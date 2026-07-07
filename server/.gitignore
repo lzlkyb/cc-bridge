@@ -1,0 +1,11 @@
+node_modules/
+config.json
+audit.log
+.cc-bridge-backup/
+dist/
+*.blob
+testroot/
+server.log
+server.pid
+*.log
+*.pid

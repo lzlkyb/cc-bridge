@@ -1,0 +1,23 @@
+{
+  "allowedRoots": [],
+  "token": "REPLACE_ME_OR_DELETE_THIS_FILE_AND_LET_THE_SERVER_GENERATE_ONE",
+  "allowedExtensions": [
+    ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs",
+    ".json", ".py", ".java", ".go", ".rs",
+    ".c", ".cpp", ".h", ".hpp", ".cs",
+    ".rb", ".php", ".sh", ".bash",
+    ".yml", ".yaml", ".toml", ".ini",
+    ".md", ".txt", ".html", ".css", ".scss",
+    ".sql", ".xml"
+  ],
+  "maxFileSizeBytes": 20971520,
+  "rateLimit": {
+    "maxRequests": 100,
+    "windowMs": 60000
+  },
+  "backupDir": ".cc-bridge-backup",
+  "backupRetention": 10,
+  "auditLogPath": "audit.log",
+  "host": "0.0.0.0",
+  "port": 7823
+}

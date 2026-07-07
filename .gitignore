@@ -1,0 +1,22 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Runtime state / secrets (per-deployment, never committed)
+config.json
+audit.log
+.cc-bridge-backup/
+testroot/
+
+# Build output
+dist/
+*.blob
+
+# Rust / Tauri
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/binaries/
+
+# OS cruft
+.DS_Store
+Thumbs.db
