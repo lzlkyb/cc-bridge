@@ -23,3 +23,8 @@ Thumbs.db
 
 # Local one-time deployment helper (not project source)
 /cc-bridge-publish.sh
+
+# Internal dev docs / design drafts (kept local, not published)
+/CLAUDE.md
+/功能优化清单.md
+/design/
