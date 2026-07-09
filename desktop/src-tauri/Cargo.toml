@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.2.2"
+version = "2.2.3"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
