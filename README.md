@@ -136,7 +136,7 @@ Claude Code 对话中触发工具调用:
         │
         ▼
   POST /mcp  ──  tools/list (发现可用工具)
-        │          返回 8 个工具的 name + description + inputSchema
+        │          返回 12 个工具的 name + description + inputSchema
         ▼
   POST /mcp  ──  tools/call (实际调用)
         │
@@ -269,7 +269,7 @@ Claude Code 对话中触发工具调用:
 - **Bearer token 认证**：`subtle::ConstantTimeEq` 防时序攻击，32 位随机字母数字。
 - **限流**：`DashMap` 滑动窗口，默认 100 次/分钟，超限 429。
 - **自动备份**：写/删/覆盖前备份到配置目录，按时间戳命名，超出保留数自动清理。
-- **审计日志**：JSONL 格式，记录每次操作的时间/工具/路径/结果/来源 IP；按保留天数（默认 30 天，0=永久）在启动时自动清理。
+- **审计日志**：JSONL 格式，记录每次操作的时间/工具/参数/结果/来源 IP/耗时（`durationMs`）；成功与失败调用均记录真实参数；按保留天数（默认 30 天，0=永久）在启动时自动清理。
 - **单文件大小上限**：默认 20MB。
 - **写锁**：`DashMap<PathBuf, Arc<Mutex<()>>>`，同一文件并发写串行化。
 
@@ -297,10 +297,10 @@ Claude Code 对话中触发工具调用:
 
 界面采用 shadcn/ui 设计语言，顶部 Tab 分页布局，共 4 个页面：
 
-- **连接**：状态概览（请求数/错误数/运行时间）+ `claude mcp add` 命令一键复制 + 全局/项目级 scope 选择 + Token 掩码显示/重新生成
+- **连接**：状态概览（请求数/错误数/运行时间，运行时间精确到秒且平滑跳秒）+ 高对比启停服务按钮（loading 态 + 失败内联报错）+ `claude mcp add` 命令一键复制 + 全局/项目级 scope 选择 + Token 掩码显示/重新生成
 - **安全**：白名单根目录 CRUD + 目录浏览器弹窗；扩展名/文件大小/限流/备份目录/备份保留，全部即时保存（防抖 800ms + 失焦）
 - **设置**：网络（host/port，改后一键保存并重启）+ 应用（开机自启开关）+ 审计（日志保留天数）
-- **日志**：审计日志表，按工具/状态筛选，点击行展开查看参数/来源 IP/错误详情
+- **日志**：审计日志表，6 列（时间 / 操作 / 参数摘要 / 来源 / 耗时 / 状态）；操作列显示中文名（如「读取文件」）+ 原始工具名；支持按操作/状态下拉筛选 + 关键字搜索（匹配参数与错误）+ 一键导出 JSON；点击行展开结构化详情（参数 KV + 格式化 JSON + 复制 + 错误块）
 - 深色/浅色主题切换（localStorage 持久化）
 
 ## 技术栈
@@ -343,10 +343,12 @@ cc-bridge/
     │       │   ├── button.tsx / input.tsx / label.tsx
     │       │   ├── card.tsx / badge.tsx / alert.tsx
     │       │   ├── tabs.tsx / dialog.tsx / table.tsx / separator.tsx
-    │       ├── tabs/                   # 4 个 Tab 页面
+    │       ├── tabs/                   # 4 个 Tab 页面 + 拆分子组件
     │       │   ├── ConnectTab.tsx
+    │       │   ├── ConnectHero.tsx     # 连接页 Hero 卡（状态/指标/启停按钮）
     │       │   ├── SecurityTab.tsx
     │       │   ├── SettingsTab.tsx     # 网络 + 应用(开机自启) + 审计
+    │       │   ├── SettingsToggles.tsx # 设置页功能开关卡
     │       │   └── LogTab.tsx
     │       └── modals/
     │           └── DirectoryBrowser.tsx # 目录浏览器弹窗
@@ -408,7 +410,7 @@ npm install
 npm run build     # cargo tauri build → 产出 NSIS 安装包
 ```
 
-产出路径：`src-tauri/target/release/bundle/nsis/cc-bridge_2.0.0_x64-setup.exe`（约 3.4MB）
+产出路径：`src-tauri/target/release/bundle/nsis/cc-bridge_2.2.1_x64-setup.exe`（约 3.4MB）
 
 ### 连接远程 Claude Code
 
