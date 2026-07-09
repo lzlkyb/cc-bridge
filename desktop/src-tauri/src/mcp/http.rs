@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use axum::body::Bytes;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, Response, StatusCode};
@@ -179,11 +180,67 @@ async fn auth_middleware(
     next.run(req).await
 }
 
+/// 解析 MCP JSON 请求体。标准 serde_json 会拒绝字符串中的 raw control character
+/// (如 `\r\n`), 但部分 MCP 客户端发送的 clientInfo.version 里可能夹带。先试严格解析,
+/// 失败时把 JSON 字符串内的控制字符替换为 `\u00XX` 转义后重试。
+fn parse_mcp_json(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
+    if let Ok(v) = serde_json::from_slice(bytes) {
+        return Ok(v);
+    }
+    // 宽松重试: 把字符串内未转义的控制字符替换为 Unicode 转义
+    let mut cleaned = Vec::with_capacity(bytes.len());
+    let mut in_string = false;
+    let mut escape = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if escape {
+            escape = false;
+            cleaned.push(b);
+            i += 1;
+            continue;
+        }
+        if in_string {
+            if b == b'\\' {
+                escape = true;
+                cleaned.push(b);
+            } else if b == b'"' {
+                in_string = false;
+                cleaned.push(b);
+            } else if b < 0x20 {
+                // 控制字符 → \u00XX
+                use std::io::Write;
+                let _ = write!(&mut cleaned, "\\u{:04x}", b);
+            } else {
+                cleaned.push(b);
+            }
+        } else {
+            cleaned.push(b);
+            if b == b'"' {
+                in_string = true;
+            }
+        }
+        i += 1;
+    }
+    serde_json::from_slice(&cleaned)
+}
+
 async fn mcp_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    Json(body): Json<serde_json::Value>,
+    body: Bytes,
 ) -> impl IntoResponse {
+    let body = match parse_mcp_json(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return Json(json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": { "code": -32700, "message": format!("Parse error: {}", e) }
+            }))
+        }
+    };
+
     state.increment_requests().await;
 
     let source_ip = addr.ip().to_string();
