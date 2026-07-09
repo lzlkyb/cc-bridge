@@ -554,6 +554,8 @@ dependencies = [
  "dashmap",
  "encoding_rs",
  "env_logger",
+ "hyper",
+ "hyper-util",
  "if-addrs",
  "log",
  "rand",
@@ -568,6 +570,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-single-instance",
  "tokio",
+ "tower",
  "tower-http",
 ]
 

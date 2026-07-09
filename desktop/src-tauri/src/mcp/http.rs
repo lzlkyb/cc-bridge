@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::body::Body;
@@ -8,7 +9,10 @@ use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Json;
+use hyper_util::rt::TokioIo;
+use hyper_util::service::TowerToHyperService;
 use serde_json::json;
+use tower::Service;
 
 use crate::audit;
 use crate::mcp::tools;
@@ -40,7 +44,7 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
         .with_state(state);
 
     let addr = format!("{}:{}", host, port);
-    let listener = match bind_with_keepalive(&addr) {
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
             log::error!("Failed to bind MCP server to {}: {}", addr, e);
@@ -56,57 +60,66 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
         .mcp_running
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
-    if let Err(e) = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await
-    {
-        log::error!("MCP server error: {}", e);
+    // 手动 accept 循环（替代 axum::serve）——每连接设 TCP keepalive。
+    // Windows 上 listener keepalive 参数不向 accepted socket 传递
+    // （SO_KEEPALIVE=true 会传但时间/间隔回落到系统默认 2h）。
+    // NAT 表 5-30min 即过期 → 必须逐连接设 keepalive(60s idle/15s 探测)。
+
+    loop {
+        let (stream, remote_addr) = match listener.accept().await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("accept error: {}", e);
+                break;
+            }
+        };
+
+        // TCP keepalive: 60s 空闲 → 每 15s 探测，保持 NAT 表活跃
+        let _ = set_conn_keepalive(&stream);
+
+        let router = app.clone();
+
+        tokio::spawn(async move {
+            // 为此连接注入 ConnectInfo（替代 AddrStream 机制）
+            use axum::extract::ConnectInfo;
+
+            let conn_router = router.layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: Next| async move {
+                    req.extensions_mut()
+                        .insert(ConnectInfo(remote_addr));
+                    next.run(req).await
+                },
+            ));
+
+            let io = TokioIo::new(stream);
+            let mut make_svc = conn_router.into_make_service();
+
+            let tower_svc = match Service::call(&mut make_svc, ()).await {
+                Ok(svc) => svc,
+                Err(_) => return,
+            };
+
+            let hyper_svc = TowerToHyperService::new(tower_svc);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, hyper_svc)
+                .await;
+        });
     }
-    // serve 返回（被 abort 或出错）时标记为停止
+
     running_state
         .mcp_running
         .store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// 创建带 TCP keepalive 的 listener，防止 VPN/NAT 空闲超时断开。
-///
-/// 默认 Windows TCP keepalive 是 2 小时——NAT 表项 5-30 分钟就过期了。
-/// 客户端复用旧连接时数据包无 NAT 映射 → 被丢弃 → 超时。
-/// 设置 60s 空闲 + 15s 探测间隔后，OS 每 60-75s 发一次探测包，
-/// 保持 NAT 表活跃且能及时发现死连接。
-fn bind_with_keepalive(addr: &str) -> Result<tokio::net::TcpListener, std::io::Error> {
-    use socket2::Socket;
-    use std::net::SocketAddr;
-    use std::time::Duration;
-
-    let parsed: SocketAddr = addr.parse().map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
-    })?;
-
-    let domain = if parsed.is_ipv4() {
-        socket2::Domain::IPV4
-    } else {
-        socket2::Domain::IPV6
-    };
-
-    let socket = Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
-    socket.set_reuse_address(true)?;
-    socket.set_keepalive(true)?;
-
-    // 平台特定的 keepalive 参数：idle 60s，之后每 15s 探测一次
+/// 在已接受的 TCP 连接上启用 keepalive（60s 空闲 / 15s 间隔）。
+fn set_conn_keepalive(stream: &tokio::net::TcpStream) -> std::io::Result<()> {
+    use socket2::SockRef;
+    let sock = SockRef::from(stream);
+    sock.set_keepalive(true)?;
     let ka = socket2::TcpKeepalive::new()
         .with_time(Duration::from_secs(60))
         .with_interval(Duration::from_secs(15));
-    socket.set_tcp_keepalive(&ka)?;
-
-    socket.bind(&parsed.into())?;
-    socket.listen(1024)?;
-    socket.set_nonblocking(true)?;
-
-    let std_listener: std::net::TcpListener = socket.into();
-    tokio::net::TcpListener::from_std(std_listener)
+    sock.set_tcp_keepalive(&ka)
 }
 
 async fn health_handler() -> impl IntoResponse {
