@@ -88,12 +88,10 @@ export function ConnectHero({
             <Button
               onClick={toggleServer}
               disabled={pending}
-              className={`min-w-[132px] gap-2 shadow-md ${
+              className={`min-w-[132px] gap-2 border border-white/20 shadow-md ${
                 pending
-                  ? "bg-white/60 text-slate-700"
-                  : running
-                    ? "bg-white text-destructive hover:bg-white/90"
-                    : "bg-white text-primary hover:bg-white/90"
+                  ? "bg-white/10 text-white/50 backdrop-blur-sm"
+                  : "bg-white/15 text-white backdrop-blur-sm hover:bg-white/25"
               }`}
             >
               {pending ? (

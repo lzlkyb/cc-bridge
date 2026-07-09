@@ -40,6 +40,9 @@ encoding_rs = "0.8"
 # Network interface enumeration (multi-homed: VPN + LAN)
 if-addrs = "0.13"
 
+# TCP keepalive (prevent NAT table expiry on idle MCP connections)
+socket2 = "0.6"
+
 # Concurrency
 dashmap = "6"
 

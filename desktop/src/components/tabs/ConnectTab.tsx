@@ -13,9 +13,13 @@ type McpScope = "global" | "project";
 export function ConnectTab({
   status,
   onRefresh,
+  selectedIp,
+  onSelectIp,
 }: {
   status?: StatusResponse;
   onRefresh: () => void;
+  selectedIp: string;
+  onSelectIp: (ip: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [confirmingRegen, setConfirmingRegen] = useState(false);
@@ -23,7 +27,6 @@ export function ConnectTab({
   const [showToken, setShowToken] = useState(false);
   const [scope, setScope] = useState<McpScope>("project");
   const [lanIps, setLanIps] = useState<string[]>([]);
-  const [selectedIp, setSelectedIp] = useState<string>("");
 
   // 监听全网卡时才需要选 IP；host 指定了具体地址就用它
   const listenAll = status?.host === "0.0.0.0";
@@ -34,7 +37,7 @@ export function ConnectTab({
       .then((ips) => {
         setLanIps(ips);
         // 默认选第一个（默认路由 IP），已选的若仍在列表中则保留
-        setSelectedIp((prev) => (prev && ips.includes(prev) ? prev : ips[0] ?? ""));
+        onSelectIp(selectedIp && ips.includes(selectedIp) ? selectedIp : ips[0] ?? "");
       })
       .catch(() => {});
   }, [listenAll]);
@@ -95,7 +98,7 @@ export function ConnectTab({
             <AddressPicker
               ips={lanIps}
               selected={selectedIp}
-              onSelect={setSelectedIp}
+              onSelect={onSelectIp}
               healthCheck={healthCheck}
             />
           )}

@@ -561,6 +561,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "socket2",
  "subtle",
  "tauri",
  "tauri-build",

@@ -39,7 +39,7 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
         .with_state(state);
 
     let addr = format!("{}:{}", host, port);
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
+    let listener = match bind_with_keepalive(&addr) {
         Ok(l) => l,
         Err(e) => {
             log::error!("Failed to bind MCP server to {}: {}", addr, e);
@@ -67,6 +67,45 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
     running_state
         .mcp_running
         .store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 创建带 TCP keepalive 的 listener，防止 VPN/NAT 空闲超时断开。
+///
+/// 默认 Windows TCP keepalive 是 2 小时——NAT 表项 5-30 分钟就过期了。
+/// 客户端复用旧连接时数据包无 NAT 映射 → 被丢弃 → 超时。
+/// 设置 60s 空闲 + 15s 探测间隔后，OS 每 60-75s 发一次探测包，
+/// 保持 NAT 表活跃且能及时发现死连接。
+fn bind_with_keepalive(addr: &str) -> Result<tokio::net::TcpListener, std::io::Error> {
+    use socket2::Socket;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    let parsed: SocketAddr = addr.parse().map_err(|e| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+    })?;
+
+    let domain = if parsed.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+
+    let socket = Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_keepalive(true)?;
+
+    // 平台特定的 keepalive 参数：idle 60s，之后每 15s 探测一次
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(15));
+    socket.set_tcp_keepalive(&ka)?;
+
+    socket.bind(&parsed.into())?;
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+
+    let std_listener: std::net::TcpListener = socket.into();
+    tokio::net::TcpListener::from_std(std_listener)
 }
 
 async fn health_handler() -> impl IntoResponse {

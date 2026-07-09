@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "./lib/tauri";
 import type { StatusResponse } from "./lib/types";
@@ -16,6 +17,9 @@ function App() {
     refetchInterval: 5000,
   });
 
+  // IP 选择状态提升到 App 层，避免切 Tab 时 ConnectTab 卸载导致选中丢失
+  const [selectedIp, setSelectedIp] = useState<string>("");
+
   return (
     // h-screen flex-col：Header 与 Tab 栏固定，仅内容区滚动（横向锁死、纵向可滚）
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
@@ -31,7 +35,7 @@ function App() {
         </div>
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-5">
           <TabsContent value="connect">
-            <ConnectTab status={status} onRefresh={refetchStatus} />
+            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={setSelectedIp} />
           </TabsContent>
           <TabsContent value="security">
             <SecurityTab status={status} onSaved={refetchStatus} />
