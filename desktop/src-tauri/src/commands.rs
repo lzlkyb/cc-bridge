@@ -1,7 +1,8 @@
+use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::audit;
 use crate::browse;
@@ -48,7 +49,16 @@ pub struct StatusResponse {
     pub rate_limit_enabled: bool,
     #[serde(rename = "encodingDetectEnabled")]
     pub encoding_detect_enabled: bool,
+    #[serde(rename = "shellEnabled")]
+    pub shell_enabled: bool,
     pub running: bool,
+    // ── 本机地址变更检测 ──
+    #[serde(rename = "lanIps")]
+    pub lan_ips: Vec<String>,
+    #[serde(rename = "lastSelectedIp")]
+    pub last_selected_ip: Option<String>,
+    #[serde(rename = "ipChanged")]
+    pub ip_changed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,9 +84,14 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
     let uptime = state.uptime_seconds().await;
     let connect_cmd = network::build_connect_command(&config.host, config.port, &config.token);
     let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
+    let lan_ips = network::get_lan_ips();
+    let ip_changed = config
+        .last_selected_ip
+        .as_ref()
+        .is_some_and(|ip| !lan_ips.contains(ip));
 
     Ok(StatusResponse {
-        version: "2.1.0".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
         uptime_seconds: uptime,
         allowed_roots: config.allowed_roots.clone(),
         allowed_extensions: config.allowed_extensions.clone(),
@@ -102,7 +117,11 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         audit_enabled: config.audit_enabled,
         rate_limit_enabled: config.rate_limit_enabled,
         encoding_detect_enabled: config.encoding_detect_enabled,
+        shell_enabled: config.shell_enabled,
         running,
+        last_selected_ip: config.last_selected_ip.clone(),
+        ip_changed,
+        lan_ips,
     })
 }
 
@@ -138,6 +157,8 @@ pub struct ConfigPatch {
     pub rate_limit_enabled: Option<bool>,
     #[serde(rename = "encodingDetectEnabled")]
     pub encoding_detect_enabled: Option<bool>,
+    #[serde(rename = "shellEnabled")]
+    pub shell_enabled: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -219,6 +240,7 @@ pub async fn save_config(
         "encoding_detect_enabled",
         &patch.encoding_detect_enabled
     );
+    apply_field!(shell_enabled, "shell_enabled", &patch.shell_enabled);
 
     if let Some(ref h) = patch.host {
         if *h != config.host {
@@ -328,6 +350,17 @@ pub async fn get_lan_ips() -> Result<Vec<String>, String> {
     Ok(network::get_lan_ips())
 }
 
+/// 用户在 Connect 页选中（或自动默认选中，或点击变更提示 banner 的"标记已处理"）时落盘，
+/// 作为下次判断"地址是否变化"的基线。
+#[tauri::command]
+pub async fn set_selected_ip(state: State<'_, Arc<AppState>>, ip: String) -> Result<(), String> {
+    let db = state.db.lock().await;
+    save_config_field(&db, "last_selected_ip", &serde_json::to_value(&ip).unwrap())?;
+    let mut config = state.config.write().await;
+    config.last_selected_ip = Some(ip);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -343,4 +376,202 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String>
     } else {
         manager.disable().map_err(|e| e.to_string())
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunningCommandInfo {
+    pub handle: String,
+    pub pid: u32,
+    pub command: String,
+    pub cwd: String,
+    pub running: bool,
+    #[serde(rename = "exitCode")]
+    pub exit_code: Option<i32>,
+    #[serde(rename = "elapsedSeconds")]
+    pub elapsed_seconds: u64,
+}
+
+/// 供本机面板展示 run_command(background=true) 启动的后台命令，与远程 MCP 的
+/// get_command_output 读的是同一份 `AppState.running_commands` 注册表。
+#[tauri::command]
+pub async fn list_running_commands(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<RunningCommandInfo>, String> {
+    // 先克隆出快照再逐个 await 锁，避免持有 DashMap 的 Ref 跨 await。
+    let snapshot: Vec<_> = state
+        .running_commands
+        .iter()
+        .map(|entry| {
+            let cmd = entry.value();
+            (
+                entry.key().clone(),
+                cmd.pid,
+                cmd.command.clone(),
+                cmd.cwd.clone(),
+                cmd.exit_code.clone(),
+                cmd.started_at.elapsed().as_secs(),
+            )
+        })
+        .collect();
+
+    let mut result = Vec::with_capacity(snapshot.len());
+    for (handle, pid, command, cwd, exit_code_arc, elapsed_seconds) in snapshot {
+        let exit_code = *exit_code_arc.lock().await;
+        result.push(RunningCommandInfo {
+            handle,
+            pid,
+            command,
+            cwd,
+            running: exit_code.is_none(),
+            exit_code,
+            elapsed_seconds,
+        });
+    }
+    Ok(result)
+}
+
+/// 本机面板的「终止」按钮：taskkill 整树，逻辑与 MCP 的 stop_command 工具一致。
+#[tauri::command]
+pub async fn stop_running_command(
+    state: State<'_, Arc<AppState>>,
+    handle: String,
+) -> Result<(), String> {
+    let entry = state
+        .running_commands
+        .remove(&handle)
+        .ok_or_else(|| format!("未知的 handle: {handle}"))?;
+    let pid = entry.1.pid;
+    std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .creation_flags(0x0800_0200) // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP，避免 Ctrl+C 信号串到其他命令
+        .output()
+        .map_err(|e| format!("终止失败: {e}"))?;
+    Ok(())
+}
+
+// ===== 自动更新（后台线程，不阻塞 UI），採自 PastePanda 实现 =====
+
+/// 指数退避重试辅助函数
+async fn retry_with_backoff<F, Fut, T, E>(
+    max_retries: u32,
+    operation_name: &str,
+    f: F,
+) -> Result<T, E>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    let mut attempt = 0u32;
+    loop {
+        match f().await {
+            Ok(val) => return Ok(val),
+            Err(e) => {
+                attempt += 1;
+                if attempt > max_retries {
+                    return Err(e);
+                }
+                let delay_secs = 1u64 << (attempt - 1);
+                log::warn!(
+                    "[Update] {} 失败（第 {}/{} 次），{} 秒后重试: {}",
+                    operation_name,
+                    attempt,
+                    max_retries,
+                    delay_secs,
+                    e
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+            }
+        }
+    }
+}
+
+/// 后台执行更新检查+下载安装，通过 Tauri event 推送状态到前端。
+/// 内置指数退避重试：检查更新最多重试 3 次，下载安装最多重试 2 次。
+#[tauri::command]
+pub fn start_update(app: tauri::AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+
+    tauri::async_runtime::spawn(async move {
+        let _ = app.emit("update:checking", ());
+
+        let updater = match app.updater() {
+            Ok(u) => u,
+            Err(e) => {
+                let _ = app.emit(
+                    "update:error",
+                    serde_json::json!({
+                        "message": format!("更新插件初始化失败: {}", e)
+                    }),
+                );
+                return;
+            }
+        };
+
+        let check_result = match retry_with_backoff(3, "检查更新", || updater.check()).await {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = app.emit(
+                    "update:error",
+                    serde_json::json!({
+                        "message": format!("检查更新失败（已重试 3 次）: {}", e)
+                    }),
+                );
+                return;
+            }
+        };
+
+        let update = match check_result {
+            Some(u) => u,
+            None => {
+                let _ = app.emit("update:uptodate", ());
+                return;
+            }
+        };
+
+        let _ = app.emit(
+            "update:available",
+            serde_json::json!({
+                "version": update.version,
+                "body": update.body,
+            }),
+        );
+
+        let _ = app.emit("update:downloading", ());
+
+        let app_progress = app.clone();
+        let app_ready = app.clone();
+        let result = retry_with_backoff(2, "下载安装", || {
+            let u = update.clone();
+            let ap = app_progress.clone();
+            let ar = app_ready.clone();
+            async move {
+                u.download_and_install(
+                    move |downloaded, total| {
+                        let _ = ap.emit(
+                            "update:progress",
+                            serde_json::json!({
+                                "downloaded": downloaded,
+                                "total": total,
+                            }),
+                        );
+                    },
+                    move || {
+                        let _ = ar.emit("update:ready", ());
+                    },
+                )
+                .await
+            }
+        })
+        .await;
+
+        if let Err(e) = result {
+            let _ = app.emit(
+                "update:error",
+                serde_json::json!({
+                    "message": format!("下载安装失败（已重试 2 次）: {}", e)
+                }),
+            );
+        }
+    });
 }

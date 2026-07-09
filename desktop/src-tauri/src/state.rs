@@ -9,6 +9,18 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::config::BridgeConfig;
 
+pub struct RunningCommand {
+    pub pid: u32,
+    pub command: String,
+    pub cwd: String,
+    pub stdout: Arc<Mutex<Vec<u8>>>,
+    pub stderr: Arc<Mutex<Vec<u8>>>,
+    pub stdout_truncated: Arc<AtomicBool>,
+    pub stderr_truncated: Arc<AtomicBool>,
+    pub exit_code: Arc<Mutex<Option<i32>>>,
+    pub started_at: Instant,
+}
+
 pub struct RuntimeStats {
     pub total_requests: u64,
     pub total_errors: u64,
@@ -35,6 +47,9 @@ pub struct AppState {
     pub mcp_server_handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     // MCP 服务是否在运行（供 UI 显示启停状态）。用户可手动停止/启动。
     pub mcp_running: AtomicBool,
+    // 后台命令注册表（run_command background=true 时登记）。v1 没有独立的定时回收任务，
+    // 已结束的 handle 会一直占位直到 stop_command 显式移除或达到并发上限被拒绝新建。
+    pub running_commands: DashMap<String, RunningCommand>,
 }
 
 impl AppState {
@@ -48,6 +63,7 @@ impl AppState {
             data_dir,
             mcp_server_handle: Mutex::new(None),
             mcp_running: AtomicBool::new(false),
+            running_commands: DashMap::new(),
         }
     }
 

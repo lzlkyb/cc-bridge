@@ -1,12 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
+import type { StatusResponse, ConfigSaveResult, RunningCommandInfo } from "../../lib/types";
+import { formatUptime } from "../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { DirectoryBrowser } from "../modals/DirectoryBrowser";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 
 export function SecurityTab({
   status,
@@ -58,6 +61,15 @@ export function SecurityTab({
           </div>
         </div>
       )}
+      {status?.shellEnabled && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-xs text-destructive">
+          <Icon name="terminal" size={16} className="mt-0.5 shrink-0" />
+          <div>
+            <b>命令执行已开启。</b>远程 Claude Code 可在白名单目录内执行<b>任意 Shell 命令</b>（等同 RCE）。
+            仅在完全信任的网络环境中使用，用完请在「设置 → 功能开关」中关闭。
+          </div>
+        </div>
+      )}
       {status?.readonlyMode && (
         <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5 text-xs text-warning">
           <Icon name="lock" size={16} className="mt-0.5 shrink-0" />
@@ -66,6 +78,8 @@ export function SecurityTab({
           </div>
         </div>
       )}
+
+      <RunningCommandsCard />
 
       <Card>
         <CardHeader>
@@ -175,6 +189,70 @@ export function SecurityTab({
         }}
       />
     </div>
+  );
+}
+
+/**
+ * 运行中的后台命令（run_command(background=true) 启动）。与远程的
+ * get_command_output 读取同一份注册表，让本机面板也能看到并一键终止。
+ * 无后台命令时不渲染，避免空卡片占地。
+ */
+function RunningCommandsCard() {
+  const { data: commands, refetch } = useQuery<RunningCommandInfo[]>({
+    queryKey: ["runningCommands"],
+    queryFn: () => invoke<RunningCommandInfo[]>("list_running_commands"),
+    refetchInterval: 3000,
+  });
+
+  const stop = async (handle: string) => {
+    await invoke("stop_running_command", { handle });
+    refetch();
+  };
+
+  if (!commands || commands.length === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle icon={<Icon name="terminal" />}>运行中的后台命令</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-[80px]">PID</TableHead>
+              <TableHead>命令</TableHead>
+              <TableHead className="w-[90px]">已运行</TableHead>
+              <TableHead className="w-[70px]" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {commands.map((cmd) => (
+              <TableRow key={cmd.handle}>
+                <TableCell className="font-mono text-xs">{cmd.pid}</TableCell>
+                <TableCell className="truncate font-mono text-xs" title={cmd.command}>
+                  {cmd.command}
+                </TableCell>
+                <TableCell className="text-xs text-muted-foreground">
+                  {formatUptime(cmd.elapsedSeconds)}
+                </TableCell>
+                <TableCell>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => stop(cmd.handle)}
+                  >
+                    <Icon name="power" size={14} />
+                    终止
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
   );
 }
 

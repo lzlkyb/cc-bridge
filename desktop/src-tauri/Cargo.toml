@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.2.1"
+version = "2.2.2"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -12,13 +12,16 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+tauri-plugin-notification = "2"
 
 # HTTP server (MCP protocol handled via axum directly)
 axum = "0.8"
 tower-http = { version = "0.6", features = ["limit"] }
 
 # Async runtime
-tokio = { version = "1", features = ["fs", "sync", "net", "rt", "macros"] }
+tokio = { version = "1", features = ["fs", "sync", "net", "rt", "macros", "process", "time", "io-util"] }
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled"] }

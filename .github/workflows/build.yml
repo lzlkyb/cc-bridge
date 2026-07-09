@@ -29,6 +29,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 🔑 准备签名密钥（文件路径方式）
+        shell: pwsh
+        run: |
+          $raw = '${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
+          if ([string]::IsNullOrWhiteSpace($raw)) {
+            Write-Host "⚠️ TAURI_SIGNING_PRIVATE_KEY 未设置，本次构建将不产生签名（.sig），updater 无法验证。"
+            "TAURI_KEY_FILE=" >> $env:GITHUB_ENV
+            exit 0
+          }
+          $keyFile = "${{ runner.temp }}\tauri-signing.key"
+          [System.IO.File]::WriteAllText($keyFile, $raw, [System.Text.Encoding]::ASCII)
+          "TAURI_KEY_FILE=$keyFile" >> $env:GITHUB_ENV
+          Write-Host "密钥文件已写入: $keyFile"
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -36,16 +50,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build Tauri desktop app (NSIS installer)
+        shell: pwsh
         run: |
           npm install
+          $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_KEY_FILE
+          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""   # 空密码，避免 CI 无 TTY 时交互式提示卡死
           npm run build
         working-directory: desktop
 
+      - name: 生成 updater.json
+        shell: pwsh
+        run: npm run updater:generate
+        working-directory: desktop
+        env:
+          GITHUB_RELEASE_TAG: ${{ github.ref_name }}
+
       - name: Collect artifacts
+        shell: pwsh
         run: |
-          mkdir dist-out
-          copy desktop\src-tauri\target\release\bundle\nsis\*.exe dist-out\
-        shell: cmd
+          mkdir dist-out -ErrorAction SilentlyContinue
+          Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe dist-out\ -ErrorAction SilentlyContinue
+          Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe.sig dist-out\ -ErrorAction SilentlyContinue
+          Copy-Item desktop\dist\updater.json dist-out\ -ErrorAction SilentlyContinue
 
       - uses: actions/upload-artifact@v4
         with:
@@ -56,5 +82,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist-out/*
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

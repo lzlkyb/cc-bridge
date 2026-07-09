@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "./lib/tauri";
 import type { StatusResponse } from "./lib/types";
@@ -20,6 +20,19 @@ function App() {
   // IP 选择状态提升到 App 层，避免切 Tab 时 ConnectTab 卸载导致选中丢失
   const [selectedIp, setSelectedIp] = useState<string>("");
 
+  // 应用重启后用上次确认过的 IP 回填，避免每次都从空开始
+  useEffect(() => {
+    if (!selectedIp && status?.lastSelectedIp) {
+      setSelectedIp(status.lastSelectedIp);
+    }
+  }, [status?.lastSelectedIp]);
+
+  // 无论自动默认选中还是手动点选，都经过这层落盘，作为下次判断地址变化的基线
+  const handleSelectIp = (ip: string) => {
+    setSelectedIp(ip);
+    if (ip) invoke("set_selected_ip", { ip }).catch(() => {});
+  };
+
   return (
     // h-screen flex-col：Header 与 Tab 栏固定，仅内容区滚动（横向锁死、纵向可滚）
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
@@ -35,7 +48,7 @@ function App() {
         </div>
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-5">
           <TabsContent value="connect">
-            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={setSelectedIp} />
+            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} />
           </TabsContent>
           <TabsContent value="security">
             <SecurityTab status={status} onSaved={refetchStatus} />

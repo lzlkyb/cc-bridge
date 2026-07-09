@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -9,11 +10,51 @@ use crate::state::AppState;
 #[derive(Debug, Deserialize)]
 pub struct ListAllowedRootsArgs {}
 
+/// CLAUDE.md 全文内嵌的大小上限（字节）；超过则只给路径提示，避免每次调用都传大文件。
+const CLAUDE_MD_INLINE_MAX_BYTES: u64 = 20 * 1024;
+
 /// 返回当前服务端的访问白名单，让远程 Claude Code 无需盲猜即可发现可用目录。
+/// 同时探测每个根目录顶层的 CLAUDE.md：存在且不超限则全文内嵌到 projectInstructions，
+/// 让远程 Claude Code 一调用本工具（约定中的"连接后第一步"）就自动拿到项目规则，
+/// 不必再手动 read_files 一次。
 pub async fn handle(_args: ListAllowedRootsArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let config = state.config.read().await;
 
-    let info = json!({
+    let project_instructions: Vec<Value> = config
+        .allowed_roots
+        .iter()
+        .filter_map(|root| {
+            let claude_md_path = Path::new(root).join("CLAUDE.md");
+            let metadata = std::fs::metadata(&claude_md_path).ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+            let path_str = claude_md_path.to_string_lossy().to_string();
+
+            if metadata.len() > CLAUDE_MD_INLINE_MAX_BYTES {
+                Some(json!({
+                    "root": root,
+                    "path": path_str,
+                    "truncated": true,
+                    "note": format!(
+                        "CLAUDE.md 超过 {}KB，未内嵌全文；请用 read_files 读取 {}",
+                        CLAUDE_MD_INLINE_MAX_BYTES / 1024,
+                        path_str
+                    ),
+                }))
+            } else {
+                let content = std::fs::read_to_string(&claude_md_path).ok()?;
+                Some(json!({
+                    "root": root,
+                    "path": path_str,
+                    "truncated": false,
+                    "content": content,
+                }))
+            }
+        })
+        .collect();
+
+    let mut info = json!({
         "allowedRoots": config.allowed_roots,
         "allowedExtensions": config.allowed_extensions,
         "maxFileSizeBytes": config.max_file_size_bytes,
@@ -23,6 +64,10 @@ pub async fn handle(_args: ListAllowedRootsArgs, state: &Arc<AppState>) -> Resul
             "只能访问以上根目录及其子目录。allowedExtensions 为空表示不限扩展名。"
         }
     });
+
+    if !project_instructions.is_empty() {
+        info["projectInstructions"] = json!(project_instructions);
+    }
 
     Ok(json!({
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&info).unwrap() }]

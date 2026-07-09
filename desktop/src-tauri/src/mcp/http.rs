@@ -70,7 +70,7 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
 }
 
 async fn health_handler() -> impl IntoResponse {
-    Json(json!({ "status": "ok", "version": "2.2.1" }))
+    Json(json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }))
 }
 
 async fn auth_middleware(
@@ -173,7 +173,7 @@ async fn mcp_handler(
                     },
                     "serverInfo": {
                         "name": "cc-bridge",
-                        "version": "2.2.1"
+                        "version": env!("CARGO_PKG_VERSION")
                     }
                 }
             }))
@@ -273,7 +273,7 @@ async fn dispatch_tool(
     state: &Arc<AppState>,
 ) -> Result<serde_json::Value, String> {
     // 只读模式：拒绝一切写操作（默认关闭）。读取/列目录/搜索/分析不受影响。
-    const WRITE_TOOLS: [&str; 7] = [
+    const WRITE_TOOLS: [&str; 8] = [
         "write_files",
         "delete_files",
         "move_files",
@@ -281,6 +281,7 @@ async fn dispatch_tool(
         "edit_files",
         "create_directory",
         "remove_directory",
+        "run_command",
     ];
     if WRITE_TOOLS.contains(&name) {
         let readonly = state.config.read().await.readonly_mode;
@@ -351,6 +352,21 @@ async fn dispatch_tool(
                 serde_json::from_value(args).map_err(|e| e.to_string())?;
             tools::analyze_file::handle(parsed, state).await
         }
+        "run_command" => {
+            let parsed: tools::run_command::RunCommandArgs =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            tools::run_command::handle(parsed, state).await
+        }
+        "get_command_output" => {
+            let parsed: tools::get_command_output::GetCommandOutputArgs =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            tools::get_command_output::handle(parsed, state).await
+        }
+        "stop_command" => {
+            let parsed: tools::stop_command::StopCommandArgs =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            tools::stop_command::handle(parsed, state).await
+        }
         _ => Err(format!("Unknown tool: {}", name)),
     }
 }
@@ -359,7 +375,7 @@ fn get_tool_definitions() -> serde_json::Value {
     json!([
         {
             "name": "list_allowed_roots",
-            "description": "List the server's access whitelist (allowed root directories, allowed file extensions, max file size). Call this FIRST to discover which directories you can read/write before attempting any file operation.",
+            "description": "List the server's access whitelist (allowed root directories, allowed file extensions, max file size). If an allowed root has a top-level CLAUDE.md, its content is inlined under projectInstructions (or a path pointer if it exceeds the size cap). Call this FIRST to discover accessible directories and pick up project rules before attempting any file operation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {}
@@ -527,6 +543,45 @@ fn get_tool_definitions() -> serde_json::Value {
                     "path": { "type": "string" }
                 },
                 "required": ["path"]
+            }
+        },
+        {
+            "name": "run_command",
+            "description": "Execute a shell command (`cmd /C`) in a whitelisted cwd. DANGEROUS: equivalent to granting the caller arbitrary code execution — disabled by default via the `shell_enabled` config toggle, and blocked entirely in read-only mode. Foreground mode (background=false, default) waits up to timeoutMs and returns stdout/stderr/exitCode. Background mode (background=true) returns immediately with a handle; poll it via get_command_output and end it via stop_command. Stateless: no persistent shell session across calls — always pass an absolute cwd, `cd` does not carry over between calls.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string" },
+                    "cwd": { "type": "string", "description": "Absolute path, must be within an allowed root" },
+                    "background": { "type": "boolean", "default": false },
+                    "timeoutMs": { "type": "integer", "default": 30000, "description": "Foreground mode only" },
+                    "maxOutputBytes": { "type": "integer", "default": 1048576, "description": "Output beyond this is discarded and truncated=true is returned" }
+                },
+                "required": ["command", "cwd"]
+            }
+        },
+        {
+            "name": "get_command_output",
+            "description": "Incrementally fetch stdout/stderr of a background command started by run_command(background=true). Pass stdoutOffset/stderrOffset (bytes already consumed) to get only new output since the last call.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "handle": { "type": "string" },
+                    "stdoutOffset": { "type": "integer", "default": 0 },
+                    "stderrOffset": { "type": "integer", "default": 0 }
+                },
+                "required": ["handle"]
+            }
+        },
+        {
+            "name": "stop_command",
+            "description": "Forcefully terminate a background command's entire process tree (taskkill /T) and remove it from the registry.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "handle": { "type": "string" }
+                },
+                "required": ["handle"]
             }
         }
     ])

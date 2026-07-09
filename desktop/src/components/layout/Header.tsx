@@ -3,6 +3,7 @@ import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { useUpdate } from "../../contexts/UpdateContext";
 
 export function Header({
   status,
@@ -13,6 +14,7 @@ export function Header({
 }) {
   const [dark, setDark] = useState(() => localStorage.getItem("theme") === "dark");
   const [busy, setBusy] = useState(false);
+  const { status: updateStatus, update: updateInfo } = useUpdate();
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -60,10 +62,34 @@ export function Header({
             白名单关闭
           </span>
         )}
+        {status?.ipChanged && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[11px] font-semibold text-destructive">
+            <Icon name="alertTriangle" size={11} />
+            IP 已变化
+          </span>
+        )}
         {status?.readonlyMode && (
           <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-semibold text-warning">
             <Icon name="lock" size={11} />
             只读
+          </span>
+        )}
+        {status?.shellEnabled && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[11px] font-semibold text-destructive">
+            <Icon name="terminal" size={11} />
+            命令执行已开启
+          </span>
+        )}
+        {updateStatus === "available" && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+            <Icon name="arrowUp" size={11} />
+            有新版本{updateInfo ? ` v${updateInfo.version}` : ""}
+          </span>
+        )}
+        {updateStatus === "ready" && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">
+            <Icon name="check" size={11} />
+            待重启
           </span>
         )}
       </div>

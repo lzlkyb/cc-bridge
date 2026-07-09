@@ -19,7 +19,11 @@ export interface StatusResponse {
   auditEnabled: boolean;
   rateLimitEnabled: boolean;
   encodingDetectEnabled: boolean;
+  shellEnabled: boolean;
   running: boolean;
+  lanIps: string[];
+  lastSelectedIp: string | null;
+  ipChanged: boolean;
 }
 
 export interface ConfigPatch {
@@ -39,6 +43,7 @@ export interface ConfigPatch {
   auditEnabled?: boolean;
   rateLimitEnabled?: boolean;
   encodingDetectEnabled?: boolean;
+  shellEnabled?: boolean;
 }
 
 export interface ConfigSaveResult {
@@ -56,6 +61,16 @@ export interface AuditEntry {
   error?: string;
   sourceIp?: string;
   durationMs?: number;
+}
+
+export interface RunningCommandInfo {
+  handle: string;
+  pid: number;
+  command: string;
+  cwd: string;
+  running: boolean;
+  exitCode: number | null;
+  elapsedSeconds: number;
 }
 
 export interface BrowseEntry {

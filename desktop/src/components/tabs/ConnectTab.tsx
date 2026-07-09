@@ -26,21 +26,19 @@ export function ConnectTab({
   const [regenDone, setRegenDone] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [scope, setScope] = useState<McpScope>("project");
-  const [lanIps, setLanIps] = useState<string[]>([]);
+  const lanIps = status?.lanIps ?? [];
 
   // 监听全网卡时才需要选 IP；host 指定了具体地址就用它
   const listenAll = status?.host === "0.0.0.0";
 
   useEffect(() => {
-    if (!listenAll) return;
-    invoke<string[]>("get_lan_ips")
-      .then((ips) => {
-        setLanIps(ips);
-        // 默认选第一个（默认路由 IP），已选的若仍在列表中则保留
-        onSelectIp(selectedIp && ips.includes(selectedIp) ? selectedIp : ips[0] ?? "");
-      })
-      .catch(() => {});
-  }, [listenAll]);
+    if (!listenAll || lanIps.length === 0) return;
+    // 仅在从未选过时默认选第一个（默认路由 IP）。已选但现在不在列表中（地址变化）
+    // 不在这里静静换新选中——那正是下方 IpChangedBanner 要提示用户确认的情形。
+    if (!selectedIp) {
+      onSelectIp(lanIps[0]);
+    }
+  }, [listenAll, lanIps.join(","), selectedIp]);
 
   // 前端用 token + port + 选中 IP 重新拼命令，摆脱后端写死的单一 IP
   const displayHost = listenAll
@@ -79,6 +77,17 @@ export function ConnectTab({
 
   return (
     <div className="space-y-4">
+      {/* IP 变化醒目提示：上次确认的 IP 不在本机网卡列表中了（VPN 重连等），引导用户选新地址 */}
+      {status?.ipChanged && (
+        <IpChangedBanner
+          lanIps={lanIps}
+          previousIp={status.lastSelectedIp ?? null}
+          port={status.port}
+          token={status.token}
+          onResolved={onSelectIp}
+        />
+      )}
+
       {/* A. Hero 渐变头卡：运行状态 + 地址 + 关键指标 + 启停按钮 */}
       <ConnectHero
         status={status}
@@ -215,6 +224,83 @@ function ipHint(ip: string): string {
   if (ip.startsWith("10.")) return "VPN 或企业内网";
   if (ip.startsWith("172.")) return "内网 / VPN / 容器网段";
   return "其它网段";
+}
+
+/** 变更醒目 banner：仅 status.ipChanged 为真时渲染。确认选中新 IP 并复制命令后，
+ * onResolved 会重新落盘 last_selected_ip，下一次轮询 ip_changed 回为 false，banner 自行消失。 */
+function IpChangedBanner({
+  lanIps,
+  previousIp,
+  port,
+  token,
+  onResolved,
+}: {
+  lanIps: string[];
+  previousIp: string | null;
+  port: number;
+  token: string;
+  onResolved: (ip: string) => void;
+}) {
+  const [pick, setPick] = useState(lanIps[0] ?? "");
+  const [copied, setCopied] = useState(false);
+
+  const command = pick
+    ? `claude mcp add --transport http cc-bridge http://${pick}:${port}/mcp --header "Authorization: Bearer ${token}"`
+    : "";
+
+  const handleConfirm = () => {
+    if (!command) return;
+    navigator.clipboard.writeText(command);
+    setCopied(true);
+    onResolved(pick);
+  };
+
+  return (
+    <div className="animate-fade-in space-y-3 rounded-lg border border-destructive/35 bg-destructive/[0.08] p-4">
+      <div className="flex items-start gap-2.5">
+        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-destructive/15 text-destructive">
+          <Icon name="alertTriangle" size={15} />
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-destructive">检测到网络地址变化</p>
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+            之前使用的 <code className="rounded bg-background px-1">{previousIp}</code> 已不在本机网卡列表中（大概率是
+            VPN 重新连接分配了新地址）。请确认下面的新地址，更新远程服务器上的连接命令。
+          </p>
+        </div>
+      </div>
+
+      {lanIps.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 pl-[38px]">
+          {lanIps.map((ip, i) => {
+            const sel = pick === ip;
+            return (
+              <button
+                key={ip}
+                onClick={() => setPick(ip)}
+                className={`relative rounded-md border-2 px-3 py-2 text-left transition-colors ${
+                  sel ? "border-primary bg-accent" : "border-transparent bg-background hover:bg-muted"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <code className={`text-sm font-mono ${sel ? "text-primary" : ""}`}>{ip}</code>
+                  {i === 0 && <Badge variant="secondary">默认</Badge>}
+                </div>
+                <p className="mt-0.5 text-xs text-muted-foreground">{ipHint(ip)}</p>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="pl-[38px]">
+        <Button size="sm" onClick={handleConfirm} disabled={!command}>
+          <Icon name={copied ? "check" : "copy"} size={14} />
+          {copied ? "已复制，可以去更新远程了" : "复制新连接命令并标记已处理"}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function AddressPicker({

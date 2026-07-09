@@ -96,6 +96,7 @@ fn ensure_defaults(conn: &Connection) -> Result<(), String> {
         ("backup_enabled", "true"),
         ("audit_enabled", "true"),
         ("rate_limit_enabled", "true"),
+        ("shell_enabled", "false"),
     ];
 
     for (key, default_value) in defaults {

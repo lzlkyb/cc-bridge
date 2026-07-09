@@ -26,6 +26,9 @@ const TOOL_LABELS: Record<string, string> = {
   remove_directory: "删除目录",
   search_files: "搜索文件",
   analyze_file: "分析文件",
+  run_command: "执行命令",
+  get_command_output: "拉取命令输出",
+  stop_command: "终止命令",
 };
 
 export function toolLabel(tool: string): string {

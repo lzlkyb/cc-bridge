@@ -7,6 +7,7 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Icon } from "../ui/icon";
 import { SettingsToggles } from "./SettingsToggles";
+import { UpdateGroup } from "./UpdateGroup";
 
 export function SettingsTab({
   status,
@@ -20,6 +21,7 @@ export function SettingsTab({
       <NetworkGroup status={status} onSaved={onSaved} />
       <SettingsToggles status={status} onSaved={onSaved} />
       <AppGroup />
+      <UpdateGroup status={status} />
       <AuditGroup status={status} onSaved={onSaved} />
     </div>
   );

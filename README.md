@@ -87,9 +87,9 @@ cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
 │  (MCP 客户端)       │────────────────▶│                                  │
 │                     │   内网:7823     │   ┌─ axum HTTP 服务器 ─┐         │
 │  通过 MCP 协议       │                 │   │  POST /mcp         │         │
-│  调用 12 个文件工具   │                 │   │  Bearer token 认证  │         │
+│  调用 15 个文件工具   │                 │   │  Bearer token 认证  │         │
 │                     │                 │   │  JSON-RPC dispatch │         │
-└─────────────────────┘                 │   │  → 12 个工具处理器  │──┐      │
+└─────────────────────┘                 │   │  → 15 个工具处理器  │──┐      │
                                         │   │  → 安全校验         │  │      │
                                         │   │  → 审计日志         │  │      │
                                         │   └────────────────────┘  │      │
@@ -102,7 +102,7 @@ cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
                                         │                        ▼  │      │
                                         │   ┌─ Rust 后端 ───────┐   │      │
                                         │   │ #[tauri::command] │   │      │
-                                        │   │ 8 个 IPC 命令     │◀──┘      │
+                                        │   │ 10 个 IPC 命令    │◀──┘      │
                                         │   │                  │          │
                                         │   │ AppState ◀───────┼── 共享    │
                                         │   │ (DB/Config/Stats)│          │
@@ -136,7 +136,7 @@ Claude Code 对话中触发工具调用:
         │
         ▼
   POST /mcp  ──  tools/list (发现可用工具)
-        │          返回 12 个工具的 name + description + inputSchema
+        │          返回 15 个工具的 name + description + inputSchema
         ▼
   POST /mcp  ──  tools/call (实际调用)
         │
@@ -245,7 +245,7 @@ Claude Code 对话中触发工具调用:
 
 ## 功能清单
 
-### 12 个 MCP 工具（远程 Claude Code 直接调用）
+### 15 个 MCP 工具（远程 Claude Code 直接调用）
 
 | 工具 | 作用 |
 |---|---|
@@ -261,6 +261,9 @@ Claude Code 对话中触发工具调用:
 | `remove_directory` | 删除目录，默认仅删空目录，`recursive=true` 递归删除整树（危险，不备份） |
 | `search_files` | 按文件名 glob + 内容关键字/正则全文搜索 |
 | `analyze_file` | 编码检测 + 语言识别 + 函数/类数量启发式估算 |
+| `run_command` | 执行 Shell 命令（`cmd /C`），前台等待结果或 `background=true` 后台运行；**默认关闭**，需在『安全』页开启「命令执行」开关（等同于授予远程任意代码执行权限），只读模式下无条件禁止；整树 taskkill 终止子进程 |
+| `get_command_output` | 增量拉取后台命令的 stdout/stderr（按偏移量），附带是否已结束、退出码 |
+| `stop_command` | 强制终止一个后台命令的整个进程树，并从注册表移除 |
 
 ### 安全机制
 
@@ -378,7 +381,7 @@ cc-bridge/
             └── mcp/                    # MCP 协议实现
                 ├── mod.rs
                 ├── http.rs             # axum 路由 + JSON-RPC dispatch
-                └── tools/              # 12 个工具处理器
+                └── tools/              # 15 个工具处理器
                     ├── mod.rs
                     ├── list_allowed_roots.rs
                     ├── list_directory.rs
@@ -391,7 +394,10 @@ cc-bridge/
                     ├── create_directory.rs
                     ├── remove_directory.rs
                     ├── search_files.rs
-                    └── analyze_file.rs
+                    ├── analyze_file.rs
+                    ├── run_command.rs
+                    ├── get_command_output.rs
+                    └── stop_command.rs
 ```
 
 ## 部署流程
@@ -410,7 +416,7 @@ npm install
 npm run build     # cargo tauri build → 产出 NSIS 安装包
 ```
 
-产出路径：`src-tauri/target/release/bundle/nsis/cc-bridge_2.2.1_x64-setup.exe`（约 3.4MB）
+产出路径：`src-tauri/target/release/bundle/nsis/cc-bridge_2.2.2_x64-setup.exe`（约 3.4MB）
 
 ### 连接远程 Claude Code
 
@@ -432,11 +438,15 @@ claude mcp add --transport http cc-bridge http://<局域网IP>:7823/mcp --header
 - `analyze_file` 的函数/类计数是正则启发式估算，不是语法解析。
 - `delete_files` 只删单个文件，不支持删目录（安全设计）。
 - MCP 协议实现为手动 JSON-RPC dispatch（非 rmcp SDK 宏），不支持 SSE 流式传输和协议协商。
+- `run_command` 无跨调用持久化 shell 会话，`cd`/环境变量不会保留到下一次调用，必须每次显式传绝对 `cwd`。
+- 后台命令（`run_command(background=true)`）注册表 v1 无自动回收：命令结束后 handle 仍占位，需显式 `stop_command` 移除，或等并发上限（5个）触发拒绝新建后再清理。
+- `run_command` 前台模式超时后，超时前已产生的部分输出不会被返回（直接强杀+丢弃，仅告知 `timedOut: true`）。
 
 ## 版本历史
 
 | 版本 | 变更 |
 |---|---|
+| v2.2.2 | 本机地址变更检测：记住上次确认使用的 IP（`last_selected_ip`），一旦不在当前网卡地址列表中（VPN 重连等）就主动提示——顶栏红色徽章 + Connect 页醒目 banner（一键复制新连接命令并重新确认）+ 系统托盘 tooltip/原生通知（应用最小化时也能发现），三处随确认同步消失。`/health` 版本号改为编译期读取 `CARGO_PKG_VERSION`，不再手写字符串避免漂移 |
 | v2.2.1 | 编码/换行保真加固（参考 nc-compile/ccedit.py）：`read_files` 整读/行读统一归一化到 LF 并回报 `newline`（CRLF/LF），修复 CRLF 文件 `edit_files` 匹配失败的问题；`edit_files` 写回**保留原换行 + 原 UTF-8 BOM**、encode→decode round-trip 守卫（往 GBK 插入不可表示字符时拒写防损坏）、原子写（临时文件 + rename）。新增「读取编码自适应」功能开关（**默认关**，按 UTF-8 读避免误判；开启后自动识别 GBK/GB18030；显式 `encoding` 参数始终优先，不受开关影响） |
 | v2.2.0 | 能力对齐 native Claude Code 文件层：新增 `edit_files`（精准字符串替换，唯一匹配/`replaceAll`，保留原文件编码）、`create_directory`、`remove_directory` 三个工具（9 → 12）；`read_files` 编码自适应（自动探测 UTF-8/GBK/GB18030/UTF-16 统一转 UTF-8，可 `encoding` 强制指定），解决 GBK（如 NC65）源码读不了的问题；三个写工具纳入只读模式门控；引入 `encoding_rs` |
 | v2.1.0 | 界面美化升级（靛蓝主色、Hero 玻璃指标卡、segmented pill Tab、图标 chip）；新增 MCP 服务停止/启动按钮（顶栏 + Hero 卡，UI 联动置灰）；设置页「功能开关」卡：路径白名单校验 / 只读模式 / 审计日志 / 写操作自动备份 / 限流保护（关闭白名单需二次确认 + 常驻警示条 + 顶栏徽章）；连接页 IP/模式选中态强化 + 项目级默认 + health 命令复制；日志页清空日志；白名单显示去除 `\\?\` 前缀 |

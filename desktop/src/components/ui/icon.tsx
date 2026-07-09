@@ -40,6 +40,7 @@ const paths: Record<string, string> = {
   spinner: "M21 12a9 9 0 1 1-6.22-8.56",
   search: "M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14zM21 21l-4.35-4.35",
   download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3",
+  terminal: "M4 17l6-6-6-6M12 19h8",
 };
 
 export type IconName = keyof typeof paths;

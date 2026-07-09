@@ -7,13 +7,18 @@
     "vite:dev": "vite",
     "vite:build": "tsc && vite build",
     "tauri": "tauri",
+    "predev": "node scripts/sync-version.mjs",
     "dev": "tauri dev",
-    "build": "tauri build"
+    "prebuild": "node scripts/sync-version.mjs",
+    "build": "tauri build",
+    "updater:generate": "node scripts/generate-updater-json.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-updater": "^2",
+    "@tauri-apps/plugin-process": "^2",
     "@tanstack/react-query": "^5.60.0"
   },
   "devDependencies": {

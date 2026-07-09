@@ -25,6 +25,12 @@ pub struct BridgeConfig {
     /// read_files 编码自适应（GBK/GB18030 启发式探测）。默认关：关时按 UTF-8 读，
     /// 避免启发式误判；显式 `encoding` 参数不受此开关影响，始终优先。
     pub encoding_detect_enabled: bool,
+    /// 命令执行（run_command/stop_command）总开关。默认关闭——开启等同于授予
+    /// 远程调用方任意代码执行权限（RCE）；只读模式开启时对 run_command 无条件覆盖为禁止。
+    pub shell_enabled: bool,
+    /// 用户上次在 Connect 页确认使用的本机 IP（多网卡场景）。用于检测网卡地址是否
+    /// 发生变化（VPN 重连等）——不在 get_lan_ips() 结果里就说明已失效，需要提示用户换新地址。
+    pub last_selected_ip: Option<String>,
 }
 
 impl Default for BridgeConfig {
@@ -54,6 +60,8 @@ impl Default for BridgeConfig {
             audit_enabled: true,
             rate_limit_enabled: true,
             encoding_detect_enabled: false,
+            shell_enabled: false,
+            last_selected_ip: None,
         }
     }
 }
@@ -117,6 +125,12 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
     }
     if let Some(v) = db::get_config_value(conn, "encoding_detect_enabled") {
         config.encoding_detect_enabled = serde_json::from_str(&v).unwrap_or(false);
+    }
+    if let Some(v) = db::get_config_value(conn, "shell_enabled") {
+        config.shell_enabled = serde_json::from_str(&v).unwrap_or(false);
+    }
+    if let Some(v) = db::get_config_value(conn, "last_selected_ip") {
+        config.last_selected_ip = serde_json::from_str(&v).unwrap_or(None);
     }
 
     Ok(config)

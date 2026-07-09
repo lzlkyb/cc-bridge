@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_notification::NotificationExt;
 
 use cc_bridge_desktop::*;
 
@@ -22,6 +23,8 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = handle
@@ -38,6 +41,14 @@ fn main() {
 
             let app_state = Arc::new(state::AppState::new(db_conn, bridge_config, data_dir));
             app.manage(app_state.clone());
+
+            // Updater 插件容错注册：失败仅 warn，不中断应用启动（比如 pubkey 还是占位符时）。
+            if let Err(e) = app
+                .handle()
+                .plugin(tauri_plugin_updater::Builder::new().build())
+            {
+                log::warn!("初始化 Updater 插件失败，已跳过：{e}");
+            }
 
             // Spawn MCP HTTP server
             let mcp_state = app_state.clone();
@@ -66,7 +77,8 @@ fn main() {
             let menu = Menu::with_items(app, &[&show_item, &restart_item, &quit_item])?;
 
             let tray_state = app_state.clone();
-            TrayIconBuilder::new()
+            TrayIconBuilder::with_id("main-tray")
+                .tooltip("cc-bridge")
                 .menu(&menu)
                 .icon(
                     app.default_window_icon()
@@ -102,6 +114,40 @@ fn main() {
                 })
                 .build(app)?;
 
+            // 本机地址变更检测：定时对比 last_selected_ip 与当前网卡地址，
+            // 驱动托盘 tooltip（常驻兜底）+ 系统通知（仅在“由一致变为不一致”那一刻弹一次）。
+            {
+                let handle = app.handle().clone();
+                let watch_state = app_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut alerting = false;
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                        let last_ip = watch_state.config.read().await.last_selected_ip.clone();
+                        let changed = match &last_ip {
+                            Some(ip) => !network::get_lan_ips().contains(ip),
+                            None => false,
+                        };
+                        if let Some(tray) = handle.tray_by_id("main-tray") {
+                            let _ = tray.set_tooltip(Some(if changed {
+                                "cc-bridge: 网络地址已变化，点击查看新连接命令"
+                            } else {
+                                "cc-bridge"
+                            }));
+                        }
+                        if changed && !alerting {
+                            let _ = handle
+                                .notification()
+                                .builder()
+                                .title("cc-bridge")
+                                .body("网络地址已变化，点击查看新连接命令")
+                                .show();
+                        }
+                        alerting = changed;
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -115,8 +161,12 @@ fn main() {
             commands::start_mcp_server,
             commands::clear_audit_log,
             commands::get_lan_ips,
+            commands::set_selected_ip,
             commands::get_autostart,
             commands::set_autostart,
+            commands::list_running_commands,
+            commands::stop_running_command,
+            commands::start_update,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
