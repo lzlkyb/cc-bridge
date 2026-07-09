@@ -10,8 +10,8 @@ on:
 
 jobs:
   test:
-    name: Run Rust test suite (Linux)
-    runs-on: ubuntu-latest
+    name: Run Rust test suite (Windows)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
