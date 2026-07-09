@@ -1,16 +1,49 @@
 [package]
 name = "cc-bridge-desktop"
-version = "1.0.0"
-description = "Native desktop shell for cc-bridge (Node.js sidecar + web panel)"
+version = "2.2.1"
+description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# Tauri core
 tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+
+# HTTP server (MCP protocol handled via axum directly)
+axum = "0.8"
+tower-http = { version = "0.6", features = ["limit"] }
+
+# Async runtime
+tokio = { version = "1", features = ["fs", "sync", "net", "rt", "macros"] }
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-url = "2"
+
+# Security
+subtle = "2"
+rand = "0.8"
+
+# Filesystem
+regex = "1"
+
+# Encoding detection/transcoding (GBK/GB18030 等非 UTF-8 文件读写)
+encoding_rs = "0.8"
+
+# Network interface enumeration (multi-homed: VPN + LAN)
+if-addrs = "0.13"
+
+# Concurrency
+dashmap = "6"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+env_logger = "0.11"

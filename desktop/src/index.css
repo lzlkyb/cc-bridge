@@ -1,0 +1,202 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
+  --color-warning: hsl(var(--warning));
+  --color-warning-foreground: hsl(var(--warning-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --radius: var(--radius);
+}
+
+:root {
+  --background: 220 23% 96%;        /* #F4F6F9 应用底 */
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+  --primary: 243 75% 59%;           /* 靛蓝 #4F46E5 */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 220 20% 94%;
+  --secondary-foreground: 222 47% 11%;
+  --muted: 214 25% 95%;
+  --muted-foreground: 215 16% 47%;
+  --accent: 226 100% 97%;           /* 靛蓝淡底 #EEF2FF */
+  --accent-foreground: 243 75% 59%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --success: 142 71% 45%;
+  --success-foreground: 0 0% 100%;
+  --warning: 25 95% 53%;
+  --warning-foreground: 0 0% 100%;
+  --border: 216 20% 90%;
+  --input: 216 20% 90%;
+  --ring: 243 75% 59%;
+  --radius: 0.6rem;
+
+  /* 视觉增强专用（非 Tailwind 语义色）*/
+  --hero-gradient: linear-gradient(135deg, #6366F1 0%, #4F46E5 52%, #0EA5E9 100%);
+  --hero-shadow: rgba(79, 70, 229, 0.32);
+  --version-gradient: linear-gradient(135deg, #6366F1, #4F46E5);
+  --version-shadow: rgba(79, 70, 229, 0.32);
+  --header-start: #ffffff;
+  --header-end: #f4f6f9;
+}
+
+.dark {
+  --background: 240 6% 6%;          /* #09090B */
+  --foreground: 240 5% 90%;
+  --card: 240 6% 10%;              /* #18181B */
+  --card-foreground: 240 5% 90%;
+  --popover: 240 6% 10%;
+  --popover-foreground: 240 5% 90%;
+  --primary: 239 84% 74%;          /* 靛蓝 #818CF8 */
+  --primary-foreground: 240 6% 10%;
+  --secondary: 240 4% 16%;
+  --secondary-foreground: 240 5% 90%;
+  --muted: 240 4% 16%;
+  --muted-foreground: 240 5% 55%;
+  --accent: 243 47% 20%;           /* 靛蓝深底 #1E1B4B */
+  --accent-foreground: 239 84% 74%;
+  --destructive: 0 72% 71%;
+  --destructive-foreground: 240 6% 10%;
+  --success: 142 69% 58%;
+  --success-foreground: 240 6% 10%;
+  --warning: 27 96% 61%;
+  --warning-foreground: 240 6% 10%;
+  --border: 240 4% 19%;
+  --input: 240 4% 19%;
+  --ring: 239 84% 74%;
+  --radius: 0.6rem;
+
+  --hero-gradient: linear-gradient(135deg, #6366F1 0%, #4F46E5 50%, #0EA5E9 100%);
+  --hero-shadow: rgba(0, 0, 0, 0.5);
+  --version-gradient: linear-gradient(135deg, #818CF8, #6366F1);
+  --version-shadow: rgba(129, 140, 248, 0.35);
+  --header-start: #18181b;
+  --header-end: #09090b;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+/* ===================================================================
+   视觉增强层（对标设计稿 A–F）—— 语义组件类，Tailwind 之外补充
+   =================================================================== */
+
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); }
+  70%  { box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 0%, transparent); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fade-in 0.22s ease; }
+
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.animate-scale-in { animation: scale-in 0.16s ease; }
+
+/* Header 渐变底 */
+.app-header {
+  background: linear-gradient(180deg, var(--header-start), var(--header-end));
+}
+
+/* 版本徽章（渐变 pill）*/
+.version-badge {
+  color: #fff;
+  background: var(--version-gradient);
+  box-shadow: 0 2px 6px var(--version-shadow);
+}
+
+/* 状态胶囊 + 脉冲点（C）*/
+.status-pill .p-dot { animation: pulse-ring 2s infinite; }
+
+/* 卡片标题图标 chip（D）*/
+.title-chip {
+  width: 28px; height: 28px; flex-shrink: 0; border-radius: 8px;
+  background: hsl(var(--accent)); display: grid; place-items: center;
+  color: hsl(var(--primary));
+}
+
+/* 卡片 hover 抬升（F）*/
+.card-lift { transition: box-shadow .25s ease, transform .25s ease, border-color .25s ease; }
+.card-lift:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.10); transform: translateY(-1px); }
+
+/* 主卡分级（B）*/
+.card-primary {
+  border-color: color-mix(in srgb, hsl(var(--primary)) 35%, hsl(var(--border)));
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 1px color-mix(in srgb, hsl(var(--primary)) 12%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, hsl(var(--primary)) 5%, hsl(var(--card))), hsl(var(--card)) 60px);
+}
+
+/* A. Hero 渐变头卡 */
+.hero {
+  position: relative; overflow: hidden;
+  border-radius: 14px; padding: 20px 22px; color: #fff;
+  background: var(--hero-gradient);
+  box-shadow: 0 12px 32px var(--hero-shadow);
+}
+.hero::before, .hero::after {
+  content: ""; position: absolute; border-radius: 50%;
+  background: rgba(255,255,255,0.14); filter: blur(2px); pointer-events: none;
+}
+.hero::before { width: 180px; height: 180px; top: -70px; right: -40px; }
+.hero::after  { width: 120px; height: 120px; bottom: -60px; left: 30%; background: rgba(255,255,255,0.08); }
+.hero-dot { animation: pulse-ring 2s infinite; }
+.hero-metric {
+  background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.22);
+  border-radius: 11px; padding: 12px 13px; backdrop-filter: blur(4px);
+}
+.hero-addr {
+  background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.25);
+  backdrop-filter: blur(4px);
+}
+/* 停止态：渐变改用中性灰，弱化视觉存在感 */
+.hero-stopped {
+  background: linear-gradient(135deg, #64748b 0%, #475569 60%, #334155 100%);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.28);
+}
+
+/* F. 统计/hero 渐变彩条、渐变分隔线 */
+.divider-grad {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, hsl(var(--border)) 20%, hsl(var(--border)) 80%, transparent);
+}
+
+/* 失败日志行左侧红描边（C）*/
+.log-err { box-shadow: inset 3px 0 0 hsl(var(--destructive)); }

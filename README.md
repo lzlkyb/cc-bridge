@@ -1,169 +1,442 @@
-# cc-bridge — 项目说明
+# cc-bridge — 本地 MCP 文件桥接服务
 
-> 写这份文档的目的：让接手这个项目的人（或另一个 AI 工具）不用翻聊天记录，看这一份就能了解这个项目是什么、为什么做、做成什么样了、还差什么。
+> 让远程 Linux 服务器上的 Claude Code 通过标准 MCP 协议直接读写本地 Windows 文件。
 
 ## 这是什么
 
-**cc-bridge**：一个跑在本地 Windows 开发机上的 MCP（Model Context Protocol）文件桥接服务，正在往"像 cc-switch 一样的原生桌面应用"演进。远程 Linux 服务器上的 Claude Code 通过标准 MCP 协议（Streamable HTTP transport）连接它，就能直接读写本地 Windows 机器上的文件、搜索代码、做批量操作——不再需要 scp 来回传文件，也不需要 SSHFS 挂载。
+**cc-bridge** 是一个运行在本地 Windows 开发机上的 MCP（Model Context Protocol）文件桥接服务，以原生桌面应用形式运行（Tauri 2）。远程 Claude Code 通过 `claude mcp add --transport http` 接入后，可直接操作本地文件系统——不再需要 scp 传文件或 SSHFS 挂载。
 
 ## 背景 / 解决的问题
 
-团队日常在本地 Windows 电脑上写代码，但 Claude Code 部署在远程 Linux 服务器上。原来的痛点：
+团队在本地 Windows 写代码，Claude Code 部署在远程 Linux 上。原来的痛点：
 
-1. **文件传输效率低**：每次改动都要手动 scp 上传下载，大文件慢，还容易忘记同步导致版本混乱。
-2. **SSHFS 不稳定**：挂载远程目录后，网络一断整个挂载点就卡死，终端被阻塞，得重新挂载才能继续工作。
-3. **缺少智能化操作**：只能靠终端命令操作文件，没有批量重构、代码分析这类能力。
-4. **操作无法审计**：不知道 Claude 改了哪些文件，误操作后没法追溯和恢复。
+1. **文件传输效率低**：每次改动都要 scp，大文件慢，容易版本混乱。
+2. **SSHFS 不稳定**：网络一断挂载点卡死，终端被阻塞。
+3. **缺少智能化操作**：只能终端命令操作文件，没有批量重构、代码分析能力。
+4. **操作无法审计**：不知道 Claude 改了哪些文件，误操作后无法追溯恢复。
 
-## 解决方案（整体架构）
+## 架构
 
 ```
-远程 Linux 服务器（Claude Code 运行的地方）
-        │  MCP 协议 / HTTP（同一内网/VPN 直连）
+远程 Linux 服务器（Claude Code）
+        │  MCP 协议 / Streamable HTTP（同一内网/VPN 直连）
         ▼
 本地 Windows 开发机
         │
-        ├─ server/cc-bridge.js ── 唯一核心逻辑文件：MCP 协议实现 + 8 个文件工具
-        │                         + 安全校验 + 自动备份 + 限流 + 审计日志
-        │                         + 内置 Web 管理面板（ui.html）
-        │
-        └─ desktop/ ── Tauri 原生桌面壳，把上面这个服务包成一个真正的
-                        桌面应用（任务栏图标/独立窗口/系统托盘），
-                        体验对标 cc-switch
+        └─ cc-bridge.exe ── 单进程 Tauri 2 桌面应用
+              │
+              ├─ 嵌入式 axum HTTP 服务器 ── MCP JSON-RPC 协议 + 12 个文件工具
+              │                             + 安全校验 + 自动备份 + 限流 + 审计
+              │
+              ├─ SQLite 配置存储 ── 原子更新，无竞态
+              │
+              └─ React 前端 ── Tauri IPC 通信，管理面板
 ```
 
-关键技术决策：**用真正的 MCP 协议**（官方 `@modelcontextprotocol/sdk`），不是自己拍脑袋做一套 REST API——这样远程 Claude Code 用 `claude mcp add --transport http` 就能把它当原生 MCP server 加进去，工具能被自动发现调用，不需要额外的协议转换胶水代码。
+**关键架构决策**：
+- **纯 Rust 后端**编译进 Tauri 二进制，不再有 Node.js sidecar（安装包 3.4MB，二进制 14MB）
+- **axum 嵌入 Tauri 进程**：对外暴露 HTTP 端口供远程 Claude Code 连接
+- **前端走 Tauri IPC**：不走 HTTP，token 只用于远程认证
+- **SQLite 替换 config.json**：原子更新，无 read-modify-write 竞态
+- **审计日志保持 JSONL 文件**：append-only，人类可读
+
+## 交互流程
+
+### 启动流程
+
+```
+用户双击 cc-bridge.exe
+        │
+        ▼
+  tauri::Builder
+        │
+        ├─ 1. single-instance 检查
+        │     └─ 已有实例运行 → 激活已有窗口，本次退出
+        │
+        ├─ 2. setup() 初始化
+        │     ├─ 创建 AppData 目录
+        │     ├─ db::init_database()
+        │     │    ├─ 创建 SQLite config 表
+        │     │    └─ 检测 config.json → 自动迁移到 SQLite
+        │     ├─ config::load_config() → 加载 BridgeConfig
+        │     ├─ 构建 AppState（DB / Config / Locks / Stats）
+        │     │
+        │     ├─ spawn axum HTTP 服务器
+        │     │    └─ 监听 0.0.0.0:7823，路由 /health + /mcp
+        │     │
+        │     ├─ 创建主窗口 (1080×820)，加载 React 前端
+        │     │
+        │     └─ 创建系统托盘
+        │          菜单: 打开面板 / 重启服务 / 退出
+        │
+        ├─ 3. on_window_event
+        │     └─ 点关闭 → 隐藏窗口（不退出进程）
+        │
+        └─ 4. run() → Tauri 事件循环
+```
+
+### 两条通信路径
+
+cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
+
+```
+┌─────────────────────┐                 ┌──────────────────────────────────┐
+│  远程 Linux 服务器    │                 │   本地 Windows                   │
+│                     │                 │                                  │
+│  Claude Code        │   HTTP / TCP    │   cc-bridge.exe (单进程)          │
+│  (MCP 客户端)       │────────────────▶│                                  │
+│                     │   内网:7823     │   ┌─ axum HTTP 服务器 ─┐         │
+│  通过 MCP 协议       │                 │   │  POST /mcp         │         │
+│  调用 12 个文件工具   │                 │   │  Bearer token 认证  │         │
+│                     │                 │   │  JSON-RPC dispatch │         │
+└─────────────────────┘                 │   │  → 12 个工具处理器  │──┐      │
+                                        │   │  → 安全校验         │  │      │
+                                        │   │  → 审计日志         │  │      │
+                                        │   └────────────────────┘  │      │
+                                        │                           │      │
+                                        │   ┌─ Tauri WebView ──┐    │      │
+                                        │   │  React 前端       │    │      │
+                                        │   │  invoke() ───────┼─┐  │      │
+                                        │   │  (Tauri IPC)     │ │  │      │
+                                        │   └──────────────────┘ │  │      │
+                                        │                        ▼  │      │
+                                        │   ┌─ Rust 后端 ───────┐   │      │
+                                        │   │ #[tauri::command] │   │      │
+                                        │   │ 8 个 IPC 命令     │◀──┘      │
+                                        │   │                  │          │
+                                        │   │ AppState ◀───────┼── 共享    │
+                                        │   │ (DB/Config/Stats)│          │
+                                        │   └──────────────────┘          │
+                                        │                                  │
+                                        │   ┌─ 本地文件系统 ─────┐          │
+                                        │   │ C:\work\...       │◀─────────┘
+                                        │   │ D:\projects\...   │  读/写/删/搜
+                                        │   └───────────────────┘
+                                        └──────────────────────────────────┘
+```
+
+**关键设计**：两条路径共享同一个 `AppState`——远程 Claude Code 的文件操作会实时反映在本地面板的审计日志和统计数据中。
+
+### MCP 工具调用链路
+
+远程 Claude Code 调用文件工具时的完整请求链路：
+
+```
+远程 Linux:
+  claude mcp add --transport http cc-bridge http://192.168.1.100:7823/mcp \
+    --header "Authorization: Bearer abc123..."
+
+Claude Code 对话中触发工具调用:
+        │
+        ▼
+  POST /mcp  ──  initialize (首次连接握手)
+        │          返回 capabilities + serverInfo
+        ▼
+  POST /mcp  ──  notifications/initialized (握手完成)
+        │
+        ▼
+  POST /mcp  ──  tools/list (发现可用工具)
+        │          返回 8 个工具的 name + description + inputSchema
+        ▼
+  POST /mcp  ──  tools/call (实际调用)
+        │
+        ├─ auth_middleware
+        │    └─ 验证 Bearer token（常量时间比较）
+        │
+        ├─ rate_limiter
+        │    └─ 滑动窗口检查（100次/分钟）
+        │
+        ├─ dispatch_tool()
+        │    ├─ resolve_safe_path()      ← canonicalize + 白名单校验
+        │    ├─ assert_extension_allowed() ← 扩展名检查
+        │    ├─ assert_file_size_ok()     ← 大小限制
+        │    ├─ path_lock (写操作)        ← DashMap 并发锁
+        │    ├─ backup (写/删操作)        ← 自动备份
+        │    └─ 执行实际文件操作
+        │
+        ├─ audit::write_audit_log()       ← 追加 JSONL
+        │
+        └─ stats.increment_requests()     ← 更新统计
+        │
+        ▼
+  返回 JSON-RPC 响应 → Claude Code 拿到结果
+```
+
+### 用户操作场景
+
+#### 首次使用
+
+```
+1. 安装并启动 cc-bridge
+2. 主窗口打开，白名单为空（安全默认：拒绝所有操作）
+3. 进入"安全"页，在白名单根目录点"浏览…"
+   → DirectoryBrowser 弹窗 → 导航选择工作目录 → 添加
+4. 回到"连接"页，选择 scope（全局 / 项目级），复制连接命令
+5. 粘贴到远程 Linux 终端执行，Claude Code 连上 cc-bridge 即可开始工作
+```
+
+#### 日常使用
+
+```
+开机 → 双击 cc-bridge → 窗口打开，MCP 服务器自动启动
+     → 远程 Claude Code 自动重连
+     → 最小化到托盘（点 X = 隐藏，不退出）
+
+两件事并行:
+  ┌── 远程 Claude Code 在后台读写文件
+  │     每次操作 → 审计日志 + 统计计数
+  │
+  └── 用户偶尔打开面板查看
+        面板每 5s 轮询状态，审计日志每 10s 轮询
+```
+
+#### 改端口/地址
+
+```
+用户在"设置 → 网络"改 port 7823 → 9000，点"保存并重启服务"
+  → save_config 检测 port 变更 → 写入 SQLite（restartRequired: true）
+  → 前端自动调用 restart_mcp_server
+  → abort 旧 axum → sleep 300ms → spawn 新 axum 监听 9000
+  → 连接命令自动更新，远程需重新 claude mcp add
+```
+
+#### 系统托盘
+
+```
+托盘图标右键:
+  打开面板  → 显示/聚焦主窗口
+  重启服务  → 杀旧 axum task + 重新启动
+  退出     → 真正结束进程（唯一的退出方式）
+```
+
+### 数据流向
+
+```
+                    ┌────────────────┐
+                    │   SQLite DB    │
+                    │   (config 表)  │
+                    └───────┬────────┘
+                            │ load / save
+                            ▼
+┌──────────┐  IPC   ┌──────────────┐  HTTP   ┌─────────────┐
+│ React UI │◀──────▶│  AppState    │◀───────▶│ 远程 Claude │
+│ (WebView)│ invoke │  (内存)       │  /mcp   │   Code      │
+└──────────┘        │              │         └─────────────┘
+                    │ ┌─ config ─┐ │
+                    │ │ RwLock   │ │
+                    │ ├─ stats ──┤ │
+                    │ │ RwLock   │ │
+                    │ ├─ locks ──┤ │
+                    │ │ DashMap  │ │
+                    │ └──────────┘ │
+                    └──────┬───────┘
+                           │ read / write
+                           ▼
+                    ┌──────────────┐
+                    │ 本地文件系统   │  白名单目录内
+                    └──────┬───────┘
+                           │
+                           ▼
+                    ┌──────────────┐
+                    │ audit.log    │  JSONL 追加写入
+                    │ .bak 备份    │  写/删前自动备份
+                    └──────────────┘
+```
 
 ## 功能清单
 
-### 8 个 MCP 工具（远程 Claude Code 直接调用）
+### 12 个 MCP 工具（远程 Claude Code 直接调用）
+
 | 工具 | 作用 |
 |---|---|
+| `list_allowed_roots` | 列出服务端白名单（允许根目录 + 扩展名 + 大小上限），远程首选调用以发现可访问范围，免盲猜 |
 | `list_directory` | 列目录，支持递归 + 深度限制 |
-| `read_files` | 批量读文件，支持指定行范围（1-based） |
+| `read_files` | 批量读文件，支持指定行范围（1-based）；返回内容 + 编码 + 换行风格；「读取编码自适应」开关开启时自动识别 GBK/GB18030 统一转 UTF-8（默认关，按 UTF-8 读），可传 `encoding` 强制指定（始终生效） |
 | `write_files` | 批量写/新建文件，自动建父目录，覆盖前自动备份 |
+| `edit_files` | 精准字符串替换（对标 native Edit），`oldString` 需唯一匹配（或 `replaceAll`），保留原文件编码（GBK 改完仍 GBK），改前备份 |
 | `delete_files` | 批量删除文件（不删目录），删前自动备份 |
-| `move_files` | 批量移动/重命名，目标已存在则先备份 |
+| `move_files` | 批量移动/重命名，跨盘自动 copy+delete 降级 |
 | `copy_files` | 批量复制，目标已存在则先备份 |
+| `create_directory` | 创建目录（含缺失父目录），幂等 |
+| `remove_directory` | 删除目录，默认仅删空目录，`recursive=true` 递归删除整树（危险，不备份） |
 | `search_files` | 按文件名 glob + 内容关键字/正则全文搜索 |
-| `analyze_file` | 文件基础信息 + 函数/类数量的启发式估算（非 AST 精确解析） |
+| `analyze_file` | 编码检测 + 语言识别 + 函数/类数量启发式估算 |
 
 ### 安全机制
-- **路径白名单**（`allowedRoots`）：只能访问明确允许的根目录，`realpathSync` 防软链接逃逸，`path.relative` 判断防路径穿越。
-- **扩展名白名单**（`allowedExtensions`）：默认放开常见代码/文本后缀，留空表示不限制。
-- **Bearer token 认证**：所有接口都要 `Authorization: Bearer <token>`，用 `crypto.timingSafeEqual` 防时序攻击。
-- **限流**：滑动窗口，默认 100 次/分钟，超限 429。
-- **自动备份**：写/删/覆盖前备份到 `.cc-bridge-backup/`，按时间戳命名，保留最近 N 份自动清理旧的。
-- **审计日志**：`audit.log`（JSON Lines），记录每次操作的时间/工具/路径摘要/成功失败/来源 IP。
-- **单文件大小上限**：默认 20MB，防止意外读写超大文件。
 
-### HTTP 接口一览
+- **路径白名单**（`allowedRoots`）：只能访问明确允许的根目录，`canonicalize()` 防软链接逃逸，祖先遍历防路径穿越。被拒时错误信息会附带当前白名单（`Allowed roots: ...`），远程无需盲猜即可得知可访问范围。
+- **扩展名白名单**（`allowedExtensions`）：大小写不敏感匹配，留空表示不限制。
+- **Bearer token 认证**：`subtle::ConstantTimeEq` 防时序攻击，32 位随机字母数字。
+- **限流**：`DashMap` 滑动窗口，默认 100 次/分钟，超限 429。
+- **自动备份**：写/删/覆盖前备份到配置目录，按时间戳命名，超出保留数自动清理。
+- **审计日志**：JSONL 格式，记录每次操作的时间/工具/路径/结果/来源 IP；按保留天数（默认 30 天，0=永久）在启动时自动清理。
+- **单文件大小上限**：默认 20MB。
+- **写锁**：`DashMap<PathBuf, Arc<Mutex<()>>>`，同一文件并发写串行化。
+
+### HTTP 接口
+
 | 路径 | 方法 | 认证 | 作用 |
 |---|---|---|---|
-| `/mcp` | POST | 需要 | MCP 协议入口（Streamable HTTP，无状态，每请求新建一个 McpServer+transport） |
+| `/mcp` | POST | Bearer token | MCP JSON-RPC 入口（Streamable HTTP） |
 | `/health` | GET | 不需要 | 存活检测 |
-| `/status` | GET | 需要 | 当前配置 + 运行状态 + 现成的 `claude mcp add` 连接命令 |
-| `/audit/recent?limit=` | GET | 需要 | 最近 N 条审计日志 |
-| `/` | GET | 不需要 | Web 管理面板（`ui.html`），面板内部再用 token 拿数据 |
-| `/config` | POST | 需要 | 局部更新配置：白名单目录/扩展名/限流/备份份数**立即热生效**；port/host 存盘但需重启才生效 |
-| `/config/token/regenerate` | POST | 需要 | 重新生成 token，立即生效 |
-| `/fs/browse?path=` | GET | 需要 | 只读目录浏览（全盘可浏览，只读目录名不读文件内容），给"选择目录"功能用 |
 
-### Web 管理面板（`ui.html`，参考 cc-switch 的卡片式视觉风格）
-浏览器打开 `http://<机器IP>:<port>/`，粘贴 token 后可以：
-- 看现成的 `claude mcp add ...` 连接命令，一键复制
-- 编辑白名单根目录（手填路径 或 点"浏览…"用目录选择器，全盘导航）
-- 编辑扩展名白名单/单文件大小上限/限流参数/备份保留份数（保存即生效，不用重启）
-- 编辑端口/监听地址（保存后提示需要重启；桌面版下会自动重启）
-- 一键重新生成 token
-- 看运行状态（运行时长/请求数/错误数）和最近的审计日志
-- 支持深色/浅色主题切换
+### Tauri IPC 命令（前端 → 后端）
 
-桌面版下，页面会通过 URL 参数自动拿到 token（不用手动粘贴），并且改端口/监听地址后由桌面壳自动重启服务、自动跳转，不需要手动操作。
+| 命令 | 作用 |
+|---|---|
+| `get_status` | 版本/运行时间/配置/统计/连接命令 |
+| `save_config` | 局部更新配置，检测 host/port 变更返回 restartRequired |
+| `regenerate_token` | 重新生成 token |
+| `get_audit_log` | 最近 N 条审计日志 |
+| `browse_directory` | 全盘目录浏览（不受白名单限制，用于目录选择器） |
+| `restart_mcp_server` | 杀旧 axum task + 按新配置重启 |
+| `get_lan_ips` | 获取局域网 IP 列表 |
+| `get_autostart` / `set_autostart` | 读取 / 设置开机自动启动（tauri-plugin-autostart） |
 
-### 易用性设计
-- **打包成单文件 exe**：用 Node 20+ 自带的 SEA（Single Executable Application）+ esbuild + postject，产出的 `cc-bridge.exe` 不需要用户机器装 Node.js，双击就能跑（`ui.html` 作为 SEA asset 内嵌进 exe，不需要额外带着这个文件）。
-- **`--setup` 交互式配置向导**：命令行问答式配置白名单目录，不用手改 `config.json`。
-- **启动横幅**：每次启动自动探测局域网 IP，直接打印出可复制粘贴的 `claude mcp add` 命令。
-- **桌面应用**（`desktop/`）：任务栏图标 + 独立窗口 + 系统托盘，双击图标直接用，不用开终端/浏览器。
+### 管理面板（React 前端）
+
+界面采用 shadcn/ui 设计语言，顶部 Tab 分页布局，共 4 个页面：
+
+- **连接**：状态概览（请求数/错误数/运行时间）+ `claude mcp add` 命令一键复制 + 全局/项目级 scope 选择 + Token 掩码显示/重新生成
+- **安全**：白名单根目录 CRUD + 目录浏览器弹窗；扩展名/文件大小/限流/备份目录/备份保留，全部即时保存（防抖 800ms + 失焦）
+- **设置**：网络（host/port，改后一键保存并重启）+ 应用（开机自启开关）+ 审计（日志保留天数）
+- **日志**：审计日志表，按工具/状态筛选，点击行展开查看参数/来源 IP/错误详情
+- 深色/浅色主题切换（localStorage 持久化）
+
+## 技术栈
+
+| 层 | 技术 |
+|---|---|
+| 桌面框架 | Tauri 2（系统 WebView2） |
+| 后端语言 | Rust |
+| HTTP 服务器 | axum 0.8 + tower-http |
+| 异步运行时 | tokio |
+| 配置存储 | SQLite（rusqlite bundled） |
+| 并发控制 | DashMap 6 |
+| 加密/安全 | subtle 2 + rand 0.8 |
+| 前端框架 | React 18 + TypeScript |
+| 构建工具 | Vite 6 |
+| 样式 | TailwindCSS 4 + shadcn/ui 设计语言（手写基础组件） |
+| 数据获取 | TanStack Query 5（5s 轮询） |
+| 打包 | NSIS 安装包 |
 
 ## 目录结构
 
 ```
-cc-bridge/                                # 整个项目的根目录
-├── README.md                             # 就是这份文档
-├── server/                                # 核心 MCP 服务（已完成并验证）
-│   ├── cc-bridge.js                       # 唯一核心逻辑源文件
-│   ├── ui.html                            # Web 面板（内嵌进 exe）
-│   ├── build.js                           # SEA 打包脚本（要在 Windows 机器上跑）
-│   ├── package.json / package-lock.json
-│   ├── config.json.example                # 配置模板（真正的 config.json 运行时自动生成，含 token，不进版本库）
-│   ├── .gitignore
-│   └── test/mcp-client-test.js            # 最小 MCP 客户端，覆盖 8 个工具 + 安全/限流/备份场景
-└── desktop/                                # 桌面壳（Rust 代码已在 Linux 容器里编译验证过，见下方"当前状态"）
-    ├── package.json                       # 只是 @tauri-apps/cli 的 npm 包装
-    ├── prepare-sidecar.js                 # 把 server/dist/ 里的 exe 按 Tauri sidecar 命名规则复制过来
-    ├── frontend-placeholder/index.html    # 未使用的占位页（真正页面来自 sidecar 自己的 HTTP 服务）
-    └── src-tauri/
-        ├── Cargo.toml / Cargo.lock / build.rs
+cc-bridge/
+├── README.md                           # 本文档
+└── desktop/                            # 完整 Tauri 2 桌面应用
+    ├── package.json                    # 前端依赖 + tauri CLI
+    ├── vite.config.ts                  # Vite 配置（端口 1420）
+    ├── tsconfig.json
+    ├── index.html
+    ├── src/                            # React 前端源码
+    │   ├── main.tsx
+    │   ├── App.tsx                     # 主应用 + TanStack Query
+    │   ├── index.css                   # TailwindCSS + 主题变量
+    │   ├── lib/
+    │   │   ├── tauri.ts                # invoke() 类型封装
+    │   │   └── types.ts                # TypeScript 类型定义
+    │   └── components/
+    │       ├── layout/Header.tsx       # 状态指示/版本/运行时间/主题切换
+    │       ├── ui/                     # 手写 shadcn 风格基础组件
+    │       │   ├── button.tsx / input.tsx / label.tsx
+    │       │   ├── card.tsx / badge.tsx / alert.tsx
+    │       │   ├── tabs.tsx / dialog.tsx / table.tsx / separator.tsx
+    │       ├── tabs/                   # 4 个 Tab 页面
+    │       │   ├── ConnectTab.tsx
+    │       │   ├── SecurityTab.tsx
+    │       │   ├── SettingsTab.tsx     # 网络 + 应用(开机自启) + 审计
+    │       │   └── LogTab.tsx
+    │       └── modals/
+    │           └── DirectoryBrowser.tsx # 目录浏览器弹窗
+    └── src-tauri/                      # Rust 后端
+        ├── Cargo.toml
         ├── tauri.conf.json
         ├── capabilities/default.json
-        ├── icons/                          # 占位图标（纯色方块，RGBA 格式），发布前要用 `npx tauri icon` 换成真的
-        └── src/main.rs                     # 拉起/管理 sidecar + 窗口 + 系统托盘 + 配置变更自动重启
+        ├── icons/                      # 占位图标（发布前用 tauri icon 替换）
+        └── src/
+            ├── main.rs                 # Tauri 入口 + 系统托盘 + 窗口管理
+            ├── lib.rs                  # 模块声明
+            ├── state.rs                # AppState（DB/Config/Locks/Stats）
+            ├── db.rs                   # SQLite 初始化 + config.json 迁移
+            ├── config.rs               # BridgeConfig 结构体 + 读写
+            ├── commands.rs             # #[tauri::command] IPC 接口（含开机自启）
+            ├── backup.rs               # 文件备份 + 自动清理
+            ├── audit.rs                # JSONL 审计日志
+            ├── browse.rs               # 全盘目录浏览（Windows 盘符枚举）
+            ├── network.rs              # LAN IP 检测 + connect 命令
+            ├── security/               # 安全模块
+            │   ├── mod.rs
+            │   ├── path.rs             # 路径校验 + canonicalize
+            │   ├── extension.rs        # 扩展名白名单
+            │   ├── filesize.rs         # 文件大小限制
+            │   ├── auth.rs             # 常量时间 token 校验
+            │   └── ratelimit.rs        # 滑动窗口限流
+            └── mcp/                    # MCP 协议实现
+                ├── mod.rs
+                ├── http.rs             # axum 路由 + JSON-RPC dispatch
+                └── tools/              # 12 个工具处理器
+                    ├── mod.rs
+                    ├── list_allowed_roots.rs
+                    ├── list_directory.rs
+                    ├── read_files.rs
+                    ├── write_files.rs
+                    ├── edit_files.rs
+                    ├── delete_files.rs
+                    ├── move_files.rs
+                    ├── copy_files.rs
+                    ├── create_directory.rs
+                    ├── remove_directory.rs
+                    ├── search_files.rs
+                    └── analyze_file.rs
 ```
 
-## 技术选型摘要
+## 部署流程
 
-- **语言/运行时**：Node.js 20+，官方 `@modelcontextprotocol/sdk`（Streamable HTTP transport），`zod` 做工具参数校验。
-- **不用**：FastAPI/Express/其他 REST 框架（用原生 `http.createServer`，保持依赖面小）。
-- **打包**：Node SEA（不是 pkg/nexe），因为官方支持、产物干净、不用额外装 Node 运行时。
-- **配置存储**：同目录 `config.json`（不是环境变量/命令行参数），首次启动自动生成默认值（`allowedRoots` 为空 = 安全默认，拒绝所有文件操作）。
-- **桌面壳**：Tauri 2（Rust），跟 cc-switch 同款技术栈，产物比 Electron 小得多（用系统自带 WebView2，不用捆绑 Chromium）。
+### 前置条件
 
-## 当前状态
+- Windows 10/11
+- Rust 工具链（`rustup.rs`）
+- Node.js 18+（仅构建时需要）
 
-1. ✅ **`server/` 核心 MCP 服务**——已完整实现并在这台 Linux 机器上验证通过（`node test/mcp-client-test.js` 16 项全部 PASS，覆盖 8 个工具、并发写锁、备份保留、路径穿越拦截、限流、token 校验等）。打包出的 SEA exe 也验证过能独立运行。**这部分需要真正部署时，要在 Windows 机器上重新 `npm install` + `node build.js`**（这台 Linux 服务器上产出的是 Linux 二进制，不能直接给 Windows 用）。
-
-2. ✅ **`desktop/` 桌面壳（Rust 代码已编译验证）**——目标是把上面的服务包成一个像 cc-switch 一样的原生桌面应用（Tauri 2）：任务栏图标、独立窗口、系统托盘、关闭窗口最小化到托盘、托盘菜单退出才真正杀进程。技术方案：
-   - `cc-bridge.exe`（SEA 产物）原样复用，作为 Tauri 的 **sidecar 子进程**，Rust 侧负责拉起/杀死它。
-   - Rust 侧读 `config.json` 拿 token，通过 URL 参数 `?token=...&managed=1` 直接把 token 传给页面，省去手动粘贴。
-   - Rust 侧后台轮询 `config.json` 的 port/host，检测到变化就自动重启 sidecar 并让窗口跳转到新地址——解决了"改端口必须手动重启"的老问题。
-   - **验证情况**：这台 Linux 服务器本来没有 Rust 工具链，装了 rustup + 在一个 Ubuntu 24.04 容器里装齐 `webkit2gtk`/`gtk3`/`libayatana-appindicator3` 等桌面依赖后，`cargo check` 已经跑通（Linux target），过程中揪出并修好了一个真实的借用检查错误（`.run()` 退出回调里 `MutexGuard` 生命周期问题）和一个图标格式问题（占位图标最初是 RGB，Tauri 要求 RGBA）。main.rs 用到的 Tauri/tauri-plugin-shell/tauri-plugin-single-instance API 已经确认是对的。**没有验证过的**：真正的 Windows 编译（`cargo tauri build` 的 NSIS 打包步骤是 Windows-only，跨平台编译不现实），需要在 Windows 机器上装好 Rust + Tauri CLI 后跑一次确认。
-   - 占位图标是纯色方块（RGBA 格式，已验证能被 Tauri 接受），正式发布前需要用 `npx tauri icon <一张方形PNG>` 换成真的品牌图。
-
-## 部署到 Windows 机器的完整流程
+### 构建 & 运行
 
 ```bash
-# 1. 把 server/ 整个文件夹传到 Windows 机器（不带 node_modules 更干净）
-cd server
-npm install
-
-# 2. 配置白名单目录（二选一）
-node cc-bridge.js --setup
-# 或者直接启动后在浏览器面板里配置：
-node cc-bridge.js
-
-# 3. 打包成不依赖 Node 环境的单文件 exe
-node build.js
-# 产出 dist/cc-bridge.exe，双击即可运行
-
-# 4. 启动后终端会打印一条现成命令，粘贴到远程 Linux 服务器执行：
-# claude mcp add --transport http cc-bridge http://<局域网IP>:7823/mcp --header "Authorization: Bearer <token>"
-```
-
-之后如果要用桌面壳版本（`desktop/`）：
-```bash
-# 装好 Rust (rustup.rs) + Tauri CLI 后
 cd desktop
 npm install
-npm run build   # 会先跑 prepare-sidecar.js 把 ../server/dist/cc-bridge.exe 复制成 sidecar，再 cargo tauri build
+npm run build     # cargo tauri build → 产出 NSIS 安装包
 ```
+
+产出路径：`src-tauri/target/release/bundle/nsis/cc-bridge_2.0.0_x64-setup.exe`（约 3.4MB）
+
+### 连接远程 Claude Code
+
+安装并启动 cc-bridge 后，面板会显示连接命令，在远程 Linux 执行：
+
+```bash
+claude mcp add --transport http cc-bridge http://<局域网IP>:7823/mcp --header "Authorization: Bearer <token>"
+```
+
+## 配置迁移
+
+首次启动时，如果检测到旧版 `config.json` 文件存在：
+- 自动将配置项导入 SQLite
+- 旧文件重命名为 `config.json.migrated`
 
 ## 已知限制
 
-- 只支持同一内网/VPN 直连，没做公网穿透/反向代理。
-- `analyze_file` 的函数/类计数是正则启发式估算，不是真正的语法解析。
-- `delete_files` 不支持删整个目录，只删单个文件（避免误删目录树）。
-- 审计日志不会自动轮转/清理，长期运行需要自己清。
-- 如果把 Web 面板的"监听地址"改成某个具体 LAN IP 而不是 `0.0.0.0`/`127.0.0.1`，桌面壳窗口（固定连 `127.0.0.1`）可能连不上自己的 sidecar——建议桌面壳场景下监听地址保持默认。
-- 桌面壳的 Windows 目标编译没有被真正验证过，只验证了 Linux 下 `cargo check` 通过（详见"当前状态"）。
+- 只支持同一内网/VPN 直连，没做公网穿透。
+- `analyze_file` 的函数/类计数是正则启发式估算，不是语法解析。
+- `delete_files` 只删单个文件，不支持删目录（安全设计）。
+- MCP 协议实现为手动 JSON-RPC dispatch（非 rmcp SDK 宏），不支持 SSE 流式传输和协议协商。
+
+## 版本历史
+
+| 版本 | 变更 |
+|---|---|
+| v2.2.1 | 编码/换行保真加固（参考 nc-compile/ccedit.py）：`read_files` 整读/行读统一归一化到 LF 并回报 `newline`（CRLF/LF），修复 CRLF 文件 `edit_files` 匹配失败的问题；`edit_files` 写回**保留原换行 + 原 UTF-8 BOM**、encode→decode round-trip 守卫（往 GBK 插入不可表示字符时拒写防损坏）、原子写（临时文件 + rename）。新增「读取编码自适应」功能开关（**默认关**，按 UTF-8 读避免误判；开启后自动识别 GBK/GB18030；显式 `encoding` 参数始终优先，不受开关影响） |
+| v2.2.0 | 能力对齐 native Claude Code 文件层：新增 `edit_files`（精准字符串替换，唯一匹配/`replaceAll`，保留原文件编码）、`create_directory`、`remove_directory` 三个工具（9 → 12）；`read_files` 编码自适应（自动探测 UTF-8/GBK/GB18030/UTF-16 统一转 UTF-8，可 `encoding` 强制指定），解决 GBK（如 NC65）源码读不了的问题；三个写工具纳入只读模式门控；引入 `encoding_rs` |
+| v2.1.0 | 界面美化升级（靛蓝主色、Hero 玻璃指标卡、segmented pill Tab、图标 chip）；新增 MCP 服务停止/启动按钮（顶栏 + Hero 卡，UI 联动置灰）；设置页「功能开关」卡：路径白名单校验 / 只读模式 / 审计日志 / 写操作自动备份 / 限流保护（关闭白名单需二次确认 + 常驻警示条 + 顶栏徽章）；连接页 IP/模式选中态强化 + 项目级默认 + health 命令复制；日志页清空日志；白名单显示去除 `\\?\` 前缀 |
+| v2.0.0 | 纯 Rust 重写，去掉 Node.js sidecar（88MB → 14MB），安装包 25MB → 3.4MB；shadcn/ui 风格 4-Tab 界面（连接/安全/设置/日志）；MCP scope 选择、开机自启、审计日志保留策略、安全项即时保存 |
+| v1.0.0 | Node.js SEA + Tauri sidecar 方案 |

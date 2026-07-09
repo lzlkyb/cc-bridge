@@ -10,17 +10,14 @@ on:
 
 jobs:
   test:
-    name: Run server test suite (Linux)
+    name: Run Rust test suite (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - run: npm install
-        working-directory: server
-      - run: npm test
-        working-directory: server
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test
+        run: cargo test
+        working-directory: desktop/src-tauri
 
   build-windows:
     name: Build Windows exe + installer
@@ -36,13 +33,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build cc-bridge server SEA executable
-        run: |
-          npm install
-          node build.js
-        working-directory: server
-
-      - name: Build Tauri desktop app (sidecar + NSIS installer)
+      - name: Build Tauri desktop app (NSIS installer)
         run: |
           npm install
           npm run build
@@ -51,7 +42,6 @@ jobs:
       - name: Collect artifacts
         run: |
           mkdir dist-out
-          copy server\dist\cc-bridge.exe dist-out\
           copy desktop\src-tauri\target\release\bundle\nsis\*.exe dist-out\
         shell: cmd
 

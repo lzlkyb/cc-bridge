@@ -20,3 +20,6 @@ desktop/src-tauri/binaries/
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# Local one-time deployment helper (not project source)
+/cc-bridge-publish.sh

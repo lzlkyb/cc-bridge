@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>cc-bridge v2.1 新功能设计稿</title>
+<style>
+  :root{
+    --background:#F4F6F9; --card:#fff; --foreground:#0f1729; --muted:#eef1f6;
+    --muted-fg:#66707e; --primary:#4F46E5; --primary-fg:#fff; --accent:#EEF2FF;
+    --border:#e2e6ee; --success:#22c55e; --destructive:#ef4444; --warning:#f97316;
+    --radius:0.6rem;
+  }
+  *{box-sizing:border-box;border-color:var(--border)}
+  body{margin:0;background:var(--background);color:var(--foreground);
+    font-family:system-ui,"Segoe UI",sans-serif;padding:28px;line-height:1.5}
+  h2.sec{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted-fg);
+    margin:34px 0 12px;font-weight:700}
+  .wrap{max-width:560px;margin:0 auto}
+  .note{font-size:12px;color:var(--muted-fg);margin:-6px 0 14px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;
+    padding:16px 18px;margin-bottom:14px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+  .card-title{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:600;margin-bottom:14px}
+  .chip{width:28px;height:28px;border-radius:8px;background:var(--accent);color:var(--primary);
+    display:grid;place-items:center;flex-shrink:0}
+  svg{stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .row-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  code{font-family:ui-monospace,Consolas,monospace}
+
+  /* ── 选中态卡片（连接页 IP / 模式）── */
+  .opt{position:relative;border:2px solid var(--border);border-radius:10px;padding:12px 13px;
+    background:var(--card);cursor:pointer;transition:.15s;text-align:left}
+  .opt:hover{background:var(--muted)}
+  .opt.sel{border-color:var(--primary);background:var(--accent);
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 14%,transparent)}
+  .opt .tick{position:absolute;top:8px;right:8px;width:20px;height:20px;border-radius:50%;
+    background:var(--primary);color:#fff;display:none;place-items:center}
+  .opt.sel .tick{display:grid}
+  .opt .t{font-size:14px;font-weight:600;margin-bottom:3px;display:flex;align-items:center;gap:7px}
+  .opt.sel .t{color:var(--primary)}
+  .opt .d{font-size:12px;color:var(--muted-fg)}
+  .badge{font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;
+    background:var(--muted);color:var(--muted-fg)}
+  .badge.rec{background:var(--accent);color:var(--primary)}
+
+  /* ── 命令 + 复制按钮 ── */
+  .cmd{display:flex;gap:8px;align-items:flex-start;margin-top:8px}
+  .cmd code{flex:1;min-width:0;white-space:pre-wrap;word-break:break-all;background:#fff;
+    border:1px solid var(--border);border-radius:8px;padding:8px 11px;font-size:12px}
+  .btn{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500;
+    padding:7px 12px;border-radius:8px;border:1px solid var(--border);background:#fff;cursor:pointer;flex-shrink:0}
+  .btn.pri{background:var(--primary);color:#fff;border-color:var(--primary)}
+  .btn.danger{color:var(--destructive);border-color:color-mix(in srgb,var(--destructive) 40%,var(--border))}
+
+  /* ── 功能开关行 ── */
+  .tog{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0;
+    border-bottom:1px solid var(--border)}
+  .tog:last-child{border-bottom:0}
+  .tog .lab{font-size:14px;font-weight:500}
+  .tog .sub{font-size:12px;color:var(--muted-fg);margin-top:2px}
+  .sw{width:44px;height:24px;border-radius:999px;background:#c9cfda;position:relative;flex-shrink:0;transition:.2s}
+  .sw.on{background:var(--primary)}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;
+    background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:.2s}
+  .sw.on::after{transform:translateX(20px)}
+  /* 危险开关（白名单关闭）*/
+  .tog.danger-off{background:color-mix(in srgb,var(--destructive) 6%,transparent);
+    border-radius:8px;padding:13px;margin:0 -13px}
+  .tog.danger-off .sw{background:var(--destructive)}
+  /* 警示条 */
+  .warn{display:flex;gap:10px;align-items:flex-start;font-size:12.5px;padding:11px 13px;border-radius:9px;
+    background:color-mix(in srgb,var(--destructive) 9%,transparent);
+    border:1px solid color-mix(in srgb,var(--destructive) 30%,transparent);color:#b42318;margin-bottom:12px}
+  .warn.amber{background:color-mix(in srgb,var(--warning) 11%,transparent);
+    border-color:color-mix(in srgb,var(--warning) 32%,transparent);color:#b45309}
+  .warn svg{flex-shrink:0;margin-top:1px}
+
+  /* 二次确认弹窗 */
+  .modal-bg{background:rgba(0,0,0,.45);border-radius:12px;padding:26px;display:grid;place-items:center;margin-top:10px}
+  .modal{background:#fff;border-radius:12px;padding:18px 20px;max-width:400px;box-shadow:0 20px 50px rgba(0,0,0,.3)}
+  .modal h4{margin:0 0 8px;font-size:15px;display:flex;align-items:center;gap:8px;color:var(--destructive)}
+  .modal p{font-size:13px;color:var(--muted-fg);margin:0 0 16px}
+  .modal .acts{display:flex;gap:8px;justify-content:flex-end}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p style="text-align:center;font-size:13px;color:var(--muted-fg);margin-bottom:4px">
+    cc-bridge v2.1 新功能设计稿 · 浅色主题预览（深色同步适配）</p>
+
+  <!-- ============ 连接页：选中态 + 复制 ============ -->
+  <h2 class="sec">① 连接页 · IP / 模式 选中态（一眼可辨）</h2>
+  <p class="note">选中项：粗靛蓝描边 + 淡靛蓝底 + 右上角对勾 + 主色标题。未选：灰描边。</p>
+
+  <div class="card">
+    <div class="card-title"><span class="chip">
+      <svg width="15" height="15" viewBox="0 0 24 24"><path d="M9 2h6l3 4v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6z"/></svg>
+    </span>选择连接地址</div>
+    <div class="row-grid">
+      <button class="opt sel">
+        <span class="tick"><svg width="12" height="12" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
+        <div class="t"><code>10.0.19.194</code> <span class="badge">默认</span></div>
+        <div class="d">VPN 或企业内网</div>
+      </button>
+      <button class="opt">
+        <div class="t"><code>192.168.1.8</code></div>
+        <div class="d">家用/办公内网</div>
+      </button>
+    </div>
+    <p class="note" style="margin:12px 0 0">在服务器上验证连通（curl 现在也有复制按钮）：</p>
+    <div class="cmd">
+      <code>curl http://10.0.19.194:7823/health</code>
+      <button class="btn"><svg width="14" height="14" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>复制</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="chip">
+      <svg width="15" height="15" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    </span>接入模式（默认改为项目级）</div>
+    <div class="row-grid">
+      <button class="opt sel">
+        <span class="tick"><svg width="12" height="12" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
+        <div class="t">项目级 <span class="badge rec">推荐</span></div>
+        <div class="d">仅指定项目生效，按需添加</div>
+      </button>
+      <button class="opt">
+        <div class="t">全局模式</div>
+        <div class="d">一次配置，所有项目可用</div>
+      </button>
+    </div>
+  </div>
+
+  <!-- ============ 设置页：功能开关 ============ -->
+  <h2 class="sec">② 设置页 · 功能开关卡（5 个）</h2>
+  <p class="note">复用已有 Toggle 组件。白名单/只读为安全敏感项，做特殊视觉。</p>
+
+  <div class="card">
+    <div class="card-title"><span class="chip">
+      <svg width="15" height="15" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+    </span>功能开关</div>
+
+    <div class="tog danger-off">
+      <div>
+        <div class="lab">路径白名单校验</div>
+        <div class="sub" style="color:#b42318">⚠ 已关闭 · 远程可访问本机<b>全部文件</b>，仅剩 Token 保护</div>
+      </div>
+      <div class="sw"></div>
+    </div>
+
+    <div class="tog">
+      <div>
+        <div class="lab">只读模式</div>
+        <div class="sub">开启后禁止写入 / 删除 / 移动 / 复制，仅允许读取、列目录、搜索</div>
+      </div>
+      <div class="sw"></div>
+    </div>
+
+    <div class="tog">
+      <div>
+        <div class="lab">审计日志</div>
+        <div class="sub">记录每次工具调用到日志页；关闭后停止记录</div>
+      </div>
+      <div class="sw on"></div>
+    </div>
+
+    <div class="tog">
+      <div>
+        <div class="lab">写操作自动备份</div>
+        <div class="sub">写入 / 删除前先备份到备份目录；关闭可节省磁盘</div>
+      </div>
+      <div class="sw on"></div>
+    </div>
+
+    <div class="tog">
+      <div>
+        <div class="lab">限流保护</div>
+        <div class="sub">按窗口限制请求次数，防止异常高频调用</div>
+      </div>
+      <div class="sw on"></div>
+    </div>
+  </div>
+
+  <p class="note">当「白名单」关闭时，安全页顶部常驻红色警示条：</p>
+  <div class="warn">
+    <svg width="17" height="17" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    <div>白名单校验已关闭，远程 Claude Code 可读写本机<b>任意路径</b>。仅在完全信任网络环境时使用，用完请及时开回。</div>
+  </div>
+  <p class="note">当「只读模式」开启时，安全页顶部常驻琥珀提示条：</p>
+  <div class="warn amber">
+    <svg width="17" height="17" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+    <div>只读模式已开启，所有写入 / 删除 / 移动 / 复制请求将被拒绝。</div>
+  </div>
+
+  <!-- 关闭白名单二次确认 -->
+  <p class="note">关闭白名单时弹出二次确认：</p>
+  <div class="modal-bg">
+    <div class="modal">
+      <h4><svg width="17" height="17" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>确定关闭路径白名单？</h4>
+      <p>关闭后远程可访问本机全部文件，风险显著上升。确认你处于可信网络环境。</p>
+      <div class="acts">
+        <button class="btn">取消</button>
+        <button class="btn danger">确定关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 日志页：删除 ============ -->
+  <h2 class="sec">③ 日志页 · 清空日志</h2>
+  <p class="note">工具栏加「清空日志」按钮（危险色），点击后二次确认。</p>
+  <div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div class="card-title" style="margin:0"><span class="chip">
+        <svg width="15" height="15" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+      </span>审计日志</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn"><svg width="14" height="14" viewBox="0 0 24 24"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>刷新</button>
+        <button class="btn danger"><svg width="14" height="14" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>清空日志</button>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">④ 其它 UX 优化（随手做）</h2>
+  <div class="card" style="font-size:13px;color:var(--muted-fg)">
+    <div style="padding:5px 0">· 顶栏去掉运行时间（hero 卡已有，避免重复）</div>
+    <div style="padding:5px 0">· 复制类按钮统一「复制 → ✓已复制」2 秒反馈</div>
+    <div style="padding:5px 0">· 日志空态 / 只读拒绝 / 白名单为空 均有明确文案引导</div>
+    <div style="padding:5px 0">· 只读 / 白名单关闭状态在顶栏加小徽章，任意页可见</div>
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,10 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "cc-bridge",
-  "version": "1.0.0",
+  "version": "2.2.1",
   "identifier": "com.ccbridge.desktop",
   "build": {
-    "frontendDist": "../frontend-placeholder"
+    "beforeDevCommand": "npm run vite:dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run vite:build",
+    "frontendDist": "../dist"
   },
   "app": {
     "windows": [],
@@ -19,7 +22,6 @@
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png"
-    ],
-    "externalBin": ["binaries/cc-bridge"]
+    ]
   }
 }
