@@ -15,12 +15,7 @@ tauri-plugin-autostart = "2"
 
 # HTTP server (MCP protocol handled via axum directly)
 axum = "0.8"
-tower = "0.5"
 tower-http = { version = "0.6", features = ["limit"] }
-
-# Manual accept loop (set TCP keepalive per connection on Windows)
-hyper = { version = "1", features = ["server"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
 
 # Async runtime
 tokio = { version = "1", features = ["fs", "sync", "net", "rt", "macros"] }
@@ -44,9 +39,6 @@ encoding_rs = "0.8"
 
 # Network interface enumeration (multi-homed: VPN + LAN)
 if-addrs = "0.13"
-
-# TCP keepalive (prevent NAT table expiry on idle MCP connections)
-socket2 = "0.6"
 
 # Concurrency
 dashmap = "6"

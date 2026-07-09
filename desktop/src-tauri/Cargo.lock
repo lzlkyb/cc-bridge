@@ -554,8 +554,6 @@ dependencies = [
  "dashmap",
  "encoding_rs",
  "env_logger",
- "hyper",
- "hyper-util",
  "if-addrs",
  "log",
  "rand",
@@ -563,14 +561,12 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "socket2",
  "subtle",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",
  "tauri-plugin-single-instance",
  "tokio",
- "tower",
  "tower-http",
 ]
 

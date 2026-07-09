@@ -1,7 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
 
-use axum::body::Bytes;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, Response, StatusCode};
@@ -9,10 +7,7 @@ use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Json;
-use hyper_util::rt::TokioIo;
-use hyper_util::service::TowerToHyperService;
 use serde_json::json;
-use tower::Service;
 
 use crate::audit;
 use crate::mcp::tools;
@@ -60,66 +55,18 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
         .mcp_running
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
-    // 手动 accept 循环（替代 axum::serve）——每连接设 TCP keepalive。
-    // Windows 上 listener keepalive 参数不向 accepted socket 传递
-    // （SO_KEEPALIVE=true 会传但时间/间隔回落到系统默认 2h）。
-    // NAT 表 5-30min 即过期 → 必须逐连接设 keepalive(60s idle/15s 探测)。
-
-    loop {
-        let (stream, remote_addr) = match listener.accept().await {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("accept error: {}", e);
-                break;
-            }
-        };
-
-        // TCP keepalive: 60s 空闲 → 每 15s 探测，保持 NAT 表活跃
-        let _ = set_conn_keepalive(&stream);
-
-        let router = app.clone();
-
-        tokio::spawn(async move {
-            // 为此连接注入 ConnectInfo（替代 AddrStream 机制）
-            use axum::extract::ConnectInfo;
-
-            let conn_router = router.layer(axum::middleware::from_fn(
-                move |mut req: Request<Body>, next: Next| async move {
-                    req.extensions_mut()
-                        .insert(ConnectInfo(remote_addr));
-                    next.run(req).await
-                },
-            ));
-
-            let io = TokioIo::new(stream);
-            let mut make_svc = conn_router.into_make_service();
-
-            let tower_svc = match Service::call(&mut make_svc, ()).await {
-                Ok(svc) => svc,
-                Err(_) => return,
-            };
-
-            let hyper_svc = TowerToHyperService::new(tower_svc);
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(io, hyper_svc)
-                .await;
-        });
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    {
+        log::error!("MCP server error: {}", e);
     }
-
+    // serve 返回（被 abort 或出错）时标记为停止
     running_state
         .mcp_running
         .store(false, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// 在已接受的 TCP 连接上启用 keepalive（60s 空闲 / 15s 间隔）。
-fn set_conn_keepalive(stream: &tokio::net::TcpStream) -> std::io::Result<()> {
-    use socket2::SockRef;
-    let sock = SockRef::from(stream);
-    sock.set_keepalive(true)?;
-    let ka = socket2::TcpKeepalive::new()
-        .with_time(Duration::from_secs(60))
-        .with_interval(Duration::from_secs(15));
-    sock.set_tcp_keepalive(&ka)
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -193,67 +140,11 @@ async fn auth_middleware(
     next.run(req).await
 }
 
-/// 解析 MCP JSON 请求体。标准 serde_json 会拒绝字符串中的 raw control character
-/// (如 `\r\n`), 但部分 MCP 客户端发送的 clientInfo.version 里可能夹带。先试严格解析,
-/// 失败时把 JSON 字符串内的控制字符替换为 `\u00XX` 转义后重试。
-fn parse_mcp_json(bytes: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
-    if let Ok(v) = serde_json::from_slice(bytes) {
-        return Ok(v);
-    }
-    // 宽松重试: 把字符串内未转义的控制字符替换为 Unicode 转义
-    let mut cleaned = Vec::with_capacity(bytes.len());
-    let mut in_string = false;
-    let mut escape = false;
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if escape {
-            escape = false;
-            cleaned.push(b);
-            i += 1;
-            continue;
-        }
-        if in_string {
-            if b == b'\\' {
-                escape = true;
-                cleaned.push(b);
-            } else if b == b'"' {
-                in_string = false;
-                cleaned.push(b);
-            } else if b < 0x20 {
-                // 控制字符 → \u00XX
-                use std::io::Write;
-                let _ = write!(&mut cleaned, "\\u{:04x}", b);
-            } else {
-                cleaned.push(b);
-            }
-        } else {
-            cleaned.push(b);
-            if b == b'"' {
-                in_string = true;
-            }
-        }
-        i += 1;
-    }
-    serde_json::from_slice(&cleaned)
-}
-
 async fn mcp_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    body: Bytes,
+    Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let body = match parse_mcp_json(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            return Json(json!({
-                "jsonrpc": "2.0",
-                "id": null,
-                "error": { "code": -32700, "message": format!("Parse error: {}", e) }
-            }))
-        }
-    };
-
     state.increment_requests().await;
 
     let source_ip = addr.ip().to_string();
