@@ -1,0 +1,34 @@
+#!/bin/sh
+# ────────────────────────────────────────────────────
+#  pre-push — push 前自动运行前端 tsc + Rust 测试
+#
+#  安装：cp .githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
+#  跳过：git push --no-verify
+#
+#  说明：cc-bridge 没有 Vitest(自动化测试用 Rust 单测覆盖),
+#  前端只跑 tsc --noEmit 守住类型,行为由后端测试覆盖。
+# ────────────────────────────────────────────────────
+
+set -e
+
+echo ""
+echo "══════════════════════════════════════════════"
+echo "  Pre-push: 运行测试..."
+echo "══════════════════════════════════════════════"
+echo ""
+
+# ── 前端 tsc 类型检查 ──
+echo "[1/2] 前端 tsc --noEmit ..."
+(cd desktop && npx tsc --noEmit)
+echo "  ✅ 前端类型检查通过"
+echo ""
+
+# ── Rust cargo test ──
+echo "[2/2] Rust cargo test..."
+(cd desktop/src-tauri && cargo test)
+echo "  ✅ Rust 测试通过"
+echo ""
+
+echo "══════════════════════════════════════════════"
+echo "  全部测试通过 ✅  开始 push..."
+echo "══════════════════════════════════════════════"

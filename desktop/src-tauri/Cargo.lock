@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "cc-bridge-desktop"
-version = "2.2.2"
+version = "2.2.3"
 dependencies = [
  "axum",
  "chrono",

@@ -3,7 +3,7 @@ import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
-import { useUpdate } from "../../contexts/UpdateContext";
+import { UpdateBadge } from "./UpdateBadge";
 
 export function Header({
   status,
@@ -14,7 +14,6 @@ export function Header({
 }) {
   const [dark, setDark] = useState(() => localStorage.getItem("theme") === "dark");
   const [busy, setBusy] = useState(false);
-  const { status: updateStatus, update: updateInfo } = useUpdate();
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", dark);
@@ -80,18 +79,7 @@ export function Header({
             命令执行已开启
           </span>
         )}
-        {updateStatus === "available" && (
-          <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
-            <Icon name="arrowUp" size={11} />
-            有新版本{updateInfo ? ` v${updateInfo.version}` : ""}
-          </span>
-        )}
-        {updateStatus === "ready" && (
-          <span className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">
-            <Icon name="check" size={11} />
-            待重启
-          </span>
-        )}
+        <UpdateBadge />
       </div>
 
       <div className="flex items-center gap-2">
