@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, Fragment } from "react";
+import { useState, useMemo, Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toolLabel } from "../../lib/utils";
@@ -40,8 +40,6 @@ function prettyParams(raw: string): string {
   }
 }
 
-const PAGE_SIZE = 50;
-
 export function LogTab() {
   const { data: entries, refetch } = useQuery<AuditEntry[]>({
     queryKey: ["auditLog"],
@@ -54,7 +52,6 @@ export function LogTab() {
   const [search, setSearch] = useState("");
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
-  const [page, setPage] = useState(0);
 
   const handleClear = async () => {
     await invoke("clear_audit_log");
@@ -81,14 +78,6 @@ export function LogTab() {
       return true;
     });
   }, [entries, toolFilter, statusFilter, search]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  // 当筛选条件变化时回到第一页
-  useEffect(() => { setPage(0); }, [toolFilter, statusFilter, search]);
-  const paged = useMemo(() => {
-    const start = page * PAGE_SIZE;
-    return filtered.slice(start, start + PAGE_SIZE);
-  }, [filtered, page]);
 
   const handleExport = (format: "json" | "csv" = "json") => {
     if (filtered.length === 0) return;

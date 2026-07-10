@@ -59,6 +59,13 @@
   --hero-gradient: linear-gradient(135deg, #6366F1 0%, #4F46E5 52%, #0EA5E9 100%);
   --hero-shadow: rgba(79, 70, 229, 0.32);
   --hero-text: #fff;
+  /* Hero 装饰光晕浅色版 + 指标卡玻璃（白色半透白底）*/
+  --hero-glow-1: rgba(255, 255, 255, 0.14);
+  --hero-glow-2: rgba(255, 255, 255, 0.08);
+  --hero-metric-bg: rgba(255, 255, 255, 0.16);
+  --hero-metric-border: rgba(255, 255, 255, 0.22);
+  --hero-addr-bg: rgba(255, 255, 255, 0.18);
+  --hero-addr-border: rgba(255, 255, 255, 0.25);
   --version-gradient: linear-gradient(135deg, #6366F1, #4F46E5);
   --version-shadow: rgba(79, 70, 229, 0.32);
   --header-start: #ffffff;
@@ -114,17 +121,26 @@
   --ring: 239 84% 74%;
   --radius: 0.6rem;
 
-  --hero-gradient: linear-gradient(135deg, #6366F1 0%, #4F46E5 50%, #0EA5E9 100%);
-  --hero-shadow: rgba(0, 0, 0, 0.5);
+  /* 暗色下 Hero 运行态：降饱和 + 加深底色，避免在 #09090b 上刺眼 */
+  --hero-gradient: linear-gradient(135deg, #4F46E5 0%, #3730A3 55%, #0C4A6E 100%);
+  /* 黑底色下黑色阴影基本无效——改为黑压暗 + 半透明白边让它从背景里"切"出来 */
+  --hero-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
   --hero-text: #fff;
+  /* 暗色下装饰光晕强度砍半避免刺眼 + 玻璃卡收紧 */
+  --hero-glow-1: rgba(255, 255, 255, 0.06);
+  --hero-glow-2: rgba(255, 255, 255, 0.04);
+  --hero-metric-bg: rgba(255, 255, 255, 0.05);
+  --hero-metric-border: rgba(255, 255, 255, 0.09);
+  --hero-addr-bg: rgba(255, 255, 255, 0.08);
+  --hero-addr-border: rgba(255, 255, 255, 0.14);
   --version-gradient: linear-gradient(135deg, #818CF8, #6366F1);
   --version-shadow: rgba(129, 140, 248, 0.35);
   --header-start: #18181b;
   --header-end: #09090b;
 
-  /* 暗色下 Hero 停止态：更暗的中性渐变 + 白色半透明阴影 */
-  --hero-stopped-bg: linear-gradient(135deg, #3a3e44 0%, #2a2d32 60%, #1a1c20 100%);
-  --hero-stopped-shadow: 0 12px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
+  /* 暗色下 Hero 停止态：深灰但加白边避免融入背景 */
+  --hero-stopped-bg: linear-gradient(135deg, #2C2F36 0%, #1F2127 60%, #15171C 100%);
+  --hero-stopped-shadow: 0 12px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.08);
 
   /* 暗色下卡片阴影：黑色变白色半透明 */
   --card-lift-shadow: 0 8px 24px rgba(255,255,255,0.04);
@@ -258,19 +274,19 @@ body {
 }
 .hero::before, .hero::after {
   content: ""; position: absolute; border-radius: 50%;
-  background: rgba(255,255,255,0.14); filter: blur(2px); pointer-events: none;
+  background: var(--hero-glow-1); filter: blur(2px); pointer-events: none;
   transition: background 0.5s ease;
 }
 .hero::before { width: 180px; height: 180px; top: -70px; right: -40px; }
-.hero::after  { width: 120px; height: 120px; bottom: -60px; left: 30%; background: rgba(255,255,255,0.08); }
+.hero::after  { width: 120px; height: 120px; bottom: -60px; left: 30%; background: var(--hero-glow-2); }
 .hero-dot { animation: pulse-ring 2s infinite; }
 .hero-metric {
-  background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.22);
+  background: var(--hero-metric-bg); border: 1px solid var(--hero-metric-border);
   border-radius: 11px; padding: 12px 13px; backdrop-filter: blur(4px);
   transition: background 0.4s ease, border-color 0.4s ease;
 }
 .hero-addr {
-  background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.25);
+  background: var(--hero-addr-bg); border: 1px solid var(--hero-addr-border);
   backdrop-filter: blur(4px);
   transition: background 0.4s ease, border-color 0.4s ease;
 }
