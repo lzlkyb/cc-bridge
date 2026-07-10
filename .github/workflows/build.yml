@@ -58,7 +58,11 @@ jobs:
       - name: Build Tauri desktop app (NSIS installer)
         shell: pwsh
         run: |
-          npm install
+          npm ci
+          # Workaround for https://github.com/npm/cli/issues/4828 — Tauri CLI 的 Windows native binding 是 optionalDependencies，
+          # 在 fresh runner 上可能不被 npm 安装，导致 tauri build 报 Cannot find native binding。
+          # 显式再装一次（幂等：已存在则跳过），不写回 package.json / package-lock.json（--no-save）。
+          npm install @tauri-apps/cli-win32-x64-msvc --no-save
           $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_KEY_FILE
           $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""   # 空密码，避免 CI 无 TTY 时交互式提示卡死
           npm run build
