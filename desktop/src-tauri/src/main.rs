@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
 use cc_bridge_desktop::*;
@@ -63,12 +63,33 @@ fn main() {
                 });
             }
 
-            // Create main window
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
-                .title("cc-bridge")
-                .inner_size(940.0, 760.0)
-                .min_inner_size(560.0, 600.0)
-                .build()?;
+            // Show main window (config: visible=false, decorations=false)
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+
+                // Win11 DWM 圆角
+                #[cfg(target_os = "windows")]
+                {
+                    use windows::Win32::Foundation::HWND;
+                    use windows::Win32::Graphics::Dwm::{
+                        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
+                    };
+                    if let Ok(hwnd) = window.hwnd() {
+                        let preference: i32 = 2; // DWMWCP_ROUNDSMALL = 2
+                        unsafe {
+                            if let Err(e) = DwmSetWindowAttribute(
+                                HWND(hwnd.0 as *mut _),
+                                DWMWA_WINDOW_CORNER_PREFERENCE,
+                                &preference as *const i32 as *const _,
+                                std::mem::size_of::<i32>() as u32,
+                            ) {
+                                log::warn!("DWM 圆角设置失败: {:?}", e);
+                            }
+                        }
+                    }
+                }
+            }
 
             // System tray
             let show_item = MenuItem::with_id(app, "show", "打开面板", true, None::<&str>)?;

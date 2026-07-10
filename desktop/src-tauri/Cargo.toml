@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.2.6"
+version = "2.2.7"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -51,7 +51,11 @@ chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 env_logger = "0.11"
 
-# ── Release 体积优化 ──
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dwm",
+] }
 # 参考 PastePanda 配置：薄 LTO + 体积优先 opt + strip 符号
 # 预期：19.5MB exe 砍到 14-15MB
 [profile.release]

@@ -5,6 +5,13 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-hide",
+    "core:window:allow-is-maximized",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
     "updater:default",
     "process:default"
   ]
