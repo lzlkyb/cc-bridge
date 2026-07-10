@@ -20,9 +20,26 @@ export function SettingsToggles({
   const [confirmWhitelistOff, setConfirmWhitelistOff] = useState(false);
   const [confirmShellOn, setConfirmShellOn] = useState(false);
   const [ackShellRisk, setAckShellRisk] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
 
   const save = async (patch: Record<string, unknown>) => {
     await invoke<ConfigSaveResult>("save_config", { patch });
+    onSaved();
+  };
+
+  const handleResetDefaults = async () => {
+    await invoke<ConfigSaveResult>("save_config", {
+      patch: {
+        whitelistEnabled: true,
+        readonlyMode: false,
+        auditEnabled: true,
+        backupEnabled: true,
+        rateLimitEnabled: true,
+        encodingDetectEnabled: false,
+        shellEnabled: false,
+      },
+    });
+    setConfirmReset(false);
     onSaved();
   };
 
@@ -131,6 +148,42 @@ export function SettingsToggles({
           }}
         />
       )}
+      {confirmReset && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          onClick={() => setConfirmReset(false)}
+        >
+          <div
+            className="animate-scale-in mx-4 w-full max-w-sm rounded-xl border bg-card p-5 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h4 className="mb-2 flex items-center gap-2 text-base font-semibold">
+              <Icon name="alertTriangle" size={18} className="text-warning" />
+              恢复默认功能开关？
+            </h4>
+            <p className="mb-4 text-sm text-muted-foreground">
+              这将把白名单校验、审计日志、备份、限流重新开启，只读模式、编码自适应、命令执行关闭。
+              当前的白名单目录、扩展名等其他设置不会受影响。
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => setConfirmReset(false)}>
+                取消
+              </Button>
+              <Button variant="default" size="sm" onClick={handleResetDefaults}>
+                恢复默认
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 恢复默认按钮 */}
+      <div className="border-t px-5 py-3">
+        <Button variant="outline" size="sm" className="text-muted-foreground" onClick={() => setConfirmReset(true)}>
+          <Icon name="refresh" size={13} />
+          恢复默认设置
+        </Button>
+      </div>
     </Card>
   );
 }

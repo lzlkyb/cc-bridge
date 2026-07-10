@@ -21,6 +21,7 @@ export function SecurityTab({
   const [newRoot, setNewRoot] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
   const [lastSavedField, setLastSavedField] = useState("");
+  const [rootSearch, setRootSearch] = useState("");
 
   const showSaved = useCallback((field: string) => {
     setLastSavedField(field);
@@ -48,6 +49,10 @@ export function SecurityTab({
     await invoke<ConfigSaveResult>("save_config", { patch: { allowedRoots: roots } });
     onSaved();
   };
+
+  const filteredRoots = status?.allowedRoots.filter((r) =>
+    rootSearch ? r.toLowerCase().includes(rootSearch.toLowerCase()) : true
+  ) ?? [];
 
   return (
     <div className="space-y-3">
@@ -84,8 +89,19 @@ export function SecurityTab({
       <div className="divider-grad" />
 
       <Card>
-        <CardHeader>
+        <CardHeader className="flex-row items-center justify-between space-y-0 gap-3 flex-wrap">
           <CardTitle icon={<Icon name="folder" />}>白名单根目录</CardTitle>
+          {status && status.allowedRoots.length > 3 && (
+            <div className="flex items-center gap-1.5 h-8 rounded-md border border-input bg-background px-2">
+              <Icon name="search" size={13} className="text-muted-foreground shrink-0" />
+              <input
+                value={rootSearch}
+                onChange={(e) => setRootSearch(e.target.value)}
+                placeholder="搜索目录…"
+                className="w-32 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+              />
+            </div>
+          )}
         </CardHeader>
         <CardContent className="space-y-3">
           {status?.allowedRoots.length === 0 && (
@@ -95,17 +111,27 @@ export function SecurityTab({
               <p className="relative z-[1] text-sm text-muted-foreground text-center max-w-[280px]">
                 添加工作目录后，远程 Claude Code 才能访问本地文件。
               </p>
-            </div>
-          )}
-          {status?.allowedRoots.map((root, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <code className="flex-1 rounded-md bg-muted px-3 py-1.5 text-xs font-mono truncate">{root}</code>
-              <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeRoot(i)}>
-                <Icon name="trash" size={14} />
-                删除
+              <Button variant="outline" size="sm" className="relative z-[1] mt-1" onClick={() => setBrowserOpen(true)}>
+                <Icon name="folder" size={14} />
+                添加第一个目录
               </Button>
             </div>
-          ))}
+          )}
+          {rootSearch && filteredRoots.length === 0 && status && status.allowedRoots.length > 0 && (
+            <p className="py-4 text-center text-sm text-muted-foreground">没有匹配的目录</p>
+          )}
+          {filteredRoots.map((root, i) => {
+            const realIndex = status?.allowedRoots.indexOf(root) ?? i;
+            return (
+              <div key={root} className="flex items-center gap-2">
+                <code className="flex-1 rounded-md bg-muted px-3 py-1.5 text-xs font-mono truncate">{root}</code>
+                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeRoot(realIndex)}>
+                  <Icon name="trash" size={14} />
+                  删除
+                </Button>
+              </div>
+            );
+          })}
           <div className="flex flex-wrap gap-2">
             <Input
               value={newRoot}
@@ -133,16 +159,41 @@ export function SecurityTab({
           <CardTitle icon={<Icon name="shield" />}>安全设置</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <AutoSaveField
-            label="允许的扩展名（逗号分隔，留空不限制）"
+          <div className="space-y-2">
+            <AutoSaveField
+              label="允许的扩展名（逗号分隔，留空不限制）"
 
-            initial={status?.allowedExtensions.join(", ") ?? ""}
-            saved={lastSavedField === "extensions"}
-            onSave={(val) => {
-              const extList = val.split(",").map((e) => e.trim()).filter(Boolean);
-              return saveField({ allowedExtensions: extList }, "extensions");
+              initial={status?.allowedExtensions.join(", ") ?? ""}
+              saved={lastSavedField === "extensions"}
+              onSave={(val) => {
+                const extList = val.split(",").map((e) => e.trim()).filter(Boolean);
+                return saveField({ allowedExtensions: extList }, "extensions");
             }}
           />
+          {/* 预设快捷填充 */}
+          <div className="flex flex-wrap gap-1.5">
+            {([
+              { label: "前端常用", value: ".js, .jsx, .ts, .tsx, .css, .html, .json" },
+              { label: "后端常用", value: ".java, .py, .go, .rs, .rb, .php" },
+              { label: "配置文件", value: ".yaml, .yml, .toml, .ini, .env, .conf" },
+              { label: "文档类", value: ".md, .txt, .csv, .log" },
+            ] as const).map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => {
+                  const current = status?.allowedExtensions.join(", ") ?? "";
+                  const val = current ? current + ", " + preset.value : preset.value;
+                  saveField({ allowedExtensions: val.split(",").map((e) => e.trim()).filter(Boolean) }, "extensions");
+                }}
+                className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
+              >
+                <Icon name="plus" size={10} />
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <AutoSaveNumber
               label="文件大小上限 (MB)"

@@ -86,9 +86,15 @@ export function ConnectHero({
         )}
       </div>
 
-      <div className="relative z-[1] grid grid-cols-3 gap-2.5">
+      <div className="relative z-[1] grid grid-cols-4 gap-2.5">
         <HeroMetric icon="activity" label="总请求数" value={status?.stats.totalRequests ?? 0} popClass={popRequests ? "hero-metric-pop" : ""} />
         <HeroMetric icon="alert" label="错误数" value={status?.stats.totalErrors ?? 0} popClass={popErrors ? "hero-metric-pop" : ""} />
+        <HeroMetric
+          icon="plug"
+          label="在线客户端"
+          value={status && running ? (status.stats.connectedClients ?? 0) : "--"}
+          popClass=""
+        />
         <HeroMetric
           icon="clock"
           label="运行时间"

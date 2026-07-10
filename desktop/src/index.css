@@ -408,3 +408,17 @@ body {
   box-shadow: var(--badge-error-shadow-hover);
   transform: translateY(-1px);
 }
+
+/* ===================================================================
+   主题切换过渡动画：仅在切换瞬间（.theme-transition）对颜色类属性做
+   平滑过渡，避免常驻 transition 拖累交互性能与首屏闪烁。
+   =================================================================== */
+.theme-transition,
+.theme-transition *,
+.theme-transition *::before,
+.theme-transition *::after {
+  transition: background-color 0.45s ease, color 0.45s ease,
+    border-color 0.45s ease, fill 0.45s ease, stroke 0.45s ease,
+    box-shadow 0.45s ease !important;
+  transition-delay: 0s !important;
+}

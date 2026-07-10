@@ -17,8 +17,16 @@ export function Header({
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
+    const root = document.documentElement;
+    // 切换主题时启用一次性过渡，避免硬闪；transitionend 后移除 class。
+    root.classList.add("theme-transition");
+    const onEnd = (e: TransitionEvent) => {
+      if (e.target === root) root.classList.remove("theme-transition");
+    };
+    root.addEventListener("transitionend", onEnd, { once: true });
+    root.classList.toggle("dark", dark);
     localStorage.setItem("theme", dark ? "dark" : "light");
+    return () => root.removeEventListener("transitionend", onEnd);
   }, [dark]);
 
   const running = status?.running ?? true;

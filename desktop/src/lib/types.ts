@@ -10,7 +10,7 @@ export interface StatusResponse {
   auditRetentionDays: number;
   host: string;
   port: number;
-  stats: { totalRequests: number; totalErrors: number };
+  stats: { totalRequests: number; totalErrors: number; connectedClients?: number };
   connectCommand: string;
   token: string;
   whitelistEnabled: boolean;

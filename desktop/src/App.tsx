@@ -1,11 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { invoke } from "./lib/tauri";
+import { invoke, listen } from "./lib/tauri";
 import type { StatusResponse } from "./lib/types";
 import { Header } from "./components/layout/Header";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { Icon } from "./components/ui/icon";
-import { ToastProvider } from "./components/ui/toast";
+import { ToastProvider, useToast } from "./components/ui/toast";
 import { ConnectTab } from "./components/tabs/ConnectTab";
 import { SecurityTab } from "./components/tabs/SecurityTab";
 import { SettingsTab } from "./components/tabs/SettingsTab";
@@ -36,12 +36,67 @@ function App() {
     if (ip) invoke("set_selected_ip", { ip }).catch(() => {});
   };
 
+  // 首次使用引导
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  useEffect(() => {
+    if (status && !isOnboardingDone()) {
+      setShowOnboarding(true);
+    }
+  }, [status]);
+
+  // 命令面板 (Ctrl+K)
+  const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [activeTab, setActiveTab] = useState("connect");
+  const handleSetTab = useCallback((tab: string) => {
+    setActiveTab(tab);
+  }, []);
+
+  // 全局键盘快捷键
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isCtrlOrMeta = e.ctrlKey || e.metaKey;
+      if (isCtrlOrMeta && e.key === "k") {
+        e.preventDefault();
+        setShowCommandPalette((v) => !v);
+      }
+      // Ctrl+1~4 切换 Tab
+      if (isCtrlOrMeta && e.key >= "1" && e.key <= "4") {
+        e.preventDefault();
+        const tabs = ["connect", "security", "settings", "log"];
+        setActiveTab(tabs[parseInt(e.key) - 1]);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // 托盘「复制连接命令」菜单：Rust 端 emit 事件，前端执行复制并反馈（复用 navigator.clipboard + toast）
+  const TrayCopyListener = () => {
+    const { toast } = useToast();
+    useEffect(() => {
+      let unlisten: (() => void) | undefined;
+      listen<null>("copy-connect-command", async () => {
+        try {
+          const s = await invoke<StatusResponse>("get_status");
+          if (s.connectCommand) {
+            await navigator.clipboard.writeText(s.connectCommand);
+            toast("连接命令已复制到剪贴板", "success");
+          }
+        } catch {
+          toast("复制失败，请手动复制", "error");
+        }
+      }).then((fn) => { unlisten = fn; });
+      return () => unlisten?.();
+    }, [toast]);
+    return null;
+  };
+
   return (
     <ToastProvider>
     {/* h-screen flex-col：Header 与 Tab 栏固定，仅内容区滚动（横向锁死、纵向可滚） */}
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
       <Header status={status} onChanged={refetchStatus} />
-      <Tabs defaultValue="connect" className="flex min-h-0 flex-1 flex-col">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col">
         <div className="shrink-0 px-5 pb-3 pt-4">
           <TabsList>
             <TabsTrigger value="connect"><Icon name="plug" /> 连接</TabsTrigger>
@@ -65,6 +120,22 @@ function App() {
           </TabsContent>
         </main>
       </Tabs>
+
+      {/* 首次使用引导 */}
+      {showOnboarding && (
+        <OnboardingGuide onClose={() => setShowOnboarding(false)} />
+      )}
+
+      {/* 命令面板 */}
+      {showCommandPalette && (
+        <CommandPalette
+          onClose={() => setShowCommandPalette(false)}
+          onNavigate={handleSetTab}
+        />
+      )}
+
+      {/* 托盘复制命令监听（无 UI，仅处理事件） */}
+      <TrayCopyListener />
     </div>
     </ToastProvider>
   );

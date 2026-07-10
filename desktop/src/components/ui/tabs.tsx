@@ -2,7 +2,9 @@ import { useState, useRef, useEffect, useCallback, type ReactNode } from "react"
 import { createContext, useContext } from "react";
 
 interface TabsProps {
-  defaultValue: string;
+  defaultValue?: string;
+  value?: string;
+  onValueChange?: (v: string) => void;
   children: ReactNode;
   className?: string;
 }
@@ -19,8 +21,19 @@ const TabsContext = createContext<TabsContextValue>({
   registerTrigger: () => {},
 });
 
-export function Tabs({ defaultValue, children, className = "" }: TabsProps) {
-  const [active, setActive] = useState(defaultValue);
+export function Tabs({ defaultValue, value: controlledValue, onValueChange, children, className = "" }: TabsProps) {
+  const [internalActive, setInternalActive] = useState(defaultValue ?? "");
+  const isControlled = controlledValue !== undefined;
+  const active = isControlled ? controlledValue : internalActive;
+
+  const setActive = useCallback(
+    (v: string) => {
+      if (!isControlled) setInternalActive(v);
+      onValueChange?.(v);
+    },
+    [isControlled, onValueChange],
+  );
+
   const triggerRefs = useRef<Map<string, HTMLElement>>(new Map());
 
   const registerTrigger = useCallback((value: string, el: HTMLElement | null) => {

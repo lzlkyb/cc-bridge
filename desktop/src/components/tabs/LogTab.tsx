@@ -1,4 +1,4 @@
-import { useState, useMemo, Fragment } from "react";
+import { useState, useMemo, useEffect, Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toolLabel } from "../../lib/utils";
@@ -8,6 +8,7 @@ import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Icon } from "../ui/icon";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
+import { useToast } from "../ui/toast";
 
 /** 参数原始 JSON → 表格行内简短摘要。parse 失败退回原文截断。纯函数（规则 11 只在本文件复用，故留本地）。 */
 function summarizeParams(raw: string): string {
@@ -39,10 +40,12 @@ function prettyParams(raw: string): string {
   }
 }
 
+const PAGE_SIZE = 50;
+
 export function LogTab() {
   const { data: entries, refetch } = useQuery<AuditEntry[]>({
     queryKey: ["auditLog"],
-    queryFn: () => invoke<AuditEntry[]>("get_audit_log", { limit: 100 }),
+    queryFn: () => invoke<AuditEntry[]>("get_audit_log", { limit: 500 }),
     refetchInterval: 10000,
   });
 
@@ -51,6 +54,7 @@ export function LogTab() {
   const [search, setSearch] = useState("");
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [page, setPage] = useState(0);
 
   const handleClear = async () => {
     await invoke("clear_audit_log");
@@ -71,22 +75,55 @@ export function LogTab() {
       if (statusFilter === "success" && !e.success) return false;
       if (statusFilter === "error" && e.success) return false;
       if (kw) {
-        const hay = `${e.params}\n${e.error ?? ""}`.toLowerCase();
+        const hay = `${e.tool}\n${toolLabel(e.tool)}\n${e.params}\n${e.sourceIp ?? ""}\n${e.error ?? ""}`.toLowerCase();
         if (!hay.includes(kw)) return false;
       }
       return true;
     });
   }, [entries, toolFilter, statusFilter, search]);
 
-  const handleExport = () => {
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // 当筛选条件变化时回到第一页
+  useEffect(() => { setPage(0); }, [toolFilter, statusFilter, search]);
+  const paged = useMemo(() => {
+    const start = page * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, page]);
+
+  const handleExport = (format: "json" | "csv" = "json") => {
     if (filtered.length === 0) return;
-    const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "cc-bridge-audit-log.json";
-    a.click();
-    URL.revokeObjectURL(url);
+    if (format === "csv") {
+      const header = "时间,工具,工具名,参数,来源IP,耗时(ms),状态,错误\n";
+      const rows = filtered.map((e) => {
+        const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
+        return [
+          e.timestamp,
+          e.tool,
+          toolLabel(e.tool),
+          esc(e.params),
+          e.sourceIp ?? "",
+          e.durationMs ?? "",
+          e.success ? "成功" : "失败",
+          esc(e.error ?? ""),
+        ].join(",");
+      }).join("\n");
+      const csv = "\uFEFF" + header + rows; // BOM for Excel Chinese support
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "cc-bridge-audit-log.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+    } else {
+      const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "cc-bridge-audit-log.json";
+      a.click();
+      URL.revokeObjectURL(url);
+    }
   };
 
   return (
@@ -100,7 +137,7 @@ export function LogTab() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="搜索参数 / 错误…"
+              placeholder="搜索工具 / 参数 / IP…"
               className="w-28 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
             />
           </div>
@@ -135,10 +172,30 @@ export function LogTab() {
             <Icon name="refresh" size={14} />
             刷新
           </Button>
-          <Button variant="outline" size="sm" disabled={filtered.length === 0} onClick={handleExport}>
-            <Icon name="download" size={14} />
-            导出
-          </Button>
+          <div className="relative group">
+            <Button variant="outline" size="sm" disabled={filtered.length === 0} onClick={() => handleExport("json")}>
+              <Icon name="download" size={14} />
+              导出 JSON
+            </Button>
+            <div className="absolute right-0 top-full mt-1 hidden group-hover:flex flex-col rounded-md border bg-popover p-1 shadow-lg z-10 min-w-[120px]">
+              <button
+                onClick={() => handleExport("json")}
+                disabled={filtered.length === 0}
+                className="flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs hover:bg-accent transition-colors"
+              >
+                <Icon name="file" size={12} />
+                导出 JSON
+              </button>
+              <button
+                onClick={() => handleExport("csv")}
+                disabled={filtered.length === 0}
+                className="flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs hover:bg-accent transition-colors"
+              >
+                <Icon name="download" size={12} />
+                导出 CSV (Excel)
+              </button>
+            </div>
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -260,9 +317,11 @@ export function LogTab() {
 /** 展开行：结构化 key-value + 参数高亮代码块 + 复制 + 错误块。 */
 function DetailPanel({ entry }: { entry: AuditEntry }) {
   const [copied, setCopied] = useState(false);
+  const { toast } = useToast();
   const copy = async () => {
     await navigator.clipboard.writeText(entry.params);
     setCopied(true);
+    toast("参数已复制到剪贴板", "success");
     setTimeout(() => setCopied(false), 1500);
   };
   return (
