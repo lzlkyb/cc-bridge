@@ -27,4 +27,7 @@ Thumbs.db
 # Internal dev docs / design drafts (kept local, not published)
 /CLAUDE.md
 /功能优化清单.md
+/功能优化清单.md.bak
 /design/
+/generated-images/
+/desktop/src-tauri/icons/backup_*/
