@@ -5,6 +5,27 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.2.15] - 2026-07-10
+
+### 新增
+- `run_command` 增加**危险命令拦截**（D 组安全债 D4）：开启「命令执行」开关后，命中 `rm -rf /`、`rm -rf /*`、`mkfs`、`format c:`、fork bomb（`:(){:|:&};:`）等毁灭性模式的命令会在解析 cwd / spawn **之前**被直接拒绝，不进入白名单解析、不注册到运行表。判定大小写不敏感。逻辑对齐开源 `rustterm-mcp` 的安全模型。
+- 新增 3 个单测：`dangerous_command_blocked_before_spawn`（拦截 + 不注册运行表）、`dangerous_command_case_insensitive`（大写变体命中）、`benign_command_not_blocked_by_dangerous_filter`（`rm -rf ./build` 等正常命令不误伤）。`run_command` 单测 9 → 12。
+
+### 说明
+- 当前为**启发式子串黑名单**，属最低成本兜底闸：误伤（`echo "rm -rf /"`）与漏拦（`rm -rf /home`）并存，不能替代真正的沙箱。二期规划升级为命令白名单或 shell 令牌化解析（见 功能优化清单 D4）。
+
+## [2.2.14] - 2026-07-10
+
+### 修复
+- `run_command` 真实子进程（非 cmd 内置命令，如 `hostname.exe`/`git.exe`/`cargo.exe`）stdout/stderr 读不到内容的**根因已定位并根治**：之前尝试的 `portable-pty`（ConPTY）方案因 `cmd.exe` 启动后会发 DSR 查询 `\x1b[6n` 并等待终端应答，而 portable-pty 0.9 的 `MasterPty`/`SlavePty` 未实现 `Write` 无法应答，导致 cmd 永久挂起（stdout 空、exitCode 超时）——该方案在 Windows 上**根本性不可用**，已彻底回退。
+- 改用 `CREATE_NO_WINDOW (0x08000000) | CREATE_NEW_PROCESS_GROUP (0x00000200)` + `Stdio::piped()` 直接 spawn `cmd /C`：stdout/stderr 各自独立管道，**真实 .exe 子进程的输出现在能正确捕获**，且 stdout/stderr 分离（`stderr` 字段不再恒为空，修复了 portable-pty 方案下两路合并的副作用）。`run_command` 的单元覆盖从 0 提升到 9（含 `foreground_real_exe_returns_stdout` 回归用例，直接复现原 bug 场景）。
+
+### 变更
+- 移除 `portable-pty` 依赖（`Cargo.toml` 删除，候选方案已废弃）；win32job 整树终止集成保持不变（`CREATE_NO_WINDOW` 下已实测无 MSVC 并发链接崩溃）。
+
+### 修复（测试套件）
+- 修复 `process_job` 两个单元测试（`create_and_assign_self_succeeds` / `two_jobs_are_independent`）会把**测试 runner 自身进程**（-1 伪句柄）挂入开启了 `KillOnJobClose` 的 Job Object，drop 时触发 `KillOnJobClose` 把整个 `cargo test --lib` 进程杀掉、且因终止码为 0 被误判为通过——导致测试套件静默中断、约半数用例从未真正运行。改为 `#[ignore]`（与已有的 `drop_kills_spawned_child` 一致）；`create_and_assign` 的成功挂载路径由 `run_command` 的真实 exe 测试间接覆盖。
+
 ## [2.2.13] - 2026-07-10
 
 ### 变更

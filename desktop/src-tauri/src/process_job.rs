@@ -40,7 +40,13 @@ mod tests {
         -1
     }
 
+    // 注意：下列两个测试原本把“当前进程伪句柄(-1)”挂入开启了 KillOnJobClose 的 Job。
+    // 这会在 `drop(job)` 时触发 KillOnJobClose，把**整个测试 runner（含测试框架）一起杀掉**，
+    // 导致 `cargo test --lib` 静默中断、且因 KillOnJobClose 终止码为 0 而被误判为通过。
+    // create_and_assign 的“成功挂载真实子进程”路径已由 `mcp::tools::run_command` 的
+    // 真实 exe 测试间接覆盖，故这里统一标记为 #[ignore]，与 drop_kills_spawned_child 一致。
     #[test]
+    #[ignore]
     fn create_and_assign_self_succeeds() {
         // 拿当前进程的伪句柄挂入 job——这模拟一个远程 spawn 后 cc-bridge 拿到的子进程 handle。
         // 如果底层 win32 API 在这台机器上完全不可用（比如 headless Windows / NoUserSession），
@@ -54,6 +60,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn two_jobs_are_independent() {
         // 验证两个 create_and_assign 调用不互踩（不同 Job Object 是独立内核对象，
         // 但有时错误的 job 复用代码可能把第二个的 raw handle 错挂到第一个）。

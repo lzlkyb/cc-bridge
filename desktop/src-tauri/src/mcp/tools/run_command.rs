@@ -1,9 +1,12 @@
+use std::io::Read;
+use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::RawHandle;
+use std::os::windows::process::CommandExt;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
@@ -12,12 +15,47 @@ use crate::process_job;
 use crate::security;
 use crate::state::{AppState, RunningCommand};
 
+/// 子进程创建标志。
+/// - `CREATE_NO_WINDOW (0x08000000)`：不创建可见控制台窗口，输出走管道（Stdio::piped）。
+///   相比 `DETACHED_PROCESS`，真实 .exe 子进程（git/cargo/npm）的 stdout/stderr 能被正确
+///   捕获（DETACHED_PROCESS 下孙进程控制台输出会丢失）；相比 ConPTY（portable-pty），
+///   不需要终端模拟器回应控制序列握手，cmd.exe 不会卡在 DSR 查询。
+/// - `CREATE_NEW_PROCESS_GROUP (0x00000200)`：把 cmd 及其子孙放进独立进程组，隔离控制台
+///   事件广播，缓解 MSVC 并发链接时偶发的 STATUS_CONTROL_C_EXIT 崩溃
+///   （仅当远程用本工具自构建 cc-bridge 本体时可能触发，构建用户自己的项目无此问题）。
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+
 fn default_timeout_ms() -> u64 {
     30_000
 }
 
 fn default_max_output_bytes() -> usize {
     1024 * 1024
+}
+
+/// 危险命令黑名单（对齐 rustterm-mcp 安全模型）。
+/// 采用子串匹配（to_lowercase 后 contains），是低成本的第一道闸——
+/// 拦掉最典型的毁灭性命令，避免开了 shell 开关后一条 `rm -rf /` 抹掉整机。
+const DANGEROUS_COMMAND_PATTERNS: &[&str] = &[
+    "rm -rf /",
+    "rm -rf /*",
+    "rm -fr /",
+    "mkfs",
+    "format c:",
+    ":(){:|:&};:", // fork bomb
+];
+
+/// 命中任一危险模式即返回 true。
+///
+/// 注意：这是启发式黑名单，误伤 / 漏拦并存——`echo "rm -rf /"` 会被误拦，
+/// `rm -rf /home` 不会被拦。它只是最低成本的兜底闸，不能替代真正的沙箱。
+/// 二期应升级为命令白名单或 shell 令牌化解析（见 功能优化清单 D4）。
+fn is_dangerous_command(command: &str) -> bool {
+    let normalized = command.to_lowercase();
+    DANGEROUS_COMMAND_PATTERNS
+        .iter()
+        .any(|d| normalized.contains(*d))
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,34 +72,26 @@ pub struct RunCommandArgs {
 
 const MAX_CONCURRENT_BACKGROUND: usize = 5;
 
-/// 候选修复（2026-07-10，待手动编译 + 重启 cc-bridge 验证，尚未确认有效）。
+/// 用 `cmd /C <command>` 在白名单 cwd 内执行命令，stdout/stderr 分别经管道捕获。
 ///
-/// 背景：实测发现无论前台/后台，只要命令是一个真实独立的 .exe（hostname.exe、
-/// git.exe、cargo.exe——不是 cmd.exe 内置命令如 echo/type），stdout/stderr 都
-/// 读不到任何内容（但 exitCode 一直正确）。根因推测：外层 cmd.exe 用
-/// DETACHED_PROCESS（完全无控制台）生成，它再往下 spawn 真实 exe（孙进程）时，
-/// Windows 对"无控制台进程的控制台子系统孙进程"处理不干净，孙进程的标准输出
-/// 没有正确复用外层设置好的管道。换回 CREATE_NO_WINDOW 能大概率修好这个
-/// 问题，但会重新暴露之前踩过的 MSVC 并发链接崩溃（多个 rustc/link.exe 共享
-/// 同一隐藏控制台，一个触发控制台事件就全体 STATUS_CONTROL_C_EXIT）。
-///
-/// ConPTY 是 Windows 官方现代控制台子系统的替代实现，理论上应该能同时避开这两个
-/// 问题——但这只是推测，需要实际验证两点：
-/// 1) 普通命令（git/hostname 等）现在能不能正常拿到输出；
-/// 2) 高并发编译（比如重新编译 cc-bridge 自己一堆依赖 crate）还会不会崩
-///    （STATUS_CONTROL_C_EXIT）。
-///
-/// **已知的行为变化（无法避免）**：PTY 天然只有一路输出（stdout/stderr 在终端里
-/// 本来就是混在一起显示的），没法像原来那样分开。这里全部塞进 `stdout` 字段，
-/// `stderr` 字段固定返回空字符串——调用方如果依赖"stderr 非空=出错"这类判断
-/// 需要调整（cc-bridge 自己的审计日志不受影响，只记录 success/error 与耗时，
-/// 不解析 stdout/stderr 内容）。
+/// 无状态：不跨调用保留 shell 会话，`cd` / 环境变量不会带到下一次调用——每次必须显式传
+/// 绝对 `cwd`（见 http.rs 工具描述）。stdout 与 stderr 分开返回（不像 ConPTY 那样合并），
+/// 调用方可直接依赖 "stderr 非空 = 出错" 判断。
 pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let config = state.config.read().await;
     if !config.shell_enabled {
         return Err(
             "命令执行未开启。请在 cc-bridge 面板『安全』页开启「命令执行」开关——\
             该功能等同于授予远程调用方任意代码执行权限，请确认风险后再开启。"
+                .to_string(),
+        );
+    }
+    // 危险命令拦截：在解析 cwd / spawn 之前先挡掉毁灭性命令（rm -rf /、mkfs、fork bomb 等）。
+    // 这是启发式黑名单兜底闸，不进入白名单解析、不注册到运行表。
+    if is_dangerous_command(&args.command) {
+        return Err(
+            "命令被安全策略拦截：命中危险模式（如 rm -rf /、mkfs、fork bomb）。\
+            如确有必要，请改用更精确、限定作用范围的写法后重试。"
                 .to_string(),
         );
     }
@@ -88,9 +118,9 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     let timeout_ms = args.timeout_ms;
     let state = state.clone();
 
-    // PTY 的创建/spawn/读取都是同步阻塞 API，丢进 spawn_blocking 避免占用 tokio 工作线程。
+    // spawn + wait 是同步阻塞 API，丢进 spawn_blocking 避免占用 tokio 工作线程。
     tokio::task::spawn_blocking(move || {
-        spawn_pty(
+        spawn_shell(
             &command,
             &resolved_cwd,
             cwd_display,
@@ -104,7 +134,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     .map_err(|e| format!("run_command 任务 panic: {e}"))?
 }
 
-fn spawn_pty(
+fn spawn_shell(
     command: &str,
     resolved_cwd: &std::path::Path,
     cwd_display: String,
@@ -113,61 +143,41 @@ fn spawn_pty(
     max_output_bytes: usize,
     state: &Arc<AppState>,
 ) -> Result<Value, String> {
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: 40,
-            cols: 200,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("创建伪终端失败: {e}"))?;
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/C", command]);
+    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    cmd.current_dir(resolved_cwd);
 
-    let mut cmd = CommandBuilder::new("cmd");
-    cmd.arg("/C");
-    cmd.arg(command);
-    cmd.cwd(resolved_cwd);
+    let child = cmd.spawn().map_err(|e| format!("启动命令失败: {e}"))?;
 
-    let child = pair
-        .slave
-        .spawn_command(cmd)
-        .map_err(|e| format!("启动命令失败: {e}"))?;
-    // slave 端子进程已经复制了一份句柄，父进程这边释放，避免占着不用的读写端。
-    drop(pair.slave);
-
-    let pid = child.process_id().unwrap_or(0);
-    let raw_handle: RawHandle = child
-        .as_raw_handle()
-        .ok_or_else(|| "命令刚启动就已退出，无法获取进程句柄".to_string())?;
+    // 把子进程挂入 Job Object（kill-on-job-close）：前台超时/结束时 drop job 顺带整树
+    // 终止（含 cmd 的孙进程 git/cargo 等）；stop_command 也靠 drop job 清理孤儿进程。
+    let raw_handle: RawHandle = child.as_raw_handle();
+    if raw_handle.is_null() {
+        return Err("命令刚启动就已退出，无法获取进程句柄".to_string());
+    }
     let job = process_job::create_and_assign(raw_handle as isize)?;
-
-    let reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| format!("获取伪终端读取端失败: {e}"))?;
 
     if background {
         spawn_background(
             job,
-            pid,
             child,
-            reader,
             max_output_bytes,
             command.to_string(),
             cwd_display,
             state,
         )
     } else {
-        run_foreground(job, child, reader, timeout_ms, max_output_bytes)
+        run_foreground(job, child, timeout_ms, max_output_bytes)
     }
 }
 
-/// 起一个专门的 OS 线程持续读取 PTY 输出（Read trait 是同步阻塞的，不能直接 await）。
-/// 累积缓冲区用 tokio::sync::Mutex 是为了复用 get_command_output.rs 里已有的
-/// `.lock().await` 读取路径——这里从同步线程用 `blocking_lock()` 写入即可，不用为了
-/// 这次改动去动 get_command_output.rs/commands.rs。
+/// 起一个专门的 OS 线程持续读取管道输出（Read trait 是同步阻塞的，不能直接 await）。
+/// 累积缓冲区用 tokio::sync::Mutex 以便复用 get_command_output.rs 的 `.lock().await` 路径。
 fn spawn_reader_thread(
-    mut reader: Box<dyn std::io::Read + Send>,
+    mut reader: Box<dyn Read + Send>,
     max_output_bytes: usize,
 ) -> (Arc<AsyncMutex<Vec<u8>>>, Arc<AtomicBool>) {
     let buf = Arc::new(AsyncMutex::new(Vec::<u8>::new()));
@@ -198,14 +208,27 @@ fn spawn_reader_thread(
     (buf, truncated)
 }
 
+fn take_reader(
+    pipe: Option<impl Read + Send + 'static>,
+    max_output_bytes: usize,
+) -> (Arc<AsyncMutex<Vec<u8>>>, Arc<AtomicBool>) {
+    match pipe {
+        Some(s) => spawn_reader_thread(Box::new(s), max_output_bytes),
+        None => (
+            Arc::new(AsyncMutex::new(Vec::new())),
+            Arc::new(AtomicBool::new(false)),
+        ),
+    }
+}
+
 fn run_foreground(
     job: win32job::Job,
-    mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    reader: Box<dyn std::io::Read + Send>,
+    mut child: Child,
     timeout_ms: u64,
     max_output_bytes: usize,
 ) -> Result<Value, String> {
-    let (buf, truncated) = spawn_reader_thread(reader, max_output_bytes);
+    let (stdout_buf, stdout_trunc) = take_reader(child.stdout.take(), max_output_bytes);
+    let (stderr_buf, stderr_trunc) = take_reader(child.stderr.take(), max_output_bytes);
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let status = loop {
@@ -223,17 +246,17 @@ fn run_foreground(
 
     match status {
         Some(status) => {
-            // 命令正常结束后 drop job：顺带清理可能残留的子孙进程（比如 `cmd /C` 里
-            // 用 `start` 开出去的 detached 后台进程），语义与 win32job 版本一致。
+            // 命令正常结束后 drop job；给读取线程一点时间把管道剩余数据读完。
             drop(job);
-            // 给读取线程一点时间把管道里剩余数据读完（子进程已退出，读到 EOF 很快）。
             std::thread::sleep(Duration::from_millis(50));
-            let output = buf.blocking_lock().clone();
+            let stdout = stdout_buf.blocking_lock().clone();
+            let stderr = stderr_buf.blocking_lock().clone();
             Ok(text_result(json!({
-                "stdout": String::from_utf8_lossy(&output),
-                "stderr": "",
-                "exitCode": status.exit_code(),
-                "truncated": truncated.load(Ordering::Relaxed),
+                "stdout": String::from_utf8_lossy(&stdout),
+                "stderr": String::from_utf8_lossy(&stderr),
+                "exitCode": status.code(),
+                "stdoutTruncated": stdout_trunc.load(Ordering::Relaxed),
+                "stderrTruncated": stderr_trunc.load(Ordering::Relaxed),
                 "timedOut": false,
             })))
         }
@@ -244,7 +267,8 @@ fn run_foreground(
                 "stdout": "",
                 "stderr": "",
                 "exitCode": Value::Null,
-                "truncated": false,
+                "stdoutTruncated": false,
+                "stderrTruncated": false,
                 "timedOut": true,
                 "note": format!("命令超过 {timeout_ms}ms 未结束，已强制终止（含子进程）"),
             })))
@@ -255,21 +279,21 @@ fn run_foreground(
 #[allow(clippy::too_many_arguments)]
 fn spawn_background(
     job: win32job::Job,
-    pid: u32,
-    mut child: Box<dyn portable_pty::Child + Send + Sync>,
-    reader: Box<dyn std::io::Read + Send>,
+    mut child: Child,
     max_output_bytes: usize,
     command: String,
     cwd: String,
     state: &Arc<AppState>,
 ) -> Result<Value, String> {
-    let (buf, truncated) = spawn_reader_thread(reader, max_output_bytes);
+    let (stdout_buf, stdout_trunc) = take_reader(child.stdout.take(), max_output_bytes);
+    let (stderr_buf, stderr_trunc) = take_reader(child.stderr.take(), max_output_bytes);
 
+    let pid = child.id();
     let exit_code: Arc<AsyncMutex<Option<i32>>> = Arc::new(AsyncMutex::new(None));
     let exit_code_clone = exit_code.clone();
     std::thread::spawn(move || {
         if let Ok(status) = child.wait() {
-            *exit_code_clone.blocking_lock() = Some(status.exit_code() as i32);
+            *exit_code_clone.blocking_lock() = status.code();
         }
     });
 
@@ -281,10 +305,10 @@ fn spawn_background(
             command,
             cwd,
             job,
-            stdout: buf,
-            stderr: Arc::new(AsyncMutex::new(Vec::new())),
-            stdout_truncated: truncated,
-            stderr_truncated: Arc::new(AtomicBool::new(false)),
+            stdout: stdout_buf,
+            stderr: stderr_buf,
+            stdout_truncated: stdout_trunc,
+            stderr_truncated: stderr_trunc,
             exit_code,
             started_at: Instant::now(),
         },
@@ -322,7 +346,9 @@ mod tests {
         dir
     }
 
-    fn make_state_with_config(f: impl FnOnce(&mut BridgeConfig)) -> (Arc<AppState>, std::path::PathBuf) {
+    fn make_state_with_config(
+        f: impl FnOnce(&mut BridgeConfig),
+    ) -> (Arc<AppState>, std::path::PathBuf) {
         let dir = unique_subdir("run_cmd");
         let conn = db::init_database(Path::new(&dir)).expect("init db");
         let mut cfg = BridgeConfig {
@@ -364,6 +390,67 @@ mod tests {
         );
         // 关键断言：注册表必须保持空——开关拒时不能让占位 entry 泄露。
         assert!(state.running_commands.is_empty());
+    }
+
+    /// 危险命令必须在 spawn 前被拦截，且不进入 cwd 白名单解析、不注册到运行表。
+    /// 覆盖 D4 安全债：开了 shell 开关后，rm -rf / 这类毁灭性命令仍应被兜底闸挡下。
+    #[tokio::test]
+    async fn dangerous_command_blocked_before_spawn() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let result = handle(
+            RunCommandArgs {
+                command: "rm -rf /".into(),
+                cwd: dir.to_string_lossy().into_owned(),
+                background: false,
+                timeout_ms: 1000,
+                max_output_bytes: 1024,
+            },
+            &state,
+        )
+        .await;
+        let err = result.expect_err("危险命令必须被拦截");
+        assert!(
+            err.contains("安全策略"),
+            "应提示被安全策略拦截，实际：{err}"
+        );
+        // 关键断言：被拦时不能注册到运行表。
+        assert!(state.running_commands.is_empty());
+    }
+
+    /// 大小写不敏感：MKFS / Rm -Rf / 变体也应命中。
+    #[tokio::test]
+    async fn dangerous_command_case_insensitive() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let result = handle(
+            RunCommandArgs {
+                command: "MKFS.ext4 /dev/sda".into(),
+                cwd: dir.to_string_lossy().into_owned(),
+                background: false,
+                timeout_ms: 1000,
+                max_output_bytes: 1024,
+            },
+            &state,
+        )
+        .await;
+        assert!(result.is_err(), "大写危险命令也应被拦截");
+        assert!(state.running_commands.is_empty());
+    }
+
+    /// 正常命令（含单词 rm 但非危险模式）不应被误拦——is_dangerous_command 只匹配整段模式。
+    #[tokio::test]
+    async fn benign_command_not_blocked_by_dangerous_filter() {
+        // 直接单元测试判定函数，避免真实 spawn 的平台依赖。
+        assert!(!is_dangerous_command("cargo build --release"));
+        assert!(!is_dangerous_command("git status"));
+        assert!(!is_dangerous_command("rm -rf ./build")); // 相对路径，不命中 "rm -rf /"
+        assert!(is_dangerous_command("rm -rf /"));
+        assert!(is_dangerous_command("sudo MKFS /dev/sdb"));
     }
 
     /// cwd 不在白名单 = security::path::resolve_safe_path 报"白名单不含..."。
@@ -432,17 +519,10 @@ mod tests {
         assert!(state.running_commands.is_empty());
     }
 
-    /// 实际 spawn `cmd /C echo hello` 验证 portable-pty 真能拿到 stdout。
-    /// 这是 v2.2.13 实验性"用 portable-pty 取代 DETACHED_PROCESS"的关键回归测试：
-    /// 旧 bug 是真实子进程（不是 cmd 内置命令）的 stdout 丢失。如果未来又切回
-    /// Stdio::piped() / DETACHED_PROCESS 又复现 bug，这条 case 会 fail。
-    ///
-    /// `#[ignore]`：2026-07-10 实测在 `cargo test` console session 下 runtime
-    /// 会 hang（PTY master 关闭顺序与 cmd.exe 内置 echo 的会话关系不明）。
-    /// 跑这条要 `cargo test -- --ignored`。手工 dev 模式重启可触发。
-    /// 后续要解开：先确认 run_command.rs 在 `cargo run` 下能正确 exit 再回头 fix 测试环境。
+    /// 实际 spawn `cmd /C echo hello` 验证 stdout 能拿到。
+    /// 这是 run_command 的核心回归：用 CREATE_NO_WINDOW + Stdio::piped() 取代 portable-pty
+    /// （ConPTY 下 cmd.exe 会卡在 DSR 控制序列握手，输出全空）后，输出必须正常捕获。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore]
     async fn foreground_echo_returns_stdout() {
         let (state, dir) = make_state_with_config(|c| {
             c.shell_enabled = true;
@@ -461,7 +541,6 @@ mod tests {
         .await
         .expect("foreground echo should succeed");
 
-        // text_result 把整个 JSON 包成 {content:[{type:text,text:"..."}]}。
         let text = v
             .get("content")
             .and_then(|c| c.as_array())
@@ -469,18 +548,59 @@ mod tests {
             .and_then(|x| x.get("text"))
             .and_then(|x| x.as_str())
             .expect("response must have text payload");
-        let info: serde_json::Value =
-            serde_json::from_str(text).expect("text payload is JSON");
+        let info: serde_json::Value = serde_json::from_str(text).expect("text payload is JSON");
 
         let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
-        assert!(stdout.contains("hello"), "stdout 应含 'hello'，实际：{stdout:?}");
+        assert!(
+            stdout.contains("hello"),
+            "stdout 应含 'hello'，实际：{stdout:?}"
+        );
         assert_eq!(info.get("exitCode").and_then(|e| e.as_i64()), Some(0));
         assert_eq!(info.get("timedOut").and_then(|t| t.as_bool()), Some(false));
     }
 
-    /// exitCode 必须真透传——exit 7 应返回 7，不能因 PTY 包装而吞掉。
+    /// 真实 .exe 子进程（不是 cmd 内置命令）的 stdout 必须能拿到。
+    /// `command = "hostname"` 经 `cmd /C hostname` 执行，hostname.exe 作为孙进程被 spawn，
+    /// 正好复现原 DETACHED_PROCESS 方案的 bug 场景（真实 .exe 输出丢失）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore]
+    async fn foreground_real_exe_returns_stdout() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let v = handle(
+            RunCommandArgs {
+                command: "hostname".into(),
+                cwd: dir.to_string_lossy().into_owned(),
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+            },
+            &state,
+        )
+        .await
+        .expect("foreground hostname should succeed");
+
+        let text = v
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .expect("response must have text payload");
+        let info: serde_json::Value = serde_json::from_str(text).expect("text payload is JSON");
+
+        let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(
+            !stdout.trim().is_empty(),
+            "hostname stdout 应为非空主机名，实际：{stdout:?}"
+        );
+        assert_eq!(info.get("exitCode").and_then(|e| e.as_i64()), Some(0));
+        assert_eq!(info.get("timedOut").and_then(|t| t.as_bool()), Some(false));
+    }
+
+    /// exitCode 必须真透传——exit 7 应返回 7，不能因包装而吞掉。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn foreground_exit_code_propagates() {
         let (state, dir) = make_state_with_config(|c| {
             c.shell_enabled = true;
@@ -510,14 +630,11 @@ mod tests {
             .get("exitCode")
             .and_then(|e| e.as_i64())
             .expect("exitCode must be a number");
-        // portable_pty 在 Windows 上可能把 exit code 标记为 7，或 256+7=263（signal-like），
-        // 不能锁死 7。这里至少要拿到非 0 即可。
         assert!(code != 0, "非 0 退出码应透传：{code}");
     }
 
-    /// max_output_bytes 截断：开 10 字节上限跑长输出，期望 truncated:true 且 stdout 长度 ≤ 10。
+    /// max_output_bytes 截断：开 10 字节上限跑长输出，期望 stdoutTruncated:true 且 stdout 长度 ≤ 10。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore]
     async fn foreground_max_output_bytes_truncates() {
         let (state, dir) = make_state_with_config(|c| {
             c.shell_enabled = true;
@@ -550,27 +667,23 @@ mod tests {
             stdout.len()
         );
         assert_eq!(
-            info.get("truncated").and_then(|t| t.as_bool()),
+            info.get("stdoutTruncated").and_then(|t| t.as_bool()),
             Some(true),
-            "truncated 字段必须是 true"
+            "stdoutTruncated 字段必须是 true"
         );
     }
 
-    /// 真实 .exe 子进程（不是 cmd 内置命令）的 stdout 必须能拿到。
-    /// 这是 portable-pty 候选修复要解决的原始 bug：旧 DETACHED_PROCESS 方案下，
-    /// `cmd /C hostname`（hostname.exe 是真实孙进程）的 stdout 读不到。
-    /// `command = "hostname"` 经 `cmd /C hostname` 执行，hostname.exe 作为孙进程被 spawn，
-    /// 正好复现原 bug 场景——这是 echo（cmd 内置）测试覆盖不到的盲区。
+    /// stderr 必须正确分离——往 stderr 写的东西不应混进 stdout。
+    /// `echo ... 1>&2` 把内容重定向到 stderr，验证 stdout 为空、stderr 含内容。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore]
-    async fn foreground_real_exe_returns_stdout() {
+    async fn foreground_stderr_separated() {
         let (state, dir) = make_state_with_config(|c| {
             c.shell_enabled = true;
             c.whitelist_enabled = true;
         });
         let v = handle(
             RunCommandArgs {
-                command: "hostname".into(),
+                command: "echo err_payload 1>&2".into(),
                 cwd: dir.to_string_lossy().into_owned(),
                 background: false,
                 timeout_ms: 5000,
@@ -579,31 +692,27 @@ mod tests {
             &state,
         )
         .await
-        .expect("foreground hostname should succeed");
-
+        .expect("stderr separation test should succeed");
         let text = v
             .get("content")
             .and_then(|c| c.as_array())
             .and_then(|a| a.first())
             .and_then(|x| x.get("text"))
             .and_then(|x| x.as_str())
-            .expect("response must have text payload");
-        let info: serde_json::Value = serde_json::from_str(text).expect("text payload is JSON");
-
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_str(text).unwrap();
         let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
-        // hostname 输出非空（本机主机名），且 exitCode 应为 0。
+        let stderr = info.get("stderr").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(stdout.trim().is_empty(), "stdout 应为空，实际：{stdout:?}");
         assert!(
-            !stdout.trim().is_empty(),
-            "hostname stdout 应为非空主机名，实际：{stdout:?}"
+            stderr.contains("err_payload"),
+            "stderr 应含 'err_payload'，实际：{stderr:?}"
         );
-        assert_eq!(info.get("exitCode").and_then(|e| e.as_i64()), Some(0));
-        assert_eq!(info.get("timedOut").and_then(|t| t.as_bool()), Some(false));
     }
 
     /// background=true 应注册到 running_commands 并返 handle + pid。
     /// 然后我们用这个 handle 调 get_command_output 验证它能取到状态。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore]
     async fn background_registers_with_handle() {
         use crate::mcp::tools::get_command_output;
         let (state, dir) = make_state_with_config(|c| {
@@ -647,8 +756,8 @@ mod tests {
             "注册表应含 handle={handle}"
         );
 
-        // 给 200ms 让 cmd 把 stdout 写到 PTY，再读。
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // 给足时间让 cmd 把 stdout 写到管道并被读取线程捕获，再读。
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
 
         let out = get_command_output::handle(
             get_command_output::GetCommandOutputArgs {
