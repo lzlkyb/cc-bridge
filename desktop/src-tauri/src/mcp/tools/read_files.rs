@@ -113,7 +113,7 @@ async fn read_single_file(
         let selected: Vec<&str> = lines
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i + 1 >= from && *i + 1 <= actual_end)
+            .filter(|(i, _)| (*i).saturating_add(1) >= from && (*i).saturating_add(1) <= actual_end)
             .map(|(_, l)| *l)
             .collect();
 

@@ -1,4 +1,3 @@
-use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -437,7 +436,8 @@ pub async fn list_running_commands(
     Ok(result)
 }
 
-/// 本机面板的「终止」按钮：taskkill 整树，逻辑与 MCP 的 stop_command 工具一致。
+/// 本机面板的「终止」按钮：移除注册表条目后 drop 其中的 Job Object（kill-on-job-close）
+/// 整树终止，不再需要 taskkill，逻辑与 MCP 的 stop_command 工具一致。
 #[tauri::command]
 pub async fn stop_running_command(
     state: State<'_, Arc<AppState>>,
@@ -447,12 +447,7 @@ pub async fn stop_running_command(
         .running_commands
         .remove(&handle)
         .ok_or_else(|| format!("未知的 handle: {handle}"))?;
-    let pid = entry.1.pid;
-    std::process::Command::new("taskkill")
-        .args(["/T", "/F", "/PID", &pid.to_string()])
-        .creation_flags(0x0800_0200) // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP，避免 Ctrl+C 信号串到其他命令
-        .output()
-        .map_err(|e| format!("终止失败: {e}"))?;
+    drop(entry);
     Ok(())
 }
 

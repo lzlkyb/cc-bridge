@@ -45,7 +45,7 @@ pub fn read_recent_entries(data_dir: &Path, limit: usize) -> Result<Vec<AuditEnt
 
     let lines: Vec<String> = std::io::BufReader::new(file)
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .collect();
 
     let entries: Vec<AuditEntry> = lines
@@ -105,7 +105,7 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<(), S
 
     let kept: Vec<String> = std::io::BufReader::new(file)
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .filter(|line| {
             // Keep lines whose timestamp is newer than cutoff. Unparseable lines are kept.
             match serde_json::from_str::<AuditEntry>(line) {

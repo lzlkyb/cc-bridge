@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::backup;
+use crate::diff_utils;
 use crate::security;
 use crate::state::AppState;
 
@@ -29,8 +30,8 @@ pub async fn handle(args: WriteFilesArgs, state: &Arc<AppState>) -> Result<Value
     let mut results = Vec::new();
 
     for f in &args.files {
-        match write_single(&f, &config, state).await {
-            Ok(()) => results.push(json!({ "path": f.path, "ok": true })),
+        match write_single(f, &config, state).await {
+            Ok(diff) => results.push(json!({ "path": f.path, "ok": true, "diff": diff })),
             Err(e) => results.push(json!({ "path": f.path, "ok": false, "error": e })),
         }
     }
@@ -44,7 +45,7 @@ async fn write_single(
     f: &WriteFileEntry,
     config: &crate::config::BridgeConfig,
     state: &Arc<AppState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let resolved = security::path::resolve_safe_path(
         &f.path,
         &config.allowed_roots,
@@ -52,9 +53,17 @@ async fn write_single(
     )?;
     security::extension::assert_extension_allowed(&resolved, &config.allowed_extensions)?;
 
+    // 仅对非 base64（纯文本）写入尝试生成 diff：二进制内容（图片等）文本 diff 无意义。
+    // 旧内容读取失败（新建文件，或者原文件不是合法 UTF-8）时按空内容处理，
+    // 不报错、不影响写入本身，只是 diff 会把新内容全部标为新增行。
+    let old_content_for_diff = if f.encoding != "base64" {
+        tokio::fs::read_to_string(&resolved).await.ok()
+    } else {
+        None
+    };
+
     let data = if f.encoding == "base64" {
-        let decoded = base64_decode(&f.content)?;
-        decoded
+        base64_decode(&f.content)?
     } else {
         f.content.as_bytes().to_vec()
     };
@@ -95,14 +104,20 @@ async fn write_single(
         .await
         .map_err(|e| format!("Write failed: {e}"))?;
 
-    Ok(())
+    let diff = if f.encoding != "base64" {
+        diff_utils::unified_diff(&f.path, old_content_for_diff.as_deref().unwrap_or(""), &f.content)
+    } else {
+        String::new()
+    };
+
+    Ok(diff)
 }
 
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     // Simple base64 decoder
     let table: Vec<u8> =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".to_vec();
-    let input = input.trim().replace('\n', "").replace('\r', "");
+    let input = input.trim().replace(['\n', '\r'], "");
     let mut output = Vec::new();
     let mut buffer = 0u32;
     let mut bits = 0u32;

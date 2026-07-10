@@ -5,6 +5,24 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.2.13] - 2026-07-10
+
+### 变更
+- `run_command` / `stop_command` 用 Windows Job Object 替换 `taskkill /T /F`：把子进程挂入 Job Object，依赖 `kill-on-job-close` 在 `drop` 时让系统自动整树终止，孙进程不再漏杀；cc-bridge 自身异常退出时后台命令也不会变孤儿进程（D 组 P4-1）。
+- `search_files` 用 `ignore` + `globset` crate 替换手写目录遍历：自动跳过 `.gitignore` 列出的目录（`.git` / `node_modules` / `target` 等），完整 glob 语义（`**/*.toml` 这类跨目录匹配终于有效）；遍历丢进 `spawn_blocking`，避免占 tokio 工作线程（D 组 P4-2）。
+- `edit_files` / `write_files` 结果新增 `diff` 字段：用 `similar` crate 生成 unified diff（含 `@@` hunk 头），远程 LLM 调用方可读到新增 / 删除摘要核对改动是否符合预期；不传 `diff` 时旧字段仍兼容（D 组 P3-1）。
+- MCP HTTP 限流键改为 `ConnectInfo` 拿到的真实对端 IP，不再读 `x-forwarded-for` 客户端请求头（任何调用方可伪造 IP 绕过限流，是 v2.2.x 期间未实测出来的安全漏洞）。Fake header 测试已加。
+
+### 新增
+- `run_command` 候选修复：用 `portable-pty` 取代 `Stdio::piped() + DETACHED_PROCESS`，尝试验证真实子进程（非 cmd 内置命令）stdout 丢失的根因（已编过，但实际 stdout 是否真能拿到，**v2.2.13 发版时尚未手工实测验证**，标记为实验性；发现 stdout 仍空时回滚到 `DETACHED_PROCESS` 路径）。
+- `process_job` 模块 + `diff_utils` 模块分别封装 `Job Object` 创建挂载、unified diff 生成。
+
+### 修复
+- clippy 升级后报旧的 7 个 lint 全清：`audit.rs` × 2 处 `lines_filter_map_ok` (`filter_map(|l| l.ok())` → `map_while(Result::ok)`)、`read_files.rs` × 1 处 `int_plus_one` (`*i + 1` → `(*i).saturating_add(1)`)、`write_files.rs` × 3 处 `needless_borrow` / `let_and_return` / `collapsible_str_replace`、`run_command.rs` × 1 处 `too_many_arguments` 加 `#[allow(...)]` 备注保留。
+
+### 删除
+- `security/ratelimit.rs` 整个文件 + `security/mod.rs` 中 `pub mod ratelimit;` 声明：经 `dispatch_tool` 调用栈全量审计，模块未被任何路径引用，属 v1.0 时代遗留的死代码（D 组 D4）。
+
 ## [2.2.8] - 2026-07-10
 
 ### 新增

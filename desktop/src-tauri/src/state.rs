@@ -13,6 +13,9 @@ pub struct RunningCommand {
     pub pid: u32,
     pub command: String,
     pub cwd: String,
+    // Job Object（kill-on-job-close）：持有它就能在 stop_command 时通过 drop 整树终止，
+    // 不再需要 taskkill（见 process_job.rs）。
+    pub job: win32job::Job,
     pub stdout: Arc<Mutex<Vec<u8>>>,
     pub stderr: Arc<Mutex<Vec<u8>>>,
     pub stdout_truncated: Arc<AtomicBool>,

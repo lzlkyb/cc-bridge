@@ -1,4 +1,3 @@
-use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -11,9 +10,13 @@ pub struct StopCommandArgs {
     pub handle: String,
 }
 
-/// 终止一个后台命令的整个进程树（taskkill /T），并从注册表中移除。
+/// 终止一个后台命令的整个进程树，并从注册表中移除。
 /// 故意不受 shell_enabled/readonly_mode 限制——即使事后关闭了命令执行开关，
 /// 仍应能终止一个已在跑的失控后台进程。
+///
+/// 整树终止不再依赖 taskkill：`entry` 里的 `job`（Job Object，开了
+/// kill-on-job-close）在本函数结束时 drop，系统会自动终止曾挂靠在它下面的
+/// 所有进程（不管嵌套几层子孙），不再需要手动 taskkill。
 pub async fn handle(args: StopCommandArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let entry = state
         .running_commands
@@ -21,18 +24,66 @@ pub async fn handle(args: StopCommandArgs, state: &Arc<AppState>) -> Result<Valu
         .ok_or_else(|| format!("未知的 handle: {}", args.handle))?;
 
     let pid = entry.1.pid;
-    let output = std::process::Command::new("taskkill")
-        .args(["/T", "/F", "/PID", &pid.to_string()])
-        .creation_flags(0x0800_0200) // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP，避免 Ctrl+C 信号串到其他命令
-        .output();
-
-    let killed = matches!(output, Ok(o) if o.status.success());
+    drop(entry);
 
     Ok(json!({
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&json!({
             "handle": args.handle,
             "pid": pid,
-            "killed": killed,
+            "killed": true,
         })).unwrap() }]
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+    use crate::state::AppState;
+    use std::path::Path;
+    use std::sync::atomic::AtomicU64;
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// 用 std::env::temp_dir() 而非 tempfile crate——cc-bridge 没有 dev-deps 段。
+    /// 每个 case 走 unique_subdir 保证并发跑不出错。
+    fn unique_subdir(label: &str) -> std::path::PathBuf {
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "cc-bridge-mcp-test-{label}-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tempdir create");
+        dir
+    }
+
+    fn make_state() -> Arc<AppState> {
+        let dir = unique_subdir("stop_cmd");
+        let conn = db::init_database(Path::new(&dir)).expect("init db");
+        Arc::new(AppState::new(conn, Default::default(), dir))
+    }
+
+    #[tokio::test]
+    async fn unknown_handle_returns_error() {
+        // stop_command 一定不能对未知 handle 静默成功——若返回 ok 但注册表没动，
+        // 客户端会以为"已停止"再去 get_command_output 仍拿到旧输出，状态机错乱。
+        let state = make_state();
+        let result = handle(
+            StopCommandArgs {
+                handle: "cmd_does_not_exist".to_string(),
+            },
+            &state,
+        )
+        .await;
+        let err = result.expect_err("unknown handle must Err");
+        assert!(
+            err.contains("未知") || err.contains("cmd_does_not_exist"),
+            "错误信息应指明 unknown handle，实际：{err}"
+        );
+
+        // 注册表应保持空（不能因为 stop 失败把别的清掉）。
+        assert!(state.running_commands.is_empty());
+    }
 }

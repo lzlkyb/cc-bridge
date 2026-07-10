@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.2.8"
+version = "2.2.13"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -36,6 +36,10 @@ rand = "0.8"
 
 # Filesystem
 regex = "1"
+# 目录遍历(自动跳过 .gitignore 列出的目录) + 完整 glob 语义，替换手写 walker/通配符
+# （P4-2，仅限 search_files，见 功能优化清单.md）
+ignore = "0.4"
+globset = "0.4"
 
 # Encoding detection/transcoding (GBK/GB18030 等非 UTF-8 文件读写)
 encoding_rs = "0.8"
@@ -46,16 +50,27 @@ if-addrs = "0.13"
 # Concurrency
 dashmap = "6"
 
+# Unified diff 生成（edit_files/write_files 改文件后随结果回传增删摘要，P3-1，见 功能优化清单.md）
+similar = "3.1"
+
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 env_logger = "0.11"
+
+# ConPTY 候选方案：用伪终端取代 Stdio::piped()+DETACHED_PROCESS，尝试修复真实
+# 子进程（非 cmd 内置命令）输出丢失的问题（待手动编译重启验证，见
+# run_command.rs 头部注释）
+portable-pty = "0.9"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
 ] }
+# Job Object 封装：让 run_command 的整树终止走系统原语（kill-on-job-close），
+# 替换手写 taskkill /T（P4-1，见 功能优化清单.md）
+win32job = "2.0"
 # 参考 PastePanda 配置：薄 LTO + 体积优先 opt + strip 符号
 # 预期：19.5MB exe 砍到 14-15MB
 [profile.release]

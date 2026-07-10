@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -73,8 +74,23 @@ async fn health_handler() -> impl IntoResponse {
     Json(json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }))
 }
 
+/// 把 axum 拿到的 ConnectInfo 转成限流键字符串。
+///
+/// D1（2026-07-10 修复）前是从请求头 `x-forwarded-for` 取——那是客户端可
+/// 以任意填写的字符串，攻击者改 IP 头就能不断换"新 IP"绕过限流。修复后
+/// 必须用 TCP 层的对端地址，该地址由内核填入、攻击者无法控制。
+///
+/// `headers` 参数存在是提醒读者：客户端 header 不能参与 key。函数体直接丢弃。
+pub fn rate_limit_key(addr: SocketAddr, headers: &axum::http::HeaderMap) -> String {
+    // 显式忽略 `headers`——保留在签名里是为了让代码审计能一眼看清"x-forwarded-for
+    // 不应被读"，未来如果有人想动这里加 header 逻辑，函数签名就在面前。
+    let _ = headers;
+    addr.ip().to_string()
+}
+
 async fn auth_middleware(
     State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     req: Request<Body>,
     next: Next,
 ) -> Response<Body> {
@@ -104,13 +120,10 @@ async fn auth_middleware(
             .unwrap();
     }
 
-    // Rate limiting
-    let ip = req
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown")
-        .to_string();
+    // Rate limiting：限流键用 ConnectInfo 拿到的真实对端 IP，不能用
+    // `x-forwarded-for`——那是客户端自己发的请求头，任何调用方都能伪造，
+    // 换个假 IP 就能无限绕过限流（D1，2026-07-10 修复）。
+    let ip = rate_limit_key(addr, req.headers());
 
     let config = state.config.read().await;
     let max_req = config.rate_limit_max_requests;
@@ -585,4 +598,57 @@ fn get_tool_definitions() -> serde_json::Value {
             }
         }
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+
+    /// D1（2026-07-10 修复）的 regression guard：限流键必须用 TCP 对端 IP，
+    /// 不能再被客户端可控 header（x-forwarded-for、x-real-ip、forwarded 等）劫持。
+    ///
+    /// 这条测试不验证"算法超限就拒绝"——那个层级由 AppState.rate_limiter 的用法 +
+    /// 已有 misc tests 覆盖；这里专盯 D1 修复点：函数体不可读 header 内容。
+    #[test]
+    fn rate_limit_key_uses_tcp_peer_ip_not_headers() {
+        let addr: SocketAddr = "10.0.0.42:54321".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        // 攻击者把这两个 header 全塞上，看 key 会不会被劫持。
+        headers.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
+        headers.insert("x-real-ip", "5.6.7.8".parse().unwrap());
+
+        let key = rate_limit_key(addr, &headers);
+
+        assert_eq!(key, "10.0.0.42", "限流键必须是对端 IP，不能被 header 劫持");
+        assert!(
+            !key.contains("1.2.3.4") && !key.contains("5.6.7.8"),
+            "key 不可包含任何 header 值：got {key}"
+        );
+    }
+
+    #[test]
+    fn rate_limit_key_ipv6() {
+        // IPv6 connect 同样应当原样输出，不能丢冒号或折叠成 IPv4。
+        let addr: SocketAddr = "[::1]:7823".parse().unwrap();
+        let headers = HeaderMap::new();
+        assert_eq!(rate_limit_key(addr, &headers), "::1");
+    }
+
+    #[test]
+    fn rate_limit_key_distinct_addresses_distinct_keys() {
+        // 同 IP 不同端口、不同 IP 同端口 — 都应当产生不同 key，避免 limit 跨调用重叠。
+        let headers = HeaderMap::new();
+        let same_ip_diff_port_a: SocketAddr = "10.0.0.1:7823".parse().unwrap();
+        let same_ip_diff_port_b: SocketAddr = "10.0.0.1:7824".parse().unwrap();
+        let diff_ip: SocketAddr = "10.0.0.2:7823".parse().unwrap();
+        let k_same_a = rate_limit_key(same_ip_diff_port_a, &headers);
+        let k_same_b = rate_limit_key(same_ip_diff_port_b, &headers);
+        let k_diff = rate_limit_key(diff_ip, &headers);
+        // 关键安全断言：不同 IP 必须区分（这才是限流绕过的修复点）。
+        assert_ne!(k_same_a, k_diff, "不同 IP 必须产生不同限流键（防 IP 绕过）");
+        // 同 IP 不同端口：当前实现只取 IP 不取 port，本服务单端口 7823 部署足够，
+        // 此处不强制要求区分——但记下行为，免得日后无人记得。
+        let _ = k_same_b;
+    }
 }

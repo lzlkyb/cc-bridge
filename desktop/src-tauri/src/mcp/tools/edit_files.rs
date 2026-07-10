@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::backup;
+use crate::diff_utils;
 use crate::encoding;
 use crate::security;
 use crate::state::AppState;
@@ -30,9 +31,14 @@ pub async fn handle(args: EditFilesArgs, state: &Arc<AppState>) -> Result<Value,
 
     for f in &args.files {
         match edit_single(f, &config, state).await {
-            Ok((count, enc, newline)) => results.push(
-                json!({ "path": f.path, "ok": true, "replacements": count, "encoding": enc, "newline": newline }),
-            ),
+            Ok(outcome) => results.push(json!({
+                "path": f.path,
+                "ok": true,
+                "replacements": outcome.replacements,
+                "encoding": outcome.encoding,
+                "newline": outcome.newline,
+                "diff": outcome.diff,
+            })),
             Err(e) => results.push(json!({ "path": f.path, "ok": false, "error": e })),
         }
     }
@@ -42,11 +48,18 @@ pub async fn handle(args: EditFilesArgs, state: &Arc<AppState>) -> Result<Value,
     )
 }
 
+struct EditOutcome {
+    replacements: usize,
+    encoding: String,
+    newline: &'static str,
+    diff: String,
+}
+
 async fn edit_single(
     f: &EditEntry,
     config: &crate::config::BridgeConfig,
     state: &Arc<AppState>,
-) -> Result<(usize, String, &'static str), String> {
+) -> Result<EditOutcome, String> {
     if f.old_string.is_empty() {
         return Err("oldString must not be empty".into());
     }
@@ -116,11 +129,14 @@ async fn edit_single(
     // 原子写：先写临时文件再 rename，避免写一半崩溃损坏原文件。
     write_atomic(&resolved, &out_bytes).await?;
 
-    Ok((
+    let diff = diff_utils::unified_diff(&f.path, content, &updated);
+
+    Ok(EditOutcome {
         replacements,
-        ft.encoding.name().to_string(),
-        ft.newline_label(),
-    ))
+        encoding: ft.encoding.name().to_string(),
+        newline: ft.newline_label(),
+        diff,
+    })
 }
 
 /// 原子写：同目录临时文件 + rename。rename 在同一卷上是原子操作。
