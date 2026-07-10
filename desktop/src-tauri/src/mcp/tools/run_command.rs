@@ -1,17 +1,19 @@
 use std::io::Read;
-use std::os::windows::io::AsRawHandle;
-use std::os::windows::io::RawHandle;
-use std::os::windows::process::CommandExt;
-use std::process::{Child, Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
+
+use process_wrap::std::{CreationFlags, JobObject, StdChildWrapper, StdCommandWrap};
+use windows::Win32::System::Threading::{
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_CREATION_FLAGS,
+};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::process_job;
 use crate::security;
 use crate::state::{AppState, RunningCommand};
 
@@ -23,9 +25,6 @@ use crate::state::{AppState, RunningCommand};
 /// - `CREATE_NEW_PROCESS_GROUP (0x00000200)`：把 cmd 及其子孙放进独立进程组，隔离控制台
 ///   事件广播，缓解 MSVC 并发链接时偶发的 STATUS_CONTROL_C_EXIT 崩溃
 ///   （仅当远程用本工具自构建 cc-bridge 本体时可能触发，构建用户自己的项目无此问题）。
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
-
 fn default_timeout_ms() -> u64 {
     30_000
 }
@@ -143,26 +142,27 @@ fn spawn_shell(
     max_output_bytes: usize,
     state: &Arc<AppState>,
 ) -> Result<Value, String> {
-    let mut cmd = Command::new("cmd");
-    cmd.args(["/C", command]);
-    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.current_dir(resolved_cwd);
+    // 用 process-wrap 的 StdCommandWrap 组合包装：
+    // - CreationFlags 必须在 JobObject 之前 wrap——JobObject 的 pre_spawn 会读取 CreationFlags
+    //   并合并 CREATE_SUSPENDED；若交给 Command 直接 .creation_flags() 会被 JobObject 覆盖，
+    //   导致 CREATE_NO_WINDOW 丢失、弹出黑窗口。
+    // - JobObject（Windows）内部以 CREATE_SUSPENDED 启动子进程、挂入 Job 后再 resume，
+    //   消除了"先 spawn 再 assign"的孙进程漏杀竞态（比原手写 win32job 更正确）。
+    let mut cmd = StdCommandWrap::with_new("cmd", |c| {
+        c.args(["/C", command]);
+        c.stdout(Stdio::piped());
+        c.stderr(Stdio::piped());
+        c.current_dir(resolved_cwd);
+    });
+    cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
+        CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0,
+    )));
+    cmd.wrap(JobObject);
 
     let child = cmd.spawn().map_err(|e| format!("启动命令失败: {e}"))?;
 
-    // 把子进程挂入 Job Object（kill-on-job-close）：前台超时/结束时 drop job 顺带整树
-    // 终止（含 cmd 的孙进程 git/cargo 等）；stop_command 也靠 drop job 清理孤儿进程。
-    let raw_handle: RawHandle = child.as_raw_handle();
-    if raw_handle.is_null() {
-        return Err("命令刚启动就已退出，无法获取进程句柄".to_string());
-    }
-    let job = process_job::create_and_assign(raw_handle as isize)?;
-
     if background {
         spawn_background(
-            job,
             child,
             max_output_bytes,
             command.to_string(),
@@ -170,7 +170,7 @@ fn spawn_shell(
             state,
         )
     } else {
-        run_foreground(job, child, timeout_ms, max_output_bytes)
+        run_foreground(child, timeout_ms, max_output_bytes)
     }
 }
 
@@ -222,13 +222,12 @@ fn take_reader(
 }
 
 fn run_foreground(
-    job: win32job::Job,
-    mut child: Child,
+    mut child: Box<dyn StdChildWrapper>,
     timeout_ms: u64,
     max_output_bytes: usize,
 ) -> Result<Value, String> {
-    let (stdout_buf, stdout_trunc) = take_reader(child.stdout.take(), max_output_bytes);
-    let (stderr_buf, stderr_trunc) = take_reader(child.stderr.take(), max_output_bytes);
+    let (stdout_buf, stdout_trunc) = take_reader(child.stdout().take(), max_output_bytes);
+    let (stderr_buf, stderr_trunc) = take_reader(child.stderr().take(), max_output_bytes);
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let status = loop {
@@ -246,8 +245,9 @@ fn run_foreground(
 
     match status {
         Some(status) => {
-            // 命令正常结束后 drop job；给读取线程一点时间把管道剩余数据读完。
-            drop(job);
+            // 命令已正常结束，drop child 顺带关闭 Job 句柄（无害）。
+            // 给读取线程一点时间把管道剩余数据读完。
+            drop(child);
             std::thread::sleep(Duration::from_millis(50));
             let stdout = stdout_buf.blocking_lock().clone();
             let stderr = stderr_buf.blocking_lock().clone();
@@ -261,8 +261,9 @@ fn run_foreground(
             })))
         }
         None => {
-            let _ = child.kill();
-            drop(job);
+            // 超时：必须用 start_kill()（TerminateJobObject）杀整树，
+            // 不能只 kill() cmd 本体——否则 git/cargo 等孙进程会变孤儿进程。
+            let _ = child.start_kill();
             Ok(text_result(json!({
                 "stdout": "",
                 "stderr": "",
@@ -278,21 +279,25 @@ fn run_foreground(
 
 #[allow(clippy::too_many_arguments)]
 fn spawn_background(
-    job: win32job::Job,
-    mut child: Child,
+    mut child: Box<dyn StdChildWrapper>,
     max_output_bytes: usize,
     command: String,
     cwd: String,
     state: &Arc<AppState>,
 ) -> Result<Value, String> {
-    let (stdout_buf, stdout_trunc) = take_reader(child.stdout.take(), max_output_bytes);
-    let (stderr_buf, stderr_trunc) = take_reader(child.stderr.take(), max_output_bytes);
+    let (stdout_buf, stdout_trunc) = take_reader(child.stdout().take(), max_output_bytes);
+    let (stderr_buf, stderr_trunc) = take_reader(child.stderr().take(), max_output_bytes);
 
     let pid = child.id();
+    // 后台任务的 wait 线程与 stop_command 共享同一份 child（Arc<Mutex>）：
+    // wait 线程持有它调 wait() 更新 exit_code；stop_command 持有它调 start_kill() 杀整树。
+    let child = Arc::new(StdMutex::new(child));
+    let child_for_wait = child.clone();
     let exit_code: Arc<AsyncMutex<Option<i32>>> = Arc::new(AsyncMutex::new(None));
     let exit_code_clone = exit_code.clone();
     std::thread::spawn(move || {
-        if let Ok(status) = child.wait() {
+        let mut c = child_for_wait.lock().unwrap();
+        if let Ok(status) = c.wait() {
             *exit_code_clone.blocking_lock() = status.code();
         }
     });
@@ -304,7 +309,7 @@ fn spawn_background(
             pid,
             command,
             cwd,
-            job,
+            child,
             stdout: stdout_buf,
             stderr: stderr_buf,
             stdout_truncated: stdout_trunc,

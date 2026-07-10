@@ -14,9 +14,10 @@ pub struct StopCommandArgs {
 /// 故意不受 shell_enabled/readonly_mode 限制——即使事后关闭了命令执行开关，
 /// 仍应能终止一个已在跑的失控后台进程。
 ///
-/// 整树终止不再依赖 taskkill：`entry` 里的 `job`（Job Object，开了
-/// kill-on-job-close）在本函数结束时 drop，系统会自动终止曾挂靠在它下面的
-/// 所有进程（不管嵌套几层子孙），不再需要手动 taskkill。
+/// 整树终止不再依赖 taskkill，也不依赖 JobObject 的 kill-on-close（process-wrap 的 std
+/// JobObject 默认不 kill-on-close，drop 不会杀进程）：这里显式调用 child.start_kill()，
+/// 它底层走 TerminateJobObject，会终止曾挂靠在 Job 下的所有进程（不管嵌套几层子孙）。
+/// entry 在离开作用域时 drop，顺带关闭 Job 句柄（无害，因为进程已先被杀）。
 pub async fn handle(args: StopCommandArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let entry = state
         .running_commands
@@ -24,6 +25,8 @@ pub async fn handle(args: StopCommandArgs, state: &Arc<AppState>) -> Result<Valu
         .ok_or_else(|| format!("未知的 handle: {}", args.handle))?;
 
     let pid = entry.1.pid;
+    // 显式杀整树（含孙进程）。start_kill 走 TerminateJobObject，不依赖 drop。
+    let _ = entry.1.child.lock().unwrap().start_kill();
     drop(entry);
 
     Ok(json!({

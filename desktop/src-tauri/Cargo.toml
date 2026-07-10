@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.2.15"
+version = "2.2.16"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -59,13 +59,20 @@ log = "0.4"
 env_logger = "0.11"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = [
+# 与 process-wrap (8.0.2) 共用同一份 windows 0.56，避免重复编译导致体积膨胀；
+# process-wrap 的 job-object / creation-flags feature 会自动启用 windows 的
+# Win32_System_JobObjects / Win32_System_Threading 等子模块。
+windows = { version = "0.56", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
 ] }
-# Job Object 封装：让 run_command 的整树终止走系统原语（kill-on-job-close），
-# 替换手写 taskkill /T（P4-1，见 功能优化清单.md）
-win32job = "2.0"
+# 进程树治理（跨平台）：run_command 用其 JobObject wrapper 替换原手写 win32job
+# （KillOnJobClose）。stop 时显式 start_kill() 触发 TerminateJobObject 杀整树
+# （process-wrap 的 std JobObject 默认不 kill-on-close，drop 不会杀进程）。
+# 精确锁 =8.0.2：对齐 windows 0.56（避免拉入第二份 windows 0.61 绑定膨胀二进制）；
+# 必须开 tracing feature——process-wrap 的 job_object 模块无条件调用 debug! 宏，
+# 而该宏仅在 tracing feature 下 import，关掉 default-features 会导致编译失败。
+process-wrap = { version = "=8.0.2", default-features = false, features = ["std", "job-object", "creation-flags", "tracing"] }
 # 参考 PastePanda 配置：薄 LTO + 体积优先 opt + strip 符号
 # 预期：19.5MB exe 砍到 14-15MB
 [profile.release]

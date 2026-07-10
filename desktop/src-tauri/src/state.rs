@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Instant;
 
 use dashmap::DashMap;
@@ -13,9 +14,12 @@ pub struct RunningCommand {
     pub pid: u32,
     pub command: String,
     pub cwd: String,
-    // Job Object（kill-on-job-close）：持有它就能在 stop_command 时通过 drop 整树终止，
-    // 不再需要 taskkill（见 process_job.rs）。
-    pub job: win32job::Job,
+    // 进程树句柄（process-wrap 的 wrapped child，Windows 上内部为 JobObject）。
+    // 后台任务的 wait 线程与 stop_command 共享同一份：wait 线程持有它调 wait() 更新
+    // exit_code；stop_command 持有它调 start_kill() 触发 TerminateJobObject 杀整树。
+    // 与前版手写 win32job Job（KillOnJobClose）不同，process-wrap 的 std JobObject 默认
+    // 不 kill-on-close，drop 不会杀进程，必须显式 start_kill()（见 stop_command.rs）。
+    pub child: Arc<StdMutex<Box<dyn process_wrap::std::StdChildWrapper>>>,
     pub stdout: Arc<Mutex<Vec<u8>>>,
     pub stderr: Arc<Mutex<Vec<u8>>>,
     pub stdout_truncated: Arc<AtomicBool>,

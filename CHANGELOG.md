@@ -5,6 +5,19 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.2.16] - 2026-07-10
+
+### 变更
+- **进程树治理迁移到 `process-wrap`**（D 组 P4-1 收尾）：`run_command` / `stop_command` 的整树终止不再依赖手写的 `win32job` Job Object，改用社区维护、跨平台、CI 覆盖 Windows/Linux/macOS 的 [`process-wrap`](https://github.com/watchexec/process-wrap)（`command-group` 官方后继）的 `JobObject` 包装器。删除自写的 `process_job.rs`（111 行 Win32 FFI）及其 `#[ignore]` 自伤测试。
+- **关键正确性改进**：`process-wrap` 的 `JobObject` 内部先以 `CREATE_SUSPENDED` 启动子进程、挂入 Job 后再 resume，**消除了原“先 spawn 再 assign”存在的孙进程漏杀竞态窗口**（孙进程可能在挂载前已 fork 出来而漏杀）。
+- 终止语义变更：`process-wrap` 的 std `JobObject` 默认**不** kill-on-close（drop 只关句柄不杀进程），因此 `stop_command` 与超时分支改为显式调用 `child.start_kill()`（底层 `TerminateJobObject`）杀整树；`RunningCommand.job: win32job::Job` 改为 `child: Arc<Mutex<Box<dyn StdChildWrapper>>>`，由后台 wait 线程与 `stop_command` 共享。
+
+### 依赖
+- 移除 `win32job = "2.0"`；新增 `process-wrap = "=8.0.2"`（精确锁定）。选 8.0.2 而非最新 8.2.x：①对齐 `windows 0.56`，避免拉入第二份 `windows 0.61` 绑定膨胀二进制；②必须开 `tracing` feature——`process-wrap` 的 `job_object` 模块无条件调用 `debug!` 宏，而该宏仅在 `tracing` feature 下 import，关掉 `default-features` 会导致编译失败。
+
+### 测试
+- 迁移后 `cargo test --lib` 41 passed / 0 failed / **0 ignored**（原 `process_job` 两个自伤 `#[ignore]` 测试随文件删除消失，测试套件不再有静默自毁风险）；`cargo clippy --lib` 零警告。`run_command` 关键回归 `foreground_real_exe_returns_stdout`、`background_registers_with_handle` 仍全绿。
+
 ## [2.2.15] - 2026-07-10
 
 ### 新增
