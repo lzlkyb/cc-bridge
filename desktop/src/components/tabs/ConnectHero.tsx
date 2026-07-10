@@ -3,7 +3,7 @@ import { invoke } from "../../lib/tauri";
 import { formatUptime } from "../../lib/utils";
 import type { StatusResponse } from "../../lib/types";
 import { Button } from "../ui/button";
-import { Icon } from "../ui/icon";
+import { Icon, type IconName } from "../ui/icon";
 
 /**
  * 连接页顶部 Hero 卡：运行状态 + 地址 + 三指标玻璃小卡 + 大号启停按钮。
@@ -86,15 +86,9 @@ export function ConnectHero({
         )}
       </div>
 
-      <div className="relative z-[1] grid grid-cols-4 gap-2.5">
+      <div className="relative z-[1] grid grid-cols-3 gap-2.5">
         <HeroMetric icon="activity" label="总请求数" value={status?.stats.totalRequests ?? 0} popClass={popRequests ? "hero-metric-pop" : ""} />
         <HeroMetric icon="alert" label="错误数" value={status?.stats.totalErrors ?? 0} popClass={popErrors ? "hero-metric-pop" : ""} />
-        <HeroMetric
-          icon="plug"
-          label="在线客户端"
-          value={status && running ? (status.stats.connectedClients ?? 0) : "--"}
-          popClass=""
-        />
         <HeroMetric
           icon="clock"
           label="运行时间"
@@ -156,7 +150,7 @@ function HeroMetric({
   value,
   popClass,
 }: {
-  icon: "activity" | "alert" | "clock";
+  icon: IconName;
   label: string;
   value: number | string;
   popClass?: string;
