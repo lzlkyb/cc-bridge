@@ -64,9 +64,7 @@ pub async fn handle(args: ReadFilesArgs, state: &Arc<AppState>) -> Result<Value,
         }
     }
 
-    Ok(
-        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&results).unwrap() }] }),
-    )
+    Ok(json!({ "content": [{ "type": "text", "text": serde_json::to_string(&results).unwrap() }] }))
 }
 
 async fn read_single_file(

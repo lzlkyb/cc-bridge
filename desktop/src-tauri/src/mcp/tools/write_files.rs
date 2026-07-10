@@ -105,7 +105,11 @@ async fn write_single(
         .map_err(|e| format!("Write failed: {e}"))?;
 
     let diff = if f.encoding != "base64" {
-        diff_utils::unified_diff(&f.path, old_content_for_diff.as_deref().unwrap_or(""), &f.content)
+        diff_utils::unified_diff(
+            &f.path,
+            old_content_for_diff.as_deref().unwrap_or(""),
+            &f.content,
+        )
     } else {
         String::new()
     };

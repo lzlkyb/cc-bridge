@@ -314,7 +314,10 @@ pub async fn restart_mcp_server(state: State<'_, Arc<AppState>>) -> Result<(), S
 
 /// 停止 MCP 服务：abort 监听任务并释放端口。UI 显示「已停止」。
 #[tauri::command]
-pub async fn stop_mcp_server(state: State<'_, Arc<AppState>>, app: AppHandle) -> Result<(), String> {
+pub async fn stop_mcp_server(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+) -> Result<(), String> {
     let mut handle = state.mcp_server_handle.lock().await;
     if let Some(h) = handle.take() {
         h.abort();
@@ -330,7 +333,10 @@ pub async fn stop_mcp_server(state: State<'_, Arc<AppState>>, app: AppHandle) ->
 
 /// 启动（或重启）MCP 服务。若已在运行先 abort 旧任务，避免端口占用。
 #[tauri::command]
-pub async fn start_mcp_server(state: State<'_, Arc<AppState>>, app: AppHandle) -> Result<(), String> {
+pub async fn start_mcp_server(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+) -> Result<(), String> {
     let mut handle = state.mcp_server_handle.lock().await;
     if let Some(h) = handle.take() {
         h.abort();

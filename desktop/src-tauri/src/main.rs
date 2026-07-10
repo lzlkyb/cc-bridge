@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::Manager;
-use tauri::Listener;
 use tauri::Emitter;
+use tauri::Listener;
+use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
 use cc_bridge_desktop::*;
@@ -17,7 +17,11 @@ use cc_bridge_desktop::*;
 fn build_tray_icon(running: bool) -> tauri::image::Image<'static> {
     const S: u32 = 32;
     let mut rgba = vec![0u8; (S * S * 4) as usize];
-    let (cr, cg, cb) = if running { (34, 197, 134) } else { (148, 163, 184) }; // emerald-500 / slate-400
+    let (cr, cg, cb) = if running {
+        (34, 197, 134)
+    } else {
+        (148, 163, 184)
+    }; // emerald-500 / slate-400
     let cx = S as f32 / 2.0;
     let cy = S as f32 / 2.0;
     let r = 9.0;
@@ -46,8 +50,10 @@ fn build_tray_icon(running: bool) -> tauri::image::Image<'static> {
 }
 
 fn tray_icon(running: bool) -> tauri::image::Image<'static> {
-    static ICONS: std::sync::OnceLock<(tauri::image::Image<'static>, tauri::image::Image<'static>)> =
-        std::sync::OnceLock::new();
+    static ICONS: std::sync::OnceLock<(
+        tauri::image::Image<'static>,
+        tauri::image::Image<'static>,
+    )> = std::sync::OnceLock::new();
     let icons = ICONS.get_or_init(|| (build_tray_icon(true), build_tray_icon(false)));
     (if running { &icons.0 } else { &icons.1 }).clone()
 }
@@ -122,7 +128,7 @@ fn main() {
                         let preference: i32 = 2; // DWMWCP_ROUNDSMALL = 2
                         unsafe {
                             if let Err(e) = DwmSetWindowAttribute(
-                                HWND(hwnd.0 as *mut _),
+                                HWND(hwnd.0 as isize),
                                 DWMWA_WINDOW_CORNER_PREFERENCE,
                                 &preference as *const i32 as *const _,
                                 std::mem::size_of::<i32>() as u32,
@@ -136,13 +142,19 @@ fn main() {
 
             // System tray
             let show_item = MenuItem::with_id(app, "show", "打开面板", true, None::<&str>)?;
-            let copy_cmd_item = MenuItem::with_id(app, "copy_cmd", "复制连接命令", true, None::<&str>)?;
+            let copy_cmd_item =
+                MenuItem::with_id(app, "copy_cmd", "复制连接命令", true, None::<&str>)?;
             let restart_item = MenuItem::with_id(app, "restart", "重启服务", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &copy_cmd_item, &restart_item, &quit_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show_item, &copy_cmd_item, &restart_item, &quit_item],
+            )?;
 
             let tray_state = app_state.clone();
-            let tray_initial_running = tray_state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
+            let tray_initial_running = tray_state
+                .mcp_running
+                .load(std::sync::atomic::Ordering::Relaxed);
             TrayIconBuilder::with_id("main-tray")
                 .tooltip("cc-bridge")
                 .menu(&menu)
@@ -201,7 +213,9 @@ fn main() {
 
             // 启动后即时按真实状态刷新一次托盘图标（上面初始读取可能早于 mcp 置位）
             if let Some(tray) = app.handle().tray_by_id("main-tray") {
-                let running = app_state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
+                let running = app_state
+                    .mcp_running
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 let _ = tray.set_icon(Some(tray_icon(running)));
             }
 
@@ -241,7 +255,9 @@ fn main() {
                             Some(ip) => !network::get_lan_ips().contains(ip),
                             None => false,
                         };
-                        let running = watch_state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
+                        let running = watch_state
+                            .mcp_running
+                            .load(std::sync::atomic::Ordering::Relaxed);
                         if let Some(tray) = handle.tray_by_id("main-tray") {
                             // tooltip：地址变化优先提示，否则显示运行状态
                             let tip = if changed {

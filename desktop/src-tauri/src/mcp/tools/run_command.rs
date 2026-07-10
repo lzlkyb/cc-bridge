@@ -67,6 +67,10 @@ pub struct RunCommandArgs {
     pub timeout_ms: u64,
     #[serde(default = "default_max_output_bytes", rename = "maxOutputBytes")]
     pub max_output_bytes: usize,
+    /// 人类可读描述，用于权限 UX / 审计日志（对标 native Claude Code 的 description 字段）。
+    /// 不参与执行逻辑，仅作记录；缺省为 None。
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 const MAX_CONCURRENT_BACKGROUND: usize = 5;
@@ -115,6 +119,10 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     let cwd_display = args.cwd;
     let background = args.background;
     let timeout_ms = args.timeout_ms;
+    let description = args.description;
+    if let Some(desc) = &description {
+        log::info!(target: "mcp::run_command", "run_command(description={}): {}", desc, command);
+    }
     let state = state.clone();
 
     // spawn + wait 是同步阻塞 API，丢进 spawn_blocking 避免占用 tokio 工作线程。
@@ -126,6 +134,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             background,
             timeout_ms,
             max_output_bytes,
+            description,
             &state,
         )
     })
@@ -133,6 +142,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     .map_err(|e| format!("run_command 任务 panic: {e}"))?
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_shell(
     command: &str,
     resolved_cwd: &std::path::Path,
@@ -140,6 +150,7 @@ fn spawn_shell(
     background: bool,
     timeout_ms: u64,
     max_output_bytes: usize,
+    description: Option<String>,
     state: &Arc<AppState>,
 ) -> Result<Value, String> {
     // 用 process-wrap 的 StdCommandWrap 组合包装：
@@ -167,6 +178,7 @@ fn spawn_shell(
             max_output_bytes,
             command.to_string(),
             cwd_display,
+            description,
             state,
         )
     } else {
@@ -283,6 +295,7 @@ fn spawn_background(
     max_output_bytes: usize,
     command: String,
     cwd: String,
+    description: Option<String>,
     state: &Arc<AppState>,
 ) -> Result<Value, String> {
     let (stdout_buf, stdout_trunc) = take_reader(child.stdout().take(), max_output_bytes);
@@ -309,6 +322,7 @@ fn spawn_background(
             pid,
             command,
             cwd,
+            description,
             child,
             stdout: stdout_buf,
             stderr: stderr_buf,
@@ -383,6 +397,7 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                description: None,
             },
             &state,
         )
@@ -412,6 +427,7 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                description: None,
             },
             &state,
         )
@@ -439,6 +455,7 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                description: None,
             },
             &state,
         )
@@ -481,6 +498,7 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                description: None,
             },
             &state,
         )
@@ -510,6 +528,7 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                description: None,
             },
             &state,
         )
@@ -540,6 +559,7 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                description: None,
             },
             &state,
         )
@@ -580,6 +600,7 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                description: None,
             },
             &state,
         )
@@ -618,6 +639,7 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                description: None,
             },
             &state,
         )
@@ -652,6 +674,7 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 10,
+                description: None,
             },
             &state,
         )
@@ -693,6 +716,7 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                description: None,
             },
             &state,
         )
@@ -731,6 +755,7 @@ mod tests {
                 background: true,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                description: None,
             },
             &state,
         )
@@ -786,6 +811,42 @@ mod tests {
         assert!(
             stdout.contains("background_test_payload"),
             "get_command_output 的 stdout 应含 payload，实际：{stdout:?}"
+        );
+    }
+
+    /// description 字段是纯透传：带 description 的 foreground 命令应正常执行，不被该字段影响。
+    /// 回归护栏——确保新增的可选字段不会干扰既有执行路径（不进入白名单/危险命令判定）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn description_field_does_not_affect_execution() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let v = handle(
+            RunCommandArgs {
+                command: "echo hello_with_desc".into(),
+                cwd: dir.to_string_lossy().into_owned(),
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: Some("a deploy step".into()),
+            },
+            &state,
+        )
+        .await
+        .expect("foreground with description should succeed");
+        let text = v
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_str(text).unwrap();
+        let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(
+            stdout.contains("hello_with_desc"),
+            "stdout 应含内容，实际：{stdout:?}"
         );
     }
 }

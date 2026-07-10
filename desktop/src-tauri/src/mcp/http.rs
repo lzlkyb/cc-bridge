@@ -8,17 +8,22 @@ use axum::middleware::Next;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::Json;
+use axum::Router;
 use serde_json::json;
 
 use crate::audit;
 use crate::mcp::tools;
 use crate::security::auth;
 use crate::state::AppState;
+use tower_http::compression::CompressionLayer;
 
-pub async fn spawn_mcp_server(state: Arc<AppState>) {
+/// 构造 MCP HTTP router（含 auth / body-limit / gzip 压缩三层）。
+///
+/// 抽成独立函数供 `spawn_mcp_server` 与集成测试共用——集成测试可把它绑到
+/// 随机端口（`TcpListener::bind("127.0.0.1:0")`）做真实 over-the-wire 验证
+/// （gzip 响应头、batch 合并、审计留痕等），无需走 Tauri GUI。
+pub async fn build_router(state: Arc<AppState>) -> Router {
     let config = state.config.read().await;
-    let host = config.host.clone();
-    let port = config.port;
     // HTTP body limit follows max file size (plus headroom for base64/JSON overhead)
     // so writing a file up to max_file_size_bytes is never rejected at the HTTP layer.
     let body_limit = (config.max_file_size_bytes as usize)
@@ -26,10 +31,7 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
         .max(1024 * 1024);
     drop(config);
 
-    // 保留一份用于翻转运行状态标志（router 会 move 掉 state）。
-    let running_state = state.clone();
-
-    let app = axum::Router::new()
+    axum::Router::new()
         .route("/health", get(health_handler))
         .route("/mcp", post(mcp_handler))
         .layer(axum::middleware::from_fn_with_state(
@@ -37,7 +39,20 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
             auth_middleware,
         ))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(body_limit))
-        .with_state(state);
+        .layer(CompressionLayer::new().gzip(true)) // 响应体 gzip 压缩（客户端 Accept-Encoding 支持时才生效，否则透明跳过）
+        .with_state(state)
+}
+
+pub async fn spawn_mcp_server(state: Arc<AppState>) {
+    let config = state.config.read().await;
+    let host = config.host.clone();
+    let port = config.port;
+    drop(config);
+
+    // 保留一份用于翻转运行状态标志（router 会 move 掉 state）。
+    let running_state = state.clone();
+
+    let app = build_router(state.clone()).await;
 
     let addr = format!("{}:{}", host, port);
     let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -187,7 +202,8 @@ async fn mcp_handler(
                     "serverInfo": {
                         "name": "cc-bridge",
                         "version": env!("CARGO_PKG_VERSION")
-                    }
+                    },
+                    "instructions": "你已连接到本地 Windows 主机上的 cc-bridge MCP 服务。当用户需要在本地 Windows 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。完整工具清单由 tools/list 提供,主要包括:\n- run_command / get_command_output / stop_command:在本地执行命令、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。"
                 }
             }))
         }
@@ -280,13 +296,13 @@ async fn mcp_handler(
     }
 }
 
-async fn dispatch_tool(
+pub async fn dispatch_tool(
     name: &str,
     args: serde_json::Value,
     state: &Arc<AppState>,
 ) -> Result<serde_json::Value, String> {
     // 只读模式：拒绝一切写操作（默认关闭）。读取/列目录/搜索/分析不受影响。
-    const WRITE_TOOLS: [&str; 8] = [
+    const WRITE_TOOLS: [&str; 9] = [
         "write_files",
         "delete_files",
         "move_files",
@@ -295,6 +311,7 @@ async fn dispatch_tool(
         "create_directory",
         "remove_directory",
         "run_command",
+        "notebook_edit",
     ];
     if WRITE_TOOLS.contains(&name) {
         let readonly = state.config.read().await.readonly_mode;
@@ -309,6 +326,11 @@ async fn dispatch_tool(
             let parsed: tools::list_allowed_roots::ListAllowedRootsArgs =
                 serde_json::from_value(args).map_err(|e| e.to_string())?;
             tools::list_allowed_roots::handle(parsed, state).await
+        }
+        "batch" => {
+            let parsed: tools::batch::BatchArgs =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            tools::batch::handle(parsed, state).await
         }
         "list_directory" => {
             let parsed: tools::list_directory::ListDirectoryArgs =
@@ -379,6 +401,11 @@ async fn dispatch_tool(
             let parsed: tools::stop_command::StopCommandArgs =
                 serde_json::from_value(args).map_err(|e| e.to_string())?;
             tools::stop_command::handle(parsed, state).await
+        }
+        "notebook_edit" => {
+            let parsed: tools::notebook_edit::NotebookEditArgs =
+                serde_json::from_value(args).map_err(|e| e.to_string())?;
+            tools::notebook_edit::handle(parsed, state).await
         }
         _ => Err(format!("Unknown tool: {}", name)),
     }
@@ -548,6 +575,44 @@ fn get_tool_definitions() -> serde_json::Value {
             }
         },
         {
+            "name": "batch",
+            "description": "Run multiple cc-bridge tool calls in ONE round trip. Prefer this whenever you need several file operations together (e.g. read many files then edit several, or search then read matches) — it collapses N network round trips into 1, the single biggest latency win over a remote link. Each operation reuses the same security checks as calling the tool directly (read-only mode, path whitelist). Nested batch is not allowed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "operations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool": { "type": "string", "description": "Any cc-bridge tool name except 'batch'" },
+                                "arguments": { "type": "object", "description": "That tool's arguments object" }
+                            },
+                            "required": ["tool", "arguments"]
+                        }
+                    },
+                    "stopOnError": { "type": "boolean", "default": true, "description": "Stop at first failing op (still returns completed results). false = run all, report each." }
+                },
+                "required": ["operations"]
+            }
+        },
+        {
+            "name": "notebook_edit",
+            "description": "Edit a Jupyter notebook (.ipynb): replace/insert/delete a cell by index. Writes the modified notebook back, preserving other metadata.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "cell": { "type": "integer", "description": "0-based cell index" },
+                    "newSource": { "type": "string", "description": "New cell source (replace/insert)" },
+                    "mode": { "type": "string", "default": "replace", "description": "replace | insert | delete" },
+                    "cellType": { "type": "string", "default": "code", "description": "Insert mode only: code | markdown | raw" }
+                },
+                "required": ["path", "cell"]
+            }
+        },
+        {
             "name": "analyze_file",
             "description": "Analyze a file: encoding, language, line/function/class counts (heuristic)",
             "inputSchema": {
@@ -565,6 +630,7 @@ fn get_tool_definitions() -> serde_json::Value {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string" },
+                    "description": { "type": "string", "description": "Human-readable description for permission UX / audit logging" },
                     "cwd": { "type": "string", "description": "Absolute path, must be within an allowed root" },
                     "background": { "type": "boolean", "default": false },
                     "timeoutMs": { "type": "integer", "default": 30000, "description": "Foreground mode only" },

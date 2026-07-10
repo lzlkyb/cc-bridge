@@ -18,6 +18,29 @@
 ### 测试
 - 迁移后 `cargo test --lib` 41 passed / 0 failed / **0 ignored**（原 `process_job` 两个自伤 `#[ignore]` 测试随文件删除消失，测试套件不再有静默自毁风险）；`cargo clippy --lib` 零警告。`run_command` 关键回归 `foreground_real_exe_returns_stdout`、`background_registers_with_handle` 仍全绿。
 
+## [2.2.17] - 2026-07-10
+
+### 新增
+- **`notebook_edit` MCP 工具**（litecode 工具差距 P2）：支持对 `.ipynb` 笔记本按 `cell` 索引执行 `replace` / `insert` / `delete` 三种模式编辑单个 cell 的 `source`，写入用 `serde_json::to_string_pretty` 保持格式。`WRITE_TOOLS` 数组由 8 增至 9（只读模式会拒绝该写类工具）；dispatch 大 match 与 HTTP 工具清单同步登记（required: `["path","cell"]`）。
+
+### 变更
+- `run_command` 新增可选 `description` 字段（litecode 差距 P0）：人类可读的执行说明，仅用于权限 UX / 审计日志与运行表记录——`state.rs` 的 `RunningCommand` 新增 `description: Option<String>`（注释明确「仅作审计/区分记录，不参与执行」）。命中时以 `log::info!(target: "mcp::run_command", "run_command(description=...): <command>")` 记审计。
+
+### 说明
+- **search_files 富 Grep 选项**（litecode 差距 P2）：新增 `case_insensitive` / `before_context` / `after_context` / `context` / `line_numbers` / `head_limit` / `output_mode`(`content`|`files_with_matches`|`count`) / `multiline` 八个可选参数。底层改用 `regex::RegexBuilder`（case_insensitive / multi_line）构建正则，`ignore::Walk` 同步阻塞迭代器丢入 `spawn_blocking`；content 分支改为先按 `head_limit` 约束收集命中、再按 `output_mode` 分支输出（Count 返计数、FilesWithMatches 仅返路径、Content 可配 before/after 上下文与行号开关）。新增 `GrepOptions` / `OutputMode` 枚举承载参数。
+- 本轮未做 litecode 差距的 **P1 cwd 持久化**（Bash cwd 持久化会改变 cc-bridge 刻意无状态的安全取舍），按之前评估留作独立 RFC，不并入 v2.2.17。
+
+### 测试
+- search_files 新增 4 单测（大小写不敏感内容匹配、files_with_matches 省略行细节、count 模式返回计数、before/after 上下文可配）；run_command 新增 1 单测（带 `description` 仍正常执行）；notebook_edit 5 单测（replace / insert / delete / 越界索引拒绝 / missing cells 拒绝）。测试套件 41 → **52 passed / 0 failed / 0 ignored**（`cargo clippy --lib -- -D warnings` 严格模式亦零警告）；关键回归 `foreground_real_exe_returns_stdout` / `background_registers_with_handle` 仍全绿。
+
+### 修正（补齐过程中一并清理，非用户可见行为变更）
+- 工作区里 P6-1 并行搜索遗留的 clippy lint：`match_result_ok` × 2（`search_files.rs` 的 `File::open(path).ok()` → `Ok(file)`）、`needless_return`（Content 分支末尾冗余 `return`）已修。
+- `run_command::spawn_shell` 因新增 `description` 参数升到 8 个参数触发 `too_many_arguments`，按 `run_command.rs:291` 既有约定加 `#[allow(clippy::too_many_arguments)]`。
+- `search_files::force_excludes_build_dirs_without_gitignore` 测试断言用正斜杠（`src/main.rs` / `target/` / `node_modules/`）比对 Windows 反斜杠路径导致失败，已归一化 `replace('\\', "/")` 修复（功能本身正确：target/node_modules 确实被强制排除）。
+
+### 会话引导（根治远程新会话需口述才调 MCP）
+- `http.rs` 的 `initialize` 响应新增 `instructions` 字段（MCP 协议标准字段，client 会自动注入每次会话系统提示）。内容为中文引导：逐条列出 `run_command` / `write_files` / `read_files` / `search_files` / `notebook_edit` / `list_allowed_*` 的用途与安全约束，并明确「遇到本地文件 / 进程 / 命令相关任务时，直接调用对应工具，无需用户额外提示」。远程 `claude code` 连上 cc-bridge 即自动获得使用引导，无需每次新开对话口述。
+
 ## [2.2.15] - 2026-07-10
 
 ### 新增

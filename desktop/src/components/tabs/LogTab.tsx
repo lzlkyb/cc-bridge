@@ -9,6 +9,7 @@ import { Badge } from "../ui/badge";
 import { Icon } from "../ui/icon";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 import { useToast } from "../ui/toast";
+import { PerfCharts } from "./PerfCharts";
 
 /** 参数原始 JSON → 表格行内简短摘要。parse 失败退回原文截断。纯函数（规则 11 只在本文件复用，故留本地）。 */
 function summarizeParams(raw: string): string {
@@ -40,6 +41,27 @@ function prettyParams(raw: string): string {
   }
 }
 
+/** 折叠条上的实时摘要：自动加载后的关键信号，无需展开即可判断瓶颈。纯函数。 */
+function perfSummaryLine(entries: AuditEntry[]): string {
+  const valid = entries.filter(
+    (e): e is AuditEntry & { durationMs: number } => typeof e.durationMs === "number"
+  );
+  if (valid.length === 0) return "暂无耗时数据";
+  const ds = valid.map((e) => e.durationMs).sort((a, b) => a - b);
+  const p95 = ds[Math.min(ds.length - 1, Math.floor((ds.length - 1) * 0.95))];
+  const total = ds.reduce((s, d) => s + d, 0);
+  const byTool = new Map<string, number>();
+  for (const e of valid) byTool.set(e.tool, (byTool.get(e.tool) ?? 0) + e.durationMs);
+  let topTool = "";
+  let topSum = -1;
+  for (const [t, s] of byTool) if (s > topSum) {
+    topSum = s;
+    topTool = t;
+  }
+  const errRate = (entries.filter((e) => !e.success).length / entries.length) * 100;
+  return `P95 ${Math.round(p95)}ms · ${toolLabel(topTool)} 占 ${((topSum / total) * 100).toFixed(1)}% · 错误率 ${errRate.toFixed(1)}%`;
+}
+
 export function LogTab() {
   const { data: entries, refetch } = useQuery<AuditEntry[]>({
     queryKey: ["auditLog"],
@@ -52,6 +74,7 @@ export function LogTab() {
   const [search, setSearch] = useState("");
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [showPerf, setShowPerf] = useState(false);
 
   const handleClear = async () => {
     await invoke("clear_audit_log");
@@ -198,6 +221,32 @@ export function LogTab() {
         </div>
       </CardHeader>
       <CardContent>
+        {entries && entries.some((e) => typeof e.durationMs === "number") && (
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setShowPerf((v) => !v)}
+              className="flex w-full items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-left transition-colors hover:bg-muted/50"
+            >
+              <span className="flex items-center gap-2 text-sm font-medium">
+                <Icon name="activity" size={15} className="text-primary" />
+                性能分析
+                <span className="text-xs font-normal text-muted-foreground">{perfSummaryLine(entries)}</span>
+              </span>
+              <Icon
+                name="arrowUp"
+                size={16}
+                className="shrink-0 text-muted-foreground transition-transform"
+                style={{ transform: showPerf ? "none" : "rotate(180deg)" }}
+              />
+            </button>
+            {showPerf && (
+              <div className="mt-2">
+                <PerfCharts entries={entries} />
+              </div>
+            )}
+          </div>
+        )}
         {filtered.length === 0 ? (
           <div className="relative flex h-52 items-center justify-center">
             {/* 大号半透明背景图标 */}

@@ -61,6 +61,12 @@ export interface AuditEntry {
   error?: string;
   sourceIp?: string;
   durationMs?: number;
+  // ── O1 结构化耗时拆解（落地后由后端写入，前端向前兼容读取）──
+  serverMs?: number; // 服务端总墙钟（请求收到→响应发出）
+  ioMs?: number; // 实际文件读写 / 备份耗时
+  auditMs?: number; // 审计写盘耗时
+  netMs?: number; // 网络往返估算（O1-b 探针，可选）
+  overheadMs?: number; // 请求解析 + 响应序列化 + 线缆传输
 }
 
 export interface RunningCommandInfo {

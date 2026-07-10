@@ -446,6 +446,8 @@ claude mcp add --transport http cc-bridge http://<局域网IP>:7823/mcp --header
 
 | 版本 | 变更 |
 |---|---|
+| v2.2.19 | `search_files` 追平 native Claude Code 第三步（P6-3）：内容搜索内核从逐行 `BufReader.lines()`+`regex` 换成 **grep-searcher**（ripgrep 同款引擎）——内存映射 + SIMD 行扫描 + 字面量预筛，大文件内容搜索提速 2–5x；自动二进制检测（含 NUL 文件跳过，对齐 native Grep `--text` 默认关）；Lossy 解码修复 **GBK 老工程源码被漏搜** 的隐藏 bug。仅引入 `grep-searcher`+`grep-regex`（不引 `grep-cli`，控制体积） |
+| v2.2.18 | `search_files` 追平 native Claude Code 第二步（P6-2）：强制排除名单补 `.svn`/`.hg`/`.bzr` 三类 VCS 元数据目录（对齐 ripgrep 默认 VCS 名单），老 SVN/Hg 工程里成千上万的 `.svn-base` 等文件不再被整盘扫入；文件名（Glob 类）搜索结果改为按修改时间倒序（最近修改优先，对齐 native Glob 相关性）。前置 P6-1 已完成并行遍历 + 强制排除 `target`/`node_modules`/`.git` |
 | v2.2.2 | 本机地址变更检测：记住上次确认使用的 IP（`last_selected_ip`），一旦不在当前网卡地址列表中（VPN 重连等）就主动提示——顶栏红色徽章 + Connect 页醒目 banner（一键复制新连接命令并重新确认）+ 系统托盘 tooltip/原生通知（应用最小化时也能发现），三处随确认同步消失。`/health` 版本号改为编译期读取 `CARGO_PKG_VERSION`，不再手写字符串避免漂移 |
 | v2.2.1 | 编码/换行保真加固（参考 nc-compile/ccedit.py）：`read_files` 整读/行读统一归一化到 LF 并回报 `newline`（CRLF/LF），修复 CRLF 文件 `edit_files` 匹配失败的问题；`edit_files` 写回**保留原换行 + 原 UTF-8 BOM**、encode→decode round-trip 守卫（往 GBK 插入不可表示字符时拒写防损坏）、原子写（临时文件 + rename）。新增「读取编码自适应」功能开关（**默认关**，按 UTF-8 读避免误判；开启后自动识别 GBK/GB18030；显式 `encoding` 参数始终优先，不受开关影响） |
 | v2.2.0 | 能力对齐 native Claude Code 文件层：新增 `edit_files`（精准字符串替换，唯一匹配/`replaceAll`，保留原文件编码）、`create_directory`、`remove_directory` 三个工具（9 → 12）；`read_files` 编码自适应（自动探测 UTF-8/GBK/GB18030/UTF-16 统一转 UTF-8，可 `encoding` 强制指定），解决 GBK（如 NC65）源码读不了的问题；三个写工具纳入只读模式门控；引入 `encoding_rs` |

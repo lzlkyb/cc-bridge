@@ -14,6 +14,8 @@ pub struct RunningCommand {
     pub pid: u32,
     pub command: String,
     pub cwd: String,
+    /// 人类可读描述（来自 run_command 的 description 参数），仅作审计/区分记录，不参与执行。
+    pub description: Option<String>,
     // 进程树句柄（process-wrap 的 wrapped child，Windows 上内部为 JobObject）。
     // 后台任务的 wait 线程与 stop_command 共享同一份：wait 线程持有它调 wait() 更新
     // exit_code；stop_command 持有它调 start_kill() 触发 TerminateJobObject 杀整树。

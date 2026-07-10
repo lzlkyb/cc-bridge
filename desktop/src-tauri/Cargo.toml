@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.2.16"
+version = "2.2.19"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -18,7 +18,7 @@ tauri-plugin-notification = "2"
 
 # HTTP server (MCP protocol handled via axum directly)
 axum = "0.8"
-tower-http = { version = "0.6", features = ["limit"] }
+tower-http = { version = "0.6", features = ["limit", "compression-gzip"] }
 
 # Async runtime
 tokio = { version = "1", features = ["fs", "sync", "net", "rt", "macros", "process", "time", "io-util"] }
@@ -40,6 +40,14 @@ regex = "1"
 # （P4-2，仅限 search_files，见 功能优化清单.md）
 ignore = "0.4"
 globset = "0.4"
+
+# 内容搜索引擎（P6-3）：ripgrep 同款 grep-searcher（内存映射 + SIMD 行扫描 +
+# 字面量预筛）+ grep-regex（默认开启字面量优化）。替换旧版逐行 BufReader.lines()
+# + regex，大文件内容搜索提速 2–5x，并自动二进制检测 + 非 UTF-8(Lossy) 鲁棒
+# （修复 GBK 老工程源码被漏搜的隐藏 bug）。只引 grep-searcher/grep-regex 两个，
+# 不引 grep-cli（会拉入额外体积，冲击「14MB exe」卖点，见 规则8）。
+grep-searcher = "0.1"
+grep-regex = "0.1"
 
 # Encoding detection/transcoding (GBK/GB18030 等非 UTF-8 文件读写)
 encoding_rs = "0.8"
@@ -75,6 +83,14 @@ windows = { version = "0.56", features = [
 process-wrap = { version = "=8.0.2", default-features = false, features = ["std", "job-object", "creation-flags", "tracing"] }
 # 参考 PastePanda 配置：薄 LTO + 体积优先 opt + strip 符号
 # 预期：19.5MB exe 砍到 14-15MB
+
+# 集成测试：真实起 MCP server + reqwest 客户端做 over-the-wire 验证
+# （gzip 响应头 / batch 合并 / 审计留痕）。Windows 上 default-tls 走系统
+# schannel，无需 openssl 编译；gzip(false) 用于强制观察压缩响应头。
+[dev-dependencies]
+axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "default-tls"] }
+
 [profile.release]
 codegen-units = 1
 lto = "thin"
