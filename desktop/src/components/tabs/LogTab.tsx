@@ -153,12 +153,17 @@ export function LogTab() {
       </CardHeader>
       <CardContent>
         {filtered.length === 0 ? (
-          <div className="flex h-40 items-center justify-center">
-            <p className="text-sm text-muted-foreground">
-              {entries?.length === 0
-                ? "暂无审计记录，远程 Claude Code 连接后操作记录将显示在这里。"
-                : "没有匹配的记录，试试调整筛选条件。"}
-            </p>
+          <div className="relative flex h-52 items-center justify-center">
+            {/* 大号半透明背景图标 */}
+            <Icon name="log" size={96} className="absolute opacity-[0.06] pointer-events-none" />
+            <div className="relative z-[1] flex flex-col items-center gap-2 text-center">
+              <Icon name={entries?.length === 0 ? "file" : "search"} size={28} className="text-muted-foreground/40" />
+              <p className="text-sm text-muted-foreground max-w-[320px]">
+                {entries?.length === 0
+                  ? "暂无审计记录，远程 Claude Code 连接后操作记录将显示在这里。"
+                  : "没有匹配的记录，试试调整筛选条件。"}
+              </p>
+            </div>
           </div>
         ) : (
           <Table className="table-fixed">
@@ -176,7 +181,11 @@ export function LogTab() {
               {filtered.map((entry, i) => (
                 <Fragment key={i}>
                   <TableRow
-                    className={`cursor-pointer ${entry.success ? "" : "bg-destructive/5 log-err"}`}
+                    className={`cursor-pointer ${
+                      entry.success
+                        ? i % 2 === 0 ? "bg-muted/20" : ""
+                        : "bg-destructive/5 log-err"
+                    }`}
                     onClick={() => setExpandedRow(expandedRow === i ? null : i)}
                   >
                     <TableCell className="text-xs text-muted-foreground whitespace-nowrap">

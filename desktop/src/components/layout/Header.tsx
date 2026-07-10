@@ -4,6 +4,7 @@ import type { StatusResponse } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { UpdateBadge } from "./UpdateBadge";
+import { TitleBarControls } from "./TitleBarControls";
 
 export function Header({
   status,
@@ -34,9 +35,12 @@ export function Header({
   };
 
   return (
-    <header className="app-header flex shrink-0 items-center justify-between border-b px-5 py-3.5">
-      <div className="flex items-center gap-2.5">
-        <h1 className="text-base font-semibold tracking-tight">cc-bridge</h1>
+    <header data-tauri-drag-region className="app-header flex shrink-0 items-center justify-between border-b px-5 py-3.5">
+      <div data-tauri-drag-region className="flex items-center gap-2.5">
+        <div className="flex shrink-0 items-center justify-center rounded-lg bg-primary/10 p-1" style={{ boxShadow: "var(--logo-icon-bg-shadow)" }}>
+          <img src="/icon.png" alt="cc-bridge" width={28} height={28} style={{ width: 28, height: 28, filter: "var(--logo-img-shadow)" }} draggable={false} />
+        </div>
+        <h1 className="text-base font-semibold tracking-tight">CC Bridge</h1>
         {status && (
           <span className="version-badge rounded-md px-2 py-0.5 text-[11px] font-bold tracking-wide">
             v{status.version}
@@ -79,21 +83,22 @@ export function Header({
             命令执行已开启
           </span>
         )}
-        <UpdateBadge />
+        <UpdateBadge currentVersion={status?.version} />
       </div>
 
-      <div className="flex items-center gap-2">
+      <div data-tauri-drag-region="false" className="flex items-center gap-2">
         {/* 启停按钮 */}
         {status && (
           <Button
             variant={running ? "outline" : "default"}
             size="sm"
-            disabled={busy}
+            isLoading={busy}
+            loadingText={running ? "停止中…" : "启动中…"}
             onClick={toggleServer}
             className="gap-1.5"
           >
-            <Icon name={running ? "pause" : "play"} size={14} />
-            {busy ? "..." : running ? "停止服务" : "启动服务"}
+            {!busy && <Icon name={running ? "pause" : "play"} size={14} />}
+            {!busy && (running ? "停止服务" : "启动服务")}
           </Button>
         )}
         <Button
@@ -104,6 +109,9 @@ export function Header({
         >
           <Icon name={dark ? "sun" : "moon"} size={18} />
         </Button>
+
+        {/* 窗口控件：最小化、最大化、关闭 — 最右侧 */}
+        <TitleBarControls />
       </div>
     </header>
   );

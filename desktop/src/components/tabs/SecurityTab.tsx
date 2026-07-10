@@ -50,7 +50,7 @@ export function SecurityTab({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* 白名单关闭 / 只读开启时的常驻警示条 */}
       {status && !status.whitelistEnabled && (
         <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-xs text-destructive">
@@ -81,15 +81,21 @@ export function SecurityTab({
 
       <RunningCommandsCard />
 
+      <div className="divider-grad" />
+
       <Card>
         <CardHeader>
           <CardTitle icon={<Icon name="folder" />}>白名单根目录</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           {status?.allowedRoots.length === 0 && (
-            <p className="text-sm text-muted-foreground py-2">
-              添加工作目录后，远程 Claude Code 才能访问本地文件。
-            </p>
+            <div className="relative flex flex-col items-center gap-2 py-6">
+              <Icon name="folder" size={72} className="absolute opacity-[0.06] pointer-events-none" />
+              <Icon name="folder" size={24} className="relative z-[1] text-muted-foreground/40" />
+              <p className="relative z-[1] text-sm text-muted-foreground text-center max-w-[280px]">
+                添加工作目录后，远程 Claude Code 才能访问本地文件。
+              </p>
+            </div>
           )}
           {status?.allowedRoots.map((root, i) => (
             <div key={i} className="flex items-center gap-2">
@@ -119,6 +125,8 @@ export function SecurityTab({
           </div>
         </CardContent>
       </Card>
+
+      <div className="divider-grad" />
 
       <Card>
         <CardHeader>
@@ -227,8 +235,8 @@ function RunningCommandsCard() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {commands.map((cmd) => (
-              <TableRow key={cmd.handle}>
+            {commands.map((cmd, i) => (
+              <TableRow key={cmd.handle} className={i % 2 === 0 ? "bg-muted/20" : ""}>
                 <TableCell className="font-mono text-xs">{cmd.pid}</TableCell>
                 <TableCell className="truncate font-mono text-xs" title={cmd.command}>
                   {cmd.command}

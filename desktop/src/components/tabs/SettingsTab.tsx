@@ -6,6 +6,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Icon } from "../ui/icon";
+import { useToast } from "../ui/toast";
 import { SettingsToggles } from "./SettingsToggles";
 import { UpdateGroup } from "./UpdateGroup";
 
@@ -17,11 +18,15 @@ export function SettingsTab({
   onSaved: () => void;
 }) {
   return (
-    <div className="space-y-4">
-      <NetworkGroup status={status} onSaved={onSaved} />
-      <SettingsToggles status={status} onSaved={onSaved} />
-      <AppGroup />
+    <div className="space-y-3">
       <UpdateGroup status={status} />
+      <div className="divider-grad" />
+      <NetworkGroup status={status} onSaved={onSaved} />
+      <div className="divider-grad" />
+      <SettingsToggles status={status} onSaved={onSaved} />
+      <div className="divider-grad" />
+      <AppGroup />
+      <div className="divider-grad" />
       <AuditGroup status={status} onSaved={onSaved} />
     </div>
   );
@@ -36,35 +41,30 @@ function NetworkGroup({
   status?: StatusResponse;
   onSaved: () => void;
 }) {
-  const [host, setHost] = useState("0.0.0.0");
   const [port, setPort] = useState(7823);
   const [saving, setSaving] = useState(false);
   const [restarted, setRestarted] = useState(false);
-  const [lanIps, setLanIps] = useState<string[]>([]);
+  const { toast } = useToast();
 
   useEffect(() => {
-    if (status) {
-      setHost(status.host);
-      setPort(status.port);
-    }
+    if (status) setPort(status.port);
   }, [status]);
 
-  useEffect(() => {
-    invoke<string[]>("get_lan_ips").then(setLanIps).catch(() => {});
-  }, []);
-
-  const dirty = status ? host !== status.host || port !== status.port : false;
+  const dirty = status ? port !== status.port : false;
 
   const handleSaveAndRestart = async () => {
     setSaving(true);
     try {
       const result = await invoke<ConfigSaveResult>("save_config", {
-        patch: { host, port },
+        patch: { port },
       });
       if (result.restartRequired) {
         await invoke("restart_mcp_server");
         setRestarted(true);
+        toast("端口已更新，服务已重启", "success");
         setTimeout(() => setRestarted(false), 3000);
+      } else {
+        toast("端口已保存", "success");
       }
       onSaved();
     } finally {
@@ -78,15 +78,14 @@ function NetworkGroup({
         <CardTitle icon={<Icon name="server" />}>网络</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label>监听地址</Label>
-            <Input value={host} onChange={(e) => setHost(e.target.value)} />
-          </div>
-          <div className="space-y-2">
-            <Label>端口</Label>
-            <Input type="number" value={port} onChange={(e) => setPort(Number(e.target.value))} />
-          </div>
+        <div className="space-y-2">
+          <Label>端口</Label>
+          <Input
+            type="number"
+            value={port}
+            onChange={(e) => setPort(Number(e.target.value))}
+            className="max-w-[200px]"
+          />
         </div>
         <div className="flex items-center gap-3">
           <Button onClick={handleSaveAndRestart} disabled={!dirty || saving}>
@@ -96,22 +95,8 @@ function NetworkGroup({
         </div>
         {dirty && (
           <p className="text-xs text-muted-foreground">
-            修改地址或端口后将自动重启 MCP 服务，无需额外操作。
+            端口冲突时可在此修改，保存后自动重启服务。
           </p>
-        )}
-
-        {lanIps.length > 0 && (
-          <div className="space-y-1.5 pt-2 border-t">
-            <Label>局域网 IP</Label>
-            {lanIps.map((ip, i) => (
-              <code key={i} className="block w-fit rounded-md bg-muted px-3 py-1.5 text-xs font-mono">
-                {ip}
-              </code>
-            ))}
-            <p className="text-xs text-muted-foreground">
-              远程服务器可通过以上 IP + 端口 {port} 连接本机。
-            </p>
-          </div>
         )}
       </CardContent>
     </Card>

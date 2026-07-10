@@ -58,10 +58,34 @@
   /* 视觉增强专用（非 Tailwind 语义色）*/
   --hero-gradient: linear-gradient(135deg, #6366F1 0%, #4F46E5 52%, #0EA5E9 100%);
   --hero-shadow: rgba(79, 70, 229, 0.32);
+  --hero-text: #fff;
   --version-gradient: linear-gradient(135deg, #6366F1, #4F46E5);
   --version-shadow: rgba(79, 70, 229, 0.32);
   --header-start: #ffffff;
   --header-end: #f4f6f9;
+
+  /* 浅色下 Hero 停止态：中性灰渐变 + 黑色阴影 */
+  --hero-stopped-bg: linear-gradient(135deg, #64748b 0%, #475569 60%, #334155 100%);
+  --hero-stopped-shadow: 0 12px 32px rgba(0,0,0,0.28);
+
+  /* 浅色下卡片阴影 */
+  --card-lift-shadow: 0 8px 24px rgba(0,0,0,0.10);
+  --card-primary-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 1px color-mix(in srgb, hsl(var(--primary)) 12%, transparent);
+
+  /* 浅色下 Header Logo 阴影 */
+  --logo-icon-bg-shadow: 0 2px 6px rgba(79,70,229,0.2);
+  --logo-img-shadow: drop-shadow(0 1px 2px rgba(0,0,0,0.15));
+
+  /* 浅色下徽章渐变（默认色） */
+  --badge-update-bg: linear-gradient(135deg, #3B82F6, #2563EB);
+  --badge-update-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
+  --badge-update-shadow-hover: 0 4px 14px rgba(37, 99, 235, 0.45);
+  --badge-ready-bg: linear-gradient(135deg, #22C55E, #16A34A);
+  --badge-ready-shadow: 0 2px 8px rgba(22, 163, 74, 0.35);
+  --badge-ready-shadow-hover: 0 4px 14px rgba(22, 163, 74, 0.45);
+  --badge-error-bg: linear-gradient(135deg, #EF4444, #DC2626);
+  --badge-error-shadow: 0 2px 8px rgba(220, 38, 38, 0.35);
+  --badge-error-shadow-hover: 0 4px 14px rgba(220, 38, 38, 0.45);
 }
 
 .dark {
@@ -92,16 +116,62 @@
 
   --hero-gradient: linear-gradient(135deg, #6366F1 0%, #4F46E5 50%, #0EA5E9 100%);
   --hero-shadow: rgba(0, 0, 0, 0.5);
+  --hero-text: #fff;
   --version-gradient: linear-gradient(135deg, #818CF8, #6366F1);
   --version-shadow: rgba(129, 140, 248, 0.35);
   --header-start: #18181b;
   --header-end: #09090b;
+
+  /* 暗色下 Hero 停止态：更暗的中性渐变 + 白色半透明阴影 */
+  --hero-stopped-bg: linear-gradient(135deg, #3a3e44 0%, #2a2d32 60%, #1a1c20 100%);
+  --hero-stopped-shadow: 0 12px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06);
+
+  /* 暗色下卡片阴影：黑色变白色半透明 */
+  --card-lift-shadow: 0 8px 24px rgba(255,255,255,0.04);
+  --card-primary-shadow: 0 1px 3px rgba(255,255,255,0.03), 0 0 0 1px color-mix(in srgb, hsl(var(--primary)) 12%, transparent);
+
+  /* 暗色下 Header Logo 阴影 */
+  --logo-icon-bg-shadow: 0 2px 6px rgba(129,140,248,0.25);
+  --logo-img-shadow: drop-shadow(0 1px 2px rgba(255,255,255,0.1));
+
+  /* 暗色下徽章渐变：提高亮度增强对比 */
+  --badge-update-bg: linear-gradient(135deg, #60A5FA, #3B82F6);
+  --badge-update-shadow: 0 2px 8px rgba(96, 165, 250, 0.35);
+  --badge-update-shadow-hover: 0 4px 14px rgba(96, 165, 250, 0.5);
+  --badge-ready-bg: linear-gradient(135deg, #4ADE80, #22C55E);
+  --badge-ready-shadow: 0 2px 8px rgba(74, 222, 128, 0.35);
+  --badge-ready-shadow-hover: 0 4px 14px rgba(74, 222, 128, 0.5);
+  --badge-error-bg: linear-gradient(135deg, #F87171, #EF4444);
+  --badge-error-shadow: 0 2px 8px rgba(248, 113, 113, 0.35);
+  --badge-error-shadow-hover: 0 4px 14px rgba(248, 113, 113, 0.5);
 }
 
 body {
   background-color: hsl(var(--background));
   color: hsl(var(--foreground));
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* 自定义滚动条：细条 + 圆角 + 半透明，仅对可滚动区域生效 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.25);
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.45);
+}
+/* Firefox 滚动条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.25) transparent;
 }
 
 * {
@@ -133,11 +203,22 @@ body {
 /* Header 渐变底 */
 .app-header {
   background: linear-gradient(180deg, var(--header-start), var(--header-end));
+  user-select: none;
+}
+/* 只对交互元素恢复文本选择，拖拽由 Tauri 的 data-tauri-drag-region 属性自动管理 */
+.app-header button,
+.app-header a,
+.app-header input,
+.app-header select,
+.app-header textarea,
+.app-header [data-tauri-drag-region="false"],
+.app-header [data-tauri-drag-region="false"] * {
+  user-select: auto;
 }
 
 /* 版本徽章（渐变 pill）*/
 .version-badge {
-  color: #fff;
+  color: var(--hero-text);
   background: var(--version-gradient);
   box-shadow: 0 2px 6px var(--version-shadow);
 }
@@ -154,12 +235,15 @@ body {
 
 /* 卡片 hover 抬升（F）*/
 .card-lift { transition: box-shadow .25s ease, transform .25s ease, border-color .25s ease; }
-.card-lift:hover { box-shadow: 0 8px 24px rgba(0,0,0,0.10); transform: translateY(-1px); }
+.card-lift:hover { box-shadow: var(--card-lift-shadow); transform: translateY(-1px); }
+
+/* 所有卡片统一 hover 微交互（仅阴影加深，不抬升，避免与 card-lift 冲突）*/
+.card-lift:not(:hover) + .card-lift { /* no-op placeholder */ }
 
 /* 主卡分级（B）*/
 .card-primary {
   border-color: color-mix(in srgb, hsl(var(--primary)) 35%, hsl(var(--border)));
-  box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 1px color-mix(in srgb, hsl(var(--primary)) 12%, transparent);
+  box-shadow: var(--card-primary-shadow);
   background:
     linear-gradient(180deg, color-mix(in srgb, hsl(var(--primary)) 5%, hsl(var(--card))), hsl(var(--card)) 60px);
 }
@@ -167,13 +251,15 @@ body {
 /* A. Hero 渐变头卡 */
 .hero {
   position: relative; overflow: hidden;
-  border-radius: 14px; padding: 20px 22px; color: #fff;
+  border-radius: 14px; padding: 20px 22px; color: var(--hero-text);
   background: var(--hero-gradient);
   box-shadow: 0 12px 32px var(--hero-shadow);
+  transition: background 0.5s ease, box-shadow 0.5s ease;
 }
 .hero::before, .hero::after {
   content: ""; position: absolute; border-radius: 50%;
   background: rgba(255,255,255,0.14); filter: blur(2px); pointer-events: none;
+  transition: background 0.5s ease;
 }
 .hero::before { width: 180px; height: 180px; top: -70px; right: -40px; }
 .hero::after  { width: 120px; height: 120px; bottom: -60px; left: 30%; background: rgba(255,255,255,0.08); }
@@ -181,15 +267,65 @@ body {
 .hero-metric {
   background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.22);
   border-radius: 11px; padding: 12px 13px; backdrop-filter: blur(4px);
+  transition: background 0.4s ease, border-color 0.4s ease;
 }
 .hero-addr {
   background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.25);
   backdrop-filter: blur(4px);
+  transition: background 0.4s ease, border-color 0.4s ease;
 }
 /* 停止态：渐变改用中性灰，弱化视觉存在感 */
 .hero-stopped {
-  background: linear-gradient(135deg, #64748b 0%, #475569 60%, #334155 100%);
-  box-shadow: 0 12px 32px rgba(0,0,0,0.28);
+  background: var(--hero-stopped-bg);
+  box-shadow: var(--hero-stopped-shadow);
+}
+
+/* ── 方案 A：Hero 运行时动态效果 ───────────────── */
+
+/* A1. 整卡呼吸 — box-shadow 缓慢明暗交替（3s 周期）*/
+@keyframes hero-breathe {
+  0%, 100% { box-shadow: 0 12px 32px var(--hero-shadow); }
+  50%      { box-shadow: 0 16px 44px var(--hero-shadow), 0 0 0 1px rgba(255,255,255,0.12); }
+}
+.hero--live {
+  animation: hero-breathe 3s ease-in-out infinite;
+}
+
+/* A2. 指标数字弹跳 — 值变化时 scale 1→1.08→1 */
+@keyframes metric-pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+.hero-metric-pop {
+  animation: metric-pop 0.3s ease;
+}
+
+/* A3. 地址胶囊流光扫过 */
+@keyframes addr-shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+.hero-addr--live {
+  background-image: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(255,255,255,0.35) 45%,
+    rgba(255,255,255,0.45) 50%,
+    rgba(255,255,255,0.35) 55%,
+    transparent 60%
+  );
+  background-size: 200% 100%;
+  animation: addr-shimmer 2.5s ease-in-out infinite;
+}
+
+/* A4. 运行时间秒数颜色闪动（数码钟感）*/
+@keyframes uptime-flash {
+  0%, 100% { color: var(--hero-text); }
+  50%      { color: #A5F3FC; }
+}
+.hero-uptime--live {
+  animation: uptime-flash 1s ease-in-out infinite;
 }
 
 /* F. 统计/hero 渐变彩条、渐变分隔线 */
@@ -200,3 +336,75 @@ body {
 
 /* 失败日志行左侧红描边（C）*/
 .log-err { box-shadow: inset 3px 0 0 hsl(var(--destructive)); }
+
+/* ===================================================================
+   更新徽章系列（Header 上的状态融合 pill）
+   =================================================================== */
+
+/* 基础 pill 样式 */
+.header-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--hero-text);
+  border: none;
+  white-space: nowrap;
+  transition: opacity 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  animation: badge-in 0.22s ease;
+}
+@keyframes badge-in {
+  from { opacity: 0; transform: scale(0.9); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* checking：版本号渐变 + 旋转 spinner */
+.header-badge-checking {
+  background: var(--version-gradient);
+  box-shadow: 0 2px 6px var(--version-shadow);
+}
+
+/* available：蓝色渐变按钮，可点击 */
+.header-badge-update {
+  background: var(--badge-update-bg);
+  box-shadow: var(--badge-update-shadow);
+}
+.header-badge-update:hover {
+  box-shadow: var(--badge-update-shadow-hover);
+  transform: translateY(-1px);
+}
+
+/* downloading：版本号渐变 + spinner */
+.header-badge-downloading {
+  background: var(--version-gradient);
+  box-shadow: 0 2px 6px var(--version-shadow);
+}
+
+/* ready：绿色渐变按钮，可点击 */
+.header-badge-ready {
+  background: var(--badge-ready-bg);
+  box-shadow: var(--badge-ready-shadow);
+}
+.header-badge-ready:hover {
+  box-shadow: var(--badge-ready-shadow-hover);
+  transform: translateY(-1px);
+}
+
+/* uptodate：版本号渐变 + 勾 */
+.header-badge-uptodate {
+  background: var(--version-gradient);
+  box-shadow: 0 2px 6px var(--version-shadow);
+}
+
+/* error：红色渐变，可点击 */
+.header-badge-error {
+  background: var(--badge-error-bg);
+  box-shadow: var(--badge-error-shadow);
+}
+.header-badge-error:hover {
+  box-shadow: var(--badge-error-shadow-hover);
+  transform: translateY(-1px);
+}

@@ -1,28 +1,129 @@
-import { useUpdate } from "../../contexts/UpdateContext";
+import { useEffect, useRef } from "react";
+import { useUpdate, friendlyError } from "../../contexts/UpdateContext";
+import { useToast } from "../ui/toast";
 import { Icon } from "../ui/icon";
 
 /**
- * Header 上的更新状态徽章：仅在有新版本 / 待重启两种状态时显示，
- * 其余状态（idle / checking / downloading / error）由 UpdateGroup 完整面板处理。
+ * Header 上的更新状态徽章。
+ *
+ * 7 种状态全覆盖：
+ * - idle        → null（不显示，版本号由 Header 的 version-badge 展示）
+ * - checking    → 版本号 pill + 旋转 spinner
+ * - available   → 蓝色按钮 "更新 vX.Y.Z"，点击下载
+ * - downloading → pill + spinner + "下载中"
+ * - ready       → 绿色按钮 "待重启"，点击重启
+ * - uptodate    → pill + "已是最新"（4 秒后自动消失回到 null）
+ * - error       → 红色 pill + 版本号，可点击重试
  */
-export function UpdateBadge() {
-  const { status, update } = useUpdate();
+export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
+  const { status, update, error, checkForUpdate, downloadAndInstall, restart } = useUpdate();
+  const { toast } = useToast();
+  const prevStatusRef = useRef(status);
 
-  if (status === "available") {
+  // ─── 状态变化时触发 toast 通知 ────────────
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    prevStatusRef.current = status;
+
+    // 仅当状态真正变化时才触发（跳过初始化 idle → idle）
+    if (prev === status) return;
+
+    if (status === "available") {
+      toast(`发现新版本 v${update?.version ?? ""}`, "info");
+    } else if (status === "uptodate") {
+      toast("已是最新版本", "success");
+    } else if (status === "ready") {
+      toast("更新已下载完成，点击重启以应用", "success");
+    } else if (status === "error") {
+      const fe = error ? friendlyError(error) : null;
+      toast(fe?.friendly ?? "更新检查失败，请重试", "error");
+    }
+  }, [status]);
+
+  const handleClick = async () => {
+    if (status === "available") {
+      await downloadAndInstall();
+    } else if (status === "ready") {
+      await restart();
+    } else if (status === "error") {
+      await checkForUpdate();
+    }
+  };
+
+  const ver = update?.version ?? "";
+
+  // ─── idle：不显示 ─────────────────────────
+  if (status === "idle") return null;
+
+  // ─── checking ─────────────────────────────
+  if (status === "checking") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
-        <Icon name="arrowUp" size={11} />
-        有新版本{update ? ` v${update.version}` : ""}
+      <span className="header-badge header-badge-checking" title="正在检查更新…">
+        <Icon name="spinner" size={10} className="animate-spin" />
+        <span>{currentVersion ? `v${currentVersion}` : ""}</span>
       </span>
     );
   }
 
+  // ─── available ────────────────────────────
+  if (status === "available") {
+    return (
+      <button
+        className="header-badge header-badge-update cursor-pointer"
+        title={`发现新版本 v${ver}，点击下载更新`}
+        onClick={handleClick}
+      >
+        <Icon name="arrowUp" size={10} />
+        <span>更新 v{ver}</span>
+      </button>
+    );
+  }
+
+  // ─── downloading ──────────────────────────
+  if (status === "downloading") {
+    return (
+      <span className="header-badge header-badge-downloading" title="正在下载更新…">
+        <Icon name="spinner" size={10} className="animate-spin" />
+        <span>下载中</span>
+      </span>
+    );
+  }
+
+  // ─── ready ────────────────────────────────
   if (status === "ready") {
     return (
-      <span className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">
-        <Icon name="check" size={11} />
-        待重启
+      <button
+        className="header-badge header-badge-ready cursor-pointer"
+        title="更新已安装，点击重启"
+        onClick={handleClick}
+      >
+        <Icon name="check" size={10} />
+        <span>待重启</span>
+      </button>
+    );
+  }
+
+  // ─── uptodate ─────────────────────────────
+  if (status === "uptodate") {
+    return (
+      <span className="header-badge header-badge-uptodate" title="已是最新版本">
+        <Icon name="check" size={10} />
+        <span>已是最新</span>
       </span>
+    );
+  }
+
+  // ─── error ────────────────────────────────
+  if (status === "error") {
+    return (
+      <button
+        className="header-badge header-badge-error cursor-pointer"
+        title="更新检查失败，点击重试"
+        onClick={handleClick}
+      >
+        <Icon name="alertTriangle" size={10} />
+        <span>{currentVersion ? `v${currentVersion}` : "出错"}</span>
+      </button>
     );
   }
 

@@ -1,14 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "./lib/tauri";
 import type { StatusResponse } from "./lib/types";
 import { Header } from "./components/layout/Header";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { Icon } from "./components/ui/icon";
+import { ToastProvider } from "./components/ui/toast";
 import { ConnectTab } from "./components/tabs/ConnectTab";
 import { SecurityTab } from "./components/tabs/SecurityTab";
 import { SettingsTab } from "./components/tabs/SettingsTab";
 import { LogTab } from "./components/tabs/LogTab";
+import { OnboardingGuide, isOnboardingDone } from "./components/modals/OnboardingGuide";
+import { CommandPalette } from "./components/modals/CommandPalette";
 
 function App() {
   const { data: status, refetch: refetchStatus } = useQuery<StatusResponse>({
@@ -34,7 +37,8 @@ function App() {
   };
 
   return (
-    // h-screen flex-col：Header 与 Tab 栏固定，仅内容区滚动（横向锁死、纵向可滚）
+    <ToastProvider>
+    {/* h-screen flex-col：Header 与 Tab 栏固定，仅内容区滚动（横向锁死、纵向可滚） */}
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
       <Header status={status} onChanged={refetchStatus} />
       <Tabs defaultValue="connect" className="flex min-h-0 flex-1 flex-col">
@@ -62,6 +66,7 @@ function App() {
         </main>
       </Tabs>
     </div>
+    </ToastProvider>
   );
 }
 

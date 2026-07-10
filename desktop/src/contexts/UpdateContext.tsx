@@ -19,6 +19,33 @@ export interface UpdateState {
   restart: () => Promise<void>;
 }
 
+// ─── 友好错误翻译 ────────────────────────
+
+export interface FriendlyError {
+  /** 用户友好文案 */
+  friendly: string;
+  /** 原始错误信息（技术细节） */
+  raw: string;
+}
+
+/** 将原始错误信息拆分为友好提示 + 原始错误 */
+export function friendlyError(raw: string): FriendlyError {
+  const lower = raw.toLowerCase();
+  if (lower.includes("networkerror") || lower.includes("failed to fetch") || lower.includes("fetch")) {
+    return { friendly: "网络连接失败，请检查网络后重试", raw };
+  }
+  if (lower.includes("enotfound") || lower.includes("getaddrinfo") || lower.includes("dns")) {
+    return { friendly: "无法解析更新服务器地址，请检查网络连接", raw };
+  }
+  if (lower.includes("timeout") || lower.includes("timed out")) {
+    return { friendly: "连接超时，请稍后重试", raw };
+  }
+  if (lower.includes("403") || lower.includes("rate limit")) {
+    return { friendly: "GitHub API 访问受限，请稍后重试", raw };
+  }
+  return { friendly: "更新失败，请重试", raw };
+}
+
 const UpdateContext = createContext<UpdateState | null>(null);
 
 export function useUpdate() {

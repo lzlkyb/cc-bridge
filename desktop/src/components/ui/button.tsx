@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 const base = "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
 
@@ -21,8 +21,23 @@ const sizes = {
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: keyof typeof variants;
   size?: keyof typeof sizes;
+  isLoading?: boolean;
+  loadingText?: string;
 }
 
-export function Button({ variant = "default", size = "default", className = "", ...props }: ButtonProps) {
-  return <button className={`${base} ${variants[variant]} ${sizes[size]} ${className}`} {...props} />;
+export function Button({ variant = "default", size = "default", className = "", isLoading, loadingText, children, disabled, ...props }: ButtonProps) {
+  return (
+    <button
+      className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
+      disabled={disabled || isLoading}
+      {...props}
+    >
+      {isLoading && (
+        <svg className="animate-spin shrink-0" viewBox="0 0 24 24" width={size === "sm" ? 14 : 16} height={size === "sm" ? 14 : 16} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+          <path d="M21 12a9 9 0 1 1-6.22-8.56" />
+        </svg>
+      )}
+      {isLoading && loadingText ? loadingText : children}
+    </button>
+  );
 }

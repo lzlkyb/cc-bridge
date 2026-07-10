@@ -6,6 +6,7 @@ import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Icon } from "../ui/icon";
 import { Alert, AlertDescription } from "../ui/alert";
+import { useToast } from "../ui/toast";
 import { ConnectHero } from "./ConnectHero";
 
 type McpScope = "global" | "project";
@@ -27,6 +28,7 @@ export function ConnectTab({
   const [showToken, setShowToken] = useState(false);
   const [scope, setScope] = useState<McpScope>("project");
   const lanIps = status?.lanIps ?? [];
+  const { toast } = useToast();
 
   // 监听全网卡时才需要选 IP；host 指定了具体地址就用它
   const listenAll = status?.host === "0.0.0.0";
@@ -64,6 +66,7 @@ export function ConnectTab({
     if (!connectCommand) return;
     navigator.clipboard.writeText(connectCommand);
     setCopied(true);
+    toast("连接命令已复制到剪贴板", "success");
     setTimeout(() => setCopied(false), 2000);
   };
 
@@ -73,10 +76,11 @@ export function ConnectTab({
     setConfirmingRegen(false);
     setRegenDone(true);
     setShowToken(false);
+    toast("Token 已重新生成，请复制新连接命令到远程服务器", "warning");
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* IP 变化醒目提示：上次确认的 IP 不在本机网卡列表中了（VPN 重连等），引导用户选新地址 */}
       {status?.ipChanged && (
         <IpChangedBanner
@@ -154,14 +158,20 @@ export function ConnectTab({
           <CardTitle icon={<Icon name="key" />}>Token</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="flex items-center gap-2">
-            <code className="flex-1 rounded-md bg-muted px-3 py-2 text-xs font-mono">
-              {showToken ? (status?.token ?? "") : "●●●●●●●●●●●●●●●●●●●●"}
-            </code>
-            <Button variant="ghost" size="sm" onClick={() => setShowToken(!showToken)}>
-              <Icon name={showToken ? "eyeOff" : "eye"} size={14} />
-              {showToken ? "隐藏" : "显示"}
-            </Button>
+          <div className="relative rounded-lg border border-dashed border-muted-foreground/25 bg-muted/40 px-4 py-3">
+            <div className="flex items-center gap-2">
+              <Icon name="lock" size={13} className="shrink-0 text-muted-foreground/50" />
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">机密信息</span>
+            </div>
+            <div className="mt-2.5 flex items-center gap-2">
+              <code className={`flex-1 rounded-md px-3 py-2 text-xs font-mono ${showToken ? "bg-background border" : "bg-muted/60"}`}>
+                {showToken ? (status?.token ?? "") : "●●●●●●●●●●●●●●●●●●●●"}
+              </code>
+              <Button variant="ghost" size="sm" onClick={() => setShowToken(!showToken)}>
+                <Icon name={showToken ? "eyeOff" : "eye"} size={14} />
+                {showToken ? "隐藏" : "显示"}
+              </Button>
+            </div>
           </div>
 
           {regenDone && (
