@@ -90,4 +90,15 @@ impl AppState {
         let stats = self.stats.read().await;
         stats.start_time.elapsed().as_secs()
     }
+
+    /// D2 修复：回收空闲路径锁。
+    ///
+    /// `path_locks` 为「路径 → Arc<Mutex>」表，每个被操作的路径都会留下一个永久 entry，
+    /// 长期运行会无界增长。此处仅移除「强引用计数 == 1」的 entry——即只有 DashMap 自身
+    /// 持有、当前没有任何工具正在持有该锁的条目；正在使用（strong_count >= 2）的锁会被保留，
+    /// 因此不会误删并发操作所需的锁。由 main 中每 60s 触发的后台任务调用。
+    pub fn gc_path_locks(&self) {
+        self.path_locks
+            .retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
 }

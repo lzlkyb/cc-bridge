@@ -4,7 +4,7 @@ use std::path::Path;
 use chrono::Local;
 use serde::Serialize;
 
-#[derive(Debug, Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct AuditEntry {
     pub timestamp: String,
     pub tool: String,

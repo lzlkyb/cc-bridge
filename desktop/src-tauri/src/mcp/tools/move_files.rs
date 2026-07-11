@@ -61,13 +61,45 @@ async fn move_single(
         return Err("source is a directory, not supported".into());
     }
 
-    let lock = state
+    // D3 修复：同时锁定源与目标路径，避免并发 move 时源被其他读/写工具穿插。
+    // 按路径字典序加锁防止两个并发 move 互相死锁；源==目标时只锁一次避免自死锁。
+    let from_lock_arc = state
         .path_locks
-        .entry(to_resolved.clone())
+        .entry(from_resolved.clone())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .value()
         .clone();
-    let _guard = lock.lock().await;
+    let to_lock_arc = if to_resolved != from_resolved {
+        Some(
+            state
+                .path_locks
+                .entry(to_resolved.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .value()
+                .clone(),
+        )
+    } else {
+        None
+    };
+    // 按路径字典序依次加锁：from < to 时先锁源，否则先锁目标，保证全局一致顺序。
+    // 源==目标（to_lock_arc 为 None）时只锁源一次，避免自死锁。
+    let (_from_guard, _to_guard) = if from_resolved < to_resolved {
+        let fg = from_lock_arc.lock().await;
+        let tg = match to_lock_arc.as_ref() {
+            Some(t) => Some(t.lock().await),
+            None => None,
+        };
+        (Some(fg), tg)
+    } else if let Some(t) = to_lock_arc.as_ref() {
+        // from >= to 且目标存在：先锁目标再锁源
+        let tg = t.lock().await;
+        let fg = from_lock_arc.lock().await;
+        (Some(fg), Some(tg))
+    } else {
+        // 目标与源相同：只锁源一次
+        let fg = from_lock_arc.lock().await;
+        (Some(fg), None)
+    };
 
     if to_resolved.exists() && config.backup_enabled {
         backup::backup_before_overwrite(&to_resolved, &config.backup_dir, &state.data_dir)?;

@@ -358,7 +358,15 @@ fn write_audit_for_call(
         Some(audit_ms),
         None,
     );
-    audit::write_audit_log(data_dir, &entry).ok();
+    // D7 修复：审计日志改为后台阻塞线程异步落盘，不再阻塞请求处理的 async 线程；
+    // 写入失败通过 log::error! 上报，不再以 .ok() 静默吞掉。
+    let audit_data_dir = data_dir.to_path_buf();
+    let audit_entry = entry.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = audit::write_audit_log(&audit_data_dir, &audit_entry) {
+            log::error!("审计日志写入失败：{e}");
+        }
+    });
 }
 
 pub async fn dispatch_tool(

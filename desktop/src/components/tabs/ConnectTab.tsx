@@ -9,7 +9,7 @@ import { Alert, AlertDescription } from "../ui/alert";
 import { useToast } from "../ui/toast";
 import { ConnectHero } from "./ConnectHero";
 
-type McpScope = "global" | "project";
+type McpScope = "user" | "project";
 
 export function ConnectTab({
   status,
@@ -27,6 +27,8 @@ export function ConnectTab({
   const [regenDone, setRegenDone] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [scope, setScope] = useState<McpScope>("project");
+  const [oldToken, setOldToken] = useState("");
+  const [projectPath, setProjectPath] = useState("");
   const lanIps = status?.lanIps ?? [];
   const { toast } = useToast();
 
@@ -54,24 +56,42 @@ export function ConnectTab({
     : "";
 
   const connectCommand =
-    scope === "project"
-      ? baseCommand.replace("claude mcp add", "claude mcp add --scope project")
+    scope === "user"
+      ? baseCommand.replace("claude mcp add", "claude mcp add --scope user")
       : baseCommand;
 
   const healthCheck = status
     ? `curl http://${displayHost}:${port}/health`
     : "";
 
+  // token 重生成：原地替换 Bearer，不 remove+add（保留服务器条目与授权状态，避免重新授权）。
+  // 作用域读持久化的 status.scope（当初接入确认的作用域），而非 UI 开关，避免匹配错文件。
+  const tokenSedCommand = (() => {
+    if (!oldToken || !token) return "";
+    const scp = (status?.scope ?? "user") as McpScope;
+    const cfgFile = scp === "user" ? "~/.claude.json" : ".mcp.json";
+    const cdPrefix =
+      scp === "project" && projectPath.trim() ? `cd ${projectPath.trim()} && ` : "";
+    return `${cdPrefix}sed -i 's#Bearer ${oldToken}#Bearer ${token}#g' ${cfgFile}`;
+  })();
+
   const handleCopy = () => {
     if (!connectCommand) return;
     navigator.clipboard.writeText(connectCommand);
     setCopied(true);
     toast("连接命令已复制到剪贴板", "success");
+    // 首次接入复制命令时，把当前选中的作用域落盘到后端配置，
+    // 供后续 IP 变化 banner / Token 重生成生成精确 sed 命令（方案 A）。
+    invoke("save_config", { scope }).catch((e) =>
+      console.error("保存接入作用域失败（不影响本次复制）", e),
+    );
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleRegenToken = async () => {
+    const old = status?.token ?? "";
     await invoke("regenerate_token");
+    setOldToken(old);
     onRefresh();
     setConfirmingRegen(false);
     setRegenDone(true);
@@ -87,7 +107,8 @@ export function ConnectTab({
           lanIps={lanIps}
           previousIp={status.lastSelectedIp ?? (status.host !== "0.0.0.0" ? status.host : null)}
           port={status.port}
-          token={status.token}
+          scope={(status?.scope ?? null) as McpScope | null}
+          projectPath={projectPath}
           onResolved={onSelectIp}
         />
       )}
@@ -126,16 +147,16 @@ export function ConnectTab({
               onClick={() => setScope("project")}
             />
             <OptionCard
-              selected={scope === "global"}
+              selected={scope === "user"}
               title="全局模式"
               desc="一次配置，所有项目都能使用"
-              onClick={() => setScope("global")}
+              onClick={() => setScope("user")}
             />
           </div>
 
           {/* Step-by-step guide */}
           <div className="rounded-lg border bg-muted/30 p-4 space-y-4">
-            {scope === "global" ? (
+            {scope === "user" ? (
               <GlobalSteps
                 command={connectCommand}
                 copied={copied}
@@ -146,6 +167,8 @@ export function ConnectTab({
                 command={connectCommand}
                 copied={copied}
                 onCopy={handleCopy}
+                projectPath={projectPath}
+                setProjectPath={setProjectPath}
               />
             )}
           </div>
@@ -177,20 +200,27 @@ export function ConnectTab({
           {regenDone && (
             <Alert variant="warning">
               <AlertDescription className="space-y-2">
-                <p>Token 已更新。请复制新的连接命令，到远程服务器重新执行以恢复连接。</p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    if (connectCommand) {
-                      navigator.clipboard.writeText(connectCommand);
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 2000);
-                    }
-                  }}
-                >
-                  {copied ? "已复制新命令 ✓" : "复制新连接命令"}
-                </Button>
+                <p>Token 已更新。请复制下方命令到远程服务器执行，原地替换 Bearer（不重新授权）：</p>
+                <div className="flex flex-wrap gap-2 items-start">
+                  <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded-md bg-background border px-3 py-2 text-xs font-mono leading-relaxed">
+                    {tokenSedCommand || "加载中..."}
+                  </code>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 mt-0.5"
+                    onClick={() => {
+                      if (tokenSedCommand) {
+                        navigator.clipboard.writeText(tokenSedCommand);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                      }
+                    }}
+                    disabled={!tokenSedCommand}
+                  >
+                    {copied ? "已复制 ✓" : "复制"}
+                  </Button>
+                </div>
               </AlertDescription>
             </Alert>
           )}
@@ -242,17 +272,20 @@ function IpChangedBanner({
   lanIps,
   previousIp,
   port,
-  token,
+  scope,
+  projectPath,
   onResolved,
 }: {
   lanIps: string[];
   previousIp: string | null;
   port: number;
-  token: string;
+  /** 持久化作用域（首次接入落盘）。null 表示旧数据未记录，此时展示两条命令兜底 */
+  scope: McpScope | null;
+  projectPath: string;
   onResolved: (ip: string) => void;
 }) {
   const [pick, setPick] = useState(lanIps[0] ?? "");
-  const [copied, setCopied] = useState(false);
+  const [copiedCmd, setCopiedCmd] = useState("");
 
   // P2: 网卡全部消失时,下方选择控件与确认按钮会永久 disabled 形成死局。
   // 此时只给说明、不渲染选择控件;网络恢复、网卡重新出现后会自动回到正常分支。
@@ -274,14 +307,33 @@ function IpChangedBanner({
     );
   }
 
-  const command = pick
-    ? `claude mcp add --transport http cc-bridge http://${pick}:${port}/mcp --header "Authorization: Bearer ${token}"`
-    : "";
+  // 原地替换 url 里的 host：sed 匹配任意旧 IP（[0-9.]*），幂等可重跑，
+  // 不动 Bearer、不 remove+add，因此服务器条目与授权状态保留、不会重新授权。
+  // 作用域读持久化的 scope（方案 A）：有值→精确单条；null（旧数据）→ user+project 两条兜底，
+  // sed 不匹配的配置文件不会误改，用户挑对的跑即可。
+  const buildSed = (scp: "user" | "project") => {
+    const cfgFile = scp === "user" ? "~/.claude.json" : ".mcp.json";
+    const cdPrefix =
+      scp === "project" && projectPath.trim() ? `cd ${projectPath.trim()} && ` : "";
+    return `${cdPrefix}sed -i 's#http://[0-9.]*:${port}/mcp#http://${pick}:${port}/mcp#g' ${cfgFile}`;
+  };
 
-  const handleConfirm = () => {
-    if (!command) return;
-    navigator.clipboard.writeText(command);
-    setCopied(true);
+  const entries: { label: string; cmd: string }[] = scope
+    ? [
+        {
+          label: scope === "user" ? "全局（~/.claude.json）" : "项目（.mcp.json）",
+          cmd: buildSed(scope),
+        },
+      ]
+    : [
+        { label: "全局（~/.claude.json）", cmd: buildSed("user") },
+        { label: "项目（.mcp.json）", cmd: buildSed("project") },
+      ];
+
+  const copyOne = (cmd: string) => {
+    if (!cmd) return;
+    navigator.clipboard.writeText(cmd);
+    setCopiedCmd(cmd);
     onResolved(pick);
   };
 
@@ -295,7 +347,7 @@ function IpChangedBanner({
           <p className="text-sm font-semibold text-destructive">检测到网络地址变化</p>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
             之前使用的 <code className="rounded bg-background px-1">{previousIp}</code> 已不在本机网卡列表中（大概率是
-            VPN 重新连接分配了新地址）。请确认下面的新地址，更新远程服务器上的连接命令。
+            VPN 重新连接分配了新地址）。请选择下面的新地址并复制命令，到远程服务器执行即可原地更新 IP（无需重新授权）。
           </p>
         </div>
       </div>
@@ -323,11 +375,22 @@ function IpChangedBanner({
         </div>
       )}
 
-      <div className="pl-[38px]">
-        <Button size="sm" onClick={handleConfirm} disabled={!command}>
-          <Icon name={copied ? "check" : "copy"} size={14} />
-          {copied ? "已复制，可以去更新远程了" : "复制新连接命令并标记已处理"}
-        </Button>
+      <div className="pl-[38px] space-y-3">
+        <p className="text-xs text-muted-foreground">
+          {scope
+            ? "复制以下命令到远程服务器执行（原地更新 IP，不会重新授权）："
+            : "未能确认当初的接入作用域，请选择你最初添加 cc-bridge 时使用的作用域执行对应命令（不匹配的配置文件不会被改动）："}
+        </p>
+        {entries.map((e, i) => (
+          <div key={i} className="space-y-1.5">
+            <p className="text-xs font-medium text-foreground/80">{e.label}</p>
+            <CommandBlock
+              command={e.cmd}
+              copied={copiedCmd === e.cmd}
+              onCopy={() => copyOne(e.cmd)}
+            />
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -513,13 +576,15 @@ function ProjectSteps({
   command,
   copied,
   onCopy,
+  projectPath,
+  setProjectPath,
 }: {
   command: string;
   copied: boolean;
   onCopy: () => void;
+  projectPath: string;
+  setProjectPath: (v: string) => void;
 }) {
-  const [projectPath, setProjectPath] = useState("");
-
   const trimmed = projectPath.trim();
   const fullCommand = trimmed
     ? `cd ${trimmed} && ${command}`

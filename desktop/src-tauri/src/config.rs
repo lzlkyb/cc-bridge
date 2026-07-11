@@ -31,6 +31,10 @@ pub struct BridgeConfig {
     /// 用户上次在 Connect 页确认使用的本机 IP（多网卡场景）。用于检测网卡地址是否
     /// 发生变化（VPN 重连等）——不在 get_lan_ips() 结果里就说明已失效，需要提示用户换新地址。
     pub last_selected_ip: Option<String>,
+    /// 用户上次在 Connect 页确认接入时使用的作用域（user=全局 ~/.claude.json / project=项目 .mcp.json）。
+    /// 用于 IP 变化 / Token 重生成时生成精确匹配该作用域的 sed 命令，避免误改其它文件。
+    /// None 表示旧数据从未落盘，此时前端兜底展示两条命令让用户自选。
+    pub scope: Option<String>,
 }
 
 impl Default for BridgeConfig {
@@ -62,6 +66,7 @@ impl Default for BridgeConfig {
             encoding_detect_enabled: false,
             shell_enabled: false,
             last_selected_ip: None,
+            scope: None,
         }
     }
 }
@@ -131,6 +136,9 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
     }
     if let Some(v) = db::get_config_value(conn, "last_selected_ip") {
         config.last_selected_ip = serde_json::from_str(&v).unwrap_or(None);
+    }
+    if let Some(v) = db::get_config_value(conn, "scope") {
+        config.scope = serde_json::from_str(&v).unwrap_or(None);
     }
 
     Ok(config)

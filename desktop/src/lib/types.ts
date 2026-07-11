@@ -24,6 +24,7 @@ export interface StatusResponse {
   lanIps: string[];
   lastSelectedIp: string | null;
   ipChanged: boolean;
+  scope: string | null;
 }
 
 export interface ConfigPatch {
@@ -44,6 +45,7 @@ export interface ConfigPatch {
   rateLimitEnabled?: boolean;
   encodingDetectEnabled?: boolean;
   shellEnabled?: boolean;
+  scope?: string;
 }
 
 export interface ConfigSaveResult {

@@ -58,6 +58,10 @@ pub struct StatusResponse {
     pub last_selected_ip: Option<String>,
     #[serde(rename = "ipChanged")]
     pub ip_changed: bool,
+    /// 用户上次接入确认的作用域（user/project），由首次接入复制命令时落盘。
+    /// IP 变化 banner / Token 重生成据此生成精确 sed 命令。None 表示旧数据未记录。
+    #[serde(rename = "scope")]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -132,6 +136,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         running,
         last_selected_ip: config.last_selected_ip.clone(),
         ip_changed,
+        scope: config.scope.clone(),
         lan_ips,
     })
 }
@@ -170,6 +175,9 @@ pub struct ConfigPatch {
     pub encoding_detect_enabled: Option<bool>,
     #[serde(rename = "shellEnabled")]
     pub shell_enabled: Option<bool>,
+    /// 用户接入时确认的作用域（user/project）。仅首次接入复制命令时由前端写入。
+    #[serde(rename = "scope")]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -252,6 +260,14 @@ pub async fn save_config(
         &patch.encoding_detect_enabled
     );
     apply_field!(shell_enabled, "shell_enabled", &patch.shell_enabled);
+    // 首次接入复制命令时由前端写入，记录 cc-bridge 被注册到远程的作用域，
+    // 供后续 IP 变化 / Token 重生成生成精确 sed 命令（方案 A）。
+    // scope 在 config 中也是 Option<String>，与 apply_field! 宏的 "T vs Option<T>" 假设不符，故单独处理。
+    if let Some(ref s) = patch.scope {
+        config.scope = Some(s.clone());
+        save_config_field(&db, "scope", &serde_json::to_value(s).unwrap())?;
+        changed.push("scope".into());
+    }
 
     if let Some(ref h) = patch.host {
         if *h != config.host {

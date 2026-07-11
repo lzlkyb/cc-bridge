@@ -77,26 +77,84 @@ fn migrate_from_json(conn: &Connection, json: &serde_json::Value) -> Result<(), 
 }
 
 fn ensure_defaults(conn: &Connection) -> Result<(), String> {
-    let defaults = [
-        ("allowed_roots", "[]"),
-        ("token", &format!("\"{}\"", generate_token())),
+    // D5 修复：默认值单源。数值/字符串全部取自 BridgeConfig::default()，消除 db.rs 与
+    // config.rs 两处硬编码漂移隐患；仅 token 需随机生成。key 名与 config.rs::load_config
+    // 的 get_config_value 对应，保持不变。
+    let d = crate::config::BridgeConfig::default();
+    let defaults: Vec<(&str, String)> = vec![
+        (
+            "allowed_roots",
+            serde_json::to_string(&d.allowed_roots)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        ("token", format!("\"{}\"", generate_token())),
         (
             "allowed_extensions",
-            r#"[".js",".ts",".jsx",".tsx",".mjs",".cjs",".json",".py",".java",".go",".rs",".c",".cpp",".h",".hpp",".cs",".rb",".php",".sh",".bash",".yml",".yaml",".toml",".ini",".md",".txt",".html",".css",".scss",".sql",".xml"]"#,
+            serde_json::to_string(&d.allowed_extensions)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
         ),
-        ("max_file_size_bytes", "20971520"),
-        ("rate_limit_max_requests", "100"),
-        ("rate_limit_window_ms", "60000"),
-        ("backup_dir", "\".cc-bridge-backup\""),
-        ("backup_retention", "10"),
-        ("host", "\"0.0.0.0\""),
-        ("port", "7823"),
-        ("whitelist_enabled", "true"),
-        ("readonly_mode", "false"),
-        ("backup_enabled", "true"),
-        ("audit_enabled", "true"),
-        ("rate_limit_enabled", "true"),
-        ("shell_enabled", "false"),
+        (
+            "max_file_size_bytes",
+            serde_json::to_string(&d.max_file_size_bytes)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "rate_limit_max_requests",
+            serde_json::to_string(&d.rate_limit_max_requests)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "rate_limit_window_ms",
+            serde_json::to_string(&d.rate_limit_window_ms)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "backup_dir",
+            serde_json::to_string(&d.backup_dir).map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "backup_retention",
+            serde_json::to_string(&d.backup_retention)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "host",
+            serde_json::to_string(&d.host).map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "port",
+            serde_json::to_string(&d.port).map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "whitelist_enabled",
+            serde_json::to_string(&d.whitelist_enabled)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "readonly_mode",
+            serde_json::to_string(&d.readonly_mode)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "backup_enabled",
+            serde_json::to_string(&d.backup_enabled)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "audit_enabled",
+            serde_json::to_string(&d.audit_enabled)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "rate_limit_enabled",
+            serde_json::to_string(&d.rate_limit_enabled)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
+        (
+            "shell_enabled",
+            serde_json::to_string(&d.shell_enabled)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
     ];
 
     for (key, default_value) in defaults {

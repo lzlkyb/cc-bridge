@@ -58,7 +58,7 @@ fn tray_icon(running: bool) -> tauri::image::Image<'static> {
     (if running { &icons.0 } else { &icons.1 }).clone()
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
     tauri::Builder::default()
@@ -76,20 +76,43 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let handle = app.handle().clone();
-            let data_dir = handle
-                .path()
-                .app_data_dir()
-                .expect("could not resolve app data directory");
-            std::fs::create_dir_all(&data_dir).expect("could not create app data directory");
+            let data_dir = handle.path().app_data_dir().map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("无法解析应用数据目录：{e}"),
+                )
+            })?;
+            std::fs::create_dir_all(&data_dir).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("无法创建应用数据目录：{e}"),
+                )
+            })?;
 
-            let db_conn = db::init_database(&data_dir).expect("failed to initialize database");
-            let bridge_config = config::load_config(&db_conn).expect("failed to load config");
+            let db_conn = db::init_database(&data_dir).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::Other, format!("初始化数据库失败：{e}"))
+            })?;
+            let bridge_config = config::load_config(&db_conn).map_err(|e| {
+                std::io::Error::new(std::io::ErrorKind::Other, format!("加载配置失败：{e}"))
+            })?;
 
             // Prune audit log per retention policy on startup
             let _ = audit::cleanup_old_entries(&data_dir, bridge_config.audit_retention_days);
 
             let app_state = Arc::new(state::AppState::new(db_conn, bridge_config, data_dir));
             app.manage(app_state.clone());
+
+            // D2 修复：后台周期性回收空闲路径锁，避免 path_locks 随运行时间无界增长。
+            {
+                let gc_state = app_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        ticker.tick().await;
+                        gc_state.gc_path_locks();
+                    }
+                });
+            }
 
             // Updater 插件容错注册：失败仅 warn，不中断应用启动（比如 pubkey 还是占位符时）。
             if let Err(e) = app
@@ -310,7 +333,8 @@ fn main() {
                 let _ = window.hide();
             }
         })
-        .build(tauri::generate_context!())
-        .expect("error building tauri application")
+        .build(tauri::generate_context!())?
         .run(|_app_handle, _event| {});
+
+    Ok(())
 }
