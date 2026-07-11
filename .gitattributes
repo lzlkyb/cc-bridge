@@ -1,0 +1,17 @@
+# 统一换行符：仓库内归一化 LF 存储，工作区检出为 LF
+# 与项目实测工作区 LF 主导一致，消除 "LF will be replaced by CRLF" 警告且不复发
+* text=auto eol=lf
+
+# 二进制文件不转换行尾
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.bin binary
+*.woff binary
+*.woff2 binary
