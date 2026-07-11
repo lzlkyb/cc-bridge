@@ -20,15 +20,11 @@ export function SettingsTab({
   highlightAnchor?: { anchor: string; nonce: number } | null;
 }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       <UpdateGroup status={status} />
-      <div className="divider-grad" />
       <NetworkGroup status={status} onSaved={onSaved} />
-      <div className="divider-grad" />
       <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
-      <div className="divider-grad" />
       <AppGroup />
-      <div className="divider-grad" />
       <AuditGroup status={status} onSaved={onSaved} />
     </div>
   );
@@ -91,15 +87,13 @@ function NetworkGroup({
         </div>
         <div className="flex items-center gap-3">
           <Button onClick={handleSaveAndRestart} disabled={!dirty || saving}>
-            {saving ? "保存中..." : dirty ? "保存并重启服务" : "保存"}
+            {saving ? "保存中..." : "保存"}
           </Button>
           {restarted && <span className="text-sm text-success">已保存并重启 ✓</span>}
         </div>
-        {dirty && (
-          <p className="text-xs text-muted-foreground">
-            端口冲突时可在此修改，保存后自动重启服务。
-          </p>
-        )}
+        <p className="text-xs text-muted-foreground">
+          端口冲突时可在此修改。<b>修改端口需重启服务生效</b>，保存后将自动重启。
+        </p>
       </CardContent>
     </Card>
   );
@@ -143,7 +137,7 @@ function AppGroup() {
               系统登录后自动在后台启动 cc-bridge，远程随时可连接。
             </p>
           </div>
-          <Toggle checked={autostart} disabled={!loaded} onChange={toggle} />
+          <Toggle checked={autostart} disabled={!loaded} onChange={toggle} ariaLabel="开机自动启动" />
         </div>
       </CardContent>
     </Card>
@@ -180,10 +174,27 @@ function AuditGroup({
     setTimeout(() => setSaved(false), 1500);
   };
 
-  const handleChange = (val: number) => {
+  // 归一化：空输入 / NaN / 负值统一为 0（配合 Input min=0），并取整。
+  const normalize = (raw: number) => (Number.isNaN(raw) || raw < 0 ? 0 : Math.floor(raw));
+
+  const handleChange = (raw: number) => {
+    const val = normalize(raw);
     setDays(val);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => save(val), 800);
+    // 触发后清空 ref，供 onBlur 判断是否已保存，避免双次保存。
+    debounceRef.current = setTimeout(() => {
+      debounceRef.current = undefined;
+      save(val);
+    }, 800);
+  };
+
+  // onBlur 仅在 debounce 仍挂起（尚未保存）时立即保存，已保存则不重复。
+  const handleBlur = () => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = undefined;
+      save(days);
+    }
   };
 
   return (
@@ -198,12 +209,10 @@ function AuditGroup({
         </div>
         <Input
           type="number"
+          min={0}
           value={days}
           onChange={(e) => handleChange(Number(e.target.value))}
-          onBlur={() => {
-            if (debounceRef.current) clearTimeout(debounceRef.current);
-            save(days);
-          }}
+          onBlur={handleBlur}
         />
         <p className="text-xs text-muted-foreground">
           超过保留天数的审计记录会在每次启动时自动清理。设为 0 表示永久保留。
@@ -219,15 +228,18 @@ function Toggle({
   checked,
   disabled,
   onChange,
+  ariaLabel,
 }: {
   checked: boolean;
   disabled?: boolean;
   onChange: () => void;
+  ariaLabel?: string;
 }) {
   return (
     <button
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={onChange}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${

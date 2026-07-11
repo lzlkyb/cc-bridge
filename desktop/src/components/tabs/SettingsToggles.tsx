@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import type { ReactNode } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
@@ -7,8 +8,9 @@ import { Switch } from "../ui/switch";
 import { Icon } from "../ui/icon";
 
 /**
- * 设置页「功能开关」卡：白名单 / 只读 / 审计 / 备份 / 限流。
- * 关闭白名单为高风险操作，需二次确认。开关即时保存到后端 config。
+ * 设置页「功能开关」卡。
+ * 按「安全 / 数据保护 / 兼容与性能」三组呈现（fix #4），卡顶带风险总览（fix #10）。
+ * 普通开关保存后即时反馈「已保存 ✓」（fix #2）；关闭白名单 / 开启命令执行为高风险，需二次确认。
  *
  * highlightAnchor：由 Header 安全徽章点击带入（{ anchor, nonce }）。
  * 切换到本页后自动滚动到对应 ToggleRow 并脉冲高亮 2 秒，引导用户定位开关。
@@ -26,6 +28,7 @@ export function SettingsToggles({
   const [confirmShellOn, setConfirmShellOn] = useState(false);
   const [ackShellRisk, setAckShellRisk] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [savedKey, setSavedKey] = useState<string | null>(null);
 
   // 由 Header 安全徽章点击触发的定位 + 高亮。
   // 非激活 Tab 在 Tabs 中为 return null（完全卸载），切到设置页时本组件才挂载，
@@ -40,9 +43,14 @@ export function SettingsToggles({
     return () => clearTimeout(t);
   }, [highlightAnchor]);
 
-  const save = async (patch: Record<string, unknown>) => {
+  // 保存并给出「已保存 ✓」反馈（fix #2）。key 用于定位反馈落在哪一行。
+  const save = async (patch: Record<string, unknown>, key?: string) => {
     await invoke<ConfigSaveResult>("save_config", { patch });
     onSaved();
+    if (key) {
+      setSavedKey(key);
+      setTimeout(() => setSavedKey((cur) => (cur === key ? null : cur)), 1500);
+    }
   };
 
   const handleResetDefaults = async () => {
@@ -64,7 +72,7 @@ export function SettingsToggles({
   const handleWhitelist = (next: boolean) => {
     // 打开直接保存；关闭需二次确认（放开对整机文件的保护）。
     if (next) {
-      save({ whitelistEnabled: true });
+      save({ whitelistEnabled: true }, "whitelist");
     } else {
       setConfirmWhitelistOff(true);
     }
@@ -75,9 +83,11 @@ export function SettingsToggles({
     if (next) {
       setConfirmShellOn(true);
     } else {
-      save({ shellEnabled: false });
+      save({ shellEnabled: false }, "shell");
     }
   };
+
+  const readonly = status?.readonlyMode ?? false;
 
   return (
     <Card>
@@ -85,6 +95,11 @@ export function SettingsToggles({
         <CardTitle icon={<Icon name="sliders" />}>功能开关</CardTitle>
       </CardHeader>
       <CardContent className="space-y-0">
+        {/* 风险总览（fix #10） */}
+        <RiskSummary status={status} />
+
+        {/* ── 分组：安全 ── */}
+        <GroupTitle>安全</GroupTitle>
         <ToggleRow
           id="toggle-whitelist"
           label="路径白名单校验"
@@ -95,52 +110,68 @@ export function SettingsToggles({
               : "仅允许访问白名单根目录内的文件（强烈建议保持开启）"
           }
           checked={status?.whitelistEnabled ?? true}
-          variant="danger"
           onChange={handleWhitelist}
+          saved={savedKey === "whitelist"}
         />
         <ToggleRow
           id="toggle-readonly"
           label="只读模式"
           sub="开启后禁止写入 / 删除 / 移动 / 复制，仅允许读取、列目录、搜索"
-          checked={status?.readonlyMode ?? false}
-          onChange={(v) => save({ readonlyMode: v })}
-        />
-        <ToggleRow
-          label="审计日志"
-          sub="记录每次工具调用到日志页；关闭后停止记录"
-          checked={status?.auditEnabled ?? true}
-          onChange={(v) => save({ auditEnabled: v })}
-        />
-        <ToggleRow
-          label="写操作自动备份"
-          sub="写入 / 删除前先备份到备份目录；关闭可节省磁盘"
-          checked={status?.backupEnabled ?? true}
-          onChange={(v) => save({ backupEnabled: v })}
-        />
-        <ToggleRow
-          label="限流保护"
-          sub="按窗口限制请求次数，防止异常高频调用"
-          checked={status?.rateLimitEnabled ?? true}
-          onChange={(v) => save({ rateLimitEnabled: v })}
-        />
-        <ToggleRow
-          label="读取编码自适应"
-          sub="读文件时自动识别 GBK/GB18030（如 NC65 源码）；关闭则按 UTF-8 读，避免误判。显式指定编码不受影响"
-          checked={status?.encodingDetectEnabled ?? false}
-          onChange={(v) => save({ encodingDetectEnabled: v })}
+          checked={readonly}
+          onChange={(v) => save({ readonlyMode: v }, "readonly")}
+          saved={savedKey === "readonly"}
         />
         <ToggleRow
           id="toggle-shell"
           label="命令执行"
           danger={status?.shellEnabled ?? false}
           sub={
-            status?.shellEnabled
-              ? "⚠ 已开启 · 等同于授予远程任意代码执行权限（RCE），只读模式下强制禁止"
-              : "允许远程执行 Shell 命令（run_command）。默认关闭，强烈建议仅临时开启"
+            readonly
+              ? "当前只读模式已开启，命令执行将被强制禁止；如需启用请先关闭只读模式"
+              : status?.shellEnabled
+                ? "⚠ 已开启 · 等同于授予远程任意代码执行权限（RCE）"
+                : "允许远程执行 Shell 命令（run_command）。默认关闭，强烈建议仅临时开启"
           }
           checked={status?.shellEnabled ?? false}
           variant="danger"
           onChange={handleShell}
+          saved={savedKey === "shell"}
+          last
+        />
+
+        {/* ── 分组：数据保护 ── */}
+        <GroupTitle>数据保护</GroupTitle>
+        <ToggleRow
+          label="审计日志"
+          sub="记录每次工具调用到日志页；关闭后停止记录"
+          checked={status?.auditEnabled ?? true}
+          onChange={(v) => save({ auditEnabled: v }, "audit")}
+          saved={savedKey === "audit"}
+        />
+        <ToggleRow
+          label="写操作自动备份"
+          sub="写入 / 删除前先备份到备份目录；关闭可节省磁盘"
+          checked={status?.backupEnabled ?? true}
+          onChange={(v) => save({ backupEnabled: v }, "backup")}
+          saved={savedKey === "backup"}
+          last
+        />
+
+        {/* ── 分组：兼容与性能 ── */}
+        <GroupTitle>兼容与性能</GroupTitle>
+        <ToggleRow
+          label="限流保护"
+          sub="按窗口限制请求次数，防止异常高频调用"
+          checked={status?.rateLimitEnabled ?? true}
+          onChange={(v) => save({ rateLimitEnabled: v }, "ratelimit")}
+          saved={savedKey === "ratelimit"}
+        />
+        <ToggleRow
+          label="读取编码自适应"
+          sub="开启：自动识别 GBK/GB18030（适合 NC65 等旧系统源码）；关闭：固定按 UTF-8 读取，避免误判。显式指定编码不受影响"
+          checked={status?.encodingDetectEnabled ?? false}
+          onChange={(v) => save({ encodingDetectEnabled: v }, "encoding")}
+          saved={savedKey === "encoding"}
           last
         />
       </CardContent>
@@ -149,13 +180,14 @@ export function SettingsToggles({
         <ConfirmModal
           onCancel={() => setConfirmWhitelistOff(false)}
           onConfirm={() => {
-            save({ whitelistEnabled: false });
+            save({ whitelistEnabled: false }, "whitelist");
             setConfirmWhitelistOff(false);
           }}
         />
       )}
       {confirmShellOn && (
         <ShellRiskModal
+          readonly={readonly}
           ackRisk={ackShellRisk}
           onAckChange={setAckShellRisk}
           onCancel={() => {
@@ -163,7 +195,7 @@ export function SettingsToggles({
             setAckShellRisk(false);
           }}
           onConfirm={() => {
-            save({ shellEnabled: true });
+            save({ shellEnabled: true }, "shell");
             setConfirmShellOn(false);
             setAckShellRisk(false);
           }}
@@ -180,7 +212,7 @@ export function SettingsToggles({
           >
             <h4 className="mb-2 flex items-center gap-2 text-base font-semibold">
               <Icon name="alertTriangle" size={18} className="text-warning" />
-              恢复默认功能开关？
+              重置功能开关为默认？
             </h4>
             <p className="mb-4 text-sm text-muted-foreground">
               这将把白名单校验、审计日志、备份、限流重新开启，只读模式、编码自适应、命令执行关闭。
@@ -191,21 +223,51 @@ export function SettingsToggles({
                 取消
               </Button>
               <Button variant="default" size="sm" onClick={handleResetDefaults}>
-                恢复默认
+                重置为默认
               </Button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 恢复默认按钮 */}
+      {/* 重置功能开关（fix #5：改名明确范围 + 去掉 muted 弱化） */}
       <div className="border-t px-5 py-3">
-        <Button variant="outline" size="sm" className="text-muted-foreground" onClick={() => setConfirmReset(true)}>
+        <Button variant="outline" size="sm" onClick={() => setConfirmReset(true)}>
           <Icon name="refresh" size={13} />
-          恢复默认设置
+          重置功能开关为默认
         </Button>
       </div>
     </Card>
+  );
+}
+
+/* 分组小标题（fix #4） */
+function GroupTitle({ children }: { children: ReactNode }) {
+  return (
+    <div className="mb-1 mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground first:mt-1">
+      {children}
+    </div>
+  );
+}
+
+/* 风险总览（fix #10）：根据白名单 / 命令执行状态给出安全 or 风险摘要 */
+function RiskSummary({ status }: { status?: StatusResponse }) {
+  if (!status) return null;
+  const risks: string[] = [];
+  if (!status.whitelistEnabled) risks.push("白名单已关闭");
+  if (status.shellEnabled) risks.push("命令执行已开启");
+  const safe = risks.length === 0;
+  return (
+    <div
+      className={`mb-1 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium ${
+        safe
+          ? "border-success/30 bg-success/10 text-success"
+          : "border-destructive/30 bg-destructive/10 text-destructive"
+      }`}
+    >
+      <Icon name={safe ? "check" : "alertTriangle"} size={14} />
+      {safe ? "所有安全开关处于推荐状态" : `当前风险：${risks.join(" · ")}`}
+    </div>
   );
 }
 
@@ -217,6 +279,7 @@ function ToggleRow({
   variant = "default",
   danger = false,
   last = false,
+  saved = false,
   id,
 }: {
   label: string;
@@ -226,6 +289,7 @@ function ToggleRow({
   variant?: "default" | "danger";
   danger?: boolean;
   last?: boolean;
+  saved?: boolean;
   id?: string;
 }) {
   return (
@@ -236,22 +300,27 @@ function ToggleRow({
       } ${danger ? "-mx-3 rounded-lg bg-destructive/5 px-3" : ""}`}
     >
       <div className="min-w-0">
-        <div className="text-sm font-medium">{label}</div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">{label}</span>
+          {saved && <span className="text-xs font-normal text-success">已保存 ✓</span>}
+        </div>
         <div className={`mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>
           {sub}
         </div>
       </div>
-      <Switch checked={checked} onChange={onChange} variant={variant} />
+      <Switch checked={checked} onChange={onChange} variant={variant} ariaLabel={label} />
     </div>
   );
 }
 
 function ShellRiskModal({
+  readonly,
   ackRisk,
   onAckChange,
   onCancel,
   onConfirm,
 }: {
+  readonly: boolean;
   ackRisk: boolean;
   onAckChange: (next: boolean) => void;
   onCancel: () => void;
@@ -270,6 +339,15 @@ function ShellRiskModal({
           <Icon name="alertTriangle" size={18} />
           确定开启命令执行？
         </h4>
+        {/* fix #3：只读模式与命令执行互斥的主动提示 */}
+        {readonly && (
+          <div className="mb-3 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <Icon name="lock" size={14} className="mt-0.5 shrink-0" />
+            <span>
+              当前<b>只读模式已开启</b>，命令执行会被<b>强制禁止</b>而不会生效。如需真正启用，请先在上方关闭只读模式。
+            </span>
+          </div>
+        )}
         <p className="mb-3 text-sm text-muted-foreground">
           开启后远程 Claude Code 可在白名单目录内执行<b>任意 Shell 命令</b>，包括但不限于安装软件、
           修改系统设置、访问网络。这等同于授予<b>远程任意代码执行权限（RCE）</b>。

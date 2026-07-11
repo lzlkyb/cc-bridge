@@ -7,11 +7,13 @@ export function Switch({
   onChange,
   variant = "default",
   disabled = false,
+  ariaLabel,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   variant?: "default" | "danger";
   disabled?: boolean;
+  ariaLabel?: string;
 }) {
   const onColor = variant === "danger" ? "bg-destructive" : "bg-primary";
   return (
@@ -19,6 +21,7 @@ export function Switch({
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={ariaLabel}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
