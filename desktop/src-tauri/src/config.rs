@@ -28,6 +28,10 @@ pub struct BridgeConfig {
     /// 命令执行（run_command/stop_command）总开关。默认关闭——开启等同于授予
     /// 远程调用方任意代码执行权限（RCE）；只读模式开启时对 run_command 无条件覆盖为禁止。
     pub shell_enabled: bool,
+    /// 会话级 cwd 持久化（run_command 的 session_id handle）。默认关闭——开启后客户端可
+    /// 在首次提供 cwd 时拿到 session_id，后续调用只传 session_id 即可沿用工作目录。每次使用
+    /// 前仍重校验白名单（规则 7 不削弱）。关闭时 run_command 行为与旧版完全一致。
+    pub session_cwd_enabled: bool,
     /// 用户上次在 Connect 页确认使用的本机 IP（多网卡场景）。用于检测网卡地址是否
     /// 发生变化（VPN 重连等）——不在 get_lan_ips() 结果里就说明已失效，需要提示用户换新地址。
     pub last_selected_ip: Option<String>,
@@ -65,6 +69,7 @@ impl Default for BridgeConfig {
             rate_limit_enabled: true,
             encoding_detect_enabled: false,
             shell_enabled: false,
+            session_cwd_enabled: false,
             last_selected_ip: None,
             scope: None,
         }
@@ -133,6 +138,9 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
     }
     if let Some(v) = db::get_config_value(conn, "shell_enabled") {
         config.shell_enabled = serde_json::from_str(&v).unwrap_or(false);
+    }
+    if let Some(v) = db::get_config_value(conn, "session_cwd_enabled") {
+        config.session_cwd_enabled = serde_json::from_str(&v).unwrap_or(false);
     }
     if let Some(v) = db::get_config_value(conn, "last_selected_ip") {
         config.last_selected_ip = serde_json::from_str(&v).unwrap_or(None);

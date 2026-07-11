@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::security;
-use crate::state::{AppState, RunningCommand};
+use crate::state::{AppState, CwdSession, RunningCommand};
 
 /// 子进程创建标志。
 /// - `CREATE_NO_WINDOW (0x08000000)`：不创建可见控制台窗口，输出走管道（Stdio::piped）。
@@ -60,7 +60,15 @@ fn is_dangerous_command(command: &str) -> bool {
 #[derive(Debug, Deserialize)]
 pub struct RunCommandArgs {
     pub command: String,
-    pub cwd: String,
+    /// 工作目录（绝对路径，须在白名单内）。会话持久化开启且提供有效 `session_id` 时可省略，
+    /// 由 session 绑定的 cwd 取代；否则必传。
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// 会话级 cwd 持久化的 opaque handle。首次带 `cwd` 调用会返回新 `session_id`（见响应
+    /// 的 `sessionId` 字段）；后续调用只传 `session_id` 即可沿用工作目录，免去每次传 cwd。
+    /// 仅在 `session_cwd_enabled` 开启时生效；关闭或缺失时忽略（行为同旧版）。
+    #[serde(default, rename = "sessionId")]
+    pub session_id: Option<String>,
     #[serde(default)]
     pub background: bool,
     #[serde(default = "default_timeout_ms", rename = "timeoutMs")]
@@ -98,11 +106,61 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
                 .to_string(),
         );
     }
-    let resolved_cwd = security::path::resolve_safe_path(
-        &args.cwd,
-        &config.allowed_roots,
-        config.whitelist_enabled,
-    )?;
+    // 会话级 cwd 持久化解析（默认关，见 BridgeConfig::session_cwd_enabled）：
+    // - 开关关：忽略 session_id，cwd 必传，行为与旧版完全一致。
+    // - 开关开 + 给定有效 session_id：复用其绑定 cwd（每次仍重校验白名单，规则7 不削弱）。
+    // - 开关开 + 无/无效 session_id：cwd 必传，解析后新建 session 并返回新 id。
+    let (resolved_cwd, cwd_display, effective_session_id) = if config.session_cwd_enabled {
+        if let Some(sid) = &args.session_id {
+            match state.cwd_sessions.get(sid) {
+                Some(s) => {
+                    let resolved = security::path::resolve_safe_path(
+                        &s.cwd.to_string_lossy(),
+                        &config.allowed_roots,
+                        config.whitelist_enabled,
+                    )
+                    .map_err(|e| format!("session 绑定的 cwd 已不在白名单：{e}"))?;
+                    (resolved, s.cwd.to_string_lossy().into_owned(), Some(sid.clone()))
+                }
+                None => {
+                    return Err(
+                        "session_id 不存在或已过期。请重新提供 cwd 以创建新会话，或由工具描述引导重新获取 session_id。"
+                            .to_string(),
+                    )
+                }
+            }
+        } else {
+            let cwd = args.cwd.as_ref().ok_or_else(|| {
+                "开启会话持久化时，必须提供 cwd（创建新会话）或有效 session_id（沿用）".to_string()
+            })?;
+            let resolved = security::path::resolve_safe_path(
+                cwd,
+                &config.allowed_roots,
+                config.whitelist_enabled,
+            )?;
+            let new_id = format!("cwd_{:032x}", rand::random::<u128>());
+            state.cwd_sessions.insert(
+                new_id.clone(),
+                CwdSession {
+                    cwd: resolved.clone(),
+                    last_active: Instant::now(),
+                },
+            );
+            (resolved, cwd.clone(), Some(new_id))
+        }
+    } else {
+        let cwd = args
+            .cwd
+            .as_ref()
+            .ok_or_else(|| "cwd 必传（会话持久化未开启时）".to_string())?;
+        let resolved = security::path::resolve_safe_path(
+            cwd,
+            &config.allowed_roots,
+            config.whitelist_enabled,
+        )?;
+        (resolved, cwd.clone(), None)
+    };
+
     if !resolved_cwd.is_dir() {
         return Err(format!("cwd 不是一个目录: {}", resolved_cwd.display()));
     }
@@ -116,7 +174,6 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     }
 
     let command = args.command;
-    let cwd_display = args.cwd;
     let background = args.background;
     let timeout_ms = args.timeout_ms;
     let description = args.description;
@@ -126,10 +183,13 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     let state = state.clone();
 
     // spawn + wait 是同步阻塞 API，丢进 spawn_blocking 避免占用 tokio 工作线程。
-    tokio::task::spawn_blocking(move || {
+    // resolved_cwd 需同时给 spawn_shell（移动进闭包）与 inject_session_info（回显 cwd），
+    // 故先 clone 一份供闭包使用，原值留给末尾回显。
+    let resolved_cwd_spawn = resolved_cwd.clone();
+    let result = tokio::task::spawn_blocking(move || {
         spawn_shell(
             &command,
-            &resolved_cwd,
+            &resolved_cwd_spawn,
             cwd_display,
             background,
             timeout_ms,
@@ -139,7 +199,8 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
         )
     })
     .await
-    .map_err(|e| format!("run_command 任务 panic: {e}"))?
+    .map_err(|e| format!("run_command 任务 panic: {e}"))?;
+    inject_session_info(result, effective_session_id, &resolved_cwd)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -342,6 +403,38 @@ fn text_result(info: Value) -> Value {
     })
 }
 
+/// 把会话 id 与本次生效 cwd 注入 run_command 返回的 JSON 文本
+/// （`content[0].text` 是一段 JSON 字符串）。仅成功路径调用——错误响应结构不同，不注入。
+fn inject_session_info(
+    result: Result<Value, String>,
+    session_id: Option<String>,
+    resolved_cwd: &std::path::Path,
+) -> Result<Value, String> {
+    let mut v = result?;
+    if let Some(obj) = v.as_object_mut() {
+        if let Some(arr) = obj.get_mut("content").and_then(|c| c.as_array_mut()) {
+            if let Some(first) = arr.first_mut() {
+                if let Some(text) = first.get_mut("text").and_then(|t| t.as_str()) {
+                    if let Ok(mut info) = serde_json::from_str::<serde_json::Value>(text) {
+                        // 仅当确有 session 时才注入 sessionId / cwd 回显字段。
+                        // 默认关（session_id = None）时不做任何注入，响应与原版完全一致，
+                        // 满足「零行为变化」要求（不在 JSON 里留下 null 占位）。
+                        if let Some(sid) = session_id {
+                            info["sessionId"] = json!(sid);
+                            info["cwd"] =
+                                json!(resolved_cwd.to_string_lossy().to_string());
+                            let new_text = serde_json::to_string_pretty(&info)
+                                .unwrap_or_else(|_| text.to_string());
+                            first["text"] = json!(new_text);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,7 +486,8 @@ mod tests {
         let result = handle(
             RunCommandArgs {
                 command: "echo should_not_run".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
@@ -423,7 +517,8 @@ mod tests {
         let result = handle(
             RunCommandArgs {
                 command: "rm -rf /".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
@@ -451,7 +546,8 @@ mod tests {
         let result = handle(
             RunCommandArgs {
                 command: "MKFS.ext4 /dev/sda".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
@@ -494,7 +590,8 @@ mod tests {
         let result = handle(
             RunCommandArgs {
                 command: "echo nothing".into(),
-                cwd: forbidden.to_string_lossy().into_owned(),
+                cwd: Some(forbidden.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
@@ -524,7 +621,8 @@ mod tests {
         let result = handle(
             RunCommandArgs {
                 command: "echo nothing".into(),
-                cwd: file_path.to_string_lossy().into_owned(),
+                cwd: Some(file_path.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
@@ -555,7 +653,8 @@ mod tests {
         let v = handle(
             RunCommandArgs {
                 command: "echo hello".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
@@ -596,7 +695,8 @@ mod tests {
         let v = handle(
             RunCommandArgs {
                 command: "hostname".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
@@ -635,7 +735,8 @@ mod tests {
         let v = handle(
             RunCommandArgs {
                 command: "exit 7".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
@@ -670,7 +771,8 @@ mod tests {
         let v = handle(
             RunCommandArgs {
                 command: "echo a_long_string_to_ensure_truncation".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 10,
@@ -712,7 +814,8 @@ mod tests {
         let v = handle(
             RunCommandArgs {
                 command: "echo err_payload 1>&2".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
@@ -751,7 +854,8 @@ mod tests {
         let v = handle(
             RunCommandArgs {
                 command: "echo background_test_payload".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: true,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
@@ -825,7 +929,8 @@ mod tests {
         let v = handle(
             RunCommandArgs {
                 command: "echo hello_with_desc".into(),
-                cwd: dir.to_string_lossy().into_owned(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
@@ -848,5 +953,242 @@ mod tests {
             stdout.contains("hello_with_desc"),
             "stdout 应含内容，实际：{stdout:?}"
         );
+    }
+
+    /// 会话级 cwd 持久化：第一次带 cwd 创建 session，返回的 JSON 应含 sessionId 与 cwd；
+    /// 第二次仅带该 sessionId（不带 cwd）应能复用同一工作目录执行命令。
+    /// 覆盖 RFC 测试点：create session → reuse cwd。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_cwd_created_and_reused() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.session_cwd_enabled = true;
+        });
+
+        // 第一次：带 cwd，创建会话。
+        let v1 = handle(
+            RunCommandArgs {
+                command: "echo from_session".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await
+        .expect("第一次 run_command 应成功并创建 session");
+
+        let text1 = v1
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .expect("response must have text payload");
+        let info1: serde_json::Value =
+            serde_json::from_str(text1).expect("text payload is JSON");
+        let session_id = info1
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .expect("开启会话持久化时必须回显 sessionId")
+            .to_string();
+        assert!(session_id.starts_with("cwd_"), "sessionId 应以 cwd_ 前缀");
+        // cwd 也应回显，供客户端在工具描述里引导。
+        // 注意：resolve_safe_path 会 canonicalize，Windows 下产出 `\\?\` 前缀的 verbatim 路径，
+        // 故与原始 dir 比较需用 canonicalize 后的形式。
+        let canon = std::fs::canonicalize(&dir).expect("canonicalize dir");
+        assert_eq!(
+            info1.get("cwd").and_then(|s| s.as_str()),
+            Some(canon.to_string_lossy().as_ref()),
+            "回显 cwd 应与 canonicalize 后的请求一致"
+        );
+        assert!(state.cwd_sessions.contains_key(&session_id));
+
+        // 第二次：仅带 sessionId，不带 cwd，应复用同一目录。
+        let v2 = handle(
+            RunCommandArgs {
+                command: "echo reused_session".into(),
+                cwd: None,
+                session_id: Some(session_id.clone()),
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await
+        .expect("复用 session 时不应要求 cwd");
+        let text2 = v2
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .expect("response must have text payload");
+        let info2: serde_json::Value =
+            serde_json::from_str(text2).expect("text payload is JSON");
+        let stdout = info2.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(
+            stdout.contains("reused_session"),
+            "复用 session 的命令应正常执行，实际：{stdout:?}"
+        );
+        // 复用后 session 仍是同一个 key。
+        assert!(state.cwd_sessions.contains_key(&session_id));
+    }
+
+    /// 会话绑定的 cwd 若已移出白名单，下次使用时必须被拒绝（每条 use 重校验）。
+    /// 覆盖 RFC 测试点：whitelist rejection on session cwd —— 规则 7 红线不削弱。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_cwd_revalidates_whitelist() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.session_cwd_enabled = true;
+        });
+
+        // 先创建 session。
+        let v1 = handle(
+            RunCommandArgs {
+                command: "echo ok".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await
+        .expect("创建 session 应成功");
+        let text1 = v1
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .expect("response must have text payload");
+        let info1: serde_json::Value =
+            serde_json::from_str(text1).expect("text payload is JSON");
+        let session_id = info1
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .expect("应回显 sessionId")
+            .to_string();
+
+        // 收紧白名单，使其不再包含 session 绑定的目录。
+        state
+            .config
+            .write()
+            .await
+            .allowed_roots
+            .clear();
+
+        // 复用 session —— 绑定的 cwd 已不在白名单，必须拒绝。
+        let result = handle(
+            RunCommandArgs {
+                command: "echo should_fail".into(),
+                cwd: None,
+                session_id: Some(session_id),
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await;
+        let err = result.expect_err("session cwd 已出白名单必须 Err");
+        assert!(
+            err.contains("白名单") || err.contains("不在白名单"),
+            "应提示 cwd 不在白名单，实际：{err}"
+        );
+    }
+
+    /// 提供不存在/无效的 session_id 必须明确报错，且不应静默创建新会话。
+    /// 覆盖 RFC 测试点：expired/unknown session error。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unknown_session_id_rejected() {
+        let (state, _dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.session_cwd_enabled = true;
+        });
+        let before = state.cwd_sessions.len();
+        let result = handle(
+            RunCommandArgs {
+                command: "echo nope".into(),
+                cwd: None,
+                session_id: Some("cwd_does_not_exist_0000000000000000".into()),
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await;
+        let err = result.expect_err("未知 sessionId 必须 Err");
+        assert!(
+            err.contains("不存在") || err.contains("过期"),
+            "应提示 session 不存在或过期，实际：{err}"
+        );
+        // 不应因带未知 id 而自动新建会话。
+        assert_eq!(
+            state.cwd_sessions.len(),
+            before,
+            "未知 sessionId 不应静默创建新会话"
+        );
+    }
+
+    /// 开关关闭时：等效旧行为——cwd 必传，且不回显 sessionId；
+    /// 即便传入 sessionId 也被忽略（不创建、不报错、不持久化）。
+    /// 覆盖 RFC 测试点：default-off regression —— 零行为变化。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn default_off_ignores_session_id() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.session_cwd_enabled = false; // 默认关
+        });
+        let v = handle(
+            RunCommandArgs {
+                command: "echo default_off".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: Some("cwd_ignored".into()), // 即便传了也不应生效
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await
+        .expect("默认关时带 sessionId 不应报错，行为与旧版一致");
+        let text = v
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .expect("response must have text payload");
+        let info: serde_json::Value = serde_json::from_str(text).expect("text payload is JSON");
+        // 默认关时不回显 sessionId。
+        assert!(
+            info.get("sessionId").is_none(),
+            "默认关时不应回显 sessionId"
+        );
+        // 且不应持久化任何会话。
+        assert!(
+            state.cwd_sessions.is_empty(),
+            "默认关时不应创建 cwd 会话，避免行为变化"
+        );
+        let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(stdout.contains("default_off"), "命令应正常执行");
     }
 }

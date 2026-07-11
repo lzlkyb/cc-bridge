@@ -229,6 +229,17 @@ async fn mcp_handler(
 /// （serverMs / ioMs / auditMs / overheadMs）能正确累加并写入审计。
 ///
 /// 抽成独立函数是为了把 `with_io_timer` 的作用域干净地包住整个分发 + 审计流程，
+/// 从 run_command 的返回 JSON 提取 session_id（content[0].text 是一段 JSON 字符串）。
+/// 仅 run_command 在开启会话持久化时会携带，用于审计追溯；其它工具恒 None。
+fn extract_run_command_session_id(content: &serde_json::Value) -> Option<String> {
+    content
+        .pointer("/content/0/text")
+        .and_then(|t| t.as_str())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|j| j.get("sessionId").cloned())
+        .and_then(|s| s.as_str().map(String::from))
+}
+
 /// 从而 `take_io()` 一定在作用域内部调用（task_local 在作用域外未初始化会 panic）。
 pub async fn handle_tools_call(
     state: Arc<AppState>,
@@ -249,6 +260,15 @@ pub async fn handle_tools_call(
         let start = std::time::Instant::now();
         let result = dispatch_tool(tool_name, arguments.clone(), &state).await;
         let elapsed = start.elapsed().as_millis() as u64;
+        // 仅 run_command 在开启会话持久化时会携带 sessionId，用于审计追溯。
+        let session_id = if tool_name == "run_command" {
+            result
+                .as_ref()
+                .ok()
+                .and_then(extract_run_command_session_id)
+        } else {
+            None
+        };
 
         // I/O 耗时（task_local 跨各工具累加）；必须在 with_io_timer 作用域内取。
         let io_ms = crate::timing::take_io();
@@ -270,6 +290,7 @@ pub async fn handle_tools_call(
                         elapsed,
                         server_ms_dispatch,
                         io_ms,
+                        session_id.clone(),
                     );
                 }
                 Json(json!({
@@ -291,6 +312,7 @@ pub async fn handle_tools_call(
                         elapsed,
                         server_ms_dispatch,
                         io_ms,
+                        session_id.clone(),
                     );
                 }
                 Json(json!({
@@ -325,6 +347,7 @@ fn write_audit_for_call(
     elapsed: u64,
     server_ms_dispatch: u64,
     io_ms: Option<u64>,
+    session_id: Option<String>,
 ) {
     let args_str = arguments.to_string();
     // auditMs 代理 = 序列化耗时。
@@ -340,6 +363,7 @@ fn write_audit_for_call(
             io_ms,
             None,
             None,
+            session_id.clone(),
         );
         let a0 = std::time::Instant::now();
         let _ = serde_json::to_string(&probe);
@@ -357,6 +381,7 @@ fn write_audit_for_call(
         io_ms,
         Some(audit_ms),
         None,
+        session_id,
     );
     // D7 修复：审计日志改为后台阻塞线程异步落盘，不再阻塞请求处理的 async 线程；
     // 写入失败通过 log::error! 上报，不再以 .ok() 静默吞掉。
@@ -698,18 +723,19 @@ fn get_tool_definitions() -> serde_json::Value {
         },
         {
             "name": "run_command",
-            "description": "Execute a shell command (`cmd /C`) in a whitelisted cwd. DANGEROUS: equivalent to granting the caller arbitrary code execution — disabled by default via the `shell_enabled` config toggle, and blocked entirely in read-only mode. Foreground mode (background=false, default) waits up to timeoutMs and returns stdout/stderr/exitCode. Background mode (background=true) returns immediately with a handle; poll it via get_command_output and end it via stop_command. Stateless: no persistent shell session across calls — always pass an absolute cwd, `cd` does not carry over between calls.",
+            "description": "Execute a shell command (`cmd /C`) in a whitelisted cwd. DANGEROUS: equivalent to granting the caller arbitrary code execution — disabled by default via the `shell_enabled` config toggle, and blocked entirely in read-only mode. Foreground mode (background=false, default) waits up to timeoutMs and returns stdout/stderr/exitCode. Background mode (background=true) returns immediately with a handle; poll it via get_command_output and end it via stop_command. The response always includes `sessionId` and `cwd`. If the server has session cwd persistence enabled (operator must turn it on), pass `cwd` on the first call to receive a `sessionId`; on later calls pass that `sessionId` instead of `cwd` to keep working in the same directory across calls. If persistence is disabled (default), you must pass an absolute `cwd` every call — `cd` does not carry over between calls.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "command": { "type": "string" },
                     "description": { "type": "string", "description": "Human-readable description for permission UX / audit logging" },
-                    "cwd": { "type": "string", "description": "Absolute path, must be within an allowed root" },
+                    "cwd": { "type": "string", "description": "Absolute path within an allowed root. Required unless a valid sessionId is supplied (session cwd persistence). If persistence is off, always pass an absolute cwd." },
+                    "sessionId": { "type": "string", "description": "Opaque session handle from a prior run_command response. Supply to reuse that call's working directory; omit cwd when using it." },
                     "background": { "type": "boolean", "default": false },
                     "timeoutMs": { "type": "integer", "default": 30000, "description": "Foreground mode only" },
                     "maxOutputBytes": { "type": "integer", "default": 1048576, "description": "Output beyond this is discarded and truncated=true is returned" }
                 },
-                "required": ["command", "cwd"]
+                "required": ["command"]
             }
         },
         {

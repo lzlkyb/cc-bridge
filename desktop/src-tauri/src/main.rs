@@ -76,19 +76,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let handle = app.handle().clone();
-            let data_dir = handle.path().app_data_dir().map_err(|e| {
-                std::io::Error::other(format!("无法解析应用数据目录：{e}"))
-            })?;
-            std::fs::create_dir_all(&data_dir).map_err(|e| {
-                std::io::Error::other(format!("无法创建应用数据目录：{e}"))
-            })?;
+            let data_dir = handle
+                .path()
+                .app_data_dir()
+                .map_err(|e| std::io::Error::other(format!("无法解析应用数据目录：{e}")))?;
+            std::fs::create_dir_all(&data_dir)
+                .map_err(|e| std::io::Error::other(format!("无法创建应用数据目录：{e}")))?;
 
-            let db_conn = db::init_database(&data_dir).map_err(|e| {
-                std::io::Error::other(format!("初始化数据库失败：{e}"))
-            })?;
-            let bridge_config = config::load_config(&db_conn).map_err(|e| {
-                std::io::Error::other(format!("加载配置失败：{e}"))
-            })?;
+            let db_conn = db::init_database(&data_dir)
+                .map_err(|e| std::io::Error::other(format!("初始化数据库失败：{e}")))?;
+            let bridge_config = config::load_config(&db_conn)
+                .map_err(|e| std::io::Error::other(format!("加载配置失败：{e}")))?;
 
             // Prune audit log per retention policy on startup
             let _ = audit::cleanup_old_entries(&data_dir, bridge_config.audit_retention_days);
@@ -104,6 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     loop {
                         ticker.tick().await;
                         gc_state.gc_path_locks();
+                        gc_state.gc_cwd_sessions();
                     }
                 });
             }
@@ -319,6 +318,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::set_autostart,
             commands::list_running_commands,
             commands::stop_running_command,
+            commands::get_command_output,
             commands::start_update,
         ])
         .on_window_event(|window, event| {

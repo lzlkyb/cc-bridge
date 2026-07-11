@@ -155,6 +155,11 @@ fn ensure_defaults(conn: &Connection) -> Result<(), String> {
             serde_json::to_string(&d.shell_enabled)
                 .map_err(|e| format!("序列化默认值失败：{e}"))?,
         ),
+        (
+            "session_cwd_enabled",
+            serde_json::to_string(&d.session_cwd_enabled)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
+        ),
     ];
 
     for (key, default_value) in defaults {

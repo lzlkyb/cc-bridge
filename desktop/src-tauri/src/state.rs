@@ -2,13 +2,23 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use rusqlite::Connection;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::BridgeConfig;
+
+/// 会话级 cwd 持久化（默认关，见 `BridgeConfig::session_cwd_enabled`）。
+///
+/// 用显式 `session_id` handle 串起跨 `run_command` 调用的工作目录，消除「每次必传 cwd」
+/// 的摩擦。安全约束不削弱：每次使用前仍经 `security::path::resolve_safe_path` 重校验白名单
+/// —— 绝不因「已存」而跳过校验（规则 7 红线）。
+pub struct CwdSession {
+    pub cwd: PathBuf,
+    pub last_active: Instant,
+}
 
 pub struct RunningCommand {
     pub pid: u32,
@@ -59,6 +69,9 @@ pub struct AppState {
     // 后台命令注册表（run_command background=true 时登记）。v1 没有独立的定时回收任务，
     // 已结束的 handle 会一直占位直到 stop_command 显式移除或达到并发上限被拒绝新建。
     pub running_commands: DashMap<String, RunningCommand>,
+    // 会话级 cwd 持久化存储（默认关）。key=opaque session_id，value=已校验的 cwd + 最后活跃时间。
+    // 与 path_locks 同源使用 DashMap；空闲回收见 `gc_cwd_sessions`。
+    pub cwd_sessions: DashMap<String, CwdSession>,
 }
 
 impl AppState {
@@ -73,6 +86,7 @@ impl AppState {
             mcp_server_handle: Mutex::new(None),
             mcp_running: AtomicBool::new(false),
             running_commands: DashMap::new(),
+            cwd_sessions: DashMap::new(),
         }
     }
 
@@ -100,5 +114,14 @@ impl AppState {
     pub fn gc_path_locks(&self) {
         self.path_locks
             .retain(|_, lock| Arc::strong_count(lock) > 1);
+    }
+
+    /// 回收空闲超过 30 分钟的 cwd 会话。
+    ///
+    /// 与 `gc_path_locks` 同节奏（每 60s，由 main 后台任务调用）。超时即丢弃，不续期——
+    /// 客户端若仍持有旧 session_id，下次调用会收到「session 不存在」错误，按工具描述重新创建即可。
+    pub fn gc_cwd_sessions(&self) {
+        let cutoff = Instant::now() - Duration::from_secs(30 * 60);
+        self.cwd_sessions.retain(|_, s| s.last_active > cutoff);
     }
 }

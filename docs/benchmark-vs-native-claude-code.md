@@ -50,6 +50,7 @@
 - native / litecode 的 Bash 跨调用保留 cwd（litecode 用 `PWD_MARKER` 技巧）。
 - cc-bridge `run_command` **刻意无状态**：cwd 每次必传（`resolve_safe_path` 强约束）。
 - 不是缺陷，是"远程不可信"设计哲学。消除需引入**会话级 cwd**（提案 P1，建议独立 RFC，可开关、默认关）。
+- **已出 RFC 并已实施**（`proposals/session_cwd_persistence_rfc.md`）。网络调研关键结论：**不能用"按 token 隐式关联 cwd"**（MCP 无协议级 session，2026-07 RC 甚至移除 `Mcp-Session-Id`）——正确做法是 **显式 `session_id` handle 模式**（同类案例 Arbitrium/sshmcp 均如此），每次用前仍重校验白名单。难度服务端 ★☆☆、**默认关开关零行为变化**；`cargo clippy --no-default-features` 零警告、`cargo test --no-default-features` 全绿（含 4 条新增会话测试）。
 - 附带差异：timeout 默认 30s vs native 120s，可调。
 
 ### 🟡 3. MCP 协议手写 dispatch（无 SSE / 协议协商）
@@ -89,7 +90,7 @@
 
 | 项 | 价值 | 说明 |
 |---|---|---|
-| **会话级 cwd 持久化** | 消除最大语义差距 | 需 RFC：sentinel 回显 + 白名单校验 + 可开关默认关。建议独立评估，不阻塞主线 |
+| **会话级 cwd 持久化** | 消除最大语义差距 | ✅ 已实施（`proposals/session_cwd_persistence_rfc.md`）。采用**显式 session_id handle 模式**（非 token 隐式关联，已据官方规范纠正）；**默认关、零行为变化**、每次重校验白名单。价值取决于客户端是否回传 id |
 | **rmcp SDK 迁移** | 补齐 SSE + 协议协商 + 减维护负担 | 重大重构；安全链路迁移需先出专项方案 |
 
 ### C. 体验增强（依赖客户端是否采用）—— 仍待做
@@ -107,7 +108,7 @@
 **确定性三连已清零，batch 已落地，主线债务见底。** 接下来分两档：
 
 - **想继续收窄体验差距（推荐）**：
-  - 出 **会话级 cwd 持久化 RFC**（B 组，消除最大语义差距）。
+  - ~~出 **会话级 cwd 持久化 RFC**（B 组，消除最大语义差距）~~ → **已完成**：RFC + 实现均已落地（默认关、clippy/test 全绿）。
   - 推动 **Claude 侧真正采用 batch**（工具已就绪，收益取决于客户端是否合并调用）。
 - **想补齐协议层长期债**：
   - 出 **rmcp SDK 迁移专项方案**（B 组），先解决安全链路挂接，再动 dispatch。

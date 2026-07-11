@@ -31,6 +31,9 @@ pub struct AuditEntry {
     /// O1：派生量 = serverMs − durationMs − auditMs（请求解析 + 响应序列化 + gzip + 线缆传输）。
     #[serde(rename = "overheadMs", skip_serializing_if = "Option::is_none")]
     pub overhead_ms: Option<u64>,
+    /// 会话级 cwd 持久化的 handle（run_command 开启会话时记录，便于审计追溯）。
+    #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 pub fn write_audit_log(data_dir: &Path, entry: &AuditEntry) -> Result<(), String> {
@@ -94,6 +97,7 @@ pub fn new_entry(
     io_ms: Option<u64>,
     audit_ms: Option<u64>,
     net_ms: Option<u64>,
+    session_id: Option<String>,
 ) -> AuditEntry {
     // overhead = server − dispatch调度 − audit写盘；缺任一分量则留 None。
     let overhead_ms = match (server_ms, duration_ms, audit_ms) {
@@ -113,6 +117,7 @@ pub fn new_entry(
         audit_ms,
         net_ms,
         overhead_ms,
+        session_id,
     }
 }
 
@@ -195,6 +200,7 @@ mod tests {
             Some(20),
             Some(4),
             Some(2),
+            None,
             None,
         );
         assert_eq!(e.server_ms, Some(20));
