@@ -113,6 +113,21 @@ export function ConnectTab({
         />
       )}
 
+      {/* 弱提示：默认网卡变了但当前 serve 的 IP 仍在线（连接未断），不弹红警告，仅做信息告知 */}
+      {listenAll && !status?.ipChanged && selectedIp && lanIps.includes(selectedIp) && lanIps[0] !== selectedIp && (
+        <div className="flex items-start gap-2.5 rounded-lg border border-blue-500/40 bg-blue-500/10 p-4">
+          <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-blue-500/15 text-blue-600">
+            <Icon name="activity" size={15} />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-blue-700">默认网卡已变化</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+              当前仍使用 <code className="rounded bg-background px-1">{selectedIp}</code> 提供服务（默认网卡现已是 <code className="rounded bg-background px-1">{lanIps[0]}</code>）。连接未中断，如需改用新的默认地址，可在下方重新选择。
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* A. Hero 渐变头卡：运行状态 + 地址 + 关键指标 + 启停按钮 */}
       <ConnectHero
         status={status}

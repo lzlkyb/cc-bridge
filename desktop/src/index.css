@@ -335,6 +335,18 @@ body {
   animation: addr-shimmer 2.5s ease-in-out infinite;
 }
 
+/* 网络卡片：端口重启警告框（深浅主题适配）*/
+.warn-box {
+  background: hsl(var(--warning) / 0.1);
+  border: 1px solid hsl(var(--warning) / 0.45);
+  color: hsl(27 90% 36%);
+}
+.dark .warn-box {
+  background: hsl(var(--warning) / 0.12);
+  border-color: hsl(var(--warning) / 0.5);
+  color: hsl(27 95% 68%);
+}
+
 /* A4. 运行时间秒数颜色闪动（数码钟感）*/
 @keyframes uptime-flash {
   0%, 100% { color: var(--hero-text); }

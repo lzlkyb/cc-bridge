@@ -49,8 +49,12 @@ function NetworkGroup({
   }, [status]);
 
   const dirty = status ? port !== status.port : false;
+  // 端口范围校验：1–65535 的整数
+  const valid = Number.isInteger(port) && port >= 1 && port <= 65535;
+  const invalid = !valid;
 
   const handleSaveAndRestart = async () => {
+    if (!valid) return;
     setSaving(true);
     try {
       const result = await invoke<ConfigSaveResult>("save_config", {
@@ -76,24 +80,46 @@ function NetworkGroup({
         <CardTitle icon={<Icon name="server" />}>网络</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {status && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <span>当前访问地址</span>
+            <code className="rounded-md bg-accent px-2 py-0.5 font-mono text-xs text-accent-foreground">
+              http://localhost:{status.port}
+            </code>
+          </div>
+        )}
         <div className="space-y-2">
           <Label>端口</Label>
           <Input
             type="number"
+            min={1}
+            max={65535}
             value={port}
             onChange={(e) => setPort(Number(e.target.value))}
-            className="max-w-[200px]"
+            className={`max-w-[200px] ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
           />
+          {invalid && (
+            <p className="text-xs text-destructive">端口范围 1 – 65535，请重新输入</p>
+          )}
         </div>
         <div className="flex items-center gap-3">
-          <Button onClick={handleSaveAndRestart} disabled={!dirty || saving}>
-            {saving ? "保存中..." : "保存"}
+          <Button
+            onClick={handleSaveAndRestart}
+            disabled={!dirty || saving || invalid}
+            isLoading={saving}
+            loadingText="保存中..."
+          >
+            {dirty ? "保存并重启服务" : "保存"}
           </Button>
+          {!dirty && !restarted && <span className="text-sm text-muted-foreground">无更改</span>}
           {restarted && <span className="text-sm text-success">已保存并重启 ✓</span>}
         </div>
-        <p className="text-xs text-muted-foreground">
-          端口冲突时可在此修改。<b>修改端口需重启服务生效</b>，保存后将自动重启。
-        </p>
+        <div className="warn-box flex items-start gap-2.5 rounded-lg p-3">
+          <Icon name="alertTriangle" size={16} className="mt-0.5 shrink-0" />
+          <p className="text-xs leading-relaxed">
+            <b>修改端口将重启服务</b>，已连接的客户端会短暂断开。保存后自动重启，无需手动操作。
+          </p>
+        </div>
       </CardContent>
     </Card>
   );

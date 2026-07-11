@@ -485,6 +485,74 @@ pub async fn stop_running_command(
     Ok(())
 }
 
+/// 本机面板实时拉取后台命令（run_command background=true）的输出，与远程 MCP 的
+/// get_command_output 读的是同一份 `AppState.running_commands` 注册表。
+/// 返回干净结构体（stdout/stderr 文本 + 长度 + 截断标记 + 运行态），供前端增量轮询。
+/// 安全不削弱：只暴露已捕获的输出，不新增任何执行 / 控制能力。
+#[tauri::command]
+pub async fn get_command_output(
+    state: State<'_, Arc<AppState>>,
+    handle: String,
+    stdout_offset: Option<usize>,
+    stderr_offset: Option<usize>,
+) -> Result<CommandOutput, String> {
+    use std::sync::atomic::Ordering;
+    let stdout_offset = stdout_offset.unwrap_or(0);
+    let stderr_offset = stderr_offset.unwrap_or(0);
+    // 先克隆出需要的 Arc，再释放 DashMap 的 Ref，避免在持有 Ref 期间跨 await。
+    let (stdout_arc, stderr_arc, stdout_trunc, stderr_trunc, exit_code_arc, pid) = {
+        let entry = state
+            .running_commands
+            .get(&handle)
+            .ok_or_else(|| format!("未知的 handle: {handle}（可能已被清理）"))?;
+        (
+            entry.stdout.clone(),
+            entry.stderr.clone(),
+            entry.stdout_truncated.clone(),
+            entry.stderr_truncated.clone(),
+            entry.exit_code.clone(),
+            entry.pid,
+        )
+    };
+
+    let stdout = stdout_arc.lock().await;
+    let stderr = stderr_arc.lock().await;
+    let exit_code = *exit_code_arc.lock().await;
+
+    let stdout_slice = &stdout[stdout_offset.min(stdout.len())..];
+    let stderr_slice = &stderr[stderr_offset.min(stderr.len())..];
+
+    Ok(CommandOutput {
+        stdout: String::from_utf8_lossy(stdout_slice).to_string(),
+        stderr: String::from_utf8_lossy(stderr_slice).to_string(),
+        stdout_total_bytes: stdout.len(),
+        stderr_total_bytes: stderr.len(),
+        stdout_truncated: stdout_trunc.load(Ordering::Relaxed),
+        stderr_truncated: stderr_trunc.load(Ordering::Relaxed),
+        running: exit_code.is_none(),
+        exit_code,
+        pid,
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct CommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    #[serde(rename = "stdoutTotalBytes")]
+    pub stdout_total_bytes: usize,
+    #[serde(rename = "stderrTotalBytes")]
+    pub stderr_total_bytes: usize,
+    #[serde(rename = "stdoutTruncated")]
+    pub stdout_truncated: bool,
+    #[serde(rename = "stderrTruncated")]
+    pub stderr_truncated: bool,
+    pub running: bool,
+    #[serde(rename = "exitCode")]
+    pub exit_code: Option<i32>,
+    pub pid: u32,
+}
+
 // ===== 自动更新（后台线程，不阻塞 UI），採自 PastePanda 实现 =====
 
 /// 指数退避重试辅助函数

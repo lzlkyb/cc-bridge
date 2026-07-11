@@ -81,6 +81,19 @@ export interface RunningCommandInfo {
   elapsedSeconds: number;
 }
 
+/** get_command_output 返回的后台命令实时输出（stdout/stderr 为本次增量片段）。 */
+export interface CommandOutput {
+  stdout: string;
+  stderr: string;
+  stdoutTotalBytes: number;
+  stderrTotalBytes: number;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  running: boolean;
+  exitCode: number | null;
+  pid: number;
+}
+
 export interface BrowseEntry {
   name: string;
   path: string;

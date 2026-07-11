@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse, ConfigSaveResult, RunningCommandInfo } from "../../lib/types";
+import type { StatusResponse, ConfigSaveResult, RunningCommandInfo, CommandOutput } from "../../lib/types";
 import { formatUptime } from "../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Input } from "../ui/input";
@@ -10,6 +10,15 @@ import { DirectoryBrowser } from "../modals/DirectoryBrowser";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
+import { SecurityOverview } from "./SecurityOverview";
+
+/** 扩展名预设（一键设为该组，覆盖当前值） */
+const PRESET_EXTENSIONS = [
+  { label: "前端常用", value: ".js, .jsx, .ts, .tsx, .css, .html, .json" },
+  { label: "后端常用", value: ".java, .py, .go, .rs, .rb, .php" },
+  { label: "配置文件", value: ".yaml, .yml, .toml, .ini, .env, .conf" },
+  { label: "文档类", value: ".md, .txt, .csv, .log" },
+] as const;
 
 export function SecurityTab({
   status,
@@ -55,42 +64,28 @@ export function SecurityTab({
   ) ?? [];
 
   return (
-    <div className="space-y-3">
-      {/* 白名单关闭 / 只读开启时的常驻警示条 */}
-      {status && !status.whitelistEnabled && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-xs text-destructive">
-          <Icon name="alertTriangle" size={16} className="mt-0.5 shrink-0" />
-          <div>
-            <b>路径白名单校验已关闭。</b>远程 Claude Code 可读写本机<b>任意路径</b>。
-            仅在完全信任网络环境时使用，用完请在「设置 → 功能开关」中开回。
-          </div>
-        </div>
-      )}
-      {status?.shellEnabled && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2.5 text-xs text-destructive">
-          <Icon name="terminal" size={16} className="mt-0.5 shrink-0" />
-          <div>
-            <b>命令执行已开启。</b>远程 Claude Code 可在白名单目录内执行<b>任意 Shell 命令</b>（等同 RCE）。
-            仅在完全信任的网络环境中使用，用完请在「设置 → 功能开关」中关闭。
-          </div>
-        </div>
-      )}
-      {status?.readonlyMode && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 px-3.5 py-2.5 text-xs text-warning">
-          <Icon name="lock" size={16} className="mt-0.5 shrink-0" />
-          <div>
-            <b>只读模式已开启。</b>所有写入 / 删除 / 移动 / 复制请求将被拒绝。
-          </div>
-        </div>
-      )}
+    <div className="space-y-4">
+      {/* 安全概览：核心开关内嵌 + 风险总览（方案 A） */}
+      <SecurityOverview status={status} onSaved={onSaved} />
 
-      <RunningCommandsCard />
-
-      <div className="divider-grad" />
+      <RunningCommandsCard danger={status?.shellEnabled ?? false} />
 
       <Card>
         <CardHeader className="flex-row items-center justify-between space-y-0 gap-3 flex-wrap">
-          <CardTitle icon={<Icon name="folder" />}>白名单根目录</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle icon={<Icon name="folder" />}>白名单根目录</CardTitle>
+            {status && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                  status.whitelistEnabled
+                    ? "bg-success/10 text-success"
+                    : "bg-destructive/10 text-destructive"
+                }`}
+              >
+                {status.whitelistEnabled ? "校验已开启" : "校验已关闭"}
+              </span>
+            )}
+          </div>
           {status && status.allowedRoots.length > 3 && (
             <div className="flex items-center gap-1.5 h-8 rounded-md border border-input bg-background px-2">
               <Icon name="search" size={13} className="text-muted-foreground shrink-0" />
@@ -109,7 +104,9 @@ export function SecurityTab({
               <Icon name="folder" size={72} className="absolute opacity-[0.06] pointer-events-none" />
               <Icon name="folder" size={24} className="relative z-[1] text-muted-foreground/40" />
               <p className="relative z-[1] text-sm text-muted-foreground text-center max-w-[280px]">
-                添加工作目录后，远程 Claude Code 才能访问本地文件。
+                {status.whitelistEnabled
+                  ? "添加工作目录后，远程 Claude Code 才能访问本地文件。"
+                  : "白名单校验已关闭，远程可访问本机任意路径，无需添加目录。"}
               </p>
               <Button variant="outline" size="sm" className="relative z-[1] mt-1" onClick={() => setBrowserOpen(true)}>
                 <Icon name="folder" size={14} />
@@ -152,87 +149,93 @@ export function SecurityTab({
         </CardContent>
       </Card>
 
-      <div className="divider-grad" />
-
       <Card>
         <CardHeader>
-          <CardTitle icon={<Icon name="shield" />}>安全设置</CardTitle>
+          <CardTitle icon={<Icon name="shield" />}>文件管控</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="mb-1 mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground first:mt-1">
+            文件过滤
+          </div>
           <div className="space-y-2">
             <AutoSaveField
               label="允许的扩展名（逗号分隔，留空不限制）"
-
               initial={status?.allowedExtensions.join(", ") ?? ""}
               saved={lastSavedField === "extensions"}
               onSave={(val) => {
                 const extList = val.split(",").map((e) => e.trim()).filter(Boolean);
                 return saveField({ allowedExtensions: extList }, "extensions");
-            }}
-          />
-          {/* 预设快捷填充 */}
-          <div className="flex flex-wrap gap-1.5">
-            {([
-              { label: "前端常用", value: ".js, .jsx, .ts, .tsx, .css, .html, .json" },
-              { label: "后端常用", value: ".java, .py, .go, .rs, .rb, .php" },
-              { label: "配置文件", value: ".yaml, .yml, .toml, .ini, .env, .conf" },
-              { label: "文档类", value: ".md, .txt, .csv, .log" },
-            ] as const).map((preset) => (
+              }}
+            />
+            {/* 预设：一键设为该组（覆盖当前值），不再追加 */}
+            <div className="flex flex-wrap gap-1.5">
+              {PRESET_EXTENSIONS.map((preset) => (
+                <button
+                  key={preset.label}
+                  type="button"
+                  onClick={() => {
+                    const val = preset.value;
+                    saveField({ allowedExtensions: val.split(",").map((e) => e.trim()).filter(Boolean) }, "extensions");
+                  }}
+                  className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
+                >
+                  <Icon name="check" size={10} />
+                  {preset.label}
+                </button>
+              ))}
               <button
-                key={preset.label}
                 type="button"
-                onClick={() => {
-                  const current = status?.allowedExtensions.join(", ") ?? "";
-                  const val = current ? current + ", " + preset.value : preset.value;
-                  saveField({ allowedExtensions: val.split(",").map((e) => e.trim()).filter(Boolean) }, "extensions");
-                }}
-                className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
+                onClick={() => saveField({ allowedExtensions: [] }, "extensions")}
+                className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-0.5 text-[11px] text-destructive hover:border-destructive/40 transition-colors"
               >
-                <Icon name="plus" size={10} />
-                {preset.label}
+                <Icon name="x" size={10} />
+                清空
               </button>
-            ))}
-          </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              点预设「一键设为该组」（覆盖当前值）；留空表示不限制扩展名。
+            </p>
           </div>
           <div className="grid grid-cols-2 gap-4">
             <AutoSaveNumber
               label="文件大小上限 (MB)"
-
               initial={status ? Math.round(status.maxFileSizeBytes / 1024 / 1024) : 20}
               saved={lastSavedField === "maxFileSize"}
               onSave={(val) => saveField({ maxFileSizeBytes: val * 1024 * 1024 }, "maxFileSize")}
             />
             <AutoSaveNumber
               label="备份保留份数"
-
               initial={status?.backupRetention ?? 10}
               saved={lastSavedField === "backupRetention"}
               onSave={(val) => saveField({ backupRetention: val }, "backupRetention")}
             />
           </div>
+          <AutoSaveField
+            label="备份目录"
+            initial={status?.backupDir ?? ""}
+            saved={lastSavedField === "backupDir"}
+            onSave={(val) => saveField({ backupDir: val }, "backupDir")}
+          />
+          <div className="mb-1 mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            请求限流
+          </div>
           <div className="grid grid-cols-2 gap-4">
             <AutoSaveNumber
-              label="限流上限（次/窗口）"
-
+              label="限流上限（次 / 窗口）"
               initial={status?.rateLimit.maxRequests ?? 100}
               saved={lastSavedField === "rateMaxReq"}
               onSave={(val) => saveField({ rateLimitMaxRequests: val }, "rateMaxReq")}
             />
             <AutoSaveNumber
               label="限流窗口（秒）"
-
               initial={status ? status.rateLimit.windowMs / 1000 : 60}
               saved={lastSavedField === "rateWindow"}
               onSave={(val) => saveField({ rateLimitWindowMs: val * 1000 }, "rateWindow")}
             />
           </div>
-          <AutoSaveField
-            label="备份目录"
-
-            initial={status?.backupDir ?? ""}
-            saved={lastSavedField === "backupDir"}
-            onSave={(val) => saveField({ backupDir: val }, "backupDir")}
-          />
+          <p className="text-xs text-muted-foreground">
+            当前生效：每 {status ? status.rateLimit.windowMs / 1000 : 60} 秒最多 {status?.rateLimit.maxRequests ?? 100} 次请求，超出后新请求将被拒绝（保护本机资源）。
+          </p>
           <p className="text-xs text-muted-foreground">
             所有设置修改后自动保存，无需手动提交。
           </p>
@@ -255,13 +258,23 @@ export function SecurityTab({
  * 运行中的后台命令（run_command(background=true) 启动）。与远程的
  * get_command_output 读取同一份注册表，让本机面板也能看到并一键终止。
  * 无后台命令时不渲染，避免空卡片占地。
+ * danger：命令执行已开启时整卡高亮红边 + 提醒，引导用户确认进程可信。
  */
-function RunningCommandsCard() {
+function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
   const { data: commands, refetch } = useQuery<RunningCommandInfo[]>({
     queryKey: ["runningCommands"],
     queryFn: () => invoke<RunningCommandInfo[]>("list_running_commands"),
     refetchInterval: 3000,
   });
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggle = (handle: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(handle)) next.delete(handle);
+      else next.add(handle);
+      return next;
+    });
 
   const stop = async (handle: string) => {
     await invoke("stop_running_command", { handle });
@@ -271,7 +284,7 @@ function RunningCommandsCard() {
   if (!commands || commands.length === 0) return null;
 
   return (
-    <Card>
+    <Card className={danger ? "border-destructive/30" : ""}>
       <CardHeader>
         <CardTitle icon={<Icon name="terminal" />}>运行中的后台命令</CardTitle>
       </CardHeader>
@@ -282,36 +295,202 @@ function RunningCommandsCard() {
               <TableHead className="w-[80px]">PID</TableHead>
               <TableHead>命令</TableHead>
               <TableHead className="w-[90px]">已运行</TableHead>
-              <TableHead className="w-[70px]" />
+              <TableHead className="w-[160px]" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {commands.map((cmd, i) => (
-              <TableRow key={cmd.handle} className={i % 2 === 0 ? "bg-muted/20" : ""}>
-                <TableCell className="font-mono text-xs">{cmd.pid}</TableCell>
-                <TableCell className="truncate font-mono text-xs" title={cmd.command}>
-                  {cmd.command}
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {formatUptime(cmd.elapsedSeconds)}
-                </TableCell>
-                <TableCell>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => stop(cmd.handle)}
-                  >
-                    <Icon name="power" size={14} />
-                    终止
-                  </Button>
-                </TableCell>
-              </TableRow>
+              <Fragment key={cmd.handle}>
+                <TableRow className={i % 2 === 0 ? "bg-muted/20" : ""}>
+                  <TableCell className="font-mono text-xs">{cmd.pid}</TableCell>
+                  <TableCell className="truncate font-mono text-xs" title={cmd.command}>
+                    {cmd.command}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {formatUptime(cmd.elapsedSeconds)}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1">
+                      <Button variant="ghost" size="sm" onClick={() => toggle(cmd.handle)}>
+                        <Icon name={expanded.has(cmd.handle) ? "chevronUp" : "chevronDown"} size={14} />
+                        {expanded.has(cmd.handle) ? "收起" : "查看输出"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => stop(cmd.handle)}
+                      >
+                        <Icon name="power" size={14} />
+                        终止
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+                {expanded.has(cmd.handle) && (
+                  <TableRow className="bg-muted/5">
+                    <TableCell colSpan={4} className="p-0">
+                      <CommandOutputPanel handle={cmd.handle} />
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
             ))}
           </TableBody>
         </Table>
+        {danger && (
+          <p className="mt-3 flex items-start gap-1.5 text-xs text-destructive">
+            <Icon name="alertTriangle" size={13} className="mt-0.5 shrink-0" />
+            命令执行已开启，请确认以上进程均来自你信任的会话。
+          </p>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * 单条后台命令的实时输出面板。
+ * 点「查看输出」展开时挂载：每 1.5s 增量拉取 get_command_output，按 stdoutOffset /
+ * stderrOffset 追加（ref 保存 offset，effect 仅在 handle 变化时重建），避免大文本反复重渲。
+ * 命令结束后停止轮询，历史输出仍可查看，方便事后排查。
+ */
+function CommandOutputPanel({ handle }: { handle: string }) {
+  const [stdout, setStdout] = useState("");
+  const [stderr, setStderr] = useState("");
+  const [meta, setMeta] = useState<{
+    running: boolean;
+    exitCode: number | null;
+    stdoutTruncated: boolean;
+    stderrTruncated: boolean;
+    stdoutTotalBytes: number;
+    stderrTotalBytes: number;
+  } | null>(null);
+  const offsets = useRef({ stdout: 0, stderr: 0 });
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+
+    const poll = async () => {
+      try {
+        const out = await invoke<CommandOutput>("get_command_output", {
+          handle,
+          stdoutOffset: offsets.current.stdout,
+          stderrOffset: offsets.current.stderr,
+        });
+        if (cancelled) return;
+        if (out.stdout) setStdout((s) => s + out.stdout);
+        if (out.stderr) setStderr((s) => s + out.stderr);
+        offsets.current.stdout = out.stdoutTotalBytes;
+        offsets.current.stderr = out.stderrTotalBytes;
+        setMeta({
+          running: out.running,
+          exitCode: out.exitCode,
+          stdoutTruncated: out.stdoutTruncated,
+          stderrTruncated: out.stderrTruncated,
+          stdoutTotalBytes: out.stdoutTotalBytes,
+          stderrTotalBytes: out.stderrTotalBytes,
+        });
+        if (!out.running && timer) {
+          clearInterval(timer);
+          timer = undefined;
+        }
+      } catch {
+        // handle 已被清理或读取失败：停止轮询，避免无意义重试。
+        if (timer) {
+          clearInterval(timer);
+          timer = undefined;
+        }
+      }
+    };
+
+    poll();
+    timer = setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      if (timer) clearInterval(timer);
+    };
+  }, [handle]);
+
+  return (
+    <div className="space-y-3 p-3">
+      <div className="flex items-center gap-2">
+        {meta?.running ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
+            运行中
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+            已结束
+            {meta && meta.exitCode !== null && meta.exitCode !== undefined
+              ? ` · ExitCode ${meta.exitCode}`
+              : ""}
+          </span>
+        )}
+        <span className="text-[11px] text-muted-foreground">实时输出（1.5s 刷新）</span>
+      </div>
+      {meta && (meta.stdoutTruncated || meta.stderrTruncated) && (
+        <p className="flex items-center gap-1.5 text-[11px] text-warning">
+          <Icon name="alertTriangle" size={12} />
+          输出已超过 1MB 上限，早期内容已自动截断。
+        </p>
+      )}
+      <LogBox
+        label="标准输出 (stdout)"
+        text={stdout}
+        bytes={meta?.stdoutTotalBytes ?? 0}
+        truncated={meta?.stdoutTruncated ?? false}
+      />
+      {stderr && (
+        <LogBox
+          label="标准错误 (stderr)"
+          text={stderr}
+          bytes={meta?.stderrTotalBytes ?? 0}
+          truncated={meta?.stderrTruncated ?? false}
+          isError
+        />
+      )}
+    </div>
+  );
+}
+
+/** 终端风格日志框：固定高度独立滚动 + 自动滚到底部，stdout 普通色、stderr 危险色。 */
+function LogBox({
+  label,
+  text,
+  bytes,
+  truncated,
+  isError,
+}: {
+  label: string;
+  text: string;
+  bytes: number;
+  truncated: boolean;
+  isError?: boolean;
+}) {
+  const ref = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+  }, [text]);
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+        <span>
+          {label} · {bytes.toLocaleString()} 字节
+        </span>
+        {truncated && <span className="text-warning">已截断</span>}
+      </div>
+      <pre
+        ref={ref}
+        className={`max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border bg-[#0d1117] p-2.5 font-mono text-[11px] leading-relaxed ${
+          isError ? "text-destructive" : "text-[#d4d4d4]"
+        }`}
+      >
+        {text || <span className="opacity-40">（暂无输出）</span>}
+      </pre>
+    </div>
   );
 }
 
