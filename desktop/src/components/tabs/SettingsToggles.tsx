@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
@@ -9,18 +9,36 @@ import { Icon } from "../ui/icon";
 /**
  * 设置页「功能开关」卡：白名单 / 只读 / 审计 / 备份 / 限流。
  * 关闭白名单为高风险操作，需二次确认。开关即时保存到后端 config。
+ *
+ * highlightAnchor：由 Header 安全徽章点击带入（{ anchor, nonce }）。
+ * 切换到本页后自动滚动到对应 ToggleRow 并脉冲高亮 2 秒，引导用户定位开关。
  */
 export function SettingsToggles({
   status,
   onSaved,
+  highlightAnchor,
 }: {
   status?: StatusResponse;
   onSaved: () => void;
+  highlightAnchor?: { anchor: string; nonce: number } | null;
 }) {
   const [confirmWhitelistOff, setConfirmWhitelistOff] = useState(false);
   const [confirmShellOn, setConfirmShellOn] = useState(false);
   const [ackShellRisk, setAckShellRisk] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
+
+  // 由 Header 安全徽章点击触发的定位 + 高亮。
+  // 非激活 Tab 在 Tabs 中为 return null（完全卸载），切到设置页时本组件才挂载，
+  // 此时 highlightAnchor 已就绪，挂载即定位，无需额外延时。
+  useEffect(() => {
+    if (!highlightAnchor?.anchor) return;
+    const el = document.getElementById(`toggle-${highlightAnchor.anchor}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("anchor-highlight");
+    const t = setTimeout(() => el.classList.remove("anchor-highlight"), 2000);
+    return () => clearTimeout(t);
+  }, [highlightAnchor]);
 
   const save = async (patch: Record<string, unknown>) => {
     await invoke<ConfigSaveResult>("save_config", { patch });
@@ -68,6 +86,7 @@ export function SettingsToggles({
       </CardHeader>
       <CardContent className="space-y-0">
         <ToggleRow
+          id="toggle-whitelist"
           label="路径白名单校验"
           danger={status ? !status.whitelistEnabled : false}
           sub={
@@ -80,6 +99,7 @@ export function SettingsToggles({
           onChange={handleWhitelist}
         />
         <ToggleRow
+          id="toggle-readonly"
           label="只读模式"
           sub="开启后禁止写入 / 删除 / 移动 / 复制，仅允许读取、列目录、搜索"
           checked={status?.readonlyMode ?? false}
@@ -110,6 +130,7 @@ export function SettingsToggles({
           onChange={(v) => save({ encodingDetectEnabled: v })}
         />
         <ToggleRow
+          id="toggle-shell"
           label="命令执行"
           danger={status?.shellEnabled ?? false}
           sub={
@@ -196,6 +217,7 @@ function ToggleRow({
   variant = "default",
   danger = false,
   last = false,
+  id,
 }: {
   label: string;
   sub: string;
@@ -204,9 +226,11 @@ function ToggleRow({
   variant?: "default" | "danger";
   danger?: boolean;
   last?: boolean;
+  id?: string;
 }) {
   return (
     <div
+      id={id}
       className={`flex items-center justify-between gap-4 py-3.5 ${
         last ? "" : "border-b"
       } ${danger ? "-mx-3 rounded-lg bg-destructive/5 px-3" : ""}`}

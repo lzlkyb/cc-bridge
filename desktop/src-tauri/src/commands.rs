@@ -81,13 +81,25 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
     let config = state.config.read().await;
     let stats = state.stats.read().await;
     let uptime = state.uptime_seconds().await;
-    let connect_cmd = network::build_connect_command(&config.host, config.port, &config.token);
     let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
     let lan_ips = network::get_lan_ips();
+    // 地址变化检测:
+    // 1) 监听全部网卡时,以用户上次确认的 IP 是否仍在网卡列表为准;
+    // 2) 指定具体 host(非 127.0.0.1 本地回环)且该地址已不在网卡列表,也视为变化(O4)。
     let ip_changed = config
         .last_selected_ip
         .as_ref()
-        .is_some_and(|ip| !lan_ips.contains(ip));
+        .is_some_and(|ip| !lan_ips.contains(ip))
+        || (config.host != "0.0.0.0"
+            && config.host != "127.0.0.1"
+            && !lan_ips.contains(&config.host));
+    let connect_cmd = network::build_connect_command(
+        &config.host,
+        config.port,
+        &config.token,
+        &lan_ips,
+        config.last_selected_ip.as_deref(),
+    );
 
     Ok(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),

@@ -13,9 +13,11 @@ import { UpdateGroup } from "./UpdateGroup";
 export function SettingsTab({
   status,
   onSaved,
+  highlightAnchor,
 }: {
   status?: StatusResponse;
   onSaved: () => void;
+  highlightAnchor?: { anchor: string; nonce: number } | null;
 }) {
   return (
     <div className="space-y-3">
@@ -23,7 +25,7 @@ export function SettingsTab({
       <div className="divider-grad" />
       <NetworkGroup status={status} onSaved={onSaved} />
       <div className="divider-grad" />
-      <SettingsToggles status={status} onSaved={onSaved} />
+      <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
       <div className="divider-grad" />
       <AppGroup />
       <div className="divider-grad" />

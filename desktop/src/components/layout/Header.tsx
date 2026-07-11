@@ -3,16 +3,18 @@ import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
-import { Icon } from "../ui/icon";
+import { Icon, type IconName } from "../ui/icon";
 import { UpdateBadge } from "./UpdateBadge";
 import { TitleBarControls } from "./TitleBarControls";
 
 export function Header({
   status,
   onChanged,
+  onNavigate,
 }: {
   status?: StatusResponse;
   onChanged?: () => void;
+  onNavigate?: (tab: string, anchor?: string) => void;
 }) {
   const [dark, setDark] = useState(() => getStoredTheme() === "dark");
   const [busy, setBusy] = useState(false);
@@ -26,6 +28,23 @@ export function Header({
   }, []);
 
   const running = status?.running ?? true;
+
+  // 安全状态小徽章：任意页可见，点击跳转到对应设置页
+  const securityBadges: {
+    key: string;
+    show: boolean;
+    label: string;
+    icon: IconName;
+    danger: boolean;
+    tab: string;
+    anchor?: string;
+    title: string;
+  }[] = [
+    { key: "whitelist", show: !!status && !status.whitelistEnabled, label: "白名单关闭", icon: "alertTriangle", danger: true, tab: "settings", anchor: "whitelist", title: "白名单已关闭，点击前往设置页关闭" },
+    { key: "ip", show: !!status?.ipChanged, label: "IP 已变化", icon: "alertTriangle", danger: true, tab: "connect", title: "连接地址已变化，点击前往连接页查看" },
+    { key: "readonly", show: !!status?.readonlyMode, label: "只读", icon: "lock", danger: false, tab: "settings", anchor: "readonly", title: "只读模式已开启，点击前往设置页查看" },
+    { key: "shell", show: !!status?.shellEnabled, label: "命令执行已开启", icon: "terminal", danger: true, tab: "settings", anchor: "shell", title: "命令执行已开启，点击前往设置页关闭" },
+  ];
 
   const toggleServer = async () => {
     setBusy(true);
@@ -62,31 +81,23 @@ export function Header({
           {!status ? "连接中" : running ? "运行中" : "已停止"}
         </span>
 
-        {/* 安全状态小徽章：任意页可见 */}
-        {status && !status.whitelistEnabled && (
-          <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[11px] font-semibold text-destructive">
-            <Icon name="alertTriangle" size={11} />
-            白名单关闭
-          </span>
-        )}
-        {status?.ipChanged && (
-          <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[11px] font-semibold text-destructive">
-            <Icon name="alertTriangle" size={11} />
-            IP 已变化
-          </span>
-        )}
-        {status?.readonlyMode && (
-          <span className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-semibold text-warning">
-            <Icon name="lock" size={11} />
-            只读
-          </span>
-        )}
-        {status?.shellEnabled && (
-          <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[11px] font-semibold text-destructive">
-            <Icon name="terminal" size={11} />
-            命令执行已开启
-          </span>
-        )}
+        {/* 安全状态小徽章：任意页可见，点击跳转到对应设置页（白名单/只读/命令执行→安全页，IP 变化→连接页） */}
+        {securityBadges.filter((b) => b.show).map((b) => (
+          <button
+            key={b.key}
+            type="button"
+            title={b.title}
+            onClick={() => onNavigate?.(b.tab, b.anchor)}
+            className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+              b.danger
+                ? "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20"
+                : "border-warning/30 bg-warning/10 text-warning hover:bg-warning/20"
+            }`}
+          >
+            <Icon name={b.icon} size={11} />
+            {b.label}
+          </button>
+        ))}
         <UpdateBadge currentVersion={status?.version} />
       </div>
 

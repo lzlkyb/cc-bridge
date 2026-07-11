@@ -33,6 +33,7 @@ const paths: Record<string, string> = {
   maximize: "M4 4h16v16H4z",
   restore: "M8 8h12v12H8zM4 16V4h12v12z",
   arrowUp: "M12 19V5M5 12l7-7 7 7",
+  chevronDown: "M6 9l6 6 6-6",
   power: "M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10",
   play: "M5 3l14 9-14 9V3z",
   pause: "M6 4h4v16H6zM14 4h4v16h-4z",

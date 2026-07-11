@@ -85,7 +85,7 @@ export function ConnectTab({
       {status?.ipChanged && (
         <IpChangedBanner
           lanIps={lanIps}
-          previousIp={status.lastSelectedIp ?? null}
+          previousIp={status.lastSelectedIp ?? (status.host !== "0.0.0.0" ? status.host : null)}
           port={status.port}
           token={status.token}
           onResolved={onSelectIp}
@@ -107,7 +107,7 @@ export function ConnectTab({
         </CardHeader>
         <CardContent className="space-y-4">
           {/* IP 选择器：多网卡时让用户选连接用哪个地址 */}
-          {listenAll && lanIps.length > 0 && (
+          {listenAll && lanIps.length > 0 && !status?.ipChanged && (
             <AddressPicker
               ips={lanIps}
               selected={selectedIp}
@@ -253,6 +253,26 @@ function IpChangedBanner({
 }) {
   const [pick, setPick] = useState(lanIps[0] ?? "");
   const [copied, setCopied] = useState(false);
+
+  // P2: 网卡全部消失时,下方选择控件与确认按钮会永久 disabled 形成死局。
+  // 此时只给说明、不渲染选择控件;网络恢复、网卡重新出现后会自动回到正常分支。
+  if (lanIps.length === 0) {
+    return (
+      <div className="animate-fade-in space-y-3 rounded-lg border border-destructive/35 bg-destructive/[0.08] p-4">
+        <div className="flex items-start gap-2.5">
+          <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-destructive/15 text-destructive">
+            <Icon name="alertTriangle" size={15} />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-destructive">检测到网络地址变化</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+              之前使用的 <code className="rounded bg-background px-1">{previousIp ?? "原地址"}</code> 已不在本机网卡列表中,且当前没有任何可用的网络地址。请检查网络连接,恢复后本应用将自动重新检测并更新连接命令。
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const command = pick
     ? `claude mcp add --transport http cc-bridge http://${pick}:${port}/mcp --header "Authorization: Bearer ${token}"`

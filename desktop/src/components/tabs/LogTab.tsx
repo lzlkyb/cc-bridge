@@ -9,6 +9,7 @@ import { Badge } from "../ui/badge";
 import { Icon } from "../ui/icon";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 import { useToast } from "../ui/toast";
+import { Combobox } from "../ui/combobox";
 import { PerfCharts } from "./PerfCharts";
 
 /** 参数原始 JSON → 表格行内简短摘要。parse 失败退回原文截断。纯函数（规则 11 只在本文件复用，故留本地）。 */
@@ -154,16 +155,14 @@ export function LogTab() {
             />
           </div>
           {/* Tool filter */}
-          <select
+          <Combobox
             value={toolFilter}
-            onChange={(e) => setToolFilter(e.target.value)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-          >
-            <option value="">全部工具</option>
-            {toolNames.map((t) => (
-              <option key={t} value={t}>{toolLabel(t)}</option>
-            ))}
-          </select>
+            options={[
+              { value: "", label: "全部工具" },
+              ...toolNames.map((t) => ({ value: t, label: toolLabel(t) })),
+            ]}
+            onChange={(v) => setToolFilter(v)}
+          />
           {/* Status filter */}
           <div className="flex items-center gap-0.5 rounded-md bg-muted p-0.5">
             {([["all", "全部"], ["success", "成功"], ["error", "失败"]] as const).map(([val, label]) => (
@@ -385,6 +384,7 @@ function DetailPanel({ entry }: { entry: AuditEntry }) {
           </>
         )}
       </div>
+      <TimingBreakdown entry={entry} />
       <div>
         <div className="mb-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
           <span>参数</span>
@@ -405,6 +405,86 @@ function DetailPanel({ entry }: { entry: AuditEntry }) {
           {entry.error}
         </div>
       )}
+    </div>
+  );
+}
+
+/** O1 结构化耗时拆解：单条审计日志的 5 维耗时可视化。无 O1 数据时显示灰色提示。 */
+function TimingBreakdown({ entry }: { entry: AuditEntry }) {
+  const serverMs = entry.serverMs;
+  if (serverMs == null) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-md border border-dashed border-border bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
+        <Icon name="activity" size={12} />
+        此记录无结构化耗时数据（O1 字段在后端 v2.2.20 后才写入，旧条目不包含 serverMs / ioMs 等）
+      </div>
+    );
+  }
+
+  const io = entry.ioMs ?? 0;
+  const audit = entry.auditMs ?? 0;
+  const overhead = entry.overheadMs ?? 0;
+  const net = entry.netMs ?? Math.max(0, (entry.durationMs ?? serverMs) - serverMs);
+  const dispatch = Math.max(0, serverMs - io - audit - overhead);
+
+  const items = [
+    { label: "调度逻辑", ms: dispatch, color: "#6366f1" },
+    { label: "文件读写 I/O", ms: io, color: "#14b8a6" },
+    { label: "审计写盘", ms: audit, color: "#f59e0b" },
+    { label: "网络往返", ms: net, color: "#ef4444" },
+    { label: "传输/序列化", ms: overhead, color: "#8b5cf6" },
+  ].filter((s) => s.ms > 0);
+
+  const total = items.reduce((s, x) => s + x.ms, 0) || 1;
+  const maxMs = Math.max(1, ...items.map((x) => x.ms));
+
+  return (
+    <div className="rounded-md border border-primary/20 bg-primary/5 p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-primary">
+        <Icon name="activity" size={13} />
+        耗时拆解
+        <span className="ml-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold">O1</span>
+        <span className="ml-auto text-[11px] font-normal text-muted-foreground">
+          服务端 <strong className="font-semibold text-foreground">{serverMs.toFixed(1)}ms</strong>
+          {entry.durationMs != null && <> · 客户端测 {entry.durationMs}ms</>}
+        </span>
+      </div>
+      {/* 堆叠条 */}
+      <div className="flex h-5 overflow-hidden rounded border border-border bg-muted/30">
+        {items.map((s) => {
+          const pct = (s.ms / total) * 100;
+          return (
+            <div
+              key={s.label}
+              className="flex items-center justify-center overflow-hidden whitespace-nowrap text-[9px] font-semibold text-white transition-all"
+              style={{ width: `${pct}%`, background: s.color }}
+              title={`${s.label}: ${s.ms.toFixed(1)}ms`}
+            >
+              {pct >= 8 ? s.ms.toFixed(0) : ""}
+            </div>
+          );
+        })}
+      </div>
+      {/* 分项列表 */}
+      <div className="mt-2 flex flex-col gap-1.5">
+        {items.map((s) => {
+          const pct = (s.ms / total) * 100;
+          return (
+            <div key={s.label} className="flex items-center gap-2 text-[11px]">
+              <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: s.color }} />
+              <span className="w-20 shrink-0 text-muted-foreground">{s.label}</span>
+              <div className="h-1.5 flex-1 overflow-hidden rounded bg-muted">
+                <div
+                  className="h-full rounded"
+                  style={{ width: `${(s.ms / maxMs) * 100}%`, background: s.color }}
+                />
+              </div>
+              <span className="w-14 shrink-0 text-right font-mono font-semibold">{s.ms.toFixed(1)}ms</span>
+              <span className="w-10 shrink-0 text-right text-[10px] text-muted-foreground">{pct.toFixed(1)}%</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

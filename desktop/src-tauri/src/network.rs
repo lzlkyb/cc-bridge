@@ -42,15 +42,31 @@ fn is_usable_ipv4(ip: &str) -> bool {
     ip != "0.0.0.0" && !ip.starts_with("127.") && !ip.starts_with("169.254.")
 }
 
-pub fn build_connect_command(host: &str, port: u16, token: &str) -> String {
+/// 构造给远程服务器粘贴的连接命令。
+/// - host == "0.0.0.0"(监听全部):优先用用户已选 IP(last_selected_ip 且仍在本机网卡),
+///   否则回退默认路由网卡(lan_ips[0]),避免给出用户没选的那个地址(P1)。
+/// - 指定具体 host:若该地址已不在本机网卡(网卡宕掉),回退到默认路由网卡,
+///   避免顶栏/托盘复制出死地址(O4)。
+///
+/// lan_ips 由调用方传入,避免重复枚举网卡(P3)。
+pub fn build_connect_command(
+    host: &str,
+    port: u16,
+    token: &str,
+    lan_ips: &[String],
+    selected_ip: Option<&str>,
+) -> String {
     let display_host = if host == "0.0.0.0" {
-        let lan_ips = get_lan_ips();
-        lan_ips
-            .first()
-            .cloned()
+        selected_ip
+            .filter(|ip| lan_ips.iter().any(|x| x == ip))
+            .map(|s| s.to_string())
+            .or_else(|| lan_ips.first().cloned())
             .unwrap_or_else(|| "127.0.0.1".into())
+    } else if lan_ips.iter().any(|x| x == host) {
+        host.to_string()
     } else {
-        host.into()
+        // 配置的具体地址已不可用,回退到默认路由网卡
+        lan_ips.first().cloned().unwrap_or_else(|| host.to_string())
     };
 
     format!(

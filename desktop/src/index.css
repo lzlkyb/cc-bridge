@@ -438,3 +438,18 @@ body {
     box-shadow 0.45s ease !important;
   transition-delay: 0s !important;
 }
+
+/* ===================================================================
+   Header 安全徽章点击 → 设置页功能开关定位高亮（P0-2 回退增强）
+   用主题 primary 色做 box-shadow 脉冲，深浅主题均协调；2 秒后由
+   SettingsToggles 的 useEffect 移除 class 还原。
+   =================================================================== */
+.anchor-highlight {
+  border-radius: 0.5rem;
+  animation: anchor-pulse 2s ease-out;
+}
+@keyframes anchor-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, hsl(var(--primary)) 60%, transparent); }
+  70%  { box-shadow: 0 0 0 7px color-mix(in srgb, hsl(var(--primary)) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, hsl(var(--primary)) 0%, transparent); }
+}
