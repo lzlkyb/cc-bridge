@@ -40,16 +40,18 @@ async fn start() -> TestServer {
     let data_dir = root.join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
 
-    let mut config = BridgeConfig::default();
-    config.allowed_roots = vec![root.to_string_lossy().to_string()];
-    config.token = "test-token".to_string();
-    config.whitelist_enabled = true;
-    config.readonly_mode = false;
-    config.audit_enabled = true;
-    config.rate_limit_enabled = false; // 测试内避免限流干扰
-    config.shell_enabled = false;
-    config.host = "127.0.0.1".to_string();
-    config.port = 0; // 实际端口由 TcpListener 决定
+    let config = BridgeConfig {
+        allowed_roots: vec![root.to_string_lossy().to_string()],
+        token: "test-token".to_string(),
+        whitelist_enabled: true,
+        readonly_mode: false,
+        audit_enabled: true,
+        rate_limit_enabled: false, // 测试内避免限流干扰
+        shell_enabled: false,
+        host: "127.0.0.1".to_string(),
+        port: 0, // 实际端口由 TcpListener 决定
+        ..Default::default()
+    };
 
     let conn = Connection::open_in_memory().unwrap();
     let state = Arc::new(AppState::new(conn, config, data_dir.clone()));

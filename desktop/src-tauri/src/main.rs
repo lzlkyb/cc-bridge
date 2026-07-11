@@ -77,23 +77,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = handle.path().app_data_dir().map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("无法解析应用数据目录：{e}"),
-                )
+                std::io::Error::other(format!("无法解析应用数据目录：{e}"))
             })?;
             std::fs::create_dir_all(&data_dir).map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("无法创建应用数据目录：{e}"),
-                )
+                std::io::Error::other(format!("无法创建应用数据目录：{e}"))
             })?;
 
             let db_conn = db::init_database(&data_dir).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("初始化数据库失败：{e}"))
+                std::io::Error::other(format!("初始化数据库失败：{e}"))
             })?;
             let bridge_config = config::load_config(&db_conn).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("加载配置失败：{e}"))
+                std::io::Error::other(format!("加载配置失败：{e}"))
             })?;
 
             // Prune audit log per retention policy on startup
