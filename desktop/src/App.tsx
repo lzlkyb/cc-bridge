@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke, listen } from "./lib/tauri";
 import type { StatusResponse } from "./lib/types";
+import { APP_INFO } from "./lib/about";
 import { Header } from "./components/layout/Header";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Button } from "./components/ui/button";
@@ -118,7 +119,7 @@ function AppContent() {
             <Icon name="alertTriangle" size={14} className="shrink-0" />
             <span className="flex-1">
               <b className="text-foreground">与本地服务失联</b>
-              <span className="text-muted-foreground"> · 无法获取状态，请检查 cc-bridge 进程是否在运行。</span>
+              <span className="text-muted-foreground"> · {`无法获取状态，请检查 ${APP_INFO.name} 进程是否在运行。`}</span>
             </span>
             <Button variant="outline" size="sm" className="h-6 px-2.5 text-[11px]" onClick={() => refetchStatus()}>
               重试

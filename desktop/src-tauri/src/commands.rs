@@ -8,6 +8,7 @@ use crate::browse;
 use crate::config::save_config_field;
 use crate::network;
 use crate::security::auth;
+use crate::security::path;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -62,6 +63,9 @@ pub struct StatusResponse {
     /// IP 变化 banner / Token 重生成据此生成精确 sed 命令。None 表示旧数据未记录。
     #[serde(rename = "scope")]
     pub scope: Option<String>,
+    /// A3 修复：启动期错误（如端口被占用）。None 表示启动正常。
+    #[serde(rename = "startupError")]
+    pub startup_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -86,6 +90,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
     let stats = state.stats.read().await;
     let uptime = state.uptime_seconds().await;
     let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
+    let startup_error = state.startup_error.lock().unwrap().clone();
     let lan_ips = network::get_lan_ips();
     // 地址变化检测:
     // 1) 监听全部网卡时,以用户上次确认的 IP 是否仍在网卡列表为准;
@@ -137,6 +142,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         last_selected_ip: config.last_selected_ip.clone(),
         ip_changed,
         scope: config.scope.clone(),
+        startup_error,
         lan_ips,
     })
 }
@@ -551,6 +557,60 @@ pub struct CommandOutput {
     #[serde(rename = "exitCode")]
     pub exit_code: Option<i32>,
     pub pid: u32,
+}
+
+// ===== 配置导入/导出（C8）=====
+
+#[tauri::command]
+pub async fn export_config(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let config = state.config.read().await;
+    serde_json::to_string_pretty(&*config).map_err(|e| format!("序列化配置失败：{e}"))
+}
+
+#[tauri::command]
+pub async fn import_config(
+    state: State<'_, Arc<AppState>>,
+    json: String,
+) -> Result<ConfigSaveResult, String> {
+    let incoming: crate::config::BridgeConfig =
+        serde_json::from_str(&json).map_err(|e| format!("配置解析失败：{e}"))?;
+
+    // 白名单兜底校验（复用 security::path 白名单逻辑，不可绕过）
+    for root in &incoming.allowed_roots {
+        if let Err(e) =
+            path::resolve_safe_path(root, &incoming.allowed_roots, incoming.whitelist_enabled)
+        {
+            return Err(format!("白名单目录校验失败「{}」：{}", root, e));
+        }
+    }
+
+    let db = state.db.lock().await;
+    crate::config::save_full_config(&db, &incoming)?;
+    drop(db);
+
+    *state.config.write().await = incoming;
+
+    // 重启服务使 host/port 等配置生效
+    let mut handle = state.mcp_server_handle.lock().await;
+    if let Some(h) = handle.take() {
+        h.abort();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    let state_clone = state.inner().clone();
+    let new_handle = tauri::async_runtime::spawn(async move {
+        crate::mcp::http::spawn_mcp_server(state_clone).await;
+    });
+    *handle = Some(new_handle);
+    state
+        .mcp_running
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    Ok(ConfigSaveResult {
+        ok: true,
+        changed: vec!["(全部配置)".into()],
+        warnings: vec![],
+        restart_required: true,
+    })
 }
 
 // ===== 自动更新（后台线程，不阻塞 UI），採自 PastePanda 实现 =====

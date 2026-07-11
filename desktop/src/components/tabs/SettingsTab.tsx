@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
+import { APP_INFO } from "../../lib/about";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -8,7 +9,7 @@ import { Label } from "../ui/label";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
 import { SettingsToggles } from "./SettingsToggles";
-import { UpdateGroup } from "./UpdateGroup";
+import { AboutGroup } from "./AboutGroup";
 
 export function SettingsTab({
   status,
@@ -21,10 +22,11 @@ export function SettingsTab({
 }) {
   return (
     <div className="space-y-4">
-      <UpdateGroup status={status} />
+      <AboutGroup status={status} />
       <NetworkGroup status={status} onSaved={onSaved} />
       <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
       <AppGroup />
+      <ConfigGroup status={status} onSaved={onSaved} />
       <AuditGroup status={status} onSaved={onSaved} />
     </div>
   );
@@ -79,45 +81,35 @@ function NetworkGroup({
       <CardHeader>
         <CardTitle icon={<Icon name="server" />}>网络</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {status && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span>当前访问地址</span>
-            <code className="rounded-md bg-accent px-2 py-0.5 font-mono text-xs text-accent-foreground">
-              http://localhost:{status.port}
-            </code>
-          </div>
-        )}
-        <div className="space-y-2">
-          <Label>端口</Label>
+      <CardContent className="space-y-3">
+        {/* 端口 + 按钮 同一行 */}
+        <div className="flex items-center gap-3">
+          <Label className="shrink-0">端口</Label>
           <Input
             type="number"
             min={1}
             max={65535}
             value={port}
             onChange={(e) => setPort(Number(e.target.value))}
-            className={`max-w-[200px] ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
+            className={`max-w-[120px] ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
           />
-          {invalid && (
-            <p className="text-xs text-destructive">端口范围 1 – 65535，请重新输入</p>
-          )}
-        </div>
-        <div className="flex items-center gap-3">
           <Button
             onClick={handleSaveAndRestart}
             disabled={!dirty || saving || invalid}
             isLoading={saving}
             loadingText="保存中..."
+            size="sm"
           >
-            {dirty ? "保存并重启服务" : "保存"}
+            {dirty ? "保存并重启" : "保存"}
           </Button>
-          {!dirty && !restarted && <span className="text-sm text-muted-foreground">无更改</span>}
-          {restarted && <span className="text-sm text-success">已保存并重启 ✓</span>}
+          {!dirty && !restarted && <span className="text-xs text-muted-foreground">无更改</span>}
+          {restarted && <span className="text-xs text-success">已保存并重启 ✓</span>}
         </div>
+        {invalid && <p className="text-xs text-destructive">端口范围 1 – 65535</p>}
         <div className="warn-box flex items-start gap-2.5 rounded-lg p-3">
-          <Icon name="alertTriangle" size={16} className="mt-0.5 shrink-0" />
-          <p className="text-xs leading-relaxed">
-            <b>修改端口将重启服务</b>，已连接的客户端会短暂断开。保存后自动重启，无需手动操作。
+          <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
+          <p className="text-[11px] leading-relaxed">
+            <b>修改端口将重启服务</b>，已连接的客户端会短暂断开。
           </p>
         </div>
       </CardContent>
@@ -160,10 +152,100 @@ function AppGroup() {
           <div className="space-y-0.5">
             <Label>开机自动启动</Label>
             <p className="text-xs text-muted-foreground">
-              系统登录后自动在后台启动 cc-bridge，远程随时可连接。
+              {`系统登录后自动在后台启动 ${APP_INFO.name}，远程随时可连接。`}
             </p>
           </div>
           <Toggle checked={autostart} disabled={!loaded} onChange={toggle} ariaLabel="开机自动启动" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ─── 配置导入/导出（C8）─── */
+
+function ConfigGroup({
+  onSaved,
+}: {
+  status?: StatusResponse;
+  onSaved: () => void;
+}) {
+  const { toast } = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [importing, setImporting] = useState(false);
+
+  const handleExport = async () => {
+    try {
+      const json = await invoke<string>("export_config");
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "cc-bridge-config.json";
+      a.click();
+      URL.revokeObjectURL(url);
+      toast("配置已导出", "success");
+    } catch (err) {
+      toast(`导出失败：${err}`, "error");
+    }
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      await invoke<ConfigSaveResult>("import_config", { json: text });
+      toast("配置已导入并重启服务", "success");
+      onSaved();
+    } catch (err) {
+      toast(`导入失败：${err}`, "error");
+    } finally {
+      setImporting(false);
+      // 清空 input 以便再次选同一个文件
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle icon={<Icon name="download" />}>配置</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-xs text-muted-foreground">
+          导出当前配置为 JSON 文件，或导入之前导出的配置。导入会覆盖当前设置并自动重启服务。
+        </p>
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">
+            <Icon name="download" size={14} />
+            导出配置
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => fileRef.current?.click()}
+            isLoading={importing}
+            loadingText="导入中..."
+            className="gap-1.5"
+          >
+            <Icon name="upload" size={14} />
+            导入配置
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".json"
+            onChange={handleImport}
+            className="hidden"
+          />
+        </div>
+        <div className="warn-box flex items-start gap-2.5 rounded-lg p-3">
+          <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
+          <p className="text-xs leading-relaxed">
+            <b>导入将覆盖所有当前配置</b>并重启服务。请确认导入文件来自可信来源。
+          </p>
         </div>
       </CardContent>
     </Card>

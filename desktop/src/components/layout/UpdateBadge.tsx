@@ -52,8 +52,19 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
 
   const ver = update?.version ?? "";
 
-  // ─── idle：不显示 ─────────────────────────
-  if (status === "idle") return null;
+  // ─── idle：显示版本号，可点击检查 ──────────
+  if (status === "idle") {
+    if (!currentVersion) return null;
+    return (
+      <button
+        className="header-badge header-badge-idle cursor-pointer"
+        title={`v${currentVersion} — 点击检查更新`}
+        onClick={() => checkForUpdate()}
+      >
+        <span>v{currentVersion}</span>
+      </button>
+    );
+  }
 
   // ─── checking ─────────────────────────────
   if (status === "checking") {
@@ -94,7 +105,7 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
     return (
       <button
         className="header-badge header-badge-ready cursor-pointer"
-        title="更新已安装，点击重启"
+                title="更新已安装，点击重启"
         onClick={handleClick}
       >
         <Icon name="check" size={10} />
@@ -118,7 +129,7 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
     return (
       <button
         className="header-badge header-badge-error cursor-pointer"
-        title="更新检查失败，点击重试"
+                title="更新检查失败，点击重试"
         onClick={handleClick}
       >
         <Icon name="alertTriangle" size={10} />

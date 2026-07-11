@@ -62,11 +62,14 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
             running_state
                 .mcp_running
                 .store(false, std::sync::atomic::Ordering::Relaxed);
+            *running_state.startup_error.lock().unwrap() =
+                Some(format!("绑定到 {} 失败：{}", addr, e));
             return;
         }
     };
 
     log::info!("MCP HTTP server listening on {}", addr);
+    *running_state.startup_error.lock().unwrap() = None;
     running_state
         .mcp_running
         .store(true, std::sync::atomic::Ordering::Relaxed);

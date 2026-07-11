@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { APP_INFO } from "../../lib/about";
 
 const STORAGE_KEY = "cc-bridge-onboarding-done";
 
@@ -16,7 +17,7 @@ const steps = [
   {
     icon: "folder" as const,
     title: "添加工作目录",
-    desc: "在「安全」页添加白名单根目录，告诉 cc-bridge 远程可以访问哪些本地文件。这是安全防护的第一道防线。",
+    get desc() { return `在「安全」页添加白名单根目录，告诉 ${APP_INFO.name} 远程可以访问哪些本地文件。这是安全防护的第一道防线。`; },
   },
   {
     icon: "plug" as const,

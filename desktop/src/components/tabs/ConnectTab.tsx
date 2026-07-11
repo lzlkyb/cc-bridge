@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
+import { APP_INFO } from "../../lib/about";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -394,7 +395,7 @@ function IpChangedBanner({
         <p className="text-xs text-muted-foreground">
           {scope
             ? "复制以下命令到远程服务器执行（原地更新 IP，不会重新授权）："
-            : "未能确认当初的接入作用域，请选择你最初添加 cc-bridge 时使用的作用域执行对应命令（不匹配的配置文件不会被改动）："}
+            : "未能确认当初的接入作用域，请选择你最初{`添加 ${APP_INFO.name}`} 时使用的作用域执行对应命令（不匹配的配置文件不会被改动）："}
         </p>
         {entries.map((e, i) => (
           <div key={i} className="space-y-1.5">
@@ -579,7 +580,7 @@ function GlobalSteps({
           <p className="text-sm font-medium">完成</p>
           <p className="text-xs text-muted-foreground">
             配置已写入 <code className="rounded bg-background px-1">~/.claude.json</code>，
-            之后在任何项目中启动 <code className="rounded bg-background px-1">claude</code> 都会自动连接 cc-bridge。
+            之后在任何项目中启动 <code className="rounded bg-background px-1">claude</code> 都会自动连接 {APP_INFO.name}。
           </p>
         </div>
       </div>

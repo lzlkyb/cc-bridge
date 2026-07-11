@@ -72,6 +72,9 @@ pub struct AppState {
     // 会话级 cwd 持久化存储（默认关）。key=opaque session_id，value=已校验的 cwd + 最后活跃时间。
     // 与 path_locks 同源使用 DashMap；空闲回收见 `gc_cwd_sessions`。
     pub cwd_sessions: DashMap<String, CwdSession>,
+    /// A3 修复：启动期错误（如端口被占用）。bind 失败时写入，成功时清除。
+    /// 供前端 Header 展示「启动失败」红态，避免用户盲目尝试。
+    pub startup_error: StdMutex<Option<String>>,
 }
 
 impl AppState {
@@ -87,6 +90,7 @@ impl AppState {
             mcp_running: AtomicBool::new(false),
             running_commands: DashMap::new(),
             cwd_sessions: DashMap::new(),
+            startup_error: StdMutex::new(None),
         }
     }
 

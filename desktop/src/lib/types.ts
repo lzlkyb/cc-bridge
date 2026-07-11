@@ -25,6 +25,8 @@ export interface StatusResponse {
   lastSelectedIp: string | null;
   ipChanged: boolean;
   scope: string | null;
+  /** A3 修复：启动期错误（如端口被占用）。null = 正常 */
+  startupError: string | null;
 }
 
 export interface ConfigPatch {

@@ -161,3 +161,94 @@ pub fn save_config_field(
         serde_json::to_string(value).map_err(|e| format!("Failed to serialize: {e}"))?;
     db::set_config_value(conn, key, &value_str)
 }
+
+/// C8：一次性写回整个 BridgeConfig。供 import_config 使用，保持与 save_config 逐字段语义一致。
+pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), String> {
+    use serde_json::to_value;
+    save_config_field(
+        conn,
+        "allowed_roots",
+        &to_value(&config.allowed_roots).unwrap(),
+    )?;
+    save_config_field(conn, "token", &to_value(&config.token).unwrap())?;
+    save_config_field(
+        conn,
+        "allowed_extensions",
+        &to_value(&config.allowed_extensions).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "max_file_size_bytes",
+        &to_value(config.max_file_size_bytes).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "rate_limit_max_requests",
+        &to_value(config.rate_limit_max_requests).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "rate_limit_window_ms",
+        &to_value(config.rate_limit_window_ms).unwrap(),
+    )?;
+    save_config_field(conn, "backup_dir", &to_value(&config.backup_dir).unwrap())?;
+    save_config_field(
+        conn,
+        "backup_retention",
+        &to_value(config.backup_retention).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "audit_retention_days",
+        &to_value(config.audit_retention_days).unwrap(),
+    )?;
+    save_config_field(conn, "host", &to_value(&config.host).unwrap())?;
+    save_config_field(conn, "port", &to_value(config.port).unwrap())?;
+    save_config_field(
+        conn,
+        "whitelist_enabled",
+        &to_value(config.whitelist_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "readonly_mode",
+        &to_value(config.readonly_mode).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "backup_enabled",
+        &to_value(config.backup_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "audit_enabled",
+        &to_value(config.audit_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "rate_limit_enabled",
+        &to_value(config.rate_limit_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "encoding_detect_enabled",
+        &to_value(config.encoding_detect_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "shell_enabled",
+        &to_value(config.shell_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "session_cwd_enabled",
+        &to_value(config.session_cwd_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "last_selected_ip",
+        &to_value(&config.last_selected_ip).unwrap(),
+    )?;
+    save_config_field(conn, "scope", &to_value(&config.scope).unwrap())?;
+    Ok(())
+}

@@ -14,21 +14,22 @@
     "updater:generate": "node scripts/generate-updater-json.mjs"
   },
   "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
+    "@tanstack/react-query": "^5.60.0",
     "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-updater": "^2",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-process": "^2",
-    "@tanstack/react-query": "^5.60.0"
+    "@tauri-apps/plugin-updater": "^2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
-    "typescript": "^5.6.0",
-    "vite": "^6.0.0",
     "tailwindcss": "^4.0.0",
-    "@tailwindcss/vite": "^4.0.0"
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0"
   }
 }

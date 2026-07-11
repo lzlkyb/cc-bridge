@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use png::Decoder;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Emitter;
@@ -15,16 +16,75 @@ use cc_bridge_desktop::*;
 /// 用代码绘制，避免额外打包二进制图标资源。两份图标缓存在 static 中，
 /// 仅泄露一次 4KB 数据，后续所有刷新都 clone 复用。
 fn build_tray_icon(running: bool) -> tauri::image::Image<'static> {
-    const S: u32 = 32;
+    const S: u32 = 64;
+    const ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
+
+    // Decode PNG → RGBA pixels
+    let decoder = Decoder::new(ICON_PNG);
+    let mut reader = match decoder.read_info() {
+        Ok(r) => r,
+        Err(_) => return fallback_dot(running),
+    };
+    let info = reader.info();
+    let (w, h) = (info.width, info.height);
+    let mut src = vec![0u8; (w * h * 4) as usize];
+    if reader.next_frame(&mut src).is_err() {
+        return fallback_dot(running);
+    }
+
+    // Scale to S×S using nearest-neighbor
+    let mut rgba = vec![0u8; (S * S * 4) as usize];
+    for y in 0..S {
+        let sy = (y as f64 * w as f64 / S as f64) as u32;
+        for x in 0..S {
+            let sx = (x as f64 * h as f64 / S as f64) as u32;
+            let si = ((sy * w + sx) * 4) as usize;
+            let di = ((y * S + x) * 4) as usize;
+            rgba[di] = src[si];
+            rgba[di + 1] = src[si + 1];
+            rgba[di + 2] = src[si + 2];
+            rgba[di + 3] = src[si + 3];
+        }
+    }
+
+    // Draw status dot (bottom-right, 8px radius)
+    let dot_r = 8;
+    let dot_cx = S - dot_r - 1;
+    let dot_cy = S - dot_r - 1;
+    let (dr, dg, db) = if running {
+        (34, 197, 134)
+    } else {
+        (148, 163, 184)
+    };
+    for y in 0..S {
+        for x in 0..S {
+            let dx = x as f32 - dot_cx as f32;
+            let dy = y as f32 - dot_cy as f32;
+            if (dx * dx + dy * dy) <= (dot_r * dot_r) as f32 {
+                let idx = ((y * S + x) * 4) as usize;
+                rgba[idx] = dr;
+                rgba[idx + 1] = dg;
+                rgba[idx + 2] = db;
+                rgba[idx + 3] = 255;
+            }
+        }
+    }
+
+    let leaked: &'static [u8] = Box::leak(rgba.into_boxed_slice());
+    tauri::image::Image::new(leaked, S, S)
+}
+
+fn fallback_dot(running: bool) -> tauri::image::Image<'static> {
+    const S: u32 = 64;
     let mut rgba = vec![0u8; (S * S * 4) as usize];
     let (cr, cg, cb) = if running {
         (34, 197, 134)
     } else {
         (148, 163, 184)
-    }; // emerald-500 / slate-400
+    };
     let cx = S as f32 / 2.0;
     let cy = S as f32 / 2.0;
-    let r = 9.0;
+    let r = 18.0;
     for y in 0..S {
         for x in 0..S {
             let dx = x as f32 + 0.5 - cx;
@@ -74,6 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = handle
@@ -320,6 +381,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::stop_running_command,
             commands::get_command_output,
             commands::start_update,
+            commands::export_config,
+            commands::import_config,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

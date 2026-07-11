@@ -47,62 +47,59 @@ export function SecurityOverview({
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader
+        className="flex-row items-center justify-between cursor-pointer select-none"
+        onClick={() => setOpen((o) => !o)}
+      >
         <CardTitle icon={<Icon name="shield" />}>安全概览</CardTitle>
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          aria-expanded={open}
-          aria-label={open ? "收起安全概览" : "展开安全概览"}
-        >
-          <Icon
-            name="chevronDown"
-            size={16}
-            className={`transition-transform ${open ? "" : "-rotate-90"}`}
-          />
-        </button>
+        <Icon
+          name="chevronDown"
+          size={16}
+          className={`text-muted-foreground transition-transform ${open ? "" : "-rotate-90"}`}
+        />
       </CardHeader>
-      {open && (
-        <CardContent className="space-y-3">
-          <RiskSummary status={status} />
-          <ToggleRow
-            label="路径白名单校验"
-            danger={status ? !status.whitelistEnabled : false}
-            sub={
-              status && !status.whitelistEnabled
-                ? "⚠ 已关闭 · 远程可访问本机全部文件，仅剩 Token 保护"
-                : "仅允许访问白名单根目录内的文件（强烈建议保持开启）"
-            }
-            checked={status?.whitelistEnabled ?? true}
-            onChange={handleWhitelist}
-            saved={savedKey === "whitelist"}
-          />
-          <ToggleRow
-            label="只读模式"
-            sub="开启后禁止写入 / 删除 / 移动 / 复制，仅允许读取、列目录、搜索"
-            checked={readonly}
-            onChange={(v) => save({ readonlyMode: v }, "readonly")}
-            saved={savedKey === "readonly"}
-          />
-          <ToggleRow
-            label="命令执行"
-            danger={status?.shellEnabled ?? false}
-            variant="danger"
-            sub={
-              readonly
-                ? "当前只读模式已开启，命令执行将被强制禁止；如需启用请先关闭只读模式"
-                : status?.shellEnabled
-                  ? "⚠ 已开启 · 等同于授予远程任意代码执行权限（RCE）"
-                  : "允许远程执行 Shell 命令（run_command）。默认关闭，强烈建议仅临时开启"
-            }
-            checked={status?.shellEnabled ?? false}
-            onChange={handleShell}
-            saved={savedKey === "shell"}
-            last
-          />
-        </CardContent>
-      )}
+      <CardContent className="space-y-3">
+        <RiskSummary status={status} />
+        {open && (
+          <>
+            <ToggleRow
+              label="路径白名单校验"
+              danger={status ? !status.whitelistEnabled : false}
+              sub={
+                status && !status.whitelistEnabled
+                  ? "⚠ 已关闭 · 远程可访问本机全部文件，仅剩 Token 保护"
+                  : "仅允许访问白名单根目录内的文件（强烈建议保持开启）"
+              }
+              checked={status?.whitelistEnabled ?? true}
+              onChange={handleWhitelist}
+              saved={savedKey === "whitelist"}
+            />
+            <ToggleRow
+              label="只读模式"
+              sub="开启后禁止写入 / 删除 / 移动 / 复制，仅允许读取、列目录、搜索"
+              checked={readonly}
+              onChange={(v) => save({ readonlyMode: v }, "readonly")}
+              saved={savedKey === "readonly"}
+            />
+            <ToggleRow
+              label="命令执行"
+              danger={status?.shellEnabled ?? false}
+              variant="danger"
+              sub={
+                readonly
+                  ? "当前只读模式已开启，命令执行将被强制禁止；如需启用请先关闭只读模式"
+                  : status?.shellEnabled
+                    ? "⚠ 已开启 · 等同于授予远程任意代码执行权限（RCE）"
+                    : "允许远程执行 Shell 命令（run_command）。默认关闭，强烈建议仅临时开启"
+              }
+              checked={status?.shellEnabled ?? false}
+              onChange={handleShell}
+              saved={savedKey === "shell"}
+              last
+            />
+          </>
+        )}
+      </CardContent>
 
       {confirmWhitelistOff && (
         <ConfirmModal

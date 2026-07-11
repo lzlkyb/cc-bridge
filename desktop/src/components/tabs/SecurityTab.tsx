@@ -5,20 +5,12 @@ import type { StatusResponse, ConfigSaveResult, RunningCommandInfo, CommandOutpu
 import { formatUptime } from "../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Input } from "../ui/input";
-import { Label } from "../ui/label";
 import { DirectoryBrowser } from "../modals/DirectoryBrowser";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 import { SecurityOverview } from "./SecurityOverview";
-
-/** 扩展名预设（一键设为该组，覆盖当前值） */
-const PRESET_EXTENSIONS = [
-  { label: "前端常用", value: ".js, .jsx, .ts, .tsx, .css, .html, .json" },
-  { label: "后端常用", value: ".java, .py, .go, .rs, .rb, .php" },
-  { label: "配置文件", value: ".yaml, .yml, .toml, .ini, .env, .conf" },
-  { label: "文档类", value: ".md, .txt, .csv, .log" },
-] as const;
+import { ChipInput } from "../ui/chip-input";
 
 export function SecurityTab({
   status,
@@ -154,89 +146,106 @@ export function SecurityTab({
           <CardTitle icon={<Icon name="shield" />}>文件管控</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="mb-1 mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground first:mt-1">
-            文件过滤
-          </div>
           <div className="space-y-2">
-            <AutoSaveField
-              label="允许的扩展名（逗号分隔，留空不限制）"
-              initial={status?.allowedExtensions.join(", ") ?? ""}
-              saved={lastSavedField === "extensions"}
-              onSave={(val) => {
-                const extList = val.split(",").map((e) => e.trim()).filter(Boolean);
-                return saveField({ allowedExtensions: extList }, "extensions");
+            <ChipInput
+              value={status?.allowedExtensions ?? []}
+              onChange={(vals) => {
+                saveField({ allowedExtensions: vals }, "extensions");
               }}
             />
-            {/* 预设：一键设为该组（覆盖当前值），不再追加 */}
-            <div className="flex flex-wrap gap-1.5">
-              {PRESET_EXTENSIONS.map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => {
-                    const val = preset.value;
-                    saveField({ allowedExtensions: val.split(",").map((e) => e.trim()).filter(Boolean) }, "extensions");
-                  }}
-                  className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-0.5 text-[11px] text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
-                >
-                  <Icon name="check" size={10} />
-                  {preset.label}
-                </button>
-              ))}
-              <button
-                type="button"
-                onClick={() => saveField({ allowedExtensions: [] }, "extensions")}
-                className="inline-flex items-center gap-1 rounded-full border bg-background px-2.5 py-0.5 text-[11px] text-destructive hover:border-destructive/40 transition-colors"
-              >
-                <Icon name="x" size={10} />
-                清空
-              </button>
-            </div>
             <p className="text-xs text-muted-foreground">
-              点预设「一键设为该组」（覆盖当前值）；留空表示不限制扩展名。
+              留空表示不限制扩展名；所有设置修改后自动保存。
             </p>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <AutoSaveNumber
-              label="文件大小上限 (MB)"
-              initial={status ? Math.round(status.maxFileSizeBytes / 1024 / 1024) : 20}
-              saved={lastSavedField === "maxFileSize"}
-              onSave={(val) => saveField({ maxFileSizeBytes: val * 1024 * 1024 }, "maxFileSize")}
-            />
-            <AutoSaveNumber
-              label="备份保留份数"
-              initial={status?.backupRetention ?? 10}
-              saved={lastSavedField === "backupRetention"}
-              onSave={(val) => saveField({ backupRetention: val }, "backupRetention")}
-            />
+
+          <div className="my-3.5 h-px bg-border" />
+
+          {/* ══ 备份 — PastePanda 行式 ══ */}
+          <div className="s-sec-label">备份</div>
+
+          <div className="s-row group">
+            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}>💾</div>
+            <div className="s-body">
+              <div className="s-label">文件大小上限</div>
+              <div className="s-row-desc">超过上限的文件自动截断</div>
+            </div>
+            <div className="s-right">
+              <InlineNum
+                value={status ? Math.round(status.maxFileSizeBytes / 1024 / 1024) : 20}
+                saved={lastSavedField === "maxFileSize"}
+                unit="MB"
+                onSave={(v) => saveField({ maxFileSizeBytes: v * 1024 * 1024 }, "maxFileSize")}
+              />
+            </div>
           </div>
-          <AutoSaveField
-            label="备份目录"
-            initial={status?.backupDir ?? ""}
+
+          <div className="s-row-divider" />
+
+          <div className="s-row group">
+            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}>📋</div>
+            <div className="s-body">
+              <div className="s-label">备份保留份数</div>
+              <div className="s-row-desc">超出后自动清理最早的备份</div>
+            </div>
+            <div className="s-right">
+              <InlineNum
+                value={status?.backupRetention ?? 10}
+                saved={lastSavedField === "backupRetention"}
+                unit="份"
+                onSave={(v) => saveField({ backupRetention: v }, "backupRetention")}
+              />
+            </div>
+          </div>
+
+          <div className="s-row-divider" />
+
+          <div className="s-row group">
+            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}>📁</div>
+            <div className="s-body">
+              <div className="s-label">备份目录</div>
+              <div className="s-row-desc font-mono text-[11px]">{status?.backupDir ?? "未设置"}</div>
+            </div>
+            <div className="s-right">
+              <Button variant="outline" size="sm" onClick={() => setBrowserOpen(true)}>浏览…</Button>
+            </div>
+          </div>
+          <InlineStr
+            value={status?.backupDir ?? ""}
             saved={lastSavedField === "backupDir"}
-            onSave={(val) => saveField({ backupDir: val }, "backupDir")}
+            onSave={(v) => saveField({ backupDir: v }, "backupDir")}
+            className="hidden"
           />
-          <div className="mb-1 mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-            请求限流
+
+          <div className="my-3.5 h-px bg-border" />
+
+          {/* ══ 请求限流 — PastePanda 合并行 ══ */}
+          <div className="s-sec-label">请求限流</div>
+
+          <div className="s-row group">
+            <div className="s-icon" style={{ background: "linear-gradient(135deg,#F59E0B,#EA580C)" }}>⏱</div>
+            <div className="s-body">
+              <div className="s-label">请求限制</div>
+              <div className="s-row-desc">
+                当前：每 {status ? status.rateLimit.windowMs / 1000 : 60}s 最多 {status?.rateLimit.maxRequests ?? 100} 次，超出拒绝
+              </div>
+            </div>
+            <div className="s-right">
+              <InlineNum
+                value={status?.rateLimit.maxRequests ?? 100}
+                saved={lastSavedField === "rateMaxReq"}
+                unit="次 /"
+                onSave={(v) => saveField({ rateLimitMaxRequests: v }, "rateMaxReq")}
+              />
+              <InlineNum
+                value={status ? status.rateLimit.windowMs / 1000 : 60}
+                saved={lastSavedField === "rateWindow"}
+                unit="秒"
+                onSave={(v) => saveField({ rateLimitWindowMs: v * 1000 }, "rateWindow")}
+              />
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <AutoSaveNumber
-              label="限流上限（次 / 窗口）"
-              initial={status?.rateLimit.maxRequests ?? 100}
-              saved={lastSavedField === "rateMaxReq"}
-              onSave={(val) => saveField({ rateLimitMaxRequests: val }, "rateMaxReq")}
-            />
-            <AutoSaveNumber
-              label="限流窗口（秒）"
-              initial={status ? status.rateLimit.windowMs / 1000 : 60}
-              saved={lastSavedField === "rateWindow"}
-              onSave={(val) => saveField({ rateLimitWindowMs: val * 1000 }, "rateWindow")}
-            />
-          </div>
-          <p className="text-xs text-muted-foreground">
-            当前生效：每 {status ? status.rateLimit.windowMs / 1000 : 60} 秒最多 {status?.rateLimit.maxRequests ?? 100} 次请求，超出后新请求将被拒绝（保护本机资源）。
-          </p>
-          <p className="text-xs text-muted-foreground">
+
+          <p className="mt-3 text-[11px] text-muted-foreground">
             所有设置修改后自动保存，无需手动提交。
           </p>
         </CardContent>
@@ -494,101 +503,61 @@ function LogBox({
   );
 }
 
-/* ─── Auto-save field components ─── */
-
-function AutoSaveField({
-  label,
-  initial,
+/* ══ 行内数字输入（PastePanda 风格） ══ */
+function InlineNum({
+  value: initial,
   saved,
+  unit,
   onSave,
 }: {
-  label: string;
-  initial: string;
-  saved: boolean;
-  onSave: (val: string) => Promise<void>;
+  value: number; saved: boolean; unit: string;
+  onSave: (v: number) => Promise<void>;
 }) {
   const [value, setValue] = useState(initial);
   const initialized = useRef(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
-
   useEffect(() => {
-    if (!initialized.current) {
-      setValue(initial);
-      initialized.current = !!initial;
-    }
+    if (!initialized.current) { setValue(initial); initialized.current = initial !== 0; }
   }, [initial]);
-
-  const handleChange = (val: string) => {
-    setValue(val);
+  const handleChange = (v: number) => {
+    setValue(v);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => onSave(val), 800);
+    debounceRef.current = setTimeout(() => onSave(v), 800);
   };
-
-  const handleBlur = () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    onSave(value);
-  };
-
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <Label>{label}</Label>
-        {saved && <span className="text-xs text-success">已保存 ✓</span>}
-      </div>
-      <Input
-        value={value}
-        onChange={(e) => handleChange(e.target.value)}
-        onBlur={handleBlur}
+    <div className="flex items-center gap-1.5">
+      <input type="number" className="s-input" value={value}
+        onChange={(e) => handleChange(Number(e.target.value))}
+        onBlur={() => { if (debounceRef.current) { clearTimeout(debounceRef.current); onSave(value); } }}
       />
+      <span className="s-unit">{unit}</span>
+      {saved && <span className="text-[10px] text-success">✓</span>}
     </div>
   );
 }
 
-function AutoSaveNumber({
-  label,
-  initial,
-  saved,
-  onSave,
+function InlineStr({
+  value: initial, saved, onSave, className = "",
 }: {
-  label: string;
-  initial: number;
-  saved: boolean;
-  onSave: (val: number) => Promise<void>;
+  value: string; saved: boolean; onSave: (v: string) => Promise<void>; className?: string;
 }) {
   const [value, setValue] = useState(initial);
   const initialized = useRef(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
-
   useEffect(() => {
-    if (!initialized.current) {
-      setValue(initial);
-      initialized.current = initial !== 0;
-    }
+    if (!initialized.current) { setValue(initial); initialized.current = !!initial; }
   }, [initial]);
-
-  const handleChange = (val: number) => {
-    setValue(val);
+  const handleChange = (v: string) => {
+    setValue(v);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => onSave(val), 800);
+    debounceRef.current = setTimeout(() => onSave(v), 800);
   };
-
-  const handleBlur = () => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    onSave(value);
-  };
-
   return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <Label>{label}</Label>
-        {saved && <span className="text-xs text-success">已保存 ✓</span>}
-      </div>
-      <Input
-        type="number"
-        value={value}
-        onChange={(e) => handleChange(Number(e.target.value))}
-        onBlur={handleBlur}
+    <div className={className}>
+      <Input value={value} onChange={(e) => handleChange(e.target.value)}
+        onBlur={() => { if (debounceRef.current) { clearTimeout(debounceRef.current); onSave(value); } }}
       />
+      {saved && <span className="text-[10px] text-success">✓</span>}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import type { StatusResponse } from "../../lib/types";
 import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
 import { Icon, type IconName } from "../ui/icon";
+import { APP_INFO } from "../../lib/about";
 import { UpdateBadge } from "./UpdateBadge";
 import { TitleBarControls } from "./TitleBarControls";
 
@@ -28,6 +29,7 @@ export function Header({
   }, []);
 
   const running = status?.running ?? true;
+  const startupError = status?.startupError ?? null;
 
   // 安全状态小徽章：任意页可见，点击跳转到对应设置页
   const securityBadges: {
@@ -60,25 +62,24 @@ export function Header({
   return (
     <header data-tauri-drag-region className="app-header flex shrink-0 items-center justify-between border-b px-5 py-3.5">
       <div data-tauri-drag-region className="flex items-center gap-2.5">
-        <div className="flex shrink-0 items-center justify-center rounded-lg bg-primary/10 p-1" style={{ boxShadow: "var(--logo-icon-bg-shadow)" }}>
-          <img src="/icon.png" alt="cc-bridge" width={28} height={28} style={{ width: 28, height: 28, filter: "var(--logo-img-shadow)" }} draggable={false} />
-        </div>
+        <img src="/icon.png" alt={APP_INFO.name} width={40} height={40} className="shrink-0 rounded-lg" draggable={false} />
         <h1 className="text-base font-semibold tracking-tight">CC Bridge</h1>
-        {status && (
-          <span className="version-badge rounded-md px-2 py-0.5 text-[11px] font-bold tracking-wide">
-            v{status.version}
-          </span>
-        )}
-        {/* 运行状态胶囊：运行=绿+脉冲，停止=灰 */}
+        <UpdateBadge currentVersion={status?.version} />
+        {/* 运行状态胶囊：启动失败=红, 运行=绿+脉冲, 停止=灰 (A3) */}
+        {/* A3：端口占用等启动错误优先展示为红态，点击跳设置页 */}
         <span
-          className={`status-pill inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${
-            running
-              ? "border-success/30 bg-success/10 text-success"
-              : "border-border bg-muted text-muted-foreground"
+          className={`status-pill inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold${
+            startupError
+              ? " border-destructive/30 bg-destructive/10 text-destructive"
+              : running
+              ? " border-success/30 bg-success/10 text-success"
+              : " border-border bg-muted text-muted-foreground"
           }`}
+          title={startupError ?? undefined}
+          {...(startupError && onNavigate ? { onClick: () => onNavigate("settings"), style: { cursor: "pointer" } } : {})}
         >
-          <span className={`h-1.5 w-1.5 rounded-full bg-current ${running ? "p-dot" : ""}`} />
-          {!status ? "连接中" : running ? "运行中" : "已停止"}
+          <span className={`h-1.5 w-1.5 rounded-full bg-current ${running && !startupError ? "p-dot" : ""}`} />
+          {!status ? "连接中" : startupError ? "启动失败" : running ? "运行中" : "已停止"}
         </span>
 
         {/* 安全状态小徽章：任意页可见，点击跳转到对应设置页（白名单/只读/命令执行→安全页，IP 变化→连接页） */}
@@ -98,7 +99,6 @@ export function Header({
             {b.label}
           </button>
         ))}
-        <UpdateBadge currentVersion={status?.version} />
       </div>
 
       <div data-tauri-drag-region="false" className="flex items-center gap-2">

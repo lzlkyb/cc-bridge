@@ -15,6 +15,7 @@ tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
 
 # HTTP server (MCP protocol handled via axum directly)
 axum = "0.8"
@@ -65,6 +66,9 @@ similar = "3.1"
 chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 env_logger = "0.11"
+
+# Image decoding (tray icon overlay)
+png = "0.17"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # 与 process-wrap (8.0.2) 共用同一份 windows 0.56，避免重复编译导致体积膨胀；

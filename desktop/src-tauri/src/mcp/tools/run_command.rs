@@ -421,8 +421,7 @@ fn inject_session_info(
                         // 满足「零行为变化」要求（不在 JSON 里留下 null 占位）。
                         if let Some(sid) = session_id {
                             info["sessionId"] = json!(sid);
-                            info["cwd"] =
-                                json!(resolved_cwd.to_string_lossy().to_string());
+                            info["cwd"] = json!(resolved_cwd.to_string_lossy().to_string());
                             let new_text = serde_json::to_string_pretty(&info)
                                 .unwrap_or_else(|_| text.to_string());
                             first["text"] = json!(new_text);
@@ -989,8 +988,7 @@ mod tests {
             .and_then(|x| x.get("text"))
             .and_then(|x| x.as_str())
             .expect("response must have text payload");
-        let info1: serde_json::Value =
-            serde_json::from_str(text1).expect("text payload is JSON");
+        let info1: serde_json::Value = serde_json::from_str(text1).expect("text payload is JSON");
         let session_id = info1
             .get("sessionId")
             .and_then(|s| s.as_str())
@@ -1030,8 +1028,7 @@ mod tests {
             .and_then(|x| x.get("text"))
             .and_then(|x| x.as_str())
             .expect("response must have text payload");
-        let info2: serde_json::Value =
-            serde_json::from_str(text2).expect("text payload is JSON");
+        let info2: serde_json::Value = serde_json::from_str(text2).expect("text payload is JSON");
         let stdout = info2.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
         assert!(
             stdout.contains("reused_session"),
@@ -1073,8 +1070,7 @@ mod tests {
             .and_then(|x| x.get("text"))
             .and_then(|x| x.as_str())
             .expect("response must have text payload");
-        let info1: serde_json::Value =
-            serde_json::from_str(text1).expect("text payload is JSON");
+        let info1: serde_json::Value = serde_json::from_str(text1).expect("text payload is JSON");
         let session_id = info1
             .get("sessionId")
             .and_then(|s| s.as_str())
@@ -1082,12 +1078,7 @@ mod tests {
             .to_string();
 
         // 收紧白名单，使其不再包含 session 绑定的目录。
-        state
-            .config
-            .write()
-            .await
-            .allowed_roots
-            .clear();
+        state.config.write().await.allowed_roots.clear();
 
         // 复用 session —— 绑定的 cwd 已不在白名单，必须拒绝。
         let result = handle(

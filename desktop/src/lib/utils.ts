@@ -12,6 +12,12 @@ export function formatUptime(seconds: number): string {
   return `${s}s`;
 }
 
+/** 版本号统一格式化为 "vX.Y.Z"（已带 v 则不重复加）。各处版本展示共用，避免前缀漂移。 */
+export function formatVersion(v?: string): string {
+  if (!v) return "?";
+  return v.startsWith("v") ? v : `v${v}`;
+}
+
 /** MCP 工具名 → 中文操作名，用于审计日志友好展示。未知工具回退原名。 */
 const TOOL_LABELS: Record<string, string> = {
   list_allowed_roots: "列出白名单",
