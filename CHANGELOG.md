@@ -5,6 +5,31 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.2.22] - 2026-07-11
+
+### 新增
+- **关于卡片 PastePanda 风格重写**：默认折叠一行，展开双列（技术栈 3×2 + 项目信息 key-value 胶囊标签），更新历史分类标签行（新增/改进/修复/安全），弹框完整介绍。
+- **Header 版本号 Upgrade Badge**：idle 可点击检查更新（7 态状态机：idle→checking→available→downloading→ready→uptodate→error），视觉由 `UpdateBadge` 组件驱动。
+- **托盘图标升级**：从手动绘制纯色圆点变为加载 `icon.png` 真图标 + 右下角状态圆点叠加，64×64。新增 `png` crate 依赖。
+- **扩展名芯片输入**：`ChipInput` 组件——34 个常用扩展名分 4 类（前端/后端/配置/文档）分类按钮展开勾选，分色显示；自定义输入支持回车/逗号/粘贴拆分/Backspace 删除。
+- **`about.ts` 统一数据源**：`APP_INFO`（名称/作者/仓库/协议/简介）、`CHANGELOG`（分类标签数组）、`ChangeCategory` 类型，多处引用统一取值。
+
+### 变更
+- **文件管控 PastePanda 风格**：备份/限流从 Label+Input 上下堆叠改为渐变徽章行式（`s-row`），新增 `InlineNum`/`InlineStr` 内联输入组件。
+- **网络卡片紧凑化**：端口输入+保存按钮同行，去掉「当前地址」影响用户认知的行。
+- **安全概览**：标题+展开箭头同一行，整行可点击展开/收起。
+- **软件名规范化**：6 处 `cc-bridge` → `CC Bridge`，统一从 `APP_INFO.name` 取值。
+- **Header 图标**：去掉紫色淡底和阴影，40px 纯图标；移除嵌套 `data-tauri-drag-region` 避免点击拦截。
+
+### 修复
+- `config.rs` `serde_json::to_value` 类型绑死导致的 19 个编译错误。
+
+### 技术
+- `SecurityTab` 删除 `AutoSaveField`/`AutoSaveNumber`（替换为 `InlineNum`/`InlineStr`）。
+- `icon.tsx` 新增 `info` 图标。
+- Rust `cargo fmt` + `cargo clippy --no-default-features` 零警告。
+- TypeScript `tsc --noEmit` 零错误。
+
 ## [2.2.16] - 2026-07-10
 
 ### 变更
