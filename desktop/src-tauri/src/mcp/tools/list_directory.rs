@@ -75,9 +75,11 @@ async fn walk_dir_inner(
     max_depth: u32,
     current_depth: u32,
 ) -> Result<Vec<DirEntry>, String> {
+    let t0 = std::time::Instant::now();
     let mut read_dir = tokio::fs::read_dir(dir)
         .await
         .map_err(|e| format!("Cannot read directory: {e}"))?;
+    crate::timing::record_io(t0.elapsed());
 
     let mut result = Vec::new();
     while let Some(entry) = read_dir
@@ -88,9 +90,14 @@ async fn walk_dir_inner(
         let name = entry.file_name().to_string_lossy().to_string();
         let full_path = entry.path();
 
+        let t1 = std::time::Instant::now();
         let metadata = match tokio::fs::metadata(&full_path).await {
-            Ok(m) => m,
+            Ok(m) => {
+                crate::timing::record_io(t1.elapsed());
+                m
+            }
             Err(e) => {
+                crate::timing::record_io(t1.elapsed());
                 result.push(DirEntry {
                     name,
                     entry_type: "unknown".into(),

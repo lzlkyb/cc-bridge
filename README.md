@@ -446,6 +446,7 @@ claude mcp add --transport http cc-bridge http://<局域网IP>:7823/mcp --header
 
 | 版本 | 变更 |
 |---|---|
+| v2.2.20 | **O1 结构化耗时拆解**：审计日志新增 5 维计时（`serverMs`/`ioMs`/`auditMs`/`netMs`/`overheadMs`），通过 `task_local` 跨工具累加 I/O 耗时（read/write/edit/list/backup/search），rayon 并行搜索用 `Arc<AtomicU64>` 跨线程累加；`overheadMs` 自动派生（server − dispatch − audit）；向后兼容旧日志（新字段全 None）。**命令面板增强**：新增重新生成令牌、启停/重启服务、清空审计日志、添加根目录、切换主题等快捷操作（分组 + 懒加载 + 异步反馈）；主题管理抽到 `lib/theme.ts` 统一复用（Header + CommandPalette 共享 `toggleTheme` + `themechange` 事件） |
 | v2.2.19 | `search_files` 追平 native Claude Code 第三步（P6-3）：内容搜索内核从逐行 `BufReader.lines()`+`regex` 换成 **grep-searcher**（ripgrep 同款引擎）——内存映射 + SIMD 行扫描 + 字面量预筛，大文件内容搜索提速 2–5x；自动二进制检测（含 NUL 文件跳过，对齐 native Grep `--text` 默认关）；Lossy 解码修复 **GBK 老工程源码被漏搜** 的隐藏 bug。仅引入 `grep-searcher`+`grep-regex`（不引 `grep-cli`，控制体积） |
 | v2.2.18 | `search_files` 追平 native Claude Code 第二步（P6-2）：强制排除名单补 `.svn`/`.hg`/`.bzr` 三类 VCS 元数据目录（对齐 ripgrep 默认 VCS 名单），老 SVN/Hg 工程里成千上万的 `.svn-base` 等文件不再被整盘扫入；文件名（Glob 类）搜索结果改为按修改时间倒序（最近修改优先，对齐 native Glob 相关性）。前置 P6-1 已完成并行遍历 + 强制排除 `target`/`node_modules`/`.git` |
 | v2.2.2 | 本机地址变更检测：记住上次确认使用的 IP（`last_selected_ip`），一旦不在当前网卡地址列表中（VPN 重连等）就主动提示——顶栏红色徽章 + Connect 页醒目 banner（一键复制新连接命令并重新确认）+ 系统托盘 tooltip/原生通知（应用最小化时也能发现），三处随确认同步消失。`/health` 版本号改为编译期读取 `CARGO_PKG_VERSION`，不再手写字符串避免漂移 |

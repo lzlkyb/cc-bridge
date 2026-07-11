@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
+import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { UpdateBadge } from "./UpdateBadge";
@@ -13,21 +14,16 @@ export function Header({
   status?: StatusResponse;
   onChanged?: () => void;
 }) {
-  const [dark, setDark] = useState(() => localStorage.getItem("theme") === "dark");
+  const [dark, setDark] = useState(() => getStoredTheme() === "dark");
   const [busy, setBusy] = useState(false);
 
+  // 主题由 lib/theme 统一管理（命令面板也复用），这里只同步图标状态
   useEffect(() => {
-    const root = document.documentElement;
-    // 切换主题时启用一次性过渡，避免硬闪；transitionend 后移除 class。
-    root.classList.add("theme-transition");
-    const onEnd = (e: TransitionEvent) => {
-      if (e.target === root) root.classList.remove("theme-transition");
-    };
-    root.addEventListener("transitionend", onEnd, { once: true });
-    root.classList.toggle("dark", dark);
-    localStorage.setItem("theme", dark ? "dark" : "light");
-    return () => root.removeEventListener("transitionend", onEnd);
-  }, [dark]);
+    const onTheme = (e: Event) =>
+      setDark((e as CustomEvent<"dark" | "light">).detail === "dark");
+    window.addEventListener("themechange", onTheme);
+    return () => window.removeEventListener("themechange", onTheme);
+  }, []);
 
   const running = status?.running ?? true;
 
@@ -109,12 +105,12 @@ export function Header({
             {!busy && (running ? "停止服务" : "启动服务")}
           </Button>
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => setDark(!dark)}
-          aria-label={dark ? "切换浅色" : "切换深色"}
-        >
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => toggleTheme()}
+            aria-label={dark ? "切换浅色" : "切换深色"}
+          >
           <Icon name={dark ? "sun" : "moon"} size={18} />
         </Button>
 

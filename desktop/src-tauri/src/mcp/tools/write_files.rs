@@ -100,9 +100,11 @@ async fn write_single(
             .map_err(|e| format!("Failed to create parent dirs: {e}"))?;
     }
 
+    let t0 = std::time::Instant::now();
     tokio::fs::write(&resolved, &data)
         .await
         .map_err(|e| format!("Write failed: {e}"))?;
+    crate::timing::record_io(t0.elapsed());
 
     let diff = if f.encoding != "base64" {
         diff_utils::unified_diff(

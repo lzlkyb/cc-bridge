@@ -1,12 +1,14 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::security;
 use crate::state::AppState;
+use crate::timing;
 
 #[derive(Debug, Deserialize)]
 pub struct SearchFilesArgs {
@@ -50,7 +52,7 @@ enum OutputMode {
 
 /// 富 Grep 选项，从 `SearchFilesArgs` 解析而来（仅 `content_pattern` 生效）。
 #[derive(Debug, Clone, Copy)]
-struct GrepOptions {
+pub struct GrepOptions {
     before: usize,
     after: usize,
     line_numbers: bool,
@@ -129,17 +131,24 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
 
     // ignore::Walk 是同步/阻塞迭代器（内部基于 walkdir），丢进 spawn_blocking 避免
     // 占用 tokio 工作线程；文件内容读取也相应改用 std::fs（同一个 blocking 任务里）。
+    // O1：跨 rayon 线程的 I/O 耗时无法用 task_local 累加，改用 Arc<AtomicU64> 在
+    // 闭包内累加，回到 tokio 任务后再 record_io（仍在 with_io_timer 作用域内）。
+    let io_nanos = Arc::new(AtomicU64::new(0));
+    let io_tracker = Arc::clone(&io_nanos);
     let matches = tokio::task::spawn_blocking(move || {
-        walk_search_blocking(
+        walk_search_blocking_tracked(
             &root_resolved,
             name_matcher.as_ref(),
             content_regex.as_ref(),
             &grep,
             max_file_size,
+            Some(&io_tracker),
         )
     })
     .await
     .map_err(|e| format!("search task panicked: {e}"))?;
+
+    timing::record_io(Duration::from_nanos(io_nanos.load(Ordering::Relaxed)));
 
     Ok(
         json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&matches).unwrap() }] }),
@@ -154,12 +163,27 @@ fn compile_glob(pattern: &str) -> Result<globset::GlobMatcher, String> {
         .map(|g| g.compile_matcher())
 }
 
-fn walk_search_blocking(
+/// 测试友好包装：保持原函数签名（无 io 追踪），便于现有单元测试零改动。
+/// 生产路径请调用 [`walk_search_blocking_tracked`] 以收集 O1 I/O 耗时。
+pub fn walk_search_blocking(
     root: &Path,
     name_matcher: Option<&globset::GlobMatcher>,
     content_regex: Option<&grep_regex::RegexMatcher>,
     grep: &GrepOptions,
     max_file_size: u64,
+) -> Vec<Value> {
+    walk_search_blocking_tracked(root, name_matcher, content_regex, grep, max_file_size, None)
+}
+
+/// 带 O1 I/O 追踪的遍历实现。`io_tracker` 为 `Some` 时，文件读取耗时累加到其中
+/// （跨 rayon 线程安全），供 [`handle`] 在 spawn_blocking 返回后 [`timing::record_io`]。
+fn walk_search_blocking_tracked(
+    root: &Path,
+    name_matcher: Option<&globset::GlobMatcher>,
+    content_regex: Option<&grep_regex::RegexMatcher>,
+    grep: &GrepOptions,
+    max_file_size: u64,
+    io_tracker: Option<&Arc<AtomicU64>>,
 ) -> Vec<Value> {
     let matches: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let counter: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
@@ -201,9 +225,11 @@ fn walk_search_blocking(
     // 天然落在 rayon 线程池里并行执行。
     let matches_arc = Arc::clone(&matches);
     let counter_arc = Arc::clone(&counter);
+    let tracker_clone = io_tracker.map(Arc::clone);
     builder.build_parallel().run(|| {
         let matches = Arc::clone(&matches_arc);
         let counter = Arc::clone(&counter_arc);
+        let tracker = tracker_clone.clone();
         Box::new(move |entry| {
             if counter.load(Ordering::Relaxed) >= head_limit {
                 return ignore::WalkState::Quit;
@@ -259,7 +285,14 @@ fn walk_search_blocking(
             // 逐行 BufReader.lines() + regex。获得 mmap+SIMD+字面量预筛（大文件 2–5x
             // 提速）、自动二进制检测（NUL 文件跳过，对齐 native Grep --text 默认关）、
             // 非 UTF-8 鲁棒（Lossy 解码，GBK 等老工程不再漏搜）。
-            let results = grep_file(path, content_regex.unwrap(), grep, head_limit, &counter);
+            let results = grep_file(
+                path,
+                content_regex.unwrap(),
+                grep,
+                head_limit,
+                &counter,
+                tracker.as_ref(),
+            );
             if results.is_empty() {
                 return ignore::WalkState::Continue;
             }
@@ -334,6 +367,7 @@ fn grep_file(
     grep: &GrepOptions,
     head_limit: usize,
     counter: &AtomicUsize,
+    io_tracker: Option<&Arc<AtomicU64>>,
 ) -> Vec<Value> {
     use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
     let mut searcher = SearcherBuilder::new()
@@ -394,9 +428,13 @@ fn grep_file(
             }
             // 取上下文：用 `from_utf8_lossy` 读全行（与 grep-searcher 同样的 Lossy 语义，
             // 保证 GBK 等非 UTF-8 文件上下文也能正确切片，彻底修复旧版 `read_to_string` 漏搜）。
+            let t0 = std::time::Instant::now();
             let Ok(bytes) = std::fs::read(path) else {
                 return Vec::new();
             };
+            if let Some(tracker) = io_tracker {
+                tracker.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            }
             let content = String::from_utf8_lossy(&bytes);
             let lines: Vec<&str> = content.lines().collect();
             let mut objs: Vec<Value> = Vec::new();

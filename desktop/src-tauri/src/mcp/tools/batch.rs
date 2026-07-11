@@ -54,16 +54,31 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
         let res = Box::pin(dispatch_tool(&op.tool, op.arguments.clone(), state)).await;
 
         // 逐子操作补审计：外层工具调用只记一条，写操作必须单独留痕，否则绕过审计。
+        // 子审计不单独计时（io 归并到 batch 外层审计的 ioMs，作用域穿透生效），
+        // 故 server_ms/io_ms/audit_ms/net_ms 均传 None。
         if audit_enabled {
             let entry = match &res {
-                Ok(_) => {
-                    audit::new_entry(&op.tool, &op.arguments.to_string(), true, None, None, None)
-                }
+                Ok(_) => audit::new_entry(
+                    &op.tool,
+                    &op.arguments.to_string(),
+                    true,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
                 Err(e) => audit::new_entry(
                     &op.tool,
                     &op.arguments.to_string(),
                     false,
                     Some(e.clone()),
+                    None,
+                    None,
+                    None,
+                    None,
                     None,
                     None,
                 ),

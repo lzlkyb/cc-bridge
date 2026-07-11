@@ -131,6 +131,8 @@ function App() {
         <CommandPalette
           onClose={() => setShowCommandPalette(false)}
           onNavigate={handleSetTab}
+          status={status}
+          onChanged={refetchStatus}
         />
       )}
 

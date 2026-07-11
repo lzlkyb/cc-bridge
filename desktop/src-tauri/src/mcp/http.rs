@@ -216,84 +216,149 @@ async fn mcp_handler(
             "id": body.get("id"),
             "result": { "tools": get_tool_definitions() }
         })),
-        "tools/call" => {
-            let tool_name = body
-                .pointer("/params/name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
-            let arguments = body
-                .pointer("/params/arguments")
-                .cloned()
-                .unwrap_or(json!({}));
-
-            let start = std::time::Instant::now();
-            let result = dispatch_tool(tool_name, arguments, &state).await;
-            let elapsed = start.elapsed().as_millis() as u64;
-
-            // 审计日志开关（默认开）。关闭时不写任何调用记录。
-            let audit_enabled = state.config.read().await.audit_enabled;
-
-            match result {
-                Ok(content) => {
-                    if audit_enabled {
-                        audit::write_audit_log(
-                            &state.data_dir,
-                            &audit::new_entry(
-                                tool_name,
-                                &format!(
-                                    "{}",
-                                    body.pointer("/params/arguments").unwrap_or(&json!({}))
-                                ),
-                                true,
-                                None,
-                                Some(source_ip.clone()),
-                                Some(elapsed),
-                            ),
-                        )
-                        .ok();
-                    }
-                    Json(json!({
-                        "jsonrpc": "2.0",
-                        "id": body.get("id"),
-                        "result": content
-                    }))
-                }
-                Err(e) => {
-                    state.increment_errors().await;
-                    if audit_enabled {
-                        audit::write_audit_log(
-                            &state.data_dir,
-                            &audit::new_entry(
-                                tool_name,
-                                &format!(
-                                    "{}",
-                                    body.pointer("/params/arguments").unwrap_or(&json!({}))
-                                ),
-                                false,
-                                Some(e.clone()),
-                                Some(source_ip),
-                                Some(elapsed),
-                            ),
-                        )
-                        .ok();
-                    }
-                    Json(json!({
-                        "jsonrpc": "2.0",
-                        "id": body.get("id"),
-                        "result": {
-                            "isError": true,
-                            "content": [{ "type": "text", "text": format!("Error: {}", e) }]
-                        }
-                    }))
-                }
-            }
-        }
+        "tools/call" => handle_tools_call(state, source_ip, body).await,
         _ => Json(json!({
             "jsonrpc": "2.0",
             "id": body.get("id"),
             "error": { "code": -32601, "message": format!("Method not found: {}", method) }
         })),
     }
+}
+
+/// 处理一次 `tools/call`，包裹在 I/O 计时器作用域内，以便 O1 结构化耗时拆解
+/// （serverMs / ioMs / auditMs / overheadMs）能正确累加并写入审计。
+///
+/// 抽成独立函数是为了把 `with_io_timer` 的作用域干净地包住整个分发 + 审计流程，
+/// 从而 `take_io()` 一定在作用域内部调用（task_local 在作用域外未初始化会 panic）。
+pub async fn handle_tools_call(
+    state: Arc<AppState>,
+    source_ip: String,
+    body: serde_json::Value,
+) -> Json<serde_json::Value> {
+    let t_recv = std::time::Instant::now();
+    crate::timing::with_io_timer(async move {
+        let tool_name = body
+            .pointer("/params/name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+        let arguments = body
+            .pointer("/params/arguments")
+            .cloned()
+            .unwrap_or(json!({}));
+
+        let start = std::time::Instant::now();
+        let result = dispatch_tool(tool_name, arguments.clone(), &state).await;
+        let elapsed = start.elapsed().as_millis() as u64;
+
+        // I/O 耗时（task_local 跨各工具累加）；必须在 with_io_timer 作用域内取。
+        let io_ms = crate::timing::take_io();
+        // 服务端总耗时（不含审计写盘；审计耗时单独记）。
+        let server_ms_dispatch = t_recv.elapsed().as_millis() as u64;
+
+        let audit_enabled = state.config.read().await.audit_enabled;
+
+        let response = match result {
+            Ok(content) => {
+                if audit_enabled {
+                    write_audit_for_call(
+                        &state.data_dir,
+                        tool_name,
+                        &arguments,
+                        true,
+                        None,
+                        Some(source_ip.clone()),
+                        elapsed,
+                        server_ms_dispatch,
+                        io_ms,
+                    );
+                }
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": body.get("id"),
+                    "result": content
+                }))
+            }
+            Err(e) => {
+                state.increment_errors().await;
+                if audit_enabled {
+                    write_audit_for_call(
+                        &state.data_dir,
+                        tool_name,
+                        &arguments,
+                        false,
+                        Some(e.clone()),
+                        Some(source_ip.clone()),
+                        elapsed,
+                        server_ms_dispatch,
+                        io_ms,
+                    );
+                }
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": body.get("id"),
+                    "result": {
+                        "isError": true,
+                        "content": [{ "type": "text", "text": format!("Error: {}", e) }]
+                    }
+                }))
+            }
+        };
+        response
+    })
+    .await
+}
+
+/// 构造并写入一条 `tools/call` 审计记录，附带 O1 结构化耗时字段。
+///
+/// `auditMs` 以序列化开销为代理测量（`write_audit_log` 的主要成本；`open` + `append`
+/// 恒定且极小）。`serverMs` 取「分发耗时 + 审计写盘耗时」作为服务端总墙钟，
+/// 于是 `overheadMs = serverMs − durationMs − auditMs` 即请求解析 + 响应序列化 +
+/// gzip 压缩 + 线缆传输（由 `new_entry` 内部派生）。
+#[allow(clippy::too_many_arguments)]
+fn write_audit_for_call(
+    data_dir: &std::path::Path,
+    tool_name: &str,
+    arguments: &serde_json::Value,
+    success: bool,
+    error: Option<String>,
+    source_ip: Option<String>,
+    elapsed: u64,
+    server_ms_dispatch: u64,
+    io_ms: Option<u64>,
+) {
+    let args_str = arguments.to_string();
+    // auditMs 代理 = 序列化耗时。
+    let audit_ms = {
+        let probe = audit::new_entry(
+            tool_name,
+            &args_str,
+            success,
+            error.clone(),
+            source_ip.clone(),
+            Some(elapsed),
+            Some(server_ms_dispatch),
+            io_ms,
+            None,
+            None,
+        );
+        let a0 = std::time::Instant::now();
+        let _ = serde_json::to_string(&probe);
+        a0.elapsed().as_millis() as u64
+    };
+    let server_ms = server_ms_dispatch + audit_ms;
+    let entry = audit::new_entry(
+        tool_name,
+        &args_str,
+        success,
+        error,
+        source_ip,
+        Some(elapsed),
+        Some(server_ms),
+        io_ms,
+        Some(audit_ms),
+        None,
+    );
+    audit::write_audit_log(data_dir, &entry).ok();
 }
 
 pub async fn dispatch_tool(

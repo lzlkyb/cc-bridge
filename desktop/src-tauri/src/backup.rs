@@ -24,7 +24,9 @@ pub fn backup_before_overwrite(
     let backup_name = format!("{file_name}.{timestamp}.bak");
     let backup_path = backup_dir.join(&backup_name);
 
+    let t0 = std::time::Instant::now();
     std::fs::copy(file_path, &backup_path).map_err(|e| format!("Failed to create backup: {e}"))?;
+    crate::timing::record_io(t0.elapsed());
 
     Ok(Some(backup_path))
 }

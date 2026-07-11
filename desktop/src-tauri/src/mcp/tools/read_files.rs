@@ -91,9 +91,11 @@ async fn read_single_file(
     security::filesize::assert_file_size_ok(&resolved, config.max_file_size_bytes)?;
 
     // 读原始字节，探测编码/换行，文本统一归一化到 LF（整读/行读一致）。
+    let t0 = std::time::Instant::now();
     let raw = tokio::fs::read(&resolved)
         .await
         .map_err(|e| format!("Read error: {e}"))?;
+    crate::timing::record_io(t0.elapsed());
     // 编码自适应默认关：关时强制按 UTF-8 读，避免启发式误判；显式 encoding 参数始终优先。
     let effective_encoding =
         encoding_override.or(if detect_enabled { None } else { Some("utf-8") });

@@ -91,9 +91,11 @@ async fn edit_single(
     security::filesize::assert_file_size_ok(&resolved, config.max_file_size_bytes)?;
 
     // 读取原始字节，探测编码/换行/BOM，文本归一化到 LF 供匹配。
+    let t0 = std::time::Instant::now();
     let raw = tokio::fs::read(&resolved)
         .await
         .map_err(|e| format!("Read error: {e}"))?;
+    crate::timing::record_io(t0.elapsed());
     let ft = encoding::read_text(&raw, None)?;
     let content = &ft.text;
 
@@ -150,10 +152,12 @@ async fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<(), String>
         .unwrap_or("ccbridge");
     let tmp = dir.join(format!(".{file_name}.ccbridge.tmp"));
 
+    let t0 = std::time::Instant::now();
     if let Err(e) = tokio::fs::write(&tmp, data).await {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(format!("Write temp failed: {e}"));
     }
+    crate::timing::record_io(t0.elapsed());
     if let Err(e) = tokio::fs::rename(&tmp, path).await {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Err(format!("Atomic rename failed: {e}"));
