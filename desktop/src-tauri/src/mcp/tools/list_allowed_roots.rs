@@ -20,39 +20,43 @@ const CLAUDE_MD_INLINE_MAX_BYTES: u64 = 20 * 1024;
 pub async fn handle(_args: ListAllowedRootsArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let config = state.config.read().await;
 
-    let project_instructions: Vec<Value> = config
-        .allowed_roots
-        .iter()
-        .filter_map(|root| {
-            let claude_md_path = Path::new(root).join("CLAUDE.md");
-            let metadata = std::fs::metadata(&claude_md_path).ok()?;
-            if !metadata.is_file() {
-                return None;
-            }
-            let path_str = claude_md_path.to_string_lossy().to_string();
+    // E-P0-3: 改用 tokio::fs 异步 I/O，避免阻塞 tokio 工作线程（网络挂载路径可卡数秒）
+    let mut project_instructions: Vec<Value> = Vec::new();
+    for root in &config.allowed_roots {
+        let claude_md_path = Path::new(root).join("CLAUDE.md");
+        let metadata = match tokio::fs::metadata(&claude_md_path).await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let path_str = claude_md_path.to_string_lossy().to_string();
 
-            if metadata.len() > CLAUDE_MD_INLINE_MAX_BYTES {
-                Some(json!({
-                    "root": root,
-                    "path": path_str,
-                    "truncated": true,
-                    "note": format!(
-                        "CLAUDE.md 超过 {}KB，未内嵌全文；请用 read_files 读取 {}",
-                        CLAUDE_MD_INLINE_MAX_BYTES / 1024,
-                        path_str
-                    ),
-                }))
-            } else {
-                let content = std::fs::read_to_string(&claude_md_path).ok()?;
-                Some(json!({
-                    "root": root,
-                    "path": path_str,
-                    "truncated": false,
-                    "content": content,
-                }))
-            }
-        })
-        .collect();
+        if metadata.len() > CLAUDE_MD_INLINE_MAX_BYTES {
+            project_instructions.push(json!({
+                "root": root,
+                "path": path_str,
+                "truncated": true,
+                "note": format!(
+                    "CLAUDE.md 超过 {}KB，未内嵌全文；请用 read_files 读取 {}",
+                    CLAUDE_MD_INLINE_MAX_BYTES / 1024,
+                    path_str
+                ),
+            }));
+        } else {
+            let content = match tokio::fs::read_to_string(&claude_md_path).await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            project_instructions.push(json!({
+                "root": root,
+                "path": path_str,
+                "truncated": false,
+                "content": content,
+            }));
+        }
+    }
 
     let mut info = json!({
         "allowedRoots": config.allowed_roots,

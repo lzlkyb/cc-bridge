@@ -579,7 +579,7 @@ dependencies = [
 
 [[package]]
 name = "cc-bridge-desktop"
-version = "2.2.21"
+version = "2.2.22"
 dependencies = [
  "axum",
  "chrono",
@@ -611,6 +611,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "tokio",
+ "tower",
  "tower-http",
  "windows 0.56.0",
 ]
@@ -5026,6 +5027,7 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",

@@ -2,6 +2,11 @@
  * 多个组件共用的纯函数集中于此（规则 11）。
  */
 
+import type { StatusResponse } from "./types";
+
+/** 接入作用域：用户级（~/.claude.json）或项目级（.mcp.json）。 */
+export type McpScope = "user" | "project";
+
 /** 秒数格式化为 "Xh Ym Zs" / "Ym Zs" / "Zs"，用于运行时长展示（精确到秒）。 */
 export function formatUptime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -39,4 +44,42 @@ const TOOL_LABELS: Record<string, string> = {
 
 export function toolLabel(tool: string): string {
   return TOOL_LABELS[tool] ?? tool;
+}
+
+/* ─── 连接页命令拼接（纯函数，ConnectTab 与 TokenManager 共用，规则 11）─── */
+
+/** 展示用主机地址：监听全网卡(0.0.0.0)时取用户选中的 IP，否则用配置的 host。 */
+export function buildDisplayHost(status: StatusResponse | undefined, selectedIp: string): string {
+  const listenAll = status?.host === "0.0.0.0";
+  return listenAll ? selectedIp || "127.0.0.1" : status?.host ?? "";
+}
+
+/** 基础接入命令（不含作用域开关），用于拼接到 claude mcp add。 */
+export function buildBaseCommand(displayHost: string, port: number, token: string): string {
+  return `claude mcp add --transport http cc-bridge http://${displayHost}:${port}/mcp --header "Authorization: Bearer ${token}"`;
+}
+
+/** 按作用域补全 --scope user（项目级不加）。 */
+export function buildConnectCommand(baseCommand: string, scope: McpScope): string {
+  return scope === "user"
+    ? baseCommand.replace("claude mcp add", "claude mcp add --scope user")
+    : baseCommand;
+}
+
+/** 服务器侧连通性验证命令。 */
+export function buildHealthCheck(displayHost: string, port: number): string {
+  return `curl http://${displayHost}:${port}/health`;
+}
+
+/** Token 重生成后原地替换 Bearer 的 sed 命令（不 remove+add，保留授权状态）。 */
+export function buildTokenSedCommand(
+  oldToken: string,
+  token: string,
+  scope: McpScope,
+  projectPath: string,
+): string {
+  if (!oldToken || !token) return "";
+  const cfgFile = scope === "user" ? "~/.claude.json" : ".mcp.json";
+  const cdPrefix = scope === "project" && projectPath.trim() ? `cd ${projectPath.trim()} && ` : "";
+  return `${cdPrefix}sed -i 's#Bearer ${oldToken}#Bearer ${token}#g' ${cfgFile}`;
 }

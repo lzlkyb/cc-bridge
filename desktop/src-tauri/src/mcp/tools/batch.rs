@@ -85,7 +85,12 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
                     None,
                 ),
             };
-            audit::write_audit_log(&state.data_dir, &entry).ok();
+            // E-P1-3: spawn_blocking 避免同步审计写在 async 循环中阻塞工作线程
+            let audit_dir = state.data_dir.clone();
+            let audit_entry = entry.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                audit::write_audit_log(&audit_dir, &audit_entry).ok();
+            });
         }
 
         match res {

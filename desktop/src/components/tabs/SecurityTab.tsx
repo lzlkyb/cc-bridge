@@ -164,7 +164,7 @@ export function SecurityTab({
           <div className="s-sec-label">备份</div>
 
           <div className="s-row group">
-            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}>💾</div>
+            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}><Icon name="download" size={15} aria-hidden="true" /></div>
             <div className="s-body">
               <div className="s-label">文件大小上限</div>
               <div className="s-row-desc">超过上限的文件自动截断</div>
@@ -182,7 +182,7 @@ export function SecurityTab({
           <div className="s-row-divider" />
 
           <div className="s-row group">
-            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}>📋</div>
+            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}><Icon name="copy" size={15} aria-hidden="true" /></div>
             <div className="s-body">
               <div className="s-label">备份保留份数</div>
               <div className="s-row-desc">超出后自动清理最早的备份</div>
@@ -200,7 +200,7 @@ export function SecurityTab({
           <div className="s-row-divider" />
 
           <div className="s-row group">
-            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}>📁</div>
+            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}><Icon name="folder" size={15} aria-hidden="true" /></div>
             <div className="s-body">
               <div className="s-label">备份目录</div>
               <div className="s-row-desc font-mono text-[11px]">{status?.backupDir ?? "未设置"}</div>

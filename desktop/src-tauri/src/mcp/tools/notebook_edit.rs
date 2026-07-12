@@ -42,7 +42,9 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
     drop(config);
 
     // 读 .ipynb（JSON）。
-    let content = std::fs::read_to_string(&resolved).map_err(|e| format!("读取失败: {e}"))?;
+    let content = tokio::fs::read_to_string(&resolved)
+        .await
+        .map_err(|e| format!("读取失败: {e}"))?;
     let mut notebook: Value = serde_json::from_str(&content)
         .map_err(|e| format!("解析 .ipynb 失败（非合法 JSON）: {e}"))?;
 
@@ -94,7 +96,9 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
 
     // 写回，保留其余字段（metadata / nbformat 等）。
     let out = serde_json::to_string_pretty(&notebook).map_err(|e| format!("序列化失败: {e}"))?;
-    std::fs::write(&resolved, out).map_err(|e| format!("写入失败: {e}"))?;
+    tokio::fs::write(&resolved, out)
+        .await
+        .map_err(|e| format!("写入失败: {e}"))?;
 
     Ok(json!({ "content": [{ "type": "text", "text": "ok" }] }))
 }

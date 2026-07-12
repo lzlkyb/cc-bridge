@@ -149,8 +149,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let bridge_config = config::load_config(&db_conn)
                 .map_err(|e| std::io::Error::other(format!("加载配置失败：{e}")))?;
 
-            // Prune audit log per retention policy on startup
-            let _ = audit::cleanup_old_entries(&data_dir, bridge_config.audit_retention_days);
+            // E-P2-4: 审计清理移到后台，避免大 audit.log 阻塞窗口显示
+            {
+                let cleanup_dir = data_dir.clone();
+                let retention = bridge_config.audit_retention_days;
+                tauri::async_runtime::spawn(async move {
+                    let _ = audit::cleanup_old_entries(&cleanup_dir, retention);
+                });
+            }
 
             let app_state = Arc::new(state::AppState::new(db_conn, bridge_config, data_dir));
             app.manage(app_state.clone());

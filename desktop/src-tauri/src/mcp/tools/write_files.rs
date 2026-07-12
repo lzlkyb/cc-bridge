@@ -120,9 +120,18 @@ async fn write_single(
 }
 
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
-    // Simple base64 decoder
-    let table: Vec<u8> =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".to_vec();
+    // E-P2-3: O(1) 查找表替代 O(64) 线性搜索
+    static DECODE_TABLE: std::sync::LazyLock<[u8; 128]> = std::sync::LazyLock::new(|| {
+        let mut table = [0xFFu8; 128];
+        for (i, &b) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+            .iter()
+            .enumerate()
+        {
+            table[b as usize] = i as u8;
+        }
+        table
+    });
+    let table = &*DECODE_TABLE;
     let input = input.trim().replace(['\n', '\r'], "");
     let mut output = Vec::new();
     let mut buffer = 0u32;
@@ -132,11 +141,14 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
         if c == b'=' {
             break;
         }
-        let val = table
-            .iter()
-            .position(|&b| b == c)
-            .ok_or_else(|| format!("Invalid base64 character: {}", c as char))?
-            as u32;
+        if c >= 128 {
+            return Err(format!("Invalid base64 character: {}", c as char));
+        }
+        let val = table[c as usize];
+        if val == 0xFF {
+            return Err(format!("Invalid base64 character: {}", c as char));
+        }
+        let val = val as u32;
         buffer = (buffer << 6) | val;
         bits += 6;
         if bits >= 8 {

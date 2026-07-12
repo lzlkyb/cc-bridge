@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
@@ -42,6 +42,22 @@ const STATS = [
   { val: "17 个", label: "MCP 工具" },
 ];
 
+// E-P2-7: 把内联 style 对象提取为模块级常量，避免每次渲染重建（约 15 处）。
+const STYLE_VERSION_BADGE: CSSProperties = { background: "var(--version-gradient)", boxShadow: "0 2px 6px var(--version-shadow)" };
+const STYLE_VERSION_BADGE_LG: CSSProperties = { background: "var(--version-gradient)", boxShadow: "0 3px 10px var(--version-shadow)" };
+const STYLE_ICON_INDIGO: CSSProperties = { background: "rgba(99,102,241,0.12)", color: "var(--color-primary)" };
+const STYLE_ICON_GREEN: CSSProperties = { background: "rgba(22,163,74,0.12)", color: "#16A34A" };
+const STYLE_ICON_ORANGE: CSSProperties = { background: "rgba(245,158,11,0.12)", color: "#F59E0B" };
+const STYLE_ICON_ACCENT: CSSProperties = { background: "hsl(var(--accent))", color: "var(--color-primary)" };
+const STYLE_CL_VERSION_BAR: CSSProperties = { background: "hsl(var(--accent))" };
+const STYLE_CL_CAPSULE: CSSProperties = { background: "var(--color-primary)" };
+const STYLE_CL_CAPSULE_MUTED: CSSProperties = { background: "var(--color-muted)" };
+const STYLE_CL_ITEM_PAD: CSSProperties = { paddingLeft: 28 };
+const STYLE_INFO_KEY: CSSProperties = { minWidth: 52 };
+const STYLE_MODAL_OVERLAY: CSSProperties = { background: "rgba(0,0,0,0.45)" };
+const STYLE_MODAL_BOX: CSSProperties = { background: "var(--color-card)" };
+const STYLE_CL_DATE: CSSProperties = { minWidth: 40 };
+
 export function AboutGroup({ status }: { status?: StatusResponse }) {
   const { status: updateStatus, update, checkForUpdate, downloadAndInstall, restart } = useUpdate();
   const { toast } = useToast();
@@ -74,7 +90,7 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
             <span className="text-[15px] font-bold text-foreground">{APP_INFO.name}</span>
             <span
               className="inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px] font-bold tracking-wide text-white"
-              style={{ background: "var(--version-gradient)", boxShadow: "0 2px 6px var(--version-shadow)" }}
+              style={STYLE_VERSION_BADGE}
             >
               {formatVersion(status?.version)}
             </span>
@@ -136,18 +152,18 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
                 <div className="section-label mb-2.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">项目信息</div>
                 <div className="flex flex-col">
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
-                    <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={{ background: "rgba(99,102,241,0.12)", color: "var(--color-primary)" }}>👤</div>
-                    <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={{ minWidth: 52 }}>作者</span>
+                    <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_INDIGO}><Icon name="user" size={14} aria-hidden="true" /></div>
+                    <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>作者</span>
                     <span className="info-val ml-auto text-right"><span className="info-tag tag-purple inline-block rounded-md px-2 py-0.5 text-[11px] font-bold">lzlkyb</span></span>
                   </div>
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
-                    <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={{ background: "rgba(22,163,74,0.12)", color: "#16A34A" }}>📄</div>
-                    <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={{ minWidth: 52 }}>开源协议</span>
+                    <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_GREEN}><Icon name="file" size={14} aria-hidden="true" /></div>
+                    <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>开源协议</span>
                     <span className="info-val ml-auto text-right"><span className="info-tag tag-green inline-block rounded-md px-2 py-0.5 text-[11px] font-bold">MIT</span></span>
                   </div>
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
-                    <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={{ background: "rgba(245,158,11,0.12)", color: "#F59E0B" }}>📦</div>
-                    <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={{ minWidth: 52 }}>仓库地址</span>
+                    <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_ORANGE}><Icon name="package" size={14} aria-hidden="true" /></div>
+                    <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>仓库地址</span>
                     <span className="info-val ml-auto text-right">
                       <button
                         type="button"
@@ -159,8 +175,8 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
                     </span>
                   </div>
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
-                    <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={{ background: "hsl(var(--accent))", color: "var(--color-primary)" }}>💡</div>
-                    <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={{ minWidth: 52 }}>简介</span>
+                    <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_ACCENT}><Icon name="info" size={14} aria-hidden="true" /></div>
+                    <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>简介</span>
                     <span className="info-desc ml-auto truncate text-[11px] text-muted-foreground" style={{ maxWidth: 160 }}>
                       {APP_INFO.description}
                     </span>
@@ -168,7 +184,7 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
                       type="button"
                       onClick={(e) => { e.stopPropagation(); setShowModal(true); }}
                       className="info-detail-btn flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-md border-0 p-0 transition-colors"
-                      style={{ background: "hsl(var(--accent))", color: "var(--color-primary)" }}
+                      style={STYLE_ICON_ACCENT}
                       title="了解更多"
                     >
                       <Icon name="info" size={16} />
@@ -188,14 +204,14 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
                 <>
                   {/* 最新版本 — 完全展开 + 高亮 */}
                   <div className="cl-version-block mb-1.5">
-                    <div className="cl-version-bar flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors" style={{ background: "hsl(var(--accent))" }}>
-                      <span className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[10px] font-bold text-white" style={{ background: "var(--color-primary)" }}>v{CHANGELOG[0].version}</span>
-                      <span className="cl-date shrink-0 text-[10px] text-muted-foreground" style={{ minWidth: 40 }}>{CHANGELOG[0].date}</span>
+                    <div className="cl-version-bar flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors" style={STYLE_CL_VERSION_BAR}>
+                      <span className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[10px] font-bold text-white" style={STYLE_CL_CAPSULE}>v{CHANGELOG[0].version}</span>
+                      <span className="cl-date shrink-0 text-[10px] text-muted-foreground" style={STYLE_CL_DATE}>{CHANGELOG[0].date}</span>
                       <span className="flex-1" />
-                      <span className="cl-latest-tag shrink-0 rounded px-1.5 text-[8px] font-bold tracking-wider text-white" style={{ background: "var(--color-primary)" }}>最新</span>
+                      <span className="cl-latest-tag shrink-0 rounded px-1.5 text-[8px] font-bold tracking-wider text-white" style={STYLE_CL_CAPSULE}>最新</span>
                     </div>
                     {CHANGELOG[0].items.map((item, j) => (
-                      <div key={j} className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:bg-muted" style={{ paddingLeft: 28 }}>
+                      <div key={j} className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:bg-muted" style={STYLE_CL_ITEM_PAD}>
                         <span className={`cl-badge shrink-0 rounded px-1.5 text-[9px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}>{CATEGORY_LABELS[item.category]}</span>
                         {item.text}
                       </div>
@@ -206,12 +222,12 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
                   {showMoreHistory && CHANGELOG.slice(1).map((entry) => (
                     <div key={entry.version} className="cl-version-block mb-1.5">
                       <div className="cl-version-bar flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
-                        <span className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[10px] font-bold text-muted-foreground" style={{ background: "var(--color-muted)" }}>v{entry.version}</span>
-                        <span className="cl-date shrink-0 text-[10px] text-muted-foreground" style={{ minWidth: 40 }}>{entry.date}</span>
+                        <span className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[10px] font-bold text-muted-foreground" style={STYLE_CL_CAPSULE_MUTED}>v{entry.version}</span>
+                        <span className="cl-date shrink-0 text-[10px] text-muted-foreground" style={STYLE_CL_DATE}>{entry.date}</span>
                         <span className="flex-1" />
                       </div>
                       {entry.items.map((item, j) => (
-                        <div key={j} className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:bg-muted" style={{ paddingLeft: 28 }}>
+                        <div key={j} className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:bg-muted" style={STYLE_CL_ITEM_PAD}>
                           <span className={`cl-badge shrink-0 rounded px-1.5 text-[9px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}>{CATEGORY_LABELS[item.category]}</span>
                           {item.text}
                         </div>
@@ -246,12 +262,12 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
       {showModal && (
         <div
           className="modal-overlay fixed inset-0 z-[1000] flex items-center justify-center"
-          style={{ background: "rgba(0,0,0,0.45)" }}
+          style={STYLE_MODAL_OVERLAY}
           onClick={() => setShowModal(false)}
         >
           <div
             className="modal-box mx-4 max-h-[80vh] w-[480px] max-w-[90vw] overflow-y-auto rounded-2xl border border-border p-7 shadow-2xl"
-            style={{ background: "var(--color-card)" }}
+            style={STYLE_MODAL_BOX}
             onClick={(e) => e.stopPropagation()}
           >
             {/* 标题 */}
@@ -259,7 +275,7 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
               <div className="flex items-center gap-2.5 text-lg font-extrabold text-foreground">
                 <div
                   className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-white"
-                  style={{ background: "var(--version-gradient)", boxShadow: "0 3px 10px var(--version-shadow)" }}
+                  style={STYLE_VERSION_BADGE_LG}
                 >
                 <img src="/icon.png" alt="" className="h-5 w-5 object-contain" />
                 </div>

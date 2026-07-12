@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from "react";
+import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { Icon, type IconName } from "../ui/icon";
 import { useToast } from "../ui/toast";
 import { invoke } from "../../lib/tauri";
@@ -104,7 +104,8 @@ export function CommandPalette({
   const isDark = document.documentElement.classList.contains("dark");
   const running = status?.running ?? true;
 
-  const items: CommandItem[] = [
+  // E-P1-11: useMemo 避免 11 个 CommandItem 每渲染重建
+  const items = useMemo<CommandItem[]>(() => [
     { id: "nav-connect", label: "前往：连接页", icon: "plug", group: "导航", tab: "connect", shortcut: "Ctrl+1" },
     { id: "nav-security", label: "前往：安全页", icon: "shield", group: "导航", tab: "security", shortcut: "Ctrl+2" },
     { id: "nav-settings", label: "前往：设置页", icon: "settings", group: "导航", tab: "settings", shortcut: "Ctrl+3" },
@@ -115,7 +116,7 @@ export function CommandPalette({
     { id: "act-clearlog", label: "清空审计日志", icon: "trash", group: "操作", run: runClearAudit },
     { id: "act-addroot", label: "添加允许访问的根目录", icon: "plus", group: "操作", run: () => setShowDirBrowser(true) },
     { id: "act-theme", label: isDark ? "切换到浅色主题" : "切换到深色主题", icon: isDark ? "sun" : "moon", group: "外观", run: toggleTheme },
-  ];
+  ], [running, isDark, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme]);
 
   const filtered = (() => {
     const q = query.trim().toLowerCase();

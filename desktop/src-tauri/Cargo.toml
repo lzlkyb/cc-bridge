@@ -19,6 +19,7 @@ tauri-plugin-opener = "2"
 
 # HTTP server (MCP protocol handled via axum directly)
 axum = "0.8"
+tower = { version = "0.5", features = ["limit"] }  # E-P0-4: ConcurrencyLimitLayer
 tower-http = { version = "0.6", features = ["limit", "compression-gzip"] }
 
 # Async runtime
@@ -100,3 +101,16 @@ codegen-units = 1
 lto = "thin"
 opt-level = "s"
 strip = "symbols"
+
+# E-P2-12: search_files 用到的 grep/regex crate 升级到 opt-level=3，CPU 密集受益
+[profile.release.package.grep-searcher]
+opt-level = 3
+
+[profile.release.package.grep-regex]
+opt-level = 3
+
+[profile.release.package.regex]
+opt-level = 3
+
+[profile.release.package.regex-automata]
+opt-level = 3

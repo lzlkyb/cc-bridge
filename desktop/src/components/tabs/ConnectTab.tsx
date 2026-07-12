@@ -1,18 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, memo } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import { APP_INFO } from "../../lib/about";
+import { McpScope, buildDisplayHost, buildBaseCommand, buildConnectCommand, buildHealthCheck } from "../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Icon } from "../ui/icon";
-import { Alert, AlertDescription } from "../ui/alert";
 import { useToast } from "../ui/toast";
 import { ConnectHero } from "./ConnectHero";
+import { TokenManager } from "./TokenManager";
 
-type McpScope = "user" | "project";
-
-export function ConnectTab({
+function ConnectTabImpl({
   status,
   onRefresh,
   selectedIp,
@@ -24,11 +23,7 @@ export function ConnectTab({
   onSelectIp: (ip: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const [confirmingRegen, setConfirmingRegen] = useState(false);
-  const [regenDone, setRegenDone] = useState(false);
-  const [showToken, setShowToken] = useState(false);
   const [scope, setScope] = useState<McpScope>("project");
-  const [oldToken, setOldToken] = useState("");
   const [projectPath, setProjectPath] = useState("");
   const lanIps = status?.lanIps ?? [];
   const { toast } = useToast();
@@ -45,36 +40,28 @@ export function ConnectTab({
     }
   }, [listenAll, lanIps.join(","), selectedIp]);
 
-  // 前端用 token + port + 选中 IP 重新拼命令，摆脱后端写死的单一 IP
-  const displayHost = listenAll
-    ? selectedIp || "127.0.0.1"
-    : status?.host ?? "";
+  // E-P2-8: useMemo 避免每渲染重复拼接命令字符串（纯函数见 lib/utils）
+  const displayHost = useMemo(
+    () => buildDisplayHost(status, selectedIp),
+    [status, selectedIp],
+  );
   const port = status?.port ?? 7823;
   const token = status?.token ?? "";
 
-  const baseCommand = status
-    ? `claude mcp add --transport http cc-bridge http://${displayHost}:${port}/mcp --header "Authorization: Bearer ${token}"`
-    : "";
+  const baseCommand = useMemo(
+    () => buildBaseCommand(displayHost, port, token),
+    [displayHost, port, token],
+  );
 
-  const connectCommand =
-    scope === "user"
-      ? baseCommand.replace("claude mcp add", "claude mcp add --scope user")
-      : baseCommand;
+  const connectCommand = useMemo(
+    () => buildConnectCommand(baseCommand, scope),
+    [baseCommand, scope],
+  );
 
-  const healthCheck = status
-    ? `curl http://${displayHost}:${port}/health`
-    : "";
-
-  // token 重生成：原地替换 Bearer，不 remove+add（保留服务器条目与授权状态，避免重新授权）。
-  // 作用域读持久化的 status.scope（当初接入确认的作用域），而非 UI 开关，避免匹配错文件。
-  const tokenSedCommand = (() => {
-    if (!oldToken || !token) return "";
-    const scp = (status?.scope ?? "user") as McpScope;
-    const cfgFile = scp === "user" ? "~/.claude.json" : ".mcp.json";
-    const cdPrefix =
-      scp === "project" && projectPath.trim() ? `cd ${projectPath.trim()} && ` : "";
-    return `${cdPrefix}sed -i 's#Bearer ${oldToken}#Bearer ${token}#g' ${cfgFile}`;
-  })();
+  const healthCheck = useMemo(
+    () => buildHealthCheck(displayHost, port),
+    [displayHost, port],
+  );
 
   const handleCopy = () => {
     if (!connectCommand) return;
@@ -87,17 +74,6 @@ export function ConnectTab({
       console.error("保存接入作用域失败（不影响本次复制）", e),
     );
     setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleRegenToken = async () => {
-    const old = status?.token ?? "";
-    await invoke("regenerate_token");
-    setOldToken(old);
-    onRefresh();
-    setConfirmingRegen(false);
-    setRegenDone(true);
-    setShowToken(false);
-    toast("Token 已重新生成，请复制新连接命令到远程服务器", "warning");
   };
 
   return (
@@ -193,69 +169,12 @@ export function ConnectTab({
 
           <div className="my-3.5 h-px bg-border" />
 
-          {/* Token 管理 */}
-          <div className="s-sec-label">Token 管理</div>
-
-          <div className="rounded-lg border border-dashed border-muted-foreground/25 bg-muted/40 px-4 py-3">
-            <div className="flex items-center gap-2">
-              <Icon name="lock" size={13} className="shrink-0 text-muted-foreground/50" />
-              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">机密信息</span>
-            </div>
-            <div className="mt-2.5 flex items-center gap-2">
-              <code className={`flex-1 rounded-md px-3 py-2 text-xs font-mono ${showToken ? "bg-background border" : "bg-muted/60"}`}>
-                {showToken ? (status?.token ?? "") : "●●●●●●●●●●●●●●●●●●●●"}
-              </code>
-              <Button variant="ghost" size="sm" onClick={() => setShowToken(!showToken)}>
-                <Icon name={showToken ? "eyeOff" : "eye"} size={14} />
-                {showToken ? "隐藏" : "显示"}
-              </Button>
-            </div>
-          </div>
-
-          {regenDone && (
-            <Alert variant="warning">
-              <AlertDescription className="space-y-2">
-                <p>Token 已更新。请复制下方命令到远程服务器执行，原地替换 Bearer（不重新授权）：</p>
-                <div className="flex flex-wrap gap-2 items-start">
-                  <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded-md bg-background border px-3 py-2 text-xs font-mono leading-relaxed">
-                    {tokenSedCommand || "加载中..."}
-                  </code>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="shrink-0 mt-0.5"
-                    onClick={() => {
-                      if (tokenSedCommand) {
-                        navigator.clipboard.writeText(tokenSedCommand);
-                        setCopied(true);
-                        setTimeout(() => setCopied(false), 2000);
-                      }
-                    }}
-                    disabled={!tokenSedCommand}
-                  >
-                    {copied ? "已复制 ✓" : "复制"}
-                  </Button>
-                </div>
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {!confirmingRegen ? (
-            <Button variant="outline" size="sm" onClick={() => setConfirmingRegen(true)}>
-              <Icon name="refresh" size={14} />
-              重新生成 Token
-            </Button>
-          ) : (
-            <Alert variant="destructive">
-              <AlertDescription className="flex items-center justify-between gap-3">
-                <span>旧 Token 将立即失效，远程 Claude Code 会断开连接。确定？</span>
-                <span className="flex gap-2 shrink-0">
-                  <Button variant="destructive" size="sm" onClick={handleRegenToken}>确定</Button>
-                  <Button variant="outline" size="sm" onClick={() => setConfirmingRegen(false)}>取消</Button>
-                </span>
-              </AlertDescription>
-            </Alert>
-          )}
+          {/* Token 管理（可折叠，状态内聚在 TokenManager）*/}
+          <TokenManager
+            status={status}
+            onRefresh={onRefresh}
+            projectPath={projectPath}
+          />
         </CardContent>
       </Card>
     </div>
@@ -396,7 +315,7 @@ function IpChangedBanner({
         <p className="text-xs text-muted-foreground">
           {scope
             ? "复制以下命令到远程服务器执行（原地更新 IP，不会重新授权）："
-            : "未能确认当初的接入作用域，请选择你最初{`添加 ${APP_INFO.name}`} 时使用的作用域执行对应命令（不匹配的配置文件不会被改动）："}
+            : `未能确认当初的接入作用域，请选择你最初添加 ${APP_INFO.name} 时使用的作用域执行对应命令（不匹配的配置文件不会被改动）：`}
         </p>
         {entries.map((e, i) => (
           <div key={i} className="space-y-1.5">
@@ -437,8 +356,8 @@ function AddressPicker({
       <div>
         <p className="text-sm font-medium">选择远程服务器能连回本机的地址</p>
         <p className="text-xs text-muted-foreground mt-1">
-          🔌 通过 <b>VPN</b> 连服务器 → 选 VPN 网段（多为 10.x）；
-          🏠 <b>内网直连</b> → 选内网 IP（192.168.x / 172.x）。
+          <Icon name="plug" size={13} className="inline-block align-[-2px] mr-1" aria-hidden="true" /> 通过 <b>VPN</b> 连服务器 → 选 VPN 网段（多为 10.x）；
+          <Icon name="monitor" size={13} className="inline-block align-[-2px] mr-1" aria-hidden="true" /> <b>内网直连</b> → 选内网 IP（192.168.x / 172.x）。
           拿不准就逐个试，或用下方命令在服务器上验证哪个通。
         </p>
       </div>
@@ -673,3 +592,5 @@ function ProjectSteps({
     </>
   );
 }
+
+export const ConnectTab = memo(ConnectTabImpl);

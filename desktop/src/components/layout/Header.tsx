@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, memo } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import { getStoredTheme, toggleTheme } from "../../lib/theme";
@@ -8,7 +8,7 @@ import { APP_INFO } from "../../lib/about";
 import { UpdateBadge } from "./UpdateBadge";
 import { TitleBarControls } from "./TitleBarControls";
 
-export function Header({
+function HeaderImpl({
   status,
   onChanged,
   onNavigate,
@@ -31,7 +31,7 @@ export function Header({
   const running = status?.running ?? true;
   const startupError = status?.startupError ?? null;
 
-  // 安全状态小徽章：任意页可见，点击跳转到对应设置页
+  // E-P1-10: useMemo 避免每帧重建 badge 数组
   const securityBadges: {
     key: string;
     show: boolean;
@@ -41,12 +41,12 @@ export function Header({
     tab: string;
     anchor?: string;
     title: string;
-  }[] = [
-    { key: "whitelist", show: !!status && !status.whitelistEnabled, label: "白名单关闭", icon: "alertTriangle", danger: true, tab: "settings", anchor: "whitelist", title: "白名单已关闭，点击前往设置页关闭" },
-    { key: "ip", show: !!status?.ipChanged, label: "IP 已变化", icon: "alertTriangle", danger: true, tab: "connect", title: "连接地址已变化，点击前往连接页查看" },
-    { key: "readonly", show: !!status?.readonlyMode, label: "只读", icon: "lock", danger: false, tab: "settings", anchor: "readonly", title: "只读模式已开启，点击前往设置页查看" },
-    { key: "shell", show: !!status?.shellEnabled, label: "命令执行已开启", icon: "terminal", danger: true, tab: "settings", anchor: "shell", title: "命令执行已开启，点击前往设置页关闭" },
-  ];
+  }[] = useMemo(() => [
+    { key: "whitelist", show: !!status && !status.whitelistEnabled, label: "白名单关闭", icon: "alertTriangle" as IconName, danger: true, tab: "settings", anchor: "whitelist", title: "白名单已关闭，点击前往设置页关闭" },
+    { key: "ip", show: !!status?.ipChanged, label: "IP 已变化", icon: "alertTriangle" as IconName, danger: true, tab: "connect", title: "连接地址已变化，点击前往连接页查看" },
+    { key: "readonly", show: !!status?.readonlyMode, label: "只读", icon: "lock" as IconName, danger: false, tab: "settings", anchor: "readonly", title: "只读模式已开启，点击前往设置页查看" },
+    { key: "shell", show: !!status?.shellEnabled, label: "命令执行已开启", icon: "terminal" as IconName, danger: true, tab: "settings", anchor: "shell", title: "命令执行已开启，点击前往设置页关闭" },
+  ], [status]);
 
   const toggleServer = async () => {
     setBusy(true);
@@ -59,27 +59,35 @@ export function Header({
     }
   };
 
+  // E-P2-9: useMemo 避免每渲染拼接 className 三元链
+  const pillClassName = useMemo(
+    () =>
+      `status-pill inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold${
+        startupError
+          ? " border-destructive/30 bg-destructive/10 text-destructive"
+          : running
+          ? " border-success/30 bg-success/10 text-success"
+          : " border-border bg-muted text-muted-foreground"
+      }`,
+    [startupError, running],
+  );
+  const pillText = !status ? "连接中" : startupError ? "启动失败" : running ? "运行中" : "已停止";
+
   return (
     <header data-tauri-drag-region className="app-header flex shrink-0 items-center justify-between border-b px-5 py-3.5">
       <div data-tauri-drag-region className="flex items-center gap-2.5">
         <img src="/icon.png" alt={APP_INFO.name} width={40} height={40} className="shrink-0 rounded-lg" draggable={false} />
         <h1 className="text-base font-semibold tracking-tight">CC Bridge</h1>
         <UpdateBadge currentVersion={status?.version} />
+
         {/* 运行状态胶囊：启动失败=红, 运行=绿+脉冲, 停止=灰 (A3) */}
-        {/* A3：端口占用等启动错误优先展示为红态，点击跳设置页 */}
         <span
-          className={`status-pill inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold${
-            startupError
-              ? " border-destructive/30 bg-destructive/10 text-destructive"
-              : running
-              ? " border-success/30 bg-success/10 text-success"
-              : " border-border bg-muted text-muted-foreground"
-          }`}
+          className={pillClassName}
           title={startupError ?? undefined}
           {...(startupError && onNavigate ? { onClick: () => onNavigate("settings"), style: { cursor: "pointer" } } : {})}
         >
           <span className={`h-1.5 w-1.5 rounded-full bg-current ${running && !startupError ? "p-dot" : ""}`} />
-          {!status ? "连接中" : startupError ? "启动失败" : running ? "运行中" : "已停止"}
+          {pillText}
         </span>
 
         {/* 安全状态小徽章：任意页可见，点击跳转到对应设置页（白名单/只读/命令执行→安全页，IP 变化→连接页） */}
@@ -131,3 +139,5 @@ export function Header({
     </header>
   );
 }
+
+export const Header = memo(HeaderImpl);

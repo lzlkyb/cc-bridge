@@ -91,7 +91,8 @@ async fn walk_dir_inner(
         let full_path = entry.path();
 
         let t1 = std::time::Instant::now();
-        let metadata = match tokio::fs::metadata(&full_path).await {
+        let metadata = match entry.metadata().await {
+            // E-P1-6: 用 entry.metadata() 避免额外 stat syscall（read_dir 已含元数据）
             Ok(m) => {
                 crate::timing::record_io(t1.elapsed());
                 m

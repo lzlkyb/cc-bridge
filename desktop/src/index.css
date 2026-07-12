@@ -682,6 +682,29 @@ body {
   background: hsl(var(--muted));
 }
 
+/* ═══ Token 管理折叠（连接页） ═══ */
+.collapsible-head {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 10px 12px; border-radius: 10px;
+  border: 1px solid hsl(var(--border)); background: hsl(var(--muted));
+  cursor: pointer; transition: background 0.12s; text-align: left;
+}
+.collapsible-head:hover { background: hsl(214 25% 91%); }
+.collapsible-chev { color: hsl(var(--muted-foreground)); transition: transform 0.2s ease; }
+.collapsible-chev.open { transform: rotate(180deg); }
+.collapsible-body { padding: 10px 4px 2px; }
+
+/* ═══ 无障碍：键盘聚焦描边 ═══ */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
 /* 命令代码框 */
 .code-box {
   background: color-mix(in srgb, hsl(var(--muted)) 60%, transparent);

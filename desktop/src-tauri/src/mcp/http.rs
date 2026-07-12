@@ -40,6 +40,7 @@ pub async fn build_router(state: Arc<AppState>) -> Router {
         ))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(body_limit))
         .layer(CompressionLayer::new().gzip(true)) // 响应体 gzip 压缩（客户端 Accept-Encoding 支持时才生效，否则透明跳过）
+        .layer(tower::limit::ConcurrencyLimitLayer::new(256)) // E-P0-4: 防止无界并发耗尽 tokio 工作线程
         .with_state(state)
 }
 
@@ -114,13 +115,35 @@ async fn auth_middleware(
 ) -> Response<Body> {
     let path = req.uri().path().to_string();
 
-    // /health does not require auth
+    // /health does not require auth, but add lightweight rate limit (E-P2-11)
     if path == "/health" {
+        let ip = rate_limit_key(addr, req.headers());
+        let now = std::time::Instant::now();
+        let h_window = std::time::Duration::from_secs(1);
+        {
+            let mut entry = state.rate_limiter.entry(ip.clone()).or_default();
+            let ts = entry.value_mut();
+            ts.retain(|t| now.duration_since(*t) < h_window);
+            if ts.len() >= 10 {
+                return Response::builder()
+                    .status(StatusCode::TOO_MANY_REQUESTS)
+                    .body(Body::from(r#"{"error":"Too many health checks"}"#))
+                    .unwrap();
+            }
+            ts.push(now);
+            if ts.is_empty() {
+                drop(entry);
+                state.rate_limiter.remove(&ip);
+            }
+        }
         return next.run(req).await;
     }
 
     let config = state.config.read().await;
     let expected_token = config.token.clone();
+    let max_req = config.rate_limit_max_requests;
+    let window_ms = config.rate_limit_window_ms;
+    let rate_limit_enabled = config.rate_limit_enabled;
     drop(config);
 
     let auth_header = req
@@ -143,12 +166,6 @@ async fn auth_middleware(
     // 换个假 IP 就能无限绕过限流（D1，2026-07-10 修复）。
     let ip = rate_limit_key(addr, req.headers());
 
-    let config = state.config.read().await;
-    let max_req = config.rate_limit_max_requests;
-    let window_ms = config.rate_limit_window_ms;
-    let rate_limit_enabled = config.rate_limit_enabled;
-    drop(config);
-
     // 限流开关（默认开）。关闭时跳过整个计数逻辑，鉴权仍在上方独立生效。
     if rate_limit_enabled {
         let now = std::time::Instant::now();
@@ -165,6 +182,11 @@ async fn auth_middleware(
                     .unwrap();
             }
             timestamps.push(now);
+            // E-P2-1: 若全部时间戳均过期，移除该 IP 条目避免 DashMap 无界增长
+            if timestamps.is_empty() {
+                drop(entry);
+                state.rate_limiter.remove(&ip);
+            }
         }
     }
 
@@ -353,26 +375,8 @@ fn write_audit_for_call(
     session_id: Option<String>,
 ) {
     let args_str = arguments.to_string();
-    // auditMs 代理 = 序列化耗时。
-    let audit_ms = {
-        let probe = audit::new_entry(
-            tool_name,
-            &args_str,
-            success,
-            error.clone(),
-            source_ip.clone(),
-            Some(elapsed),
-            Some(server_ms_dispatch),
-            io_ms,
-            None,
-            None,
-            session_id.clone(),
-        );
-        let a0 = std::time::Instant::now();
-        let _ = serde_json::to_string(&probe);
-        a0.elapsed().as_millis() as u64
-    };
-    let server_ms = server_ms_dispatch + audit_ms;
+    // E-P1-7: 测量序列化耗时（直接计时一次写入，消除 O1 双重序列化开销）
+    let a0 = std::time::Instant::now();
     let entry = audit::new_entry(
         tool_name,
         &args_str,
@@ -380,12 +384,19 @@ fn write_audit_for_call(
         error,
         source_ip,
         Some(elapsed),
-        Some(server_ms),
+        Some(server_ms_dispatch),
         io_ms,
-        Some(audit_ms),
+        None,
         None,
         session_id,
     );
+    let _ = serde_json::to_string(&entry);
+    let audit_ms = a0.elapsed().as_millis() as u64;
+    let server_ms = server_ms_dispatch + audit_ms;
+    // 补充正确的 serverMs/auditMs
+    let mut entry = entry;
+    entry.server_ms = Some(server_ms);
+    entry.audit_ms = Some(audit_ms);
     // D7 修复：审计日志改为后台阻塞线程异步落盘，不再阻塞请求处理的 async 线程；
     // 写入失败通过 log::error! 上报，不再以 .ok() 静默吞掉。
     let audit_data_dir = data_dir.to_path_buf();

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::LazyLock;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -127,6 +128,28 @@ fn ext_to_language(ext: &str) -> String {
 }
 
 fn count_functions_classes(text: &str, language: &str) -> (usize, usize) {
+    // E-P1-2: 预编译所有正则，避免每次调用重复编译
+    use regex::Regex;
+    static RE_CACHE: LazyLock<std::collections::HashMap<String, Regex>> = LazyLock::new(|| {
+        let patterns: &[&str] = &[
+            r"\bfunction\s+\w+",
+            r"=>\s*\b",
+            r"\bclass\s+\w+",
+            r"(?m)^\s*def\s+\w+",
+            r"(?m)^\s*class\s+\w+",
+            r"\b(?:public|private|protected|static)\s+\w+\s+\w+\s*\([^)]*\)\s*\{",
+            r"\bfunc\s+\w+",
+            r"\bfn\s+\w+",
+            r"\bstruct\s+\w+",
+            r"\b\w+\s+\w+\s*\([^;{]*\)\s*\{",
+        ];
+        patterns
+            .iter()
+            .map(|&p| (p.to_string(), Regex::new(p).unwrap()))
+            .collect()
+    });
+    let compiled = |p: &&str| RE_CACHE.get(*p);
+
     let (fn_patterns, cls_patterns): (Vec<&str>, Vec<&str>) = match language {
         "javascript" | "typescript" => (
             vec![r"\bfunction\s+\w+", r"=>\s*\{"],
@@ -151,13 +174,13 @@ fn count_functions_classes(text: &str, language: &str) -> (usize, usize) {
 
     let fn_count: usize = fn_patterns
         .iter()
-        .filter_map(|p| regex::Regex::new(p).ok())
+        .filter_map(compiled)
         .map(|re| re.find_iter(text).count())
         .sum();
 
     let cls_count: usize = cls_patterns
         .iter()
-        .filter_map(|p| regex::Regex::new(p).ok())
+        .filter_map(compiled)
         .map(|re| re.find_iter(text).count())
         .sum();
 

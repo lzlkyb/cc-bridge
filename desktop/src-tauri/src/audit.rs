@@ -1,5 +1,6 @@
-use std::io::{BufRead, Write};
-use std::path::Path;
+use std::io::{BufRead, BufWriter, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use chrono::Local;
 use serde::Serialize;
@@ -36,20 +37,47 @@ pub struct AuditEntry {
     pub session_id: Option<String>,
 }
 
-pub fn write_audit_log(data_dir: &Path, entry: &AuditEntry) -> Result<(), String> {
-    let log_path = data_dir.join("audit.log");
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("Failed to open audit log: {e}"))?;
+/// E-P0-7: 共享审计日志写句柄，避免每次写都 open 文件（高频批量调用下省 1000 open/s）。
+/// 以 data_dir 为键惰性打开，写后 flush；日志被轮换（cleanup/clear）时由
+/// `close_audit_writer` 释放句柄，避免 Windows 下文件被占用导致 rename 失败。
+type AuditWriter = Option<(PathBuf, BufWriter<std::fs::File>)>;
+static AUDIT_WRITER: OnceLock<Mutex<AuditWriter>> = OnceLock::new();
 
+pub fn write_audit_log(data_dir: &Path, entry: &AuditEntry) -> Result<(), String> {
     let line = serde_json::to_string(entry)
         .map_err(|e| format!("Failed to serialize audit entry: {e}"))?;
 
-    writeln!(file, "{}", line).map_err(|e| format!("Failed to write audit log: {e}"))?;
-
+    let lock = AUDIT_WRITER.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap();
+    // 重新打开条件：尚未打开，或目标目录变化（理论单目录，防御性）。
+    let reopen = match guard.as_ref() {
+        Some((p, _)) => p.as_path() != data_dir,
+        None => true,
+    };
+    if reopen {
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(data_dir.join("audit.log"))
+            .map_err(|e| format!("Failed to open audit log: {e}"))?;
+        *guard = Some((data_dir.to_path_buf(), BufWriter::new(f)));
+    }
+    let (_, w) = guard.as_mut().unwrap();
+    writeln!(w, "{}", line).map_err(|e| format!("Failed to write audit log: {e}"))?;
+    w.flush()
+        .map_err(|e| format!("Failed to flush audit log: {e}"))?;
     Ok(())
+}
+
+/// E-P0-7: 释放共享写句柄（审计日志轮换/清空前调用）。
+pub fn close_audit_writer() {
+    if let Some(m) = AUDIT_WRITER.get() {
+        if let Ok(mut g) = m.lock() {
+            if let Some((_, mut w)) = g.take() {
+                let _ = w.flush();
+            }
+        }
+    }
 }
 
 pub fn read_recent_entries(data_dir: &Path, limit: usize) -> Result<Vec<AuditEntry>, String> {
@@ -61,15 +89,19 @@ pub fn read_recent_entries(data_dir: &Path, limit: usize) -> Result<Vec<AuditEnt
     let file =
         std::fs::File::open(&log_path).map_err(|e| format!("Failed to open audit log: {e}"))?;
 
-    let lines: Vec<String> = std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .collect();
+    // E-P2-2: 用固定容量 VecDeque 避免整文件进内存，只保留最后 limit 行
+    let mut deque: std::collections::VecDeque<String> =
+        std::collections::VecDeque::with_capacity(limit);
+    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+        if deque.len() >= limit {
+            deque.pop_front();
+        }
+        deque.push_back(line);
+    }
 
-    let entries: Vec<AuditEntry> = lines
+    let entries: Vec<AuditEntry> = deque
         .iter()
         .rev()
-        .take(limit)
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
 
@@ -78,6 +110,7 @@ pub fn read_recent_entries(data_dir: &Path, limit: usize) -> Result<Vec<AuditEnt
 
 /// 清空全部审计日志（删除 audit.log）。用户在日志页手动触发。
 pub fn clear_all(data_dir: &Path) -> Result<(), String> {
+    close_audit_writer();
     let log_path = data_dir.join("audit.log");
     if log_path.exists() {
         std::fs::remove_file(&log_path).map_err(|e| format!("Failed to clear audit log: {e}"))?;
@@ -128,6 +161,8 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<(), S
         return Ok(());
     }
 
+    // E-P0-7: 轮换前释放共享写句柄，避免 Windows 下 rename 因文件被占用而失败。
+    close_audit_writer();
     let log_path = data_dir.join("audit.log");
     if !log_path.exists() {
         return Ok(());

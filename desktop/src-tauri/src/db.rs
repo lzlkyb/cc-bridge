@@ -6,6 +6,15 @@ pub fn init_database(data_dir: &Path) -> Result<Connection, String> {
     let db_path = data_dir.join("cc-bridge.db");
     let conn = Connection::open(&db_path).map_err(|e| format!("Failed to open database: {e}"))?;
 
+    // E-P0-1: 性能 PRAGMA——WAL 写吞吐 2-5×，busy_timeout 防写冲突，synchronous=NORMAL 减 fsync
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA busy_timeout=5000;
+         PRAGMA synchronous=NORMAL;
+         PRAGMA foreign_keys=ON;",
+    )
+    .map_err(|e| format!("Failed to set PRAGMA: {e}"))?;
+
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS config (
             key   TEXT PRIMARY KEY NOT NULL,
@@ -162,6 +171,9 @@ fn ensure_defaults(conn: &Connection) -> Result<(), String> {
         ),
     ];
 
+    // E-P1-4: 用事务包裹，避免 18 次独立隐式事务 + fsync
+    conn.execute("BEGIN", [])
+        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
     for (key, default_value) in defaults {
         conn.execute(
             "INSERT OR IGNORE INTO config (key, value) VALUES (?1, ?2)",
@@ -169,6 +181,8 @@ fn ensure_defaults(conn: &Connection) -> Result<(), String> {
         )
         .map_err(|e| format!("Failed to insert default for {key}: {e}"))?;
     }
+    conn.execute("COMMIT", [])
+        .map_err(|e| format!("Failed to commit defaults: {e}"))?;
 
     Ok(())
 }

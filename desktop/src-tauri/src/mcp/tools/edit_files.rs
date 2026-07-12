@@ -99,7 +99,7 @@ async fn edit_single(
     let ft = encoding::read_text(&raw, None)?;
     let content = &ft.text;
 
-    let match_count = content.matches(&f.old_string).count();
+    let match_count = content.matches(&f.old_string).take(2).count(); // E-P0-5: 早停在 >1，避免全文件扫描
     if match_count == 0 {
         return Err("oldString not found in file".into());
     }

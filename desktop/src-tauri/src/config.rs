@@ -76,77 +76,70 @@ impl Default for BridgeConfig {
     }
 }
 
+/// E-P2-5: 反序列化失败时记日志，便于排查 DB 损坏等边缘情况
+fn parse_or_warn<T: serde::de::DeserializeOwned>(key: &str, value: &str, fallback: T) -> T {
+    serde_json::from_str(value).unwrap_or_else(|e| {
+        log::warn!("配置字段「{}」反序列化失败，使用默认值：{e}", key);
+        fallback
+    })
+}
+
 pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
     let mut config = BridgeConfig::default();
 
-    if let Some(v) = db::get_config_value(conn, "allowed_roots") {
-        let roots: Vec<String> = serde_json::from_str(&v).unwrap_or_default();
-        // 兼容旧数据：剥掉早期 canonicalize 写入的 \\?\ 前缀，纯展示层归一化，匹配不受影响。
-        config.allowed_roots = roots
-            .into_iter()
-            .map(|r| r.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(r))
-            .collect();
-    }
-    if let Some(v) = db::get_config_value(conn, "token") {
-        config.token = serde_json::from_str(&v).unwrap_or_default();
-    }
-    if let Some(v) = db::get_config_value(conn, "allowed_extensions") {
-        config.allowed_extensions = serde_json::from_str(&v).unwrap_or_default();
-    }
-    if let Some(v) = db::get_config_value(conn, "max_file_size_bytes") {
-        config.max_file_size_bytes = serde_json::from_str(&v).unwrap_or(20_971_520);
-    }
-    if let Some(v) = db::get_config_value(conn, "rate_limit_max_requests") {
-        config.rate_limit_max_requests = serde_json::from_str(&v).unwrap_or(100);
-    }
-    if let Some(v) = db::get_config_value(conn, "rate_limit_window_ms") {
-        config.rate_limit_window_ms = serde_json::from_str(&v).unwrap_or(60_000);
-    }
-    if let Some(v) = db::get_config_value(conn, "backup_dir") {
-        config.backup_dir = serde_json::from_str(&v).unwrap_or_else(|_| ".cc-bridge-backup".into());
-    }
-    if let Some(v) = db::get_config_value(conn, "backup_retention") {
-        config.backup_retention = serde_json::from_str(&v).unwrap_or(10);
-    }
-    if let Some(v) = db::get_config_value(conn, "audit_retention_days") {
-        config.audit_retention_days = serde_json::from_str(&v).unwrap_or(30);
-    }
-    if let Some(v) = db::get_config_value(conn, "host") {
-        config.host = serde_json::from_str(&v).unwrap_or_else(|_| "0.0.0.0".into());
-    }
-    if let Some(v) = db::get_config_value(conn, "port") {
-        config.port = serde_json::from_str(&v).unwrap_or(7823);
-    }
-    // 功能开关：缺省沿用默认（安全约束全开），旧数据库无此键时回退到 default。
-    if let Some(v) = db::get_config_value(conn, "whitelist_enabled") {
-        config.whitelist_enabled = serde_json::from_str(&v).unwrap_or(true);
-    }
-    if let Some(v) = db::get_config_value(conn, "readonly_mode") {
-        config.readonly_mode = serde_json::from_str(&v).unwrap_or(false);
-    }
-    if let Some(v) = db::get_config_value(conn, "backup_enabled") {
-        config.backup_enabled = serde_json::from_str(&v).unwrap_or(true);
-    }
-    if let Some(v) = db::get_config_value(conn, "audit_enabled") {
-        config.audit_enabled = serde_json::from_str(&v).unwrap_or(true);
-    }
-    if let Some(v) = db::get_config_value(conn, "rate_limit_enabled") {
-        config.rate_limit_enabled = serde_json::from_str(&v).unwrap_or(true);
-    }
-    if let Some(v) = db::get_config_value(conn, "encoding_detect_enabled") {
-        config.encoding_detect_enabled = serde_json::from_str(&v).unwrap_or(false);
-    }
-    if let Some(v) = db::get_config_value(conn, "shell_enabled") {
-        config.shell_enabled = serde_json::from_str(&v).unwrap_or(false);
-    }
-    if let Some(v) = db::get_config_value(conn, "session_cwd_enabled") {
-        config.session_cwd_enabled = serde_json::from_str(&v).unwrap_or(false);
-    }
-    if let Some(v) = db::get_config_value(conn, "last_selected_ip") {
-        config.last_selected_ip = serde_json::from_str(&v).unwrap_or(None);
-    }
-    if let Some(v) = db::get_config_value(conn, "scope") {
-        config.scope = serde_json::from_str(&v).unwrap_or(None);
+    // E-P0-6: 单次 SELECT key,value FROM config 代替 22 次独立查询，启动 DB 耗时 -90%
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM config")
+        .map_err(|e| format!("查询配置失败：{e}"))?;
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| format!("遍历配置失败：{e}"))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for (key, value) in &rows {
+        match key.as_str() {
+            "allowed_roots" => {
+                let roots: Vec<String> = parse_or_warn(key, value, vec![]);
+                config.allowed_roots = roots
+                    .into_iter()
+                    .map(|r| r.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(r))
+                    .collect();
+            }
+            "token" => config.token = parse_or_warn(key, value, String::new()),
+            "allowed_extensions" => config.allowed_extensions = parse_or_warn(key, value, vec![]),
+            "max_file_size_bytes" => {
+                config.max_file_size_bytes = parse_or_warn(key, value, 20_971_520u64)
+            }
+            "rate_limit_max_requests" => {
+                config.rate_limit_max_requests = parse_or_warn(key, value, 100u32)
+            }
+            "rate_limit_window_ms" => {
+                config.rate_limit_window_ms = parse_or_warn(key, value, 60_000u64)
+            }
+            "backup_dir" => {
+                config.backup_dir = parse_or_warn(key, value, ".cc-bridge-backup".into())
+            }
+            "backup_retention" => config.backup_retention = parse_or_warn(key, value, 10u32),
+            "audit_retention_days" => {
+                config.audit_retention_days = parse_or_warn(key, value, 30u32)
+            }
+            "host" => config.host = parse_or_warn(key, value, "0.0.0.0".into()),
+            "port" => config.port = parse_or_warn(key, value, 7823u16),
+            "whitelist_enabled" => config.whitelist_enabled = parse_or_warn(key, value, true),
+            "readonly_mode" => config.readonly_mode = parse_or_warn(key, value, false),
+            "backup_enabled" => config.backup_enabled = parse_or_warn(key, value, true),
+            "audit_enabled" => config.audit_enabled = parse_or_warn(key, value, true),
+            "rate_limit_enabled" => config.rate_limit_enabled = parse_or_warn(key, value, true),
+            "encoding_detect_enabled" => {
+                config.encoding_detect_enabled = parse_or_warn(key, value, false)
+            }
+            "shell_enabled" => config.shell_enabled = parse_or_warn(key, value, false),
+            "session_cwd_enabled" => config.session_cwd_enabled = parse_or_warn(key, value, false),
+            "last_selected_ip" => config.last_selected_ip = parse_or_warn(key, value, None),
+            "scope" => config.scope = parse_or_warn(key, value, None),
+            _ => {}
+        }
     }
 
     Ok(config)
@@ -165,6 +158,11 @@ pub fn save_config_field(
 /// C8：一次性写回整个 BridgeConfig。供 import_config 使用，保持与 save_config 逐字段语义一致。
 pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), String> {
     use serde_json::to_value;
+
+    // E-P1-5: 用事务包裹 22 次 INSERT，避免独立隐式事务 + fsync
+    conn.execute("BEGIN", [])
+        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
+
     save_config_field(
         conn,
         "allowed_roots",
@@ -250,5 +248,8 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         &to_value(&config.last_selected_ip).unwrap(),
     )?;
     save_config_field(conn, "scope", &to_value(&config.scope).unwrap())?;
+
+    conn.execute("COMMIT", [])
+        .map_err(|e| format!("Failed to commit full config: {e}"))?;
     Ok(())
 }

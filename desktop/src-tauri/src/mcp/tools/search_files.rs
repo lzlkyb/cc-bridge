@@ -10,6 +10,12 @@ use crate::security;
 use crate::state::AppState;
 use crate::timing;
 
+use grep_searcher::{
+    sinks, BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind,
+    SinkMatch,
+};
+use std::io;
+
 #[derive(Debug, Deserialize)]
 pub struct SearchFilesArgs {
     #[serde(rename = "rootPath")]
@@ -349,6 +355,117 @@ fn walk_search_blocking_tracked(
     out
 }
 
+/// P1-12：在 grep-searcher 的**同一次扫描**内直接收集命中行及其前/后上下文，
+/// 避免命中后再 `std::fs::read` 整文件进堆内存切片上下文（旧版 Content 模式的
+/// O(file_size) 内存峰值来源）。grep-searcher 内部 mmap/读缓冲后即提供上下文行，
+/// 本 Sink 仅做收集与 JSON 拼装。
+///
+/// 上下文行由 grep-searcher 在 `matched` 之前/之后分别以 `SinkContextKind::Before`
+/// /`After` 推送给 `context`；相邻匹配会自动合并（第二个匹配的重叠行不再重复，
+/// 对齐 native ripgrep 行为）。`after` 行保证在下一个 `matched` 或 `finish` 前 flush，
+/// 不会丢失。
+struct ContentSink<'a> {
+    counter: &'a AtomicUsize,
+    head_limit: usize,
+    path: &'a Path,
+    line_numbers: bool,
+    /// 当前匹配之前的上下文行（grep-searcher 保证在 `matched` 前按从远到近顺序推送）。
+    pending_before: Vec<(u64, String)>,
+    /// 已完成的匹配结果（含 `contextAfter`，由后续 `context(After)` 回填）。
+    results: Vec<Value>,
+}
+
+impl<'a> ContentSink<'a> {
+    fn new(
+        before: usize,
+        _after: usize,
+        counter: &'a AtomicUsize,
+        head_limit: usize,
+        path: &'a Path,
+        line_numbers: bool,
+    ) -> Self {
+        Self {
+            counter,
+            head_limit,
+            path,
+            line_numbers,
+            pending_before: Vec::with_capacity(before),
+            results: Vec::new(),
+        }
+    }
+}
+
+impl<'a> Sink for ContentSink<'a> {
+    type Error = io::Error;
+
+    fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch) -> Result<bool, io::Error> {
+        // 受全局 head_limit 约束早停（counter 跨文件共享）。
+        if self.counter.load(Ordering::Relaxed) + self.results.len() >= self.head_limit {
+            return Ok(false);
+        }
+        let ln = match mat.line_number() {
+            Some(n) => n,
+            // 理论上 SearcherBuilder 默认开启 line_number，不会走到这里；为稳健跳过本行。
+            None => return Ok(true),
+        };
+        // mat.bytes() 含行终止符，与旧版 `sinks::Lossy` 给的 `line` 一致（保留尾换行）。
+        let line = String::from_utf8_lossy(mat.bytes()).into_owned();
+        let mut obj = json!({
+            "path": self.path.to_string_lossy(),
+            "type": "content",
+            "line": line,
+            // 上下文行由 grep-searcher 在 `matched` 之前按从远到近推送，与旧版
+            // `lines[idx-before..idx]`（从远到近）顺序一致。
+            "contextBefore": self
+                .pending_before
+                .iter()
+                .map(|(_, t)| Value::String(t.clone()))
+                .collect::<Vec<_>>(),
+            "contextAfter": Vec::<Value>::new(),
+        });
+        if self.line_numbers {
+            obj["lineNumber"] = json!(ln);
+        }
+        self.results.push(obj);
+        self.pending_before.clear();
+        Ok(true)
+    }
+
+    fn context(&mut self, _searcher: &Searcher, ctx: &SinkContext) -> Result<bool, io::Error> {
+        let ln = ctx.line_number().unwrap_or(0);
+        // 上下文行含行终止符，剥离之以对齐旧版 `.lines()`（不含尾换行）。
+        let text = strip_line_term(String::from_utf8_lossy(ctx.bytes()).into_owned());
+        match ctx.kind() {
+            SinkContextKind::Before => {
+                self.pending_before.push((ln, text));
+            }
+            SinkContextKind::After => {
+                // `after` 行在下一个 `matched` 或 `finish` 前 flush，此刻 results 的最后一个
+                // 元素正是它所属的匹配。
+                if let Some(last) = self.results.last_mut() {
+                    last["contextAfter"]
+                        .as_array_mut()
+                        .expect("contextAfter is always an array")
+                        .push(Value::String(text));
+                }
+            }
+            SinkContextKind::Other => {}
+        }
+        Ok(true)
+    }
+}
+
+/// 去掉尾随的单个行终止符（`\n` 或 `\r\n`），对齐 `str::lines()` 的剥离语义。
+fn strip_line_term(mut s: String) -> String {
+    if s.ends_with('\n') {
+        s.pop();
+        if s.ends_with('\r') {
+            s.pop();
+        }
+    }
+    s
+}
+
 /// 用 grep-searcher（ripgrep 同款引擎）对单文件做内容搜索。
 ///
 /// 相较旧版「逐行 `BufReader.lines()` + `regex`」，本实现获得：
@@ -369,13 +486,11 @@ fn grep_file(
     counter: &AtomicUsize,
     io_tracker: Option<&Arc<AtomicU64>>,
 ) -> Vec<Value> {
-    use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
-    let mut searcher = SearcherBuilder::new()
-        .binary_detection(BinaryDetection::quit(0))
-        .build();
-
     match grep.output_mode {
         OutputMode::FilesWithMatches => {
+            let mut searcher = SearcherBuilder::new()
+                .binary_detection(BinaryDetection::quit(0))
+                .build();
             let mut found = false;
             let res = searcher.search_path(
                 matcher,
@@ -391,6 +506,9 @@ fn grep_file(
             vec![json!({ "path": path.to_string_lossy(), "type": "content" })]
         }
         OutputMode::Count => {
+            let mut searcher = SearcherBuilder::new()
+                .binary_detection(BinaryDetection::quit(0))
+                .build();
             let mut count = 0usize;
             let res = searcher.search_path(
                 matcher,
@@ -410,57 +528,33 @@ fn grep_file(
             })]
         }
         OutputMode::Content => {
-            // 先 mmap + SIMD 快扫匹配行（不整读内存），命中即收集行号 + 文本。
-            let mut hits: Vec<(u64, String)> = Vec::new();
-            let res = searcher.search_path(
-                matcher,
+            // P1-12：用 grep-searcher 原生的 before/after context，在**同一次 mmap 扫描**
+            // 内直接从它已读入/映射的缓冲提取命中行的上下文，彻底消除旧版「命中后再
+            // `std::fs::read` 整文件进堆内存切片上下文」的 O(file_size) 内存峰值——大文件
+            // 不再为取几行上下文而把整个文件读进内存。行为对齐 native ripgrep（相邻匹配
+            // 自动合并上下文，第二个匹配不再重复前一个匹配的重叠行）。
+            let mut searcher = SearcherBuilder::new()
+                .binary_detection(BinaryDetection::quit(0))
+                .before_context(grep.before)
+                .after_context(grep.after)
+                .build();
+            let mut sink = ContentSink::new(
+                grep.before,
+                grep.after,
+                counter,
+                head_limit,
                 path,
-                sinks::Lossy(|ln, line| {
-                    if counter.load(Ordering::Relaxed) + hits.len() >= head_limit {
-                        return Ok(false); // 受 head_limit 约束早停
-                    }
-                    hits.push((ln, line.to_string()));
-                    Ok(true)
-                }),
+                grep.line_numbers,
             );
-            if res.is_err() || hits.is_empty() {
-                return Vec::new();
-            }
-            // 取上下文：用 `from_utf8_lossy` 读全行（与 grep-searcher 同样的 Lossy 语义，
-            // 保证 GBK 等非 UTF-8 文件上下文也能正确切片，彻底修复旧版 `read_to_string` 漏搜）。
             let t0 = std::time::Instant::now();
-            let Ok(bytes) = std::fs::read(path) else {
-                return Vec::new();
-            };
+            let res = searcher.search_path(matcher, path, &mut sink);
             if let Some(tracker) = io_tracker {
                 tracker.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
             }
-            let content = String::from_utf8_lossy(&bytes);
-            let lines: Vec<&str> = content.lines().collect();
-            let mut objs: Vec<Value> = Vec::new();
-            for (ln, line) in &hits {
-                if objs.len() >= head_limit {
-                    break;
-                }
-                let idx = (*ln).saturating_sub(1) as usize;
-                let ctx_before: Vec<&str> = lines[idx.saturating_sub(grep.before)..idx].to_vec();
-                let ctx_after: Vec<&str> = lines
-                    .get(idx + 1..=(idx + grep.after).min(lines.len().saturating_sub(1)))
-                    .unwrap_or(&[])
-                    .to_vec();
-                let mut obj = json!({
-                    "path": path.to_string_lossy(),
-                    "type": "content",
-                    "line": line,
-                    "contextBefore": ctx_before,
-                    "contextAfter": ctx_after,
-                });
-                if grep.line_numbers {
-                    obj["lineNumber"] = json!(ln);
-                }
-                objs.push(obj);
+            if res.is_err() || sink.results.is_empty() {
+                return Vec::new();
             }
-            objs
+            sink.results
         }
     }
 }
