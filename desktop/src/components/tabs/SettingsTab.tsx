@@ -15,14 +15,16 @@ export function SettingsTab({
   status,
   onSaved,
   highlightAnchor,
+  unreadCount,
 }: {
   status?: StatusResponse;
   onSaved: () => void;
   highlightAnchor?: { anchor: string; nonce: number } | null;
+  unreadCount?: number;
 }) {
   return (
     <div className="space-y-4">
-      <AboutGroup status={status} />
+      <AboutGroup status={status} unreadCount={unreadCount} />
       <NetworkGroup status={status} onSaved={onSaved} />
       <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
       <AppGroup />

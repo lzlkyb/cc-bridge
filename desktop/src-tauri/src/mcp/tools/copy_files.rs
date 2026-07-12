@@ -7,13 +7,13 @@ use crate::backup;
 use crate::security;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct CopyItem {
     pub from: String,
     pub to: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct CopyFilesArgs {
     pub items: Vec<CopyItem>,
 }

@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.2.22"
+version = "2.2.23"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -59,6 +59,10 @@ if-addrs = "0.13"
 
 # Concurrency
 dashmap = "6"
+
+# 内部 proc-macro（手写 dispatch 折中重构：ToolSchema 自动派生 inputSchema）。
+# 仅编译期依赖，不进 exe（守二进制体积红线，见 规则8）。
+cc-bridge-macros = { path = "macros" }
 
 # Unified diff 生成（edit_files/write_files 改文件后随结果回传增删摘要，P3-1，见 功能优化清单.md）
 similar = "3.1"

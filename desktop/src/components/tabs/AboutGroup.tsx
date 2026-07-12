@@ -6,16 +6,9 @@ import { useToast } from "../ui/toast";
 import { useUpdate, type UpdateStatus } from "../../contexts/UpdateContext";
 import type { StatusResponse } from "../../lib/types";
 import { formatVersion } from "../../lib/utils";
-import { APP_INFO, CHANGELOG, CATEGORY_LABELS, type ChangeCategory } from "../../lib/about";
+import { APP_INFO } from "../../lib/about";
 import { openUrl } from "@tauri-apps/plugin-opener";
-
-/** category → Tailwind 类后缀 */
-const CATEGORY_CLASS: Record<ChangeCategory, string> = {
-  feat: "cl-badge-feat",
-  improve: "cl-badge-improve",
-  fix: "cl-badge-fix",
-  sec: "cl-badge-sec",
-};
+import { ChangelogView } from "./ChangelogView";
 
 /** 技术栈数据 */
 const TECH_STACK = [
@@ -49,20 +42,14 @@ const STYLE_ICON_INDIGO: CSSProperties = { background: "rgba(99,102,241,0.12)", 
 const STYLE_ICON_GREEN: CSSProperties = { background: "rgba(22,163,74,0.12)", color: "#16A34A" };
 const STYLE_ICON_ORANGE: CSSProperties = { background: "rgba(245,158,11,0.12)", color: "#F59E0B" };
 const STYLE_ICON_ACCENT: CSSProperties = { background: "hsl(var(--accent))", color: "var(--color-primary)" };
-const STYLE_CL_VERSION_BAR: CSSProperties = { background: "hsl(var(--accent))" };
-const STYLE_CL_CAPSULE: CSSProperties = { background: "var(--color-primary)" };
-const STYLE_CL_CAPSULE_MUTED: CSSProperties = { background: "var(--color-muted)" };
-const STYLE_CL_ITEM_PAD: CSSProperties = { paddingLeft: 28 };
 const STYLE_INFO_KEY: CSSProperties = { minWidth: 52 };
 const STYLE_MODAL_OVERLAY: CSSProperties = { background: "rgba(0,0,0,0.45)" };
 const STYLE_MODAL_BOX: CSSProperties = { background: "var(--color-card)" };
-const STYLE_CL_DATE: CSSProperties = { minWidth: 40 };
 
-export function AboutGroup({ status }: { status?: StatusResponse }) {
+export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; unreadCount?: number }) {
   const { status: updateStatus, update, checkForUpdate, downloadAndInstall, restart } = useUpdate();
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
-  const [showMoreHistory, setShowMoreHistory] = useState(false);
   const [showModal, setShowModal] = useState(false);
 
   const openRepo = async () => {
@@ -87,7 +74,7 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
 
           {/* 名称 + 版本 + 状态 */}
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            <span className="text-[15px] font-bold text-foreground">{APP_INFO.name}</span>
+            <span className="text-[15px] font-bold text-foreground">关于 {APP_INFO.name}</span>
             <span
               className="inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px] font-bold tracking-wide text-white"
               style={STYLE_VERSION_BADGE}
@@ -95,6 +82,14 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
               {formatVersion(status?.version)}
             </span>
             <UpdateStatusPill status={updateStatus} update={update} />
+            {unreadCount !== undefined && unreadCount > 0 && (
+              <span
+                className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white"
+                title={`${unreadCount} 项新更新`}
+              >
+                {unreadCount > 9 ? "9+" : unreadCount}
+              </span>
+            )}
           </div>
 
           {/* 操作按钮区（阻止冒泡，不触发展开） */}
@@ -194,61 +189,15 @@ export function AboutGroup({ status }: { status?: StatusResponse }) {
               </div>
             </div>
 
-            <div className="about-divider h-px bg-border" />
-
-            {/* 更新历史 — 分类标签行 */}
-            <div className="px-[22px] py-3.5">
-              <div className="section-label mb-2.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">更新历史</div>
-
-              {CHANGELOG.length > 0 && (
-                <>
-                  {/* 最新版本 — 完全展开 + 高亮 */}
-                  <div className="cl-version-block mb-1.5">
-                    <div className="cl-version-bar flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors" style={STYLE_CL_VERSION_BAR}>
-                      <span className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[10px] font-bold text-white" style={STYLE_CL_CAPSULE}>v{CHANGELOG[0].version}</span>
-                      <span className="cl-date shrink-0 text-[10px] text-muted-foreground" style={STYLE_CL_DATE}>{CHANGELOG[0].date}</span>
-                      <span className="flex-1" />
-                      <span className="cl-latest-tag shrink-0 rounded px-1.5 text-[8px] font-bold tracking-wider text-white" style={STYLE_CL_CAPSULE}>最新</span>
-                    </div>
-                    {CHANGELOG[0].items.map((item, j) => (
-                      <div key={j} className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:bg-muted" style={STYLE_CL_ITEM_PAD}>
-                        <span className={`cl-badge shrink-0 rounded px-1.5 text-[9px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}>{CATEGORY_LABELS[item.category]}</span>
-                        {item.text}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* 折叠的历史版本 */}
-                  {showMoreHistory && CHANGELOG.slice(1).map((entry) => (
-                    <div key={entry.version} className="cl-version-block mb-1.5">
-                      <div className="cl-version-bar flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
-                        <span className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[10px] font-bold text-muted-foreground" style={STYLE_CL_CAPSULE_MUTED}>v{entry.version}</span>
-                        <span className="cl-date shrink-0 text-[10px] text-muted-foreground" style={STYLE_CL_DATE}>{entry.date}</span>
-                        <span className="flex-1" />
-                      </div>
-                      {entry.items.map((item, j) => (
-                        <div key={j} className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:bg-muted" style={STYLE_CL_ITEM_PAD}>
-                          <span className={`cl-badge shrink-0 rounded px-1.5 text-[9px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}>{CATEGORY_LABELS[item.category]}</span>
-                          {item.text}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-
-                  {/* 折叠按钮 */}
-                  {CHANGELOG.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => setShowMoreHistory(!showMoreHistory)}
-                      className="changelog-toggle mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border bg-transparent px-2 py-1.5 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-primary hover:bg-muted hover:text-foreground"
-                    >
-                      <Icon name="chevronDown" size={12} className={`transition-transform duration-200 ${showMoreHistory ? "rotate-180" : ""}`} />
-                      <span>{showMoreHistory ? "收起历史版本" : `查看更多版本 (${CHANGELOG.length - 1})`}</span>
-                    </button>
-                  )}
-                </>
-              )}
+            {/* ═══ 更新历史（内嵌：技术栈/项目信息 双列 与 版权行之间） ═══ */}
+            <div className="px-[22px] pt-3.5">
+              <div className="section-label mb-0 flex items-center gap-1.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">
+                <Icon name="history" size={12} /> 更新历史
+              </div>
             </div>
+            <ChangelogView />
+
+            <div className="about-divider h-px bg-border" />
 
             {/* Footer */}
             <div className="about-footer flex items-center justify-between border-t border-border px-[22px] py-2.5">

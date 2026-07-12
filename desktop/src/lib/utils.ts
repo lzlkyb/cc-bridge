@@ -83,3 +83,42 @@ export function buildTokenSedCommand(
   const cdPrefix = scope === "project" && projectPath.trim() ? `cd ${projectPath.trim()} && ` : "";
   return `${cdPrefix}sed -i 's#Bearer ${oldToken}#Bearer ${token}#g' ${cfgFile}`;
 }
+
+/* ─── 更新历史「已读」状态（localStorage，纯函数，规则 11）─── */
+
+const CHANGELOG_LAST_SEEN_KEY = "ccb_changelog_last_seen";
+
+/** 读取用户上次看到的版本（未看过返回 null）。 */
+export function getLastSeenVersion(): string | null {
+  try {
+    return localStorage.getItem(CHANGELOG_LAST_SEEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** 记录用户已看到某版本（通常是当前最新版）。 */
+export function setLastSeenVersion(version: string): void {
+  try {
+    localStorage.setItem(CHANGELOG_LAST_SEEN_KEY, version);
+  } catch {
+    /* localStorage 不可用时静默忽略，仅影响红点提示 */
+  }
+}
+
+/** 语义版本比较：a>b 返回正数，a<b 返回负数，相等 0。 */
+export function compareVersion(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff) return diff;
+  }
+  return 0;
+}
+
+/** 统计比 lastSeen 更新的版本数量（用于「更新」Tab 未读红点）。 */
+export function countUnreadVersions(versions: string[], lastSeen: string | null): number {
+  if (!lastSeen) return versions.length; // 从未看过 → 全部未读
+  return versions.filter((v) => compareVersion(v, lastSeen) > 0).length;
+}

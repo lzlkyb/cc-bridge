@@ -1,0 +1,13 @@
+[package]
+name = "cc-bridge-macros"
+version = "0.1.0"
+edition = "2021"
+description = "Internal proc-macros for cc-bridge (ToolSchema derive). Build-time only — not linked into the shipped binary."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

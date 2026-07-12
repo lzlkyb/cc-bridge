@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use crate::state::AppState;
 
 /// 无参数。serde 默认忽略多余字段，`{}` 或带字段都能反序列化。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct ListAllowedRootsArgs {}
 
 /// CLAUDE.md 全文内嵌的大小上限（字节）；超过则只给路径提示，避免每次调用都传大文件。

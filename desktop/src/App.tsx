@@ -1,8 +1,9 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke, listen } from "./lib/tauri";
 import type { StatusResponse } from "./lib/types";
-import { APP_INFO } from "./lib/about";
+import { APP_INFO, CHANGELOG } from "./lib/about";
+import { getLastSeenVersion, setLastSeenVersion, countUnreadVersions } from "./lib/utils";
 import { Header } from "./components/layout/Header";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Button } from "./components/ui/button";
@@ -63,10 +64,26 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState("connect");
   // 安全徽章点击带入的定位锚点（带 nonce 以便重复点击同一徽章也能重新触发高亮）
   const [pendingAnchor, setPendingAnchor] = useState<{ anchor: string; nonce: number } | null>(null);
+
+  // 更新历史未读红点：记录上次看到的最新版本，与 CHANGELOG 最新版比较得出未读数；进「设置」即标记已读。
+  const [lastSeen, setLastSeen] = useState<string | null>(() => getLastSeenVersion());
+  const unreadCount = useMemo(
+    () => countUnreadVersions(CHANGELOG.map((e) => e.version), lastSeen),
+    [lastSeen],
+  );
+  const markChangelogSeen = useCallback(() => {
+    const latest = CHANGELOG[0]?.version;
+    if (latest) {
+      setLastSeenVersion(latest);
+      setLastSeen(latest);
+    }
+  }, []);
+
   const handleNavigate = useCallback((tab: string, anchor?: string) => {
     setActiveTab(tab);
+    if (tab === "settings") markChangelogSeen();
     setPendingAnchor(anchor ? { anchor, nonce: Date.now() } : null);
-  }, []);
+  }, [markChangelogSeen]);
 
   // 全局键盘快捷键
   useEffect(() => {
@@ -127,12 +144,28 @@ function AppContent() {
           </div>
         </div>
       )}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex min-h-0 flex-1 flex-col">
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => {
+          setActiveTab(v);
+          if (v === "settings") markChangelogSeen();
+        }}
+        className="flex min-h-0 flex-1 flex-col"
+      >
         <div className="shrink-0 px-5 pb-3 pt-4">
           <TabsList>
             <TabsTrigger value="connect"><Icon name="plug" /> 连接</TabsTrigger>
             <TabsTrigger value="security"><Icon name="shield" /> 安全</TabsTrigger>
-            <TabsTrigger value="settings"><Icon name="settings" /> 设置</TabsTrigger>
+            <TabsTrigger value="settings">
+              <span className="relative inline-flex items-center">
+                <Icon name="settings" /> 设置
+                {unreadCount > 0 && (
+                  <span className="absolute -right-2.5 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </span>
+            </TabsTrigger>
             <TabsTrigger value="log"><Icon name="log" /> 日志</TabsTrigger>
           </TabsList>
         </div>
@@ -144,7 +177,7 @@ function AppContent() {
             <SecurityTab status={status} onSaved={refetchStatus} />
           </TabsContent>
           <TabsContent value="settings">
-            <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} />
+            <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} />
           </TabsContent>
           <TabsContent value="log">
             <LogTab />

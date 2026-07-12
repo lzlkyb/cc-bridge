@@ -2,8 +2,10 @@
 // - 仓库地址：src-tauri/tauri.conf.json 的 updater.endpoints
 // - 作者：GitHub 用户 lzlkyb（Cargo.toml 无 authors 字段）
 // - 协议：根目录 LICENSE（MIT）
-// - 更新历史：根目录 CHANGELOG.md（Keep a Changelog），此处精炼为条目列表。
-// 注：CHANGELOG.md 最新仅到 2.2.17，2.2.18–2.2.21 尚未补录，待维护。
+// - 更新历史：由 scripts/gen-changelog.mjs 在 predev/prebuild 时从根目录 CHANGELOG.md
+//   （Keep a Changelog，唯一手写源）自动解析生成 lib/changelog.generated.ts，此处 re-export。
+//   分类映射（新增→feat / 变更→improve / 修复→fix / 安全→sec，技术依赖测试说明→improve）
+//   集中在脚本内，根除此前手写 about.ts 数组「双份维护、漏写版本」的痛点。
 
 export const APP_INFO = {
   name: "CC Bridge",
@@ -31,50 +33,10 @@ export interface ChangelogEntry {
   version: string;
   date: string;
   items: ChangelogItem[];
+  /** 本期亮点（可选）：CHANGELOG.md 的 `### 亮点` 小节，UI 顶部渐变条突出展示。 */
+  highlights?: string[];
 }
 
-// 取自根目录 CHANGELOG.md（2.2.13–2.2.17 真实记录，精炼为条目列表，未编造）。
-export const CHANGELOG: ChangelogEntry[] = [
-  {
-    version: "2.2.17",
-    date: "07-10",
-    items: [
-      { category: "feat", text: "notebook_edit MCP 工具，支持编辑 .ipynb 文件" },
-      { category: "feat", text: "search_files 富 Grep 选项（上下文 / 行号 / 输出模式）" },
-      { category: "improve", text: "run_command 新增 description 字段，便于审计区分" },
-    ],
-  },
-  {
-    version: "2.2.16",
-    date: "07-10",
-    items: [
-      { category: "improve", text: "进程树治理迁移到 process-wrap，消除竞态" },
-      { category: "improve", text: "显式 start_kill() 杀整树，杜绝孙进程泄漏" },
-    ],
-  },
-  {
-    version: "2.2.15",
-    date: "07-10",
-    items: [
-      { category: "sec", text: "run_command 危险命令拦截（rm -rf /、fork bomb）" },
-      { category: "sec", text: "启发式子串黑名单兜底" },
-    ],
-  },
-  {
-    version: "2.2.14",
-    date: "07-10",
-    items: [
-      { category: "fix", text: "根治子进程 stdout/stderr 读不到内容" },
-      { category: "fix", text: "改用 CREATE_NO_WINDOW + Stdio::piped spawn" },
-    ],
-  },
-  {
-    version: "2.2.13",
-    date: "07-10",
-    items: [
-      { category: "improve", text: "Job Object 替换 taskkill，进程管控更可靠" },
-      { category: "improve", text: "ignore + globset，完整 glob 语义" },
-      { category: "feat", text: "edit_files / write_files 新增 diff 字段" },
-    ],
-  },
-];
+// CHANGELOG 现由脚本从 CHANGELOG.md 自动生成（见 scripts/gen-changelog.mjs），
+// 此处仅 re-export，避免手写数组与 CHANGELOG.md 双份维护、漏写版本。
+export { CHANGELOG } from "./changelog.generated";

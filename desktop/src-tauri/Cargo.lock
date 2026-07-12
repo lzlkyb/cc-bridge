@@ -579,9 +579,10 @@ dependencies = [
 
 [[package]]
 name = "cc-bridge-desktop"
-version = "2.2.22"
+version = "2.2.23"
 dependencies = [
  "axum",
+ "cc-bridge-macros",
  "chrono",
  "dashmap",
  "encoding_rs",
@@ -614,6 +615,15 @@ dependencies = [
  "tower",
  "tower-http",
  "windows 0.56.0",
+]
+
+[[package]]
+name = "cc-bridge-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]

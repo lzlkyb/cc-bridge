@@ -5,105 +5,128 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [2.2.22] - 2026-07-11
+## [2.2.23] - 2026-07-12
+
+### 亮点
+- MCP 后端分发层重构：手写 `match` 分发改为「工具注册表 + `ToolSchema` 派生宏」，17 个工具的 `inputSchema` 自动从 handler 的 Args struct 派生，新增工具零样板、协议契约与代码同源
+- 新增 over-the-wire 集成测试：真实起 MCP server + 真实 reqwest 客户端端到端验证协议握手、17 工具分发与落盘副作用、鉴权 / 限流 / gzip / 错误码，测试套件 72 → 82 全绿、`cargo clippy --no-default-features` 零警告
+- 连接页方案 A 完整落地：Token 内嵌复制命令、`s-sec-label` 安全分区、渐变徽章步骤、灰底命令框、步骤行 hover
+- 关于页更新历史自动化：从 `CHANGELOG.md` 自动生成（`gen-changelog.mjs` + `changelog.generated.ts` + `ChangelogView`），不再出现「落后好几个版本」
 
 ### 新增
-- **关于卡片 PastePanda 风格重写**：默认折叠一行，展开双列（技术栈 3×2 + 项目信息 key-value 胶囊标签），更新历史分类标签行（新增/改进/修复/安全），弹框完整介绍。
-- **Header 版本号 Upgrade Badge**：idle 可点击检查更新（7 态状态机：idle→checking→available→downloading→ready→uptodate→error），视觉由 `UpdateBadge` 组件驱动。
-- **托盘图标升级**：从手动绘制纯色圆点变为加载 `icon.png` 真图标 + 右下角状态圆点叠加，64×64。新增 `png` crate 依赖。
-- **扩展名芯片输入**：`ChipInput` 组件——34 个常用扩展名分 4 类（前端/后端/配置/文档）分类按钮展开勾选，分色显示；自定义输入支持回车/逗号/粘贴拆分/Backspace 删除。
-- **`about.ts` 统一数据源**：`APP_INFO`（名称/作者/仓库/协议/简介）、`CHANGELOG`（分类标签数组）、`ChangeCategory` 类型，多处引用统一取值。
+- 工具注册表 `src/mcp/tools/registry.rs`：集中声明 17 个工具的名称 / 读写属性 / handler 分发，替代散落各处的 `match` 分支
+- `ToolSchema` 派生宏（新增 `cc-bridge-macros` proc-macro crate，仅编译期依赖、不进 exe，守二进制体积红线）：从工具 Args struct 自动生成 `inputSchema`
+- over-the-wire 集成测试模块（`http.rs`，10 个用例）：initialize 回显 / tools/list=17 / 未知方法 -32601 / 全工具分发+副作用 / 后台 run→output→stop 三元组 / auth 401·200 / 限流 429 / gzip 响应头
+- 关于页 `ChangelogView` 组件 + `scripts/gen-changelog.mjs` + `src/lib/changelog.generated.ts`，更新历史从 `CHANGELOG.md` 自动同步
+- `TokenManager.tsx` 令牌管理界面
+- `list_allowed_roots` 增强：自动内嵌各根目录顶层 `CLAUDE.md` 到 `projectInstructions`（超过 20KB 仅给路径提示）
 
 ### 变更
-- **文件管控 PastePanda 风格**：备份/限流从 Label+Input 上下堆叠改为渐变徽章行式（`s-row`），新增 `InlineNum`/`InlineStr` 内联输入组件。
-- **网络卡片紧凑化**：端口输入+保存按钮同行，去掉「当前地址」影响用户认知的行。
-- **安全概览**：标题+展开箭头同一行，整行可点击展开/收起。
-- **软件名规范化**：6 处 `cc-bridge` → `CC Bridge`，统一从 `APP_INFO.name` 取值。
-- **Header 图标**：去掉紫色淡底和阴影，40px 纯图标；移除嵌套 `data-tauri-drag-region` 避免点击拦截。
+- 后端分发由 `match` 分支改为 registry 查表分发，全部 17 个工具接入注册表
+- 连接页方案 A 完整落地：Token 内嵌复制命令、`s-sec-label` 分区、渐变徽章步骤、灰底命令框、步骤行 hover（PastePanda 风格优化）
+- 后端性能与质量优化：`config.rs` / `audit.rs` / `db.rs` / `main.rs` 模块重构
+- `search_files` 内容搜索增强、`read_files` 编码与行号能力增强
 
 ### 修复
-- `config.rs` `serde_json::to_value` 类型绑死导致的 19 个编译错误。
-
-### 技术
-- `SecurityTab` 删除 `AutoSaveField`/`AutoSaveNumber`（替换为 `InlineNum`/`InlineStr`）。
-- `icon.tsx` 新增 `info` 图标。
-- Rust `cargo fmt` + `cargo clippy --no-default-features` 零警告。
-- TypeScript `tsc --noEmit` 零错误。
-
-## [2.2.16] - 2026-07-10
-
-### 变更
-- **进程树治理迁移到 `process-wrap`**（D 组 P4-1 收尾）：`run_command` / `stop_command` 的整树终止不再依赖手写的 `win32job` Job Object，改用社区维护、跨平台、CI 覆盖 Windows/Linux/macOS 的 [`process-wrap`](https://github.com/watchexec/process-wrap)（`command-group` 官方后继）的 `JobObject` 包装器。删除自写的 `process_job.rs`（111 行 Win32 FFI）及其 `#[ignore]` 自伤测试。
-- **关键正确性改进**：`process-wrap` 的 `JobObject` 内部先以 `CREATE_SUSPENDED` 启动子进程、挂入 Job 后再 resume，**消除了原“先 spawn 再 assign”存在的孙进程漏杀竞态窗口**（孙进程可能在挂载前已 fork 出来而漏杀）。
-- 终止语义变更：`process-wrap` 的 std `JobObject` 默认**不** kill-on-close（drop 只关句柄不杀进程），因此 `stop_command` 与超时分支改为显式调用 `child.start_kill()`（底层 `TerminateJobObject`）杀整树；`RunningCommand.job: win32job::Job` 改为 `child: Arc<Mutex<Box<dyn StdChildWrapper>>>`，由后台 wait 线程与 `stop_command` 共享。
-
-### 依赖
-- 移除 `win32job = "2.0"`；新增 `process-wrap = "=8.0.2"`（精确锁定）。选 8.0.2 而非最新 8.2.x：①对齐 `windows 0.56`，避免拉入第二份 `windows 0.61` 绑定膨胀二进制；②必须开 `tracing` feature——`process-wrap` 的 `job_object` 模块无条件调用 `debug!` 宏，而该宏仅在 `tracing` feature 下 import，关掉 `default-features` 会导致编译失败。
+- `notebook_edit` 驼峰 `newSource` 字段被静默忽略：该字段此前只有 `#[serde(default)]` 缺 `#[serde(rename = "newSource")]`，客户端按文档传 camelCase 时单元格被清空为 `""`；补 rename 后修复（此缺陷因既有单测直接构造 Rust struct、从未走 JSON 反序列化而长期未发现，恰由本次 over-the-wire 测试捕获）
+- 审计日志改同步落盘：`write_audit_for_call` 与 batch 子操作审计原用 `spawn_blocking` 后台异步写盘，与"响应返回后立即读 audit.log"无 happens-before，并发跑 `perf_real` 集成测试时后台写盘被抢占排队导致 `batch_writes_are_audited` 偶发 `NotFound`。改为同步写盘（单条 ~6.8µs，比 spawn_blocking 跨线程调度 20-50µs 更省，对微秒级小 IO 异步本是负优化），请求返回前审计必已落盘，竞争消除
 
 ### 测试
-- 迁移后 `cargo test --lib` 41 passed / 0 failed / **0 ignored**（原 `process_job` 两个自伤 `#[ignore]` 测试随文件删除消失，测试套件不再有静默自毁风险）；`cargo clippy --lib` 零警告。`run_command` 关键回归 `foreground_real_exe_returns_stdout`、`background_registers_with_handle` 仍全绿。
+- 新增 10 个 over-the-wire 集成测试；测试套件 72 → 82 全绿（含原有单测 + registry 遍历断言 + over-wire）；`cargo clippy --no-default-features --tests` 零警告；`tsc --noEmit` 零错误
+
+### 技术
+- `reqwest` / `axum` 作为 dev-dependency 支撑集成测试，`default-tls` 在 Windows 走系统 schannel，无需 openssl 编译
+
+## [2.2.22] - 2026-07-11
+
+### 亮点
+- 关于页与连接页全面改用 PastePanda 风格，信息更清晰、操作更顺手
+- 扩展名可按类别勾选，白名单配置更快
+- 更新历史改为自动同步，不再出现「落后好几个版本」
+
+### 新增
+- 关于卡片 PastePanda 风格重写：默认收起成一行，点开双列展示（技术栈 + 项目信息），更新历史按「新增 / 改进 / 修复 / 安全」分类标签呈现，详情弹框介绍完整能力。
+- Header 版本号支持一键检查更新：空闲时点击即可检查，覆盖检查中 / 有新版 / 下载中 / 待重启 / 已最新 / 出错等状态。
+- 托盘图标升级：改用应用真图标，并在右下角叠加运行状态小圆点。
+- 扩展名芯片输入：常用扩展名按「前端 / 后端 / 配置 / 文档」分类，点开勾选、分色显示；也支持自定义输入（回车、逗号、粘贴拆分）。
+- 统一应用信息数据源：名称 / 作者 / 仓库 / 协议等集中管理，多处界面一致。
+
+### 变更
+- 文件管控改用行式渐变徽章，备份与限流配置更紧凑直观。
+- 网络卡片端口与保存按钮同行，去掉容易误解的「当前地址」行。
+- 安全概览标题与展开箭头合并为一行，整行可点。
+- 全应用统一为「CC Bridge」名称（此前部分界面显示小写 cc-bridge）。
+- Header 图标改为纯图标，去掉多余底色与阴影。
+
+### 修复
+- 修好一处会导致 19 个编译错误的类型绑定问题。
+
+### 技术
+- 移除冗余输入组件、改用语内联输入；补充图标；Rust 与 TypeScript 均零警告。
 
 ## [2.2.17] - 2026-07-10
 
+### 亮点
+- 新增 Notebook 编辑能力，AI 可直接改 .ipynb
+- 搜索文件支持上下文、行号等富选项，大项目找内容更精准
+
 ### 新增
-- **`notebook_edit` MCP 工具**（litecode 工具差距 P2）：支持对 `.ipynb` 笔记本按 `cell` 索引执行 `replace` / `insert` / `delete` 三种模式编辑单个 cell 的 `source`，写入用 `serde_json::to_string_pretty` 保持格式。`WRITE_TOOLS` 数组由 8 增至 9（只读模式会拒绝该写类工具）；dispatch 大 match 与 HTTP 工具清单同步登记（required: `["path","cell"]`）。
+- 新增 `notebook_edit` 工具：可按单元格对 `.ipynb` 笔记本做替换 / 插入 / 删除，AI 编辑 Notebook 更顺手（只读模式会拒绝该写类工具）。
+- `run_command` 新增 `description` 字段：给每条命令加一句人话说明，审计日志里一眼看懂这条命令在做什么。
 
 ### 变更
-- `run_command` 新增可选 `description` 字段（litecode 差距 P0）：人类可读的执行说明，仅用于权限 UX / 审计日志与运行表记录——`state.rs` 的 `RunningCommand` 新增 `description: Option<String>`（注释明确「仅作审计/区分记录，不参与执行」）。命中时以 `log::info!(target: "mcp::run_command", "run_command(description=...): <command>")` 记审计。
+- 远程 AI 连上即自动获得使用引导（哪些工具可用、安全约束），不用每次新会话口述。
 
 ### 说明
-- **search_files 富 Grep 选项**（litecode 差距 P2）：新增 `case_insensitive` / `before_context` / `after_context` / `context` / `line_numbers` / `head_limit` / `output_mode`(`content`|`files_with_matches`|`count`) / `multiline` 八个可选参数。底层改用 `regex::RegexBuilder`（case_insensitive / multi_line）构建正则，`ignore::Walk` 同步阻塞迭代器丢入 `spawn_blocking`；content 分支改为先按 `head_limit` 约束收集命中、再按 `output_mode` 分支输出（Count 返计数、FilesWithMatches 仅返路径、Content 可配 before/after 上下文与行号开关）。新增 `GrepOptions` / `OutputMode` 枚举承载参数。
-- 本轮未做 litecode 差距的 **P1 cwd 持久化**（Bash cwd 持久化会改变 cc-bridge 刻意无状态的安全取舍），按之前评估留作独立 RFC，不并入 v2.2.17。
+- 搜索文件增强：支持大小写不敏感、上下文行、行号、输出模式（仅路径 / 计数 / 内容）等富选项。
+- 未做「命令执行目录持久化」：会改变 cc-bridge 刻意无状态的安全取舍，按评估留作独立方案。
 
 ### 测试
-- search_files 新增 4 单测（大小写不敏感内容匹配、files_with_matches 省略行细节、count 模式返回计数、before/after 上下文可配）；run_command 新增 1 单测（带 `description` 仍正常执行）；notebook_edit 5 单测（replace / insert / delete / 越界索引拒绝 / missing cells 拒绝）。测试套件 41 → **52 passed / 0 failed / 0 ignored**（`cargo clippy --lib -- -D warnings` 严格模式亦零警告）；关键回归 `foreground_real_exe_returns_stdout` / `background_registers_with_handle` 仍全绿。
+- 新增 11 个单元测试，测试套件 41 → 52 全绿。
 
-### 修正（补齐过程中一并清理，非用户可见行为变更）
-- 工作区里 P6-1 并行搜索遗留的 clippy lint：`match_result_ok` × 2（`search_files.rs` 的 `File::open(path).ok()` → `Ok(file)`）、`needless_return`（Content 分支末尾冗余 `return`）已修。
-- `run_command::spawn_shell` 因新增 `description` 参数升到 8 个参数触发 `too_many_arguments`，按 `run_command.rs:291` 既有约定加 `#[allow(clippy::too_many_arguments)]`。
-- `search_files::force_excludes_build_dirs_without_gitignore` 测试断言用正斜杠（`src/main.rs` / `target/` / `node_modules/`）比对 Windows 反斜杠路径导致失败，已归一化 `replace('\\', "/")` 修复（功能本身正确：target/node_modules 确实被强制排除）。
+## [2.2.16] - 2026-07-10
 
-### 会话引导（根治远程新会话需口述才调 MCP）
-- `http.rs` 的 `initialize` 响应新增 `instructions` 字段（MCP 协议标准字段，client 会自动注入每次会话系统提示）。内容为中文引导：逐条列出 `run_command` / `write_files` / `read_files` / `search_files` / `notebook_edit` / `list_allowed_*` 的用途与安全约束，并明确「遇到本地文件 / 进程 / 命令相关任务时，直接调用对应工具，无需用户额外提示」。远程 `claude code` 连上 cc-bridge 即自动获得使用引导，无需每次新开对话口述。
+### 亮点
+- 后台命令管控更稳，连接不再卡在残留进程上
+
+### 变更
+- 后台命令整树终止改用社区成熟方案（process-wrap），替代手写的 Windows 进程管理，跨平台更可靠。
+- 修复「先启动子进程再挂入进程组」之间的竞态窗口，孙进程不再漏杀。
+- 终止语义明确：显式杀整棵树，避免留下残留进程。
+
+### 技术
+- 移除自写的进程管理代码，依赖更精简；`cargo test` 41 全绿、零警告。
 
 ## [2.2.15] - 2026-07-10
 
 ### 新增
-- `run_command` 增加**危险命令拦截**（D 组安全债 D4）：开启「命令执行」开关后，命中 `rm -rf /`、`rm -rf /*`、`mkfs`、`format c:`、fork bomb（`:(){:|:&};:`）等毁灭性模式的命令会在解析 cwd / spawn **之前**被直接拒绝，不进入白名单解析、不注册到运行表。判定大小写不敏感。逻辑对齐开源 `rustterm-mcp` 的安全模型。
-- 新增 3 个单测：`dangerous_command_blocked_before_spawn`（拦截 + 不注册运行表）、`dangerous_command_case_insensitive`（大写变体命中）、`benign_command_not_blocked_by_dangerous_filter`（`rm -rf ./build` 等正常命令不误伤）。`run_command` 单测 9 → 12。
+- 命令执行增加危险命令拦截：开启命令执行后，`rm -rf /`、格式化磁盘、fork bomb 等毁灭性命令会在执行前被直接拒绝，保护你的机器。
 
 ### 说明
-- 当前为**启发式子串黑名单**，属最低成本兜底闸：误伤（`echo "rm -rf /"`）与漏拦（`rm -rf /home`）并存，不能替代真正的沙箱。二期规划升级为命令白名单或 shell 令牌化解析（见 功能优化清单 D4）。
+- 当前为启发式拦截（最低成本兜底），误伤与漏拦并存，后续会升级为更严谨的沙箱。
 
 ## [2.2.14] - 2026-07-10
 
 ### 修复
-- `run_command` 真实子进程（非 cmd 内置命令，如 `hostname.exe`/`git.exe`/`cargo.exe`）stdout/stderr 读不到内容的**根因已定位并根治**：之前尝试的 `portable-pty`（ConPTY）方案因 `cmd.exe` 启动后会发 DSR 查询 `\x1b[6n` 并等待终端应答，而 portable-pty 0.9 的 `MasterPty`/`SlavePty` 未实现 `Write` 无法应答，导致 cmd 永久挂起（stdout 空、exitCode 超时）——该方案在 Windows 上**根本性不可用**，已彻底回退。
-- 改用 `CREATE_NO_WINDOW (0x08000000) | CREATE_NEW_PROCESS_GROUP (0x00000200)` + `Stdio::piped()` 直接 spawn `cmd /C`：stdout/stderr 各自独立管道，**真实 .exe 子进程的输出现在能正确捕获**，且 stdout/stderr 分离（`stderr` 字段不再恒为空，修复了 portable-pty 方案下两路合并的副作用）。`run_command` 的单元覆盖从 0 提升到 9（含 `foreground_real_exe_returns_stdout` 回归用例，直接复现原 bug 场景）。
+- 根治真实程序（如 git.exe / cargo.exe）执行后读不到输出的问题：改用标准管道直接启动，命令输出现在能正确捕获、标准错误也不再恒为空。
+- 修好测试套件会误杀自身的问题，约半数用例之前从未真正运行。
 
 ### 变更
-- 移除 `portable-pty` 依赖（`Cargo.toml` 删除，候选方案已废弃）；win32job 整树终止集成保持不变（`CREATE_NO_WINDOW` 下已实测无 MSVC 并发链接崩溃）。
-
-### 修复（测试套件）
-- 修复 `process_job` 两个单元测试（`create_and_assign_self_succeeds` / `two_jobs_are_independent`）会把**测试 runner 自身进程**（-1 伪句柄）挂入开启了 `KillOnJobClose` 的 Job Object，drop 时触发 `KillOnJobClose` 把整个 `cargo test --lib` 进程杀掉、且因终止码为 0 被误判为通过——导致测试套件静默中断、约半数用例从未真正运行。改为 `#[ignore]`（与已有的 `drop_kills_spawned_child` 一致）；`create_and_assign` 的成功挂载路径由 `run_command` 的真实 exe 测试间接覆盖。
+- 移除不可用的终端模拟方案，依赖更干净。
 
 ## [2.2.13] - 2026-07-10
 
 ### 变更
-- `run_command` / `stop_command` 用 Windows Job Object 替换 `taskkill /T /F`：把子进程挂入 Job Object，依赖 `kill-on-job-close` 在 `drop` 时让系统自动整树终止，孙进程不再漏杀；cc-bridge 自身异常退出时后台命令也不会变孤儿进程（D 组 P4-1）。
-- `search_files` 用 `ignore` + `globset` crate 替换手写目录遍历：自动跳过 `.gitignore` 列出的目录（`.git` / `node_modules` / `target` 等），完整 glob 语义（`**/*.toml` 这类跨目录匹配终于有效）；遍历丢进 `spawn_blocking`，避免占 tokio 工作线程（D 组 P4-2）。
-- `edit_files` / `write_files` 结果新增 `diff` 字段：用 `similar` crate 生成 unified diff（含 `@@` hunk 头），远程 LLM 调用方可读到新增 / 删除摘要核对改动是否符合预期；不传 `diff` 时旧字段仍兼容（D 组 P3-1）。
-- MCP HTTP 限流键改为 `ConnectInfo` 拿到的真实对端 IP，不再读 `x-forwarded-for` 客户端请求头（任何调用方可伪造 IP 绕过限流，是 v2.2.x 期间未实测出来的安全漏洞）。Fake header 测试已加。
+- 后台命令整树终止改用 Windows 进程组，子进程 / 孙进程不再漏杀，应用异常退出也不会留下孤儿进程。
+- 搜索文件改用成熟目录遍历库，自动跳过 node_modules / target 等，跨目录 glob 匹配终于好用。
+- 写文件结果新增改动对比（diff），AI 改动前你能先核对。
+- 限流改用真实对端 IP，防止伪造请求头绕过限流（修复一处安全隐患）。
 
 ### 新增
-- `run_command` 候选修复：用 `portable-pty` 取代 `Stdio::piped() + DETACHED_PROCESS`，尝试验证真实子进程（非 cmd 内置命令）stdout 丢失的根因（已编过，但实际 stdout 是否真能拿到，**v2.2.13 发版时尚未手工实测验证**，标记为实验性；发现 stdout 仍空时回滚到 `DETACHED_PROCESS` 路径）。
-- `process_job` 模块 + `diff_utils` 模块分别封装 `Job Object` 创建挂载、unified diff 生成。
+- 抽离进程管理与 diff 生成模块，代码结构更清晰。
 
 ### 修复
-- clippy 升级后报旧的 7 个 lint 全清：`audit.rs` × 2 处 `lines_filter_map_ok` (`filter_map(|l| l.ok())` → `map_while(Result::ok)`)、`read_files.rs` × 1 处 `int_plus_one` (`*i + 1` → `(*i).saturating_add(1)`)、`write_files.rs` × 3 处 `needless_borrow` / `let_and_return` / `collapsible_str_replace`、`run_command.rs` × 1 处 `too_many_arguments` 加 `#[allow(...)]` 备注保留。
-
-### 删除
-- `security/ratelimit.rs` 整个文件 + `security/mod.rs` 中 `pub mod ratelimit;` 声明：经 `dispatch_tool` 调用栈全量审计，模块未被任何路径引用，属 v1.0 时代遗留的死代码（D 组 D4）。
+- 清理一批过时代码检查告警；删除一处从未被引用的死代码（限流模块）。
 
 ## [2.2.8] - 2026-07-10
 

@@ -10,7 +10,7 @@ use crate::encoding;
 use crate::security;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 #[serde(untagged)]
 pub enum FileRef {
     Simple(String),
@@ -23,7 +23,7 @@ pub enum FileRef {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct ReadFilesArgs {
     pub files: Vec<FileRef>,
     #[serde(rename = "startLine")]

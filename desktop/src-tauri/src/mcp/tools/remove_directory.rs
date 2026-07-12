@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::security;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct RemoveDirectoryArgs {
     pub path: String,
     /// 递归删除整个目录树（危险）。默认 false：仅删空目录，非空则失败。

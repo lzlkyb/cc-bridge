@@ -626,6 +626,16 @@ body {
 .dark .cl-badge-fix     { background: rgba(251,191,36,0.18); color: #FCD34D; }
 .dark .cl-badge-sec     { background: rgba(248,113,113,0.18); color: #FCA5A5; }
 
+/* ═══ 更新历史 头条亮点条（C）═══ */
+.cl-highlight-bar {
+  background: linear-gradient(135deg, #6366F1, #8B5CF6);
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+}
+.dark .cl-highlight-bar {
+  background: linear-gradient(135deg, #5B54E8, #7C3AED);
+  box-shadow: 0 2px 10px rgba(99, 102, 241, 0.4);
+}
+
 /* ═══ 弹框动画 ═══ */
 .modal-overlay {
   animation: modal-fade-in 0.2s ease;

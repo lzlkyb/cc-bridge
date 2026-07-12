@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct StopCommandArgs {
     pub handle: String,
 }

@@ -7,14 +7,14 @@ use crate::audit;
 use crate::mcp::http::dispatch_tool;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct BatchArgs {
     pub operations: Vec<BatchOp>,
     #[serde(default = "default_stop_on_error", rename = "stopOnError")]
     pub stop_on_error: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct BatchOp {
     pub tool: String,
     #[serde(default)]
@@ -85,12 +85,12 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
                     None,
                 ),
             };
-            // E-P1-3: spawn_blocking 避免同步审计写在 async 循环中阻塞工作线程
-            let audit_dir = state.data_dir.clone();
-            let audit_entry = entry.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                audit::write_audit_log(&audit_dir, &audit_entry).ok();
-            });
+            // 同步落盘：与 http.rs::write_audit_for_call 一致。单条写盘约 6.8µs，
+            // 比 spawn_blocking 的跨线程调度（~20-50µs）更省，且请求返回前审计已落盘，
+            // 消除异步落盘在并发测试下的时序竞争（perf_real::batch_writes_are_audited）。
+            if let Err(e) = audit::write_audit_log(&state.data_dir, &entry) {
+                log::error!("batch 子操作审计写入失败：{e}");
+            }
         }
 
         match res {

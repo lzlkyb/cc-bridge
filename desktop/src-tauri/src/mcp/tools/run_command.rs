@@ -57,7 +57,7 @@ fn is_dangerous_command(command: &str) -> bool {
         .any(|d| normalized.contains(*d))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct RunCommandArgs {
     pub command: String,
     /// 工作目录（绝对路径，须在白名单内）。会话持久化开启且提供有效 `session_id` 时可省略，

@@ -6,14 +6,14 @@ use serde_json::{json, Value};
 use crate::security;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct NotebookEditArgs {
     /// 目标 .ipynb 文件路径（需在白名单根内、且扩展名被允许）。
     pub path: String,
     /// 单元格索引（从 0 开始）。
     pub cell: usize,
     /// 新的单元格源码（replace / insert 模式使用）。
-    #[serde(default)]
+    #[serde(default, rename = "newSource")]
     pub new_source: String,
     /// 操作模式：replace（默认，替换现有 cell）| insert（在 cell 索引处插入）| delete（删除该 cell）。
     #[serde(rename = "mode", default = "default_mode")]

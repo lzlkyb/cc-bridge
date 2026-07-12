@@ -8,7 +8,7 @@ use crate::diff_utils;
 use crate::security;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct WriteFileEntry {
     pub path: String,
     pub content: String,
@@ -20,7 +20,7 @@ fn default_encoding() -> String {
     "utf8".into()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct WriteFilesArgs {
     pub files: Vec<WriteFileEntry>,
 }

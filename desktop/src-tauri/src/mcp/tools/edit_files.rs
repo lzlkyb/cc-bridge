@@ -9,7 +9,7 @@ use crate::encoding;
 use crate::security;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct EditEntry {
     pub path: String,
     #[serde(rename = "oldString")]
@@ -20,7 +20,7 @@ pub struct EditEntry {
     pub replace_all: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct EditFilesArgs {
     pub files: Vec<EditEntry>,
 }

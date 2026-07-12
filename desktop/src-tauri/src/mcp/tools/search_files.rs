@@ -16,7 +16,7 @@ use grep_searcher::{
 };
 use std::io;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct SearchFilesArgs {
     #[serde(rename = "rootPath")]
     pub root_path: String,

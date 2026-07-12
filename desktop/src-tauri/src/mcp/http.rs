@@ -12,7 +12,6 @@ use axum::Router;
 use serde_json::json;
 
 use crate::audit;
-use crate::mcp::tools;
 use crate::security::auth;
 use crate::state::AppState;
 use tower_http::compression::CompressionLayer;
@@ -397,15 +396,13 @@ fn write_audit_for_call(
     let mut entry = entry;
     entry.server_ms = Some(server_ms);
     entry.audit_ms = Some(audit_ms);
-    // D7 修复：审计日志改为后台阻塞线程异步落盘，不再阻塞请求处理的 async 线程；
-    // 写入失败通过 log::error! 上报，不再以 .ok() 静默吞掉。
-    let audit_data_dir = data_dir.to_path_buf();
-    let audit_entry = entry.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Err(e) = audit::write_audit_log(&audit_data_dir, &audit_entry) {
-            log::error!("审计日志写入失败：{e}");
-        }
-    });
+    // 同步落盘：单条写盘（BufWriter append + writeln + flush，稳态不重开）约 6.8µs，
+    // 远小于 spawn_blocking 的跨线程调度开销（~20-50µs），对微秒级小 IO 异步是负优化。
+    // 且同步写建立 happens-before：请求返回时审计必然已落盘，消除"响应后立即读 audit.log"
+    // 的时序竞争（tests/perf_real.rs::batch_writes_are_audited 在并发跑时因异步落盘偶发 NotFound）。
+    if let Err(e) = audit::write_audit_log(data_dir, &entry) {
+        log::error!("审计日志写入失败：{e}");
+    }
 }
 
 pub async fn dispatch_tool(
@@ -433,351 +430,31 @@ pub async fn dispatch_tool(
             ));
         }
     }
-    match name {
-        "list_allowed_roots" => {
-            let parsed: tools::list_allowed_roots::ListAllowedRootsArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::list_allowed_roots::handle(parsed, state).await
-        }
-        "batch" => {
-            let parsed: tools::batch::BatchArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::batch::handle(parsed, state).await
-        }
-        "list_directory" => {
-            let parsed: tools::list_directory::ListDirectoryArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::list_directory::handle(parsed, state).await
-        }
-        "read_files" => {
-            let parsed: tools::read_files::ReadFilesArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::read_files::handle(parsed, state).await
-        }
-        "write_files" => {
-            let parsed: tools::write_files::WriteFilesArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::write_files::handle(parsed, state).await
-        }
-        "edit_files" => {
-            let parsed: tools::edit_files::EditFilesArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::edit_files::handle(parsed, state).await
-        }
-        "create_directory" => {
-            let parsed: tools::create_directory::CreateDirectoryArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::create_directory::handle(parsed, state).await
-        }
-        "remove_directory" => {
-            let parsed: tools::remove_directory::RemoveDirectoryArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::remove_directory::handle(parsed, state).await
-        }
-        "delete_files" => {
-            let parsed: tools::delete_files::DeleteFilesArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::delete_files::handle(parsed, state).await
-        }
-        "move_files" => {
-            let parsed: tools::move_files::MoveFilesArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::move_files::handle(parsed, state).await
-        }
-        "copy_files" => {
-            let parsed: tools::copy_files::CopyFilesArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::copy_files::handle(parsed, state).await
-        }
-        "search_files" => {
-            let parsed: tools::search_files::SearchFilesArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::search_files::handle(parsed, state).await
-        }
-        "analyze_file" => {
-            let parsed: tools::analyze_file::AnalyzeFileArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::analyze_file::handle(parsed, state).await
-        }
-        "run_command" => {
-            let parsed: tools::run_command::RunCommandArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::run_command::handle(parsed, state).await
-        }
-        "get_command_output" => {
-            let parsed: tools::get_command_output::GetCommandOutputArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::get_command_output::handle(parsed, state).await
-        }
-        "stop_command" => {
-            let parsed: tools::stop_command::StopCommandArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::stop_command::handle(parsed, state).await
-        }
-        "notebook_edit" => {
-            let parsed: tools::notebook_edit::NotebookEditArgs =
-                serde_json::from_value(args).map_err(|e| e.to_string())?;
-            tools::notebook_edit::handle(parsed, state).await
-        }
-        _ => Err(format!("Unknown tool: {}", name)),
-    }
+    // 数据驱动：从注册表查找工具并分发（registry.rs 单点维护，加工具不再改此 match）。
+    let tools = crate::mcp::tools::registry::all_tools();
+    let spec = tools
+        .iter()
+        .find(|t| t.name == name)
+        .ok_or_else(|| format!("Unknown tool: {name}"))?;
+    (spec.run)(args, state).await
 }
 
+
 fn get_tool_definitions() -> serde_json::Value {
-    json!([
-        {
-            "name": "list_allowed_roots",
-            "description": "List the server's access whitelist (allowed root directories, allowed file extensions, max file size). If an allowed root has a top-level CLAUDE.md, its content is inlined under projectInstructions (or a path pointer if it exceeds the size cap). Call this FIRST to discover accessible directories and pick up project rules before attempting any file operation.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {}
-            }
-        },
-        {
-            "name": "list_directory",
-            "description": "List directory contents with optional recursion and depth limit",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Absolute path of the directory to list" },
-                    "recursive": { "type": "boolean", "default": false },
-                    "maxDepth": { "type": "integer", "default": 10 }
-                },
-                "required": ["path"]
-            }
-        },
-        {
-            "name": "read_files",
-            "description": "Read one or more files, optionally by line range (1-based, inclusive). Returns UTF-8 text plus the detected encoding and newline style. Encoding auto-detection (GBK/GB18030 heuristic) is a server-side toggle, OFF by default (reads as UTF-8); pass `encoding` (e.g. \"gbk\") to force a specific decoding regardless of the toggle.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "files": {
-                        "type": "array",
-                        "items": {
-                            "oneOf": [
-                                { "type": "string" },
-                                { "type": "object", "properties": { "path": { "type": "string" }, "startLine": { "type": "integer" }, "endLine": { "type": "integer" } }, "required": ["path"] }
-                            ]
-                        },
-                        "minItems": 1
-                    },
-                    "startLine": { "type": "integer" },
-                    "endLine": { "type": "integer" },
-                    "encoding": { "type": "string", "description": "Optional forced encoding label, e.g. utf8 / gbk / gb18030. Always honored. Omit to follow the server's encoding auto-detect toggle (UTF-8 when off)." }
-                },
-                "required": ["files"]
-            }
-        },
-        {
-            "name": "write_files",
-            "description": "Write or create files. Automatically creates parent directories and backs up before overwriting.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "files": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": { "type": "string" },
-                                "content": { "type": "string" },
-                                "encoding": { "type": "string", "enum": ["utf8", "base64"], "default": "utf8" }
-                            },
-                            "required": ["path", "content"]
-                        },
-                        "minItems": 1
-                    }
-                },
-                "required": ["files"]
-            }
-        },
-        {
-            "name": "edit_files",
-            "description": "Edit files in place by exact string replacement (like native Edit). For each file, `oldString` must match EXACTLY ONCE unless `replaceAll` is true — include enough surrounding context to be unique. Preserves the file's original encoding (a GBK file stays GBK). Backs up before writing. Far cheaper than rewriting whole files with write_files.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "files": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": { "type": "string" },
-                                "oldString": { "type": "string", "description": "Exact text to find; must be unique in the file unless replaceAll=true" },
-                                "newString": { "type": "string", "description": "Replacement text" },
-                                "replaceAll": { "type": "boolean", "default": false, "description": "Replace all occurrences instead of requiring a single unique match" }
-                            },
-                            "required": ["path", "oldString", "newString"]
-                        },
-                        "minItems": 1
-                    }
-                },
-                "required": ["files"]
-            }
-        },
-        {
-            "name": "create_directory",
-            "description": "Create a directory (and any missing parents). Idempotent: succeeds if it already exists.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Absolute path of the directory to create" }
-                },
-                "required": ["path"]
-            }
-        },
-        {
-            "name": "remove_directory",
-            "description": "Remove a directory. By default only removes an EMPTY directory (fails if non-empty). Set recursive=true to delete the entire tree — DANGEROUS, this permanently removes all contents and is not backed up.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Absolute path of the directory to remove" },
-                    "recursive": { "type": "boolean", "default": false, "description": "Recursively delete all contents. Use with extreme caution." }
-                },
-                "required": ["path"]
-            }
-        },
-        {
-            "name": "delete_files",
-            "description": "Delete files (not directories). Backs up before deletion.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "paths": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
-                },
-                "required": ["paths"]
-            }
-        },
-        {
-            "name": "move_files",
-            "description": "Move/rename files with cross-device fallback",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "items": { "type": "array", "items": { "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" } }, "required": ["from", "to"] }, "minItems": 1 }
-                },
-                "required": ["items"]
-            }
-        },
-        {
-            "name": "copy_files",
-            "description": "Copy files, backing up destination if it exists",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "items": { "type": "array", "items": { "type": "object", "properties": { "from": { "type": "string" }, "to": { "type": "string" } }, "required": ["from", "to"] }, "minItems": 1 }
-                },
-                "required": ["items"]
-            }
-        },
-        {
-            "name": "search_files",
-            "description": "Search files by name glob and/or content regex with context lines",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "rootPath": { "type": "string" },
-                    "namePattern": { "type": "string", "description": "Glob pattern against filename" },
-                    "contentPattern": { "type": "string", "description": "Regex or literal substring" },
-                    "maxResults": { "type": "integer", "default": 100 }
-                },
-                "required": ["rootPath"]
-            }
-        },
-        {
-            "name": "batch",
-            "description": "Run multiple cc-bridge tool calls in ONE round trip. Prefer this whenever you need several file operations together (e.g. read many files then edit several, or search then read matches) — it collapses N network round trips into 1, the single biggest latency win over a remote link. Each operation reuses the same security checks as calling the tool directly (read-only mode, path whitelist). Nested batch is not allowed.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "operations": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "tool": { "type": "string", "description": "Any cc-bridge tool name except 'batch'" },
-                                "arguments": { "type": "object", "description": "That tool's arguments object" }
-                            },
-                            "required": ["tool", "arguments"]
-                        }
-                    },
-                    "stopOnError": { "type": "boolean", "default": true, "description": "Stop at first failing op (still returns completed results). false = run all, report each." }
-                },
-                "required": ["operations"]
-            }
-        },
-        {
-            "name": "notebook_edit",
-            "description": "Edit a Jupyter notebook (.ipynb): replace/insert/delete a cell by index. Writes the modified notebook back, preserving other metadata.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" },
-                    "cell": { "type": "integer", "description": "0-based cell index" },
-                    "newSource": { "type": "string", "description": "New cell source (replace/insert)" },
-                    "mode": { "type": "string", "default": "replace", "description": "replace | insert | delete" },
-                    "cellType": { "type": "string", "default": "code", "description": "Insert mode only: code | markdown | raw" }
-                },
-                "required": ["path", "cell"]
-            }
-        },
-        {
-            "name": "analyze_file",
-            "description": "Analyze a file: encoding, language, line/function/class counts (heuristic)",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string" }
-                },
-                "required": ["path"]
-            }
-        },
-        {
-            "name": "run_command",
-            "description": "Execute a shell command (`cmd /C`) in a whitelisted cwd. DANGEROUS: equivalent to granting the caller arbitrary code execution — disabled by default via the `shell_enabled` config toggle, and blocked entirely in read-only mode. Foreground mode (background=false, default) waits up to timeoutMs and returns stdout/stderr/exitCode. Background mode (background=true) returns immediately with a handle; poll it via get_command_output and end it via stop_command. The response always includes `sessionId` and `cwd`. If the server has session cwd persistence enabled (operator must turn it on), pass `cwd` on the first call to receive a `sessionId`; on later calls pass that `sessionId` instead of `cwd` to keep working in the same directory across calls. If persistence is disabled (default), you must pass an absolute `cwd` every call — `cd` does not carry over between calls.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string" },
-                    "description": { "type": "string", "description": "Human-readable description for permission UX / audit logging" },
-                    "cwd": { "type": "string", "description": "Absolute path within an allowed root. Required unless a valid sessionId is supplied (session cwd persistence). If persistence is off, always pass an absolute cwd." },
-                    "sessionId": { "type": "string", "description": "Opaque session handle from a prior run_command response. Supply to reuse that call's working directory; omit cwd when using it." },
-                    "background": { "type": "boolean", "default": false },
-                    "timeoutMs": { "type": "integer", "default": 30000, "description": "Foreground mode only" },
-                    "maxOutputBytes": { "type": "integer", "default": 1048576, "description": "Output beyond this is discarded and truncated=true is returned" }
-                },
-                "required": ["command"]
-            }
-        },
-        {
-            "name": "get_command_output",
-            "description": "Incrementally fetch stdout/stderr of a background command started by run_command(background=true). Pass stdoutOffset/stderrOffset (bytes already consumed) to get only new output since the last call.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "handle": { "type": "string" },
-                    "stdoutOffset": { "type": "integer", "default": 0 },
-                    "stderrOffset": { "type": "integer", "default": 0 }
-                },
-                "required": ["handle"]
-            }
-        },
-        {
-            "name": "stop_command",
-            "description": "Forcefully terminate a background command's entire process tree (taskkill /T) and remove it from the registry.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "handle": { "type": "string" }
-                },
-                "required": ["handle"]
-            }
-        }
-    ])
+    // 数据驱动：遍历注册表生成 tools/list 的 inputSchema（schema 由 XxxArgs 的
+    // ToolSchema derive 自动生成，单一来源，消除手写 json! 与字段漂移）。
+    crate::mcp::tools::registry::all_tools()
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.desc,
+                "inputSchema": t.schema,
+            })
+        })
+        .collect::<serde_json::Value>()
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -829,5 +506,625 @@ mod tests {
         // 同 IP 不同端口：当前实现只取 IP 不取 port，本服务单端口 7823 部署足够，
         // 此处不强制要求区分——但记下行为，免得日后无人记得。
         let _ = k_same_b;
+    }
+}
+
+/// ── over-the-wire 集成测试 ───────────────────────────────────────────────
+///
+/// 这一层是手写 dispatch 折中重构（registry + ToolSchema 派生）最该被覆盖、
+/// 却此前完全空白的地方：所有既有测试都直接调 `handle(args, &state)`，**绕过了
+/// `mcp_handler` → `dispatch_tool` → `get_tool_definitions` → registry 这条 HTTP
+/// 分发链**。本模块用 `build_router` 绑 `127.0.0.1:0` + `reqwest` 真实发 HTTP 请求，
+/// 把整条链路、17 个工具、以及鉴权/限流/gzip 中间件都跑一遍。
+///
+/// 每个测试自建一个独立 server（随机端口、独立 AppState），互不干扰；临时白名单
+/// 根目录放在 `std::env::temp_dir()` 下，所有文件操作都收在根内，测试结束即弃。
+#[cfg(test)]
+mod over_wire_tests {
+    use super::build_router;
+    use crate::config::BridgeConfig;
+    use crate::state::AppState;
+    use serde_json::{json, Value};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio::task::JoinHandle;
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// 每个 case 一个唯一、可写的临时根目录（避免并发跑串）。
+    fn unique_temp_root(label: &str) -> PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "cc-bridge-ow-{label}-{}-{n}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp root");
+        dir
+    }
+
+    /// 测试用配置：已知 token、临时白名单根、关闭审计/备份副作用、开启 shell 以测命令工具。
+    fn test_config(root: &Path) -> BridgeConfig {
+        let mut ext = BridgeConfig::default().allowed_extensions;
+        ext.push(".ipynb".to_string()); // notebook_edit 需要
+        BridgeConfig {
+            allowed_roots: vec![root.to_string_lossy().into_owned()],
+            token: "ow-test-token".to_string(),
+            allowed_extensions: ext,
+            whitelist_enabled: true,
+            readonly_mode: false,
+            shell_enabled: true, // run_command / stop_command
+            backup_enabled: false, // 避免临时目录里写备份
+            audit_enabled: false, // 不落审计日志
+            rate_limit_enabled: true,
+            rate_limit_max_requests: 100,
+            rate_limit_window_ms: 60_000,
+            ..Default::default()
+        }
+    }
+
+    struct TestServer {
+        base: String,
+        token: String,
+        _handle: JoinHandle<()>,
+    }
+
+    /// 起一个真实 MCP server（随机端口），返回 base URL + token。
+    async fn spawn_server(cfg: BridgeConfig, root: PathBuf) -> TestServer {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-mem db");
+        let state = Arc::new(AppState::new(conn, cfg, root.clone()));
+        let router = build_router(state).await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind 127.0.0.1:0");
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
+        });
+        TestServer {
+            base: format!("http://{addr}"),
+            token: "ow-test-token".to_string(),
+            _handle: handle,
+        }
+    }
+
+    /// 带 Bearer token 的 JSON-RPC 客户端。
+    fn client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .gzip(true)
+            .build()
+            .expect("reqwest client")
+    }
+
+    /// 发一次 tools/call / initialize / tools/list，返回解析后的 JSON-RPC 响应。
+    async fn rpc(base: &str, token: &str, method: &str, params: Value) -> Value {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        });
+        client()
+            .post(format!("{base}/mcp"))
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&body)
+            .send()
+            .await
+            .expect("request failed")
+            .json()
+            .await
+            .expect("response not json")
+    }
+
+    /// 裸 POST（不带/带自定义 token 与 header），用于鉴权/限流/gzip 等中间件测试。
+    async fn raw_post(base: &str, token: Option<&str>, body: Value) -> reqwest::Response {
+        let mut b = client().post(format!("{base}/mcp")).json(&body);
+        if let Some(t) = token {
+            b = b.header("Authorization", format!("Bearer {t}"));
+        }
+        b.send().await.expect("raw request failed")
+    }
+
+    /// 断言一次 tools/call 被成功分发（未走协议级 error、工具级 isError 为 false、content 结构完整）。
+    fn assert_dispatch_ok(result: &Value) {
+        assert!(
+            result.get("result").is_some(),
+            "响应缺少 result 字段（可能 method not found）: {result}"
+        );
+        let r = &result["result"];
+        assert!(
+            r.get("isError").and_then(|v| v.as_bool()) != Some(true),
+            "工具返回 isError，分发/执行出错: {r}"
+        );
+        r.get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c0| c0.get("text"))
+            .and_then(|t| t.as_str())
+            .expect("content[0].text 缺失");
+    }
+
+    /// 解析 `content[0].text`（多数工具把结果序列化成 JSON 字符串塞进 text）。
+    fn inner_text(result: &Value) -> Value {
+        let t = result["result"]["content"][0]["text"]
+            .as_str()
+            .expect("content[0].text 缺失");
+        serde_json::from_str(t).expect("inner text 不是合法 JSON")
+    }
+
+    // ── 协议层 ──────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn initialize_echoes_protocol_version() {
+        let root = unique_temp_root("init");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let r = rpc(
+            &srv.base,
+            &srv.token,
+            "initialize",
+            json!({ "protocolVersion": "2025-06-18" }),
+        )
+        .await;
+        assert_eq!(
+            r["result"]["protocolVersion"].as_str(),
+            Some("2025-06-18"),
+            "initialize 必须回显客户端协议版本"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn tools_list_returns_17_tools_with_schemas() {
+        let root = unique_temp_root("list");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let r = rpc(&srv.base, &srv.token, "tools/list", json!({})).await;
+        let tools = r["result"]["tools"].as_array().expect("tools 应是数组");
+        assert_eq!(tools.len(), 17, "tools/list 必须暴露全部 17 个工具");
+        for t in tools {
+            assert!(
+                !t["name"].as_str().unwrap_or("").is_empty(),
+                "工具名不可为空"
+            );
+            assert!(
+                !t["description"].as_str().unwrap_or("").is_empty(),
+                "工具描述不可为空（重构后工具级 description 原样保留）"
+            );
+            assert!(
+                t["inputSchema"].is_object(),
+                "工具 {} 的 inputSchema 必须是对象（由 ToolSchema 派生）",
+                t["name"]
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn unknown_method_returns_32601() {
+        let root = unique_temp_root("unknown");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let r = rpc(&srv.base, &srv.token, "bogus/method", json!({})).await;
+        assert_eq!(
+            r["error"]["code"].as_i64(),
+            Some(-32601),
+            "未知 method 必须返回 -32601"
+        );
+    }
+
+    // ── 17 工具全量分发 + 关键副作用 ────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn all_tools_dispatch_and_apply_side_effects() {
+        let root = unique_temp_root("dispatch");
+        let root_s = root.to_string_lossy().into_owned();
+        let p = |name: &str| -> String { root.join(name).to_string_lossy().into_owned() };
+
+        // 预置 fixture（均在白名单根内）
+        std::fs::write(p("read.txt"), "read content").unwrap();
+        std::fs::write(p("edit.txt"), "foo base").unwrap();
+        std::fs::write(p("del.txt"), "x").unwrap();
+        std::fs::write(p("mv_src.txt"), "x").unwrap();
+        std::fs::write(p("cp_src.txt"), "x").unwrap();
+        std::fs::write(p("search.txt"), "needle here").unwrap();
+        std::fs::write(p("analyze.txt"), "fn main(){}\n").unwrap();
+        std::fs::write(
+            p("nb.ipynb"),
+            serde_json::to_string_pretty(&json!({
+                "cells": [{"cell_type": "code", "metadata": {}, "source": "print(1)"}],
+                "metadata": {},
+                "nbformat": 4,
+                "nbformat_minor": 5
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(p("listdir")).unwrap();
+        std::fs::create_dir_all(p("removed")).unwrap();
+
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+
+        // 1) list_allowed_roots
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "list_allowed_roots", "arguments": {} }),
+            )
+            .await,
+        );
+
+        // 2) list_directory
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "list_directory", "arguments": { "path": root_s } }),
+            )
+            .await,
+        );
+
+        // 3) read_files —— 内容回读
+        let r = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "read_files", "arguments": { "files": [p("read.txt")] } }),
+        )
+        .await;
+        assert_dispatch_ok(&r);
+        assert!(
+            inner_text(&r).to_string().contains("read content"),
+            "read_files 应回读内容"
+        );
+
+        // 4) write_files —— 落盘校验
+        let wp = p("written.txt");
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "write_files", "arguments": { "files": [{ "path": wp, "content": "hello write" }] } }),
+            )
+            .await,
+        );
+        assert!(std::path::Path::new(&wp).exists(), "write_files 应创建文件");
+
+        // 5) edit_files —— 替换校验
+        let ep = p("edit.txt");
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "edit_files", "arguments": { "files": [{ "path": ep, "oldString": "foo", "newString": "bar" }] } }),
+            )
+            .await,
+        );
+        assert!(
+            std::fs::read_to_string(&ep).unwrap().contains("bar"),
+            "edit_files 应完成替换"
+        );
+
+        // 6) create_directory
+        let cdp = p("created");
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "create_directory", "arguments": { "path": cdp } }),
+            )
+            .await,
+        );
+        assert!(std::path::Path::new(&cdp).is_dir(), "create_directory 应创建目录");
+
+        // 7) delete_files
+        let dp = p("del.txt");
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "delete_files", "arguments": { "paths": [dp] } }),
+            )
+            .await,
+        );
+        assert!(!std::path::Path::new(&dp).exists(), "delete_files 应删除文件");
+
+        // 8) remove_directory
+        let rdp = p("removed");
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "remove_directory", "arguments": { "path": rdp, "recursive": true } }),
+            )
+            .await,
+        );
+        assert!(
+            !std::path::Path::new(&rdp).exists(),
+            "remove_directory 应删除目录"
+        );
+
+        // 9) move_files —— 源消失、目标出现
+        let msrc = p("mv_src.txt");
+        let mdst = p("mv_dst.txt");
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "move_files", "arguments": { "items": [{ "from": msrc, "to": mdst }] } }),
+            )
+            .await,
+        );
+        assert!(
+            std::path::Path::new(&mdst).exists() && !std::path::Path::new(&msrc).exists(),
+            "move_files 应 relocated"
+        );
+
+        // 10) copy_files —— 两处都在
+        let csrc = p("cp_src.txt");
+        let cdst = p("cp_dst.txt");
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "copy_files", "arguments": { "items": [{ "from": csrc, "to": cdst }] } }),
+            )
+            .await,
+        );
+        assert!(
+            std::path::Path::new(&csrc).exists() && std::path::Path::new(&cdst).exists(),
+            "copy_files 应复制出副本"
+        );
+
+        // 11) search_files —— 命中 needle
+        let r = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "search_files", "arguments": { "rootPath": root_s, "contentPattern": "needle" } }),
+        )
+        .await;
+        assert_dispatch_ok(&r);
+        assert!(
+            !inner_text(&r).as_array().unwrap().is_empty(),
+            "search_files 应命中 needle"
+        );
+
+        // 12) run_command（前台）—— 回显 hello
+        let r = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "run_command", "arguments": { "command": "echo hello", "cwd": root_s } }),
+        )
+        .await;
+        assert_dispatch_ok(&r);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("hello"),
+            "run_command 应回显 hello"
+        );
+
+        // 13) analyze_file
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "analyze_file", "arguments": { "path": p("analyze.txt") } }),
+            )
+            .await,
+        );
+
+        // 14) notebook_edit —— 改 cell source（顺带验证驼峰 newSource 入参被正确接受，
+        // 该字段曾因缺少 serde rename 被静默忽略，见 notebook_edit.rs 修复）。
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "notebook_edit", "arguments": { "path": p("nb.ipynb"), "cell": 0, "newSource": "print(42)", "mode": "replace" } }),
+            )
+            .await,
+        );
+        let nb: Value =
+            serde_json::from_str(&std::fs::read_to_string(p("nb.ipynb")).unwrap()).unwrap();
+        assert_eq!(
+            nb["cells"][0]["source"].as_str(),
+            Some("print(42)"),
+            "notebook_edit 应改写单元格"
+        );
+
+        // 15) batch —— 合并两个只读操作
+        let r = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "batch", "arguments": { "operations": [
+                { "tool": "list_allowed_roots", "arguments": {} },
+                { "tool": "list_directory", "arguments": { "path": root_s } }
+            ] } }),
+        )
+        .await;
+        assert_dispatch_ok(&r);
+        assert_eq!(
+            inner_text(&r)["executed"].as_u64(),
+            Some(2),
+            "batch 应执行 2 个子操作"
+        );
+    }
+
+    // ── 命令执行三元组（后台 run → 取输出 → 停止） ─────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn exec_background_run_output_stop_roundtrip() {
+        let root = unique_temp_root("exec");
+        let root_s = root.to_string_lossy().into_owned();
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+
+        // 后台启动命令，拿 handle
+        let bg = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "run_command", "arguments": { "command": "echo bghit", "cwd": root_s, "background": true } }),
+        )
+        .await;
+        assert_dispatch_ok(&bg);
+        let handle = inner_text(&bg)["handle"].as_str().expect("handle").to_string();
+
+        // 轮询 get_command_output，直到拿到 bghit（最多 ~2s）
+        let mut got = String::new();
+        for _ in 0..20 {
+            let r = rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "get_command_output", "arguments": { "handle": handle.clone() } }),
+            )
+            .await;
+            assert_dispatch_ok(&r);
+            let o = inner_text(&r);
+            let stdout = o["stdout"].as_str().unwrap_or("");
+            if stdout.contains("bghit") {
+                got = stdout.to_string();
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            got.contains("bghit"),
+            "get_command_output 应取到后台命令输出，got={got}"
+        );
+
+        // stop_command 终止
+        let st = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "stop_command", "arguments": { "handle": handle.clone() } }),
+        )
+        .await;
+        assert_dispatch_ok(&st);
+        assert_eq!(
+            inner_text(&st)["killed"].as_bool(),
+            Some(true),
+            "stop_command 应报告已终止"
+        );
+
+        // 负向：未知 handle 必须路由到 stop_command 处理器（而非 Unknown tool）
+        let bad = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "stop_command", "arguments": { "handle": "nope" } }),
+        )
+        .await;
+        let r = bad["result"].as_object().expect("result");
+        assert_eq!(
+            r.get("isError").and_then(|v| v.as_bool()),
+            Some(true),
+            "未知 handle 应走 stop_command 处理器返回 isError"
+        );
+        let txt = r["content"][0]["text"].as_str().unwrap();
+        assert!(
+            txt.contains("未知") || txt.contains("nope"),
+            "错误应指明未知 handle（证明路由正确）: {txt}"
+        );
+    }
+
+    // ── 中间件：鉴权 / 限流 / gzip ─────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn auth_missing_token_returns_401() {
+        let root = unique_temp_root("auth1");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+        let resp = raw_post(&srv.base, None, body).await;
+        assert_eq!(resp.status(), 401, "缺 Authorization 必须 401");
+        assert!(resp.text().await.unwrap().contains("Unauthorized"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn auth_wrong_token_returns_401() {
+        let root = unique_temp_root("auth2");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+        let resp = raw_post(&srv.base, Some("wrong-token"), body).await;
+        assert_eq!(resp.status(), 401, "错误 token 必须 401");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn auth_valid_token_returns_200() {
+        let root = unique_temp_root("auth3");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+        let resp = raw_post(&srv.base, Some(&srv.token), body).await;
+        assert_eq!(resp.status(), 200, "正确 token 必须 200");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn rate_limit_returns_429_after_max() {
+        // 独立 server，max=1：同 IP 第二次请求必被限流。
+        let root = unique_temp_root("rl");
+        let mut cfg = test_config(&root);
+        cfg.rate_limit_max_requests = 1;
+        cfg.rate_limit_window_ms = 60_000;
+        let srv = spawn_server(cfg, root.clone()).await;
+
+        let body = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "list_allowed_roots", "arguments": {} }
+        });
+        let r1 = raw_post(&srv.base, Some(&srv.token), body.clone()).await;
+        assert_eq!(r1.status(), 200, "首次请求应通过");
+        let r2 = raw_post(&srv.base, Some(&srv.token), body.clone()).await;
+        assert_eq!(r2.status(), 429, "同窗口第二次请求必须 429");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn gzip_response_header_present() {
+        let root = unique_temp_root("gzip");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+
+        // 关闭客户端自动解压，手动声明 Accept-Encoding: gzip，观察压缩响应头。
+        let client = reqwest::Client::builder().gzip(false).build().unwrap();
+        let resp = client
+            .post(format!("{}/mcp", srv.base))
+            .header("Authorization", format!("Bearer {}", srv.token))
+            .header("Accept-Encoding", "gzip")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.headers()
+                .get("content-encoding")
+                .map(|v| v.to_str().unwrap()),
+            Some("gzip"),
+            "响应应被 gzip 压缩"
+        );
     }
 }

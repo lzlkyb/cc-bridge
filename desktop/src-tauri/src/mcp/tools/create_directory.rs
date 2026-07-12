@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::security;
 use crate::state::AppState;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct CreateDirectoryArgs {
     pub path: String,
 }

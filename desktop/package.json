@@ -1,15 +1,15 @@
 {
   "name": "cc-bridge-desktop",
-  "version": "2.2.22",
+  "version": "2.2.23",
   "private": true,
   "type": "module",
   "scripts": {
     "vite:dev": "vite",
     "vite:build": "tsc && vite build",
     "tauri": "tauri",
-    "predev": "node scripts/sync-version.mjs",
+    "predev": "node scripts/sync-version.mjs && node scripts/gen-changelog.mjs",
     "dev": "tauri dev",
-    "prebuild": "node scripts/sync-version.mjs",
+    "prebuild": "node scripts/sync-version.mjs && node scripts/gen-changelog.mjs",
     "build": "tauri build",
     "updater:generate": "node scripts/generate-updater-json.mjs"
   },
