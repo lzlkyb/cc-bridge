@@ -265,10 +265,12 @@ export function ConnectTab({
 
 /* ─── Step components ─── */
 
-function StepNumber({ n }: { n: number }) {
+function StepNumber({ n, done }: { n: number; done?: boolean }) {
   return (
-    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-bold text-primary-foreground">
-      {n}
+    <span
+      className={`step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${done ? "step-num--done" : ""}`}
+    >
+      {done ? "✓" : n}
     </span>
   );
 }
@@ -535,11 +537,12 @@ function CommandBlock({
   onCopy: () => void;
 }) {
   return (
-    <div className="flex flex-wrap gap-2 items-start">
-      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded-md bg-background border px-3 py-2 text-xs font-mono leading-relaxed">
+    <div className="code-box flex items-start gap-2">
+      <span className="mt-[1px] shrink-0 font-mono text-xs font-semibold text-primary/30">$</span>
+      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-foreground">
         {command || "加载中..."}
       </code>
-      <Button variant="outline" size="sm" className="shrink-0 mt-0.5" onClick={onCopy} disabled={!command}>
+      <Button variant="outline" size="sm" className="shrink-0" onClick={onCopy} disabled={!command}>
         <Icon name={copied ? "check" : "copy"} size={14} />
         {copied ? "已复制" : "复制"}
       </Button>
@@ -558,29 +561,29 @@ function GlobalSteps({
 }) {
   return (
     <>
-      <div className="flex gap-3">
+      <div className="step-row flex gap-3">
         <StepNumber n={1} />
-        <div className="flex-1 space-y-2">
-          <p className="text-sm font-medium">SSH 登录远程 Linux 服务器</p>
+        <div className="flex-1 space-y-1.5">
+          <p className="text-[12.5px] font-semibold">SSH 登录远程 Linux 服务器</p>
           <p className="text-xs text-muted-foreground">在任意目录下执行即可</p>
         </div>
       </div>
 
-      <div className="flex gap-3">
+      <div className="step-row flex gap-3">
         <StepNumber n={2} />
         <div className="flex-1 space-y-2">
-          <p className="text-sm font-medium">执行连接命令</p>
+          <p className="text-[12.5px] font-semibold">执行连接命令</p>
           <CommandBlock command={command} copied={copied} onCopy={onCopy} />
         </div>
       </div>
 
-      <div className="flex gap-3">
-        <StepNumber n={3} />
-        <div className="flex-1 space-y-2">
-          <p className="text-sm font-medium">完成</p>
+      <div className="step-row flex gap-3">
+        <StepNumber n={3} done />
+        <div className="flex-1 space-y-1.5">
+          <p className="text-[12.5px] font-semibold">完成</p>
           <p className="text-xs text-muted-foreground">
-            配置已写入 <code className="rounded bg-background px-1">~/.claude.json</code>，
-            之后在任何项目中启动 <code className="rounded bg-background px-1">claude</code> 都会自动连接 {APP_INFO.name}。
+            配置已写入 <code className="rounded bg-muted px-1">~/.claude.json</code>，
+            之后在任何项目中启动 <code className="rounded bg-muted px-1">claude</code> 都会自动连接 {APP_INFO.name}。
           </p>
         </div>
       </div>
@@ -614,17 +617,20 @@ function ProjectSteps({
 
   return (
     <>
-      <div className="flex gap-3">
+      <div className="step-row flex gap-3">
         <StepNumber n={1} />
-        <div className="flex-1 space-y-2">
-          <p className="text-sm font-medium">SSH 登录远程 Linux 服务器</p>
+        <div className="flex-1 space-y-1.5">
+          <p className="text-[12.5px] font-semibold">SSH 登录远程 Linux 服务器</p>
         </div>
       </div>
 
-      <div className="flex gap-3">
+      <div className="step-row flex gap-3">
         <StepNumber n={2} />
         <div className="flex-1 space-y-2">
-          <p className="text-sm font-medium">填写远程项目路径（可选）</p>
+          <p className="text-[12.5px] font-semibold">填写远程项目路径（可选）</p>
+          <p className="text-xs text-muted-foreground">
+            如需进入特定目录执行，填入路径后命令前会自动加 <code className="rounded bg-muted px-1">cd</code>
+          </p>
           <input
             value={projectPath}
             onChange={(e) => setProjectPath(e.target.value)}
@@ -639,49 +645,28 @@ function ProjectSteps({
         </div>
       </div>
 
-      <div className="flex gap-3">
+      <div className="step-row flex gap-3">
         <StepNumber n={3} />
         <div className="flex-1 space-y-2">
-          <p className="text-sm font-medium">
+          <p className="text-[12.5px] font-semibold">
             {trimmed ? "复制并执行" : "在项目目录下执行"}
           </p>
           {!trimmed && (
             <p className="text-xs text-muted-foreground">
-              请确保已 <code className="rounded bg-background px-1">cd</code> 到目标项目目录
+              请确保已 <code className="rounded bg-muted px-1">cd</code> 到目标项目目录
             </p>
           )}
-          <div className="flex flex-wrap gap-2 items-start">
-            <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded-md bg-background border px-3 py-2 text-xs font-mono leading-relaxed">
-              {command ? (
-                <>
-                  {trimmed && <span className="text-muted-foreground">cd {trimmed} && </span>}
-                  {command}
-                </>
-              ) : (
-                "加载中..."
-              )}
-            </code>
-            <Button
-              variant="outline"
-              size="sm"
-              className="shrink-0 mt-0.5"
-              onClick={handleProjectCopy}
-              disabled={!command}
-            >
-              <Icon name={copied ? "check" : "copy"} size={14} />
-              {copied ? "已复制" : "复制"}
-            </Button>
-          </div>
+          <CommandBlock command={fullCommand} copied={copied} onCopy={handleProjectCopy} />
         </div>
       </div>
 
-      <div className="flex gap-3">
-        <StepNumber n={4} />
-        <div className="flex-1 space-y-2">
-          <p className="text-sm font-medium">完成</p>
+      <div className="step-row flex gap-3">
+        <StepNumber n={4} done />
+        <div className="flex-1 space-y-1.5">
+          <p className="text-[12.5px] font-semibold">完成</p>
           <p className="text-xs text-muted-foreground">
-            配置已写入项目目录的 <code className="rounded bg-background px-1">.mcp.json</code>，
-            仅在该项目中启动 <code className="rounded bg-background px-1">claude</code> 时生效。
+            配置已写入项目目录的 <code className="rounded bg-muted px-1">.mcp.json</code>，
+            仅在该项目中启动 <code className="rounded bg-muted px-1">claude</code> 时生效。
             如需给其他项目也添加，修改上方路径后再次复制执行即可。
           </p>
         </div>
