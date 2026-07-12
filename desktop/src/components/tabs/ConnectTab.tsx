@@ -170,7 +170,9 @@ export function ConnectTab({
             />
           </div>
 
-          {/* Step-by-step guide */}
+          {/* 接入步骤 */}
+          <div className="s-sec-label">接入步骤</div>
+
           <div className="rounded-lg border bg-muted/30 p-4 space-y-4">
             {scope === "user" ? (
               <GlobalSteps
@@ -188,16 +190,13 @@ export function ConnectTab({
               />
             )}
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Token */}
-      <Card>
-        <CardHeader>
-          <CardTitle icon={<Icon name="key" />}>Token</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="relative rounded-lg border border-dashed border-muted-foreground/25 bg-muted/40 px-4 py-3">
+          <div className="my-3.5 h-px bg-border" />
+
+          {/* Token 管理 */}
+          <div className="s-sec-label">Token 管理</div>
+
+          <div className="rounded-lg border border-dashed border-muted-foreground/25 bg-muted/40 px-4 py-3">
             <div className="flex items-center gap-2">
               <Icon name="lock" size={13} className="shrink-0 text-muted-foreground/50" />
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">机密信息</span>
