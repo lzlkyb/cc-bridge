@@ -28,7 +28,8 @@ function HeaderImpl({
     return () => window.removeEventListener("themechange", onTheme);
   }, []);
 
-  const running = status?.running ?? true;
+  // S5: 未知态(轮询间隙/首帧)一律视为未运行，避免 `?? true` 制造"总在运行"的错觉
+  const running = status?.running ?? false;
   const startupError = status?.startupError ?? null;
 
   // E-P1-10: useMemo 避免每帧重建 badge 数组
@@ -44,6 +45,7 @@ function HeaderImpl({
   }[] = useMemo(() => [
     { key: "whitelist", show: !!status && !status.whitelistEnabled, label: "白名单关闭", icon: "alertTriangle" as IconName, danger: true, tab: "settings", anchor: "whitelist", title: "白名单已关闭，点击前往设置页关闭" },
     { key: "ip", show: !!status?.ipChanged, label: "IP 已变化", icon: "alertTriangle" as IconName, danger: true, tab: "connect", title: "连接地址已变化，点击前往连接页查看" },
+    { key: "link", show: !!status?.running && status?.remoteReachable === false && !status?.ipChanged, label: "远程不可达", icon: "alertTriangle" as IconName, danger: true, tab: "connect", title: "远程连接不可达，点击前往连接页查看" },
     { key: "readonly", show: !!status?.readonlyMode, label: "只读", icon: "lock" as IconName, danger: false, tab: "settings", anchor: "readonly", title: "只读模式已开启，点击前往设置页查看" },
     { key: "shell", show: !!status?.shellEnabled, label: "命令执行已开启", icon: "terminal" as IconName, danger: true, tab: "settings", anchor: "shell", title: "命令执行已开启，点击前往设置页关闭" },
   ], [status]);
@@ -59,19 +61,33 @@ function HeaderImpl({
     }
   };
 
+  // S2: 链路状态机。linkDown = 服务在跑，但地址变了或探针不通（远程连不回本机）。
+  // 这正是此前"服务显示运行却连不上"的真相——用醒目的红态暴露出来，绝不淹没。
+  const linkDown = !!status && !!running && (status.ipChanged || status.remoteReachable === false);
+
   // E-P2-9: useMemo 避免每渲染拼接 className 三元链
   const pillClassName = useMemo(
     () =>
       `status-pill inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold${
         startupError
           ? " border-destructive/30 bg-destructive/10 text-destructive"
-          : running
-          ? " border-success/30 bg-success/10 text-success"
-          : " border-border bg-muted text-muted-foreground"
+          : !running
+          ? " border-border bg-muted text-muted-foreground"
+          : linkDown
+          ? " border-destructive/30 bg-destructive/10 text-destructive"
+          : " border-success/30 bg-success/10 text-success"
       }`,
-    [startupError, running],
+    [startupError, running, linkDown],
   );
-  const pillText = !status ? "连接中" : startupError ? "启动失败" : running ? "运行中" : "已停止";
+  const pillText = !status
+    ? "连接中"
+    : startupError
+    ? "启动失败"
+    : !running
+    ? "已停止"
+    : linkDown
+    ? "远程连接中断"
+    : "已连接";
 
   return (
     <header data-tauri-drag-region className="app-header flex shrink-0 items-center justify-between border-b px-5 py-3.5">
@@ -83,10 +99,14 @@ function HeaderImpl({
         {/* 运行状态胶囊：启动失败=红, 运行=绿+脉冲, 停止=灰 (A3) */}
         <span
           className={pillClassName}
-          title={startupError ?? undefined}
-          {...(startupError && onNavigate ? { onClick: () => onNavigate("settings"), style: { cursor: "pointer" } } : {})}
+          title={startupError ?? (linkDown ? "网络地址已失效，远程连接中断" : undefined)}
+          {...(startupError && onNavigate
+            ? { onClick: () => onNavigate("settings"), style: { cursor: "pointer" } }
+            : linkDown && onNavigate
+            ? { onClick: () => onNavigate("connect"), style: { cursor: "pointer" } }
+            : {})}
         >
-          <span className={`h-1.5 w-1.5 rounded-full bg-current ${running && !startupError ? "p-dot" : ""}`} />
+          <span className={`h-1.5 w-1.5 rounded-full bg-current ${running && !startupError && !linkDown ? "p-dot" : ""}`} />
           {pillText}
         </span>
 

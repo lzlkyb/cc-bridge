@@ -24,6 +24,9 @@ export interface StatusResponse {
   lanIps: string[];
   lastSelectedIp: string | null;
   ipChanged: boolean;
+  /** S1：远程链路可达性探针。对远程客户端应连接的展示地址:port 做 TCP 探测。
+   *  false 表示「服务在跑但远程连不回」（地址失效/网络断开），驱动「远程连接中断」状态。 */
+  remoteReachable: boolean;
   scope: string | null;
   /** A3 修复：启动期错误（如端口被占用）。null = 正常 */
   startupError: string | null;
@@ -81,6 +84,17 @@ export interface RunningCommandInfo {
   running: boolean;
   exitCode: number | null;
   elapsedSeconds: number;
+}
+
+/** get_audit_log 返回的审计日志分页结果（策略 A：页码分页）。 */
+export interface AuditPage {
+  entries: AuditEntry[];
+  /** 审计日志总条数（用于前端算总页数，不受当前页大小影响） */
+  total: number;
+  /** 当前页（≥1） */
+  page: number;
+  /** 每页条数 */
+  pageSize: number;
 }
 
 /** get_command_output 返回的后台命令实时输出（stdout/stderr 为本次增量片段）。 */

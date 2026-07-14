@@ -2,11 +2,13 @@ import { useState, useEffect, useMemo, memo } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import { APP_INFO } from "../../lib/about";
-import { McpScope, buildDisplayHost, buildBaseCommand, buildConnectCommand, buildHealthCheck } from "../../lib/utils";
+import { McpScope, buildDisplayHost, buildBaseCommand, buildConnectCommand, buildHealthCheck, buildPermissionGrantCommand, ipHint } from "../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Icon } from "../ui/icon";
+import { Switch } from "../ui/switch";
+import { Alert } from "../ui/alert";
 import { useToast } from "../ui/toast";
 import { ConnectHero } from "./ConnectHero";
 import { TokenManager } from "./TokenManager";
@@ -16,15 +18,23 @@ function ConnectTabImpl({
   onRefresh,
   selectedIp,
   onSelectIp,
+  ipResolvedByUser,
+  onSedResolved,
 }: {
   status?: StatusResponse;
   onRefresh: () => void;
   selectedIp: string;
   onSelectIp: (ip: string) => void;
+  /** 方案 Q: 用户已点选新地址但未复制远程更新命令的中间态（App 层提升），用于保持 banner 可见 */
+  ipResolvedByUser: boolean;
+  /** 方案 Q: 复制远程更新 sed 命令后收口，通知 App 清除 ipResolvedByUser */
+  onSedResolved: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [scope, setScope] = useState<McpScope>("project");
   const [projectPath, setProjectPath] = useState("");
+  const [includeShellTools, setIncludeShellTools] = useState(false);
+  const [permCopied, setPermCopied] = useState(false);
   const lanIps = status?.lanIps ?? [];
   const { toast } = useToast();
 
@@ -33,12 +43,16 @@ function ConnectTabImpl({
 
   useEffect(() => {
     if (!listenAll || lanIps.length === 0) return;
-    // 仅在从未选过时默认选第一个（默认路由 IP）。已选但现在不在列表中（地址变化）
-    // 不在这里静静换新选中——那正是下方 IpChangedBanner 要提示用户确认的情形。
-    if (!selectedIp) {
+    // 仅在「后端确实从没记录过选中 IP」时默认选第一个。已选但现在不在列表中
+    // （地址变化）不在这里静静换新选中——那正是下方 IpChangedBanner 要提示用户
+    // 确认的情形。
+    // 注意：不能用本地 selectedIp 判断「从未选过」——它每次冷启动都会重置为 ""，
+    // 会导致每次启动都把后端 last_selected_ip 覆盖成 lan_ips[0]（物理网卡 IP，永不
+    // 消失），从而让 ip_changed 永远无法触发，弱提示全部失效（见诊断报告）。
+    if (!selectedIp && !status?.lastSelectedIp) {
       onSelectIp(lanIps[0]);
     }
-  }, [listenAll, lanIps.join(","), selectedIp]);
+  }, [listenAll, lanIps.join(","), selectedIp, status?.lastSelectedIp]);
 
   // E-P2-8: useMemo 避免每渲染重复拼接命令字符串（纯函数见 lib/utils）
   const displayHost = useMemo(
@@ -63,6 +77,11 @@ function ConnectTabImpl({
     [displayHost, port],
   );
 
+  const permissionCommand = useMemo(
+    () => buildPermissionGrantCommand(scope, projectPath, includeShellTools),
+    [scope, projectPath, includeShellTools],
+  );
+
   const handleCopy = () => {
     if (!connectCommand) return;
     navigator.clipboard.writeText(connectCommand);
@@ -76,33 +95,29 @@ function ConnectTabImpl({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handlePermCopy = () => {
+    if (!permissionCommand) return;
+    navigator.clipboard.writeText(permissionCommand);
+    setPermCopied(true);
+    toast("授权命令已复制到剪贴板", "success");
+    setTimeout(() => setPermCopied(false), 2000);
+  };
+
   return (
     <div className="space-y-3">
-      {/* IP 变化醒目提示：上次确认的 IP 不在本机网卡列表中了（VPN 重连等），引导用户选新地址 */}
-      {status?.ipChanged && (
+      {/* IP 变化醒目提示：上次确认的 IP 不在本机网卡列表中了（VPN 重连等），引导用户选新地址。
+          方案 Q：ipChanged 被乐观清除后，靠 ipResolvedByUser 兜底保持可见，直到用户复制远程更新命令。 */}
+      {(status?.ipChanged || ipResolvedByUser) && (
         <IpChangedBanner
           lanIps={lanIps}
-          previousIp={status.lastSelectedIp ?? (status.host !== "0.0.0.0" ? status.host : null)}
-          port={status.port}
+          selectedIp={selectedIp}
+          previousIp={status?.lastSelectedIp ?? (status?.host && status.host !== "0.0.0.0" ? status.host : null)}
+          port={status?.port ?? 7823}
           scope={(status?.scope ?? null) as McpScope | null}
           projectPath={projectPath}
           onResolved={onSelectIp}
+          onSedResolved={onSedResolved}
         />
-      )}
-
-      {/* 弱提示：默认网卡变了但当前 serve 的 IP 仍在线（连接未断），不弹红警告，仅做信息告知 */}
-      {listenAll && !status?.ipChanged && selectedIp && lanIps.includes(selectedIp) && lanIps[0] !== selectedIp && (
-        <div className="flex items-start gap-2.5 rounded-lg border border-blue-500/40 bg-blue-500/10 p-4">
-          <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-blue-500/15 text-blue-600">
-            <Icon name="activity" size={15} />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-blue-700">默认网卡已变化</p>
-            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-              当前仍使用 <code className="rounded bg-background px-1">{selectedIp}</code> 提供服务（默认网卡现已是 <code className="rounded bg-background px-1">{lanIps[0]}</code>）。连接未中断，如需改用新的默认地址，可在下方重新选择。
-            </p>
-          </div>
-        </div>
       )}
 
       {/* A. Hero 渐变头卡：运行状态 + 地址 + 关键指标 + 启停按钮 */}
@@ -119,8 +134,9 @@ function ConnectTabImpl({
           <CardTitle icon={<Icon name="plug" />}>接入 Claude Code</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* IP 选择器：多网卡时让用户选连接用哪个地址 */}
-          {listenAll && lanIps.length > 0 && !status?.ipChanged && (
+          {/* IP 选择器：多网卡时让用户选连接用哪个地址。
+              ipChanged 时也照常渲染——真实选择控件交还给它，banner 只负责提示（方案 B 修复"选不了"）。 */}
+          {listenAll && lanIps.length > 0 && (
             <AddressPicker
               ips={lanIps}
               selected={selectedIp}
@@ -175,6 +191,59 @@ function ConnectTabImpl({
             onRefresh={onRefresh}
             projectPath={projectPath}
           />
+
+          <div className="my-3.5 h-px bg-border" />
+
+          {/* 权限自动授权：一键生成命令，往 permissions.allow 追加 cc-bridge 工具规则 + 信任该 MCP 服务器，
+              免去逐工具重复确认。沿用上方已有的 scope/projectPath，不重复画作用域/路径控件。*/}
+          <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+            <div className="s-sec-label">权限自动授权</div>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Claude Code 每次调用 cc-bridge 的工具都会弹窗确认。复制下面的命令，粘贴到 Claude Code
+              所在终端执行一次，即可免去后续所有工具调用的重复授权 —— 无需重启会话，改完立即生效。
+            </p>
+
+            {scope === "project" && !projectPath.trim() && (
+              <Alert variant="warning" className="flex items-start gap-2 p-3 text-xs">
+                <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  上方“填写远程项目路径”未填写：命令不带 <code className="rounded bg-background px-1">cd</code>，
+                  会直接用执行时终端所在目录拼相对路径{" "}
+                  <code className="rounded bg-background px-1">.claude/settings.local.json</code>。
+                  若执行时不在目标项目目录下，会悄悄写到错误位置且不会报错。请确保执行前已 cd 到目标
+                  项目目录，或在上方填写路径。
+                </span>
+              </Alert>
+            )}
+
+            <div className="s-row">
+              <div className="min-w-0 flex-1">
+                <p className="s-label">同时免确认命令执行工具</p>
+                <p className="s-row-desc mt-0.5">
+                  <code className="rounded bg-muted px-1">run_command</code> /{" "}
+                  <code className="rounded bg-muted px-1">get_command_output</code> /{" "}
+                  <code className="rounded bg-muted px-1">stop_command</code> —— 等价于授予远程任意命令执行能力
+                </p>
+              </div>
+              <Switch
+                checked={includeShellTools}
+                onChange={setIncludeShellTools}
+                variant="danger"
+                ariaLabel="同时免确认命令执行工具"
+              />
+            </div>
+
+            {includeShellTools && (
+              <Alert variant="destructive" className="flex items-start gap-2 p-3 text-xs">
+                <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
+                <span className="leading-relaxed">
+                  已开启：生成的命令会免确认执行全部 17 个工具（含命令执行能力）。请仅在完全信任该 cc-bridge 连接时开启此项。
+                </span>
+              </Alert>
+            )}
+
+            <CommandBlock command={permissionCommand} copied={permCopied} onCopy={handlePermCopy} />
+          </div>
         </CardContent>
       </Card>
     </div>
@@ -195,32 +264,29 @@ function StepNumber({ n, done }: { n: number; done?: boolean }) {
 
 /* ─── 连接地址选择器 ─── */
 
-function ipHint(ip: string): string {
-  if (ip.startsWith("192.168.")) return "家用/办公内网";
-  if (ip.startsWith("10.")) return "VPN 或企业内网";
-  if (ip.startsWith("172.")) return "内网 / VPN / 容器网段";
-  return "其它网段";
-}
-
 /** 变更醒目 banner：仅 status.ipChanged 为真时渲染。确认选中新 IP 并复制命令后，
  * onResolved 会重新落盘 last_selected_ip，下一次轮询 ip_changed 回为 false，banner 自行消失。 */
 function IpChangedBanner({
   lanIps,
+  selectedIp,
   previousIp,
   port,
   scope,
   projectPath,
   onResolved,
+  onSedResolved,
 }: {
   lanIps: string[];
+  selectedIp: string;
   previousIp: string | null;
   port: number;
   /** 持久化作用域（首次接入落盘）。null 表示旧数据未记录，此时展示两条命令兜底 */
   scope: McpScope | null;
   projectPath: string;
   onResolved: (ip: string) => void;
+  /** 方案 Q: 复制远程更新命令后通知 App 收口（清除 ipResolvedByUser），banner 随后自然消失 */
+  onSedResolved: () => void;
 }) {
-  const [pick, setPick] = useState(lanIps[0] ?? "");
   const [copiedCmd, setCopiedCmd] = useState("");
 
   // P2: 网卡全部消失时,下方选择控件与确认按钮会永久 disabled 形成死局。
@@ -251,7 +317,7 @@ function IpChangedBanner({
     const cfgFile = scp === "user" ? "~/.claude.json" : ".mcp.json";
     const cdPrefix =
       scp === "project" && projectPath.trim() ? `cd ${projectPath.trim()} && ` : "";
-    return `${cdPrefix}sed -i 's#http://[0-9.]*:${port}/mcp#http://${pick}:${port}/mcp#g' ${cfgFile}`;
+    return `${cdPrefix}sed -i 's#http://[0-9.]*:${port}/mcp#http://${selectedIp}:${port}/mcp#g' ${cfgFile}`;
   };
 
   const entries: { label: string; cmd: string }[] = scope
@@ -266,11 +332,17 @@ function IpChangedBanner({
         { label: "项目（.mcp.json）", cmd: buildSed("project") },
       ];
 
+  // 仅当用户已在下方 AddressPicker 选中一个当前在网卡列表中的「新」地址时，
+  // 才允许生成/复制 sed（把远程配置里的旧 IP 替换为选中的新 IP）。
+  // selectedIp 为空或仍是已消失的旧地址时，sed 无意义，禁用复制。
+  const newIpValid = !!selectedIp && lanIps.includes(selectedIp);
+
   const copyOne = (cmd: string) => {
-    if (!cmd) return;
+    if (!cmd || !newIpValid) return;
     navigator.clipboard.writeText(cmd);
     setCopiedCmd(cmd);
-    onResolved(pick);
+    onResolved(selectedIp);
+    onSedResolved(); // 方案 Q: 收口——复制远程更新命令后允许 banner 自然消失
   };
 
   return (
@@ -281,53 +353,36 @@ function IpChangedBanner({
         </div>
         <div>
           <p className="text-sm font-semibold text-destructive">检测到网络地址变化</p>
-          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
-            之前使用的 <code className="rounded bg-background px-1">{previousIp}</code> 已不在本机网卡列表中（大概率是
-            VPN 重新连接分配了新地址）。请选择下面的新地址并复制命令，到远程服务器执行即可原地更新 IP（无需重新授权）。
+            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+              之前使用的 <code className="rounded bg-background px-1">{previousIp}</code> 已不在本机网卡列表中（大概率是
+              网络重新连接后分配了新地址）。请在下方「选择远程服务器能连回本机的地址」中选中新地址，连接命令会自动更新，复制后到远程服务器执行即可原地更新 IP（无需重新授权）。
+            </p>
+        </div>
+      </div>
+
+      {newIpValid ? (
+        <div className="pl-[38px] space-y-3">
+          <p className="text-xs text-muted-foreground">
+            {scope
+              ? "已选中新地址，复制以下命令到远程服务器执行（原地更新 IP，不会重新授权）："
+              : `未能确认当初的接入作用域，请选择你最初添加 ${APP_INFO.name} 时使用的作用域执行对应命令（不匹配的配置文件不会被改动）：`}
           </p>
+          {entries.map((e, i) => (
+            <div key={i} className="space-y-1.5">
+              <p className="text-xs font-medium text-foreground/80">{e.label}</p>
+              <CommandBlock
+                command={e.cmd}
+                copied={copiedCmd === e.cmd}
+                onCopy={() => copyOne(e.cmd)}
+              />
+            </div>
+          ))}
         </div>
-      </div>
-
-      {lanIps.length > 0 && (
-        <div className="grid grid-cols-2 gap-2 pl-[38px]">
-          {lanIps.map((ip, i) => {
-            const sel = pick === ip;
-            return (
-              <button
-                key={ip}
-                onClick={() => setPick(ip)}
-                className={`relative rounded-md border-2 px-3 py-2 text-left transition-colors ${
-                  sel ? "border-primary bg-accent" : "border-transparent bg-background hover:bg-muted"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <code className={`text-sm font-mono ${sel ? "text-primary" : ""}`}>{ip}</code>
-                  {i === 0 && <Badge variant="secondary">默认</Badge>}
-                </div>
-                <p className="mt-0.5 text-xs text-muted-foreground">{ipHint(ip)}</p>
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="pl-[38px] space-y-3">
-        <p className="text-xs text-muted-foreground">
-          {scope
-            ? "复制以下命令到远程服务器执行（原地更新 IP，不会重新授权）："
-            : `未能确认当初的接入作用域，请选择你最初添加 ${APP_INFO.name} 时使用的作用域执行对应命令（不匹配的配置文件不会被改动）：`}
+      ) : (
+        <p className="pl-[38px] text-xs text-muted-foreground">
+          在下方选一个新地址后，这里会自动生成「原地更新 IP」的远程命令。
         </p>
-        {entries.map((e, i) => (
-          <div key={i} className="space-y-1.5">
-            <p className="text-xs font-medium text-foreground/80">{e.label}</p>
-            <CommandBlock
-              command={e.cmd}
-              copied={copiedCmd === e.cmd}
-              onCopy={() => copyOne(e.cmd)}
-            />
-          </div>
-        ))}
-      </div>
+      )}
     </div>
   );
 }

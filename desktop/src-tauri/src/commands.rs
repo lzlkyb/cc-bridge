@@ -1,7 +1,10 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
+use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 use crate::audit;
 use crate::browse;
@@ -59,6 +62,11 @@ pub struct StatusResponse {
     pub last_selected_ip: Option<String>,
     #[serde(rename = "ipChanged")]
     pub ip_changed: bool,
+    /// S1: 远程链路可达性探针。对「远程客户端应当连接的展示地址:port」做 TCP 探测
+    /// （超时 200ms）。running 为 false 时直接 false（服务都没跑，谈不上可达）。
+    /// 这是「远程连接中断」状态机的真实信号源，区别于 ip_changed（仅文本地址变化）。
+    #[serde(rename = "remoteReachable")]
+    pub remote_reachable: bool,
     /// 用户上次接入确认的作用域（user/project），由首次接入复制命令时落盘。
     /// IP 变化 banner / Token 重生成据此生成精确 sed 命令。None 表示旧数据未记录。
     #[serde(rename = "scope")]
@@ -110,6 +118,28 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         config.last_selected_ip.as_deref(),
     );
 
+    // S1: 远程链路可达性探针。解析远程客户端应当连接的展示地址（与连接命令一致），
+    // 对该地址:port 做 TCP 探测（超时 200ms）。running 为 false 时不探测，直接不可达。
+    // 这是「远程连接中断」状态机的真实信号源，区别于 ip_changed（仅文本地址变化）。
+    let remote_reachable = if !running {
+        false
+    } else {
+        let probe_host = network::resolve_display_host(
+            &config.host,
+            &lan_ips,
+            config.last_selected_ip.as_deref(),
+        );
+        match timeout(
+            Duration::from_millis(200),
+            TcpStream::connect((probe_host.as_str(), config.port)),
+        )
+        .await
+        {
+            Ok(Ok(_)) => true,
+            _ => false,
+        }
+    };
+
     Ok(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
         uptime_seconds: uptime,
@@ -141,6 +171,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         running,
         last_selected_ip: config.last_selected_ip.clone(),
         ip_changed,
+        remote_reachable,
         scope: config.scope.clone(),
         startup_error,
         lan_ips,
@@ -313,10 +344,20 @@ pub async fn regenerate_token(state: State<'_, Arc<AppState>>) -> Result<String,
 #[tauri::command]
 pub async fn get_audit_log(
     state: State<'_, Arc<AppState>>,
+    page: Option<u32>,
+    page_size: Option<u32>,
+    // 兼容旧前端：传 limit 等价于 (page=1, page_size=limit)
     limit: Option<u32>,
-) -> Result<Vec<audit::AuditEntry>, String> {
-    let limit = limit.unwrap_or(50) as usize;
-    audit::read_recent_entries(&state.data_dir, limit)
+) -> Result<audit::AuditPage, String> {
+    // 策略 A：页码分页。page 默认 1；page_size 默认 50；兼容旧 limit 参数。clamp 到 1..=500。
+    let page = page.unwrap_or(1).max(1) as usize;
+    let page_size = match (page_size, limit) {
+        (Some(ps), _) => ps as usize,
+        (None, Some(l)) => l as usize,
+        (None, None) => 50,
+    }
+    .clamp(1, 500);
+    audit::read_page(&state.data_dir, page, page_size)
 }
 
 #[tauri::command]
@@ -455,14 +496,23 @@ pub async fn list_running_commands(
                 cmd.command.clone(),
                 cmd.cwd.clone(),
                 cmd.exit_code.clone(),
+                cmd.finished_elapsed_secs.clone(),
                 cmd.started_at.elapsed().as_secs(),
             )
         })
         .collect();
 
     let mut result = Vec::with_capacity(snapshot.len());
-    for (handle, pid, command, cwd, exit_code_arc, elapsed_seconds) in snapshot {
+    for (handle, pid, command, cwd, exit_code_arc, finished_elapsed_arc, live_elapsed_seconds) in
+        snapshot
+    {
         let exit_code = *exit_code_arc.lock().await;
+        // 修复：进程已结束时优先用 wait 线程写入的定格值，不再用 started_at.elapsed() 实时计算，
+        // 避免面板里“已运行”在命令早已结束后还一直增长。
+        let elapsed_seconds = match *finished_elapsed_arc.lock().await {
+            Some(frozen) => frozen,
+            None => live_elapsed_seconds,
+        };
         result.push(RunningCommandInfo {
             handle,
             pid,
@@ -474,6 +524,64 @@ pub async fn list_running_commands(
         });
     }
     Ok(result)
+}
+
+/// 后台定时清理：命令结束满 5 分钟宽限期（供桌面面板/远程 MCP 调用方来得及读到最终输出）后，
+/// 自动从注册表移除，修复 v1 无自动回收导致“已结束的还占着并发上限”的问题。
+/// 仅清理已结束（exit_code 为 Some）且超过宽限期的条目，运行中的不动。
+/// 由 main.rs 里的周期任务调用（每 60s 一次）。
+pub async fn cleanup_finished_commands(state: &Arc<AppState>) {
+    const GRACE_PERIOD: Duration = Duration::from_secs(5 * 60);
+
+    let snapshot: Vec<_> = state
+        .running_commands
+        .iter()
+        .map(|entry| {
+            let cmd = entry.value();
+            (
+                entry.key().clone(),
+                cmd.exit_code.clone(),
+                cmd.finished_elapsed_secs.clone(),
+                cmd.started_at,
+            )
+        })
+        .collect();
+
+    let mut to_remove = Vec::new();
+    for (handle, exit_code_arc, finished_elapsed_arc, started_at) in snapshot {
+        if exit_code_arc.lock().await.is_none() {
+            continue; // 还在跑，不清
+        }
+        let Some(finished_secs) = *finished_elapsed_arc.lock().await else {
+            continue; // exit_code 已写但 finished_elapsed 还没来得及写入（极短窗口），下一轮再看
+        };
+        let finished_at = started_at + Duration::from_secs(finished_secs);
+        if finished_at.elapsed() >= GRACE_PERIOD {
+            to_remove.push(handle);
+        }
+    }
+
+    for handle in to_remove {
+        state.running_commands.remove(&handle);
+    }
+}
+
+/// 并发上限时的即时腾位：不管 5 分钟宽限期，把所有已结束（exit_code 为 Some）的
+/// 命令立即移除，为新命令腾出空位。修复：之前一旦命中并发上限，即使前面的早已跑完，
+/// 新命令也会被硬拒绝，用户必须手动 stop_command 才能重试。由
+/// `run_command.rs` 在打包 5 上限报错前先调用。
+pub async fn evict_finished_commands(state: &Arc<AppState>) {
+    let snapshot: Vec<_> = state
+        .running_commands
+        .iter()
+        .map(|entry| (entry.key().clone(), entry.value().exit_code.clone()))
+        .collect();
+
+    for (handle, exit_code_arc) in snapshot {
+        if exit_code_arc.lock().await.is_some() {
+            state.running_commands.remove(&handle);
+        }
+    }
 }
 
 /// 本机面板的「终止」按钮：移除注册表条目后 drop 其中的 Job Object（kill-on-job-close）

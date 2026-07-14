@@ -390,8 +390,10 @@ fn write_audit_for_call(
         session_id,
     );
     let _ = serde_json::to_string(&entry);
-    let audit_ms = a0.elapsed().as_millis() as u64;
-    let server_ms = server_ms_dispatch + audit_ms;
+    // f64 毫秒（不用 .as_millis() as u64）：实测单条写盘序列化开销在微秒级（~6.8µs），
+    // 若截断为整数毫秒会恒为 0，导致前端耗时拆解面板的“审计写盘”一项长期不可见。
+    let audit_ms = a0.elapsed().as_secs_f64() * 1000.0;
+    let server_ms = server_ms_dispatch + audit_ms.round() as u64;
     // 补充正确的 serverMs/auditMs
     let mut entry = entry;
     entry.server_ms = Some(server_ms);
@@ -439,7 +441,6 @@ pub async fn dispatch_tool(
     (spec.run)(args, state).await
 }
 
-
 fn get_tool_definitions() -> serde_json::Value {
     // 数据驱动：遍历注册表生成 tools/list 的 inputSchema（schema 由 XxxArgs 的
     // ToolSchema derive 自动生成，单一来源，消除手写 json! 与字段漂移）。
@@ -454,7 +455,6 @@ fn get_tool_definitions() -> serde_json::Value {
         })
         .collect::<serde_json::Value>()
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -537,10 +537,8 @@ mod over_wire_tests {
     /// 每个 case 一个唯一、可写的临时根目录（避免并发跑串）。
     fn unique_temp_root(label: &str) -> PathBuf {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "cc-bridge-ow-{label}-{}-{n}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("cc-bridge-ow-{label}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp root");
         dir
@@ -556,9 +554,9 @@ mod over_wire_tests {
             allowed_extensions: ext,
             whitelist_enabled: true,
             readonly_mode: false,
-            shell_enabled: true, // run_command / stop_command
+            shell_enabled: true,   // run_command / stop_command
             backup_enabled: false, // 避免临时目录里写备份
-            audit_enabled: false, // 不落审计日志
+            audit_enabled: false,  // 不落审计日志
             rate_limit_enabled: true,
             rate_limit_max_requests: 100,
             rate_limit_window_ms: 60_000,
@@ -577,7 +575,9 @@ mod over_wire_tests {
         let conn = rusqlite::Connection::open_in_memory().expect("in-mem db");
         let state = Arc::new(AppState::new(conn, cfg, root.clone()));
         let router = build_router(state).await;
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind 127.0.0.1:0");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind 127.0.0.1:0");
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
             let _ = axum::serve(
@@ -824,7 +824,10 @@ mod over_wire_tests {
             )
             .await,
         );
-        assert!(std::path::Path::new(&cdp).is_dir(), "create_directory 应创建目录");
+        assert!(
+            std::path::Path::new(&cdp).is_dir(),
+            "create_directory 应创建目录"
+        );
 
         // 7) delete_files
         let dp = p("del.txt");
@@ -837,7 +840,10 @@ mod over_wire_tests {
             )
             .await,
         );
-        assert!(!std::path::Path::new(&dp).exists(), "delete_files 应删除文件");
+        assert!(
+            !std::path::Path::new(&dp).exists(),
+            "delete_files 应删除文件"
+        );
 
         // 8) remove_directory
         let rdp = p("removed");
@@ -987,7 +993,10 @@ mod over_wire_tests {
         )
         .await;
         assert_dispatch_ok(&bg);
-        let handle = inner_text(&bg)["handle"].as_str().expect("handle").to_string();
+        let handle = inner_text(&bg)["handle"]
+            .as_str()
+            .expect("handle")
+            .to_string();
 
         // 轮询 get_command_output，直到拿到 bghit（最多 ~2s）
         let mut got = String::new();

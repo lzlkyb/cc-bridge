@@ -23,6 +23,27 @@ export function formatVersion(v?: string): string {
   return v.startsWith("v") ? v : `v${v}`;
 }
 
+/**
+ * 毫秒耗时格式化为一眼可读的中文文本，自动换算单位（微秒/毫秒/秒/分），避免用户看到
+ * 大数字（如 10000ms）还要心算，也不用英文缩写（ms/s）而用中文单位。
+ * - <1ms：换算成微秒（审计写盘等微秒级耗时仍能看清，不四舍五入成 0）。
+ * - <10ms：毫秒保留 1 位小数（区分 1.2毫秒与 8.7毫秒）。
+ * - <1000ms：毫秒取整。
+ * - <60s：换算成秒（保留 1 位小数，如 10000ms → "10.0秒"）。
+ * - ≥60s：换算成 "X分Y秒"。
+ */
+export function formatDurationMs(ms: number): string {
+  if (ms <= 0) return "0毫秒";
+  if (ms < 1) return `${Math.round(ms * 1000)}微秒`;
+  if (ms < 10) return `${ms.toFixed(1)}毫秒`;
+  if (ms < 1000) return `${Math.round(ms)}毫秒`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}秒`;
+  const m = Math.floor(totalSeconds / 60);
+  const s = Math.round(totalSeconds % 60);
+  return `${m}分${s}秒`;
+}
+
 /** MCP 工具名 → 中文操作名，用于审计日志友好展示。未知工具回退原名。 */
 const TOOL_LABELS: Record<string, string> = {
   list_allowed_roots: "列出白名单",
@@ -59,16 +80,31 @@ export function buildBaseCommand(displayHost: string, port: number, token: strin
   return `claude mcp add --transport http cc-bridge http://${displayHost}:${port}/mcp --header "Authorization: Bearer ${token}"`;
 }
 
-/** 按作用域补全 --scope user（项目级不加）。 */
+/**
+ * 按作用域补全 --scope 参数。
+ * 修复（2026-07-13）：之前项目级分支不加任何 --scope，而 Claude Code CLI 不带 --scope 时默认是
+ * local scope（写入 ~/.claude.json 按项目路径存的部分），而非 UI 文案对用户宣称的 .mcp.json。
+ * 导致 IpChangedBanner/TokenManager 生成的 sed 命令（假设 project scope = .mcp.json）
+ * 在项目级场景下实际改不到真正生效的配置文件。现显式加 --scope project，与
+ * buildTokenSedCommand / IpChangedBanner 里 "project => .mcp.json" 的假设保持一致。
+ */
 export function buildConnectCommand(baseCommand: string, scope: McpScope): string {
   return scope === "user"
     ? baseCommand.replace("claude mcp add", "claude mcp add --scope user")
-    : baseCommand;
+    : baseCommand.replace("claude mcp add", "claude mcp add --scope project");
 }
 
 /** 服务器侧连通性验证命令。 */
 export function buildHealthCheck(displayHost: string, port: number): string {
   return `curl http://${displayHost}:${port}/health`;
+}
+
+/** 网络地址友好提示：帮助用户判断远程服务器该选哪个 IP 连回本机。ConnectTab 与引导向导共用。 */
+export function ipHint(ip: string): string {
+  if (ip.startsWith("192.168.")) return "家用/办公内网";
+  if (ip.startsWith("10.")) return "VPN 或企业内网";
+  if (ip.startsWith("172.")) return "内网 / 容器网段";
+  return "其它网段";
 }
 
 /** Token 重生成后原地替换 Bearer 的 sed 命令（不 remove+add，保留授权状态）。 */
@@ -82,6 +118,63 @@ export function buildTokenSedCommand(
   const cfgFile = scope === "user" ? "~/.claude.json" : ".mcp.json";
   const cdPrefix = scope === "project" && projectPath.trim() ? `cd ${projectPath.trim()} && ` : "";
   return `${cdPrefix}sed -i 's#Bearer ${oldToken}#Bearer ${token}#g' ${cfgFile}`;
+}
+
+/** cc-bridge 除命令执行三元组外的 14 个文件/列表类工具，用于权限授权命令默认不包含命令执行能力。 */
+const NON_SHELL_TOOLS = [
+  "list_allowed_roots",
+  "list_directory",
+  "read_files",
+  "write_files",
+  "edit_files",
+  "create_directory",
+  "remove_directory",
+  "delete_files",
+  "move_files",
+  "copy_files",
+  "search_files",
+  "batch",
+  "notebook_edit",
+  "analyze_file",
+];
+
+/**
+ * 生成“一键免重复授权”命令：往 Claude Code 的 permissions.allow 里追加 cc-bridge 工具规则
+ * + 信任该 MCP 服务器，免去每次调用都弹窗确认。用 python3 读-改-写，幂等去重，不依赖
+ * jq（不保证所有用户环境已安装）。
+ * 目标文件固定落 gitignore 的 settings.local.json（项目级）/settings.json（全局），
+ * 不是连接命令用的 .mcp.json——权限规则属个人本地免打扰设置，不适合和团队共享的
+ * MCP 服务器配置混在一起。
+ * includeShellTools=false 时逐个列出 14 个文件/列表类工具规则，run_command 系列不包含；
+ * =true 时改成单条 mcp__cc-bridge__* 通配符（等价于全部 17 个，且自动覆盖未来新增工具）。
+ */
+export function buildPermissionGrantCommand(
+  scope: McpScope,
+  projectPath: string,
+  includeShellTools: boolean,
+): string {
+  const targetFile = scope === "user" ? "~/.claude/settings.json" : ".claude/settings.local.json";
+  const trimmed = projectPath.trim();
+  const cdPrefix = scope === "project" && trimmed ? `cd ${trimmed} && ` : "";
+
+  const toolsBlock = includeShellTools
+    ? `if 'mcp__cc-bridge__*' not in allow:\n    allow.append('mcp__cc-bridge__*')`
+    : `tools = ${JSON.stringify(NON_SHELL_TOOLS)}\nfor t in tools:\n    rule = f'mcp__cc-bridge__{t}'\n    if rule not in allow:\n        allow.append(rule)`;
+
+  return `${cdPrefix}python3 -c "
+import json, os
+p = os.path.expanduser('${targetFile}')
+d = json.load(open(p)) if os.path.exists(p) else {}
+allow = d.setdefault('permissions', {}).setdefault('allow', [])
+${toolsBlock}
+d['enableAllProjectMcpServers'] = True
+servers = d.setdefault('enabledMcpjsonServers', [])
+if 'cc-bridge' not in servers:
+    servers.append('cc-bridge')
+os.makedirs(os.path.dirname(p) or '.', exist_ok=True)
+json.dump(d, open(p, 'w'), indent=2, ensure_ascii=False)
+print('已写入:', os.path.abspath(p))
+"`;
 }
 
 /* ─── 更新历史「已读」状态（localStorage，纯函数，规则 11）─── */

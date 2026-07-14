@@ -9,6 +9,7 @@ import { DirectoryBrowser } from "../modals/DirectoryBrowser";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
+import { Badge } from "../ui/badge";
 import { SecurityOverview } from "./SecurityOverview";
 import { ChipInput } from "../ui/chip-input";
 
@@ -296,6 +297,9 @@ function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
     <Card className={danger ? "border-destructive/30" : ""}>
       <CardHeader>
         <CardTitle icon={<Icon name="terminal" />}>运行中的后台命令</CardTitle>
+        <p className="text-xs text-muted-foreground">
+          已结束的命令会保留 5 分钟供查看输出（看右侧“状态”区分是否还在跑），之后自动清理。
+        </p>
       </CardHeader>
       <CardContent>
         <Table>
@@ -303,8 +307,9 @@ function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
             <TableRow>
               <TableHead className="w-[80px]">PID</TableHead>
               <TableHead>命令</TableHead>
+              <TableHead className="w-[76px]">状态</TableHead>
               <TableHead className="w-[90px]">已运行</TableHead>
-              <TableHead className="w-[160px]" />
+              <TableHead className="w-[210px]" />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -315,19 +320,22 @@ function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
                   <TableCell className="truncate font-mono text-xs" title={cmd.command}>
                     {cmd.command}
                   </TableCell>
+                  <TableCell>
+                    <CommandStatusBadge running={cmd.running} exitCode={cmd.exitCode} />
+                  </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {formatUptime(cmd.elapsedSeconds)}
                   </TableCell>
                   <TableCell>
-                    <div className="flex items-center gap-1">
-                      <Button variant="ghost" size="sm" onClick={() => toggle(cmd.handle)}>
+                    <div className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
+                      <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => toggle(cmd.handle)}>
                         <Icon name={expanded.has(cmd.handle) ? "chevronUp" : "chevronDown"} size={14} />
                         {expanded.has(cmd.handle) ? "收起" : "查看输出"}
                       </Button>
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="text-destructive hover:text-destructive"
+                        className="whitespace-nowrap text-destructive hover:text-destructive"
                         onClick={() => stop(cmd.handle)}
                       >
                         <Icon name="power" size={14} />
@@ -338,7 +346,7 @@ function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
                 </TableRow>
                 {expanded.has(cmd.handle) && (
                   <TableRow className="bg-muted/5">
-                    <TableCell colSpan={4} className="p-0">
+                    <TableCell colSpan={5} className="p-0">
                       <CommandOutputPanel handle={cmd.handle} />
                     </TableCell>
                   </TableRow>
@@ -355,6 +363,28 @@ function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * 后台命令状态徽章：区分“还在跑”/“已成功结束”/“已失败结束”三种状态，
+ * 避免用户把处于 5 分钟清理宽限期内的已结束命令误以为还在运行。
+ */
+function CommandStatusBadge({
+  running,
+  exitCode,
+}: {
+  running: boolean;
+  exitCode: number | null;
+}) {
+  if (running) {
+    return <Badge variant="default">运行中</Badge>;
+  }
+  if (exitCode === 0) {
+    return <Badge variant="success">已结束</Badge>;
+  }
+  return (
+    <Badge variant="destructive">{exitCode != null ? `失败 (${exitCode})` : "已结束"}</Badge>
   );
 }
 

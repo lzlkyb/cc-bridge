@@ -38,6 +38,10 @@ pub struct RunningCommand {
     pub stderr_truncated: Arc<AtomicBool>,
     pub exit_code: Arc<Mutex<Option<i32>>>,
     pub started_at: Instant,
+    /// 进程结束那一刻定格的“已运行秒数”（由 wait 线程与 exit_code 同时写入）。
+    /// 修复：之前面板的“已运行”一直用 started_at.elapsed() 实时计算，即使进程早已结束
+    /// （v1 不自动回收注册表条目，要等 stop_command 显式移除），还会随面板轮询一直增长下去。
+    pub finished_elapsed_secs: Arc<Mutex<Option<u64>>>,
 }
 
 pub struct RuntimeStats {

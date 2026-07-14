@@ -41,17 +41,45 @@ pub async fn handle(args: AnalyzeFileArgs, state: &Arc<AppState>) -> Result<Valu
         .unwrap_or_default();
     let language = ext_to_language(&ext);
 
-    let (line_count, function_count, class_count) = if encoding != "binary" {
-        let text = String::from_utf8_lossy(&data);
-        let lines = if text.is_empty() {
-            0
+    let (line_count, function_count, class_count, analysis_note) = if encoding != "binary" {
+        // 大文件跳过 line/function/class 扫描：`String::from_utf8_lossy` 需要把整文件
+        // 解码成 String，对 GBK 老工程等大文件会瞬间吃满内存（曾对 ~500MB 文件触发
+        // OOM-killer）。对超大文件只返 encoding/language/mtime/size，远程 AI 仍能
+        // 据此判断"该用 read_files 取行范围"或"用 search_files 局部查"。
+        const LARGE_FILE_LINE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+        if metadata.len() > LARGE_FILE_LINE_SCAN_BYTES {
+            (
+                None,
+                None,
+                None,
+                format!(
+                    "file > {LARGE_FILE_LINE_SCAN_BYTES} bytes ({n} bytes): line/function/class counts skipped to avoid full-file in-memory decode; use read_files (with start/endLine) or search_files for partial inspection",
+                    n = metadata.len()
+                ),
+            )
         } else {
-            text.lines().count()
-        };
-        let (fns, cls) = count_functions_classes(&text, &language);
-        (Some(lines), Some(fns), Some(cls))
+            let text = String::from_utf8_lossy(&data);
+            let lines = if text.is_empty() {
+                0
+            } else {
+                text.lines().count()
+            };
+            let (fns, cls) = count_functions_classes(&text, &language);
+            (
+                Some(lines),
+                Some(fns),
+                Some(cls),
+                "function/class counts are heuristic regex-based estimates, not AST-accurate parsing"
+                    .to_string(),
+            )
+        }
     } else {
-        (None, None, None)
+        (
+            None,
+            None,
+            None,
+            "binary file: line/function/class counts skipped".to_string(),
+        )
     };
 
     let mtime = metadata
@@ -69,7 +97,7 @@ pub async fn handle(args: AnalyzeFileArgs, state: &Arc<AppState>) -> Result<Valu
         "lineCount": line_count,
         "functionCount": function_count,
         "classCount": class_count,
-        "analysisNote": "function/class counts are heuristic regex-based estimates, not AST-accurate parsing",
+        "analysisNote": analysis_note,
     });
 
     Ok(
@@ -185,4 +213,154 @@ fn count_functions_classes(text: &str, language: &str) -> (usize, usize) {
         .sum();
 
     (fn_count, cls_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BridgeConfig;
+    use crate::db;
+    use crate::state::AppState;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_subdir(label: &str) -> std::path::PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "cc-bridge-analyze-test-{label}-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tempdir create");
+        dir
+    }
+
+    fn make_state(f: impl FnOnce(&mut BridgeConfig)) -> (Arc<AppState>, std::path::PathBuf) {
+        let dir = unique_subdir("analyze");
+        let conn = db::init_database(Path::new(&dir)).expect("init db");
+        let mut cfg = BridgeConfig {
+            allowed_roots: vec![dir.to_string_lossy().into_owned()],
+            ..BridgeConfig::default()
+        };
+        f(&mut cfg);
+        (Arc::new(AppState::new(conn, cfg, dir.clone())), dir)
+    }
+
+    /// 小文件：line/function/class 计数全部给出，analysisNote 是正常的启发式提示。
+    #[tokio::test]
+    async fn small_file_returns_full_counts() {
+        let (state, dir) = make_state(|c| {
+            c.allowed_extensions = vec![".rs".to_string()];
+            c.whitelist_enabled = true;
+        });
+        let p = dir.join("small.rs");
+        std::fs::write(
+            &p,
+            "fn alpha() {}\nfn beta() {}\nstruct Gamma {}\nfn delta() {}\n",
+        )
+        .unwrap();
+
+        let v = handle(
+            AnalyzeFileArgs {
+                path: p.to_string_lossy().into_owned(),
+            },
+            &state,
+        )
+        .await
+        .expect("small file analyze should succeed");
+        let text = v["content"][0]["text"].as_str().unwrap();
+        let info: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(info["encoding"].as_str(), Some("utf8"));
+        assert_eq!(info["language"].as_str(), Some("rust"));
+        assert!(info["lineCount"].as_u64().unwrap() > 0, "lineCount 应 > 0");
+        assert!(
+            info["functionCount"].as_u64().unwrap() >= 3,
+            "至少 alpha/beta/delta 三个 fn"
+        );
+        assert!(
+            info["classCount"].as_u64().unwrap() >= 1,
+            "至少 Gamma struct"
+        );
+        assert!(
+            info["analysisNote"].as_str().unwrap().contains("heuristic"),
+            "小文件 analysisNote 应保持原文（heuristic 提示）"
+        );
+    }
+
+    /// 大文件（>64MB）：line/function/class 全部 None，analysisNote 明确说明跳过原因。
+    /// 这一条专盯 H1 修复：避免对大文件做全文件 in-memory decode（OOM 风险）。
+    /// 文件用稀疏写盘（64MB + 1 字节），阈值走 "> LARGE_FILE_LINE_SCAN_BYTES" 的严格大于分支。
+    #[tokio::test]
+    async fn large_file_skips_line_scan() {
+        let (state, dir) = make_state(|c| {
+            c.allowed_extensions = vec![".rs".to_string()];
+            c.whitelist_enabled = true;
+            // 把 max_file_size_bytes 调到足够大，允许 analyze 一个 64MB+ 的文件。
+            c.max_file_size_bytes = 256 * 1024 * 1024;
+        });
+        let p = dir.join("big.rs");
+        // 64MB + 100 字节（首字节 'f'，其余填充 'x' 保证从 utf8 视角合法）。
+        // 用 std::fs::File + 1MB 缓冲循环写盘，避免在 Rust 内存里一次分配 64MB Vec。
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&p)
+            .unwrap();
+        f.write_all(b"f").unwrap();
+        let buf = vec![b'x'; 1024 * 1024]; // 1MB
+        let total: u64 = 64 * 1024 * 1024 + 100;
+        let mut written: u64 = 1;
+        while written < total {
+            let chunk = buf.len().min((total - written) as usize);
+            f.write_all(&buf[..chunk]).unwrap();
+            written += chunk as u64;
+        }
+        f.sync_all().unwrap();
+        let actual = std::fs::metadata(&p).unwrap().len();
+        assert!(
+            actual > 64 * 1024 * 1024,
+            "测试 fixture 必须 > 64MB，实际 {actual}"
+        );
+
+        let v = handle(
+            AnalyzeFileArgs {
+                path: p.to_string_lossy().into_owned(),
+            },
+            &state,
+        )
+        .await
+        .expect("large file analyze should still succeed (skipping line scan, not failing)");
+        let text = v["content"][0]["text"].as_str().unwrap();
+        let info: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(
+            info["lineCount"],
+            serde_json::Value::Null,
+            "大文件 lineCount 必须为 null"
+        );
+        assert_eq!(
+            info["functionCount"],
+            serde_json::Value::Null,
+            "大文件 functionCount 必须为 null"
+        );
+        assert_eq!(
+            info["classCount"],
+            serde_json::Value::Null,
+            "大文件 classCount 必须为 null"
+        );
+        assert_eq!(info["size"].as_u64(), Some(actual), "size 必须真实回报");
+        let note = info["analysisNote"].as_str().unwrap();
+        assert!(
+            note.contains("skipped"),
+            "analysisNote 应说明跳过原因，实际：{note}"
+        );
+        assert!(
+            note.contains("read_files") || note.contains("search_files"),
+            "analysisNote 应给出替代工具建议，实际：{note}"
+        );
+    }
 }

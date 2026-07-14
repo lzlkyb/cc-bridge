@@ -84,7 +84,8 @@ curl -s "$BASE_URL/health"
 ### 3.3 响应判读（重要）
 - **协议级成功**：响应含 `result` 字段。
 - **协议级错误**：响应含 `error` 字段，如 `{"error":{"code":-32601,"message":"Method not found: ..."}}`。
-- **工具级错误**：注意——工具执行失败**不走** `error`，而是 `result.isError == true`，且 `result.content[0].text` 形如 `"Error: <原因>"`。所以判定「工具是否成功」要看：`result` 存在**且** `result.isError != true`。
+- **工具级错误**：注意——工具执行失败**不走** `error`，而是 `result.isError == true`，且 `result.content[0].text` 形如 `"Error: <原因>"`。所以判定「工具是否成功」要看：`result` 存在**且** `result.isError != true`。**但该约定仅适用于单一目标的工具**（如 `list_directory`/`analyze_file`/`run_command` 等），多文件/多项类工具见下条。
+- **多文件/多项操作类工具的失败判定（重要，2026-07-13 实测补充）**：`read_files`/`write_files`/`copy_files`/`move_files`/`delete_files` 等接受数组参数、一次调用处理多个文件/项的工具，**不走顶层 `result.isError`**，而是在 `result.content[0].text`（二次解析后的 JSON 数组）里，每个文件/项自带自己的 `ok`（bool）和 `error`（失败时）字段。例如读取白名单外路径时，实际返回的是 `[{"error":"Access denied: ...","path":"..."}]`（无 `isError` 字段），而不是 `result.isError:true` + `"Error: ..."` 字符串。**测试这类工具时必须逐项检查 `ok`/`error` 字段，单纯看顶层 `isError` 会把部分成功部分失败的批量调用误判为全面成功。**
 - **返回内容**：绝大多数工具把结果**序列化成一段 JSON 字符串**塞进 `result.content[0].text`。要拿结构化数据需**二次解析**该字符串。`notebook_edit` 成功时 `content[0].text` 就是 `"ok"`（非 JSON）。
 
 ### 3.4 Windows 路径转义（最容易踩的坑）
@@ -288,14 +289,15 @@ tool batch "$(jq -n --arg r "$SANDBOX_WIN" '{operations:[
 | H2 | 错 token → 401 | 同上但加 `-H "Authorization: Bearer wrong-token"` | HTTP `401` → PASS |
 | H3 | 正确 token → 200 | 同上但用真实 `$TOKEN` | HTTP `200` → PASS |
 | H4 | gzip 响应 | `curl -s -D - -o /dev/null -X POST "$BASE_URL/mcp" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -H "Accept-Encoding: gzip" -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` | 响应头含 `content-encoding: gzip` → PASS |
-| H5 | 路径越权被拒 | `tool read_files` 传一个**允许根目录之外**的路径（如 `C:\Windows\win.ini`）| `result.isError==true`，提示白名单/不在允许目录 → PASS |
-| H6 | 扩展名白名单被拒 | `tool write_files` 写一个**不在白名单**的扩展名（如 `x.exe`）到沙箱 | `result.isError==true`，提示扩展名不允许 → PASS |
+| H5 | 路径越权被拒 | `tool read_files` 传一个**允许根目录之外**的路径（如 `C:\Windows\win.ini`）| **注意**：`read_files` 属 3.3 节描述的多文件类工具，顶层 `result.isError` 不会为 true；应解析 `result.content[0].text`（JSON 数组），确认对应项带 `error` 字段（如 `Access denied: ... is not within any allowed root`）→ PASS |
+| H6 | 扩展名白名单被拒 | `tool write_files` 写一个**不在白名单**的扩展名（如 `x.exe`）到沙箱 | 同上——`write_files` 也属多文件类工具，应检查解析后数组对应项的 `ok:false` 且 `error` 提示扩展名不允许（如 `Extension '.exe' is not in the allowed list`），而非顶层 `isError` → PASS |
 | H7 | 限流 429（谨慎/可选）| 短时间内对 `/mcp` 连发超过 `rate_limit_max_requests`（默认 100/60s）次同 IP 请求 | 超限后出现 HTTP `429` → PASS。**注意**：默认阈值 100 较高，会打满配额影响后续用例，建议放到最后跑，或请运营者临时调低阈值；不便测则 SKIP。|
-| H8 | 只读模式（条件）| 仅当运营者开启只读模式时验证：任一写工具 → `isError` 且提示只读 | 相应判定；未开启则 SKIP |
+| H8 | 只读模式（条件）| 仅当运营者开启只读模式时验证：任一写工具 → 提示只读（单目标工具看顶层 `isError`，`write_files`/`copy_files`/`move_files`/`delete_files` 等多文件类工具看对应项的 `ok:false`+`error`，见 3.3 节） | 相应判定；未开启则 SKIP |
 
 H5 示例：
 ```bash
-tool read_files "$(jq -n '{files:["C:\\Windows\\win.ini"]}')" | jq '.result.isError, .result.content[0].text'
+tool read_files "$(jq -n '{files:["C:\\Windows\\win.ini"]}')" | jq -r '.result.content[0].text' | jq .
+# 注意：顶层 result 不带 isError，需看二次解析后数组里对应项的 error 字段
 ```
 
 ---

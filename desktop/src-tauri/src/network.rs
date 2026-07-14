@@ -42,6 +42,28 @@ fn is_usable_ipv4(ip: &str) -> bool {
     ip != "0.0.0.0" && !ip.starts_with("127.") && !ip.starts_with("169.254.")
 }
 
+/// 解析「远程客户端应当连接」的展示地址（也是可达性探针的目标地址）：
+/// - host == "0.0.0.0"(监听全部):优先用用户已选 IP(last_selected_ip 且仍在本机网卡),
+///   否则回退默认路由网卡(lan_ips[0]),避免给出用户没选的那个地址(P1)。
+/// - 指定具体 host:若该地址仍在网卡则用它,否则回退默认路由网卡。
+///
+/// build_connect_command 与 get_status 的可达性探针共用此函数,
+/// 确保「复制给用户的地址」与「探测的地址」完全一致(S1)。
+pub fn resolve_display_host(host: &str, lan_ips: &[String], selected_ip: Option<&str>) -> String {
+    if host == "0.0.0.0" {
+        selected_ip
+            .filter(|ip| lan_ips.iter().any(|x| x == ip))
+            .map(|s| s.to_string())
+            .or_else(|| lan_ips.first().cloned())
+            .unwrap_or_else(|| "127.0.0.1".into())
+    } else if lan_ips.iter().any(|x| x == host) {
+        host.to_string()
+    } else {
+        // 配置的具体地址已不可用,回退到默认路由网卡
+        lan_ips.first().cloned().unwrap_or_else(|| host.to_string())
+    }
+}
+
 /// 构造给远程服务器粘贴的连接命令。
 /// - host == "0.0.0.0"(监听全部):优先用用户已选 IP(last_selected_ip 且仍在本机网卡),
 ///   否则回退默认路由网卡(lan_ips[0]),避免给出用户没选的那个地址(P1)。
@@ -56,18 +78,7 @@ pub fn build_connect_command(
     lan_ips: &[String],
     selected_ip: Option<&str>,
 ) -> String {
-    let display_host = if host == "0.0.0.0" {
-        selected_ip
-            .filter(|ip| lan_ips.iter().any(|x| x == ip))
-            .map(|s| s.to_string())
-            .or_else(|| lan_ips.first().cloned())
-            .unwrap_or_else(|| "127.0.0.1".into())
-    } else if lan_ips.iter().any(|x| x == host) {
-        host.to_string()
-    } else {
-        // 配置的具体地址已不可用,回退到默认路由网卡
-        lan_ips.first().cloned().unwrap_or_else(|| host.to_string())
-    };
+    let display_host = resolve_display_host(host, lan_ips, selected_ip);
 
     format!(
         "claude mcp add --transport http cc-bridge http://{}:{}/mcp --header \"Authorization: Bearer {}\"",

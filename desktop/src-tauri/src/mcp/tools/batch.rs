@@ -51,11 +51,15 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
         // 复用现有分发 → 复用全部安全校验（只读模式 / WRITE_TOOLS / 路径白名单）。
         // 这是 batch 设计的核心：零新文件操作代码 = 零新攻击面。
         // Box::pin 断开与 dispatch_tool 的互递归（async fn 递归必须加间接层）。
+        let t0 = std::time::Instant::now();
         let res = Box::pin(dispatch_tool(&op.tool, op.arguments.clone(), state)).await;
+        // 子操作自身的分发耗时：修复之前全传 None 导致日志列表里 batch 相关行耗时列一律
+        // 显示“—”的问题。
+        let duration_ms = t0.elapsed().as_millis() as u64;
 
         // 逐子操作补审计：外层工具调用只记一条，写操作必须单独留痕，否则绕过审计。
-        // 子审计不单独计时（io 归并到 batch 外层审计的 ioMs，作用域穿透生效），
-        // 故 server_ms/io_ms/audit_ms/net_ms 均传 None。
+        // server_ms/io_ms/audit_ms/net_ms 仍不单独测（io 归并到 batch 外层审计的 ioMs，作用域
+        // 穿透生效），但 duration_ms 现在具体测了，日志列表不再一片“—”。
         if audit_enabled {
             let entry = match &res {
                 Ok(_) => audit::new_entry(
@@ -64,7 +68,7 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
                     true,
                     None,
                     None,
-                    None,
+                    Some(duration_ms),
                     None,
                     None,
                     None,
@@ -77,7 +81,7 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
                     false,
                     Some(e.clone()),
                     None,
-                    None,
+                    Some(duration_ms),
                     None,
                     None,
                     None,

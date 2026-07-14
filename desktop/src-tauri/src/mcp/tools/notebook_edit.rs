@@ -95,8 +95,9 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
     }
 
     // 写回，保留其余字段（metadata / nbformat 等）。
+    // 复用 edit_files::write_atomic：同目录临时文件 + rename，崩溃中途不会损坏原 .ipynb。
     let out = serde_json::to_string_pretty(&notebook).map_err(|e| format!("序列化失败: {e}"))?;
-    tokio::fs::write(&resolved, out)
+    crate::mcp::tools::edit_files::write_atomic(&resolved, out.as_bytes())
         .await
         .map_err(|e| format!("写入失败: {e}"))?;
 
@@ -287,5 +288,44 @@ mod tests {
         )
         .await;
         assert!(r.is_err(), "缺 cells 数组必须 Err");
+    }
+
+    /// 原子写回归：写成功后同目录下不应残留 `.ccbridge.tmp` 临时文件。
+    /// 之前用裸 `tokio::fs::write`，本测试对原子写路径同样要绿——确保复用
+    /// `edit_files::write_atomic` 没有引入新的清理遗漏。
+    #[tokio::test]
+    async fn atomic_write_leaves_no_tmp_residue() {
+        let (state, dir) = make_state(|c| {
+            c.allowed_extensions = vec![".ipynb".to_string()];
+            c.whitelist_enabled = true;
+        });
+        let p = dir.join("n.ipynb");
+        std::fs::write(&p, serde_json::to_string_pretty(&sample_nb()).unwrap()).unwrap();
+
+        handle(
+            NotebookEditArgs {
+                path: p.to_string_lossy().into_owned(),
+                cell: 0,
+                new_source: "print(99)".into(),
+                mode: "replace".into(),
+                cell_type: "code".into(),
+            },
+            &state,
+        )
+        .await
+        .expect("replace should succeed");
+
+        let tmp_residue: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".ccbridge.tmp"))
+            .collect();
+        assert!(
+            tmp_residue.is_empty(),
+            "原子写成功后不应残留 .ccbridge.tmp，实际：{tmp_residue:?}"
+        );
+        // 且写入内容确实生效。
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(written["cells"][0]["source"].as_str().unwrap(), "print(99)");
     }
 }

@@ -1,8 +1,9 @@
 import { useState, useMemo, Fragment } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
-import { toolLabel } from "../../lib/utils";
-import type { AuditEntry } from "../../lib/types";
+import { toolLabel, formatDurationMs } from "../../lib/utils";
+import type { AuditEntry, AuditPage } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -11,6 +12,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from ".
 import { useToast } from "../ui/toast";
 import { Combobox } from "../ui/combobox";
 import { PerfCharts } from "./PerfCharts";
+import { AuditPager } from "./AuditPager";
 
 /** 参数原始 JSON → 表格行内简短摘要。parse 失败退回原文截断。纯函数（规则 11 只在本文件复用，故留本地）。 */
 function summarizeParams(raw: string): string {
@@ -64,11 +66,19 @@ function perfSummaryLine(entries: AuditEntry[]): string {
 }
 
 export function LogTab() {
-  const { data: entries, refetch } = useQuery<AuditEntry[]>({
-    queryKey: ["auditLog"],
-    queryFn: () => invoke<AuditEntry[]>("get_audit_log", { limit: 500 }),
+  // 分页状态（策略 A：页码分页）。page/pageSize 变化即触发按页重新拉取。
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
+
+  const { data: pageData, refetch } = useQuery<AuditPage>({
+    queryKey: ["auditLog", page, pageSize],
+    queryFn: () => invoke<AuditPage>("get_audit_log", { page, page_size: pageSize }),
     refetchInterval: 10000,
   });
+
+  // 本页数据 + 总数（供分页器算总页数）。筛选仅作用于当前页 entries。
+  const entries = pageData?.entries ?? [];
+  const total = pageData?.total ?? 0;
 
   const [toolFilter, setToolFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "error">("all");
@@ -80,7 +90,13 @@ export function LogTab() {
   const handleClear = async () => {
     await invoke("clear_audit_log");
     setConfirmClear(false);
+    setPage(1);
     refetch();
+  };
+
+  const handlePageSizeChange = (s: number) => {
+    setPageSize(s);
+    setPage(1);
   };
 
   const toolNames = useMemo(() => {
@@ -298,7 +314,7 @@ export function LogTab() {
                       {entry.sourceIp ?? "—"}
                     </TableCell>
                     <TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">
-                      {entry.durationMs != null ? `${entry.durationMs}ms` : "—"}
+                      {entry.durationMs != null ? formatDurationMs(entry.durationMs) : "—"}
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
                       <Badge variant={entry.success ? "success" : "destructive"}>
@@ -318,35 +334,46 @@ export function LogTab() {
             </TableBody>
           </Table>
         )}
+        {total > 0 && (
+          <AuditPager
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onPageChange={setPage}
+            onPageSizeChange={handlePageSizeChange}
+          />
+        )}
       </CardContent>
 
-      {confirmClear && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-          onClick={() => setConfirmClear(false)}
-        >
+      {confirmClear &&
+        createPortal(
           <div
-            className="animate-scale-in mx-4 w-full max-w-md rounded-xl border bg-card p-5 shadow-lg"
-            onClick={(e) => e.stopPropagation()}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+            onClick={() => setConfirmClear(false)}
           >
-            <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
-              <Icon name="alertTriangle" size={18} />
-              确定清空全部审计日志？
-            </h4>
-            <p className="mb-4 text-sm text-muted-foreground">
-              此操作会删除本机所有历史调用记录，且<b>不可恢复</b>。
-            </p>
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => setConfirmClear(false)}>
-                取消
-              </Button>
-              <Button variant="destructive" size="sm" onClick={handleClear}>
-                确定清空
-              </Button>
+            <div
+              className="animate-scale-in mx-4 w-full max-w-md rounded-xl border bg-card p-5 shadow-lg"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
+                <Icon name="alertTriangle" size={18} />
+                确定清空全部审计日志？
+              </h4>
+              <p className="mb-4 text-sm text-muted-foreground">
+                此操作会删除本机所有历史调用记录，且<b>不可恢复</b>。
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" size="sm" onClick={() => setConfirmClear(false)}>
+                  取消
+                </Button>
+                <Button variant="destructive" size="sm" onClick={handleClear}>
+                  确定清空
+                </Button>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </Card>
   );
 }
@@ -380,7 +407,7 @@ function DetailPanel({ entry }: { entry: AuditEntry }) {
         {entry.durationMs != null && (
           <>
             <span className="text-muted-foreground">耗时</span>
-            <span>{entry.durationMs} ms</span>
+            <span>{formatDurationMs(entry.durationMs)}</span>
           </>
         )}
       </div>
@@ -445,8 +472,8 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
         耗时拆解
         <span className="ml-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold">O1</span>
         <span className="ml-auto text-[11px] font-normal text-muted-foreground">
-          服务端 <strong className="font-semibold text-foreground">{serverMs.toFixed(1)}ms</strong>
-          {entry.durationMs != null && <> · 客户端测 {entry.durationMs}ms</>}
+          服务端 <strong className="font-semibold text-foreground">{formatDurationMs(serverMs)}</strong>
+          {entry.durationMs != null && <> · 客户端测 {formatDurationMs(entry.durationMs)}</>}
         </span>
       </div>
       {/* 堆叠条 */}
@@ -458,9 +485,9 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
               key={s.label}
               className="flex items-center justify-center overflow-hidden whitespace-nowrap text-[9px] font-semibold text-white transition-all"
               style={{ width: `${pct}%`, background: s.color }}
-              title={`${s.label}: ${s.ms.toFixed(1)}ms`}
+              title={`${s.label}: ${formatDurationMs(s.ms)}`}
             >
-              {pct >= 8 ? s.ms.toFixed(0) : ""}
+              {pct >= 8 ? formatDurationMs(s.ms) : ""}
             </div>
           );
         })}
@@ -479,7 +506,7 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
                   style={{ width: `${(s.ms / maxMs) * 100}%`, background: s.color }}
                 />
               </div>
-              <span className="w-14 shrink-0 text-right font-mono font-semibold">{s.ms.toFixed(1)}ms</span>
+              <span className="w-16 shrink-0 text-right font-mono font-semibold">{formatDurationMs(s.ms)}</span>
               <span className="w-10 shrink-0 text-right text-[10px] text-muted-foreground">{pct.toFixed(1)}%</span>
             </div>
           );

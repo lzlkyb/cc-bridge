@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Icon } from "../ui/icon";
-import { toolLabel } from "../../lib/utils";
+import { toolLabel, formatDurationMs } from "../../lib/utils";
 import type { AuditEntry } from "../../lib/types";
 
 /**
@@ -167,15 +167,15 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
     else if (overall.p95 < 100) verdict = "网络 RTT 与服务端处理混合 —— 双管齐下";
     else verdict = "服务端处理偏慢 —— 优先优化高占比工具（见下）";
     const conclusion = [
-      `总体：调用 ${overall.count} 次，合计 ${fmt(overall.totalMs)}，P50 ${overall.p50.toFixed(
-        0
-      )}ms / P95 ${overall.p95.toFixed(0)}ms / P99 ${overall.p99.toFixed(0)}ms，错误率 ${overall.errorRate.toFixed(
+      `总体：调用 ${overall.count} 次，合计 ${formatDurationMs(overall.totalMs)}，P50 ${formatDurationMs(
+        overall.p50
+      )} / P95 ${formatDurationMs(overall.p95)} / P99 ${formatDurationMs(overall.p99)}，错误率 ${overall.errorRate.toFixed(
         1
       )}%。`,
       dom
         ? `耗时主因：「${toolLabel(dom.tool)}」(${dom.tool}) 占 ${(dom.share * 100).toFixed(
             1
-          )}%（${fmt(dom.sumMs)}），平均 ${dom.mean.toFixed(0)}ms、P95 ${dom.p95.toFixed(0)}ms。\n    建议：参照功能优化清单对应条目优先处理该工具。`
+          )}%（${formatDurationMs(dom.sumMs)}），平均 ${formatDurationMs(dom.mean)}、P95 ${formatDurationMs(dom.p95)}。\n    建议：参照功能优化清单对应条目优先处理该工具。`
         : "",
       `瓶颈判定：${verdict}。`,
     ]
@@ -214,9 +214,9 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
         {/* 概要统计条 */}
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           <StatTile label="调用总数" value={String(overall.count)} />
-          <StatTile label="总耗时" value={fmt(overall.totalMs)} />
-          <StatTile label="P50" value={`${overall.p50.toFixed(0)}ms`} />
-          <StatTile label="P95" value={`${overall.p95.toFixed(0)}ms`} />
+          <StatTile label="总耗时" value={formatDurationMs(overall.totalMs)} />
+          <StatTile label="P50" value={formatDurationMs(overall.p50)} />
+          <StatTile label="P95" value={formatDurationMs(overall.p95)} />
           <StatTile label="错误率" value={`${overall.errorRate.toFixed(1)}%`} />
         </div>
 
@@ -286,7 +286,7 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
               <rect x={groupW - 90} y={6} width={10} height={10} fill="#94a3b8" rx={2} />
               <text x={groupW - 76} y={15} fontSize="9" className="fill-muted-foreground">P95</text>
               <text x={0} y={166} fontSize="8" className="fill-muted-foreground">
-                纵轴峰值 {maxP95.toFixed(0)}ms
+                纵轴峰值 {formatDurationMs(maxP95)}
               </text>
             </svg>
           </Panel>
@@ -338,7 +338,7 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
                           style={{ width: `${(s.ms / max) * 100}%`, background: s.color }}
                         />
                       </div>
-                      <span className="w-16 shrink-0 text-right font-mono">{s.ms.toFixed(1)}ms</span>
+                      <span className="w-16 shrink-0 text-right font-mono">{formatDurationMs(s.ms)}</span>
                     </div>
                   );
                 })}
@@ -360,7 +360,7 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
                     style={{ width: `${(e.durationMs / maxTop) * 100}%` }}
                   />
                 </div>
-                <span className="w-20 shrink-0 text-right font-mono">{e.durationMs}ms</span>
+                <span className="w-20 shrink-0 text-right font-mono">{formatDurationMs(e.durationMs)}</span>
               </div>
             ))}
           </div>
@@ -377,10 +377,6 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
       </CardContent>
     </Card>
   );
-}
-
-function fmt(ms: number): string {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms.toFixed(0)}ms`;
 }
 
 function StatTile({ label, value }: { label: string; value: string }) {

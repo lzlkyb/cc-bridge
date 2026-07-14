@@ -5,6 +5,26 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+- 连接页新增“权限自动授权”区块（`ConnectTab.tsx`，紧跟在 `TokenManager` 之后）：一键复制命令往 Claude Code 的 `permissions.allow` 追加 cc-bridge 工具规则 + 信任该 MCP 服务器，免去每次调用都弹窗确认（无需重启会话，改完立即生效）。
+- 新增 `buildPermissionGrantCommand`（`lib/utils.ts`）：默认逐个列出 14 个文件/列表类工具规则，`run_command`/`get_command_output`/`stop_command` 三个命令执行工具需手动打开开关才会带上（改成单条 `mcp__cc-bridge__*` 通配符，同时自动覆盖未来新增工具），开关打开时显示红色警示条。
+- 权限命令用 `python3` 读-改-写，幂等去重，不依赖 `jq`（不保证所有用户环境已安装）；目标文件固定落 `settings.local.json`（项目级，不进 git）/`settings.json`（全局），与连接命令用的 `.mcp.json` 区分开——权限规则属个人本地免打扰设置，不适合和团队共享的 MCP 服务器配置混在一起。
+- 项目级且路径未填写时显示警告：命令不带 `cd` 前缀会直接用执行时终端所在目录拼相对路径，若不在目标目录下执行会悄悄写到错误位置且不报错，故加了明显警示文案。
+- `formatDurationMs`（`lib/utils.ts`）：毫秒耗时自动换算中文单位（微秒/毫秒/秒/分），避免用户看到 10000ms 这类大数字还要心算，应用到 `LogTab.tsx`/`PerfCharts.tsx` 全部耗时展示点，删除 `PerfCharts.tsx` 重复的局部 `fmt()`。
+- 安全页“运行中的后台命令”卡片新增状态徽章（`CommandStatusBadge`：运行中/已结束/失败 + 退出码），避免处于 5 分钟清理宽限期内的已结束命令被误以为还在跑，卡片标题下加一行说明文字。
+- 后台命令定时自动清理（`commands::cleanup_finished_commands`，`main.rs` 每 60s 调一次）：已结束满 5 分钟宽限期（供查看最终输出）后自动从 `running_commands` 注册表移除。
+- 后台命令数命中 5 个并发上限时优先腾位（`commands::evict_finished_commands`）：不等 5 分钟宽限期，先尝试把已结束的命令立即移除为新命令腾空位，真正 5 个都还在跑时才拒绝，不再需要用户手动 `stop_command` 才能重试。
+
+### 修复
+- **执行命令时一闪而过的空白 cmd 黑窗**：`spawn_shell` 之前只设置了 stdout/stderr 为 `Stdio::piped()`，没显式设置 stdin。cc-bridge 本身是 GUI 子系统程序没有控制台，子进程默认继承到的 stdin 句柄无效，`cmd.exe` 拿到无效句柄后会尝试自己申请控制台兼底，瞬时击穿 `CREATE_NO_WINDOW` 的抑制效果。现显式 `c.stdin(Stdio::null())`，不再给 cmd.exe 理由自己申请控制台。
+- 安全页“运行中的后台命令”卡片“已运行”一直增长：`elapsed_seconds` 之前恒用 `started_at.elapsed()` 实时计算，即使进程早已退出（v1 不自动回收注册表条目）仍会随面板轮询一直长。`RunningCommand` 新增 `finished_elapsed_secs` 字段，由 wait 线程与 `exit_code` 同时定格，面板优先用定格值。
+- **O1 耗时拆解面板长期缺失两项维度**：`auditMs`/`overheadMs` 之前用整数毫秒存储，实测典型值在微秒级（~6.8µs）会恒截断为 0，被前端 `filter(s.ms > 0)` 过滤隐藏。后端 `audit.rs`/`http.rs` 改用 `f64` 保留小数精度，两项现在能正常显示。
+- `batch` 子操作审计记录之前全部传 `None`，导致日志列表里 `batch` 相关行的耗时列一律显示“—”。`batch.rs` 现在为每个子操作单独计时。
+- 安全页“运行中的后台命令”卡片：操作列固定宽度 `w-[160px]` 小于两个按钮（查看输出/收起 + 终止）实际宽度，导致换行。加宽到 `w-[210px]`，并加 `whitespace-nowrap` 防止文字换行。
+- `buildConnectCommand`（连接页“项目级”接入命令）缺失 `--scope project` 参数：之前项目级分支不加任何 `--scope`，而 Claude Code CLI 不带 `--scope` 时默认是 `local` scope（写入 `~/.claude.json` 按项目路径存的部分），与连接页文案宣称的 `.mcp.json` 不符。导致地址变化 `IpChangedBanner` 与 Token 重生成 `TokenManager` 生成的 sed 命令（均假设 project scope = `.mcp.json`）在项目级场景下实际改不到真正生效的配置文件，表现为“复制 sed 命令执行后不生效/地址仍不对”。现显式加 `--scope project`，与 sed 命令生成逻辑的假设保持一致。
+
 ## [2.2.23] - 2026-07-12
 
 ### 亮点

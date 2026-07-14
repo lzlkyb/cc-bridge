@@ -142,7 +142,8 @@ async fn edit_single(
 }
 
 /// 原子写：同目录临时文件 + rename。rename 在同一卷上是原子操作。
-async fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
+/// `pub(crate)` 让 `notebook_edit` 也复用同一份实现，避免每个写工具各写一份原子写逻辑。
+pub(crate) async fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| "target has no parent directory".to_string())?;

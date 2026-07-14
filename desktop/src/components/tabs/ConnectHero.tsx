@@ -22,6 +22,96 @@ export function ConnectHero({
 }) {
   const running = status?.running ?? true;
 
+  // 炫酷背景：① 数据流瀑布(Matrix) + ② 粒子星座(Constellation)，纯前端 canvas，零后端依赖。
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const ctx = cv.getContext("2d");
+    if (!ctx) return;
+    const DPR = Math.min(window.devicePixelRatio || 1, 2);
+    let W = 0, H = 0, raf = 0, t = 0;
+    const GLYPHS = ["0", "1", "{", "}", "<", ">", "/", "\\", "∑", "λ", "%", "★", "·"];
+    const COLW = 15;
+    let cols = 0;
+    let drops: number[] = [];
+    const N = 44, LINK = 132;
+    let nodes: { x: number; y: number; vx: number; vy: number; r: number }[] = [];
+    const fit = () => {
+      const r = cv.getBoundingClientRect();
+      W = r.width; H = r.height;
+      cv.width = Math.max(1, W * DPR); cv.height = Math.max(1, H * DPR);
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      cols = Math.ceil(W / COLW);
+      drops = Array.from({ length: cols }, () => Math.random() * H);
+      if (nodes.length === 0) {
+        nodes = Array.from({ length: N }, () => ({
+          x: Math.random() * W, y: Math.random() * H,
+          vx: (Math.random() - 0.5) * 0.28, vy: (Math.random() - 0.5) * 0.28,
+          r: Math.random() * 1.6 + 0.8,
+        }));
+      }
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(cv);
+    const isDark = () => document.documentElement.classList.contains("dark");
+    const draw = () => {
+      t += 1;
+      ctx.clearRect(0, 0, W, H);
+      const dark = isDark();
+      const indigo = dark ? "129,140,248" : "79,70,229";
+      const teal = dark ? "45,212,191" : "13,148,136";
+      const cyan = dark ? "56,189,248" : "14,165,233";
+      ctx.font = "13px ui-monospace, Menlo, Consolas, monospace";
+      ctx.textAlign = "center";
+      // ① 数据流瀑布（打底）
+      for (let i = 0; i < cols; i++) {
+        const x = i * COLW + COLW / 2;
+        const y = drops[i];
+        ctx.fillStyle = `rgba(${teal},0.95)`;
+        ctx.fillText(GLYPHS[(Math.floor(t * 0.03) + i) % GLYPHS.length], x, y);
+        for (let k = 1; k <= 14; k++) {
+          const ty = y - k * 15;
+          if (ty < -15) continue;
+          const a = 0.42 * Math.pow(1 - k / 15, 1.4);
+          ctx.fillStyle = `rgba(${i % 2 ? indigo : cyan},${a})`;
+          ctx.fillText(GLYPHS[(Math.floor(t * 0.03) + i + k) % GLYPHS.length], x, ty);
+        }
+        drops[i] += 1.4 + (i % 3) * 0.5;
+        if (drops[i] > H + 30) drops[i] = -Math.random() * 120;
+      }
+      // ② 粒子星座（叠加，邻近粒子自动连线）
+      ctx.globalCompositeOperation = "lighter";
+      for (const n of nodes) {
+        n.x += n.vx; n.y += n.vy;
+        if (n.x < 0) n.x += W; if (n.x > W) n.x -= W;
+        if (n.y < 0) n.y += H; if (n.y > H) n.y -= H;
+      }
+      for (let i = 0; i < N; i++) {
+        for (let j = i + 1; j < N; j++) {
+          const a = nodes[i], b = nodes[j];
+          const dx = a.x - b.x, dy = a.y - b.y;
+          const d = Math.hypot(dx, dy);
+          if (d < LINK) {
+            const al = (1 - d / LINK) * 0.30;
+            ctx.strokeStyle = `rgba(${indigo},${al})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+          }
+        }
+      }
+      for (const n of nodes) {
+        ctx.fillStyle = `rgba(${teal},0.9)`;
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalCompositeOperation = "source-over";
+      if (running) raf = requestAnimationFrame(draw);
+    };
+    draw();
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  }, [running]);
+
   // A2. 指标变化弹跳 — 用 ref 追踪上次值，变化时触发 CSS 弹跳动画
   const prevRequests = useRef(status?.stats.totalRequests ?? 0);
   const prevErrors = useRef(status?.stats.totalErrors ?? 0);
@@ -73,7 +163,8 @@ export function ConnectHero({
   };
 
   return (
-    <div className={`hero flex flex-col gap-4 ${running ? "hero--live" : "hero-stopped"}`}>
+    <div className={`hero relative flex flex-col gap-4 overflow-hidden ${running ? "hero--live" : "hero-stopped"}`}>
+      <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 z-0 h-full w-full" aria-hidden="true" />
       <div className="relative z-[1] flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5 text-[15px] font-semibold">
           <span className={`h-2.5 w-2.5 rounded-full bg-white text-white ${running ? "hero-dot" : "opacity-50"}`} />

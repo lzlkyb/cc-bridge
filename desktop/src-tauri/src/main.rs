@@ -367,6 +367,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
+            // 后台命令定时清理：每 60s 扫一次，把超过 5 分钟宽限期的已结束命令从
+            // running_commands 注册表里移除（见 commands::cleanup_finished_commands）。
+            {
+                let cleanup_state = app_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        commands::cleanup_finished_commands(&cleanup_state).await;
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

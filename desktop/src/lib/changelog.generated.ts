@@ -4,6 +4,27 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.2.23",
+    date: "2026-07-12",
+    highlights: [
+      "MCP 后端分发层重构：手写 `match` 分发改为「工具注册表 + `ToolSchema` 派生宏」，17 个工具的 `inputSchema` 自动从 handler 的 Args struct 派生，新增工具零样板、协议契约与代码同源",
+      "新增 over-the-wire 集成测试：真实起 MCP server + 真实 reqwest 客户端端到端验证协议握手、17 工具分发与落盘副作用、鉴权 / 限流 / gzip / 错误码，测试套件 72 → 82 全绿、`cargo clippy --no-default-features` 零警告",
+      "连接页方案 A 完整落地：Token 内嵌复制命令、`s-sec-label` 安全分区、渐变徽章步骤、灰底命令框、步骤行 hover",
+    ],
+    items: [
+      { category: "feat", text: "工具注册表 `src/mcp/tools/registry.rs`：集中声明 17 个工具的名称 / 读写属性 / handler 分发，替代散落各处的 `match` 分支" },
+      { category: "feat", text: "`ToolSchema` 派生宏（新增 `cc-bridge-macros` proc-macro crate，仅编译期依赖、不进 exe，守二进制体积红线）：从工具 Args struct 自动生成 `inputSchema`" },
+      { category: "feat", text: "over-the-wire 集成测试模块（`http.rs`，10 个用例）：initialize 回显 / tools/list=17 / 未知方法 -32601 / 全工具分发+副作用 / 后台 run→output→stop 三元组 / auth 401·200 / 限流 429 / gzip 响应头" },
+      { category: "feat", text: "关于页 `ChangelogView` 组件 + `scripts/gen-changelog.mjs` + `src/lib/changelog.generated.ts`，更新历史从 `CHANGELOG.md` 自动同步" },
+      { category: "feat", text: "`TokenManager.tsx` 令牌管理界面" },
+      { category: "improve", text: "后端分发由 `match` 分支改为 registry 查表分发，全部 17 个工具接入注册表" },
+      { category: "improve", text: "连接页方案 A 完整落地：Token 内嵌复制命令、`s-sec-label` 分区、渐变徽章步骤、灰底命令框、步骤行 hover（PastePanda 风格优化）" },
+      { category: "improve", text: "后端性能与质量优化：`config.rs` / `audit.rs` / `db.rs` / `main.rs` 模块重构" },
+      { category: "fix", text: "`notebook_edit` 驼峰 `newSource` 字段被静默忽略：该字段此前只有 `#[serde(default)]` 缺 `#[serde(rename = \"newSource\")]`，客户端按文档传 camelCase 时单元格被清空为 `\"\"`；补 rename 后修复（此缺陷因既有单测直接构造 Rust struct、从未走 JSON 反序列化而长期未发现，恰由本次 over-the-wire 测试捕获）" },
+      { category: "improve", text: "`reqwest` / `axum` 作为 dev-dependency 支撑集成测试，`default-tls` 在 Windows 走系统 schannel，无需 openssl 编译" },
+    ],
+  },
+  {
     version: "2.2.22",
     date: "2026-07-11",
     highlights: [
@@ -106,13 +127,6 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-07-09",
     items: [
       { category: "fix", text: "同步 `Cargo.lock` 中 v2.2.5 版本号（之前 2.2.5 release 时 sync-version 触发了 lock 重生但未提交）。" },
-    ],
-  },
-  {
-    version: "2.2.5",
-    date: "2026-07-09",
-    items: [
-      { category: "fix", text: "自动更新 ACL 权限：`capabilities/default.json` 缺 `updater:default` 和 `process:default`，导致前端 `check()` 调用报 `Command plugin:updater|check not allowed by ACL`。补齐后 `check()` / `downloadAndInstall` / `relaunch` 全部放行。" },
     ],
   },
 ];

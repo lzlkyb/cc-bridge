@@ -23,15 +23,18 @@ pub struct AuditEntry {
     /// O1：实际文件读写 / 备份 / 拷贝耗时（task_local 跨工具累加）。
     #[serde(rename = "ioMs", skip_serializing_if = "Option::is_none")]
     pub io_ms: Option<u64>,
-    /// O1：审计写盘耗时（以序列化开销为代理测量）。
+    /// O1：审计写盘耗时（以序列化开销为代理测量）。带小数的毫秒（f64）——实测典型值在
+    /// 微秒级（~6.8µs），若用整数毫秒会恒截断为 0 而被前端过滤隐藏（见 O1 耗时拆解面板“审计
+    /// 写盘”一项长期不可见的问题）。
     #[serde(rename = "auditMs", skip_serializing_if = "Option::is_none")]
-    pub audit_ms: Option<u64>,
+    pub audit_ms: Option<f64>,
     /// O1：网络往返估算（O1-b 探针填；本次恒 None）。
     #[serde(rename = "netMs", skip_serializing_if = "Option::is_none")]
     pub net_ms: Option<u64>,
     /// O1：派生量 = serverMs − durationMs − auditMs（请求解析 + 响应序列化 + gzip + 线缆传输）。
+    /// 同样改为 f64：输入里的 auditMs 带小数，若继续用整数会丢精度、也容易截断成 0 被隐藏。
     #[serde(rename = "overheadMs", skip_serializing_if = "Option::is_none")]
-    pub overhead_ms: Option<u64>,
+    pub overhead_ms: Option<f64>,
     /// 会话级 cwd 持久化的 handle（run_command 开启会话时记录，便于审计追溯）。
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -80,32 +83,57 @@ pub fn close_audit_writer() {
     }
 }
 
-pub fn read_recent_entries(data_dir: &Path, limit: usize) -> Result<Vec<AuditEntry>, String> {
+/// 分页读取结果（策略 A：页码分页）。前端依 `total` / `page_size` 计算总页数。
+/// `entries` 已倒序（最新在前），`page` / `page_size` 回显请求值（已 clamp）。
+#[derive(Debug, Clone, Serialize)]
+pub struct AuditPage {
+    pub entries: Vec<AuditEntry>,
+    /// 审计日志总条数（用于前端算总页数；不受当前页大小影响）
+    pub total: usize,
+    /// 当前页（≥1，已 clamp 到合法范围）
+    pub page: usize,
+    /// 每页条数（已 clamp 到 1..=500）
+    #[serde(rename = "pageSize")]
+    pub page_size: usize,
+}
+
+/// 分页读取审计日志（策略 A：页码分页）。
+/// 读全 JSONL 文件 → `total = 行数` → 倒序（最新在前）→ `skip((page-1)*page_size).take(page_size)`。
+/// 审计量受 30 天保留限制，全读可接受；返回结构供前端算总页数并渲染分页器。
+pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<AuditPage, String> {
+    let page = page.max(1);
+    let page_size = page_size.max(1);
     let log_path = data_dir.join("audit.log");
     if !log_path.exists() {
-        return Ok(vec![]);
+        return Ok(AuditPage {
+            entries: vec![],
+            total: 0,
+            page,
+            page_size,
+        });
     }
 
     let file =
         std::fs::File::open(&log_path).map_err(|e| format!("Failed to open audit log: {e}"))?;
 
-    // E-P2-2: 用固定容量 VecDeque 避免整文件进内存，只保留最后 limit 行
-    let mut deque: std::collections::VecDeque<String> =
-        std::collections::VecDeque::with_capacity(limit);
-    for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
-        if deque.len() >= limit {
-            deque.pop_front();
-        }
-        deque.push_back(line);
-    }
-
-    let entries: Vec<AuditEntry> = deque
-        .iter()
-        .rev()
-        .filter_map(|line| serde_json::from_str(line).ok())
+    // 整文件读入并按行解析：审计量受保留期限制，全读成本可控，且分页需 total。
+    let all: Vec<AuditEntry> = std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str(&line).ok())
         .collect();
 
-    Ok(entries)
+    let total = all.len();
+    let start = (page - 1) * page_size;
+    // 倒序后取本页：最新条目在前，与 read_recent_entries 旧行为一致。
+    let entries: Vec<AuditEntry> = all.into_iter().rev().skip(start).take(page_size).collect();
+
+    Ok(AuditPage {
+        entries,
+        total,
+        page,
+        page_size,
+    })
 }
 
 /// 清空全部审计日志（删除 audit.log）。用户在日志页手动触发。
@@ -128,13 +156,14 @@ pub fn new_entry(
     duration_ms: Option<u64>,
     server_ms: Option<u64>,
     io_ms: Option<u64>,
-    audit_ms: Option<u64>,
+    audit_ms: Option<f64>,
     net_ms: Option<u64>,
     session_id: Option<String>,
 ) -> AuditEntry {
-    // overhead = server − dispatch调度 − audit写盘；缺任一分量则留 None。
+    // overhead = server − dispatch调度 − audit写盘；缺任一分量则留 None。f64 运算，不再用
+    // saturating_sub（那是整数语义），max(0.0) 处理负数四舍五入误差。
     let overhead_ms = match (server_ms, duration_ms, audit_ms) {
-        (Some(s), Some(d), Some(a)) => Some(s.saturating_sub(d + a)),
+        (Some(s), Some(d), Some(a)) => Some((s as f64 - d as f64 - a).max(0.0)),
         _ => None,
     };
     AuditEntry {
@@ -234,14 +263,36 @@ mod tests {
             Some(10),
             Some(20),
             Some(4),
-            Some(2),
+            Some(2.0),
             None,
             None,
         );
         assert_eq!(e.server_ms, Some(20));
         assert_eq!(e.io_ms, Some(4));
-        assert_eq!(e.audit_ms, Some(2));
+        assert_eq!(e.audit_ms, Some(2.0));
         // overhead = 20 − 10 − 2 = 8
-        assert_eq!(e.overhead_ms, Some(8));
+        assert_eq!(e.overhead_ms, Some(8.0));
+    }
+
+    /// O1：修复前 auditMs/overheadMs 用整数毫秒会把微秒级实测值截断为 0，导致前端
+    /// 过滤隐藏。f64 应能保留小数精度。
+    #[test]
+    fn new_entry_keeps_sub_millisecond_audit_precision() {
+        let e = new_entry(
+            "read_files",
+            "{}",
+            true,
+            None,
+            None,
+            Some(1),
+            Some(1),
+            None,
+            Some(0.0068),
+            None,
+            None,
+        );
+        assert_eq!(e.audit_ms, Some(0.0068));
+        // overhead = 1 − 1 − 0.0068，clamp 到 0
+        assert_eq!(e.overhead_ms, Some(0.0));
     }
 }

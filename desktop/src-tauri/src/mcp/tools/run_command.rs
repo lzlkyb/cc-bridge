@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::commands;
 use crate::security;
 use crate::state::{AppState, CwdSession, RunningCommand};
 
@@ -168,6 +169,11 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     drop(config);
 
     if args.background && state.running_commands.len() >= MAX_CONCURRENT_BACKGROUND {
+        // 修复：先尝试把已结束的命令腾出去（不用等 5 分钟宽限期，这里优先保新命令能启动），
+        // 真正 5 个都还在跑时才拒绝。
+        commands::evict_finished_commands(state).await;
+    }
+    if args.background && state.running_commands.len() >= MAX_CONCURRENT_BACKGROUND {
         return Err(format!(
             "后台命令数已达上限（{MAX_CONCURRENT_BACKGROUND}），请先用 stop_command 结束一些再试。"
         ));
@@ -222,6 +228,11 @@ fn spawn_shell(
     //   消除了"先 spawn 再 assign"的孙进程漏杀竞态（比原手写 win32job 更正确）。
     let mut cmd = StdCommandWrap::with_new("cmd", |c| {
         c.args(["/C", command]);
+        // 修复：显式给 stdin 一个空句柄。cc-bridge 本身是 GUI 子系统程序，没有控制台、
+        // 也就没有可继承的有效 stdin 句柄。若不显式设置（默认继承父进程句柄），
+        // cmd.exe 拿到无效句柄后会尝试自己申请一个控制台兼底，这会瞬时击穿
+        // CREATE_NO_WINDOW 的抑制效果，表现为一闪而过的空白 cmd 黑窗。
+        c.stdin(Stdio::null());
         c.stdout(Stdio::piped());
         c.stderr(Stdio::piped());
         c.current_dir(resolved_cwd);
@@ -363,16 +374,22 @@ fn spawn_background(
     let (stderr_buf, stderr_trunc) = take_reader(child.stderr().take(), max_output_bytes);
 
     let pid = child.id();
+    let started_at = Instant::now();
     // 后台任务的 wait 线程与 stop_command 共享同一份 child（Arc<Mutex>）：
     // wait 线程持有它调 wait() 更新 exit_code；stop_command 持有它调 start_kill() 杀整树。
     let child = Arc::new(StdMutex::new(child));
     let child_for_wait = child.clone();
     let exit_code: Arc<AsyncMutex<Option<i32>>> = Arc::new(AsyncMutex::new(None));
     let exit_code_clone = exit_code.clone();
+    // 修复：进程结束时同步定格“已运行秒数”，避免面板在进程早已退出后还用 started_at.elapsed() 实时计算，导致时长一直增长。
+    let finished_elapsed: Arc<AsyncMutex<Option<u64>>> = Arc::new(AsyncMutex::new(None));
+    let finished_elapsed_clone = finished_elapsed.clone();
     std::thread::spawn(move || {
         let mut c = child_for_wait.lock().unwrap();
         if let Ok(status) = c.wait() {
+            let elapsed_secs = started_at.elapsed().as_secs();
             *exit_code_clone.blocking_lock() = status.code();
+            *finished_elapsed_clone.blocking_lock() = Some(elapsed_secs);
         }
     });
 
@@ -390,7 +407,8 @@ fn spawn_background(
             stdout_truncated: stdout_trunc,
             stderr_truncated: stderr_trunc,
             exit_code,
-            started_at: Instant::now(),
+            started_at,
+            finished_elapsed_secs: finished_elapsed,
         },
     );
 
