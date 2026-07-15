@@ -3,6 +3,7 @@ import { invoke } from "../../lib/tauri";
 import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
 import { APP_INFO } from "../../lib/about";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
+import { Alert } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
@@ -108,6 +109,14 @@ function NetworkGroup({
           {restarted && <span className="text-xs text-success">已保存并重启 ✓</span>}
         </div>
         {invalid && <p className="text-xs text-destructive">端口范围 1 – 65535</p>}
+        {status?.firewallEnabled === false && (
+          <Alert variant="warning">
+            <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
+            <span>
+              <b>检测到 Windows 防火墙已关闭。</b>远程仍可连入，但本机缺少网络层防护，建议仅在可信网络下保持此状态，并尽快重新启用防火墙。
+            </span>
+          </Alert>
+        )}
         <div className="warn-box flex items-start gap-2.5 rounded-lg p-3">
           <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
           <p className="text-[11px] leading-relaxed">

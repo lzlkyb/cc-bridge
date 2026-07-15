@@ -65,6 +65,15 @@ function HeaderImpl({
   // 这正是此前"服务显示运行却连不上"的真相——用醒目的红态暴露出来，绝不淹没。
   const linkDown = !!status && !!running && (status.ipChanged || status.remoteReachable === false);
 
+  // 防火墙未放行：本机服务正常，但 Windows 防火墙挡住了远程入站（探针盲点的诚实降级）。
+  // 仅当「服务在跑 + 链路未中断 + 防火墙开 + 7823 未放行」时成立，橙态，绝不谎报绿色。
+  const firewallBlocked =
+    !!status &&
+    running &&
+    !linkDown &&
+    status.firewallEnabled === true &&
+    status.firewallPortOpen === false;
+
   // E-P2-9: useMemo 避免每渲染拼接 className 三元链
   const pillClassName = useMemo(
     () =>
@@ -75,9 +84,11 @@ function HeaderImpl({
           ? " border-border bg-muted text-muted-foreground"
           : linkDown
           ? " border-destructive/30 bg-destructive/10 text-destructive"
+          : firewallBlocked
+          ? " border-warning/30 bg-warning/10 text-warning"
           : " border-success/30 bg-success/10 text-success"
       }`,
-    [startupError, running, linkDown],
+    [startupError, running, linkDown, firewallBlocked],
   );
   const pillText = !status
     ? "连接中"
@@ -87,6 +98,8 @@ function HeaderImpl({
     ? "已停止"
     : linkDown
     ? "远程连接中断"
+    : firewallBlocked
+    ? "远程未确认连接"
     : "已连接";
 
   return (
@@ -99,14 +112,16 @@ function HeaderImpl({
         {/* 运行状态胶囊：启动失败=红, 运行=绿+脉冲, 停止=灰 (A3) */}
         <span
           className={pillClassName}
-          title={startupError ?? (linkDown ? "网络地址已失效，远程连接中断" : undefined)}
+          title={startupError ?? (linkDown ? "网络地址已失效，远程连接中断" : firewallBlocked ? "本机服务正常，但防火墙可能拦截远程入站，远程可能无法连入" : undefined)}
           {...(startupError && onNavigate
             ? { onClick: () => onNavigate("settings"), style: { cursor: "pointer" } }
             : linkDown && onNavigate
             ? { onClick: () => onNavigate("connect"), style: { cursor: "pointer" } }
+            : firewallBlocked && onNavigate
+            ? { onClick: () => onNavigate("connect"), style: { cursor: "pointer" } }
             : {})}
         >
-          <span className={`h-1.5 w-1.5 rounded-full bg-current ${running && !startupError && !linkDown ? "p-dot" : ""}`} />
+          <span className={`h-1.5 w-1.5 rounded-full bg-current ${running && !startupError && !linkDown && !firewallBlocked ? "p-dot" : ""}`} />
           {pillText}
         </span>
 

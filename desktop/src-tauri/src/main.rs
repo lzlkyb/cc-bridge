@@ -379,6 +379,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
+            // 防火墙状态定时刷新：初次立即检查一次（保证首屏拿到真实状态），之后每 5 分钟复查，
+            // 覆盖「用户在应用运行中开关防火墙 / 增删规则」的场景。get_status 读的是缓存，
+            // 不在此间隔内反复跑 netsh（守规则8 的轻量原则）。
+            {
+                let fw_state = app_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+                    {
+                        let port = fw_state.config.read().await.port;
+                        crate::firewall::refresh_cache(&fw_state, port).await;
+                    }
+                    loop {
+                        ticker.tick().await;
+                        let port = fw_state.config.read().await.port;
+                        crate::firewall::refresh_cache(&fw_state, port).await;
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -393,6 +412,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::clear_audit_log,
             commands::get_lan_ips,
             commands::set_selected_ip,
+            commands::refresh_firewall,
+            commands::open_firewall_port,
             commands::get_autostart,
             commands::set_autostart,
             commands::list_running_commands,
@@ -401,6 +422,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::start_update,
             commands::export_config,
             commands::import_config,
+            commands::restore_file,
+            commands::get_file_diff,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

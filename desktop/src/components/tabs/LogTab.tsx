@@ -1,9 +1,9 @@
-import { useState, useMemo, Fragment } from "react";
+import { useState, useMemo, Fragment, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toolLabel, formatDurationMs } from "../../lib/utils";
-import type { AuditEntry, AuditPage } from "../../lib/types";
+import type { AuditEntry, AuditPage, FileDiffResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
@@ -86,6 +86,9 @@ export function LogTab() {
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [showPerf, setShowPerf] = useState(false);
+  // 一键回滚 / 变更 Diff 的弹窗状态（指向被点击的审计条目）。
+  const [diffEntry, setDiffEntry] = useState<AuditEntry | null>(null);
+  const [restoreEntry, setRestoreEntry] = useState<AuditEntry | null>(null);
 
   const handleClear = async () => {
     await invoke("clear_audit_log");
@@ -325,7 +328,11 @@ export function LogTab() {
                   {expandedRow === i && (
                     <TableRow key={`${i}-detail`}>
                       <TableCell colSpan={6} className="bg-muted/30">
-                        <DetailPanel entry={entry} />
+                        <DetailPanel
+                          entry={entry}
+                          onViewDiff={setDiffEntry}
+                          onRestore={setRestoreEntry}
+                        />
                       </TableCell>
                     </TableRow>
                   )}
@@ -374,12 +381,30 @@ export function LogTab() {
           </div>,
           document.body,
         )}
+      {diffEntry &&
+        createPortal(
+          <DiffModal entry={diffEntry} onClose={() => setDiffEntry(null)} />,
+          document.body,
+        )}
+      {restoreEntry &&
+        createPortal(
+          <RestoreConfirmDialog entry={restoreEntry} onClose={() => setRestoreEntry(null)} />,
+          document.body,
+        )}
     </Card>
   );
 }
 
-/** 展开行：结构化 key-value + 参数高亮代码块 + 复制 + 错误块。 */
-function DetailPanel({ entry }: { entry: AuditEntry }) {
+/** 展开行：结构化 key-value + 参数高亮代码块 + 复制 + 错误块 + 一键回滚 / 变更 Diff 入口。 */
+function DetailPanel({
+  entry,
+  onViewDiff,
+  onRestore,
+}: {
+  entry: AuditEntry;
+  onViewDiff: (e: AuditEntry) => void;
+  onRestore: (e: AuditEntry) => void;
+}) {
   const [copied, setCopied] = useState(false);
   const { toast } = useToast();
   const copy = async () => {
@@ -390,6 +415,23 @@ function DetailPanel({ entry }: { entry: AuditEntry }) {
   };
   return (
     <div className="space-y-3 py-1">
+      {entry.backupPath && entry.targetPath && (
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => onViewDiff(entry)}>
+            <Icon name="history" size={14} />
+            查看变更
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-destructive hover:text-destructive"
+            onClick={() => onRestore(entry)}
+          >
+            <Icon name="restore" size={14} />
+            {entry.tool === "delete_files" ? "恢复被删文件" : "一键还原"}
+          </Button>
+        </div>
+      )}
       <div className="grid grid-cols-[76px_1fr] gap-x-3 gap-y-1 text-xs">
         <span className="text-muted-foreground">时间</span>
         <span className="break-all">{new Date(entry.timestamp).toLocaleString()}</span>
@@ -513,5 +555,174 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
         })}
       </div>
     </div>
+  );
+}
+
+/** 变更 Diff 弹窗：调 get_file_diff，行级红绿高亮展示备份（前）vs 当前文件（后）。
+ *  大文件 / 二进制 / 行数过多触发护栏，仅提示可还原、不展示全量 diff。 */
+function DiffModal({ entry, onClose }: { entry: AuditEntry; onClose: () => void }) {
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [result, setResult] = useState<FileDiffResult | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await invoke<FileDiffResult>("get_file_diff", {
+          backup_path: entry.backupPath,
+          target_path: entry.targetPath,
+        });
+        if (!cancelled) setResult(r);
+      } catch (e) {
+        if (!cancelled) setErr(String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [entry]);
+
+  const fileName = entry.targetPath?.split(/[\\/]/).pop() ?? "文件";
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="animate-scale-in flex h-[80vh] w-full max-w-3xl flex-col rounded-xl border bg-card shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Icon name="history" size={16} className="text-primary" />
+            变更 Diff
+            <span className="font-mono text-xs font-normal text-muted-foreground">{fileName}</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="grid h-7 w-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted"
+          >
+            <Icon name="close" size={14} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto p-3">
+          {loading && (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              加载中…
+            </div>
+          )}
+          {err && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive break-all">
+              {err}
+            </div>
+          )}
+          {result && result.guard && (
+            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+              {result.guard}
+              <span className="ml-1 font-mono text-muted-foreground">
+                （{result.beforeLines} → {result.afterLines} 行）
+              </span>
+            </div>
+          )}
+          {result && !result.guard && (
+            <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-[12px] leading-relaxed text-background">
+              {result.lines.map((l, i) => (
+                <div
+                  key={i}
+                  className={
+                    l.kind === "removed"
+                      ? "bg-red-500/25"
+                      : l.kind === "added"
+                        ? "bg-green-500/25"
+                        : ""
+                  }
+                >
+                  {l.text}
+                </div>
+              ))}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** 一键还原确认弹窗：调 restore_file，把备份写回目标（删除类=恢复被删文件）。 */
+function RestoreConfirmDialog({ entry, onClose }: { entry: AuditEntry; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  if (!entry.backupPath || !entry.targetPath) return null;
+  const isDelete = entry.tool === "delete_files";
+
+  const onConfirm = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await invoke("restore_file", {
+        backup_path: entry.backupPath,
+        target_path: entry.targetPath,
+      });
+      toast(isDelete ? "已恢复被删文件" : "已还原到操作前版本", "success");
+      onClose();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="animate-scale-in mx-4 w-full max-w-md rounded-xl border bg-card p-5 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
+          <Icon name="restore" size={18} />
+          {isDelete ? "恢复被删文件？" : "确认回滚到操作前？"}
+        </h4>
+        <p className="mb-3 text-sm text-muted-foreground">
+          {isDelete
+            ? "将从备份中恢复该文件到被删除前的版本。"
+            : "将把目标文件恢复到本次操作之前的版本。还原前会自动再生成一份备份，可再次撤销。"}
+        </p>
+        <div className="mb-4 space-y-1.5 rounded-md bg-muted/30 p-3 text-xs">
+          <div className="flex gap-2">
+            <span className="w-12 shrink-0 text-muted-foreground">目标</span>
+            <code className="break-all font-mono">{entry.targetPath}</code>
+          </div>
+          <div className="flex gap-2">
+            <span className="w-12 shrink-0 text-muted-foreground">备份</span>
+            <code className="break-all font-mono">{entry.backupPath}</code>
+          </div>
+        </div>
+        {err && (
+          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive break-all">
+            {err}
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
+            取消
+          </Button>
+          <Button variant="destructive" size="sm" onClick={onConfirm} disabled={busy}>
+            {busy && <Icon name="spinner" size={14} className="animate-spin" />}
+            {isDelete ? "恢复文件" : "确认还原"}
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

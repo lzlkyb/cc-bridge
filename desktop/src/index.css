@@ -267,7 +267,7 @@ body {
 /* A. Hero 渐变头卡 */
 .hero {
   position: relative; overflow: hidden;
-  border-radius: 14px; padding: 20px 22px; color: var(--hero-text);
+  border-radius: 14px; padding: 16px 20px; color: var(--hero-text);
   background: var(--hero-gradient);
   box-shadow: 0 12px 32px var(--hero-shadow);
   transition: background 0.5s ease, box-shadow 0.5s ease;
@@ -282,7 +282,7 @@ body {
 .hero-dot { animation: pulse-ring 2s infinite; }
 .hero-metric {
   background: var(--hero-metric-bg); border: 1px solid var(--hero-metric-border);
-  border-radius: 11px; padding: 12px 13px; backdrop-filter: blur(4px);
+  border-radius: 11px; padding: 9px 10px; backdrop-filter: blur(4px);
   transition: background 0.4s ease, border-color 0.4s ease;
 }
 .hero-addr {
@@ -354,6 +354,31 @@ body {
 }
 .hero-uptime--live {
   animation: uptime-flash 1s ease-in-out infinite;
+}
+
+/* ── 方案 A 分组布局（运行卡指标重排）── */
+/* Hero 内的分区小标题：白字变体（覆盖卡片场景的深色 .s-sec-label）*/
+.hero-sec-label {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.6px; color: rgba(255, 255, 255, 0.72); margin-bottom: 5px;
+}
+/* 概览卡（成功率）略降透明底，与主指标卡区分 */
+.hero-overview { background: rgba(255, 255, 255, 0.10); }
+/* 指标数字字号分级 */
+.hero-val-xl { font-size: 30px; font-weight: 800; line-height: 1; letter-spacing: -0.03em; }
+.hero-val-lg { font-size: 28px; font-weight: 800; line-height: 1.05; letter-spacing: -0.02em; }
+.hero-val-sm { font-size: 18px; font-weight: 800; line-height: 1.1; }
+/* 治理条 / 热门工具的胶囊 */
+.hero-pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px; font-size: 11px;
+  background: rgba(255, 255, 255, 0.18); border: 1px solid rgba(255, 255, 255, 0.28);
+  color: #fff; white-space: nowrap;
+}
+.hero-pill b { font-weight: 800; }
+/* 热门工具胶囊：青色变体，与「安全治理」胶囊区分 */
+.hero-pill.tool {
+  background: rgba(14, 165, 233, 0.22); border-color: rgba(14, 165, 233, 0.4);
 }
 
 /* F. 统计/hero 渐变彩条、渐变分隔线 */

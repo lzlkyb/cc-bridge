@@ -10,7 +10,28 @@ export interface StatusResponse {
   auditRetentionDays: number;
   host: string;
   port: number;
-  stats: { totalRequests: number; totalErrors: number };
+  stats: {
+    totalRequests: number;
+    totalErrors: number;
+    /** 实时成功率（%），累计 = (total-errors)/total*100 */
+    successRate: number;
+    /** 请求速率：近 60s 窗口内请求数 */
+    requestsPerMin: number;
+    /** 平均耗时（ms） */
+    avgLatencyMs: number;
+    /** P95 耗时（ms） */
+    p95LatencyMs: number;
+    /** 限流命中次数（429） */
+    rateLimitHits: number;
+    /** 鉴权拒绝次数（401） */
+    authDenies: number;
+    /** 审计落盘条数 */
+    auditCount: number;
+    /** 当前活跃后台命令数 */
+    activeCommands: number;
+    /** 热门工具 Top3 */
+    topTools: { name: string; count: number }[];
+  };
   connectCommand: string;
   token: string;
   whitelistEnabled: boolean;
@@ -30,6 +51,11 @@ export interface StatusResponse {
   scope: string | null;
   /** A3 修复：启动期错误（如端口被占用）。null = 正常 */
   startupError: string | null;
+  /** 防火墙状态（仅 Windows 真实查询，其它平台为 null）。
+   *  firewallEnabled：防火墙是否开启；firewallPortOpen：7823/TCP 入站是否放行。
+   *  null 表示无法判断（非 Windows / 查询失败）。 */
+  firewallEnabled: boolean | null;
+  firewallPortOpen: boolean | null;
 }
 
 export interface ConfigPatch {
@@ -74,6 +100,24 @@ export interface AuditEntry {
   auditMs?: number; // 审计写盘耗时
   netMs?: number; // 网络往返估算（O1-b 探针，可选）
   overheadMs?: number; // 请求解析 + 响应序列化 + 线缆传输
+  /** 关联备份：本操作前生成的 .bak 绝对路径（写/删类操作且备份开启时存在），供一键回滚 / Diff。 */
+  backupPath?: string;
+  /** 关联备份：被备份/覆盖的目标文件绝对路径，供回滚写回定位。 */
+  targetPath?: string;
+}
+
+/** get_file_diff 返回的单行 diff（行级红绿高亮）。 */
+export interface DiffLine {
+  kind: "context" | "added" | "removed";
+  text: string;
+}
+
+/** get_file_diff 返回的变更 Diff 结果。guard 非空表示触发护栏（仅可还原、不预览全量 diff）。 */
+export interface FileDiffResult {
+  lines: DiffLine[];
+  guard: string | null;
+  beforeLines: number;
+  afterLines: number;
 }
 
 export interface RunningCommandInfo {

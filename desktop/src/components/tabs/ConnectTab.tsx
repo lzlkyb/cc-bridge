@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, memo } from "react";
+import { useState, useEffect, useMemo, memo, useRef } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import { APP_INFO } from "../../lib/about";
@@ -37,6 +37,25 @@ function ConnectTabImpl({
   const [permCopied, setPermCopied] = useState(false);
   const lanIps = status?.lanIps ?? [];
   const { toast } = useToast();
+
+  // 链路是否真正中断（红态）：服务在跑，但地址变了或探针不通（远程连不回本机）。
+  // 防火墙告警块在链路未中断时才显示——红态优先于橙态，避免叠加制造混乱（设计稿规则）。
+  const linkDown =
+    !!status && !!status.running && (status.ipChanged || status.remoteReachable === false);
+
+  // 地址变化 banner 显示期间，固化「之前使用的地址」，避免选新地址落盘后
+  // lastSelectedIp 变成新地址、把"之前使用"误显示为刚选的新地址（残留 bug 修复）。
+  const prevIpRef = useRef<string | null>(null);
+  useEffect(() => {
+    const show = !!status?.ipChanged || ipResolvedByUser;
+    if (show && prevIpRef.current == null) {
+      prevIpRef.current =
+        status?.lastSelectedIp ??
+        (status?.host && status.host !== "0.0.0.0" ? status.host : null);
+    } else if (!show) {
+      prevIpRef.current = null;
+    }
+  }, [status?.ipChanged, status?.lastSelectedIp, ipResolvedByUser, status?.host]);
 
   // 监听全网卡时才需要选 IP；host 指定了具体地址就用它
   const listenAll = status?.host === "0.0.0.0";
@@ -105,13 +124,22 @@ function ConnectTabImpl({
 
   return (
     <div className="space-y-3">
+      {/* 防火墙告警块：仅 Windows 防火墙开 + 未放行 7823，且链路未真正中断（红态优先）。
+          诚实暴露本机探针对远程入站拦截的盲点——不再谎报绿色「已连接」。 */}
+      {status?.running &&
+        status.firewallEnabled === true &&
+        status.firewallPortOpen === false &&
+        !linkDown && (
+          <FirewallAlertBlock port={status.port} onRefresh={onRefresh} />
+        )}
+
       {/* IP 变化醒目提示：上次确认的 IP 不在本机网卡列表中了（VPN 重连等），引导用户选新地址。
           方案 Q：ipChanged 被乐观清除后，靠 ipResolvedByUser 兜底保持可见，直到用户复制远程更新命令。 */}
       {(status?.ipChanged || ipResolvedByUser) && (
         <IpChangedBanner
           lanIps={lanIps}
           selectedIp={selectedIp}
-          previousIp={status?.lastSelectedIp ?? (status?.host && status.host !== "0.0.0.0" ? status.host : null)}
+          previousIp={prevIpRef.current}
           port={status?.port ?? 7823}
           scope={(status?.scope ?? null) as McpScope | null}
           projectPath={projectPath}
@@ -383,6 +411,85 @@ function IpChangedBanner({
           在下方选一个新地址后，这里会自动生成「原地更新 IP」的远程命令。
         </p>
       )}
+    </div>
+  );
+}
+
+/** 防火墙规则级告警块：仅「防火墙开 + 未放行 7823」时渲染。
+ * 提供「一键开放（UAC 提权）」+「手动 netsh 命令」+「远程自检命令」，并支持「重新检查」。 */
+function FirewallAlertBlock({
+  port,
+  onRefresh,
+}: {
+  port: number;
+  onRefresh: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
+
+  const copyCmd = (cmd: string, label: string) => {
+    if (!cmd) return;
+    navigator.clipboard.writeText(cmd);
+    toast(`${label}已复制到剪贴板`, "success");
+  };
+
+  const open = async () => {
+    setBusy(true);
+    try {
+      await invoke("open_firewall_port");
+      toast("已在 UAC 弹窗中请求开放端口 " + port, "success");
+      onRefresh();
+    } catch (e) {
+      // 用户取消 UAC 或提权失败：明确提示，不静默
+      toast(`开放失败：${String(e)}`, "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recheck = async () => {
+    try {
+      await invoke("refresh_firewall");
+      onRefresh();
+      toast("已重新检查防火墙状态", "success");
+    } catch (e) {
+      toast(`检查失败：${String(e)}`, "error");
+    }
+  };
+
+  const manualCmd = `netsh advfirewall firewall add rule name=cc-bridge dir=in action=allow protocol=TCP localport=${port}`;
+  const healthCmd = `curl http://<本机IP>:${port}/health`;
+
+  return (
+    <div className="animate-fade-in space-y-3 rounded-lg border border-warning/40 bg-warning/10 p-4">
+      <div className="flex items-start gap-2.5">
+        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-warning/15 text-warning">
+          <Icon name="shield" size={15} />
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-warning">远程可能无法连入：防火墙未放行端口 {port}</p>
+          <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+            本机 Windows 防火墙已开启，但未对 <code className="rounded bg-background px-1">{port}/TCP</code> 添加入站允许规则。远程服务器上的 Claude Code 发来的入站请求会被拦截，导致连接失败（即使本地服务正常运行）。
+          </p>
+        </div>
+      </div>
+      <div className="pl-[38px] flex flex-wrap items-center gap-2">
+        <Button variant="default" size="sm" onClick={open} isLoading={busy} loadingText="请确认 UAC…">
+          <Icon name="shield" size={14} />
+          一键开放防火墙端口（{port}）
+        </Button>
+        <Button variant="outline" size="sm" onClick={recheck} disabled={busy}>
+          <Icon name="refresh" size={14} />
+          重新检查
+        </Button>
+        <span className="text-xs text-muted-foreground">点击后弹出系统 UAC 授权框，确认即写入入站规则。</span>
+      </div>
+      <div className="pl-[38px] space-y-1.5">
+        <p className="text-xs text-muted-foreground">或手动在管理员终端执行：</p>
+        <CommandBlock command={manualCmd} copied={false} onCopy={() => copyCmd(manualCmd, "命令")} />
+        <p className="text-xs text-muted-foreground">在远程服务器上验证连通（返回 {"{"}&quot;status&quot;:&quot;ok&quot;{"}"} 即可用该 IP）：</p>
+        <CommandBlock command={healthCmd} copied={false} onCopy={() => copyCmd(healthCmd, "命令")} />
+      </div>
     </div>
   );
 }

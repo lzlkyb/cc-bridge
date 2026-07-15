@@ -154,6 +154,8 @@ async fn auth_middleware(
     let provided_token = auth_header.strip_prefix("Bearer ").unwrap_or("");
 
     if !auth::verify_token(provided_token, &expected_token) {
+        // 方案 A：鉴权拒绝（401）= 拒绝未授权访问，计入治理指标。
+        state.inc_auth_denies();
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .body(Body::from(r#"{"error":"Unauthorized"}"#))
@@ -175,6 +177,8 @@ async fn auth_middleware(
             let timestamps = entry.value_mut();
             timestamps.retain(|t| now.duration_since(*t) < window_duration);
             if timestamps.len() >= max_req as usize {
+                // 方案 A：限流命中（429）计入治理指标。
+                state.inc_rate_limit_hits();
                 return Response::builder()
                     .status(StatusCode::TOO_MANY_REQUESTS)
                     .body(Body::from(r#"{"error":"Rate limit exceeded"}"#))
@@ -198,6 +202,8 @@ async fn mcp_handler(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     state.increment_requests().await;
+    // 方案 A：记录请求到达时间（rpm 统计）。
+    state.record_request_time();
 
     let source_ip = addr.ip().to_string();
 
@@ -272,84 +278,92 @@ pub async fn handle_tools_call(
 ) -> Json<serde_json::Value> {
     let t_recv = std::time::Instant::now();
     crate::timing::with_io_timer(async move {
-        let tool_name = body
-            .pointer("/params/name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("");
-        let arguments = body
-            .pointer("/params/arguments")
-            .cloned()
-            .unwrap_or(json!({}));
+        crate::audit::with_op_backup(async {
+            let tool_name = body
+                .pointer("/params/name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            let arguments = body
+                .pointer("/params/arguments")
+                .cloned()
+                .unwrap_or(json!({}));
 
-        let start = std::time::Instant::now();
-        let result = dispatch_tool(tool_name, arguments.clone(), &state).await;
-        let elapsed = start.elapsed().as_millis() as u64;
-        // 仅 run_command 在开启会话持久化时会携带 sessionId，用于审计追溯。
-        let session_id = if tool_name == "run_command" {
-            result
-                .as_ref()
-                .ok()
-                .and_then(extract_run_command_session_id)
-        } else {
-            None
-        };
+            let start = std::time::Instant::now();
+            let result = dispatch_tool(tool_name, arguments.clone(), &state).await;
+            let elapsed = start.elapsed().as_millis() as u64;
+            // 方案 A：记录实时耗时 + 工具调用计数（热门工具 Top3 用）。
+            state.record_latency(elapsed);
+            state.record_tool(tool_name);
+            // 仅 run_command 在开启会话持久化时会携带 sessionId，用于审计追溯。
+            let session_id = if tool_name == "run_command" {
+                result
+                    .as_ref()
+                    .ok()
+                    .and_then(extract_run_command_session_id)
+            } else {
+                None
+            };
 
-        // I/O 耗时（task_local 跨各工具累加）；必须在 with_io_timer 作用域内取。
-        let io_ms = crate::timing::take_io();
-        // 服务端总耗时（不含审计写盘；审计耗时单独记）。
-        let server_ms_dispatch = t_recv.elapsed().as_millis() as u64;
+            // I/O 耗时（task_local 跨各工具累加）；必须在 with_io_timer 作用域内取。
+            let io_ms = crate::timing::take_io();
+            // 服务端总耗时（不含审计写盘；审计耗时单独记）。
+            let server_ms_dispatch = t_recv.elapsed().as_millis() as u64;
 
-        let audit_enabled = state.config.read().await.audit_enabled;
+            let audit_enabled = state.config.read().await.audit_enabled;
 
-        let response = match result {
-            Ok(content) => {
-                if audit_enabled {
-                    write_audit_for_call(
-                        &state.data_dir,
-                        tool_name,
-                        &arguments,
-                        true,
-                        None,
-                        Some(source_ip.clone()),
-                        elapsed,
-                        server_ms_dispatch,
-                        io_ms,
-                        session_id.clone(),
-                    );
-                }
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "id": body.get("id"),
-                    "result": content
-                }))
-            }
-            Err(e) => {
-                state.increment_errors().await;
-                if audit_enabled {
-                    write_audit_for_call(
-                        &state.data_dir,
-                        tool_name,
-                        &arguments,
-                        false,
-                        Some(e.clone()),
-                        Some(source_ip.clone()),
-                        elapsed,
-                        server_ms_dispatch,
-                        io_ms,
-                        session_id.clone(),
-                    );
-                }
-                Json(json!({
-                    "jsonrpc": "2.0",
-                    "id": body.get("id"),
-                    "result": {
-                        "isError": true,
-                        "content": [{ "type": "text", "text": format!("Error: {}", e) }]
+            let response = match result {
+                Ok(content) => {
+                    if audit_enabled {
+                        write_audit_for_call(
+                            &state.data_dir,
+                            tool_name,
+                            &arguments,
+                            true,
+                            None,
+                            Some(source_ip.clone()),
+                            elapsed,
+                            server_ms_dispatch,
+                            io_ms,
+                            session_id.clone(),
+                        );
+                        state.inc_audit_count();
                     }
-                }))
-            }
-        };
-        response
+                    Json(json!({
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": content
+                    }))
+                }
+                Err(e) => {
+                    state.increment_errors().await;
+                    if audit_enabled {
+                        write_audit_for_call(
+                            &state.data_dir,
+                            tool_name,
+                            &arguments,
+                            false,
+                            Some(e.clone()),
+                            Some(source_ip.clone()),
+                            elapsed,
+                            server_ms_dispatch,
+                            io_ms,
+                            session_id.clone(),
+                        );
+                        state.inc_audit_count();
+                    }
+                    Json(json!({
+                        "jsonrpc": "2.0",
+                        "id": body.get("id"),
+                        "result": {
+                            "isError": true,
+                            "content": [{ "type": "text", "text": format!("Error: {}", e) }]
+                        }
+                    }))
+                }
+            };
+            response
+        })
+        .await
     })
     .await
 }
@@ -398,6 +412,11 @@ fn write_audit_for_call(
     let mut entry = entry;
     entry.server_ms = Some(server_ms);
     entry.audit_ms = Some(audit_ms);
+    // 关联备份：取出本操作的备份/目标路径写入审计条目（一键回滚 / Diff 用）。
+    if let Some((bp, tp)) = crate::audit::take_op_backup() {
+        entry.backup_path = bp.map(|p| p.to_string_lossy().into_owned());
+        entry.target_path = tp.map(|p| p.to_string_lossy().into_owned());
+    }
     // 同步落盘：单条写盘（BufWriter append + writeln + flush，稳态不重开）约 6.8µs，
     // 远小于 spawn_blocking 的跨线程调度开销（~20-50µs），对微秒级小 IO 异步是负优化。
     // 且同步写建立 happens-before：请求返回时审计必然已落盘，消除"响应后立即读 audit.log"
@@ -797,6 +816,50 @@ mod over_wire_tests {
         );
         assert!(std::path::Path::new(&wp).exists(), "write_files 应创建文件");
 
+        // 4b) write_files —— encoding 参数必须真正生效（gbk 应按 GBK 字节写盘，而非 UTF-8）
+        let gpk = p("gbk_written.txt");
+        assert_dispatch_ok(
+            &rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "write_files", "arguments": { "files": [{ "path": gpk, "content": "中文内容", "encoding": "gbk" }] } }),
+            )
+            .await,
+        );
+        let gbytes = std::fs::read(&gpk).unwrap();
+        assert!(
+            std::str::from_utf8(&gbytes).is_err(),
+            "gbk 编码文件不应是合法 UTF-8"
+        );
+        let (decoded, _, _) = encoding_rs::GBK.decode(&gbytes);
+        assert_eq!(
+            decoded.as_ref(),
+            "中文内容",
+            "gbk 写盘后应能用 GBK 解码还原"
+        );
+
+        // 4c) write_files —— 未知 encoding 标签必须报错，而非静默写成 UTF-8
+        let badp = p("bad_enc.txt");
+        let bad_r = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "write_files", "arguments": { "files": [{ "path": badp, "content": "x", "encoding": "no-such-encoding" }] } }),
+        )
+        .await;
+        let bad_inner = inner_text(&bad_r);
+        let bad_ok = bad_inner["content"]
+            .as_array()
+            .and_then(|arr| arr.get(0))
+            .and_then(|e| e["ok"].as_bool())
+            .unwrap_or(true);
+        assert!(!bad_ok, "未知 encoding 标签应使该文件写入失败");
+        assert!(
+            !std::path::Path::new(&badp).exists(),
+            "未知 encoding 标签不应创建文件"
+        );
+
         // 5) edit_files —— 替换校验
         let ep = p("edit.txt");
         assert_dispatch_ok(
@@ -973,6 +1036,90 @@ mod over_wire_tests {
             Some(2),
             "batch 应执行 2 个子操作"
         );
+    }
+
+    // ── write_files：新建文件尊重 encoding（坐实「新建不会乱码」） ──
+    // 非 #[ignore]：随默认 `cargo test` 真实执行，覆盖多编码新建文件落盘字节正确性，
+    // 与既有的 4b/4c（位于 #[ignore] 的全量测试内）互补，确保修复不被静默回退。
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_files_new_files_respect_encoding() {
+        let root = unique_temp_root("wf_enc_new");
+        let root_s = root.to_string_lossy().into_owned();
+        let p = |name: &str| -> String { root.join(name).to_string_lossy().into_owned() };
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+
+        // (原文, encoding 标签, 回读校验用 encoding_rs 静态, 是否应为合法 UTF-8)
+        let cases: &[(&str, &str, &'static encoding_rs::Encoding, bool)] = &[
+            ("hello 世界 123", "utf-8", encoding_rs::UTF_8, true),
+            ("你好世界", "gbk", encoding_rs::GBK, false),
+            ("你好世界", "gb18030", encoding_rs::GB18030, false),
+            ("こんにちは", "shift_jis", encoding_rs::SHIFT_JIS, false),
+            ("你好世界", "big5", encoding_rs::BIG5, false),
+        ];
+
+        for (content, label, enc_static, is_utf8) in cases {
+            let fp = p(&format!("new_{label}.txt"));
+            assert!(
+                !std::path::Path::new(&fp).exists(),
+                "前置：{fp} 必须是尚未存在的新建文件"
+            );
+
+            let r = rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": "write_files", "arguments": { "files": [{ "path": fp, "content": content, "encoding": label }] } }),
+            )
+            .await;
+            assert_dispatch_ok(&r);
+
+            let bytes = std::fs::read(&fp).unwrap_or_else(|_| panic!("新建文件 {fp} 应已落盘"));
+
+            // 1) utf-8 须字节级等于原文；其余须不是合法 UTF-8（证明没被 as_bytes 写成 UTF-8）
+            assert_eq!(
+                std::str::from_utf8(&bytes).is_ok(),
+                *is_utf8,
+                "{label} 落盘字节的 UTF-8 合法性不符合预期"
+            );
+            if *is_utf8 {
+                assert_eq!(bytes, content.as_bytes(), "{label} 应字节级等于原文");
+            } else {
+                // 2) 用对应编码解码必须无损还原为原始内容（证明无乱码）
+                let (decoded, _, had_errors) = enc_static.decode(&bytes);
+                assert!(!had_errors, "{label} 落盘字节应能被该编码完整解码");
+                assert_eq!(decoded.as_ref(), *content, "{label} 解码还原应等于原文");
+            }
+
+            let _ = std::fs::remove_file(&fp);
+        }
+
+        // 3) 安全不削弱：白名单外路径必须被 write_files 拒绝（不创建文件）
+        let outside = format!("{root_s}/../wf_enc_escape.txt");
+        let r_out = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "write_files", "arguments": { "files": [{ "path": outside, "content": "x" }] } }),
+        )
+        .await;
+        // write_files 把每个文件的成败塞进 content[0].text 的 JSON 数组里，
+        // inner_text 已解析该数组，故直接取 [0]["ok"]。
+        let out_arr = inner_text(&r_out);
+        let out_ok = out_arr
+            .get(0)
+            .and_then(|e| e.get("ok").and_then(|v| v.as_bool()))
+            .unwrap_or(true); // 结构异常时默认判为"已写入"，让断言失败而非误判通过
+        assert!(
+            !out_ok,
+            "白名单外路径必须被 write_files 拒绝（ok 应为 false）"
+        );
+        assert!(
+            !std::path::Path::new(&outside).exists(),
+            "白名单外路径不得创建任何文件"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // ── 命令执行三元组（后台 run → 取输出 → 停止） ─────────────────────

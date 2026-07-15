@@ -102,13 +102,16 @@ async fn move_single(
     };
 
     if to_resolved.exists() && config.backup_enabled {
-        backup::backup_before_overwrite(&to_resolved, &config.backup_dir, &state.data_dir)?;
+        let bp =
+            backup::backup_before_overwrite(&to_resolved, &config.backup_dir, &state.data_dir)?;
         backup::prune_backups(
             &to_resolved,
             &config.backup_dir,
             &state.data_dir,
             config.backup_retention,
         )?;
+        // 关联审计：记录本次备份路径 + 目标路径（供一键回滚 / Diff 使用）。
+        crate::audit::record_op_backup(bp, Some(to_resolved.clone()));
     }
 
     if let Some(parent) = to_resolved.parent() {

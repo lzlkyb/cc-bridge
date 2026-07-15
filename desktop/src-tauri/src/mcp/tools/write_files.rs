@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 use crate::backup;
 use crate::diff_utils;
+use crate::encoding as enc_mod;
 use crate::security;
 use crate::state::AppState;
 
@@ -65,7 +66,15 @@ async fn write_single(
     let data = if f.encoding == "base64" {
         base64_decode(&f.content)?
     } else {
-        f.content.as_bytes().to_vec()
+        let enc = enc_mod::label_to_encoding(&f.encoding)
+            .ok_or_else(|| format!("Unknown encoding label: {}", f.encoding))?;
+        // 归一化换行用于 round-trip 守卫；若原文含 CRLF，则写回时还原 CRLF，
+        // 保证内容（含换行风格）不丢失，且不触发 encode_text 错误的有损拒绝
+        // （其守卫要求输入为 LF 归一化文本）。utf8 默认路径与改动前 as_bytes() 行为一致。
+        let crlf = f.content.contains("\r\n");
+        let normalized = f.content.replace("\r\n", "\n").replace('\r', "\n");
+        enc_mod::encode_text(&normalized, enc, crlf, false)
+            .map_err(|e| format!("Failed to encode content as {}: {e}", f.encoding))?
     };
 
     if data.len() as u64 > config.max_file_size_bytes {
@@ -85,13 +94,15 @@ async fn write_single(
     let _guard = lock.lock().await;
 
     if resolved.exists() && config.backup_enabled {
-        backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir)?;
+        let bp = backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir)?;
         backup::prune_backups(
             &resolved,
             &config.backup_dir,
             &state.data_dir,
             config.backup_retention,
         )?;
+        // 关联审计：记录本次备份路径 + 目标路径（供一键回滚 / Diff 使用）。
+        crate::audit::record_op_backup(bp, Some(resolved.clone()));
     }
 
     if let Some(parent) = resolved.parent() {

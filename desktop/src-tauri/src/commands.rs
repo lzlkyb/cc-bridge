@@ -1,12 +1,16 @@
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use similar::TextDiff;
 use tauri::{AppHandle, Emitter, State};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::audit;
+use crate::backup;
 use crate::browse;
 use crate::config::save_config_field;
 use crate::network;
@@ -74,6 +78,15 @@ pub struct StatusResponse {
     /// A3 修复：启动期错误（如端口被占用）。None 表示启动正常。
     #[serde(rename = "startupError")]
     pub startup_error: Option<String>,
+    /// 防火墙状态（仅 Windows 真实查询，其它平台为 None）。
+    /// firewall_enabled：防火墙是否开启（任一配置文件启用即 true）。
+    /// firewall_port_open：7823/TCP 入站是否被放行（存在 allow 规则即 true）。
+    /// 两者均为 None 表示无法判断（非 Windows / 查询失败）。
+    /// 这是「远程未确认连接」状态机的信号源——诚实暴露本机探针对远程入站拦截的盲点。
+    #[serde(rename = "firewallEnabled")]
+    pub firewall_enabled: Option<bool>,
+    #[serde(rename = "firewallPortOpen")]
+    pub firewall_port_open: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +103,40 @@ pub struct StatsInfo {
     pub total_requests: u64,
     #[serde(rename = "totalErrors")]
     pub total_errors: u64,
+    /// 实时成功率（%），累计 = (total-errors)/total*100。
+    #[serde(rename = "successRate")]
+    pub success_rate: f64,
+    /// 请求速率（近 60s 窗口内请求数）。
+    #[serde(rename = "requestsPerMin")]
+    pub requests_per_min: u64,
+    /// 平均耗时（ms），累计和/计数。
+    #[serde(rename = "avgLatencyMs")]
+    pub avg_latency_ms: u64,
+    /// P95 耗时（ms），最近样本环形缓冲分位。
+    #[serde(rename = "p95LatencyMs")]
+    pub p95_latency_ms: u64,
+    /// 限流命中次数（429）。
+    #[serde(rename = "rateLimitHits")]
+    pub rate_limit_hits: u64,
+    /// 鉴权拒绝次数（401）。
+    #[serde(rename = "authDenies")]
+    pub auth_denies: u64,
+    /// 审计落盘条数。
+    #[serde(rename = "auditCount")]
+    pub audit_count: u64,
+    /// 当前活跃后台命令数（exit_code 仍为 None）。
+    #[serde(rename = "activeCommands")]
+    pub active_commands: u64,
+    /// 热门工具 Top3（按累计调用次数降序）。
+    #[serde(rename = "topTools")]
+    pub top_tools: Vec<ToolCount>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ToolCount {
+    pub name: String,
+    #[serde(rename = "count")]
+    pub count: u64,
 }
 
 #[tauri::command]
@@ -100,6 +147,19 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
     let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
     let startup_error = state.startup_error.lock().unwrap().clone();
     let lan_ips = network::get_lan_ips();
+
+    // 防火墙状态：优先读缓存（后台定时刷新）。缓存尚未初始化时做一次同步查询，
+    // 保证首屏即可拿到真实状态，避免前几次轮询都返回 unknown。
+    let (firewall_enabled, firewall_port_open) = {
+        let mut cache = state.firewall_cache.lock().unwrap();
+        if cache.checked_at.is_none() {
+            let (e, p) = crate::firewall::query_firewall_state(config.port);
+            cache.enabled = e;
+            cache.port_open = p;
+            cache.checked_at = Some(Instant::now());
+        }
+        (cache.enabled, cache.port_open)
+    };
     // 地址变化检测:
     // 1) 监听全部网卡时,以用户上次确认的 IP 是否仍在网卡列表为准;
     // 2) 指定具体 host(非 127.0.0.1 本地回环)且该地址已不在网卡列表,也视为变化(O4)。
@@ -129,15 +189,85 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
             &lan_ips,
             config.last_selected_ip.as_deref(),
         );
-        match timeout(
-            Duration::from_millis(200),
-            TcpStream::connect((probe_host.as_str(), config.port)),
+        matches!(
+            timeout(
+                Duration::from_millis(200),
+                TcpStream::connect((probe_host.as_str(), config.port)),
+            )
+            .await,
+            Ok(Ok(_))
         )
-        .await
-        {
-            Ok(Ok(_)) => true,
-            _ => false,
+    };
+
+    // ── 方案 A 运行卡实时指标聚合（全做真，无伪造）──
+    let total = stats.total_requests;
+    let errs = stats.total_errors;
+    let success_rate = if total > 0 {
+        (total - errs) as f64 / total as f64 * 100.0
+    } else {
+        100.0
+    };
+
+    // rpm：按 60s 窗口滑动计数（就地 prune 旧时间戳，避免无界增长）。
+    let requests_per_min = {
+        let mut q = state.recent_requests.lock().unwrap();
+        let cutoff = Instant::now() - Duration::from_secs(60);
+        q.retain(|t| *t > cutoff);
+        q.len() as u64
+    };
+
+    // avg / P95 耗时：avg = 累计和/计数；P95 = 最近样本环形缓冲分位。
+    let (avg_latency_ms, p95_latency_ms) = {
+        let sum = state.latency_sum_ms.load(Ordering::Relaxed);
+        let cnt = state.latency_count.load(Ordering::Relaxed);
+        let avg = sum.checked_div(cnt).unwrap_or(0);
+        let q = state.latency_samples.lock().unwrap();
+        let mut v: Vec<u64> = q.iter().copied().collect();
+        drop(q);
+        v.sort_unstable();
+        let p95 = if v.is_empty() {
+            0
+        } else {
+            let idx = ((v.len() as f64 * 0.95) as usize).min(v.len() - 1);
+            v[idx]
+        };
+        (avg, p95)
+    };
+
+    let rate_limit_hits = state.rate_limit_hits.load(Ordering::Relaxed);
+    let auth_denies = state.auth_denies.load(Ordering::Relaxed);
+    let audit_count = state.audit_count.load(Ordering::Relaxed);
+
+    // 活跃命令：注册表里 exit_code 仍 None 的条目。先克隆 Arc 再跨 await 锁，
+    // 避免持有 DashMap Ref 跨 await（与 list_running_commands 同套路）。
+    let active_commands = {
+        let snapshot: Vec<_> = state
+            .running_commands
+            .iter()
+            .map(|e| e.value().exit_code.clone())
+            .collect();
+        let mut n = 0u64;
+        for arc in snapshot {
+            if arc.lock().await.is_none() {
+                n += 1;
+            }
         }
+        n
+    };
+
+    // 热门工具 Top3（按累计调用次数降序）。
+    let top_tools: Vec<ToolCount> = {
+        let mut v: Vec<ToolCount> = state
+            .tool_counts
+            .iter()
+            .map(|e| ToolCount {
+                name: e.key().clone(),
+                count: *e.value(),
+            })
+            .collect();
+        v.sort_by_key(|b| std::cmp::Reverse(b.count));
+        v.truncate(3);
+        v
     };
 
     Ok(StatusResponse {
@@ -158,6 +288,15 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         stats: StatsInfo {
             total_requests: stats.total_requests,
             total_errors: stats.total_errors,
+            success_rate,
+            requests_per_min,
+            avg_latency_ms,
+            p95_latency_ms,
+            rate_limit_hits,
+            auth_denies,
+            audit_count,
+            active_commands,
+            top_tools,
         },
         connect_command: connect_cmd,
         token: config.token.clone(),
@@ -175,7 +314,49 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         scope: config.scope.clone(),
         startup_error,
         lan_ips,
+        firewall_enabled,
+        firewall_port_open,
     })
+}
+
+/// 手动/定点刷新防火墙状态缓存（前端「重新检查」按钮调用）。
+/// 立即重跑 netsh 查询并回写缓存，下次 get_status 即返回最新结果。
+#[tauri::command]
+pub async fn refresh_firewall(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let port = state.config.read().await.port;
+    crate::firewall::refresh_cache(&state, port).await;
+    Ok(())
+}
+
+/// 一键开放防火墙端口（仅 Windows 有意义）。
+/// 通过 UAC 提权（PowerShell Start-Process -Verb RunAs）写入 7823/TCP 入站允许规则，
+/// 不引入任何 Rust 依赖（守规则8）。成功后立即刷新缓存并回写 get_status。
+#[tauri::command]
+pub async fn open_firewall_port(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let port = state.config.read().await.port;
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("无法定位自身路径: {e}"))?
+            .to_string_lossy()
+            .into_owned();
+        let params = format!(
+            "advfirewall firewall add rule name=cc-bridge dir=in action=allow protocol=TCP localport={port} program=\"{exe}\""
+        );
+        // 提权过程可能长时间挂起（用户未处理 UAC 弹窗），放到阻塞线程避免占用 async 工作线程
+        let res =
+            tauri::async_runtime::spawn_blocking(move || crate::firewall::elevate_netsh(&params))
+                .await
+                .map_err(|e| format!("开放防火墙端口任务异常: {e}"))?;
+        res?;
+        crate::firewall::refresh_cache(&state, port).await;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = &state;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -665,6 +846,206 @@ pub struct CommandOutput {
     #[serde(rename = "exitCode")]
     pub exit_code: Option<i32>,
     pub pid: u32,
+}
+
+// ===== 一键回滚 + 变更 Diff（P1）=====
+
+/// 校验 backup_path 合法性：必须在 data_dir/backup_dir 内且以 .bak 结尾。
+/// canonicalize 后做前缀校验，杜绝用备份通道越权读写任意文件（安全模块不削弱）。
+fn assert_backup_path_in_scope(
+    backup_path: &str,
+    data_dir: &std::path::Path,
+    backup_dir: &str,
+) -> Result<PathBuf, String> {
+    let expected_dir = data_dir.join(backup_dir);
+    let expected_canon = expected_dir
+        .canonicalize()
+        .map_err(|e| format!("备份目录解析失败：{e}"))?;
+    let bak_canon = PathBuf::from(backup_path)
+        .canonicalize()
+        .map_err(|_| "备份文件不存在或路径非法".to_string())?;
+    let bak_str = bak_canon.to_string_lossy();
+    if !bak_canon.starts_with(&expected_canon) || !bak_str.ends_with(".bak") {
+        return Err("备份路径越权：必须为白名单备份目录内的 .bak 文件".into());
+    }
+    Ok(bak_canon)
+}
+
+/// 一键回滚：将指定 .bak 备份按原字节写回目标文件（保留原始编码）。
+///
+/// 安全（不削弱）：backup_path 限备份目录内 .bak；target_path 走白名单校验。
+/// 还原前对当前目标再备一次（可继续撤销）；目标不存在（删除类操作）则直接恢复被删文件。
+/// 自身写一条审计（关联新备份），使回滚动作也可追溯。
+#[tauri::command]
+pub async fn restore_file(
+    state: State<'_, Arc<AppState>>,
+    backup_path: String,
+    target_path: String,
+) -> Result<(), String> {
+    let config = state.config.read().await;
+    let data_dir = state.data_dir.clone();
+    let backup_dir = config.backup_dir.clone();
+    let backup_retention = config.backup_retention;
+
+    // 1) 安全校验 backup_path
+    let bak_canon = assert_backup_path_in_scope(&backup_path, &data_dir, &backup_dir)?;
+    // 2) 白名单校验 target（安全模块不削弱）
+    let resolved = path::resolve_safe_path(
+        &target_path,
+        &config.allowed_roots,
+        config.whitelist_enabled,
+    )?;
+    drop(config);
+
+    // 3) 还原前再备一次（可继续撤销）——仅当目标已存在
+    let mut new_backup: Option<PathBuf> = None;
+    if resolved.exists() {
+        new_backup = backup::backup_before_overwrite(&resolved, &backup_dir, &data_dir)?;
+        backup::prune_backups(&resolved, &backup_dir, &data_dir, backup_retention)?;
+    }
+
+    // 4) 原子写回：临时文件 + rename（保留原始字节 / 编码）
+    let tmp = resolved.with_extension("tmp_restore");
+    std::fs::copy(&bak_canon, &tmp).map_err(|e| format!("写入临时文件失败：{e}"))?;
+    std::fs::rename(&tmp, &resolved).map_err(|e| format!("恢复文件失败：{e}"))?;
+
+    // 5) 写审计（工具名 restore_file，关联本次新备份以便再撤销）
+    let mut entry = audit::new_entry(
+        "restore_file",
+        &serde_json::json!({ "backupPath": backup_path, "targetPath": target_path }).to_string(),
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    entry.backup_path = new_backup
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+    entry.target_path = Some(target_path.clone());
+    audit::write_audit_log(&data_dir, &entry)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiffLine {
+    /// "context" | "added" | "removed"
+    pub kind: String,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FileDiffResult {
+    pub lines: Vec<DiffLine>,
+    /// 触发护栏的原因（二进制 / 体积过大 / 行数过多）；非空时前端仅允许「还原」、不展示全量 diff。
+    #[serde(rename = "guard")]
+    pub guard: Option<String>,
+    #[serde(rename = "beforeLines")]
+    pub before_lines: usize,
+    #[serde(rename = "afterLines")]
+    pub after_lines: usize,
+}
+
+/// 变更 Diff：实时用 .bak（前）vs 当前文件（后）做行级 diff，不占存储。
+///
+/// 安全（不削弱）：同 restore_file —— backup_path 限备份目录内 .bak；target 走白名单校验。
+/// 大文件 / 二进制 / 行数过多触发护栏，仅返回行数统计，避免前端卡死；护栏下仍允许「还原」。
+#[tauri::command]
+pub async fn get_file_diff(
+    state: State<'_, Arc<AppState>>,
+    backup_path: String,
+    target_path: String,
+) -> Result<FileDiffResult, String> {
+    let config = state.config.read().await;
+    let data_dir = state.data_dir.clone();
+    let backup_dir = config.backup_dir.clone();
+
+    // 1) 校验 backup_path
+    let bak_canon = assert_backup_path_in_scope(&backup_path, &data_dir, &backup_dir)?;
+    // 2) 白名单校验 target
+    let resolved = path::resolve_safe_path(
+        &target_path,
+        &config.allowed_roots,
+        config.whitelist_enabled,
+    )?;
+
+    // 3) 读取 before（.bak）与 after（当前；不存在 = 已删除）
+    let before_bytes = std::fs::read(&bak_canon).map_err(|e| format!("读取备份失败：{e}"))?;
+    let after_bytes = if resolved.exists() {
+        Some(std::fs::read(&resolved).map_err(|e| format!("读取当前文件失败：{e}"))?)
+    } else {
+        None
+    };
+    drop(config);
+
+    let before_has_nul = before_bytes.contains(&0u8);
+    let after_has_nul = after_bytes
+        .as_ref()
+        .map(|b| b.contains(&0u8))
+        .unwrap_or(false);
+    let big = before_bytes.len() > 1_000_000
+        || after_bytes
+            .as_ref()
+            .map(|b| b.len() > 1_000_000)
+            .unwrap_or(false);
+
+    let before = String::from_utf8_lossy(&before_bytes).into_owned();
+    let after = after_bytes
+        .as_ref()
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default();
+
+    let before_lines = before.lines().count();
+    let after_lines = after.lines().count();
+    let many = before_lines > 2000 || after_lines > 2000;
+
+    let guard = if before_has_nul || after_has_nul {
+        Some("文件含二进制内容，仅可一键还原，不可预览 diff".into())
+    } else if big {
+        Some("文件体积超过 1MB，仅可一键还原，不可预览 diff".into())
+    } else if many {
+        Some("变更行数过多（>2000），仅可一键还原，不可预览 diff".into())
+    } else {
+        None
+    };
+
+    if guard.is_some() {
+        return Ok(FileDiffResult {
+            lines: vec![],
+            guard,
+            before_lines,
+            after_lines,
+        });
+    }
+
+    // 行级 diff（复用 similar，已是项目依赖）
+    let diff = TextDiff::from_lines(&before, &after);
+    let lines: Vec<DiffLine> = diff
+        .iter_all_changes()
+        .map(|c| {
+            let (sign, kind) = match c.tag() {
+                similar::ChangeTag::Delete => ("-", "removed"),
+                similar::ChangeTag::Insert => ("+", "added"),
+                similar::ChangeTag::Equal => (" ", "context"),
+            };
+            DiffLine {
+                kind: kind.into(),
+                text: format!("{}{}", sign, c.value()),
+            }
+        })
+        .collect();
+
+    Ok(FileDiffResult {
+        lines,
+        guard: None,
+        before_lines,
+        after_lines,
+    })
 }
 
 // ===== 配置导入/导出（C8）=====

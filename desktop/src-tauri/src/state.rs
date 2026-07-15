@@ -1,5 +1,6 @@
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -50,6 +51,18 @@ pub struct RuntimeStats {
     pub start_time: Instant,
 }
 
+/// 防火墙状态缓存（规则级，仅 Windows 真实查询）。
+/// 由后台定时任务（每 5 分钟）与按需（open_firewall_port 成功后 / 前端「重新检查」）刷新，
+/// get_status 直接读缓存，避免在 5s 轮询里反复跑 netsh。
+pub struct FirewallCache {
+    /// 防火墙是否开启（任一配置文件启用即 true）。
+    pub enabled: Option<bool>,
+    /// 7823/TCP 入站是否被放行（存在 allow 规则即 true）。
+    pub port_open: Option<bool>,
+    /// 上次检查时刻；None 表示尚未检查过。
+    pub checked_at: Option<Instant>,
+}
+
 impl Default for RuntimeStats {
     fn default() -> Self {
         Self {
@@ -79,6 +92,26 @@ pub struct AppState {
     /// A3 修复：启动期错误（如端口被占用）。bind 失败时写入，成功时清除。
     /// 供前端 Header 展示「启动失败」红态，避免用户盲目尝试。
     pub startup_error: StdMutex<Option<String>>,
+
+    /// 防火墙状态缓存（规则级，仅 Windows 真实查询）。见 `FirewallCache`。
+    pub firewall_cache: StdMutex<FirewallCache>,
+
+    // ── 方案 A 运行卡实时指标（全做真·后端实时统计）──
+    /// 最近请求到达时间戳，用于 rpm（60s 滑动窗口）。StdMutex 短临界区，不跨 await。
+    pub recent_requests: StdMutex<VecDeque<Instant>>,
+    /// 耗时累计（ms）与计数，用于平均耗时（无锁原子）。
+    pub latency_sum_ms: AtomicU64,
+    pub latency_count: AtomicU64,
+    /// 最近耗时样本（ms）环形缓冲，固定容量用于 P95 计算。
+    pub latency_samples: StdMutex<VecDeque<u64>>,
+    /// 限流命中次数（429 因超出单窗口上限）。
+    pub rate_limit_hits: AtomicU64,
+    /// 鉴权拒绝次数（401 因 token 校验失败 = 拒绝未授权访问）。
+    pub auth_denies: AtomicU64,
+    /// 审计落盘条数（仅 audit_enabled 且写成功时累计）。
+    pub audit_count: AtomicU64,
+    /// 各工具累计调用次数（热门工具 Top3 用）。DashMap 并发安全。
+    pub tool_counts: DashMap<String, u64>,
 }
 
 impl AppState {
@@ -95,6 +128,19 @@ impl AppState {
             running_commands: DashMap::new(),
             cwd_sessions: DashMap::new(),
             startup_error: StdMutex::new(None),
+            firewall_cache: StdMutex::new(FirewallCache {
+                enabled: None,
+                port_open: None,
+                checked_at: None,
+            }),
+            recent_requests: StdMutex::new(VecDeque::new()),
+            latency_sum_ms: AtomicU64::new(0),
+            latency_count: AtomicU64::new(0),
+            latency_samples: StdMutex::new(VecDeque::new()),
+            rate_limit_hits: AtomicU64::new(0),
+            auth_denies: AtomicU64::new(0),
+            audit_count: AtomicU64::new(0),
+            tool_counts: DashMap::new(),
         }
     }
 
@@ -131,5 +177,49 @@ impl AppState {
     pub fn gc_cwd_sessions(&self) {
         let cutoff = Instant::now() - Duration::from_secs(30 * 60);
         self.cwd_sessions.retain(|_, s| s.last_active > cutoff);
+    }
+
+    // ── 方案 A 运行卡实时指标采集（全做真，禁止伪造）──
+
+    /// 记录一次请求到达时间（rpm 统计）。环形上限 10_000 防无界增长。
+    pub fn record_request_time(&self) {
+        const CAP: usize = 10_000;
+        let mut q = self.recent_requests.lock().unwrap();
+        q.push_back(Instant::now());
+        while q.len() > CAP {
+            q.pop_front();
+        }
+    }
+
+    /// 记录一次工具调用耗时（ms）：更新累计和/计数（avg）+ 环形样本（P95）。样本上限 500。
+    pub fn record_latency(&self, ms: u64) {
+        const CAP: usize = 500;
+        self.latency_sum_ms.fetch_add(ms, Ordering::Relaxed);
+        self.latency_count.fetch_add(1, Ordering::Relaxed);
+        let mut q = self.latency_samples.lock().unwrap();
+        q.push_back(ms);
+        while q.len() > CAP {
+            q.pop_front();
+        }
+    }
+
+    /// 记录一次工具调用（按工具名累计，热门工具 Top3 用）。
+    pub fn record_tool(&self, name: &str) {
+        *self.tool_counts.entry(name.to_string()).or_insert(0) += 1;
+    }
+
+    /// 限流命中（429）计数 +1。
+    pub fn inc_rate_limit_hits(&self) {
+        self.rate_limit_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 鉴权拒绝（401）计数 +1。
+    pub fn inc_auth_denies(&self) {
+        self.auth_denies.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 审计落盘条数 +1。
+    pub fn inc_audit_count(&self) {
+        self.audit_count.fetch_add(1, Ordering::Relaxed);
     }
 }

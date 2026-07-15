@@ -119,13 +119,15 @@ async fn edit_single(
     let out_bytes = encoding::encode_text(&updated, ft.encoding, ft.crlf, ft.had_bom)?;
 
     if config.backup_enabled {
-        backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir)?;
+        let bp = backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir)?;
         backup::prune_backups(
             &resolved,
             &config.backup_dir,
             &state.data_dir,
             config.backup_retention,
         )?;
+        // 关联审计：记录本次备份路径 + 目标路径（供一键回滚 / Diff 使用）。
+        crate::audit::record_op_backup(bp, Some(resolved.clone()));
     }
 
     // 原子写：先写临时文件再 rename，避免写一半崩溃损坏原文件。

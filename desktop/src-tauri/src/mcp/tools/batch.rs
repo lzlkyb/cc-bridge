@@ -51,8 +51,15 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
         // 复用现有分发 → 复用全部安全校验（只读模式 / WRITE_TOOLS / 路径白名单）。
         // 这是 batch 设计的核心：零新文件操作代码 = 零新攻击面。
         // Box::pin 断开与 dispatch_tool 的互递归（async fn 递归必须加间接层）。
+        // 子操作分发包在 with_op_backup 作用域内：写工具会 record_op_backup，
+        // 未进入作用域会在 .with() 上 panic（与 http.rs 保持一致）。
         let t0 = std::time::Instant::now();
-        let res = Box::pin(dispatch_tool(&op.tool, op.arguments.clone(), state)).await;
+        let res = crate::audit::with_op_backup(Box::pin(dispatch_tool(
+            &op.tool,
+            op.arguments.clone(),
+            state,
+        )))
+        .await;
         // 子操作自身的分发耗时：修复之前全传 None 导致日志列表里 batch 相关行耗时列一律
         // 显示“—”的问题。
         let duration_ms = t0.elapsed().as_millis() as u64;

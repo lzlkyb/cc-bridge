@@ -89,7 +89,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             write_files,
             WriteFilesArgs,
-            r#"Write or create files. Automatically creates parent directories and backs up before overwriting."#,
+            r#"Write or create files. Automatically creates parent directories and backs up before overwriting. The `encoding` parameter controls the on-disk byte encoding of the text content (defaults to utf8); pass e.g. "gbk", "gb18030" or "utf-16le" to write in that encoding. Pass "base64" to write raw binary from a base64 string."#,
             true
         ),
         register_tool!(

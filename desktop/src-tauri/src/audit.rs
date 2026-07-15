@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use tokio::task_local;
 
 use chrono::Local;
 use serde::Serialize;
@@ -38,6 +39,44 @@ pub struct AuditEntry {
     /// 会话级 cwd 持久化的 handle（run_command 开启会话时记录，便于审计追溯）。
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// 关联备份：本操作执行前生成的 .bak 绝对路径（仅写/删类操作、且备份开启时存在）。
+    /// 前端据此提供「一键回滚 / 变更 Diff」入口。旧日志无此字段，`skip_serializing_if` 兼容。
+    #[serde(rename = "backupPath", skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<String>,
+    /// 关联备份：被备份/覆盖的目标文件绝对路径（同一次操作的原文件，用于回滚写回定位）。
+    #[serde(rename = "targetPath", skip_serializing_if = "Option::is_none")]
+    pub target_path: Option<String>,
+}
+
+/// 关联备份传递：在同一次工具调用（同一 async 任务）内，由写工具把本次生成的备份路径 +
+/// 目标文件路径写入，再由 `write_audit_for_call` 在生成审计条目时取出并落盘。
+/// 用 task_local 而非返回值穿透，避免改动 5 个工具 + dispatch_tool 的签名与返回类型。
+/// 所有写工具的调用入口（http.rs 的 dispatch_tool、batch.rs 的子操作分发）都包裹在
+/// `with_op_backup` 作用域内，故 `record_op_backup` / `take_op_backup` 一定处于作用域中。
+use std::cell::RefCell;
+task_local! {
+    static OP_BACKUP: RefCell<Option<(Option<PathBuf>, Option<PathBuf>)>>;
+}
+
+/// 进入一次工具调用的关联备份作用域，包裹 dispatch + 审计全过程（在 `handle_tools_call` 内）。
+pub async fn with_op_backup<F>(fut: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    let slot: RefCell<Option<(Option<PathBuf>, Option<PathBuf>)>> = RefCell::new(None);
+    OP_BACKUP.scope(slot, fut).await
+}
+
+/// 工具内部调用：记录本次操作生成的备份路径与目标路径（供审计关联）。
+pub fn record_op_backup(backup: Option<PathBuf>, target: Option<PathBuf>) {
+    OP_BACKUP.with(|c| {
+        *c.borrow_mut() = Some((backup, target));
+    });
+}
+
+/// 审计写盘前调用：取出并清空关联备份信息。
+pub fn take_op_backup() -> Option<(Option<PathBuf>, Option<PathBuf>)> {
+    OP_BACKUP.with(|c| c.borrow_mut().take())
 }
 
 /// E-P0-7: 共享审计日志写句柄，避免每次写都 open 文件（高频批量调用下省 1000 open/s）。
@@ -180,6 +219,8 @@ pub fn new_entry(
         net_ms,
         overhead_ms,
         session_id,
+        backup_path: None,
+        target_path: None,
     }
 }
 
