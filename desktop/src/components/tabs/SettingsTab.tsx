@@ -29,6 +29,7 @@ export function SettingsTab({
       <NetworkGroup status={status} onSaved={onSaved} />
       <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
       <AppGroup />
+      <InstallGroup />
       <ConfigGroup status={status} onSaved={onSaved} />
       <AuditGroup status={status} onSaved={onSaved} />
     </div>
@@ -49,8 +50,18 @@ function NetworkGroup({
   const [restarted, setRestarted] = useState(false);
   const { toast } = useToast();
 
+  // 仅在用户未偏离（当前输入仍等于上次同步的服务端值）时跟随服务端回填；
+  // 用户正在编辑偏离值时保留输入，避免 App 层 5s 轮询（refetchInterval）把输入框冲掉。
+  // 对比同文件 AuditGroup 用 initialized 仅首次回填，这里用「偏离检测」兼顾「外部改端口后跟随」。
+  const syncedRef = useRef<number | null>(null);
   useEffect(() => {
-    if (status) setPort(status.port);
+    if (!status) return;
+    const serverPort = status.port;
+    setPort((prev) => {
+      const follow = syncedRef.current === null || prev === syncedRef.current;
+      syncedRef.current = serverPort;
+      return follow ? serverPort : prev;
+    });
   }, [status]);
 
   const dirty = status ? port !== status.port : false;
@@ -67,8 +78,18 @@ function NetworkGroup({
       });
       if (result.restartRequired) {
         await invoke("restart_mcp_server");
+        // 防火墙联动：端口变了 → 旧端口规则残留、新端口无放行规则。主动刷新
+        // 缓存使「连接」页防火墙告警块基于新端口正确显示（未放行时提示一键开放）。
+        await invoke("refresh_firewall").catch(() => {});
         setRestarted(true);
-        toast("端口已更新，服务已重启", "success");
+        if (status?.firewallEnabled === true) {
+          toast(
+            "端口已更新，服务已重启。若远程无法连接，请到「连接」页为新端口开放防火墙",
+            "success",
+          );
+        } else {
+          toast("端口已更新，服务已重启", "success");
+        }
         setTimeout(() => setRestarted(false), 3000);
       } else {
         toast("端口已保存", "success");
@@ -167,6 +188,93 @@ function AppGroup() {
             </p>
           </div>
           <Toggle checked={autostart} disabled={!loaded} onChange={toggle} ariaLabel="开机自动启动" />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ─── 安装与快捷方式 ─── */
+
+function InstallGroup() {
+  const { toast } = useToast();
+  const [dir, setDir] = useState("");
+  const [revealing, setRevealing] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    invoke<string>("install_dir")
+      .then(setDir)
+      .catch(() => setDir(""));
+  }, []);
+
+  const handleReveal = async () => {
+    setRevealing(true);
+    try {
+      await invoke("reveal_install_dir");
+      toast("已打开安装目录", "success");
+    } catch (err) {
+      toast(`打开失败：${err}`, "error");
+    } finally {
+      setRevealing(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    setCreating(true);
+    try {
+      await invoke("create_desktop_shortcut");
+      toast("已创建桌面快捷方式（已覆盖同名项）", "success");
+    } catch (err) {
+      toast(`创建失败：${err}`, "error");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle icon={<Icon name="package" />}>安装与快捷方式</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 space-y-0.5">
+            <Label>安装位置</Label>
+            <p className="truncate text-xs text-muted-foreground" title={dir}>
+              {dir || "—"}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleReveal}
+            isLoading={revealing}
+            loadingText="打开中..."
+            className="gap-1.5 shrink-0"
+          >
+            <Icon name="folder" size={14} />
+            打开目录
+          </Button>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 space-y-0.5">
+            <Label>桌面快捷方式</Label>
+            <p className="text-xs text-muted-foreground">
+              误删桌面图标后可一键重建，已存在则覆盖。
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleCreate}
+            isLoading={creating}
+            loadingText="创建中..."
+            className="gap-1.5 shrink-0"
+          >
+            <Icon name="external" size={14} />
+            创建到桌面
+          </Button>
         </div>
       </CardContent>
     </Card>

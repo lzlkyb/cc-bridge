@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use similar::TextDiff;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -644,6 +644,97 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String>
     } else {
         manager.disable().map_err(|e| e.to_string())
     }
+}
+
+/// 返回软件安装目录（即当前 exe 所在目录）。
+/// 用于前端「安装位置」展示。发布版即安装目录；开发模式指向 target/debug。
+#[tauri::command]
+pub fn install_dir() -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法定位自身路径: {e}"))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "无法解析安装目录".to_string())?
+        .to_string_lossy()
+        .into_owned();
+    Ok(dir)
+}
+
+/// 在系统文件管理器中打开安装目录（cmd start 经 ShellExecute，规避 explorer /select 的 DDE 转发导致不弹窗）。
+/// 同时返回安装目录字符串，便于前端展示。
+#[tauri::command]
+pub fn reveal_install_dir() -> Result<String, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法定位自身路径: {e}"))?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "无法解析安装目录".to_string())?
+        .to_string_lossy()
+        .into_owned();
+    // 用 cmd start 直接打开安装目录（纯目录打开）。
+    // 注：explorer /select 在 explorer 已单实例运行时会经 DDE 把请求转发给已有实例并
+    // 立即退出（返回成功），但实际不弹出窗口，故改用 start 经 ShellExecute 打开目录。
+    let status = std::process::Command::new("cmd")
+        .args(["/c", "start", "", &dir])
+        .status();
+    if let Err(e) = status {
+        return Err(format!("打开安装目录失败: {e}"));
+    }
+    Ok(dir)
+}
+
+/// 在桌面创建（或覆盖）指向本程序 exe 的快捷方式。
+/// 复用系统 WScript.Shell COM（零 Rust 依赖，守规则8），普通用户权限即可，
+/// 桌面为当前用户可写目录，无需 UAC 提权。用户确认：已存在同名 lnk 直接覆盖。
+/// 桌面路径优先取 USERPROFILE\Desktop，失败回退 Tauri desktop_dir()。
+#[tauri::command]
+pub fn create_desktop_shortcut(app: tauri::AppHandle) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("无法定位自身路径: {e}"))?;
+    let exe_str = exe.to_string_lossy().into_owned();
+    let dir_str = exe
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    // 桌面路径：优先 USERPROFILE\Desktop（不依赖 Tauri path 插件，最稳）；
+    // 失败则回退到 Tauri 的 desktop_dir() 解析。
+    let desktop = std::env::var("USERPROFILE")
+        .map(|u| std::path::Path::new(&u).join("Desktop"))
+        .or_else(|_| {
+            app.path()
+                .desktop_dir()
+                .map(|p| p.to_path_buf())
+                .map_err(|e| format!("无法解析桌面目录: {e}"))
+        })
+        .map_err(|e| e.to_string())?;
+    let lnk_path = desktop.join("cc-bridge.lnk");
+    let lnk_str = lnk_path.to_string_lossy().into_owned();
+
+    // 单引号 PowerShell 字符串：路径中的单引号转义为两个单引号（反斜杠在单引号中即字面量）。
+    let ps = format!(
+        "$ws=New-Object -ComObject WScript.Shell; \
+         $lnk=$ws.CreateShortcut('{lnk}'); \
+         $lnk.TargetPath='{exe}'; \
+         $lnk.IconLocation='{exe},0'; \
+         $lnk.Description='cc-bridge'; \
+         $lnk.WorkingDirectory='{dir}'; \
+         $lnk.Save()",
+        lnk = lnk_str.replace('\'', "''"),
+        exe = exe_str.replace('\'', "''"),
+        dir = dir_str.replace('\'', "''"),
+    );
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .output()
+        .map_err(|e| format!("创建快捷方式失败: {e}"))?;
+    if !out.status.success() {
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if msg.is_empty() {
+            "创建桌面快捷方式失败".into()
+        } else {
+            format!("创建桌面快捷方式失败：{msg}")
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
