@@ -9,6 +9,7 @@ import { formatVersion } from "../../lib/utils";
 import { APP_INFO } from "../../lib/about";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChangelogView } from "./ChangelogView";
+import { ReleaseNotes } from "../update/UpdateNotesDialog";
 
 /** 技术栈数据 */
 const TECH_STACK = [
@@ -47,7 +48,7 @@ const STYLE_MODAL_OVERLAY: CSSProperties = { background: "rgba(0,0,0,0.45)" };
 const STYLE_MODAL_BOX: CSSProperties = { background: "var(--color-card)" };
 
 export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; unreadCount?: number }) {
-  const { status: updateStatus, update, progress, progressIndeterminate, checkForUpdate, downloadAndInstall, restart } = useUpdate();
+  const { status: updateStatus, update, progress, progressIndeterminate, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -81,7 +82,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
             >
               {formatVersion(status?.version)}
             </span>
-            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} />
+            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} onOpenNotes={() => openUpdateNotes()} />
             {unreadCount !== undefined && unreadCount > 0 && (
               <span
                 className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white"
@@ -117,6 +118,23 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
         {expanded && (
           <div className="about-expanded">
             <div className="about-divider h-px bg-border" />
+
+            {/* ═══ 本次更新内容（有新版本时内联展示，可点开弹窗看完整说明） ═══ */}
+            {updateStatus === "available" && update && (
+              <div className="px-[22px] pt-3.5">
+                <div
+                  className="section-label mb-2 flex cursor-pointer items-center gap-1.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground transition-colors hover:text-primary"
+                  onClick={() => openUpdateNotes()}
+                  title="查看完整更新说明"
+                >
+                  <Icon name="sparkles" size={12} /> 本次更新内容
+                  <span className="ml-auto text-[10px] font-normal normal-case tracking-normal text-primary opacity-80">查看详情 ›</span>
+                </div>
+                <div className="max-h-[180px] overflow-y-auto rounded-xl border border-border bg-muted px-3.5 py-1">
+                  <ReleaseNotes body={update.body ?? null} />
+                </div>
+              </div>
+            )}
 
             {/* 技术栈 + 项目信息 双列 */}
             <div className="grid grid-cols-2">
@@ -283,7 +301,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
 }
 
 /* ── 更新状态胶囊 ── */
-function UpdateStatusPill({ status, update, progress, progressIndeterminate }: { status: UpdateStatus; update: { version: string } | null; progress: number; progressIndeterminate: boolean }) {
+function UpdateStatusPill({ status, update, progress, progressIndeterminate, onOpenNotes }: { status: UpdateStatus; update: { version: string } | null; progress: number; progressIndeterminate: boolean; onOpenNotes?: () => void }) {
   if (status === "uptodate") {
     return (
       <span className="status-pill flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success">
@@ -294,7 +312,14 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate }: {
   }
   if (status === "available") {
     return (
-      <span className="flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-[3px] text-[11px] font-semibold text-warning">
+      <span
+        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-[3px] text-[11px] font-semibold text-warning transition-colors hover:bg-warning/20"
+        title="查看本次更新内容"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenNotes?.();
+        }}
+      >
         有新版本 v{update?.version}
       </span>
     );

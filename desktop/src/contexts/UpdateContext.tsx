@@ -3,6 +3,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke } from "../lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { UpdateNotesDialog } from "../components/update/UpdateNotesDialog";
 
 // ─── 类型定义 ────────────────────────────
 
@@ -19,6 +20,8 @@ export interface UpdateState {
   checkForUpdate: () => Promise<void>;
   downloadAndInstall: () => Promise<void>;
   restart: () => Promise<void>;
+  /** 打开「查看更新内容」弹窗 */
+  openUpdateNotes: () => void;
 }
 
 // ─── 友好错误翻译 ────────────────────────
@@ -85,6 +88,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [progress, setProgress] = useState(0);
   const [progressIndeterminate, setProgressIndeterminate] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showNotes, setShowNotes] = useState(false);
   const checkingRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const uptodateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -246,9 +250,15 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // ─── 更新内容弹窗 ────────────────────────
+
+  const openUpdateNotes = useCallback(() => setShowNotes(true), []);
+  const closeUpdateNotes = useCallback(() => setShowNotes(false), []);
+
   return (
-    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, error, checkForUpdate, downloadAndInstall, restart }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes }}>
       {children}
+      <UpdateNotesDialog open={showNotes} update={update} onClose={closeUpdateNotes} onDownload={downloadAndInstall} />
     </UpdateContext.Provider>
   );
 }

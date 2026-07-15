@@ -16,7 +16,7 @@ import { Icon } from "../ui/icon";
  * - error       → 红色 pill + 版本号，可点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, progress, progressIndeterminate, error, checkForUpdate, downloadAndInstall, restart } = useUpdate();
+  const { status, update, progress, progressIndeterminate, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -79,14 +79,25 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   // ─── available ────────────────────────────
   if (status === "available") {
     return (
-      <button
-        className="header-badge header-badge-update cursor-pointer"
-        title={`发现新版本 v${ver}，点击下载更新`}
-        onClick={handleClick}
-      >
-        <Icon name="arrowUp" size={10} />
-        <span>更新 v{ver}</span>
-      </button>
+      <>
+        <button
+          className="header-badge header-badge-update cursor-pointer"
+          title={`发现新版本 v${ver}，点击下载更新`}
+          onClick={handleClick}
+        >
+          <Icon name="arrowUp" size={10} />
+          <span>更新 v{ver}</span>
+        </button>
+        <button
+          type="button"
+          className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-card px-2.5 py-[3px] text-[11px] font-semibold text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
+          title="查看本次更新内容"
+          onClick={() => openUpdateNotes()}
+        >
+          <Icon name="info" size={11} />
+          <span>详情</span>
+        </button>
+      </>
     );
   }
 
