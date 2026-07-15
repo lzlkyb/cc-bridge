@@ -16,7 +16,7 @@ import { Icon } from "../ui/icon";
  * - error       → 红色 pill + 版本号，可点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, error, checkForUpdate, downloadAndInstall, restart } = useUpdate();
+  const { status, update, progress, progressIndeterminate, error, checkForUpdate, downloadAndInstall, restart } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -94,8 +94,8 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   if (status === "downloading") {
     return (
       <span className="header-badge header-badge-downloading" title="正在下载更新…">
-        <Icon name="spinner" size={10} className="animate-spin" />
-        <span>下载中</span>
+        <DownloadRing progress={progress} indeterminate={progressIndeterminate} />
+        <span>{progressIndeterminate ? "下载中" : `下载中 ${progress}%`}</span>
       </span>
     );
   }
@@ -139,4 +139,37 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   }
 
   return null;
+}
+
+/** Header 下载进度环：渐变底上使用白色描边。indeterminate 时整体旋转，不显数字。 */
+function DownloadRing({ progress, indeterminate }: { progress: number; indeterminate: boolean }) {
+  const size = 14;
+  const stroke = 2.5;
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const clamped = Math.min(100, Math.max(0, progress));
+  const offset = indeterminate ? 0 : c * (1 - clamped / 100);
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      className={indeterminate ? "animate-spin" : ""}
+      aria-hidden="true"
+    >
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth={stroke} />
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={r}
+        fill="none"
+        stroke="#fff"
+        strokeWidth={stroke}
+        strokeLinecap="round"
+        strokeDasharray={c}
+        strokeDashoffset={offset}
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+      />
+    </svg>
+  );
 }

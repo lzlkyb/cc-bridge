@@ -13,6 +13,8 @@ export interface UpdateState {
   update: Update | null;
   /** 下载进度 0-100 */
   progress: number;
+  /** 进度未知（total=null，无法计算百分比）时为 true，UI 显示不确定态 */
+  progressIndeterminate: boolean;
   error: string | null;
   checkForUpdate: () => Promise<void>;
   downloadAndInstall: () => Promise<void>;
@@ -81,6 +83,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const [update, setUpdate] = useState<Update | null>(null);
   const [progress, setProgress] = useState(0);
+  const [progressIndeterminate, setProgressIndeterminate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const checkingRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -193,12 +196,19 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
         await listen("update:downloading", () => {
           setStatus("downloading");
           setProgress(0);
+          setProgressIndeterminate(false);
         }),
       );
       unlisteners.push(
         await listen<{ downloaded: number; total: number | null }>("update:progress", (e) => {
           const { downloaded, total } = e.payload;
-          if (total) setProgress(Math.round((downloaded / total) * 100));
+          if (total) {
+            setProgress(Math.round((downloaded / total) * 100));
+            setProgressIndeterminate(false);
+          } else {
+            // total 未知（如某些源不返回 Content-Length）：无法计算百分比，标记不确定态
+            setProgressIndeterminate(true);
+          }
         }),
       );
       unlisteners.push(
@@ -237,7 +247,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <UpdateContext.Provider value={{ status, update, progress, error, checkForUpdate, downloadAndInstall, restart }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, error, checkForUpdate, downloadAndInstall, restart }}>
       {children}
     </UpdateContext.Provider>
   );
