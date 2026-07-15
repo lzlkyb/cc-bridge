@@ -7,9 +7,9 @@ import { Icon } from "../ui/icon";
 import { HealthRing, HeroChip, HeroStat, TOOL_LABELS, usePopClass } from "./HeroStats";
 
 /**
- * 连接页顶部 Hero 卡（方案 A · 分组清晰 · 方案1基础上再压缩）：
- * 状态行 → 概览区(成功率 hero 大数字 + 健康度环) → 核心性能 2×3 网格
- * → 安全治理 · 热门工具 Top3(合并一行) → 启停控制。
+ * 连接页顶部 Hero 卡（方案 B · 双栏卡片）：
+ * 状态行 → 双栏（左:5/12 概览卡片 成功率+健康环 | 右:7/12 2×3 指标网格）
+ * → 安全治理 · 热门工具（无标题单行流式） → 启停控制。
  * 背景为升级版数据雨 canvas（负载联动：rpm 越高雨越密越快，空闲稀疏慢速「呼吸」）
  * + 正式实色 hero + 白色 glow 光斑。
  * 所有指标均来自后端真实统计（StatusResponse.stats），停止态将实时性指标置 --。
@@ -168,7 +168,7 @@ export function ConnectHero({
   const ratePop = usePopClass(rateText);
 
   return (
-    <div className={`hero relative flex flex-col gap-2.5 overflow-hidden ${running ? "hero--live" : "hero-stopped"}`}>
+    <div className={`hero relative flex flex-col gap-2 overflow-hidden ${running ? "hero--live" : "hero-stopped"}`}>
       <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 z-0 h-full w-full" aria-hidden="true" />
       {/* 状态行 */}
       <div className="relative z-[1] flex items-center justify-between gap-3">
@@ -183,39 +183,35 @@ export function ConnectHero({
         )}
       </div>
 
-      {/* 概览区：成功率 hero 大数字 + 健康度环 */}
+      {/* 双栏：左概览卡片 + 右 2×3 指标网格 */}
       <div className="relative z-[1] grid grid-cols-12 gap-2.5 items-stretch">
-        <div className="col-span-7 hero-metric hero-overview flex flex-col justify-center">
+        {/* 左栏：概览卡片（成功率 + 健康环合并） */}
+        <div className="col-span-5 hero-metric hero-overview flex flex-col justify-center gap-0.5">
           <div className="hero-sec-label">服务健康度 · 实时成功率</div>
-          <div className="flex items-end gap-3">
-            <div className={`hero-val-xl ${ratePop}`}>{rateText}</div>
-            <div className="text-[11px] opacity-80 mb-0.5">累计</div>
+          <div className="flex items-end gap-2.5">
+            <div className={`text-[36px] font-extrabold leading-none tracking-tight ${ratePop}`}>{rateText}</div>
+            <div className="text-[10.5px] opacity-75 mb-1">累计</div>
           </div>
-        </div>
-        <div className="col-span-5 hero-metric flex flex-col">
-          <div className="hero-sec-label">综合健康度</div>
-          <div className="flex items-center gap-2.5 mt-0.5">
+          <div className="flex items-center gap-2 mt-1.5">
             <HealthRing rate={rate} running={running} />
             <div className="flex-1 text-[11.5px] leading-relaxed opacity-85">
               运行正常
             </div>
           </div>
         </div>
+        {/* 右栏：2×3 指标网格 */}
+        <div className="col-span-7 grid grid-cols-3 gap-1.5">
+          <HeroStat icon="activity" label="请求速率" value={rpmText} />
+          <HeroStat icon="clock" label="平均耗时" value={avgText} />
+          <HeroStat icon="alertTriangle" label="慢请求 P95" value={p95Text} sub="95% 请求快于此" />
+          <HeroStat icon="clock" label="运行时间" value={uptimeText} />
+          <HeroStat icon="server" label="累计请求" value={fmt(total)} />
+          <HeroStat icon="alertTriangle" label="错误次数" value={fmt(errs)} />
+        </div>
       </div>
 
-      {/* 核心性能 2×3 */}
-      <div className="relative z-[1] grid grid-cols-3 gap-1.5">
-        <HeroStat icon="activity" label="请求速率" value={rpmText} />
-        <HeroStat icon="clock" label="平均耗时" value={avgText} />
-        <HeroStat icon="alertTriangle" label="慢请求 P95" value={p95Text} sub="95% 请求快于此" />
-        <HeroStat icon="clock" label="运行时间" value={uptimeText} />
-        <HeroStat icon="server" label="累计请求" value={fmt(total)} />
-        <HeroStat icon="alertTriangle" label="错误次数" value={fmt(errs)} />
-      </div>
-
-      {/* 安全治理 · 热门工具 Top3（合并一行，省一整块标题+间距） */}
+      {/* 底部行：安全治理 · 热门工具（无标题，单行流式） */}
       <div className="relative z-[1]">
-        <div className="hero-sec-label" style={{ color: "rgba(255,255,255,0.88)" }}>安全治理 · 热门工具 Top3</div>
         <div className="flex flex-wrap items-center gap-2">
           <HeroChip icon="shield" label="限流命中" value={fmt(rateLimitHits)} />
           <HeroChip icon="lock" label="越权拒绝" value={fmt(authDenies)} />

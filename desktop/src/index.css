@@ -267,7 +267,7 @@ body {
 /* A. Hero 渐变头卡 */
 .hero {
   position: relative; overflow: hidden;
-  border-radius: 14px; padding: 16px 20px; color: var(--hero-text);
+  border-radius: 14px; padding: 14px 20px; color: var(--hero-text);
   background: var(--hero-gradient);
   box-shadow: 0 12px 32px var(--hero-shadow);
   transition: background 0.5s ease, box-shadow 0.5s ease;
