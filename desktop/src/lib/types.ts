@@ -6,6 +6,12 @@ export interface StatusResponse {
   maxFileSizeBytes: number;
   rateLimit: { maxRequests: number; windowMs: number };
   backupDir: string;
+  /** 备份目录绝对路径（data_dir / backup_dir），设置页直接展示，无需前端拼凑。 */
+  backupDirAbs: string;
+  /** 备份目录内 .bak 文件总数（get_status 扫描得到）。 */
+  backupCount: number;
+  /** 备份目录总占用字节数。 */
+  backupTotalBytes: number;
   backupRetention: number;
   auditRetentionDays: number;
   host: string;
@@ -56,6 +62,9 @@ export interface StatusResponse {
    *  null 表示无法判断（非 Windows / 查询失败）。 */
   firewallEnabled: boolean | null;
   firewallPortOpen: boolean | null;
+  /** 防火墙探测是否可用。false = 后端启动探测发现 netsh 异常，此后停用查询以避免反复弹系统错误框。
+   *  由后端启动时写入（state.firewall_available，默认 true）。undefined/null = 未确定，按可用处理。 */
+  firewallAvailable?: boolean | null;
 }
 
 export interface ConfigPatch {
@@ -118,6 +127,33 @@ export interface FileDiffResult {
   guard: string | null;
   beforeLines: number;
   afterLines: number;
+}
+
+/** list_backups 返回的单个备份条目。 */
+export interface BackupFileInfo {
+  backupPath: string;
+  sizeBytes: number;
+  /** 已格式化为 "YYYY-MM-DD HH:MM:SS" */
+  createdAt: string;
+  /** 白名单内按文件名匹配到的候选还原目标（绝对路径）；白名单关闭时为空。 */
+  targets: string[];
+}
+
+/** list_backups 返回的按原文件名分组结果。 */
+export interface BackupGroupInfo {
+  originalFile: string;
+  count: number;
+  totalBytes: number;
+  entries: BackupFileInfo[];
+}
+
+/** list_backups 返回的完整结果。 */
+export interface BackupListResult {
+  dir: string;
+  exists: boolean;
+  count: number;
+  totalBytes: number;
+  groups: BackupGroupInfo[];
 }
 
 export interface RunningCommandInfo {

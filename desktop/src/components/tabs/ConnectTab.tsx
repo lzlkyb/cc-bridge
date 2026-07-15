@@ -20,6 +20,8 @@ function ConnectTabImpl({
   onSelectIp,
   ipResolvedByUser,
   onSedResolved,
+  dismissed,
+  onDismissIpChange,
 }: {
   status?: StatusResponse;
   onRefresh: () => void;
@@ -29,6 +31,10 @@ function ConnectTabImpl({
   ipResolvedByUser: boolean;
   /** 方案 Q: 复制远程更新 sed 命令后收口，通知 App 清除 ipResolvedByUser */
   onSedResolved: () => void;
+  /** 方案 R: 用户点关闭按钮「本次会话忽略此 IP 变化提示」（App 层提升），用于隐藏 banner */
+  dismissed?: boolean;
+  /** 方案 R: 关闭按钮回调，通知 App 置 ipChangeDismissed=true */
+  onDismissIpChange?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [scope, setScope] = useState<McpScope>("project");
@@ -133,18 +139,37 @@ function ConnectTabImpl({
           <FirewallAlertBlock port={status.port} onRefresh={onRefresh} />
         )}
 
+      {/* 防火墙探测不可用（netsh 异常）：温和提示，不弹系统错误框。
+          与上方橙色告警互斥——netsh 损坏时 firewallEnabled/portOpen 均为 null，橙色块不会渲染。 */}
+      {status?.firewallAvailable === false && (
+        <div className="animate-fade-in space-y-2 rounded-lg border border-border bg-secondary/40 p-4">
+          <div className="flex items-start gap-2.5">
+            <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
+              <Icon name="info" size={15} />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-foreground">防火墙状态暂不可用</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+                无法查询系统防火墙状态（系统 <code className="rounded bg-background px-1">netsh</code> 异常，错误码 0xc0000142）。这<strong>不影响服务运行与远程连接</strong>——仅本机的防火墙探测被停用，以避免反复弹出系统错误框。如需恢复状态显示，请以管理员身份运行 <code className="rounded bg-background px-1">sfc /scannow</code> 修复后重启本应用。
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* IP 变化醒目提示：上次确认的 IP 不在本机网卡列表中了（VPN 重连等），引导用户选新地址。
           方案 Q：ipChanged 被乐观清除后，靠 ipResolvedByUser 兜底保持可见，直到用户复制远程更新命令。 */}
-      {(status?.ipChanged || ipResolvedByUser) && (
+      {(status?.ipChanged || ipResolvedByUser) && !dismissed && (
         <IpChangedBanner
           lanIps={lanIps}
           selectedIp={selectedIp}
           previousIp={prevIpRef.current}
           port={status?.port ?? 7823}
-          scope={(status?.scope ?? null) as McpScope | null}
+          scope={scope}
           projectPath={projectPath}
           onResolved={onSelectIp}
           onSedResolved={onSedResolved}
+          onDismiss={onDismissIpChange}
         />
       )}
 
@@ -303,17 +328,20 @@ function IpChangedBanner({
   projectPath,
   onResolved,
   onSedResolved,
+  onDismiss,
 }: {
   lanIps: string[];
   selectedIp: string;
   previousIp: string | null;
   port: number;
-  /** 持久化作用域（首次接入落盘）。null 表示旧数据未记录，此时展示两条命令兜底 */
-  scope: McpScope | null;
+  /** 接入作用域：与下方「项目级/全局模式」选择卡共用同一份 scope 状态，实时联动 */
+  scope: McpScope;
   projectPath: string;
   onResolved: (ip: string) => void;
   /** 方案 Q: 复制远程更新命令后通知 App 收口（清除 ipResolvedByUser），banner 随后自然消失 */
   onSedResolved: () => void;
+  /** 方案 R: 关闭按钮回调，通知 App 会话级隐藏 banner */
+  onDismiss?: () => void;
 }) {
   const [copiedCmd, setCopiedCmd] = useState("");
 
@@ -321,7 +349,18 @@ function IpChangedBanner({
   // 此时只给说明、不渲染选择控件;网络恢复、网卡重新出现后会自动回到正常分支。
   if (lanIps.length === 0) {
     return (
-      <div className="animate-fade-in space-y-3 rounded-lg border border-destructive/35 bg-destructive/[0.08] p-4">
+      <div className="animate-fade-in relative space-y-3 rounded-lg border border-destructive/35 bg-destructive/[0.08] p-4">
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="关闭提示"
+            title="本次会话忽略此提示"
+            className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-foreground"
+          >
+            <Icon name="close" size={14} />
+          </button>
+        )}
         <div className="flex items-start gap-2.5">
           <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-destructive/15 text-destructive">
             <Icon name="alertTriangle" size={15} />
@@ -339,8 +378,7 @@ function IpChangedBanner({
 
   // 原地替换 url 里的 host：sed 匹配任意旧 IP（[0-9.]*），幂等可重跑，
   // 不动 Bearer、不 remove+add，因此服务器条目与授权状态保留、不会重新授权。
-  // 作用域读持久化的 scope（方案 A）：有值→精确单条；null（旧数据）→ user+project 两条兜底，
-  // sed 不匹配的配置文件不会误改，用户挑对的跑即可。
+  // 作用域直接读下方选择卡当前选中的 scope（方案 A：实时联动），始终输出单条精确命令。
   const buildSed = (scp: "user" | "project") => {
     const cfgFile = scp === "user" ? "~/.claude.json" : ".mcp.json";
     const cdPrefix =
@@ -348,17 +386,12 @@ function IpChangedBanner({
     return `${cdPrefix}sed -i 's#http://[0-9.]*:${port}/mcp#http://${selectedIp}:${port}/mcp#g' ${cfgFile}`;
   };
 
-  const entries: { label: string; cmd: string }[] = scope
-    ? [
-        {
-          label: scope === "user" ? "全局（~/.claude.json）" : "项目（.mcp.json）",
-          cmd: buildSed(scope),
-        },
-      ]
-    : [
-        { label: "全局（~/.claude.json）", cmd: buildSed("user") },
-        { label: "项目（.mcp.json）", cmd: buildSed("project") },
-      ];
+  const entries: { label: string; cmd: string }[] = [
+    {
+      label: scope === "user" ? "全局（~/.claude.json）" : "项目（.mcp.json）",
+      cmd: buildSed(scope),
+    },
+  ];
 
   // 仅当用户已在下方 AddressPicker 选中一个当前在网卡列表中的「新」地址时，
   // 才允许生成/复制 sed（把远程配置里的旧 IP 替换为选中的新 IP）。
@@ -374,7 +407,18 @@ function IpChangedBanner({
   };
 
   return (
-    <div className="animate-fade-in space-y-3 rounded-lg border border-destructive/35 bg-destructive/[0.08] p-4">
+    <div className="animate-fade-in relative space-y-3 rounded-lg border border-destructive/35 bg-destructive/[0.08] p-4">
+      {onDismiss && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="关闭提示"
+          title="本次会话忽略此提示"
+          className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-foreground"
+        >
+          <Icon name="close" size={14} />
+        </button>
+      )}
       <div className="flex items-start gap-2.5">
         <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-destructive/15 text-destructive">
           <Icon name="alertTriangle" size={15} />
@@ -391,9 +435,7 @@ function IpChangedBanner({
       {newIpValid ? (
         <div className="pl-[38px] space-y-3">
           <p className="text-xs text-muted-foreground">
-            {scope
-              ? "已选中新地址，复制以下命令到远程服务器执行（原地更新 IP，不会重新授权）："
-              : `未能确认当初的接入作用域，请选择你最初添加 ${APP_INFO.name} 时使用的作用域执行对应命令（不匹配的配置文件不会被改动）：`}
+            已选中新地址，复制以下命令到远程服务器执行（原地更新 IP，不会重新授权）：
           </p>
           {entries.map((e, i) => (
             <div key={i} className="space-y-1.5">

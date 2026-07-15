@@ -76,3 +76,28 @@ pub fn prune_backups(
 
     Ok(removed)
 }
+
+/// 备份目录的绝对路径 = data_dir / backup_dir_name。
+pub fn backup_dir_abs(data_dir: &Path, backup_dir_name: &str) -> PathBuf {
+    data_dir.join(backup_dir_name)
+}
+
+/// 统计备份目录：返回 (` .bak 文件数`, `总字节数`)。目录不存在时返回 (0, 0)。
+/// 用于设置页「共 N 个备份 · 占用 X MB」展示，避免前端再扫磁盘。
+pub fn backup_stats(data_dir: &Path, backup_dir_name: &str) -> (u32, u64) {
+    let dir = data_dir.join(backup_dir_name);
+    let mut count = 0u32;
+    let mut total = 0u64;
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for entry in rd.filter_map(|e| e.ok()) {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("bak") {
+                if let Ok(meta) = entry.metadata() {
+                    count += 1;
+                    total += meta.len();
+                }
+            }
+        }
+    }
+    (count, total)
+}

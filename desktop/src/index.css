@@ -670,6 +670,16 @@ body {
   to   { opacity: 1; }
 }
 
+/* 版本历史加载骨架屏微光 */
+@keyframes vh-skel-shimmer {
+  0%   { opacity: 0.55; }
+  50%  { opacity: 1; }
+  100% { opacity: 0.55; }
+}
+.vh-skel {
+  animation: vh-skel-shimmer 1.3s ease-in-out infinite;
+}
+
 /* ═══ PastePanda 风格设置行 ═══ */
 .s-sec-label {
   font-size: 10px; font-weight: 700; text-transform: uppercase;
@@ -683,6 +693,7 @@ body {
 .s-icon {
   width: 28px; height: 28px; border-radius: 7px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center; font-size: 13px;
+  background: transparent; color: hsl(var(--foreground));
 }
 .s-body { flex: 1; min-width: 0; }
 .s-label { font-size: 12.5px; font-weight: 600; color: hsl(var(--foreground)); }

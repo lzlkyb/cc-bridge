@@ -95,6 +95,9 @@ pub struct AppState {
 
     /// 防火墙状态缓存（规则级，仅 Windows 真实查询）。见 `FirewallCache`。
     pub firewall_cache: StdMutex<FirewallCache>,
+    /// 系统 netsh 是否可用（启动探测一次）。false 时停止后台/手动防火墙查询，
+    /// 状态恒为 unknown，避免 netsh 损坏时反复 spawn 失败进程并触发「应用程序错误」弹窗。
+    pub firewall_available: StdMutex<bool>,
 
     // ── 方案 A 运行卡实时指标（全做真·后端实时统计）──
     /// 最近请求到达时间戳，用于 rpm（60s 滑动窗口）。StdMutex 短临界区，不跨 await。
@@ -133,6 +136,7 @@ impl AppState {
                 port_open: None,
                 checked_at: None,
             }),
+            firewall_available: StdMutex::new(true),
             recent_requests: StdMutex::new(VecDeque::new()),
             latency_sum_ms: AtomicU64::new(0),
             latency_count: AtomicU64::new(0),

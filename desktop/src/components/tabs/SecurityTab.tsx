@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef, useCallback, Fragment } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse, ConfigSaveResult, RunningCommandInfo, CommandOutput } from "../../lib/types";
-import { formatUptime } from "../../lib/utils";
+import type { StatusResponse, ConfigSaveResult, RunningCommandInfo, CommandOutput, BackupListResult, BackupFileInfo } from "../../lib/types";
+import { formatUptime, formatBytes } from "../../lib/utils";
+import { VersionHistoryModal } from "../backup/VersionHistoryModal";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Input } from "../ui/input";
 import { DirectoryBrowser } from "../modals/DirectoryBrowser";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { useToast } from "../ui/toast";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 import { Badge } from "../ui/badge";
 import { SecurityOverview } from "./SecurityOverview";
@@ -24,6 +27,36 @@ export function SecurityTab({
   const [browserOpen, setBrowserOpen] = useState(false);
   const [lastSavedField, setLastSavedField] = useState("");
   const [rootSearch, setRootSearch] = useState("");
+
+  // ── 备份查看（P0 统计/路径 · P1 清单/还原 · 版本历史弹框）──
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [backups, setBackups] = useState<BackupListResult | null>(null);
+  const [loadingBackups, setLoadingBackups] = useState(false);
+  const [restoreEntry, setRestoreEntry] = useState<BackupFileInfo | null>(null);
+
+  const handleOpenBackupDir = async () => {
+    try {
+      await invoke("reveal_backup_dir");
+    } catch (e) {
+      console.error("[备份] 打开目录失败:", e);
+    }
+  };
+
+  const openHistory = async () => {
+    setHistoryOpen(true);
+    // 首次打开时懒加载（不占首屏），之后复用缓存
+    if (!backups && !loadingBackups) {
+      setLoadingBackups(true);
+      try {
+        const r = await invoke<BackupListResult>("list_backups");
+        setBackups(r);
+      } catch (e) {
+        console.error("[备份] 列出失败:", e);
+      } finally {
+        setLoadingBackups(false);
+      }
+    }
+  };
 
   const showSaved = useCallback((field: string) => {
     setLastSavedField(field);
@@ -165,7 +198,7 @@ export function SecurityTab({
           <div className="s-sec-label">备份</div>
 
           <div className="s-row group">
-            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}><Icon name="download" size={15} aria-hidden="true" /></div>
+            <span className="title-chip"><Icon name="file" size={15} aria-hidden="true" /></span>
             <div className="s-body">
               <div className="s-label">文件大小上限</div>
               <div className="s-row-desc">超过上限的文件自动截断</div>
@@ -183,10 +216,13 @@ export function SecurityTab({
           <div className="s-row-divider" />
 
           <div className="s-row group">
-            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}><Icon name="copy" size={15} aria-hidden="true" /></div>
+            <span className="title-chip"><Icon name="history" size={15} aria-hidden="true" /></span>
             <div className="s-body">
               <div className="s-label">备份保留份数</div>
-              <div className="s-row-desc">超出后自动清理最早的备份</div>
+              <div className="s-row-desc">
+                同一文件最多保留最近 N 份（按编辑次数累积，
+                <span className="font-medium text-foreground">非按天</span>）
+              </div>
             </div>
             <div className="s-right">
               <InlineNum
@@ -201,20 +237,75 @@ export function SecurityTab({
           <div className="s-row-divider" />
 
           <div className="s-row group">
-            <div className="s-icon" style={{ background: "linear-gradient(135deg,#6366F1,#4F46E5)" }}><Icon name="folder" size={15} aria-hidden="true" /></div>
+            <span className="title-chip"><Icon name="folder" size={15} aria-hidden="true" /></span>
             <div className="s-body">
               <div className="s-label">备份目录</div>
-              <div className="s-row-desc font-mono text-[11px]">{status?.backupDir ?? "未设置"}</div>
+              <div className="s-row-desc font-mono text-[11px] break-all" title={status?.backupDirAbs}>
+                {status?.backupDirAbs || status?.backupDir || "未设置"}
+              </div>
             </div>
             <div className="s-right">
-              <Button variant="outline" size="sm" onClick={() => setBrowserOpen(true)}>浏览…</Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleOpenBackupDir}
+                disabled={!status?.backupDirAbs}
+              >
+                <Icon name="folder" size={14} />
+                打开文件夹
+              </Button>
             </div>
           </div>
-          <InlineStr
-            value={status?.backupDir ?? ""}
-            saved={lastSavedField === "backupDir"}
-            onSave={(v) => saveField({ backupDir: v }, "backupDir")}
-            className="hidden"
+          <p className="s-row-desc px-2.5 pb-1 text-[10.5px]">
+            备份仅存于本机该目录，远程 Claude Code 无法读取；目录名由程序固定管理，无需手动修改。
+          </p>
+
+          {/* P0：实时统计 + 规则说明 */}
+          <div className="mt-1 flex items-center gap-2 rounded-md bg-muted/60 px-3 py-2 text-xs">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+            <span>
+              共 <span className="font-semibold">{status?.backupCount ?? 0}</span> 个备份 · 占用{" "}
+              <span className="font-semibold">{formatBytes(status?.backupTotalBytes ?? 0)}</span>
+            </span>
+          </div>
+          <div className="mt-2.5 flex gap-2.5 rounded-lg border border-primary/25 bg-primary/10 p-3 text-xs leading-relaxed text-foreground">
+            <Icon name="info" size={15} className="mt-0.5 shrink-0 text-primary" />
+            <div>
+              <b className="text-primary">备份怎么产生的？</b> 你（或远程会话）每次
+              <b>改写 / 删除一个已存在的受保护文件</b>前，程序会自动把原文件复制一份到上面的目录，命名为
+              <code className="mx-0.5 rounded bg-background/60 px-1 font-mono text-[11px]">原文件名.时间戳.bak</code>
+              。同一文件被改多次会留多个版本，<b>只按份数保留最近 N 份，与日期无关</b>。
+            </div>
+          </div>
+
+          {/* 版本历史：打开居中弹框（检索/导航 + 版本时间线 + 相邻对比 + 还原） */}
+          <button
+            type="button"
+            className="mt-3 flex w-full items-center gap-3 rounded-lg border border-border bg-card px-3.5 py-3 text-left transition-colors hover:bg-muted"
+            onClick={openHistory}
+          >
+            <span className="title-chip">
+              <Icon name="history" size={16} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-semibold text-foreground">版本历史</div>
+              <div className="truncate text-[11px] text-muted-foreground">
+                浏览备份快照 · 查看改动 · 对比相邻版本 · 还原
+              </div>
+            </div>
+            <span className="shrink-0 text-xs font-semibold text-primary">
+              打开
+              <Icon name="chevronRight" size={14} className="ml-0.5 inline" />
+            </span>
+          </button>
+
+          <VersionHistoryModal
+            open={historyOpen}
+            status={status}
+            result={backups}
+            loading={loadingBackups}
+            onClose={() => setHistoryOpen(false)}
+            onRestore={(entry) => setRestoreEntry(entry)}
           />
 
           <div className="my-3.5 h-px bg-border" />
@@ -223,7 +314,7 @@ export function SecurityTab({
           <div className="s-sec-label">请求限流</div>
 
           <div className="s-row group">
-            <div className="s-icon" style={{ background: "linear-gradient(135deg,#F59E0B,#EA580C)" }}>⏱</div>
+            <span className="title-chip"><Icon name="sliders" size={15} aria-hidden="true" /></span>
             <div className="s-body">
               <div className="s-label">请求限制</div>
               <div className="s-row-desc">
@@ -260,6 +351,10 @@ export function SecurityTab({
           addRoot(path);
         }}
       />
+
+      {restoreEntry && (
+        <RestoreBackupDialog entry={restoreEntry} onClose={() => setRestoreEntry(null)} />
+      )}
     </div>
   );
 }
@@ -566,28 +661,102 @@ function InlineNum({
   );
 }
 
-function InlineStr({
-  value: initial, saved, onSave, className = "",
-}: {
-  value: string; saved: boolean; onSave: (v: string) => Promise<void>; className?: string;
-}) {
-  const [value, setValue] = useState(initial);
-  const initialized = useRef(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
-  useEffect(() => {
-    if (!initialized.current) { setValue(initial); initialized.current = !!initial; }
-  }, [initial]);
-  const handleChange = (v: string) => {
-    setValue(v);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => onSave(v), 800);
+/** P1：还原确认弹窗（调已有 restore_file）。targets 为空时禁用确认。 */
+function RestoreBackupDialog({ entry, onClose }: { entry: BackupFileInfo; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [target, setTarget] = useState(entry.targets[0] ?? "");
+  const { toast } = useToast();
+
+  const onConfirm = async () => {
+    if (!target) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await invoke("restore_file", { backup_path: entry.backupPath, target_path: target });
+      toast("已还原到操作前版本", "success");
+      onClose();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
   };
-  return (
-    <div className={className}>
-      <Input value={value} onChange={(e) => handleChange(e.target.value)}
-        onBlur={() => { if (debounceRef.current) { clearTimeout(debounceRef.current); onSave(value); } }}
-      />
-      {saved && <span className="text-[10px] text-success">✓</span>}
-    </div>
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="mx-4 w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
+          <Icon name="restore" size={18} />
+          还原备份
+        </h4>
+        <div className="mb-3 space-y-1.5 rounded-md bg-muted/30 p-3 text-xs">
+          <div className="flex gap-2">
+            <span className="w-14 shrink-0 text-muted-foreground">备份</span>
+            <code className="break-all font-mono">{entry.backupPath}</code>
+          </div>
+          <div className="flex gap-2">
+            <span className="w-14 shrink-0 text-muted-foreground">大小</span>
+            <span className="font-mono">{formatBytes(entry.sizeBytes)}</span>
+          </div>
+        </div>
+        {entry.targets.length > 0 ? (
+          <div className="mb-3">
+            <label className="mb-1 block text-xs font-medium text-muted-foreground">
+              还原到（在白名单目录中按文件名匹配）
+            </label>
+            {entry.targets.length === 1 ? (
+              <code className="block break-all rounded-md border border-border bg-muted/30 p-2 font-mono text-xs">
+                {entry.targets[0]}
+              </code>
+            ) : (
+              <select
+                value={target}
+                onChange={(e) => setTarget(e.target.value)}
+                className="h-9 w-full rounded-md border border-input bg-card px-2 font-mono text-xs outline-none focus:border-primary"
+              >
+                {entry.targets.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        ) : (
+          <p className="mb-3 flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
+            <Icon name="info" size={14} className="mt-0.5 shrink-0" />
+            未找到匹配的目标文件（白名单关闭或文件名不在白名单目录内），无法安全还原。可在「审计日志」中对应操作的详情里还原。
+          </p>
+        )}
+        {err && (
+          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive break-all">
+            {err}
+          </div>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
+            取消
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={onConfirm}
+            disabled={busy || entry.targets.length === 0 || !target}
+            isLoading={busy}
+            loadingText="还原中…"
+          >
+            确认还原
+          </Button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

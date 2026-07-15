@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-07-15
+
+### 新增
+- 备份浏览器（版本历史弹框）：设置页备份段新增「版本历史」入口，居中大弹框按原文件分组展示版本时间线；支持「看改了什么」(`get_file_diff`，白名单关闭时禁用)、「与上一版比」(`diff_backups` 相邻版对比)、「还原」(复用 RestoreBackupDialog)；含检索 / 排序 / 文件索引跳转 / 按文件·按时间视图切换 / 展开全部。后端新增 `diff_backups` 命令（两 .bak 互比，双重白名单校验）。
+- 防火墙 netsh 可用性探测：启动一次性探测 `netsh` 是否可用，损坏时停用防火墙查询并改为连接页温和提示，避免反复弹出系统错误框。
+
+### 变更
+- IP 变化弹窗作用域改为跟随连接页「项目级 / 全局模式」选择卡实时联动（复用现有控件），只给单一精确命令，去掉旧数据的两条兜底。
+- 打开安装目录改用 `tauri-plugin-opener` 的 `reveal_item_in_dir`（不再闪 cmd 窗口）；创建桌面快捷方式给 powershell 加 `-WindowStyle Hidden`（不再闪窗口）。
+- 安全页「备份份数 / 请求限制」图标去渐变背景，统一为单色 lucide 图标，与白名单等图标风格一致。
+- `Status` 新增 `firewallAvailable` 字段，供前端判断并显示防火墙探测不可用提示。
+
+### 修复
+- 防火墙查询触发 `netsh.exe` 崩溃(0xc0000142)时反复弹出系统错误框：子进程创建时 `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)` 抑制硬错误弹窗，且 netsh 命令与提权 powershell 均加 `CREATE_NO_WINDOW`；启动探测到 netsh 不可用后停用后续查询。
+
 ## [2.3.0] - 2026-07-15
 
 ### 新增

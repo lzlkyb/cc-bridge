@@ -215,3 +215,36 @@ export function countUnreadVersions(versions: string[], lastSeen: string | null)
   if (!lastSeen) return versions.length; // 从未看过 → 全部未读
   return versions.filter((v) => compareVersion(v, lastSeen) > 0).length;
 }
+
+/**
+ * 绝对时间（备份 createdAt 形如 "YYYY-MM-DD HH:MM:SS"）转中文相对时间：
+ * 刚刚 / X 分钟前 / X 小时前 / X 天前 / X 个月前 / X 年前。
+ * 解析失败（如"未知时间"）原样返回，避免崩溃。
+ */
+export function formatRelativeTime(dateStr: string): string {
+  if (!dateStr) return "";
+  const s = dateStr.includes("T") ? dateStr : dateStr.replace(" ", "T");
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return dateStr;
+  const diffSec = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diffSec < 0) return dateStr; // 未来时间（时钟异常）回退原值
+  if (diffSec < 60) return "刚刚";
+  const min = Math.floor(diffSec / 60);
+  if (min < 60) return `${min} 分钟前`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} 小时前`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day} 天前`;
+  const mon = Math.floor(day / 30);
+  if (mon < 12) return `${mon} 个月前`;
+  return `${Math.floor(mon / 12)} 年前`;
+}
+
+/** 字节数格式化为带单位的人类可读文本（B/KB/MB/GB），SecurityTab 与版本历史弹框共用（规则 11）。 */
+export function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const val = bytes / Math.pow(1024, i);
+  return `${val >= 10 || i === 0 ? Math.round(val) : val.toFixed(1)} ${units[i]}`;
+}

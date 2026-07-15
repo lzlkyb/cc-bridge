@@ -33,6 +33,12 @@ pub struct StatusResponse {
     pub rate_limit: RateLimitInfo,
     #[serde(rename = "backupDir")]
     pub backup_dir: String,
+    #[serde(rename = "backupDirAbs")]
+    pub backup_dir_abs: String,
+    #[serde(rename = "backupCount")]
+    pub backup_count: u32,
+    #[serde(rename = "backupTotalBytes")]
+    pub backup_total_bytes: u64,
     #[serde(rename = "backupRetention")]
     pub backup_retention: u32,
     #[serde(rename = "auditRetentionDays")]
@@ -81,12 +87,17 @@ pub struct StatusResponse {
     /// 防火墙状态（仅 Windows 真实查询，其它平台为 None）。
     /// firewall_enabled：防火墙是否开启（任一配置文件启用即 true）。
     /// firewall_port_open：7823/TCP 入站是否被放行（存在 allow 规则即 true）。
-    /// 两者均为 None 表示无法判断（非 Windows / 查询失败）。
+    /// 两者均为 None 表示无法判断（非 Windows / 查询失败 / netsh 不可用）。
     /// 这是「远程未确认连接」状态机的信号源——诚实暴露本机探针对远程入站拦截的盲点。
     #[serde(rename = "firewallEnabled")]
     pub firewall_enabled: Option<bool>,
     #[serde(rename = "firewallPortOpen")]
     pub firewall_port_open: Option<bool>,
+    /// 系统 netsh 是否可用（仅 Windows 有意义）。Some(true)=可用；Some(false)=netsh 异常
+    /// （已停用查询，状态恒为 unknown）；None=非 Windows。前端据此在 netsh 损坏时给出温和
+    /// 提示，而非让用户反复看到「应用程序错误」弹窗。
+    #[serde(rename = "firewallAvailable")]
+    pub firewall_available: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -150,15 +161,33 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
 
     // 防火墙状态：优先读缓存（后台定时刷新）。缓存尚未初始化时做一次同步查询，
     // 保证首屏即可拿到真实状态，避免前几次轮询都返回 unknown。
+    // netsh 不可用时（启动探测失败）跳过查询，状态保持 unknown（不再弹窗 / 反复 spawn）。
     let (firewall_enabled, firewall_port_open) = {
         let mut cache = state.firewall_cache.lock().unwrap();
         if cache.checked_at.is_none() {
-            let (e, p) = crate::firewall::query_firewall_state(config.port);
-            cache.enabled = e;
-            cache.port_open = p;
+            #[cfg(windows)]
+            let available = *state.firewall_available.lock().unwrap();
+            #[cfg(not(windows))]
+            let available = true;
+            if available {
+                let (e, p) = crate::firewall::query_firewall_state(config.port);
+                cache.enabled = e;
+                cache.port_open = p;
+            }
             cache.checked_at = Some(Instant::now());
         }
         (cache.enabled, cache.port_open)
+    };
+    // netsh 可用性：仅 Windows 有意义（非 Windows 为 None）。
+    let firewall_available: Option<bool> = {
+        #[cfg(windows)]
+        {
+            Some(*state.firewall_available.lock().unwrap())
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
     };
     // 地址变化检测:
     // 1) 监听全部网卡时,以用户上次确认的 IP 是否仍在网卡列表为准;
@@ -270,6 +299,15 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         v
     };
 
+    // 备份目录绝对路径 + 统计（扫一次磁盘，供设置页展示）。
+    let backup_dir_abs = state
+        .data_dir
+        .join(&config.backup_dir)
+        .to_string_lossy()
+        .into_owned();
+    let (backup_count, backup_total_bytes) =
+        backup::backup_stats(&state.data_dir, &config.backup_dir);
+
     Ok(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
         uptime_seconds: uptime,
@@ -281,6 +319,9 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
             window_ms: config.rate_limit_window_ms,
         },
         backup_dir: config.backup_dir.clone(),
+        backup_dir_abs,
+        backup_count,
+        backup_total_bytes,
         backup_retention: config.backup_retention,
         audit_retention_days: config.audit_retention_days,
         host: config.host.clone(),
@@ -316,6 +357,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         lan_ips,
         firewall_enabled,
         firewall_port_open,
+        firewall_available,
     })
 }
 
@@ -659,7 +701,9 @@ pub fn install_dir() -> Result<String, String> {
     Ok(dir)
 }
 
-/// 在系统文件管理器中打开安装目录（cmd start 经 ShellExecute，规避 explorer /select 的 DDE 转发导致不弹窗）。
+/// 在系统文件管理器中打开（定位）安装目录。
+/// 使用 tauri-plugin-opener 的 reveal_item_in_dir（Windows 底层 SHOpenFolderAndSelectItems），
+/// 不产生子进程、不闪 cmd 窗口；项目已依赖并注册 opener 插件（Cargo.toml:18 / main.rs:137）。
 /// 同时返回安装目录字符串，便于前端展示。
 #[tauri::command]
 pub fn reveal_install_dir() -> Result<String, String> {
@@ -669,15 +713,7 @@ pub fn reveal_install_dir() -> Result<String, String> {
         .ok_or_else(|| "无法解析安装目录".to_string())?
         .to_string_lossy()
         .into_owned();
-    // 用 cmd start 直接打开安装目录（纯目录打开）。
-    // 注：explorer /select 在 explorer 已单实例运行时会经 DDE 把请求转发给已有实例并
-    // 立即退出（返回成功），但实际不弹出窗口，故改用 start 经 ShellExecute 打开目录。
-    let status = std::process::Command::new("cmd")
-        .args(["/c", "start", "", &dir])
-        .status();
-    if let Err(e) = status {
-        return Err(format!("打开安装目录失败: {e}"));
-    }
+    tauri_plugin_opener::reveal_item_in_dir(&dir).map_err(|e| format!("打开安装目录失败: {e}"))?;
     Ok(dir)
 }
 
@@ -723,7 +759,14 @@ pub fn create_desktop_shortcut(app: tauri::AppHandle) -> Result<(), String> {
         dir = dir_str.replace('\'', "''"),
     );
     let out = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &ps,
+        ])
         .output()
         .map_err(|e| format!("创建快捷方式失败: {e}"))?;
     if !out.status.success() {
@@ -967,7 +1010,7 @@ fn assert_backup_path_in_scope(
 /// 安全（不削弱）：backup_path 限备份目录内 .bak；target_path 走白名单校验。
 /// 还原前对当前目标再备一次（可继续撤销）；目标不存在（删除类操作）则直接恢复被删文件。
 /// 自身写一条审计（关联新备份），使回滚动作也可追溯。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn restore_file(
     state: State<'_, Arc<AppState>>,
     backup_path: String,
@@ -1023,6 +1066,233 @@ pub async fn restore_file(
     Ok(())
 }
 
+// ===== 备份目录查看 + 清单（P0/P1）=====
+
+/// 在系统文件管理器中打开备份目录（复用 reveal_install_dir 的 cmd start 思路，
+/// 规避 explorer /select 的 DDE 转发导致不弹窗）。同时返回绝对路径供前端展示。
+/// 目录可能尚不存在（从未产生备份）——先创建，确保资源管理器能打开。
+#[tauri::command]
+pub async fn reveal_backup_dir(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let config = state.config.read().await;
+    let dir = state.data_dir.join(&config.backup_dir);
+    drop(config);
+    let dir_str = dir.to_string_lossy().into_owned();
+    let _ = std::fs::create_dir_all(&dir);
+    let status = std::process::Command::new("cmd")
+        .args(["/c", "start", "", &dir_str])
+        .status();
+    if let Err(e) = status {
+        return Err(format!("打开备份目录失败: {e}"));
+    }
+    Ok(dir_str)
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackupFileInfo {
+    #[serde(rename = "backupPath")]
+    pub backup_path: String,
+    #[serde(rename = "sizeBytes")]
+    pub size_bytes: u64,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    /// 白名单内按文件名匹配到的候选还原目标（绝对路径）。白名单关闭时恒为空。
+    pub targets: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackupGroupInfo {
+    #[serde(rename = "originalFile")]
+    pub original_file: String,
+    pub count: usize,
+    #[serde(rename = "totalBytes")]
+    pub total_bytes: u64,
+    pub entries: Vec<BackupFileInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackupListResult {
+    pub dir: String,
+    pub exists: bool,
+    pub count: usize,
+    #[serde(rename = "totalBytes")]
+    pub total_bytes: u64,
+    pub groups: Vec<BackupGroupInfo>,
+}
+
+/// 列出全部 .bak 备份，按原文件名分组，并尽力反查还原目标。
+///
+/// 安全（不削弱）：targets 仅在白名单开启时、于 allowed_roots 内按文件名递归匹配，
+/// 不返回白名单外路径；白名单关闭时 targets 恒为空（还原交由 restore_file 走白名单校验）。
+#[tauri::command]
+pub async fn list_backups(state: State<'_, Arc<AppState>>) -> Result<BackupListResult, String> {
+    let config = state.config.read().await;
+    let data_dir = state.data_dir.clone();
+    let backup_dir_name = config.backup_dir.clone();
+    let whitelist_enabled = config.whitelist_enabled;
+    let allowed_roots: Vec<std::path::PathBuf> = config
+        .allowed_roots
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    drop(config);
+
+    let dir = data_dir.join(&backup_dir_name);
+    let mut result = BackupListResult {
+        dir: dir.to_string_lossy().into_owned(),
+        exists: dir.exists(),
+        count: 0,
+        total_bytes: 0,
+        groups: Vec::new(),
+    };
+    if !result.exists {
+        return Ok(result);
+    }
+
+    let mut groups: std::collections::BTreeMap<String, BackupGroupInfo> =
+        std::collections::BTreeMap::new();
+
+    let rd = std::fs::read_dir(&dir).map_err(|e| format!("读取备份目录失败: {e}"))?;
+    for entry in rd.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("bak") {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let size = meta.len();
+        // 文件名 = "{original}.{timestamp}.bak"（时间戳含下划线、无点）
+        let stem = match p.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let (original, ts) = match stem.rsplit_once('.') {
+            Some((o, t)) => (o.to_string(), t.to_string()),
+            None => (stem.clone(), String::new()),
+        };
+        let created_at = parse_backup_timestamp(&ts, &meta);
+        let g = groups
+            .entry(original.clone())
+            .or_insert_with(|| BackupGroupInfo {
+                original_file: original.clone(),
+                count: 0,
+                total_bytes: 0,
+                entries: Vec::new(),
+            });
+        g.count += 1;
+        g.total_bytes += size;
+        g.entries.push(BackupFileInfo {
+            backup_path: p.to_string_lossy().into_owned(),
+            size_bytes: size,
+            created_at,
+            targets: Vec::new(),
+        });
+    }
+
+    // 反查还原目标（仅白名单开启时）：单遍遍历白名单树建 {文件名->路径列表} map，
+    // 再 O(1) 回填。避免"每个 .bak 都递归全树"的 O(备份数 × 树大小) 重复扫描。
+    if whitelist_enabled && !groups.is_empty() {
+        let wanted: std::collections::HashSet<String> = groups.keys().cloned().collect();
+        let map = build_targets_map(&allowed_roots, &wanted);
+        for g in groups.values_mut() {
+            if let Some(paths) = map.get(&g.original_file) {
+                for e in g.entries.iter_mut() {
+                    e.targets = paths.clone();
+                }
+            }
+        }
+    }
+
+    // 每组内按时间倒序（文件名时间戳字典序即时间序）
+    for g in groups.values_mut() {
+        g.entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    }
+    result.groups = groups.into_values().collect();
+    result.count = result.groups.iter().map(|g| g.count).sum();
+    result.total_bytes = result.groups.iter().map(|g| g.total_bytes).sum();
+    Ok(result)
+}
+
+/// 解析备份时间戳（文件名内嵌的 %Y%m%d_%H%M%S_%3f）；失败回退到文件修改时间。
+fn parse_backup_timestamp(ts: &str, meta: &std::fs::Metadata) -> String {
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(ts, "%Y%m%d_%H%M%S_%3f") {
+        return dt.format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+    if let Ok(system_time) = meta.modified() {
+        let dt: chrono::DateTime<chrono::Local> = system_time.into();
+        return dt.format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+    "未知时间".to_string()
+}
+
+/// 单遍遍历白名单根目录，一次性收集所有 `wanted` 文件名的匹配路径，返回 {文件名->路径列表} map。
+/// 有界：最大深度 6、最多扫描 8000 个文件、每个文件名最多 50 个候选。
+/// 相比"每个文件名各扫一遍树"，把 O(备份数 × 树大小) 降到 O(树大小)。
+fn build_targets_map(
+    roots: &[std::path::PathBuf],
+    wanted: &std::collections::HashSet<String>,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    if wanted.is_empty() {
+        return map;
+    }
+    let mut scanned = 0usize;
+    for root in roots {
+        if !root.exists() {
+            continue;
+        }
+        walk_collect_targets(root, 0, 6, &mut scanned, 8000, wanted, &mut map);
+    }
+    map
+}
+
+fn walk_collect_targets(
+    dir: &std::path::Path,
+    depth: u32,
+    max_depth: u32,
+    scanned: &mut usize,
+    max_scan: usize,
+    wanted: &std::collections::HashSet<String>,
+    out: &mut std::collections::HashMap<String, Vec<String>>,
+) {
+    if depth > max_depth || *scanned >= max_scan {
+        return;
+    }
+    let rd = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for entry in rd.filter_map(|e| e.ok()) {
+        if *scanned >= max_scan {
+            return;
+        }
+        *scanned += 1;
+        let p = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
+            // 跳过常见无关/巨型目录以提速，避免卡死
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == ".git" || name == "node_modules" || name == "target" || name == ".cache" {
+                continue;
+            }
+            walk_collect_targets(&p, depth + 1, max_depth, scanned, max_scan, wanted, out);
+        } else if file_type.is_file() {
+            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                if wanted.contains(name) {
+                    let v = out.entry(name.to_string()).or_default();
+                    if v.len() < 50 {
+                        v.push(p.to_string_lossy().into_owned());
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct DiffLine {
     /// "context" | "added" | "removed"
@@ -1046,7 +1316,7 @@ pub struct FileDiffResult {
 ///
 /// 安全（不削弱）：同 restore_file —— backup_path 限备份目录内 .bak；target 走白名单校验。
 /// 大文件 / 二进制 / 行数过多触发护栏，仅返回行数统计，避免前端卡死；护栏下仍允许「还原」。
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_file_diff(
     state: State<'_, Arc<AppState>>,
     backup_path: String,
@@ -1116,6 +1386,83 @@ pub async fn get_file_diff(
 
     // 行级 diff（复用 similar，已是项目依赖）
     let diff = TextDiff::from_lines(&before, &after);
+    let lines: Vec<DiffLine> = diff
+        .iter_all_changes()
+        .map(|c| {
+            let (sign, kind) = match c.tag() {
+                similar::ChangeTag::Delete => ("-", "removed"),
+                similar::ChangeTag::Insert => ("+", "added"),
+                similar::ChangeTag::Equal => (" ", "context"),
+            };
+            DiffLine {
+                kind: kind.into(),
+                text: format!("{}{}", sign, c.value()),
+            }
+        })
+        .collect();
+
+    Ok(FileDiffResult {
+        lines,
+        guard: None,
+        before_lines,
+        after_lines,
+    })
+}
+
+/// 相邻版本对比：两个 .bak 互为 before/after 做行级 diff（均限备份目录内）。
+///
+/// 安全（不削弱）：两个路径都经 `assert_backup_path_in_scope` 双重校验（必须在备份目录内、以 .bak 结尾），
+/// 杜绝用对比通道越权读取任意文件。复用 get_file_diff 的护栏 + similar，零新依赖。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn diff_backups(
+    state: State<'_, Arc<AppState>>,
+    from_path: String,
+    to_path: String,
+) -> Result<FileDiffResult, String> {
+    let config = state.config.read().await;
+    let data_dir = state.data_dir.clone();
+    let backup_dir = config.backup_dir.clone();
+    drop(config);
+
+    // 双重校验：两个路径都需在备份目录内且为 .bak
+    let from_canon = assert_backup_path_in_scope(&from_path, &data_dir, &backup_dir)?;
+    let to_canon = assert_backup_path_in_scope(&to_path, &data_dir, &backup_dir)?;
+
+    let from_bytes = std::fs::read(&from_canon).map_err(|e| format!("读取备份失败：{e}"))?;
+    let to_bytes = std::fs::read(&to_canon).map_err(|e| format!("读取备份失败：{e}"))?;
+
+    let from_has_nul = from_bytes.contains(&0u8);
+    let to_has_nul = to_bytes.contains(&0u8);
+    let big = from_bytes.len() > 1_000_000 || to_bytes.len() > 1_000_000;
+
+    let from = String::from_utf8_lossy(&from_bytes).into_owned();
+    let to = String::from_utf8_lossy(&to_bytes).into_owned();
+
+    let before_lines = from.lines().count();
+    let after_lines = to.lines().count();
+    let many = before_lines > 2000 || after_lines > 2000;
+
+    let guard = if from_has_nul || to_has_nul {
+        Some("文件含二进制内容，仅可一键还原，不可预览 diff".into())
+    } else if big {
+        Some("文件体积超过 1MB，仅可一键还原，不可预览 diff".into())
+    } else if many {
+        Some("变更行数过多（>2000），仅可一键还原，不可预览 diff".into())
+    } else {
+        None
+    };
+
+    if guard.is_some() {
+        return Ok(FileDiffResult {
+            lines: vec![],
+            guard,
+            before_lines,
+            after_lines,
+        });
+    }
+
+    // 行级 diff（复用 similar，已是项目依赖）。from=较旧版本，to=较新版本。
+    let diff = TextDiff::from_lines(&from, &to);
     let lines: Vec<DiffLine> = diff
         .iter_all_changes()
         .map(|c| {

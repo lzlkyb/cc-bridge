@@ -33,6 +33,9 @@ function AppContent() {
   // 远程更新命令（onSedResolved 收口）才随轮询自然消失。
   const [ipResolvedByUser, setIpResolvedByUser] = useState(false);
 
+  // 方案 R: 用户点关闭后「本次会话忽略此 IP 变化提示」的中间态（App 层提升）。
+  const [ipChangeDismissed, setIpChangeDismissed] = useState(false);
+
   // 应用重启后用上次确认过的 IP 回填，避免每次都从空开始
   useEffect(() => {
     if (!selectedIp && status?.lastSelectedIp) {
@@ -65,6 +68,13 @@ function AppContent() {
 
   // 方案 Q: 用户复制了远程更新 sed 命令后收口，允许 banner 随乐观状态/下次轮询自然消失。
   const handleSedResolved = useCallback(() => setIpResolvedByUser(false), []);
+
+  // 方案 R: 用户点关闭后仅本次会话隐藏 banner。当出现「新的」地址变化(false→true)时
+  // 自动解除隐藏,避免关一次就永久屏蔽后续变化;停留为 true 的轮询不会重复触发重置。
+  useEffect(() => {
+    if (status?.ipChanged) setIpChangeDismissed(false);
+  }, [status?.ipChanged]);
+  const handleDismissIpChange = useCallback(() => setIpChangeDismissed(true), []);
 
   // 首次使用引导
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -204,7 +214,7 @@ function AppContent() {
         </div>
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-5">
           <TabsContent value="connect">
-            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} />
+            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} />
           </TabsContent>
           <TabsContent value="security">
             <SecurityTab status={status} onSaved={refetchStatus} />

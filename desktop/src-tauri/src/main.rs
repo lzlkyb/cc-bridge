@@ -121,6 +121,11 @@ fn tray_icon(running: bool) -> tauri::image::Image<'static> {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
+    // 抑制子进程（如 netsh）初始化失败时的「应用程序错误」硬弹窗（0xc0000142）。
+    // 必须在 spawn 任何 netsh 之前调用，错误模式会被其后创建的子进程继承。
+    #[cfg(windows)]
+    crate::firewall::suppress_child_error_dialogs();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -160,6 +165,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let app_state = Arc::new(state::AppState::new(db_conn, bridge_config, data_dir));
             app.manage(app_state.clone());
+
+            // 防火墙：启动探测 netsh 是否可用。不可用时置 false，停止后续查询，
+            // 避免 netsh 损坏时反复 spawn 失败进程、且不再触发「应用程序错误」弹窗
+            // （错误模式已在 main() 抑制）。须在后台定时刷新任务之前完成。
+            #[cfg(windows)]
+            {
+                let available = crate::firewall::probe_netsh_available();
+                *app_state.firewall_available.lock().unwrap() = available;
+            }
 
             // D2 修复：后台周期性回收空闲路径锁，避免 path_locks 随运行时间无界增长。
             {
@@ -427,6 +441,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::import_config,
             commands::restore_file,
             commands::get_file_diff,
+            commands::diff_backups,
+            commands::reveal_backup_dir,
+            commands::list_backups,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

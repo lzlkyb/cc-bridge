@@ -4,6 +4,46 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.1",
+    date: "2026-07-15",
+    items: [
+      { category: "feat", text: "备份浏览器（版本历史弹框）：设置页备份段新增「版本历史」入口，居中大弹框按原文件分组展示版本时间线；支持「看改了什么」(`get_file_diff`，白名单关闭时禁用)、「与上一版比」(`diff_backups` 相邻版对比)、「还原」(复用 RestoreBackupDialog)；含检索 / 排序 / 文件索引跳转 / 按文件·按时间视图切换 / 展开全部。后端新增 `diff_backups` 命令（两 .bak 互比，双重白名单校验）。" },
+      { category: "improve", text: "IP 变化弹窗作用域改为跟随连接页「项目级 / 全局模式」选择卡实时联动（复用现有控件），只给单一精确命令，去掉旧数据的两条兜底。" },
+      { category: "improve", text: "打开安装目录改用 `tauri-plugin-opener` 的 `reveal_item_in_dir`（不再闪 cmd 窗口）；创建桌面快捷方式给 powershell 加 `-WindowStyle Hidden`（不再闪窗口）。" },
+      { category: "improve", text: "安全页「备份份数 / 请求限制」图标去渐变背景，统一为单色 lucide 图标，与白名单等图标风格一致。" },
+      { category: "fix", text: "防火墙查询触发 `netsh.exe` 崩溃(0xc0000142)时反复弹出系统错误框：子进程创建时 `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)` 抑制硬错误弹窗，且 netsh 命令与提权 powershell 均加 `CREATE_NO_WINDOW`；启动探测到 netsh 不可用后停用后续查询。" },
+    ],
+  },
+  {
+    version: "2.3.0",
+    date: "2026-07-15",
+    items: [
+      { category: "feat", text: "连接页新增\"权限自动授权\"区块（`ConnectTab.tsx`，紧跟在 `TokenManager` 之后）：一键复制命令往 Claude Code 的 `permissions.allow` 追加 cc-bridge 工具规则 + 信任该 MCP 服务器，免去每次调用都弹窗确认（无需重启会话，改完立即生效）。" },
+      { category: "feat", text: "新增 `buildPermissionGrantCommand`（`lib/utils.ts`）：默认逐个列出 14 个文件/列表类工具规则，`run_command`/`get_command_output`/`stop_command` 三个命令执行工具需手动打开开关才会带上（改成单条 `mcp__cc-bridge__*` 通配符，同时自动覆盖未来新增工具），开关打开时显示红色警示条。" },
+      { category: "feat", text: "权限命令用 `python3` 读-改-写，幂等去重，不依赖 `jq`（不保证所有用户环境已安装）；目标文件固定落 `settings.local.json`（项目级，不进 git）/`settings.json`（全局），与连接命令用的 `.mcp.json` 区分开——权限规则属个人本地免打扰设置，不适合和团队共享的 MCP 服务器配置混在一起。" },
+      { category: "feat", text: "项目级且路径未填写时显示警告：命令不带 `cd` 前缀会直接用执行时终端所在目录拼相对路径，若不在目标目录下执行会悄悄写到错误位置且不报错，故加了明显警示文案。" },
+      { category: "feat", text: "`formatDurationMs`（`lib/utils.ts`）：毫秒耗时自动换算中文单位（微秒/毫秒/秒/分），避免用户看到 10000ms 这类大数字还要心算，应用到 `LogTab.tsx`/`PerfCharts.tsx` 全部耗时展示点，删除 `PerfCharts.tsx` 重复的局部 `fmt()`。" },
+      { category: "feat", text: "安全页\"运行中的后台命令\"卡片新增状态徽章（`CommandStatusBadge`：运行中/已结束/失败 + 退出码），避免处于 5 分钟清理宽限期内的已结束命令被误以为还在跑，卡片标题下加一行说明文字。" },
+      { category: "feat", text: "后台命令定时自动清理（`commands::cleanup_finished_commands`，`main.rs` 每 60s 调一次）：已结束满 5 分钟宽限期（供查看最终输出）后自动从 `running_commands` 注册表移除。" },
+      { category: "feat", text: "后台命令数命中 5 个并发上限时优先腾位（`commands::evict_finished_commands`）：不等 5 分钟宽限期，先尝试把已结束的命令立即移除为新命令腾空位，真正 5 个都还在跑时才拒绝，不再需要用户手动 `stop_command` 才能重试。" },
+      { category: "feat", text: "运行卡双栏布局优化（方案B）：状态行 → 双栏（左概览卡 + 右 2×3 网格）→ 底部治理+控制，5 层结构压缩到 3 层，高度 ~375→275px。" },
+      { category: "feat", text: "停止服务按钮质感优化（去硬边框改 box-shadow 三层叠加 + backdrop-blur 增强）+ 卡片底部分隔线由 border-t 实线改为两端渐隐渐变线。" },
+      { category: "feat", text: "数据雨负载联动（ConnectHero）：rpm 越高雨越密越快，空闲稀疏慢速呼吸。" },
+      { category: "feat", text: "防火墙落地：新增 firewall.rs（Windows netsh 规则级查询 + UAC 提权开放端口）、state.rs FirewallCache 后台刷新、commands.rs refresh_firewall/open_firewall_port；ConnectTab 新增防火墙告警块（一键开放/重新检查/手动 netsh）。" },
+      { category: "feat", text: "更新下载进度条可视化：Header 进度环 + 关于卡片进度胶囊。" },
+      { category: "feat", text: "安装目录查看与桌面快捷方式重建：设置页新增「安装与快捷方式」卡片（展示安装位置 + 打开目录 + 创建桌面快捷方式）；commands.rs 新增 install_dir / reveal_install_dir / create_desktop_shortcut。" },
+      { category: "improve", text: "运行卡方案A压缩：padding/gap/font-size 缩减，高度 ~448→375px，保留全部指标。" },
+      { category: "fix", text: "执行命令时一闪而过的空白 cmd 黑窗：`spawn_shell` 之前只设置了 stdout/stderr 为 `Stdio::piped()`，没显式设置 stdin。cc-bridge 本身是 GUI 子系统程序没有控制台，子进程默认继承到的 stdin 句柄无效，`cmd.exe` 拿到无效句柄后会尝试自己申请控制台兼底，瞬时击穿 `CREATE_NO_WINDOW` 的抑制效果。现显式 `c.stdin(Stdio::null())`，不再给 cmd.exe 理由自己申请控制台。" },
+      { category: "fix", text: "安全页\"运行中的后台命令\"卡片\"已运行\"一直增长：`elapsed_seconds` 之前恒用 `started_at.elapsed()` 实时计算，即使进程早已退出（v1 不自动回收注册表条目）仍会随面板轮询一直长。`RunningCommand` 新增 `finished_elapsed_secs` 字段，由 wait 线程与 `exit_code` 同时定格，面板优先用定格值。" },
+      { category: "fix", text: "O1 耗时拆解面板长期缺失两项维度：`auditMs`/`overheadMs` 之前用整数毫秒存储，实测典型值在微秒级（~6.8µs）会恒截断为 0，被前端 `filter(s.ms > 0)` 过滤隐藏。后端 `audit.rs`/`http.rs` 改用 `f64` 保留小数精度，两项现在能正常显示。" },
+      { category: "fix", text: "`batch` 子操作审计记录之前全部传 `None`，导致日志列表里 `batch` 相关行的耗时列一律显示\"—\"。`batch.rs` 现在为每个子操作单独计时。" },
+      { category: "fix", text: "安全页\"运行中的后台命令\"卡片：操作列固定宽度 `w-[160px]` 小于两个按钮（查看输出/收起 + 终止）实际宽度，导致换行。加宽到 `w-[210px]`，并加 `whitespace-nowrap` 防止文字换行。" },
+      { category: "fix", text: "`buildConnectCommand`（连接页\"项目级\"接入命令）缺失 `--scope project` 参数：之前项目级分支不加任何 `--scope`，而 Claude Code CLI 不带 `--scope` 时默认是 `local` scope（写入 `~/.claude.json` 按项目路径存的部分），与连接页文案宣称的 `.mcp.json` 不符。导致地址变化 `IpChangedBanner` 与 Token 重生成 `TokenManager` 生成的 sed 命令（均假设 project scope = `.mcp.json`）在项目级场景下实际改不到真正生效的配置文件，表现为\"复制 sed 命令执行后不生效/地址仍不对\"。现显式加 `--scope project`，与 sed 命令生成逻辑的假设保持一致。" },
+      { category: "fix", text: "安装目录打开「显示成功但不弹窗」：`reveal_install_dir` 改用 ShellExecute 直接打开目录，规避 explorer 单实例 DDE 转发导致不弹窗的怪癖。" },
+      { category: "fix", text: "桌面快捷方式创建失败：`create_desktop_shortcut` 桌面路径改取 `USERPROFILE\\Desktop` 优先，不再依赖易解析失败的 `app.path().desktop_dir()`。" },
+    ],
+  },
+  {
     version: "2.2.23",
     date: "2026-07-12",
     highlights: [
@@ -109,24 +149,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "LogTab 清理：删除未使用的 `PAGE_SIZE` / `totalPages` / `paged` memo / `useEffect` 同步分页 / `useState(0)` 状态（前端实际未做分页 UI）；`tsc --noEmit` 现在 0 错误。" },
       { category: "fix", text: "类型修正：`ConnectHero.tsx` 的 `HeroMetric` 指标签 `icon` 字段从字面量字符串联合扩为完整 `IconName`（避免新增 `Icon` 类型时回归报错）；`button.tsx` 删除未使用的 `ReactNode` 导入。" },
       { category: "fix", text: "`package.json` 版本号同步到 2.2.8（之前漏改）。" },
-    ],
-  },
-  {
-    version: "2.2.7",
-    date: "2026-07-10",
-    items: [
-      { category: "improve", text: "v2.2.2 → v2.2.6 release 期间累积改动合并提交：" },
-      { category: "improve", text: "后端：注册 `start_update` 等 Tauri command、补 `tauri-plugin-updater` / `tauri-plugin-notification` / `tauri-plugin-process` 依赖，`main.rs` 调整启动流程。" },
-      { category: "improve", text: "前端设计系统升级：靛蓝主题色、玻璃指标卡、segmented pill Tab、`TitleBarControls` 自绘标题栏、`Toast` 统一反馈组件、`index.css` +220 行新样式变量。" },
-      { category: "improve", text: "`UpdateContext` 抽出更新状态层；`Header` 拆 `UpdateBadge`；多个 tab 卡片样式更新。" },
-      { category: "improve", text: "图标套件重新生成（18 个 png/ico 体积变化）。" },
-    ],
-  },
-  {
-    version: "2.2.6",
-    date: "2026-07-09",
-    items: [
-      { category: "fix", text: "同步 `Cargo.lock` 中 v2.2.5 版本号（之前 2.2.5 release 时 sync-version 触发了 lock 重生但未提交）。" },
     ],
   },
 ];
