@@ -102,8 +102,10 @@ async fn move_single(
     };
 
     if to_resolved.exists() && config.backup_enabled {
+        let db = state.db.lock().await;
         let bp =
-            backup::backup_before_overwrite(&to_resolved, &config.backup_dir, &state.data_dir)?;
+            backup::backup_before_overwrite(&to_resolved, &config.backup_dir, &state.data_dir, &db)?;
+        drop(db);
         backup::prune_backups(
             &to_resolved,
             &config.backup_dir,

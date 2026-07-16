@@ -685,7 +685,7 @@ function RestoreBackupDialog({ entry, onClose }: { entry: BackupFileInfo; onClos
 
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-[1001] flex items-center justify-center bg-black/50 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
@@ -709,7 +709,7 @@ function RestoreBackupDialog({ entry, onClose }: { entry: BackupFileInfo; onClos
         {entry.targets.length > 0 ? (
           <div className="mb-3">
             <label className="mb-1 block text-xs font-medium text-muted-foreground">
-              还原到（在白名单目录中按文件名匹配）
+              还原到（创建备份时记录的原始路径）
             </label>
             {entry.targets.length === 1 ? (
               <code className="block break-all rounded-md border border-border bg-muted/30 p-2 font-mono text-xs">
@@ -732,7 +732,7 @@ function RestoreBackupDialog({ entry, onClose }: { entry: BackupFileInfo; onClos
         ) : (
           <p className="mb-3 flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
             <Icon name="info" size={14} className="mt-0.5 shrink-0" />
-            未找到匹配的目标文件（白名单关闭或文件名不在白名单目录内），无法安全还原。可在「审计日志」中对应操作的详情里还原。
+            未找到还原目标（白名单关闭、该路径已不在白名单内，或这是无索引记录的历史备份），无法安全还原。可在「审计日志」中对应操作的详情里还原。
           </p>
         )}
         {err && (

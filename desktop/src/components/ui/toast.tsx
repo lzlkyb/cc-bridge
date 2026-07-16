@@ -54,7 +54,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={{ toast: addToast }}>
       {children}
       {/* Toast 容器：右上角固定定位 */}
-      <div className="fixed right-4 top-16 z-[999] flex flex-col gap-2 pointer-events-none">
+      <div className="fixed right-4 top-16 z-[2000] flex flex-col gap-2 pointer-events-none">
         {toasts.map((t) => (
           <ToastItemView key={t.id} item={t} onDismiss={() => removeToast(t.id)} />
         ))}

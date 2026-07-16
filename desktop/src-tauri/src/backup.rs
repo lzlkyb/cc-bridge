@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
+use rusqlite::{params, Connection};
 
 pub fn backup_before_overwrite(
     file_path: &Path,
     backup_dir_name: &str,
     data_dir: &Path,
+    db: &Connection,
 ) -> Result<Option<PathBuf>, String> {
     if !file_path.exists() {
         return Ok(None);
@@ -27,6 +29,18 @@ pub fn backup_before_overwrite(
     let t0 = std::time::Instant::now();
     std::fs::copy(file_path, &backup_path).map_err(|e| format!("Failed to create backup: {e}"))?;
     crate::timing::record_io(t0.elapsed());
+
+    // 记录原始绝对路径，供还原时精确定位（非致命：备份文件本身已落盘成功，
+    // 索引写入失败只影响后续 UI 还原/看改了什么按钮可用性，不影响数据安全）。
+    if let Err(e) = db.execute(
+        "INSERT OR REPLACE INTO backup_index (backup_path, original_path) VALUES (?1, ?2)",
+        params![
+            backup_path.to_string_lossy().into_owned(),
+            file_path.to_string_lossy().into_owned()
+        ],
+    ) {
+        log::warn!("记录备份索引失败（不影响备份本身）: {e}");
+    }
 
     Ok(Some(backup_path))
 }

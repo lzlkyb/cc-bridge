@@ -94,7 +94,9 @@ async fn write_single(
     let _guard = lock.lock().await;
 
     if resolved.exists() && config.backup_enabled {
-        let bp = backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir)?;
+        let db = state.db.lock().await;
+        let bp = backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir, &db)?;
+        drop(db);
         backup::prune_backups(
             &resolved,
             &config.backup_dir,

@@ -135,7 +135,7 @@ export interface BackupFileInfo {
   sizeBytes: number;
   /** 已格式化为 "YYYY-MM-DD HH:MM:SS" */
   createdAt: string;
-  /** 白名单内按文件名匹配到的候选还原目标（绝对路径）；白名单关闭时为空。 */
+  /** 创建备份时记录的原始绝对路径（仍落在白名单内才返回）；白名单关闭或无索引记录（历史备份）时为空。 */
   targets: string[];
 }
 

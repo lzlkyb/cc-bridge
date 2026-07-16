@@ -188,12 +188,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
-            // Updater 插件容错注册：失败仅 warn，不中断应用启动（比如 pubkey 还是占位符时）。
-            if let Err(e) = app
+            // Updater 插件容错注册：pubkey 已与签名私钥配对（见 tauri.conf.json 的 plugins.updater.pubkey）。
+            // 更新源优先级：环境变量 CCBRIDGE_UPDATE_ENDPOINT（逗号分隔多 URL，按顺序故障转移）>
+            // tauri.conf.json 的 plugins.updater.endpoints。端点解析在 commands.rs 的 build_updater() 统一处理。
+            // 用 match 兜底，避免 dev 环境端点不可达或配置误改导致 updater 初始化失败时拖垮整个应用启动。
+            match app
                 .handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())
             {
-                log::warn!("初始化 Updater 插件失败，已跳过：{e}");
+                Ok(_) => log::info!(
+                    "Updater 插件已启用（更新源默认 tauri.conf.json 的 plugins.updater.endpoints，可用环境变量 CCBRIDGE_UPDATE_ENDPOINT 覆盖）"
+                ),
+                Err(e) => log::warn!("初始化 Updater 插件失败，已跳过：{e}"),
             }
 
             // Spawn MCP HTTP server
@@ -289,16 +295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "restart" => {
                         let s = tray_state.clone();
                         tauri::async_runtime::spawn(async move {
-                            let mut h = s.mcp_server_handle.lock().await;
-                            if let Some(handle) = h.take() {
-                                handle.abort();
-                                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                            }
-                            let sc = s.clone();
-                            let new_handle = tauri::async_runtime::spawn(async move {
-                                mcp::http::spawn_mcp_server(sc).await;
-                            });
-                            *h = Some(new_handle);
+                            mcp::http::restart_server(&s).await;
                         });
                     }
                     "quit" => {
@@ -437,6 +434,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::stop_running_command,
             commands::get_command_output,
             commands::start_update,
+            commands::check_update,
             commands::export_config,
             commands::import_config,
             commands::restore_file,

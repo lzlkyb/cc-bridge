@@ -119,7 +119,9 @@ async fn edit_single(
     let out_bytes = encoding::encode_text(&updated, ft.encoding, ft.crlf, ft.had_bom)?;
 
     if config.backup_enabled {
-        let bp = backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir)?;
+        let db = state.db.lock().await;
+        let bp = backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir, &db)?;
+        drop(db);
         backup::prune_backups(
             &resolved,
             &config.backup_dir,

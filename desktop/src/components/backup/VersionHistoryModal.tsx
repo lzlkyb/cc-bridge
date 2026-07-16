@@ -77,10 +77,10 @@ function DiffView({ state, title }: { state?: DiffState; title: string }) {
  * 解决"备份列表看不懂、多文件难定位、不知道改了什么"三件事：
  *  - 检索/导航：搜索文件名、最近修改优先排序、可点击文件索引栏跳转、按文件/按时间视图切换、展开全部。
  *  - 版本时间线：每个原文件一条时间线（当前文件终点 + 各 .bak 快照节点）。
- *  - 看改了什么：get_file_diff（.bak vs 当前文件，懒加载，白名单关闭时禁用）。
+ *  - 看改了什么：get_file_diff（.bak vs 当前文件，懒加载，白名单关闭或无索引记录（历史备份）时禁用）。
  *  - 与上一版比：diff_backups（两个 .bak 互比，直接回答"上一个和下一个差在哪"）。
  *  - 还原：复用 RestoreBackupDialog（弹框外二级确认）。
- * 安全不削弱：白名单关闭时"看改了什么"因无 target 禁用、"与上一版比"纯 .bak 互比仍可用、还原仍禁用。
+ * 安全不削弱：白名单关闭或该备份无索引记录（历史备份）时"看改了什么"因无 target 禁用、"与上一版比"纯 .bak 互比仍可用、还原仍禁用。
  */
 export function VersionHistoryModal({
   open,
@@ -424,7 +424,7 @@ export function VersionHistoryModal({
                                       <button
                                         type="button"
                                         disabled={!canDiff}
-                                        title={canDiff ? "对比 .bak 与当前文件" : "白名单关闭，无法定位当前文件"}
+                                        title={canDiff ? "对比 .bak 与当前文件" : "无法定位当前文件（白名单关闭 / 路径已不在白名单内 / 无索引记录的历史备份）"}
                                         onClick={() => toggleCur(e)}
                                         className="rounded-md border border-input bg-card px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
                                       >
@@ -442,7 +442,7 @@ export function VersionHistoryModal({
                                       <button
                                         type="button"
                                         disabled={!canDiff}
-                                        title={canDiff ? "还原到该备份" : "白名单关闭，禁用还原"}
+                                        title={canDiff ? "还原到该备份" : "禁用还原（白名单关闭 / 路径已不在白名单内 / 无索引记录的历史备份）"}
                                         onClick={() => onRestore(e)}
                                         className="rounded-md border border-input bg-card px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
                                       >

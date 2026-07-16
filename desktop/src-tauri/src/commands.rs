@@ -595,18 +595,7 @@ pub async fn browse_directory(path: Option<String>) -> Result<browse::BrowseResu
 
 #[tauri::command]
 pub async fn restart_mcp_server(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let mut handle = state.mcp_server_handle.lock().await;
-    if let Some(h) = handle.take() {
-        h.abort();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
-
-    let state_clone = state.inner().clone();
-    let new_handle = tauri::async_runtime::spawn(async move {
-        crate::mcp::http::spawn_mcp_server(state_clone).await;
-    });
-    *handle = Some(new_handle);
-
+    crate::mcp::http::restart_server(state.inner()).await;
     Ok(())
 }
 
@@ -635,17 +624,7 @@ pub async fn start_mcp_server(
     state: State<'_, Arc<AppState>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let mut handle = state.mcp_server_handle.lock().await;
-    if let Some(h) = handle.take() {
-        h.abort();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
-
-    let state_clone = state.inner().clone();
-    let new_handle = tauri::async_runtime::spawn(async move {
-        crate::mcp::http::spawn_mcp_server(state_clone).await;
-    });
-    *handle = Some(new_handle);
+    crate::mcp::http::restart_server(state.inner()).await;
 
     // 乐观置运行态并即时通知托盘（serve 失败会在 http.rs 回退 false）
     state
@@ -1034,7 +1013,9 @@ pub async fn restore_file(
     // 3) 还原前再备一次（可继续撤销）——仅当目标已存在
     let mut new_backup: Option<PathBuf> = None;
     if resolved.exists() {
-        new_backup = backup::backup_before_overwrite(&resolved, &backup_dir, &data_dir)?;
+        let db = state.db.lock().await;
+        new_backup = backup::backup_before_overwrite(&resolved, &backup_dir, &data_dir, &db)?;
+        drop(db);
         backup::prune_backups(&resolved, &backup_dir, &data_dir, backup_retention)?;
     }
 
@@ -1095,7 +1076,8 @@ pub struct BackupFileInfo {
     pub size_bytes: u64,
     #[serde(rename = "createdAt")]
     pub created_at: String,
-    /// 白名单内按文件名匹配到的候选还原目标（绝对路径）。白名单关闭时恒为空。
+    /// 创建备份时记录的原始绝对路径（仍落在当前白名单内才返回）。白名单关闭
+    /// 或该备份无对应索引记录（历史备份）时恒为空。
     pub targets: Vec<String>,
 }
 
@@ -1119,21 +1101,18 @@ pub struct BackupListResult {
     pub groups: Vec<BackupGroupInfo>,
 }
 
-/// 列出全部 .bak 备份，按原文件名分组，并尽力反查还原目标。
+/// 列出全部 .bak 备份，按原文件名分组，并从 backup_index 表精确反查还原目标。
 ///
-/// 安全（不削弱）：targets 仅在白名单开启时、于 allowed_roots 内按文件名递归匹配，
-/// 不返回白名单外路径；白名单关闭时 targets 恒为空（还原交由 restore_file 走白名单校验）。
+/// 安全（不削弱）：targets 仅在白名单开启时返回，且仍需再次经过 resolve_safe_path
+/// 确认当前确实落在 allowed_roots 内（root 配置可能在备份之后被改过），不返回白名单外
+/// 路径；白名单关闭时 targets 恒为空（还原交由 restore_file 再走一次白名单校验）。
 #[tauri::command]
 pub async fn list_backups(state: State<'_, Arc<AppState>>) -> Result<BackupListResult, String> {
     let config = state.config.read().await;
     let data_dir = state.data_dir.clone();
     let backup_dir_name = config.backup_dir.clone();
     let whitelist_enabled = config.whitelist_enabled;
-    let allowed_roots: Vec<std::path::PathBuf> = config
-        .allowed_roots
-        .iter()
-        .map(std::path::PathBuf::from)
-        .collect();
+    let allowed_roots: Vec<String> = config.allowed_roots.clone();
     drop(config);
 
     let dir = data_dir.join(&backup_dir_name);
@@ -1190,15 +1169,32 @@ pub async fn list_backups(state: State<'_, Arc<AppState>>) -> Result<BackupListR
         });
     }
 
-    // 反查还原目标（仅白名单开启时）：单遍遍历白名单树建 {文件名->路径列表} map，
-    // 再 O(1) 回填。避免"每个 .bak 都递归全树"的 O(备份数 × 树大小) 重复扫描。
+    // 反查还原目标（仅白名单开启时）：从 backup_index 表精确读取创建备份时记录的原始绝对路径，
+    // 不再对文件系统做"按文件名猜"的有边界遍历（旧实现受 max_depth=6/max_scan=8000 限制，
+    // 对深层企业级仓库容易查不到）。旧备份（backup_index 上线前创建）无对应记录，
+    // 查不到即 targets 为空，前端按钮相应禁用（已知、可接受的降级）。
     if whitelist_enabled && !groups.is_empty() {
-        let wanted: std::collections::HashSet<String> = groups.keys().cloned().collect();
-        let map = build_targets_map(&allowed_roots, &wanted);
+        let db = state.db.lock().await;
+        let mut index: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Ok(mut stmt) = db.prepare("SELECT backup_path, original_path FROM backup_index") {
+            if let Ok(rows) =
+                stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            {
+                for row in rows.filter_map(|r| r.ok()) {
+                    index.insert(row.0, row.1);
+                }
+            }
+        }
+        drop(db);
+
         for g in groups.values_mut() {
-            if let Some(paths) = map.get(&g.original_file) {
-                for e in g.entries.iter_mut() {
-                    e.targets = paths.clone();
+            for e in g.entries.iter_mut() {
+                if let Some(original_path) = index.get(&e.backup_path) {
+                    // 仍需核实该路径当前确实落在白名单内（root 配置可能在备份之后被改过）。
+                    if let Ok(resolved) = path::resolve_safe_path(original_path, &allowed_roots, true)
+                    {
+                        e.targets = vec![path::display_path(&resolved)];
+                    }
                 }
             }
         }
@@ -1224,73 +1220,6 @@ fn parse_backup_timestamp(ts: &str, meta: &std::fs::Metadata) -> String {
         return dt.format("%Y-%m-%d %H:%M:%S").to_string();
     }
     "未知时间".to_string()
-}
-
-/// 单遍遍历白名单根目录，一次性收集所有 `wanted` 文件名的匹配路径，返回 {文件名->路径列表} map。
-/// 有界：最大深度 6、最多扫描 8000 个文件、每个文件名最多 50 个候选。
-/// 相比"每个文件名各扫一遍树"，把 O(备份数 × 树大小) 降到 O(树大小)。
-fn build_targets_map(
-    roots: &[std::path::PathBuf],
-    wanted: &std::collections::HashSet<String>,
-) -> std::collections::HashMap<String, Vec<String>> {
-    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    if wanted.is_empty() {
-        return map;
-    }
-    let mut scanned = 0usize;
-    for root in roots {
-        if !root.exists() {
-            continue;
-        }
-        walk_collect_targets(root, 0, 6, &mut scanned, 8000, wanted, &mut map);
-    }
-    map
-}
-
-fn walk_collect_targets(
-    dir: &std::path::Path,
-    depth: u32,
-    max_depth: u32,
-    scanned: &mut usize,
-    max_scan: usize,
-    wanted: &std::collections::HashSet<String>,
-    out: &mut std::collections::HashMap<String, Vec<String>>,
-) {
-    if depth > max_depth || *scanned >= max_scan {
-        return;
-    }
-    let rd = match std::fs::read_dir(dir) {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    for entry in rd.filter_map(|e| e.ok()) {
-        if *scanned >= max_scan {
-            return;
-        }
-        *scanned += 1;
-        let p = entry.path();
-        let file_type = match entry.file_type() {
-            Ok(ft) => ft,
-            Err(_) => continue,
-        };
-        if file_type.is_dir() {
-            // 跳过常见无关/巨型目录以提速，避免卡死
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == ".git" || name == "node_modules" || name == "target" || name == ".cache" {
-                continue;
-            }
-            walk_collect_targets(&p, depth + 1, max_depth, scanned, max_scan, wanted, out);
-        } else if file_type.is_file() {
-            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                if wanted.contains(name) {
-                    let v = out.entry(name.to_string()).or_default();
-                    if v.len() < 50 {
-                        v.push(p.to_string_lossy().into_owned());
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1518,16 +1447,7 @@ pub async fn import_config(
     *state.config.write().await = incoming;
 
     // 重启服务使 host/port 等配置生效
-    let mut handle = state.mcp_server_handle.lock().await;
-    if let Some(h) = handle.take() {
-        h.abort();
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    }
-    let state_clone = state.inner().clone();
-    let new_handle = tauri::async_runtime::spawn(async move {
-        crate::mcp::http::spawn_mcp_server(state_clone).await;
-    });
-    *handle = Some(new_handle);
+    crate::mcp::http::restart_server(state.inner()).await;
     state
         .mcp_running
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1577,92 +1497,254 @@ where
     }
 }
 
+/// 解析更新源端点：优先环境变量 `CCBRIDGE_UPDATE_ENDPOINT`（逗号分隔多 URL，按顺序故障转移），
+/// 未设置或解析为空则返回 `None`（退回 `tauri.conf.json` 的 `plugins.updater.endpoints`）。
+fn resolve_update_endpoints() -> Result<Option<Vec<url::Url>>, String> {
+    let raw = match std::env::var("CCBRIDGE_UPDATE_ENDPOINT") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => return Ok(None),
+    };
+    let mut eps = Vec::new();
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match url::Url::parse(trimmed) {
+            Ok(u) => eps.push(u),
+            Err(e) => return Err(format!("更新源 \"{trimmed}\" 不是合法 URL: {e}")),
+        }
+    }
+    if eps.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(eps))
+    }
+}
+
+/// Gitee 镜像仓库路径（owner/repo），CI 会把每次发版的产物 + manifest 同步到这里的
+/// `releases` 分支 `latest/` 目录（见 .github/workflows/build.yml）。国内访问远比任何
+/// 公共 GitHub 代理稳定，作为更新源的第一候选；失败时自动回退到 tauri.conf.json 配置的
+/// ghproxy/GitHub 端点（见 candidate_endpoint_groups）。
+///
+const GITEE_REPOSITORY: &str = "lzul/cc-bridge";
+
+/// 候选更新源分组，按顺序尝试：前一组检查或下载任一步失败，才换下一组。
+/// 手动 env 覆盖（CCBRIDGE_UPDATE_ENDPOINT）存在时只用这一组、不做自动换源，保持覆盖语义单一可预期。
+fn candidate_endpoint_groups() -> Result<Vec<Option<Vec<url::Url>>>, String> {
+    if let Some(eps) = resolve_update_endpoints()? {
+        return Ok(vec![Some(eps)]);
+    }
+    let gitee_url =
+        format!("https://gitee.com/{GITEE_REPOSITORY}/raw/releases/latest/updater-gitee.json");
+    let gitee = url::Url::parse(&gitee_url).map_err(|e| format!("Gitee 更新源 URL 无效: {e}"))?;
+    Ok(vec![
+        Some(vec![gitee]),
+        None, // 退回 tauri.conf.json 配置的端点（现有 ghproxy → GitHub 两级）
+    ])
+}
+
+/// 构造 `Updater`：注入指定的端点（若有），否则用配置端点。
+/// 供 `check_update` / `start_update` 共用，确保更新源解析只有这一处实现（单一真相源）。
+fn build_updater(
+    app: &tauri::AppHandle,
+    endpoints: Option<Vec<url::Url>>,
+) -> Result<tauri_plugin_updater::Updater, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let app_handle = app.clone();
+    let mut builder = app_handle.updater_builder();
+    if let Some(eps) = endpoints {
+        builder = builder
+            .endpoints(eps)
+            .map_err(|e| format!("更新源配置无效（需 https）: {e}"))?;
+    }
+    builder
+        .build()
+        .map_err(|e| format!("更新插件初始化失败: {e}"))
+}
+
 /// 后台执行更新检查+下载安装，通过 Tauri event 推送状态到前端。
-/// 内置指数退避重试：检查更新最多重试 3 次，下载安装最多重试 2 次。
+/// 按 `candidate_endpoint_groups` 的顺序依次尝试候选源（默认 Gitee 优先、ghproxy/GitHub
+/// 回退），前一个候选检查或下载任一步失败就换下一个，全部失败才报错。内置指数退避重试：
+/// 每个候选内检查最多重试 2 次、下载安装最多重试 2 次。
 #[tauri::command]
 pub fn start_update(app: tauri::AppHandle) {
-    use tauri_plugin_updater::UpdaterExt;
-
     tauri::async_runtime::spawn(async move {
         let _ = app.emit("update:checking", ());
 
-        let updater = match app.updater() {
-            Ok(u) => u,
+        let groups = match candidate_endpoint_groups() {
+            Ok(g) => g,
             Err(e) => {
-                let _ = app.emit(
-                    "update:error",
-                    serde_json::json!({
-                        "message": format!("更新插件初始化失败: {}", e)
-                    }),
-                );
+                let _ = app.emit("update:error", serde_json::json!({ "message": e }));
                 return;
             }
         };
 
-        let check_result = match retry_with_backoff(3, "检查更新", || updater.check()).await {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = app.emit(
-                    "update:error",
-                    serde_json::json!({
-                        "message": format!("检查更新失败（已重试 3 次）: {}", e)
-                    }),
-                );
-                return;
-            }
-        };
+        let mut last_message: Option<String> = None;
+        for endpoints in groups {
+            let updater = match build_updater(&app, endpoints) {
+                Ok(u) => u,
+                Err(e) => {
+                    last_message = Some(e);
+                    continue;
+                }
+            };
 
-        let update = match check_result {
-            Some(u) => u,
-            None => {
-                let _ = app.emit("update:uptodate", ());
-                return;
-            }
-        };
+            let check_result = match retry_with_backoff(2, "检查更新", || updater.check()).await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_message = Some(format!("检查更新失败: {e}"));
+                    continue;
+                }
+            };
 
-        let _ = app.emit(
-            "update:available",
-            serde_json::json!({
-                "version": update.version,
-                "body": update.body,
-            }),
-        );
+            let update = match check_result {
+                Some(u) => u,
+                None => {
+                    // 下载链路不负责"已是最新"判定（那是 check_update 的事）。
+                    // 这里返回 None 说明下载前复查没拿到可用更新，发 error 而非 uptodate，
+                    // 避免把用户手上已有的可用更新静默清空；不再尝试下一个候选（各源应给出一致结论，
+                    // 换源重试只会徒增耗时）。
+                    let _ = app.emit(
+                        "update:error",
+                        serde_json::json!({
+                            "message": "下载前复查未找到可用更新，可能已发布新版本，请重新检查"
+                        }),
+                    );
+                    return;
+                }
+            };
 
-        let _ = app.emit("update:downloading", ());
-
-        let app_progress = app.clone();
-        let app_ready = app.clone();
-        let result = retry_with_backoff(2, "下载安装", || {
-            let u = update.clone();
-            let ap = app_progress.clone();
-            let ar = app_ready.clone();
-            async move {
-                u.download_and_install(
-                    move |downloaded, total| {
-                        let _ = ap.emit(
-                            "update:progress",
-                            serde_json::json!({
-                                "downloaded": downloaded,
-                                "total": total,
-                            }),
-                        );
-                    },
-                    move || {
-                        let _ = ar.emit("update:ready", ());
-                    },
-                )
-                .await
-            }
-        })
-        .await;
-
-        if let Err(e) = result {
             let _ = app.emit(
-                "update:error",
+                "update:available",
                 serde_json::json!({
-                    "message": format!("下载安装失败（已重试 2 次）: {}", e)
+                    "version": update.version,
+                    "body": update.body,
                 }),
             );
+
+            let _ = app.emit("update:downloading", ());
+
+            let app_progress = app.clone();
+            let app_ready = app.clone();
+            let result = retry_with_backoff(2, "下载安装", || {
+                let u = update.clone();
+                let ap = app_progress.clone();
+                let ar = app_ready.clone();
+                async move {
+                    let mut downloaded_total: u64 = 0;
+                    // 下载速度：窗口限流计算（~250ms 重算一次），不是每个 chunk 都重算——
+                    // 快网速下 chunk 回调可能每秒触发好几十次，逐次算瞬时速率会跳得难看。
+                    // downloaded/total 仍每 chunk 都发（百分比保持平滑），只有 bytesPerSec 在窗口
+                    // 间隔内复用上一次算出的值。
+                    let mut window_start = std::time::Instant::now();
+                    let mut window_bytes: u64 = 0;
+                    let mut last_bytes_per_sec: f64 = 0.0;
+                    u.download_and_install(
+                        move |chunk_len, total| {
+                            downloaded_total += chunk_len as u64;
+                            window_bytes += chunk_len as u64;
+                            let elapsed = window_start.elapsed();
+                            if elapsed.as_millis() >= 250 {
+                                last_bytes_per_sec = window_bytes as f64 / elapsed.as_secs_f64();
+                                window_start = std::time::Instant::now();
+                                window_bytes = 0;
+                            }
+                            let _ = ap.emit(
+                                "update:progress",
+                                serde_json::json!({
+                                    "downloaded": downloaded_total,
+                                    "total": total,
+                                    "bytesPerSec": last_bytes_per_sec,
+                                }),
+                            );
+                        },
+                        move || {
+                            let _ = ar.emit("update:ready", ());
+                        },
+                    )
+                    .await
+                }
+            })
+            .await;
+
+            match result {
+                Ok(()) => return, // 这个源成功，结束
+                Err(e) => {
+                    last_message = Some(format!("下载安装失败: {e}"));
+                    continue; // 换下一个候选源重试
+                }
+            }
         }
+
+        let _ = app.emit(
+            "update:error",
+            serde_json::json!({
+                "message": format!(
+                    "全部更新源均失败（已依次尝试）: {}",
+                    last_message.unwrap_or_else(|| "未知错误".into())
+                )
+            }),
+        );
+    });
+}
+
+/// 只检查更新、不下载，通过 Tauri event 把结果推给前端用于展示徽章。
+/// 与 `start_update` 共用 `updater.check()`、指数退避重试与候选源回退顺序，确保检查逻辑
+/// 只有这一处实现（单一真相源）。
+#[tauri::command]
+pub fn check_update(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let _ = app.emit("update:checking", ());
+
+        let groups = match candidate_endpoint_groups() {
+            Ok(g) => g,
+            Err(e) => {
+                let _ = app.emit("update:error", serde_json::json!({ "message": e }));
+                return;
+            }
+        };
+
+        let mut last_message: Option<String> = None;
+        for endpoints in groups {
+            let updater = match build_updater(&app, endpoints) {
+                Ok(u) => u,
+                Err(e) => {
+                    last_message = Some(e);
+                    continue;
+                }
+            };
+
+            match retry_with_backoff(2, "检查更新", || updater.check()).await {
+                Ok(Some(u)) => {
+                    let _ = app.emit(
+                        "update:available",
+                        serde_json::json!({
+                            "version": u.version,
+                            "body": u.body,
+                        }),
+                    );
+                    return;
+                }
+                Ok(None) => {
+                    let _ = app.emit("update:uptodate", ());
+                    return;
+                }
+                Err(e) => {
+                    last_message = Some(format!("检查更新失败: {e}"));
+                    continue;
+                }
+            }
+        }
+
+        let _ = app.emit(
+            "update:error",
+            serde_json::json!({
+                "message": format!(
+                    "全部更新源均检查失败（已依次尝试）: {}",
+                    last_message.unwrap_or_else(|| "未知错误".into())
+                )
+            }),
+        );
     });
 }

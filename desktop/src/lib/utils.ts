@@ -248,3 +248,8 @@ export function formatBytes(bytes: number): string {
   const val = bytes / Math.pow(1024, i);
   return `${val >= 10 || i === 0 ? Math.round(val) : val.toFixed(1)} ${units[i]}`;
 }
+
+/** 下载速率格式化（复用 formatBytes 加 "/s" 后缀），UpdateBadge/AboutGroup 的更新进度展示共用。 */
+export function formatBytesPerSec(bytesPerSec: number): string {
+  return `${formatBytes(bytesPerSec)}/s`;
+}

@@ -23,6 +23,17 @@ pub fn init_database(data_dir: &Path) -> Result<Connection, String> {
     )
     .map_err(|e| format!("Failed to create config table: {e}"))?;
 
+    // 备份索引：创建备份时记录原始绝对路径，还原时精确读取而非按文件名猜测。
+    // 旧备份（本表上线前创建的）没有对应记录，查不到即视为"无法定位"，前端按钮相应禁用——
+    // 属已知、可接受的降级（历史备份仍在磁盘上，只是失去了 UI 一键还原/看改了什么的能力）。
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS backup_index (
+            backup_path   TEXT PRIMARY KEY NOT NULL,
+            original_path TEXT NOT NULL
+        );",
+    )
+    .map_err(|e| format!("Failed to create backup_index table: {e}"))?;
+
     // Migrate from config.json if it exists and the config table is empty
     let config_json_path = data_dir.join("config.json");
     if config_json_path.exists() {

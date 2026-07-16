@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.3.1"
+version = "2.3.2"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -13,6 +13,8 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-updater = "2"
+# P2-2：更新源 env 覆盖（CCBRIDGE_UPDATE_ENDPOINT）构造 Url 用，与插件共用同一份 url 2.x
+url = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"

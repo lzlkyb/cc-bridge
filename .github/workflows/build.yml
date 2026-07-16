@@ -68,12 +68,42 @@ jobs:
           npm run build
         working-directory: desktop
 
+      - name: 抽取更新说明 (CHANGELOG)
+        shell: pwsh
+        run: |
+          $changelog = Get-Content -Raw -Path CHANGELOG.md
+          # 取第一个「已发布版本」段（跳过顶部的 [Unreleased]），作为更新弹窗说明。
+          # 正则要求版本号形如 x.y.z，避免误抓 [Unreleased]。
+          if ($changelog -match '(?s)##\s*\[\d+\.\d+\.\d+\][^\n]*\n(.*?)(?=\n##\s|$)') {
+            $notes = $matches[1].Trim()
+            "UPDATER_NOTES<<EOF" >> $env:GITHUB_ENV
+            $notes >> $env:GITHUB_ENV
+            "EOF" >> $env:GITHUB_ENV
+            Write-Host "已抽取更新说明 ($($notes.Length) 字符)"
+          } else {
+            Write-Host "未在 CHANGELOG 中找到已发布版本段，使用默认说明"
+          }
+
       - name: 生成 updater.json
         shell: pwsh
         run: npm run updater:generate
         working-directory: desktop
         env:
           GITHUB_RELEASE_TAG: ${{ github.ref_name }}
+          # 二进制下载走 ghproxy 镜像，解决国内用户下载慢；元数据检查另有 tauri.conf.json 的 GitHub 端点兜底。
+          # 注意：updater.json 的 url 为单值、无二进制级兜底，故 ghproxy 域名需稳定；若失效改此 env + config 即可。
+          UPDATER_DOWNLOAD_BASE: "https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download"
+
+      - name: 校验 updater.json 签名非空
+        shell: pwsh
+        run: |
+          $json = Get-Content -Raw -Path desktop/dist/updater.json | ConvertFrom-Json
+          $sig = $json.platforms.'windows-x86_64'.signature
+          if ([string]::IsNullOrWhiteSpace($sig)) {
+            Write-Error "updater.json 的 windows-x86_64.signature 为空，自动更新将无法校验签名。请确认 TAURI_SIGNING_PRIVATE_KEY 已配置且构建产生 .sig。"
+            exit 1
+          }
+          Write-Host "updater.json 签名校验通过"
 
       - name: 📦 打包绿色便携版
         shell: pwsh
@@ -118,3 +148,71 @@ jobs:
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 以下两步解决国内用户直连 GitHub 下载安装包不稳定/很慢的问题：把产物同步一份到 Gitee（国内访问远比任何公共
+      # GitHub 代理稳定），客户端（commands.rs）优先试 Gitee，失败再回退到现有的 ghproxy/GitHub 路径。
+      # 两个 secret（GITEE_TOKEN/GITEE_REPOSITORY）未配置时自动跳过，不影响现有发版流程。
+      - name: 生成 Gitee 版 updater-gitee.json（国内加速镜像，可选）
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace("${{ secrets.GITEE_REPOSITORY }}")) {
+            Write-Host "⚠️ 未配置 GITEE_REPOSITORY secret，跳过 Gitee 镜像 manifest 生成（自动更新仍走现有 GitHub/ghproxy 路径）。"
+            exit 0
+          }
+          npm run updater:generate
+        working-directory: desktop
+        env:
+          GITHUB_RELEASE_TAG: ${{ github.ref_name }}
+          # Gitee raw 文件直链与 GitHub Release 拼法形状不同（owner/repo/raw/ref/path，非
+          # base/tag/filename），用 UPDATER_URL_TEMPLATE 完全接管拼接（见 generate-updater-json.mjs）。
+          # 固定走 releases 分支下的 latest/ 目录（每次发版覆盖，不按 tag 累加）：
+          # 客户端检查更新时事先不知道最新 tag 是什么，需要一个固定不变的 URL（对齐 GitHub
+          # 的 releases/latest/download 语义）；固定目录也避免了镜像仓库随发版次数无限增长。
+          UPDATER_URL_TEMPLATE: "https://gitee.com/${{ secrets.GITEE_REPOSITORY }}/raw/releases/latest/{filename}"
+          UPDATER_OUTPUT_FILENAME: "updater-gitee.json"
+
+      - name: 镜像发布产物到 Gitee（国内加速，可选）
+        shell: pwsh
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_REPOSITORY: ${{ secrets.GITEE_REPOSITORY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GITEE_TOKEN) -or [string]::IsNullOrWhiteSpace($env:GITEE_REPOSITORY)) {
+            Write-Host "⚠️ 未配置 GITEE_TOKEN/GITEE_REPOSITORY secret，跳过 Gitee 镜像发布。"
+            exit 0
+          }
+          $tag = "${{ github.ref_name }}"
+          try {
+            $giteeUrl = "https://oauth2:$($env:GITEE_TOKEN)@gitee.com/$($env:GITEE_REPOSITORY).git"
+            $mirrorDir = Join-Path $env:RUNNER_TEMP "gitee-mirror"
+
+            # 独立临时目录里操作 Gitee remote，不动主 checkout 的分支/工作区状态。
+            git clone --depth 1 --branch releases $giteeUrl $mirrorDir 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              # releases 分支还不存在（首次发布）：clone 默认分支后本地新建孤儿分支。
+              git clone --depth 1 $giteeUrl $mirrorDir
+              Push-Location $mirrorDir
+              git checkout --orphan releases
+              git reset --hard
+              Pop-Location
+            }
+
+            # 固定覆盖 latest/ 目录（不按 tag 累加）：先清空旧内容再写新的，避免上一个版本不同文件名的
+            # exe/sig 残留下来。
+            $destDir = Join-Path $mirrorDir "latest"
+            if (Test-Path $destDir) { Remove-Item $destDir -Recurse -Force }
+            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+            Copy-Item dist-out/*.exe $destDir/ -ErrorAction SilentlyContinue
+            Copy-Item dist-out/*.exe.sig $destDir/ -ErrorAction SilentlyContinue
+            Copy-Item desktop/dist/updater-gitee.json $destDir/ -ErrorAction SilentlyContinue
+
+            Push-Location $mirrorDir
+            git add -A latest
+            git -c user.email="ci@cc-bridge.local" -c user.name="cc-bridge-ci" commit -m "release: mirror $tag to Gitee (latest)"
+            git push origin releases
+            Pop-Location
+
+            Write-Host "✅ 已镜像到 Gitee releases 分支：$tag"
+          } catch {
+            Write-Host "⚠️ Gitee 镜像发布失败（不影响本次 GitHub Release 已发布内容，自动更新仍可走现有 GitHub/ghproxy 路径）：$_"
+          }

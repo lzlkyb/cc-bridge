@@ -88,6 +88,25 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
         .store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// 重启 MCP 监听任务的共享核心：abort 旧 handle（若有）→ 等 300ms 释放端口 → 重新 spawn。
+///
+/// 原本此段逻辑在 `restart_mcp_server`/`start_mcp_server`/`import_config`（均在 `commands.rs`）
+/// 以及托盘菜单的 "restart" 处理（`main.rs`）里各自写了一份，四处完全相同，收拢到这里。
+/// 是否需要顺带置 `mcp_running`/发 `mcp-status-changed` 事件由调用方自行决定（各处现有
+/// 行为不同，本函数不假设、不改变）。
+pub async fn restart_server(state: &Arc<AppState>) {
+    let mut handle = state.mcp_server_handle.lock().await;
+    if let Some(h) = handle.take() {
+        h.abort();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    let state_clone = state.clone();
+    let new_handle = tauri::async_runtime::spawn(async move {
+        spawn_mcp_server(state_clone).await;
+    });
+    *handle = Some(new_handle);
+}
+
 async fn health_handler() -> impl IntoResponse {
     Json(json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }))
 }
@@ -408,10 +427,15 @@ fn write_audit_for_call(
     // 若截断为整数毫秒会恒为 0，导致前端耗时拆解面板的“审计写盘”一项长期不可见。
     let audit_ms = a0.elapsed().as_secs_f64() * 1000.0;
     let server_ms = server_ms_dispatch + audit_ms.round() as u64;
-    // 补充正确的 serverMs/auditMs
+    // 补充正确的 serverMs/auditMs，并同步重新推导 overheadMs——
+    // 上面 new_entry() 构造时 audit_ms 还未知（传的 None），内部根据公式
+    // (server,duration,audit 三者均 Some 才算) 已把 overhead_ms 常驻成了 None；
+    // 若只补 server_ms/audit_ms 而不重算 overhead_ms，它会永远卡在那个 None 上
+    // （G6 端到端回归测试实测捕获到的真实回归，不是假设情境）。
     let mut entry = entry;
     entry.server_ms = Some(server_ms);
     entry.audit_ms = Some(audit_ms);
+    entry.overhead_ms = Some((server_ms as f64 - elapsed as f64 - audit_ms).max(0.0));
     // 关联备份：取出本操作的备份/目标路径写入审计条目（一键回滚 / Diff 用）。
     if let Some((bp, tp)) = crate::audit::take_op_backup() {
         entry.backup_path = bp.map(|p| p.to_string_lossy().into_owned());
@@ -673,6 +697,60 @@ mod over_wire_tests {
             .as_str()
             .expect("content[0].text 缺失");
         serde_json::from_str(t).expect("inner text 不是合法 JSON")
+    }
+
+    // ── 耗时链路（G6）──────────────────────────────────────────────
+
+    /// G6：`audit.rs` 的 duration/server/audit/overhead 之前只有单测验证四则运算本身
+    /// （手带数字传入 `new_entry`），没有任何测试真正走过一次真实 HTTP 调用验证这条链路
+    /// 在真实运行时依旧成立。本测试走完整 HTTP 路径（mcp_handler → handle_tools_call →
+    /// dispatch_tool → write_audit_for_call → audit::new_entry → 落盘），回读真实写入的
+    /// audit.log 最后一条，验证守恒式：serverMs == durationMs + auditMs + overheadMs
+    /// （允许 <1ms 误差，来自 write_audit_for_call 内 auditMs 的 .round() 取整）。未来谁在
+    /// handle_tools_call 里插入新 await 步骤而没同步改计时点，这条会因守恒式被破坏而失败。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn e2e_timing_dimensions_conserve() {
+        let root = unique_temp_root("timing");
+        let mut cfg = test_config(&root);
+        cfg.audit_enabled = true; // 本测试需要真实落盘的审计条目
+        let srv = spawn_server(cfg, root.clone()).await;
+
+        // list_allowed_roots 无参数、I/O 最轻，适合当耗时链路的最小边界样本。
+        let resp = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "list_allowed_roots", "arguments": {} }),
+        )
+        .await;
+        assert_dispatch_ok(&resp);
+
+        let log_path = root.join("audit.log");
+        let content = std::fs::read_to_string(&log_path).expect("audit.log 应已生成");
+        let last_line = content.lines().last().expect("至少一条审计记录");
+        let entry: crate::audit::AuditEntry =
+            serde_json::from_str(last_line).expect("审计行应为合法 JSON");
+
+        let duration_ms = entry.duration_ms.expect("durationMs 必须被填充") as f64;
+        let server_ms = entry.server_ms.expect("serverMs 必须被填充") as f64;
+        let audit_ms = entry.audit_ms.expect("auditMs 必须被填充");
+        let overhead_ms = entry.overhead_ms.expect("overheadMs 必须被填充");
+
+        assert!(
+            overhead_ms >= 0.0,
+            "overhead_ms 不得为负，实测 {overhead_ms}"
+        );
+        let reconstructed = duration_ms + audit_ms + overhead_ms;
+        assert!(
+            (reconstructed - server_ms).abs() < 1.0,
+            "守恒式被破坏：duration({duration_ms}) + audit({audit_ms}) + overhead({overhead_ms}) \
+             = {reconstructed}，与 server({server_ms}) 不一致"
+        );
+        assert!(
+            server_ms >= duration_ms,
+            "server_ms({server_ms}) 必须 >= duration_ms({duration_ms})"
+        );
     }
 
     // ── 协议层 ──────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useUpdate, friendlyError } from "../../contexts/UpdateContext";
 import { useToast } from "../ui/toast";
 import { Icon } from "../ui/icon";
+import { formatBytesPerSec } from "../../lib/utils";
 
 /**
  * Header 上的更新状态徽章。
@@ -16,7 +17,7 @@ import { Icon } from "../ui/icon";
  * - error       → 红色 pill + 版本号，可点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, progress, progressIndeterminate, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
+  const { status, update, progress, progressIndeterminate, bytesPerSec, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -103,10 +104,11 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
 
   // ─── downloading ──────────────────────────
   if (status === "downloading") {
+    const speedText = bytesPerSec > 0 ? ` · ${formatBytesPerSec(bytesPerSec)}` : "";
     return (
-      <span className="header-badge header-badge-downloading" title="正在下载更新…">
+      <span className="header-badge header-badge-downloading" title={`正在下载更新…${speedText}`}>
         <DownloadRing progress={progress} indeterminate={progressIndeterminate} />
-        <span>{progressIndeterminate ? "下载中" : `下载中 ${progress}%`}</span>
+        <span>{progressIndeterminate ? `下载中${speedText}` : `下载中 ${progress}%${speedText}`}</span>
       </span>
     );
   }

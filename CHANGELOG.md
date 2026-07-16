@@ -7,6 +7,27 @@
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-07-16
+
+### 新增
+- 更新下载进度新增下载速度显示（如 "2.3 MB/s"）。Rust 侧 `download_and_install` 回调里加了 ~250ms 窗口限流计算（不是每个 chunk 都重算，避免快网速下数字跳得难看），`update:progress` 事件新增 `bytesPerSec` 字段；前端 `UpdateContext`/`UpdateBadge`/`AboutGroup` 相应接收并展示，新增 `formatBytesPerSec` 工具函数复用现有 `formatBytes`。
+- 自动更新支持 Gitee 镜像优先 + 客户端自动回退，解决国内用户直连 GitHub 下载安装包不稳定/很慢的问题。根因：之前下载 URL 在 CI 构建时写死进 `updater.json` 的单个字符串（固定指向 `ghproxy.net`），没有任何运行时兜底。现在 CI（`.github/workflows/build.yml`）每次发版会额外把产物 + 专属 manifest（`updater-gitee.json`）同步到 Gitee 镜像仓库的 `releases` 分支 `latest/` 目录（固定覆盖，不按 tag 累加，避免仓库无限增长）；客户端（`commands.rs` 的 `start_update`/`check_update`）改为按候选源列表依次尝试（Gitee 优先→现有 ghproxy/GitHub 回退），任一候选检查或下载失败就换下一个，签名校验仍由 tauri-plugin-updater 内部处理、不受影响。`desktop/scripts/generate-updater-json.mjs` 新增 `UPDATER_URL_TEMPLATE`/`UPDATER_OUTPUT_FILENAME` 两个环境变量支持 Gitee 这种与 GitHub Release 拼法形状不同的镜像。
+  - `GITEE_REPOSITORY` 常量已改为真实 Gitee 仓库路径 `lzul/cc-bridge`。仍需在 GitHub Actions secrets 里配置 `GITEE_TOKEN`/`GITEE_REPOSITORY`（后者值也是 `lzul/cc-bridge`）才能让 CI 的 Gitee 同步步骤生效，且需 Gitee 仓库确实已导入/镜像好。
+
+### 修复
+- `overheadMs`（日志/性能面板五维耗时拆解的其中一维）在真实运行时恒为 `None`，前端从未真正显示过这一项：`write_audit_for_call` 构造审计条目时 `audit_ms` 还未知（传 `None`）导致 `overhead_ms` 被永久算成 `None`，后面补 `server_ms`/`audit_ms` 时忘了同步重算。新增一个真实走 HTTP 全链路、回读真实 audit.log 的回归测试实测抛出此 bug。
+
+### 优化
+- `mcp/tools/registry.rs` 单测删除硬编码 `tools.len()==17` 断言，改为纯不变式校验，新增工具时无需同步改这个数字。
+- 新增 `mcp::http::restart_server(state)` 收拢 4 处重复的 MCP 重启逻辑（`restart_mcp_server`/`start_mcp_server`/`import_config`/托盘菜单）。
+- `batch` 工具描述补充 non-transactional 说明，避免远程调用方误判部分失败会回滚。
+- CLAUDE.md 规则 7 同步更新为实际的注册表 register_tool! 流程，并同步更新相关 RFC 的状态字段。
+
+- 版本历史弹框里点击“还原”弹出的确认框被压在弹框下面（看不到/点不到）：`RestoreBackupDialog` 用的是普通弹框级别的 `z-50`，而 `VersionHistoryModal` 自身是 `z-[1000]`，从它里打开时确认框被压在下面。改为 `z-[1001]`，高于父弹框。前端只改 className，HMR 热更新即生效。
+- 版本历史弹框中"看改了什么"/"还原"按钮即使白名单已开启仍为灰（对深层企业级仓库尤其明显）：旧实现靠在白名单根目录下按文件名做有边界目录遍历反查原始路径（`max_depth=6`、`max_scan=8000`），文件实际嵌套深度超过 6 层或仓库文件数超过 8000 时必然查不到。改为在创建备份时（`backup.rs`）就将原始绝对路径写入新增的 `backup_index` 表（`db.rs`），`list_backups` 改为直接查表精确还原，不再依赖有界目录遍历。删除了旧的 `build_targets_map`/`walk_collect_targets`。现有备份（该表上线前创建）无索引记录，仍会显示为无法定位，需重新产生备份才能用新机制。
+- 更新下载进度条一直显示 0%：`commands.rs` 下载回调误把 `tauri-plugin-updater` 给的“本次分片字节数”当成了“累计已下载字节数”直接 emit 给前端，前端每次用单个分片大小除以总大小算百分比，结果永远接近 0。改为在 Rust 侧用 `downloaded_total` 累加分片字节数后再 emit，前端逻辑无需改动。
+- 点击「检查更新」后无提示、无报错（静默回到原样）：前端 `UpdateContext` 的 `update:uptodate` 监听器错误地把状态直接重置为 `idle`，跳过了「已是最新」状态，导致「已是最新」pill 与 toast 永不触发。改为进入 `uptodate` 状态并启用已声明的 `uptodateTimerRef`（4 秒后自动回 `idle`），恢复正确的反馈。
+
 ## [2.3.1] - 2026-07-15
 
 ### 新增

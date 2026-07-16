@@ -70,8 +70,10 @@ async fn copy_single(
     let _guard = lock.lock().await;
 
     if to_resolved.exists() && config.backup_enabled {
+        let db = state.db.lock().await;
         let bp =
-            backup::backup_before_overwrite(&to_resolved, &config.backup_dir, &state.data_dir)?;
+            backup::backup_before_overwrite(&to_resolved, &config.backup_dir, &state.data_dir, &db)?;
+        drop(db);
         backup::prune_backups(
             &to_resolved,
             &config.backup_dir,

@@ -1,6 +1,6 @@
 # RFC：手写 dispatch 折中重构（注册表 + Schema 自动派生）
 
-> 状态：草案（待决策）
+> 状态：**已实施**（2026-07-14 起，`registry.rs`/`http.rs` 已按本方案落地，CLAUDE.md 规则 7 已同步更新；本文档保留作为设计记录）
 > 关联：`proposals/session_cwd_persistence_rfc.md`、CLAUDE.md 规则 7（三件套）/ 规则 8（二进制体积）/ 规则 7 安全红线
 > 目标读者：维护者（非用户可见功能）
 

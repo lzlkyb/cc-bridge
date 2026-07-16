@@ -3,9 +3,9 @@ import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
-import { useUpdate, type UpdateStatus } from "../../contexts/UpdateContext";
+import { useUpdate, type UpdateStatus, type UpdateInfo } from "../../contexts/UpdateContext";
 import type { StatusResponse } from "../../lib/types";
-import { formatVersion } from "../../lib/utils";
+import { formatVersion, formatBytesPerSec } from "../../lib/utils";
 import { APP_INFO } from "../../lib/about";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChangelogView } from "./ChangelogView";
@@ -48,7 +48,7 @@ const STYLE_MODAL_OVERLAY: CSSProperties = { background: "rgba(0,0,0,0.45)" };
 const STYLE_MODAL_BOX: CSSProperties = { background: "var(--color-card)" };
 
 export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; unreadCount?: number }) {
-  const { status: updateStatus, update, progress, progressIndeterminate, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
+  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -82,7 +82,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
             >
               {formatVersion(status?.version)}
             </span>
-            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} onOpenNotes={() => openUpdateNotes()} />
+            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} bytesPerSec={bytesPerSec} onOpenNotes={() => openUpdateNotes()} />
             {unreadCount !== undefined && unreadCount > 0 && (
               <span
                 className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white"
@@ -301,7 +301,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
 }
 
 /* ── 更新状态胶囊 ── */
-function UpdateStatusPill({ status, update, progress, progressIndeterminate, onOpenNotes }: { status: UpdateStatus; update: { version: string } | null; progress: number; progressIndeterminate: boolean; onOpenNotes?: () => void }) {
+function UpdateStatusPill({ status, update, progress, progressIndeterminate, bytesPerSec, onOpenNotes }: { status: UpdateStatus; update: UpdateInfo | null; progress: number; progressIndeterminate: boolean; bytesPerSec: number; onOpenNotes?: () => void }) {
   if (status === "uptodate") {
     return (
       <span className="status-pill flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success">
@@ -335,6 +335,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, onO
             style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
           />
         </span>
+        {bytesPerSec > 0 && <span className="font-normal text-primary/70">{formatBytesPerSec(bytesPerSec)}</span>}
       </span>
     );
   }

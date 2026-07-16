@@ -137,7 +137,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             batch,
             BatchArgs,
-            r#"Run multiple cc-bridge tool calls in ONE round trip. Prefer this whenever you need several file operations together (e.g. read many files then edit several, or search then read matches) — it collapses N network round trips into 1, the single biggest latency win over a remote link. Each operation reuses the same security checks as calling the tool directly (read-only mode, path whitelist). Nested batch is not allowed."#,
+            r#"Run multiple cc-bridge tool calls in ONE round trip. Prefer this whenever you need several file operations together (e.g. read many files then edit several, or search then read matches) — it collapses N network round trips into 1, the single biggest latency win over a remote link. Each operation reuses the same security checks as calling the tool directly (read-only mode, path whitelist). Nested batch is not allowed. Non-transactional: when stopOnError is true (default), execution halts on the first failing operation but operations that already completed (including any writes) are NOT rolled back."#,
             false
         ),
         register_tool!(
@@ -177,21 +177,20 @@ pub fn all_tools() -> Vec<ToolSpec> {
 mod tests {
     use super::*;
 
-    /// Single traversal over the registry: guards tool count + schema auto-derivation.
-    /// Adding a tool MUST bump the `17` assertion and add a `register_tool!` line here —
-    /// that is the whole point of the 折中半程重构 (see proposals/handwritten_dispatch_refactor_rfc.md).
+    /// Single traversal over the registry: guards schema auto-derivation via pure
+    /// invariants (no hardcoded tool count — adding/removing a tool needs no assertion
+    /// bump here, only a `register_tool!` line in `all_tools()`; see G4 in
+    /// 功能优化清单.md and proposals/handwritten_dispatch_refactor_rfc.md).
     #[test]
     fn registry_has_expected_count_and_schemas() {
         let tools = all_tools();
 
-        // 1) Count is stable at 17. Any drift means a tool was added/removed
-        //    without updating the registry — exactly the footgun we eliminated.
-        assert_eq!(tools.len(), 17, "tool count drifted from 17");
+        // 1) Registry is non-empty (catches an accidentally-emptied all_tools()).
+        assert!(!tools.is_empty(), "tool registry must not be empty");
 
         // 2) Every tool: non-empty name + description + an object schema with a
         //    `properties` object (may legitimately be empty — e.g. list_allowed_roots
         //    takes no args). Type must always be "object".
-        let mut non_empty = 0usize;
         for t in &tools {
             assert!(!t.name.is_empty(), "tool name must not be empty");
             assert!(
@@ -199,8 +198,7 @@ mod tests {
                 "tool {name} description must not be empty",
                 name = t.name
             );
-            let props = t
-                .schema
+            t.schema
                 .get("properties")
                 .and_then(|p| p.as_object())
                 .unwrap_or_else(|| panic!("tool {} schema missing 'properties'", t.name));
@@ -211,19 +209,19 @@ mod tests {
                 "tool {} schema type must be 'object'",
                 t.name
             );
-            if !props.is_empty() {
-                non_empty += 1;
-            }
         }
-        // At least 16 of 17 tools take arguments. If the derive ever regresses and
-        // starts emitting empty properties for every tool, this drops far below 16
-        // and the test fails — a cheap guard against a silently broken derive.
-        assert!(
-            non_empty >= 16,
-            "expected >=16 tools with non-empty properties, got {non_empty}"
+        // 3) Names must be unique — a duplicate register_tool! line (copy-paste error)
+        //    would silently shadow one tool via `.find(|t| t.name == name)` in dispatch_tool.
+        let mut names: Vec<&str> = tools.iter().map(|t| t.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            tools.len(),
+            "duplicate tool name registered (register_tool! copy-paste error)"
         );
 
-        // 3) serde(rename) derivation: the schema key must follow the rename, not the
+        // 4) serde(rename) derivation: the schema key must follow the rename, not the
         //    Rust field name. This catches a broken derive (the #1 regression risk).
         let run_cmd = tools
             .iter()
