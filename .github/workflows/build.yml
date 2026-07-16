@@ -187,10 +187,10 @@ jobs:
             $mirrorDir = Join-Path $env:RUNNER_TEMP "gitee-mirror"
 
             # 独立临时目录里操作 Gitee remote，不动主 checkout 的分支/工作区状态。
-            git clone --depth 1 --branch releases $giteeUrl $mirrorDir 2>$null
+            git clone --depth 1 --branch releases $giteeUrl $mirrorDir 2>&1
             if ($LASTEXITCODE -ne 0) {
               # releases 分支还不存在（首次发布）：clone 默认分支后本地新建孤儿分支。
-              git clone --depth 1 $giteeUrl $mirrorDir
+              git clone --depth 1 $giteeUrl $mirrorDir 2>&1
               Push-Location $mirrorDir
               git checkout --orphan releases
               git reset --hard
@@ -215,4 +215,5 @@ jobs:
             Write-Host "✅ 已镜像到 Gitee releases 分支：$tag"
           } catch {
             Write-Host "⚠️ Gitee 镜像发布失败（不影响本次 GitHub Release 已发布内容，自动更新仍可走现有 GitHub/ghproxy 路径）：$_"
+            exit 0
           }
