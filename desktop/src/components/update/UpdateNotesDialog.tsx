@@ -1,71 +1,71 @@
 import { Icon } from "../ui/icon";
 
-/**
- * Release Notes 前缀 → 中文标签 + 配色（跟随主题 CSS 变量，深浅色自适应）。
- * 与项目 commit 前缀规范保持一致：feat / fix / chg(change) / refactor / docs。
+/** 将文本中的 **...** 转换为 <strong> 标签，其余保持纯文本。 */
+function renderBold(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={i} className="font-semibold text-foreground/90">{part.slice(2, -2)}</strong>;
+    }
+    return part;
+  });
+}
+
+/** 章节标题色标（交替使用，修复类用琥珀色）。 */
+function sectionDotColor(sectionIdx: number, label: string): string {
+  if (/修复|fix/i.test(label)) return "bg-amber-400";
+  return sectionIdx % 2 === 0 ? "bg-indigo-400" : "bg-violet-400";
+}
+
+/** Release Notes 轻量渲染，支持三种内容格式：
+ *  1. `**标题**` 单独一行 → 章节标题（带色标圆点）
+ *  2. `- 条目` → 列表项（带圆点 bullet）
+ *  3. 纯文本行 → 段落文字
+ *  行内 `**加粗**` 自动转为 <strong>。
  */
-const PREFIX_MAP: Record<string, { key: keyof typeof CHIP_STYLES; label: string }> = {
-  feat: { key: "feat", label: "新功能" },
-  fix: { key: "fix", label: "修复" },
-  chg: { key: "chg", label: "变更" },
-  change: { key: "chg", label: "变更" },
-  refactor: { key: "refactor", label: "重构" },
-  docs: { key: "docs", label: "文档" },
-};
-
-const CHIP_STYLES = {
-  feat: { color: "var(--primary)", bg: "color-mix(in srgb, var(--primary) 12%, transparent)" },
-  fix: { color: "var(--destructive)", bg: "color-mix(in srgb, var(--destructive) 12%, transparent)" },
-  chg: { color: "var(--warning)", bg: "color-mix(in srgb, var(--warning) 12%, transparent)" },
-  refactor: { color: "var(--muted-foreground)", bg: "color-mix(in srgb, var(--muted-foreground) 14%, transparent)" },
-  docs: { color: "var(--success)", bg: "color-mix(in srgb, var(--success) 12%, transparent)" },
-} as const;
-
-/** 去重后的图例顺序（feat→fix→chg→refactor→docs），供弹窗顶部与文档展示。 */
-const LEGEND: { key: keyof typeof CHIP_STYLES; label: string }[] = [
-  { key: "feat", label: "新功能" },
-  { key: "fix", label: "修复" },
-  { key: "chg", label: "变更" },
-  { key: "refactor", label: "重构" },
-  { key: "docs", label: "文档" },
-];
-
-/** 轻量 Release Notes 渲染：前缀→中文标签徽章 + 列表项。纯展示，无副作用。 */
 export function ReleaseNotes({ body }: { body: string | null | undefined }) {
   if (!body || !body.trim()) {
     return <div className="px-1 py-2 text-xs text-muted-foreground">本次更新暂无说明</div>;
   }
+
   const lines = body.split("\n");
+  let sectionIdx = 0;
+
   return (
     <div className="flex flex-col">
       {lines.map((raw, i) => {
         const line = raw.trimEnd();
-        if (line.trim() === "") return <div key={i} className="h-1.5" />;
+        if (line.trim() === "") return <div key={i} className="h-2" />;
 
-        const isList = /^[-*]\s+/.test(line);
-        const content = isList ? line.replace(/^[-*]\s+/, "") : line;
-        const m = content.match(/^(\w+):\s*(.*)$/);
-        const info = m ? PREFIX_MAP[m[1].toLowerCase()] : undefined;
-
-        if (info) {
-          const st = CHIP_STYLES[info.key];
+        // 整行 **...** → 章节标题
+        const headerMatch = line.match(/^\*\*(.+)\*\*$/);
+        if (headerMatch) {
+          const label = headerMatch[1].trim();
+          const dotCls = sectionDotColor(sectionIdx, label);
+          sectionIdx++;
           return (
-            <div key={i} className="flex items-baseline gap-2 py-[3px]">
-              <span className="shrink-0 select-none text-[11px] text-muted-foreground">{isList ? "•" : "›"}</span>
-              <span
-                className="inline-block shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-bold leading-tight"
-                style={{ color: st.color, background: st.bg }}
-              >
-                {info.label}
-              </span>
-              <span className="text-[12.5px] leading-snug text-foreground/90">{m![2]}</span>
+            <div key={i} className="mb-1.5 mt-3 flex items-center gap-2 text-xs font-bold text-foreground tracking-[0.3px] first:mt-0">
+              <span className={`inline-block h-2 w-2 shrink-0 rounded-[3px] ${dotCls}`} />
+              {renderBold(label)}
             </div>
           );
         }
+
+        // 列表项
+        const itemMatch = line.match(/^\s*[-*]\s+(.*)$/);
+        if (itemMatch) {
+          return (
+            <div key={i} className="relative py-[3px] pl-4 text-[13px] leading-[1.55] text-muted-foreground">
+              <span className="absolute left-0 top-[9px] h-[5px] w-[5px] rounded-full bg-[#d2d2d7]" />
+              {renderBold(itemMatch[1])}
+            </div>
+          );
+        }
+
+        // 普通段落
         return (
-          <div key={i} className="flex items-baseline gap-2 py-[3px]">
-            <span className="shrink-0 select-none text-[11px] text-muted-foreground">{isList ? "•" : "›"}</span>
-            <span className="text-[12.5px] leading-snug text-foreground/90">{content}</span>
+          <div key={i} className="py-[2px] text-[13px] leading-[1.55] text-muted-foreground">
+            {renderBold(line)}
           </div>
         );
       })}
@@ -73,7 +73,7 @@ export function ReleaseNotes({ body }: { body: string | null | undefined }) {
   );
 }
 
-/** 「查看更新内容」弹窗：复用应用通用 modal 视觉（modal-overlay / modal-box）。 */
+/** 「查看更新内容」弹窗 —— v3 排版驱动风格（参考 Linear / Clerk / macOS 更新页）。 */
 export function UpdateNotesDialog({
   open,
   update,
@@ -91,59 +91,61 @@ export function UpdateNotesDialog({
   return (
     <div
       className="modal-overlay fixed inset-0 z-[1000] flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.45)" }}
       onClick={onClose}
     >
       <div
-        className="modal-box mx-4 max-h-[80vh] w-[480px] max-w-[90vw] overflow-y-auto rounded-2xl border border-border p-6 shadow-2xl"
-        style={{ background: "var(--color-card)" }}
+        className="modal-box relative mx-4 w-[488px] max-w-[90vw] overflow-hidden rounded-[20px] modal-surface"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* 标题 */}
-        <div className="mb-3.5 flex items-center gap-2.5">
+        {/* ── 关闭按钮（绝对定位右上角） ── */}
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-4 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <Icon name="close" size={18} />
+        </button>
+
+        {/* ═══ Hero 区（居中布局） ═══ */}
+        <div className="px-9 pb-0 pt-9 text-center">
           <div
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-white"
-            style={{ background: "var(--version-gradient)" }}
+            className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl text-white bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] shadow-glow-primary-lg"
           >
-            <img src="/icon.png" alt="" className="h-5 w-5 object-contain" />
+            <img src="/icon.png" alt="" className="h-8 w-8 object-contain" />
           </div>
-          <div className="text-[15px] font-extrabold text-foreground">CC Bridge 更新到 v{ver}</div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+
+          <div
+            className="mb-2.5 inline-block rounded-full bg-primary/[0.12] px-3 py-[3px] text-[11px] font-bold tracking-[0.5px] text-primary"
           >
-            <Icon name="close" size={18} />
-          </button>
+            新版本可用
+          </div>
+
+          <div className="text-[36px] font-extrabold leading-none tracking-[-0.5px] text-foreground">
+            v{ver}
+          </div>
+          <div className="mt-1.5 text-[13px] text-muted-foreground">CC Bridge 软件更新</div>
+          <div className="mt-4 mb-6 inline-flex items-center gap-2 text-xs text-[#aeaeb2]">
+            <span className="rounded-md bg-muted px-2 py-0.5 text-[11px]">v2.3.1 → v{ver}</span>
+            <span className="text-[#d2d2d7]">·</span>
+            <span className="rounded-md bg-muted px-2 py-0.5 text-[11px]">约 14 MB</span>
+          </div>
         </div>
 
-        {/* 标签图例 */}
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          {LEGEND.map((l) => {
-            const st = CHIP_STYLES[l.key];
-            return (
-              <span
-                key={l.key}
-                className="rounded-full px-2 py-0.5 text-[10px] font-bold"
-                style={{ color: st.color, background: st.bg }}
-              >
-                {l.label}
-              </span>
-            );
-          })}
-        </div>
+        {/* ── 分隔线 ── */}
+        <div className="mx-9 h-px bg-[linear-gradient(to_right,transparent,hsl(var(--border))_15%,hsl(var(--border))_85%,transparent)]" />
 
-        {/* 更新内容滚动区 */}
-        <div className="mb-4 max-h-[320px] overflow-y-auto rounded-xl border border-border bg-muted p-3.5">
+        {/* ═══ 更新内容滚动区 ═══ */}
+        <div className="max-h-[320px] overflow-y-auto px-9 pb-0 pt-7">
           <ReleaseNotes body={update.body ?? null} />
         </div>
 
-        {/* 底部操作 */}
-        <div className="flex justify-end gap-2.5">
+        {/* ═══ 底部操作 ═══ */}
+        <div className="flex items-center gap-2.5 px-9 pb-6 pt-4">
+          <span className="flex-1 text-xs text-muted-foreground opacity-60">下载完成后自动安装并重启</span>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg border border-border bg-card px-4 py-2 text-[13px] font-bold text-foreground transition-colors hover:bg-muted"
+            className="rounded-[10px] bg-transparent px-4 py-2.5 text-[13px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             稍后
           </button>
@@ -153,10 +155,9 @@ export function UpdateNotesDialog({
               onDownload();
               onClose();
             }}
-            className="rounded-lg border-0 px-4.5 py-2 text-[13px] font-bold text-white shadow-sm transition-[transform,box-shadow] hover:-translate-y-px"
-            style={{ background: "var(--badge-update-bg)", boxShadow: "var(--badge-update-shadow)" }}
+            className="rounded-[10px] bg-[hsl(var(--primary))] px-5 py-2.5 text-[13px] font-semibold text-white shadow-glow-primary transition-all hover:-translate-y-px hover:bg-[hsl(243,75%,53%)] hover:shadow-glow-primary-strong"
           >
-            立即更新
+            下载并更新
           </button>
         </div>
       </div>

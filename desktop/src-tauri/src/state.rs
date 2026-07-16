@@ -183,6 +183,74 @@ impl AppState {
         self.cwd_sessions.retain(|_, s| s.last_active > cutoff);
     }
 
+    /// G5 修复：从 commands.rs 收拢到这里。之前它们定义在 Tauri 命令层（commands.rs），却被
+    /// 协议层的 mcp/tools/run_command.rs 反向 `use crate::commands` 调用，依赖方向反了；且与
+    /// gc_path_locks/gc_cwd_sessions 是几乎同构的“快照→判断→remove”模式，收拢到同一处。
+    ///
+    /// 并发上限时的即时腾位：不管 5 分钟宽容期，把所有已结束（exit_code 为 Some）的
+    /// 命令立即移除，为新命令腾出空位。修复：之前一旦命中并发上限，即使前面的早已跑完，
+    /// 新命令也会被硬拒绝，用户必须手动 stop_command 才能重试。由 `run_command.rs` 在打包 5
+    /// 上限报错前先调用。
+    pub async fn evict_finished_commands(&self) {
+        let snapshot: Vec<_> = self
+            .running_commands
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().exit_code.clone()))
+            .collect();
+
+        for (handle, exit_code_arc) in snapshot {
+            if exit_code_arc.lock().await.is_some() {
+                self.running_commands.remove(&handle);
+            }
+        }
+    }
+
+    /// 后台定时清理：从配置读宽容期（默认 2 分钟），命令结束后超过该时间自动从注册表移除。
+    /// 0 表示立即清理（不保留宽容期）。
+    /// 仅清理已结束（exit_code 为 Some）且超过宽容期的条目，运行中的不动。
+    /// 由 main.rs 里的周期任务调用（每 60s 一次）。
+    pub async fn cleanup_finished_commands(&self) {
+        let cleanup_secs = self.config.read().await.command_cleanup_secs;
+        if cleanup_secs == 0 {
+            // 宽容期为 0：仅保留仍在运行的，已结束的全清
+            self.evict_finished_commands().await;
+            return;
+        }
+        let grace_period = Duration::from_secs(cleanup_secs);
+
+        let snapshot: Vec<_> = self
+            .running_commands
+            .iter()
+            .map(|entry| {
+                let cmd = entry.value();
+                (
+                    entry.key().clone(),
+                    cmd.exit_code.clone(),
+                    cmd.finished_elapsed_secs.clone(),
+                    cmd.started_at,
+                )
+            })
+            .collect();
+
+        let mut to_remove = Vec::new();
+        for (handle, exit_code_arc, finished_elapsed_arc, started_at) in snapshot {
+            if exit_code_arc.lock().await.is_none() {
+                continue; // 还在跑，不清
+            }
+            let Some(finished_secs) = *finished_elapsed_arc.lock().await else {
+                continue; // exit_code 已写但 finished_elapsed 还没来得及写入（极短窗口），下一轮再看
+            };
+            let finished_at = started_at + Duration::from_secs(finished_secs);
+            if finished_at.elapsed() >= grace_period {
+                to_remove.push(handle);
+            }
+        }
+
+        for handle in to_remove {
+            self.running_commands.remove(&handle);
+        }
+    }
+
     // ── 方案 A 运行卡实时指标采集（全做真，禁止伪造）──
 
     /// 记录一次请求到达时间（rpm 统计）。环形上限 10_000 防无界增长。

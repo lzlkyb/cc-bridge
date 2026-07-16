@@ -70,7 +70,7 @@ export function OnboardingGuide({
       onClick={handleSkip}
     >
       <div
-        className={`mx-4 flex max-h-[88vh] w-full max-w-md flex-col rounded-2xl border bg-card p-6 shadow-2xl transition-all duration-300 ${
+        className={`mx-4 flex max-h-[88vh] w-full max-w-md flex-col rounded-2xl modal-surface p-6 transition-all duration-300 ${
           visible ? "translate-y-0 opacity-100 scale-100" : "translate-y-4 opacity-0 scale-95"
         }`}
         onClick={(e) => e.stopPropagation()}

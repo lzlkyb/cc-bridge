@@ -6,9 +6,11 @@ import {
   buildBaseCommand,
   buildConnectCommand,
   buildPermissionGrantCommand,
+  copyText,
 } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
+import { useToast } from "../../ui/toast";
 
 function CommandBox({ command, copied, onCopy }: { command: string; copied: boolean; onCopy: () => void }) {
   return (
@@ -39,6 +41,7 @@ export function StepConnectCmd({
   const [scope, setScope] = useState<McpScope>("project");
   const [copied, setCopied] = useState(false);
   const [permCopied, setPermCopied] = useState(false);
+  const { toast } = useToast();
 
   const displayHost = buildDisplayHost(status, selectedIp);
   const port = status?.port ?? 7823;
@@ -47,18 +50,29 @@ export function StepConnectCmd({
   const connectCommand = buildConnectCommand(baseCommand, scope);
   const permissionCommand = buildPermissionGrantCommand(scope, "", false);
 
+  // H6 修复：之前未 await/catch，剪贴板权限被拒绝时会出现"显示已复制但其实没复制"的假阳性反馈。
   const copyConnect = () => {
     if (!connectCommand) return;
-    navigator.clipboard.writeText(connectCommand);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    void copyText(
+      connectCommand,
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      (e) => toast(`复制失败：${e}`, "error"),
+    );
   };
 
   const copyPerm = () => {
     if (!permissionCommand) return;
-    navigator.clipboard.writeText(permissionCommand);
-    setPermCopied(true);
-    setTimeout(() => setPermCopied(false), 2000);
+    void copyText(
+      permissionCommand,
+      () => {
+        setPermCopied(true);
+        setTimeout(() => setPermCopied(false), 2000);
+      },
+      (e) => toast(`复制失败：${e}`, "error"),
+    );
   };
 
   return (
@@ -72,7 +86,7 @@ export function StepConnectCmd({
           onClick={() => setScope("project")}
           className={`relative rounded-lg border-2 p-3 text-left transition-colors ${
             scope === "project"
-              ? "border-primary bg-accent shadow-[0_0_0_3px_color-mix(in_srgb,hsl(var(--primary))_14%,transparent)]"
+              ? "border-primary bg-accent shadow-ring-focus"
               : "border-transparent bg-muted/50 hover:bg-muted"
           }`}
         >
@@ -84,7 +98,7 @@ export function StepConnectCmd({
           onClick={() => setScope("user")}
           className={`relative rounded-lg border-2 p-3 text-left transition-colors ${
             scope === "user"
-              ? "border-primary bg-accent shadow-[0_0_0_3px_color-mix(in_srgb,hsl(var(--primary))_14%,transparent)]"
+              ? "border-primary bg-accent shadow-ring-focus"
               : "border-transparent bg-muted/50 hover:bg-muted"
           }`}
         >

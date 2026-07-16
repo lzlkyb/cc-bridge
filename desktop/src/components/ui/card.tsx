@@ -1,7 +1,7 @@
 import type { HTMLAttributes, ReactNode } from "react";
 
 export function Card({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={`card-lift rounded-xl border bg-card text-card-foreground shadow-sm ${className}`} {...props} />;
+  return <div className={`card-lift rounded-xl border bg-card text-card-foreground shadow-card ${className}`} {...props} />;
 }
 
 export function CardHeader({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {

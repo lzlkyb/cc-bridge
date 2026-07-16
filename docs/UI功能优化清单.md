@@ -42,3 +42,34 @@
 - B2 与 `App.tsx` 的 S5 修复（Header `running ?? true` → `?? false`，2026-07-13 落地）同源，应一并统一到 `?? false`。
 - 本轮与 2026-07-13「整体 UI 审查」互补；此前已落地：IP 选择 B 方案、S3 横幅方案 A、运行卡背景 ①+②。
 - 所有改动未提交，待用户明确「提交」后按规则 5 走 git commit。
+
+## 五、UI 升级改进项（设计语言统一 P1 / 视觉润色 P2）
+
+> 来源：2026-07-16 整体 UI 升级建议的 P0–P3 分级。P0（架构卫生：拆 ConnectTab/SecurityTab + 提升 ToggleRow/InlineNum + 统一确认弹窗）已于当日执行完，见上方「四、关联上下文」。
+> 本節仅记录 **P1 / P2** 两级改进项（P3 侧栏导航/全局搜索/通知中心为长远项，暂不纳入）。**状态：P1-1、P1-2、P1-3、P1-4 均已完成代码改动（未提交）；下一步 P2-1~P2-4 表层润色。**
+> 实证依据（2026-07-16 全仓 Grep）：内联 `style={{` 散落 13 个文件；`shadow-*` 任意值 + 内联 `boxShadow` 并存；`rounded-*` 在 50+ 文件种类繁杂——印证下方"清内联 style / 规范阴影圆角 token"确为真实问题。
+
+### P1 设计语言统一（结构性，先做）
+
+| 编号 | 标题 | 范围 / 位置 | 现状 | 建议修复 | 优先级 |
+|------|------|-------------|------|----------|--------|
+| P1-1 | 统一「设置行」布局组件【已完成，未提交】 | `SettingsToggles`(`ToggleRow`) / `SecurityTab`(`InlineNum`+按钮行) / `SettingsTab`(端口、保留天数输入行) / `TokenManager`(自定义行) | 各 Tab 的"标签 + 说明 + 控件 + 保存指示"行布局各自为政，对齐/间距/字号不一致 | 抽象统一 `SettingsRow`（props：`label` / `sublabel` / `control` / `saved?`），替换散落写法；已有 `ui/ToggleRow.tsx` 可纳入此体系 | 高 |
+| P1-2 | 清理内联 `style={{}}`【已完成，未提交】 | 13 文件：`toast.tsx`、`AboutGroup.tsx`、`LogDetailPanel.tsx`、`chip-input.tsx`、`VersionHistoryModal.tsx`、`UpdateNotesDialog.tsx`、`TokenManager.tsx`、`PerfCharts.tsx`、`LogTab.tsx`、`AuditPager.tsx`、`ui/tabs.tsx` 等 | 硬编码颜色/尺寸散落内联，暗色模式与主题切换易漏改、难统一 | 静态 inline 已全部转为 Tailwind class / CSS token（遮罩、卡片背景、渐变、阴影、旋转、maxWidth/Height 等）；仅动态/数据驱动（数据色、进度条宽度、动画指示器）保留内联；`tsc --noEmit` 零错误 | 高 |
+| P1-3 | 规范阴影 token【已完成，未提交】 | 全仓 `shadow-lg/md/sm` + `shadow-[...]` 任意值 + 内联 `boxShadow` 并存 | 卡片/弹窗/悬浮态阴影层级无统一标尺，深浅主题下观感漂移 | `@theme inline` 注册 9 个 token（card/pop/hover + glow-primary/-lg/-strong + glow-warning + ring-focus + ring-inset-primary），浅/深两套值经 `--sh-*` 变量切换；约 30 处散落阴影改为 token 类；5 处重复聚焦环合并为 `shadow-ring-focus`；保留 ConnectHero 玻璃按钮与版本徽章（已 token 化） | 中 |
+| P1-4 | 统一卡片/容器基底【已完成，未提交】 | 模态表面 10 处（VersionHistoryModal / UpdateNotesDialog / OnboardingGuide / CommandPalette / DirectoryBrowser / LogDetailPanel×2 / dialog / ConfirmModal / ConfirmDialog）共享 `border bg-card … shadow-pop` 但代码重复 | 同类模态容器基底写法重复、后续调整阴影/边框需逐处改 | 经调研：内容卡已统一（`<Card>`/`.card-primary`/`.card-lift`），真实价值在**去重模态表面**；沿用项目语义类约定新增 `.modal-surface`（border + bg-card + shadow-pop，深浅主题自适应），收口 10 处模态，零视觉变化、零结构风险 | 中 |
+
+### P2 视觉润色（表层，P1 之后做）
+
+| 编号 | 标题 | 范围 / 位置 | 现状 | 建议修复 | 优先级 |
+|------|------|-------------|------|----------|--------|
+| P2-1 | 微交互统一 | 全仓 hover/focus/active 过渡 | `transition-colors duration-150` 等用法散落、部分控件无按压/聚焦反馈，加载态 spinner 样式不统一 | 抽象交互基元（hover/focus/active 过渡时长与缓动统一）；loading 态统一 spinner 组件 | 中 |
+| P2-2 | 空状态设计 | `LogTab`(审计无记录) / `SecurityTab`(白名单为空) / `RunningCommandsCard`(无历史) / 日志筛选无结果 | 仅朴素占位或留白，无引导文案/插画，新用户易以为"坏了" | 统一空状态组件（图标 + 一句引导 + 可选操作按钮），覆盖上述场景 | 中 |
+| P2-3 | 分隔线规范 | 全仓 `border-border` / `border-white/10` / `border-black/5` 混用 | 分隔线明暗与粗细不一致，列表/卡片内割裂感 | 建立 divider token（如 `border-border` 统一），替代任意透明度分隔线 | 低 |
+| P2-4 | 圆角尺度统一 | `rounded` / `rounded-lg` / `rounded-xl` / `rounded-2xl` / `rounded-full` 在 50+ 文件并存 | 同语义元素圆角跳变（如卡片有 lg 有 xl），整体精致度受损 | 映射到统一 radius token（sm=6 / md=10 / lg=14 / full=9999px），按钮/卡片/弹窗/头像各归其档 | 低 |
+
+### P1 / P2 执行顺序建议
+
+1. **P1-1 + P1-2**（设置行统一 + 清内联 style）先行——消除最显眼的不一致，且为后续 token 化铺路。
+2. **P1-3 + P1-4**（阴影/卡片 token）紧随——建立设计系统骨架。
+3. **P2-1 ~ P2-4**（微交互/空状态/分隔线/圆角）表层润色，依赖 P1 的 token 基底才稳。
+4. 全部纯前端，遵循规则 7（组件 ≤300 行）、规则 12（改前读真实源码）、规则 4（视觉变更先出 HTML 设计稿）。

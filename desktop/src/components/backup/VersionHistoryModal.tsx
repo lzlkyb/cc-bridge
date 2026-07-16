@@ -5,10 +5,12 @@ import type {
   BackupListResult,
   BackupFileInfo,
   FileDiffResult,
+  DiffLine,
   StatusResponse,
 } from "../../lib/types";
 import { formatRelativeTime, formatBytes } from "../../lib/utils";
 import { Icon } from "../ui/icon";
+import { useToast } from "../ui/toast";
 
 /** 单个 diff 的加载态缓存（含预存的 +/- 计数，避免渲染时重复 filter）。 */
 type DiffState = {
@@ -32,8 +34,102 @@ function countDiff(r: FileDiffResult): { added: number; removed: number } {
   return { added, removed };
 }
 
-/** 红绿 diff 渲染块（懒加载、护栏、错误统一处理）。 */
+type NumberedLine = DiffLine & { beforeNo: number | null; afterNo: number | null };
+
+/** 按 kind 序列推算前/后文件的行号（added 行没有 beforeNo，removed 行没有 afterNo）。
+ * 后端 `get_file_diff`/`diff_backups` 返回的是整文件逐行（含未改动的 context 行），不带行号，
+ * 所以前端从第 1 行开始自己推就能准确。 */
+function numberLines(lines: DiffLine[]): NumberedLine[] {
+  let before = 1;
+  let after = 1;
+  return lines.map((l) => {
+    const beforeNo = l.kind === "added" ? null : before;
+    const afterNo = l.kind === "removed" ? null : after;
+    if (l.kind !== "added") before++;
+    if (l.kind !== "removed") after++;
+    return { ...l, beforeNo, afterNo };
+  });
+}
+
+/** 变更行前后各保留多少行上下文才常驻可见，其余连续未变更行折叠。 */
+const CONTEXT_RADIUS = 2;
+
+type Segment =
+  | { kind: "visible"; lines: NumberedLine[] }
+  | { kind: "gap"; lines: NumberedLine[]; key: string };
+
+/** 把编号后的行切成“常驻可见段”与“可折叠段”：变更行前后各留 CONTEXT_RADIUS 行，
+ * 其余连续未变更行折叠成一段。默认“仅看变更”模式下只渲染 visible 段 + 折叠条，
+ * 完整上下文模式/单独展开某段时才渲染 gap 段里的实际内容。 */
+function buildSegments(lines: NumberedLine[]): Segment[] {
+  const n = lines.length;
+  const keep = new Array(n).fill(false);
+  for (let i = 0; i < n; i++) {
+    if (lines[i].kind !== "context") {
+      for (let j = Math.max(0, i - CONTEXT_RADIUS); j <= Math.min(n - 1, i + CONTEXT_RADIUS); j++) {
+        keep[j] = true;
+      }
+    }
+  }
+  const segments: Segment[] = [];
+  let i = 0;
+  while (i < n) {
+    if (keep[i]) {
+      const start = i;
+      while (i < n && keep[i]) i++;
+      segments.push({ kind: "visible", lines: lines.slice(start, i) });
+    } else {
+      const start = i;
+      while (i < n && !keep[i]) i++;
+      segments.push({ kind: "gap", lines: lines.slice(start, i), key: `gap-${start}` });
+    }
+  }
+  return segments;
+}
+
+function diffLineClass(kind: DiffLine["kind"]): string {
+  if (kind === "added") return "bg-success/10 text-success";
+  if (kind === "removed") return "bg-destructive/10 text-destructive";
+  return "bg-muted/40 text-foreground";
+}
+
+function DiffLineRow({ l }: { l: NumberedLine }) {
+  const sign = l.kind === "added" ? "+" : l.kind === "removed" ? "-" : " ";
+  return (
+    <div className={`flex gap-2 ${diffLineClass(l.kind)} whitespace-pre px-2 py-px`}>
+      <span className="w-7 shrink-0 select-none text-right text-muted-foreground/60">{l.beforeNo ?? ""}</span>
+      <span className="w-7 shrink-0 select-none text-right text-muted-foreground/60">{l.afterNo ?? ""}</span>
+      <span>{sign}{l.text}</span>
+    </div>
+  );
+}
+
+/** 红绿 diff 渲染块（懒加载、护栏、错误统一处理）。
+ * 默认“仅看变更”：未改动的大段上下文折叠，可单独展开某一段，也可用顶部开关一次性展开全部上下文。 */
 function DiffView({ state, title }: { state?: DiffState; title: string }) {
+  const [fullContext, setFullContext] = useState(false);
+  const [expandedGaps, setExpandedGaps] = useState<Set<string>>(new Set());
+  const { toast } = useToast();
+
+  const numbered = useMemo(
+    () => (state?.result && !state.result.guard ? numberLines(state.result.lines) : []),
+    [state?.result],
+  );
+  const segments = useMemo(() => buildSegments(numbered), [numbered]);
+
+  const handleCopy = async () => {
+    if (!state?.result || state.result.guard) return;
+    const text = state.result.lines
+      .map((l) => `${l.kind === "added" ? "+" : l.kind === "removed" ? "-" : " "}${l.text}`)
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("已复制 diff 到剪贴板", "success");
+    } catch (e) {
+      toast(`复制失败：${String(e)}`, "error");
+    }
+  };
+
   return (
     <div className="mt-2">
       <div className="mb-1 text-[11px] font-semibold text-muted-foreground">{title}</div>
@@ -49,28 +145,66 @@ function DiffView({ state, title }: { state?: DiffState; title: string }) {
           </div>
         )}
         {state?.result && !state.result.guard && (
-          <div className="max-h-64 overflow-auto">
-            {state.result.lines.map((l, i) => (
-              <div
-                key={i}
-                className={
-                  l.kind === "added"
-                    ? "bg-success/10 text-success"
-                    : l.kind === "removed"
-                      ? "bg-destructive/10 text-destructive"
-                      : "bg-muted/40 text-foreground"
-                }
-                style={{ whiteSpace: "pre", padding: "1px 8px" }}
-              >
-                {l.text}
+          <>
+            <div className="flex items-center gap-2 border-b border-border bg-muted/20 px-2 py-1.5 font-sans">
+              {(state.added || state.removed) ? (
+                <span className="flex gap-1.5 text-[11px]">
+                  {state.added ? <span className="text-success">+{state.added}</span> : null}
+                  {state.removed ? <span className="text-destructive">−{state.removed}</span> : null}
+                </span>
+              ) : null}
+              <div className="ml-auto flex overflow-hidden rounded-md border border-border">
+                <button
+                  type="button"
+                  onClick={() => setFullContext(false)}
+                  className={`px-2 py-0.5 text-[10.5px] transition-colors ${!fullContext ? "bg-primary text-white" : "bg-card text-muted-foreground hover:bg-muted"}`}
+                >
+                  仅看变更
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFullContext(true)}
+                  className={`px-2 py-0.5 text-[10.5px] transition-colors ${fullContext ? "bg-primary text-white" : "bg-card text-muted-foreground hover:bg-muted"}`}
+                >
+                  完整上下文
+                </button>
               </div>
-            ))}
-          </div>
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="rounded-md border border-border bg-card px-2 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-muted"
+              >
+                复制
+              </button>
+            </div>
+            <div className="max-h-80 overflow-auto">
+              {segments.map((seg, si) =>
+                seg.kind === "visible" || fullContext || expandedGaps.has(seg.key) ? (
+                  seg.lines.map((l, li) => <DiffLineRow key={`${si}-${li}`} l={l} />)
+                ) : (
+                  <button
+                    key={seg.key}
+                    type="button"
+                    onClick={() => setExpandedGaps((prev) => new Set(prev).add(seg.key))}
+                    className="flex w-full items-center justify-center bg-transparent px-2 py-1 font-sans text-[11px] text-muted-foreground transition-colors hover:bg-muted/30"
+                  >
+                    ⋯ 还有 {seg.lines.length} 行未变更，点击展开 ⋯
+                  </button>
+                ),
+              )}
+            </div>
+          </>
         )}
       </div>
     </div>
   );
 }
+
+/** 查看类操作（看改了什么/与上一版比）用蓝色，与不可逆的“还原”做视觉分级，避免手滑点错。 */
+const VIEW_BTN_CLASS =
+  "rounded-md border border-primary/35 bg-card px-2 py-1 text-[11px] text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:border-input disabled:text-foreground";
+const DANGER_BTN_CLASS =
+  "rounded-md border border-destructive/40 bg-card px-2 py-1 text-[11px] text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:border-input disabled:text-foreground";
 
 /**
  * 版本历史弹框（居中大弹框，沿用 UpdateNotesDialog 视觉）。
@@ -198,12 +332,10 @@ export function VersionHistoryModal({
   return createPortal(
     <div
       className="modal-overlay fixed inset-0 z-[1000] flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.45)" }}
       onClick={onClose}
     >
       <div
-        className="modal-box flex max-h-[85vh] w-[1000px] max-w-[92vw] flex-col overflow-hidden rounded-2xl border border-border shadow-2xl"
-        style={{ background: "var(--color-card)" }}
+        className="modal-box flex max-h-[85vh] w-[1000px] max-w-[92vw] flex-col overflow-hidden rounded-2xl modal-surface"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 标题栏 */}
@@ -308,8 +440,7 @@ export function VersionHistoryModal({
                 <div className="grid grid-cols-[200px_1fr] gap-3">
                   {/* 文件索引栏 */}
                   <div
-                    className="overflow-y-auto rounded-xl border border-border bg-muted/40 p-2"
-                    style={{ maxHeight: "62vh" }}
+                    className="overflow-y-auto max-h-[62vh] rounded-xl border border-border bg-muted/40 p-2"
                   >
                     <div className="px-1 pb-1 text-[11px] font-semibold text-muted-foreground">
                       文件索引（点击跳转）
@@ -320,7 +451,7 @@ export function VersionHistoryModal({
                         onClick={() => jumpTo(groups.indexOf(g), g.originalFile)}
                         className={`mb-1 cursor-pointer rounded-lg px-2 py-1.5 transition-colors ${
                           activeRail === g.originalFile
-                            ? "bg-card shadow-[inset_0_0_0_1px_var(--primary)]"
+                            ? "bg-card shadow-ring-inset-primary"
                             : "hover:bg-card"
                         }`}
                       >
@@ -362,10 +493,7 @@ export function VersionHistoryModal({
                           <div className="py-2 pl-3 pr-2">
                             {/* 当前文件（终点节点） */}
                             <div className="relative border-l-2 border-border py-2 pl-4">
-                              <span
-                                className="absolute -left-[7px] top-3 h-3 w-3 rounded-full border-2"
-                                style={{ background: "var(--primary)", borderColor: "var(--primary)" }}
-                              />
+                              <span className="absolute -left-[7px] top-3 h-3 w-3 rounded-full border-2 bg-primary border-primary" />
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="text-[13px] font-semibold text-foreground">
                                   {g.originalFile}
@@ -386,10 +514,7 @@ export function VersionHistoryModal({
                                   key={e.backupPath}
                                   className="relative border-l-2 border-border py-2 pl-4"
                                 >
-                                  <span
-                                    className="absolute -left-[7px] top-3 h-3 w-3 rounded-full border-2"
-                                    style={{ background: "var(--color-card)", borderColor: "var(--primary)" }}
-                                  />
+                                  <span className="absolute -left-[7px] top-3 h-3 w-3 rounded-full border-2 bg-card border-primary" />
                                   <div className="flex flex-wrap items-center gap-2">
                                     <span
                                       className="font-mono text-[12px] font-semibold"
@@ -426,7 +551,7 @@ export function VersionHistoryModal({
                                         disabled={!canDiff}
                                         title={canDiff ? "对比 .bak 与当前文件" : "无法定位当前文件（白名单关闭 / 路径已不在白名单内 / 无索引记录的历史备份）"}
                                         onClick={() => toggleCur(e)}
-                                        className="rounded-md border border-input bg-card px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                                        className={VIEW_BTN_CLASS}
                                       >
                                         看改了什么
                                       </button>
@@ -434,7 +559,7 @@ export function VersionHistoryModal({
                                         <button
                                           type="button"
                                           onClick={() => toggleAdj(e, prev)}
-                                          className="rounded-md border border-input bg-card px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-muted"
+                                          className={VIEW_BTN_CLASS}
                                         >
                                           与上一版比
                                         </button>
@@ -444,11 +569,17 @@ export function VersionHistoryModal({
                                         disabled={!canDiff}
                                         title={canDiff ? "还原到该备份" : "禁用还原（白名单关闭 / 路径已不在白名单内 / 无索引记录的历史备份）"}
                                         onClick={() => onRestore(e)}
-                                        className="rounded-md border border-input bg-card px-2 py-1 text-[11px] text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+                                        className={DANGER_BTN_CLASS}
                                       >
                                         还原
                                       </button>
                                     </div>
+                                    {!canDiff && (
+                                      <p className="flex basis-full items-start gap-1 text-[10.5px] leading-snug text-warning">
+                                        <Icon name="alertTriangle" size={11} className="mt-0.5 shrink-0" />
+                                        无法定位当前文件（白名单关闭 / 路径已不在白名单内 / 无索引记录的历史备份），“看改了什么”与“还原”暂不可用
+                                      </p>
+                                    )}
                                   </div>
                                   {openSet.has(`cur:${e.backupPath}`) && (
                                     <DiffView state={curState[e.backupPath]} title="相对当前文件的变更" />
@@ -472,33 +603,54 @@ export function VersionHistoryModal({
                 /* 按时间视图 */
                 <div className="overflow-hidden rounded-xl border border-border">
                   {groups
-                    .flatMap((g) => g.entries.map((e) => ({ g, e })))
+                    .flatMap((g) => g.entries.map((e, ei) => ({ g, e, ei })))
                     .sort((a, b) => b.e.createdAt.localeCompare(a.e.createdAt))
-                    .map(({ g, e }) => {
+                    .map(({ g, e, ei }) => {
                       const canDiff = e.targets.length > 0;
+                      const prev = ei < g.entries.length - 1 ? g.entries[ei + 1] : null;
                       return (
-                        <div key={e.backupPath} className="border-b border-border last:border-b-0">
-                          <button
-                            type="button"
-                            onClick={() => toggleCur(e)}
-                            disabled={!canDiff}
-                            className="flex w-full flex-wrap items-center gap-2 px-3 py-2 text-left text-xs disabled:opacity-50"
-                          >
+                        <div key={e.backupPath} className="border-b border-border px-3 py-2 last:border-b-0">
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
                             <span className="font-mono text-muted-foreground">{formatRelativeTime(e.createdAt)}</span>
                             <span className="font-mono font-semibold">{g.originalFile}</span>
-                            {canDiff && (
-                              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[11px] text-primary">
-                                看改动
-                              </span>
-                            )}
                             <span className="ml-auto font-mono text-muted-foreground">
                               {formatBytes(e.sizeBytes)}
                             </span>
-                          </button>
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap items-start gap-1.5">
+                            <button
+                              type="button"
+                              disabled={!canDiff}
+                              title={canDiff ? "对比 .bak 与当前文件" : "无法定位当前文件（白名单关闭 / 路径已不在白名单内 / 无索引记录的历史备份）"}
+                              onClick={() => toggleCur(e)}
+                              className={VIEW_BTN_CLASS}
+                            >
+                              看改了什么
+                            </button>
+                            {prev && (
+                              <button
+                                type="button"
+                                onClick={() => toggleAdj(e, prev)}
+                                className={VIEW_BTN_CLASS}
+                              >
+                                与上一版比
+                              </button>
+                            )}
+                            {!canDiff && (
+                              <p className="flex basis-full items-start gap-1 text-[10.5px] leading-snug text-warning">
+                                <Icon name="alertTriangle" size={11} className="mt-0.5 shrink-0" />
+                                无法定位当前文件，“看改了什么”暂不可用（“与上一版比”不受影响）
+                              </p>
+                            )}
+                          </div>
                           {openSet.has(`cur:${e.backupPath}`) && (
-                            <div className="px-3 pb-2">
-                              <DiffView state={curState[e.backupPath]} title="相对当前文件的变更" />
-                            </div>
+                            <DiffView state={curState[e.backupPath]} title="相对当前文件的变更" />
+                          )}
+                          {prev && openSet.has(`adj:${e.backupPath}`) && (
+                            <DiffView
+                              state={adjState[e.backupPath]}
+                              title={`与上一版（${prev.createdAt}）的差异`}
+                            />
                           )}
                         </div>
                       );

@@ -96,7 +96,16 @@ async fn edit_single(
         .await
         .map_err(|e| format!("Read error: {e}"))?;
     crate::timing::record_io(t0.elapsed());
-    let ft = encoding::read_text(&raw, None)?;
+    // 修复：之前这里无条件传 None，总是走自动探测，与 `read_files.rs` 不一致——后者会看
+    // `config.encoding_detect_enabled`（默认关），关时强制按 UTF-8 读、不走 GBK/GB18030 启发式。两个工具对
+    // 同一个文件可能得到不同的解码结果，导致“`read_files` 里看起来完全一样的内容，
+    // `edit_files` 却匹配不到”这类诡异现象。现与 read_files.rs 保持同样的判断逻辑。
+    let effective_encoding = if config.encoding_detect_enabled {
+        None
+    } else {
+        Some("utf-8")
+    };
+    let ft = encoding::read_text(&raw, effective_encoding)?;
     let content = &ft.text;
 
     let match_count = content.matches(&f.old_string).take(2).count(); // E-P0-5: 早停在 >1，避免全文件扫描

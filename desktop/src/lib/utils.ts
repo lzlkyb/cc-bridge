@@ -7,6 +7,22 @@ import type { StatusResponse } from "./types";
 /** 接入作用域：用户级（~/.claude.json）或项目级（.mcp.json）。 */
 export type McpScope = "user" | "project";
 
+/** H6 修复：统一剪贴板复制入口。navigator.clipboard.writeText 未 await/catch 时，权限被拒绝会出现
+ * "显示已复制但其实没复制"的假阳性反馈（ConnectTab/TokenManager/onboarding 多处同款问题）。
+ * 调用方传 onSuccess/onError 回调，不内置 toast 依赖（不同调用点的成功/失败文案不一致）。 */
+export async function copyText(
+  text: string,
+  onSuccess: () => void,
+  onError?: (e: unknown) => void,
+): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+    onSuccess();
+  } catch (e) {
+    onError?.(e);
+  }
+}
+
 /** 秒数格式化为 "Xh Ym Zs" / "Ym Zs" / "Zs"，用于运行时长展示（精确到秒）。 */
 export function formatUptime(seconds: number): string {
   const h = Math.floor(seconds / 3600);

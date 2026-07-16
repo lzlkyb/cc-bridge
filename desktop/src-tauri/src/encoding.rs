@@ -72,7 +72,20 @@ pub fn read_text(data: &[u8], override_label: Option<&str>) -> Result<FileText, 
     };
     let had_bom = requested == UTF_8 && data.starts_with(&UTF8_BOM);
     // decode 会剥掉匹配的 BOM；若检测到与 requested 不同的 BOM 会改用 BOM 编码。
-    let (cow, actual, _had_errors) = requested.decode(data);
+    let (cow, actual, had_errors) = requested.decode(data);
+    // 修复：之前这里用 `_had_errors` 丢弃了解码错误标志。当 detect_encoding 四种尝试都失败（既不是合法 UTF-8，
+    // 也无法被 GBK/GB18030 无损解码）时会落到这里的 UTF-8 兼底分支，`decode()` 会静默用 U+FFFD 替换无法解码的字节。
+    // 若不拦截，后续 edit_files/notebook_edit 写回时会把这些 U+FFFD 永久烤进文件，与本模块注释里声明的
+    // “编码有损时拒绝写入而非静默损坏”原则自相矛盾（该原则之前只在 encode_text 的回写方向实现），这里补上读方向的同样保护。
+    if had_errors {
+        let label = match override_label {
+            Some(l) if !l.trim().is_empty() => format!("指定编码 '{l}'"),
+            _ => "自动探测（已依次尝试 BOM / UTF-8 / GBK / GB18030）".to_string(),
+        };
+        return Err(format!(
+            "无法无损解码文件内容（{label}）：存在无法正确转换的字节。为避免将这些字节静默替换为 U+FFFD 并在后续写回时永久损坏原始内容，已拒绝处理。若确定真实编码，请显式传入 encoding 参数重试。"
+        ));
+    }
     let raw = cow.as_ref();
     let crlf = raw.contains("\r\n");
     // 归一化到 LF：CRLF 与孤立 CR 都转成 LF，用于匹配/展示。
@@ -121,7 +134,8 @@ pub fn encode_text(
     Ok(out)
 }
 
-/// 把文本按指定编码编码为字节流（测试/内部用，不做守卫）。
+/// 把文本按指定编码编码为字节流（仅测试用，不做守卫）。
+#[cfg(test)]
 pub fn encode_string(text: &str, enc: &'static Encoding) -> Vec<u8> {
     let (cow, _, _) = enc.encode(text);
     cow.into_owned()
@@ -215,6 +229,28 @@ mod tests {
         let ft = read_text(&bytes, Some("gbk")).unwrap();
         assert_eq!(ft.text, "测试");
         assert_eq!(ft.encoding, GBK);
+    }
+
+    #[test]
+    fn test_read_text_rejects_undecodable_bytes_instead_of_lossy_fffd() {
+        // 修复回归：0xFF 既不是合法 UTF-8，也不是合法 GBK/GB18030 首字节（合法范围 0x81-0xFE），
+        // detect_encoding 四种尝试都会失败、落到 UTF-8 兼底分支。修复前这里会静默用 U+FFFD
+        // 替换并返回 Ok，修复后必须返回 Err，避免写回时永久烤进替换字符。
+        let bytes = b"hello \xff world";
+        let result = read_text(bytes, None);
+        assert!(result.is_err(), "不可解码的字节应该报错而不是静默 lossy 成功：{:?}", result.map(|f| f.text));
+    }
+
+    #[test]
+    fn test_read_text_override_label_also_rejects_lossy() {
+        // 显式指定的编码同样不应该容忍有损解码（之前也是同样的 _had_errors 丢弃问题，
+        // 无论走自动探测还是显式 override 都会命中同一行）。
+        // 注意：不能用任意 UTF-8 中文字节测试——GBK 解码对"这个字节序列是否对应某个
+        // 合法 GBK 字符"宽容很高，很多 UTF-8 中文字节恰好也能被当成合法（碰巧）GBK 解码（这正是
+        // GBK 误判风险本身的根源）。用 0xFF 这种超出 GBK 首字节合法范围（0x81-0xFE）的字节才能确保真正报错。
+        let bytes: &[u8] = b"abc\xff";
+        let result = read_text(bytes, Some("gbk"));
+        assert!(result.is_err());
     }
 
     #[test]

@@ -47,7 +47,7 @@ export function AuditPager({ page, pageSize, total, onPageChange, onPageSizeChan
               onClick={() => onPageSizeChange(n)}
               className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
                 pageSize === n
-                  ? "bg-background text-foreground shadow-sm"
+                  ? "bg-background text-foreground shadow-card"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -66,7 +66,7 @@ export function AuditPager({ page, pageSize, total, onPageChange, onPageSizeChan
             disabled={cur <= 1}
             onClick={() => onPageChange(cur - 1)}
           >
-            <Icon name="arrowUp" size={14} style={{ transform: "rotate(-90deg)" }} />
+            <Icon name="arrowUp" size={14} className="-rotate-90" />
             上一页
           </Button>
           <div className="mx-1 flex items-center gap-1">
@@ -95,7 +95,7 @@ export function AuditPager({ page, pageSize, total, onPageChange, onPageSizeChan
             onClick={() => onPageChange(cur + 1)}
           >
             下一页
-            <Icon name="arrowUp" size={14} style={{ transform: "rotate(90deg)" }} />
+            <Icon name="arrowUp" size={14} className="rotate-90" />
           </Button>
           <Button
             variant="outline"

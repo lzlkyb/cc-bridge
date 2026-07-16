@@ -4,6 +4,27 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.2",
+    date: "2026-07-16",
+    items: [
+      { category: "feat", text: "版本历史弹框（`VersionHistoryModal.tsx`）交互友好化，先出 HTML 设计稿确认后落地：" },
+      { category: "feat", text: "diff 默认“仅看变更”（核心改动）：「看改了什么」/「与上一版比」之前把未改动的 context 行和变更行平铺展示，文件稍大时很难找到真正改了哪里。新增 \"仅看变更/完整上下文\" 切换（默认仅看变更），连续未变更行折叠成可点击的“…还有 N 行未变更…”分隔条（变更行前后各留 2 行上下文），加行号（前端根据 kind 序列自己推算，后端无需改动）+复制按钮。" },
+      { category: "feat", text: "按钮按危险程度分色：「看改了什么」/「与上一版比」（纯查看）统一蓝色描边，不可逆的「还原」改红色描边，避免手滑点错。" },
+      { category: "feat", text: "禁用原因内联提示：白名单关闭/无索引记录导致按钮禁用时，除了保留 title 悬浮提示，按钮组下方新增一行小字直接说明原因，不需要 hover 才能看到。" },
+      { category: "feat", text: "“按时间”视图补齐“与上一版比”：之前只有「看改了什么」，现在与「按文件」视图能力对齐。" },
+      { category: "feat", text: "更新下载进度新增下载速度显示（如 \"2.3 MB/s\"）。Rust 侧 `download_and_install` 回调里加了 ~250ms 窗口限流计算（不是每个 chunk 都重算，避免快网速下数字跳得难看），`update:progress` 事件新增 `bytesPerSec` 字段；前端 `UpdateContext`/`UpdateBadge`/`AboutGroup` 相应接收并展示，新增 `formatBytesPerSec` 工具函数复用现有 `formatBytes`。" },
+      { category: "feat", text: "自动更新支持 Gitee 镜像优先 + 客户端自动回退，解决国内用户直连 GitHub 下载安装包不稳定/很慢的问题。根因：之前下载 URL 在 CI 构建时写死进 `updater.json` 的单个字符串（固定指向 `ghproxy.net`），没有任何运行时兜底。现在 CI（`.github/workflows/build.yml`）每次发版会额外把产物 + 专属 manifest（`updater-gitee.json`）同步到 Gitee 镜像仓库的 `releases` 分支 `latest/` 目录（固定覆盖，不按 tag 累加，避免仓库无限增长）；客户端（`commands.rs` 的 `start_update`/`check_update`）改为按候选源列表依次尝试（Gitee 优先→现有 ghproxy/GitHub 回退），任一候选检查或下载失败就换下一个，签名校验仍由 tauri-plugin-updater 内部处理、不受影响。`desktop/scripts/generate-updater-json.mjs` 新增 `UPDATER_URL_TEMPLATE`/`UPDATER_OUTPUT_FILENAME` 两个环境变量支持 Gitee 这种与 GitHub Release 拼法形状不同的镜像。" },
+      { category: "improve", text: "`mcp/tools/registry.rs` 单测删除硬编码 `tools.len()==17` 断言，改为纯不变式校验，新增工具时无需同步改这个数字。" },
+      { category: "improve", text: "新增 `mcp::http::restart_server(state)` 收拢 4 处重复的 MCP 重启逻辑（`restart_mcp_server`/`start_mcp_server`/`import_config`/托盘菜单）。" },
+      { category: "improve", text: "`batch` 工具描述补充 non-transactional 说明，避免远程调用方误判部分失败会回滚。" },
+      { category: "improve", text: "CLAUDE.md 规则 7 同步更新为实际的注册表 register_tool! 流程，并同步更新相关 RFC 的状态字段。" },
+      { category: "improve", text: "版本历史弹框里点击“还原”弹出的确认框被压在弹框下面（看不到/点不到）：`RestoreBackupDialog` 用的是普通弹框级别的 `z-50`，而 `VersionHistoryModal` 自身是 `z-[1000]`，从它里打开时确认框被压在下面。改为 `z-[1001]`，高于父弹框。前端只改 className，HMR 热更新即生效。" },
+      { category: "improve", text: "版本历史弹框中\"看改了什么\"/\"还原\"按钮即使白名单已开启仍为灰（对深层企业级仓库尤其明显）：旧实现靠在白名单根目录下按文件名做有边界目录遍历反查原始路径（`max_depth=6`、`max_scan=8000`），文件实际嵌套深度超过 6 层或仓库文件数超过 8000 时必然查不到。改为在创建备份时（`backup.rs`）就将原始绝对路径写入新增的 `backup_index` 表（`db.rs`），`list_backups` 改为直接查表精确还原，不再依赖有界目录遍历。删除了旧的 `build_targets_map`/`walk_collect_targets`。现有备份（该表上线前创建）无索引记录，仍会显示为无法定位，需重新产生备份才能用新机制。" },
+      { category: "improve", text: "更新下载进度条一直显示 0%：`commands.rs` 下载回调误把 `tauri-plugin-updater` 给的“本次分片字节数”当成了“累计已下载字节数”直接 emit 给前端，前端每次用单个分片大小除以总大小算百分比，结果永远接近 0。改为在 Rust 侧用 `downloaded_total` 累加分片字节数后再 emit，前端逻辑无需改动。" },
+      { category: "improve", text: "点击「检查更新」后无提示、无报错（静默回到原样）：前端 `UpdateContext` 的 `update:uptodate` 监听器错误地把状态直接重置为 `idle`，跳过了「已是最新」状态，导致「已是最新」pill 与 toast 永不触发。改为进入 `uptodate` 状态并启用已声明的 `uptodateTimerRef`（4 秒后自动回 `idle`），恢复正确的反馈。" },
+    ],
+  },
+  {
     version: "2.3.1",
     date: "2026-07-15",
     items: [
@@ -127,28 +148,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "搜索文件改用成熟目录遍历库，自动跳过 node_modules / target 等，跨目录 glob 匹配终于好用。" },
       { category: "improve", text: "写文件结果新增改动对比（diff），AI 改动前你能先核对。" },
       { category: "fix", text: "清理一批过时代码检查告警；删除一处从未被引用的死代码（限流模块）。" },
-    ],
-  },
-  {
-    version: "2.2.8",
-    date: "2026-07-10",
-    items: [
-      { category: "feat", text: "首次使用引导 `OnboardingGuide`：三步引导用户添加白名单目录 → 复制连接命令 → 启动服务，本地 `localStorage` 记忆已引导状态，仅首次弹出。" },
-      { category: "feat", text: "命令面板 `CommandPalette`（Ctrl+K / ⌘K）：键盘快速切换 4 个 Tab，支持搜索、↑↓ 导航、Enter 确认、Esc 关闭；全局快捷键 Ctrl+1~4 直跳 Tab。" },
-      { category: "feat", text: "连接页 Hero 卡升级：新增启停大按钮（loading 态 + 内联错误提示）、指标变化弹跳动画、运行时长平滑跳秒（本地每秒自增 + 5s 轮询校准）。" },
-      { category: "feat", text: "安全页「运行中的后台命令」卡片：列出 `run_command(background=true)` 启动的进程（PID/命令/已运行时长），一键终止，与远程 `get_command_output` 共享注册表。" },
-      { category: "feat", text: "安全页白名单目录搜索框 + 扩展名预设快捷填充（前端常用/后端常用/配置文件/文档类）。" },
-      { category: "feat", text: "日志页升级：搜索 + 工具/状态筛选、JSON/CSV(Excel) 导出、行展开查看参数详情（高亮代码块 + 复制）、清空日志二次确认。" },
-      { category: "feat", text: "托盘增强：图标随服务运行状态切换（运行时绿点 / 停止灰点，代码生成无需额外资源）；左键点击托盘 toggle 主窗口显隐；右键菜单新增「复制连接命令」（经前端通道写剪贴板 + toast）；tooltip 实时显示「运行中 / 已停止 / 地址变化」；启停时即时刷新托盘（通过 `mcp-status-changed` 事件）。" },
-      { category: "feat", text: "主题切换过渡动画：深/浅色切换时颜色类属性 0.45s 平滑过渡，切换瞬间临时启用 `theme-transition` 避免常驻 transition 拖累性能与首屏闪烁。" },
-      { category: "improve", text: "`tabs.tsx` 升级为 segmented pill 滑动指示器（绝对定位高亮块 + transform 过渡，窗口 resize 重算），替代旧静态高亮。" },
-      { category: "improve", text: "`SettingsToggles` 新增「命令执行」开关，开启等同授予 RCE，需勾选风险确认的二次确认弹窗；新增「恢复默认设置」按钮。" },
-      { category: "improve", text: "`StatusResponse` 新增 `lastSelectedIp` / `ipChanged` 字段，IP 选中态提升到 App 层，重启后用上次确认 IP 回填，避免切 Tab 丢失。" },
-      { category: "fix", text: "连接页 Hero 卡 4 列指示签删掉「在线客户端」（后端从未实现该字段，前端一直显示 `--`），改为 3 列（总请求 / 错误 / 运行时间）。" },
-      { category: "fix", text: "Hero 主题适配：拆分 `--hero-gradient` / `--hero-shadow` / `--hero-glow-1/2` / `--hero-metric-bg/border` / `--hero-addr-bg/border` 变量，两主题各配一份，深色下渐变降饱和 + 加白边避免融背景；装饰光晕深色下透明度砍半避免刺眼；指标卡补玻璃质感（`backdrop-filter: blur(4px)` + 半透明背板）。" },
-      { category: "fix", text: "LogTab 清理：删除未使用的 `PAGE_SIZE` / `totalPages` / `paged` memo / `useEffect` 同步分页 / `useState(0)` 状态（前端实际未做分页 UI）；`tsc --noEmit` 现在 0 错误。" },
-      { category: "fix", text: "类型修正：`ConnectHero.tsx` 的 `HeroMetric` 指标签 `icon` 字段从字面量字符串联合扩为完整 `IconName`（避免新增 `Icon` 类型时回归报错）；`button.tsx` 删除未使用的 `ReactNode` 导入。" },
-      { category: "fix", text: "`package.json` 版本号同步到 2.2.8（之前漏改）。" },
     ],
   },
 ];

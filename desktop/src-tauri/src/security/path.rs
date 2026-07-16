@@ -29,6 +29,16 @@ pub fn resolve_safe_path(
                     let remainder = requested_path
                         .strip_prefix(parent)
                         .map_err(|e| format!("Path prefix error: {e}"))?;
+                    // 修复：这个 remainder 是未经 canonicalize 的原始尾部，若含 `..`/`.` 组件，理论上可以穿越到
+                    // real_parent 之外、绕过后面 is_within 的前缀匹配。当前仅靠 Windows canonicalize 返回的 `\\?\`
+                    // verbatim 前缀让文件系统不解释 `..`“侥幸”挡住，一旦换成去前缀的 canonicalize（如 dunce）即可被利用。
+                    // 现显式拒绝，不依赖实现细节副作用。
+                    if contains_dotdot(remainder) {
+                        return Err(format!(
+                            "Path contains disallowed '..' or '.' component: {}",
+                            requested_path.display()
+                        ));
+                    }
                     break real_parent.join(remainder);
                 }
                 ancestor = parent.to_path_buf();
@@ -76,6 +86,13 @@ fn is_within(path: &Path, root: &Path) -> bool {
     path.starts_with(root)
 }
 
+/// F1 修复：检测路径分量中是否含 `..`(ParentDir)/`.`(CurDir) 组件。用于拒绝新建路径分支里未规范化的
+/// 尾部 remainder，避免其中的 `..` 在后续真实文件 I/O 时被重新解释为目录跳转、绕过 is_within 的前缀匹配。
+fn contains_dotdot(p: &Path) -> bool {
+    p.components()
+        .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +106,18 @@ mod tests {
 
         let result = resolve_safe_path("C:\\Windows\\System32\\cmd.exe", &[root], true);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_contains_dotdot_detects_traversal_components() {
+        // F1 回归：直接验证新增的 remainder 拒绝逻辑本身（纯组件判断，不碰文件系统，确定性强）：
+        // 真实走到这个分支需要“多级不存在的中间目录 + 末尾 ..”才能让 remainder 保留 `..`（Windows 对
+        // .exists() 本身就会先词法折叠掉紧跟在末尾的 ..），不好造确定性 fixture，故直接单测判断函数。
+        assert!(contains_dotdot(Path::new("sub/../secret.txt")));
+        assert!(contains_dotdot(Path::new("./secret.txt")));
+        assert!(contains_dotdot(Path::new("a/b/../../c")));
+        assert!(!contains_dotdot(Path::new("sub/secret.txt")));
+        assert!(!contains_dotdot(Path::new("secret.txt")));
     }
 
     #[test]

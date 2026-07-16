@@ -14,6 +14,8 @@ export interface StatusResponse {
   backupTotalBytes: number;
   backupRetention: number;
   auditRetentionDays: number;
+  /** 后台命令结束后保留时长（秒），默认 120。 */
+  commandCleanupSecs: number;
   host: string;
   port: number;
   stats: {
@@ -76,6 +78,7 @@ export interface ConfigPatch {
   backupDir?: string;
   backupRetention?: number;
   auditRetentionDays?: number;
+  commandCleanupSecs?: number;
   host?: string;
   port?: number;
   whitelistEnabled?: boolean;

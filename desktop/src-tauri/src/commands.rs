@@ -3,6 +3,9 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde::{Deserialize, Serialize};
 use similar::TextDiff;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -43,6 +46,9 @@ pub struct StatusResponse {
     pub backup_retention: u32,
     #[serde(rename = "auditRetentionDays")]
     pub audit_retention_days: u32,
+    /// 后台命令结束后保留时长（秒），默认 120（2 分钟），可配置。
+    #[serde(rename = "commandCleanupSecs")]
+    pub command_cleanup_secs: u64,
     pub host: String,
     pub port: u16,
     pub stats: StatsInfo,
@@ -324,6 +330,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         backup_total_bytes,
         backup_retention: config.backup_retention,
         audit_retention_days: config.audit_retention_days,
+        command_cleanup_secs: config.command_cleanup_secs,
         host: config.host.clone(),
         port: config.port,
         stats: StatsInfo {
@@ -419,6 +426,9 @@ pub struct ConfigPatch {
     pub backup_retention: Option<u32>,
     #[serde(rename = "auditRetentionDays")]
     pub audit_retention_days: Option<u32>,
+    /// 后台命令结束后保留时长（秒），可调。
+    #[serde(rename = "commandCleanupSecs")]
+    pub command_cleanup_secs: Option<u64>,
     pub host: Option<String>,
     pub port: Option<u16>,
     #[serde(rename = "whitelistEnabled")]
@@ -500,6 +510,11 @@ pub async fn save_config(
         audit_retention_days,
         "audit_retention_days",
         &patch.audit_retention_days
+    );
+    apply_field!(
+        command_cleanup_secs,
+        "command_cleanup_secs",
+        &patch.command_cleanup_secs
     );
     apply_field!(
         whitelist_enabled,
@@ -820,63 +835,7 @@ pub async fn list_running_commands(
     Ok(result)
 }
 
-/// 后台定时清理：命令结束满 5 分钟宽限期（供桌面面板/远程 MCP 调用方来得及读到最终输出）后，
-/// 自动从注册表移除，修复 v1 无自动回收导致“已结束的还占着并发上限”的问题。
-/// 仅清理已结束（exit_code 为 Some）且超过宽限期的条目，运行中的不动。
-/// 由 main.rs 里的周期任务调用（每 60s 一次）。
-pub async fn cleanup_finished_commands(state: &Arc<AppState>) {
-    const GRACE_PERIOD: Duration = Duration::from_secs(5 * 60);
-
-    let snapshot: Vec<_> = state
-        .running_commands
-        .iter()
-        .map(|entry| {
-            let cmd = entry.value();
-            (
-                entry.key().clone(),
-                cmd.exit_code.clone(),
-                cmd.finished_elapsed_secs.clone(),
-                cmd.started_at,
-            )
-        })
-        .collect();
-
-    let mut to_remove = Vec::new();
-    for (handle, exit_code_arc, finished_elapsed_arc, started_at) in snapshot {
-        if exit_code_arc.lock().await.is_none() {
-            continue; // 还在跑，不清
-        }
-        let Some(finished_secs) = *finished_elapsed_arc.lock().await else {
-            continue; // exit_code 已写但 finished_elapsed 还没来得及写入（极短窗口），下一轮再看
-        };
-        let finished_at = started_at + Duration::from_secs(finished_secs);
-        if finished_at.elapsed() >= GRACE_PERIOD {
-            to_remove.push(handle);
-        }
-    }
-
-    for handle in to_remove {
-        state.running_commands.remove(&handle);
-    }
-}
-
-/// 并发上限时的即时腾位：不管 5 分钟宽限期，把所有已结束（exit_code 为 Some）的
-/// 命令立即移除，为新命令腾出空位。修复：之前一旦命中并发上限，即使前面的早已跑完，
-/// 新命令也会被硬拒绝，用户必须手动 stop_command 才能重试。由
-/// `run_command.rs` 在打包 5 上限报错前先调用。
-pub async fn evict_finished_commands(state: &Arc<AppState>) {
-    let snapshot: Vec<_> = state
-        .running_commands
-        .iter()
-        .map(|entry| (entry.key().clone(), entry.value().exit_code.clone()))
-        .collect();
-
-    for (handle, exit_code_arc) in snapshot {
-        if exit_code_arc.lock().await.is_some() {
-            state.running_commands.remove(&handle);
-        }
-    }
-}
+// G5: cleanup_finished_commands / evict_finished_commands moved to state.rs (AppState methods).
 
 /// 本机面板的「终止」按钮：移除注册表条目后 drop 其中的 Job Object（kill-on-job-close）
 /// 整树终止，不再需要 taskkill，逻辑与 MCP 的 stop_command 工具一致。
@@ -1059,9 +1018,14 @@ pub async fn reveal_backup_dir(state: State<'_, Arc<AppState>>) -> Result<String
     drop(config);
     let dir_str = dir.to_string_lossy().into_owned();
     let _ = std::fs::create_dir_all(&dir);
-    let status = std::process::Command::new("cmd")
-        .args(["/c", "start", "", &dir_str])
-        .status();
+    // 修复：漏加 CREATE_NO_WINDOW，cmd.exe 会一闪而过弹出黑框（对齐 firewall.rs 里
+    // netsh/powershell 子进程的同款修复；run_command.rs 的 CREATE_NO_WINDOW 修复未覆盖到这里）。
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut command = std::process::Command::new("cmd");
+    command.args(["/c", "start", "", &dir_str]);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let status = command.status();
     if let Err(e) = status {
         return Err(format!("打开备份目录失败: {e}"));
     }

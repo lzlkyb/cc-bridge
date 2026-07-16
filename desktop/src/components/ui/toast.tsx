@@ -75,12 +75,11 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: () => 
   return (
     <div
       onClick={onDismiss}
-      className={`pointer-events-auto flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm font-medium shadow-lg backdrop-blur-md cursor-pointer select-none transition-all duration-300 ${
+      className={`pointer-events-auto flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm font-medium shadow-pop backdrop-blur-md cursor-pointer select-none transition-all duration-300 max-w-[380px] ${
         variantStyles[item.variant]
       } ${
         visible ? "translate-x-0 opacity-100" : "translate-x-4 opacity-0"
       }`}
-      style={{ maxWidth: 380 }}
     >
       <Icon name={variantIcons[item.variant] as any} size={15} className="shrink-0" />
       <span className="leading-snug">{item.message}</span>

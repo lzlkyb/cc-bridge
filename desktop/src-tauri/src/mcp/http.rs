@@ -1200,6 +1200,71 @@ mod over_wire_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // edit_files 必须与 read_files 同样遵守 encoding_detect_enabled（回归）：修复前 edit_files
+    // 无论该开关怎么设都无条件自动探测，与 read_files（关时强制 UTF-8）不一致。
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn edit_files_respects_encoding_detect_toggle_like_read_files() {
+        let root = unique_temp_root("ef_enc_toggle");
+        let fp = root.join("gbk_notes.txt");
+        let gbk_bytes = {
+            let (cow, _, _had_errors) = encoding_rs::GBK.encode("你好世界，这是一份 GBK 注释。");
+            cow.into_owned()
+        };
+        std::fs::write(&fp, &gbk_bytes).expect("预写 GBK 文件");
+        let fp_s = fp.to_string_lossy().into_owned();
+
+        // 情况 1：默认配置（encoding_detect_enabled=false，与 config.rs 默认值一致）。
+        // 修复后：edit_files 应该也强制按 UTF-8 解码（与 read_files 一致），GBK 字节不是合法 UTF-8，
+        // 应该报错而不是静默自动探测成 GBK 并匹配成功。
+        let srv_off = spawn_server(test_config(&root), root.clone()).await;
+        let r_off = rpc(
+            &srv_off.base,
+            &srv_off.token,
+            "tools/call",
+            json!({ "name": "edit_files", "arguments": { "files": [
+                { "path": fp_s, "oldString": "你好世界", "newString": "hello world" }
+            ] } }),
+        )
+        .await;
+        let arr_off = inner_text(&r_off);
+        let ok_off = arr_off
+            .get(0)
+            .and_then(|e| e.get("ok").and_then(|v| v.as_bool()))
+            .unwrap_or(true);
+        assert!(
+            !ok_off,
+            "encoding_detect_enabled=false 时，对 GBK 文件的 edit_files 应该因强制 UTF-8 解码失败而报错，不应该静默自动探测成 GBK 后匹配成功"
+        );
+        assert_eq!(std::fs::read(&fp).unwrap(), gbk_bytes);
+
+        // 情况 2：显式开启 encoding_detect_enabled=true 时，自动探测应该正确识别出 GBK 并成功匹配。
+        let cfg_on = crate::config::BridgeConfig {
+            encoding_detect_enabled: true,
+            ..test_config(&root)
+        };
+        let srv_on = spawn_server(cfg_on, root.clone()).await;
+        let r_on = rpc(
+            &srv_on.base,
+            &srv_on.token,
+            "tools/call",
+            json!({ "name": "edit_files", "arguments": { "files": [
+                { "path": fp_s, "oldString": "你好世界", "newString": "hello world" }
+            ] } }),
+        )
+        .await;
+        assert_dispatch_ok(&r_on);
+        let written_bytes = std::fs::read(&fp).unwrap();
+        let (decoded, _, had_errors) = encoding_rs::GBK.decode(&written_bytes);
+        assert!(!had_errors, "写回应仍为合法 GBK 字节");
+        assert!(
+            decoded.contains("hello world") && !decoded.contains("你好世界"),
+            "encoding_detect_enabled=true 时应成功识别 GBK 并完成替换：{decoded}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // ── 命令执行三元组（后台 run → 取输出 → 停止） ─────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -54,7 +54,7 @@ export function DirectoryBrowser({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="animate-scale-in mx-4 w-full max-w-lg rounded-xl border bg-card p-4 shadow-lg"
+        className="animate-scale-in mx-4 w-full max-w-lg rounded-xl modal-surface p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-3 flex items-center justify-between">
@@ -69,7 +69,7 @@ export function DirectoryBrowser({
 
         {currentPath && (
           <div className="mb-2 flex items-center gap-2">
-            <code className="flex-1 truncate rounded-md bg-muted px-2 py-1 text-xs">{currentPath}</code>
+            <code className="flex-1 truncate rounded-md bg-muted px-2 py-1 text-xs" title={currentPath}>{currentPath}</code>
             <Button size="sm" onClick={() => onSelect(currentPath)}>
               选择此目录
             </Button>
@@ -103,7 +103,7 @@ export function DirectoryBrowser({
                 className="flex w-full items-center gap-2 border-b px-3 py-2 text-left text-sm last:border-0 hover:bg-muted"
               >
                 <Icon name="folder" size={15} className="text-primary shrink-0" />
-                <span className="truncate">{entry.name}</span>
+                <span className="truncate" title={entry.name}>{entry.name}</span>
               </button>
             ))
           )}

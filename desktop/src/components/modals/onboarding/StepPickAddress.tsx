@@ -1,8 +1,9 @@
 import { useState } from "react";
 import type { StatusResponse } from "../../../lib/types";
-import { buildDisplayHost, buildHealthCheck, ipHint } from "../../../lib/utils";
+import { buildDisplayHost, buildHealthCheck, ipHint, copyText } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
+import { useToast } from "../../ui/toast";
 
 /**
  * 引导第 2 步：选择远程服务器能连回本机的地址。
@@ -18,6 +19,7 @@ export function StepPickAddress({
   onSelectIp: (ip: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const { toast } = useToast();
   const lanIps = status?.lanIps ?? [];
   const port = status?.port ?? 7823;
   // 用户还没点选时，用第一个网卡 IP 作为兜底展示，避免连通验证命令显示 127.0.0.1。
@@ -25,11 +27,17 @@ export function StepPickAddress({
   const displayHost = buildDisplayHost(status, effectiveIp);
   const healthCheck = buildHealthCheck(displayHost, port);
 
+  // H6 修复：之前未 await/catch，剪贴板权限被拒绝时会出现"显示已复制但其实没复制"的假阳性反馈。
   const copy = () => {
     if (!healthCheck) return;
-    navigator.clipboard.writeText(healthCheck);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    void copyText(
+      healthCheck,
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      },
+      (e) => toast(`复制失败：${e}`, "error"),
+    );
   };
 
   return (
@@ -54,7 +62,7 @@ export function StepPickAddress({
                   onClick={() => onSelectIp(ip)}
                   className={`relative rounded-md border-2 px-3 py-2 text-left transition-colors ${
                     sel
-                      ? "border-primary bg-accent shadow-[0_0_0_3px_color-mix(in_srgb,hsl(var(--primary))_14%,transparent)]"
+                      ? "border-primary bg-accent shadow-ring-focus"
                       : "border-transparent bg-background hover:bg-muted"
                   }`}
                 >

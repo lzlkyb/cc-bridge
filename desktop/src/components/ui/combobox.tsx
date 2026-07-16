@@ -54,7 +54,7 @@ export function Combobox({ value, options, onChange, className = "" }: ComboboxP
         />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-lg">
+        <div className="absolute left-0 top-full z-20 mt-1 min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-pop">
           {options.map((opt) => (
             <button
               key={opt.value}

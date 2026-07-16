@@ -32,6 +32,8 @@ pub struct BridgeConfig {
     /// 在首次提供 cwd 时拿到 session_id，后续调用只传 session_id 即可沿用工作目录。每次使用
     /// 前仍重校验白名单（规则 7 不削弱）。关闭时 run_command 行为与旧版完全一致。
     pub session_cwd_enabled: bool,
+    /// 后台命令结束后保留时长（秒）。默认 120（2 分钟），超时自动清理。0 表示立即清理。
+    pub command_cleanup_secs: u64,
     /// 用户上次在 Connect 页确认使用的本机 IP（多网卡场景）。用于检测网卡地址是否
     /// 发生变化（VPN 重连等）——不在 get_lan_ips() 结果里就说明已失效，需要提示用户换新地址。
     pub last_selected_ip: Option<String>,
@@ -70,6 +72,7 @@ impl Default for BridgeConfig {
             encoding_detect_enabled: false,
             shell_enabled: false,
             session_cwd_enabled: false,
+            command_cleanup_secs: 120,
             last_selected_ip: None,
             scope: None,
         }
@@ -136,6 +139,7 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             }
             "shell_enabled" => config.shell_enabled = parse_or_warn(key, value, false),
             "session_cwd_enabled" => config.session_cwd_enabled = parse_or_warn(key, value, false),
+            "command_cleanup_secs" => config.command_cleanup_secs = parse_or_warn(key, value, 120u64),
             "last_selected_ip" => config.last_selected_ip = parse_or_warn(key, value, None),
             "scope" => config.scope = parse_or_warn(key, value, None),
             _ => {}
@@ -242,6 +246,13 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         "session_cwd_enabled",
         &to_value(config.session_cwd_enabled).unwrap(),
     )?;
+
+    save_config_field(
+        conn,
+        "command_cleanup_secs",
+        &to_value(config.command_cleanup_secs).unwrap(),
+    )?;
+
     save_config_field(
         conn,
         "last_selected_ip",

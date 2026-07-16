@@ -32,6 +32,12 @@ export class ErrorBoundary extends Component<Props, State> {
     this.setState({ hasError: false, error: undefined });
   };
 
+  // H9 修复：「重新加载」只重置 React 状态，若崩溃根源是持久化查询缓存/外部状态，很可能立即复现；
+  // 再提供一个真正刷新整个页面的最后手段。
+  handleFullReload = () => {
+    window.location.reload();
+  };
+
   render() {
     if (this.state.hasError) {
       return (
@@ -50,10 +56,16 @@ export class ErrorBoundary extends Component<Props, State> {
               {this.state.error.message}
             </pre>
           )}
-          <Button onClick={this.handleRetry}>
-            <Icon name="refresh" size={16} />
-            重新加载
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={this.handleRetry}>
+              <Icon name="refresh" size={16} />
+              重新加载
+            </Button>
+            <Button variant="outline" onClick={this.handleFullReload}>
+              <Icon name="refresh" size={16} />
+              完全刷新
+            </Button>
+          </div>
         </div>
       );
     }

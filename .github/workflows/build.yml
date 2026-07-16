@@ -72,14 +72,20 @@ jobs:
         shell: pwsh
         run: |
           $changelog = Get-Content -Raw -Path CHANGELOG.md
-          # 取第一个「已发布版本」段（跳过顶部的 [Unreleased]），作为更新弹窗说明。
+          # 优先抽取「用户摘要」块（面向最终用户）；没有则降级为整段抓取。
           # 正则要求版本号形如 x.y.z，避免误抓 [Unreleased]。
-          if ($changelog -match '(?s)##\s*\[\d+\.\d+\.\d+\][^\n]*\n(.*?)(?=\n##\s|$)') {
+          if ($changelog -match '(?s)##\s*\[\d+\.\d+\.\d+\][^\n]*\n.*?###\s*用户摘要\s*\n(.*?)(?=\n###\s|\n##\s|$)') {
             $notes = $matches[1].Trim()
             "UPDATER_NOTES<<EOF" >> $env:GITHUB_ENV
             $notes >> $env:GITHUB_ENV
             "EOF" >> $env:GITHUB_ENV
-            Write-Host "已抽取更新说明 ($($notes.Length) 字符)"
+            Write-Host "已抽取用户摘要 ($($notes.Length) 字符)"
+          } elseif ($changelog -match '(?s)##\s*\[\d+\.\d+\.\d+\][^\n]*\n(.*?)(?=\n##\s|$)') {
+            $notes = $matches[1].Trim()
+            "UPDATER_NOTES<<EOF" >> $env:GITHUB_ENV
+            $notes >> $env:GITHUB_ENV
+            "EOF" >> $env:GITHUB_ENV
+            Write-Host "未找到用户摘要，已抽取整段说明 ($($notes.Length) 字符)"
           } else {
             Write-Host "未在 CHANGELOG 中找到已发布版本段，使用默认说明"
           }

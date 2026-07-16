@@ -14,7 +14,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::commands;
 use crate::security;
 use crate::state::{AppState, CwdSession, RunningCommand};
 
@@ -171,7 +170,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     if args.background && state.running_commands.len() >= MAX_CONCURRENT_BACKGROUND {
         // 修复：先尝试把已结束的命令腾出去（不用等 5 分钟宽限期，这里优先保新命令能启动），
         // 真正 5 个都还在跑时才拒绝。
-        commands::evict_finished_commands(state).await;
+        state.evict_finished_commands().await;
     }
     if args.background && state.running_commands.len() >= MAX_CONCURRENT_BACKGROUND {
         return Err(format!(

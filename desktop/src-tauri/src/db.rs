@@ -107,7 +107,10 @@ fn ensure_defaults(conn: &Connection) -> Result<(), String> {
             serde_json::to_string(&d.allowed_roots)
                 .map_err(|e| format!("序列化默认值失败：{e}"))?,
         ),
-        ("token", format!("\"{}\"", generate_token())),
+        (
+            "token",
+            format!("\"{}\"", crate::security::auth::generate_token()),
+        ),
         (
             "allowed_extensions",
             serde_json::to_string(&d.allowed_extensions)
@@ -196,21 +199,6 @@ fn ensure_defaults(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("Failed to commit defaults: {e}"))?;
 
     Ok(())
-}
-
-fn generate_token() -> String {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    (0..32)
-        .map(|_| {
-            let idx = rng.gen_range(0..36);
-            if idx < 10 {
-                (b'0' + idx) as char
-            } else {
-                (b'a' + idx - 10) as char
-            }
-        })
-        .collect()
 }
 
 pub fn get_config_value(conn: &Connection, key: &str) -> Option<String> {

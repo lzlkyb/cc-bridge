@@ -5,6 +5,7 @@ import { APP_INFO } from "../../../lib/about";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
 import { DirectoryBrowser } from "../DirectoryBrowser";
+import { useToast } from "../../ui/toast";
 
 /**
  * 引导第 1 步：添加白名单根目录。
@@ -21,7 +22,9 @@ export function StepAddDir({
   const [newRoot, setNewRoot] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
 
+  // H5 修复：之前失败时无 toast，finally 直接关 loading，用户不知道是否需要重试/路径是否合法。
   const addRoot = async (path?: string) => {
     const rootToAdd = path || newRoot.trim();
     if (!rootToAdd || !status) return;
@@ -31,6 +34,8 @@ export function StepAddDir({
       await invoke<ConfigSaveResult>("save_config", { patch: { allowedRoots: roots } });
       setNewRoot("");
       onRefresh();
+    } catch (e) {
+      toast(`添加目录失败：${e}`, "error");
     } finally {
       setBusy(false);
     }
@@ -43,6 +48,8 @@ export function StepAddDir({
     try {
       await invoke<ConfigSaveResult>("save_config", { patch: { allowedRoots: roots } });
       onRefresh();
+    } catch (e) {
+      toast(`删除目录失败：${e}`, "error");
     } finally {
       setBusy(false);
     }

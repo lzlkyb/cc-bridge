@@ -44,8 +44,6 @@ const STYLE_ICON_GREEN: CSSProperties = { background: "rgba(22,163,74,0.12)", co
 const STYLE_ICON_ORANGE: CSSProperties = { background: "rgba(245,158,11,0.12)", color: "#F59E0B" };
 const STYLE_ICON_ACCENT: CSSProperties = { background: "hsl(var(--accent))", color: "var(--color-primary)" };
 const STYLE_INFO_KEY: CSSProperties = { minWidth: 52 };
-const STYLE_MODAL_OVERLAY: CSSProperties = { background: "rgba(0,0,0,0.45)" };
-const STYLE_MODAL_BOX: CSSProperties = { background: "var(--color-card)" };
 
 export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; unreadCount?: number }) {
   const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
@@ -181,7 +179,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
                       <button
                         type="button"
                         onClick={openRepo}
-                        className="info-tag info-tag-clickable tag-orange inline-block cursor-pointer rounded-md px-2 py-0.5 text-[11px] font-bold transition-all hover:translate-y-[-1px] hover:shadow-sm"
+                        className="info-tag info-tag-clickable tag-orange inline-block cursor-pointer rounded-md px-2 py-0.5 text-[11px] font-bold transition-all hover:translate-y-[-1px] hover:shadow-hover"
                       >
                         GitHub ↗
                       </button>
@@ -190,7 +188,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
                     <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_ACCENT}><Icon name="info" size={14} aria-hidden="true" /></div>
                     <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>简介</span>
-                    <span className="info-desc ml-auto truncate text-[11px] text-muted-foreground" style={{ maxWidth: 160 }}>
+                    <span className="info-desc ml-auto max-w-[160px] truncate text-[11px] text-muted-foreground">
                       {APP_INFO.description}
                     </span>
                     <button
@@ -227,15 +225,13 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
 
       {/* ═══ 弹框：关于 CC Bridge ═══ */}
       {showModal && (
-        <div
-          className="modal-overlay fixed inset-0 z-[1000] flex items-center justify-center"
-          style={STYLE_MODAL_OVERLAY}
-          onClick={() => setShowModal(false)}
-        >
+      <div
+        className="modal-overlay fixed inset-0 z-[1000] flex items-center justify-center"
+        onClick={() => setShowModal(false)}
+      >
           <div
-            className="modal-box mx-4 max-h-[80vh] w-[480px] max-w-[90vw] overflow-y-auto rounded-2xl border border-border p-7 shadow-2xl"
-            style={STYLE_MODAL_BOX}
-            onClick={(e) => e.stopPropagation()}
+        className="modal-box mx-4 max-h-[80vh] w-[480px] max-w-[90vw] overflow-y-auto rounded-2xl border border-border p-7 shadow-pop"
+        onClick={(e) => e.stopPropagation()}
           >
             {/* 标题 */}
             <div className="modal-header mb-[18px] flex items-center justify-between">

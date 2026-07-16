@@ -118,6 +118,29 @@ fn tray_icon(running: bool) -> tauri::image::Image<'static> {
     (if running { &icons.0 } else { &icons.1 }).clone()
 }
 
+/// G1 修复：后台周期任务加 panic 恢复。之前 4 个 tauri::async_runtime::spawn 循环任一 panic 后，该循环会
+/// 永久静默停止（托盘不刷新/命令注册表不回收/防火墙缓存过期等），用户和日志都无感知。
+/// 用 JoinHandle 的 panic 检测做自愈：内层任务 panic → 记录错误日志 → 短暂延迟后重新 spawn。
+fn spawn_supervised<F>(name: &'static str, make_task: F)
+where
+    F: Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + 'static,
+{
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let handle = tauri::async_runtime::spawn(make_task());
+            match handle.await {
+                Ok(()) => {
+                    log::warn!("后台任务「{name}」意外正常退出（预期是永久循环），1s 后重启");
+                }
+                Err(e) => {
+                    log::error!("后台任务「{name}」 panic，1s 后自愈重启：{e}");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
@@ -176,15 +199,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // D2 修复：后台周期性回收空闲路径锁，避免 path_locks 随运行时间无界增长。
+            // G1 修复：套 spawn_supervised，panic 后自愈重启而非永久静默停止。
             {
                 let gc_state = app_state.clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
-                    loop {
-                        ticker.tick().await;
-                        gc_state.gc_path_locks();
-                        gc_state.gc_cwd_sessions();
-                    }
+                spawn_supervised("path_locks/cwd_sessions GC", move || {
+                    let gc_state = gc_state.clone();
+                    Box::pin(async move {
+                        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                        loop {
+                            ticker.tick().await;
+                            gc_state.gc_path_locks();
+                            gc_state.gc_cwd_sessions();
+                        }
+                    })
                 });
             }
 
@@ -340,53 +367,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let handle = app.handle().clone();
                 let watch_state = app_state.clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut alerting = false;
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                        let last_ip = watch_state.config.read().await.last_selected_ip.clone();
-                        let changed = match &last_ip {
-                            Some(ip) => !network::get_lan_ips().contains(ip),
-                            None => false,
-                        };
-                        let running = watch_state
-                            .mcp_running
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        if let Some(tray) = handle.tray_by_id("main-tray") {
-                            // tooltip：地址变化优先提示，否则显示运行状态
-                            let tip = if changed {
-                                "cc-bridge: 网络地址已变化，点击查看新连接命令"
-                            } else if running {
-                                "cc-bridge · 服务运行中"
-                            } else {
-                                "cc-bridge · 已停止"
+                // G1 修复：套 spawn_supervised，panic 后自愈重启而非永久静默停止。
+                spawn_supervised("本机地址变化检测", move || {
+                    let handle = handle.clone();
+                    let watch_state = watch_state.clone();
+                    Box::pin(async move {
+                        let mut alerting = false;
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                            let last_ip = watch_state.config.read().await.last_selected_ip.clone();
+                            let changed = match &last_ip {
+                                Some(ip) => !network::get_lan_ips().contains(ip),
+                                None => false,
                             };
-                            let _ = tray.set_tooltip(Some(tip));
-                            // 图标随运行状态刷新（地址变化不改变图标）
-                            let _ = tray.set_icon(Some(tray_icon(running)));
+                            let running = watch_state
+                                .mcp_running
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            if let Some(tray) = handle.tray_by_id("main-tray") {
+                                // tooltip：地址变化优先提示，否则显示运行状态
+                                let tip = if changed {
+                                    "cc-bridge: 网络地址已变化，点击查看新连接命令"
+                                } else if running {
+                                    "cc-bridge · 服务运行中"
+                                } else {
+                                    "cc-bridge · 已停止"
+                                };
+                                let _ = tray.set_tooltip(Some(tip));
+                                // 图标随运行状态刷新（地址变化不改变图标）
+                                let _ = tray.set_icon(Some(tray_icon(running)));
+                            }
+                            if changed && !alerting {
+                                let _ = handle
+                                    .notification()
+                                    .builder()
+                                    .title("cc-bridge")
+                                    .body("网络地址已变化，点击查看新连接命令")
+                                    .show();
+                            }
+                            alerting = changed;
                         }
-                        if changed && !alerting {
-                            let _ = handle
-                                .notification()
-                                .builder()
-                                .title("cc-bridge")
-                                .body("网络地址已变化，点击查看新连接命令")
-                                .show();
-                        }
-                        alerting = changed;
-                    }
+                    })
                 });
             }
 
-            // 后台命令定时清理：每 60s 扫一次，把超过 5 分钟宽限期的已结束命令从
+            // 后台命令定时清理：每 60s 扫一次，把超过配置的宽限期（默认 2 分钟）的已结束命令从
             // running_commands 注册表里移除（见 commands::cleanup_finished_commands）。
             {
                 let cleanup_state = app_state.clone();
-                tauri::async_runtime::spawn(async move {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                        commands::cleanup_finished_commands(&cleanup_state).await;
-                    }
+                // G1 修复：套 spawn_supervised，panic 后自愈重启而非永久静默停止。
+                spawn_supervised("后台命令定时清理", move || {
+                    let cleanup_state = cleanup_state.clone();
+                    Box::pin(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                            cleanup_state.cleanup_finished_commands().await;
+                        }
+                    })
                 });
             }
 
@@ -395,17 +431,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 不在此间隔内反复跑 netsh（守规则8 的轻量原则）。
             {
                 let fw_state = app_state.clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
-                    {
-                        let port = fw_state.config.read().await.port;
-                        crate::firewall::refresh_cache(&fw_state, port).await;
-                    }
-                    loop {
-                        ticker.tick().await;
-                        let port = fw_state.config.read().await.port;
-                        crate::firewall::refresh_cache(&fw_state, port).await;
-                    }
+                // G1 修复：套 spawn_supervised，panic 后自愈重启而非永久静默停止。
+                spawn_supervised("防火墙缓存刷新", move || {
+                    let fw_state = fw_state.clone();
+                    Box::pin(async move {
+                        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
+                        {
+                            let port = fw_state.config.read().await.port;
+                            crate::firewall::refresh_cache(&fw_state, port).await;
+                        }
+                        loop {
+                            ticker.tick().await;
+                            let port = fw_state.config.read().await.port;
+                            crate::firewall::refresh_cache(&fw_state, port).await;
+                        }
+                    })
                 });
             }
 

@@ -27,6 +27,17 @@
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
   --radius: var(--radius);
+
+  /* P1-3 阴影 token（值指向 :root / .dark 的 --sh-*，深浅主题自适应）*/
+  --shadow-card: var(--sh-card);
+  --shadow-pop: var(--sh-pop);
+  --shadow-hover: var(--sh-hover);
+  --shadow-glow-primary: var(--sh-glow-primary);
+  --shadow-glow-primary-lg: var(--sh-glow-primary-lg);
+  --shadow-glow-primary-strong: var(--sh-glow-primary-strong);
+  --shadow-glow-warning: var(--sh-glow-warning);
+  --shadow-ring-focus: var(--sh-ring-focus);
+  --shadow-ring-inset-primary: var(--sh-ring-inset-primary);
 }
 
 :root {
@@ -93,6 +104,17 @@
   --badge-error-bg: linear-gradient(135deg, #EF4444, #DC2626);
   --badge-error-shadow: 0 2px 8px rgba(220, 38, 38, 0.35);
   --badge-error-shadow-hover: 0 4px 14px rgba(220, 38, 38, 0.45);
+
+  /* ── P1-3 阴影 token（中性三档 + 品牌辉光 + 聚焦环，浅色）── */
+  --sh-card: 0 1px 2px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+  --sh-pop: 0 8px 40px rgba(0,0,0,0.10), 0 2px 8px rgba(0,0,0,0.06);
+  --sh-hover: 0 4px 12px rgba(0,0,0,0.10), 0 2px 4px rgba(0,0,0,0.06);
+  --sh-glow-primary: 0 2px 8px rgba(79,70,229,0.25);
+  --sh-glow-primary-lg: 0 8px 24px rgba(79,70,229,0.25);
+  --sh-glow-primary-strong: 0 4px 16px rgba(79,70,229,0.35);
+  --sh-glow-warning: 0 2px 6px rgba(245,158,11,0.25);
+  --sh-ring-focus: 0 0 0 3px color-mix(in srgb, hsl(var(--primary)) 14%, transparent);
+  --sh-ring-inset-primary: inset 0 0 0 1px hsl(var(--primary));
 }
 
 .dark {
@@ -160,6 +182,17 @@
   --badge-error-bg: linear-gradient(135deg, #F87171, #EF4444);
   --badge-error-shadow: 0 2px 8px rgba(248, 113, 113, 0.35);
   --badge-error-shadow-hover: 0 4px 14px rgba(248, 113, 113, 0.5);
+
+  /* ── P1-3 阴影 token（深浅主题自适应）── */
+  --sh-card: 0 1px 2px rgba(0,0,0,0.4);
+  --sh-pop: 0 8px 40px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3);
+  --sh-hover: 0 4px 12px rgba(0,0,0,0.45), 0 2px 4px rgba(0,0,0,0.35);
+  --sh-glow-primary: 0 2px 8px rgba(129,140,248,0.35);
+  --sh-glow-primary-lg: 0 8px 24px rgba(129,140,248,0.35);
+  --sh-glow-primary-strong: 0 4px 16px rgba(129,140,248,0.45);
+  --sh-glow-warning: 0 2px 6px rgba(245,158,11,0.28);
+  --sh-ring-focus: 0 0 0 3px color-mix(in srgb, hsl(var(--primary)) 14%, transparent);
+  --sh-ring-inset-primary: inset 0 0 0 1px hsl(var(--primary));
 }
 
 body {
@@ -663,11 +696,20 @@ body {
 
 /* ═══ 弹框动画 ═══ */
 .modal-overlay {
+  background: rgba(0, 0, 0, 0.45);
   animation: modal-fade-in 0.2s ease;
 }
 @keyframes modal-fade-in {
   from { opacity: 0; }
   to   { opacity: 1; }
+}
+
+/* P1-4 模态表面统一基底：border + bg-card + shadow-pop（深浅主题自适应）。
+   所有弹窗/对话框共享此样式，避免各模态重复手写同一套表面类；改模态外观只改此处。 */
+.modal-surface {
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  box-shadow: var(--shadow-pop);
 }
 
 /* 版本历史加载骨架屏微光 */

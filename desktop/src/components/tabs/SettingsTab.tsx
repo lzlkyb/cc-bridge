@@ -6,9 +6,11 @@ import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Alert } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { Label } from "../ui/label";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { Switch } from "../ui/switch";
+import { SettingsRow } from "../ui/SettingsRow";
 import { SettingsToggles } from "./SettingsToggles";
 import { AboutGroup } from "./AboutGroup";
 
@@ -106,29 +108,34 @@ function NetworkGroup({
         <CardTitle icon={<Icon name="server" />}>网络</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {/* 端口 + 按钮 同一行 */}
-        <div className="flex items-center gap-3">
-          <Label className="shrink-0">端口</Label>
-          <Input
-            type="number"
-            min={1}
-            max={65535}
-            value={port}
-            onChange={(e) => setPort(Number(e.target.value))}
-            className={`max-w-[120px] ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
-          />
-          <Button
-            onClick={handleSaveAndRestart}
-            disabled={!dirty || saving || invalid}
-            isLoading={saving}
-            loadingText="保存中..."
-            size="sm"
-          >
-            {dirty ? "保存并重启" : "保存"}
-          </Button>
-          {!dirty && !restarted && <span className="text-xs text-muted-foreground">无更改</span>}
-          {restarted && <span className="text-xs text-success">已保存并重启 ✓</span>}
-        </div>
+        {/* 端口 + 按钮 同一行（统一到 SettingsRow）*/}
+        <SettingsRow
+          label="端口"
+          last
+          control={
+            <div className="flex items-center gap-3">
+              <Input
+                type="number"
+                min={1}
+                max={65535}
+                value={port}
+                onChange={(e) => setPort(Number(e.target.value))}
+                className={`max-w-[120px] ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
+              />
+              <Button
+                onClick={handleSaveAndRestart}
+                disabled={!dirty || saving || invalid}
+                isLoading={saving}
+                loadingText="保存中..."
+                size="sm"
+              >
+                {dirty ? "保存并重启" : "保存"}
+              </Button>
+              {!dirty && !restarted && <span className="text-xs text-muted-foreground">无更改</span>}
+              {restarted && <span className="text-xs text-success">已保存并重启 ✓</span>}
+            </div>
+          }
+        />
         {invalid && <p className="text-xs text-destructive">端口范围 1 – 65535</p>}
         {status?.firewallEnabled === false && (
           <Alert variant="warning">
@@ -180,15 +187,14 @@ function AppGroup() {
         <CardTitle icon={<Icon name="monitor" />}>应用</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <Label>开机自动启动</Label>
-            <p className="text-xs text-muted-foreground">
-              {`系统登录后自动在后台启动 ${APP_INFO.name}，远程随时可连接。`}
-            </p>
-          </div>
-          <Toggle checked={autostart} disabled={!loaded} onChange={toggle} ariaLabel="开机自动启动" />
-        </div>
+        <SettingsRow
+          label="开机自动启动"
+          sub={`系统登录后自动在后台启动 ${APP_INFO.name}，远程随时可连接。`}
+          last
+          control={
+            <Switch checked={autostart} disabled={!loaded} onChange={() => toggle()} ariaLabel="开机自动启动" />
+          }
+        />
       </CardContent>
     </Card>
   );
@@ -238,44 +244,41 @@ function InstallGroup() {
         <CardTitle icon={<Icon name="package" />}>安装与快捷方式</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0 space-y-0.5">
-            <Label>安装位置</Label>
-            <p className="truncate text-xs text-muted-foreground" title={dir}>
-              {dir || "—"}
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleReveal}
-            isLoading={revealing}
-            loadingText="打开中..."
-            className="gap-1.5 shrink-0"
-          >
-            <Icon name="folder" size={14} />
-            打开目录
-          </Button>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0 space-y-0.5">
-            <Label>桌面快捷方式</Label>
-            <p className="text-xs text-muted-foreground">
-              误删桌面图标后可一键重建，已存在则覆盖。
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleCreate}
-            isLoading={creating}
-            loadingText="创建中..."
-            className="gap-1.5 shrink-0"
-          >
-            <Icon name="external" size={14} />
-            创建到桌面
-          </Button>
-        </div>
+        <SettingsRow
+          label="安装位置"
+          sub={<span className="block truncate" title={dir}>{dir || "—"}</span>}
+          control={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleReveal}
+              isLoading={revealing}
+              loadingText="打开中..."
+              className="gap-1.5 shrink-0"
+            >
+              <Icon name="folder" size={14} />
+              打开目录
+            </Button>
+          }
+        />
+        <SettingsRow
+          label="桌面快捷方式"
+          sub="误删桌面图标后可一键重建，已存在则覆盖。"
+          last
+          control={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCreate}
+              isLoading={creating}
+              loadingText="创建中..."
+              className="gap-1.5 shrink-0"
+            >
+              <Icon name="external" size={14} />
+              创建到桌面
+            </Button>
+          }
+        />
       </CardContent>
     </Card>
   );
@@ -292,6 +295,7 @@ function ConfigGroup({
   const { toast } = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const [importing, setImporting] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
 
   const handleExport = async () => {
     try {
@@ -309,9 +313,15 @@ function ConfigGroup({
     }
   };
 
-  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // H2 修复：选中文件不再立即导入（之前只靠静态文案提示，选中即刻覆盖全部配置并重启，一次误选
+  // 就会清空当前全部安全设置且不可撤销）：先暂存文件弹 ConfirmDialog，确认后才真正 invoke。
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    setPendingFile(file);
+  };
+
+  const doImport = async (file: File) => {
     setImporting(true);
     try {
       const text = await file.text();
@@ -367,6 +377,28 @@ function ConfigGroup({
           </p>
         </div>
       </CardContent>
+      {pendingFile && (
+        <ConfirmDialog
+          title="确定导入此配置文件？"
+          description={
+            <>
+              将用 <b>{pendingFile.name}</b> 覆盖当前全部配置（白名单、Token、命令执行等安全开关）并自动重启服务，
+              且不可撤销。请确认此文件来自可信来源。
+            </>
+          }
+          variant="destructive"
+          confirmLabel="确定导入"
+          onCancel={() => {
+            setPendingFile(null);
+            if (fileRef.current) fileRef.current.value = "";
+          }}
+          onConfirm={() => {
+            const file = pendingFile;
+            setPendingFile(null);
+            void doImport(file);
+          }}
+        />
+      )}
     </Card>
   );
 }
@@ -429,55 +461,26 @@ function AuditGroup({
       <CardHeader>
         <CardTitle icon={<Icon name="file" />}>审计</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2">
-        <div className="flex items-center gap-2">
-          <Label>审计日志保留天数</Label>
-          {saved && <span className="text-xs text-success">已保存 ✓</span>}
-        </div>
-        <Input
-          type="number"
-          min={0}
-          value={days}
-          onChange={(e) => handleChange(Number(e.target.value))}
-          onBlur={handleBlur}
+      <CardContent>
+        <SettingsRow
+          label="审计日志保留天数"
+          saved={saved}
+          layout="stack"
+          last
+          control={
+            <Input
+              type="number"
+              min={0}
+              value={days}
+              onChange={(e) => handleChange(Number(e.target.value))}
+              onBlur={handleBlur}
+            />
+          }
+          sub="超过保留天数的审计记录会在每次启动时自动清理。设为 0 表示永久保留。"
         />
-        <p className="text-xs text-muted-foreground">
-          超过保留天数的审计记录会在每次启动时自动清理。设为 0 表示永久保留。
-        </p>
       </CardContent>
     </Card>
   );
 }
 
-/* ─── Toggle switch ─── */
-
-function Toggle({
-  checked,
-  disabled,
-  onChange,
-  ariaLabel,
-}: {
-  checked: boolean;
-  disabled?: boolean;
-  onChange: () => void;
-  ariaLabel?: string;
-}) {
-  return (
-    <button
-      role="switch"
-      aria-checked={checked}
-      aria-label={ariaLabel}
-      disabled={disabled}
-      onClick={onChange}
-      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
-        checked ? "bg-primary" : "bg-muted-foreground/30"
-      }`}
-    >
-      <span
-        className={`inline-block h-5 w-5 transform rounded-full bg-background shadow transition-transform ${
-          checked ? "translate-x-5" : "translate-x-0.5"
-        }`}
-      />
-    </button>
-  );
-}
+/* 开机自动启动等普通开关统一复用 ui/switch 的 Switch（已删除本地重复 Toggle 实现）。 */

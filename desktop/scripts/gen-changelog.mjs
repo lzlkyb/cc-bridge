@@ -106,7 +106,13 @@ for (const line of lines) {
   const secMatch = line.match(/^###\s+(.+)$/);
   if (secMatch && current) {
     const sec = secMatch[1].trim();
-    if (sec === "亮点" || sec === "Highlights") {
+    if (sec === "用户摘要") {
+      // 用户摘要仅用于更新弹窗（updater.json notes），应用内更新历史跳过
+      mode = "skip";
+      currentCategory = null;
+      currentItem = null;
+      currentHighlight = null;
+    } else if (sec === "亮点" || sec === "Highlights") {
       // C：头条亮点 → 单独收集，UI 顶部渐变条突出
       mode = "highlights";
       currentItem = null;
@@ -121,6 +127,7 @@ for (const line of lines) {
   }
 
   // 条目：以 - 或 * 开头
+  if (mode === "skip") continue;
   const itemMatch = line.match(/^\s*[-*]\s+(.*)$/);
   if (itemMatch && current) {
     if (mode === "highlights") {

@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
-import { McpScope, buildTokenSedCommand } from "../../lib/utils";
+import { McpScope, buildTokenSedCommand, copyText } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { Alert, AlertDescription } from "../ui/alert";
@@ -58,10 +58,9 @@ export function TokenManager({
         aria-expanded={expanded}
       >
         <span
-          className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white"
+          className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-[#F59E0B] to-[#D97706] shadow-glow-warning"
           role="img"
           aria-label="访问令牌"
-          style={{ background: "linear-gradient(135deg, #F59E0B, #D97706)", boxShadow: "0 2px 6px rgba(245,158,11,.25)" }}
         >
           <Icon name="key" size={14} aria-hidden="true" />
         </span>
@@ -115,10 +114,16 @@ export function TokenManager({
                     size="sm"
                     className="shrink-0 mt-0.5"
                     onClick={() => {
+                      // H6 修复：之前未 await/catch，剪贴板权限被拒绝时会出现"显示已复制但其实没复制"。
                       if (tokenSedCommand) {
-                        navigator.clipboard.writeText(tokenSedCommand);
-                        setCopied(true);
-                        setTimeout(() => setCopied(false), 2000);
+                        void copyText(
+                          tokenSedCommand,
+                          () => {
+                            setCopied(true);
+                            setTimeout(() => setCopied(false), 2000);
+                          },
+                          (e) => toast(`复制失败：${e}`, "error"),
+                        );
                       }
                     }}
                     disabled={!tokenSedCommand}

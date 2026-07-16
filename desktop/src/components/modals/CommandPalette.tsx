@@ -3,8 +3,10 @@ import { Icon, type IconName } from "../ui/icon";
 import { useToast } from "../ui/toast";
 import { invoke } from "../../lib/tauri";
 import { toggleTheme } from "../../lib/theme";
+import { copyText } from "../../lib/utils";
 import type { StatusResponse } from "../../lib/types";
 import { DirectoryBrowser } from "./DirectoryBrowser";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 
 interface CommandItem {
   id: string;
@@ -14,6 +16,9 @@ interface CommandItem {
   shortcut?: string;
   tab?: string;
   run?: () => void | Promise<void>;
+  /** H1 修复：不可逆/高风险操作，需先过 ConfirmDialog 而不是直接 invoke（对齐 LogTab/TokenManager 已有确认弹窗）。 */
+  confirmTitle?: string;
+  confirmDescription?: string;
 }
 
 export function CommandPalette({
@@ -33,6 +38,7 @@ export function CommandPalette({
   const [visible, setVisible] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showDirBrowser, setShowDirBrowser] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState<CommandItem | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -47,8 +53,12 @@ export function CommandPalette({
   const runRegenerateToken = async () => {
     try {
       const token = await invoke<string>("regenerate_token");
-      await navigator.clipboard.writeText(token).catch(() => {});
-      toast("访问令牌已重新生成并复制到剪贴板", "success");
+      // H6 修复：之前 .catch(() => {}) 静默吞掉复制失败，下一行仍会无条件提示"已复制"。
+      await copyText(
+        token,
+        () => toast("访问令牌已重新生成并复制到剪贴板", "success"),
+        () => toast("访问令牌已重新生成，但复制到剪贴板失败，请手动复制", "error"),
+      );
       onChanged?.();
     } catch (e) {
       toast("生成失败：" + String(e), "error");
@@ -110,10 +120,26 @@ export function CommandPalette({
     { id: "nav-security", label: "前往：安全页", icon: "shield", group: "导航", tab: "security", shortcut: "Ctrl+2" },
     { id: "nav-settings", label: "前往：设置页", icon: "settings", group: "导航", tab: "settings", shortcut: "Ctrl+3" },
     { id: "nav-log", label: "前往：日志页", icon: "log", group: "导航", tab: "log", shortcut: "Ctrl+4" },
-    { id: "act-token", label: "重新生成访问令牌", icon: "key", group: "操作", run: runRegenerateToken },
+    {
+      id: "act-token",
+      label: "重新生成访问令牌",
+      icon: "key",
+      group: "操作",
+      run: runRegenerateToken,
+      confirmTitle: "确定重新生成访问令牌？",
+      confirmDescription: "旧令牌立即失效，所有使用旧令牌连接的 Claude Code 会需要重新配置。",
+    },
     { id: "act-server", label: running ? "停止 MCP 服务" : "启动 MCP 服务", icon: running ? "pause" : "play", group: "操作", run: runToggleServer },
     { id: "act-restart", label: "重启 MCP 服务", icon: "refresh", group: "操作", run: runRestartServer },
-    { id: "act-clearlog", label: "清空审计日志", icon: "trash", group: "操作", run: runClearAudit },
+    {
+      id: "act-clearlog",
+      label: "清空审计日志",
+      icon: "trash",
+      group: "操作",
+      run: runClearAudit,
+      confirmTitle: "确定清空全部审计日志？",
+      confirmDescription: "此操作会删除本机所有历史调用记录，且不可恢复。",
+    },
     { id: "act-addroot", label: "添加允许访问的根目录", icon: "plus", group: "操作", run: () => setShowDirBrowser(true) },
     { id: "act-theme", label: isDark ? "切换到浅色主题" : "切换到深色主题", icon: isDark ? "sun" : "moon", group: "外观", run: toggleTheme },
   ], [running, isDark, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme]);
@@ -129,6 +155,17 @@ export function CommandPalette({
     setSelectedIndex(0);
   }, [query]);
 
+  const runItem = async (item: CommandItem) => {
+    if (!item.run) return;
+    setBusyId(item.id);
+    try {
+      await item.run();
+    } finally {
+      setBusyId(null);
+      onClose();
+    }
+  };
+
   const selectItem = async (item: CommandItem) => {
     if (item.tab) {
       onNavigate(item.tab);
@@ -141,13 +178,13 @@ export function CommandPalette({
       item.run();
       return;
     }
-    setBusyId(item.id);
-    try {
-      await item.run();
-    } finally {
-      setBusyId(null);
-      onClose();
+    // H1 修复：不可逆/高风险操作先弹 ConfirmDialog，不直接 invoke（之前打字+回车即执行，与同一操作在
+    // 正常页面里有确认弹窗不一致）。
+    if (item.confirmTitle) {
+      setPendingConfirm(item);
+      return;
     }
+    await runItem(item);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -163,6 +200,7 @@ export function CommandPalette({
       if (item) selectItem(item);
     } else if (e.key === "Escape") {
       if (showDirBrowser) return; // 交给 DirectoryBrowser 处理
+      if (pendingConfirm) return; // 交给 ConfirmDialog 处理
       onClose();
     }
   };
@@ -176,7 +214,7 @@ export function CommandPalette({
         onClick={onClose}
       >
         <div
-          className={`mx-4 w-full max-w-md overflow-hidden rounded-xl border bg-card shadow-2xl transition-all duration-200 ${
+          className={`mx-4 w-full max-w-md overflow-hidden rounded-xl modal-surface transition-all duration-200 ${
             visible ? "translate-y-0 opacity-100 scale-100" : "translate-y-2 opacity-0 scale-98"
           }`}
           onClick={(e) => e.stopPropagation()}
@@ -250,6 +288,20 @@ export function CommandPalette({
           open
           onClose={() => setShowDirBrowser(false)}
           onSelect={handleSelectRoot}
+        />
+      )}
+
+      {pendingConfirm && (
+        <ConfirmDialog
+          title={pendingConfirm.confirmTitle ?? "确认此操作？"}
+          description={pendingConfirm.confirmDescription}
+          variant="destructive"
+          onCancel={() => setPendingConfirm(null)}
+          onConfirm={() => {
+            const item = pendingConfirm;
+            setPendingConfirm(null);
+            void runItem(item);
+          }}
         />
       )}
     </>
