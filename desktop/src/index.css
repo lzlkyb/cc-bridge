@@ -38,6 +38,10 @@
   --shadow-glow-warning: var(--sh-glow-warning);
   --shadow-ring-focus: var(--sh-ring-focus);
   --shadow-ring-inset-primary: var(--sh-ring-inset-primary);
+
+  /* P2-1 微交互：全局默认过渡时长/缓动集中定义（统一 hover/focus/active 反馈基准）*/
+  --default-transition-duration: 150ms;
+  --default-transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 :root {
@@ -710,6 +714,39 @@ body {
   border: 1px solid hsl(var(--border));
   background: hsl(var(--card));
   box-shadow: var(--shadow-pop);
+}
+
+/* P2-1 微交互：统一可点击元素的过渡与按压反馈。给图标按钮/可点击行选用，
+   替代散落的 transition-colors；:active 轻微缩放提供按压感，hover/focus 过渡与时长基准一致。 */
+.interactive {
+  transition-property: color, background-color, border-color, box-shadow, transform;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+.interactive:active {
+  transform: scale(0.98);
+}
+
+/* P2-3 分隔线语义类：统一 border-border 分隔线，深浅主题自适应；末条自动去边框。
+   替代散落的 border-b/t border-border / border-r border-border；有意例外保留不动
+   （ConnectHero 玻璃 chip 白边、border-dashed 虚线、VersionHistoryModal 时间线 border-l-2）。 */
+.divider-x {
+  border-bottom: 1px solid hsl(var(--border));
+}
+.divider-x:last-child {
+  border-bottom: none;
+}
+.divider-x-top {
+  border-top: 1px solid hsl(var(--border));
+}
+.divider-x-top:last-child {
+  border-top: none;
+}
+.divider-y {
+  border-right: 1px solid hsl(var(--border));
+}
+.divider-y:last-child {
+  border-right: none;
 }
 
 /* 版本历史加载骨架屏微光 */

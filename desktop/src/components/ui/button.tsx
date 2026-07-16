@@ -1,6 +1,6 @@
 import type { ButtonHTMLAttributes } from "react";
 
-const base = "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
+const base = "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50";
 
 const variants = {
   default: "bg-primary text-primary-foreground hover:brightness-110 hover:shadow-glow-primary",

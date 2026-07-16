@@ -8,6 +8,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { Icon } from "../ui/icon";
+import { EmptyState } from "../ui/EmptyState";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 import { Combobox } from "../ui/combobox";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -337,18 +338,15 @@ export function LogTab() {
           </div>
         )}
         {filtered.length === 0 ? (
-          <div className="relative flex h-52 items-center justify-center">
-            {/* 大号半透明背景图标 */}
-            <Icon name="log" size={96} className="absolute opacity-[0.06] pointer-events-none" />
-            <div className="relative z-[1] flex flex-col items-center gap-2 text-center">
-              <Icon name={entries?.length === 0 ? "file" : "search"} size={28} className="text-muted-foreground/40" />
-              <p className="text-sm text-muted-foreground max-w-[320px]">
-                {entries?.length === 0
-                  ? "暂无审计记录，远程 Claude Code 连接后操作记录将显示在这里。"
-                  : "没有匹配的记录，试试调整筛选条件。"}
-              </p>
-            </div>
-          </div>
+          <EmptyState
+            className="h-52"
+            bigIconSize={96}
+            iconSize={28}
+            icon={entries?.length === 0 ? "file" : "search"}
+            description={entries?.length === 0
+              ? "暂无审计记录，远程 Claude Code 连接后操作记录将显示在这里。"
+              : "没有匹配的记录，试试调整筛选条件。"}
+          />
         ) : (
           <Table className="table-fixed">
             <TableHeader>

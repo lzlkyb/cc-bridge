@@ -109,7 +109,7 @@ export function OnboardingGuide({
         </div>
 
         {/* Footer */}
-        <div className="mt-5 flex items-center justify-between border-t border-border pt-4">
+        <div className="mt-5 flex items-center justify-between divider-x-top pt-4">
           <button
             onClick={handleSkip}
             className="text-xs text-muted-foreground hover:text-foreground transition-colors"

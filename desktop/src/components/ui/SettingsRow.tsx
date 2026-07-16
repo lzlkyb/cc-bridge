@@ -33,7 +33,7 @@ export function SettingsRow({
       className={[
         "flex gap-3 py-3",
         isStack ? "flex-col items-stretch" : "flex-row items-center justify-between",
-        last ? "" : "border-b border-border",
+        last ? "" : "divider-x",
         danger ? "-mx-3 rounded-lg bg-destructive/5 px-3" : "",
       ].join(" ")}
     >

@@ -11,6 +11,7 @@ import type {
 import { formatRelativeTime, formatBytes } from "../../lib/utils";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
+import { Spinner } from "../ui/Spinner";
 
 /** 单个 diff 的加载态缓存（含预存的 +/- 计数，避免渲染时重复 filter）。 */
 type DiffState = {
@@ -134,7 +135,11 @@ function DiffView({ state, title }: { state?: DiffState; title: string }) {
     <div className="mt-2">
       <div className="mb-1 text-[11px] font-semibold text-muted-foreground">{title}</div>
       <div className="overflow-hidden rounded-lg border border-border font-mono text-[11.5px]">
-        {state?.loading && <div className="bg-muted/30 p-2 text-muted-foreground">加载中…</div>}
+        {state?.loading && (
+          <div className="flex items-center gap-2 bg-muted/30 p-2 text-muted-foreground">
+            <Spinner size={14} /> 加载中…
+          </div>
+        )}
         {state?.error && (
           <div className="break-all bg-destructive/10 p-2 text-destructive">加载失败：{state.error}</div>
         )}
@@ -146,7 +151,7 @@ function DiffView({ state, title }: { state?: DiffState; title: string }) {
         )}
         {state?.result && !state.result.guard && (
           <>
-            <div className="flex items-center gap-2 border-b border-border bg-muted/20 px-2 py-1.5 font-sans">
+            <div className="flex items-center gap-2 divider-x bg-muted/20 px-2 py-1.5 font-sans">
               {(state.added || state.removed) ? (
                 <span className="flex gap-1.5 text-[11px]">
                   {state.added ? <span className="text-success">+{state.added}</span> : null}
@@ -339,7 +344,7 @@ export function VersionHistoryModal({
         onClick={(e) => e.stopPropagation()}
       >
         {/* 标题栏 */}
-        <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
+        <div className="flex items-center gap-2.5 divider-x px-4 py-3">
           <span className="title-chip">
             <Icon name="history" size={15} />
           </span>
@@ -350,7 +355,7 @@ export function VersionHistoryModal({
           <button
             type="button"
             onClick={onClose}
-            className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground interactive hover:bg-accent hover:text-foreground"
             aria-label="关闭"
           >
             <Icon name="close" size={18} />
@@ -609,7 +614,7 @@ export function VersionHistoryModal({
                       const canDiff = e.targets.length > 0;
                       const prev = ei < g.entries.length - 1 ? g.entries[ei + 1] : null;
                       return (
-                        <div key={e.backupPath} className="border-b border-border px-3 py-2 last:border-b-0">
+                        <div key={e.backupPath} className="divider-x px-3 py-2">
                           <div className="flex flex-wrap items-center gap-2 text-xs">
                             <span className="font-mono text-muted-foreground">{formatRelativeTime(e.createdAt)}</span>
                             <span className="font-mono font-semibold">{g.originalFile}</span>

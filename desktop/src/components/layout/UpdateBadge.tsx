@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useUpdate, friendlyError } from "../../contexts/UpdateContext";
 import { useToast } from "../ui/toast";
 import { Icon } from "../ui/icon";
+import { Spinner } from "../ui/Spinner";
 import { formatBytesPerSec } from "../../lib/utils";
 
 /**
@@ -71,7 +72,7 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   if (status === "checking") {
     return (
       <span className="header-badge header-badge-checking" title="正在检查更新…">
-        <Icon name="spinner" size={10} className="animate-spin" />
+        <Spinner size={10} />
         <span>{currentVersion ? `v${currentVersion}` : ""}</span>
       </span>
     );

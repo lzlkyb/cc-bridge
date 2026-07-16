@@ -46,7 +46,7 @@
 ## 五、UI 升级改进项（设计语言统一 P1 / 视觉润色 P2）
 
 > 来源：2026-07-16 整体 UI 升级建议的 P0–P3 分级。P0（架构卫生：拆 ConnectTab/SecurityTab + 提升 ToggleRow/InlineNum + 统一确认弹窗）已于当日执行完，见上方「四、关联上下文」。
-> 本節仅记录 **P1 / P2** 两级改进项（P3 侧栏导航/全局搜索/通知中心为长远项，暂不纳入）。**状态：P1-1、P1-2、P1-3、P1-4 均已完成代码改动（未提交）；下一步 P2-1~P2-4 表层润色。**
+> 本節仅记录 **P1 / P2** 两级改进项（P3 侧栏导航/全局搜索/通知中心为长远项，暂不纳入）。**状态：P1 / P2 全部完成（未提交）。**
 > 实证依据（2026-07-16 全仓 Grep）：内联 `style={{` 散落 13 个文件；`shadow-*` 任意值 + 内联 `boxShadow` 并存；`rounded-*` 在 50+ 文件种类繁杂——印证下方"清内联 style / 规范阴影圆角 token"确为真实问题。
 
 ### P1 设计语言统一（结构性，先做）
@@ -62,10 +62,10 @@
 
 | 编号 | 标题 | 范围 / 位置 | 现状 | 建议修复 | 优先级 |
 |------|------|-------------|------|----------|--------|
-| P2-1 | 微交互统一 | 全仓 hover/focus/active 过渡 | `transition-colors duration-150` 等用法散落、部分控件无按压/聚焦反馈，加载态 spinner 样式不统一 | 抽象交互基元（hover/focus/active 过渡时长与缓动统一）；loading 态统一 spinner 组件 | 中 |
-| P2-2 | 空状态设计 | `LogTab`(审计无记录) / `SecurityTab`(白名单为空) / `RunningCommandsCard`(无历史) / 日志筛选无结果 | 仅朴素占位或留白，无引导文案/插画，新用户易以为"坏了" | 统一空状态组件（图标 + 一句引导 + 可选操作按钮），覆盖上述场景 | 中 |
-| P2-3 | 分隔线规范 | 全仓 `border-border` / `border-white/10` / `border-black/5` 混用 | 分隔线明暗与粗细不一致，列表/卡片内割裂感 | 建立 divider token（如 `border-border` 统一），替代任意透明度分隔线 | 低 |
-| P2-4 | 圆角尺度统一 | `rounded` / `rounded-lg` / `rounded-xl` / `rounded-2xl` / `rounded-full` 在 50+ 文件并存 | 同语义元素圆角跳变（如卡片有 lg 有 xl），整体精致度受损 | 映射到统一 radius token（sm=6 / md=10 / lg=14 / full=9999px），按钮/卡片/弹窗/头像各归其档 | 低 |
+| P2-1 | 微交互统一【已完成，未提交】 | 全仓 hover/focus/active 过渡 | transition 时长 150/200/250/300 并存；图标按钮无按压反馈；加载态 spinner 不统一（UpdateBadge 内联 spinner / VersionHistoryModal 纯文本"加载中…"） | ① @theme 集中默认过渡(150ms+cubic-bezier) ② 新增 .interactive 语义类(统一过渡+active:scale 按压反馈)给 3 个图标关闭按钮 ③ ui/Spinner.tsx 统一加载态替换 UpdateBadge 内联 spinner 与 VersionHistoryModal 文本占位 ④ button 系统 base 补 active:scale-[0.98]；tsc 零错误、HMR 已热更 | 中 |
+| P2-2 | 空状态设计【部分回退·未提交】 | `LogTab`(审计无记录/筛选无果) / `SecurityTab`(白名单为空/筛选无匹配) / `RunningCommandsCard`(无运行记录) / `CommandPalette`(无匹配结果) | 仅朴素占位或整卡消失，无引导文案/插画，新用户易以为"坏了" | 新建 `ui/EmptyState.tsx`（背景大图标 opacity-0.06 + 小图标 text-muted-foreground/40 + 引导文案 + 可选 action）；设计稿 `design/empty-state.html` 先确认。**2026-07-16 用户回退两处**：① `SecurityTab` 白名单为空块 + 筛选无匹配，恢复 P2-2 之前的原始写法（带"添加第一个目录"按钮的居中引导 / 朴素"没有匹配的目录"文案，去掉 EmptyState）；② `RunningCommandsCard` 恢复 `if (!commands || commands.length === 0) return null`——无命令时整卡不显示。现 EmptyState 仅保留于 `LogTab`(审计无记录/筛选无果) 与 `CommandPalette`(无匹配结果)；`tsc --noEmit` 零错误、dev HMR 已热更 | 中 |
+| P2-3 | 分隔线规范【已完成，未提交】 | 重复出现的 `border-b/t border-border` / `border-r border-border`（SettingsRow / AuditPager / OnboardingGuide / VersionHistoryModal×3 / AboutGroup×3） | 分隔线写法散落重复，后续调整需逐处改；原笔记担心的 `border-white/10`/`border-black/5` 半透明分隔线经核查已 0 匹配 | `index.css` 新增 `.divider-x`(border-bottom)/`.divider-x-top`(border-top)/`.divider-y`(border-right) 语义类（值指向 `hsl(var(--border))` 随主题切换，`:last-child` 自动去末条边框）；9 处分隔线收口为语义类（零视觉变化）；有意例外（玻璃 chip 白边/虚线/时间线 2px/状态 pill 盒子边框）保留不动；`tsc --noEmit` 零错误、dev HMR 已热更 | 低 |
+| P2-4 | 圆角尺度统一【已核查·无需改动】 | `rounded-md`(≈55) / `rounded-lg`(≈37) / `rounded-full`(≈27) / `rounded-xl`(≈13) / `rounded-2xl`(≈4) / `rounded-sm·3xl·none`(≈6) 跨 55 文件 | 原笔记担心"同语义元素圆角跳变"，实证核查后并未出现 | 全仓 Grep 统计显示圆角已按语义分层：`rounded-md`=按钮/输入/芯片/徽章等小控件，`rounded-lg`=卡片/面板/容器，`rounded-xl`·`rounded-2xl`=模态表面（按尺寸递进），`rounded-full`=胶囊/头像/圆点/开关；尺度连贯、无同语义跳变。全量 token 化需改 55+ 文件、视觉收益低、回归风险高，故标记已达标、不改动 | 低 |
 
 ### P1 / P2 执行顺序建议
 

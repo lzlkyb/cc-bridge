@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, Fragment } from "react";
 import { Icon, type IconName } from "../ui/icon";
+import { EmptyState } from "../ui/EmptyState";
 import { useToast } from "../ui/toast";
 import { invoke } from "../../lib/tauri";
 import { toggleTheme } from "../../lib/theme";
@@ -238,7 +239,7 @@ export function CommandPalette({
           {/* Results */}
           <div className="max-h-[300px] overflow-y-auto py-1.5">
             {filtered.length === 0 ? (
-              <p className="px-4 py-6 text-center text-sm text-muted-foreground">没有匹配结果</p>
+              <EmptyState className="py-6" icon="search" description="没有匹配的结果，换个关键词试试" />
             ) : (
               filtered.map((item, i) => {
                 const showHeader = item.group !== lastGroup;

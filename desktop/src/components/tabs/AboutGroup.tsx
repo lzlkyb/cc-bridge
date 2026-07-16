@@ -137,7 +137,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
             {/* 技术栈 + 项目信息 双列 */}
             <div className="grid grid-cols-2">
               {/* 左：技术栈 3×2 */}
-              <div className="dual-left border-r border-border px-[22px] py-3.5">
+              <div className="dual-left divider-y px-[22px] py-3.5">
                 <div className="section-label mb-2.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">技术栈</div>
                 <div className="grid grid-cols-3 gap-1.5">
                   {TECH_STACK.map((t) => (
@@ -216,7 +216,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
             <div className="about-divider h-px bg-border" />
 
             {/* Footer */}
-            <div className="about-footer flex items-center justify-between border-t border-border px-[22px] py-2.5">
+            <div className="about-footer flex items-center justify-between divider-x-top px-[22px] py-2.5">
               <span className="text-[10px] text-muted-foreground">© 2026 CC Bridge · MIT License · by {APP_INFO.author}</span>
             </div>
           </div>
@@ -247,7 +247,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
               <button
                 type="button"
                 onClick={() => setShowModal(false)}
-                className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground interactive hover:bg-accent hover:text-foreground"
               >
                 <Icon name="close" size={18} />
               </button>
@@ -280,7 +280,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
                 · <strong className="text-foreground">MIT 开源：</strong>完全免费，代码透明可审计
               </p>
 
-              <div className="modal-stats flex gap-5 border-t border-border pt-3">
+              <div className="modal-stats flex gap-5 divider-x-top pt-3">
                 {STATS.map((s) => (
                   <div key={s.label} className="flex flex-1 flex-col items-center text-center">
                     <div className="text-lg font-extrabold text-foreground">{s.val}</div>

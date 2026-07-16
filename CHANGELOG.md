@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-07-16
+
+### 用户摘要
+本次为 UI 设计语言统一与表层润色的收尾版本：统一全局过渡与微交互反馈、抽离分隔线语义类、收敛空状态交互（保留日志/命令面板的引导式空状态，去掉白名单与后台命令的原生空状态以贴合既有交互）。同时随本次发布落地 P0/P1 的安全加固与多项交互修复。
+
+### 优化
+- 微交互统一：在 `@theme inline` 集中定义全局默认过渡（150ms cubic-bezier），新增 `.interactive` 语义类（颜色/背景/边框/阴影/缩放过渡 + 按压 `scale(0.98)`），按钮系统统一 `active:scale-[0.98]` 按压反馈。
+- 新增 `ui/Spinner.tsx` 统一加载指示（替换各处内联 spinner 文本/图标），`UpdateBadge`/`VersionHistoryModal` 的“加载中”改用统一组件。
+- 分隔线规范：新增 `.divider-x` / `.divider-x-top` / `.divider-y` 语义类（值指向 `hsl(var(--border))` 随主题切换、末条自动去边框），收口 9 处重复的单面分隔线（SettingsRow / AuditPager / OnboardingGuide / VersionHistoryModal×3 / AboutGroup×3），零视觉变化。
+- 空状态收敛：仅保留日志页与命令面板的引导式空状态（`ui/EmptyState.tsx`）；白名单为空与“运行中后台命令”恢复为 P2 前交互（无命令时整卡不显示，贴合原有体验）。
+
 ### 安全
 - `edit_files` 之前无论 `encoding_detect_enabled`（默认关）怎么设都无条件自动探测编码，与 `read_files`（关时强制 UTF-8）不一致，导致同一文件在两个工具里可能解码出不同内容。现 `edit_files` 与 `read_files` 保持同样的判断逻辑。
 - `encoding::read_text` 之前用 `_had_errors` 丢弃了解码错误标志：当文件既非合法 UTF-8、也无法被 GBK/GB18030 无损解码时，会静默用 U+FFFD 替换无法解码的字节并返回成功，后续 `edit_files`/`notebook_edit` 写回时会把这些替换字符永久烤进文件。现改为直接返回错误，与同模块写方向已有的“编码有损拒绝写入”原则保持一致。
