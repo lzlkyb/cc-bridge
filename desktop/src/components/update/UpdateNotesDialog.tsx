@@ -1,4 +1,5 @@
 import { Icon } from "../ui/icon";
+import { Modal } from "../ui/Modal";
 
 /** 将文本中的 **...** 转换为 <strong> 标签，其余保持纯文本。 */
 function renderBold(text: string): React.ReactNode {
@@ -79,24 +80,19 @@ export function UpdateNotesDialog({
   update,
   onClose,
   onDownload,
+  onDismiss,
 }: {
   open: boolean;
   update: { version?: string; body?: string | null } | null;
   onClose: () => void;
   onDownload: () => void;
+  onDismiss: () => void;
 }) {
-  if (!open || !update) return null;
+  if (!update) return null;
   const ver = update.version ?? "";
 
   return (
-    <div
-      className="modal-overlay fixed inset-0 z-[1000] flex items-center justify-center"
-      onClick={onClose}
-    >
-      <div
-        className="modal-box relative mx-4 w-[488px] max-w-[90vw] overflow-hidden rounded-[20px] modal-surface"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal open={open} onClose={onClose} zIndex={1000} className="modal-box relative mx-4 w-[488px] max-w-[90vw] overflow-hidden rounded-[20px] modal-surface">
         {/* ── 关闭按钮（绝对定位右上角） ── */}
         <button
           type="button"
@@ -139,12 +135,20 @@ export function UpdateNotesDialog({
           <ReleaseNotes body={update.body ?? null} />
         </div>
 
+        {/* 底部轻提示：稍后行为说明 */}
+        <div className="px-9 pb-1 pt-3 text-center text-[11px] text-muted-foreground/70">
+          点「稍后」后，本版本不再自动弹框；有新版本时仍会提醒你
+        </div>
+
         {/* ═══ 底部操作 ═══ */}
-        <div className="flex items-center gap-2.5 px-9 pb-6 pt-4">
+        <div className="flex items-center gap-2.5 px-9 pb-6 pt-2">
           <span className="flex-1 text-xs text-muted-foreground opacity-60">下载完成后自动安装并重启</span>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => {
+              onDismiss();
+              onClose();
+            }}
             className="rounded-[10px] bg-transparent px-4 py-2.5 text-[13px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             稍后
@@ -160,7 +164,6 @@ export function UpdateNotesDialog({
             下载并更新
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

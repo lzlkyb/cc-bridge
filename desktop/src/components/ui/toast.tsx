@@ -72,6 +72,13 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: () => 
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  // 退场：父级在 3500ms 移除前，于 3200ms 先触发滑出（与 transition duration-300 对齐），
+  // 补齐此前缺失的退场动画（原 toast 只有进场、关闭是瞬间消失）。
+  useEffect(() => {
+    const hideTimer = window.setTimeout(() => setVisible(false), 3200);
+    return () => window.clearTimeout(hideTimer);
+  }, []);
+
   return (
     <div
       onClick={onDismiss}

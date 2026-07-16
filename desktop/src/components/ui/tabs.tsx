@@ -126,5 +126,5 @@ export function TabsTrigger({ value, children, className = "" }: { value: string
 export function TabsContent({ value, children, className = "" }: { value: string; children: ReactNode; className?: string }) {
   const { active } = useContext(TabsContext);
   if (active !== value) return null;
-  return <div className={`animate-fade-in ${className}`}>{children}</div>;
+  return <div className={`animate-tab-in ${className}`}>{children}</div>;
 }

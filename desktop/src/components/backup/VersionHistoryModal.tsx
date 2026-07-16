@@ -1,5 +1,4 @@
 import { useState, useMemo, useEffect } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "../../lib/tauri";
 import type {
   BackupListResult,
@@ -12,6 +11,7 @@ import { formatRelativeTime, formatBytes } from "../../lib/utils";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
 import { Spinner } from "../ui/Spinner";
+import { Modal } from "../ui/Modal";
 
 /** 单个 diff 的加载态缓存（含预存的 +/- 计数，避免渲染时重复 filter）。 */
 type DiffState = {
@@ -269,8 +269,6 @@ export function VersionHistoryModal({
     return sorted;
   }, [result, query, sort]);
 
-  if (!open) return null;
-
   const allExpanded = groups.length > 0 && expanded.size === groups.length;
   const toggleAll = () => {
     setExpanded(allExpanded ? new Set() : new Set(groups.map((g) => g.originalFile)));
@@ -334,15 +332,8 @@ export function VersionHistoryModal({
 
   const isEmpty = !loading && (!result || !result.exists || result.groups.length === 0);
 
-  return createPortal(
-    <div
-      className="modal-overlay fixed inset-0 z-[1000] flex items-center justify-center"
-      onClick={onClose}
-    >
-      <div
-        className="modal-box flex max-h-[85vh] w-[1000px] max-w-[92vw] flex-col overflow-hidden rounded-2xl modal-surface"
-        onClick={(e) => e.stopPropagation()}
-      >
+  return (
+    <Modal open={open} onClose={onClose} zIndex={1000} className="modal-box flex max-h-[85vh] w-[1000px] max-w-[92vw] flex-col overflow-hidden rounded-2xl modal-surface">
         {/* 标题栏 */}
         <div className="flex items-center gap-2.5 divider-x px-4 py-3">
           <span className="title-chip">
@@ -673,8 +664,6 @@ export function VersionHistoryModal({
             </>
           )}
         </div>
-      </div>
-    </div>,
-    document.body,
+    </Modal>
   );
 }

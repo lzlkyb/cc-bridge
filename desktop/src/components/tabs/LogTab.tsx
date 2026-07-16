@@ -10,6 +10,7 @@ import { Badge } from "../ui/badge";
 import { Icon } from "../ui/icon";
 import { EmptyState } from "../ui/EmptyState";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
+import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { Combobox } from "../ui/combobox";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { PerfCharts } from "./PerfCharts";
@@ -83,6 +84,8 @@ export function LogTab() {
   const [diffEntry, setDiffEntry] = useState<AuditEntry | null>(null);
   const [restoreEntry, setRestoreEntry] = useState<AuditEntry | null>(null);
   const { toast } = useToast();
+  // 审计列表增删/筛选/清空时 FLIP 平滑进出场（动画质感升级；减弱动效时自动关闭）。
+  const auditBody = useAutoAnimateRM<HTMLTableSectionElement>();
 
   const handleClear = async () => {
     await invoke("clear_audit_log");
@@ -359,7 +362,7 @@ export function LogTab() {
                 <TableHead className="w-[64px]">状态</TableHead>
               </TableRow>
             </TableHeader>
-            <TableBody>
+            <TableBody ref={auditBody}>
               {filtered.map((entry, i) => (
                 <Fragment key={i}>
                   <TableRow

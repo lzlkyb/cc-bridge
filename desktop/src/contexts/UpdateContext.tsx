@@ -29,6 +29,10 @@ export interface UpdateState {
   restart: () => Promise<void>;
   /** 打开「查看更新内容」弹窗 */
   openUpdateNotes: () => void;
+  /** 记住当前可用版本为「稍后」：本版本不再弹框（按版本号记忆，换版本自动解除） */
+  dismissUpdate: () => void;
+  /** 判断某版本是否已被「稍后」抑制 */
+  isDismissed: (version?: string) => boolean;
 }
 
 // ─── 友好错误翻译 ────────────────────────
@@ -71,6 +75,8 @@ export function useUpdate() {
 /** 自动检查间隔：24 小时 */
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const LAST_CHECK_KEY = "ccbridge_last_update_check";
+/** 「稍后」抑制记忆：记录的版本号（本版本不再弹框，换版本自动解除） */
+const DISMISSED_KEY = "ccbridge_dismissed_update_version";
 
 // ─── Provider ────────────────────────────
 
@@ -82,6 +88,13 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [bytesPerSec, setBytesPerSec] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [showNotes, setShowNotes] = useState(false);
+  const [dismissedVersion, setDismissedVersion] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(DISMISSED_KEY);
+    } catch {
+      return null;
+    }
+  });
   const checkingRef = useRef(false);
   const downloadingRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -263,10 +276,30 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const openUpdateNotes = useCallback(() => setShowNotes(true), []);
   const closeUpdateNotes = useCallback(() => setShowNotes(false), []);
 
+  // ─── 「稍后」抑制（按版本号记忆，换版本自动解除）────
+  const dismissUpdate = useCallback(() => {
+    const v = update?.version;
+    if (!v) return;
+    try {
+      localStorage.setItem(DISMISSED_KEY, v);
+    } catch {
+      // 存储失败忽略
+    }
+    setDismissedVersion(v);
+  }, [update?.version]);
+
+  const isDismissed = useCallback(
+    (version?: string) => {
+      if (!version) return false;
+      return dismissedVersion === version;
+    },
+    [dismissedVersion],
+  );
+
   return (
-    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed }}>
       {children}
-      <UpdateNotesDialog open={showNotes} update={update} onClose={closeUpdateNotes} onDownload={downloadAndInstall} />
+      <UpdateNotesDialog open={showNotes} update={update} onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate} />
     </UpdateContext.Provider>
   );
 }

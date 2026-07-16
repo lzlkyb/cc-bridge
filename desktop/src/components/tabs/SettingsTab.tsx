@@ -113,7 +113,7 @@ function NetworkGroup({
           label="端口"
           last
           control={
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-3">
               <Input
                 type="number"
                 min={1}
@@ -128,11 +128,12 @@ function NetworkGroup({
                 isLoading={saving}
                 loadingText="保存中..."
                 size="sm"
+                className="shrink-0 whitespace-nowrap"
               >
                 {dirty ? "保存并重启" : "保存"}
               </Button>
-              {!dirty && !restarted && <span className="text-xs text-muted-foreground">无更改</span>}
-              {restarted && <span className="text-xs text-success">已保存并重启 ✓</span>}
+              {!dirty && !restarted && <span className="text-xs text-muted-foreground whitespace-nowrap">无更改</span>}
+              {restarted && <span className="text-xs text-success whitespace-nowrap">已保存并重启 ✓</span>}
             </div>
           }
         />

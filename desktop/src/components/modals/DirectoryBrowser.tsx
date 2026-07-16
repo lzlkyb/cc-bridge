@@ -3,6 +3,7 @@ import { invoke } from "../../lib/tauri";
 import type { BrowseResult, BrowseEntry } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { Modal } from "../ui/Modal";
 
 export function DirectoryBrowser({
   open,
@@ -40,23 +41,8 @@ export function DirectoryBrowser({
     }
   }, [open, entries.length, loading, currentPath, browse]);
 
-  useEffect(() => {
-    if (!open) return;
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="animate-scale-in mx-4 w-full max-w-lg rounded-xl modal-surface p-4"
-        onClick={(e) => e.stopPropagation()}
-      >
+    <Modal open={open} onClose={onClose} zIndex={50} className="mx-4 w-full max-w-lg rounded-xl modal-surface p-4">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="flex items-center gap-2 text-base font-semibold">
             <span className="title-chip"><Icon name="folder" /></span>
@@ -108,7 +94,6 @@ export function DirectoryBrowser({
             ))
           )}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

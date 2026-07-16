@@ -4,6 +4,40 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.4",
+    date: "2026-07-16",
+    items: [
+      { category: "improve", text: "引入轻量动画库（gzip 约 3.5KB，不触碰安装包体积红线）并抽离统一弹窗原语，更新说明 / 版本历史 / 目录浏览 / 通用对话框 / 确认框共 5 处弹窗关闭时带退场动画，不再硬消失。" },
+      { category: "improve", text: "Tab 切换由硬切改为交叉淡入（右侧滑入 + 淡入），切换更顺滑。" },
+      { category: "improve", text: "安全页白名单列表、日志页审计表格的增删与重排接入 FLIP 动画，增删项平滑入退场。" },
+      { category: "improve", text: "按钮新增点击水波纹反馈与 refined hover/active 反馈；Toast 补充退场动画；连接页 Hero 指标数字改为平滑滚动（count-up）。" },
+      { category: "improve", text: "全局「减弱动效」守卫：系统开启该设置时自动关闭动画与特效（弹窗退场、列表动画、水波纹、数字滚动、连接页画布特效均降级），无障碍友好。" },
+      { category: "feat", text: "更新交互优化：点「更新」且有可用更新时弹框查看详情；点「稍后更新」后本版本不再自动弹框（按版本号记忆，版本变化自动解除抑制），始终保留手动入口。" },
+    ],
+  },
+  {
+    version: "2.3.3",
+    date: "2026-07-16",
+    items: [
+      { category: "improve", text: "微交互统一：在 `@theme inline` 集中定义全局默认过渡（150ms cubic-bezier），新增 `.interactive` 语义类（颜色/背景/边框/阴影/缩放过渡 + 按压 `scale(0.98)`），按钮系统统一 `active:scale-[0.98]` 按压反馈。" },
+      { category: "improve", text: "新增 `ui/Spinner.tsx` 统一加载指示（替换各处内联 spinner 文本/图标），`UpdateBadge`/`VersionHistoryModal` 的“加载中”改用统一组件。" },
+      { category: "improve", text: "分隔线规范：新增 `.divider-x` / `.divider-x-top` / `.divider-y` 语义类（值指向 `hsl(var(--border))` 随主题切换、末条自动去边框），收口 9 处重复的单面分隔线（SettingsRow / AuditPager / OnboardingGuide / VersionHistoryModal×3 / AboutGroup×3），零视觉变化。" },
+      { category: "sec", text: "`edit_files` 之前无论 `encoding_detect_enabled`（默认关）怎么设都无条件自动探测编码，与 `read_files`（关时强制 UTF-8）不一致，导致同一文件在两个工具里可能解码出不同内容。现 `edit_files` 与 `read_files` 保持同样的判断逻辑。" },
+      { category: "sec", text: "`encoding::read_text` 之前用 `_had_errors` 丢弃了解码错误标志：当文件既非合法 UTF-8、也无法被 GBK/GB18030 无损解码时，会静默用 U+FFFD 替换无法解码的字节并返回成功，后续 `edit_files`/`notebook_edit` 写回时会把这些替换字符永久烤进文件。现改为直接返回错误，与同模块写方向已有的“编码有损拒绝写入”原则保持一致。" },
+      { category: "sec", text: "`security/path.rs` 新建路径分支新增显式拒绝 remainder 中的 `..`/`.` 组件（`contains_dotdot`），不再依赖 Windows `\\\\?\\` 前缀的实现细节副作用挡住路径穿越。" },
+      { category: "sec", text: "`auth::verify_token` 改为完全常量时间比较，消除长度侧信道。" },
+      { category: "sec", text: "4 个后台周期任务（路径锁/cwd 会话回收、本机地址变化检测、后台命令定时清理、防火墙缓存刷新）加 panic 自愈重启，不再因一次未捕获的 panic 永久静默停止。" },
+      { category: "fix", text: "安全页“查看备份目录”按钮（`reveal_backup_dir`）点击时会一闪而过弹出黑色 cmd 窗口：它用 `cmd /c start` 拉起资源管理器，但漏加了 `CREATE_NO_WINDOW`（同目录下的 `reveal_install_dir` 之前已改用 `reveal_item_in_dir` 修过同类闪窗问题，但后来新增的 `reveal_backup_dir` 没跟着修；`run_command.rs`/`firewall.rs` 里的 `CREATE_NO_WINDOW` 修复也没覆盖到这里）。现对齐 `firewall.rs` 的同款写法加上 `creation_flags(CREATE_NO_WINDOW)`。" },
+      { category: "fix", text: "命令面板（Ctrl+K）重新生成 Token/清空审计日志之前打字+回车即执行，现走与正常页面一致的二次确认。" },
+      { category: "fix", text: "导入配置选中文件后立即覆盖全部安全设置并重启服务，现先弹确认框展示将覆盖的范围。" },
+      { category: "fix", text: "安全页白名单目录删除、多处添加目录失败无提示等交互细节问题。" },
+      { category: "feat", text: "日志页新增“导出诊断报告”，基于当前筛选拼版本/性能摘要/按工具耗时/错误列表的 Markdown，下载为 `.md` 同时复制到剪贴板。" },
+      { category: "improve", text: "新增 `ui/ConfirmDialog.tsx` 统一确认弹窗，替换 6 处重复/内联弹窗实现。" },
+      { category: "improve", text: "修复 `ConnectTab.tsx` 拆分后的 5 个子文件（`connect/` 目录）缺少一层相对导入路径导致的编译错误；`LogTab.tsx` 新拆出 `LogDetailPanel.tsx`；`SecurityTab.tsx` 确认已拆分为 `RunningCommandsCard`/`FileControlCard`。" },
+      { category: "improve", text: "`cleanup_finished_commands`/`evict_finished_commands` 从 Tauri 命令层收拢为 `AppState` 方法，消除反向依赖；删除 `db.rs` 重复的 `generate_token`。" },
+    ],
+  },
+  {
     version: "2.3.2",
     date: "2026-07-16",
     items: [
@@ -130,24 +164,6 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-07-10",
     items: [
       { category: "improve", text: "当前为启发式拦截（最低成本兜底），误伤与漏拦并存，后续会升级为更严谨的沙箱。" },
-    ],
-  },
-  {
-    version: "2.2.14",
-    date: "2026-07-10",
-    items: [
-      { category: "fix", text: "根治真实程序（如 git.exe / cargo.exe）执行后读不到输出的问题：改用标准管道直接启动，命令输出现在能正确捕获、标准错误也不再恒为空。" },
-      { category: "improve", text: "移除不可用的终端模拟方案，依赖更干净。" },
-    ],
-  },
-  {
-    version: "2.2.13",
-    date: "2026-07-10",
-    items: [
-      { category: "improve", text: "后台命令整树终止改用 Windows 进程组，子进程 / 孙进程不再漏杀，应用异常退出也不会留下孤儿进程。" },
-      { category: "improve", text: "搜索文件改用成熟目录遍历库，自动跳过 node_modules / target 等，跨目录 glob 匹配终于好用。" },
-      { category: "improve", text: "写文件结果新增改动对比（diff），AI 改动前你能先核对。" },
-      { category: "fix", text: "清理一批过时代码检查告警；删除一处从未被引用的死代码（限流模块）。" },
     ],
   },
 ];

@@ -5,6 +5,8 @@ import type { StatusResponse } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { HealthRing, HeroChip, HeroStat, TOOL_LABELS, usePopClass } from "./HeroStats";
+import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { useCountUp } from "../../hooks/useCountUp";
 
 /**
  * 连接页顶部 Hero 卡（方案 B · 双栏卡片）：
@@ -26,6 +28,7 @@ export function ConnectHero({
   onChanged: () => void;
 }) {
   const running = status?.running ?? true;
+  const reduced = usePrefersReducedMotion();
 
   // 炫酷背景：数据流瀑布(Matrix)——负载联动：rpm 越高雨越密越快，空闲稀疏慢速「呼吸」。
   // rpm 经 ref 传入动画循环，不进 effect 依赖（避免每次轮询重启动画闪烁）。
@@ -39,6 +42,8 @@ export function ConnectHero({
     if (!cv) return;
     const ctx = cv.getContext("2d");
     if (!ctx) return;
+    // 减弱动效：不启动数据流瀑布，避免眩晕（静态 hero 渐变已足够）。
+    if (reduced) return;
     const DPR = Math.min(window.devicePixelRatio || 1, 2);
     let W = 0, H = 0, raf = 0, t = 0;
     const GLYPHS = ["0", "1", "{", "}", "<", ">", "/", "\\", "∑", "λ", "%", "★", "·"];
@@ -114,7 +119,7 @@ export function ConnectHero({
       ro.disconnect();
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [running]);
+  }, [running, reduced]);
 
   // 运行时长本地每秒自增，5s 轮询回来时以后端 uptime 为准校准，实现平滑跳秒。
   const [liveUptime, setLiveUptime] = useState(0);
@@ -159,7 +164,11 @@ export function ConnectHero({
   const topTools = s?.topTools ?? [];
 
   const fmt = (n: number) => n.toLocaleString("en-US");
-  const rateText = status ? `${rate.toFixed(1)}%` : "--";
+  // 指标数字 count-up 入场（仅首次挂载滚动一次；轮询更新不重播，避免乱跳）
+  const rateAnim = useCountUp(rate, { enabled: running && !reduced, duration: 900 });
+  const totalAnim = useCountUp(total, { enabled: !reduced });
+  const errsAnim = useCountUp(errs, { enabled: !reduced });
+  const rateText = status ? `${rateAnim.toFixed(1)}%` : "--";
   const rpmText = running ? `${rpm}/min` : "--";
   const avgText = running ? `${avg}ms` : "--";
   const p95Text = running ? `${p95}ms` : "--";
@@ -205,8 +214,8 @@ export function ConnectHero({
           <HeroStat icon="clock" label="平均耗时" value={avgText} />
           <HeroStat icon="alertTriangle" label="慢请求 P95" value={p95Text} sub="95% 请求快于此" />
           <HeroStat icon="clock" label="运行时间" value={uptimeText} />
-          <HeroStat icon="server" label="累计请求" value={fmt(total)} />
-          <HeroStat icon="alertTriangle" label="错误次数" value={fmt(errs)} />
+          <HeroStat icon="server" label="累计请求" value={fmt(totalAnim)} />
+          <HeroStat icon="alertTriangle" label="错误次数" value={fmt(errsAnim)} />
         </div>
       </div>
 

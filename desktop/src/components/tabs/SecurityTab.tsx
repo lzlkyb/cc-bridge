@@ -11,6 +11,7 @@ import { RunningCommandsCard } from "./RunningCommandsCard";
 import { FileControlCard } from "./FileControlCard";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { useToast } from "../ui/toast";
+import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 
 export function SecurityTab({
   status,
@@ -24,6 +25,8 @@ export function SecurityTab({
   const [rootSearch, setRootSearch] = useState("");
   const [pendingRemoveRoot, setPendingRemoveRoot] = useState<{ index: number; path: string } | null>(null);
   const { toast } = useToast();
+  // 白名单列表增删/筛选时 FLIP 平滑进出场与位移（动画质感升级；减弱动效时自动关闭）。
+  const listParent = useAutoAnimateRM<HTMLDivElement>();
 
   // H5 修复：之前失败时无 toast，finally 直接关 loading，用户不知道是否需要重试/路径是否合法。
   const addRoot = async (path?: string) => {
@@ -108,6 +111,7 @@ export function SecurityTab({
           {rootSearch && filteredRoots.length === 0 && status && status.allowedRoots.length > 0 && (
             <p className="py-4 text-center text-sm text-muted-foreground">没有匹配的目录</p>
           )}
+          <div ref={listParent} className="space-y-2">
           {filteredRoots.map((root, i) => {
             const realIndex = status?.allowedRoots.indexOf(root) ?? i;
             return (
@@ -120,6 +124,7 @@ export function SecurityTab({
               </div>
             );
           })}
+          </div>
           <div className="flex flex-wrap gap-2">
             <Input
               value={newRoot}

@@ -42,6 +42,10 @@
   /* P2-1 微交互：全局默认过渡时长/缓动集中定义（统一 hover/focus/active 反馈基准）*/
   --default-transition-duration: 150ms;
   --default-transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 动画质感升级：统一缓动 token（生成 ease-spring / ease-out-expo 工具类，弹窗/微交互共用）*/
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 :root {
@@ -252,6 +256,28 @@ body {
   to   { opacity: 1; transform: scale(1); }
 }
 .animate-scale-in { animation: scale-in 0.16s ease; }
+
+/* Tab 切换入场：新面板从右微移入 + 淡入（替代硬切；退场由父级卸载驱动即时消失，可接受）*/
+@keyframes tab-in {
+  from { opacity: 0; transform: translateX(10px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.animate-tab-in { animation: tab-in 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* 按钮 ripple 水波（pointer 位置）*/
+.ripple {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  background: currentColor;
+  opacity: 0.25;
+  transform: scale(0);
+  transform-origin: center;
+  animation: ripple-out 0.6s ease-out forwards;
+}
+@keyframes ripple-out {
+  to { transform: scale(2.4); opacity: 0; }
+}
 
 /* Header 渐变底 */
 .app-header {
@@ -835,4 +861,19 @@ select:focus-visible,
   background: color-mix(in srgb, hsl(var(--muted)) 60%, transparent);
   border: 1px solid hsl(var(--border));
   border-radius: 8px; padding: 9px 12px;
+}
+
+/* ═══ 动画质感升级：减弱动效守卫 ═══
+   用户系统开启「减少动态效果」时，把所有动画/过渡降级为即时，保证可访问性
+   （避免眩晕、尊重系统偏好）。Modal 的退场延时与 hero canvas 瀑布也单独做了 JS 降级。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
 }

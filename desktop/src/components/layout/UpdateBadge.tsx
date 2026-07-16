@@ -18,7 +18,7 @@ import { formatBytesPerSec } from "../../lib/utils";
  * - error       → 红色 pill + 版本号，可点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, progress, progressIndeterminate, bytesPerSec, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
+  const { status, update, progress, progressIndeterminate, bytesPerSec, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -44,7 +44,12 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
 
   const handleClick = async () => {
     if (status === "available") {
-      await downloadAndInstall();
+      // 本版本已「稍后」过 → 直接下载；否则打开更新内容弹框
+      if (isDismissed(update?.version)) {
+        await downloadAndInstall();
+      } else {
+        openUpdateNotes();
+      }
     } else if (status === "ready") {
       await restart();
     } else if (status === "error") {
@@ -84,7 +89,7 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
       <>
         <button
           className="header-badge header-badge-update cursor-pointer"
-          title={`发现新版本 v${ver}，点击下载更新`}
+          title={`发现新版本 v${ver}，点击查看更新详情`}
           onClick={handleClick}
         >
           <Icon name="arrowUp" size={10} />

@@ -1,4 +1,5 @@
-import type { ButtonHTMLAttributes } from "react";
+import { useState, type ButtonHTMLAttributes, type PointerEvent as ReactPointerEvent } from "react";
+import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 
 const base = "inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50";
 
@@ -18,6 +19,13 @@ const sizes = {
   icon: "h-9 w-9 hover:scale-[1.08] active:scale-95",
 };
 
+interface Ripple {
+  key: number;
+  x: number;
+  y: number;
+  size: number;
+}
+
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: keyof typeof variants;
   size?: keyof typeof sizes;
@@ -25,13 +33,42 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   loadingText?: string;
 }
 
-export function Button({ variant = "default", size = "default", className = "", isLoading, loadingText, children, disabled, ...props }: ButtonProps) {
+export function Button({
+  variant = "default",
+  size = "default",
+  className = "",
+  isLoading,
+  loadingText,
+  children,
+  disabled,
+  onPointerDown,
+  ...props
+}: ButtonProps) {
+  const reduced = usePrefersReducedMotion();
+  const [ripples, setRipples] = useState<Ripple[]>([]);
+
+  const addRipple = (e: ReactPointerEvent<HTMLButtonElement>) => {
+    onPointerDown?.(e);
+    if (reduced || disabled || isLoading || !e.currentTarget) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const sizePx = Math.max(rect.width, rect.height);
+    const x = e.clientX - rect.left - sizePx / 2;
+    const y = e.clientY - rect.top - sizePx / 2;
+    const key = Date.now() + Math.random();
+    setRipples((rs) => [...rs, { key, x, y, size: sizePx }]);
+    window.setTimeout(() => setRipples((rs) => rs.filter((r) => r.key !== key)), 600);
+  };
+
   return (
     <button
-      className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
+      className={`${base} relative overflow-hidden ${variants[variant]} ${sizes[size]} ${className}`}
       disabled={disabled || isLoading}
+      onPointerDown={addRipple}
       {...props}
     >
+      {ripples.map((r) => (
+        <span key={r.key} className="ripple" style={{ left: r.x, top: r.y, width: r.size, height: r.size }} />
+      ))}
       {isLoading && (
         <svg className="animate-spin shrink-0" viewBox="0 0 24 24" width={size === "sm" ? 14 : 16} height={size === "sm" ? 14 : 16} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
           <path d="M21 12a9 9 0 1 1-6.22-8.56" />
