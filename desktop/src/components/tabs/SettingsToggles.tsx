@@ -5,6 +5,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { ToggleRow } from "../ui/ToggleRow";
+import { useToast } from "../ui/toast";
 import { ConfirmModal } from "../ui/ConfirmModal";
 
 /**
@@ -29,6 +30,7 @@ export function SettingsToggles({
   const [ackShellRisk, setAckShellRisk] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [savedKey, setSavedKey] = useState<string | null>(null);
+  const { toast } = useToast();
 
   // 由 Header 安全徽章点击触发的定位 + 高亮。
   // 非激活 Tab 在 Tabs 中为 return null（完全卸载），切到设置页时本组件才挂载，
@@ -172,6 +174,17 @@ export function SettingsToggles({
           checked={status?.encodingDetectEnabled ?? false}
           onChange={(v) => save({ encodingDetectEnabled: v }, "encoding")}
           saved={savedKey === "encoding"}
+        />
+        {/* 命令执行壳层：cmd / bash 分段选择（shell_type UI 开关）。
+         * bashAvailable=false（未检测到 Git for Windows）时 bash 置灰、点击不保存并提示。 */}
+        <ShellTypeRow
+          value={status?.shellType ?? "cmd"}
+          bashAvailable={status?.bashAvailable ?? true}
+          onSelect={(v) => save({ shellType: v }, "shelltype")}
+          onBashUnavailable={() =>
+            toast("未检测到 Git for Windows，bash 不可用，已保持 cmd", "warning")
+          }
+          saved={savedKey === "shelltype"}
           last
         />
       </CardContent>
@@ -224,6 +237,80 @@ function GroupTitle({ children }: { children: ReactNode }) {
   return (
     <div className="mb-1 mt-4 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground first:mt-1">
       {children}
+    </div>
+  );
+}
+
+/* 命令执行壳层分段选择：cmd（默认）/ bash（Git Bash）。
+ * 复用 ToggleRow 行布局（左标签+描述，右控件），控件为两按钮分段器而非开关。
+ * bashAvailable=false 时 bash 按钮置灰（aria-disabled + 弱化样式），点击不触发保存，
+ * 改为调用 onBashUnavailable（弹 toast 提示先安装 Git for Windows），保持 shell_type 为 cmd。 */
+function ShellTypeRow({
+  value,
+  bashAvailable = true,
+  onSelect,
+  onBashUnavailable,
+  saved,
+  last = false,
+}: {
+  value: string;
+  bashAvailable?: boolean;
+  onSelect: (next: "cmd" | "bash") => void;
+  onBashUnavailable?: () => void;
+  saved?: boolean;
+  last?: boolean;
+}) {
+  const options: { key: "cmd" | "bash"; label: string }[] = [
+    { key: "cmd", label: "cmd" },
+    { key: "bash", label: "bash" },
+  ];
+  return (
+    <div
+      className={`flex items-center justify-between gap-4 py-3.5 ${
+        last ? "" : "border-b"
+      }`}
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">命令执行壳层</span>
+          {saved && <span className="text-xs font-normal text-success">已保存 ✓</span>}
+        </div>
+        <div className="mt-0.5 text-xs text-muted-foreground">
+          默认 <b>cmd</b>（零依赖）；选 <b>bash</b> 走 Git Bash，支持 POSIX 语法 / jq / find / 管道。需本机已装 Git for Windows；切换即时生效，无需重启。
+        </div>
+        {!bashAvailable && (
+          <div className="mt-1 text-xs text-warning">
+            ⚠ 未检测到 Git for Windows（bash.exe），bash 暂不可用；安装后在此切换即可生效，无需重启。
+          </div>
+        )}
+      </div>
+      <div className="flex shrink-0 rounded-lg border bg-muted p-0.5">
+        {options.map((o) => {
+          const active = value === o.key;
+          const disabled = o.key === "bash" && !bashAvailable;
+          return (
+            <button
+              key={o.key}
+              type="button"
+              aria-disabled={disabled}
+              onClick={() => {
+                if (disabled) {
+                  onBashUnavailable?.();
+                  return;
+                }
+                onSelect(o.key);
+              }}
+              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                active
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              } ${disabled ? "cursor-not-allowed opacity-40 hover:text-muted-foreground" : ""}`}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

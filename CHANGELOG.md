@@ -5,7 +5,26 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [2.3.5] - 2026-07-17
+
+### 用户摘要
+本次大幅提升命令执行灵活性、可靠性，以及托盘便利性。你现在可以在设置页选择 Git Bash 作为命令执行壳层——远端 Claude Code 连接时会自动感知、生成 POSIX 风格的命令（如 `rm`/`cp`/`grep`），像在真实 Linux 终端里操作你的 Windows 文件；即使你本机没装 Git for Windows，切换到 bash 也会被前端直接拦截并提示，不用等到执行时才报错。托盘菜单新增「复制 IP 替换命令」项——网络变动后点一下即可拿到 sed 命令去远端更新 IP，不用再去连接页操作。同时修复了托盘「复制连接命令」在窗口隐藏时失败的问题（现在不再依赖浏览器焦点，直接系统级写剪贴板 + 通知反馈），以及之前 read_files 会把 PNG/EXE/.pyc 等二进制文件误判为文本返回乱码的隐藏 bug。
+
+### 新增
+- **bash 命令执行壳层支持**：设置页新增加「命令执行壳层」分段控件（cmd / bash），选择 bash 后命令通过 Git Bash 执行（支持 POSIX 路径与语法如 `rm`/`cp`/`grep`/`sed`）。
+  - 远端感知：`tools/list` 按当前壳层动态生成 run_command 工具描述（bash 下提示用 POSIX 路径/语法、`$HOME`、`/tmp` 等），重连/新会话即生效。
+  - 返回回声：每次 `run_command` 返回额外 `shell` 字段（`"cmd"` 或 `"bash"`），已连会话无需重连，从工具返回中即可获知当前壳层并自行纠正命令语法。
+  - bash 探测定时生效：Git for Windows 安装后无需重启服务端，下一次调用即刻检测到（`OnceLock` 改 `Mutex`，未命中时重探）。
+- **bash 不可用前端拦截**：本机未安装 Git for Windows 时，设置页 bash 选项置灰 + 灰字提示，点击不保存并弹 toast，不用等到实际执行命令时才知道 bash 不可用。
+- **托盘新增「复制 IP 替换命令」**：生成 sed 命令（`sed -i 's#http://[0-9.]*:{port}/mcp#http://{新IP}:{port}/mcp#g' ~/.claude.json`），与连接页 `IpChangedBanner` 命令形式一致，Rust 端直接写系统剪贴板 + 通知反馈。
+
+### 修复
+- **托盘「复制连接命令」不再依赖 webview 焦点**：原实现走「Rust emit 事件 → 前端复制」通道，窗口隐藏/失焦时前端 `writeText` 调用必失败 → 弹「复制失败，请手工复制」。改为 Rust 端直接用 `tauri-plugin-clipboard-manager` 写系统剪贴板 + 系统通知反馈，彻底绕开 webview 依赖。
+- **`read_files` 二进制文件防乱码守卫**：新增 `is_binary_content` 函数（NUL 字节 / 非打印控制字符占比 >10% → 判二进制），在 `read_text` 之前先拦截 PNG/EXE/`.pyc` 等二进制文件，避免被 GBK/GB18030 误判为可解码文本并返回满屏乱码污染远程 CC 上下文。
+
+### 变更
+- **`edit_files` 匹配失败时给出空白告警**：`old_string` 未匹配到时检测首尾是否多带空白字符（空格/制表符/换行，模型常见失误），命中返回 `warning` 字段提示。
+- MCP `initialize` 握手文案新增提示：建议连接后第一步调用 `list_allowed_roots`，让远程 Claude Code 无需再手动 read_files 获取项目规则。
 
 ## [2.3.4] - 2026-07-16
 

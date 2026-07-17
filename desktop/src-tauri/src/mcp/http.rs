@@ -252,7 +252,7 @@ async fn mcp_handler(
                         "name": "cc-bridge",
                         "version": env!("CARGO_PKG_VERSION")
                     },
-                    "instructions": "你已连接到本地 Windows 主机上的 cc-bridge MCP 服务。当用户需要在本地 Windows 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。完整工具清单由 tools/list 提供,主要包括:\n- run_command / get_command_output / stop_command:在本地执行命令、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。"
+                    "instructions": "你已连接到本地 Windows 主机上的 cc-bridge MCP 服务。当用户需要在本地 Windows 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层 CLAUDE.md 的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / get_command_output / stop_command:在本地执行命令、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 cmd 或 Git Bash，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。"
                 }
             }))
         }
@@ -260,11 +260,15 @@ async fn mcp_handler(
             "jsonrpc": "2.0",
             "id": null
         })),
-        "tools/list" => Json(json!({
-            "jsonrpc": "2.0",
-            "id": body.get("id"),
-            "result": { "tools": get_tool_definitions() }
-        })),
+        "tools/list" => {
+            // 按当前 shell_type 动态生成工具描述，确保（重新）连接时模型拿到准确的壳层信息。
+            let shell_type = state.config.read().await.shell_type.clone();
+            Json(json!({
+                "jsonrpc": "2.0",
+                "id": body.get("id"),
+                "result": { "tools": get_tool_definitions(&shell_type) }
+            }))
+        }
         "tools/call" => handle_tools_call(state, source_ip, body).await,
         _ => Json(json!({
             "jsonrpc": "2.0",
@@ -484,19 +488,36 @@ pub async fn dispatch_tool(
     (spec.run)(args, state).await
 }
 
-fn get_tool_definitions() -> serde_json::Value {
+fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
     // 数据驱动：遍历注册表生成 tools/list 的 inputSchema（schema 由 XxxArgs 的
     // ToolSchema derive 自动生成，单一来源，消除手写 json! 与字段漂移）。
+    // run_command 的描述按当前 shell_type 动态生成，让（重新）连接时模型拿到准确壳层信号。
+    let run_cmd_desc = run_command_description(shell_type);
     crate::mcp::tools::registry::all_tools()
         .iter()
         .map(|t| {
+            let desc: &str = if t.name == "run_command" {
+                run_cmd_desc.as_str()
+            } else {
+                t.desc
+            };
             json!({
                 "name": t.name,
-                "description": t.desc,
+                "description": desc,
                 "inputSchema": t.schema,
             })
         })
         .collect::<serde_json::Value>()
+}
+
+/// 按当前 shell_type 生成 run_command 的描述，让连接时模型拿到准确的壳层信号，
+/// 从一开始就用对语法（bash → POSIX 路径 + bash 语法；cmd → Windows 路径 + cmd 语法）。
+fn run_command_description(shell_type: &str) -> String {
+    if shell_type == "bash" {
+        "在本地执行一条命令并返回其 stdout / stderr / 退出码。壳层为 Git Bash（需本机已安装 Git for Windows）：请使用 POSIX 路径（如 /c/Users/...）与 bash 语法（jq / find / 管道等原生可用）。cwd 支持在会话内跨命令持久化。".to_string()
+    } else {
+        "在本地执行一条命令并返回其 stdout / stderr / 退出码。壳层为 cmd（默认，零外部依赖）：请使用 Windows cmd 语法与路径（如 C:\\Users\\...）。cwd 支持在会话内跨命令持久化。".to_string()
+    }
 }
 
 #[cfg(test)]
@@ -927,7 +948,10 @@ mod over_wire_tests {
         )
         .await;
         let bad_inner = inner_text(&bad_r);
-        let bad_ok = bad_inner["content"]
+        // 注意：inner_text 已经把 result.content[0].text 解开成真实结果(write_files 返回的 results 数组本身)，
+        // 这里不应该再取一次 ["content"](对数组用字符串 key 索引会静默返回 null，让 as_array()/and_then 链恰恰全部跑空，
+        // 最后 unwrap_or(true) 总是命中，导致本条断言无论实际结果都不会失败)。
+        let bad_ok = bad_inner
             .as_array()
             .and_then(|arr| arr.get(0))
             .and_then(|e| e["ok"].as_bool())

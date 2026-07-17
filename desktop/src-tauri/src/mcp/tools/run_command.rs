@@ -1,9 +1,14 @@
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
+
+use crate::mcp::tools::shell::{
+    build_invocation, normalize_cwd_from_shell, parse_shell_type, ShellType,
+};
 
 use process_wrap::std::{CreationFlags, JobObject, StdChildWrapper, StdCommandWrap};
 use windows::Win32::System::Threading::{
@@ -106,6 +111,8 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
                 .to_string(),
         );
     }
+    // 捕获白名单根（cwd 消失恢复用），随后 config 会 drop。
+    let allowed_roots = config.allowed_roots.clone();
     // 会话级 cwd 持久化解析（默认关，见 BridgeConfig::session_cwd_enabled）：
     // - 开关关：忽略 session_id，cwd 必传，行为与旧版完全一致。
     // - 开关开 + 给定有效 session_id：复用其绑定 cwd（每次仍重校验白名单，规则7 不削弱）。
@@ -161,10 +168,28 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
         (resolved, cwd.clone(), None)
     };
 
+    // cwd 消失恢复：白名单校验通过后，若 cwd 已不在磁盘（如上一命令 rm -rf 了它），
+    // 回退到第一个存在的 allowed_root 再继续（对齐 Claude Code 的 cwd 恢复），避免每次硬报错。
+    // 回退目标仍在白名单内，不削弱安全围栏。
+    let resolved_cwd = if !resolved_cwd.exists() {
+        allowed_roots
+            .iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.exists())
+            .unwrap_or(resolved_cwd)
+    } else {
+        resolved_cwd
+    };
+
     if !resolved_cwd.is_dir() {
         return Err(format!("cwd 不是一个目录: {}", resolved_cwd.display()));
     }
     let max_output_bytes = args.max_output_bytes.max(1);
+    // 壳层类型（cmd/bash）与是否追踪命令结束后的有效 cwd（= 会话内）。
+    // track_cwd 仅当存在有效 session_id 时为 true——所有新行为都藏在会话后，
+    // 默认关 / 无会话时命令原样透传，现有测试零回归。
+    let shell = parse_shell_type(&config.shell_type);
+    let track_cwd = effective_session_id.is_some();
     drop(config);
 
     if args.background && state.running_commands.len() >= MAX_CONCURRENT_BACKGROUND {
@@ -191,6 +216,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     // resolved_cwd 需同时给 spawn_shell（移动进闭包）与 inject_session_info（回显 cwd），
     // 故先 clone 一份供闭包使用，原值留给末尾回显。
     let resolved_cwd_spawn = resolved_cwd.clone();
+    let state_for_blocking = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         spawn_shell(
             &command,
@@ -200,12 +226,44 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             timeout_ms,
             max_output_bytes,
             description,
-            &state,
+            &state_for_blocking,
+            shell,
+            track_cwd,
         )
     })
     .await
     .map_err(|e| format!("run_command 任务 panic: {e}"))?;
-    inject_session_info(result, effective_session_id, &resolved_cwd)
+    // result: Result<(Value, Option<PathBuf>), String> —— 第二个元素是命令结束后的有效 cwd（仅 track_cwd 时 Some）。
+    let (mut value, effective_new_cwd) = result?;
+
+    // 会话内 cwd 持久化：把命令结束后的有效 cwd 回写 session。
+    // 关键：回写前用 resolve_safe_path 重校验白名单（规则 7 不削弱）——
+    // 命令内 `cd` 到白名单外也不会污染 session。
+    if track_cwd {
+        if let (Some(sid), Some(new_cwd)) = (&effective_session_id, effective_new_cwd) {
+            let cfg = state.config.read().await;
+            if let Some(new_cwd_str) = new_cwd.to_str() {
+                if let Ok(resolved) = security::path::resolve_safe_path(
+                    new_cwd_str,
+                    &cfg.allowed_roots,
+                    cfg.whitelist_enabled,
+                ) {
+                    if let Some(mut s) = state.cwd_sessions.get_mut(sid) {
+                        s.cwd = resolved;
+                        s.last_active = Instant::now();
+                    }
+                }
+            }
+        }
+    }
+
+    // 回声当前壳层，使已连会话无需重连即能从工具返回中获知当前 shell_type，
+    // 自动将后续命令语法从 cmd 纠正为 bash（或反之）。
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("shell".into(), json!(shell.as_str()));
+    }
+
+    inject_session_info(Ok(value), effective_session_id, &resolved_cwd)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -218,23 +276,39 @@ fn spawn_shell(
     max_output_bytes: usize,
     description: Option<String>,
     state: &Arc<AppState>,
-) -> Result<Value, String> {
+    shell: ShellType,
+    track_cwd: bool,
+) -> Result<(Value, Option<PathBuf>), String> {
     // 用 process-wrap 的 StdCommandWrap 组合包装：
     // - CreationFlags 必须在 JobObject 之前 wrap——JobObject 的 pre_spawn 会读取 CreationFlags
     //   并合并 CREATE_SUSPENDED；若交给 Command 直接 .creation_flags() 会被 JobObject 覆盖，
     //   导致 CREATE_NO_WINDOW 丢失、弹出黑窗口。
     // - JobObject（Windows）内部以 CREATE_SUSPENDED 启动子进程、挂入 Job 后再 resume，
     //   消除了"先 spawn 再 assign"的孙进程漏杀竞态（比原手写 win32job 更正确）。
-    let mut cmd = StdCommandWrap::with_new("cmd", |c| {
-        c.args(["/C", command]);
+    // 壳层（cmd/bash）与命令包裹由 build_invocation 决定，进程管道封装（CreationFlags /
+    // JobObject / stdin null / piped / current_dir）全部 shell 无关，一行不动。
+    let inv =
+        match build_invocation(shell, command, resolved_cwd, track_cwd) {
+            Some(inv) => inv,
+            None => return Err(
+                "bash 不可用：未检测到 Git for Windows 的 bash.exe。请将配置 shell_type 改回 cmd，\
+                 或在本地安装 Git for Windows 后重试。"
+                    .to_string(),
+            ),
+        };
+    let mut cmd = StdCommandWrap::with_new(inv.program.as_str(), |c| {
+        c.args(&inv.args);
         // 修复：显式给 stdin 一个空句柄。cc-bridge 本身是 GUI 子系统程序，没有控制台、
         // 也就没有可继承的有效 stdin 句柄。若不显式设置（默认继承父进程句柄），
-        // cmd.exe 拿到无效句柄后会尝试自己申请一个控制台兼底，这会瞬时击穿
-        // CREATE_NO_WINDOW 的抑制效果，表现为一闪而过的空白 cmd 黑窗。
+        // 子进程拿到无效句柄后会尝试自己申请一个控制台兼底，这会瞬时击穿
+        // CREATE_NO_WINDOW 的抑制效果，表现为一闪而过的空白黑窗。
         c.stdin(Stdio::null());
         c.stdout(Stdio::piped());
         c.stderr(Stdio::piped());
         c.current_dir(resolved_cwd);
+        for (k, v) in &inv.env_extra {
+            c.env(k, v);
+        }
     });
     cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
         CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0,
@@ -252,8 +326,15 @@ fn spawn_shell(
             description,
             state,
         )
+        .map(|v| (v, None))
     } else {
-        run_foreground(child, timeout_ms, max_output_bytes)
+        run_foreground(
+            child,
+            timeout_ms,
+            max_output_bytes,
+            track_cwd,
+            inv.cwd_capture_file.as_deref(),
+        )
     }
 }
 
@@ -304,11 +385,30 @@ fn take_reader(
     }
 }
 
+/// 读取 cwd 捕获文件，规整为 Rust/Windows 可用的 PathBuf。
+/// 文件不存在（命令提前失败未写）或读失败时返回 None —— 调用方据此不更新 session cwd。
+fn read_cwd_file(cwd_file: Option<&std::path::Path>) -> Option<PathBuf> {
+    let f = cwd_file?;
+    match std::fs::read_to_string(f) {
+        Ok(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(normalize_cwd_from_shell(trimmed))
+            }
+        }
+        Err(_) => None,
+    }
+}
+
 fn run_foreground(
     mut child: Box<dyn StdChildWrapper>,
     timeout_ms: u64,
     max_output_bytes: usize,
-) -> Result<Value, String> {
+    track_cwd: bool,
+    cwd_file: Option<&std::path::Path>,
+) -> Result<(Value, Option<PathBuf>), String> {
     let (stdout_buf, stdout_trunc) = take_reader(child.stdout().take(), max_output_bytes);
     let (stderr_buf, stderr_trunc) = take_reader(child.stderr().take(), max_output_bytes);
 
@@ -334,28 +434,41 @@ fn run_foreground(
             std::thread::sleep(Duration::from_millis(50));
             let stdout = stdout_buf.blocking_lock().clone();
             let stderr = stderr_buf.blocking_lock().clone();
-            Ok(text_result(json!({
-                "stdout": String::from_utf8_lossy(&stdout),
-                "stderr": String::from_utf8_lossy(&stderr),
-                "exitCode": status.code(),
-                "stdoutTruncated": stdout_trunc.load(Ordering::Relaxed),
-                "stderrTruncated": stderr_trunc.load(Ordering::Relaxed),
-                "timedOut": false,
-            })))
+            // 会话内：读回命令结束后的有效 cwd（bash 经 `pwd -W` 写 Windows 风格路径，规整回
+            // 原生 PathBuf；cmd 经 `cd` 写原生路径）。文件不存在说明命令提前失败，None（不更新）。
+            let effective_cwd = if track_cwd {
+                read_cwd_file(cwd_file)
+            } else {
+                None
+            };
+            Ok((
+                text_result(json!({
+                    "stdout": String::from_utf8_lossy(&stdout),
+                    "stderr": String::from_utf8_lossy(&stderr),
+                    "exitCode": status.code(),
+                    "stdoutTruncated": stdout_trunc.load(Ordering::Relaxed),
+                    "stderrTruncated": stderr_trunc.load(Ordering::Relaxed),
+                    "timedOut": false,
+                })),
+                effective_cwd,
+            ))
         }
         None => {
             // 超时：必须用 start_kill()（TerminateJobObject）杀整树，
             // 不能只 kill() cmd 本体——否则 git/cargo 等孙进程会变孤儿进程。
             let _ = child.start_kill();
-            Ok(text_result(json!({
-                "stdout": "",
-                "stderr": "",
-                "exitCode": Value::Null,
-                "stdoutTruncated": false,
-                "stderrTruncated": false,
-                "timedOut": true,
-                "note": format!("命令超过 {timeout_ms}ms 未结束，已强制终止（含子进程）"),
-            })))
+            Ok((
+                text_result(json!({
+                    "stdout": "",
+                    "stderr": "",
+                    "exitCode": Value::Null,
+                    "stdoutTruncated": false,
+                    "stderrTruncated": false,
+                    "timedOut": true,
+                    "note": format!("命令超过 {timeout_ms}ms 未结束，已强制终止（含子进程）"),
+                })),
+                None,
+            ))
         }
     }
 }
@@ -1198,5 +1311,177 @@ mod tests {
         );
         let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
         assert!(stdout.contains("default_off"), "命令应正常执行");
+    }
+
+    /// 测试辅助：从 run_command 返回的 Value（content[0].text 是 JSON 字符串）解析出内层 JSON。
+    fn parse_response_text(v: &serde_json::Value) -> serde_json::Value {
+        let text = v
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .expect("response must have text payload");
+        serde_json::from_str(text).expect("text payload is JSON")
+    }
+
+    /// bash 模式基础回归：shell_type=bash 时 `echo` 正常返回 stdout。
+    /// 本机无 Git Bash 时跳过（不 fail）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bash_echo_returns_stdout() {
+        if crate::mcp::tools::shell::detect_bash_exe().is_none() {
+            eprintln!("skip bash_echo_returns_stdout: 未检测到 Git Bash");
+            return;
+        }
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.shell_type = "bash".into();
+        });
+        let v = handle(
+            RunCommandArgs {
+                command: "echo hello_bash".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await
+        .expect("bash echo should succeed");
+        let info = parse_response_text(&v);
+        let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(
+            stdout.contains("hello_bash"),
+            "bash stdout 应含 hello_bash，实际：{stdout:?}"
+        );
+        assert_eq!(info.get("exitCode").and_then(|e| e.as_i64()), Some(0));
+    }
+
+    /// bash 会话内 cwd 持久化：第一次 `cd subdir && pwd` 后，第二次仅带 session_id 的 `pwd`
+    /// 应输出 subdir —— 验证命令内 `cd` 跨调用持久化（pwd 文件法 + 白名单重校验后回写 session）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bash_session_cwd_persists() {
+        if crate::mcp::tools::shell::detect_bash_exe().is_none() {
+            eprintln!("skip bash_session_cwd_persists: 未检测到 Git Bash");
+            return;
+        }
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.session_cwd_enabled = true;
+            c.shell_type = "bash".into();
+        });
+        let sub = dir.join("subdir");
+        std::fs::create_dir_all(&sub).expect("create subdir");
+        // 第一次：带 cwd，cd 进 subdir，创建 session。
+        let v1 = handle(
+            RunCommandArgs {
+                command: "cd subdir && pwd".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await
+        .expect("第一次 run_command 应成功");
+        let info1 = parse_response_text(&v1);
+        let session_id = info1
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .expect("开启会话持久化必须回显 sessionId")
+            .to_string();
+        // 第二次：仅带 session_id，pwd 应输出 subdir（cd 持久化）。
+        let v2 = handle(
+            RunCommandArgs {
+                command: "pwd".into(),
+                cwd: None,
+                session_id: Some(session_id),
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await
+        .expect("复用 session 应成功");
+        let info2 = parse_response_text(&v2);
+        let stdout = info2.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(
+            stdout.contains("subdir"),
+            "cwd 应持久化到 subdir，实际：{stdout:?}"
+        );
+    }
+
+    /// bash 会话内 `cd` 到白名单外目录后，session cwd 不应被更新（回写前重校验白名单生效）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bash_cwd_persistence_rejected_when_outside_whitelist() {
+        if crate::mcp::tools::shell::detect_bash_exe().is_none() {
+            eprintln!(
+                "skip bash_cwd_persistence_rejected_when_outside_whitelist: 未检测到 Git Bash"
+            );
+            return;
+        }
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.session_cwd_enabled = true;
+            c.shell_type = "bash".into();
+        });
+        // 创建 session（cwd=dir）。
+        let v1 = handle(
+            RunCommandArgs {
+                command: "echo ok".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await
+        .expect("创建 session 应成功");
+        let info1 = parse_response_text(&v1);
+        let session_id = info1
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .expect("应回显 sessionId")
+            .to_string();
+        // cd 到一个存在但白名单外的目录（系统 temp）。用 POSIX 路径传给 bash。
+        let outside = std::env::temp_dir();
+        let posix = crate::mcp::tools::shell::windows_to_posix(&outside);
+        let _ = handle(
+            RunCommandArgs {
+                command: format!("cd {posix} && pwd"),
+                cwd: None,
+                session_id: Some(session_id.clone()),
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+            },
+            &state,
+        )
+        .await
+        .expect("cd 到白名单外不应报错（命令本身能跑）");
+        // session cwd 必须仍是原 dir（越界路径回写被白名单拒绝）。
+        // session.cwd 来自 resolve_safe_path 的 canonicalize，带 `\\?\` 前缀；dir 是测试原始路径，
+        // 故比较前把 dir 也 canonicalize 对齐（Windows 上 canonicalize 返回 `\\?\` 形式）。
+        let session = state.cwd_sessions.get(&session_id).expect("session 应存在");
+        let expected = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        assert_eq!(
+            session.cwd, expected,
+            "session cwd 不应被更新为白名单外路径"
+        );
     }
 }

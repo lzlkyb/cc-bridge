@@ -5,9 +5,9 @@ use std::sync::Arc;
 use png::Decoder;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::Emitter;
 use tauri::Listener;
 use tauri::Manager;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_notification::NotificationExt;
 
 use cc_bridge_desktop::*;
@@ -163,6 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = handle
@@ -274,11 +275,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let show_item = MenuItem::with_id(app, "show", "打开面板", true, None::<&str>)?;
             let copy_cmd_item =
                 MenuItem::with_id(app, "copy_cmd", "复制连接命令", true, None::<&str>)?;
+            let copy_ip_sed_item = MenuItem::with_id(
+                app,
+                "copy_ip_sed",
+                "复制IP替换命令",
+                true,
+                None::<&str>,
+            )?;
             let restart_item = MenuItem::with_id(app, "restart", "重启服务", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&show_item, &copy_cmd_item, &restart_item, &quit_item],
+                &[&show_item, &copy_cmd_item, &copy_ip_sed_item, &restart_item, &quit_item],
             )?;
 
             let tray_state = app_state.clone();
@@ -314,10 +322,87 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                     "copy_cmd" => {
-                        // 通过事件让前端（拥有 navigator.clipboard 能力）执行复制并 toast。
-                        // Tauri v2 核心不提供 Rust 端剪贴板 API，故走前端通道。
+                        // 直接在 Rust 端用 clipboard_manager 插件写入系统剪贴板，
+                        // 不再依赖前端 webview。托盘点击时面板常处于隐藏/失焦状态，
+                        // 旧的前端事件通道会因 navigator.clipboard 或插件 invoke 异常而失败。
+                        let state = tray_state.clone();
                         let app_h = tray_app.app_handle().clone();
-                        let _ = app_h.emit("copy-connect-command", ());
+                        tauri::async_runtime::spawn(async move {
+                            let (host, port, token, last_selected_ip) = {
+                                let cfg = state.config.read().await;
+                                (
+                                    cfg.host.clone(),
+                                    cfg.port,
+                                    cfg.token.clone(),
+                                    cfg.last_selected_ip.clone(),
+                                )
+                            };
+                            let lan_ips = network::get_lan_ips();
+                            let cmd = network::build_connect_command(
+                                &host,
+                                port,
+                                &token,
+                                &lan_ips,
+                                last_selected_ip.as_deref(),
+                            );
+                            match app_h.clipboard().write_text(cmd) {
+                                Ok(_) => {
+                                    let _ = app_h
+                                        .notification()
+                                        .builder()
+                                        .title("cc-bridge")
+                                        .body("连接命令已复制到剪贴板")
+                                        .show();
+                                }
+                                Err(e) => {
+                                    let _ = app_h
+                                        .notification()
+                                        .builder()
+                                        .title("cc-bridge")
+                                        .body(format!("复制失败，请手动复制：{e}"))
+                                        .show();
+                                }
+                            }
+                        });
+                    }
+                    "copy_ip_sed" => {
+                        // 网络变动时在 Rust 端直接生成「原地替换 IP」的 sed 命令并写入剪贴板，
+                        // 与连接页 IpChangedBanner 的 user 级 sed 等价；不依赖前端 webview 焦点。
+                        // 托盘项无 projectPath，固定输出用户级（~/.claude.json）；
+                        // 项目级替换请在连接页 IpChangedBanner 复制带 cd 的精确命令。
+                        let state = tray_state.clone();
+                        let app_h = tray_app.app_handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            let (host, port, last_selected_ip) = {
+                                let cfg = state.config.read().await;
+                                (cfg.host.clone(), cfg.port, cfg.last_selected_ip.clone())
+                            };
+                            let lan_ips = network::get_lan_ips();
+                            let display_host = network::resolve_display_host(
+                                &host,
+                                &lan_ips,
+                                last_selected_ip.as_deref(),
+                            );
+                            let cmd = network::build_ip_sed_command(port, &display_host);
+                            match app_h.clipboard().write_text(cmd) {
+                                Ok(_) => {
+                                    let _ = app_h
+                                        .notification()
+                                        .builder()
+                                        .title("cc-bridge")
+                                        .body("IP 替换命令已复制到剪贴板（用户级 ~/.claude.json）")
+                                        .show();
+                                }
+                                Err(e) => {
+                                    let _ = app_h
+                                        .notification()
+                                        .builder()
+                                        .title("cc-bridge")
+                                        .body(format!("复制失败，请手动复制：{e}"))
+                                        .show();
+                                }
+                            }
+                        });
                     }
                     "restart" => {
                         let s = tray_state.clone();

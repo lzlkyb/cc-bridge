@@ -5,7 +5,7 @@ import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
 import { useUpdate, type UpdateStatus, type UpdateInfo } from "../../contexts/UpdateContext";
 import type { StatusResponse } from "../../lib/types";
-import { formatVersion, formatBytesPerSec } from "../../lib/utils";
+import { formatVersion, formatBytes, formatBytesPerSec } from "../../lib/utils";
 import { APP_INFO } from "../../lib/about";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChangelogView } from "./ChangelogView";
@@ -46,7 +46,7 @@ const STYLE_ICON_ACCENT: CSSProperties = { background: "hsl(var(--accent))", col
 const STYLE_INFO_KEY: CSSProperties = { minWidth: 52 };
 
 export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; unreadCount?: number }) {
-  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
+  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -80,7 +80,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
             >
               {formatVersion(status?.version)}
             </span>
-            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} bytesPerSec={bytesPerSec} onOpenNotes={() => openUpdateNotes()} />
+            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} bytesPerSec={bytesPerSec} downloadedBytes={downloadedBytes} onOpenNotes={() => openUpdateNotes()} />
             {unreadCount !== undefined && unreadCount > 0 && (
               <span
                 className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white"
@@ -297,7 +297,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
 }
 
 /* ── 更新状态胶囊 ── */
-function UpdateStatusPill({ status, update, progress, progressIndeterminate, bytesPerSec, onOpenNotes }: { status: UpdateStatus; update: UpdateInfo | null; progress: number; progressIndeterminate: boolean; bytesPerSec: number; onOpenNotes?: () => void }) {
+function UpdateStatusPill({ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, onOpenNotes }: { status: UpdateStatus; update: UpdateInfo | null; progress: number; progressIndeterminate: boolean; bytesPerSec: number; downloadedBytes: number; onOpenNotes?: () => void }) {
   if (status === "uptodate") {
     return (
       <span className="status-pill flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success">
@@ -323,15 +323,27 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
   if (status === "downloading") {
     return (
       <span className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-[3px] text-[11px] font-semibold text-primary">
-        <Icon name="download" size={11} className={progressIndeterminate ? "animate-pulse" : ""} />
-        <span>{progressIndeterminate ? "下载中…" : `${progress}%`}</span>
-        <span className="h-1 w-12 overflow-hidden rounded-full bg-primary/20">
-          <span
-            className="block h-1 rounded-full bg-primary transition-[width] duration-200"
-            style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
-          />
-        </span>
-        {bytesPerSec > 0 && <span className="font-normal text-primary/70">{formatBytesPerSec(bytesPerSec)}</span>}
+        <Icon name="download" size={11} />
+        {progressIndeterminate ? (
+          // 无总大小（如 Gitee 源 chunked 不返回 Content-Length）：条纹滚动动画条 + 真实已下载字节/速率
+          <>
+            <span className="relative h-1 w-12 overflow-hidden rounded-full bg-primary/20">
+              <span className="indet-fill" />
+            </span>
+            <span className="font-normal text-primary/70">{`已下载 ${formatBytes(downloadedBytes)} · ${formatBytesPerSec(bytesPerSec)}`}</span>
+          </>
+        ) : (
+          <>
+            <span>{progress}%</span>
+            <span className="h-1 w-12 overflow-hidden rounded-full bg-primary/20">
+              <span
+                className="block h-1 rounded-full bg-primary transition-[width] duration-200"
+                style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+              />
+            </span>
+            {bytesPerSec > 0 && <span className="font-normal text-primary/70">{formatBytesPerSec(bytesPerSec)}</span>}
+          </>
+        )}
       </span>
     );
   }

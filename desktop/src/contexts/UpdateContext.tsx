@@ -23,6 +23,8 @@ export interface UpdateState {
   progressIndeterminate: boolean;
   /** 下载速率（字节/秒），~250ms 窗口重算一次；下载刚开始第一个窗口还没算完时为 0。 */
   bytesPerSec: number;
+  /** 已下载字节数（后端每 chunk 都发 downloaded）；无总大小时用于展示"已下载 X MB" */
+  downloadedBytes: number;
   error: string | null;
   checkForUpdate: () => Promise<void>;
   downloadAndInstall: () => Promise<void>;
@@ -86,6 +88,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [progress, setProgress] = useState(0);
   const [progressIndeterminate, setProgressIndeterminate] = useState(false);
   const [bytesPerSec, setBytesPerSec] = useState(0);
+  const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [showNotes, setShowNotes] = useState(false);
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(() => {
@@ -213,11 +216,13 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           setProgress(0);
           setProgressIndeterminate(false);
           setBytesPerSec(0);
+          setDownloadedBytes(0);
         }),
       );
       unlisteners.push(
         await listen<{ downloaded: number; total: number | null; bytesPerSec?: number }>("update:progress", (e) => {
           const { downloaded, total, bytesPerSec: bps } = e.payload;
+          setDownloadedBytes(downloaded);
           if (total) {
             setProgress(Math.round((downloaded / total) * 100));
             setProgressIndeterminate(false);
@@ -297,7 +302,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed }}>
       {children}
       <UpdateNotesDialog open={showNotes} update={update} onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate} />
     </UpdateContext.Provider>

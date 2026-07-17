@@ -49,6 +49,10 @@ export interface StatusResponse {
   rateLimitEnabled: boolean;
   encodingDetectEnabled: boolean;
   shellEnabled: boolean;
+  /** 命令执行壳层：cmd（默认）或 bash（Git Bash） */
+  shellType: string;
+  /** 本机是否检测到 Git for Windows 的 bash.exe。false 时前端「命令执行壳层」的 bash 选项置灰且点击提示，不保存。 */
+  bashAvailable: boolean;
   running: boolean;
   lanIps: string[];
   lastSelectedIp: string | null;
@@ -88,6 +92,8 @@ export interface ConfigPatch {
   rateLimitEnabled?: boolean;
   encodingDetectEnabled?: boolean;
   shellEnabled?: boolean;
+  /** 命令执行壳层：cmd 或 bash。前端「命令执行壳层」分段控件写入。 */
+  shellType?: string;
   scope?: string;
 }
 

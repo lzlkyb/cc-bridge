@@ -70,6 +70,13 @@ pub struct StatusResponse {
     pub encoding_detect_enabled: bool,
     #[serde(rename = "shellEnabled")]
     pub shell_enabled: bool,
+    /// 命令执行壳层：cmd（默认）或 bash（Git Bash）。前端「命令执行壳层」分段控件读写。
+    #[serde(rename = "shellType")]
+    pub shell_type: String,
+    /// 本机是否检测到 Git Bash（bash.exe）。false 时前端「命令执行壳层」的 bash 选项置灰，
+    /// 点击不保存并提示用户先安装 Git for Windows。
+    #[serde(rename = "bashAvailable")]
+    pub bash_available: bool,
     pub running: bool,
     // ── 本机地址变更检测 ──
     #[serde(rename = "lanIps")]
@@ -355,6 +362,8 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         rate_limit_enabled: config.rate_limit_enabled,
         encoding_detect_enabled: config.encoding_detect_enabled,
         shell_enabled: config.shell_enabled,
+        shell_type: config.shell_type.clone(),
+        bash_available: crate::mcp::tools::shell::detect_bash_exe().is_some(),
         running,
         last_selected_ip: config.last_selected_ip.clone(),
         ip_changed,
@@ -445,6 +454,9 @@ pub struct ConfigPatch {
     pub encoding_detect_enabled: Option<bool>,
     #[serde(rename = "shellEnabled")]
     pub shell_enabled: Option<bool>,
+    /// 命令执行壳层：cmd 或 bash。前端「命令执行壳层」分段控件写入。
+    #[serde(rename = "shellType")]
+    pub shell_type: Option<String>,
     /// 用户接入时确认的作用域（user/project）。仅首次接入复制命令时由前端写入。
     #[serde(rename = "scope")]
     pub scope: Option<String>,
@@ -535,6 +547,8 @@ pub async fn save_config(
         &patch.encoding_detect_enabled
     );
     apply_field!(shell_enabled, "shell_enabled", &patch.shell_enabled);
+    // 命令执行壳层：cmd（默认）/ bash。仅接受这两个值，其它值由 config.rs 解析时回退 cmd。
+    apply_field!(shell_type, "shell_type", &patch.shell_type);
     // 首次接入复制命令时由前端写入，记录 cc-bridge 被注册到远程的作用域，
     // 供后续 IP 变化 / Token 重生成生成精确 sed 命令（方案 A）。
     // scope 在 config 中也是 Option<String>，与 apply_field! 宏的 "T vs Option<T>" 假设不符，故单独处理。
@@ -1141,9 +1155,9 @@ pub async fn list_backups(state: State<'_, Arc<AppState>>) -> Result<BackupListR
         let db = state.db.lock().await;
         let mut index: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         if let Ok(mut stmt) = db.prepare("SELECT backup_path, original_path FROM backup_index") {
-            if let Ok(rows) =
-                stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-            {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            }) {
                 for row in rows.filter_map(|r| r.ok()) {
                     index.insert(row.0, row.1);
                 }
@@ -1155,7 +1169,8 @@ pub async fn list_backups(state: State<'_, Arc<AppState>>) -> Result<BackupListR
             for e in g.entries.iter_mut() {
                 if let Some(original_path) = index.get(&e.backup_path) {
                     // 仍需核实该路径当前确实落在白名单内（root 配置可能在备份之后被改过）。
-                    if let Ok(resolved) = path::resolve_safe_path(original_path, &allowed_roots, true)
+                    if let Ok(resolved) =
+                        path::resolve_safe_path(original_path, &allowed_roots, true)
                     {
                         e.targets = vec![path::display_path(&resolved)];
                     }
@@ -1554,7 +1569,8 @@ pub fn start_update(app: tauri::AppHandle) {
                 }
             };
 
-            let check_result = match retry_with_backoff(2, "检查更新", || updater.check()).await {
+            let check_result = match retry_with_backoff(2, "检查更新", || updater.check()).await
+            {
                 Ok(r) => r,
                 Err(e) => {
                     last_message = Some(format!("检查更新失败: {e}"));

@@ -85,3 +85,18 @@ pub fn build_connect_command(
         display_host, port, token
     )
 }
+
+/// 生成「网络变动时原地更新 IP」的 sed 命令（用户级 `~/.claude.json`）。
+///
+/// 与前端 `IpChangedBanner.buildSed("user")` 等价：用 `[0-9.]*` 匹配任意旧 IP，幂等可重跑，
+/// 不动 Bearer、不 remove+add，保留 server 条目与授权状态，远端无需重新 approve。
+///
+/// WHY（托盘项）：托盘右键「复制 IP 替换命令」在 Rust 端生成、直接写剪贴板（不依赖 webview 焦点）。
+/// 托盘项无 projectPath 上下文，故固定输出用户级（`~/.claude.json`）；
+/// 项目级（`.mcp.json`，需 `cd <projectPath>`）替换请在连接页 `IpChangedBanner` 复制带 cd 的精确命令。
+pub fn build_ip_sed_command(port: u16, display_host: &str) -> String {
+    format!(
+        "sed -i 's#http://[0-9.]*:{}#/mcp#http://{}:{}#/mcp#g' ~/.claude.json",
+        port, display_host, port
+    )
+}

@@ -89,8 +89,12 @@ fn is_within(path: &Path, root: &Path) -> bool {
 /// F1 修复：检测路径分量中是否含 `..`(ParentDir)/`.`(CurDir) 组件。用于拒绝新建路径分支里未规范化的
 /// 尾部 remainder，避免其中的 `..` 在后续真实文件 I/O 时被重新解释为目录跳转、绕过 is_within 的前缀匹配。
 fn contains_dotdot(p: &Path) -> bool {
-    p.components()
-        .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
+    p.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir | std::path::Component::CurDir
+        )
+    })
 }
 
 #[cfg(test)]

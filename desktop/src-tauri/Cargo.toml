@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.3.4"
+version = "2.3.5"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -18,6 +18,7 @@ url = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-clipboard-manager = "2"
 
 # HTTP server (MCP protocol handled via axum directly)
 axum = "0.8"

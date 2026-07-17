@@ -58,7 +58,8 @@ async fn delete_single(
 
     if config.backup_enabled {
         let db = state.db.lock().await;
-        let bp = backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir, &db)?;
+        let bp =
+            backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir, &db)?;
         drop(db);
         backup::prune_backups(
             &resolved,

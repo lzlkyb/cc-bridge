@@ -32,6 +32,10 @@ pub struct BridgeConfig {
     /// 在首次提供 cwd 时拿到 session_id，后续调用只传 session_id 即可沿用工作目录。每次使用
     /// 前仍重校验白名单（规则 7 不削弱）。关闭时 run_command 行为与旧版完全一致。
     pub session_cwd_enabled: bool,
+    /// 命令执行使用的 shell：`cmd`（默认，零外部依赖）或 `bash`（Git Bash，需安装
+    /// Git for Windows）。仅影响 run_command/stop_command 的壳层；安全围栏
+    /// （路径白名单/Bearer 鉴权/限流）与 shell 无关，bash 模式不削弱任何一条。
+    pub shell_type: String,
     /// 后台命令结束后保留时长（秒）。默认 120（2 分钟），超时自动清理。0 表示立即清理。
     pub command_cleanup_secs: u64,
     /// 用户上次在 Connect 页确认使用的本机 IP（多网卡场景）。用于检测网卡地址是否
@@ -72,6 +76,7 @@ impl Default for BridgeConfig {
             encoding_detect_enabled: false,
             shell_enabled: false,
             session_cwd_enabled: false,
+            shell_type: "cmd".into(),
             command_cleanup_secs: 120,
             last_selected_ip: None,
             scope: None,
@@ -139,7 +144,18 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             }
             "shell_enabled" => config.shell_enabled = parse_or_warn(key, value, false),
             "session_cwd_enabled" => config.session_cwd_enabled = parse_or_warn(key, value, false),
-            "command_cleanup_secs" => config.command_cleanup_secs = parse_or_warn(key, value, 120u64),
+            "shell_type" => {
+                let s = parse_or_warn::<String>(key, value, "cmd".into());
+                // 仅接受 cmd / bash，其它值回退 cmd，避免未知壳层静默生效。
+                config.shell_type = if s == "bash" {
+                    "bash".into()
+                } else {
+                    "cmd".into()
+                };
+            }
+            "command_cleanup_secs" => {
+                config.command_cleanup_secs = parse_or_warn(key, value, 120u64)
+            }
             "last_selected_ip" => config.last_selected_ip = parse_or_warn(key, value, None),
             "scope" => config.scope = parse_or_warn(key, value, None),
             _ => {}
@@ -246,6 +262,7 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         "session_cwd_enabled",
         &to_value(config.session_cwd_enabled).unwrap(),
     )?;
+    save_config_field(conn, "shell_type", &to_value(&config.shell_type).unwrap())?;
 
     save_config_field(
         conn,

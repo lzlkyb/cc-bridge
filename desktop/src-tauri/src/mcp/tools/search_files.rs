@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -141,7 +141,7 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     // 闭包内累加，回到 tokio 任务后再 record_io（仍在 with_io_timer 作用域内）。
     let io_nanos = Arc::new(AtomicU64::new(0));
     let io_tracker = Arc::clone(&io_nanos);
-    let matches = tokio::task::spawn_blocking(move || {
+    let (matches, truncated) = tokio::task::spawn_blocking(move || {
         walk_search_blocking_tracked(
             &root_resolved,
             name_matcher.as_ref(),
@@ -156,9 +156,23 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
 
     timing::record_io(Duration::from_nanos(io_nanos.load(Ordering::Relaxed)));
 
-    Ok(
-        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&matches).unwrap() }] }),
-    )
+    // ④ 截断回显：walker 触及 head_limit（= head_limit.unwrap_or(max_results)）提前终止时
+    // `truncated=true`，结果不完整。追加一个文本块告知远程 CC「结果被截断、可缩小范围或分页」，
+    // 不动 matches 数组结构，模型读自然语言即可理解（不做精确 totalMatched 二次扫描，避免性能回退）。
+    let mut content_blocks =
+        vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&matches).unwrap() })];
+    if truncated {
+        content_blocks.push(json!({
+            "type": "text",
+            "text": format!(
+                "搜索结果已被截断：本次返回 {} 条（上限 {}）。结果可能不完整——建议缩小 rootPath / namePattern / contentPattern 范围，或调小 maxResults 进一步分页。",
+                matches.len(),
+                grep.head_limit
+            )
+        }));
+    }
+
+    Ok(json!({ "content": content_blocks }))
 }
 
 fn compile_glob(pattern: &str) -> Result<globset::GlobMatcher, String> {
@@ -178,11 +192,15 @@ pub fn walk_search_blocking(
     grep: &GrepOptions,
     max_file_size: u64,
 ) -> Vec<Value> {
-    walk_search_blocking_tracked(root, name_matcher, content_regex, grep, max_file_size, None)
+    walk_search_blocking_tracked(root, name_matcher, content_regex, grep, max_file_size, None).0
 }
 
 /// 带 O1 I/O 追踪的遍历实现。`io_tracker` 为 `Some` 时，文件读取耗时累加到其中
 /// （跨 rayon 线程安全），供 [`handle`] 在 spawn_blocking 返回后 [`timing::record_io`]。
+///
+/// 返回 `(matches, truncated)`：`truncated` 为 `true` 表示遍历因触及 `head_limit` 而提前
+/// 终止（结果不完整）。并行 walker 的 `head_limit` 是软上限（线程竞态下结果数可能略多于/少于
+/// limit），故用「是否触发过 limit 早停」而非「结果数 >= limit」来判定截断，避免误判。
 fn walk_search_blocking_tracked(
     root: &Path,
     name_matcher: Option<&globset::GlobMatcher>,
@@ -190,9 +208,10 @@ fn walk_search_blocking_tracked(
     grep: &GrepOptions,
     max_file_size: u64,
     io_tracker: Option<&Arc<AtomicU64>>,
-) -> Vec<Value> {
+) -> (Vec<Value>, bool) {
     let matches: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let counter: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let truncated: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let head_limit = grep.head_limit;
 
     // ignore::WalkBuilder 默认开启 git_ignore（吃 .gitignore）。hidden(false) 保留
@@ -231,13 +250,16 @@ fn walk_search_blocking_tracked(
     // 天然落在 rayon 线程池里并行执行。
     let matches_arc = Arc::clone(&matches);
     let counter_arc = Arc::clone(&counter);
+    let truncated_arc = Arc::clone(&truncated);
     let tracker_clone = io_tracker.map(Arc::clone);
     builder.build_parallel().run(|| {
         let matches = Arc::clone(&matches_arc);
         let counter = Arc::clone(&counter_arc);
+        let truncated = Arc::clone(&truncated_arc);
         let tracker = tracker_clone.clone();
         Box::new(move |entry| {
             if counter.load(Ordering::Relaxed) >= head_limit {
+                truncated.store(true, Ordering::Relaxed);
                 return ignore::WalkState::Quit;
             }
             let entry = match entry {
@@ -273,6 +295,7 @@ fn walk_search_blocking_tracked(
                 drop(g);
                 counter.fetch_add(1, Ordering::Relaxed);
                 return if n >= head_limit {
+                    truncated.store(true, Ordering::Relaxed);
                     ignore::WalkState::Quit
                 } else {
                     ignore::WalkState::Continue
@@ -313,6 +336,7 @@ fn walk_search_blocking_tracked(
             drop(g);
             counter.fetch_add(n, Ordering::Relaxed);
             if n >= head_limit {
+                truncated.store(true, Ordering::Relaxed);
                 ignore::WalkState::Quit
             } else {
                 ignore::WalkState::Continue
@@ -352,7 +376,7 @@ fn walk_search_blocking_tracked(
             obj.remove("_mtime");
         }
     }
-    out
+    (out, truncated.load(Ordering::Relaxed))
 }
 
 /// P1-12：在 grep-searcher 的**同一次扫描**内直接收集命中行及其前/后上下文，
@@ -782,6 +806,72 @@ mod tests {
             let c = m.get("count").and_then(|c| c.as_u64()).expect("count 字段");
             assert!(c > 0, "count 应 > 0，实际：{c}");
         }
+    }
+
+    #[test]
+    fn content_search_truncates_at_head_limit() {
+        // ④ 前置验证：content 模式在达到 head_limit 时 walker 精确标记 truncated=true。
+        // 并行 walker 的 head_limit 是软上限（结果数可能略多/略少于 limit），故断言
+        // 精确的 truncated 标志，而非结果数 == limit。
+        let root = unique_subdir("trunc_content");
+        for i in 0..20u32 {
+            touch(&root.join(format!("f{i}.rs")), "fn marker() {}\n");
+        }
+        let re = matcher("marker");
+        let opts = GrepOptions {
+            head_limit: 5,
+            ..Default::default()
+        };
+        let (matches, truncated) =
+            walk_search_blocking_tracked(&root, None, Some(&re), &opts, 1_000_000, None);
+        assert!(
+            truncated,
+            "content 模式应在 head_limit=5 触发截断标记，结果数：{}",
+            matches.len()
+        );
+        assert!(
+            !matches.is_empty(),
+            "截断时也应至少返回部分结果，实际：{matches:?}"
+        );
+    }
+
+    #[test]
+    fn name_search_truncates_at_head_limit() {
+        // name 模式同样受 head_limit 约束，触发 walker 的 truncated 标记（handle 据此判断截断）。
+        let root = unique_subdir("trunc_name");
+        for i in 0..20u32 {
+            touch(&root.join(format!("f{i}.txt")), "MATCH\n");
+        }
+        let glob = globset::Glob::new("*.txt").unwrap().compile_matcher();
+        let opts = GrepOptions {
+            head_limit: 5,
+            ..Default::default()
+        };
+        let (matches, truncated) =
+            walk_search_blocking_tracked(&root, Some(&glob), None, &opts, 1_000_000, None);
+        assert!(
+            truncated,
+            "name 模式应在 head_limit=5 触发截断标记，结果数：{}",
+            matches.len()
+        );
+    }
+
+    #[test]
+    fn search_within_limit_is_not_truncated() {
+        // 反向验证：命中数明显小于 head_limit 时 truncated 应为 false（结果完整）。
+        let root = unique_subdir("no_trunc");
+        for i in 0..3u32 {
+            touch(&root.join(format!("f{i}.rs")), "fn marker() {}\n");
+        }
+        let re = matcher("marker");
+        let opts = GrepOptions {
+            head_limit: 100,
+            ..Default::default()
+        };
+        let (matches, truncated) =
+            walk_search_blocking_tracked(&root, None, Some(&re), &opts, 1_000_000, None);
+        assert!(!truncated, "命中数(3) < head_limit(100) 不应标记截断");
+        assert_eq!(matches.len(), 3, "应返回全部 3 条，结果：{matches:?}");
     }
 
     #[test]

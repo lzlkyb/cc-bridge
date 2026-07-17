@@ -38,8 +38,11 @@ pub async fn handle(args: EditFilesArgs, state: &Arc<AppState>) -> Result<Value,
                 "encoding": outcome.encoding,
                 "newline": outcome.newline,
                 "diff": outcome.diff,
+                "warning": outcome.warning,
             })),
-            Err(e) => results.push(json!({ "path": f.path, "ok": false, "error": e })),
+            Err(e) => results.push(
+                json!({ "path": f.path, "ok": false, "error": e.message, "warning": e.warning }),
+            ),
         }
     }
 
@@ -53,18 +56,51 @@ struct EditOutcome {
     encoding: String,
     newline: &'static str,
     diff: String,
+    /// 对 old_string 的首尾空白告警（模型多带空白导致匹配失败时给的提示）。仅 Some 时输出。
+    warning: Option<String>,
+}
+
+/// edit_single 的错误：携带可选的首尾空白告警，让匹配失败的提示更有指导性。
+struct EditError {
+    message: String,
+    warning: Option<String>,
+}
+
+impl From<String> for EditError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            warning: None,
+        }
+    }
+}
+
+impl From<&str> for EditError {
+    fn from(message: &str) -> Self {
+        Self {
+            message: message.to_string(),
+            warning: None,
+        }
+    }
 }
 
 async fn edit_single(
     f: &EditEntry,
     config: &crate::config::BridgeConfig,
     state: &Arc<AppState>,
-) -> Result<EditOutcome, String> {
+) -> Result<EditOutcome, EditError> {
+    let warning = whitespace_warning(&f.old_string);
     if f.old_string.is_empty() {
-        return Err("oldString must not be empty".into());
+        return Err(EditError {
+            message: "oldString must not be empty".into(),
+            warning: warning.clone(),
+        });
     }
     if f.old_string == f.new_string {
-        return Err("oldString and newString are identical, nothing to do".into());
+        return Err(EditError {
+            message: "oldString and newString are identical, nothing to do".into(),
+            warning: warning.clone(),
+        });
     }
 
     let resolved = security::path::resolve_safe_path(
@@ -110,16 +146,22 @@ async fn edit_single(
 
     let match_count = content.matches(&f.old_string).take(2).count(); // E-P0-5: 早停在 >1，避免全文件扫描
     if match_count == 0 {
-        return Err("oldString not found in file".into());
+        return Err(EditError {
+            message: "oldString not found in file".into(),
+            warning: warning.clone(),
+        });
     }
 
     let (updated, replacements) = if f.replace_all {
         (content.replace(&f.old_string, &f.new_string), match_count)
     } else {
         if match_count > 1 {
-            return Err(format!(
-                "oldString matched {match_count} times, not unique; add more surrounding context or set replaceAll=true"
-            ));
+            return Err(EditError {
+                message: format!(
+                    "oldString matched {match_count} times, not unique; add more surrounding context or set replaceAll=true"
+                ),
+                warning: warning.clone(),
+            });
         }
         (content.replacen(&f.old_string, &f.new_string, 1), 1)
     };
@@ -129,7 +171,8 @@ async fn edit_single(
 
     if config.backup_enabled {
         let db = state.db.lock().await;
-        let bp = backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir, &db)?;
+        let bp =
+            backup::backup_before_overwrite(&resolved, &config.backup_dir, &state.data_dir, &db)?;
         drop(db);
         backup::prune_backups(
             &resolved,
@@ -151,6 +194,7 @@ async fn edit_single(
         encoding: ft.encoding.name().to_string(),
         newline: ft.newline_label(),
         diff,
+        warning,
     })
 }
 
@@ -177,4 +221,66 @@ pub(crate) async fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<
         return Err(format!("Atomic rename failed: {e}"));
     }
     Ok(())
+}
+
+/// 检测 old_string 首尾是否多带空白字符（空格 / 制表符 / 换行 / 回车），命中返回一条告警文案。
+///
+/// WHY: 模型常因 old_string 多带一个换行或尾随空格导致「0 次匹配」报错，触发一轮远程往返重试。
+/// 提前告警能让模型第一次就修正。仅告警、绝不改动匹配逻辑（否则会掩盖模型的真实错误）。
+fn whitespace_warning(s: &str) -> Option<String> {
+    let lead = s.len() - s.trim_start().len();
+    let trail = s.len() - s.trim_end().len();
+    if lead == 0 && trail == 0 {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if lead > 0 {
+        let spaces = s[..lead].chars().filter(|c| *c == ' ').count();
+        let tabs = lead - spaces;
+        parts.push(format!(
+            "前导 {lead} 个字符（空格 {spaces} / 制表符 {tabs}）"
+        ));
+    }
+    if trail > 0 {
+        let trail_part = &s[s.len() - trail..];
+        let spaces = trail_part.chars().filter(|c| *c == ' ').count();
+        let tabs = trail - spaces;
+        parts.push(format!(
+            "尾随 {trail} 个字符（空格 {spaces} / 制表符 {tabs}）"
+        ));
+    }
+    let nl = s.matches('\n').count();
+    let cr = s.matches('\r').count();
+    if nl > 0 || cr > 0 {
+        parts.push(format!("含 {nl} 个换行符 / {cr} 个回车符"));
+    }
+    Some(format!(
+        "oldString 首尾检测到空白字符：{}。若非故意多带，去掉首尾空白后重试可避免匹配失败。",
+        parts.join("，")
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn whitespace_warning_detects_leading_and_trailing() {
+        let w = whitespace_warning("    fn main() {\n");
+        let text = w.expect("应检测到首尾空白");
+        assert!(text.contains("前导"), "应提到前导空白：{text}");
+        assert!(text.contains("尾随"), "应提到尾随空白：{text}");
+        assert!(text.contains("换行符"), "应提到换行符：{text}");
+    }
+
+    #[test]
+    fn whitespace_warning_none_for_clean_string() {
+        assert!(whitespace_warning("fn main() {").is_none());
+    }
+
+    #[test]
+    fn whitespace_warning_tab_counts() {
+        let w = whitespace_warning("\tfn()").expect("应检测到前导制表符");
+        assert!(w.contains("制表符 1"), "应统计出 1 个制表符：{w}");
+    }
 }

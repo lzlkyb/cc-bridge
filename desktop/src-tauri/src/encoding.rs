@@ -98,6 +98,39 @@ pub fn read_text(data: &[u8], override_label: Option<&str>) -> Result<FileText, 
     })
 }
 
+/// 判断字节流是否为二进制内容（用于 `read_files` 守卫，避免把二进制当文本裸返乱码）。
+///
+/// WHY: `read_text` 只在编码**有损**时拦截（`encoding.rs:80`），而 GBK/GB18030 几乎能解码
+/// 任何双字节序列，导致 PNG/EXE/`".pyc"` 这类二进制被当文本成功解码、返回乱码，污染远程
+/// CC 上下文。`is_binary_content` 在 `read_text` 之前先拦一层。
+///
+/// 判定（采样前 8KB）：
+/// - 排除合法 UTF-16/UTF-32 BOM（其 ASCII 区间含 `0x00` 字节，是编码特征不是二进制垃圾）。
+/// - 命中 NUL（`0x00`）即判二进制（正常文本文件不含 NUL）。
+/// - 非打印控制字符占比 > 10% 判二进制（覆盖「全 NUL 之外的控制字符垃圾」）。
+pub fn is_binary_content(data: &[u8]) -> bool {
+    // 排除合法 UTF-16/UTF-32 BOM：它们的 0x00 是编码特征，不是二进制垃圾。
+    if data.starts_with(&[0xFF, 0xFE])
+        || data.starts_with(&[0xFE, 0xFF])
+        || data.starts_with(&[0xFF, 0xFE, 0x00])
+        || data.starts_with(&[0x00, 0xFE, 0xFF])
+    {
+        return false;
+    }
+    let sample = &data[..data.len().min(8192)];
+    if sample.is_empty() {
+        return false;
+    }
+    if sample.contains(&0x00) {
+        return true;
+    }
+    let non_print = sample
+        .iter()
+        .filter(|&&b| b < 0x09 || (0x0D < b && b < 0x20) || b == 0x7F)
+        .count();
+    (non_print as f64 / sample.len() as f64) > 0.10
+}
+
 /// 把归一化文本（LF）按指定编码/换行/BOM 无损编码为字节流。
 /// 编码有损（往 GBK 插入不可表示字符等）时返回错误，绝不静默损坏文件。
 pub fn encode_text(
@@ -238,7 +271,11 @@ mod tests {
         // 替换并返回 Ok，修复后必须返回 Err，避免写回时永久烤进替换字符。
         let bytes = b"hello \xff world";
         let result = read_text(bytes, None);
-        assert!(result.is_err(), "不可解码的字节应该报错而不是静默 lossy 成功：{:?}", result.map(|f| f.text));
+        assert!(
+            result.is_err(),
+            "不可解码的字节应该报错而不是静默 lossy 成功：{:?}",
+            result.map(|f| f.text)
+        );
     }
 
     #[test]
@@ -256,5 +293,36 @@ mod tests {
     #[test]
     fn test_unknown_label_errors() {
         assert!(read_text(b"x", Some("no-such-encoding")).is_err());
+    }
+
+    #[test]
+    fn test_is_binary_content_detects_real_binaries() {
+        // NUL 开头的二进制（.pyc 类）
+        assert!(is_binary_content(b"\x00world"));
+        // PNG 头（0x89 起）——GBK 会误判为可解码，必须被 is_binary_content 拦下
+        assert!(is_binary_content(b"\x89PNG\r\n\x1a\n\x00\x01\x02"));
+        // EXE 头（MZ + NUL）
+        assert!(is_binary_content(b"MZ\x00\x00\x01\x02"));
+        // 全控制字符垃圾（非打印占比高）
+        assert!(is_binary_content(&[
+            0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07
+        ]));
+    }
+
+    #[test]
+    fn test_is_binary_content_accepts_text() {
+        // 合法 UTF-8 文本
+        assert!(!is_binary_content("hello 世界\nfn main()\n".as_bytes()));
+        // 合法 GBK 中文（不是二进制）
+        assert!(!is_binary_content("你好".as_bytes()));
+        // 普通 ASCII + 空格（非打印占比 < 10%）
+        assert!(!is_binary_content(b"just some normal text with spaces"));
+        // UTF-16LE BOM：排除，不是二进制
+        assert!(!is_binary_content(b"\xff\xfeh\x00i\x00"));
+    }
+
+    #[test]
+    fn test_is_binary_content_empty_is_not_binary() {
+        assert!(!is_binary_content(b""));
     }
 }

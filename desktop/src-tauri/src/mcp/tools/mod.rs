@@ -14,5 +14,6 @@ pub mod registry;
 pub mod remove_directory;
 pub mod run_command;
 pub mod search_files;
+pub mod shell;
 pub mod stop_command;
 pub mod write_files;

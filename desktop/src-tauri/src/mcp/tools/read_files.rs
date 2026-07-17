@@ -4,7 +4,7 @@ use std::sync::Arc;
 use encoding_rs::UTF_8;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
 use crate::encoding;
 use crate::security;
@@ -115,6 +115,14 @@ async fn read_single_file(
         .await
         .map_err(|e| format!("Read error: {e}"))?;
     crate::timing::record_io(t0.elapsed());
+    // 二进制守卫：read_text 只在编码有损时拦截，而 GBK/GB18030 几乎能解码任何双字节序列，
+    // 导致 PNG/EXE/".pyc" 等二进制被当文本成功解码、裸返乱码污染远程上下文。这里先按内容
+    // 检测 NUL / 非打印字符占比，命中即返回友好提示而非乱码。
+    if encoding::is_binary_content(&raw) {
+        return Err(
+            "文件疑似二进制内容（含 NUL 或非文本控制字符占比过高），read_files 不会原样返回以避免污染远程上下文。如需查看请通过其他方式获取，或确认文件真实编码后再处理。".into(),
+        );
+    }
     // 编码自适应默认关：关时强制按 UTF-8 读，避免启发式误判；显式 encoding 参数始终优先。
     let effective_encoding =
         encoding_override.or(if detect_enabled { None } else { Some("utf-8") });
@@ -163,9 +171,26 @@ async fn read_range_streaming(
     end_line: Option<u32>,
     encoding_override: Option<&str>,
 ) -> Result<Value, String> {
-    let file = tokio::fs::File::open(resolved)
+    let mut file = tokio::fs::File::open(resolved)
         .await
         .map_err(|e| format!("Cannot open: {e}"))?;
+    // 二进制守卫：流式读也要避免把二进制当文本逐行裸返。先 peek 前 8KB 检测，命中则返回
+    // 友好提示（与全读路径一致）；否则回到文件头重新流式解码。
+    {
+        let mut peek = [0u8; 8192];
+        let n = file
+            .read(&mut peek)
+            .await
+            .map_err(|e| format!("Read error: {e}"))?;
+        if encoding::is_binary_content(&peek[..n]) {
+            return Err(
+                "文件疑似二进制内容（含 NUL 或非文本控制字符占比过高），read_files 不会原样返回以避免污染远程上下文。如需查看请通过其他方式获取。".into(),
+            );
+        }
+        file.seek(std::io::SeekFrom::Start(0))
+            .await
+            .map_err(|e| format!("Seek error: {e}"))?;
+    }
     let reader = BufReader::new(file);
     let mut split = reader.split(b'\n');
 
