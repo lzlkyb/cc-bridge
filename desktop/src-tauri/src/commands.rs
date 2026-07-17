@@ -1595,11 +1595,15 @@ pub fn start_update(app: tauri::AppHandle) {
                 }
             };
 
+            let date_str = update.date.map(|d| d.to_string());
+            let current_ver = update.current_version.clone();
             let _ = app.emit(
                 "update:available",
                 serde_json::json!({
                     "version": update.version,
                     "body": update.body,
+                    "date": date_str,
+                    "currentVersion": current_ver,
                 }),
             );
 
@@ -1697,11 +1701,15 @@ pub fn check_update(app: tauri::AppHandle) {
 
             match retry_with_backoff(2, "检查更新", || updater.check()).await {
                 Ok(Some(u)) => {
+                    let date_str = u.date.map(|d| d.to_string());
+                    let current_ver = u.current_version.clone();
                     let _ = app.emit(
                         "update:available",
                         serde_json::json!({
                             "version": u.version,
                             "body": u.body,
+                            "date": date_str,
+                            "currentVersion": current_ver,
                         }),
                     );
                     return;

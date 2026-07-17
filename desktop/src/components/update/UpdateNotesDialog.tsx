@@ -12,6 +12,18 @@ function renderBold(text: string): React.ReactNode {
   });
 }
 
+/** 把 ISO 日期字符串格式化为中文可读格式（如 "2026年7月17日"）。 */
+function formatDate(iso?: string | null): string {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+  } catch {
+    return "";
+  }
+}
+
 /** 章节标题色标（交替使用，修复类用琥珀色）。 */
 function sectionDotColor(sectionIdx: number, label: string): string {
   if (/修复|fix/i.test(label)) return "bg-amber-400";
@@ -38,7 +50,7 @@ export function ReleaseNotes({ body }: { body: string | null | undefined }) {
         const line = raw.trimEnd();
         if (line.trim() === "") return <div key={i} className="h-2" />;
 
-        // 整行 **...** → 章节标题
+        // 整行 **...** → 章节标题（CHANGELOG 内 `**新增**` 等）
         const headerMatch = line.match(/^\*\*(.+)\*\*$/);
         if (headerMatch) {
           const label = headerMatch[1].trim();
@@ -48,6 +60,20 @@ export function ReleaseNotes({ body }: { body: string | null | undefined }) {
             <div key={i} className="mb-1.5 mt-3 flex items-center gap-2 text-xs font-bold text-foreground tracking-[0.3px] first:mt-0">
               <span className={`inline-block h-2 w-2 shrink-0 rounded-[3px] ${dotCls}`} />
               {renderBold(label)}
+            </div>
+          );
+        }
+
+        // Markdown ### 标题 → 章节标题（CHANGELOG 内 `### 新增` 等）
+        const mdHeaderMatch = line.match(/^###\s+(.+)$/);
+        if (mdHeaderMatch) {
+          const label = mdHeaderMatch[1].trim();
+          const dotCls = sectionDotColor(sectionIdx, label);
+          sectionIdx++;
+          return (
+            <div key={i} className="mb-1.5 mt-3 flex items-center gap-2 text-xs font-bold text-foreground tracking-[0.3px] first:mt-0">
+              <span className={`inline-block h-2 w-2 shrink-0 rounded-[3px] ${dotCls}`} />
+              {label}
             </div>
           );
         }
@@ -83,7 +109,7 @@ export function UpdateNotesDialog({
   onDismiss,
 }: {
   open: boolean;
-  update: { version?: string; body?: string | null } | null;
+  update: { version?: string; body?: string | null; date?: string | null; currentVersion?: string } | null;
   onClose: () => void;
   onDownload: () => void;
   onDismiss: () => void;
@@ -119,12 +145,17 @@ export function UpdateNotesDialog({
           <div className="text-[36px] font-extrabold leading-none tracking-[-0.5px] text-foreground">
             v{ver}
           </div>
-          <div className="mt-1.5 text-[13px] text-muted-foreground">CC Bridge 软件更新</div>
-          <div className="mt-4 mb-6 inline-flex items-center gap-2 text-xs text-[#aeaeb2]">
-            <span className="rounded-md bg-muted px-2 py-0.5 text-[11px]">v2.3.1 → v{ver}</span>
-            <span className="text-[#d2d2d7]">·</span>
-            <span className="rounded-md bg-muted px-2 py-0.5 text-[11px]">约 14 MB</span>
+          <div className="mt-1.5 text-[13px] text-muted-foreground">
+            {update.date ? formatDate(update.date) : "CC Bridge 软件更新"}
           </div>
+          {update.currentVersion && (
+            <div className="mt-4 mb-6 inline-flex items-center gap-2 text-xs text-[#aeaeb2]">
+              <span className="rounded-md bg-muted px-2 py-0.5 text-[11px]">
+                v{update.currentVersion} → v{ver}
+              </span>
+            </div>
+          )}
+          {!update.currentVersion && <div className="mt-4 mb-6" />}
         </div>
 
         {/* ── 分隔线 ── */}

@@ -86,25 +86,14 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   // ─── available ────────────────────────────
   if (status === "available") {
     return (
-      <>
-        <button
-          className="header-badge header-badge-update cursor-pointer"
-          title={`发现新版本 v${ver}，点击查看更新详情`}
-          onClick={handleClick}
-        >
-          <Icon name="arrowUp" size={10} />
-          <span>更新 v{ver}</span>
-        </button>
-        <button
-          type="button"
-          className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-card px-2.5 py-[3px] text-[11px] font-semibold text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
-          title="查看本次更新内容"
-          onClick={() => openUpdateNotes()}
-        >
-          <Icon name="info" size={11} />
-          <span>详情</span>
-        </button>
-      </>
+      <button
+        className="header-badge header-badge-update cursor-pointer"
+        title={`发现新版本 v${ver}，点击查看更新详情`}
+        onClick={handleClick}
+      >
+        <Icon name="arrowUp" size={10} />
+        <span>更新 v{ver}</span>
+      </button>
     );
   }
 

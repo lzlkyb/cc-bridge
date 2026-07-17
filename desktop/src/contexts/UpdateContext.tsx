@@ -12,6 +12,10 @@ export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "
 export interface UpdateInfo {
   version?: string;
   body?: string | null;
+  /** 发布日期（ISO 8601 / RFC 3339），如 "2026-07-17T00:00:00Z" */
+  date?: string | null;
+  /** 当前运行版本，用于弹框里展示 "v旧 → v新" */
+  currentVersion?: string;
 }
 
 export interface UpdateState {
@@ -203,11 +207,11 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
         }),
       );
       unlisteners.push(
-        await listen<{ version: string; body: string | null }>("update:available", (e) => {
+        await listen<{ version: string; body: string | null; date?: string | null; currentVersion?: string }>("update:available", (e) => {
           // 下载进行中（start_update 内部复查会再发 available），保持 downloading 不被回退
           if (downloadingRef.current) return;
           setStatus("available");
-          setUpdate({ version: e.payload.version, body: e.payload.body });
+          setUpdate({ version: e.payload.version, body: e.payload.body, date: e.payload.date, currentVersion: e.payload.currentVersion });
         }),
       );
       unlisteners.push(

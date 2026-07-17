@@ -74,7 +74,9 @@ jobs:
           $changelog = Get-Content -Raw -Path CHANGELOG.md
           # 优先抽取「用户摘要」块（面向最终用户）；没有则降级为整段抓取。
           # 正则要求版本号形如 x.y.z，避免误抓 [Unreleased]。
-          if ($changelog -match '(?s)##\s*\[\d+\.\d+\.\d+\][^\n]*\n.*?###\s*用户摘要\s*\n(.*?)(?=\n###\s|\n##\s|$)') {
+          # 抽取从「用户摘要」到下一个版本头之间的全部内容（含 新增/修复/变更 等分类子块），
+          # 让更新弹框能渲染结构化列表而非单段纯文本墙。
+          if ($changelog -match '(?s)##\s*\[\d+\.\d+\.\d+\][^\n]*\n.*?###\s*用户摘要\s*\n(.*?)(?=\n##\s\[|$)') {
             $notes = $matches[1].Trim()
             "UPDATER_NOTES<<EOF" >> $env:GITHUB_ENV
             $notes >> $env:GITHUB_ENV
