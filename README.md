@@ -1,6 +1,19 @@
-# cc-bridge — 本地 MCP 文件桥接服务
+# cc-bridge — 让远程 Claude Code 直接读写你本机文件
 
-> 让远程 Linux 服务器上的 Claude Code 通过标准 MCP 协议直接读写本地 Windows 文件。
+[![最新版本](https://img.shields.io/github/v/release/lzlkyb/cc-bridge)](https://github.com/lzlkyb/cc-bridge/releases)
+[![开源协议](https://img.shields.io/github/license/lzlkyb/cc-bridge)](LICENSE)
+[![Star 数](https://img.shields.io/github/stars/lzlkyb/cc-bridge)](https://github.com/lzlkyb/cc-bridge/stargazers)
+[![下载量](https://img.shields.io/github/downloads/lzlkyb/cc-bridge/total)](https://github.com/lzlkyb/cc-bridge/releases)
+
+> 你在本地 Windows 写代码，Claude Code 跑在远程 Linux？别再 scp 来回倒腾文件了——装个 cc-bridge，让远端的 Claude Code 像在本地一样直接读、写、搜你的文件，全程有白名单、审计日志、还能一键还原。安装包只有 **3.4MB**。
+
+### 界面一览
+
+| 连接页 | 安全页 | 设置页 | 日志 / 审计页 |
+|---|---|---|---|
+| ![连接页](docs/images/connect.png) | ![安全页](docs/images/security.png) | ![设置页](docs/images/settings.png) | ![日志页](docs/images/logs.png) |
+
+> 截图存放于 `docs/images/`：`connect.png`（连接页：状态 / 一键复制命令）、`security.png`（安全页：白名单 + 开关）、`settings.png`（设置页：IP 变更检测 / 备份浏览器 / 启动项等开关）、`logs.png`（日志页：审计时间线）。建议单张压缩到 500KB 以内。
 
 ## 这是什么
 
@@ -15,6 +28,15 @@
 3. **缺少智能化操作**：只能终端命令操作文件，没有批量重构、代码分析能力。
 4. **操作无法审计**：不知道 Claude 改了哪些文件，误操作后无法追溯恢复。
 
+## 快速开始（约 1 分钟）
+
+1. **下载安装**：到 [Releases](https://github.com/lzlkyb/cc-bridge/releases) 下载 `cc-bridge_x.x.x_x64-setup.exe`（国内用户建议走 Gitee 镜像，下载更快），双击安装并启动。
+2. **开放目录**：打开「安全」页 → 点「浏览」把你的工作目录加进白名单（默认拒绝一切访问，安全优先）。
+3. **复制连接命令**：切到「连接」页，复制给出的 `claude mcp add ...` 命令。
+4. **远端接入**：粘贴到远程 Linux 终端执行，Claude Code 立刻就能读写你本机的文件了。
+
+> 仅建议在同一内网 / VPN 下使用，不要暴露到公网（详见文末「已知限制」）。
+
 ## 架构
 
 ```
@@ -25,7 +47,7 @@
         │
         └─ cc-bridge.exe ── 单进程 Tauri 2 桌面应用
               │
-              ├─ 嵌入式 axum HTTP 服务器 ── MCP JSON-RPC 协议 + 12 个文件工具
+              ├─ 嵌入式 axum HTTP 服务器 ── MCP JSON-RPC 协议 + 17 个文件工具
               │                             + 安全校验 + 自动备份 + 限流 + 审计
               │
               ├─ SQLite 配置存储 ── 原子更新，无竞态
@@ -87,9 +109,9 @@ cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
 │  (MCP 客户端)       │────────────────▶│                                  │
 │                     │   内网:7823     │   ┌─ axum HTTP 服务器 ─┐         │
 │  通过 MCP 协议       │                 │   │  POST /mcp         │         │
-│  调用 15 个文件工具   │                 │   │  Bearer token 认证  │         │
+│  调用 17 个文件工具   │                 │   │  Bearer token 认证  │         │
 │                     │                 │   │  JSON-RPC dispatch │         │
-└─────────────────────┘                 │   │  → 15 个工具处理器  │──┐      │
+└─────────────────────┘                 │   │  → 17 个工具处理器  │──┐      │
                                         │   │  → 安全校验         │  │      │
                                         │   │  → 审计日志         │  │      │
                                         │   └────────────────────┘  │      │
@@ -136,7 +158,7 @@ Claude Code 对话中触发工具调用:
         │
         ▼
   POST /mcp  ──  tools/list (发现可用工具)
-        │          返回 15 个工具的 name + description + inputSchema
+        │          返回 17 个工具的 name + description + inputSchema
         ▼
   POST /mcp  ──  tools/call (实际调用)
         │
@@ -245,7 +267,7 @@ Claude Code 对话中触发工具调用:
 
 ## 功能清单
 
-### 15 个 MCP 工具（远程 Claude Code 直接调用）
+### 17 个 MCP 工具（远程 Claude Code 直接调用）
 
 | 工具 | 作用 |
 |---|---|
@@ -254,12 +276,14 @@ Claude Code 对话中触发工具调用:
 | `read_files` | 批量读文件，支持指定行范围（1-based）；返回内容 + 编码 + 换行风格；「读取编码自适应」开关开启时自动识别 GBK/GB18030 统一转 UTF-8（默认关，按 UTF-8 读），可传 `encoding` 强制指定（始终生效） |
 | `write_files` | 批量写/新建文件，自动建父目录，覆盖前自动备份 |
 | `edit_files` | 精准字符串替换（对标 native Edit），`oldString` 需唯一匹配（或 `replaceAll`），保留原文件编码（GBK 改完仍 GBK），改前备份 |
+| `notebook_edit` | 编辑 Jupyter 笔记本（`.ipynb`）：按索引替换/插入/删除单元格，保留其它元数据 |
 | `delete_files` | 批量删除文件（不删目录），删前自动备份 |
 | `move_files` | 批量移动/重命名，跨盘自动 copy+delete 降级 |
 | `copy_files` | 批量复制，目标已存在则先备份 |
 | `create_directory` | 创建目录（含缺失父目录），幂等 |
 | `remove_directory` | 删除目录，默认仅删空目录，`recursive=true` 递归删除整树（危险，不备份） |
 | `search_files` | 按文件名 glob + 内容关键字/正则全文搜索 |
+| `batch` | 一次往返批量执行多个工具调用，把 N 次网络往返合并为 1 次（远程链路最大延迟优化）；每个子操作复用同样的白名单 / 只读校验；非事务，出错即停但不回滚已完成写入 |
 | `analyze_file` | 编码检测 + 语言识别 + 函数/类数量启发式估算 |
 | `run_command` | 执行 Shell 命令（`cmd /C`），前台等待结果或 `background=true` 后台运行；**默认关闭**，需在『安全』页开启「命令执行」开关（等同于授予远程任意代码执行权限），只读模式下无条件禁止；整树 taskkill 终止子进程 |
 | `get_command_output` | 增量拉取后台命令的 stdout/stderr（按偏移量），附带是否已结束、退出码 |
@@ -384,7 +408,7 @@ cc-bridge/
             └── mcp/                    # MCP 协议实现
                 ├── mod.rs
                 ├── http.rs             # axum 路由 + JSON-RPC dispatch
-                └── tools/              # 15 个工具处理器
+                └── tools/              # 17 个工具处理器
                     ├── mod.rs
                     ├── list_allowed_roots.rs
                     ├── list_directory.rs
