@@ -460,9 +460,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let mut alerting = false;
                         loop {
                             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                            let current_ips = network::get_lan_ips();
+                            // 刷新缓存供 get_status 读取，避免其在 5s 轮询里实时调 UdpSocket 闪黑窗
+                            *watch_state.lan_ips.lock().unwrap() = current_ips.clone();
                             let last_ip = watch_state.config.read().await.last_selected_ip.clone();
                             let changed = match &last_ip {
-                                Some(ip) => !network::get_lan_ips().contains(ip),
+                                Some(ip) => !current_ips.contains(ip),
                                 None => false,
                             };
                             let running = watch_state

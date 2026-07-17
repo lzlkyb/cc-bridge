@@ -115,6 +115,9 @@ pub struct AppState {
     pub audit_count: AtomicU64,
     /// 各工具累计调用次数（热门工具 Top3 用）。DashMap 并发安全。
     pub tool_counts: DashMap<String, u64>,
+    /// 本机 IPv4 地址列表缓存（避免 get_lan_ips 里的 UdpSocket::connect 在 5s 轮询里反复
+    /// 短暂分配控制台导致的 cmd 黑窗；由后台 IP 检测任务每 15s 刷新）。
+    pub lan_ips: StdMutex<Vec<String>>,
 }
 
 impl AppState {
@@ -145,6 +148,7 @@ impl AppState {
             auth_denies: AtomicU64::new(0),
             audit_count: AtomicU64::new(0),
             tool_counts: DashMap::new(),
+            lan_ips: StdMutex::new(crate::network::get_lan_ips()),
         }
     }
 

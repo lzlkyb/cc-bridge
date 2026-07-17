@@ -170,7 +170,9 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
     let uptime = state.uptime_seconds().await;
     let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
     let startup_error = state.startup_error.lock().unwrap().clone();
-    let lan_ips = network::get_lan_ips();
+    // 不在此处调 network::get_lan_ips()——其内部 UdpSocket::connect 在 Windows GUI 子系统上
+    // 会短暂分配控制台导致 cmd 黑窗闪烁。改为读 AppState 缓存（由后台 IP 检测任务每 15s 刷新）。
+    let lan_ips = state.lan_ips.lock().unwrap().clone();
 
     // 防火墙状态：优先读缓存（后台定时刷新）。缓存尚未初始化时做一次同步查询，
     // 保证首屏即可拿到真实状态，避免前几次轮询都返回 unknown。
