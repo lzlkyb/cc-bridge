@@ -668,6 +668,13 @@ pub async fn get_lan_ips() -> Result<Vec<String>, String> {
     Ok(network::get_lan_ips())
 }
 
+/// 强制重新探测 Git Bash（供设置页「刷新检测」按钮调用）。
+/// 返回是否检测到 bash.exe。
+#[tauri::command]
+pub async fn refresh_bash_detection() -> Result<bool, String> {
+    Ok(crate::mcp::tools::shell::refresh_bash_detection().is_some())
+}
+
 /// 用户在 Connect 页选中（或自动默认选中，或点击变更提示 banner 的"标记已处理"）时落盘，
 /// 作为下次判断"地址是否变化"的基线。
 #[tauri::command]

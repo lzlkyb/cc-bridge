@@ -7,6 +7,7 @@ import { Icon } from "../ui/icon";
 import { ToggleRow } from "../ui/ToggleRow";
 import { useToast } from "../ui/toast";
 import { ConfirmModal } from "../ui/ConfirmModal";
+import { Spinner } from "../ui/Spinner";
 
 /**
  * 设置页「功能开关」卡。
@@ -30,6 +31,7 @@ export function SettingsToggles({
   const [ackShellRisk, setAckShellRisk] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [savedKey, setSavedKey] = useState<string | null>(null);
+  const [refreshingBash, setRefreshingBash] = useState(false);
   const { toast } = useToast();
 
   // 由 Header 安全徽章点击触发的定位 + 高亮。
@@ -176,7 +178,7 @@ export function SettingsToggles({
           saved={savedKey === "encoding"}
         />
         {/* 命令执行壳层：cmd / bash 分段选择（shell_type UI 开关）。
-         * bashAvailable=false（未检测到 Git for Windows）时 bash 置灰、点击不保存并提示。 */}
+         * bashAvailable=false（未检测到 Git for Windows）时 bash 置灰、显示「刷新检测」按钮。 */}
         <ShellTypeRow
           value={status?.shellType ?? "cmd"}
           bashAvailable={status?.bashAvailable ?? true}
@@ -184,6 +186,23 @@ export function SettingsToggles({
           onBashUnavailable={() =>
             toast("未检测到 Git for Windows，bash 不可用，已保持 cmd", "warning")
           }
+          onRefreshBash={async () => {
+            setRefreshingBash(true);
+            try {
+              const found = await invoke<boolean>("refresh_bash_detection");
+              if (found) {
+                toast("已检测到 Git Bash，现在可以切换到 bash 了", "success");
+              } else {
+                toast("仍未检测到 Git for Windows，请确认已安装", "warning");
+              }
+            } catch {
+              toast("检测失败，请稍后重试", "error");
+            } finally {
+              setRefreshingBash(false);
+              onSaved(); // 触发 get_status 刷新 bashAvailable
+            }
+          }}
+          refreshingBash={refreshingBash}
           saved={savedKey === "shelltype"}
           last
         />
@@ -244,12 +263,15 @@ function GroupTitle({ children }: { children: ReactNode }) {
 /* 命令执行壳层分段选择：cmd（默认）/ bash（Git Bash）。
  * 复用 ToggleRow 行布局（左标签+描述，右控件），控件为两按钮分段器而非开关。
  * bashAvailable=false 时 bash 按钮置灰（aria-disabled + 弱化样式），点击不触发保存，
- * 改为调用 onBashUnavailable（弹 toast 提示先安装 Git for Windows），保持 shell_type 为 cmd。 */
+ * 改为调用 onBashUnavailable（弹 toast 提示先安装 Git for Windows），保持 shell_type 为 cmd。
+ * bashAvailable=false 时还会显示「刷新检测」按钮，安装 Git for Windows 后点击即重新探测。 */
 function ShellTypeRow({
   value,
   bashAvailable = true,
   onSelect,
   onBashUnavailable,
+  onRefreshBash,
+  refreshingBash = false,
   saved,
   last = false,
 }: {
@@ -257,6 +279,8 @@ function ShellTypeRow({
   bashAvailable?: boolean;
   onSelect: (next: "cmd" | "bash") => void;
   onBashUnavailable?: () => void;
+  onRefreshBash?: () => void;
+  refreshingBash?: boolean;
   saved?: boolean;
   last?: boolean;
 }) {
@@ -279,8 +303,31 @@ function ShellTypeRow({
           默认 <b>cmd</b>（零依赖）；选 <b>bash</b> 走 Git Bash，支持 POSIX 语法 / jq / find / 管道。需本机已装 Git for Windows；切换即时生效，无需重启。
         </div>
         {!bashAvailable && (
-          <div className="mt-1 text-xs text-warning">
-            ⚠ 未检测到 Git for Windows（bash.exe），bash 暂不可用；安装后在此切换即可生效，无需重启。
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="text-xs text-warning">
+              ⚠ 未检测到 Git for Windows，bash 暂不可用
+            </span>
+            {onRefreshBash && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+                onClick={onRefreshBash}
+                disabled={refreshingBash}
+              >
+                {refreshingBash ? (
+                  <>
+                    <Spinner size={10} />
+                    检测中…
+                  </>
+                ) : (
+                  <>
+                    <Icon name="refresh" size={11} />
+                    刷新检测
+                  </>
+                )}
+              </button>
+            )}
+            <span className="text-[11px] text-muted-foreground/60">安装后点击即生效，无需重启</span>
           </div>
         )}
       </div>

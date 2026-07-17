@@ -13,7 +13,7 @@
 //!   每条命令仍独立 spawn、逐条重校验白名单，**不削弱**任何安全围栏。
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 /// 命令执行使用的 shell 类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,15 +74,31 @@ fn detect_bash_exe_inner() -> Option<PathBuf> {
     None
 }
 
-/// 缓存探测结果：启动时首次调用扫描磁盘，之后永不重探。
-/// 若安装 Git for Windows 后需要 bash，重启 cc-bridge 即可识别。
-static BASH_EXE: OnceLock<Option<PathBuf>> = OnceLock::new();
+/// 缓存探测结果。启动时首次 `get_status` 触发初始化，之后只读不扫磁盘。
+/// 用户安装 Git for Windows 后，通过设置页「刷新检测」按钮调用 `refresh_bash_detection()` 更新。
+static BASH_EXE: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// 是否已完成首次探测（避免 5s 轮询里 None 未命中而反复初始化）。
+static BASH_INIT: Mutex<bool> = Mutex::new(false);
 
-/// 返回探测到的 bash.exe 路径。
-/// 仅在首次调用时扫描文件系统（`OnceLock`），之后走内存缓存，
-/// 不会在 5s 轮询 `get_status` 时反复触发 Windows 文件系统钩子。
+/// 返回探测到的 bash.exe 路径（纯缓存读取，不触发磁盘扫描）。
+/// 首次调用时执行一次扫描写入缓存，之后仅读缓存。
 pub fn detect_bash_exe() -> Option<PathBuf> {
-    BASH_EXE.get_or_init(detect_bash_exe_inner).clone()
+    let mut inited = BASH_INIT.lock().unwrap();
+    if !*inited {
+        *inited = true;
+        drop(inited);
+        let found = detect_bash_exe_inner();
+        *BASH_EXE.lock().unwrap() = found;
+    }
+    BASH_EXE.lock().unwrap().clone()
+}
+
+/// 强制重新探测 bash.exe（供设置页「刷新检测」按钮调用）。
+/// 覆盖缓存并返回新的探测结果。
+pub fn refresh_bash_detection() -> Option<PathBuf> {
+    let found = detect_bash_exe_inner();
+    *BASH_EXE.lock().unwrap() = found.clone();
+    found
 }
 
 /// Windows 原生路径 → MSYS/Git Bash 的 POSIX 路径。

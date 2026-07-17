@@ -547,6 +547,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::start_mcp_server,
             commands::clear_audit_log,
             commands::get_lan_ips,
+            commands::refresh_bash_detection,
             commands::set_selected_ip,
             commands::refresh_firewall,
             commands::open_firewall_port,
