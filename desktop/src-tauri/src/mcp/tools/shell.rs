@@ -13,9 +13,7 @@
 //!   每条命令仍独立 spawn、逐条重校验白名单，**不削弱**任何安全围栏。
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::OnceLock;
 
 /// 命令执行使用的 shell 类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,42 +74,15 @@ fn detect_bash_exe_inner() -> Option<PathBuf> {
     None
 }
 
-static BASH_EXE: Mutex<Option<PathBuf>> = Mutex::new(None);
-/// 上次探测时间（用于未安装时的节流，避免 5s 轮询每次都触发文件系统扫描）。
-static BASH_LAST_PROBE: Mutex<Option<Instant>> = Mutex::new(None);
-/// 是否已探测过（至少跑过一次 detect_bash_exe_inner）。
-static BASH_PROBED: AtomicBool = AtomicBool::new(false);
-
-/// bash 未安装时重新探测的最小间隔（秒）。
-const BASH_REPROBE_SECS: u64 = 30;
+/// 缓存探测结果：启动时首次调用扫描磁盘，之后永不重探。
+/// 若安装 Git for Windows 后需要 bash，重启 cc-bridge 即可识别。
+static BASH_EXE: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// 返回探测到的 bash.exe 路径。
-/// - 已确认存在 → 缓存命中直接返回。
-/// - 已确认不存在且距上次探测 < 30s → 只读缓存，不重探（避免 5s 轮询反复扫磁盘）。
-/// - 从未探测或距上次 > 30s → 重新探测（「安装 Git for Windows 后无需重启」支持）。
+/// 仅在首次调用时扫描文件系统（`OnceLock`），之后走内存缓存，
+/// 不会在 5s 轮询 `get_status` 时反复触发 Windows 文件系统钩子。
 pub fn detect_bash_exe() -> Option<PathBuf> {
-    // 已确认存在 → 直接返回
-    if let Some(cached) = BASH_EXE.lock().unwrap().clone() {
-        return Some(cached);
-    }
-
-    // 已探测过但未找到：节流，避免每 5 秒重新扫文件系统 → cmd 黑窗
-    if BASH_PROBED.load(Ordering::Relaxed) {
-        let mut last = BASH_LAST_PROBE.lock().unwrap();
-        if let Some(t) = *last {
-            if t.elapsed().as_secs() < BASH_REPROBE_SECS {
-                return None; // 冷却中，不重探
-            }
-        }
-        *last = Some(Instant::now());
-    } else {
-        BASH_PROBED.store(true, Ordering::Relaxed);
-        *BASH_LAST_PROBE.lock().unwrap() = Some(Instant::now());
-    }
-
-    let found = detect_bash_exe_inner();
-    *BASH_EXE.lock().unwrap() = found.clone();
-    found
+    BASH_EXE.get_or_init(detect_bash_exe_inner).clone()
 }
 
 /// Windows 原生路径 → MSYS/Git Bash 的 POSIX 路径。
