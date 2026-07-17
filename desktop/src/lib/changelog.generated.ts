@@ -4,6 +4,20 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.5",
+    date: "2026-07-17",
+    items: [
+      { category: "feat", text: "bash 命令执行壳层支持：设置页新增加「命令执行壳层」分段控件（cmd / bash），选择 bash 后命令通过 Git Bash 执行（支持 POSIX 路径与语法如 `rm`/`cp`/`grep`/`sed`）。" },
+      { category: "feat", text: "远端感知：`tools/list` 按当前壳层动态生成 run_command 工具描述（bash 下提示用 POSIX 路径/语法、`$HOME`、`/tmp` 等），重连/新会话即生效。" },
+      { category: "feat", text: "返回回声：每次 `run_command` 返回额外 `shell` 字段（`\"cmd\"` 或 `\"bash\"`），已连会话无需重连，从工具返回中即可获知当前壳层并自行纠正命令语法。" },
+      { category: "feat", text: "bash 探测定时生效：Git for Windows 安装后无需重启服务端，下一次调用即刻检测到（`OnceLock` 改 `Mutex`，未命中时重探）。" },
+      { category: "feat", text: "bash 不可用前端拦截：本机未安装 Git for Windows 时，设置页 bash 选项置灰 + 灰字提示，点击不保存并弹 toast，不用等到实际执行命令时才知道 bash 不可用。" },
+      { category: "fix", text: "托盘「复制连接命令」不再依赖 webview 焦点：原实现走「Rust emit 事件 → 前端复制」通道，窗口隐藏/失焦时前端 `writeText` 调用必失败 → 弹「复制失败，请手工复制」。改为 Rust 端直接用 `tauri-plugin-clipboard-manager` 写系统剪贴板 + 系统通知反馈，彻底绕开 webview 依赖。" },
+      { category: "improve", text: "`edit_files` 匹配失败时给出空白告警：`old_string` 未匹配到时检测首尾是否多带空白字符（空格/制表符/换行，模型常见失误），命中返回 `warning` 字段提示。" },
+      { category: "improve", text: "MCP `initialize` 握手文案新增提示：建议连接后第一步调用 `list_allowed_roots`，让远程 Claude Code 无需再手动 read_files 获取项目规则。" },
+    ],
+  },
+  {
     version: "2.3.4",
     date: "2026-07-16",
     items: [
@@ -157,13 +171,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "后台命令整树终止改用社区成熟方案（process-wrap），替代手写的 Windows 进程管理，跨平台更可靠。" },
       { category: "improve", text: "修复「先启动子进程再挂入进程组」之间的竞态窗口，孙进程不再漏杀。" },
       { category: "improve", text: "移除自写的进程管理代码，依赖更精简；`cargo test` 41 全绿、零警告。" },
-    ],
-  },
-  {
-    version: "2.2.15",
-    date: "2026-07-10",
-    items: [
-      { category: "improve", text: "当前为启发式拦截（最低成本兜底），误伤与漏拦并存，后续会升级为更严谨的沙箱。" },
     ],
   },
 ];
