@@ -92,8 +92,9 @@ export function buildDisplayHost(status: StatusResponse | undefined, selectedIp:
 }
 
 /** 基础接入命令（不含作用域开关），用于拼接到 claude mcp add。 */
-export function buildBaseCommand(displayHost: string, port: number, token: string): string {
-  return `claude mcp add --transport http cc-bridge http://${displayHost}:${port}/mcp --header "Authorization: Bearer ${token}"`;
+export function buildBaseCommand(displayHost: string, port: number, token: string, transport: string = "http"): string {
+  const urlSuffix = transport === "sse" ? "/mcp/sse" : "/mcp";
+  return `claude mcp add --transport ${transport} cc-bridge http://${displayHost}:${port}${urlSuffix} --header "Authorization: Bearer ${token}"`;
 }
 
 /**

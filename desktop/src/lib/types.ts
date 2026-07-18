@@ -51,6 +51,8 @@ export interface StatusResponse {
   shellEnabled: boolean;
   /** 命令执行壳层：cmd（默认）或 bash（Git Bash） */
   shellType: string;
+  /** MCP 传输协议：http（默认，JSON-RPC）或 sse（流式输出） */
+  transport: string;
   /** 本机是否检测到 Git for Windows 的 bash.exe。false 时前端「命令执行壳层」的 bash 选项置灰且点击提示，不保存。 */
   bashAvailable: boolean;
   running: boolean;
@@ -94,6 +96,8 @@ export interface ConfigPatch {
   shellEnabled?: boolean;
   /** 命令执行壳层：cmd 或 bash。前端「命令执行壳层」分段控件写入。 */
   shellType?: string;
+  /** MCP 传输协议：http 或 sse。前端「MCP 传输协议」分段控件写入。 */
+  transport?: string;
   scope?: string;
 }
 

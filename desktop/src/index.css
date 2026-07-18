@@ -868,6 +868,24 @@ body {
   animation: vh-skel-shimmer 1.3s ease-in-out infinite;
 }
 
+/* 版本历史弹框全屏（requestFullscreen） */
+.vh-fullscreen-container {
+  transition: all 0.25s ease;
+}
+.vh-fullscreen-container:fullscreen {
+  background: hsl(var(--background));
+  padding: 24px;
+  overflow-y: auto;
+}
+.vh-fullscreen-container:fullscreen .modal-surface {
+  /* 全屏时去掉 Modal 的尺寸限制，铺满 */
+  max-height: 100vh !important;
+  max-width: 100vw !important;
+  width: 100% !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+}
+
 /* ═══ PastePanda 风格设置行 ═══ */
 .s-sec-label {
   font-size: 10px; font-weight: 700; text-transform: uppercase;
@@ -937,6 +955,12 @@ select:focus-visible,
 [tabindex]:focus-visible {
   outline: 2px solid hsl(var(--ring));
   outline-offset: 2px;
+}
+
+/* 日志搜索框：外层容器已用 focus-within:ring 显示聚焦态，
+   抑制输入框自身 focus-visible 描边（未分层规则，特异性压过全局 input:focus-visible）。*/
+.log-search-input:focus-visible {
+  outline: none;
 }
 
 /* 命令代码框 */

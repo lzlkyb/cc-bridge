@@ -77,12 +77,18 @@ pub fn build_connect_command(
     token: &str,
     lan_ips: &[String],
     selected_ip: Option<&str>,
+    transport: &str,
 ) -> String {
     let display_host = resolve_display_host(host, lan_ips, selected_ip);
+    let url_suffix = if transport == "sse" {
+        "/mcp/sse"
+    } else {
+        "/mcp"
+    };
 
     format!(
-        "claude mcp add --transport http cc-bridge http://{}:{}/mcp --header \"Authorization: Bearer {}\"",
-        display_host, port, token
+        "claude mcp add --transport {} cc-bridge http://{}:{}{} --header \"Authorization: Bearer {}\"",
+        transport, display_host, port, url_suffix, token
     )
 }
 

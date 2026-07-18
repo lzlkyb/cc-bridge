@@ -36,6 +36,9 @@ pub struct BridgeConfig {
     /// Git for Windows）。仅影响 run_command/stop_command 的壳层；安全围栏
     /// （路径白名单/Bearer 鉴权/限流）与 shell 无关，bash 模式不削弱任何一条。
     pub shell_type: String,
+    /// MCP 传输协议：`http`（默认，JSON-RPC）或 `sse`（流式，run_command 实时可见）。
+    /// 仅影响连接命令生成（URL 后缀与 --transport 参数），服务端两端点共存。
+    pub transport: String,
     /// 后台命令结束后保留时长（秒）。默认 120（2 分钟），超时自动清理。0 表示立即清理。
     pub command_cleanup_secs: u64,
     /// 用户上次在 Connect 页确认使用的本机 IP（多网卡场景）。用于检测网卡地址是否
@@ -77,6 +80,7 @@ impl Default for BridgeConfig {
             shell_enabled: false,
             session_cwd_enabled: false,
             shell_type: "cmd".into(),
+            transport: "http".into(),
             command_cleanup_secs: 120,
             last_selected_ip: None,
             scope: None,
@@ -158,6 +162,14 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             }
             "last_selected_ip" => config.last_selected_ip = parse_or_warn(key, value, None),
             "scope" => config.scope = parse_or_warn(key, value, None),
+            "transport" => {
+                let s = parse_or_warn::<String>(key, value, "http".into());
+                config.transport = if s == "sse" {
+                    "sse".into()
+                } else {
+                    "http".into()
+                };
+            }
             _ => {}
         }
     }
@@ -276,6 +288,7 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         &to_value(&config.last_selected_ip).unwrap(),
     )?;
     save_config_field(conn, "scope", &to_value(&config.scope).unwrap())?;
+    save_config_field(conn, "transport", &to_value(&config.transport).unwrap())?;
 
     conn.execute("COMMIT", [])
         .map_err(|e| format!("Failed to commit full config: {e}"))?;

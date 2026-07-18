@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import { McpScope, buildTokenSedCommand, copyText } from "../../lib/utils";
@@ -6,6 +6,7 @@ import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { Alert, AlertDescription } from "../ui/alert";
 import { useToast } from "../ui/toast";
+import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 
 /**
  * 访问令牌管理（可折叠）。从 ConnectTab 抽离，收口 Token 相关的 5 个局部状态，
@@ -16,18 +17,23 @@ export function TokenManager({
   status,
   onRefresh,
   projectPath,
+  expanded,
+  onToggle,
 }: {
   status?: StatusResponse;
   onRefresh: () => void;
   projectPath: string;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const [showToken, setShowToken] = useState(false);
   const [confirmingRegen, setConfirmingRegen] = useState(false);
   const [regenDone, setRegenDone] = useState(false);
-  const [tokenOpen, setTokenOpen] = useState(false);
   const [oldToken, setOldToken] = useState("");
   const [copied, setCopied] = useState(false);
   const { toast } = useToast();
+  const tokenBody = useAutoAnimateRM<HTMLDivElement>();
+  const btnRef = useRef<HTMLButtonElement>(null);
 
   // 原地替换 Bearer，不 remove+add（保留服务器条目与授权状态，避免重新授权）。
   // 作用域读持久化的 status.scope（当初接入确认的作用域），而非 UI 开关，避免匹配错文件。
@@ -47,15 +53,25 @@ export function TokenManager({
     toast("Token 已重新生成，请复制新连接命令到远程服务器", "warning");
   };
 
-  const expanded = tokenOpen || confirmingRegen || regenDone;
+  const showBody = expanded || confirmingRegen || regenDone;
+
+  useEffect(() => {
+    if (showBody) {
+      requestAnimationFrame(() => {
+        btnRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        window.scrollBy({ top: -60, behavior: "instant" });
+      });
+    }
+  }, [showBody]);
 
   return (
     <>
       <button
         type="button"
         className="collapsible-head w-full text-left"
-        onClick={() => setTokenOpen((v) => !v)}
-        aria-expanded={expanded}
+        onClick={onToggle}
+        aria-expanded={showBody}
+        ref={btnRef}
       >
         <span
           className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-[#F59E0B] to-[#D97706] shadow-glow-warning"
@@ -71,13 +87,14 @@ export function TokenManager({
         <Icon
           name="chevronDown"
           size={16}
-          className={`collapsible-chev ${expanded ? "open" : ""}`}
+          className={`collapsible-chev ${showBody ? "open" : ""}`}
           aria-hidden="true"
         />
       </button>
 
-      {expanded && (
-        <div className="collapsible-body pl-9">
+      <div ref={tokenBody}>
+        {showBody && (
+          <div className="collapsible-body pl-9">
           <div className="step-row flex items-center gap-3">
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">机密信息</span>
@@ -148,6 +165,7 @@ export function TokenManager({
           )}
         </div>
       )}
+      </div>
     </>
   );
 }

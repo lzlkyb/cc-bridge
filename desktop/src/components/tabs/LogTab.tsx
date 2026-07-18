@@ -232,13 +232,13 @@ function LogTabImpl() {
         <CardTitle icon={<Icon name="log" />}>审计日志</CardTitle>
         <div className="flex items-center gap-2 flex-wrap">
           {/* Search */}
-          <div className="flex items-center gap-1.5 h-8 rounded-md border border-input bg-background px-2">
+          <div className="flex items-center gap-1.5 h-8 rounded-md bg-background px-2 transition-shadow focus-within:ring-2 focus-within:ring-ring">
             <Icon name="search" size={13} className="text-muted-foreground shrink-0" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="搜索工具 / 参数 / IP…"
-              className="w-28 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+              className="w-28 bg-transparent text-xs outline-none log-search-input placeholder:text-muted-foreground"
             />
           </div>
           {/* Tool filter */}

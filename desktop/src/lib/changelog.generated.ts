@@ -4,6 +4,32 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.8",
+    date: "2026-07-18",
+    items: [
+      { category: "feat", text: "传输模式开关（HTTP / SSE）：设置页新增「传输协议」切换，默认 HTTP；切到 SSE 时弹出现成迁移命令（移除旧 HTTP 配置 + 用 SSE 端点重新添加），复制即可让远端改用流式连接" },
+      { category: "feat", text: "SSE 流式服务端：新增 SSE 端点与消息通道，支持流式返回命令执行结果，远端可实时看到输出" },
+      { category: "feat", text: "连接页命令随传输模式联动：选 SSE 时连接命令与托盘复制命令自动指向 SSE 端点" },
+      { category: "fix", text: "启动 / 探测 bash 时偶发闪一下黑窗口：`where bash` / `where git` 探测加上不弹窗标志" },
+      { category: "fix", text: "日志页搜索框聚焦时出现一圈难看的内边框高亮：调整聚焦样式，只保留外层高亮" },
+      { category: "improve", text: "连接页整体重构为手风琴模式：首次使用自动展开「权限自动授权 / 接入步骤」，之后默认收起、可手动展开；一次只展开一个区块，展开时平滑动画并自动滚动到视野内" },
+      { category: "improve", text: "连接页「传输安全提醒」常驻提示移除，避免造成不必要的使用顾虑" },
+      { category: "improve", text: "版本历史弹框「打开」按钮风格统一（去掉箭头、文字居中）；新增一键全屏放大，长内容查看更方便" },
+      { category: "improve", text: "连接页、令牌管理、命令面板等折叠 / 列表增删增加平滑过渡动画，交互更顺滑" },
+      { category: "improve", text: "ConnectTab 组件瘦身（约 333 → 190 行），结构更清晰、便于维护" },
+    ],
+  },
+  {
+    version: "2.3.7",
+    date: "2026-07-18",
+    items: [
+      { category: "improve", text: "审计日志读取更快：空闲轮询时不再反复解析整个日志文件" },
+      { category: "improve", text: "白名单校验更快：允许访问的目录路径只标准化一次，工具反复调用不再重复计算" },
+      { category: "improve", text: "网络 IP 列表获取更快：不再每 5 秒扫描一遍网卡，联网变化时才刷新" },
+      { category: "improve", text: "更新弹框内容展示更聚焦，只呈现对你有用的要点" },
+    ],
+  },
+  {
     version: "2.3.6",
     date: "2026-07-17",
     items: [
@@ -138,27 +164,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "安全概览标题与展开箭头合并为一行，整行可点。" },
       { category: "improve", text: "全应用统一为「CC Bridge」名称（此前部分界面显示小写 cc-bridge）。" },
       { category: "improve", text: "移除冗余输入组件、改用语内联输入；补充图标；Rust 与 TypeScript 均零警告。" },
-    ],
-  },
-  {
-    version: "2.2.17",
-    date: "2026-07-10",
-    highlights: [
-      "新增 Notebook 编辑能力，AI 可直接改 .ipynb",
-    ],
-    items: [
-      { category: "feat", text: "新增 `notebook_edit` 工具：可按单元格对 `.ipynb` 笔记本做替换 / 插入 / 删除，AI 编辑 Notebook 更顺手（只读模式会拒绝该写类工具）。" },
-      { category: "improve", text: "搜索文件增强：支持大小写不敏感、上下文行、行号、输出模式（仅路径 / 计数 / 内容）等富选项。" },
-      { category: "improve", text: "新增 11 个单元测试，测试套件 41 → 52 全绿。" },
-    ],
-  },
-  {
-    version: "2.2.16",
-    date: "2026-07-10",
-    items: [
-      { category: "improve", text: "后台命令整树终止改用社区成熟方案（process-wrap），替代手写的 Windows 进程管理，跨平台更可靠。" },
-      { category: "improve", text: "修复「先启动子进程再挂入进程组」之间的竞态窗口，孙进程不再漏杀。" },
-      { category: "improve", text: "移除自写的进程管理代码，依赖更精简；`cargo test` 41 全绿、零警告。" },
     ],
   },
 ];

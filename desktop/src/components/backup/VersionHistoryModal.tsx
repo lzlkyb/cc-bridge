@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { invoke } from "../../lib/tauri";
 import type {
   BackupListResult,
@@ -97,7 +97,7 @@ function diffLineClass(kind: DiffLine["kind"]): string {
 function DiffLineRow({ l }: { l: NumberedLine }) {
   const sign = l.kind === "added" ? "+" : l.kind === "removed" ? "-" : " ";
   return (
-    <div className={`flex gap-2 ${diffLineClass(l.kind)} whitespace-pre px-2 py-px`}>
+    <div className={`flex gap-2 ${diffLineClass(l.kind)} whitespace-pre-wrap break-words px-2 py-px`}>
       <span className="w-7 shrink-0 select-none text-right text-muted-foreground/60">{l.beforeNo ?? ""}</span>
       <span className="w-7 shrink-0 select-none text-right text-muted-foreground/60">{l.afterNo ?? ""}</span>
       <span>{sign}{l.text}</span>
@@ -244,6 +244,20 @@ export function VersionHistoryModal({
   const [openSet, setOpenSet] = useState<Set<string>>(new Set());
   const [curState, setCurState] = useState<Record<string, DiffState>>({});
   const [adjState, setAdjState] = useState<Record<string, DiffState>>({});
+  const modalRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = modalRef.current;
+    if (!el) return;
+    const onFs = () => {
+      if (!document.fullscreenElement) {
+        // 退出全屏后，如果浏览器还有滚动偏移，先重置
+        window.scrollTo(0, 0);
+      }
+    };
+    el.addEventListener("fullscreenchange", onFs);
+    return () => el.removeEventListener("fullscreenchange", onFs);
+  }, []);
 
   // 打开时默认折叠所有分组（性能：避免一次性渲染全部时间线节点）
   useEffect(() => {
@@ -334,6 +348,7 @@ export function VersionHistoryModal({
 
   return (
     <Modal open={open} onClose={onClose} zIndex={1000} className="modal-box flex max-h-[85vh] w-[1000px] max-w-[92vw] flex-col overflow-hidden rounded-2xl modal-surface">
+      <div ref={modalRef} className="vh-fullscreen-container flex flex-col overflow-hidden">
         {/* 标题栏 */}
         <div className="flex items-center gap-2.5 divider-x px-4 py-3">
           <span className="title-chip">
@@ -345,8 +360,22 @@ export function VersionHistoryModal({
           </span>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => {
+              if (document.fullscreenElement) {
+                document.exitFullscreen();
+              } else {
+                modalRef.current?.requestFullscreen();
+              }
+            }}
             className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground interactive hover:bg-accent hover:text-foreground"
+            aria-label="全屏"
+          >
+            <Icon name="maximize" size={14} />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground interactive hover:bg-accent hover:text-foreground"
             aria-label="关闭"
           >
             <Icon name="close" size={18} />
@@ -664,6 +693,7 @@ export function VersionHistoryModal({
             </>
           )}
         </div>
+      </div>
     </Modal>
   );
 }

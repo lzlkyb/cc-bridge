@@ -46,7 +46,7 @@ export function StepConnectCmd({
   const displayHost = buildDisplayHost(status, selectedIp);
   const port = status?.port ?? 7823;
   const token = status?.token ?? "";
-  const baseCommand = buildBaseCommand(displayHost, port, token);
+  const baseCommand = buildBaseCommand(displayHost, port, token, status?.transport);
   const connectCommand = buildConnectCommand(baseCommand, scope);
   const permissionCommand = buildPermissionGrantCommand(scope, "", false);
 

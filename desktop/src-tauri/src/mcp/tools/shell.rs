@@ -15,6 +15,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 /// 命令执行使用的 shell 类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellType {
@@ -42,6 +45,10 @@ pub fn parse_shell_type(s: &str) -> ShellType {
     }
 }
 
+/// 子进程无控制台窗口标志（Windows）。
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// Git Bash 可执行文件的常见安装位置（按优先级）。
 const BASH_CANDIDATES: &[&str] = &[
     "C:\\Program Files\\Git\\bin\\bash.exe",
@@ -59,14 +66,60 @@ fn detect_bash_exe_inner() -> Option<PathBuf> {
             return Some(PathBuf::from(c));
         }
     }
-    // 兜底：在 PATH 里用 `where bash` 找（Git 安装时通常把 bin 加入 PATH）。
-    if let Ok(out) = std::process::Command::new("where").arg("bash").output() {
+    // Scoop 安装路径（%USERPROFILE%\scoop\apps\git\...）
+    if let Ok(home) = std::env::var("USERPROFILE") {
+        let scoop_bash = Path::new(&home).join("scoop/apps/git/current/usr/bin/bash.exe");
+        if scoop_bash.is_file() {
+            return Some(scoop_bash);
+        }
+    }
+    // 兜底1：在 PATH 里用 `where bash` 找（最可靠，覆盖非标准安装路径如 D:\software\Git\）
+    if let Ok(out) = std::process::Command::new("where")
+        .arg("bash")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
         if out.status.success() {
             let stdout = String::from_utf8_lossy(&out.stdout);
             if let Some(first) = stdout.lines().next() {
                 let p = first.trim();
                 if !p.is_empty() {
                     return Some(PathBuf::from(p));
+                }
+            }
+        }
+    }
+    // 兜底2：通过 where git 找到 git.exe，倒推 bash.exe。
+    // Git for Windows 安装时必定把 cmd\ 加入 PATH，where git 几乎总能命中。
+    // 覆盖 bash 不在 PATH 但 git 在 PATH 的场景（标准安装仅 cmd\ 在 PATH）。
+    if let Ok(out) = std::process::Command::new("where")
+        .arg("git")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                let git_exe = line.trim();
+                if git_exe.is_empty() {
+                    continue;
+                }
+                let git_path = std::path::Path::new(git_exe);
+                // git.exe → cmd\ → <GitRoot>，然后尝试标准与 PortableGit 布局
+                if let Some(git_root) = git_path.parent().and_then(|p| p.parent()) {
+                    for sub in &["bin/bash.exe", "usr/bin/bash.exe"] {
+                        let candidate = git_root.join(sub);
+                        if candidate.is_file() {
+                            return Some(candidate);
+                        }
+                    }
+                }
+                // 部分安装 git.exe 直接在 <GitRoot>\bin\git.exe → bash 在同级
+                if let Some(parent) = git_path.parent() {
+                    let candidate = parent.join("bash.exe");
+                    if candidate.is_file() {
+                        return Some(candidate);
+                    }
                 }
             }
         }
@@ -215,5 +268,64 @@ pub fn build_invocation(
                 cwd_capture_file: file,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_shell_type_bash() {
+        assert_eq!(parse_shell_type("bash"), ShellType::Bash);
+    }
+
+    #[test]
+    fn parse_shell_type_cmd_and_unknown() {
+        assert_eq!(parse_shell_type("cmd"), ShellType::Cmd);
+        assert_eq!(parse_shell_type("powershell"), ShellType::Cmd);
+        assert_eq!(parse_shell_type(""), ShellType::Cmd);
+    }
+
+    #[test]
+    fn windows_to_posix_drive_letter() {
+        assert_eq!(
+            windows_to_posix(Path::new("C:\\Users\\foo")),
+            "/c/Users/foo"
+        );
+    }
+
+    #[test]
+    fn windows_to_posix_verbatim_prefix() {
+        assert_eq!(
+            windows_to_posix(Path::new("\\\\?\\C:\\foo\\bar")),
+            "/c/foo/bar"
+        );
+    }
+
+    #[test]
+    fn sh_quote_plain() {
+        assert_eq!(sh_quote("echo hello"), "'echo hello'");
+    }
+
+    #[test]
+    fn sh_quote_with_single_quote() {
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn normalize_cwd_msys_posix() {
+        assert_eq!(
+            normalize_cwd_from_shell("/c/Users/foo"),
+            PathBuf::from("C:\\Users\\foo")
+        );
+    }
+
+    #[test]
+    fn normalize_cwd_native_unchanged() {
+        assert_eq!(
+            normalize_cwd_from_shell("C:\\foo\\bar"),
+            PathBuf::from("C:\\foo\\bar")
+        );
     }
 }

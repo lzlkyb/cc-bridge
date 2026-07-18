@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.3.7"
+version = "2.3.8"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -34,6 +34,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# SSE transport
+tokio-stream = { version = "0.1", features = ["sync"] }
+uuid = { version = "1", features = ["v4"] }
 
 # Security
 subtle = "2"

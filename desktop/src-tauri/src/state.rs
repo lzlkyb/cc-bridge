@@ -112,6 +112,10 @@ pub struct AppState {
     /// 与 lan_ips 同款的短临界区 StdMutex，不跨 await。
     pub canonicalized_roots: StdMutex<Vec<PathBuf>>,
 
+    /// SSE transport session 注册表。key = session UUID，value = broadcast sender。
+    /// GET /mcp/sse 握手时注册，POST /mcp/messages 结果投递时查找，连接断开后自动过期。
+    pub sse_registry: crate::mcp::sse::SseRegistry,
+
     // ── 方案 A 运行卡实时指标（全做真·后端实时统计）──
     /// 最近请求到达时间戳，用于 rpm（60s 滑动窗口）。StdMutex 短临界区，不跨 await。
     pub recent_requests: StdMutex<VecDeque<Instant>>,
@@ -154,6 +158,7 @@ impl AppState {
             firewall_available: StdMutex::new(true),
             lan_ips: StdMutex::new(network::get_lan_ips()),
             canonicalized_roots: StdMutex::new(canonicalized_roots),
+            sse_registry: crate::mcp::sse::new_registry(),
             recent_requests: StdMutex::new(VecDeque::new()),
             latency_sum_ms: AtomicU64::new(0),
             latency_count: AtomicU64::new(0),

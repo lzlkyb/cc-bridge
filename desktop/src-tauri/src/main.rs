@@ -328,13 +328,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let state = tray_state.clone();
                         let app_h = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            let (host, port, token, last_selected_ip) = {
+                            let (host, port, token, last_selected_ip, transport) = {
                                 let cfg = state.config.read().await;
                                 (
                                     cfg.host.clone(),
                                     cfg.port,
                                     cfg.token.clone(),
                                     cfg.last_selected_ip.clone(),
+                                    cfg.transport.clone(),
                                 )
                             };
                             let lan_ips = network::get_lan_ips();
@@ -344,6 +345,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &token,
                                 &lan_ips,
                                 last_selected_ip.as_deref(),
+                                &transport,
                             );
                             match app_h.clipboard().write_text(cmd) {
                                 Ok(_) => {

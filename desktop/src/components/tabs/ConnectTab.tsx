@@ -15,6 +15,7 @@ import { Icon } from "../ui/icon";
 import { Switch } from "../ui/switch";
 import { Alert } from "../ui/alert";
 import { useToast } from "../ui/toast";
+import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { ConnectHero } from "./ConnectHero";
 import { TokenManager } from "./TokenManager";
 import { IpChangedBanner } from "./connect/IpChangedBanner";
@@ -53,6 +54,12 @@ function ConnectTabImpl({
   const [permCopied, setPermCopied] = useState(false);
   const lanIps = status?.lanIps ?? [];
   const { toast } = useToast();
+
+  type Section = "steps" | "token" | "perm";
+  const [expanded, setExpanded] = useState<Section | null>(null);
+  const handleToggle = (section: Section) => {
+    setExpanded((prev) => (prev === section ? null : section));
+  };
 
   // 链路是否真正中断（红态）：服务在跑，但地址变了或探针不通（远程连不回本机）。
   // 防火墙告警块在链路未中断时才显示——红态优先于橙态，避免叠加制造混乱（设计稿规则）。
@@ -98,8 +105,8 @@ function ConnectTabImpl({
   const token = status?.token ?? "";
 
   const baseCommand = useMemo(
-    () => buildBaseCommand(displayHost, port, token),
-    [displayHost, port, token],
+    () => buildBaseCommand(displayHost, port, token, status?.transport),
+    [displayHost, port, token, status?.transport],
   );
 
   const connectCommand = useMemo(
@@ -199,133 +206,192 @@ function ConnectTabImpl({
         onChanged={onRefresh}
       />
 
-      {/* Connect guide（主卡）*/}
-      <Card className="card-primary">
-        <CardHeader>
-          <CardTitle icon={<Icon name="plug" />}>接入 Claude Code</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* F2：传输安全提醒——默认监听 0.0.0.0 且 /mcp 目前是明文 HTTP，Bearer token 全程明文传输，
-              同网段可被嗅探（README 安全机制节同步说明）。 */}
-          <Alert variant="warning" className="flex items-start gap-2 p-3 text-xs">
-            <Icon name="shield" size={14} className="mt-0.5 shrink-0" />
-            <span>
-              传输安全提醒：目前连接是明文 HTTP，Token 全程以明文传输，同网段内可被嗅探。
-              请务必只在 <b>VPN</b> 或受信任的内网环境中使用，不要直接暴露到公网。
-            </span>
-          </Alert>
-          {/* IP 选择器：多网卡时让用户选连接用哪个地址。
-              ipChanged 时也照常渲染——真实选择控件交还给它，banner 只负责提示（方案 B 修复"选不了"）。 */}
-          {listenAll && lanIps.length > 0 && (
-            <AddressPicker
-              ips={lanIps}
-              selected={selectedIp}
-              onSelect={onSelectIp}
-              healthCheck={healthCheck}
-            />
-          )}
+      <ConnectGuide
+        status={status}
+        listenAll={listenAll} lanIps={lanIps} selectedIp={selectedIp}
+        onSelectIp={onSelectIp} healthCheck={healthCheck}
+        scope={scope} setScope={setScope}
+        connectCommand={connectCommand} copied={copied} handleCopy={handleCopy}
+        projectPath={projectPath} setProjectPath={setProjectPath}
+        onRefresh={onRefresh}
+        includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
+        permissionCommand={permissionCommand} permCopied={permCopied}
+        handlePermCopy={handlePermCopy}
+        expanded={expanded} onToggle={handleToggle}
+      />
+    </div>
+  );
+}
 
-          {/* Scope selector as two option cards（默认项目级，选中态强化）*/}
-          <div className="grid grid-cols-2 gap-3">
-            <OptionCard
-              selected={scope === "project"}
-              title="项目级"
-              desc="仅指定项目生效，按需添加"
-              badge="推荐"
-              onClick={() => setScope("project")}
-            />
-            <OptionCard
-              selected={scope === "user"}
-              title="全局模式"
-              desc="一次配置，所有项目都能使用"
-              onClick={() => setScope("user")}
-            />
-          </div>
+function ConnectGuide({
+  status, listenAll, lanIps, selectedIp, onSelectIp, healthCheck,
+  scope, setScope, connectCommand, copied, handleCopy,
+  projectPath, setProjectPath, onRefresh,
+  includeShellTools, setIncludeShellTools, permissionCommand, permCopied, handlePermCopy,
+  expanded, onToggle,
+}: {
+  status?: StatusResponse;
+  listenAll: boolean; lanIps: string[]; selectedIp: string;
+  onSelectIp: (ip: string) => void; healthCheck: string;
+  scope: McpScope; setScope: (s: McpScope) => void;
+  connectCommand: string; copied: boolean; handleCopy: () => void;
+  projectPath: string; setProjectPath: (p: string) => void;
+  onRefresh: () => void;
+  includeShellTools: boolean; setIncludeShellTools: (v: boolean) => void;
+  permissionCommand: string; permCopied: boolean; handlePermCopy: () => void;
+  expanded: string | null; onToggle: (s: "steps" | "token" | "perm") => void;
+}) {
+  const stepsOpen = expanded === "steps";
+  const permOpen = expanded === "perm";
+  const stepsBody = useAutoAnimateRM<HTMLDivElement>();
+  const permBody = useAutoAnimateRM<HTMLDivElement>();
+  const stepsBtn = useRef<HTMLButtonElement>(null);
+  const permBtn = useRef<HTMLButtonElement>(null);
 
-          {/* 接入步骤 */}
-          <div className="s-sec-label">接入步骤</div>
+  const scrollToBtn = (el: HTMLElement | null) => {
+    if (!el) return;
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.scrollBy({ top: -60, behavior: "instant" });
+    });
+  };
 
-          <div className="rounded-lg border bg-muted/30 p-4 space-y-4">
-            {scope === "user" ? (
-              <GlobalSteps
-                command={connectCommand}
-                copied={copied}
-                onCopy={handleCopy}
-              />
-            ) : (
-              <ProjectSteps
-                command={connectCommand}
-                copied={copied}
-                onCopy={handleCopy}
-                projectPath={projectPath}
-                setProjectPath={setProjectPath}
-              />
-            )}
-          </div>
-
-          <div className="my-3.5 h-px bg-border" />
-
-          {/* Token 管理（可折叠，状态内聚在 TokenManager）*/}
-          <TokenManager
-            status={status}
-            onRefresh={onRefresh}
-            projectPath={projectPath}
-          />
-
-          <div className="my-3.5 h-px bg-border" />
-
-          {/* 权限自动授权：一键生成命令，往 permissions.allow 追加 cc-bridge 工具规则 + 信任该 MCP 服务器，
-              免去逐工具重复确认。沿用上方已有的 scope/projectPath，不重复画作用域/路径控件。*/}
-          <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
-            <div className="s-sec-label">权限自动授权</div>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              Claude Code 每次调用 cc-bridge 的工具都会弹窗确认。复制下面的命令，粘贴到 Claude Code
-              所在终端执行一次，即可免去后续所有工具调用的重复授权 —— 无需重启会话，改完立即生效。
-            </p>
-
-            {scope === "project" && !projectPath.trim() && (
-              <Alert variant="warning" className="flex items-start gap-2 p-3 text-xs">
-                <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-                <span>
-                  上方“填写远程项目路径”未填写：命令不带 <code className="rounded bg-background px-1">cd</code>，
-                  会直接用执行时终端所在目录拼相对路径{" "}
-                  <code className="rounded bg-background px-1">.claude/settings.local.json</code>。
-                  若执行时不在目标项目目录下，会悄悄写到错误位置且不会报错。请确保执行前已 cd 到目标
-                  项目目录，或在上方填写路径。
-                </span>
-              </Alert>
-            )}
-
-            <div className="s-row">
-              <div className="min-w-0 flex-1">
-                <p className="s-label">同时免确认命令执行工具</p>
-                <p className="s-row-desc mt-0.5">
-                  <code className="rounded bg-muted px-1">run_command</code> /{" "}
-                  <code className="rounded bg-muted px-1">get_command_output</code> /{" "}
-                  <code className="rounded bg-muted px-1">stop_command</code> —— 等价于授予远程任意命令执行能力
-                </p>
-              </div>
-              <Switch
-                checked={includeShellTools}
-                onChange={setIncludeShellTools}
-                variant="danger"
-                ariaLabel="同时免确认命令执行工具"
-              />
+  useEffect(() => { if (stepsOpen) scrollToBtn(stepsBtn.current); }, [stepsOpen]);
+  useEffect(() => { if (permOpen) scrollToBtn(permBtn.current); }, [permOpen]);
+  return (
+    <Card className="card-primary">
+      <CardHeader>
+        <CardTitle icon={<Icon name="plug" />}>接入 Claude Code</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {listenAll && lanIps.length > 0 && (
+          <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp} healthCheck={healthCheck} />
+        )}
+        <div className="grid grid-cols-2 gap-3">
+          {([
+            { key: "project", title: "项目级", desc: "仅指定项目生效", badge: "推荐" as const },
+            { key: "user", title: "全局模式", desc: "一次配置，所有项目都能使用" },
+          ] as const).map((o) => (
+            <OptionCard key={o.key} selected={scope===o.key} title={o.title} desc={o.desc}
+              badge={"badge" in o ? o.badge : undefined} onClick={()=>setScope(o.key)} />
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => onToggle("steps")}
+          className="collapsible-head w-full text-left"
+          aria-expanded={stepsOpen}
+          ref={stepsBtn}
+        >
+          <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-primary to-primary/70">
+            <Icon name="terminal" size={14} aria-hidden="true" />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-foreground">
+              接入步骤
+              <span className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${status?.transport === "sse" ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200" : "bg-indigo-50 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-200"}`}>
+                {status?.transport === "sse" ? "SSE 流式" : "HTTP"}
+              </span>
             </div>
-
-            {includeShellTools && (
-              <Alert variant="destructive" className="flex items-start gap-2 p-3 text-xs">
-                <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-                <span className="leading-relaxed">
-                  已开启：生成的命令会免确认执行全部 17 个工具（含命令执行能力）。请仅在完全信任该 cc-bridge 连接时开启此项。
-                </span>
-              </Alert>
+            {!stepsOpen && (
+              <div className="text-[11px] text-muted-foreground">点击展开查看连接命令</div>
             )}
-
-            <CommandBlock command={permissionCommand} copied={permCopied} onCopy={handlePermCopy} />
           </div>
-        </CardContent>
-      </Card>
+          <Icon
+            name="chevronDown"
+            size={16}
+            className={`collapsible-chev ${stepsOpen ? "open" : ""}`}
+            aria-hidden="true"
+          />
+        </button>
+        <div ref={stepsBody}>
+          {stepsOpen && (
+            <div className="collapsible-body pl-9">
+              {scope === "user" ? (
+                <GlobalSteps command={connectCommand} copied={copied} onCopy={handleCopy} />
+              ) : (
+                <ProjectSteps command={connectCommand} copied={copied} onCopy={handleCopy}
+                  projectPath={projectPath} setProjectPath={setProjectPath} />
+              )}
+            </div>
+          )}
+        </div>
+        <div className="my-3.5 h-px bg-border" />
+        <TokenManager status={status} onRefresh={onRefresh} projectPath={projectPath}
+          expanded={expanded === "token"} onToggle={() => onToggle("token")} />
+        <button
+          type="button"
+          onClick={() => onToggle("perm")}
+          className="collapsible-head w-full text-left"
+          aria-expanded={permOpen}
+          ref={permBtn}
+        >
+          <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-emerald-500 to-emerald-600">
+            <Icon name="check" size={14} aria-hidden="true" />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-foreground">权限自动授权</div>
+            {!permOpen && (
+              <div className="text-[11px] text-muted-foreground">点击展开查看授权命令</div>
+            )}
+          </div>
+          <Icon
+            name="chevronDown"
+            size={16}
+            className={`collapsible-chev ${permOpen ? "open" : ""}`}
+            aria-hidden="true"
+          />
+        </button>
+        <div ref={permBody}>
+          {permOpen && (
+            <div className="collapsible-body pl-9">
+              <PermissionCard scope={scope} projectPath={projectPath}
+                includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
+                permissionCommand={permissionCommand} permCopied={permCopied} handlePermCopy={handlePermCopy} />
+            </div>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PermissionCard({
+  scope, projectPath, includeShellTools, setIncludeShellTools,
+  permissionCommand, permCopied, handlePermCopy,
+}: {
+  scope: McpScope; projectPath: string;
+  includeShellTools: boolean; setIncludeShellTools: (v: boolean) => void;
+  permissionCommand: string; permCopied: boolean; handlePermCopy: () => void;
+}) {
+  return (
+    <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
+      <div className="s-sec-label">权限自动授权</div>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        复制命令到远端终端执行一次，即可免去 Claude Code 对 cc-bridge 全部工具的重复授权。
+      </p>
+      {scope === "project" && !projectPath.trim() && (
+        <Alert variant="warning" className="flex items-start gap-2 p-3 text-xs">
+          <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
+          <span>上方路径未填写——命令不带 <code className="rounded bg-background px-1">cd</code>，写错位置不会报错。</span>
+        </Alert>
+      )}
+      <div className="s-row">
+        <div className="min-w-0 flex-1">
+          <p className="s-label">同时免确认命令执行工具</p>
+          <p className="s-row-desc mt-0.5">
+            开启后 <code className="rounded bg-muted px-1">run_command</code> 等命令类工具也免确认。
+          </p>
+        </div>
+        <Switch checked={includeShellTools} onChange={setIncludeShellTools} variant="danger" ariaLabel="同时免确认命令执行工具" />
+      </div>
+      {includeShellTools && (
+        <Alert variant="destructive" className="flex items-start gap-2 p-3 text-xs">
+          <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
+          <span className="leading-relaxed">已开启：生成的命令会免确认全部 17 个工具（含命令执行）。请仅在完全信任该连接时开启。</span>
+        </Alert>
+      )}
+      <CommandBlock command={permissionCommand} copied={permCopied} onCopy={handlePermCopy} />
     </div>
   );
 }

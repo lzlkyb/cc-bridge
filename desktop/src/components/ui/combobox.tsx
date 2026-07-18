@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Icon } from "./icon";
+import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 
 /**
  * 自定义 Combobox（P0-3）：替换 LogTab 中的原生 <select>。
@@ -21,6 +22,7 @@ interface ComboboxProps {
 export function Combobox({ value, options, onChange, className = "" }: ComboboxProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const listRef = useAutoAnimateRM<HTMLDivElement>();
 
   // 点击外部关闭
   useEffect(() => {
@@ -54,7 +56,7 @@ export function Combobox({ value, options, onChange, className = "" }: ComboboxP
         />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-pop">
+        <div ref={listRef} className="absolute left-0 top-full z-20 mt-1 min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-pop">
           {options.map((opt) => (
             <button
               key={opt.value}

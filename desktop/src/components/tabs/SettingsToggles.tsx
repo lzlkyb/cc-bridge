@@ -8,6 +8,7 @@ import { ToggleRow } from "../ui/ToggleRow";
 import { useToast } from "../ui/toast";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { Spinner } from "../ui/Spinner";
+import { buildBaseCommand } from "../../lib/utils";
 
 /**
  * 设置页「功能开关」卡。
@@ -32,6 +33,7 @@ export function SettingsToggles({
   const [confirmReset, setConfirmReset] = useState(false);
   const [savedKey, setSavedKey] = useState<string | null>(null);
   const [refreshingBash, setRefreshingBash] = useState(false);
+  const [confirmSse, setConfirmSse] = useState(false);
   const { toast } = useToast();
 
   // 由 Header 安全徽章点击触发的定位 + 高亮。
@@ -204,6 +206,17 @@ export function SettingsToggles({
           }}
           refreshingBash={refreshingBash}
           saved={savedKey === "shelltype"}
+        />
+        <TransportRow
+          value={status?.transport ?? "http"}
+          onSelect={(v) => {
+            if (v === "sse") {
+              setConfirmSse(true);
+            } else {
+              save({ transport: "http" }, "transport");
+            }
+          }}
+          saved={savedKey === "transport"}
           last
         />
       </CardContent>
@@ -237,6 +250,18 @@ export function SettingsToggles({
         <ResetModal
           onCancel={() => setConfirmReset(false)}
           onConfirm={handleResetDefaults}
+        />
+      )}
+
+      {confirmSse && (
+        <SseMigrationModal
+          status={status}
+          onCancel={() => setConfirmSse(false)}
+          onConfirm={() => {
+            save({ transport: "sse" }, "transport");
+            setConfirmSse(false);
+            toast("已切换到 SSE，请到远端执行迁移命令", "success");
+          }}
         />
       )}
 
@@ -493,6 +518,121 @@ function ResetModal({
         </Button>
         <Button variant="default" size="sm" onClick={onConfirm}>
           重置为默认
+        </Button>
+      </div>
+    </ConfirmModal>
+  );
+}
+
+function TransportRow({
+  value,
+  onSelect,
+  saved,
+  last = false,
+}: {
+  value: string;
+  onSelect: (next: "http" | "sse") => void;
+  saved?: boolean;
+  last?: boolean;
+}) {
+  const options: { key: "http" | "sse"; label: string }[] = [
+    { key: "http", label: "HTTP" },
+    { key: "sse", label: "SSE" },
+  ];
+  return (
+    <div
+      className={`flex items-center justify-between gap-4 py-3.5 ${
+        last ? "" : "border-b"
+      }`}
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">MCP 传输协议</span>
+          {saved && <span className="text-xs font-normal text-success">已保存 ✓</span>}
+        </div>
+        <div className="mt-0.5 text-xs text-muted-foreground">
+          默认 <b>HTTP</b>（JSON-RPC，稳定兼容）；选 <b>SSE</b> 后 run_command 输出实时推送。
+          切换后需到远端替换连接命令。
+        </div>
+      </div>
+      <div className="flex shrink-0 rounded-lg border bg-muted p-0.5">
+        {options.map((o) => {
+          const active = value === o.key;
+          return (
+            <button
+              key={o.key}
+              type="button"
+              onClick={() => onSelect(o.key)}
+              className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                active
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SseMigrationModal({
+  status,
+  onCancel,
+  onConfirm,
+}: {
+  status?: StatusResponse;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { toast } = useToast();
+  const host = status?.host ?? "0.0.0.0";
+  const port = status?.port ?? 7823;
+  const token = status?.token ?? "";
+  const sseCmd = buildBaseCommand(host, port, token, "sse");
+  const migrationCmd = `claude mcp remove cc-bridge && ${sseCmd}`;
+
+  const copyMigration = async () => {
+    try {
+      await navigator.clipboard.writeText(migrationCmd);
+      toast("已复制，请到远端终端粘贴执行", "success");
+    } catch {
+      toast("复制失败，请手动复制", "warning");
+    }
+  };
+
+  return (
+    <ConfirmModal open onClose={onCancel}>
+      <h4 className="mb-2 flex items-center gap-2 text-base font-semibold">
+        <Icon name="alertCircle" size={18} className="text-primary" />
+        切换到 SSE（流式传输）
+      </h4>
+      <p className="mb-3 text-sm text-muted-foreground">
+        切换后 run_command 输出会实时推送到远端。请先复制下方命令到远端终端执行，再点「确认切换」。
+      </p>
+      <div className="relative mb-2">
+        <pre className="rounded-md bg-slate-900 px-3 py-2.5 text-[11px] leading-relaxed text-slate-200 overflow-x-auto whitespace-pre-wrap break-all">
+{migrationCmd}
+        </pre>
+        <button
+          type="button"
+          className="absolute right-2 top-2 rounded px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 transition-colors"
+          onClick={copyMigration}
+        >
+          📋 复制
+        </button>
+      </div>
+      <p className="mb-4 text-[11px] text-muted-foreground">
+        💡 如果之前用了 <code>--scope project</code>，请在 remove 命令后也加上
+      </p>
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" size="sm" onClick={onCancel}>
+          取消
+        </Button>
+        <Button variant="default" size="sm" onClick={onConfirm}>
+          我已复制，确认切换
         </Button>
       </div>
     </ConfirmModal>

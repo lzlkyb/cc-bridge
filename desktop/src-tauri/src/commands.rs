@@ -73,6 +73,8 @@ pub struct StatusResponse {
     /// 命令执行壳层：cmd（默认）或 bash（Git Bash）。前端「命令执行壳层」分段控件读写。
     #[serde(rename = "shellType")]
     pub shell_type: String,
+    /// MCP 传输协议：http（默认）或 sse。设置页「MCP 传输协议」分段控件读写。
+    pub transport: String,
     /// 本机是否检测到 Git Bash（bash.exe）。false 时前端「命令执行壳层」的 bash 选项置灰，
     /// 点击不保存并提示用户先安装 Git for Windows。
     #[serde(rename = "bashAvailable")]
@@ -218,6 +220,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         &config.token,
         &lan_ips,
         config.last_selected_ip.as_deref(),
+        &config.transport,
     );
 
     // S1: 远程链路可达性探针。解析远程客户端应当连接的展示地址（与连接命令一致），
@@ -363,6 +366,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         encoding_detect_enabled: config.encoding_detect_enabled,
         shell_enabled: config.shell_enabled,
         shell_type: config.shell_type.clone(),
+        transport: config.transport.clone(),
         bash_available: crate::mcp::tools::shell::detect_bash_exe().is_some(),
         running,
         last_selected_ip: config.last_selected_ip.clone(),
@@ -457,6 +461,8 @@ pub struct ConfigPatch {
     /// 命令执行壳层：cmd 或 bash。前端「命令执行壳层」分段控件写入。
     #[serde(rename = "shellType")]
     pub shell_type: Option<String>,
+    /// MCP 传输协议：http 或 sse。前端「MCP 传输协议」分段控件写入。
+    pub transport: Option<String>,
     /// 用户接入时确认的作用域（user/project）。仅首次接入复制命令时由前端写入。
     #[serde(rename = "scope")]
     pub scope: Option<String>,
@@ -549,6 +555,7 @@ pub async fn save_config(
     apply_field!(shell_enabled, "shell_enabled", &patch.shell_enabled);
     // 命令执行壳层：cmd（默认）/ bash。仅接受这两个值，其它值由 config.rs 解析时回退 cmd。
     apply_field!(shell_type, "shell_type", &patch.shell_type);
+    apply_field!(transport, "transport", &patch.transport);
     // 首次接入复制命令时由前端写入，记录 cc-bridge 被注册到远程的作用域，
     // 供后续 IP 变化 / Token 重生成生成精确 sed 命令（方案 A）。
     // scope 在 config 中也是 Option<String>，与 apply_field! 宏的 "T vs Option<T>" 假设不符，故单独处理。

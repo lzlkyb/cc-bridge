@@ -33,6 +33,8 @@ pub async fn build_router(state: Arc<AppState>) -> Router {
     axum::Router::new()
         .route("/health", get(health_handler))
         .route("/mcp", post(mcp_handler))
+        .route("/mcp/sse", get(crate::mcp::sse::sse_handler))
+        .route("/mcp/messages", post(crate::mcp::sse::sse_message_handler))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
@@ -154,6 +156,15 @@ async fn auth_middleware(
                 state.rate_limiter.remove(&ip);
             }
         }
+        return next.run(req).await;
+    }
+
+    // /mcp/sse GET 握手免 token 校验（token 通过 query param 传入并由 sse_handler 自行校验）
+    if path == "/mcp/sse" && req.method() == axum::http::Method::GET {
+        return next.run(req).await;
+    }
+    // /mcp/messages 免 token 校验（session 在 SSE 握手时已验证，消息端点无需重复验）
+    if path == "/mcp/messages" {
         return next.run(req).await;
     }
 
@@ -488,7 +499,7 @@ pub async fn dispatch_tool(
     (spec.run)(args, state).await
 }
 
-fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
+pub fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
     // 数据驱动：遍历注册表生成 tools/list 的 inputSchema（schema 由 XxxArgs 的
     // ToolSchema derive 自动生成，单一来源，消除手写 json! 与字段漂移）。
     // run_command 的描述按当前 shell_type 动态生成，让（重新）连接时模型拿到准确壳层信号。
@@ -1449,5 +1460,117 @@ mod over_wire_tests {
             Some("gzip"),
             "响应应被 gzip 压缩"
         );
+    }
+
+    // ── SSE transport 集成测试 ──
+
+    /// 从 SSE 流的首块中提取 sessionId。
+    async fn extract_session_from_sse(base: &str, token: &str) -> String {
+        let mut resp = reqwest::Client::new()
+            .get(format!("{}/mcp/sse?token={}", base, token))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        // SSE 是无限流，不能用 text()——用 chunk() 只读首块
+        let chunk = tokio::time::timeout(Duration::from_secs(3), resp.chunk())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let body = String::from_utf8_lossy(&chunk);
+        body.lines()
+            .find(|l| l.starts_with("data: /mcp/messages?sessionId="))
+            .and_then(|l| l.split("sessionId=").nth(1))
+            .map(|s| s.trim().to_string())
+            .expect("应包含 sessionId")
+    }
+
+    /// SSE 握手：GET /mcp/sse?token=xxx → 200 + endpoint 事件。
+    #[tokio::test]
+    #[ignore]
+    async fn sse_handshake_returns_endpoint_event() {
+        let root = unique_temp_root("sse-handshake");
+        let srv = spawn_server(test_config(&root), root).await;
+        let sid = extract_session_from_sse(&srv.base, &srv.token).await;
+        assert!(!sid.is_empty(), "sessionId 不应为空");
+    }
+
+    /// SSE 握手拒绝错误 token。
+    #[tokio::test]
+    #[ignore]
+    async fn sse_handshake_rejects_wrong_token() {
+        let root = unique_temp_root("sse-bad-token");
+        let srv = spawn_server(test_config(&root), root).await;
+        let resp = reqwest::Client::new()
+            .get(format!("{}/mcp/sse?token=wrong-token", srv.base))
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 401);
+    }
+
+    /// SSE 消息端点：POST tools/list → 202 Accepted。
+    #[tokio::test]
+    #[ignore]
+    async fn sse_messages_tools_list() {
+        let root = unique_temp_root("sse-tools");
+        let srv = spawn_server(test_config(&root), root).await;
+        let sid = extract_session_from_sse(&srv.base, &srv.token).await;
+        let msg_resp = reqwest::Client::new()
+            .post(format!("{}/mcp/messages?sessionId={}", srv.base, sid))
+            .json(&json!({
+                "jsonrpc": "2.0", "id": 1,
+                "method": "tools/list", "params": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(msg_resp.status(), 202);
+    }
+
+    /// SSE 消息端点：run_command echo → 202 Accepted。
+    #[tokio::test]
+    #[ignore]
+    async fn sse_messages_run_command() {
+        let root = unique_temp_root("sse-run");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let sid = extract_session_from_sse(&srv.base, &srv.token).await;
+        let msg_resp = reqwest::Client::new()
+            .post(format!("{}/mcp/messages?sessionId={}", srv.base, sid))
+            .json(&json!({
+                "jsonrpc": "2.0", "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_command",
+                    "arguments": json!({
+                        "command": "echo sse_test",
+                        "cwd": root.to_string_lossy()
+                    })
+                }
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(msg_resp.status(), 202);
+    }
+
+    /// SSE 消息端点：无效 sessionId 返回 404。
+    #[tokio::test]
+    #[ignore]
+    async fn sse_messages_bad_session() {
+        let root = unique_temp_root("sse-bad-session");
+        let srv = spawn_server(test_config(&root), root).await;
+        let msg_resp = reqwest::Client::new()
+            .post(format!("{}/mcp/messages?sessionId=nonexistent", srv.base))
+            .json(&json!({
+                "jsonrpc": "2.0", "id": 1,
+                "method": "tools/list", "params": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(msg_resp.status(), 404, "无效 session 应返回 404");
     }
 }

@@ -178,10 +178,9 @@ export function FileControlCard({ status, onSaved }: { status?: StatusResponse; 
               浏览备份快照 · 查看改动 · 对比相邻版本 · 还原
             </div>
           </div>
-          <span className="shrink-0 text-xs font-semibold text-primary">
+          <Button variant="outline" size="sm">
             打开
-            <Icon name="chevronRight" size={14} className="ml-0.5 inline" />
-          </span>
+          </Button>
         </button>
 
         <VersionHistoryModal
