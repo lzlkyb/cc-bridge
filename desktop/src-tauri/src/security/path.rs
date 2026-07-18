@@ -7,9 +7,36 @@ pub fn display_path(p: &Path) -> String {
     s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
 }
 
+/// 把一组 root 字符串 canonicalize 为 PathBuf 集合（缓存构建与原始函数共用，逻辑唯一来源）。
+/// 对每个 root：能解析就用 canonicalize 后的真实路径，失败（根不存在等）则 fallback 原路径，
+/// 与原 `resolve_safe_path` 内联逻辑完全一致。
+pub(crate) fn canonicalize_roots(roots: &[String]) -> Vec<PathBuf> {
+    roots
+        .iter()
+        .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| PathBuf::from(r)))
+        .collect()
+}
+
 pub fn resolve_safe_path(
     requested: &str,
     allowed_roots: &[String],
+    enforce_whitelist: bool,
+) -> Result<PathBuf, String> {
+    // 原始入口保持 `&[String]` 签名（测试与个别 override 调用点不动），
+    // 内部先 canonicalize 再走缓存版逻辑——canonicalize 逻辑唯一来源在 canonicalize_roots。
+    resolve_safe_path_cached(
+        requested,
+        &canonicalize_roots(allowed_roots),
+        enforce_whitelist,
+    )
+}
+
+/// 缓存版：allowed_roots 已是预 canonicalize 的集合（来自 AppState 缓存），
+/// 避免每个工具调用都对所有 root 各做一次 stat 级 canonicalize。
+/// 语义与 `resolve_safe_path` 完全一致（roots 的 canonicalize/fallback 在缓存构建时已应用）。
+pub fn resolve_safe_path_cached(
+    requested: &str,
+    allowed_roots: &[PathBuf],
     enforce_whitelist: bool,
 ) -> Result<PathBuf, String> {
     let requested_path = PathBuf::from(requested);
@@ -55,14 +82,8 @@ pub fn resolve_safe_path(
         return Ok(resolved);
     }
 
-    // Check if the resolved path is within any allowed root
-    let is_allowed = allowed_roots.iter().any(|root| {
-        let root_path = match std::fs::canonicalize(root) {
-            Ok(p) => p,
-            Err(_) => PathBuf::from(root),
-        };
-        is_within(&resolved, &root_path)
-    });
+    // Check if the resolved path is within any allowed root（roots 已预 canonicalize）
+    let is_allowed = allowed_roots.iter().any(|root| is_within(&resolved, root));
 
     if !is_allowed {
         // 报错时附上白名单，远程 Claude Code 一次撞墙即可得知可访问范围，无需盲猜。
@@ -70,7 +91,11 @@ pub fn resolve_safe_path(
             "(whitelist is empty — no directories are accessible; add roots in the cc-bridge panel)"
                 .to_string()
         } else {
-            allowed_roots.join(", ")
+            allowed_roots
+                .iter()
+                .map(|p| display_path(p))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         return Err(format!(
             "Access denied: {} is not within any allowed root. Allowed roots: {}",

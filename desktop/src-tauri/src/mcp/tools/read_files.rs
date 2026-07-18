@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use encoding_rs::UTF_8;
@@ -36,6 +36,7 @@ pub struct ReadFilesArgs {
 
 pub async fn handle(args: ReadFilesArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let config = state.config.read().await;
+    let cached_roots = state.cached_roots();
     let mut results = Vec::new();
 
     for item in &args.files {
@@ -58,6 +59,7 @@ pub async fn handle(args: ReadFilesArgs, state: &Arc<AppState>) -> Result<Value,
             end_line,
             args.encoding.as_deref(),
             config.encoding_detect_enabled,
+            &cached_roots,
             &config,
         )
         .await
@@ -76,11 +78,12 @@ async fn read_single_file(
     end_line: Option<u32>,
     encoding_override: Option<&str>,
     detect_enabled: bool,
+    cached_roots: &[PathBuf],
     config: &crate::config::BridgeConfig,
 ) -> Result<Value, String> {
-    let resolved = security::path::resolve_safe_path(
+    let resolved = security::path::resolve_safe_path_cached(
         file_path,
-        &config.allowed_roots,
+        cached_roots,
         config.whitelist_enabled,
     )?;
     security::extension::assert_extension_allowed(&resolved, &config.allowed_extensions)?;

@@ -33,9 +33,9 @@ async fn delete_single(
     config: &crate::config::BridgeConfig,
     state: &Arc<AppState>,
 ) -> Result<(), String> {
-    let resolved = security::path::resolve_safe_path(
+    let resolved = security::path::resolve_safe_path_cached(
         file_path,
-        &config.allowed_roots,
+        &state.cached_roots(),
         config.whitelist_enabled,
     )?;
     security::extension::assert_extension_allowed(&resolved, &config.allowed_extensions)?;

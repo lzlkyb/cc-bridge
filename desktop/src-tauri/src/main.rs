@@ -467,9 +467,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         loop {
                             // 阻塞等待 OS 通知（无通知时线程在内核态休眠，零 CPU）
                             let _ = rx.recv().await;
+                            // IP 变化通知到达：重扫网卡写回缓存，并据此判断 changed
+                            // （刷新缓存与判断合一，避免二次网卡枚举）。
+                            let ips = watch_state.refresh_lan_ips();
                             let last_ip = watch_state.config.read().await.last_selected_ip.clone();
                             let changed = match &last_ip {
-                                Some(ip) => !network::get_lan_ips().contains(ip),
+                                Some(ip) => !ips.contains(ip),
                                 None => false,
                             };
                             let running = watch_state

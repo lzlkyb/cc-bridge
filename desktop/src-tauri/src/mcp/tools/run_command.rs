@@ -121,9 +121,9 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
         if let Some(sid) = &args.session_id {
             match state.cwd_sessions.get(sid) {
                 Some(s) => {
-                    let resolved = security::path::resolve_safe_path(
+                    let resolved = security::path::resolve_safe_path_cached(
                         &s.cwd.to_string_lossy(),
-                        &config.allowed_roots,
+                        &state.cached_roots(),
                         config.whitelist_enabled,
                     )
                     .map_err(|e| format!("session 绑定的 cwd 已不在白名单：{e}"))?;
@@ -140,9 +140,9 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             let cwd = args.cwd.as_ref().ok_or_else(|| {
                 "开启会话持久化时，必须提供 cwd（创建新会话）或有效 session_id（沿用）".to_string()
             })?;
-            let resolved = security::path::resolve_safe_path(
+            let resolved = security::path::resolve_safe_path_cached(
                 cwd,
-                &config.allowed_roots,
+                &state.cached_roots(),
                 config.whitelist_enabled,
             )?;
             let new_id = format!("cwd_{:032x}", rand::random::<u128>());
@@ -160,9 +160,9 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             .cwd
             .as_ref()
             .ok_or_else(|| "cwd 必传（会话持久化未开启时）".to_string())?;
-        let resolved = security::path::resolve_safe_path(
+        let resolved = security::path::resolve_safe_path_cached(
             cwd,
-            &config.allowed_roots,
+            &state.cached_roots(),
             config.whitelist_enabled,
         )?;
         (resolved, cwd.clone(), None)
@@ -1209,6 +1209,8 @@ mod tests {
 
         // 收紧白名单，使其不再包含 session 绑定的目录。
         state.config.write().await.allowed_roots.clear();
+        // 同步刷新白名单缓存，否则缓存仍含被清掉的目录，后续校验会误放行。
+        state.refresh_canonicalized_roots(&state.config.read().await.allowed_roots);
 
         // 复用 session —— 绑定的 cwd 已不在白名单，必须拒绝。
         let result = handle(

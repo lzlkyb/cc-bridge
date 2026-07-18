@@ -1,4 +1,4 @@
-import { useState, useMemo, Fragment } from "react";
+import { useState, useMemo, Fragment, memo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toolLabel, formatDurationMs, formatVersion, copyText } from "../../lib/utils";
@@ -59,7 +59,7 @@ function perfSummaryLine(entries: AuditEntry[]): string {
   return `P95 ${Math.round(p95)}ms · ${toolLabel(topTool)} 占 ${((topSum / total) * 100).toFixed(1)}% · 错误率 ${errRate.toFixed(1)}%`;
 }
 
-export function LogTab() {
+function LogTabImpl() {
   // 分页状态（策略 A：页码分页）。page/pageSize 变化即触发按页重新拉取。
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -445,3 +445,7 @@ export function LogTab() {
     </Card>
   );
 }
+
+// E-P5/P6: 日志页不消费 status，用 memo 隔离 App.tsx 每 5s 状态轮询的父级级联重渲染，
+// 仅自身 10s 审计轮询与用户操作触发本组件重渲染（消除双重轮询 + 整树空转重算）。
+export const LogTab = memo(LogTabImpl);

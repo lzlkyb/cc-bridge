@@ -17,9 +17,9 @@ pub struct RemoveDirectoryArgs {
 pub async fn handle(args: RemoveDirectoryArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let config = state.config.read().await;
 
-    let resolved = security::path::resolve_safe_path(
+    let resolved = security::path::resolve_safe_path_cached(
         &args.path,
-        &config.allowed_roots,
+        &state.cached_roots(),
         config.whitelist_enabled,
     )?;
 

@@ -33,9 +33,9 @@ fn default_cell_type() -> String {
 
 pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let config = state.config.read().await;
-    let resolved = security::path::resolve_safe_path(
+    let resolved = security::path::resolve_safe_path_cached(
         &args.path,
-        &config.allowed_roots,
+        &state.cached_roots(),
         config.whitelist_enabled,
     )?;
     security::extension::assert_extension_allowed(&resolved, &config.allowed_extensions)?;

@@ -10,6 +10,7 @@ use rusqlite::Connection;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::BridgeConfig;
+use crate::network;
 
 /// 会话级 cwd 持久化（默认关，见 `BridgeConfig::session_cwd_enabled`）。
 ///
@@ -99,6 +100,18 @@ pub struct AppState {
     /// 状态恒为 unknown，避免 netsh 损坏时反复 spawn 失败进程并触发「应用程序错误」弹窗。
     pub firewall_available: StdMutex<bool>,
 
+    /// 本机可达 IPv4 地址列表缓存（IP 检测优化）。
+    /// 由 new() 启动时初始化一次 + ip_watch 事件（IP 变化时）刷新；get_status 每 5s
+    /// 热路径直接读此缓存，避免每次轮询都重扫网卡（UdpSocket bind + GetAdaptersAddresses）。
+    /// 与 firewall_cache 同款的短临界区 StdMutex，不跨 await。
+    pub lan_ips: StdMutex<Vec<String>>,
+
+    /// 白名单根目录 canonicalize 缓存（白名单校验性能优化）。
+    /// 由 new() 启动时初始化一次 + 配置变更（save_config/import_config）时刷新；
+    /// 工具层白名单校验直接读此缓存，避免每个工具调用都对所有 root 各做一次 stat 级 canonicalize。
+    /// 与 lan_ips 同款的短临界区 StdMutex，不跨 await。
+    pub canonicalized_roots: StdMutex<Vec<PathBuf>>,
+
     // ── 方案 A 运行卡实时指标（全做真·后端实时统计）──
     /// 最近请求到达时间戳，用于 rpm（60s 滑动窗口）。StdMutex 短临界区，不跨 await。
     pub recent_requests: StdMutex<VecDeque<Instant>>,
@@ -119,6 +132,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(db: Connection, config: BridgeConfig, data_dir: PathBuf) -> Self {
+        // 白名单根目录缓存初始化：在 config 被移入 RwLock 前取一次 canonicalize。
+        let canonicalized_roots = crate::security::path::canonicalize_roots(&config.allowed_roots);
         Self {
             db: Mutex::new(db),
             config: RwLock::new(config),
@@ -137,6 +152,8 @@ impl AppState {
                 checked_at: None,
             }),
             firewall_available: StdMutex::new(true),
+            lan_ips: StdMutex::new(network::get_lan_ips()),
+            canonicalized_roots: StdMutex::new(canonicalized_roots),
             recent_requests: StdMutex::new(VecDeque::new()),
             latency_sum_ms: AtomicU64::new(0),
             latency_count: AtomicU64::new(0),
@@ -295,5 +312,34 @@ impl AppState {
     /// 审计落盘条数 +1。
     pub fn inc_audit_count(&self) {
         self.audit_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    // ── 本机 IP 地址缓存（IP 检测优化）──
+
+    /// 重扫网卡并把最新列表写回缓存，返回最新列表。
+    /// 仅由 ip_watch 事件（OS 通知 IP 变化时）调用，刷新与「changed 判断」合一。
+    pub fn refresh_lan_ips(&self) -> Vec<String> {
+        let ips = network::get_lan_ips();
+        *self.lan_ips.lock().unwrap() = ips.clone();
+        ips
+    }
+
+    /// 读缓存（get_status 每 5s 热路径用，零系统调用）。
+    pub fn cached_lan_ips(&self) -> Vec<String> {
+        self.lan_ips.lock().unwrap().clone()
+    }
+
+    // ── 白名单根目录缓存（白名单校验性能优化）──
+
+    /// 用最新的 allowed_roots 重算缓存（canonicalize 一次）。仅由配置变更路径调用，
+    /// 不碰 config 锁，避免与调用方已有的 config 读写锁产生顺序依赖。
+    pub fn refresh_canonicalized_roots(&self, allowed_roots: &[String]) {
+        *self.canonicalized_roots.lock().unwrap() =
+            crate::security::path::canonicalize_roots(allowed_roots);
+    }
+
+    /// 读缓存（工具层白名单校验用，零重复 canonicalize）。
+    pub fn cached_roots(&self) -> Vec<PathBuf> {
+        self.canonicalized_roots.lock().unwrap().clone()
     }
 }

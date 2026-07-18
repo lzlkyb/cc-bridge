@@ -47,9 +47,9 @@ async fn write_single(
     config: &crate::config::BridgeConfig,
     state: &Arc<AppState>,
 ) -> Result<String, String> {
-    let resolved = security::path::resolve_safe_path(
+    let resolved = security::path::resolve_safe_path_cached(
         &f.path,
-        &config.allowed_roots,
+        &state.cached_roots(),
         config.whitelist_enabled,
     )?;
     security::extension::assert_extension_allowed(&resolved, &config.allowed_extensions)?;

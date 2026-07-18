@@ -85,6 +85,13 @@ pub fn take_op_backup() -> Option<(Option<PathBuf>, Option<PathBuf>)> {
 type AuditWriter = Option<(PathBuf, BufWriter<std::fs::File>)>;
 static AUDIT_WRITER: OnceLock<Mutex<AuditWriter>> = OnceLock::new();
 
+/// E-P4: 审计日志解析缓存。read_page 每 10s 被前端轮询，稳态下日志不再变化时全量
+/// JSON 解析是纯浪费。以 (path, mtime, len) 为键值缓存整份解析结果，仅当文件被追加/
+/// 轮换/清空（mtime 或 len 变化）时才重新解析。clear_all / cleanup_old_entries 在改写
+/// 文件后主动失效，避免 stale。与 AUDIT_WRITER 同构（OnceLock<Mutex<…>>）。
+type AuditCache = Option<(PathBuf, u64, u64, Vec<AuditEntry>)>;
+static AUDIT_CACHE: OnceLock<Mutex<AuditCache>> = OnceLock::new();
+
 pub fn write_audit_log(data_dir: &Path, entry: &AuditEntry) -> Result<(), String> {
     let line = serde_json::to_string(entry)
         .map_err(|e| format!("Failed to serialize audit entry: {e}"))?;
@@ -136,14 +143,37 @@ pub struct AuditPage {
     pub page_size: usize,
 }
 
+/// 全量读入 audit.log 并逐行解析为 `AuditEntry`。仅在缓存未命中（文件变更）时调用，
+/// 平时 read_page 直接复用 AUDIT_CACHE 中的已解析结果，跳过本函数。
+fn parse_all_entries(log_path: &Path) -> Result<Vec<AuditEntry>, String> {
+    let file =
+        std::fs::File::open(log_path).map_err(|e| format!("Failed to open audit log: {e}"))?;
+    Ok(std::io::BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|line| serde_json::from_str(&line).ok())
+        .collect())
+}
+
 /// 分页读取审计日志（策略 A：页码分页）。
 /// 读全 JSONL 文件 → `total = 行数` → 倒序（最新在前）→ `skip((page-1)*page_size).take(page_size)`。
 /// 审计量受 30 天保留限制，全读可接受；返回结构供前端算总页数并渲染分页器。
+///
+/// E-P4 优化：以 (path, mtime, len) 为键值缓存整份解析结果。前端每 10s 轮询本函数，
+/// 稳态下日志不再变化时直接复用缓存（零 JSON 解析）；仅当文件被追加/轮换/清空
+/// （mtime 或 len 变化）时才重新全量解析。clear_all / cleanup_old_entries 在改写文件后
+/// 主动失效缓存，避免返回 stale 数据。
 pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<AuditPage, String> {
     let page = page.max(1);
     let page_size = page_size.max(1);
     let log_path = data_dir.join("audit.log");
     if !log_path.exists() {
+        // 文件不存在：清空缓存（避免 stale），返回空页。
+        if let Some(m) = AUDIT_CACHE.get() {
+            if let Ok(mut g) = m.lock() {
+                *g = None;
+            }
+        }
         return Ok(AuditPage {
             entries: vec![],
             total: 0,
@@ -152,15 +182,34 @@ pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<Audit
         });
     }
 
-    let file =
-        std::fs::File::open(&log_path).map_err(|e| format!("Failed to open audit log: {e}"))?;
+    let meta =
+        std::fs::metadata(&log_path).map_err(|e| format!("Failed to stat audit log: {e}"))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let len = meta.len();
 
-    // 整文件读入并按行解析：审计量受保留期限制，全读成本可控，且分页需 total。
-    let all: Vec<AuditEntry> = std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter_map(|line| serde_json::from_str(&line).ok())
-        .collect();
+    // 先短锁判定是否命中；命中则克隆缓存条目（不持有锁做 IO）。
+    let cache = AUDIT_CACHE.get_or_init(|| Mutex::new(None));
+    let hit = {
+        let g = cache.lock().unwrap();
+        matches!(
+            g.as_ref(),
+            Some((p, mt, ln, _))
+                if p.as_path() == log_path.as_path() && *mt == mtime && *ln == len
+        )
+    };
+    let all: Vec<AuditEntry> = if hit {
+        cache.lock().unwrap().as_ref().unwrap().3.clone()
+    } else {
+        let parsed = parse_all_entries(&log_path)?;
+        let mut g = cache.lock().unwrap();
+        *g = Some((log_path.clone(), mtime, len, parsed.clone()));
+        parsed
+    };
 
     let total = all.len();
     let start = (page - 1) * page_size;
@@ -181,6 +230,12 @@ pub fn clear_all(data_dir: &Path) -> Result<(), String> {
     let log_path = data_dir.join("audit.log");
     if log_path.exists() {
         std::fs::remove_file(&log_path).map_err(|e| format!("Failed to clear audit log: {e}"))?;
+    }
+    // E-P4: 文件已删，失效解析缓存（下次读取会重建或返回空）。
+    if let Some(m) = AUDIT_CACHE.get() {
+        if let Ok(mut g) = m.lock() {
+            *g = None;
+        }
     }
     Ok(())
 }
@@ -270,6 +325,13 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<(), S
     std::fs::rename(&tmp_path, &log_path)
         .map_err(|e| format!("Failed to replace audit log: {e}"))?;
 
+    // E-P4: 文件已被 rewrite，mtime/len 已变，失效解析缓存（下次读取会重建）。
+    if let Some(m) = AUDIT_CACHE.get() {
+        if let Ok(mut g) = m.lock() {
+            *g = None;
+        }
+    }
+
     Ok(())
 }
 
@@ -335,5 +397,101 @@ mod tests {
         assert_eq!(e.audit_ms, Some(0.0068));
         // overhead = 1 − 1 − 0.0068，clamp 到 0
         assert_eq!(e.overhead_ms, Some(0.0));
+    }
+
+    /// E-P4: 测试辅助——在系统临时目录下建一个唯一子目录作 data_dir。
+    fn tmp_data_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ccb_test_{}_{}", name, std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    /// E-P4: read_page 倒序分页 + total 正确；且二次同参调用走缓存命中、结果一致。
+    #[test]
+    fn read_page_paginates_recent_first() {
+        let dir = tmp_data_dir("paging");
+        let _ = clear_all(&dir);
+        for i in 0..5 {
+            let e = new_entry(
+                format!("tool_{i}").as_str(),
+                "{}",
+                true,
+                None,
+                None,
+                Some(i as u64),
+                Some(i as u64),
+                None,
+                None,
+                None,
+                None,
+            );
+            write_audit_log(&dir, &e).expect("write");
+        }
+        let page = read_page(&dir, 1, 50).expect("read");
+        assert_eq!(page.total, 5);
+        assert_eq!(page.entries.len(), 5);
+        // 倒序：最新（tool_4）在前
+        assert_eq!(page.entries[0].tool, "tool_4");
+        assert_eq!(page.entries[4].tool, "tool_0");
+
+        // 第二页：page_size=2 → 取 tool_4, tool_3（缓存命中路径）
+        let p2 = read_page(&dir, 1, 2).expect("read2");
+        assert_eq!(p2.entries.len(), 2);
+        assert_eq!(p2.entries[0].tool, "tool_4");
+        assert_eq!(p2.entries[1].tool, "tool_3");
+
+        // 二次同参调用结果一致（缓存未失效）
+        let again = read_page(&dir, 1, 50).expect("read again");
+        assert_eq!(again.total, page.total);
+        assert_eq!(again.entries[0].tool, page.entries[0].tool);
+        let _ = clear_all(&dir);
+    }
+
+    /// E-P4: 无文件变更时两次 read_page 结果一致；追加后缓存失效、total 增加。
+    #[test]
+    fn read_page_cache_consistent_and_invalidates() {
+        let dir = tmp_data_dir("cache");
+        let _ = clear_all(&dir);
+        for i in 0..3 {
+            let e = new_entry(
+                format!("t{i}").as_str(),
+                "{}",
+                true,
+                None,
+                None,
+                Some(i as u64),
+                Some(i as u64),
+                None,
+                None,
+                None,
+                None,
+            );
+            write_audit_log(&dir, &e).expect("write");
+        }
+        let a = read_page(&dir, 1, 50).expect("read a");
+        let b = read_page(&dir, 1, 50).expect("read b");
+        assert_eq!(a.entries.len(), b.entries.len());
+        assert_eq!(a.total, b.total);
+        assert_eq!(a.entries[0].tool, b.entries[0].tool);
+
+        // 追加一条 → len 变化 → 缓存失效 → total 变为 4
+        let e4 = new_entry(
+            "t3",
+            "{}",
+            true,
+            None,
+            None,
+            Some(3),
+            Some(3),
+            None,
+            None,
+            None,
+            None,
+        );
+        write_audit_log(&dir, &e4).expect("write 4");
+        let c = read_page(&dir, 1, 50).expect("read c");
+        assert_eq!(c.total, 4);
+        assert_eq!(c.entries[0].tool, "t3");
+        let _ = clear_all(&dir);
     }
 }

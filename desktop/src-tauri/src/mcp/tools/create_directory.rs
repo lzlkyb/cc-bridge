@@ -15,9 +15,9 @@ pub async fn handle(args: CreateDirectoryArgs, state: &Arc<AppState>) -> Result<
     let config = state.config.read().await;
 
     // 目录无扩展名，不做扩展名白名单校验（否则会被误拒），仅走路径白名单。
-    let resolved = security::path::resolve_safe_path(
+    let resolved = security::path::resolve_safe_path_cached(
         &args.path,
-        &config.allowed_roots,
+        &state.cached_roots(),
         config.whitelist_enabled,
     )?;
 

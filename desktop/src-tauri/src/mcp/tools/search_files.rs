@@ -84,9 +84,9 @@ fn default_max_results() -> usize {
 
 pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let config = state.config.read().await;
-    let root_resolved = security::path::resolve_safe_path(
+    let root_resolved = security::path::resolve_safe_path_cached(
         &args.root_path,
-        &config.allowed_roots,
+        &state.cached_roots(),
         config.whitelist_enabled,
     )?;
 

@@ -170,7 +170,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
     let uptime = state.uptime_seconds().await;
     let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
     let startup_error = state.startup_error.lock().unwrap().clone();
-    let lan_ips = network::get_lan_ips();
+    let lan_ips = state.cached_lan_ips();
 
     // 防火墙状态：优先读缓存（后台定时刷新）。缓存尚未初始化时做一次同步查询，
     // 保证首屏即可拿到真实状态，避免前几次轮询都返回 unknown。
@@ -574,6 +574,10 @@ pub async fn save_config(
             restart_required = true;
         }
     }
+
+    // 白名单根目录缓存随配置刷新（性能优化）：先释放 config 写锁，避免下面读锁死等。
+    drop(config);
+    state.refresh_canonicalized_roots(&state.config.read().await.allowed_roots);
 
     Ok(ConfigSaveResult {
         ok: true,
@@ -983,9 +987,9 @@ pub async fn restore_file(
     // 1) 安全校验 backup_path
     let bak_canon = assert_backup_path_in_scope(&backup_path, &data_dir, &backup_dir)?;
     // 2) 白名单校验 target（安全模块不削弱）
-    let resolved = path::resolve_safe_path(
+    let resolved = path::resolve_safe_path_cached(
         &target_path,
-        &config.allowed_roots,
+        &state.cached_roots(),
         config.whitelist_enabled,
     )?;
     drop(config);
@@ -1097,7 +1101,6 @@ pub async fn list_backups(state: State<'_, Arc<AppState>>) -> Result<BackupListR
     let data_dir = state.data_dir.clone();
     let backup_dir_name = config.backup_dir.clone();
     let whitelist_enabled = config.whitelist_enabled;
-    let allowed_roots: Vec<String> = config.allowed_roots.clone();
     drop(config);
 
     let dir = data_dir.join(&backup_dir_name);
@@ -1177,7 +1180,7 @@ pub async fn list_backups(state: State<'_, Arc<AppState>>) -> Result<BackupListR
                 if let Some(original_path) = index.get(&e.backup_path) {
                     // 仍需核实该路径当前确实落在白名单内（root 配置可能在备份之后被改过）。
                     if let Ok(resolved) =
-                        path::resolve_safe_path(original_path, &allowed_roots, true)
+                        path::resolve_safe_path_cached(original_path, &state.cached_roots(), true)
                     {
                         e.targets = vec![path::display_path(&resolved)];
                     }
@@ -1244,9 +1247,9 @@ pub async fn get_file_diff(
     // 1) 校验 backup_path
     let bak_canon = assert_backup_path_in_scope(&backup_path, &data_dir, &backup_dir)?;
     // 2) 白名单校验 target
-    let resolved = path::resolve_safe_path(
+    let resolved = path::resolve_safe_path_cached(
         &target_path,
-        &config.allowed_roots,
+        &state.cached_roots(),
         config.whitelist_enabled,
     )?;
 
@@ -1409,18 +1412,23 @@ pub async fn export_config(state: State<'_, Arc<AppState>>) -> Result<String, St
     serde_json::to_string_pretty(&*config).map_err(|e| format!("序列化配置失败：{e}"))
 }
 
-#[tauri::command]
-pub async fn import_config(
-    state: State<'_, Arc<AppState>>,
-    json: String,
+/// `import_config` 的纯逻辑入口：解析 → 白名单兜底校验 → 落库 → 写 config → 刷新白名单缓存。
+///
+/// 抽出来是为了让回归测试能直达「写 config 后必须刷新缓存」这一不变量，而不触发
+/// Tauri `State` 包装与 `restart_server` 的端口副作用（见文件末尾 `import_config_refreshes_cached_roots`）。
+pub(crate) async fn import_config_inner(
+    state: &Arc<AppState>,
+    json: &str,
 ) -> Result<ConfigSaveResult, String> {
     let incoming: crate::config::BridgeConfig =
-        serde_json::from_str(&json).map_err(|e| format!("配置解析失败：{e}"))?;
+        serde_json::from_str(json).map_err(|e| format!("配置解析失败：{e}"))?;
 
-    // 白名单兜底校验（复用 security::path 白名单逻辑，不可绕过）
+    // 白名单兜底校验（复用 security::path 白名单逻辑，不可绕过）。
+    // incoming 尚未写入 state，用其自身 roots 预 canonicalize 的本地缓存集合校验。
+    let incoming_roots = crate::security::path::canonicalize_roots(&incoming.allowed_roots);
     for root in &incoming.allowed_roots {
         if let Err(e) =
-            path::resolve_safe_path(root, &incoming.allowed_roots, incoming.whitelist_enabled)
+            path::resolve_safe_path_cached(root, &incoming_roots, incoming.whitelist_enabled)
         {
             return Err(format!("白名单目录校验失败「{}」：{}", root, e));
         }
@@ -1432,11 +1440,9 @@ pub async fn import_config(
 
     *state.config.write().await = incoming;
 
-    // 重启服务使 host/port 等配置生效
-    crate::mcp::http::restart_server(state.inner()).await;
-    state
-        .mcp_running
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // 白名单根缓存随导入刷新（性能优化）：与 save_config 一致，写完 config 后用最新 roots 重算，
+    // 否则缓存仍指向旧 roots，导致后续工具校验误放行/误拒绝。
+    state.refresh_canonicalized_roots(&state.config.read().await.allowed_roots);
 
     Ok(ConfigSaveResult {
         ok: true,
@@ -1444,6 +1450,22 @@ pub async fn import_config(
         warnings: vec![],
         restart_required: true,
     })
+}
+
+#[tauri::command]
+pub async fn import_config(
+    state: State<'_, Arc<AppState>>,
+    json: String,
+) -> Result<ConfigSaveResult, String> {
+    let result = import_config_inner(state.inner(), &json).await;
+    // 仅成功时重启服务使 host/port 等配置生效（失败时不重启，与原语义一致）
+    if result.is_ok() {
+        crate::mcp::http::restart_server(state.inner()).await;
+        state
+            .mcp_running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    result
 }
 
 // ===== 自动更新（后台线程，不阻塞 UI），採自 PastePanda 实现 =====
@@ -1742,4 +1764,104 @@ pub fn check_update(app: tauri::AppHandle) {
             }),
         );
     });
+}
+
+// ===== 单元测试 =====
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::BridgeConfig;
+    use crate::db;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// 回归测试：import_config 写入新的 `allowed_roots` 后**必须**刷新白名单缓存
+    /// （`canonicalized_roots`），否则 `cached_roots()` 仍指向旧 roots，导致后续所有
+    /// 走 `state.cached_roots()` 的工具校验误放行/误拒绝。
+    ///
+    /// 复现 #1-A 复审发现的 `import_config` 漏刷缓存 bug：若有人把
+    /// `import_config_inner` 里的 `refresh_canonicalized_roots(...)` 一行删掉，
+    /// 本测试的"缓存必须等于新 roots"断言会直接失败——这正是本测试存在的意义。
+    #[tokio::test]
+    async fn import_config_refreshes_cached_roots() {
+        // 两个不同目录，确保"导入后缓存是否跟着变"可被明确测出（若用同一目录则无差异）。
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir_a: PathBuf = std::env::temp_dir().join(format!(
+            "cc-bridge-import-test-a-{}-{}-{}",
+            std::process::id(),
+            n,
+            "a"
+        ));
+        let dir_b: PathBuf = std::env::temp_dir().join(format!(
+            "cc-bridge-import-test-b-{}-{}-{}",
+            std::process::id(),
+            n,
+            "b"
+        ));
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        std::fs::create_dir_all(&dir_a).expect("create dir_a");
+        std::fs::create_dir_all(&dir_b).expect("create dir_b");
+
+        let root_a = dir_a.to_string_lossy().into_owned();
+        let root_b = dir_b.to_string_lossy().into_owned();
+
+        // 初始 state：白名单 = [dir_a]
+        let conn = db::init_database(Path::new(&dir_a)).expect("init db");
+        let cfg = BridgeConfig {
+            allowed_roots: vec![root_a.clone()],
+            ..BridgeConfig::default()
+        };
+        let state = Arc::new(AppState::new(conn, cfg, dir_a.clone()));
+
+        // 导入前：缓存必须等于 [dir_a] 的 canonicalize 结果
+        let expected_a =
+            crate::security::path::canonicalize_roots(&state.config.read().await.allowed_roots);
+        assert_eq!(
+            state.cached_roots(),
+            expected_a,
+            "导入前缓存应等于 [dir_a] 的 canonicalize"
+        );
+
+        // 构造 incoming 配置，白名单改为 [dir_b]
+        let incoming = BridgeConfig {
+            allowed_roots: vec![root_b.clone()],
+            ..BridgeConfig::default()
+        };
+        let json = serde_json::to_string(&incoming).expect("serialize config");
+
+        // 直达纯逻辑入口（不经过 restart_server，无端口副作用）
+        let result = super::import_config_inner(&state, &json).await;
+        assert!(result.is_ok(), "import_config 应成功：{:?}", result.err());
+
+        // 导入后 1：config 自身必须已更新为 [dir_b]
+        let cfg_roots = state.config.read().await.allowed_roots.clone();
+        assert_eq!(
+            cfg_roots,
+            vec![root_b.clone()],
+            "导入后 config.allowed_roots 应更新为 [dir_b]"
+        );
+
+        // 导入后 2（关键）：缓存必须同步刷新为 [dir_b]，否则白名单校验会误放行/误拒绝
+        let expected_b = crate::security::path::canonicalize_roots(&cfg_roots);
+        assert_eq!(
+            state.cached_roots(),
+            expected_b,
+            "导入后缓存必须刷新为 [dir_b] 的 canonicalize，否则白名单校验会误放行/误拒绝"
+        );
+
+        // 导入后 3：缓存不应仍停留在导入前的旧 roots（删掉刷新行时此断言必败）
+        assert_ne!(
+            state.cached_roots(),
+            expected_a,
+            "缓存不应仍指向导入前的旧 roots [dir_a]"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
 }
