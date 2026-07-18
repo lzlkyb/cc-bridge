@@ -42,7 +42,7 @@ mod imp {
 
                 // SIO_ADDRESS_LIST_CHANGE: 返回 0 或 WSAEFAULT 均表示地址变化（后者是
                 // ioctl 无 output buffer 时的正常返回码，意为"有数据准备好"）。
-                if result == 0 || result == WSAEFAULT.0 as i32 {
+                if result == 0 || result == WSAEFAULT.0 {
                     let _ = tx.send(());
                 } else {
                     // socket 被关闭（shutdown）或其他不可恢复错误 → 退出线程
