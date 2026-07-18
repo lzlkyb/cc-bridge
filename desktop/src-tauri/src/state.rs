@@ -179,7 +179,9 @@ impl AppState {
     /// 与 `gc_path_locks` 同节奏（每 60s，由 main 后台任务调用）。超时即丢弃，不续期——
     /// 客户端若仍持有旧 session_id，下次调用会收到「session 不存在」错误，按工具描述重新创建即可。
     pub fn gc_cwd_sessions(&self) {
-        let cutoff = Instant::now() - Duration::from_secs(30 * 60);
+        let Some(cutoff) = Instant::now().checked_sub(Duration::from_secs(30 * 60)) else {
+            return; // 进程启动不足 30 分钟，不可能有超时 session
+        };
         self.cwd_sessions.retain(|_, s| s.last_active > cutoff);
     }
 
