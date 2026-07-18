@@ -452,14 +452,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let handle = app.handle().clone();
                 let watch_state = app_state.clone();
-                // G1 修复：套 spawn_supervised，panic 后自愈重启而非永久静默停止。
+                // 事件驱动 IP 变化检测（Windows SIO_ADDRESS_LIST_CHANGE，替代 15s 轮询）。
+                // spawn_ip_watch 在专用阻塞线程上等待 OS 通知，通过 channel 通知 async 端。
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                let _watcher_socket = crate::ip_watch::spawn(tx);
                 spawn_supervised("本机地址变化检测", move || {
                     let handle = handle.clone();
                     let watch_state = watch_state.clone();
+                    // 每次 panic 自愈重启时重建 watcher（旧 socket 已随 drop 关闭）。
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+                    let _watcher = crate::ip_watch::spawn(tx);
                     Box::pin(async move {
                         let mut alerting = false;
                         loop {
-                            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                            // 阻塞等待 OS 通知（无通知时线程在内核态休眠，零 CPU）
+                            let _ = rx.recv().await;
                             let last_ip = watch_state.config.read().await.last_selected_ip.clone();
                             let changed = match &last_ip {
                                 Some(ip) => !network::get_lan_ips().contains(ip),
