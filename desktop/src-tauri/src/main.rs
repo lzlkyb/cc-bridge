@@ -120,6 +120,24 @@ fn tray_icon(running: bool) -> tauri::image::Image<'static> {
     (if running { &icons.0 } else { &icons.1 }).clone()
 }
 
+/// 托盘状态刷新（带去重）：仅当 running 或 tooltip 文本真正变化时才重设图标/tooltip。
+/// 三处刷新点（初始/状态事件/地址变化循环）共享同一 `last` 缓存，消除网络抖动导致的
+/// 高频 set_icon 在 Windows 上表现为的图标闪烁（同状态重复重设即闪）。
+fn refresh_tray(
+    tray: &tauri::tray::TrayIcon,
+    running: bool,
+    tip: &str,
+    last: &std::sync::Arc<std::sync::Mutex<(bool, String)>>,
+) {
+    let mut g = last.lock().unwrap();
+    if g.0 == running && g.1 == tip {
+        return; // 无变化，跳过重设（防高频重绘闪烁）
+    }
+    let _ = tray.set_icon(Some(tray_icon(running)));
+    let _ = tray.set_tooltip(Some(tip));
+    *g = (running, tip.to_string());
+}
+
 /// G1 修复：后台周期任务加 panic 恢复。之前 4 个 tauri::async_runtime::spawn 循环任一 panic 后，该循环会
 /// 永久静默停止（托盘不刷新/命令注册表不回收/防火墙缓存过期等），用户和日志都无感知。
 /// 用 JoinHandle 的 panic 检测做自愈：内层任务 panic → 记录错误日志 → 短暂延迟后重新 spawn。
@@ -372,8 +390,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "copy_ip_sed" => {
                         // 网络变动时在 Rust 端直接生成「原地替换 IP」的 sed 命令并写入剪贴板，
                         // 与连接页 IpChangedBanner 的 user 级 sed 等价；不依赖前端 webview 焦点。
-                        // 托盘项无 projectPath，固定输出用户级（~/.claude.json）；
-                        // 项目级替换请在连接页 IpChangedBanner 复制带 cd 的精确命令。
+                        // 托盘项跟随用户在连接页选择的作用域（config.scope / config.project_path），
+                        // 与连接页 IpChangedBanner.buildSed 逐字等价（含 cd 前缀）；方案 A 已对齐，不再是固定用户级。
                         let state = tray_state.clone();
                         let app_h = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
@@ -445,31 +463,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .build(app)?;
 
+            // 托盘状态去重缓存：三处刷新点（初始/状态事件/地址变化循环）共享，
+            // 仅在 (running, tooltip) 真正变化时才重设图标，消除网络抖动下的高频重绘闪烁。
+            let last_tray =
+                std::sync::Arc::new(std::sync::Mutex::new((false, String::new())));
+
             // 启动后即时按真实状态刷新一次托盘图标（上面初始读取可能早于 mcp 置位）
             if let Some(tray) = app.handle().tray_by_id("main-tray") {
                 let running = app_state
                     .mcp_running
                     .load(std::sync::atomic::Ordering::Relaxed);
-                let _ = tray.set_icon(Some(tray_icon(running)));
+                let tip = if running {
+                    "cc-bridge · 服务运行中"
+                } else {
+                    "cc-bridge · 已停止"
+                };
+                refresh_tray(&tray, running, tip, &last_tray);
             }
 
             // 监听前端/命令触发的状态变更事件，即时刷新托盘图标与 tooltip
             {
                 let handle = app.handle().clone();
+                let last_tray = last_tray.clone();
                 app.listen("mcp-status-changed", move |_| {
                     let h = handle.clone();
+                    let last_tray = last_tray.clone();
                     tauri::async_runtime::spawn(async move {
                         let running = h
                             .state::<std::sync::Arc<state::AppState>>()
                             .mcp_running
                             .load(std::sync::atomic::Ordering::Relaxed);
                         if let Some(tray) = h.tray_by_id("main-tray") {
-                            let _ = tray.set_icon(Some(tray_icon(running)));
-                            let _ = tray.set_tooltip(Some(if running {
+                            let tip = if running {
                                 "cc-bridge · 服务运行中"
                             } else {
                                 "cc-bridge · 已停止"
-                            }));
+                            };
+                            refresh_tray(&tray, running, tip, &last_tray);
                         }
                     });
                 });
@@ -480,13 +510,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let handle = app.handle().clone();
                 let watch_state = app_state.clone();
+                let last_tray = last_tray.clone();
                 // 事件驱动 IP 变化检测（Windows SIO_ADDRESS_LIST_CHANGE，替代 15s 轮询）。
                 // spawn_ip_watch 在专用阻塞线程上等待 OS 通知，通过 channel 通知 async 端。
-                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-                let _watcher_socket = crate::ip_watch::spawn(tx);
                 spawn_supervised("本机地址变化检测", move || {
                     let handle = handle.clone();
                     let watch_state = watch_state.clone();
+                    let last_tray = last_tray.clone();
                     // 每次 panic 自愈重启时重建 watcher（旧 socket 已随 drop 关闭）。
                     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
                     let _watcher = crate::ip_watch::spawn(tx);
@@ -495,6 +525,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         loop {
                             // 阻塞等待 OS 通知（无通知时线程在内核态休眠，零 CPU）
                             let _ = rx.recv().await;
+                            // 防抖：收到首个通知后，在 600ms 窗口内合并后续连续的网络抖动
+                            // （Wi-Fi 重连/VPN/DHCP 续租常一次变化伴随多条通知），只处理一次，
+                            // 以最终状态为准，避免风暴式重扫网卡与托盘重绘。
+                            while tokio::time::timeout(
+                                std::time::Duration::from_millis(600),
+                                rx.recv(),
+                            )
+                            .await
+                            .is_ok()
+                            {
+                                // 窗口内仍有通知到达，继续吸收
+                            }
                             // IP 变化通知到达：重扫网卡写回缓存，并据此判断 changed
                             // （刷新缓存与判断合一，避免二次网卡枚举）。
                             let ips = watch_state.refresh_lan_ips();
@@ -515,9 +557,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 } else {
                                     "cc-bridge · 已停止"
                                 };
-                                let _ = tray.set_tooltip(Some(tip));
-                                // 图标随运行状态刷新（地址变化不改变图标）
-                                let _ = tray.set_icon(Some(tray_icon(running)));
+                                // 去重刷新（图标随运行状态；地址变化仅改 tooltip）
+                                refresh_tray(&tray, running, tip, &last_tray);
                             }
                             if changed && !alerting {
                                 let _ = handle

@@ -4,6 +4,31 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.10",
+    date: "2026-07-21",
+    items: [
+      { category: "fix", text: "托盘「复制 IP 命令」跟随连接页作用域：此前托盘端固定复制用户级（~/.claude.json）命令，与连接页选「项目级」时显示的 .mcp.json 命令对不上；现托盘端读取连接页实际选择的作用域与项目路径，生成与连接页逐字一致的命令。" },
+      { category: "fix", text: "连接页切换「项目级 / 全局模式」后托盘命令不联动：作用域与项目路径没有真正写入持久化配置，托盘端一直读到默认作用域；现已在切换或首次打开连接页时即时落盘，托盘复制命令与连接页保持同步。" },
+    ],
+  },
+  {
+    version: "2.3.9",
+    date: "2026-07-21",
+    items: [
+      { category: "feat", text: "设置页「安装与快捷方式」卡片与命令面板（Ctrl+K）新增「重新查看使用引导」入口，关闭引导后可随时重新打开（H3）。" },
+      { category: "fix", text: "新手引导交互缺陷（H3）：点击遮罩不再永久关闭引导（改为轻微抖动，提示改用下方按钮），消除「误触遮罩即永久跳过」；每步新增完成态——完成时标题右侧显「已完成」，未完成时底部给轻量提示（软引导，不强制拦截「下一步」）。" },
+      { category: "fix", text: "全量代码审计后的一批后端健壮性修复：内容搜索非法/超长正则、结构异常的 .ipynb 不再触发进程 panic；备份保留数设为 0 不再误删全部历史备份；批量操作子项补记来源 IP；后台命令的临时工作目录捕获文件读后即删、不再累积；托盘图标非正方形时缩放越界；审计缓存判定与读取的竞态；目录递归补深度与总条目上限；大文件分析只读前缀避免 OOM；整份配置写入改为事务式、中途失败自动回滚不残留未结束事务；SSE 推送滞后丢帧改为记录日志。" },
+      { category: "fix", text: "前端健壮性修复：日志详情行展开在轮询刷新后错位（改用稳定 key）；CSV 导出加公式注入防护；性能面板统计改为覆盖最近 500 条且耗时拆解不再重复计数；分页在总数缩减后不再停在空页；设置保存/目录浏览失败给出可见反馈；更新事件监听在快速重挂载下的注册竞态；主动停服不再被误判为「网络恢复」并自动重启；命令/脚本生成中的项目路径统一加引号；版本比较容忍带后缀的版本号。" },
+      { category: "sec", text: "`edit_files` 之前无视 `encoding_detect_enabled`（默认关）无条件自动探测编码，与 `read_files`（关时强制 UTF-8）不一致，可能对同一文件解码出不同内容；现两者判断逻辑一致。" },
+      { category: "sec", text: "`encoding::read_text` 自动探测四种编码全部失败时会静默用 U+FFFD 替换并可能在写回时永久损坏原文；现改为拒绝并报错，提示显式指定编码。" },
+      { category: "sec", text: "未配置访问令牌（空 token）不再等同于放行：`verify_token` 对空期望值失败关闭（fail-closed），杜绝空配置被无鉴权访问。" },
+      { category: "sec", text: "一键回滚（restore_file）补齐只读模式与扩展名白名单校验，堵住经回滚通道绕过写入闸门的路径。" },
+      { category: "sec", text: "白名单目录删除改为按路径匹配，修复重复目录/轮询刷新下删错目标；新手引导添加白名单去重。" },
+      { category: "sec", text: "默认 cmd 壳层补充 Windows 破坏性命令拦截（rd/rmdir/del /s、diskpart、cipher /w 等）；`is_binary_content` 修正 UTF-32BE BOM 误判为二进制。" },
+      { category: "sec", text: "只读模式开启时安全风险总览不再因 shell 开关配置值而误报「高风险 RCE」（只读会强制禁用命令执行）。" },
+    ],
+  },
+  {
     version: "2.3.8",
     date: "2026-07-18",
     items: [
@@ -124,46 +149,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "`buildConnectCommand`（连接页\"项目级\"接入命令）缺失 `--scope project` 参数：之前项目级分支不加任何 `--scope`，而 Claude Code CLI 不带 `--scope` 时默认是 `local` scope（写入 `~/.claude.json` 按项目路径存的部分），与连接页文案宣称的 `.mcp.json` 不符。导致地址变化 `IpChangedBanner` 与 Token 重生成 `TokenManager` 生成的 sed 命令（均假设 project scope = `.mcp.json`）在项目级场景下实际改不到真正生效的配置文件，表现为\"复制 sed 命令执行后不生效/地址仍不对\"。现显式加 `--scope project`，与 sed 命令生成逻辑的假设保持一致。" },
       { category: "fix", text: "安装目录打开「显示成功但不弹窗」：`reveal_install_dir` 改用 ShellExecute 直接打开目录，规避 explorer 单实例 DDE 转发导致不弹窗的怪癖。" },
       { category: "fix", text: "桌面快捷方式创建失败：`create_desktop_shortcut` 桌面路径改取 `USERPROFILE\\Desktop` 优先，不再依赖易解析失败的 `app.path().desktop_dir()`。" },
-    ],
-  },
-  {
-    version: "2.2.23",
-    date: "2026-07-12",
-    highlights: [
-      "MCP 后端分发层重构：手写 `match` 分发改为「工具注册表 + `ToolSchema` 派生宏」，17 个工具的 `inputSchema` 自动从 handler 的 Args struct 派生，新增工具零样板、协议契约与代码同源",
-      "新增 over-the-wire 集成测试：真实起 MCP server + 真实 reqwest 客户端端到端验证协议握手、17 工具分发与落盘副作用、鉴权 / 限流 / gzip / 错误码，测试套件 72 → 82 全绿、`cargo clippy --no-default-features` 零警告",
-      "连接页方案 A 完整落地：Token 内嵌复制命令、`s-sec-label` 安全分区、渐变徽章步骤、灰底命令框、步骤行 hover",
-    ],
-    items: [
-      { category: "feat", text: "工具注册表 `src/mcp/tools/registry.rs`：集中声明 17 个工具的名称 / 读写属性 / handler 分发，替代散落各处的 `match` 分支" },
-      { category: "feat", text: "`ToolSchema` 派生宏（新增 `cc-bridge-macros` proc-macro crate，仅编译期依赖、不进 exe，守二进制体积红线）：从工具 Args struct 自动生成 `inputSchema`" },
-      { category: "feat", text: "over-the-wire 集成测试模块（`http.rs`，10 个用例）：initialize 回显 / tools/list=17 / 未知方法 -32601 / 全工具分发+副作用 / 后台 run→output→stop 三元组 / auth 401·200 / 限流 429 / gzip 响应头" },
-      { category: "feat", text: "关于页 `ChangelogView` 组件 + `scripts/gen-changelog.mjs` + `src/lib/changelog.generated.ts`，更新历史从 `CHANGELOG.md` 自动同步" },
-      { category: "feat", text: "`TokenManager.tsx` 令牌管理界面" },
-      { category: "improve", text: "后端分发由 `match` 分支改为 registry 查表分发，全部 17 个工具接入注册表" },
-      { category: "improve", text: "连接页方案 A 完整落地：Token 内嵌复制命令、`s-sec-label` 分区、渐变徽章步骤、灰底命令框、步骤行 hover（PastePanda 风格优化）" },
-      { category: "improve", text: "后端性能与质量优化：`config.rs` / `audit.rs` / `db.rs` / `main.rs` 模块重构" },
-      { category: "fix", text: "`notebook_edit` 驼峰 `newSource` 字段被静默忽略：该字段此前只有 `#[serde(default)]` 缺 `#[serde(rename = \"newSource\")]`，客户端按文档传 camelCase 时单元格被清空为 `\"\"`；补 rename 后修复（此缺陷因既有单测直接构造 Rust struct、从未走 JSON 反序列化而长期未发现，恰由本次 over-the-wire 测试捕获）" },
-      { category: "improve", text: "`reqwest` / `axum` 作为 dev-dependency 支撑集成测试，`default-tls` 在 Windows 走系统 schannel，无需 openssl 编译" },
-    ],
-  },
-  {
-    version: "2.2.22",
-    date: "2026-07-11",
-    highlights: [
-      "关于页与连接页全面改用 PastePanda 风格，信息更清晰、操作更顺手",
-      "扩展名可按类别勾选，白名单配置更快",
-    ],
-    items: [
-      { category: "feat", text: "关于卡片 PastePanda 风格重写：默认收起成一行，点开双列展示（技术栈 + 项目信息），更新历史按「新增 / 改进 / 修复 / 安全」分类标签呈现，详情弹框介绍完整能力。" },
-      { category: "feat", text: "Header 版本号支持一键检查更新：空闲时点击即可检查，覆盖检查中 / 有新版 / 下载中 / 待重启 / 已最新 / 出错等状态。" },
-      { category: "feat", text: "托盘图标升级：改用应用真图标，并在右下角叠加运行状态小圆点。" },
-      { category: "feat", text: "扩展名芯片输入：常用扩展名按「前端 / 后端 / 配置 / 文档」分类，点开勾选、分色显示；也支持自定义输入（回车、逗号、粘贴拆分）。" },
-      { category: "improve", text: "文件管控改用行式渐变徽章，备份与限流配置更紧凑直观。" },
-      { category: "improve", text: "网络卡片端口与保存按钮同行，去掉容易误解的「当前地址」行。" },
-      { category: "improve", text: "安全概览标题与展开箭头合并为一行，整行可点。" },
-      { category: "improve", text: "全应用统一为「CC Bridge」名称（此前部分界面显示小写 cc-bridge）。" },
-      { category: "improve", text: "移除冗余输入组件、改用语内联输入；补充图标；Rust 与 TypeScript 均零警告。" },
     ],
   },
 ];

@@ -96,6 +96,20 @@ function ConnectTabImpl({
     }
   }, [listenAll, lanIps.join(","), selectedIp, status?.lastSelectedIp]);
 
+  // 方案 A：作用域/项目路径一变更立即落盘，使托盘端复制的 IP 命令与连接页一致。
+  // 否则连接页用 UI 本地 scope（默认 project），托盘读持久化 config.scope（默认 None→user），
+  // 两者来源不同会不一致。此处让 config.scope 始终等于 UI 选择（含挂载时用默认值同步一次）。
+  useEffect(() => {
+    const t = setTimeout(() => {
+      // 注意：save_config 命令的形参名为 patch，前端必须把字段包进 { patch: {...} }，
+      // 否则 Tauri 取到的是空 ConfigPatch（全部 None），scope 静默不落盘且不报错（曾因此漏改）。
+      invoke("save_config", { patch: { scope, projectPath: projectPath || null } }).catch((e) =>
+        console.error("保存接入作用域/项目路径失败（不影响界面）", e),
+      );
+    }, 300);
+    return () => clearTimeout(t);
+  }, [scope, projectPath]);
+
   // E-P2-8: useMemo 避免每渲染重复拼接命令字符串（纯函数见 lib/utils）
   const displayHost = useMemo(
     () => buildDisplayHost(status, selectedIp),
@@ -137,7 +151,7 @@ function ConnectTabImpl({
         toast("连接命令已复制到剪贴板", "success");
     // 首次接入复制命令时，把当前选中的作用域落盘到后端配置，
     // 供后续 IP 变化 banner / Token 重生成生成精确 sed 命令（方案 A）。
-        invoke("save_config", { scope, projectPath: projectPath || null }).catch((e) =>
+        invoke("save_config", { patch: { scope, projectPath: projectPath || null } }).catch((e) =>
           console.error("保存接入作用域/项目路径失败（不影响本次复制）", e),
         );
         setTimeout(() => setCopied(false), 2000);
