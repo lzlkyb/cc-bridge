@@ -39,6 +39,12 @@ export interface UpdateState {
   dismissUpdate: () => void;
   /** 判断某版本是否已被「稍后」抑制 */
   isDismissed: (version?: string) => boolean;
+  /** 本次「已是最新」提示是否来自手动检查：自动检查（启动/定时）不弹框，只在版本号 pill 提示 */
+  manualCheck: boolean;
+  /** 手动检查「已是最新」toast 已消费后复位 manualCheck */
+  acknowledgeUptodate: () => void;
+  /** 手动触发检查更新（用户主动点击，命中 uptodate 时才弹「已是最新」提示框） */
+  manualCheckForUpdate: () => Promise<void>;
 }
 
 // ─── 友好错误翻译 ────────────────────────
@@ -106,6 +112,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const downloadingRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const uptodateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 标记当前这次检查是否为用户手动触发（区分自动/手动，决定是否弹「已是最新」框） */
+  const manualCheckRef = useRef(false);
+  const [manualCheck, setManualCheck] = useState(false);
 
   // ─── 静默检查（不改变 UI 状态，仅内部记录）─────
   // 统一走后端 check_update 命令，状态由事件驱动（update:available / update:uptodate）。
@@ -127,9 +136,12 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   // 统一走后端 check_update 命令；checking/available/uptodate/error 全部由后端事件驱动，
   // 前端不再各自维护一份检查逻辑（避免与 Rust 双真相源）。
 
-  const checkForUpdate = useCallback(async () => {
+  // ─── 检查更新（manual=false 自动/启动/定时；manual=true 用户主动点击）──
+  // 自动检查只更新版本号区域状态、不弹「已是最新」提示框；手动检查命中 uptodate 才弹框。
+  const runCheck = useCallback(async (manual: boolean) => {
     if (checkingRef.current) return;
     checkingRef.current = true;
+    manualCheckRef.current = manual;
     setStatus("checking");
     setError(null);
 
@@ -145,6 +157,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
     }
   }, []);
+  const checkForUpdate = useCallback(() => runCheck(false), [runCheck]);
+  const manualCheckForUpdate = useCallback(() => runCheck(true), [runCheck]);
 
   // ─── 启动时自动检查 ──────────────────────
 
@@ -261,10 +275,12 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       );
       track(
         await listen("update:uptodate", () => {
-          // 进入「已是最新」可见状态（原本被误重置为 idle，导致 pill/toast 永不触发）。
-          // 4 秒后自动回到 idle；先清旧定时器防重入（如连续多次检查命中）。
+          // 进入「已是最新」可见状态（版本号 pill 显示）；4 秒后自动回到 idle。
+          // 仅手动检查才弹「已是最新」提示框（manualCheck），自动检查（启动/定时）不弹框。
           setStatus("uptodate");
           setUpdate(null);
+          if (manualCheckRef.current) setManualCheck(true);
+          manualCheckRef.current = false;
           if (uptodateTimerRef.current) clearTimeout(uptodateTimerRef.current);
           uptodateTimerRef.current = setTimeout(() => {
             setStatus((s) => (s === "uptodate" ? "idle" : s));
@@ -316,7 +332,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, error, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
       {children}
       <UpdateNotesDialog open={showNotes} update={update} onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate} />
     </UpdateContext.Provider>

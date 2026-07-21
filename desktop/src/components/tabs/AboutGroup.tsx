@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useState, useEffect, useRef, useCallback, type CSSProperties } from "react";
 import { Card } from "../ui/card";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
@@ -45,11 +45,41 @@ const STYLE_ICON_ORANGE: CSSProperties = { background: "rgba(245,158,11,0.12)", 
 const STYLE_ICON_ACCENT: CSSProperties = { background: "hsl(var(--accent))", color: "var(--color-primary)" };
 const STYLE_INFO_KEY: CSSProperties = { minWidth: 52 };
 
-export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; unreadCount?: number }) {
-  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, checkForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
+export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken }: {
+  status?: StatusResponse;
+  unreadCount?: number;
+  /** 看完更新历史后标记已读（红点消失）。 */
+  onMarkSeen?: () => void;
+  /** 自增信号：变化时自动展开本卡片并滚动到更新历史。 */
+  changelogOpenToken?: number;
+}) {
+  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const changelogRef = useRef<HTMLDivElement>(null);
+
+  // 打开更新历史：展开本卡片并滚动到「更新历史」区
+  const openChangelog = useCallback(() => {
+    setExpanded(true);
+    requestAnimationFrame(() => {
+      changelogRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.scrollBy({ top: -60, behavior: "instant" });
+    });
+  }, []);
+
+  // 外部信号（点设置 tab 红点 / 进设置页有未读）→ 自动展开更新历史
+  useEffect(() => {
+    if (changelogOpenToken && changelogOpenToken > 0) openChangelog();
+  }, [changelogOpenToken, openChangelog]);
+
+  // 看完才标记已读：展开且有未读时，停留 3 秒后标记（中途收起则取消）
+  useEffect(() => {
+    if (expanded && unreadCount && unreadCount > 0) {
+      const t = setTimeout(() => onMarkSeen?.(), 3000);
+      return () => clearTimeout(t);
+    }
+  }, [expanded, unreadCount, onMarkSeen]);
 
   const openRepo = async () => {
     try {
@@ -83,8 +113,21 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
             <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} bytesPerSec={bytesPerSec} downloadedBytes={downloadedBytes} onOpenNotes={() => openUpdateNotes()} />
             {unreadCount !== undefined && unreadCount > 0 && (
               <span
-                className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white"
-                title={`${unreadCount} 项新更新`}
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openChangelog();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    openChangelog();
+                  }
+                }}
+                title={`${unreadCount} 项新更新，点击查看更新历史`}
+                className="changelog-dot flex h-4 min-w-[16px] cursor-pointer items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white"
               >
                 {unreadCount > 9 ? "9+" : unreadCount}
               </span>
@@ -93,7 +136,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
 
           {/* 操作按钮区（阻止冒泡，不触发展开） */}
           <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-            <UpdateActionBtn status={updateStatus} onCheck={checkForUpdate} onDownload={downloadAndInstall} onRestart={restart} />
+            <UpdateActionBtn status={updateStatus} onCheck={manualCheckForUpdate} onDownload={downloadAndInstall} onRestart={restart} />
             <button
               type="button"
               onClick={openRepo}
@@ -206,7 +249,7 @@ export function AboutGroup({ status, unreadCount }: { status?: StatusResponse; u
             </div>
 
             {/* ═══ 更新历史（内嵌：技术栈/项目信息 双列 与 版权行之间） ═══ */}
-            <div className="px-[22px] pt-3.5">
+            <div ref={changelogRef} className="px-[22px] pt-3.5">
               <div className="section-label mb-0 flex items-center gap-1.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">
                 <Icon name="history" size={12} /> 更新历史
               </div>

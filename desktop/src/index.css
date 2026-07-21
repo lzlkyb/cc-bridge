@@ -606,6 +606,16 @@ body {
   background: hsl(var(--card));
 }
 
+/* 更新红点：可点击入口 + 脉冲提示（引导查看更新历史） */
+.changelog-dot { cursor: pointer; transition: transform .15s; }
+.changelog-dot:hover { transform: scale(1.12); }
+@keyframes reddot-ring {
+  0% { box-shadow: 0 0 0 0 rgba(239,68,68,.45); }
+  70% { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+  100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+}
+.changelog-dot { animation: reddot-ring 2s infinite; }
+
 /* GitHub 按钮 */
 .github-btn:hover {
   background: hsl(var(--muted));

@@ -20,6 +20,8 @@ export function SettingsTab({
   highlightAnchor,
   unreadCount,
   onReopenOnboarding,
+  onMarkSeen,
+  changelogOpenToken,
 }: {
   status?: StatusResponse;
   onSaved: () => void;
@@ -27,10 +29,14 @@ export function SettingsTab({
   unreadCount?: number;
   /** H3：重新查看首次使用引导。 */
   onReopenOnboarding?: () => void;
+  /** 看完更新历史后标记已读（红点消失）。 */
+  onMarkSeen?: () => void;
+  /** 自增信号：变化时自动展开关于卡片并滚动到更新历史。 */
+  changelogOpenToken?: number;
 }) {
   return (
     <div className="space-y-4">
-      <AboutGroup status={status} unreadCount={unreadCount} />
+      <AboutGroup status={status} unreadCount={unreadCount} onMarkSeen={onMarkSeen} changelogOpenToken={changelogOpenToken} />
       <NetworkGroup status={status} onSaved={onSaved} />
       <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
       <AppGroup />

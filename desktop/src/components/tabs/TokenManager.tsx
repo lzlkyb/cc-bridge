@@ -55,7 +55,10 @@ export function TokenManager({
 
   const showBody = expanded || confirmingRegen || regenDone;
 
+  // 首次渲染（如首次接入四块全开展示态）不自动滚动，避免首屏跳动；仅后续展开才平滑滚动
+  const mounted = useRef(false);
   useEffect(() => {
+    if (!mounted.current) { mounted.current = true; return; }
     if (showBody) {
       requestAnimationFrame(() => {
         btnRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });

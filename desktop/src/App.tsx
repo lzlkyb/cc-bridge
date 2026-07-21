@@ -94,9 +94,12 @@ function AppContent() {
 
   // 更新历史未读红点：记录上次看到的最新版本，与 CHANGELOG 最新版比较得出未读数；进「设置」即标记已读。
   const [lastSeen, setLastSeen] = useState<string | null>(() => getLastSeenVersion());
+  // 未读基准：优先用「用户上次浏览的版本」，否则回退到「当前运行版本」。
+  // 回退到运行版本可消除「软件已是最新版、却每次打开都红点」的问题（localStorage 为空或
+  // 未持久化时，不再把全部历史版本算作未读）。
   const unreadCount = useMemo(
-    () => countUnreadVersions(CHANGELOG.map((e) => e.version), lastSeen),
-    [lastSeen],
+    () => countUnreadVersions(CHANGELOG.map((e) => e.version), lastSeen ?? status?.version ?? null),
+    [lastSeen, status?.version],
   );
   const markChangelogSeen = useCallback(() => {
     const latest = CHANGELOG[0]?.version;
@@ -105,12 +108,16 @@ function AppContent() {
       setLastSeen(latest);
     }
   }, []);
+  // 更新历史引导：红点可点击 → 跳设置 + 自动展开关于卡片 + 滚动到更新历史。
+  // token 自增作为「打开更新历史」信号，传给 SettingsTab→AboutGroup。
+  const [changelogOpenToken, setChangelogOpenToken] = useState(0);
 
   const handleNavigate = useCallback((tab: string, anchor?: string) => {
     setActiveTab(tab);
-    if (tab === "settings") markChangelogSeen();
+    // 进设置页且有未读时，触发「自动展开更新历史」引导（不再进设置就清红点）
+    if (tab === "settings" && unreadCount > 0) setChangelogOpenToken((t) => t + 1);
     setPendingAnchor(anchor ? { anchor, nonce: Date.now() } : null);
-  }, [markChangelogSeen]);
+  }, [unreadCount]);
 
   // 全局键盘快捷键
   useEffect(() => {
@@ -172,7 +179,8 @@ function AppContent() {
         value={activeTab}
         onValueChange={(v) => {
           setActiveTab(v);
-          if (v === "settings") markChangelogSeen();
+          // 进设置页且有未读时，触发「自动展开更新历史」引导
+          if (v === "settings" && unreadCount > 0) setChangelogOpenToken((t) => t + 1);
         }}
         className="flex min-h-0 flex-1 flex-col"
       >
@@ -184,7 +192,25 @@ function AppContent() {
               <span className="relative inline-flex items-center">
                 <Icon name="settings" /> 设置
                 {unreadCount > 0 && (
-                  <span className="absolute -right-2.5 -top-1.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white">
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (activeTab !== "settings") setActiveTab("settings");
+                      setChangelogOpenToken((t) => t + 1);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (activeTab !== "settings") setActiveTab("settings");
+                        setChangelogOpenToken((t) => t + 1);
+                      }
+                    }}
+                    title={`${unreadCount} 项新更新，点击查看更新历史`}
+                    className="changelog-dot absolute -right-2.5 -top-1.5 flex h-4 min-w-[16px] cursor-pointer items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white"
+                  >
                     {unreadCount > 9 ? "9+" : unreadCount}
                   </span>
                 )}
@@ -201,7 +227,7 @@ function AppContent() {
             <SecurityTab status={status} onSaved={refetchStatus} />
           </TabsContent>
           <TabsContent value="settings">
-            <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} />
+            <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} />
           </TabsContent>
           <TabsContent value="log">
             <LogTab />

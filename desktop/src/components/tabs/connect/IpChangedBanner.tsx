@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../ui/icon";
 import { McpScope, copyText } from "../../../lib/utils";
 import { CommandBlock } from "./widgets";
@@ -8,6 +8,10 @@ import { useToast } from "../../ui/toast";
  * 地址变化醒目 banner：仅 status.ipChanged 为真（或 ipResolvedByUser 兜底）时渲染。
  * 确认选中新 IP 并复制命令后，onResolved 会重新落盘 last_selected_ip，下一次轮询
  * ip_changed 回为 false，banner 自行消失。
+ *
+ * 方案 B（自动收起）：弹出先完整展开（给足注意力），约 60s 后自动折叠成一条细条
+ * （不消失、保留入口）；折叠细条上直接带「复制」按钮，可一键复制 sed 而无需展开；
+ * 用户手动点开细条后保持展开、不再自动收起。复制成功 / 点 × 仍按原逻辑收口 / 忽略。
  */
 export function IpChangedBanner({
   lanIps,
@@ -31,7 +35,31 @@ export function IpChangedBanner({
   onDismiss?: () => void;
 }) {
   const [copiedCmd, setCopiedCmd] = useState("");
+  const [expanded, setExpanded] = useState(true);
+  const [countdown, setCountdown] = useState(60);
+  // 仅首次自动折叠一次；用户手动展开后保持展开，不再定时收起
+  const autoCollapsed = useRef(false);
   const { toast } = useToast();
+
+  // 方案 B：弹出先展开，约 60s 后自动折叠为细条（仅自动折叠一次）。
+  // 同步驱动可视倒计时（250ms 精度、按秒向上取整显示），到 0 收起。
+  useEffect(() => {
+    if (!expanded || autoCollapsed.current) return;
+    const total = 60000;
+    const start = Date.now();
+    setCountdown(60);
+    const id = setInterval(() => {
+      const remain = total - (Date.now() - start);
+      if (remain <= 0) {
+        clearInterval(id);
+        autoCollapsed.current = true;
+        setExpanded(false);
+        return;
+      }
+      setCountdown(Math.ceil(remain / 1000));
+    }, 250);
+    return () => clearInterval(id);
+  }, [expanded]);
 
   // 网卡全部消失时，下方选择控件与确认按钮会永久 disabled 形成死局。
   // 此时只给说明、不渲染选择控件；网络恢复、网卡重新出现后会自动回到正常分支。
@@ -101,6 +129,55 @@ export function IpChangedBanner({
     );
   };
 
+  // 折叠态细条：约 40px，保留入口；带「复制」按钮可一键复制，无需展开
+  if (!expanded) {
+    return (
+      <div className="animate-fade-in flex items-stretch rounded-lg border border-destructive/35 bg-destructive/[0.08]">
+        <button
+          type="button"
+          onClick={() => {
+            autoCollapsed.current = true;
+            setExpanded(true);
+          }}
+          className="flex flex-1 items-center gap-2 rounded-l-lg py-2 pl-3 pr-2 text-left"
+          aria-label="展开提示"
+        >
+          <span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-destructive/15 text-destructive text-xs font-bold">
+            !
+          </span>
+          <span className="text-sm font-semibold text-destructive">检测到网络地址变化</span>
+          <span className="text-xs text-muted-foreground">· 点击展开新连接命令</span>
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            copyOne(entries[0].cmd);
+          }}
+          disabled={!newIpValid}
+          className="shrink-0 rounded-md border border-destructive/30 bg-white px-3 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          复制
+        </button>
+        <span className="grid place-items-center px-1 text-muted-foreground">▴</span>
+        {onDismiss && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDismiss();
+            }}
+            aria-label="关闭提示"
+            title="本次会话忽略此提示"
+            className="grid h-auto w-7 place-items-center rounded-r-lg text-muted-foreground transition-colors hover:bg-destructive/15 hover:text-foreground"
+          >
+            <Icon name="close" size={14} />
+          </button>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="animate-fade-in relative space-y-3 rounded-lg border border-destructive/35 bg-destructive/[0.08] p-4">
       {onDismiss && (
@@ -124,7 +201,12 @@ export function IpChangedBanner({
               之前使用的 <code className="rounded bg-background px-1">{previousIp}</code> 已不在本机网卡列表中（大概率是
               网络重新连接后分配了新地址）。请在下方「选择远程服务器能连回本机的地址」中选中新地址，连接命令会自动更新，复制后到远程服务器执行即可原地更新 IP（无需重新授权）。
             </p>
-        </div>
+            {!autoCollapsed.current && (
+              <p className="mt-1.5 text-xs text-muted-foreground/80">
+                {countdown} 秒后自动收起为细条 · 点细条可重新展开 · 点 × 可忽略
+              </p>
+            )}
+          </div>
       </div>
 
       {newIpValid ? (

@@ -522,53 +522,65 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _watcher = crate::ip_watch::spawn(tx);
                     Box::pin(async move {
                         let mut alerting = false;
+                        // 周期兜底：OS 的 SIO_ADDRESS_LIST_CHANGE 仅在「网卡列表增减」时通知，
+                        // DHCP 续租 / 同网卡换 IP（地址变了但接口没增减）往往不通知，会导致运行中
+                        // IP 变更漏检、前端 IP 变化 banner 永不弹出。每 15s 兜底重扫一次网卡，
+                        // 保证 get_status 的 ip_changed 能在变更后及时变 true。
+                        let mut fallback = tokio::time::interval(std::time::Duration::from_secs(15));
                         loop {
-                            // 阻塞等待 OS 通知（无通知时线程在内核态休眠，零 CPU）
-                            let _ = rx.recv().await;
-                            // 防抖：收到首个通知后，在 600ms 窗口内合并后续连续的网络抖动
-                            // （Wi-Fi 重连/VPN/DHCP 续租常一次变化伴随多条通知），只处理一次，
-                            // 以最终状态为准，避免风暴式重扫网卡与托盘重绘。
-                            while tokio::time::timeout(
-                                std::time::Duration::from_millis(600),
-                                rx.recv(),
-                            )
-                            .await
-                            .is_ok()
-                            {
-                                // 窗口内仍有通知到达，继续吸收
+                            tokio::select! {
+                                // 兜底路径：仅刷新网卡缓存（不重复弹通知/改 tooltip，避免每 15s 打扰）。
+                                _ = fallback.tick() => {
+                                    watch_state.refresh_lan_ips();
+                                }
+                                // 原 OS 事件路径：防抖合并后重扫网卡、刷新托盘 tooltip、必要时弹通知。
+                                _ = rx.recv() => {
+                                    // 防抖：收到首个通知后，在 600ms 窗口内合并后续连续的网络抖动
+                                    // （Wi-Fi 重连/VPN/DHCP 续租常一次变化伴随多条通知），只处理一次，
+                                    // 以最终状态为准，避免风暴式重扫网卡与托盘重绘。
+                                    while tokio::time::timeout(
+                                        std::time::Duration::from_millis(600),
+                                        rx.recv(),
+                                    )
+                                    .await
+                                    .is_ok()
+                                    {
+                                        // 窗口内仍有通知到达，继续吸收
+                                    }
+                                    // IP 变化通知到达：重扫网卡写回缓存，并据此判断 changed
+                                    // （刷新缓存与判断合一，避免二次网卡枚举）。
+                                    let ips = watch_state.refresh_lan_ips();
+                                    let last_ip = watch_state.config.read().await.last_selected_ip.clone();
+                                    let changed = match &last_ip {
+                                        Some(ip) => !ips.contains(ip),
+                                        None => false,
+                                    };
+                                    let running = watch_state
+                                        .mcp_running
+                                        .load(std::sync::atomic::Ordering::Relaxed);
+                                    if let Some(tray) = handle.tray_by_id("main-tray") {
+                                        // tooltip：地址变化优先提示，否则显示运行状态
+                                        let tip = if changed {
+                                            "cc-bridge: 网络地址已变化，点击查看新连接命令"
+                                        } else if running {
+                                            "cc-bridge · 服务运行中"
+                                        } else {
+                                            "cc-bridge · 已停止"
+                                        };
+                                        // 去重刷新（图标随运行状态；地址变化仅改 tooltip）
+                                        refresh_tray(&tray, running, tip, &last_tray);
+                                    }
+                                    if changed && !alerting {
+                                        let _ = handle
+                                            .notification()
+                                            .builder()
+                                            .title("cc-bridge")
+                                            .body("网络地址已变化，点击查看新连接命令")
+                                            .show();
+                                    }
+                                    alerting = changed;
+                                }
                             }
-                            // IP 变化通知到达：重扫网卡写回缓存，并据此判断 changed
-                            // （刷新缓存与判断合一，避免二次网卡枚举）。
-                            let ips = watch_state.refresh_lan_ips();
-                            let last_ip = watch_state.config.read().await.last_selected_ip.clone();
-                            let changed = match &last_ip {
-                                Some(ip) => !ips.contains(ip),
-                                None => false,
-                            };
-                            let running = watch_state
-                                .mcp_running
-                                .load(std::sync::atomic::Ordering::Relaxed);
-                            if let Some(tray) = handle.tray_by_id("main-tray") {
-                                // tooltip：地址变化优先提示，否则显示运行状态
-                                let tip = if changed {
-                                    "cc-bridge: 网络地址已变化，点击查看新连接命令"
-                                } else if running {
-                                    "cc-bridge · 服务运行中"
-                                } else {
-                                    "cc-bridge · 已停止"
-                                };
-                                // 去重刷新（图标随运行状态；地址变化仅改 tooltip）
-                                refresh_tray(&tray, running, tip, &last_tray);
-                            }
-                            if changed && !alerting {
-                                let _ = handle
-                                    .notification()
-                                    .builder()
-                                    .title("cc-bridge")
-                                    .body("网络地址已变化，点击查看新连接命令")
-                                    .show();
-                            }
-                            alerting = changed;
                         }
                     })
                 });

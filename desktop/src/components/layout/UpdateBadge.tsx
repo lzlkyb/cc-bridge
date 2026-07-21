@@ -18,7 +18,7 @@ import { formatBytesPerSec } from "../../lib/utils";
  * - error       → 红色 pill + 版本号，可点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, progress, progressIndeterminate, bytesPerSec, error, checkForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed } = useUpdate();
+  const { status, update, progress, progressIndeterminate, bytesPerSec, error, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -33,7 +33,11 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
     if (status === "available") {
       toast(`发现新版本 v${update?.version ?? ""}`, "info");
     } else if (status === "uptodate") {
-      toast("已是最新版本", "success");
+      // 仅手动检查时弹「已是最新」提示框；自动检查（启动/定时）只显示版本号 pill
+      if (manualCheck) {
+        toast("已是最新版本", "success");
+        acknowledgeUptodate();
+      }
     } else if (status === "ready") {
       toast("更新已下载完成，点击重启以应用", "success");
     } else if (status === "error") {
@@ -53,7 +57,7 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
     } else if (status === "ready") {
       await restart();
     } else if (status === "error") {
-      await checkForUpdate();
+      await manualCheckForUpdate();
     }
   };
 
@@ -66,7 +70,7 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
       <button
         className="header-badge header-badge-idle cursor-pointer"
         title={`v${currentVersion} — 点击检查更新`}
-        onClick={() => checkForUpdate()}
+        onClick={() => manualCheckForUpdate()}
       >
         <span>v{currentVersion}</span>
       </button>

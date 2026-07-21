@@ -55,9 +55,18 @@ function ConnectTabImpl({
   const lanIps = status?.lanIps ?? [];
   const { toast } = useToast();
 
-  type Section = "steps" | "token" | "perm";
+  type Section = "scope" | "steps" | "token" | "perm";
+  const ONBOARD_KEY = "ccb_connect_onboarded";
   const [expanded, setExpanded] = useState<Section | null>(null);
+  // 首次接入引导：无引导标记时默认四块全展开；用户首次交互任意折叠块即写入标记、回到单选聚焦
+  const [firstRunAll, setFirstRunAll] = useState(() => !localStorage.getItem(ONBOARD_KEY));
   const handleToggle = (section: Section) => {
+    if (firstRunAll) {
+      localStorage.setItem(ONBOARD_KEY, "1");
+      setFirstRunAll(false);
+      setExpanded(section);
+      return;
+    }
     setExpanded((prev) => (prev === section ? null : section));
   };
 
@@ -85,13 +94,19 @@ function ConnectTabImpl({
 
   useEffect(() => {
     if (!listenAll || lanIps.length === 0) return;
-    // 仅在「后端确实从没记录过选中 IP」时默认选第一个。已选但现在不在列表中
-    // （地址变化）不在这里静静换新选中——那正是下方 IpChangedBanner 要提示用户
-    // 确认的情形。
+    // 场景 1：后端从没记录过选中 IP → 默认选第一个（首次接入）。
     // 注意：不能用本地 selectedIp 判断「从未选过」——它每次冷启动都会重置为 ""，
     // 会导致每次启动都把后端 last_selected_ip 覆盖成 lan_ips[0]（物理网卡 IP，永不
     // 消失），从而让 ip_changed 永远无法触发，弱提示全部失效（见诊断报告）。
     if (!selectedIp && !status?.lastSelectedIp) {
+      onSelectIp(lanIps[0]);
+      return;
+    }
+    // 场景 2：当前选中 IP 已不在网卡列表（地址变化，如 DHCP 续租 / 换网）——
+    // 自动预选第一个可用地址作为候选，让 IP 变化 banner 立即给出可复制的 sed 命令；
+    // 用户仍可在 AddressPicker 中改选。仅当「当前选中已失效」时触发，绝不覆盖用户
+    // 确认过的有效地址（避免静默切换）。
+    if (selectedIp && !lanIps.includes(selectedIp)) {
       onSelectIp(lanIps[0]);
     }
   }, [listenAll, lanIps.join(","), selectedIp, status?.lastSelectedIp]);
@@ -235,7 +250,7 @@ function ConnectTabImpl({
         includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
         permissionCommand={permissionCommand} permCopied={permCopied}
         handlePermCopy={handlePermCopy}
-        expanded={expanded} onToggle={handleToggle}
+        expanded={expanded} onToggle={handleToggle} firstRunAll={firstRunAll}
       />
     </div>
   );
@@ -246,7 +261,7 @@ function ConnectGuide({
   scope, setScope, connectCommand, copied, handleCopy,
   projectPath, setProjectPath, onRefresh,
   includeShellTools, setIncludeShellTools, permissionCommand, permCopied, handlePermCopy,
-  expanded, onToggle,
+  expanded, onToggle, firstRunAll,
 }: {
   status?: StatusResponse;
   listenAll: boolean; lanIps: string[]; selectedIp: string;
@@ -257,12 +272,17 @@ function ConnectGuide({
   onRefresh: () => void;
   includeShellTools: boolean; setIncludeShellTools: (v: boolean) => void;
   permissionCommand: string; permCopied: boolean; handlePermCopy: () => void;
-  expanded: string | null; onToggle: (s: "steps" | "token" | "perm") => void;
+  expanded: string | null; onToggle: (s: "scope" | "steps" | "token" | "perm") => void;
+  firstRunAll: boolean;
 }) {
-  const stepsOpen = expanded === "steps";
-  const permOpen = expanded === "perm";
+  const isOpen = (k: "scope" | "steps" | "token" | "perm") => firstRunAll || expanded === k;
+  const scopeOpen = isOpen("scope");
+  const stepsOpen = isOpen("steps");
+  const permOpen = isOpen("perm");
+  const scopeBody = useAutoAnimateRM<HTMLDivElement>();
   const stepsBody = useAutoAnimateRM<HTMLDivElement>();
   const permBody = useAutoAnimateRM<HTMLDivElement>();
+  const scopeBtn = useRef<HTMLButtonElement>(null);
   const stepsBtn = useRef<HTMLButtonElement>(null);
   const permBtn = useRef<HTMLButtonElement>(null);
 
@@ -274,8 +294,13 @@ function ConnectGuide({
     });
   };
 
-  useEffect(() => { if (stepsOpen) scrollToBtn(stepsBtn.current); }, [stepsOpen]);
-  useEffect(() => { if (permOpen) scrollToBtn(permBtn.current); }, [permOpen]);
+  // 首次全开展示态不自动滚动（避免首屏跳动）；仅用户主动展开才平滑滚动到该块
+  const scopeMounted = useRef(false);
+  const stepsMounted = useRef(false);
+  const permMounted = useRef(false);
+  useEffect(() => { if (!scopeMounted.current) { scopeMounted.current = true; return; } if (scopeOpen) scrollToBtn(scopeBtn.current); }, [scopeOpen]);
+  useEffect(() => { if (!stepsMounted.current) { stepsMounted.current = true; return; } if (stepsOpen) scrollToBtn(stepsBtn.current); }, [stepsOpen]);
+  useEffect(() => { if (!permMounted.current) { permMounted.current = true; return; } if (permOpen) scrollToBtn(permBtn.current); }, [permOpen]);
   return (
     <Card className="card-primary">
       <CardHeader>
@@ -285,15 +310,47 @@ function ConnectGuide({
         {listenAll && lanIps.length > 0 && (
           <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp} healthCheck={healthCheck} />
         )}
-        <div className="grid grid-cols-2 gap-3">
-          {([
-            { key: "project", title: "项目级", desc: "仅指定项目生效", badge: "推荐" as const },
-            { key: "user", title: "全局模式", desc: "一次配置，所有项目都能使用" },
-          ] as const).map((o) => (
-            <OptionCard key={o.key} selected={scope===o.key} title={o.title} desc={o.desc}
-              badge={"badge" in o ? o.badge : undefined} onClick={()=>setScope(o.key)} />
-          ))}
+        <button
+          type="button"
+          onClick={() => onToggle("scope")}
+          className="collapsible-head w-full text-left"
+          aria-expanded={scopeOpen}
+          ref={scopeBtn}
+        >
+          <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-primary to-primary/70">
+            <Icon name="sliders" size={14} aria-hidden="true" />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-[13px] font-semibold text-foreground">接入模式</div>
+            {!scopeOpen && (
+              <div className="text-[11px] text-muted-foreground">
+                {scope === "project" ? "项目级 · 仅指定项目生效" : "全局模式 · 所有项目可用"}
+              </div>
+            )}
+          </div>
+          <Icon
+            name="chevronDown"
+            size={16}
+            className={`collapsible-chev ${scopeOpen ? "open" : ""}`}
+            aria-hidden="true"
+          />
+        </button>
+        <div ref={scopeBody}>
+          {scopeOpen && (
+            <div className="collapsible-body pl-9">
+              <div className="grid grid-cols-2 gap-3">
+                {([
+                  { key: "project", title: "项目级", desc: "仅指定项目生效", badge: "推荐" as const },
+                  { key: "user", title: "全局模式", desc: "一次配置，所有项目都能使用" },
+                ] as const).map((o) => (
+                  <OptionCard key={o.key} selected={scope===o.key} title={o.title} desc={o.desc}
+                    badge={"badge" in o ? o.badge : undefined} onClick={()=>setScope(o.key)} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
+        <div className="my-3.5 h-px bg-border" />
         <button
           type="button"
           onClick={() => onToggle("steps")}
@@ -336,7 +393,7 @@ function ConnectGuide({
         </div>
         <div className="my-3.5 h-px bg-border" />
         <TokenManager status={status} onRefresh={onRefresh} projectPath={projectPath}
-          expanded={expanded === "token"} onToggle={() => onToggle("token")} />
+          expanded={isOpen("token")} onToggle={() => onToggle("token")} />
         <button
           type="button"
           onClick={() => onToggle("perm")}
