@@ -8,7 +8,7 @@ export function GlobalSteps({
 }: {
   command: string;
   copied: boolean;
-  onCopy: () => void;
+  onCopy: (command?: string) => void;
 }) {
   return (
     <>
@@ -51,7 +51,7 @@ export function ProjectSteps({
 }: {
   command: string;
   copied: boolean;
-  onCopy: () => void;
+  onCopy: (command?: string) => void;
   projectPath: string;
   setProjectPath: (v: string) => void;
 }) {
@@ -62,8 +62,10 @@ export function ProjectSteps({
 
   const handleProjectCopy = () => {
     if (!command) return;
-    navigator.clipboard.writeText(fullCommand);
-    onCopy();
+    // H1 修复：把含 cd 前缀的完整命令交给父层统一用 copyText 复制一次，
+    // 不再自行 writeText 再调 onCopy 造成双写覆盖（旧实现最终复制的是不含 cd 的命令）；
+    // 同时因走 copyText 而带上了 成功/失败 反馈（修复 M4 的未 await/catch）。
+    onCopy(fullCommand);
   };
 
   return (

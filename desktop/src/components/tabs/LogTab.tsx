@@ -77,9 +77,19 @@ function LogTabImpl() {
   const [toolFilter, setToolFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "error">("all");
   const [search, setSearch] = useState("");
-  const [expandedRow, setExpandedRow] = useState<number | null>(null);
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [showPerf, setShowPerf] = useState(false);
+
+  // 性能分析面板独立拉取最近 500 条（后端 page_size 上限），避免统计口径只覆盖当前分页页。
+  // 仅在面板展开时启用，关闭时不轮询、不占用请求。
+  const { data: perfPage } = useQuery<AuditPage>({
+    queryKey: ["auditLogPerf"],
+    queryFn: () => invoke<AuditPage>("get_audit_log", { page: 1, page_size: 500 }),
+    enabled: showPerf,
+    refetchInterval: 30000,
+  });
+  const perfEntries = perfPage?.entries ?? entries;
   // 一键回滚 / 变更 Diff 的弹窗状态（指向被点击的审计条目）。
   const [diffEntry, setDiffEntry] = useState<AuditEntry | null>(null);
   const [restoreEntry, setRestoreEntry] = useState<AuditEntry | null>(null);
@@ -124,7 +134,11 @@ function LogTabImpl() {
     if (format === "csv") {
       const header = "时间,工具,工具名,参数,来源IP,耗时(ms),状态,错误\n";
       const rows = filtered.map((e) => {
-        const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
+        const esc = (s: string) => {
+          const v = String(s ?? "");
+          const guarded = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+          return `"${guarded.replace(/"/g, '""')}"`;
+        };
         return [
           e.timestamp,
           e.tool,
@@ -335,7 +349,7 @@ function LogTabImpl() {
             </button>
             {showPerf && (
               <div className="mt-2">
-                <PerfCharts entries={entries} />
+                <PerfCharts entries={perfEntries} />
               </div>
             )}
           </div>
@@ -363,15 +377,17 @@ function LogTabImpl() {
               </TableRow>
             </TableHeader>
             <TableBody ref={auditBody}>
-              {filtered.map((entry, i) => (
-                <Fragment key={i}>
+              {filtered.map((entry, i) => {
+                const rowKey = `${entry.timestamp}-${entry.tool}-${entry.sourceIp ?? ""}-${entry.durationMs ?? ""}`;
+                return (
+                <Fragment key={rowKey}>
                   <TableRow
                     className={`cursor-pointer ${
                       entry.success
                         ? i % 2 === 0 ? "bg-muted/20" : ""
                         : "bg-destructive/5 log-err"
                     }`}
-                    onClick={() => setExpandedRow(expandedRow === i ? null : i)}
+                    onClick={() => setExpandedRow(expandedRow === rowKey ? null : rowKey)}
                   >
                     <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                       {new Date(entry.timestamp).toLocaleTimeString()}
@@ -397,8 +413,8 @@ function LogTabImpl() {
                       </Badge>
                     </TableCell>
                   </TableRow>
-                  {expandedRow === i && (
-                    <TableRow key={`${i}-detail`}>
+                  {expandedRow === rowKey && (
+                    <TableRow key={`${rowKey}-detail`}>
                       <TableCell colSpan={6} className="bg-muted/30">
                         <DetailPanel
                           entry={entry}
@@ -409,7 +425,8 @@ function LogTabImpl() {
                     </TableRow>
                   )}
                 </Fragment>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         )}

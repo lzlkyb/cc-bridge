@@ -29,9 +29,17 @@ pub async fn handle(args: AnalyzeFileArgs, state: &Arc<AppState>) -> Result<Valu
     }
     security::filesize::assert_file_size_ok(&resolved, config.max_file_size_bytes)?;
 
-    let data = tokio::fs::read(&resolved)
-        .await
-        .map_err(|e| format!("Read error: {e}"))?;
+    // 大文件只读前 64KB 做编码探测，不整文件载入——否则 tokio::fs::read 会在下方
+    // “大文件跳过扫描”分支生效前就把整文件读进内存触发 OOM（曾对 ~500MB 文件触发 OOM-killer）。
+    const LARGE_FILE_LINE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
+    let is_large = metadata.len() > LARGE_FILE_LINE_SCAN_BYTES;
+    let data = if is_large {
+        read_file_prefix(&resolved, 64 * 1024).await?
+    } else {
+        tokio::fs::read(&resolved)
+            .await
+            .map_err(|e| format!("Read error: {e}"))?
+    };
 
     let encoding = guess_encoding(&data);
     let ext = resolved
@@ -43,11 +51,9 @@ pub async fn handle(args: AnalyzeFileArgs, state: &Arc<AppState>) -> Result<Valu
 
     let (line_count, function_count, class_count, analysis_note) = if encoding != "binary" {
         // 大文件跳过 line/function/class 扫描：`String::from_utf8_lossy` 需要把整文件
-        // 解码成 String，对 GBK 老工程等大文件会瞬间吃满内存（曾对 ~500MB 文件触发
-        // OOM-killer）。对超大文件只返 encoding/language/mtime/size，远程 AI 仍能
-        // 据此判断"该用 read_files 取行范围"或"用 search_files 局部查"。
-        const LARGE_FILE_LINE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
-        if metadata.len() > LARGE_FILE_LINE_SCAN_BYTES {
+        // 解码成 String，对 GBK 老工程等大文件会瞬间吃满内存。对超大文件只返
+        // encoding/language/mtime/size（上方已只读前缀，data 也不含完整内容）。
+        if is_large {
             (
                 None,
                 None,
@@ -103,6 +109,21 @@ pub async fn handle(args: AnalyzeFileArgs, state: &Arc<AppState>) -> Result<Valu
     Ok(
         json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap() }] }),
     )
+}
+
+/// 只读文件前 `max` 字节（供大文件编码探测，避免整文件载入）。
+async fn read_file_prefix(path: &std::path::Path, max: usize) -> Result<Vec<u8>, String> {
+    use tokio::io::AsyncReadExt;
+    let mut f = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| format!("Open error: {e}"))?;
+    let mut buf = vec![0u8; max];
+    let n = f
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("Read error: {e}"))?;
+    buf.truncate(n);
+    Ok(buf)
 }
 
 fn guess_encoding(data: &[u8]) -> &'static str {

@@ -124,17 +124,21 @@ function ConnectTabImpl({
     [scope, projectPath, includeShellTools],
   );
 
-  const handleCopy = () => {
-    if (!connectCommand) return;
+  const handleCopy = (cmd?: string) => {
+    // H1 修复：允许调用方指定要复制的命令（ProjectSteps 传含 cd 前缀的完整命令），
+    // 缺省则复制 connectCommand。避免此前 ProjectSteps 先自行 writeText(fullCommand) 再调
+    // 本函数二次 writeText(connectCommand) 造成的双写覆盖（cd 前缀丢失）。
+    const target = cmd ?? connectCommand;
+    if (!target) return;
     void copyText(
-      connectCommand,
+      target,
       () => {
         setCopied(true);
         toast("连接命令已复制到剪贴板", "success");
     // 首次接入复制命令时，把当前选中的作用域落盘到后端配置，
     // 供后续 IP 变化 banner / Token 重生成生成精确 sed 命令（方案 A）。
-        invoke("save_config", { scope }).catch((e) =>
-          console.error("保存接入作用域失败（不影响本次复制）", e),
+        invoke("save_config", { scope, projectPath: projectPath || null }).catch((e) =>
+          console.error("保存接入作用域/项目路径失败（不影响本次复制）", e),
         );
         setTimeout(() => setCopied(false), 2000);
       },
@@ -234,7 +238,7 @@ function ConnectGuide({
   listenAll: boolean; lanIps: string[]; selectedIp: string;
   onSelectIp: (ip: string) => void; healthCheck: string;
   scope: McpScope; setScope: (s: McpScope) => void;
-  connectCommand: string; copied: boolean; handleCopy: () => void;
+  connectCommand: string; copied: boolean; handleCopy: (command?: string) => void;
   projectPath: string; setProjectPath: (p: string) => void;
   onRefresh: () => void;
   includeShellTools: boolean; setIncludeShellTools: (v: boolean) => void;

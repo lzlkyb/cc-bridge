@@ -45,6 +45,29 @@ pub fn backup_before_overwrite(
     Ok(Some(backup_path))
 }
 
+/// M2 修复：严格校验一个备份文件名是否属于本文件——去掉 `{file_name}.` 前缀后，
+/// 剩余部分必须恰好是 `YYYYMMDD_HHMMSS_mmm.bak` 时间戳格式。旧实现只用
+/// starts_with(prefix)+ends_with(".bak")，会把「前缀包含」的他文件备份误纳入
+/// （如 prune "config" 命中 "config.local.<ts>.bak"），导致跨文件误删。
+/// 已知残留：同名不同目录的文件（a/x.rs 与 b/x.rs）在同一扁平备份目录内 basename
+/// 相同，仍会共享同一集合——彻底区分需按 backup_index 表的 original_path 精确筛选（后续项）。
+fn is_own_timestamped_backup(name: &str, prefix: &str) -> bool {
+    let rest = match name.strip_prefix(prefix) {
+        Some(r) => r,
+        None => return false,
+    };
+    let ts = match rest.strip_suffix(".bak") {
+        Some(t) => t,
+        None => return false,
+    };
+    let parts: Vec<&str> = ts.split('_').collect();
+    parts.len() == 3
+        && parts[0].len() == 8
+        && parts[1].len() == 6
+        && parts[2].len() == 3
+        && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit()))
+}
+
 pub fn prune_backups(
     file_path: &Path,
     backup_dir_name: &str,
@@ -56,13 +79,18 @@ pub fn prune_backups(
         return Ok(0);
     }
 
+    // retention=0 的语义与 audit_retention_days=0 对齐：视为“无限保留”、不裁剪，
+    // 而不是把全部历史备份删光（旧实现 `len() > 0` 会删除所有备份）。
+    if retention == 0 {
+        return Ok(0);
+    }
+
     let file_name = file_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
     let prefix = format!("{file_name}.");
-    let suffix = ".bak";
 
     let mut backups: Vec<PathBuf> = std::fs::read_dir(&backup_dir)
         .map_err(|e| format!("Failed to read backup directory: {e}"))?
@@ -71,7 +99,7 @@ pub fn prune_backups(
         .filter(|path| {
             path.file_name()
                 .and_then(|n| n.to_str())
-                .map(|n| n.starts_with(&prefix) && n.ends_with(suffix))
+                .map(|n| is_own_timestamped_backup(n, &prefix))
                 .unwrap_or(false)
         })
         .collect();

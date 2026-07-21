@@ -48,6 +48,9 @@ pub struct BridgeConfig {
     /// 用于 IP 变化 / Token 重生成时生成精确匹配该作用域的 sed 命令，避免误改其它文件。
     /// None 表示旧数据从未落盘，此时前端兜底展示两条命令让用户自选。
     pub scope: Option<String>,
+    /// 用户接入时确认的项目路径（项目级 scope 时用于 cd 前缀）。
+    /// 跟随连接页选择，供托盘「复制 IP 替换命令」生成带 cd 的精确命令，与 IpChangedBanner 对齐。
+    pub project_path: Option<String>,
 }
 
 impl Default for BridgeConfig {
@@ -84,6 +87,7 @@ impl Default for BridgeConfig {
             command_cleanup_secs: 120,
             last_selected_ip: None,
             scope: None,
+            project_path: None,
         }
     }
 }
@@ -162,6 +166,7 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             }
             "last_selected_ip" => config.last_selected_ip = parse_or_warn(key, value, None),
             "scope" => config.scope = parse_or_warn(key, value, None),
+            "project_path" => config.project_path = parse_or_warn(key, value, None),
             "transport" => {
                 let s = parse_or_warn::<String>(key, value, "http".into());
                 config.transport = if s == "sse" {
@@ -191,9 +196,13 @@ pub fn save_config_field(
 pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), String> {
     use serde_json::to_value;
 
-    // E-P1-5: 用事务包裹 22 次 INSERT，避免独立隐式事务 + fsync
-    conn.execute("BEGIN", [])
+    // E-P1-5: 用事务包裹 22 次 INSERT，避免独立隐式事务 + fsync。
+    // 用 RAII 事务而非手写 BEGIN/COMMIT：任一 save_config_field 失败时 `?` 提前返回，
+    // tx drop 时自动 ROLLBACK，不会像旧实现那样在连接上残留未结束事务（导致下次 BEGIN 报错）。
+    let tx = conn
+        .unchecked_transaction()
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
+    let conn = &tx;
 
     save_config_field(
         conn,
@@ -288,9 +297,14 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         &to_value(&config.last_selected_ip).unwrap(),
     )?;
     save_config_field(conn, "scope", &to_value(&config.scope).unwrap())?;
+    save_config_field(
+        conn,
+        "project_path",
+        &to_value(&config.project_path).unwrap(),
+    )?;
     save_config_field(conn, "transport", &to_value(&config.transport).unwrap())?;
 
-    conn.execute("COMMIT", [])
+    tx.commit()
         .map_err(|e| format!("Failed to commit full config: {e}"))?;
     Ok(())
 }

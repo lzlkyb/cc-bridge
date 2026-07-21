@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,11 @@ pub struct ListDirectoryArgs {
 fn default_max_depth() -> u32 {
     10
 }
+
+/// max_depth 硬上限：防止客户端传入超大值导致过深递归。
+const MAX_DEPTH_CAP: u32 = 50;
+/// 递归遍历的总条目硬上限：防止在超大目录树上无界累积导致内存膨胀。
+const MAX_TOTAL_ENTRIES: usize = 50_000;
 
 #[derive(Debug, Serialize)]
 struct DirEntry {
@@ -53,7 +59,10 @@ pub async fn handle(args: ListDirectoryArgs, state: &Arc<AppState>) -> Result<Va
         return Err("path is not a directory".into());
     }
 
-    let entries = walk_dir(&resolved, args.recursive, args.max_depth, 0).await?;
+    // 客户端 max_depth 无上界，强制限到硬上限；并用共享计数器限制总条目。
+    let max_depth = args.max_depth.min(MAX_DEPTH_CAP);
+    let counter = Arc::new(AtomicUsize::new(0));
+    let entries = walk_dir(&resolved, args.recursive, max_depth, 0, counter).await?;
     Ok(
         json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&entries).unwrap() }] }),
     )
@@ -64,9 +73,16 @@ fn walk_dir(
     recursive: bool,
     max_depth: u32,
     current_depth: u32,
+    counter: Arc<AtomicUsize>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<DirEntry>, String>> + Send + '_>>
 {
-    Box::pin(walk_dir_inner(dir, recursive, max_depth, current_depth))
+    Box::pin(walk_dir_inner(
+        dir,
+        recursive,
+        max_depth,
+        current_depth,
+        counter,
+    ))
 }
 
 async fn walk_dir_inner(
@@ -74,6 +90,7 @@ async fn walk_dir_inner(
     recursive: bool,
     max_depth: u32,
     current_depth: u32,
+    counter: Arc<AtomicUsize>,
 ) -> Result<Vec<DirEntry>, String> {
     let t0 = std::time::Instant::now();
     let mut read_dir = tokio::fs::read_dir(dir)
@@ -88,6 +105,10 @@ async fn walk_dir_inner(
         .map_err(|e| format!("Read error: {e}"))?
     {
         let name = entry.file_name().to_string_lossy().to_string();
+        // 命中总条目上限：停止继续枚举，避免超大目录树无界累积。
+        if counter.fetch_add(1, Ordering::Relaxed) >= MAX_TOTAL_ENTRIES {
+            break;
+        }
         let full_path = entry.path();
 
         let t1 = std::time::Instant::now();
@@ -139,7 +160,15 @@ async fn walk_dir_inner(
             if current_depth >= max_depth {
                 dir_entry.truncated = Some(true);
             } else {
-                match walk_dir(&full_path, recursive, max_depth, current_depth + 1).await {
+                match walk_dir(
+                    &full_path,
+                    recursive,
+                    max_depth,
+                    current_depth + 1,
+                    Arc::clone(&counter),
+                )
+                .await
+                {
                     Ok(children) => dir_entry.children = Some(children),
                     Err(e) => dir_entry.error = Some(e),
                 }

@@ -257,6 +257,16 @@ body {
 }
 .animate-scale-in { animation: scale-in 0.16s ease; }
 
+/* 新手引导（H3）：点遮罩不再关闭，改为轻微抖动提示“请用下方按钮”。减弱动效时由全局守卫自动降级。*/
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+.animate-shake { animation: shake 0.4s ease; }
+
 /* Tab 切换入场：新面板从右微移入 + 淡入（替代硬切；退场由父级卸载驱动即时消失，可接受）*/
 @keyframes tab-in {
   from { opacity: 0; transform: translateX(10px); }

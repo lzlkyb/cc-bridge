@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { StatusResponse } from "../../../lib/types";
 import { buildDisplayHost } from "../../../lib/utils";
 import { Button } from "../../ui/button";
@@ -14,12 +14,26 @@ type TestState = "idle" | "testing" | "ok" | "fail";
 export function StepTest({
   status,
   selectedIp,
+  onTested,
 }: {
   status?: StatusResponse;
   selectedIp: string;
+  /** H3：本步完成态——自检通过后上报，供向导显示“已完成”。 */
+  onTested?: () => void;
 }) {
   const [state, setState] = useState<TestState>("idle");
   const [detail, setDetail] = useState("");
+  // 保存未完成的自检请求/定时器，组件卸载时中止，避免汄漏 + 卸载后 setState 警告。
+  const abortRef = useRef<AbortController | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
 
   const displayHost = buildDisplayHost(status, selectedIp);
   // 本机探测：监听全网卡(0.0.0.0)或未选地址时回退到 127.0.0.1。
@@ -30,14 +44,15 @@ export function StepTest({
   const runTest = async () => {
     setState("testing");
     setDetail("");
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    timerRef.current = timer;
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 5000);
       const res = await fetch(`http://${probeHost}:${port}/health`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: ctrl.signal,
       });
-      clearTimeout(timer);
       const text = await res.text();
       let ok = false;
       try {
@@ -45,8 +60,10 @@ export function StepTest({
       } catch {
         /* 非 JSON 响应，按失败处理 */
       }
+      if (!mountedRef.current) return; // 组件已卸载，不再 setState
       if (res.ok && ok) {
         setState("ok");
+        onTested?.();
         setDetail(
           "服务正常监听，连接命令里的地址与令牌有效。到远程服务器执行连接命令后，Claude Code 即可连回本机读写文件。",
         );
@@ -55,8 +72,13 @@ export function StepTest({
         setDetail(`服务返回异常（HTTP ${res.status}）。请确认服务已启动、令牌未过期。`);
       }
     } catch {
-      setState("fail");
-      setDetail("无法连接到本机服务。请确认已点击「启动服务」，且端口未被占用。");
+      if (mountedRef.current) {
+        setState("fail");
+        setDetail("无法连接到本机服务。请确认已点击「启动服务」，且端口未被占用。");
+      }
+    } finally {
+      clearTimeout(timer);
+      timerRef.current = null;
     }
   };
 

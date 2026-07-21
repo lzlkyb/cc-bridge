@@ -23,6 +23,12 @@ export function useCountUp(target: number, { duration = 700, enabled = true }: C
       return;
     }
     if (isFirst.current) {
+      // 首帧真实值还未到达（target=0，如异步轮询未回）时不消耗入场动画，
+      // 否则真实值到达后只会直接 setVal(target)、不再从 0 滚动。
+      if (target === 0) {
+        setVal(0);
+        return;
+      }
       isFirst.current = false;
       const start = performance.now();
       let raf = 0;

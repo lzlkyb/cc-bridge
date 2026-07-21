@@ -98,28 +98,31 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     }
 
     let max_file_size = config.max_file_size_bytes;
+    // H6：把扩展名白名单也带进遍历，令内容搜索与 read_files 一样受其约束。
+    let allowed_extensions = config.allowed_extensions.clone();
     drop(config);
 
     let name_matcher = args.name_pattern.as_deref().map(compile_glob).transpose()?;
-    let content_regex = args.content_pattern.as_deref().map(|p| {
-        let build_matcher = |pat: &str| -> grep_regex::RegexMatcher {
-            grep_regex::RegexMatcherBuilder::new()
-                .case_insensitive(args.case_insensitive.unwrap_or(false))
-                .multi_line(args.multiline.unwrap_or(false))
-                .build(pat)
-                .expect("invalid content_pattern")
-        };
-        // 先按原始 pattern 编译；非法正则（如裸特殊字符）则用 regex::escape 转义后
-        // 重试，对齐旧版 RegexBuilder + escape 的回退语义。
-        match grep_regex::RegexMatcherBuilder::new()
-            .case_insensitive(args.case_insensitive.unwrap_or(false))
-            .multi_line(args.multiline.unwrap_or(false))
-            .build(p)
-        {
-            Ok(m) => m,
-            Err(_) => build_matcher(&regex::escape(p)),
-        }
-    });
+    let content_regex = args
+        .content_pattern
+        .as_deref()
+        .map(|p| -> Result<grep_regex::RegexMatcher, String> {
+            let build_matcher = |pat: &str| {
+                grep_regex::RegexMatcherBuilder::new()
+                    .case_insensitive(args.case_insensitive.unwrap_or(false))
+                    .multi_line(args.multiline.unwrap_or(false))
+                    .build(pat)
+            };
+            // 先按原始 pattern 编译；非法正则（如裸特殊字符）则用 regex::escape 转义后
+            // 重试，对齐旧版 RegexBuilder + escape 的回退语义。两次都失败（如超长 pattern 超
+            // 过正则大小上限）时返回 Err 而非 panic——旧实现的 .expect 可被客户端输入触发崩溃。
+            match build_matcher(p) {
+                Ok(m) => Ok(m),
+                Err(_) => build_matcher(&regex::escape(p))
+                    .map_err(|e| format!("invalid content_pattern: {e}")),
+            }
+        })
+        .transpose()?;
 
     // 富 Grep 选项：从 SearchFilesArgs 解析。`context` 同时覆盖 before/after；
     // `head_limit` 缺省时回退到 `max_results`（保持原有 maxResults 语义）。
@@ -148,6 +151,7 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
             content_regex.as_ref(),
             &grep,
             max_file_size,
+            &allowed_extensions,
             Some(&io_tracker),
         )
     })
@@ -192,7 +196,17 @@ pub fn walk_search_blocking(
     grep: &GrepOptions,
     max_file_size: u64,
 ) -> Vec<Value> {
-    walk_search_blocking_tracked(root, name_matcher, content_regex, grep, max_file_size, None).0
+    // 测试包装：不限扩展名（传空白名单，assert_extension_allowed 对空白名单放行），保现有测试零改动。
+    walk_search_blocking_tracked(
+        root,
+        name_matcher,
+        content_regex,
+        grep,
+        max_file_size,
+        &[],
+        None,
+    )
+    .0
 }
 
 /// 带 O1 I/O 追踪的遍历实现。`io_tracker` 为 `Some` 时，文件读取耗时累加到其中
@@ -207,6 +221,7 @@ fn walk_search_blocking_tracked(
     content_regex: Option<&grep_regex::RegexMatcher>,
     grep: &GrepOptions,
     max_file_size: u64,
+    allowed_extensions: &[String],
     io_tracker: Option<&Arc<AtomicU64>>,
 ) -> (Vec<Value>, bool) {
     let matches: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
@@ -271,9 +286,12 @@ fn walk_search_blocking_tracked(
                 return ignore::WalkState::Continue;
             }
             let path = entry.path();
-            let file_name = entry.file_name().to_string_lossy();
             if let Some(m) = name_matcher {
-                if !m.is_match(file_name.as_ref()) {
+                // M19 修复：对「相对 root 的路径」做 glob 匹配，而非只用文件名(基名)。
+                // 旧实现只匹配基名，含目录分量的 glob（src/*.rs、docs/**）永远不成立、静默返回空；
+                // 用相对路径后对齐 native Glob（* 默认跨 /，故 *.rs 仍匹配所有层级）。
+                let rel = path.strip_prefix(root).unwrap_or(path);
+                if !m.is_match(rel) {
                     return ignore::WalkState::Continue;
                 }
             }
@@ -302,6 +320,11 @@ fn walk_search_blocking_tracked(
                 };
             }
 
+            // H6 修复：内容搜索必须受扩展名白名单约束（与 read_files 一致），否则可用
+            // outputMode=content 逐行读出 .env/.pem/id_rsa 等白名单外敏感文件内容。
+            if security::extension::assert_extension_allowed(path, allowed_extensions).is_err() {
+                return ignore::WalkState::Continue;
+            }
             let file_meta = match entry.metadata() {
                 Ok(m) => m,
                 Err(_) => return ignore::WalkState::Continue,
@@ -326,15 +349,20 @@ fn walk_search_blocking_tracked(
                 return ignore::WalkState::Continue;
             }
             let mut g = matches.lock().unwrap();
+            // H5 修复：counter 只累加本文件真正 push 进去的条数(added)，而非 g 的总长度。
+            // 旧实现 fetch_add(g.len()) 把「全局累计总长」当增量重复累加，counter 被前缀和式放大，
+            // 导致远未达 head_limit 就误判触顶、提前 Quit，内容搜索静默丢失大量命中。
+            let mut added = 0usize;
             for r in results {
                 if g.len() >= head_limit {
                     break;
                 }
                 g.push(r);
+                added += 1;
             }
             let n = g.len();
             drop(g);
-            counter.fetch_add(n, Ordering::Relaxed);
+            counter.fetch_add(added, Ordering::Relaxed);
             if n >= head_limit {
                 truncated.store(true, Ordering::Relaxed);
                 ignore::WalkState::Quit
@@ -823,7 +851,7 @@ mod tests {
             ..Default::default()
         };
         let (matches, truncated) =
-            walk_search_blocking_tracked(&root, None, Some(&re), &opts, 1_000_000, None);
+            walk_search_blocking_tracked(&root, None, Some(&re), &opts, 1_000_000, &[], None);
         assert!(
             truncated,
             "content 模式应在 head_limit=5 触发截断标记，结果数：{}",
@@ -848,7 +876,7 @@ mod tests {
             ..Default::default()
         };
         let (matches, truncated) =
-            walk_search_blocking_tracked(&root, Some(&glob), None, &opts, 1_000_000, None);
+            walk_search_blocking_tracked(&root, Some(&glob), None, &opts, 1_000_000, &[], None);
         assert!(
             truncated,
             "name 模式应在 head_limit=5 触发截断标记，结果数：{}",
@@ -869,7 +897,7 @@ mod tests {
             ..Default::default()
         };
         let (matches, truncated) =
-            walk_search_blocking_tracked(&root, None, Some(&re), &opts, 1_000_000, None);
+            walk_search_blocking_tracked(&root, None, Some(&re), &opts, 1_000_000, &[], None);
         assert!(!truncated, "命中数(3) < head_limit(100) 不应标记截断");
         assert_eq!(matches.len(), 3, "应返回全部 3 条，结果：{matches:?}");
     }

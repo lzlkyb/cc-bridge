@@ -35,9 +35,11 @@ fn build_tray_icon(running: bool) -> tauri::image::Image<'static> {
     // Scale to S×S using nearest-neighbor
     let mut rgba = vec![0u8; (S * S * 4) as usize];
     for y in 0..S {
-        let sy = (y as f64 * w as f64 / S as f64) as u32;
+        // 修复：源行 sy 应按源高 h 缩放、源列 sx 应按源宽 w 缩放；此前 w/h 用反，
+        // 非正方形图标下 sy 可能超过实际行数导致 si 越界 panic 或色彩错乱。
+        let sy = (y as f64 * h as f64 / S as f64) as u32;
         for x in 0..S {
-            let sx = (x as f64 * h as f64 / S as f64) as u32;
+            let sx = (x as f64 * w as f64 / S as f64) as u32;
             let si = ((sy * w + sx) * 4) as usize;
             let di = ((y * S + x) * 4) as usize;
             rgba[di] = src[si];
@@ -375,9 +377,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let state = tray_state.clone();
                         let app_h = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            let (host, port, last_selected_ip) = {
+                            let (host, port, last_selected_ip, scope, project_path) = {
                                 let cfg = state.config.read().await;
-                                (cfg.host.clone(), cfg.port, cfg.last_selected_ip.clone())
+                                (
+                                    cfg.host.clone(),
+                                    cfg.port,
+                                    cfg.last_selected_ip.clone(),
+                                    cfg.scope.clone(),
+                                    cfg.project_path.clone(),
+                                )
                             };
                             let lan_ips = network::get_lan_ips();
                             let display_host = network::resolve_display_host(
@@ -385,14 +393,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &lan_ips,
                                 last_selected_ip.as_deref(),
                             );
-                            let cmd = network::build_ip_sed_command(port, &display_host);
+                            let scope_str = scope.as_deref().unwrap_or("user");
+                            let cmd =
+                                network::build_ip_sed_command(port, &display_host, scope_str, &project_path);
+                            let scope_label = if scope_str == "project" {
+                                if project_path
+                                    .as_ref()
+                                    .map(|p| p.trim())
+                                    .unwrap_or("")
+                                    .is_empty()
+                                {
+                                    "项目级 .mcp.json（请在项目目录下执行）"
+                                } else {
+                                    "项目级 .mcp.json"
+                                }
+                            } else {
+                                "用户级 ~/.claude.json"
+                            };
                             match app_h.clipboard().write_text(cmd) {
                                 Ok(_) => {
                                     let _ = app_h
                                         .notification()
                                         .builder()
                                         .title("cc-bridge")
-                                        .body("IP 替换命令已复制到剪贴板（用户级 ~/.claude.json）")
+                                        .body(format!(
+                                            "IP 替换命令已复制到剪贴板（{scope_label}）"
+                                        ))
                                         .show();
                                 }
                                 Err(e) => {

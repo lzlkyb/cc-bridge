@@ -112,6 +112,9 @@ fn query_port_allowed(port: u16) -> Option<bool> {
 /// 解析 netsh 规则列表，判断是否存在「入站 + 允许 + TCP + 本地端口==port」的规则。
 #[cfg(windows)]
 fn parse_inbound_allow(text: &str, port: &str) -> bool {
+    // Windows netsh 输出为 CRLF（\r\n\r\n）换行，先规整为 LF 再按空行分块，
+    // 否则 split("\n\n") 在 CRLF 下不分割、所有规则混为一 block、字段被覆盖。
+    let text = text.replace("\r\n", "\n");
     for block in text.split("\n\n") {
         let mut direction = String::new();
         let mut action = String::new();
@@ -119,12 +122,21 @@ fn parse_inbound_allow(text: &str, port: &str) -> bool {
         let mut localport = String::new();
         for line in block.lines() {
             if let Some((k, v)) = split_kv(line) {
+                // 同时兑配中文与英文 netsh 键名（英文系统上为 Direction/Action/Protocol/Local Port，
+                // 旧实现只匹配中文键名，英文 locale 下所有字段解不出来、恒判“未放行”）。
+                let kn = k.to_lowercase().replace(' ', "");
                 match k.as_str() {
                     "方向" => direction = v,
                     "操作" => action = v,
                     "协议" => proto = v,
                     "本地端口" => localport = v,
-                    _ => {}
+                    _ => match kn.as_str() {
+                        "direction" => direction = v,
+                        "action" => action = v,
+                        "protocol" => proto = v,
+                        "localport" => localport = v,
+                        _ => {}
+                    },
                 }
             }
         }
@@ -174,4 +186,27 @@ pub fn elevate_netsh(params: &str) -> Result<(), String> {
         return Err(format!("开放防火墙端口失败：{msg}"));
     }
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_inbound_allow_recognizes_crlf_multi_rule() {
+        // Windows netsh 输出为 CRLF；多个规则以 \r\n\r\n 分隔。
+        // 修复前 split("\n\n") 在 CRLF 下不分割 → 多规则字段互相覆盖 → 误判“未放行”。
+        let text = "规则名称: rule-allow\r\n方向: 入站\r\n操作: 允许\r\n协议: TCP\r\n本地端口: 7823\r\n\r\n规则名称: rule-other\r\n方向: 入站\r\n操作: 允许\r\n协议: TCP\r\n本地端口: 9999";
+        assert!(
+            parse_inbound_allow(text, "7823"),
+            "CRLF 多规则下应识别放行规则"
+        );
+    }
+
+    #[test]
+    fn parse_inbound_allow_crlf_no_match() {
+        let text =
+            "规则名称: rule-allow\r\n方向: 入站\r\n操作: 允许\r\n协议: TCP\r\n本地端口: 9999";
+        assert!(!parse_inbound_allow(text, "7823"), "端口不匹配应判未放行");
+    }
 }

@@ -20,6 +20,9 @@ extern "system" {
         lp_overlapped: *mut u8,
         lp_completion_routine: usize,
     ) -> i32;
+
+    /// winsock2 WSAGetLastError — 取上一次 Winsock 错误码（区分 WSAEFAULT 与真实错误）
+    fn WSAGetLastError() -> i32;
 }
 
 #[cfg(windows)]
@@ -29,7 +32,7 @@ mod imp {
     use std::thread;
     use tokio::sync::mpsc;
 
-    use super::{WSAIoctl, SIO_ADDRESS_LIST_CHANGE};
+    use super::{WSAGetLastError, WSAIoctl, SIO_ADDRESS_LIST_CHANGE};
 
     /// 启动一个阻塞线程监听本机地址变化，通过 channel 通知 async 端。
     /// 传出的 `UdpSocket` 供调用方持有：drop 时关闭 socket → 阻塞的 WSAIoctl 返回错误 → 线程退出。
@@ -57,7 +60,10 @@ mod imp {
             // 返回 0 表示成功（地址变化），SOCKET_ERROR(-1) + WSAEFAULT(10014) 也是
             // 正常返回码（无 output buffer 时 ioctl 用它表示"有数据准备好"）。
             // 其他错误（如 socket 关闭 = WSAENOTSOCK 10038）→ 线程退出。
-            if ret == 0 || ret == -1 {
+            // 仅 ret==0 或 (-1 且 WSAGetLastError==WSAEFAULT 10014) 才算正常（地址变化/有数据）；
+            // 其他 -1 错误（如 socket 关闭 WSAENOTSOCK 10038）必须 break，避免把任意 -1 当作
+            // “地址已变化”而在异常时忙等空转、无限发事件。
+            if ret == 0 || (ret == -1 && unsafe { WSAGetLastError() } == 10014) {
                 let _ = tx.send(());
             } else {
                 break;

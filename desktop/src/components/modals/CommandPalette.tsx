@@ -28,11 +28,14 @@ export function CommandPalette({
   onNavigate,
   status,
   onChanged,
+  onReopenOnboarding,
 }: {
   onClose: () => void;
   onNavigate: (tab: string) => void;
   status?: StatusResponse;
   onChanged?: () => void;
+  /** H3：重新打开首次使用引导（不清除 localStorage，仅重新展示）。 */
+  onReopenOnboarding?: () => void;
 }) {
   const { toast } = useToast();
   const [query, setQuery] = useState("");
@@ -69,7 +72,8 @@ export function CommandPalette({
   };
 
   const runToggleServer = async () => {
-    const running = status?.running ?? true;
+    // 与 Header S5 对齐：状态未知时当作未运行。
+    const running = status?.running ?? false;
     try {
       await invoke(running ? "stop_mcp_server" : "start_mcp_server");
       toast(running ? "MCP 服务已停止" : "MCP 服务已启动", "success");
@@ -115,7 +119,8 @@ export function CommandPalette({
   };
 
   const isDark = document.documentElement.classList.contains("dark");
-  const running = status?.running ?? true;
+  // 与 Header S5 对齐：状态未知（status 未加载）时默认当作未运行，避免误导。
+  const running = status?.running ?? false;
 
   // E-P1-11: useMemo 避免 11 个 CommandItem 每渲染重建
   const items = useMemo<CommandItem[]>(() => [
@@ -144,8 +149,9 @@ export function CommandPalette({
       confirmDescription: "此操作会删除本机所有历史调用记录，且不可恢复。",
     },
     { id: "act-addroot", label: "添加允许访问的根目录", icon: "plus", group: "操作", run: () => setShowDirBrowser(true) },
+    { id: "act-onboarding", label: "重新查看使用引导", icon: "info", group: "操作", run: () => onReopenOnboarding?.() },
     { id: "act-theme", label: isDark ? "切换到浅色主题" : "切换到深色主题", icon: isDark ? "sun" : "moon", group: "外观", run: toggleTheme },
-  ], [running, isDark, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme]);
+  ], [running, isDark, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding]);
 
   const filtered = (() => {
     const q = query.trim().toLowerCase();

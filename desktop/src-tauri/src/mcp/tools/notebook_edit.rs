@@ -39,6 +39,12 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
         config.whitelist_enabled,
     )?;
     security::extension::assert_extension_allowed(&resolved, &config.allowed_extensions)?;
+    // M10 修复：与其它文件工具一致，读入前校验文件大小，避免超大 .ipynb 全量读入 OOM。
+    security::filesize::assert_file_size_ok(&resolved, config.max_file_size_bytes)?;
+    // M11 修复：覆写前需备份 + 审计关联，先取出相关配置再 drop。
+    let backup_enabled = config.backup_enabled;
+    let backup_dir = config.backup_dir.clone();
+    let backup_retention = config.backup_retention;
     drop(config);
 
     // 读 .ipynb（JSON）。
@@ -59,7 +65,14 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
             let cell = cells
                 .get_mut(args.cell)
                 .ok_or_else(|| format!("cell 索引 {} 越界（共 {} 个）", args.cell, cell_count))?;
-            cell["source"] = source_to_json(&args.new_source);
+            // 守卫：cell 非 JSON 对象时（.ipynb 结构异常）直接 `cell["source"]=` 会 panic，改为返回错误。
+            let obj = cell.as_object_mut().ok_or_else(|| {
+                format!(
+                    "cell 索引 {} 不是 JSON 对象，无法设置 source（.ipynb 结构异常）",
+                    args.cell
+                )
+            })?;
+            obj.insert("source".to_string(), source_to_json(&args.new_source));
         }
         "insert" => {
             if args.cell > cells.len() {
@@ -97,6 +110,15 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
     // 写回，保留其余字段（metadata / nbformat 等）。
     // 复用 edit_files::write_atomic：同目录临时文件 + rename，崩溃中途不会损坏原 .ipynb。
     let out = serde_json::to_string_pretty(&notebook).map_err(|e| format!("序列化失败: {e}"))?;
+    // M11：覆写前备份（受 backup_enabled 控制）+ 记录审计关联，支撑一键回滚，与 edit_files 一致。
+    if backup_enabled {
+        let db = state.db.lock().await;
+        let bp =
+            crate::backup::backup_before_overwrite(&resolved, &backup_dir, &state.data_dir, &db)?;
+        crate::backup::prune_backups(&resolved, &backup_dir, &state.data_dir, backup_retention)?;
+        drop(db);
+        crate::audit::record_op_backup(bp, Some(resolved.clone()));
+    }
     crate::mcp::tools::edit_files::write_atomic(&resolved, out.as_bytes())
         .await
         .map_err(|e| format!("写入失败: {e}"))?;

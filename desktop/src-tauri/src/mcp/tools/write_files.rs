@@ -115,7 +115,9 @@ async fn write_single(
     }
 
     let t0 = std::time::Instant::now();
-    tokio::fs::write(&resolved, &data)
+    // M9 修复：改用原子写（同目录临时文件 + rename），与 edit_files/notebook_edit 一致，
+    // 避免直接覆写时进程被杀/断电/磁盘满导致原文件被截断损坏。
+    crate::mcp::tools::edit_files::write_atomic(&resolved, &data)
         .await
         .map_err(|e| format!("Write failed: {e}"))?;
     crate::timing::record_io(t0.elapsed());

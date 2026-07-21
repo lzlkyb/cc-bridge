@@ -51,28 +51,37 @@ export function SettingsToggles({
 
   // 保存并给出「已保存 ✓」反馈（fix #2）。key 用于定位反馈落在哪一行。
   const save = async (patch: Record<string, unknown>, key?: string) => {
-    await invoke<ConfigSaveResult>("save_config", { patch });
-    onSaved();
-    if (key) {
-      setSavedKey(key);
-      setTimeout(() => setSavedKey((cur) => (cur === key ? null : cur)), 1500);
+    try {
+      await invoke<ConfigSaveResult>("save_config", { patch });
+      onSaved();
+      if (key) {
+        setSavedKey(key);
+        setTimeout(() => setSavedKey((cur) => (cur === key ? null : cur)), 1500);
+      }
+    } catch (e) {
+      // 之前无 try/catch，保存失败会静默抛未处理 rejection，开关看似生效实则未落盘。
+      toast(`保存失败：${e}`, "error");
     }
   };
 
   const handleResetDefaults = async () => {
-    await invoke<ConfigSaveResult>("save_config", {
-      patch: {
-        whitelistEnabled: true,
-        readonlyMode: false,
-        auditEnabled: true,
-        backupEnabled: true,
-        rateLimitEnabled: true,
-        encodingDetectEnabled: false,
-        shellEnabled: false,
-      },
-    });
-    setConfirmReset(false);
-    onSaved();
+    try {
+      await invoke<ConfigSaveResult>("save_config", {
+        patch: {
+          whitelistEnabled: true,
+          readonlyMode: false,
+          auditEnabled: true,
+          backupEnabled: true,
+          rateLimitEnabled: true,
+          encodingDetectEnabled: false,
+          shellEnabled: false,
+        },
+      });
+      setConfirmReset(false);
+      onSaved();
+    } catch (e) {
+      toast(`恢复默认失败：${e}`, "error");
+    }
   };
 
   const handleWhitelist = (next: boolean) => {

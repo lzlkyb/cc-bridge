@@ -42,12 +42,21 @@ fn default_max_output_bytes() -> usize {
 /// 采用子串匹配（to_lowercase 后 contains），是低成本的第一道闸——
 /// 拦掉最典型的毁灭性命令，避免开了 shell 开关后一条 `rm -rf /` 抹掉整机。
 const DANGEROUS_COMMAND_PATTERNS: &[&str] = &[
+    // Linux/bash 语义
     "rm -rf /",
     "rm -rf /*",
     "rm -fr /",
     "mkfs",
-    "format c:",
     ":(){:|:&};:", // fork bomb
+    // Windows/cmd 语义（本项目默认 shell 为 cmd，旧黑名单只有 Linux 命令 + format c:，
+    // 在 cmd 下几乎拦不住任何 Windows 破坏性命令）。
+    "format c:",
+    "rd /s /q",
+    "rmdir /s /q",
+    "del /f /s /q",
+    "del /s /q",
+    "diskpart",
+    "cipher /w",
 ];
 
 /// 命中任一危险模式即返回 true。
@@ -389,7 +398,7 @@ fn take_reader(
 /// 文件不存在（命令提前失败未写）或读失败时返回 None —— 调用方据此不更新 session cwd。
 fn read_cwd_file(cwd_file: Option<&std::path::Path>) -> Option<PathBuf> {
     let f = cwd_file?;
-    match std::fs::read_to_string(f) {
+    let result = match std::fs::read_to_string(f) {
         Ok(s) => {
             let trimmed = s.trim();
             if trimmed.is_empty() {
@@ -399,7 +408,10 @@ fn read_cwd_file(cwd_file: Option<&std::path::Path>) -> Option<PathBuf> {
             }
         }
         Err(_) => None,
-    }
+    };
+    // 读完即删除临时 cwd 捕获文件（best-effort），避免会话 cwd 捕获文件在 temp 目录长期累积泄漏。
+    let _ = std::fs::remove_file(f);
+    result
 }
 
 fn run_foreground(
@@ -496,12 +508,27 @@ fn spawn_background(
     // 修复：进程结束时同步定格“已运行秒数”，避免面板在进程早已退出后还用 started_at.elapsed() 实时计算，导致时长一直增长。
     let finished_elapsed: Arc<AsyncMutex<Option<u64>>> = Arc::new(AsyncMutex::new(None));
     let finished_elapsed_clone = finished_elapsed.clone();
-    std::thread::spawn(move || {
-        let mut c = child_for_wait.lock().unwrap();
-        if let Ok(status) = c.wait() {
-            let elapsed_secs = started_at.elapsed().as_secs();
-            *exit_code_clone.blocking_lock() = status.code();
-            *finished_elapsed_clone.blocking_lock() = Some(elapsed_secs);
+    // H4 修复：改用 try_wait 轮询，wait 线程不在整个进程生命周期内持锁。
+    // 旧实现 c.wait() 期间独占 child 锁，导致 stop_command 的 start_kill 抢不到锁、
+    // 永远杀不掉运行中的后台进程。现每次只在 try_wait 瞬间短暂持锁，其余时间释放，
+    // 让 stop_command 能在进程运行期拿到锁执行 start_kill。
+    std::thread::spawn(move || loop {
+        let status = {
+            let mut c = child_for_wait.lock().unwrap();
+            match c.try_wait() {
+                Ok(Some(s)) => Some(s),
+                Ok(None) => None,
+                Err(_) => break,
+            }
+        };
+        match status {
+            Some(s) => {
+                let elapsed_secs = started_at.elapsed().as_secs();
+                *exit_code_clone.blocking_lock() = s.code();
+                *finished_elapsed_clone.blocking_lock() = Some(elapsed_secs);
+                break;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(100)),
         }
     });
 

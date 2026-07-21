@@ -23,7 +23,7 @@ export function SecurityTab({
   const [newRoot, setNewRoot] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
   const [rootSearch, setRootSearch] = useState("");
-  const [pendingRemoveRoot, setPendingRemoveRoot] = useState<{ index: number; path: string } | null>(null);
+  const [pendingRemoveRoot, setPendingRemoveRoot] = useState<string | null>(null);
   const { toast } = useToast();
   // 白名单列表增删/筛选时 FLIP 平滑进出场与位移（动画质感升级；减弱动效时自动关闭）。
   const listParent = useAutoAnimateRM<HTMLDivElement>();
@@ -42,9 +42,11 @@ export function SecurityTab({
     }
   };
 
-  const removeRoot = async (index: number) => {
+  const removeRoot = async (path: string) => {
     if (!status) return;
-    const roots = status.allowedRoots.filter((_, i) => i !== index);
+    // 按路径值删除，而非按渲染时捕获的下标：既避免重复目录 indexOf 命中首个而删错，
+    // 也避免 10s 轮询刷新后下标过期删错项。
+    const roots = status.allowedRoots.filter((r) => r !== path);
     try {
       await invoke<ConfigSaveResult>("save_config", { patch: { allowedRoots: roots } });
       onSaved();
@@ -112,18 +114,15 @@ export function SecurityTab({
             <p className="py-4 text-center text-sm text-muted-foreground">没有匹配的目录</p>
           )}
           <div ref={listParent} className="space-y-2">
-          {filteredRoots.map((root, i) => {
-            const realIndex = status?.allowedRoots.indexOf(root) ?? i;
-            return (
+          {filteredRoots.map((root) => (
               <div key={root} className="flex items-center gap-2">
                 <code className="flex-1 rounded-md bg-muted px-3 py-1.5 text-xs font-mono truncate">{root}</code>
-                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setPendingRemoveRoot({ index: realIndex, path: root })}>
+                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setPendingRemoveRoot(root)}>
                   <Icon name="trash" size={14} />
                   删除
                 </Button>
               </div>
-            );
-          })}
+          ))}
           </div>
           <div className="flex flex-wrap gap-2">
             <Input
@@ -161,7 +160,7 @@ export function SecurityTab({
           title="确定删除这个白名单目录？"
           description={
             <>
-              <code className="break-all">{pendingRemoveRoot.path}</code> 将从白名单中移除，远程 Claude Code 将立即
+              <code className="break-all">{pendingRemoveRoot}</code> 将从白名单中移除，远程 Claude Code 将立即
               失去该目录的访问权限。
             </>
           }
@@ -169,9 +168,9 @@ export function SecurityTab({
           confirmLabel="确定删除"
           onCancel={() => setPendingRemoveRoot(null)}
           onConfirm={() => {
-            const index = pendingRemoveRoot.index;
+            const path = pendingRemoveRoot;
             setPendingRemoveRoot(null);
-            void removeRoot(index);
+            void removeRoot(path);
           }}
         />
       )}

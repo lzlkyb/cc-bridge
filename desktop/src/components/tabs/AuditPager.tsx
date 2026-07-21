@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 
@@ -30,6 +31,12 @@ export function AuditPager({ page, pageSize, total, onPageChange, onPageSizeChan
   const tp = Math.max(1, Math.ceil(total / pageSize));
   const cur = Math.min(page, tp);
   const win = pageWindow(cur, tp);
+
+  // 总条数缩减后，实际请求页 page 可能超过总页数，导致后端返回空页（显示 cur 已被钳制
+  // 到 tp 但 page 未同步）。检测到越界时回传钳制后的页码，重新拉取正确页。
+  useEffect(() => {
+    if (page > tp) onPageChange(tp);
+  }, [page, tp, onPageChange]);
 
   return (
     <div className="mt-4 flex flex-col gap-3 divider-x-top pt-4 sm:flex-row sm:items-center sm:justify-between">

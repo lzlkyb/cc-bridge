@@ -70,7 +70,7 @@ export function IpChangedBanner({
   const buildSed = (scp: "user" | "project") => {
     const cfgFile = scp === "user" ? "~/.claude.json" : ".mcp.json";
     const cdPrefix =
-      scp === "project" && projectPath.trim() ? `cd ${projectPath.trim()} && ` : "";
+      scp === "project" && projectPath.trim() ? `cd "${projectPath.trim()}" && ` : "";
     return `${cdPrefix}sed -i 's#http://[0-9.]*:${port}/mcp#http://${selectedIp}:${port}/mcp#g' ${cfgFile}`;
   };
 

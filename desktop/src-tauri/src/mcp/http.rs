@@ -136,8 +136,11 @@ async fn auth_middleware(
     let path = req.uri().path().to_string();
 
     // /health does not require auth, but add lightweight rate limit (E-P2-11)
+    // M14 修复：health 用独立的 "health:" 前缀键，不再与 /mcp 共用同一条时间戳向量。
+    // 旧实现共享同一 key 时，health 的1s retain 会清掉 /mcp 长窗口赖以计数的历史，
+    // 使 /mcp 限流可被“每次先打个 /health”绕过。
     if path == "/health" {
-        let ip = rate_limit_key(addr, req.headers());
+        let ip = format!("health:{}", rate_limit_key(addr, req.headers()));
         let now = std::time::Instant::now();
         let h_window = std::time::Duration::from_secs(1);
         {
@@ -151,22 +154,19 @@ async fn auth_middleware(
                     .unwrap();
             }
             ts.push(now);
-            if ts.is_empty() {
-                drop(entry);
-                state.rate_limiter.remove(&ip);
-            }
         }
         return next.run(req).await;
     }
 
-    // /mcp/sse GET 握手免 token 校验（token 通过 query param 传入并由 sse_handler 自行校验）
+    // /mcp/sse GET 握手免 token 校验（token 通过 query param 传入并由 sse_handler 自行校验；
+    // 长连接握手，不计入限流）。
     if path == "/mcp/sse" && req.method() == axum::http::Method::GET {
         return next.run(req).await;
     }
-    // /mcp/messages 免 token 校验（session 在 SSE 握手时已验证，消息端点无需重复验）
-    if path == "/mcp/messages" {
-        return next.run(req).await;
-    }
+
+    // M17 修复：/mcp/messages 免 token（SSE 握手时已验 session），但仍须受限流约束，
+    // 不能像此前那样整体放行——否则 SSE 工具调用面完全不受 rate_limit 约束。
+    let skip_token = path == "/mcp/messages";
 
     let config = state.config.read().await;
     let expected_token = config.token.clone();
@@ -175,26 +175,29 @@ async fn auth_middleware(
     let rate_limit_enabled = config.rate_limit_enabled;
     drop(config);
 
-    let auth_header = req
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+    if !skip_token {
+        let auth_header = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
 
-    let provided_token = auth_header.strip_prefix("Bearer ").unwrap_or("");
+        let provided_token = auth_header.strip_prefix("Bearer ").unwrap_or("");
 
-    if !auth::verify_token(provided_token, &expected_token) {
-        // 方案 A：鉴权拒绝（401）= 拒绝未授权访问，计入治理指标。
-        state.inc_auth_denies();
-        return Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .body(Body::from(r#"{"error":"Unauthorized"}"#))
-            .unwrap();
+        if !auth::verify_token(provided_token, &expected_token) {
+            // 方案 A：鉴权拒绝（401）= 拒绝未授权访问，计入治理指标。
+            state.inc_auth_denies();
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .body(Body::from(r#"{"error":"Unauthorized"}"#))
+                .unwrap();
+        }
     }
 
     // Rate limiting：限流键用 ConnectInfo 拿到的真实对端 IP，不能用
     // `x-forwarded-for`——那是客户端自己发的请求头，任何调用方都能伪造，
-    // 换个假 IP 就能无限绕过限流（D1，2026-07-10 修复）。
+    // 换个假 IP 就能无限绕过限流（D1，2026-07-10 修复）。/mcp 与 /mcp/messages 共享同一
+    // 对端 IP 的限流窗口（同一客户端的工具调用总量限流）。
     let ip = rate_limit_key(addr, req.headers());
 
     // 限流开关（默认开）。关闭时跳过整个计数逻辑，鉴权仍在上方独立生效。
@@ -215,11 +218,16 @@ async fn auth_middleware(
                     .unwrap();
             }
             timestamps.push(now);
-            // E-P2-1: 若全部时间戳均过期，移除该 IP 条目避免 DashMap 无界增长
-            if timestamps.is_empty() {
-                drop(entry);
-                state.rate_limiter.remove(&ip);
-            }
+        }
+
+        // M15 修复：机会性 GC——条目数超阈值时清扫全过期条目，避免 rate_limiter DashMap
+        // 无界增长（旧的 push 后 is_empty 判断恒为 false，是死代码、从不触发清理）。
+        // 阈值以上才全表 retain，摊销下近似 O(1)；同时清掉 health: 前缀的过期条目。
+        if state.rate_limiter.len() > 4096 {
+            state.rate_limiter.retain(|_, v| {
+                v.retain(|t| now.duration_since(*t) < window_duration);
+                !v.is_empty()
+            });
         }
     }
 
@@ -323,7 +331,12 @@ pub async fn handle_tools_call(
                 .unwrap_or(json!({}));
 
             let start = std::time::Instant::now();
-            let result = dispatch_tool(tool_name, arguments.clone(), &state).await;
+            // 把 source_ip 注入 task_local 作用域，使 batch 子操作的审计条目也能拿到 sourceIp。
+            let result = crate::audit::with_source_ip(
+                Some(source_ip.clone()),
+                dispatch_tool(tool_name, arguments.clone(), &state),
+            )
+            .await;
             let elapsed = start.elapsed().as_millis() as u64;
             // 方案 A：记录实时耗时 + 工具调用计数（热门工具 Top3 用）。
             state.record_latency(elapsed);
@@ -409,7 +422,7 @@ pub async fn handle_tools_call(
 /// 于是 `overheadMs = serverMs − durationMs − auditMs` 即请求解析 + 响应序列化 +
 /// gzip 压缩 + 线缆传输（由 `new_entry` 内部派生）。
 #[allow(clippy::too_many_arguments)]
-fn write_audit_for_call(
+pub(crate) fn write_audit_for_call(
     data_dir: &std::path::Path,
     tool_name: &str,
     arguments: &serde_json::Value,

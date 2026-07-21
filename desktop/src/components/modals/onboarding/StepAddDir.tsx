@@ -28,6 +28,12 @@ export function StepAddDir({
   const addRoot = async (path?: string) => {
     const rootToAdd = path || newRoot.trim();
     if (!rootToAdd || !status) return;
+    // 去重：已存在则不重复添加，避免白名单重复条目与重复 React key。
+    if (status.allowedRoots.includes(rootToAdd)) {
+      toast("该目录已在白名单中", "info");
+      setNewRoot("");
+      return;
+    }
     const roots = [...status.allowedRoots, rootToAdd];
     setBusy(true);
     try {

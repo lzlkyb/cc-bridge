@@ -153,7 +153,10 @@ async fn edit_single(
     }
 
     let (updated, replacements) = if f.replace_all {
-        (content.replace(&f.old_string, &f.new_string), match_count)
+        // match_count 因 take(2) 早停最多为 2（仅用于唯一性判定）；replaceAll 需上报真实
+        // 替换次数，这里重新全量计数（replace 本身也会全串扫描，代价可忽）。
+        let actual = content.matches(&f.old_string).count();
+        (content.replace(&f.old_string, &f.new_string), actual)
     } else {
         if match_count > 1 {
             return Err(EditError {

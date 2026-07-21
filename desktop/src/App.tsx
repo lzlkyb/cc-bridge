@@ -41,7 +41,7 @@ function AppContent() {
     if (!selectedIp && status?.lastSelectedIp) {
       setSelectedIp(status.lastSelectedIp);
     }
-  }, [status?.lastSelectedIp]);
+  }, [status?.lastSelectedIp, selectedIp]);
 
   const queryClient = useQueryClient();
 
@@ -83,6 +83,8 @@ function AppContent() {
       setShowOnboarding(true);
     }
   }, [status]);
+  // H3：重新查看引导（设置页 / 命令面板触发）——只打开弹窗，不清 localStorage。
+  const openOnboarding = useCallback(() => setShowOnboarding(true), []);
 
   // 命令面板 (Ctrl+K)
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -199,7 +201,7 @@ function AppContent() {
             <SecurityTab status={status} onSaved={refetchStatus} />
           </TabsContent>
           <TabsContent value="settings">
-            <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} />
+            <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} />
           </TabsContent>
           <TabsContent value="log">
             <LogTab />
@@ -225,6 +227,7 @@ function AppContent() {
           onNavigate={handleNavigate}
           status={status}
           onChanged={refetchStatus}
+          onReopenOnboarding={openOnboarding}
         />
       )}
 
@@ -254,15 +257,14 @@ function LinkStateWatcher({
     if (wasDown !== null && wasDown !== linkDown) {
       if (linkDown) {
         toast("远程连接已中断，请检查本机网络连接", "error");
-      } else {
-        // S4: 链路由中断恢复。自动重新选中已记录的 IP（IP 一致即满足"IP 一样直接选中"），
-        // 仅当服务意外停止时才保底重启，尊重用户主动停服意图。
+      } else if (status.running) {
+        // 仅当服务仍在运行时，linkDown→false 才是真正的「网络恢复」；若 running=false
+        // 则是用户主动停服，不应误报恢复、更不应自动重启用户刚停掉的服务。
+        // S4: 链路由中断恢复（且服务仍在运行）。自动重新选中已记录的 IP。
         toast("网络已恢复，Claude Code 可重新连接", "success");
         if (status.lastSelectedIp) {
           // byUser=false: 自动恢复只更新选中/落盘，不触发 IP 变化 banner
           onReselectIp(status.lastSelectedIp, false);
-        } else if (!status.running) {
-          invoke("start_mcp_server").catch(() => {});
         }
       }
     }

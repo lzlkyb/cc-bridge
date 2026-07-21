@@ -152,7 +152,9 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
           0
         ) / valid.length;
       split = [
-        { label: "调度逻辑", ms: f("durationMs"), color: "#6366f1" },
+        // durationMs 已包含 ioMs，直接当“调度逻辑”会与“文件读写 I/O”重复计数；
+        // 这里扣除 ioMs，得到不含 I/O 的纯调度/处理耗时。
+        { label: "调度逻辑", ms: Math.max(0, f("durationMs") - f("ioMs")), color: "#6366f1" },
         { label: "文件读写 I/O", ms: f("ioMs"), color: "#14b8a6" },
         { label: "审计写盘", ms: f("auditMs"), color: "#f59e0b" },
         { label: "网络往返", ms: f("netMs"), color: "#ef4444" },
@@ -207,7 +209,7 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
       <CardHeader className="flex-row items-center gap-2 space-y-0">
         <CardTitle icon={<Icon name="activity" />}>性能分析</CardTitle>
         <span className="text-xs text-muted-foreground">
-          基于全部 {overall.count} 条带耗时记录 · 自动诊断
+          基于最近 {overall.count} 条带耗时记录 · 自动诊断
         </span>
       </CardHeader>
       <CardContent className="space-y-5">

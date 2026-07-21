@@ -56,6 +56,21 @@ pub struct AuditEntry {
 use std::cell::RefCell;
 task_local! {
     static OP_BACKUP: RefCell<Option<(Option<PathBuf>, Option<PathBuf>)>>;
+    // 本次工具调用的来源 IP（供 batch 子操作补写 sourceIp；与 OP_BACKUP 同一任务作用域）。
+    static SOURCE_IP: Option<String>;
+}
+
+/// 进入一次工具调用的来源 IP 作用域（包住 dispatch + 子操作分发）。
+pub async fn with_source_ip<F>(ip: Option<String>, fut: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    SOURCE_IP.scope(ip, fut).await
+}
+
+/// 读取当前工具调用的来源 IP；不在作用域内（如单元测试）时返回 None，不 panic。
+pub fn current_source_ip() -> Option<String> {
+    SOURCE_IP.try_with(|ip| ip.clone()).ok().flatten()
 }
 
 /// 进入一次工具调用的关联备份作用域，包裹 dispatch + 审计全过程（在 `handle_tools_call` 内）。
@@ -68,15 +83,18 @@ where
 }
 
 /// 工具内部调用：记录本次操作生成的备份路径与目标路径（供审计关联）。
+/// 用 try_with 而非 with：作用域未建立（如单元测试直调 handle、或未来新的分发路径）时
+/// 安全 no-op，而不是在写操作中途 panic（此时备份已生成、write_atomic 尚未执行）。
+/// 生产路径下 dispatch 始终包在 with_op_backup 作用域内，关联仍正常生效。
 pub fn record_op_backup(backup: Option<PathBuf>, target: Option<PathBuf>) {
-    OP_BACKUP.with(|c| {
+    let _ = OP_BACKUP.try_with(|c| {
         *c.borrow_mut() = Some((backup, target));
     });
 }
 
-/// 审计写盘前调用：取出并清空关联备份信息。
+/// 审计写盘前调用：取出并清空关联备份信息（作用域缺失时返回 None，不 panic）。
 pub fn take_op_backup() -> Option<(Option<PathBuf>, Option<PathBuf>)> {
-    OP_BACKUP.with(|c| c.borrow_mut().take())
+    OP_BACKUP.try_with(|c| c.borrow_mut().take()).ok().flatten()
 }
 
 /// E-P0-7: 共享审计日志写句柄，避免每次写都 open 文件（高频批量调用下省 1000 open/s）。
@@ -192,23 +210,33 @@ pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<Audit
         .unwrap_or(0);
     let len = meta.len();
 
-    // 先短锁判定是否命中；命中则克隆缓存条目（不持有锁做 IO）。
+    // 判定命中与克隆在同一次持锁内完成，避免 TOCTOU：旧实现先短锁判 hit 再释锁重锁
+    // clone，两次之间若 clear_all/cleanup 把缓存置 None，`.as_ref().unwrap()` 会 panic 并在
+    // 持锁时毒化互斥锁，导致后续所有 lock().unwrap() 跟着 panic。
     let cache = AUDIT_CACHE.get_or_init(|| Mutex::new(None));
-    let hit = {
+    // 步一：持锁内一次性完成“判命中 + 克隆”（命中返回 Some(clone)，未命中返回 None），
+    // 锁在本作用域末尾释放。
+    let cached: Option<Vec<AuditEntry>> = {
         let g = cache.lock().unwrap();
-        matches!(
-            g.as_ref(),
-            Some((p, mt, ln, _))
-                if p.as_path() == log_path.as_path() && *mt == mtime && *ln == len
-        )
+        match g.as_ref() {
+            Some((p, mt, ln, entries))
+                if p.as_path() == log_path.as_path() && *mt == mtime && *ln == len =>
+            {
+                Some(entries.clone())
+            }
+            _ => None,
+        }
     };
-    let all: Vec<AuditEntry> = if hit {
-        cache.lock().unwrap().as_ref().unwrap().3.clone()
-    } else {
-        let parsed = parse_all_entries(&log_path)?;
-        let mut g = cache.lock().unwrap();
-        *g = Some((log_path.clone(), mtime, len, parsed.clone()));
-        parsed
+    // 步二：未命中才释锁后做 IO 解析，再重新上锁写回缓存。全程不存在旧实现那种
+    // “判 hit 与 clone 分两次持锁”的 TOCTOU 窗口，也不再对 None 做 unwrap。
+    let all: Vec<AuditEntry> = match cached {
+        Some(entries) => entries,
+        None => {
+            let parsed = parse_all_entries(&log_path)?;
+            let mut g = cache.lock().unwrap();
+            *g = Some((log_path.clone(), mtime, len, parsed.clone()));
+            parsed
+        }
     };
 
     let total = all.len();

@@ -466,6 +466,10 @@ pub struct ConfigPatch {
     /// 用户接入时确认的作用域（user/project）。仅首次接入复制命令时由前端写入。
     #[serde(rename = "scope")]
     pub scope: Option<String>,
+    /// 用户接入时确认的项目路径（项目级 scope 时用于 cd 前缀）。
+    /// 跟随连接页选择，供托盘「复制 IP 替换命令」生成带 cd 的精确命令，与 IpChangedBanner 对齐。
+    #[serde(rename = "projectPath")]
+    pub project_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -490,8 +494,10 @@ pub async fn save_config(
     macro_rules! apply_field {
         ($field:ident, $key:expr, $val:expr) => {
             if let Some(v) = $val {
-                config.$field = v.clone();
+                // 先持久化再改内存：若 save_config_field 失败（`?` 提前返回），内存不会领先于
+                // DB。旧顺序先改内存后写盘，写盘失败时内存已变、DB 未变，产生不一致。
                 save_config_field(&db, $key, &serde_json::to_value(&v).unwrap())?;
+                config.$field = v.clone();
                 changed.push($key.into());
             }
         };
@@ -560,23 +566,29 @@ pub async fn save_config(
     // 供后续 IP 变化 / Token 重生成生成精确 sed 命令（方案 A）。
     // scope 在 config 中也是 Option<String>，与 apply_field! 宏的 "T vs Option<T>" 假设不符，故单独处理。
     if let Some(ref s) = patch.scope {
-        config.scope = Some(s.clone());
         save_config_field(&db, "scope", &serde_json::to_value(s).unwrap())?;
+        config.scope = Some(s.clone());
         changed.push("scope".into());
+    }
+    // project_path 同 scope 为 Option<String>，apply_field! 宏假设不符，单独处理。
+    if let Some(ref p) = patch.project_path {
+        save_config_field(&db, "project_path", &serde_json::to_value(p).unwrap())?;
+        config.project_path = Some(p.clone());
+        changed.push("project_path".into());
     }
 
     if let Some(ref h) = patch.host {
         if *h != config.host {
-            config.host = h.clone();
             save_config_field(&db, "host", &serde_json::to_value(h).unwrap())?;
+            config.host = h.clone();
             changed.push("host".into());
             restart_required = true;
         }
     }
     if let Some(p) = patch.port {
         if p != config.port {
-            config.port = p;
             save_config_field(&db, "port", &serde_json::to_value(p).unwrap())?;
+            config.port = p;
             changed.push("port".into());
             restart_required = true;
         }
@@ -990,6 +1002,8 @@ pub async fn restore_file(
     let data_dir = state.data_dir.clone();
     let backup_dir = config.backup_dir.clone();
     let backup_retention = config.backup_retention;
+    let readonly_mode = config.readonly_mode;
+    let allowed_extensions = config.allowed_extensions.clone();
 
     // 1) 安全校验 backup_path
     let bak_canon = assert_backup_path_in_scope(&backup_path, &data_dir, &backup_dir)?;
@@ -1000,6 +1014,13 @@ pub async fn restore_file(
         config.whitelist_enabled,
     )?;
     drop(config);
+
+    // 回滚也是写操作：与写工具一致，只读模式下拒绝、并校验扩展名白名单，
+    // 避免经回滚通道绕过只读闸门或向非白名单扩展名写入。
+    if readonly_mode {
+        return Err("只读模式已开启，禁止恢复文件（写操作被拦截）".into());
+    }
+    crate::security::extension::assert_extension_allowed(&resolved, &allowed_extensions)?;
 
     // 3) 还原前再备一次（可继续撤销）——仅当目标已存在
     let mut new_backup: Option<PathBuf> = None;
@@ -1416,7 +1437,11 @@ pub async fn diff_backups(
 #[tauri::command]
 pub async fn export_config(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     let config = state.config.read().await;
-    serde_json::to_string_pretty(&*config).map_err(|e| format!("序列化配置失败：{e}"))
+    // M1 修复：不导出 Bearer token（唯一远程访问凭证）。克隆后脱敏再序列化，
+    // 避免导出的配置文件被备份/转发/入库时泄露凭证。导入端 token 为空时会保留现有或重新生成。
+    let mut export = config.clone();
+    export.token = String::new();
+    serde_json::to_string_pretty(&export).map_err(|e| format!("序列化配置失败：{e}"))
 }
 
 /// `import_config` 的纯逻辑入口：解析 → 白名单兜底校验 → 落库 → 写 config → 刷新白名单缓存。
@@ -1427,8 +1452,18 @@ pub(crate) async fn import_config_inner(
     state: &Arc<AppState>,
     json: &str,
 ) -> Result<ConfigSaveResult, String> {
-    let incoming: crate::config::BridgeConfig =
+    let mut incoming: crate::config::BridgeConfig =
         serde_json::from_str(json).map_err(|e| format!("配置解析失败：{e}"))?;
+    // M1 配套：导出已脱敏 token（空）。导入时 token 为空则保留现有、现有也空则生成新，
+    // 避免把鉴权凭证清空（空 token 会导致鉴权被绕过）。
+    if incoming.token.trim().is_empty() {
+        let cur = state.config.read().await.token.clone();
+        incoming.token = if cur.trim().is_empty() {
+            crate::security::auth::generate_token()
+        } else {
+            cur
+        };
+    }
 
     // 白名单兜底校验（复用 security::path 白名单逻辑，不可绕过）。
     // incoming 尚未写入 state，用其自身 roots 预 canonicalize 的本地缓存集合校验。

@@ -133,7 +133,7 @@ export function buildTokenSedCommand(
 ): string {
   if (!oldToken || !token) return "";
   const cfgFile = scope === "user" ? "~/.claude.json" : ".mcp.json";
-  const cdPrefix = scope === "project" && projectPath.trim() ? `cd ${projectPath.trim()} && ` : "";
+  const cdPrefix = scope === "project" && projectPath.trim() ? `cd "${projectPath.trim()}" && ` : "";
   return `${cdPrefix}sed -i 's#Bearer ${oldToken}#Bearer ${token}#g' ${cfgFile}`;
 }
 
@@ -172,11 +172,12 @@ export function buildPermissionGrantCommand(
 ): string {
   const targetFile = scope === "user" ? "~/.claude/settings.json" : ".claude/settings.local.json";
   const trimmed = projectPath.trim();
-  const cdPrefix = scope === "project" && trimmed ? `cd ${trimmed} && ` : "";
+  // cd 目标路径加双引号，避免含空格或特殊字符的项目路径拆成多个参数。
+  const cdPrefix = scope === "project" && trimmed ? `cd "${trimmed}" && ` : "";
 
   const toolsBlock = includeShellTools
     ? `if 'mcp__cc-bridge__*' not in allow:\n    allow.append('mcp__cc-bridge__*')`
-    : `tools = ${JSON.stringify(NON_SHELL_TOOLS)}\nfor t in tools:\n    rule = f'mcp__cc-bridge__{t}'\n    if rule not in allow:\n        allow.append(rule)`;
+    : `tools = [${NON_SHELL_TOOLS.map((t) => `'${t}'`).join(", ")}]\nfor t in tools:\n    rule = f'mcp__cc-bridge__{t}'\n    if rule not in allow:\n        allow.append(rule)`;
 
   return `${cdPrefix}python3 -c "
 import json, os
@@ -218,8 +219,14 @@ export function setLastSeenVersion(version: string): void {
 
 /** 语义版本比较：a>b 返回正数，a<b 返回负数，相等 0。 */
 export function compareVersion(a: string, b: string): number {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
+  // 按段取前导整数（parseInt 容忍 "1-rc1" 之类后缀，取到 1）；真正非数字段安全退化为 0。
+  // 旧实现用 Number("1-rc1") 得 NaN、再被 || 0 吞成 0，会静默丢掉该段的真实数字。
+  const seg = (s: string) => {
+    const n = parseInt(s, 10);
+    return Number.isNaN(n) ? 0 : n;
+  };
+  const pa = a.split(".").map(seg);
+  const pb = b.split(".").map(seg);
   for (let i = 0; i < 3; i++) {
     const diff = (pa[i] || 0) - (pb[i] || 0);
     if (diff) return diff;

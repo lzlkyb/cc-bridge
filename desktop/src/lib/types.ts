@@ -99,6 +99,8 @@ export interface ConfigPatch {
   /** MCP 传输协议：http 或 sse。前端「MCP 传输协议」分段控件写入。 */
   transport?: string;
   scope?: string;
+  /** 用户接入时确认的项目路径（项目级 scope 时用于 cd 前缀）。跟随连接页选择，供托盘生成精确 sed 命令。 */
+  projectPath?: string;
 }
 
 export interface ConfigSaveResult {

@@ -9,6 +9,11 @@ const MAX_TOKEN_LEN: usize = 128;
 pub fn verify_token(provided: &str, expected: &str) -> bool {
     let p_bytes = provided.as_bytes();
     let e_bytes = expected.as_bytes();
+    // 失败关闭：未配置 token（expected 为空）绝不放行——否则空配置 + 无 Authorization 头
+    // 的请求会因两侧皆为空而通过 ct_eq，造成完全鉴权绕过。
+    if e_bytes.is_empty() {
+        return false;
+    }
     if p_bytes.len() > MAX_TOKEN_LEN || e_bytes.len() > MAX_TOKEN_LEN {
         return false;
     }
@@ -52,5 +57,12 @@ mod tests {
     #[test]
     fn test_different_length() {
         assert!(!verify_token("short", "longer-token"));
+    }
+
+    #[test]
+    fn test_empty_expected_fails_closed() {
+        // 未配置 token 时，无论提供什么（包括空）都必须拒绝。
+        assert!(!verify_token("", ""));
+        assert!(!verify_token("anything", ""));
     }
 }

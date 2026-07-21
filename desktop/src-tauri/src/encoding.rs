@@ -7,7 +7,7 @@
 //! 编码有损（如往 GBK 插入不可表示字符）时**拒绝写入**而非静默损坏。
 //! 相关问题：anthropics/claude-code#56946（内置工具把 GBK 读成 U+FFFD）。
 
-use encoding_rs::{Encoding, GB18030, GBK, UTF_16BE, UTF_16LE, UTF_8};
+use encoding_rs::{Encoding, GBK, UTF_16BE, UTF_16LE, UTF_8};
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
@@ -48,14 +48,13 @@ pub fn detect_encoding(data: &[u8]) -> &'static Encoding {
     if std::str::from_utf8(data).is_ok() {
         return UTF_8;
     }
-    // 3. 非 UTF-8：先试 GBK（严格），无替换字符即判定；再退 GB18030（超集）
+    // 3. 非 UTF-8：按 GBK（encoding_rs 中 GBK 与 GB18030 共用同一套解码/编码实现，
+    //    实际就是 gb18030 解码器，能覆盖 GB18030 全集）无损解码即判定为中文编码。
+    //    注：此前还有一段“GBK 失败后再试 GB18030”的回退，但二者解码行为完全一致（GBK 报错时
+    //    GB18030 同样报错），GB18030 分支永远不可达，已删除该死代码。GBK 标签下回写也走同一编码器，可无损。
     let (_, had_errors) = GBK.decode_without_bom_handling(data);
     if !had_errors {
         return GBK;
-    }
-    let (_, had_errors) = GB18030.decode_without_bom_handling(data);
-    if !had_errors {
-        return GB18030;
     }
     // 4. 兜底：按 UTF-8 lossy 处理（decode 阶段用替换字符）
     UTF_8
@@ -110,10 +109,10 @@ pub fn read_text(data: &[u8], override_label: Option<&str>) -> Result<FileText, 
 /// - 非打印控制字符占比 > 10% 判二进制（覆盖「全 NUL 之外的控制字符垃圾」）。
 pub fn is_binary_content(data: &[u8]) -> bool {
     // 排除合法 UTF-16/UTF-32 BOM：它们的 0x00 是编码特征，不是二进制垃圾。
-    if data.starts_with(&[0xFF, 0xFE])
-        || data.starts_with(&[0xFE, 0xFF])
-        || data.starts_with(&[0xFF, 0xFE, 0x00])
-        || data.starts_with(&[0x00, 0xFE, 0xFF])
+    if data.starts_with(&[0xFF, 0xFE])                  // UTF-16LE（同时覆盖 UTF-32LE 的 FF FE 00 00 前缀）
+        || data.starts_with(&[0xFE, 0xFF])              // UTF-16BE
+        || data.starts_with(&[0x00, 0x00, 0xFE, 0xFF])
+    // UTF-32BE（此前误写为 00 FE FF，导致 UTF-32BE 文本被当二进制）
     {
         return false;
     }

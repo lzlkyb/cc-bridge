@@ -31,6 +31,14 @@ pub fn validate_batch(args: &BatchArgs) -> Result<(), String> {
     if args.operations.is_empty() {
         return Err("batch requires at least one operation".into());
     }
+    // 限制单次 batch 的子操作数量，避免一个请求被放大成大量文件/命令操作。
+    const MAX_BATCH_OPS: usize = 100;
+    if args.operations.len() > MAX_BATCH_OPS {
+        return Err(format!(
+            "batch operations 数量 {} 超过上限 {MAX_BATCH_OPS}",
+            args.operations.len()
+        ));
+    }
     for (idx, op) in args.operations.iter().enumerate() {
         if op.tool == "batch" {
             return Err(format!("operation[{idx}]: nested batch is not allowed"));
@@ -43,6 +51,8 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
     validate_batch(&args)?;
 
     let audit_enabled = state.config.read().await.audit_enabled;
+    // 从 task_local 作用域取本次调用的来源 IP，补写进每条子操作审计（之前恒为 None）。
+    let source_ip = audit::current_source_ip();
 
     let mut results = Vec::with_capacity(args.operations.len());
     let mut executed = 0usize;
@@ -74,7 +84,7 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
                     &op.arguments.to_string(),
                     true,
                     None,
-                    None,
+                    source_ip.clone(),
                     Some(duration_ms),
                     None,
                     None,
@@ -87,7 +97,7 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
                     &op.arguments.to_string(),
                     false,
                     Some(e.clone()),
-                    None,
+                    source_ip.clone(),
                     Some(duration_ms),
                     None,
                     None,

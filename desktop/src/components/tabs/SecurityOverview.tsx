@@ -170,9 +170,11 @@ export function SecurityOverview({
 /* 风险总览：三档（较安全 / 有风险 / 高风险），视觉与设计稿一致 */
 function RiskSummary({ status }: { status?: StatusResponse }) {
   if (!status) return null;
-  const shellOn = status.shellEnabled;
-  const whitelistOff = !status.whitelistEnabled;
   const readonlyOn = status.readonlyMode;
+  // 只读模式会强制禁用命令执行（后端拦截 run_command），因此风险判定应看“有效”命令执行
+  // 状态；否则只要配置 flag 为开，即使实际被只读拦住，也会误报“高风险 RCE”。
+  const shellOn = status.shellEnabled && !readonlyOn;
+  const whitelistOff = !status.whitelistEnabled;
 
   let level: string;
   let desc: string;

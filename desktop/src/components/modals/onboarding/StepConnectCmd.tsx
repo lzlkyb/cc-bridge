@@ -34,9 +34,12 @@ function CommandBox({ command, copied, onCopy }: { command: string; copied: bool
 export function StepConnectCmd({
   status,
   selectedIp,
+  onCopied,
 }: {
   status?: StatusResponse;
   selectedIp: string;
+  /** H3：本步完成态——用户复制过连接命令后上报，供向导显示“已完成”。 */
+  onCopied?: () => void;
 }) {
   const [scope, setScope] = useState<McpScope>("project");
   const [copied, setCopied] = useState(false);
@@ -57,6 +60,7 @@ export function StepConnectCmd({
       connectCommand,
       () => {
         setCopied(true);
+        onCopied?.();
         setTimeout(() => setCopied(false), 2000);
       },
       (e) => toast(`复制失败：${e}`, "error"),

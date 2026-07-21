@@ -19,11 +19,14 @@ export function SettingsTab({
   onSaved,
   highlightAnchor,
   unreadCount,
+  onReopenOnboarding,
 }: {
   status?: StatusResponse;
   onSaved: () => void;
   highlightAnchor?: { anchor: string; nonce: number } | null;
   unreadCount?: number;
+  /** H3：重新查看首次使用引导。 */
+  onReopenOnboarding?: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -31,7 +34,7 @@ export function SettingsTab({
       <NetworkGroup status={status} onSaved={onSaved} />
       <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
       <AppGroup />
-      <InstallGroup />
+      <InstallGroup onReopenOnboarding={onReopenOnboarding} />
       <ConfigGroup status={status} onSaved={onSaved} />
       <AuditGroup status={status} onSaved={onSaved} />
     </div>
@@ -203,7 +206,7 @@ function AppGroup() {
 
 /* ─── 安装与快捷方式 ─── */
 
-function InstallGroup() {
+function InstallGroup({ onReopenOnboarding }: { onReopenOnboarding?: () => void }) {
   const { toast } = useToast();
   const [dir, setDir] = useState("");
   const [revealing, setRevealing] = useState(false);
@@ -265,7 +268,6 @@ function InstallGroup() {
         <SettingsRow
           label="桌面快捷方式"
           sub="误删桌面图标后可一键重建，已存在则覆盖。"
-          last
           control={
             <Button
               variant="outline"
@@ -277,6 +279,22 @@ function InstallGroup() {
             >
               <Icon name="external" size={14} />
               创建到桌面
+            </Button>
+          }
+        />
+        <SettingsRow
+          label="使用引导"
+          sub="重新查看首次接入的分步引导。"
+          last
+          control={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onReopenOnboarding?.()}
+              className="gap-1.5 shrink-0"
+            >
+              <Icon name="info" size={14} />
+              重新查看
             </Button>
           }
         />

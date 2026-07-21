@@ -4,6 +4,7 @@ import type { BrowseResult, BrowseEntry } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { Modal } from "../ui/Modal";
+import { useToast } from "../ui/toast";
 
 export function DirectoryBrowser({
   open,
@@ -18,6 +19,7 @@ export function DirectoryBrowser({
   const [parentPath, setParentPath] = useState<string | null>(null);
   const [entries, setEntries] = useState<BrowseEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const { toast } = useToast();
 
   const browse = useCallback(async (path?: string) => {
     setLoading(true);
@@ -29,11 +31,13 @@ export function DirectoryBrowser({
       setParentPath(result.parent ?? null);
       setEntries(result.entries);
     } catch (e) {
+      // 之前仅 console.error，用户看不到任何反馈（目录无权限/不存在时静默失败）。
       console.error("Browse error:", e);
+      toast(`无法浏览目录：${e}`, "error");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     if (open && entries.length === 0 && !loading && currentPath === null) {

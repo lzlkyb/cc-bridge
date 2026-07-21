@@ -195,10 +195,17 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   // ─── 监听后台更新事件 ────────────────────
 
   useEffect(() => {
+    let cancelled = false;
     const unlisteners: UnlistenFn[] = [];
+    // async 注册期间若组件已卸载（StrictMode/快速重挂载，cleanup 会早于 await 完成），
+    // 立即注销刚注册的监听，避免监听器泄漏与重复注册。
+    const track = (fn: UnlistenFn) => {
+      if (cancelled) fn();
+      else unlisteners.push(fn);
+    };
 
     const setupListeners = async () => {
-      unlisteners.push(
+      track(
         await listen("update:checking", () => {
           // 下载进行中（start_update 内部复查也会发 checking），不回退状态
           if (downloadingRef.current) return;
@@ -206,7 +213,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           setError(null);
         }),
       );
-      unlisteners.push(
+      track(
         await listen<{ version: string; body: string | null; date?: string | null; currentVersion?: string }>("update:available", (e) => {
           // 下载进行中（start_update 内部复查会再发 available），保持 downloading 不被回退
           if (downloadingRef.current) return;
@@ -214,7 +221,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           setUpdate({ version: e.payload.version, body: e.payload.body, date: e.payload.date, currentVersion: e.payload.currentVersion });
         }),
       );
-      unlisteners.push(
+      track(
         await listen("update:downloading", () => {
           setStatus("downloading");
           setProgress(0);
@@ -223,7 +230,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           setDownloadedBytes(0);
         }),
       );
-      unlisteners.push(
+      track(
         await listen<{ downloaded: number; total: number | null; bytesPerSec?: number }>("update:progress", (e) => {
           const { downloaded, total, bytesPerSec: bps } = e.payload;
           setDownloadedBytes(downloaded);
@@ -237,14 +244,14 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           setBytesPerSec(bps ?? 0);
         }),
       );
-      unlisteners.push(
+      track(
         await listen("update:ready", () => {
           setProgress(100);
           setStatus("ready");
           downloadingRef.current = false;
         }),
       );
-      unlisteners.push(
+      track(
         await listen<{ message: string }>("update:error", (e) => {
           console.error("[Update] 更新失败:", e.payload.message);
           setError(e.payload.message);
@@ -252,7 +259,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           downloadingRef.current = false;
         }),
       );
-      unlisteners.push(
+      track(
         await listen("update:uptodate", () => {
           // 进入「已是最新」可见状态（原本被误重置为 idle，导致 pill/toast 永不触发）。
           // 4 秒后自动回到 idle；先清旧定时器防重入（如连续多次检查命中）。
@@ -267,7 +274,10 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     };
 
     setupListeners();
-    return () => unlisteners.forEach((fn) => fn());
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((fn) => fn());
+    };
   }, []);
 
   // ─── 重启应用 ────────────────────────────

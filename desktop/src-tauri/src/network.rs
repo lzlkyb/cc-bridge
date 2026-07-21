@@ -92,17 +92,97 @@ pub fn build_connect_command(
     )
 }
 
-/// 生成「网络变动时原地更新 IP」的 sed 命令（用户级 `~/.claude.json`）。
+/// 生成「网络变动时原地更新 IP」的 sed 命令，**严格对齐前端 `IpChangedBanner.buildSed`**：
+/// - user 级：`sed -i 's#...#...#g' ~/.claude.json`
+/// - project 级 + 有项目路径：`cd "<path>" && sed -i 's#...#...#g' .mcp.json`
+/// - project 级 + 无路径：`sed -i 's#...#...#g' .mcp.json`（提示在项目目录执行）
 ///
-/// 与前端 `IpChangedBanner.buildSed("user")` 等价：用 `[0-9.]*` 匹配任意旧 IP，幂等可重跑，
-/// 不动 Bearer、不 remove+add，保留 server 条目与授权状态，远端无需重新 approve。
-///
-/// WHY（托盘项）：托盘右键「复制 IP 替换命令」在 Rust 端生成、直接写剪贴板（不依赖 webview 焦点）。
-/// 托盘项无 projectPath 上下文，故固定输出用户级（`~/.claude.json`）；
-/// 项目级（`.mcp.json`，需 `cd <projectPath>`）替换请在连接页 `IpChangedBanner` 复制带 cd 的精确命令。
-pub fn build_ip_sed_command(port: u16, display_host: &str) -> String {
+/// 作用域与项目路径**跟随用户在连接页的选择**（方案 A）：托盘读 `config.scope` / `config.project_path`，
+/// 与连接页复制的命令逐字等价（含 cd 前缀），不再是固定用户级。
+pub fn build_ip_sed_command(
+    port: u16,
+    display_host: &str,
+    scope: &str,
+    project_path: &Option<String>,
+) -> String {
+    let cfg_file = if scope == "project" {
+        ".mcp.json"
+    } else {
+        "~/.claude.json"
+    };
+    let cd_prefix = if scope == "project" {
+        if let Some(p) = project_path {
+            let t = p.trim();
+            if !t.is_empty() {
+                format!("cd \"{t}\" && ")
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
     format!(
-        "sed -i 's#http://[0-9.]*:{}#/mcp#http://{}:{}#/mcp#g' ~/.claude.json",
-        port, display_host, port
+        "{cd_prefix}sed -i 's#http://[0-9.]*:{port}/mcp#http://{display_host}:{port}/mcp#g' {cfg_file}"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_ip_sed_command_user_scope() {
+        let cmd = build_ip_sed_command(7823, "192.168.1.100", "user", &None);
+        // 合法 sed 分隔符 # 必须恰好 3 个（s#pat#rep#g），且 /mcp 应位于 pattern 与 replacement 内部。
+        assert_eq!(cmd.matches('#').count(), 3, "sed 分隔符 # 应为 3 个");
+        assert!(
+            cmd.contains("http://[0-9.]*:7823/mcp"),
+            "pattern 应内嵌 /mcp"
+        );
+        assert!(
+            cmd.contains("http://192.168.1.100:7823/mcp"),
+            "replacement 应内嵌 /mcp"
+        );
+        assert!(
+            cmd.ends_with("~/.claude.json"),
+            "user 级目标文件应为 ~/.claude.json"
+        );
+        assert!(!cmd.contains("cd "), "user 级不应含 cd 前缀");
+        assert!(
+            !cmd.contains("#/mcp#"),
+            "不应出现坏的分隔（/mcp 落在分隔符位置）"
+        );
+    }
+
+    #[test]
+    fn build_ip_sed_command_project_with_path() {
+        let cmd = build_ip_sed_command(
+            7823,
+            "192.168.1.100",
+            "project",
+            &Some("/d/work/my-proj".into()),
+        );
+        assert!(
+            cmd.starts_with("cd \"/d/work/my-proj\" && "),
+            "project+路径应含 cd 前缀"
+        );
+        assert!(
+            cmd.ends_with(".mcp.json"),
+            "project 级目标文件应为 .mcp.json"
+        );
+        assert_eq!(cmd.matches('#').count(), 3, "sed 分隔符 # 应为 3 个");
+    }
+
+    #[test]
+    fn build_ip_sed_command_project_without_path() {
+        let cmd = build_ip_sed_command(7823, "192.168.1.100", "project", &None);
+        assert!(!cmd.contains("cd "), "project+无路径不应含 cd 前缀");
+        assert!(
+            cmd.ends_with(".mcp.json"),
+            "project 级目标文件应为 .mcp.json"
+        );
+    }
 }
