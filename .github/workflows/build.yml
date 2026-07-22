@@ -7,13 +7,27 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
+# 共享编译缓存：sccache 把每个 crate 的编译对象按 hash 存到 GitHub Actions Cache，
+# 跨发版 / 跨 PR 命中（依赖不变时基本秒级）；第一次或改了大段 Rust 仍要全编。
+env:
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+
 jobs:
+  # 轻量测试：仅 PR / 非 tag 的 push / 手动触发时跑，保护合入质量（用 dev 编译，快）。
+  # tag 发版时跳过本 job —— 由 build-windows 内的 `cargo test --release` 统一覆盖，
+  # 避免 dev + release 两遍全量依赖编译（A 优化的核心）。
   test:
-    name: Run Rust test suite (Windows)
+    name: Rust test suite (Windows)
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Sccache Setup (跨 PR 编译缓存)
+        uses: mozilla/sccache-action@v0.8.2
+        with:
+          version: "v0.8.2"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
@@ -21,9 +35,10 @@ jobs:
         run: cargo test
         working-directory: desktop/src-tauri
 
+  # 发版构建：仅 tag 触发。test(release) 与 build 同 job 内复用 release target，
+  # 依赖 crate 只编译一遍（A）；sccache 让依赖不变时后续发版秒级命中（B）。
   build-windows:
     name: Build Windows exe + installer
-    needs: test
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     permissions:
@@ -48,17 +63,33 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          # C：缓存 npm 下载（~/.npm），npm ci 仍重装但省去网络下载。
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Sccache Setup (跨发版编译缓存)
+        uses: mozilla/sccache-action@v0.8.2
+        with:
+          version: "v0.8.2"
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
 
+      - name: Install frontend deps
+        run: npm ci
+        working-directory: desktop
+
+      # A：用 release profile 跑测试，编译出的 release 依赖产物直接被下面 tauri build 复用。
+      - name: cargo test (release, 复用后续 build 的编译产物)
+        run: cargo test --release
+        working-directory: desktop/src-tauri
+
       - name: Build Tauri desktop app (NSIS installer)
         shell: pwsh
         run: |
-          npm ci
           # Workaround for https://github.com/npm/cli/issues/4828 — Tauri CLI 的 Windows native binding 是 optionalDependencies，
           # 在 fresh runner 上可能不被 npm 安装，导致 tauri build 报 Cannot find native binding。
           # 显式再装一次（幂等：已存在则跳过），不写回 package.json / package-lock.json（--no-save）。

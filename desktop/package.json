@@ -11,7 +11,8 @@
     "dev": "tauri dev",
     "prebuild": "node scripts/sync-version.mjs && node scripts/gen-changelog.mjs",
     "build": "tauri build",
-    "updater:generate": "node scripts/generate-updater-json.mjs"
+    "updater:generate": "node scripts/generate-updater-json.mjs",
+    "release": "node scripts/release.mjs"
   },
   "dependencies": {
     "@formkit/auto-animate": "^0.10.0",
