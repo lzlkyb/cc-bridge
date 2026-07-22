@@ -5,6 +5,14 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 变更
+- write_files 覆盖已有文件时自动保留原编码：省略 `encoding` 且服务端编码自动识别开启时，会探测并沿用目标文件的原编码（GBK 文件保持 GBK），不再默认按 UTF-8 覆写导致中文文件被静默转码；新建文件或关闭自动识别时仍按 utf8。显式传 `encoding`（如 "gbk"）或 "base64" 的行为不变，与 read_files/edit_files 对齐。
+
+### 技术细节
+- `WriteFileEntry.encoding` 由 `String`（默认 "utf8"）改为 `Option<String>`，以区分「未指定（自动）」与「显式指定」；未指定时读取原文件字节走 `encoding::detect_encoding`（受 `config.encoding_detect_enabled` 门控，二进制内容跳过），写盘仍经 `encode_text` 的 round-trip 守卫兜底（探测猜错只报错不损坏文件）。
+
 ## [2.3.12] - 2026-07-22
 
 ### 更新摘要

@@ -89,7 +89,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             write_files,
             WriteFilesArgs,
-            r#"Write or create files. Automatically creates parent directories and backs up before overwriting. The `encoding` parameter controls the on-disk byte encoding of the text content (defaults to utf8); pass e.g. "gbk", "gb18030" or "utf-16le" to write in that encoding. Pass "base64" to write raw binary from a base64 string."#,
+            r#"Write or create files. Automatically creates parent directories and backs up before overwriting. Encoding: omit `encoding` and — when overwriting an EXISTING file with server-side encoding auto-detection ON — the file's original encoding is detected and preserved (a GBK file stays GBK instead of being silently converted to UTF-8); otherwise defaults to utf8. Pass `encoding` (e.g. "gbk", "gb18030", "utf-16le") to force a specific on-disk encoding, or "base64" to write raw binary from a base64 string."#,
             true
         ),
         register_tool!(
