@@ -796,7 +796,10 @@ pub fn create_desktop_shortcut(app: tauri::AppHandle) -> Result<(), String> {
         exe = exe_str.replace('\'', "''"),
         dir = dir_str.replace('\'', "''"),
     );
-    let out = std::process::Command::new("powershell")
+    let mut cmd = std::process::Command::new("powershell");
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW：隐藏 powershell 控制台窗口，避免闪黑框
+    let out = cmd
         .args([
             "-NoProfile",
             "-NonInteractive",

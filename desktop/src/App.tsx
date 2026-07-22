@@ -107,7 +107,10 @@ function AppContent() {
       setLastSeenVersion(latest);
       setLastSeen(latest);
     }
-  }, []);
+    // 问题 3 根因修复：看完已读即消费「自动展开更新历史」引导信号。
+    // 否则 changelogOpenToken 残留 >0，下次进设置页（AboutGroup 重新挂载）即便无红点也会自动展开。
+    setChangelogOpenToken(0);
+  }, [setChangelogOpenToken]);
   // 更新历史引导：红点可点击 → 跳设置 + 自动展开关于卡片 + 滚动到更新历史。
   // token 自增作为「打开更新历史」信号，传给 SettingsTab→AboutGroup。
   const [changelogOpenToken, setChangelogOpenToken] = useState(0);

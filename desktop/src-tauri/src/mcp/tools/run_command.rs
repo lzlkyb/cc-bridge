@@ -12,7 +12,7 @@ use crate::mcp::tools::shell::{
 
 use process_wrap::std::{CreationFlags, JobObject, StdChildWrapper, StdCommandWrap};
 use windows::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_CREATION_FLAGS,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_CREATION_FLAGS,
 };
 
 use serde::Deserialize;
@@ -288,14 +288,15 @@ fn spawn_shell(
     shell: ShellType,
     track_cwd: bool,
 ) -> Result<(Value, Option<PathBuf>), String> {
-    // 用 process-wrap 的 StdCommandWrap 组合包装：
-    // - CreationFlags 必须在 JobObject 之前 wrap——JobObject 的 pre_spawn 会读取 CreationFlags
-    //   并合并 CREATE_SUSPENDED；若交给 Command 直接 .creation_flags() 会被 JobObject 覆盖，
-    //   导致 CREATE_NO_WINDOW 丢失、弹出黑窗口。
-    // - JobObject（Windows）内部以 CREATE_SUSPENDED 启动子进程、挂入 Job 后再 resume，
-    //   消除了"先 spawn 再 assign"的孙进程漏杀竞态（比原手写 win32job 更正确）。
-    // 壳层（cmd/bash）与命令包裹由 build_invocation 决定，进程管道封装（CreationFlags /
-    // JobObject / stdin null / piped / current_dir）全部 shell 无关，一行不动。
+    // 用 process-wrap 的 StdCommandWrap 组合包装（Windows 实测结论，见复现测试）：
+    // - 关键陷阱：JobObject 的 pre_spawn 是"覆盖式"重设 creation_flags（只写 CREATE_SUSPENDED，
+    //   并不会合并 CreationFlags 包裹里设的值）。因此必须【先 wrap(JobObject) 再 wrap(CreationFlags)】，
+    //   让 CreationFlags 最后写入、压住 JobObject 的重设；否则 CREATE_NO_WINDOW 会被冲掉 → 弹黑窗口。
+    // - CreationFlags 里必须显式带上 CREATE_SUSPENDED：最终 creation_flags =
+    //   CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED，
+    //   JobObject 仍按"挂入 Job 后再 resume"的预期工作，整树 kill（start_kill）不受影响。
+    // 壳层（cmd/bash）由 build_invocation 决定；进程管道封装（flags / JobObject / stdin null /
+    // piped / current_dir）shell 无关，一行不动。
     let inv =
         match build_invocation(shell, command, resolved_cwd, track_cwd) {
             Some(inv) => inv,
@@ -319,10 +320,11 @@ fn spawn_shell(
             c.env(k, v);
         }
     });
-    cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
-        CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0,
-    )));
+    // 顺序敏感：先 JobObject 再 CreationFlags，确保 CREATE_NO_WINDOW 不被 JobObject 覆盖。
     cmd.wrap(JobObject);
+    cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
+        CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0 | CREATE_SUSPENDED.0,
+    )));
 
     let child = cmd.spawn().map_err(|e| format!("启动命令失败: {e}"))?;
 

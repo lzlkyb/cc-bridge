@@ -60,7 +60,11 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
           <TableBody>
             {commands.map((cmd, i) => (
               <Fragment key={cmd.handle}>
-                <TableRow className={i % 2 === 0 ? "bg-muted/20" : ""}>
+                <TableRow
+                  className={`${i % 2 === 0 ? "bg-muted/20" : ""} cursor-pointer`}
+                  onClick={() => toggle(cmd.handle)}
+                  title="点击整行任意位置展开/收起输出"
+                >
                   <TableCell className="font-mono text-xs">{cmd.pid}</TableCell>
                   <TableCell className="truncate font-mono text-xs" title={cmd.command}>
                     {cmd.command}
@@ -73,7 +77,7 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
                   </TableCell>
                   <TableCell>
                     <div className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
-                      <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => toggle(cmd.handle)}>
+                      <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={(e) => { e.stopPropagation(); toggle(cmd.handle); }}>
                         <Icon name={expanded.has(cmd.handle) ? "chevronUp" : "chevronDown"} size={14} />
                         {expanded.has(cmd.handle) ? "收起" : "查看输出"}
                       </Button>
@@ -81,7 +85,7 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
                         variant="ghost"
                         size="sm"
                         className="whitespace-nowrap text-destructive hover:text-destructive"
-                        onClick={() => stop(cmd.handle)}
+                        onClick={(e) => { e.stopPropagation(); stop(cmd.handle); }}
                       >
                         <Icon name="power" size={14} />
                         终止
