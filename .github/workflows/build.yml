@@ -25,9 +25,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Sccache Setup (跨 PR 编译缓存)
-        uses: mozilla/sccache-action@v0.8.2
-        with:
-          version: "v0.8.2"
+        uses: mozilla/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
@@ -70,9 +68,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Sccache Setup (跨发版编译缓存)
-        uses: mozilla/sccache-action@v0.8.2
-        with:
-          version: "v0.8.2"
+        uses: mozilla/sccache-action@v0.0.10
 
       - uses: Swatinem/rust-cache@v2
         with:
