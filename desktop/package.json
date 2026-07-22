@@ -1,6 +1,6 @@
 {
   "name": "cc-bridge-desktop",
-  "version": "2.3.10",
+  "version": "2.3.12",
   "private": true,
   "type": "module",
   "scripts": {

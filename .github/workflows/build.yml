@@ -63,9 +63,13 @@ jobs:
           # 在 fresh runner 上可能不被 npm 安装，导致 tauri build 报 Cannot find native binding。
           # 显式再装一次（幂等：已存在则跳过），不写回 package.json / package-lock.json（--no-save）。
           npm install @tauri-apps/cli-win32-x64-msvc --no-save
+          # prebuild（版本同步 + 生成 changelog.generated.ts）独立执行，
+          # 避免在 npm run 的 pre→build 钩子链中改写 package.json 导致后续 tauri 路径丢失。
+          npm run prebuild
           $env:TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_KEY_FILE
           $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ""   # 空密码，避免 CI 无 TTY 时交互式提示卡死
-          npm run build
+          # npx 直接从 node_modules/.bin 解析 tauri，不依赖 npm run 的 PATH 上下文。
+          npx tauri build
         working-directory: desktop
 
       - name: 抽取更新说明 (CHANGELOG)
