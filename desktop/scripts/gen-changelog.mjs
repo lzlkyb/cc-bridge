@@ -105,6 +105,15 @@ for (const line of lines) {
   // 小节标题：### 新增 / ### 变更 / ### 技术 / ### 亮点 ...
   const secMatch = line.match(/^###\s+(.+)$/);
   if (secMatch && current) {
+    // 切换小节前先把上一个小节正在累积的条目 flush，否则上一小节末条会丢失
+    if (currentItem) {
+      current.items.push(currentItem);
+      currentItem = null;
+    }
+    if (currentHighlight !== null) {
+      current.highlights.push(currentHighlight);
+      currentHighlight = null;
+    }
     const sec = secMatch[1].trim();
     if (sec === "用户摘要") {
       // 用户摘要仅用于更新弹窗（updater.json notes），应用内更新历史跳过

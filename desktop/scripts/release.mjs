@@ -84,6 +84,8 @@ function todayISO() {
 }
 async function ask(question, defaultValue) {
   if (YES) return defaultValue ?? "";
+  // 非 TTY（如 CI / 自动化环境）不交互，直接返回默认，避免 readline 在空 stdin 上抛错导致整段 CHANGELOG 没写
+  if (!process.stdin.isTTY) return defaultValue ?? "";
   const rl = readline.createInterface({ input, output });
   try {
     const ans = (await rl.question(`\x1b[36m${question}\x1b[0m `)).trim();
@@ -156,14 +158,42 @@ async function main() {
     const msg = line.replace(/^(feat|fix|chg|change|refactor|perf|sec)(\(.*?\))?:\s*/i, "");
     sections[sec].push(`- ${msg}`);
   }
-  const sectionLines = Object.entries(sections)
-    .filter(([, items]) => items.length)
-    .map(([name, items]) => `### ${name}\n${items.join("\n")}`)
-    .join("\n");
   const fallbackSections = `### 变更\n- 见 git 提交历史`;
 
   // 4. 插入 CHANGELOG.md
   let changelog = fs.readFileSync(CHANGELOG_PATH, "utf-8");
+
+  // 消费 ## [Unreleased]：把其用户向小节并入本次发布，并从 CHANGELOG 删除该段，
+  // 避免「Unreleased 永远留着 / 下次又踩」以及本次发布漏写已积累条目。
+  const unrelMatch = changelog.match(/^##\s+\[Unreleased\][\s\S]*?(?=\n##\s+\[|$)/m);
+  if (unrelMatch) {
+    const body = unrelMatch[0];
+    const skipSec = new Set([
+      "用户摘要", "技术", "技术细节", "说明", "实现说明", "开发者", "亮点", "Highlights",
+    ]);
+    const secRe = /###\s+([^\n]+)\n([\s\S]*?)(?=\n###\s+|\n##\s+|$)/g;
+    let m;
+    while ((m = secRe.exec(body))) {
+      const name = m[1].trim();
+      if (skipSec.has(name)) continue;
+      const items = m[2]
+        .split("\n")
+        .map((l) => l.match(/^\s*[-*]\s+(.*)$/))
+        .filter(Boolean)
+        .map((x) => `- ${x[1].trim()}`);
+      if (items.length) {
+        if (!sections[name]) sections[name] = [];
+        sections[name].push(...items);
+      }
+    }
+    changelog = changelog.replace(unrelMatch[0] + "\n", "");
+    console.log(`\x1b[32m[4/7]\x1b[0m 已消费并归档 ## [Unreleased]`);
+  }
+
+  const sectionLines = Object.entries(sections)
+    .filter(([, items]) => items.length)
+    .map(([name, items]) => `### ${name}\n${items.join("\n")}`)
+    .join("\n");
   const newBlock = `## [${next}] - ${todayISO()}\n\n### 更新摘要\n${summary}\n\n${
     sectionLines || fallbackSections
   }\n\n`;
