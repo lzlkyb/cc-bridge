@@ -606,7 +606,7 @@ dependencies = [
 
 [[package]]
 name = "cc-bridge-desktop"
-version = "2.3.12"
+version = "2.3.13"
 dependencies = [
  "axum",
  "cc-bridge-macros",

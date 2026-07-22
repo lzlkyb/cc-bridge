@@ -101,6 +101,10 @@ function AppContent() {
     () => countUnreadVersions(CHANGELOG.map((e) => e.version), lastSeen ?? status?.version ?? null),
     [lastSeen, status?.version],
   );
+  // 更新历史引导：红点可点击 → 跳设置 + 自动展开关于卡片 + 滚动到更新历史。
+  // token 自增作为「打开更新历史」信号，传给 SettingsTab→AboutGroup。
+  const [changelogOpenToken, setChangelogOpenToken] = useState(0);
+
   const markChangelogSeen = useCallback(() => {
     const latest = CHANGELOG[0]?.version;
     if (latest) {
@@ -111,9 +115,6 @@ function AppContent() {
     // 否则 changelogOpenToken 残留 >0，下次进设置页（AboutGroup 重新挂载）即便无红点也会自动展开。
     setChangelogOpenToken(0);
   }, [setChangelogOpenToken]);
-  // 更新历史引导：红点可点击 → 跳设置 + 自动展开关于卡片 + 滚动到更新历史。
-  // token 自增作为「打开更新历史」信号，传给 SettingsTab→AboutGroup。
-  const [changelogOpenToken, setChangelogOpenToken] = useState(0);
 
   const handleNavigate = useCallback((tab: string, anchor?: string) => {
     setActiveTab(tab);

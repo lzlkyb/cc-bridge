@@ -12,7 +12,7 @@ use crate::mcp::tools::shell::{
 
 use process_wrap::std::{CreationFlags, JobObject, StdChildWrapper, StdCommandWrap};
 use windows::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_CREATION_FLAGS,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_CREATION_FLAGS,
 };
 
 use serde::Deserialize;
@@ -289,12 +289,14 @@ fn spawn_shell(
     track_cwd: bool,
 ) -> Result<(Value, Option<PathBuf>), String> {
     // 用 process-wrap 的 StdCommandWrap 组合包装（Windows 实测结论，见复现测试）：
-    // - 关键陷阱：JobObject 的 pre_spawn 是"覆盖式"重设 creation_flags（只写 CREATE_SUSPENDED，
-    //   并不会合并 CreationFlags 包裹里设的值）。因此必须【先 wrap(JobObject) 再 wrap(CreationFlags)】，
-    //   让 CreationFlags 最后写入、压住 JobObject 的重设；否则 CREATE_NO_WINDOW 会被冲掉 → 弹黑窗口。
-    // - CreationFlags 里必须显式带上 CREATE_SUSPENDED：最终 creation_flags =
-    //   CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED，
-    //   JobObject 仍按"挂入 Job 后再 resume"的预期工作，整树 kill（start_kill）不受影响。
+    // - 关键陷阱：JobObject 的 pre_spawn 会重设 creation_flags 为 CREATE_SUSPENDED（且不合并
+    //   CreationFlags）。因此必须【先 wrap(JobObject) 再 wrap(CreationFlags)】，让 CreationFlags
+    //   最后写入、压住 JobObject 的重设；否则 CREATE_NO_WINDOW 被冲掉 → 弹黑窗口。
+    // - 注意：CreationFlags 里【不要】带 CREATE_SUSPENDED。JobObject 的 wrap_child 会检测
+    //   CreationFlags 是否含 SUSPENDED，若含则跳过 resume_threads，导致子进程永久挂起、无输出
+    //   （即 background_registers_with_handle 测试失败）。不含 SUSPENDED 时 JobObject 正常
+    //   resume，整树 kill（start_kill → terminate_job）依旧有效，仅丢失 spawn→assign job 的
+    //   极小竞态窗口（可接受，claude-code 等亦不依赖此保护）。
     // 壳层（cmd/bash）由 build_invocation 决定；进程管道封装（flags / JobObject / stdin null /
     // piped / current_dir）shell 无关，一行不动。
     let inv =
@@ -323,7 +325,7 @@ fn spawn_shell(
     // 顺序敏感：先 JobObject 再 CreationFlags，确保 CREATE_NO_WINDOW 不被 JobObject 覆盖。
     cmd.wrap(JobObject);
     cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
-        CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0 | CREATE_SUSPENDED.0,
+        CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0,
     )));
 
     let child = cmd.spawn().map_err(|e| format!("启动命令失败: {e}"))?;
@@ -354,11 +356,13 @@ fn spawn_shell(
 fn spawn_reader_thread(
     mut reader: Box<dyn Read + Send>,
     max_output_bytes: usize,
-) -> (Arc<AsyncMutex<Vec<u8>>>, Arc<AtomicBool>) {
+) -> (Arc<AsyncMutex<Vec<u8>>>, Arc<AtomicBool>, Arc<AtomicBool>) {
     let buf = Arc::new(AsyncMutex::new(Vec::<u8>::new()));
     let truncated = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
     let buf_clone = buf.clone();
     let truncated_clone = truncated.clone();
+    let done_clone = done.clone();
     std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
         loop {
@@ -379,18 +383,20 @@ fn spawn_reader_thread(
                 Err(_) => break,
             }
         }
+        done_clone.store(true, Ordering::Relaxed);
     });
-    (buf, truncated)
+    (buf, truncated, done)
 }
 
 fn take_reader(
     pipe: Option<impl Read + Send + 'static>,
     max_output_bytes: usize,
-) -> (Arc<AsyncMutex<Vec<u8>>>, Arc<AtomicBool>) {
+) -> (Arc<AsyncMutex<Vec<u8>>>, Arc<AtomicBool>, Arc<AtomicBool>) {
     match pipe {
         Some(s) => spawn_reader_thread(Box::new(s), max_output_bytes),
         None => (
             Arc::new(AsyncMutex::new(Vec::new())),
+            Arc::new(AtomicBool::new(false)),
             Arc::new(AtomicBool::new(false)),
         ),
     }
@@ -423,8 +429,8 @@ fn run_foreground(
     track_cwd: bool,
     cwd_file: Option<&std::path::Path>,
 ) -> Result<(Value, Option<PathBuf>), String> {
-    let (stdout_buf, stdout_trunc) = take_reader(child.stdout().take(), max_output_bytes);
-    let (stderr_buf, stderr_trunc) = take_reader(child.stderr().take(), max_output_bytes);
+    let (stdout_buf, stdout_trunc, stdout_done) = take_reader(child.stdout().take(), max_output_bytes);
+    let (stderr_buf, stderr_trunc, stderr_done) = take_reader(child.stderr().take(), max_output_bytes);
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let status = loop {
@@ -443,9 +449,17 @@ fn run_foreground(
     match status {
         Some(status) => {
             // 命令已正常结束，drop child 顺带关闭 Job 句柄（无害）。
-            // 给读取线程一点时间把管道剩余数据读完。
+            // 等待读取线程把管道剩余数据读完（子进程退出 → write 端关闭 → reader 读到 EOF
+            // 才置 done）。取代原硬编码 50ms 睡眠：高负载并行测试下 50ms 不足以让 reader
+            // 线程被调度，会丢输出（description_field 测试偶发 stdout 空的根因）。
             drop(child);
-            std::thread::sleep(Duration::from_millis(50));
+            let mut spins = 0;
+            while (!stdout_done.load(Ordering::Relaxed) || !stderr_done.load(Ordering::Relaxed))
+                && spins < 500
+            {
+                std::thread::sleep(Duration::from_millis(2));
+                spins += 1;
+            }
             let stdout = stdout_buf.blocking_lock().clone();
             let stderr = stderr_buf.blocking_lock().clone();
             // 会话内：读回命令结束后的有效 cwd（bash 经 `pwd -W` 写 Windows 风格路径，规整回
@@ -496,8 +510,8 @@ fn spawn_background(
     description: Option<String>,
     state: &Arc<AppState>,
 ) -> Result<Value, String> {
-    let (stdout_buf, stdout_trunc) = take_reader(child.stdout().take(), max_output_bytes);
-    let (stderr_buf, stderr_trunc) = take_reader(child.stderr().take(), max_output_bytes);
+    let (stdout_buf, stdout_trunc, _stdout_done) = take_reader(child.stdout().take(), max_output_bytes);
+    let (stderr_buf, stderr_trunc, _stderr_done) = take_reader(child.stderr().take(), max_output_bytes);
 
     let pid = child.id();
     let started_at = Instant::now();
