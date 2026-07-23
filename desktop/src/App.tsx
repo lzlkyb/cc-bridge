@@ -97,9 +97,13 @@ function AppContent() {
   // 未读基准：优先用「用户上次浏览的版本」，否则回退到「当前运行版本」。
   // 回退到运行版本可消除「软件已是最新版、却每次打开都红点」的问题（localStorage 为空或
   // 未持久化时，不再把全部历史版本算作未读）。
+  // 首屏保护：status 尚未加载完成时不把"未知"误判为"全部未读"，避免启动即闪红点。
   const unreadCount = useMemo(
-    () => countUnreadVersions(CHANGELOG.map((e) => e.version), lastSeen ?? status?.version ?? null),
-    [lastSeen, status?.version],
+    () => {
+      if (!status) return 0;
+      return countUnreadVersions(CHANGELOG.map((e) => e.version), lastSeen ?? status.version ?? null);
+    },
+    [lastSeen, status],
   );
   // 更新历史引导：红点可点击 → 跳设置 + 自动展开关于卡片 + 滚动到更新历史。
   // token 自增作为「打开更新历史」信号，传给 SettingsTab→AboutGroup。
@@ -116,12 +120,25 @@ function AppContent() {
     setChangelogOpenToken(0);
   }, [setChangelogOpenToken]);
 
+  // 进「设置」页即标记已读（持久化 lastSeen），与"自动展开更新历史"引导信号脱钩。
+  // 修复"每次进软件设置 tab 都红点"：不再依赖 AboutGroup 停留 3 秒才写 lastSeen。
+  const markSeenOnEnter = useCallback(() => {
+    const latest = CHANGELOG[0]?.version;
+    if (latest) {
+      setLastSeenVersion(latest);
+      setLastSeen(latest);
+    }
+  }, []);
+
   const handleNavigate = useCallback((tab: string, anchor?: string) => {
     setActiveTab(tab);
-    // 进设置页且有未读时，触发「自动展开更新历史」引导（不再进设置就清红点）
-    if (tab === "settings" && unreadCount > 0) setChangelogOpenToken((t) => t + 1);
+    // 进设置页即标记已读，并触发「自动展开更新历史」引导（与已读脱钩，保留引导）。
+    if (tab === "settings") {
+      markSeenOnEnter();
+      setChangelogOpenToken((t) => t + 1);
+    }
     setPendingAnchor(anchor ? { anchor, nonce: Date.now() } : null);
-  }, [unreadCount]);
+  }, [markSeenOnEnter]);
 
   // 全局键盘快捷键
   useEffect(() => {
@@ -194,8 +211,11 @@ function AppContent() {
         value={activeTab}
         onValueChange={(v) => {
           setActiveTab(v);
-          // 进设置页且有未读时，触发「自动展开更新历史」引导
-          if (v === "settings" && unreadCount > 0) setChangelogOpenToken((t) => t + 1);
+          // 进设置页即标记已读，并触发「自动展开更新历史」引导（与已读脱钩）。
+          if (v === "settings") {
+            markSeenOnEnter();
+            setChangelogOpenToken((t) => t + 1);
+          }
         }}
         className="flex min-h-0 flex-1 flex-col"
       >
