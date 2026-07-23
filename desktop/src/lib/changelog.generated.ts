@@ -4,6 +4,17 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.15",
+    date: "2026-07-23",
+    items: [
+      { category: "improve", text: "工具写权限清单改为运行时从注册表推导，移除硬编码" },
+      { category: "improve", text: "docs: 补 v2.3.14 CHANGELOG 与生成文件（发版脚本漏纳入）" },
+      { category: "fix", text: "修复关于卡片进设置页无条件展开回归" },
+      { category: "fix", text: "修复状态响应缺project_path、停止命令未终止子进程、备份清理误删" },
+      { category: "fix", text: "修复发版脚本CHANGELOG插入位置错误导致漏纳版本段与生成文件" },
+    ],
+  },
+  {
     version: "2.3.14",
     date: "2026-07-23",
     items: [
@@ -114,17 +125,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "二进制文件不再被误判为文本，避免返回满屏乱码污染远端上下文" },
       { category: "improve", text: "编辑文件匹配失败时提示「是否多带了首尾空白」，减少模型失误" },
       { category: "improve", text: "连接后建议先列出允许访问的根目录，省去手动读取项目规则" },
-    ],
-  },
-  {
-    version: "2.3.4",
-    date: "2026-07-16",
-    items: [
-      { category: "feat", text: "更新弹框支持「稍后」：本版本不再自动弹，有新版本仍会提醒" },
-      { category: "improve", text: "弹窗关闭、切换、列表增删都更顺滑，按钮有点击反馈" },
-      { category: "improve", text: "连接页数字平滑滚动；开启系统「减弱动效」会自动关闭动画" },
-      { category: "improve", text: "统一全局动效曲线，体验更一致" },
-      { category: "fix", text: "修复窄屏下设置页按钮文字竖排的问题" },
     ],
   },
 ];
