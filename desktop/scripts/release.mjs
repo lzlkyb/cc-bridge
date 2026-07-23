@@ -238,13 +238,18 @@ async function main() {
     "desktop/src/lib/changelog.generated.ts",
   ];
   run(`git add ${files.map((f) => `"${f}"`).join(" ")}`);
-  // 防漏纳：确认关键文件确实被 git 纳入（CHANGELOG 写入异常时 git add 会静默跳过）
-  const unstaged = execSync("git status --porcelain", { cwd: ROOT, stdio: "pipe" })
+  // 防漏纳：确认 7 个发版文件都已进入暂存区（CHANGELOG 写入异常时 git add 会静默跳过）。
+  // 注意：不能用 `git status --porcelain` 判空——git add 之后这些文件在 porcelain 里
+  // 显示为已暂存（首列 M），输出必然非空，会误判为漏纳而中止。改查暂存区文件清单。
+  const staged = execSync("git diff --cached --name-only", { cwd: ROOT, stdio: "pipe" })
     .toString()
-    .trim();
-  if (unstaged) {
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const missing = files.filter((f) => !staged.includes(f));
+  if (missing.length) {
     console.error(
-      `\x1b[31m[RELEASE ERROR]\x1b[0m 发版文件未全部纳入暂存区，已中止以免漏发：\n${unstaged}`,
+      `\x1b[31m[RELEASE ERROR]\x1b[0m 以下发版文件未被 git 纳入暂存区，已中止以免漏发：\n${missing.join("\n")}`,
     );
     process.exit(1);
   }
