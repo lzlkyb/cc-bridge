@@ -188,6 +188,14 @@ export function SettingsToggles({
           onChange={(v) => save({ encodingDetectEnabled: v }, "encoding")}
           saved={savedKey === "encoding"}
         />
+        <ToggleRow
+          id="toggle-session-persist"
+          label="命令会话持久化"
+          sub="开启后 run_command 可用 session_id 跨调用保留工作目录，并通过 env 参数（key=value）持久化环境变量（如 venv / PATH），解决 source venv / export 每调用丢失的问题。默认关闭"
+          checked={status?.sessionCwdEnabled ?? false}
+          onChange={(v) => save({ sessionCwdEnabled: v }, "session-persist")}
+          saved={savedKey === "session-persist"}
+        />
         {/* 命令执行壳层：cmd / bash 分段选择（shell_type UI 开关）。
          * bashAvailable=false（未检测到 Git for Windows）时 bash 置灰、显示「刷新检测」按钮。 */}
         <ShellTypeRow

@@ -49,6 +49,8 @@ export interface StatusResponse {
   rateLimitEnabled: boolean;
   encodingDetectEnabled: boolean;
   shellEnabled: boolean;
+  /** 命令会话持久化（run_command 的 session_id 跨调用保留 cwd + env）。默认关闭 */
+  sessionCwdEnabled: boolean;
   /** 命令执行壳层：cmd（默认）或 bash（Git Bash） */
   shellType: string;
   /** MCP 传输协议：http（默认，JSON-RPC）或 sse（流式输出） */

@@ -538,9 +538,9 @@ pub fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
 /// 从一开始就用对语法（bash → POSIX 路径 + bash 语法；cmd → Windows 路径 + cmd 语法）。
 fn run_command_description(shell_type: &str) -> String {
     if shell_type == "bash" {
-        "在本地执行一条命令并返回其 stdout / stderr / 退出码。壳层为 Git Bash（需本机已安装 Git for Windows）：请使用 POSIX 路径（如 /c/Users/...）与 bash 语法（jq / find / 管道等原生可用）。cwd 支持在会话内跨命令持久化。".to_string()
+        "在本地执行一条命令并返回其 stdout / stderr / 退出码。壳层为 Git Bash（需本机已安装 Git for Windows）：请使用 POSIX 路径（如 /c/Users/...）与 bash 语法（jq / find / 管道等原生可用）。开启「命令会话持久化」后：cwd 由 session_id 在会话内跨命令持久化；并通过 env 参数（key=value 映射）持久化环境变量（如 VIRTUAL_ENV / PATH），解决 source venv / export 每调用丢失的问题（注意：env 仅接受显式 key=value，无法自动捕获 shell 内 source 激活）。".to_string()
     } else {
-        "在本地执行一条命令并返回其 stdout / stderr / 退出码。壳层为 cmd（默认，零外部依赖）：请使用 Windows cmd 语法与路径（如 C:\\Users\\...）。cwd 支持在会话内跨命令持久化。".to_string()
+        "在本地执行一条命令并返回其 stdout / stderr / 退出码。壳层为 cmd（默认，零外部依赖）：请使用 Windows cmd 语法与路径（如 C:\\Users\\...）。开启「命令会话持久化」后：cwd 由 session_id 在会话内跨命令持久化；并通过 env 参数（key=value 映射）持久化环境变量（如 VIRTUAL_ENV / PATH），解决 source venv / export 每调用丢失的问题（注意：env 仅接受显式 key=value，无法自动捕获 shell 内 source 激活）。".to_string()
     }
 }
 

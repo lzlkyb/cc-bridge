@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,6 +20,10 @@ use crate::network;
 /// —— 绝不因「已存」而跳过校验（规则 7 红线）。
 pub struct CwdSession {
     pub cwd: PathBuf,
+    /// 会话级持久化的环境变量（key=value），跨 run_command 调用保留——
+    /// 解决「source venv / export PATH 每调用丢失」的痛点。注入子进程时仅作用于 env、
+    /// 与路径白名单无关，cwd 仍每次重校验（规则 7 不削弱）。
+    pub env_overrides: HashMap<String, String>,
     pub last_active: Instant,
 }
 

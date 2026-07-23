@@ -71,6 +71,14 @@ fn is_dangerous_command(command: &str) -> bool {
         .any(|d| normalized.contains(*d))
 }
 
+/// 会话级环境变量条目（key=value），用于 run_command 的 `env` 参数。
+/// 跨调用持久化到会话（与 cwd 同生命周期），解决 source venv / export PATH 每调用丢失。
+#[derive(Debug, Clone, Deserialize, cc_bridge_macros::ToolSchema)]
+pub struct EnvEntry {
+    pub key: String,
+    pub value: String,
+}
+
 #[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct RunCommandArgs {
     pub command: String,
@@ -89,6 +97,13 @@ pub struct RunCommandArgs {
     pub timeout_ms: u64,
     #[serde(default = "default_max_output_bytes", rename = "maxOutputBytes")]
     pub max_output_bytes: usize,
+    /// 会话级持久环境变量（key=value 映射）。仅当 session_cwd_enabled 开启且提供有效
+    /// session_id（或新建会话）时生效：首次随 cwd 设立会话时作为初始 env，后续调用与既有
+    /// env_overrides 合并（后写覆盖）。跨调用保留，解决 source venv / export PATH 每调用
+    /// 丢失的问题。注意：无法自动捕获 shell 内 `source` 激活的虚拟环境（每次起重壳激活即
+    /// 丢失），请用 env 显式持久化 VIRTUAL_ENV / PATH 等。
+    #[serde(default, rename = "env")]
+    pub env: Option<Vec<EnvEntry>>,
     /// 人类可读描述，用于权限 UX / 审计日志（对标 native Claude Code 的 description 字段）。
     /// 不参与执行逻辑，仅作记录；缺省为 None。
     #[serde(default)]
@@ -159,6 +174,11 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
                 new_id.clone(),
                 CwdSession {
                     cwd: resolved.clone(),
+                    env_overrides: args
+                        .env
+                        .clone()
+                        .map(|v| v.into_iter().map(|e| (e.key, e.value)).collect())
+                        .unwrap_or_default(),
                     last_active: Instant::now(),
                 },
             );
@@ -221,6 +241,27 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     }
     let state = state.clone();
 
+    // 会话级环境变量持久化：收集 session 既有 env_overrides，并合并本次传入的 env 写回 session。
+    // 注入子进程时不绕过白名单（仅环境变量，与路径无关）；cwd 仍每次重校验（规则 7 不削弱）。
+    let mut session_env: Vec<(String, String)> = Vec::new();
+    if let Some(sid) = &effective_session_id {
+        if let Some(s) = state.cwd_sessions.get(sid) {
+            for (k, v) in &s.env_overrides {
+                session_env.push((k.clone(), v.clone()));
+            }
+        }
+        if let Some(env) = &args.env {
+            if let Some(mut s) = state.cwd_sessions.get_mut(sid) {
+                for e in env {
+                    s.env_overrides.insert(e.key.clone(), e.value.clone());
+                }
+            }
+            for e in env {
+                session_env.push((e.key.clone(), e.value.clone()));
+            }
+        }
+    }
+
     // spawn + wait 是同步阻塞 API，丢进 spawn_blocking 避免占用 tokio 工作线程。
     // resolved_cwd 需同时给 spawn_shell（移动进闭包）与 inject_session_info（回显 cwd），
     // 故先 clone 一份供闭包使用，原值留给末尾回显。
@@ -238,6 +279,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             &state_for_blocking,
             shell,
             track_cwd,
+            session_env,
         )
     })
     .await
@@ -287,6 +329,7 @@ fn spawn_shell(
     state: &Arc<AppState>,
     shell: ShellType,
     track_cwd: bool,
+    extra_env: Vec<(String, String)>,
 ) -> Result<(Value, Option<PathBuf>), String> {
     // 用 process-wrap 的 StdCommandWrap 组合包装（Windows 实测结论，见复现测试）：
     // - 关键陷阱：JobObject 的 pre_spawn 会重设 creation_flags 为 CREATE_SUSPENDED（且不合并
@@ -319,6 +362,9 @@ fn spawn_shell(
         c.stderr(Stdio::piped());
         c.current_dir(resolved_cwd);
         for (k, v) in &inv.env_extra {
+            c.env(k, v);
+        }
+        for (k, v) in &extra_env {
             c.env(k, v);
         }
     });
@@ -429,8 +475,10 @@ fn run_foreground(
     track_cwd: bool,
     cwd_file: Option<&std::path::Path>,
 ) -> Result<(Value, Option<PathBuf>), String> {
-    let (stdout_buf, stdout_trunc, stdout_done) = take_reader(child.stdout().take(), max_output_bytes);
-    let (stderr_buf, stderr_trunc, stderr_done) = take_reader(child.stderr().take(), max_output_bytes);
+    let (stdout_buf, stdout_trunc, stdout_done) =
+        take_reader(child.stdout().take(), max_output_bytes);
+    let (stderr_buf, stderr_trunc, stderr_done) =
+        take_reader(child.stderr().take(), max_output_bytes);
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let status = loop {
@@ -510,8 +558,10 @@ fn spawn_background(
     description: Option<String>,
     state: &Arc<AppState>,
 ) -> Result<Value, String> {
-    let (stdout_buf, stdout_trunc, _stdout_done) = take_reader(child.stdout().take(), max_output_bytes);
-    let (stderr_buf, stderr_trunc, _stderr_done) = take_reader(child.stderr().take(), max_output_bytes);
+    let (stdout_buf, stdout_trunc, _stdout_done) =
+        take_reader(child.stdout().take(), max_output_bytes);
+    let (stderr_buf, stderr_trunc, _stderr_done) =
+        take_reader(child.stderr().take(), max_output_bytes);
 
     let pid = child.id();
     let started_at = Instant::now();
@@ -664,6 +714,7 @@ mod tests {
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -695,6 +746,7 @@ mod tests {
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -724,6 +776,7 @@ mod tests {
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -768,6 +821,7 @@ mod tests {
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -799,6 +853,7 @@ mod tests {
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -831,6 +886,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -873,6 +929,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -913,6 +970,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -949,6 +1007,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 10,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -992,6 +1051,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1032,6 +1092,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1107,6 +1168,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: Some("a deploy step".into()),
+                env: None,
             },
             &state,
         )
@@ -1148,6 +1210,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1189,6 +1252,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1231,6 +1295,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1265,6 +1330,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1295,6 +1361,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1331,6 +1398,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1392,6 +1460,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1432,6 +1501,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1453,6 +1523,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1491,6 +1562,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
@@ -1514,6 +1586,7 @@ mod tests {
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
                 description: None,
+                env: None,
             },
             &state,
         )
