@@ -308,7 +308,7 @@ function ConnectGuide({
       </CardHeader>
       <CardContent className="space-y-4">
         {listenAll && lanIps.length > 0 && (
-          <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp} healthCheck={healthCheck} />
+          <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp} healthCheck={healthCheck} onRefresh={onRefresh} />
         )}
         <button
           type="button"

@@ -66,7 +66,15 @@ mod imp {
             if ret == 0 || (ret == -1 && unsafe { WSAGetLastError() } == 10014) {
                 let _ = tx.send(());
             } else {
-                break;
+                // 意外错误（非地址变化、非 WSAEFAULT）：不直接退出整条事件线，
+                // 而是自愈重试，避免事件线退出后丢失托盘通知 / 弹通知能力
+                // （方案 C 的轮询 task 已兜底缓存刷新，这里只需保住事件通知）。
+                // 仅当 socket 被外部关闭（WSAENOTSOCK 10038，drop 触发停止信号）才正常退出。
+                let err = unsafe { WSAGetLastError() };
+                if err == 10038 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
         });
 

@@ -142,6 +142,17 @@ function AppContent() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // 方案 C: 网络变化 / 切回窗口时主动刷新状态，确保连接页 IP 立即更新（不依赖 5s 轮询）。
+  useEffect(() => {
+    const refresh = () => refetchStatus();
+    window.addEventListener("online", refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.removeEventListener("online", refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [refetchStatus]);
+
   return (
     <ToastProvider>
     {/* h-screen flex-col：Header 与 Tab 栏固定，仅内容区滚动（横向锁死、纵向可滚） */}

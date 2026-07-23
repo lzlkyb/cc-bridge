@@ -505,15 +505,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
-            // 本机地址变更检测：定时对比 last_selected_ip 与当前网卡地址，
-            // 驱动托盘 tooltip（常驻兜底）+ 系统通知（仅在“由一致变为不一致”那一刻弹一次）。
+            // 本机地址变更检测（方案 C：轮询为主 + OS 事件加速）。
+            // 之前用 tokio::select! 把「15s 兜底」与「OS 事件」合在一个 task，OS 事件高频时
+            // 兜底分支长期抢不到执行，导致 DHCP 续租 / 同网卡换 IP 这类 OS 不通知的变化漏检、
+            // 前端连接页 IP 不刷新。现拆成两个独立 task，彻底消除 select 竞争：
+            //   - 轮询 task：每 5s 无条件刷新网卡缓存（保证缓存新鲜，根治漏检/饿死）。
+            //   - 事件 task：OS 通知触发时做防抖合并 + 刷新缓存 + 更新托盘 tooltip / 弹通知。
+            {
+                let poll_state = app_state.clone();
+                spawn_supervised("本机地址轮询刷新", move || {
+                    let poll_state = poll_state.clone();
+                    Box::pin(async move {
+                        let mut poll = tokio::time::interval(std::time::Duration::from_secs(5));
+                        loop {
+                            poll.tick().await;
+                            poll_state.refresh_lan_ips();
+                        }
+                    })
+                });
+            }
             {
                 let handle = app.handle().clone();
                 let watch_state = app_state.clone();
                 let last_tray = last_tray.clone();
-                // 事件驱动 IP 变化检测（Windows SIO_ADDRESS_LIST_CHANGE，替代 15s 轮询）。
+                // 事件驱动 IP 变化检测（Windows SIO_ADDRESS_LIST_CHANGE）。
                 // spawn_ip_watch 在专用阻塞线程上等待 OS 通知，通过 channel 通知 async 端。
-                spawn_supervised("本机地址变化检测", move || {
+                spawn_supervised("本机地址变化事件", move || {
                     let handle = handle.clone();
                     let watch_state = watch_state.clone();
                     let last_tray = last_tray.clone();
@@ -522,65 +539,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _watcher = crate::ip_watch::spawn(tx);
                     Box::pin(async move {
                         let mut alerting = false;
-                        // 周期兜底：OS 的 SIO_ADDRESS_LIST_CHANGE 仅在「网卡列表增减」时通知，
-                        // DHCP 续租 / 同网卡换 IP（地址变了但接口没增减）往往不通知，会导致运行中
-                        // IP 变更漏检、前端 IP 变化 banner 永不弹出。每 15s 兜底重扫一次网卡，
-                        // 保证 get_status 的 ip_changed 能在变更后及时变 true。
-                        let mut fallback = tokio::time::interval(std::time::Duration::from_secs(15));
                         loop {
-                            tokio::select! {
-                                // 兜底路径：仅刷新网卡缓存（不重复弹通知/改 tooltip，避免每 15s 打扰）。
-                                _ = fallback.tick() => {
-                                    watch_state.refresh_lan_ips();
-                                }
-                                // 原 OS 事件路径：防抖合并后重扫网卡、刷新托盘 tooltip、必要时弹通知。
-                                _ = rx.recv() => {
-                                    // 防抖：收到首个通知后，在 600ms 窗口内合并后续连续的网络抖动
-                                    // （Wi-Fi 重连/VPN/DHCP 续租常一次变化伴随多条通知），只处理一次，
-                                    // 以最终状态为准，避免风暴式重扫网卡与托盘重绘。
-                                    while tokio::time::timeout(
-                                        std::time::Duration::from_millis(600),
-                                        rx.recv(),
-                                    )
-                                    .await
-                                    .is_ok()
-                                    {
-                                        // 窗口内仍有通知到达，继续吸收
-                                    }
-                                    // IP 变化通知到达：重扫网卡写回缓存，并据此判断 changed
-                                    // （刷新缓存与判断合一，避免二次网卡枚举）。
-                                    let ips = watch_state.refresh_lan_ips();
-                                    let last_ip = watch_state.config.read().await.last_selected_ip.clone();
-                                    let changed = match &last_ip {
-                                        Some(ip) => !ips.contains(ip),
-                                        None => false,
-                                    };
-                                    let running = watch_state
-                                        .mcp_running
-                                        .load(std::sync::atomic::Ordering::Relaxed);
-                                    if let Some(tray) = handle.tray_by_id("main-tray") {
-                                        // tooltip：地址变化优先提示，否则显示运行状态
-                                        let tip = if changed {
-                                            "cc-bridge: 网络地址已变化，点击查看新连接命令"
-                                        } else if running {
-                                            "cc-bridge · 服务运行中"
-                                        } else {
-                                            "cc-bridge · 已停止"
-                                        };
-                                        // 去重刷新（图标随运行状态；地址变化仅改 tooltip）
-                                        refresh_tray(&tray, running, tip, &last_tray);
-                                    }
-                                    if changed && !alerting {
-                                        let _ = handle
-                                            .notification()
-                                            .builder()
-                                            .title("cc-bridge")
-                                            .body("网络地址已变化，点击查看新连接命令")
-                                            .show();
-                                    }
-                                    alerting = changed;
-                                }
+                            let _ = rx.recv().await;
+                            // 防抖：收到首个通知后，在 600ms 窗口内合并后续连续的网络抖动
+                            // （Wi-Fi 重连/VPN/DHCP 续租常一次变化伴随多条通知），只处理一次，
+                            // 以最终状态为准，避免风暴式重扫网卡与托盘重绘。
+                            while tokio::time::timeout(
+                                std::time::Duration::from_millis(600),
+                                rx.recv(),
+                            )
+                            .await
+                            .is_ok()
+                            {
+                                // 窗口内仍有通知到达，继续吸收
                             }
+                            // IP 变化通知到达：重扫网卡写回缓存，并据此判断 changed
+                            // （刷新缓存与判断合一，避免二次网卡枚举）。
+                            let ips = watch_state.refresh_lan_ips();
+                            let last_ip = watch_state.config.read().await.last_selected_ip.clone();
+                            let changed = match &last_ip {
+                                Some(ip) => !ips.contains(ip),
+                                None => false,
+                            };
+                            let running = watch_state
+                                .mcp_running
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            if let Some(tray) = handle.tray_by_id("main-tray") {
+                                // tooltip：地址变化优先提示，否则显示运行状态
+                                let tip = if changed {
+                                    "cc-bridge: 网络地址已变化，点击查看新连接命令"
+                                } else if running {
+                                    "cc-bridge · 服务运行中"
+                                } else {
+                                    "cc-bridge · 已停止"
+                                };
+                                // 去重刷新（图标随运行状态；地址变化仅改 tooltip）
+                                refresh_tray(&tray, running, tip, &last_tray);
+                            }
+                            if changed && !alerting {
+                                let _ = handle
+                                    .notification()
+                                    .builder()
+                                    .title("cc-bridge")
+                                    .body("网络地址已变化，点击查看新连接命令")
+                                    .show();
+                            }
+                            alerting = changed;
                         }
                     })
                 });

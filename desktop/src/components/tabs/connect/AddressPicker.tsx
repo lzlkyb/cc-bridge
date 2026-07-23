@@ -11,13 +11,16 @@ export function AddressPicker({
   selected,
   onSelect,
   healthCheck,
+  onRefresh,
 }: {
   ips: string[];
   selected: string;
   onSelect: (ip: string) => void;
   healthCheck: string;
+  onRefresh?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const { toast } = useToast();
   // H6 修复：之前未 await/catch，剪贴板权限被拒绝时会出现"显示已复制但其实没复制"。
   const copyHealth = () => {
@@ -34,13 +37,30 @@ export function AddressPicker({
 
   return (
     <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
-      <div>
-        <p className="text-sm font-medium">选择远程服务器能连回本机的地址</p>
-        <p className="text-xs text-muted-foreground mt-1">
-          <Icon name="plug" size={13} className="inline-block align-[-2px] mr-1" aria-hidden="true" /> 通过 <b>VPN</b> 连服务器 → 选 VPN 网段（多为 10.x）；
-          <Icon name="monitor" size={13} className="inline-block align-[-2px] mr-1" aria-hidden="true" /> <b>内网直连</b> → 选内网 IP（192.168.x / 172.x）。
-          拿不准就逐个试，或用下方命令在服务器上验证哪个通。
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">选择远程服务器能连回本机的地址</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            <Icon name="plug" size={13} className="inline-block align-[-2px] mr-1" aria-hidden="true" /> 通过 <b>VPN</b> 连服务器 → 选 VPN 网段（多为 10.x）；
+            <Icon name="monitor" size={13} className="inline-block align-[-2px] mr-1" aria-hidden="true" /> <b>内网直连</b> → 选内网 IP（192.168.x / 172.x）。
+            拿不准就逐个试，或用下方命令在服务器上验证哪个通。
+          </p>
+        </div>
+        {onRefresh && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={() => {
+              setRefreshing(true);
+              onRefresh();
+              setTimeout(() => setRefreshing(false), 800);
+            }}
+          >
+            <Icon name="refresh" size={14} className={refreshing ? "animate-spin" : ""} />
+            {refreshing ? "刷新中" : "刷新地址"}
+          </Button>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-2">
