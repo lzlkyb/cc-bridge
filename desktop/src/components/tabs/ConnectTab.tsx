@@ -56,17 +56,12 @@ function ConnectTabImpl({
   const { toast } = useToast();
 
   type Section = "scope" | "steps" | "token" | "perm";
-  const ONBOARD_KEY = "ccb_connect_onboarded";
+  // 默认折叠（单选聚焦）：进连接页四块均收起，用户按需点开。
+  // 原「首次接入四块全展开」引导依赖 localStorage 标记，无法区分「真新用户」与「升级的老用户」
+  // （旧版没写过该标记，老用户升级后首次进入会被误判为新用户全展开），且 scope / lastSelectedIp
+  // 均会被首启自动副作用污染，故改为默认折叠，更贴合老用户习惯。
   const [expanded, setExpanded] = useState<Section | null>(null);
-  // 首次接入引导：无引导标记时默认四块全展开；用户首次交互任意折叠块即写入标记、回到单选聚焦
-  const [firstRunAll, setFirstRunAll] = useState(() => !localStorage.getItem(ONBOARD_KEY));
   const handleToggle = (section: Section) => {
-    if (firstRunAll) {
-      localStorage.setItem(ONBOARD_KEY, "1");
-      setFirstRunAll(false);
-      setExpanded(section);
-      return;
-    }
     setExpanded((prev) => (prev === section ? null : section));
   };
 
@@ -250,7 +245,7 @@ function ConnectTabImpl({
         includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
         permissionCommand={permissionCommand} permCopied={permCopied}
         handlePermCopy={handlePermCopy}
-        expanded={expanded} onToggle={handleToggle} firstRunAll={firstRunAll}
+        expanded={expanded} onToggle={handleToggle}
       />
     </div>
   );
@@ -261,7 +256,7 @@ function ConnectGuide({
   scope, setScope, connectCommand, copied, handleCopy,
   projectPath, setProjectPath, onRefresh,
   includeShellTools, setIncludeShellTools, permissionCommand, permCopied, handlePermCopy,
-  expanded, onToggle, firstRunAll,
+  expanded, onToggle,
 }: {
   status?: StatusResponse;
   listenAll: boolean; lanIps: string[]; selectedIp: string;
@@ -273,9 +268,8 @@ function ConnectGuide({
   includeShellTools: boolean; setIncludeShellTools: (v: boolean) => void;
   permissionCommand: string; permCopied: boolean; handlePermCopy: () => void;
   expanded: string | null; onToggle: (s: "scope" | "steps" | "token" | "perm") => void;
-  firstRunAll: boolean;
 }) {
-  const isOpen = (k: "scope" | "steps" | "token" | "perm") => firstRunAll || expanded === k;
+  const isOpen = (k: "scope" | "steps" | "token" | "perm") => expanded === k;
   const scopeOpen = isOpen("scope");
   const stepsOpen = isOpen("steps");
   const permOpen = isOpen("perm");
@@ -294,7 +288,7 @@ function ConnectGuide({
     });
   };
 
-  // 首次全开展示态不自动滚动（避免首屏跳动）；仅用户主动展开才平滑滚动到该块
+  // 首屏不自动滚动（避免进入即跳动）；仅用户主动展开对应块时才平滑滚动到该块
   const scopeMounted = useRef(false);
   const stepsMounted = useRef(false);
   const permMounted = useRef(false);
