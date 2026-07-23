@@ -65,6 +65,8 @@ export interface StatusResponse {
    *  false 表示「服务在跑但远程连不回」（地址失效/网络断开），驱动「远程连接中断」状态。 */
   remoteReachable: boolean;
   scope: string | null;
+  /** 用户接入时确认的项目路径（project 作用域时生效）。由连接页保存，前端据此回填避免每次进入被重置为 null。 */
+  projectPath: string | null;
   /** A3 修复：启动期错误（如端口被占用）。null = 正常 */
   startupError: string | null;
   /** 防火墙状态（仅 Windows 真实查询，其它平台为 null）。

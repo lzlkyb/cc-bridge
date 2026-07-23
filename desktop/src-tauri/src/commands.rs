@@ -96,6 +96,10 @@ pub struct StatusResponse {
     /// IP 变化 banner / Token 重生成据此生成精确 sed 命令。None 表示旧数据未记录。
     #[serde(rename = "scope")]
     pub scope: Option<String>,
+    /// 用户上次接入确认的项目路径（project 作用域时生效）。由连接页保存。
+    /// None 表示未指定；连接页据此回填，避免每次进入被重置为 null。
+    #[serde(rename = "projectPath")]
+    pub project_path: Option<String>,
     /// A3 修复：启动期错误（如端口被占用）。None 表示启动正常。
     #[serde(rename = "startupError")]
     pub startup_error: Option<String>,
@@ -373,6 +377,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         ip_changed,
         remote_reachable,
         scope: config.scope.clone(),
+        project_path: config.project_path.clone(),
         startup_error,
         lan_ips,
         firewall_enabled,
@@ -884,8 +889,7 @@ pub async fn list_running_commands(
 
 // G5: cleanup_finished_commands / evict_finished_commands moved to state.rs (AppState methods).
 
-/// 本机面板的「终止」按钮：移除注册表条目后 drop 其中的 Job Object（kill-on-job-close）
-/// 整树终止，不再需要 taskkill，逻辑与 MCP 的 stop_command 工具一致。
+/// 本机面板的「终止」按钮：移除注册表条目并显式整树终止，逻辑与 MCP 的 stop_command 工具一致。
 #[tauri::command]
 pub async fn stop_running_command(
     state: State<'_, Arc<AppState>>,
@@ -895,6 +899,12 @@ pub async fn stop_running_command(
         .running_commands
         .remove(&handle)
         .ok_or_else(|| format!("未知的 handle: {handle}"))?;
+    // 必须显式 start_kill：process-wrap 的 JobObject 默认不 kill-on-close，drop 不会杀进程
+    // （见 Cargo.toml:95 注释）。仅 drop 会让后台命令成孤儿进程、输出读取线程泄漏。
+    // child 是 Box<dyn StdChildWrapper>，对 trait object 调 start_kill 无需额外 use。
+    if let Ok(mut guard) = entry.1.child.lock() {
+        let _ = guard.start_kill();
+    }
     drop(entry);
     Ok(())
 }
@@ -1030,8 +1040,8 @@ pub async fn restore_file(
     if resolved.exists() {
         let db = state.db.lock().await;
         new_backup = backup::backup_before_overwrite(&resolved, &backup_dir, &data_dir, &db)?;
+        backup::prune_backups(&resolved, &backup_dir, &data_dir, backup_retention, &db)?;
         drop(db);
-        backup::prune_backups(&resolved, &backup_dir, &data_dir, backup_retention)?;
     }
 
     // 4) 原子写回：临时文件 + rename（保留原始字节 / 编码）

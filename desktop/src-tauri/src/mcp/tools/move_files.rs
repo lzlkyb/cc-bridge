@@ -109,13 +109,14 @@ async fn move_single(
             &state.data_dir,
             &db,
         )?;
-        drop(db);
         backup::prune_backups(
             &to_resolved,
             &config.backup_dir,
             &state.data_dir,
             config.backup_retention,
+            &db,
         )?;
+        drop(db);
         // 关联审计：记录本次备份路径 + 目标路径（供一键回滚 / Diff 使用）。
         crate::audit::record_op_backup(bp, Some(to_resolved.clone()));
     }

@@ -115,7 +115,13 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
         let db = state.db.lock().await;
         let bp =
             crate::backup::backup_before_overwrite(&resolved, &backup_dir, &state.data_dir, &db)?;
-        crate::backup::prune_backups(&resolved, &backup_dir, &state.data_dir, backup_retention)?;
+        crate::backup::prune_backups(
+            &resolved,
+            &backup_dir,
+            &state.data_dir,
+            backup_retention,
+            &db,
+        )?;
         drop(db);
         crate::audit::record_op_backup(bp, Some(resolved.clone()));
     }

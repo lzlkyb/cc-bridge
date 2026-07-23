@@ -73,6 +73,7 @@ pub fn prune_backups(
     backup_dir_name: &str,
     data_dir: &Path,
     retention: u32,
+    db: &Connection,
 ) -> Result<u32, String> {
     let backup_dir = data_dir.join(backup_dir_name);
     if !backup_dir.exists() {
@@ -85,24 +86,45 @@ pub fn prune_backups(
         return Ok(0);
     }
 
-    let file_name = file_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown");
+    // M2 修复：按 backup_index.original_path 精确筛选本文件的备份，避免同名不同目录
+    // 文件（a/x.rs 与 b/x.rs）在扁平备份目录内 basename 相同而互相串扰（误删/误纳）。
+    let original = file_path.to_string_lossy().into_owned();
+    let candidates: Vec<PathBuf> = {
+        let mut stmt = db
+            .prepare(
+                "SELECT backup_path FROM backup_index WHERE original_path = ?1 \
+                 ORDER BY backup_path ASC",
+            )
+            .map_err(|e| format!("查询备份索引失败: {e}"))?;
+        let rows = stmt
+            .query_map(params![original], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("读取备份索引失败: {e}"))?;
+        rows.filter_map(|r| r.ok()).map(PathBuf::from).collect()
+    };
 
-    let prefix = format!("{file_name}.");
+    // 兜底：索引表无记录（旧版备份或索引缺失）时退回文件名匹配，避免漏删。
+    let mut backups = if candidates.is_empty() {
+        let file_name = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
 
-    let mut backups: Vec<PathBuf> = std::fs::read_dir(&backup_dir)
-        .map_err(|e| format!("Failed to read backup directory: {e}"))?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| is_own_timestamped_backup(n, &prefix))
-                .unwrap_or(false)
-        })
-        .collect();
+        let prefix = format!("{file_name}.");
+
+        std::fs::read_dir(&backup_dir)
+            .map_err(|e| format!("Failed to read backup directory: {e}"))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| is_own_timestamped_backup(n, &prefix))
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        candidates
+    };
 
     // Sort by name (timestamp is embedded) — oldest first
     backups.sort();
@@ -111,6 +133,11 @@ pub fn prune_backups(
     while backups.len() > retention as usize {
         if let Some(oldest) = backups.first() {
             let _ = std::fs::remove_file(oldest);
+            // 同步清理索引记录，避免孤儿索引行堆积
+            let _ = db.execute(
+                "DELETE FROM backup_index WHERE backup_path = ?1",
+                params![oldest.to_string_lossy().into_owned()],
+            );
             backups.remove(0);
             removed += 1;
         }

@@ -70,7 +70,13 @@ pub async fn handle(args: RemoveDirectoryArgs, state: &Arc<AppState>) -> Result<
             let db = state.db.lock().await;
             for f in &files {
                 crate::backup::backup_before_overwrite(f, &backup_dir, &state.data_dir, &db)?;
-                crate::backup::prune_backups(f, &backup_dir, &state.data_dir, backup_retention)?;
+                crate::backup::prune_backups(
+                    f,
+                    &backup_dir,
+                    &state.data_dir,
+                    backup_retention,
+                    &db,
+                )?;
             }
             drop(db);
         }

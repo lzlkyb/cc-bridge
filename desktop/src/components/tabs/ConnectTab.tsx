@@ -106,10 +106,19 @@ function ConnectTabImpl({
     }
   }, [listenAll, lanIps.join(","), selectedIp, status?.lastSelectedIp]);
 
+  // H1 修复：从后端回填 scope / projectPath，避免每次进入连接页被静默重置为默认值。
+  // status 异步加载，挂载时可能 undefined，故在 status 就绪后回填一次（仅当后端有值时）。
+  useEffect(() => {
+    if (status?.scope) setScope(status.scope as McpScope);
+    if (status?.projectPath != null) setProjectPath(status.projectPath);
+  }, [status?.scope, status?.projectPath]);
+
   // 方案 A：作用域/项目路径一变更立即落盘，使托盘端复制的 IP 命令与连接页一致。
   // 否则连接页用 UI 本地 scope（默认 project），托盘读持久化 config.scope（默认 None→user），
-  // 两者来源不同会不一致。此处让 config.scope 始终等于 UI 选择（含挂载时用默认值同步一次）。
+  // 两者来源不同会不一致。此处让 config.scope 始终等于 UI 选择。
+  // H1 修复：status 未加载时不保存，避免挂载即用默认值（project/""）覆盖后端已存的值。
   useEffect(() => {
+    if (!status) return;
     const t = setTimeout(() => {
       // 注意：save_config 命令的形参名为 patch，前端必须把字段包进 { patch: {...} }，
       // 否则 Tauri 取到的是空 ConfigPatch（全部 None），scope 静默不落盘且不报错（曾因此漏改）。
