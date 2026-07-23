@@ -132,13 +132,14 @@ function AppContent() {
 
   const handleNavigate = useCallback((tab: string, anchor?: string) => {
     setActiveTab(tab);
-    // 进设置页即标记已读，并触发「自动展开更新历史」引导（与已读脱钩，保留引导）。
+    // 进设置页即标记已读；仅当有未读（红点）时才自动展开「关于卡片/更新历史」引导。
+    // 无红点时不展开，恢复"只有小红点才打开关于卡片"的行为。
     if (tab === "settings") {
+      if (unreadCount > 0) setChangelogOpenToken((t) => t + 1);
       markSeenOnEnter();
-      setChangelogOpenToken((t) => t + 1);
     }
     setPendingAnchor(anchor ? { anchor, nonce: Date.now() } : null);
-  }, [markSeenOnEnter]);
+  }, [markSeenOnEnter, unreadCount]);
 
   // 全局键盘快捷键
   useEffect(() => {
@@ -211,10 +212,10 @@ function AppContent() {
         value={activeTab}
         onValueChange={(v) => {
           setActiveTab(v);
-          // 进设置页即标记已读，并触发「自动展开更新历史」引导（与已读脱钩）。
+          // 进设置页即标记已读；仅当有未读（红点）时才自动展开「关于卡片/更新历史」引导。
           if (v === "settings") {
+            if (unreadCount > 0) setChangelogOpenToken((t) => t + 1);
             markSeenOnEnter();
-            setChangelogOpenToken((t) => t + 1);
           }
         }}
         className="flex min-h-0 flex-1 flex-col"
