@@ -4,6 +4,16 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.14",
+    date: "2026-07-23",
+    items: [
+      { category: "feat", text: "命令会话持久化新增环境变量跨调用重放：run_command 支持 env 参数，可为会话持久化环境变量（如 venv 的 PATH/VIRTUAL_ENV），默认关闭。" },
+      { category: "fix", text: "网络变化时连接页 IP 未刷新：后端改为独立 5s 轮询刷新地址，前端监听 online/focus 事件并在连接页提供手动刷新按钮。" },
+      { category: "fix", text: "设置小红点每次进入软件都显示：首屏 status 未加载时不再误判为全部未读；进入设置页即标记已读。" },
+      { category: "fix", text: "连接页 4 个卡片默认全展开：改为默认折叠、单选聚焦，老用户不再被引导霸屏。" },
+    ],
+  },
+  {
     version: "2.3.13",
     date: "2026-07-22",
     items: [
@@ -115,27 +125,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "连接页数字平滑滚动；开启系统「减弱动效」会自动关闭动画" },
       { category: "improve", text: "统一全局动效曲线，体验更一致" },
       { category: "fix", text: "修复窄屏下设置页按钮文字竖排的问题" },
-    ],
-  },
-  {
-    version: "2.3.3",
-    date: "2026-07-16",
-    items: [
-      { category: "improve", text: "统一全局交互反馈与视觉细节，过渡更自然" },
-      { category: "improve", text: "收敛空状态，只保留日志与命令面板的引导提示" },
-      { category: "sec", text: "编码读写逻辑保持一致，杜绝同一文件两工具解码结果不同" },
-      { category: "sec", text: "有损编码直接报错而非静默替换，避免乱码被烤进文件" },
-      { category: "sec", text: "路径穿越与 Token 校验更严格，四个后台任务加自愈" },
-      { category: "fix", text: "修复备份目录按钮闪现黑窗口的问题" },
-      { category: "fix", text: "命令面板重生成 Token / 清日志前需二次确认，防误执行" },
-      { category: "fix", text: "导入配置先弹确认框，不再直接覆盖全部安全设置" },
-      { category: "fix", text: "安全页白名单目录删除、多处添加目录失败无提示等交互细节问题。" },
-      { category: "fix", text: "多处（ConnectTab/CommandPalette/TokenManager/onboarding 等 9 处）剪贴板复制未 await/catch 导致的“显示已复制但其实没复制”假阳性反馈，新增统一入口 `lib/utils.ts::copyText()`。" },
-      { category: "feat", text: "日志页新增“导出诊断报告”，基于当前筛选拼版本/性能摘要/按工具耗时/错误列表的 Markdown，下载为 `.md` 同时复制到剪贴板。" },
-      { category: "feat", text: "`ErrorBoundary` 新增“完全刷新”按钮作为“重新加载”的最后手段。" },
-      { category: "improve", text: "新增 `ui/ConfirmDialog.tsx` 统一确认弹窗，替换 6 处重复/内联弹窗实现。" },
-      { category: "improve", text: "修复 `ConnectTab.tsx` 拆分后的 5 个子文件（`connect/` 目录）缺少一层相对导入路径导致的编译错误；`LogTab.tsx` 新拆出 `LogDetailPanel.tsx`；`SecurityTab.tsx` 确认已拆分为 `RunningCommandsCard`/`FileControlCard`。" },
-      { category: "improve", text: "`cleanup_finished_commands`/`evict_finished_commands` 从 Tauri 命令层收拢为 `AppState` 方法，消除反向依赖；删除 `db.rs` 重复的 `generate_token`。" },
     ],
   },
 ];
