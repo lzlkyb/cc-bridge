@@ -1,5 +1,6 @@
+use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::body::Body;
 use axum::extract::State;
@@ -484,18 +485,17 @@ pub async fn dispatch_tool(
     state: &Arc<AppState>,
 ) -> Result<serde_json::Value, String> {
     // 只读模式：拒绝一切写操作（默认关闭）。读取/列目录/搜索/分析不受影响。
-    const WRITE_TOOLS: [&str; 9] = [
-        "write_files",
-        "delete_files",
-        "move_files",
-        "copy_files",
-        "edit_files",
-        "create_directory",
-        "remove_directory",
-        "run_command",
-        "notebook_edit",
-    ];
-    if WRITE_TOOLS.contains(&name) {
+    // 写工具集合由 registry 单一来源驱动（下方一次性缓存），不再硬编码常量，
+    // 避免日后新增写工具只改 registry 漏改此处导致只读模式失效。
+    static WRITE_SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    let write_set = WRITE_SET.get_or_init(|| {
+        crate::mcp::tools::registry::all_tools()
+            .iter()
+            .filter(|t| t.is_write)
+            .map(|t| t.name)
+            .collect::<HashSet<&'static str>>()
+    });
+    if write_set.contains(name) {
         let readonly = state.config.read().await.readonly_mode;
         if readonly {
             return Err(format!(

@@ -30,9 +30,10 @@ pub type ToolRunner = for<'a> fn(Value, &'a Arc<AppState>) -> BoxFuture<'a, Resu
 pub struct ToolSpec {
     pub name: &'static str,
     pub desc: &'static str,
-    /// Declared write-flag (mirrors the live `WRITE_TOOLS` gate in `http.rs::dispatch_tool`,
-    /// which is intentionally kept unchanged per the 折中半程 RFC — "no security gate changes").
-    /// Kept here as the registry's declarative source of truth for tool metadata.
+    /// Declared write-flag. This is the single source of truth for the read-only-mode gate:
+    /// `http.rs::dispatch_tool` derives its write-tool set from `all_tools()` at runtime
+    /// (cached via `OnceLock`), so adding a write tool here automatically enforces
+    /// read-only mode — there is no parallel `WRITE_TOOLS` constant to keep in sync.
     pub is_write: bool,
     pub schema: Value,
     /// Dispatch entry. Signature is intentionally identical to the old `dispatch_tool`
