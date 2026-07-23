@@ -197,7 +197,14 @@ async function main() {
   const newBlock = `## [${next}] - ${todayISO()}\n\n### 更新摘要\n${summary}\n\n${
     sectionLines || fallbackSections
   }\n\n`;
-  changelog = changelog.replace(/(^#.*\n)/, `$1\n${newBlock}`);
+  // 必须插到第一个「版本段标题」（## [x.y.z]）之前，而非第一个 # 行（# Changelog 大标题）之后——
+  // 否则新段会被排在文件头描述与首个版本段之间，解析器按 ## [x.y.z] 分段时它既不属于任何版本、也不被 git 正确纳入。
+  const firstVer = changelog.match(/^##\s+\[/m);
+  if (firstVer && firstVer.index !== undefined) {
+    changelog = changelog.slice(0, firstVer.index) + newBlock + changelog.slice(firstVer.index);
+  } else {
+    changelog = changelog.replace(/(^#.*\n)/, `$1\n${newBlock}`);
+  }
   fs.writeFileSync(CHANGELOG_PATH, changelog, "utf-8");
   console.log(`\x1b[32m[4/7]\x1b[0m CHANGELOG.md 插入 [${next}] 段`);
 
@@ -231,6 +238,16 @@ async function main() {
     "desktop/src/lib/changelog.generated.ts",
   ];
   run(`git add ${files.map((f) => `"${f}"`).join(" ")}`);
+  // 防漏纳：确认关键文件确实被 git 纳入（CHANGELOG 写入异常时 git add 会静默跳过）
+  const unstaged = execSync("git status --porcelain", { cwd: ROOT, stdio: "pipe" })
+    .toString()
+    .trim();
+  if (unstaged) {
+    console.error(
+      `\x1b[31m[RELEASE ERROR]\x1b[0m 发版文件未全部纳入暂存区，已中止以免漏发：\n${unstaged}`,
+    );
+    process.exit(1);
+  }
   run(`git commit -m "chg: 发版 v${next}"`);
   console.log(`\x1b[32m[7/7]\x1b[0m 已 commit 发版 v${next}`);
 
