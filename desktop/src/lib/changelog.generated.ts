@@ -4,6 +4,14 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.17",
+    date: "2026-07-24",
+    items: [
+      { category: "fix", text: "修复 test 二进制加载 GUI DLL 导致 0xc0000139 崩溃" },
+      { category: "fix", text: "同步 Cargo.lock 版本号至 2.3.16" },
+    ],
+  },
+  {
     version: "2.3.16",
     date: "2026-07-24",
     items: [
@@ -108,19 +116,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "连接页 HTTP / SSE 状态改为配色徽章（靛蓝 / 蓝）直观区分" },
       { category: "improve", text: "连接页、令牌管理、命令面板等折叠 / 列表增删增加平滑过渡动画，交互更顺滑" },
       { category: "improve", text: "ConnectTab 组件瘦身（约 333 → 190 行），结构更清晰、便于维护" },
-    ],
-  },
-  {
-    version: "2.3.7",
-    date: "2026-07-18",
-    items: [
-      { category: "improve", text: "审计日志读取更快：空闲轮询时不再反复解析整个日志文件" },
-      { category: "improve", text: "白名单校验更快：允许访问的目录路径只标准化一次，工具反复调用不再重复计算" },
-      { category: "improve", text: "网络 IP 列表获取更快：不再每 5 秒扫描一遍网卡，联网变化时才刷新" },
-      { category: "improve", text: "日志页面更跟手：隔离了后台状态轮询引发的整页重算，翻页与筛选更顺滑" },
-      { category: "fix", text: "修复导入配置后新目录未立即生效的问题" },
-      { category: "feat", text: "更新弹框升级路径更直观：清晰展示「当前版本 → 新版本」" },
-      { category: "improve", text: "更新弹框内容展示更聚焦，只呈现对你有用的要点" },
     ],
   },
 ];

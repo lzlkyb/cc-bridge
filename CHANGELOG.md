@@ -5,6 +5,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.3.17] - 2026-07-24
+
+### 更新摘要
+v2.3.17 版本更新
+
+### 修复
+- 修复 test 二进制加载 GUI DLL 导致 0xc0000139 崩溃
+- 同步 Cargo.lock 版本号至 2.3.16
+
 ## [2.3.16] - 2026-07-24
 
 ### 更新摘要

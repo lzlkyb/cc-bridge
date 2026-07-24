@@ -24,10 +24,7 @@ fn default_title() -> String {
     "cc-bridge".into()
 }
 
-pub async fn handle(
-    args: PushNotificationArgs,
-    state: &Arc<AppState>,
-) -> Result<Value, String> {
+pub async fn handle(args: PushNotificationArgs, state: &Arc<AppState>) -> Result<Value, String> {
     // 开关检查：关闭时静默忽略，不推通知也不报错。
     let enabled = state.config.read().await.notify_task_complete;
     if !enabled {

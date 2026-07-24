@@ -193,9 +193,7 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "notify_command_complete" => {
                 config.notify_command_complete = parse_or_warn(key, value, true)
             }
-            "notify_task_complete" => {
-                config.notify_task_complete = parse_or_warn(key, value, true)
-            }
+            "notify_task_complete" => config.notify_task_complete = parse_or_warn(key, value, true),
             "transport" => {
                 let s = parse_or_warn::<String>(key, value, "http".into());
                 config.transport = if s == "sse" {
