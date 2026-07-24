@@ -4,6 +4,13 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.18",
+    date: "2026-07-24",
+    items: [
+      { category: "fix", text: "用 notifications cargo feature 替代 cfg(not(test))，修复集成测试 0xc0000139" },
+    ],
+  },
+  {
     version: "2.3.17",
     date: "2026-07-24",
     items: [
@@ -97,25 +104,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "sec", text: "白名单目录删除改为按路径匹配，修复重复目录/轮询刷新下删错目标；新手引导添加白名单去重。" },
       { category: "sec", text: "默认 cmd 壳层补充 Windows 破坏性命令拦截（rd/rmdir/del /s、diskpart、cipher /w 等）；`is_binary_content` 修正 UTF-32BE BOM 误判为二进制。" },
       { category: "sec", text: "只读模式开启时安全风险总览不再因 shell 开关配置值而误报「高风险 RCE」（只读会强制禁用命令执行）。" },
-    ],
-  },
-  {
-    version: "2.3.8",
-    date: "2026-07-18",
-    items: [
-      { category: "feat", text: "传输模式开关（HTTP / SSE）：设置页新增「传输协议」切换，默认 HTTP；切到 SSE 时弹出现成迁移命令（移除旧 HTTP 配置 + 用 SSE 端点重新添加），复制即可让远端改用流式连接" },
-      { category: "feat", text: "SSE 流式服务端：新增 SSE 端点与消息通道，支持流式返回命令执行结果，远端可实时看到输出" },
-      { category: "feat", text: "连接页命令随传输模式联动：选 SSE 时连接命令与托盘复制命令自动指向 SSE 端点" },
-      { category: "feat", text: "bash 探测兜底：本地装了 Git for Windows 但没单独装 bash 时，自动按 Git 安装目录推导 bash 路径（支持三种常见布局），设置页「命令执行壳层」不再误报「未检测到」" },
-      { category: "fix", text: "启动 / 探测 bash 时偶发闪一下黑窗口：`where bash` / `where git` 探测加上不弹窗标志" },
-      { category: "fix", text: "日志页搜索框聚焦时出现一圈难看的内边框高亮：调整聚焦样式，只保留外层高亮" },
-      { category: "fix", text: "版本历史弹框「看改了什么」内容超宽需横拉滚动条：长行自动换行，无需左右拖动" },
-      { category: "improve", text: "连接页整体重构为手风琴模式：首次使用自动展开「权限自动授权 / 接入步骤」，之后默认收起、可手动展开；一次只展开一个区块，展开时平滑动画并自动滚动到视野内" },
-      { category: "improve", text: "连接页「传输安全提醒」常驻提示移除，避免造成不必要的使用顾虑" },
-      { category: "improve", text: "版本历史弹框「打开」按钮风格统一（去掉箭头、文字居中）；新增一键全屏放大，长内容查看更方便" },
-      { category: "improve", text: "连接页 HTTP / SSE 状态改为配色徽章（靛蓝 / 蓝）直观区分" },
-      { category: "improve", text: "连接页、令牌管理、命令面板等折叠 / 列表增删增加平滑过渡动画，交互更顺滑" },
-      { category: "improve", text: "ConnectTab 组件瘦身（约 333 → 190 行），结构更清晰、便于维护" },
     ],
   },
 ];

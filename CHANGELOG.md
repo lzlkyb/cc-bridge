@@ -5,6 +5,14 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.3.18] - 2026-07-24
+
+### 更新摘要
+v2.3.18 版本更新
+
+### 修复
+- 用 notifications cargo feature 替代 cfg(not(test))，修复集成测试 0xc0000139
+
 ## [2.3.17] - 2026-07-24
 
 ### 更新摘要
