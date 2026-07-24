@@ -5,6 +5,7 @@ import { toolLabel, formatDurationMs } from "../../lib/utils";
 import type { AuditEntry, FileDiffResult } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/toast";
 
 /** 尝试 pretty-print JSON；失败退回原文。 */
@@ -125,11 +126,11 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
   const dispatch = Math.max(0, serverMs - io - audit - overhead);
 
   const items = [
-    { label: "调度逻辑", ms: dispatch, color: "#6366f1" },
-    { label: "文件读写 I/O", ms: io, color: "#14b8a6" },
-    { label: "审计写盘", ms: audit, color: "#f59e0b" },
-    { label: "网络往返", ms: net, color: "#ef4444" },
-    { label: "传输/序列化", ms: overhead, color: "#8b5cf6" },
+    { label: "调度逻辑", ms: dispatch, color: "var(--chart-1)" },
+    { label: "文件读写 I/O", ms: io, color: "var(--chart-2)" },
+    { label: "审计写盘", ms: audit, color: "var(--chart-3)" },
+    { label: "网络往返", ms: net, color: "var(--chart-4)" },
+    { label: "传输/序列化", ms: overhead, color: "var(--chart-5)" },
   ].filter((s) => s.ms > 0);
 
   const total = items.reduce((s, x) => s + x.ms, 0) || 1;
@@ -237,8 +238,14 @@ export function DiffModal({ entry, onClose }: { entry: AuditEntry; onClose: () =
         </div>
         <div className="flex-1 overflow-auto p-3">
           {loading && (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              加载中…
+            <div className="space-y-2 p-1">
+              <Skeleton className="h-3.5 w-full" />
+              <Skeleton className="h-3.5 w-11/12" />
+              <Skeleton className="h-3.5 w-full" />
+              <Skeleton className="h-3.5 w-4/5" />
+              <Skeleton className="h-3.5 w-full" />
+              <Skeleton className="h-3.5 w-3/4" />
+              <Skeleton className="h-3.5 w-10/12" />
             </div>
           )}
           {err && (

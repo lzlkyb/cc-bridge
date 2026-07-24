@@ -194,7 +194,7 @@ function CommandOutputPanel({ handle }: { handle: string }) {
     };
 
     poll();
-    timer = setInterval(poll, 1500);
+    timer = setInterval(poll, 3000);
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
@@ -217,7 +217,7 @@ function CommandOutputPanel({ handle }: { handle: string }) {
               : ""}
           </span>
         )}
-        <span className="text-[11px] text-muted-foreground">实时输出（1.5s 刷新）</span>
+        <span className="text-[11px] text-muted-foreground">实时输出（3s 刷新）</span>
       </div>
       {meta && (meta.stdoutTruncated || meta.stderrTruncated) && (
         <p className="flex items-center gap-1.5 text-[11px] text-warning">

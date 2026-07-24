@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, memo, useRef } from "react";
-import { invoke } from "../../lib/tauri";
+import { invokeOrToast } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import {
   McpScope,
@@ -122,9 +122,7 @@ function ConnectTabImpl({
     const t = setTimeout(() => {
       // 注意：save_config 命令的形参名为 patch，前端必须把字段包进 { patch: {...} }，
       // 否则 Tauri 取到的是空 ConfigPatch（全部 None），scope 静默不落盘且不报错（曾因此漏改）。
-      invoke("save_config", { patch: { scope, projectPath: projectPath || null } }).catch((e) =>
-        console.error("保存接入作用域/项目路径失败（不影响界面）", e),
-      );
+      void invokeOrToast("save_config", { patch: { scope, projectPath: projectPath || null } });
     }, 300);
     return () => clearTimeout(t);
   }, [scope, projectPath]);
@@ -170,9 +168,7 @@ function ConnectTabImpl({
         toast("连接命令已复制到剪贴板", "success");
     // 首次接入复制命令时，把当前选中的作用域落盘到后端配置，
     // 供后续 IP 变化 banner / Token 重生成生成精确 sed 命令（方案 A）。
-        invoke("save_config", { patch: { scope, projectPath: projectPath || null } }).catch((e) =>
-          console.error("保存接入作用域/项目路径失败（不影响本次复制）", e),
-        );
+        void invokeOrToast("save_config", { patch: { scope, projectPath: projectPath || null } });
         setTimeout(() => setCopied(false), 2000);
       },
       (e) => toast(`复制失败：${e}`, "error"),
@@ -324,7 +320,7 @@ function ConnectGuide({
             <Icon name="sliders" size={14} aria-hidden="true" />
           </span>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold text-foreground">接入模式</div>
+            <div className="ui-h-sub text-foreground">接入模式</div>
             {!scopeOpen && (
               <div className="text-[11px] text-muted-foreground">
                 {scope === "project" ? "项目级 · 仅指定项目生效" : "全局模式 · 所有项目可用"}
@@ -365,7 +361,7 @@ function ConnectGuide({
             <Icon name="terminal" size={14} aria-hidden="true" />
           </span>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold text-foreground">
+            <div className="ui-h-sub text-foreground">
               接入步骤
               <span className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${status?.transport === "sse" ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200" : "bg-indigo-50 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-200"}`}>
                 {status?.transport === "sse" ? "SSE 流式" : "HTTP"}
@@ -408,7 +404,7 @@ function ConnectGuide({
             <Icon name="check" size={14} aria-hidden="true" />
           </span>
           <div className="flex-1 min-w-0">
-            <div className="text-[13px] font-semibold text-foreground">权限自动授权</div>
+            <div className="ui-h-sub text-foreground">权限自动授权</div>
             {!permOpen && (
               <div className="text-[11px] text-muted-foreground">点击展开查看授权命令</div>
             )}

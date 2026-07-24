@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>A 层快速打磨 · 设计确认</title>
+<style>
+  :root{
+    --primary:#4F46E5; --primary-fg:#fff;
+    --success:#16a34a; --destructive:#dc2626; --warning:#d97706;
+    --bg:#f7f8fa; --card:#fff; --border:#e6e8ee; --fg:#1f2430; --muted:#6b7280;
+    --ring:0 0 0 3px rgba(79,70,229,.18);
+    --radius:14px; --radius-sm:10px;
+    --shadow:0 1px 2px rgba(16,24,40,.04),0 4px 14px rgba(16,24,40,.06);
+  }
+  .dark{
+    --bg:#0e1117; --card:#161b24; --border:#262d3a; --fg:#e6e9ef; --muted:#9aa4b2;
+    --ring:0 0 0 3px rgba(129,124,255,.28);
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--fg);line-height:1.5;padding:28px 20px 64px}
+  .wrap{max-width:860px;margin:0 auto}
+  .topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+  h1{font-size:20px;font-weight:700;margin:0}
+  .toggle{appearance:none;border:1px solid var(--border);background:var(--card);color:var(--fg);
+    border-radius:999px;padding:6px 14px;font-size:13px;cursor:pointer}
+  .toggle:focus-visible{outline:none;box-shadow:var(--ring)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:18px 20px;margin-bottom:16px}
+  .card h2{font-size:15px;font-weight:600;margin:0 0 4px;display:flex;align-items:center;gap:8px}
+  .tag{font-size:11px;font-weight:600;color:var(--primary);background:color-mix(in srgb,var(--primary) 12%,transparent);
+    border-radius:6px;padding:2px 8px}
+  .desc{color:var(--muted);font-size:12.5px;margin:0 0 14px}
+
+  /* ---- A2 字体层级刻度 ---- */
+  .scale{border-top:1px dashed var(--border);margin-top:8px;padding-top:12px}
+  .row{display:flex;align-items:baseline;gap:14px;padding:7px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent)}
+  .row:last-child{border-bottom:0}
+  .k{width:128px;flex:none;color:var(--muted);font-size:12px}
+  .v{color:var(--fg)}
+  .t-page{font-size:18px;font-weight:700}
+  .t-section{font-size:14px;font-weight:600}
+  .t-sub{font-size:13px;font-weight:600}
+  .t-body{font-size:13px;font-weight:400}
+  .t-eyebrow{font-size:10px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--muted)}
+
+  /* ---- A1 已保存反馈 before/after ---- */
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .col-h{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:8px}
+  .old{display:flex;flex-direction:column;gap:10px}
+  .old span{font-size:12.5px}
+  .bad{display:inline-flex;align-items:center;gap:3px}
+  .new{display:flex;flex-direction:column;gap:10px;align-items:flex-start}
+  .saved{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:500;color:var(--success);
+    opacity:0;animation:fade .25s ease forwards}
+  @keyframes fade{to{opacity:1}}
+  .saved svg{width:13px;height:13px}
+
+  /* ---- A3 焦点环 ---- */
+  .field{display:flex;flex-direction:column;gap:8px}
+  .lbl{font-size:12px;color:var(--muted)}
+  input.demo{height:36px;width:260px;border:1px solid var(--border);border-radius:var(--radius-sm);
+    background:var(--bg);color:var(--fg);padding:0 12px;font-size:13px;transition:border-color .15s,box-shadow .15s}
+  input.demo:focus-visible{outline:none;box-shadow:var(--ring);border-color:var(--primary)}
+  .note{font-size:12px;color:var(--muted);margin-top:10px;background:color-mix(in srgb,var(--warning) 8%,transparent);
+    border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);border-radius:8px;padding:9px 12px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+    background:color-mix(in srgb,var(--fg) 7%,transparent);padding:1px 5px;border-radius:4px}
+  @media (prefers-reduced-motion: reduce){ .saved{animation:none;opacity:1} *{transition:none!important} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <h1>A 层快速打磨 · 设计确认</h1>
+    <button class="toggle" id="tg">切换 浅 / 暗</button>
+  </div>
+
+  <!-- A2 -->
+  <div class="card">
+    <h2>A2 · 统一字体层级 <span class="tag">type scale</span></h2>
+    <p class="desc">现状：卡片/区块标题从 <code>text-[12.5px]</code> 到 <code>text-base</code>(18px) 不等，字重 <code>font-semibold</code>~<code>font-extrabold</code> 混乱。下方为统一后的刻度，全应用一致。</p>
+    <div class="scale">
+      <div class="row"><div class="k">页面 / Tab 标题</div><div class="v t-page">本地服务 · 接入 Claude Code</div></div>
+      <div class="row"><div class="k">区块 / 卡片标题</div><div class="v t-section">运行中的命令 · 文件管控 · 安全概览</div></div>
+      <div class="row"><div class="k">子标题</div><div class="v t-sub">权限自动授权 · 接入模式</div></div>
+      <div class="row"><div class="k">正文</div><div class="v t-body">服务正在本地运行，等待 Claude Code 接入…</div></div>
+      <div class="row"><div class="k">eyebrow 小标</div><div class="v t-eyebrow">技术栈 · 项目信息 · 核心能力</div></div>
+    </div>
+  </div>
+
+  <!-- A1 -->
+  <div class="card">
+    <h2 class="t-section">A1 · 统一「已保存」反馈 <span class="tag">SavedHint</span></h2>
+    <p class="desc">现状：<code>已保存 ✓</code> 散落在 7+ 处，字号 <code>text-xs</code> vs <code>text-[10px]</code>、✓ 有前缀有后缀不一致。改为统一小组件 <code>&lt;SavedHint/&gt;</code>（行内即时反馈）；页面级异步动作仍走 <code>toast</code>，作用域清晰、不冗余。</p>
+    <div class="ba">
+      <div><div class="col-h">改前（3 种不一致）</div>
+        <div class="old">
+          <span class="bad" style="color:var(--success)">✓</span>
+          <span class="bad" style="color:var(--success);font-size:12px">已保存 ✓</span>
+          <span class="bad" style="color:var(--success);font-size:12px">已保存并重启 ✓</span>
+        </div>
+      </div>
+      <div><div class="col-h">改后（1 个统一组件）</div>
+        <div class="new">
+          <span class="saved"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已保存</span>
+          <span class="saved"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已保存</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- A3 -->
+  <div class="card">
+    <h2 class="t-section">A3 · 焦点环 + 无障碍 <span class="tag">a11y</span></h2>
+    <p class="desc">全局 <code>focus-visible</code> 基线已有，但输入框混用 <code>focus:ring-primary/20</code> 与 <code>focus-visible:ring-ring</code>。统一为 <code>focus-visible:ring-2 focus-visible:ring-ring</code>；并新增 <code>prefers-reduced-motion</code> 关闭微光/脉冲/过渡。</p>
+    <div class="field">
+      <label class="lbl">输入框（键盘 Tab 聚焦可见焦点环）</label>
+      <input class="demo" placeholder="点这里或按 Tab 聚焦" />
+    </div>
+    <div class="note">新增 CSS：<br><code>@media (prefers-reduced-motion: reduce){ *{transition:none!important} .skeleton{animation:none} .animate-pulse{animation:none} }</code><br>动效敏感用户不再被骨架屏微光 / 脉冲干扰。</div>
+  </div>
+
+  <p class="desc" style="text-align:center">全部零新增依赖，守 3.4MB 安装包。确认后我改 <code>index.css</code> + 新增 <code>ui/SavedHint.tsx</code> + 替换 7 处行内反馈 + 统一焦点环与字体刻度。</p>
+</div>
+<script>
+  const b=document.body;document.getElementById('tg').onclick=()=>b.classList.toggle('dark');
+</script>
+</body>
+</html>

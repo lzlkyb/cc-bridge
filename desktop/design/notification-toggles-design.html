@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>通知开关 - 设置页设计稿</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --card-bg: #ffffff;
+    --border: #e2e8f0;
+    --text-primary: #0f172a;
+    --text-secondary: #64748b;
+    --text-muted: #94a3b8;
+    --accent: #3b82f6;
+    --accent-bg: #eff6ff;
+    --success: #22c55e;
+    --success-bg: #f0fdf4;
+    --destructive: #ef4444;
+    --destructive-bg: #fef2f2;
+    --muted-bg: #f8fafc;
+    --radius: 8px;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font);
+    background: #f1f5f9;
+    color: var(--text-primary);
+    padding: 24px;
+    display: flex;
+    justify-content: center;
+  }
+  .page { max-width: 680px; width: 100%; }
+
+  /* Card */
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .card-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+  }
+  .card-header svg { color: var(--text-secondary); flex-shrink: 0; }
+  .card-title { font-size: 14px; font-weight: 600; }
+  .card-content { padding: 0; }
+
+  /* Group title */
+  .group-title {
+    padding: 12px 20px 4px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; color: var(--text-muted);
+  }
+
+  /* Toggle row */
+  .toggle-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 14px 20px;
+  }
+  .toggle-row.last { border-bottom: none; }
+  .toggle-row:not(.last) { border-bottom: 1px solid var(--border); }
+
+  .toggle-row .info { min-width: 0; }
+  .toggle-row .info .label {
+    font-size: 14px; font-weight: 500;
+  }
+  .toggle-row .info .sub {
+    margin-top: 2px; font-size: 12px; color: var(--text-secondary); line-height: 1.5;
+  }
+  .toggle-row .info .badge {
+    display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px;
+    font-size: 10px; font-weight: 600; vertical-align: middle;
+  }
+  .badge-new { background: var(--accent-bg); color: var(--accent); }
+
+  /* Switch */
+  .switch {
+    position: relative; display: inline-block;
+    width: 40px; height: 22px; flex-shrink: 0;
+  }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+    background: #cbd5e1; border-radius: 22px; transition: background 0.2s;
+  }
+  .slider::before {
+    content: ""; position: absolute; height: 18px; width: 18px;
+    left: 2px; bottom: 2px; background: white; border-radius: 50%;
+    transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,.12);
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+
+  /* Notification preview area */
+  .toast-preview {
+    display: flex; align-items: flex-start; gap: 10px;
+    margin: 0 20px 16px; padding: 12px 14px;
+    background: #1e293b; color: #e2e8f0; border-radius: 10px;
+    font-size: 12px; line-height: 1.5;
+    box-shadow: 0 4px 16px rgba(0,0,0,.15);
+  }
+  .toast-preview .app-icon {
+    width: 20px; height: 20px; border-radius: 4px; background: var(--accent);
+    flex-shrink: 0; margin-top: 1px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 700; color: white;
+  }
+  .toast-preview .app-name { font-weight: 600; font-size: 11px; opacity: .8; }
+  .toast-preview .app-title { font-weight: 600; margin-top: 1px; }
+  .toast-preview .app-body { opacity: .75; margin-top: 1px; }
+
+  .desc-box {
+    margin: 0 20px 12px; padding: 10px 12px;
+    background: var(--muted-bg); border-radius: 6px;
+    font-size: 11px; color: var(--text-secondary); line-height: 1.55;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- 设置页 - 功能开关卡片（截取通知分组所在区域） -->
+<div class="card">
+  <div class="card-header">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+    <span class="card-title">功能开关</span>
+  </div>
+  <div class="card-content">
+
+    <!-- ... 上方已有分组：安全 / 数据保护 / 兼容与性能 ... -->
+
+    <!-- ====== 新增：通知分组 ====== -->
+    <div class="group-title">通知 <span class="badge badge-new">NEW</span></div>
+
+    <div class="desc-box">
+      任务完成或后台命令结束时，通过 Windows 系统通知提醒你，无需一直盯着终端。
+    </div>
+
+    <!-- 开关1：后台命令完成通知 -->
+    <div class="toggle-row">
+      <div class="info">
+        <div class="label">后台命令完成通知</div>
+        <div class="sub">AI 提交的后台命令（如 npm install / cargo build）跑完后自动弹出通知。</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <!-- 开关2：任务完成通知 -->
+    <div class="toggle-row last">
+      <div class="info">
+        <div class="label">任务完成通知</div>
+        <div class="sub">AI 完成你交代的任务后主动推送通知。需要 AI 客户端配合，此开关关闭后 AI 调用通知工具将被静默忽略。</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" checked>
+        <span class="slider"></span>
+      </label>
+    </div>
+
+  </div>
+
+  <!-- 预览：模拟 Windows toast -->
+  <div style="padding: 6px 20px 16px;">
+    <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">预览效果</div>
+    <div class="toast-preview">
+      <div class="app-icon">CB</div>
+      <div style="min-width:0;">
+        <div class="app-name">cc-bridge</div>
+        <div class="app-title">后台命令完成</div>
+        <div class="app-body">cargo build --release 已结束（exit 0）</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 重置按钮 -->
+  <div style="border-top: 1px solid var(--border); padding: 12px 20px;">
+    <button style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid var(--border);border-radius:6px;background:white;font-size:12px;color:var(--text-secondary);cursor:pointer;">↻ 重置功能开关为默认</button>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

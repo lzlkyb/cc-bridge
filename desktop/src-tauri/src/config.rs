@@ -51,6 +51,21 @@ pub struct BridgeConfig {
     /// 用户接入时确认的项目路径（项目级 scope 时用于 cd 前缀）。
     /// 跟随连接页选择，供托盘「复制 IP 替换命令」生成带 cd 的精确命令，与 IpChangedBanner 对齐。
     pub project_path: Option<String>,
+    /// 命令白名单开关（Layer 2，opt-in，④P0-1）。默认关闭——开启后 run_command 的每个子命令
+    /// 首 token 必须在 `command_allowlist` 内，否则被拦截。仅缩小可执行程序面、抬高地板；
+    /// 不削弱 Layer 1（常开破坏性检测）与既有安全围栏（规则7）。注意 `shell_enabled` 已自承授予
+    /// 远程调用方任意代码执行权限（RCE），白名单只是缩小面，并非沙箱。
+    pub command_allowlist_enabled: bool,
+    /// 命令白名单程序列表（Layer 2）。大小写不敏感按 basename 匹配（如 `git`、
+    /// `C:\Windows\System32\cmd.exe`、绝对/相对路径均可）。仅在 `command_allowlist_enabled`
+    /// 为 true 且列表非空时生效；空列表视为未启用，避免误锁死全部命令。
+    pub command_allowlist: Vec<String>,
+    /// 后台命令完成通知。默认开启——后台 run_command（background=true）结束后自动推 Windows
+    /// toast，告知用户命令已结束及退出码。关闭后不再自动推送。
+    pub notify_command_complete: bool,
+    /// 任务完成通知（push_notification MCP 工具总开关）。默认开启——远程 AI 可主动调用
+    /// push_notification 推桌面通知。关闭后 push_notification 静默忽略（不推通知，不报错）。
+    pub notify_task_complete: bool,
 }
 
 impl Default for BridgeConfig {
@@ -88,6 +103,10 @@ impl Default for BridgeConfig {
             last_selected_ip: None,
             scope: None,
             project_path: None,
+            command_allowlist_enabled: false,
+            command_allowlist: vec![],
+            notify_command_complete: true,
+            notify_task_complete: true,
         }
     }
 }
@@ -167,6 +186,16 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "last_selected_ip" => config.last_selected_ip = parse_or_warn(key, value, None),
             "scope" => config.scope = parse_or_warn(key, value, None),
             "project_path" => config.project_path = parse_or_warn(key, value, None),
+            "command_allowlist_enabled" => {
+                config.command_allowlist_enabled = parse_or_warn(key, value, false)
+            }
+            "command_allowlist" => config.command_allowlist = parse_or_warn(key, value, vec![]),
+            "notify_command_complete" => {
+                config.notify_command_complete = parse_or_warn(key, value, true)
+            }
+            "notify_task_complete" => {
+                config.notify_task_complete = parse_or_warn(key, value, true)
+            }
             "transport" => {
                 let s = parse_or_warn::<String>(key, value, "http".into());
                 config.transport = if s == "sse" {
@@ -301,6 +330,26 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         conn,
         "project_path",
         &to_value(&config.project_path).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "command_allowlist_enabled",
+        &to_value(config.command_allowlist_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "command_allowlist",
+        &to_value(&config.command_allowlist).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "notify_command_complete",
+        &to_value(config.notify_command_complete).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "notify_task_complete",
+        &to_value(config.notify_task_complete).unwrap(),
     )?;
     save_config_field(conn, "transport", &to_value(&config.transport).unwrap())?;
 

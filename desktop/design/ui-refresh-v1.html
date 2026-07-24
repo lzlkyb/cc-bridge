@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>cc-bridge UI 精修设计稿 · 方案1</title>
+<style>
+  /* ── 真实 design tokens（取自 index.css :root / .dark）── */
+  :root {
+    --background: 220 23% 96%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --primary: 243 75% 59%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 20% 94%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 214 25% 95%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 226 100% 97%;
+    --accent-foreground: 243 75% 59%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 25 95% 53%;
+    --border: 216 20% 90%;
+    --input: 216 20% 90%;
+    --ring: 243 75% 59%;
+    --radius: 0.6rem;
+    /* 精修新增：语义间距 token（统一卡片内边距 / 区块间距）*/
+    --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+    --space-4: 16px; --space-5: 20px; --space-6: 24px; --space-8: 32px;
+    /* 精修新增：图表色板（替代 PerfCharts 硬编码 hex，深浅主题共用）*/
+    --chart-1:#6366f1; --chart-2:#14b8a6; --chart-3:#f59e0b; --chart-4:#ef4444;
+    --chart-5:#10b981; --chart-6:#8b5cf6; --chart-7:#0ea5e9; --chart-8:#ec4899;
+    --chart-9:#84cc16; --chart-10:#f97316; --chart-grid:#94a3b8;
+  }
+  .dark {
+    --background: 240 6% 6%;
+    --foreground: 240 5% 90%;
+    --card: 240 6% 12%;
+    --card-foreground: 240 5% 90%;
+    --primary: 239 84% 74%;
+    --primary-foreground: 240 6% 10%;
+    --secondary: 240 4% 18%;
+    --secondary-foreground: 240 5% 90%;
+    --muted: 240 4% 18%;
+    --muted-foreground: 240 5% 65%;
+    --accent: 243 47% 20%;
+    --accent-foreground: 239 84% 74%;
+    --destructive: 0 72% 71%;
+    --destructive-foreground: 240 6% 10%;
+    --success: 142 69% 58%;
+    --warning: 27 96% 61%;
+    --border: 240 4% 22%;
+    --input: 240 4% 22%;
+    --ring: 239 84% 74%;
+  }
+
+  * { box-sizing: border-box; border-color: hsl(var(--border)); }
+  body {
+    margin: 0; background: hsl(var(--background)); color: hsl(var(--foreground));
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: var(--space-6) var(--space-5) 64px; }
+  h1 { font-size: 20px; font-weight: 700; margin: 0; }
+  h2 { font-size: 15px; font-weight: 600; margin: 0 0 var(--space-3); display:flex; align-items:center; gap:8px; }
+  h2 .tag { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: hsl(var(--primary)/0.12); color: hsl(var(--primary)); }
+  section { background: hsl(var(--card)); border: 1px solid hsl(var(--border)); border-radius: var(--radius); padding: var(--space-5); margin-bottom: var(--space-5); }
+  .muted { color: hsl(var(--muted-foreground)); }
+  .small { font-size: 12px; }
+
+  /* 顶栏 */
+  .topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom: var(--space-6); }
+  .brand { display:flex; align-items:center; gap:10px; }
+  .logo { width:30px; height:30px; border-radius:9px; background: linear-gradient(135deg,#6366F1,#4F46E5); display:grid; place-items:center; color:#fff; font-weight:700; font-size:13px; box-shadow: 0 2px 6px rgba(79,70,229,.2); }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill-idle { background: linear-gradient(135deg,#6366F1,#4F46E5); color:#fff; }
+  .pill-run { background: hsl(var(--success)/0.12); color: hsl(var(--success)); }
+
+  /* Hero 卡（真实 ConnectHero 结构：运行中 + 地址 + 复制）*/
+  .hero { position:relative; overflow:hidden; border-radius:14px; padding: var(--space-5); color:#fff;
+    background: linear-gradient(135deg,#6366F1 0%,#4F46E5 52%,#0EA5E9 100%);
+    box-shadow: 0 12px 32px rgba(79,70,229,.32); animation: breathe 3s ease-in-out infinite; }
+  @keyframes breathe { 0%,100%{box-shadow:0 12px 32px rgba(79,70,229,.32);} 50%{box-shadow:0 16px 44px rgba(79,70,229,.32),0 0 0 1px rgba(255,255,255,.12);} }
+  .hero::before, .hero::after { content:""; position:absolute; border-radius:50%; background:rgba(255,255,255,.12); }
+  .hero::before { width:160px; height:160px; top:-60px; right:-30px; }
+  .hero::after { width:110px; height:110px; bottom:-50px; left:30%; background:rgba(255,255,255,.07); }
+  .hero-row { display:flex; align-items:center; justify-content:space-between; position:relative; }
+  .hero h3 { margin:0 0 4px; font-size:16px; font-weight:600; }
+  .hero .sub { font-size:13px; opacity:.82; margin:0; }
+  .hero-btn { background:rgba(255,255,255,.18); border:1px solid rgba(255,255,255,.28); color:#fff; padding:6px 14px; border-radius:9px; font-size:12px; font-weight:600; cursor:pointer; }
+  .addr { margin-top: var(--space-4); display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:10px; background:rgba(255,255,255,.18); border:1px solid rgba(255,255,255,.25); font-family: ui-monospace, monospace; font-size:13px; }
+
+  /* 卡片（真实 card.tsx 风格：rounded-xl border shadow）*/
+  .card { background: hsl(var(--card)); border:1px solid hsl(var(--border)); border-radius: var(--radius); padding: var(--space-5); }
+  .card-title { display:flex; align-items:center; gap:10px; margin-bottom: var(--space-4); }
+  .title-chip { width:28px; height:28px; border-radius:8px; background: hsl(var(--accent)); color: hsl(var(--primary)); display:grid; place-items:center; }
+  .grid-2 { display:grid; grid-template-columns:1fr 1fr; gap: var(--space-3); margin-top: var(--space-4); }
+  .ip-card { border:1px solid hsl(var(--border)); border-radius: var(--radius); padding: var(--space-3) var(--space-4); cursor:pointer; transition: .15s; }
+  .ip-card.sel { border:2px solid hsl(var(--primary)); background: hsl(var(--accent)); }
+  .ip-card:hover { border-color: hsl(var(--primary)); }
+
+  /* Toggle 行（真实 SettingsRow 风格）*/
+  .row { display:flex; align-items:center; gap:10px; padding:10px; border-radius:8px; }
+  .row:hover { background: hsl(var(--muted)); }
+  .row .label { font-size:13px; font-weight:600; }
+  .row .desc { font-size:11px; color: hsl(var(--muted-foreground)); }
+  .switch { width:38px; height:22px; border-radius:999px; background: hsl(var(--muted-foreground)/.3); position:relative; transition:.2s; flex-shrink:0; }
+  .switch.on { background: hsl(var(--primary)); }
+  .switch::after { content:""; position:absolute; width:18px; height:18px; border-radius:50%; background:#fff; top:2px; left:2px; transition:.2s; }
+  .switch.on::after { left:18px; }
+
+  /* 状态胶囊（真实 Header 七态之一）*/
+  .status-pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:600; background: hsl(var(--success)/.12); color: hsl(var(--success)); }
+  .status-pill .dot { width:7px; height:7px; border-radius:50%; background: hsl(var(--success)); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 hsl(var(--success)/.5);} 70%{box-shadow:0 0 0 6px hsl(var(--success)/0);} 100%{box-shadow:0 0 0 0 hsl(var(--success)/0);} }
+
+  /* 空状态（精修：大图标 + 装饰环 + 统一文案）*/
+  .empty { display:flex; flex-direction:column; align-items:center; text-align:center; padding: var(--space-8) var(--space-5); }
+  .empty-ring { width:96px; height:96px; border-radius:50%; background: hsl(var(--muted)/.5); display:grid; place-items:center; margin-bottom: var(--space-4); position:relative; }
+  .empty-ring::after { content:""; position:absolute; inset:-6px; border-radius:50%; border:1px dashed hsl(var(--border)); }
+  .empty p { color: hsl(var(--muted-foreground)); font-size:13px; max-width:320px; margin:0; line-height:1.6; }
+
+  /* 骨架屏原语（精修新增）*/
+  .skeleton { background: hsl(var(--muted)); border-radius:8px; animation: shimmer 1.3s ease-in-out infinite; }
+  @keyframes shimmer { 0%,100%{opacity:.55;} 50%{opacity:1;} }
+  .sk-line { height:12px; border-radius:6px; }
+
+  /* PerfCharts 环形图（主题化：fill 引用 --chart-N）*/
+  .donut-wrap { display:flex; align-items:center; gap: var(--space-5); }
+  .legend { display:grid; grid-template-columns:1fr 1fr; gap:6px 16px; font-size:12px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; }
+
+  /* 图标规范（统一 strokeWidth=2）*/
+  .icon-grid { display:flex; flex-wrap:wrap; gap: var(--space-3); }
+  .icon-cell { display:flex; flex-direction:column; align-items:center; gap:6px; width:72px; padding: var(--space-3); border:1px solid hsl(var(--border)); border-radius:10px; font-size:11px; color: hsl(var(--muted-foreground)); }
+  .icon-cell svg { color: hsl(var(--foreground)); }
+  svg.ico { fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+
+  /* token 色板 */
+  .swatches { display:flex; gap: var(--space-3); flex-wrap:wrap; }
+  .sw { text-align:center; font-size:11px; }
+  .sw .box { width:48px; height:48px; border-radius:10px; border:1px solid hsl(var(--border)); margin-bottom:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="brand">
+      <div class="logo">CB</div>
+      <div>
+        <h1>cc-bridge UI 精修设计稿</h1>
+        <div class="small muted">方案 1 · 精修打磨（零体积风险）· 全部用真实 design tokens 与内联 SVG 图标</div>
+      </div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button class="pill pill-idle" id="themeBtn" onclick="toggleTheme()" style="cursor:pointer; border:none;">切换 浅/暗</button>
+    </div>
+  </div>
+
+  <!-- 设计 Token -->
+  <section>
+    <h2>① 统一设计 Token <span class="tag">新增</span></h2>
+    <div class="small muted" style="margin-bottom: var(--space-4);">新增语义间距 <code>--space-1..8</code> 收敛卡片内边距与区块间距；图表色板 <code>--chart-1..10</code> 替代 PerfCharts 硬编码 hex，深浅主题共用。</div>
+    <div class="swatches">
+      <div class="sw"><div class="box" style="background:hsl(var(--primary))"></div>primary</div>
+      <div class="sw"><div class="box" style="background:hsl(var(--success))"></div>success</div>
+      <div class="sw"><div class="box" style="background:hsl(var(--destructive))"></div>destructive</div>
+      <div class="sw"><div class="box" style="background:hsl(var(--warning))"></div>warning</div>
+      <div class="sw"><div class="box" style="background:hsl(var(--muted))"></div>muted</div>
+      <div class="sw"><div class="box" style="background:hsl(var(--border))"></div>border</div>
+      <div class="sw"><div class="box" style="background:hsl(var(--accent))"></div>accent</div>
+    </div>
+    <div class="small muted" style="margin-top: var(--space-4);">圆角半径 <b>--radius: 0.6rem</b> · 卡片统一 <b>rounded-xl + 1px border + shadow-card</b></div>
+  </section>
+
+  <!-- 连接页精修 -->
+  <section>
+    <h2>② 连接页 · Hero + IP 选择（真实文案）</h2>
+    <div class="hero">
+      <div class="hero-row">
+        <div>
+          <h3>本地服务运行中</h3>
+          <p class="sub">Claude Code 可通过以下地址连接</p>
+        </div>
+        <button class="hero-btn">复制命令</button>
+      </div>
+      <div class="addr">http://192.168.1.20:8877</div>
+    </div>
+
+    <div class="card" style="margin-top: var(--space-4);">
+      <div class="card-title">
+        <span class="title-chip"><svg class="ico" width="16" height="16" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg></span>
+        <span class="label" style="font-weight:600;">接入 Claude Code</span>
+        <span class="status-pill" style="margin-left:auto;"><span class="dot"></span>运行中</span>
+      </div>
+      <div class="small muted">选择本机连接地址（远程 Claude Code 填此地址）</div>
+      <div class="grid-2">
+        <div class="ip-card sel">
+          <div style="display:flex;justify-content:space-between;align-items:center;"><span class="label">以太网</span><span class="small" style="color:hsl(var(--primary));font-weight:600;">已选</span></div>
+          <div class="small muted" style="font-family:ui-monospace,monospace;">192.168.1.20</div>
+        </div>
+        <div class="ip-card">
+          <div style="display:flex;justify-content:space-between;align-items:center;"><span class="label">WLAN</span></div>
+          <div class="small muted" style="font-family:ui-monospace,monospace;">10.0.19.194</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 设置页精修 -->
+  <section>
+    <h2>③ 设置页 · 区块卡片 + Toggle 行</h2>
+    <div class="card">
+      <div class="card-title">
+        <span class="title-chip"><svg class="ico" width="16" height="16" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+        <span class="label" style="font-weight:600;">安全</span>
+      </div>
+      <div class="row">
+        <div style="flex:1;"><div class="label">路径白名单校验</div><div class="desc">仅允许访问已授权目录下的文件</div></div>
+        <div class="switch on"></div>
+      </div>
+      <div class="row">
+        <div style="flex:1;"><div class="label">只读模式</div><div class="desc">禁止任何写操作</div></div>
+        <div class="switch"></div>
+      </div>
+      <div class="row">
+        <div style="flex:1;"><div class="label">命令执行</div><div class="desc">允许 Claude Code 在本地执行命令</div></div>
+        <div class="switch on"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 空状态 + 骨架屏 -->
+  <section>
+    <h2>④ 空状态优化 + 骨架屏原语 <span class="tag">新增</span></h2>
+    <div class="grid-2">
+      <div class="card">
+        <div class="small muted" style="margin-bottom: var(--space-3);">空状态（日志页真实文案）</div>
+        <div class="empty">
+          <div class="empty-ring">
+            <svg class="ico" width="34" height="34" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5"/></svg>
+          </div>
+          <p>暂无审计记录，远程 Claude Code 连接后操作记录将显示在这里。</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="small muted" style="margin-bottom: var(--space-3);">骨架屏（加载态统一反馈）</div>
+        <div class="skeleton sk-line" style="width:40%; margin-bottom:10px;"></div>
+        <div class="skeleton sk-line" style="width:85%; margin-bottom:8px;"></div>
+        <div class="skeleton sk-line" style="width:70%; margin-bottom:8px;"></div>
+        <div class="skeleton sk-line" style="width:90%;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PerfCharts 主题化 -->
+  <section>
+    <h2>⑤ PerfCharts 主题化 <span class="tag">修复硬编码</span></h2>
+    <div class="small muted" style="margin-bottom: var(--space-4);">原 <code>PALETTE</code> 硬编码 10 个 hex（#6366f1…#f97316）+ #94a3b8 + bg-rose-500，暗色下仍可用但脱离主题变量。精修后改为引用 <code>--chart-1..10</code> / <code>--chart-grid</code>，便于后续换肤与统一。下图即引用变量后的环形图。</div>
+    <div class="donut-wrap">
+      <svg viewBox="0 0 120 120" width="150" height="150">
+        <circle cx="60" cy="60" r="52" fill="var(--chart-1)"/>
+        <path d="M60 8 A52 52 0 0 1 106 42 L60 60 Z" fill="var(--chart-2)"/>
+        <path d="M106 42 A52 52 0 0 1 100 100 L60 60 Z" fill="var(--chart-3)"/>
+        <path d="M100 100 A52 52 0 0 1 40 110 L60 60 Z" fill="var(--chart-4)"/>
+        <path d="M40 110 A52 52 0 0 1 18 60 L60 60 Z" fill="var(--chart-5)"/>
+        <path d="M18 60 A52 52 0 0 1 60 8 L60 60 Z" fill="var(--chart-6)"/>
+        <circle cx="60" cy="60" r="30" fill="hsl(var(--card))"/>
+      </svg>
+      <div class="legend">
+        <div><i style="background:var(--chart-1)"></i>调度逻辑</div>
+        <div><i style="background:var(--chart-2)"></i>文件读写 I/O</div>
+        <div><i style="background:var(--chart-3)"></i>审计写盘</div>
+        <div><i style="background:var(--chart-4)"></i>网络往返</div>
+        <div><i style="background:var(--chart-5)"></i>传输/序列化</div>
+        <div><i style="background:var(--chart-6)"></i>其他工具</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 图标规范 -->
+  <section>
+    <h2>⑥ 图标规范 · 统一描边 2px（真实 icon.tsx 集）</h2>
+    <div class="small muted" style="margin-bottom: var(--space-4);">所有图标统一 <code>stroke-width:2</code>、viewBox 24、lucide 风格。精修时补全缺失场景图标、统一视觉权重。</div>
+    <div class="icon-grid">
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg>plug</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>shield</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>settings</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5"/></svg>log</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>activity</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2"/></svg>clock</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg>alert</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zM7 11V7a5 5 0 0 1 10 0v4"/></svg>lock</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M9 9h11a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2zM5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>copy</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg>check</div>
+      <div class="icon-cell"><svg class="ico" width="22" height="22" viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 16v-4M12 8h.01"/></svg>info</div>
+    </div>
+  </section>
+
+  <div class="small muted" style="text-align:center; padding: var(--space-4);">
+    设计稿与真实代码一致：颜色/圆角/阴影取自 <code>index.css</code>，图标取自 <code>icon.tsx</code>，文案取自各 Tab 真实组件。点击右上角「切换 浅/暗」查看双主题效果。
+  </div>
+</div>
+
+<script>
+  function toggleTheme(){ document.documentElement.classList.toggle('dark'); }
+</script>
+</body>
+</html>

@@ -58,7 +58,7 @@ export function RestoreBackupDialog({ entry, onClose }: { entry: BackupFileInfo;
             <select
               value={target}
               onChange={(e) => setTarget(e.target.value)}
-              className="h-9 w-full rounded-md border border-input bg-card px-2 font-mono text-xs outline-none focus:border-primary"
+              className="h-9 w-full rounded-md border border-input bg-card px-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-primary"
             >
               {entry.targets.map((t) => (
                 <option key={t} value={t}>

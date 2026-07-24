@@ -103,7 +103,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 
           {/* 名称 + 版本 + 状态 */}
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            <span className="text-[15px] font-bold text-foreground">关于 {APP_INFO.name}</span>
+            <span className="ui-h-section text-foreground">关于 {APP_INFO.name}</span>
             <span
               className="inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px] font-bold tracking-wide text-white"
               style={STYLE_VERSION_BADGE}
@@ -164,7 +164,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
             {updateStatus === "available" && update && (
               <div className="px-[22px] pt-3.5">
                 <div
-                  className="section-label mb-2 flex cursor-pointer items-center gap-1.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground transition-colors hover:text-primary"
+                  className="section-label mb-2 flex cursor-pointer items-center gap-1.5 ui-eyebrow transition-colors hover:text-primary"
                   onClick={() => openUpdateNotes()}
                   title="查看完整更新说明"
                 >
@@ -181,7 +181,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
             <div className="grid grid-cols-2">
               {/* 左：技术栈 3×2 */}
               <div className="dual-left divider-y px-[22px] py-3.5">
-                <div className="section-label mb-2.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">技术栈</div>
+                <div className="section-label mb-2.5 ui-eyebrow">技术栈</div>
                 <div className="grid grid-cols-3 gap-1.5">
                   {TECH_STACK.map((t) => (
                     <div
@@ -203,7 +203,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 
               {/* 右：项目信息 */}
               <div className="dual-right px-[22px] py-3.5">
-                <div className="section-label mb-2.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">项目信息</div>
+                <div className="section-label mb-2.5 ui-eyebrow">项目信息</div>
                 <div className="flex flex-col">
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
                     <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_INDIGO}><Icon name="user" size={14} aria-hidden="true" /></div>
@@ -250,7 +250,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 
             {/* ═══ 更新历史（内嵌：技术栈/项目信息 双列 与 版权行之间） ═══ */}
             <div ref={changelogRef} className="px-[22px] pt-3.5">
-              <div className="section-label mb-0 flex items-center gap-1.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">
+              <div className="section-label mb-0 flex items-center gap-1.5 ui-eyebrow">
                 <Icon name="history" size={12} /> 更新历史
               </div>
             </div>
@@ -304,7 +304,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                 让 AI 能够安全地读写文件、搜索内容、执行命令。
               </p>
 
-              <div className="section-label mb-2.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">核心能力</div>
+              <div className="section-label mb-2.5 ui-eyebrow">核心能力</div>
               <div className="grid grid-cols-2 gap-2 mb-4">
                 {HIGHLIGHTS.map((h) => (
                   <div key={h.label} className="flex items-center gap-2 rounded-lg bg-muted px-2.5 py-2 text-xs font-semibold text-foreground">
@@ -314,7 +314,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                 ))}
               </div>
 
-              <div className="section-label mb-2.5 text-[10px] font-bold tracking-[0.8px] uppercase text-muted-foreground">特色优势</div>
+              <div className="section-label mb-2.5 ui-eyebrow">特色优势</div>
               <p className="mb-2.5 text-xs leading-relaxed">
                 · <strong className="text-foreground">极轻量：</strong>安装包仅 3.4MB，启动内存 &lt; 20MB<br/>
                 · <strong className="text-foreground">全离线：</strong>无需网络，纯本地运行，数据不出设备<br/>

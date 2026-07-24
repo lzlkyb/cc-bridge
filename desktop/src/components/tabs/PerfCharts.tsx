@@ -12,18 +12,19 @@ import type { AuditEntry } from "../../lib/types";
  * 面板会自动多渲染一张「单次调用耗时拆解」堆叠条，无需改此文件以外的逻辑。
  */
 
-// 固定调色板：在浅色/深色主题下都清晰，不随主题反色。
+// 固定调色板：统一托管在 index.css 的 --chart-1..10（主题无关，深浅一致），
+// 改配色只动一处。SVG fill 与 inline style background 均直接引用 var()。
 const PALETTE = [
-  "#6366f1", // indigo
-  "#14b8a6", // teal
-  "#f59e0b", // amber
-  "#ef4444", // rose
-  "#10b981", // emerald
-  "#8b5cf6", // violet
-  "#0ea5e9", // sky
-  "#ec4899", // pink
-  "#84cc16", // lime
-  "#f97316", // orange
+  "var(--chart-1)", // indigo
+  "var(--chart-2)", // teal
+  "var(--chart-3)", // amber
+  "var(--chart-4)", // rose
+  "var(--chart-5)", // emerald
+  "var(--chart-6)", // violet
+  "var(--chart-7)", // sky
+  "var(--chart-8)", // pink
+  "var(--chart-9)", // lime
+  "var(--chart-10)", // orange
 ];
 
 interface ToolStat {
@@ -154,11 +155,11 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
       split = [
         // durationMs 已包含 ioMs，直接当“调度逻辑”会与“文件读写 I/O”重复计数；
         // 这里扣除 ioMs，得到不含 I/O 的纯调度/处理耗时。
-        { label: "调度逻辑", ms: Math.max(0, f("durationMs") - f("ioMs")), color: "#6366f1" },
-        { label: "文件读写 I/O", ms: f("ioMs"), color: "#14b8a6" },
-        { label: "审计写盘", ms: f("auditMs"), color: "#f59e0b" },
-        { label: "网络往返", ms: f("netMs"), color: "#ef4444" },
-        { label: "传输/序列化", ms: f("overheadMs"), color: "#8b5cf6" },
+        { label: "调度逻辑", ms: Math.max(0, f("durationMs") - f("ioMs")), color: "var(--chart-1)" },
+        { label: "文件读写 I/O", ms: f("ioMs"), color: "var(--chart-2)" },
+        { label: "审计写盘", ms: f("auditMs"), color: "var(--chart-3)" },
+        { label: "网络往返", ms: f("netMs"), color: "var(--chart-4)" },
+        { label: "传输/序列化", ms: f("overheadMs"), color: "var(--chart-5)" },
       ].filter((x) => x.ms > 0);
     }
 
@@ -275,7 +276,7 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
                 return (
                   <g key={t.tool}>
                     <rect x={x} y={y - h50} width={w} height={h50} fill={PALETTE[i % PALETTE.length]} rx={2} />
-                    <rect x={x + w + 4} y={y - h95} width={w} height={h95} fill="#94a3b8" rx={2} />
+                    <rect x={x + w + 4} y={y - h95} width={w} height={h95} fill="var(--chart-compare)" rx={2} />
                     <text x={x + w + 2} y={y + 12} fontSize="9" textAnchor="middle" className="fill-muted-foreground">
                       {toolLabel(t.tool).slice(0, 6)}
                     </text>
@@ -285,7 +286,7 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
               {/* 图例 */}
               <rect x={groupW - 150} y={6} width={10} height={10} fill={PALETTE[0]} rx={2} />
               <text x={groupW - 136} y={15} fontSize="9" className="fill-muted-foreground">P50</text>
-              <rect x={groupW - 90} y={6} width={10} height={10} fill="#94a3b8" rx={2} />
+              <rect x={groupW - 90} y={6} width={10} height={10} fill="var(--chart-compare)" rx={2} />
               <text x={groupW - 76} y={15} fontSize="9" className="fill-muted-foreground">P95</text>
               <text x={0} y={166} fontSize="8" className="fill-muted-foreground">
                 纵轴峰值 {formatDurationMs(maxP95)}

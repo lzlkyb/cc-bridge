@@ -9,6 +9,7 @@ import { useToast } from "../ui/toast";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { Spinner } from "../ui/Spinner";
 import { buildBaseCommand } from "../../lib/utils";
+import { SavedHint } from "../ui/SavedHint";
 
 /**
  * 设置页「功能开关」卡。
@@ -234,6 +235,30 @@ export function SettingsToggles({
             }
           }}
           saved={savedKey === "transport"}
+        />
+
+        {/* ── 分组：通知 ── */}
+        <GroupTitle>
+          通知
+          <span className="ml-1.5 rounded bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-primary">
+            NEW
+          </span>
+        </GroupTitle>
+        <ToggleRow
+          id="toggle-notify-command"
+          label="后台命令完成通知"
+          sub="后台命令（background=true）执行完毕后自动弹出 Windows toast，告知命令已结束及退出码。默认开启"
+          checked={status?.notifyCommandComplete ?? true}
+          onChange={(v) => save({ notifyCommandComplete: v }, "notify-cmd")}
+          saved={savedKey === "notify-cmd"}
+        />
+        <ToggleRow
+          id="toggle-notify-task"
+          label="任务完成通知"
+          sub="AI 完成任务后可主动调用 push_notification 工具推送桌面通知。关闭后 AI 的推送请求会被静默忽略。默认开启"
+          checked={status?.notifyTaskComplete ?? true}
+          onChange={(v) => save({ notifyTaskComplete: v }, "notify-task")}
+          saved={savedKey === "notify-task"}
           last
         />
       </CardContent>
@@ -339,7 +364,7 @@ function ShellTypeRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">命令执行壳层</span>
-          {saved && <span className="text-xs font-normal text-success">已保存 ✓</span>}
+          {saved && <SavedHint>已保存</SavedHint>}
         </div>
         <div className="mt-0.5 text-xs text-muted-foreground">
           默认 <b>cmd</b>（零依赖）；选 <b>bash</b> 走 Git Bash，支持 POSIX 语法 / jq / find / 管道。需本机已装 Git for Windows；切换即时生效，无需重启。
@@ -565,7 +590,7 @@ function TransportRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">MCP 传输协议</span>
-          {saved && <span className="text-xs font-normal text-success">已保存 ✓</span>}
+          {saved && <SavedHint>已保存</SavedHint>}
         </div>
         <div className="mt-0.5 text-xs text-muted-foreground">
           默认 <b>HTTP</b>（JSON-RPC，稳定兼容）；选 <b>SSE</b> 后 run_command 输出实时推送。

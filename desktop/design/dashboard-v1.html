@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CC Bridge · 首页仪表盘设计稿 (B2)</title>
+<style>
+  /* ── 真实设计令牌（取自 src/index.css @theme，浅/暗双主题共用）── */
+  :root{
+    --background:#f6f7fb; --foreground:#1f2430; --card:#ffffff; --card-foreground:#1f2430;
+    --popover:#ffffff; --muted:#eef0f6; --muted-foreground:#6b7280;
+    --border:#e3e6ef; --input:#e3e6ef;
+    --primary:#4F46E5; --primary-foreground:#ffffff;
+    --success:#16a34a; --success-bg:rgba(22,163,74,.10); --success-border:rgba(22,163,74,.30);
+    --warning:#d97706; --warning-bg:rgba(217,119,6,.10); --warning-border:rgba(217,119,6,.30);
+    --destructive:#dc2626; --destructive-bg:rgba(220,38,38,.10); --destructive-border:rgba(220,38,38,.30);
+    --ring:#4F46E5; --radius:.6rem;
+    --hero-live:linear-gradient(135deg,#4F46E5 0%,#0e7490 55%,#0ea5e9 100%);
+    --hero-stopped:linear-gradient(135deg,#64748b 0%,#475569 60%,#334155 100%);
+    --chart-1:#6366f1; --chart-2:#14b8a6; --chart-3:#f59e0b; --chart-4:#ef4444; --chart-5:#8b5cf6;
+  }
+  .dark{
+    --background:#0d1017; --foreground:#e7eaf0; --card:#141925; --card-foreground:#e7eaf0;
+    --popover:#1a2030; --muted:#1c2230; --muted-foreground:#8b94a7;
+    --border:#262d3d; --input:#262d3d;
+    --primary:#818cf8; --primary-foreground:#0d1017;
+    --success:#4ade80; --success-bg:rgba(74,222,128,.12); --success-border:rgba(74,222,128,.35);
+    --warning:#fbbf24; --warning-bg:rgba(251,191,36,.12); --warning-border:rgba(251,191,36,.35);
+    --destructive:#f87171; --destructive-bg:rgba(248,113,113,.12); --destructive-border:rgba(248,113,113,.35);
+    --ring:#818cf8;
+    --hero-live:linear-gradient(135deg,#4338ca 0%,#0e7490 55%,#0ea5e9 100%);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--background);color:var(--foreground);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+  .app{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  /* Header */
+  .header{display:flex;align-items:center;justify-content:space-between;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--card)}
+  .brand{display:flex;align-items:center;gap:10px}
+  .logo{width:40px;height:40px;border-radius:10px;background:var(--hero-live);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800}
+  .brand h1{font-size:16px;margin:0;font-weight:600;letter-spacing:-.01em}
+  .pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;border:1px solid var(--border);padding:3px 10px;font-size:12px;font-weight:600}
+  .pill.green{color:var(--success);background:var(--success-bg);border-color:var(--success-border)}
+  .pill.green .dot{width:6px;height:6px;border-radius:50%;background:currentColor;animation:pulse 1.6s infinite}
+  .badge-danger{display:inline-flex;align-items:center;gap:4px;border-radius:999px;border:1px solid var(--destructive-border);background:var(--destructive-bg);color:var(--destructive);padding:2px 8px;font-size:11px;font-weight:600;cursor:pointer}
+  .badge-warn{display:inline-flex;align-items:center;gap:4px;border-radius:999px;border:1px solid var(--warning-border);background:var(--warning-bg);color:var(--warning);padding:2px 8px;font-size:11px;font-weight:600;cursor:pointer}
+  .header-right{display:flex;align-items:center;gap:8px}
+  .iconbtn{width:34px;height:34px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--foreground);display:flex;align-items:center;justify-content:center;cursor:pointer}
+  .iconbtn:hover{background:var(--muted)}
+  .ic{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+  .ic svg{display:block}
+  .winctrl{display:flex;gap:4px}
+  .winctrl span{width:14px;height:14px;border-radius:50%;background:var(--muted-foreground);opacity:.5}
+  /* Tabs */
+  .tabs-bar{padding:14px 20px 10px}
+  .tabs{display:inline-flex;gap:4px;background:var(--muted);padding:4px;border-radius:12px}
+  .tab{display:inline-flex;align-items:center;gap:6px;border:none;background:transparent;color:var(--muted-foreground);
+       padding:7px 14px;border-radius:9px;font-size:13px;font-weight:600;cursor:pointer}
+  .tab.active{background:var(--card);color:var(--foreground);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+  .tab .rel{position:relative;display:inline-flex}
+  .tab .rel .num{position:absolute;top:-7px;right:-9px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:var(--destructive);color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  /* Main */
+  main{flex:1;overflow-y:auto;padding:4px 20px 20px}
+  .grid2{display:grid;grid-template-columns:1.55fr 1fr;gap:16px;margin-top:16px}
+  @media(max-width:920px){.grid2{grid-template-columns:1fr}}
+  /* Hero */
+  .hero{position:relative;overflow:hidden;border-radius:16px;color:#fff;background:var(--hero-live);
+        box-shadow:0 18px 40px -12px rgba(79,70,229,.45);padding:18px 20px;display:flex;flex-direction:column;gap:14px}
+  .hero::after{content:"";position:absolute;inset:0;background:
+        radial-gradient(circle at 18% 20%,rgba(255,255,255,.18),transparent 40%),
+        radial-gradient(circle at 85% 90%,rgba(14,165,233,.35),transparent 45%);pointer-events:none}
+  .hero>*{position:relative;z-index:1}
+  .hero-status{display:flex;align-items:center;justify-content:space-between}
+  .hero-status .l{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:600}
+  .hero-status .l .d{width:10px;height:10px;border-radius:50%;background:#fff;animation:pulse 1.6s infinite}
+  .hero-addr{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;background:rgba(255,255,255,.16);padding:4px 12px;border-radius:999px}
+  .hero-cols{display:grid;grid-template-columns:5fr 7fr;gap:14px}
+  .overview{border-radius:12px;background:rgba(255,255,255,.10);padding:14px;display:flex;flex-direction:column;justify-content:center;gap:4px}
+  .overview .lab{font-size:11px;opacity:.8}
+  .overview .big{font-size:34px;font-weight:800;line-height:1;letter-spacing:-.02em}
+  .overview .sub{font-size:10.5px;opacity:.75}
+  .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+  .metric{background:rgba(255,255,255,.10);border-radius:10px;padding:10px}
+  .metric .v{font-size:18px;font-weight:800;line-height:1.1}
+  .metric .k{display:flex;align-items:center;gap:5px;font-size:11px;opacity:.85;margin-top:5px}
+  .metric .s{font-size:9px;opacity:.65;margin-top:2px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.12);border-radius:999px;padding:4px 10px;font-size:11.5px}
+  .chip b{font-weight:700}
+  .chip.tool{background:rgba(255,255,255,.16)}
+  .hero-foot{display:flex;align-items:center;gap:10px;border-top:1px solid rgba(255,255,255,.14);padding-top:12px;margin-top:2px}
+  .hero-foot .t{flex:1;font-size:11.5px;opacity:.9}
+  .btn-stop{display:inline-flex;align-items:center;gap:8px;min-width:130px;justify-content:center;background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.22);
+            padding:9px 16px;border-radius:10px;font-weight:600;font-size:13px;cursor:pointer;backdrop-filter:blur(6px)}
+  .btn-stop:hover{background:rgba(255,255,255,.26)}
+  /* Cards */
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
+  .card h3{margin:0 0 12px;font-size:14px;font-weight:700;display:flex;align-items:center;gap:7px}
+  .card h3 .ic{color:var(--primary)}
+  /* Activity */
+  .act{display:flex;flex-direction:column}
+  .act-row{display:flex;align-items:center;gap:11px;padding:9px 4px;border-bottom:1px solid var(--border)}
+  .act-row:last-child{border-bottom:none}
+  .act-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .act-dot.ok{background:var(--success)}
+  .act-dot.fail{background:var(--destructive)}
+  .act-main{flex:1;min-width:0}
+  .act-tool{font-weight:600;font-size:13px}
+  .act-meta{font-size:11px;color:var(--muted-foreground);margin-top:1px}
+  .act-time{font-family:ui-monospace,monospace;font-size:11px;color:var(--muted-foreground);flex-shrink:0}
+  .act-dur{font-family:ui-monospace,monospace;font-size:11px;color:var(--muted-foreground);width:48px;text-align:right;flex-shrink:0}
+  .viewall{margin-top:12px;width:100%;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid var(--border);background:var(--card);color:var(--foreground);
+           padding:9px;border-radius:10px;font-weight:600;font-size:13px;cursor:pointer}
+  .viewall:hover{background:var(--muted)}
+  /* Security snapshot */
+  .sec-row{display:flex;align-items:center;justify-content:space-between;padding:9px 2px;border-bottom:1px solid var(--border)}
+  .sec-row:last-child{border-bottom:none}
+  .sec-left{display:flex;align-items:center;gap:9px;font-size:13px}
+  .sec-left .si{color:var(--muted-foreground)}
+  .tag{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px}
+  .tag.on{color:var(--success);background:var(--success-bg);border:1px solid var(--success-border)}
+  .tag.off{color:var(--muted-foreground);background:var(--muted);border:1px solid var(--border)}
+  /* Quick actions */
+  .qa{display:flex;flex-direction:column;gap:9px;margin-top:14px}
+  .qa button{display:inline-flex;align-items:center;gap:9px;width:100%;text-align:left;border:1px solid var(--border);background:var(--card);color:var(--foreground);
+            padding:10px 12px;border-radius:10px;font-weight:600;font-size:13px;cursor:pointer}
+  .qa button:hover{background:var(--muted)}
+  .qa button .qi{color:var(--primary)}
+  .hint{position:fixed;right:16px;bottom:16px;display:flex;gap:8px}
+  .hint button{font-size:12px;border:1px solid var(--border);background:var(--card);color:var(--foreground);padding:8px 12px;border-radius:10px;cursor:pointer;font-weight:600}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Header（复用真实 Header：状态胶囊 + 安防徽章 + 主题切换） -->
+  <header class="header">
+    <div class="brand">
+      <div class="logo">CC</div>
+      <h1>CC Bridge</h1>
+      <span class="pill green"><span class="dot"></span>已连接</span>
+      <span class="badge-danger" title="白名单已关闭"><i class="ic" data-icon="alertTriangle" data-size="11"></i> 白名单关闭</span>
+      <span class="badge-warn" title="命令执行已开启"><i class="ic" data-icon="terminal" data-size="11"></i> 命令执行已开启</span>
+    </div>
+    <div class="header-right">
+      <button class="iconbtn" id="themeBtn" title="切换主题"><i class="ic" data-icon="moon" data-size="18"></i></button>
+      <div class="winctrl"><span></span><span></span><span></span></div>
+    </div>
+  </header>
+
+  <!-- Tab 栏：插入「概览」为首屏默认 Tab（Ctrl+1..5） -->
+  <div class="tabs-bar">
+    <div class="tabs">
+      <button class="tab active"><i class="ic" data-icon="monitor" data-size="15"></i>概览</button>
+      <button class="tab"><i class="ic" data-icon="plug" data-size="15"></i>连接</button>
+      <button class="tab"><i class="ic" data-icon="shield" data-size="15"></i>安全</button>
+      <button class="tab"><span class="rel"><i class="ic" data-icon="settings" data-size="15"></i><span class="num">2</span></span>设置</button>
+      <button class="tab"><i class="ic" data-icon="log" data-size="15"></i>日志</button>
+    </div>
+  </div>
+
+  <main>
+    <!-- 复用 ConnectHero：状态行 + 健康环 + 2×3 指标 + 治理胶囊 + 启停 -->
+    <div class="hero">
+      <div class="hero-status">
+        <div class="l"><span class="d"></span>服务运行中</div>
+        <span class="hero-addr">127.0.0.1 : 7823</span>
+      </div>
+      <div class="hero-cols">
+        <div class="overview">
+          <div class="lab">服务健康度 · 实时成功率</div>
+          <div class="big">99.9%</div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+            <svg width="42" height="42" viewBox="0 0 42 42">
+              <defs><linearGradient id="hg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#818CF8"/><stop offset="1" stop-color="#0EA5E9"/></linearGradient></defs>
+              <circle cx="21" cy="21" r="18" fill="none" stroke="rgba(255,255,255,.18)" stroke-width="4"/>
+              <circle cx="21" cy="21" r="18" fill="none" stroke="url(#hg)" stroke-width="4" stroke-linecap="round" stroke-dasharray="113.1" stroke-dashoffset="0.11" transform="rotate(-90 21 21)"/>
+              <text x="21" y="25" text-anchor="middle" fill="#fff" font-size="11" font-weight="800">优</text>
+            </svg>
+            <div style="font-size:11.5px;opacity:.85;line-height:1.4">运行正常</div>
+          </div>
+        </div>
+        <div class="metrics">
+          <div class="metric"><div class="v">12/min</div><div class="k"><i class="ic" data-icon="activity" data-size="12"></i>请求速率</div></div>
+          <div class="metric"><div class="v">8ms</div><div class="k"><i class="ic" data-icon="clock" data-size="12"></i>平均耗时</div></div>
+          <div class="metric"><div class="v">23ms</div><div class="k"><i class="ic" data-icon="alertTriangle" data-size="12"></i>慢请求P95</div><div class="s">95% 请求快于此</div></div>
+          <div class="metric"><div class="v">3天2时</div><div class="k"><i class="ic" data-icon="clock" data-size="12"></i>运行时间</div></div>
+          <div class="metric"><div class="v">1,284</div><div class="k"><i class="ic" data-icon="server" data-size="12"></i>累计请求</div></div>
+          <div class="metric"><div class="v">0</div><div class="k"><i class="ic" data-icon="alertTriangle" data-size="12"></i>错误次数</div></div>
+        </div>
+      </div>
+      <div class="chips">
+        <span class="chip"><i class="ic" data-icon="alertTriangle" data-size="12"></i>限流命中 <b>0</b></span>
+        <span class="chip"><i class="ic" data-icon="lock" data-size="12"></i>越权拒绝 <b>0</b></span>
+        <span class="chip"><i class="ic" data-icon="log" data-size="12"></i>审计 <b>312 条</b></span>
+        <span class="chip"><i class="ic" data-icon="terminal" data-size="12"></i>活跃命令 <b>0</b></span>
+        <span class="chip tool"><i class="ic" data-icon="terminal" data-size="12"></i>读取文件 <b>842</b></span>
+        <span class="chip tool"><i class="ic" data-icon="terminal" data-size="12"></i>写入文件 <b>233</b></span>
+        <span class="chip tool"><i class="ic" data-icon="terminal" data-size="12"></i>列目录 <b>91</b></span>
+      </div>
+      <div class="hero-foot">
+        <span class="t">正在监听，远程可连接</span>
+        <button class="btn-stop"><i class="ic" data-icon="pause" data-size="16"></i>停止服务</button>
+      </div>
+    </div>
+
+    <!-- 仪表盘主体：左=最近活动，右=安全治理快照+快捷操作 -->
+    <div class="grid2">
+      <!-- 最近活动（数据源：get_audit_log 最近 N 条） -->
+      <div class="card">
+        <h3><i class="ic" data-icon="log" data-size="16"></i>最近活动</h3>
+        <div class="act">
+          <div class="act-row"><span class="act-dot ok"></span><div class="act-main"><div class="act-tool">读取文件 <span style="color:var(--muted-foreground);font-weight:400">read_files</span></div><div class="act-meta">127.0.0.1 · /project/src/main.rs</div></div><span class="act-dur">8ms</span><span class="act-time">12:04:33</span></div>
+          <div class="act-row"><span class="act-dot ok"></span><div class="act-main"><div class="act-tool">写入文件 <span style="color:var(--muted-foreground);font-weight:400">write_files</span></div><div class="act-meta">127.0.0.1 · /project/README.md</div></div><span class="act-dur">14ms</span><span class="act-time">12:04:21</span></div>
+          <div class="act-row"><span class="act-dot ok"></span><div class="act-main"><div class="act-tool">列目录 <span style="color:var(--muted-foreground);font-weight:400">list_directory</span></div><div class="act-meta">127.0.0.1 · /project/src</div></div><span class="act-dur">3ms</span><span class="act-time">12:03:58</span></div>
+          <div class="act-row"><span class="act-dot fail"></span><div class="act-main"><div class="act-tool">删除文件 <span style="color:var(--muted-foreground);font-weight:400">delete_files</span></div><div class="act-meta">127.0.0.1 · 越权：路径不在白名单</div></div><span class="act-dur">1ms</span><span class="act-time">12:02:40</span></div>
+          <div class="act-row"><span class="act-dot ok"></span><div class="act-main"><div class="act-tool">执行命令 <span style="color:var(--muted-foreground);font-weight:400">run_command</span></div><div class="act-meta">127.0.0.1 · git status</div></div><span class="act-dur">42ms</span><span class="act-time">12:01:17</span></div>
+        </div>
+        <button class="viewall">查看全部日志 <i class="ic" data-icon="chevronDown" data-size="14" style="transform:rotate(-90deg)"></i></button>
+      </div>
+
+      <!-- 右栏 -->
+      <div>
+        <div class="card">
+          <h3><i class="ic" data-icon="shield" data-size="16"></i>安全治理快照</h3>
+          <div class="sec-row"><div class="sec-left"><i class="ic si" data-icon="lock" data-size="15"></i>白名单</div><span class="tag off">已关闭</span></div>
+          <div class="sec-row"><div class="sec-left"><i class="ic si" data-icon="eyeOff" data-size="15"></i>只读模式</div><span class="tag off">关闭</span></div>
+          <div class="sec-row"><div class="sec-left"><i class="ic si" data-icon="terminal" data-size="15"></i>命令执行</div><span class="tag on">已开启</span></div>
+          <div class="sec-row"><div class="sec-left"><i class="ic si" data-icon="server" data-size="15"></i>备份</div><span class="tag on">已开启</span></div>
+          <div class="sec-row"><div class="sec-left"><i class="ic si" data-icon="log" data-size="15"></i>审计</div><span class="tag on">已开启</span></div>
+          <div class="sec-row"><div class="sec-left"><i class="ic si" data-icon="alertTriangle" data-size="15"></i>限流</div><span class="tag on">已开启</span></div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h3><i class="ic" data-icon="sparkles" data-size="16"></i>快捷操作</h3>
+          <div class="qa">
+            <button><i class="ic qi" data-icon="copy" data-size="16"></i>复制连接命令</button>
+            <button><i class="ic qi" data-icon="settings" data-size="16"></i>打开设置</button>
+            <button><i class="ic qi" data-icon="refresh" data-size="16"></i>刷新状态</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="hint">
+  <button id="themeBtn2">切换 浅 / 暗</button>
+</div>
+
+<script>
+  // 真实图标路径（取自 src/components/ui/icon.tsx，stroke-width:2 lucide 风格）
+  const ICONS={
+    monitor:"M2 3h20v14H2zM8 21h8M12 17v4",
+    plug:"M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1",
+    shield:"M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
+    settings:"M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z",
+    log:"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5",
+    moon:"M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z",
+    sun:"M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4",
+    alertTriangle:"M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01",
+    clock:"M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2",
+    activity:"M22 12h-4l-3 9L9 3l-3 9H2",
+    server:"M2 2h20v8H2zM2 14h20v8H2zM6 6h.01M6 18h.01",
+    terminal:"M4 17l6-6-6-6M12 19h8",
+    lock:"M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zM7 11V7a5 5 0 0 1 10 0v4",
+    eyeOff:"M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 8 10 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07A3 3 0 1 1 9.9 9.9M1 1l22 22M6.61 6.61A18.5 18.5 0 0 0 2 12s3 8 10 8a9.12 9.12 0 0 0 5.39-1.61",
+    sparkles:"m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3z",
+    copy:"M9 9h11a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2zM5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1",
+    refresh:"M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15",
+    chevronDown:"M6 9l6 6 6-6",
+    pause:"M6 4h4v16H6zM14 4h4v16h-4z"
+  };
+  function renderIcons(){
+    document.querySelectorAll('i.ic[data-icon]').forEach(el=>{
+      const name=el.getAttribute('data-icon'); const size=+(el.getAttribute('data-size')||16);
+      const p=ICONS[name]||'';
+      el.innerHTML=`<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${p}"/></svg>`;
+    });
+  }
+  renderIcons();
+
+  const root=document.documentElement;
+  function toggle(){ root.classList.toggle('dark'); const m=document.querySelector('[data-icon="moon"]'); if(m){m.innerHTML=`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="${root.classList.contains('dark')?ICONS.sun:ICONS.moon}"/></svg>`;} }
+  document.getElementById('themeBtn').onclick=toggle;
+  document.getElementById('themeBtn2').onclick=toggle;
+  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));t.classList.add('active');});
+</script>
+</body>
+</html>

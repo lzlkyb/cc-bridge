@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>命令白名单 (Layer 2) · 安全页设计稿</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#16181d; --card2:#1a1d23; --border:#272b33;
+    --fg:#e6e8eb; --muted:#8b919b; --brand:#6366f1;
+    --success:#22c55e; --warning:#f59e0b; --destructive:#ef4444; --muted-bg:#1f232b;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;}
+  .page{max-width:720px;margin:0 auto;padding:28px 18px 60px;}
+  .h1{font-size:18px;font-weight:650;margin:0 0 4px;}
+  .sub{color:var(--muted);font-size:13px;margin:0 0 22px;line-height:1.6;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;margin-bottom:16px;overflow:hidden;}
+  .card-h{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border);}
+  .card-t{display:flex;align-items:center;gap:9px;font-size:14.5px;font-weight:600;}
+  .ic{width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;background:var(--muted-bg);color:var(--muted);font-size:12px;}
+  .ic.brand{background:rgba(99,102,241,.15);color:var(--brand);}
+  .ic.warn{background:rgba(245,158,11,.15);color:var(--warning);}
+  .pill{font-size:11px;font-weight:600;padding:2px 9px;border-radius:999px;border:1px solid;}
+  .pill.on{border-color:rgba(34,197,94,.3);background:rgba(34,197,94,.1);color:var(--success);}
+  .pill.off{border-color:rgba(239,68,68,.3);background:rgba(239,68,68,.1);color:var(--destructive);}
+  .card-c{padding:14px 16px;}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0;border-bottom:1px solid var(--border);}
+  .row:last-child{border-bottom:none;}
+  .row.danger{margin:0 -16px;padding:13px 16px;background:rgba(239,68,68,.06);border-radius:10px;}
+  .lab{font-size:13.5px;font-weight:550;display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+  .sub2{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.55;}
+  .sub2.r{color:var(--destructive);}
+  /* switch */
+  .sw{position:relative;width:40px;height:23px;border-radius:999px;background:#3a3f49;flex:none;transition:.18s;cursor:pointer;}
+  .sw.on{background:var(--brand);}
+  .sw::after{content:"";position:absolute;top:2.5px;left:2.5px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.18s;}
+  .sw.on::after{transform:translateX(17px);}
+  /* list */
+  .chips{display:flex;flex-direction:column;gap:8px;margin-top:4px;}
+  .chip{display:flex;align-items:center;gap:10px;background:var(--muted-bg);border:1px solid var(--border);border-radius:9px;padding:8px 10px;}
+  .chip code{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:var(--fg);word-break:break-all;}
+  .btn{border:1px solid var(--border);background:var(--card2);color:var(--fg);border-radius:8px;padding:7px 12px;font-size:12.5px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+  .btn:hover{border-color:#3a3f49;}
+  .btn.primary{background:var(--brand);border-color:var(--brand);color:#fff;}
+  .btn.ghost{border:none;background:transparent;color:var(--destructive);padding:6px 8px;}
+  .btn:disabled{opacity:.45;cursor:not-allowed;}
+  .addrow{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;}
+  .inp{flex:1;min-width:160px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 11px;color:var(--fg);font-size:12.5px;font-family:ui-monospace,Menlo,monospace;outline:none;}
+  .inp:focus{border-color:var(--brand);}
+  .empty{text-align:center;color:var(--muted);font-size:13px;padding:18px 0;}
+  .note{font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.6;}
+  .lockhint{display:flex;align-items:center;gap:10px;background:var(--muted-bg);border:1px dashed var(--border);border-radius:10px;padding:14px;color:var(--muted);font-size:12.5px;}
+  .divider{height:1px;background:var(--border);margin:18px 0;}
+  .tag{font-size:10.5px;color:var(--muted);border:1px solid var(--border);border-radius:6px;padding:1px 6px;font-weight:500;}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1 class="h1">命令执行白名单（Layer 2）· 安全页设计稿</h1>
+  <p class="sub">
+    位置：<b>安全（Security）页</b> → 新增卡片「命令执行白名单」，紧跟在「文件控制」卡片之后。<br/>
+    依赖：仅当「命令执行（shell_enabled）」已开启时本卡片才可配置；否则整卡置灰并提示先开启命令执行。<br/>
+    行为：开启后，<b>每个</b> run_command 子命令的首个程序必须在白名单内（大小写不敏感、按程序名 basename 匹配），与 Layer 1 破坏性拦截叠加。空列表视为未启用，避免误锁死全部命令。
+  </p>
+
+  <!-- ===== 状态 A：命令执行未开启 → 整卡锁定 ===== -->
+  <div class="card">
+    <div class="card-h">
+      <div class="card-t"><span class="ic brand">⚡</span>命令执行白名单 <span class="tag">Layer 2 · opt-in</span></div>
+      <span class="pill off">命令执行未开启</span>
+    </div>
+    <div class="card-c">
+      <div class="lockhint">
+        <span class="ic warn">🔒</span>
+        请先在上方「安全概览」中开启「命令执行」后，才能配置可执行程序白名单。白名单仅缩小可执行程序面，<b>不</b>削弱 Layer 1 破坏性拦截。
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 状态 B：命令执行已开启，但白名单关闭 ===== -->
+  <div class="card">
+    <div class="card-h">
+      <div class="card-t"><span class="ic brand">⚡</span>命令执行白名单 <span class="tag">Layer 2 · opt-in</span></div>
+      <span class="pill off">白名单关闭</span>
+    </div>
+    <div class="card-c">
+      <div class="row">
+        <div>
+          <div class="lab">启用命令白名单</div>
+          <div class="sub2">开启后，只有白名单内的程序可被远程执行（如 git、node、cmd）。与「破坏性操作拦截（Layer 1）」叠加，进一步缩小可执行面。<b>需先开启命令执行。</b></div>
+        </div>
+        <div class="sw" title="关闭"></div>
+      </div>
+      <div class="note">关闭时：远程可在白名单目录内执行<b>任意</b>程序（仅受 Layer 1 保护）。开启后：未列入白名单的程序一律拦截，并向调用方返回「不在白名单内」。</div>
+    </div>
+  </div>
+
+  <!-- ===== 状态 C：命令执行已开启 + 白名单开启（可编辑） ===== -->
+  <div class="card">
+    <div class="card-h">
+      <div class="card-t"><span class="ic brand">⚡</span>命令执行白名单 <span class="tag">Layer 2 · opt-in</span></div>
+      <span class="pill on">白名单开启 · 3 项</span>
+    </div>
+    <div class="card-c">
+      <div class="row" style="border-bottom:1px solid var(--border)">
+        <div>
+          <div class="lab">启用命令白名单</div>
+          <div class="sub2">已开启：未列入白名单的程序将被拦截。</div>
+        </div>
+        <div class="sw on" title="开启"></div>
+      </div>
+
+      <div class="chips" style="margin-top:12px">
+        <div class="chip"><code>git</code><button class="btn ghost">🗑 删除</button></div>
+        <div class="chip"><code>node</code><button class="btn ghost">🗑 删除</button></div>
+        <div class="chip"><code>C:\Windows\System32\cmd.exe</code><button class="btn ghost">🗑 删除</button></div>
+      </div>
+
+      <div class="addrow">
+        <input class="inp" placeholder="输入程序名，如 python、npm、bash…" />
+        <button class="btn primary">＋ 添加</button>
+      </div>
+      <div class="note">
+        匹配规则：大小写不敏感，按程序名 basename 比较（<code>git</code> 能匹配 <code>/usr/bin/git</code>、<code>C:\Program Files\Git\bin\git.exe</code>）。<br/>
+        添加时自动去重；删除最后一项不会自动关闭开关（空列表等价于「未启用」，所有命令照常放行，仅受 Layer 1 约束）。
+      </div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+  <p class="sub" style="margin:0">
+    <b>与现状的衔接：</b>「命令执行」开关（shell_enabled）已在安全概览内。本卡片仅新增 opt-in 的「可执行程序白名单」，复用同一 <code>save_config</code> 通道（patch 含 <code>commandAllowlistEnabled</code> / <code>commandAllowlist</code>）。后端校验（command_policy.rs）与配置字段（config.rs / commands.rs / types.ts）已在本任务落地并通过测试。
+  </p>
+</div>
+</body>
+</html>

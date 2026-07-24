@@ -7,6 +7,7 @@ import { Icon } from "../ui/icon";
 import { Alert, AlertDescription } from "../ui/alert";
 import { useToast } from "../ui/toast";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
+import { SavedHint } from "../ui/SavedHint";
 
 /**
  * 访问令牌管理（可折叠）。从 ConnectTab 抽离，收口 Token 相关的 5 个局部状态，
@@ -148,7 +149,7 @@ export function TokenManager({
                     }}
                     disabled={!tokenSedCommand}
                   >
-                    {copied ? "已复制 ✓" : "复制"}
+                    {copied ? <SavedHint>已复制</SavedHint> : "复制"}
                   </Button>
                 </div>
               </AlertDescription>

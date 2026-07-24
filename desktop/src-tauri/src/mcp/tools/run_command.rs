@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
+use crate::mcp::tools::command_policy::validate_command_policy;
 use crate::mcp::tools::shell::{
     build_invocation, normalize_cwd_from_shell, parse_shell_type, ShellType,
 };
@@ -36,39 +37,6 @@ fn default_timeout_ms() -> u64 {
 
 fn default_max_output_bytes() -> usize {
     1024 * 1024
-}
-
-/// 危险命令黑名单（对齐 rustterm-mcp 安全模型）。
-/// 采用子串匹配（to_lowercase 后 contains），是低成本的第一道闸——
-/// 拦掉最典型的毁灭性命令，避免开了 shell 开关后一条 `rm -rf /` 抹掉整机。
-const DANGEROUS_COMMAND_PATTERNS: &[&str] = &[
-    // Linux/bash 语义
-    "rm -rf /",
-    "rm -rf /*",
-    "rm -fr /",
-    "mkfs",
-    ":(){:|:&};:", // fork bomb
-    // Windows/cmd 语义（本项目默认 shell 为 cmd，旧黑名单只有 Linux 命令 + format c:，
-    // 在 cmd 下几乎拦不住任何 Windows 破坏性命令）。
-    "format c:",
-    "rd /s /q",
-    "rmdir /s /q",
-    "del /f /s /q",
-    "del /s /q",
-    "diskpart",
-    "cipher /w",
-];
-
-/// 命中任一危险模式即返回 true。
-///
-/// 注意：这是启发式黑名单，误伤 / 漏拦并存——`echo "rm -rf /"` 会被误拦，
-/// `rm -rf /home` 不会被拦。它只是最低成本的兜底闸，不能替代真正的沙箱。
-/// 二期应升级为命令白名单或 shell 令牌化解析（见 功能优化清单 D4）。
-fn is_dangerous_command(command: &str) -> bool {
-    let normalized = command.to_lowercase();
-    DANGEROUS_COMMAND_PATTERNS
-        .iter()
-        .any(|d| normalized.contains(*d))
 }
 
 /// 会话级环境变量条目（key=value），用于 run_command 的 `env` 参数。
@@ -126,17 +94,22 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
                 .to_string(),
         );
     }
-    // 危险命令拦截：在解析 cwd / spawn 之前先挡掉毁灭性命令（rm -rf /、mkfs、fork bomb 等）。
-    // 这是启发式黑名单兜底闸，不进入白名单解析、不注册到运行表。
-    if is_dangerous_command(&args.command) {
-        return Err(
-            "命令被安全策略拦截：命中危险模式（如 rm -rf /、mkfs、fork bomb）。\
-            如确有必要，请改用更精确、限定作用范围的写法后重试。"
-                .to_string(),
-        );
-    }
+    // 命令安全策略校验（④P0-1）：在解析 cwd / spawn 之前先按 shell 语法分词、切子命令、
+    // 逐子命令做破坏性操作检测（Layer 1，常开）。语法感知——引号内的危险串不误拦、
+    // 链式命令任一子命令危险即拦。被拦时不进入白名单解析、不注册到运行表。
+    // Layer 2（可执行白名单）已接入：command_allowlist_enabled 开启即传入白名单（含空列表）。
+    let policy_shell = parse_shell_type(&config.shell_type);
+    // Layer 2（opt-in 可执行白名单）：开关开启即传 Some（fail-closed——空列表=全部拒绝）；
+    // 关闭时传 None（仅 Layer 1，不削弱）。注意 config 仍持有读锁，allowlist 借用与 validate 同生命周期。
+    let allowlist = if config.command_allowlist_enabled {
+        Some(config.command_allowlist.as_slice())
+    } else {
+        None
+    };
+    validate_command_policy(&args.command, policy_shell, allowlist)?;
     // 捕获白名单根（cwd 消失恢复用），随后 config 会 drop。
     let allowed_roots = config.allowed_roots.clone();
+    let notify_command_complete = config.notify_command_complete;
     // 会话级 cwd 持久化解析（默认关，见 BridgeConfig::session_cwd_enabled）：
     // - 开关关：忽略 session_id，cwd 必传，行为与旧版完全一致。
     // - 开关开 + 给定有效 session_id：复用其绑定 cwd（每次仍重校验白名单，规则7 不削弱）。
@@ -280,6 +253,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             shell,
             track_cwd,
             session_env,
+            notify_command_complete,
         )
     })
     .await
@@ -330,6 +304,7 @@ fn spawn_shell(
     shell: ShellType,
     track_cwd: bool,
     extra_env: Vec<(String, String)>,
+    notify_command_complete: bool,
 ) -> Result<(Value, Option<PathBuf>), String> {
     // 用 process-wrap 的 StdCommandWrap 组合包装（Windows 实测结论，见复现测试）：
     // - 关键陷阱：JobObject 的 pre_spawn 会重设 creation_flags 为 CREATE_SUSPENDED（且不合并
@@ -384,6 +359,7 @@ fn spawn_shell(
             cwd_display,
             description,
             state,
+            notify_command_complete,
         )
         .map(|v| (v, None))
     } else {
@@ -557,6 +533,7 @@ fn spawn_background(
     cwd: String,
     description: Option<String>,
     state: &Arc<AppState>,
+    notify_command_complete: bool,
 ) -> Result<Value, String> {
     let (stdout_buf, stdout_trunc, _stdout_done) =
         take_reader(child.stdout().take(), max_output_bytes);
@@ -574,6 +551,11 @@ fn spawn_background(
     // 修复：进程结束时同步定格“已运行秒数”，避免面板在进程早已退出后还用 started_at.elapsed() 实时计算，导致时长一直增长。
     let finished_elapsed: Arc<AsyncMutex<Option<u64>>> = Arc::new(AsyncMutex::new(None));
     let finished_elapsed_clone = finished_elapsed.clone();
+    // 后台命令完成通知：在 spawn 线程前提取 AppHandle（StdMutex，同步安全）。
+    // 开关标志 notify_command_complete 由调用方（handle）在 async 上下文读出后传入。
+    let app_handle = state.app_handle.lock().unwrap().clone();
+    let notify_cmd = command.clone();
+
     // H4 修复：改用 try_wait 轮询，wait 线程不在整个进程生命周期内持锁。
     // 旧实现 c.wait() 期间独占 child 锁，导致 stop_command 的 start_kill 抢不到锁、
     // 永远杀不掉运行中的后台进程。现每次只在 try_wait 瞬间短暂持锁，其余时间释放，
@@ -590,8 +572,21 @@ fn spawn_background(
         match status {
             Some(s) => {
                 let elapsed_secs = started_at.elapsed().as_secs();
-                *exit_code_clone.blocking_lock() = s.code();
+                let code = s.code();
+                *exit_code_clone.blocking_lock() = code;
                 *finished_elapsed_clone.blocking_lock() = Some(elapsed_secs);
+                // 后台命令完成通知
+                if notify_command_complete {
+                    if let Some(ref h) = app_handle {
+                        use tauri_plugin_notification::NotificationExt;
+                        let body = match code {
+                            Some(0) => format!("{} 已完成（退出码 0）", notify_cmd),
+                            Some(c) => format!("{} 已结束（退出码 {}）", notify_cmd, c),
+                            None => format!("{} 已结束（无退出码）", notify_cmd),
+                        };
+                        let _ = h.notification().builder().title("后台命令完成").body(&body).show();
+                    }
+                }
                 break;
             }
             None => std::thread::sleep(std::time::Duration::from_millis(100)),
@@ -785,15 +780,89 @@ mod tests {
         assert!(state.running_commands.is_empty());
     }
 
-    /// 正常命令（含单词 rm 但非危险模式）不应被误拦——is_dangerous_command 只匹配整段模式。
+    /// 正常命令不误拦、毁灭性命令拦住——策略判定的冒烟用例（详尽用例见 command_policy 模块测试）。
+    #[test]
+    fn benign_command_not_blocked_by_dangerous_filter() {
+        use crate::mcp::tools::command_policy::validate_command_policy;
+        use crate::mcp::tools::shell::ShellType;
+        let ok = |c: &str| validate_command_policy(c, ShellType::Bash, None).is_ok();
+        assert!(ok("cargo build --release"));
+        assert!(ok("git status"));
+        assert!(ok("rm -rf ./build")); // 相对路径不视为毁灭性
+        assert!(!ok("rm -rf /"));
+        assert!(!ok("sudo mkfs /dev/sdb"));
+    }
+
+    /// Layer 2 配置接线（④P0-1）：开启命令白名单后，未列入白名单的程序被拦截，
+    /// 白名单内的良性命令放行；且 Layer 1（破坏性检测）不被白名单绕过。
     #[tokio::test]
-    async fn benign_command_not_blocked_by_dangerous_filter() {
-        // 直接单元测试判定函数，避免真实 spawn 的平台依赖。
-        assert!(!is_dangerous_command("cargo build --release"));
-        assert!(!is_dangerous_command("git status"));
-        assert!(!is_dangerous_command("rm -rf ./build")); // 相对路径，不命中 "rm -rf /"
-        assert!(is_dangerous_command("rm -rf /"));
-        assert!(is_dangerous_command("sudo MKFS /dev/sdb"));
+    async fn layer2_allowlist_enforced_through_config() {
+        // 1) 仅 echo 在白名单内：git（良性）应被 Layer 2 拦截；echo 放行。
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.command_allowlist_enabled = true;
+            c.command_allowlist = vec!["echo".to_string()];
+        });
+        let cwd = Some(dir.to_string_lossy().into_owned());
+
+        let blocked = handle(
+            RunCommandArgs {
+                command: "git status".into(),
+                cwd: cwd.clone(),
+                session_id: None,
+                background: false,
+                timeout_ms: 1000,
+                max_output_bytes: 1024,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await;
+        let err = blocked.expect_err("git 不在白名单内必须 Err");
+        assert!(err.contains("白名单"), "应报白名单拦截，实际：{err}");
+
+        let allowed = handle(
+            RunCommandArgs {
+                command: "echo hello".into(),
+                cwd: cwd.clone(),
+                session_id: None,
+                background: false,
+                timeout_ms: 1000,
+                max_output_bytes: 1024,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await;
+        assert!(allowed.is_ok(), "echo 在白名单内应放行");
+
+        // 2) Layer 1 不被白名单绕过：即使把 rm 放进白名单，指向系统目录的 rm -rf 仍被拦。
+        let (state2, dir2) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.command_allowlist_enabled = true;
+            c.command_allowlist = vec!["rm".to_string()];
+        });
+        let destructive = handle(
+            RunCommandArgs {
+                command: "rm -rf C:\\Windows".into(),
+                cwd: Some(dir2.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 1000,
+                max_output_bytes: 1024,
+                description: None,
+                env: None,
+            },
+            &state2,
+        )
+        .await;
+        let derr = destructive.expect_err("rm -rf C:\\Windows 必须被 Layer 1 拦截");
+        assert!(
+            !derr.contains("白名单"),
+            "不应因白名单放行而绕过 Layer 1，实际：{derr}"
+        );
     }
 
     /// cwd 不在白名单 = security::path::resolve_safe_path 报"白名单不含..."。

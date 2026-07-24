@@ -171,6 +171,12 @@ pub fn all_tools() -> Vec<ToolSpec> {
             r#"Forcefully terminate a background command's entire process tree (taskkill /T) and remove it from the registry."#,
             false
         ),
+        register_tool!(
+            push_notification,
+            PushNotificationArgs,
+            r#"Push a desktop notification to the user. Call this when you've completed a user's task (coding, analysis, file generation, etc.) to let them know the result without them needing to check the conversation. The notification appears as a Windows toast. Both title and body are optional — defaults to "cc-bridge" and empty body respectively."#,
+            false
+        ),
     ]
 }
 

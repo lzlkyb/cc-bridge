@@ -7,6 +7,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { ChipInput } from "../ui/chip-input";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { toast } from "../ui/toast";
 import { InlineNum } from "../ui/InlineNum";
 import { RestoreBackupDialog } from "./RestoreBackupDialog";
 
@@ -25,7 +26,7 @@ export function FileControlCard({ status, onSaved }: { status?: StatusResponse; 
     try {
       await invoke("reveal_backup_dir");
     } catch (e) {
-      console.error("[备份] 打开目录失败:", e);
+      toast(`打开备份目录失败：${e}`, "error");
     }
   };
 
@@ -38,7 +39,7 @@ export function FileControlCard({ status, onSaved }: { status?: StatusResponse; 
         const r = await invoke<BackupListResult>("list_backups");
         setBackups(r);
       } catch (e) {
-        console.error("[备份] 列出失败:", e);
+        toast(`加载备份列表失败：${e}`, "error");
       } finally {
         setLoadingBackups(false);
       }
@@ -52,9 +53,13 @@ export function FileControlCard({ status, onSaved }: { status?: StatusResponse; 
 
   const saveField = useCallback(
     async (patch: Record<string, unknown>, fieldName: string) => {
-      await invoke<ConfigSaveResult>("save_config", { patch });
-      onSaved();
-      showSaved(fieldName);
+      try {
+        await invoke<ConfigSaveResult>("save_config", { patch });
+        onSaved();
+        showSaved(fieldName);
+      } catch (e) {
+        toast(`保存失败：${e}`, "error");
+      }
     },
     [onSaved, showSaved],
   );

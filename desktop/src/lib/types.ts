@@ -77,6 +77,14 @@ export interface StatusResponse {
   /** 防火墙探测是否可用。false = 后端启动探测发现 netsh 异常，此后停用查询以避免反复弹系统错误框。
    *  由后端启动时写入（state.firewall_available，默认 true）。undefined/null = 未确定，按可用处理。 */
   firewallAvailable?: boolean | null;
+  /** Layer 2 命令白名单开关（opt-in，④P0-1）。默认关闭。开启后 run_command 子命令首 token 须在白名单内。 */
+  commandAllowlistEnabled: boolean;
+  /** Layer 2 命令白名单程序列表（大小写不敏感 basename 匹配）。 */
+  commandAllowlist: string[];
+  /** 后台命令完成通知开关。默认开启——后台命令结束后自动推 Windows toast。 */
+  notifyCommandComplete: boolean;
+  /** 任务完成通知开关（push_notification MCP 工具总开关）。默认开启。 */
+  notifyTaskComplete: boolean;
 }
 
 export interface ConfigPatch {
@@ -105,6 +113,14 @@ export interface ConfigPatch {
   scope?: string;
   /** 用户接入时确认的项目路径（项目级 scope 时用于 cd 前缀）。跟随连接页选择，供托盘生成精确 sed 命令。 */
   projectPath?: string;
+  /** Layer 2 命令白名单开关（④P0-1）。前端「安全」页写入。 */
+  commandAllowlistEnabled?: boolean;
+  /** Layer 2 命令白名单程序列表（④P0-1）。前端「安全」页写入。 */
+  commandAllowlist?: string[];
+  /** 后台命令完成通知开关。前端「功能开关」卡写入。 */
+  notifyCommandComplete?: boolean;
+  /** 任务完成通知开关。前端「功能开关」卡写入。 */
+  notifyTaskComplete?: boolean;
 }
 
 export interface ConfigSaveResult {

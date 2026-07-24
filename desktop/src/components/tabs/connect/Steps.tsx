@@ -15,7 +15,7 @@ export function GlobalSteps({
       <div className="step-row flex gap-3">
         <StepNumber n={1} />
         <div className="flex-1 space-y-1.5">
-          <p className="text-[12.5px] font-semibold">SSH 登录远程 Linux 服务器</p>
+          <p className="ui-h-sub">SSH 登录远程 Linux 服务器</p>
           <p className="text-xs text-muted-foreground">在任意目录下执行即可</p>
         </div>
       </div>
@@ -23,7 +23,7 @@ export function GlobalSteps({
       <div className="step-row flex gap-3">
         <StepNumber n={2} />
         <div className="flex-1 space-y-2">
-          <p className="text-[12.5px] font-semibold">执行连接命令</p>
+          <p className="ui-h-sub">执行连接命令</p>
           <CommandBlock command={command} copied={copied} onCopy={onCopy} />
         </div>
       </div>
@@ -31,7 +31,7 @@ export function GlobalSteps({
       <div className="step-row flex gap-3">
         <StepNumber n={3} done />
         <div className="flex-1 space-y-1.5">
-          <p className="text-[12.5px] font-semibold">完成</p>
+          <p className="ui-h-sub">完成</p>
           <p className="text-xs text-muted-foreground">
             配置已写入 <code className="rounded bg-muted px-1">~/.claude.json</code>，
             之后在任何项目中启动 <code className="rounded bg-muted px-1">claude</code> 都会自动连接 {APP_INFO.name}。
@@ -73,14 +73,14 @@ export function ProjectSteps({
       <div className="step-row flex gap-3">
         <StepNumber n={1} />
         <div className="flex-1 space-y-1.5">
-          <p className="text-[12.5px] font-semibold">SSH 登录远程 Linux 服务器</p>
+          <p className="ui-h-sub">SSH 登录远程 Linux 服务器</p>
         </div>
       </div>
 
       <div className="step-row flex gap-3">
         <StepNumber n={2} />
         <div className="flex-1 space-y-2">
-          <p className="text-[12.5px] font-semibold">填写远程项目路径（可选）</p>
+          <p className="ui-h-sub">填写远程项目路径（可选）</p>
           <p className="text-xs text-muted-foreground">
             如需进入特定目录执行，填入路径后命令前会自动加 <code className="rounded bg-muted px-1">cd</code>
           </p>
@@ -101,7 +101,7 @@ export function ProjectSteps({
       <div className="step-row flex gap-3">
         <StepNumber n={3} />
         <div className="flex-1 space-y-2">
-          <p className="text-[12.5px] font-semibold">
+          <p className="ui-h-sub">
             {trimmed ? "复制并执行" : "在项目目录下执行"}
           </p>
           {!trimmed && (
@@ -116,7 +116,7 @@ export function ProjectSteps({
       <div className="step-row flex gap-3">
         <StepNumber n={4} done />
         <div className="flex-1 space-y-1.5">
-          <p className="text-[12.5px] font-semibold">完成</p>
+          <p className="ui-h-sub">完成</p>
           <p className="text-xs text-muted-foreground">
             配置已写入项目目录的 <code className="rounded bg-muted px-1">.mcp.json</code>，
             仅在该项目中启动 <code className="rounded bg-muted px-1">claude</code> 时生效。

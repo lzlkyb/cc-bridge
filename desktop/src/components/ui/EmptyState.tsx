@@ -27,6 +27,7 @@ export function EmptyState({
 }) {
   return (
     <div className={`relative flex flex-col items-center justify-center gap-2.5 px-6 text-center ${className}`}>
+      <span className="empty-ring left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2" />
       <Icon name={icon} size={bigIconSize} className="pointer-events-none absolute opacity-[0.06]" />
       <Icon name={icon} size={iconSize} className="relative z-[1] text-muted-foreground/40" />
       <p className="relative z-[1] max-w-[280px] text-sm leading-relaxed text-muted-foreground">{description}</p>

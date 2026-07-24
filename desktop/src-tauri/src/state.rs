@@ -121,6 +121,10 @@ pub struct AppState {
     /// GET /mcp/sse 握手时注册，POST /mcp/messages 结果投递时查找，连接断开后自动过期。
     pub sse_registry: crate::mcp::sse::SseRegistry,
 
+    /// Tauri AppHandle，供 MCP 工具调用 Tauri 插件（notification 等）。
+    /// new() 时为 None，main.rs 在 setup 中注入。StdMutex 短临界区，不跨 await。
+    pub app_handle: StdMutex<Option<tauri::AppHandle>>,
+
     // ── 方案 A 运行卡实时指标（全做真·后端实时统计）──
     /// 最近请求到达时间戳，用于 rpm（60s 滑动窗口）。StdMutex 短临界区，不跨 await。
     pub recent_requests: StdMutex<VecDeque<Instant>>,
@@ -172,6 +176,7 @@ impl AppState {
             auth_denies: AtomicU64::new(0),
             audit_count: AtomicU64::new(0),
             tool_counts: DashMap::new(),
+            app_handle: StdMutex::new(None),
         }
     }
 

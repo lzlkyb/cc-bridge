@@ -12,6 +12,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Switch } from "../ui/switch";
 import { SettingsRow } from "../ui/SettingsRow";
 import { SettingsToggles } from "./SettingsToggles";
+import { SavedHint } from "../ui/SavedHint";
 import { AboutGroup } from "./AboutGroup";
 
 export function SettingsTab({
@@ -91,7 +92,9 @@ function NetworkGroup({
         await invoke("restart_mcp_server");
         // 防火墙联动：端口变了 → 旧端口规则残留、新端口无放行规则。主动刷新
         // 缓存使「连接」页防火墙告警块基于新端口正确显示（未放行时提示一键开放）。
-        await invoke("refresh_firewall").catch(() => {});
+        await invoke("refresh_firewall").catch((e) =>
+          toast(`刷新防火墙失败：${e}`, "error"),
+        );
         setRestarted(true);
         if (status?.firewallEnabled === true) {
           toast(
@@ -142,7 +145,7 @@ function NetworkGroup({
                 {dirty ? "保存并重启" : "保存"}
               </Button>
               {!dirty && !restarted && <span className="text-xs text-muted-foreground whitespace-nowrap">无更改</span>}
-              {restarted && <span className="text-xs text-success whitespace-nowrap">已保存并重启 ✓</span>}
+              {restarted && <SavedHint className="whitespace-nowrap">已保存并重启</SavedHint>}
             </div>
           }
         />

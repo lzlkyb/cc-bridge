@@ -179,7 +179,7 @@ export function ChipInput({
         <span className="shrink-0 text-[11px] font-medium text-foreground">自定义</span>
         <input
           ref={inputRef}
-          className="h-[34px] min-w-0 flex-1 rounded-md border border-input bg-card px-2.5 font-mono text-xs text-foreground transition-colors focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+          className="h-[34px] min-w-0 flex-1 rounded-md border border-input bg-card px-2.5 font-mono text-xs text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-primary"
           placeholder={placeholder}
           value={input}
           onChange={(e) => setInput(e.target.value)}

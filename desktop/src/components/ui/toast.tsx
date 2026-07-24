@@ -15,8 +15,24 @@ interface ToastContextValue {
 
 const ToastContext = createContext<ToastContextValue>({ toast: () => {} });
 
+/**
+ * Toast 文案规范（UI 精修统一约定，调用方请遵守）：
+ *  - success：操作成功类（"已复制" / "已还原到操作前版本"），用 check 图标
+ *  - error：  失败/异常类（"复制失败：…" / 接口报错），用 alertTriangle 图标
+ *  - warning：需提醒但非阻断（保留）
+ *  - info：   中性提示（保留）
+ * 约定：文案简洁、动宾结构；成功态不重复写"成功"二字（图标已表达）。
+ */
 export function useToast() {
   return useContext(ToastContext);
+}
+
+// 模块级单例：供非组件代码（如 lib/tauri.ts 的 invokeOrToast）直接调用 toast。
+// 由 ToastProvider 挂载时写入实现；未挂载时调用为 no-op。
+let toastImpl: ((message: string, variant?: ToastVariant) => void) | null = null;
+
+export function toast(message: string, variant: ToastVariant = "info") {
+  toastImpl?.(message, variant);
 }
 
 let toastId = 0;
@@ -49,6 +65,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const removeToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  // 将实现暴露给模块级单例（供非组件调用，如 invokeOrToast）
+  useEffect(() => {
+    toastImpl = addToast;
+  }, [addToast]);
 
   return (
     <ToastContext.Provider value={{ toast: addToast }}>

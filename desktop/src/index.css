@@ -94,6 +94,20 @@
   --hero-stopped-bg: linear-gradient(135deg, #64748b 0%, #475569 60%, #334155 100%);
   --hero-stopped-shadow: 0 12px 32px rgba(0,0,0,0.28);
 
+  /* 图表/数据可视化固定调色板（PerfCharts / TimingBreakdown 共用；主题无关、深浅一致，
+     改配色只动此处）。SVG fill 与 inline style background 均直接引用 var()。 */
+  --chart-1: #6366f1;  /* indigo */
+  --chart-2: #14b8a6;  /* teal */
+  --chart-3: #f59e0b;  /* amber */
+  --chart-4: #ef4444;  /* rose */
+  --chart-5: #10b981;  /* emerald */
+  --chart-6: #8b5cf6;  /* violet */
+  --chart-7: #0ea5e9;  /* sky */
+  --chart-8: #ec4899;  /* pink */
+  --chart-9: #84cc16;  /* lime */
+  --chart-10: #f97316; /* orange */
+  --chart-compare: #94a3b8; /* 对比柱（P95）/ 中性灰 */
+
   /* 浅色下卡片阴影 */
   --card-lift-shadow: 0 8px 24px rgba(0,0,0,0.10);
   --card-primary-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 1px color-mix(in srgb, hsl(var(--primary)) 12%, transparent);
@@ -988,6 +1002,54 @@ select:focus-visible,
   background: color-mix(in srgb, hsl(var(--muted)) 60%, transparent);
   border: 1px solid hsl(var(--border));
   border-radius: 8px; padding: 9px 12px;
+}
+
+/* ═══ 字体层级刻度（A 层统一）═══ */
+.ui-h-section { font-size: 14px; font-weight: 600; line-height: 1.4; }
+.ui-h-sub { font-size: 13px; font-weight: 600; line-height: 1.4; }
+.ui-eyebrow {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
+  text-transform: uppercase; color: hsl(var(--muted-foreground));
+}
+
+/* ═══ 已保存反馈（统一组件 SavedHint）═══ */
+.saved-hint { animation: saved-in 0.22s ease both; }
+.saved-hint--icon { font-size: 10px; gap: 0; }
+@keyframes saved-in {
+  from { opacity: 0; transform: translateY(1px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ═══ 无障碍：尊重 prefers-reduced-motion ═══ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+  .skeleton { animation: none; }
+}
+
+/* ═══ 空状态装饰环（方案1 精修）═══ */
+.empty-ring {
+  position: absolute;
+  width: 112px; height: 112px; border-radius: 50%;
+  background: radial-gradient(circle,
+    color-mix(in srgb, hsl(var(--primary)) 12%, transparent) 0%,
+    transparent 70%);
+  pointer-events: none;
+}
+
+/* ═══ 骨架屏 Skeleton（统一加载反馈，替代散落"加载中…"）═══ */
+@keyframes skeleton-shimmer {
+  0%   { opacity: 0.5; }
+  50%  { opacity: 1; }
+  100% { opacity: 0.5; }
+}
+.skeleton {
+  background: hsl(var(--muted));
+  border-radius: 6px;
+  animation: skeleton-shimmer 1.3s ease-in-out infinite;
 }
 
 /* ═══ 动画质感升级：减弱动效守卫 ═══

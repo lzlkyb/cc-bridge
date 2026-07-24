@@ -117,6 +117,18 @@ pub struct StatusResponse {
     /// 提示，而非让用户反复看到「应用程序错误」弹窗。
     #[serde(rename = "firewallAvailable")]
     pub firewall_available: Option<bool>,
+    /// 命令白名单开关（Layer 2，opt-in，④P0-1）。前端「安全」页读写。
+    #[serde(rename = "commandAllowlistEnabled")]
+    pub command_allowlist_enabled: bool,
+    /// 命令白名单程序列表（Layer 2，④P0-1）。前端「安全」页读写。
+    #[serde(rename = "commandAllowlist")]
+    pub command_allowlist: Vec<String>,
+    /// 后台命令完成通知开关。默认开启——后台命令结束后自动推 Windows toast。
+    #[serde(rename = "notifyCommandComplete")]
+    pub notify_command_complete: bool,
+    /// 任务完成通知开关（push_notification MCP 工具总开关）。默认开启。
+    #[serde(rename = "notifyTaskComplete")]
+    pub notify_task_complete: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -383,6 +395,10 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         firewall_enabled,
         firewall_port_open,
         firewall_available,
+        command_allowlist_enabled: config.command_allowlist_enabled,
+        command_allowlist: config.command_allowlist.clone(),
+        notify_command_complete: config.notify_command_complete,
+        notify_task_complete: config.notify_task_complete,
     })
 }
 
@@ -475,6 +491,18 @@ pub struct ConfigPatch {
     /// 跟随连接页选择，供托盘「复制 IP 替换命令」生成带 cd 的精确命令，与 IpChangedBanner 对齐。
     #[serde(rename = "projectPath")]
     pub project_path: Option<String>,
+    /// 命令白名单开关（Layer 2，④P0-1）。前端「安全」页写入。
+    #[serde(rename = "commandAllowlistEnabled")]
+    pub command_allowlist_enabled: Option<bool>,
+    /// 命令白名单程序列表（Layer 2，④P0-1）。前端「安全」页写入。
+    #[serde(rename = "commandAllowlist")]
+    pub command_allowlist: Option<Vec<String>>,
+    /// 后台命令完成通知开关。前端「功能开关」卡写入。
+    #[serde(rename = "notifyCommandComplete")]
+    pub notify_command_complete: Option<bool>,
+    /// 任务完成通知开关（push_notification 工具总开关）。前端「功能开关」卡写入。
+    #[serde(rename = "notifyTaskComplete")]
+    pub notify_task_complete: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -567,6 +595,28 @@ pub async fn save_config(
     // 命令执行壳层：cmd（默认）/ bash。仅接受这两个值，其它值由 config.rs 解析时回退 cmd。
     apply_field!(shell_type, "shell_type", &patch.shell_type);
     apply_field!(transport, "transport", &patch.transport);
+    // Layer 2 命令白名单（④P0-1）：开关 + 程序列表。仅当二者均被提供时更新。
+    apply_field!(
+        command_allowlist_enabled,
+        "command_allowlist_enabled",
+        &patch.command_allowlist_enabled
+    );
+    apply_field!(
+        command_allowlist,
+        "command_allowlist",
+        &patch.command_allowlist
+    );
+    // 通知开关
+    apply_field!(
+        notify_command_complete,
+        "notify_command_complete",
+        &patch.notify_command_complete
+    );
+    apply_field!(
+        notify_task_complete,
+        "notify_task_complete",
+        &patch.notify_task_complete
+    );
     // 首次接入复制命令时由前端写入，记录 cc-bridge 被注册到远程的作用域，
     // 供后续 IP 变化 / Token 重生成生成精确 sed 命令（方案 A）。
     // scope 在 config 中也是 Option<String>，与 apply_field! 宏的 "T vs Option<T>" 假设不符，故单独处理。

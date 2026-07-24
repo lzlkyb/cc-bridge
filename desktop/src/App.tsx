@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "./lib/tauri";
 import type { StatusResponse } from "./lib/types";
@@ -9,11 +9,13 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { Icon } from "./components/ui/icon";
-import { ToastProvider, useToast } from "./components/ui/toast";
+import { ToastProvider, useToast, toast } from "./components/ui/toast";
 import { ConnectTab } from "./components/tabs/ConnectTab";
-import { SecurityTab } from "./components/tabs/SecurityTab";
-import { SettingsTab } from "./components/tabs/SettingsTab";
-import { LogTab } from "./components/tabs/LogTab";
+import { Skeleton } from "./components/ui/Skeleton";
+// 非首屏 Tab 懒加载：减小首屏 JS，切到对应 Tab 时才加载（fallback 用骨架屏）
+const SecurityTab = lazy(() => import("./components/tabs/SecurityTab").then((m) => ({ default: m.SecurityTab })));
+const SettingsTab = lazy(() => import("./components/tabs/SettingsTab").then((m) => ({ default: m.SettingsTab })));
+const LogTab = lazy(() => import("./components/tabs/LogTab").then((m) => ({ default: m.LogTab })));
 import { OnboardingGuide, isOnboardingDone } from "./components/modals/OnboardingGuide";
 import { CommandPalette } from "./components/modals/CommandPalette";
 
@@ -63,7 +65,7 @@ function AppContent() {
         );
       })
       // O3: 原 .catch(() => {}) 会静默吞掉写入失败,导致"标记已处理"无效却无提示
-      .catch((e) => console.error("[cc-bridge] 保存选中 IP 失败:", e));
+      .catch((e) => toast(`保存选中 IP 失败：${e}`, "error"));
   }, [queryClient]);
 
   // 方案 Q: 用户复制了远程更新 sed 命令后收口，允许 banner 随乐观状态/下次轮询自然消失。
@@ -260,13 +262,19 @@ function AppContent() {
             <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} />
           </TabsContent>
           <TabsContent value="security">
-            <SecurityTab status={status} onSaved={refetchStatus} />
+            <Suspense fallback={<TabFallback />}>
+              <SecurityTab status={status} onSaved={refetchStatus} />
+            </Suspense>
           </TabsContent>
           <TabsContent value="settings">
-            <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} />
+            <Suspense fallback={<TabFallback />}>
+              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} />
+            </Suspense>
           </TabsContent>
           <TabsContent value="log">
-            <LogTab />
+            <Suspense fallback={<TabFallback />}>
+              <LogTab />
+            </Suspense>
           </TabsContent>
         </main>
       </Tabs>
@@ -333,6 +341,16 @@ function LinkStateWatcher({
     prevLinkDown.current = linkDown;
   }, [status, toast, onReselectIp]);
   return null;
+}
+
+/** 懒加载 Tab 的占位骨架屏：模拟卡片布局，加载期间微光呼吸 */
+function TabFallback() {
+  return (
+    <div className="space-y-4 p-1">
+      <Skeleton className="h-36 w-full rounded-xl" />
+      <Skeleton className="h-64 w-full rounded-xl" />
+    </div>
+  );
 }
 
 export default function App() {

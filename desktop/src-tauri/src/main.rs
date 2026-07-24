@@ -210,6 +210,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let app_state = Arc::new(state::AppState::new(db_conn, bridge_config, data_dir));
             app.manage(app_state.clone());
 
+            // 注入 AppHandle 供 MCP 工具调用 Tauri 插件（notification 等）
+            *app_state.app_handle.lock().unwrap() = Some(app.handle().clone());
+
             // 防火墙：启动探测 netsh 是否可用。不可用时置 false，停止后续查询，
             // 避免 netsh 损坏时反复 spawn 失败进程、且不再触发「应用程序错误」弹窗
             // （错误模式已在 main() 抑制）。须在后台定时刷新任务之前完成。

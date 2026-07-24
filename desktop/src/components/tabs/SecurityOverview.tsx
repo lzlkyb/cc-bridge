@@ -5,6 +5,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Icon } from "../ui/icon";
 import { Switch } from "../ui/switch";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { SavedHint } from "../ui/SavedHint";
 
 /**
  * 安全概览卡（方案 A 顶部）。
@@ -235,7 +236,7 @@ function ToggleRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">{label}</span>
-          {saved && <span className="text-xs font-normal text-success">已保存 ✓</span>}
+          {saved && <SavedHint>已保存</SavedHint>}
         </div>
         <div className={`mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>
           {sub}

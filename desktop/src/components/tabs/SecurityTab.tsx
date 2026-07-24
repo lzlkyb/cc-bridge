@@ -9,6 +9,7 @@ import { DirectoryBrowser } from "../modals/DirectoryBrowser";
 import { SecurityOverview } from "./SecurityOverview";
 import { RunningCommandsCard } from "./RunningCommandsCard";
 import { FileControlCard } from "./FileControlCard";
+import { CommandAllowlistCard } from "./CommandAllowlistCard";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { useToast } from "../ui/toast";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
@@ -145,6 +146,8 @@ export function SecurityTab({
       </Card>
 
       <FileControlCard status={status} onSaved={onSaved} />
+
+      <CommandAllowlistCard status={status} onSaved={onSaved} />
 
       <DirectoryBrowser
         open={browserOpen}

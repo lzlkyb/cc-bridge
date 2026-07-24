@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { SavedHint } from "./SavedHint";
 
 /** 行内数字输入（带防抖自动保存 + 已保存反馈），供设置页各类数值项复用。 */
 export function InlineNum({
@@ -41,7 +42,7 @@ export function InlineNum({
         }}
       />
       <span className="s-unit">{unit}</span>
-      {saved && <span className="text-[10px] text-success">✓</span>}
+      {saved && <SavedHint iconOnly />}
     </div>
   );
 }

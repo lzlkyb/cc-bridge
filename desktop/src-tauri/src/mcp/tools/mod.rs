@@ -1,5 +1,6 @@
 pub mod analyze_file;
 pub mod batch;
+pub mod command_policy;
 pub mod copy_files;
 pub mod create_directory;
 pub mod delete_files;
@@ -9,6 +10,7 @@ pub mod list_allowed_roots;
 pub mod list_directory;
 pub mod move_files;
 pub mod notebook_edit;
+pub mod push_notification;
 pub mod read_files;
 pub mod registry;
 pub mod remove_directory;

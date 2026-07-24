@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { SavedHint } from "./SavedHint";
 
 /**
  * 设置页通用「行」骨架：左侧标签 + 说明，右侧控制区。
@@ -41,7 +42,7 @@ export function SettingsRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">{label}</span>
-          {saved && <span className="text-xs font-normal text-success">已保存 ✓</span>}
+          {saved && <SavedHint>已保存</SavedHint>}
         </div>
         {!isStack && sub && (
           <div className={`mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>

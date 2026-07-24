@@ -977,7 +977,7 @@ mod over_wire_tests {
         // 最后 unwrap_or(true) 总是命中，导致本条断言无论实际结果都不会失败)。
         let bad_ok = bad_inner
             .as_array()
-            .and_then(|arr| arr.get(0))
+            .and_then(|arr| arr.first())
             .and_then(|e| e["ok"].as_bool())
             .unwrap_or(true);
         assert!(!bad_ok, "未知 encoding 标签应使该文件写入失败");
