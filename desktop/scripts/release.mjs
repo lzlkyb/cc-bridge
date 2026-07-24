@@ -220,9 +220,11 @@ async function main() {
   console.log(`\x1b[32m[6/7]\x1b[0m 已重新生成 changelog.generated.ts`);
 
   // 7. 门禁：cargo test + clippy
+  // cargo test 必须 --no-default-features：notifications feature 会拉入 GUI DLL
+  // 导致 test 二进制 0xc0000139（与 CI/pre-push 钩子保持一致）
   if (!SKIP_TESTS) {
-    console.log("\x1b[35m[门禁] cargo test\x1b[0m");
-    run("cargo test", path.join(DESKTOP, "src-tauri"));
+    console.log("\x1b[35m[门禁] cargo test --no-default-features\x1b[0m");
+    run("cargo test --no-default-features", path.join(DESKTOP, "src-tauri"));
     console.log("\x1b[35m[门禁] cargo clippy --no-default-features\x1b[0m");
     run("cargo clippy --no-default-features", path.join(DESKTOP, "src-tauri"));
   }

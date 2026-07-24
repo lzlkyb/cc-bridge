@@ -30,7 +30,7 @@ jobs:
         with:
           workspaces: desktop/src-tauri
       - name: cargo test
-        run: cargo test
+        run: cargo test --no-default-features
         working-directory: desktop/src-tauri
 
   # 发版构建：仅 tag 触发。test(release) 与 build 同 job 内复用 release target，
@@ -80,7 +80,7 @@ jobs:
 
       # A：用 release profile 跑测试，编译出的 release 依赖产物直接被下面 tauri build 复用。
       - name: cargo test (release, 复用后续 build 的编译产物)
-        run: cargo test --release
+        run: cargo test --release --no-default-features
         working-directory: desktop/src-tauri
 
       - name: Build Tauri desktop app (NSIS installer)

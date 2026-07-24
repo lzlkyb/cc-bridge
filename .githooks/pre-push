@@ -25,7 +25,7 @@ echo ""
 
 # ── Rust cargo test ──
 echo "[2/2] Rust cargo test..."
-(cd desktop/src-tauri && cargo test)
+(cd desktop/src-tauri && cargo test --no-default-features)
 echo "  ✅ Rust 测试通过"
 echo ""
 

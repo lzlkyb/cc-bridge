@@ -171,7 +171,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
             r#"Forcefully terminate a background command's entire process tree (taskkill /T) and remove it from the registry."#,
             false
         ),
-        #[cfg(not(test))]
+        #[cfg(feature = "notifications")]
         register_tool!(
             push_notification,
             PushNotificationArgs,

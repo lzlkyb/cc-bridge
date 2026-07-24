@@ -123,9 +123,11 @@ pub struct AppState {
 
     /// Tauri AppHandle，供 MCP 工具调用 Tauri 插件（notification 等）。
     /// new() 时为 None，main.rs 在 setup 中注入。StdMutex 短临界区，不跨 await。
-    /// test profile 下不编译：AppHandle 会引入 tao/webview2-com 的 GUI DLL 链，
+    /// 用 feature 门控：AppHandle 会引入 tao/webview2-com 的 GUI DLL 链，
     /// 导致 test 二进制启动时 0xc0000139（入口点未找到）。
-    #[cfg(not(test))]
+    /// #[cfg(not(test))] 对集成测试无效（lib 作为依赖编译时不带 test cfg），
+    /// 改用 feature gate + CI --no-default-features。
+    #[cfg(feature = "notifications")]
     pub app_handle: StdMutex<Option<tauri::AppHandle>>,
 
     // ── 方案 A 运行卡实时指标（全做真·后端实时统计）──
@@ -179,7 +181,7 @@ impl AppState {
             auth_denies: AtomicU64::new(0),
             audit_count: AtomicU64::new(0),
             tool_counts: DashMap::new(),
-            #[cfg(not(test))]
+            #[cfg(feature = "notifications")]
             app_handle: StdMutex::new(None),
         }
     }

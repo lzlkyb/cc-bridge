@@ -8,9 +8,25 @@ use tauri::tray::TrayIconBuilder;
 use tauri::Listener;
 use tauri::Manager;
 use tauri_plugin_clipboard_manager::ClipboardExt;
+#[cfg(feature = "notifications")]
 use tauri_plugin_notification::NotificationExt;
 
 use cc_bridge_desktop::*;
+
+/// 统一 toast 通知辅助：notifications feature 关闭时为 no-op。
+/// 集中一处门控，避免每个调用点重复 #[cfg]。
+#[cfg(feature = "notifications")]
+fn notify_toast(handle: &tauri::AppHandle, body: &str) {
+    let _ = handle
+        .notification()
+        .builder()
+        .title("cc-bridge")
+        .body(body)
+        .show();
+}
+
+#[cfg(not(feature = "notifications"))]
+fn notify_toast(_handle: &tauri::AppHandle, _body: &str) {}
 
 /// 生成托盘图标：透明底 + 居中状态色圆点（运行时绿、停止灰）。
 /// 用代码绘制，避免额外打包二进制图标资源。两份图标缓存在 static 中，
@@ -169,7 +185,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(windows)]
     crate::firewall::suppress_child_error_dialogs();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -180,8 +196,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init());
+
+    #[cfg(feature = "notifications")]
+    let builder = builder.plugin(tauri_plugin_notification::init());
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
@@ -211,7 +231,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app.manage(app_state.clone());
 
             // 注入 AppHandle 供 MCP 工具调用 Tauri 插件（notification 等）
-            *app_state.app_handle.lock().unwrap() = Some(app.handle().clone());
+            #[cfg(feature = "notifications")]
+            {
+                *app_state.app_handle.lock().unwrap() = Some(app.handle().clone());
+            }
 
             // 防火墙：启动探测 netsh 是否可用。不可用时置 false，停止后续查询，
             // 避免 netsh 损坏时反复 spawn 失败进程、且不再触发「应用程序错误」弹窗
@@ -372,20 +395,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             match app_h.clipboard().write_text(cmd) {
                                 Ok(_) => {
-                                    let _ = app_h
-                                        .notification()
-                                        .builder()
-                                        .title("cc-bridge")
-                                        .body("连接命令已复制到剪贴板")
-                                        .show();
+                                    notify_toast(&app_h, "连接命令已复制到剪贴板");
                                 }
                                 Err(e) => {
-                                    let _ = app_h
-                                        .notification()
-                                        .builder()
-                                        .title("cc-bridge")
-                                        .body(format!("复制失败，请手动复制：{e}"))
-                                        .show();
+                                    notify_toast(&app_h, &format!("复制失败，请手动复制：{e}"));
                                 }
                             }
                         });
@@ -433,22 +446,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             };
                             match app_h.clipboard().write_text(cmd) {
                                 Ok(_) => {
-                                    let _ = app_h
-                                        .notification()
-                                        .builder()
-                                        .title("cc-bridge")
-                                        .body(format!(
-                                            "IP 替换命令已复制到剪贴板（{scope_label}）"
-                                        ))
-                                        .show();
+                                    notify_toast(
+                                        &app_h,
+                                        &format!("IP 替换命令已复制到剪贴板（{scope_label}）"),
+                                    );
                                 }
                                 Err(e) => {
-                                    let _ = app_h
-                                        .notification()
-                                        .builder()
-                                        .title("cc-bridge")
-                                        .body(format!("复制失败，请手动复制：{e}"))
-                                        .show();
+                                    notify_toast(&app_h, &format!("复制失败，请手动复制：{e}"));
                                 }
                             }
                         });
@@ -580,12 +584,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 refresh_tray(&tray, running, tip, &last_tray);
                             }
                             if changed && !alerting {
-                                let _ = handle
-                                    .notification()
-                                    .builder()
-                                    .title("cc-bridge")
-                                    .body("网络地址已变化，点击查看新连接命令")
-                                    .show();
+                                notify_toast(&handle, "网络地址已变化，点击查看新连接命令");
                             }
                             alerting = changed;
                         }

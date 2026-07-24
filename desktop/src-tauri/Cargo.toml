@@ -4,6 +4,13 @@ version = "2.3.17"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
+[features]
+default = ["notifications"]
+# notifications 功能包含桌面通知（push_notification MCP 工具 + 后台命令完成 toast）。
+# 用 cargo feature 而非 #[cfg(not(test))] 门控：后者对集成测试无效（lib 作为依赖编译时不带 test cfg）。
+# CI / 测试用 --no-default-features 禁用，避免 AppHandle + notification 插件拉入 GUI DLL 导致 0xc0000139。
+notifications = ["dep:tauri-plugin-notification"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -16,7 +23,7 @@ tauri-plugin-updater = "2"
 # P2-2：更新源 env 覆盖（CCBRIDGE_UPDATE_ENDPOINT）构造 Url 用，与插件共用同一份 url 2.x
 url = "2"
 tauri-plugin-process = "2"
-tauri-plugin-notification = "2"
+tauri-plugin-notification = { version = "2", optional = true }
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
 
