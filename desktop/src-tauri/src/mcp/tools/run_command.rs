@@ -526,6 +526,7 @@ fn run_foreground(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg_attr(test, allow(unused_variables))]
 fn spawn_background(
     mut child: Box<dyn StdChildWrapper>,
     max_output_bytes: usize,
@@ -553,7 +554,11 @@ fn spawn_background(
     let finished_elapsed_clone = finished_elapsed.clone();
     // 后台命令完成通知：在 spawn 线程前提取 AppHandle（StdMutex，同步安全）。
     // 开关标志 notify_command_complete 由调用方（handle）在 async 上下文读出后传入。
+    // test profile 下 app_handle 字段不存在（state.rs 用 #[cfg(not(test))] 剔除），
+    // 对应变量也不编译。
+    #[cfg(not(test))]
     let app_handle = state.app_handle.lock().unwrap().clone();
+    #[cfg(not(test))]
     let notify_cmd = command.clone();
 
     // H4 修复：改用 try_wait 轮询，wait 线程不在整个进程生命周期内持锁。
@@ -575,7 +580,8 @@ fn spawn_background(
                 let code = s.code();
                 *exit_code_clone.blocking_lock() = code;
                 *finished_elapsed_clone.blocking_lock() = Some(elapsed_secs);
-                // 后台命令完成通知
+                // 后台命令完成通知（test profile 下不链接 notification 插件，避免 0xc0000139）
+                #[cfg(not(test))]
                 if notify_command_complete {
                     if let Some(ref h) = app_handle {
                         use tauri_plugin_notification::NotificationExt;
@@ -584,7 +590,12 @@ fn spawn_background(
                             Some(c) => format!("{} 已结束（退出码 {}）", notify_cmd, c),
                             None => format!("{} 已结束（无退出码）", notify_cmd),
                         };
-                        let _ = h.notification().builder().title("后台命令完成").body(&body).show();
+                        let _ = h
+                            .notification()
+                            .builder()
+                            .title("后台命令完成")
+                            .body(&body)
+                            .show();
                     }
                 }
                 break;
