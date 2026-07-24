@@ -4,14 +4,22 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.16",
+    date: "2026-07-24",
+    items: [
+      { category: "feat", text: "新增桌面通知能力与命令安全策略" },
+      { category: "fix", text: "修复发版脚本防漏纳门禁误判（已暂存文件被判为漏纳而中止发版）" },
+    ],
+  },
+  {
     version: "2.3.15",
     date: "2026-07-23",
     items: [
       { category: "improve", text: "工具写权限清单改为运行时从注册表推导，移除硬编码" },
-      { category: "improve", text: "docs: 补 v2.3.14 CHANGELOG 与生成文件（发版脚本漏纳入）" },
       { category: "fix", text: "修复关于卡片进设置页无条件展开回归" },
-      { category: "fix", text: "修复状态响应缺project_path、停止命令未终止子进程、备份清理误删" },
-      { category: "fix", text: "修复发版脚本CHANGELOG插入位置错误导致漏纳版本段与生成文件" },
+      { category: "fix", text: "修复状态响应缺 project_path 字段导致前端 project 模式回填空值" },
+      { category: "fix", text: "修复停止命令未真正终止后台子进程" },
+      { category: "fix", text: "修复备份清理按文件名误删其他备份（改为按原始路径精确匹配）" },
     ],
   },
   {
@@ -113,18 +121,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "修复导入配置后新目录未立即生效的问题" },
       { category: "feat", text: "更新弹框升级路径更直观：清晰展示「当前版本 → 新版本」" },
       { category: "improve", text: "更新弹框内容展示更聚焦，只呈现对你有用的要点" },
-    ],
-  },
-  {
-    version: "2.3.6",
-    date: "2026-07-17",
-    items: [
-      { category: "feat", text: "命令执行可选 Git Bash 壳层，远端自动用 POSIX 风格命令操作你的文件" },
-      { category: "feat", text: "托盘新增「复制 IP 替换命令」，换网络后一键拿到替换命令" },
-      { category: "fix", text: "托盘「复制连接命令」不再依赖窗口焦点，后台隐藏也能稳定复制" },
-      { category: "fix", text: "二进制文件不再被误判为文本，避免返回满屏乱码污染远端上下文" },
-      { category: "improve", text: "编辑文件匹配失败时提示「是否多带了首尾空白」，减少模型失误" },
-      { category: "improve", text: "连接后建议先列出允许访问的根目录，省去手动读取项目规则" },
     ],
   },
 ];

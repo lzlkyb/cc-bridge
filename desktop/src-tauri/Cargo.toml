@@ -1,6 +1,6 @@
 [package]
 name = "cc-bridge-desktop"
-version = "2.3.15"
+version = "2.3.16"
 description = "cc-bridge: local MCP file bridge for remote Claude Code"
 edition = "2021"
 
@@ -73,6 +73,10 @@ cc-bridge-macros = { path = "macros" }
 
 # Unified diff 生成（edit_files/write_files 改文件后随结果回传增删摘要，P3-1，见 功能优化清单.md）
 similar = "3.1"
+
+# 命令安全策略（④P0-1）：POSIX 分词，把 run_command 危险命令拦截从「子串黑名单」
+# 升级为「语法感知 token 分析」。极小纯 Rust crate（无传递依赖），不冲击体积红线（规则8）。
+shell-words = "1"
 
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
