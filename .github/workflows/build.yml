@@ -22,7 +22,7 @@ jobs:
     if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Sccache Setup (跨 PR 编译缓存)
         uses: mozilla/sccache-action@v0.0.10
@@ -42,7 +42,7 @@ jobs:
     permissions:
       contents: write   # 创建 GitHub Release 需要写权限（默认 token 只读）
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: 🔑 准备签名密钥（文件路径方式）
         shell: pwsh
@@ -58,7 +58,7 @@ jobs:
           "TAURI_KEY_FILE=$keyFile" >> $env:GITHUB_ENV
           Write-Host "密钥文件已写入: $keyFile"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
           # C：缓存 npm 下载（~/.npm），npm ci 仍重装但省去网络下载。
@@ -171,13 +171,13 @@ jobs:
           Copy-Item desktop\dist\updater.json dist-out\ -ErrorAction SilentlyContinue
           Copy-Item cc-bridge_*.zip dist-out\ -ErrorAction SilentlyContinue
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: cc-bridge-windows
           path: dist-out/*
 
       - name: Attach to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist-out/*
           fail_on_unmatched_files: false
