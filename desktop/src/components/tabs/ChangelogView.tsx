@@ -10,7 +10,7 @@ const CATEGORY_CLASS: Record<ChangeCategory, string> = {
   sec: "cl-badge-sec",
 };
 
-const STYLE_CL_VERSIONBar: CSSProperties = { background: "hsl(var(--accent))" };
+const STYLE_CL_VERSIONBar: CSSProperties = { background: "var(--color-accent)" };
 const STYLE_CL_CAPSULE: CSSProperties = { background: "var(--color-primary)" };
 const STYLE_CL_CAPSULE_MUTED: CSSProperties = { background: "var(--color-muted)" };
 const STYLE_CL_ITEM_PAD: CSSProperties = { paddingLeft: 28 };

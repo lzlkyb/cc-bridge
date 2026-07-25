@@ -42,7 +42,7 @@ const STYLE_VERSION_BADGE_LG: CSSProperties = { background: "var(--version-gradi
 const STYLE_ICON_INDIGO: CSSProperties = { background: "rgba(99,102,241,0.12)", color: "var(--color-primary)" };
 const STYLE_ICON_GREEN: CSSProperties = { background: "rgba(22,163,74,0.12)", color: "#16A34A" };
 const STYLE_ICON_ORANGE: CSSProperties = { background: "rgba(245,158,11,0.12)", color: "#F59E0B" };
-const STYLE_ICON_ACCENT: CSSProperties = { background: "hsl(var(--accent))", color: "var(--color-primary)" };
+const STYLE_ICON_ACCENT: CSSProperties = { background: "var(--color-accent)", color: "var(--color-primary)" };
 const STYLE_INFO_KEY: CSSProperties = { minWidth: 52 };
 
 export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken }: {
