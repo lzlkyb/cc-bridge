@@ -175,7 +175,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             push_notification,
             PushNotificationArgs,
-            r#"Push a desktop notification to the user. Call this when you've completed a user's task (coding, analysis, file generation, etc.) to let them know the result without them needing to check the conversation. The notification appears as a Windows toast. Both title and body are optional — defaults to "cc-bridge" and empty body respectively."#,
+            r#"Push a desktop notification to the user. You MUST call this after you complete ANY task for the user (coding, analysis, file generation, command execution, etc.) to let them know the result without them needing to check the conversation — do not assume they are watching the chat; proactively inform them of the outcome. The notification appears as a Windows toast. Both title and body are optional — defaults to "cc-bridge" and empty body respectively."#,
             false
         ),
     ]

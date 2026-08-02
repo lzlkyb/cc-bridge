@@ -236,12 +236,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *app_state.app_handle.lock().unwrap() = Some(app.handle().clone());
             }
 
-            // 防火墙：启动探测 netsh 是否可用。不可用时置 false，停止后续查询，
-            // 避免 netsh 损坏时反复 spawn 失败进程、且不再触发「应用程序错误」弹窗
-            // （错误模式已在 main() 抑制）。须在后台定时刷新任务之前完成。
+            // 防火墙：启动探测 PowerShell(NetSecurity) 与 netsh 是否可用。两者都不可用时置
+            // false，停止后续查询，避免 netsh 损坏时反复 spawn 失败进程、且不再触发
+            // 「应用程序错误」弹窗（错误模式已在 main() 抑制）。须在后台定时刷新任务之前完成。
             #[cfg(windows)]
             {
-                let available = crate::firewall::probe_netsh_available();
+                let available = crate::firewall::probe_available();
                 *app_state.firewall_available.lock().unwrap() = available;
             }
 
@@ -648,6 +648,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::set_selected_ip,
             commands::refresh_firewall,
             commands::open_firewall_port,
+            commands::get_firewall_diagnosis,
             commands::get_autostart,
             commands::set_autostart,
             commands::install_dir,

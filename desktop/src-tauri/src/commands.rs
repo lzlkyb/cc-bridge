@@ -411,9 +411,16 @@ pub async fn refresh_firewall(state: State<'_, Arc<AppState>>) -> Result<(), Str
     Ok(())
 }
 
-/// 一键开放防火墙端口（仅 Windows 有意义）。
-/// 通过 UAC 提权（PowerShell Start-Process -Verb RunAs）写入 7823/TCP 入站允许规则，
-/// 不引入任何 Rust 依赖（守规则8）。成功后立即刷新缓存并回写 get_status。
+/// 一键开放 / 修复防火墙规则（仅 Windows 有意义）。
+///
+/// 与旧版的差异在于它不只「加一条规则」，而是一次 UAC 授权内完成：
+/// 1. 删除旧版固定名规则与同名旧规则（幂等，不再重复堆积）；
+/// 2. 删除上次诊断识别出的阻止规则（Block 优先于 Allow，不删就永远不通）
+///    与指向旧安装路径的废规则（会让状态检测假绿）；
+/// 3. 写入带 `profile=any enable=yes` 的正确规则——旧版省略 profile，实测只落到
+///    Public，当前网络是域/专用时规则完全不生效，这是「必须关防火墙才能用」的根因。
+///
+/// 仍不引入任何 Rust 依赖（守规则8）：复用系统 netsh + PowerShell。
 #[tauri::command]
 pub async fn open_firewall_port(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     #[cfg(windows)]
@@ -423,14 +430,23 @@ pub async fn open_firewall_port(state: State<'_, Arc<AppState>>) -> Result<(), S
             .map_err(|e| format!("无法定位自身路径: {e}"))?
             .to_string_lossy()
             .into_owned();
-        let params = format!(
-            "advfirewall firewall add rule name=cc-bridge dir=in action=allow protocol=TCP localport={port} program=\"{exe}\""
-        );
+        // 清理清单取自最近一次诊断。诊断还没跑过（刚启动）时清单为空，
+        // 仅做「删旧同名 + 写新规则」，仍然是幂等的。
+        let remove = state
+            .firewall_cache
+            .lock()
+            .unwrap()
+            .diagnosis
+            .as_ref()
+            .map(|d| d.removable_rule_names())
+            .unwrap_or_default();
+        let script = crate::firewall_diag::build_repair_script(port, &exe, &remove);
         // 提权过程可能长时间挂起（用户未处理 UAC 弹窗），放到阻塞线程避免占用 async 工作线程
-        let res =
-            tauri::async_runtime::spawn_blocking(move || crate::firewall::elevate_netsh(&params))
-                .await
-                .map_err(|e| format!("开放防火墙端口任务异常: {e}"))?;
+        let res = tauri::async_runtime::spawn_blocking(move || {
+            crate::firewall::elevate_cmd_script(&script)
+        })
+        .await
+        .map_err(|e| format!("开放防火墙端口任务异常: {e}"))?;
         res?;
         crate::firewall::refresh_cache(&state, port).await;
         Ok(())
@@ -440,6 +456,49 @@ pub async fn open_firewall_port(state: State<'_, Arc<AppState>>) -> Result<(), S
         let _ = &state;
         Ok(())
     }
+}
+
+/// 防火墙诊断回传体。前端「防火墙」卡片/告警块据此渲染具体原因与可用动作。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirewallDiagnosisResponse {
+    /// 结构化诊断；None = 尚未完成首次检查（前端显示「检测中」）。
+    pub diagnosis: Option<crate::firewall_diag::FirewallDiagnosis>,
+    /// 探测能力是否可用（PowerShell 与 netsh 都不可用时为 false，只能给手动命令）。
+    pub available: bool,
+    /// 等价手动命令（管理员终端执行），已带 profile=any。
+    pub manual_command: String,
+    /// 我们写入的规则名，便于用户在「高级安全 Windows Defender 防火墙」里自查。
+    pub rule_name: String,
+    /// 距上次检查的秒数；None = 尚未检查过。
+    pub checked_seconds_ago: Option<u64>,
+}
+
+/// 读取缓存的防火墙诊断（不触发查询，要重查请先调 `refresh_firewall`）。
+#[tauri::command]
+pub async fn get_firewall_diagnosis(
+    state: State<'_, Arc<AppState>>,
+) -> Result<FirewallDiagnosisResponse, String> {
+    let port = state.config.read().await.port;
+    let available = *state.firewall_available.lock().unwrap();
+    let (diagnosis, checked_seconds_ago) = {
+        let cache = state.firewall_cache.lock().unwrap();
+        (
+            cache.diagnosis.clone(),
+            cache.checked_at.map(|t| t.elapsed().as_secs()),
+        )
+    };
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("无法定位自身路径: {e}"))?
+        .to_string_lossy()
+        .into_owned();
+    Ok(FirewallDiagnosisResponse {
+        diagnosis,
+        available,
+        manual_command: crate::firewall_diag::manual_command(port, &exe),
+        rule_name: crate::firewall_diag::rule_name(port),
+        checked_seconds_ago,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -671,7 +730,7 @@ pub async fn regenerate_token(state: State<'_, Arc<AppState>>) -> Result<String,
     Ok(new_token)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_audit_log(
     state: State<'_, Arc<AppState>>,
     page: Option<u32>,

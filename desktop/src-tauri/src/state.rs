@@ -63,10 +63,13 @@ pub struct RuntimeStats {
 pub struct FirewallCache {
     /// 防火墙是否开启（任一配置文件启用即 true）。
     pub enabled: Option<bool>,
-    /// 7823/TCP 入站是否被放行（存在 allow 规则即 true）。
+    /// 7823/TCP 入站是否被放行（已计入配置文件覆盖与阻止规则，不再只看「有没有规则」）。
     pub port_open: Option<bool>,
     /// 上次检查时刻；None 表示尚未检查过。
     pub checked_at: Option<Instant>,
+    /// 结构化诊断结果（PowerShell 路径可用时才有）。前端「防火墙」卡片据此
+    /// 说明「为什么不通」并给出对应修复动作，避免只给一个布尔值导致的「假绿」。
+    pub diagnosis: Option<crate::firewall_diag::FirewallDiagnosis>,
 }
 
 impl Default for RuntimeStats {
@@ -168,6 +171,7 @@ impl AppState {
                 enabled: None,
                 port_open: None,
                 checked_at: None,
+                diagnosis: None,
             }),
             firewall_available: StdMutex::new(true),
             lan_ips: StdMutex::new(network::get_lan_ips()),

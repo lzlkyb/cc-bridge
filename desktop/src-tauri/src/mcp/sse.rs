@@ -172,7 +172,8 @@ pub async fn sse_message_handler(
                 "result": {
                     "protocolVersion": protocol_version,
                     "capabilities": { "tools": { "listChanged": false } },
-                    "serverInfo": { "name": "cc-bridge", "version": env!("CARGO_PKG_VERSION") }
+                    "serverInfo": { "name": "cc-bridge", "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": crate::mcp::http::server_instructions()
                 }
             });
             let _ = tx.send(sse_data_frame(&resp));
@@ -183,7 +184,12 @@ pub async fn sse_message_handler(
             let resp = json!({
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "result": { "tools": crate::mcp::http::get_tool_definitions(&shell_type) }
+                "result": {
+                    "tools": crate::mcp::http::get_tool_definitions(&shell_type),
+                    // list-caching 提示（MCP 2025-11-05+，向后兼容：旧客户端忽略未知字段）。
+                    "ttlMs": 3_600_000,
+                    "cacheScope": "user"
+                }
             });
             let _ = tx.send(sse_data_frame(&resp));
         }

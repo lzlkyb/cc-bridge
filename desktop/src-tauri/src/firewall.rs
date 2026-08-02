@@ -5,6 +5,7 @@ use std::time::Instant;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+use crate::firewall_diag::{self, FirewallDiagnosis, Issue};
 use crate::state::AppState;
 
 /// 子进程无控制台窗口标志（Windows）。仅去掉 netsh/powershell 子进程闪一下的黑框，
@@ -19,7 +20,13 @@ pub type FirewallState = (Option<bool>, Option<bool>);
 #[cfg(windows)]
 pub fn query_firewall_state(port: u16) -> FirewallState {
     let enabled = query_firewall_enabled();
-    let port_open = query_port_allowed(port);
+    // 防火墙已确认关闭 → 端口必然可达，跳过规则枚举（关了任何规则都不挡）。
+    // 否则才去 netsh 枚举全部规则判断放行与否——这一步在关闭场景完全多余。
+    let port_open = if enabled == Some(false) {
+        Some(true)
+    } else {
+        query_port_allowed(port)
+    };
     (enabled, port_open)
 }
 
@@ -62,19 +69,72 @@ pub fn probe_netsh_available() -> bool {
         .unwrap_or(false)
 }
 
-/// 后台定时（每 5 分钟）与按需（open_firewall_port 成功后 / 前端「重新检查」）刷新缓存。
-/// netsh 不可用（启动探测失败）时跳过查询，保持 unknown（不再 spawn 失败进程、不再弹窗）。
+/// 当前可执行文件路径（规则 `program=` 的比对基准）。取不到时返回空串，
+/// 此时诊断会把所有带 program= 的规则当成「不匹配」，宁可多报不漏报。
+pub fn current_exe_string() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// 完整查询：优先 PowerShell 结构化诊断，不可用时回退 netsh 文本解析。
+///
+/// 回退路径只能得到粗粒度结论（有没有一条命中端口的 allow 规则），拿不到配置文件覆盖
+/// 与阻止规则信息，因此 `source` 会标为 `netsh`，前端据此提示「诊断能力受限」。
+pub fn query_full(port: u16) -> FirewallDiagnosis {
+    let exe = current_exe_string();
+    if let Some(d) = firewall_diag::query_diagnosis(port, &exe) {
+        return d;
+    }
+    let (enabled, port_open) = query_firewall_state(port);
+    let mut issues: Vec<Issue> = Vec::new();
+    let source = if enabled.is_none() && port_open.is_none() {
+        issues.push(Issue {
+            code: "probeUnavailable".into(),
+            detail: "无法读取本机防火墙状态（PowerShell 与 netsh 均不可用）。请用下方手动命令在管理员终端自行添加规则。".into(),
+            fixable: false,
+        });
+        "unavailable"
+    } else {
+        if port_open == Some(false) {
+            issues.push(Issue {
+                code: "noRule".into(),
+                detail: format!("未找到放行 {port}/TCP 入站的规则。"),
+                fixable: true,
+            });
+        }
+        "netsh"
+    };
+    FirewallDiagnosis {
+        port,
+        exe,
+        enabled,
+        port_open,
+        issues,
+        source: source.into(),
+        ..Default::default()
+    }
+}
+
+/// 后台定时（每 5 分钟）与按需（修复成功后 / 前端「重新检查」）刷新缓存。
+/// 探测不可用（启动探测失败）时跳过查询，保持 unknown（不再 spawn 失败进程、不再弹窗）。
 pub async fn refresh_cache(state: &Arc<AppState>, port: u16) {
     if !*state.firewall_available.lock().unwrap() {
-        // netsh 不可用：仅刷新时间戳（避免每 5 分钟都重判），状态保留为 unknown。
+        // 探测不可用：仅刷新时间戳（避免每 5 分钟都重判），状态保留为 unknown。
         let mut cache = state.firewall_cache.lock().unwrap();
         cache.checked_at = Some(Instant::now());
         return;
     }
-    let (enabled, port_open) = query_firewall_state(port);
+    // PowerShell 冷启动 + 三次全量规则查询约 1s，放到阻塞线程，不占用 async 工作线程。
+    let diag = tauri::async_runtime::spawn_blocking(move || query_full(port))
+        .await
+        .ok();
     let mut cache = state.firewall_cache.lock().unwrap();
-    cache.enabled = enabled;
-    cache.port_open = port_open;
+    if let Some(d) = diag {
+        cache.enabled = d.enabled;
+        cache.port_open = d.port_open;
+        cache.diagnosis = Some(d);
+    }
     cache.checked_at = Some(Instant::now());
 }
 
@@ -163,27 +223,46 @@ fn split_kv(line: &str) -> Option<(String, String)> {
     Some((key, val))
 }
 
-/// 通过 PowerShell 的 `Start-Process -Verb RunAs` 触发 UAC 提权执行 netsh，
-/// 写入 7823/TCP 入站允许规则。`-Wait` 等待提权进程结束（用户取消则非 0 退出）。
+/// 启动探测：只要 PowerShell 或 netsh 有一个能用，防火墙功能就可用。
+/// 两者都不可用才把 `firewall_available` 置 false（停用后续查询）。
+#[cfg(windows)]
+pub fn probe_available() -> bool {
+    firewall_diag::probe_powershell_available() || probe_netsh_available()
+}
+
+/// 提权执行一段批处理脚本（一次 UAC 弹窗完成全部 netsh 动作）。
 ///
-/// 不引入任何 Rust 依赖——复用系统 netsh + PowerShell，零二进制体积增加（守规则8）。
-/// 用单引号 here-string 包裹参数，避免路径中的空格/反斜杠被 PowerShell 二次解析。
-pub fn elevate_netsh(params: &str) -> Result<(), String> {
-    let ps = format!(
-        "Start-Process -FilePath netsh.exe -ArgumentList @'`n{params}`n'@ -Verb RunAs -Wait",
-    );
+/// 为什么不直接提权单条 netsh：修复需要「先删旧规则再建新规则」多个步骤，
+/// 逐条提权会让用户连续点好几次 UAC。写成一个临时 .cmd 只需一次授权。
+///
+/// 路径通过环境变量传给 PowerShell 并在 PS 内部拼引号，避开了旧实现那种
+/// `@'`n...`n'@` here-string 写法：单引号 here-string 要求 `@'` 后紧跟真正的换行，
+/// 字面 `` `n `` 不会被当换行处理，在部分环境下会直接报解析错误。
+/// `-WindowStyle Hidden` 避免提权 cmd 闪黑框；`-PassThru` + `exit $p.ExitCode`
+/// 把真实退出码带回来，因此「修复成功」的判据是 netsh add rule 真的成功了。
+pub fn elevate_cmd_script(script: &str) -> Result<(), String> {
+    let path = std::env::temp_dir().join(format!("cc-bridge-fw-fix-{}.cmd", std::process::id()));
+    std::fs::write(&path, script).map_err(|e| format!("写入修复脚本失败：{e}"))?;
+
+    let ps = "$ErrorActionPreference='Stop'; \
+         $arg = '/c \"' + $env:CCB_FIX_SCRIPT + '\"'; \
+         $p = Start-Process -FilePath cmd.exe -ArgumentList $arg -Verb RunAs -Wait -PassThru -WindowStyle Hidden; \
+         exit $p.ExitCode";
     let mut cmd = Command::new("powershell");
-    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps]);
+    cmd.args(["-NoProfile", "-NonInteractive", "-Command", ps])
+        .env("CCB_FIX_SCRIPT", &path);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
-    let out = cmd.output().map_err(|e| format!("启动提权失败: {e}"))?;
+    let out = cmd.output().map_err(|e| format!("启动提权失败：{e}"));
+    let _ = std::fs::remove_file(&path);
+    let out = out?;
     if !out.status.success() {
         let msg = String::from_utf8_lossy(&out.stderr);
         let msg = msg.trim();
         if msg.is_empty() {
-            return Err("开放防火墙端口被取消或未授权".into());
+            return Err("写入防火墙规则被取消或未授权".into());
         }
-        return Err(format!("开放防火墙端口失败：{msg}"));
+        return Err(format!("写入防火墙规则失败：{msg}"));
     }
     Ok(())
 }

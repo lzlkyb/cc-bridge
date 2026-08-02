@@ -272,7 +272,7 @@ async fn mcp_handler(
                         "name": "cc-bridge",
                         "version": env!("CARGO_PKG_VERSION")
                     },
-                    "instructions": "你已连接到本地 Windows 主机上的 cc-bridge MCP 服务。当用户需要在本地 Windows 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层 CLAUDE.md 的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / get_command_output / stop_command:在本地执行命令、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 cmd 或 Git Bash，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。"
+                    "instructions": server_instructions()
                 }
             }))
         }
@@ -286,7 +286,13 @@ async fn mcp_handler(
             Json(json!({
                 "jsonrpc": "2.0",
                 "id": body.get("id"),
-                "result": { "tools": get_tool_definitions(&shell_type) }
+                "result": {
+                    "tools": get_tool_definitions(&shell_type),
+                    // list-caching 提示（MCP 2025-11-05+，向后兼容：旧客户端忽略未知字段）。
+                    // 工具目录静态不变，缓存 1 小时、跨用户会话共享，减少远程隧道重复拉取。
+                    "ttlMs": 3_600_000,
+                    "cacheScope": "user"
+                }
             }))
         }
         "tools/call" => handle_tools_call(state, source_ip, body).await,
@@ -512,12 +518,19 @@ pub async fn dispatch_tool(
     (spec.run)(args, state).await
 }
 
+/// `initialize` 响应里的 `instructions` 字段：告知连接的客户端/模型如何正确使用本服务。
+/// 这是 MCP 规范里服务端向模型下发"用法指引 / 应主动调用的工具"的唯一标准通道。
+/// HTTP 与 SSE 两个 transport 共用此函数，避免两份字符串漂移。
+pub fn server_instructions() -> &'static str {
+    "你已连接到本地 Windows 主机上的 cc-bridge MCP 服务。当用户需要在本地 Windows 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层 CLAUDE.md 的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / get_command_output / stop_command:在本地执行命令、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 cmd 或 Git Bash，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。\n\n重要：每次为用户完成一个任务（编写代码、编辑文件、执行分析、生成交付物、或跑完 shell 命令）后，你必须调用 push_notification 工具弹出桌面 toast 通知用户——不要假设用户正在盯着对话窗口，应主动把任务结果告知对方（即使用户没有显式要求）。"
+}
+
 pub fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
     // 数据驱动：遍历注册表生成 tools/list 的 inputSchema（schema 由 XxxArgs 的
     // ToolSchema derive 自动生成，单一来源，消除手写 json! 与字段漂移）。
     // run_command 的描述按当前 shell_type 动态生成，让（重新）连接时模型拿到准确壳层信号。
     let run_cmd_desc = run_command_description(shell_type);
-    crate::mcp::tools::registry::all_tools()
+    let mut tools: Vec<serde_json::Value> = crate::mcp::tools::registry::all_tools()
         .iter()
         .map(|t| {
             let desc: &str = if t.name == "run_command" {
@@ -531,7 +544,15 @@ pub fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
                 "inputSchema": t.schema,
             })
         })
-        .collect::<serde_json::Value>()
+        .collect();
+    // 确定性排序：稳定 tools/list 输出顺序。MCP 新协议（2026-07-28）明确要求列表确定性
+    // 排序；即使旧客户端忽略顺序，稳定顺序也能提升远程 SSH 隧道下 LLM prompt 缓存命中率。
+    tools.sort_by(|a, b| {
+        let an = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        an.cmp(bn)
+    });
+    serde_json::Value::Array(tools)
 }
 
 /// 按当前 shell_type 生成 run_command 的描述，让连接时模型拿到准确的壳层信号，

@@ -7,6 +7,7 @@ pub mod db;
 pub mod diff_utils;
 pub mod encoding;
 pub mod firewall;
+pub mod firewall_diag;
 pub mod ip_watch;
 pub mod mcp;
 pub mod network;
