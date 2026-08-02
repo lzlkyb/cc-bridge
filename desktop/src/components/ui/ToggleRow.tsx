@@ -29,16 +29,16 @@ export function ToggleRow({
   return (
     <div
       id={id}
-      className={`flex items-center justify-between gap-4 py-3.5 ${
+      className={`srow flex items-center justify-between gap-4 py-3.5 ${
         last ? "" : "border-b"
       } ${danger ? "-mx-3 rounded-lg bg-destructive/5 px-3" : ""}`}
     >
-      <div className="min-w-0">
+      <div className="grow min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{label}</span>
+          <span className="t text-sm font-medium">{label}</span>
           {saved && <SavedHint>已保存</SavedHint>}
         </div>
-        <div className={`mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>
+        <div className={`d mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>
           {sub}
         </div>
       </div>

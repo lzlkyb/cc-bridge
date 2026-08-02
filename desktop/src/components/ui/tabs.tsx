@@ -86,10 +86,10 @@ export function TabsList({ children, className = "" }: { children: ReactNode; cl
   }, [updateIndicator]);
 
   return (
-    <div ref={listRef} className={`relative flex w-full gap-0.5 rounded-xl bg-secondary p-1 ${className}`}>
+    <div ref={listRef} className={`app-tabs relative flex w-full gap-0.5 rounded-xl bg-secondary p-1 ${className}`}>
       {/* 滑动指示器 — 绝对定位的高亮块，带 transform 过渡 */}
       <div
-        className="absolute top-1 h-[calc(100%-8px)] rounded-lg bg-card shadow-card transition-all duration-250 ease-out pointer-events-none"
+        className="app-tabs-ind absolute top-1 h-[calc(100%-8px)] rounded-lg bg-card shadow-card transition-all duration-250 ease-out pointer-events-none"
         style={{ left: indicatorStyle.left, width: indicatorStyle.width }}
       />
       {children}
@@ -111,8 +111,10 @@ export function TabsTrigger({ value, children, className = "" }: { value: string
     <button
       ref={btnRef}
       data-value={value}
+      // 现代外观的激活态样式钩子（属性比类名稳，见 index.css .app-tab[data-active]）
+      data-active={isActive || undefined}
       onClick={() => setActive(value)}
-      className={`relative z-[1] flex flex-1 items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-200 ${
+      className={`app-tab relative z-[1] flex flex-1 items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-200 ${
         isActive
           ? "text-primary"
           : "text-muted-foreground hover:text-foreground"
@@ -127,4 +129,9 @@ export function TabsContent({ value, children, className = "" }: { value: string
   const { active } = useContext(TabsContext);
   if (active !== value) return null;
   return <div className={`animate-tab-in ${className}`}>{children}</div>;
+}
+
+/** 在 Tabs 内部任意位置获取上下文，用于编程式切换 tab（如连接页跳日志页） */
+export function useTabs() {
+  return useContext(TabsContext);
 }

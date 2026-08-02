@@ -5,7 +5,7 @@ export function Table({ className = "", ...props }: HTMLAttributes<HTMLTableElem
 }
 
 export function TableHeader({ className = "", ...props }: HTMLAttributes<HTMLTableSectionElement>) {
-  return <thead className={`border-b ${className}`} {...props} />;
+  return <thead className={`border-b sticky top-0 z-[1] bg-card ${className}`} {...props} />;
 }
 
 // forwardRef：支持把 auto-animate 等 ref 挂到 <tbody>（审计日志增删/筛选时 FLIP 过渡）。
@@ -19,7 +19,7 @@ export function TableRow({ className = "", ...props }: HTMLAttributes<HTMLTableR
 }
 
 export function TableHead({ className = "", ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
-  return <th className={`h-10 px-3 text-left align-middle font-medium text-muted-foreground ${className}`} {...props} />;
+  return <th className={`h-10 px-3 text-left align-middle font-medium text-muted-foreground bg-card ${className}`} {...props} />;
 }
 
 export function TableCell({ className = "", ...props }: TdHTMLAttributes<HTMLTableCellElement>) {

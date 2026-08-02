@@ -198,7 +198,7 @@ function RiskSummary({ status }: { status?: StatusResponse }) {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+    <div className="risk-band flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
       <span className="text-muted-foreground">当前风险等级：</span>
       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 font-semibold ${pill}`}>
         {level}

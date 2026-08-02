@@ -43,7 +43,7 @@ export function DetailPanel({
     }
   };
   return (
-    <div className="space-y-3 py-1">
+    <div className="space-y-3 py-1 detail">
       {entry.backupPath && entry.targetPath && (
         <div className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={() => onViewDiff(entry)}>
@@ -61,7 +61,7 @@ export function DetailPanel({
           </Button>
         </div>
       )}
-      <div className="grid grid-cols-[76px_1fr] gap-x-3 gap-y-1 text-xs">
+      <div className="grid grid-cols-[76px_1fr] gap-x-3 gap-y-1 text-xs kv">
         <span className="text-muted-foreground">时间</span>
         <span className="break-all">{new Date(entry.timestamp).toLocaleString()}</span>
         <span className="text-muted-foreground">操作</span>
@@ -94,7 +94,7 @@ export function DetailPanel({
             {copied ? "已复制" : "复制"}
           </button>
         </div>
-        <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-[11px] leading-relaxed text-background">
+        <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-[11px] leading-relaxed text-background pre">
           {prettyParams(entry.params)}
         </pre>
       </div>
@@ -147,7 +147,7 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
           {entry.durationMs != null && <> · 客户端测 {formatDurationMs(entry.durationMs)}</>}
         </span>
       </div>
-      <div className="flex h-5 overflow-hidden rounded border border-border bg-muted/30">
+      <div className="flex h-5 overflow-hidden rounded border border-border bg-muted/30 tb-bar">
         {items.map((s) => {
           const pct = (s.ms / total) * 100;
           return (
@@ -162,21 +162,21 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
           );
         })}
       </div>
-      <div className="mt-2 flex flex-col gap-1.5">
+      <div className="mt-2 flex flex-col gap-1.5 tb-legend">
         {items.map((s) => {
           const pct = (s.ms / total) * 100;
           return (
-            <div key={s.label} className="flex items-center gap-2 text-[11px]">
-              <span className="h-2 w-2 shrink-0 rounded-sm" style={{ background: s.color }} />
-              <span className="w-20 shrink-0 text-muted-foreground">{s.label}</span>
+            <div key={s.label} className="flex items-center gap-2 text-[11px] tb-item">
+              <span className="h-2 w-2 shrink-0 rounded-sm sw2" style={{ background: s.color }} />
+              <span className="w-20 shrink-0 text-muted-foreground nm">{s.label}</span>
               <div className="h-1.5 flex-1 overflow-hidden rounded bg-muted">
                 <div
                   className="h-full rounded"
                   style={{ width: `${(s.ms / maxMs) * 100}%`, background: s.color }}
                 />
               </div>
-              <span className="w-16 shrink-0 text-right font-mono font-semibold">{formatDurationMs(s.ms)}</span>
-              <span className="w-10 shrink-0 text-right text-[10px] text-muted-foreground">{pct.toFixed(1)}%</span>
+              <span className="w-16 shrink-0 text-right font-mono font-semibold ms">{formatDurationMs(s.ms)}</span>
+              <span className="w-10 shrink-0 text-right text-[10px] text-muted-foreground pc">{pct.toFixed(1)}%</span>
             </div>
           );
         })}
@@ -262,7 +262,7 @@ export function DiffModal({ entry, onClose }: { entry: AuditEntry; onClose: () =
             </div>
           )}
           {result && !result.guard && (
-            <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-[12px] leading-relaxed text-background">
+            <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-[12px] leading-relaxed text-background diff">
               {result.lines.map((l, i) => (
                 <div
                   key={i}
@@ -313,14 +313,14 @@ export function RestoreConfirmDialog({ entry, onClose }: { entry: AuditEntry; on
   };
 
   return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={onClose}
-    >
       <div
-        className="animate-scale-in mx-4 w-full max-w-md rounded-xl modal-surface p-5"
-        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm dlg-mask"
+        onClick={onClose}
       >
+        <div
+          className="animate-scale-in mx-4 w-full max-w-md rounded-xl modal-surface p-5 dlg"
+          onClick={(e) => e.stopPropagation()}
+        >
         <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
           <Icon name="restore" size={18} />
           {isDelete ? "恢复被删文件？" : "确认回滚到操作前？"}
@@ -345,7 +345,7 @@ export function RestoreConfirmDialog({ entry, onClose }: { entry: AuditEntry; on
             {err}
           </div>
         )}
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end gap-2 dlg-act">
           <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
             取消
           </Button>

@@ -438,7 +438,7 @@ function RiskSummary({ status }: { status?: StatusResponse }) {
   const safe = risks.length === 0;
   return (
     <div
-      className={`mb-1 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium ${
+      className={`risk-band mb-1 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium ${
         safe
           ? "border-success/30 bg-success/10 text-success"
           : "border-destructive/30 bg-destructive/10 text-destructive"

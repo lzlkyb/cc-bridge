@@ -241,7 +241,7 @@ function LogTabImpl() {
   };
 
   return (
-    <Card className="flex flex-col">
+    <Card className="flex flex-col log-tab h-full min-h-0 overflow-hidden">
       <CardHeader className="flex-row items-center justify-between space-y-0 gap-3 flex-wrap">
         <CardTitle icon={<Icon name="log" />}>审计日志</CardTitle>
         <div className="flex items-center gap-2 flex-wrap">
@@ -328,7 +328,7 @@ function LogTabImpl() {
           </Button>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="flex flex-col flex-1 min-h-0 overflow-y-auto">
         {entries && entries.some((e) => typeof e.durationMs === "number") && (
           <div className="mb-3">
             <button
@@ -354,9 +354,19 @@ function LogTabImpl() {
             )}
           </div>
         )}
-        {filtered.length === 0 ? (
+        {!pageData ? (
+          <div className="space-y-1.5 py-2" aria-hidden="true">
+            {Array.from({ length: 9 }).map((_, i) => (
+              <div key={i} className="skel-row flex items-center gap-3 px-1">
+                <div className="skel h-3 w-20 rounded bg-muted" />
+                <div className="skel h-3 flex-1 rounded bg-muted" />
+                <div className="skel h-3 w-24 rounded bg-muted" />
+              </div>
+            ))}
+          </div>
+        ) : filtered.length === 0 ? (
           <EmptyState
-            className="h-52"
+            className="h-52 empty"
             bigIconSize={96}
             iconSize={28}
             icon={entries?.length === 0 ? "file" : "search"}
@@ -365,7 +375,7 @@ function LogTabImpl() {
               : "没有匹配的记录，试试调整筛选条件。"}
           />
         ) : (
-          <Table className="table-fixed">
+          <Table className="table-fixed audit">
             <TableHeader>
               <TableRow>
                 <TableHead className="w-[74px]">时间</TableHead>
@@ -430,7 +440,9 @@ function LogTabImpl() {
             </TableBody>
           </Table>
         )}
-        {total > 0 && (
+      </CardContent>
+      {total > 0 && (
+        <div className="shrink-0 border-t bg-card px-5 py-3">
           <AuditPager
             page={page}
             pageSize={pageSize}
@@ -438,8 +450,8 @@ function LogTabImpl() {
             onPageChange={setPage}
             onPageSizeChange={handlePageSizeChange}
           />
-        )}
-      </CardContent>
+        </div>
+      )}
 
       {confirmClear && (
         <ConfirmDialog

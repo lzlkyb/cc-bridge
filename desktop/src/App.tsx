@@ -271,7 +271,7 @@ function AppContent() {
               <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} />
             </Suspense>
           </TabsContent>
-          <TabsContent value="log">
+          <TabsContent value="log" className="h-full">
             <Suspense fallback={<TabFallback />}>
               <LogTab />
             </Suspense>

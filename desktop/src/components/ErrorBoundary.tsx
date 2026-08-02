@@ -41,30 +41,32 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex h-screen flex-col items-center justify-center gap-4 bg-background p-8 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
-            <Icon name="alertTriangle" size={32} className="text-destructive" />
-          </div>
-          <div className="space-y-1.5">
-            <h2 className="text-lg font-semibold text-foreground">应用遇到错误</h2>
-            <p className="max-w-md text-sm text-muted-foreground">
-              页面渲染过程中发生了异常。可以尝试重新加载，如果问题持续请重启应用。
-            </p>
-          </div>
-          {this.state.error?.message && (
-            <pre className="max-w-lg overflow-auto rounded-md bg-muted p-3 text-left text-xs text-muted-foreground">
-              {this.state.error.message}
-            </pre>
-          )}
-          <div className="flex items-center gap-2">
-            <Button onClick={this.handleRetry}>
-              <Icon name="refresh" size={16} />
-              重新加载
-            </Button>
-            <Button variant="outline" onClick={this.handleFullReload}>
-              <Icon name="refresh" size={16} />
-              完全刷新
-            </Button>
+        <div className="eb-mask flex h-screen flex-col items-center justify-center gap-4 bg-background p-8 text-center">
+          <div className="eb flex flex-col items-center gap-4 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10 eb-ico">
+              <Icon name="alertTriangle" size={32} className="text-destructive" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-semibold text-foreground">应用遇到错误</h3>
+              <p className="max-w-md text-sm text-muted-foreground">
+                页面渲染过程中发生了异常。可以尝试重新加载，如果问题持续请重启应用。
+              </p>
+            </div>
+            {this.state.error?.message && (
+              <pre className="max-w-lg overflow-auto rounded-md bg-muted p-3 text-left text-xs text-muted-foreground eb-stack">
+                {this.state.error.message}
+              </pre>
+            )}
+            <div className="flex items-center gap-2 eb-act">
+              <Button onClick={this.handleRetry}>
+                <Icon name="refresh" size={16} />
+                重新加载
+              </Button>
+              <Button variant="outline" onClick={this.handleFullReload}>
+                <Icon name="refresh" size={16} />
+                完全刷新
+              </Button>
+            </div>
           </div>
         </div>
       );

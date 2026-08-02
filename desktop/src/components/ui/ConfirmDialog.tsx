@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "./button";
 import { Icon } from "./icon";
@@ -35,13 +35,43 @@ export function ConfirmDialog({
   onCancel,
   onConfirm,
 }: ConfirmDialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // 焦点陷阱 + 关闭后焦点归还（单套 UI 始终启用，提升键盘可达性）
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    const node = dialogRef.current;
+    if (!node) return;
+    const focusables = node.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    );
+    focusables[0]?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Tab" || focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    node.addEventListener("keydown", onKey);
+    return () => {
+      node.removeEventListener("keydown", onKey);
+      prev?.focus?.();
+    };
+  }, []);
+
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm dlg-mask"
       onClick={onCancel}
     >
       <div
-        className="animate-scale-in mx-4 w-full max-w-md rounded-xl modal-surface p-5"
+        ref={dialogRef}
+        className="animate-scale-in mx-4 w-full max-w-md rounded-xl modal-surface p-5 dlg"
         onClick={(e) => e.stopPropagation()}
       >
         <h4
@@ -58,7 +88,7 @@ export function ConfirmDialog({
         </h4>
         {description && <p className="mb-3 text-sm text-muted-foreground">{description}</p>}
         {children}
-        <div className="mt-4 flex justify-end gap-2">
+        <div className="mt-4 flex justify-end gap-2 dlg-act">
           <Button variant="outline" size="sm" onClick={onCancel}>
             {cancelLabel}
           </Button>

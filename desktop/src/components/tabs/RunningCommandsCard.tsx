@@ -47,7 +47,7 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
         </p>
       </CardHeader>
       <CardContent>
-        <Table>
+        <Table className="cmds">
           <TableHeader>
             <TableRow>
               <TableHead className="w-[80px]">PID</TableHead>
@@ -61,7 +61,7 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
             {commands.map((cmd, i) => (
               <Fragment key={cmd.handle}>
                 <TableRow
-                  className={`${i % 2 === 0 ? "bg-muted/20" : ""} cursor-pointer`}
+                  className={`cursor-pointer crow ${i % 2 === 0 ? "bg-muted/20 zebra" : ""}`}
                   onClick={() => toggle(cmd.handle)}
                   title="点击整行任意位置展开/收起输出"
                 >
@@ -264,7 +264,7 @@ function LogBox({
   }, [text]);
   return (
     <div className="space-y-1">
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+      <div className="flex items-center justify-between text-[11px] text-muted-foreground term-meta">
         <span>
           {label} · {bytes.toLocaleString()} 字节
         </span>
@@ -272,11 +272,11 @@ function LogBox({
       </div>
       <pre
         ref={ref}
-        className={`max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border bg-[#0d1117] p-2.5 font-mono text-[11px] leading-relaxed ${
+        className={`termbox max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border bg-[#0d1117] p-2.5 font-mono text-[11px] leading-relaxed ${
           isError ? "text-destructive" : "text-[#d4d4d4]"
         }`}
       >
-        {text || <span className="opacity-40">（暂无输出）</span>}
+        {text ? (isError ? <span className="e">{text}</span> : text) : <span className="opacity-40">（暂无输出）</span>}
       </pre>
     </div>
   );

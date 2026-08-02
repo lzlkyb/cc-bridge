@@ -3,6 +3,7 @@ import { invoke } from "../../lib/tauri";
 import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
 import { APP_INFO } from "../../lib/about";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
+import { FirewallGroup } from "./firewall/FirewallGroup";
 import { Alert } from "../ui/alert";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -14,7 +15,6 @@ import { SettingsRow } from "../ui/SettingsRow";
 import { SettingsToggles } from "./SettingsToggles";
 import { SavedHint } from "../ui/SavedHint";
 import { AboutGroup } from "./AboutGroup";
-import { getStoredAppearance, setAppearance, type Appearance } from "../../lib/appearance";
 
 export function SettingsTab({
   status,
@@ -37,10 +37,10 @@ export function SettingsTab({
   changelogOpenToken?: number;
 }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 settings-tab">
       <AboutGroup status={status} unreadCount={unreadCount} onMarkSeen={onMarkSeen} changelogOpenToken={changelogOpenToken} />
       <NetworkGroup status={status} onSaved={onSaved} />
-      <AppearanceGroup />
+      <FirewallGroup onRefresh={onSaved} />
       <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
       <AppGroup />
       <InstallGroup onReopenOnboarding={onReopenOnboarding} />
@@ -50,56 +50,6 @@ export function SettingsTab({
   );
 }
 
-/* ─── 外观 ─── */
-
-function AppearanceGroup() {
-  const [appearance, setLocal] = useState<Appearance>(() => getStoredAppearance());
-  const options: { key: Appearance; label: string; desc: string }[] = [
-    { key: "classic", label: "经典", desc: "当前默认样式" },
-    { key: "modern", label: "现代", desc: "OKLCH 色彩 + Bento 布局" },
-  ];
-  const select = (next: Appearance) => {
-    if (next === appearance) return;
-    setLocal(next);
-    setAppearance(next);
-  };
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle icon={<Icon name="sparkles" />}>外观</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <SettingsRow
-          label="界面风格"
-          sub="经典为当前默认样式；现代采用 OKLCH 色彩与 Bento 布局。切换即时生效，无需重启。关闭现代即回到经典，互不影响。"
-          last
-          control={
-            <div className="flex shrink-0 rounded-lg border bg-muted p-0.5">
-              {options.map((o) => {
-                const active = appearance === o.key;
-                return (
-                  <button
-                    key={o.key}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => select(o.key)}
-                    className={`rounded-md px-4 py-1.5 text-xs font-medium transition-colors ${
-                      active
-                        ? "bg-background text-foreground shadow-sm"
-                        : "text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {o.label}
-                  </button>
-                );
-              })}
-            </div>
-          }
-        />
-      </CardContent>
-    </Card>
-  );
-}
 
 /* ─── 网络 ─── */
 

@@ -189,13 +189,14 @@ function ConnectTabImpl({
   };
 
   return (
-    <div className="space-y-3">
-      {/* 防火墙告警块：仅 Windows 防火墙开 + 未放行 7823，且链路未真正中断（红态优先）。
+    <div className="space-y-3 connect-tab">
+      {/* 防火墙告警块：是否现身由组件内部根据后端结构化诊断自己判定（无阻塞类问题则返回 null）。
+          不再在这里看 firewallPortOpen 布尔值：旧条件在「规则只覆盖 Public / 指向旧路径 / 存在
+          Block 规则」这三种常见情形下会假绿，导致用户只能去关整个防火墙。仍保留 linkDown 互斥。
           诚实暴露本机探针对远程入站拦截的盲点——不再谎报绿色「已连接」。 */}
-      {status?.running &&
-        status.firewallEnabled === true &&
-        status.firewallPortOpen === false &&
-        !linkDown && <FirewallAlertBlock port={status.port} onRefresh={onRefresh} />}
+      {status?.running && !linkDown && (
+        <FirewallAlertBlock port={status.port} onRefresh={onRefresh} />
+      )}
 
       {/* 防火墙探测不可用（netsh 异常）：温和提示，不弹系统错误框。
           与上方橙色告警互斥——netsh 损坏时 firewallEnabled/portOpen 均为 null，橙色块不会渲染。 */}
@@ -231,14 +232,12 @@ function ConnectTabImpl({
         />
       )}
 
-      {/* A. Hero 渐变头卡：运行状态 + 地址 + 关键指标 + 启停按钮 */}
       <ConnectHero
         status={status}
         displayHost={displayHost}
         port={port}
         onChanged={onRefresh}
       />
-
       <ConnectGuide
         status={status}
         listenAll={listenAll} lanIps={lanIps} selectedIp={selectedIp}
@@ -256,12 +255,12 @@ function ConnectTabImpl({
   );
 }
 
-function ConnectGuide({
+export function ConnectGuide({
   status, listenAll, lanIps, selectedIp, onSelectIp, healthCheck,
   scope, setScope, connectCommand, copied, handleCopy,
   projectPath, setProjectPath, onRefresh,
   includeShellTools, setIncludeShellTools, permissionCommand, permCopied, handlePermCopy,
-  expanded, onToggle,
+  expanded, onToggle, bare = false,
 }: {
   status?: StatusResponse;
   listenAll: boolean; lanIps: string[]; selectedIp: string;
@@ -273,6 +272,7 @@ function ConnectGuide({
   includeShellTools: boolean; setIncludeShellTools: (v: boolean) => void;
   permissionCommand: string; permCopied: boolean; handlePermCopy: () => void;
   expanded: string | null; onToggle: (s: "scope" | "steps" | "token" | "perm") => void;
+  bare?: boolean;
 }) {
   const isOpen = (k: "scope" | "steps" | "token" | "perm") => expanded === k;
   const scopeOpen = isOpen("scope");
@@ -300,132 +300,147 @@ function ConnectGuide({
   useEffect(() => { if (!scopeMounted.current) { scopeMounted.current = true; return; } if (scopeOpen) scrollToBtn(scopeBtn.current); }, [scopeOpen]);
   useEffect(() => { if (!stepsMounted.current) { stepsMounted.current = true; return; } if (stepsOpen) scrollToBtn(stepsBtn.current); }, [stepsOpen]);
   useEffect(() => { if (!permMounted.current) { permMounted.current = true; return; } if (permOpen) scrollToBtn(permBtn.current); }, [permOpen]);
+  const guideInner = (
+    <>
+        {listenAll && lanIps.length > 0 && (
+          <div className="guide-block guide-block--raw">
+            <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp} healthCheck={healthCheck} onRefresh={onRefresh} />
+          </div>
+        )}
+        <div className="guide-block">
+          <button
+            type="button"
+            onClick={() => onToggle("scope")}
+            className="collapsible-head w-full text-left"
+            aria-expanded={scopeOpen}
+            ref={scopeBtn}
+          >
+            <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-primary to-primary/70">
+              <Icon name="sliders" size={14} aria-hidden="true" />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="ui-h-sub text-foreground">接入模式</div>
+              {!scopeOpen && (
+                <div className="text-[11px] text-muted-foreground">
+                  {scope === "project" ? "项目级 · 仅指定项目生效" : "全局模式 · 所有项目可用"}
+                </div>
+              )}
+            </div>
+            <Icon
+              name="chevronDown"
+              size={16}
+              className={`collapsible-chev ${scopeOpen ? "open" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
+          <div ref={scopeBody}>
+            {scopeOpen && (
+              <div className="collapsible-body pl-9">
+                <div className="grid grid-cols-2 gap-3">
+                  {([
+                    { key: "project", title: "项目级", desc: "仅指定项目生效", badge: "推荐" as const },
+                    { key: "user", title: "全局模式", desc: "一次配置，所有项目都能使用" },
+                  ] as const).map((o) => (
+                    <OptionCard key={o.key} selected={scope===o.key} title={o.title} desc={o.desc}
+                      badge={"badge" in o ? o.badge : undefined} onClick={()=>setScope(o.key)} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="my-3.5 h-px bg-border guide-divider" />
+        <div className="guide-block">
+          <button
+            type="button"
+            onClick={() => onToggle("steps")}
+            className="collapsible-head w-full text-left"
+            aria-expanded={stepsOpen}
+            ref={stepsBtn}
+          >
+            <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-primary to-primary/70">
+              <Icon name="terminal" size={14} aria-hidden="true" />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="ui-h-sub text-foreground">
+                接入步骤
+                <span className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${status?.transport === "sse" ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200" : "bg-indigo-50 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-200"}`}>
+                  {status?.transport === "sse" ? "SSE 流式" : "HTTP"}
+                </span>
+              </div>
+              {!stepsOpen && (
+                <div className="text-[11px] text-muted-foreground">点击展开查看连接命令</div>
+              )}
+            </div>
+            <Icon
+              name="chevronDown"
+              size={16}
+              className={`collapsible-chev ${stepsOpen ? "open" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
+          <div ref={stepsBody}>
+            {stepsOpen && (
+              <div className="collapsible-body pl-9">
+                {scope === "user" ? (
+                  <GlobalSteps command={connectCommand} copied={copied} onCopy={handleCopy} />
+                ) : (
+                  <ProjectSteps command={connectCommand} copied={copied} onCopy={handleCopy}
+                    projectPath={projectPath} setProjectPath={setProjectPath} />
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="my-3.5 h-px bg-border guide-divider" />
+        <div className="guide-block">
+          <TokenManager status={status} onRefresh={onRefresh} projectPath={projectPath}
+            expanded={isOpen("token")} onToggle={() => onToggle("token")} />
+        </div>
+        <div className="guide-block">
+          <button
+            type="button"
+            onClick={() => onToggle("perm")}
+            className="collapsible-head w-full text-left"
+            aria-expanded={permOpen}
+            ref={permBtn}
+          >
+            <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-emerald-500 to-emerald-600">
+              <Icon name="check" size={14} aria-hidden="true" />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="ui-h-sub text-foreground">权限自动授权</div>
+              {!permOpen && (
+                <div className="text-[11px] text-muted-foreground">点击展开查看授权命令</div>
+              )}
+            </div>
+            <Icon
+              name="chevronDown"
+              size={16}
+              className={`collapsible-chev ${permOpen ? "open" : ""}`}
+              aria-hidden="true"
+            />
+          </button>
+          <div ref={permBody}>
+            {permOpen && (
+              <div className="collapsible-body pl-9">
+                <PermissionCard scope={scope} projectPath={projectPath}
+                  includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
+                  permissionCommand={permissionCommand} permCopied={permCopied} handlePermCopy={handlePermCopy} />
+              </div>
+            )}
+          </div>
+        </div>
+    </>
+  );
+
+  if (bare) return <div className="card-content space-y-4">{guideInner}</div>;
   return (
     <Card className="card-primary">
       <CardHeader>
         <CardTitle icon={<Icon name="plug" />}>接入 Claude Code</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {listenAll && lanIps.length > 0 && (
-          <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp} healthCheck={healthCheck} onRefresh={onRefresh} />
-        )}
-        <button
-          type="button"
-          onClick={() => onToggle("scope")}
-          className="collapsible-head w-full text-left"
-          aria-expanded={scopeOpen}
-          ref={scopeBtn}
-        >
-          <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-primary to-primary/70">
-            <Icon name="sliders" size={14} aria-hidden="true" />
-          </span>
-          <div className="flex-1 min-w-0">
-            <div className="ui-h-sub text-foreground">接入模式</div>
-            {!scopeOpen && (
-              <div className="text-[11px] text-muted-foreground">
-                {scope === "project" ? "项目级 · 仅指定项目生效" : "全局模式 · 所有项目可用"}
-              </div>
-            )}
-          </div>
-          <Icon
-            name="chevronDown"
-            size={16}
-            className={`collapsible-chev ${scopeOpen ? "open" : ""}`}
-            aria-hidden="true"
-          />
-        </button>
-        <div ref={scopeBody}>
-          {scopeOpen && (
-            <div className="collapsible-body pl-9">
-              <div className="grid grid-cols-2 gap-3">
-                {([
-                  { key: "project", title: "项目级", desc: "仅指定项目生效", badge: "推荐" as const },
-                  { key: "user", title: "全局模式", desc: "一次配置，所有项目都能使用" },
-                ] as const).map((o) => (
-                  <OptionCard key={o.key} selected={scope===o.key} title={o.title} desc={o.desc}
-                    badge={"badge" in o ? o.badge : undefined} onClick={()=>setScope(o.key)} />
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="my-3.5 h-px bg-border" />
-        <button
-          type="button"
-          onClick={() => onToggle("steps")}
-          className="collapsible-head w-full text-left"
-          aria-expanded={stepsOpen}
-          ref={stepsBtn}
-        >
-          <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-primary to-primary/70">
-            <Icon name="terminal" size={14} aria-hidden="true" />
-          </span>
-          <div className="flex-1 min-w-0">
-            <div className="ui-h-sub text-foreground">
-              接入步骤
-              <span className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${status?.transport === "sse" ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200" : "bg-indigo-50 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-200"}`}>
-                {status?.transport === "sse" ? "SSE 流式" : "HTTP"}
-              </span>
-            </div>
-            {!stepsOpen && (
-              <div className="text-[11px] text-muted-foreground">点击展开查看连接命令</div>
-            )}
-          </div>
-          <Icon
-            name="chevronDown"
-            size={16}
-            className={`collapsible-chev ${stepsOpen ? "open" : ""}`}
-            aria-hidden="true"
-          />
-        </button>
-        <div ref={stepsBody}>
-          {stepsOpen && (
-            <div className="collapsible-body pl-9">
-              {scope === "user" ? (
-                <GlobalSteps command={connectCommand} copied={copied} onCopy={handleCopy} />
-              ) : (
-                <ProjectSteps command={connectCommand} copied={copied} onCopy={handleCopy}
-                  projectPath={projectPath} setProjectPath={setProjectPath} />
-              )}
-            </div>
-          )}
-        </div>
-        <div className="my-3.5 h-px bg-border" />
-        <TokenManager status={status} onRefresh={onRefresh} projectPath={projectPath}
-          expanded={isOpen("token")} onToggle={() => onToggle("token")} />
-        <button
-          type="button"
-          onClick={() => onToggle("perm")}
-          className="collapsible-head w-full text-left"
-          aria-expanded={permOpen}
-          ref={permBtn}
-        >
-          <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-emerald-500 to-emerald-600">
-            <Icon name="check" size={14} aria-hidden="true" />
-          </span>
-          <div className="flex-1 min-w-0">
-            <div className="ui-h-sub text-foreground">权限自动授权</div>
-            {!permOpen && (
-              <div className="text-[11px] text-muted-foreground">点击展开查看授权命令</div>
-            )}
-          </div>
-          <Icon
-            name="chevronDown"
-            size={16}
-            className={`collapsible-chev ${permOpen ? "open" : ""}`}
-            aria-hidden="true"
-          />
-        </button>
-        <div ref={permBody}>
-          {permOpen && (
-            <div className="collapsible-body pl-9">
-              <PermissionCard scope={scope} projectPath={projectPath}
-                includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
-                permissionCommand={permissionCommand} permCopied={permCopied} handlePermCopy={handlePermCopy} />
-            </div>
-          )}
-        </div>
-      </CardContent>
+      <CardContent className="space-y-4">{guideInner}</CardContent>
     </Card>
   );
 }

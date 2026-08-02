@@ -87,6 +87,76 @@ export interface StatusResponse {
   notifyTaskComplete: boolean;
 }
 
+/* ─── 防火墙结构化诊断（get_firewall_diagnosis）─── */
+
+/** 诊断问题项。code 与后端 firewall_diag.rs 的问题码表一致。 */
+export interface FirewallIssue {
+  code:
+    | "firewallOff"
+    | "noRule"
+    | "profileGap"
+    | "blockRule"
+    | "staleRule"
+    | "duplicateRule"
+    | "localPolicyBlocked"
+    | "probeUnavailable"
+    | string;
+  /** 面向用户的具体描述（已含涉事配置文件名 / 规则名）。 */
+  detail: string;
+  /** 能否被「一键修复」解决。false 的项需用户或 IT 介入。 */
+  fixable: boolean;
+}
+
+export interface FirewallRuleInfo {
+  name: string;
+  /** `Allow` | `Block`。 */
+  action: string;
+  /** 规则覆盖的配置文件，如 `Any` / `Public` / `Domain, Private`。 */
+  profiles: string;
+  /** 规则绑定的程序路径；null = 不限程序。 */
+  program: string | null;
+  localPort: string;
+  enabled: boolean;
+}
+
+export interface FirewallProfileInfo {
+  /** `Domain` | `Private` | `Public`。 */
+  name: string;
+  enabled: boolean;
+  defaultInboundBlock: boolean;
+  /** false = 域策略禁止本地规则生效，本机加规则无效。 */
+  allowLocalRules: boolean;
+  /** 当前网络是否落在此配置文件——规则只在活动配置文件下生效。 */
+  active: boolean;
+  /** 该配置文件下本端口入站是否真的通。 */
+  covered: boolean;
+}
+
+export interface FirewallDiagnosis {
+  port: number;
+  /** 当前可执行文件路径（规则 program= 的比对基准）。 */
+  exe: string;
+  enabled: boolean | null;
+  portOpen: boolean | null;
+  profiles: FirewallProfileInfo[];
+  activeProfiles: string[];
+  allowRules: FirewallRuleInfo[];
+  blockRules: FirewallRuleInfo[];
+  staleRules: FirewallRuleInfo[];
+  issues: FirewallIssue[];
+  /** netsh 回退路径拿不到配置文件覆盖/阻止规则信息，前端据此提示诊断能力受限。 */
+  source: "powershell" | "netsh" | "unavailable" | string;
+}
+
+export interface FirewallDiagnosisResponse {
+  /** null = 尚未完成首次检查。 */
+  diagnosis: FirewallDiagnosis | null;
+  available: boolean;
+  manualCommand: string;
+  ruleName: string;
+  checkedSecondsAgo: number | null;
+}
+
 export interface ConfigPatch {
   allowedRoots?: string[];
   allowedExtensions?: string[];

@@ -136,10 +136,10 @@ export function OnboardingGuide({
         {/* Step dots */}
         <div className="my-4 flex items-center justify-center gap-2">
           {steps.map((_, i) => (
-            <span
+            <i
               key={i}
               className={`h-1.5 rounded-full transition-all duration-300 ${
-                i === step ? "w-6 bg-primary" : i < step ? "w-1.5 bg-primary/40" : "w-1.5 bg-muted-foreground/25"
+                i === step ? "w-6 bg-primary now" : i < step ? "w-1.5 bg-primary/40 todo" : "w-1.5 bg-muted-foreground/25 todo"
               }`}
             />
           ))}

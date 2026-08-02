@@ -32,20 +32,20 @@ export function SettingsRow({
   return (
     <div
       className={[
-        "flex gap-3 py-3",
-        isStack ? "flex-col items-stretch" : "flex-row items-center justify-between",
+        "srow flex gap-3 py-3",
+        isStack ? "stack flex-col items-stretch" : "flex-row items-center justify-between",
         last ? "" : "divider-x",
         danger ? "-mx-3 rounded-lg bg-destructive/5 px-3" : "",
       ].join(" ")}
     >
       {/* 标签 + 说明（横排时说明在标签下方、控制区左侧；竖排时说明在控制区下方） */}
-      <div className="min-w-0">
+      <div className="grow min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{label}</span>
+          <span className="t text-sm font-medium">{label}</span>
           {saved && <SavedHint>已保存</SavedHint>}
         </div>
         {!isStack && sub && (
-          <div className={`mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>
+          <div className={`d mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>
             {sub}
           </div>
         )}
@@ -56,7 +56,7 @@ export function SettingsRow({
 
       {/* 竖排时说明置于控制区下方 */}
       {isStack && sub && (
-        <div className={`text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>{sub}</div>
+        <div className={`d text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>{sub}</div>
       )}
     </div>
   );

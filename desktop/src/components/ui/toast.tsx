@@ -74,8 +74,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ toast: addToast }}>
       {children}
-      {/* Toast 容器：右上角固定定位 */}
-      <div className="fixed right-4 top-16 z-[2000] flex flex-col gap-2 pointer-events-none">
+      {/* Toast 容器：现代态移到右下角（.toast-stack）；错误项用 role=alert 走 assertive 播报 */}
+      <div
+        className="fixed right-4 top-16 z-[2000] flex flex-col gap-2 pointer-events-none toast-stack"
+        role="region"
+        aria-label="通知"
+        aria-live="polite"
+      >
         {toasts.map((t) => (
           <ToastItemView key={t.id} item={t} onDismiss={() => removeToast(t.id)} />
         ))}
@@ -103,7 +108,10 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: () => 
   return (
     <div
       onClick={onDismiss}
-      className={`pointer-events-auto flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm font-medium shadow-pop backdrop-blur-md cursor-pointer select-none transition-all duration-300 max-w-[380px] ${
+      role={item.variant === "error" ? "alert" : undefined}
+      className={`pointer-events-auto flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm font-medium shadow-pop backdrop-blur-md cursor-pointer select-none transition-all duration-300 max-w-[380px] toast ${
+        item.variant === "error" ? "err" : item.variant === "warning" ? "warn" : ""
+      } ${
         variantStyles[item.variant]
       } ${
         visible ? "translate-x-0 opacity-100" : "translate-x-4 opacity-0"

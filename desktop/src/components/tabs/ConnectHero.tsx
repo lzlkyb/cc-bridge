@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "../../lib/tauri";
 import { formatUptime } from "../../lib/utils";
 import type { StatusResponse } from "../../lib/types";
@@ -30,96 +30,9 @@ export function ConnectHero({
   const running = status?.running ?? true;
   const reduced = usePrefersReducedMotion();
 
-  // 炫酷背景：数据流瀑布(Matrix)——负载联动：rpm 越高雨越密越快，空闲稀疏慢速「呼吸」。
-  // rpm 经 ref 传入动画循环，不进 effect 依赖（避免每次轮询重启动画闪烁）。
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rpmRef = useRef(0);
-  useEffect(() => {
-    rpmRef.current = running ? status?.stats?.requestsPerMin ?? 0 : 0;
-  }, [status, running]);
-  useEffect(() => {
-    const cv = canvasRef.current;
-    if (!cv) return;
-    const ctx = cv.getContext("2d");
-    if (!ctx) return;
-    // 减弱动效：不启动数据流瀑布，避免眩晕（静态 hero 渐变已足够）。
-    if (reduced) return;
-    const DPR = Math.min(window.devicePixelRatio || 1, 2);
-    let W = 0, H = 0, raf = 0, t = 0;
-    const GLYPHS = ["0", "1", "{", "}", "<", ">", "/", "\\", "∑", "λ", "%", "★", "·"];
-    const COLW = 15;
-    let cols = 0;
-    let drops: number[] = [];
-    let thr: number[] = []; // 每列激活阈值，空闲时按阈值均匀隐藏部分列
-    const fit = () => {
-      const r = cv.getBoundingClientRect();
-      W = r.width; H = r.height;
-      cv.width = Math.max(1, W * DPR); cv.height = Math.max(1, H * DPR);
-      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-      cols = Math.ceil(W / COLW);
-      drops = Array.from({ length: cols }, () => Math.random() * H);
-      thr = Array.from({ length: cols }, () => Math.random());
-    };
-    fit();
-    const ro = new ResizeObserver(fit);
-    ro.observe(cv);
-    const isDark = () => document.documentElement.classList.contains("dark");
-    let curLoad = 0; // 负载缓动值（向 rpm 决定的 targetLoad 追随，避免轮询跳变时雨突变）
-    const draw = () => {
-      t += 1;
-      const targetLoad = Math.min(1, rpmRef.current / 120);
-      curLoad += (targetLoad - curLoad) * 0.05;
-      const load = curLoad;
-      const speed = 0.5 + load * 2.4;       // 空闲 0.5 → 峰值 ~2.9（rpm≈120）
-      const density = 0.42 + load * 0.58;   // 激活列比例 0.42 → 1.0
-      ctx.clearRect(0, 0, W, H);
-      const dark = isDark();
-      const indigo = dark ? "129,140,248" : "79,70,229";
-      const cyan = dark ? "56,189,248" : "14,165,233";
-      ctx.font = "13px ui-monospace, Menlo, Consolas, monospace";
-      ctx.textAlign = "center";
-      // 数据流瀑布（升级版）：头部亮青 + 微 glow，平滑拖尾
-      const TAIL = 16;
-      for (let i = 0; i < cols; i++) {
-        if (thr[i] > density) continue;     // 该列空闲时不落、不画
-        const x = i * COLW + COLW / 2;
-        const y = drops[i];
-        // 头部：亮青 + 轻微 glow（仅头部，远比逐帧全屏 glow 省）
-        ctx.shadowBlur = 6;
-        ctx.shadowColor = `rgba(${cyan},0.9)`;
-        ctx.fillStyle = `rgba(${cyan},0.98)`;
-        ctx.fillText(GLYPHS[(Math.floor(t * 0.03) + i) % GLYPHS.length], x, y);
-        ctx.shadowBlur = 0;
-        // 拖尾：青→靛蓝渐变，透明度 (1-k/TAIL)^1.6 平滑
-        for (let k = 1; k <= TAIL; k++) {
-          const ty = y - k * 15;
-          if (ty < -15) continue;
-          const a = 0.42 * Math.pow(1 - k / TAIL, 1.6);
-          const col = k / TAIL < 0.5 ? cyan : indigo;
-          ctx.fillStyle = `rgba(${col},${a})`;
-          ctx.fillText(GLYPHS[(Math.floor(t * 0.03) + i + k) % GLYPHS.length], x, ty);
-        }
-        drops[i] += speed * (1 + (i % 3) * 0.18);
-        if (drops[i] > H + 30) drops[i] = -Math.random() * 120;
-      }
-      if (running) raf = requestAnimationFrame(draw);
-    };
-    draw();
-    // 后台暂停：切到别的 tab 时停止 rAF，避免空转
-    const onVis = () => {
-      if (document.hidden) {
-        cancelAnimationFrame(raf);
-      } else if (running) {
-        raf = requestAnimationFrame(draw);
-      }
-    };
-    document.addEventListener("visibilitychange", onVis);
-    return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
-      document.removeEventListener("visibilitychange", onVis);
-    };
-  }, [running, reduced]);
+  // 运行态动态表达已改为纯 CSS（见 index.css 的 .hero--live 呼吸 / .hero-shimmer 顶部流光），
+  // 不再使用 canvas + requestAnimationFrame，主线程零开销。
+
 
   // 运行时长本地每秒自增，5s 轮询回来时以后端 uptime 为准校准，实现平滑跳秒。
   const [liveUptime, setLiveUptime] = useState(0);
@@ -178,7 +91,11 @@ export function ConnectHero({
 
   return (
     <div className={`hero relative flex flex-col gap-2 overflow-hidden ${running ? "hero--live" : "hero-stopped"}`}>
-      <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 z-0 h-full w-full" aria-hidden="true" />
+      {running && !reduced && (
+        <div className="hero-shimmer pointer-events-none absolute inset-x-0 top-0 z-[1]" aria-hidden="true">
+          <span className="hero-shimmer-seg" />
+        </div>
+      )}
       {/* 状态行 */}
       <div className="relative z-[1] flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5 text-[15px] font-semibold">

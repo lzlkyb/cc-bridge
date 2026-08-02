@@ -7,6 +7,14 @@ const variants = {
   success: "border-success/50 bg-success/10 text-success",
 };
 
+/* 现代外观钩子：设计稿 .alert 的色调命名与本组件 variant 命名的映射 */
+const modernTone: Record<keyof typeof variants, string> = {
+  default: "info",
+  destructive: "danger",
+  warning: "warn",
+  success: "ok",
+};
+
 interface AlertProps extends HTMLAttributes<HTMLDivElement> {
   variant?: keyof typeof variants;
 }
@@ -15,7 +23,7 @@ export function Alert({ variant = "default", className = "", ...props }: AlertPr
   return (
     <div
       role="alert"
-      className={`relative w-full rounded-lg border p-4 text-sm ${variants[variant]} ${className}`}
+      className={`alert ${modernTone[variant]} relative w-full rounded-lg border p-4 text-sm ${variants[variant]} ${className}`}
       {...props}
     />
   );

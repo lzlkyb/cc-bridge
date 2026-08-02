@@ -219,17 +219,17 @@ export function CommandPalette({
   return (
     <>
       <div
-        className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm pt-[15vh]"
+        className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm pt-[15vh] pal-mask"
         onClick={onClose}
       >
         <div
-          className={`mx-4 w-full max-w-md overflow-hidden rounded-xl modal-surface transition-all duration-200 ${
+          className={`mx-4 w-full max-w-md overflow-hidden rounded-xl modal-surface transition-all duration-200 pal ${
             visible ? "translate-y-0 opacity-100 scale-100" : "translate-y-2 opacity-0 scale-98"
           }`}
           onClick={(e) => e.stopPropagation()}
         >
           {/* Search input */}
-          <div className="flex items-center gap-2.5 border-b px-4 py-3">
+          <div className="flex items-center gap-2.5 border-b px-4 py-3 pal-in">
             <Icon name="search" size={16} className="text-muted-foreground shrink-0" />
             <input
               ref={inputRef}
@@ -245,7 +245,7 @@ export function CommandPalette({
           </div>
 
           {/* Results */}
-          <div ref={listRef} className="max-h-[300px] overflow-y-auto py-1.5">
+          <div ref={listRef} className="max-h-[300px] overflow-y-auto py-1.5 pal-list">
             {filtered.length === 0 ? (
               <EmptyState className="py-6" icon="search" description="没有匹配的结果，换个关键词试试" />
             ) : (
@@ -256,7 +256,7 @@ export function CommandPalette({
                 return (
                   <Fragment key={item.id}>
                     {showHeader && (
-                      <div className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <div className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground pal-g">
                         {item.group}
                       </div>
                     )}
@@ -264,8 +264,8 @@ export function CommandPalette({
                       onClick={() => selectItem(item)}
                       onMouseEnter={() => setSelectedIndex(i)}
                       disabled={isBusy}
-                      className={`flex w-full items-center gap-3 px-4 py-2.5 text-sm transition-colors disabled:opacity-60 ${
-                        i === selectedIndex ? "bg-accent text-accent-foreground" : "text-foreground hover:bg-muted/60"
+                      className={`flex w-full items-center gap-3 px-4 py-2.5 text-sm transition-colors disabled:opacity-60 pal-it ${
+                        i === selectedIndex ? "sel bg-accent text-accent-foreground" : "text-foreground hover:bg-muted/60"
                       }`}
                     >
                       <Icon name={item.icon} size={15} className="shrink-0" />
@@ -282,7 +282,7 @@ export function CommandPalette({
           </div>
 
           {/* Footer hint */}
-          <div className="border-t px-4 py-2">
+          <div className="border-t px-4 py-2 pal-ft">
             <p className="text-[10px] text-muted-foreground">
               <kbd className="rounded bg-muted px-1 py-0.5 font-mono">↑↓</kbd> 导航 ·{" "}
               <kbd className="rounded bg-muted px-1 py-0.5 font-mono">Enter</kbd> 执行 ·{" "}
