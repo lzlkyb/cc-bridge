@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
+import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
 import { APP_INFO } from "../../lib/about";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { FirewallGroup } from "./firewall/FirewallGroup";
@@ -25,7 +25,7 @@ export function SettingsTab({
   onMarkSeen,
   changelogOpenToken,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onSaved: () => void;
   highlightAnchor?: { anchor: string; nonce: number } | null;
   unreadCount?: number;
@@ -57,7 +57,7 @@ function NetworkGroup({
   status,
   onSaved,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onSaved: () => void;
 }) {
   const [port, setPort] = useState(7823);
@@ -320,7 +320,7 @@ function InstallGroup({ onReopenOnboarding }: { onReopenOnboarding?: () => void 
 function ConfigGroup({
   onSaved,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onSaved: () => void;
 }) {
   const { toast } = useToast();
@@ -440,7 +440,7 @@ function AuditGroup({
   status,
   onSaved,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onSaved: () => void;
 }) {
   const [days, setDays] = useState(30);

@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { formatUptime } from "../../lib/utils";
-import type { StatusResponse } from "../../lib/types";
+import type { StatusResponse, StaticStatus, LiveStatus } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { HealthRing, HeroChip, HeroStat, TOOL_LABELS, usePopClass } from "./HeroStats";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { useCountUp } from "../../hooks/useCountUp";
+import { useAppHidden } from "../../lib/appVisibility";
 
 /**
  * 连接页顶部 Hero 卡（方案 B · 双栏卡片）：
@@ -22,7 +24,8 @@ export function ConnectHero({
   port,
   onChanged,
 }: {
-  status?: StatusResponse;
+  /** 不含高频字段（uptime / stats 由本组件自己订阅，见下方）。 */
+  status?: StaticStatus;
   displayHost: string;
   port: number;
   onChanged: () => void;
@@ -30,19 +33,36 @@ export function ConnectHero({
   const running = status?.running ?? true;
   const reduced = usePrefersReducedMotion();
 
-  // 运行态动态表达已改为纯 CSS（见 index.css 的 .hero--live 呼吸 / .hero-shimmer 顶部流光），
-  // 不再使用 canvas + requestAnimationFrame，主线程零开销。
+  // 运行态动态表达已改为纯 CSS（仅保留 .hero-dot 脉冲，零主线程开销）。
+  // 2026-08-02：移除 .hero-breathe / .addr-shimmer / .hero-shimmer-flow（持续 paint 累计烧 ~6% CPU）。
 
+
+  // 实时字段（uptime / stats）由本组件**自己订阅**，不再从 props 里拿。
+  //
+  // 原因：这两个字段每 5s 轮询都变，若随整个 `StatusResponse` 从 App 层往下传，
+  // 顶层引用就每 5s 必换 → Header / ConnectTab 上的 `memo` 弹不住 → 当前 Tab 整棵重渲染。
+  // 实查全工程只有本组件读它们，所以把订阅下沉到这里，把重渲染隔离在本组件内。
+  // 用同一个 queryKey（["status"]）共享 App 那边的缓存与轮询，**不会多发请求**，
+  // 也不在这里设 refetchInterval（轮询由 App 层拥有）。
+  const { data: live } = useQuery<StatusResponse, Error, LiveStatus>({
+    queryKey: ["status"],
+    queryFn: () => invoke<StatusResponse>("get_status"),
+    select: (s) => ({ uptimeSeconds: s.uptimeSeconds, stats: s.stats }),
+  });
 
   // 运行时长本地每秒自增，5s 轮询回来时以后端 uptime 为准校准，实现平滑跳秒。
   const [liveUptime, setLiveUptime] = useState(0);
-  const uptimeSeconds = status?.uptimeSeconds;
+  const uptimeSeconds = live?.uptimeSeconds;
+  const appHidden = useAppHidden();
   useEffect(() => {
     if (uptimeSeconds == null || !running) return;
     setLiveUptime(uptimeSeconds);
+    // 窗口不可见时不跳秒：每秒一次 setState 会驱动整个 Hero 重渲染，而没人在看。
+    // 恢复可见时 App 层会立即 refetch，uptimeSeconds 变化会触发本 effect 重跑并校准。
+    if (appHidden) return;
     const timer = setInterval(() => setLiveUptime((s) => s + 1), 1000);
     return () => clearInterval(timer);
-  }, [uptimeSeconds, running]);
+  }, [uptimeSeconds, running, appHidden]);
 
   // 启停操作的过渡态与失败内联报错。
   const [pending, setPending] = useState(false);
@@ -63,7 +83,7 @@ export function ConnectHero({
   };
 
   // ── 实时指标（全部来自后端真实统计）──
-  const s = status?.stats;
+  const s = live?.stats;
   const total = s?.totalRequests ?? 0;
   const errs = s?.totalErrors ?? 0;
   const rate = s?.successRate ?? 100;
@@ -91,11 +111,7 @@ export function ConnectHero({
 
   return (
     <div className={`hero relative flex flex-col gap-2 overflow-hidden ${running ? "hero--live" : "hero-stopped"}`}>
-      {running && !reduced && (
-        <div className="hero-shimmer pointer-events-none absolute inset-x-0 top-0 z-[1]" aria-hidden="true">
-          <span className="hero-shimmer-seg" />
-        </div>
-      )}
+      {/* 顶部流光 hero-shimmer-seg 已移除（transform: translateX 动画，CPU 占用 ~1%） */}
       {/* 状态行 */}
       <div className="relative z-[1] flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5 text-[15px] font-semibold">

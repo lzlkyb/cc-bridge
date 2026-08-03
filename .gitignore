@@ -33,3 +33,10 @@ Thumbs.db
 /generated-images/
 /desktop/src-tauri/icons/backup_*/
 /.workbuddy/
+
+# 测试用独立 target 目录：dev 运行时会占住 target/debug 的 exe，
+# 跑 cargo test 需用 CARGO_TARGET_DIR=target-test 绕开（见 已经做完的.md L10）。
+desktop/src-tauri/target-test/
+
+# 排障用的临时脚本（下划线前缀），不入库。
+_clean_locks.ps1

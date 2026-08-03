@@ -51,7 +51,9 @@
 - cc-bridge `run_command` **刻意无状态**：cwd 每次必传（`resolve_safe_path` 强约束）。
 - 不是缺陷，是"远程不可信"设计哲学。消除需引入**会话级 cwd**（提案 P1，建议独立 RFC，可开关、默认关）。
 - **已出 RFC 并已实施**（`proposals/session_cwd_persistence_rfc.md`）。网络调研关键结论：**不能用"按 token 隐式关联 cwd"**（MCP 无协议级 session，2026-07 RC 甚至移除 `Mcp-Session-Id`）——正确做法是 **显式 `session_id` handle 模式**（同类案例 Arbitrium/sshmcp 均如此），每次用前仍重校验白名单。难度服务端 ★☆☆、**默认关开关零行为变化**；`cargo clippy --no-default-features` 零警告、`cargo test --no-default-features` 全绿（含 4 条新增会话测试）。
-- 附带差异：timeout 默认 30s vs native 120s，可调。
+- ~~附带差异：timeout 默认 30s vs native 120s，可调。~~ ✅ 2026-08-03 已对齐到 **120s**，
+  且超时不再丢弃已产出输出（见 CHANGELOG / 已经做完的.md L8）。仍未对齐的是 native 的
+  「超时自动转后台而不杀」行为（见清单 P6-1）。
 
 ### 🟡 3. MCP 协议手写 dispatch（无 SSE / 协议协商）
 - `dispatch_tool` 手写 JSON-RPC，不支持 SSE 流式与协议协商。

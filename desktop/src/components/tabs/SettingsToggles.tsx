@@ -1,6 +1,6 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
+import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
@@ -24,7 +24,7 @@ export function SettingsToggles({
   onSaved,
   highlightAnchor,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onSaved: () => void;
   highlightAnchor?: { anchor: string; nonce: number } | null;
 }) {
@@ -430,7 +430,7 @@ function ShellTypeRow({
 }
 
 /* 风险总览（fix #10）：根据白名单 / 命令执行状态给出安全 or 风险摘要 */
-function RiskSummary({ status }: { status?: StatusResponse }) {
+function RiskSummary({ status }: { status?: StaticStatus }) {
   if (!status) return null;
   const risks: string[] = [];
   if (!status.whitelistEnabled) risks.push("白名单已关闭");
@@ -625,7 +625,7 @@ function SseMigrationModal({
   onCancel,
   onConfirm,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onCancel: () => void;
   onConfirm: () => void;
 }) {

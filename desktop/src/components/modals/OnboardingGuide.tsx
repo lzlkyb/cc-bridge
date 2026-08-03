@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { StatusResponse } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { StepAddDir } from "./onboarding/StepAddDir";
@@ -49,7 +49,7 @@ export function OnboardingGuide({
   onRefresh,
   onClose,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   selectedIp: string;
   onSelectIp: (ip: string) => void;
   onRefresh: () => void;

@@ -6,7 +6,7 @@ import { useToast } from "../ui/toast";
 import { invoke } from "../../lib/tauri";
 import { toggleTheme } from "../../lib/theme";
 import { copyText } from "../../lib/utils";
-import type { StatusResponse } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
 import { DirectoryBrowser } from "./DirectoryBrowser";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 
@@ -32,7 +32,7 @@ export function CommandPalette({
 }: {
   onClose: () => void;
   onNavigate: (tab: string) => void;
-  status?: StatusResponse;
+  status?: StaticStatus;
   onChanged?: () => void;
   /** H3：重新打开首次使用引导（不清除 localStorage，仅重新展示）。 */
   onReopenOnboarding?: () => void;

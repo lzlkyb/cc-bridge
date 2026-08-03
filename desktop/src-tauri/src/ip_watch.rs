@@ -1,95 +1,89 @@
 //! Windows 本机地址变化事件监听（事件驱动，替代 15s 轮询）。
 //!
-//! 使用 winsock2 `SIO_ADDRESS_LIST_CHANGE` ioctl：在专用阻塞线程上等待 OS 通知。
-//! 纯 raw FFI 调用，零额外 crate 依赖，不触发 windows-rs 的 Winsock 初始化
-//! （避免 GUI 子系统下 DLL 加载期分配控制台导致启动闪黑窗）。
+//! 用 iphlpapi 的 `NotifyAddrChange`：两个参数都传 NULL 时它是**同步阻塞**调用，
+//! 一直等到本机地址列表发生变化才返回 `NO_ERROR`。纯 raw FFI，零额外 crate 依赖。
+//!
+//! ## 历史坑（别改回去）
+//!
+//! 曾用 winsock2 的 `SIO_ADDRESS_LIST_CHANGE` ioctl，并把 `-1 + WSAEFAULT(10014)`
+//! 当作「地址已变化 / 有数据准备好」。实机探针测得（`wsaioctl_probe.rs`）：
+//! 该调用在 `cbOutBuffer = 0` 时 **0.000ms 立即返回 WSAEFAULT**。WSAEFAULT 的真实含义
+//! 是「输出缓冲区参数无效」——即 ioctl 直接失败、通知压根没挂上，而不是有事件。
+//!
+//! 后果是两个 bug套在一起：
+//! 1. 该 `loop` 每秒空转数百万次 → 一个线程常驻 100% 单核（实测 101.3%）；
+//! 2. 往 unbounded channel 狂发假事件 → 下游防抖的吸收循环永不退出 →
+//!    `refresh_lan_ips` 与托盘提示从来没执行过，IP 变化检测实际上是死的。
+//!
+//! 所以这里除了换 API，还加了两道护栏：**非预期返回必退避**、
+//! **事件频率硬限流**。即使将来通知 API 又出现「立即返回」行为，最坏也只会
+//! 退化成每 200ms 一次，不会再烧掉一个核。
 
-/// SIO_ADDRESS_LIST_CHANGE control code
-const SIO_ADDRESS_LIST_CHANGE: u32 = 0x4800_0016;
+use std::time::Duration;
 
-extern "system" {
-    /// winsock2 WSAIoctl — 阻塞等待地址列表变化
-    fn WSAIoctl(
-        s: usize,
-        dw_io_control_code: u32,
-        lpv_in_buffer: *const u8,
-        cb_in_buffer: u32,
-        lpv_out_buffer: *mut u8,
-        cb_out_buffer: u32,
-        lpcb_bytes_returned: *mut u32,
-        lp_overlapped: *mut u8,
-        lp_completion_routine: usize,
-    ) -> i32;
+/// 两次事件之间的最小间隔（硬限流护栏，≤ 5 次/秒）。
+pub const MIN_EVENT_INTERVAL: Duration = Duration::from_millis(200);
 
-    /// winsock2 WSAGetLastError — 取上一次 Winsock 错误码（区分 WSAEFAULT 与真实错误）
-    fn WSAGetLastError() -> i32;
-}
+/// 通知 API 返回非预期值时的退避时长。宁可暂时失去事件能力（有 5s 轮询兜底），
+/// 也绝不空转。
+const ERROR_BACKOFF: Duration = Duration::from_secs(2);
 
 #[cfg(windows)]
 mod imp {
-    use std::net::UdpSocket;
-    use std::os::windows::io::AsRawSocket;
     use std::thread;
+    use std::time::Instant;
     use tokio::sync::mpsc;
 
-    use super::{WSAGetLastError, WSAIoctl, SIO_ADDRESS_LIST_CHANGE};
+    use super::{ERROR_BACKOFF, MIN_EVENT_INTERVAL};
+
+    /// `NO_ERROR`：地址列表已变化。
+    const NO_ERROR: u32 = 0;
+
+    #[link(name = "iphlpapi")]
+    extern "system" {
+        /// iphlpapi `NotifyAddrChange`。两参均为 NULL 时同步阻塞，直到地址列表变化
+        /// 才返回 `NO_ERROR`。不需要 handle，也不需要 overlapped。
+        fn NotifyAddrChange(handle: *mut usize, overlapped: *mut u8) -> u32;
+    }
 
     /// 启动一个阻塞线程监听本机地址变化，通过 channel 通知 async 端。
-    /// 传出的 `UdpSocket` 供调用方持有：drop 时关闭 socket → 阻塞的 WSAIoctl 返回错误 → 线程退出。
-    pub fn spawn(tx: mpsc::UnboundedSender<()>) -> UdpSocket {
-        let socket = UdpSocket::bind("0.0.0.0:0").expect("ip-watch: bind failed");
-        let raw = socket.as_raw_socket() as usize;
-
-        thread::spawn(move || loop {
-            let mut bytes_returned = 0u32;
-            // SAFETY: raw 是当前线程持有的 UdpSocket 的 SOCKET 句柄；
-            // 所有指针参数为 null/零长度，不涉及缓冲区越界。
-            let ret = unsafe {
-                WSAIoctl(
-                    raw,
-                    SIO_ADDRESS_LIST_CHANGE,
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null_mut(),
-                    0,
-                    &mut bytes_returned,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-            // 返回 0 表示成功（地址变化），SOCKET_ERROR(-1) + WSAEFAULT(10014) 也是
-            // 正常返回码（无 output buffer 时 ioctl 用它表示"有数据准备好"）。
-            // 其他错误（如 socket 关闭 = WSAENOTSOCK 10038）→ 线程退出。
-            // 仅 ret==0 或 (-1 且 WSAGetLastError==WSAEFAULT 10014) 才算正常（地址变化/有数据）；
-            // 其他 -1 错误（如 socket 关闭 WSAENOTSOCK 10038）必须 break，避免把任意 -1 当作
-            // “地址已变化”而在异常时忙等空转、无限发事件。
-            if ret == 0 || (ret == -1 && unsafe { WSAGetLastError() } == 10014) {
-                let _ = tx.send(());
-            } else {
-                // 意外错误（非地址变化、非 WSAEFAULT）：不直接退出整条事件线，
-                // 而是自愈重试，避免事件线退出后丢失托盘通知 / 弹通知能力
-                // （方案 C 的轮询 task 已兜底缓存刷新，这里只需保住事件通知）。
-                // 仅当 socket 被外部关闭（WSAENOTSOCK 10038，drop 触发停止信号）才正常退出。
-                let err = unsafe { WSAGetLastError() };
-                if err == 10038 {
+    ///
+    /// 线程退出时机：`tx.send` 失败（接收端已 drop，即 app 退出或上层自愈重建）。
+    /// 注意阻塞中的 `NotifyAddrChange` 无法从外部中断，因此旧线程会在下一次地址变化
+    /// 时才发现 channel 已断并退出——这是可接受的：它全程阻塞不吃 CPU，进程退出时随之消亡。
+    pub fn spawn(tx: mpsc::UnboundedSender<()>) {
+        thread::spawn(move || {
+            // 初始值减去一个间隔，使首次事件不被限流延迟。
+            let mut last_event = Instant::now() - MIN_EVENT_INTERVAL;
+            loop {
+                // SAFETY: 两个指针参数均传 NULL（同步模式），不涉及任何缓冲区读写。
+                let ret = unsafe { NotifyAddrChange(std::ptr::null_mut(), std::ptr::null_mut()) };
+                if ret != NO_ERROR {
+                    // 非预期返回：退避后重试。这条分支就是当年那个 bug 的直接防御——
+                    // 任何「说不清的返回值」都不得当成事件，也不得立即重试。
+                    thread::sleep(ERROR_BACKOFF);
+                    continue;
+                }
+                // 硬限流：不丢事件，只把间隔拉到 MIN_EVENT_INTERVAL 以上。
+                let since = last_event.elapsed();
+                if since < MIN_EVENT_INTERVAL {
+                    thread::sleep(MIN_EVENT_INTERVAL - since);
+                }
+                last_event = Instant::now();
+                if tx.send(()).is_err() {
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(500));
             }
         });
-
-        socket
     }
 }
 
 #[cfg(not(windows))]
 mod imp {
-    use std::net::UdpSocket;
     use tokio::sync::mpsc;
 
-    pub fn spawn(_tx: mpsc::UnboundedSender<()>) -> UdpSocket {
-        UdpSocket::bind("0.0.0.0:0").expect("ip-watch: bind failed")
-    }
+    /// 非 Windows 平台无此能力：不启线程，地址变化完全交由上层 5s 轮询兜底。
+    pub fn spawn(_tx: mpsc::UnboundedSender<()>) {}
 }
 
 pub use imp::spawn;

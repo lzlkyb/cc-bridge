@@ -183,12 +183,27 @@ pub struct ToolCount {
 
 #[tauri::command]
 pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusResponse, String> {
-    let config = state.config.read().await;
-    let stats = state.stats.read().await;
     let uptime = state.uptime_seconds().await;
     let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
     let startup_error = state.startup_error.lock().unwrap().clone();
     let lan_ips = state.cached_lan_ips();
+
+    // 先用一次**短锁**取出下面三处慢操作要用的少量字段，随即释放。
+    //
+    // 为何这么做：本函数有三处慢操作——首次防火墙查询（netsh，可达数百 ms）、
+    // 可达性探针（TCP connect，最长 200ms）、备份目录统计（磁盘枚举，实测 2.3ms /
+    // 1230 个文件）。原实现把 config 读锁从函数开头一路罩到末尾，于是前端每 5s 轮询
+    // 一次，就造出一个最长 200ms+ 的窗口，期间任何配置写入（用户在设置页改东西）
+    // 都得排队等这把锁。读锁只应用来读内存，不应罩住 I/O 与 await。
+    let (probe_host, port, backup_dir_name) = {
+        let config = state.config.read().await;
+        let probe_host = network::resolve_display_host(
+            &config.host,
+            &lan_ips,
+            config.last_selected_ip.as_deref(),
+        );
+        (probe_host, config.port, config.backup_dir.clone())
+    };
 
     // 防火墙状态：优先读缓存（后台定时刷新）。缓存尚未初始化时做一次同步查询，
     // 保证首屏即可拿到真实状态，避免前几次轮询都返回 unknown。
@@ -201,7 +216,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
             #[cfg(not(windows))]
             let available = true;
             if available {
-                let (e, p) = crate::firewall::query_firewall_state(config.port);
+                let (e, p) = crate::firewall::query_firewall_state(port);
                 cache.enabled = e;
                 cache.port_open = p;
             }
@@ -220,6 +235,38 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
             None
         }
     };
+    // S1: 远程链路可达性探针。对远程客户端应当连接的展示地址（与连接命令一致）
+    // 做 TCP 探测（超时 200ms）。running 为 false 时不探测，直接不可达。
+    // 这是「远程连接中断」状态机的真实信号源，区别于 ip_changed（仅文本地址变化）。
+    // 不降频的理由：不可达时用户正盯着「连接中断」状态等恢复，拉长周期会直接
+    // 拖慢恢复提示；而窗口不可见时前端已经完全停了轮询（见 lib/appVisibility.ts），
+    // 常驻开销本来就已归零。
+    let remote_reachable = if !running {
+        false
+    } else {
+        matches!(
+            timeout(
+                Duration::from_millis(200),
+                TcpStream::connect((probe_host.as_str(), port)),
+            )
+            .await,
+            Ok(Ok(_))
+        )
+    };
+
+    // 备份目录绝对路径 + 统计（扫一次磁盘，供设置页展示）。同样放在锁外。
+    let backup_dir_abs = state
+        .data_dir
+        .join(&backup_dir_name)
+        .to_string_lossy()
+        .into_owned();
+    let (backup_count, backup_total_bytes) =
+        backup::backup_stats(&state.data_dir, &backup_dir_name);
+
+    // ── 慢操作到此结束，现在才取锁读其余字段（全是内存读，微秒级）。──
+    let config = state.config.read().await;
+    let stats = state.stats.read().await;
+
     // 地址变化检测:
     // 1) 监听全部网卡时,以用户上次确认的 IP 是否仍在网卡列表为准;
     // 2) 指定具体 host(非 127.0.0.1 本地回环)且该地址已不在网卡列表,也视为变化(O4)。
@@ -238,27 +285,6 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         config.last_selected_ip.as_deref(),
         &config.transport,
     );
-
-    // S1: 远程链路可达性探针。解析远程客户端应当连接的展示地址（与连接命令一致），
-    // 对该地址:port 做 TCP 探测（超时 200ms）。running 为 false 时不探测，直接不可达。
-    // 这是「远程连接中断」状态机的真实信号源，区别于 ip_changed（仅文本地址变化）。
-    let remote_reachable = if !running {
-        false
-    } else {
-        let probe_host = network::resolve_display_host(
-            &config.host,
-            &lan_ips,
-            config.last_selected_ip.as_deref(),
-        );
-        matches!(
-            timeout(
-                Duration::from_millis(200),
-                TcpStream::connect((probe_host.as_str(), config.port)),
-            )
-            .await,
-            Ok(Ok(_))
-        )
-    };
 
     // ── 方案 A 运行卡实时指标聚合（全做真，无伪造）──
     let total = stats.total_requests;
@@ -330,15 +356,6 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         v.truncate(3);
         v
     };
-
-    // 备份目录绝对路径 + 统计（扫一次磁盘，供设置页展示）。
-    let backup_dir_abs = state
-        .data_dir
-        .join(&config.backup_dir)
-        .to_string_lossy()
-        .into_owned();
-    let (backup_count, backup_total_bytes) =
-        backup::backup_stats(&state.data_dir, &config.backup_dir);
 
     Ok(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),

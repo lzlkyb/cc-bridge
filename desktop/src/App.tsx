@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "./lib/tauri";
-import type { StatusResponse } from "./lib/types";
+import type { StatusResponse, StaticStatus } from "./lib/types";
 import { APP_INFO, CHANGELOG } from "./lib/about";
 import { getLastSeenVersion, setLastSeenVersion, countUnreadVersions } from "./lib/utils";
 import { Header } from "./components/layout/Header";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { useAppHiddenFlag } from "./hooks/useAppHiddenFlag";
+import { useAppHidden } from "./lib/appVisibility";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { Icon } from "./components/ui/icon";
@@ -20,11 +22,35 @@ import { OnboardingGuide, isOnboardingDone } from "./components/modals/Onboardin
 import { CommandPalette } from "./components/modals/CommandPalette";
 
 function AppContent() {
-  const { data: status, refetch: refetchStatus, isError: statusError } = useQuery<StatusResponse>({
+  // 窗口收进托盘/最小化时给 <html> 打 data-app-hidden，暂停全部 CSS 动画。
+  // WebView2 不会自己为隐藏窗口节流动画，实测不做这事会白烧约 0.6 个 CPU 核。
+  useAppHiddenFlag();
+  // 窗口不可见时停掉全部定时轮询（本层 5s / 日志 10s / 防火墙 30s / 后台命令 3s）。
+  // 最重的是本层：`get_status` 里带一次可达性探针（真开 TCP 连接，200ms 超时）。
+  const appHidden = useAppHidden();
+
+  // 分层订阅：本层只要「剔掉高频字段」的部分，使其引用在 uptime/stats 变化时保持稳定，
+  // 下游 `memo(Header)` / `memo(ConnectTab)` 才真正生效（否则顶层引用每 5s 必换，memo 形同虚设）。
+  // 实时数字由唯一需要它们的 ConnectHero 自己订阅同一个 queryKey（共享缓存，不多发请求）。
+  const { data: status, refetch: refetchStatus, isError: statusError } = useQuery<
+    StatusResponse,
+    Error,
+    StaticStatus
+  >({
     queryKey: ["status"],
     queryFn: () => invoke<StatusResponse>("get_status"),
-    refetchInterval: 5000,
+    refetchInterval: appHidden ? false : 5000,
+    select: ({ uptimeSeconds: _uptime, stats: _stats, ...rest }) => rest,
   });
+
+  // 从隐藏恢复到可见时立即补一次，而不是干等下一个 5s 周期（否则刚打开窗口
+  // 看到的是旧数据）。用 ref 做跃迁检测：只在 hidden → visible 那一刻刷，
+  // 首次挂载（appHidden 本就是 false）不重复发请求。
+  const wasHiddenRef = useRef(false);
+  useEffect(() => {
+    if (wasHiddenRef.current && !appHidden) void refetchStatus();
+    wasHiddenRef.current = appHidden;
+  }, [appHidden, refetchStatus]);
 
   // IP 选择状态提升到 App 层，避免切 Tab 时 ConnectTab 卸载导致选中丢失
   const [selectedIp, setSelectedIp] = useState<string>("");
@@ -314,7 +340,7 @@ function LinkStateWatcher({
   status,
   onReselectIp,
 }: {
-  status: StatusResponse | undefined;
+  status: StaticStatus | undefined;
   onReselectIp: (ip: string, byUser?: boolean) => void;
 }) {
   const { toast } = useToast();

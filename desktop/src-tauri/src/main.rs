@@ -5,6 +5,7 @@ use std::sync::Arc;
 use png::Decoder;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
+use tauri::Emitter;
 use tauri::Listener;
 use tauri::Manager;
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -352,11 +353,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } = event
                     {
                         if let Some(w) = tray_app.app_handle().get_webview_window("main") {
-                            let _ = if w.is_visible().unwrap_or(false) {
+                            let visible = w.is_visible().unwrap_or(false);
+                            let _ = if visible {
                                 w.hide()
                             } else {
                                 w.show().and_then(|_| w.set_focus())
                             };
+                            // 告知前端可见性变化：前端据此暂停/恢复全部 CSS 动画
+                            // （见 index.css 的 data-app-hidden）。WebView2 不会自己为隐藏窗口节流动画，
+                            // 实测收进托盘后 webview CPU 几乎不降，必须显式通知。
+                            let _ = w.emit("app:visibility", !visible);
                         }
                     }
                 })
@@ -365,6 +371,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(w) = tray_app.get_webview_window("main") {
                             let _ = w.show();
                             let _ = w.set_focus();
+                            let _ = w.emit("app:visibility", true);
                         }
                     }
                     "copy_cmd" => {
@@ -535,15 +542,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let handle = app.handle().clone();
                 let watch_state = app_state.clone();
                 let last_tray = last_tray.clone();
-                // 事件驱动 IP 变化检测（Windows SIO_ADDRESS_LIST_CHANGE）。
-                // spawn_ip_watch 在专用阻塞线程上等待 OS 通知，通过 channel 通知 async 端。
+                // 事件驱动 IP 变化检测（Windows iphlpapi NotifyAddrChange）。
+                // ip_watch::spawn 在专用阻塞线程上等待 OS 通知，通过 channel 通知 async 端。
                 spawn_supervised("本机地址变化事件", move || {
                     let handle = handle.clone();
                     let watch_state = watch_state.clone();
                     let last_tray = last_tray.clone();
-                    // 每次 panic 自愈重启时重建 watcher（旧 socket 已随 drop 关闭）。
+                    // 每次 panic 自愈重启时重建 channel；旧监听线程会在下次地址变化时
+                    // 发现 send 失败并自行退出（它全程阻塞不吃 CPU）。
                     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-                    let _watcher = crate::ip_watch::spawn(tx);
+                    crate::ip_watch::spawn(tx);
                     Box::pin(async move {
                         let mut alerting = false;
                         loop {
@@ -551,14 +559,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 防抖：收到首个通知后，在 600ms 窗口内合并后续连续的网络抖动
                             // （Wi-Fi 重连/VPN/DHCP 续租常一次变化伴随多条通知），只处理一次，
                             // 以最终状态为准，避免风暴式重扫网卡与托盘重绘。
-                            while tokio::time::timeout(
-                                std::time::Duration::from_millis(600),
-                                rx.recv(),
-                            )
-                            .await
-                            .is_ok()
+                            //
+                            // 吸收必须有上限：旧版这里是无限 while，一旦生产端异常刷事件（ip_watch 那个
+                            // WSAEFAULT 空转 bug），`is_ok()` 恒真 → 循环永不退出 → 下面的
+                            // refresh_lan_ips / 托盘更新从来执行不到，IP 变化检测整个失效。
+                            // 现在最多吸 32 条就强制往下走：就算生产端再出问题，功能也不会被拖死。
+                            const MAX_COALESCE: usize = 32;
+                            let mut coalesced = 0usize;
+                            while coalesced < MAX_COALESCE
+                                && tokio::time::timeout(
+                                    std::time::Duration::from_millis(600),
+                                    rx.recv(),
+                                )
+                                .await
+                                .is_ok()
                             {
                                 // 窗口内仍有通知到达，继续吸收
+                                coalesced += 1;
                             }
                             // IP 变化通知到达：重扫网卡写回缓存，并据此判断 changed
                             // （刷新缓存与判断合一，避免二次网卡枚举）。
@@ -667,11 +684,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::reveal_backup_dir,
             commands::list_backups,
         ])
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
+                // 关窗 = 收进托盘，同样要通知前端暂停动画。
+                let _ = window.emit("app:visibility", false);
             }
+            // OS 级最小化 / 还原。为何要在这里处理：
+            // 1. Windows 上最小化只会触发 `Resized`，Tauri 没有独立的 Minimized 事件；
+            // 2. WebView2 在宿主窗口最小化时**不发** visibilitychange（实测最小化前后
+            //    webview CPU 从 19.9% → 17.2% 单核，几乎没降），所以前端的
+            //    `document.hidden` 兜底在此场景下拿不到信号。
+            // 不处理的后果：暂停动画只在「收进托盘」路径生效，最小化照旧烧 CPU。
+            tauri::WindowEvent::Resized(_) => {
+                // Resized 在拖动窗口边框时高频触发，只在最小化状态真正翻转时才发事件。
+                static LAST_MINIMIZED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                let minimized = window.is_minimized().unwrap_or(false);
+                if LAST_MINIMIZED.swap(minimized, std::sync::atomic::Ordering::Relaxed)
+                    != minimized
+                {
+                    let _ = window.emit("app:visibility", !minimized);
+                }
+            }
+            _ => {}
         })
         .build(tauri::generate_context!())?
         .run(|_app_handle, _event| {});

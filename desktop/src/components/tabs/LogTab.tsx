@@ -11,6 +11,7 @@ import { Icon } from "../ui/icon";
 import { EmptyState } from "../ui/EmptyState";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
+import { useAppHidden } from "../../lib/appVisibility";
 import { Combobox } from "../ui/combobox";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { PerfCharts } from "./PerfCharts";
@@ -63,11 +64,13 @@ function LogTabImpl() {
   // 分页状态（策略 A：页码分页）。page/pageSize 变化即触发按页重新拉取。
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  // 窗口不可见时停掉日志轮询（本页 10s + 性能面板 30s）。
+  const appHidden = useAppHidden();
 
   const { data: pageData, refetch } = useQuery<AuditPage>({
     queryKey: ["auditLog", page, pageSize],
     queryFn: () => invoke<AuditPage>("get_audit_log", { page, page_size: pageSize }),
-    refetchInterval: 10000,
+    refetchInterval: appHidden ? false : 10000,
   });
 
   // 本页数据 + 总数（供分页器算总页数）。筛选仅作用于当前页 entries。
@@ -87,7 +90,7 @@ function LogTabImpl() {
     queryKey: ["auditLogPerf"],
     queryFn: () => invoke<AuditPage>("get_audit_log", { page: 1, page_size: 500 }),
     enabled: showPerf,
-    refetchInterval: 30000,
+    refetchInterval: appHidden ? false : 30000,
   });
   const perfEntries = perfPage?.entries ?? entries;
   // 一键回滚 / 变更 Diff 的弹窗状态（指向被点击的审计条目）。

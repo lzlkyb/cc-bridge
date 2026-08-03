@@ -87,6 +87,23 @@ export interface StatusResponse {
   notifyTaskComplete: boolean;
 }
 
+/* ─── 状态分层：高频字段 vs 稳定字段 ─── */
+
+/**
+ * 每次轮询必变的字段。实查全工程，**只有 ConnectHero 读这两个**。
+ */
+export type LiveStatus = Pick<StatusResponse, "uptimeSeconds" | "stats">;
+
+/**
+ * 剔掉高频字段后的状态，供不关心实时数字的组件使用。
+ *
+ * 为何要分这一层：`uptimeSeconds` / `stats` 每 5s 轮询都变 → `StatusResponse` 顶层引用
+ * 必然是新的 → 包了 `memo` 的 Header / ConnectTab 也弹不住，当前 Tab 整棵每 5s 重渲染。
+ * 把这两个字段剔掉后，react-query 的 structural sharing 会在其余字段未变时**保持旧引用**，
+ * memo 才真正生效（参见「功能优化清单.md」M14）。
+ */
+export type StaticStatus = Omit<StatusResponse, "uptimeSeconds" | "stats">;
+
 /* ─── 防火墙结构化诊断（get_firewall_diagnosis）─── */
 
 /** 诊断问题项。code 与后端 firewall_diag.rs 的问题码表一致。 */

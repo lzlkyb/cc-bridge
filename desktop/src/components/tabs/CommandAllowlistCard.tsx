@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
+import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Icon } from "../ui/icon";
 import { Switch } from "../ui/switch";
@@ -23,7 +23,7 @@ export function CommandAllowlistCard({
   status,
   onSaved,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onSaved: () => void;
 }) {
   const shellOn = status?.shellEnabled ?? false;

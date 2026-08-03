@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { StatusResponse } from "../../../lib/types";
+import type { StaticStatus } from "../../../lib/types";
 import { buildDisplayHost, buildHealthCheck, ipHint, copyText } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
@@ -14,7 +14,7 @@ export function StepPickAddress({
   selectedIp,
   onSelectIp,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   selectedIp: string;
   onSelectIp: (ip: string) => void;
 }) {

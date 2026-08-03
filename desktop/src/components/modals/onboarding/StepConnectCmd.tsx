@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { StatusResponse } from "../../../lib/types";
+import type { StaticStatus } from "../../../lib/types";
 import {
   McpScope,
   buildDisplayHost,
@@ -36,7 +36,7 @@ export function StepConnectCmd({
   selectedIp,
   onCopied,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   selectedIp: string;
   /** H3：本步完成态——用户复制过连接命令后上报，供向导显示“已完成”。 */
   onCopied?: () => void;

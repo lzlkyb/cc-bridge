@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse, ConfigSaveResult, BackupListResult, BackupFileInfo } from "../../lib/types";
+import type { StaticStatus, ConfigSaveResult, BackupListResult, BackupFileInfo } from "../../lib/types";
 import { formatBytes } from "../../lib/utils";
 import { VersionHistoryModal } from "../backup/VersionHistoryModal";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
@@ -15,7 +15,7 @@ import { RestoreBackupDialog } from "./RestoreBackupDialog";
  * 「文件管控」卡：扩展名限制、备份（统计/路径/版本历史）、请求限流、后台命令清理。
  * 相关状态（保存反馈、备份列表、版本历史、还原目标）内聚于此，避免主文件膨胀。
  */
-export function FileControlCard({ status, onSaved }: { status?: StatusResponse; onSaved: () => void }) {
+export function FileControlCard({ status, onSaved }: { status?: StaticStatus; onSaved: () => void }) {
   const [lastSavedField, setLastSavedField] = useState("");
   const [backups, setBackups] = useState<BackupListResult | null>(null);
   const [loadingBackups, setLoadingBackups] = useState(false);

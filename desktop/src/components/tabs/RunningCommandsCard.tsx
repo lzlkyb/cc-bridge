@@ -8,6 +8,7 @@ import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 import { Badge } from "../ui/badge";
+import { useAppHidden } from "../../lib/appVisibility";
 
 /**
  * 运行中的后台命令（run_command(background=true) 启动）。与远程的
@@ -16,10 +17,12 @@ import { Badge } from "../ui/badge";
  * danger：命令执行已开启时整卡高亮红边 + 提醒，引导用户确认进程可信。
  */
 export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
+  // 窗口不可见时停轮询（3s 是全应用最密的一条）。
+  const appHidden = useAppHidden();
   const { data: commands, refetch } = useQuery<RunningCommandInfo[]>({
     queryKey: ["runningCommands"],
     queryFn: () => invoke<RunningCommandInfo[]>("list_running_commands"),
-    refetchInterval: 3000,
+    refetchInterval: appHidden ? false : 3000,
   });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -139,11 +142,12 @@ function CommandStatusBadge({
 
 /**
  * 单条后台命令的实时输出面板。
- * 点「查看输出」展开时挂载：每 1.5s 增量拉取 get_command_output，按 stdoutOffset /
- * stderrOffset 追加（ref 保存 offset，effect 仅在 handle 变化时重建），避免大文本反复重渲。
- * 命令结束后停止轮询，历史输出仍可查看，方便事后排查。
+ * 点「查看输出」展开时挂载：每 3s 增量拉取 get_command_output，按 stdoutOffset /
+ * stderrOffset 追加（ref 保存 offset，effect 仅在 handle 或可见性变化时重建），
+ * 避免大文本反复重渲。命令结束后停止轮询，历史输出仍可查看，方便事后排查。
  */
 function CommandOutputPanel({ handle }: { handle: string }) {
+  const appHidden = useAppHidden();
   const [stdout, setStdout] = useState("");
   const [stderr, setStderr] = useState("");
   const [meta, setMeta] = useState<{
@@ -157,6 +161,9 @@ function CommandOutputPanel({ handle }: { handle: string }) {
   const offsets = useRef({ stdout: 0, stderr: 0 });
 
   useEffect(() => {
+    // 窗口不可见时不轮询；offset 存在 ref 里，恢复可见后 effect 重跑会立即 poll 一次
+    // 拿增量，不会丢输出也不会重复追加。
+    if (appHidden) return;
     let cancelled = false;
     let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -199,7 +206,7 @@ function CommandOutputPanel({ handle }: { handle: string }) {
       cancelled = true;
       if (timer) clearInterval(timer);
     };
-  }, [handle]);
+  }, [handle, appHidden]);
 
   return (
     <div className="space-y-3 p-3">

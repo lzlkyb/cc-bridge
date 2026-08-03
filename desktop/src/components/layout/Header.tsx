@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, memo } from "react";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
 import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
 import { Icon, type IconName } from "../ui/icon";
@@ -13,7 +13,7 @@ function HeaderImpl({
   onChanged,
   onNavigate,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onChanged?: () => void;
   onNavigate?: (tab: string, anchor?: string) => void;
 }) {

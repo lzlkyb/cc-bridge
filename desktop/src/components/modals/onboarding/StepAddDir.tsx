@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "../../../lib/tauri";
-import type { StatusResponse, ConfigSaveResult } from "../../../lib/types";
+import type { StaticStatus, ConfigSaveResult } from "../../../lib/types";
 import { APP_INFO } from "../../../lib/about";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
@@ -16,7 +16,7 @@ export function StepAddDir({
   status,
   onRefresh,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onRefresh: () => void;
 }) {
   const [newRoot, setNewRoot] = useState("");

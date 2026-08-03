@@ -74,7 +74,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ toast: addToast }}>
       {children}
-      {/* Toast 容器：现代态移到右下角（.toast-stack）；错误项用 role=alert 走 assertive 播报 */}
+      {/* Toast 容器：z-[2000] 在 Header 之上，错误项用 role=alert 走 assertive 播报 */}
       <div
         className="fixed right-4 top-16 z-[2000] flex flex-col gap-2 pointer-events-none toast-stack"
         role="region"

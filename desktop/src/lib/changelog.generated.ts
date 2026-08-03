@@ -4,6 +4,41 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.3.20",
+    date: "2026-08-03",
+    items: [
+      { category: "fix", text: "后台有个线程会长期占满一个 CPU 核心，现已修复；同一个问题还让「IP 变化提示」一直没能生效，也一并修好" },
+      { category: "fix", text: "命令超时后不再丢弃已经跑出来的输出，默认超时也从 30 秒放宽到 2 分钟" },
+      { category: "fix", text: "修好三个远程工具参数「传了不生效」的问题：命令超时、输出上限、批量操作出错是否中断" },
+      { category: "improve", text: "窗口收进托盘或最小化后，各类后台轮询与常驻动画全部暂停，不再空耗 CPU" },
+      { category: "improve", text: "数据库日志文件从约 4MB 收回到 0，启动更快" },
+      { category: "improve", text: "刷新状态时的界面重绘范围大幅收窄，日志翻页也更省内存" },
+      { category: "improve", text: "一个线程常驻跑满一个 CPU 核：`ip_watch.rs` 用 winsock2 `SIO_ADDRESS_LIST_CHANGE` ioctl 监听地址变化，并把 `-1 + WSAEFAULT(10014)` 当成「地址已变化 / 有数据准备好」。实机探针测得该调用在 `cbOutBuffer=0` 时 0.000ms 立即返回 WSAEFAULT —— WSAEFAULT 意为「输出缓冲区参数无效」，即 ioctl 直接失败、通知根本没挂上。于是那个 `loop` 每秒空转数百万次（实测单线程 101.3% 单核，进程合计 125%）。改用 iphlpapi `NotifyAddrChange(NULL, NULL)`（同步阻塞，已用探针验证真的会阻塞）。" },
+      { category: "improve", text: "IP 变化检测实际上一直是死的（上一条的连带后果）：假事件洪流让防抖的无限吸收循环 `while timeout(600ms, rx.recv()).is_ok()` 恒真、永不退出，其后的 `refresh_lan_ips` 与托盘提示从来执行不到（只有 5s 轮询那条兜底路径在工作）。现吸收循环加上限（最多 32 条）。" },
+      { category: "improve", text: "命令超时就什么都拿不到：`run_command` 超时分支里 `stdout`/`stderr` 是硬编码的空串，已跑出来的输出全部丢弃。按 1281 条真实审计记录，141 次（11%）撞到了 30s 默认超时（而 p50 只有 1125ms，被截断的都是 cargo build 这类长命令）——编译跑了半分钟、报错都刷出来了，调用方却只拿到一个空结果。现默认超时提到 120s，且超时时会等读取线程把缓冲区吐完（最多 100 × 2ms），把真实输出连同 truncated 标记一起带回，并附提示引导长任务用 `background: true`。新增两条回归测试锁住行为。（注：这不等于「超时自动转后台」，那仍待做。）" },
+      { category: "improve", text: "三个 MCP 工具参数一直是失效的（传了等于没传）：`run_command` 的 `timeoutMs` / `maxOutputBytes` 与 `batch` 的 `stopOnError`，在工具 schema 里被暴露成 snake_case（`timeout_ms` 等），而服务端反序列化只认 camelCase——于是调用方按 schema 传参会被静默忽略、永远回落默认值（实际踩到：传 `timeout_ms: 180000` 仍按默认超时结束）；另 `search_files` 的 `maxResults` 被误标成必填。根因在 `ToolSchema` 衍生宏：`parse_nested_meta` 的回调未把非目标项的 `= value` 消费掉，解析在第一个不关心的带值项处就报错并被吞，属性里后续项全部读不到（具体丢 `rename` 还是丢 `default` 取决于两者的书写顺序，所以症状看上去毫无规律）。现改为对所有带值项统一先吃下值再取用，并补两条断言 schema 形状的回归测试（这类 bug 不报错、不失败构建）。注：这会使上述参数名在 schema 里改为 camelCase，但它们原本传了也无效，不存在有效依赖。" },
+      { category: "improve", text: "新增两道护栏防止同类问题再现：通知 API 返回非预期值时强制退避 2s（绝不空转）；事件频率硬限流 ≤ 5 次/秒。即使将来 API 行为再变，最坏也只退化成每 200ms 一次，不会再烧掉一个核。" },
+      { category: "improve", text: "前端常驻脉冲点从动画 `box-shadow`（每帧重绘，且紧邻 `backdrop-filter` 元素会连带大面积背景重新模糊）改为伪元素的 `transform + opacity` 涟漪（纯合成）；`indet-slide` 从动画 `left`（每帧布局）改为 `transform: translateX`；删掉死代码 `uptime-flash` / `.hero-uptime--live`。新增「窗口不可见时暂停全部动画」机制（`data-app-hidden` + `hooks/useAppHiddenFlag.ts`，Rust 侧在托盘 toggle / 托盘菜单显示 / 关窗收托盘 / OS 最小化四处发 `app:visibility`）。暂停范围只限于 7 个常驻 `infinite` 动画，不碰 transition 与一次性入场动画——最初写成 `*` 加 `transition: none !important`，实际跑起来整页白屏（会把正在入场的元素永久冻在 `opacity: 0`），已改窄并在 CSS 里留下警告。另：早前“暂停未生效”的结论已被推翻（那次测量未受控，见清单 M10），信号计算现有单测兜底；但真实 CPU 收益仍待受控复测。" },
+      { category: "improve", text: "`ip_watch::spawn` 不再返回 `UdpSocket`（改用 `NotifyAddrChange` 后不再需要用 socket 关闭作为停止信号）；线程以 `tx.send` 失败作为退出条件。" },
+      { category: "improve", text: "新增 `desktop/src-tauri/ip_watch_probe.rs`（独立诊断工具，不在 `src/` 下、不参与 Cargo 构建）：一次性验证两个通知 API 的阻塞行为，以后怀疑同类问题直接 `rustc ip_watch_probe.rs -O -o ip_watch_probe.exe` 跑一次即可。" },
+      { category: "improve", text: "日志面板取一页不再克隆全量：`audit.rs` 的 `read_page` 原先把缓存里整份 4898 条 / 5.2MB 的解析结果 `clone()` 一份（另有一次 `parsed.clone()`），而调用方只要几十条；前端 10s 轮询一次，即每 10s 白白克隆再丢弃两份 5MB。现改为 `page_slice()` 只克隆本页。（`AUDIT_CACHE` 本身常驻内存的问题仍在，待做。）" },
+      { category: "improve", text: "WAL 文件从 3.94MB 降到 0：实测 `cc-bridge.db` 仅 448KB 而 `cc-bridge.db-wal` 高达 4.13MB——SQLite 默认 `wal_autocheckpoint` 是 1000 页（≈4MB），而本应用写入量小、进程常驻，几乎碰不到该阀值。修法分两层：① `wal_autocheckpoint` 设为 256 页（≈1MB 就回写）防它继续长，不设更小是因为太小会把随机写变成频繁 fsync；② 光有①不够——autocheckpoint 只把内容回写主库并重置写指针复用同一个文件，从不缩小文件本身（实测只加①重启后 WAL 依旧 4.13MB），所以又在启动时补一次 `wal_checkpoint(TRUNCATE)` 把残留 WAL 截到 0。实测：WAL 4132392 → 0 bytes、主库 +16KB（内容回写），净省 3.94MB，并减少每次启动的 WAL replay。" },
+      { category: "improve", text: "5s 状态轮询不再连带重渲染整个 Tab：有 8 个组件直接吃 `status`，而 `uptimeSeconds` / `stats` 每 5s 必变 → 顶层引用必然是新的，包 `memo` 也挡不住（react-query 的 structuralSharing 只保得住未变字段的引用，救不了顶层对象）。现按变化频率拆订阅：新增 `StaticStatus` / `LiveStatus` 两个类型，主查询用 `select` 剔掉高频字段，`ConnectHero` 用同一 `queryKey` 自行订阅那两个字段（共享缓存，不多发请求），秒级变化只重渲染它自己。注：重渲染范围尚未用 React DevTools 实测确认。" },
+      { category: "improve", text: "窗口收进托盘后不再空转轮询：以前窗口不可见时，8 处轮询依旧全速跑——状态（5s）、审计日志（10s）、防火墙诊断（30s）、后台命令列表与输出（各 3s）、运行时长跳秒（1s），其中最重的是状态轮询里带的可达性探针（真开一次 TCP 连接，200ms 超时）。现全部随窗口可见性断流，恢复可见那一刻立即补一次而不干等周期。新增 `lib/appVisibility.ts`（模块级 store + `useSyncExternalStore`）把可见性从“只写 DOM 属性”升级为 React 可订阅状态，并配 6 条单测。一次性倒计时（IP 变化提示）与小时级更新检查有意不断。" },
+      { category: "improve", text: "状态查询不再用读锁罩住磁盘与网络 I/O：`get_status` 的 `config` 读锁原本从函数开头一路罩到末尾，横跨了首次防火墙查询（netsh，可达数百 ms）、可达性探针（最长 200ms）与备份目录枚举，于是前端每 5s 轮询一次就造出一个最长 200ms+ 的窗口，期间在设置页改任何配置都得排队等锁。现拆为「短锁取字段 → 锁外做慢操作 → 再取锁读剩下」，锁持有时间降到微秒级。（附：同时用探针实测排除了两个怀疑——备份目录统计在 1230 个文件下只 2.3ms，bash 探测已有缓存，两者都不是瓶颈。）" },
+    ],
+  },
+  {
+    version: "2.3.19",
+    date: "2026-08-02",
+    items: [
+      { category: "feat", text: "安装时可勾选一键放行 Windows 防火墙，省去首次启动被拦截的麻烦" },
+      { category: "sec", text: "命令拦截从子串黑名单升级为语法感知分析，更精准地拦截危险命令" },
+      { category: "improve", text: "日志分页改为窗口内滚动，操作时不再被外层滚动带走" },
+      { category: "improve", text: "连接页改用纯 CSS 动态表达，体积更小、运行更顺" },
+    ],
+  },
+  {
     version: "2.3.18",
     date: "2026-07-24",
     items: [
@@ -75,35 +110,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "feat", text: "连接页「接入模式」折叠区：原常驻的作用域选择收为手风琴第 1 折叠区，折叠头实时显示当前选中的模式；首次接入（无引导标记）默认四块全展开引导。" },
       { category: "improve", text: "更新检查弹框分流：自动 / 启动检查更新只在版本号上提示，仅手动点「检查更新」才弹「已是最新版本」框。" },
       { category: "improve", text: "首次接入引导更顺：首次全展开时页面不再自动滚动跳动（连接页与令牌管理的滚动逻辑跳过首屏）。" },
-    ],
-  },
-  {
-    version: "2.3.10",
-    date: "2026-07-21",
-    items: [
-      { category: "fix", text: "托盘「复制 IP 命令」跟随连接页作用域：此前托盘端固定复制用户级（~/.claude.json）命令，与连接页选「项目级」时显示的 .mcp.json 命令对不上；现托盘端读取连接页实际选择的作用域与项目路径，生成与连接页逐字一致的命令。" },
-      { category: "fix", text: "连接页切换「项目级 / 全局模式」后托盘命令不联动：作用域与项目路径没有真正写入持久化配置，托盘端一直读到默认作用域；现已在切换或首次打开连接页时即时落盘，托盘复制命令与连接页保持同步。" },
-    ],
-  },
-  {
-    version: "2.3.9",
-    date: "2026-07-21",
-    items: [
-      { category: "feat", text: "设置页「安装与快捷方式」卡片与命令面板（Ctrl+K）新增「重新查看使用引导」入口，关闭引导后可随时重新打开（H3）。" },
-      { category: "feat", text: "`search_files` 结果截断回显：命中数超过上限时，在结果后附提示，告知远程 Claude Code 结果不完整、可缩小范围或翻页。" },
-      { category: "fix", text: "新手引导交互缺陷（H3）：点击遮罩不再永久关闭引导（改为轻微抖动，提示改用下方按钮），消除「误触遮罩即永久跳过」；每步新增完成态——完成时标题右侧显「已完成」，未完成时底部给轻量提示（软引导，不强制拦截「下一步」）。" },
-      { category: "fix", text: "全量代码审计后的一批后端健壮性修复：内容搜索非法/超长正则、结构异常的 .ipynb 不再触发进程 panic；备份保留数设为 0 不再误删全部历史备份；批量操作子项补记来源 IP；后台命令的临时工作目录捕获文件读后即删、不再累积；托盘图标非正方形时缩放越界；审计缓存判定与读取的竞态；目录递归补深度与总条目上限；大文件分析只读前缀避免 OOM；整份配置写入改为事务式、中途失败自动回滚不残留未结束事务；SSE 推送滞后丢帧改为记录日志。" },
-      { category: "fix", text: "前端健壮性修复：日志详情行展开在轮询刷新后错位（改用稳定 key）；CSV 导出加公式注入防护；性能面板统计改为覆盖最近 500 条且耗时拆解不再重复计数；分页在总数缩减后不再停在空页；设置保存/目录浏览失败给出可见反馈；更新事件监听在快速重挂载下的注册竞态；主动停服不再被误判为「网络恢复」并自动重启；命令/脚本生成中的项目路径统一加引号；版本比较容忍带后缀的版本号。" },
-      { category: "fix", text: "`read_files` 二进制守卫增强：PNG / EXE 等二进制此前会经 `read_text` 的 GBK 回退误判为文本、返回满屏乱码污染远端上下文；现通过内容 NUL / 非打印字符检测，在读取前拦截并返回友好提示。" },
-      { category: "improve", text: "MCP `initialize` 握手 instructions 文案补充：建议连接后第一步调用 `list_allowed_roots`，自动内嵌各根目录顶层 CLAUDE.md（projectInstructions），无需再手动 read_files 就能获知项目规则。" },
-      { category: "improve", text: "`edit_files` 在 `old_string` 首尾含空格 / 制表符 / 换行 / 回车时返回 `warning`，主动提醒模型确认是否多带了空白，减少「0 次匹配」导致的重试往返。" },
-      { category: "sec", text: "`edit_files` 之前无视 `encoding_detect_enabled`（默认关）无条件自动探测编码，与 `read_files`（关时强制 UTF-8）不一致，可能对同一文件解码出不同内容；现两者判断逻辑一致。" },
-      { category: "sec", text: "`encoding::read_text` 自动探测四种编码全部失败时会静默用 U+FFFD 替换并可能在写回时永久损坏原文；现改为拒绝并报错，提示显式指定编码。" },
-      { category: "sec", text: "未配置访问令牌（空 token）不再等同于放行：`verify_token` 对空期望值失败关闭（fail-closed），杜绝空配置被无鉴权访问。" },
-      { category: "sec", text: "一键回滚（restore_file）补齐只读模式与扩展名白名单校验，堵住经回滚通道绕过写入闸门的路径。" },
-      { category: "sec", text: "白名单目录删除改为按路径匹配，修复重复目录/轮询刷新下删错目标；新手引导添加白名单去重。" },
-      { category: "sec", text: "默认 cmd 壳层补充 Windows 破坏性命令拦截（rd/rmdir/del /s、diskpart、cipher /w 等）；`is_binary_content` 修正 UTF-32BE BOM 误判为二进制。" },
-      { category: "sec", text: "只读模式开启时安全风险总览不再因 shell 开关配置值而误报「高风险 RCE」（只读会强制禁用命令执行）。" },
     ],
   },
 ];

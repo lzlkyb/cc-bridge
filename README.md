@@ -467,12 +467,13 @@ claude mcp add --transport http cc-bridge http://<局域网IP>:7823/mcp --header
 - MCP 协议实现为手动 JSON-RPC dispatch（非 rmcp SDK 宏），不支持 SSE 流式传输和协议协商。
 - `run_command` 无跨调用持久化 shell 会话，`cd`/环境变量不会保留到下一次调用，必须每次显式传绝对 `cwd`。
 - 后台命令（`run_command(background=true)`）注册表 v1 无自动回收：命令结束后 handle 仍占位，需显式 `stop_command` 移除，或等并发上限（5个）触发拒绝新建后再清理。
-- `run_command` 前台模式超时后，超时前已产生的部分输出不会被返回（直接强杀+丢弃，仅告知 `timedOut: true`）。
+- `run_command` 前台模式超时后仍会强杀命令（不会自动转后台继续跑）；但超时前已产生的输出会连同 `timedOut: true` 一起返回（默认超时 120s）。长任务请用 `background: true`。
 
 ## 版本历史
 
 | 版本 | 变更 |
 |---|---|
+| v2.3.20 | 修复长期占满一个 CPU 核心的后台线程（并让「IP 变化提示」恢复生效）；窗口收进托盘后暂停全部轮询与常驻动画；数据库日志文件从 4MB 收到 0；命令超时不再丢弃已产出输出且默认超时放宽到 2 分钟；修复三个此前传了不生效的工具参数 |
 | v2.3.19 | 新增 Windows 防火墙一键放行；命令拦截升级为语法感知分析；日志分页内滚、连接页纯 CSS 动态表达 |
 | v2.3.18 | v2.3.18 版本更新 |
 | v2.3.17 | v2.3.17 版本更新 |

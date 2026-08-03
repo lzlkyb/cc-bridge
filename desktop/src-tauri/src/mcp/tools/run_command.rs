@@ -23,16 +23,26 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::security;
 use crate::state::{AppState, CwdSession, RunningCommand};
 
-/// 子进程创建标志。
-/// - `CREATE_NO_WINDOW (0x08000000)`：不创建可见控制台窗口，输出走管道（Stdio::piped）。
-///   相比 `DETACHED_PROCESS`，真实 .exe 子进程（git/cargo/npm）的 stdout/stderr 能被正确
-///   捕获（DETACHED_PROCESS 下孙进程控制台输出会丢失）；相比 ConPTY（portable-pty），
-///   不需要终端模拟器回应控制序列握手，cmd.exe 不会卡在 DSR 查询。
-/// - `CREATE_NEW_PROCESS_GROUP (0x00000200)`：把 cmd 及其子孙放进独立进程组，隔离控制台
-///   事件广播，缓解 MSVC 并发链接时偶发的 STATUS_CONTROL_C_EXIT 崩溃
-///   （仅当远程用本工具自构建 cc-bridge 本体时可能触发，构建用户自己的项目无此问题）。
+// 子进程创建标志的选型理由（实际使用处见下方 spawn 点：
+// `CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0`）。
+// 注：这段原本是 `SPAWN_FLAGS` 常量的文档，常量改成内联后注释成了孤儿并错挂到
+// 下面的 `default_timeout_ms` 上，故降为普通注释。
+// - `CREATE_NO_WINDOW (0x08000000)`：不创建可见控制台窗口，输出走管道（Stdio::piped）。
+//   相比 `DETACHED_PROCESS`，真实 .exe 子进程（git/cargo/npm）的 stdout/stderr 能被正确
+//   捕获（DETACHED_PROCESS 下孙进程控制台输出会丢失）；相比 ConPTY（portable-pty），
+//   不需要终端模拟器回应控制序列握手，cmd.exe 不会卡在 DSR 查询。
+// - `CREATE_NEW_PROCESS_GROUP (0x00000200)`：把 cmd 及其子孙放进独立进程组，隔离控制台
+//   事件广播，缓解 MSVC 并发链接时偶发的 STATUS_CONTROL_C_EXIT 崩溃
+//   （仅当远程用本工具自构建 cc-bridge 本体时可能触发，构建用户自己的项目无此问题）。
+
+/// 前台命令默认超时。
+///
+/// 从 30s 提到 120s：按审计日志 1281 次真实调用统计，**141 次（11%）撞到 30s 超时**，
+/// 而 p50 只有 1125ms——也就是说绝大多数命令很快，但构建类（cargo build / npm run build）
+/// 被成批截断。120s 能覆盖绝大多数增量构建；真正的长任务应该用 `background: true`，
+/// 而不是把超时改成无限大（否则客户端侧会先超时，反而拿不到任何输出）。
 fn default_timeout_ms() -> u64 {
-    30_000
+    120_000
 }
 
 fn default_max_output_bytes() -> usize {
@@ -509,15 +519,36 @@ fn run_foreground(
             // 超时：必须用 start_kill()（TerminateJobObject）杀整树，
             // 不能只 kill() cmd 本体——否则 git/cargo 等孙进程会变孤儿进程。
             let _ = child.start_kill();
+            // 超时也要把**已产出的输出还回去**。
+            //
+            // 旧实现这里硬编码 `"stdout": ""` / `"stderr": ""`，而那两个缓冲里其实已经有
+            // reader 线程收到的内容——相当于把已经拿到的诊断信息丢掉。对 cargo build 这类
+            // 边跑边吐进度的命令，超时前的输出恰好是最有用的部分（卡在哪一步）。
+            // 审计日志显示 11% 的调用走到这条分支，影响面不小。
+            //
+            // start_kill() 后管道写端关闭，reader 会读到 EOF；给它们一个短窗口排空（最多 ~200ms），
+            // 超时就用当前已有的内容，绝不因为等 reader 而把超时处理本身拖住。
+            let mut spins = 0;
+            while (!stdout_done.load(Ordering::Relaxed) || !stderr_done.load(Ordering::Relaxed))
+                && spins < 100
+            {
+                std::thread::sleep(Duration::from_millis(2));
+                spins += 1;
+            }
+            let stdout = stdout_buf.blocking_lock().clone();
+            let stderr = stderr_buf.blocking_lock().clone();
             Ok((
                 text_result(json!({
-                    "stdout": "",
-                    "stderr": "",
+                    "stdout": String::from_utf8_lossy(&stdout),
+                    "stderr": String::from_utf8_lossy(&stderr),
                     "exitCode": Value::Null,
-                    "stdoutTruncated": false,
-                    "stderrTruncated": false,
+                    "stdoutTruncated": stdout_trunc.load(Ordering::Relaxed),
+                    "stderrTruncated": stderr_trunc.load(Ordering::Relaxed),
                     "timedOut": true,
-                    "note": format!("命令超过 {timeout_ms}ms 未结束，已强制终止（含子进程）"),
+                    "note": format!(
+                        "命令超过 {timeout_ms}ms 未结束，已强制终止（含子进程）。以上是超时前已产出的输出；\
+                         长任务请用 background:true 后用 get_command_output 轮询。"
+                    ),
                 })),
                 None,
             ))
@@ -1681,5 +1712,68 @@ mod tests {
             session.cwd, expected,
             "session cwd 不应被更新为白名单外路径"
         );
+    }
+
+    /// 超时必须把**已产出的输出**带回来，而不是返回空串。
+    ///
+    /// 回归背景：旧实现在超时分支里硬编码 `"stdout": ""` / `"stderr": ""`，而 reader 线程
+    /// 其实已经把内容收进缓冲了——相当于把拿到手的诊断信息丢掉。对 `cargo build`
+    /// 这类边跑边吐进度的命令，超时前的输出恰好是最有用的部分（卡在哪一步）；
+    /// 审计日志统计 1281 次调用中有 141 次（11%）会走到超时分支。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_preserves_partial_output() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+
+        // cmd 语法：先 echo（立即产出），再用 ping 阻塞约 19s。
+        // 用 ping 而不用 `timeout /t`：后者在 stdin 被重定向时会直接报错退出，
+        // 而我们的子进程 stdin 是 Stdio::null()。ping 是 Windows 自带，无额外依赖。
+        let v = handle(
+            RunCommandArgs {
+                command: "echo partial_before_timeout && ping -n 20 127.0.0.1 > nul".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 2000,
+                max_output_bytes: 64 * 1024,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await
+        .expect("超时不应返回 Err，而应返回带 timedOut 标记的结果");
+
+        let text = v
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .unwrap();
+        let info: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert_eq!(
+            info.get("timedOut").and_then(|b| b.as_bool()),
+            Some(true),
+            "命令超时时 timedOut 必须为 true：{info}"
+        );
+        let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(
+            stdout.contains("partial_before_timeout"),
+            "超时分支必须保留超时前已产出的 stdout（旧实现返回空串），实际：{stdout:?}"
+        );
+    }
+
+    /// 默认超时不得回退到 30s。
+    ///
+    /// 依据：审计日志 1281 次真实调用里 141 次（11%）serverMs ≥ 29s（撞 30s 超时），
+    /// 而 p50 只有 1125ms——多数命令很快，是构建类被成批截断。这条锁住默认值，
+    /// 避免以后被无意改回。
+    #[test]
+    fn default_timeout_is_not_30s() {
+        assert_eq!(default_timeout_ms(), 120_000);
     }
 }

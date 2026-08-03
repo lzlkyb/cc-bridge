@@ -129,24 +129,65 @@ fn type_schema(ty: &Type) -> proc_macro2::TokenStream {
     }
 }
 
-fn get_rename(f: &syn::Field) -> Option<String> {
+/// 遍历字段上所有 `#[serde(...)]` 里的每一项，把（项名, 字符串值）交给回调。
+///
+/// **为何要专门抽这个函数**：`parse_nested_meta` 的回调必须把每一项的 `= value`
+/// **完整消费掉**，否则解析位置会停在 `=` 前，整个 `parse_nested_meta` 立即
+/// 返回 `Err`，该属性里**后续所有项都读不到**。之前 `get_rename` 与
+/// `has_serde_default` 各自只消费自己关心的那一项，于是：
+/// - `#[serde(default = "f", rename = "x")]` 会丢 `rename`；
+/// - `#[serde(rename = "x", default = "f")]` 会丢 `default`。
+///
+/// 丢哪个取决于书写顺序，而两种后果都很难查：
+/// - 丢 `rename` → schema 里字段名回落成 snake_case，而 serde 反序列化只认 camelCase，
+///   调用方按 schema 传参**被静默忽略、永远用默认值**
+///   （`run_command` 的 timeoutMs / maxOutputBytes、`batch` 的 stopOnError 都中过）；
+/// - 丢 `default` → 带默认值的字段被误标成 `required`（`search_files` 的 maxResults）。
+///
+/// 已知局限：不处理 `rename(serialize = "..", deserialize = "..")` 这种括号形式
+/// （本仓库未使用），但会把整块括号吃掉，不会再因此让后续项解析失败。
+fn for_each_serde_meta(f: &syn::Field, mut visit: impl FnMut(&syn::Ident, Option<String>)) {
     for attr in &f.attrs {
-        if attr.path().is_ident("serde") {
-            let mut rename = None;
-            let _ = attr.parse_nested_meta(|m| {
-                if m.path.is_ident("rename") {
-                    if let Ok(s) = m.value().and_then(|v| v.parse::<syn::LitStr>()) {
-                        rename = Some(s.value());
-                    }
-                }
-                Ok(())
-            });
-            if rename.is_some() {
-                return rename;
-            }
+        if !attr.path().is_ident("serde") {
+            continue;
         }
+        let _ = attr.parse_nested_meta(|m| {
+            let ident = m.path.get_ident().cloned();
+            let value = if m.input.peek(syn::Token![=]) {
+                // 关键：只要这一项带 `=`，无论是否关心，都必须把值读掉。
+                // 先当 Expr 吃下整个值（能覆盖字符串/路径/布尔等任意写法），
+                // 再从中取字符串字面量。
+                match m.value().and_then(|v| v.parse::<syn::Expr>()) {
+                    Ok(syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    })) => Some(s.value()),
+                    _ => None,
+                }
+            } else if m.input.peek(syn::token::Paren) {
+                // 形如 `rename(serialize = "..")`：整块吃掉，不解析内容。
+                let _ = m.input.parse::<proc_macro2::TokenTree>();
+                None
+            } else {
+                None
+            };
+            if let Some(id) = ident {
+                visit(&id, value);
+            }
+            Ok(())
+        });
     }
-    None
+}
+
+fn get_rename(f: &syn::Field) -> Option<String> {
+    let mut rename = None;
+    for_each_serde_meta(f, |id, value| {
+        // 只取第一个，与 serde 自身行为一致。
+        if id == "rename" && rename.is_none() {
+            rename = value;
+        }
+    });
+    rename
 }
 
 fn is_option_type(ty: &Type) -> bool {
@@ -159,21 +200,14 @@ fn is_option_type(ty: &Type) -> bool {
 }
 
 fn has_serde_default(f: &syn::Field) -> bool {
-    for attr in &f.attrs {
-        if attr.path().is_ident("serde") {
-            let mut found = false;
-            let _ = attr.parse_nested_meta(|m| {
-                if m.path.is_ident("default") {
-                    found = true;
-                }
-                Ok(())
-            });
-            if found {
-                return true;
-            }
+    let mut found = false;
+    // 无论 `default` 还是 `default = "fn"` 都算有默认值，所以不看 value。
+    for_each_serde_meta(f, |id, _| {
+        if id == "default" {
+            found = true;
         }
-    }
-    false
+    });
+    found
 }
 
 fn first_generic_type(seg: &syn::PathSegment) -> Type {

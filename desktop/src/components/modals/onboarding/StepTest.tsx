@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import type { StatusResponse } from "../../../lib/types";
+import type { StaticStatus } from "../../../lib/types";
 import { buildDisplayHost } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
@@ -16,7 +16,7 @@ export function StepTest({
   selectedIp,
   onTested,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   selectedIp: string;
   /** H3：本步完成态——自检通过后上报，供向导显示“已完成”。 */
   onTested?: () => void;

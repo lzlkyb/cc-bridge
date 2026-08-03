@@ -5,6 +5,44 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.3.20] - 2026-08-03
+
+### 更新摘要
+修掉了一个会长期占满整个 CPU 核心的后台线程；窗口收进托盘后不再空转轮询、动画也会暂停；数据库日志文件不再无限堆积；命令超时也不再把已经跑出来的输出丢掉。
+
+### 修复
+- 后台有个线程会长期占满一个 CPU 核心，现已修复；同一个问题还让「IP 变化提示」一直没能生效，也一并修好
+- 命令超时后不再丢弃已经跑出来的输出，默认超时也从 30 秒放宽到 2 分钟
+- 修好三个远程工具参数「传了不生效」的问题：命令超时、输出上限、批量操作出错是否中断
+
+### 优化
+- 窗口收进托盘或最小化后，各类后台轮询与常驻动画全部暂停，不再空耗 CPU
+- 数据库日志文件从约 4MB 收回到 0，启动更快
+- 刷新状态时的界面重绘范围大幅收窄，日志翻页也更省内存
+
+### 技术细节
+
+> 以下为实现层面的记录（含文件名 / 根因 / 实测数据），**不进更新弹框**。
+
+#### 修复详情
+- **一个线程常驻跑满一个 CPU 核**：`ip_watch.rs` 用 winsock2 `SIO_ADDRESS_LIST_CHANGE` ioctl 监听地址变化，并把 `-1 + WSAEFAULT(10014)` 当成「地址已变化 / 有数据准备好」。实机探针测得该调用在 `cbOutBuffer=0` 时 **0.000ms 立即返回 WSAEFAULT** —— WSAEFAULT 意为「输出缓冲区参数无效」，即 ioctl 直接失败、通知根本没挂上。于是那个 `loop` 每秒空转数百万次（实测单线程 101.3% 单核，进程合计 125%）。改用 iphlpapi `NotifyAddrChange(NULL, NULL)`（同步阻塞，已用探针验证真的会阻塞）。
+- **IP 变化检测实际上一直是死的**（上一条的连带后果）：假事件洪流让防抖的无限吸收循环 `while timeout(600ms, rx.recv()).is_ok()` 恒真、永不退出，其后的 `refresh_lan_ips` 与托盘提示从来执行不到（只有 5s 轮询那条兜底路径在工作）。现吸收循环加上限（最多 32 条）。
+- **命令超时就什么都拿不到**：`run_command` 超时分支里 `stdout`/`stderr` 是硬编码的空串，已跑出来的输出全部丢弃。按 1281 条真实审计记录，**141 次（11%）撞到了 30s 默认超时**（而 p50 只有 1125ms，被截断的都是 cargo build 这类长命令）——编译跑了半分钟、报错都刷出来了，调用方却只拿到一个空结果。现默认超时提到 **120s**，且超时时会等读取线程把缓冲区吐完（最多 100 × 2ms），把真实输出连同 truncated 标记一起带回，并附提示引导长任务用 `background: true`。新增两条回归测试锁住行为。（注：这不等于「超时自动转后台」，那仍待做。）
+- **三个 MCP 工具参数一直是失效的（传了等于没传）**：`run_command` 的 `timeoutMs` / `maxOutputBytes` 与 `batch` 的 `stopOnError`，在工具 schema 里被暴露成 snake_case（`timeout_ms` 等），而服务端反序列化只认 camelCase——于是调用方按 schema 传参会被**静默忽略、永远回落默认值**（实际踩到：传 `timeout_ms: 180000` 仍按默认超时结束）；另 `search_files` 的 `maxResults` 被误标成必填。根因在 `ToolSchema` 衍生宏：`parse_nested_meta` 的回调未把非目标项的 `= value` 消费掉，解析在第一个不关心的带值项处就报错并被吞，**属性里后续项全部读不到**（具体丢 `rename` 还是丢 `default` 取决于两者的书写顺序，所以症状看上去毫无规律）。现改为对所有带值项统一先吃下值再取用，并补两条断言 schema 形状的回归测试（这类 bug 不报错、不失败构建）。注：这会使上述参数名在 schema 里改为 camelCase，但它们原本传了也无效，不存在有效依赖。
+- 新增两道护栏防止同类问题再现：通知 API 返回非预期值时强制退避 2s（绝不空转）；事件频率硬限流 ≤ 5 次/秒。即使将来 API 行为再变，最坏也只退化成每 200ms 一次，不会再烧掉一个核。
+
+#### 变更详情
+- 前端常驻脉冲点从动画 `box-shadow`（每帧重绘，且紧邻 `backdrop-filter` 元素会连带大面积背景重新模糊）改为伪元素的 `transform + opacity` 涟漪（纯合成）；`indet-slide` 从动画 `left`（每帧布局）改为 `transform: translateX`；删掉死代码 `uptime-flash` / `.hero-uptime--live`。新增「窗口不可见时暂停全部动画」机制（`data-app-hidden` + `hooks/useAppHiddenFlag.ts`，Rust 侧在托盘 toggle / 托盘菜单显示 / 关窗收托盘 / OS 最小化四处发 `app:visibility`）。**暂停范围只限于 7 个常驻 `infinite` 动画，不碰 transition 与一次性入场动画**——最初写成 `*` 加 `transition: none !important`，实际跑起来整页白屏（会把正在入场的元素永久冻在 `opacity: 0`），已改窄并在 CSS 里留下警告。另：早前“暂停未生效”的结论已被推翻（那次测量未受控，见清单 M10），信号计算现有单测兜底；但真实 CPU 收益仍待受控复测。
+- `ip_watch::spawn` 不再返回 `UdpSocket`（改用 `NotifyAddrChange` 后不再需要用 socket 关闭作为停止信号）；线程以 `tx.send` 失败作为退出条件。
+- 新增 `desktop/src-tauri/ip_watch_probe.rs`（独立诊断工具，不在 `src/` 下、不参与 Cargo 构建）：一次性验证两个通知 API 的阻塞行为，以后怀疑同类问题直接 `rustc ip_watch_probe.rs -O -o ip_watch_probe.exe` 跑一次即可。
+
+#### 性能详情
+- **日志面板取一页不再克隆全量**：`audit.rs` 的 `read_page` 原先把缓存里整份 4898 条 / 5.2MB 的解析结果 `clone()` 一份（另有一次 `parsed.clone()`），而调用方只要几十条；前端 10s 轮询一次，即每 10s 白白克隆再丢弃两份 5MB。现改为 `page_slice()` 只克隆本页。（`AUDIT_CACHE` 本身常驻内存的问题仍在，待做。）
+- **WAL 文件从 3.94MB 降到 0**：实测 `cc-bridge.db` 仅 448KB 而 `cc-bridge.db-wal` 高达 4.13MB——SQLite 默认 `wal_autocheckpoint` 是 1000 页（≈4MB），而本应用写入量小、进程常驻，几乎碰不到该阀值。修法分两层：① `wal_autocheckpoint` 设为 256 页（≈1MB 就回写）防它继续长，不设更小是因为太小会把随机写变成频繁 fsync；② **光有①不够**——autocheckpoint 只把内容回写主库并重置写指针复用同一个文件，从不缩小文件本身（实测只加①重启后 WAL 依旧 4.13MB），所以又在启动时补一次 `wal_checkpoint(TRUNCATE)` 把残留 WAL 截到 0。实测：WAL 4132392 → 0 bytes、主库 +16KB（内容回写），净省 3.94MB，并减少每次启动的 WAL replay。
+- **5s 状态轮询不再连带重渲染整个 Tab**：有 8 个组件直接吃 `status`，而 `uptimeSeconds` / `stats` 每 5s 必变 → 顶层引用必然是新的，包 `memo` 也挡不住（react-query 的 structuralSharing 只保得住未变字段的引用，救不了顶层对象）。现按变化频率拆订阅：新增 `StaticStatus` / `LiveStatus` 两个类型，主查询用 `select` 剔掉高频字段，`ConnectHero` 用同一 `queryKey` 自行订阅那两个字段（共享缓存，不多发请求），秒级变化只重渲染它自己。**注：重渲染范围尚未用 React DevTools 实测确认。**
+- **窗口收进托盘后不再空转轮询**：以前窗口不可见时，8 处轮询依旧全速跑——状态（5s）、审计日志（10s）、防火墙诊断（30s）、后台命令列表与输出（各 3s）、运行时长跳秒（1s），其中最重的是状态轮询里带的可达性探针（真开一次 TCP 连接，200ms 超时）。现全部随窗口可见性断流，恢复可见那一刻立即补一次而不干等周期。新增 `lib/appVisibility.ts`（模块级 store + `useSyncExternalStore`）把可见性从“只写 DOM 属性”升级为 React 可订阅状态，并配 6 条单测。一次性倒计时（IP 变化提示）与小时级更新检查有意不断。
+- **状态查询不再用读锁罩住磁盘与网络 I/O**：`get_status` 的 `config` 读锁原本从函数开头一路罩到末尾，横跨了首次防火墙查询（netsh，可达数百 ms）、可达性探针（最长 200ms）与备份目录枚举，于是前端每 5s 轮询一次就造出一个最长 200ms+ 的窗口，期间在设置页改任何配置都得排队等锁。现拆为「短锁取字段 → 锁外做慢操作 → 再取锁读剩下」，锁持有时间降到微秒级。（附：同时用探针实测排除了两个怀疑——备份目录统计在 1230 个文件下只 2.3ms，bash 探测已有缓存，两者都不是瓶颈。）
+
 ## [2.3.19] - 2026-08-02
 
 ### 更新摘要

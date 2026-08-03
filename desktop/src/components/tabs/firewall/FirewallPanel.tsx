@@ -5,6 +5,7 @@ import { Icon } from "../../ui/icon";
 import { Button } from "../../ui/button";
 import { useToast } from "../../ui/toast";
 import { copyText } from "../../../lib/utils";
+import { useAppHidden } from "../../../lib/appVisibility";
 import type {
   FirewallDiagnosisResponse,
   FirewallIssue,
@@ -28,10 +29,13 @@ export const FIREWALL_QUERY_KEY = ["firewall-diagnosis"] as const;
  * 所以 30s 轮询很便宜；后台每 5 分钟会自己重跑一次真查询。
  */
 export function useFirewallDiagnosis(enabled = true) {
+  // 窗口不可见时停轮询：防火墙状态变化很慢，而后端自己每 5 分钟会重跑真查询，
+  // 隐藏期间漏掉的那几轮没有价值。
+  const appHidden = useAppHidden();
   return useQuery<FirewallDiagnosisResponse>({
     queryKey: FIREWALL_QUERY_KEY,
     queryFn: () => invoke<FirewallDiagnosisResponse>("get_firewall_diagnosis"),
-    refetchInterval: 30_000,
+    refetchInterval: appHidden ? false : 30_000,
     enabled,
   });
 }

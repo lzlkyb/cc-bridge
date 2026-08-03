@@ -11,9 +11,24 @@ pub fn init_database(data_dir: &Path) -> Result<Connection, String> {
         "PRAGMA journal_mode=WAL;
          PRAGMA busy_timeout=5000;
          PRAGMA synchronous=NORMAL;
-         PRAGMA foreign_keys=ON;",
+         PRAGMA foreign_keys=ON;
+         PRAGMA wal_autocheckpoint=256;",
     )
     .map_err(|e| format!("Failed to set PRAGMA: {e}"))?;
+
+    // 启动时做一次 TRUNCATE checkpoint，把残留 WAL 回写主库并**把文件截到 0**。
+    //
+    // 为何光有上面的 `wal_autocheckpoint` 不够：它只在 WAL 页数超阀时把内容回写主库、
+    // 然后**重置写指针复用同一个文件**，并不缩小文件本身。实测就撞上了这个：
+    // 加了 autocheckpoint 后重启，`cc-bridge.db-wal` 依旧是 4.13MB（而主库才 448KB）。
+    // 残留的大 WAL 不仅占磁盘，还会拖累每次启动的 replay。
+    //
+    // 失败不当错：TRUNCATE 需要独占，若恰好有其他进程持有连接会返回 SQLITE_BUSY。
+    // 这里是启动路径、本进程只此一个连接，正常不会发生；即使发生也只是没收到空间，
+    // 不影响数据正确性，所以不能因此让启动失败。
+    if let Err(e) = conn.pragma_update(None, "wal_checkpoint", "TRUNCATE") {
+        log::warn!("启动 WAL checkpoint(TRUNCATE) 未成功（不影响使用）: {e}");
+    }
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS config (

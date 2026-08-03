@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, memo, useRef } from "react";
 import { invokeOrToast } from "../../lib/tauri";
-import type { StatusResponse } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
 import {
   McpScope,
   buildDisplayHost,
@@ -34,7 +34,7 @@ function ConnectTabImpl({
   dismissed,
   onDismissIpChange,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onRefresh: () => void;
   selectedIp: string;
   onSelectIp: (ip: string) => void;
@@ -262,7 +262,7 @@ export function ConnectGuide({
   includeShellTools, setIncludeShellTools, permissionCommand, permCopied, handlePermCopy,
   expanded, onToggle, bare = false,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   listenAll: boolean; lanIps: string[]; selectedIp: string;
   onSelectIp: (ip: string) => void; healthCheck: string;
   scope: McpScope; setScope: (s: McpScope) => void;

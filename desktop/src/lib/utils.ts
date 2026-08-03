@@ -2,7 +2,7 @@
  * 多个组件共用的纯函数集中于此（规则 11）。
  */
 
-import type { StatusResponse } from "./types";
+import type { StaticStatus } from "./types";
 
 /** 接入作用域：用户级（~/.claude.json）或项目级（.mcp.json）。 */
 export type McpScope = "user" | "project";
@@ -86,7 +86,7 @@ export function toolLabel(tool: string): string {
 /* ─── 连接页命令拼接（纯函数，ConnectTab 与 TokenManager 共用，规则 11）─── */
 
 /** 展示用主机地址：监听全网卡(0.0.0.0)时取用户选中的 IP，否则用配置的 host。 */
-export function buildDisplayHost(status: StatusResponse | undefined, selectedIp: string): string {
+export function buildDisplayHost(status: StaticStatus | undefined, selectedIp: string): string {
   const listenAll = status?.host === "0.0.0.0";
   return listenAll ? selectedIp || "127.0.0.1" : status?.host ?? "";
 }

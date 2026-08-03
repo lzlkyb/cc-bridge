@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse, ConfigSaveResult } from "../../lib/types";
+import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Icon } from "../ui/icon";
 import { Switch } from "../ui/switch";
@@ -17,7 +17,7 @@ export function SecurityOverview({
   status,
   onSaved,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onSaved: () => void;
 }) {
   const [confirmWhitelistOff, setConfirmWhitelistOff] = useState(false);
@@ -169,7 +169,7 @@ export function SecurityOverview({
 }
 
 /* 风险总览：三档（较安全 / 有风险 / 高风险），视觉与设计稿一致 */
-function RiskSummary({ status }: { status?: StatusResponse }) {
+function RiskSummary({ status }: { status?: StaticStatus }) {
   if (!status) return null;
   const readonlyOn = status.readonlyMode;
   // 只读模式会强制禁用命令执行（后端拦截 run_command），因此风险判定应看“有效”命令执行

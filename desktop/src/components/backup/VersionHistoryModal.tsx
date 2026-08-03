@@ -5,7 +5,7 @@ import type {
   BackupFileInfo,
   FileDiffResult,
   DiffLine,
-  StatusResponse,
+  StaticStatus,
 } from "../../lib/types";
 import { formatRelativeTime, formatBytes } from "../../lib/utils";
 import { Icon } from "../ui/icon";
@@ -230,7 +230,7 @@ export function VersionHistoryModal({
   onRestore,
 }: {
   open: boolean;
-  status?: StatusResponse;
+  status?: StaticStatus;
   result: BackupListResult | null;
   loading: boolean;
   onClose: () => void;

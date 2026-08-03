@@ -4,7 +4,7 @@ import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
 import { useUpdate, type UpdateStatus, type UpdateInfo } from "../../contexts/UpdateContext";
-import type { StatusResponse } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
 import { formatVersion, formatBytes, formatBytesPerSec } from "../../lib/utils";
 import { APP_INFO } from "../../lib/about";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -46,7 +46,7 @@ const STYLE_ICON_ACCENT: CSSProperties = { background: "var(--color-accent)", co
 const STYLE_INFO_KEY: CSSProperties = { minWidth: 52 };
 
 export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   unreadCount?: number;
   /** 看完更新历史后标记已读（红点消失）。 */
   onMarkSeen?: () => void;

@@ -161,6 +161,18 @@ pub struct AuditPage {
     pub page_size: usize,
 }
 
+/// 从已解析的全量条目里取一页（倒序：最新在前，与 read_recent_entries 旧行为一致）。
+///
+/// 只对本页那几条做 `cloned()`，不克隆整份——这是避免“为返回 50 条而 memcpy 几 MB”的关键。
+fn page_slice(all: &[AuditEntry], start: usize, page_size: usize) -> Vec<AuditEntry> {
+    all.iter()
+        .rev()
+        .skip(start)
+        .take(page_size)
+        .cloned()
+        .collect()
+}
+
 /// 全量读入 audit.log 并逐行解析为 `AuditEntry`。仅在缓存未命中（文件变更）时调用，
 /// 平时 read_page 直接复用 AUDIT_CACHE 中的已解析结果，跳过本函数。
 fn parse_all_entries(log_path: &Path) -> Result<Vec<AuditEntry>, String> {
@@ -210,39 +222,45 @@ pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<Audit
         .unwrap_or(0);
     let len = meta.len();
 
-    // 判定命中与克隆在同一次持锁内完成，避免 TOCTOU：旧实现先短锁判 hit 再释锁重锁
-    // clone，两次之间若 clear_all/cleanup 把缓存置 None，`.as_ref().unwrap()` 会 panic 并在
+    // 判定命中与取页必须在同一次持锁内完成，避免 TOCTOU：更早的实现先短锁判 hit 再释锁重锁
+    // 取数，两次之间若 clear_all/cleanup 把缓存置 None，`.as_ref().unwrap()` 会 panic 并在
     // 持锁时毒化互斥锁，导致后续所有 lock().unwrap() 跟着 panic。
     let cache = AUDIT_CACHE.get_or_init(|| Mutex::new(None));
-    // 步一：持锁内一次性完成“判命中 + 克隆”（命中返回 Some(clone)，未命中返回 None），
-    // 锁在本作用域末尾释放。
-    let cached: Option<Vec<AuditEntry>> = {
+    let start = (page - 1) * page_size;
+
+    // 取页务必在持锁内完成，**只克隆本页需要的那几条**。
+    //
+    // 旧实现是 `Some(entries.clone())`：命中缓存时先把**整份**解析结果克隆一份，再
+    // `rev().skip().take(page_size)` 丢掉0～99%。实测审计日志 4898 条 / 5.2MB，也就是说
+    // 每次只为返回 50 条就要 memcpy 几 MB + 上万次 String 分配；而日志页开着时每 10s
+    // 轮询一次（性能面板那条还是 page_size=500 / 30s）。
+    //
+    // 持锁时长反而变短：从“克隆全量”降为“克隆 page_size 条”。
+    // 仍然是单次持锁完成判命中 + 取数，没有旧实现那种分两次持锁的 TOCTOU 窗口。
+    let hit: Option<(usize, Vec<AuditEntry>)> = {
         let g = cache.lock().unwrap();
         match g.as_ref() {
-            Some((p, mt, ln, entries))
+            Some((p, mt, ln, all))
                 if p.as_path() == log_path.as_path() && *mt == mtime && *ln == len =>
             {
-                Some(entries.clone())
+                Some((all.len(), page_slice(all, start, page_size)))
             }
             _ => None,
         }
     };
-    // 步二：未命中才释锁后做 IO 解析，再重新上锁写回缓存。全程不存在旧实现那种
-    // “判 hit 与 clone 分两次持锁”的 TOCTOU 窗口，也不再对 None 做 unwrap。
-    let all: Vec<AuditEntry> = match cached {
-        Some(entries) => entries,
+
+    // 未命中：释锁后做 IO 解析，先取本页再把全量移进缓存（避免旧实现那次额外的
+    // `parsed.clone()`——那是第二次全量克隆）。
+    let (total, entries) = match hit {
+        Some(v) => v,
         None => {
             let parsed = parse_all_entries(&log_path)?;
-            let mut g = cache.lock().unwrap();
-            *g = Some((log_path.clone(), mtime, len, parsed.clone()));
-            parsed
+            let total = parsed.len();
+            let entries = page_slice(&parsed, start, page_size);
+            *cache.lock().unwrap() = Some((log_path.clone(), mtime, len, parsed));
+            (total, entries)
         }
     };
-
-    let total = all.len();
-    let start = (page - 1) * page_size;
-    // 倒序后取本页：最新条目在前，与 read_recent_entries 旧行为一致。
-    let entries: Vec<AuditEntry> = all.into_iter().rev().skip(start).take(page_size).collect();
 
     Ok(AuditPage {
         entries,

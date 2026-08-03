@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { invoke } from "../../lib/tauri";
-import type { StatusResponse } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
 import { McpScope, buildTokenSedCommand, copyText } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
@@ -21,7 +21,7 @@ export function TokenManager({
   expanded,
   onToggle,
 }: {
-  status?: StatusResponse;
+  status?: StaticStatus;
   onRefresh: () => void;
   projectPath: string;
   expanded: boolean;

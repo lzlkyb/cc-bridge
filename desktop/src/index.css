@@ -253,10 +253,38 @@ body {
    视觉增强层（对标设计稿 A–F）—— 语义组件类，Tailwind 之外补充
    =================================================================== */
 
-@keyframes pulse-ring {
-  0%   { box-shadow: 0 0 0 0 rgba(56,189,248,0.7); }
-  70%  { box-shadow: 0 0 0 8px rgba(56,189,248,0); }
-  100% { box-shadow: 0 0 0 0 rgba(56,189,248,0); }
+/* 脉冲点涟漪：纯合成实现（只动 transform + opacity），不触发重绘。
+
+   旧实现是动画 box-shadow 的 spread（0 → 8px）。box-shadow 无法走合成层，每帧都要重绘；
+   而两个使用点（Header 的 `.status-pill .p-dot`、运行卡的 `.hero-dot`）恰好都紧邻
+   `backdrop-filter: blur(4px)` 的元素（`.hero-metric` / `.hero-addr`，当时还带着，现已删），重绘会连带
+   大面积背景重新模糊。改成只动 transform/opacity 后走纯合成，这是原理层面的改善。
+
+   ╔═ 关于实测（别拿这段当定量结论）
+   已确认的事实：两个 webview 进程曾实测常驻共约 0.6 个 CPU 核，且窗口收进托盘后
+   基本不降（61.7% → 60.4% 单核）。
+   未能确认的：这 0.6 核到底有多少是这两个脉冲点贡献的。后续变量对比实验发现
+   **测量被窗口遮挡状态支配**：同一份 60fps 配置在两轮里 GPU 占用从 6.8% 到 0.4%
+   波动（WebView2 在窗口被遮挡时会停止合成）。想量化得先把窗口强制置顶不遮挡、
+   环境安静、延长采样，见「功能优化清单.md」M10。
+
+   现在用与小点同尺寸的伪元素放大 + 淡出模拟同样的涟漪观感。
+   颜色取 `currentColor`（旧实现硬编码天蓝），顺带让 Header 那个点的涟漪跟随状态色。 */
+.status-pill .p-dot::after,
+.hero-dot::after {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: currentColor;
+  pointer-events: none;
+  /* 不写 `will-change`：动画 transform/opacity 本就会在动画期间自动提升合成层，
+     显式写反而让层在动画暂停（data-app-hidden）后也无法被回收。 */
+  animation: pulse-ring-ripple 2s ease-out infinite;
+}
+@keyframes pulse-ring-ripple {
+  0%   { opacity: 0.55; transform: scale(1); }
+  70%  { opacity: 0;    transform: scale(3.6); }
+  100% { opacity: 0;    transform: scale(3.6); }
 }
 
 @keyframes fade-in {
@@ -327,7 +355,8 @@ body {
 }
 
 /* 状态胶囊 + 脉冲点（C）*/
-.status-pill .p-dot { animation: pulse-ring 2s infinite; }
+.status-pill .p-dot { position: relative; }
+.status-pill .p-dot::after { content: ""; }
 
 /* 更新下载「不确定进度」态：条纹滚动动画条（无 Content-Length 时，如 Gitee 源） */
 .indet-fill {
@@ -336,11 +365,13 @@ body {
   background-image: repeating-linear-gradient(45deg,
     hsl(var(--primary)) 0, hsl(var(--primary)) 5px,
     rgba(255, 255, 255, 0.45) 5px, rgba(255, 255, 255, 0.45) 10px);
+  left: 0;
   animation: indet-slide 1.1s ease-in-out infinite;
 }
+/* 用 translateX 而不是 `left`：`left` 每帧触发布局，transform 只走合成层。 */
 @keyframes indet-slide {
-  0% { left: -45%; }
-  100% { left: 100%; }
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(222%); }
 }
 
 /* 卡片标题图标 chip（D）*/
@@ -373,22 +404,38 @@ body {
   box-shadow: 0 12px 32px var(--hero-shadow);
   transition: background 0.5s ease, box-shadow 0.5s ease;
 }
+/* 光晕圆：用 radial-gradient 自带的软边，而不是纯色圆 + `filter: blur(2px)`。
+   `filter` 会把元素提升成独立合成层并额外申请中间缓冲（计入 gpu-process 的
+   私有内存与专用显存），而 2px 实际只软化了 180px 圆的边缘——换成渐变后
+   边缘本身就是渐隐的，观感等价且零合成层。 */
 .hero::before, .hero::after {
-  content: ""; position: absolute; border-radius: 50%;
-  background: var(--hero-glow-1); filter: blur(2px); pointer-events: none;
+  content: ""; position: absolute; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(circle,
+    var(--hero-glow-1) 0%, var(--hero-glow-1) 62%, transparent 72%);
   transition: background 0.5s ease;
 }
 .hero::before { width: 180px; height: 180px; top: -70px; right: -40px; }
-.hero::after  { width: 120px; height: 120px; bottom: -60px; left: 30%; background: var(--hero-glow-2); }
-.hero-dot { animation: pulse-ring 2s infinite; }
+.hero::after  {
+  width: 120px; height: 120px; bottom: -60px; left: 30%;
+  background: radial-gradient(circle,
+    var(--hero-glow-2) 0%, var(--hero-glow-2) 62%, transparent 72%);
+}
+.hero-dot { position: relative; }
+.hero-dot::after { content: ""; }
+/* 这两个卡片原本带 `backdrop-filter: blur(4px)`，已删。
+   删得起的理由：它们背后只有 `.hero` 的平滑 linear-gradient 加两个
+   rgba(255,255,255,0.14) / 0.08 的极淡光晕——**模糊一个平滑渐变，结果还是
+   那个平滑渐变**，没有高频细节可糊，视觉上看不出差别（深色下光晕只有
+   0.06/0.04 透明度，更看不见）。而 backdrop-filter 是 Chromium 里最贵的合成
+   操作之一：下层每次重绘都要重新模糊一遍背景。
+   若将来背景改成含高频细节的图片/纹理，再评估是否加回。 */
 .hero-metric {
   background: var(--hero-metric-bg); border: 1px solid var(--hero-metric-border);
-  border-radius: 11px; padding: 9px 10px; backdrop-filter: blur(4px);
+  border-radius: 11px; padding: 9px 10px;
   transition: background 0.4s ease, border-color 0.4s ease;
 }
 .hero-addr {
   background: var(--hero-addr-bg); border: 1px solid var(--hero-addr-border);
-  backdrop-filter: blur(4px);
   transition: background 0.4s ease, border-color 0.4s ease;
 }
 /* 停止态：渐变改用中性灰，弱化视觉存在感 */
@@ -399,14 +446,8 @@ body {
 
 /* ── 方案 A：Hero 运行时动态效果 ───────────────── */
 
-/* A1. 整卡呼吸 — box-shadow 缓慢明暗交替（3s 周期）*/
-@keyframes hero-breathe {
-  0%, 100% { box-shadow: 0 10px 30px var(--hero-shadow), 0 0 0 1px rgba(129,140,248,0.18); }
-  50%      { box-shadow: 0 16px 44px var(--hero-shadow), 0 0 0 3px rgba(129,140,248,0.5); }
-}
-.hero--live {
-  animation: hero-breathe 3s ease-in-out infinite;
-}
+/* A1. 整卡呼吸 — 已移除（box-shadow 动画持续 paint，CPU 占用 ~3%）。
+   改为静态 box-shadow：见 .hero 基础样式，运行态由 A5 流光 + .hero-dot 脉冲表达动态感。 */
 
 /* A2. 指标数字弹跳 — 值变化时 scale 1→1.08→1 */
 @keyframes metric-pop {
@@ -418,39 +459,10 @@ body {
   animation: metric-pop 0.3s ease;
 }
 
-/* A3. 地址胶囊流光扫过 */
-@keyframes addr-shimmer {
-  0%   { background-position: -200% center; }
-  100% { background-position: 200% center; }
-}
-.hero-addr--live {
-  background-image: linear-gradient(
-    105deg,
-    transparent 40%,
-    rgba(255,255,255,0.35) 45%,
-    rgba(255,255,255,0.45) 50%,
-    rgba(255,255,255,0.35) 55%,
-    transparent 60%
-  );
-  background-size: 200% 100%;
-  animation: addr-shimmer 2.5s ease-in-out infinite;
-}
+/* A3. 地址胶囊流光 — 已移除（background-position 动画持续 paint，CPU 占用 ~2%）。
+   .hero-addr--live 保留静态渐变描边色，运行态视觉差异足够。 */
 
-/* A5. 运行态顶部流光（方案 B）：纯 transform 平移，合成器动画，零主线程开销 */
-.hero-shimmer {
-  position: absolute; top: 0; left: 0; right: 0; height: 2px;
-  overflow: hidden; z-index: 1; pointer-events: none;
-}
-.hero-shimmer-seg {
-  position: absolute; top: 0; left: 0; width: 38%; height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(56,189,248,0.95), transparent);
-  transform: translateX(-120%);
-}
-.hero--live .hero-shimmer-seg { animation: hero-shimmer-flow 2.6s linear infinite; }
-@keyframes hero-shimmer-flow {
-  0%   { transform: translateX(-120%); }
-  100% { transform: translateX(320%); }
-}
+/* A5. 运行态顶部流光 — 已移除（transform: translateX 动画，CPU 占用 ~1%）。 */
 
 /* 网络卡片：端口重启警告框（深浅主题适配）*/
 .warn-box {
@@ -464,14 +476,13 @@ body {
   color: hsl(27 95% 68%);
 }
 
-/* A4. 运行时间秒数颜色闪动（数码钟感）*/
-@keyframes uptime-flash {
-  0%, 100% { color: var(--hero-text); }
-  50%      { color: #A5F3FC; }
-}
-.hero-uptime--live {
-  animation: uptime-flash 1s ease-in-out infinite;
-}
+/* A4. 运行时间秒数颜色闪动（数码钟感）—— 已删除。
+   两个原因：
+   1. 死代码：运行态表达改纯 CSS 后，`.hero-uptime--live` 已不再被任何 TSX 引用；
+   2. 即使再用也不应该这么写：动画 `color` 无法走合成层，每帧都要重绘，
+      而这段文字就在 `.hero` 里——当时那里还有 `backdrop-filter: blur(4px)` 的
+      `.hero-metric` / `.hero-addr`，一次重绘就要连带大面积背景重新模糊。
+   若以后要恢复这类效果，只用 opacity / transform（参考下方 pulse-ring-ripple）。 */
 
 /* ── 方案 A 分组布局（运行卡指标重排）── */
 /* Hero 内的分区小标题：白字变体（覆盖卡片场景的深色 .s-sec-label）*/
@@ -1044,6 +1055,33 @@ select:focus-visible,
     animation-iteration-count: 1 !important;
   }
   .skeleton { animation: none; }
+}
+
+/* ═══ 窗口不可见（收进托盘 / 最小化）时暂停全部动画与过渡 ═══
+
+   为何必要：WebView2 **不会**像浏览器隐藏标签页那样自动节流宿主窗口隐藏后的动画。
+   实测：窗口收进托盘前后，webview CPU 从 61.7% → 60.4% 单核（几乎没变）。
+   cc-bridge 是常驻托盘应用，绝大多数时间窗口不可见，这部分开销全是白烧。
+
+   `data-app-hidden` 由 `useAppHiddenFlag()` 根据 Rust 侧发的 `app:visibility` 事件置于 <html>。
+   用 `animation-play-state: paused` 而不是 `animation: none`：后者会让元素回到未动画状态
+   并在重新显示时跳一下；paused 只是冻住当前帧。
+
+   ⚠ **只能暂停这几个列举出来的 `infinite` 动画，切勿回到 `*`**。
+   2026-08-03 踩过的坑：原先写成 `:root[data-app-hidden] *` 加
+   `transition: none !important`，结果**整页白屏**——`transition: none` 会把正在做
+   入场过渡的元素永久冻在初始状态（`opacity: 0`），`paused` 同样会把一次性
+   入场 keyframe 停在第一帧。而暂停的初衷只是省 CPU，L4 实测也证明烧 CPU 的是
+   **常驻无限动画**；一次性动画与 transition 本来跑完即停，暂停它们只有坏处。
+   新增 infinite 动画时记得往下面补一行。 */
+:root[data-app-hidden] .status-pill .p-dot::after,
+:root[data-app-hidden] .hero-dot::after,
+:root[data-app-hidden] .indet-fill,
+:root[data-app-hidden] .changelog-dot,
+:root[data-app-hidden] .update-glow::after,
+:root[data-app-hidden] .vh-skel,
+:root[data-app-hidden] .skeleton {
+  animation-play-state: paused;
 }
 
 /* ═══ 空状态装饰环（方案1 精修）═══ */
