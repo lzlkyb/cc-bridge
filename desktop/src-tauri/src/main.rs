@@ -29,6 +29,58 @@ fn notify_toast(handle: &tauri::AppHandle, body: &str) {
 #[cfg(not(feature = "notifications"))]
 fn notify_toast(_handle: &tauri::AppHandle, _body: &str) {}
 
+/// 显示主窗口；若它已被销毁（关窗时我们会真的销毁以释放 webview），
+/// 则按 `tauri.conf.json` 里的原配置重建。
+///
+/// **为何关窗要销毁而不是 `hide()`**：webview 那一组进程
+/// （BROWSER / gpu-process / renderer / utility ×2 / crashpad）实测占约 **80MB**
+/// 专用工作集，而 `hide()` 一个字节都不会释放。cc-bridge 绝大多数时间收在
+/// 托盘、用户通过远程 MCP 使用它，那 80MB 全程白挂。销毁后只剩 Rust 主进程
+/// 约 5.5MB；代价是重开窗口要重新加载前端（约 1~2 秒）。
+///
+/// **安全前提（已逐条核实，别担心销毁窗口会阻功能）**：
+/// - 托盘挂在 app 上（`TrayIconBuilder::build(app)`），不是窗口级；
+/// - MCP 服务跑在 tokio runtime（setup 里 `spawn_mcp_server`）；
+/// - 桌面通知全走 `handle.notification()`（IP 变化提示、后台命令完成、
+///   MCP `push_notification`），均为 app 级；
+/// - IP 变化检测整条链路（refresh_lan_ips → 托盘 tooltip → 通知）全在 Rust 侧；
+///   前端的变化横幅靠 `get_status` 的 `ip_changed` 字段渲染，状态在后端，
+///   重开窗口后照常显示。
+fn show_or_create_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        // 窗口本来就存在 → 是从隐藏态恢复（开关关闭时的行为），要通知前端
+        // 恢复动画与轮询。新建的窗口不需要——前端刚挂载，默认就是可见态。
+        let _ = w.emit("app:visibility", true);
+        return;
+    }
+    // 从配置重建，保证尺寸 / 装饰 / 居中等与首次启动完全一致（不手写一份参数，
+    // 否则以后改 tauri.conf.json 会两边不同步）。
+    let cfg = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .cloned();
+    let Some(cfg) = cfg else {
+        log::error!("tauri.conf.json 里找不到 label=main 的窗口配置，无法重建窗口");
+        return;
+    };
+    match tauri::WebviewWindowBuilder::from_config(app, &cfg) {
+        // 配置里 visible=false（防启动闪烁），所以重建后需显式 show。
+        Ok(builder) => match builder.build() {
+            Ok(w) => {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+            Err(e) => log::error!("重建主窗口失败: {e}"),
+        },
+        Err(e) => log::error!("从配置构造窗口 builder 失败: {e}"),
+    }
+}
+
 /// 生成托盘图标：透明底 + 居中状态色圆点（运行时绿、停止灰）。
 /// 用代码绘制，避免额外打包二进制图标资源。两份图标缓存在 static 中，
 /// 仅泄露一次 4KB 数据，后续所有刷新都 clone 复用。
@@ -188,10 +240,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            // 重复启动：把界面唤到前台。窗口可能已被销毁（省内存模式），
+            // 所以走 or_create——否则用户双击图标会没任何反应。
+            show_or_create_main_window(app);
         }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -352,28 +403,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ..
                     } = event
                     {
-                        if let Some(w) = tray_app.app_handle().get_webview_window("main") {
-                            let visible = w.is_visible().unwrap_or(false);
-                            let _ = if visible {
-                                w.hide()
-                            } else {
-                                w.show().and_then(|_| w.set_focus())
-                            };
-                            // 告知前端可见性变化：前端据此暂停/恢复全部 CSS 动画
-                            // （见 index.css 的 data-app-hidden）。WebView2 不会自己为隐藏窗口节流动画，
-                            // 实测收进托盘后 webview CPU 几乎不降，必须显式通知。
-                            let _ = w.emit("app:visibility", !visible);
+                        match tray_app.app_handle().get_webview_window("main") {
+                            Some(w) if w.is_visible().unwrap_or(false) => {
+                                // 收起：走正常关闭流程，由 `CloseRequested` 根据
+                                // 「关窗时释放界面内存」开关决定销毁还是仅隐藏——
+                                // 判断只写在一处，这里不重复。
+                                let _ = w.close();
+                            }
+                            // 窗口存在但不可见（秒开模式隐藏态，或最小化）→ 恢复；
+                            // 窗口已被销毁（省内存模式）→ 重建。两种情况同一个入口。
+                            _ => show_or_create_main_window(tray_app.app_handle()),
                         }
                     }
                 })
                 .on_menu_event(move |tray_app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(w) = tray_app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                            let _ = w.emit("app:visibility", true);
-                        }
-                    }
+                    "show" => show_or_create_main_window(tray_app.app_handle()),
                     "copy_cmd" => {
                         // 直接在 Rust 端用 clipboard_manager 插件写入系统剪贴板，
                         // 不再依赖前端 webview。托盘点击时面板常处于隐藏/失焦状态，
@@ -686,10 +730,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                let _ = window.hide();
-                // 关窗 = 收进托盘，同样要通知前端暂停动画。
-                let _ = window.emit("app:visibility", false);
+                // 读「关窗时释放界面内存」开关。同步回调里不能 await，所以用 try_read；
+                // 拿不到锁（仅当恰有写者持锁，极罕见）时按配置默认值 true 处理。
+                // 为何不用 AtomicBool 镜像：配置写入点有四处（save_config / 导入配置等），
+                // 逐处同步镜像容易漏；直接读配置才是单一事实源。
+                let release = window
+                    .app_handle()
+                    .state::<std::sync::Arc<state::AppState>>()
+                    .config
+                    .try_read()
+                    .map(|c| c.release_webview_on_close)
+                    .unwrap_or(true);
+                if release {
+                    // 省内存模式：**不** prevent_close，让窗口连同 webview 一起销毁，
+                    // 释放约 80MB。应用不会退出——下面 `RunEvent::ExitRequested` 里拦住了
+                    // 「最后一个窗口关闭」引发的退出。需要界面时由托盘重建。
+                    // 这里不再 emit `app:visibility`：前端即将随 webview 一起消失。
+                } else {
+                    // 秒开模式：仅隐藏，webview 保留，所以要通知前端暂停动画与轮询。
+                    api.prevent_close();
+                    let _ = window.hide();
+                    let _ = window.emit("app:visibility", false);
+                }
             }
             // OS 级最小化 / 还原。为何要在这里处理：
             // 1. Windows 上最小化只会触发 `Resized`，Tauri 没有独立的 Minimized 事件；
@@ -711,7 +773,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         })
         .build(tauri::generate_context!())?
-        .run(|_app_handle, _event| {});
+        .run(|_app_handle, event| {
+            // 关掉最后一个窗口**不应**退出应用。
+            //
+            // Tauri 默认行为是“所有窗口关闭 → 退出进程”，而 cc-bridge 是常驻托盘服务：
+            // 开启「关窗时释放界面内存」后关窗会真的销毁窗口，若不拦住这里，
+            // MCP 服务会跟着一起死——远程那边直接断连。
+            //
+            // 只拦 `code: None`：那是“窗口全关”触发的退出。托盘菜单「退出」走的是
+            // `tray_app.exit(0)`，会带 `code: Some(0)`，不在此列，因此真退出仍然正常。
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 
     Ok(())
 }

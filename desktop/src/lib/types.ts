@@ -85,6 +85,12 @@ export interface StatusResponse {
   notifyCommandComplete: boolean;
   /** 任务完成通知开关（push_notification MCP 工具总开关）。默认开启。 */
   notifyTaskComplete: boolean;
+  /**
+   * 关窗时释放界面内存。默认开启。
+   * 开：关窗销毁窗口与 webview，托盘常驻约 85MB → 5.5MB，再开需重新加载（1~2 秒）；
+   * 关：仅隐藏，秒开但内存持续占用。两者都不影响 MCP 服务 / 托盘 / 桌面通知。
+   */
+  releaseWebviewOnClose: boolean;
 }
 
 /* ─── 状态分层：高频字段 vs 稳定字段 ─── */
@@ -208,6 +214,8 @@ export interface ConfigPatch {
   notifyCommandComplete?: boolean;
   /** 任务完成通知开关。前端「功能开关」卡写入。 */
   notifyTaskComplete?: boolean;
+  /** 关窗时释放界面内存。前端「兼容与性能」分组写入。 */
+  releaseWebviewOnClose?: boolean;
 }
 
 export interface ConfigSaveResult {

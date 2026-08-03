@@ -5,6 +5,31 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 更新摘要
+新增「关窗时释放界面内存」开关（默认开启）：关闭窗口后界面进程会被回收，托盘常驻内存从约 88MB 降到 6MB；MCP 服务、托盘与通知全程不受影响。
+
+### 新增
+- 设置页「兼容与性能」新增「关窗时释放界面内存」开关：开启后关闭窗口即回收界面进程，托盘常驻内存约 88MB → 6MB，再次打开需重新加载（1~2 秒）；不想等可关掉此开关，改为仅隐藏窗口、再开瞬时显示
+
+### 技术细节
+
+> 以下为实现层面的记录，**不进更新弹框**。
+
+#### 实现
+- `CloseRequested` 根据新配置 `release_webview_on_close` 决定销毁还是 `hide()`。开关值用 `config.try_read()` 读（同步回调不能 await），拿不到锁时回退默认 true——不用 `AtomicBool` 镜像是因为配置有四个写入点（save_config / 导入配置等），逐处同步迟早会漏，直接读配置才是单一事实源。
+- **关键风险点**：Tauri 默认「所有窗口关闭 → 退出进程」，若不拦截会把 MCP 服务一起带走、远程直接断连。现在 `RunEvent::ExitRequested` 只拦 `code: None`（窗口全关触发）；托盘「退出」走 `exit(0)` 带 `code: Some(0)`，真退出不受影响。
+- 窗口重建用 `WebviewWindowBuilder::from_config` 从 `tauri.conf.json` 原配置重建，不手写一份参数以免与配置漂移；托盘菜单「显示」、托盘左键、单实例重复启动三个入口统一走 `show_or_create_main_window`（单实例那条尤其要紧：窗口销毁后双击图标必须能唤起来）。
+- 托盘左键「收起」改为 `w.close()`，让销毁/隐藏的判断只写在 `CloseRequested` 一处。
+- 已逐条核实不受窗口销毁影响：MCP 服务（tokio runtime）、托盘（挂在 app 上）、桌面通知（IP 变化 / 后台命令完成 / push_notification 全走 `handle.notification()`）、IP 变化检测（整条链路在 Rust 侧，前端横幅靠 `get_status` 的 `ip_changed` 状态兜底）。唯一影响：窗口关闭期间前端的自动更新检查定时器不跑，重开窗口时会立即补一次。
+
+#### 清理
+- 清掉两处过期注释：`ConnectHero.tsx` 与 `index.css` 里仍写着「数据雨 canvas」，而 canvas 在 2.3.19 已改为纯 CSS、元素早已移除。
+
+#### 文档
+- `功能优化清单.md` M4 重写：一次内存排查事故的完整记录——**前三版数据全错**，真正的根因是一个已卸载软件在 Machine 级环境变量里残留的 `WEBVIEW2_USER_DATA_FOLDER`，它让本机所有 WebView2 应用共用同一 profile 与同一 BROWSER 进程（连带共享 localStorage，比内存串台更严重）。同时记下四次误判的根源与六条测量纪律（归属用父进程链、口径用专用工作集、先确认窗口真可见等）。
+
 ## [2.3.20] - 2026-08-03
 
 ### 更新摘要

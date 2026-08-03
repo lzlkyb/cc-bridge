@@ -66,6 +66,17 @@ pub struct BridgeConfig {
     /// 任务完成通知（push_notification MCP 工具总开关）。默认开启——远程 AI 可主动调用
     /// push_notification 推桌面通知。关闭后 push_notification 静默忽略（不推通知，不报错）。
     pub notify_task_complete: bool,
+    /// 关窗时释放界面内存。默认开启。
+    ///
+    /// 开（省内存）：关窗 = 销毁窗口与 webview，托盘常驻占用从约 **85MB 降到 5.5MB**
+    /// （webview 的 BROWSER/gpu/renderer/utility 进程组实测约 80MB，`hide()` 不会释放）；
+    /// 代价是下次打开窗口要重新加载前端，约 1~2 秒。
+    ///
+    /// 关（秒开）：关窗只隐藏，webview 常驻，再次打开瞬时显示，代价是那 80MB 一直挂着。
+    ///
+    /// 两种模式都不影响功能：MCP 服务、托盘、桌面通知（含 IP 变化提示）均为
+    /// app 级，不依赖窗口存活。
+    pub release_webview_on_close: bool,
 }
 
 impl Default for BridgeConfig {
@@ -107,6 +118,7 @@ impl Default for BridgeConfig {
             command_allowlist: vec![],
             notify_command_complete: true,
             notify_task_complete: true,
+            release_webview_on_close: true,
         }
     }
 }
@@ -194,6 +206,9 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
                 config.notify_command_complete = parse_or_warn(key, value, true)
             }
             "notify_task_complete" => config.notify_task_complete = parse_or_warn(key, value, true),
+            "release_webview_on_close" => {
+                config.release_webview_on_close = parse_or_warn(key, value, true)
+            }
             "transport" => {
                 let s = parse_or_warn::<String>(key, value, "http".into());
                 config.transport = if s == "sse" {
@@ -343,6 +358,11 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         conn,
         "notify_command_complete",
         &to_value(config.notify_command_complete).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "release_webview_on_close",
+        &to_value(config.release_webview_on_close).unwrap(),
     )?;
     save_config_field(
         conn,

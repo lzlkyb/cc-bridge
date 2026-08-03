@@ -1108,7 +1108,8 @@ select:focus-visible,
 
 /* ═══ 动画质感升级：减弱动效守卫 ═══
    用户系统开启「减少动态效果」时，把所有动画/过渡降级为即时，保证可访问性
-   （避免眩晕、尊重系统偏好）。Modal 的退场延时与 hero canvas 瀑布也单独做了 JS 降级。 */
+   （避免眩晕、尊重系统偏好）。Modal 的退场延时另在 JS 里单独降级。
+   （旧注释提到的 “hero canvas 瀑布” 已于 2.3.19 改为纯 CSS，canvas 早已移除。） */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

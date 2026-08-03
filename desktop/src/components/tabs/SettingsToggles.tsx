@@ -176,6 +176,14 @@ export function SettingsToggles({
         {/* ── 分组：兼容与性能 ── */}
         <GroupTitle>兼容与性能</GroupTitle>
         <ToggleRow
+          id="toggle-release-webview"
+          label="关窗时释放界面内存"
+          sub="开启：关窗时销毁界面进程，托盘常驻内存约 85MB → 6MB，再次打开需重新加载（1~2 秒）；关闭：仅隐藏窗口，再次打开瞬时显示，但界面进程持续占用内存。MCP 服务、托盘与桌面通知均不受影响。默认开启"
+          checked={status?.releaseWebviewOnClose ?? true}
+          onChange={(v) => save({ releaseWebviewOnClose: v }, "release-webview")}
+          saved={savedKey === "release-webview"}
+        />
+        <ToggleRow
           label="限流保护"
           sub="按窗口限制请求次数，防止异常高频调用"
           checked={status?.rateLimitEnabled ?? true}

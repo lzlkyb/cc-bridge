@@ -14,8 +14,8 @@ import { useAppHidden } from "../../lib/appVisibility";
  * 连接页顶部 Hero 卡（方案 B · 双栏卡片）：
  * 状态行 → 双栏（左:5/12 概览卡片 成功率+健康环 | 右:7/12 2×3 指标网格）
  * → 安全治理 · 热门工具（无标题单行流式） → 启停控制。
- * 背景为升级版数据雨 canvas（负载联动：rpm 越高雨越密越快，空闲稀疏慢速「呼吸」）
- * + 正式实色 hero + 白色 glow 光斑。
+ * 背景全走纯 CSS：实色 hero 底 + 伪元素 radial-gradient 光斑
+ * （2.3.19 起已不再用数据雨 canvas，canvas 元素早已移除）。
  * 所有指标均来自后端真实统计（StatusResponse.stats），停止态将实时性指标置 --。
  */
 export function ConnectHero({
