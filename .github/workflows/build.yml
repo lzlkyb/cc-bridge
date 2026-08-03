@@ -33,6 +33,33 @@ jobs:
         run: cargo test --no-default-features
         working-directory: desktop/src-tauri
 
+  # macOS 编译门禁。为何需要它：本项目主力平台是 Windows，开发机也是 Windows，
+  # 而平台差异（平台专属 crate feature、缺失的 cfg(not(windows)) 分支、Win32 API 调用）
+  # **只会在 mac 编译时暴露**。没有这道门禁，Windows 侧的改动会静默破坏 mac 支持。
+  #
+  # 只跑 `cargo check`（不跑 test、不打包）：目标是尽快拿到编译期错误，控制 CI 时长。
+  # 不装前端依赖：与上面 Windows 的 test job 一致，纯 Rust 检查不需要 dist 产物。
+  #
+  # ⚠ `continue-on-error: true` 是暂时的：mac 适配尚在推进中，本 job 当前必红，
+  # 不能让它阻塞 Windows 侧的正常合入。**mac 能编过后记得把这行删掉**，
+  # 否则这道门禁就形同虚设。
+  check-macos:
+    name: Cargo check (macOS)
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Sccache Setup
+        uses: mozilla/sccache-action@v0.0.10
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: cargo check
+        run: cargo check --no-default-features
+        working-directory: desktop/src-tauri
+
   # 发版构建：仅 tag 触发。test(release) 与 build 同 job 内复用 release target，
   # 依赖 crate 只编译一遍（A）；sccache 让依赖不变时后续发版秒级命中（B）。
   build-windows:
