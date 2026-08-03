@@ -92,6 +92,15 @@ env_logger = "0.11"
 
 # Image decoding (tray icon overlay)
 png = "0.17"
+# 进程树治理（真跨平台）：run_command 用它接管子进程，stop_command 靠 start_kill() 杀整树。
+# trait（StdChildWrapper / StdCommandWrap）与 std feature 两个平台都要，所以声明在这里；
+# 而“怎么杀整树”的实现是平台专属的，分到下面两个 target 段（Windows: job-object +
+# creation-flags；Unix: process-group）——之前整个 crate 只写在 Windows 段里，
+# 导致 mac 上 `use process_wrap::...` 直接报 E0433（CI macOS job 实测）。
+# 精确锁 =8.0.2：对齐 windows 0.56，避免拉入第二份 windows 0.61 绑定膨胀二进制。
+# 必须开 tracing——process-wrap 的 job_object 模块无条件调用 debug! 宏，而该宏仅在
+# tracing feature 下 import，关掉会导致编译失败。
+process-wrap = { version = "=8.0.2", default-features = false, features = ["std", "tracing"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # 与 process-wrap (8.0.2) 共用同一份 windows 0.56，避免重复编译导致体积膨胀；
@@ -107,9 +116,18 @@ windows = { version = "0.56", features = [
 # 精确锁 =8.0.2：对齐 windows 0.56（避免拉入第二份 windows 0.61 绑定膨胀二进制）；
 # 必须开 tracing feature——process-wrap 的 job_object 模块无条件调用 debug! 宏，
 # 而该宏仅在 tracing feature 下 import，关掉 default-features 会导致编译失败。
-process-wrap = { version = "=8.0.2", default-features = false, features = ["std", "job-object", "creation-flags", "tracing"] }
-# 参考 PastePanda 配置：薄 LTO + 体积优先 opt + strip 符号
-# 预期：19.5MB exe 砍到 14-15MB
+# 仅 Windows 需要的 feature：job-object / creation-flags 都会拉 windows crate
+# （见 process-wrap 的 [features] 定义），在 mac / Linux 上无法编译。
+# crate 本体与 std/tracing 已提到公共 [dependencies]；Cargo 对同一 crate 在多个
+# target 段声明的 features 取并集，所以这里只需补平台专属那几个。
+process-wrap = { version = "=8.0.2", default-features = false, features = ["job-object", "creation-flags"] }
+
+[target.'cfg(unix)'.dependencies]
+# Unix 没有 JobObject 这种“进程树容器”，用**进程组**代替：process-group 让子进程
+# spawn 时 setpgid 成为组长，于是 start_kill() 会向整个进程组发信号、连子孙进程
+# 一起杀——等价于 Windows 侧 TerminateJobObject 的效果，而且该 feature 是纯标记
+# （`process-group = []`）、不拉任何额外依赖。
+process-wrap = { version = "=8.0.2", default-features = false, features = ["process-group"] }
 
 # 集成测试：真实起 MCP server + reqwest 客户端做 over-the-wire 验证
 # （gzip 响应头 / batch 合并 / 审计留痕）。Windows 上 default-tls 走系统

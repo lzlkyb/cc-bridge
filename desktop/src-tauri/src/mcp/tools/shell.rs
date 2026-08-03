@@ -50,6 +50,9 @@ pub fn parse_shell_type(s: &str) -> ShellType {
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Git Bash 可执行文件的常见安装位置（按优先级）。
+/// 仅 Windows：非 Windows 上 bash 是系统自带的，路径完全不同（见下方 unix 版探测）。
+/// 必须加 cfg，否则 mac 上此常量无人使用 → dead_code 警告 → `clippy -D warnings` 直接报错。
+#[cfg(windows)]
 const BASH_CANDIDATES: &[&str] = &[
     "C:\\Program Files\\Git\\bin\\bash.exe",
     "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
@@ -60,6 +63,7 @@ const BASH_CANDIDATES: &[&str] = &[
 
 /// 探测 Git Bash 的 `bash.exe`（缓存结果，避免每条命令都 spawn `where`）。
 /// 找不到返回 None（调用方据此报错，由上层决定是否回退 cmd）。
+#[cfg(windows)]
 fn detect_bash_exe_inner() -> Option<PathBuf> {
     for c in BASH_CANDIDATES {
         if Path::new(c).is_file() {
@@ -126,6 +130,42 @@ fn detect_bash_exe_inner() -> Option<PathBuf> {
     }
     None
 }
+/// 非 Windows（macOS / Linux）的 bash 探测。
+///
+/// 与 Windows 版完全不同：这里不能用 `where` 命令，也不能用
+/// `.creation_flags(CREATE_NO_WINDOW)`——那两个 API 在非 Windows 上根本不存在
+/// （CI 的 macOS job 就是在那两行报 E0425）。
+///
+/// 顺序：先查常见绝对路径，再用 `command -v bash` 兜底——后者能覆盖 Homebrew
+/// （Apple Silicon 上是 `/opt/homebrew/bin/bash`）与用户自定义安装位置。
+/// 用 `command -v` 而不是 `which`：前者是 POSIX 内建，精简环境里也一定有。
+#[cfg(not(windows))]
+fn detect_bash_exe_inner() -> Option<PathBuf> {
+    for c in [
+        "/bin/bash",
+        "/usr/bin/bash",
+        "/usr/local/bin/bash",
+        "/opt/homebrew/bin/bash",
+    ] {
+        if Path::new(c).is_file() {
+            return Some(PathBuf::from(c));
+        }
+    }
+    if let Ok(out) = std::process::Command::new("sh")
+        .args(["-c", "command -v bash"])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            let p = s.trim();
+            if !p.is_empty() {
+                return Some(PathBuf::from(p));
+            }
+        }
+    }
+    None
+}
+
 
 /// 缓存探测结果。启动时首次 `get_status` 触发初始化，之后只读不扫磁盘。
 /// 用户安装 Git for Windows 后，通过设置页「刷新检测」按钮调用 `refresh_bash_detection()` 更新。

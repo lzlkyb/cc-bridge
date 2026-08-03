@@ -11,7 +11,16 @@ use crate::mcp::tools::shell::{
     build_invocation, normalize_cwd_from_shell, parse_shell_type, ShellType,
 };
 
-use process_wrap::std::{CreationFlags, JobObject, StdChildWrapper, StdCommandWrap};
+// 这两个是跨平台的 trait，两边都要。
+use process_wrap::std::{StdChildWrapper, StdCommandWrap};
+// 以下均为平台专属的“怎么管进程树”实现：
+// Windows 靠 JobObject（容器）+ CreationFlags（不弹控制台窗口）；
+// Unix 靠进程组（setpgid 后对整组发信号），也不存在“黑窗口”问题。
+#[cfg(windows)]
+use process_wrap::std::{CreationFlags, JobObject};
+#[cfg(unix)]
+use process_wrap::std::ProcessGroup;
+#[cfg(windows)]
 use windows::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_CREATION_FLAGS,
 };
@@ -354,10 +363,18 @@ fn spawn_shell(
         }
     });
     // 顺序敏感：先 JobObject 再 CreationFlags，确保 CREATE_NO_WINDOW 不被 JobObject 覆盖。
-    cmd.wrap(JobObject);
-    cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
-        CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0,
-    )));
+    #[cfg(windows)]
+    {
+        cmd.wrap(JobObject);
+        cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
+            CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0,
+        )));
+    }
+    // Unix 对应物：把子进程设为进程组组长，于是 `start_kill()` 向整组发信号，
+    // 连子孙进程一起杀（对应 Windows 的 TerminateJobObject）。
+    // 不需要 CREATE_NO_WINDOW 类的处理：Unix 下不会弹控制台窗口。
+    #[cfg(unix)]
+    cmd.wrap(ProcessGroup::leader());
 
     let child = cmd.spawn().map_err(|e| format!("启动命令失败: {e}"))?;
 
