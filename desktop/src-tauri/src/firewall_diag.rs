@@ -1072,6 +1072,7 @@ mod tests {
     // ─── netsh verbose 解析 ──────────────────────────────────
 
     /// 英文 locale（chcp 65001 下实测就是英文键名）。
+    #[cfg(windows)]
     const NETSH_EN: &str = concat!(
         "\r\nRule Name:                            cc-bridge (7823/TCP)\r\n",
         "----------------------------------------------------------------------\r\n",
@@ -1101,6 +1102,7 @@ mod tests {
     );
 
     /// 中文 locale（GBK 控制台，键名与值都是中文）。
+    #[cfg(windows)]
     const NETSH_ZH: &str = concat!(
         "\r\n规则名称:                             cc-bridge\r\n",
         "----------------------------------------------------------------------\r\n",
