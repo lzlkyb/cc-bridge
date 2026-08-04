@@ -160,20 +160,12 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const checkForUpdate = useCallback(() => runCheck(false), [runCheck]);
   const manualCheckForUpdate = useCallback(() => runCheck(true), [runCheck]);
 
-  // ─── 启动时自动检查 ──────────────────────
+  // ─── 定时检查（启动自检见下方监听 effect）──────────
 
   useEffect(() => {
-    const doStartupCheck = async () => {
-      const lastCheck = localStorage.getItem(LAST_CHECK_KEY);
-      const now = Date.now();
-      if (lastCheck && now - Number(lastCheck) < CHECK_INTERVAL_MS) {
-        await silentCheck();
-        return;
-      }
-      await checkForUpdate();
-    };
-    doStartupCheck();
-
+    // 定时检查不涉及竞态（首次触发在 CHECK_INTERVAL_MS 之后，监听器早已就绪），留在这里。
+    // 启动自检已移到下方「监听后台更新事件」的 effect 里、await 完所有 listen 之后，
+    // 原因见那里的注释。
     timerRef.current = setInterval(() => {
       checkForUpdate();
     }, CHECK_INTERVAL_MS);
@@ -289,11 +281,39 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       );
     };
 
-    setupListeners();
+    // 启动自检必须等到**监听器全部注册完**才能发。
+    //
+    // 原来它在上方一个单独的 useEffect 里，而那个 effect 声明在本 effect 之前——
+    // React 按声明顺序执行，于是「发起检查」早于「注册监听」。而 `listen()` 是异步的
+    // （上面 7 个监听器每个都要一次 IPC 往返），而 Rust 侧 `check_update` 是 spawn 后
+    // 很快就 emit。更新源响应够快时，`update:available` 会在监听注册完之前发出去、
+    // **永久丢失** → 后端已经发现新版本，界面却显示「无更新」。
+    //
+    // 这是 CI 在真实 macOS 上抓到的：runner 到 GitHub 是同机房级延迟，启动后约 1 秒
+    // 就拿到了新版本，稳定跑赢前端注册，于是重现了“有更新但不提示”。
+    // 国内用户走 ghproxy/Gitee 通常慢，所以不易触发——但内网/快网下会命中。
+    //
+    // 仅交换两个 effect 的顺序不够：两边的 async 部分都在微任务队列里排队，
+    // IPC 完成先后仍不保证。只有把它放在 `await` 完所有 listen 之后才真正无竞态。
+    const doStartupCheck = async () => {
+      const lastCheck = localStorage.getItem(LAST_CHECK_KEY);
+      const now = Date.now();
+      if (lastCheck && now - Number(lastCheck) < CHECK_INTERVAL_MS) {
+        await silentCheck();
+        return;
+      }
+      await checkForUpdate();
+    };
+
+    setupListeners().then(() => {
+      // cancelled 时不再发起检查（组件已卸载，监听器也已注销）
+      if (!cancelled) doStartupCheck();
+    });
     return () => {
       cancelled = true;
       unlisteners.forEach((fn) => fn());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ─── 重启应用 ────────────────────────────

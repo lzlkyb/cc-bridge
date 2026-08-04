@@ -161,6 +161,23 @@ echo "::group::4) 两段式点击：先开更新弹框，再点弹框里的「�
 # 现在 mac-ax-click.sh 支持前缀匹配，用「更新 v」就能命中任意版本号。
 # 仍保留名单输出：万一文案再改，名单能直接告诉我们新名字。
 bash .github/scripts/mac-ax-buttons.sh "$UPD_PID" "启动自检后的窗口（找更新相关按钮）"
+
+# 不光依赖启动自检：它曾因一个竞态而丢事件（后端拿到了新版本、前端却显示无更新，
+# 见 UpdateContext.tsx 里的注释）。主动点一次「检查更新」既能绕开那个竞态窗口，
+# 也更贴近用户真实操作。入口在设置页的「关于」折叠区里，所以要先展开它。
+echo "--- 主动触发一次检查更新（绕开启动自检的竞态）---"
+bash .github/scripts/mac-ax-click.sh "$UPD_PID" "设置"
+sleep 3
+bash .github/scripts/mac-ax-click.sh "$UPD_PID" "关于 "
+sleep 3
+bash .github/scripts/mac-ax-buttons.sh "$UPD_PID" "展开关于卡片后（找检查更新入口）"
+for N in "检查更新" "立即检查" "检查"; do
+  R=$(bash .github/scripts/mac-ax-click.sh "$UPD_PID" "$N")
+  echo "  试检查入口 [$N] -> $R"
+  case "$R" in OK*) sleep 8; break;; esac
+done
+bash .github/scripts/mac-ax-buttons.sh "$UPD_PID" "主动检查后（应出现更新按钮）"
+
 CLICKED=""
 for NAME in "更新 v" "立即更新" "下载并安装" "更新"; do
   R=$(bash .github/scripts/mac-ax-click.sh "$UPD_PID" "$NAME")
