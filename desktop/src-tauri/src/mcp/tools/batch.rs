@@ -228,10 +228,20 @@ mod tests {
     #[tokio::test]
     async fn path_outside_root_rejected_in_batch() {
         let state = test_state(Some(std::env::temp_dir().join("cc-bridge-batch-never")));
+        // 白名单外的**绝对路径**样本必须按平台取。
+        // 不能两边都用 `C:\Windows\...`：在 mac 上反斜杠是**合法文件名字符**，
+        // 那串会被当成一个叫 `C:\Windows\System32\cmd.exe` 的**相对路径**，
+        // 于是拒绝原因变成“文件不存在”而不是“越出白名单”，错误文案也不含
+        // "Access denied"——这正是 CI 在 macOS 上真实跑测试后报出的失败。
+        #[cfg(windows)]
+        let outside_path = "C:\\Windows\\System32\\cmd.exe";
+        #[cfg(not(windows))]
+        let outside_path = "/etc/passwd";
+
         let args = BatchArgs {
             operations: vec![BatchOp {
                 tool: "read_files".into(),
-                arguments: json!({ "files": ["C:\\Windows\\System32\\cmd.exe"] }),
+                arguments: json!({ "files": [outside_path] }),
             }],
             stop_on_error: true,
         };
