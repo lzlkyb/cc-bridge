@@ -182,9 +182,25 @@ jobs:
           ls -l "$RUNNER_TEMP"/smoke.key*
           echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/smoke.key" >> "$GITHUB_ENV"
           echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
-          # tauri.conf.json 的 pubkey 字段是「公钥文件全文」的 base64
-          # （解码现有值可见它含 "untrusted comment: minisign public key: ..." 那两行）。
-          PUB=$(base64 < "$RUNNER_TEMP/smoke.key.pub" | tr -d '\n')
+          # 要写进 pubkey 的是「公钥文件全文的 base64」。坑：`tauri signer generate`
+          # 产出的 .pub **文件内容本身就已经是 base64**（解码后才是
+          # "untrusted comment: minisign public key: ..." 那两行）。我最初又 base64 了一次，
+          # 双重编码导致构建直接报
+          #   failed to decode pubkey: ... Missing encoded key in public key
+          # 所以下面按**内容**自动判断而不是猜：能解出 minisign 头就直接用，
+          # 否则才编码一次（将来 Tauri 改格式也不会悲剧）。
+          PUB=$(node -e "
+            const fs=require('fs'), f=process.argv[1];
+            const raw=fs.readFileSync(f,'utf8').replace(/\s+/g,'');
+            let out;
+            try {
+              out = Buffer.from(raw,'base64').toString('utf8').startsWith('untrusted comment')
+                ? raw
+                : fs.readFileSync(f).toString('base64');
+            } catch (e) { out = fs.readFileSync(f).toString('base64'); }
+            process.stdout.write(out);
+          " "$RUNNER_TEMP/smoke.key.pub")
+          echo "pubkey 长度=${#PUB}，解码首行：$(printf '%s' "$PUB" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(Buffer.from(s,'base64').toString().split('\n')[0]))")"
           PUB="$PUB" node -e "
             const fs=require('fs'), p='src-tauri/tauri.conf.json';
             const j=JSON.parse(fs.readFileSync(p,'utf8'));
@@ -565,16 +581,172 @@ jobs:
           path: ${{ runner.temp }}/out/**
           if-no-files-found: warn
 
+  # ── mac 发版构建（仅 tag 触发，在 build-windows 之前跑）──────────────────
+  # 为何要比 Windows 先跑：updater.json 只能有一份（attach 到同一个 Release），
+  # 而两个平台在不同 job 里构建、各自只看得到自己的产物。若两边都自行生成并 attach，
+  # 后跑的会**静默覆盖**先跑那个平台的条目 → 那个平台的用户失去自动更新。
+  # 所以 mac 只把自己的平台条目当**片段**产出（不 attach updater.json），
+  # 由 build-windows 用 UPDATER_MERGE_INTO 合并后统一 attach。
+  #
+  # 只出 arm64（已确认）。不出 dmg：烟测只验过 --bundles app，dmg 从未构建过，
+  # 内网分发给 zip 就够，多出一个未验证的环节不划算。
+  build-macos:
+    name: Build macOS app (arm64)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 🔑 准备签名密钥（文件路径方式）
+        run: |
+          RAW='${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
+          if [ -z "$(printf '%s' "$RAW" | tr -d '[:space:]')" ]; then
+            echo "❌ TAURI_SIGNING_PRIVATE_KEY 未设置。mac 包必须签名，否则 updater 验签会报"
+            echo "   'The signature was created with a different key than the one provided'，"
+            echo "   用户下载得到包但永远装不上（烟测里已实际撞过这个）。"
+            exit 1
+          fi
+          KEY_FILE="$RUNNER_TEMP/tauri-signing.key"
+          printf '%s' "$RAW" > "$KEY_FILE"
+          echo "TAURI_SIGNING_PRIVATE_KEY=$KEY_FILE" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Sccache Setup
+        uses: mozilla/sccache-action@v0.0.10
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
+      - name: Install frontend deps
+        run: |
+          npm ci
+          npm install @tauri-apps/cli-darwin-arm64 --no-save || true
+        working-directory: desktop
+
+      # tag 发版时 check-macos 作业被跳过，而 main 的 push 也不在触发列表里，
+      # 所以如果这里不跑，mac 侧在发版时就**完全没有测试覆盖**。
+      # 用 release profile 跑，编译产物直接被下面 tauri build 复用（与 Windows 侧同策略）。
+      - name: cargo test (release, 复用后续 build 的编译产物)
+        run: cargo test --release --no-default-features
+        working-directory: desktop/src-tauri
+
+      - name: Build macOS .app
+        run: |
+          npm run prebuild
+          # bundle.targets 固定为 nsis（Windows 发版用），mac 用 --bundles 覆盖。
+          npx tauri build --bundles app
+        working-directory: desktop
+
+      # 生成两份平台片段：GitHub 路径与 Gitee 镜像路径的 URL 形状不同，
+      # 各自都要一份，否则 mac 用户在 Gitee 那一组拿不到条目（updater 会返回
+      # TargetsNotFound 错误→自动回退到 GitHub 组，功能不断但白多一轮重试延迟）。
+      # 片段里的 version/notes 不重要：合并时只取 platforms，顶层字段由 Windows 侧提供。
+      - name: 生成 mac 平台片段（GitHub 路径）
+        run: |
+          set -e
+          UPDATER_OUTPUT_FILENAME=updater-macos.json npm run updater:generate
+        working-directory: desktop
+        env:
+          GITHUB_RELEASE_TAG: ${{ github.ref_name }}
+          UPDATER_DOWNLOAD_BASE: "https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download"
+
+      - name: 生成 Gitee 变体的 mac 片段（覆盖 URL 为 Gitee 直链）
+        run: |
+          set -e
+          UPDATER_OUTPUT_FILENAME=updater-macos-gitee.json npm run updater:generate
+        working-directory: desktop
+        env:
+          GITHUB_RELEASE_TAG: ${{ github.ref_name }}
+          UPDATER_URL_TEMPLATE: "https://gitee.com/${{ secrets.GITEE_REPOSITORY }}/raw/releases/latest/{filename}"
+
+      - name: 校验 darwin-aarch64 签名非空
+        run: |
+          node -e "
+            const j=require('./dist/updater-macos.json');
+            const p=j.platforms['darwin-aarch64'];
+            if(!p || !p.signature || !p.signature.trim()){
+              console.error('❌ updater-macos.json 的 darwin-aarch64.signature 为空。');
+              console.error('   mac 客户端会下载到包但验签失败、永远装不上。');
+              process.exit(1);
+            }
+            console.log('darwin-aarch64 签名校验通过，url=' + p.url);
+          "
+        working-directory: desktop
+
+      - name: 📦 打包给用户下载的 zip
+        run: |
+          set -e
+          VERSION=$(node -e "console.log(require('./desktop/src-tauri/tauri.conf.json').version)")
+          APP_DIR=desktop/src-tauri/target/release/bundle/macos
+          ZIP="cc-bridge_${VERSION}_aarch64-apple-darwin.zip"
+          # 用 ditto 而不是 zip：它会保留 .app 的资源叉与符号链接，
+          # 普通 zip 会破坏 bundle 结构导致解压后打不开。
+          ditto -c -k --sequesterRsrc --keepParent "$APP_DIR/cc-bridge.app" "$ZIP"
+          echo "✅ $ZIP  ($(du -h "$ZIP" | cut -f1))"
+
+      - name: Collect artifacts
+        run: |
+          set -e
+          mkdir -p dist-out
+          cp desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz dist-out/ 2>/dev/null || true
+          cp desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig dist-out/ 2>/dev/null || true
+          cp cc-bridge_*_aarch64-apple-darwin.zip dist-out/ 2>/dev/null || true
+          # 平台片段只作为 artifact 传给 build-windows 合并，**不** attach 到 Release
+          cp desktop/dist/updater-macos.json dist-out/ 2>/dev/null || true
+          cp desktop/dist/updater-macos-gitee.json dist-out/ 2>/dev/null || true
+          ls -l dist-out
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: cc-bridge-macos
+          path: dist-out/*
+
+      # 只 attach 用户/updater 要下载的东西。updater.json 由 build-windows 合并后统一 attach，
+      # 在这里 attach 会与它冲突。
+      - name: Attach macOS 产物到 GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist-out/*.app.tar.gz
+            dist-out/*.app.tar.gz.sig
+            dist-out/*.zip
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # 发版构建：仅 tag 触发。test(release) 与 build 同 job 内复用 release target，
   # 依赖 crate 只编译一遍（A）；sccache 让依赖不变时后续发版秒级命中（B）。
   build-windows:
     name: Build Windows exe + installer
-    if: startsWith(github.ref, 'refs/tags/v')
+    # needs 使它在 mac 之后跑（发版串行，多花约 10 分钟）——因为它要合并 mac 的
+    # 平台片段。`always()` 保证 **mac job 失败时 Windows 仍能发**（Windows 是主平台，
+    # 不应被 mac 拖累）；此时下载片段会失败，而 generate 脚本对缺失的
+    # UPDATER_MERGE_INTO 只 warn 不 fail，于是降级为只发 Windows 条目。
+    needs: [build-macos]
+    if: always() && startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     permissions:
       contents: write   # 创建 GitHub Release 需要写权限（默认 token 只读）
     steps:
       - uses: actions/checkout@v5
+
+      # 拉 mac 的平台片段与产物。continue-on-error：mac job 挂了不能连带 Windows 发不了。
+      - name: 下载 mac 产物（用于合并 updater.json；缺失则降级为只发 Windows）
+        id: dl-mac
+        continue-on-error: true
+        uses: actions/download-artifact@v5
+        with:
+          name: cc-bridge-macos
+          path: mac-artifact
 
       - name: 🔑 准备签名密钥（文件路径方式）
         shell: pwsh
@@ -651,12 +823,16 @@ jobs:
             Write-Host "未在 CHANGELOG 中找到已发布版本段，使用默认说明"
           }
 
-      - name: 生成 updater.json
+      - name: 生成 updater.json（合并 mac 平台条目）
         shell: pwsh
         run: npm run updater:generate
         working-directory: desktop
         env:
           GITHUB_RELEASE_TAG: ${{ github.ref_name }}
+          # 合并 mac 片段：不接这一句的后果是 mac 条目根本不进 updater.json，
+          # mac 用户永远检测不到更新且不报错。指向不存在的文件时脚本只 warn，
+          # 所以 mac job 挂了也不会把 Windows 发版带倒。
+          UPDATER_MERGE_INTO: ${{ github.workspace }}\mac-artifact\updater-macos.json
           # 二进制下载走 ghproxy 镜像，解决国内用户下载慢；元数据检查另有 tauri.conf.json 的 GitHub 端点兜底。
           # 注意：updater.json 的 url 为单值、无二进制级兜底，故 ghproxy 域名需稳定；若失效改此 env + config 即可。
           UPDATER_DOWNLOAD_BASE: "https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download"
@@ -670,7 +846,23 @@ jobs:
             Write-Error "updater.json 的 windows-x86_64.signature 为空，自动更新将无法校验签名。请确认 TAURI_SIGNING_PRIVATE_KEY 已配置且构建产生 .sig。"
             exit 1
           }
-          Write-Host "updater.json 签名校验通过"
+          Write-Host "updater.json windows-x86_64 签名校验通过"
+
+          # mac 条目的合并结果必须显式确认：它缺失时**不会报错**，mac 用户只是
+          # 永远检测不到更新——这种静默失效必须在发版时就看到。
+          $macFragment = "${{ github.workspace }}\mac-artifact\updater-macos.json"
+          $darwin = $json.platforms.'darwin-aarch64'
+          if (Test-Path $macFragment) {
+            if ($null -eq $darwin -or [string]::IsNullOrWhiteSpace($darwin.signature)) {
+              Write-Error "mac 片段存在但 darwin-aarch64 未合并进 updater.json（或签名为空）。这会让 mac 用户静默失去自动更新，终止发版。"
+              exit 1
+            }
+            Write-Host "updater.json darwin-aarch64 已合并，url=$($darwin.url)"
+          } else {
+            Write-Host "⚠️ 未拿到 mac 片段（mac job 可能失败或被跳过），本次 updater.json 只含 Windows。"
+            Write-Host "   后果：mac 用户本次检测不到更新（不报错）。若本次应该包含 mac，请查 build-macos 作业。"
+          }
+          Write-Host "最终平台条目：$($json.platforms.PSObject.Properties.Name -join ', ')"
 
       - name: 📦 打包绿色便携版
         shell: pwsh
@@ -737,6 +929,8 @@ jobs:
           # 的 releases/latest/download 语义）；固定目录也避免了镜像仓库随发版次数无限增长。
           UPDATER_URL_TEMPLATE: "https://gitee.com/${{ secrets.GITEE_REPOSITORY }}/raw/releases/latest/{filename}"
           UPDATER_OUTPUT_FILENAME: "updater-gitee.json"
+          # 用 Gitee 变体的 mac 片段（URL 指向 Gitee 直链），不能用 GitHub 那份。
+          UPDATER_MERGE_INTO: ${{ github.workspace }}\mac-artifact\updater-macos-gitee.json
 
       - name: 镜像发布产物到 Gitee（国内加速，可选）
         shell: pwsh
@@ -771,6 +965,11 @@ jobs:
             New-Item -ItemType Directory -Path $destDir -Force | Out-Null
             Copy-Item dist-out/*.exe $destDir/ -ErrorAction SilentlyContinue
             Copy-Item dist-out/*.exe.sig $destDir/ -ErrorAction SilentlyContinue
+            # mac 产物也得推上去：updater-gitee.json 里的 darwin 条目指向 Gitee 直链，
+            # 不推就是指向一个不存在的文件 → mac 用户在 Gitee 那组下载 404、
+            # 然后才回退到 GitHub（能成但白多一轮失败重试）。
+            Copy-Item mac-artifact/*.app.tar.gz $destDir/ -ErrorAction SilentlyContinue
+            Copy-Item mac-artifact/*.app.tar.gz.sig $destDir/ -ErrorAction SilentlyContinue
             Copy-Item desktop/dist/updater-gitee.json $destDir/ -ErrorAction SilentlyContinue
 
             Push-Location $mirrorDir

@@ -99,7 +99,21 @@ echo "签名长度=${#SIG}"
 # 而那个错误只在应用日志里（得开 RUST_LOG 才看得到），白跑了三轮。
 # 在这里提前对比两个公钥，不匹配就直接红，而不是等 90s 超时后猜原因。
 CONF_PUB=$(node -e "console.log(JSON.parse(require('fs').readFileSync('desktop/src-tauri/tauri.conf.json','utf8')).plugins.updater.pubkey)")
-KEY_PUB=$(base64 < "$KEY.pub" 2>/dev/null | tr -d '\n')
+# 注意：`tauri signer generate` 产出的 .pub 文件内容**本身就是 base64**，
+# 不能再编一次（双重编码会让比对永远不相等，且构建侧会直接报
+# "Missing encoded key in public key"）。同样按内容自动判断。
+KEY_PUB=$(node -e "
+  const fs=require('fs'), f=process.argv[1];
+  if(!fs.existsSync(f)){ process.exit(0); }
+  const raw=fs.readFileSync(f,'utf8').replace(/\s+/g,'');
+  let out;
+  try {
+    out = Buffer.from(raw,'base64').toString('utf8').startsWith('untrusted comment')
+      ? raw
+      : fs.readFileSync(f).toString('base64');
+  } catch (e) { out = fs.readFileSync(f).toString('base64'); }
+  process.stdout.write(out);
+" "$KEY.pub" 2>/dev/null)
 if [ -z "$KEY_PUB" ]; then
   echo "⚠ 找不到 $KEY.pub，无法比对公钥（不终止，但若后面验签失败先查这里）"
 elif [ "$CONF_PUB" = "$KEY_PUB" ]; then
