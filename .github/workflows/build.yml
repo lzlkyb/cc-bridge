@@ -47,7 +47,7 @@ jobs:
   # `--all-targets` 会连测试代码一起编译——mac 上跑不了的测试必须带 cfg(windows)，
   # 否则这里会红。
   check-macos:
-    name: Cargo check (macOS)
+    name: Rust check + test (macOS)
     if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
     steps:
@@ -60,6 +60,14 @@ jobs:
           workspaces: desktop/src-tauri
       - name: clippy (与 Windows 侧同等严格)
         run: cargo clippy --all-targets --no-default-features -- -D warnings
+        working-directory: desktop/src-tauri
+      # 真实跑测试，而不只是编译。cc-bridge 的核心是 MCP HTTP 服务与命令执行，
+      # 这两块**不依赖 GUI**，完全能在 CI 的 mac 上验证：sh -c 真实执行、
+      # 会话 cwd 捕获（pwd 写文件再读回）、进程树杀灭、文件工具、审计、SQLite。
+      # 这是在没有 mac 设备的情况下，把 mac 侧从「写完没跑过」变成「跑过了」的唯一途径。
+      # 仍验不到的只有 GUI：托盘外观与交互、窗口行为、桌面通知、Gatekeeper、自动更新。
+      - name: cargo test（真实执行，非仅编译）
+        run: cargo test --no-default-features
         working-directory: desktop/src-tauri
 
   # 发版构建：仅 tag 触发。test(release) 与 build 同 job 内复用 release target，

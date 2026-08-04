@@ -1744,12 +1744,21 @@ mod tests {
             c.whitelist_enabled = true;
         });
 
-        // cmd 语法：先 echo（立即产出），再用 ping 阻塞约 19s。
-        // 用 ping 而不用 `timeout /t`：后者在 stdin 被重定向时会直接报错退出，
-        // 而我们的子进程 stdin 是 Stdio::null()。ping 是 Windows 自带，无额外依赖。
+        // 先 echo（立即产出），再阻塞约 19s，确保一定撞上 2s 超时。
+        //
+        // Windows：用 `ping -n` 而不用 `timeout /t`——后者在 stdin 被重定向时会直接
+        // 报错退出，而我们的子进程 stdin 是 `Stdio::null()`。
+        // Unix：用 `sleep`（POSIX 自带）。注意不能直接用 Windows 那串——`ping -n`
+        // 在 mac 上是非法参数（应为 `-c`）、`> nul` 也不是空设备（应为 `/dev/null`），
+        // 两者都会让命令立即失败、根本撞不到超时，测试就失去意义了。
+        #[cfg(windows)]
+        let blocking_cmd = "echo partial_before_timeout && ping -n 20 127.0.0.1 > nul";
+        #[cfg(not(windows))]
+        let blocking_cmd = "echo partial_before_timeout && sleep 19";
+
         let v = handle(
             RunCommandArgs {
-                command: "echo partial_before_timeout && ping -n 20 127.0.0.1 > nul".into(),
+                command: blocking_cmd.into(),
                 cwd: Some(dir.to_string_lossy().into_owned()),
                 session_id: None,
                 background: false,
@@ -1781,6 +1790,132 @@ mod tests {
         assert!(
             stdout.contains("partial_before_timeout"),
             "超时分支必须保留超时前已产出的 stdout（旧实现返回空串），实际：{stdout:?}"
+        );
+    }
+
+    /// **Unix 真实执行验证**：确认 `/bin/sh -c` 这条链路真的能跑通。
+    ///
+    /// 为何单独写：mac 侧的壳层实现（`build_invocation_unix`）是在 Windows 机器上
+    /// 盲写的，CI 的 `clippy` 只能保证编译、保证不了真能执行。这条在 macOS runner 上
+    /// 真的 spawn 一次 `/bin/sh`，把「写完没跑过」变成「跑过了」。
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn unix_sh_really_executes() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        // 用 $(( )) 算术展开：这是 POSIX sh 语法，能顺带证明走的确实是 sh 而非别的壳层。
+        let v = handle(
+            RunCommandArgs {
+                command: "echo unix_ok_$((6*7))".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 10_000,
+                max_output_bytes: 4096,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await
+        .expect("Unix 前台 sh 执行应成功");
+
+        let text = v
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let info: serde_json::Value = serde_json::from_str(&text).expect("结果应为 JSON");
+        let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(
+            stdout.contains("unix_ok_42"),
+            "sh 算术展开未生效，说明壳层不是 POSIX sh 或未真正执行：{stdout:?}"
+        );
+        assert_eq!(info.get("exitCode").and_then(|c| c.as_i64()), Some(0));
+    }
+
+    /// **Unix 真实执行验证**：会话 cwd 捕获链路（`pwd` 写文件 → Rust 读回）。
+    ///
+    /// 这条专门盯 `build_invocation_unix` 里把 Windows 的 `pwd -W` 换成 `pwd` 那处改动：
+    /// `-W` 是 MSYS 专属扩展，在 Unix 上是非法选项、会让整条命令失败。若哪天有人把
+    /// 两个平台的实现又合并回去，这条会立刻红。
+    ///
+    /// 注意 sessionId 是**后端生成的 opaque handle**（`cwd_` 前缀），必须从首次响应里
+    /// 取出来再复用——不能自造字符串（那会被当成无效 handle）。
+    #[tokio::test]
+    #[cfg(not(windows))]
+    async fn unix_session_cwd_capture_works() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.session_cwd_enabled = true;
+        });
+        std::fs::create_dir_all(dir.join("sub")).expect("建子目录");
+
+        let payload = |v: &serde_json::Value| -> serde_json::Value {
+            let t = v
+                .get("content")
+                .and_then(|c| c.as_array())
+                .and_then(|a| a.first())
+                .and_then(|x| x.get("text"))
+                .and_then(|x| x.as_str())
+                .expect("响应应带 text 载荷")
+                .to_string();
+            serde_json::from_str(&t).expect("text 载荷应为 JSON")
+        };
+
+        // 第一次：带 cwd 建会话，并在命令里 cd 进子目录——cwd 捕获应把子目录记下来。
+        let v1 = handle(
+            RunCommandArgs {
+                command: "cd sub && echo moved".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 10_000,
+                max_output_bytes: 4096,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await
+        .expect("首次带 cwd 的会话命令应成功");
+        let info1 = payload(&v1);
+        let session_id = info1
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .expect("开启会话持久化时必须回显 sessionId")
+            .to_string();
+
+        // 第二次：只带 sessionId 跑 `pwd`，输出应落在子目录里——证明 `pwd` 捕获链路真的生效。
+        let v2 = handle(
+            RunCommandArgs {
+                command: "pwd".into(),
+                cwd: None,
+                session_id: Some(session_id),
+                background: false,
+                timeout_ms: 10_000,
+                max_output_bytes: 4096,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await
+        .expect("复用会话的命令应成功");
+        let stdout = payload(&v2)
+            .get("stdout")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            stdout.trim_end().ends_with("sub"),
+            "会话 cwd 未落到子目录，说明 Unix 侧 pwd 捕获链路没跑通：{stdout:?}"
         );
     }
 
