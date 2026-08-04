@@ -24,6 +24,12 @@
 - 托盘左键「收起」改为 `w.close()`，让销毁/隐藏的判断只写在 `CloseRequested` 一处。
 - 已逐条核实不受窗口销毁影响：MCP 服务（tokio runtime）、托盘（挂在 app 上）、桌面通知（IP 变化 / 后台命令完成 / push_notification 全走 `handle.notification()`）、IP 变化检测（整条链路在 Rust 侧，前端横幅靠 `get_status` 的 `ip_changed` 状态兜底）。唯一影响：窗口关闭期间前端的自动更新检查定时器不跑，重开窗口时会立即补一次。
 
+#### 修复（mac 侧文案）
+- 设置页两处文案在 mac 上是错的，已按平台切分（N16）：
+  - 「命令执行壳层」默认项在 mac 上显示为 **`sh`**（Unix 下 `cmd` 实际跑的是 `/bin/sh`），说明也不再提「需本机已装 Git for Windows」——改为「macOS 自带 bash 3.2，如需新版可用 Homebrew 安装」。**存储值仍是 `cmd`/`bash` 未变**（后端按这两个值反序列化）。
+  - 「关窗时释放界面内存」的数字不再照搬 Windows 的「85MB → 6MB」：mac 实测是独立 `WebContent` 进程 121MB → 进程消失、主进程约 22MB 常驻，两平台测量口径本就不同。
+- 文案收进 `lib/platform.ts` 的 `shellTypeCopy()` / `releaseWebviewHint()`，并补 10 条单测锁住不变量（尤其「mac 文案不得出现 Git for Windows」与「两平台数字不许串」）。`SettingsToggles.tsx` 已 690 行、远超 300 行上限，不再往里堆文案。
+
 #### 清理
 - 清掉两处过期注释：`ConnectHero.tsx` 与 `index.css` 里仍写着「数据雨 canvas」，而 canvas 在 2.3.19 已改为纯 CSS、元素早已移除。
 

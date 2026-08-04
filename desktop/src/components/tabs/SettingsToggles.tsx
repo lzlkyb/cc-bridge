@@ -9,6 +9,7 @@ import { useToast } from "../ui/toast";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { Spinner } from "../ui/Spinner";
 import { buildBaseCommand } from "../../lib/utils";
+import { releaseWebviewHint, shellTypeCopy } from "../../lib/platform";
 import { SavedHint } from "../ui/SavedHint";
 
 /**
@@ -34,6 +35,8 @@ export function SettingsToggles({
   const [confirmReset, setConfirmReset] = useState(false);
   const [savedKey, setSavedKey] = useState<string | null>(null);
   const [refreshingBash, setRefreshingBash] = useState(false);
+  // 壳层相关的平台文案（toast 与 ShellTypeRow 共用同一份，避免两处各写一句逐渐跑偏）
+  const shellCopy = shellTypeCopy(status?.platform);
   const [confirmSse, setConfirmSse] = useState(false);
   const { toast } = useToast();
 
@@ -178,7 +181,7 @@ export function SettingsToggles({
         <ToggleRow
           id="toggle-release-webview"
           label="关窗时释放界面内存"
-          sub="开启：关窗时销毁界面进程，托盘常驻内存约 85MB → 6MB，再次打开需重新加载（1~2 秒）；关闭：仅隐藏窗口，再次打开瞬时显示，但界面进程持续占用内存。MCP 服务、托盘与桌面通知均不受影响。默认开启"
+          sub={releaseWebviewHint(status?.platform)}
           checked={status?.releaseWebviewOnClose ?? true}
           onChange={(v) => save({ releaseWebviewOnClose: v }, "release-webview")}
           saved={savedKey === "release-webview"}
@@ -205,23 +208,24 @@ export function SettingsToggles({
           onChange={(v) => save({ sessionCwdEnabled: v }, "session-persist")}
           saved={savedKey === "session-persist"}
         />
-        {/* 命令执行壳层：cmd / bash 分段选择（shell_type UI 开关）。
-         * bashAvailable=false（未检测到 Git for Windows）时 bash 置灰、显示「刷新检测」按钮。 */}
+        {/* 命令执行壳层分段选择（shell_type UI 开关）。
+         * 存储值永远是 cmd / bash；**显示名按平台变**（Unix 上 cmd 实际跑的是
+         * /bin/sh，所以显示为 sh），文案全部收在 lib/platform.ts 的 shellTypeCopy()。
+         * bashAvailable=false 时 bash 置灰、显示「刷新检测」按钮。 */}
         <ShellTypeRow
+          platform={status?.platform}
           value={status?.shellType ?? "cmd"}
           bashAvailable={status?.bashAvailable ?? true}
           onSelect={(v) => save({ shellType: v }, "shelltype")}
-          onBashUnavailable={() =>
-            toast("未检测到 Git for Windows，bash 不可用，已保持 cmd", "warning")
-          }
+          onBashUnavailable={() => toast(shellCopy.unavailableToast, "warning")}
           onRefreshBash={async () => {
             setRefreshingBash(true);
             try {
               const found = await invoke<boolean>("refresh_bash_detection");
               if (found) {
-                toast("已检测到 Git Bash，现在可以切换到 bash 了", "success");
+                toast("已检测到 bash，现在可以切换了", "success");
               } else {
-                toast("仍未检测到 Git for Windows，请确认已安装", "warning");
+                toast(shellCopy.stillUnavailableToast, "warning");
               }
             } catch {
               toast("检测失败，请稍后重试", "error");
@@ -338,9 +342,12 @@ function GroupTitle({ children }: { children: ReactNode }) {
 /* 命令执行壳层分段选择：cmd（默认）/ bash（Git Bash）。
  * 复用 ToggleRow 行布局（左标签+描述，右控件），控件为两按钮分段器而非开关。
  * bashAvailable=false 时 bash 按钮置灰（aria-disabled + 弱化样式），点击不触发保存，
- * 改为调用 onBashUnavailable（弹 toast 提示先安装 Git for Windows），保持 shell_type 为 cmd。
- * bashAvailable=false 时还会显示「刷新检测」按钮，安装 Git for Windows 后点击即重新探测。 */
+ * 改为调用 onBashUnavailable（弹 toast），保持 shell_type 不变；并额外显示「刷新检测」按钮。
+ *
+ * 所有文案与**显示名**都来自 `shellTypeCopy(platform)`：存储值永远是 `cmd` / `bash`，
+ * 但 Unix 上 `cmd` 实际跑的是 `/bin/sh`，显示成 cmd 会误导用户（见 lib/platform.ts）。 */
 function ShellTypeRow({
+  platform,
   value,
   bashAvailable = true,
   onSelect,
@@ -350,6 +357,7 @@ function ShellTypeRow({
   saved,
   last = false,
 }: {
+  platform?: string;
   value: string;
   bashAvailable?: boolean;
   onSelect: (next: "cmd" | "bash") => void;
@@ -359,9 +367,11 @@ function ShellTypeRow({
   saved?: boolean;
   last?: boolean;
 }) {
+  const copy = shellTypeCopy(platform);
+  // key 是存储值（后端 ShellType 反序列化用），label 只是显示名，两者不能混。
   const options: { key: "cmd" | "bash"; label: string }[] = [
-    { key: "cmd", label: "cmd" },
-    { key: "bash", label: "bash" },
+    { key: "cmd", label: copy.defaultLabel },
+    { key: "bash", label: copy.altLabel },
   ];
   return (
     <div
@@ -375,13 +385,11 @@ function ShellTypeRow({
           {saved && <SavedHint>已保存</SavedHint>}
         </div>
         <div className="mt-0.5 text-xs text-muted-foreground">
-          默认 <b>cmd</b>（零依赖）；选 <b>bash</b> 走 Git Bash，支持 POSIX 语法 / jq / find / 管道。需本机已装 Git for Windows；切换即时生效，无需重启。
+          默认 <b>{copy.defaultLabel}</b>（{copy.defaultNote}）；选 <b>{copy.altLabel}</b> {copy.altNote}
         </div>
         {!bashAvailable && (
           <div className="mt-1.5 flex items-center gap-2">
-            <span className="text-xs text-warning">
-              ⚠ 未检测到 Git for Windows，bash 暂不可用
-            </span>
+            <span className="text-xs text-warning">{copy.unavailableWarn}</span>
             {onRefreshBash && (
               <button
                 type="button"
