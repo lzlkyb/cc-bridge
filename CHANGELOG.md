@@ -5,13 +5,23 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [2.4.0] - 2026-08-04
 
 ### 更新摘要
-新增「关窗时释放界面内存」开关（默认开启）：关闭窗口后界面进程会被回收，托盘常驻内存从约 88MB 降到 6MB；MCP 服务、托盘与通知全程不受影响。
+本版起支持 macOS（Apple Silicon 芯片）：可安装、可自动更新，功能与 Windows 版一致，仅防火墙相关功能除外（那是 Windows 专属）。另新增「关窗时释放界面内存」开关，关闭窗口后界面进程会被回收，托盘常驻内存大幅下降；MCP 服务、托盘与通知全程不受影响。
 
 ### 新增
+- **支持 macOS（Apple Silicon）**：装好后即可像 Windows 版一样被远程 Claude Code 连接使用；自动更新完整可用——首次安装时放行一次，之后的更新都是无感的
 - 设置页「兼容与性能」新增「关窗时释放界面内存」开关：开启后关闭窗口即回收界面进程，托盘常驻内存约 88MB → 6MB，再次打开需重新加载（1~2 秒）；不想等可关掉此开关，改为仅隐藏窗口、再开瞬时显示
+
+### 变更
+- macOS 上的界面文案与可用功能按平台适配：命令执行壳层、桌面通知说法、内存数字、危险命令示例都改成了 mac 的实际情况；Windows 专属的防火墙放行与桌面快捷方式在 mac 上自动隐藏
+
+### 修复
+- macOS 上「打开备份目录」点了没反应、「安装位置」显示为包内部路径，两处已修正；菜单栏图标现在能正确跟随系统浅色/深色主题
+
+### 安全
+- 强化危险命令拦截：补上了 macOS 上三类之前拦不住的毁灭性目标（系统目录的另一种写法、整个用户家目录、整块外置盘/网络盘），现在与 Windows 同等强度；同时保证不误拦正常的项目目录
 
 ### 技术细节
 
@@ -48,6 +58,12 @@
   - 命令白名单卡的危险命令示例按平台取（mac 上举 `rm -rf C:\Windows` 只会让用户困惑）。
 - 新增文案收在 `lib/platform.ts`（`notifyCommandCompleteSub` / `dangerousCommandExample` / `aboutCopy`），并补 6 条单测锁不变量（mac 文案不得出现 `3.4MB` / `< 20 MB` / `Job Object`；首帧 undefined 必须落 Windows 文案，避免 Windows 用户闪一下「免安装」这种错数字）。共 43 条前端单测全过。
 - 顺带确认了两件**没问题**的事，免得日后重复排查：数据目录用的是 `app_data_dir()`（mac 落 `~/Library/Application Support/`，**不在 .app 包内**，所以自动更新整包替换不会丢配置 / 审计 / 备份）；开机自启走 `tauri-plugin-autostart` 且已传 `MacosLauncher::LaunchAgent`。
+- **Layer 1 破坏性拦截在 mac 上比 Windows 弱**（由「MCP 工具需不需要适配 mac」这个问题顺藤摸瓜查出来的）。`is_catastrophic_target()` 的清单是按 Windows + Linux 写的，漏了三类 macOS 特有目标：
+  - **`/private`——真绕过**。mac 上 `/etc` `/var` `/tmp` 全是指向 `/private/*` 的符号链接，拦 `rm -rf /etc` 而不拦 `rm -rf /private/etc`，同一个目标换个写法就过了。
+  - **`/Users/<用户名>`**——一整个家目录。此前只精确匹配 `/Users` 本身，而 Windows 的等价写法 `c:/users/foo` 一直靠 depth 规则拦得住——两平台强度不对等。
+  - **`/Volumes/<卷名>`**——mac 挂外置盘/网络盘的位置，地位等价于 Windows 的 `D:\`（盘根本来就拦）；Linux 的 `/mnt` `/media` 已在列表里，就它没有。
+  修法：`/private` 进前缀匹配清单；把「容器型」目录（`/users` `/home` `/volumes` `/mnt` `/media`）改为与 `c:/users` 同一套 depth ≤ 2 规则，并把那段 depth 判定抽成 `is_shallow()` 共用。新增两组单测：三类目标必须拦，**且深层项目路径（`/Users/foo/myproject`、`/Volumes/Backup/build`、`/opt/myapp/build`）绝不能误拦**——拦过头同样是缺陷。守规则 7：这是对安全模块的补强，不是放松。
+- 同时确认其余 MCP 接口（文件类 9 个、`search_files` / `analyze_file` / `notebook_edit` / `list_allowed_roots` / `batch`）**无平台专属代码**，路径校验走 `canonicalize` + 祖先遍历、扩展名白名单统一转小写，两平台都对；`is_device_path()` 本来就包含 `/dev/disk*`（mac 的命名）。
 - `commands.rs` 顶部的 `tauri::Manager` 导入改成在 Windows 版 impl 内局部 `use`：它只被 `app.path()` 用到，留在顶部会让 mac 的 `clippy --all-targets -D warnings`（CI 与 Windows 侧同等严格）因未用导入直接失败。
 
 #### 清理

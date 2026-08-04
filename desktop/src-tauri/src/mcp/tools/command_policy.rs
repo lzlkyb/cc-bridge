@@ -428,6 +428,10 @@ fn is_catastrophic_target(s: &str) -> bool {
         "/dev",
         "/sys",
         "/proc",
+        // `/private` 是 macOS 专属且**必须有**：mac 上 `/etc` `/var` `/tmp` 全是指向
+        // `/private/*` 的符号链接。只拦 `/etc`、不拦 `/private/etc`，同一个目标换个
+        // 写法就绕过去了。
+        "/private",
         "/system",
         "/library",
         "/applications",
@@ -438,10 +442,24 @@ fn is_catastrophic_target(s: &str) -> bool {
     {
         return true;
     }
-    // 家/挂载类目录——仅精确匹配目录本身危险；其下是用户项目（合法，不误拦）。
-    const UNIX_HOME_EXACT: &[&str] = &["/root", "/home", "/opt", "/mnt", "/media", "/users"];
+    // 家/安装类目录——仅精确匹配目录本身危险；其下是用户项目（合法，不误拦）。
+    const UNIX_HOME_EXACT: &[&str] = &["/root", "/opt"];
     if UNIX_HOME_EXACT.contains(&norm.as_str()) {
         return true;
+    }
+    // 「容器型」目录：它们的**直接下一级**是一整个用户家目录或一整个挂载卷，
+    // 删掉等于清空某人全部数据 / 一整块盘，因此与 Windows 的 `c:/users` 同规则处理
+    // （见下方 is_shallow）。
+    //   · `/users`   → macOS 的 /Users。此前只精确匹配，`rm -rf /Users/zhang` 不触发，
+    //                  而 Windows 的等价写法 `c:/users/zhang` 却拦得住——两平台强度不对等。
+    //   · `/volumes` → macOS 挂外置盘/网络盘的位置，地位等价于 Windows 的 `D:\`（盘根已拦）。
+    //   · `/home` `/mnt` `/media` → Linux 上的同类，一并对齐。
+    const UNIX_CONTAINER_PREFIX: &[&str] = &["/users", "/home", "/volumes", "/mnt", "/media"];
+    if UNIX_CONTAINER_PREFIX
+        .iter()
+        .any(|p| norm == *p || norm.starts_with(&format!("{p}/")))
+    {
+        return is_shallow(&norm);
     }
 
     // Windows 系统 / 用户根目录（前缀匹配，含盘符）。
@@ -455,13 +473,17 @@ fn is_catastrophic_target(s: &str) -> bool {
         .iter()
         .any(|p| norm == *p || norm.starts_with(&format!("{p}/")))
     {
-        // 允许更深的具体子路径（如 c:/users/foo/proj）？users/windows 下再深仍属系统/他人目录，保守拦截根与一级。
-        // 仅当正好是这些根或其直接下一级视为毁灭性，避免误拦深层项目路径。
-        let depth = norm.matches('/').count();
-        return depth <= 2; // c:/windows(1) / c:/users/foo(2) 视为危险；更深放行。
+        return is_shallow(&norm);
     }
 
     false
+}
+
+/// 路径深度 ≤ 2 段（`c:/windows`、1 个斜杠；`c:/users/foo` / `/users/foo`、2 个）
+/// 视为「容器根或其直接下一级」→ 毁灭性；更深放行——那已经是具体项目目录，
+/// 误拦会让正常开发用不了（如 `/Users/foo/myproject`、`c:/users/foo/proj`）。
+fn is_shallow(norm: &str) -> bool {
+    norm.matches('/').count() <= 2
 }
 
 #[cfg(test)]
@@ -507,6 +529,41 @@ mod tests {
         assert!(cmd_block("rd /s /q C:\\Windows"));
         assert!(cmd_block("format c:"));
         assert!(cmd_block("format D: /fs:ntfs"));
+    }
+
+    // ── macOS 专属毁灭性目标（N17 补强）──
+    // 这三类此前在 mac 上是漏的，而 Windows 的等价写法都拦得住——两平台强度不对等。
+    #[test]
+    fn macos_catastrophic_targets_blocked() {
+        // ① /private：mac 上 /etc /var /tmp 都是指向它的符号链接，
+        //    只拦 /etc 的话换个写法就绕过去了。
+        assert!(bash_block("rm -rf /private"));
+        assert!(bash_block("rm -rf /private/etc"));
+        assert!(bash_block("rm -rf /private/var/db"));
+        // ② /Users/<用户名>：一整个家目录。Windows 的 c:/users/foo 一直是拦的。
+        assert!(bash_block("rm -rf /Users"));
+        assert!(bash_block("rm -rf /Users/zhang"));
+        // ③ /Volumes/<卷名>：mac 的外置盘/网络盘挂载点，地位等价于 Windows 的 D:\
+        assert!(bash_block("rm -rf /Volumes"));
+        assert!(bash_block("rm -rf /Volumes/Backup"));
+        // 其余 mac 系统目录（回归确认，这几个本来就拦）
+        assert!(bash_block("rm -rf /System/Library"));
+        assert!(bash_block("rm -rf /Applications"));
+        assert!(bash_block("rm -rf /Library/Preferences"));
+    }
+
+    // ── 上一条的对称要求：深层项目路径绝不能被误拦 ──
+    // 这是「拦得住」的反面：拦过头会让正常开发直接用不了，同样是缺陷。
+    #[test]
+    fn deep_project_paths_not_blocked() {
+        assert!(!bash_block("rm -rf /Users/zhang/myproject"));
+        assert!(!bash_block("rm -rf /Users/zhang/proj/node_modules"));
+        assert!(!bash_block("rm -rf /Volumes/Backup/build"));
+        assert!(!bash_block("rm -rf /home/dev/app/dist"));
+        assert!(!cmd_block("rd /s /q C:\\Users\\zhang\\proj\\out"));
+        // /opt 本身危险，但 Homebrew 装在 /opt/homebrew 下，子路径不该误拦
+        assert!(bash_block("rm -rf /opt"));
+        assert!(!bash_block("rm -rf /opt/myapp/build"));
     }
 
     // ── 分隔符注入：链式命令的任一子命令危险即拦 ──
