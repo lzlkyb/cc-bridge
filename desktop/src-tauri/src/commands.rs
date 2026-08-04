@@ -8,7 +8,10 @@ use std::os::windows::process::CommandExt;
 
 use serde::{Deserialize, Serialize};
 use similar::TextDiff;
-use tauri::{AppHandle, Emitter, Manager, State};
+// Manager 只被 create_desktop_shortcut_impl 的 Windows 版用到（app.path()），
+// 放这里会让 mac 的 `clippy --all-targets -D warnings` 因未用导入直接失败，
+// 所以改成在那个函数内部局部 use。
+use tauri::{AppHandle, Emitter, State};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -876,41 +879,65 @@ pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String>
     }
 }
 
-/// 返回软件安装目录（即当前 exe 所在目录）。
-/// 用于前端「安装位置」展示。发布版即安装目录；开发模式指向 target/debug。
-#[tauri::command]
-pub fn install_dir() -> Result<String, String> {
+/// 安装位置：Windows 上就是 exe 所在目录；macOS 上要**从 .app 包内部走出来**。
+///
+/// mac 的 `current_exe()` 落在 `…/cc-bridge.app/Contents/MacOS/cc-bridge-desktop`，
+/// 直接取 parent 得到的是 `Contents/MacOS`——展示给用户是一串包内部路径，
+/// 再交给 reveal_item_in_dir 更是直接把访达跳进「显示包内容」。
+/// 所以往上三层找 `.app` 本体：MacOS → Contents → *.app。
+/// 任一层不符（开发模式下 target/debug 里的裸二进制）就按原样返回 parent。
+fn resolve_install_dir() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("无法定位自身路径: {e}"))?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| "无法解析安装目录".to_string())?
-        .to_string_lossy()
-        .into_owned();
-    Ok(dir)
+    let dir = exe.parent().ok_or_else(|| "无法解析安装目录".to_string())?;
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = dir.parent().and_then(|contents| contents.parent()) {
+        if bundle.extension().is_some_and(|ext| ext == "app") {
+            return Ok(bundle.to_string_lossy().into_owned());
+        }
+    }
+    Ok(dir.to_string_lossy().into_owned())
 }
 
-/// 在系统文件管理器中打开（定位）安装目录。
-/// 使用 tauri-plugin-opener 的 reveal_item_in_dir（Windows 底层 SHOpenFolderAndSelectItems），
-/// 不产生子进程、不闪 cmd 窗口；项目已依赖并注册 opener 插件（Cargo.toml:18 / main.rs:137）。
-/// 同时返回安装目录字符串，便于前端展示。
+/// 返回软件安装位置，用于前端「安装位置」展示。
+/// 发布版：Windows 是安装目录、macOS 是 `.app` 本体；开发模式指向 target/debug。
+#[tauri::command]
+pub fn install_dir() -> Result<String, String> {
+    resolve_install_dir()
+}
+
+/// 在系统文件管理器中打开（定位）安装位置。
+/// 使用 tauri-plugin-opener 的 reveal_item_in_dir（Windows 底层 SHOpenFolderAndSelectItems，
+/// macOS 走 NSWorkspace 在访达里选中目标），不产生子进程、不闪 cmd 窗口；
+/// 项目已依赖并注册 opener 插件（Cargo.toml:18 / main.rs:137）。
+/// 同时返回该路径字符串，便于前端展示。
 #[tauri::command]
 pub fn reveal_install_dir() -> Result<String, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("无法定位自身路径: {e}"))?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| "无法解析安装目录".to_string())?
-        .to_string_lossy()
-        .into_owned();
+    let dir = resolve_install_dir()?;
     tauri_plugin_opener::reveal_item_in_dir(&dir).map_err(|e| format!("打开安装目录失败: {e}"))?;
     Ok(dir)
 }
 
-/// 在桌面创建（或覆盖）指向本程序 exe 的快捷方式。
+/// 在桌面创建（或覆盖）指向本程序的快捷方式。**仅 Windows**，见下方两份 impl。
+#[tauri::command]
+pub fn create_desktop_shortcut(app: tauri::AppHandle) -> Result<(), String> {
+    create_desktop_shortcut_impl(app)
+}
+
+/// 非 Windows 没有 .lnk 这回事：macOS 上应用装在 /Applications、入口是 Dock 与启动台，
+/// 桌面本来就不放图标。前端已按平台隐藏这一行（SettingsTab.tsx 的 InstallGroup），
+/// 这里再兜一层明确报错——否则会一路走到 Windows 版里去 spawn `powershell`，
+/// mac 上拿到的是「No such file or directory」这种看不出所以然的底层错误。
+#[cfg(not(windows))]
+fn create_desktop_shortcut_impl(_app: tauri::AppHandle) -> Result<(), String> {
+    Err("桌面快捷方式仅 Windows 支持；macOS 请把 cc-bridge.app 拖到 Dock 或从启动台打开".into())
+}
+
 /// 复用系统 WScript.Shell COM（零 Rust 依赖，守规则8），普通用户权限即可，
 /// 桌面为当前用户可写目录，无需 UAC 提权。用户确认：已存在同名 lnk 直接覆盖。
 /// 桌面路径优先取 USERPROFILE\Desktop，失败回退 Tauri desktop_dir()。
-#[tauri::command]
-pub fn create_desktop_shortcut(app: tauri::AppHandle) -> Result<(), String> {
+#[cfg(windows)]
+fn create_desktop_shortcut_impl(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager; // app.path()；仅此处需要，见文件顶部 use 行的注释
     let exe = std::env::current_exe().map_err(|e| format!("无法定位自身路径: {e}"))?;
     let exe_str = exe.to_string_lossy().into_owned();
     let dir_str = exe
@@ -1229,17 +1256,24 @@ pub async fn reveal_backup_dir(state: State<'_, Arc<AppState>>) -> Result<String
     drop(config);
     let dir_str = dir.to_string_lossy().into_owned();
     let _ = std::fs::create_dir_all(&dir);
-    // 修复：漏加 CREATE_NO_WINDOW，cmd.exe 会一闪而过弹出黑框（对齐 firewall.rs 里
-    // netsh/powershell 子进程的同款修复；run_command.rs 的 CREATE_NO_WINDOW 修复未覆盖到这里）。
-    #[cfg_attr(not(windows), allow(unused_mut))]
-    let mut command = std::process::Command::new("cmd");
-    command.args(["/c", "start", "", &dir_str]);
     #[cfg(windows)]
-    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    let status = command.status();
-    if let Err(e) = status {
-        return Err(format!("打开备份目录失败: {e}"));
+    {
+        // 修复：漏加 CREATE_NO_WINDOW，cmd.exe 会一闪而过弹出黑框（对齐 firewall.rs 里
+        // netsh/powershell 子进程的同款修复；run_command.rs 的 CREATE_NO_WINDOW 修复未覆盖到这里）。
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/c", "start", "", &dir_str]);
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        if let Err(e) = command.status() {
+            return Err(format!("打开备份目录失败: {e}"));
+        }
     }
+    // 非 Windows 上根本没有 `cmd`，原来这里必然返回「No such file or directory」，
+    // 「打开备份目录」按钮在 mac 上是死的。改走 opener 插件（与 reveal_install_dir 同一条路）。
+    // Windows 分支保留原样不动：当年用 `cmd /c start` 正是为了规避 explorer /select 的
+    // DDE 转发导致不弹窗，不能顺手「统一」掉。
+    #[cfg(not(windows))]
+    tauri_plugin_opener::open_path(&dir_str, None::<&str>)
+        .map_err(|e| format!("打开备份目录失败: {e}"))?;
     Ok(dir_str)
 }
 

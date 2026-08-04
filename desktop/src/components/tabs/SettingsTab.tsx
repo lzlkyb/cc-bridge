@@ -46,7 +46,7 @@ export function SettingsTab({
       {isWindows(status?.platform) && <FirewallGroup onRefresh={onSaved} />}
       <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
       <AppGroup />
-      <InstallGroup onReopenOnboarding={onReopenOnboarding} />
+      <InstallGroup platform={status?.platform} onReopenOnboarding={onReopenOnboarding} />
       <ConfigGroup status={status} onSaved={onSaved} />
       <AuditGroup status={status} onSaved={onSaved} />
     </div>
@@ -221,7 +221,14 @@ function AppGroup() {
 
 /* ─── 安装与快捷方式 ─── */
 
-function InstallGroup({ onReopenOnboarding }: { onReopenOnboarding?: () => void }) {
+function InstallGroup({
+  platform,
+  onReopenOnboarding,
+}: {
+  /** 用于隐藏「桌面快捷方式」（仅 Windows，见下方注释）。 */
+  platform?: string;
+  onReopenOnboarding?: () => void;
+}) {
   const { toast } = useToast();
   const [dir, setDir] = useState("");
   const [revealing, setRevealing] = useState(false);
@@ -280,6 +287,10 @@ function InstallGroup({ onReopenOnboarding }: { onReopenOnboarding?: () => void 
             </Button>
           }
         />
+        {/* 桌面快捷方式仅 Windows：后端靠 WScript.Shell COM 写 .lnk（靠 powershell），
+            mac 上既没有 .lnk 这回事、也没有 powershell——不隐藏的话这个按钮一点就报错。
+            mac 的入口是 Dock / 启动台，桌面本来不放应用图标。 */}
+        {isWindows(platform) && (
         <SettingsRow
           label="桌面快捷方式"
           sub="误删桌面图标后可一键重建，已存在则覆盖。"
@@ -297,6 +308,7 @@ function InstallGroup({ onReopenOnboarding }: { onReopenOnboarding?: () => void 
             </Button>
           }
         />
+        )}
         <SettingsRow
           label="使用引导"
           sub="重新查看首次接入的分步引导。"

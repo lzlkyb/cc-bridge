@@ -81,14 +81,17 @@ export interface StatusResponse {
   commandAllowlistEnabled: boolean;
   /** Layer 2 命令白名单程序列表（大小写不敏感 basename 匹配）。 */
   commandAllowlist: string[];
-  /** 后台命令完成通知开关。默认开启——后台命令结束后自动推 Windows toast。 */
+  /** 后台命令完成通知开关。默认开启——后台命令结束后自动推系统桌面通知
+   *  （Windows toast / macOS 通知中心；文案见 lib/platform.ts 的 notifyCommandCompleteSub）。 */
   notifyCommandComplete: boolean;
   /** 任务完成通知开关（push_notification MCP 工具总开关）。默认开启。 */
   notifyTaskComplete: boolean;
   /**
    * 关窗时释放界面内存。默认开启。
-   * 开：关窗销毁窗口与 webview，托盘常驻约 85MB → 5.5MB，再开需重新加载（1~2 秒）；
+   * 开：关窗销毁窗口与 webview，再开需重新加载（1~2 秒）；
    * 关：仅隐藏，秒开但内存持续占用。两者都不影响 MCP 服务 / 托盘 / 桌面通知。
+   * 具体能省多少内存两个平台差很多、且测量口径不同，数字只在
+   * lib/platform.ts 的 releaseWebviewHint() 里维护一份，别在别处再写一遍。
    */
   releaseWebviewOnClose: boolean;
   /**

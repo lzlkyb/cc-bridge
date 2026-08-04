@@ -534,6 +534,13 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 - **防火墙相关功能不可用**：这些靠 Windows 的 `netsh`，界面上已自动隐藏。
 - **IP 变化提示不实时**：mac 上靠 5 秒轮询兜底（功能正常，只是不是瞬时的）。
 - **命令执行壳层为 `sh` / `bash`**（Windows 是 `cmd` / Git Bash）。
+- **设置页没有「桌面快捷方式」这一行**：它靠 Windows 的 `.lnk` + `powershell` 实现，
+  mac 上没这回事。入口用 Dock / 启动台（把 `cc-bridge.app` 拖进 Dock 即可）。
+- **「安装位置」显示的是 `cc-bridge.app` 本体**（而不是包内的 `Contents/MacOS`），
+  「打开目录」会在访达里选中它。
+- **桌面通知尚未在真机确认**：mac 侧走 `NSUserNotification`，若系统设置的「通知」
+  里没放行 cc-bridge，通知会静默不弹。现已把失败写进日志（日志页可见），
+  `push_notification` 也会回传 `pushed: false`，让远程 AI 改用文字告知你。
 
 ## 配置迁移
 

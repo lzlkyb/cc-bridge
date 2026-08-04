@@ -7,6 +7,7 @@ import { useUpdate, type UpdateStatus, type UpdateInfo } from "../../contexts/Up
 import type { StaticStatus } from "../../lib/types";
 import { formatVersion, formatBytes, formatBytesPerSec } from "../../lib/utils";
 import { APP_INFO } from "../../lib/about";
+import { aboutCopy } from "../../lib/platform";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChangelogView } from "./ChangelogView";
 import { ReleaseNotes } from "../update/UpdateNotesDialog";
@@ -29,12 +30,9 @@ const HIGHLIGHTS = [
   { label: "路径白名单安全校验", color: "#EF4444" },
 ];
 
-/** 弹框统计数据 */
-const STATS = [
-  { val: "3.4 MB", label: "安装包大小" },
-  { val: "< 20 MB", label: "运行时内存" },
-  { val: "17 个", label: "MCP 工具" },
-];
+/* 弹框统计数据，以及「极轻量」「安全沙箱」两条卖点，都收在
+   lib/platform.ts 的 aboutCopy()——安装包体积、内存口径、进程隔离机制
+   这三项在 Windows 与 macOS 上全都不一样。 */
 
 // E-P2-7: 把内联 style 对象提取为模块级常量，避免每次渲染重建（约 15 处）。
 const STYLE_VERSION_BADGE: CSSProperties = { background: "var(--version-gradient)", boxShadow: "0 2px 6px var(--version-shadow)" };
@@ -54,6 +52,8 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
   changelogOpenToken?: number;
 }) {
   const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
+  // 关于弹框里随平台变的数字与卖点（见 lib/platform.ts 的取舍注释）。
+  const about = aboutCopy(status?.platform);
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -316,15 +316,15 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 
               <div className="section-label mb-2.5 ui-eyebrow">特色优势</div>
               <p className="mb-2.5 text-xs leading-relaxed">
-                · <strong className="text-foreground">极轻量：</strong>安装包仅 3.4MB，启动内存 &lt; 20MB<br/>
+                · <strong className="text-foreground">极轻量：</strong>{about.lightweight}<br/>
                 · <strong className="text-foreground">全离线：</strong>无需网络，纯本地运行，数据不出设备<br/>
-                · <strong className="text-foreground">安全沙箱：</strong>路径白名单 + 危险命令拦截 + Job Object 进程隔离<br/>
+                · <strong className="text-foreground">安全沙箱：</strong>{about.sandbox}<br/>
                 · <strong className="text-foreground">标准协议：</strong>兼容 Cursor / Claude / VS Code 等 MCP 客户端<br/>
                 · <strong className="text-foreground">MIT 开源：</strong>完全免费，代码透明可审计
               </p>
 
               <div className="modal-stats flex gap-5 divider-x-top pt-3">
-                {STATS.map((s) => (
+                {about.stats.map((s) => (
                   <div key={s.label} className="flex flex-1 flex-col items-center text-center">
                     <div className="text-lg font-extrabold text-foreground">{s.val}</div>
                     <div className="mt-0.5 text-[10px] text-muted-foreground">{s.label}</div>

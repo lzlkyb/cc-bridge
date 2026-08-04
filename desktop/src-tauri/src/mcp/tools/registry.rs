@@ -65,6 +65,25 @@ macro_rules! register_tool {
     }};
 }
 
+/// stop_command / push_notification 的描述里带平台专属措词。这两段是**发给远程 AI 的**，
+/// 说错会让模型对本机能力形成错误认知（同 `http.rs::run_command_description`，
+/// 那里已经按平台分了支），所以这里按平台给两份。
+///
+/// 顺手修正了一个 Windows 侧的陈年错误：描述里写的 `taskkill /T` 并不是实际实现。
+/// stop_command 走的是 `child.start_kill()`——Windows 上是 TerminateJobObject，
+/// Unix 上是向整个进程组发信号（见 stop_command.rs 与 Cargo.toml 的分平台 feature）。
+#[cfg(windows)]
+const STOP_COMMAND_DESC: &str = r#"Forcefully terminate a background command's entire process tree (TerminateJobObject on the command's job object, so grandchildren die too) and remove it from the registry."#;
+#[cfg(not(windows))]
+const STOP_COMMAND_DESC: &str = r#"Forcefully terminate a background command's entire process tree (SIGKILL to the command's whole POSIX process group, so grandchildren die too) and remove it from the registry."#;
+
+// 必须跟着 notifications feature 一起门控：该 feature 关闭时（CI 跑
+// --no-default-features）push_notification 工具不注册，常量也就没人用，会报 dead_code。
+#[cfg(all(windows, feature = "notifications"))]
+const PUSH_NOTIFICATION_DESC: &str = r#"Push a desktop notification to the user. You MUST call this after you complete ANY task for the user (coding, analysis, file generation, command execution, etc.) to let them know the result without them needing to check the conversation — do not assume they are watching the chat; proactively inform them of the outcome. The notification appears as a Windows toast. Both title and body are optional — defaults to "cc-bridge" and empty body respectively."#;
+#[cfg(all(not(windows), feature = "notifications"))]
+const PUSH_NOTIFICATION_DESC: &str = r#"Push a desktop notification to the user. You MUST call this after you complete ANY task for the user (coding, analysis, file generation, command execution, etc.) to let them know the result without them needing to check the conversation — do not assume they are watching the chat; proactively inform them of the outcome. The notification appears in the native OS notification centre (macOS Notification Center). If the result says pushed:false with a reason, the notification could NOT be delivered — tell the user the outcome in your reply instead. Both title and body are optional — defaults to "cc-bridge" and empty body respectively."#;
+
 /// All registered tools. The ONLY place that lists tools — one line per tool.
 /// Returns an owned `Vec` because `schema` is derived at runtime (not a `&'static`).
 pub fn all_tools() -> Vec<ToolSpec> {
@@ -156,6 +175,9 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             run_command,
             RunCommandArgs,
+            // 注意：这段字面量在 tools/list 里会被 `http.rs::run_command_description(shell_type)`
+            // 按「平台 + 当前 shell_type」整段覆盖，它只是 ToolSpec 的占位默认值。
+            // 改给 AI 看的壳层描述请改那个函数，改这里不会生效。
             r#"Execute a shell command in a whitelisted cwd. The shell is `cmd` by default; if the operator set `shell_type=bash` in config, commands run in Git Bash — use POSIX `/c/...` paths and bash syntax (jq/find/pipes work natively). DANGEROUS: equivalent to granting the caller arbitrary code execution — disabled by default via the `shell_enabled` config toggle, and blocked entirely in read-only mode. Foreground mode (background=false, default) waits up to timeoutMs and returns stdout/stderr/exitCode. Background mode (background=true) returns immediately with a handle; poll it via get_command_output and end it via stop_command. If session cwd persistence is enabled (operator must turn it on), pass `cwd` on the first call to receive a `sessionId`; on later calls pass that `sessionId` instead of `cwd` to keep working in the same directory — `cd` inside a command now carries over to the next call (re-validated against the whitelist each time). If persistence is disabled (default), you must pass an absolute `cwd` every call."#,
             true
         ),
@@ -168,14 +190,14 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             stop_command,
             StopCommandArgs,
-            r#"Forcefully terminate a background command's entire process tree (taskkill /T) and remove it from the registry."#,
+            STOP_COMMAND_DESC,
             false
         ),
         #[cfg(feature = "notifications")]
         register_tool!(
             push_notification,
             PushNotificationArgs,
-            r#"Push a desktop notification to the user. You MUST call this after you complete ANY task for the user (coding, analysis, file generation, command execution, etc.) to let them know the result without them needing to check the conversation — do not assume they are watching the chat; proactively inform them of the outcome. The notification appears as a Windows toast. Both title and body are optional — defaults to "cc-bridge" and empty body respectively."#,
+            PUSH_NOTIFICATION_DESC,
             false
         ),
     ]

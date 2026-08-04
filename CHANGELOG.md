@@ -30,6 +30,26 @@
   - 「关窗时释放界面内存」的数字不再照搬 Windows 的「85MB → 6MB」：mac 实测是独立 `WebContent` 进程 121MB → 进程消失、主进程约 22MB 常驻，两平台测量口径本就不同。
 - 文案收进 `lib/platform.ts` 的 `shellTypeCopy()` / `releaseWebviewHint()`，并补 10 条单测锁住不变量（尤其「mac 文案不得出现 Git for Windows」与「两平台数字不许串」）。`SettingsToggles.tsx` 已 690 行、远超 300 行上限，不再往里堆文案。
 
+#### 修复（mac 适配全量排查）
+把 Rust 侧所有 `#[cfg(windows)]` 是否有配对的非 Windows 分支、所有 `Command::new()` 生成的子进程、以及前端全部平台相关文案逐条过了一遍，修掉如下问题。
+
+- **两个按钮在 mac 上必然报错**：
+  - 「桌面快捷方式 / 创建到桌面」无条件 spawn `powershell` 写 `.lnk`，mac 上直接 `No such file or directory`。现按平台拆成两份 impl，前端也隐藏了这一行（mac 的入口是 Dock / 启动台，桌面本来不放应用图标）。
+  - 「打开备份目录」用 `cmd /c start`，mac 上同样没有 `cmd`。非 Windows 改走 `tauri-plugin-opener`（与 `reveal_install_dir` 同一条路）；**Windows 分支保留原样不动**——当年用 `cmd /c start` 正是为了规避 `explorer /select` 的 DDE 转发不弹窗。
+- **「安装位置」在 mac 上指到 bundle 内部**：`current_exe().parent()` 得到的是 `cc-bridge.app/Contents/MacOS`，展示给用户是一串包内路径，「打开目录」更是让访达跳进「显示包内容」。新增 `resolve_install_dir()`：mac 上往上三层取 `.app` 本体，开发模式（裸二进制）自动回退。
+- **Dock / 访达图标只有 256px**：`icons/icon.icns`（含大尺寸）一直在仓库里，但 `bundle.icon` 只列了三个 PNG，tauri-bundler 找不到 `.icns` 就拿 PNG 现生成一个，Retina 下发虚。已把 `icons/icon.icns` 加进列表（不影响 Windows，那边取 `.ico`/PNG）。
+- **桌面通知失败原先被完全吞掉**：三处调用点全是 `let _ = ...show()`。mac 侧走 `mac-notification-sys`（`NSUserNotification`），系统未放行时 `show()` 返回 `Err`；而插件 desktop 侧的 `permission_state()` / `request_permission()` 是硬编码返回 `Granted` 的空实现（`tauri-plugin-notification 2.3.3/src/desktop.rs:61-66`），查不出真实授权状态——这个 `Err` 是唯一信号。现在三处都写 `log::warn!`，且 `push_notification` 失败时回传 `pushed: false` + `reason`（仍返回 `Ok`：推不出去不是调用方的错）。这条要紧的原因：工具描述里强制 AI「每完成一个任务必调 `push_notification`」，mac 上它一旦不工作，此前用户和日志都拿不到任何提示。
+- **发给远程 AI 的工具描述里的平台错误**（同 `run_command` 早已做过的平台分支）：
+  - `push_notification`：不再对 mac 说「appears as a Windows toast」，并补了一句「若返回 `pushed:false` 就改用文字告知用户」。
+  - `stop_command`：原文写 `taskkill /T`，**这在 Windows 上也是错的**——实际走 `child.start_kill()`，Windows 是 `TerminateJobObject`、Unix 是向整个进程组发 `SIGKILL`。现两个平台各自据实描述。
+- **UI 文案**：
+  - 「后台命令完成通知」不再对 mac 说「Windows toast」。
+  - 「关于」弹框的三个数字与两条卖点按平台分：mac 不再照搬「安装包 3.4MB」（mac 压根没有安装程序，发布物是 `.app.tar.gz`）、「启动内存 < 20MB」（mac 主进程实测约 22MB）、「Job Object 进程隔离」（Windows 专属 API，mac 是 POSIX 进程组）。
+  - 命令白名单卡的危险命令示例按平台取（mac 上举 `rm -rf C:\Windows` 只会让用户困惑）。
+- 新增文案收在 `lib/platform.ts`（`notifyCommandCompleteSub` / `dangerousCommandExample` / `aboutCopy`），并补 6 条单测锁不变量（mac 文案不得出现 `3.4MB` / `< 20 MB` / `Job Object`；首帧 undefined 必须落 Windows 文案，避免 Windows 用户闪一下「免安装」这种错数字）。共 43 条前端单测全过。
+- 顺带确认了两件**没问题**的事，免得日后重复排查：数据目录用的是 `app_data_dir()`（mac 落 `~/Library/Application Support/`，**不在 .app 包内**，所以自动更新整包替换不会丢配置 / 审计 / 备份）；开机自启走 `tauri-plugin-autostart` 且已传 `MacosLauncher::LaunchAgent`。
+- `commands.rs` 顶部的 `tauri::Manager` 导入改成在 Windows 版 impl 内局部 `use`：它只被 `app.path()` 用到，留在顶部会让 mac 的 `clippy --all-targets -D warnings`（CI 与 Windows 侧同等严格）因未用导入直接失败。
+
 #### 清理
 - 清掉两处过期注释：`ConnectHero.tsx` 与 `index.css` 里仍写着「数据雨 canvas」，而 canvas 在 2.3.19 已改为纯 CSS、元素早已移除。
 

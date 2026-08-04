@@ -118,3 +118,69 @@ export function releaseWebviewHint(platform: string | undefined): string {
     : "托盘常驻内存约 85MB → 6MB";
   return `开启：关窗时销毁界面进程，${saving}，再次打开需重新加载（1~2 秒）；关闭：仅隐藏窗口，再次打开瞬时显示，但界面进程持续占用内存。MCP 服务、托盘与桌面通知均不受影响。默认开启`;
 }
+
+/**
+ * 「后台命令完成通知」一行的说明。
+ *
+ * 原文案写死了「Windows toast」，mac 上它是通知中心横幅。
+ * 后端两个平台都走同一个 `tauri-plugin-notification`，只是展现形式不同。
+ */
+export function notifyCommandCompleteSub(platform: string | undefined): string {
+  const kind = isMac(platform) ? "macOS 通知中心横幅" : "Windows toast";
+  return `后台命令（background=true）执行完毕后自动弹出${kind}，告知命令已结束及退出码。默认开启`;
+}
+
+/**
+ * Layer 1 破坏性拦截的示例命令（用于向用户说明「即使加了白名单也拦得住」）。
+ * 举例必须是本平台真存在的路径：mac 用户看到 `C:\\Windows` 只会困惑。
+ */
+export function dangerousCommandExample(platform: string | undefined): string {
+  return isMac(platform) ? "rm -rf /System" : "rm -rf C:\\Windows";
+}
+
+/* ─── 「关于」弹框的平台相关文案 ─────────────────────────── */
+
+/** 「关于」弹框里会随平台变的几处文案。 */
+export interface AboutCopy {
+  /** 底部三个统计格 */
+  stats: { val: string; label: string }[];
+  /** 「极轻量」那一条的正文 */
+  lightweight: string;
+  /** 「安全沙箱」那一条的正文 */
+  sandbox: string;
+}
+
+/**
+ * 关于弹框里的数字与卖点按平台分。为何不能共用一份：
+ * - 「3.4MB 安装包」是 Windows NSIS 安装包的体积，mac 侧压根没有安装程序
+ *   （发布物是 `.app.tar.gz`，装法是拖进 /Applications），照搬就是编数字；
+ * - 「启动内存 < 20MB」同样是 Windows 口径，mac 主进程实测约 22MB
+ *   （参见 releaseWebviewHint 的注释，两平台测量口径本就不同）；
+ * - 「Job Object 进程隔离」是 Windows 专属 API，mac 上是 POSIX 进程组
+ *   （见 stop_command.rs：start_kill 在两个平台上底层完全不同）。
+ *
+ * 注意这里用 `isMac` 而不是本文件其他处的 `isWindows`：首帧（undefined）应当
+ * 落到 Windows 文案，否则 Windows 用户打开弹框时可能先闪一下「免安装」这种错数字。
+ */
+export function aboutCopy(platform: string | undefined): AboutCopy {
+  if (isMac(platform)) {
+    return {
+      stats: [
+        { val: "免安装", label: "拖入即用" },
+        { val: "约 22 MB", label: "常驻内存" },
+        { val: "17 个", label: "MCP 工具" },
+      ],
+      lightweight: "无需安装程序，拖进「应用程序」即用；托盘常驻内存约 22MB",
+      sandbox: "路径白名单 + 危险命令拦截 + 进程组隔离",
+    };
+  }
+  return {
+    stats: [
+      { val: "3.4 MB", label: "安装包大小" },
+      { val: "< 20 MB", label: "运行时内存" },
+      { val: "17 个", label: "MCP 工具" },
+    ],
+    lightweight: "安装包仅 3.4MB，启动内存 < 20MB",
+    sandbox: "路径白名单 + 危险命令拦截 + Job Object 进程隔离",
+  };
+}

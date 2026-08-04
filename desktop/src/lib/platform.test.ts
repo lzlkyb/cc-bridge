@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  aboutCopy,
+  dangerousCommandExample,
   isMac,
   isWindows,
   modKeyLabel,
+  notifyCommandCompleteSub,
   releaseWebviewHint,
   shellTypeCopy,
   shortcutLabel,
@@ -82,5 +85,54 @@ describe("releaseWebviewHint", () => {
       expect(releaseWebviewHint(p)).toContain("MCP 服务");
       expect(releaseWebviewHint(p)).toContain("不受影响");
     }
+  });
+});
+
+describe("notifyCommandCompleteSub", () => {
+  it("Windows 说 toast，mac 说通知中心", () => {
+    expect(notifyCommandCompleteSub("windows")).toContain("Windows toast");
+    const mac = notifyCommandCompleteSub("macos");
+    expect(mac).toContain("通知中心");
+    expect(mac).not.toContain("Windows toast");
+  });
+});
+
+describe("dangerousCommandExample", () => {
+  it("举例必须是本平台真存在的路径", () => {
+    expect(dangerousCommandExample("windows")).toBe("rm -rf C:\\Windows");
+    // mac 上不能出现盘符路径，否则用户完全对不上号
+    const mac = dangerousCommandExample("macos");
+    expect(mac).not.toContain("C:\\");
+    expect(mac).toContain("/");
+  });
+});
+
+describe("aboutCopy", () => {
+  it("Windows 保留 NSIS 安装包体积与 Job Object 口径", () => {
+    const a = aboutCopy("windows");
+    expect(a.stats.map((s) => s.val)).toContain("3.4 MB");
+    expect(a.lightweight).toContain("3.4MB");
+    expect(a.sandbox).toContain("Job Object");
+  });
+
+  it("mac 不得出现 3.4MB / <20MB / Job Object 这三个 Windows 口径", () => {
+    // mac 没有安装程序（发布物是 .app.tar.gz），照搬这些数字就是编；
+    // Job Object 更是 Windows 专属 API，mac 上是 POSIX 进程组。
+    const a = aboutCopy("macos");
+    const all = [a.lightweight, a.sandbox, ...a.stats.map((s) => `${s.val}${s.label}`)].join("|");
+    expect(all).not.toContain("3.4");
+    expect(all).not.toContain("20 MB");
+    expect(all).not.toContain("Job Object");
+    expect(a.sandbox).toContain("进程组");
+  });
+
+  it("首帧（undefined）落 Windows 文案，避免闪一下「免安装」这种错数字", () => {
+    expect(aboutCopy(undefined).lightweight).toBe(aboutCopy("windows").lightweight);
+  });
+
+  it("统计格固定三个，MCP 工具数两平台一致", () => {
+    expect(aboutCopy("windows").stats).toHaveLength(3);
+    expect(aboutCopy("macos").stats).toHaveLength(3);
+    expect(aboutCopy("macos").stats[2]).toEqual(aboutCopy("windows").stats[2]);
   });
 });

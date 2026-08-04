@@ -18,12 +18,20 @@ use cc_bridge_desktop::*;
 /// 集中一处门控，避免每个调用点重复 #[cfg]。
 #[cfg(feature = "notifications")]
 fn notify_toast(handle: &tauri::AppHandle, body: &str) {
-    let _ = handle
+    // 失败必须留痕。mac 上桌面通知走 mac-notification-sys（NSUserNotification），
+    // 应用不在 LaunchServices 认得的位置、或系统侧关掉了本应用通知时，show() 返回 Err。
+    // 而插件 desktop 侧的 permission_state() / request_permission() 是硬编码返回 Granted 的
+    // 空实现（tauri-plugin-notification 2.3.3/src/desktop.rs:61-66），查不出真实授权状态——
+    // 所以这个 Err 是唯一的信号，原先 `let _ =` 吞掉后用户和日志都看不见。
+    if let Err(e) = handle
         .notification()
         .builder()
         .title("cc-bridge")
         .body(body)
-        .show();
+        .show()
+    {
+        log::warn!("桌面通知发送失败：{e}");
+    }
 }
 
 #[cfg(not(feature = "notifications"))]

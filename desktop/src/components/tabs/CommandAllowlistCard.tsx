@@ -10,6 +10,7 @@ import { SavedHint } from "../ui/SavedHint";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { useToast } from "../ui/toast";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
+import { dangerousCommandExample } from "../../lib/platform";
 
 /**
  * 「命令白名单」卡（④P0-1 Layer 2）。仅当命令执行（shellEnabled）开启时才可配置——
@@ -17,7 +18,9 @@ import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
  *   ① shellEnabled 未开 → 整卡锁定提示，引导去「安全概览」开启命令执行；
  *   ② 已开但白名单关 → 仅开关（远程可执行任意程序，受 Layer 1 兜底）；
  *   ③ 已开且白名单开 → 程序列表增删（大小写不敏感、按 basename 匹配）。
- * 注意：Layer 1 破坏性拦截不被白名单绕过——即便把 rm 列入白名单，rm -rf C:\Windows 仍被拦。
+ * 注意：Layer 1 破坏性拦截不被白名单绕过——即便把 rm 列入白名单，`rm -rf` 打系统目录仍被拦。
+ * 向用户展示的示例命令按平台取（lib/platform.ts 的 dangerousCommandExample）：
+ * mac 上举 `C:\Windows` 只会让用户困惑。
  */
 export function CommandAllowlistCard({
   status,
@@ -154,7 +157,7 @@ export function CommandAllowlistCard({
                     <code className="rounded bg-background/60 px-1 font-mono text-[11px]">rm</code>，
                     <b>Layer 1 破坏性拦截仍生效</b>——{" "}
                     <code className="rounded bg-background/60 px-1 font-mono text-[11px]">
-                      rm -rf C:\Windows
+                      {dangerousCommandExample(status?.platform)}
                     </code>{" "}
                     依然会被拦截。
                   </span>

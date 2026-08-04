@@ -15,8 +15,12 @@ pub struct StopCommandArgs {
 /// 仍应能终止一个已在跑的失控后台进程。
 ///
 /// 整树终止不再依赖 taskkill，也不依赖 JobObject 的 kill-on-close（process-wrap 的 std
-/// JobObject 默认不 kill-on-close，drop 不会杀进程）：这里显式调用 child.start_kill()，
-/// 它底层走 TerminateJobObject，会终止曾挂靠在 Job 下的所有进程（不管嵌套几层子孙）。
+/// JobObject 默认不 kill-on-close，drop 不会杀进程）：这里显式调用 child.start_kill()。
+/// 它的底层实现按平台分（见 Cargo.toml 的分 target feature）：
+/// - Windows：TerminateJobObject，终止曾挂靠在 Job 下的所有进程；
+/// - Unix / macOS：子进程 spawn 时已 setpgid 成为组长，信号发给整个进程组。
+///
+/// 两者都能连子孙进程一起杀（不管嵌套几层）。
 /// entry 在离开作用域时 drop，顺带关闭 Job 句柄（无害，因为进程已先被杀）。
 pub async fn handle(args: StopCommandArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let entry = state

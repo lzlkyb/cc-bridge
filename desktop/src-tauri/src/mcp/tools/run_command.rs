@@ -638,12 +638,16 @@ fn spawn_background(
                             Some(c) => format!("{} 已结束（退出码 {}）", notify_cmd, c),
                             None => format!("{} 已结束（无退出码）", notify_cmd),
                         };
-                        let _ = h
+                        // 不吞错：理由见 main.rs::notify_toast 的注释（mac 上这是唯一的失败信号）。
+                        if let Err(e) = h
                             .notification()
                             .builder()
                             .title("后台命令完成")
                             .body(&body)
-                            .show();
+                            .show()
+                        {
+                            log::warn!("后台命令完成通知发送失败：{e}");
+                        }
                     }
                 }
                 break;

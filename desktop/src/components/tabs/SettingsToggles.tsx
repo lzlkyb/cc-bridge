@@ -9,7 +9,7 @@ import { useToast } from "../ui/toast";
 import { ConfirmModal } from "../ui/ConfirmModal";
 import { Spinner } from "../ui/Spinner";
 import { buildBaseCommand } from "../../lib/utils";
-import { releaseWebviewHint, shellTypeCopy } from "../../lib/platform";
+import { notifyCommandCompleteSub, releaseWebviewHint, shellTypeCopy } from "../../lib/platform";
 import { SavedHint } from "../ui/SavedHint";
 
 /**
@@ -259,7 +259,7 @@ export function SettingsToggles({
         <ToggleRow
           id="toggle-notify-command"
           label="后台命令完成通知"
-          sub="后台命令（background=true）执行完毕后自动弹出 Windows toast，告知命令已结束及退出码。默认开启"
+          sub={notifyCommandCompleteSub(status?.platform)}
           checked={status?.notifyCommandComplete ?? true}
           onChange={(v) => save({ notifyCommandComplete: v }, "notify-cmd")}
           saved={savedKey === "notify-cmd"}
