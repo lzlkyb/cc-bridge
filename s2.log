@@ -1,0 +1,1972 @@
+﻿2026-08-04T02:36:38.9505270Z Current runner version: '2.336.0'
+2026-08-04T02:36:38.9523660Z ##[group]Runner Image Provisioner
+2026-08-04T02:36:38.9524210Z Hosted Compute Agent
+2026-08-04T02:36:38.9524590Z Version: 20260707.563
+2026-08-04T02:36:38.9524980Z Commit: 02667638d2b423fbc733a8e32a88b44996a3ba6e
+2026-08-04T02:36:38.9525440Z Build Date: 2026-07-07T19:33:50Z
+2026-08-04T02:36:38.9525870Z Worker ID: {0835f130-c2cc-4a19-8c99-757966ff16d7}
+2026-08-04T02:36:38.9526340Z Azure Region: westus
+2026-08-04T02:36:38.9526700Z ##[endgroup]
+2026-08-04T02:36:38.9527700Z ##[group]Operating System
+2026-08-04T02:36:38.9528100Z macOS
+2026-08-04T02:36:38.9528420Z 26.5.2
+2026-08-04T02:36:38.9528810Z 25F84
+2026-08-04T02:36:38.9529170Z ##[endgroup]
+2026-08-04T02:36:38.9529520Z ##[group]Runner Image
+2026-08-04T02:36:38.9529910Z Image: macos-26-arm64
+2026-08-04T02:36:38.9530300Z Version: 20260728.0273.1
+2026-08-04T02:36:38.9531320Z Included Software: https://github.com/actions/runner-images/blob/macos-26-arm64/20260728.0273/images/macos/macos-26-arm64-Readme.md
+2026-08-04T02:36:38.9532360Z Image Release: https://github.com/actions/runner-images/releases/tag/macos-26-arm64%2F20260728.0273
+2026-08-04T02:36:38.9533060Z ##[endgroup]
+2026-08-04T02:36:38.9533860Z ##[group]GITHUB_TOKEN Permissions
+2026-08-04T02:36:38.9535130Z Contents: read
+2026-08-04T02:36:38.9535540Z Metadata: read
+2026-08-04T02:36:38.9535900Z Packages: read
+2026-08-04T02:36:38.9536250Z ##[endgroup]
+2026-08-04T02:36:38.9537760Z Secret source: Actions
+2026-08-04T02:36:38.9540430Z Prepare workflow directory
+2026-08-04T02:36:38.9906110Z Prepare all required actions
+2026-08-04T02:36:38.9951460Z Getting action download info
+2026-08-04T02:36:39.1401410Z Download action repository 'actions/checkout@v5' (SHA:fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09)
+2026-08-04T02:36:39.4804080Z Download action repository 'dtolnay/rust-toolchain@stable' (SHA:4cda84d5c5c54efe2404f9d843567869ab1699d4)
+2026-08-04T02:36:39.9886040Z Download action repository 'mozilla/sccache-action@v0.0.10' (SHA:9e7fa8a12102821edf02ca5dbea1acd0f89a2696)
+2026-08-04T02:36:40.7731130Z Download action repository 'Swatinem/rust-cache@v2' (SHA:e18b497796c12c097a38f9edb9d0641fb99eee32)
+2026-08-04T02:36:41.8763200Z Download action repository 'actions/setup-node@v5' (SHA:a0853c24544627f65ddf259abe73b1d18a591444)
+2026-08-04T02:36:41.9819740Z Download action repository 'actions/upload-artifact@v5' (SHA:330a01c490aca151604b8cf639adc76d48f6c5d4)
+2026-08-04T02:36:42.1775520Z Complete job name: macOS GUI/打包/分发烟测（按需触发）
+2026-08-04T02:36:42.2215960Z ##[group]Run actions/checkout@v5
+2026-08-04T02:36:42.2216330Z with:
+2026-08-04T02:36:42.2216480Z   repository: lzlkyb/cc-bridge
+2026-08-04T02:36:42.2218520Z   token: ***
+2026-08-04T02:36:42.2218650Z   ssh-strict: true
+2026-08-04T02:36:42.2218780Z   ssh-user: git
+2026-08-04T02:36:42.2218930Z   persist-credentials: true
+2026-08-04T02:36:42.2219080Z   clean: true
+2026-08-04T02:36:42.2219230Z   sparse-checkout-cone-mode: true
+2026-08-04T02:36:42.2219400Z   fetch-depth: 1
+2026-08-04T02:36:42.2219540Z   fetch-tags: false
+2026-08-04T02:36:42.2219690Z   show-progress: true
+2026-08-04T02:36:42.2219840Z   lfs: false
+2026-08-04T02:36:42.2219960Z   submodules: false
+2026-08-04T02:36:42.2220100Z   set-safe-directory: true
+2026-08-04T02:36:42.2220270Z   allow-unsafe-pr-checkout: false
+2026-08-04T02:36:42.2220540Z env:
+2026-08-04T02:36:42.2220670Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:42.2220830Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:42.2220970Z ##[endgroup]
+2026-08-04T02:36:42.7180040Z Syncing repository: lzlkyb/cc-bridge
+2026-08-04T02:36:42.7180970Z ##[group]Getting Git version info
+2026-08-04T02:36:42.7181270Z Working directory is '/Users/runner/work/cc-bridge/cc-bridge'
+2026-08-04T02:36:42.7181710Z [command]/opt/homebrew/bin/git version
+2026-08-04T02:36:42.7462500Z git version 2.55.0
+2026-08-04T02:36:42.7477430Z ##[endgroup]
+2026-08-04T02:36:42.7483520Z Copying '/Users/runner/.gitconfig' to '/Users/runner/work/_temp/7becca8d-4967-467b-a61e-4176fe5add9f/.gitconfig'
+2026-08-04T02:36:42.7489880Z Temporarily overriding HOME='/Users/runner/work/_temp/7becca8d-4967-467b-a61e-4176fe5add9f' before making global git config changes
+2026-08-04T02:36:42.7491010Z Adding repository directory to the temporary git global config as a safe directory
+2026-08-04T02:36:42.7492990Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/runner/work/cc-bridge/cc-bridge
+2026-08-04T02:36:42.7588370Z Deleting the contents of '/Users/runner/work/cc-bridge/cc-bridge'
+2026-08-04T02:36:42.7591090Z ##[group]Initializing the repository
+2026-08-04T02:36:42.7595760Z [command]/opt/homebrew/bin/git init /Users/runner/work/cc-bridge/cc-bridge
+2026-08-04T02:36:42.7812750Z hint: Using 'master' as the name for the initial branch. This default branch name
+2026-08-04T02:36:42.7813620Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+2026-08-04T02:36:42.7814320Z hint: to use in all of your new repositories, which will suppress this warning,
+2026-08-04T02:36:42.7814970Z hint: call:
+2026-08-04T02:36:42.7815160Z hint:
+2026-08-04T02:36:42.7815620Z hint: 	git config --global init.defaultBranch <name>
+2026-08-04T02:36:42.7816010Z hint:
+2026-08-04T02:36:42.7816440Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+2026-08-04T02:36:42.7817080Z hint: 'development'. The just-created branch can be renamed via this command:
+2026-08-04T02:36:42.7817730Z hint:
+2026-08-04T02:36:42.7817990Z hint: 	git branch -m <name>
+2026-08-04T02:36:42.7818350Z hint:
+2026-08-04T02:36:42.7818890Z hint: Disable this message with "git config set advice.defaultBranchName false"
+2026-08-04T02:36:42.7819700Z Initialized empty Git repository in /Users/runner/work/cc-bridge/cc-bridge/.git/
+2026-08-04T02:36:42.7833290Z [command]/opt/homebrew/bin/git remote add origin https://github.com/lzlkyb/cc-bridge
+2026-08-04T02:36:42.7910980Z ##[endgroup]
+2026-08-04T02:36:42.7911320Z ##[group]Disabling automatic garbage collection
+2026-08-04T02:36:42.7913950Z [command]/opt/homebrew/bin/git config --local gc.auto 0
+2026-08-04T02:36:42.7981790Z ##[endgroup]
+2026-08-04T02:36:42.7983890Z ##[group]Setting up auth
+2026-08-04T02:36:42.7986440Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-08-04T02:36:42.8049200Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-08-04T02:36:42.9094700Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-08-04T02:36:42.9147880Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-08-04T02:36:42.9842130Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-04T02:36:42.9905420Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-08-04T02:36:43.1121630Z [command]/opt/homebrew/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+2026-08-04T02:36:43.1335720Z ##[endgroup]
+2026-08-04T02:36:43.1337340Z ##[group]Fetching the repository
+2026-08-04T02:36:43.1339080Z [command]/opt/homebrew/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +6b6bbf64905914e656a35d66b10415e954e115e4:refs/remotes/origin/main
+2026-08-04T02:36:44.3934580Z From https://github.com/lzlkyb/cc-bridge
+2026-08-04T02:36:44.3935410Z  * [new ref]         6b6bbf64905914e656a35d66b10415e954e115e4 -> origin/main
+2026-08-04T02:36:44.3944140Z ##[endgroup]
+2026-08-04T02:36:44.3944670Z ##[group]Determining the checkout info
+2026-08-04T02:36:44.3947660Z ##[endgroup]
+2026-08-04T02:36:44.3957500Z [command]/opt/homebrew/bin/git sparse-checkout disable
+2026-08-04T02:36:44.4085100Z [command]/opt/homebrew/bin/git config --local --unset-all extensions.worktreeConfig
+2026-08-04T02:36:44.4191750Z ##[group]Checking out the ref
+2026-08-04T02:36:44.4194640Z [command]/opt/homebrew/bin/git checkout --progress --force -B main refs/remotes/origin/main
+2026-08-04T02:36:44.5139330Z Switched to a new branch 'main'
+2026-08-04T02:36:44.5212130Z branch 'main' set up to track 'origin/main'.
+2026-08-04T02:36:44.5213230Z ##[endgroup]
+2026-08-04T02:36:44.5329180Z [command]/opt/homebrew/bin/git log -1 --format=%H
+2026-08-04T02:36:44.5400780Z 6b6bbf64905914e656a35d66b10415e954e115e4
+2026-08-04T02:36:44.5712330Z ##[group]Run dtolnay/rust-toolchain@stable
+2026-08-04T02:36:44.5712570Z with:
+2026-08-04T02:36:44.5712690Z   toolchain: stable
+2026-08-04T02:36:44.5712820Z env:
+2026-08-04T02:36:44.5712950Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:44.5713110Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:44.5713250Z ##[endgroup]
+2026-08-04T02:36:44.5771790Z ##[start-action display=Run : parse toolchain version;id=__dtolnay_rust-toolchain.parse]
+2026-08-04T02:36:44.5799060Z ##[group]Run : parse toolchain version
+2026-08-04T02:36:44.5799330Z [36;1m: parse toolchain version[0m
+2026-08-04T02:36:44.5799510Z [36;1mif [[ -z $toolchain ]]; then[0m
+2026-08-04T02:36:44.5799910Z [36;1m  # GitHub does not enforce `required: true` inputs itself. https://github.com/actions/runner/issues/1070[0m
+2026-08-04T02:36:44.5800320Z [36;1m  echo "'toolchain' is a required input" >&2[0m
+2026-08-04T02:36:44.5800540Z [36;1m  exit 1[0m
+2026-08-04T02:36:44.5800820Z [36;1melif [[ $toolchain =~ ^stable' '[0-9]+' '(year|month|week|day)s?' 'ago$ ]]; then[0m
+2026-08-04T02:36:44.5801130Z [36;1m  if [[ macOS == macOS ]]; then[0m
+2026-08-04T02:36:44.5801550Z [36;1m    echo "toolchain=1.$((($(date -v-$(sed 's/stable \([0-9]*\) \(.\).*/\1\2/' <<< $toolchain) +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+2026-08-04T02:36:44.5801940Z [36;1m  else[0m
+2026-08-04T02:36:44.5802250Z [36;1m    echo "toolchain=1.$((($(date --date "${toolchain#stable }" +%s)/60/60/24-16569)/7/6))" >> $GITHUB_OUTPUT[0m
+2026-08-04T02:36:44.5802600Z [36;1m  fi[0m
+2026-08-04T02:36:44.5802820Z [36;1melif [[ $toolchain =~ ^stable' 'minus' '[0-9]+' 'releases?$ ]]; then[0m
+2026-08-04T02:36:44.5803270Z [36;1m  echo "toolchain=1.$((($(date +%s)/60/60/24-16569)/7/6-${toolchain//[^0-9]/}))" >> $GITHUB_OUTPUT[0m
+2026-08-04T02:36:44.5803620Z [36;1melif [[ $toolchain =~ ^1\.[0-9]+$ ]]; then[0m
+2026-08-04T02:36:44.5804120Z [36;1m  echo "toolchain=1.$((i=${toolchain#1.}, c=($(date +%s)/60/60/24-16569)/7/6, i+9*i*(10*i<=c)+90*i*(100*i<=c)))" >> $GITHUB_OUTPUT[0m
+2026-08-04T02:36:44.5804630Z [36;1melse[0m
+2026-08-04T02:36:44.5804880Z [36;1m  echo "toolchain=$toolchain" >> $GITHUB_OUTPUT[0m
+2026-08-04T02:36:44.5805100Z [36;1mfi[0m
+2026-08-04T02:36:44.5841350Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:44.5841650Z env:
+2026-08-04T02:36:44.5841800Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:44.5842000Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:44.5842160Z   toolchain: stable
+2026-08-04T02:36:44.5842390Z ##[endgroup]
+2026-08-04T02:36:44.6300090Z ##[end-action id=__dtolnay_rust-toolchain.parse;outcome=success;conclusion=success;duration_ms=52]
+2026-08-04T02:36:44.6316100Z ##[start-action display=Run : construct rustup command line;id=__dtolnay_rust-toolchain.flags]
+2026-08-04T02:36:44.6333310Z ##[group]Run : construct rustup command line
+2026-08-04T02:36:44.6333580Z [36;1m: construct rustup command line[0m
+2026-08-04T02:36:44.6333960Z [36;1mecho "targets=$(for t in ${targets//,/ }; do echo -n ' --target' $t; done)" >> $GITHUB_OUTPUT[0m
+2026-08-04T02:36:44.6334460Z [36;1mecho "components=$(for c in ${components//,/ }; do echo -n ' --component' $c; done)" >> $GITHUB_OUTPUT[0m
+2026-08-04T02:36:44.6334840Z [36;1mecho "downgrade=" >> $GITHUB_OUTPUT[0m
+2026-08-04T02:36:44.6362020Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:44.6362260Z env:
+2026-08-04T02:36:44.6362400Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:44.6362580Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:44.6362740Z   targets: 
+2026-08-04T02:36:44.6363080Z   components: 
+2026-08-04T02:36:44.6363210Z ##[endgroup]
+2026-08-04T02:36:44.6635600Z ##[end-action id=__dtolnay_rust-toolchain.flags;outcome=success;conclusion=success;duration_ms=31]
+2026-08-04T02:36:44.6638550Z ##[start-action display=Run : set $CARGO_HOME;id=__dtolnay_rust-toolchain.__run]
+2026-08-04T02:36:44.6653040Z ##[group]Run : set $CARGO_HOME
+2026-08-04T02:36:44.6653240Z [36;1m: set $CARGO_HOME[0m
+2026-08-04T02:36:44.6653780Z [36;1mecho CARGO_HOME=${CARGO_HOME:-"$HOME/.cargo"} >> $GITHUB_ENV[0m
+2026-08-04T02:36:44.6683040Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:44.6683310Z env:
+2026-08-04T02:36:44.6683450Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:44.6683640Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:44.6683820Z ##[endgroup]
+2026-08-04T02:36:44.7038960Z ##[end-action id=__dtolnay_rust-toolchain.__run;outcome=success;conclusion=success;duration_ms=39]
+2026-08-04T02:36:44.7041300Z ##[start-action display=Run : install rustup if needed;id=__dtolnay_rust-toolchain.__run_2]
+2026-08-04T02:36:44.7062860Z ##[group]Run : install rustup if needed
+2026-08-04T02:36:44.7063100Z [36;1m: install rustup if needed[0m
+2026-08-04T02:36:44.7063330Z [36;1mif ! command -v rustup &>/dev/null; then[0m
+2026-08-04T02:36:44.7063920Z [36;1m  curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused --location --silent --show-error --fail https://sh.rustup.rs | sh -s -- --default-toolchain none -y[0m
+2026-08-04T02:36:44.7064510Z [36;1m  echo "$CARGO_HOME/bin" >> $GITHUB_PATH[0m
+2026-08-04T02:36:44.7064820Z [36;1mfi[0m
+2026-08-04T02:36:44.7092210Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:44.7092450Z env:
+2026-08-04T02:36:44.7092600Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:44.7092790Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:44.7092970Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:44.7093160Z ##[endgroup]
+2026-08-04T02:36:44.7395920Z ##[end-action id=__dtolnay_rust-toolchain.__run_2;outcome=success;conclusion=success;duration_ms=35]
+2026-08-04T02:36:44.7399880Z ##[start-action display=Run : install rustup if needed on windows;id=__dtolnay_rust-toolchain.__run_3]
+2026-08-04T02:36:44.7405990Z ##[end-action id=__dtolnay_rust-toolchain.__run_3;outcome=skipped;conclusion=skipped;duration_ms=0]
+2026-08-04T02:36:44.7433410Z ##[start-action display=rustup toolchain install stable;id=__dtolnay_rust-toolchain.__run_4]
+2026-08-04T02:36:44.7450690Z ##[group]Run rustup toolchain install stable --profile minimal --no-self-update
+2026-08-04T02:36:44.7451150Z [36;1mrustup toolchain install stable --profile minimal --no-self-update[0m
+2026-08-04T02:36:44.7485120Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:44.7485440Z env:
+2026-08-04T02:36:44.7485630Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:44.7485810Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:44.7486020Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:44.7486240Z   RUSTUP_PERMIT_COPY_RENAME: 1
+2026-08-04T02:36:44.7486420Z ##[endgroup]
+2026-08-04T02:36:45.0816970Z info: syncing channel updates for stable-aarch64-apple-darwin
+2026-08-04T02:36:45.1768370Z 
+2026-08-04T02:36:45.1864510Z info: self-update is disabled for this build of rustup
+2026-08-04T02:36:45.1864960Z   stable-aarch64-apple-darwin unchanged - rustc 1.97.1 (8bab26f4f 2026-07-14)
+2026-08-04T02:36:45.1865480Z info: any updates to rustup will need to be fetched with your system package manager
+2026-08-04T02:36:45.1865770Z 
+2026-08-04T02:36:45.1882940Z ##[end-action id=__dtolnay_rust-toolchain.__run_4;outcome=success;conclusion=success;duration_ms=444]
+2026-08-04T02:36:45.1886110Z ##[start-action display=Run rustup default stable;id=__dtolnay_rust-toolchain.__run_5]
+2026-08-04T02:36:45.1903110Z ##[group]Run rustup default stable
+2026-08-04T02:36:45.1903350Z [36;1mrustup default stable[0m
+2026-08-04T02:36:45.1934330Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:45.1934650Z env:
+2026-08-04T02:36:45.1934840Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:45.1935530Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:45.1935730Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:45.1935950Z ##[endgroup]
+2026-08-04T02:36:45.2361860Z info: using existing install for stable-aarch64-apple-darwin
+2026-08-04T02:36:45.2390040Z info: default toolchain set to stable-aarch64-apple-darwin
+2026-08-04T02:36:45.2390280Z 
+2026-08-04T02:36:45.2488670Z   stable-aarch64-apple-darwin unchanged - rustc 1.97.1 (8bab26f4f 2026-07-14)
+2026-08-04T02:36:45.2489010Z 
+2026-08-04T02:36:45.2507030Z ##[end-action id=__dtolnay_rust-toolchain.__run_5;outcome=success;conclusion=success;duration_ms=61]
+2026-08-04T02:36:45.2518630Z ##[start-action display=Run : create cachekey;id=__dtolnay_rust-toolchain.rustc-version]
+2026-08-04T02:36:45.2682120Z ##[group]Run : create cachekey
+2026-08-04T02:36:45.2682400Z [36;1m: create cachekey[0m
+2026-08-04T02:36:45.2682820Z [36;1mDATE=$(rustc +stable --version --verbose | sed -ne 's/^commit-date: \(20[0-9][0-9]\)-\([01][0-9]\)-\([0-3][0-9]\)$/\1\2\3/p')[0m
+2026-08-04T02:36:45.2683430Z [36;1mHASH=$(rustc +stable --version --verbose | sed -ne 's/^commit-hash: //p')[0m
+2026-08-04T02:36:45.2683860Z [36;1mecho "cachekey=$(echo $DATE$HASH | head -c12)" >> $GITHUB_OUTPUT[0m
+2026-08-04T02:36:45.2770860Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:45.2771150Z env:
+2026-08-04T02:36:45.2771320Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:45.2771500Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:45.2771690Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:45.2771910Z ##[endgroup]
+2026-08-04T02:36:45.4096500Z ##[end-action id=__dtolnay_rust-toolchain.rustc-version;outcome=success;conclusion=success;duration_ms=157]
+2026-08-04T02:36:45.4098620Z ##[start-action display=Run : disable incremental compilation;id=__dtolnay_rust-toolchain.__run_6]
+2026-08-04T02:36:45.4126050Z ##[group]Run : disable incremental compilation
+2026-08-04T02:36:45.4126360Z [36;1m: disable incremental compilation[0m
+2026-08-04T02:36:45.4126640Z [36;1mif [ -z "${CARGO_INCREMENTAL+set}" ]; then[0m
+2026-08-04T02:36:45.4126950Z [36;1m  echo CARGO_INCREMENTAL=0 >> $GITHUB_ENV[0m
+2026-08-04T02:36:45.4127180Z [36;1mfi[0m
+2026-08-04T02:36:45.4158750Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:45.4159080Z env:
+2026-08-04T02:36:45.4159260Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:45.4159450Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:45.4159630Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:45.4159840Z ##[endgroup]
+2026-08-04T02:36:45.4466940Z ##[end-action id=__dtolnay_rust-toolchain.__run_6;outcome=success;conclusion=success;duration_ms=36]
+2026-08-04T02:36:45.4469010Z ##[start-action display=Run : enable colors in Cargo output;id=__dtolnay_rust-toolchain.__run_7]
+2026-08-04T02:36:45.4486910Z ##[group]Run : enable colors in Cargo output
+2026-08-04T02:36:45.4487210Z [36;1m: enable colors in Cargo output[0m
+2026-08-04T02:36:45.4487470Z [36;1mif [ -z "${CARGO_TERM_COLOR+set}" ]; then[0m
+2026-08-04T02:36:45.4487760Z [36;1m  echo CARGO_TERM_COLOR=always >> $GITHUB_ENV[0m
+2026-08-04T02:36:45.4488030Z [36;1mfi[0m
+2026-08-04T02:36:45.4517920Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:45.4518190Z env:
+2026-08-04T02:36:45.4518370Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:45.4518560Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:45.4518750Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:45.4518950Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:36:45.4519120Z ##[endgroup]
+2026-08-04T02:36:45.4816850Z ##[end-action id=__dtolnay_rust-toolchain.__run_7;outcome=success;conclusion=success;duration_ms=34]
+2026-08-04T02:36:45.4822330Z ##[start-action display=Run : enable Cargo sparse registry;id=__dtolnay_rust-toolchain.__run_8]
+2026-08-04T02:36:45.4843400Z ##[group]Run : enable Cargo sparse registry
+2026-08-04T02:36:45.4843690Z [36;1m: enable Cargo sparse registry[0m
+2026-08-04T02:36:45.4844050Z [36;1m# implemented in 1.66, stabilized in 1.68, made default in 1.70[0m
+2026-08-04T02:36:45.4844670Z [36;1mif [ -z "${CARGO_REGISTRIES_CRATES_IO_PROTOCOL+set}" -o -f "/Users/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol ]; then[0m
+2026-08-04T02:36:45.4845590Z [36;1m  if rustc +stable --version --verbose | grep -q '^release: 1\.6[89]\.'; then[0m
+2026-08-04T02:36:45.4846100Z [36;1m    touch "/Users/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+2026-08-04T02:36:45.4846580Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse >> $GITHUB_ENV[0m
+2026-08-04T02:36:45.4847190Z [36;1m  elif rustc +stable --version --verbose | grep -q '^release: 1\.6[67]\.'; then[0m
+2026-08-04T02:36:45.4847680Z [36;1m    touch "/Users/runner/work/_temp"/.implicit_cargo_registries_crates_io_protocol || true[0m
+2026-08-04T02:36:45.4848140Z [36;1m    echo CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git >> $GITHUB_ENV[0m
+2026-08-04T02:36:45.4848430Z [36;1m  fi[0m
+2026-08-04T02:36:45.4848590Z [36;1mfi[0m
+2026-08-04T02:36:45.4879260Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:45.4879530Z env:
+2026-08-04T02:36:45.4879680Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:45.4879890Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:45.4880110Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:45.4880390Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:36:45.4880610Z   CARGO_TERM_COLOR: always
+2026-08-04T02:36:45.4880830Z ##[endgroup]
+2026-08-04T02:36:45.5577720Z ##[end-action id=__dtolnay_rust-toolchain.__run_8;outcome=success;conclusion=success;duration_ms=75]
+2026-08-04T02:36:45.5581240Z ##[start-action display=Run : work around spurious network errors in curl 8.0;id=__dtolnay_rust-toolchain.__run_9]
+2026-08-04T02:36:45.5598760Z ##[group]Run : work around spurious network errors in curl 8.0
+2026-08-04T02:36:45.5599180Z [36;1m: work around spurious network errors in curl 8.0[0m
+2026-08-04T02:36:45.5599660Z [36;1m# https://rust-lang.zulipchat.com/#narrow/stream/246057-t-cargo/topic/timeout.20investigation[0m
+2026-08-04T02:36:45.5600210Z [36;1mif rustc +stable --version --verbose | grep -q '^release: 1\.7[01]\.'; then[0m
+2026-08-04T02:36:45.5600660Z [36;1m  echo CARGO_HTTP_MULTIPLEXING=false >> $GITHUB_ENV[0m
+2026-08-04T02:36:45.5600910Z [36;1mfi[0m
+2026-08-04T02:36:45.5635080Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:45.5635360Z env:
+2026-08-04T02:36:45.5635520Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:45.5635710Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:45.5635890Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:45.5636120Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:36:45.5636310Z   CARGO_TERM_COLOR: always
+2026-08-04T02:36:45.5636510Z ##[endgroup]
+2026-08-04T02:36:45.6175220Z ##[end-action id=__dtolnay_rust-toolchain.__run_9;outcome=success;conclusion=success;duration_ms=59]
+2026-08-04T02:36:45.6178520Z ##[start-action display=Run rustc +stable --version --verbose;id=__dtolnay_rust-toolchain.__run_10]
+2026-08-04T02:36:45.6196670Z ##[group]Run rustc +stable --version --verbose
+2026-08-04T02:36:45.6196970Z [36;1mrustc +stable --version --verbose[0m
+2026-08-04T02:36:45.6231990Z shell: /bin/bash --noprofile --norc -e -o pipefail {0}
+2026-08-04T02:36:45.6232240Z env:
+2026-08-04T02:36:45.6232390Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:45.6232570Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:45.6232750Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:45.6232940Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:36:45.6233110Z   CARGO_TERM_COLOR: always
+2026-08-04T02:36:45.6233280Z ##[endgroup]
+2026-08-04T02:36:45.6695130Z rustc 1.97.1 (8bab26f4f 2026-07-14)
+2026-08-04T02:36:45.6695560Z binary: rustc
+2026-08-04T02:36:45.6695780Z commit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+2026-08-04T02:36:45.6696050Z commit-date: 2026-07-14
+2026-08-04T02:36:45.6696240Z host: aarch64-apple-darwin
+2026-08-04T02:36:45.6696440Z release: 1.97.1
+2026-08-04T02:36:45.6699030Z LLVM version: 22.1.6
+2026-08-04T02:36:45.6710730Z ##[end-action id=__dtolnay_rust-toolchain.__run_10;outcome=success;conclusion=success;duration_ms=53]
+2026-08-04T02:36:45.6768120Z ##[group]Run mozilla/sccache-action@v0.0.10
+2026-08-04T02:36:45.6768510Z with:
+2026-08-04T02:36:45.6770200Z   token: ***
+2026-08-04T02:36:45.6770350Z   disable_annotations: false
+2026-08-04T02:36:45.6770510Z env:
+2026-08-04T02:36:45.6770650Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:45.6770820Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:45.6771000Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:45.6771190Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:36:45.6771360Z   CARGO_TERM_COLOR: always
+2026-08-04T02:36:45.6771510Z ##[endgroup]
+2026-08-04T02:36:46.3242850Z try to setup sccache version: v0.17.0
+2026-08-04T02:36:46.3254050Z sccache download from url: https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-apple-darwin.tar.gz
+2026-08-04T02:36:46.9037390Z Correct checksum: 0c560bfba31aef5bdfb4fb3d2677f6e61d71c5c00952f2a83344f47aa31f00f1
+2026-08-04T02:36:46.9149150Z [command]/usr/bin/tar xz -C /Users/runner/work/_temp/dc8a7c50-24ff-48aa-8fa0-2ecf55373995 -f /Users/runner/work/_temp/67c098dc-fa1a-4e2d-a6b6-98d12bfabd37
+2026-08-04T02:36:46.9528430Z sccache extracted to: /Users/runner/work/_temp/dc8a7c50-24ff-48aa-8fa0-2ecf55373995
+2026-08-04T02:36:46.9697220Z sccache cached to: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64
+2026-08-04T02:36:46.9831000Z ##[group]Run Swatinem/rust-cache@v2
+2026-08-04T02:36:46.9831230Z with:
+2026-08-04T02:36:46.9831400Z   workspaces: desktop/src-tauri
+2026-08-04T02:36:46.9831590Z   prefix-key: v0-rust
+2026-08-04T02:36:46.9831770Z   add-job-id-key: true
+2026-08-04T02:36:46.9831930Z   add-rust-environment-hash-key: true
+2026-08-04T02:36:46.9832170Z   cache-targets: true
+2026-08-04T02:36:46.9832320Z   cache-all-crates: false
+2026-08-04T02:36:46.9832490Z   cache-workspace-crates: false
+2026-08-04T02:36:46.9832690Z   save-if: true
+2026-08-04T02:36:46.9832870Z   cache-provider: github
+2026-08-04T02:36:46.9833030Z   cache-bin: true
+2026-08-04T02:36:46.9833210Z   lookup-only: false
+2026-08-04T02:36:46.9833370Z   cmd-format: {0}
+2026-08-04T02:36:46.9833520Z env:
+2026-08-04T02:36:46.9833660Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:46.9833840Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:46.9834010Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:46.9834190Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:36:46.9834390Z   CARGO_TERM_COLOR: always
+2026-08-04T02:36:46.9834680Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:36:46.9835010Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:36:46.9835500Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:36:46.9874120Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:36:46.9874330Z ##[endgroup]
+2026-08-04T02:36:47.2077130Z (node:3644) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-08-04T02:36:47.2078040Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-08-04T02:36:47.4382250Z ##[group]Cache Configuration
+2026-08-04T02:36:47.4382770Z Cache Provider:
+2026-08-04T02:36:47.4383080Z     github
+2026-08-04T02:36:47.4383360Z Workspaces:
+2026-08-04T02:36:47.4383680Z     /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri
+2026-08-04T02:36:47.4384080Z Cache Paths:
+2026-08-04T02:36:47.4384460Z     /Users/runner/.cargo/bin
+2026-08-04T02:36:47.4384760Z     /Users/runner/.cargo/.crates.toml
+2026-08-04T02:36:47.4385070Z     /Users/runner/.cargo/.crates2.json
+2026-08-04T02:36:47.4385520Z     /Users/runner/.cargo/registry
+2026-08-04T02:36:47.4387240Z     /Users/runner/.cargo/git
+2026-08-04T02:36:47.4387590Z     /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target
+2026-08-04T02:36:47.4387960Z Restore Key:
+2026-08-04T02:36:47.4388240Z     v0-rust-smoke-macos-Darwin-arm64-b04b8c66
+2026-08-04T02:36:47.4388560Z Cache Key:
+2026-08-04T02:36:47.4388850Z     v0-rust-smoke-macos-Darwin-arm64-b04b8c66-82c46a42
+2026-08-04T02:36:47.4389190Z .. Prefix:
+2026-08-04T02:36:47.4389450Z   - v0-rust-smoke-macos-Darwin-arm64
+2026-08-04T02:36:47.4390990Z .. Environment considered:
+2026-08-04T02:36:47.4391580Z   - Rust Versions:
+2026-08-04T02:36:47.4392780Z     - 1.97.1 aarch64-apple-darwin 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+2026-08-04T02:36:47.4393440Z     - 1.97.1 aarch64-apple-darwin 8bab26f4f68e0e26f0bb7960be334d5b520ea452
+2026-08-04T02:36:47.4393830Z   - CARGO_HOME
+2026-08-04T02:36:47.4394160Z   - CARGO_INCREMENTAL
+2026-08-04T02:36:47.4394730Z   - CARGO_TERM_COLOR
+2026-08-04T02:36:47.4403130Z   - RUSTC_WRAPPER
+2026-08-04T02:36:47.4403330Z .. Lockfiles considered:
+2026-08-04T02:36:47.4403620Z   - /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/Cargo.lock
+2026-08-04T02:36:47.4404050Z   - /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/Cargo.toml
+2026-08-04T02:36:47.4404710Z ##[endgroup]
+2026-08-04T02:36:47.4404840Z 
+2026-08-04T02:36:47.4404900Z ... Restoring cache ...
+2026-08-04T02:36:47.5110320Z No cache found.
+2026-08-04T02:36:47.5178230Z ##[group]Run actions/setup-node@v5
+2026-08-04T02:36:47.5178450Z with:
+2026-08-04T02:36:47.5178600Z   node-version: 22
+2026-08-04T02:36:47.5178740Z   cache: npm
+2026-08-04T02:36:47.5178940Z   cache-dependency-path: desktop/package-lock.json
+2026-08-04T02:36:47.5179190Z   always-auth: false
+2026-08-04T02:36:47.5179360Z   check-latest: false
+2026-08-04T02:36:47.5181140Z   token: ***
+2026-08-04T02:36:47.5181300Z   package-manager-cache: true
+2026-08-04T02:36:47.5181460Z env:
+2026-08-04T02:36:47.5181590Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:47.5181770Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:47.5181940Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:47.5182120Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:36:47.5182290Z   CARGO_TERM_COLOR: always
+2026-08-04T02:36:47.5182540Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:36:47.5182870Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:36:47.5183230Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:36:47.5218970Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:36:47.5219160Z   CACHE_ON_FAILURE: false
+2026-08-04T02:36:47.5219320Z ##[endgroup]
+2026-08-04T02:36:47.6526790Z Found in cache @ /Users/runner/hostedtoolcache/node/22.23.1/arm64
+2026-08-04T02:36:47.6530440Z (node:3650) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-08-04T02:36:47.6531000Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-08-04T02:36:47.6532210Z ##[group]Environment details
+2026-08-04T02:36:48.1125910Z node: v22.23.1
+2026-08-04T02:36:48.1126150Z npm: 10.9.8
+2026-08-04T02:36:48.1126300Z yarn: 1.22.22
+2026-08-04T02:36:48.1126730Z ##[endgroup]
+2026-08-04T02:36:48.1148930Z [command]/Users/runner/hostedtoolcache/node/22.23.1/arm64/bin/npm config get cache
+2026-08-04T02:36:48.2653460Z /Users/runner/.npm
+2026-08-04T02:36:48.3188580Z npm cache is not found
+2026-08-04T02:36:48.3277310Z ##[group]Run set +e
+2026-08-04T02:36:48.3277520Z [36;1mset +e[0m
+2026-08-04T02:36:48.3277700Z [36;1mecho "::group::会话身份与系统信息"[0m
+2026-08-04T02:36:48.3277900Z [36;1mid[0m
+2026-08-04T02:36:48.3278170Z [36;1mecho "launchctl managername = $(launchctl managername 2>&1)   # Aqua = 有图形会话"[0m
+2026-08-04T02:36:48.3278590Z [36;1mecho "SSH_CONNECTION=${SSH_CONNECTION:-<none>}"[0m
+2026-08-04T02:36:48.3278830Z [36;1msw_vers[0m
+2026-08-04T02:36:48.3279000Z [36;1mecho "arch = $(uname -m)"[0m
+2026-08-04T02:36:48.3279210Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:36:48.3279390Z [36;1m[0m
+2026-08-04T02:36:48.3279560Z [36;1mecho "::group::screencapture 能否出图"[0m
+2026-08-04T02:36:48.3279820Z [36;1mscreencapture -x "$RUNNER_TEMP/probe.png"[0m
+2026-08-04T02:36:48.3280070Z [36;1mecho "screencapture exit=$?"[0m
+2026-08-04T02:36:48.3280300Z [36;1mls -l "$RUNNER_TEMP/probe.png" 2>&1[0m
+2026-08-04T02:36:48.3280540Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:36:48.3280750Z [36;1m[0m
+2026-08-04T02:36:48.3280980Z [36;1mecho "::group::osascript 能否驱动 System Events（TCC 辅助权限）"[0m
+2026-08-04T02:36:48.3281400Z [36;1mosascript -e 'tell application "System Events" to return name of first process' 2>&1[0m
+2026-08-04T02:36:48.3283570Z [36;1mecho "osascript exit=$?"[0m
+2026-08-04T02:36:48.3283790Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:36:48.3315110Z shell: /bin/bash -e {0}
+2026-08-04T02:36:48.3315300Z env:
+2026-08-04T02:36:48.3315450Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:48.3315640Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:48.3315810Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:48.3316010Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:36:48.3316180Z   CARGO_TERM_COLOR: always
+2026-08-04T02:36:48.3316440Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:36:48.3316780Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:36:48.3317110Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:36:48.3351230Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:36:48.3351410Z   CACHE_ON_FAILURE: false
+2026-08-04T02:36:48.3351580Z ##[endgroup]
+2026-08-04T02:36:48.3690460Z ##[group]会话身份与系统信息
+2026-08-04T02:36:48.3751570Z uid=501(runner) gid=20(staff) groups=20(staff),12(everyone),61(localaccounts),79(_appserverusr),80(admin),81(_appserveradm),264(_webdeveloper),701(com.apple.sharepoint.group.1),33(_appstore),98(_lpadmin),100(_lpoperator),204(_developer),250(_analyticsusers),395(com.apple.access_ftp),398(com.apple.access_screensharing),399(com.apple.access_ssh),400(com.apple.access_remote_ae)
+2026-08-04T02:36:48.3816620Z launchctl managername = Aqua   # Aqua = 有图形会话
+2026-08-04T02:36:48.3816960Z SSH_CONNECTION=<none>
+2026-08-04T02:36:48.3893840Z ProductName:		macOS
+2026-08-04T02:36:48.3894310Z ProductVersion:		26.5.2
+2026-08-04T02:36:48.3894590Z BuildVersion:		25F84
+2026-08-04T02:36:48.3920330Z arch = arm64
+2026-08-04T02:36:48.3920880Z ##[endgroup]
+2026-08-04T02:36:48.3921290Z ##[group]screencapture 能否出图
+2026-08-04T02:36:48.6388880Z screencapture exit=0
+2026-08-04T02:36:48.6494760Z -rw-r--r--@ 1 runner  staff  80358 Aug  4 02:36 /Users/runner/work/_temp/probe.png
+2026-08-04T02:36:48.6596550Z ##[endgroup]
+2026-08-04T02:36:48.6664170Z ##[group]osascript 能否驱动 System Events（TCC 辅助权限）
+2026-08-04T02:36:49.0091690Z loginwindow
+2026-08-04T02:36:49.0123380Z osascript exit=0
+2026-08-04T02:36:49.0124030Z ##[endgroup]
+2026-08-04T02:36:49.0353220Z ##[group]Run npm ci
+2026-08-04T02:36:49.0353480Z [36;1mnpm ci[0m
+2026-08-04T02:36:49.0353790Z [36;1m# 与 Windows 侧同一个 npm optionalDependencies 坑（npm/cli#4828）：[0m
+2026-08-04T02:36:49.0354160Z [36;1m# Tauri CLI 的平台 native binding 可能不被装上，显式补一次，不写回 lock。[0m
+2026-08-04T02:36:49.0354460Z [36;1mif [ "$(uname -m)" = "arm64" ]; then[0m
+2026-08-04T02:36:49.0354780Z [36;1m  npm install @tauri-apps/cli-darwin-arm64 --no-save || true[0m
+2026-08-04T02:36:49.0355080Z [36;1melse[0m
+2026-08-04T02:36:49.0355290Z [36;1m  npm install @tauri-apps/cli-darwin-x64 --no-save || true[0m
+2026-08-04T02:36:49.0356480Z [36;1mfi[0m
+2026-08-04T02:36:49.0432920Z shell: /bin/bash -e {0}
+2026-08-04T02:36:49.0453020Z env:
+2026-08-04T02:36:49.0453210Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:36:49.0453400Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:36:49.0453580Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:36:49.0453800Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:36:49.0454040Z   CARGO_TERM_COLOR: always
+2026-08-04T02:36:49.0454790Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:36:49.0457430Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:36:49.0457790Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:36:49.0518480Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:36:49.0518740Z   CACHE_ON_FAILURE: false
+2026-08-04T02:36:49.0518960Z ##[endgroup]
+2026-08-04T02:37:01.0527070Z 
+2026-08-04T02:37:01.0529100Z added 119 packages, and audited 120 packages in 12s
+2026-08-04T02:37:01.0529650Z 
+2026-08-04T02:37:01.0529920Z 25 packages are looking for funding
+2026-08-04T02:37:01.0530450Z   run `npm fund` for details
+2026-08-04T02:37:01.0543180Z 
+2026-08-04T02:37:01.0543500Z 1 high severity vulnerability
+2026-08-04T02:37:01.0543880Z 
+2026-08-04T02:37:01.0544100Z To address all issues, run:
+2026-08-04T02:37:01.0545300Z   npm audit fix
+2026-08-04T02:37:01.0545560Z 
+2026-08-04T02:37:01.0545790Z Run `npm audit` for details.
+2026-08-04T02:37:01.7053160Z 
+2026-08-04T02:37:01.7053850Z up to date, audited 120 packages in 490ms
+2026-08-04T02:37:01.7054370Z 
+2026-08-04T02:37:01.7054630Z 25 packages are looking for funding
+2026-08-04T02:37:01.7055140Z   run `npm fund` for details
+2026-08-04T02:37:01.7072250Z 
+2026-08-04T02:37:01.7072710Z 1 high severity vulnerability
+2026-08-04T02:37:01.7073090Z 
+2026-08-04T02:37:01.7073400Z To address all issues, run:
+2026-08-04T02:37:01.7073770Z   npm audit fix
+2026-08-04T02:37:01.7073970Z 
+2026-08-04T02:37:01.7074300Z Run `npm audit` for details.
+2026-08-04T02:37:01.7181450Z ##[group]Run npx tauri signer generate -w "$RUNNER_TEMP/smoke.key" -p "" -f
+2026-08-04T02:37:01.7182090Z [36;1mnpx tauri signer generate -w "$RUNNER_TEMP/smoke.key" -p "" -f[0m
+2026-08-04T02:37:01.7182600Z [36;1mecho "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/smoke.key" >> "$GITHUB_ENV"[0m
+2026-08-04T02:37:01.7183040Z [36;1mecho "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"[0m
+2026-08-04T02:37:01.7220180Z shell: /bin/bash -e {0}
+2026-08-04T02:37:01.7220430Z env:
+2026-08-04T02:37:01.7220650Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:37:01.7220890Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:37:01.7221140Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:37:01.7221380Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:37:01.7221640Z   CARGO_TERM_COLOR: always
+2026-08-04T02:37:01.7222010Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:37:01.7222330Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:37:01.7222870Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:37:01.7259130Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:37:01.7259580Z   CACHE_ON_FAILURE: false
+2026-08-04T02:37:01.7259900Z ##[endgroup]
+2026-08-04T02:37:02.1292140Z 
+2026-08-04T02:37:02.1292850Z Your keypair was generated successfully:
+2026-08-04T02:37:02.1293910Z Private: /Users/runner/work/_temp/smoke.key (Keep it secret!)
+2026-08-04T02:37:02.1294610Z Public: /Users/runner/work/_temp/smoke.key.pub
+2026-08-04T02:37:02.1295120Z ---------------------------
+2026-08-04T02:37:02.1295380Z 
+2026-08-04T02:37:02.1295530Z Environment variables used to sign:
+2026-08-04T02:37:02.1296130Z - `TAURI_SIGNING_PRIVATE_KEY`: String of your private key
+2026-08-04T02:37:02.1296840Z - `TAURI_SIGNING_PRIVATE_KEY_PATH`: Path to your private key file
+2026-08-04T02:37:02.1297610Z - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`:  Your private key password (optional if key has no password)
+2026-08-04T02:37:02.1298020Z 
+2026-08-04T02:37:02.1298680Z ATTENTION: If you lose your private key OR password, you'll not be able to sign your update package and updates will not work
+2026-08-04T02:37:02.1429200Z ##[group]Run npm run prebuild
+2026-08-04T02:37:02.1429890Z [36;1mnpm run prebuild[0m
+2026-08-04T02:37:02.1455990Z [36;1m# bundle.targets 固定为 nsis（Windows 发版路径），mac 上用 --bundles 覆盖。[0m
+2026-08-04T02:37:02.1456570Z [36;1m# 故意不往配置里加 mac target：那条路径是正式发版用的，不拿它做实验。[0m
+2026-08-04T02:37:02.1457450Z [36;1mnpx tauri build --bundles app[0m
+2026-08-04T02:37:02.1519910Z shell: /bin/bash -e {0}
+2026-08-04T02:37:02.1520340Z env:
+2026-08-04T02:37:02.1520520Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:37:02.1520770Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:37:02.1521690Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:37:02.1522260Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:37:02.1522460Z   CARGO_TERM_COLOR: always
+2026-08-04T02:37:02.1522880Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:37:02.1523490Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:37:02.1523920Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:37:02.1563460Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:37:02.1563890Z   CACHE_ON_FAILURE: false
+2026-08-04T02:37:02.1564260Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:37:02.1564660Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:37:02.1566460Z ##[endgroup]
+2026-08-04T02:37:02.3111350Z 
+2026-08-04T02:37:02.3111800Z > cc-bridge-desktop@2.3.20 prebuild
+2026-08-04T02:37:02.3112350Z > node scripts/sync-version.mjs && node scripts/gen-changelog.mjs
+2026-08-04T02:37:02.3112690Z 
+2026-08-04T02:37:02.3523770Z [36m[SYNC-VERSION][0m Cargo.toml 版本（真源）: 2.3.20
+2026-08-04T02:37:02.3528500Z [32m[SYNC-VERSION OK][0m tauri.conf.json 版本一致: 2.3.20
+2026-08-04T02:37:02.3529080Z [32m[SYNC-VERSION OK][0m package.json 版本一致: 2.3.20
+2026-08-04T02:37:02.3965690Z [36m[GEN-CHANGELOG][0m 解析到 39 个版本，生成最近 10 个
+2026-08-04T02:37:02.3970770Z [32m[GEN-CHANGELOG OK][0m 已生成 /Users/runner/work/cc-bridge/cc-bridge/desktop/src/lib/changelog.generated.ts（10 个版本，2.3.20 为最新）
+2026-08-04T02:37:02.7741310Z         Info Looking up installed tauri packages to check mismatched versions...
+2026-08-04T02:37:03.1137760Z      Running beforeBuildCommand `npm run vite:build`
+2026-08-04T02:37:03.2543670Z 
+2026-08-04T02:37:03.2544290Z > cc-bridge-desktop@2.3.20 vite:build
+2026-08-04T02:37:03.2545120Z > tsc && vite build
+2026-08-04T02:37:03.2545340Z 
+2026-08-04T02:37:06.4036250Z [36mvite v6.4.3 [32mbuilding for production...[36m[39m
+2026-08-04T02:37:06.4410340Z transforming...
+2026-08-04T02:37:07.2569020Z [32m✓[39m 158 modules transformed.
+2026-08-04T02:37:07.3439010Z rendering chunks...
+2026-08-04T02:37:07.3875620Z computing gzip size...
+2026-08-04T02:37:07.4109250Z [2mdist/[22m[32mindex.html                       [39m[1m[2m  0.65 kB[22m[1m[22m[2m │ gzip:  0.33 kB[22m
+2026-08-04T02:37:07.4143570Z [2mdist/[22m[2massets/[22m[35mindex-DR_2_Dne.css        [39m[1m[2m 89.52 kB[22m[1m[22m[2m │ gzip: 16.02 kB[22m
+2026-08-04T02:37:07.4145080Z [2mdist/[22m[2massets/[22m[36mConfirmModal-D08ILwmR.js  [39m[1m[2m  0.69 kB[22m[1m[22m[2m │ gzip:  0.44 kB[22m
+2026-08-04T02:37:07.4146850Z [2mdist/[22m[2massets/[22m[36mtable-DIZoOQiB.js         [39m[1m[2m  0.83 kB[22m[1m[22m[2m │ gzip:  0.39 kB[22m
+2026-08-04T02:37:07.4148120Z [2mdist/[22m[2massets/[22m[36mvendor-tauri-D4RCdzPG.js  [39m[1m[2m 14.95 kB[22m[1m[22m[2m │ gzip:  3.82 kB[22m
+2026-08-04T02:37:07.4152860Z [2mdist/[22m[2massets/[22m[36mLogTab-DFbsUJBk.js        [39m[1m[2m 32.84 kB[22m[1m[22m[2m │ gzip: 10.74 kB[22m
+2026-08-04T02:37:07.4153840Z [2mdist/[22m[2massets/[22m[36mvendor-query-D7LYmuH7.js  [39m[1m[2m 41.57 kB[22m[1m[22m[2m │ gzip: 12.96 kB[22m
+2026-08-04T02:37:07.4155590Z [2mdist/[22m[2massets/[22m[36mSettingsTab-B1KSLMmB.js   [39m[1m[2m 46.62 kB[22m[1m[22m[2m │ gzip: 14.45 kB[22m
+2026-08-04T02:37:07.4166880Z [2mdist/[22m[2massets/[22m[36mSecurityTab-Ce7Bf_oa.js   [39m[1m[2m 51.16 kB[22m[1m[22m[2m │ gzip: 14.61 kB[22m
+2026-08-04T02:37:07.4274380Z [2mdist/[22m[2massets/[22m[36mvendor-react-BRehkr6i.js  [39m[1m[2m134.66 kB[22m[1m[22m[2m │ gzip: 43.23 kB[22m
+2026-08-04T02:37:07.4276930Z [2mdist/[22m[2massets/[22m[36mindex-B0T268R5.js         [39m[1m[2m138.04 kB[22m[1m[22m[2m │ gzip: 45.89 kB[22m
+2026-08-04T02:37:07.4277840Z [32m✓ built in 991ms[39m
+2026-08-04T02:37:08.3245700Z [1m[92m    Updating[0m crates.io index
+2026-08-04T02:37:09.2095840Z [1m[92m Downloading[0m crates ...
+2026-08-04T02:37:09.2450040Z [1m[92m  Downloaded[0m anstyle-query v1.1.5
+2026-08-04T02:37:09.2599130Z [1m[92m  Downloaded[0m colorchoice v1.0.5
+2026-08-04T02:37:09.2701190Z [1m[92m  Downloaded[0m ahash v0.8.12
+2026-08-04T02:37:09.2732600Z [1m[92m  Downloaded[0m ctor v0.8.0
+2026-08-04T02:37:09.2733220Z [1m[92m  Downloaded[0m anstyle v1.0.14
+2026-08-04T02:37:09.2760200Z [1m[92m  Downloaded[0m displaydoc v0.2.6
+2026-08-04T02:37:09.2791750Z [1m[92m  Downloaded[0m env_filter v2.0.0
+2026-08-04T02:37:09.2817890Z [1m[92m  Downloaded[0m fallible-iterator v0.3.0
+2026-08-04T02:37:09.2838610Z [1m[92m  Downloaded[0m adler2 v2.0.1
+2026-08-04T02:37:09.2879300Z [1m[92m  Downloaded[0m alloc-stdlib v0.2.4
+2026-08-04T02:37:09.2908610Z [1m[92m  Downloaded[0m brotli-decompressor v5.0.3
+2026-08-04T02:37:09.3037120Z [1m[92m  Downloaded[0m scopeguard v1.2.0
+2026-08-04T02:37:09.3079160Z [1m[92m  Downloaded[0m quick-error v2.0.1
+2026-08-04T02:37:09.3131840Z [1m[92m  Downloaded[0m powerfmt v0.2.0
+2026-08-04T02:37:09.3136020Z [1m[92m  Downloaded[0m serde_derive v1.0.228
+2026-08-04T02:37:09.3187910Z [1m[92m  Downloaded[0m filetime v0.2.29
+2026-08-04T02:37:09.3226170Z [1m[92m  Downloaded[0m phf v0.13.1
+2026-08-04T02:37:09.3247680Z [1m[92m  Downloaded[0m phf_macros v0.13.1
+2026-08-04T02:37:09.3266570Z [1m[92m  Downloaded[0m servo_arc v0.4.3
+2026-08-04T02:37:09.3306360Z [1m[92m  Downloaded[0m schemars v1.2.1
+2026-08-04T02:37:09.3899930Z [1m[92m  Downloaded[0m siphasher v1.0.3
+2026-08-04T02:37:09.4007040Z [1m[92m  Downloaded[0m regex-automata v0.4.14
+2026-08-04T02:37:09.4437940Z [1m[92m  Downloaded[0m tauri-plugin-opener v2.5.4
+2026-08-04T02:37:09.4547280Z [1m[92m  Downloaded[0m lock_api v0.4.14
+2026-08-04T02:37:09.4656060Z [1m[92m  Downloaded[0m anyhow v1.0.103
+2026-08-04T02:37:09.4761560Z [1m[92m  Downloaded[0m string_cache_codegen v0.6.1
+2026-08-04T02:37:09.4832220Z [1m[92m  Downloaded[0m arboard v3.6.1
+2026-08-04T02:37:09.4833130Z [1m[92m  Downloaded[0m ref-cast v1.0.25
+2026-08-04T02:37:09.4833810Z [1m[92m  Downloaded[0m synstructure v0.13.2
+2026-08-04T02:37:09.4834340Z [1m[92m  Downloaded[0m tauri-macros v2.6.3
+2026-08-04T02:37:09.4834980Z [1m[92m  Downloaded[0m simd-adler32 v0.3.9
+2026-08-04T02:37:09.5232690Z [1m[92m  Downloaded[0m bytes v1.12.0
+2026-08-04T02:37:09.5334500Z [1m[92m  Downloaded[0m embed_plist v1.2.2
+2026-08-04T02:37:09.5362520Z [1m[92m  Downloaded[0m equivalent v1.0.2
+2026-08-04T02:37:09.5363660Z [1m[92m  Downloaded[0m fastrand v2.4.1
+2026-08-04T02:37:09.5385890Z [1m[92m  Downloaded[0m time-macros v0.2.31
+2026-08-04T02:37:09.5386470Z [1m[92m  Downloaded[0m autocfg v1.5.1
+2026-08-04T02:37:09.5404470Z [1m[92m  Downloaded[0m auto-launch v0.5.0
+2026-08-04T02:37:09.5456160Z [1m[92m  Downloaded[0m dtoa-short v0.3.5
+2026-08-04T02:37:09.5458900Z [1m[92m  Downloaded[0m axum-core v0.5.6
+2026-08-04T02:37:09.5492840Z [1m[92m  Downloaded[0m dirs v4.0.0
+2026-08-04T02:37:09.5513620Z [1m[92m  Downloaded[0m dtor-proc-macro v0.0.6
+2026-08-04T02:37:09.5529090Z [1m[92m  Downloaded[0m fax v0.2.7
+2026-08-04T02:37:09.5568070Z [1m[92m  Downloaded[0m aho-corasick v1.1.4
+2026-08-04T02:37:09.5662180Z [1m[92m  Downloaded[0m axum v0.8.9
+2026-08-04T02:37:09.5816460Z [1m[92m  Downloaded[0m defmt v1.1.1
+2026-08-04T02:37:09.5916620Z [1m[92m  Downloaded[0m dtor v0.3.0
+2026-08-04T02:37:09.6017930Z [1m[92m  Downloaded[0m walkdir v2.5.0
+2026-08-04T02:37:09.6027770Z [1m[92m  Downloaded[0m security-framework-sys v2.17.0
+2026-08-04T02:37:09.6039520Z [1m[92m  Downloaded[0m dirs v6.0.0
+2026-08-04T02:37:09.6060890Z [1m[92m  Downloaded[0m rusqlite v0.32.1
+2026-08-04T02:37:09.6165020Z [1m[92m  Downloaded[0m serde_derive_internals v0.29.1
+2026-08-04T02:37:09.6192710Z [1m[92m  Downloaded[0m deranged v0.5.8
+2026-08-04T02:37:09.6212960Z [1m[92m  Downloaded[0m crypto-common v0.1.7
+2026-08-04T02:37:09.6229000Z [1m[92m  Downloaded[0m dunce v1.0.5
+2026-08-04T02:37:09.6244160Z [1m[92m  Downloaded[0m embed-resource v3.0.11
+2026-08-04T02:37:09.6276830Z [1m[92m  Downloaded[0m env_logger v0.11.11
+2026-08-04T02:37:09.6315220Z [1m[92m  Downloaded[0m ppv-lite86 v0.2.21
+2026-08-04T02:37:09.6335750Z [1m[92m  Downloaded[0m quote v1.0.46
+2026-08-04T02:37:09.6393310Z [1m[92m  Downloaded[0m alloc-no-stdlib v2.0.4
+2026-08-04T02:37:09.6421430Z [1m[92m  Downloaded[0m crossbeam-utils v0.8.22
+2026-08-04T02:37:09.6472710Z [1m[92m  Downloaded[0m phf_shared v0.13.1
+2026-08-04T02:37:09.6486410Z [1m[92m  Downloaded[0m ref-cast-impl v1.0.25
+2026-08-04T02:37:09.6498200Z [1m[92m  Downloaded[0m serde_urlencoded v0.7.1
+2026-08-04T02:37:09.6534910Z [1m[92m  Downloaded[0m objc2-exception-helper v0.1.1
+2026-08-04T02:37:09.6549890Z [1m[92m  Downloaded[0m unic-ucd-ident v0.9.0
+2026-08-04T02:37:09.6578080Z [1m[92m  Downloaded[0m darling_macro v0.23.0
+2026-08-04T02:37:09.6587960Z [1m[92m  Downloaded[0m byteorder v1.5.0
+2026-08-04T02:37:09.6612710Z [1m[92m  Downloaded[0m compression-core v0.4.32
+2026-08-04T02:37:09.6629850Z [1m[92m  Downloaded[0m dirs-sys v0.3.7
+2026-08-04T02:37:09.6653210Z [1m[92m  Downloaded[0m fdeflate v0.3.7
+2026-08-04T02:37:09.6682880Z [1m[92m  Downloaded[0m phf_codegen v0.13.1
+2026-08-04T02:37:09.6695700Z [1m[92m  Downloaded[0m rand_chacha v0.3.1
+2026-08-04T02:37:09.6716340Z [1m[92m  Downloaded[0m defmt-macros v1.1.1
+2026-08-04T02:37:09.6790370Z [1m[92m  Downloaded[0m digest v0.10.7
+2026-08-04T02:37:09.6898250Z [1m[92m  Downloaded[0m ctor-proc-macro v0.0.7
+2026-08-04T02:37:09.6899090Z [1m[92m  Downloaded[0m schemars v0.9.0
+2026-08-04T02:37:09.7136920Z [1m[92m  Downloaded[0m schemars_derive v0.8.22
+2026-08-04T02:37:09.7164090Z [1m[92m  Downloaded[0m serde_with_macros v3.21.0
+2026-08-04T02:37:09.7197450Z [1m[92m  Downloaded[0m sha2 v0.10.9
+2026-08-04T02:37:09.7249190Z [1m[92m  Downloaded[0m bit-set v0.8.0
+2026-08-04T02:37:09.7270730Z [1m[92m  Downloaded[0m byteorder-lite v0.1.0
+2026-08-04T02:37:09.7291310Z [1m[92m  Downloaded[0m cfg_aliases v0.1.1
+2026-08-04T02:37:09.7321340Z [1m[92m  Downloaded[0m cssparser-macros v0.6.1
+2026-08-04T02:37:09.7346190Z [1m[92m  Downloaded[0m async-compression v0.4.42
+2026-08-04T02:37:09.7545790Z [1m[92m  Downloaded[0m cargo-platform v0.1.9
+2026-08-04T02:37:09.7582350Z [1m[92m  Downloaded[0m dispatch2 v0.3.1
+2026-08-04T02:37:09.7641440Z [1m[92m  Downloaded[0m cookie v0.18.1
+2026-08-04T02:37:09.7679670Z [1m[92m  Downloaded[0m core-graphics-types v0.2.0
+2026-08-04T02:37:09.7706160Z [1m[92m  Downloaded[0m crossbeam-deque v0.8.7
+2026-08-04T02:37:09.7739330Z [1m[92m  Downloaded[0m crossbeam-epoch v0.9.20
+2026-08-04T02:37:09.7790000Z [1m[92m  Downloaded[0m dashmap v6.2.1
+2026-08-04T02:37:09.7831140Z [1m[92m  Downloaded[0m defmt-parser v1.0.0
+2026-08-04T02:37:09.7847920Z [1m[92m  Downloaded[0m dtoa v1.0.11
+2026-08-04T02:37:09.7874550Z [1m[92m  Downloaded[0m dyn-clone v1.0.20
+2026-08-04T02:37:09.7903820Z [1m[92m  Downloaded[0m encoding_rs_io v0.1.7
+2026-08-04T02:37:09.7923020Z [1m[92m  Downloaded[0m erased-serde v0.4.10
+2026-08-04T02:37:09.7969670Z [1m[92m  Downloaded[0m fallible-streaming-iterator v0.1.9
+2026-08-04T02:37:09.7982990Z [1m[92m  Downloaded[0m phf_generator v0.13.1
+2026-08-04T02:37:09.7999490Z [1m[92m  Downloaded[0m serialize-to-javascript v0.1.2
+2026-08-04T02:37:09.8015930Z [1m[92m  Downloaded[0m sync_wrapper v1.0.2
+2026-08-04T02:37:09.8030750Z [1m[92m  Downloaded[0m grep-searcher v0.1.16
+2026-08-04T02:37:09.8061990Z [1m[92m  Downloaded[0m option-ext v0.2.0
+2026-08-04T02:37:09.8075510Z [1m[92m  Downloaded[0m base64 v0.22.1
+2026-08-04T02:37:09.8141840Z [1m[92m  Downloaded[0m bit-vec v0.8.0
+2026-08-04T02:37:09.8182950Z [1m[92m  Downloaded[0m bitflags v2.13.0
+2026-08-04T02:37:09.8298130Z [1m[92m  Downloaded[0m block-buffer v0.10.4
+2026-08-04T02:37:09.8315240Z [1m[92m  Downloaded[0m block2 v0.6.2
+2026-08-04T02:37:09.8342850Z [1m[92m  Downloaded[0m cargo_metadata v0.19.2
+2026-08-04T02:37:09.8381990Z [1m[92m  Downloaded[0m core-foundation v0.10.1
+2026-08-04T02:37:09.8438140Z [1m[92m  Downloaded[0m core-graphics v0.25.0
+2026-08-04T02:37:09.8476440Z [1m[92m  Downloaded[0m cssparser v0.36.0
+2026-08-04T02:37:09.8516520Z [1m[92m  Downloaded[0m derive_more-impl v2.1.1
+2026-08-04T02:37:09.8624920Z [1m[92m  Downloaded[0m percent-encoding v2.3.2
+2026-08-04T02:37:09.8636790Z [1m[92m  Downloaded[0m proc-macro2 v1.0.106
+2026-08-04T02:37:09.8689750Z [1m[92m  Downloaded[0m serde_path_to_error v0.1.20
+2026-08-04T02:37:09.8714870Z [1m[92m  Downloaded[0m smallvec v1.15.2
+2026-08-04T02:37:09.8736660Z [1m[92m  Downloaded[0m string_cache v0.9.0
+2026-08-04T02:37:09.8761490Z [1m[92m  Downloaded[0m swift-rs v1.0.7
+2026-08-04T02:37:09.8794770Z [1m[92m  Downloaded[0m http-body v1.0.1
+2026-08-04T02:37:09.8808040Z [1m[92m  Downloaded[0m tokio-stream v0.1.18
+2026-08-04T02:37:09.8900210Z [1m[92m  Downloaded[0m version_check v0.9.5
+2026-08-04T02:37:09.8920130Z [1m[92m  Downloaded[0m thiserror-impl v2.0.18
+2026-08-04T02:37:09.8958470Z [1m[92m  Downloaded[0m toml_datetime v0.7.5+spec-1.1.0
+2026-08-04T02:37:09.8976810Z [1m[92m  Downloaded[0m anstream v1.0.0
+2026-08-04T02:37:09.9010940Z [1m[92m  Downloaded[0m anstyle-parse v1.0.0
+2026-08-04T02:37:09.9036710Z [1m[92m  Downloaded[0m atomic-waker v1.1.2
+2026-08-04T02:37:09.9055730Z [1m[92m  Downloaded[0m base64 v0.21.7
+2026-08-04T02:37:09.9122070Z [1m[92m  Downloaded[0m bitflags v1.3.2
+2026-08-04T02:37:09.9176980Z [1m[92m  Downloaded[0m bs58 v0.5.1
+2026-08-04T02:37:09.9216730Z [1m[92m  Downloaded[0m bytemuck v1.25.0
+2026-08-04T02:37:09.9271190Z [1m[92m  Downloaded[0m camino v1.2.4
+2026-08-04T02:37:09.9303500Z [1m[92m  Downloaded[0m cargo_toml v0.22.3
+2026-08-04T02:37:09.9321870Z [1m[92m  Downloaded[0m cc v1.2.66
+2026-08-04T02:37:09.9364390Z [1m[92m  Downloaded[0m cfb v0.7.3
+2026-08-04T02:37:09.9443430Z [1m[92m  Downloaded[0m cfg-if v1.0.4
+2026-08-04T02:37:09.9464700Z [1m[92m  Downloaded[0m compression-codecs v0.4.38
+2026-08-04T02:37:09.9541660Z [1m[92m  Downloaded[0m core-foundation-sys v0.8.7
+2026-08-04T02:37:09.9597160Z [1m[92m  Downloaded[0m cpufeatures v0.2.17
+2026-08-04T02:37:09.9618030Z [1m[92m  Downloaded[0m crc32fast v1.5.0
+2026-08-04T02:37:09.9644680Z [1m[92m  Downloaded[0m darling v0.23.0
+2026-08-04T02:37:09.9777820Z [1m[92m  Downloaded[0m derive_more v2.1.1
+2026-08-04T02:37:10.0029530Z [1m[92m  Downloaded[0m dirs-sys v0.5.0
+2026-08-04T02:37:10.0052000Z [1m[92m  Downloaded[0m dom_query v0.27.0
+2026-08-04T02:37:10.0132740Z [1m[92m  Downloaded[0m dpi v0.1.2
+2026-08-04T02:37:10.0151070Z [1m[92m  Downloaded[0m errno v0.3.14
+2026-08-04T02:37:10.0175970Z [1m[92m  Downloaded[0m precomputed-hash v0.1.1
+2026-08-04T02:37:10.0186260Z [1m[92m  Downloaded[0m rand v0.9.4
+2026-08-04T02:37:10.0267460Z [1m[92m  Downloaded[0m rand_chacha v0.9.0
+2026-08-04T02:37:10.0285240Z [1m[92m  Downloaded[0m rustc_version v0.4.1
+2026-08-04T02:37:10.0303580Z [1m[92m  Downloaded[0m schemars v0.8.22
+2026-08-04T02:37:10.0588600Z [1m[92m  Downloaded[0m security-framework v3.7.0
+2026-08-04T02:37:10.0664500Z [1m[92m  Downloaded[0m selectors v0.36.1
+2026-08-04T02:37:10.0701990Z [1m[92m  Downloaded[0m serde_core v1.0.228
+2026-08-04T02:37:10.0812340Z [1m[92m  Downloaded[0m slab v0.4.12
+2026-08-04T02:37:10.1334360Z [1m[92m  Downloaded[0m tauri-codegen v2.6.3
+2026-08-04T02:37:10.1360330Z [1m[92m  Downloaded[0m tauri-plugin-autostart v2.5.1
+2026-08-04T02:37:10.1414330Z [1m[92m  Downloaded[0m tauri-plugin-notification v2.3.3
+2026-08-04T02:37:10.1526440Z [1m[92m  Downloaded[0m http v1.4.2
+2026-08-04T02:37:10.1589220Z [1m[92m  Downloaded[0m icu_collections v2.2.0
+2026-08-04T02:37:10.1712190Z [1m[92m  Downloaded[0m icu_locale_core v2.2.0
+2026-08-04T02:37:10.1842900Z [1m[92m  Downloaded[0m json-patch v3.0.1
+2026-08-04T02:37:10.1886160Z [1m[92m  Downloaded[0m litemap v0.8.2
+2026-08-04T02:37:10.1936360Z [1m[92m  Downloaded[0m miniz_oxide v0.8.9
+2026-08-04T02:37:10.1972990Z [1m[92m  Downloaded[0m time-core v0.1.9
+2026-08-04T02:37:10.1989440Z [1m[92m  Downloaded[0m typeid v1.0.3
+2026-08-04T02:37:10.2007220Z [1m[92m  Downloaded[0m zerovec-derive v0.11.3
+2026-08-04T02:37:10.2030240Z [1m[92m  Downloaded[0m hashlink v0.9.1
+2026-08-04T02:37:10.2074940Z [1m[92m  Downloaded[0m tauri-plugin-updater v2.10.1
+2026-08-04T02:37:10.2129100Z [1m[92m  Downloaded[0m parking_lot_core v0.9.12
+2026-08-04T02:37:10.2162050Z [1m[92m  Downloaded[0m getrandom v0.3.4
+2026-08-04T02:37:10.2217420Z [1m[92m  Downloaded[0m hex v0.4.3
+2026-08-04T02:37:10.2240700Z [1m[92m  Downloaded[0m chrono v0.4.45
+2026-08-04T02:37:10.2340300Z [1m[92m  Downloaded[0m crossbeam-channel v0.5.16
+2026-08-04T02:37:10.2411820Z [1m[92m  Downloaded[0m darling_core v0.23.0
+2026-08-04T02:37:10.2521620Z [1m[92m  Downloaded[0m plist v1.10.0
+2026-08-04T02:37:10.2594290Z [1m[92m  Downloaded[0m png v0.18.1
+2026-08-04T02:37:10.2655060Z [1m[92m  Downloaded[0m potential_utf v0.1.5
+2026-08-04T02:37:10.2714930Z [1m[92m  Downloaded[0m rand v0.8.6
+2026-08-04T02:37:10.2763320Z [1m[92m  Downloaded[0m rand_core v0.9.5
+2026-08-04T02:37:10.2772530Z [1m[92m  Downloaded[0m raw-window-handle v0.6.2
+2026-08-04T02:37:10.2807600Z [1m[92m  Downloaded[0m regex v1.12.4
+2026-08-04T02:37:10.2892590Z [1m[92m  Downloaded[0m rustc-hash v2.1.3
+2026-08-04T02:37:10.2917000Z [1m[92m  Downloaded[0m rustls-pki-types v1.15.0
+2026-08-04T02:37:10.2959450Z [1m[92m  Downloaded[0m ryu v1.0.23
+2026-08-04T02:37:10.3017050Z [1m[92m  Downloaded[0m semver v1.0.28
+2026-08-04T02:37:10.3052350Z [1m[92m  Downloaded[0m serde_json v1.0.150
+2026-08-04T02:37:10.3188240Z [1m[92m  Downloaded[0m serde_with v3.21.0
+2026-08-04T02:37:10.3426480Z [1m[92m  Downloaded[0m stable_deref_trait v1.2.1
+2026-08-04T02:37:10.3452320Z [1m[92m  Downloaded[0m grep-regex v0.1.14
+2026-08-04T02:37:10.3470430Z [1m[92m  Downloaded[0m icu_normalizer v2.2.0
+2026-08-04T02:37:10.3546980Z [1m[92m  Downloaded[0m tokio-util v0.7.18
+2026-08-04T02:37:10.3762370Z [1m[92m  Downloaded[0m zerovec v0.11.6
+2026-08-04T02:37:10.3909030Z [1m[92m  Downloaded[0m generic-array v0.14.7
+2026-08-04T02:37:10.3950080Z [1m[92m  Downloaded[0m hashbrown v0.17.1
+2026-08-04T02:37:10.4045410Z [1m[92m  Downloaded[0m memchr v2.8.2
+2026-08-04T02:37:10.4140470Z [1m[92m  Downloaded[0m memmap2 v0.9.11
+2026-08-04T02:37:10.4165510Z [1m[92m  Downloaded[0m tauri-plugin-single-instance v2.4.2
+2026-08-04T02:37:10.4197840Z [1m[92m  Downloaded[0m toml_parser v1.1.2+spec-1.1.0
+2026-08-04T02:37:10.4232960Z [1m[92m  Downloaded[0m yoke-derive v0.8.2
+2026-08-04T02:37:10.4250220Z [1m[92m  Downloaded[0m glob v0.3.3
+2026-08-04T02:37:10.4273270Z [1m[92m  Downloaded[0m hyper-rustls v0.27.9
+2026-08-04T02:37:10.4297550Z [1m[92m  Downloaded[0m icu_properties v2.2.0
+2026-08-04T02:37:10.4336440Z [1m[92m  Downloaded[0m try-lock v0.2.5
+2026-08-04T02:37:10.4356230Z [1m[92m  Downloaded[0m unic-char-property v0.9.0
+2026-08-04T02:37:10.4385440Z [1m[92m  Downloaded[0m winnow v1.0.3
+2026-08-04T02:37:10.4551990Z [1m[92m  Downloaded[0m bstr v1.12.3
+2026-08-04T02:37:10.4676610Z [1m[92m  Downloaded[0m png v0.17.16
+2026-08-04T02:37:10.4739060Z [1m[92m  Downloaded[0m quick-xml v0.41.0
+2026-08-04T02:37:10.4837930Z [1m[92m  Downloaded[0m rand_core v0.6.4
+2026-08-04T02:37:10.4866230Z [1m[92m  Downloaded[0m regex-syntax v0.8.11
+2026-08-04T02:37:10.4968850Z [1m[92m  Downloaded[0m reqwest v0.13.4
+2026-08-04T02:37:10.5146160Z [1m[92m  Downloaded[0m rustix v1.1.4
+2026-08-04T02:37:10.5790550Z [1m[92m  Downloaded[0m rustls v0.23.41
+2026-08-04T02:37:10.6016710Z [1m[92m  Downloaded[0m same-file v1.0.6
+2026-08-04T02:37:10.6082400Z [1m[92m  Downloaded[0m serde v1.0.228
+2026-08-04T02:37:10.6126270Z [1m[92m  Downloaded[0m shlex v2.0.1
+2026-08-04T02:37:10.6146690Z [1m[92m  Downloaded[0m similar v3.1.1
+2026-08-04T02:37:10.6221110Z [1m[92m  Downloaded[0m tao v0.35.3
+2026-08-04T02:37:10.6432090Z [1m[92m  Downloaded[0m tauri v2.11.5
+2026-08-04T02:37:10.6702030Z [1m[92m  Downloaded[0m tauri-plugin v2.6.3
+2026-08-04T02:37:10.6787760Z [1m[92m  Downloaded[0m image v0.25.10
+2026-08-04T02:37:10.6904470Z [1m[92m  Downloaded[0m new_debug_unreachable v1.0.6
+2026-08-04T02:37:10.6924770Z [1m[92m  Downloaded[0m objc2 v0.6.4
+2026-08-04T02:37:10.7245660Z [1m[92m  Downloaded[0m once_cell v1.21.4
+2026-08-04T02:37:10.7308810Z [1m[92m  Downloaded[0m zune-core v0.5.1
+2026-08-04T02:37:10.7412850Z [1m[92m  Downloaded[0m toml v1.1.2+spec-1.1.0
+2026-08-04T02:37:10.7577310Z [1m[92m  Downloaded[0m hyper v1.10.1
+2026-08-04T02:37:10.7745050Z [1m[92m  Downloaded[0m notify-rust v4.18.0
+2026-08-04T02:37:10.7801320Z [1m[92m  Downloaded[0m parking_lot v0.12.5
+2026-08-04T02:37:10.7852300Z [1m[92m  Downloaded[0m typenum v1.20.1
+2026-08-04T02:37:10.7916230Z [1m[92m  Downloaded[0m winnow v0.7.15
+2026-08-04T02:37:10.8096500Z [1m[92m  Downloaded[0m futures-io v0.3.32
+2026-08-04T02:37:10.8112330Z [1m[92m  Downloaded[0m futures-macro v0.3.32
+2026-08-04T02:37:10.8131390Z [1m[92m  Downloaded[0m futures-task v0.3.32
+2026-08-04T02:37:10.8156880Z [1m[92m  Downloaded[0m getrandom v0.4.3
+2026-08-04T02:37:10.8223480Z [1m[92m  Downloaded[0m grep-matcher v0.1.8
+2026-08-04T02:37:10.8244060Z [1m[92m  Downloaded[0m half v2.7.1
+2026-08-04T02:37:10.8294340Z [1m[92m  Downloaded[0m hashbrown v0.12.3
+2026-08-04T02:37:10.8397930Z [1m[92m  Downloaded[0m tracing-attributes v0.1.31
+2026-08-04T02:37:10.8441260Z [1m[92m  Downloaded[0m unic-ucd-version v0.9.0
+2026-08-04T02:37:10.8462920Z [1m[92m  Downloaded[0m ipnet v2.12.0
+2026-08-04T02:37:10.8496940Z [1m[92m  Downloaded[0m brotli v8.0.4
+2026-08-04T02:37:10.8708930Z [1m[92m  Downloaded[0m pkg-config v0.3.33
+2026-08-04T02:37:10.8738430Z [1m[92m  Downloaded[0m rustls-platform-verifier v0.7.0
+2026-08-04T02:37:10.8837600Z [1m[92m  Downloaded[0m rustls-webpki v0.103.13
+2026-08-04T02:37:10.8889960Z [1m[92m  Downloaded[0m serde_repr v0.1.20
+2026-08-04T02:37:10.8957800Z [1m[92m  Downloaded[0m serialize-to-javascript-impl v0.1.2
+2026-08-04T02:37:10.8975570Z [1m[92m  Downloaded[0m shell-words v1.1.1
+2026-08-04T02:37:10.8995170Z [1m[92m  Downloaded[0m socket2 v0.6.4
+2026-08-04T02:37:10.9026940Z [1m[92m  Downloaded[0m tauri-plugin-clipboard-manager v2.3.2
+2026-08-04T02:37:10.9161870Z [1m[92m  Downloaded[0m thiserror v2.0.18
+2026-08-04T02:37:10.9325270Z [1m[92m  Downloaded[0m tracing v0.1.44
+2026-08-04T02:37:10.9632370Z [1m[92m  Downloaded[0m untrusted v0.9.0
+2026-08-04T02:37:10.9662060Z [1m[92m  Downloaded[0m vcpkg v0.2.15
+2026-08-04T02:37:11.0676170Z [1m[92m  Downloaded[0m zmij v1.0.21
+2026-08-04T02:37:11.0706730Z [1m[92m  Downloaded[0m zune-jpeg v0.5.15
+2026-08-04T02:37:11.0770550Z [1m[92m  Downloaded[0m hyper-util v0.1.20
+2026-08-04T02:37:11.0872810Z [1m[92m  Downloaded[0m iana-time-zone v0.1.65
+2026-08-04T02:37:11.0921790Z [1m[92m  Downloaded[0m matchit v0.8.4
+2026-08-04T02:37:11.0957220Z [1m[92m  Downloaded[0m objc2-web-kit v0.3.2
+2026-08-04T02:37:11.1318260Z [1m[92m  Downloaded[0m uuid v1.23.4
+2026-08-04T02:37:11.1390880Z [1m[92m  Downloaded[0m log v0.4.33
+2026-08-04T02:37:11.1436260Z [1m[92m  Downloaded[0m nix v0.28.0
+2026-08-04T02:37:11.1647120Z [1m[92m  Downloaded[0m writeable v0.6.3
+2026-08-04T02:37:11.1680520Z [1m[92m  Downloaded[0m futures-util v0.3.32
+2026-08-04T02:37:11.1939250Z [1m[92m  Downloaded[0m getrandom v0.2.17
+2026-08-04T02:37:11.1992700Z [1m[92m  Downloaded[0m globset v0.4.18
+2026-08-04T02:37:11.2021420Z [1m[92m  Downloaded[0m tracing-core v0.1.36
+2026-08-04T02:37:11.2075830Z [1m[92m  Downloaded[0m unic-common v0.9.0
+2026-08-04T02:37:11.2086510Z [1m[92m  Downloaded[0m unicode-ident v1.0.24
+2026-08-04T02:37:11.2135030Z [1m[92m  Downloaded[0m unicode-segmentation v1.13.3
+2026-08-04T02:37:11.2183670Z [1m[92m  Downloaded[0m foreign-types-shared v0.3.1
+2026-08-04T02:37:11.2197360Z [1m[92m  Downloaded[0m form_urlencoded v1.2.2
+2026-08-04T02:37:11.2213030Z [1m[92m  Downloaded[0m pin-project-lite v0.2.17
+2026-08-04T02:37:11.2316640Z [1m[92m  Downloaded[0m serde_spanned v1.1.1
+2026-08-04T02:37:11.2337680Z [1m[92m  Downloaded[0m subtle v2.6.1
+2026-08-04T02:37:11.2355940Z [1m[92m  Downloaded[0m tauri-build v2.6.3
+2026-08-04T02:37:11.2380950Z [1m[92m  Downloaded[0m ico v0.5.0
+2026-08-04T02:37:11.2431890Z [1m[92m  Downloaded[0m is_terminal_polyfill v1.70.2
+2026-08-04T02:37:11.2447440Z [1m[92m  Downloaded[0m markup5ever v0.38.0
+2026-08-04T02:37:11.2469300Z [1m[92m  Downloaded[0m tinyvec v1.11.0
+2026-08-04T02:37:11.2516200Z [1m[92m  Downloaded[0m zerofrom-derive v0.1.7
+2026-08-04T02:37:11.2531890Z [1m[92m  Downloaded[0m httpdate v1.0.3
+2026-08-04T02:37:11.2551460Z [1m[92m  Downloaded[0m xattr v1.6.1
+2026-08-04T02:37:11.2582450Z [1m[92m  Downloaded[0m find-msvc-tools v0.1.9
+2026-08-04T02:37:11.2614140Z [1m[92m  Downloaded[0m fnv v1.0.7
+2026-08-04T02:37:11.2633400Z [1m[92m  Downloaded[0m icu_properties_data v2.2.0
+2026-08-04T02:37:11.2906880Z [1m[92m  Downloaded[0m indexmap v2.14.0
+2026-08-04T02:37:11.2982860Z [1m[92m  Downloaded[0m infer v0.19.0
+2026-08-04T02:37:11.3026450Z [1m[92m  Downloaded[0m jsonptr v0.6.3
+2026-08-04T02:37:11.3075000Z [1m[92m  Downloaded[0m mime v0.3.17
+2026-08-04T02:37:11.3099490Z [1m[92m  Downloaded[0m toml v0.9.12+spec-1.1.0
+2026-08-04T02:37:11.3166580Z [1m[92m  Downloaded[0m encoding_rs v0.8.35
+2026-08-04T02:37:11.3446480Z [1m[92m  Downloaded[0m process-wrap v8.0.2
+2026-08-04T02:37:11.3565300Z [1m[92m  Downloaded[0m serde-untagged v0.1.9
+2026-08-04T02:37:11.3592770Z [1m[92m  Downloaded[0m signal-hook-registry v1.4.8
+2026-08-04T02:37:11.3611930Z [1m[92m  Downloaded[0m strsim v0.11.1
+2026-08-04T02:37:11.3632530Z [1m[92m  Downloaded[0m open v5.3.6
+2026-08-04T02:37:11.3656520Z [1m[92m  Downloaded[0m icu_normalizer_data v2.2.0
+2026-08-04T02:37:11.3750960Z [1m[92m  Downloaded[0m toml_datetime v1.1.1+spec-1.1.0
+2026-08-04T02:37:11.3751540Z [1m[92m  Downloaded[0m zeroize v1.9.0
+2026-08-04T02:37:11.3763280Z [1m[92m  Downloaded[0m zerotrie v0.2.4
+2026-08-04T02:37:11.3832990Z [1m[92m  Downloaded[0m tauri-runtime v2.11.3
+2026-08-04T02:37:11.3859730Z [1m[92m  Downloaded[0m unic-char-range v0.9.0
+2026-08-04T02:37:11.3883780Z [1m[92m  Downloaded[0m futures-sink v0.3.32
+2026-08-04T02:37:11.3898250Z [1m[92m  Downloaded[0m html5ever v0.38.0
+2026-08-04T02:37:11.3962080Z [1m[92m  Downloaded[0m tray-icon v0.24.1
+2026-08-04T02:37:11.4006670Z [1m[92m  Downloaded[0m urlpattern v0.3.0
+2026-08-04T02:37:11.4059630Z [1m[92m  Downloaded[0m utf8_iter v1.0.4
+2026-08-04T02:37:11.4077930Z [1m[92m  Downloaded[0m utf8parse v0.2.2
+2026-08-04T02:37:11.4097040Z [1m[92m  Downloaded[0m want v0.3.1
+2026-08-04T02:37:11.4118130Z [1m[92m  Downloaded[0m yoke v0.8.3
+2026-08-04T02:37:11.4164700Z [1m[92m  Downloaded[0m foldhash v0.2.0
+2026-08-04T02:37:11.4214900Z [1m[92m  Downloaded[0m futures-channel v0.3.32
+2026-08-04T02:37:11.4286340Z [1m[92m  Downloaded[0m idna v1.1.0
+2026-08-04T02:37:11.4316490Z [1m[92m  Downloaded[0m if-addrs v0.13.4
+2026-08-04T02:37:11.4348420Z [1m[92m  Downloaded[0m ignore v0.4.28
+2026-08-04T02:37:11.4384620Z [1m[92m  Downloaded[0m keyboard-types v0.7.0
+2026-08-04T02:37:11.4410480Z [1m[92m  Downloaded[0m mac-notification-sys v0.6.15
+2026-08-04T02:37:11.4446230Z [1m[92m  Downloaded[0m tinyvec_macros v0.1.1
+2026-08-04T02:37:11.4451290Z [1m[92m  Downloaded[0m tokio-rustls v0.26.4
+2026-08-04T02:37:11.4492370Z [1m[92m  Downloaded[0m tower-layer v0.3.3
+2026-08-04T02:37:11.4508580Z [1m[92m  Downloaded[0m pxfm v0.1.30
+2026-08-04T02:37:11.4944450Z [1m[92m  Downloaded[0m tar v0.4.46
+2026-08-04T02:37:11.4994630Z [1m[92m  Downloaded[0m zerofrom v0.1.8
+2026-08-04T02:37:11.5006490Z [1m[92m  Downloaded[0m hashbrown v0.14.5
+2026-08-04T02:37:11.5073110Z [1m[92m  Downloaded[0m heck v0.5.0
+2026-08-04T02:37:11.5101240Z [1m[92m  Downloaded[0m futures-core v0.3.32
+2026-08-04T02:37:11.5119150Z [1m[92m  Downloaded[0m icu_provider v2.2.0
+2026-08-04T02:37:11.5163590Z [1m[92m  Downloaded[0m idna_adapter v1.2.2
+2026-08-04T02:37:11.5182570Z [1m[92m  Downloaded[0m osakit v0.3.1
+2026-08-04T02:37:11.5213910Z [1m[92m  Downloaded[0m time v0.3.53
+2026-08-04T02:37:11.5487950Z [1m[92m  Downloaded[0m zerocopy-derive v0.8.53
+2026-08-04T02:37:11.5683770Z [1m[92m  Downloaded[0m toml_writer v1.1.1+spec-1.1.0
+2026-08-04T02:37:11.5704490Z [1m[92m  Downloaded[0m tauri-plugin-process v2.3.1
+2026-08-04T02:37:11.5748350Z [1m[92m  Downloaded[0m tauri-runtime-wry v2.11.4
+2026-08-04T02:37:11.5785600Z [1m[92m  Downloaded[0m moxcms v0.8.1
+2026-08-04T02:37:11.5954240Z [1m[92m  Downloaded[0m objc2-io-surface v0.3.2
+2026-08-04T02:37:11.5979930Z [1m[92m  Downloaded[0m url v2.5.8
+2026-08-04T02:37:11.6020320Z [1m[92m  Downloaded[0m web_atoms v0.2.5
+2026-08-04T02:37:11.6036740Z [1m[92m  Downloaded[0m weezl v0.1.12
+2026-08-04T02:37:11.6074880Z [1m[92m  Downloaded[0m flate2 v1.1.9
+2026-08-04T02:37:11.6156880Z [1m[92m  Downloaded[0m zerocopy v0.8.53
+2026-08-04T02:37:11.6811410Z [1m[92m  Downloaded[0m wry v0.55.1
+2026-08-04T02:37:11.7123330Z [1m[92m  Downloaded[0m num-conv v0.2.2
+2026-08-04T02:37:11.7135860Z [1m[92m  Downloaded[0m num-traits v0.2.19
+2026-08-04T02:37:11.7142540Z [1m[92m  Downloaded[0m objc2-core-graphics v0.3.2
+2026-08-04T02:37:11.7230970Z [1m[92m  Downloaded[0m objc2-encode v4.1.0
+2026-08-04T02:37:11.7253930Z [1m[92m  Downloaded[0m syn v2.0.118
+2026-08-04T02:37:11.7545850Z [1m[92m  Downloaded[0m httparse v1.10.1
+2026-08-04T02:37:11.7598870Z [1m[92m  Downloaded[0m ident_case v1.0.1
+2026-08-04T02:37:11.7618400Z [1m[92m  Downloaded[0m indexmap v1.9.3
+2026-08-04T02:37:11.7680800Z [1m[92m  Downloaded[0m tempfile v3.27.0
+2026-08-04T02:37:11.7728960Z [1m[92m  Downloaded[0m thiserror v1.0.69
+2026-08-04T02:37:11.7839370Z [1m[92m  Downloaded[0m thiserror-impl v1.0.69
+2026-08-04T02:37:11.7861760Z [1m[92m  Downloaded[0m tower v0.5.3
+2026-08-04T02:37:11.8192400Z [1m[92m  Downloaded[0m tendril v0.5.1
+2026-08-04T02:37:11.8263080Z [1m[92m  Downloaded[0m tower-service v0.3.3
+2026-08-04T02:37:11.8291790Z [1m[92m  Downloaded[0m libc v0.2.186
+2026-08-04T02:37:11.9246200Z [1m[92m  Downloaded[0m objc2-osa-kit v0.3.2
+2026-08-04T02:37:11.9297760Z [1m[92m  Downloaded[0m tiff v0.11.3
+2026-08-04T02:37:11.9430970Z [1m[92m  Downloaded[0m objc2-core-foundation v0.3.2
+2026-08-04T02:37:11.9571330Z [1m[92m  Downloaded[0m itoa v1.0.18
+2026-08-04T02:37:11.9595540Z [1m[92m  Downloaded[0m jiff v0.2.31
+2026-08-04T02:37:11.9944180Z [1m[92m  Downloaded[0m tauri-winres v0.3.6
+2026-08-04T02:37:11.9979530Z [1m[92m  Downloaded[0m http-body-util v0.1.3
+2026-08-04T02:37:12.0016710Z [1m[92m  Downloaded[0m minisign-verify v0.2.5
+2026-08-04T02:37:12.0043200Z [1m[92m  Downloaded[0m tauri-utils v2.9.3
+2026-08-04T02:37:12.0146480Z [1m[92m  Downloaded[0m foreign-types-macros v0.2.3
+2026-08-04T02:37:12.0170180Z [1m[92m  Downloaded[0m foreign-types v0.5.0
+2026-08-04T02:37:12.0210250Z [1m[92m  Downloaded[0m objc2-foundation v0.3.2
+2026-08-04T02:37:12.0644860Z [1m[92m  Downloaded[0m tinystr v0.8.3
+2026-08-04T02:37:12.0679860Z [1m[92m  Downloaded[0m tower-http v0.6.11
+2026-08-04T02:37:12.0837410Z [1m[92m  Downloaded[0m muda v0.19.3
+2026-08-04T02:37:12.0897840Z [1m[92m  Downloaded[0m tokio-macros v2.7.0
+2026-08-04T02:37:12.0917140Z [1m[92m  Downloaded[0m tokio v1.52.3
+2026-08-04T02:37:12.1685490Z [1m[92m  Downloaded[0m mio v1.2.1
+2026-08-04T02:37:12.1781820Z [1m[92m  Downloaded[0m ring v0.17.14
+2026-08-04T02:37:12.2724300Z [1m[92m  Downloaded[0m objc2-app-kit v0.3.2
+2026-08-04T02:37:12.3236680Z [1m[92m  Downloaded[0m window-vibrancy v0.6.0
+2026-08-04T02:37:12.3335290Z [1m[92m  Downloaded[0m libsqlite3-sys v0.30.1
+2026-08-04T02:37:12.6610370Z [1m[92m   Compiling[0m proc-macro2 v1.0.106
+2026-08-04T02:37:12.6613060Z [1m[92m   Compiling[0m unicode-ident v1.0.24
+2026-08-04T02:37:12.6613640Z [1m[92m   Compiling[0m quote v1.0.46
+2026-08-04T02:37:12.8226320Z [1m[92m   Compiling[0m libc v0.2.186
+2026-08-04T02:37:16.4781250Z [1m[92m   Compiling[0m serde_core v1.0.228
+2026-08-04T02:37:16.7313160Z [1m[92m   Compiling[0m find-msvc-tools v0.1.9
+2026-08-04T02:37:16.9968900Z [1m[92m   Compiling[0m shlex v2.0.1
+2026-08-04T02:37:17.0924180Z [1m[92m   Compiling[0m cc v1.2.66
+2026-08-04T02:37:17.1890730Z [1m[92m   Compiling[0m syn v2.0.118
+2026-08-04T02:37:17.2288800Z [1m[92m   Compiling[0m cfg-if v1.0.4
+2026-08-04T02:37:17.3350070Z [1m[92m   Compiling[0m zmij v1.0.21
+2026-08-04T02:37:17.3600360Z [1m[92m   Compiling[0m icu_properties_data v2.2.0
+2026-08-04T02:37:17.4852360Z [1m[92m   Compiling[0m icu_normalizer_data v2.2.0
+2026-08-04T02:37:17.4856360Z [1m[92m   Compiling[0m siphasher v1.0.3
+2026-08-04T02:37:17.5387560Z [1m[92m   Compiling[0m synstructure v0.13.2
+2026-08-04T02:37:17.5801760Z [1m[92m   Compiling[0m serde_derive v1.0.228
+2026-08-04T02:37:17.6001090Z [1m[92m   Compiling[0m zerovec-derive v0.11.3
+2026-08-04T02:37:17.7086690Z [1m[92m   Compiling[0m zerofrom-derive v0.1.7
+2026-08-04T02:37:18.2702020Z [1m[92m   Compiling[0m yoke-derive v0.8.2
+2026-08-04T02:37:18.2760020Z [1m[92m   Compiling[0m displaydoc v0.2.6
+2026-08-04T02:37:18.6923900Z [1m[92m   Compiling[0m phf_shared v0.13.1
+2026-08-04T02:37:18.7344670Z [1m[92m   Compiling[0m fastrand v2.4.1
+2026-08-04T02:37:18.8258300Z [1m[92m   Compiling[0m stable_deref_trait v1.2.1
+2026-08-04T02:37:19.0886940Z [1m[92m   Compiling[0m phf_generator v0.13.1
+2026-08-04T02:37:19.1827590Z [1m[92m   Compiling[0m getrandom v0.4.3
+2026-08-04T02:37:19.3800180Z [1m[92m   Compiling[0m memchr v2.8.2
+2026-08-04T02:37:19.4182710Z [1m[92m   Compiling[0m zerofrom v0.1.8
+2026-08-04T02:37:19.4998870Z [1m[92m   Compiling[0m serde v1.0.228
+2026-08-04T02:37:19.5497400Z [1m[92m   Compiling[0m smallvec v1.15.2
+2026-08-04T02:37:19.5651330Z [1m[92m   Compiling[0m yoke v0.8.3
+2026-08-04T02:37:19.6629720Z [1m[92m   Compiling[0m bitflags v2.13.0
+2026-08-04T02:37:19.6666930Z [1m[92m   Compiling[0m zerovec v0.11.6
+2026-08-04T02:37:19.7533910Z [1m[92m   Compiling[0m num-conv v0.2.2
+2026-08-04T02:37:19.8144120Z [1m[92m   Compiling[0m time-core v0.1.9
+2026-08-04T02:37:19.8742170Z [1m[92m   Compiling[0m thiserror v2.0.18
+2026-08-04T02:37:19.8865010Z [1m[92m   Compiling[0m itoa v1.0.18
+2026-08-04T02:37:19.9185700Z [1m[92m   Compiling[0m phf_macros v0.13.1
+2026-08-04T02:37:19.9565230Z [1m[92m   Compiling[0m typeid v1.0.3
+2026-08-04T02:37:20.0397440Z [1m[92m   Compiling[0m parking_lot_core v0.9.12
+2026-08-04T02:37:20.1055430Z [1m[92m   Compiling[0m autocfg v1.5.1
+2026-08-04T02:37:20.1884590Z [1m[92m   Compiling[0m thiserror-impl v2.0.18
+2026-08-04T02:37:20.2290600Z [1m[92m   Compiling[0m thiserror v1.0.69
+2026-08-04T02:37:20.3334220Z [1m[92m   Compiling[0m tinystr v0.8.3
+2026-08-04T02:37:20.3944590Z [1m[92m   Compiling[0m phf_codegen v0.13.1
+2026-08-04T02:37:20.4533780Z [1m[92m   Compiling[0m erased-serde v0.4.10
+2026-08-04T02:37:20.4642520Z [1m[92m   Compiling[0m ident_case v1.0.1
+2026-08-04T02:37:20.5379080Z [1m[92m   Compiling[0m writeable v0.6.3
+2026-08-04T02:37:20.5951000Z [1m[92m   Compiling[0m litemap v0.8.2
+2026-08-04T02:37:20.6491830Z [1m[92m   Compiling[0m serde_json v1.0.150
+2026-08-04T02:37:20.6923750Z [1m[92m   Compiling[0m strsim v0.11.1
+2026-08-04T02:37:20.7652590Z [1m[92m   Compiling[0m icu_locale_core v2.2.0
+2026-08-04T02:37:20.7810020Z [1m[92m   Compiling[0m darling_core v0.23.0
+2026-08-04T02:37:20.9210340Z [1m[92m   Compiling[0m potential_utf v0.1.5
+2026-08-04T02:37:20.9709730Z [1m[92m   Compiling[0m zerotrie v0.2.4
+2026-08-04T02:37:21.0068020Z [1m[92m   Compiling[0m thiserror-impl v1.0.69
+2026-08-04T02:37:21.0263000Z [1m[92m   Compiling[0m utf8_iter v1.0.4
+2026-08-04T02:37:21.0903060Z [1m[92m   Compiling[0m icu_collections v2.2.0
+2026-08-04T02:37:21.1181330Z [1m[92m   Compiling[0m icu_provider v2.2.0
+2026-08-04T02:37:21.2372190Z [1m[92m   Compiling[0m darling_macro v0.23.0
+2026-08-04T02:37:21.5302360Z [1m[92m   Compiling[0m anyhow v1.0.103
+2026-08-04T02:37:21.5365150Z [1m[92m   Compiling[0m scopeguard v1.2.0
+2026-08-04T02:37:21.5403770Z [1m[92m   Compiling[0m new_debug_unreachable v1.0.6
+2026-08-04T02:37:21.6309970Z [1m[92m   Compiling[0m lock_api v0.4.14
+2026-08-04T02:37:21.8566440Z [1m[92m   Compiling[0m darling v0.23.0
+2026-08-04T02:37:21.8754510Z [1m[92m   Compiling[0m phf v0.13.1
+2026-08-04T02:37:21.8857850Z [1m[92m   Compiling[0m string_cache_codegen v0.6.1
+2026-08-04T02:37:21.9297040Z [1m[92m   Compiling[0m precomputed-hash v0.1.1
+2026-08-04T02:37:21.9610090Z [1m[92m   Compiling[0m winnow v1.0.3
+2026-08-04T02:37:21.9992470Z [1m[92m   Compiling[0m web_atoms v0.2.5
+2026-08-04T02:37:22.0768270Z [1m[92m   Compiling[0m toml_parser v1.1.2+spec-1.1.0
+2026-08-04T02:37:22.1406470Z [1m[92m   Compiling[0m serde_with_macros v3.21.0
+2026-08-04T02:37:22.2498420Z [1m[92m   Compiling[0m parking_lot v0.12.5
+2026-08-04T02:37:22.2560350Z [1m[92m   Compiling[0m icu_properties v2.2.0
+2026-08-04T02:37:22.3432650Z [1m[92m   Compiling[0m icu_normalizer v2.2.0
+2026-08-04T02:37:22.4952940Z [1m[92m   Compiling[0m serde_spanned v1.1.1
+2026-08-04T02:37:22.5370440Z [1m[92m   Compiling[0m ctor-proc-macro v0.0.7
+2026-08-04T02:37:22.5653700Z [1m[92m   Compiling[0m toml_writer v1.1.1+spec-1.1.0
+2026-08-04T02:37:22.6329830Z [1m[92m   Compiling[0m idna_adapter v1.2.2
+2026-08-04T02:37:22.6841350Z [1m[92m   Compiling[0m string_cache v0.9.0
+2026-08-04T02:37:22.7471600Z [1m[92m   Compiling[0m semver v1.0.28
+2026-08-04T02:37:22.7680810Z [1m[92m   Compiling[0m percent-encoding v2.3.2
+2026-08-04T02:37:22.8321020Z [1m[92m   Compiling[0m log v0.4.33
+2026-08-04T02:37:22.8325990Z [1m[92m   Compiling[0m dtoa v1.0.11
+2026-08-04T02:37:22.9101190Z [1m[92m   Compiling[0m dtoa-short v0.3.5
+2026-08-04T02:37:22.9168090Z [1m[92m   Compiling[0m form_urlencoded v1.2.2
+2026-08-04T02:37:22.9926670Z [1m[92m   Compiling[0m uuid v1.23.4
+2026-08-04T02:37:22.9969280Z [1m[92m   Compiling[0m idna v1.1.0
+2026-08-04T02:37:23.0933330Z [1m[92m   Compiling[0m tendril v0.5.1
+2026-08-04T02:37:23.1148930Z [1m[92m   Compiling[0m selectors v0.36.1
+2026-08-04T02:37:23.1420780Z [1m[92m   Compiling[0m indexmap v1.9.3
+2026-08-04T02:37:23.2312600Z [1m[92m   Compiling[0m aho-corasick v1.1.4
+2026-08-04T02:37:23.2482140Z [1m[92m   Compiling[0m cssparser-macros v0.6.1
+2026-08-04T02:37:23.3178260Z [1m[92m   Compiling[0m derive_more-impl v2.1.1
+2026-08-04T02:37:23.4142040Z [1m[92m   Compiling[0m toml_datetime v1.1.1+spec-1.1.0
+2026-08-04T02:37:23.4671770Z [1m[92m   Compiling[0m once_cell v1.21.4
+2026-08-04T02:37:23.5150100Z [1m[92m   Compiling[0m camino v1.2.4
+2026-08-04T02:37:23.5485530Z [1m[92m   Compiling[0m unic-char-range v0.9.0
+2026-08-04T02:37:23.6496530Z [1m[92m   Compiling[0m alloc-no-stdlib v2.0.4
+2026-08-04T02:37:23.6987900Z [1m[92m   Compiling[0m unic-common v0.9.0
+2026-08-04T02:37:23.7503580Z [1m[92m   Compiling[0m byteorder v1.5.0
+2026-08-04T02:37:23.7810070Z [1m[92m   Compiling[0m regex-syntax v0.8.11
+2026-08-04T02:37:23.7864330Z [1m[92m   Compiling[0m derive_more v2.1.1
+2026-08-04T02:37:23.8351920Z [1m[92m   Compiling[0m unic-ucd-version v0.9.0
+2026-08-04T02:37:23.8698030Z [1m[92m   Compiling[0m alloc-stdlib v0.2.4
+2026-08-04T02:37:23.9275340Z [1m[92m   Compiling[0m unic-char-property v0.9.0
+2026-08-04T02:37:23.9511440Z [1m[92m   Compiling[0m toml v1.1.2+spec-1.1.0
+2026-08-04T02:37:24.0024850Z [1m[92m   Compiling[0m cssparser v0.36.0
+2026-08-04T02:37:24.0522670Z [1m[92m   Compiling[0m regex-automata v0.4.14
+2026-08-04T02:37:24.2124830Z [1m[92m   Compiling[0m markup5ever v0.38.0
+2026-08-04T02:37:24.2818830Z [1m[92m   Compiling[0m url v2.5.8
+2026-08-04T02:37:24.3004160Z [1m[92m   Compiling[0m swift-rs v1.0.7
+2026-08-04T02:37:24.5447520Z [1m[92m   Compiling[0m servo_arc v0.4.3
+2026-08-04T02:37:24.5541540Z [1m[92m   Compiling[0m serde_derive_internals v0.29.1
+2026-08-04T02:37:24.5553960Z [1m[92m   Compiling[0m objc2-exception-helper v0.1.1
+2026-08-04T02:37:24.6369690Z [1m[92m   Compiling[0m schemars v0.8.22
+2026-08-04T02:37:24.6608160Z [1m[92m   Compiling[0m hashbrown v0.12.3
+2026-08-04T02:37:24.6700740Z [1m[92m   Compiling[0m bit-vec v0.8.0
+2026-08-04T02:37:24.7606310Z [1m[92m   Compiling[0m deranged v0.5.8
+2026-08-04T02:37:24.8298870Z [1m[92m   Compiling[0m fnv v1.0.7
+2026-08-04T02:37:24.8388860Z [1m[92m   Compiling[0m hashbrown v0.17.1
+2026-08-04T02:37:24.9060700Z [1m[92m   Compiling[0m rustc-hash v2.1.3
+2026-08-04T02:37:24.9672950Z [1m[92m   Compiling[0m powerfmt v0.2.0
+2026-08-04T02:37:25.0382140Z [1m[92m   Compiling[0m equivalent v1.0.2
+2026-08-04T02:37:25.0435640Z [1m[92m   Compiling[0m time v0.3.53
+2026-08-04T02:37:25.1192320Z [1m[92m   Compiling[0m indexmap v2.14.0
+2026-08-04T02:37:25.2618580Z [1m[92m   Compiling[0m cfb v0.7.3
+2026-08-04T02:37:25.3590830Z [1m[92m   Compiling[0m bit-set v0.8.0
+2026-08-04T02:37:25.4351110Z [1m[92m   Compiling[0m schemars_derive v0.8.22
+2026-08-04T02:37:25.7951960Z [1m[92m   Compiling[0m regex v1.12.4
+2026-08-04T02:37:26.0068430Z [1m[92m   Compiling[0m html5ever v0.38.0
+2026-08-04T02:37:26.0758380Z [1m[92m   Compiling[0m unic-ucd-ident v0.9.0
+2026-08-04T02:37:26.2310420Z [1m[92m   Compiling[0m brotli-decompressor v5.0.3
+2026-08-04T02:37:26.4303560Z [1m[92m   Compiling[0m jsonptr v0.6.3
+2026-08-04T02:37:26.4819710Z [1m[92m   Compiling[0m cargo-platform v0.1.9
+2026-08-04T02:37:26.5752050Z [1m[92m   Compiling[0m quick-xml v0.41.0
+2026-08-04T02:37:26.6084100Z [1m[92m   Compiling[0m base64 v0.22.1
+2026-08-04T02:37:26.7560130Z [1m[92m   Compiling[0m foldhash v0.2.0
+2026-08-04T02:37:26.7561230Z [1m[92m   Compiling[0m version_check v0.9.5
+2026-08-04T02:37:26.8500190Z [1m[92m   Compiling[0m same-file v1.0.6
+2026-08-04T02:37:26.8702230Z [1m[92m   Compiling[0m bytes v1.12.0
+2026-08-04T02:37:26.9951000Z [1m[92m   Compiling[0m dyn-clone v1.0.20
+2026-08-04T02:37:27.0341760Z [1m[92m   Compiling[0m dunce v1.0.5
+2026-08-04T02:37:27.0394240Z [1m[92m   Compiling[0m base64 v0.21.7
+2026-08-04T02:37:27.1155760Z [1m[92m   Compiling[0m http v1.4.2
+2026-08-04T02:37:27.2251410Z [1m[92m   Compiling[0m walkdir v2.5.0
+2026-08-04T02:37:27.2569580Z [1m[92m   Compiling[0m dom_query v0.27.0
+2026-08-04T02:37:27.2661740Z [1m[92m   Compiling[0m plist v1.10.0
+2026-08-04T02:37:27.3095580Z [1m[92m   Compiling[0m cargo_metadata v0.19.2
+2026-08-04T02:37:27.3908780Z [1m[92m   Compiling[0m json-patch v3.0.1
+2026-08-04T02:37:27.4988070Z [1m[92m   Compiling[0m brotli v8.0.4
+2026-08-04T02:37:27.5341890Z [1m[92m   Compiling[0m urlpattern v0.3.0
+2026-08-04T02:37:27.5906480Z [1m[92m   Compiling[0m serde-untagged v0.1.9
+2026-08-04T02:37:27.6684710Z [1m[92m   Compiling[0m infer v0.19.0
+2026-08-04T02:37:27.7651080Z [1m[92m   Compiling[0m ctor v0.8.0
+2026-08-04T02:37:27.8468610Z [1m[92m   Compiling[0m serde_with v3.21.0
+2026-08-04T02:37:27.9081780Z [1m[92m   Compiling[0m objc2 v0.6.4
+2026-08-04T02:37:28.0241250Z [1m[92m   Compiling[0m crc32fast v1.5.0
+2026-08-04T02:37:28.0378330Z [1m[92m   Compiling[0m glob v0.3.3
+2026-08-04T02:37:28.1673650Z [1m[92m   Compiling[0m tauri-utils v2.9.3
+2026-08-04T02:37:28.3282270Z [1m[92m   Compiling[0m objc2-encode v4.1.0
+2026-08-04T02:37:28.7015560Z [1m[92m   Compiling[0m errno v0.3.14
+2026-08-04T02:37:28.7379270Z [1m[92m   Compiling[0m pin-project-lite v0.2.17
+2026-08-04T02:37:28.7850480Z [1m[92m   Compiling[0m objc2-core-foundation v0.3.2
+2026-08-04T02:37:28.8202460Z [1m[92m   Compiling[0m block2 v0.6.2
+2026-08-04T02:37:29.0777310Z [1m[92m   Compiling[0m objc2-foundation v0.3.2
+2026-08-04T02:37:29.3485110Z [1m[92m   Compiling[0m simd-adler32 v0.3.9
+2026-08-04T02:37:29.7463610Z [1m[92m   Compiling[0m rustc_version v0.4.1
+2026-08-04T02:37:29.8952860Z [1m[92m   Compiling[0m toml_datetime v0.7.5+spec-1.1.0
+2026-08-04T02:37:30.0363330Z [1m[92m   Compiling[0m winnow v0.7.15
+2026-08-04T02:37:30.2832710Z [1m[92m   Compiling[0m option-ext v0.2.0
+2026-08-04T02:37:30.3597150Z [1m[92m   Compiling[0m adler2 v2.0.1
+2026-08-04T02:37:30.4443710Z [1m[92m   Compiling[0m miniz_oxide v0.8.9
+2026-08-04T02:37:30.5909650Z [1m[92m   Compiling[0m dirs-sys v0.5.0
+2026-08-04T02:37:30.6797150Z [1m[92m   Compiling[0m toml v0.9.12+spec-1.1.0
+2026-08-04T02:37:30.9085010Z [1m[92m   Compiling[0m embed-resource v3.0.11
+2026-08-04T02:37:30.9926040Z [1m[92m   Compiling[0m objc2-core-graphics v0.3.2
+2026-08-04T02:37:31.0410020Z [1m[92m   Compiling[0m signal-hook-registry v1.4.8
+2026-08-04T02:37:31.1496350Z [1m[92m   Compiling[0m tokio-macros v2.7.0
+2026-08-04T02:37:31.1727090Z [1m[92m   Compiling[0m socket2 v0.6.4
+2026-08-04T02:37:31.2888150Z [1m[92m   Compiling[0m mio v1.2.1
+2026-08-04T02:37:31.4851460Z [1m[92m   Compiling[0m heck v0.5.0
+2026-08-04T02:37:31.5159480Z [1m[92m   Compiling[0m tokio v1.52.3
+2026-08-04T02:37:31.5753750Z [1m[92m   Compiling[0m flate2 v1.1.9
+2026-08-04T02:37:31.6879630Z [1m[92m   Compiling[0m tauri-winres v0.3.6
+2026-08-04T02:37:32.1412550Z [1m[92m   Compiling[0m cargo_toml v0.22.3
+2026-08-04T02:37:32.2657940Z [1m[92m   Compiling[0m dirs v6.0.0
+2026-08-04T02:37:32.3777790Z [1m[92m   Compiling[0m tauri-plugin v2.6.3
+2026-08-04T02:37:32.4591370Z [1m[92m   Compiling[0m crossbeam-utils v0.8.22
+2026-08-04T02:37:32.6691440Z [1m[92m   Compiling[0m core-foundation-sys v0.8.7
+2026-08-04T02:37:32.7744300Z [1m[92m   Compiling[0m tauri-build v2.6.3
+2026-08-04T02:37:32.9038820Z [1m[92m   Compiling[0m zerocopy v0.8.53
+2026-08-04T02:37:33.2993120Z [1m[92m   Compiling[0m time-macros v0.2.31
+2026-08-04T02:37:33.3076280Z [1m[92m   Compiling[0m zerocopy-derive v0.8.53
+2026-08-04T02:37:33.3385850Z [1m[92m   Compiling[0m objc2-app-kit v0.3.2
+2026-08-04T02:37:34.9383930Z [1m[92m   Compiling[0m tauri v2.11.5
+2026-08-04T02:37:35.0725450Z [1m[92m   Compiling[0m generic-array v0.14.7
+2026-08-04T02:37:35.6694560Z [1m[92m   Compiling[0m core-foundation v0.10.1
+2026-08-04T02:37:35.6761130Z [1m[92m   Compiling[0m typenum v1.20.1
+2026-08-04T02:37:35.8023610Z [1m[92m   Compiling[0m futures-core v0.3.32
+2026-08-04T02:37:35.8890920Z [1m[92m   Compiling[0m dpi v0.1.2
+2026-08-04T02:37:36.4713950Z [1m[92m   Compiling[0m cookie v0.18.1
+2026-08-04T02:37:36.5047960Z [1m[92m   Compiling[0m getrandom v0.3.4
+2026-08-04T02:37:36.6652100Z [1m[92m   Compiling[0m raw-window-handle v0.6.2
+2026-08-04T02:37:37.1021320Z [1m[92m   Compiling[0m crypto-common v0.1.7
+2026-08-04T02:37:37.1619360Z [1m[92m   Compiling[0m block-buffer v0.10.4
+2026-08-04T02:37:37.1920520Z [1m[92m   Compiling[0m fdeflate v0.3.7
+2026-08-04T02:37:37.2897160Z [1m[92m   Compiling[0m crossbeam-channel v0.5.16
+2026-08-04T02:37:37.4231860Z [1m[92m   Compiling[0m foreign-types-macros v0.2.3
+2026-08-04T02:37:37.6403230Z [1m[92m   Compiling[0m bitflags v1.3.2
+2026-08-04T02:37:37.6887180Z [1m[92m   Compiling[0m foreign-types-shared v0.3.1
+2026-08-04T02:37:37.7163170Z [1m[92m   Compiling[0m png v0.17.16
+2026-08-04T02:37:37.7619820Z [1m[92m   Compiling[0m foreign-types v0.5.0
+2026-08-04T02:37:37.9898220Z [1m[92m   Compiling[0m digest v0.10.7
+2026-08-04T02:37:38.3371370Z [1m[92m   Compiling[0m core-graphics-types v0.2.0
+2026-08-04T02:37:38.3585640Z [1m[92m   Compiling[0m objc2-web-kit v0.3.2
+2026-08-04T02:37:38.3838230Z [1m[92m   Compiling[0m tracing-core v0.1.36
+2026-08-04T02:37:38.5307440Z [1m[92m   Compiling[0m cpufeatures v0.2.17
+2026-08-04T02:37:38.6442920Z [1m[92m   Compiling[0m tracing-attributes v0.1.31
+2026-08-04T02:37:38.6659540Z [1m[92m   Compiling[0m getrandom v0.2.17
+2026-08-04T02:37:38.7570660Z [1m[92m   Compiling[0m tauri-runtime v2.11.3
+2026-08-04T02:37:38.8023350Z [1m[92m   Compiling[0m unicode-segmentation v1.13.3
+2026-08-04T02:37:38.9272890Z [1m[92m   Compiling[0m wry v0.55.1
+2026-08-04T02:37:39.1703440Z [1m[92m   Compiling[0m keyboard-types v0.7.0
+2026-08-04T02:37:39.2496620Z [1m[92m   Compiling[0m tracing v0.1.44
+2026-08-04T02:37:39.3871450Z [1m[92m   Compiling[0m sha2 v0.10.9
+2026-08-04T02:37:39.3906500Z [1m[92m   Compiling[0m core-graphics v0.25.0
+2026-08-04T02:37:39.4686720Z [1m[92m   Compiling[0m ico v0.5.0
+2026-08-04T02:37:39.5700800Z [1m[92m   Compiling[0m png v0.18.1
+2026-08-04T02:37:39.6222660Z [1m[92m   Compiling[0m dispatch2 v0.3.1
+2026-08-04T02:37:39.7202700Z [1m[92m   Compiling[0m ring v0.17.14
+2026-08-04T02:37:39.7821340Z [1m[92m   Compiling[0m mime v0.3.17
+2026-08-04T02:37:39.8165990Z [1m[92m   Compiling[0m tauri-runtime-wry v2.11.4
+2026-08-04T02:37:39.8681560Z [1m[92m   Compiling[0m tao v0.35.3
+2026-08-04T02:37:40.1377220Z [1m[92m   Compiling[0m muda v0.19.3
+2026-08-04T02:37:40.3209130Z [1m[92m   Compiling[0m tauri-codegen v2.6.3
+2026-08-04T02:37:40.3505730Z [1m[92m   Compiling[0m http-body v1.0.1
+2026-08-04T02:37:40.4220310Z [1m[92m   Compiling[0m serialize-to-javascript-impl v0.1.2
+2026-08-04T02:37:40.4852870Z [1m[92m   Compiling[0m tauri-macros v2.6.3
+2026-08-04T02:37:40.6007490Z [1m[92m   Compiling[0m serialize-to-javascript v0.1.2
+2026-08-04T02:37:40.8871080Z [1m[92m   Compiling[0m tray-icon v0.24.1
+2026-08-04T02:37:41.1058420Z [1m[92m   Compiling[0m window-vibrancy v0.6.0
+2026-08-04T02:37:41.1433320Z [1m[92m   Compiling[0m serde_repr v0.1.20
+2026-08-04T02:37:41.2149920Z [1m[92m   Compiling[0m futures-macro v0.3.32
+2026-08-04T02:37:41.3694720Z [1m[92m   Compiling[0m httparse v1.10.1
+2026-08-04T02:37:41.5624630Z [1m[92m   Compiling[0m futures-task v0.3.32
+2026-08-04T02:37:41.5821280Z [1m[92m   Compiling[0m tower-service v0.3.3
+2026-08-04T02:37:41.6429640Z [1m[92m   Compiling[0m zeroize v1.9.0
+2026-08-04T02:37:41.6558760Z [1m[92m   Compiling[0m untrusted v0.9.0
+2026-08-04T02:37:41.7404390Z [1m[92m   Compiling[0m embed_plist v1.2.2
+2026-08-04T02:37:41.8062130Z [1m[92m   Compiling[0m slab v0.4.12
+2026-08-04T02:37:41.9136360Z [1m[92m   Compiling[0m futures-util v0.3.32
+2026-08-04T02:37:42.2051810Z [1m[92m   Compiling[0m rustls-pki-types v1.15.0
+2026-08-04T02:37:42.3370440Z [1m[92m   Compiling[0m num-traits v0.2.19
+2026-08-04T02:37:42.3477020Z [1m[92m   Compiling[0m futures-sink v0.3.32
+2026-08-04T02:37:42.4215460Z [1m[92m   Compiling[0m rustls v0.23.41
+2026-08-04T02:37:42.4353880Z [1m[92m   Compiling[0m try-lock v0.2.5
+2026-08-04T02:37:42.4610330Z [1m[92m   Compiling[0m rustls-webpki v0.103.13
+2026-08-04T02:37:42.5111440Z [1m[92m   Compiling[0m want v0.3.1
+2026-08-04T02:37:42.5936440Z [1m[92m   Compiling[0m tokio-util v0.7.18
+2026-08-04T02:37:42.6175050Z [1m[92m   Compiling[0m sync_wrapper v1.0.2
+2026-08-04T02:37:42.6894840Z [1m[92m   Compiling[0m futures-channel v0.3.32
+2026-08-04T02:37:42.7284670Z [1m[92m   Compiling[0m ahash v0.8.12
+2026-08-04T02:37:42.7322660Z [1m[92m   Compiling[0m atomic-waker v1.1.2
+2026-08-04T02:37:42.7763630Z [1m[92m   Compiling[0m rustix v1.1.4
+2026-08-04T02:37:42.8098670Z [1m[92m   Compiling[0m subtle v2.6.1
+2026-08-04T02:37:42.8397270Z [1m[92m   Compiling[0m tower-layer v0.3.3
+2026-08-04T02:37:42.9104200Z [1m[92m   Compiling[0m httpdate v1.0.3
+2026-08-04T02:37:42.9927450Z [1m[92m   Compiling[0m hyper v1.10.1
+2026-08-04T02:37:43.2282970Z [1m[92m   Compiling[0m http-body-util v0.1.3
+2026-08-04T02:37:43.2336480Z [1m[92m   Compiling[0m ppv-lite86 v0.2.21
+2026-08-04T02:37:43.2498160Z [1m[92m   Compiling[0m zune-core v0.5.1
+2026-08-04T02:37:43.3384170Z [1m[92m   Compiling[0m ipnet v2.12.0
+2026-08-04T02:37:43.3496160Z [1m[92m   Compiling[0m compression-core v0.4.32
+2026-08-04T02:37:43.3573560Z [1m[92m   Compiling[0m zune-jpeg v0.5.15
+2026-08-04T02:37:43.4246250Z [1m[92m   Compiling[0m compression-codecs v0.4.38
+2026-08-04T02:37:43.4417780Z [1m[92m   Compiling[0m hyper-util v0.1.20
+2026-08-04T02:37:43.6276030Z [1m[92m   Compiling[0m tower v0.5.3
+2026-08-04T02:37:43.7902110Z [1m[92m   Compiling[0m half v2.7.1
+2026-08-04T02:37:43.8282820Z [1m[92m   Compiling[0m security-framework-sys v2.17.0
+2026-08-04T02:37:43.8745700Z [1m[92m   Compiling[0m bstr v1.12.3
+2026-08-04T02:37:43.9106920Z [1m[92m   Compiling[0m mac-notification-sys v0.6.15
+2026-08-04T02:37:43.9491040Z [1m[92m   Compiling[0m quick-error v2.0.1
+2026-08-04T02:37:44.0344460Z [1m[92m   Compiling[0m weezl v0.1.12
+2026-08-04T02:37:44.0451310Z [1m[92m   Compiling[0m vcpkg v0.2.15
+2026-08-04T02:37:44.0511330Z [1m[92m   Compiling[0m fax v0.2.7
+2026-08-04T02:37:44.1401600Z [1m[92m   Compiling[0m pkg-config v0.3.33
+2026-08-04T02:37:44.1462980Z [1m[92m   Compiling[0m crossbeam-epoch v0.9.20
+2026-08-04T02:37:44.1723000Z [1m[92m   Compiling[0m cfg_aliases v0.1.1
+2026-08-04T02:37:44.2570680Z [1m[92m   Compiling[0m pxfm v0.1.30
+2026-08-04T02:37:44.2921410Z [1m[92m   Compiling[0m nix v0.28.0
+2026-08-04T02:37:44.3370780Z [1m[92m   Compiling[0m libsqlite3-sys v0.30.1
+2026-08-04T02:37:44.5790680Z [1m[92m   Compiling[0m tiff v0.11.3
+2026-08-04T02:37:44.7563810Z [1m[92m   Compiling[0m moxcms v0.8.1
+2026-08-04T02:37:44.8549180Z [1m[92m   Compiling[0m security-framework v3.7.0
+2026-08-04T02:37:45.1296090Z [1m[92m   Compiling[0m hashbrown v0.14.5
+2026-08-04T02:37:45.1695650Z [1m[92m   Compiling[0m async-compression v0.4.42
+2026-08-04T02:37:45.3240020Z [1m[92m   Compiling[0m tokio-rustls v0.26.4
+2026-08-04T02:37:45.3497570Z [1m[92m   Compiling[0m rand_core v0.9.5
+2026-08-04T02:37:45.4330070Z [1m[92m   Compiling[0m tauri-plugin-notification v2.3.3
+2026-08-04T02:37:45.4480180Z [1m[92m   Compiling[0m tauri-plugin-process v2.3.1
+2026-08-04T02:37:45.9577310Z [1m[92m   Compiling[0m tauri-plugin-updater v2.10.1
+2026-08-04T02:37:45.9703200Z [1m[92m   Compiling[0m tauri-plugin-clipboard-manager v2.3.2
+2026-08-04T02:37:46.3350800Z [1m[92m   Compiling[0m tauri-plugin-opener v2.5.4
+2026-08-04T02:37:46.3514250Z [1m[92m   Compiling[0m tauri-plugin-autostart v2.5.1
+2026-08-04T02:37:46.3712930Z [1m[92m   Compiling[0m dirs-sys v0.3.7
+2026-08-04T02:37:46.4490510Z [1m[92m   Compiling[0m utf8parse v0.2.2
+2026-08-04T02:37:46.5780970Z [1m[92m   Compiling[0m byteorder-lite v0.1.0
+2026-08-04T02:37:46.6780390Z [1m[92m   Compiling[0m bytemuck v1.25.0
+2026-08-04T02:37:46.7140170Z [1m[92m   Compiling[0m crossbeam-deque v0.8.7
+2026-08-04T02:37:46.8152330Z [1m[92m   Compiling[0m image v0.25.10
+2026-08-04T02:37:46.8301080Z [1m[92m   Compiling[0m anstyle-parse v1.0.0
+2026-08-04T02:37:46.8678900Z [1m[92m   Compiling[0m dirs v4.0.0
+2026-08-04T02:37:46.9945520Z [1m[92m   Compiling[0m rand_chacha v0.9.0
+2026-08-04T02:37:47.0483680Z [1m[92m   Compiling[0m hyper-rustls v0.27.9
+2026-08-04T02:37:47.0604730Z [1m[92m   Compiling[0m tower-http v0.6.11
+2026-08-04T02:37:47.0910360Z [1m[92m   Compiling[0m rustls-platform-verifier v0.7.0
+2026-08-04T02:37:47.2524330Z [1m[92m   Compiling[0m xattr v1.6.1
+2026-08-04T02:37:47.3198680Z [1m[92m   Compiling[0m rand_core v0.6.4
+2026-08-04T02:37:47.3364880Z [1m[92m   Compiling[0m objc2-osa-kit v0.3.2
+2026-08-04T02:37:47.4234510Z [1m[92m   Compiling[0m grep-matcher v0.1.8
+2026-08-04T02:37:47.4678640Z [1m[92m   Compiling[0m encoding_rs v0.8.35
+2026-08-04T02:37:47.5161680Z [1m[92m   Compiling[0m filetime v0.2.29
+2026-08-04T02:37:47.5205450Z [1m[92m   Compiling[0m anstyle-query v1.1.5
+2026-08-04T02:37:47.6708710Z [1m[92m   Compiling[0m anstyle v1.0.14
+2026-08-04T02:37:47.7288840Z [1m[92m   Compiling[0m is_terminal_polyfill v1.70.2
+2026-08-04T02:37:47.7800880Z [1m[92m   Compiling[0m colorchoice v1.0.5
+2026-08-04T02:37:47.8156550Z [1m[92m   Compiling[0m ryu v1.0.23
+2026-08-04T02:37:47.8534310Z [1m[92m   Compiling[0m anstream v1.0.0
+2026-08-04T02:37:47.8691770Z [1m[92m   Compiling[0m tempfile v3.27.0
+2026-08-04T02:37:47.9044910Z [1m[92m   Compiling[0m serde_urlencoded v0.7.1
+2026-08-04T02:37:47.9655320Z [1m[92m   Compiling[0m encoding_rs_io v0.1.7
+2026-08-04T02:37:48.0312230Z [1m[92m   Compiling[0m tar v0.4.46
+2026-08-04T02:37:48.0582510Z [1m[92m   Compiling[0m osakit v0.3.1
+2026-08-04T02:37:48.1642040Z [1m[92m   Compiling[0m rand_chacha v0.3.1
+2026-08-04T02:37:48.2977110Z [1m[92m   Compiling[0m reqwest v0.13.4
+2026-08-04T02:37:48.3671560Z [1m[92m   Compiling[0m rand v0.9.4
+2026-08-04T02:37:48.5062180Z [1m[92m   Compiling[0m arboard v3.6.1
+2026-08-04T02:37:48.6371160Z [1m[92m   Compiling[0m notify-rust v4.18.0
+2026-08-04T02:37:48.6654390Z [1m[92m   Compiling[0m auto-launch v0.5.0
+2026-08-04T02:37:48.6894990Z [1m[92m   Compiling[0m hashlink v0.9.1
+2026-08-04T02:37:48.7448460Z [1m[92m   Compiling[0m globset v0.4.18
+2026-08-04T02:37:48.7534900Z [1m[92m   Compiling[0m axum-core v0.5.6
+2026-08-04T02:37:48.7903540Z [1m[92m   Compiling[0m env_filter v2.0.0
+2026-08-04T02:37:48.8600630Z [1m[92m   Compiling[0m cc-bridge-desktop v2.3.20 (/Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri)
+2026-08-04T02:37:48.8814590Z [1m[92m   Compiling[0m iana-time-zone v0.1.65
+2026-08-04T02:37:48.9047130Z [1m[92m   Compiling[0m serde_path_to_error v0.1.20
+2026-08-04T02:37:48.9638110Z [1m[92m   Compiling[0m open v5.3.6
+2026-08-04T02:37:49.0055060Z [1m[92m   Compiling[0m memmap2 v0.9.11
+2026-08-04T02:37:49.0656230Z [1m[92m   Compiling[0m minisign-verify v0.2.5
+2026-08-04T02:37:49.1113100Z [1m[92m   Compiling[0m jiff v0.2.31
+2026-08-04T02:37:49.1809400Z [1m[92m   Compiling[0m matchit v0.8.4
+2026-08-04T02:37:49.3003920Z [1m[92m   Compiling[0m fallible-iterator v0.3.0
+2026-08-04T02:37:49.3787640Z [1m[92m   Compiling[0m fallible-streaming-iterator v0.1.9
+2026-08-04T02:37:49.4529270Z [1m[92m   Compiling[0m rusqlite v0.32.1
+2026-08-04T02:37:49.5350560Z [1m[92m   Compiling[0m env_logger v0.11.11
+2026-08-04T02:37:49.5611700Z [1m[92m   Compiling[0m axum v0.8.9
+2026-08-04T02:37:49.6955960Z [1m[92m   Compiling[0m grep-searcher v0.1.16
+2026-08-04T02:37:49.8709850Z [1m[92m   Compiling[0m chrono v0.4.45
+2026-08-04T02:37:49.8746370Z [1m[92m   Compiling[0m ignore v0.4.28
+2026-08-04T02:37:50.1279320Z [1m[92m   Compiling[0m process-wrap v8.0.2
+2026-08-04T02:37:50.2104410Z [1m[92m   Compiling[0m rand v0.8.6
+2026-08-04T02:37:50.2380900Z [1m[92m   Compiling[0m dashmap v6.2.1
+2026-08-04T02:37:50.2884370Z [1m[92m   Compiling[0m grep-regex v0.1.14
+2026-08-04T02:37:50.3834290Z [1m[92m   Compiling[0m tokio-stream v0.1.18
+2026-08-04T02:37:50.4026470Z [1m[92m   Compiling[0m tauri-plugin-single-instance v2.4.2
+2026-08-04T02:37:50.4682710Z [1m[92m   Compiling[0m cc-bridge-macros v0.1.0 (/Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/macros)
+2026-08-04T02:37:50.5200220Z [1m[92m   Compiling[0m if-addrs v0.13.4
+2026-08-04T02:37:50.5405350Z [1m[92m   Compiling[0m similar v3.1.1
+2026-08-04T02:37:50.6306380Z [1m[92m   Compiling[0m shell-words v1.1.1
+2026-08-04T02:39:13.3580680Z [1m[92m    Finished[0m `release` profile [optimized] target(s) in 2m 05s
+2026-08-04T02:39:13.5775140Z        Built application at: /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/cc-bridge-desktop
+2026-08-04T02:39:13.5969970Z     Bundling cc-bridge.app (/Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app)
+2026-08-04T02:39:13.6168550Z      Signing with identity "-"
+2026-08-04T02:39:13.6168980Z Signing with identity "-"
+2026-08-04T02:39:13.6170260Z Signing /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:13.6322930Z /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop: replacing existing signature
+2026-08-04T02:39:13.6691230Z Signing with identity "-"
+2026-08-04T02:39:13.6692270Z Signing /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app
+2026-08-04T02:39:13.6780430Z /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app: replacing existing signature
+2026-08-04T02:39:13.7073700Z         Warn skipping app notarization, no APPLE_ID & APPLE_PASSWORD & APPLE_TEAM_ID or APPLE_API_KEY & APPLE_API_ISSUER & APPLE_API_KEY_PATH environment variables found
+2026-08-04T02:39:13.9274960Z     Bundling /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app.tar.gz (/Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app.tar.gz)
+2026-08-04T02:39:13.9292190Z     Finished 1 bundle at:
+2026-08-04T02:39:13.9297140Z         /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app
+2026-08-04T02:39:13.9306870Z         /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app.tar.gz (updater)
+2026-08-04T02:39:13.9410860Z 
+2026-08-04T02:39:14.1006800Z         Warn The updater secret key from `TAURI_SIGNING_PRIVATE_KEY` does not match the public key from `plugins > updater > pubkey`. If you are not rotating keys, this means your configuration is wrong and won't be accepted at runtime when performing update.
+2026-08-04T02:39:14.1007880Z     Finished 1 updater signature at:
+2026-08-04T02:39:14.1008430Z         /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app.tar.gz.sig
+2026-08-04T02:39:14.1009670Z 
+2026-08-04T02:39:14.1585440Z ##[group]Run set +e
+2026-08-04T02:39:14.1586000Z [36;1mset +e[0m
+2026-08-04T02:39:14.1586330Z [36;1mAPP="desktop/src-tauri/target/release/bundle/macos/cc-bridge.app"[0m
+2026-08-04T02:39:14.1586760Z [36;1mls -la desktop/src-tauri/target/release/bundle/macos/ 2>&1[0m
+2026-08-04T02:39:14.1587330Z [36;1mecho "::group::codesign -dv（签名主体，ad-hoc 应显示 Signature=adhoc）"[0m
+2026-08-04T02:39:14.1587800Z [36;1mcodesign -dv --verbose=4 "$APP" 2>&1[0m
+2026-08-04T02:39:14.1588100Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:39:14.1588460Z [36;1mecho "::group::codesign --verify（签名完整性）"[0m
+2026-08-04T02:39:14.1589080Z [36;1mcodesign --verify --deep --strict --verbose=2 "$APP" 2>&1[0m
+2026-08-04T02:39:14.1589520Z [36;1mecho "verify exit=$?"[0m
+2026-08-04T02:39:14.1589780Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:39:14.1590180Z [36;1mecho "::group::spctl -a -vvv（Gatekeeper 对未公证包的结论）"[0m
+2026-08-04T02:39:14.1590580Z [36;1mspctl -a -vvv -t exec "$APP" 2>&1[0m
+2026-08-04T02:39:14.1591630Z [36;1mecho "spctl exit=$?   # 非 0 属预期：ad-hoc + 未公证"[0m
+2026-08-04T02:39:14.1592000Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:39:14.1867330Z shell: /bin/bash -e {0}
+2026-08-04T02:39:14.1868190Z env:
+2026-08-04T02:39:14.1869240Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:39:14.1869980Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:39:14.1870550Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:39:14.1871640Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:39:14.1872140Z   CARGO_TERM_COLOR: always
+2026-08-04T02:39:14.1872600Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:39:14.1873740Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:39:14.1874310Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:39:14.1917970Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:39:14.1918320Z   CACHE_ON_FAILURE: false
+2026-08-04T02:39:14.1918780Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:39:14.1919170Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:39:14.1919490Z ##[endgroup]
+2026-08-04T02:39:14.3157200Z total 12072
+2026-08-04T02:39:14.3158110Z drwxr-xr-x  5 runner  staff      160 Aug  4 02:39 .
+2026-08-04T02:39:14.3158550Z drwxr-xr-x  3 runner  staff       96 Aug  4 02:39 ..
+2026-08-04T02:39:14.3159100Z drwxr-xr-x  3 runner  staff       96 Aug  4 02:39 cc-bridge.app
+2026-08-04T02:39:14.3159620Z -rw-r--r--  1 runner  staff  6174693 Aug  4 02:39 cc-bridge.app.tar.gz
+2026-08-04T02:39:14.3160520Z -rw-r--r--  1 runner  staff      408 Aug  4 02:39 cc-bridge.app.tar.gz.sig
+2026-08-04T02:39:14.3163130Z ##[group]codesign -dv（签名主体，ad-hoc 应显示 Signature=adhoc）
+2026-08-04T02:39:14.3239900Z Executable=/Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:14.3240810Z Identifier=com.ccbridge.desktop
+2026-08-04T02:39:14.3241330Z Format=app bundle with Mach-O thin (arm64)
+2026-08-04T02:39:14.3242060Z CodeDirectory v=20500 size=27701 flags=0x10002(adhoc,runtime) hashes=859+3 location=embedded
+2026-08-04T02:39:14.3242550Z VersionPlatform=1
+2026-08-04T02:39:14.3242920Z VersionMin=720896
+2026-08-04T02:39:14.3243160Z VersionSDK=1705216
+2026-08-04T02:39:14.3243540Z Hash type=sha256 size=32
+2026-08-04T02:39:14.3243970Z CandidateCDHash sha256=f43394b6a1b68f4761d674c4ccaba17d20d6ed72
+2026-08-04T02:39:14.3244710Z CandidateCDHashFull sha256=f43394b6a1b68f4761d674c4ccaba17d20d6ed720e71a32cb3df830573f91d95
+2026-08-04T02:39:14.3245340Z Hash choices=sha256
+2026-08-04T02:39:14.3245960Z CMSDigest=f43394b6a1b68f4761d674c4ccaba17d20d6ed720e71a32cb3df830573f91d95
+2026-08-04T02:39:14.3246410Z CMSDigestType=2
+2026-08-04T02:39:14.3246890Z Executable Segment base=0
+2026-08-04T02:39:14.3247220Z Executable Segment limit=12189696
+2026-08-04T02:39:14.3247650Z Executable Segment flags=0x1
+2026-08-04T02:39:14.3248070Z Page size=16384
+2026-08-04T02:39:14.3248950Z CDHash=f43394b6a1b68f4761d674c4ccaba17d20d6ed72
+2026-08-04T02:39:14.3249350Z Signature=adhoc
+2026-08-04T02:39:14.3250080Z Info.plist entries=14
+2026-08-04T02:39:14.3250470Z TeamIdentifier=not set
+2026-08-04T02:39:14.3250980Z Runtime Version=26.5.0
+2026-08-04T02:39:14.3251310Z Sealed Resources version=2 rules=13 files=1
+2026-08-04T02:39:14.3251800Z Internal requirements count=0 size=12
+2026-08-04T02:39:14.3252340Z ##[endgroup]
+2026-08-04T02:39:14.3253100Z ##[group]codesign --verify（签名完整性）
+2026-08-04T02:39:14.3438590Z desktop/src-tauri/target/release/bundle/macos/cc-bridge.app: valid on disk
+2026-08-04T02:39:14.3441040Z desktop/src-tauri/target/release/bundle/macos/cc-bridge.app: satisfies its Designated Requirement
+2026-08-04T02:39:14.3443160Z verify exit=0
+2026-08-04T02:39:14.3444000Z ##[endgroup]
+2026-08-04T02:39:14.3444890Z ##[group]spctl -a -vvv（Gatekeeper 对未公证包的结论）
+2026-08-04T02:39:14.6859150Z desktop/src-tauri/target/release/bundle/macos/cc-bridge.app: rejected
+2026-08-04T02:39:14.6861810Z spctl exit=3   # 非 0 属预期：ad-hoc + 未公证
+2026-08-04T02:39:14.6862700Z ##[endgroup]
+2026-08-04T02:39:14.7167390Z ##[group]Run set +e
+2026-08-04T02:39:14.7167690Z [36;1mset +e[0m
+2026-08-04T02:39:14.7167980Z [36;1mSRC="desktop/src-tauri/target/release/bundle/macos/cc-bridge.app"[0m
+2026-08-04T02:39:14.7168400Z [36;1mQ="$RUNNER_TEMP/quarantined/cc-bridge.app"[0m
+2026-08-04T02:39:14.7168770Z [36;1mmkdir -p "$RUNNER_TEMP/quarantined"[0m
+2026-08-04T02:39:14.7169070Z [36;1mcp -R "$SRC" "$Q"[0m
+2026-08-04T02:39:14.7169390Z [36;1mxattr -w com.apple.quarantine "0083;00000000;Safari;" "$Q"[0m
+2026-08-04T02:39:14.7169790Z [36;1mecho "::group::打上隔离属性后"[0m
+2026-08-04T02:39:14.7170050Z [36;1mxattr -l "$Q"[0m
+2026-08-04T02:39:14.7170310Z [36;1mspctl -a -vvv -t exec "$Q" 2>&1[0m
+2026-08-04T02:39:14.7170560Z [36;1mecho "spctl exit=$?"[0m
+2026-08-04T02:39:14.7170850Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:39:14.7171170Z [36;1mecho "::group::用户侧解法是否真的管用：xattr -dr com.apple.quarantine"[0m
+2026-08-04T02:39:14.7171660Z [36;1mxattr -dr com.apple.quarantine "$Q"[0m
+2026-08-04T02:39:14.7172040Z [36;1mecho "清除后属性列表（空即已清除）：[$(xattr -l "$Q")]"[0m
+2026-08-04T02:39:14.7172320Z [36;1mspctl -a -vvv -t exec "$Q" 2>&1[0m
+2026-08-04T02:39:14.7172620Z [36;1mecho "spctl exit=$?"[0m
+2026-08-04T02:39:14.7172930Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:39:14.7222110Z shell: /bin/bash -e {0}
+2026-08-04T02:39:14.7222310Z env:
+2026-08-04T02:39:14.7222460Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:39:14.7222640Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:39:14.7222820Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:39:14.7223020Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:39:14.7223180Z   CARGO_TERM_COLOR: always
+2026-08-04T02:39:14.7223490Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:39:14.7223800Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:39:14.7224130Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:39:14.7262290Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:39:14.7262520Z   CACHE_ON_FAILURE: false
+2026-08-04T02:39:14.7262790Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:39:14.7263070Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:39:14.7263330Z ##[endgroup]
+2026-08-04T02:39:14.7974920Z ##[group]打上隔离属性后
+2026-08-04T02:39:14.8003390Z com.apple.quarantine: 0083;00000000;Safari;
+2026-08-04T02:39:15.0276030Z /Users/runner/work/_temp/quarantined/cc-bridge.app: rejected
+2026-08-04T02:39:15.0278130Z spctl exit=3
+2026-08-04T02:39:15.0278730Z ##[endgroup]
+2026-08-04T02:39:15.0279640Z ##[group]用户侧解法是否真的管用：xattr -dr com.apple.quarantine
+2026-08-04T02:39:15.0343690Z 清除后属性列表（空即已清除）：[]
+2026-08-04T02:39:15.2210980Z /Users/runner/work/_temp/quarantined/cc-bridge.app: rejected
+2026-08-04T02:39:15.2219320Z spctl exit=3
+2026-08-04T02:39:15.2219950Z ##[endgroup]
+2026-08-04T02:39:15.2526810Z ##[group]Run set +e
+2026-08-04T02:39:15.2527270Z [36;1mset +e[0m
+2026-08-04T02:39:15.2528900Z [36;1mAPP="$PWD/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app"[0m
+2026-08-04T02:39:15.2531300Z [36;1m# 不能写死 MacOS/cc-bridge：.app **目录名**用 productName（cc-bridge），而里面的[0m
+2026-08-04T02:39:15.2531710Z [36;1m# **可执行文件名**用 Cargo 包名（cc-bridge-desktop），两者不一致。[0m
+2026-08-04T02:39:15.2532540Z [36;1m# 第一轮 CI 就挂在这里（No such file or directory）——改从 Info.plist 取真值。[0m
+2026-08-04T02:39:15.2533210Z [36;1mBIN_NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")[0m
+2026-08-04T02:39:15.2534190Z [36;1mBIN="$APP/Contents/MacOS/$BIN_NAME"[0m
+2026-08-04T02:39:15.2534660Z [36;1mecho "CFBundleExecutable=$BIN_NAME"[0m
+2026-08-04T02:39:15.2535050Z [36;1mls -l "$APP/Contents/MacOS/"[0m
+2026-08-04T02:39:15.2535380Z [36;1mecho "APP_BIN=$BIN" >> "$GITHUB_ENV"[0m
+2026-08-04T02:39:15.2535620Z [36;1mLOG="$RUNNER_TEMP/app-1.log"[0m
+2026-08-04T02:39:15.2536100Z [36;1m"$BIN" > "$LOG" 2>&1 &[0m
+2026-08-04T02:39:15.2536400Z [36;1mPID=$![0m
+2026-08-04T02:39:15.2536880Z [36;1mecho "APP_PID=$PID" >> "$GITHUB_ENV"[0m
+2026-08-04T02:39:15.2537320Z [36;1mecho "已启动 pid=${PID}，窗口 visible:false，预期直接收进托盘"[0m
+2026-08-04T02:39:15.2537960Z [36;1mcode=""[0m
+2026-08-04T02:39:15.2538230Z [36;1mfor i in $(seq 1 40); do[0m
+2026-08-04T02:39:15.2538770Z [36;1m  code=$(curl -s -o "$RUNNER_TEMP/health.json" -w '%{http_code}' --max-time 2 http://127.0.0.1:7823/health)[0m
+2026-08-04T02:39:15.2539240Z [36;1m  if [ "$code" = "200" ]; then[0m
+2026-08-04T02:39:15.2539620Z [36;1m    echo "✅ 第 ${i} 次探测命中：/health 200 —— MCP 服务在 mac 上自动起来了"[0m
+2026-08-04T02:39:15.2540000Z [36;1m    cat "$RUNNER_TEMP/health.json"; echo[0m
+2026-08-04T02:39:15.2541220Z [36;1m    break[0m
+2026-08-04T02:39:15.2541830Z [36;1m  fi[0m
+2026-08-04T02:39:15.2542540Z [36;1m  if ! kill -0 "$PID" 2>/dev/null; then[0m
+2026-08-04T02:39:15.2543880Z [36;1m    echo "❌ 进程在第 ${i} 次探测前就退出了，这是 mac 启动路径的硬失败。日志："[0m
+2026-08-04T02:39:15.2544740Z [36;1m    cat "$LOG"[0m
+2026-08-04T02:39:15.2545310Z [36;1m    exit 1[0m
+2026-08-04T02:39:15.2551300Z [36;1m  fi[0m
+2026-08-04T02:39:15.2551960Z [36;1m  sleep 1[0m
+2026-08-04T02:39:15.2552590Z [36;1mdone[0m
+2026-08-04T02:39:15.2553340Z [36;1mif [ "$code" != "200" ]; then[0m
+2026-08-04T02:39:15.2553870Z [36;1m  echo "❌ 40 秒内 /health 未就绪。日志："[0m
+2026-08-04T02:39:15.2554520Z [36;1m  cat "$LOG"[0m
+2026-08-04T02:39:15.2554820Z [36;1m  exit 1[0m
+2026-08-04T02:39:15.2555130Z [36;1mfi[0m
+2026-08-04T02:39:15.2611860Z shell: /bin/bash -e {0}
+2026-08-04T02:39:15.2612070Z env:
+2026-08-04T02:39:15.2612270Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:39:15.2612460Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:39:15.2612680Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:39:15.2612890Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:39:15.2613090Z   CARGO_TERM_COLOR: always
+2026-08-04T02:39:15.2613370Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:39:15.2613730Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:39:15.2614670Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:39:15.2669780Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:39:15.2670100Z   CACHE_ON_FAILURE: false
+2026-08-04T02:39:15.2670380Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:39:15.2670700Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:39:15.2670910Z ##[endgroup]
+2026-08-04T02:39:15.3682560Z CFBundleExecutable=cc-bridge-desktop
+2026-08-04T02:39:15.3727670Z total 27568
+2026-08-04T02:39:15.3728570Z -rwxr-xr-x  1 runner  staff  14111808 Aug  4 02:39 cc-bridge-desktop
+2026-08-04T02:39:15.3738250Z 已启动 pid=13530，窗口 visible:false，预期直接收进托盘
+2026-08-04T02:39:17.7109590Z ✅ 第 3 次探测命中：/health 200 —— MCP 服务在 mac 上自动起来了
+2026-08-04T02:39:17.7211950Z {"status":"ok","version":"2.3.20"}
+2026-08-04T02:39:17.7656290Z ##[group]Run set +e
+2026-08-04T02:39:17.7656670Z [36;1mset +e[0m
+2026-08-04T02:39:17.7656870Z [36;1msample() {[0m
+2026-08-04T02:39:17.7657190Z [36;1m  echo "::group::$1"[0m
+2026-08-04T02:39:17.7657600Z [36;1m  ps -o pid,rss,vsz,comm -p "$APP_PID"[0m
+2026-08-04T02:39:17.7658360Z [36;1m  # footprint 口径更接近活动监视器。注意：不能拿这里的数字直接跟 Windows 侧那[0m
+2026-08-04T02:39:17.7658800Z [36;1m  # 82MB 比——那是 Private Working Set，口径不同；只看 mac 自己的前后差值。[0m
+2026-08-04T02:39:17.7659250Z [36;1m  sudo /usr/bin/footprint -p "$APP_PID" 2>&1 | tail -8[0m
+2026-08-04T02:39:17.7679180Z [36;1m  echo "— 同名相关进程（看 WKWebView 是否另起进程）—"[0m
+2026-08-04T02:39:17.7679660Z [36;1m  ps ax -o pid,rss,comm | grep -i -e cc-bridge -e WebKit -e WebContent | grep -v grep[0m
+2026-08-04T02:39:17.7680000Z [36;1m  echo "::endgroup::"[0m
+2026-08-04T02:39:17.7680160Z [36;1m}[0m
+2026-08-04T02:39:17.7680420Z [36;1m# 窗口数断言：用 unix id 定位进程，避开猜 System Events 里的进程名。[0m
+2026-08-04T02:39:17.7681010Z [36;1mwins() { osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to return count of windows" 2>&1; }[0m
+2026-08-04T02:39:17.7681750Z [36;1mecho "AX 看到的进程名 = $(osascript -e "tell application \"System Events\" to return name of (first process whose unix id is $APP_PID)" 2>&1)"[0m
+2026-08-04T02:39:17.7691990Z [36;1msample "托盘态（webview 尚未创建）"[0m
+2026-08-04T02:39:17.7692270Z [36;1mecho "托盘态窗口数 = $(wins)   # 预期 0（visible:false）"[0m
+2026-08-04T02:39:17.7692600Z [36;1m# 第二次启动同一二进制 → single-instance 回调 → show_or_create_main_window。[0m
+2026-08-04T02:39:17.7692990Z [36;1m"$APP_BIN" > "$RUNNER_TEMP/app-2.log" 2>&1[0m
+2026-08-04T02:39:17.7693290Z [36;1mecho "第二实例退出码=$?，应为 0 且由 single-instance 把主窗口拉起来"[0m
+2026-08-04T02:39:17.7693530Z [36;1msleep 10[0m
+2026-08-04T02:39:17.7693680Z [36;1msample "显示窗口后（webview 已创建）"[0m
+2026-08-04T02:39:17.7694000Z [36;1mecho "显示后窗口数 = $(wins)   # 预期 1，这条就是 single-instance 活了的硬证据"[0m
+2026-08-04T02:39:17.7736890Z shell: /bin/bash -e {0}
+2026-08-04T02:39:17.7737240Z env:
+2026-08-04T02:39:17.7737460Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:39:17.7737770Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:39:17.7738010Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:39:17.7738770Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:39:17.7739000Z   CARGO_TERM_COLOR: always
+2026-08-04T02:39:17.7739470Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:39:17.7739880Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:39:17.7740420Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:39:17.7782450Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:39:17.7782790Z   CACHE_ON_FAILURE: false
+2026-08-04T02:39:17.7783040Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:39:17.7783360Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:39:17.7783900Z   APP_BIN: /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:17.7784460Z   APP_PID: 13530
+2026-08-04T02:39:17.7784630Z ##[endgroup]
+2026-08-04T02:39:18.0979870Z AX 看到的进程名 = cc-bridge-desktop
+2026-08-04T02:39:18.1090920Z ##[group]托盘态（webview 尚未创建）
+2026-08-04T02:39:18.1190820Z   PID    RSS      VSZ COMM
+2026-08-04T02:39:18.1293580Z 13530  92704 440036384 /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:18.5226290Z     0 B        0 B          0 B       1021    __AUTH_CONST
+2026-08-04T02:39:18.5342690Z     ---        ---          ---        ---    ---
+2026-08-04T02:39:18.5445550Z   22 MB      20 MB       864 KB       8342    TOTAL
+2026-08-04T02:39:18.5546930Z 
+2026-08-04T02:39:18.5690590Z Auxiliary data:
+2026-08-04T02:39:18.5792100Z     phys_footprint: 22 MB
+2026-08-04T02:39:18.5895000Z     phys_footprint_peak: 22 MB
+2026-08-04T02:39:18.6005570Z 
+2026-08-04T02:39:18.6111480Z — 同名相关进程（看 WKWebView 是否另起进程）—
+2026-08-04T02:39:18.6214260Z 13530  94128 /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:18.6318580Z 13544  25664 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking
+2026-08-04T02:39:18.6319990Z 13545  45664 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+2026-08-04T02:39:18.6424680Z ##[endgroup]
+2026-08-04T02:39:18.7330830Z 托盘态窗口数 = 1   # 预期 0（visible:false）
+2026-08-04T02:39:18.7958600Z 第二实例退出码=0，应为 0 且由 single-instance 把主窗口拉起来
+2026-08-04T02:39:28.9419820Z ##[group]显示窗口后（webview 已创建）
+2026-08-04T02:39:28.9445890Z   PID    RSS      VSZ COMM
+2026-08-04T02:39:28.9447670Z 13530  96784 440064496 /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:29.0175610Z     0 B        0 B          0 B       1024    __AUTH_CONST
+2026-08-04T02:39:29.0176320Z     ---        ---          ---        ---    ---
+2026-08-04T02:39:29.0179150Z   23 MB      20 MB      1360 KB       8384    TOTAL
+2026-08-04T02:39:29.0182980Z 
+2026-08-04T02:39:29.0222610Z Auxiliary data:
+2026-08-04T02:39:29.0223180Z     phys_footprint: 23 MB
+2026-08-04T02:39:29.0223740Z     phys_footprint_peak: 24 MB
+2026-08-04T02:39:29.0224100Z 
+2026-08-04T02:39:29.0224580Z — 同名相关进程（看 WKWebView 是否另起进程）—
+2026-08-04T02:39:29.0437640Z 13530  96784 /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:29.0439750Z 13544  26544 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking
+2026-08-04T02:39:29.0441140Z 13545 108656 /System/Library/Frameworks/WebKit.framework/Versions/A/XPCServices/com.apple.WebKit.WebContent.xpc/Contents/MacOS/com.apple.WebKit.WebContent
+2026-08-04T02:39:29.0442800Z ##[endgroup]
+2026-08-04T02:39:29.1315090Z 显示后窗口数 = 1   # 预期 1，这条就是 single-instance 活了的硬证据
+2026-08-04T02:39:29.1433500Z ##[group]Run set +e
+2026-08-04T02:39:29.1435050Z [36;1mset +e[0m
+2026-08-04T02:39:29.1435310Z [36;1mmkdir -p "$RUNNER_TEMP/shots"[0m
+2026-08-04T02:39:29.1439230Z [36;1mscreencapture -x "$RUNNER_TEMP/shots/01-full.png"; echo "full exit=$?"[0m
+2026-08-04T02:39:29.1439670Z [36;1m# 单截顶部菜单栏，方便看模板图标（icon_as_template）在菜单栏里的实际观感[0m
+2026-08-04T02:39:29.1440170Z [36;1mscreencapture -x -R 0,0,2400,44 "$RUNNER_TEMP/shots/02-menubar.png"; echo "menubar exit=$?"[0m
+2026-08-04T02:39:29.1440630Z [36;1mls -l "$RUNNER_TEMP/shots"[0m
+2026-08-04T02:39:29.1500980Z shell: /bin/bash -e {0}
+2026-08-04T02:39:29.1502920Z env:
+2026-08-04T02:39:29.1504710Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:39:29.1504970Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:39:29.1506720Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:39:29.1508430Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:39:29.1508700Z   CARGO_TERM_COLOR: always
+2026-08-04T02:39:29.1510420Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:39:29.1512150Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:39:29.1513920Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:39:29.1555480Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:39:29.1555760Z   CACHE_ON_FAILURE: false
+2026-08-04T02:39:29.1556190Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:39:29.1556530Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:39:29.1557230Z   APP_BIN: /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:29.1557860Z   APP_PID: 13530
+2026-08-04T02:39:29.1558090Z ##[endgroup]
+2026-08-04T02:39:29.4645390Z full exit=0
+2026-08-04T02:39:29.5524780Z menubar exit=0
+2026-08-04T02:39:29.5588530Z total 680
+2026-08-04T02:39:29.5589460Z -rw-r--r--@ 1 runner  staff  323878 Aug  4 02:39 01-full.png
+2026-08-04T02:39:29.5590140Z -rw-r--r--@ 1 runner  staff   18664 Aug  4 02:39 02-menubar.png
+2026-08-04T02:39:29.5623020Z ##[group]Run set +e
+2026-08-04T02:39:29.5623300Z [36;1mset +e[0m
+2026-08-04T02:39:29.5623860Z [36;1mwins() { osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to return count of windows" 2>&1; }[0m
+2026-08-04T02:39:29.5624520Z [36;1mrss() { ps -o rss= -p "$APP_PID" | tr -d ' '; }[0m
+2026-08-04T02:39:29.5624960Z [36;1mmkdir -p "$RUNNER_TEMP/shots"[0m
+2026-08-04T02:39:29.5649500Z [36;1mecho "关窗前：窗口数=$(wins) RSS=$(rss)KB"[0m
+2026-08-04T02:39:29.5650200Z [36;1mosascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $APP_PID) to true" 2>&1[0m
+2026-08-04T02:39:29.5656890Z [36;1msleep 2[0m
+2026-08-04T02:39:29.5657260Z [36;1mosascript -e 'tell application "System Events" to keystroke "w" using command down' 2>&1[0m
+2026-08-04T02:39:29.5658400Z [36;1mecho "Cmd+W 发送 exit=$?"[0m
+2026-08-04T02:39:29.5658630Z [36;1msleep 8[0m
+2026-08-04T02:39:29.5659260Z [36;1mecho "关窗后：窗口数=$(wins) RSS=$(rss)KB"[0m
+2026-08-04T02:39:29.5660010Z [36;1mif kill -0 "$APP_PID" 2>/dev/null; then[0m
+2026-08-04T02:39:29.5660370Z [36;1m  echo "✅ 关窗后进程仍存活 —— ExitRequested{code:None} 拦截在 mac 上也生效，服务没被带走"[0m
+2026-08-04T02:39:29.5660950Z [36;1melse[0m
+2026-08-04T02:39:29.5661200Z [36;1m  echo "❌ 关窗把整个应用带退了 —— mac 上拦截失效，MCP 服务会断，这是阻塞缺陷"[0m
+2026-08-04T02:39:29.5661440Z [36;1mfi[0m
+2026-08-04T02:39:29.5661810Z [36;1mecho "关窗后 /health 仍否存活：$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:7823/health)"[0m
+2026-08-04T02:39:29.5662330Z [36;1mscreencapture -x "$RUNNER_TEMP/shots/04-after-close.png" 2>/dev/null[0m
+2026-08-04T02:39:29.5711980Z shell: /bin/bash -e {0}
+2026-08-04T02:39:29.5712240Z env:
+2026-08-04T02:39:29.5713500Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:39:29.5713800Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:39:29.5714560Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:39:29.5714780Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:39:29.5714960Z   CARGO_TERM_COLOR: always
+2026-08-04T02:39:29.5717320Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:39:29.5717700Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:39:29.5719220Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:39:29.5761280Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:39:29.5761550Z   CACHE_ON_FAILURE: false
+2026-08-04T02:39:29.5761950Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:39:29.5762420Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:39:29.5763130Z   APP_BIN: /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:29.5763600Z   APP_PID: 13530
+2026-08-04T02:39:29.5763900Z ##[endgroup]
+2026-08-04T02:39:29.7320690Z 关窗前：窗口数=1 RSS=96784KB
+2026-08-04T02:39:31.8930230Z Cmd+W 发送 exit=0
+2026-08-04T02:39:40.0214000Z 关窗后：窗口数=1 RSS=108944KB
+2026-08-04T02:39:40.0215150Z ✅ 关窗后进程仍存活 —— ExitRequested{code:None} 拦截在 mac 上也生效，服务没被带走
+2026-08-04T02:39:40.0311990Z 关窗后 /health 仍否存活：200
+2026-08-04T02:39:40.1804510Z ##[group]Run set +e
+2026-08-04T02:39:40.1804730Z [36;1mset +e[0m
+2026-08-04T02:39:40.1805060Z [36;1mDIR="$HOME/Library/Application Support/com.ccbridge.desktop"[0m
+2026-08-04T02:39:40.1805660Z [36;1mecho "::group::应用数据目录（验证 mac 路径解析正确）"[0m
+2026-08-04T02:39:40.1805900Z [36;1mls -l "$DIR" 2>&1[0m
+2026-08-04T02:39:40.1806080Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:39:40.1806320Z [36;1m# config 表是 key/value，value 为 JSON 字符串，故要剥掉引号[0m
+2026-08-04T02:39:40.1806780Z [36;1mTOKEN=$(sqlite3 "$DIR/cc-bridge.db" "select value from config where key='token';" 2>&1 | tr -d '"')[0m
+2026-08-04T02:39:40.1807180Z [36;1mecho "token 长度=${#TOKEN}"[0m
+2026-08-04T02:39:40.1807510Z [36;1mcurl -sS -X POST http://127.0.0.1:7823/mcp \[0m
+2026-08-04T02:39:40.1807860Z [36;1m  -H "Authorization: ***" \[0m
+2026-08-04T02:39:40.1808160Z [36;1m  -H 'Content-Type: application/json' \[0m
+2026-08-04T02:39:40.1808790Z [36;1m  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"push_notification","arguments":{"title":"CI 烟测","body":"mac 通知链路验证"}}}' 2>&1 | head -c 2000[0m
+2026-08-04T02:39:40.1809300Z [36;1mecho[0m
+2026-08-04T02:39:40.1809450Z [36;1msleep 3[0m
+2026-08-04T02:39:40.1809780Z [36;1mscreencapture -x "$RUNNER_TEMP/shots/03-notification.png"; echo "shot exit=$?"[0m
+2026-08-04T02:39:40.1871660Z shell: /bin/bash -e {0}
+2026-08-04T02:39:40.1871910Z env:
+2026-08-04T02:39:40.1872100Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:39:40.1872280Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:39:40.1872490Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:39:40.1872680Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:39:40.1872870Z   CARGO_TERM_COLOR: always
+2026-08-04T02:39:40.1873180Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:39:40.1873550Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:39:40.1873910Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:39:40.1913780Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:39:40.1914080Z   CACHE_ON_FAILURE: false
+2026-08-04T02:39:40.1915050Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:39:40.1915460Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:39:40.1916010Z   APP_BIN: /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:40.1916640Z   APP_PID: 13530
+2026-08-04T02:39:40.1916820Z ##[endgroup]
+2026-08-04T02:39:40.2317910Z ##[group]应用数据目录（验证 mac 路径解析正确）
+2026-08-04T02:39:40.2388510Z total 160
+2026-08-04T02:39:40.2391150Z -rw-r--r--  1 runner  staff   4096 Aug  4 02:39 cc-bridge.db
+2026-08-04T02:39:40.2393250Z -rw-r--r--  1 runner  staff  32768 Aug  4 02:39 cc-bridge.db-shm
+2026-08-04T02:39:40.2394060Z -rw-r--r--  1 runner  staff  41232 Aug  4 02:39 cc-bridge.db-wal
+2026-08-04T02:39:40.2394770Z ##[endgroup]
+2026-08-04T02:39:40.4253150Z token 长度=32
+2026-08-04T02:39:40.4398850Z {"id":1,"jsonrpc":"2.0","result":{"pushed":true}}
+2026-08-04T02:39:43.5410220Z shot exit=0
+2026-08-04T02:39:43.5479100Z ##[group]Run set +e
+2026-08-04T02:39:43.5480620Z [36;1mset +e[0m
+2026-08-04T02:39:43.5481130Z [36;1mecho "退出前存活检查：$(kill -0 "$APP_PID" 2>/dev/null && echo alive || echo dead)"[0m
+2026-08-04T02:39:43.5481830Z [36;1m# 先发真实按键 Cmd+Q（完全走用户那条路径）。前面已关窗，此时应用只剩托盘，[0m
+2026-08-04T02:39:43.5482180Z [36;1m# 先把它拉到前台才接得到按键。[0m
+2026-08-04T02:39:43.5482800Z [36;1mosascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $APP_PID) to true" 2>&1[0m
+2026-08-04T02:39:43.5483270Z [36;1msleep 2[0m
+2026-08-04T02:39:43.5483630Z [36;1mosascript -e 'tell application "System Events" to keystroke "q" using command down' 2>&1[0m
+2026-08-04T02:39:43.5484110Z [36;1mecho "Cmd+Q 真实按键 exit=$?"[0m
+2026-08-04T02:39:43.5484370Z [36;1msleep 6[0m
+2026-08-04T02:39:43.5484570Z [36;1mif kill -0 "$APP_PID" 2>/dev/null; then[0m
+2026-08-04T02:39:43.5484870Z [36;1m  echo "⚠ Cmd+Q 后进程仍存活，再试 Apple Event quit 区分是「按键没递到」还是「真的拦住了」"[0m
+2026-08-04T02:39:43.5485340Z [36;1m  osascript -e 'tell application "cc-bridge" to quit' 2>&1[0m
+2026-08-04T02:39:43.5485700Z [36;1m  echo "Apple Event quit exit=$?"[0m
+2026-08-04T02:39:43.5486620Z [36;1m  sleep 6[0m
+2026-08-04T02:39:43.5486840Z [36;1m  if kill -0 "$APP_PID" 2>/dev/null; then[0m
+2026-08-04T02:39:43.5487220Z [36;1m    echo "⚠⚠ 两种退出都没用 —— ExitRequested 拦截很可能误伤了用户主动退出，得改"[0m
+2026-08-04T02:39:43.5487490Z [36;1m  else[0m
+2026-08-04T02:39:43.5487760Z [36;1m    echo "✅ Apple Event quit 生效 —— 拦截未误伤退出；上一步失败只是按键未递到"[0m
+2026-08-04T02:39:43.5488550Z [36;1m  fi[0m
+2026-08-04T02:39:43.5489310Z [36;1melse[0m
+2026-08-04T02:39:43.5491710Z [36;1m  echo "✅ Cmd+Q 后进程已退出 —— 用户主动退出未被 ExitRequested{code:None} 拦截误伤"[0m
+2026-08-04T02:39:43.5492040Z [36;1mfi[0m
+2026-08-04T02:39:43.5556820Z shell: /bin/bash -e {0}
+2026-08-04T02:39:43.5557040Z env:
+2026-08-04T02:39:43.5557200Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:39:43.5557400Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:39:43.5557570Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:39:43.5557830Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:39:43.5557980Z   CARGO_TERM_COLOR: always
+2026-08-04T02:39:43.5558250Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:39:43.5558570Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:39:43.5558920Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:39:43.5599390Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:39:43.5599620Z   CACHE_ON_FAILURE: false
+2026-08-04T02:39:43.5599910Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:39:43.5600200Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:39:43.5600710Z   APP_BIN: /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:43.5601240Z   APP_PID: 13530
+2026-08-04T02:39:43.5601380Z ##[endgroup]
+2026-08-04T02:39:43.6062920Z 退出前存活检查：alive
+2026-08-04T02:39:45.8608020Z Cmd+Q 真实按键 exit=0
+2026-08-04T02:39:51.9237120Z ✅ Cmd+Q 后进程已退出 —— 用户主动退出未被 ExitRequested{code:None} 拦截误伤
+2026-08-04T02:39:51.9280610Z ##[group]Run set +e
+2026-08-04T02:39:51.9281010Z [36;1mset +e[0m
+2026-08-04T02:39:51.9281280Z [36;1mpkill -f cc-bridge-desktop 2>/dev/null; sleep 3[0m
+2026-08-04T02:39:51.9281660Z [36;1mQ="$RUNNER_TEMP/quarantined2/cc-bridge.app"[0m
+2026-08-04T02:39:51.9282000Z [36;1mmkdir -p "$RUNNER_TEMP/quarantined2"[0m
+2026-08-04T02:39:51.9282400Z [36;1mcp -R "$PWD/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app" "$Q"[0m
+2026-08-04T02:39:51.9282810Z [36;1mxattr -w com.apple.quarantine "0083;00000000;Safari;" "$Q"[0m
+2026-08-04T02:39:51.9283150Z [36;1mmkdir -p "$RUNNER_TEMP/shots"[0m
+2026-08-04T02:39:51.9283410Z [36;1mecho "::group::带隔离属性 open"[0m
+2026-08-04T02:39:51.9283730Z [36;1m# 不能加 -W：它会等应用退出，若真的启动成功就永远堵在这里。[0m
+2026-08-04T02:39:51.9284010Z [36;1mopen -n "$Q" 2>&1; echo "open exit=$?"[0m
+2026-08-04T02:39:51.9284350Z [36;1msleep 6[0m
+2026-08-04T02:39:51.9285450Z [36;1mecho "服务是否起来了：$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:7823/health)   # 000 = 未启动（被拦）"[0m
+2026-08-04T02:39:51.9286620Z [36;1mscreencapture -x "$RUNNER_TEMP/shots/05-quarantine-dialog.png" 2>/dev/null[0m
+2026-08-04T02:39:51.9287010Z [36;1mpkill -f cc-bridge-desktop 2>/dev/null; sleep 3[0m
+2026-08-04T02:39:51.9287310Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:39:51.9287550Z [36;1mecho "::group::清掉隔离属性后再 open"[0m
+2026-08-04T02:39:51.9287890Z [36;1mxattr -dr com.apple.quarantine "$Q"[0m
+2026-08-04T02:39:51.9288200Z [36;1mopen -n "$Q" 2>&1; echo "open exit=$?"[0m
+2026-08-04T02:39:51.9288460Z [36;1msleep 12[0m
+2026-08-04T02:39:51.9288910Z [36;1mecho "服务是否起来了：$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:7823/health)   # 200 = xattr -dr 确实管用"[0m
+2026-08-04T02:39:51.9289550Z [36;1mscreencapture -x "$RUNNER_TEMP/shots/06-after-dequarantine.png" 2>/dev/null[0m
+2026-08-04T02:39:51.9289980Z [36;1mpkill -f cc-bridge-desktop 2>/dev/null[0m
+2026-08-04T02:39:51.9290310Z [36;1mecho "::endgroup::"[0m
+2026-08-04T02:39:51.9338400Z shell: /bin/bash -e {0}
+2026-08-04T02:39:51.9338620Z env:
+2026-08-04T02:39:51.9338790Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:39:51.9338990Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:39:51.9339190Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:39:51.9339380Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:39:51.9339570Z   CARGO_TERM_COLOR: always
+2026-08-04T02:39:51.9339840Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:39:51.9340150Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:39:51.9340470Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:39:51.9379690Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:39:51.9379940Z   CACHE_ON_FAILURE: false
+2026-08-04T02:39:51.9380200Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:39:51.9380490Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:39:51.9381050Z   APP_BIN: /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:39:51.9381540Z   APP_PID: 13530
+2026-08-04T02:39:51.9381700Z ##[endgroup]
+2026-08-04T02:39:55.1089170Z ##[group]带隔离属性 open
+2026-08-04T02:52:50.1328720Z ##[error]The operation was canceled.
+2026-08-04T02:52:50.1428820Z ##[group]Run set +e
+2026-08-04T02:52:50.1429180Z [36;1mset +e[0m
+2026-08-04T02:52:50.1429490Z [36;1mkill -TERM "$APP_PID" 2>/dev/null; sleep 2; kill -9 "$APP_PID" 2>/dev/null[0m
+2026-08-04T02:52:50.1430750Z [36;1mmkdir -p "$RUNNER_TEMP/out"[0m
+2026-08-04T02:52:50.1431080Z [36;1mcp "$RUNNER_TEMP"/app-*.log "$RUNNER_TEMP/out/" 2>/dev/null[0m
+2026-08-04T02:52:50.1431510Z [36;1mcp -R "$RUNNER_TEMP/shots" "$RUNNER_TEMP/out/" 2>/dev/null[0m
+2026-08-04T02:52:50.1432070Z [36;1mcp -R "$HOME/Library/Logs/com.ccbridge.desktop" "$RUNNER_TEMP/out/app-logs" 2>/dev/null[0m
+2026-08-04T02:52:50.1432660Z [36;1mls -lR "$RUNNER_TEMP/out" 2>&1[0m
+2026-08-04T02:52:50.1593560Z shell: /bin/bash -e {0}
+2026-08-04T02:52:50.1594990Z env:
+2026-08-04T02:52:50.1595510Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:52:50.1597410Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:52:50.1597690Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:52:50.1598570Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:52:50.1599280Z   CARGO_TERM_COLOR: always
+2026-08-04T02:52:50.1600180Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:52:50.1600670Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:52:50.1601530Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:52:50.1648530Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:52:50.1648880Z   CACHE_ON_FAILURE: false
+2026-08-04T02:52:50.1649210Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:52:50.1649540Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:52:50.1650140Z   APP_BIN: /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:52:50.1650680Z   APP_PID: 13530
+2026-08-04T02:52:50.1650910Z ##[endgroup]
+2026-08-04T02:52:52.4615110Z total 8
+2026-08-04T02:52:52.4615580Z -rw-r--r--  1 runner  staff  363 Aug  4 02:52 app-1.log
+2026-08-04T02:52:52.4616150Z -rw-r--r--  1 runner  staff    0 Aug  4 02:52 app-2.log
+2026-08-04T02:52:52.4616610Z drwxr-xr-x  6 runner  staff  192 Aug  4 02:52 shots
+2026-08-04T02:52:52.4616790Z 
+2026-08-04T02:52:52.4616990Z /Users/runner/work/_temp/out/shots:
+2026-08-04T02:52:52.4617360Z total 1960
+2026-08-04T02:52:52.4617720Z -rw-r--r--@ 1 runner  staff  323878 Aug  4 02:52 01-full.png
+2026-08-04T02:52:52.4618280Z -rw-r--r--@ 1 runner  staff   18664 Aug  4 02:52 02-menubar.png
+2026-08-04T02:52:52.4618820Z -rw-r--r--@ 1 runner  staff  324154 Aug  4 02:52 03-notification.png
+2026-08-04T02:52:52.4619320Z -rw-r--r--@ 1 runner  staff  324214 Aug  4 02:52 04-after-close.png
+2026-08-04T02:52:52.4711770Z Node 20 is being deprecated. This workflow is running with Node 24 by default. If you need to temporarily use Node 20, you can set the ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION=true environment variable. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
+2026-08-04T02:52:52.4713890Z ##[group]Run actions/upload-artifact@v5
+2026-08-04T02:52:52.4714290Z with:
+2026-08-04T02:52:52.4714520Z   name: macos-smoke-evidence
+2026-08-04T02:52:52.4714840Z   path: /Users/runner/work/_temp/out/**
+2026-08-04T02:52:52.4715110Z   if-no-files-found: warn
+2026-08-04T02:52:52.4715410Z   compression-level: 6
+2026-08-04T02:52:52.4715580Z   overwrite: false
+2026-08-04T02:52:52.4715910Z   include-hidden-files: false
+2026-08-04T02:52:52.4716130Z env:
+2026-08-04T02:52:52.4716420Z   SCCACHE_GHA_ENABLED: true
+2026-08-04T02:52:52.4716690Z   RUSTC_WRAPPER: sccache
+2026-08-04T02:52:52.4717010Z   CARGO_HOME: /Users/runner/.cargo
+2026-08-04T02:52:52.4717430Z   CARGO_INCREMENTAL: 0
+2026-08-04T02:52:52.4717710Z   CARGO_TERM_COLOR: always
+2026-08-04T02:52:52.4718100Z   SCCACHE_PATH: /Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache
+2026-08-04T02:52:52.4718510Z   ACTIONS_CACHE_SERVICE_V2: on
+2026-08-04T02:52:52.4718890Z   ACTIONS_RESULTS_URL: https://results-receiver.actions.githubusercontent.com/
+2026-08-04T02:52:52.4758580Z   ACTIONS_RUNTIME_TOKEN: ***
+2026-08-04T02:52:52.4758950Z   CACHE_ON_FAILURE: false
+2026-08-04T02:52:52.4759260Z   TAURI_SIGNING_PRIVATE_KEY: /Users/runner/work/_temp/smoke.key
+2026-08-04T02:52:52.4759730Z   TAURI_SIGNING_PRIVATE_KEY_PASSWORD: 
+2026-08-04T02:52:52.4760300Z   APP_BIN: /Users/runner/work/cc-bridge/cc-bridge/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge-desktop
+2026-08-04T02:52:52.4760940Z   APP_PID: 13530
+2026-08-04T02:52:52.4761150Z ##[endgroup]
+2026-08-04T02:52:53.1028960Z (node:35838) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+2026-08-04T02:52:53.1030850Z (Use `node --trace-deprecation ...` to show where the warning was created)
+2026-08-04T02:52:53.1157060Z With the provided path, there will be 6 files uploaded
+2026-08-04T02:52:53.1164960Z Artifact name is valid!
+2026-08-04T02:52:53.1166200Z Root directory input is valid!
+2026-08-04T02:52:53.2691370Z Beginning upload of artifact content to blob storage
+2026-08-04T02:52:53.3611260Z (node:35838) [DEP0169] DeprecationWarning: `url.parse()` behavior is not standardized and prone to errors that have security implications. Use the WHATWG URL API instead. CVEs are not issued for `url.parse()` vulnerabilities.
+2026-08-04T02:52:53.4256020Z Uploaded bytes 983711
+2026-08-04T02:52:53.4410430Z Finished uploading artifact content to blob storage!
+2026-08-04T02:52:53.4412340Z SHA256 digest of uploaded artifact zip is 86df50aa5438d6183ccf3bb1eeea6020743ca787a8bf49e10fbcb22b0598c073
+2026-08-04T02:52:53.4413530Z Finalizing artifact upload
+2026-08-04T02:52:53.5967220Z Artifact macos-smoke-evidence.zip successfully finalized. Artifact ID 8878542912
+2026-08-04T02:52:53.5968620Z Artifact macos-smoke-evidence has been successfully uploaded! Final size is 983711 bytes. Artifact ID is 8878542912
+2026-08-04T02:52:53.5971260Z Artifact download URL: https://github.com/lzlkyb/cc-bridge/actions/runs/30872300645/artifacts/8878542912
+2026-08-04T02:52:53.6243010Z Post job cleanup.
+2026-08-04T02:52:53.7933910Z ##[group]Get human-readable stats
+2026-08-04T02:52:53.7964990Z [command]/Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache --show-stats
+2026-08-04T02:52:53.8228180Z Compile requests                      0
+2026-08-04T02:52:53.8229480Z Compile requests executed             0
+2026-08-04T02:52:53.8230260Z Cache hits                            0
+2026-08-04T02:52:53.8232620Z Cache misses                          0
+2026-08-04T02:52:53.8236000Z Cache hits rate                       -
+2026-08-04T02:52:53.8236770Z Cache timeouts                        0
+2026-08-04T02:52:53.8237440Z Cache read errors                     0
+2026-08-04T02:52:53.8244740Z Forced recaches                       0
+2026-08-04T02:52:53.8245230Z Cache write errors                    0
+2026-08-04T02:52:53.8245660Z Cache errors                          0
+2026-08-04T02:52:53.8246200Z Compilations                          0
+2026-08-04T02:52:53.8246660Z Compilation failures                  0
+2026-08-04T02:52:53.8247110Z Non-cacheable compilations            0
+2026-08-04T02:52:53.8247530Z Non-cacheable calls                   0
+2026-08-04T02:52:53.8247950Z Non-compilation calls                 0
+2026-08-04T02:52:53.8250150Z Unsupported compiler calls            0
+2026-08-04T02:52:53.8251200Z Average cache write               0.000 s
+2026-08-04T02:52:53.8252050Z Average compiler                  0.000 s
+2026-08-04T02:52:53.8252850Z Average cache read hit            0.000 s
+2026-08-04T02:52:53.8253810Z Failed distributed compilations       0
+2026-08-04T02:52:53.8256700Z Cache location                  ghac, name: cb1f7e366526abf6ae1eead078b47c23b3cb3bd4371944adbb7fae50b8e89210, prefix: /sccache/
+2026-08-04T02:52:53.8257520Z Base directories                (none)
+2026-08-04T02:52:53.8257980Z Version (client)                0.17.0
+2026-08-04T02:52:53.8258620Z ##[endgroup]
+2026-08-04T02:52:53.8258950Z ##[group]Get JSON stats
+2026-08-04T02:52:53.8259640Z [command]/Users/runner/hostedtoolcache/sccache/0.17.0/arm64/sccache --show-stats --stats-format=json
+2026-08-04T02:52:53.8402430Z {"stats":{"compile_requests":0,"requests_unsupported_compiler":0,"requests_not_compile":0,"requests_not_cacheable":0,"requests_executed":0,"cache_errors":{"counts":{},"adv_counts":{}},"cache_hits":{"counts":{},"adv_counts":{}},"cache_misses":{"counts":{},"adv_counts":{}},"cache_timeouts":0,"cache_read_errors":0,"non_cacheable_compilations":0,"forced_recaches":0,"cache_write_errors":0,"cache_writes":0,"cache_write_duration":{"secs":0,"nanos":0},"cache_read_hit_duration":{"secs":0,"nanos":0},"compilations":0,"compiler_write_duration":{"secs":0,"nanos":0},"compile_fails":0,"not_cached":{},"dist_compiles":{},"dist_errors":0,"multi_level":null},"cache_location":"ghac, name: cb1f7e366526abf6ae1eead078b47c23b3cb3bd4371944adbb7fae50b8e89210, prefix: /sccache/","cache_size":null,"max_cache_size":null,"use_preprocessor_cache_mode":false,"version":"0.17.0","basedirs":[]}
+2026-08-04T02:52:53.8411080Z ##[endgroup]
+2026-08-04T02:52:53.8436590Z ##[notice]0% - 0 hits, 0 misses, 0 errors
+2026-08-04T02:52:53.8438580Z 
+2026-08-04T02:52:53.8439450Z Full human-readable stats:
+2026-08-04T02:52:53.8440240Z Compile requests                      0
+2026-08-04T02:52:53.8441030Z Compile requests executed             0
+2026-08-04T02:52:53.8441770Z Cache hits                            0
+2026-08-04T02:52:53.8442530Z Cache misses                          0
+2026-08-04T02:52:53.8443600Z Cache hits rate                       -
+2026-08-04T02:52:53.8444040Z Cache timeouts                        0
+2026-08-04T02:52:53.8444380Z Cache read errors                     0
+2026-08-04T02:52:53.8445220Z Forced recaches                       0
+2026-08-04T02:52:53.8445620Z Cache write errors                    0
+2026-08-04T02:52:53.8445970Z Cache errors                          0
+2026-08-04T02:52:53.8446240Z Compilations                          0
+2026-08-04T02:52:53.8447070Z Compilation failures                  0
+2026-08-04T02:52:53.8447770Z Non-cacheable compilations            0
+2026-08-04T02:52:53.8448150Z Non-cacheable calls                   0
+2026-08-04T02:52:53.8448450Z Non-compilation calls                 0
+2026-08-04T02:52:53.8448740Z Unsupported compiler calls            0
+2026-08-04T02:52:53.8449050Z Average cache write               0.000 s
+2026-08-04T02:52:53.8449630Z Average compiler                  0.000 s
+2026-08-04T02:52:53.8450490Z Average cache read hit            0.000 s
+2026-08-04T02:52:53.8450890Z Failed distributed compilations       0
+2026-08-04T02:52:53.8451570Z Cache location                  ghac, name: cb1f7e366526abf6ae1eead078b47c23b3cb3bd4371944adbb7fae50b8e89210, prefix: /sccache/
+2026-08-04T02:52:53.8452110Z Base directories                (none)
+2026-08-04T02:52:53.8452390Z Version (client)                0.17.0
+2026-08-04T02:52:53.8452550Z 
+2026-08-04T02:52:53.8613730Z Post job cleanup.
+2026-08-04T02:52:54.0109570Z [command]/opt/homebrew/bin/git version
+2026-08-04T02:52:54.0424440Z git version 2.55.0
+2026-08-04T02:52:54.0453810Z Copying '/Users/runner/.gitconfig' to '/Users/runner/work/_temp/5063aab7-1e44-45ea-a015-2137ec4f3ba0/.gitconfig'
+2026-08-04T02:52:54.0471100Z Temporarily overriding HOME='/Users/runner/work/_temp/5063aab7-1e44-45ea-a015-2137ec4f3ba0' before making global git config changes
+2026-08-04T02:52:54.0472470Z Adding repository directory to the temporary git global config as a safe directory
+2026-08-04T02:52:54.0483870Z [command]/opt/homebrew/bin/git config --global --add safe.directory /Users/runner/work/cc-bridge/cc-bridge
+2026-08-04T02:52:54.0675720Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-08-04T02:52:54.0770450Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-08-04T02:52:54.2254930Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-08-04T02:52:54.2337980Z http.https://github.com/.extraheader
+2026-08-04T02:52:54.2345720Z [command]/opt/homebrew/bin/git config --local --unset-all http.https://github.com/.extraheader
+2026-08-04T02:52:54.2458330Z [command]/opt/homebrew/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-08-04T02:52:54.4278310Z [command]/opt/homebrew/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-08-04T02:52:54.4381160Z [command]/opt/homebrew/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-08-04T02:52:54.5753280Z Cleaning up orphan processes
+2026-08-04T02:52:56.0402160Z Terminate orphan process: pid (14723) (cc-bridge-deskt)
+2026-08-04T02:52:56.2298980Z Terminate orphan process: pid (14720) (open)
+2026-08-04T02:52:57.5899290Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/upload-artifact@v5. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

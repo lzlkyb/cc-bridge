@@ -136,6 +136,18 @@ jobs:
           echo "osascript exit=$?"
           echo "::endgroup::"
 
+      # 上一轮截图里看到屏幕正中间站着一个系统模态框：「bash is requesting to bypass
+      # the system private window picker...」——macOS 的屏幕录制（TCC）授权框，由第一次
+      # screencapture 触发。它是模态的且抢键盘焦点，后果有两个：
+      #   1. 后续所有截图都被它污染（遮住了真正要看的窗口）；
+      #   2. 发给应用的按键（Cmd+W）实际被它吃掉 —— 上一轮关窗验证就是这么失真的。
+      # 所以必须先把它点掉，而且得在每次交互前重新点一次（它会反复弹）。
+      - name: 清除 TCC 屏幕录制授权模态框
+        continue-on-error: true
+        run: |
+          set +e
+          bash .github/scripts/mac-dismiss-dialogs.sh
+
       - name: Install frontend deps
         run: |
           npm ci
@@ -262,8 +274,11 @@ jobs:
           # 窗口数断言：用 unix id 定位进程，避开猜 System Events 里的进程名。
           wins() { osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to return count of windows" 2>&1; }
           echo "AX 看到的进程名 = $(osascript -e "tell application \"System Events\" to return name of (first process whose unix id is $APP_PID)" 2>&1)"
-          sample "托盘态（webview 尚未创建）"
-          echo "托盘态窗口数 = $(wins)   # 预期 0（visible:false）"
+          # 注意口径：visible:false 只是不显示，**窗口对象与 webview 在启动时就已创建**，
+          # 所以 AX 窗口数本来就是 1（上一轮我把预期写成 0，是我对口径的误解）。
+          # 窗口数的真正用处是分辨关窗后的两种结局：销毁 → 0，hide → 仍为 1。
+          sample "启动态（窗口已创建但隐藏）"
+          echo "启动态窗口数 = $(wins)   # 1 属正常：visible:false 不等于未创建"
           # 第二次启动同一二进制 → single-instance 回调 → show_or_create_main_window。
           "$APP_BIN" > "$RUNNER_TEMP/app-2.log" 2>&1
           echo "第二实例退出码=$?，应为 0 且由 single-instance 把主窗口拉起来"
@@ -292,12 +307,25 @@ jobs:
           wins() { osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to return count of windows" 2>&1; }
           rss() { ps -o rss= -p "$APP_PID" | tr -d ' '; }
           mkdir -p "$RUNNER_TEMP/shots"
+          # 先清掉可能又弹出来的系统模态框，否则下面的按键/点击全发给它了
+          bash .github/scripts/mac-dismiss-dialogs.sh
           echo "关窗前：窗口数=$(wins) RSS=$(rss)KB"
           osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $APP_PID) to true" 2>&1
           sleep 2
-          osascript -e 'tell application "System Events" to keystroke "w" using command down' 2>&1
-          echo "Cmd+W 发送 exit=$?"
+          # 先把 Window 菜单里有什么打出来：如果根本没有 Close Window，
+          # 那 Cmd+W 本身就不存在，验证得换另一条路——这个信息必需先确认。
+          echo "Window 菜单项：$(osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to return name of every menu item of menu 1 of menu bar item \"Window\" of menu bar 1" 2>&1)"
+          # 点菜单项比发按键可靠：不依赖键盘焦点落在哪里。上一轮就是因为 TCC
+          # 模态框抢了焦点，Cmd+W 根本没递到应用，得出了「关窗未生效」的假结论。
+          osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to click menu item \"Close Window\" of menu 1 of menu bar item \"Window\" of menu bar 1" 2>&1
+          echo "点 Close Window 菜单项 exit=$?"
           sleep 8
+          if [ "$(wins)" = "1" ]; then
+            echo "菜单项路径看上去没生效，再补一次真实按键 Cmd+W 作为对照"
+            osascript -e 'tell application "System Events" to keystroke "w" using command down' 2>&1
+            echo "Cmd+W 按键 exit=$?"
+            sleep 8
+          fi
           echo "关窗后：窗口数=$(wins) RSS=$(rss)KB"
           if kill -0 "$APP_PID" 2>/dev/null; then
             echo "✅ 关窗后进程仍存活 —— ExitRequested{code:None} 拦截在 mac 上也生效，服务没被带走"
@@ -334,6 +362,7 @@ jobs:
         continue-on-error: true
         run: |
           set +e
+          bash .github/scripts/mac-dismiss-dialogs.sh
           echo "退出前存活检查：$(kill -0 "$APP_PID" 2>/dev/null && echo alive || echo dead)"
           # 先发真实按键 Cmd+Q（完全走用户那条路径）。前面已关窗，此时应用只剩托盘，
           # 先把它拉到前台才接得到按键。
@@ -370,17 +399,28 @@ jobs:
           xattr -w com.apple.quarantine "0083;00000000;Safari;" "$Q"
           mkdir -p "$RUNNER_TEMP/shots"
           echo "::group::带隔离属性 open"
-          # 不能加 -W：它会等应用退出，若真的启动成功就永远堵在这里。
-          open -n "$Q" 2>&1; echo "open exit=$?"
-          sleep 6
+          # 上一轮这一步卡死了 11 分钟：Gatekeeper 弹模态框，`open` 在等 LaunchServices
+          # 回报启动结果，而模态框没人点就永远等不到。改成后台跑 + 有界等待。
+          open -n "$Q" > "$RUNNER_TEMP/open-q.log" 2>&1 &
+          OPEN_PID=$!
+          sleep 10
+          if kill -0 "$OPEN_PID" 2>/dev/null; then
+            echo "open 仍在阻塞（这本身就是被 Gatekeeper 模态框拦住的信号），强行结束"
+            kill -9 "$OPEN_PID" 2>/dev/null
+          fi
+          echo "open 输出：$(cat "$RUNNER_TEMP/open-q.log" 2>/dev/null)"
+          screencapture -x "$RUNNER_TEMP/shots/05a-gatekeeper-block.png" 2>/dev/null
           echo "服务是否起来了：$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:7823/health)   # 000 = 未启动（被拦）"
           screencapture -x "$RUNNER_TEMP/shots/05-quarantine-dialog.png" 2>/dev/null
           pkill -f cc-bridge-desktop 2>/dev/null; sleep 3
           echo "::endgroup::"
           echo "::group::清掉隔离属性后再 open"
           xattr -dr com.apple.quarantine "$Q"
-          open -n "$Q" 2>&1; echo "open exit=$?"
+          open -n "$Q" > "$RUNNER_TEMP/open-q2.log" 2>&1 &
+          OPEN_PID2=$!
           sleep 12
+          kill -9 "$OPEN_PID2" 2>/dev/null
+          echo "open 输出：$(cat "$RUNNER_TEMP/open-q2.log" 2>/dev/null)"
           echo "服务是否起来了：$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:7823/health)   # 200 = xattr -dr 确实管用"
           screencapture -x "$RUNNER_TEMP/shots/06-after-dequarantine.png" 2>/dev/null
           pkill -f cc-bridge-desktop 2>/dev/null
@@ -397,6 +437,14 @@ jobs:
           cp -R "$RUNNER_TEMP/shots" "$RUNNER_TEMP/out/" 2>/dev/null
           cp -R "$HOME/Library/Logs/com.ccbridge.desktop" "$RUNNER_TEMP/out/app-logs" 2>/dev/null
           ls -lR "$RUNNER_TEMP/out" 2>&1
+          # 直接把应用 stdout 打进 CI 日志：上一轮还得下载 artifact 才能看到它，
+          # 而里面的内容（updater 报错）恰好是判断前端有没有真的跑起来的关键证据。
+          echo "::group::应用 stdout（app-1.log）"
+          cat "$RUNNER_TEMP/app-1.log" 2>/dev/null
+          echo "::endgroup::"
+          echo "::group::应用日志目录探查"
+          ls -la "$HOME/Library/Logs/" 2>&1 | head -20
+          echo "::endgroup::"
 
       - uses: actions/upload-artifact@v5
         if: always()

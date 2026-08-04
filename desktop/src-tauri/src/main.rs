@@ -203,6 +203,12 @@ fn refresh_tray(
         return; // 无变化，跳过重设（防高频重绘闪烁）
     }
     let _ = tray.set_icon(Some(tray_icon(running)));
+    // 必须在每次 set_icon 后重新声明模板属性：它是挂在 NSImage 上的（setTemplate:），
+    // set_icon 会换一个全新的 NSImage，于是建托盘时 icon_as_template 的设置被抹掉。
+    // 这个 bug 是 CI 在真实 macOS 上截图才发现的：代码写了模板化，实际菜单栏里仍是
+    // 彩色图标（启动时的首次状态刷新就把它抹了）。
+    #[cfg(target_os = "macos")]
+    let _ = tray.set_icon_as_template(true);
     let _ = tray.set_tooltip(Some(tip));
     *g = (running, tip.to_string());
 }
@@ -403,6 +409,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 失效——但菜单栏图标本来就不该用颜色传达状态（系统惯例），且 tooltip
                 // 与菜单仍会显示运行状态。彻底的做法是给 mac 另做一对“实心/空心圆环”
                 // 形状图标用形状而非颜色区分，待真机验证后再做（清单 N5 / N13）。
+                //
+                // 注意：只在这里设一次**不够**——`refresh_tray` 里的 `set_icon` 会换掉
+                // NSImage、连带抹掉模板属性，那边已补上 `set_icon_as_template(true)`。
                 .icon_as_template(cfg!(target_os = "macos"))
                 .on_tray_icon_event(move |tray_app, event| {
                     // 左键抬起：toggle 主窗口显隐（右键由 menu 接管）
