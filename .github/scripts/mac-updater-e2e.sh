@@ -148,14 +148,23 @@ sleep 4
 echo "::endgroup::"
 
 echo "::group::4) 找并点「立即更新」"
-# 启动会自动检查一次更新，此时应已发现 99.9.9。先把当前按钮名单列出来，
-# 再逐个试候选名——真实名称我还没拿到，名单会告诉我们它叫什么。
+# 启动会自动检查一次更新。上一轮已拿到真实按钮名：**「更新 v99.9.9」**——带版本号，
+# 所以我那 7 个固定候选名（立即更新/现在更新/…）全部 NOTFOUND。
+# 现在 mac-ax-click.sh 支持前缀匹配，用「更新 v」就能命中任意版本号。
+# 仍保留名单输出：万一文案再改，名单能直接告诉我们新名字。
 bash .github/scripts/mac-ax-buttons.sh "$UPD_PID" "启动自检后的窗口（找更新相关按钮）"
 CLICKED=""
-for NAME in "立即更新" "现在更新" "下载并安装" "立即下载" "更新" "检查更新" "关于 CC Bridge v2.3.20"; do
+for NAME in "更新 v" "立即更新" "下载并安装" "更新"; do
   R=$(bash .github/scripts/mac-ax-click.sh "$UPD_PID" "$NAME")
   echo "  试 [$NAME] -> $R"
-  case "$R" in OK*) CLICKED="$NAME"; sleep 5; bash .github/scripts/mac-ax-buttons.sh "$UPD_PID" "点过 [$NAME] 之后";; esac
+  case "$R" in
+    OK*)
+      CLICKED="$R"
+      sleep 6
+      bash .github/scripts/mac-ax-buttons.sh "$UPD_PID" "点过 [$NAME] 之后"
+      break  # 点中就停：再点下一个可能把已开始的下载打断
+      ;;
+  esac
 done
 echo "点到的按钮：[${CLICKED:-无}]"
 screencapture -x "$RUNNER_TEMP/shots/08-updater.png" 2>/dev/null
@@ -181,6 +190,19 @@ screencapture -x "$RUNNER_TEMP/shots/09-after-update.png" 2>/dev/null
 echo "::endgroup::"
 
 echo "::group::6) 重启新版 —— N11 的核心问题：更新后能不能打开"
+# 必须 gate 在替换成功上。上一轮这里给出了**假阳性**：替换根本没发生，
+# 却因为重启后 /health 200 而报了「✅ 更新后重启成功」——它证明的只是
+# 「旧包能启动」，与 N11 要问的问题无关。没替换成功就不该给结论。
+if [ "$OK" != "1" ]; then
+  echo "⚠ 替换未发生，**跳过**「更新后能否启动」的验证。"
+  echo "  理由：此时重启只是把旧包再跑一遍，/health 200 会给出假阳性结论。"
+  echo "::endgroup::"
+  echo "::group::应用日志（更新过程）"
+  tail -80 "$RUNNER_TEMP/app-upd.log" 2>/dev/null
+  echo "::endgroup::"
+  pkill -f cc-bridge-desktop 2>/dev/null
+  exit 1
+fi
 pkill -f cc-bridge-desktop 2>/dev/null
 sleep 4
 echo "更新后的包签名与 Gatekeeper："

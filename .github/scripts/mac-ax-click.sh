@@ -25,11 +25,26 @@ with timeout of 90 seconds
     on error errm
       return "FAIL 拿不到 window 1 的元素：" & errm
     end try
+    -- 先精确匹配扫一遍（避免前缀匹配误中同名前缀的其他按钮）
     repeat with e in els
       try
         if (role of e is "AXButton") and (((name of e) as string) is "$NAME") then
           click e
           return "OK clicked: $NAME"
+        end if
+      end try
+    end repeat
+    -- 再前缀匹配扫一遍：有些按钮名带**动态内容**，固定字串永远匹不上。
+    -- 实例：更新按钮叫「更新 v99.9.9」（带版本号），我曾拿「立即更新/现在更新/
+    -- 下载并安装」等 7 个猜的名字去找，全部 NOTFOUND。
+    repeat with e in els
+      try
+        if role of e is "AXButton" then
+          set nm to ((name of e) as string)
+          if nm starts with "$NAME" then
+            click e
+            return "OK clicked(prefix): " & nm
+          end if
         end if
       end try
     end repeat
