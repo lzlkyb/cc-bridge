@@ -15,6 +15,7 @@ import { SettingsRow } from "../ui/SettingsRow";
 import { SettingsToggles } from "./SettingsToggles";
 import { SavedHint } from "../ui/SavedHint";
 import { AboutGroup } from "./AboutGroup";
+import { isWindows } from "../../lib/platform";
 
 export function SettingsTab({
   status,
@@ -40,7 +41,9 @@ export function SettingsTab({
     <div className="space-y-4 settings-tab">
       <AboutGroup status={status} unreadCount={unreadCount} onMarkSeen={onMarkSeen} changelogOpenToken={changelogOpenToken} />
       <NetworkGroup status={status} onSaved={onSaved} />
-      <FirewallGroup onRefresh={onSaved} />
+      {/* 防火墙卡片仅 Windows：macOS 的防火墙是**按应用授权**而非按端口开洞，
+          且默认不拦本机监听端口的入站连接，整套 netsh 诊断/修复在那里无意义。 */}
+      {isWindows(status?.platform) && <FirewallGroup onRefresh={onSaved} />}
       <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
       <AppGroup />
       <InstallGroup onReopenOnboarding={onReopenOnboarding} />

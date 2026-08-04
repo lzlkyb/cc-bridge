@@ -91,6 +91,11 @@ export interface StatusResponse {
    * 关：仅隐藏，秒开但内存持续占用。两者都不影响 MCP 服务 / 托盘 / 桌面通知。
    */
   releaseWebviewOnClose: boolean;
+  /**
+   * 运行平台：`"windows"` / `"macos"` / `"linux"`（后端 `std::env::consts::OS`）。
+   * 用于隐藏 Windows 专属 UI 与切换快捷键标签，见 `lib/platform.ts`。
+   */
+  platform: string;
 }
 
 /* ─── 状态分层：高频字段 vs 稳定字段 ─── */

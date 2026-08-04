@@ -9,6 +9,7 @@ import { copyText } from "../../lib/utils";
 import type { StaticStatus } from "../../lib/types";
 import { DirectoryBrowser } from "./DirectoryBrowser";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { shortcutLabel } from "../../lib/platform";
 
 interface CommandItem {
   id: string;
@@ -121,13 +122,17 @@ export function CommandPalette({
   const isDark = document.documentElement.classList.contains("dark");
   // 与 Header S5 对齐：状态未知（status 未加载）时默认当作未运行，避免误导。
   const running = status?.running ?? false;
+  // 快捷键标签的平台来源；首帧 status 为 undefined 时先显示 Ctrl（见 lib/platform.ts 的取舍）。
+  const platform = status?.platform;
 
   // E-P1-11: useMemo 避免 11 个 CommandItem 每渲染重建
   const items = useMemo<CommandItem[]>(() => [
-    { id: "nav-connect", label: "前往：连接页", icon: "plug", group: "导航", tab: "connect", shortcut: "Ctrl+1" },
-    { id: "nav-security", label: "前往：安全页", icon: "shield", group: "导航", tab: "security", shortcut: "Ctrl+2" },
-    { id: "nav-settings", label: "前往：设置页", icon: "settings", group: "导航", tab: "settings", shortcut: "Ctrl+3" },
-    { id: "nav-log", label: "前往：日志页", icon: "log", group: "导航", tab: "log", shortcut: "Ctrl+4" },
+    // 快捷键标签按平台变（mac 显示 ⌘1）。功能本身早已兼容——App.tsx 的键盘
+    // 监听用的是 `e.ctrlKey || e.metaKey`，这里仅修正显示。
+    { id: "nav-connect", label: "前往：连接页", icon: "plug", group: "导航", tab: "connect", shortcut: shortcutLabel(platform, "1") },
+    { id: "nav-security", label: "前往：安全页", icon: "shield", group: "导航", tab: "security", shortcut: shortcutLabel(platform, "2") },
+    { id: "nav-settings", label: "前往：设置页", icon: "settings", group: "导航", tab: "settings", shortcut: shortcutLabel(platform, "3") },
+    { id: "nav-log", label: "前往：日志页", icon: "log", group: "导航", tab: "log", shortcut: shortcutLabel(platform, "4") },
     {
       id: "act-token",
       label: "重新生成访问令牌",
@@ -151,7 +156,7 @@ export function CommandPalette({
     { id: "act-addroot", label: "添加允许访问的根目录", icon: "plus", group: "操作", run: () => setShowDirBrowser(true) },
     { id: "act-onboarding", label: "重新查看使用引导", icon: "info", group: "操作", run: () => onReopenOnboarding?.() },
     { id: "act-theme", label: isDark ? "切换到浅色主题" : "切换到深色主题", icon: isDark ? "sun" : "moon", group: "外观", run: toggleTheme },
-  ], [running, isDark, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding]);
+  ], [running, isDark, platform, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding]);
 
   const filtered = (() => {
     const q = query.trim().toLowerCase();

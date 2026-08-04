@@ -395,6 +395,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .tooltip("cc-bridge")
                 .menu(&menu)
                 .icon(tray_icon(tray_initial_running))
+                // macOS 菜单栏要求**模板图标**：系统只取 alpha 通道、自己上色，以适配
+                // 浅色/深色菜单栏与高亮选中态。我们的图标是代码绘制的**彩色状态圆点**
+                // （运行绿 / 停止灰），不声明为 template 在 mac 上会显得很突兀。
+                //
+                // 取舍：声明为 template 后颜色会被系统抹掉，于是「绿/灰表示运行状态」在 mac 上
+                // 失效——但菜单栏图标本来就不该用颜色传达状态（系统惯例），且 tooltip
+                // 与菜单仍会显示运行状态。彻底的做法是给 mac 另做一对“实心/空心圆环”
+                // 形状图标用形状而非颜色区分，待真机验证后再做（清单 N5 / N13）。
+                .icon_as_template(cfg!(target_os = "macos"))
                 .on_tray_icon_event(move |tray_app, event| {
                     // 左键抬起：toggle 主窗口显隐（右键由 menu 接管）
                     if let tauri::tray::TrayIconEvent::Click {

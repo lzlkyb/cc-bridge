@@ -132,6 +132,12 @@ pub struct StatusResponse {
     /// 关窗时释放界面内存。默认开启（关窗销毁 webview，托盘常驻约 85MB → 5.5MB）。
     #[serde(rename = "releaseWebviewOnClose")]
     pub release_webview_on_close: bool,
+    /// 运行平台：`"windows"` / `"macos"` / `"linux"`（取 `std::env::consts::OS`）。
+    ///
+    /// 为何由后端下发而不是前端自己探：这是**编译期常量**，比嗅探
+    /// `navigator.userAgent` 可靠，也不用为此引入 `@tauri-apps/plugin-os` 依赖。
+    /// 前端据此隐藏 Windows 专属 UI（防火墙卡片/告警）与切换快捷键标签（⌘ / Ctrl）。
+    pub platform: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -420,6 +426,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         notify_command_complete: config.notify_command_complete,
         notify_task_complete: config.notify_task_complete,
         release_webview_on_close: config.release_webview_on_close,
+        platform: std::env::consts::OS.to_string(),
     })
 }
 

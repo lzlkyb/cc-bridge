@@ -20,6 +20,7 @@ import { ConnectHero } from "./ConnectHero";
 import { TokenManager } from "./TokenManager";
 import { IpChangedBanner } from "./connect/IpChangedBanner";
 import { FirewallAlertBlock } from "./connect/FirewallAlertBlock";
+import { isWindows } from "../../lib/platform";
 import { AddressPicker } from "./connect/AddressPicker";
 import { OptionCard, CommandBlock } from "./connect/widgets";
 import { GlobalSteps, ProjectSteps } from "./connect/Steps";
@@ -194,13 +195,15 @@ function ConnectTabImpl({
           不再在这里看 firewallPortOpen 布尔值：旧条件在「规则只覆盖 Public / 指向旧路径 / 存在
           Block 规则」这三种常见情形下会假绿，导致用户只能去关整个防火墙。仍保留 linkDown 互斥。
           诚实暴露本机探针对远程入站拦截的盲点——不再谎报绿色「已连接」。 */}
-      {status?.running && !linkDown && (
+      {/* 仅 Windows：macOS 防火墙按应用授权、默认不拦本机监听端口的入站连接，
+          netsh 诊断整套在那里没有对应物。 */}
+      {status?.running && !linkDown && isWindows(status.platform) && (
         <FirewallAlertBlock port={status.port} onRefresh={onRefresh} />
       )}
 
       {/* 防火墙探测不可用（netsh 异常）：温和提示，不弹系统错误框。
           与上方橙色告警互斥——netsh 损坏时 firewallEnabled/portOpen 均为 null，橙色块不会渲染。 */}
-      {status?.firewallAvailable === false && (
+      {isWindows(status?.platform) && status?.firewallAvailable === false && (
         <div className="animate-fade-in space-y-2 rounded-lg border border-border bg-secondary/40 p-4">
           <div className="flex items-start gap-2.5">
             <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
