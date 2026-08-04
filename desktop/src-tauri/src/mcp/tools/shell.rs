@@ -222,6 +222,12 @@ fn sh_quote(s: &str) -> String {
 pub fn normalize_cwd_from_shell(s: &str) -> PathBuf {
     let s = s.trim();
     // 形如 /c/Users/foo 的 MSYS POSIX 绝对路径（盘符 + 斜杠）。
+    //
+    // ⚠ **必须限定 Windows**：这条启发式在 Unix 上会误伤真实路径——mac/Linux 的
+    // `pwd` 输出如 `/a/b` 这种**首段只有一个字符**的路径会恰好命中（第 3 个字节是 `/`），
+    // 被当成盘符转成 `a:\b`。常见的 `/Users` `/tmp` `/opt` 恰好不命中，
+    // 所以这个 bug 很难被发现。Unix 上 `pwd` 本就输出可直用的原生路径，无需任何转换。
+    #[cfg(windows)]
     if s.len() >= 3 && s.starts_with('/') && s.as_bytes()[2] == b'/' {
         let drive = &s[1..2];
         let rest = &s[3..];
@@ -245,14 +251,18 @@ pub struct Invocation {
 
 /// 构造一次命令调用的壳层细节。
 ///
-/// - `shell`：cmd 或 bash。
+/// - `shell`：cmd（Windows）/ sh（Unix）或 bash。
 /// - `command`：用户原始命令。
-/// - `native_cwd`：已白名单校验的**原生** cwd（如 `C:\foo`）。由调用方传给进程 `current_dir`
-///   （Windows API 级，Git Bash 启动即落在 `/c/foo`），不直接进入命令字符串。
+/// - `native_cwd`：已白名单校验的**原生** cwd。由调用方传给进程 `current_dir`，
+///   不直接进入命令字符串。
 /// - `track_cwd`：是否捕获命令结束后的有效 cwd（= `effective_session_id.is_some()`，仅会话内）。
 ///   仅前台命令会回写 session cwd（后台不更新，对齐 Claude Code）。
 ///
-/// 返回 None 仅当 bash 模式且未探测到 bash.exe（调用方应 Err）。
+/// 返回 None 仅当 bash 模式且未探测到 bash（调用方应 Err）。
+///
+/// **平台分派**：两边的壳层形态差异太大（`cmd /C` vs `sh -c`、MSYS 的 `pwd -W` 与
+/// 路径转换 vs 原生 POSIX），混在一个 match 里会很难读，故拆成两个平台专属实现。
+/// 对外签名不变，调用方（run_command.rs）无需感知。
 pub fn build_invocation(
     shell: ShellType,
     command: &str,
@@ -265,6 +275,19 @@ pub fn build_invocation(
         None
     };
 
+    #[cfg(windows)]
+    let inv = build_invocation_windows(shell, command, cwd_file);
+    #[cfg(not(windows))]
+    let inv = build_invocation_unix(shell, command, cwd_file);
+    inv
+}
+
+#[cfg(windows)]
+fn build_invocation_windows(
+    shell: ShellType,
+    command: &str,
+    cwd_file: Option<PathBuf>,
+) -> Option<Invocation> {
     match shell {
         ShellType::Cmd => match &cwd_file {
             None => Some(Invocation {
@@ -306,6 +329,63 @@ pub fn build_invocation(
                 args: vec!["-c".into(), script],
                 env_extra: vec![("MSYS_NO_PATHCONV".into(), "1".into())],
                 cwd_capture_file: file,
+            })
+        }
+    }
+}
+
+/// Unix（macOS / Linux）壳层构造。与 Windows 版的每一处差异都是必须的：
+///
+/// - **`ShellType::Cmd` 映射为 `/bin/sh`**。Unix 上没有 `cmd.exe`；`/bin/sh` 是 POSIX
+///   默认壳层、任何 Unix 都有。配置值仍写 `"cmd"`（不动用户既有配置），语义变为
+///   「平台默认壳层」——UI 与工具描述需按平台显示名称（见清单 N3 / N6）。
+/// - **cwd 捕获用 `pwd`，绝不能用 Windows 版的 `pwd -W`**：`-W` 是 MSYS bash 的专属
+///   扩展（输出 Windows 风格路径），Unix bash 上它是非法选项、会直接报错。
+/// - **重定向目标不做 `windows_to_posix` 转换**：路径本来就是 POSIX。仍用 `sh_quote`
+///   包裹，因为 temp 目录可能含空格。
+/// - **不注入 `MSYS_NO_PATHCONV`**：那是 MSYS 的 argv 路径自动转换开关，Unix 无此机制。
+/// - **保留 `shopt -u extglob` 与 `eval` 引号包裹**：安全围栏与 Windows 侧完全一致
+///   （防白名单校验通过后，恶意文件名在 shell 展开期被扩展）。
+/// - `>` 而非 Windows 版的 `>|`：`>|` 是 bash 对 noclobber 的强制覆盖语法，`sh`
+///   不保证支持；默认 noclobber 是关的，`>` 足够。
+#[cfg(not(windows))]
+fn build_invocation_unix(
+    shell: ShellType,
+    command: &str,
+    cwd_file: Option<PathBuf>,
+) -> Option<Invocation> {
+    // 把 cwd 捕获文件路径安全地嵌进 shell 脚本（temp 目录可能含空格）。
+    let redirect = |f: &Path| format!(" && pwd > {}", sh_quote(&f.to_string_lossy()));
+
+    match shell {
+        // sh 不保证有 shopt/extglob（dash 等就没有），所以这里只做最朴素的 -c，
+        // 与 Windows 侧 cmd 分支的处理级别相对应。
+        ShellType::Cmd => {
+            let script = match &cwd_file {
+                None => command.to_string(),
+                Some(f) => format!("{}{}", command, redirect(f)),
+            };
+            Some(Invocation {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), script],
+                env_extra: vec![],
+                cwd_capture_file: cwd_file,
+            })
+        }
+        ShellType::Bash => {
+            let bash_exe = detect_bash_exe()?;
+            let quoted = sh_quote(command);
+            let prefix = "{ shopt -u extglob 2>/dev/null || true; }";
+            let body = format!("{prefix} && eval {quoted}");
+            let script = match &cwd_file {
+                None => body,
+                Some(f) => format!("{}{}", body, redirect(f)),
+            };
+            Some(Invocation {
+                program: bash_exe.to_string_lossy().into_owned(),
+                args: vec!["-c".into(), script],
+                env_extra: vec![],
+                cwd_capture_file: cwd_file,
             })
         }
     }
@@ -353,7 +433,9 @@ mod tests {
         assert_eq!(sh_quote("it's"), "'it'\\''s'");
     }
 
+    /// MSYS 盘符转换仅 Windows 生效（见 normalize_cwd_from_shell 里的 cfg 与原因）。
     #[test]
+    #[cfg(windows)]
     fn normalize_cwd_msys_posix() {
         assert_eq!(
             normalize_cwd_from_shell("/c/Users/foo"),
@@ -361,11 +443,55 @@ mod tests {
         );
     }
 
+    /// Unix 上绝不能做盘符转换：`/a/b` 这种首段单字符的真实路径恰好会命中
+    /// 那条 MSYS 启发式（第 3 个字节是 `/`），若不限定平台会被错误转成 `a:\b`。
+    /// 这条测试就是锁住那个回归。
     #[test]
+    #[cfg(not(windows))]
+    fn normalize_cwd_unix_no_drive_rewrite() {
+        assert_eq!(normalize_cwd_from_shell("/a/b"), PathBuf::from("/a/b"));
+        assert_eq!(
+            normalize_cwd_from_shell("/Users/foo"),
+            PathBuf::from("/Users/foo")
+        );
+        assert_eq!(normalize_cwd_from_shell("  /tmp/x  "), PathBuf::from("/tmp/x"));
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn normalize_cwd_native_unchanged() {
         assert_eq!(
             normalize_cwd_from_shell("C:\\foo\\bar"),
             PathBuf::from("C:\\foo\\bar")
         );
+    }
+
+    /// Unix 壳层构造：Cmd 映射到 /bin/sh，且不注入 MSYS 专属环境变量。
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_cmd_maps_to_sh() {
+        let inv = build_invocation(ShellType::Cmd, "echo hi", Path::new("/tmp"), false).unwrap();
+        assert_eq!(inv.program, "/bin/sh");
+        assert_eq!(inv.args, vec!["-c".to_string(), "echo hi".to_string()]);
+        assert!(
+            inv.env_extra.is_empty(),
+            "Unix 不应注入 MSYS_NO_PATHCONV，得到：{:?}",
+            inv.env_extra
+        );
+    }
+
+    /// cwd 捕获在 Unix 上必须用 `pwd`，**不能**带 `-W`（那是 MSYS 专属扩展，
+    /// Unix bash 上是非法选项、会直接报错）。
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_cwd_capture_uses_plain_pwd() {
+        let inv = build_invocation(ShellType::Cmd, "cd /tmp", Path::new("/tmp"), true).unwrap();
+        let script = &inv.args[1];
+        assert!(script.contains(" && pwd "), "实际脚本：{script}");
+        assert!(
+            !script.contains("pwd -W"),
+            "不得使用 MSYS 专属的 pwd -W：{script}"
+        );
+        assert!(inv.cwd_capture_file.is_some());
     }
 }

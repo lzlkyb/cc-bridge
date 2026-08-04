@@ -522,7 +522,33 @@ pub async fn dispatch_tool(
 /// 这是 MCP 规范里服务端向模型下发"用法指引 / 应主动调用的工具"的唯一标准通道。
 /// HTTP 与 SSE 两个 transport 共用此函数，避免两份字符串漂移。
 pub fn server_instructions() -> &'static str {
-    "你已连接到本地 Windows 主机上的 cc-bridge MCP 服务。当用户需要在本地 Windows 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层 CLAUDE.md 的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / get_command_output / stop_command:在本地执行命令、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 cmd 或 Git Bash，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。\n\n重要：每次为用户完成一个任务（编写代码、编辑文件、执行分析、生成交付物、或跑完 shell 命令）后，你必须调用 push_notification 工具弹出桌面 toast 通知用户——不要假设用户正在盯着对话窗口，应主动把任务结果告知对方（即使用户没有显式要求）。"
+    // 用 OnceLock 缓存拼装结果：既能按平台变化，又保持 &'static str 返回类型
+    // （调用方 HTTP / SSE 两处都不用改）。
+    //
+    // 为何不按平台写两份字符串：原注释已强调「HTTP 与 SSE 共用此函数，避免两份
+    // 字符串漂移」；若再按平台复制一份，同一段指引就有两处要同步维护，迟早不一致。
+    // 因此只把平台相关的三个词抽成占位符。
+    //
+    // 这段文本是**连接时发给远程 AI 的第一段指引**，说错平台会让 AI 全程用错
+    // 命令语法与路径形态，所以必须跟着实际平台走。
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        let os_name = if cfg!(windows) {
+            "Windows"
+        } else if cfg!(target_os = "macos") {
+            "macOS"
+        } else {
+            "Linux"
+        };
+        let shells = if cfg!(windows) {
+            "cmd 或 Git Bash"
+        } else {
+            "/bin/sh 或 bash"
+        };
+        format!(
+            "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层 CLAUDE.md 的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / get_command_output / stop_command:在本地执行命令、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 {shells}，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。\n\n重要：每次为用户完成一个任务（编写代码、编辑文件、执行分析、生成交付物、或跑完 shell 命令）后，你必须调用 push_notification 工具弹出桌面 toast 通知用户——不要假设用户正在盯着对话窗口，应主动把任务结果告知对方（即使用户没有显式要求）。"
+        )
+    })
 }
 
 pub fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
@@ -555,14 +581,32 @@ pub fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
     serde_json::Value::Array(tools)
 }
 
-/// 按当前 shell_type 生成 run_command 的描述，让连接时模型拿到准确的壳层信号，
-/// 从一开始就用对语法（bash → POSIX 路径 + bash 语法；cmd → Windows 路径 + cmd 语法）。
+/// 按当前平台 + shell_type 生成 run_command 的描述，让连接时模型拿到准确的壳层信号，
+/// 从一开始就用对语法与路径形态。
+///
+/// **为何必须按平台分**：这段描述是**发给远程 AI 的**。若在 mac 上仍说「壳层为 cmd、
+/// 请用 Windows 语法与 `C:\Users\...` 路径」，AI 会持续生成 Windows 命令，
+/// 哪怕后端已经换成 `/bin/sh` 执行——命令会全部失败，且失败原因对 AI 不可见。
 fn run_command_description(shell_type: &str) -> String {
-    if shell_type == "bash" {
-        "在本地执行一条命令并返回其 stdout / stderr / 退出码。壳层为 Git Bash（需本机已安装 Git for Windows）：请使用 POSIX 路径（如 /c/Users/...）与 bash 语法（jq / find / 管道等原生可用）。开启「命令会话持久化」后：cwd 由 session_id 在会话内跨命令持久化；并通过 env 参数（key=value 映射）持久化环境变量（如 VIRTUAL_ENV / PATH），解决 source venv / export 每调用丢失的问题（注意：env 仅接受显式 key=value，无法自动捕获 shell 内 source 激活）。".to_string()
+    let common = "开启「命令会话持久化」后：cwd 由 session_id 在会话内跨命令持久化；并通过 env 参数（key=value 映射）持久化环境变量（如 VIRTUAL_ENV / PATH），解决 source venv / export 每调用丢失的问题（注意：env 仅接受显式 key=value，无法自动捕获 shell 内 source 激活）。";
+
+    #[cfg(windows)]
+    let shell_part = if shell_type == "bash" {
+        "壳层为 Git Bash（需本机已安装 Git for Windows）：请使用 POSIX 路径（如 /c/Users/...）与 bash 语法（jq / find / 管道等原生可用）。"
     } else {
-        "在本地执行一条命令并返回其 stdout / stderr / 退出码。壳层为 cmd（默认，零外部依赖）：请使用 Windows cmd 语法与路径（如 C:\\Users\\...）。开启「命令会话持久化」后：cwd 由 session_id 在会话内跨命令持久化；并通过 env 参数（key=value 映射）持久化环境变量（如 VIRTUAL_ENV / PATH），解决 source venv / export 每调用丢失的问题（注意：env 仅接受显式 key=value，无法自动捕获 shell 内 source 激活）。".to_string()
-    }
+        "壳层为 cmd（默认，零外部依赖）：请使用 Windows cmd 语法与路径（如 C:\\Users\\...）。"
+    };
+
+    // macOS / Linux：两种配置值都落在 POSIX 壳层上，路径一律 `/` 开头。
+    // 配置值仍沿用 "cmd"/"bash"（不动用户既有配置），但对 AI 只描述实际形态。
+    #[cfg(not(windows))]
+    let shell_part = if shell_type == "bash" {
+        "壳层为 bash：请使用 bash 语法与 POSIX 路径（如 /Users/...）。jq / find / 管道等原生可用。"
+    } else {
+        "壳层为 /bin/sh（POSIX 默认，零外部依赖）：请使用 POSIX sh 语法与路径（如 /Users/...）。注意 sh 不保证支持 bash 专属语法（数组、[[ ]]、shopt 等），需要时请在设置里切到 bash。"
+    };
+
+    format!("在本地执行一条命令并返回其 stdout / stderr / 退出码。{shell_part}{common}")
 }
 
 #[cfg(test)]
