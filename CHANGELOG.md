@@ -44,6 +44,8 @@
 - `tauri.conf.json` 补 `bundle.macOS.signingIdentity: "-"`（ad-hoc 签名，内网自用不买开发者账号）。`bundle.targets` 故意仍保持 `["nsis"]` 不动，mac 侧用 CLI `--bundles app` 覆盖，避开影响 Windows 正式发版路径。
 
 #### 文档
+- README 新增「macOS 安装与更新说明」：适用范围（仅 Apple Silicon、ad-hoc 签名未公证）、隔离属性的两种解法（`xattr -dr` 或系统设置放行，并注明 macOS 15 起「右键打开」已失效）、安装位置对自动更新的影响（`~/Applications` 无感 / `/Applications` 每次弹管理员密码框 / 外置盘会失败）、自动更新可用且更新后不会再被 Gatekeeper 拦、以及与 Windows 版的已知差异。构建章节补 mac 命令（必须带 `--bundles app`，打 zip 要用 `ditto` 而非 `zip`）。
+- `docs/Mac版本支持方案.md` 第 2.2 节加实测更正块：该节原文全部基于推理，其中三条经源码核对与真机实测后为错或不准确，最严重的是「Tauri 自动生成 `darwin-universal` 条目、不用改」——实际 key 是 `darwin-aarch64` 且需自己生成，这正是 mac 自动更新此前彻底不通的原因。原文保留备查。
 - `功能优化清单.md` M4 重写：一次内存排查事故的完整记录——**前三版数据全错**，真正的根因是一个已卸载软件在 Machine 级环境变量里残留的 `WEBVIEW2_USER_DATA_FOLDER`，它让本机所有 WebView2 应用共用同一 profile 与同一 BROWSER 进程（连带共享 localStorage，比内存串台更严重）。同时记下四次误判的根源与六条测量纪律（归属用父进程链、口径用专用工作集、先确认窗口真可见等）。
 
 ## [2.3.20] - 2026-08-03

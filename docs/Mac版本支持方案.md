@@ -110,6 +110,29 @@ xattr -dr com.apple.quarantine /Applications/cc-bridge.app
 
 ### 2.2 自动更新陷阱（必须提前告知用户）
 
+> ## ⚠️ 实测更正（2026-08-04）——**下面原文里有三条是错的，先读这里**
+>
+> 本节原文写于立项时，全部基于**推理**。后来逐条对着 `tauri-plugin-updater-2.10.1`
+> 源码核对、并在 CI 的真实 macOS 上跑完了整条链路（检查 → 下载 → 验签 → 替换
+> `.app` → 重启），结果如下：
+>
+> | 原文结论 | 实测/源码结论 |
+> |---|---|
+> | 「`updater.json` 多平台 ✅ 不受影响，Tauri 自动生成 `darwin-universal` 条目，**不用改**」 | 🔴 **完全错误**。`updater.json` 是本项目自己的 `generate-updater-json.mjs` 生成的，Tauri 不会插手；而它当时只产出 `windows-x86_64`。且客户端要找的 key 是 **`darwin-aarch64`**（`updater_os()` 返回 `darwin`），不是 `darwin-universal`。找不到平台 key 就**永远检测不到更新且不报错** —— mac 自动更新之前是彻底不通的。已修。 |
+> | 「更新后首次启动被 Gatekeeper 拦一次」（下文「坑 2」） | 🔴 **不成立**。`install_inner` 全程用 `tar::Archive::unpack` + `std::fs::rename`，**纯 Rust 文件操作、不经 LaunchServices 也不调 ditto**，新 `.app` 不会被打上 quarantine。实测确认：更新后 `xattr` 为空、签名校验通过、重启后服务正常。用户只需首次安装时放行一次。 |
+> | 「装到 `/Applications` 需 sudo → 静默失败」 | 🟡 **不准确**。`rename` 返回 `PermissionDenied` 时 updater 会走 AppleScript `with administrator privileges` 提权重试，会**弹系统管理员密码框**，输密码就能装。体验差但能用，不是静默失败。 |
+>
+> **另外发现一条原文没提的真实风险**：备份用 `tempfile::tempdir()`（在 `/var/folders`），
+> 而 `rename` 跨文件系统返回的是 `EXDEV` 而**不是** `PermissionDenied` → 代码走
+> `return Err` 分支、**不会尝试提权、直接失败**。同卷时没事，但 app 放在外置盘/
+> 另一个卷上就必然更新失败。这一条尚未实测（CI 里同卷、碰不到），已写进 README。
+>
+> **一条方法论**：不要拿 `spctl -a -vvv` 当「能不能打开」的依据。它对 ad-hoc 包**永远**
+> 报 rejected（连清掉 quarantine 后也是），因为它判的是能不能过**公证策略**；
+> 而 Gatekeeper 实际只拦带 quarantine 的包。必须真的 `open` 一次才算数。
+>
+> 以下原文保留备查（能看出判断是怎么一步步被修正的），**但上表优先**。
+
 A 方案下，**自动更新能跑但体验有坑**——这是选 A 方案必须接受的代价。Tauri updater 和 Apple Gatekeeper 是两套独立机制，必须拆开看：
 
 #### 自动更新流程拆解

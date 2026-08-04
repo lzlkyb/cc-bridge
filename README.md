@@ -31,6 +31,8 @@
 ## 快速开始（约 1 分钟）
 
 1. **下载安装**：到 [Releases](https://github.com/lzlkyb/cc-bridge/releases) 下载 `cc-bridge_x.x.x_x64-setup.exe`（国内用户建议走 Gitee 镜像，下载更快），双击安装并启动。
+   > **macOS 用户**：下载 `cc-bridge_x.x.x_aarch64-apple-darwin.zip`（仅 Apple Silicon），
+   > 首次打开可能被系统拦下——见下方 [macOS 安装与更新说明](#macos-安装与更新说明)。
 2. **开放目录**：打开「安全」页 → 点「浏览」把你的工作目录加进白名单（默认拒绝一切访问，安全优先）。
 3. **复制连接命令**：切到「连接」页，复制给出的 `claude mcp add ...` 命令。
 4. **远端接入**：粘贴到远程 Linux 终端执行，Claude Code 立刻就能读写你本机的文件了。
@@ -431,11 +433,13 @@ cc-bridge/
 
 ### 前置条件
 
-- Windows 10/11
+- **Windows 10/11**，或 **macOS（Apple Silicon）**
 - Rust 工具链（`rustup.rs`）
 - Node.js 18+（仅构建时需要）
 
 ### 构建 & 运行
+
+**Windows**：
 
 ```bash
 cd desktop
@@ -445,6 +449,26 @@ npm run build     # cargo tauri build → 产出 NSIS 安装包
 
 产出路径：`src-tauri/target/release/bundle/nsis/cc-bridge_2.2.2_x64-setup.exe`（约 3.4MB）
 
+**macOS**：
+
+```bash
+cd desktop
+npm install
+npm run prebuild
+npx tauri build --bundles app     # 必须用 --bundles 覆盖
+```
+
+产出路径：`src-tauri/target/release/bundle/macos/cc-bridge.app`（以及 updater 用的
+`cc-bridge.app.tar.gz` + `.sig`）。
+
+> 为何 mac 必须带 `--bundles`：`tauri.conf.json` 的 `bundle.targets` 固定为 `nsis`
+> （Windows 发版路径），不覆盖的话 mac 上会直接失败。故意不往配置里加 mac target，
+> 避开影响已稳定的 Windows 发版。
+>
+> 若要产出可分发的 zip，用 `ditto` 而不是 `zip`：
+> `ditto -c -k --sequesterRsrc --keepParent <path>/cc-bridge.app out.zip`。
+> 普通 `zip` 会破坏 `.app` 的资源叉与符号链接，解压后打不开。
+
 ### 连接远程 Claude Code
 
 安装并启动 cc-bridge 后，面板会显示连接命令，在远程 Linux 执行：
@@ -452,6 +476,64 @@ npm run build     # cargo tauri build → 产出 NSIS 安装包
 ```bash
 claude mcp add --transport http cc-bridge http://<局域网IP>:7823/mcp --header "Authorization: Bearer <token>"
 ```
+
+## macOS 安装与更新说明
+
+> 本节结论均来自 CI 在真实 macOS（arm64）上的实测，不是推测。
+
+**适用范围**：仅 **Apple Silicon（arm64）**。包用 **ad-hoc 签名**，未购买 Apple Developer
+账号、未做公证（notarize）——这是内网自用的取舍。
+
+### 安装
+
+**推荐路径：内网直接拷贝**。通过共享目录 / U 盘 / `scp` 拿到 `cc-bridge.app` 的，
+通常**不带隔离属性，双击就能开**，没有下面那些麻烦。
+
+**经浏览器 / 网盘下载的**，macOS 会给它打上 `com.apple.quarantine` 隔离属性，
+首次打开会被 Gatekeeper 拦住（实测：带隔离属性时应用起不来，服务端口无响应）。
+两种解法：
+
+```bash
+# 方式一（推荐，一次性）：直接清除隔离属性
+xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
+```
+
+方式二（图形界面）：双击 → 被拦 → **系统设置 → 隐私与安全性** → 下拉找到提示 → 点「仍要打开」。
+
+> ⚠️ **macOS 15 (Sequoia) 起，老套路「右键 → 打开」已经失效**，必须走系统设置那条。
+
+> 如果你用 `spctl -a -vvv` 自己查过并看到 `rejected`，**不用在意**：`spctl` 判的是
+> 「能不能过公证策略」，ad-hoc 包永远过不了；而 Gatekeeper 实际只拦**带隔离属性**的包。
+> 实测：清掉隔离属性后应用正常启动，尽管 `spctl` 仍报 rejected。
+
+### 装到哪里
+
+| 位置 | 自动更新体验 |
+|---|---|
+| `~/Applications/`（用户级）| ✅ **推荐** —— 全程无感 |
+| `/Applications/`（系统级）| ⚠️ 能用，但**每次更新都会弹系统管理员密码框**（updater 需提权才能写入）|
+| 外置盘 / 其他磁盘卷 | ❌ **不要放**——自动更新会失败 |
+
+> 最后一条的原因：updater 先用 `rename` 把旧包移到临时目录（在 `/var/folders`），
+> 而 `rename` 跨文件系统会返回 `EXDEV` 而不是「权限不足」——于是它**不会尝试提权，
+> 直接失败**。这一条是读 源码 发现的，尚未实测（CI 里同卷、碰不到）。
+
+### 自动更新
+
+**可用**。完整链路（检查 → 下载 → 验签 → 替换 `.app` → 重启）已在真实 macOS 上跑通。
+
+一个常见担心可以打消：**更新后不会再被 Gatekeeper 拦**。因为 updater 是用程序直接
+解压并替换文件的，不经浏览器那条路，**新包不会被打上隔离属性**（实测确认：
+更新后的包 `xattr` 为空、签名校验通过、重启后服务正常）。所以你只需要在**首次安装**时
+放行一次，之后的更新都是无感的。
+
+### 已知差异（与 Windows 版相比）
+
+- **`Cmd+W` 关不了窗**：窗口是自绘标题栏，没有系统关闭按钮，而 `Cmd+W` 依赖的正是它。
+  用标题栏里的关闭按钮（正常）或托盘菜单。`Cmd+Q` 退出正常。
+- **防火墙相关功能不可用**：这些靠 Windows 的 `netsh`，界面上已自动隐藏。
+- **IP 变化提示不实时**：mac 上靠 5 秒轮询兜底（功能正常，只是不是瞬时的）。
+- **命令执行壳层为 `sh` / `bash`**（Windows 是 `cmd` / Git Bash）。
 
 ## 配置迁移
 
