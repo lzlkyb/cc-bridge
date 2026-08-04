@@ -28,6 +28,8 @@
 - 清掉两处过期注释：`ConnectHero.tsx` 与 `index.css` 里仍写着「数据雨 canvas」，而 canvas 在 2.3.19 已改为纯 CSS、元素早已移除。
 
 #### CI 与验证
+- **烟测当场抄出一个真 bug 并已修**：mac 菜单栏托盘图标应为**模板图标**（单色、由系统适配深浅色），但真机截图里它仍是彩色的，而旁边系统的聚光灯 / 控制中心都是单色黑。根因：模板属性挂在 NSImage 上（`setTemplate:`），`refresh_tray` 里的 `set_icon` 会换一个全新 NSImage、连带把它抹掉；而托盘在启动时就会做首次状态刷新，所以建托盘时设的 `icon_as_template` 几乎立刻失效。已在每次 `set_icon` 后补 `set_icon_as_template(true)`。
+- 修正一个错误结论：`spctl -a` 对 ad-hoc 签名包**永远**报 rejected，清掉 quarantine 后也是——因为它判的是能不能过公证策略，而 Gatekeeper 实际只拦带 quarantine 的包。光看 `spctl` 会得出「永远打不开」的假结论，已改为真的 `open` 两次看实际行为。
 - 新增 `smoke-macos` 作业（仅 `workflow_dispatch` 按需触发）：在真实 macOS 上构建 `.app`（ad-hoc 签名）并验证 codesign / Gatekeeper 评估 / quarantine 隔离属性陷阱与 `xattr -dr` 解法 / 应用启动与 MCP `/health` 探活 / webview 内存代价 / 桌面通知链路 / Apple Event quit（等价 Cmd+Q）退出语义，并上传截图与日志作证据。
 - 能这么做的前提：之前把「GUI / 打包 / 分发」整块判成「只能真机」，这个判定过宽——GitHub 的 macOS runner 带图形会话。窗口配置是 `visible: false` 且 CI 无辅助权限（TCC）点不了托盘菜单，改用「再启动一次二进制 → single-instance 回调 → `show_or_create_main_window`」把窗口显示出来。
 - `tauri.conf.json` 补 `bundle.macOS.signingIdentity: "-"`（ad-hoc 签名，内网自用不买开发者账号）。`bundle.targets` 故意仍保持 `["nsis"]` 不动，mac 侧用 CLI `--bundles app` 覆盖，避开影响 Windows 正式发版路径。

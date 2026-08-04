@@ -326,7 +326,25 @@ jobs:
             echo "Cmd+W 按键 exit=$?"
             sleep 8
           fi
+          echo "菜单/按键路径后：窗口数=$(wins) RSS=$(rss)KB"
+          # 假设：窗口是 decorations:false（无标题栏），AppKit 的 performClose: 对「没有
+          # 关闭按钮的窗口」是 no-op（只响一声）——而 Close Window 菜单项与 Cmd+W 走的
+          # 就是 performClose:。先把窗口按钮列表打出来验证这个假设。
+          echo "窗口按钮列表：$(osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to return name of every button of window 1" 2>&1)   # 空 = 无标题栏按钮，performClose: 就是空转"
+          # 不管 AppKit 那条路通不通，都要测**产品真实路径**：点托盘图标。
+          # 它走 on_tray_icon_event → w.close() → CloseRequested → 销毁 webview，
+          # 完全不经 AppKit 的关闭按钮逻辑。menu bar 2 就是状态栏。
+          if [ "$(wins)" = "1" ]; then
+            echo "改走产品真实路径：点菜单栏托盘图标（→ w.close()）"
+            osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to click menu bar item 1 of menu bar 2" 2>&1
+            echo "点托盘 exit=$?"
+            sleep 10
+          fi
           echo "关窗后：窗口数=$(wins) RSS=$(rss)KB"
+          # 关键口径：mac 的 webview 跑在独立的 WebContent 进程里，主进程 RSS 看不出销毁。
+          # 销毁成功的硬标志是这个进程**消失**——也就是清单 N8 要的那个数字。
+          echo "关窗后 WebContent 进程（空 = 已销毁）："
+          ps ax -o pid,rss,comm | grep -i -e WebContent -e cc-bridge | grep -v grep
           if kill -0 "$APP_PID" 2>/dev/null; then
             echo "✅ 关窗后进程仍存活 —— ExitRequested{code:None} 拦截在 mac 上也生效，服务没被带走"
           else

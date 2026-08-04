@@ -1,0 +1,12 @@
+[1] in_progress | Install frontend deps
+[2] in_progress | 构建 .app（ad-hoc 签名）
+[3] in_progress | 构建 .app（ad-hoc 签名）
+[4] in_progress | 构建 .app（ad-hoc 签名）
+[5] in_progress | 构建 .app（ad-hoc 签名）
+[6] in_progress | 构建 .app（ad-hoc 签名）
+[7] in_progress | 构建 .app（ad-hoc 签名）
+[8] in_progress | 关窗行为（Cmd+W → 销毁 webview 但不退应用）
+[9] in_progress | 分发陷阱复验·带/不带隔离属性实际能不能启动
+[10] in_progress | Post Run Swatinem/rust-cache@v2
+[11] completed | 
+LOG_SAVED lines=2139
