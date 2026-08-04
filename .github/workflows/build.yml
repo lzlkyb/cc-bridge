@@ -40,14 +40,16 @@ jobs:
   # 只跑 `cargo check`（不跑 test、不打包）：目标是尽快拿到编译期错误，控制 CI 时长。
   # 不装前端依赖：与上面 Windows 的 test job 一致，纯 Rust 检查不需要 dist 产物。
   #
-  # ⚠ `continue-on-error: true` 是暂时的：mac 适配尚在推进中，本 job 当前必红，
-  # 不能让它阻塞 Windows 侧的正常合入。**mac 能编过后记得把这行删掉**，
-  # 否则这道门禁就形同虚设。
+  # ⚠ 与 Windows 侧的严格度**尚不对等**：Windows 跑的是 `clippy -D warnings`，
+  # 这里只跑 `cargo check`（不把 warning 当错）。原因：mac 上 `firewall_diag.rs` 的
+  # netsh 解析函数没有调用方，会产生 20+ 个 dead_code 警告。正确修法需区分
+  # “类型定义”（FirewallDiagnosis / Issue 等，commands.rs 的返回类型用得到，跨平台保留）
+  # 与“netsh 解析逻辑”（可 cfg(windows)），属于 mac 适配第二期的防火墙改造。
+  # **那一期做完后，把下面的 cargo check 升级为 clippy -D warnings**，两边才真正齐平。
   check-macos:
     name: Cargo check (macOS)
     if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable

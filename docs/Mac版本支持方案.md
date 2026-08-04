@@ -2,7 +2,52 @@
 
 > **方案 A：免费版（不签不公证）**
 > 编写日期：2026-08-03
-> 状态：草案，待实施
+> 状态：**第一期（能编译）已完成，2026-08-03**；第二期（平台适配）与第三期（发布）待做
+
+---
+
+## 0. 实施进度与对本文的修正
+
+> 本节由实际实施回写。**下文步骤 1 的三处风险评估偏低了**，以本节为准。
+
+### 已完成：CI macOS 门禁 + Rust 平台分支
+- 新增 `check-macos` job（`macos-latest` + `cargo check`）。仓库是 public，
+  macOS runner 不消耗免费额度。先让它跑一次拿真实报错、再按报错修——
+  比在 Windows 上凭推理一次改完可靠得多。
+- 实测报出 **5 个** E0433/E0425，已全部修完，macOS job 现为 green。
+
+### 本文估错的三处（按实际报错修正）
+1. **本文说 `shell.rs`「bash / zsh / sh（已支持）」、风险低——实际它只有
+   `cfg(windows)` 分支，根本没有 `not(windows)` 实现**，mac 上 `detect_bash_exe_inner`
+   不存在 → 编译失败。已补 unix 版：查常见绝对路径 + `command -v bash` 兜底
+   （覆盖 Homebrew 的 `/opt/homebrew/bin/bash`）。`BASH_CANDIDATES` 也加了
+   `cfg(windows)`，否则 mac 上 dead_code 会被 `clippy -D warnings` 判错。
+2. **本文说「验证 process-wrap 在 Mac 上自动 fallback」——实际不是 fallback 问题：
+   整个 crate 在 mac 上都不存在**。它原先只声明在
+   `[target.'cfg(target_os = "windows")'.dependencies]` 段里，而 `state.rs` 的
+   `RunningCommand.child` 字段直接用 `process_wrap::std::StdChildWrapper` 作类型
+   （结构体定义，没法用 cfg 绕过）。这是三处里最棘手的一处，不是中风险。
+   修法：crate 本体 + `std`/`tracing` 提到公共 `[dependencies]`，平台专属 feature
+   分到两个 target 段（Windows: `job-object` + `creation-flags`；Unix: `process-group`）。
+   Cargo 对同一 crate 多段声明的 features 取并集，所以 **`state.rs` 一行未改**。
+   `run_command.rs` 补 `#[cfg(unix)] cmd.wrap(ProcessGroup::leader())`——setpgid 成
+   组长后 `start_kill()` 向整个进程组发信号、连子孙一起杀，等价于 Windows 侧的
+   `TerminateJobObject`，所以 `stop_command` 的语义在 mac 上是对的。
+3. **路径与文件名有误**：`run_command.rs` 实际在 `src-tauri/src/mcp/tools/` 下，
+   不在 `src-tauri/src/`；防火墙 UI 在 `components/tabs/firewall/FirewallPanel.tsx`，
+   不是本文猜的 `SecurityTab.tsx`（本文原文写着「假设」）。
+
+### 第二期新增待办（第一期暴露出来的）
+- **mac 上有 20+ 个 dead_code 警告**，全来自 `firewall_diag.rs` 的 netsh 解析函数
+  （`parse_netsh_rules` / `split_kv` / `analyze` / `to_info` 等）在 mac 上没有调用方。
+  因此 CI 的 mac job 目前只能跑 `cargo check`，**不能跑 `clippy -D warnings`**，
+  与 Windows 侧严格度不对等。
+  正确修法要区分两类：**类型定义**（`FirewallDiagnosis` / `Issue` 等，`commands.rs`
+  的返回类型用得到，必须跨平台保留）vs **netsh 解析逻辑**（可整体 `cfg(windows)`）。
+  这块做完后，把 CI 里的 `cargo check` 升级成 `clippy -D warnings`。
+- 运行时适配（第一期**未**触及，mac 上跑起来仍不对）：`build_invocation` 仍会走
+  `cmd.exe`；`mcp/http.rs` 的工具描述里硬编码了「壳层为 cmd、请用 Windows cmd 语法
+  与路径」——那段描述是发给远程 AI 的，不改的话 mac 上 AI 会一直生成 Windows 命令。
 
 ---
 
