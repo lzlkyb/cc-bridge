@@ -31,6 +31,9 @@
 - **mac 自动更新之前是完全不通的**：`generate-updater-json.mjs` 只生成 `windows-x86_64` 条目、`findNsisArtifact()` 硬编码扫 `bundle/nsis`，而 mac 客户端要找的 key 是 `darwin-aarch64`（tauri-plugin-updater 的 `updater_os()` 返回 `darwin` 而非 `macos`）。找不到自己的平台 key 就永远检测不到更新，且不报错。现已改为双平台探测（`bundle/macos/*.app.tar.gz` → `darwin-aarch64`），并新增 `UPDATER_MERGE_INTO` 跨 job 合并（Windows 与 mac 在不同 job 构建、各自只看得到自己的产物，后跑的若直接覆写会静默抹掉先跑那个平台的条目）。只出 arm64。
 
 #### CI 与验证
+- **mac 自动更新完整链路已在真实 macOS 上跑通**（检查 → 下载 → 验签 → 替换 `.app` → 重启启动）。硬证据：替换后 `Info.plist` 版本号变为测试版本、包内出现标记文件、`codesign --verify` 通过、**无 quarantine 属性**（这就是「更新后不会被 Gatekeeper 拦」的直接证据）、重启后 `/health` 200。据此 `docs/Mac版本支持方案.md` 第 2.2 节那条「每次更新后要重新绕 Gatekeeper」可以正式判为不成立。
+- 新增 `build-macos` 发版作业（仅 tag 触发）与 `updater.json` 跨作业合并：两平台在不同作业构建、各自只看得到自己的产物，若两边都自行生成并 attach，后跑的会**静默覆盖**先跑那个平台的条目。现由 mac 产出平台片段、Windows 侧合并后统一 attach，并加了「片段存在却没合并进去就终止发版」的显式校验。mac 挂了 Windows 仍能发（降级为只发 Windows）。
+- 仍未验的一个源码层风险：updater 用 `tempfile::tempdir()` 做备份，而 `rename` 跨文件系统返回 `EXDEV` 而非 `PermissionDenied` → 不尝试提权、直接失败。CI 里同卷所以没覆盖到，**app 放在外置盘/另一个卷上会更新失败**。
 - **关窗释放内存在 mac 上已实测验证**：用辅助功能点自绘标题栏里的「关闭窗口」按钮（即产品真实路径），窗口数 1→0、`WebContent` 进程从 121MB 到完全消失，而主进程 RSS 几乎不变（96880→96944KB）。结论：mac 上关窗释放约 121MB，**且必须看 `WebContent` 进程而不是主进程 RSS**，否则会得出“webview 不要钱”的错误结论。关窗后进程存活、`/health` 仍 200，服务没被带走。
 - 纠正一个我自己的错误结论：曾说「webview 内容对辅助功能是一整块、点不到」——实测推翻。WKWebView 会暴露完整网页 AX 树（`AXWebArea`），136 个元素、所有按钮的中文名都读得到（关闭窗口 / 停止服务 / 跳过引导 / …）。之前查不到是因为用了 `button ... of window 1`（只查直接子元素），改用 `entire contents` 深层查找即可。这使得 CI 能真的走完整 UI 流程。
 - **烟测当场抓出一个真 bug 并已修**：mac 菜单栏托盘图标应为**模板图标**（单色、由系统适配深浅色），但真机截图里它仍是彩色的，而旁边系统的聚光灯 / 控制中心都是单色黑。根因：模板属性挂在 NSImage 上（`setTemplate:`），`refresh_tray` 里的 `set_icon` 会换一个全新 NSImage、连带把它抹掉；而托盘在启动时就会做首次状态刷新，所以建托盘时设的 `icon_as_template` 几乎立刻失效。已在每次 `set_icon` 后补 `set_icon_as_template(true)`。
