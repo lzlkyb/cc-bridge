@@ -129,6 +129,7 @@ pub fn is_batch_safe(name: &str) -> bool {
 
 // ─── PowerShell 侧原始事实 ──────────────────────────────────────────
 
+#[cfg(windows)]
 #[derive(Debug, Deserialize)]
 struct PsProfile {
     name: String,
@@ -139,6 +140,7 @@ struct PsProfile {
     allow_local_rules: bool,
 }
 
+#[cfg(windows)]
 #[derive(Debug, Deserialize)]
 struct PsOut {
     #[serde(default)]
@@ -147,6 +149,7 @@ struct PsOut {
     active: Vec<String>,
 }
 
+#[cfg(windows)]
 /// 一条入站规则的原始字段（值已归一化为英文枚举）。来源：netsh verbose 文本。
 ///
 /// 为何不用 PowerShell 的 `Get-NetFirewallPortFilter`：它的**批量枚举在普通权限下会被
@@ -362,6 +365,7 @@ pub fn query_diagnosis(port: u16, exe: &str) -> Option<FirewallDiagnosis> {
     Some(analyze(port, exe, out.profiles, out.active, rules))
 }
 
+#[cfg(windows)]
 /// 解析 netsh verbose 输出，返回（解出的规则块总数, 命中本端口且为 TCP 的规则）。
 ///
 /// 规则块以「规则名称/Rule Name」行为起点切分，比按空行切分稳（不受空行/CRLF 影响）。
@@ -414,6 +418,7 @@ fn parse_netsh_rules(text: &str, port: u16) -> (usize, Vec<RawRule>) {
     (blocks, rules)
 }
 
+#[cfg(windows)]
 /// 键名归一：去空白 + 小写。netsh 英文输出里有 `Rule Name` / `Edge traversal` 这种带空格的键。
 fn normalize_key(key: &str) -> String {
     key.chars()
@@ -422,12 +427,14 @@ fn normalize_key(key: &str) -> String {
         .to_lowercase()
 }
 
+#[cfg(windows)]
 /// 「是/Yes」→ true。其余（否/No）为 false。
 fn is_yes(v: &str) -> bool {
     let v = v.trim();
     v.eq_ignore_ascii_case("yes") || v == "是"
 }
 
+#[cfg(windows)]
 /// 操作值归一为 `Allow` / `Block`。未识别时原样返回，让上层的匹配自然失败而不是误归类。
 fn norm_action(v: &str) -> String {
     let t = v.trim();
@@ -440,6 +447,7 @@ fn norm_action(v: &str) -> String {
     }
 }
 
+#[cfg(windows)]
 /// 「任何/Any」→ `Any`；其余原样（去空白）。
 fn norm_any(v: &str) -> String {
     let t = v.trim();
@@ -450,6 +458,7 @@ fn norm_any(v: &str) -> String {
     }
 }
 
+#[cfg(windows)]
 /// 配置文件列表归一：`域,专用,公用` / `Domain,Private,Public` / `任何` → 英文逗号列表或 `Any`。
 fn norm_profiles(v: &str) -> String {
     let t = v.trim();
@@ -476,6 +485,7 @@ fn norm_profiles(v: &str) -> String {
     }
 }
 
+#[cfg(windows)]
 /// 程序字段：`任何/Any/System/空` 视为不限程序（None）。
 fn norm_program(v: &str) -> Option<String> {
     let t = v.trim();
@@ -486,6 +496,7 @@ fn norm_program(v: &str) -> Option<String> {
     }
 }
 
+#[cfg(windows)]
 /// 本地端口字段是否命中目标端口。支持 `Any` / 单值 / 逗号列表 / `a-b` 区间。
 fn port_hit(local_port: &str, port: u16) -> bool {
     let lp = local_port.trim();
@@ -507,6 +518,7 @@ fn port_hit(local_port: &str, port: u16) -> bool {
     })
 }
 
+#[cfg(windows)]
 /// 按首个冒号（ASCII 或全角）切分 "键: 值"。错开分隔线与空行。
 ///
 /// 用 `char_indices` 而不是 `find(':') + 1`：全角冒号占 3 字节，按 1 字节切会落在
@@ -526,6 +538,7 @@ pub fn query_diagnosis(_port: u16, _exe: &str) -> Option<FirewallDiagnosis> {
     None
 }
 
+#[cfg(windows)]
 /// 规则的 profile 字段是否覆盖某个配置文件。`Any` 覆盖全部。
 fn profile_covers(rule_profiles: &str, target: &str) -> bool {
     let rp = rule_profiles.trim();
@@ -535,6 +548,7 @@ fn profile_covers(rule_profiles: &str, target: &str) -> bool {
     rp.split(',').any(|t| t.trim().eq_ignore_ascii_case(target))
 }
 
+#[cfg(windows)]
 /// 展开 `%ProgramFiles%` 这类环境变量占位（防火墙规则里常以未展开形式存储）。
 fn expand_env(path: &str) -> String {
     let mut out = String::with_capacity(path.len());
@@ -567,6 +581,7 @@ fn expand_env(path: &str) -> String {
     out
 }
 
+#[cfg(windows)]
 /// Windows 路径等价比较：忽略大小写、统一分隔符、去掉包裹引号并展开环境变量。
 fn paths_equal(a: &str, b: &str) -> bool {
     let norm = |s: &str| {
@@ -577,6 +592,7 @@ fn paths_equal(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
+#[cfg(windows)]
 /// 规则是否对「本程序」生效：不限程序的规则同样生效。
 fn program_matches(program: &Option<String>, exe: &str) -> bool {
     match program {
@@ -585,6 +601,7 @@ fn program_matches(program: &Option<String>, exe: &str) -> bool {
     }
 }
 
+#[cfg(windows)]
 /// 是否是 cc-bridge 自己的规则（用于判定「废规则」范围，避免误删别人的规则）。
 fn is_ours(r: &RawRule, exe: &str) -> bool {
     if r.name.to_lowercase().contains("cc-bridge") {
@@ -599,6 +616,7 @@ fn is_ours(r: &RawRule, exe: &str) -> bool {
     }
 }
 
+#[cfg(windows)]
 fn to_info(r: &RawRule) -> RuleInfo {
     RuleInfo {
         name: r.name.clone(),
@@ -610,6 +628,7 @@ fn to_info(r: &RawRule) -> RuleInfo {
     }
 }
 
+#[cfg(windows)]
 /// 所有「当前网络所在的配置文件」是否都已关闭防火墙。
 ///
 /// 返回 `Some(true)` = 已知且全部关闭（可短路跳过规则枚举）；
@@ -631,6 +650,7 @@ fn all_active_profiles_off(profiles: &[PsProfile], active: &[String]) -> Option<
     Some(active_profiles.iter().all(|p| !p.enabled))
 }
 
+#[cfg(windows)]
 /// 核心判定：把原始事实（配置文件来自 PowerShell、规则来自 netsh）转成结论 + 问题清单。
 fn analyze(
     port: u16,
@@ -859,6 +879,7 @@ mod tests {
     /// 核心回归：规则只覆盖 Public、当前网络是 Private 时，必须判为「不通」+ profileGap。
     /// 旧实现（只看方向/操作/协议/端口）在这里会误报「已放行」。
     #[test]
+    #[cfg(windows)]
     fn public_only_rule_does_not_cover_private_network() {
         let d = analyze(
             7823,
@@ -873,6 +894,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn any_profile_rule_covers_private_network() {
         let d = analyze(
             7823,
@@ -887,6 +909,7 @@ mod tests {
 
     /// Block 规则优先于 Allow：两者都在时结论必须是不通。
     #[test]
+    #[cfg(windows)]
     fn block_rule_wins_over_allow() {
         let d = analyze(
             7823,
@@ -904,6 +927,7 @@ mod tests {
 
     /// program= 指向旧路径的规则既不算放行，也要被识别成废规则。
     #[test]
+    #[cfg(windows)]
     fn stale_program_path_is_not_coverage() {
         let d = analyze(
             7823,
@@ -919,6 +943,7 @@ mod tests {
 
     /// 域策略禁止本地规则时，即使规则齐全也要给出不可修复提示。
     #[test]
+    #[cfg(windows)]
     fn local_policy_blocked_is_reported_unfixable() {
         let mut ps = profs();
         ps[1].allow_local_rules = false;
@@ -939,6 +964,7 @@ mod tests {
 
     /// 短路判定：当前活动配置文件全部关闭 → Some(true)，可跳过规则枚举。
     #[test]
+    #[cfg(windows)]
     fn all_active_off_true_when_every_active_profile_disabled() {
         let mut ps = profs(); // Domain/Private/Public 全 enabled=true
         ps[1].enabled = false; // 仅当前活动 Private 关闭
@@ -950,6 +976,7 @@ mod tests {
 
     /// 多个活动配置中只要有一个开着 → Some(false)，仍需完整检测。
     #[test]
+    #[cfg(windows)]
     fn all_active_off_false_when_any_active_enabled() {
         let mut ps = profs();
         ps[1].enabled = false; // Private 关
@@ -963,6 +990,7 @@ mod tests {
 
     /// 活动配置全部关闭即为短路，即便某个不活动的配置开着也不影响。
     #[test]
+    #[cfg(windows)]
     fn all_active_off_true_ignores_inactive_enabled_profile() {
         let mut ps = profs();
         ps[1].enabled = false; // Private 关
@@ -976,6 +1004,7 @@ mod tests {
 
     /// 无活动配置文件信息（或活动类别对不上）→ None，不能贸然判定关闭。
     #[test]
+    #[cfg(windows)]
     fn all_active_off_none_when_no_active_info() {
         assert_eq!(all_active_profiles_off(&profs(), &[]), None);
         assert_eq!(all_active_profiles_off(&profs(), &["Foo".into()]), None);
@@ -1024,6 +1053,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
     fn env_vars_in_program_path_are_expanded() {
         std::env::set_var("CCB_TEST_DIR", "C:\\app");
         assert!(paths_equal(
@@ -1077,6 +1107,7 @@ mod tests {
     );
 
     #[test]
+    #[cfg(windows)]
     fn parses_english_netsh_output() {
         let (blocks, rules) = parse_netsh_rules(NETSH_EN, 7823);
         assert_eq!(blocks, 2, "两个规则块都应被识别");
@@ -1097,6 +1128,7 @@ mod tests {
     /// 中文键名与中文值都要能解析——旧 netsh 解析只认中文，英文系统全漏；
     /// 这里两个方向都锁住。
     #[test]
+    #[cfg(windows)]
     fn parses_chinese_netsh_output() {
         let (blocks, rules) = parse_netsh_rules(NETSH_ZH, 7823);
         assert_eq!(blocks, 1);
@@ -1110,6 +1142,7 @@ mod tests {
 
     /// 端口 Any 的规则对任何端口都算命中（实机上 cc-bridge 的规则正是 LocalPort=Any）。
     #[test]
+    #[cfg(windows)]
     fn port_any_matches_and_ranges_work() {
         assert!(port_hit("Any", 7823));
         assert!(port_hit("7823", 7823));
@@ -1121,6 +1154,7 @@ mod tests {
 
     /// 解析失败（拿到的不是规则输出）必须返回 0 块，让调用方回退而不是下「没有规则」的错结论。
     #[test]
+    #[cfg(windows)]
     fn garbage_input_yields_zero_blocks() {
         let (blocks, rules) =
             parse_netsh_rules("\u{fffd}\u{fffd}\r\n\u{fffd}\u{fffd} \u{fffd}\r\n", 7823);
@@ -1130,6 +1164,7 @@ mod tests {
 
     /// 全角冒号不能让切分 panic（中文系统某些输出用全角）。
     #[test]
+    #[cfg(windows)]
     fn full_width_colon_does_not_panic() {
         let kv = split_kv("协议：                                 TCP");
         assert_eq!(kv, Some(("协议".into(), "TCP".into())));
