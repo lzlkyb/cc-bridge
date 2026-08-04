@@ -130,7 +130,10 @@ echo "原 .app 无标记文件 ✓（判定基线干净）"
 
 pkill -f cc-bridge-desktop 2>/dev/null
 sleep 3
-CCBRIDGE_UPDATE_ENDPOINT="$ENDPOINT" "$BIN" > "$RUNNER_TEMP/app-upd.log" 2>&1 &
+# 开 updater 的详细日志：`start_update` 失败时只发 Tauri event 给前端、**不写日志**，
+# 上一轮因此拿到的 app-upd.log 是空的、什么也没查到。updater 内部有 log::debug!，
+# 把级别降下来就能看到它到底请求了什么、拿到什么。
+RUST_LOG="info,tauri_plugin_updater=trace" CCBRIDGE_UPDATE_ENDPOINT="$ENDPOINT" "$BIN" > "$RUNNER_TEMP/app-upd.log" 2>&1 &
 UPD_PID=$!
 for i in $(seq 1 40); do
   code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 http://127.0.0.1:7823/health)
@@ -182,8 +185,15 @@ for NAME in "下载并更新" "下载并安装" "立即下载" "下载"; do
   case "$R" in
     OK*)
       CLICKED2="$R"
-      sleep 5
-      bash .github/scripts/mac-ax-buttons.sh "$UPD_PID" "点过 [$NAME] 之后（应出现下载进度）"
+      # 密集采样：上一轮只 sleep 5 采一次，结果既没看到进度也没看到错误——
+      # 错误提示可能是瞬时的（toast），顶栏按钮直接回退成了「v2.3.20」。
+      # 每 3s 采一次、只抓关键文案，才能捕到下载中 / 失败原因。
+      for k in 1 2 3 4 5 6 7 8; do
+        sleep 3
+        echo "--- 点击后第 $((k*3))s 的关键文案 ---"
+        bash .github/scripts/mac-ax-buttons.sh "$UPD_PID" "t+$((k*3))s" 2>&1 \
+          | grep -aE "元素总数|%|失败|错误|更新|下载|安装|重启|源|稍后|MB|KB/s" | head -10
+      done
       break
       ;;
   esac
@@ -208,8 +218,12 @@ for i in $(seq 1 90); do
   sleep 1
 done
 if [ "$OK" != "1" ]; then
-  echo "❌ 90s 内未出现标记文件：替换未发生。应用日志："
-  tail -60 "$RUNNER_TEMP/app-upd.log"
+  echo "❌ 90s 内未出现标记文件：替换未发生。"
+  echo "--- app-upd.log 全文（含 updater trace）---"
+  cat "$RUNNER_TEMP/app-upd.log"
+  echo "--- .app 目录状态（确认是否被动过）---"
+  ls -la "$APP/Contents/Resources/" 2>&1 | head -12
+  stat -f "%Sm %N" "$APP" 2>&1
 fi
 screencapture -x "$RUNNER_TEMP/shots/09-after-update.png" 2>/dev/null
 echo "::endgroup::"
