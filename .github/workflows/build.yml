@@ -165,14 +165,35 @@ jobs:
           fi
         working-directory: desktop
 
-      # tauri.conf.json 里 createUpdaterArtifacts=true，没有私钥会直接构建失败。
-      # 烟测不需要真实发版密钥，现场生成一把一次性的：公钥对不上只影响「客户端校验更新」，
-      # 不影响本 job 要验的打包 / 启动 / 分发行为。
-      - name: 生成一次性更新签名密钥
+      # tauri.conf.json 里 createUpdaterArtifacts=true，没有私钥会直接构建失败，
+      # 所以烟测现场生成一把一次性密钥。
+      #
+      # ⚠ 必须同时把它的**公钥**写进 tauri.conf.json：我最初在这里写的注释是
+      # 「公钥对不上只影响客户端校验更新，不影响本 job 要验的行为」——那只在「只验
+      # 打包」时成立。自从加了自动更新端到端验证，那句就变成了错误前提：
+      # 更新链路的核心恰恰包含验签。实际后果是连续三轮报
+      #   "The signature was created with a different key than the one provided"
+      # ——包下载下来了但验签失败，替换永远不会发生。
+      # pubkey 必须在 `tauri build` **之前**写入，因为它会被编译进二进制。
+      - name: 生成一次性更新签名密钥（并把配对公钥写进配置）
         run: |
+          set -e
           npx tauri signer generate -w "$RUNNER_TEMP/smoke.key" -p "" -f
+          ls -l "$RUNNER_TEMP"/smoke.key*
           echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/smoke.key" >> "$GITHUB_ENV"
           echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+          # tauri.conf.json 的 pubkey 字段是「公钥文件全文」的 base64
+          # （解码现有值可见它含 "untrusted comment: minisign public key: ..." 那两行）。
+          PUB=$(base64 < "$RUNNER_TEMP/smoke.key.pub" | tr -d '\n')
+          PUB="$PUB" node -e "
+            const fs=require('fs'), p='src-tauri/tauri.conf.json';
+            const j=JSON.parse(fs.readFileSync(p,'utf8'));
+            const before=j.plugins.updater.pubkey.slice(0,24);
+            j.plugins.updater.pubkey=process.env.PUB;
+            fs.writeFileSync(p, JSON.stringify(j,null,2)+'\n');
+            console.log('pubkey 已换为烟测一次性密钥的配对公钥（仅 CI 工作区临时改动，不提交）');
+            console.log('  改前：'+before+'…  改后：'+j.plugins.updater.pubkey.slice(0,24)+'…');
+          "
         working-directory: desktop
 
       - name: 构建 .app（ad-hoc 签名）

@@ -14,6 +14,10 @@
 # 2. **标记文件才是硬证据**。“进程还活着”不能证明替换发生了；只有新包里那个
 #    Contents/Resources/CI_UPDATE_MARKER 出现在原位置，才能确定 .app 真的被换了。
 #
+# 密钥：签名私钥必须与**应用内置的 pubkey**配对。烟测用一次性密钥，所以 workflow 会在
+# tauri build 之前把配对公钥写进 tauri.conf.json。我最初以为「公钥对不上只影响客户端
+# 校验」——那只在只验打包时成立，验更新链路时验签就是核心环节，这个错误前提让我白跑三轮。
+#
 # 为何必须挂到 GitHub Release：`endpoints()` 在 release 构建下要求 https，而本地自签
 # 证书行不通（updater 默认 feature 是 rustls-tls 且未启用 native-roots，把证书加进
 # 钥匙串无效）。tag 带 run id 避开并发冲突，标为 prerelease，**跑完即删**。
@@ -88,6 +92,26 @@ if [ ! -f "$PKG.sig" ]; then
 fi
 SIG=$(cat "$PKG.sig")
 echo "签名长度=${#SIG}"
+
+# 前置检查：签名用的私钥必须与**应用内置的公钥**配对。
+# 为何单列一步：这正是前三轮失败的原因——包能下载、但 updater 报
+# "The signature was created with a different key than the one provided"，
+# 而那个错误只在应用日志里（得开 RUST_LOG 才看得到），白跑了三轮。
+# 在这里提前对比两个公钥，不匹配就直接红，而不是等 90s 超时后猜原因。
+CONF_PUB=$(node -e "console.log(JSON.parse(require('fs').readFileSync('desktop/src-tauri/tauri.conf.json','utf8')).plugins.updater.pubkey)")
+KEY_PUB=$(base64 < "$KEY.pub" 2>/dev/null | tr -d '\n')
+if [ -z "$KEY_PUB" ]; then
+  echo "⚠ 找不到 $KEY.pub，无法比对公钥（不终止，但若后面验签失败先查这里）"
+elif [ "$CONF_PUB" = "$KEY_PUB" ]; then
+  echo "✅ 签名密钥与应用内置公钥配对（验签不会因密钥不匹而失败）"
+else
+  echo "❌ 密钥不配对！应用内置公钥与签名私钥不是一对，验签必失败，提前终止。"
+  echo "  配置里 pubkey 前 24 字符：${CONF_PUB:0:24}…"
+  echo "  签名密钥公钥前 24 字符：${KEY_PUB:0:24}…"
+  echo "  修法：在 tauri build **之前**把 $KEY.pub 的 base64 写进 tauri.conf.json 的"
+  echo "        plugins.updater.pubkey（pubkey 会被编译进二进制，事后改无效）。"
+  exit 1
+fi
 echo "::endgroup::"
 
 # ── 2) 挂到临时 prerelease ───────────────────────────────────
