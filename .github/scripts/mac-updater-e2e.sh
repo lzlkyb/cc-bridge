@@ -147,7 +147,12 @@ bash .github/scripts/mac-ax-click.sh "$UPD_PID" "跳过引导"
 sleep 4
 echo "::endgroup::"
 
-echo "::group::4) 找并点「立即更新」"
+echo "::group::4) 两段式点击：先开更新弹框，再点弹框里的「下载并更新」"
+# 为何是两段：上一轮成功点中了顶栏的「更新 v99.9.9」，但替换没发生——
+# 因为那个按钮只是**打开更新说明弹框**（点完它本身仍在、元素数 99→116）。
+# 弹框里才是真正触发下载的按钮，AX 名单显示它叫「下载并**更新**」
+# （我先前候选名写的是「下载并**安装**」，差一个字就全落空了）。
+# 弹框里另一个按钮是「稍后」——千万别误点，否则直接关掉弹框。
 # 启动会自动检查一次更新。上一轮已拿到真实按钮名：**「更新 v99.9.9」**——带版本号，
 # 所以我那 7 个固定候选名（立即更新/现在更新/…）全部 NOTFOUND。
 # 现在 mac-ax-click.sh 支持前缀匹配，用「更新 v」就能命中任意版本号。
@@ -166,7 +171,27 @@ for NAME in "更新 v" "立即更新" "下载并安装" "更新"; do
       ;;
   esac
 done
-echo "点到的按钮：[${CLICKED:-无}]"
+echo "第一段（开弹框）点到：[${CLICKED:-无}]"
+
+# 第二段：弹框里的确认按钮。弹框文案已知为「下载完成后自动安装并重启」，
+# 所以点下去后应用会自己重启，不需要我们介入。
+CLICKED2=""
+for NAME in "下载并更新" "下载并安装" "立即下载" "下载"; do
+  R=$(bash .github/scripts/mac-ax-click.sh "$UPD_PID" "$NAME")
+  echo "  试 [$NAME] -> $R"
+  case "$R" in
+    OK*)
+      CLICKED2="$R"
+      sleep 5
+      bash .github/scripts/mac-ax-buttons.sh "$UPD_PID" "点过 [$NAME] 之后（应出现下载进度）"
+      break
+      ;;
+  esac
+done
+echo "第二段（确认下载）点到：[${CLICKED2:-无}]"
+if [ -z "$CLICKED2" ]; then
+  echo "⚠ 未找到弹框里的确认按钮，下载不会开始——看上面名单确认真实文案"
+fi
 screencapture -x "$RUNNER_TEMP/shots/08-updater.png" 2>/dev/null
 echo "::endgroup::"
 
