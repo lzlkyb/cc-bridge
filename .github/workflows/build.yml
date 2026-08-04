@@ -311,6 +311,23 @@ jobs:
         continue-on-error: true
         run: bash .github/scripts/mac-ax-probe.sh "$APP_PID"
 
+      # 上一轮已证实 AX 能穿进 webview（AXWebArea=1、136 个元素、按钮中文名都读得到）。
+      # 于是可以真的跑 UI 流程了。这一步的目标是把「检查更新 / 立即更新」那几个按钮的
+      # **真实可访问名称**摸出来——下一步搭完整自动更新链路靠它们定位。
+      # 启动后停在首次引导页，得先跳过引导才能进主界面。
+      - name: 走 UI 流程 · 跳过引导 → 进设置页（摸「检查更新」按钮名）
+        continue-on-error: true
+        run: |
+          set +e
+          bash .github/scripts/mac-ax-click.sh "$APP_PID" "跳过引导"
+          sleep 4
+          bash .github/scripts/mac-ax-buttons.sh "$APP_PID" "跳过引导后的主界面"
+          bash .github/scripts/mac-ax-click.sh "$APP_PID" "设置"
+          sleep 4
+          bash .github/scripts/mac-ax-buttons.sh "$APP_PID" "设置页（找检查更新 / 关于卡片）"
+          mkdir -p "$RUNNER_TEMP/shots"
+          screencapture -x "$RUNNER_TEMP/shots/07-settings.png" 2>/dev/null
+
       - name: 截图（托盘图标 + 主窗口实际渲染）
         continue-on-error: true
         run: |
@@ -334,9 +351,19 @@ jobs:
           mkdir -p "$RUNNER_TEMP/shots"
           # 先清掉可能又弹出来的系统模态框，否则下面的按键/点击全发给它了
           bash .github/scripts/mac-dismiss-dialogs.sh
-          echo "关窗前：窗口数=$(wins) RSS=$(rss)KB"
+          web() { ps ax -o pid,rss,comm | grep -i WebContent | grep -v grep | awk '{print $1":"$2"KB"}' | tr '\n' ' '; }
+          echo "关窗前：窗口数=$(wins) RSS=$(rss)KB WebContent=[$(web)]"
           osascript -e "tell application \"System Events\" to set frontmost of (first process whose unix id is $APP_PID) to true" 2>&1
           sleep 2
+          # 优先走**产品真实路径**：点自绘标题栏里那个关闭按钮（AX 名称就叫「关闭窗口」）。
+          # 它走前端 close() → CloseRequested → release_webview_on_close 分支，
+          # 而不是 AppKit 那个对无关闭按钮窗口空转的 performClose:（见清单 N15）。
+          bash .github/scripts/mac-ax-click.sh "$APP_PID" "关闭窗口"
+          sleep 10
+          echo "点自绘关闭按钮后：窗口数=$(wins) RSS=$(rss)KB WebContent=[$(web)]"
+          # 仅当 AX 点自绘按钮没关掉窗口时，才回去试 AppKit 那两条路做对照。
+          if [ "$(wins)" = "1" ]; then
+          echo "—— 自绘按钮未关掉窗口，回去试 AppKit 路径作对照 ——"
           # 先把 Window 菜单里有什么打出来：如果根本没有 Close Window，
           # 那 Cmd+W 本身就不存在，验证得换另一条路——这个信息必需先确认。
           echo "Window 菜单项：$(osascript -e "tell application \"System Events\" to tell (first process whose unix id is $APP_PID) to return name of every menu item of menu 1 of menu bar item \"Window\" of menu bar 1" 2>&1)"
@@ -352,6 +379,9 @@ jobs:
             sleep 8
           fi
           echo "菜单/按键路径后：窗口数=$(wins) RSS=$(rss)KB"
+          else
+            echo "✅ AX 点自绘关闭按钮已把窗口关掉（窗口数已不再是 1），跳过 AppKit 对照"
+          fi
           # 假设：窗口是 decorations:false（无标题栏），AppKit 的 performClose: 对「没有
           # 关闭按钮的窗口」是 no-op（只响一声）——而 Close Window 菜单项与 Cmd+W 走的
           # 就是 performClose:。先把窗口按钮列表打出来验证这个假设。
