@@ -26,6 +26,10 @@ pub const MIN_EVENT_INTERVAL: Duration = Duration::from_millis(200);
 
 /// 通知 API 返回非预期值时的退避时长。宁可暂时失去事件能力（有 5s 轮询兜底），
 /// 也绝不空转。
+// 仅 Windows 版 `imp` 使用（NotifyAddrChange 返回非预期值时强制退避）；
+// 非 Windows 的 `imp` 是空实现，故限定平台，否则 mac 上是 dead_code。
+// 对比：MIN_EVENT_INTERVAL 是 `pub const`，pub 项不触发 dead_code，无需 cfg。
+#[cfg(windows)]
 const ERROR_BACKOFF: Duration = Duration::from_secs(2);
 
 #[cfg(windows)]

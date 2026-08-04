@@ -9,7 +9,12 @@
 //! 与本端口相关的全部入站规则），在 Rust 侧做判定并产出可执行的问题清单。
 //! netsh 文本解析仅作为 PowerShell 不可用时的兜底（见 `firewall::query_firewall_state`）。
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+// `Deserialize` 仅被 `PsProfile` / `PsOut` 的 derive 使用，而那两个 struct 是
+// PowerShell 输出解析专属、已限定 cfg(windows)。故此 import 同样要限定平台，
+// 否则 mac 上是 unused import —— clippy -D warnings 会判错。
+#[cfg(windows)]
+use serde::Deserialize;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -850,6 +855,7 @@ pub fn profile_label(name: &str) -> &str {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
     fn rule(action: &str, profiles: &str, program: Option<&str>) -> RawRule {
         RawRule {
             name: "r".into(),
@@ -862,6 +868,7 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
     fn profs() -> Vec<PsProfile> {
         ["Domain", "Private", "Public"]
             .iter()
