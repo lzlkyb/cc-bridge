@@ -96,7 +96,12 @@ jobs:
     name: macOS GUI/打包/分发烟测（按需触发）
     if: github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    permissions:
+      # 自动更新端到端验证需要临时建一个 prerelease 当 https 测试源（跑完即删）。
+      # 本地自签证书行不通：endpoints() 在 release 构建下要求 https，而 updater 默认
+      # feature 是 rustls-tls 且未启用 native-roots，把证书加进钥匙串也不管用。
+      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -498,6 +503,19 @@ jobs:
           screencapture -x "$RUNNER_TEMP/shots/06-after-dequarantine.png" 2>/dev/null
           pkill -f cc-bridge-desktop 2>/dev/null
           echo "::endgroup::"
+
+      # 清单 N11 的核心风险：「更新后打不开」是脉冲式故障——发了才知道，且用户已经
+      # 升不回去。前面已按源码推翻了文档里的两条推测，但推翻推测不等于验过，
+      # 这一步真的跑一遍：检查 → 下载 → 验签 → 替换 .app → 重启能否启动。
+      - name: 自动更新 · 完整链路真跑（临时 prerelease 作 https 源，跑完即删）
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash .github/scripts/mac-updater-e2e.sh \
+            "$PWD/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app" \
+            "$APP_BIN" \
+            "$RUNNER_TEMP/smoke.key"
 
       - name: 收尾 · 结束进程并收集证据
         if: always()
