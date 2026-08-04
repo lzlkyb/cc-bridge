@@ -40,3 +40,7 @@ desktop/src-tauri/target-test/
 
 # 排障用的临时脚本（下划线前缀），不入库。
 _clean_locks.ps1
+
+# CI 日志临时文件（排查 mac 烟测时用 gh api 拉下来的，曾被 git add -A 误提交）
+smoke*.log
+s[0-9]*.log
