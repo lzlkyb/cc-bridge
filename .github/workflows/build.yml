@@ -70,6 +70,262 @@ jobs:
         run: cargo test --no-default-features
         working-directory: desktop/src-tauri
 
+  # ── macOS GUI / 打包 / 分发烟测 ────────────────────────────────────────────
+  # 为什么会有这个 job：check-macos 已证明 MCP 服务与命令执行在真实 macOS 上跑得通
+  # （130 passed），但当时把「GUI / 打包 / 分发」整块判成「只能真机验证」。重新审过
+  # 后发现这个判定过宽——GitHub 的 macOS runner 带图形会话（自动登录的 Aqua session），
+  # 下面这些其实都能在 CI 里拿到实证，而不是靠推理：
+  #   · .app 能否构建、ad-hoc 签名是否成立（codesign --verify）
+  #   · Gatekeeper 对未公证包的评估结论（spctl -a -vvv）
+  #   · 「从浏览器下载后解压」的 quarantine 陷阱，以及 xattr -dr 解法是否真的管用
+  #   · 应用能否真的起起来、MCP 服务是否自动监听（/health 探活）
+  #   · webview 的内存代价（第二次启动触发 single-instance 显示窗口，前后采样 RSS）
+  #   · 桌面通知链路（用应用自己的 push_notification 工具端到端走一遍）
+  #   · 退出语义：Apple Event quit（等价 Cmd+Q）是否被我们拦 ExitRequested 的改动误伤
+  #
+  # 关键技巧：窗口配置是 visible:false（启动即收托盘），CI 里没有辅助权限（TCC）无法
+  # 点托盘菜单。但**再启动一次同一个二进制**会触发 single-instance 插件回调 →
+  # show_or_create_main_window，这是唯一不需要 TCC 就能把窗口显示出来的途径。
+  #
+  # 真机仍不可替代的只剩「人眼观感」：托盘图标在深浅色菜单栏下好不好看、左键手感。
+  # 那部分靠上传的截图人工看，做不到自动断言。
+  #
+  # 只在 workflow_dispatch 触发：mac 上整套 tauri build 约 10 分钟，不值得挂在每个 PR 上。
+  # 手动跑：gh workflow run build.yml --ref main
+  smoke-macos:
+    name: macOS GUI/打包/分发烟测（按需触发）
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Sccache Setup
+        uses: mozilla/sccache-action@v0.0.10
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      # 探针：runner 到底有没有图形会话。没有的话后面所有 GUI 步骤都不必看结论了，
+      # 直接据此判定「必须真机」——这是用事实替代猜测的前提。
+      - name: 探针 · 图形会话可用性
+        continue-on-error: true
+        run: |
+          set +e
+          echo "::group::会话身份与系统信息"
+          id
+          echo "launchctl managername = $(launchctl managername 2>&1)   # Aqua = 有图形会话"
+          echo "SSH_CONNECTION=${SSH_CONNECTION:-<none>}"
+          sw_vers
+          echo "arch = $(uname -m)"
+          echo "::endgroup::"
+
+          echo "::group::screencapture 能否出图"
+          screencapture -x "$RUNNER_TEMP/probe.png"
+          echo "screencapture exit=$?"
+          ls -l "$RUNNER_TEMP/probe.png" 2>&1
+          echo "::endgroup::"
+
+          echo "::group::osascript 能否驱动 System Events（TCC 辅助权限）"
+          osascript -e 'tell application "System Events" to return name of first process' 2>&1
+          echo "osascript exit=$?"
+          echo "::endgroup::"
+
+      - name: Install frontend deps
+        run: |
+          npm ci
+          # 与 Windows 侧同一个 npm optionalDependencies 坑（npm/cli#4828）：
+          # Tauri CLI 的平台 native binding 可能不被装上，显式补一次，不写回 lock。
+          if [ "$(uname -m)" = "arm64" ]; then
+            npm install @tauri-apps/cli-darwin-arm64 --no-save || true
+          else
+            npm install @tauri-apps/cli-darwin-x64 --no-save || true
+          fi
+        working-directory: desktop
+
+      # tauri.conf.json 里 createUpdaterArtifacts=true，没有私钥会直接构建失败。
+      # 烟测不需要真实发版密钥，现场生成一把一次性的：公钥对不上只影响「客户端校验更新」，
+      # 不影响本 job 要验的打包 / 启动 / 分发行为。
+      - name: 生成一次性更新签名密钥
+        run: |
+          npx tauri signer generate -w "$RUNNER_TEMP/smoke.key" -p "" -f
+          echo "TAURI_SIGNING_PRIVATE_KEY=$RUNNER_TEMP/smoke.key" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+        working-directory: desktop
+
+      - name: 构建 .app（ad-hoc 签名）
+        run: |
+          npm run prebuild
+          # bundle.targets 固定为 nsis（Windows 发版路径），mac 上用 --bundles 覆盖。
+          # 故意不往配置里加 mac target：那条路径是正式发版用的，不拿它做实验。
+          npx tauri build --bundles app
+        working-directory: desktop
+
+      - name: 签名与 Gatekeeper 评估
+        continue-on-error: true
+        run: |
+          set +e
+          APP="desktop/src-tauri/target/release/bundle/macos/cc-bridge.app"
+          ls -la desktop/src-tauri/target/release/bundle/macos/ 2>&1
+          echo "::group::codesign -dv（签名主体，ad-hoc 应显示 Signature=adhoc）"
+          codesign -dv --verbose=4 "$APP" 2>&1
+          echo "::endgroup::"
+          echo "::group::codesign --verify（签名完整性）"
+          codesign --verify --deep --strict --verbose=2 "$APP" 2>&1
+          echo "verify exit=$?"
+          echo "::endgroup::"
+          echo "::group::spctl -a -vvv（Gatekeeper 对未公证包的结论）"
+          spctl -a -vvv -t exec "$APP" 2>&1
+          echo "spctl exit=$?   # 非 0 属预期：ad-hoc + 未公证"
+          echo "::endgroup::"
+
+      # 这一步验的是「别人拿到我们的包会撞上什么」。ad-hoc 签名包在别人电脑上被拦，
+      # 直接原因不是签名无效，而是浏览器/网盘下载时 LaunchServices 写的 quarantine 属性。
+      - name: 分发陷阱 · quarantine 隔离属性
+        continue-on-error: true
+        run: |
+          set +e
+          SRC="desktop/src-tauri/target/release/bundle/macos/cc-bridge.app"
+          Q="$RUNNER_TEMP/quarantined/cc-bridge.app"
+          mkdir -p "$RUNNER_TEMP/quarantined"
+          cp -R "$SRC" "$Q"
+          xattr -w com.apple.quarantine "0083;00000000;Safari;" "$Q"
+          echo "::group::打上隔离属性后"
+          xattr -l "$Q"
+          spctl -a -vvv -t exec "$Q" 2>&1
+          echo "spctl exit=$?"
+          echo "::endgroup::"
+          echo "::group::用户侧解法是否真的管用：xattr -dr com.apple.quarantine"
+          xattr -dr com.apple.quarantine "$Q"
+          echo "清除后属性列表（空即已清除）：[$(xattr -l "$Q")]"
+          spctl -a -vvv -t exec "$Q" 2>&1
+          echo "spctl exit=$?"
+          echo "::endgroup::"
+
+      - name: 启动应用 + MCP 服务探活
+        run: |
+          set +e
+          APP="$PWD/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app"
+          BIN="$APP/Contents/MacOS/cc-bridge"
+          LOG="$RUNNER_TEMP/app-1.log"
+          "$BIN" > "$LOG" 2>&1 &
+          PID=$!
+          echo "APP_PID=$PID" >> "$GITHUB_ENV"
+          echo "已启动，pid=$PID（窗口 visible:false，预期直接收进托盘）"
+          code=""
+          for i in $(seq 1 40); do
+            code=$(curl -s -o "$RUNNER_TEMP/health.json" -w '%{http_code}' --max-time 2 http://127.0.0.1:7823/health)
+            if [ "$code" = "200" ]; then
+              echo "✅ 第 ${i} 次探测命中：/health 200 —— MCP 服务在 mac 上自动起来了"
+              cat "$RUNNER_TEMP/health.json"; echo
+              break
+            fi
+            if ! kill -0 "$PID" 2>/dev/null; then
+              echo "❌ 进程在第 ${i} 次探测前就退出了，这是 mac 启动路径的硬失败。日志："
+              cat "$LOG"
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$code" != "200" ]; then
+            echo "❌ 40 秒内 /health 未就绪。日志："
+            cat "$LOG"
+            exit 1
+          fi
+
+      - name: 内存代价（托盘态 vs 显示窗口后）
+        continue-on-error: true
+        run: |
+          set +e
+          BIN="$PWD/desktop/src-tauri/target/release/bundle/macos/cc-bridge.app/Contents/MacOS/cc-bridge"
+          sample() {
+            echo "::group::$1"
+            ps -o pid,rss,vsz,comm -p "$APP_PID"
+            # footprint 口径更接近活动监视器。注意：不能拿这里的数字直接跟 Windows 侧那
+            # 82MB 比——那是 Private Working Set，口径不同；只看 mac 自己的前后差值。
+            sudo /usr/bin/footprint -p "$APP_PID" 2>&1 | tail -8
+            echo "— 同名相关进程（看 WKWebView 是否另起进程）—"
+            ps ax -o pid,rss,comm | grep -i -e cc-bridge -e WebKit -e WebContent | grep -v grep
+            echo "::endgroup::"
+          }
+          sample "托盘态（webview 尚未创建）"
+          # 第二次启动同一二进制 → single-instance 回调 → show_or_create_main_window。
+          "$BIN" > "$RUNNER_TEMP/app-2.log" 2>&1
+          echo "第二实例退出码=$?（应为 0，且由 single-instance 把主窗口拉起来）"
+          sleep 10
+          sample "显示窗口后（webview 已创建）"
+
+      - name: 截图（托盘图标 + 主窗口实际渲染）
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/shots"
+          screencapture -x "$RUNNER_TEMP/shots/01-full.png"; echo "full exit=$?"
+          # 单截顶部菜单栏，方便看模板图标（icon_as_template）在菜单栏里的实际观感
+          screencapture -x -R 0,0,2400,44 "$RUNNER_TEMP/shots/02-menubar.png"; echo "menubar exit=$?"
+          ls -l "$RUNNER_TEMP/shots"
+
+      - name: 桌面通知链路（走应用自己的 push_notification）
+        continue-on-error: true
+        run: |
+          set +e
+          DIR="$HOME/Library/Application Support/com.ccbridge.desktop"
+          echo "::group::应用数据目录（验证 mac 路径解析正确）"
+          ls -l "$DIR" 2>&1
+          echo "::endgroup::"
+          # config 表是 key/value，value 为 JSON 字符串，故要剥掉引号
+          TOKEN=$(sqlite3 "$DIR/cc-bridge.db" "select value from config where key='token';" 2>&1 | tr -d '"')
+          echo "token 长度=${#TOKEN}"
+          curl -sS -X POST http://127.0.0.1:7823/mcp \
+            -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"push_notification","arguments":{"title":"CI 烟测","body":"mac 通知链路验证"}}}' 2>&1 | head -c 2000
+          echo
+          sleep 3
+          screencapture -x "$RUNNER_TEMP/shots/03-notification.png"; echo "shot exit=$?"
+
+      # 本 job 里价值最高的一条：我们为了「关窗不退出应用」加了
+      #   RunEvent::ExitRequested { code: None, .. } => api.prevent_exit()
+      # 需要确认它没把 mac 上用户主动 Cmd+Q 也一起拦掉（那会变成退不掉的应用）。
+      # osascript 的 quit 发的是 kAEQuitApplication，与 Cmd+Q 同一条路径。
+      - name: 退出语义（Apple Event quit ≈ Cmd+Q）
+        continue-on-error: true
+        run: |
+          set +e
+          echo "退出前存活检查：$(kill -0 "$APP_PID" 2>/dev/null && echo alive || echo dead)"
+          osascript -e 'tell application "cc-bridge" to quit' 2>&1
+          echo "osascript exit=$?（若报 not authorized 说明被 TCC 拦，本条结论悬空）"
+          sleep 6
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            echo "⚠ quit 后进程仍存活 —— 需查 ExitRequested 拦截是否误伤了 Cmd+Q"
+          else
+            echo "✅ quit 后进程已退出 —— Cmd+Q 未被 ExitRequested{code:None} 拦截误伤"
+          fi
+
+      - name: 收尾 · 结束进程并收集证据
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e
+          kill -TERM "$APP_PID" 2>/dev/null; sleep 2; kill -9 "$APP_PID" 2>/dev/null
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$RUNNER_TEMP"/app-*.log "$RUNNER_TEMP/out/" 2>/dev/null
+          cp -R "$RUNNER_TEMP/shots" "$RUNNER_TEMP/out/" 2>/dev/null
+          cp -R "$HOME/Library/Logs/com.ccbridge.desktop" "$RUNNER_TEMP/out/app-logs" 2>/dev/null
+          ls -lR "$RUNNER_TEMP/out" 2>&1
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: macos-smoke-evidence
+          path: ${{ runner.temp }}/out/**
+          if-no-files-found: warn
+
   # 发版构建：仅 tag 触发。test(release) 与 build 同 job 内复用 release target，
   # 依赖 crate 只编译一遍（A）；sccache 让依赖不变时后续发版秒级命中（B）。
   build-windows:

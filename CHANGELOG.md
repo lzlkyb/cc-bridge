@@ -27,6 +27,11 @@
 #### 清理
 - 清掉两处过期注释：`ConnectHero.tsx` 与 `index.css` 里仍写着「数据雨 canvas」，而 canvas 在 2.3.19 已改为纯 CSS、元素早已移除。
 
+#### CI 与验证
+- 新增 `smoke-macos` 作业（仅 `workflow_dispatch` 按需触发）：在真实 macOS 上构建 `.app`（ad-hoc 签名）并验证 codesign / Gatekeeper 评估 / quarantine 隔离属性陷阱与 `xattr -dr` 解法 / 应用启动与 MCP `/health` 探活 / webview 内存代价 / 桌面通知链路 / Apple Event quit（等价 Cmd+Q）退出语义，并上传截图与日志作证据。
+- 能这么做的前提：之前把「GUI / 打包 / 分发」整块判成「只能真机」，这个判定过宽——GitHub 的 macOS runner 带图形会话。窗口配置是 `visible: false` 且 CI 无辅助权限（TCC）点不了托盘菜单，改用「再启动一次二进制 → single-instance 回调 → `show_or_create_main_window`」把窗口显示出来。
+- `tauri.conf.json` 补 `bundle.macOS.signingIdentity: "-"`（ad-hoc 签名，内网自用不买开发者账号）。`bundle.targets` 故意仍保持 `["nsis"]` 不动，mac 侧用 CLI `--bundles app` 覆盖，避开影响 Windows 正式发版路径。
+
 #### 文档
 - `功能优化清单.md` M4 重写：一次内存排查事故的完整记录——**前三版数据全错**，真正的根因是一个已卸载软件在 Machine 级环境变量里残留的 `WEBVIEW2_USER_DATA_FOLDER`，它让本机所有 WebView2 应用共用同一 profile 与同一 BROWSER 进程（连带共享 localStorage，比内存串台更严重）。同时记下四次误判的根源与六条测量纪律（归属用父进程链、口径用专用工作集、先确认窗口真可见等）。
 
