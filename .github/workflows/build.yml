@@ -286,6 +286,31 @@ jobs:
           sample "显示窗口后（webview 已创建）"
           echo "显示后窗口数 = $(wins)   # 预期 1，这条就是 single-instance 活了的硬证据"
 
+      # 验证 generate-updater-json.mjs 真的能从 mac 产物生成 darwin-aarch64 条目。
+      # 之前它只认 bundle/nsis，所以 mac 自动更新一直是**完全不通**的（客户端找不到
+      # 自己的平台 key 就永远检测不到更新，而且不报错）。这一步把它钉住。
+      - name: updater.json 生成（验 darwin-aarch64 条目）
+        continue-on-error: true
+        run: |
+          set +e
+          echo "::group::只有 mac 产物时"
+          npm run updater:generate 2>&1 | tail -30
+          echo "::endgroup::"
+          echo "::group::跨 job 合并语义（模拟已有 windows 条目的 json）"
+          printf '%s' '{"version":"0.0.0","platforms":{"windows-x86_64":{"signature":"FAKE","url":"https://example.com/x.exe"}}}' > "$RUNNER_TEMP/base.json"
+          UPDATER_MERGE_INTO="$RUNNER_TEMP/base.json" UPDATER_OUTPUT_FILENAME=updater-merged.json npm run updater:generate 2>&1 | tail -30
+          echo "--- 合并结果的平台 key（应同时有 windows-x86_64 与 darwin-aarch64）---"
+          node -e "const j=require('$PWD/dist/updater-merged.json');console.log(Object.keys(j.platforms).join(', '))"
+          echo "::endgroup::"
+        working-directory: desktop
+
+      # 关键探针：AX 能不能看到 webview 内部元素。这一条结论同时决定两件事：
+      #   能否点「立即更新」（自动更新能否在 CI 真跑）、
+      #   能否点自绘标题栏的关闭按钮（N15/N8 的关窗验证能否自动化）。
+      - name: 探针 · AX 能否穿进 webview
+        continue-on-error: true
+        run: bash .github/scripts/mac-ax-probe.sh "$APP_PID"
+
       - name: 截图（托盘图标 + 主窗口实际渲染）
         continue-on-error: true
         run: |
