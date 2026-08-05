@@ -87,7 +87,58 @@ mod imp {
     use tokio::sync::mpsc;
 
     /// 非 Windows 平台无此能力：不启线程，地址变化完全交由上层 5s 轮询兜底。
+    ///
+    /// ⚠️ **对消费端的契约（别忽略）**：`_tx` 一进本函数就被 drop，所以接收端的
+    /// `recv()` 会**立即且永远**返回 `None`。消费端必须把 `None` 当作“退出”处理，
+    /// 否则它的 `loop` 会变成以 CPU 极限速度转的热循环。
+    ///
+    /// 这不是假设——`main.rs` 的消费循环曾写成 `let _ = rx.recv().await;`（丢掉 None），
+    /// 于是 **mac 用户从 v2.4.0 首个 mac 版起就是 100% 单核占用**，而且每轮还去枚举一遍网卡。
+    /// 与本文件头那个 Windows 的 WSAEFAULT 空转 bug 是同一类错误：
+    /// **把“说不清的/表示结束的返回值”当成了事件。**
     pub fn spawn(_tx: mpsc::UnboundedSender<()>) {}
 }
 
 pub use imp::spawn;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 钉住「通道已关闭」与「窗口内又来了一条」的区别。
+    ///
+    /// 为何值得一条测试：`main.rs` 的防抖窗口曾写成
+    /// `timeout(600ms, rx.recv()).await.is_ok()`——而 `timeout` 包着一个**立即完成**的
+    /// future 时返回的是 `Ok(None)`，`.is_ok()` 对它是 **true**。于是“通道已关闭”
+    /// 被误判成“还有事件”。这几条断言就是防止有人改回 `.is_ok()`。
+    #[tokio::test]
+    async fn closed_channel_is_ok_but_not_some() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        drop(tx); // 模拟非 Windows 的 spawn(_tx)：收下就丢
+
+        let r = tokio::time::timeout(Duration::from_millis(50), rx.recv()).await;
+
+        assert!(
+            r.is_ok(),
+            "通道关闭时 timeout 返回 Ok(None)，is_ok() 必为 true——这正是那个坑"
+        );
+        assert!(
+            !matches!(r, Ok(Some(()))),
+            "通道已关闭，不得被当成收到了事件"
+        );
+        assert!(matches!(r, Ok(None)), "关闭后应为 Ok(None)");
+    }
+
+    /// 非 Windows 上 `spawn` 收下 sender 就 drop——消费端必须据此退出。
+    /// 这条只在 mac / Linux 上跑（CI 的 macos-latest 作业会跑到）。
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn non_windows_spawn_closes_channel_immediately() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        spawn(tx);
+        assert!(
+            rx.recv().await.is_none(),
+            "非 Windows 的 spawn 不启线程、不持有 sender，通道必须立即关闭"
+        );
+    }
+}

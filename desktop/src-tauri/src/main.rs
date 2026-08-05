@@ -661,7 +661,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Box::pin(async move {
                         let mut alerting = false;
                         loop {
-                            let _ = rx.recv().await;
+                            // 通道关闭（recv 返回 None）说明生产端已经没了，必须退出。
+                            //
+                            // 🔴 不这么写的后果（mac 用户从 v2.4.0 起 100% 单核占用的真因）：
+                            // 非 Windows 平台上 `ip_watch::spawn` 是空实现，参数 `_tx` 一进函数就被 drop，
+                            // 于是这里的 `recv()` **立即且永远**返回 None。旧代码用 `let _ =` 把这个信号
+                            // 丢掉，而外层 loop 尾部没有任何 sleep —— 整个循环就以 CPU 极限速度转，
+                            // 而且每轮都要跑下面的 `refresh_lan_ips()`——那是真去枚举一遍网卡的系统调用。
+                            //
+                            // Windows 上 sender 由监听线程全程持有，永远走不到这个 break，行为不变。
+                            if rx.recv().await.is_none() {
+                                log::info!(
+                                    "本机地址变化事件：通道已关闭（本平台无 OS 级地址监听），\
+                                     退出该监听任务，地址变化改由上层 5s 轮询兜底"
+                                );
+                                break;
+                            }
                             // 防抖：收到首个通知后，在 600ms 窗口内合并后续连续的网络抖动
                             // （Wi-Fi 重连/VPN/DHCP 续租常一次变化伴随多条通知），只处理一次，
                             // 以最终状态为准，避免风暴式重扫网卡与托盘重绘。
@@ -672,13 +687,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // 现在最多吸 32 条就强制往下走：就算生产端再出问题，功能也不会被拖死。
                             const MAX_COALESCE: usize = 32;
                             let mut coalesced = 0usize;
+                            // 必须区分「窗口内又来了一条」与「通道已关闭」：`timeout()` 包着一个
+                            // **立即完成**的 future 时返回的是 `Ok(None)`，而 `.is_ok()` 对它是 **true**
+                            // —— 于是通道关闭会被误判成「还有事件」，瞬间吸满 32 条。
+                            // 上面的 break 已经不会再让它烧 CPU，但这是同一个认知错误，留着下一个人还会踩。
                             while coalesced < MAX_COALESCE
-                                && tokio::time::timeout(
-                                    std::time::Duration::from_millis(600),
-                                    rx.recv(),
+                                && matches!(
+                                    tokio::time::timeout(
+                                        std::time::Duration::from_millis(600),
+                                        rx.recv(),
+                                    )
+                                    .await,
+                                    Ok(Some(()))
                                 )
-                                .await
-                                .is_ok()
                             {
                                 // 窗口内仍有通知到达，继续吸收
                                 coalesced += 1;
