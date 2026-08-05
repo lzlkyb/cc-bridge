@@ -1,5 +1,6 @@
 import { Icon } from "../ui/icon";
 import { Modal } from "../ui/Modal";
+import { APP_INFO } from "../../lib/about";
 
 /** 将文本中的 **...** 转换为 <strong> 标签，其余保持纯文本。 */
 function renderBold(text: string): React.ReactNode {
@@ -217,7 +218,7 @@ export function UpdateNotesDialog({
           </div>
 
           <div className="mt-1.5 text-[13px] text-muted-foreground">
-            {update.date ? formatDate(update.date) : "CC Bridge 软件更新"}
+            {update.date ? formatDate(update.date) : `${APP_INFO.name} 软件更新`}
           </div>
 
           {update.currentVersion && (

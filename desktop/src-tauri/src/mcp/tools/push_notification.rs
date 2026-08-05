@@ -22,7 +22,7 @@ pub struct PushNotificationArgs {
 }
 
 fn default_title() -> String {
-    "cc-bridge".into()
+    crate::branding::APP_DISPLAY_NAME.into()
 }
 
 pub async fn handle(args: PushNotificationArgs, state: &Arc<AppState>) -> Result<Value, String> {

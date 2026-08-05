@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "cc-bridge",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "identifier": "com.ccbridge.desktop",
   "build": {
     "beforeDevCommand": "npm run vite:dev",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "cc-bridge",
+        "title": "CC Bridge",
         "width": 940,
         "height": 760,
         "minWidth": 560,

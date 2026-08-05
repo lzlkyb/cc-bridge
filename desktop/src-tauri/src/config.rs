@@ -3,9 +3,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::db;
 
+/// 一个白名单「配置组」（按项目切换用）。只是**存档**：当前生效的集合永远是
+/// `BridgeConfig::allowed_roots`，组不参与任何路径校验。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RootProfile {
+    pub name: String,
+    pub roots: Vec<String>,
+}
+
+/// 隐式迁移时合成的组名（老配置库升级路径）。
+pub const DEFAULT_PROFILE_NAME: &str = "默认";
+
+/// 容器级 `serde(default)` 是**兼容历史**的关键：`import_config` 直接把 JSON
+/// 反序列化成本结构体，而本结构体历史上一直在加字段。没有 default 时，
+/// 旧版本导出的配置文件（缺了后来新增的字段）导入新版本会直接报
+/// `missing field` 失败——例如 `notify_task_complete` 是后加的，那之前导出的
+/// 配置就再也导不进来。加了以后：缺的字段取默认值，老配置文件都能导入。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BridgeConfig {
     pub allowed_roots: Vec<String>,
+    /// 白名单配置组（存档）。与 `allowed_roots` 的关系：切换组 = 把该组 roots
+    /// 写进 `allowed_roots`；在当前组里增删目录则反向同步回本字段。
+    pub root_profiles: Vec<RootProfile>,
+    /// 当前组名。**仅用于 UI 展示与存档归属**，不参与任何安全判定。
+    pub active_profile: String,
     pub token: String,
     pub allowed_extensions: Vec<String>,
     pub max_file_size_bytes: u64,
@@ -83,6 +105,8 @@ impl Default for BridgeConfig {
     fn default() -> Self {
         Self {
             allowed_roots: vec![],
+            root_profiles: vec![],
+            active_profile: String::new(),
             token: String::new(),
             allowed_extensions: vec![
                 ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".json", ".py", ".java", ".go",
@@ -153,6 +177,8 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
                     .map(|r| r.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(r))
                     .collect();
             }
+            "root_profiles" => config.root_profiles = parse_or_warn(key, value, vec![]),
+            "active_profile" => config.active_profile = parse_or_warn(key, value, String::new()),
             "token" => config.token = parse_or_warn(key, value, String::new()),
             "allowed_extensions" => config.allowed_extensions = parse_or_warn(key, value, vec![]),
             "max_file_size_bytes" => {
@@ -221,7 +247,104 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
         }
     }
 
+    normalize_profiles(&mut config);
     Ok(config)
+}
+
+/// 保证 `root_profiles` / `active_profile` 自洽，并完成老配置库的**隐式迁移**：
+/// - profiles 为空（旧版升级上来，或全新安装）→ 用当前 `allowed_roots` 合成一个「默认」组；
+/// - `active_profile` 不在 profiles 里（脏数据 / 手改过库）→ 回落到第一个组。
+///
+/// **关键：不动 `allowed_roots`。** 生效集合是唯一事实源，组只是存档——所以升级
+/// 后的实际可访问范围与升级前**完全一致**，不会因为引入组而变宽或变窄。
+///
+/// 只在内存里补齐、不写库：纯读取路径不应有副作用，且重复启动幂等。
+/// 真正落库交给用户操作组的那一刻（组命令 / save_config 的反向同步）。
+pub(crate) fn normalize_profiles(config: &mut BridgeConfig) {
+    if config.root_profiles.is_empty() {
+        config.root_profiles = vec![RootProfile {
+            name: DEFAULT_PROFILE_NAME.to_string(),
+            roots: config.allowed_roots.clone(),
+        }];
+    }
+    if !config
+        .root_profiles
+        .iter()
+        .any(|p| p.name == config.active_profile)
+    {
+        config.active_profile = config.root_profiles[0].name.clone();
+    }
+}
+
+// 故意把这组测试紧贴在 `normalize_profiles` 下方（而不是文件末尾）：它们验的是
+// 上面那一个函数的兼容契约，放一起更容易跟着一同维护。
+// 为此需要关掉 items_after_test_module（该 lint 要求 test mod 必须在最后）。
+#[allow(clippy::items_after_test_module)]
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    /// 隐式迁移（兼容历史）：老配置库没有 root_profiles，必须用当前生效集合
+    /// 合成一个「默认」组，且**不能改动 allowed_roots**——升级后可访问范围
+    /// 必须与升级前完全一致（变宽是安全事故，变窄是功能事故）。
+    #[test]
+    fn migrates_legacy_config_into_default_profile() {
+        let mut c = BridgeConfig {
+            allowed_roots: vec!["C:/work".into(), "D:/proj".into()],
+            ..BridgeConfig::default()
+        };
+        normalize_profiles(&mut c);
+        assert_eq!(c.root_profiles.len(), 1);
+        assert_eq!(c.root_profiles[0].name, DEFAULT_PROFILE_NAME);
+        assert_eq!(c.root_profiles[0].roots, vec!["C:/work", "D:/proj"]);
+        assert_eq!(c.active_profile, DEFAULT_PROFILE_NAME);
+        // 生效集合原封不动
+        assert_eq!(c.allowed_roots, vec!["C:/work", "D:/proj"]);
+    }
+
+    /// active_profile 指向不存在的组（脏数据 / 手改过库）时回落到第一个组，
+    /// 不能停在悬空指针上（否则 UI 会显示一个不存在的组名）。
+    #[test]
+    fn dangling_active_profile_falls_back() {
+        let mut c = BridgeConfig {
+            root_profiles: vec![
+                RootProfile { name: "A".into(), roots: vec![] },
+                RootProfile { name: "B".into(), roots: vec![] },
+            ],
+            active_profile: "已被删除的组".into(),
+            ..BridgeConfig::default()
+        };
+        normalize_profiles(&mut c);
+        assert_eq!(c.active_profile, "A");
+    }
+
+    /// 已有组时不得重复合成（幂等）：否则每次启动都会多出一个「默认」组。
+    #[test]
+    fn normalize_is_idempotent() {
+        let mut c = BridgeConfig {
+            root_profiles: vec![RootProfile { name: "X".into(), roots: vec!["/a".into()] }],
+            active_profile: "X".into(),
+            ..BridgeConfig::default()
+        };
+        normalize_profiles(&mut c);
+        normalize_profiles(&mut c);
+        assert_eq!(c.root_profiles.len(), 1);
+        assert_eq!(c.active_profile, "X");
+    }
+
+    /// 兼容历史的关键一条：**旧版本导出的配置文件（大量字段缺失）必须能导入**。
+    /// 这靠的是 BridgeConfig 容器级 `#[serde(default)]`；没有它时这里会报
+    /// `missing field`——而那正是本次一并修掉的既有缺陷。
+    #[test]
+    fn legacy_export_without_new_fields_still_imports() {
+        let legacy = r#"{"allowed_roots":["C:/old"],"token":"t","port":7823}"#;
+        let c: BridgeConfig = serde_json::from_str(legacy).expect("老配置文件必须能导入");
+        assert_eq!(c.allowed_roots, vec!["C:/old"]);
+        assert_eq!(c.port, 7823);
+        // 缺的字段取默认值，而不是报错
+        assert!(c.root_profiles.is_empty());
+        assert!(c.whitelist_enabled, "whitelist_enabled 默认应为 true（安全默认）");
+    }
 }
 
 pub fn save_config_field(
@@ -358,6 +481,16 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         conn,
         "notify_command_complete",
         &to_value(config.notify_command_complete).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "root_profiles",
+        &to_value(&config.root_profiles).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "active_profile",
+        &to_value(&config.active_profile).unwrap(),
     )?;
     save_config_field(
         conn,

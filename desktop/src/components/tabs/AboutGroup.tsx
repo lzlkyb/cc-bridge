@@ -68,8 +68,25 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
     });
   }, []);
 
-  // 外部信号（点设置 tab 红点 / 进设置页有未读）→ 自动展开更新历史
+  // 外部信号（点设置 tab 红点 / 进设置页有未读）→ 自动展开更新历史。
+  //
+  // 必须比对「上次处理过的 token」而不能只判 `> 0`：React effect **在挂载时必然
+  // 执行一次**，不管依赖值有没变；而 SettingsTab 是 lazy + TabsContent，切走就卸载。
+  // 于是只要 token 停在 >0，**每次从其它 tab 切回来都会自动展开**。
+  //
+  // 为何 token 会永久停在 >0（两个各自正确的修复叠加出的第三个 bug）：
+  //   1. 首次带红点进设置页 → token+1，同时 App.tsx 的 markSeenOnEnter() 写 lastSeen
+  //      → unreadCount 立刻变 0；
+  //   2. 负责把 token 归零的 markChangelogSeen 由下方那个 effect 触发，条件是
+  //      `expanded && unreadCount > 0`——unreadCount 已经是 0，它再也不会被调用；
+  //   3. token 永久停在 1。
+  // 用「值 > 0」当一次性信号，就要求每条消费路径都记得归零，漏一条就复发
+  // （已经漏了两次）。比对 ref 后，挂载天然是 no-op，谁忘了归零也不会再复发。
+  const handledTokenRef = useRef(changelogOpenToken);
   useEffect(() => {
+    // 首次挂载（ref 初值 = 当前 token）或 token 未变 → 不动。
+    if (changelogOpenToken === handledTokenRef.current) return;
+    handledTokenRef.current = changelogOpenToken;
     if (changelogOpenToken && changelogOpenToken > 0) openChangelog();
   }, [changelogOpenToken, openChangelog]);
 
@@ -91,7 +108,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 
   return (
     <>
-      <Card className="about-card overflow-hidden">
+      <Card id="set-about" className="about-card overflow-hidden">
         {/* ═══ 收起态头部（始终可见） ═══ */}
         <button
           type="button"
@@ -260,7 +277,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 
             {/* Footer */}
             <div className="about-footer flex items-center justify-between divider-x-top px-[22px] py-2.5">
-              <span className="text-[10px] text-muted-foreground">© 2026 CC Bridge · MIT License · by {APP_INFO.author}</span>
+              <span className="text-[10px] text-muted-foreground">© 2026 {APP_INFO.name} · MIT License · by {APP_INFO.author}</span>
             </div>
           </div>
         )}
@@ -299,7 +316,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
             {/* 正文 */}
             <div className="modal-body text-[13px] leading-relaxed text-muted-foreground">
               <p className="mb-3.5">
-                CC Bridge 是一款轻量级桌面应用，基于 <strong className="text-foreground">Tauri 2 + Rust</strong> 构建。
+                {APP_INFO.name} 是一款轻量级桌面应用，基于 <strong className="text-foreground">Tauri 2 + Rust</strong> 构建。
                 它为 AI 编程助手提供标准的 MCP（Model Context Protocol）本地文件系统桥接服务，
                 让 AI 能够安全地读写文件、搜索内容、执行命令。
               </p>

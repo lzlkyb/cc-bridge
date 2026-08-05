@@ -5,7 +5,7 @@
 [![Star 数](https://img.shields.io/github/stars/lzlkyb/cc-bridge)](https://github.com/lzlkyb/cc-bridge/stargazers)
 [![下载量](https://img.shields.io/github/downloads/lzlkyb/cc-bridge/total)](https://github.com/lzlkyb/cc-bridge/releases)
 
-> 你在本地 Windows 写代码，Claude Code 跑在远程 Linux？别再 scp 来回倒腾文件了——装个 cc-bridge，让远端的 Claude Code 像在本地一样直接读、写、搜你的文件，全程有白名单、审计日志、还能一键还原。安装包只有 **3.4MB**。
+> 你在本地 Windows / macOS 写代码，Claude Code 跑在远程 Linux？别再 scp 来回倒腾文件了——装个 cc-bridge，让远端的 Claude Code 像在本地一样直接读、写、搜你的文件，全程有白名单、审计日志、还能一键还原。安装包 **4.5MB**（Windows）/ **5.7MB**（macOS）。
 
 ### 界面一览
 
@@ -17,11 +17,11 @@
 
 ## 这是什么
 
-**cc-bridge** 是一个运行在本地 Windows 开发机上的 MCP（Model Context Protocol）文件桥接服务，以原生桌面应用形式运行（Tauri 2）。远程 Claude Code 通过 `claude mcp add --transport http` 接入后，可直接操作本地文件系统——不再需要 scp 传文件或 SSHFS 挂载。
+**cc-bridge** 是一个运行在本地开发机上的 MCP（Model Context Protocol）文件桥接服务，以原生桌面应用形式运行（Tauri 2）。**支持 Windows 10/11 与 macOS（Apple Silicon）**，同一套 Rust 代码，两个平台功能一致（防火墙一键放行等 Windows 专属功能除外，详见 [已知差异](#已知差异与-windows-版相比)）。远程 Claude Code 通过 `claude mcp add --transport http` 接入后，可直接操作本地文件系统——不再需要 scp 传文件或 SSHFS 挂载。
 
 ## 背景 / 解决的问题
 
-团队在本地 Windows 写代码，Claude Code 部署在远程 Linux 上。原来的痛点：
+团队在本地（Windows / macOS）写代码，Claude Code 部署在远程 Linux 上。原来的痛点：
 
 1. **文件传输效率低**：每次改动都要 scp，大文件慢，容易版本混乱。
 2. **SSHFS 不稳定**：网络一断挂载点卡死，终端被阻塞。
@@ -30,9 +30,21 @@
 
 ## 快速开始（约 1 分钟）
 
-1. **下载安装**：到 [Releases](https://github.com/lzlkyb/cc-bridge/releases) 下载 `cc-bridge_x.x.x_x64-setup.exe`（国内用户建议走 Gitee 镜像，下载更快），双击安装并启动。
-   > **macOS 用户**：下载 `cc-bridge_x.x.x_aarch64-apple-darwin.zip`（仅 Apple Silicon），
-   > 首次打开可能被系统拦下——见下方 [macOS 安装与更新说明](#macos-安装与更新说明)。
+1. **下载安装**：到 [Releases](https://github.com/lzlkyb/cc-bridge/releases) 按你的系统选一个：
+
+   | 系统 | 下载 | 安装 |
+   |---|---|---|
+   | **Windows 10/11** | `cc-bridge_x.x.x_x64-setup.exe` | 双击安装并启动 |
+   | **macOS**（Apple Silicon） | `cc-bridge_x.x.x_aarch64-apple-darwin.zip` | 解压后拖进「应用程序」；首次打开会被系统拦下，先看 [macOS 安装与更新说明](#macos-安装与更新说明) |
+
+   > **国内用户**：GitHub 下载慢的话走 Gitee 镜像
+   > [gitee.com/lzul/cc-bridge 的 releases 分支](https://gitee.com/lzul/cc-bridge/tree/releases/latest)（发版时由 CI 自动同步到 `latest/` 目录）。
+   > 注意那里只有 Windows 的 `.exe` 与 mac 的 `.app.tar.gz`（自动更新用的包，解开也能用），
+   > **没有** mac 的 `.zip`——mac 首次安装请从 GitHub Releases 拿。
+   > 安装后的**自动更新**也是 Gitee 优先，失败才退回 ghproxy / GitHub，无需手动配置。
+
+   > 暂无 Intel Mac（x86_64）和 Linux 构建。
+
 2. **开放目录**：打开「安全」页 → 点「浏览」把你的工作目录加进白名单（默认拒绝一切访问，安全优先）。
 3. **复制连接命令**：切到「连接」页，复制给出的 `claude mcp add ...` 命令。
 4. **远端接入**：粘贴到远程 Linux 终端执行，Claude Code 立刻就能读写你本机的文件了。
@@ -45,11 +57,11 @@
 远程 Linux 服务器（Claude Code）
         │  MCP 协议 / Streamable HTTP（同一内网/VPN 直连）
         ▼
-本地 Windows 开发机
+本地开发机（Windows / macOS）
         │
-        └─ cc-bridge.exe ── 单进程 Tauri 2 桌面应用
+        └─ cc-bridge.exe / cc-bridge.app ── 单进程 Tauri 2 桌面应用
               │
-              ├─ 嵌入式 axum HTTP 服务器 ── MCP JSON-RPC 协议 + 17 个文件工具
+              ├─ 嵌入式 axum HTTP 服务器 ── MCP JSON-RPC 协议 + 18 个工具
               │                             + 安全校验 + 自动备份 + 限流 + 审计
               │
               ├─ SQLite 配置存储 ── 原子更新，无竞态
@@ -58,7 +70,8 @@
 ```
 
 **关键架构决策**：
-- **纯 Rust 后端**编译进 Tauri 二进制，不再有 Node.js sidecar（安装包 3.4MB，二进制 14MB）
+- **纯 Rust 后端**编译进 Tauri 二进制，不再有 Node.js sidecar（安装包 4.5MB / mac zip 5.7MB）
+- **单一代码库跑两个平台**：平台差异用 `cfg(windows)` / `cfg(target_os = "macos")` 在 Rust 侧切开，前端按后端下发的平台信息隐藏不适用的开关，CI 在 windows-latest 与 macos-latest 上各跑一遍 clippy + 测试
 - **axum 嵌入 Tauri 进程**：对外暴露 HTTP 端口供远程 Claude Code 连接
 - **前端走 Tauri IPC**：不走 HTTP，token 只用于远程认证
 - **SQLite 替换 config.json**：原子更新，无 read-modify-write 竞态
@@ -69,7 +82,7 @@
 ### 启动流程
 
 ```
-用户双击 cc-bridge.exe
+用户双击 cc-bridge.exe / 打开 cc-bridge.app
         │
         ▼
   tauri::Builder
@@ -105,9 +118,9 @@ cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
 
 ```
 ┌─────────────────────┐                 ┌──────────────────────────────────┐
-│  远程 Linux 服务器    │                 │   本地 Windows                   │
+│  远程 Linux 服务器    │                 │   本地 Windows / macOS           │
 │                     │                 │                                  │
-│  Claude Code        │   HTTP / TCP    │   cc-bridge.exe (单进程)          │
+│  Claude Code        │   HTTP / TCP    │   cc-bridge (单进程)              │
 │  (MCP 客户端)       │────────────────▶│                                  │
 │                     │   内网:7823     │   ┌─ axum HTTP 服务器 ─┐         │
 │  通过 MCP 协议       │                 │   │  POST /mcp         │         │
@@ -269,7 +282,7 @@ Claude Code 对话中触发工具调用:
 
 ## 功能清单
 
-### 17 个 MCP 工具（远程 Claude Code 直接调用）
+### 18 个 MCP 工具（远程 Claude Code 直接调用）
 
 | 工具 | 作用 |
 |---|---|
@@ -287,9 +300,10 @@ Claude Code 对话中触发工具调用:
 | `search_files` | 按文件名 glob + 内容关键字/正则全文搜索 |
 | `batch` | 一次往返批量执行多个工具调用，把 N 次网络往返合并为 1 次（远程链路最大延迟优化）；每个子操作复用同样的白名单 / 只读校验；非事务，出错即停但不回滚已完成写入 |
 | `analyze_file` | 编码检测 + 语言识别 + 函数/类数量启发式估算 |
-| `run_command` | 执行 Shell 命令（`cmd /C`），前台等待结果或 `background=true` 后台运行；**默认关闭**，需在『安全』页开启「命令执行」开关（等同于授予远程任意代码执行权限），只读模式下无条件禁止；整树 taskkill 终止子进程 |
+| `run_command` | 执行 Shell 命令（壳层按平台与配置：Windows = `cmd /C` 或 Git Bash，macOS = `sh` / `bash`），前台等待结果或 `background=true` 后台运行；**默认关闭**，需在『安全』页开启「命令执行」开关（等同于授予远程任意代码执行权限），只读模式下无条件禁止 |
 | `get_command_output` | 增量拉取后台命令的 stdout/stderr（按偏移量），附带是否已结束、退出码 |
-| `stop_command` | 强制终止一个后台命令的整个进程树，并从注册表移除 |
+| `stop_command` | 强制终止一个后台命令的整个进程树（Windows = TerminateJobObject，macOS = 向整个 POSIX 进程组发 SIGKILL，孙进程一并死），并从注册表移除 |
+| `push_notification` | 向本机推桌面通知（Windows = 系统 toast，macOS = 通知中心），让远程 Claude Code 干完活能主动叫你；编译期 `notifications` feature 关闭时不注册 |
 
 ### 安全机制
 
@@ -339,7 +353,7 @@ Claude Code 对话中触发工具调用:
 
 | 层 | 技术 |
 |---|---|
-| 桌面框架 | Tauri 2（系统 WebView2） |
+| 桌面框架 | Tauri 2（用系统 WebView：Windows = WebView2 / macOS = WKWebView） |
 | 后端语言 | Rust |
 | HTTP 服务器 | axum 0.8 + tower-http |
 | 异步运行时 | tokio |
@@ -350,7 +364,8 @@ Claude Code 对话中触发工具调用:
 | 构建工具 | Vite 6 |
 | 样式 | TailwindCSS 4 + shadcn/ui 设计语言（手写基础组件） |
 | 数据获取 | TanStack Query 5（5s 轮询） |
-| 打包 | NSIS 安装包 |
+| 打包 | Windows：NSIS 安装包；macOS：`.app` + `ditto` 打的 zip |
+| 平台 | Windows 10/11、macOS（Apple Silicon） |
 
 ## 目录结构
 
@@ -398,7 +413,7 @@ cc-bridge/
             ├── commands.rs             # #[tauri::command] IPC 接口（含开机自启）
             ├── backup.rs               # 文件备份 + 自动清理
             ├── audit.rs                # JSONL 审计日志
-            ├── browse.rs               # 全盘目录浏览（Windows 盘符枚举）
+            ├── browse.rs               # 全盘目录浏览（Windows 枚举盘符 / macOS 从 / 起）
             ├── network.rs              # LAN IP 检测 + connect 命令
             ├── security/               # 安全模块
             │   ├── mod.rs
@@ -447,7 +462,7 @@ npm install
 npm run build     # cargo tauri build → 产出 NSIS 安装包
 ```
 
-产出路径：`src-tauri/target/release/bundle/nsis/cc-bridge_2.2.2_x64-setup.exe`（约 3.4MB）
+产出路径：`src-tauri/target/release/bundle/nsis/cc-bridge_<版本>_x64-setup.exe`（v2.4.0 为 4.48MB）
 
 **macOS**：
 
@@ -550,11 +565,12 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 
 ## 已知限制
 
+- **平台**：仅 Windows 10/11 与 macOS（Apple Silicon）；没有 Intel Mac（x86_64）和 Linux 构建。mac 版的差异见 [已知差异](#已知差异与-windows-版相比)。
 - 只支持同一内网/VPN 直连，没做公网穿透。
 - `analyze_file` 的函数/类计数是正则启发式估算，不是语法解析。
 - `delete_files` 只删单个文件，不支持删目录（安全设计）。
-- MCP 协议实现为手动 JSON-RPC dispatch（非 rmcp SDK 宏），不支持 SSE 流式传输和协议协商。
-- `run_command` 无跨调用持久化 shell 会话，`cd`/环境变量不会保留到下一次调用，必须每次显式传绝对 `cwd`。
+- MCP 协议实现为手动 JSON-RPC dispatch（非 rmcp SDK 宏），不做协议协商。
+- `run_command` 的跨调用 shell 会话持久化（拿 `sessionId` 带住 `cwd` + 环境变量）**默认关闭**，不开时必须每次显式传绝对 `cwd`。
 - 后台命令（`run_command(background=true)`）注册表 v1 无自动回收：命令结束后 handle 仍占位，需显式 `stop_command` 移除，或等并发上限（5个）触发拒绝新建后再清理。
 - `run_command` 前台模式超时后仍会强杀命令（不会自动转后台继续跑）；但超时前已产生的输出会连同 `timedOut: true` 一起返回（默认超时 120s）。长任务请用 `background: true`。
 
@@ -562,6 +578,7 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 
 | 版本 | 变更 |
 |---|---|
+| v2.4.1 | 白名单可按项目存多套目录并一键切换；备份可在面板里手动清理（按时间/体积、删前预览、默认保底留最近一份）；设置页重排为十张主题卡且设置项可搜；修复「删除早于 N 天」误删备份、「关窗时释放界面内存」未生效、托盘左键弹右键菜单；统一应用名与 macOS 图标 |
 | v2.4.0 | 新增 macOS（Apple Silicon）支持：可安装、可自动更新，功能与 Windows 版一致（防火墙相关功能除外）；界面文案与可用功能按平台适配；修正 mac 上「打开备份目录」与「安装位置」；危险命令拦截补上 mac 三类毁灭性目标 |
 | v2.3.20 | 修复长期占满一个 CPU 核心的后台线程（并让「IP 变化提示」恢复生效）；窗口收进托盘后暂停全部轮询与常驻动画；数据库日志文件从 4MB 收到 0；命令超时不再丢弃已产出输出且默认超时放宽到 2 分钟；修复三个此前传了不生效的工具参数 |
 | v2.3.19 | 新增 Windows 防火墙一键放行；命令拦截升级为语法感知分析；日志分页内滚、连接页纯 CSS 动态表达 |

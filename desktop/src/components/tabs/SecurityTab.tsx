@@ -2,6 +2,8 @@ import { useState } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
+import { RootProfilePill } from "./RootProfilePill";
+import { RootProfilePanel } from "./RootProfilePanel";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
@@ -25,6 +27,9 @@ export function SecurityTab({
   const [browserOpen, setBrowserOpen] = useState(false);
   const [rootSearch, setRootSearch] = useState("");
   const [pendingRemoveRoot, setPendingRemoveRoot] = useState<string | null>(null);
+  // 配置组是否展开。放在这一层而不是组件内部：胶囊在 CardHeader、面板在 CardContent，
+  // 不在同一 DOM 位置，这是两者唯一需要共享的状态（面板自己那堆状态仍在面板里）。
+  const [profileOpen, setProfileOpen] = useState(false);
   const { toast } = useToast();
   // 白名单列表增删/筛选时 FLIP 平滑进出场与位移（动画质感升级；减弱动效时自动关闭）。
   const listParent = useAutoAnimateRM<HTMLDivElement>();
@@ -67,7 +72,6 @@ export function SecurityTab({
 
       <RunningCommandsCard danger={status?.shellEnabled ?? false} />
 
-      <div className="sec-grid">
       <Card>
         <CardHeader className="flex-row items-center justify-between space-y-0 gap-3 flex-wrap">
           <div className="flex items-center gap-2">
@@ -83,6 +87,17 @@ export function SecurityTab({
                 {status.whitelistEnabled ? "校验已开启" : "校验已关闭"}
               </span>
             )}
+            {/* 配置组胶囊（按项目切换白名单）。放标题行而不是卡内通栏一条：
+                那条常驻占 48px + 12px 间距，而标题行右侧大多数时间是空的
+                （搜索框只在目录 > 3 时才渲染）。详见设计稿方案 B。 */}
+            {status && (
+              <RootProfilePill
+                profiles={status.rootProfiles ?? []}
+                active={status.activeProfile ?? ""}
+                open={profileOpen}
+                onToggle={() => setProfileOpen((v) => !v)}
+              />
+            )}
           </div>
           {status && status.allowedRoots.length > 3 && (
             <div className="flex items-center gap-1.5 h-8 rounded-md border border-input bg-background px-2">
@@ -97,6 +112,17 @@ export function SecurityTab({
           )}
         </CardHeader>
         <CardContent className="space-y-3">
+          {/* 配置组展开面板，由标题行的胶囊控制。组只是存档，当前生效的仍是下方列出的
+              allowedRoots；在本组里增删目录会由后端反向同步回该组存档。
+              注意不给它加 margin：CardContent 的 space-y-3 会给后一个兄弟节点上 mt-3。 */}
+          {status && profileOpen && (
+            <RootProfilePanel
+              profiles={status.rootProfiles ?? []}
+              active={status.activeProfile ?? ""}
+              onChanged={onSaved}
+              onClose={() => setProfileOpen(false)}
+            />
+          )}
           {status?.allowedRoots.length === 0 && (
             <div className="relative flex flex-col items-center gap-2 py-6">
               <Icon name="folder" size={72} className="absolute opacity-[0.06] pointer-events-none" />
@@ -146,8 +172,7 @@ export function SecurityTab({
         </CardContent>
       </Card>
 
-        <CommandAllowlistCard status={status} onSaved={onSaved} />
-      </div>
+      <CommandAllowlistCard status={status} onSaved={onSaved} />
 
       <FileControlCard status={status} onSaved={onSaved} />
 

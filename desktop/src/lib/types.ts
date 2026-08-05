@@ -77,6 +77,13 @@ export interface StatusResponse {
   /** 防火墙探测是否可用。false = 后端启动探测发现 netsh 异常，此后停用查询以避免反复弹系统错误框。
    *  由后端启动时写入（state.firewall_available，默认 true）。undefined/null = 未确定，按可用处理。 */
   firewallAvailable?: boolean | null;
+  /**
+   * 白名单配置组（存档）与当前组名，用于「按项目切换白名单」。
+   * **不参与安全判定**——当前生效的集合永远是上面的 `allowedRoots`，
+   * 组只是存档（后端同一取舍，见 config.rs 的 RootProfile）。
+   */
+  rootProfiles: RootProfile[];
+  activeProfile: string;
   /** Layer 2 命令白名单开关（opt-in，④P0-1）。默认关闭。开启后 run_command 子命令首 token 须在白名单内。 */
   commandAllowlistEnabled: boolean;
   /** Layer 2 命令白名单程序列表（大小写不敏感 basename 匹配）。 */
@@ -117,6 +124,12 @@ export type LiveStatus = Pick<StatusResponse, "uptimeSeconds" | "stats">;
  * memo 才真正生效（参见「功能优化清单.md」M14）。
  */
 export type StaticStatus = Omit<StatusResponse, "uptimeSeconds" | "stats">;
+
+/** 一个白名单配置组（按项目切换用）。与后端 `config.rs` 的 `RootProfile` 一一对应。 */
+export interface RootProfile {
+  name: string;
+  roots: string[];
+}
 
 /* ─── 防火墙结构化诊断（get_firewall_diagnosis）─── */
 
@@ -292,6 +305,32 @@ export interface BackupListResult {
   count: number;
   totalBytes: number;
   groups: BackupGroupInfo[];
+}
+
+/** preview_backup_cleanup 返回：给条件算出的清理计划统计（无副作用）。 */
+export interface BackupCleanupPreview {
+  /** 待删份数 */
+  count: number;
+  freedBytes: number;
+  totalBytesBefore: number;
+  totalCountBefore: number;
+  /** 执行后将不再有任何备份的原文件（预览里那行红字要列出来） */
+  filesLosingAll: string[];
+  /**
+   * 待删备份的完整路径清单，确认时**原样回传**给 `cleanup_backups`。
+   * 这是「预览 == 执行」的实现方式：后端只删这份清单，不重新按条件算。
+   */
+  victims: string[];
+}
+
+/** cleanup_backups / delete_backups_of_file 返回：实际执行结果。 */
+export interface BackupCleanupResult {
+  removed: number;
+  freedBytes: number;
+  /** 顺手清掉的孤儿索引行数（历史上绕过面板手删备份遗留的） */
+  healedIndexRows: number;
+  /** 删失败的份数（被占用 / 只读属性等），大于 0 时必须告知用户 */
+  failed: number;
 }
 
 export interface RunningCommandInfo {

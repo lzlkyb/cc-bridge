@@ -4,206 +4,13 @@ import type {
   BackupListResult,
   BackupFileInfo,
   FileDiffResult,
-  DiffLine,
   StaticStatus,
 } from "../../lib/types";
 import { formatRelativeTime, formatBytes } from "../../lib/utils";
 import { Icon } from "../ui/icon";
-import { useToast } from "../ui/toast";
-import { Spinner } from "../ui/Spinner";
 import { Modal } from "../ui/Modal";
-
-/** 单个 diff 的加载态缓存（含预存的 +/- 计数，避免渲染时重复 filter）。 */
-type DiffState = {
-  loading: boolean;
-  result?: FileDiffResult;
-  added?: number;
-  removed?: number;
-  error?: string;
-};
-
-/** 结果回来时预存一次 +/- 计数，渲染直接读取。 */
-function countDiff(r: FileDiffResult): { added: number; removed: number } {
-  let added = 0;
-  let removed = 0;
-  if (!r.guard) {
-    for (const l of r.lines) {
-      if (l.kind === "added") added++;
-      else if (l.kind === "removed") removed++;
-    }
-  }
-  return { added, removed };
-}
-
-type NumberedLine = DiffLine & { beforeNo: number | null; afterNo: number | null };
-
-/** 按 kind 序列推算前/后文件的行号（added 行没有 beforeNo，removed 行没有 afterNo）。
- * 后端 `get_file_diff`/`diff_backups` 返回的是整文件逐行（含未改动的 context 行），不带行号，
- * 所以前端从第 1 行开始自己推就能准确。 */
-function numberLines(lines: DiffLine[]): NumberedLine[] {
-  let before = 1;
-  let after = 1;
-  return lines.map((l) => {
-    const beforeNo = l.kind === "added" ? null : before;
-    const afterNo = l.kind === "removed" ? null : after;
-    if (l.kind !== "added") before++;
-    if (l.kind !== "removed") after++;
-    return { ...l, beforeNo, afterNo };
-  });
-}
-
-/** 变更行前后各保留多少行上下文才常驻可见，其余连续未变更行折叠。 */
-const CONTEXT_RADIUS = 2;
-
-type Segment =
-  | { kind: "visible"; lines: NumberedLine[] }
-  | { kind: "gap"; lines: NumberedLine[]; key: string };
-
-/** 把编号后的行切成“常驻可见段”与“可折叠段”：变更行前后各留 CONTEXT_RADIUS 行，
- * 其余连续未变更行折叠成一段。默认“仅看变更”模式下只渲染 visible 段 + 折叠条，
- * 完整上下文模式/单独展开某段时才渲染 gap 段里的实际内容。 */
-function buildSegments(lines: NumberedLine[]): Segment[] {
-  const n = lines.length;
-  const keep = new Array(n).fill(false);
-  for (let i = 0; i < n; i++) {
-    if (lines[i].kind !== "context") {
-      for (let j = Math.max(0, i - CONTEXT_RADIUS); j <= Math.min(n - 1, i + CONTEXT_RADIUS); j++) {
-        keep[j] = true;
-      }
-    }
-  }
-  const segments: Segment[] = [];
-  let i = 0;
-  while (i < n) {
-    if (keep[i]) {
-      const start = i;
-      while (i < n && keep[i]) i++;
-      segments.push({ kind: "visible", lines: lines.slice(start, i) });
-    } else {
-      const start = i;
-      while (i < n && !keep[i]) i++;
-      segments.push({ kind: "gap", lines: lines.slice(start, i), key: `gap-${start}` });
-    }
-  }
-  return segments;
-}
-
-function diffLineClass(kind: DiffLine["kind"]): string {
-  if (kind === "added") return "bg-success/10 text-success";
-  if (kind === "removed") return "bg-destructive/10 text-destructive";
-  return "bg-muted/40 text-foreground";
-}
-
-function DiffLineRow({ l }: { l: NumberedLine }) {
-  const sign = l.kind === "added" ? "+" : l.kind === "removed" ? "-" : " ";
-  return (
-    <div className={`flex gap-2 ${diffLineClass(l.kind)} whitespace-pre-wrap break-words px-2 py-px`}>
-      <span className="w-7 shrink-0 select-none text-right text-muted-foreground/60">{l.beforeNo ?? ""}</span>
-      <span className="w-7 shrink-0 select-none text-right text-muted-foreground/60">{l.afterNo ?? ""}</span>
-      <span>{sign}{l.text}</span>
-    </div>
-  );
-}
-
-/** 红绿 diff 渲染块（懒加载、护栏、错误统一处理）。
- * 默认“仅看变更”：未改动的大段上下文折叠，可单独展开某一段，也可用顶部开关一次性展开全部上下文。 */
-function DiffView({ state, title }: { state?: DiffState; title: string }) {
-  const [fullContext, setFullContext] = useState(false);
-  const [expandedGaps, setExpandedGaps] = useState<Set<string>>(new Set());
-  const { toast } = useToast();
-
-  const numbered = useMemo(
-    () => (state?.result && !state.result.guard ? numberLines(state.result.lines) : []),
-    [state?.result],
-  );
-  const segments = useMemo(() => buildSegments(numbered), [numbered]);
-
-  const handleCopy = async () => {
-    if (!state?.result || state.result.guard) return;
-    const text = state.result.lines
-      .map((l) => `${l.kind === "added" ? "+" : l.kind === "removed" ? "-" : " "}${l.text}`)
-      .join("\n");
-    try {
-      await navigator.clipboard.writeText(text);
-      toast("已复制 diff 到剪贴板", "success");
-    } catch (e) {
-      toast(`复制失败：${String(e)}`, "error");
-    }
-  };
-
-  return (
-    <div className="mt-2">
-      <div className="mb-1 text-[11px] font-semibold text-muted-foreground">{title}</div>
-      <div className="overflow-hidden rounded-lg border border-border font-mono text-[11.5px]">
-        {state?.loading && (
-          <div className="flex items-center gap-2 bg-muted/30 p-2 text-muted-foreground">
-            <Spinner size={14} /> 加载中…
-          </div>
-        )}
-        {state?.error && (
-          <div className="break-all bg-destructive/10 p-2 text-destructive">加载失败：{state.error}</div>
-        )}
-        {state?.result && state.result.guard && (
-          <div className="bg-muted p-2 text-muted-foreground">
-            {state.result.guard}
-            <span className="ml-1 font-sans">（{state.result.beforeLines} 行 → {state.result.afterLines} 行）</span>
-          </div>
-        )}
-        {state?.result && !state.result.guard && (
-          <>
-            <div className="flex items-center gap-2 divider-x bg-muted/20 px-2 py-1.5 font-sans">
-              {(state.added || state.removed) ? (
-                <span className="flex gap-1.5 text-[11px]">
-                  {state.added ? <span className="text-success">+{state.added}</span> : null}
-                  {state.removed ? <span className="text-destructive">−{state.removed}</span> : null}
-                </span>
-              ) : null}
-              <div className="ml-auto flex overflow-hidden rounded-md border border-border">
-                <button
-                  type="button"
-                  onClick={() => setFullContext(false)}
-                  className={`px-2 py-0.5 text-[10.5px] transition-colors ${!fullContext ? "bg-primary text-white" : "bg-card text-muted-foreground hover:bg-muted"}`}
-                >
-                  仅看变更
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFullContext(true)}
-                  className={`px-2 py-0.5 text-[10.5px] transition-colors ${fullContext ? "bg-primary text-white" : "bg-card text-muted-foreground hover:bg-muted"}`}
-                >
-                  完整上下文
-                </button>
-              </div>
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="rounded-md border border-border bg-card px-2 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-muted"
-              >
-                复制
-              </button>
-            </div>
-            <div className="max-h-80 overflow-auto">
-              {segments.map((seg, si) =>
-                seg.kind === "visible" || fullContext || expandedGaps.has(seg.key) ? (
-                  seg.lines.map((l, li) => <DiffLineRow key={`${si}-${li}`} l={l} />)
-                ) : (
-                  <button
-                    key={seg.key}
-                    type="button"
-                    onClick={() => setExpandedGaps((prev) => new Set(prev).add(seg.key))}
-                    className="flex w-full items-center justify-center bg-transparent px-2 py-1 font-sans text-[11px] text-muted-foreground transition-colors hover:bg-muted/30"
-                  >
-                    ⋯ 还有 {seg.lines.length} 行未变更，点击展开 ⋯
-                  </button>
-                ),
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+import { BackupDeleteConfirm, type BackupDeleteTarget } from "./BackupDeleteConfirm";
+import { DiffView, type DiffState, countDiff } from "./DiffView";
 
 /** 查看类操作（看改了什么/与上一版比）用蓝色，与不可逆的“还原”做视觉分级，避免手滑点错。 */
 const VIEW_BTN_CLASS =
@@ -228,6 +35,7 @@ export function VersionHistoryModal({
   loading,
   onClose,
   onRestore,
+  onDeleted,
 }: {
   open: boolean;
   status?: StaticStatus;
@@ -235,6 +43,8 @@ export function VersionHistoryModal({
   loading: boolean;
   onClose: () => void;
   onRestore: (entry: BackupFileInfo) => void;
+  /** 删掉备份后通知调用方刷新统计并失效备份列表缓存。 */
+  onDeleted: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<"recent" | "name">("recent");
@@ -244,6 +54,7 @@ export function VersionHistoryModal({
   const [openSet, setOpenSet] = useState<Set<string>>(new Set());
   const [curState, setCurState] = useState<Record<string, DiffState>>({});
   const [adjState, setAdjState] = useState<Record<string, DiffState>>({});
+  const [delTarget, setDelTarget] = useState<BackupDeleteTarget | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -267,6 +78,9 @@ export function VersionHistoryModal({
       setOpenSet(new Set());
       setCurState({});
       setAdjState({});
+      // 必须一并清：否则开着确认框时关掉本弹框，下次打开会自己弹出上次那个
+      // 删除确认，而且指向的可能是已不存在的路径。
+      setDelTarget(null);
     }
   }, [open]);
 
@@ -498,22 +312,44 @@ export function VersionHistoryModal({
                         id={`vh-grp-${gi}`}
                         className="mb-2.5 overflow-hidden rounded-xl border border-border"
                       >
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpanded((prev) => {
-                              const n = new Set(prev);
-                              n.has(g.originalFile) ? n.delete(g.originalFile) : n.add(g.originalFile);
-                              return n;
-                            })
-                          }
-                          className="flex w-full items-center justify-between gap-2 bg-muted/50 px-3 py-2 text-left text-xs font-semibold"
-                        >
-                          <span className="truncate font-mono">{g.originalFile}</span>
-                          <span className="shrink-0 font-normal text-muted-foreground">
-                            {g.count} 份 · {formatBytes(g.totalBytes)}
-                          </span>
-                        </button>
+                        {/* 展开按钮与删除按钮平级——不能嵌套 button，所以外层改成 div。
+                            内边距给展开 button 自己带（而不是放在外层 div 上），否则那圈
+                            padding 变成点不到的死区，而原来整行连内边距都可点。 */}
+                        <div className="flex items-center bg-muted/50 pr-2 text-xs font-semibold">
+                          <button
+                            type="button"
+                            aria-expanded={expanded.has(g.originalFile)}
+                            onClick={() =>
+                              setExpanded((prev) => {
+                                const n = new Set(prev);
+                                n.has(g.originalFile)
+                                  ? n.delete(g.originalFile)
+                                  : n.add(g.originalFile);
+                                return n;
+                              })
+                            }
+                            className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-2 text-left"
+                          >
+                            <span className="truncate font-mono">{g.originalFile}</span>
+                            <span className="shrink-0 font-normal text-muted-foreground">
+                              {g.count} 份 · {formatBytes(g.totalBytes)}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            title="删除该文件的全部备份"
+                            onClick={() =>
+                              setDelTarget({
+                                kind: "group",
+                                originalFile: g.originalFile,
+                                count: g.count,
+                              })
+                            }
+                            className={`${DANGER_BTN_CLASS} ml-2 shrink-0 font-normal`}
+                          >
+                            删除全部
+                          </button>
+                        </div>
                         {expanded.has(g.originalFile) && (
                           <div className="py-2 pl-3 pr-2">
                             {/* 当前文件（终点节点） */}
@@ -598,6 +434,17 @@ export function VersionHistoryModal({
                                       >
                                         还原
                                       </button>
+                                      {/* 逐条删除只服务「精确删某一份」，批量走备份卡的「清理备份…」。 */}
+                                      <button
+                                        type="button"
+                                        title="删除这份备份"
+                                        onClick={() =>
+                                          setDelTarget({ kind: "one", backupPath: e.backupPath })
+                                        }
+                                        className={DANGER_BTN_CLASS}
+                                      >
+                                        删除
+                                      </button>
                                     </div>
                                     {!canDiff && (
                                       <p className="flex basis-full items-start gap-1 text-[10.5px] leading-snug text-warning">
@@ -661,6 +508,27 @@ export function VersionHistoryModal({
                                 与上一版比
                               </button>
                             )}
+                            {/* 还原与按文件视图保持对称：只给删除不给还原，等于让破坏性动作
+                                可达而恢复动作不可达。禁用条件与按文件视图完全一致。 */}
+                            <button
+                              type="button"
+                              disabled={!canDiff}
+                              title={canDiff ? "还原到该备份" : "禁用还原（白名单关闭 / 路径已不在白名单内 / 无索引记录的历史备份）"}
+                              onClick={() => onRestore(e)}
+                              className={DANGER_BTN_CLASS}
+                            >
+                              还原
+                            </button>
+                            <button
+                              type="button"
+                              title="删除这份备份"
+                              onClick={() =>
+                                setDelTarget({ kind: "one", backupPath: e.backupPath })
+                              }
+                              className={DANGER_BTN_CLASS}
+                            >
+                              删除
+                            </button>
                             {!canDiff && (
                               <p className="flex basis-full items-start gap-1 text-[10.5px] leading-snug text-warning">
                                 <Icon name="alertTriangle" size={11} className="mt-0.5 shrink-0" />
@@ -694,6 +562,14 @@ export function VersionHistoryModal({
           )}
         </div>
       </div>
+
+      {delTarget && (
+        <BackupDeleteConfirm
+          target={delTarget}
+          onCancel={() => setDelTarget(null)}
+          onDeleted={onDeleted}
+        />
+      )}
     </Modal>
   );
 }

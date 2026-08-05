@@ -10,6 +10,7 @@ import type { StaticStatus } from "../../lib/types";
 import { DirectoryBrowser } from "./DirectoryBrowser";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { shortcutLabel } from "../../lib/platform";
+import { SETTING_SEARCH_ITEMS } from "../../lib/settingsSearch";
 
 interface CommandItem {
   id: string;
@@ -18,6 +19,18 @@ interface CommandItem {
   group: string;
   shortcut?: string;
   tab?: string;
+  /**
+   * 跳转后要定位+高亮的锚点。与 Header 安全徽章同一套机制（`highlightAnchor`）：
+   * 开关类传裸名（`shell` → `toggle-shell`），卡级传完整 id（`set-network`）。
+   */
+  anchor?: string;
+  /**
+   * 额外搜索词（不展示，只参与匹配）。
+   *
+   * 为何需要：用户想到的词往往不是标题——搜「rce」找命令执行、搜「GBK」找编码自适应。
+   * 只比标题的搜索等于只能搜你已经知道的名字。
+   */
+  keywords?: string;
   run?: () => void | Promise<void>;
   /** H1 修复：不可逆/高风险操作，需先过 ConfirmDialog 而不是直接 invoke（对齐 LogTab/TokenManager 已有确认弹窗）。 */
   confirmTitle?: string;
@@ -32,7 +45,8 @@ export function CommandPalette({
   onReopenOnboarding,
 }: {
   onClose: () => void;
-  onNavigate: (tab: string) => void;
+  /** 第二个参数传锚点（App.handleNavigate 本来就支持，只是这里的类型之前没开口）。 */
+  onNavigate: (tab: string, anchor?: string) => void;
   status?: StaticStatus;
   onChanged?: () => void;
   /** H3：重新打开首次使用引导（不清除 localStorage，仅重新展示）。 */
@@ -156,12 +170,20 @@ export function CommandPalette({
     { id: "act-addroot", label: "添加允许访问的根目录", icon: "plus", group: "操作", run: () => setShowDirBrowser(true) },
     { id: "act-onboarding", label: "重新查看使用引导", icon: "info", group: "操作", run: () => onReopenOnboarding?.() },
     { id: "act-theme", label: isDark ? "切换到浅色主题" : "切换到深色主题", icon: isDark ? "sun" : "moon", group: "外观", run: toggleTheme },
+    // 设置项索引（纯数据，见 lib/settingsSearch.ts）。只跳转、不代操——原因写在那个文件里。
+    ...SETTING_SEARCH_ITEMS,
   ], [running, isDark, platform, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding]);
 
   const filtered = (() => {
     const q = query.trim().toLowerCase();
     if (!q) return items;
-    return items.filter((c) => c.label.toLowerCase().includes(q));
+    // 标题 + keywords 一起匹配（keywords 不展示）。
+    // 20 多条量级下简单 includes 就够，不上模糊匹配库。
+    return items.filter(
+      (c) =>
+        c.label.toLowerCase().includes(q) ||
+        (c.keywords ? c.keywords.toLowerCase().includes(q) : false),
+    );
   })();
 
   // 重置选中项当搜索变化
@@ -182,7 +204,7 @@ export function CommandPalette({
 
   const selectItem = async (item: CommandItem) => {
     if (item.tab) {
-      onNavigate(item.tab);
+      onNavigate(item.tab, item.anchor);
       onClose();
       return;
     }

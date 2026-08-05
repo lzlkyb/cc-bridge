@@ -621,7 +621,8 @@ body {
 /* ===================================================================
    Header 安全徽章点击 → 设置页功能开关定位高亮（P0-2 回退增强）
    用主题 primary 色做 box-shadow 脉冲，深浅主题均协调；2 秒后由
-   SettingsToggles 的 useEffect 移除 class 还原。
+   SettingsTab 的 useEffect 移除 class 还原（拆卡后 `toggle-*` 分散在安全 /
+   高级 / 通知三张卡，定位逻辑故提到页面级）。
    =================================================================== */
 .anchor-highlight {
   border-radius: 0.5rem;
@@ -1120,4 +1121,19 @@ select:focus-visible,
     transition-delay: 0ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ═══ 首帧骨架屏 → 真实界面的淡入 ═══
+   index.html 里的骨架屏被 React 替掉那一刻会有一次硬切换（骨架灰块 → 真实文字），
+   给一次很短的淡入把这个跳变磨掉。
+
+   ⚠ 静止态必须是 opacity: 1，淡入只由 keyframe 提供。
+   写成 `opacity: 0` + 动画补到 1 的话，一旦动画被禁用或冻住（减弱动效、
+   data-app-hidden），元素就永久停在透明——2026-08-03 那次整页白屏就是这么来的。 */
+.app-boot-fade {
+  animation: app-boot-fade 180ms ease-out;
+}
+@keyframes app-boot-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }

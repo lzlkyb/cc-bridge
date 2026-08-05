@@ -85,7 +85,7 @@ export function StepTest({
   return (
     <div className="space-y-4">
       <p className="text-sm leading-relaxed text-muted-foreground">
-        点下方按钮，本机直接探测 cc-bridge 服务是否就绪、令牌是否有效。这只是本机自检——若此处通过但远程连不上，通常是 VPN / 防火墙问题，请检查网络连通性。
+        点下方按钮，本机直接探测 CC Bridge 服务是否就绪、令牌是否有效。这只是本机自检——若此处通过但远程连不上，通常是 VPN / 防火墙问题，请检查网络连通性。
       </p>
 
       <Button onClick={runTest} disabled={state === "testing"} className="w-full">

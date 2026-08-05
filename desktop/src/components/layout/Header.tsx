@@ -106,7 +106,8 @@ function HeaderImpl({
     <header data-tauri-drag-region className="app-header flex shrink-0 items-center justify-between border-b px-5 py-3.5">
       <div data-tauri-drag-region className="flex items-center gap-2.5">
         <img src="/icon.png" alt={APP_INFO.name} width={40} height={40} className="shrink-0 rounded-lg" draggable={false} />
-        <h1 className="text-base font-semibold tracking-tight">CC Bridge</h1>
+        {/* 走 APP_INFO.name，不再硬编码：旁边 img 的 alt 本来就用它，两者值恰好一样而已，改常量时这里会漏 */}
+        <h1 className="text-base font-semibold tracking-tight">{APP_INFO.name}</h1>
         <UpdateBadge currentVersion={status?.version} />
 
         {/* 运行状态胶囊：启动失败=红, 运行=绿+脉冲, 停止=灰 (A3) */}

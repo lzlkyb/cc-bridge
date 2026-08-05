@@ -3,10 +3,170 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>cc-bridge</title>
+    <title>CC Bridge</title>
+    <script>
+      // 抢先定主题。主题本来是 main.tsx 里打的 class，也就是说 JS bundle 加载完
+      // 之前页面永远是浅色（窗口 backgroundColor 写死为 #F4F6F9）——深色用户每次开窗
+      // 都先挨一下白屏。同步 script 会阻塞渲染，所以不会有中间态。
+      // 与 main.tsx 里那行不冲突（重复置为同一值，幂等）。
+      try {
+        if (localStorage.getItem("theme") === "dark") {
+          document.documentElement.classList.add("dark");
+        }
+      } catch (_) {
+        /* 隐私模式下 localStorage 可能抛错，按浅色走就行 */
+      }
+    </script>
+    <style>
+      /* 首帧骨架屏（设计稿：design/开窗首帧骨架屏-设计稿.html）。
+
+         为何写在这里而不是做成 React 组件：空白的 1~2 秒正是「JS bundle 还没加载完」
+         的时间，React 组件要等 bundle 执行完才能渲染，恰好错过了需要它的那段时间。
+         写在 #root 里面则浏览器解析 HTML 就渲染；React createRoot().render() 时会
+         自然把它清掉，不需要任何手动拆除代码。
+
+         样式全部内联、不依赖 Tailwind 那份 CSS（它也是外部资源）。
+         参考尺寸取自真实布局：Header 的 px-5 py-3.5 + 40×40 图标，TabsList 的
+         px-5 pt-4 pb-3 / rounded-xl bg-secondary p-1。只画到卡片轮廓为止：真实内容
+         高度随状态变，画得越细越快过时。 */
+      :root {
+        --sk-bg: #f4f6f9;
+        --sk-card: #ffffff;
+        --sk-border: #e3e7ed;
+        --sk-block: #edf0f4;
+        --sk-sheen: rgba(255, 255, 255, 0.55);
+      }
+      :root.dark {
+        --sk-bg: #09090b;
+        --sk-card: #1e1e21;
+        --sk-border: #37373c;
+        --sk-block: #2e2e33;
+        --sk-sheen: rgba(255, 255, 255, 0.1);
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--sk-bg);
+      }
+      #root {
+        height: 100%;
+      }
+      .boot {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+      }
+      .boot-hd {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--sk-border);
+      }
+      .boot-tabs {
+        flex: none;
+        display: flex;
+        gap: 2px;
+        margin: 16px 20px 12px;
+        padding: 4px;
+        height: 40px;
+        border-radius: 12px;
+        background: var(--sk-block);
+      }
+      .boot-tab {
+        flex: 1;
+        border-radius: 8px;
+      }
+      .boot-tab.on {
+        background: var(--sk-card);
+      }
+      .boot-body {
+        padding: 0 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .boot-card {
+        border: 1px solid var(--sk-border);
+        border-radius: 12px;
+        background: var(--sk-card);
+        padding: 12px;
+      }
+      .sk {
+        border-radius: 5px;
+        background: var(--sk-block);
+      }
+      /* 流光用 background-position 平移渐变，纯合成。
+         不用 box-shadow / filter——项目里早就因为那个每帧重绘做过一轮优化。 */
+      @keyframes boot-sheen {
+        from {
+          background-position: -240px 0;
+        }
+        to {
+          background-position: calc(240px + 100%) 0;
+        }
+      }
+      .sk.live {
+        background-image: linear-gradient(
+          90deg,
+          var(--sk-block) 0%,
+          var(--sk-sheen) 50%,
+          var(--sk-block) 100%
+        );
+        background-size: 240px 100%;
+        background-repeat: no-repeat;
+        animation: boot-sheen 1.3s ease-in-out infinite;
+      }
+      /* 全局减弱动效守卫在 Tailwind CSS 里，而这段在它之外，得自己写一份。 */
+      @media (prefers-reduced-motion: reduce) {
+        .sk.live {
+          background-image: none;
+          animation: none;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- React 挂载后这整块会被自动替掉，无需手动清理 -->
+      <div class="boot" aria-hidden="true">
+        <div class="boot-hd">
+          <!-- logo 用真图而不是骨架块：它是 public/ 下的静态文件，浏览器解析到这行就能发请求，
+               不用等 JS bundle——能画的就不该拿灰块代替，看着像「应用已经在了」而不是「还在加载」。
+               外层保留 .sk 作底（注意不带 live，不流光）：万一图没加载出来，看到的还是个灰方块，
+               不会变成浏览器的破图标。旁边的应用名仍用骨架块：那是文字，字体未就绪时画出来会跳。 -->
+          <div class="sk" style="width: 40px; height: 40px; border-radius: 8px; flex: none">
+            <img src="/icon.png" alt="" width="40" height="40" style="display: block; border-radius: 8px" />
+          </div>
+          <div style="flex: 1; display: flex; flex-direction: column; gap: 6px">
+            <div class="sk live" style="width: 96px; height: 13px"></div>
+            <div class="sk live" style="width: 150px; height: 9px"></div>
+          </div>
+          <div class="sk live" style="width: 64px; height: 24px; border-radius: 12px; flex: none"></div>
+        </div>
+        <div class="boot-tabs">
+          <div class="boot-tab on"></div>
+          <div class="boot-tab"></div>
+          <div class="boot-tab"></div>
+          <div class="boot-tab"></div>
+        </div>
+        <div class="boot-body">
+          <div class="boot-card">
+            <div class="sk live" style="width: 40%; height: 10px; margin-bottom: 10px"></div>
+            <div class="sk live" style="width: 72%; height: 8px; margin-bottom: 6px"></div>
+            <div class="sk live" style="width: 55%; height: 8px"></div>
+          </div>
+          <div class="boot-card">
+            <div class="sk live" style="width: 32%; height: 10px; margin-bottom: 10px"></div>
+            <div class="sk live" style="width: 64%; height: 8px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

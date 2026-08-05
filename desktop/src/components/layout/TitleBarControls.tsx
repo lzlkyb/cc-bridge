@@ -40,8 +40,17 @@ export function TitleBarControls() {
   }, []);
 
   const close = useCallback(() => {
-    // 关闭 = 隐藏到托盘（与 CloseRequested → hide() 一致）
-    getCurrentWindow().hide().catch(() => {});
+    // 必须是 close() 而不是 hide()。
+    //
+    // 「关窗时释放界面内存」的「销毁还是仅隐藏」判断只写在后端的
+    // `CloseRequested` 里（main.rs）。hide() 不会触发那个事件，于是无论开关怎么设
+    // webview 永远不被销毁——而这个按钮是用户关窗的**主要入口**，所以那个开关
+    // 实际上是形同虚设（只有托盘左键「收起」走 w.close()，那条才真销毁）。
+    //
+    // 改成 close() 后，销毁/隐藏的判断回归到 CloseRequested 单一处，与托盘入口统一。
+    // 注意：这靠 `capabilities/default.json` 里的 `core:window:allow-close`，
+    // 没那条权限的话 IPC 会被 ACL 拦掉、按钮变成完全没反应。
+    getCurrentWindow().close().catch(() => {});
   }, []);
 
   const btnCls = "flex items-center justify-center w-8 h-8 rounded-lg transition-all hover:bg-accent hover:text-accent-foreground active:scale-95";

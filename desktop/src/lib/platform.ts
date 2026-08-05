@@ -45,7 +45,8 @@ export function shortcutLabel(platform: string | undefined, key: string): string
  *
  * 为何放在这里而不是写在组件里：
  * 1. 本文件已是「平台差异的单一判断处」，文案分叉属于同一类关注点；
- * 2. `SettingsToggles.tsx` 已经 690 行、远超项目规则的 300 行上限，不能再往里堆。
+ * 2. 文案分叉堆在组件里会把组件撑大——当初的 `SettingsToggles.tsx` 就是这么涨到
+ *    690 行的（那个文件已拆成 `tabs/settings/` 下的四张卡）。
  */
 
 /** 「命令执行壳层」一行的全部文案。 */

@@ -1,21 +1,17 @@
-import { useState, useEffect, useRef } from "react";
-import { invoke } from "../../lib/tauri";
-import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
-import { APP_INFO } from "../../lib/about";
-import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
-import { FirewallGroup } from "./firewall/FirewallGroup";
-import { Alert } from "../ui/alert";
-import { Button } from "../ui/button";
-import { Input } from "../ui/input";
-import { Icon } from "../ui/icon";
-import { useToast } from "../ui/toast";
-import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { Switch } from "../ui/switch";
-import { SettingsRow } from "../ui/SettingsRow";
-import { SettingsToggles } from "./SettingsToggles";
-import { SavedHint } from "../ui/SavedHint";
-import { AboutGroup } from "./AboutGroup";
+import { useEffect } from "react";
+import type { StaticStatus } from "../../lib/types";
 import { isWindows } from "../../lib/platform";
+import { FirewallGroup } from "./firewall/FirewallGroup";
+import { AboutGroup } from "./AboutGroup";
+import { RiskSummary } from "./settings/RiskSummary";
+import { NetworkGroup } from "./settings/NetworkGroup";
+import { SecurityGroup } from "./settings/SecurityGroup";
+import { BackupAuditGroup } from "./settings/BackupAuditGroup";
+import { NotifyGroup } from "./settings/NotifyGroup";
+import { AdvancedGroup } from "./settings/AdvancedGroup";
+import { AppGroup } from "./settings/AppGroup";
+import { InstallGroup } from "./settings/InstallGroup";
+import { ConfigGroup } from "./settings/ConfigGroup";
 
 export function SettingsTab({
   status,
@@ -37,496 +33,50 @@ export function SettingsTab({
   /** 自增信号：变化时自动展开关于卡片并滚动到更新历史。 */
   changelogOpenToken?: number;
 }) {
+  // 由 Header 安全徽章 / 命令面板触发的定位 + 高亮。
+  //
+  // 提到页面级：拆卡后 `toggle-*` 分散在安全 / 高级 / 通知三张卡里，放在某一张卡
+  // 里就只能定位到自己那几个。这里用 getElementById 全局查，与卡片归属无关。
+  // 非激活 Tab 在 Tabs 中为 return null（完全卸载），切到设置页时本组件才挂载，
+  // 子组件先于父 effect 挂载完成，所以挂载即可定位，无需额外延时。
+  useEffect(() => {
+    if (!highlightAnchor?.anchor) return;
+    // 先试 `toggle-<a>`，再回退到字面 id。
+    //
+    // 保留 `toggle-` 尝试是为了不弄坏 Header 安全徽章——它传的是裸名
+    // （`whitelist` / `readonly` / `shell`）；回退到字面 id 是为了让命令面板能
+    // 跳到卡级锚点（`set-network` 这类），否则非开关类设置只能跳到页顶。
+    const el =
+      document.getElementById(`toggle-${highlightAnchor.anchor}`) ??
+      document.getElementById(highlightAnchor.anchor);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("anchor-highlight");
+    const t = setTimeout(() => el.classList.remove("anchor-highlight"), 2000);
+    return () => clearTimeout(t);
+  }, [highlightAnchor]);
+
   return (
     <div className="space-y-4 settings-tab">
+      {/* 风险总览从原「功能开关」卡内提到页面级：它汇总的是**跨卡**风险，
+          拆卡后待在某一张卡里就不合适了。 */}
+      <RiskSummary status={status} />
+      {/* 关于卡置顶（用户指定）。在风险总览**之后**：那一条是告警横幅而非卡片，
+          把告警压到卡片下面就失去了意义。 */}
       <AboutGroup status={status} unreadCount={unreadCount} onMarkSeen={onMarkSeen} changelogOpenToken={changelogOpenToken} />
+      {/* 其余顺序按「风险 + 改动频率」排（设计稿：design/设置页布局重组-方案A-设计稿.html） */}
       <NetworkGroup status={status} onSaved={onSaved} />
       {/* 防火墙卡片仅 Windows：macOS 的防火墙是**按应用授权**而非按端口开洞，
-          且默认不拦本机监听端口的入站连接，整套 netsh 诊断/修复在那里无意义。 */}
+          且默认不拦本机监听端口的入站连接，整套 netsh 诊断/修复在那里无意义。
+          紧跟网络：两者回答的是同一个问题——远程能不能连进来。 */}
       {isWindows(status?.platform) && <FirewallGroup onRefresh={onSaved} />}
-      <SettingsToggles status={status} onSaved={onSaved} highlightAnchor={highlightAnchor} />
+      <SecurityGroup status={status} onSaved={onSaved} />
+      <BackupAuditGroup status={status} onSaved={onSaved} />
+      <NotifyGroup status={status} onSaved={onSaved} />
+      <AdvancedGroup status={status} onSaved={onSaved} />
       <AppGroup />
       <InstallGroup platform={status?.platform} onReopenOnboarding={onReopenOnboarding} />
       <ConfigGroup status={status} onSaved={onSaved} />
-      <AuditGroup status={status} onSaved={onSaved} />
     </div>
   );
 }
-
-
-/* ─── 网络 ─── */
-
-function NetworkGroup({
-  status,
-  onSaved,
-}: {
-  status?: StaticStatus;
-  onSaved: () => void;
-}) {
-  const [port, setPort] = useState(7823);
-  const [saving, setSaving] = useState(false);
-  const [restarted, setRestarted] = useState(false);
-  const { toast } = useToast();
-
-  // 仅在用户未偏离（当前输入仍等于上次同步的服务端值）时跟随服务端回填；
-  // 用户正在编辑偏离值时保留输入，避免 App 层 5s 轮询（refetchInterval）把输入框冲掉。
-  // 对比同文件 AuditGroup 用 initialized 仅首次回填，这里用「偏离检测」兼顾「外部改端口后跟随」。
-  const syncedRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!status) return;
-    const serverPort = status.port;
-    setPort((prev) => {
-      const follow = syncedRef.current === null || prev === syncedRef.current;
-      syncedRef.current = serverPort;
-      return follow ? serverPort : prev;
-    });
-  }, [status]);
-
-  const dirty = status ? port !== status.port : false;
-  // 端口范围校验：1–65535 的整数
-  const valid = Number.isInteger(port) && port >= 1 && port <= 65535;
-  const invalid = !valid;
-
-  const handleSaveAndRestart = async () => {
-    if (!valid) return;
-    setSaving(true);
-    try {
-      const result = await invoke<ConfigSaveResult>("save_config", {
-        patch: { port },
-      });
-      if (result.restartRequired) {
-        await invoke("restart_mcp_server");
-        // 防火墙联动：端口变了 → 旧端口规则残留、新端口无放行规则。主动刷新
-        // 缓存使「连接」页防火墙告警块基于新端口正确显示（未放行时提示一键开放）。
-        await invoke("refresh_firewall").catch((e) =>
-          toast(`刷新防火墙失败：${e}`, "error"),
-        );
-        setRestarted(true);
-        if (status?.firewallEnabled === true) {
-          toast(
-            "端口已更新，服务已重启。若远程无法连接，请到「连接」页为新端口开放防火墙",
-            "success",
-          );
-        } else {
-          toast("端口已更新，服务已重启", "success");
-        }
-        setTimeout(() => setRestarted(false), 3000);
-      } else {
-        toast("端口已保存", "success");
-      }
-      onSaved();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle icon={<Icon name="server" />}>网络</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {/* 端口 + 按钮 同一行（统一到 SettingsRow）*/}
-        <SettingsRow
-          label="端口"
-          last
-          control={
-            <div className="flex flex-wrap items-center gap-3">
-              <Input
-                type="number"
-                min={1}
-                max={65535}
-                value={port}
-                onChange={(e) => setPort(Number(e.target.value))}
-                className={`max-w-[120px] ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
-              />
-              <Button
-                onClick={handleSaveAndRestart}
-                disabled={!dirty || saving || invalid}
-                isLoading={saving}
-                loadingText="保存中..."
-                size="sm"
-                className="shrink-0 whitespace-nowrap"
-              >
-                {dirty ? "保存并重启" : "保存"}
-              </Button>
-              {!dirty && !restarted && <span className="text-xs text-muted-foreground whitespace-nowrap">无更改</span>}
-              {restarted && <SavedHint className="whitespace-nowrap">已保存并重启</SavedHint>}
-            </div>
-          }
-        />
-        {invalid && <p className="text-xs text-destructive">端口范围 1 – 65535</p>}
-        {status?.firewallEnabled === false && (
-          <Alert variant="warning">
-            <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-            <span>
-              <b>检测到 Windows 防火墙已关闭。</b>远程仍可连入，但本机缺少网络层防护，建议仅在可信网络下保持此状态，并尽快重新启用防火墙。
-            </span>
-          </Alert>
-        )}
-        <div className="warn-box flex items-start gap-2.5 rounded-lg p-3">
-          <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-          <p className="text-[11px] leading-relaxed">
-            <b>修改端口将重启服务</b>，已连接的客户端会短暂断开。
-          </p>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-/* ─── 应用 ─── */
-
-function AppGroup() {
-  const [autostart, setAutostart] = useState(false);
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    invoke<boolean>("get_autostart")
-      .then((v) => {
-        setAutostart(v);
-        setLoaded(true);
-      })
-      .catch(() => setLoaded(true));
-  }, []);
-
-  const toggle = async () => {
-    const next = !autostart;
-    setAutostart(next);
-    try {
-      await invoke("set_autostart", { enabled: next });
-    } catch {
-      setAutostart(!next); // revert on failure
-    }
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle icon={<Icon name="monitor" />}>应用</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <SettingsRow
-          label="开机自动启动"
-          sub={`系统登录后自动在后台启动 ${APP_INFO.name}，远程随时可连接。`}
-          last
-          control={
-            <Switch checked={autostart} disabled={!loaded} onChange={() => toggle()} ariaLabel="开机自动启动" />
-          }
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-/* ─── 安装与快捷方式 ─── */
-
-function InstallGroup({
-  platform,
-  onReopenOnboarding,
-}: {
-  /** 用于隐藏「桌面快捷方式」（仅 Windows，见下方注释）。 */
-  platform?: string;
-  onReopenOnboarding?: () => void;
-}) {
-  const { toast } = useToast();
-  const [dir, setDir] = useState("");
-  const [revealing, setRevealing] = useState(false);
-  const [creating, setCreating] = useState(false);
-
-  useEffect(() => {
-    invoke<string>("install_dir")
-      .then(setDir)
-      .catch(() => setDir(""));
-  }, []);
-
-  const handleReveal = async () => {
-    setRevealing(true);
-    try {
-      await invoke("reveal_install_dir");
-      toast("已打开安装目录", "success");
-    } catch (err) {
-      toast(`打开失败：${err}`, "error");
-    } finally {
-      setRevealing(false);
-    }
-  };
-
-  const handleCreate = async () => {
-    setCreating(true);
-    try {
-      await invoke("create_desktop_shortcut");
-      toast("已创建桌面快捷方式（已覆盖同名项）", "success");
-    } catch (err) {
-      toast(`创建失败：${err}`, "error");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle icon={<Icon name="package" />}>安装与快捷方式</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <SettingsRow
-          label="安装位置"
-          sub={<span className="block truncate" title={dir}>{dir || "—"}</span>}
-          control={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleReveal}
-              isLoading={revealing}
-              loadingText="打开中..."
-              className="gap-1.5 shrink-0"
-            >
-              <Icon name="folder" size={14} />
-              打开目录
-            </Button>
-          }
-        />
-        {/* 桌面快捷方式仅 Windows：后端靠 WScript.Shell COM 写 .lnk（靠 powershell），
-            mac 上既没有 .lnk 这回事、也没有 powershell——不隐藏的话这个按钮一点就报错。
-            mac 的入口是 Dock / 启动台，桌面本来不放应用图标。 */}
-        {isWindows(platform) && (
-        <SettingsRow
-          label="桌面快捷方式"
-          sub="误删桌面图标后可一键重建，已存在则覆盖。"
-          control={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleCreate}
-              isLoading={creating}
-              loadingText="创建中..."
-              className="gap-1.5 shrink-0"
-            >
-              <Icon name="external" size={14} />
-              创建到桌面
-            </Button>
-          }
-        />
-        )}
-        <SettingsRow
-          label="使用引导"
-          sub="重新查看首次接入的分步引导。"
-          last
-          control={
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onReopenOnboarding?.()}
-              className="gap-1.5 shrink-0"
-            >
-              <Icon name="info" size={14} />
-              重新查看
-            </Button>
-          }
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-/* ─── 配置导入/导出（C8）─── */
-
-function ConfigGroup({
-  onSaved,
-}: {
-  status?: StaticStatus;
-  onSaved: () => void;
-}) {
-  const { toast } = useToast();
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [importing, setImporting] = useState(false);
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
-
-  const handleExport = async () => {
-    try {
-      const json = await invoke<string>("export_config");
-      const blob = new Blob([json], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "cc-bridge-config.json";
-      a.click();
-      URL.revokeObjectURL(url);
-      toast("配置已导出", "success");
-    } catch (err) {
-      toast(`导出失败：${err}`, "error");
-    }
-  };
-
-  // H2 修复：选中文件不再立即导入（之前只靠静态文案提示，选中即刻覆盖全部配置并重启，一次误选
-  // 就会清空当前全部安全设置且不可撤销）：先暂存文件弹 ConfirmDialog，确认后才真正 invoke。
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setPendingFile(file);
-  };
-
-  const doImport = async (file: File) => {
-    setImporting(true);
-    try {
-      const text = await file.text();
-      await invoke<ConfigSaveResult>("import_config", { json: text });
-      toast("配置已导入并重启服务", "success");
-      onSaved();
-    } catch (err) {
-      toast(`导入失败：${err}`, "error");
-    } finally {
-      setImporting(false);
-      // 清空 input 以便再次选同一个文件
-      if (fileRef.current) fileRef.current.value = "";
-    }
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle icon={<Icon name="download" />}>配置</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <p className="text-xs text-muted-foreground">
-          导出当前配置为 JSON 文件，或导入之前导出的配置。导入会覆盖当前设置并自动重启服务。
-        </p>
-        <div className="flex items-center gap-3">
-          <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">
-            <Icon name="download" size={14} />
-            导出配置
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fileRef.current?.click()}
-            isLoading={importing}
-            loadingText="导入中..."
-            className="gap-1.5"
-          >
-            <Icon name="upload" size={14} />
-            导入配置
-          </Button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".json"
-            onChange={handleImport}
-            className="hidden"
-          />
-        </div>
-        <div className="warn-box flex items-start gap-2.5 rounded-lg p-3">
-          <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-          <p className="text-xs leading-relaxed">
-            <b>导入将覆盖所有当前配置</b>并重启服务。请确认导入文件来自可信来源。
-          </p>
-        </div>
-      </CardContent>
-      {pendingFile && (
-        <ConfirmDialog
-          title="确定导入此配置文件？"
-          description={
-            <>
-              将用 <b>{pendingFile.name}</b> 覆盖当前全部配置（白名单、Token、命令执行等安全开关）并自动重启服务，
-              且不可撤销。请确认此文件来自可信来源。
-            </>
-          }
-          variant="destructive"
-          confirmLabel="确定导入"
-          onCancel={() => {
-            setPendingFile(null);
-            if (fileRef.current) fileRef.current.value = "";
-          }}
-          onConfirm={() => {
-            const file = pendingFile;
-            setPendingFile(null);
-            void doImport(file);
-          }}
-        />
-      )}
-    </Card>
-  );
-}
-
-/* ─── 审计 ─── */
-
-function AuditGroup({
-  status,
-  onSaved,
-}: {
-  status?: StaticStatus;
-  onSaved: () => void;
-}) {
-  const [days, setDays] = useState(30);
-  const [saved, setSaved] = useState(false);
-  const initialized = useRef(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
-
-  useEffect(() => {
-    if (status && !initialized.current) {
-      setDays(status.auditRetentionDays);
-      initialized.current = true;
-    }
-  }, [status]);
-
-  const save = async (val: number) => {
-    await invoke<ConfigSaveResult>("save_config", {
-      patch: { auditRetentionDays: val },
-    });
-    onSaved();
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1500);
-  };
-
-  // 归一化：空输入 / NaN / 负值统一为 0（配合 Input min=0），并取整。
-  const normalize = (raw: number) => (Number.isNaN(raw) || raw < 0 ? 0 : Math.floor(raw));
-
-  const handleChange = (raw: number) => {
-    const val = normalize(raw);
-    setDays(val);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    // 触发后清空 ref，供 onBlur 判断是否已保存，避免双次保存。
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = undefined;
-      save(val);
-    }, 800);
-  };
-
-  // onBlur 仅在 debounce 仍挂起（尚未保存）时立即保存，已保存则不重复。
-  const handleBlur = () => {
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-      debounceRef.current = undefined;
-      save(days);
-    }
-  };
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle icon={<Icon name="file" />}>审计</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <SettingsRow
-          label="审计日志保留天数"
-          saved={saved}
-          layout="stack"
-          last
-          control={
-            <Input
-              type="number"
-              min={0}
-              value={days}
-              onChange={(e) => handleChange(Number(e.target.value))}
-              onBlur={handleBlur}
-            />
-          }
-          sub="超过保留天数的审计记录会在每次启动时自动清理。设为 0 表示永久保留。"
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-/* 开机自动启动等普通开关统一复用 ui/switch 的 Switch（已删除本地重复 Toggle 实现）。 */

@@ -3,6 +3,7 @@ import { invoke } from "../../lib/tauri";
 import type { StaticStatus, ConfigSaveResult, BackupListResult, BackupFileInfo } from "../../lib/types";
 import { formatBytes } from "../../lib/utils";
 import { VersionHistoryModal } from "../backup/VersionHistoryModal";
+import { BackupCleanupDialog } from "../backup/BackupCleanupDialog";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { ChipInput } from "../ui/chip-input";
 import { Button } from "../ui/button";
@@ -21,6 +22,35 @@ export function FileControlCard({ status, onSaved }: { status?: StaticStatus; on
   const [loadingBackups, setLoadingBackups] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [restoreEntry, setRestoreEntry] = useState<BackupFileInfo | null>(null);
+  const [cleanupOpen, setCleanupOpen] = useState(false);
+
+  const loadBackups = useCallback(async () => {
+    setLoadingBackups(true);
+    try {
+      const r = await invoke<BackupListResult>("list_backups");
+      setBackups(r);
+    } catch (e) {
+      toast(`加载备份列表失败：${e}`, "error");
+    } finally {
+      setLoadingBackups(false);
+    }
+  }, []);
+
+  /**
+   * 删掉备份后统一走这里：刷新占用统计 + 处理备份列表缓存。
+   *
+   * 版本历史**正开着**时必须重新拉取，不能只把缓存置 null：列表只在点「打开」
+   * 时懒加载，置 null 后没人重拉，弹框会直接变成「暂无备份文件」的空态
+   * （`isEmpty = !loading && !result`）——删了一份却看起来像全没了。
+   */
+  const invalidateBackups = useCallback(() => {
+    onSaved();
+    if (historyOpen) {
+      void loadBackups();
+    } else {
+      setBackups(null);
+    }
+  }, [onSaved, historyOpen, loadBackups]);
 
   const handleOpenBackupDir = async () => {
     try {
@@ -34,15 +64,7 @@ export function FileControlCard({ status, onSaved }: { status?: StaticStatus; on
     setHistoryOpen(true);
     // 首次打开时懒加载（不占首屏），之后复用缓存
     if (!backups && !loadingBackups) {
-      setLoadingBackups(true);
-      try {
-        const r = await invoke<BackupListResult>("list_backups");
-        setBackups(r);
-      } catch (e) {
-        toast(`加载备份列表失败：${e}`, "error");
-      } finally {
-        setLoadingBackups(false);
-      }
+      await loadBackups();
     }
   };
 
@@ -157,7 +179,24 @@ export function FileControlCard({ status, onSaved }: { status?: StaticStatus; on
             共 <span className="font-semibold">{status?.backupCount ?? 0}</span> 个备份 · 占用{" "}
             <span className="font-semibold">{formatBytes(status?.backupTotalBytes ?? 0)}</span>
           </span>
+          {/* 面板上原本根本没有删备份的入口，唯一办法是「打开文件夹」自己手删——
+              而手删不会清 backup_index，会留孤儿索引行。 */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto shrink-0"
+            onClick={() => setCleanupOpen(true)}
+          >
+            <Icon name="trash" size={14} />
+            清理备份…
+          </Button>
         </div>
+
+        <BackupCleanupDialog
+          open={cleanupOpen}
+          onClose={() => setCleanupOpen(false)}
+          onDone={invalidateBackups}
+        />
         <div className="mt-2.5 flex gap-2.5 rounded-lg border border-primary/25 bg-primary/10 p-3 text-xs leading-relaxed text-foreground">
           <Icon name="info" size={15} className="mt-0.5 shrink-0 text-primary" />
           <div>
@@ -195,6 +234,7 @@ export function FileControlCard({ status, onSaved }: { status?: StaticStatus; on
           loading={loadingBackups}
           onClose={() => setHistoryOpen(false)}
           onRestore={(entry) => setRestoreEntry(entry)}
+          onDeleted={invalidateBackups}
         />
 
         <div className="my-3.5 h-px bg-border" />
@@ -248,9 +288,9 @@ export function FileControlCard({ status, onSaved }: { status?: StaticStatus; on
           </div>
         </div>
 
-        <p className="mt-3 text-[11px] text-muted-foreground">
-          所有设置修改后自动保存，无需手动提交。
-        </p>
+        {/* 原先这里还有一句「所有设置修改后自动保存，无需手动提交」，已删：
+            同一张卡顶部（扩展名那行下面）已经说过「所有设置修改后自动保存」，
+            这是重复；且每个控件保存后本身会出「已保存」行内反馈。 */}
       </CardContent>
 
       {restoreEntry && (

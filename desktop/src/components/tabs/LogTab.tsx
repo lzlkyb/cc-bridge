@@ -2,6 +2,7 @@ import { useState, useMemo, Fragment, memo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toolLabel, formatDurationMs, formatVersion, copyText } from "../../lib/utils";
+import { APP_INFO } from "../../lib/about";
 import type { AuditEntry, AuditPage, StatusResponse } from "../../lib/types";
 import { useToast } from "../ui/toast";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
@@ -201,7 +202,7 @@ function LogTabImpl() {
         );
 
       const lines: string[] = [
-        "# cc-bridge 诊断报告",
+        `# ${APP_INFO.name} 诊断报告`,
         "",
         `- 版本：${formatVersion(status?.version)}`,
         `- 导出时间：${new Date().toLocaleString()}`,

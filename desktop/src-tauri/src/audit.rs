@@ -327,16 +327,20 @@ pub fn new_entry(
 
 /// Remove audit entries older than `retention_days`. A value of 0 disables cleanup
 /// (keep everything). Rewrites audit.log in place keeping only recent lines.
-pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<(), String> {
+///
+/// 返回**实际删掉的条数**（不是 `()`）：调用方靠它给用户反馈「已清理 N 条」，
+/// 也靠它写日志。原先返回 `()` 且调用方用 `let _ =` 吞掉，清理成功与否、
+/// 清了多少，用户和日志都完全无感。
+pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<u64, String> {
     if retention_days == 0 {
-        return Ok(());
+        return Ok(0);
     }
 
     // E-P0-7: 轮换前释放共享写句柄，避免 Windows 下 rename 因文件被占用而失败。
     close_audit_writer();
     let log_path = data_dir.join("audit.log");
     if !log_path.exists() {
-        return Ok(());
+        return Ok(0);
     }
 
     let cutoff = Local::now() - chrono::Duration::days(retention_days as i64);
@@ -344,10 +348,12 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<(), S
     let file =
         std::fs::File::open(&log_path).map_err(|e| format!("Failed to open audit log: {e}"))?;
 
+    let mut total: u64 = 0;
     let kept: Vec<String> = std::io::BufReader::new(file)
         .lines()
         .map_while(Result::ok)
         .filter(|line| {
+            total += 1;
             // Keep lines whose timestamp is newer than cutoff. Unparseable lines are kept.
             match serde_json::from_str::<AuditEntry>(line) {
                 Ok(entry) => match chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
@@ -358,6 +364,13 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<(), S
             }
         })
         .collect();
+
+    // 没有过期条目就不重写文件。原实现无条件 rewrite + rename，于是**每次启动**
+    // 都白写一遍整份日志、并白白失效一次解析缓存（E-P4 那个缓存）。
+    let removed = total - kept.len() as u64;
+    if removed == 0 {
+        return Ok(0);
+    }
 
     let tmp_path = data_dir.join("audit.log.tmp");
     {
@@ -378,12 +391,57 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<(), S
         }
     }
 
-    Ok(())
+    Ok(removed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// cleanup_old_entries 必须返回**实际删除条数**，且无过期条目时返回 0 并
+    /// **不重写文件**。前者是「不再静默」的基础（调用方靠它写日志 / 提示用户）；
+    /// 后者避免每次启动白写一遍整份日志、并白白失效一次解析缓存。
+    #[test]
+    fn cleanup_reports_removed_count_and_skips_when_nothing_expired() {
+        let dir = tmp_data_dir("cleanup-count");
+        let _ = clear_all(&dir);
+        let log = dir.join("audit.log");
+
+        let old_ts = (Local::now() - chrono::Duration::days(90)).to_rfc3339();
+        let now_ts = Local::now().to_rfc3339();
+        let line = |ts: &str, tool: &str| {
+            format!(r#"{{"timestamp":"{ts}","tool":"{tool}","params":"{{}}","success":true}}"#)
+        };
+        std::fs::write(
+            &log,
+            format!(
+                "{}\n{}\n{}\n",
+                line(&old_ts, "old1"),
+                line(&old_ts, "old2"),
+                line(&now_ts, "fresh")
+            ),
+        )
+        .expect("write log");
+
+        let removed = cleanup_old_entries(&dir, 30).expect("cleanup");
+        assert_eq!(removed, 2, "应报告删除 2 条");
+        let page = read_page(&dir, 1, 50).expect("read");
+        assert_eq!(page.total, 1, "只应剩下未过期的那一条");
+        assert_eq!(page.entries[0].tool, "fresh");
+
+        // 再跑一次：已无过期条目 → 返回 0，且文件 mtime 不变（证明没被重写）
+        let before = std::fs::metadata(&log)
+            .and_then(|m| m.modified())
+            .expect("mtime");
+        let again = cleanup_old_entries(&dir, 30).expect("cleanup again");
+        assert_eq!(again, 0);
+        let after = std::fs::metadata(&log)
+            .and_then(|m| m.modified())
+            .expect("mtime2");
+        assert_eq!(before, after, "无过期条目时不应重写文件");
+
+        let _ = clear_all(&dir);
+    }
 
     /// O1 向后兼容：旧版 audit.log 行（无 serverMs/ioMs/auditMs/netMs/overheadMs）
     /// 必须能被新 AuditEntry 解析，且这些新字段全为 None，旧字段正常。

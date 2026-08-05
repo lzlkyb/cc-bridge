@@ -8,6 +8,10 @@
 //   集中在脚本内，根除此前手写 about.ts 数组「双份维护、漏写版本」的痛点。
 
 export const APP_INFO = {
+  // 面向用户的**显示名**。与 Rust 侧 `src-tauri/src/branding.rs` 的 APP_DISPLAY_NAME 是同一个
+  // 字符串的两份维护（前端拿不到 Rust 常量，只能各存一份），改这里请同步改那边。
+  // 注意它不等于标识符 `cc-bridge`（仓库名 / 安装目录 / exe 名 / MCP serverInfo.name），
+  // 两层的边界与为何不合并，那个文件的头注释里写了。
   name: "CC Bridge",
   author: "lzlkyb",
   repoUrl: "https://github.com/lzlkyb/cc-bridge",

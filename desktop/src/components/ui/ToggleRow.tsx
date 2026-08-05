@@ -3,7 +3,7 @@ import { SavedHint } from "./SavedHint";
 
 /**
  * 设置页通用的「开关行」：左侧标签 + 描述，右侧 Switch。
- * 从 SettingsToggles 内部抽出为共享组件，供各设置类页面复用。
+ * 共享组件，供 `tabs/settings/` 下的各张设置卡与安全页复用。
  */
 export function ToggleRow({
   label,

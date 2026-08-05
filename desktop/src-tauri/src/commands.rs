@@ -31,6 +31,12 @@ pub struct StatusResponse {
     pub uptime_seconds: u64,
     #[serde(rename = "allowedRoots")]
     pub allowed_roots: Vec<String>,
+    /// 白名单配置组（存档）与当前组名。仅服务「按项目切换」这个 UI 能力，
+    /// **不参与安全判定**——当前生效集合永远是上面的 `allowed_roots`。
+    #[serde(rename = "rootProfiles")]
+    pub root_profiles: Vec<crate::config::RootProfile>,
+    #[serde(rename = "activeProfile")]
+    pub active_profile: String,
     #[serde(rename = "allowedExtensions")]
     pub allowed_extensions: Vec<String>,
     #[serde(rename = "maxFileSizeBytes")]
@@ -373,6 +379,8 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         version: env!("CARGO_PKG_VERSION").into(),
         uptime_seconds: uptime,
         allowed_roots: config.allowed_roots.clone(),
+        root_profiles: config.root_profiles.clone(),
+        active_profile: config.active_profile.clone(),
         allowed_extensions: config.allowed_extensions.clone(),
         max_file_size_bytes: config.max_file_size_bytes,
         rate_limit: RateLimitInfo {
@@ -747,6 +755,39 @@ pub async fn save_config(
         }
     }
 
+    // 反向同步：在当前组里增删目录时，把生效集合写回该组的存档。
+    // 不同步的后果：“切走再切回来”会用旧存档覆盖掉刚改的目录，看起来就像改动丢了。
+    // 注意方向：`allowed_roots` 仍是唯一事实源，这里只是让存档跟上它。
+    if patch.allowed_roots.is_some() {
+        let active = config.active_profile.clone();
+        let roots = config.allowed_roots.clone();
+        if let Some(p) = config.root_profiles.iter_mut().find(|p| p.name == active) {
+            p.roots = roots;
+        }
+        save_config_field(
+            &db,
+            "root_profiles",
+            &serde_json::to_value(&config.root_profiles).unwrap(),
+        )?;
+    }
+
+    // 保留天数一变就后台跑一次清理，不再等下次启动。
+    // 原行为：`save_config` 只存值，而清理只在启动时跑——用户把 30 天改成 7 天后
+    // 什么都不会发生，很容易误以为改完就生效了。
+    // 放后台：大 audit.log 的重写可能耗时，不能卡住保存配置这个交互
+    // （与启动那次同理，E-P2-4 当时就是为此改成后台的）。
+    if patch.audit_retention_days.is_some() {
+        let dir = state.data_dir.clone();
+        let retention = config.audit_retention_days;
+        tauri::async_runtime::spawn(async move {
+            match audit::cleanup_old_entries(&dir, retention) {
+                Ok(0) => {}
+                Ok(n) => log::info!("保留天数改为 {retention} 天，已删除 {n} 条过期审计记录"),
+                Err(e) => log::warn!("保留天数变更后清理审计日志失败：{e}"),
+            }
+        });
+    }
+
     // 白名单根目录缓存随配置刷新（性能优化）：先释放 config 写锁，避免下面读锁死等。
     drop(config);
     state.refresh_canonicalized_roots(&state.config.read().await.allowed_roots);
@@ -757,6 +798,202 @@ pub async fn save_config(
         warnings: vec![],
         restart_required,
     })
+}
+
+// ===== 白名单配置组（按项目切换）=====
+//
+// 安全要点：以下命令**只**经 Tauri invoke 暴露给本机面板，不注册为 MCP 工具——
+// 远程 AI 不能自行更换自己的可访问范围。这是选「人工切换配置组」而非
+// 「按远程项目自动切」的核心理由。
+//
+// 另一个要点：切换组 = 把该组 roots 写进 `allowed_roots`，然后跑与 `save_config`
+// 完全相同的收尾（持久化 → 刷新 canonicalize 缓存）。不新增任何安全关键路径。
+
+/// 组名校验：去首尾空白 → 非空 → 长度上限 → 不重名。
+/// `allow_same` 传重命名时的原名（允许改成自己，否则“只改大小写”之类会被误判重名）。
+/// 重名直接拒绝而不自动加后缀：两个看起来一样的组比报错更害人。
+fn validate_profile_name(
+    name: &str,
+    existing: &[crate::config::RootProfile],
+    allow_same: Option<&str>,
+) -> Result<String, String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Err("组名不能为空".into());
+    }
+    if n.chars().count() > 40 {
+        return Err("组名过长（最多 40 字）".into());
+    }
+    if existing
+        .iter()
+        .any(|p| p.name == n && Some(p.name.as_str()) != allow_same)
+    {
+        return Err(format!("已存在同名配置组「{n}」"));
+    }
+    Ok(n.to_string())
+}
+
+/// 新建配置组。`copy_current=true` 时用当前生效集合作为初内容，否则建空组。
+/// `switch=true` 则建完立即切过去。
+#[tauri::command]
+pub async fn create_root_profile(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    copy_current: bool,
+    switch: bool,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let mut config = state.config.write().await;
+    let clean = validate_profile_name(&name, &config.root_profiles, None)?;
+    let roots = if copy_current {
+        config.allowed_roots.clone()
+    } else {
+        vec![]
+    };
+    config.root_profiles.push(crate::config::RootProfile {
+        name: clean.clone(),
+        roots: roots.clone(),
+    });
+    save_config_field(
+        &db,
+        "root_profiles",
+        &serde_json::to_value(&config.root_profiles).unwrap(),
+    )?;
+    if switch {
+        apply_profile_switch(&db, &mut config, &clean, roots)?;
+    }
+    drop(config);
+    state.refresh_canonicalized_roots(&state.config.read().await.allowed_roots);
+    Ok(())
+}
+
+/// 删除配置组。**只删这份目录清单，不碰目录里的任何文件。**
+/// 两条护栏：不能删当前组（否则生效集合无归属），也不能删到一个不剩。
+#[tauri::command]
+pub async fn delete_root_profile(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let mut config = state.config.write().await;
+    if config.active_profile == name {
+        return Err("不能删除当前使用中的配置组，请先切到其它组".into());
+    }
+    if config.root_profiles.len() <= 1 {
+        return Err("至少需保留一个配置组".into());
+    }
+    let before = config.root_profiles.len();
+    config.root_profiles.retain(|p| p.name != name);
+    if config.root_profiles.len() == before {
+        return Err(format!("配置组「{name}」不存在"));
+    }
+    save_config_field(
+        &db,
+        "root_profiles",
+        &serde_json::to_value(&config.root_profiles).unwrap(),
+    )?;
+    Ok(())
+}
+
+/// 重命名配置组。改的是当前组时，`active_profile` 指针要跟着改，
+/// 否则下次 `normalize_profiles` 会因为“指针指向不存在的组”而默默回落到第一个组。
+#[tauri::command]
+pub async fn rename_root_profile(
+    state: State<'_, Arc<AppState>>,
+    old_name: String,
+    new_name: String,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let mut config = state.config.write().await;
+    let clean = validate_profile_name(&new_name, &config.root_profiles, Some(&old_name))?;
+    match config.root_profiles.iter_mut().find(|p| p.name == old_name) {
+        Some(p) => p.name = clean.clone(),
+        None => return Err(format!("配置组「{old_name}」不存在")),
+    }
+    save_config_field(
+        &db,
+        "root_profiles",
+        &serde_json::to_value(&config.root_profiles).unwrap(),
+    )?;
+    if config.active_profile == old_name {
+        config.active_profile = clean;
+        save_config_field(
+            &db,
+            "active_profile",
+            &serde_json::to_value(&config.active_profile).unwrap(),
+        )?;
+    }
+    Ok(())
+}
+
+/// 切换到指定配置组：把该组 roots 写进生效集合，并刷新白名单缓存 + 记审计。
+///
+/// 已在跑的后台命令不会被杀，但它后续经 cc-bridge 的文件操作按**新**白名单校验。
+#[tauri::command]
+pub async fn switch_root_profile(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> Result<(), String> {
+    switch_root_profile_inner(&state, &name).await
+}
+
+/// 纯逻辑入口（与 `import_config_inner` 同一套路）：不依赖 Tauri `State`，
+/// 便于单元测试直达——「切换后必须刷新白名单缓存」这条安全不变量得能被测出来。
+pub(crate) async fn switch_root_profile_inner(
+    state: &Arc<AppState>,
+    name: &str,
+) -> Result<(), String> {
+    let name = name.to_string();
+    let db = state.db.lock().await;
+    let mut config = state.config.write().await;
+    let from = config.active_profile.clone();
+    let roots = config
+        .root_profiles
+        .iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| format!("配置组「{name}」不存在"))?
+        .roots
+        .clone();
+    let count = roots.len();
+    apply_profile_switch(&db, &mut config, &name, roots)?;
+    drop(config);
+    drop(db);
+
+    // 刷新 canonicalize 缓存——漏了这一步就是安全缺陷：UI 显示已切换，
+    // 而路径校验还在用旧根目录（import_config 历史上正是漏在这里，有回归测试）。
+    state.refresh_canonicalized_roots(&state.config.read().await.allowed_roots);
+
+    let entry = audit::new_entry(
+        "switch_root_profile",
+        &serde_json::json!({ "from": from, "to": name, "rootCount": count }).to_string(),
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let _ = audit::write_audit_log(&state.data_dir, &entry);
+    Ok(())
+}
+
+/// 切换的共用写入：先落盘再改内存（与 save_config 的 apply_field! 同一约定，
+/// 避免写盘失败时内存领先于 DB）。不在此刷缓存：谁持有锁谁负责，由调用方
+/// 释锁后统一刷。
+fn apply_profile_switch(
+    db: &rusqlite::Connection,
+    config: &mut crate::config::BridgeConfig,
+    name: &str,
+    roots: Vec<String>,
+) -> Result<(), String> {
+    save_config_field(db, "allowed_roots", &serde_json::to_value(&roots).unwrap())?;
+    save_config_field(db, "active_profile", &serde_json::to_value(name).unwrap())?;
+    config.allowed_roots = roots;
+    config.active_profile = name.to_string();
+    Ok(())
 }
 
 #[tauri::command]
@@ -791,6 +1028,298 @@ pub async fn get_audit_log(
 #[tauri::command]
 pub async fn clear_audit_log(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     audit::clear_all(&state.data_dir)
+}
+
+/// 按当前保留天数**立即**清理一次，返回删掉的条数（供前端提示「已清理 N 条」）。
+///
+/// 为何需要它：之前手动只有「清空全部」（`clear_audit_log`，直接删整个文件），
+/// 想「只删旧的、留最近几天」唯一办法是改保留天数然后重启应用——中间没任何反馈。
+/// 这个命令把那个中间档补上了。
+#[tauri::command]
+pub async fn cleanup_audit_now(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
+    let retention = state.config.read().await.audit_retention_days;
+    let removed = audit::cleanup_old_entries(&state.data_dir, retention)?;
+    log::info!("手动清理审计日志：已删除 {removed} 条（保留 {retention} 天）");
+    Ok(removed)
+}
+
+// ===== 备份高级清理（设计稿：design/备份与审计-高级清理-设计稿.html）=====
+
+#[derive(Debug, Serialize)]
+pub struct BackupCleanupPreview {
+    /// 待删份数
+    pub count: u32,
+    #[serde(rename = "freedBytes")]
+    pub freed_bytes: u64,
+    #[serde(rename = "totalBytesBefore")]
+    pub total_bytes_before: u64,
+    #[serde(rename = "totalCountBefore")]
+    pub total_count_before: u32,
+    /// 执行后将不再有任何备份的原文件（预览里那行红字）。
+    #[serde(rename = "filesLosingAll")]
+    pub files_losing_all: Vec<String>,
+    /// **待删备份的完整路径列表**——前端原样回传给 `cleanup_backups`。
+    ///
+    /// 这是「预览 == 执行」真正的实现方式。共用同一个 `plan_cleanup` **函数**并不够：
+    /// 两个命令各自重扫目录、各自取一次 `now()`，于是预览到确认之间只要发生一次
+    /// MCP 写操作（这正是本应用的主业）新增了 `.bak`，或 cutoff 随时间前移，
+    /// 实际删除集合就不等于用户确认过的那个集合——恰好就是注释里反复承诺不会发生的
+    /// 「预览说删 847、实际删了 900」。
+    pub victims: Vec<String>,
+}
+
+/// 把前端传的 mode 字符串转成强类型。非法值直接报错——删除操作不容许“猜一个默认”。
+fn parse_cleanup_mode(
+    mode: &str,
+    days: Option<u32>,
+    target_mb: Option<u64>,
+) -> Result<backup::CleanupMode, String> {
+    match mode {
+        "olderThanDays" => days
+            .filter(|d| *d > 0)
+            .map(backup::CleanupMode::OlderThanDays)
+            .ok_or_else(|| "按时间清理需提供大于 0 的天数".to_string()),
+        // 与 days 一样必须 > 0：目标 0 字节等于全删，但用户以为自己在「清到 300MB」。
+        // 想全删必须显式选「全部清空」（`cleanup_audit_before` 已经立了这个规矩）。
+        "toTotalMb" => target_mb
+            .filter(|mb| *mb > 0)
+            .map(|mb| backup::CleanupMode::ToTotalBytes(mb.saturating_mul(1024 * 1024)))
+            .ok_or_else(|| {
+                "按体积清理需提供大于 0 的目标大小（想全删请选「全部清空」）".to_string()
+            }),
+        "all" => Ok(backup::CleanupMode::All),
+        other => Err(format!("未知的清理方式：{other}")),
+    }
+}
+
+/// 预览清理（**无副作用**）。与执行共用 `backup::plan_cleanup` 这一份筛选实现，
+/// 所以不会出现「预览说删 847、实际删了 900」这类偏差。
+#[tauri::command]
+pub async fn preview_backup_cleanup(
+    state: State<'_, Arc<AppState>>,
+    mode: String,
+    days: Option<u32>,
+    target_mb: Option<u64>,
+    keep_last_one: bool,
+) -> Result<BackupCleanupPreview, String> {
+    let m = parse_cleanup_mode(&mode, days, target_mb)?;
+    let backup_dir = state.config.read().await.backup_dir.clone();
+    let db = state.db.lock().await;
+    let items = backup::list_backup_items(&state.data_dir, &backup_dir, &db)
+        .ok_or_else(|| "读不到备份目录（不存在 / 权限不足 / 所在盘未就绪）".to_string())?;
+    drop(db);
+    let plan = backup::plan_cleanup(&items, &m, keep_last_one);
+    Ok(BackupCleanupPreview {
+        count: plan.victims.len() as u32,
+        freed_bytes: plan.freed_bytes,
+        total_bytes_before: plan.total_bytes_before,
+        total_count_before: plan.total_count_before,
+        files_losing_all: plan.files_losing_all,
+        victims: plan
+            .victims
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+    })
+}
+
+#[derive(Debug, Serialize)]
+pub struct BackupCleanupResult {
+    pub removed: u32,
+    #[serde(rename = "freedBytes")]
+    pub freed_bytes: u64,
+    /// 顺手清掉的孤儿索引行数（历史上绕过面板手删备份遗留的）。
+    #[serde(rename = "healedIndexRows")]
+    pub healed_index_rows: u32,
+    /// 删失败的份数（被杀软/编辑器占用、只读属性等）。
+    /// 不能吞：预览说 900、实际只删了 3 而不给解释，用户无法判断发生了什么。
+    pub failed: u32,
+}
+
+/// 删备份写审计。三个删除命令（批量/单份/整组）共用它——三者同样不可逆，
+/// 一次能干掉几百个版本，不能只给批量那条留痕。
+fn audit_backup_deletion(data_dir: &std::path::Path, action: &str, detail: serde_json::Value) {
+    let entry = audit::new_entry(
+        action,
+        &detail.to_string(),
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    if let Err(e) = audit::write_audit_log(data_dir, &entry) {
+        log::warn!("写入删备份审计失败：{e}");
+    }
+}
+
+/// 执行清理。**只删 `victims` 里的路径**，即预览返回、用户看到并确认过的那一份清单。
+///
+/// 为何不重新根据条件算一遍（原先的写法）：预览到确认之间只要发生一次 MCP 写操作
+/// 就会新增 `.bak`，或自动裁剪删掉几个，或 cutoff 随 `now()` 前移——实际删除集合
+/// 就不等于用户确认过的集合。后新增的备份因为不在清单里而不会被删，这是对的：
+/// 用户没确认过它们。
+///
+/// `mode`/`days`/`target_mb`/`keep_last_one` 已不参与筛选，**仅用于审计记录**当时的条件。
+#[tauri::command]
+pub async fn cleanup_backups(
+    state: State<'_, Arc<AppState>>,
+    victims: Vec<String>,
+    mode: String,
+    days: Option<u32>,
+    target_mb: Option<u64>,
+    keep_last_one: bool,
+) -> Result<BackupCleanupResult, String> {
+    if victims.is_empty() {
+        return Err("没有待删备份（请先重新预览）".into());
+    }
+    let backup_dir_name = state.config.read().await.backup_dir.clone();
+
+    // 每一条路径都重新过一次「必须落在备份目录内且是 .bak」的校验。
+    // 前端传什么都不能直接信，复用已有的 `assert_backup_path_in_scope`（安全模块不另写一套）。
+    let mut targets: Vec<PathBuf> = Vec::with_capacity(victims.len());
+    for v in &victims {
+        targets.push(assert_backup_path_in_scope(
+            v,
+            &state.data_dir,
+            &backup_dir_name,
+        )?);
+    }
+
+    // 删文件全程**不持 db 锁**，并且丢到 spawn_blocking：备份可能上万，
+    // 原先持锁删完所有文件会把 write_files/edit_files 等全部 MCP 写操作
+    // （它们写备份索引也要同一把锁）卡在那里数十秒，同时还挂住一个 tokio worker。
+    let (deleted, freed, failed) = tokio::task::spawn_blocking(move || {
+        backup::delete_files_bulk(&targets)
+    })
+    .await
+    .map_err(|e| format!("清理任务异常结束：{e}"))?;
+    let removed = deleted.len() as u32;
+
+    let db = state.db.lock().await;
+    backup::purge_index_rows(&db, &deleted);
+    // 自愈孤儿索引前先确认备份目录**真的读得到**：读不到时绝不能把索引行当孤儿清掉。
+    let dir_readable =
+        backup::list_backup_items(&state.data_dir, &backup_dir_name, &db).is_some();
+    let healed = if dir_readable {
+        backup::heal_orphan_index(&db, &state.data_dir.join(&backup_dir_name))
+    } else {
+        log::warn!("备份目录不可读，跳过孤儿索引自愈");
+        0
+    };
+    drop(db);
+
+    audit_backup_deletion(
+        &state.data_dir,
+        "cleanup_backups",
+        serde_json::json!({
+            "mode": mode, "days": days, "targetMb": target_mb,
+            "keepLastOne": keep_last_one, "confirmed": victims.len(),
+            "removed": removed, "failed": failed, "freedBytes": freed
+        }),
+    );
+    log::info!(
+        "清理备份：确认 {} 个，删除 {removed} 个，失败 {failed} 个，释放 {freed} 字节，修复孤儿索引 {healed} 行",
+        victims.len()
+    );
+    Ok(BackupCleanupResult {
+        removed,
+        freed_bytes: freed,
+        healed_index_rows: healed,
+        failed,
+    })
+}
+
+/// 删单份备份（版本历史逐行）。路径必须落在备份目录内且以 .bak 结尾——
+/// 复用已有的 `assert_backup_path_in_scope`，不另写一套校验（安全模块不削弱）。
+#[tauri::command]
+pub async fn delete_backup(
+    state: State<'_, Arc<AppState>>,
+    backup_path: String,
+) -> Result<u64, String> {
+    let backup_dir = state.config.read().await.backup_dir.clone();
+    let canon = assert_backup_path_in_scope(&backup_path, &state.data_dir, &backup_dir)?;
+    let size = std::fs::metadata(&canon).map(|m| m.len()).unwrap_or(0);
+    std::fs::remove_file(&canon).map_err(|e| format!("删除备份失败：{e}"))?;
+    let db = state.db.lock().await;
+    let _ = db.execute(
+        "DELETE FROM backup_index WHERE backup_path = ?1",
+        rusqlite::params![canon.to_string_lossy().into_owned()],
+    );
+    drop(db);
+    audit_backup_deletion(
+        &state.data_dir,
+        "delete_backup",
+        serde_json::json!({ "backupPath": canon.to_string_lossy(), "freedBytes": size }),
+    );
+    Ok(size)
+}
+
+/// 删某原文件的**全部**备份（分组头一键）。返回 (删除数, 释放字节)。
+#[tauri::command]
+pub async fn delete_backups_of_file(
+    state: State<'_, Arc<AppState>>,
+    original_path: String,
+) -> Result<BackupCleanupResult, String> {
+    let backup_dir = state.config.read().await.backup_dir.clone();
+    let db = state.db.lock().await;
+    let items = backup::list_backup_items(&state.data_dir, &backup_dir, &db)
+        .ok_or_else(|| "读不到备份目录（不存在 / 权限不足 / 所在盘未就绪）".to_string())?;
+    // 只选属于该原文件的，然后走与批量清理同一条执行路径。
+    //
+    // 两种口径都认：`BackupItem.original` 优先取索引里的**完整原路径**，而版本历史
+    // （`list_backups`）是按**备份文件名推导出的原文件名**分组的。前端从分组头传过来的
+    // 是后者，如果只比 `i.original`，有索引记录的备份（绝大多数）一个都匹配不上。
+    // 按名匹配会把不同目录的同名文件一起删——但那正是用户在分组里看到的内容。
+    let mine: Vec<backup::BackupItem> = items
+        .into_iter()
+        .filter(|i| {
+            i.original == original_path
+                || backup::original_from_backup_name(&i.path) == original_path
+        })
+        .collect();
+    if mine.is_empty() {
+        return Err("该文件没有备份".into());
+    }
+    // 此处故意不给底线：用户明确要删这个文件的全部备份，前端会弹确认。
+    let plan = backup::plan_cleanup(&mine, &backup::CleanupMode::All, false);
+    let (deleted, freed, failed) = backup::delete_files_bulk(&plan.victims);
+    let removed = deleted.len() as u32;
+    backup::purge_index_rows(&db, &deleted);
+    drop(db);
+    audit_backup_deletion(
+        &state.data_dir,
+        "delete_backups_of_file",
+        serde_json::json!({
+            "originalPath": original_path, "removed": removed,
+            "failed": failed, "freedBytes": freed
+        }),
+    );
+    Ok(BackupCleanupResult {
+        removed,
+        freed_bytes: freed,
+        healed_index_rows: 0,
+        failed,
+    })
+}
+
+/// 审计：按**临时**天数清一次，不改配置里的保留天数。
+/// 与备份侧「清理早于 N 天」操作心智一致。
+#[tauri::command]
+pub async fn cleanup_audit_before(
+    state: State<'_, Arc<AppState>>,
+    days: u32,
+) -> Result<u64, String> {
+    if days == 0 {
+        return Err("天数需大于 0（想全删请用日志页的「清空全部」）".into());
+    }
+    let removed = audit::cleanup_old_entries(&state.data_dir, days)?;
+    log::info!("按临时天数清理审计日志：早于 {days} 天的已删 {removed} 条");
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -2012,6 +2541,76 @@ mod tests {
     use std::sync::Arc;
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// 回归测试（安全）：`switch_root_profile` 切换配置组后**必须**刷新
+    /// `canonicalized_roots`。漏刷的后果不是显示问题而是**安全缺陷**：UI 与
+    /// `get_status` 都显示已切到新组，而所有走 `state.cached_roots()` 的工具校验
+    /// 仍按旧组的根目录放行 / 拒给。若有人删掉 `switch_root_profile_inner` 里的
+    /// `refresh_canonicalized_roots` 一行，下面第 2 条断言会直接失败。
+    #[tokio::test]
+    async fn switch_root_profile_refreshes_cached_roots() {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir_a: PathBuf =
+            std::env::temp_dir().join(format!("cc-bridge-prof-a-{}-{}", std::process::id(), n));
+        let dir_b: PathBuf =
+            std::env::temp_dir().join(format!("cc-bridge-prof-b-{}-{}", std::process::id(), n));
+        for d in [&dir_a, &dir_b] {
+            let _ = std::fs::remove_dir_all(d);
+            std::fs::create_dir_all(d).expect("create dir");
+        }
+        let root_a = dir_a.to_string_lossy().into_owned();
+        let root_b = dir_b.to_string_lossy().into_owned();
+
+        let conn = db::init_database(Path::new(&dir_a)).expect("init db");
+        let cfg = BridgeConfig {
+            allowed_roots: vec![root_a.clone()],
+            root_profiles: vec![
+                crate::config::RootProfile {
+                    name: "A组".into(),
+                    roots: vec![root_a.clone()],
+                },
+                crate::config::RootProfile {
+                    name: "B组".into(),
+                    roots: vec![root_b.clone()],
+                },
+            ],
+            active_profile: "A组".into(),
+            ..BridgeConfig::default()
+        };
+        let state = Arc::new(AppState::new(conn, cfg, dir_a.clone()));
+
+        assert_eq!(
+            state.cached_roots(),
+            crate::security::path::canonicalize_roots(std::slice::from_ref(&root_a)),
+            "切换前缓存应为 A 组"
+        );
+
+        super::switch_root_profile_inner(&state, "B组")
+            .await
+            .expect("切换应成功");
+
+        // 1) 生效集合与当前组名都已换成 B 组
+        assert_eq!(
+            state.config.read().await.allowed_roots,
+            vec![root_b.clone()]
+        );
+        assert_eq!(state.config.read().await.active_profile, "B组");
+        // 2) 关键：白名单缓存必须跟着换
+        assert_eq!(
+            state.cached_roots(),
+            crate::security::path::canonicalize_roots(std::slice::from_ref(&root_b)),
+            "切换后缓存必须等于 B 组的 canonicalize——漏刷即安全缺陷"
+        );
+
+        // 3) 切到不存在的组必须报错，且不得改动任何状态
+        assert!(super::switch_root_profile_inner(&state, "不存在的组")
+            .await
+            .is_err());
+        assert_eq!(state.config.read().await.active_profile, "B组");
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
 
     /// 回归测试：import_config 写入新的 `allowed_roots` 后**必须**刷新白名单缓存
     /// （`canonicalized_roots`），否则 `cached_roots()` 仍指向旧 roots，导致后续所有

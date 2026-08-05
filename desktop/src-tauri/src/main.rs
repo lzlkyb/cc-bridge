@@ -26,7 +26,7 @@ fn notify_toast(handle: &tauri::AppHandle, body: &str) {
     if let Err(e) = handle
         .notification()
         .builder()
-        .title("cc-bridge")
+        .title(branding::APP_DISPLAY_NAME)
         .body(body)
         .show()
     {
@@ -80,6 +80,8 @@ fn show_or_create_main_window(app: &tauri::AppHandle) {
         // 配置里 visible=false（防启动闪烁），所以重建后需显式 show。
         Ok(builder) => match builder.build() {
             Ok(w) => {
+                // 圆角要在 show 前打上，否则能看到一帧直角
+                apply_window_decorations(&w);
                 let _ = w.show();
                 let _ = w.set_focus();
             }
@@ -87,6 +89,37 @@ fn show_or_create_main_window(app: &tauri::AppHandle) {
         },
         Err(e) => log::error!("从配置构造窗口 builder 失败: {e}"),
     }
+}
+
+/// 给窗口打上平台特异的装饰（目前只有 Win11 DWM 圆角）。
+///
+/// **为何必须抽成函数**：这一步原先只写在 `setup` 里，只作用于启动时创建的
+/// 那个窗口。开启「关窗时释放界面内存」后窗口会被销毁并重建，重建路径没补这一步
+/// ——于是关窗再开，窗口从圆角变成直角（而开关关闭时不会，因为窗口没被销毁），
+/// 同一个应用出现两种窗口外观。现在启动与重建两条路径共用它。
+fn apply_window_decorations(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
+        };
+        if let Ok(hwnd) = window.hwnd() {
+            let preference: i32 = 2; // DWMWCP_ROUNDSMALL = 2
+            unsafe {
+                if let Err(e) = DwmSetWindowAttribute(
+                    HWND(hwnd.0 as isize),
+                    DWMWA_WINDOW_CORNER_PREFERENCE,
+                    &preference as *const i32 as *const _,
+                    std::mem::size_of::<i32>() as u32,
+                ) {
+                    log::warn!("DWM 圆角设置失败: {:?}", e);
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = window;
 }
 
 /// 生成托盘图标：透明底 + 居中状态色圆点（运行时绿、停止灰）。
@@ -289,7 +322,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let cleanup_dir = data_dir.clone();
                 let retention = bridge_config.audit_retention_days;
                 tauri::async_runtime::spawn(async move {
-                    let _ = audit::cleanup_old_entries(&cleanup_dir, retention);
+                    // 不再 `let _ =` 吞掉：这一步会重写 + rename audit.log，而 rename 在
+                    // Windows 上确实会因文件被占用而失败（参见 audit.rs 里 E-P0-7 那段）。
+                    // 吞掉的后果是：保留天数静默失效，日志无限增长而无人知道。
+                    match audit::cleanup_old_entries(&cleanup_dir, retention) {
+                        Ok(0) => {}
+                        Ok(n) => log::info!("启动清理审计日志：已删除 {n} 条过期记录（保留 {retention} 天）"),
+                        Err(e) => log::warn!("启动清理审计日志失败：{e}"),
+                    }
                 });
             }
 
@@ -357,30 +397,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Show main window (config: visible=false, decorations=false)
             if let Some(window) = app.get_webview_window("main") {
+                // 与重建路径共用同一份装饰逻辑（见 `apply_window_decorations`）
+                apply_window_decorations(&window);
                 let _ = window.show();
                 let _ = window.set_focus();
-
-                // Win11 DWM 圆角
-                #[cfg(target_os = "windows")]
-                {
-                    use windows::Win32::Foundation::HWND;
-                    use windows::Win32::Graphics::Dwm::{
-                        DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
-                    };
-                    if let Ok(hwnd) = window.hwnd() {
-                        let preference: i32 = 2; // DWMWCP_ROUNDSMALL = 2
-                        unsafe {
-                            if let Err(e) = DwmSetWindowAttribute(
-                                HWND(hwnd.0 as isize),
-                                DWMWA_WINDOW_CORNER_PREFERENCE,
-                                &preference as *const i32 as *const _,
-                                std::mem::size_of::<i32>() as u32,
-                            ) {
-                                log::warn!("DWM 圆角设置失败: {:?}", e);
-                            }
-                        }
-                    }
-                }
             }
 
             // System tray
@@ -406,7 +426,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .mcp_running
                 .load(std::sync::atomic::Ordering::Relaxed);
             TrayIconBuilder::with_id("main-tray")
-                .tooltip("cc-bridge")
+                .tooltip(branding::APP_DISPLAY_NAME)
                 .menu(&menu)
                 .icon(tray_icon(tray_initial_running))
                 // macOS 菜单栏要求**模板图标**：系统只取 alpha 通道、自己上色，以适配
@@ -421,8 +441,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 注意：只在这里设一次**不够**——`refresh_tray` 里的 `set_icon` 会换掉
                 // NSImage、连带抹掉模板属性，那边已补上 `set_icon_as_template(true)`。
                 .icon_as_template(cfg!(target_os = "macos"))
+                // **必须显式设它**：Tauri 的 `show_menu_on_left_click` 默认为 `true`，
+                // 而我们又在 `on_tray_icon_event` 里自己接了左键——于是左键会**同时**
+                // 弹菜单（Tauri 默认行为）+ 切换窗口（我们的 handler）。
+                //
+                // 两个平台惯例相反，所以这里按平台分开：
+                // - Windows：左键 = 开/收面板，右键 = 菜单。所以关掉它。
+                // - macOS：菜单栏图标的惯例是**左键就开菜单**（右键在菜单栏几乎无人用），
+                //   而菜单里已经有「打开面板」，所以保留 true，并在下面的 handler 里
+                //   跳过左键 toggle（否则同样会弹菜单 + 切窗口）。
+                .show_menu_on_left_click(cfg!(target_os = "macos"))
                 .on_tray_icon_event(move |tray_app, event| {
+                    // mac 上左键已由系统用于展开菜单，不再额外 toggle 窗口；
+                    // 两个参数在该平台下无用，显式丢弃以免变成未使用参数
+                    // （CI 的 clippy 跑在 macOS 且带 -D warnings）。
+                    #[cfg(target_os = "macos")]
+                    let _ = (tray_app, &event);
                     // 左键抬起：toggle 主窗口显隐（右键由 menu 接管）
+                    #[cfg(not(target_os = "macos"))]
                     if let tauri::tray::TrayIconEvent::Click {
                         button: tauri::tray::MouseButton::Left,
                         button_state: tauri::tray::MouseButtonState::Up,
@@ -558,9 +594,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .mcp_running
                     .load(std::sync::atomic::Ordering::Relaxed);
                 let tip = if running {
-                    "cc-bridge · 服务运行中"
+                    branding::TRAY_TIP_RUNNING
                 } else {
-                    "cc-bridge · 已停止"
+                    branding::TRAY_TIP_STOPPED
                 };
                 refresh_tray(&tray, running, tip, &last_tray);
             }
@@ -579,9 +615,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .load(std::sync::atomic::Ordering::Relaxed);
                         if let Some(tray) = h.tray_by_id("main-tray") {
                             let tip = if running {
-                                "cc-bridge · 服务运行中"
+                                branding::TRAY_TIP_RUNNING
                             } else {
-                                "cc-bridge · 已停止"
+                                branding::TRAY_TIP_STOPPED
                             };
                             refresh_tray(&tray, running, tip, &last_tray);
                         }
@@ -661,11 +697,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(tray) = handle.tray_by_id("main-tray") {
                                 // tooltip：地址变化优先提示，否则显示运行状态
                                 let tip = if changed {
-                                    "cc-bridge: 网络地址已变化，点击查看新连接命令"
+                                    branding::TRAY_TIP_IP_CHANGED
                                 } else if running {
-                                    "cc-bridge · 服务运行中"
+                                    branding::TRAY_TIP_RUNNING
                                 } else {
-                                    "cc-bridge · 已停止"
+                                    branding::TRAY_TIP_STOPPED
                                 };
                                 // 去重刷新（图标随运行状态；地址变化仅改 tooltip）
                                 refresh_tray(&tray, running, tip, &last_tray);
@@ -690,6 +726,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         loop {
                             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                             cleanup_state.cleanup_finished_commands().await;
+                        }
+                    })
+                });
+            }
+
+            // 审计日志定时清理（每 24 小时）。
+            //
+            // 为何必须有这个：原先清理**只在启动时跑一次**，而 cc-bridge 是常驻托盘
+            // 服务、设计上就是开着几周不关。于是不重启的用户那里，「保留天数」形同虚设，
+            // audit.log 会无限增长——机制与产品形态不匹配。
+            //
+            // 每次 tick 重新读配置，而不是把 retention 捕进闭包：用户中途改了保留天数
+            // 不需要重启就能生效。
+            {
+                let audit_state = app_state.clone();
+                spawn_supervised("审计日志定时清理", move || {
+                    let audit_state = audit_state.clone();
+                    Box::pin(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
+                            let retention = audit_state.config.read().await.audit_retention_days;
+                            let dir = audit_state.data_dir.clone();
+                            match audit::cleanup_old_entries(&dir, retention) {
+                                Ok(0) => {}
+                                Ok(n) => log::info!(
+                                    "定时清理审计日志：已删除 {n} 条过期记录（保留 {retention} 天）"
+                                ),
+                                Err(e) => log::warn!("定时清理审计日志失败：{e}"),
+                            }
                         }
                     })
                 });
@@ -736,6 +801,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::refresh_firewall,
             commands::open_firewall_port,
             commands::get_firewall_diagnosis,
+            commands::cleanup_audit_now,
+            commands::cleanup_audit_before,
+            commands::preview_backup_cleanup,
+            commands::cleanup_backups,
+            commands::delete_backup,
+            commands::delete_backups_of_file,
+            commands::create_root_profile,
+            commands::delete_root_profile,
+            commands::rename_root_profile,
+            commands::switch_root_profile,
             commands::get_autostart,
             commands::set_autostart,
             commands::install_dir,
@@ -799,7 +874,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         })
         .build(tauri::generate_context!())?
-        .run(|_app_handle, event| {
+        .run(|app_handle, event| {
+            // 只有 macOS 分支用得上 app_handle，其它平台不能让它变成未使用参数
+            // （CI 的 clippy 带 -D warnings）。
+            #[cfg(not(target_os = "macos"))]
+            let _ = app_handle;
+            // macOS：点 Dock 图标。
+            //
+            // 不处理的后果：开启「关窗时释放界面内存」后窗口是真被销毁的，
+            // Dock 上图标还在但点下去什么都不发生——用户只能从菜单栏图标唤回，
+            // 而他很可能以为应用已经死了。（开关关闭时同样无反应，只不过那时
+            // 窗口至少还存在，问题没这么显眼。）
+            //
+            // `has_visible_windows` 为 true 时不管：系统自己会把窗口提到前面。
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } = event
+            {
+                show_or_create_main_window(app_handle);
+                return;
+            }
             // 关掉最后一个窗口**不应**退出应用。
             //
             // Tauri 默认行为是“所有窗口关闭 → 退出进程”，而 cc-bridge 是常驻托盘服务：

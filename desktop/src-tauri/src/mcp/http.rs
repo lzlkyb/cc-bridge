@@ -505,7 +505,7 @@ pub async fn dispatch_tool(
         let readonly = state.config.read().await.readonly_mode;
         if readonly {
             return Err(format!(
-                "只读模式已开启，已拒绝写操作 `{name}`。如需写入，请在 cc-bridge 设置页关闭「只读模式」。"
+                "只读模式已开启，已拒绝写操作 `{name}`。如需写入，请在 CC Bridge 设置页关闭「只读模式」。"
             ));
         }
     }

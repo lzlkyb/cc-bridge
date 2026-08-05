@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod backup;
+pub mod branding;
 pub mod browse;
 pub mod commands;
 pub mod config;
