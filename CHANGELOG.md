@@ -11,6 +11,30 @@
 
 > 以下为实现层面的记录，**不进更新弹框**。
 
+#### D19 完成：第 4 批拆完，`commands.rs` 2700 → **48 行**
+
+最后一批搬出剩下的 1119 行，`commands.rs` 只剩 48 行的模块聚合（含 26 行头注释），
+**零实现代码**。全过程 `main.rs` 的 `invoke_handler!` 42 项一个字未改。
+
+本批新增 5 个文件：`config_cmds.rs`（745）· `running.rs`（166）· `system.rs`（150）·
+`server.rs`（86）· `audit_cmds.rs`（68）。
+
+**config 与 config_io 最终合成一个文件**（而非规划里写的两个），理由是测试的归属：
+那两条单测一条测 `switch_root_profile`（config）、一条测 `import_config`（config_io），
+且共用同一个 `SEQ` 计数器与临时目录搭建。拆成两个文件就得把测试模块也劈开、
+复制那套 setup——收益不抵代价。✅ 测试路径现已变为
+`commands::config_cmds::tests::…` 且两条均通过，证明它们真的跟着被测代码走了——
+其中 `switch_root_profile_refreshes_cached_roots` 是**安全回归测试**（切组后漏刷
+`canonicalized_roots` 是安全缺陷，不是显示问题），留在聚合文件里就断了守护。
+
+本批只报了 1 条错，但很典型：`running.rs` 的 `Ordering` unused——`get_command_output`
+**函数体内部自己就有一份局部 `use`**，而我按“扫到 Ordering 就引一下”又在顶部加了一份。
+局部 `use` 这种写法靠顶层扫描看不出来，只能靠 `-D warnings`。
+
+**四批总计**：2700 行 → 9 个子模块 + 48 行聚合。指纹校验全程证明原有 **75 项逐字未变**
+（最终差异列表里没有一条 `<`，新增 18 项正好是 9 个 `mod` + 9 个 `pub use`）。
+安全函数 `assert_backup_path_in_scope` 始终私有，暴露面未扩大。
+
 #### D19 方案 C 第 3 批：状态遥测与防火墙拆出
 
 搬出 514 行，`commands.rs` **1675 → 1167 行**（累计从 2700 降 **57%**）。
