@@ -254,6 +254,53 @@ fn refresh_tray(
     *g = (running, tip.to_string());
 }
 
+/// 刷新网卡缓存 → 判定地址是否变化 → 更新托盘 tooltip → 必要时弹通知。一整套。
+///
+/// **为何抽成函数**：这套逻辑原本只长在「本机地址变化事件」那个 task 里，而那个 task 在
+/// 非 Windows 上（`ip_watch::spawn` 是空实现）会直接退出——于是 mac 上托盘提示与桌面通知
+/// 就永远不会出现。现在两个 task 共用它：
+/// - **5s 轮询 task**：主力。所有平台都跑，保证能力不依赖 OS 事件。
+/// - **事件 task**（仅 Windows 实际生效）：低延迟加速器，收到 OS 通知就立即跑一轮。
+///
+/// `alerting` 必须是**两个 task 共享**的（所以是 `Arc<AtomicBool>` 而不是局部 `let mut`）：
+/// 否则 Windows 上事件 task 弹完通知、轮询 task 5s 后看到自己那份 `alerting` 还是 false，
+/// 会把同一次地址变化重复弹一遍。
+async fn refresh_and_report_ip_change(
+    handle: &tauri::AppHandle,
+    state: &std::sync::Arc<state::AppState>,
+    last_tray: &std::sync::Arc<std::sync::Mutex<(bool, String)>>,
+    alerting: &std::sync::atomic::AtomicBool,
+) {
+    // 刷新缓存与判定合一，避免二次网卡枚举。
+    let ips = state.refresh_lan_ips();
+    let last_ip = state.config.read().await.last_selected_ip.clone();
+    let changed = match &last_ip {
+        Some(ip) => !ips.contains(ip),
+        None => false,
+    };
+    let running = state
+        .mcp_running
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if let Some(tray) = handle.tray_by_id("main-tray") {
+        // tooltip：地址变化优先提示，否则显示运行状态
+        let tip = if changed {
+            branding::TRAY_TIP_IP_CHANGED
+        } else if running {
+            branding::TRAY_TIP_RUNNING
+        } else {
+            branding::TRAY_TIP_STOPPED
+        };
+        // 去重刷新（图标随运行状态；地址变化仅改 tooltip）。
+        // 这也是轮询 task 每 5s 调它也不会造成图标闪烁的原因：同状态直接返回。
+        refresh_tray(&tray, running, tip, last_tray);
+    }
+    // 只在「从未变到已变」的边沿弹一次，否则轮询会每 5s 弹一个。
+    let was = alerting.swap(changed, std::sync::atomic::Ordering::Relaxed);
+    if changed && !was {
+        notify_toast(handle, "网络地址已变化，点击查看新连接命令");
+    }
+}
+
 /// G1 修复：后台周期任务加 panic 恢复。之前 4 个 tauri::async_runtime::spawn 循环任一 panic 后，该循环会
 /// 永久静默停止（托盘不刷新/命令注册表不回收/防火墙缓存过期等），用户和日志都无感知。
 /// 用 JoinHandle 的 panic 检测做自愈：内层任务 panic → 记录错误日志 → 短暂延迟后重新 spawn。
@@ -629,17 +676,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 之前用 tokio::select! 把「15s 兜底」与「OS 事件」合在一个 task，OS 事件高频时
             // 兜底分支长期抢不到执行，导致 DHCP 续租 / 同网卡换 IP 这类 OS 不通知的变化漏检、
             // 前端连接页 IP 不刷新。现拆成两个独立 task，彻底消除 select 竞争：
-            //   - 轮询 task：每 5s 无条件刷新网卡缓存（保证缓存新鲜，根治漏检/饿死）。
-            //   - 事件 task：OS 通知触发时做防抖合并 + 刷新缓存 + 更新托盘 tooltip / 弹通知。
+            //   - 轮询 task：每 5s 跑全套（刷新缓存 + 判定变化 + 托盘 tooltip + 通知）。**所有平台**。
+            //   - 事件 task：OS 通知触发时做防抖合并后跑同一套，仅作低延迟加速（实际仅 Windows 生效）。
+            //
+            // 为何轮询 task 必须跑全套（而不是只 `refresh_lan_ips()`）：事件 task 在非 Windows 上
+            // 会因通道关闭而直接退出（`ip_watch::spawn` 是空实现）。若只有事件 task 做判定，
+            // mac 上托盘提示与桌面通知就永远不会出现。之前就是这么写的，而那个能力在 mac 上
+            // “能用”只是因为那个 task 当时在以 100% CPU 空转——修掉热循环后它就露馅了。
+            //
+            // `ip_alerting` 两个 task 共享，防止同一次地址变化被弹两次通知。
+            let ip_alerting = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             {
                 let poll_state = app_state.clone();
+                let poll_handle = app.handle().clone();
+                let poll_last_tray = last_tray.clone();
+                let poll_alerting = ip_alerting.clone();
                 spawn_supervised("本机地址轮询刷新", move || {
                     let poll_state = poll_state.clone();
+                    let poll_handle = poll_handle.clone();
+                    let poll_last_tray = poll_last_tray.clone();
+                    let poll_alerting = poll_alerting.clone();
                     Box::pin(async move {
                         let mut poll = tokio::time::interval(std::time::Duration::from_secs(5));
                         loop {
                             poll.tick().await;
-                            poll_state.refresh_lan_ips();
+                            refresh_and_report_ip_change(
+                                &poll_handle,
+                                &poll_state,
+                                &poll_last_tray,
+                                &poll_alerting,
+                            )
+                            .await;
                         }
                     })
                 });
@@ -648,18 +715,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let handle = app.handle().clone();
                 let watch_state = app_state.clone();
                 let last_tray = last_tray.clone();
+                let event_alerting = ip_alerting.clone();
                 // 事件驱动 IP 变化检测（Windows iphlpapi NotifyAddrChange）。
                 // ip_watch::spawn 在专用阻塞线程上等待 OS 通知，通过 channel 通知 async 端。
                 spawn_supervised("本机地址变化事件", move || {
                     let handle = handle.clone();
                     let watch_state = watch_state.clone();
                     let last_tray = last_tray.clone();
+                    let event_alerting = event_alerting.clone();
                     // 每次 panic 自愈重启时重建 channel；旧监听线程会在下次地址变化时
                     // 发现 send 失败并自行退出（它全程阻塞不吃 CPU）。
                     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
                     crate::ip_watch::spawn(tx);
                     Box::pin(async move {
-                        let mut alerting = false;
                         loop {
                             // 通道关闭（recv 返回 None）说明生产端已经没了，必须退出。
                             //
@@ -704,33 +772,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // 窗口内仍有通知到达，继续吸收
                                 coalesced += 1;
                             }
-                            // IP 变化通知到达：重扫网卡写回缓存，并据此判断 changed
-                            // （刷新缓存与判断合一，避免二次网卡枚举）。
-                            let ips = watch_state.refresh_lan_ips();
-                            let last_ip = watch_state.config.read().await.last_selected_ip.clone();
-                            let changed = match &last_ip {
-                                Some(ip) => !ips.contains(ip),
-                                None => false,
-                            };
-                            let running = watch_state
-                                .mcp_running
-                                .load(std::sync::atomic::Ordering::Relaxed);
-                            if let Some(tray) = handle.tray_by_id("main-tray") {
-                                // tooltip：地址变化优先提示，否则显示运行状态
-                                let tip = if changed {
-                                    branding::TRAY_TIP_IP_CHANGED
-                                } else if running {
-                                    branding::TRAY_TIP_RUNNING
-                                } else {
-                                    branding::TRAY_TIP_STOPPED
-                                };
-                                // 去重刷新（图标随运行状态；地址变化仅改 tooltip）
-                                refresh_tray(&tray, running, tip, &last_tray);
-                            }
-                            if changed && !alerting {
-                                notify_toast(&handle, "网络地址已变化，点击查看新连接命令");
-                            }
-                            alerting = changed;
+                            // OS 通知到达：跑与轮询 task 完全相同的一套（共享 `ip_alerting`，
+                            // 所以不会与轮询重复弹通知）。本 task 的唯一价值就是**低延迟**：
+                            // 不用等到下一个 5s tick。
+                            refresh_and_report_ip_change(
+                                &handle,
+                                &watch_state,
+                                &last_tray,
+                                &event_alerting,
+                            )
+                            .await;
                         }
                     })
                 });
