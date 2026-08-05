@@ -4,6 +4,18 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.4.2",
+    date: "2026-08-05",
+    items: [
+      { category: "fix", text: "macOS 上 CPU 一直占着一个核心跑满（mac 版自首发以来一直存在）。本机地址变化的监听任务在 mac 上陷入了空转，并且每转一圈都去重新枚举一遍网卡。Windows 不在此影响范围" },
+      { category: "fix", text: "顺这个问题一并修好了一件 mac 上本来就不对的事：地址变化时的托盘悬浮提示与桌面通知。它们原本挂在上述那个空转的任务上，在 mac 上“能用”仅仅是因为它在烧 CPU；现已改由应用自带的 5 秒轮询负责，不再依赖系统级事件。界面上的地址变化提醒（顶部徽章 / 横幅 / 连接页提示）从未受此影响" },
+      { category: "improve", text: "5s 轮询 task：主力，所有平台都跑全套 → 能力不再依赖 OS 事件。" },
+      { category: "improve", text: "事件 task（实际仅 Windows 生效）：降为低延迟加速器，收到通知就立即跑一轮，不用等下个 tick。 `alerting` 从局部 `let mut` 改成两个 task 共享的 `Arc<AtomicBool>`，否则 Windows 上事件 task 弹完通知、轮询 task 5s 后看到自己那份还是 `false`，会把同一次地址变化重复弹一遍。用 `swap()` 取边沿，只在「从未变到已变」时弹。 对 Windows 的行为变化：轮询 task 现在也会每 5s 刷一次托盘。不会引起图标闪烁——`refresh_tray` 本身就带去重（`last_tray` 缓存，同状态直接返回），那本来就是为修图标闪烁加的。 尚未做的：消费循环仍内联在 `main.rs` 的 `setup` 闭包里，无法直接单测“sender 掉了就退出”。抽成独立函数是对的，但那是重构，不应与一个线上 100% CPU 故障的修复混在一起，留作单独一轮。 最后一批搬出剩下的 1119 行，`commands.rs` 只剩 48 行的模块聚合（含 26 行头注释）， 零实现代码。全过程 `main.rs` 的 `invoke_handler!` 42 项一个字未改。 本批新增 5 个文件：`config_cmds.rs`（745）· `running.rs`（166）· `system.rs`（150）· `server.rs`（86）· `audit_cmds.rs`（68）。 config 与 config_io 最终合成一个文件（而非规划里写的两个），理由是测试的归属： 那两条单测一条测 `switch_root_profile`（config）、一条测 `import_config`（config_io）， 且共用同一个 `SEQ` 计数器与临时目录搭建。拆成两个文件就得把测试模块也劈开、 复制那套 setup——收益不抵代价。✅ 测试路径现已变为 `commands::config_cmds::tests::…` 且两条均通过，证明它们真的跟着被测代码走了—— 其中 `switch_root_profile_refreshes_cached_roots` 是安全回归测试（切组后漏刷 `canonicalized_roots` 是安全缺陷，不是显示问题），留在聚合文件里就断了守护。 本批只报了 1 条错，但很典型：`running.rs` 的 `Ordering` unused——`get_command_output` 函数体内部自己就有一份局部 `use`，而我按“扫到 Ordering 就引一下”又在顶部加了一份。 局部 `use` 这种写法靠顶层扫描看不出来，只能靠 `-D warnings`。 四批总计：2700 行 → 9 个子模块 + 48 行聚合。指纹校验全程证明原有 75 项逐字未变 （最终差异列表里没有一条 `<`，新增 18 项正好是 9 个 `mod` + 9 个 `pub use`）。 安全函数 `assert_backup_path_in_scope` 始终私有，暴露面未扩大。 搬出 514 行，`commands.rs` 1675 → 1167 行（累计从 2700 降 57%）。" },
+      { category: "improve", text: "`commands/status.rs`（439 行）——`get_status` 与它的四个响应结构体。只有 1 个命令却占 416 行： 结构体占一半，剩下是聚合逻辑（配置快照 / 统计 / 限流 / LAN 地址 / 工具计数 / 防火墙缓存 / 平台标识）。 前端每 5s 轮询它，所以它同时是性能话题（清单 M2 / M14）的主角——单独成文件后再动它不会再摊到大文件。" },
+      { category: "improve", text: "`commands/firewall_cmds.rs`（117 行）——刷新缓存 / 一键放行 / 诊断三个命令。命名同样要避开 `crate::firewall` 与 `crate::firewall_diag` 两个已有模块（与第 2 批 `backup_cmds` 同一理由）。 这三个命令是 Windows 专属能力，但函数本身不带 `cfg`——平台差异在 `crate::firewall` 内部处理， 前端则按 `platform` 字段隐藏整张卡片（清单 N4），所以本次无需处理 cfg 分支。 本批编译报了 5 条 unused import，全是随 status 域走后失效的：`Ordering` / `Duration` / `Instant` / `TcpStream` / `timeout` / `crate::backup`——`get_status` 是它们在 `commands.rs` 里的唯一用户 （轮询计时、TCP 探活、备份统计）。两批下来已能看出规律：每拆一个域，`commands.rs` 的 imports 就瘦一层，而 `-D warnings` 会把漏删的那几条逐一点名。 四道校验全过：指纹原有 75 项逐字未变（新增 8 项全是 `mod` 与 `pub use`）· 双口径 clippy 干净 · `cargo test --no-default-features` 160 + 4 passed · `main.rs` 仍零改动。 搬出 737 行（10 个命令），`commands.rs` 2409 → 1675 行（累计从 2700 降 38%）。 这一域在原文件里被 running_commands 割成了两段（原 1052–1314 与 1687–2160），本次合为一处， 两段相对顺序保持不变以便与原文件对照。 文件名叫 `backup_cmds` 而不是 `backup`：`crate::backup`（`src/backup.rs`）已存在，而 `commands.rs` 顶部有 `use crate::backup;`。子模块同名会与它冲突——幸好是编译错而非静默覆盖， 但没必要赌这个。 本批证明了那套校验真能抓东西——编译报了 3 个错，全在规划时列出的风险类别里： 1. `E0599: no method named creation_flags`——`reveal_backup_dir` 的 Windows 分支要用 `Command::creation_flags`（CREATE_NO_WINDOW，不加会闪黑框），它依赖的 `use std::os::windows::process::CommandExt;` 带着 `#[cfg(windows)]`，搬动时漏了。 补上时必须同样 cfg 门控：不门控则本机 clippy 过、mac clippy 红，而 mac 那边本地看不到。 2. `unused import: std::path::PathBuf`——随备份域走了，`commands.rs` 里只剩测试模块在用 （那里自带 `use`）。 3. `unused import: similar::TextDiff`——彻底无人用。 ✅ 安全边界保住：`assert_backup_path_in_scope`（canonicalize 后做前缀校验，杜绝用备份通道 越权读写任意文件）拆后仍是私有的——它的 7 处调用全在本模块内，因此不需也不得改成 `pub` （规则 7：安全模块不得削弱）。 四道校验全过：指纹原有 75 项逐字未变（新增 4 项全是模块声明）· 双口径 clippy 干净 · `cargo test --no-default-features` 160 + 4 passed · `main.rs` 仍零改动。 `commands.rs` 从立项时的 1556 行长到了 2700 行（42 个 IPC 命令）。本批搬出 297 行，降至 2409 行。 为何拿 update 打头阵：它的 4 个私有辅助（`retry_with_backoff` / `resolve_update_endpoints` / `candidate_endpoint_groups` / `build_updater`）全部只被本模块调用，与其它域零耦合。拿它来验证 「`pub use` 重导出 + `main.rs` 的 `invoke_handler!` 零改动」这套机制——机制若不成立，42 项命令 会同时报错，在这里暴露远比在大搬动里暴露好查。结果：机制成立，`main.rs` 一个字未改。 新增 `tools/fingerprint.py`——纯搬动重构的等价性校验器。 为何需要它：`commands.rs` 自己 只有 2 条测试（覆盖 42 个命令中的 2 个），所以「`cargo test` 全绿」根本不能证明命令没坏； 而大搬动的 diff 也无法逐行审。它按「列 0 出现的顶层项」切块，对每块规范化后算 md5： 搬动只改变块的所在文件与顺序，不改内容，所以哈希集合必须逐字相同。 校验器本身先做了三个对照实验（一个抓不到改动的校验器毫无价值）：① 把 update 那 297 行整块 搬到文件开头 → 0 差异；② 偷改退避基数 `1u64 <<` → `2u64 <<`（一个字符）→ 精确只报 `retry_with_backoff`；③ 搬动与篡改同时发生 → 仍只报那一条。 首次实战就抓到了一个校验器自己的缺陷：`ITEM` 正则只把 `///` / `//!` 当块起点，漏了列 0 的 普通 `//` 注释，于是 `// ===== 自动更新 =====` 这类区段分隔注释被并进了前一个函数的块， 搬动后 `import_config` 与 `check_update` 哈希无故变化。已修正正则并在注释里记下这个坑。 本批四道校验全过：① 指纹 75 项逐字一致（差异仅新增 `mod update;` 与 `pub use update::*;` 两项）； ② `clippy --all-targets -D warnings` 与 `--no-default-features`（mac CI 口径）均干净； ③ `cargo test --no-default-features` 160 + 4 passed；④ 私有辅助未被改成 `pub`，暴露面未扩大。" },
+    ],
+  },
+  {
     version: "2.4.1",
     date: "2026-08-05",
     items: [
@@ -246,16 +258,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "网络变化时连接页 IP 未刷新：后端改为独立 5s 轮询刷新地址，前端监听 online/focus 事件并在连接页提供手动刷新按钮。" },
       { category: "fix", text: "设置小红点每次进入软件都显示：首屏 status 未加载时不再误判为全部未读；进入设置页即标记已读。" },
       { category: "fix", text: "连接页 4 个卡片默认全展开：改为默认折叠、单选聚焦，老用户不再被引导霸屏。" },
-    ],
-  },
-  {
-    version: "2.3.13",
-    date: "2026-07-22",
-    items: [
-      { category: "fix", text: "执行命令弹出黑框：发布版执行 cmd/bash 命令不再弹出黑色控制台窗口，命令在后台安静执行。" },
-      { category: "fix", text: "关于卡片无故展开：没有新版本更新时，关于页「更新历史」卡片不再自动展开红点提示。" },
-      { category: "improve", text: "后台命令整行可点：运行中或已结束的后台命令列表，点击整行即可展开查看输出，不必再精准点「查看输出」按钮。" },
-      { category: "improve", text: "write_files 覆盖已有文件时自动保留原编码：原文件是 GBK 等中文编码时，会探测并沿用原编码，不再默认按 UTF-8 覆写导致中文乱码；新建文件或关闭自动识别时仍按 UTF-8。" },
     ],
   },
 ];
