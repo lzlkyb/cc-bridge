@@ -7,6 +7,36 @@
 
 ## [Unreleased]
 
+### 技术细节
+
+> 以下为实现层面的记录，**不进更新弹框**。
+
+#### D19 方案 C 第 1 批：自动更新拆到 `commands/update.rs`
+
+`commands.rs` 从立项时的 1556 行长到了 2700 行（42 个 IPC 命令）。本批搬出 297 行，降至 2409 行。
+
+**为何拿 update 打头阵**：它的 4 个私有辅助（`retry_with_backoff` / `resolve_update_endpoints` /
+`candidate_endpoint_groups` / `build_updater`）全部只被本模块调用，与其它域零耦合。拿它来验证
+「`pub use` 重导出 + `main.rs` 的 `invoke_handler!` 零改动」这套机制——机制若不成立，42 项命令
+会同时报错，在这里暴露远比在大搬动里暴露好查。**结果：机制成立**，`main.rs` 一个字未改。
+
+**新增 `tools/fingerprint.py`——纯搬动重构的等价性校验器。** 为何需要它：`commands.rs` 自己
+只有 2 条测试（覆盖 42 个命令中的 2 个），所以「`cargo test` 全绿」根本不能证明命令没坏；
+而大搬动的 diff 也无法逐行审。它按「列 0 出现的顶层项」切块，对每块规范化后算 md5：
+搬动只改变块的所在文件与顺序，不改内容，所以哈希集合必须逐字相同。
+
+校验器本身先做了三个对照实验（一个抓不到改动的校验器毫无价值）：① 把 update 那 297 行整块
+搬到文件开头 → 0 差异；② 偷改退避基数 `1u64 <<` → `2u64 <<`（**一个字符**）→ 精确只报
+`retry_with_backoff`；③ 搬动与篡改同时发生 → 仍只报那一条。
+
+首次实战就抓到了一个**校验器自己的缺陷**：`ITEM` 正则只把 `///` / `//!` 当块起点，漏了列 0 的
+普通 `//` 注释，于是 `// ===== 自动更新 =====` 这类区段分隔注释被并进了**前一个函数**的块，
+搬动后 `import_config` 与 `check_update` 哈希无故变化。已修正正则并在注释里记下这个坑。
+
+**本批四道校验全过**：① 指纹 75 项逐字一致（差异仅新增 `mod update;` 与 `pub use update::*;` 两项）；
+② `clippy --all-targets -D warnings` 与 `--no-default-features`（mac CI 口径）均干净；
+③ `cargo test --no-default-features` 160 + 4 passed；④ 私有辅助未被改成 `pub`，暴露面未扩大。
+
 ## [2.4.1] - 2026-08-05
 
 ### 更新摘要
