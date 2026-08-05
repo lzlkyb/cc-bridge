@@ -11,6 +11,33 @@
 
 > 以下为实现层面的记录，**不进更新弹框**。
 
+#### D19 方案 C 第 2 批：备份域拆到 `commands/backup_cmds.rs`
+
+搬出 737 行（10 个命令），`commands.rs` **2409 → 1675 行**（累计从 2700 降 38%）。
+这一域在原文件里**被 running_commands 割成了两段**（原 1052–1314 与 1687–2160），本次合为一处，
+两段相对顺序保持不变以便与原文件对照。
+
+**文件名叫 `backup_cmds` 而不是 `backup`**：`crate::backup`（`src/backup.rs`）已存在，而
+`commands.rs` 顶部有 `use crate::backup;`。子模块同名会与它冲突——幸好是编译错而非静默覆盖，
+但没必要赌这个。
+
+**本批证明了那套校验真能抓东西**——编译报了 3 个错，全在规划时列出的风险类别里：
+
+1. **`E0599: no method named creation_flags`**——`reveal_backup_dir` 的 Windows 分支要用
+   `Command::creation_flags`（CREATE_NO_WINDOW，不加会闪黑框），它依赖的
+   `use std::os::windows::process::CommandExt;` 带着 `#[cfg(windows)]`，**搬动时漏了**。
+   补上时必须同样 cfg 门控：不门控则本机 clippy 过、mac clippy 红，而 mac 那边本地看不到。
+2. **`unused import: std::path::PathBuf`**——随备份域走了，`commands.rs` 里只剩测试模块在用
+   （那里自带 `use`）。
+3. **`unused import: similar::TextDiff`**——彻底无人用。
+
+✅ **安全边界保住**：`assert_backup_path_in_scope`（canonicalize 后做前缀校验，杜绝用备份通道
+越权读写任意文件）拆后**仍是私有的**——它的 7 处调用全在本模块内，因此不需也不得改成 `pub`
+（规则 7：安全模块不得削弱）。
+
+四道校验全过：指纹原有 75 项逐字未变（新增 4 项全是模块声明）· 双口径 clippy 干净 ·
+`cargo test --no-default-features` 160 + 4 passed · `main.rs` 仍零改动。
+
 #### D19 方案 C 第 1 批：自动更新拆到 `commands/update.rs`
 
 `commands.rs` 从立项时的 1556 行长到了 2700 行（42 个 IPC 命令）。本批搬出 297 行，降至 2409 行。
