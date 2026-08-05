@@ -11,6 +11,26 @@
 
 > 以下为实现层面的记录，**不进更新弹框**。
 
+#### D19 方案 C 第 3 批：状态遥测与防火墙拆出
+
+搬出 514 行，`commands.rs` **1675 → 1167 行**（累计从 2700 降 **57%**）。
+
+- `commands/status.rs`（439 行）——`get_status` 与它的四个响应结构体。只有 1 个命令却占 416 行：
+  结构体占一半，剩下是聚合逻辑（配置快照 / 统计 / 限流 / LAN 地址 / 工具计数 / 防火墙缓存 / 平台标识）。
+  前端每 5s 轮询它，所以它同时是性能话题（清单 M2 / M14）的主角——单独成文件后再动它不会再摊到大文件。
+- `commands/firewall_cmds.rs`（117 行）——刷新缓存 / 一键放行 / 诊断三个命令。命名同样要避开
+  `crate::firewall` 与 `crate::firewall_diag` 两个已有模块（与第 2 批 `backup_cmds` 同一理由）。
+  这三个命令是 Windows 专属能力，但函数本身不带 `cfg`——平台差异在 `crate::firewall` 内部处理，
+  前端则按 `platform` 字段隐藏整张卡片（清单 N4），所以本次无需处理 cfg 分支。
+
+本批编译报了 5 条 unused import，全是随 status 域走后失效的：`Ordering` / `Duration` / `Instant` /
+`TcpStream` / `timeout` / `crate::backup`——`get_status` 是它们在 `commands.rs` 里的唯一用户
+（轮询计时、TCP 探活、备份统计）。两批下来已能看出规律：**每拆一个域，`commands.rs` 的
+ imports 就瘦一层**，而 `-D warnings` 会把漏删的那几条逐一点名。
+
+四道校验全过：指纹原有 75 项逐字未变（新增 8 项全是 `mod` 与 `pub use`）· 双口径 clippy 干净 ·
+`cargo test --no-default-features` 160 + 4 passed · `main.rs` 仍零改动。
+
 #### D19 方案 C 第 2 批：备份域拆到 `commands/backup_cmds.rs`
 
 搬出 737 行（10 个命令），`commands.rs` **2409 → 1675 行**（累计从 2700 降 38%）。
