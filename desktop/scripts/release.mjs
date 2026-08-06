@@ -165,7 +165,12 @@ async function main() {
 
   // 消费 ## [Unreleased]：把其用户向小节并入本次发布，并从 CHANGELOG 删除该段，
   // 避免「Unreleased 永远留着 / 下次又踩」以及本次发布漏写已积累条目。
-  const unrelMatch = changelog.match(/^##\s+\[Unreleased\][\s\S]*?(?=\n##\s+\[|$)/m);
+  // ⚠ 结尾那个 `$` 必须写成 `$(?![\s\S])`（真正的整串结尾）。
+  // 带 `m` 标记时 `$` 匹配的是**行尾**，惰性量词 `[\s\S]*?` 会在
+  // `## [Unreleased]` 这一行的行尾就停住——结果只删掉标题行、一条 `###` 项目也没收集到，
+  // 整段 Unreleased 内容被孤零零留在文件抬头（不属于任何版本段），
+  // 而新版本段只包含 git log 自动分类出的那几条。v2.5.0 发版时就踩上了。
+  const unrelMatch = changelog.match(/^##\s+\[Unreleased\][\s\S]*?(?=\n##\s+\[|$(?![\s\S]))/m);
   if (unrelMatch) {
     const body = unrelMatch[0];
     const skipSec = new Set([
