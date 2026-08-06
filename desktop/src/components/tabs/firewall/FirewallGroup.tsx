@@ -48,7 +48,10 @@ export function FirewallGroup({ onRefresh }: { onRefresh?: () => void }) {
         : `${Math.floor(data.checkedSecondsAgo / 60)} 分钟前检查`;
 
   return (
-    <Card>
+    // id 供锚点定位：命令面板与连接页链路图的「防火墙」段都靠它跳过来。
+    // 与 `SETTING_SEARCH_ITEMS` 里的 `anchor: "set-firewall"` 对应（SettingsTab 先试
+    // `toggle-<a>` 再回退到字面 id，所以这里用完整 id）。
+    <Card id="set-firewall">
       <CardHeader>
         <CardTitle icon={<Icon name="shield" />}>
           防火墙

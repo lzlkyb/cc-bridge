@@ -104,6 +104,7 @@ function AppContent() {
   }, [status?.ipChanged]);
   const handleDismissIpChange = useCallback(() => setIpChangeDismissed(true), []);
 
+
   // 首次使用引导
   const [showOnboarding, setShowOnboarding] = useState(false);
   useEffect(() => {
@@ -287,7 +288,7 @@ function AppContent() {
         </div>
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-5">
           <TabsContent value="connect">
-            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} />
+            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} />
           </TabsContent>
           <TabsContent value="security">
             <Suspense fallback={<TabFallback />}>
@@ -301,7 +302,8 @@ function AppContent() {
           </TabsContent>
           <TabsContent value="log" className="h-full">
             <Suspense fallback={<TabFallback />}>
-              <LogTab />
+              {/* highlightAnchor 传同一份 pendingAnchor：本页只认 "perf"（展开性能面板）。 */}
+              <LogTab highlightAnchor={pendingAnchor} />
             </Suspense>
           </TabsContent>
         </main>

@@ -47,6 +47,9 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-release-webview", label: "关窗时释放界面内存", icon: "monitor", group: "设置 · 高级", tab: "settings", anchor: "release-webview", keywords: "内存 memory webview 占用 关窗" },
 
   { id: "set-network", label: "监听端口 / MCP 传输协议", icon: "server", group: "设置 · 其它", tab: "settings", anchor: "set-network", keywords: "port 7823 端口 transport http sse 协议" },
+  // 仅 Windows 渲染（`SettingsTab` 里有 isWindows 守卫）。非 Windows 上点了会跳到设置页但
+  // 找不到锚点——SettingsTab 的定位 effect 对找不到的 id 是静默返回的，不会报错。
+  { id: "set-firewall", label: "防火墙规则与一键修复", icon: "shield", group: "设置 · 其它", tab: "settings", anchor: "set-firewall", keywords: "firewall netsh 入站 放行 端口 拦截 远程连不上" },
   { id: "set-app", label: "开机自动启动", icon: "power", group: "设置 · 其它", tab: "settings", anchor: "set-app", keywords: "autostart 开机启动 开机自启" },
   { id: "set-install", label: "安装与快捷方式", icon: "package", group: "设置 · 其它", tab: "settings", anchor: "set-install", keywords: "install 快捷方式 桌面 安装目录" },
   { id: "set-config", label: "导入 / 导出 / 重置配置", icon: "download", group: "设置 · 其它", tab: "settings", anchor: "set-config", keywords: "import export reset 备份配置 恢复默认" },

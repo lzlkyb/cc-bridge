@@ -13,6 +13,7 @@ import {
   buildHealthCheck,
   buildTokenSedCommand,
   buildPermissionGrantCommand,
+  formatUptime,
 } from "./utils";
 import type { StatusResponse } from "./types";
 
@@ -156,5 +157,32 @@ describe("buildPermissionGrantCommand", () => {
     const cmd = buildPermissionGrantCommand("user", "", true);
     expect(cmd).toContain("d['enableAllProjectMcpServers'] = True");
     expect(cmd).toContain("'cc-bridge' not in servers");
+  });
+});
+
+describe("formatUptime（中文时长）", () => {
+  it("不足一分钟给到秒（刚启动时能看到跳）", () => {
+    expect(formatUptime(0)).toBe("0秒");
+    expect(formatUptime(45)).toBe("45秒");
+  });
+
+  it("分钟级给「X分Y秒」", () => {
+    expect(formatUptime(60)).toBe("1分0秒");
+    expect(formatUptime(125)).toBe("2分5秒");
+  });
+
+  it("小时级只给两级：「X小时Y分」，不再带秒", () => {
+    expect(formatUptime(3600)).toBe("1小时0分");
+    expect(formatUptime(3600 + 22 * 60 + 13)).toBe("1小时22分");
+  });
+
+  it("超过一天进位到「X天Y小时」", () => {
+    expect(formatUptime(86400)).toBe("1天0小时");
+    expect(formatUptime(3 * 86400 + 14 * 3600 + 59 * 60)).toBe("3天14小时");
+  });
+
+  it("负数与小数不产生怪值", () => {
+    expect(formatUptime(-5)).toBe("0秒");
+    expect(formatUptime(45.9)).toBe("45秒");
   });
 });

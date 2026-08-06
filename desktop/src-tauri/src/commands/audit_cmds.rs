@@ -33,6 +33,19 @@ pub async fn get_audit_log(
     audit::read_page(&state.data_dir, page, page_size)
 }
 
+/// 连接页「最近活动」：尾部读取最近 n 条审计（默认 3）。
+///
+/// 🔴 **不能用 `get_audit_log` 代替**：那条路径的缓存键含 mtime/len，而审计是追加写，
+/// 远程一活跃就次次缓存未命中 → 全量重解析整个 audit.log。连接页是默认停留页，
+/// 按 5s 轮询会把它变成持续的 CPU 与内存开销。详见 `audit::read_recent_tail` 头注释。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_recent_activity(
+    state: State<'_, Arc<AppState>>,
+    n: Option<u32>,
+) -> Result<Vec<audit::AuditEntry>, String> {
+    audit::read_recent_tail(&state.data_dir, n.unwrap_or(3) as usize)
+}
+
 #[tauri::command]
 pub async fn clear_audit_log(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     audit::clear_all(&state.data_dir)

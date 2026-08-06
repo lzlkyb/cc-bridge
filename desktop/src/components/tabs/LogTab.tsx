@@ -1,4 +1,4 @@
-import { useState, useMemo, Fragment, memo } from "react";
+import { useState, useMemo, useEffect, useRef, Fragment, memo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toolLabel, formatDurationMs, formatVersion, copyText } from "../../lib/utils";
@@ -61,7 +61,18 @@ function perfSummaryLine(entries: AuditEntry[]): string {
   return `P95 ${Math.round(p95)}ms · ${toolLabel(topTool)} 占 ${((topSum / total) * 100).toFixed(1)}% · 错误率 ${errRate.toFixed(1)}%`;
 }
 
-function LogTabImpl() {
+function LogTabImpl({
+  highlightAnchor,
+}: {
+  /**
+   * 跳转锚点。与设置页 / Header 安全徽章同一套机制（App 的 `pendingAnchor`）。
+   *
+   * 本页目前只认 `"perf"`：展开性能分析面板并滚到它。
+   * 为何复用 anchor 而不新加一个 `openPerf` props：App 已经在维护 `pendingAnchor`，
+   * 再开一条平行管线会出现两套“跳转意图”要同步。
+   */
+  highlightAnchor?: { anchor: string; nonce: number } | null;
+}) {
   // 分页状态（策略 A：页码分页）。page/pageSize 变化即触发按页重新拉取。
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -84,6 +95,18 @@ function LogTabImpl() {
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [showPerf, setShowPerf] = useState(false);
+  const perfBtnRef = useRef<HTMLButtonElement>(null);
+
+  // 深链到性能面板：连接页的「P95 延迟」卡点击后跳这里。
+  // 依赖 nonce 而不是 anchor：同一个锚点连点两次也要再触发一次（anchor 不变，nonce 变）。
+  useEffect(() => {
+    if (highlightAnchor?.anchor !== "perf") return;
+    setShowPerf(true);
+    // rAF 等展开后的布局落定再滚，否则滚到的是展开前的位置。
+    requestAnimationFrame(() => {
+      perfBtnRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [highlightAnchor?.anchor, highlightAnchor?.nonce]);
 
   // 性能分析面板独立拉取最近 500 条（后端 page_size 上限），避免统计口径只覆盖当前分页页。
   // 仅在面板展开时启用，关闭时不轮询、不占用请求。
@@ -337,6 +360,8 @@ function LogTabImpl() {
           <div className="mb-3">
             <button
               type="button"
+              id="log-perf"
+              ref={perfBtnRef}
               onClick={() => setShowPerf((v) => !v)}
               className="flex w-full items-center justify-between rounded-md border bg-muted/30 px-3 py-2 text-left transition-colors hover:bg-muted/50"
             >

@@ -16,7 +16,7 @@ import { Switch } from "../ui/switch";
 import { Alert } from "../ui/alert";
 import { useToast } from "../ui/toast";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
-import { ConnectHero } from "./ConnectHero";
+import { ConnectBento } from "./ConnectBento";
 import { TokenManager } from "./TokenManager";
 import { IpChangedBanner } from "./connect/IpChangedBanner";
 import { FirewallAlertBlock } from "./connect/FirewallAlertBlock";
@@ -34,6 +34,7 @@ function ConnectTabImpl({
   onSedResolved,
   dismissed,
   onDismissIpChange,
+  onNavigate,
 }: {
   status?: StaticStatus;
   onRefresh: () => void;
@@ -47,6 +48,11 @@ function ConnectTabImpl({
   dismissed?: boolean;
   /** 方案 R: 关闭按钮回调，通知 App 置 ipChangeDismissed=true */
   onDismissIpChange?: () => void;
+  /**
+   * 跨 Tab 跳转（可带锚点）。与 Header 安全徽章、命令面板同一个 `App.handleNavigate`。
+   * Bento 各卡靠它跳到对应的设置项 / 页面；不传则所有卡退化为不可点。
+   */
+  onNavigate?: (tab: string, anchor?: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const [scope, setScope] = useState<McpScope>("project");
@@ -235,24 +241,29 @@ function ConnectTabImpl({
         />
       )}
 
-      <ConnectHero
+      {/* Bento 网格：状态主卡 + 四张指标卡 + 健康/治理 + 接入向导。
+          向导作为插槽传入（它的一大堆 props 仍由本组件持有，Bento 不关心）。 */}
+      <ConnectBento
         status={status}
         displayHost={displayHost}
         port={port}
         onChanged={onRefresh}
-      />
-      <ConnectGuide
-        status={status}
-        listenAll={listenAll} lanIps={lanIps} selectedIp={selectedIp}
-        onSelectIp={onSelectIp} healthCheck={healthCheck}
-        scope={scope} setScope={setScope}
-        connectCommand={connectCommand} copied={copied} handleCopy={handleCopy}
-        projectPath={projectPath} setProjectPath={setProjectPath}
-        onRefresh={onRefresh}
-        includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
-        permissionCommand={permissionCommand} permCopied={permCopied}
-        handlePermCopy={handlePermCopy}
-        expanded={expanded} onToggle={handleToggle}
+        onNavigate={onNavigate}
+        guide={
+          <ConnectGuide
+            status={status}
+            listenAll={listenAll} lanIps={lanIps} selectedIp={selectedIp}
+            onSelectIp={onSelectIp} healthCheck={healthCheck}
+            scope={scope} setScope={setScope}
+            connectCommand={connectCommand} copied={copied} handleCopy={handleCopy}
+            projectPath={projectPath} setProjectPath={setProjectPath}
+            onRefresh={onRefresh}
+            includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
+            permissionCommand={permissionCommand} permCopied={permCopied}
+            handlePermCopy={handlePermCopy}
+            expanded={expanded} onToggle={handleToggle}
+          />
+        }
       />
     </div>
   );

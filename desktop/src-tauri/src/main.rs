@@ -301,6 +301,40 @@ async fn refresh_and_report_ip_change(
     }
 }
 
+/// 复核主窗口「是否对用户不可见」，仅在状态翻转时通知前端暂停 / 恢复轮询与动画。
+///
+/// **为何需要它（而不是只靠窗口事件）**：mac 上最小化到 Dock **不产生任何 tao 窗口事件**。
+/// 查过 tao 0.35.3 的 macOS 实现，三条都对不上：
+///   1. `WindowEvent::Resized` 全平台只从 `window_delegate.rs:122`（`windowDidResize:`）
+///      一处发出，而 AppKit 最小化时窗口尺寸没变，根本不会调它；
+///   2. 那份 window delegate 里没有 `windowDidMiniaturize` / `windowDidDeminiaturize`；
+///   3. 遮挡事件（`Occluded` / `occlusionState`）整个 crate 一处都没有。
+/// 于是 `on_window_event` 里的 `Resized` 分支在 mac 上永不触发，前端收不到
+/// `app:visibility = false`，3s / 5s 两条轮询和 CSS 动画在最小化后照常跑。
+///
+/// **为何查状态而不是补事件**：状态检查天然覆盖「任何没发事件的隐藏路径」，比逐个平台
+/// 补事件更不容易漏，也不必写 objc（那种代码在 Windows 上一行都测不到）。代价是最长 5s
+/// 才暂停——这是省电优化不是正确性问题，可以接受。Windows 侧的 `Resized` 分支保留，
+/// 它给的是 0 延迟；两条路径同真值、且前端 `recompute()` 自带去重，不会互相打架。
+///
+/// **两项必须都查**：只查 `is_minimized()` 会**破坏现有的托盘隐藏暂停**——收进托盘时窗口
+/// `is_minimized()` 是 false，会误发 `visibility = true`，把已经暂停的轮询重新打开。
+fn sync_window_visibility(handle: &tauri::AppHandle) {
+    // 窗口已销毁（「关窗时释放界面内存」开关打开时的正常路径）→ 没有前端可通知，跳过。
+    let Some(w) = handle.get_webview_window("main") else {
+        return;
+    };
+    // 任一成立即视为不可见：收进托盘 / 系统级隐藏应用 → is_visible 为 false；
+    // 最小化到 Dock 或任务栏 → is_minimized 为 true。
+    // 读失败一律按「可见」处理：宁可漏暂停，也不能误暂停，把用户正看着的界面冻住。
+    let hidden = !w.is_visible().unwrap_or(true) || w.is_minimized().unwrap_or(false);
+    // 边沿触发：不加这层，5s 一次的 tick 会稳定产生每分钟 12 次无谓 IPC。
+    static LAST_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if LAST_HIDDEN.swap(hidden, std::sync::atomic::Ordering::Relaxed) != hidden {
+        let _ = w.emit("app:visibility", !hidden);
+    }
+}
+
 /// G1 修复：后台周期任务加 panic 恢复。之前 4 个 tauri::async_runtime::spawn 循环任一 panic 后，该循环会
 /// 永久静默停止（托盘不刷新/命令注册表不回收/防火墙缓存过期等），用户和日志都无感知。
 /// 用 JoinHandle 的 panic 检测做自愈：内层任务 panic → 记录错误日志 → 短暂延迟后重新 spawn。
@@ -707,6 +741,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 &poll_alerting,
                             )
                             .await;
+                            // 顺带复核窗口可见性（原因见该函数头注释：mac 最小化不发任何窗口事件）。
+                            // 搭在这个已有的 5s tick 上，而不是为两次廉价的状态查询再起一个 task。
+                            sync_window_visibility(&poll_handle);
                         }
                     })
                 });
@@ -897,6 +934,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::import_config,
             commands::restore_file,
             commands::get_file_diff,
+            commands::get_recent_activity,
             commands::diff_backups,
             commands::reveal_backup_dir,
             commands::list_backups,
@@ -926,7 +964,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = window.emit("app:visibility", false);
                 }
             }
-            // OS 级最小化 / 还原。为何要在这里处理：
+            // OS 级最小化 / 还原。**仅 Windows 有效**——mac 上最小化到 Dock 尺寸不变，
+            // tao 不会发 `Resized`（也没有 miniaturize / 遮挡事件），详见
+            // `sync_window_visibility` 头注释；mac 的暂停由那个 5s 状态复核兜底。
+            // 为何还要保留这条事件路径：它在 Windows 上是 0 延迟的，兜底要等下一个 tick。
             // 1. Windows 上最小化只会触发 `Resized`，Tauri 没有独立的 Minimized 事件；
             // 2. WebView2 在宿主窗口最小化时**不发** visibilitychange（实测最小化前后
             //    webview CPU 从 19.9% → 17.2% 单核，几乎没降），所以前端的

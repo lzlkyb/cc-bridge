@@ -14,12 +14,16 @@ import { listen } from "@tauri-apps/api/event";
  * Tauri 事件（而不是每个消费者各订一次）。
  *
  * 信号源两路取“或”：
- * 1. Rust 侧 `app:visibility` 事件（权威）—— 托盘左键 toggle / 托盘菜单“显示” /
- *    关窗收托盘 / OS 级最小化（Resized 边缘检测）四处都会发；
+ * 1. Rust 侧 `app:visibility` 事件（权威），又分两类发送时机：
+ *    - **事件驱动**（0 延迟）—— 托盘左键 toggle / 托盘菜单“显示” / 关窗收托盘 /
+ *      OS 级最小化（`Resized` 边缘检测，**仅 Windows** 会触发）；
+ *    - **状态复核**（最长 5s 延迟，全平台）—— Rust 的 `sync_window_visibility` 每 5s
+ *      查一次 `!is_visible() || is_minimized()`，翻转时发事件。它兜住了没有对应窗口事件
+ *      的隐藏路径，典型就是 **mac 最小化到 Dock**（tao 在 macOS 上对此不发任何事件）；
  * 2. `document.hidden` —— 兜底 WebView2 自己能感知的场景。
  *
- * 已知局限：若系统既不发 visibilitychange、又不走上面四个路径（罕见），则不会暂停。
  * 取舍：宁可漏暂停也不能误暂停——后者会让可见界面的动画冻住、轮询停死。
+ * 状态复核那路的两个 `unwrap_or` 同样按这个取舍定向：读不到就当作可见。
  */
 
 let hidden = false;

@@ -256,9 +256,12 @@ body {
 /* 脉冲点涟漪：纯合成实现（只动 transform + opacity），不触发重绘。
 
    旧实现是动画 box-shadow 的 spread（0 → 8px）。box-shadow 无法走合成层，每帧都要重绘；
-   而两个使用点（Header 的 `.status-pill .p-dot`、运行卡的 `.hero-dot`）恰好都紧邻
-   `backdrop-filter: blur(4px)` 的元素（`.hero-metric` / `.hero-addr`，当时还带着，现已删），重绘会连带
+   而当时两个使用点（Header 的 `.status-pill .p-dot`、运行卡的 `.hero-dot`）恰好都紧邻
+   `backdrop-filter: blur(4px)` 的元素（`.hero-metric` / `.hero-addr`），重绘会连带
    大面积背景重新模糊。改成只动 transform/opacity 后走纯合成，这是原理层面的改善。
+
+   现在只剩 Header 那一个使用点：`.hero-dot` 随 Hero 卡一起下了，连接页的光晕
+   换成了 `.chain-ripple`（见 E4，同样只动 transform/opacity）。
 
    ╔═ 关于实测（别拿这段当定量结论）
    已确认的事实：两个 webview 进程曾实测常驻共约 0.6 个 CPU 核，且窗口收进托盘后
@@ -270,8 +273,7 @@ body {
 
    现在用与小点同尺寸的伪元素放大 + 淡出模拟同样的涟漪观感。
    颜色取 `currentColor`（旧实现硬编码天蓝），顺带让 Header 那个点的涟漪跟随状态色。 */
-.status-pill .p-dot::after,
-.hero-dot::after {
+.status-pill .p-dot::after {
   position: absolute;
   inset: 0;
   border-radius: 50%;
@@ -449,14 +451,18 @@ body {
 /* A1. 整卡呼吸 — 已移除（box-shadow 动画持续 paint，CPU 占用 ~3%）。
    改为静态 box-shadow：见 .hero 基础样式，运行态由 A5 流光 + .hero-dot 脉冲表达动态感。 */
 
-/* A2. 指标数字弹跳 — 值变化时 scale 1→1.08→1 */
+/* A2. 指标数字弹跳 — 值变化时 scale 1→1.08→1。事件驱动，值不变就不跑。
+   类名从 `.hero-metric-pop` 改成 `.metric-pop`：hero 卡已不存在，前缀只会误导。
+   驱动它的 hook 在 `hooks/useChangeClass.ts`（usePopClass）。 */
 @keyframes metric-pop {
   0%   { transform: scale(1); }
   40%  { transform: scale(1.08); }
   100% { transform: scale(1); }
 }
-.hero-metric-pop {
+.metric-pop {
   animation: metric-pop 0.3s ease;
+  /* inline-block：纯行内元素上 transform 不生效 */
+  display: inline-block;
 }
 
 /* A3. 地址胶囊流光 — 已移除（background-position 动画持续 paint，CPU 占用 ~2%）。
@@ -507,6 +513,389 @@ body {
 /* 热门工具胶囊：青色变体，与「安全治理」胶囊区分 */
 .hero-pill.tool {
   background: rgba(14, 165, 233, 0.22); border-color: rgba(14, 165, 233, 0.4);
+}
+
+/* E0. 连接页 Bento 网格（ConnectBento.tsx）
+   12 列：行1 = 状态卡(4) + 四张指标卡(2×4)；行2 = 状态卡继续占 + 健康(4) + 治理(4)；
+   行3 = 接入向导(12)。列跨度用**子选择器**而不是给每张卡加 class：
+   `MetricCards` 返回 Fragment，那四张卡拿不到外层包装，只能从父侧定位。 */
+.bento {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+/* 布局（按设计稿，**两行**）：
+     行1 = 状态(4) + 指标(2)×4 = 12
+     行2 = 状态续  + 健康(4) + 治理(4) = 12
+     行3 = 接入向导(12)
+   🔴 **列跨度必须加起来等于 12，改之前务必重新验算**。
+   曾经写过一个 `@media (max-width:1080px) { .metric-card { span 3 } }`，
+   而默认窗口就是 940px → 它一直生效 → 4 + 3×4 = **16 列**超出网格：
+   指标卡换行、把健康度与治理卡挤到第 3 行（状态卡只跨 2 行，于是它们旁边空 4 列）。 */
+.bento > .status-card { grid-column: span 4; grid-row: span 2; }
+.bento > .metric-card { grid-column: span 2; }
+.bento > .bento-card  { grid-column: span 4; }
+.bento > .bento-span12 { grid-column: span 12; }
+
+/* 窄窗（< 820px，最小可到 560px）：彻底单列。
+   链路图三段平分，列宽低于约 300px 时段名与副标题会挤在一起；
+   单列下它反而摊得更开。 */
+@media (max-width: 820px) {
+  .bento { grid-template-columns: 1fr; }
+  .bento > .status-card,
+  .bento > .metric-card,
+  .bento > .bento-card,
+  .bento > .bento-span12 { grid-column: span 1; grid-row: auto; }
+}
+
+/* 白底汇总卡（健康度 / 安全治理）。 */
+.bento-card {
+  display: flex; flex-direction: column;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--r-card, 14px);
+  padding: 14px 16px;
+  box-shadow: var(--sh-card);
+}
+.bento-eyebrow {
+  display: flex; align-items: center;
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; color: hsl(var(--muted-foreground));
+}
+
+/* 治理胶囊。 */
+.gov-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10.5px; font-weight: 700;
+  border-radius: 999px; padding: 4px 10px;
+  background: hsl(var(--muted)); color: hsl(var(--muted-foreground));
+}
+.gov-pill--ok   { background: hsl(var(--success) / 0.14); color: hsl(var(--success)); }
+.gov-pill--warn { background: hsl(var(--warning) / 0.16); color: hsl(var(--warning)); }
+
+/* 可点的胶囊才给 hover 反馈。之前只有 `.nav-target { cursor: pointer }`，
+   除了指针形状什么都没有，用户根本不知道九个胶囊各自能跳到对应设置。 */
+.gov-pill.nav-target {
+  transition: transform 120ms cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 120ms cubic-bezier(0.4, 0, 0.2, 1),
+              background-color 120ms linear;
+}
+.gov-pill.nav-target:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  background: hsl(var(--muted-foreground) / 0.18);
+}
+/* 三种色态各配自己的 hover 底色，否则绿色 / 警色胶囊悬停时会串成中性灰。 */
+.gov-pill--ok.nav-target:hover   { background: hsl(var(--success) / 0.26); }
+.gov-pill--warn.nav-target:hover { background: hsl(var(--warning) / 0.3); }
+
+/* 热门工具占比条（健康度卡）。 */
+.tool-bar {
+  flex: 1 1 auto; min-width: 0; height: 5px;
+  border-radius: 999px; background: hsl(var(--muted)); overflow: hidden;
+}
+.tool-bar > i {
+  display: block; height: 100%; border-radius: 999px;
+  background: hsl(var(--primary));
+  /* 宽度固定 100%，长度靠 scaleX 控——transform 纯合成，而动 width 会触发 layout+paint。 */
+  width: 100%;
+  transform-origin: left center;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* E1. 连接页 Bento 的状态主卡（StatusCard.tsx）
+   四种基调对应 computeChain() 的 tone。为何不用 Tailwind 行内渐变：
+   四套渐变 × 两个色停点写成原子类会是四串长得读不下去的 class，
+   而且重启/停止按钮要根据基调变文字色，靠后代选择器才能一处写完。 */
+.status-card {
+  display: flex; flex-direction: column;
+  border-radius: var(--r-card, 14px);
+  padding: 16px;
+  color: #fff;
+  box-shadow: var(--sh-card);
+}
+.status-card--live    { background: linear-gradient(160deg, hsl(var(--primary)), hsl(var(--primary) / 0.72)); }
+.status-card--warn    { background: linear-gradient(160deg, #d97706, #b45309); }
+.status-card--error   { background: linear-gradient(160deg, #dc2626, #991b1b); }
+.status-card--stopped { background: linear-gradient(160deg, #64748b, #475569); }
+
+/* 卡内按钮：白底 + 文字色跟随基调，保证在四种渐变上都有足够对比度。 */
+.status-btn {
+  gap: 6px; border-radius: 8px; font-size: 11.5px; font-weight: 700;
+  background: rgba(255, 255, 255, 0.92);
+  /* 跟 --ghost 的 1px 边框对齐盒模型。h-9 + border-box 下高度本来就一致，
+     但内容区宽度会差 2px，图标与文字的居中基准跟着偏。 */
+  border: 1px solid transparent;
+  min-width: 0;
+}
+/* 宽度不跟文字长度走：主按钮吃掉剩余宽度，重启给一个下限宽。
+   否则「停止服务」≈100px 而「重启」≈77px，看着像两种尺寸；
+   而且切到 pending 态（停止中… / 重启中…）时两颗宽度会当场各变一次。
+   ⚠ 写在 CSS 而不是用 Tailwind 的 flex-1 / min-w-[88px]：本文件是无层 CSS，
+   会压过 @layer utilities，上面那句 `min-width: 0` 会直接吃掉 min-w 工具类。 */
+.status-btn--grow { flex: 1 1 auto; }
+.status-card--live    .status-btn { color: hsl(var(--primary)); }
+.status-card--warn    .status-btn { color: #b45309; }
+.status-card--error   .status-btn { color: #991b1b; }
+.status-card--stopped .status-btn { color: #475569; }
+.status-btn:hover:not(:disabled) { background: #fff; }
+/* 次要按钮（重启）：半透明白底 + 白字，不与主按钮争视线。 */
+.status-btn--ghost,
+.status-card .status-btn--ghost {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  color: #fff;
+  min-width: 88px;
+}
+.status-btn--ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.24); }
+.status-btn:disabled { opacity: 0.45; }
+/* ghost 的按压水波换深色。`.ripple` 默认 `background: currentColor`，
+   而这颗按钮的 currentColor 是白——白水波叠在 rgba(255,255,255,.16) 的白膜上
+   等于没有，这是「重启点了没反馈」最直接的一层原因（主按钮是白底深字，水波清楚）。
+   四种基调的渐变都偏中深色，一个深色水波在四种上都看得见，不必按基调分别配。 */
+.status-btn--ghost .ripple { background: #000; opacity: 0.22; }
+
+/* E3. Bento 指标卡与 sparkline（MetricCards.tsx）
+   卡上的 `text-primary` / `text-success` 等只用来设 currentColor，
+   sparkline 的描边与填充都从它取色——一处定色，不用传两个颜色参数。 */
+.metric-card {
+  display: flex; flex-direction: column;
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--r-card, 14px);
+  padding: 12px 14px;
+  box-shadow: var(--sh-card);
+  min-height: 118px;
+}
+/* sparkline **吸收多余高度**（flex:1）而不是 `margin-top:auto` 贴底。
+   为何：状态卡跨两行且自身比右侧两行更高，多出的高度被网格摊给右侧行；
+   若图表固定 30px 并贴底，副标题与图表之间就会裂出一大片空白。
+   让图表长高把空间吃掉，preserveAspectRatio="none" 会自然纵向拉伸。
+   注：flex:1 现在挂在组件里包裹 svg 的那层相对容器上（末端标点要绝对定位在它里面），
+   svg 自身改为撑满该容器。 */
+.metric-spark { display: block; width: 100%; height: 100%; }
+/* vector-effect：preserveAspectRatio="none" 会把 viewBox 非等比拉伸，
+   不加这句描边就会跟着变形成粗细不均的线。 */
+.metric-spark__line {
+  fill: none; stroke: currentColor; stroke-width: 1.8;
+  stroke-linejoin: round; stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  /* 首次挂载时把线“画”出来。动画跑完后 dashoffset 回到 0，
+     dasharray 仍在但 220 > 弧长，所以是一整条实线，不会留下虚线。 */
+  stroke-dasharray: 220;
+  animation: spark-draw 0.85s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.metric-spark__area { fill: currentColor; opacity: 0.12; stroke: none; }
+
+/* 阈值参考线（仅面积图）。虚线 + 降透明度，不与数据线争视线。
+   dasharray 不能随 viewBox 拉伸变形 → 同样靠 non-scaling-stroke。 */
+.metric-spark__threshold {
+  stroke: currentColor; stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.45;
+  vector-effect: non-scaling-stroke;
+  /* 入场淡入：它是“接近限流”才浮现的，突然冒出来不如淡入。
+     （y1/y2 不是 CSS 属性，**无法过渡**，所以只能做淡入。） */
+  animation: fade-in 0.4s ease;
+}
+
+/* 柱状（P95）。不加描边：柱很细，描边会把它糊成一片。 */
+.metric-spark__bar {
+  fill: currentColor; opacity: 0.75;
+  /* 高度由行内 `transform: scaleY(ratio)` 给（rect 本身画满高）。
+     transform-box: fill-box + transform-origin: bottom：让 scaleY 以自身底边为基准
+     向上长，而不是以 SVG 原点。不写这两句柱会从顶部缩。
+
+     ⚠️ **更正一处早先写错的话**：用 transform 而不是 height 的理由是
+     「避免逐帧改几何属性触发 SVG 重排」，**不是**「走纯合成」。
+     Chromium 对 **SVG 子元素**的独立合成支持很有限，这里的 transform 动画
+     大概率仍会重绘所在的 <svg>。好在单张图只有 140×30 CSS px，代价可控。
+     （未实测，只从原理判断——本项目 M10 的教训是这类测量极易被窗口遮挡状态支配。） */
+  transform-box: fill-box;
+  transform-origin: bottom center;
+  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 热力条（调用增量）。opacity 由行内属性给（level），这里只定色。
+   格子相邻紧贴，靠深浅变化拼出节奏感。 */
+.metric-spark__heat {
+  fill: currentColor;
+  /* opacity 变化本身便宜，15 格一起渐变也不心痛。
+     同上：SVG 子元素的 opacity 动画未必能独立合成，但重绘面积就是这条 140×12 的带。 */
+  transition: opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 阶梯线（活跃命令）。miter 拐角而不是 round：阶梯的直角就是它要表达的
+   “瞬时跳变”，倒圆了反而像渐变。也不跑描边生长动画（让它直接到位）。 */
+.metric-spark__step {
+  stroke-linejoin: miter;
+  stroke-dasharray: none;
+  animation: none;
+}
+/* 值变化时重画一遍。
+   为何只能用“重画”而不是形状过渡：polyline 的 `points` **不是可过渡属性**。
+   dasharray 给 400：阶梯线弧长约是水平跨度 ×2 加纵向跳变，400 能盖住最坏情况。 */
+.metric-spark__step--redraw {
+  stroke-dasharray: 400;
+  animation: spark-redraw 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes spark-redraw {
+  from { stroke-dashoffset: 400; }
+  to   { stroke-dashoffset: 0; }
+}
+
+/* E4. 连接页 Bento 的微动画。
+
+   立场：**能事件驱动的绝不做成常驻**。本文件 A1/A3/A5 三处删除记录带着实测数字
+   （~3% / ~2% / ~1% CPU），说明常驻 paint 动画在这个常驻托盘应用里是真花钱的。
+   下面只有一个 infinite（.chain-ripple），已按文件尾部的契约补进暂停清单。 */
+
+/* 链路图三段依次淡入（一次性，delay 由行内 style 给）。
+   为何不会每 5s 重放：节点的 React key 稳定，轮询只更新属性不重挂元素，
+   而 CSS animation 只在元素挂载时跑。 */
+@keyframes chain-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+.chain-seg { animation: chain-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both; }
+/* 错开 60ms 依次淡入。用 nth-child 而不是行内 `animationDelay`：
+   那三段现在是 `NavTarget` 包的，为了一个 delay 给它开一个 style 口不值得。
+   mac 上只有两段，第 3 条规则自然不命中。 */
+.chain-seg:nth-child(2) { animation-delay: 60ms; }
+.chain-seg:nth-child(3) { animation-delay: 120ms; }
+
+/* 可点击跳转目标（NavTarget）。
+   只在真的可点时才挂这个类——`onNavigate` 不传时 NavTarget 渲染纯 div，
+   不会给出“能点”的假暗示。 */
+.nav-target { cursor: pointer; }
+/* 焦点环：键盘用户必须看得见自己在哪。用 :focus-visible 而不是 :focus，
+   鼠标点击后不留下一圈描边。 */
+.nav-target:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+/* 深色渐变卡（状态主卡）内的焦点环换白色，否则 --ring 压在渐变上看不见。 */
+.status-card .nav-target:focus-visible { outline-color: rgba(255, 255, 255, 0.9); }
+
+/* “通”节点的光晕。只给链路末段（远程调用）且 tone=ok 时用——全屏只保留这一个
+   常驻动画。只动 transform/opacity，走纯合成不重绘。
+
+   为何不直接复用 `.status-pill .p-dot::after` 那条：那个点只有 6px，scale(3.6)
+   放到 ~22px 正合适；链路节点是 26px，同样倍数会摊到 93px，糊满整段。
+
+   为何是独立元素而不是节点的 ::after：节点是白底圆 + 绿色✓，在它自己的
+   ::after 上画扩散色块会盖住图标；独立元素放在节点**之后绘制顺序的下层**，
+   从背后扩散出去，才是光晕而不是遮罩。 */
+.chain-ripple {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.9);
+  pointer-events: none;
+  animation: chain-ripple 2.4s ease-out infinite;
+}
+@keyframes chain-ripple {
+  0%   { opacity: 0.45; transform: scale(1); }
+  70%  { opacity: 0;    transform: scale(1.95); }
+  100% { opacity: 0;    transform: scale(1.95); }
+}
+
+/* sparkline 首次描边生长（一次性）。
+   dasharray 取 220：viewBox 是 100×30，折线弧长加上纵向起伏最多一百多单位，
+   给到 220 能盖住最坏情况（宁可留余，不够会在开头露出片段）。
+   为何只跑一次：点数 <2 时渲染的是“采样中…” div，有数据后才挂载 svg，
+   之后每 5s 只改 points 属性、不重挂元素。 */
+@keyframes spark-draw {
+  from { stroke-dashoffset: 220; }
+  to   { stroke-dashoffset: 0; }
+}
+
+/* 基调切换（蓝→橙→红→灰）时的过渡。
+   为何不用 `transition: background`：linear-gradient **不是可插值属性**，
+   写了也是硬切。改成基调真的变了时播一次淡入，观感上是“平滑换装”。 */
+@keyframes tone-switch {
+  from { opacity: 0.75; }
+  to   { opacity: 1; }
+}
+.status-card--switch { animation: tone-switch 0.4s ease; }
+
+/* 健康环：弧长变化过渡 + 首次从 0 画出。
+   诚实说：`stroke-dashoffset` **不是纯合成属性**，SVG 几何变化要重绘。
+   但这是一个 56px 的圆，且只在成功率真的变了时跑 0.6s——量级上可忽略。
+   from 硬编 151：r=24 → 周长 2π×24 ≈ 150.8。只写 from、不写 to，
+   这样 to 自动取元素当前值，动画结束后不会回跳。 */
+.health-arc {
+  transition: stroke-dashoffset 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: health-draw 0.9s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes health-draw { from { stroke-dashoffset: 151; } }
+
+/* 链路连线：实/虚两层叠放靠 opacity 交叉淡入（纯合成），
+   接通时另播一次从左生长。
+   为何要两层而不是切 background：`repeating-linear-gradient` 与纯色之间
+   **无法插值**，直接切就是硬变。 */
+.chain-link { transform-origin: left center; transition: opacity 0.35s ease; }
+.chain-link--grow { animation: link-grow 0.45s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes link-grow { from { transform: scaleX(0); } }
+
+/* 链路节点：状态翻转时弹一下。 */
+.chain-node--pop { animation: node-pop 0.42s cubic-bezier(0.34, 1.4, 0.64, 1); }
+@keyframes node-pop {
+  0%   { transform: scale(1); }
+  35%  { transform: scale(1.18); }
+  100% { transform: scale(1); }
+}
+
+/* 白底卡 hover 微抬起。仅 hover 触发，零常驻。
+   只动 transform + box-shadow；前者纯合成，后者仅在悬停那一下重绘。 */
+.metric-card, .bento-card {
+  transition: transform 160ms cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+/* 阴影加深给所有卡：表达「这是一块整体」。 */
+.metric-card:hover, .bento-card:hover { box-shadow: var(--sh-hover); }
+/* 抬起只给**真的可点**的卡。NavTarget 渲染出来正好带 .nav-target，
+   所以指标卡 / 健康度卡（nav-target + 卡类）抬，
+   治理卡（纯 bento-card，只有九个胶囊各自可点）不抬——整卡抬起却点不动是个撒谎的暗示。
+   onNavigate 不传时 NavTarget 渲染纯 div，也自动不抬。新增卡片不用再记这条。 */
+.metric-card.nav-target:hover, .bento-card.nav-target:hover { transform: translateY(-2px); }
+
+/* sparkline 末端标点：静态，**不脉动**。标明“这是当前值”而不引入常驻动画。
+
+   🔴 **为何是 HTML 元素而不是 SVG `<circle>`**：图表用了
+   `preserveAspectRatio="none"`，viewBox 100×30 被非等比拉伸到卡片尺寸，
+   SVG 里的正圆会被抻成椭圆，而且偏心率随卡片宽度变。
+   用百分定位的 HTML 圆点就不受拉伸影响。 */
+.metric-spark__tip {
+  position: absolute;
+  width: 5px; height: 5px;
+  /* 负 margin 把圆点中心对到坐标点上（left/top 定的是左上角）。 */
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: currentColor;
+  /* 用 box-shadow 做描边而不是 border：border 会撑大盒模型、弄乱居中。 */
+  box-shadow: 0 0 0 1.5px hsl(var(--card));
+  pointer-events: none;
+  /* 🔴 **不给 left/top 加 transition**（曾经加过，是错的）：
+   * 1. left/top 是**布局属性**，过渡会逐帧触发 layout，而不是只合成；
+   * 2. 视觉上也不对——折线的 `points` 无法过渡，它是瞬间跳到新形状的；
+   *    标点却缓缓滑到新位置，会看到它脱线飘一下。跟线一起瞬变才是对的。 */
+}
+
+/* E2. 服务链路图的连线（ServiceChain.tsx）
+   为何不用 Tailwind：需要 `left:-50% / right:50%` 这种跨到前一个弹性项中心的
+   定位，再叠 13px 内边距避开两端的节点圆（节点 26px）——原子类表达不了。 */
+.chain-link {
+  left: -50%; right: 50%;
+  margin-left: 13px; margin-right: 13px;
+  background: rgba(255, 255, 255, 0.9);
+}
+/* 上游不通：虚线 + 降透明度。色相不变——这里要表达的是“断”而不是“错”，
+   错在哪一环由那个节点的 ✕ 负责说。 */
+.chain-link--cut {
+  background: repeating-linear-gradient(90deg,
+    rgba(255, 255, 255, 0.45) 0 4px, transparent 4px 8px);
 }
 
 /* F. 统计/hero 渐变彩条、渐变分隔线 */
@@ -1076,7 +1465,7 @@ select:focus-visible,
    **常驻无限动画**；一次性动画与 transition 本来跑完即停，暂停它们只有坏处。
    新增 infinite 动画时记得往下面补一行。 */
 :root[data-app-hidden] .status-pill .p-dot::after,
-:root[data-app-hidden] .hero-dot::after,
+:root[data-app-hidden] .chain-ripple,
 :root[data-app-hidden] .indet-fill,
 :root[data-app-hidden] .changelog-dot,
 :root[data-app-hidden] .update-glow::after,

@@ -23,14 +23,23 @@ export async function copyText(
   }
 }
 
-/** 秒数格式化为 "Xh Ym Zs" / "Ym Zs" / "Zs"，用于运行时长展示（精确到秒）。 */
+/**
+ * 秒数格式化为中文时长（精确到秒），用于运行时长 / 已运行列展示。
+ *
+ * 超过一天后进一位到“天”：服务跑上几天是常态，“86小时40分12秒”读起来很费劲。
+ * 只给最大两级单位（如“3天14小时”而不是“3天14小时22分13秒”）：精度再高对“跑了多久”
+ * 这个问题没有意义，而卡片右上角宽度有限。不足一分钟时仍给到秒，刚启动时能看到跳。
+ */
 export function formatUptime(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
+  const total = Math.max(0, Math.floor(seconds));
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (d > 0) return `${d}天${h}小时`;
+  if (h > 0) return `${h}小时${m}分`;
+  if (m > 0) return `${m}分${s}秒`;
+  return `${s}秒`;
 }
 
 /** 版本号统一格式化为 "vX.Y.Z"（已带 v 则不重复加）。各处版本展示共用，避免前缀漂移。 */

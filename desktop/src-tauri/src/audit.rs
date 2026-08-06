@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufWriter, Write};
+use std::io::{BufRead, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use tokio::task_local;
@@ -182,6 +182,63 @@ fn parse_all_entries(log_path: &Path) -> Result<Vec<AuditEntry>, String> {
         .lines()
         .map_while(Result::ok)
         .filter_map(|line| serde_json::from_str(&line).ok())
+        .collect())
+}
+
+/// 尾部窗口大小。实测单条审计 JSON 约 200–400 字节（带 O1 耗时拆解字段时偏大），
+/// 8KB 够装 20–40 条，覆盖 `read_recent_tail` 的 n 上限（20）。
+const TAIL_WINDOW: u64 = 8 * 1024;
+
+/// 尾部读取最近 n 条审计（连接页「最近活动」用）。返回**最新在前**，与 `read_page` 排序一致。
+///
+/// 🔴 **为何不复用 `read_page`**：它的缓存键是 `(path, mtime, len)`，而审计是**追加写**——
+/// 远程每调用一次工具就写一条，缓存**必然失效** → 走 `parse_all_entries` 全量重解析。
+/// 本文件 `read_page` 头上那段注释里的实测基准是 **4898 条 / 5.2MB**；连接页若按 5s 轮询，
+/// 就是每 5s 解析 5MB，而且随日志增长越来越贵。日志页这么干尚可（用户主动打开才跑），
+/// 连接页是**默认停留页**，扛不住。
+///
+/// 本函数 `seek` 到文件末尾往回读一个固定窗口，只解析窗口内的行，
+/// **复杂度 O(窗口) 而非 O(文件)**，成本与日志规模无关。也**不碰 `AUDIT_CACHE`**：
+/// 不污染它（避免把部分数据当全量存进去），也不与日志页争那把锁。
+pub fn read_recent_tail(data_dir: &Path, n: usize) -> Result<Vec<AuditEntry>, String> {
+    // clamp 是防线：防止调用方传大值把它用成“分页读”——窗口固定，要更多也给不了。
+    let n = n.clamp(1, 20);
+    let log_path = data_dir.join("audit.log");
+    // 文件不存在不是错误：首次启动、或用户刚清空过日志，就是这个状态。
+    if !log_path.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut file =
+        std::fs::File::open(&log_path).map_err(|e| format!("Failed to open audit log: {e}"))?;
+    let len = file
+        .metadata()
+        .map_err(|e| format!("Failed to stat audit log: {e}"))?
+        .len();
+    let offset = len.saturating_sub(TAIL_WINDOW);
+    if offset > 0 {
+        file.seek(std::io::SeekFrom::Start(offset))
+            .map_err(|e| format!("Failed to seek audit log: {e}"))?;
+    }
+    let mut buf = Vec::with_capacity(TAIL_WINDOW as usize);
+    file.read_to_end(&mut buf)
+        .map_err(|e| format!("Failed to read audit log tail: {e}"))?;
+
+    // 从文件中间起读，偏移可能落在 UTF-8 多字节字符中间（审计 params 里常有中文路径）。
+    // `from_utf8_lossy` 先兜住不报错，再配合下面的“丢首行”——两者合起来保证替换字符
+    // 只会出现在那条被丢弃的行里，不会污染返回给前端的数据。
+    let text = String::from_utf8_lossy(&buf);
+    let lines: Vec<&str> = text.lines().collect();
+    // offset > 0 说明不是从文件头读的，第一行**必然**被切断，直接丢。
+    let start = if offset > 0 { 1.min(lines.len()) } else { 0 };
+
+    // 倒序取（最新在前）。解析失败的行**静默跳过**：审计是追加写，读的瞬间
+    // 最后一条可能只写了一半。这与 `parse_all_entries` 的 `filter_map(...ok())` 同策略。
+    Ok(lines[start..]
+        .iter()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<AuditEntry>(l).ok())
+        .take(n)
         .collect())
 }
 
@@ -597,5 +654,125 @@ mod tests {
         assert_eq!(c.total, 4);
         assert_eq!(c.entries[0].tool, "t3");
         let _ = clear_all(&dir);
+    }
+
+    /// 测试用：写一行最小合法的审计 JSON。`pad` 用来把单条撑胖，好让测试能轻松
+    /// 造出超过 `TAIL_WINDOW` 的文件。
+    fn tail_line(tool: &str, pad: usize) -> String {
+        format!(
+            r#"{{"timestamp":"2026-08-06T10:00:00+08:00","tool":"{tool}","params":"{}","success":true}}"#,
+            "x".repeat(pad)
+        )
+    }
+
+    /// 基本行为：最新在前、取满 n 条，与 `read_page` 排序一致。
+    #[test]
+    fn tail_returns_newest_first() {
+        let dir = tmp_data_dir("tail-order");
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+        let body: String = (0..5)
+            .map(|i| format!("{}\n", tail_line(&format!("t{i}"), 0)))
+            .collect();
+        std::fs::write(dir.join("audit.log"), body).expect("write");
+
+        let got = read_recent_tail(&dir, 3).expect("tail");
+        let tools: Vec<&str> = got.iter().map(|e| e.tool.as_str()).collect();
+        assert_eq!(tools, vec!["t4", "t3", "t2"], "应当最新在前且只取 3 条");
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+    }
+
+    /// 文件不存在 → 空列表而非 Err。首次启动就是这个状态，报错会让连接页无缘无故弹错。
+    #[test]
+    fn tail_missing_file_is_empty_not_error() {
+        let dir = tmp_data_dir("tail-missing");
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+        assert_eq!(read_recent_tail(&dir, 3).expect("ok").len(), 0);
+    }
+
+    /// 🔴 核心保障：文件远大于窗口时，仍能拿到正确的最后几条。
+    ///
+    /// 这正是本函数存在的意义——如果这里挂了，说明它退化成了全量读或读错位置。
+    #[test]
+    fn tail_reads_only_window_of_large_file() {
+        let dir = tmp_data_dir("tail-large");
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+        // 每条 ~1KB × 40 条 ≈ 40KB，远超 8KB 窗口。
+        let body: String = (0..40)
+            .map(|i| format!("{}\n", tail_line(&format!("tool{i:02}"), 1000)))
+            .collect();
+        assert!(body.len() as u64 > TAIL_WINDOW * 4, "构造的文件必须远大于窗口");
+        std::fs::write(dir.join("audit.log"), body).expect("write");
+
+        let got = read_recent_tail(&dir, 3).expect("tail");
+        let tools: Vec<&str> = got.iter().map(|e| e.tool.as_str()).collect();
+        assert_eq!(tools, vec!["tool39", "tool38", "tool37"]);
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+    }
+
+    /// 写到一半的最后一行（追加写的真实情形）必须被静默跳过，而不是报错或返回空。
+    #[test]
+    fn tail_skips_half_written_last_line() {
+        let dir = tmp_data_dir("tail-partial");
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+        let body = format!(
+            "{}\n{}\n{{\"timestamp\":\"2026-08-06T10:00",
+            tail_line("good1", 0),
+            tail_line("good2", 0)
+        );
+        std::fs::write(dir.join("audit.log"), body).expect("write");
+
+        let got = read_recent_tail(&dir, 5).expect("tail");
+        let tools: Vec<&str> = got.iter().map(|e| e.tool.as_str()).collect();
+        assert_eq!(tools, vec!["good2", "good1"], "半条 JSON 应被跳过，不影响其余");
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+    }
+
+    /// 中文路径（多字节 UTF-8）在窗口边界被切开时，不能 panic，也不能把乱码
+    /// 泄露到返回值里——替换字符只允许出现在那条被丢弃的首行中。
+    #[test]
+    fn tail_handles_utf8_split_at_window_edge() {
+        let dir = tmp_data_dir("tail-utf8");
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+        // 用中文填充把文件撑过窗口，保证 8KB 偏移大概率落在某个三字节字符中间。
+        let zh = "中文路径".repeat(200); // 4 字 × 3B × 200 = 2400B
+        let body: String = (0..12)
+            .map(|i| {
+                format!(
+                    r#"{{"timestamp":"2026-08-06T10:00:00+08:00","tool":"zh{i:02}","params":"{zh}","success":true}}"#
+                ) + "\n"
+            })
+            .collect();
+        std::fs::write(dir.join("audit.log"), body).expect("write");
+
+        let got = read_recent_tail(&dir, 2).expect("tail");
+        let tools: Vec<&str> = got.iter().map(|e| e.tool.as_str()).collect();
+        assert_eq!(tools, vec!["zh11", "zh10"]);
+        for e in &got {
+            assert!(
+                !e.params.contains('\u{FFFD}'),
+                "返回的条目里不得含有 UTF-8 替换字符"
+            );
+        }
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+    }
+
+    /// n 必须被 clamp：传 0 不能返回空，传大值不能把它变回全量读。
+    #[test]
+    fn tail_clamps_n() {
+        let dir = tmp_data_dir("tail-clamp");
+        let _ = std::fs::remove_file(dir.join("audit.log"));
+        let body: String = (0..30)
+            .map(|i| format!("{}\n", tail_line(&format!("c{i:02}"), 0)))
+            .collect();
+        std::fs::write(dir.join("audit.log"), body).expect("write");
+
+        assert_eq!(read_recent_tail(&dir, 0).expect("n=0").len(), 1, "0 应 clamp 到 1");
+        assert_eq!(
+            read_recent_tail(&dir, 9999).expect("n=9999").len(),
+            20,
+            "大值应 clamp 到 20"
+        );
+        let _ = std::fs::remove_file(dir.join("audit.log"));
     }
 }
