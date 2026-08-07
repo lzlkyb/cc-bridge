@@ -6,6 +6,7 @@ import { AboutGroup } from "./AboutGroup";
 import { RiskSummary } from "./settings/RiskSummary";
 import { NetworkGroup } from "./settings/NetworkGroup";
 import { SecurityGroup } from "./settings/SecurityGroup";
+import { McpBridgeGroup } from "./settings/mcpbridge/McpBridgeGroup";
 import { BackupAuditGroup } from "./settings/BackupAuditGroup";
 import { NotifyGroup } from "./settings/NotifyGroup";
 import { AdvancedGroup } from "./settings/AdvancedGroup";
@@ -71,6 +72,11 @@ export function SettingsTab({
           紧跟网络：两者回答的是同一个问题——远程能不能连进来。 */}
       {isWindows(status?.platform) && <FirewallGroup onRefresh={onSaved} />}
       <SecurityGroup status={status} onSaved={onSaved} />
+      {/* 紧邻安全卡：它的风险不低于「命令执行」——后者还有三道闸
+          （shell_enabled / 危险命令拦截 / 命令白名单），而桥接的 spawn 一道都不走。
+          不传 `onSaved`：它自己管自己的刷新，不能挂在全局刷新链上（每改一个
+          开关就会把所有 server 的 PATH 扫一遍）。 */}
+      <McpBridgeGroup status={status} />
       <BackupAuditGroup status={status} onSaved={onSaved} />
       <NotifyGroup status={status} onSaved={onSaved} />
       <AdvancedGroup status={status} onSaved={onSaved} />

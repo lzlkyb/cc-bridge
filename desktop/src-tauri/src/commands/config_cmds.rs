@@ -500,10 +500,27 @@ pub async fn regenerate_token(state: State<'_, Arc<AppState>>) -> Result<String,
 #[tauri::command]
 pub async fn export_config(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     let config = state.config.read().await;
+    export_config_json(&config)
+}
+
+/// `export_config` 的纯逻辑入口。抽出来是为了让脱敏不变量能被直接单测（同
+/// `import_config_inner`）——它守的是密钥不外泄，不能只靠人看。
+pub(crate) fn export_config_json(config: &crate::config::BridgeConfig) -> Result<String, String> {
     // M1 修复：不导出 Bearer token（唯一远程访问凭证）。克隆后脱敏再序列化，
     // 避免导出的配置文件被备份/转发/入库时泄露凭证。导入端 token 为空时会保留现有或重新生成。
     let mut export = config.clone();
     export.token = String::new();
+    // 🔴 外挂 MCP 桥的配置**不导出**，两个理由，任一个单独成立：
+    //
+    // 1. `env` 里是真的 API key（本机 `paper_search_mcp` 就带一个）。不摸掉的话，
+    //    点一下「导出配置」就把密钥明文写进了一个会被备份 / 转发的文件——
+    //    跟 token 同一类风险（S7）。
+    // 2. 它写的是“要启动哪个可执行文件”。一份能四处传的配置文件不应该携带执行通道（S1）。
+    //
+    // 不担心导出/导入往返会丢东西：`import_config_inner` 同样**忽略**这两个字段，
+    // 两边是一致的。
+    export.external_mcp_enabled = false;
+    export.external_mcp_servers = vec![];
     serde_json::to_string_pretty(&export).map_err(|e| format!("序列化配置失败：{e}"))
 }
 
@@ -537,6 +554,21 @@ pub(crate) async fn import_config_inner(
         {
             return Err(format!("白名单目录校验失败「{}」：{}", root, e));
         }
+    }
+
+    // 🔴 外挂 MCP 桥的配置**不受导入影响**，原样保留本机现有值。
+    //
+    // 不这么做的后果：导入一份 `external_mcp_enabled: true` + 某条 `enabled: true`
+    // 且 command 指向任意程序的 JSON，就能直接给远程开出一条执行通道——
+    // 不过 `mcp_bridge_cmds::validate`（名字 / stdio / S8 自我引用）、不弹风险确认、
+    // 不写审计，而那八个专用命令存在的全部理由就是拦这个（S1）。
+    // 顺带也避开了第二个坑：导入改掉 command 后，旧子进程仍在连接池里。
+    //
+    // 导出端（`export_config`）同样不写这两个字段，两边对得上。
+    {
+        let cur = state.config.read().await;
+        incoming.external_mcp_enabled = cur.external_mcp_enabled;
+        incoming.external_mcp_servers = cur.external_mcp_servers.clone();
     }
 
     let db = state.db.lock().await;
@@ -741,5 +773,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir_a);
         let _ = std::fs::remove_dir_all(&dir_b);
     }
-}
 
+    fn mcp_spec() -> crate::mcp::bridge::config::ExternalMcpServer {
+        crate::mcp::bridge::config::ExternalMcpServer {
+            name: "paper".into(),
+            transport: "stdio".into(),
+            command: "python.exe".into(),
+            args: vec!["-m".into(), "paper_search_mcp.server".into()],
+            env: vec![("API_KEY".into(), "sk-live-super-secret".into())],
+            cwd: None,
+            enabled: true,
+            allow_remote_cwd: false,
+        }
+    }
+
+    /// 🔴 回归测试（安全）：导出的配置**不得含外挂 MCP server 的 env 值**。
+    ///
+    /// 旧实现只脱敏了 `token`，而 `external_mcp_servers` 跟着 `BridgeConfig` 一起
+    /// 序列化，于是点一下「导出配置」就把 API key 明文写进了文件（S7）。
+    /// 把那两行脱敏删掉，本测试必败。
+    #[test]
+    fn export_never_leaks_external_mcp_env() {
+        let cfg = BridgeConfig {
+            token: "tok-should-not-appear".into(),
+            external_mcp_enabled: true,
+            external_mcp_servers: vec![mcp_spec()],
+            ..BridgeConfig::default()
+        };
+        let json = super::export_config_json(&cfg).expect("export");
+        assert!(!json.contains("sk-live"), "env 值泄露了：{json}");
+        assert!(!json.contains("tok-should-not-appear"), "token 泄露了");
+        // 连名字与命令都不带：它写的是“要启动哪个可执行文件”，
+        // 一份能四处传的配置文件不应该携带执行通道（S1）。
+        assert!(
+            !json.contains("paper_search_mcp"),
+            "外挂 server 不应导出：{json}"
+        );
+    }
+
+    /// 🔴 回归测试（安全）：`import_config` **不得改动**外挂 MCP 桥的配置。
+    ///
+    /// 旧实现是整体替换 config，于是导入一份 `external_mcp_enabled: true` +
+    /// 某条 `enabled: true` 且 command 指向任意程序的 JSON，就能直接给远程
+    /// 开出一条执行通道——不过三道校验、不弹风险确认、不写审计（S1）。
+    #[tokio::test]
+    async fn import_cannot_touch_external_mcp() {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir: PathBuf =
+            std::env::temp_dir().join(format!("cc-bridge-mcp-import-{}-{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let conn = db::init_database(Path::new(&dir)).expect("init db");
+        // 本机现状：总开关关，一条已配置的 server。
+        let cfg = BridgeConfig {
+            allowed_roots: vec![dir.to_string_lossy().into_owned()],
+            external_mcp_enabled: false,
+            external_mcp_servers: vec![mcp_spec()],
+            ..BridgeConfig::default()
+        };
+        let state = Arc::new(AppState::new(conn, cfg, dir.clone()));
+
+        // 恶意/粗心的导入：想把总开关打开并换成另一条 server。
+        let mut evil = mcp_spec();
+        evil.name = "evil".into();
+        evil.command = "cmd".into();
+        let incoming = BridgeConfig {
+            allowed_roots: vec![dir.to_string_lossy().into_owned()],
+            external_mcp_enabled: true,
+            external_mcp_servers: vec![evil],
+            ..BridgeConfig::default()
+        };
+        let json = serde_json::to_string(&incoming).expect("serialize");
+        super::import_config_inner(&state, &json)
+            .await
+            .expect("import");
+
+        let after = state.config.read().await;
+        assert!(!after.external_mcp_enabled, "导入不得打开总开关");
+        assert_eq!(after.external_mcp_servers.len(), 1);
+        assert_eq!(
+            after.external_mcp_servers[0].name, "paper",
+            "导入不得替换外挂 server 列表"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

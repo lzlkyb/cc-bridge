@@ -27,6 +27,8 @@ mod audit_cmds;
 mod backup_cmds;
 mod config_cmds;
 mod firewall_cmds;
+/// 外挂 MCP 桥（名字带 `_cmds`：`crate::mcp::bridge` 下已有同名概念）。
+mod mcp_bridge_cmds;
 mod running;
 mod server;
 mod status;
@@ -37,6 +39,7 @@ pub use audit_cmds::*;
 pub use backup_cmds::*;
 pub use config_cmds::*;
 pub use firewall_cmds::*;
+pub use mcp_bridge_cmds::*;
 pub use running::*;
 pub use server::*;
 pub use status::*;

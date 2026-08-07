@@ -37,6 +37,19 @@ export interface ChainSegment {
   detail: string;
 }
 
+/**
+ * 首次接入（远程从未调用过）时的指引文案。
+ *
+ * ⚠ 里面两个标签名必须与 `ConnectTab` 的实际 UI 对得上：
+ * 「接入 Claude Code」是卡片标题，「接入步骤」是里面那个折叠区的标题——
+ * **连接命令与复制按钮都收在该折叠区内，不展开是看不见的**。
+ *
+ * 早先写的是「把下方『接入 Claude Code』里的命令复制到远程执行即可」——
+ * 那是卡片还是展开式时的写法；改成折叠后，照这句话往下找只能看到几行折叠标题，
+ * 既没命令也没复制按钮。两处返回点共用同一个常量，免得日后只改一处。
+ */
+const FIRST_RUN_HINT = "展开下方「接入 Claude Code」→「接入步骤」，复制命令到远程执行";
+
 /** 卡片整体基调，决定背景渐变。 */
 export type ChainTone = "live" | "warn" | "error" | "stopped";
 
@@ -161,7 +174,7 @@ export function computeChain(input: ChainInput): ChainState {
       headline: hasCalled ? "远程 Claude Code 可以正常调用" : "本机已就绪，等远程接入",
       sub: hasCalled
         ? `本次运行已调用 ${input.totalRequests.toLocaleString("en-US")} 次`
-        : "把下方「接入 Claude Code」里的命令复制到远程执行即可",
+        : FIRST_RUN_HINT,
       segments: [service, remote],
     };
   }
@@ -195,7 +208,7 @@ export function computeChain(input: ChainInput): ChainState {
       ? fwUnknown
         ? "防火墙状态查不到，但远程已成功调用过，实际不影响"
         : `本次运行已调用 ${input.totalRequests.toLocaleString("en-US")} 次`
-      : "把下方「接入 Claude Code」里的命令复制到远程执行即可",
+      : FIRST_RUN_HINT,
     segments: [service, firewall, remote],
   };
 }

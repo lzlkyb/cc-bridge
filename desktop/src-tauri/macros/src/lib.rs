@@ -110,8 +110,19 @@ fn type_schema(ty: &Type) -> proc_macro2::TokenStream {
                     quote! { ::serde_json::json!({"type": "integer"}) }
                 }
                 "f32" | "f64" => quote! { ::serde_json::json!({"type": "number"}) },
-                // serde_json::Value → unconstrained.
-                "Value" => quote! { ::serde_json::json!({}) },
+                // serde_json::Value → an MCP `arguments` bag, which is ALWAYS an object.
+                //
+                // 🔴 Emitting a bare `{}` here is not "permissive", it is a bug: a client
+                // that sees an untyped top-level parameter has no reason to send an object,
+                // and at least one (Claude Code) sends the raw text as a STRING instead.
+                // The call then forwards a string where the callee expects fields, so every
+                // argument is silently dropped — caught during real-machine testing of
+                // `mcp_proxy`, invisible to all 227 unit tests because they feed
+                // `Value::Object` directly and never go through a client's schema reading.
+                //
+                // Both `Value` fields in this crate (`batch.arguments`, `mcp_proxy.args`)
+                // are such bags, so declaring `object` is a correction, not a narrowing.
+                "Value" => quote! { ::serde_json::json!({"type": "object"}) },
                 "Option" => {
                     let inner = first_generic_type(seg);
                     type_schema(&inner)

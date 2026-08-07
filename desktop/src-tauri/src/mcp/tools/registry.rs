@@ -161,6 +161,18 @@ pub fn all_tools() -> Vec<ToolSpec> {
             false
         ),
         register_tool!(
+            mcp_list_servers,
+            McpListServersArgs,
+            r#"List external MCP servers bridged through cc-bridge, and the tools each one exposes. Returns a COMPACT index (tool name + one-line summary) by default; pass `server` to get that server's full inputSchema plus its usage instructions, and additionally `tool` to narrow to a single tool. This reads a cached manifest and starts NO processes; pass `refresh: true` only when a server is reported as `stale` (that will start the server to re-read its tool list). Call this BEFORE mcp_proxy to discover what is available."#,
+            false
+        ),
+        register_tool!(
+            mcp_proxy,
+            McpProxyArgs,
+            r#"Invoke a tool on an external MCP server bridged through cc-bridge (discover them via mcp_list_servers). DANGEROUS: the external server is a SEPARATE PROCESS — cc-bridge's path whitelist does NOT constrain it, and cc-bridge cannot see which files it reads or writes; only the forwarded call itself is audited. Because cc-bridge cannot tell whether an external tool reads or writes, this tool is treated as a write tool and is therefore blocked entirely in read-only mode."#,
+            true
+        ),
+        register_tool!(
             notebook_edit,
             NotebookEditArgs,
             r#"Edit a Jupyter notebook (.ipynb): replace/insert/delete a cell by index. Writes the modified notebook back, preserving other metadata."#,
@@ -278,6 +290,30 @@ mod tests {
         assert!(
             !run_required.contains(&"sessionId"),
             "sessionId is Option -> must NOT be in 'required'"
+        );
+
+        // 🔴 外挂 MCP 桥的两个工具：写标记必须是这个方向。
+        //
+        // `mcp_proxy` 标 `is_write: true` **不是因为它一定写盘**，而是因为 cc-bridge
+        // 根本无从得知外挂工具到底读还是写（参数 schema 是对方定义的）。
+        // 只读模式下宁可全拦住。这一行一旦被改成 false，只读模式就漏了一个口子、
+        // 而且不会有任何报错——所以必须用断言钉住。
+        let proxy = tools
+            .iter()
+            .find(|t| t.name == "mcp_proxy")
+            .expect("mcp_proxy must be registered");
+        assert!(
+            proxy.is_write,
+            "mcp_proxy 必须标为写工具：cc-bridge 无法判断外挂工具会不会写盘，\
+             只读模式下必须全拦"
+        );
+        let list_servers = tools
+            .iter()
+            .find(|t| t.name == "mcp_list_servers")
+            .expect("mcp_list_servers must be registered");
+        assert!(
+            !list_servers.is_write,
+            "mcp_list_servers 只读持久化的工具清单，不应在只读模式下被拦"
         );
 
         let list_dir = tools

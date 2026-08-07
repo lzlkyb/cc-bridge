@@ -309,6 +309,7 @@ async fn refresh_and_report_ip_change(
 ///      一处发出，而 AppKit 最小化时窗口尺寸没变，根本不会调它；
 ///   2. 那份 window delegate 里没有 `windowDidMiniaturize` / `windowDidDeminiaturize`；
 ///   3. 遮挡事件（`Occluded` / `occlusionState`）整个 crate 一处都没有。
+///
 /// 于是 `on_window_event` 里的 `Resized` 分支在 mac 上永不触发，前端收不到
 /// `app:visibility = false`，3s / 5s 两条轮询和 CSS 动画在最小化后照常跑。
 ///
@@ -931,6 +932,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::start_update,
             commands::check_update,
             commands::export_config,
+            // 外挂 MCP 桥（阶段 6）。这八个**只经 Tauri 暴露给本机面板**，
+            // 绝不注册为 MCP 工具——能改它们的配置 = 能以本机用户身份执行任意程序（S1）。
+            commands::mcp_bridge_list,
+            commands::mcp_bridge_scan,
+            commands::mcp_bridge_import,
+            commands::mcp_bridge_upsert,
+            commands::mcp_bridge_remove,
+            commands::mcp_bridge_set_enabled,
+            commands::mcp_bridge_set_master,
+            commands::mcp_bridge_set_remote_cwd,
+            commands::mcp_bridge_probe,
             commands::import_config,
             commands::restore_file,
             commands::get_file_diff,
@@ -1008,6 +1020,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 show_or_create_main_window(app_handle);
                 return;
+            }
+            // 真退出时把外挂 MCP 子进程关干净。
+            //
+            // 不关的后果不是“多几个残留进程”那么轻：它们按本机用户身份跑着，
+            // 而用户已经退出了 cc-bridge——他有理由认为这条通道已经断了。
+            // 用 `Exit` 而非 `ExitRequested`：后者会被下面那条拦住（关窗不算退出）。
+            // 写在前面：`ExitRequested` 的模式会把 `api` 从 `event` 里 move 走。
+            if matches!(event, tauri::RunEvent::Exit) {
+                app_handle
+                    .state::<std::sync::Arc<state::AppState>>()
+                    .mcp_bridge
+                    .shutdown_all();
             }
             // 关掉最后一个窗口**不应**退出应用。
             //

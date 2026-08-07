@@ -932,54 +932,161 @@ jobs:
           # 用 Gitee 变体的 mac 片段（URL 指向 Gitee 直链），不能用 GitHub 那份。
           UPDATER_MERGE_INTO: ${{ github.workspace }}\mac-artifact\updater-macos-gitee.json
 
+      # 可选性靠 continue-on-error 实现，不靠脚本里的 exit 0：
+      #   旧实现包一层 try/catch，失败时 catch 里 exit 0 想做到"不影响发版"，但
+      #   PowerShell 的 catch 只接 cmdlet 的终止错误，git 这类原生命令返回非零
+      #   **不会**进 catch（实测：native 失败 LASTEXITCODE=3 但不抛；cmdlet 失败才抛），
+      #   于是出现两种都错的结果：
+      #     - git push 失败 → 不进 catch → 底下那句 "✅ 已镜像" 照样打印（日志骗人）；
+      #     - 反过来某个 cmdlet 失败 → 进 catch → exit 0 → 绿灯，而镜像其实从没成功。
+      #   实际后果：v2.4.0~v2.5.0 连着四个版本都是绿灯，但 Gitee 上压根没有 releases
+      #   分支，客户端读的 raw 地址一直是 404（已实测确认）。
+      #   现在：每个 git 调用后显式判 $LASTEXITCODE，失败就带原因 exit 1（步骤标红、
+      #   一眼看得见），而 continue-on-error 保证它不拖累已发布的 GitHub Release；
+      #   成功日志只在真推上去 **并且回头验证过客户端那个地址可读** 之后才打印。
       - name: 镜像发布产物到 Gitee（国内加速，可选）
         shell: pwsh
+        continue-on-error: true
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_REPOSITORY: ${{ secrets.GITEE_REPOSITORY }}
         run: |
+          # 不用 Stop：让流程走到我们自己的检查点，而不是被某个 cmdlet 的异常抢跑。
+          $ErrorActionPreference = 'Continue'
+
+          function Fail([string]$why) {
+            Write-Host ""
+            Write-Host "❌ Gitee 镜像未完成：$why"
+            Write-Host "   GitHub Release 已正常发布，自动更新仍可走 ghproxy/GitHub 端点；"
+            Write-Host "   但注意：Gitee 上会留着**上一版**的 manifest，而客户端把 Gitee 排在首选，"
+            Write-Host "   读到旧版本号会认为‘已是最新’而不再回退问 GitHub"
+            Write-Host "   → 国内用户会静默看不到新版本，这一步失败不能当成无关痛痒。"
+            exit 1
+          }
+
           if ([string]::IsNullOrWhiteSpace($env:GITEE_TOKEN) -or [string]::IsNullOrWhiteSpace($env:GITEE_REPOSITORY)) {
             Write-Host "⚠️ 未配置 GITEE_TOKEN/GITEE_REPOSITORY secret，跳过 Gitee 镜像发布。"
             exit 0
           }
           $tag = "${{ github.ref_name }}"
-          try {
-            $giteeUrl = "https://oauth2:$($env:GITEE_TOKEN)@gitee.com/$($env:GITEE_REPOSITORY).git"
-            $mirrorDir = Join-Path $env:RUNNER_TEMP "gitee-mirror"
+          # 仓库路径不是秘密，打出来：客户端（update.rs 里硬编码 lzul/cc-bridge）与这个
+          # secret 不一致时，镜像会"成功"到一个没人读的仓库，不打印根本无法发现。
+          Write-Host "目标 Gitee 仓库：$($env:GITEE_REPOSITORY)（分支 releases，目录 latest/）"
 
-            # 独立临时目录里操作 Gitee remote，不动主 checkout 的分支/工作区状态。
-            git clone --depth 1 --branch releases $giteeUrl $mirrorDir 2>&1
-            if ($LASTEXITCODE -ne 0) {
-              # releases 分支还不存在（首次发布）：clone 默认分支后本地新建孤儿分支。
-              git clone --depth 1 $giteeUrl $mirrorDir 2>&1
-              Push-Location $mirrorDir
-              git checkout --orphan releases
-              git reset --hard
-              Pop-Location
-            }
+          $giteeUrl = "https://oauth2:$($env:GITEE_TOKEN)@gitee.com/$($env:GITEE_REPOSITORY).git"
+          $mirrorDir = Join-Path $env:RUNNER_TEMP "gitee-mirror"
 
-            # 固定覆盖 latest/ 目录（不按 tag 累加）：先清空旧内容再写新的，避免上一个版本不同文件名的
-            # exe/sig 残留下来。
-            $destDir = Join-Path $mirrorDir "latest"
-            if (Test-Path $destDir) { Remove-Item $destDir -Recurse -Force }
-            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-            Copy-Item dist-out/*.exe $destDir/ -ErrorAction SilentlyContinue
-            Copy-Item dist-out/*.exe.sig $destDir/ -ErrorAction SilentlyContinue
-            # mac 产物也得推上去：updater-gitee.json 里的 darwin 条目指向 Gitee 直链，
-            # 不推就是指向一个不存在的文件 → mac 用户在 Gitee 那组下载 404、
-            # 然后才回退到 GitHub（能成但白多一轮失败重试）。
-            Copy-Item mac-artifact/*.app.tar.gz $destDir/ -ErrorAction SilentlyContinue
-            Copy-Item mac-artifact/*.app.tar.gz.sig $destDir/ -ErrorAction SilentlyContinue
-            Copy-Item desktop/dist/updater-gitee.json $destDir/ -ErrorAction SilentlyContinue
-
+          # 独立临时目录里操作 Gitee remote，不动主 checkout 的分支/工作区状态。
+          git clone --depth 1 --branch releases $giteeUrl $mirrorDir 2>&1 | Write-Host
+          if ($LASTEXITCODE -ne 0) {
+            # releases 分支还不存在（首次发布）：clone 默认分支后本地新建孤儿分支。
+            Write-Host "ℹ️ releases 分支不存在，改为 clone 默认分支后建孤儿分支"
+            git clone --depth 1 $giteeUrl $mirrorDir 2>&1 | Write-Host
+            if ($LASTEXITCODE -ne 0) { Fail "clone Gitee 仓库失败（查 GITEE_TOKEN 是否有写权限、GITEE_REPOSITORY 路径是否正确）" }
+            if (-not (Test-Path $mirrorDir)) { Fail "clone 返回 0 但目录不存在：$mirrorDir" }
             Push-Location $mirrorDir
-            git add -A latest
-            git -c user.email="ci@cc-bridge.local" -c user.name="cc-bridge-ci" commit -m "release: mirror $tag to Gitee (latest)"
-            git push origin releases
+            git checkout --orphan releases 2>&1 | Write-Host
+            if ($LASTEXITCODE -ne 0) { Pop-Location; Fail "创建 releases 孤儿分支失败" }
+            git reset --hard 2>&1 | Write-Host
             Pop-Location
-
-            Write-Host "✅ 已镜像到 Gitee releases 分支：$tag"
-          } catch {
-            Write-Host "⚠️ Gitee 镜像发布失败（不影响本次 GitHub Release 已发布内容，自动更新仍可走现有 GitHub/ghproxy 路径）：$_"
-            exit 0
           }
+          if (-not (Test-Path $mirrorDir)) { Fail "镜像工作目录不存在：$mirrorDir" }
+
+          # 固定覆盖 latest/ 目录（不按 tag 累加）：先清空旧内容再写新的，避免上一个版本不同文件名的
+          # exe/sig 残留下来。
+          $destDir = Join-Path $mirrorDir "latest"
+          if (Test-Path $destDir) { Remove-Item $destDir -Recurse -Force }
+          New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+          Copy-Item dist-out/*.exe $destDir/ -ErrorAction SilentlyContinue
+          Copy-Item dist-out/*.exe.sig $destDir/ -ErrorAction SilentlyContinue
+          # mac 产物也得推上去：updater-gitee.json 里的 darwin 条目指向 Gitee 直链，
+          # 不推就是指向一个不存在的文件 → mac 用户在 Gitee 那组下载 404、
+          # 然后才回退到 GitHub（能成但白多一轮失败重试）。
+          Copy-Item mac-artifact/*.app.tar.gz $destDir/ -ErrorAction SilentlyContinue
+          Copy-Item mac-artifact/*.app.tar.gz.sig $destDir/ -ErrorAction SilentlyContinue
+          Copy-Item desktop/dist/updater-gitee.json $destDir/ -ErrorAction SilentlyContinue
+
+          # 文件清单与总体积必须打印：跨境上行实测只有约 35KB/s（7MB 级要 3.5~4.5 分钟，
+          # 而链路在 4 分钟量级会被切断）。cc-bridge 还要同时推 Windows exe + mac tar.gz，
+          # 体积比单 Windows 项目更大，更容易撞上这个上限 —— 体积是事后定性的关键依据。
+          $files = @(Get-ChildItem $destDir -Recurse -File)
+          if ($files.Count -eq 0) { Fail "latest/ 里一个文件都没有（产物路径变了？上面的 Copy-Item 全没匹配上）" }
+          $mb = ($files | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host ("待推送 latest/：{0} 个文件，合计 {1:N2} MB" -f $files.Count, $mb)
+          $files | ForEach-Object { Write-Host ("  - {0}  {1:N2} MB" -f $_.Name, ($_.Length / 1MB)) }
+          if (-not ($files | Where-Object { $_.Name -eq 'updater-gitee.json' })) {
+            Fail "latest/ 里没有 updater-gitee.json —— 客户端就是读它，缺了镜像等于白做"
+          }
+
+          Push-Location $mirrorDir
+          git add -A latest 2>&1 | Write-Host
+          if ($LASTEXITCODE -ne 0) { Pop-Location; Fail "git add 失败" }
+          git -c user.email="ci@cc-bridge.local" -c user.name="cc-bridge-ci" commit -m "release: mirror $tag to Gitee (latest)" 2>&1 | Write-Host
+          if ($LASTEXITCODE -ne 0) { Pop-Location; Fail "git commit 失败（内容与上一版完全相同时也会非零）" }
+
+          Write-Host "--- git count-objects ---"
+          git count-objects -vH 2>&1 | Write-Host
+
+          # 诊断开关：只在这一步打开。GIT_CURL_VERBOSE 能看到连接在哪一步被重置；
+          # GIT_TRACE_CURL_NO_DATA 只要头不要数据体，否则日志会被二进制淹没。
+          # token 在 URL 里，但它是 secret，GitHub 会自动打码成 ***。
+          $env:GIT_CURL_VERBOSE = "1"
+          $env:GIT_TRACE = "1"
+          $env:GIT_TRACE_CURL_NO_DATA = "1"
+
+          Write-Host "====== 第一次 push（默认参数） ======"
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          git push --progress --verbose origin releases 2>&1 | Write-Host
+          $pushCode = $LASTEXITCODE
+          $sw.Stop()
+          $sec1 = [int]$sw.Elapsed.TotalSeconds
+          Write-Host ("第一次 push：退出码 {0}，耗时 {1} 秒" -f $pushCode, $sec1)
+          if ($sec1 -gt 0) { Write-Host ("  均速约 {0:N0} KB/s" -f ($mb * 1024 / $sec1)) }
+
+          # 第二次（仅失败时）：两个针对 "RPC failed / curl 55" 的经典改法一起试，
+          # 放在同一次 run 里验证，省得为了试一个参数再发一版：
+          #   http.postBuffer=500MB → 不用 chunked 上传（很多反代处理不好 chunked）
+          #   --no-thin             → 不发 thin pack（部分服务端对 thin pack 会断连）
+          if ($pushCode -ne 0) {
+            Write-Host ""
+            Write-Host "====== 第二次 push（http.postBuffer=500MB + --no-thin） ======"
+            $sw2 = [System.Diagnostics.Stopwatch]::StartNew()
+            git -c http.postBuffer=524288000 push --no-thin --progress --verbose origin releases 2>&1 | Write-Host
+            $pushCode2 = $LASTEXITCODE
+            $sw2.Stop()
+            $sec2 = [int]$sw2.Elapsed.TotalSeconds
+            Write-Host ("第二次 push：退出码 {0}，耗时 {1} 秒" -f $pushCode2, $sec2)
+            # annotation 会进入 run 的 annotations，不用翻完整日志就能拿到关键数字
+            Write-Host ("::error title=Gitee 镜像诊断::pack={0:N2}MB files={1} push1_code={2} push1_sec={3} push2_code={4} push2_sec={5}" -f $mb, $files.Count, $pushCode, $sec1, $pushCode2, $sec2)
+            if ($pushCode2 -eq 0) {
+              Write-Host "✅ 第二次成功 —— 说明 postBuffer/--no-thin 能绕过这个问题，应该直接加到默认参数里"
+              $pushCode = 0
+            }
+          }
+          Pop-Location
+          if ($pushCode -ne 0) { Fail "git push 两次都失败（见上方 GIT_CURL_VERBOSE 输出：连接在哪一步被重置、传了多少字节）" }
+
+          # ── 真正的“发成功了吗”检测：push 返回 0 只说明 git 不报错，不说明客户端能用 ──
+          # 客户端（update.rs）读的就是下面这个地址。实测：Gitee raw 会 302 跳到
+          # raw.giteeusercontent.com 的签名地址，所以必须跟随重定向。
+          # 只比 200 还不够：推失败时 Gitee 上会留着上一版的 manifest，也是 200。
+          # 所以还要比 version 字段是不是本次 tag —— 这才能拦住“旧 manifest 静默
+          # 屏蔽新版本”那个坑。
+          $ver = $tag.TrimStart('v')
+          $raw = "https://gitee.com/$($env:GITEE_REPOSITORY)/raw/releases/latest/updater-gitee.json"
+          Write-Host "--- 验证客户端实际使用的地址：$raw ---"
+          try {
+            $resp = Invoke-WebRequest -Uri $raw -MaximumRedirection 5 -TimeoutSec 60 -UseBasicParsing
+            Write-Host ("raw 返回 {0}，长度 {1} 字节" -f $resp.StatusCode, $resp.RawContentLength)
+            $manifest = $resp.Content | ConvertFrom-Json
+            Write-Host ("manifest.version = {0}（本次 tag = {1}）" -f $manifest.version, $ver)
+            Write-Host ("platforms = {0}" -f (($manifest.platforms.PSObject.Properties | ForEach-Object { $_.Name }) -join ', '))
+            if ($manifest.version -ne $ver) {
+              Fail "raw 读到的 manifest 版本是 $($manifest.version)，不是本次的 $ver —— 镜像内容是旧的"
+            }
+          } catch {
+            Fail "raw 地址请求/解析失败：$_（推上去了却读不到，客户端一样用不了）"
+          }
+
+          Write-Host ("::notice title=Gitee 镜像::已验证可用 version={0} pack={1:N2}MB files={2} sec={3}" -f $ver, $mb, $files.Count, $sec1)
+          Write-Host "✅ 已镜像到 Gitee 并验证客户端地址可读：$tag"

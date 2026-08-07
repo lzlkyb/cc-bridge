@@ -102,6 +102,9 @@ pub struct AppState {
     /// 供前端 Header 展示「启动失败」红态，避免用户盲目尝试。
     pub startup_error: StdMutex<Option<String>>,
 
+    /// 外挂 MCP server 的连接池（通用桥）。懒启动，列工具不碰它。
+    pub mcp_bridge: crate::mcp::bridge::McpBridge,
+
     /// 防火墙状态缓存（规则级，仅 Windows 真实查询）。见 `FirewallCache`。
     pub firewall_cache: StdMutex<FirewallCache>,
     /// 系统 netsh 是否可用（启动探测一次）。false 时停止后台/手动防火墙查询，
@@ -167,6 +170,7 @@ impl AppState {
             running_commands: DashMap::new(),
             cwd_sessions: DashMap::new(),
             startup_error: StdMutex::new(None),
+            mcp_bridge: crate::mcp::bridge::McpBridge::new(),
             firewall_cache: StdMutex::new(FirewallCache {
                 enabled: None,
                 port_open: None,

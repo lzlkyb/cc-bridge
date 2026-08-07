@@ -26,6 +26,17 @@ pub struct BridgeConfig {
     /// 白名单配置组（存档）。与 `allowed_roots` 的关系：切换组 = 把该组 roots
     /// 写进 `allowed_roots`；在当前组里增删目录则反向同步回本字段。
     pub root_profiles: Vec<RootProfile>,
+    /// 外挂 MCP server 总开关。**默认关**（决策 1）。
+    ///
+    /// 不能合并到 `shell_enabled`：那个开关的语义是“允许远程跑任意命令”，
+    /// 而桥接是“允许远程调用**本机管理员预先指定的**几个程序”。合并会让两个开关都变模糊。
+    pub external_mcp_enabled: bool,
+    /// 外挂 MCP server 列表。
+    ///
+    /// 🔴 **只能通过 Tauri 命令（前端设置页）修改，绝不经由 MCP 写入**（方案 S1）：
+    /// 里面写的是“要启动哪个可执行文件”，能改它 = 能以本机用户身份执行任意程序，
+    /// 而桥接的 spawn 不走 `run_command` 那三道闸（shell_enabled / 危险命令拦截 / 命令白名单）。
+    pub external_mcp_servers: Vec<crate::mcp::bridge::config::ExternalMcpServer>,
     /// 当前组名。**仅用于 UI 展示与存档归属**，不参与任何安全判定。
     pub active_profile: String,
     pub token: String,
@@ -106,6 +117,8 @@ impl Default for BridgeConfig {
         Self {
             allowed_roots: vec![],
             root_profiles: vec![],
+            external_mcp_enabled: false,
+            external_mcp_servers: vec![],
             active_profile: String::new(),
             token: String::new(),
             allowed_extensions: vec![
@@ -178,6 +191,10 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
                     .collect();
             }
             "root_profiles" => config.root_profiles = parse_or_warn(key, value, vec![]),
+            "external_mcp_enabled" => config.external_mcp_enabled = value == "true",
+            "external_mcp_servers" => {
+                config.external_mcp_servers = parse_or_warn(key, value, vec![])
+            }
             "active_profile" => config.active_profile = parse_or_warn(key, value, String::new()),
             "token" => config.token = parse_or_warn(key, value, String::new()),
             "allowed_extensions" => config.allowed_extensions = parse_or_warn(key, value, vec![]),
@@ -308,8 +325,14 @@ mod profile_tests {
     fn dangling_active_profile_falls_back() {
         let mut c = BridgeConfig {
             root_profiles: vec![
-                RootProfile { name: "A".into(), roots: vec![] },
-                RootProfile { name: "B".into(), roots: vec![] },
+                RootProfile {
+                    name: "A".into(),
+                    roots: vec![],
+                },
+                RootProfile {
+                    name: "B".into(),
+                    roots: vec![],
+                },
             ],
             active_profile: "已被删除的组".into(),
             ..BridgeConfig::default()
@@ -322,7 +345,10 @@ mod profile_tests {
     #[test]
     fn normalize_is_idempotent() {
         let mut c = BridgeConfig {
-            root_profiles: vec![RootProfile { name: "X".into(), roots: vec!["/a".into()] }],
+            root_profiles: vec![RootProfile {
+                name: "X".into(),
+                roots: vec!["/a".into()],
+            }],
             active_profile: "X".into(),
             ..BridgeConfig::default()
         };
@@ -343,7 +369,10 @@ mod profile_tests {
         assert_eq!(c.port, 7823);
         // 缺的字段取默认值，而不是报错
         assert!(c.root_profiles.is_empty());
-        assert!(c.whitelist_enabled, "whitelist_enabled 默认应为 true（安全默认）");
+        assert!(
+            c.whitelist_enabled,
+            "whitelist_enabled 默认应为 true（安全默认）"
+        );
     }
 }
 
@@ -503,6 +532,19 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         &to_value(config.notify_task_complete).unwrap(),
     )?;
     save_config_field(conn, "transport", &to_value(&config.transport).unwrap())?;
+    // 外挂 MCP 桥的两个键。漏写的后果不是“少存一个字段”：调用方（`import_config_inner`）
+    // 是先落库再整体替换内存，漏一个就会造成内存领先于 DB——界面上已生效、
+    // 重启后又变回去（已删的 server 复活）。
+    save_config_field(
+        conn,
+        "external_mcp_enabled",
+        &to_value(config.external_mcp_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "external_mcp_servers",
+        &to_value(&config.external_mcp_servers).unwrap(),
+    )?;
 
     tx.commit()
         .map_err(|e| format!("Failed to commit full config: {e}"))?;

@@ -49,6 +49,10 @@ pub fn init_database(data_dir: &Path) -> Result<Connection, String> {
     )
     .map_err(|e| format!("Failed to create backup_index table: {e}"))?;
 
+    // 外挂 MCP server 的工具清单缓存。建表逻辑放在 bridge 模块里，这里只负责调一下，
+    // 避免表结构跟读写它的代码分两处维护。
+    crate::mcp::bridge::manifest::ensure_table(&conn)?;
+
     // Migrate from config.json if it exists and the config table is empty
     let config_json_path = data_dir.join("config.json");
     if config_json_path.exists() {
@@ -125,6 +129,12 @@ fn ensure_defaults(conn: &Connection) -> Result<(), String> {
         (
             "token",
             format!("\"{}\"", crate::security::auth::generate_token()),
+        ),
+        ("external_mcp_enabled", d.external_mcp_enabled.to_string()),
+        (
+            "external_mcp_servers",
+            serde_json::to_string(&d.external_mcp_servers)
+                .map_err(|e| format!("序列化默认值失败：{e}"))?,
         ),
         (
             "allowed_extensions",

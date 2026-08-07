@@ -8,6 +8,8 @@ pub mod edit_files;
 pub mod get_command_output;
 pub mod list_allowed_roots;
 pub mod list_directory;
+pub mod mcp_list_servers;
+pub mod mcp_proxy;
 pub mod move_files;
 pub mod notebook_edit;
 #[cfg(feature = "notifications")]

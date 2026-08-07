@@ -167,15 +167,22 @@ export function StatusCard({
       <p className="mt-1 break-all text-[11px] leading-relaxed opacity-90">{chain.sub}</p>
 
       {status && running && (
-        <>
-          <div className="mt-3 truncate rounded-lg bg-white/[0.14] px-2.5 py-1.5 font-mono text-[11.5px]">
-            {displayHost} : {port}
-          </div>
-          <div className="mt-1.5 text-[10.5px] opacity-90">
-            {(status.transport ?? "http").toUpperCase()} 传输
-            {status.token ? " · Bearer 已启用" : " · 未设 Bearer"}
-          </div>
-        </>
+        // 传输 / Bearer 并进地址行。它俩原来各占一行，而「HTTP 传输 · Bearer 已启用」
+        // 这句话在正常态几乎永远不变，不值一整行（本卡跨两行，它的高度直接决定
+        // 右侧六张卡的行高）。
+        //
+        // truncate 的降级方向正好是对的：宽度不够时先吃掉尾部的元信息，
+        // 地址（用户要复制的那串）保住。所以不需要拆 flex 子项去控优先级。
+        <div className="mt-3 truncate rounded-lg bg-white/[0.14] px-2.5 py-1.5 font-mono text-[11.5px]">
+          {displayHost} : {port}
+          {/* 元信息不跟 font-mono：等宽字体下 CJK 既偏宽也难看（与最近活动同一理由）。
+              顺带也拉开了层次：地址是等宽的数据，后面两项是标签。 */}
+          <span className="font-sans opacity-85">
+            {" · "}
+            {(status.transport ?? "http").toUpperCase()}
+            {status.token ? " · Bearer" : " · 未设 Bearer"}
+          </span>
+        </div>
       )}
 
       {status && (
