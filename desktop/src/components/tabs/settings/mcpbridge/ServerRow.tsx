@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { Button } from "../../../ui/button";
 import { Icon } from "../../../ui/icon";
 import { Switch } from "../../../ui/switch";
 import { Spinner } from "../../../ui/Spinner";
 import { SubSetting } from "../SubSetting";
+import { ToolList } from "./ToolList";
 import { fullCommand, type McpBridgeServer, type ServerState } from "./types";
 
 /** 徽章文案与颜色。全部可由**不启进程**的信息算出来。 */
@@ -62,6 +64,9 @@ export function ServerRow({
 }) {
   const b = badgeOf(server, master);
   const when = stamp(server.fetchedAt);
+  // 展开工具清单。默认收起：一行就铺开十几个工具会把其它 server 顶出视口。
+  const [open, setOpen] = useState(false);
+  const hasTools = server.tools.length > 0 || !!server.instructions;
 
   return (
     <div
@@ -70,7 +75,19 @@ export function ServerRow({
       <div className="flex items-center gap-2">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${b.dot}`} />
         <span className="truncate text-[13px] font-semibold">{server.name}</span>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${b.cls}`}>{b.text}</span>
+        {/* 徽章可点：已探测时展开具体清单。光一个“8 个工具”不回答“它能干什么”。 */}
+        {hasTools ? (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${b.cls}`}
+            title={open ? "收起工具清单" : "展开工具清单"}
+          >
+            {b.text} {open ? "▴" : "▾"}
+          </button>
+        ) : (
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${b.cls}`}>{b.text}</span>
+        )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {/* 总开关关着时禁用：这是本卡里**唯一会真的启动子进程**的按钮。 */}
           <Button
@@ -114,6 +131,8 @@ export function ServerRow({
           </span>
         )}
       </div>
+
+      {open && <ToolList tools={server.tools} instructions={server.instructions} />}
 
       {/* 🔴 本特性里唯一放宽边界的开关。做成子项：它是这个 server 的参数，
           不是独立开关；server 未启用时跟着置灰。 */}

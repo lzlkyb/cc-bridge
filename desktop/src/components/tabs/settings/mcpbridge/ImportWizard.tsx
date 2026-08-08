@@ -5,27 +5,38 @@ import { Icon } from "../../../ui/icon";
 import { Spinner } from "../../../ui/Spinner";
 import { ConfirmModal } from "../../../ui/ConfirmModal";
 import { useToast } from "../../../ui/toast";
-import { fullCommand, type McpBridgeCandidate, type McpBridgeScan } from "./types";
+import { CandidateRow } from "./CandidateRow";
+import {
+  fullCommand,
+  type McpBridgeCandidate,
+  type McpBridgeInspect,
+  type McpBridgeScan,
+} from "./types";
 
 /**
  * 导入向导。
  *
- * 两条硬规矩写进了界面：
+ * 三条硬规矩写进了界面：
  * 1. **全部保持关闭**（S2）——确认按钮写死了“保持关闭”三个字，不能只写“导入”；
  *    只写导入的话，用户会默认导入即生效。
  * 2. **不可导入的也列出来**（§9）——直接不显示会让用户以为扫漏了，
  *    然后去手动添加一个本就不能用的。
+ * 3. **扫描零进程**——启进程只能由用户逐条点「运行一下」触发。
  */
 export function ImportWizard({
+  master,
   onCancel,
   onImport,
 }: {
+  /** 总开关。关着时不允许运行候选（后端也会拒，这里只是提前置灰）。 */
+  master: boolean;
   onCancel: () => void;
   onImport: (names: string[]) => Promise<unknown>;
 }) {
   const [scan, setScan] = useState<McpBridgeScan | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState<string | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -44,6 +55,45 @@ export function ImportWizard({
       if (!next.delete(name)) next.add(name);
       return next;
     });
+
+  /**
+   * 运行一条候选。**会真的启动子进程**（后端拿完清单立刻关掉）。
+   *
+   * 失败不弹 toast 就算了：错误原文（带对方 stderr）直接写回那一行，
+   * 弹一下就没的话，用户根本来不及看完那段 stderr。
+   */
+  const inspect = async (name: string) => {
+    setRunning(name);
+    try {
+      const r = await invoke<McpBridgeInspect>("mcp_bridge_inspect", { name });
+      setScan((prev) =>
+        prev
+          ? {
+              ...prev,
+              candidates: prev.candidates.map((c) =>
+                c.name === name
+                  ? {
+                      ...c,
+                      tools: r.tools,
+                      toolCount: r.toolCount,
+                      instructions: r.instructions,
+                      // 失败时把行置为 unavailable，原文就地显示。
+                      ...(r.state === "failed"
+                        ? { state: "unavailable" as const, reason: r.error ?? "启动失败" }
+                        : {}),
+                    }
+                  : c,
+              ),
+            }
+          : prev,
+      );
+    } catch (e) {
+      // 这一支是后端直接拒了（总开关关着 / 候选没了），不属于“这条启不起来”。
+      toast(`${e}`, "error");
+    } finally {
+      setRunning(null);
+    }
+  };
 
   const ok = scan?.candidates.filter((c) => c.state === "importable") ?? [];
   const bad = scan?.candidates.filter((c) => c.state !== "importable") ?? [];
@@ -80,42 +130,15 @@ export function ImportWizard({
           </div>
         )}
         {ok.map((c) => (
-          <button
+          <CandidateRow
             key={c.name}
-            type="button"
-            onClick={() => toggle(c.name)}
-            className={`mb-1.5 flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-2 text-left ${
-              picked.has(c.name) ? "border-primary/35 bg-primary/8" : ""
-            }`}
-          >
-            <span
-              className={`mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded border ${
-                picked.has(c.name) ? "border-primary bg-primary text-primary-foreground" : ""
-              }`}
-            >
-              {picked.has(c.name) && <Icon name="check" size={11} />}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="flex flex-wrap items-center gap-1.5 text-[13px] font-semibold">
-                {c.name}
-                {c.renamedFrom && (
-                  <span className="rounded-full bg-warning/14 px-2 py-0.5 text-[10px] font-normal text-warning">
-                    已存在同名，导入为此名（原：{c.renamedFrom}）
-                  </span>
-                )}
-              </span>
-              {/* 完整命令（S0）：`D:` 这种参数必须在勾选前就看得见。 */}
-              <span className="mt-1 block break-all rounded-md bg-muted px-2 py-1 font-mono text-[11px]">
-                {fullCommand(c.command, c.args)}
-              </span>
-              {c.envKeys.length > 0 && (
-                <span className="mt-1 block text-[11px] text-muted-foreground">
-                  环境变量：{c.envKeys.join("、")}
-                  <span className="ml-1.5 text-success">值已隐藏</span>
-                </span>
-              )}
-            </span>
-          </button>
+            c={c}
+            picked={picked.has(c.name)}
+            running={running === c.name}
+            masterOff={!master}
+            onToggle={() => toggle(c.name)}
+            onInspect={() => void inspect(c.name)}
+          />
         ))}
 
         {bad.length > 0 && (
@@ -157,7 +180,8 @@ function UnavailableRow({ c }: { c: McpBridgeCandidate }) {
   return (
     <div className="mb-1.5 rounded-lg border bg-muted/60 px-2.5 py-2 opacity-70">
       <div className="text-[13px] font-semibold">{c.name}</div>
-      <div className="mt-0.5 text-[11px] text-muted-foreground">{c.reason}</div>
+      {/* 原文可能是多行的 stderr，不能当成一行渲染。 */}
+      <div className="mt-0.5 whitespace-pre-wrap text-[11px] text-muted-foreground">{c.reason}</div>
       <div className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
         {fullCommand(c.command, c.args)}
       </div>

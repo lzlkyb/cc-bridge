@@ -11,6 +11,17 @@
 /** 服务状态。全部可由**不启进程**的信息算出来。 */
 export type ServerState = "ready" | "stale" | "unknown" | "not_installed" | "failed";
 
+/**
+ * 工具的紧凑形式：名字 + 一句话。
+ *
+ * **没有 `inputSchema`**——后端的 `compact_index` 就不给。界面只需回答
+ * “这东西能干什么”，完整 schema 是给模型看的。
+ */
+export interface McpTool {
+  name: string;
+  summary: string;
+}
+
 export interface McpBridgeServer {
   name: string;
   transport: string;
@@ -37,6 +48,10 @@ export interface McpBridgeServer {
   allowRemoteCwd: boolean;
   /** 当前活着的实例（各自的工作目录）。不展示的话，用户不知道自己开了几个进程。 */
   liveCwds: string[];
+  /** 工具清单。没探测过时为空数组——不会为了填它去启进程。 */
+  tools: McpTool[];
+  /** server 自己给的说明。MCP 的**可选**字段，很多 server 没有。 */
+  instructions?: string;
 }
 
 export interface McpBridgeList {
@@ -61,6 +76,23 @@ export interface McpBridgeCandidate {
   reason: string | null;
   /** 同名避让后的原名，有才传。 */
   renamedFrom?: string;
+  /**
+   * 工具清单。扫描本身是**零进程**的，所以它只在两种情况下非空：
+   * 用户点过「运行一下」，或之前跑过且指纹未变（后端从 manifest 带出来）。
+   */
+  tools?: McpTool[];
+  toolCount?: number;
+  instructions?: string;
+}
+
+/** 导入向导里「运行一下」的返回。 */
+export interface McpBridgeInspect {
+  state: "ready" | "failed";
+  toolCount: number;
+  tools: McpTool[];
+  instructions?: string;
+  /** 失败原文 + 对方 stderr。不改写。 */
+  error?: string;
 }
 
 export interface McpBridgeScan {

@@ -154,6 +154,38 @@ pub fn delete(conn: &Connection, server: &str) -> Result<(), String> {
     .map_err(|e| format!("删除 mcp_manifest 失败：{e}"))
 }
 
+/// 孤儿 manifest 的保留期。它只是垃圾回收，取值不敏感。
+pub const ORPHAN_TTL_SECS: i64 = 7 * 24 * 3600;
+
+/// 删掉「不在配置里」且「早于 `before`」的 manifest 行。
+///
+/// 导入向导里可以对**还没导入**的候选点「运行一下」，结果就写在这张表里
+/// （这样导入后设置页不用再探一次）。用户看完不导入时，那行就成了孤儿。
+///
+/// 它本身是**惰性无害**的（`describe()` 只查配置里存在的 server，
+/// 且 `is_stale_for` 会比指纹，日后同名但不同配置不会误用旧数据），
+/// 所以不开定时器，只在扫描时顺手扫一遍——与 `sweep_idle` 同一个思路。
+pub fn purge_orphans(conn: &Connection, keep: &[String], before: i64) -> Result<usize, String> {
+    // 没有任何已配置的 server 时，`NOT IN ()` 不是合法 SQL，得把那一段去掉。
+    if keep.is_empty() {
+        return conn
+            .execute("DELETE FROM mcp_manifest WHERE fetched_at < ?1", [before])
+            .map_err(|e| e.to_string());
+    }
+    // rusqlite 不能把 `Vec` 直接绑成 IN 列表，手工拼占位符。
+    // `keep` 来自本机配置里的 server 名（已过 `validate_name`），不是外部输入；
+    // 即便如此也只拼占位符、值走绑定，不拼字符串。
+    let holes = vec!["?"; keep.len()].join(",");
+    let sql = format!("DELETE FROM mcp_manifest WHERE fetched_at < ? AND server NOT IN ({holes})");
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(keep.len() + 1);
+    params.push(&before);
+    for k in keep {
+        params.push(k);
+    }
+    conn.execute(&sql, params.as_slice())
+        .map_err(|e| e.to_string())
+}
+
 /// 紧凑索引：只给工具名 + 一句话描述，**不带 `inputSchema`**。
 ///
 /// 🔴 N 个 server × 每个十几个工具的完整 schema 是很大一坨，而它是工具**返回值**——
@@ -207,6 +239,48 @@ mod tests {
         let c = Connection::open_in_memory().expect("in-mem db");
         ensure_table(&c).expect("建表");
         c
+    }
+
+    fn row(server: &str, fetched_at: i64) -> Manifest {
+        Manifest {
+            server: server.into(),
+            fingerprint: "fp".into(),
+            server_info: json!({}),
+            instructions: None,
+            tools: json!([]),
+            fetched_at,
+        }
+    }
+
+    /// 孤儿清理只删「不在配置里」**且**「够旧」的。
+    ///
+    /// 三种组合都要钉，因为写错哪一条的后果都是**静默**的：
+    /// 删多了 = 用户下次打开设置页发现工具清单莫名没了；删少了 = 垃圾永远留着。
+    #[test]
+    fn purge_orphans_only_removes_old_and_unconfigured() {
+        let conn = db();
+        save(&conn, &row("已配置且旧", 100)).expect("1");
+        save(&conn, &row("未配置但新", 900)).expect("2");
+        save(&conn, &row("未配置且旧", 100)).expect("3");
+
+        let keep = vec!["已配置且旧".to_string()];
+        let n = purge_orphans(&conn, &keep, 500).expect("清理");
+
+        assert_eq!(n, 1, "只该删「未配置且旧」那一条");
+        assert!(load(&conn, "已配置且旧").unwrap().is_some(), "配置里的多旧都不能删");
+        assert!(load(&conn, "未配置但新").unwrap().is_some(), "还在保留期内的不能删");
+        assert!(load(&conn, "未配置且旧").unwrap().is_none());
+    }
+
+    /// 一个 server 都没配置时，`NOT IN ()` 不是合法 SQL——走的是另一条分支。
+    #[test]
+    fn purge_orphans_handles_empty_keep_list() {
+        let conn = db();
+        save(&conn, &row("a", 100)).expect("1");
+        save(&conn, &row("b", 900)).expect("2");
+        let n = purge_orphans(&conn, &[], 500).expect("不能因为空列表报 SQL 错");
+        assert_eq!(n, 1);
+        assert!(load(&conn, "b").unwrap().is_some());
     }
 
     fn spec(args: &[&str]) -> ExternalMcpServer {

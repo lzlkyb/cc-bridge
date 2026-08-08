@@ -11,8 +11,6 @@
 //!
 //! 解析部分是**纯函数**（只吃 `Value`），所以不碰文件系统就能完整单测。
 
-use std::path::PathBuf;
-
 use serde_json::{json, Value};
 
 use super::config::ExternalMcpServer;
@@ -97,6 +95,22 @@ impl ImportCandidate {
     }
 }
 
+/// 从配置里的项目路径**字符串**里取最后一段做标签。
+///
+/// 🔴 不用 `Path::file_name()`。那个方法描述的是「**本机**文件系统」的语义，
+/// 而这里处理的是「别的机器写进 JSON 的一个字符串」——两回事。
+/// Unix 上 `\` 不是分隔符，于是 `D:\work\myapp` 会被整串当成一个组件：
+/// **v2.6.0 的 mac 发版就挂在这里**（实测解出 `d--work-myapp` 而不是 `myapp`）。
+/// 两种分隔符都认，结果就与运行平台无关了；顺带也盖住了 dotfiles 仓库 /
+/// 网盘同步过来的配置（路径风格未必匹配本机）。
+fn project_label(path: &str) -> String {
+    path.rsplit(['/', '\\'])
+        // 跳空段：尾部带分隔符时（`D:\work\myapp\`）否则会解出空串。
+        .find(|s| !s.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
 /// 解析 Claude Code 的 `~/.claude.json`：顶层 `mcpServers` + `projects.*.mcpServers`。
 ///
 /// 项目级的也含（决策 4）：本机目前只有全局的，但别的机器上有，漏扫比多扫更难排查。
@@ -104,10 +118,7 @@ pub fn parse_claude_code(root: &Value, source: &str) -> Vec<ImportCandidate> {
     let mut out = from_map(root.get("mcpServers"), source, None);
     if let Some(projects) = root.get("projects").and_then(|p| p.as_object()) {
         for (path, v) in projects {
-            let label = PathBuf::from(path)
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.clone());
+            let label = project_label(path);
             out.extend(from_map(v.get("mcpServers"), source, Some(&label)));
         }
     }
@@ -548,6 +559,23 @@ mod tests {
         assert!(matches!(c[0].status, CandidateStatus::Unavailable(_)));
     }
 
+    /// 🔴 回归：标签提取必须与运行平台无关。
+    ///
+    /// v2.6.0 的 mac 发版就挂在这一条：原实现用 `Path::file_name()`，
+    /// Unix 上 `\` 不是分隔符，`D:\work\myapp` 解出的是整串（清洗后
+    /// 变成 `d--work-myapp`）。Windows 两种分隔符都认，所以本机永远测不出来。
+    #[test]
+    fn project_label_is_platform_independent() {
+        assert_eq!(project_label("D:\\work\\myapp"), "myapp");
+        assert_eq!(project_label("/home/me/work/myapp"), "myapp");
+        assert_eq!(
+            project_label("D:\\work\\myapp\\"),
+            "myapp",
+            "尾部带分隔符时不能解出空串"
+        );
+        assert_eq!(project_label("myapp"), "myapp", "没有分隔符时原样返回");
+    }
+
     /// 项目级的带项目后缀，来源也要标明（决策 4）。
     #[test]
     fn project_scoped_servers_get_suffix_and_source_label() {
@@ -616,7 +644,7 @@ mod tests {
             println!("（拿不到家目录，跳过）");
             return;
         };
-        let path = PathBuf::from(home).join(".claude.json");
+        let path = std::path::PathBuf::from(home).join(".claude.json");
         let Ok(raw) = std::fs::read_to_string(&path) else {
             println!("（{} 不存在，跳过）", path.display());
             return;

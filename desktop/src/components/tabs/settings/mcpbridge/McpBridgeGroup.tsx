@@ -115,7 +115,11 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
       </CardContent>
 
       {importing && (
-        <ImportWizard onCancel={() => setImporting(false)} onImport={bridge.importSelected} />
+        <ImportWizard
+          master={master}
+          onCancel={() => setImporting(false)}
+          onImport={bridge.importSelected}
+        />
       )}
 
       {editing && (
@@ -138,6 +142,8 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
           args={confirmEnable.args}
           envKeys={confirmEnable.envKeys}
           effectiveCwd={confirmEnable.cwd ?? confirmEnable.effectiveCwd}
+          tools={confirmEnable.tools}
+          instructions={confirmEnable.instructions}
           onCancel={() => setConfirmEnable(null)}
           onConfirm={() => {
             void bridge.setEnabled(confirmEnable.name, true);

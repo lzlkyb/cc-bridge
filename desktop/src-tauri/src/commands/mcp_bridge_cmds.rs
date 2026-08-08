@@ -60,7 +60,29 @@ pub struct BridgeServerView {
     pub tool_count: usize,
     #[serde(rename = "fetchedAt", skip_serializing_if = "Option::is_none")]
     pub fetched_at: Option<i64>,
+    /// 工具紧凑索引（名字 + 一句话）。没 manifest 时为空数组。
+    ///
+    /// 不带 `inputSchema`：那东西很大，而界面上只需要“这东西能干什么”。
+    pub tools: Value,
+    /// server 自己给的说明（MCP 的**可选**字段，很多 server 不提供）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
     /// `failed` / `not_installed` 时的**原文**。不改写成「启动失败」这种没信息量的话。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 导入向导里「运行一下」的结果。
+#[derive(Debug, Serialize)]
+pub struct BridgeInspectResult {
+    /// `ready` / `failed`。
+    pub state: String,
+    #[serde(rename = "toolCount")]
+    pub tool_count: usize,
+    pub tools: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    /// 失败原文 + 对方的 stderr。不改写。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -164,6 +186,8 @@ fn view_of(
     let mut tool_count = 0usize;
     let mut fetched_at = None;
     let mut error = None;
+    let mut tools = Value::Array(vec![]);
+    let mut instructions = None;
 
     // 优先级：命令不存在 > 上次启动失败 > manifest 状态。
     // 命令都找不到时再报「需刷新」毫无意义。
@@ -176,6 +200,8 @@ fn view_of(
     } else if let Ok(Some(m)) = manifest::load(db, &spec.name) {
         tool_count = m.tool_count();
         fetched_at = Some(m.fetched_at);
+        tools = manifest::compact_index(&m.tools);
+        instructions = m.instructions.clone();
         state = if m.is_stale_for(spec) {
             "stale"
         } else {
@@ -208,6 +234,8 @@ fn view_of(
         state,
         tool_count,
         fetched_at,
+        tools,
+        instructions,
         error,
     }
 }
@@ -228,6 +256,15 @@ pub async fn mcp_bridge_scan(state: State<'_, Arc<AppState>>) -> Result<BridgeSc
     import::mark_already_imported(&mut cands, &existing);
     let renamed = import::resolve_names(&mut cands, &taken);
 
+    let db = state.db.lock().await;
+    // 顺手清孤儿 manifest（运行过但没导入的那些）。零定时器，与 `sweep_idle` 同思路。
+    // 失败不阻断扫描：清不掉垃圾不是用户现在要解决的事。
+    let _ = manifest::purge_orphans(
+        &db,
+        &taken,
+        chrono::Local::now().timestamp() - manifest::ORPHAN_TTL_SECS,
+    );
+
     let candidates = cands
         .iter()
         .map(|c| {
@@ -236,9 +273,21 @@ pub async fn mcp_bridge_scan(state: State<'_, Arc<AppState>>) -> Result<BridgeSc
             if let Some((from, _)) = renamed.iter().find(|(_, to)| *to == c.spec.name) {
                 v["renamedFrom"] = json!(from);
             }
+            // 之前运行过就直接带上工具清单，不让用户重新开向导后再跑一遍。
+            // 指纹对不上（命令/参数改过）就当没有——旧清单比没有更坏。
+            if let Ok(Some(m)) = manifest::load(&db, &c.spec.name) {
+                if !m.is_stale_for(&c.spec) {
+                    v["tools"] = manifest::compact_index(&m.tools);
+                    v["toolCount"] = json!(m.tool_count());
+                    if let Some(i) = &m.instructions {
+                        v["instructions"] = json!(i);
+                    }
+                }
+            }
             v
         })
         .collect();
+    drop(db);
 
     Ok(BridgeScanResult {
         candidates,
@@ -658,6 +707,103 @@ pub async fn mcp_bridge_probe(
             Ok(BridgeProbeResult {
                 state: "failed".into(),
                 tool_count: 0,
+                error: Some(e),
+            })
+        }
+    }
+}
+
+/// 导入向导里的「运行一下」：把**还没导入**的候选拉起来拓一次工具清单，再关掉。
+///
+/// 🔴 它与 `mcp_bridge_probe` 并列为本模块**仅有的两个会启动子进程的命令**，
+/// 同样必须由用户显式点。区别只在于：probe 的对象在配置里，inspect 的对象还不在。
+///
+/// **没有二次确认框**（列表行里已经逐字展示了完整命令），所以两件事不能省：
+/// ① 按钮文案直说是“运行”；② **本次执行进审计**——否则日志里会出现一个
+/// 没有任何来源记录的进程启动。
+///
+/// 结果直接写进 `mcp_manifest`：用户随后导入时，设置页天然就有数据，
+/// 不需要对同一个 server 再探一次。没导入就成孤儿行，由 `purge_orphans` 兜底。
+#[tauri::command]
+pub async fn mcp_bridge_inspect(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+) -> Result<BridgeInspectResult, String> {
+    let state = state.inner();
+    let (master, existing) = {
+        let cfg = state.config.read().await;
+        (
+            cfg.external_mcp_enabled,
+            cfg.external_mcp_servers.clone(),
+        )
+    };
+    if !master {
+        // 与 probe 同一条规矩：总开关的语义就是「允许启动外挂进程」。
+        return Err("外挂 MCP 桥总开关未启用，运行候选会真的启动子进程，故不允许。".into());
+    }
+
+    // 重新扫一遍而不相信前端传回来的 spec：与 `mcp_bridge_import` 同理——
+    // 前端拿到的预览**没有 env 值**（S7），而启动真需要它。
+    let (mut cands, _) = scan_sources();
+    import::mark_self(&mut cands);
+    import::mark_already_imported(&mut cands, &existing);
+    let taken: Vec<String> = existing.iter().map(|s| s.name.clone()).collect();
+    import::resolve_names(&mut cands, &taken);
+
+    let cand = cands
+        .iter()
+        .find(|c| c.spec.name == name)
+        .ok_or_else(|| format!("重新扫描时已找不到 `{name}`（源配置可能刚被改过）。"))?;
+    if cand.status != import::CandidateStatus::Importable {
+        return Err(format!("`{name}` 不可导入：{}", cand.status.reason()));
+    }
+    let spec = cand.spec.clone();
+    validate(&spec)?;
+
+    let running = spec.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        let mut s = session::connect(&running, None, bridge::DEFAULT_TIMEOUT)?;
+        let now = chrono::Local::now().timestamp();
+        let captured = manifest::capture(s.client()?, &running, bridge::DEFAULT_TIMEOUT, now);
+        let tail = s.stderr_tail();
+        s.shutdown(session::GRACE);
+        match captured {
+            Ok(m) => Ok(m),
+            Err(e) if tail.is_empty() => Err(e),
+            Err(e) => Err(format!("{e}\nstderr：\n{}", tail.join("\n"))),
+        }
+    })
+    .await
+    .map_err(|e| format!("运行任务 panic：{e}"))?;
+
+    // 审计带上完整命令：没有确认框时，这里是唯一能回答
+    // 「这个进程当时为什么被启动」的地方。`brief()` 只出 env 键名（S7）。
+    match outcome {
+        Ok(m) => {
+            let count = m.tool_count();
+            let tools = manifest::compact_index(&m.tools);
+            let instructions = m.instructions.clone();
+            {
+                let db = state.db.lock().await;
+                manifest::save(&db, &m)?;
+            }
+            audit_change(state, "mcp_bridge_inspect", brief(&spec), None);
+            Ok(BridgeInspectResult {
+                state: "ready".into(),
+                tool_count: count,
+                tools,
+                instructions,
+                error: None,
+            })
+        }
+        // 失败也返 `Ok`：要让那一行就地显示错误原文，而不是弹个 toast 就没了。
+        Err(e) => {
+            audit_change(state, "mcp_bridge_inspect", brief(&spec), Some(e.clone()));
+            Ok(BridgeInspectResult {
+                state: "failed".into(),
+                tool_count: 0,
+                tools: Value::Array(vec![]),
+                instructions: None,
                 error: Some(e),
             })
         }

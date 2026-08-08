@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Button } from "../../../ui/button";
 import { Icon } from "../../../ui/icon";
 import { ConfirmModal } from "../../../ui/ConfirmModal";
-import { fullCommand } from "./types";
+import { ToolList } from "./ToolList";
+import { fullCommand, type McpTool } from "./types";
 
 /**
  * 启用 / 新增 / 改参数的二次确认。**三者共用同一个弹窗**（S1）。
@@ -19,6 +20,8 @@ export function EnableRiskModal({
   args,
   envKeys,
   effectiveCwd,
+  tools,
+  instructions,
   mode,
   onCancel,
   onConfirm,
@@ -27,6 +30,12 @@ export function EnableRiskModal({
   command: string;
   args: string[];
   envKeys: string[];
+  /**
+   * 已探测到的工具清单。空就不渲染——**不在这里顶起一个进程**：
+   * 确认框弹出来时用户还没点“确认”。
+   */
+  tools?: McpTool[];
+  instructions?: string;
   /** `cwd` 为空时实际生效的目录；自定义了就直接传那个。 */
   effectiveCwd?: string | null;
   mode: "enable" | "save";
@@ -54,7 +63,17 @@ export function EnableRiskModal({
         <span>环境变量：{envKeys.length ? envKeys.join("、") : "无"}</span>
       </div>
 
-      <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
+      {/* 工具清单放在风险文案**之前**：下面那句“将获得全部能力”得先有个指向，
+          否则它只是一句没有宾语的警告。 */}
+      {(tools?.length || instructions) && (
+        <ToolList
+          tools={tools ?? []}
+          instructions={instructions}
+          title={`它会给远程这 ${tools?.length ?? 0} 个工具：`}
+        />
+      )}
+
+      <div className="mb-3 mt-3 rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
         <div className="mb-1.5 font-semibold">启用后会发生什么：</div>
         <div className="mb-1">① 远程 Claude Code 将获得这个 server 的<b>全部能力</b>。</div>
         <div className="mb-1">
