@@ -1313,6 +1313,91 @@ mod over_wire_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// 🔴 回归（端到端）：`oldString` 带 CRLF 必须能匹配，且行尾不被污染。
+    ///
+    /// **为什么必须走这条链路而不是单测**：`edit_files.rs` 里那条只调
+    /// `normalize_newlines` 断言字符串包含关系，把 `needle` 全改回 `f.old_string`
+    /// 它照样全绿——等于没防护。这里真起服务、真读写文件，改坏了必红。
+    ///
+    /// 三件事一起钉：CRLF 文件能匹配、写回仍是 CRLF、LF 文件不会被升成 CRLF。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn edit_files_matches_crlf_old_string_and_preserves_line_endings() {
+        let root = unique_temp_root("ef_crlf");
+        let crlf_p = root.join("crlf.txt");
+        let lf_p = root.join("lf.txt");
+        std::fs::write(&crlf_p, b"alpha\r\nbeta\r\ngamma\r\n").expect("预写 CRLF");
+        std::fs::write(&lf_p, b"one\ntwo\nthree\n").expect("预写 LF");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+
+        // CRLF 文件 + 带 `\r\n` 的 oldString：修复前这里必然报 oldString not found。
+        let r = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "edit_files", "arguments": { "files": [
+                { "path": crlf_p.to_string_lossy(), "oldString": "alpha\r\nbeta", "newString": "ALPHA\nBETA" }
+            ] } }),
+        )
+        .await;
+        assert_dispatch_ok(&r);
+        assert_eq!(
+            std::fs::read(&crlf_p).unwrap(),
+            b"ALPHA\r\nBETA\r\ngamma\r\n",
+            "带 CRLF 的 oldString 要能匹配，且写回必须仍是 CRLF"
+        );
+
+        // LF 文件 + 带 `\r\n` 的 oldString：归一化不能反过来把 LF 文件升成 CRLF。
+        let r2 = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "edit_files", "arguments": { "files": [
+                { "path": lf_p.to_string_lossy(), "oldString": "one\r\ntwo", "newString": "ONE\nTWO" }
+            ] } }),
+        )
+        .await;
+        assert_dispatch_ok(&r2);
+        assert_eq!(
+            std::fs::read(&lf_p).unwrap(),
+            b"ONE\nTWO\nthree\n",
+            "LF 文件不能因为 oldString 带了 \\r 就被写成 CRLF"
+        );
+
+        // newString 带 `\r`：拒绝，且错误里不能再出现“编码无法表示”那句假话。
+        let r3 = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({ "name": "edit_files", "arguments": { "files": [
+                { "path": lf_p.to_string_lossy(), "oldString": "three", "newString": "X\r\nY" }
+            ] } }),
+        )
+        .await;
+        let arr = inner_text(&r3);
+        let e0 = arr.get(0).expect("应有一条结果");
+        assert_eq!(e0.get("ok").and_then(|v| v.as_bool()), Some(false));
+        let msg = e0
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            msg.contains("回车符"),
+            "错误应直指回车符，实际：{msg}"
+        );
+        assert!(
+            !msg.contains("not representable"),
+            "不能再报“字符无法表示”——那是把人往编码方向引的假诊断：{msg}"
+        );
+        assert_eq!(
+            std::fs::read(&lf_p).unwrap(),
+            b"ONE\nTWO\nthree\n",
+            "被拒的编辑不能动文件"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     // edit_files 必须与 read_files 同样遵守 encoding_detect_enabled（回归）：修复前 edit_files
     // 无论该开关怎么设都无条件自动探测，与 read_files（关时强制 UTF-8）不一致。
 

@@ -97,7 +97,7 @@ async fn write_single(
         // 保证内容（含换行风格）不丢失，且不触发 encode_text 错误的有损拒绝
         // （其守卫要求输入为 LF 归一化文本）。utf8 默认路径与改动前 as_bytes() 行为一致。
         let crlf = f.content.contains("\r\n");
-        let normalized = f.content.replace("\r\n", "\n").replace('\r', "\n");
+        let normalized = enc_mod::normalize_newlines(&f.content);
         enc_mod::encode_text(&normalized, enc, crlf, false)
             .map_err(|e| format!("Failed to encode content as {}: {e}", enc.name()))?
     };

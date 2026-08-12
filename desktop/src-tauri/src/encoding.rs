@@ -62,9 +62,17 @@ pub fn detect_encoding(data: &[u8]) -> &'static Encoding {
 
 /// 把任意行尾归一到 LF：CRLF 与孤立 CR 都转成 LF。
 ///
-/// 🔴 **单一定义**，不要在别处再抄一遍。读文件（[`read_text`]）与
-/// `edit_files` 归一化 `oldString` 用的必须是同一套规则——两边一旦脱钩，
-/// 就会出现“看着一模一样却匹配不上”这类谁都查不出来的现象。
+/// 🔴 **单一定义**，不要在别处再抄一遍。全部四个使用点都要走这里：
+/// [`read_text`]（读）、[`encode_text`] 的 round-trip 守卫（写）、
+/// `edit_files` 归一化 `oldString`（匹配）、`write_files` 归一化 `content`（写）。
+/// 任意两边脱钩都会出现“看着一模一样却匹配不上”或“每次写入都被守卫拒掉”
+/// 这类谁都查不出来的现象（后者报的还是“字符无法表示”这句假话）。
+///
+/// ⚠ **契约：纯 CR（经典 Mac）换行的文件会被转成 LF，不会还原。**
+/// [`read_text`] 的 `crlf` 标志取自 `contains("\r\n")`，纯 CR 文件为 `false`，
+/// 而这里会把每个孤立 `\r` 转成 `\n`——于是改一个词会把**全文行尾**换掉。
+/// 这是既有行为（经典 Mac 格式已基本绝迹，不值得为它多开一条还原路径），
+/// 写在这里是为了让它从**隐含前提**变成**明写的取舍**。
 pub fn normalize_newlines(s: &str) -> String {
     s.replace("\r\n", "\n").replace('\r', "\n")
 }
@@ -159,7 +167,7 @@ pub fn encode_text(
     // round-trip 守卫：解码回来归一化后必须与输入一致，否则说明该编码无法无损
     // 表示新内容（如 GBK 装不下的字符），拒绝写入。
     let (back, _, _) = enc.decode(&body);
-    let back_norm = back.replace("\r\n", "\n").replace('\r', "\n");
+    let back_norm = normalize_newlines(&back);
     if back_norm != text_lf {
         return Err(format!(
             "encode round-trip mismatch under {} — the new content contains characters not representable in this encoding; aborting write to avoid corruption",
@@ -200,6 +208,24 @@ mod tests {
         assert_eq!(normalize_newlines("a\rb"), "a\nb", "孤立 CR 也要转");
         assert_eq!(normalize_newlines("a\nb"), "a\nb", "已是 LF 的不能动");
         assert_eq!(normalize_newlines("a\r\n\r\nb"), "a\n\nb");
+    }
+
+    /// 纯 CR（经典 Mac）文件会被转成 LF 且**不还原**——这是取舍，不是意外。
+    ///
+    /// 钉它的理由：这个行为一直是**隐含**的（`crlf` 标志只看 `\r\n`），
+    /// 而它的后果不小：对纯 CR 文件改一个词，全文行尾都会被换掉。
+    /// 写成测试之后，日后谁想改成“保真纯 CR”就必须先面对这条断言。
+    #[test]
+    fn lone_cr_is_converted_to_lf_and_not_restored() {
+        let ft = read_text(b"a\rb\rc", None).expect("纯 CR 应能读");
+        assert_eq!(ft.text, "a\nb\nc");
+        assert!(!ft.crlf, "`crlf` 标志只看 \\r\\n，纯 CR 文件为 false");
+
+        let out = encode_text(&ft.text, ft.encoding, ft.crlf, ft.had_bom).expect("回写");
+        assert_eq!(
+            out, b"a\nb\nc",
+            "纯 CR **不会**被还原——行尾已整体变成 LF"
+        );
     }
 
     #[test]

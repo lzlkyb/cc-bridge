@@ -89,7 +89,12 @@ async fn edit_single(
     config: &crate::config::BridgeConfig,
     state: &Arc<AppState>,
 ) -> Result<EditOutcome, EditError> {
-    let warning = whitespace_warning(&f.old_string);
+    // 🔴 告警算在**归一化后**的串上。
+    //
+    // 算在原串上的后果：带 CRLF 的 `oldString` 现在能匹配成功了，却会在
+    // **成功响应**里顶着一句“含 N 个回车符……去掉首尾空白后重试可避免匹配失败”。
+    // 模型读到这句会以为还有风险、白发一轮重试——正是这条告警当初想省掉的往返。
+    let warning = whitespace_warning(&crate::encoding::normalize_newlines(&f.old_string));
     if f.old_string.is_empty() {
         return Err(EditError {
             message: "oldString must not be empty".into(),
@@ -302,11 +307,12 @@ fn whitespace_warning(s: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// 🔴 回归：oldString 带 CRLF 必须能匹配到已归一化的文件内容。
+    /// 归一化规则本身的说明性断言：原串匹配不上、归一化后能匹配上。
     ///
-    /// 这条曾经是**必然失败**的：文件读进来就没有 `\r` 了，而 `read_files`
-    /// 又在内容旁边报 `newline: "CRLF"`，把人往写 `\r\n` 的方向引。
-    /// 下面第一条断言就是“为什么需要归一化”的现场证据。
+    /// ⚠ **它不是回归测试，别当它是。** 它只调 `normalize_newlines`，
+    /// 压根没碰 `edit_single`——把下面那个 `needle` 改回 `f.old_string`，
+    /// 这条照样全绿（已实验验证）。真正护住行为的是 `http.rs` 里那条
+    /// `edit_files_matches_crlf_old_string_and_preserves_line_endings`（真起服务、真读写文件）。
     #[test]
     fn crlf_needle_matches_normalized_content() {
         // 文件读进来之后的样子（与 `read_text` 同一套规则）。
