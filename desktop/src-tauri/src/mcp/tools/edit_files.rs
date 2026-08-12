@@ -96,7 +96,41 @@ async fn edit_single(
             warning: warning.clone(),
         });
     }
-    if f.old_string == f.new_string {
+    // 🔴 newString 里的 `\r` 必须在碰文件之前就拦住。
+    //
+    // 不拦的话它会一路跑到 `encode_text` 的 round-trip 守卫那里被拒，
+    // 而那条错误写的是「字符在本编码下无法表示」——**这句话是假的**：
+    // `\r` 在 UTF-8 里当然表示得了。真实原因是回写时会把 `\n` 全量换成
+    // `\r\n`，于是 newString 自带的 `\r\n` 变成 `\r\r\n`。把人往编码方向引的
+    // 错误诊断比没有诊断更坏，所以在这里给真话。
+    //
+    // 为什么不像 `oldString` 那样帮它归一化：匹配是**查询**，归一化只是把
+    // 针和草垛放进同一个坐标系，不丢信息；而写入是**改写**，静默把调用方
+    // 要求的 `\r\n` 换成别的东西，跟本模块“宁可拒写也不静默损坏”的原则相冲。
+    if f.new_string.contains('\r') {
+        return Err(EditError {
+            message: "newString 含回车符 \\r。本工具在归一化为 LF 的文本上工作，回写时按文件原有行尾还原；\
+                      保留 \\r 会让还原后出现 \\r\\r\\n。去掉 \\r、只用 \\n 即可——\
+                      目标文件是 CRLF 时会自动还原成 CRLF。"
+                .into(),
+            warning: warning.clone(),
+        });
+    }
+
+    // 🔴 把 `oldString` 按与文件内容**同一套规则**归一化再拿去匹配。
+    //
+    // 文件内容读进来就已经没有任何 `\r` 了，所以调用方传 `"a\r\nb"` 本来
+    // **必然**匹配不上；而 `read_files` 又会在内容旁边报 `newline: "CRLF"`，
+    // 恰好把人往这个坑里引。
+    //
+    // 归一化查询串不是“宽容”，是把针和草垛放进同一个坐标系：用户想匹配的
+    // 那段字节确实在磁盘上，我们只是用文件自己的表示法去找它，零信息损失。
+    // （“只匹配 CRLF 而不匹配 LF”这个能力今天本来就不存在，因为内容已归一化。）
+    let needle = crate::encoding::normalize_newlines(&f.old_string);
+
+    // 比的是**归一化后**的：`"a\r\nb"` → `"a\nb"` 对上 `"a\nb"` 也是空操作，
+    // 按原串比会放它过去，然后报一次“成功替换”但文件一个字没变。
+    if needle == f.new_string {
         return Err(EditError {
             message: "oldString and newString are identical, nothing to do".into(),
             warning: warning.clone(),
@@ -144,7 +178,7 @@ async fn edit_single(
     let ft = encoding::read_text(&raw, effective_encoding)?;
     let content = &ft.text;
 
-    let match_count = content.matches(&f.old_string).take(2).count(); // E-P0-5: 早停在 >1，避免全文件扫描
+    let match_count = content.matches(&needle).take(2).count(); // E-P0-5: 早停在 >1，避免全文件扫描
     if match_count == 0 {
         return Err(EditError {
             message: "oldString not found in file".into(),
@@ -155,8 +189,8 @@ async fn edit_single(
     let (updated, replacements) = if f.replace_all {
         // match_count 因 take(2) 早停最多为 2（仅用于唯一性判定）；replaceAll 需上报真实
         // 替换次数，这里重新全量计数（replace 本身也会全串扫描，代价可忽）。
-        let actual = content.matches(&f.old_string).count();
-        (content.replace(&f.old_string, &f.new_string), actual)
+        let actual = content.matches(&needle).count();
+        (content.replace(&needle, &f.new_string), actual)
     } else {
         if match_count > 1 {
             return Err(EditError {
@@ -166,7 +200,7 @@ async fn edit_single(
                 warning: warning.clone(),
             });
         }
-        (content.replacen(&f.old_string, &f.new_string, 1), 1)
+        (content.replacen(&needle, &f.new_string, 1), 1)
     };
 
     // 按原编码/换行/BOM 无损编码（内含 round-trip 守卫，编码有损会报错）。
@@ -267,6 +301,23 @@ fn whitespace_warning(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 🔴 回归：oldString 带 CRLF 必须能匹配到已归一化的文件内容。
+    ///
+    /// 这条曾经是**必然失败**的：文件读进来就没有 `\r` 了，而 `read_files`
+    /// 又在内容旁边报 `newline: "CRLF"`，把人往写 `\r\n` 的方向引。
+    /// 下面第一条断言就是“为什么需要归一化”的现场证据。
+    #[test]
+    fn crlf_needle_matches_normalized_content() {
+        // 文件读进来之后的样子（与 `read_text` 同一套规则）。
+        let content = crate::encoding::normalize_newlines("alpha\r\nbeta\r\n");
+        assert!(
+            !content.contains("alpha\r\nbeta"),
+            "原串必然匹配不上——这正是要归一化查询串的理由"
+        );
+        let needle = crate::encoding::normalize_newlines("alpha\r\nbeta");
+        assert!(content.contains(&needle), "归一化后必须能匹配上");
+    }
 
     #[test]
     fn whitespace_warning_detects_leading_and_trailing() {

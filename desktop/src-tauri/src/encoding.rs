@@ -60,6 +60,15 @@ pub fn detect_encoding(data: &[u8]) -> &'static Encoding {
     UTF_8
 }
 
+/// 把任意行尾归一到 LF：CRLF 与孤立 CR 都转成 LF。
+///
+/// 🔴 **单一定义**，不要在别处再抄一遍。读文件（[`read_text`]）与
+/// `edit_files` 归一化 `oldString` 用的必须是同一套规则——两边一旦脱钩，
+/// 就会出现“看着一模一样却匹配不上”这类谁都查不出来的现象。
+pub fn normalize_newlines(s: &str) -> String {
+    s.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 /// 读取字节流为归一化文本（LF），并记录编码/换行/BOM 供无损回写。
 /// `override_label`（如 "gbk"）优先，否则自动探测。
 pub fn read_text(data: &[u8], override_label: Option<&str>) -> Result<FileText, String> {
@@ -88,7 +97,7 @@ pub fn read_text(data: &[u8], override_label: Option<&str>) -> Result<FileText, 
     let raw = cow.as_ref();
     let crlf = raw.contains("\r\n");
     // 归一化到 LF：CRLF 与孤立 CR 都转成 LF，用于匹配/展示。
-    let text = raw.replace("\r\n", "\n").replace('\r', "\n");
+    let text = normalize_newlines(raw);
     Ok(FileText {
         text,
         encoding: actual,
@@ -182,6 +191,16 @@ pub fn label_to_encoding(label: &str) -> Option<&'static Encoding> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 归一化规则本身。`edit_files` 归一化 `oldString` 用的是同一个函数，
+    /// 这条一旦改了，那边的匹配行为也跟着变——所以先把规则钉死。
+    #[test]
+    fn normalize_newlines_handles_crlf_and_lone_cr() {
+        assert_eq!(normalize_newlines("a\r\nb"), "a\nb");
+        assert_eq!(normalize_newlines("a\rb"), "a\nb", "孤立 CR 也要转");
+        assert_eq!(normalize_newlines("a\nb"), "a\nb", "已是 LF 的不能动");
+        assert_eq!(normalize_newlines("a\r\n\r\nb"), "a\n\nb");
+    }
 
     #[test]
     fn test_detect_utf8() {
