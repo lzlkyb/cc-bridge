@@ -4,6 +4,14 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.6.4",
+    date: "2026-08-20",
+    items: [
+      { category: "feat", text: "关于页新增赞助开发者入口 + mcp_proxy 描述带上已挂载外挂工具名" },
+      { category: "feat", text: "`mcp_proxy` 的描述会带上当前已挂载外挂 server 的工具名（如 `codegraph: codegraph_explore, codegraph_callers, ...`）。这不是给人读的文案，是喂给客户端工具检索的领域词：Claude Code v2.1.7+ 默认开启 Tool Search，工具描述不再常驻上下文而是按需检索，而 `mcp_proxy` 原描述里一个领域词都没有，模型查代码结构时根本检索不到它，外挂 server 等于隐身。没挂任何 server 时描述与改动前逐字相同" },
+    ],
+  },
+  {
     version: "2.6.3",
     date: "2026-08-12",
     items: [
@@ -308,16 +316,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "5s 状态轮询不再连带重渲染整个 Tab：有 8 个组件直接吃 `status`，而 `uptimeSeconds` / `stats` 每 5s 必变 → 顶层引用必然是新的，包 `memo` 也挡不住（react-query 的 structuralSharing 只保得住未变字段的引用，救不了顶层对象）。现按变化频率拆订阅：新增 `StaticStatus` / `LiveStatus` 两个类型，主查询用 `select` 剔掉高频字段，`ConnectHero` 用同一 `queryKey` 自行订阅那两个字段（共享缓存，不多发请求），秒级变化只重渲染它自己。注：重渲染范围尚未用 React DevTools 实测确认。" },
       { category: "improve", text: "窗口收进托盘后不再空转轮询：以前窗口不可见时，8 处轮询依旧全速跑——状态（5s）、审计日志（10s）、防火墙诊断（30s）、后台命令列表与输出（各 3s）、运行时长跳秒（1s），其中最重的是状态轮询里带的可达性探针（真开一次 TCP 连接，200ms 超时）。现全部随窗口可见性断流，恢复可见那一刻立即补一次而不干等周期。新增 `lib/appVisibility.ts`（模块级 store + `useSyncExternalStore`）把可见性从“只写 DOM 属性”升级为 React 可订阅状态，并配 6 条单测。一次性倒计时（IP 变化提示）与小时级更新检查有意不断。" },
       { category: "improve", text: "状态查询不再用读锁罩住磁盘与网络 I/O：`get_status` 的 `config` 读锁原本从函数开头一路罩到末尾，横跨了首次防火墙查询（netsh，可达数百 ms）、可达性探针（最长 200ms）与备份目录枚举，于是前端每 5s 轮询一次就造出一个最长 200ms+ 的窗口，期间在设置页改任何配置都得排队等锁。现拆为「短锁取字段 → 锁外做慢操作 → 再取锁读剩下」，锁持有时间降到微秒级。（附：同时用探针实测排除了两个怀疑——备份目录统计在 1230 个文件下只 2.3ms，bash 探测已有缓存，两者都不是瓶颈。）" },
-    ],
-  },
-  {
-    version: "2.3.19",
-    date: "2026-08-02",
-    items: [
-      { category: "feat", text: "安装时可勾选一键放行 Windows 防火墙，省去首次启动被拦截的麻烦" },
-      { category: "sec", text: "命令拦截从子串黑名单升级为语法感知分析，更精准地拦截危险命令" },
-      { category: "improve", text: "日志分页改为窗口内滚动，操作时不再被外层滚动带走" },
-      { category: "improve", text: "连接页改用纯 CSS 动态表达，体积更小、运行更顺" },
     ],
   },
 ];

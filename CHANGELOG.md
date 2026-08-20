@@ -5,21 +5,14 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [2.6.4] - 2026-08-20
+
+### 更新摘要
+v2.6.4 版本更新
 
 ### 新增
+- 关于页新增赞助开发者入口 + mcp_proxy 描述带上已挂载外挂工具名
 - **`mcp_proxy` 的描述会带上当前已挂载外挂 server 的工具名**（如 `codegraph: codegraph_explore, codegraph_callers, ...`）。这不是给人读的文案，是喂给客户端工具检索的领域词：Claude Code v2.1.7+ 默认开启 Tool Search，工具描述不再常驻上下文而是按需检索，而 `mcp_proxy` 原描述里一个领域词都没有，模型查代码结构时根本检索不到它，外挂 server 等于隐身。没挂任何 server 时描述与改动前逐字相同
-
-### 技术细节
-- 实测确认客户端检索的是**完整描述文本**而非仅工具名：搜 `heuristic`（只出现在描述里、任何工具名都没有的词）能精确命中 `analyze_file` 与 `read_files`。此前判断「延迟加载只暴露名字、改描述无用」是错的，本改动即建立在这次实测上
-- **只放工具名，不放外挂 server 自己写的摘要**。摘要是 tool poisoning 的入口（Invariant Labs 2025-04 首个 PoC；MCPTox 在 45+ 真实 server 上实测成功率 >60%），工具名是受字符集与长度约束的标识符，注入空间小得多。名字够用就永远不必承担那个风险；不够用再加摘要，但那之前须先做「描述哈希 + 变更重新批准」以堵 rug pull（CVE-2025-54136）
-- 不合规的工具名**整条丢弃而不是改写**：洗干净的名字调不通，会让模型拿一个不存在的工具名去调 `mcp_proxy`，比不列它更糟
-- 零进程启动：只读持久化 manifest，与 `mcp_list_servers` 同一条纪律。`tools/list` 是每次连接必发的请求，在这里冷启动子进程会把「连一下看看」变成十几秒
-- 有硬预算：单 server 最多 40 个工具名、单名最长 64 字符、总计 1200 字符，超出即停
-- ⚠ 工具目录因此不再「静态不变」。叠加 `initialize` 声明的 `listChanged: false` 与 `ttlMs: 1h`，会话中途新启用一个 server 后，已连接的客户端最多要等 1 小时（或重连）才看得到。这是有意接受的取舍：启用 server 是低频管理动作，为它丢掉每次连接的缓存不划算
-- HTTP 与 SSE 两个 transport 同步接线，避免换一种连法就搜不到外挂工具
-
----
 
 ## [2.6.3] - 2026-08-12
 
