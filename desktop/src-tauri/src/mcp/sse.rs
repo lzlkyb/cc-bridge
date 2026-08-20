@@ -181,12 +181,16 @@ pub async fn sse_message_handler(
         "notifications/initialized" => {}
         "tools/list" => {
             let shell_type = state.config.read().await.shell_type.clone();
+            // 与 HTTP transport 保持一致：`mcp_proxy` 的描述带上已挂载 server 的工具名。
+            // 两边必须同步，否则换一种 transport 连进来就搜不到外挂工具了。
+            let proxy_hint = crate::mcp::tools::mcp_proxy::keyword_hint(&state).await;
             let resp = json!({
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "tools": crate::mcp::http::get_tool_definitions(&shell_type),
+                    "tools": crate::mcp::http::get_tool_definitions(&shell_type, proxy_hint.as_deref()),
                     // list-caching 提示（MCP 2025-11-05+，向后兼容：旧客户端忽略未知字段）。
+                    // 目录不再静态，取舍理由见 http.rs 同位置注释。
                     "ttlMs": 3_600_000,
                     "cacheScope": "user"
                 }

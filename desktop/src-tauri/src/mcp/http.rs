@@ -283,13 +283,19 @@ async fn mcp_handler(
         "tools/list" => {
             // 按当前 shell_type 动态生成工具描述，确保（重新）连接时模型拿到准确的壳层信息。
             let shell_type = state.config.read().await.shell_type.clone();
+            let proxy_hint = crate::mcp::tools::mcp_proxy::keyword_hint(&state).await;
             Json(json!({
                 "jsonrpc": "2.0",
                 "id": body.get("id"),
                 "result": {
-                    "tools": get_tool_definitions(&shell_type),
+                    "tools": get_tool_definitions(&shell_type, proxy_hint.as_deref()),
                     // list-caching 提示（MCP 2025-11-05+，向后兼容：旧客户端忽略未知字段）。
-                    // 工具目录静态不变，缓存 1 小时、跨用户会话共享，减少远程隧道重复拉取。
+                    // 缓存 1 小时、跨用户会话共享，减少远程隧道重复拉取。
+                    //
+                    // ⚠ 目录不再“静态不变”：`mcp_proxy` 的描述随已挂载的外挂 server 变化。
+                    // 叠上 initialize 里声明的 `listChanged: false`，会话中途新启用一个 server 后，
+                    // 已连接的客户端最多要等 1 小时（或重连）才看得到。这是有意接受的取舍：
+                    // 启用 server 是低频的管理动作，为它把每次连接的缓存都丢掉不划算。
                     "ttlMs": 3_600_000,
                     "cacheScope": "user"
                 }
@@ -551,7 +557,12 @@ pub fn server_instructions() -> &'static str {
     })
 }
 
-pub fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
+/// 生成 `tools/list` 的工具目录。
+///
+/// `proxy_hint`：追加到 `mcp_proxy` 描述末尾的已挂载 server 工具名清单
+/// （见 [`crate::mcp::tools::mcp_proxy::keyword_hint`]）。传 `None` 则用静态描述。
+/// 它是参数而不是在函数内部现查，是因为本函数同步、而读配置与 manifest 需要 async。
+pub fn get_tool_definitions(shell_type: &str, proxy_hint: Option<&str>) -> serde_json::Value {
     // 数据驱动：遍历注册表生成 tools/list 的 inputSchema（schema 由 XxxArgs 的
     // ToolSchema derive 自动生成，单一来源，消除手写 json! 与字段漂移）。
     // run_command 的描述按当前 shell_type 动态生成，让（重新）连接时模型拿到准确壳层信号。
@@ -559,10 +570,16 @@ pub fn get_tool_definitions(shell_type: &str) -> serde_json::Value {
     let mut tools: Vec<serde_json::Value> = crate::mcp::tools::registry::all_tools()
         .iter()
         .map(|t| {
-            let desc: &str = if t.name == "run_command" {
-                run_cmd_desc.as_str()
+            let desc: std::borrow::Cow<'_, str> = if t.name == "run_command" {
+                std::borrow::Cow::Borrowed(run_cmd_desc.as_str())
+            } else if t.name == "mcp_proxy" {
+                // 没挂任何外挂 server 时 hint 为 None，描述与改动前逐字相同。
+                match proxy_hint {
+                    Some(h) => std::borrow::Cow::Owned(format!("{}{}", t.desc, h)),
+                    None => std::borrow::Cow::Borrowed(t.desc),
+                }
             } else {
-                t.desc
+                std::borrow::Cow::Borrowed(t.desc)
             };
             json!({
                 "name": t.name,
@@ -905,6 +922,55 @@ mod over_wire_tests {
                 t["inputSchema"].is_object(),
                 "工具 {} 的 inputSchema 必须是对象（由 ToolSchema 派生）",
                 t["name"]
+            );
+        }
+    }
+
+    /// 接线测试：`proxy_hint` 必须真的落到 `mcp_proxy` 的描述上，而且只落到它一个。
+    ///
+    /// 🔴 这条防的是“`keyword_hint` 写对了、却没接进 `tools/list`”。上一轮审查
+    /// 抓到过一条只测辅助函数、把接线整个漏掉的假回归测试，不重蹈。
+    ///
+    /// 不走真实 server（本文件其它 `tools/list` 测试都带 `#[ignore]`），
+    /// 因为 `get_tool_definitions` 本身是纯函数，直接调就能盖住接线，且默认就会跑。
+    #[test]
+    fn proxy_hint_is_appended_only_to_mcp_proxy() {
+        let sentinel = "\n\nHINT-SENTINEL codegraph_callers";
+        let base = super::get_tool_definitions("bash", None);
+        let with = super::get_tool_definitions("bash", Some(sentinel));
+
+        let desc = |v: &serde_json::Value, name: &str| -> String {
+            v.as_array()
+                .expect("tools 应是数组")
+                .iter()
+                .find(|t| t["name"] == name)
+                .unwrap_or_else(|| panic!("{name} 应在工具目录里"))["description"]
+                .as_str()
+                .expect("description 应是字符串")
+                .to_string()
+        };
+
+        let p_base = desc(&base, "mcp_proxy");
+        let p_with = desc(&with, "mcp_proxy");
+        assert!(
+            p_with.ends_with(sentinel),
+            "hint 必须追加到 mcp_proxy 描述末尾，实际：{p_with}"
+        );
+        assert!(
+            p_with.starts_with(&p_base),
+            "静态描述必须原样保留在前面，不能被 hint 替掉"
+        );
+        assert!(
+            !p_base.contains("HINT-SENTINEL"),
+            "传 None 时描述必须与改动前逐字相同"
+        );
+
+        // 其它工具的描述一个字都不能变。
+        for name in ["read_files", "run_command", "mcp_list_servers", "batch"] {
+            assert_eq!(
+                desc(&base, name),
+                desc(&with, name),
+                "{name} 的描述不该受 proxy_hint 影响"
             );
         }
     }

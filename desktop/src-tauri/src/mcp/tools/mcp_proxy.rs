@@ -208,6 +208,113 @@ pub async fn handle(args: McpProxyArgs, state: &Arc<AppState>) -> Result<Value, 
     }
 }
 
+/// 追加到 `mcp_proxy` 描述里的关键词总预算（字符数）。
+///
+/// 这段文字进的是 `tools/list`，每次（重）连接都会灼进客户端上下文，所以必须有硬上限：
+/// 挂 5 个 server × 每个 30 个工具时不能无限膨胀。超预算就停在上一个 server。
+const KEYWORD_BUDGET: usize = 1200;
+/// 每个 server 最多列几个工具名。
+const MAX_TOOLS_PER_SERVER: usize = 40;
+/// 单个工具名最长字符数。
+const MAX_NAME_LEN: usize = 64;
+
+/// 在 `mcp_proxy` 的静态描述后面，追加**当前已挂载 server 的工具名清单**。
+///
+/// # 这是喂给检索索引的，不是给人读的
+///
+/// 客户端（Claude Code v2.1.7+ 默认开 Tool Search）不再把全部工具描述常驻上下文，
+/// 而是按需检索。实测它检索的是**完整描述文本**而不只是工具名：搜 `heuristic`
+/// （一个只出现在描述里、任何工具名都没有的词）能精确命中 `analyze_file` 与
+/// `read_files` 这两个描述里含该词的工具。
+///
+/// 于是问题就清楚了：`mcp_proxy` 原来的描述里**一个领域词都没有**。模型要查代码结构时
+/// 检索不到它，外挂 server 等于隐身——发现它的唯一路径是模型先莫名想到调
+/// `mcp_list_servers`，而那个念头本身正是需要被触发的东西。把 `codegraph_callers`、
+/// `codegraph_impact` 这类名字放进描述，就是**给索引喂领域词**，让它在使用现场浮出来。
+///
+/// # 为什么只放工具名，不放外挂 server 自己写的摘要
+///
+/// 摘要是 tool poisoning 的入口（Invariant Labs 2025-04 首个 PoC；MCPTox 在 45+ 真实
+/// server 上实测成功率 >60%）。工具**名**是受字符集与长度约束的标识符，注入空间小得多。
+///
+/// 先只用名字试效果：**名字够用的话，我们永远不必承担那个风险**。不够用再加摘要，
+/// 但那之前必须先做「描述哈希 + 变更重新批准」（rug pull，CVE-2025-54136）——否则
+/// 用户点「启用」时批准的文本，server 事后改掉也没人知道。
+///
+/// # 零进程启动
+///
+/// 只读持久化的 manifest，与 `mcp_list_servers` 同一条纪律。`tools/list` 是每次连接
+/// 必发的请求，在这里冷启动子进程等于把「连一下看看」变成十几秒。
+///
+/// 返回 `None` 表示没有可追加的内容（总开关关、或一个有缓存的 server 都没有），
+/// 此时描述保持静态原样。
+pub async fn keyword_hint(state: &Arc<AppState>) -> Option<String> {
+    let (enabled, specs) = {
+        let c = state.config.read().await;
+        (c.external_mcp_enabled, c.external_mcp_servers.clone())
+    };
+    if !enabled {
+        return None;
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for spec in specs.iter().filter(|s| s.enabled && s.is_stdio()) {
+        let cached = {
+            let db = state.db.lock().await;
+            crate::mcp::bridge::manifest::load(&db, &spec.name)
+                .ok()
+                .flatten()
+        };
+        let Some(m) = cached else { continue };
+        let names = searchable_tool_names(&m.tools);
+        if names.is_empty() {
+            continue;
+        }
+        // server 名来自用户自己的配置，原样保留：改写会让模型拿着一个调不通的名字去调。
+        // 只挡换行——它会把描述截成两段，破坏原本的行结构。
+        let server = spec.name.replace(['\n', '\r'], " ");
+        let line = format!("- {}: {}", server, names.join(", "));
+        let cost = line.chars().count();
+        if used + cost > KEYWORD_BUDGET {
+            break;
+        }
+        used += cost;
+        lines.push(line);
+    }
+
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "\n\nCurrently bridged servers and their tool names (listed so you can tell whether one is \
+         relevant — call mcp_list_servers for summaries and input schemas):\n{}",
+        lines.join("\n")
+    ))
+}
+
+/// 从 manifest 的工具数组里挑出**可以安全放进描述**的工具名。
+///
+/// 🔴 不合规的名字**整条丢掉，不改写**。改写出来的名字调不通，会让模型拿着一个
+/// 不存在的工具名去调 `mcp_proxy`，比不列它更糟。
+fn searchable_tool_names(tools: &Value) -> Vec<String> {
+    tools
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
+        .filter(|n| {
+            !n.is_empty()
+                && n.chars().count() <= MAX_NAME_LEN
+                && n.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        })
+        .take(MAX_TOOLS_PER_SERVER)
+        .map(|s| s.to_string())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +396,55 @@ mod tests {
             gate_remote_cwd(Some("  C:/proj  "), &spec(true)).expect("ok"),
             Some("C:/proj")
         );
+    }
+
+    /// 合规名字原样留下，不合规的**整条丢掉而不是改写**。
+    ///
+    /// 🔴 改写是比丢弃更坏的选项：`bad name!` 洗成 `badname` 后，模型会拿这个
+    /// 根本不存在的工具名去调 `mcp_proxy`，拿到一个莫名其妙的“工具不存在”。
+    #[test]
+    fn drops_unusable_tool_names_instead_of_rewriting_them() {
+        let tools = json!([
+            {"name": "codegraph_explore"},
+            {"name": "a.b-c_1"},
+            {"name": "bad name!"},
+            {"name": "中文工具"},
+            {"name": ""},
+            {"name": "x".repeat(MAX_NAME_LEN + 1)},
+            {"summary": "没有 name 字段"}
+        ]);
+        assert_eq!(
+            searchable_tool_names(&tools),
+            vec!["codegraph_explore".to_string(), "a.b-c_1".to_string()],
+            "只留完全合规的，且不得出现被“洗干净”的变体"
+        );
+    }
+
+    /// 长度刚好卡在上限上的名字要留下（边界是 `<=` 不是 `<`）。
+    #[test]
+    fn name_at_exactly_max_len_is_kept() {
+        let exact = "n".repeat(MAX_NAME_LEN);
+        assert_eq!(searchable_tool_names(&json!([{"name": exact}])), vec![exact]);
+    }
+
+    /// 工具多的 server 要截断，否则一个 server 就能吃掉全部预算。
+    #[test]
+    fn caps_tool_count_per_server() {
+        let many: Vec<Value> = (0..MAX_TOOLS_PER_SERVER + 10)
+            .map(|i| json!({"name": format!("t{i}")}))
+            .collect();
+        assert_eq!(
+            searchable_tool_names(&Value::Array(many)).len(),
+            MAX_TOOLS_PER_SERVER
+        );
+    }
+
+    /// 不是数组也不能 panic——manifest 里的 `tools` 是外挂 server 给的，形状不受我们控制。
+    #[test]
+    fn tolerates_malformed_manifest_shapes() {
+        for bad in [json!(null), json!("不是数组"), json!({"tools": []}), json!(7)] {
+            assert!(searchable_tool_names(&bad).is_empty(), "{bad} 应该得到空");
+        }
     }
 
     /// 🔴 schema 必须声明 `args` 是对象。少了这一行，客户端就有理由把它

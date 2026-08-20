@@ -11,6 +11,7 @@ import { aboutCopy } from "../../lib/platform";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChangelogView } from "./ChangelogView";
 import { ReleaseNotes } from "../update/UpdateNotesDialog";
+import { SponsorCard } from "./SponsorCard";
 
 /** 技术栈数据 */
 const TECH_STACK = [
@@ -264,6 +265,9 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                 </div>
               </div>
             </div>
+
+            {/* ═══ 赞助开发者（移植自 pastepanda 6ead67a） ═══ */}
+            <SponsorCard />
 
             {/* ═══ 更新历史（内嵌：技术栈/项目信息 双列 与 版权行之间） ═══ */}
             <div ref={changelogRef} className="px-[22px] pt-3.5">
