@@ -5,6 +5,25 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.7.0] - 2026-08-25
+
+### 更新摘要
+v2.7.0 版本更新
+
+### 新增
+- SSH 终端——侧边栏可折叠、选区/拖选复制、拖选开关、配色对比度对齐
+- **SSH 终端连接侧边栏可折叠（图标 rail）**。终端 Tab 头部「收起」按钮或 `Ctrl/Cmd+B` 切换：侧栏收成 48px 窄条（首字母圆 + 状态点 + 展开按钮 + hover tooltip），终端释放约 240px；展开时宽度 300ms expo 过渡、列表 stagger 淡入。折叠态用 localStorage 记忆，刷新/重开保持，零后端改动。
+- **「拖拽即选」开关（默认关）**。设置页「高级 → 终端拖拽即选」开启后，在终端里直接拖选一段文字即自动进选择态、松手自动复制；关闭则恢复为必须按住 Shift 或点「选择模式」按钮（两条老路径始终可用）。对应新增后端配置项 `ssh_drag_select_enabled`（默认 false，向后兼容）。
+- **按住 Shift 拖选松手自动复制**。选择态下鼠标松开即把选区写入剪贴板（抵御 Claude Code 持续重绘冲掉 live selection），并加 500ms 去重窗避免一次松手弹出多条提示。
+### 修复
+- **SSH 终端登录后无法输入（根因：portable-pty 0.9.0 的 Windows ConPTY 输入 bug）**。现象是「输出正常、敲键无反应」——前端 `onData`→`ssh_input` 链路实测是通的（dev 后台 `[SSH] input` 能收到键入），但 0.9.0 重写的 ConPTY backend 会**静默丢弃写入（返回 Ok）**，远端 shell 收不到输入。已将 `portable-pty` 从 `"0.9"` 钉死到 `"=0.8.1"`（回到稳定的旧 ConPTY backend，crates.io 已发布、API 兼容，多家终端项目已验证此回退可解 wezterm#1396 一类输入故障）。这是依赖层回归，非业务逻辑 bug，前端聚焦加固代码（见下）属冗余防护、保留无害。
+- **SSH 连接状态可观测性 + 终端聚焦加固**。`ssh_connect` 在连接成功/早期失败/关闭三处增加 `#[cfg(debug_assertions)] eprintln!("[SSH] ...")` 日志（dev 后台可见连接结果）；`ssh_input` 增加写后 `input-ok` / 失败 `input-FAIL` 诊断日志。`SshTerminal.tsx` 在打开、`mousedown`/`pointerdown`、切回该终端、`focusin` 时显式 `term.focus()` 夺回隐藏 textarea 焦点，并用「已回传 N 字符 / 输入失败」徽标前台提示输入回路状态。注意：HMR 不会重建 xterm 实例，已存在的旧会话需断开重连才会走新代码。
+- **SSH 终端切换应用级 Tab 需重新连接（根因：`TabsContent` 卸载 `TerminalTab`）**。项目自研 `TabsContent`（`src/components/ui/tabs.tsx:130`）在 `active !== value` 时直接 `return null`，导致切到连接/日志/设置等 tab 时整个 `TerminalTab` 被卸载、前端 `sessions` 活跃连接 state 清零，切回需手动重连（后端 SSH session 其实未断，但前端无 re-attach 机制）。修复：`App.tsx` 将 `TerminalTab` 移出 `TabsContent`，改为常驻挂载、用 `display: activeTab==='terminal'?'block':'none'` 控制显隐，复用 `TerminalTab` 内部已验证的 `display:none` 多会话常驻模式，SSH 会话全程保活、切回即见历史输出。
+- **SSH 终端在 TUI（如 Claude Code）下无法选区/复制（根因：鼠标报告模式 + 关鼠标报告的转义发错了方向）**。TUI 开启鼠标报告（`ESC[?1006h/?1002h/?1003h`）后，xterm 将鼠标拖拽编码为终端鼠标事件发给远端、本地选区建不起来，复制按钮读 `term.getSelection()` 恒为空并提示「没有选中内容」。**真正的修复关键是关鼠标报告必须写到【本地 xterm】（`term.write`）**：xterm 的 `mouseTrackingMode` 只由它从【输出流】解析的转义控制，而早先错误地把 `ESC[?1006l` 经 `ssh_input` 发给【远端 PTY(stdin)】，xterm 从不解析、Claude Code 又反复在输出里重设 `?1006h`，于是鼠标报告一直开着、拖选永远被吃（dev 日志实锤：`?1006h` 与重置序列先后出现、选区恒空）。修复（纯前端、零 Rust）：① 状态栏新增「选择模式」按钮，开启时把 `ESC[?1006l/?1003l/?1002l/?1000l` **直接 `term.write` 到本地 xterm** 关闭鼠标报告使拖选建立本地选区；并在 `ssh_output` 监听每帧输出后再关一次，抵御远端重绘重设 `?1006h`（开启期 Claude Code 鼠标滚轮/点击在本地失效，复制完切回即可）；xterm v6 非 Mac 下 `shouldForceSelection` 本就返回 `shiftKey`，故「按住 Shift 拖选」是原生支持、无需额外发序列；② 新增「复制整屏」按钮，从 xterm 缓冲区（`term.buffer.active` 遍历行 `translateToString(true)`）直接导出可视区域纯文本，鼠标报告模式下也必成；③ 新增「按住 Shift 自动选择」：窗口监听 Shift 的 keydown/keyup，按住期间把同样的关鼠标报告序列 `term.write` 到本地 xterm、松开停止重关（只响应聚焦的会话、多会话互不误触），与手动选择模式共用 `selectActiveRef` 协调——任一为真即本地关鼠标报告；xterm v6 原生 `shouldForceSelection` 在 Windows 下也对 Shift 强制选区，双重保险；④ 复制按钮优先 `term.getSelection()`，空则明确提示「请先拖选或点复制整屏」。标题栏在选择模式/按住 Shift 下显示「拖选复制」徽标（区分「选择模式·拖选复制」与「按住 Shift·拖选复制」来源）。
+- **SSH 连接列表「编辑」按钮图标上下错位**。该按钮漏了 `flex items-center gap-1`，svg 与文字未被 flex 约束导致换行堆叠；已与同组其他按钮对齐。
+- **收起按钮与设计稿不一致（样式 / 字形 / 位置）**。改为带边框 ghost 按钮 + chevron 箭头（新增 `chevronLeft` 图标，展开按钮旋转 180°），并调整头部按钮顺序为「新建 → 收起」与设计稿一致。
+- **终端区域「雾蒙蒙」对比度不足**。xterm 主题对齐设计稿调色板：主文本 `#d4d4d4`→`#e6e6e6`、green `#6a9955`→`#22c55e`、blue `#569cd6`→`#60a5fa`、magenta `#c586c0`→`#c4b5fd`，背景保持 `#1e1e1e`（已确认非蒙版/拉伸所致，ResizeObserver 早已处理画布重算）。
+
 ## [2.6.4] - 2026-08-20
 
 ### 更新摘要

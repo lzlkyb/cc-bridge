@@ -4,6 +4,23 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.7.0",
+    date: "2026-08-25",
+    items: [
+      { category: "feat", text: "SSH 终端——侧边栏可折叠、选区/拖选复制、拖选开关、配色对比度对齐" },
+      { category: "feat", text: "SSH 终端连接侧边栏可折叠（图标 rail）。终端 Tab 头部「收起」按钮或 `Ctrl/Cmd+B` 切换：侧栏收成 48px 窄条（首字母圆 + 状态点 + 展开按钮 + hover tooltip），终端释放约 240px；展开时宽度 300ms expo 过渡、列表 stagger 淡入。折叠态用 localStorage 记忆，刷新/重开保持，零后端改动。" },
+      { category: "feat", text: "「拖拽即选」开关（默认关）。设置页「高级 → 终端拖拽即选」开启后，在终端里直接拖选一段文字即自动进选择态、松手自动复制；关闭则恢复为必须按住 Shift 或点「选择模式」按钮（两条老路径始终可用）。对应新增后端配置项 `ssh_drag_select_enabled`（默认 false，向后兼容）。" },
+      { category: "feat", text: "按住 Shift 拖选松手自动复制。选择态下鼠标松开即把选区写入剪贴板（抵御 Claude Code 持续重绘冲掉 live selection），并加 500ms 去重窗避免一次松手弹出多条提示。" },
+      { category: "fix", text: "SSH 终端登录后无法输入（根因：portable-pty 0.9.0 的 Windows ConPTY 输入 bug）。现象是「输出正常、敲键无反应」——前端 `onData`→`ssh_input` 链路实测是通的（dev 后台 `[SSH] input` 能收到键入），但 0.9.0 重写的 ConPTY backend 会静默丢弃写入（返回 Ok），远端 shell 收不到输入。已将 `portable-pty` 从 `\"0.9\"` 钉死到 `\"=0.8.1\"`（回到稳定的旧 ConPTY backend，crates.io 已发布、API 兼容，多家终端项目已验证此回退可解 wezterm#1396 一类输入故障）。这是依赖层回归，非业务逻辑 bug，前端聚焦加固代码（见下）属冗余防护、保留无害。" },
+      { category: "fix", text: "SSH 连接状态可观测性 + 终端聚焦加固。`ssh_connect` 在连接成功/早期失败/关闭三处增加 `#[cfg(debug_assertions)] eprintln!(\"[SSH] ...\")` 日志（dev 后台可见连接结果）；`ssh_input` 增加写后 `input-ok` / 失败 `input-FAIL` 诊断日志。`SshTerminal.tsx` 在打开、`mousedown`/`pointerdown`、切回该终端、`focusin` 时显式 `term.focus()` 夺回隐藏 textarea 焦点，并用「已回传 N 字符 / 输入失败」徽标前台提示输入回路状态。注意：HMR 不会重建 xterm 实例，已存在的旧会话需断开重连才会走新代码。" },
+      { category: "fix", text: "SSH 终端切换应用级 Tab 需重新连接（根因：`TabsContent` 卸载 `TerminalTab`）。项目自研 `TabsContent`（`src/components/ui/tabs.tsx:130`）在 `active !== value` 时直接 `return null`，导致切到连接/日志/设置等 tab 时整个 `TerminalTab` 被卸载、前端 `sessions` 活跃连接 state 清零，切回需手动重连（后端 SSH session 其实未断，但前端无 re-attach 机制）。修复：`App.tsx` 将 `TerminalTab` 移出 `TabsContent`，改为常驻挂载、用 `display: activeTab==='terminal'?'block':'none'` 控制显隐，复用 `TerminalTab` 内部已验证的 `display:none` 多会话常驻模式，SSH 会话全程保活、切回即见历史输出。" },
+      { category: "fix", text: "SSH 终端在 TUI（如 Claude Code）下无法选区/复制（根因：鼠标报告模式 + 关鼠标报告的转义发错了方向）。TUI 开启鼠标报告（`ESC[?1006h/?1002h/?1003h`）后，xterm 将鼠标拖拽编码为终端鼠标事件发给远端、本地选区建不起来，复制按钮读 `term.getSelection()` 恒为空并提示「没有选中内容」。真正的修复关键是关鼠标报告必须写到【本地 xterm】（`term.write`）：xterm 的 `mouseTrackingMode` 只由它从【输出流】解析的转义控制，而早先错误地把 `ESC[?1006l` 经 `ssh_input` 发给【远端 PTY(stdin)】，xterm 从不解析、Claude Code 又反复在输出里重设 `?1006h`，于是鼠标报告一直开着、拖选永远被吃（dev 日志实锤：`?1006h` 与重置序列先后出现、选区恒空）。修复（纯前端、零 Rust）：① 状态栏新增「选择模式」按钮，开启时把 `ESC[?1006l/?1003l/?1002l/?1000l` 直接 `term.write` 到本地 xterm 关闭鼠标报告使拖选建立本地选区；并在 `ssh_output` 监听每帧输出后再关一次，抵御远端重绘重设 `?1006h`（开启期 Claude Code 鼠标滚轮/点击在本地失效，复制完切回即可）；xterm v6 非 Mac 下 `shouldForceSelection` 本就返回 `shiftKey`，故「按住 Shift 拖选」是原生支持、无需额外发序列；② 新增「复制整屏」按钮，从 xterm 缓冲区（`term.buffer.active` 遍历行 `translateToString(true)`）直接导出可视区域纯文本，鼠标报告模式下也必成；③ 新增「按住 Shift 自动选择」：窗口监听 Shift 的 keydown/keyup，按住期间把同样的关鼠标报告序列 `term.write` 到本地 xterm、松开停止重关（只响应聚焦的会话、多会话互不误触），与手动选择模式共用 `selectActiveRef` 协调——任一为真即本地关鼠标报告；xterm v6 原生 `shouldForceSelection` 在 Windows 下也对 Shift 强制选区，双重保险；④ 复制按钮优先 `term.getSelection()`，空则明确提示「请先拖选或点复制整屏」。标题栏在选择模式/按住 Shift 下显示「拖选复制」徽标（区分「选择模式·拖选复制」与「按住 Shift·拖选复制」来源）。" },
+      { category: "fix", text: "SSH 连接列表「编辑」按钮图标上下错位。该按钮漏了 `flex items-center gap-1`，svg 与文字未被 flex 约束导致换行堆叠；已与同组其他按钮对齐。" },
+      { category: "fix", text: "收起按钮与设计稿不一致（样式 / 字形 / 位置）。改为带边框 ghost 按钮 + chevron 箭头（新增 `chevronLeft` 图标，展开按钮旋转 180°），并调整头部按钮顺序为「新建 → 收起」与设计稿一致。" },
+      { category: "fix", text: "终端区域「雾蒙蒙」对比度不足。xterm 主题对齐设计稿调色板：主文本 `#d4d4d4`→`#e6e6e6`、green `#6a9955`→`#22c55e`、blue `#569cd6`→`#60a5fa`、magenta `#c586c0`→`#c4b5fd`，背景保持 `#1e1e1e`（已确认非蒙版/拉伸所致，ResizeObserver 早已处理画布重算）。" },
+    ],
+  },
+  {
     version: "2.6.4",
     date: "2026-08-20",
     items: [
@@ -291,31 +308,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "README 新增「macOS 安装与更新说明」：适用范围（仅 Apple Silicon、ad-hoc 签名未公证）、隔离属性的两种解法（`xattr -dr` 或系统设置放行，并注明 macOS 15 起「右键打开」已失效）、安装位置对自动更新的影响（`~/Applications` 无感 / `/Applications` 每次弹管理员密码框 / 外置盘会失败）、自动更新可用且更新后不会再被 Gatekeeper 拦、以及与 Windows 版的已知差异。构建章节补 mac 命令（必须带 `--bundles app`，打 zip 要用 `ditto` 而非 `zip`）。" },
       { category: "improve", text: "`docs/Mac版本支持方案.md` 第 2.2 节加实测更正块：该节原文全部基于推理，其中三条经源码核对与真机实测后为错或不准确，最严重的是「Tauri 自动生成 `darwin-universal` 条目、不用改」——实际 key 是 `darwin-aarch64` 且需自己生成，这正是 mac 自动更新此前彻底不通的原因。原文保留备查。" },
       { category: "improve", text: "`功能优化清单.md` M4 重写：一次内存排查事故的完整记录——前三版数据全错，真正的根因是一个已卸载软件在 Machine 级环境变量里残留的 `WEBVIEW2_USER_DATA_FOLDER`，它让本机所有 WebView2 应用共用同一 profile 与同一 BROWSER 进程（连带共享 localStorage，比内存串台更严重）。同时记下四次误判的根源与六条测量纪律（归属用父进程链、口径用专用工作集、先确认窗口真可见等）。" },
-    ],
-  },
-  {
-    version: "2.3.20",
-    date: "2026-08-03",
-    items: [
-      { category: "fix", text: "后台有个线程会长期占满一个 CPU 核心，现已修复；同一个问题还让「IP 变化提示」一直没能生效，也一并修好" },
-      { category: "fix", text: "命令超时后不再丢弃已经跑出来的输出，默认超时也从 30 秒放宽到 2 分钟" },
-      { category: "fix", text: "修好三个远程工具参数「传了不生效」的问题：命令超时、输出上限、批量操作出错是否中断" },
-      { category: "improve", text: "窗口收进托盘或最小化后，各类后台轮询与常驻动画全部暂停，不再空耗 CPU" },
-      { category: "improve", text: "数据库日志文件从约 4MB 收回到 0，启动更快" },
-      { category: "improve", text: "刷新状态时的界面重绘范围大幅收窄，日志翻页也更省内存" },
-      { category: "improve", text: "一个线程常驻跑满一个 CPU 核：`ip_watch.rs` 用 winsock2 `SIO_ADDRESS_LIST_CHANGE` ioctl 监听地址变化，并把 `-1 + WSAEFAULT(10014)` 当成「地址已变化 / 有数据准备好」。实机探针测得该调用在 `cbOutBuffer=0` 时 0.000ms 立即返回 WSAEFAULT —— WSAEFAULT 意为「输出缓冲区参数无效」，即 ioctl 直接失败、通知根本没挂上。于是那个 `loop` 每秒空转数百万次（实测单线程 101.3% 单核，进程合计 125%）。改用 iphlpapi `NotifyAddrChange(NULL, NULL)`（同步阻塞，已用探针验证真的会阻塞）。" },
-      { category: "improve", text: "IP 变化检测实际上一直是死的（上一条的连带后果）：假事件洪流让防抖的无限吸收循环 `while timeout(600ms, rx.recv()).is_ok()` 恒真、永不退出，其后的 `refresh_lan_ips` 与托盘提示从来执行不到（只有 5s 轮询那条兜底路径在工作）。现吸收循环加上限（最多 32 条）。" },
-      { category: "improve", text: "命令超时就什么都拿不到：`run_command` 超时分支里 `stdout`/`stderr` 是硬编码的空串，已跑出来的输出全部丢弃。按 1281 条真实审计记录，141 次（11%）撞到了 30s 默认超时（而 p50 只有 1125ms，被截断的都是 cargo build 这类长命令）——编译跑了半分钟、报错都刷出来了，调用方却只拿到一个空结果。现默认超时提到 120s，且超时时会等读取线程把缓冲区吐完（最多 100 × 2ms），把真实输出连同 truncated 标记一起带回，并附提示引导长任务用 `background: true`。新增两条回归测试锁住行为。（注：这不等于「超时自动转后台」，那仍待做。）" },
-      { category: "improve", text: "三个 MCP 工具参数一直是失效的（传了等于没传）：`run_command` 的 `timeoutMs` / `maxOutputBytes` 与 `batch` 的 `stopOnError`，在工具 schema 里被暴露成 snake_case（`timeout_ms` 等），而服务端反序列化只认 camelCase——于是调用方按 schema 传参会被静默忽略、永远回落默认值（实际踩到：传 `timeout_ms: 180000` 仍按默认超时结束）；另 `search_files` 的 `maxResults` 被误标成必填。根因在 `ToolSchema` 衍生宏：`parse_nested_meta` 的回调未把非目标项的 `= value` 消费掉，解析在第一个不关心的带值项处就报错并被吞，属性里后续项全部读不到（具体丢 `rename` 还是丢 `default` 取决于两者的书写顺序，所以症状看上去毫无规律）。现改为对所有带值项统一先吃下值再取用，并补两条断言 schema 形状的回归测试（这类 bug 不报错、不失败构建）。注：这会使上述参数名在 schema 里改为 camelCase，但它们原本传了也无效，不存在有效依赖。" },
-      { category: "improve", text: "新增两道护栏防止同类问题再现：通知 API 返回非预期值时强制退避 2s（绝不空转）；事件频率硬限流 ≤ 5 次/秒。即使将来 API 行为再变，最坏也只退化成每 200ms 一次，不会再烧掉一个核。" },
-      { category: "improve", text: "前端常驻脉冲点从动画 `box-shadow`（每帧重绘，且紧邻 `backdrop-filter` 元素会连带大面积背景重新模糊）改为伪元素的 `transform + opacity` 涟漪（纯合成）；`indet-slide` 从动画 `left`（每帧布局）改为 `transform: translateX`；删掉死代码 `uptime-flash` / `.hero-uptime--live`。新增「窗口不可见时暂停全部动画」机制（`data-app-hidden` + `hooks/useAppHiddenFlag.ts`，Rust 侧在托盘 toggle / 托盘菜单显示 / 关窗收托盘 / OS 最小化四处发 `app:visibility`）。暂停范围只限于 7 个常驻 `infinite` 动画，不碰 transition 与一次性入场动画——最初写成 `*` 加 `transition: none !important`，实际跑起来整页白屏（会把正在入场的元素永久冻在 `opacity: 0`），已改窄并在 CSS 里留下警告。另：早前“暂停未生效”的结论已被推翻（那次测量未受控，见清单 M10），信号计算现有单测兜底；但真实 CPU 收益仍待受控复测。" },
-      { category: "improve", text: "`ip_watch::spawn` 不再返回 `UdpSocket`（改用 `NotifyAddrChange` 后不再需要用 socket 关闭作为停止信号）；线程以 `tx.send` 失败作为退出条件。" },
-      { category: "improve", text: "新增 `desktop/src-tauri/ip_watch_probe.rs`（独立诊断工具，不在 `src/` 下、不参与 Cargo 构建）：一次性验证两个通知 API 的阻塞行为，以后怀疑同类问题直接 `rustc ip_watch_probe.rs -O -o ip_watch_probe.exe` 跑一次即可。" },
-      { category: "improve", text: "日志面板取一页不再克隆全量：`audit.rs` 的 `read_page` 原先把缓存里整份 4898 条 / 5.2MB 的解析结果 `clone()` 一份（另有一次 `parsed.clone()`），而调用方只要几十条；前端 10s 轮询一次，即每 10s 白白克隆再丢弃两份 5MB。现改为 `page_slice()` 只克隆本页。（`AUDIT_CACHE` 本身常驻内存的问题仍在，待做。）" },
-      { category: "improve", text: "WAL 文件从 3.94MB 降到 0：实测 `cc-bridge.db` 仅 448KB 而 `cc-bridge.db-wal` 高达 4.13MB——SQLite 默认 `wal_autocheckpoint` 是 1000 页（≈4MB），而本应用写入量小、进程常驻，几乎碰不到该阀值。修法分两层：① `wal_autocheckpoint` 设为 256 页（≈1MB 就回写）防它继续长，不设更小是因为太小会把随机写变成频繁 fsync；② 光有①不够——autocheckpoint 只把内容回写主库并重置写指针复用同一个文件，从不缩小文件本身（实测只加①重启后 WAL 依旧 4.13MB），所以又在启动时补一次 `wal_checkpoint(TRUNCATE)` 把残留 WAL 截到 0。实测：WAL 4132392 → 0 bytes、主库 +16KB（内容回写），净省 3.94MB，并减少每次启动的 WAL replay。" },
-      { category: "improve", text: "5s 状态轮询不再连带重渲染整个 Tab：有 8 个组件直接吃 `status`，而 `uptimeSeconds` / `stats` 每 5s 必变 → 顶层引用必然是新的，包 `memo` 也挡不住（react-query 的 structuralSharing 只保得住未变字段的引用，救不了顶层对象）。现按变化频率拆订阅：新增 `StaticStatus` / `LiveStatus` 两个类型，主查询用 `select` 剔掉高频字段，`ConnectHero` 用同一 `queryKey` 自行订阅那两个字段（共享缓存，不多发请求），秒级变化只重渲染它自己。注：重渲染范围尚未用 React DevTools 实测确认。" },
-      { category: "improve", text: "窗口收进托盘后不再空转轮询：以前窗口不可见时，8 处轮询依旧全速跑——状态（5s）、审计日志（10s）、防火墙诊断（30s）、后台命令列表与输出（各 3s）、运行时长跳秒（1s），其中最重的是状态轮询里带的可达性探针（真开一次 TCP 连接，200ms 超时）。现全部随窗口可见性断流，恢复可见那一刻立即补一次而不干等周期。新增 `lib/appVisibility.ts`（模块级 store + `useSyncExternalStore`）把可见性从“只写 DOM 属性”升级为 React 可订阅状态，并配 6 条单测。一次性倒计时（IP 变化提示）与小时级更新检查有意不断。" },
-      { category: "improve", text: "状态查询不再用读锁罩住磁盘与网络 I/O：`get_status` 的 `config` 读锁原本从函数开头一路罩到末尾，横跨了首次防火墙查询（netsh，可达数百 ms）、可达性探针（最长 200ms）与备份目录枚举，于是前端每 5s 轮询一次就造出一个最长 200ms+ 的窗口，期间在设置页改任何配置都得排队等锁。现拆为「短锁取字段 → 锁外做慢操作 → 再取锁读剩下」，锁持有时间降到微秒级。（附：同时用探针实测排除了两个怀疑——备份目录统计在 1230 个文件下只 2.3ms，bash 探测已有缓存，两者都不是瓶颈。）" },
     ],
   },
 ];

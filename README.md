@@ -139,7 +139,7 @@ cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
                                         │                        ▼  │      │
                                         │   ┌─ Rust 后端 ───────┐   │      │
                                         │   │ #[tauri::command] │   │      │
-                                        │   │ 10 个 IPC 命令    │◀──┘      │
+                                        │   │ 23 个 IPC 命令    │◀──┘      │
                                         │   │                  │          │
                                         │   │ AppState ◀───────┼── 共享    │
                                         │   │ (DB/Config/Stats)│          │
@@ -305,6 +305,23 @@ Claude Code 对话中触发工具调用:
 | `stop_command` | 强制终止一个后台命令的整个进程树（Windows = TerminateJobObject，macOS = 向整个 POSIX 进程组发 SIGKILL，孙进程一并死），并从注册表移除 |
 | `push_notification` | 向本机推桌面通知（Windows = 系统 toast，macOS = 通知中心），让远程 Claude Code 干完活能主动叫你；编译期 `notifications` feature 关闭时不注册 |
 
+### SSH 终端（本地人操作，非 MCP 工具）
+
+第 5 个 Tab「终端」提供一个真正的**交互式终端**，让你在 cc-bridge 面板里直接连远端 Linux 敲命令——**这是给人手动用的，不是给远程 Claude Code 用的 MCP 工具**（所以不计入上面的 18 个 MCP 工具）。
+
+- **后端**：调用本机系统自带 OpenSSH（Windows 10/11 自带 `C:\Windows\System32\OpenSSH\ssh.exe`，macOS 永远有），用 `portable-pty` 开本地 PTY（Windows = ConPTY / Unix = pty）把 ssh 的输入输出接到 xterm.js。零新网络协议、零重依赖，体积代价可忽略（portable-pty 0.9 只引 `windows-sys` 0.61.2 等小库）。
+- **连接**：支持两种认证方式——
+  - **密码**：名称 / 主机 / 端口 / 用户名 / 密码，可勾「记住密码」——密码用 aes-gcm 加密后落盘（密钥在 `data_dir/ssh_key.bin`，明文不出本地进程）。
+  - **密钥**：选「密钥」认证后填私钥路径（`id_rsa` / `id_ed25519` 等）+ 可选密码短语（passphrase）。有 passphrase 时同样经 aes-gcm 加密落盘，ssh 握手时由 PTY 自动填充。后端在 key 模式下给 `ssh` 加 `-i <keyfile>`，并用 `IdentitiesOnly=yes` 避免 agent 干扰。
+- **交互**：xterm.js 渲染，`TERM=xterm-256color` + 中文 UTF-8；窗口缩放走 PTY `resize`；`ServerAliveInterval=30 / ServerAliveCountMax=3` 保活防断；复制粘贴走 WebView 剪贴板。
+- **多标签终端**：每个 SSH 连接一个独立 xterm 实例 + 会话标签（顶部可切换/关闭），后台连接保持不断开；点连接自动新建标签，断线后标签标红。
+- **SFTP 文件管理**：每个连接带「文件」按钮，弹出文件浏览器抽屉——列目录（解析 `ls -la`）、进入上级/子目录、上传/下载（走 `scp -t` / `scp -f` 子协议）、新建目录、删除。本地路径用输入框（不引原生文件选择器插件，零新增 Rust crate）。
+- **安全闸**：`ssh_enabled` 总开关默认关，首次进终端页弹启用确认（锁图标 + 风险说明）。凭据仅经 Tauri IPC 写入本机，明文字段绝不经通用 `save_config` 补丁，也不经 MCP 暴露给远端。SFTP 与终端共用同一开关与连接池。
+- **连接池**：复用 `AppState` 的 `DashMap` 管理 SSH 会话，60s GC 回收已退出的僵尸会话（含 SFTP 用的无屏 PTY 子进程）。
+- **新增 13 个 Tauri IPC 命令**（终端 8 + SFTP 5）：`ssh_check` / `ssh_list_connections` / `ssh_save_connection` / `ssh_delete_connection` / `ssh_connect` / `ssh_input` / `ssh_resize` / `ssh_disconnect` + `ssh_sftp_list` / `ssh_sftp_get` / `ssh_sftp_put` / `ssh_sftp_mkdir` / `ssh_sftp_remove`（见上「Tauri IPC 命令」表）。
+
+> ⚠️ Windows 极少数精简镜像 / 旧 Win10 可能没装 OpenSSH。`ssh_check` 返回 absent 时前端弹降级卡，按提示用 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0`（需管理员）安装即可。
+
 ### 安全机制
 
 - **路径白名单**（`allowedRoots`）：只能访问明确允许的根目录，`canonicalize()` 防软链接逃逸，祖先遍历防路径穿越。被拒时错误信息会附带当前白名单（`Allowed roots: ...`），远程无需盲猜即可得知可访问范围。
@@ -338,15 +355,29 @@ Claude Code 对话中触发工具调用:
 | `restart_mcp_server` | 杀旧 axum task + 按新配置重启 |
 | `get_lan_ips` | 获取局域网 IP 列表 |
 | `get_autostart` / `set_autostart` | 读取 / 设置开机自动启动（tauri-plugin-autostart） |
+| `ssh_check` | 检测本机是否装有 OpenSSH 客户端（Windows 查 `System32`/`SysWOW64\OpenSSH\ssh.exe`，mac 永远有） |
+| `ssh_list_connections` | 列出已保存的 SSH 连接（名称 / user@host:port，不含密码） |
+| `ssh_save_connection` | 新增 / 更新连接；密码由后端用 aes-gcm 加密后落盘（明文不经过通用 `save_config` 补丁） |
+| `ssh_delete_connection` | 删除一个已保存的连接（含其加密密码） |
+| `ssh_connect` | 用系统 ssh + 本地 PTY 建立交互会话，reader 线程把输出经 `ssh_output` 事件推给前端，检测 `password:` 提示自动填记住的密码 |
+| `ssh_input` | 把 xterm 的按键转发进 PTY（密码在本地 typed，不回显） |
+| `ssh_resize` | PTY 跟随窗口缩放（`resize`） |
+| `ssh_disconnect` | 关闭会话，杀掉 ssh 子进程 |
+| `ssh_sftp_list` | 列远程目录（走 `ssh` + `ls -la` PTY 子进程，解析为结构化条目：名称/大小/权限/mtime/类型） |
+| `ssh_sftp_get` | 下载远程文件到本地（scp `-f` 协议，PTY 自动填密码/密码短语，含超时与错误输出收集） |
+| `ssh_sftp_put` | 上传本地文件到远程（scp `-t` 协议，同上） |
+| `ssh_sftp_mkdir` | 远程新建目录（`mkdir -p`） |
+| `ssh_sftp_remove` | 远程删除文件/目录（`rm -rf`，危险操作，前端二次确认） |
 
 ### 管理面板（React 前端）
 
-界面采用 shadcn/ui 设计语言，顶部 Tab 分页布局，共 4 个页面：
+界面采用 shadcn/ui 设计语言，顶部 Tab 分页布局，共 5 个页面：
 
 - **连接**：状态概览（请求数/错误数/运行时间，运行时间精确到秒且平滑跳秒）+ 高对比启停服务按钮（loading 态 + 失败内联报错）+ `claude mcp add` 命令一键复制 + 全局/项目级 scope 选择 + Token 掩码显示/重新生成
 - **安全**：白名单根目录 CRUD + 目录浏览器弹窗；扩展名/文件大小/限流/备份目录/备份保留，全部即时保存（防抖 800ms + 失焦）
 - **设置**：网络（host/port，改后一键保存并重启）+ 应用（开机自启开关）+ 审计（日志保留天数）
 - **日志**：审计日志表，6 列（时间 / 操作 / 参数摘要 / 来源 / 耗时 / 状态）；操作列显示中文名（如「读取文件」）+ 原始工具名；支持按操作/状态下拉筛选 + 关键字搜索（匹配参数与错误）+ 一键导出 JSON；点击行展开结构化详情（参数 KV + 格式化 JSON + 复制 + 错误块）
+- **终端**：SSH 终端（第 5 个 Tab，Ctrl+5）。人在面板里手动操作远端 Linux 的终端——左栏 SSH 连接列表（名称 + user@host:port + 在线/离线点），右栏 xterm.js 深色终端（复制 / 清屏 / 断开）。支持密码登录、记住密码（aes-gcm 加密落盘）、窗口缩放、`ServerAliveInterval` 保活；总开关 `ssh_enabled` 默认关，首次进入弹启用确认（遵循「默认关 + 多层闸」）。**仅本地 Tauri IPC 调用，不经过 MCP，远端 Claude Code 无法用它**
 - 深色/浅色主题切换（localStorage 持久化）
 
 ## 技术栈
@@ -359,11 +390,13 @@ Claude Code 对话中触发工具调用:
 | 异步运行时 | tokio |
 | 配置存储 | SQLite（rusqlite bundled） |
 | 并发控制 | DashMap 6 |
-| 加密/安全 | subtle 2 + rand 0.8 |
+| PTY | portable-pty 0.9（Windows ConPTY / Unix pty，SSH 终端用） |
+| 加密/安全 | subtle 2 + rand 0.8 + aes-gcm 0.10（SSH 密码落盘加密） |
 | 前端框架 | React 18 + TypeScript |
 | 构建工具 | Vite 6 |
 | 样式 | TailwindCSS 4 + shadcn/ui 设计语言（手写基础组件） |
 | 数据获取 | TanStack Query 5（5s 轮询） |
+| 终端渲染 | xterm.js 5 + xterm-addon-fit（SSH 终端） |
 | 打包 | Windows：NSIS 安装包；macOS：`.app` + `ditto` 打的 zip |
 | 平台 | Windows 10/11、macOS（Apple Silicon） |
 
@@ -390,13 +423,16 @@ cc-bridge/
     │       │   ├── button.tsx / input.tsx / label.tsx
     │       │   ├── card.tsx / badge.tsx / alert.tsx
     │       │   ├── tabs.tsx / dialog.tsx / table.tsx / separator.tsx
-    │       ├── tabs/                   # 4 个 Tab 页面 + 拆分子组件
-    │       │   ├── ConnectTab.tsx
-    │       │   ├── ConnectHero.tsx     # 连接页 Hero 卡（状态/指标/启停按钮）
-    │       │   ├── SecurityTab.tsx
-    │       │   ├── SettingsTab.tsx     # 网络 + 应用(开机自启) + 审计
-    │       │   ├── SettingsToggles.tsx # 设置页功能开关卡
-    │       │   └── LogTab.tsx
+│       ├── tabs/                   # 5 个 Tab 页面 + 拆分子组件
+│       │   ├── ConnectTab.tsx
+│       │   ├── ConnectHero.tsx     # 连接页 Hero 卡（状态/指标/启停按钮）
+│       │   ├── SecurityTab.tsx
+│       │   ├── SettingsTab.tsx     # 网络 + 应用(开机自启) + 审计
+│       │   ├── SettingsToggles.tsx # 设置页功能开关卡
+│       │   ├── LogTab.tsx
+│       │   ├── TerminalTab.tsx      # 第 5 个 Tab：SSH 终端（连接列表 + xterm）
+│       │   ├── SshTerminal.tsx      # xterm.js 终端组件（输入/输出/缩放/复制清空）
+│       │   └── SshConnectionDialog.tsx # 新建/编辑 SSH 连接弹框
     │       └── modals/
     │           └── DirectoryBrowser.tsx # 目录浏览器弹窗
     └── src-tauri/                      # Rust 后端
@@ -410,7 +446,10 @@ cc-bridge/
             ├── state.rs                # AppState（DB/Config/Locks/Stats）
             ├── db.rs                   # SQLite 初始化 + config.json 迁移
             ├── config.rs               # BridgeConfig 结构体 + 读写
-            ├── commands.rs             # #[tauri::command] IPC 接口（含开机自启）
+            ├── commands.rs             # #[tauri::command] IPC 接口聚合（含开机自启 + SSH 终端）
+            ├── commands/               # IPC 命令按职责拆分，commands.rs 用 `pub use` 聚合
+            │   └── ssh_cmds.rs         # SSH 终端 8 个命令：ssh_check/list/save/delete/connect/input/resize/disconnect
+            ├── ssh_crypto.rs          # SSH 密码 aes-gcm 加密/解密（落盘用，密钥在 data_dir/ssh_key.bin）
             ├── backup.rs               # 文件备份 + 自动清理
             ├── audit.rs                # JSONL 审计日志
             ├── browse.rs               # 全盘目录浏览（Windows 枚举盘符 / macOS 从 / 起）
@@ -573,11 +612,13 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 - `run_command` 的跨调用 shell 会话持久化（拿 `sessionId` 带住 `cwd` + 环境变量）**默认关闭**，不开时必须每次显式传绝对 `cwd`。
 - 后台命令（`run_command(background=true)`）注册表 v1 无自动回收：命令结束后 handle 仍占位，需显式 `stop_command` 移除，或等并发上限（5个）触发拒绝新建后再清理。
 - `run_command` 前台模式超时后仍会强杀命令（不会自动转后台继续跑）；但超时前已产生的输出会连同 `timedOut: true` 一起返回（默认超时 120s）。长任务请用 `background: true`。
+- **SSH 终端**是本地人操作的交互终端（第 5 个 Tab），**不是**给远程 Claude Code 的 MCP 工具，远端无法用它；它需要本机装有 OpenSSH 客户端（Windows 10/11 / macOS 均自带，极少数精简镜像需 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` 安装）。
 
 ## 版本历史
 
 | 版本 | 变更 |
 |---|---|
+| v2.7.0 | v2.7.0 版本更新 |
 | v2.6.4 | v2.6.4 版本更新 |
 | v2.6.3 | 上版换行修复的收尾：成功的编辑不再顶着一句“可能匹配失败”的矛盾提醒；内部补上真正走完整链路的回归测试（旧那条把修复改回去也不会变红），并把行尾归一化规则统一到一处 |
 | v2.6.2 | 修复编辑 **Windows 换行（CRLF）文件时莫名报「找不到要替换的内容」**（内容就在那里，只是行尾表示对不上）；同时修掉一条会把人往编码问题上引的错误诊断。写入行为未变：CRLF 文件改完仍是 CRLF |
