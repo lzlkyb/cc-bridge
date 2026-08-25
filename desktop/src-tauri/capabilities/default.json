@@ -16,6 +16,8 @@
     "updater:default",
     "process:default",
     "opener:default",
-    "clipboard-manager:default"
+    "clipboard-manager:default",
+    "dialog:default",
+    "dialog:allow-open"
   ]
 }

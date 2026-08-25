@@ -13,5 +13,7 @@ pub mod ip_watch;
 pub mod mcp;
 pub mod network;
 pub mod security;
+/// SSH 终端密码加密（S1 凭据加密落盘）。
+pub mod ssh_crypto;
 pub mod state;
 pub mod timing;

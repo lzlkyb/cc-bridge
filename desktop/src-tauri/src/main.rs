@@ -385,6 +385,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
             let data_dir = handle
@@ -445,6 +446,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             ticker.tick().await;
                             gc_state.gc_path_locks();
                             gc_state.gc_cwd_sessions();
+                            gc_state.gc_ssh_sessions();
                         }
                     })
                 });
@@ -951,6 +953,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::diff_backups,
             commands::reveal_backup_dir,
             commands::list_backups,
+            // SSH 终端（面板内交互终端，首版密码登录）。仅经 Tauri 暴露给本机面板，
+            // 绝不注册为 MCP 工具——凭据只走本机 IPC，不对远程 Claude Code 暴露（S1）。
+            commands::ssh_check,
+            commands::ssh_connect,
+            commands::ssh_input,
+            commands::ssh_resize,
+            commands::ssh_disconnect,
+            commands::ssh_list_connections,
+            commands::ssh_save_connection,
+            commands::ssh_delete_connection,
+            // SFTP 文件传输（同一安全闸 ssh_enabled，仍只经 Tauri 暴露给本机面板）。
+            commands::ssh_sftp_list,
+            commands::ssh_sftp_get,
+            commands::ssh_sftp_put,
+            commands::ssh_sftp_mkdir,
+            commands::ssh_sftp_remove,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {

@@ -18,6 +18,7 @@ import { Skeleton } from "./components/ui/Skeleton";
 const SecurityTab = lazy(() => import("./components/tabs/SecurityTab").then((m) => ({ default: m.SecurityTab })));
 const SettingsTab = lazy(() => import("./components/tabs/SettingsTab").then((m) => ({ default: m.SettingsTab })));
 const LogTab = lazy(() => import("./components/tabs/LogTab").then((m) => ({ default: m.LogTab })));
+const TerminalTab = lazy(() => import("./components/tabs/TerminalTab").then((m) => ({ default: m.TerminalTab })));
 import { OnboardingGuide, isOnboardingDone } from "./components/modals/OnboardingGuide";
 import { CommandPalette } from "./components/modals/CommandPalette";
 
@@ -172,16 +173,31 @@ function AppContent() {
 
   // 全局键盘快捷键
   useEffect(() => {
+    const isEditableTarget = (el: EventTarget | null): boolean => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        el.isContentEditable
+      );
+    };
     const handleKeyDown = (e: KeyboardEvent) => {
       const isCtrlOrMeta = e.ctrlKey || e.metaKey;
       if (isCtrlOrMeta && e.key === "k") {
         e.preventDefault();
         setShowCommandPalette((v) => !v);
       }
-      // Ctrl+1~4 切换 Tab
-      if (isCtrlOrMeta && e.key >= "1" && e.key <= "4") {
+      // Ctrl+1~5 切换 Tab；输入框/可编辑元素聚焦时不拦截，避免覆盖正常输入（如密码、命令参数）
+      if (
+        isCtrlOrMeta &&
+        e.key >= "1" &&
+        e.key <= "5" &&
+        !isEditableTarget(e.target)
+      ) {
         e.preventDefault();
-        const tabs = ["connect", "security", "settings", "log"];
+        const tabs = ["connect", "security", "settings", "log", "terminal"];
         setActiveTab(tabs[parseInt(e.key) - 1]);
       }
     };
@@ -284,6 +300,7 @@ function AppContent() {
               </span>
             </TabsTrigger>
             <TabsTrigger value="log"><Icon name="log" /> 日志</TabsTrigger>
+            <TabsTrigger value="terminal"><Icon name="terminal" /> 终端</TabsTrigger>
           </TabsList>
         </div>
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-5">
@@ -306,6 +323,14 @@ function AppContent() {
               <LogTab highlightAnchor={pendingAnchor} />
             </Suspense>
           </TabsContent>
+          {/* 终端常驻挂载：切 app tab 用 CSS 隐藏而非卸载，保活 SSH 会话。
+              避免 TabsContent 在 active!==value 时 return null 卸载 TerminalTab、
+              导致前端 sessions state 丢失需重新连接。复用 TerminalTab 内部已验证的 display:none 模式。 */}
+          <div className="h-full" style={{ display: activeTab === "terminal" ? "block" : "none" }}>
+            <Suspense fallback={<TabFallback />}>
+              <TerminalTab status={status} />
+            </Suspense>
+          </div>
         </main>
       </Tabs>
 

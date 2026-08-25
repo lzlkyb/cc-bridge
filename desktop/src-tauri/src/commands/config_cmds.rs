@@ -93,6 +93,12 @@ pub struct ConfigPatch {
     /// 关窗时释放界面内存。前端「功能开关」卡写入。
     #[serde(rename = "releaseWebviewOnClose")]
     pub release_webview_on_close: Option<bool>,
+    /// SSH 终端总开关（仅布尔，无凭据，可走通用 patch）。
+    #[serde(rename = "sshEnabled")]
+    pub ssh_enabled: Option<bool>,
+    /// 终端拖拽即选开关。前端「高级」卡写入。
+    #[serde(rename = "sshDragSelectEnabled")]
+    pub ssh_drag_select_enabled: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -212,6 +218,22 @@ pub async fn save_config(
         "release_webview_on_close",
         &patch.release_webview_on_close
     );
+    // SSH 终端总开关（仅布尔，无凭据，安全可走通用 patch）。
+    let ssh_was_enabled = config.ssh_enabled;
+    apply_field!(ssh_enabled, "ssh_enabled", &patch.ssh_enabled);
+    // 终端拖拽即选（纯布尔，无副作用，安全可走通用 patch）。
+    apply_field!(
+        ssh_drag_select_enabled,
+        "ssh_drag_select_enabled",
+        &patch.ssh_drag_select_enabled
+    );
+    // 🔴 这个开关必须是**断路器**：由开变关时立刻杀掉全部活会话。
+    // 否则关掉后已经开着的终端照样能输入、能操作远程主机，开关就只是
+    // 「能不能新建」而不是安全边界。此处仍持有 config 写锁，而该方法只碰
+    // ssh_sessions（DashMap），不会回头拿 config 锁，无死锁。
+    if ssh_was_enabled && !config.ssh_enabled {
+        state.kill_all_ssh_sessions();
+    }
     // 首次接入复制命令时由前端写入，记录 cc-bridge 被注册到远程的作用域，
     // 供后续 IP 变化 / Token 重生成生成精确 sed 命令（方案 A）。
     // scope 在 config 中也是 Option<String>，与 apply_field! 宏的 "T vs Option<T>" 假设不符，故单独处理。

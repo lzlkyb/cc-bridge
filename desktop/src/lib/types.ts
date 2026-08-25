@@ -102,6 +102,10 @@ export interface StatusResponse {
    */
   releaseWebviewOnClose: boolean;
   /**
+   * 终端拖拽即选：在 xterm 内拖拽即自动进选择态复制。默认关闭。
+   */
+  sshDragSelectEnabled: boolean;
+  /**
    * 运行平台：`"windows"` / `"macos"` / `"linux"`（后端 `std::env::consts::OS`）。
    * 用于隐藏 Windows 专属 UI 与切换快捷键标签，见 `lib/platform.ts`。
    */
@@ -237,6 +241,8 @@ export interface ConfigPatch {
   notifyTaskComplete?: boolean;
   /** 关窗时释放界面内存。前端「兼容与性能」分组写入。 */
   releaseWebviewOnClose?: boolean;
+  /** 终端拖拽即选开关。前端「高级」分组写入。 */
+  sshDragSelectEnabled?: boolean;
 }
 
 export interface ConfigSaveResult {
@@ -377,4 +383,71 @@ export interface BrowseResult {
   path: string;
   parent: string | null;
   entries: BrowseEntry[];
+}
+
+/* ─── SSH 终端（面板内交互终端，首版密码登录）─── */
+
+/** 一条 SSH 连接配置（与后端 `config.rs::SshConnection` 对应，camelCase）。 */
+export interface SshConnection {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  /** 认证方式：password（密码）/ key（私钥 + 可选密码短语）。 */
+  authType: string;
+  rememberPassword: boolean;
+  /** aes-gcm 密文（base64），仅 rememberPassword 时非空；前端拿不到明文。 */
+  encryptedPassword: string;
+  /** 私钥路径（authType==="key" 时有效）。 */
+  keyPath: string;
+  /** 是否记住密钥密码短语（仅 key 认证有意义）。 */
+  rememberPassphrase: boolean;
+  /** aes-gcm 密文（base64），仅 rememberPassphrase 时非空；前端拿不到明文。 */
+  encryptedPassphrase: string;
+}
+
+/** `ssh_check` 返回：系统 ssh 是否可用 + 路径 + 不可用时的安装指引。 */
+export interface SshCheckResult {
+  available: boolean;
+  path: string | null;
+  installHint: string | null;
+}
+
+/** `ssh_list_connections` 返回：开关 + 连接列表。 */
+export interface SshConnectionList {
+  enabled: boolean;
+  connections: SshConnection[];
+}
+
+/** `ssh_output` 事件载荷：一段终端输出增量。 */
+export interface SshOutput {
+  sessionId: string;
+  data: string;
+}
+
+/** `ssh_closed` 事件载荷：ssh 进程退出。 */
+export interface SshClosed {
+  sessionId: string;
+}
+
+/** `ssh_connect_failed` 事件载荷：连接早期失败（进程在宽限期内自行退出）。 */
+export interface SshConnectFailed {
+  sessionId: string;
+  /** 可读失败原因（中文）。 */
+  reason: string;
+}
+
+/** `ssh_sftp_list` 返回：单个远程文件/目录条目。 */
+export interface SshFileEntry {
+  /** 文件名（含软链 ` -> target` 后缀）。 */
+  name: string;
+  /** 是否为目录。 */
+  isDir: boolean;
+  /** 字节大小（目录为 0）。 */
+  size: number;
+  /** 修改时间（Unix 秒）。 */
+  mtime: number;
+  /** 是否为软链接。 */
+  isSymlink: boolean;
 }

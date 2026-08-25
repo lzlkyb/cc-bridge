@@ -31,6 +31,8 @@ mod firewall_cmds;
 mod mcp_bridge_cmds;
 mod running;
 mod server;
+/// SSH 终端（面板内交互终端，首版密码登录）。
+mod ssh_cmds;
 mod status;
 mod system;
 mod update;
@@ -42,6 +44,7 @@ pub use firewall_cmds::*;
 pub use mcp_bridge_cmds::*;
 pub use running::*;
 pub use server::*;
+pub use ssh_cmds::*;
 pub use status::*;
 pub use system::*;
 pub use update::*;

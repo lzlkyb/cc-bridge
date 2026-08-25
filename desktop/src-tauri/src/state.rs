@@ -27,6 +27,30 @@ pub struct CwdSession {
     pub last_active: Instant,
 }
 
+/// 一条 SSH 终端会话（面板内交互终端，首版密码登录）。
+///
+/// 由 `ssh_connect` 创建：用 `portable_pty` 开 PTY 跑系统 `ssh`，reader 由独立线程
+/// 持续 `emit("ssh_output")` 推前端，writer 接收前端键入，child 为 ssh 进程。
+/// `master` 仅用于 `set_size`（窗口缩放）；writer 自身即 PTY stdin 通道。
+pub struct SshSession {
+    /// PTY master：持有它才能 `set_size`（缩放），drop 时关闭 PTY 设备。
+    /// 用 StdMutex 包一层：portable_pty 的 `MasterPty` 只 `Send` 不 `Sync`，
+    /// 而 `DashMap<V>` 要求 `V: Sync`；`StdMutex<T>: Sync where T: Send`，
+    /// 包上后 `SshSession` 即满足 `Sync`。`set_size` 自身是 `&self`，锁内短时持有即可。
+    pub master: StdMutex<Box<dyn portable_pty::MasterPty + Send>>,
+    /// ssh 子进程（Windows 上内部为 ConPTY 宿主进程）。kill 即断开。
+    pub child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// PTY stdin 写入端（前端键入 → 这里）。用 StdMutex 包裹：reader 线程（密码自动填充）
+    /// 与 `ssh_input` 命令都要写它，且不能长期持有 DashMap Ref（避免与 remove 互锁）。
+    pub writer: StdMutex<Box<dyn std::io::Write + Send>>,
+    /// 当前终端尺寸 (rows, cols)，供重连/缩放校验。
+    pub dimensions: (u16, u16),
+    /// 标记「是否已被主动断开」（`ssh_disconnect` 置 true）。reader 线程在
+    /// EOF 到达时据此区分「主动断开（静默）」与「进程自己退出（可能是连接失败）」，
+    /// 从而决定是否发 `ssh_connect_failed` 早期失败事件。用 Arc 让 kill 方与 reader 线程共享。
+    pub disconnected: Arc<AtomicBool>,
+}
+
 pub struct RunningCommand {
     pub pid: u32,
     pub command: String,
@@ -98,6 +122,9 @@ pub struct AppState {
     // 会话级 cwd 持久化存储（默认关）。key=opaque session_id，value=已校验的 cwd + 最后活跃时间。
     // 与 path_locks 同源使用 DashMap；空闲回收见 `gc_cwd_sessions`。
     pub cwd_sessions: DashMap<String, CwdSession>,
+    /// SSH 终端会话连接池。key=session_id（uuid），value=PTY master/child/writer。
+    /// 复用 cwd_sessions 的 DashMap 模式；空闲回收见 `gc_ssh_sessions`。
+    pub ssh_sessions: DashMap<String, SshSession>,
     /// A3 修复：启动期错误（如端口被占用）。bind 失败时写入，成功时清除。
     /// 供前端 Header 展示「启动失败」红态，避免用户盲目尝试。
     pub startup_error: StdMutex<Option<String>>,
@@ -169,6 +196,7 @@ impl AppState {
             mcp_running: AtomicBool::new(false),
             running_commands: DashMap::new(),
             cwd_sessions: DashMap::new(),
+            ssh_sessions: DashMap::new(),
             startup_error: StdMutex::new(None),
             mcp_bridge: crate::mcp::bridge::McpBridge::new(),
             firewall_cache: StdMutex::new(FirewallCache {
@@ -229,6 +257,49 @@ impl AppState {
             return; // 进程启动不足 30 分钟，不可能有超时 session
         };
         self.cwd_sessions.retain(|_, s| s.last_active > cutoff);
+    }
+
+    /// 回收已退出（ssh 进程结束）的 SSH 终端会话。
+    ///
+    /// 正常情况下 reader 线程在 EOF 时会自行移除会话；此方法作为兜底，清理 reader 线程
+    /// 异常退出时残留的「僵尸会话」（child 已结束但 DashMap 条目未清）。
+    /// 不杀活跃会话——空闲活会话（用户挂着的 shell）不能因 GC 被断。
+    pub fn gc_ssh_sessions(&self) {
+        // `Child::try_wait(&mut self)` 要 `&mut`，而 `iter()` 给的是共享引用、调不了
+        // `&mut` 方法。改用 `iter_mut()` 拿到可变引用（每个 shard 写锁短时持有，try_wait
+        // 只是一次非阻塞进程状态轮询，不会嵌套其它 shard 锁，无死锁风险）。
+        let mut to_remove: Vec<String> = Vec::new();
+        for mut e in self.ssh_sessions.iter_mut() {
+            if e.value_mut()
+                .child
+                .try_wait()
+                .map(|s| s.is_some())
+                .unwrap_or(false)
+            {
+                to_remove.push(e.key().clone());
+            }
+        }
+        for id in to_remove {
+            self.ssh_sessions.remove(&id);
+        }
+    }
+
+    /// 杀掉**全部** SSH 会话（总开关被关闭时调用）。
+    ///
+    /// 🔴 安全开关必须是**断路器**，不能只是「能不能新建」。否则用户在设置页关掉
+    /// 「SSH 终端」后，已经开着的会话照样能输入、能操作远程主机——关了等于没关。
+    ///
+    /// 先置 `disconnected` 再 kill，让 reader 线程在 EOF 时走「主动断开」分支静默收尾，
+    /// 不会向前端发 `ssh_connect_failed` 把「管理员关了开关」误报成「连接失败」。
+    pub fn kill_all_ssh_sessions(&self) {
+        let ids: Vec<String> = self.ssh_sessions.iter().map(|e| e.key().clone()).collect();
+        for id in ids {
+            if let Some(mut e) = self.ssh_sessions.get_mut(&id) {
+                e.disconnected.store(true, Ordering::SeqCst);
+                let _ = e.child.kill();
+            }
+            self.ssh_sessions.remove(&id);
+        }
     }
 
     /// G5 修复：从 commands.rs 收拢到这里。之前它们定义在 Tauri 命令层（commands.rs），却被

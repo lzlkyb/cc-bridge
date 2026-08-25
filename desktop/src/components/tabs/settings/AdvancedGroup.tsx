@@ -57,6 +57,14 @@ export function AdvancedGroup({
           checked={status?.releaseWebviewOnClose ?? true}
           onChange={(v) => save({ releaseWebviewOnClose: v }, "release-webview")}
           saved={savedKey === "release-webview"}
+        />
+        <ToggleRow
+          id="toggle-ssh-drag-select"
+          label="终端拖拽即选"
+          sub="开启：在 SSH 终端内直接拖选文字即自动复制，无需按住 Shift 或点「选择模式」。默认关闭——避免拖拽误触发选择。Shift / 选择模式两条路径始终可用"
+          checked={status?.sshDragSelectEnabled ?? false}
+          onChange={(v) => save({ sshDragSelectEnabled: v }, "ssh-drag-select")}
+          saved={savedKey === "ssh-drag-select"}
           last
         />
       </CardContent>

@@ -26,6 +26,7 @@ tauri-plugin-process = "2"
 tauri-plugin-notification = { version = "2", optional = true }
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-dialog = "2"
 
 # HTTP server (MCP protocol handled via axum directly)
 axum = "0.8"
@@ -73,6 +74,18 @@ if-addrs = "0.13"
 
 # Concurrency
 dashmap = "6"
+
+# SSH 终端（面板内交互终端，首版密码登录）：
+# portable-pty 提供跨平台 PTY（Windows=ConPTY / Unix=pty），让系统 ssh 跑在真终端里。
+# 钉死 0.8.1：0.9.0 重写了 Windows ConPTY backend，存在已知输入 bug（写入被静默丢弃、
+# 返回 Ok，表现为「输出正常但敲键无反应」）——见 wezterm#1396 一类，crates.io 无修复版发布。
+# 多家终端项目（GeminiDesktop 等）回退 0.8.1 解决。0.8.x API（openpty/spawn_command/
+# take_writer/try_clone_reader/resize）与本项目用法完全兼容，且不再引入 serial2 重绑定。
+portable-pty = "=0.8.1"
+# 「记住密码」加密落盘（S1：凭据只经 Tauri IPC 写入本机，明文不出本地进程）。
+# aes-gcm 是纯 Rust AEAD，体量极小；密钥存 data_dir/ssh_key.bin（每安装随机生成）。
+aes-gcm = "0.10"
+base64 = "0.22"
 
 # 内部 proc-macro（手写 dispatch 折中重构：ToolSchema 自动派生 inputSchema）。
 # 仅编译期依赖，不进 exe（守二进制体积红线，见 规则8）。

@@ -11,6 +11,63 @@ pub struct RootProfile {
     pub roots: Vec<String>,
 }
 
+/// 一条 SSH 连接配置（面板内终端，首版密码登录）。
+///
+/// 🔴 安全边界（S1）：凭据只经 Tauri IPC 写入本机，明文绝不走 MCP 暴露给远程 Claude Code。
+/// `encrypted_password` 是 aes-gcm 密文（base64），密钥存 `data_dir/ssh_key.bin`，
+/// 不在结构体里保留任何明文密码字段。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SshConnection {
+    /// 稳定 id（前端连接列表 key），新建时由前端/后端生成 uuid。
+    pub id: String,
+    /// 展示名（连接列表左侧）。
+    pub name: String,
+    /// 远程主机（域名或 IP）。
+    pub host: String,
+    /// SSH 端口，默认 22。
+    pub port: u16,
+    /// 登录用户名。
+    pub username: String,
+    /// 认证方式：`"password"`（密码）/ `"key"`（私钥 + 可选密码短语）。
+    #[serde(rename = "authType")]
+    pub auth_type: String,
+    /// 是否记住密码（记住时 `encrypted_password` 非空）。
+    #[serde(rename = "rememberPassword")]
+    pub remember_password: bool,
+    /// aes-gcm 密文（base64，格式 nonce(12B)+ciphertext），仅当 `remember_password` 为 true 时有效。
+    #[serde(rename = "encryptedPassword")]
+    pub encrypted_password: String,
+    /// 私钥路径（`auth_type == "key"` 时有效）。明文存：路径非机密，
+    /// 密钥文件本身由 OS 文件权限 +（可选）密码短语保护。
+    #[serde(rename = "keyPath", default)]
+    pub key_path: String,
+    /// 是否记住密钥密码短语（记住时 `encrypted_passphrase` 非空，仅 key 认证有意义）。
+    #[serde(rename = "rememberPassphrase", default)]
+    pub remember_passphrase: bool,
+    /// aes-gcm 密文（base64），仅当 `remember_passphrase` 为 true 时有效。
+    #[serde(rename = "encryptedPassphrase", default)]
+    pub encrypted_passphrase: String,
+}
+
+impl Default for SshConnection {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            host: String::new(),
+            port: 22,
+            username: String::new(),
+            auth_type: "password".into(),
+            remember_password: false,
+            encrypted_password: String::new(),
+            key_path: String::new(),
+            remember_passphrase: false,
+            encrypted_passphrase: String::new(),
+        }
+    }
+}
+
 /// 隐式迁移时合成的组名（老配置库升级路径）。
 pub const DEFAULT_PROFILE_NAME: &str = "默认";
 
@@ -110,6 +167,18 @@ pub struct BridgeConfig {
     /// 两种模式都不影响功能：MCP 服务、托盘、桌面通知（含 IP 变化提示）均为
     /// app 级，不依赖窗口存活。
     pub release_webview_on_close: bool,
+    /// SSH 终端总开关（面板内交互终端）。默认关——遵循「默认关 + 多层闸」，
+    /// 首次进「终端」Tab 需用户显式启用（见前端启用闸）。
+    pub ssh_enabled: bool,
+    /// SSH 连接列表（首版密码登录）。
+    ///
+    /// 🔴 只经 Tauri IPC 修改（前端 save_config patch），绝不走 MCP（对齐 external_mcp_servers 注释）。
+    /// 凭据以加密形式存于每条连接的 `encrypted_password`，明文密码不经此结构。
+    pub ssh_connections: Vec<SshConnection>,
+    /// 终端拖拽即选：在 xterm 内按住左键移动超阈值即自动进选择态、松手复制。
+    /// 默认关——保持默认交互（拖拽不误触发选择，避免与 Claude Code 等 TUI 点击冲突）；
+    /// 开启后无需记 Shift / 点「选择模式」即可拖选复制。Shift / 选择模式两条路径不受此开关影响。
+    pub ssh_drag_select_enabled: bool,
 }
 
 impl Default for BridgeConfig {
@@ -156,6 +225,9 @@ impl Default for BridgeConfig {
             notify_command_complete: true,
             notify_task_complete: true,
             release_webview_on_close: true,
+            ssh_enabled: false,
+            ssh_connections: vec![],
+            ssh_drag_select_enabled: false,
         }
     }
 }
@@ -251,6 +323,11 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "notify_task_complete" => config.notify_task_complete = parse_or_warn(key, value, true),
             "release_webview_on_close" => {
                 config.release_webview_on_close = parse_or_warn(key, value, true)
+            }
+            "ssh_enabled" => config.ssh_enabled = parse_or_warn(key, value, false),
+            "ssh_connections" => config.ssh_connections = parse_or_warn(key, value, vec![]),
+            "ssh_drag_select_enabled" => {
+                config.ssh_drag_select_enabled = parse_or_warn(key, value, false)
             }
             "transport" => {
                 let s = parse_or_warn::<String>(key, value, "http".into());
@@ -532,6 +609,18 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         &to_value(config.notify_task_complete).unwrap(),
     )?;
     save_config_field(conn, "transport", &to_value(&config.transport).unwrap())?;
+    // SSH 终端配置。漏写的后果与 external_mcp_servers 同：内存领先于 DB，重启后丢失。
+    save_config_field(conn, "ssh_enabled", &to_value(config.ssh_enabled).unwrap())?;
+    save_config_field(
+        conn,
+        "ssh_connections",
+        &to_value(&config.ssh_connections).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "ssh_drag_select_enabled",
+        &to_value(config.ssh_drag_select_enabled).unwrap(),
+    )?;
     // 外挂 MCP 桥的两个键。漏写的后果不是“少存一个字段”：调用方（`import_config_inner`）
     // 是先落库再整体替换内存，漏一个就会造成内存领先于 DB——界面上已生效、
     // 重启后又变回去（已删的 server 复活）。
