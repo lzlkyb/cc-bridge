@@ -5,6 +5,30 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [2.7.1] - 2026-08-31
+
+### 更新摘要
+SSH 终端现在能粘贴了（Ctrl+V / 右键 / 工具栏）；文件传输加上了进度条和取消按钮，覆盖前会先问一句；并修复了带空格的文件名传不了的问题。
+
+### 新增
+- **SSH 终端支持粘贴**。Ctrl+V、Ctrl+Shift+V、右键菜单（复制 / 粘贴 / 全选）、工具栏按钮四条路径。此前终端里**没有任何粘贴通路**：xterm 把 Ctrl+V 当作 SYN 控制字符发给远端并 `preventDefault`，浏览器因此不会产生 `paste` 事件，xterm 自带的两个 paste 监听器永远收不到。改用官方钩子 `attachCustomKeyEventHandler` 在 xterm 之前截获。代价是远端不再收到 Ctrl+V（readline 的 quoted-insert 失效）。另：`Shift+Insert` 在旧版本上本来就能粘贴，xterm 对它不设按键结果因而不拦截原生事件。
+- **文件传输进度条 + 取消**。传输期间在文件头下方显示百分比与剩余时间，可随时取消（后端置标志，monitor 线程 ≤200ms 内终止进程）。此前传输期间界面只有一个 busy 态，看不出在传还是卡死，也停不下来。
+- **覆盖前二次确认**。下载与上传遇到同名文件都会先弹确认框——此前删除有二次确认、覆盖却静默执行，而两者丢数据的后果是一样的。下载改为先写 `.ccbpart` 临时文件、传完才替换，**中途取消或失败不会碰到原文件**。
+
+### 修复
+- **带空格 / 特殊字符的文件名无法上传下载**。scp 的远程路径没加 shell 引号，而同一文件里的 `ls`/`mkdir`/`rm` 都加了，于是这类文件在列表里看得见、点下载却失败。遗留 SCP 协议下远程路径由远端 shell 展开，`a b.txt` 会被拆成两个参数。
+- **传输失败时错误信息几乎是空的**。scp 的 `-q` 会把进度条**和** ssh 的警告/诊断信息一起关掉，失败只剩一句「退出码 1」。已去掉 `-q`，噪声交给前端本就写好的清理函数。
+- **远端是 macOS/BSD 时列目录直接报错**。BSD 的 `ls` 拒绝 `--time-style` 时以非零码退出，而降级判断写在 `spawn_capture(..)?` 之后，永远走不到——降级路径是死代码。
+- **每次上传/下载都白跑一次握手**。强制 SFTP 协议的 `-s` 在本机 OpenSSH 8.1p1 上不存在，原实现每次传输都先试一次（一次完整 TCP + 认证）才回退。改为探测一次、进程内缓存；探测只读 scp 的 usage 输出，不建立网络连接。
+
+### 技术细节
+- `clipboard-manager:default` 自述是“No features are enabled by default … Clipboard interaction needs to be explicitly enabled”，即**什么都不授予**——这解释了为何全项目都在用 `navigator.clipboard.writeText` 绕开插件。已补 `clipboard-manager:allow-read-text`（只加读文本，不加读图片 / HTML）。
+- 取消标志用 `DashMap<String, Arc<AtomicBool>>` 注册，**不放 `Child`**：`spawn_capture` 的 monitor 线程本就独占 Child，共享出去要处理 `kill(&mut self)` 的可变借用、多套一层锁。
+- 传输改用 `spawn_blocking`：原先最长 600s 阻塞在 tokio worker 上，加了取消后会导致 `ssh_sftp_cancel` 自己排不上队。
+- 「取消 / 超时 / 失败」用错误前缀常量区分，不靠匹配中文文案——文案会改，前缀不会。
+- 进度只解析 `(\d+)%`，不解析速率与 ETA 的列位：各版本 scp 的进度行格式不一致，百分比是唯一稳定项；剩余时间由前端按变化率算并做 EMA 平滑。去掉 `-q` 后进度条会涌进捕获缓冲，故只折叠「当前未完成行」，已换行的真实错误一律不动。
+- 留档：旧的 `xterm` / `xterm-addon-fit` 已被官方废弃（npm 标注 “Move to @xterm/xterm instead”、冻结在 5.3.0），已迁移到 `@xterm/xterm@6` + `@xterm/addon-fit@0.11`。这步实际随 v2.7.0 一同发出，但当时未记入发版说明，在此补记。
+
 ## [2.7.0] - 2026-08-25
 
 ### 更新摘要
