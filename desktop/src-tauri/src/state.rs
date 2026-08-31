@@ -125,6 +125,12 @@ pub struct AppState {
     /// SSH 终端会话连接池。key=session_id（uuid），value=PTY master/child/writer。
     /// 复用 cwd_sessions 的 DashMap 模式；空闲回收见 `gc_ssh_sessions`。
     pub ssh_sessions: DashMap<String, SshSession>,
+    /// SFTP 传输的**取消标志**。key=transfer_id（前端生成的 uuid），置位即请求取消。
+    ///
+    /// 🔴 这里只放一个 `AtomicBool` 而不是 `Child`：`spawn_capture` 的 monitor 线程
+    /// 本就独占 Child，让它轮询这个标志自己 kill 即可。把 Child 共享出去则要处理
+    /// `Child::kill(&mut self)` 的可变借用，要多套一层锁，得不偿失。
+    pub ssh_transfers: DashMap<String, Arc<AtomicBool>>,
     /// A3 修复：启动期错误（如端口被占用）。bind 失败时写入，成功时清除。
     /// 供前端 Header 展示「启动失败」红态，避免用户盲目尝试。
     pub startup_error: StdMutex<Option<String>>,
@@ -197,6 +203,7 @@ impl AppState {
             running_commands: DashMap::new(),
             cwd_sessions: DashMap::new(),
             ssh_sessions: DashMap::new(),
+            ssh_transfers: DashMap::new(),
             startup_error: StdMutex::new(None),
             mcp_bridge: crate::mcp::bridge::McpBridge::new(),
             firewall_cache: StdMutex::new(FirewallCache {

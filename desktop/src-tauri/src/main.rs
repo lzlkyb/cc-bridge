@@ -967,6 +967,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_sftp_list,
             commands::ssh_sftp_get,
             commands::ssh_sftp_put,
+            commands::ssh_sftp_cancel,
             commands::ssh_sftp_mkdir,
             commands::ssh_sftp_remove,
         ])

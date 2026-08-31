@@ -9,6 +9,8 @@ import type { SshConnection, SshFileEntry } from "../../lib/types";
 import { FileTable } from "./SshFileRow";
 import { MkdirForm, UploadForm, DownloadForm } from "./SshFileForms";
 import { FileHeader, RemoveConfirmDialog } from "./SshFileToolbar";
+import { cleanErr, useSshTransfer } from "./useSshTransfer";
+import { OverwriteConfirmDialog, TransferBar } from "./SshTransferBar";
 
 interface Props {
   conn: SshConnection;
@@ -29,23 +31,6 @@ function parentRemote(dir: string): string {
 }
 
 /**
- * 清理 SFTP 报错里的 PTY 噪声：scp/ssh 在 PTY 下会输出 `\r` 进度条、ANSI 转义、
- * 多余空行。剥掉后只留人类可读的错误（权限拒绝 / 路径不存在 / 连接失败等）。
- */
-function cleanErr(raw: unknown): string {
-  const s = String(raw ?? "");
-  return s
-    .replace(/\u001b\[[0-9;]*m/g, "") // ANSI 颜色
-    .replace(/[\r\u0008]/g, "") // 回车 / 退格（进度条覆盖）
-    .split("\n")
-    .map((l) => l.trimEnd())
-    .filter((l) => l.trim().length > 0)
-    .slice(-6) // 只取末尾关键几行
-    .join("\n")
-    .trim();
-}
-
-/**
  * SFTP 文件管理器：列目录 / 进入 / 上一级 / 下载 / 上传 / 新建文件夹 / 删除。
  * 走后端 `ssh_sftp_*` 命令（ssh 跑远程命令 + scp 传文件，PTY 自动填凭据）。
  * 本机路径用内联文本框输入（不依赖系统文件选择器插件）。
@@ -55,7 +40,8 @@ export function SshFileBrowser({ conn, onBack }: Props) {
   const [entries, setEntries] = useState<SshFileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // 传输态交给 useSshTransfer 管，这里只管 mkdir / 删除这类瞬时操作。
+  const [busyOp, setBusyOp] = useState(false);
   // 上传：本机源文件路径。
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadLocal, setUploadLocal] = useState("");
@@ -75,6 +61,10 @@ export function SshFileBrowser({ conn, onBack }: Props) {
     queryFn: () => invoke<{ platform?: string }>("get_status"),
   });
   const mac = isMac(status?.platform);
+  const xfer = useSshTransfer();
+  // 传输进行中也算忙：期间禁掉新建/上传/删除，避免并发多条 ssh 握手
+  // （本机 OpenSSH 不支持连接复用，并发只会把握手成本乘以 N）。
+  const busy = busyOp || !!xfer.transfer;
 
   const list = useCallback(
     async (p: string) => {
@@ -124,20 +114,17 @@ export function SshFileBrowser({ conn, onBack }: Props) {
       toast("请填写本机保存路径", "error");
       return;
     }
-    setBusy(true);
-    try {
-      await invoke("ssh_sftp_get", {
-        connectionId: conn.id,
-        remote: joinRemote(path, name),
-        local: downloadLocal.trim(),
-      });
-      toast(`已下载：${name}`, "success");
+    // 进度 / 取消 / 覆盖确认全在 useSshTransfer 里；目标已存在时它会先弹确认框，
+    // 确认后重跑，整个流程走完才 resolve——所以这里 await 到的是最终结果。
+    const ok = await xfer.download({
+      connectionId: conn.id,
+      name,
+      remote: joinRemote(path, name),
+      local: downloadLocal.trim(),
+    });
+    if (ok) {
       setDownloadFor(null);
       setDownloadLocal("");
-    } catch (e) {
-      toast(`下载失败：${cleanErr(e)}`, "error");
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -147,21 +134,19 @@ export function SshFileBrowser({ conn, onBack }: Props) {
       return;
     }
     const base = uploadLocal.trim().replace(/\\/g, "/").split("/").pop() || "file";
-    setBusy(true);
-    try {
-      await invoke("ssh_sftp_put", {
-        connectionId: conn.id,
-        local: uploadLocal.trim(),
-        remote: joinRemote(path, base),
-      });
-      toast(`已上传：${base}`, "success");
+    // 重名判定在前端：当前目录的 entries 手里已经有，在后端再查一次
+    // 就多一次完整的 ssh 握手。
+    const ok = await xfer.upload({
+      connectionId: conn.id,
+      name: base,
+      local: uploadLocal.trim(),
+      remote: joinRemote(path, base),
+      remoteExists: entries.some((e) => e.name === base),
+    });
+    if (ok) {
       setUploadOpen(false);
       setUploadLocal("");
       void list(path);
-    } catch (e) {
-      toast(`上传失败：${cleanErr(e)}`, "error");
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -182,7 +167,7 @@ export function SshFileBrowser({ conn, onBack }: Props) {
 
   const doMkdir = async () => {
     if (!mkdirName.trim()) return;
-    setBusy(true);
+    setBusyOp(true);
     try {
       await invoke("ssh_sftp_mkdir", {
         connectionId: conn.id,
@@ -195,7 +180,7 @@ export function SshFileBrowser({ conn, onBack }: Props) {
     } catch (e) {
       toast(`创建失败：${cleanErr(e)}`, "error");
     } finally {
-      setBusy(false);
+      setBusyOp(false);
     }
   };
 
@@ -203,7 +188,7 @@ export function SshFileBrowser({ conn, onBack }: Props) {
     const e = removeTarget;
     if (!e) return;
     setRemoveTarget(null);
-    setBusy(true);
+    setBusyOp(true);
     try {
       await invoke("ssh_sftp_remove", {
         connectionId: conn.id,
@@ -214,7 +199,7 @@ export function SshFileBrowser({ conn, onBack }: Props) {
     } catch (err) {
       toast(`删除失败：${cleanErr(err)}`, "error");
     } finally {
-      setBusy(false);
+      setBusyOp(false);
     }
   };
 
@@ -261,6 +246,11 @@ export function SshFileBrowser({ conn, onBack }: Props) {
         />
       )}
 
+      {/* 传输中：进度 + 取消。一次只会有一条。 */}
+      {xfer.transfer && (
+        <TransferBar transfer={xfer.transfer} onCancel={xfer.cancel} />
+      )}
+
       {/* 文件列表 */}
       <FileTable
         entries={entries}
@@ -291,6 +281,12 @@ export function SshFileBrowser({ conn, onBack }: Props) {
         busy={busy}
         onConfirm={() => void confirmRemove()}
         onCancel={() => setRemoveTarget(null)}
+      />
+
+      {/* 覆盖确认：删除有二次确认，覆盖也必须有——两者丢数据的后果一样。 */}
+      <OverwriteConfirmDialog
+        prompt={xfer.prompt}
+        onCancel={xfer.dismissPrompt}
       />
     </div>
   );

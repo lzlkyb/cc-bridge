@@ -238,30 +238,116 @@ fn is_unknown_option_err(msg: &str) -> bool {
         || m.contains("usage: scp")
 }
 
-/// 跑一次 scp，优先带 `-s`（强制 SFTP 协议），老版本不认这个选项时回退。
+/// 本机 scp 是否支持 `-s`（强制 SFTP 协议）。**探测一次，进程内缓存。**
 ///
-/// 🔴 为什么非要 `-s`：不带它时 scp 可能走**遗留 SCP 协议**，那条路径上远程路径
-/// 会被远端 shell 展开（CVE-2020-15778 一类），下载方向还存在恶意服务端投放额外
-/// 文件的历史问题（CVE-2019-6111）。而这里的远程路径来自 `parse_ls` 解出的
-/// **远端文件名**，正是远端可控的输入。
+/// 🔴 不能每次传输都先试一遍 `-s`：不支持时那一次会先跑完整的 TCP + 认证
+/// 握手才失败，等于把每次上传/下载的握手次数翻倍。
+/// 本机 OpenSSH_for_Windows_8.1p1 实测 `scp -s` → `unknown option -- s`，
+/// 即长期走回退路径，那一次白跑的握手完全是浪费。
 ///
-/// `-s` 是 OpenSSH 8.6+ 才有的选项，所以必须能回退——同本文件 `ls` 的 GNU/BSD 降级写法。
+/// 探测手段：不带参数跑 scp 会打印 usage 并退出，usage 里的短选项簇列全了它认识的 flag
+/// （8.1 是 `[-346BCpqrTv]`，9.x 是 `[-346ABCOpqRrsTv]`）。**不建立任何网络连接**，
+/// 代价只是一次本地进程启动。
+fn scp_supports_sftp_protocol(scp: &PathBuf) -> bool {
+    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| match std::process::Command::new(scp).output() {
+        Ok(o) => {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            usage_lists_short_flag(&text, 's')
+        }
+        // 跑不起来就当不支持，走回退路径（那条路径在所有版本上都能用）。
+        Err(_) => false,
+    })
+}
+
+/// 从 usage 文本里的首个 `[-xxx]` 短选项簇里找某个 flag。
+fn usage_lists_short_flag(usage: &str, flag: char) -> bool {
+    usage
+        .split_once("[-")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .is_some_and(|(cluster, _)| cluster.contains(flag))
+}
+
+/// 拼 scp 的远端端点 `user@host:path`。
+///
+/// 🔴 `quote_for_shell` 不是风格选择，两种协议对路径的处理是相反的：
+/// - **遗留 SCP 协议**：远程路径由远端 shell 展开。不引则 `a b.txt` 被拆成两个参数
+///   ——这正是带空格文件名传不了的原因；同文件的 `ls`/`mkdir`/`rm` 早就引了，
+///   唯独 scp 这两处漏了。
+/// - **`-s`（SFTP 协议）**：路径按字面处理，引了反而会让引号变成文件名的一部分。
+fn scp_endpoint(conn: &SshConnection, remote: &str, quote_for_shell: bool) -> String {
+    let path = if quote_for_shell {
+        shell_quote(remote)
+    } else {
+        remote.to_string()
+    };
+    format!("{}@{}:{}", conn.username, conn.host, path)
+}
+
+/// 一次 scp 传输的目标描述。把 remote/local/方向收成一体，
+/// 免得 `run_scp` 参数表膨胀到 clippy 都看不下去（too_many_arguments）。
+struct ScpJob<'a> {
+    conn: &'a SshConnection,
+    remote: &'a str,
+    local: &'a str,
+    /// true = 本机→远端，false = 远端→本机。
+    upload: bool,
+}
+
+/// 跑一次 scp。
+///
+/// 优先用 `-s` 强制 SFTP 协议：遗留 SCP 协议上远程路径会被远端 shell 展开
+/// （CVE-2020-15778 一类），下载方向还有恶意服务端投放额外文件的历史问题
+/// （CVE-2019-6111），而这里的远程路径来自 `parse_ls` 解出的**远端文件名**。
+/// 不支持时回退到遗留协议，并**改用 shell 引号**保护路径。
+///
+/// 不传 `-q`：它会把进度条**和** ssh 的警告/诊断信息一起关掉，失败时错误几乎是空的；
+/// 前端 `cleanErr` 本来就是为剔掉进度条噪声写的，噪声交给它处理。
 fn run_scp(
     scp: &PathBuf,
-    base: &[String],
+    job: ScpJob<'_>,
     pw: Option<String>,
     pp: Option<String>,
+    hooks: TransferHooks,
 ) -> Result<(), String> {
     const SCP_TIMEOUT: Duration = Duration::from_secs(600);
-    let mut forced_sftp = vec!["-s".to_string()];
-    forced_sftp.extend_from_slice(base);
-    match spawn_capture(scp, &forced_sftp, pw.clone(), pp.clone(), SCP_TIMEOUT) {
-        Ok(_) => Ok(()),
-        Err(e) if is_unknown_option_err(&e) => {
-            spawn_capture(scp, base, pw, pp, SCP_TIMEOUT).map(|_| ())
+    let build = |sftp_mode: bool| -> Vec<String> {
+        let mut a: Vec<String> = Vec::new();
+        if sftp_mode {
+            a.push("-s".into());
         }
-        Err(e) => Err(e),
+        a.extend(ssh_base_args(job.conn, "-P"));
+        let endpoint = scp_endpoint(job.conn, job.remote, !sftp_mode);
+        if job.upload {
+            a.push(job.local.to_string());
+            a.push(endpoint);
+        } else {
+            a.push(endpoint);
+            a.push(job.local.to_string());
+        }
+        a
+    };
+
+    if scp_supports_sftp_protocol(scp) {
+        match spawn_capture(
+            scp,
+            &build(true),
+            pw.clone(),
+            pp.clone(),
+            SCP_TIMEOUT,
+            hooks.clone(),
+        ) {
+            Ok(_) => return Ok(()),
+            // 探测说支持却仍报未知选项：探测判错了，退回遗留协议再试一次。
+            Err(e) if is_unknown_option_err(&e) => {}
+            Err(e) => return Err(e),
+        }
     }
+    spawn_capture(scp, &build(false), pw, pp, SCP_TIMEOUT, hooks).map(|_| ())
 }
 
 /// 把路径包成单引号并转义内部单引号，避免远程命令注入。
@@ -379,6 +465,83 @@ fn parse_ls(out: &str, gnu: bool) -> Result<Vec<SshFileEntry>, String> {
     Ok(entries)
 }
 
+/// 传输被用户取消的错误前缀。
+///
+/// 🔴 用**前缀标记**而不是让前端去匹配中文文案：文案会改，前缀不会。
+/// 设计稿 §4 要求「取消」「超时」「失败」三者在 UI 上可区分，靠字串包含去猜必然跑偏。
+pub const ERR_CANCELLED: &str = "CCB_CANCELLED";
+/// 下载目标已存在且未授权覆盖的错误前缀（同上，供前端弹覆盖确认框）。
+pub const ERR_TARGET_EXISTS: &str = "CCB_TARGET_EXISTS";
+
+/// 下载用的临时后缀。传完才 rename 到正式名。
+const PART_SUFFIX: &str = ".ccbpart";
+
+/// 进度事件载荷。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SshTransferProgress {
+    transfer_id: String,
+    percent: u8,
+}
+
+/// 传输类调用的可选钩子：进度上报 + 取消。
+///
+/// 列目录 / mkdir / rm 用 `Default`（三个字段都是 None）——它们瞬时完成，
+/// 既不需要进度也不需要取消。
+#[derive(Default, Clone)]
+struct TransferHooks {
+    app: Option<AppHandle>,
+    transfer_id: Option<String>,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+}
+
+/// 从一块输出里取**最后一个** `NN%`。
+///
+/// 🔴 只认百分比，**不解析速率 / ETA 的列位**（设计稿 §5）：各版本 scp 的
+/// 进度行格式不一致，百分比是唯一稳定的一项。速率与剩余时间由前端按变化率自己算。
+///
+/// 取最后一个而不是第一个：一块里可能堆了好几次刷新，最新那个才是当前值。
+fn last_percent_in(chunk: &[u8]) -> Option<u8> {
+    let s = String::from_utf8_lossy(chunk);
+    let b = s.as_bytes();
+    let mut found = None;
+    for (i, &c) in b.iter().enumerate() {
+        if c != b'%' {
+            continue;
+        }
+        let mut start = i;
+        while start > 0 && b[start - 1].is_ascii_digit() {
+            start -= 1;
+        }
+        if start == i {
+            continue; // `%` 前面没数字，不是进度
+        }
+        // start..i 全是 ASCII 数字，字节下标天然落在字符边界上。
+        if let Ok(v) = s[start..i].parse::<u16>() {
+            if v <= 100 {
+                found = Some(v as u8);
+            }
+        }
+    }
+    found
+}
+
+/// 把累积输出里的**进度条刷新**折叠掉，防止长传输把内存撑爆。
+///
+/// 🔴 去掉 `-q` 是为了拿回 ssh 的诊断信息（`-q` 会把进度条**和**警告/诊断一起关掉，
+/// 失败时错误几乎是空的），代价就是进度条会进缓冲区。scp 的进度条靠 `\r` 原地刷新、
+/// 不换行，一次大文件传输能刷出几万次；不折叠的话 `captured` 会无限增长。
+///
+/// 只动**当前未完成行**（最后一个 `\n` 之后的部分）：只保留最后一个 `\r` 之后的内容。
+/// 已换行的历史（包括所有真实错误信息）一律不动。
+/// `\r` `\n` 都是 ASCII，字节下标天然落在字符边界上，不会切坏 UTF-8。
+fn collapse_progress(buf: &mut String) {
+    let line_start = buf.rfind('\n').map(|i| i + 1).unwrap_or(0);
+    if let Some(cr) = buf[line_start..].rfind('\r') {
+        buf.replace_range(line_start..line_start + cr + 1, "");
+    }
+}
+
 /// 在 PTY 里跑一次性命令（ssh 远程命令 / scp 传输），捕获全部输出并自动填充
 /// 密码/密码短语，等待进程退出（带超时），返回捕获到的输出字符串。
 ///
@@ -390,7 +553,15 @@ fn spawn_capture(
     auto_password: Option<String>,
     auto_passphrase: Option<String>,
     timeout: Duration,
+    hooks: TransferHooks,
 ) -> Result<String, String> {
+    // 先拆开：app/transfer_id 要进 reader 线程，cancel 要进 monitor 线程。
+    let TransferHooks {
+        app,
+        transfer_id,
+        cancel,
+    } = hooks;
+    let progress_target = app.zip(transfer_id);
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -425,6 +596,7 @@ fn spawn_capture(
         let mut buf = [0u8; 4096];
         let mut pending_pw = auto_password;
         let mut pending_pp = auto_passphrase;
+        let mut last_percent: Option<u8> = None;
         // 认证窗口：过期即丢弃待填凭据，不再对任何输出反应（见 CREDENTIAL_FILL_WINDOW）。
         let fill_deadline = Instant::now() + CREDENTIAL_FILL_WINDOW;
         loop {
@@ -435,6 +607,23 @@ fn spawn_capture(
                     {
                         let mut s = cap_for_reader.lock().unwrap();
                         s.push_str(&String::from_utf8_lossy(chunk));
+                        collapse_progress(&mut s);
+                    }
+                    // 进度：只在传输类调用（带钩子）时上报，且**百分比变了才发**——
+                    // scp 一秒能刷很多次，每次都发一次 IPC 是白烧。
+                    if let Some((app, tid)) = &progress_target {
+                        if let Some(p) = last_percent_in(chunk) {
+                            if last_percent != Some(p) {
+                                last_percent = Some(p);
+                                let _ = app.emit(
+                                    "ssh_transfer_progress",
+                                    SshTransferProgress {
+                                        transfer_id: tid.clone(),
+                                        percent: p,
+                                    },
+                                );
+                            }
+                        }
                     }
                     // 窗口关闭：立即丢弃明文，不让它在内存里挂着，也不再可能被误触。
                     if Instant::now() >= fill_deadline {
@@ -473,15 +662,35 @@ fn spawn_capture(
 
     // monitor：等 reader 收尾（=进程退出）或超时；超时则强杀。
     let (done_tx, done_rx) = mpsc::channel::<Result<portable_pty::ExitStatus, String>>();
-    std::thread::spawn(move || match prompt_rx.recv_timeout(timeout) {
-        Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-            let st = child.wait().map_err(|e| format!("等待进程失败：{e}"));
-            let _ = done_tx.send(st);
-        }
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = done_tx.send(Err("操作超时（网络不通或远程无响应），请重试".into()));
+    // 🔴 不能直接 `recv_timeout(timeout)` 等满全程：那样取消请求要等到 600s 超时才生效。
+    // 改成短轮询，每轮查一次取消标志。本线程**独占** child，所以 kill 不需要任何锁。
+    let deadline = Instant::now() + timeout;
+    std::thread::spawn(move || loop {
+        match prompt_rx.recv_timeout(Duration::from_millis(200)) {
+            // reader 收尾 = 进程已退出（正常结束路径）。
+            Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let st = child.wait().map_err(|e| format!("等待进程失败：{e}"));
+                let _ = done_tx.send(st);
+                return;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if cancel
+                    .as_ref()
+                    .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
+                {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = done_tx.send(Err(format!("{ERR_CANCELLED}: 传输已取消")));
+                    return;
+                }
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ =
+                        done_tx.send(Err("操作超时（网络不通或远程无响应），请重试".into()));
+                    return;
+                }
+            }
         }
     });
 
@@ -1008,6 +1217,7 @@ pub async fn ssh_sftp_list(
         pw.clone(),
         pp.clone(),
         Duration::from_secs(30),
+        TransferHooks::default(),
     );
     // 🔴 失败分支也得看。BSD/macOS 的 `ls` 拒绝 `--time-style` 时是以**非零码退出**，
     // `spawn_capture` 因此返回 Err。原实现写的是 `spawn_capture(..)?` 再去看 Ok 分支的
@@ -1022,7 +1232,14 @@ pub async fn ssh_sftp_list(
     }
     let mut args_bsd = args;
     args_bsd.push(bsd_cmd);
-    let out2 = spawn_capture(&ssh_path, &args_bsd, pw, pp, Duration::from_secs(30))?;
+    let out2 = spawn_capture(
+        &ssh_path,
+        &args_bsd,
+        pw,
+        pp,
+        Duration::from_secs(30),
+        TransferHooks::default(),
+    )?;
     parse_ls(&out2, false)
 }
 
@@ -1030,46 +1247,140 @@ pub async fn ssh_sftp_list(
 #[tauri::command]
 pub async fn ssh_sftp_get(
     state: State<'_, Arc<AppState>>,
+    app: AppHandle,
     connection_id: String,
     remote: String,
     local: String,
+    transfer_id: String,
+    overwrite: bool,
 ) -> Result<(), String> {
     if !state.config.read().await.ssh_enabled {
         return Err("SSH 终端未启用".into());
+    }
+    // 🔴 覆盖必须显式授权。项目里没有查本机路径存在性的命令，所以这道检查只能落在后端
+    // （上传方向则由前端拿 `entries` 判，零额外往返）。返回可识别前缀，
+    // 前端据此弹覆盖确认框，而不是靠匹配错误文案去猜。
+    if !overwrite && std::path::Path::new(&local).exists() {
+        return Err(format!("{ERR_TARGET_EXISTS}: 本机已存在同名文件：{local}"));
     }
     let conn = fetch_conn(&state, &connection_id).await?;
     let _ = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let scp_path =
         find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
     let (pw, pp) = resolve_secrets(&conn, &state.data_dir)?;
-    let mut args = vec!["-q".into()];
-    args.extend(ssh_base_args(&conn, "-P"));
-    args.push(format!("{}@{}:{}", conn.username, conn.host, remote));
-    args.push(local.clone());
-    run_scp(&scp_path, &args, pw, pp)
+
+    // 🔴 先下到临时名，成功再 rename。这样**取消或失败永远不会碰到用户原有的文件**——
+    // 否则「确认覆盖后下到一半取消」会把原文件毁成半个，而用户在对话框里确认的是
+    // 「要么新文件、要么旧文件」，不是碎文件。
+    let part = format!("{local}{PART_SUFFIX}");
+    let cancel = register_transfer(&state, &transfer_id);
+    let hooks = TransferHooks {
+        app: Some(app),
+        transfer_id: Some(transfer_id.clone()),
+        cancel: Some(cancel),
+    };
+    let (scp, c, r, p) = (scp_path, conn, remote, part.clone());
+    // 丢到阻塞线程池：传输最长 600s，占着 tokio worker 不放会让
+    // `ssh_sftp_cancel` 自己都排不上队。
+    let joined = tokio::task::spawn_blocking(move || {
+        let job = ScpJob {
+            conn: &c,
+            remote: &r,
+            local: &p,
+            upload: false,
+        };
+        run_scp(&scp, job, pw, pp, hooks)
+    })
+    .await;
+    // 🔴 先注销再 `?`：写成 `.map_err(..)?` 再 remove 的话，任务 panic 时会提前返回，
+    // 取消标志就永久留在注册表里了。
+    state.ssh_transfers.remove(&transfer_id);
+    let res = joined.map_err(|e| format!("传输任务异常终止：{e}"))?;
+
+    match res {
+        Ok(()) => std::fs::rename(&part, &local).map_err(|e| {
+            let _ = std::fs::remove_file(&part);
+            format!("下载完成但改名失败：{e}")
+        }),
+        Err(e) => {
+            // 取消或失败：清掉半个临时文件，不留垃圾，也不碰正式文件。
+            let _ = std::fs::remove_file(&part);
+            Err(e)
+        }
+    }
+}
+
+/// 登记一次传输的取消标志，返回的句柄交给 monitor 线程轮询。
+fn register_transfer(
+    state: &AppState,
+    transfer_id: &str,
+) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state
+        .ssh_transfers
+        .insert(transfer_id.to_string(), flag.clone());
+    flag
+}
+
+/// 取消一次进行中的 SFTP 传输。
+///
+/// 只置位标志，真正的 kill 由 `spawn_capture` 的 monitor 线程在下一次轮询（≤200ms）时做。
+/// 找不到 id 也返回 Ok：传输可能刚好自己结束了，那不是错误。
+#[tauri::command]
+pub async fn ssh_sftp_cancel(
+    state: State<'_, Arc<AppState>>,
+    transfer_id: String,
+) -> Result<(), String> {
+    if let Some(f) = state.ssh_transfers.get(&transfer_id) {
+        f.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    Ok(())
 }
 
 /// 上传本机文件到远程。`local` 本机源路径，`remote` 远程目标路径。
 #[tauri::command]
 pub async fn ssh_sftp_put(
     state: State<'_, Arc<AppState>>,
+    app: AppHandle,
     connection_id: String,
     local: String,
     remote: String,
+    transfer_id: String,
 ) -> Result<(), String> {
     if !state.config.read().await.ssh_enabled {
         return Err("SSH 终端未启用".into());
     }
+    // 上传方向不在这里查重名：当前目录的 `entries` 前端手里已经有，
+    // 在后端再查一次就多一次完整的 ssh 握手（本机 OpenSSH 不支持连接复用）。
     let conn = fetch_conn(&state, &connection_id).await?;
     let _ = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let scp_path =
         find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
     let (pw, pp) = resolve_secrets(&conn, &state.data_dir)?;
-    let mut args = vec!["-q".into()];
-    args.extend(ssh_base_args(&conn, "-P"));
-    args.push(local.clone());
-    args.push(format!("{}@{}:{}", conn.username, conn.host, remote));
-    run_scp(&scp_path, &args, pw, pp)
+
+    let cancel = register_transfer(&state, &transfer_id);
+    let hooks = TransferHooks {
+        app: Some(app),
+        transfer_id: Some(transfer_id.clone()),
+        cancel: Some(cancel),
+    };
+    let (scp, c, r, l) = (scp_path, conn, remote, local);
+    let joined = tokio::task::spawn_blocking(move || {
+        let job = ScpJob {
+            conn: &c,
+            remote: &r,
+            local: &l,
+            upload: true,
+        };
+        run_scp(&scp, job, pw, pp, hooks)
+    })
+    .await;
+    // 先注销再 `?`，理由同 `ssh_sftp_get`。
+    state.ssh_transfers.remove(&transfer_id);
+    let res = joined.map_err(|e| format!("传输任务异常终止：{e}"))?;
+    // 取消时**不**自动删除远端残留（设计稿 §3）：若本次是覆盖上传，
+    // 那个文件本来就是用户的；改由前端提示路径、交用户处置。
+    res
 }
 
 /// 在远程创建目录（含父目录，`mkdir -p`）。
@@ -1089,7 +1400,15 @@ pub async fn ssh_sftp_mkdir(
     let mut args = ssh_base_args(&conn, "-p");
     args.push(format!("{}@{}", conn.username, conn.host));
     args.push(remote_cmd);
-    spawn_capture(&ssh_path, &args, pw, pp, Duration::from_secs(30))?;
+    // 瞬时操作：不需要进度，也不需要取消。
+    spawn_capture(
+        &ssh_path,
+        &args,
+        pw,
+        pp,
+        Duration::from_secs(30),
+        TransferHooks::default(),
+    )?;
     Ok(())
 }
 
@@ -1110,7 +1429,15 @@ pub async fn ssh_sftp_remove(
     let mut args = ssh_base_args(&conn, "-p");
     args.push(format!("{}@{}", conn.username, conn.host));
     args.push(remote_cmd);
-    spawn_capture(&ssh_path, &args, pw, pp, Duration::from_secs(30))?;
+    // 瞬时操作：不需要进度，也不需要取消。
+    spawn_capture(
+        &ssh_path,
+        &args,
+        pw,
+        pp,
+        Duration::from_secs(30),
+        TransferHooks::default(),
+    )?;
     Ok(())
 }
 
@@ -1243,6 +1570,118 @@ lrwxr-xr-x  1 u  g    7 Apr  5 10:02 link -> /tmp/target\n";
         assert!(!is_unknown_option_err(
             "远程命令失败（退出码 2）：ls: /nope: No such file or directory"
         ));
+    }
+
+    /// 🔴 F1 回归：遗留 SCP 协议下远程路径**必须**带 shell 引号，SFTP 协议下**必须不带**。
+    ///
+    /// 不引则 `会议纪要 2026.docx` 被远端 shell 拆成两个参数，传输失败——
+    /// 而同文件的 ls/mkdir/rm 早就引了，唯独 scp 这两处漏了，于是列表里看得见、就是传不动。
+    /// 反方向也必须钉住：SFTP 协议按字面处理路径，引了引号会变成文件名的一部分。
+    #[test]
+    fn legacy_scp_quotes_remote_path_but_sftp_mode_does_not() {
+        let conn = SshConnection {
+            username: "ops".into(),
+            host: "10.0.3.21".into(),
+            ..Default::default()
+        };
+        let p = "/data/会议纪要 2026.docx";
+        assert_eq!(
+            scp_endpoint(&conn, p, true),
+            "ops@10.0.3.21:'/data/会议纪要 2026.docx'",
+            "遗留协议：路径过远端 shell，必须引"
+        );
+        assert_eq!(
+            scp_endpoint(&conn, p, false),
+            "ops@10.0.3.21:/data/会议纪要 2026.docx",
+            "SFTP 协议：路径按字面处理，绝不能引"
+        );
+    }
+
+    /// 单引号 / 分号这类字符在遗留协议下也必须被中和。
+    #[test]
+    fn legacy_scp_neutralises_dangerous_remote_names() {
+        let conn = SshConnection {
+            username: "u".into(),
+            host: "h".into(),
+            ..Default::default()
+        };
+        let ep = scp_endpoint(&conn, "/tmp/a'; touch /tmp/pwned; '", true);
+        // 精确断言而不是“不包含某子串”。
+        //
+        // ⚠ 这里有个容易踩的坑（我第一版就写错了）：结果里**确实含有** `'; touch`
+        // 这个子串，但它是转义序列 `'\''` 的尾部接上分号，shell 看到的是字面量。
+        // 拿子串包含关系判安全性会把安全结果误判成不安全，只能比完整输出。
+        assert_eq!(
+            ep, "u@h:'/tmp/a'\\''; touch /tmp/pwned; '\\'''",
+            "每个单引号都要被折成 '\\'' ，整个路径仍包在外层单引号里"
+        );
+        assert_eq!(ep.matches("'\\''").count(), 2, "两个单引号都要被转义：{ep}");
+    }
+
+    /// 🔴 F2 回归：用**真实的 usage 文本**判定 `-s` 支持性。
+    ///
+    /// v81 那段是本机 OpenSSH_for_Windows_8.1p1 的实测输出（`scp -s` → unknown option）。
+    /// 判错的代价是每次传输白跑一次完整 TCP + 认证握手。
+    #[test]
+    fn detects_scp_sftp_flag_from_real_usage_text() {
+        let v81 = "usage: scp [-346BCpqrTv] [-c cipher] [-F ssh_config] [-i identity_file]\n\
+                   [-J destination] [-l limit] [-o ssh_option] [-P port]\n\
+                   [-S program] source ... target";
+        let v9 = "usage: scp [-346ABCOpqRrsTv] [-c cipher] [-D sftp_server_path] [-F ssh_config]";
+        assert!(!usage_lists_short_flag(v81, 's'), "8.1p1 不支持 -s");
+        assert!(usage_lists_short_flag(v9, 's'), "9.x 支持 -s");
+        // 只看首个短选项簇，不能被后面 `[-S program]` 的大写 S 或别处字母骗到。
+        assert!(!usage_lists_short_flag(v81, 'O'), "8.1p1 也没有 -O");
+    }
+
+    /// 从 scp 真实形状的进度行里取百分比，且取**最后一个**（一块里可能堆了多次刷新）。
+    #[test]
+    fn last_percent_takes_the_newest_refresh() {
+        let chunk = b"data.bin   12%  1.0MB   1.2MB/s   00:40\rdata.bin   37%  3.1MB";
+        assert_eq!(last_percent_in(chunk), Some(37));
+        assert_eq!(last_percent_in(b"file  0%"), Some(0));
+        assert_eq!(last_percent_in(b"file 100% done"), Some(100));
+    }
+
+    /// 不是进度的 `%` 不能误认；超过 100 的数字也不能当百分比。
+    ///
+    /// 前者如远端输出里的 `50%` 以外的裸 `%`（shell 提示符、printf 格式串），
+    /// 后者如 `120%`——真当成百分比会把进度条画爆。
+    #[test]
+    fn last_percent_rejects_non_progress() {
+        assert_eq!(last_percent_in(b"user@host:~% "), None); // `%` 前面没数字
+        assert_eq!(last_percent_in(b"no percent here"), None);
+        assert_eq!(last_percent_in(b""), None);
+        // 120% 被排除后，应该什么都不剩（而不是退而取个错值）。
+        assert_eq!(last_percent_in(b"weird 120%"), None);
+        // 非 UTF-8 字节不能 panic。
+        assert_eq!(last_percent_in(&[0xff, 0xfe, b'5', b'%']), Some(5));
+    }
+
+    /// 进度条刷新必须被折叠，否则大文件传输会把捕获缓冲撑爆。
+    #[test]
+    fn collapse_progress_keeps_only_latest_refresh() {
+        let mut b = String::from("scp 启动\n");
+        for i in 0..5000 {
+            b.push_str(&format!("\rfile.bin {i}%  1.2MB/s"));
+            collapse_progress(&mut b);
+        }
+        assert!(b.len() < 200, "进度刷新应被折叠，实际长度 {}", b.len());
+        assert!(b.starts_with("scp 启动\n"), "已换行的历史不能被动：{b:?}");
+        assert!(b.contains("4999%"), "应保留最后一次刷新：{b:?}");
+    }
+
+    /// 真实错误信息（以换行结束）必须原样保留，不能被折叠逻辑吃掉——
+    /// 去掉 `-q` 就是为了拿回这些信息。
+    #[test]
+    fn collapse_progress_preserves_real_messages() {
+        let mut b = String::new();
+        b.push_str("Permission denied (publickey,password).\r\n");
+        collapse_progress(&mut b);
+        b.push_str("lost connection\n");
+        collapse_progress(&mut b);
+        assert!(b.contains("Permission denied"), "诊断信息不能丢：{b:?}");
+        assert!(b.contains("lost connection"));
     }
 
     /// 带单引号的文件名不能逃出引号变成远程命令。

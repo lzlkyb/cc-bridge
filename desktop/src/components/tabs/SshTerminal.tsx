@@ -5,8 +5,14 @@ import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+// 用 Tauri 插件读剪贴板，而不是 navigator.clipboard.readText()：后者在 WebView2 里
+// 需要 clipboard-read 权限（无提示 UI，往往静默被拒）。插件路径确定，
+// 但需在 capabilities 里显式给 `clipboard-manager:allow-read-text`——
+// `clipboard-manager:default` 自述就是“No features are enabled by default”，它什么都不授予。
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "../../lib/tauri";
 import { listen } from "../../lib/tauri";
+import { SshTerminalMenu, type TerminalMenuPos } from "./SshTerminalMenu";
 import { toast } from "../ui/toast";
 import { Icon } from "../ui/icon";
 import type { SshConnection, SshOutput, SshClosed, SshConnectFailed } from "../../lib/types";
@@ -14,6 +20,34 @@ import type { SshConnection, SshOutput, SshClosed, SshConnectFailed } from "../.
 /** 等宽 + 中文 fallback 字体栈：保证中文文件名/日志不乱码。 */
 const FONT =
   'ui-monospace, SFMono-Regular, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace';
+
+/**
+ * 读系统剪贴板并原样发给远端 PTY。
+ *
+ * 写成模块级函数（而非组件内闭包），是为了让 xterm 的按键钩子直接调它——
+ * 那个钩子在创建 effect 里注册一次，闭包住组件函数会拿到陈旧引用。
+ *
+ * 空剪贴板**静默返回**：右键误触不应该弹提示。读取失败则必须报，不吞。
+ */
+async function pasteFromClipboard(
+  sessionId: string,
+  onErr: (msg: string) => void,
+): Promise<void> {
+  let text: string;
+  try {
+    text = (await readText()) ?? "";
+  } catch (e) {
+    onErr(`读取剪贴板失败：${e}`);
+    return;
+  }
+  if (!text) return;
+  try {
+    // 含换行就原样发：多行被远端 shell 当多条命令执行是终端的既有语义，不拦截、不弹确认框。
+    await invoke("ssh_input", { sessionId, data: text });
+  } catch (e) {
+    onErr(`粘贴失败：${e}`);
+  }
+}
 
 interface Props {
   sessionId: string;
@@ -56,6 +90,8 @@ export function SshTerminal({ sessionId, conn, onClose, visible, dragSelectEnabl
   // 拖拽即选择：按住左键移动超阈值时临时进入选择态，用于标题栏徽标提示。
   const [dragSelecting, setDragSelecting] = useState(false);
   const [inputErr, setInputErr] = useState<string | null>(null);
+  // 右键菜单锚点（视口坐标），null = 不显示。
+  const [menuPos, setMenuPos] = useState<TerminalMenuPos | null>(null);
   const keystrokesRef = useRef(0);
   // 选择模式：TUI（如 Claude Code）开启鼠标报告模式后会吃掉鼠标拖选，xterm 选区建不起来、
   // 复制按钮读 term.getSelection() 恒为空。开启时直接把「关闭鼠标报告」的转义写到本地 xterm
@@ -148,6 +184,21 @@ export function SshTerminal({ sessionId, conn, onClose, visible, dragSelectEnabl
     fit.fit();
     termRef.current = term;
     fitRef.current = fit;
+    // 🔴 粘贴必须赶在 xterm 前面截获。xterm 把 Ctrl+V 当作 SYN(\x16) 发给远端并
+    // preventDefault，浏览器因此不会产生 paste 事件，它自带的两个 paste 监听器永远收不到
+    // （见 Keyboard.ts：ctrl+字母分支对 V/C/X 没有任何排除）。
+    // `attachCustomKeyEventHandler` 是官方钩子：`_keyDown` 第一件事就查它，返回 false 直接短路。
+    //
+    // 代价：远端不再收到 Ctrl+V（readline 的 quoted-insert 失效）——已与使用者确认接受。
+    // e.key 在 Ctrl+Shift+V 下是 "V"，故一条判定同时覆盖两个组合键。
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      if ((e.ctrlKey || e.metaKey) && (e.key === "v" || e.key === "V")) {
+        void pasteFromClipboard(sessionId, (m) => toast(m, "error"));
+        return false;
+      }
+      return true;
+    });
     // 打开即聚焦隐藏 textarea：xterm 不在 open() 时自动聚焦，若不显式 focus，
     // onData 不触发、键入无法回传后端（输出正常但无法输入）。
     // 同步 focus 偶尔因「open 后初始布局未完成」落空，用 rAF + 短延时双保险确保真正聚焦；
@@ -181,6 +232,13 @@ export function SshTerminal({ sessionId, conn, onClose, visible, dragSelectEnabl
         focusedRef.current = false;
       }
     };
+    // 右键：阻掉默认菜单，改弹自己的复制/粘贴/全选。用视口坐标定位，
+    // 因为终端容器带 overflow-hidden，菜单挂在容器内会被裁掉。
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      setMenuPos({ x: e.clientX, y: e.clientY });
+    };
+    container.addEventListener("contextmenu", onContextMenu);
     container.addEventListener("focusin", onFocusIn);
     container.addEventListener("focusout", onFocusOut);
     // 点工具栏 / 切走再点回时夺回焦点（mousedown/pointerdown 比 click 更早触发，避免丢首个字符）。
@@ -361,6 +419,7 @@ export function SshTerminal({ sessionId, conn, onClose, visible, dragSelectEnabl
       offData.dispose();
       offResize.dispose();
       offSel.dispose();
+      container.removeEventListener("contextmenu", onContextMenu);
       container.removeEventListener("focusin", onFocusIn);
       container.removeEventListener("focusout", onFocusOut);
       unlistens.forEach((u) => u());
@@ -390,6 +449,13 @@ export function SshTerminal({ sessionId, conn, onClose, visible, dragSelectEnabl
       .then(() => toast("已复制选中文字", "success"))
       .catch(() => toast("复制失败", "error"));
   };
+  const handlePaste = () => {
+    void pasteFromClipboard(sessionId, (m) => toast(m, "error")).then(() => {
+      // 按钮 / 右键路径不依赖终端焦点，但粘完把焦点还给终端，接着就能敲。
+      termRef.current?.focus();
+    });
+  };
+  const handleSelectAll = () => termRef.current?.selectAll();
   const handleClear = () => termRef.current?.clear();
   const handleDisconnect = () => {
     void invoke("ssh_disconnect", { sessionId })
@@ -488,6 +554,9 @@ export function SshTerminal({ sessionId, conn, onClose, visible, dragSelectEnabl
           <ButtonIcon title="复制整屏" onClick={handleCopyScreen}>
             <Icon name="monitor" size={14} />
           </ButtonIcon>
+          <ButtonIcon title="粘贴（Ctrl+V / 右键）" onClick={handlePaste}>
+            <Icon name="clipboard" size={14} />
+          </ButtonIcon>
           <ButtonIcon
             title={selectMode ? "退出选择模式（恢复鼠标报告）" : "选择模式（关鼠标报告以拖选复制）"}
             highlight={selectMode}
@@ -508,6 +577,18 @@ export function SshTerminal({ sessionId, conn, onClose, visible, dragSelectEnabl
         ref={containerRef}
         className="min-h-0 flex-1 overflow-hidden bg-[#1e1e1e] p-2"
       />
+      {menuPos && (
+        <SshTerminalMenu
+          pos={menuPos}
+          hasSelection={Boolean(
+            termRef.current?.getSelection() || lastSelectionRef.current,
+          )}
+          onCopy={handleCopy}
+          onPaste={handlePaste}
+          onSelectAll={handleSelectAll}
+          onClose={() => setMenuPos(null)}
+        />
+      )}
     </div>
   );
 }

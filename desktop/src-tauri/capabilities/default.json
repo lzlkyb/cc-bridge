@@ -17,6 +17,7 @@
     "process:default",
     "opener:default",
     "clipboard-manager:default",
+    "clipboard-manager:allow-read-text",
     "dialog:default",
     "dialog:allow-open"
   ]
