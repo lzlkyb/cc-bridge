@@ -31,6 +31,11 @@ export function TransferBar({
       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
         <Icon name={transfer.kind === "up" ? "upload" : "download"} size={12} />
       </span>
+      {transfer.total != null && transfer.total > 1 && (
+        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+          {transfer.index}/{transfer.total}
+        </span>
+      )}
       <span className="max-w-[190px] truncate text-xs" title={transfer.name}>
         {transfer.name}
       </span>

@@ -185,18 +185,16 @@ pub async fn cleanup_backups(
     // 删文件全程**不持 db 锁**，并且丢到 spawn_blocking：备份可能上万，
     // 原先持锁删完所有文件会把 write_files/edit_files 等全部 MCP 写操作
     // （它们写备份索引也要同一把锁）卡在那里数十秒，同时还挂住一个 tokio worker。
-    let (deleted, freed, failed) = tokio::task::spawn_blocking(move || {
-        backup::delete_files_bulk(&targets)
-    })
-    .await
-    .map_err(|e| format!("清理任务异常结束：{e}"))?;
+    let (deleted, freed, failed) =
+        tokio::task::spawn_blocking(move || backup::delete_files_bulk(&targets))
+            .await
+            .map_err(|e| format!("清理任务异常结束：{e}"))?;
     let removed = deleted.len() as u32;
 
     let db = state.db.lock().await;
     backup::purge_index_rows(&db, &deleted);
     // 自愈孤儿索引前先确认备份目录**真的读得到**：读不到时绝不能把索引行当孤儿清掉。
-    let dir_readable =
-        backup::list_backup_items(&state.data_dir, &backup_dir_name, &db).is_some();
+    let dir_readable = backup::list_backup_items(&state.data_dir, &backup_dir_name, &db).is_some();
     let healed = if dir_readable {
         backup::heal_orphan_index(&db, &state.data_dir.join(&backup_dir_name))
     } else {

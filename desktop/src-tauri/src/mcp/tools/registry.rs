@@ -199,12 +199,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
             r#"Incrementally fetch stdout/stderr of a background command started by run_command(background=true). Pass stdoutOffset/stderrOffset (bytes already consumed) to get only new output since the last call."#,
             false
         ),
-        register_tool!(
-            stop_command,
-            StopCommandArgs,
-            STOP_COMMAND_DESC,
-            false
-        ),
+        register_tool!(stop_command, StopCommandArgs, STOP_COMMAND_DESC, false),
         #[cfg(feature = "notifications")]
         register_tool!(
             push_notification,

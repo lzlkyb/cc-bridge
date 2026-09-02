@@ -10,6 +10,15 @@ import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 export interface ComboboxOption {
   value: string;
   label: string;
+  /** 右侧的次要说明（地址、不可选的理由等）。 */
+  hint?: string;
+  /**
+   * 置灰不可选。
+   *
+   * 为什么置灰而不是直接不列出来：用户在列表里找不到自己知道存在的一条
+   * 连接时，无从得知是自己看错了还是它本来就不能选。配合 `hint` 给出理由。
+   */
+  disabled?: boolean;
 }
 
 interface ComboboxProps {
@@ -17,9 +26,17 @@ interface ComboboxProps {
   options: ComboboxOption[];
   onChange: (value: string) => void;
   className?: string;
+  /** 触发按钮撑满容器（表单里与 Input 对齐时用）。 */
+  fullWidth?: boolean;
 }
 
-export function Combobox({ value, options, onChange, className = "" }: ComboboxProps) {
+export function Combobox({
+  value,
+  options,
+  onChange,
+  className = "",
+  fullWidth = false,
+}: ComboboxProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const listRef = useAutoAnimateRM<HTMLDivElement>();
@@ -46,7 +63,9 @@ export function Combobox({ value, options, onChange, className = "" }: ComboboxP
         onKeyDown={(e) => {
           if (e.key === "Escape") setOpen(false);
         }}
-        className="flex h-8 min-w-[120px] items-center justify-between gap-1.5 rounded-md border border-input bg-background px-2.5 text-xs transition-colors hover:border-primary"
+        className={`flex h-8 min-w-[120px] items-center justify-between gap-1.5 rounded-md border border-input bg-background px-2.5 text-xs transition-colors hover:border-primary ${
+          fullWidth ? "w-full" : ""
+        }`}
       >
         <span className="truncate">{selected?.label ?? value}</span>
         <Icon
@@ -56,16 +75,24 @@ export function Combobox({ value, options, onChange, className = "" }: ComboboxP
         />
       </button>
       {open && (
-        <div ref={listRef} className="absolute left-0 top-full z-20 mt-1 min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-pop">
+        <div
+          ref={listRef}
+          className={`absolute left-0 top-full z-20 mt-1 min-w-[160px] rounded-md border border-border bg-popover p-1 shadow-pop ${
+            fullWidth ? "right-0" : ""
+          }`}
+        >
           {options.map((opt) => (
             <button
               key={opt.value}
               type="button"
+              disabled={opt.disabled}
+              title={opt.hint}
               onClick={() => {
+                if (opt.disabled) return;
                 onChange(opt.value);
                 setOpen(false);
               }}
-              className={`flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-accent hover:text-accent-foreground ${
+              className={`flex w-full items-center gap-2 rounded-sm px-2.5 py-1.5 text-left text-xs transition-colors enabled:hover:bg-accent enabled:hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-45 ${
                 opt.value === value ? "font-medium text-primary" : ""
               }`}
             >
@@ -75,6 +102,11 @@ export function Combobox({ value, options, onChange, className = "" }: ComboboxP
                 className={`shrink-0 ${opt.value === value ? "opacity-100" : "opacity-0"}`}
               />
               <span className="truncate">{opt.label}</span>
+              {opt.hint && (
+                <span className="ml-auto shrink-0 pl-2 text-[10.5px] text-muted-foreground">
+                  {opt.hint}
+                </span>
+              )}
             </button>
           ))}
         </div>

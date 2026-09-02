@@ -12,6 +12,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::config::BridgeConfig;
 use crate::network;
+use crate::ssh_helper::{HelperSession as SshHelperSession, HELPER_IDLE_TTL};
 
 /// 会话级 cwd 持久化（默认关，见 `BridgeConfig::session_cwd_enabled`）。
 ///
@@ -131,6 +132,18 @@ pub struct AppState {
     /// 本就独占 Child，让它轮询这个标志自己 kill 即可。把 Child 共享出去则要处理
     /// `Child::kill(&mut self)` 的可变借用，要多套一层锁，得不偿失。
     pub ssh_transfers: DashMap<String, Arc<AtomicBool>>,
+    /// SFTP 操作复用的「helper 会话」。key=connection_id（不是 session_id）。
+    ///
+    /// 一个连接一条，因为列目录/建目录/删除面向的是「哪台主机」而不是「哪个终端标签」。
+    /// 外层 `StdMutex` 把同一条会话上的命令串行化（一条 shell 同时只能跑一条命令）。
+    /// 空闲回收见 `gc_ssh_helpers`。
+    pub ssh_helpers: DashMap<String, Arc<StdMutex<SshHelperSession>>>,
+    /// helper **起不来**的连接：记下失败时刻，短期内不再尝试。
+    ///
+    /// 为何需要这个负缓存：服务器禁 shell / 没有 /bin/sh 时 helper 永远建不起来，
+    /// 而失败不记的话**每一次列目录都要先白费一次完整的 TCP+认证握手**，
+    /// 然后才退回一次性路径——恰好把这个模块想省的握手反而翻了一倍。
+    pub ssh_helper_blocked: DashMap<String, Instant>,
     /// A3 修复：启动期错误（如端口被占用）。bind 失败时写入，成功时清除。
     /// 供前端 Header 展示「启动失败」红态，避免用户盲目尝试。
     pub startup_error: StdMutex<Option<String>>,
@@ -204,6 +217,8 @@ impl AppState {
             cwd_sessions: DashMap::new(),
             ssh_sessions: DashMap::new(),
             ssh_transfers: DashMap::new(),
+            ssh_helpers: DashMap::new(),
+            ssh_helper_blocked: DashMap::new(),
             startup_error: StdMutex::new(None),
             mcp_bridge: crate::mcp::bridge::McpBridge::new(),
             firewall_cache: StdMutex::new(FirewallCache {
@@ -288,6 +303,55 @@ impl AppState {
         }
         for id in to_remove {
             self.ssh_sessions.remove(&id);
+        }
+    }
+
+    /// 回收空闲或已死的 SFTP helper 会话。
+    ///
+    /// 必须回收的理由不是本机内存，而是**服务器端的 `MaxSessions`（默认只有 10）**：
+    /// 白占着会让用户自己后续的 ssh 连不进去。
+    ///
+    /// 锁语义：先把候选挑出来再逐个处理，避免在持有 DashMap shard 锁时去拿会话的
+    /// `StdMutex`（那样一旦有人正在跑命令就会阻塞整个 shard）。
+    pub fn gc_ssh_helpers(&self) {
+        let candidates: Vec<String> = self
+            .ssh_helpers
+            .iter()
+            .filter(|e| {
+                e.value()
+                    .try_lock()
+                    .map(|h| h.idle_for() > HELPER_IDLE_TTL)
+                    .unwrap_or(false) // 拿不到锁 = 正在用，当然不是空闲
+            })
+            .map(|e| e.key().clone())
+            .collect();
+        for id in candidates {
+            if let Some((_, sess)) = self.ssh_helpers.remove(&id) {
+                if let Ok(mut h) = sess.try_lock() {
+                    h.close();
+                }
+            }
+        }
+    }
+
+    /// 关掉某个连接的 helper（连接被删 / helper 坏了时调）。
+    pub fn drop_ssh_helper(&self, connection_id: &str) {
+        if let Some((_, sess)) = self.ssh_helpers.remove(connection_id) {
+            // 拿得到锁就立即关（快路径）；拿不到说明正在跑命令，
+            // 交给 `HelperSession` 的 Drop 收尾（摆脱最后一个 Arc 时必然触发）。
+            if let Ok(mut h) = sess.try_lock() {
+                h.close();
+            }
+        }
+        self.ssh_helper_blocked.remove(connection_id);
+    }
+
+    /// 关掉全部 SFTP helper 会话。与 `kill_all_ssh_sessions` 同时调——
+    /// 总开关是**断路器**，关了就不能还有任何存活的 SSH 连接，包括这些不推屏的。
+    pub fn kill_all_ssh_helpers(&self) {
+        let ids: Vec<String> = self.ssh_helpers.iter().map(|e| e.key().clone()).collect();
+        for id in ids {
+            self.drop_ssh_helper(&id);
         }
     }
 

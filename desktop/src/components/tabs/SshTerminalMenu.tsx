@@ -10,6 +10,8 @@ interface Props {
   pos: TerminalMenuPos;
   /** 有无选中内容：无选中时「复制」置灰（而不是隐藏，菜单高度才稳定）。 */
   hasSelection: boolean;
+  /** 会话已断开时置灰「粘贴」。 */
+  pasteDisabled: boolean;
   onCopy: () => void;
   onPaste: () => void;
   onSelectAll: () => void;
@@ -31,6 +33,7 @@ const MENU_H = 124;
 export function SshTerminalMenu({
   pos,
   hasSelection,
+  pasteDisabled,
   onCopy,
   onPaste,
   onSelectAll,
@@ -71,9 +74,12 @@ export function SshTerminalMenu({
       style={{ left, top, width: MENU_W }}
       className="fixed z-50 rounded-lg border border-border bg-card p-1 shadow-lg"
     >
+      {/* 快捷键提示必须与 useSshTerminalSession 里真正拦下的组合键一致。
+          曾经这里写的是 Ctrl+Shift+C / Ctrl+A 但一个都没实现，而 xterm 会把它们发成
+          \x03（SIGINT，中断命令）与 \x01（跳行首 / tmux 前缀）——相当于教用户按一个会打断自己任务的键。 */}
       <Item label="复制" hint={hasSelection ? "Ctrl+Shift+C" : "无选中"} disabled={!hasSelection} onClick={run(onCopy)} />
-      <Item label="粘贴" hint="Ctrl+V" onClick={run(onPaste)} />
-      <Item label="全选" hint="Ctrl+A" onClick={run(onSelectAll)} />
+      <Item label="粘贴" hint={pasteDisabled ? "已断开" : "Ctrl+V"} disabled={pasteDisabled} onClick={run(onPaste)} />
+      <Item label="全选" hint="Ctrl+Shift+A" onClick={run(onSelectAll)} />
     </div>
   );
 }

@@ -16,10 +16,10 @@ use process_wrap::std::{StdChildWrapper, StdCommandWrap};
 // 以下均为平台专属的“怎么管进程树”实现：
 // Windows 靠 JobObject（容器）+ CreationFlags（不弹控制台窗口）；
 // Unix 靠进程组（setpgid 后对整组发信号），也不存在“黑窗口”问题。
-#[cfg(windows)]
-use process_wrap::std::{CreationFlags, JobObject};
 #[cfg(unix)]
 use process_wrap::std::ProcessGroup;
+#[cfg(windows)]
+use process_wrap::std::{CreationFlags, JobObject};
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_CREATION_FLAGS,

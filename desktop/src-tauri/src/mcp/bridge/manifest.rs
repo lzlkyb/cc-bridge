@@ -267,8 +267,14 @@ mod tests {
         let n = purge_orphans(&conn, &keep, 500).expect("清理");
 
         assert_eq!(n, 1, "只该删「未配置且旧」那一条");
-        assert!(load(&conn, "已配置且旧").unwrap().is_some(), "配置里的多旧都不能删");
-        assert!(load(&conn, "未配置但新").unwrap().is_some(), "还在保留期内的不能删");
+        assert!(
+            load(&conn, "已配置且旧").unwrap().is_some(),
+            "配置里的多旧都不能删"
+        );
+        assert!(
+            load(&conn, "未配置但新").unwrap().is_some(),
+            "还在保留期内的不能删"
+        );
         assert!(load(&conn, "未配置且旧").unwrap().is_none());
     }
 

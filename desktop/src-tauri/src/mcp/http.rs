@@ -1447,10 +1447,7 @@ mod over_wire_tests {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
-        assert!(
-            msg.contains("回车符"),
-            "错误应直指回车符，实际：{msg}"
-        );
+        assert!(msg.contains("回车符"), "错误应直指回车符，实际：{msg}");
         assert!(
             !msg.contains("not representable"),
             "不能再报“字符无法表示”——那是把人往编码方向引的假诊断：{msg}"

@@ -732,10 +732,7 @@ pub async fn mcp_bridge_inspect(
     let state = state.inner();
     let (master, existing) = {
         let cfg = state.config.read().await;
-        (
-            cfg.external_mcp_enabled,
-            cfg.external_mcp_servers.clone(),
-        )
+        (cfg.external_mcp_enabled, cfg.external_mcp_servers.clone())
     };
     if !master {
         // 与 probe 同一条规矩：总开关的语义就是「允许启动外挂进程」。

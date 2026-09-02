@@ -64,7 +64,6 @@ pub async fn cleanup_audit_now(state: State<'_, Arc<AppState>>) -> Result<u64, S
     Ok(removed)
 }
 
-
 /// 审计：按**临时**天数清一次，不改配置里的保留天数。
 /// 与备份侧「清理早于 N 天」操作心智一致。
 #[tauri::command]

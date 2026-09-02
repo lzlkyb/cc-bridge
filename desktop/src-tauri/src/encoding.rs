@@ -222,10 +222,7 @@ mod tests {
         assert!(!ft.crlf, "`crlf` 标志只看 \\r\\n，纯 CR 文件为 false");
 
         let out = encode_text(&ft.text, ft.encoding, ft.crlf, ft.had_bom).expect("回写");
-        assert_eq!(
-            out, b"a\nb\nc",
-            "纯 CR **不会**被还原——行尾已整体变成 LF"
-        );
+        assert_eq!(out, b"a\nb\nc", "纯 CR **不会**被还原——行尾已整体变成 LF");
     }
 
     #[test]

@@ -405,6 +405,11 @@ export interface SshConnection {
   rememberPassphrase: boolean;
   /** aes-gcm 密文（base64），仅 rememberPassphrase 时非空；前端拿不到明文。 */
   encryptedPassphrase: string;
+  /**
+   * 跳板机：另一条连接的 id；空 = 直连。
+   * 只支持一跳（被引用的连接自身必须是直连）。
+   */
+  proxyJumpId: string;
 }
 
 /** `ssh_check` 返回：系统 ssh 是否可用 + 路径 + 不可用时的安装指引。 */

@@ -424,7 +424,10 @@ mod tests {
     #[test]
     fn name_at_exactly_max_len_is_kept() {
         let exact = "n".repeat(MAX_NAME_LEN);
-        assert_eq!(searchable_tool_names(&json!([{"name": exact}])), vec![exact]);
+        assert_eq!(
+            searchable_tool_names(&json!([{"name": exact}])),
+            vec![exact]
+        );
     }
 
     /// 工具多的 server 要截断，否则一个 server 就能吃掉全部预算。
@@ -442,7 +445,12 @@ mod tests {
     /// 不是数组也不能 panic——manifest 里的 `tools` 是外挂 server 给的，形状不受我们控制。
     #[test]
     fn tolerates_malformed_manifest_shapes() {
-        for bad in [json!(null), json!("不是数组"), json!({"tools": []}), json!(7)] {
+        for bad in [
+            json!(null),
+            json!("不是数组"),
+            json!({"tools": []}),
+            json!(7),
+        ] {
             assert!(searchable_tool_names(&bad).is_empty(), "{bad} 应该得到空");
         }
     }

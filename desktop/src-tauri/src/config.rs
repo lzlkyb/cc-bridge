@@ -48,6 +48,16 @@ pub struct SshConnection {
     /// aes-gcm 密文（base64），仅当 `remember_passphrase` 为 true 时有效。
     #[serde(rename = "encryptedPassphrase", default)]
     pub encrypted_passphrase: String,
+    /// 跳板机：另一条 SSH 连接的 `id`；空 = 直连。
+    ///
+    /// 存 id 而不是内嵌一套 host/port/user/key + 独立密文，是为了**不扩大凭据落盘面**：
+    /// 跳板机的密码/密钥复用被引用连接自己那份加密存储，多台目标机共用一个堡垒机时
+    /// 改密码也只改一处。
+    ///
+    /// **只支持一跳**：被引用的连接自身必须是直连（`ssh_save_connection` 会校验）。
+    /// 这样规则一句话说得清，也不必做环检测。
+    #[serde(rename = "proxyJumpId", default)]
+    pub proxy_jump_id: String,
 }
 
 impl Default for SshConnection {
@@ -64,6 +74,7 @@ impl Default for SshConnection {
             key_path: String::new(),
             remember_passphrase: false,
             encrypted_passphrase: String::new(),
+            proxy_jump_id: String::new(),
         }
     }
 }

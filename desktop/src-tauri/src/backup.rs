@@ -259,9 +259,9 @@ pub fn list_backup_items(
     let dir = data_dir.join(backup_dir_name);
     let mut index: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     if let Ok(mut stmt) = db.prepare("SELECT backup_path, original_path FROM backup_index") {
-        if let Ok(rows) = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        }) {
+        if let Ok(rows) =
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        {
             for (k, v) in rows.flatten() {
                 index.insert(k, v);
             }
@@ -376,9 +376,12 @@ pub fn plan_cleanup(items: &[BackupItem], mode: &CleanupMode, keep_last_one: boo
     // (总数, 待删数, 展示名, 是否有索引)
     let mut per_group: HashMap<&str, (usize, usize, &str, bool)> = HashMap::new();
     for it in items {
-        let e = per_group
-            .entry(it.group_key.as_str())
-            .or_insert((0, 0, it.original.as_str(), it.indexed));
+        let e = per_group.entry(it.group_key.as_str()).or_insert((
+            0,
+            0,
+            it.original.as_str(),
+            it.indexed,
+        ));
         e.0 += 1;
         if victim_set.contains(it.path.as_path()) {
             e.1 += 1;
@@ -651,11 +654,12 @@ mod cleanup_tests {
     fn created_time_comes_from_filename_not_mtime() {
         let p = PathBuf::from("/b/Foo.java.20260804_120000_123.bak");
         let got = created_from_backup_name(&p).expect("合规时间戳必须能解出来");
-        let expect = chrono::NaiveDateTime::parse_from_str("20260804_120000_123", "%Y%m%d_%H%M%S_%3f")
-            .unwrap()
-            .and_local_timezone(Local)
-            .earliest()
-            .unwrap();
+        let expect =
+            chrono::NaiveDateTime::parse_from_str("20260804_120000_123", "%Y%m%d_%H%M%S_%3f")
+                .unwrap()
+                .and_local_timezone(Local)
+                .earliest()
+                .unwrap();
         let got_ms = got
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -711,8 +715,16 @@ mod cleanup_tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let a = plan_cleanup(&mk(["/b/1.bak", "/b/2.bak", "/b/3.bak"]), &CleanupMode::All, true);
-        let b = plan_cleanup(&mk(["/b/3.bak", "/b/1.bak", "/b/2.bak"]), &CleanupMode::All, true);
+        let a = plan_cleanup(
+            &mk(["/b/1.bak", "/b/2.bak", "/b/3.bak"]),
+            &CleanupMode::All,
+            true,
+        );
+        let b = plan_cleanup(
+            &mk(["/b/3.bak", "/b/1.bak", "/b/2.bak"]),
+            &CleanupMode::All,
+            true,
+        );
         let mut va = a.victims.clone();
         let mut vb = b.victims.clone();
         va.sort();

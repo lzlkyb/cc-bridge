@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
-import { downloadDir, join } from "@tauri-apps/api/path";
-import { open } from "@tauri-apps/plugin-dialog";
 import { isMac } from "../../lib/platform";
 import { toast } from "../ui/toast";
 import type { SshConnection, SshFileEntry } from "../../lib/types";
 import { FileTable } from "./SshFileRow";
 import { MkdirForm, UploadForm, DownloadForm } from "./SshFileForms";
 import { FileHeader, RemoveConfirmDialog } from "./SshFileToolbar";
-import { cleanErr, useSshTransfer } from "./useSshTransfer";
+import { useSshTransfer } from "./useSshTransfer";
+import { cleanErr } from "../../lib/utils";
 import { OverwriteConfirmDialog, TransferBar } from "./SshTransferBar";
+import { SshDropOverlay } from "./SshDropOverlay";
+import { useFileBrowserDrop } from "./useFileBrowserDrop";
+import { useSshFileForms } from "./useSshFileForms";
+import { loadUploadDir, saveUploadDir } from "../../lib/uploadDir";
 
 interface Props {
   conn: SshConnection;
@@ -36,23 +39,22 @@ function parentRemote(dir: string): string {
  * 本机路径用内联文本框输入（不依赖系统文件选择器插件）。
  */
 export function SshFileBrowser({ conn, onBack }: Props) {
-  const [path, setPath] = useState("/");
+  // 起始路径用「上次上传目录」而不是写死的 `/`：面板一关就 unmount，
+  // 每次重开都从根目录开始本来就难用；而且这份状态与终端拖拽共用，
+  // 两个入口才不会各自漂移。
+  const [path, setPath] = useState(() => loadUploadDir(conn.id));
   const [entries, setEntries] = useState<SshFileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 传输态交给 useSshTransfer 管，这里只管 mkdir / 删除这类瞬时操作。
   const [busyOp, setBusyOp] = useState(false);
-  // 上传：本机源文件路径。
-  const [uploadOpen, setUploadOpen] = useState(false);
-  const [uploadLocal, setUploadLocal] = useState("");
   // 新建文件夹名。
   const [mkdirOpen, setMkdirOpen] = useState(false);
   const [mkdirName, setMkdirName] = useState("");
-  // 下载目标：entry.name -> 本机目标路径。
-  const [downloadFor, setDownloadFor] = useState<string | null>(null);
-  const [downloadLocal, setDownloadLocal] = useState("");
   // 删除确认：待删除条目（项目内 Dialog 二次确认，避免 window.confirm 与 Tauri 风格割裂）。
   const [removeTarget, setRemoveTarget] = useState<SshFileEntry | null>(null);
+  // 列目录超过这个时长还没回来，就在界面上解释一下（而不是让圈一直转）。
+  const SLOW_HINT_MS = 2500;
 
   // 平台标识用于切换占位文案（mac 显示 POSIX 路径，Windows 显示盘符路径）。
   // get_status 是全局缓存的查询，这里复用不会多开连接。
@@ -64,7 +66,9 @@ export function SshFileBrowser({ conn, onBack }: Props) {
   const xfer = useSshTransfer();
   // 传输进行中也算忙：期间禁掉新建/上传/删除，避免并发多条 ssh 握手
   // （本机 OpenSSH 不支持连接复用，并发只会把握手成本乘以 N）。
-  const busy = busyOp || !!xfer.transfer;
+  // 含 `xfer.prompt`（覆盖确认框）：否则确认框开着时还能接第二批拖放，
+  // 第二次 setPrompt 会覆盖第一次，第一批的 Promise 永远不 resolve。
+  const busy = busyOp || !!xfer.transfer || !!xfer.prompt;
 
   const list = useCallback(
     async (p: string) => {
@@ -94,76 +98,46 @@ export function SshFileBrowser({ conn, onBack }: Props) {
     void list(path);
   }, [list, path]);
 
+  // 当前目录回写成「上次上传目录」：下次重开面板与终端拖拽都从这里起。
+  useEffect(() => {
+    saveUploadDir(conn.id, path);
+  }, [conn.id, path]);
+
+  const { paneRef, ...drop } = useFileBrowserDrop({
+    connectionId: conn.id,
+    path,
+    entries,
+    busy,
+    uploadMany: xfer.uploadMany,
+    onDone: () => void list(path),
+  });
+
+  // 「上传 / 下载表单」那一组状态与动作（规则 7 拆分，纯搬运）。
+  const forms = useSshFileForms({
+    connectionId: conn.id,
+    path,
+    entries,
+    xfer,
+    joinRemote,
+    onUploaded: () => void list(path),
+  });
+
+  // 超过 SLOW_HINT_MS 还在加载就补一句解释。
+  //
+  // WHY：本机 OpenSSH 不支持连接复用（无 ControlMaster），**每次列目录都是一次完整的
+  // TCP + 认证握手**，慢链路上好几秒很正常，超时上限是 30 秒。只转个圈不说话的话，
+  // 用户无法区分「慢」和「死」，只能干等。
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!loading) {
+      setSlow(false);
+      return;
+    }
+    const t = setTimeout(() => setSlow(true), SLOW_HINT_MS);
+    return () => clearTimeout(t);
+  }, [loading]);
+
   const openDir = (name: string) => setPath(joinRemote(path, name));
-
-  // 点击下载：展开下载表单并预填本机下载目录下的同名文件（用 path::join 而非
-  // 字符串拼，避免 macOS 上 downloadDir() 末尾无分隔符拼成错路径）。
-  const handleDownload = (name: string) => {
-    setDownloadFor(name);
-    void (async () => {
-      try {
-        setDownloadLocal(await join(await downloadDir(), name));
-      } catch {
-        setDownloadLocal(name);
-      }
-    })();
-  };
-
-  const doDownload = async (name: string) => {
-    if (!downloadLocal.trim()) {
-      toast("请填写本机保存路径", "error");
-      return;
-    }
-    // 进度 / 取消 / 覆盖确认全在 useSshTransfer 里；目标已存在时它会先弹确认框，
-    // 确认后重跑，整个流程走完才 resolve——所以这里 await 到的是最终结果。
-    const ok = await xfer.download({
-      connectionId: conn.id,
-      name,
-      remote: joinRemote(path, name),
-      local: downloadLocal.trim(),
-    });
-    if (ok) {
-      setDownloadFor(null);
-      setDownloadLocal("");
-    }
-  };
-
-  const doUpload = async () => {
-    if (!uploadLocal.trim()) {
-      toast("请选择或填写本机文件路径", "error");
-      return;
-    }
-    const base = uploadLocal.trim().replace(/\\/g, "/").split("/").pop() || "file";
-    // 重名判定在前端：当前目录的 entries 手里已经有，在后端再查一次
-    // 就多一次完整的 ssh 握手。
-    const ok = await xfer.upload({
-      connectionId: conn.id,
-      name: base,
-      local: uploadLocal.trim(),
-      remote: joinRemote(path, base),
-      remoteExists: entries.some((e) => e.name === base),
-    });
-    if (ok) {
-      setUploadOpen(false);
-      setUploadLocal("");
-      void list(path);
-    }
-  };
-
-  // 用系统文件选择器选本机文件（拿到真实绝对路径，scp 才能读取）。
-  const pickUpload = async () => {
-    try {
-      const selected = await open({
-        multiple: false,
-        title: "选择要上传的文件",
-      });
-      if (typeof selected === "string") {
-        setUploadLocal(selected);
-      }
-    } catch {
-      /* 用户取消或无选择器权限，忽略 */
-    }
-  };
 
   const doMkdir = async () => {
     if (!mkdirName.trim()) return;
@@ -204,7 +178,8 @@ export function SshFileBrowser({ conn, onBack }: Props) {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={paneRef} className="relative flex h-full min-h-0 flex-col">
+      {drop.zone === "files" && <SshDropOverlay count={drop.count} dir={path} />}
       {/* 顶部：返回 + 连接信息 + 操作 + 路径条 */}
       <FileHeader
         conn={conn}
@@ -219,10 +194,15 @@ export function SshFileBrowser({ conn, onBack }: Props) {
           setMkdirName("");
         }}
         onUpload={() => {
-          setUploadOpen((v) => !v);
-          setUploadLocal("");
+          forms.setUploadOpen((v) => !v);
+          forms.setUploadLocal("");
         }}
       />
+      {loading && slow && (
+        <div className="shrink-0 border-b border-border bg-muted/50 px-3 py-1.5 text-[11px] text-muted-foreground">
+          正在读取远程目录…首次需要建立一条常驻会话，后续操作会快很多；若服务器不支持常驻会话会自动退回旧方式，最长可能等一分钟。
+        </div>
+      )}
 
       {/* 新建文件夹 / 上传表单（同一位置交替出现） */}
       {mkdirOpen && (
@@ -234,15 +214,15 @@ export function SshFileBrowser({ conn, onBack }: Props) {
           onCancel={() => setMkdirOpen(false)}
         />
       )}
-      {uploadOpen && (
+      {forms.uploadOpen && (
         <UploadForm
-          value={uploadLocal}
+          value={forms.uploadLocal}
           busy={busy}
           mac={mac}
-          onChange={setUploadLocal}
-          onPick={() => void pickUpload()}
-          onSubmit={() => void doUpload()}
-          onCancel={() => setUploadOpen(false)}
+          onChange={forms.setUploadLocal}
+          onPick={() => void forms.pickUpload()}
+          onSubmit={() => void forms.doUpload()}
+          onCancel={() => forms.setUploadOpen(false)}
         />
       )}
 
@@ -258,20 +238,20 @@ export function SshFileBrowser({ conn, onBack }: Props) {
         error={error}
         busy={busy}
         onOpenDir={openDir}
-        onDownload={handleDownload}
+        onDownload={forms.handleDownload}
         onRemove={setRemoveTarget}
       />
 
       {/* 下载目标表单 */}
-      {downloadFor && (
+      {forms.downloadFor && (
         <DownloadForm
-          name={downloadFor}
-          value={downloadLocal}
+          name={forms.downloadFor}
+          value={forms.downloadLocal}
           busy={busy}
           mac={mac}
-          onChange={setDownloadLocal}
-          onSubmit={() => void doDownload(downloadFor)}
-          onCancel={() => setDownloadFor(null)}
+          onChange={forms.setDownloadLocal}
+          onSubmit={() => void forms.doDownload(forms.downloadFor!)}
+          onCancel={() => forms.setDownloadFor(null)}
         />
       )}
 

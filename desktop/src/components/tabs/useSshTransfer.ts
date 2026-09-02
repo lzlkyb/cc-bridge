@@ -1,15 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke, listen } from "../../lib/tauri";
 import { toast } from "../ui/toast";
-
-/**
- * 与后端 `ssh_cmds.rs` 的错误前缀常量一一对应。**改一边必须改另一边。**
- *
- * 🔴 用前缀而不是匹配中文文案：文案会改，前缀不会。
- * 「取消」「超时」「失败」在 UI 上必须可区分，靠字串包含去猜必然跑偏。
- */
-const ERR_CANCELLED = "CCB_CANCELLED";
-const ERR_TARGET_EXISTS = "CCB_TARGET_EXISTS";
+import { joinRemoteDir } from "../../lib/uploadDir";
+import { cleanErr } from "../../lib/utils";
+// 错误前缀协议（与后端 ssh_cmds.rs 一一对应）统一放 lib/sshErrors.ts。
+import { isCancelled, isTargetExists } from "../../lib/sshErrors";
 
 /** EMA 平滑系数：scp 的刷新间隔不均匀，直接用瞬时值算 ETA 会剧烈跳动。 */
 const ETA_SMOOTHING = 0.7;
@@ -23,6 +18,9 @@ export interface TransferState {
   percent: number | null;
   /** 剩余秒数，null = 还算不出。 */
   eta: number | null;
+  /** 批量上传时的序号（从 1 起）与总数；单个传输时为 undefined。 */
+  index?: number;
+  total?: number;
 }
 
 /** 覆盖确认：由调用方渲染对话框，确认后调 `confirm()` 重跑一次。 */
@@ -32,23 +30,6 @@ export interface OverwritePrompt {
   confirm: () => void;
   /** 用户放弃：让等待中的 Promise 以 false 收尾，避免调用方永远悬着。 */
   cancel: () => void;
-}
-
-/**
- * 清理 SFTP 报错里的 PTY 噪声：scp/ssh 在 PTY 下会输出 `\r` 进度条、ANSI 转义、
- * 多余空行。剥掉后只留人类可读的错误（权限拒绝 / 路径不存在 / 连接失败等）。
- */
-export function cleanErr(raw: unknown): string {
-  const s = String(raw ?? "");
-  return s
-    .replace(/\[[0-9;]*m/g, "") // ANSI 颜色
-    .replace(/[\r]/g, "") // 回车 / 退格（进度条覆盖）
-    .split("\n")
-    .map((l) => l.trimEnd())
-    .filter((l) => l.trim().length > 0)
-    .slice(-6) // 只取末尾关键几行
-    .join("\n")
-    .trim();
 }
 
 interface StartArgs {
@@ -109,19 +90,27 @@ export function useSshTransfer() {
     };
   }, []);
 
-  const begin = (kind: TransferKind, name: string) => {
+  // begin / end / report 都包成稳定引用：它们只用到 setState 与 ref（本身就稳定），
+  // 但不包的话，下面每个 useCallback 的依赖数组都得把它们列进去，
+  // 而它们每次渲染都是新函数 —— 等于所有回调都失去记忆化。
+  const begin = useCallback((
+    kind: TransferKind,
+    name: string,
+    index?: number,
+    total?: number,
+  ) => {
     const id = crypto.randomUUID();
     idRef.current = id;
     lastRef.current = null;
     etaRef.current = null;
-    setTransfer({ kind, name, percent: null, eta: null });
+    setTransfer({ kind, name, percent: null, eta: null, index, total });
     return id;
-  };
+  }, []);
 
-  const end = () => {
+  const end = useCallback(() => {
     idRef.current = null;
     setTransfer(null);
-  };
+  }, []);
 
   /** 取消当前传输。后端只置位标志，真正终止在 ≤200ms 后发生。 */
   const cancel = useCallback(() => {
@@ -130,9 +119,8 @@ export function useSshTransfer() {
   }, []);
 
   /** 失败分流：取消 / 真失败，文案不能混。 */
-  const report = (raw: unknown, kind: TransferKind, name: string) => {
-    const s = String(raw ?? "");
-    if (s.includes(ERR_CANCELLED)) {
+  const report = useCallback((raw: unknown, kind: TransferKind, name: string) => {
+    if (isCancelled(raw)) {
       if (kind === "up") {
         // 设计稿 §3：不自动删远端残留（可能是覆盖上传，那文件本来就是用户的），
         // 但必须明确告知，不能静默。
@@ -142,8 +130,8 @@ export function useSshTransfer() {
       }
       return;
     }
-    toast(`${kind === "up" ? "上传" : "下载"}失败：${cleanErr(s)}`, "error");
-  };
+    toast(`${kind === "up" ? "上传" : "下载"}失败：${cleanErr(raw)}`, "error");
+  }, []);
 
   /**
    * 关闭覆盖确认框。必须走 `prompt.cancel()` 而不是直接 `setPrompt(null)`，
@@ -178,7 +166,7 @@ export function useSshTransfer() {
         toast(`已下载：${a.name}`, "success");
         return "ok";
       } catch (e) {
-        if (!overwrite && String(e ?? "").includes(ERR_TARGET_EXISTS)) {
+        if (!overwrite && isTargetExists(e)) {
           return "exists";
         }
         report(e, "down", a.name);
@@ -204,7 +192,51 @@ export function useSshTransfer() {
         },
       });
     });
-  }, []);
+  }, [begin, end, report]);
+
+  /**
+   * 传一个文件（含覆盖确认）。返回三态而不是 bool：
+   * 批量上传必须能分辨「用户取消」与「传失败」，否则只能瞎猜要不要继续。
+   */
+  const putOne = useCallback(async (
+    a: StartArgs & { index?: number; total?: number },
+    remoteExists: boolean,
+  ): Promise<"ok" | "cancelled" | "fail"> => {
+    const run = async (): Promise<"ok" | "cancelled" | "fail"> => {
+      const id = begin("up", a.name, a.index, a.total);
+      try {
+        await invoke("ssh_sftp_put", {
+          connectionId: a.connectionId,
+          local: a.local,
+          remote: a.remote,
+          transferId: id,
+        });
+        toast(`已上传：${a.name}`, "success");
+        return "ok";
+      } catch (e) {
+        report(e, "up", a.name);
+        return isCancelled(e) ? "cancelled" : "fail";
+      } finally {
+        end();
+      }
+    };
+    if (!remoteExists) return run();
+    return new Promise((resolve) => {
+      setPrompt({
+        kind: "up",
+        path: a.remote,
+        confirm: () => {
+          setPrompt(null);
+          void run().then(resolve);
+        },
+        cancel: () => {
+          setPrompt(null);
+          // 放弃覆盖 = 主动取消，批量时应当停下来而不是接着闷头传下一个。
+          resolve("cancelled");
+        },
+      });
+    });
+  }, [begin, end, report]);
 
   /**
    * 上传。重名判定在**前端**（调用方传 `remoteExists`）：当前目录的 entries
@@ -212,43 +244,73 @@ export function useSshTransfer() {
    */
   const upload = useCallback(
     async (a: StartArgs & { remoteExists: boolean }): Promise<boolean> => {
-      const run = async (): Promise<boolean> => {
-        const id = begin("up", a.name);
-        try {
-          await invoke("ssh_sftp_put", {
-            connectionId: a.connectionId,
-            local: a.local,
-            remote: a.remote,
-            transferId: id,
-          });
-          toast(`已上传：${a.name}`, "success");
-          return true;
-        } catch (e) {
-          report(e, "up", a.name);
-          return false;
-        } finally {
-          end();
-        }
-      };
-      if (a.remoteExists) {
-        return new Promise((resolve) => {
-          setPrompt({
-            kind: "up",
-            path: a.remote,
-            confirm: () => {
-              setPrompt(null);
-              void run().then(resolve);
-            },
-            cancel: () => {
-              setPrompt(null);
-              resolve(false);
-            },
-          });
-        });
-      }
-      return run();
+      const r = await putOne(a, a.remoteExists);
+      return r === "ok";
     },
-    [],
+    [putOne],
+  );
+
+  /**
+   * 批量上传（拖拽入口）。**顺序**跑，没改现有的一次一个传输模型。
+   *
+   * 🔴 `existing` 不传时会**先列一次目标目录**。现有的上传重名检查是靠调用方
+   * 手里的 entries 比对的（见 `upload` 的注释），而**终端拖拽时手里根本没有目标
+   * 目录的列表**——不补这一次列目录，拖拽上传就是**静默覆盖**远端同名文件；
+   * 删除有二次确认、覆盖却悄无声息，两者丢数据的后果是一样的。
+   * 这一次列目录现在很便宜（helper 常驻会话），顺便也确认了目标目录真实存在。
+   */
+  const uploadMany = useCallback(
+    async (a: {
+      connectionId: string;
+      dir: string;
+      files: { local: string; name: string }[];
+      existing?: string[];
+    }): Promise<{ done: number; total: number }> => {
+      const total = a.files.length;
+      if (total === 0) return { done: 0, total: 0 };
+
+      let names = a.existing;
+      if (names === undefined) {
+        try {
+          const entries = await invoke<{ name: string }[]>("ssh_sftp_list", {
+            connectionId: a.connectionId,
+            path: a.dir,
+          });
+          // 软链条目的 name 带 ` -> target` 后缀，比对前先截掉。
+          names = entries.map((e) => e.name.split(" -> ")[0]);
+        } catch (e) {
+          toast(`目标目录无法访问：${cleanErr(e)}`, "error");
+          return { done: 0, total };
+        }
+      }
+      const existingSet = new Set(names);
+
+      for (let i = 0; i < total; i++) {
+        const f = a.files[i];
+        const r = await putOne(
+          {
+            connectionId: a.connectionId,
+            name: f.name,
+            local: f.local,
+            remote: joinRemoteDir(a.dir, f.name),
+            index: i + 1,
+            total,
+          },
+          existingSet.has(f.name),
+        );
+        if (r !== "ok") {
+          const left = total - i - 1;
+          if (left > 0) toast(`已停下，还有 ${left} 个文件未上传`, "warning");
+          return { done: i, total };
+        }
+        // 🔴 传完就要计入「已存在」。否则一次拖入 `a/x.txt` 与 `b/x.txt` 时，
+        // 第二个在开头那次列目录里确实不存在 → 不弹覆盖确认 → 直接盖掉刚传上去的
+        // 那个，最后还报「已上传 2 个文件」而远端只有一个。
+        existingSet.add(f.name);
+      }
+      return { done: total, total };
+    },
+    [putOne],
   );
 
   return {
@@ -257,6 +319,7 @@ export function useSshTransfer() {
     dismissPrompt,
     download,
     upload,
+    uploadMany,
     cancel,
   };
 }

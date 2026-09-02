@@ -1,34 +1,81 @@
 #!/bin/sh
-# ────────────────────────────────────────────────────
-#  pre-push — push 前自动运行前端 tsc + Rust 测试
+# ──────────────────────────────────────────────────
+#  pre-push — push 前自动跑完整门禁（前端 + Rust）
 #
 #  安装：cp .githooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
 #  跳过：git push --no-verify
 #
-#  说明：cc-bridge 没有 Vitest(自动化测试用 Rust 单测覆盖),
-#  前端只跑 tsc --noEmit 守住类型,行为由后端测试覆盖。
-# ────────────────────────────────────────────────────
+#  为什么把这五项都放进钩子：
+#  一条规则要么由机器把关，要么就会烂掉。CLAUDE.md 要求「提交前跑 cargo fmt +
+#  clippy，保持零警告」，但之前没有任何东西执行它——clippy 只在 tag 触发的
+#  macOS job 里跑，于是可以连着 push 十次都不知道有警告。
+#
+#  顺序按「失败越快越靠前」排：fmt 瞬完、tsc/vitest 几秒、clippy 与 test 最慢。
+#
+#  ⚠️ 本钩子自己要跑两次 cargo（clippy + test），push 前不要另外手动起
+#     独立的 cargo test，否则会争抢 target/ 构建锁导致钩子失败。
+# ──────────────────────────────────────────────────
 
 set -e
 
 echo ""
 echo "══════════════════════════════════════════════"
-echo "  Pre-push: 运行测试..."
+echo "  Pre-push: 运行门禁（7 项）..."
 echo "══════════════════════════════════════════════"
 echo ""
 
-# ── 前端 tsc 类型检查 ──
-echo "[1/2] 前端 tsc --noEmit ..."
+# ── 组件体量（纯读文件，最快，放最前）──
+# 规则 7 的机器执行版：行数 + 单文件里的 useState/useEffect 总数。
+# 存量超标文件走棘轮基线（只许变小），新文件必须直接合规。
+echo "[1/7] 组件体量门禁 ..."
+(cd desktop && node scripts/check-component-size.mjs)
+echo ""
+
+# ── Rust 格式（瞬完，最常见的低级失败放最前）──
+echo "[2/7] cargo fmt --check ..."
+if ! (cd desktop/src-tauri && cargo fmt --check >/dev/null 2>&1); then
+  echo "  ❌ 格式不合规。在 desktop/src-tauri 下跑一句 'cargo fmt' 即可修复。"
+  exit 1
+fi
+echo "  ✅ 格式通过"
+echo ""
+
+# ── ESLint ──
+# 上它的唯一理由是 react-hooks 那两条规则：依赖数组不全 / hooks 调用顺序问题
+# 会造成“闭包拿陈旧值”，而 tsc 完全看不出来。存量违规记在 eslint-suppressions.json
+# 里（棘轮，只许减少），新违规直接拦。
+echo "[3/7] eslint ..."
+(cd desktop && npx eslint .)
+echo "  ✅ eslint 通过"
+echo ""
+
+# ── 前端类型 ──
+echo "[4/7] 前端 tsc --noEmit ..."
 (cd desktop && npx tsc --noEmit)
 echo "  ✅ 前端类型检查通过"
 echo ""
 
-# ── Rust cargo test ──
-echo "[2/2] Rust cargo test..."
+# ── 前端单测 ──
+# 旧注释写的是「cc-bridge 没有 Vitest」——那已经不成立了。目前有 12 个测试文件
+# 共 147 条用例，盖的全是真机难复现的纯计算（终端行高回退、高 DPI 拖放命中判定、
+# 远程路径归一化等）。不跑它们等于白写。
+echo "[5/7] 前端 vitest ..."
+(cd desktop && npm test --silent)
+echo "  ✅ 前端单测通过"
+echo ""
+
+# ── Rust 静态检查（与 CI 的 macOS job 同等严格）──
+echo "[6/7] cargo clippy -D warnings ..."
+(cd desktop/src-tauri && cargo clippy --all-targets --no-default-features -- -D warnings)
+echo "  ✅ clippy 零警告"
+echo ""
+
+# ── Rust 测试 ──
+echo "[7/7] Rust cargo test ..."
 (cd desktop/src-tauri && cargo test --no-default-features)
 echo "  ✅ Rust 测试通过"
 echo ""
 
 echo "══════════════════════════════════════════════"
-echo "  全部测试通过 ✅  开始 push..."
+echo "  全部门禁通过 ✅  开始 push..."
 echo "══════════════════════════════════════════════"

@@ -13,7 +13,9 @@
     "prebuild": "node scripts/sync-version.mjs && node scripts/gen-changelog.mjs",
     "build": "tauri build",
     "updater:generate": "node scripts/generate-updater-json.mjs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "lint": "eslint .",
+    "lint:prune": "eslint . --prune-suppressions"
   },
   "dependencies": {
     "@formkit/auto-animate": "^0.10.0",
@@ -25,18 +27,26 @@
     "@tauri-apps/plugin-process": "^2",
     "@tauri-apps/plugin-updater": "^2",
     "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@tailwindcss/vite": "^4.0.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.6.0",
+    "typescript-eslint": "^8.69.0",
     "vite": "^6.0.0",
     "vitest": "^4.1.10"
   }

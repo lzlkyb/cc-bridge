@@ -278,9 +278,7 @@ async fn refresh_and_report_ip_change(
         Some(ip) => !ips.contains(ip),
         None => false,
     };
-    let running = state
-        .mcp_running
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
     if let Some(tray) = handle.tray_by_id("main-tray") {
         // tooltip：地址变化优先提示，否则显示运行状态
         let tip = if changed {
@@ -447,6 +445,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             gc_state.gc_path_locks();
                             gc_state.gc_cwd_sessions();
                             gc_state.gc_ssh_sessions();
+                            gc_state.gc_ssh_helpers();
                         }
                     })
                 });
@@ -970,6 +969,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_sftp_cancel,
             commands::ssh_sftp_mkdir,
             commands::ssh_sftp_remove,
+            // 拖拽上传：只读本机路径的元数据（分辨文件/目录），不读内容。
+            commands::local_path_info,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {

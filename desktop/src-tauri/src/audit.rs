@@ -701,7 +701,10 @@ mod tests {
         let body: String = (0..40)
             .map(|i| format!("{}\n", tail_line(&format!("tool{i:02}"), 1000)))
             .collect();
-        assert!(body.len() as u64 > TAIL_WINDOW * 4, "构造的文件必须远大于窗口");
+        assert!(
+            body.len() as u64 > TAIL_WINDOW * 4,
+            "构造的文件必须远大于窗口"
+        );
         std::fs::write(dir.join("audit.log"), body).expect("write");
 
         let got = read_recent_tail(&dir, 3).expect("tail");
@@ -724,7 +727,11 @@ mod tests {
 
         let got = read_recent_tail(&dir, 5).expect("tail");
         let tools: Vec<&str> = got.iter().map(|e| e.tool.as_str()).collect();
-        assert_eq!(tools, vec!["good2", "good1"], "半条 JSON 应被跳过，不影响其余");
+        assert_eq!(
+            tools,
+            vec!["good2", "good1"],
+            "半条 JSON 应被跳过，不影响其余"
+        );
         let _ = std::fs::remove_file(dir.join("audit.log"));
     }
 
@@ -767,7 +774,11 @@ mod tests {
             .collect();
         std::fs::write(dir.join("audit.log"), body).expect("write");
 
-        assert_eq!(read_recent_tail(&dir, 0).expect("n=0").len(), 1, "0 应 clamp 到 1");
+        assert_eq!(
+            read_recent_tail(&dir, 0).expect("n=0").len(),
+            1,
+            "0 应 clamp 到 1"
+        );
         assert_eq!(
             read_recent_tail(&dir, 9999).expect("n=9999").len(),
             20,

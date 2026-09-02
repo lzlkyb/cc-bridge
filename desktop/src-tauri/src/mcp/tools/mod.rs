@@ -76,7 +76,8 @@ mod schema_tests {
 
         let props = prop_names(&BatchArgs::schema());
         assert!(
-            props.contains(&"stopOnError".to_string()) && !props.contains(&"stop_on_error".to_string()),
+            props.contains(&"stopOnError".to_string())
+                && !props.contains(&"stop_on_error".to_string()),
             "batch 的 stopOnError 同样是 rename-在-default-之后，properties = {props:?}"
         );
     }

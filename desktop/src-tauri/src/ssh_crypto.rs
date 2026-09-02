@@ -134,7 +134,10 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("mkdir");
         let k1 = load_or_create_key(&dir).expect("首次生成");
         let k2 = load_or_create_key(&dir).expect("二次读回");
-        assert_eq!(k1, k2, "同一 data_dir 必须拿到同一把钥匙，否则旧密文全部解不开");
+        assert_eq!(
+            k1, k2,
+            "同一 data_dir 必须拿到同一把钥匙，否则旧密文全部解不开"
+        );
         assert!(
             !dir.join("ssh_key.bin.tmp").exists(),
             "原子落盘后不应残留临时文件"

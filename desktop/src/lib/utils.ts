@@ -286,3 +286,22 @@ export function formatBytes(bytes: number): string {
 export function formatBytesPerSec(bytesPerSec: number): string {
   return `${formatBytes(bytesPerSec)}/s`;
 }
+
+/**
+ * 清理 SFTP 报错里的 PTY 噪声：scp/ssh 在 PTY 下会输出 `\r` 进度条、ANSI 转义、
+ * 多余空行。剥掉后只留人类可读的错误（权限拒绝 / 路径不存在 / 连接失败等）。
+ */
+export function cleanErr(raw: unknown): string {
+  const s = String(raw ?? "");
+  return s
+    // eslint-disable-next-line no-control-regex -- 本函数的职责就是剥掉 PTY 的控制字符
+    .replace(/\[[0-9;]*m/g, "") // ANSI 颜色
+    // eslint-disable-next-line no-control-regex -- 同上：退格是 scp 进度条的刷新方式
+    .replace(/[\r]/g, "") // 回车 / 退格（进度条覆盖）
+    .split("\n")
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim().length > 0)
+    .slice(-6) // 只取末尾关键几行
+    .join("\n")
+    .trim();
+}

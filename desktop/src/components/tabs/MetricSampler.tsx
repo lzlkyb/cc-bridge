@@ -47,7 +47,7 @@ export function MetricSampler() {
     //
     // `dataUpdatedAt` 是每次 fetch 成功的时间戳，**数据相同也会更新**，
     // 正好把“每 5s 采一次”这个节拍归一回时间而不是变化。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [dataUpdatedAt]);
 
   return null;

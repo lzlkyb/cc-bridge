@@ -2,6 +2,12 @@ name: Build
 
 on:
   push:
+    # tag → 发版（build-macos / build-windows）；main → 只跑测试门禁。
+    #
+    # 为什么要加 main（2026-09-02）：之前只有 `pull_request` 会触发，而发版流程里
+    # `git push origin main` 是**直推**的（不走 PR）——于是真正入主线的那一次推送
+    # 反而没有任何 CI。下面各 job 的 `if:` 已经按“非 tag”分流，无需再改。
+    branches: [main]
     tags: ['v*']
   pull_request:
     branches: [main]
@@ -14,6 +20,44 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  # 前端门禁。为何需要它（2026-09-02）：CI 过去**完全没有前端检查**——
+  # 12 个测试文件 147 条用例只在本机 pre-push 钩子里跑，而钩子可以 `--no-verify` 绕过，
+  # 也不存在于别人的机器上。那些用例盖的恰恰是真机难复现的纯计算
+  # （终端行高回退、高 DPI 拖放命中判定、远程路径归一化）。
+  #
+  # 跑 ubuntu：纯 Node 工作，不需要 Rust/系统依赖，比 windows runner 快且便宜。
+  frontend:
+    name: Frontend (tsc + vitest + build)
+    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install frontend deps
+        run: npm ci
+        working-directory: desktop
+      - name: 组件体量门禁（行数 + 状态数）
+        run: node scripts/check-component-size.mjs
+        working-directory: desktop
+      # 存量违规记在 eslint-suppressions.json（棘轮，只许减少），新违规直接拦。
+      - name: eslint
+        run: npm run lint
+        working-directory: desktop
+      - name: tsc --noEmit
+        run: npx tsc --noEmit
+        working-directory: desktop
+      - name: vitest
+        run: npm test
+        working-directory: desktop
+      # vite:build 自带 tsc，上面单跑一次是为了让类型错误早一步、单独报出来。
+      - name: vite build
+        run: npm run vite:build
+        working-directory: desktop
+
   # 轻量测试：仅 PR / 非 tag 的 push / 手动触发时跑，保护合入质量（用 dev 编译，快）。
   # tag 发版时跳过本 job —— 由 build-windows 内的 `cargo test --release` 统一覆盖，
   # 避免 dev + release 两遍全量依赖编译（A 优化的核心）。

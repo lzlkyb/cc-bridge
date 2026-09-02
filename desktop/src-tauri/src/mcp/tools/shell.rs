@@ -166,7 +166,6 @@ fn detect_bash_exe_inner() -> Option<PathBuf> {
     None
 }
 
-
 /// 缓存探测结果。启动时首次 `get_status` 触发初始化，之后只读不扫磁盘。
 /// 用户安装 Git for Windows 后，通过设置页「刷新检测」按钮调用 `refresh_bash_detection()` 更新。
 static BASH_EXE: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -454,7 +453,10 @@ mod tests {
             normalize_cwd_from_shell("/Users/foo"),
             PathBuf::from("/Users/foo")
         );
-        assert_eq!(normalize_cwd_from_shell("  /tmp/x  "), PathBuf::from("/tmp/x"));
+        assert_eq!(
+            normalize_cwd_from_shell("  /tmp/x  "),
+            PathBuf::from("/tmp/x")
+        );
     }
 
     #[test]

@@ -5,10 +5,24 @@ import type { SshConnection } from "../../lib/types";
 export interface SshSessionRef {
   sessionId: string;
   conn: SshConnection;
+  /**
+   * 断开原因；null = 还连着。
+   *
+   * 断开后会话**不从数组里移除**：终端保留为只读态，历史输出仍可滚可选可复制，
+   * 并提供「重新连接」。这也让误点 × 不再是不可逆的事故。
+   */
+  closedReason: string | null;
 }
 
 interface ConnectionListItemProps {
   conn: SshConnection;
+  /**
+   * 跳板机名称；undefined = 直连。
+   *
+   * 为什么值得占一个胶囊：连接失败时用户第一件要知道的事就是
+   * 「这条到底是不是走跳板的」——否则会拿目标机的参数去排跳板机的故障。
+   */
+  jumpName?: string;
   /** 该连接当前是否有打开的会话（有则显示「断开」，否则显示「连接」）。 */
   session: SshSessionRef | undefined;
   isActive: boolean;
@@ -29,6 +43,7 @@ interface ConnectionListItemProps {
  */
 export function ConnectionListItem({
   conn,
+  jumpName,
   session,
   isActive,
   connecting,
@@ -52,7 +67,7 @@ export function ConnectionListItem({
       <div className="flex items-center gap-2">
         <span
           className={`h-2 w-2 shrink-0 rounded-full ${
-            isActive
+            isActive && !session?.closedReason
               ? "bg-green-500"
               : connecting
                 ? "animate-pulse bg-muted-foreground/40"
@@ -60,6 +75,14 @@ export function ConnectionListItem({
           }`}
         />
         <span className="truncate text-sm font-medium">{conn.name || conn.host}</span>
+        {jumpName && (
+          <span
+            title={`经跳板机「${jumpName}」中转`}
+            className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-[9.5px] font-bold text-primary"
+          >
+            经 {jumpName}
+          </span>
+        )}
         {connecting && (
           <span className="text-[10px] text-muted-foreground">连接中…</span>
         )}
@@ -69,7 +92,7 @@ export function ConnectionListItem({
         {conn.username}@{conn.host}:{conn.port}
       </div>
       <div className="mt-2 flex items-center gap-1 pl-4">
-        {session ? (
+        {session && !session.closedReason ? (
           <button
             type="button"
             onClick={() => onDisconnect(session.sessionId)}
@@ -97,9 +120,11 @@ export function ConnectionListItem({
         )}
         <button
           type="button"
-          disabled={!session}
-          title={session ? "管理该连接的远程文件" : "请先连接后再管理文件"}
-          onClick={() => session && onOpenFiles(conn)}
+          disabled={!session || !!session.closedReason}
+          title={
+            session && !session.closedReason ? "管理该连接的远程文件" : "请先连接后再管理文件"
+          }
+          onClick={() => session && !session.closedReason && onOpenFiles(conn)}
           className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Icon name="folder" size={12} /> 文件
@@ -146,52 +171,68 @@ interface TerminalTabsBarProps {
   sessions: SshSessionRef[];
   activeId: string | null;
   onActivate: (sessionId: string) => void;
+  /** 已连接的会话点 ×：断开（但保留标签）。 */
   onDisconnect: (sessionId: string) => void;
+  /** 已断开的会话点 ×：真正移除标签。 */
+  onCloseTab: (sessionId: string) => void;
 }
 
 /**
- * 终端标签栏：多会话时顶部横向标签，点切换、点 × 断开。
+ * 终端标签栏：多会话时顶部横向标签。
+ *
+ * × 的语义分两档：**已连接 → 断开（标签保留）；已断开 → 关闭标签**。
+ * 这个 11px 的 × 本来是一点就断、无确认；现在第一下只是进入可重连的断开态，
+ * 误点不再丢历史输出——比加二次确认好，不多一步点击。
  */
 export function TerminalTabsBar({
   sessions,
   activeId,
   onActivate,
   onDisconnect,
+  onCloseTab,
 }: TerminalTabsBarProps) {
   return (
     <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border bg-card px-2 py-1.5">
-      {sessions.map((s) => (
-        <div
-          key={s.sessionId}
-          className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ${
-            s.sessionId === activeId
-              ? "bg-primary/10 text-foreground"
-              : "text-muted-foreground hover:bg-muted"
-          }`}
-        >
-          <button
-            type="button"
-            onClick={() => onActivate(s.sessionId)}
-            className="flex items-center gap-1.5"
+      {sessions.map((s) => {
+        const closed = !!s.closedReason;
+        const active = s.sessionId === activeId;
+        return (
+          <div
+            key={s.sessionId}
+            className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ${
+              active ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-muted"
+            }`}
           >
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${
-                s.sessionId === activeId ? "bg-green-500" : "bg-muted-foreground/40"
-              }`}
-            />
-            {s.conn.name || s.conn.host}
-            {s.conn.authType === "key" && <span>🔑</span>}
-          </button>
-          <button
-            type="button"
-            onClick={() => onDisconnect(s.sessionId)}
-            className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-            title="断开"
-          >
-            <Icon name="close" size={11} />
-          </button>
-        </div>
-      ))}
+            <button
+              type="button"
+              onClick={() => onActivate(s.sessionId)}
+              className="flex items-center gap-1.5"
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  closed
+                    ? "bg-destructive/60"
+                    : active
+                      ? "bg-green-500"
+                      : "bg-muted-foreground/40"
+                }`}
+              />
+              <span className={closed ? "line-through opacity-70" : undefined}>
+                {s.conn.name || s.conn.host}
+              </span>
+              {s.conn.authType === "key" && <span>🔑</span>}
+            </button>
+            <button
+              type="button"
+              onClick={() => (closed ? onCloseTab(s.sessionId) : onDisconnect(s.sessionId))}
+              className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              title={closed ? "关闭标签" : "断开（标签保留，可重连）"}
+            >
+              <Icon name="close" size={11} />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

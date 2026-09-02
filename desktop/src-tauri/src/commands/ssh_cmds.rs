@@ -13,7 +13,7 @@
 
 use std::io::Read;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -24,6 +24,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::config::SshConnection;
+use crate::ssh_helper::HelperSession;
+use crate::ssh_proxy::PendingCreds;
 use crate::state::AppState;
 
 /// 一次终端输出增量（reader 线程持续推送）。
@@ -175,9 +177,70 @@ fn resolve_secrets(
     }
 }
 
+/// 解析「目标 + 可选跳板」两段的凭据，合成一个派发器。
+///
+/// 跳板机的凭据来自**被引用那条连接自己**的加密存储，不新增任何落盘面。
+fn resolve_link_secrets(
+    link: &SshLink,
+    data_dir: &std::path::Path,
+) -> Result<PendingCreds, String> {
+    let (pw, pp) = resolve_secrets(&link.conn, data_dir)?;
+    let mut creds = PendingCreds::direct(&link.conn, pw, pp);
+    if let Some(j) = &link.jump {
+        let (jpw, jpp) = resolve_secrets(j, data_dir)?;
+        creds = creds.with_jump(j, jpw, jpp);
+    }
+    Ok(creds)
+}
+
+/// 一次操作的完整目标：目标连接 + 可选跳板机。
+///
+/// 把两者绑在一起传，而不是给 `ssh_base_args` / `run_scp` / `spawn_capture` 一路
+/// 都加一个 `Option<&SshConnection>` 参数——后者一旦在某个调用点忘了传，表现是
+/// **静默地走直连**（连不上，且从报错里看不出为什么）。
+struct SshLink {
+    conn: SshConnection,
+    jump: Option<SshConnection>,
+    /// 已拼好的 `-o ProxyCommand=` 的值；None = 直连。
+    ///
+    /// 建连接时就拼好而不是每次用到再拼：拼接会因为非法字符失败，失败必须
+    /// 在一开始就报出来，而不是埋在某一条传输路径里。
+    proxy: Option<String>,
+}
+
+impl SshLink {
+    fn new(conn: SshConnection, jump: Option<SshConnection>) -> Result<Self, String> {
+        let proxy = match &jump {
+            None => None,
+            Some(j) => {
+                // ProxyCommand 里跑的是 **ssh**（即使外层是 scp），所以这里取的是 ssh 路径。
+                let ssh = find_ssh()
+                    .ok_or_else(|| "未检测到系统 OpenSSH 客户端，无法经跳板机连接".to_string())?;
+                Some(crate::ssh_proxy::proxy_command_value(&ssh, j)?)
+            }
+        };
+        Ok(Self { conn, jump, proxy })
+    }
+
+    /// 直连（无跳板）。仅测试用：生产路径上的连接一律经 `fetch_link` 构造，
+    /// 那里会一并解析跳板机——给生产代码留一个「能绕过跳板解析」的构造器反而是陷阱。
+    #[cfg(test)]
+    fn direct(conn: SshConnection) -> Self {
+        Self {
+            conn,
+            jump: None,
+            proxy: None,
+        }
+    }
+}
+
 /// 拼 ssh/scp 通用连接选项。`port_flag` 区分 ssh 的 `-p` 与 scp 的 `-P`。
 /// 密钥认证时追加 `-i <key_path>`（仅当路径非空）。
-fn ssh_base_args(conn: &SshConnection, port_flag: &str) -> Vec<String> {
+///
+/// 无跳板时（`link.proxy == None`）输出与加跳板机功能之前**逐字节一致**，
+/// 老连接零影响（见本文件底部的 `direct_args_unchanged_by_proxy_support` 用例）。
+fn ssh_base_args(link: &SshLink, port_flag: &str) -> Vec<String> {
+    let conn = &link.conn;
     let mut v = vec![
         "-o".into(),
         "ServerAliveInterval=30".into(),
@@ -188,6 +251,10 @@ fn ssh_base_args(conn: &SshConnection, port_flag: &str) -> Vec<String> {
         port_flag.into(),
         conn.port.to_string(),
     ];
+    if let Some(p) = &link.proxy {
+        v.push("-o".into());
+        v.push(format!("ProxyCommand={p}"));
+    }
     if conn.auth_type == "key" && !conn.key_path.is_empty() {
         v.push("-i".into());
         v.push(conn.key_path.clone());
@@ -291,7 +358,7 @@ fn scp_endpoint(conn: &SshConnection, remote: &str, quote_for_shell: bool) -> St
 /// 一次 scp 传输的目标描述。把 remote/local/方向收成一体，
 /// 免得 `run_scp` 参数表膨胀到 clippy 都看不下去（too_many_arguments）。
 struct ScpJob<'a> {
-    conn: &'a SshConnection,
+    link: &'a SshLink,
     remote: &'a str,
     local: &'a str,
     /// true = 本机→远端，false = 远端→本机。
@@ -310,8 +377,7 @@ struct ScpJob<'a> {
 fn run_scp(
     scp: &PathBuf,
     job: ScpJob<'_>,
-    pw: Option<String>,
-    pp: Option<String>,
+    creds: PendingCreds,
     hooks: TransferHooks,
 ) -> Result<(), String> {
     const SCP_TIMEOUT: Duration = Duration::from_secs(600);
@@ -320,8 +386,8 @@ fn run_scp(
         if sftp_mode {
             a.push("-s".into());
         }
-        a.extend(ssh_base_args(job.conn, "-P"));
-        let endpoint = scp_endpoint(job.conn, job.remote, !sftp_mode);
+        a.extend(ssh_base_args(job.link, "-P"));
+        let endpoint = scp_endpoint(&job.link.conn, job.remote, !sftp_mode);
         if job.upload {
             a.push(job.local.to_string());
             a.push(endpoint);
@@ -333,21 +399,39 @@ fn run_scp(
     };
 
     if scp_supports_sftp_protocol(scp) {
-        match spawn_capture(
-            scp,
-            &build(true),
-            pw.clone(),
-            pp.clone(),
-            SCP_TIMEOUT,
-            hooks.clone(),
-        ) {
+        match spawn_capture(scp, &build(true), creds.clone(), SCP_TIMEOUT, hooks.clone()) {
             Ok(_) => return Ok(()),
             // 探测说支持却仍报未知选项：探测判错了，退回遗留协议再试一次。
             Err(e) if is_unknown_option_err(&e) => {}
             Err(e) => return Err(e),
         }
     }
-    spawn_capture(scp, &build(false), pw, pp, SCP_TIMEOUT, hooks).map(|_| ())
+    spawn_capture(scp, &build(false), creds, SCP_TIMEOUT, hooks).map(|_| ())
+}
+
+/// 列目录命令（GNU coreutils）。
+///
+/// - `--time-style=+%s`：把 mtime 输出成 epoch 秒，便于排序。macOS/BSD 的 `ls`
+///   不支持该选项（报 `illegal option`），调用方命中后退到 `bsd_ls_cmd`。
+/// - 🔴 `--quoting-style=literal`：**不能省**。helper 会话用 `-tt` 给了远端一个 tty，
+///   而 coreutils 在 isatty(stdout) 时默认用 shell-escape 引用——`my report.txt`
+///   会变成 `'my report.txt'`（带单引号），`parse_ls` 拿到的名字就多了一对引号，
+///   前端据此拼出的远程路径全部报「No such file」（下载/删除/进目录）。
+///   旧的一次性路径不带 `-t`、stdout 是管道，所以不会引用——开了 helper 才露出来，
+///   且恰好打掉了“带空格文件名传不了”那个修复。（已在 coreutils 8.32 实测）
+fn gnu_ls_cmd(path: &str) -> String {
+    format!(
+        "ls -la --time-style=+%s --quoting-style=literal {}",
+        shell_quote(path)
+    )
+}
+
+/// 列目录命令（BSD/macOS 降级路径）。
+///
+/// BSD `ls` 没有 `--quoting-style`（给了会直接报错），也不像 coreutils 那样
+/// 在 tty 下自动加引号，所以这边保持裸 `ls -la`。mtime 解析不到（前端显示「未知」）。
+fn bsd_ls_cmd(path: &str) -> String {
+    format!("ls -la {}", shell_quote(path))
 }
 
 /// 把路径包成单引号并转义内部单引号，避免远程命令注入。
@@ -542,16 +626,143 @@ fn collapse_progress(buf: &mut String) {
     }
 }
 
+/// 列目录 / 建目录 / 删除这类「请求-响应」操作的超时。
+///
+/// 本机 OpenSSH 不支持连接复用（无 ControlMaster），**每一次这类操作都是一次完整的
+/// TCP + 认证握手**，慢链路上本来就要好几秒，所以给得比直觉宽。
+const SSH_ONESHOT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// helper 建立失败后的冷却期。
+///
+/// 服务器禁 shell / 没有 /bin/sh 时 helper 永远建不起来，而失败不记的话
+/// 每一次列目录/建目录/删除都要先白费一次完整的 TCP+认证握手。
+/// 取 60 秒而不是永久：服务器配置可能被改好，不应该要重启应用才能重试。
+const HELPER_BLOCK_TTL: Duration = Duration::from_secs(60);
+
+/// 在阻塞线程池里跑一次 `spawn_capture`。
+///
+/// 🔴 `spawn_capture` 是**同步阻塞**的（等子进程退出 + 读到 EOF），而 tauri 的
+/// `#[command] async fn` 跑在 tokio 的 worker 上。直接调等于把一个 worker 钉住最长 30 秒；
+/// worker 被占满时，其它命令（包括**每敲一个字符都要走的 `ssh_input`**）会一起排队，
+/// 表现就是「界面卡住 / 一直加载中」。
+///
+/// 传输路径（get/put）已经改用 spawn_blocking，列目录/建目录/删除当时漏了。
+async fn spawn_capture_off_runtime(
+    program: PathBuf,
+    args: Vec<String>,
+    creds: PendingCreds,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        spawn_capture(
+            &program,
+            &args,
+            creds,
+            SSH_ONESHOT_TIMEOUT,
+            TransferHooks::default(),
+        )
+    })
+    .await
+    .map_err(|e| format!("任务调度失败：{e}"))?
+}
+
+/// 在该连接的**常驻 helper 会话**上跑一条命令，返回（输出, 退出码）。
+///
+/// 这是列目录/建目录/删除的**快路径**：本机 OpenSSH 没有 ControlMaster，
+/// 不复用的话每次都是一次完整的 TCP + 认证握手。
+///
+/// **任何失败都返回 Err，调用方必须退回一次性握手路径**（服务器禁 shell、
+/// MaxSessions 满、远端没有 /bin/sh 都会让 helper 起不来）。helper 一旦出错就拆掉重建。
+async fn run_via_helper(
+    state: &Arc<AppState>,
+    link: &SshLink,
+    ssh_path: &Path,
+    creds: PendingCreds,
+    cmd: String,
+) -> Result<(String, i32), String> {
+    let conn = &link.conn;
+    let key = conn.id.clone();
+    // 负缓存：上次起不来且还在冷却期内就直接失败，让调用方走一次性路径。
+    if let Some(t) = state.ssh_helper_blocked.get(&key) {
+        if t.elapsed() < HELPER_BLOCK_TTL {
+            return Err("helper 会话近期建立失败，暂不重试".into());
+        }
+    }
+    // 只取走 Arc 就立即放掉 DashMap 的 Ref：绝不能持着 shard 锁进 await。
+    let existing = state.ssh_helpers.get(&key).map(|e| e.value().clone());
+    let sess = match existing {
+        Some(s) => s,
+        None => {
+            // to_path_buf 而不是 clone：`&Path` 上的 clone 克隆的是**引用**，
+            // 拿进 'static 的 spawn_blocking 闭包会借用逸出。
+            let ssh = ssh_path.to_path_buf();
+            let args = ssh_base_args(link, "-p");
+            let target = format!("{}@{}", conn.username, conn.host);
+            let created = tokio::task::spawn_blocking(move || {
+                HelperSession::open(
+                    &ssh,
+                    &args,
+                    &target,
+                    creds,
+                    |s| password_prompt_in(s.as_bytes()),
+                    |s| passphrase_prompt_in(s.as_bytes()),
+                )
+            })
+            .await
+            .map_err(|e| format!("任务调度失败：{e}"))?;
+            let created = match created {
+                Ok(c) => c,
+                Err(e) => {
+                    // 记下失败，冷却期内不再试（见 `ssh_helper_blocked`）。
+                    state.ssh_helper_blocked.insert(key.clone(), Instant::now());
+                    return Err(e);
+                }
+            };
+            let arc = Arc::new(StdMutex::new(created));
+            // 🔴 `get` 与插入之间有 `.await`，所以两个并发调用（例如面板刷新与
+            // 拖拽上传的同名检查同时发生）都会拿到 None，各自建一条登录。
+            // 用 `or_insert_with` 原子定胜负；落败的那条靠 `HelperSession` 的 Drop 关掉，
+            // 否则它会永远占着服务器的 MaxSessions（默认只有 10）——而那正是本模块
+            // 极力节省的东西。本段不跨 await，持 Ref 是安全的。
+            let winner = state
+                .ssh_helpers
+                .entry(key.clone())
+                .or_insert_with(|| arc.clone())
+                .value()
+                .clone();
+            state.ssh_helper_blocked.remove(&key);
+            winner
+        }
+    };
+
+    let running = sess.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        let mut h = running
+            .lock()
+            .map_err(|_| "helper 会话锁中毒".to_string())?;
+        h.run(&cmd)
+    })
+    .await
+    .map_err(|e| format!("任务调度失败：{e}"))?;
+
+    // 跑坏了（超时/已退出/写失败）就拆掉，下次重建；本次交给调用方回退。
+    if res.is_err() {
+        state.drop_ssh_helper(&key);
+    }
+    res
+}
+
 /// 在 PTY 里跑一次性命令（ssh 远程命令 / scp 传输），捕获全部输出并自动填充
 /// 密码/密码短语，等待进程退出（带超时），返回捕获到的输出字符串。
 ///
 /// 与交互终端 `ssh_connect` 共用「PTY + 凭据自动填充」机制，但输出不推屏、而是
 /// 收集成字符串返回，便于 SFTP 这类「请求-响应」操作做结构化解析。
+///
+/// 注意它是**同步阻塞**的：在 `#[command] async fn` 里要走 `spawn_capture_off_runtime`，
+/// 不要直接调。
 fn spawn_capture(
     program: &PathBuf,
     args: &[String],
-    auto_password: Option<String>,
-    auto_passphrase: Option<String>,
+    auto_creds: PendingCreds,
     timeout: Duration,
     hooks: TransferHooks,
 ) -> Result<String, String> {
@@ -594,8 +805,7 @@ fn spawn_capture(
     let (prompt_tx, prompt_rx) = mpsc::channel::<()>();
     let reader_handle = std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        let mut pending_pw = auto_password;
-        let mut pending_pp = auto_passphrase;
+        let mut creds = auto_creds;
         let mut last_percent: Option<u8> = None;
         // 认证窗口：过期即丢弃待填凭据，不再对任何输出反应（见 CREDENTIAL_FILL_WINDOW）。
         let fill_deadline = Instant::now() + CREDENTIAL_FILL_WINDOW;
@@ -627,30 +837,26 @@ fn spawn_capture(
                     }
                     // 窗口关闭：立即丢弃明文，不让它在内存里挂着，也不再可能被误触。
                     if Instant::now() >= fill_deadline {
-                        pending_pw = None;
-                        pending_pp = None;
+                        creds.clear();
                     }
-                    if let Some(pw) = pending_pw.take() {
-                        if password_prompt_in(chunk) {
+                    // 提示未到就什么都不做，继续等（受上面的时间窗约束）。
+                    // 哪一个槽该答这个提示交给 `PendingCreds`：走跳板机时一次连接有
+                    // **两段登录**，把目标机密码填给跳板机提示是一个真实的泄露。
+                    if creds.has_any() {
+                        let text = String::from_utf8_lossy(chunk);
+                        let filled = if password_prompt_in(chunk) {
+                            creds.take_password(&text)
+                        } else if passphrase_prompt_in(chunk) {
+                            creds.take_passphrase(&text)
+                        } else {
+                            None
+                        };
+                        if let Some(secret) = filled {
                             if let Ok(mut w) = master.take_writer() {
-                                let _ = w.write_all(pw.as_bytes());
+                                let _ = w.write_all(secret.as_bytes());
                                 let _ = w.write_all(b"\n");
                                 let _ = w.flush();
                             }
-                        } else {
-                            // 提示还没来，继续等（受上面的时间窗约束）。
-                            pending_pw = Some(pw);
-                        }
-                    }
-                    if let Some(pp) = pending_pp.take() {
-                        if passphrase_prompt_in(chunk) {
-                            if let Ok(mut w) = master.take_writer() {
-                                let _ = w.write_all(pp.as_bytes());
-                                let _ = w.write_all(b"\n");
-                                let _ = w.flush();
-                            }
-                        } else {
-                            pending_pp = Some(pp);
                         }
                     }
                 }
@@ -686,8 +892,7 @@ fn spawn_capture(
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    let _ =
-                        done_tx.send(Err("操作超时（网络不通或远程无响应），请重试".into()));
+                    let _ = done_tx.send(Err("操作超时（网络不通或远程无响应），请重试".into()));
                     return;
                 }
             }
@@ -781,6 +986,26 @@ pub async fn ssh_save_connection(
     if conn.id.trim().is_empty() {
         conn.id = uuid::Uuid::new_v4().to_string();
     }
+    // 跳板机校验。前端的下拉已经置灰了这些项，这里再守一层：
+    // 配置也可以从导入文件进来，绕过 UI。
+    if !conn.proxy_jump_id.is_empty() {
+        if conn.proxy_jump_id == conn.id {
+            return Err("不能把连接自己当作跳板机".into());
+        }
+        let config = state.config.read().await;
+        let jump = config
+            .ssh_connections
+            .iter()
+            .find(|c| c.id == conn.proxy_jump_id)
+            .ok_or_else(|| "选中的跳板机连接不存在，请重新选择".to_string())?;
+        // 只支持一跳：规则一句话说得清，也就不必做 A→B→A 的环检测。
+        if !jump.proxy_jump_id.is_empty() {
+            return Err(format!(
+                "跳板机「{}」自身也配了跳板机，目前只支持一跳",
+                jump.name
+            ));
+        }
+    }
     // 密码字段（仅密码认证有意义）。密钥认证时清掉遗留的密码密文。
     if conn.auth_type != "key" {
         if conn.remember_password {
@@ -843,6 +1068,11 @@ pub async fn ssh_save_connection(
         "ssh_connections",
         &serde_json::to_value(&config.ssh_connections).unwrap(),
     )?;
+    // 🔴 必须拆掉旧 helper：它以 connection_id 为 key、空闲 TTL 300 秒，而里面钉的是
+    // **修改前**的主机/用户/端口/跳板。不拆的后果：把 host 从 10.0.1.5 改成 10.0.1.9
+    // 并保存，5 分钟内再开文件面板，列目录/建目录/**删除**全部走缓存的旧会话——
+    // `rm -rf` 会执行在**旧主机**上。删除连接的路径当时加了，保存这条漏了。
+    state.drop_ssh_helper(&conn.id);
     Ok(conn)
 }
 
@@ -854,6 +1084,21 @@ pub async fn ssh_delete_connection(
 ) -> Result<(), String> {
     let db = state.db.lock().await;
     let mut config = state.config.write().await;
+    // 先扫引用：删掉一个被当作跳板机的连接，会让引用方**下次连接才报错**。
+    // 宁可在这里拦住并把受影响的名字列出来，也不静默地拆掉别人的链路。
+    let refs: Vec<String> = config
+        .ssh_connections
+        .iter()
+        .filter(|c| c.id != id && c.proxy_jump_id == id)
+        .map(|c| c.name.clone())
+        .collect();
+    if !refs.is_empty() {
+        return Err(format!(
+            "还有 {} 条连接以它为跳板机（{}），请先把它们改成其它跳板机或直连",
+            refs.len(),
+            refs.join("、")
+        ));
+    }
     let before = config.ssh_connections.len();
     config.ssh_connections.retain(|c| c.id != id);
     if config.ssh_connections.len() == before {
@@ -864,6 +1109,8 @@ pub async fn ssh_delete_connection(
         "ssh_connections",
         &serde_json::to_value(&config.ssh_connections).unwrap(),
     )?;
+    // 连接都删了，它的 SFTP helper 会话没必要再占着服务器的 MaxSessions。
+    state.drop_ssh_helper(&id);
     Ok(())
 }
 
@@ -883,16 +1130,9 @@ pub async fn ssh_connect(
         return Err("SSH 终端未启用，请先在设置中开启".into());
     }
 
-    // 2) 取连接配置。
-    let conn = {
-        let config = state.config.read().await;
-        config
-            .ssh_connections
-            .iter()
-            .find(|c| c.id == args.connection_id)
-            .cloned()
-            .ok_or_else(|| format!("未找到 SSH 连接：{}", args.connection_id))?
-    };
+    // 2) 取连接配置 + 解析跳板机。
+    let link = fetch_link(&state, &args.connection_id).await?;
+    let conn = link.conn.clone();
 
     // 3) 解析 ssh 路径（理论上前端已用 ssh_check 拦过，这里再守一层）。
     let ssh_path = find_ssh().ok_or_else(|| {
@@ -901,7 +1141,7 @@ pub async fn ssh_connect(
     })?;
 
     // 4) 凭据解析：密码 / 密码短语（仅此刻在内存出现明文，用过即丢）。
-    let (auto_password, auto_passphrase) = resolve_secrets(&conn, &state.data_dir)?;
+    let auto_creds = resolve_link_secrets(&link, &state.data_dir)?;
 
     // 5) 开 PTY 跑 ssh。
     let pty_system = native_pty_system();
@@ -916,7 +1156,7 @@ pub async fn ssh_connect(
         .map_err(|e| format!("打开 PTY 失败：{e}"))?;
 
     let mut cmd = CommandBuilder::new(&ssh_path);
-    for a in ssh_base_args(&conn, "-p") {
+    for a in ssh_base_args(&link, "-p") {
         cmd.arg(a);
     }
     cmd.arg(format!("{}@{}", conn.username, conn.host));
@@ -969,8 +1209,7 @@ pub async fn ssh_connect(
     let spawn_time = Instant::now();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        let mut pending_pw = auto_password;
-        let mut pending_pp = auto_passphrase;
+        let mut creds = auto_creds;
         // 认证窗口：过期即丢弃待填凭据。密钥认证成功时密码提示永远不会到来，
         // 没有这道线密码就会在已登录的 shell 里继续待命（见 CREDENTIAL_FILL_WINDOW）。
         let fill_deadline = Instant::now() + CREDENTIAL_FILL_WINDOW;
@@ -988,36 +1227,28 @@ pub async fn ssh_connect(
                     );
                     // 窗口关闭：立即丢弃明文，不让它在内存里挂着，也不再可能被误触。
                     if Instant::now() >= fill_deadline {
-                        pending_pw = None;
-                        pending_pp = None;
+                        creds.clear();
                     }
-                    // 密码自动填充：本块是真正的密码提示且还有待填密码，则写密码 + 回车。
-                    if let Some(pw) = pending_pw.take() {
-                        if password_prompt_in(chunk) {
+                    // 凭据自动填充：提示未到就什么都不做，继续等（受上面的时间窗约束）。
+                    // 哪一个槽该答这个提示交给 `PendingCreds`：走跳板机时一次连接有
+                    // **两段登录**，把目标机密码填给跳板机提示是一个真实的泄露。
+                    if creds.has_any() {
+                        let text = String::from_utf8_lossy(chunk);
+                        let filled = if password_prompt_in(chunk) {
+                            creds.take_password(&text)
+                        } else if passphrase_prompt_in(chunk) {
+                            creds.take_passphrase(&text)
+                        } else {
+                            None
+                        };
+                        if let Some(secret) = filled {
                             if let Some(entry) = app_state.ssh_sessions.get(&sid) {
                                 if let Ok(mut w) = entry.writer.lock() {
-                                    let _ = w.write_all(pw.as_bytes());
+                                    let _ = w.write_all(secret.as_bytes());
                                     let _ = w.write_all(b"\n");
                                     let _ = w.flush();
                                 }
                             }
-                        } else {
-                            // 提示还没来，继续等（受上面的时间窗约束）。
-                            pending_pw = Some(pw);
-                        }
-                    }
-                    // 密钥密码短语自动填充（key 认证 + 记住密码短语时）。
-                    if let Some(pp) = pending_pp.take() {
-                        if passphrase_prompt_in(chunk) {
-                            if let Some(entry) = app_state.ssh_sessions.get(&sid) {
-                                if let Ok(mut w) = entry.writer.lock() {
-                                    let _ = w.write_all(pp.as_bytes());
-                                    let _ = w.write_all(b"\n");
-                                    let _ = w.flush();
-                                }
-                            }
-                        } else {
-                            pending_pp = Some(pp);
                         }
                     }
                 }
@@ -1040,7 +1271,10 @@ pub async fn ssh_connect(
                 },
             );
             #[cfg(debug_assertions)]
-            eprintln!("[SSH] 连接早期失败 session={}（ssh 进程在宽限期内退出）", &sid[..8.min(sid.len())]);
+            eprintln!(
+                "[SSH] 连接早期失败 session={}（ssh 进程在宽限期内退出）",
+                &sid[..8.min(sid.len())]
+            );
         } else {
             let _ = app2.emit(
                 "ssh_closed",
@@ -1178,14 +1412,36 @@ pub async fn ssh_disconnect(
 // 走「ssh 跑远程命令 / scp 传文件」+ PTY 凭据自动填充（与交互终端同一套机制），
 // 只是把输出捕获成结构化结果而非流式推屏。安全闸同 `ssh_enabled`。
 
-/// 取连接配置（按 id），找不到报错。改为 async 读，避免在 tokio worker 上阻塞。
-async fn fetch_conn(state: &State<'_, Arc<AppState>>, id: &str) -> Result<SshConnection, String> {
-    let c = state.config.read().await;
-    c.ssh_connections
-        .iter()
-        .find(|x| x.id == id)
-        .cloned()
-        .ok_or_else(|| format!("未找到 SSH 连接：{id}"))
+/// 取连接配置（按 id）+ 解析它的跳板机，找不到报错。
+/// 改为 async 读，避免在 tokio worker 上阻塞。
+///
+/// 跳板机缺失时给的是**能照着做的错误**，而不是默默退回直连（那会表现成
+/// 一句看不懂的超时），也不是让 ssh 带着一个空主机去报原始错误。
+async fn fetch_link(state: &State<'_, Arc<AppState>>, id: &str) -> Result<SshLink, String> {
+    let (conn, jump) = {
+        let c = state.config.read().await;
+        let conn = c
+            .ssh_connections
+            .iter()
+            .find(|x| x.id == id)
+            .cloned()
+            .ok_or_else(|| format!("未找到 SSH 连接：{id}"))?;
+        let jump = if conn.proxy_jump_id.is_empty() {
+            None
+        } else {
+            Some(
+                c.ssh_connections
+                    .iter()
+                    .find(|x| x.id == conn.proxy_jump_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!("连接「{}」的跳板机已不存在，请在编辑里重新指定", conn.name)
+                    })?,
+            )
+        };
+        (conn, jump)
+    };
+    SshLink::new(conn, jump)
 }
 
 /// 列出远程目录内容。
@@ -1198,27 +1454,44 @@ pub async fn ssh_sftp_list(
     if !state.config.read().await.ssh_enabled {
         return Err("SSH 终端未启用".into());
     }
-    let conn = fetch_conn(&state, &connection_id).await?;
+    let link = fetch_link(&state, &connection_id).await?;
+    let conn = &link.conn;
     let ssh_path =
         find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端，无法列目录".to_string())?;
-    let (pw, pp) = resolve_secrets(&conn, &state.data_dir)?;
-    let mut args = ssh_base_args(&conn, "-p");
+    let creds = resolve_link_secrets(&link, &state.data_dir)?;
+    let mut args = ssh_base_args(&link, "-p");
     args.push(format!("{}@{}", conn.username, conn.host));
-    // GNU coreutils 支持 `--time-style=+%s`（把 mtime 输出成 epoch 秒，便于排序）；
-    // macOS/BSD 的 `ls` 不支持该选项（会报 `illegal option`），此时退化为默认
-    // `ls -la`，mtime 解析不到（前端显示「未知」）。先试 GNU，命中报错再退化。
-    let gnu_cmd = format!("ls -la --time-style=+%s {}", shell_quote(&path));
-    let bsd_cmd = format!("ls -la {}", shell_quote(&path));
+    let gnu_cmd = gnu_ls_cmd(&path);
+    let bsd_cmd = bsd_ls_cmd(&path);
+    // 快路径：在常驻 helper 会话上跑，零握手。helper 不可用则落到下面的旧路径。
+    //
+    // 注意：只要 helper **拿到了响应**（哪怕退出码非 0）就不再走旧路径——
+    // 目录不存在这类真实错误重跑一遍只是白垃一次握手，结果一样。
+    if let Ok((out, code)) =
+        run_via_helper(&state, &link, &ssh_path, creds.clone(), gnu_cmd.clone()).await
+    {
+        if code == 0 {
+            return parse_ls(&out, true);
+        }
+        if is_unknown_option_err(&out) {
+            // BSD/macOS 的 ls 不认 --time-style，降级重跑（仍在同一条 helper 上）。
+            if let Ok((out2, code2)) =
+                run_via_helper(&state, &link, &ssh_path, creds.clone(), bsd_cmd.clone()).await
+            {
+                return if code2 == 0 {
+                    parse_ls(&out2, false)
+                } else {
+                    Err(out2.trim().to_string())
+                };
+            }
+        } else {
+            return Err(out.trim().to_string());
+        }
+    }
+
     let mut args_gnu = args.clone();
     args_gnu.push(gnu_cmd);
-    let gnu_res = spawn_capture(
-        &ssh_path,
-        &args_gnu,
-        pw.clone(),
-        pp.clone(),
-        Duration::from_secs(30),
-        TransferHooks::default(),
-    );
+    let gnu_res = spawn_capture_off_runtime(ssh_path.clone(), args_gnu, creds.clone()).await;
     // 🔴 失败分支也得看。BSD/macOS 的 `ls` 拒绝 `--time-style` 时是以**非零码退出**，
     // `spawn_capture` 因此返回 Err。原实现写的是 `spawn_capture(..)?` 再去看 Ok 分支的
     // 输出，于是降级路径**永远走不到**——远端是 macOS/BSD 时列目录直接报错。
@@ -1232,14 +1505,7 @@ pub async fn ssh_sftp_list(
     }
     let mut args_bsd = args;
     args_bsd.push(bsd_cmd);
-    let out2 = spawn_capture(
-        &ssh_path,
-        &args_bsd,
-        pw,
-        pp,
-        Duration::from_secs(30),
-        TransferHooks::default(),
-    )?;
+    let out2 = spawn_capture_off_runtime(ssh_path, args_bsd, creds).await?;
     parse_ls(&out2, false)
 }
 
@@ -1263,11 +1529,11 @@ pub async fn ssh_sftp_get(
     if !overwrite && std::path::Path::new(&local).exists() {
         return Err(format!("{ERR_TARGET_EXISTS}: 本机已存在同名文件：{local}"));
     }
-    let conn = fetch_conn(&state, &connection_id).await?;
+    let link = fetch_link(&state, &connection_id).await?;
     let _ = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let scp_path =
         find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
-    let (pw, pp) = resolve_secrets(&conn, &state.data_dir)?;
+    let creds = resolve_link_secrets(&link, &state.data_dir)?;
 
     // 🔴 先下到临时名，成功再 rename。这样**取消或失败永远不会碰到用户原有的文件**——
     // 否则「确认覆盖后下到一半取消」会把原文件毁成半个，而用户在对话框里确认的是
@@ -1279,17 +1545,17 @@ pub async fn ssh_sftp_get(
         transfer_id: Some(transfer_id.clone()),
         cancel: Some(cancel),
     };
-    let (scp, c, r, p) = (scp_path, conn, remote, part.clone());
+    let (scp, c, r, p) = (scp_path, link, remote, part.clone());
     // 丢到阻塞线程池：传输最长 600s，占着 tokio worker 不放会让
     // `ssh_sftp_cancel` 自己都排不上队。
     let joined = tokio::task::spawn_blocking(move || {
         let job = ScpJob {
-            conn: &c,
+            link: &c,
             remote: &r,
             local: &p,
             upload: false,
         };
-        run_scp(&scp, job, pw, pp, hooks)
+        run_scp(&scp, job, creds, hooks)
     })
     .await;
     // 🔴 先注销再 `?`：写成 `.map_err(..)?` 再 remove 的话，任务 panic 时会提前返回，
@@ -1352,11 +1618,11 @@ pub async fn ssh_sftp_put(
     }
     // 上传方向不在这里查重名：当前目录的 `entries` 前端手里已经有，
     // 在后端再查一次就多一次完整的 ssh 握手（本机 OpenSSH 不支持连接复用）。
-    let conn = fetch_conn(&state, &connection_id).await?;
+    let link = fetch_link(&state, &connection_id).await?;
     let _ = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let scp_path =
         find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
-    let (pw, pp) = resolve_secrets(&conn, &state.data_dir)?;
+    let creds = resolve_link_secrets(&link, &state.data_dir)?;
 
     let cancel = register_transfer(&state, &transfer_id);
     let hooks = TransferHooks {
@@ -1364,15 +1630,15 @@ pub async fn ssh_sftp_put(
         transfer_id: Some(transfer_id.clone()),
         cancel: Some(cancel),
     };
-    let (scp, c, r, l) = (scp_path, conn, remote, local);
+    let (scp, c, r, l) = (scp_path, link, remote, local);
     let joined = tokio::task::spawn_blocking(move || {
         let job = ScpJob {
-            conn: &c,
+            link: &c,
             remote: &r,
             local: &l,
             upload: true,
         };
-        run_scp(&scp, job, pw, pp, hooks)
+        run_scp(&scp, job, creds, hooks)
     })
     .await;
     // 先注销再 `?`，理由同 `ssh_sftp_get`。
@@ -1381,6 +1647,64 @@ pub async fn ssh_sftp_put(
     // 取消时**不**自动删除远端残留（设计稿 §3）：若本次是覆盖上传，
     // 那个文件本来就是用户的；改由前端提示路径、交用户处置。
     res
+}
+
+/// 一个被拖进来的本机路径的基本信息。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalPathInfo {
+    /// 原路径（原样回传，供前端做 key）。
+    pub path: String,
+    /// 文件名（不含目录）。
+    pub name: String,
+    /// 是否为目录。
+    pub is_dir: bool,
+    /// 字节数；目录或取不到时为 0。
+    pub size: u64,
+    /// 路径是否存在（拿不到元信息就是 false）。
+    pub exists: bool,
+}
+
+/// 查本机路径的类型与大小。专为**拖拽上传**服务。
+///
+/// 为什么需要它：Tauri 的拖放事件只给路径字符串，而前端没装 `plugin-fs`。
+/// 没这个就无法在拖入时分辨文件夹——而 `run_scp` 没带 `-r`，直接传目录
+/// 只会招一句看不懂的 scp 错误。宁可加这一个命令，也不为了 stat 引入整个 fs 插件
+/// （那会把一整块文件系统权限面开给前端，代价远大于收益）。
+///
+/// **只读元数据，不读内容**，也不注册为 MCP 工具：仅本机面板经 Tauri IPC 调用。
+#[tauri::command]
+pub async fn local_path_info(paths: Vec<String>) -> Result<Vec<LocalPathInfo>, String> {
+    tokio::task::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|p| {
+                let pb = PathBuf::from(&p);
+                let name = pb
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| p.clone());
+                match std::fs::metadata(&pb) {
+                    Ok(m) => LocalPathInfo {
+                        path: p,
+                        name,
+                        is_dir: m.is_dir(),
+                        size: m.len(),
+                        exists: true,
+                    },
+                    Err(_) => LocalPathInfo {
+                        path: p,
+                        name,
+                        is_dir: false,
+                        size: 0,
+                        exists: false,
+                    },
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("任务调度失败：{e}"))
 }
 
 /// 在远程创建目录（含父目录，`mkdir -p`）。
@@ -1393,22 +1717,26 @@ pub async fn ssh_sftp_mkdir(
     if !state.config.read().await.ssh_enabled {
         return Err("SSH 终端未启用".into());
     }
-    let conn = fetch_conn(&state, &connection_id).await?;
+    let link = fetch_link(&state, &connection_id).await?;
+    let conn = &link.conn;
     let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
-    let (pw, pp) = resolve_secrets(&conn, &state.data_dir)?;
+    let creds = resolve_link_secrets(&link, &state.data_dir)?;
     let remote_cmd = format!("mkdir -p {}", shell_quote(&path));
-    let mut args = ssh_base_args(&conn, "-p");
+    // 快路径：常驻 helper（同 ssh_sftp_list）。
+    if let Ok((out, code)) =
+        run_via_helper(&state, &link, &ssh_path, creds.clone(), remote_cmd.clone()).await
+    {
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err(out.trim().to_string())
+        };
+    }
+    let mut args = ssh_base_args(&link, "-p");
     args.push(format!("{}@{}", conn.username, conn.host));
     args.push(remote_cmd);
     // 瞬时操作：不需要进度，也不需要取消。
-    spawn_capture(
-        &ssh_path,
-        &args,
-        pw,
-        pp,
-        Duration::from_secs(30),
-        TransferHooks::default(),
-    )?;
+    spawn_capture_off_runtime(ssh_path, args, creds).await?;
     Ok(())
 }
 
@@ -1422,28 +1750,118 @@ pub async fn ssh_sftp_remove(
     if !state.config.read().await.ssh_enabled {
         return Err("SSH 终端未启用".into());
     }
-    let conn = fetch_conn(&state, &connection_id).await?;
+    let link = fetch_link(&state, &connection_id).await?;
+    let conn = &link.conn;
     let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
-    let (pw, pp) = resolve_secrets(&conn, &state.data_dir)?;
+    let creds = resolve_link_secrets(&link, &state.data_dir)?;
     let remote_cmd = format!("rm -rf {}", shell_quote(&path));
-    let mut args = ssh_base_args(&conn, "-p");
+    // 快路径：常驻 helper（同 ssh_sftp_list）。
+    if let Ok((out, code)) =
+        run_via_helper(&state, &link, &ssh_path, creds.clone(), remote_cmd.clone()).await
+    {
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err(out.trim().to_string())
+        };
+    }
+    let mut args = ssh_base_args(&link, "-p");
     args.push(format!("{}@{}", conn.username, conn.host));
     args.push(remote_cmd);
     // 瞬时操作：不需要进度，也不需要取消。
-    spawn_capture(
-        &ssh_path,
-        &args,
-        pw,
-        pp,
-        Duration::from_secs(30),
-        TransferHooks::default(),
-    )?;
+    spawn_capture_off_runtime(ssh_path, args, creds).await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 列目录命令：tty 下的引用必须关掉 ─────────────────────
+
+    /// 🔴 回归：helper 会话用 `-tt` 给了远端一个 tty，而 coreutils 在 isatty(stdout)
+    /// 时默认用 shell-escape 引用：`my report.txt` 变成 `'my report.txt'`。
+    /// `parse_ls` 拿到带引号的名字后，前端拼出的远程路径全部报「No such file」。
+    /// 旧的一次性路径（无 `-t`、stdout 是管道）不会引用，所以这个缺陷
+    /// 是开了 helper 才出现的，且恰好打掉了“带空格文件名传不了”那个修复。
+    #[test]
+    fn gnu_ls_disables_tty_quoting() {
+        let c = gnu_ls_cmd("/opt/app");
+        assert!(c.contains("--quoting-style=literal"), "{c}");
+        assert!(c.contains("--time-style=+%s"), "{c}");
+        assert!(c.contains("'/opt/app'"), "路径必须带 shell 引号：{c}");
+    }
+
+    /// BSD `ls` 没有 `--quoting-style`（给了会直接报错、连降级路径一起废掉）。
+    #[test]
+    fn bsd_ls_has_no_gnu_only_flags() {
+        let c = bsd_ls_cmd("/opt/app");
+        assert!(!c.contains("--"), "BSD 降级命令不能带 GNU 长选项：{c}");
+        assert!(c.contains("'/opt/app'"), "{c}");
+    }
+
+    // ── 跳板机：不配时参数必须逐字节不变 ────────────────────────
+
+    /// 🔴 加跳板机支持改动了所有连接都要走的 `ssh_base_args`。
+    /// 本用例钉住「不配跳板 = 参数与以前完全一致」，否则老连接会被连带改坏。
+    #[test]
+    fn direct_args_unchanged_by_proxy_support() {
+        let conn = SshConnection {
+            host: "10.0.1.50".into(),
+            port: 22,
+            username: "root".into(),
+            ..Default::default()
+        };
+        let args = ssh_base_args(&SshLink::direct(conn), "-p");
+        assert_eq!(
+            args,
+            vec![
+                "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=3",
+                "-o",
+                "StrictHostKeyChecking=accept-new",
+                "-p",
+                "22",
+            ]
+        );
+        assert!(!args.iter().any(|a| a.contains("Proxy")));
+    }
+
+    /// 配了跳板时，`-o ProxyCommand=` 必须真的出现在参数里。
+    /// （它足以发现“忘了把 link 传到某个调用点”这类静默退回直连的缺陷。）
+    #[test]
+    fn proxy_command_reaches_the_arg_list() {
+        let conn = SshConnection {
+            host: "10.0.1.50".into(),
+            port: 22,
+            username: "root".into(),
+            ..Default::default()
+        };
+        let jump = SshConnection {
+            host: "bastion.corp.com".into(),
+            port: 2222,
+            username: "ops".into(),
+            ..Default::default()
+        };
+        let link = SshLink {
+            conn,
+            jump: Some(jump.clone()),
+            proxy: Some(crate::ssh_proxy::proxy_command_value(Path::new("ssh"), &jump).unwrap()),
+        };
+        // scp 用 `-P`，ssh 用 `-p`；两边都要带上跳板。
+        for flag in ["-p", "-P"] {
+            let args = ssh_base_args(&link, flag);
+            let proxy = args
+                .iter()
+                .find(|a| a.starts_with("ProxyCommand="))
+                .unwrap_or_else(|| panic!("{flag} 的参数里没有 ProxyCommand：{args:?}"));
+            assert!(proxy.contains("-W %h:%p"), "{proxy}");
+            assert!(proxy.contains("ops@bastion.corp.com"), "{proxy}");
+            assert!(proxy.contains("-p 2222"), "{proxy}");
+        }
+    }
 
     // ── 凭据提示识别（这组是安全回归护栏，不是辅助测试）────────────────
 
