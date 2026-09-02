@@ -32,7 +32,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://ghproxy.net/https://github.com/lzlkyb/cc-bridge/releases/latest/download/updater.json",
+        "https://gh-proxy.com/https://github.com/lzlkyb/cc-bridge/releases/latest/download/updater.json",
         "https://github.com/lzlkyb/cc-bridge/releases/latest/download/updater.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVBQUYxODUxMjFGQkRBRUQKUldUdDJ2c2hVUml2V3VWRi84RmZUdWlkRVBnM1JMWHNkOUZzSEZ0cTlCRW1RS3dJbEZyZGUwRUMK",
