@@ -4,6 +4,7 @@ import {
   clampFontSize,
   loadFontSize,
   saveFontSize,
+  subscribeFontSize,
   FONT_SIZE_DEFAULT,
 } from "../../lib/terminalFontSize";
 
@@ -29,15 +30,23 @@ export function useTerminalFontSize({ termRef, containerRef, doFit }: Args) {
   // 中心提示：null = 不显示。
   const [badge, setBadge] = useState<number | null>(null);
   const badgeTimer = useRef<number | undefined>(undefined);
+  // 让稳定的 bump 读到当下值，不用把副作用写进 setState 的更新函数（StrictMode 会双调）。
+  const sizeRef = useRef(fontSize);
+  sizeRef.current = fontSize;
+
+  // 别处（另一个终端）改了字号就跟着变。以前没这条线，字号存在一个全局键里
+  // 却只在当前终端生效，重启后其它终端才突然跳过去。
+  useEffect(() => subscribeFontSize(setFontSize), []);
 
   const bump = useCallback((delta: number) => {
-    setFontSize((cur) => {
-      const next = clampFontSize(cur + delta);
-      if (next !== cur) saveFontSize(next);
-      // 到边界了也要闪一下，否则用户不知道是“没生效”还是“到顶了”。
-      setBadge(next);
-      return next;
-    });
+    const cur = sizeRef.current;
+    const next = clampFontSize(cur + delta);
+    // 到边界了也要闪一下，否则用户不知道是“没生效”还是“到顶了”。
+    // 只在鼠标所在的这个终端闪（广播只改字号、不带徽标）。
+    setBadge(next);
+    if (next === cur) return;
+    setFontSize(next);
+    saveFontSize(next); // 存盘 + 广播给其它终端
   }, []);
 
   // 提示自动消失。单独一个 effect，避免在 setState 更新函数里做副作用（StrictMode 会双调）。

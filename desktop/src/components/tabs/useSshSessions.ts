@@ -8,6 +8,10 @@ import type { SshSessionRef } from "./TerminalConnectionItem";
 const INITIAL_ROWS = 30;
 const INITIAL_COLS = 100;
 
+/** 标签身份的递增计数。不用 crypto.randomUUID：只要在本次运行内唯一就够了。 */
+let tabSeq = 0;
+const nextTabId = () => `tab-${++tabSeq}`;
+
 /**
  * 终端会话集合的全部状态转移：连接 / 断开 / 重连 / 关标签。
  *
@@ -48,27 +52,42 @@ export function useSshSessions() {
   );
 
   /**
-   * 连接。已有活着的会话则直接切过去；若该连接残留一个已断开的标签，
-   * 新会话**原位替换**它（而不是追加），避免标签栏堆一排死标签、且保持位置不跳。
+   * 连接。三种落点，优先级从上到下：
+   *
+   * - `intoTab`：重连指定标签。**保留 tabId**，只换 sessionId——React 不重挂，
+   *   xterm 实例和它的历史输出都活着。
+   * - `newTab`：强制另开一个。以前同一台机器只能开一个终端，
+   *   想一边 `tail -f` 一边敲命令就得开两个 app。
+   * - 都没传：有活着的就切过去；否则原位复用该连接残留的已断开标签（位置不跳）；
+   *   再否则追加。
    */
   const connect = useCallback(
-    async (conn: SshConnection) => {
-      const live = sessionsRef.current.find((s) => s.conn.id === conn.id && !s.closedReason);
-      if (live) {
-        setActiveId(live.sessionId);
-        return;
+    async (conn: SshConnection, opts?: { newTab?: boolean; intoTab?: string }) => {
+      if (!opts?.newTab && !opts?.intoTab) {
+        const live = sessionsRef.current.find((s) => s.conn.id === conn.id && !s.closedReason);
+        if (live) {
+          setActiveId(live.sessionId);
+          return;
+        }
       }
       setConnectingId(conn.id);
       try {
         const sessionId = await invoke<string>("ssh_connect", {
           args: { connectionId: conn.id, rows: INITIAL_ROWS, cols: INITIAL_COLS },
         });
-        const fresh: SshSessionRef = { sessionId, conn, closedReason: null };
         patch((prev) => {
-          const idx = prev.findIndex((s) => s.conn.id === conn.id && s.closedReason);
-          if (idx < 0) return [...prev, fresh];
+          // 找要复用的标签：指定了就找它，否则找本连接第一个已断开的；newTab 不复用。
+          const idx = opts?.newTab
+            ? -1
+            : opts?.intoTab
+              ? prev.findIndex((s) => s.tabId === opts.intoTab)
+              : prev.findIndex((s) => s.conn.id === conn.id && s.closedReason);
+          if (idx < 0) {
+            return [...prev, { tabId: nextTabId(), sessionId, conn, closedReason: null }];
+          }
           const next = [...prev];
-          next[idx] = fresh;
+          // 展开旧项以**保留 tabId**，这正是历史输出能活下来的原因。
+          next[idx] = { ...next[idx], sessionId, conn, closedReason: null };
           return next;
         });
         setActiveId(sessionId);

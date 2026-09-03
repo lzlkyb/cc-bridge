@@ -20,28 +20,19 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
 // 终端里的链接用系统浏览器打开（项目里已有 opener 插件与 `opener:default` 权限）。
 import { openUrl } from "@tauri-apps/plugin-opener";
-// 用 Tauri 插件读剪贴板，而不是 navigator.clipboard.readText()：后者在 WebView2 里
-// 需要 clipboard-read 权限（无提示 UI，往往静默被拒）。插件路径确定，
-// 但需在 capabilities 里显式给 `clipboard-manager:allow-read-text`——
-// `clipboard-manager:default` 自述就是“No features are enabled by default”，它什么都不授予。
-import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke, listen } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { MOUSE_REPORT_OFF } from "./useSshTerminalSelect";
+import { attachTerminalKeymap, type TerminalKeyActions } from "./terminalKeymap";
+import { sshOutputEvent } from "../../lib/terminalEvents";
 import { TERMINAL_FONT, TERMINAL_SCROLLBACK, terminalTheme } from "../../lib/terminalTheme";
 import { loadFontSize } from "../../lib/terminalFontSize";
 import { rowsToDrop } from "../../lib/terminalFit";
-import { countPasteLines, pastePreview } from "../../lib/terminalPaste";
+import { useTerminalPaste } from "./useTerminalPaste";
 import type { Theme } from "../../lib/theme";
 import type { SshOutput, SshClosed, SshConnectFailed } from "../../lib/types";
 
-/** 多行粘贴确认框的数据；null = 不弹。 */
-export interface PastePrompt {
-  lineCount: number;
-  preview: string;
-  confirm: () => void;
-  cancel: () => void;
-}
+export type { PastePrompt } from "./useTerminalPaste";
 
 interface Args {
   sessionId: string;
@@ -71,7 +62,7 @@ interface Args {
 /**
  * 单个 SSH 会话的 xterm 生命周期：创建/销毁、输入输出回路、尺寸同步、主题热切换、粘贴。
  * - onData → ssh_input（前端键入回传后端 PTY）
- * - listen("ssh_output") → term.write（按 sessionId 路由该会话的输出）
+ * - listen(sshOutputEvent(sessionId)) → term.write（每会话一个事件名，不走全局广播）
  * - onResize → ssh_resize（窗口缩放跟手，vi/htop 不串列）
  */
 export function useSshTerminalSession({
@@ -107,8 +98,6 @@ export function useSshTerminalSession({
   // 时加的调试件，诊断能力已被「点击终端以输入」与「输入失败」两个徽标覆盖；
   // 而它每敲一个字符就 setState 一次，等于每字符一次 React 重渲染。
   const [inputErr, setInputErr] = useState<string | null>(null);
-  // 多行粘贴确认框。
-  const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
 
   /**
    * 重算终端尺寸。只读 ref，故引用永久稳定。
@@ -146,64 +135,17 @@ export function useSshTerminalSession({
     if (drop > 0) term.resize(term.cols, term.rows - drop);
   }, [containerRef, termRef]);
 
-  /** 把文本原样发给远端 PTY。 */
-  const sendPaste = useCallback(
-    async (text: string) => {
-      if (closedRef.current) {
-        toast("连接已断开，无法输入", "error");
-        return;
-      }
-      try {
-        await invoke("ssh_input", { sessionId, data: text });
-      } catch (e) {
-        toast(`粘贴失败：${e}`, "error");
-      }
-    },
-    [sessionId],
-  );
-
-  /**
-   * 粘贴：读剪贴板 → 多行先问一句 → 发给远端。
-   *
-   * 空剪贴板**静默返回**：右键误触不应该弹提示。读取失败则必须报，不吞。
-   * 粘完把焦点还给终端（按钮/右键路径不依赖焦点，但粘完得能接着敲）。
-   */
-  const paste = useCallback(async () => {
-    let text: string;
-    try {
-      text = (await readText()) ?? "";
-    } catch (e) {
-      toast(`读取剪贴板失败：${e}`, "error");
-      return;
-    }
-    if (!text) return;
-    const refocus = () => termRef.current?.focus();
-    if (countPasteLines(text) > 1) {
-      setPastePrompt({
-        lineCount: countPasteLines(text),
-        preview: pastePreview(text),
-        confirm: () => {
-          setPastePrompt(null);
-          void sendPaste(text).then(refocus);
-        },
-        cancel: () => {
-          setPastePrompt(null);
-          refocus();
-        },
-      });
-      return;
-    }
-    await sendPaste(text);
-    refocus();
-  }, [sendPaste, termRef]);
+  // 粘贴（含多行确认框）单独成 hook，与终端生命周期无逻辑耦合。
+  const { paste, pastePrompt } = useTerminalPaste({ sessionId, closedRef, termRef });
 
   // 供 xterm 按键钩子调用：那个钩子在创建 effect 里只注册一次，直接闭包会拿到陈旧引用。
-  const pasteRef = useRef(paste);
-  pasteRef.current = paste;
-  const copyRef = useRef(copySelection);
-  copyRef.current = copySelection;
-  const openSearchRef = useRef(openSearch);
-  openSearchRef.current = openSearch;
+  const keyActionsRef = useRef<TerminalKeyActions>({ paste, copy: copySelection, openSearch });
+  keyActionsRef.current = { paste, copy: copySelection, openSearch };
+
+  // 最近一次已经写进终端的输入错误（用于去重，见下面 onData）。
+  const writtenInputErrRef = useRef<string | null>(null);
+  // 上一次接好线的会话：null = 还没接过。用它分辨「首次挂载」与「重连」。
+  const wiredSessionRef = useRef<string | null>(null);
 
   // 多标签切换：该终端从隐藏(display:none)变为可见时，容器重新获得尺寸，
   // 需要主动 fit 一次并把新尺寸告知后端，否则切回的终端会显示挤压/错位。
@@ -296,44 +238,8 @@ export function useSshTerminalSession({
     termRef.current = term;
     fitRef.current = fit;
     doFit();
-    // 🔴 复制/粘贴必须赶在 xterm 前面截获。xterm 把 ctrl+字母一律映射成控制字符
-    // （`String.fromCharCode(keyCode - 64)`），**这条分支对 shift 没有任何排除**，所以：
-    //   Ctrl+V / Ctrl+Shift+V → \x16（SYN），且 preventDefault → 浏览器不产生 paste 事件
-    //   Ctrl+Shift+C          → \x03（SIGINT，会中断正在跑的命令）
-    //   Ctrl+Shift+A          → \x01
-    // `attachCustomKeyEventHandler` 是官方钩子：`_keyDown` 第一件事就查它，返回 false 直接短路
-    // （不 preventDefault、不阻止冒泡）。
-    //
-    // 为什么只抢带 shift 的组合：不带 shift 的 Ctrl+C / Ctrl+A 在终端里分别是 SIGINT 和
-    // 「跳行首 / tmux 前缀键」，都是刚需，抢不得；带 shift 的那两个目前只会发出完全相同的
-    // 控制字符（shift 被忽略），拿过来不丢任何能力，而且是 GNOME Terminal 等的通行惯例。
-    //
-    // 代价：远端不再收到 Ctrl+V（readline 的 quoted-insert 失效）——已与使用者确认接受。
-    term.attachCustomKeyEventHandler((e) => {
-      if (e.type !== "keydown") return true;
-      const ctrl = e.ctrlKey || e.metaKey;
-      // e.key 在 Ctrl+Shift+V 下是 "V"，故一条判定同时覆盖 Ctrl+V 与 Ctrl+Shift+V。
-      if (ctrl && (e.key === "v" || e.key === "V")) {
-        void pasteRef.current();
-        return false;
-      }
-      if (ctrl && e.shiftKey && (e.key === "c" || e.key === "C")) {
-        copyRef.current();
-        return false;
-      }
-      if (ctrl && e.shiftKey && (e.key === "a" || e.key === "A")) {
-        term.selectAll();
-        return false;
-      }
-      // 搜索同理用 Ctrl+Shift+F：Ctrl+F 在 readline 里是光标右移、vim 里是翻页，抢不得。
-      if (ctrl && e.shiftKey && (e.key === "f" || e.key === "F")) {
-        openSearchRef.current();
-        return false;
-      }
-      // F11 切全屏：实际切换由 TerminalTab 的 window 级监听完成，这里只负责不发往远端。
-      if (e.key === "F11") return false;
-      return true;
-    });
+    // 快捷键拦截（含为什么必须赶在 xterm 前面的完整理由）见 `terminalKeymap.ts`。
+    attachTerminalKeymap(term, keyActionsRef);
     // 打开即聚焦隐藏 textarea：xterm 不在 open() 时自动聚焦，若不显式 focus，
     // onData 不触发、键入无法回传后端（输出正常但无法输入）。
     // 同步 focus 偶尔因“open 后初始布局未完成”落空，用 rAF + 短延时双保险。
@@ -374,60 +280,6 @@ export function useSshTerminalSession({
     const detachSelect = attachSelect(term, container);
     const detachSearch = attachSearch(term);
 
-    // 连上后立即把真实尺寸告诉后端，避免初始 80x24 与面板不符。
-    void invoke("ssh_resize", { sessionId, rows: term.rows, cols: term.cols }).catch(() => {});
-
-    const offData = term.onData((data) => {
-      void invoke("ssh_input", { sessionId, data })
-        .then(() => setInputErr(null))
-        .catch((e) => {
-          const msg = String(e);
-          setInputErr(msg);
-          // 前台可见：onData 已触发但后端拒绝，红字提示便于定位（不再静默吞错）。
-          term.write(`\x1b[31m\r\n[输入失败] ${msg}\x1b[0m`);
-        });
-    });
-    const offResize = term.onResize(({ rows, cols }) => {
-      void invoke("ssh_resize", { sessionId, rows, cols }).catch(() => {});
-    });
-
-    // 竞态防护：listen() 返回的 Promise 是异步 resolve 的。若组件在 resolve 之前就卸载，
-    // cleanup 同步执行时 unlisten 还是 undefined，监听器会泄漏且永不注销。
-    let cancelled = false;
-    const unlistens: Array<() => void> = [];
-    const track = (p: Promise<() => void>) =>
-      void p.then((u) => {
-        if (cancelled) u();
-        else unlistens.push(u);
-      });
-    track(
-      listen<SshOutput>("ssh_output", (p) => {
-        if (p.sessionId !== sessionId) return;
-        term.write(p.data);
-        // 选择态期间，远端 TUI（如 Claude Code）会在重绘输出里重设鼠标报告（ESC[?1006h），
-        // 导致本地 mouseTrackingMode 重新打开、拖选又被吃掉。故每帧输出后再关一次。
-        if (selectActiveRef.current) term.write(MOUSE_REPORT_OFF);
-      }),
-    );
-    // 🔴 断开/失败的原因不能只 `term.write` 完事——xterm 的 write 是攒到 rAF 才刷的，
-    // 以前写完立刻卸载组件，那行字从来没机会渲染，用户只看到标签凭空消失。
-    // 现在交给 onClosed：会话保留为「已断开」态，原因同时上横幅和 toast。
-    track(
-      listen<SshClosed>("ssh_closed", (p) => {
-        if (p.sessionId !== sessionId) return;
-        term.write("\r\n\x1b[33m[连接已断开]\x1b[0m\r\n");
-        onClosedRef.current("连接已断开");
-      }),
-    );
-    // 连接早期失败：ssh 进程在宽限期内自行退出（主机/端口/认证错）。
-    track(
-      listen<SshConnectFailed>("ssh_connect_failed", (p) => {
-        if (p.sessionId !== sessionId) return;
-        term.write(`\r\n\x1b[31m[连接失败] ${p.reason}\x1b[0m\r\n`);
-        onClosedRef.current(p.reason);
-      }),
-    );
-
     // 容器尺寸变化 → 重新 fit（面板拉伸/窗口缩放/全屏切换）。
     // 用 rAF 合并同一帧内的多次回调（侧栏 300ms 宽度过渡会连发几十次），
     // 同时让浏览器先完成布局再量——doFit 里的实测依赖稳定的布局。
@@ -457,35 +309,113 @@ export function useSshTerminalSession({
     watchDpr();
 
     return () => {
-      cancelled = true;
       if (rafId) cancelAnimationFrame(rafId);
       dprMq?.removeEventListener("change", onDpr);
-      offData.dispose();
-      offResize.dispose();
       detachSelect();
       detachSearch();
       container.removeEventListener("focusin", onFocusIn);
       container.removeEventListener("focusout", onFocusOut);
       container.removeEventListener("mousedown", grabFocus);
       container.removeEventListener("pointerdown", grabFocus);
-      unlistens.forEach((u) => u());
       ro.disconnect();
       webgl?.dispose();
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
     };
-    // 仅 sessionId 变化时重建终端；其余依赖均为稳定引用（ref / useCallback）。
-  }, [
-    sessionId,
-    doFit,
-    attachSelect,
-    attachSearch,
-    containerRef,
-    termRef,
-    focusedRef,
-    selectActiveRef,
-  ]);
+    // 🔴 依赖里**没有 sessionId**，这是故意的。重连会换一个 sessionId，但终端实例
+    // 必须活下来：「断开后保留标签」的全部意义就是历史输出可读可选可复制，
+    // 而以前 sessionId 一变就重建 xterm，等于点一下「重新连接」就把它们全清了。
+    // 会话相关的接线（输入/输出/断开事件）在下面另一个 effect 里按 sessionId 重挂。
+    // 其余依赖均为稳定引用（ref / useCallback）。
+  }, [doFit, attachSelect, attachSearch, containerRef, termRef, focusedRef]);
+
+  // ── 会话接线：按 sessionId 重挂，终端实例不动 ──
+  //
+  // 顺序保证：同一组件内的 effect 按声明顺序执行，上面那个先跑并填好 termRef。
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+
+    // 重连（而非首次挂载）时在旧输出下面画一条分隔，否则新会话的提示符会
+    // 直接接在断开前的输出后面，看不出中间断过。比对 sessionId 而不是用布尔量，
+    // 是为了不被 StrictMode 的双调误判成重连。
+    if (wiredSessionRef.current !== null && wiredSessionRef.current !== sessionId) {
+      term.write("\r\n\x1b[36m[已重新连接]\x1b[0m\r\n");
+      writtenInputErrRef.current = null;
+    }
+    wiredSessionRef.current = sessionId;
+
+    // 连上后立即把真实尺寸告诉后端，避免初始 80x24 与面板不符。
+    void invoke("ssh_resize", { sessionId, rows: term.rows, cols: term.cols }).catch(() => {});
+
+    const offData = term.onData((data) => {
+      void invoke("ssh_input", { sessionId, data })
+        .then(() => {
+          writtenInputErrRef.current = null;
+          setInputErr(null);
+        })
+        .catch((e) => {
+          const msg = String(e);
+          setInputErr(msg);
+          // 前台可见：onData 已触发但后端拒绝，红字提示便于定位（不再静默吞错）。
+          // 🔴 同一个原因只写一次：总开关被关掉后每敲一个字符都会失败，
+          // 不去重就是一敲一行红字，把最后那屏有用的输出直接刷没。
+          if (writtenInputErrRef.current === msg) return;
+          writtenInputErrRef.current = msg;
+          term.write(`\x1b[31m\r\n[输入失败] ${msg}\x1b[0m`);
+        });
+    });
+    const offResize = term.onResize(({ rows, cols }) => {
+      void invoke("ssh_resize", { sessionId, rows, cols }).catch(() => {});
+    });
+
+    // 竞态防护：listen() 返回的 Promise 是异步 resolve 的。若组件在 resolve 之前就卸载，
+    // cleanup 同步执行时 unlisten 还是 undefined，监听器会泄漏且永不注销。
+    let cancelled = false;
+    const unlistens: Array<() => void> = [];
+    const track = (p: Promise<() => void>) =>
+      void p.then((u) => {
+        if (cancelled) u();
+        else unlistens.push(u);
+      });
+    // 输出走**本会话专属**的事件名（不再是全局 `ssh_output` 广播），
+    // 理由见 `lib/terminalEvents.ts`。sessionId 的判相当于空跑，但留着不亏。
+    track(
+      listen<SshOutput>(sshOutputEvent(sessionId), (p) => {
+        if (p.sessionId !== sessionId) return;
+        term.write(p.data);
+        // 选择态期间，远端 TUI（如 Claude Code）会在重绘输出里重设鼠标报告（ESC[?1006h），
+        // 导致本地 mouseTrackingMode 重新打开、拖选又被吃掉。故每帧输出后再关一次。
+        if (selectActiveRef.current) term.write(MOUSE_REPORT_OFF);
+      }),
+    );
+    // 🔴 断开/失败的原因不能只 `term.write` 完事——xterm 的 write 是攒到 rAF 才刷的，
+    // 以前写完立刻卸载组件，那行字从来没有机会渲染，用户只看到标签凭空消失。
+    // 现在交给 onClosed：会话保留为「已断开」态，原因同时上横幅和 toast。
+    track(
+      listen<SshClosed>("ssh_closed", (p) => {
+        if (p.sessionId !== sessionId) return;
+        term.write("\r\n\x1b[33m[连接已断开]\x1b[0m\r\n");
+        onClosedRef.current("连接已断开");
+      }),
+    );
+    // 连接早期失败：ssh 进程在宽限期内自行退出（主机/端口/认证错）。
+    track(
+      listen<SshConnectFailed>("ssh_connect_failed", (p) => {
+        if (p.sessionId !== sessionId) return;
+        term.write(`\r\n\x1b[31m[连接失败] ${p.reason}\x1b[0m\r\n`);
+        onClosedRef.current(p.reason);
+      }),
+    );
+
+    return () => {
+      cancelled = true;
+      offData.dispose();
+      offResize.dispose();
+      unlistens.forEach((u) => u());
+    };
+  }, [sessionId, termRef, selectActiveRef]);
 
   /** 整屏快照复制：从 xterm 缓冲区导出可视区域纯文本，不依赖选区（鼠标报告模式下也必成）。 */
   const copyScreen = useCallback(() => {

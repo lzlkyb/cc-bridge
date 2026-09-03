@@ -19,6 +19,8 @@ interface Props {
   onNew: () => void;
   onConnect: (conn: SshConnection) => void;
   onDisconnect: (sessionId: string) => void;
+  /** 对该连接另开一个终端。 */
+  onNewTerminal: (conn: SshConnection) => void;
   onActivate: (sessionId: string) => void;
   onOpenFiles: (conn: SshConnection) => void;
   onEdit: (conn: SshConnection) => void;
@@ -43,6 +45,7 @@ export function TerminalSidebar({
   onNew,
   onConnect,
   onDisconnect,
+  onNewTerminal,
   onActivate,
   onOpenFiles,
   onEdit,
@@ -97,7 +100,7 @@ export function TerminalSidebar({
                 <button
                   type="button"
                   onClick={() => onSetCollapsed(true)}
-                  title="收起侧栏 (Ctrl/Cmd+B)"
+                  title="收起侧栏 (Ctrl/Cmd+Shift+B)"
                   className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   <Icon name="chevronLeft" size={16} />
@@ -144,6 +147,7 @@ export function TerminalSidebar({
                     confirmingDelete={confirmingDelete === c.id}
                     onConnect={onConnect}
                     onDisconnect={onDisconnect}
+                    onNewTerminal={onNewTerminal}
                     onOpenFiles={onOpenFiles}
                     onEdit={onEdit}
                     onDeleteRequest={() => onDeleteRequest(c.id)}
@@ -182,7 +186,7 @@ function CollapsedRail({
       <button
         type="button"
         onClick={onExpand}
-        title="展开 SSH 连接 (Ctrl/Cmd+B)"
+        title="展开 SSH 连接 (Ctrl/Cmd+Shift+B)"
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <Icon name="chevronLeft" size={16} style={{ transform: "rotate(180deg)" }} />
@@ -191,7 +195,10 @@ function CollapsedRail({
       {connections.map((c) => {
         const session = sessions.find((s) => s.conn.id === c.id);
         const isActive = !!session && session.sessionId === activeId;
-        const connected = !!session;
+        // 🔴 必须连 `closedReason` 一起判。只看「有没有 session」的话，断开后保留的标签
+        // 会让这里一直亮绿点——而展开态的 `ConnectionListItem` 是判了的，
+        // 同一份数据两处口径不一致。
+        const connected = !!session && !session.closedReason;
         const initial =
           (c.name || c.username || "?").trim().charAt(0).toUpperCase() || "?";
         return (

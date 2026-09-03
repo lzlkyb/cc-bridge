@@ -40,6 +40,11 @@ export function SshTerminalFind({ search }: { search: TerminalSearch }) {
             e.preventDefault();
             if (e.shiftKey) search.findPrev();
             else search.findNext();
+          } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "f" || e.key === "F")) {
+            // 搜索框已经聚焦时，Ctrl+Shift+F 到不了 xterm 的按键钩子（那只在终端聚焦时触发），
+            // 所以这里自己接一下。不接的话上面那句「再按一次能直接换关键词」是做不到的。
+            e.preventDefault();
+            e.currentTarget.select();
           }
         }}
         className="h-6 w-36 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"

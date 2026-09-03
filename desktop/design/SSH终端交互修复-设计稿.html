@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>SSH 终端交互修复 · 设计稿</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #171a21; --border: #2a2f3a; --fg: #e6e8ec;
+    --muted: #9aa3b2; --primary: #6ea8fe; --green: #3fb950; --red: #f85149;
+    --amber: #d29922; --indigo: #8b8bf5;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 32px; background: var(--bg); color: var(--fg);
+    font: 14px/1.7 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 36px 0 10px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border); }
+  .sub { color: var(--muted); margin: 0 0 8px; font-size: 13px; }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  .panel { background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden; margin: 12px 0; }
+  .bar { display: flex; align-items: center; gap: 6px; padding: 7px 10px;
+    border-bottom: 1px solid var(--border); background: #12151b; }
+  .tab { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px;
+    border-radius: 6px; font-size: 12px; color: var(--muted); }
+  .tab.active { background: rgba(110,168,254,.12); color: var(--fg); }
+  .tab.closed span.name { text-decoration: line-through; opacity: .7; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .dot.g { background: var(--green); } .dot.r { background: rgba(248,81,73,.6); }
+  .dot.n { background: rgba(154,163,178,.4); }
+  .x { opacity: .5; font-size: 11px; }
+  .plus { margin-left: 4px; padding: 3px 8px; border: 1px dashed var(--border);
+    border-radius: 6px; color: var(--muted); font-size: 12px; cursor: default; }
+  .screen { padding: 14px; font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 12.5px; color: #c9d1d9; min-height: 96px; position: relative; }
+  .cyan { color: #56d4dd; } .yellow { color: var(--amber); } .dim { color: #6e7681; }
+  .overlay { position: absolute; inset: 8px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center; flex-direction: column;
+    gap: 6px; font-family: system-ui, "Microsoft YaHei", sans-serif; }
+  .ov-drop { border: 2px dashed var(--primary); background: rgba(110,168,254,.10); color: var(--primary); }
+  .ov-busy { border: 2px dashed var(--border); background: rgba(0,0,0,.45); color: var(--muted); }
+  .ov-t { font-size: 14px; font-weight: 600; }
+  .ov-s { font-size: 12px; opacity: .85; }
+  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+    border-radius: 999px; font-size: 11px; font-weight: 500; }
+  .b-idx { background: rgba(154,163,178,.15); color: var(--muted);
+    font-family: Consolas, monospace; padding: 0 5px; border-radius: 4px; font-size: 10.5px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0; }
+  th, td { border: 1px solid var(--border); padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #12151b; color: var(--muted); font-weight: 600; }
+  code { background: #0b0d11; border: 1px solid var(--border); border-radius: 4px;
+    padding: 1px 5px; font-family: Consolas, monospace; font-size: 12px; }
+  .note { border-left: 3px solid var(--amber); background: rgba(210,153,34,.07);
+    padding: 8px 12px; margin: 10px 0; font-size: 13px; }
+  .note.no { border-left-color: var(--red); background: rgba(248,81,73,.07); }
+  .cap { color: var(--muted); font-size: 12px; margin: 4px 0 0; }
+  .center { text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>SSH 终端交互修复 · 设计稿</h1>
+  <p class="sub">本稿只覆盖审查出的 14 条里**有可见变化**的三条（#8 / #12 / #13）。
+  其余十一条是行为修正，界面不变，不入稿。</p>
+
+  <h2>#8 同一台机器可以开多个终端</h2>
+  <p class="sub">现状：点「连接」时若已有活会话，直接切过去——想一边 <code>tail -f</code> 一边敲命令做不到。</p>
+
+  <div class="panel">
+    <div class="bar">
+      <span class="tab active"><span class="dot g"></span><span class="name">生产机</span><span class="b-idx">#1</span><span class="x">✕</span></span>
+      <span class="tab"><span class="dot n"></span><span class="name">生产机</span><span class="b-idx">#2</span><span class="x">✕</span></span>
+      <span class="tab closed"><span class="dot r"></span><span class="name">测试机</span><span class="x">✕</span></span>
+      <span class="plus">＋ 新终端</span>
+    </div>
+    <div class="screen">
+      <div class="dim">ops@prod:~$ tail -f /var/log/app.log</div>
+      <div class="dim">…</div>
+    </div>
+  </div>
+  <p class="cap">变化两处：右侧新增虚线的「＋ 新终端」按钮（对当前活动连接另开一个）；
+  同一连接有多个标签时，名字后跟 <code>#1 #2</code> 序号——否则两个标签长得一模一样。
+  只有一个时**不显示**序号，不给单终端的常见情况增噪。</p>
+  <p class="cap">侧栏连接项上同步新增一个「＋」小按钮（仅在该连接已有活会话时出现），与标签栏入口等价。</p>
+
+  <h2>#9 重连不再清历史（仅一行分隔）</h2>
+  <div class="panel">
+    <div class="screen">
+      <div class="dim">ops@prod:~$ ./deploy.sh</div>
+      <div class="dim">Uploading… done</div>
+      <div class="yellow">[连接已断开]</div>
+      <div class="cyan">[已重新连接]</div>
+      <div class="dim">ops@prod:~$ </div>
+    </div>
+  </div>
+  <p class="cap">旧行为是整屏清空（组件重挂）。现在只多一行青色分隔，断开前的输出全部保留。
+  无新控件，不占版面。</p>
+
+  <h2>#12 传输中拖入文件的反馈</h2>
+  <p class="sub">现状：正在传输（或确认框开着）时拖文件进来，<code>collectZones</code> 返回空数组，
+  遮罩不出、也不提示——用户不知道为什么没反应。</p>
+
+  <div class="panel">
+    <div class="screen">
+      <div class="dim">ops@prod:~$</div>
+      <div class="overlay ov-drop">
+        <div class="ov-t">松手上传 3 个文件</div>
+        <div class="ov-s">下一步可选目标目录</div>
+      </div>
+    </div>
+  </div>
+  <p class="cap">保持不变：空闲时拖入 = 蓝色虚线遮罩。</p>
+
+  <div class="panel">
+    <div class="screen">
+      <div class="dim">ops@prod:~$</div>
+      <div class="overlay ov-busy">
+        <div class="ov-t">正在传输，请稍候</div>
+        <div class="ov-s">当前批完成后再拖入</div>
+      </div>
+    </div>
+  </div>
+  <p class="cap"><strong>新增：</strong>忙时拖入 = 灰色虚线遮罩 + 说清楚原因。仍然**不接文件**（行为不变），
+  只是从「没反应」变成「告诉你为什么」。</p>
+  <div class="note">为什么不排队：两批文件的目标目录可能不一样，混在一条进度条里看不出来；
+  而且两个循环共用同一个 <code>idRef</code>，取消与进度会打到错误的传输上。</div>
+
+  <h2>#13 字号在多个终端间同步</h2>
+  <p class="sub">现状：字号存在一个全局 localStorage 键，但每个终端各自持有 state。
+  把 A 调到 20，B 还是 14；重启后两个都变 20。“同一个设置”却表现不一致。</p>
+
+  <table>
+    <tr><th style="width:20%">方案</th><th>行为</th><th style="width:34%">取舍</th></tr>
+    <tr>
+      <td><strong>A（采用）</strong><br>全局同步</td>
+      <td>任一终端 Ctrl+滚轮，<strong>所有</strong>终端立即跟着变；仍写 localStorage。
+        中心字号提示只在**鼠标所在**的那个终端闪。</td>
+      <td>与“一个全局设置”的存储形式一致；无新 UI。
+        代价：不能给某一个终端单独调字号。</td>
+    </tr>
+    <tr>
+      <td>B（否决）<br>每终端独立</td>
+      <td>各管各的，不持久化。</td>
+      <td>重启后全部回默认，会被当成“设置丢了”。</td>
+    </tr>
+  </table>
+  <p class="cap">选 A：它把实现改成与存储一致，而不是反过来。无界面新控件，只是行为变得可预期。</p>
+
+  <h2>快捷键变更（#2）</h2>
+  <table>
+    <tr><th>键</th><th>旧</th><th>新</th><th>理由</th></tr>
+    <tr>
+      <td><code>Ctrl+B</code></td>
+      <td>折叠侧栏<strong>并且</strong>把 <code>\x02</code> 发给远端</td>
+      <td>原样发给远端</td>
+      <td>tmux 前缀键 / readline 光标左移，刚需</td>
+    </tr>
+    <tr>
+      <td><code>Ctrl+Shift+B</code></td>
+      <td>—</td>
+      <td>折叠侧栏（仅本页在前台时）</td>
+      <td>与 Ctrl+Shift+C / A / F 一致</td>
+    </tr>
+  </table>
+  <div class="note no">旧行为是<strong>两件事同时发生</strong>：<code>preventDefault()</code> 不阻止冒泡，
+  xterm 已经先把 <code>\x02</code> 发出去了，事件再冒到 window 把侧栏也切了。
+  用 tmux 的人每按一次前缀键侧栏就闪一下。</div>
+
+  <h2>不做的</h2>
+  <table>
+    <tr><th style="width:32%">候选</th><th>为什么不做</th></tr>
+    <tr><td>标签拖拽排序</td><td>本轮是修 bug，不撑新交互。标签数量通常个位数，收益低。</td></tr>
+    <tr><td>中键关标签</td><td>同上；而且中键在终端里是主选区粘贴，容易打架。</td></tr>
+    <tr><td>终端内分屏</td><td>远超出本次范围。</td></tr>
+  </table>
+
+</div>
+</body>
+</html>

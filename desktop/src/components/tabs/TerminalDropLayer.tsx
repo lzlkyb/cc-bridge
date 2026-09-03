@@ -27,7 +27,7 @@ export function TerminalDropLayer({ up, dropping, count }: Props) {
         />
       )}
       {up.transfer && <TransferBar transfer={up.transfer} onCancel={up.cancel} />}
-      {dropping && <SshDropOverlay count={count} />}
+      {dropping && <SshDropOverlay count={count} busy={up.busy} />}
       <SshUploadSheet
         files={up.pending}
         initialDir={up.dir}

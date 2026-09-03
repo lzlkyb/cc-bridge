@@ -32,18 +32,29 @@ export function useTerminalViewState(
   // 软件内全屏：右侧面板 fixed 铺满窗口，盖住 Header / Tab 栏 / 侧栏。
   const [fullscreen, setFullscreen] = useState(false);
 
-  // 快捷键 Ctrl/Cmd+B 切换折叠（VS Code 习惯）。终端聚焦时 keydown 仍冒泡到 window，
-  // 故全局监听即可；preventDefault 阻止终端把该组合键当输入发往远端。
+  // 快捷键 Ctrl/Cmd+Shift+B 切换折叠。
+  //
+  // 🔴 为什么不是 Ctrl+B（VS Code 习惯）：本页左边是侧栏，右边是一个真终端。
+  // Ctrl+B 在终端里是 tmux 的默认前缀键，也是 readline 的 backward-char（光标左移），
+  // 都是刚需。而且抢也抢不干净：preventDefault **不阻止冒泡**，xterm 已经先把
+  // \x02 发给了远端，事件再冒到这里把侧栏也切了——用 tmux 的人每按一次前缀键
+  // 侧栏就闪一下。现在跟 Ctrl+Shift+C/A/F 一致都带 Shift，并在 `terminalKeymap.ts`
+  // 里把 Ctrl+Shift+B 拦下不发往远端。
+  //
+  // 两道门槛与 F11 相同：本页不在前台时不接。App 用 display:none 隐藏本页（为保活
+  // SSH 会话不卸载），此时 offsetParent 为 null；以前没这道判断，在连接页/日志页
+  // 按这个组合键也会默默把侧栏折叠掉。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
-        e.preventDefault();
-        setCollapsed((c) => !c);
-      }
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey) return;
+      if (e.key.toLowerCase() !== "b") return;
+      if (!rootRef.current?.offsetParent) return;
+      e.preventDefault();
+      setCollapsed((c) => !c);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [rootRef]);
 
   // F11 切全屏。两道门槛：
   // ① 终端页不在前台时不抢 F11——App 用 display:none 隐藏本页（为保活 SSH 会话不卸载），

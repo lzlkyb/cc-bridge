@@ -3,6 +3,14 @@ import type { SshConnection } from "../../lib/types";
 
 /** 一个已建立的 SSH 终端会话（TerminalTab 的 sessions 数组元素）。 */
 export interface SshSessionRef {
+  /**
+   * 标签的**稳定身份**，用作 React key。
+   *
+   * 🔴 不能拿 sessionId 当 key：重连会换一个 sessionId，key 一变组件就重挂，
+   * xterm 实例跟着重建——而「断开后保留标签」的全部意义就是历史输出可读可复制，
+   * 结果点一下「重新连接」就全没了。tabId 在标签的一生里不变。
+   */
+  tabId: string;
   sessionId: string;
   conn: SshConnection;
   /**
@@ -31,6 +39,8 @@ interface ConnectionListItemProps {
   confirmingDelete: boolean;
   onConnect: (conn: SshConnection) => void;
   onDisconnect: (sessionId: string) => void;
+  /** 对该连接再开一个终端（仅在已有活会话时出现）。 */
+  onNewTerminal: (conn: SshConnection) => void;
   onOpenFiles: (conn: SshConnection) => void;
   onEdit: (conn: SshConnection) => void;
   onDeleteRequest: () => void;
@@ -50,6 +60,7 @@ export function ConnectionListItem({
   confirmingDelete,
   onConnect,
   onDisconnect,
+  onNewTerminal,
   onOpenFiles,
   onEdit,
   onDeleteRequest,
@@ -93,13 +104,25 @@ export function ConnectionListItem({
       </div>
       <div className="mt-2 flex items-center gap-1 pl-4">
         {session && !session.closedReason ? (
-          <button
-            type="button"
-            onClick={() => onDisconnect(session.sessionId)}
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-          >
-            <Icon name="power" size={12} /> 断开
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => onDisconnect(session.sessionId)}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+            >
+              <Icon name="power" size={12} /> 断开
+            </button>
+            {/* 另开一个。以前同一台机器只能开一个终端，想一边 tail -f 一边敲命令做不到。
+                只在已连接时出现：没连的时候旁边就是「连接」，再放一个「＋」只会让人猜它们的区别。 */}
+            <button
+              type="button"
+              title="对这台机器再开一个终端"
+              onClick={() => onNewTerminal(conn)}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <Icon name="plus" size={12} />
+            </button>
+          </>
         ) : (
           <button
             type="button"
@@ -163,76 +186,6 @@ export function ConnectionListItem({
           </button>
         )}
       </div>
-    </div>
-  );
-}
-
-interface TerminalTabsBarProps {
-  sessions: SshSessionRef[];
-  activeId: string | null;
-  onActivate: (sessionId: string) => void;
-  /** 已连接的会话点 ×：断开（但保留标签）。 */
-  onDisconnect: (sessionId: string) => void;
-  /** 已断开的会话点 ×：真正移除标签。 */
-  onCloseTab: (sessionId: string) => void;
-}
-
-/**
- * 终端标签栏：多会话时顶部横向标签。
- *
- * × 的语义分两档：**已连接 → 断开（标签保留）；已断开 → 关闭标签**。
- * 这个 11px 的 × 本来是一点就断、无确认；现在第一下只是进入可重连的断开态，
- * 误点不再丢历史输出——比加二次确认好，不多一步点击。
- */
-export function TerminalTabsBar({
-  sessions,
-  activeId,
-  onActivate,
-  onDisconnect,
-  onCloseTab,
-}: TerminalTabsBarProps) {
-  return (
-    <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border bg-card px-2 py-1.5">
-      {sessions.map((s) => {
-        const closed = !!s.closedReason;
-        const active = s.sessionId === activeId;
-        return (
-          <div
-            key={s.sessionId}
-            className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ${
-              active ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-muted"
-            }`}
-          >
-            <button
-              type="button"
-              onClick={() => onActivate(s.sessionId)}
-              className="flex items-center gap-1.5"
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  closed
-                    ? "bg-destructive/60"
-                    : active
-                      ? "bg-green-500"
-                      : "bg-muted-foreground/40"
-                }`}
-              />
-              <span className={closed ? "line-through opacity-70" : undefined}>
-                {s.conn.name || s.conn.host}
-              </span>
-              {s.conn.authType === "key" && <span>🔑</span>}
-            </button>
-            <button
-              type="button"
-              onClick={() => (closed ? onCloseTab(s.sessionId) : onDisconnect(s.sessionId))}
-              className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-              title={closed ? "关闭标签" : "断开（标签保留，可重连）"}
-            >
-              <Icon name="close" size={11} />
-            </button>
-          </div>
-        );
-      })}
     </div>
   );
 }

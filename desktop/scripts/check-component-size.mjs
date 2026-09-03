@@ -46,7 +46,8 @@ const BASELINE = {
   // 🔴 514 行，而且是 2026-09-02 本次重构**新建**的。当时把 621 行的
   // `SshTerminal.tsx` 拆成 115 行 + 这个 hook，并声称“符合规则 7”——
   // 那只是因为当时的规则只管 `.tsx`。这正是本脚本要堵的“搬家”。
-  "src/components/tabs/useSshTerminalSession.ts": { lines: 513 },
+  // 2026-09-03：513 → 443（快捷键钩子→terminalKeymap.ts，粘贴→useTerminalPaste.ts）。
+  "src/components/tabs/useSshTerminalSession.ts": { lines: 443 },
   "src/components/tabs/PerfCharts.tsx": { lines: 401 },
   "src/components/tabs/LogDetailPanel.tsx": { lines: 361 },
   "src/components/tabs/useSshTransfer.ts": { lines: 325 },

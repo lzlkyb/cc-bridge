@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
-import { Icon } from "../ui/icon";
 import { useThemeMode } from "../../hooks/useThemeMode";
 import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
 import type {
@@ -18,7 +17,8 @@ import { TerminalSidebar } from "./TerminalSidebar";
 import { SshEnableGate, SshMissingCard } from "./TerminalGates";
 import { useTerminalViewState } from "./useTerminalViewState";
 import { useSshSessions } from "./useSshSessions";
-import { TerminalTabsBar } from "./TerminalConnectionItem";
+import { TerminalTabsBar } from "./TerminalTabsBar";
+import { TerminalEmptyState } from "./TerminalEmptyState";
 import { useFileDrop } from "./useFileDrop";
 import { useTerminalUpload } from "./useTerminalUpload";
 import { TerminalDropLayer } from "./TerminalDropLayer";
@@ -68,13 +68,19 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   const up = useTerminalUpload(activeConn);
   const drop = useFileDrop({
     collectZones: () => {
-      // 文件面板盖在终端之上时交给它自己的监听器；传输中/待确认时不接新的
-      // ——两批文件的目标目录可能不一样，混在一条进度条里看不出来。
-      if (fileConn || !activeConn || up.busy) return [];
+      // 文件面板盖在终端之上时交给它自己的监听器。
+      // 注意这里**不再**拿 up.busy 当排除条件：忙的时候也要收集拖放区，
+      // 否则遮罩不出、也不提示，用户只知道「没反应」。接不接在 onDrop 里拿主意。
+      if (fileConn || !activeConn) return [];
       const z = zoneOf("terminal", termAreaRef.current);
       return z ? [z] : ([] as DropZone[]);
     },
-    onDrop: (_zone, paths) => void up.dropped(paths),
+    // 忙的时候不接：两批文件的目标目录可能不一样，混在一条进度条里看不出来；
+    // 而且两个循环共用同一个 idRef，取消与进度会打到错误的传输上。
+    onDrop: (_zone, paths) => {
+      if (up.busy) return;
+      void up.dropped(paths);
+    },
   });
 
   const openSession = (sessionId: string) => {
@@ -84,6 +90,11 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   const connect = (conn: SshConnection) => {
     setFileConn(null);
     void ssh.connect(conn);
+  };
+  // 另开一个（不复用现有标签）。
+  const newTerminal = (conn: SshConnection) => {
+    setFileConn(null);
+    void ssh.connect(conn, { newTab: true });
   };
 
   // 启用后探测系统 ssh 可用性（决定降级卡片）。
@@ -167,6 +178,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
         }}
         onConnect={connect}
         onDisconnect={(sessionId) => void ssh.disconnect(sessionId)}
+        onNewTerminal={newTerminal}
         onActivate={openSession}
         onOpenFiles={setFileConn}
         onEdit={(conn) => {
@@ -205,35 +217,20 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
               onActivate={openSession}
               onDisconnect={(sessionId) => void ssh.disconnect(sessionId)}
               onCloseTab={ssh.closeTab}
+              // 只在当前标签还连着时给「新终端」：已断开的标签旁边已经有「重新连接」了。
+              onNewTerminal={activeConn ? () => newTerminal(activeConn) : null}
             />
           )}
           {/* 全部会话都挂载，仅当前可见；后台会话继续收输出 */}
           <div className="relative min-h-0 flex-1">
             {sessions.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                <div className="text-center">
-                  <Icon name="terminal" size={28} className="mx-auto mb-2 opacity-50" />
-                  {/* 折叠态下左侧只剩一条 48px 窄条，再说「从左侧选择」就是指不到东西 */}
-                  {collapsed ? (
-                    <>
-                      <div>还没有打开的终端</div>
-                      <button
-                        type="button"
-                        onClick={() => setCollapsed(false)}
-                        className="mt-2 rounded-md border border-border bg-card px-3 py-1.5 text-xs text-foreground transition-colors hover:bg-muted"
-                      >
-                        展开连接列表
-                      </button>
-                    </>
-                  ) : (
-                    "从左侧选择一个连接开始"
-                  )}
-                </div>
-              </div>
+              <TerminalEmptyState collapsed={collapsed} onExpand={() => setCollapsed(false)} />
             ) : (
               sessions.map((s) => (
+                // 🔴 key 用 tabId 而不是 sessionId：重连会换 sessionId，key 一变组件就重挂、
+                // xterm 跟着重建，断开前的历史输出全没——而保留标签就是为了那些输出。
                 <div
-                  key={s.sessionId}
+                  key={s.tabId}
                   className="absolute inset-0"
                   style={{ display: s.sessionId === activeId ? "block" : "none" }}
                 >
@@ -242,7 +239,11 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
                     conn={s.conn}
                     closedReason={s.closedReason}
                     onClosed={(reason) => ssh.markClosed(s.sessionId, reason)}
-                    onReconnect={() => connect(s.conn)}
+                    // 重连回**这个**标签：同一连接可能有多个标签，不指定就可能接到别人头上。
+                    onReconnect={() => {
+                      setFileConn(null);
+                      void ssh.connect(s.conn, { intoTab: s.tabId });
+                    }}
                     onCloseTab={() => ssh.closeTab(s.sessionId)}
                     visible={s.sessionId === activeId}
                     dragSelectEnabled={status?.sshDragSelectEnabled ?? false}

@@ -27,10 +27,32 @@ export function loadFontSize(): number {
   }
 }
 
+/**
+ * 字号变化的订阅者。
+ *
+ * 🔴 上面那句「字号是**全局**的」以前只是句声明：存储确实是一个全局键，
+ * 但每个终端各自持有 state，没人告诉其它终端“值变了”。于是把 A 调到 20、
+ * B 还是 14，重启后两个都变 20——同一个设置表现得像两个。
+ */
+const listeners = new Set<(n: number) => void>();
+
+/** 订阅字号变化（另一个终端调了字号）；返回退订函数。 */
+export function subscribeFontSize(fn: (n: number) => void): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
+/** 存盘并广播给所有开着的终端。 */
 export function saveFontSize(n: number): void {
+  const v = clampFontSize(n);
   try {
-    localStorage.setItem(KEY, String(clampFontSize(n)));
+    localStorage.setItem(KEY, String(v));
   } catch {
     /* 存不下就算了，不影响当前会话 */
   }
+  // 广播不能放进上面的 try：没有 localStorage 时存盘失败是可接受的，
+  // 但本次会话内的同步不能跟着一起挂。
+  listeners.forEach((fn) => fn(v));
 }

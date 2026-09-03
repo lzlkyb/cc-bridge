@@ -4,7 +4,8 @@
 //! 范围：人在面板手动操作交互终端 + 远程 Linux 登录（密码 / 私钥 + 密码短语），
 //! 并支持在面板内做 SFTP 文件传输。后端用系统自带 OpenSSH（Windows/macOS 自带）
 //! + `portable_pty` 提供的 PTY（Windows=ConPTY / Unix=pty），输出经
-//! `app.emit("ssh_output", ...)` 事件流推前端；SFTP 传输复用同一套「PTY + 凭据自动填充」机制，
+//! `app.emit(ssh_output_event(&sid), ...)` 事件流推前端（每会话一个事件名，并按一帧合批）；
+//! SFTP 传输复用同一套「PTY + 凭据自动填充」机制，
 //! 只是把输出捕获成结构化结果而非流式推屏。
 //!
 //! 🔴 安全：SSH 凭据只经 Tauri IPC 写入本机（`save_config` patch），绝不注册为 MCP 工具，
@@ -807,6 +808,10 @@ fn spawn_capture(
         let mut buf = [0u8; 4096];
         let mut creds = auto_creds;
         let mut last_percent: Option<u8> = None;
+        // 🔴 必须跨 read 增量解码：4096 字节的读取边界会把一个中文字符劈成两半，
+        // 逐块 from_utf8_lossy 会把两半各自变成 U+FFFD。这条路径上跑的是 `ls` 输出，
+        // 直接体现为**中文文件名乱码**；同时还会让下面「密码：」的中文提示匹配失效。
+        let mut dec = crate::utf8_stream::Utf8Stream::new();
         // 认证窗口：过期即丢弃待填凭据，不再对任何输出反应（见 CREDENTIAL_FILL_WINDOW）。
         let fill_deadline = Instant::now() + CREDENTIAL_FILL_WINDOW;
         loop {
@@ -814,9 +819,10 @@ fn spawn_capture(
                 Ok(0) => break,
                 Ok(n) => {
                     let chunk = &buf[..n];
-                    {
+                    let text = dec.push(chunk);
+                    if !text.is_empty() {
                         let mut s = cap_for_reader.lock().unwrap();
-                        s.push_str(&String::from_utf8_lossy(chunk));
+                        s.push_str(&text);
                         collapse_progress(&mut s);
                     }
                     // 进度：只在传输类调用（带钩子）时上报，且**百分比变了才发**——
@@ -842,11 +848,12 @@ fn spawn_capture(
                     // 提示未到就什么都不做，继续等（受上面的时间窗约束）。
                     // 哪一个槽该答这个提示交给 `PendingCreds`：走跳板机时一次连接有
                     // **两段登录**，把目标机密码填给跳板机提示是一个真实的泄露。
-                    if creds.has_any() {
-                        let text = String::from_utf8_lossy(chunk);
-                        let filled = if password_prompt_in(chunk) {
+                    // 提示匹配走**解码后**的文本，不再看裸 chunk：否则一个被劈开的
+                    // 「密、码」就能让整句中文提示匹配不上，表现为自动填密码静默失效。
+                    if creds.has_any() && !text.is_empty() {
+                        let filled = if password_prompt_in(text.as_bytes()) {
                             creds.take_password(&text)
-                        } else if passphrase_prompt_in(chunk) {
+                        } else if passphrase_prompt_in(text.as_bytes()) {
                             creds.take_passphrase(&text)
                         } else {
                             None
@@ -862,6 +869,13 @@ fn spawn_capture(
                 }
                 Err(_) => break,
             }
+        }
+        // EOF 收尾：流结束了，残字节再等不到后续，此时才该落盘。
+        let tail = dec.flush();
+        if !tail.is_empty() {
+            let mut s = cap_for_reader.lock().unwrap();
+            s.push_str(&tail);
+            collapse_progress(&mut s);
         }
         let _ = prompt_tx.send(());
     });
@@ -1114,6 +1128,30 @@ pub async fn ssh_delete_connection(
     Ok(())
 }
 
+/// 终端输出的合批窗口（一帧）。
+///
+/// 以前每读到 4096 字节就 emit 一次，`cat 大文件` / `yes` 能把这个频率推到
+/// 每秒上万个 IPC 事件，每个都要 JSON 序列化一次——webview 主线程直接被淹。
+/// 选一帧是因为 xterm 本来就是攒到 rAF 才渲染，比一帧更细的推送不会让人更早看到。
+const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+
+/// 单批上限：攻到这个量就立刻发，不等窗口走完。
+const OUTPUT_BATCH_MAX: usize = 64 * 1024;
+
+/// 按会话独立的输出事件名。
+///
+/// WHY 不再用全局的 `ssh_output`：Tauri 的事件是**广播**，N 个会话就有 N 个监听器，
+/// 每条输出都要在每个监听器上反序列化一次，再被其中 N-1 个按 sessionId 丢掉。
+///
+/// 去掉 uuid 里的连字符、只留字母数字，是为了稳当地落在 Tauri 的事件名字符集里，
+/// 不去赌它到底收不收 `-`。前端的 `sshOutputEvent()` 必须与此逐字一致。
+pub fn ssh_output_event(session_id: &str) -> String {
+    let mut s = String::with_capacity(11 + session_id.len());
+    s.push_str("ssh_output_");
+    s.extend(session_id.chars().filter(|c| c.is_ascii_alphanumeric()));
+    s
+}
+
 /// 建立 SSH 终端会话：开 PTY 跑系统 ssh，启动 reader 线程持续推送输出。
 ///
 /// 返回 session_id（前端后续 ssh_input / ssh_resize / ssh_disconnect 用它路由）。
@@ -1203,6 +1241,63 @@ pub async fn ssh_connect(
     // 7) reader 线程：持续读 PTY 输出 → emit ssh_output；EOF → 按情形 emit
     //    ssh_closed（正常断开）或 ssh_connect_failed（早期失败）+ 移除会话。
     //    若 remember_password，检测密码提示后自动写密码（中英文提示兼容）。
+    // 7a) 输出泵：另起一个线程把 reader 送过来的文本按时间窗合批后再 emit。
+    //
+    // 🔴 为什么不在 reader 里直接攒：reader 阻塞在 `read()` 上，一旦远端安静下来，
+    // 攒在手里的最后一批就再也没人发了——命令输出的末尾几十字节会死在缓冲里。
+    // 独立线程用 `recv_timeout` 就天然有一个「没新数据也要刷一次」的兵。
+    let (out_tx, out_rx) = mpsc::channel::<String>();
+    let app_pump = app.clone();
+    let ev_pump = ssh_output_event(&session_id);
+    let sid_pump = session_id.clone();
+    let pump = std::thread::spawn(move || {
+        let mut buf = String::new();
+        // 没 emit 过之前不讲节流：首屏（ssh banner / 密码提示）必须立刻出来。
+        let mut ever_emitted = false;
+        let mut last_emit = Instant::now();
+        let emit = |data: String| {
+            let _ = app_pump.emit(
+                &ev_pump,
+                SshOutput {
+                    session_id: sid_pump.clone(),
+                    data,
+                },
+            );
+        };
+        loop {
+            match out_rx.recv_timeout(OUTPUT_FLUSH_INTERVAL) {
+                Ok(s) => {
+                    buf.push_str(&s);
+                    // 🔴 「离上次发已经超过一帧」时立即发，而不是无条件等满一帧：
+                    // 后者会给**每一次敲键回显**都加上 16ms 延迟。终端对这个极敏感，
+                    // 而交互场景下上一次 emit 本来就早过一帧了——所以只有真在洪水时才会限流。
+                    if buf.len() >= OUTPUT_BATCH_MAX
+                        || !ever_emitted
+                        || last_emit.elapsed() >= OUTPUT_FLUSH_INTERVAL
+                    {
+                        emit(std::mem::take(&mut buf));
+                        ever_emitted = true;
+                        last_emit = Instant::now();
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if !buf.is_empty() {
+                        emit(std::mem::take(&mut buf));
+                        ever_emitted = true;
+                        last_emit = Instant::now();
+                    }
+                }
+                // reader 退出（丢了 tx）：把尾巴发完再收工。
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    if !buf.is_empty() {
+                        emit(buf);
+                    }
+                    break;
+                }
+            }
+        }
+    });
+
     let app2 = app.clone();
     let app_state = state.inner().clone();
     let sid = session_id.clone();
@@ -1210,6 +1305,9 @@ pub async fn ssh_connect(
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut creds = auto_creds;
+        // 🔴 必须跨 read 增量解码：4096 字节的读取边界会把一个中文字符劈成两半，
+        // 逐块 from_utf8_lossy 把两半各自变成 U+FFFD——实测纯中文下**每 ~4KB 烂一个字**。
+        let mut dec = crate::utf8_stream::Utf8Stream::new();
         // 认证窗口：过期即丢弃待填凭据。密钥认证成功时密码提示永远不会到来，
         // 没有这道线密码就会在已登录的 shell 里继续待命（见 CREDENTIAL_FILL_WINDOW）。
         let fill_deadline = Instant::now() + CREDENTIAL_FILL_WINDOW;
@@ -1217,14 +1315,7 @@ pub async fn ssh_connect(
             match reader.read(&mut buf) {
                 Ok(0) => break, // EOF：ssh 进程结束
                 Ok(n) => {
-                    let chunk = &buf[..n];
-                    let _ = app2.emit(
-                        "ssh_output",
-                        SshOutput {
-                            session_id: sid.clone(),
-                            data: String::from_utf8_lossy(chunk).to_string(),
-                        },
-                    );
+                    let text = dec.push(&buf[..n]);
                     // 窗口关闭：立即丢弃明文，不让它在内存里挂着，也不再可能被误触。
                     if Instant::now() >= fill_deadline {
                         creds.clear();
@@ -1232,11 +1323,13 @@ pub async fn ssh_connect(
                     // 凭据自动填充：提示未到就什么都不做，继续等（受上面的时间窗约束）。
                     // 哪一个槽该答这个提示交给 `PendingCreds`：走跳板机时一次连接有
                     // **两段登录**，把目标机密码填给跳板机提示是一个真实的泄露。
-                    if creds.has_any() {
-                        let text = String::from_utf8_lossy(chunk);
-                        let filled = if password_prompt_in(chunk) {
+                    //
+                    // 提示匹配走**解码后**的文本，不再看裸 chunk：否则一个被劈开的
+                    // 「密、码」就能让整句中文提示匹配不上，表现为自动填密码静默失效。
+                    if creds.has_any() && !text.is_empty() {
+                        let filled = if password_prompt_in(text.as_bytes()) {
                             creds.take_password(&text)
-                        } else if passphrase_prompt_in(chunk) {
+                        } else if passphrase_prompt_in(text.as_bytes()) {
                             creds.take_passphrase(&text)
                         } else {
                             None
@@ -1251,10 +1344,25 @@ pub async fn ssh_connect(
                             }
                         }
                     }
+                    // 最后才交给输出泵（上面的提示匹配要借用 text，这里直接移走不用拷贝）。
+                    // 发送失败只可能是泵线程已退，此时也就不必再推了。
+                    if !text.is_empty() {
+                        let _ = out_tx.send(text);
+                    }
                 }
                 Err(_) => break,
             }
         }
+        // EOF 收尾：残字节再等不到后续，此刻才该落盘。
+        let tail = dec.flush();
+        if !tail.is_empty() {
+            let _ = out_tx.send(tail);
+        }
+        // 🔴 先关掉 tx 并等泵线程把攒的都发完，再发断开/失败事件。
+        // 否则「连接已断开」会赶在最后一批输出前面到达，而那一批往往正是断开原因
+        // （sshd 的 "Connection closed by ..."）——用户会看到一个没有上文的错误。
+        drop(out_tx);
+        let _ = pump.join();
         // EOF：ssh 进程结束。区分三种情形：
         // 1) 主动断开（disconnected 已置）→ 静默，前端早已清 UI。
         // 2) 进程在失败宽限期内自行退出且非主动断开 → 连接早期失败（主机/端口/认证），
@@ -1321,11 +1429,15 @@ pub async fn ssh_input(
         .ok_or_else(|| format!("SSH 会话不存在或已断开：{session_id}"))?;
     // 诊断日志（debug 构建）：确认前端 onData → ssh_input 是否真正到达后端。
     // 若敲键时后台出现该日志，说明链路通、问题在下游；若不出现，说明前端 onData 未触发（焦点）。
+    //
+    // 🔴 只能打长度，不能打内容。这里流过的就是用户敲的每一个字符——包括在
+    // 远端密码提示下手动输入的密码。本项目对凭据的基线是「明文绝不外露」，
+    // 把它逐字符打进 dev 控制台与这条基线直接冲突。长度足够完成它的诊断职责。
     #[cfg(debug_assertions)]
     eprintln!(
-        "[SSH] input session={} data={:?}",
+        "[SSH] input session={} bytes={}",
         &session_id[..8.min(session_id.len())],
-        data
+        data.len()
     );
     let mut w = entry
         .writer
@@ -1927,6 +2039,20 @@ mod tests {
     fn tolerates_non_utf8_chunks() {
         assert!(!password_prompt_in(&[0xff, 0xfe, 0x80]));
         assert!(!passphrase_prompt_in(&[0xff, 0xfe, 0x80]));
+    }
+
+    /// 事件名只能含字母数字与下划线（uuid 的连字符必须被剔掉），
+    /// 且不同会话必须得到不同的名字——否则两个终端会收到彼此的输出。
+    /// 前端 `lib/terminalEvents.ts` 里有一条用同一个 uuid 对照的字面量断言。
+    #[test]
+    fn output_event_name_is_per_session_and_charset_safe() {
+        let a = ssh_output_event("3f2b1c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d");
+        assert_eq!(a, "ssh_output_3f2b1c4d5e6f7a8b9c0d1e2f3a4b5c6d");
+        assert!(
+            a.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "事件名出现了不在安全字符集里的字符：{a}"
+        );
+        assert_ne!(a, ssh_output_event("00000000-0000-0000-0000-000000000001"));
     }
 
     // ── ls 解析 ────────────────────────────────────────────────────

@@ -21,6 +21,16 @@ export const MOUSE_REPORT_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 /** 拖拽超过这个像素数才算「拖选」，以下当普通点击（不影响 TUI 定位光标）。 */
 const DRAG_THRESHOLD = 4;
+/**
+ * 选区缓存的有效期。
+ *
+ * 🔴 没有这条线时缓存只增不减，是一个真实的误操作陷阱：按过一次 Ctrl+Shift+A
+ * 全选之后，之后任何一次「复制选中」只要当下没有选区，都会静默回退到那份
+ * **整个滚动历史（5000 行）**的缓存——用户以为复制的是刚拖选的内容。
+ * 缓存的唯一用途是抵御 TUI 每帧重绘冲空 live selection，那是毫秒级的事，
+ * 10 秒远远够用。
+ */
+const SELECTION_CACHE_TTL_MS = 10_000;
 /** 同一次松手可能触发多个 pointerup（或 HMR 累积的多个监听闭包），窗口内只复制一次。 */
 const COPY_DEDUP_MS = 500;
 
@@ -73,8 +83,19 @@ export function useSshTerminalSelect({
   const selectActiveRef = useRef(false);
   // 选区缓存：远端 TUI（Claude Code）每帧重绘会清空刚建立的本地选区，导致点「复制选中」时
   // term.getSelection() 已被冲空（而右键在 mouseup 瞬间复制故成功）。用 onSelectionChange 把最近
-  // 一次非空选区缓存下来，按钮优先读缓存。
-  const lastSelectionRef = useRef("");
+  // 一次非空选区缓存下来，按钮优先读缓存。带时间戳，过期即废（见 SELECTION_CACHE_TTL_MS）。
+  const lastSelectionRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
+
+  /** 读缓存的选区；超期就当没有，并顺手丢掉（不让一份 5000 行的字符串常驻）。 */
+  const cachedSelection = useCallback(() => {
+    const c = lastSelectionRef.current;
+    if (!c.text) return "";
+    if (Date.now() - c.at > SELECTION_CACHE_TTL_MS) {
+      lastSelectionRef.current = { text: "", at: 0 };
+      return "";
+    }
+    return c.text;
+  }, []);
   // 复制去重时间戳：跨所有松手监听实例共享（HMR 可能累积多个闭包）。
   const lastCopyAtRef = useRef(0);
   const pointerDownRef = useRef(false);
@@ -84,14 +105,14 @@ export function useSshTerminalSelect({
   const toggleSelectMode = useCallback(() => setSelectMode((v) => !v), []);
 
   const hasSelection = useCallback(
-    () => Boolean(termRef.current?.getSelection() || lastSelectionRef.current),
-    [termRef],
+    () => Boolean(termRef.current?.getSelection() || cachedSelection()),
+    [termRef, cachedSelection],
   );
 
   const copySelection = useCallback(() => {
     // 优先读 live selection；被 TUI 重绘冲空时回退到缓存的最近非空选区。
     const live = termRef.current?.getSelection() ?? "";
-    const sel = live || lastSelectionRef.current;
+    const sel = live || cachedSelection();
     if (!sel) {
       toast("未选中文字：请先拖选，或点「复制整屏」", "error");
       return;
@@ -100,7 +121,7 @@ export function useSshTerminalSelect({
       .writeText(sel)
       .then(() => toast("已复制选中文字", "success"))
       .catch(() => toast("复制失败", "error"));
-  }, [termRef]);
+  }, [termRef, cachedSelection]);
 
   const attach = useCallback(
     (term: Terminal, container: HTMLElement) => {
@@ -151,7 +172,7 @@ export function useSshTerminalSelect({
         const t = termRef.current;
         if (!t) return;
         const live = t.getSelection() ?? "";
-        const sel = live || lastSelectionRef.current;
+        const sel = live || cachedSelection();
         if (!sel) {
           // 空选区：拖拽临时选择态直接退出（不复制、不提示）；手动/Shift 选择态保留供后续操作。
           if (dragSelectRef.current) {
@@ -198,7 +219,7 @@ export function useSshTerminalSelect({
       // 选区缓存：选区一旦变化且非空即记入，抵御 TUI 持续重绘清空 live selection。
       const offSel = term.onSelectionChange(() => {
         const s = term.getSelection();
-        if (s) lastSelectionRef.current = s;
+        if (s) lastSelectionRef.current = { text: s, at: Date.now() };
       });
 
       return () => {
@@ -211,7 +232,7 @@ export function useSshTerminalSelect({
         offSel.dispose();
       };
     },
-    [termRef, focusedRef, dragSelectEnabledRef],
+    [termRef, focusedRef, dragSelectEnabledRef, cachedSelection],
   );
 
   // 选择态（手动选择模式 或 按住 Shift）开关：直接写到【本地 xterm】关闭鼠标报告。

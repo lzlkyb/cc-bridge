@@ -31,7 +31,7 @@ pub struct CwdSession {
 /// 一条 SSH 终端会话（面板内交互终端，首版密码登录）。
 ///
 /// 由 `ssh_connect` 创建：用 `portable_pty` 开 PTY 跑系统 `ssh`，reader 由独立线程
-/// 持续 `emit("ssh_output")` 推前端，writer 接收前端键入，child 为 ssh 进程。
+/// 持续推本会话专属的 `ssh_output_<hex>` 事件给前端，writer 接收前端键入，child 为 ssh 进程。
 /// `master` 仅用于 `set_size`（窗口缩放）；writer 自身即 PTY stdin 通道。
 pub struct SshSession {
     /// PTY master：持有它才能 `set_size`（缩放），drop 时关闭 PTY 设备。
