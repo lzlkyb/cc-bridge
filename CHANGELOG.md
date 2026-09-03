@@ -42,7 +42,7 @@
 - `useSshTerminalSession` 的创建 effect 拆成两个：实例生命周期（不含 sessionId）+ 会话接线（按 sessionId 重挂）。分辨「首次挂载」与「重连」用的是比对 sessionId 而不是布尔量，否则 StrictMode 的双调会误报一次「已重新连接」。
 - 拆出 `terminalKeymap.ts`（快捷键拦截）、`useTerminalPaste.ts`（粘贴）、`TerminalTabsBar.tsx`、`TerminalEmptyState.tsx`；`useSshTerminalSession.ts` 513 → 443 行，棘轮基线跟着调低。
 - 字号同步靠 `lib/terminalFontSize.ts` 里的一个订阅集合；广播故意放在存盘的 `try` 外面（没有 localStorage 时存盘可以失败，本次会话内的同步不能跟着挂）。
-- ❗ 本机 `cargo test` 目前跑不起来：测试二进制启动即挂 `0xc0000139`（getrandom 0.3+/0.4 链的 `ProcessPrng` 在本机不可用）。已在干净 HEAD 上复现，**与本次改动无关**；Rust 新增逻辑改用独立 crate 验证（6 条全通，并反向确认换回旧实现会红 3 条）。
+- 本机 `cargo test` 中途有一阵跑不起来：测试二进制启动即挂 `0xc0000139`（getrandom 0.3+/0.4 链的 `ProcessPrng` 在本机不可用），在干净 HEAD 上也能复现。Rust 新增逻辑因此先用独立 crate 验证（6 条全通，并反向确认换回旧实现会红 3 条）。**提交前复测已恢复正常**：`cargo test --no-default-features` 312 passed + `tests/perf_real.rs` 4 passed，全绿。
 
 ## [2.7.3] - 2026-09-02
 
