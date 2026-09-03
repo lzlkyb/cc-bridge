@@ -701,7 +701,7 @@ jobs:
         working-directory: desktop
         env:
           GITHUB_RELEASE_TAG: ${{ github.ref_name }}
-          UPDATER_DOWNLOAD_BASE: "https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download"
+          UPDATER_DOWNLOAD_BASE: "https://gh-proxy.com/https://github.com/${{ github.repository }}/releases/download"
 
       - name: 生成 Gitee 变体的 mac 片段（覆盖 URL 为 Gitee 直链）
         run: |
@@ -879,7 +879,7 @@ jobs:
           UPDATER_MERGE_INTO: ${{ github.workspace }}\mac-artifact\updater-macos.json
           # 二进制下载走 ghproxy 镜像，解决国内用户下载慢；元数据检查另有 tauri.conf.json 的 GitHub 端点兜底。
           # 注意：updater.json 的 url 为单值、无二进制级兜底，故 ghproxy 域名需稳定；若失效改此 env + config 即可。
-          UPDATER_DOWNLOAD_BASE: "https://ghproxy.net/https://github.com/${{ github.repository }}/releases/download"
+          UPDATER_DOWNLOAD_BASE: "https://gh-proxy.com/https://github.com/${{ github.repository }}/releases/download"
 
       - name: 校验 updater.json 签名非空
         shell: pwsh
