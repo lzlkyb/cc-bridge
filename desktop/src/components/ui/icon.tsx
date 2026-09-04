@@ -62,6 +62,11 @@ const paths: Record<string, string> = {
   // 三个点靠 strokeLinecap="round" 的零长线段画出来（与 alert/info 的 "h.01" 同一套做法）。
   more: "M5 12h.01M12 12h.01M19 12h.01",
   collapse: "M3 8h3a2 2 0 0 0 2-2V3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M21 16h-3a2 2 0 0 0-2 2v3",
+  // 终端状态栏的 git 分支段。刻意不用 emoji（依赖 Nerd Font，缺字体就是豆腐块），
+  // 与整套图标一样走内联 SVG。
+  gitBranch: "M6 3v12M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM15 6a9 9 0 0 0-9 9",
+  // 终端风格调色板。lucide 原版 palette 图标，与整套内联 SVG 风格一致。
+  palette: "M12 3a9 9 0 0 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1-.23-.27-.39-.62-.39-1 0-.83.67-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.42-4.03-8-9-8zM6.5 9a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm4-4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm5 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z",
 };
 
 export type IconName = keyof typeof paths;

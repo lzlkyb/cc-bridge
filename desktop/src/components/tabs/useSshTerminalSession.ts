@@ -25,9 +25,14 @@ import { toast } from "../ui/toast";
 import { MOUSE_REPORT_OFF } from "./useSshTerminalSelect";
 import { attachTerminalKeymap, type TerminalKeyActions } from "./terminalKeymap";
 import { sshOutputEvent } from "../../lib/terminalEvents";
-import { TERMINAL_FONT, TERMINAL_SCROLLBACK, terminalTheme } from "../../lib/terminalTheme";
+import {
+  TERMINAL_FONT,
+  TERMINAL_SCROLLBACK,
+  terminalTheme,
+  type TerminalPreset,
+} from "../../lib/terminalTheme";
 import { loadFontSize } from "../../lib/terminalFontSize";
-import { rowsToDrop } from "../../lib/terminalFit";
+import { useTerminalFit } from "../../hooks/useTerminalFit";
 import { useTerminalPaste } from "./useTerminalPaste";
 import type { Theme } from "../../lib/theme";
 import type { SshOutput, SshClosed, SshConnectFailed } from "../../lib/types";
@@ -40,7 +45,10 @@ interface Args {
   visible: boolean;
   /** 软件内全屏态：变化时容器尺寸剧变，需要重新 fit。 */
   fullscreen: boolean;
+  /** 亮/暗主题。 */
   mode: Theme;
+  /** 终端风格预设（靖蓝/极简/经典/高对比），决定 xterm 的 ANSI 色盘。 */
+  preset: TerminalPreset;
   /** 会话已断开：禁掉键入，但终端保留（历史输出仍可滚可选可复制）。 */
   closed: boolean;
   /** 会话结束（远端断开 / 连接失败），带原因。 */
@@ -70,6 +78,7 @@ export function useSshTerminalSession({
   visible,
   fullscreen,
   mode,
+  preset,
   closed,
   onClosed,
   containerRef,
@@ -88,6 +97,10 @@ export function useSshTerminalSession({
   onClosedRef.current = onClosed;
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  // preset 同样用 ref 承接：它若进创建 effect 的依赖，换个风格就会 dispose/重建 xterm，
+  // 滚动历史（5000 行）与当前连接全丢。热切换在下面单独一个 effect 里做。
+  const presetRef = useRef(preset);
+  presetRef.current = preset;
   const closedRef = useRef(closed);
   closedRef.current = closed;
   // 焦点状态：xterm 仅在隐藏 textarea 拿到焦点时 onData 才触发。未聚焦时在前台提示用户点击。
@@ -99,41 +112,9 @@ export function useSshTerminalSession({
   // 而它每敲一个字符就 setState 一次，等于每字符一次 React 重渲染。
   const [inputErr, setInputErr] = useState<string | null>(null);
 
-  /**
-   * 重算终端尺寸。只读 ref，故引用永久稳定。
-   *
-   * fit() 之后多一步实测、超了就回退行数，算法与理由见 `lib/terminalFit.ts`。
-   */
-  const doFit = useCallback(() => {
-    const fit = fitRef.current;
-    const term = termRef.current;
-    const box = containerRef.current;
-    if (!fit || !term || !box) return;
-    // 🔴 容器被隐藏时必须在 fit() **之前**就返回。
-    // 切会话 / 切 app tab 都是用 display:none 隐藏（为保活 SSH 会话不卸载），此时容器尺寸为 0，
-    // 而 FitAddon 算出的是 `Math.max(1, floor(0/行高)) = 1` 行 × 2 列——它会把这个尺寸
-    // 通过 onResize 发给远端 PTY，远端 TUI 会照着 1x2 重排。ResizeObserver 在元素变为
-    // display:none 时会以 0×0 触发，所以这条路径是真会走到的。
-    if (box.clientHeight === 0 || box.clientWidth === 0) return;
-    try {
-      fit.fit();
-    } catch {
-      return; // 元素未挂载时 fit 会抛，忽略
-    }
-    const el = term.element;
-    if (!el) return;
-    // 量 `.xterm-screen`（正是 rows × 行高 那个盒子）与 `.xterm` 两者的较大值：
-    // 前者直接对应渲染出来的字符网格，后者在不同 xterm 版本的 DOM 结构下未必跟随内容高。
-    // 用 getBoundingClientRect 而不是 offsetHeight/clientHeight：后者是取整值，两个盒子各自
-    // 舍入会凭空造出不足 1px 的“溢出”（缩放 125% 下很常见）。
-    const screen = el.querySelector<HTMLElement>(".xterm-screen");
-    const contentH = Math.max(
-      el.getBoundingClientRect().height,
-      screen?.getBoundingClientRect().height ?? 0,
-    );
-    const drop = rowsToDrop(contentH, box.getBoundingClientRect().height, term.rows);
-    if (drop > 0) term.resize(term.cols, term.rows - drop);
-  }, [containerRef, termRef]);
+  // 尺寸适配（fit + 实测回退）单独成 hook：纯 DOM 测量，与会话生命周期无关，
+  // 引用永久稳定（只读 ref），可安全进任何 effect 的依赖数组。
+  const doFit = useTerminalFit({ containerRef, termRef, fitRef });
 
   // 粘贴（含多行确认框）单独成 hook，与终端生命周期无逻辑耦合。
   const { paste, pastePrompt } = useTerminalPaste({ sessionId, closedRef, termRef });
@@ -176,11 +157,12 @@ export function useSshTerminalSession({
     return () => cancelAnimationFrame(id);
   }, [fullscreen, doFit]);
 
-  // 主题热切换：直接改 options.theme，**不重建终端**，历史输出与连接全保留。
+  // 主题/预设热切换：直接改 options.theme，**不重建终端**，历史输出与连接全保留。
+  // 切预设只影响颜色，不动 rows/cols，所以不需要 fit。
   useEffect(() => {
     const term = termRef.current;
-    if (term) term.options.theme = terminalTheme(mode);
-  }, [mode, termRef]);
+    if (term) term.options.theme = terminalTheme(mode, preset);
+  }, [mode, preset, termRef]);
 
   // 断开后禁掉键入与光标闪烁：终端保留只是为了让历史输出可读可复制，
   // 再让它看起来像能敲东西就是误导（敲下去只会得到一堆「输入失败」）。
@@ -202,7 +184,7 @@ export function useSshTerminalSession({
       cursorBlink: true,
       allowProposedApi: true,
       scrollback: TERMINAL_SCROLLBACK,
-      theme: terminalTheme(modeRef.current),
+      theme: terminalTheme(modeRef.current, presetRef.current),
     });
     const fit = new FitAddon();
     term.loadAddon(fit);

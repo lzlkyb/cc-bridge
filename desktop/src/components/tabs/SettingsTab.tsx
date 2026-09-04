@@ -10,6 +10,7 @@ import { McpBridgeGroup } from "./settings/mcpbridge/McpBridgeGroup";
 import { BackupAuditGroup } from "./settings/BackupAuditGroup";
 import { NotifyGroup } from "./settings/NotifyGroup";
 import { AdvancedGroup } from "./settings/AdvancedGroup";
+import { TerminalGroup } from "./settings/TerminalGroup";
 import { AppGroup } from "./settings/AppGroup";
 import { InstallGroup } from "./settings/InstallGroup";
 import { ConfigGroup } from "./settings/ConfigGroup";
@@ -80,6 +81,9 @@ export function SettingsTab({
       <BackupAuditGroup status={status} onSaved={onSaved} />
       <NotifyGroup status={status} onSaved={onSaved} />
       <AdvancedGroup status={status} onSaved={onSaved} />
+      {/* 紧跟「高级」：终端拖拽即选在那张卡里，终端相关的两项挨着放。
+          风格是低频但会回头改的项，故不塞进「装完很少再动」的高级卡。 */}
+      <TerminalGroup />
       <AppGroup />
       <InstallGroup platform={status?.platform} onReopenOnboarding={onReopenOnboarding} />
       <ConfigGroup status={status} onSaved={onSaved} />

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { useThemeMode } from "../../hooks/useThemeMode";
+import { useTerminalPreset } from "../../hooks/useTerminalPreset";
 import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
 import type {
   SshConnection,
@@ -47,7 +48,8 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const mode = useThemeMode();
-  const surface = TERMINAL_SURFACE[mode];
+  const preset = useTerminalPreset();
+  const surface = TERMINAL_SURFACE[preset][mode];
 
   const ssh = useSshSessions();
   const { sessions, activeId } = ssh;

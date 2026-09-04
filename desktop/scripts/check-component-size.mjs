@@ -47,7 +47,8 @@ const BASELINE = {
   // `SshTerminal.tsx` 拆成 115 行 + 这个 hook，并声称“符合规则 7”——
   // 那只是因为当时的规则只管 `.tsx`。这正是本脚本要堵的“搬家”。
   // 2026-09-03：513 → 443（快捷键钩子→terminalKeymap.ts，粘贴→useTerminalPaste.ts）。
-  "src/components/tabs/useSshTerminalSession.ts": { lines: 443 },
+  // 2026-09-04：443 → 425（尺寸适配→hooks/useTerminalFit.ts；终端预设功能在同文件内净减）。
+  "src/components/tabs/useSshTerminalSession.ts": { lines: 425 },
   "src/components/tabs/PerfCharts.tsx": { lines: 401 },
   "src/components/tabs/LogDetailPanel.tsx": { lines: 361 },
   "src/components/tabs/useSshTransfer.ts": { lines: 325 },

@@ -8,7 +8,10 @@ import { useSshTerminalSession } from "./useSshTerminalSession";
 import { useTerminalSearch } from "./useTerminalSearch";
 import { useTerminalFontSize } from "./useTerminalFontSize";
 import { SshTerminalFind } from "./SshTerminalFind";
+import { TerminalStatusBar } from "./TerminalStatusBar";
 import { useThemeMode } from "../../hooks/useThemeMode";
+import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
+import { useTerminalOsc } from "../../hooks/useTerminalOsc";
 import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import type { SshConnection } from "../../lib/types";
@@ -60,6 +63,8 @@ export function SshTerminal({
   // 右键菜单锚点（视口坐标），null = 不显示。
   const [menuPos, setMenuPos] = useState<TerminalMenuPos | null>(null);
   const mode = useThemeMode();
+  const preset = useTerminalPreset();
+  const inject = useTerminalInject();
   const closed = closedReason !== null;
 
   const select = useSshTerminalSelect({ termRef, focusedRef, dragSelectEnabledRef });
@@ -69,6 +74,7 @@ export function SshTerminal({
     visible,
     fullscreen,
     mode,
+    preset,
     closed,
     onClosed,
     containerRef,
@@ -81,6 +87,8 @@ export function SshTerminal({
     openSearch: search.openSearch,
   });
   const font = useTerminalFontSize({ termRef, containerRef, doFit });
+  // 远端状态探测：注入钩子 + 解析 OSC。钩子关闭 / 不支持时自动降级，终端本身不受影响。
+  const { status, state } = useTerminalOsc({ sessionId, enabled: inject, closed, termRef });
 
   // 右键：阻掉默认菜单，改弹自己的复制/粘贴/全选。用视口坐标定位，
   // 因为终端容器带 overflow-hidden，菜单挂在容器内会被裁掉。
@@ -95,7 +103,7 @@ export function SshTerminal({
     return () => container.removeEventListener("contextmenu", onContextMenu);
   }, []);
 
-  const surface = TERMINAL_SURFACE[mode];
+  const surface = TERMINAL_SURFACE[preset][mode];
   return (
     <div className="flex h-full min-h-0 flex-col" style={{ background: surface }}>
       <SshTerminalToolbar
@@ -114,6 +122,15 @@ export function SshTerminal({
         onToggleSelectMode={select.toggleSelectMode}
         onClear={() => termRef.current?.clear()}
         onToggleFullscreen={onToggleFullscreen}
+      />
+      <TerminalStatusBar
+        sessionId={sessionId}
+        conn={conn}
+        preset={preset}
+        mode={mode}
+        status={status}
+        state={state}
+        closed={closed}
       />
       {closedReason !== null && (
         <SshDisconnectedBar

@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon";
+import { Menu, MenuItem } from "../ui/Menu";
+import { useTerminalPreset } from "../../hooks/useTerminalPreset";
+import { setPreset, PRESETS } from "../../lib/terminalPreset";
+import { TERMINAL_PALETTES, type TerminalPreset } from "../../lib/terminalTheme";
 import type { SshConnection } from "../../lib/types";
 
 interface Props {
@@ -29,6 +32,8 @@ interface Props {
  * 按钮分两层：常用的（复制选中 / 粘贴 / 全屏）直接露出，不常用的（复制整屏 / 选择模式 / 清屏）
  * 收进「更多」菜单并**带上文字**——纯图标并列时 `sliders` 代表「选择模式」基本猜不出来。
  * 清屏收进去也顺带降了误点风险（它会清掉滚动历史且无法撤销）。
+ *
+ * 另有一枚常驻「风格」按钮：在终端页面内一步切换预设，避免每次都进设置页。
  *
  * 注意这里**没有「断开」按钮**：断开入口在标签栏的 × 与左侧连接列表。
  */
@@ -120,6 +125,7 @@ export function SshTerminalToolbar({
         >
           <Icon name={fullscreen ? "collapse" : "expand"} size={14} />
         </ButtonIcon>
+        <PresetMenu />
         <MoreMenu
           selectMode={selectMode}
           onCopyScreen={onCopyScreen}
@@ -128,6 +134,67 @@ export function SshTerminalToolbar({
         />
       </div>
     </div>
+  );
+}
+
+/**
+ * 终端风格快切：工具条常驻按钮，弹层列 4 套预设（小色板预览 + 名称 + 描述），
+ * 当前项打勾。点击即走全局 store（`setPreset`），所有终端同时换肤、不断连、不丢历史。
+ */
+function PresetMenu() {
+  const current = useTerminalPreset();
+  return (
+    <Menu
+      width="w-60"
+      trigger={(open, toggle) => (
+        <ButtonIcon title="终端风格（点此切换）" highlight={open} onClick={toggle}>
+          <Icon name="palette" size={14} />
+        </ButtonIcon>
+      )}
+    >
+      {(close) =>
+        PRESETS.map((p) => (
+          <MenuItem
+            key={p.id}
+            active={current === p.id}
+            onClick={() => {
+              setPreset(p.id);
+              close();
+            }}
+            trailing={
+              current === p.id ? (
+                <Icon name="check" size={13} className="text-primary" />
+              ) : null
+            }
+            label={
+              <span className="flex min-w-0 flex-1 items-center gap-2">
+                <PresetSwatch preset={p.id} />
+                <span className="flex min-w-0 flex-col leading-tight">
+                  <span className="truncate text-[13px]">{p.name}</span>
+                  <span className="truncate text-[11px] text-muted-foreground">{p.desc}</span>
+                </span>
+              </span>
+            }
+          />
+        ))
+      }
+    </Menu>
+  );
+}
+
+/** 预设小色板预览：背景 + 几个代表 ANSI 色拼一行，一眼区分四套风格。 */
+function PresetSwatch({ preset }: { preset: TerminalPreset }) {
+  const pal = TERMINAL_PALETTES[preset].dark;
+  const colors = [pal.background, pal.green, pal.cyan, pal.magenta, pal.yellow];
+  return (
+    <span
+      className="flex shrink-0 overflow-hidden rounded border border-border"
+      style={{ width: 22, height: 14 }}
+    >
+      {colors.map((c, i) => (
+        <span key={i} style={{ background: c, flex: 1 }} />
+      ))}
+    </span>
   );
 }
 
@@ -143,82 +210,28 @@ function MoreMenu({
   onToggleSelectMode: () => void;
   onClear: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    // 捕获阶段监听：终端容器在 mousedown 上会夺焦点，冒泡阶段才关菜单会慢一拍。
-    const onDown = (e: MouseEvent) => {
-      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("mousedown", onDown, true);
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("mousedown", onDown, true);
-      window.removeEventListener("keydown", onKey, true);
-    };
-  }, [open]);
-
-  const run = (fn: () => void) => () => {
-    fn();
-    setOpen(false);
-  };
-
   return (
-    <div ref={boxRef} className="relative">
-      <ButtonIcon title="更多" highlight={open} onClick={() => setOpen((v) => !v)}>
-        <Icon name="more" size={14} />
-      </ButtonIcon>
-      {open && (
-        <div
-          role="menu"
-          className="absolute right-0 top-full z-20 mt-1 w-44 rounded-lg border border-border bg-card p-1 shadow-lg"
-        >
-          <MenuItem label="复制整屏" icon="monitor" onClick={run(onCopyScreen)} />
+    <Menu
+      trigger={(open, toggle) => (
+        <ButtonIcon title="更多" highlight={open} onClick={toggle}>
+          <Icon name="more" size={14} />
+        </ButtonIcon>
+      )}
+    >
+      {(close) => (
+        <>
+          <MenuItem label="复制整屏" icon="monitor" onClick={() => { onCopyScreen(); close(); }} />
           <MenuItem
             label={selectMode ? "退出选择模式" : "选择模式"}
             hint={selectMode ? "恢复鼠标报告" : "拖选复制"}
             icon="sliders"
             active={selectMode}
-            onClick={run(onToggleSelectMode)}
+            onClick={() => { onToggleSelectMode(); close(); }}
           />
-          <MenuItem label="清屏" icon="refresh" onClick={run(onClear)} />
-        </div>
+          <MenuItem label="清屏" icon="refresh" onClick={() => { onClear(); close(); }} />
+        </>
       )}
-    </div>
-  );
-}
-
-function MenuItem({
-  label,
-  hint,
-  icon,
-  active,
-  onClick,
-}: {
-  label: string;
-  hint?: string;
-  icon: "monitor" | "sliders" | "refresh";
-  active?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors hover:bg-muted ${
-        active ? "text-primary" : "text-foreground"
-      }`}
-    >
-      <Icon name={icon} size={13} className="shrink-0" />
-      <span>{label}</span>
-      {hint && <span className="ml-auto text-[11px] text-muted-foreground">{hint}</span>}
-    </button>
+    </Menu>
   );
 }
 
