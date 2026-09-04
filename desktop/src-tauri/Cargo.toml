@@ -150,7 +150,13 @@ axum = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "default-tls"] }
 
 [profile.release]
-codegen-units = 1
+# codegen-units 用默认 16 而不是 1：跨单元优化已由下面的 lto = "thin" 提供，
+# 两者收益重叠。压到 1 只是禁用 LLVM 并行代码生成——编译慢 2–3 倍，却换不来多少
+# 体积或性能收益。实测意义重大：GitHub 缓存按 ref 隔离 scope，tag 构建的产物
+# 下个 tag 读不到，每次发版都是冷启动全量编译（缓存命中率 0–1%）。
+# ⚠️ 体积红线（规则8）：改动后必须核对 installer 体积——基准 12.03MB，预算 20MB；
+# 若涨超预算就改回 1。
+codegen-units = 16
 lto = "thin"
 opt-level = "s"
 strip = "symbols"
