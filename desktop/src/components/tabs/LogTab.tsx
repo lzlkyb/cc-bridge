@@ -17,49 +17,10 @@ import { Combobox } from "../ui/combobox";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { PerfCharts } from "./PerfCharts";
 import { AuditPager } from "./AuditPager";
-import { DetailPanel, DiffModal, RestoreConfirmDialog } from "./LogDetailPanel";
-
-/** 参数原始 JSON → 表格行内简短摘要。parse 失败退回原文截断。纯函数（规则 11 只在本文件复用，故留本地）。 */
-function summarizeParams(raw: string): string {
-  const clip = (s: string, n = 60) => (s.length > n ? s.slice(0, n) + "…" : s);
-  let obj: Record<string, unknown>;
-  try {
-    obj = JSON.parse(raw);
-  } catch {
-    return clip(raw);
-  }
-  if (!obj || typeof obj !== "object") return clip(raw);
-  const parts: string[] = [];
-  if (Array.isArray(obj.files)) {
-    parts.push(`files: ${obj.files.length} 项`);
-    if (typeof obj.encoding === "string") parts.push(`encoding: ${obj.encoding}`);
-  } else if (typeof obj.path === "string") {
-    parts.push(`path: …/${obj.path.split(/[\\/]/).pop() || obj.path}`);
-  }
-  if (typeof obj.oldString === "string") parts.push(`oldString: "${clip(obj.oldString, 20)}"`);
-  return parts.length ? parts.join(" · ") : clip(raw);
-}
-
-/** 折叠条上的实时摘要：自动加载后的关键信号，无需展开即可判断瓶颈。纯函数。 */
-function perfSummaryLine(entries: AuditEntry[]): string {
-  const valid = entries.filter(
-    (e): e is AuditEntry & { durationMs: number } => typeof e.durationMs === "number"
-  );
-  if (valid.length === 0) return "暂无耗时数据";
-  const ds = valid.map((e) => e.durationMs).sort((a, b) => a - b);
-  const p95 = ds[Math.min(ds.length - 1, Math.floor((ds.length - 1) * 0.95))];
-  const total = ds.reduce((s, d) => s + d, 0);
-  const byTool = new Map<string, number>();
-  for (const e of valid) byTool.set(e.tool, (byTool.get(e.tool) ?? 0) + e.durationMs);
-  let topTool = "";
-  let topSum = -1;
-  for (const [t, s] of byTool) if (s > topSum) {
-    topSum = s;
-    topTool = t;
-  }
-  const errRate = (entries.filter((e) => !e.success).length / entries.length) * 100;
-  return `P95 ${Math.round(p95)}ms · ${toolLabel(topTool)} 占 ${((topSum / total) * 100).toFixed(1)}% · 错误率 ${errRate.toFixed(1)}%`;
-}
+import { DetailPanel } from "./LogDetailPanel";
+import { LogDiffModal } from "./LogDiffModal";
+import { LogRestoreDialog } from "./LogRestoreDialog";
+import { summarizeParams, perfSummaryLine } from "../../lib/logFormat";
 
 function LogTabImpl({
   highlightAnchor,
@@ -513,9 +474,9 @@ function LogTabImpl({
           onConfirm={handleClear}
         />
       )}
-      {diffEntry && <DiffModal entry={diffEntry} onClose={() => setDiffEntry(null)} />}
+      {diffEntry && <LogDiffModal entry={diffEntry} onClose={() => setDiffEntry(null)} />}
       {restoreEntry && (
-        <RestoreConfirmDialog entry={restoreEntry} onClose={() => setRestoreEntry(null)} />
+        <LogRestoreDialog entry={restoreEntry} onClose={() => setRestoreEntry(null)} />
       )}
     </Card>
   );

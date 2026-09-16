@@ -1,25 +1,18 @@
-import { useState, useEffect } from "react";
-import { createPortal } from "react-dom";
-import { invoke } from "../../lib/tauri";
+import { useState } from "react";
 import { toolLabel, formatDurationMs } from "../../lib/utils";
-import { friendlyAuditError } from "../../lib/auditError";
-import type { AuditEntry, FileDiffResult } from "../../lib/types";
+import { prettyParams } from "../../lib/logFormat";
+import type { AuditEntry } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
-import { Skeleton } from "../ui/Skeleton";
 import { useToast } from "../ui/toast";
 
-/** 尝试 pretty-print JSON；失败退回原文。 */
-function prettyParams(raw: string): string {
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
-}
-
-/** D10：从 LogTab.tsx 拆出——展开行详情 + 耗时拆解 + 变更 Diff / 一键还原 弹窗，都是同一个
- * "审计条目详情"工作流的组成部分，收拢到一个文件。 */
+/** D10：从 LogTab.tsx 拆出——展开行详情 + 耗时拆解，都是同一个 "审计条目详情" 工作流的
+ *  组成部分，收拢到一个文件。
+ *
+ *  2026-09-16：原来还住着 DiffModal 与 RestoreConfirmDialog。那两个各自带自己的
+ *  useEffect 与弹窗生命周期，与本文件"展开行内容"的职责不是一回事，且让本文件冲到
+ *  382 行 / 9 个 useState+useEffect（红线分别是 300 行 / 8 个）。已抽成
+ *  `LogDiffModal.tsx`、`LogRestoreDialog.tsx`。 */
 
 /** 展开行：结构化 key-value + 参数高亮代码块 + 复制 + 错误块 + 一键回滚 / 变更 Diff 入口。 */
 export function DetailPanel({
@@ -183,200 +176,5 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
         })}
       </div>
     </div>
-  );
-}
-
-/** 变更 Diff 弹窗：调 get_file_diff，行级红绿高亮展示备份（前）vs 当前文件（后）。
- *  大文件 / 二进制 / 行数过多触发护栏，仅提示可还原、不展示全量 diff。 */
-export function DiffModal({ entry, onClose }: { entry: AuditEntry; onClose: () => void }) {
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [result, setResult] = useState<FileDiffResult | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await invoke<FileDiffResult>("get_file_diff", {
-          backup_path: entry.backupPath,
-          target_path: entry.targetPath,
-        });
-        if (!cancelled) setResult(r);
-      } catch (e) {
-        if (!cancelled) setErr(friendlyAuditError(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [entry]);
-
-  // Esc 关闭（与项目内 Modal/ConfirmDialog 行为对齐）。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const fileName = entry.targetPath?.split(/[\\/]/).pop() ?? "文件";
-
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="animate-scale-in flex h-[80vh] w-full max-w-3xl flex-col rounded-xl modal-surface"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <Icon name="history" size={16} className="text-primary" />
-            变更 Diff
-            <span className="font-mono text-xs font-normal text-muted-foreground">{fileName}</span>
-          </div>
-          <button
-            onClick={onClose}
-            className="grid h-7 w-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted"
-          >
-            <Icon name="close" size={14} />
-          </button>
-        </div>
-        <div className="flex-1 overflow-auto p-3">
-          {loading && (
-            <div className="space-y-2 p-1">
-              <Skeleton className="h-3.5 w-full" />
-              <Skeleton className="h-3.5 w-11/12" />
-              <Skeleton className="h-3.5 w-full" />
-              <Skeleton className="h-3.5 w-4/5" />
-              <Skeleton className="h-3.5 w-full" />
-              <Skeleton className="h-3.5 w-3/4" />
-              <Skeleton className="h-3.5 w-10/12" />
-            </div>
-          )}
-          {err && (
-            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive break-all">
-              {err}
-            </div>
-          )}
-          {result && result.guard && (
-            <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-              {result.guard}
-              <span className="ml-1 font-mono text-muted-foreground">
-                （{result.beforeLines} → {result.afterLines} 行）
-              </span>
-            </div>
-          )}
-          {result && !result.guard && (
-            <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-[12px] leading-relaxed text-background diff">
-              {result.lines.map((l, i) => (
-                <div
-                  key={i}
-                  className={
-                    l.kind === "removed"
-                      ? "bg-red-500/25"
-                      : l.kind === "added"
-                        ? "bg-green-500/25"
-                        : ""
-                  }
-                >
-                  {l.text}
-                </div>
-              ))}
-            </pre>
-          )}
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-/** 一键还原确认弹窗：调 restore_file，把备份写回目标（删除类=恢复被删文件）。 */
-export function RestoreConfirmDialog({ entry, onClose }: { entry: AuditEntry; onClose: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const { toast } = useToast();
-
-  // Esc = 取消（危险操作确认的最低预期）；执行中（busy）不响应，避免误关。
-  // 必须在下方 early return 之前声明（rules-of-hooks）。
-  useEffect(() => {
-    if (busy) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, busy]);
-
-  if (!entry.backupPath || !entry.targetPath) return null;
-  const isDelete = entry.tool === "delete_files";
-
-  const onConfirm = async () => {
-    setBusy(true);
-    setErr(null);
-    try {
-      await invoke("restore_file", {
-        backup_path: entry.backupPath,
-        target_path: entry.targetPath,
-      });
-      toast(isDelete ? "已恢复被删文件" : "已还原到操作前版本", "success");
-      onClose();
-    } catch (e) {
-      setErr(friendlyAuditError(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return createPortal(
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm dlg-mask"
-        onClick={onClose}
-      >
-        <div
-          className="animate-scale-in mx-4 w-full max-w-md rounded-xl modal-surface p-5 dlg"
-          onClick={(e) => e.stopPropagation()}
-        >
-        <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
-          <Icon name="restore" size={18} />
-          {isDelete ? "恢复被删文件？" : "确认回滚到操作前？"}
-        </h4>
-        <p className="mb-3 text-sm text-muted-foreground">
-          {isDelete
-            ? "将从备份中恢复该文件到被删除前的版本。"
-            : "将把目标文件恢复到本次操作之前的版本。还原前会自动再生成一份备份，可再次撤销。"}
-        </p>
-        <div className="mb-4 space-y-1.5 rounded-md bg-muted/30 p-3 text-xs">
-          <div className="flex gap-2">
-            <span className="w-12 shrink-0 text-muted-foreground">目标</span>
-            <code className="break-all font-mono">{entry.targetPath}</code>
-          </div>
-          <div className="flex gap-2">
-            <span className="w-12 shrink-0 text-muted-foreground">备份</span>
-            <code className="break-all font-mono">{entry.backupPath}</code>
-          </div>
-        </div>
-        {err && (
-          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive break-all">
-            {err}
-          </div>
-        )}
-        <div className="flex justify-end gap-2 dlg-act">
-          <Button variant="outline" size="sm" onClick={onClose} disabled={busy}>
-            取消
-          </Button>
-          <Button variant="destructive" size="sm" onClick={onConfirm} disabled={busy}>
-            {busy && <Icon name="spinner" size={14} className="animate-spin" />}
-            {isDelete ? "恢复文件" : "确认还原"}
-          </Button>
-        </div>
-      </div>
-    </div>,
-    document.body,
   );
 }

@@ -40,18 +40,24 @@ const MAX_HOOKS = 8;
 const BASELINE = {
   // ── 行数超标 ──
   "src/components/backup/VersionHistoryModal.tsx": { lines: 575, hooks: 11 },
-  "src/components/tabs/LogTab.tsx": { lines: 509, hooks: 11 },
+  // 2026-09-16：509 → 487（参数摘要 / 性能摘要两条纯函数 → lib/logFormat.ts，本次顺带补了单测）。
+  "src/components/tabs/LogTab.tsx": { lines: 487, hooks: 11 },
   "src/components/tabs/ConnectTab.tsx": { lines: 502, hooks: 13 },
-  "src/components/tabs/AboutGroup.tsx": { lines: 475 },
+  // 2026-09-16：475 → 411（内联的「关于」弹窗 → AboutInfoModal.tsx）。
+  "src/components/tabs/AboutGroup.tsx": { lines: 411 },
   // 🔴 514 行，而且是 2026-09-02 本次重构**新建**的。当时把 621 行的
   // `SshTerminal.tsx` 拆成 115 行 + 这个 hook，并声称“符合规则 7”——
   // 那只是因为当时的规则只管 `.tsx`。这正是本脚本要堵的“搬家”。
   // 2026-09-03：513 → 443（快捷键钩子→terminalKeymap.ts，粘贴→useTerminalPaste.ts）。
   // 2026-09-04：443 → 425（尺寸适配→hooks/useTerminalFit.ts；终端预设功能在同文件内净减）。
-  "src/components/tabs/useSshTerminalSession.ts": { lines: 425 },
+  // 2026-09-16：425 → 423（清理终端交互摩擦时净减）。
+  "src/components/tabs/useSshTerminalSession.ts": { lines: 423 },
   "src/components/tabs/PerfCharts.tsx": { lines: 401 },
-  "src/components/tabs/LogDetailPanel.tsx": { lines: 361 },
-  "src/components/tabs/useSshTransfer.ts": { lines: 325 },
+  // 2026-09-16：`LogDetailPanel.tsx` 已从本表**移除**。它原本登记 361 行，本次把
+  // 内联的 DiffModal / RestoreConfirmDialog 抽成 `LogDiffModal.tsx` / `LogRestoreDialog.tsx`
+  // 后降到 180 行、1 个 hook，重新落在 300 行 / 8 状态的默认上限之内——不需要豁免了。
+  // 2026-09-16：325 → 303（类型契约→lib/transferTypes.ts；覆盖提问编排→useTransferPrompt.ts）。
+  "src/components/tabs/useSshTransfer.ts": { lines: 303 },
   "src/components/modals/CommandPalette.tsx": { lines: 345, hooks: 9 },
   "src/components/tabs/FileControlCard.tsx": { lines: 301 },
   // ── 行数合格、但状态数超标 ──

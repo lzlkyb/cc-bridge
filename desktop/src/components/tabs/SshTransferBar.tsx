@@ -1,7 +1,7 @@
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogTitle } from "../ui/dialog";
-import type { OverwritePrompt, TransferState } from "./useSshTransfer";
+import type { OverwritePrompt, TransferState } from "../../lib/transferTypes";
 
 /** 把剩余秒数格成 `mm:ss`。超过一小时就不报了——那个量级的估值没有参考价值。 */
 function fmtEta(sec: number | null): string | null {
