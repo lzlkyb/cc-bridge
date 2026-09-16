@@ -4,6 +4,30 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.7.6",
+    date: "2026-09-16",
+    items: [
+      { category: "feat", text: "终端底部状态栏（Starship 风格）。显示远端当前目录、上一条命令的退出码与耗时、git 分支，4 套预设可选（深色 / 浅色各一套色盘，切换即时生效、不重连、不丢历史输出）。目录等信息通过终端自身的 OSC 转义序列从远端读回，不改远端 `PS1`、不写任何远端文件；远端不是 bash / zsh 时自动降级，只显示本地信息。" },
+      { category: "feat", text: "设置页左侧导航。12 张设置卡按概念亲疏分成 5 簇，滚动时高亮自动跟随。以前找一个开关得在长页面里上下翻。" },
+      { category: "feat", text: "工具栏加了搜索按钮。Ctrl+K 一直都能用，只是没有任何地方提示过它，等于没人知道。" },
+      { category: "improve", text: "粘贴多行文本不再弹确认框。现在内容整块插进远端命令行、显示成多行，按回车才执行。以前弹框的理由是「多行会被远端逐行执行」——那只是因为发送时绕过了终端自身的处理。远端若没有该保护机制（精简 shell、或正跑着 `cat`），行为与以前一致。" },
+      { category: "improve", text: "拖文件到终端不再每次问目标目录。直接传到远端 shell 当前所在的目录——也就是你此刻所在的目录。探不到时才退回原来的确认框，传错了有「改目录」可以重传。" },
+      { category: "improve", text: "批量上传的同名文件一次问完。以前拖 5 个同名文件要点 5 次确认，现在问一次，另可选「跳过同名」。" },
+      { category: "improve", text: "切主题不再弹「运行中的 TUI 需重启」。这句话挪到设置页「终端风格」的说明里常驻显示，不再每次调配色都打断一下。" },
+      { category: "fix", text: "状态栏现在会显示断开态：会话断开时冻结已用时并标注「已断开」，不再假装还在跑。" },
+      { category: "fix", text: "切换终端标签不再把运行时长清零（计时起点原本挂在组件上，一重挂就归零）。" },
+      { category: "fix", text: "窄窗口下状态栏不再把时长和提示挤出屏幕（关键段锁定在右区）。" },
+      { category: "fix", text: "批量上传不再逐条弹「已上传」。一次传 10 个文件就是 10 条提示，把屏幕刷满。" },
+      { category: "fix", text: "拖选文字自动复制时不再弹提示。它是自动行为，复制成功是预期结果；失败仍然会报。" },
+      { category: "fix", text: "传输中再拖文件进来不再毫无反应，现在会说明「正在传输中，等这批传完再拖」。" },
+      { category: "fix", text: "删除连接改为后端删除成功后再断本地会话。以前先断前端再调后端，后端失败时界面上连接已经消失、实际还在，刷新一下又冒出来。" },
+      { category: "fix", text: "日志导出与清空不再无声无息：导出空数据、清空失败、导出失败都会给出说明，导出成功也有反馈。" },
+      { category: "fix", text: "审计与备份的错误提示改成人话。「备份文件不存在」「文件被占用」「没有权限」这些以前直接显示 `os error 32` 之类的英文错误码。" },
+      { category: "fix", text: "更新失败不再只剩一个孤立的「重试」按钮，关于卡现在会显示「更新失败」状态并说明原因。" },
+      { category: "fix", text: "引导 / 关于 / 审计弹窗统一支持 Esc 关闭。" },
+    ],
+  },
+  {
     version: "2.7.5",
     date: "2026-09-04",
     items: [
@@ -143,20 +167,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "归一化规则抽成 `encoding::normalize_newlines` 单一定义，`read_text` 与 `edit_files` 共用——两边规则一旦脱钩就会重现“看着一模一样却匹配不上”，现在物理上不可能" },
       { category: "improve", text: "写入行为完全未变：CRLF 文件改完仍是 CRLF（回写时按探测到的行尾还原）" },
       { category: "improve", text: "同时加了一道防回归检查：归一化后的 `oldString` 若与 `newString` 相同，在碰文件之前就拦下。这不是修旧缺陷，而是归一化本身会新开出的一个口子：两边归一化后变得相同时，替换会“成功”但文件一字未变 ---" },
-    ],
-  },
-  {
-    version: "2.6.1",
-    date: "2026-08-08",
-    items: [
-      { category: "fix", text: "mac 版发不出来。v2.6.0 的 mac 构建挂在一条测试上：导入时给项目取名的那段逻辑跟运行平台绑死了，在 mac / Linux 上会把一整条 Windows 路径当成项目名。现已改成与平台无关（Windows 用户不受影响，v2.6.0 的 Windows 包是完整可用的）" },
-      { category: "feat", text: "导入时能看清每个工具到底是干什么的。导入向导里每条候选多了一个「运行一下」按钮，就地列出它提供哪些工具（名字 + 一句话）；设置页的服务行也可以点开看同一份清单。跑一次就够：导入后不需要对同一个工具再探一次" },
-      { category: "improve", text: "启用前的风险确认框会列出它要交给远程的工具。原先只写着“远程将获得这个 server 的全部能力”，却从不说那些能力具体是什么——而启用才是真正交出执行权限的那一步" },
-      { category: "improve", text: "`project_label` 不再用 `Path::file_name()`：那个方法描述的是「本机文件系统」的语义，而这里处理的是「别的机器写进 JSON 的字符串」。Unix 上 `\\` 不是分隔符，`D:\\work\\myapp` 会被整串当成一个组件（解出 `d--work-myapp`）。Windows 两种分隔符都认，所以本机永远测不出来" },
-      { category: "improve", text: "新增 `mcp_bridge_inspect`：与 `mcp_bridge_probe` 并列为仅有的两个会启动子进程的命令，扫描本身仍是零进程。它没有二次确认框（列表行里已逐字展示完整命令），因此两处补偿不能省：按钮文案直说是“运行”、本次执行进审计" },
-      { category: "improve", text: "inspect 结果直接写 `mcp_manifest`，所以导入后设置页天然命中；没导入就成孤儿行，由扫描时顺手跑的 `purge_orphans` 兜底（7 天、零定时器，与 `sweep_idle` 同思路）" },
-      { category: "improve", text: "工具清单抽成共用的 `ToolList`，四处 import 同一个；`ImportWizard` 拆出 `CandidateRow`（规则 7）" },
-      { category: "improve", text: "以工具清单而不是 `instructions` 为主：后者是 MCP 的可选字段，很多 server 不提供，而工具描述是必填项 ---" },
     ],
   },
 ];
