@@ -185,10 +185,9 @@ export function useSshTerminalSelect({
         const now = Date.now();
         if (now - lastCopyAtRef.current < COPY_DEDUP_MS) return;
         lastCopyAtRef.current = now;
-        navigator.clipboard
-          .writeText(sel)
-          .then(() => toast("已复制选中文字", "success"))
-          .catch(() => toast("复制失败", "error"));
+        // 成功**不弹 toast**：拖选即复制是自动行为，每次松手弹一条会把屏幕刷满，
+        // 而且用户本来就知道它复制了。失败仍必须报，不吞。
+        navigator.clipboard.writeText(sel).catch(() => toast("复制失败", "error"));
         // 拖拽临时选择：复制后退出选择态，恢复 TUI 鼠标（远端下次重绘自行重设 ?1006h）。
         if (dragSelectRef.current) {
           selectActiveRef.current = false;

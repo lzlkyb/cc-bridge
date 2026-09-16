@@ -69,6 +69,9 @@ export function TransferBar({
  *
  * 现状是删除有二次确认、覆盖却静默执行——两者丢数据的后果是一样的。
  * 下载方向额外说明临时文件机制，让用户知道取消不会毁掉原文件。
+ *
+ * 批量上传同名时**一次问完**（`names` 多于一个）：原来每个同名文件各弹一次，
+ * 拖 5 个同名文件要点 5 次确认。这里给「跳过同名」作为第三个出口。
  */
 export function OverwriteConfirmDialog({
   prompt,
@@ -78,17 +81,39 @@ export function OverwriteConfirmDialog({
   onCancel: () => void;
 }) {
   const up = prompt?.kind === "up";
+  const names = prompt?.names ?? [];
+  const many = names.length > 1;
   return (
     <Dialog open={!!prompt} onClose={onCancel}>
       <DialogHeader>
-        <DialogTitle>{up ? "远端已存在同名文件" : "本机已存在同名文件"}</DialogTitle>
+        <DialogTitle>
+          {many
+            ? `远端有 ${names.length} 个同名文件`
+            : up
+              ? "远端已存在同名文件"
+              : "本机已存在同名文件"}
+        </DialogTitle>
       </DialogHeader>
       <p className="text-sm text-muted-foreground">
-        {up ? "继续上传将覆盖远端文件。" : "继续下载将覆盖该文件，原内容无法恢复。"}
+        {many
+          ? `继续只覆盖这些同名文件，其余照常上传。`
+          : up
+            ? "继续上传将覆盖远端文件。"
+            : "继续下载将覆盖该文件，原内容无法恢复。"}
       </p>
-      <code className="mt-2 block break-all rounded-md border border-border bg-muted px-2.5 py-2 text-xs text-foreground">
-        {prompt?.path}
-      </code>
+      {many ? (
+        <ul className="mt-2 max-h-40 overflow-auto rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-xs leading-relaxed text-foreground">
+          {names.map((n) => (
+            <li key={n} className="break-all">
+              {n}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <code className="mt-2 block break-all rounded-md border border-border bg-muted px-2.5 py-2 text-xs text-foreground">
+          {prompt?.path}
+        </code>
+      )}
       {!up && (
         <p className="mt-2 text-xs text-muted-foreground">
           下载会先写临时文件，传完才替换；中途取消不会动原文件。
@@ -98,7 +123,12 @@ export function OverwriteConfirmDialog({
         <Button variant="outline" onClick={onCancel}>
           取消
         </Button>
-        <Button onClick={() => prompt?.confirm()}>覆盖</Button>
+        {prompt?.skip && (
+          <Button variant="outline" onClick={prompt.skip}>
+            跳过同名
+          </Button>
+        )}
+        <Button onClick={() => prompt?.confirm()}>{many ? "全部覆盖" : "覆盖"}</Button>
       </div>
     </Dialog>
   );

@@ -15,10 +15,11 @@ interface SheetProps {
 }
 
 /**
- * 终端拖拽的目标目录确认。
+ * 终端拖拽的目标目录确认——**只在探不到远端 cwd 时才会出现**。
  *
- * 为什么必须确认：**终端的 cwd 对我们不可知**（见 `lib/uploadDir.ts`）。
- * 不猜、也不假装知道，而是预填上次用过的目录并让用户改。
+ * 正常情况下这份确认不弹：`hooks/useTerminalOsc.ts` 通过 OSC 7 已经拿到远端 shell 的
+ * 当前目录，`useTerminalUpload` 直接传到那里，不问。只有注入被关、远端非 bash/zsh、
+ * 或回执还没到时才退到这里，预填上次用过的目录让用户改一次。
  */
 export function SshUploadSheet({ files, initialDir, onCancel, onConfirm }: SheetProps) {
   const [dir, setDir] = useState(initialDir);
@@ -89,10 +90,13 @@ export function SshUploadSheet({ files, initialDir, onCancel, onConfirm }: Sheet
 export function SshUploadResult({
   dir,
   count,
+  onChangeDir,
   onDismiss,
 }: {
   dir: string;
   count: number;
+  /** 传错目录时的出口：把那批文件放回确认队列重传。 */
+  onChangeDir: () => void;
   onDismiss: () => void;
 }) {
   return (
@@ -104,6 +108,14 @@ export function SshUploadResult({
       <code className="min-w-0 flex-1 truncate rounded bg-muted px-1.5 py-0.5 text-xs" title={dir}>
         {dir}
       </code>
+      <button
+        type="button"
+        onClick={onChangeDir}
+        title="传到别的目录"
+        className="shrink-0 rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted"
+      >
+        改目录
+      </button>
       <button
         type="button"
         onClick={() => {

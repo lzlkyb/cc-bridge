@@ -37,8 +37,6 @@ import { useTerminalPaste } from "./useTerminalPaste";
 import type { Theme } from "../../lib/theme";
 import type { SshOutput, SshClosed, SshConnectFailed } from "../../lib/types";
 
-export type { PastePrompt } from "./useTerminalPaste";
-
 interface Args {
   sessionId: string;
   /** 该终端当前是否可见（多标签切换时从 display:none → block，需重新 fit）。 */
@@ -116,8 +114,8 @@ export function useSshTerminalSession({
   // 引用永久稳定（只读 ref），可安全进任何 effect 的依赖数组。
   const doFit = useTerminalFit({ containerRef, termRef, fitRef });
 
-  // 粘贴（含多行确认框）单独成 hook，与终端生命周期无逻辑耦合。
-  const { paste, pastePrompt } = useTerminalPaste({ sessionId, closedRef, termRef });
+  // 粘贴（规范化 + bracketed paste 包裹）单独成 hook，与终端生命周期无逻辑耦合。
+  const { paste } = useTerminalPaste({ sessionId, closedRef, termRef });
 
   // 供 xterm 按键钩子调用：那个钩子在创建 effect 里只注册一次，直接闭包会拿到陈旧引用。
   const keyActionsRef = useRef<TerminalKeyActions>({ paste, copy: copySelection, openSearch });
@@ -421,5 +419,5 @@ export function useSshTerminalSession({
       .catch(() => toast("复制失败", "error"));
   }, [termRef]);
 
-  return { focused, inputErr, paste, copyScreen, pastePrompt, doFit };
+  return { focused, inputErr, paste, copyScreen, doFit };
 }

@@ -1,4 +1,4 @@
-import { useCallback, useState, type MutableRefObject, type RefObject } from "react";
+import { useCallback, type MutableRefObject, type RefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 // 用 Tauri 插件读剪贴板，而不是 navigator.clipboard.readText()：后者在 WebView2 里
 // 需要 clipboard-read 权限（无提示 UI，往往静默被拒）。插件路径确定，
@@ -7,15 +7,7 @@ import type { Terminal } from "@xterm/xterm";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
-import { countPasteLines, pastePreview } from "../../lib/terminalPaste";
-
-/** 多行粘贴确认框的数据；null = 不弹。 */
-export interface PastePrompt {
-  lineCount: number;
-  preview: string;
-  confirm: () => void;
-  cancel: () => void;
-}
+import { preparePaste } from "../../lib/terminalPaste";
 
 interface Args {
   sessionId: string;
@@ -25,29 +17,32 @@ interface Args {
 }
 
 /**
- * 终端粘贴：读剪贴板 → 多行先问一句 → 发给远端。
+ * 终端粘贴：读剪贴板 → 规范化 + 按远端模式包裹 → 发给远端。
  *
- * 单独成 hook 是为了把「确认框」这个 state 从 `useSshTerminalSession` 里拿出来：
- * 那个 hook 的状态/effect 数量已经顶到规则 7 的上限，而粘贴与终端的生命周期、
- * 尺寸同步那些事没有逻辑耦合。
+ * **不弹确认框**。判据从「本地数几行」换成「远端支不支持 bracketed paste」：
+ * bash/zsh 的 readline 默认开着它，内容会整块插进编辑缓冲区、显示成多行、
+ * 等用户按回车——与「粘贴就是插入」的预期一致，没有打断的必要。
+ *
+ * 单独成 hook 是为了把这块逻辑从 `useSshTerminalSession` 里拿出来：那个 hook 的
+ * 状态/effect 数量已经顶到规则 7 的上限，而粘贴与终端的生命周期、尺寸同步没有耦合。
  */
 export function useTerminalPaste({ sessionId, closedRef, termRef }: Args) {
-  const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
-
-  /** 把文本原样发给远端 PTY。 */
+  /** 把文本规范化 + 包裹后发给远端 PTY。 */
   const sendPaste = useCallback(
     async (text: string) => {
       if (closedRef.current) {
         toast("连接已断开，无法输入", "error");
         return;
       }
+      // 每次都读远端当前模式，不缓存：同一会话里 vi / less / cat 各会开关各的。
+      const data = preparePaste(text, termRef.current?.modes.bracketedPasteMode === true);
       try {
-        await invoke("ssh_input", { sessionId, data: text });
+        await invoke("ssh_input", { sessionId, data });
       } catch (e) {
         toast(`粘贴失败：${e}`, "error");
       }
     },
-    [sessionId, closedRef],
+    [sessionId, closedRef, termRef],
   );
 
   /**
@@ -65,25 +60,9 @@ export function useTerminalPaste({ sessionId, closedRef, termRef }: Args) {
       return;
     }
     if (!text) return;
-    const refocus = () => termRef.current?.focus();
-    if (countPasteLines(text) > 1) {
-      setPastePrompt({
-        lineCount: countPasteLines(text),
-        preview: pastePreview(text),
-        confirm: () => {
-          setPastePrompt(null);
-          void sendPaste(text).then(refocus);
-        },
-        cancel: () => {
-          setPastePrompt(null);
-          refocus();
-        },
-      });
-      return;
-    }
     await sendPaste(text);
-    refocus();
+    termRef.current?.focus();
   }, [sendPaste, termRef]);
 
-  return { paste, pastePrompt };
+  return { paste };
 }

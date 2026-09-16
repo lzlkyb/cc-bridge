@@ -1,43 +1,62 @@
 import { describe, it, expect } from "vitest";
-import { countPasteLines, pastePreview } from "./terminalPaste";
+import { normalizePaste, preparePaste } from "./terminalPaste";
 
-describe("countPasteLines", () => {
-  it("空串算 0 行", () => {
-    expect(countPasteLines("")).toBe(0);
+const START = "\x1b[200~";
+const END = "\x1b[201~";
+
+describe("normalizePaste", () => {
+  it("LF 换成 CR", () => {
+    expect(normalizePaste("a\nb")).toBe("a\rb");
   });
 
-  it("单行算 1 行", () => {
-    expect(countPasteLines("ls -al")).toBe(1);
+  it("CRLF 折叠成一个 CR，不多出一个空行", () => {
+    expect(normalizePaste("a\r\nb")).toBe("a\rb");
   });
 
-  // 关键行为：这种粘贴等价于手敲一条命令再回车，不应该弹确认框。
-  it("单行 + 末尾换行仍算 1 行（不弹框）", () => {
-    expect(countPasteLines("ls -al\n")).toBe(1);
-    expect(countPasteLines("ls -al\r\n")).toBe(1);
+  it("已是 CR 的行尾原样保留", () => {
+    expect(normalizePaste("a\rb")).toBe("a\rb");
   });
 
-  it("多行按实际命令数算", () => {
-    expect(countPasteLines("cd /opt\ngit pull")).toBe(2);
-    expect(countPasteLines("cd /opt\ngit pull\n")).toBe(2);
-    expect(countPasteLines("cd /opt\r\ngit pull\r\n")).toBe(2);
+  it("单行不受影响", () => {
+    expect(normalizePaste("ls -al")).toBe("ls -al");
   });
 
-  it("中间的空行也是一条（空行会让 shell 多回一次车）", () => {
-    expect(countPasteLines("a\n\nb")).toBe(3);
+  it("空串仍是空串", () => {
+    expect(normalizePaste("")).toBe("");
   });
 });
 
-describe("pastePreview", () => {
-  it("不超上限时原样展示", () => {
-    expect(pastePreview("a\nb\nc")).toBe("a\nb\nc");
+describe("preparePaste", () => {
+  // 关键行为：远端支持 bracketed paste 时，内容整块插入编辑缓冲区、显示多行、
+  // 不执行——"粘贴就是插入"全靠这一条。
+  it("远端支持时首尾包上标记", () => {
+    expect(preparePaste("a\nb", true)).toBe(`${START}a\rb${END}`);
   });
 
-  it("超出部分折成一句「…还有 N 行」", () => {
-    expect(pastePreview("a\nb\nc\nd")).toBe("a\nb\nc\n…还有 1 行");
-    expect(pastePreview("a\nb\nc\nd\ne\nf")).toBe("a\nb\nc\n…还有 3 行");
+  it("远端不支持时只做规范化，不加标记", () => {
+    expect(preparePaste("a\nb", false)).toBe("a\rb");
+    expect(preparePaste("a\r\nb", false)).toBe("a\rb");
   });
 
-  it("末尾换行不会多出一行空白", () => {
-    expect(pastePreview("a\nb\n")).toBe("a\nb");
+  it("单行也走同一套逻辑（不再有单行特例）", () => {
+    expect(preparePaste("ls -al", true)).toBe(`${START}ls -al${END}`);
+    expect(preparePaste("ls -al", false)).toBe("ls -al");
+  });
+
+  // 不剥离的话，内容里的 END 会提前闭合包裹，后面的内容落回裸发、重新变成逐行执行。
+  it("剥离内容里自带的标记，防止提前闭合包裹", () => {
+    expect(preparePaste(`a${END}b\nc`, true)).toBe(`${START}ab\rc${END}`);
+  });
+
+  it("起止标记都被剥掉", () => {
+    expect(preparePaste(`x${START}y${END}z`, true)).toBe(`${START}xyz${END}`);
+  });
+
+  it("远端不支持时不剥内容（此时标记只是普通字节）", () => {
+    expect(preparePaste(`a${END}b`, false)).toBe(`a${END}b`);
+  });
+
+  it("空串在支持模式下也成对包裹", () => {
+    expect(preparePaste("", true)).toBe(`${START}${END}`);
   });
 });

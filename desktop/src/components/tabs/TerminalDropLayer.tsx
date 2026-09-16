@@ -23,6 +23,7 @@ export function TerminalDropLayer({ up, dropping, count }: Props) {
         <SshUploadResult
           dir={up.result.dir}
           count={up.result.count}
+          onChangeDir={up.changeDir}
           onDismiss={up.dismissResult}
         />
       )}

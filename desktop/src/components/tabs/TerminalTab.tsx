@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
@@ -67,7 +67,14 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   const activeSession = sessions.find((s) => s.sessionId === activeId);
   const activeConn =
     activeSession && !activeSession.closedReason ? activeSession.conn : null;
-  const up = useTerminalUpload(activeConn);
+  // 各会话的远端 cwd（OSC 7 探测，见 hooks/useTerminalOsc.ts）。拖拽上传拿它当目标目录，
+  // 省掉「每次拖文件都问传到哪」——那正是文件面板侧早就免掉的一步。
+  const [cwdBySession, setCwdBySession] = useState<Record<string, string | null>>({});
+  const onCwd = useCallback((sessionId: string, cwd: string | null) => {
+    setCwdBySession((m) => (m[sessionId] === cwd ? m : { ...m, [sessionId]: cwd }));
+  }, []);
+  const activeCwd = activeId ? (cwdBySession[activeId] ?? null) : null;
+  const up = useTerminalUpload(activeConn, activeCwd);
   const drop = useFileDrop({
     collectZones: () => {
       // 文件面板盖在终端之上时交给它自己的监听器。
@@ -77,10 +84,13 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
       const z = zoneOf("terminal", termAreaRef.current);
       return z ? [z] : ([] as DropZone[]);
     },
-    // 忙的时候不接：两批文件的目标目录可能不一样，混在一条进度条里看不出来；
-    // 而且两个循环共用同一个 idRef，取消与进度会打到错误的传输上。
+    // 忙的时候不接（两个循环共用同一个 idRef，混在一起进度会打错），
+    // 但**不能静默丢**：遮罩刚高亮过，接着什么都不发生比报个原因更让人困惑。
     onDrop: (_zone, paths) => {
-      if (up.busy) return;
+      if (up.busy) {
+        toast("正在传输中，等这批传完再拖", "info");
+        return;
+      }
       void up.dropped(paths);
     },
   });
@@ -114,17 +124,9 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
     };
   }, [enabled]);
 
-  // 切主题时提醒：跑着的 TUI 不会跟着变。
-  // Claude Code 这类程序在**启动时**探测背景明暗（COLORFGBG / OSC 11），xterm 换了色，
-  // 它还按旧假设画，于是一些低亮度文字会看不清。新开的 TUI 无此问题。
-  const prevModeRef = useRef(mode);
-  useEffect(() => {
-    if (prevModeRef.current === mode) return;
-    prevModeRef.current = mode;
-    if (sessions.some((s) => !s.closedReason)) {
-      toast("终端配色已切换；运行中的 TUI（如 Claude Code）需重启才会跟着变", "info");
-    }
-  }, [mode, sessions]);
+  // 切主题不再弹提醒。跑着的 TUI（Claude Code 这类在启动时探测背景明暗的程序）不会跟着
+  // 变色——这条信息已写进设置页「终端风格」的说明里。放在那里是常驻可见的，而弹 toast 是
+  // 每次切主题都打断一下，调一次配色能弹好几次。
 
   const enableSsh = async () => {
     try {
@@ -136,11 +138,13 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   };
 
   const removeConnection = async (id: string) => {
-    ssh.dropConnection(id);
-    // 若文件面板正对着被删连接，一并关闭，避免面板残留报错。
-    setFileConn((fc) => (fc && fc.id === id ? null : fc));
+    // 先请求后端删除，成功后才断本地会话并清 UI——之前是先 dropConnection 再 invoke，
+    // 后端失败时 UI 已移除而连接还在（假删除），下次刷新列表连接又冒出来。
     try {
       await invoke("ssh_delete_connection", { id });
+      // 若文件面板正对着被删连接，一并关闭，避免面板残留报错。
+      setFileConn((fc) => (fc && fc.id === id ? null : fc));
+      ssh.dropConnection(id);
       setConfirmingDelete(null);
       await queryClient.invalidateQueries({ queryKey: ["sshConnections"] });
     } catch (e) {
@@ -251,6 +255,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
                     dragSelectEnabled={status?.sshDragSelectEnabled ?? false}
                     fullscreen={fullscreen}
                     onToggleFullscreen={() => setFullscreen((v) => !v)}
+                    onCwd={(cwd) => onCwd(s.sessionId, cwd)}
                   />
                 </div>
               ))

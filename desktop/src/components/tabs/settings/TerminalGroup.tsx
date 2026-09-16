@@ -26,7 +26,7 @@ export function TerminalGroup() {
       <CardContent>
         <SettingsRow
           label="终端风格"
-          sub="同时决定状态栏与终端内容的配色，包括远端程序输出的 ANSI 颜色。切换即时生效，不会重连，也不会丢失已滚动的历史输出。"
+          sub="同时决定状态栏与终端内容的配色，包括远端程序输出的 ANSI 颜色。切换即时生效，不会重连，也不会丢失已滚动的历史输出。注意：已经在跑的全屏程序（如 Claude Code）不会跟着变——它们在启动时探测一次背景明暗，重启才会用上新配色。"
           layout="stack"
           control={
             <div className="flex flex-wrap gap-1.5 pt-1">

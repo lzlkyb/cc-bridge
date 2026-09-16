@@ -13,7 +13,6 @@ import { useThemeMode } from "../../hooks/useThemeMode";
 import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
 import { useTerminalOsc } from "../../hooks/useTerminalOsc";
 import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
-import { ConfirmDialog } from "../ui/ConfirmDialog";
 import type { SshConnection } from "../../lib/types";
 
 interface Props {
@@ -32,6 +31,8 @@ interface Props {
   /** 是否处于软件内全屏（布局由 TerminalTab 控制，这里只管图标/徽标与重新 fit）。 */
   fullscreen: boolean;
   onToggleFullscreen: () => void;
+  /** 远端 cwd 变化（OSC 7 探测结果，探不到时为 null）。父级拿它当拖拽上传的目标目录。 */
+  onCwd: (cwd: string | null) => void;
 }
 
 /**
@@ -52,6 +53,7 @@ export function SshTerminal({
   dragSelectEnabled,
   fullscreen,
   onToggleFullscreen,
+  onCwd,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -69,7 +71,7 @@ export function SshTerminal({
 
   const select = useSshTerminalSelect({ termRef, focusedRef, dragSelectEnabledRef });
   const search = useTerminalSearch(termRef, mode);
-  const { focused, inputErr, paste, copyScreen, pastePrompt, doFit } = useSshTerminalSession({
+  const { focused, inputErr, paste, copyScreen, doFit } = useSshTerminalSession({
     sessionId,
     visible,
     fullscreen,
@@ -89,6 +91,14 @@ export function SshTerminal({
   const font = useTerminalFontSize({ termRef, containerRef, doFit });
   // 远端状态探测：注入钩子 + 解析 OSC。钩子关闭 / 不支持时自动降级，终端本身不受影响。
   const { status, state } = useTerminalOsc({ sessionId, enabled: inject, closed, termRef });
+
+  // 把远端 cwd 上报给父级：拖拽上传要拿它当目标目录，有了它就不用每次拖文件都问一遍。
+  // 用 ref 承接回调——调用方传的是内联箭头函数，进依赖会让这个 effect 每次渲染都重跑。
+  const onCwdRef = useRef(onCwd);
+  onCwdRef.current = onCwd;
+  useEffect(() => {
+    onCwdRef.current(status.cwd);
+  }, [status.cwd]);
 
   // 右键：阻掉默认菜单，改弹自己的复制/粘贴/全选。用视口坐标定位，
   // 因为终端容器带 overflow-hidden，菜单挂在容器内会被裁掉。
@@ -164,20 +174,6 @@ export function SshTerminal({
           onSelectAll={() => termRef.current?.selectAll()}
           onClose={() => setMenuPos(null)}
         />
-      )}
-      {pastePrompt && (
-        <ConfirmDialog
-          variant="destructive"
-          title={`粘贴 ${pastePrompt.lineCount} 行内容？`}
-          description="多行内容粘进终端会被远端 shell 逐行执行，不会等你再按回车。"
-          confirmLabel="粘贴并执行"
-          onCancel={pastePrompt.cancel}
-          onConfirm={pastePrompt.confirm}
-        >
-          <pre className="max-h-40 overflow-auto rounded-md border border-border bg-muted px-3 py-2 text-xs leading-relaxed text-foreground">
-            {pastePrompt.preview}
-          </pre>
-        </ConfirmDialog>
       )}
     </div>
   );

@@ -1,34 +1,49 @@
 /**
- * 多行粘贴的判定与预览（纯函数，便于单测）。
+ * 粘贴内容在发给远端 PTY 之前的规范化与包裹（纯函数，便于单测）。
  *
- * WHY 要拦：多行内容粘进终端会被远端 shell **逐行执行**，不会等用户再按回车。
- * iTerm2 / Windows Terminal / VS Code 全都会先问一句。
+ * WHY 要包裹：多行内容直发 PTY，远端 shell 会**逐行执行**。而远端应用（bash/zsh 的
+ * readline、vim、less 等）开启 bracketed paste（DECSET 2004）后，终端把内容包在
+ * `ESC[200~ … ESC[201~` 里，它就把整块内容插进编辑缓冲区**显示成多行**、不执行，
+ * 等用户自己按回车——这正是"粘贴就是插入"的语义。
+ *
+ * 因此这里**不统计行数、不做任何拦截**：能不能"只显示不执行"由远端模式决定，
+ * 交给 `preparePaste(text, term.modes.bracketedPasteMode)` 处理。
  */
 
-/** 确认框里最多展示几行原文。 */
-export const PASTE_PREVIEW_LINES = 3;
+/** bracketed paste 的起止标记（DECSET 2004）。 */
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
 
-/** 按行拆分，并丢掉**末尾的单个换行**（它只是把最后一条命令提交掉，不多一条）。 */
-function splitLines(text: string): string[] {
-  return text.replace(/\r?\n$/, "").split(/\r?\n/);
+/**
+ * 内容里自带的起止标记要剥掉：不剥的话，粘贴内容中的 `ESC[201~` 会提前闭合包裹，
+ * 后面的内容落回裸发状态、重新变成逐行执行。
+ *
+ * 用全局正则而非 `replaceAll`：tsconfig 的 target/lib 都是 ES2020，没有 `replaceAll`。
+ */
+// eslint-disable-next-line no-control-regex -- 要匹配的就是 ESC(0x1b) 控制字符
+const PASTE_MARKERS = /\x1b\[20[01]~/g;
+
+/**
+ * 换行规范化：`\r?\n → \r`（与 xterm 的 `terminal.paste()` 一致）。
+ *
+ * CR 才是"回车"的正解——只发 LF 要靠 PTY 的 ICRNL 兜着才换行，raw 模式下不一定生效。
+ * 且换行统一成 CR 后，bracketed paste 里 readline 才会把每段渲染成独立的一行。
+ */
+export function normalizePaste(text: string): string {
+  return text.replace(/\r?\n/g, "\r");
 }
 
 /**
- * 粘贴内容会被远端当成几条命令执行。
+ * 组装最终发给 PTY 的字节。
  *
- * 末尾换行不计数：`"ls\n"` 与手敲 `ls` 再回车等价，没必要弹框。
+ * @param bracketed 远端当前是否处于 bracketed paste 模式，取
+ *   `term.modes.bracketedPasteMode`（由远端应用的输出流实时声明）。
+ *   - true：内容整块插入编辑缓冲区，显示多行、不执行。
+ *   - false：原样发送，远端会逐行执行——终端协议里没有"多行且不执行"的第三种表达，
+ *     此时"不打断用户"与"不逐行执行"只能二选一。
  */
-export function countPasteLines(text: string): number {
-  if (!text) return 0;
-  return splitLines(text).length;
-}
-
-/**
- * 确认框里的内容预览：最多 `PASTE_PREVIEW_LINES` 行，超出部分折成一句「…还有 N 行」。
- */
-export function pastePreview(text: string): string {
-  const lines = splitLines(text);
-  if (lines.length <= PASTE_PREVIEW_LINES) return lines.join("\n");
-  const rest = lines.length - PASTE_PREVIEW_LINES;
-  return [...lines.slice(0, PASTE_PREVIEW_LINES), `…还有 ${rest} 行`].join("\n");
+export function preparePaste(text: string, bracketed: boolean): string {
+  const normalized = normalizePaste(text);
+  if (!bracketed) return normalized;
+  return PASTE_START + normalized.replace(PASTE_MARKERS, "") + PASTE_END;
 }

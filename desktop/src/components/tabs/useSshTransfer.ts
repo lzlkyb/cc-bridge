@@ -23,11 +23,21 @@ export interface TransferState {
   total?: number;
 }
 
-/** 覆盖确认：由调用方渲染对话框，确认后调 `confirm()` 重跑一次。 */
+/**
+ * 覆盖确认：由调用方渲染对话框，确认后调 `confirm()` 重跑一次。
+ *
+ * 支持批量：`names` 是全部同名文件，UI 据此决定显示单个路径还是「N 个文件」清单。
+ * 批量时必须再给 `skip`（跳过同名、继续传其余的），单个场景不提供。
+ */
 export interface OverwritePrompt {
   kind: TransferKind;
+  /** 展示用：单个文件是它的完整远程路径，批量时是目标目录。 */
   path: string;
+  /** 同名文件清单，单个场景长度为 1。 */
+  names: string[];
   confirm: () => void;
+  /** 跳过同名、继续传其余的。**仅批量提供**：UI 有这个字段才渲染该按钮。 */
+  skip?: () => void;
   /** 用户放弃：让等待中的 Promise 以 false 收尾，避免调用方永远悬着。 */
   cancel: () => void;
 }
@@ -182,6 +192,7 @@ export function useSshTransfer() {
       setPrompt({
         kind: "down",
         path: a.local,
+        names: [a.name],
         confirm: () => {
           setPrompt(null);
           void run(true).then((r) => resolve(r === "ok"));
@@ -201,6 +212,8 @@ export function useSshTransfer() {
   const putOne = useCallback(async (
     a: StartArgs & { index?: number; total?: number },
     remoteExists: boolean,
+    /** 批量上传时置 true：逐条 success toast 会刷屏，改由调用方汇总告知。 */
+    silent = false,
   ): Promise<"ok" | "cancelled" | "fail"> => {
     const run = async (): Promise<"ok" | "cancelled" | "fail"> => {
       const id = begin("up", a.name, a.index, a.total);
@@ -211,7 +224,7 @@ export function useSshTransfer() {
           remote: a.remote,
           transferId: id,
         });
-        toast(`已上传：${a.name}`, "success");
+        if (!silent) toast(`已上传：${a.name}`, "success");
         return "ok";
       } catch (e) {
         report(e, "up", a.name);
@@ -225,6 +238,7 @@ export function useSshTransfer() {
       setPrompt({
         kind: "up",
         path: a.remote,
+        names: [a.name],
         confirm: () => {
           setPrompt(null);
           void run().then(resolve);
@@ -285,8 +299,53 @@ export function useSshTransfer() {
       }
       const existingSet = new Set(names);
 
+      // 🔴 同名**一次问完**，不在循环里逐个弹。原来每个同名文件各弹一次，拖 5 个同名
+      // 文件就要点 5 次——和「多行粘贴逐个确认」是同一类设计错误：用高频打断去换一个
+      // 低频风险。这里给出一次全局选择，循环内不再问。
+      const conflicts = a.files.map((f) => f.name).filter((n) => existingSet.has(n));
+      let skipSet: Set<string> | null = null;
+      if (conflicts.length > 0) {
+        const decision = await new Promise<"overwrite" | "skip" | "cancel">((resolve) => {
+          setPrompt({
+            kind: "up",
+            path: a.dir,
+            // 去重后再给 UI：一次拖入 `a/x.txt` 与 `b/x.txt` 时 conflicts 会出现两个
+            // "x.txt"，直传会让对话框列出重复项（React key 冲突）并把数量报成 2。
+            names: [...new Set(conflicts)],
+            confirm: () => {
+              setPrompt(null);
+              resolve("overwrite");
+            },
+            skip: () => {
+              setPrompt(null);
+              resolve("skip");
+            },
+            cancel: () => {
+              setPrompt(null);
+              resolve("cancel");
+            },
+          });
+        });
+        if (decision === "cancel") return { done: 0, total };
+        if (decision === "skip") {
+          skipSet = new Set(conflicts);
+          // 全部同名且选了跳过 → 循环一次都不进、done 恒为 0，而调用方是「done>0 才提示」
+          // （终端拖拽挂结果条、文件面板只刷新列表）→ 用户点了按钮却什么都没发生。
+          // 这里明确交代一句，不让这个分支静默收场。
+          if (conflicts.length === total) {
+            toast(`已跳过全部 ${total} 个同名文件，未上传`, "info");
+          }
+        }
+      }
+
+      let done = 0;
       for (let i = 0; i < total; i++) {
         const f = a.files[i];
+        // 用户选了「跳过同名」：这些原样不动，其余照传。
+        if (skipSet?.has(f.name)) continue;
+        // 覆盖与否上面已经问过，循环里不再弹（`false`）；
+        // `silent` 让逐条 success toast 闭嘴——汇总由调用方给（终端拖拽有结果条，
+        // 文件面板靠传完刷新列表）。
         const r = await putOne(
           {
             connectionId: a.connectionId,
@@ -296,19 +355,17 @@ export function useSshTransfer() {
             index: i + 1,
             total,
           },
-          existingSet.has(f.name),
+          false,
+          true,
         );
         if (r !== "ok") {
           const left = total - i - 1;
           if (left > 0) toast(`已停下，还有 ${left} 个文件未上传`, "warning");
-          return { done: i, total };
+          return { done, total };
         }
-        // 🔴 传完就要计入「已存在」。否则一次拖入 `a/x.txt` 与 `b/x.txt` 时，
-        // 第二个在开头那次列目录里确实不存在 → 不弹覆盖确认 → 直接盖掉刚传上去的
-        // 那个，最后还报「已上传 2 个文件」而远端只有一个。
-        existingSet.add(f.name);
+        done++;
       }
-      return { done: total, total };
+      return { done, total };
     },
     [putOne],
   );
