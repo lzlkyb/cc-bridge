@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "../../lib/tauri";
 import { toolLabel, formatDurationMs } from "../../lib/utils";
+import { friendlyAuditError } from "../../lib/auditError";
 import type { AuditEntry, FileDiffResult } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
@@ -202,7 +203,7 @@ export function DiffModal({ entry, onClose }: { entry: AuditEntry; onClose: () =
         });
         if (!cancelled) setResult(r);
       } catch (e) {
-        if (!cancelled) setErr(String(e));
+        if (!cancelled) setErr(friendlyAuditError(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -211,6 +212,15 @@ export function DiffModal({ entry, onClose }: { entry: AuditEntry; onClose: () =
       cancelled = true;
     };
   }, [entry]);
+
+  // Esc 关闭（与项目内 Modal/ConfirmDialog 行为对齐）。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const fileName = entry.targetPath?.split(/[\\/]/).pop() ?? "文件";
 
@@ -292,6 +302,17 @@ export function RestoreConfirmDialog({ entry, onClose }: { entry: AuditEntry; on
   const [err, setErr] = useState<string | null>(null);
   const { toast } = useToast();
 
+  // Esc = 取消（危险操作确认的最低预期）；执行中（busy）不响应，避免误关。
+  // 必须在下方 early return 之前声明（rules-of-hooks）。
+  useEffect(() => {
+    if (busy) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, busy]);
+
   if (!entry.backupPath || !entry.targetPath) return null;
   const isDelete = entry.tool === "delete_files";
 
@@ -306,7 +327,7 @@ export function RestoreConfirmDialog({ entry, onClose }: { entry: AuditEntry; on
       toast(isDelete ? "已恢复被删文件" : "已还原到操作前版本", "success");
       onClose();
     } catch (e) {
-      setErr(String(e));
+      setErr(friendlyAuditError(e));
     } finally {
       setBusy(false);
     }

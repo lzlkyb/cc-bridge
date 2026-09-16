@@ -121,8 +121,9 @@ export function BackupAuditGroup({
     }
   };
 
+  // id 供设置页左栏导航 scrollspy 定位（lib/settingsSections.ts）。
   return (
-    <Card>
+    <Card id="set-backupaudit">
       <CardHeader>
         <CardTitle icon={<Icon name="history" />}>备份与审计</CardTitle>
       </CardHeader>

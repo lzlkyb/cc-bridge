@@ -60,6 +60,16 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
   const [showModal, setShowModal] = useState(false);
   const changelogRef = useRef<HTMLDivElement>(null);
 
+  // 「了解更多」弹框支持 Esc 关闭（项目内 Modal/ConfirmDialog 均有此行为，补齐一致性）。
+  useEffect(() => {
+    if (!showModal) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowModal(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showModal]);
+
   // 打开更新历史：展开本卡片并滚动到「更新历史」区
   const openChangelog = useCallback(() => {
     setExpanded(true);
@@ -249,7 +259,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
                     <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_ACCENT}><Icon name="info" size={14} aria-hidden="true" /></div>
                     <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>简介</span>
-                    <span className="info-desc ml-auto max-w-[160px] truncate text-[11px] text-muted-foreground">
+                    <span className="info-desc ml-auto max-w-[160px] truncate text-[11px] text-muted-foreground" title={APP_INFO.description}>
                       {APP_INFO.description}
                     </span>
                     <button
@@ -415,6 +425,16 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
     return (
       <span className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success">
         已下载
+      </span>
+    );
+  }
+  // error 也要有可见状态：之前直接 return null，失败后页面只剩一个孤零零的
+  // 「重试」按钮，用户不知道发生了什么、更不知道为什么要点它。
+  if (status === "error") {
+    return (
+      <span className="flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-[3px] text-[11px] font-semibold text-destructive">
+        <Icon name="alertTriangle" size={11} />
+        更新失败
       </span>
     );
   }

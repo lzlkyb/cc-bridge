@@ -12,10 +12,13 @@ function HeaderImpl({
   status,
   onChanged,
   onNavigate,
+  onOpenSearch,
 }: {
   status?: StaticStatus;
   onChanged?: () => void;
   onNavigate?: (tab: string, anchor?: string) => void;
+  /** 打开命令面板：给 Ctrl+K 一个可见入口，否则不知道快捷键的人发现不了它。 */
+  onOpenSearch?: () => void;
 }) {
   const [dark, setDark] = useState(() => getStoredTheme() === "dark");
   const [busy, setBusy] = useState(false);
@@ -43,7 +46,7 @@ function HeaderImpl({
     anchor?: string;
     title: string;
   }[] = useMemo(() => [
-    { key: "whitelist", show: !!status && !status.whitelistEnabled, label: "白名单关闭", icon: "alertTriangle" as IconName, danger: true, tab: "settings", anchor: "whitelist", title: "白名单已关闭，点击前往设置页关闭" },
+    { key: "whitelist", show: !!status && !status.whitelistEnabled, label: "白名单关闭", icon: "alertTriangle" as IconName, danger: true, tab: "settings", anchor: "whitelist", title: "白名单已关闭，点击前往设置页开启" },
     { key: "ip", show: !!status?.ipChanged, label: "IP 已变化", icon: "alertTriangle" as IconName, danger: true, tab: "connect", title: "连接地址已变化，点击前往连接页查看" },
     { key: "link", show: !!status?.running && status?.remoteReachable === false && !status?.ipChanged, label: "远程不可达", icon: "alertTriangle" as IconName, danger: true, tab: "connect", title: "远程连接不可达，点击前往连接页查看" },
     { key: "readonly", show: !!status?.readonlyMode, label: "只读", icon: "lock" as IconName, danger: false, tab: "settings", anchor: "readonly", title: "只读模式已开启，点击前往设置页查看" },
@@ -160,12 +163,25 @@ function HeaderImpl({
             {!busy && (running ? "停止服务" : "启动服务")}
           </Button>
         )}
+        {/* 搜索（命令面板）入口：Ctrl+K 的可见按钮，让搜索能力可被发现 */}
+        {onOpenSearch && (
           <Button
             variant="ghost"
-            size="icon"
-            onClick={() => toggleTheme()}
-            aria-label={dark ? "切换浅色" : "切换深色"}
+            size="sm"
+            onClick={onOpenSearch}
+            title="搜索页面与设置（Ctrl+K）"
+            aria-label="搜索（Ctrl+K）"
+            className="gap-1.5 text-muted-foreground"
           >
+            <Icon name="search" size={14} />
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => toggleTheme()}
+          aria-label={dark ? "切换浅色" : "切换深色"}
+        >
           <Icon name={dark ? "sun" : "moon"} size={18} />
         </Button>
 

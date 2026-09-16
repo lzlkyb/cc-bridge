@@ -222,7 +222,7 @@ function AppContent() {
     {/* app-boot-fade：接替 index.html 里的首帧骨架屏时做一次很短的淡入，
         磨掉「骨架灰块 → 真实文字」那下硬切换。 */}
     <div className="app-boot-fade flex h-screen flex-col overflow-hidden bg-background text-foreground">
-      <Header status={status} onChanged={refetchStatus} onNavigate={handleNavigate} />
+      <Header status={status} onChanged={refetchStatus} onNavigate={handleNavigate} onOpenSearch={() => setShowCommandPalette(true)} />
       {statusError && (
         <div className="shrink-0 px-5 pt-2">
           <div className="flex items-center gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
@@ -314,7 +314,7 @@ function AppContent() {
           </TabsContent>
           <TabsContent value="settings">
             <Suspense fallback={<TabFallback />}>
-              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} />
+              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} onOpenSearch={() => setShowCommandPalette(true)} />
             </Suspense>
           </TabsContent>
           <TabsContent value="log" className="h-full">

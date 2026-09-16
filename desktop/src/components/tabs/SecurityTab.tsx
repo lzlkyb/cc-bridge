@@ -144,7 +144,7 @@ export function SecurityTab({
           <div ref={listParent} className="space-y-2">
           {filteredRoots.map((root) => (
               <div key={root} className="dir-item flex items-center gap-2">
-                <code className="flex-1 rounded-md bg-muted px-3 py-1.5 text-xs font-mono truncate">{root}</code>
+                <code className="flex-1 rounded-md bg-muted px-3 py-1.5 text-xs font-mono truncate" title={root}>{root}</code>
                 <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setPendingRemoveRoot(root)}>
                   <Icon name="trash" size={14} />
                   删除

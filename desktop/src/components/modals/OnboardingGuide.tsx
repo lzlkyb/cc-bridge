@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { StaticStatus } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
@@ -67,10 +67,10 @@ export function OnboardingGuide({
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  const finish = () => {
+  const finish = useCallback(() => {
     setOnboardingDone();
     onClose();
-  };
+  }, [onClose]);
 
   const handleNext = () => {
     if (step < steps.length - 1) setStep(step + 1);
@@ -78,6 +78,20 @@ export function OnboardingGuide({
   };
 
   const handleSkip = () => finish();
+
+  // Esc = 跳过引导（与项目内弹窗 Esc 可关的行为对齐；跳过与「跳过引导」按钮同义，
+  // 都走 finish 写入已完成标记，不会出现「Esc 关了下次又弹」）。
+  //
+  // finish 用 useCallback 固定、并进依赖：此前是空依赖 + eslint-disable，把首次渲染的
+  // onClose 锁死。现在 onClose 只是 `setState` 包装所以侥幸正确，但将来它若带上别的逻辑
+  // （例如上报或前置校验），这个 effect 会静默用旧闭包。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") finish();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [finish]);
 
   // H3：点遮罩不再永久关闭引导，仅轻微抖动提示改用下方按钮（跳过 / 下一步）。
   const handleOverlayClick = () => {

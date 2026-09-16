@@ -125,10 +125,17 @@ function LogTabImpl({
   const auditBody = useAutoAnimateRM<HTMLTableSectionElement>();
 
   const handleClear = async () => {
-    await invoke("clear_audit_log");
-    setConfirmClear(false);
-    setPage(1);
-    refetch();
+    // 之前无 try/catch：失败是 unhandled rejection，确认框关了日志却没清、界面毫无反应。
+    try {
+      await invoke("clear_audit_log");
+      setConfirmClear(false);
+      setPage(1);
+      refetch();
+      toast("审计日志已清空", "success");
+    } catch (e) {
+      toast(`清空失败：${String(e)}`, "error");
+      setConfirmClear(false);
+    }
   };
 
   const handlePageSizeChange = (s: number) => {
@@ -157,42 +164,52 @@ function LogTabImpl({
   }, [entries, toolFilter, statusFilter, search]);
 
   const handleExport = (format: "json" | "csv" = "json") => {
-    if (filtered.length === 0) return;
-    if (format === "csv") {
-      const header = "时间,工具,工具名,参数,来源IP,耗时(ms),状态,错误\n";
-      const rows = filtered.map((e) => {
-        const esc = (s: string) => {
-          const v = String(s ?? "");
-          const guarded = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
-          return `"${guarded.replace(/"/g, '""')}"`;
-        };
-        return [
-          e.timestamp,
-          e.tool,
-          toolLabel(e.tool),
-          esc(e.params),
-          e.sourceIp ?? "",
-          e.durationMs ?? "",
-          e.success ? "成功" : "失败",
-          esc(e.error ?? ""),
-        ].join(",");
-      }).join("\n");
-      const csv = "\uFEFF" + header + rows; // BOM for Excel Chinese support
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "cc-bridge-audit-log.csv";
-      a.click();
-      URL.revokeObjectURL(url);
-    } else {
-      const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "cc-bridge-audit-log.json";
-      a.click();
-      URL.revokeObjectURL(url);
+    // 空数据以前是静默 return，点了没任何反应；至少给一句提示。
+    if (filtered.length === 0) {
+      toast("当前没有可导出的日志", "info");
+      return;
+    }
+    try {
+      if (format === "csv") {
+        const header = "时间,工具,工具名,参数,来源IP,耗时(ms),状态,错误\n";
+        const rows = filtered.map((e) => {
+          const esc = (s: string) => {
+            const v = String(s ?? "");
+            const guarded = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+            return `"${guarded.replace(/"/g, '""')}"`;
+          };
+          return [
+            e.timestamp,
+            e.tool,
+            toolLabel(e.tool),
+            esc(e.params),
+            e.sourceIp ?? "",
+            e.durationMs ?? "",
+            e.success ? "成功" : "失败",
+            esc(e.error ?? ""),
+          ].join(",");
+        }).join("\n");
+        const csv = "\uFEFF" + header + rows; // BOM for Excel Chinese support
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "cc-bridge-audit-log.csv";
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "cc-bridge-audit-log.json";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+      // 与「导出诊断报告」对齐：导出要有成功反馈，否则瞬间下完时不知道导没导出。
+      toast(`已导出 ${filtered.length} 条审计日志（${format.toUpperCase()}）`, "success");
+    } catch (e) {
+      toast(`导出失败：${String(e)}`, "error");
     }
   };
 

@@ -16,8 +16,9 @@ export function NotifyGroup({
   onSaved: () => void;
 }) {
   const { savedKey, save } = useSettingSave(onSaved);
+  // id 供设置页左栏导航 scrollspy 定位（lib/settingsSections.ts）。
   return (
-    <Card>
+    <Card id="set-notify">
       <CardHeader>
         <CardTitle icon={<Icon name="activity" />}>通知</CardTitle>
       </CardHeader>
