@@ -4,7 +4,7 @@ import { MetricSampler } from "./MetricSampler";
 import { StatusCard } from "./StatusCard";
 import { MetricCards } from "./MetricCards";
 import { HealthCard } from "./HealthCard";
-import { GovCard } from "./GovCard";
+import { UsageCard } from "./UsageCard";
 
 /**
  * 连接页 Bento 布局。取代旧的整幅 `ConnectHero`（已删）。
@@ -12,9 +12,10 @@ import { GovCard } from "./GovCard";
  * 12 列网格的几何：
  * ```
  *   行1: [状态主卡 span4 ][指标1][指标2][指标3][指标4]   ← 4 + 2×4 = 12
- *   行2: [   同上（row span 2） ][ 健康度 span4 ][ 治理 span4 ]
+ *   行2: [   同上（row span 2） ][ 健康度·治理 span4 ][ 用量 span4 ]   ← 4+4+4 = 12
  *   行3: [        接入 Claude Code（span 12）              ]
  * ```
+ * 原 GovCard（安全治理）已并入 HealthCard（设计稿方案 B），腾出的 4 列给了用量卡。
  *
  * **为何将 live 数据下沉到各卡而不是在这里统一取**：只要本组件自己调 `useQuery`，
  * 它就会每 5s 重渲，连带整个子树（七张卡 + 接入向导）跟着重渲。所以本组件
@@ -57,7 +58,7 @@ export function ConnectBento({
       />
       <MetricCards status={status} onNavigate={onNavigate} />
       <HealthCard status={status} onNavigate={onNavigate} />
-      <GovCard status={status} onNavigate={onNavigate} />
+      <UsageCard onNavigate={onNavigate} />
 
       {/* 接入向导是外部传入的 ReactNode，拿不到它的根 class，只能包一层。 */}
       <div className="bento-span12">{guide}</div>

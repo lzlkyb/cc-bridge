@@ -901,6 +901,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::save_config,
             commands::regenerate_token,
             commands::get_audit_log,
+            commands::get_token_usage,
             commands::browse_directory,
             commands::restart_mcp_server,
             commands::stop_mcp_server,

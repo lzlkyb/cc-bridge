@@ -1,20 +1,37 @@
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
-import { toolLabel } from "../../lib/utils";
 import type { StatusResponse, StaticStatus, LiveStatus } from "../../lib/types";
 import { useCountUp } from "../../hooks/useCountUp";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { usePopClass } from "../../hooks/useChangeClass";
-import { NavTarget } from "../ui/NavTarget";
+import { NavTarget, StopClick } from "../ui/NavTarget";
+import { Icon } from "../ui/icon";
 
 /**
- * Bento 右下的健康度卡（4/12 列）。
+ * Bento 行2 的「健康度 · 安全治理」合并卡（4/12 列）。
  *
- * 它要 stats，所以自己订阅 `["status"]`（共享 App 层的缓存与轮询，不多发请求）。
- * 整卡可点 → 日志页：成功率 / 失败数 / 热门工具全部源自审计，明细在那边。
+ * 原为两张独立卡（HealthCard + GovCard）。Token 用量卡加入行2 后 8 列要分给
+ * 三张卡（3+3+2），治理卡 9 个胶囊被压到 2 列会过度换行；按设计稿方案 B 把
+ * 治理胶囊整体下沉到健康卡下半部（健康卡本来就有 flex-1 富余吃高度），
+ * 行2 变成 合并卡(4) + 用量卡(4)，网格维持 4+4+4=12。
+ *
+ * 整卡可点 → 日志页：成功率 / 失败数 / 审计明细在那边。九个胶囊各自跳对应
+ * 设置项，用 StopClick 阻断冒泡（点胶囊不得触发整卡跳日志页）。
  */
 
-/** 健康度卡：环 + 成功率 + 治理异常计数 + 热门工具。 */
+/** 九个治理胶囊各自的跳转目标（anchor 全部取自 lib/settingsSearch.ts，勿另起一套）。 */
+const NAV = {
+  roots: { tab: "security", title: "去安全页管理白名单目录" },
+  audit: { tab: "settings", anchor: "audit", title: "去设置调整审计日志" },
+  ratelimit: { tab: "settings", anchor: "ratelimit", title: "去设置调整限流" },
+  backup: { tab: "settings", anchor: "backup", title: "去设置调整写备份" },
+  encoding: { tab: "settings", anchor: "encoding", title: "去设置调整读取编码自适应" },
+  readonly: { tab: "settings", anchor: "readonly", title: "去设置调整只读模式" },
+  shell: { tab: "settings", anchor: "shell", title: "去设置调整命令执行" },
+  session: { tab: "settings", anchor: "session-persist", title: "去设置调整命令会话持久化" },
+} as const;
+
+/** 健康度 + 安全治理：环 + 成功率 + 四道防线胶囊。 */
 export function HealthCard({
   status,
   onNavigate,
@@ -31,25 +48,44 @@ export function HealthCard({
   const running = status?.running ?? false;
   const s = live?.stats;
   const rate = s?.successRate ?? 100;
-  const top = s?.topTools ?? [];
-  const total = s?.totalRequests ?? 0;
 
-  // 入场数字滚动（仅首次挂载，后续 5s 轮询直接跟随终值）。这是老版本 `useCountUp(rate)`
-  // 的原始用法。JS 驱动的动画 CSS 全局兜底管不到，所以要自己查 reduced-motion。
+  // 入场数字滚动（仅首次挂载，后续 5s 轮询直接跟随终值）。JS 驱动的动画
+  // CSS 全局兜底管不到，所以要自己查 reduced-motion。
   const reduced = usePrefersReducedMotion();
   const rateAnim = useCountUp(rate, { enabled: running && !reduced, duration: 900 });
   const rateText = running ? `成功率 ${rateAnim.toFixed(1)}%` : "服务未运行";
   const ratePop = usePopClass(rateText);
 
+  // 「推荐状态 ✓」只在四道基础防线全开时给——不能因为「大部分开了」就撞绿。
+  const roots = status?.allowedRoots.length ?? 0;
+  const windowSec = Math.round((status?.rateLimit.windowMs ?? 0) / 1000);
+  const recommended =
+    !!status?.whitelistEnabled &&
+    !!status?.auditEnabled &&
+    !!status?.rateLimitEnabled &&
+    !!status?.backupEnabled;
+
+  // status 未就绪（冷启动首帧）渲染占位空卡，占住网格位（原 GovCard 行为）。
+  if (!status) return <div className="bento-card" />;
+
   return (
-    // 整卡可点 → 日志页：成功率 / 失败数 / 热门工具全部源自审计，去日志页才看得到明细。
     <NavTarget
       onNavigate={onNavigate}
       tab="log"
       title="去日志页看调用明细与错误"
       className="bento-card"
     >
-      <div className="bento-eyebrow">健康度</div>
+      <div className="bento-eyebrow">
+        健康度 · 安全治理
+        <span
+          className={`ml-auto text-[10px] font-bold normal-case tracking-normal ${
+            recommended ? "text-success" : "text-warning"
+          }`}
+        >
+          {recommended ? "推荐状态 ✓" : "有防线未开"}
+        </span>
+      </div>
+
       <div className="mt-1.5 flex items-center gap-3.5">
         <HealthRing rate={rate} running={running} />
         <div className="min-w-0">
@@ -65,44 +101,100 @@ export function HealthCard({
         </div>
       </div>
 
-      {/* 热门工具占比。flex-1 是为了**吃掉多余高度**：本卡在网格第 2 行，
-          而那一行的高度由跨两行的状态卡反推出来（比本卡内容高一百多像素），
-          不伸缩就会在底部留一大片空白。与指标卡的 sparkline 同一套做法。 */}
-      <div className="mt-3 flex flex-1 flex-col justify-end gap-1.5">
-        {top.length === 0 || total === 0 ? (
-          <p className="text-[10.5px] text-muted-foreground">还没有工具调用</p>
-        ) : (
-          top.map((t) => (
-            <ToolBar key={t.name} name={t.name} count={t.count} total={total} />
-          ))
-        )}
-      </div>
+      {/* 治理胶囊。mt-auto + content-end 吃掉网格摊过来的多余高度（行2 的高度由
+          跨两行的状态卡反推）。🔴 StopClick 必需：胶囊嵌在整卡可点的 NavTarget 里，
+          不阻断冒泡的话点胶囊会顺带跳去日志页（见 NavTarget.StopClick 注释）。 */}
+      <StopClick className="mt-auto flex flex-1 flex-wrap content-end gap-1.5 pt-3">
+        <Pill
+          on={status.whitelistEnabled}
+          text={`路径白名单 · ${roots} 目录`}
+          onNavigate={onNavigate}
+          {...NAV.roots}
+        />
+        <Pill on={status.auditEnabled} text="审计日志" onNavigate={onNavigate} {...NAV.audit} />
+        <Pill
+          on={status.rateLimitEnabled}
+          text={`限流 ${status.rateLimit.maxRequests}次/${windowSec}秒`}
+          onNavigate={onNavigate}
+          {...NAV.ratelimit}
+        />
+        <Pill
+          on={status.backupEnabled}
+          text={`写备份 ${status.backupCount} 份`}
+          onNavigate={onNavigate}
+          {...NAV.backup}
+        />
+        <Pill
+          on={status.encodingDetectEnabled}
+          text="编码探测"
+          onNavigate={onNavigate}
+          {...NAV.encoding}
+        />
+        {/* 备份保留份数：纯配置值，不是开关，所以永远中性色。 */}
+        <Pill
+          on={false}
+          text={`每文件保留 ${status.backupRetention} 份`}
+          onNavigate={onNavigate}
+          {...NAV.backup}
+        />
+        {/* 下三项是「开了才需要留神」的项：传进去的 on 已取过反，
+            配上 warnWhenOn 后——开启时报警色，关闭是中性。 */}
+        <Pill
+          on={!status.readonlyMode}
+          warnWhenOn
+          text={`只读模式 ${status.readonlyMode ? "开" : "关"}`}
+          onNavigate={onNavigate}
+          {...NAV.readonly}
+        />
+        <Pill
+          on={!status.shellEnabled}
+          warnWhenOn
+          text={`命令执行 ${status.shellEnabled ? `开 · ${status.shellType}` : "关"}`}
+          onNavigate={onNavigate}
+          {...NAV.shell}
+        />
+        <Pill
+          on={!status.sessionCwdEnabled}
+          warnWhenOn
+          text={`会话持久化 ${status.sessionCwdEnabled ? "开" : "关"}`}
+          onNavigate={onNavigate}
+          {...NAV.session}
+        />
+      </StopClick>
     </NavTarget>
   );
 }
 
 /**
- * 单个热门工具的占比条。
+ * 治理胶囊。
  *
- * 分母用 `totalRequests`（而不是 Top3 之和）：前者回答的是“这个工具占全部调用的多少”，
- * 后者会把三个占比强行归一到 100%——那是假的，尾部还有很多其它工具。
+ * `on=true` → 绿色带 ✓；`on=false` → 中性灰。
+ * `warnWhenOn` 用于「只读模式 / 命令执行」这种反语义项：传进来的 `on` 已经取过反，
+ * false 意味着「该留神的项被打开了」，此时用警色而不是灰色。
  */
-function ToolBar({ name, count, total }: { name: string; count: number; total: number }) {
-  const pct = total > 0 ? (count / total) * 100 : 0;
+function Pill({
+  on,
+  text,
+  warnWhenOn,
+  onNavigate,
+  tab,
+  anchor,
+  title,
+}: {
+  on: boolean;
+  text: string;
+  warnWhenOn?: boolean;
+  onNavigate?: (tab: string, anchor?: string) => void;
+  tab: string;
+  anchor?: string;
+  title: string;
+}) {
+  const cls = on ? "gov-pill gov-pill--ok" : warnWhenOn ? "gov-pill gov-pill--warn" : "gov-pill";
   return (
-    <div className="flex items-center gap-2 text-[10px]">
-      <span className="w-[52px] shrink-0 truncate text-muted-foreground" title={toolLabel(name)}>
-        {toolLabel(name)}
-      </span>
-      <span className="tool-bar">
-        {/* 用 scaleX 而不是 width：width 变化会触发 layout + paint，
-            transform 走纯合成。过渡定义在 index.css 的 `.tool-bar > i`。 */}
-        <i style={{ transform: `scaleX(${Math.max(0.02, Math.min(1, pct / 100))})` }} />
-      </span>
-      <span className="w-[30px] shrink-0 text-right tabular-nums text-muted-foreground">
-        {pct >= 10 ? pct.toFixed(0) : pct.toFixed(1)}%
-      </span>
-    </div>
+    <NavTarget onNavigate={onNavigate} tab={tab} anchor={anchor} title={title} className={cls}>
+      {on && <Icon name="check" size={11} />}
+      {text}
+    </NavTarget>
   );
 }
 
@@ -163,4 +255,3 @@ function HealthRing({ rate, running }: { rate: number; running: boolean }) {
     </svg>
   );
 }
-

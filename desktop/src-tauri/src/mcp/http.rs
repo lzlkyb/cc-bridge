@@ -374,6 +374,9 @@ pub async fn handle_tools_call(
             let response = match result {
                 Ok(content) => {
                     if audit_enabled {
+                        // Token 用量估算埋点：结果 Value 序列化后的字节数。
+                        let result_bytes =
+                            serde_json::to_vec(&content).map(|v| v.len() as u64).ok();
                         write_audit_for_call(
                             &state.data_dir,
                             tool_name,
@@ -385,6 +388,7 @@ pub async fn handle_tools_call(
                             server_ms_dispatch,
                             io_ms,
                             session_id.clone(),
+                            result_bytes,
                         );
                         state.inc_audit_count();
                     }
@@ -397,6 +401,8 @@ pub async fn handle_tools_call(
                 Err(e) => {
                     state.increment_errors().await;
                     if audit_enabled {
+                        // 错误文案会以 "Error: {e}" 进入模型上下文，按该长度估算。
+                        let result_bytes = Some(("Error: ".len() + e.len()) as u64);
                         write_audit_for_call(
                             &state.data_dir,
                             tool_name,
@@ -408,6 +414,7 @@ pub async fn handle_tools_call(
                             server_ms_dispatch,
                             io_ms,
                             session_id.clone(),
+                            result_bytes,
                         );
                         state.inc_audit_count();
                     }
@@ -446,6 +453,10 @@ pub(crate) fn write_audit_for_call(
     server_ms_dispatch: u64,
     io_ms: Option<u64>,
     session_id: Option<String>,
+    // Token 用量估算埋点：工具返回结果的序列化字节数（成功 = 结果 Value 的 JSON
+    // 长度；失败 = 错误文案长度）。None = 该路径拿不到响应体（batch 子操作、旧日志），
+    // 聚合时输出侧按 0 计。
+    result_bytes: Option<u64>,
 ) {
     let args_str = arguments.to_string();
     // E-P1-7: 测量序列化耗时（直接计时一次写入，消除 O1 双重序列化开销）
@@ -463,6 +474,8 @@ pub(crate) fn write_audit_for_call(
         None,
         session_id,
     );
+    let mut entry = entry;
+    entry.result_bytes = result_bytes;
     let _ = serde_json::to_string(&entry);
     // f64 毫秒（不用 .as_millis() as u64）：实测单条写盘序列化开销在微秒级（~6.8µs），
     // 若截断为整数毫秒会恒为 0，导致前端耗时拆解面板的“审计写盘”一项长期不可见。
@@ -473,7 +486,6 @@ pub(crate) fn write_audit_for_call(
     // (server,duration,audit 三者均 Some 才算) 已把 overhead_ms 常驻成了 None；
     // 若只补 server_ms/audit_ms 而不重算 overhead_ms，它会永远卡在那个 None 上
     // （G6 端到端回归测试实测捕获到的真实回归，不是假设情境）。
-    let mut entry = entry;
     entry.server_ms = Some(server_ms);
     entry.audit_ms = Some(audit_ms);
     entry.overhead_ms = Some((server_ms as f64 - elapsed as f64 - audit_ms).max(0.0));

@@ -270,6 +270,33 @@ export interface AuditEntry {
   backupPath?: string;
   /** 关联备份：被备份/覆盖的目标文件绝对路径，供回滚写回定位。 */
   targetPath?: string;
+  /** Token 用量估算埋点：工具返回结果的序列化字节数（旧日志无此字段）。 */
+  resultBytes?: number;
+}
+
+// ── Token 用量估算（get_token_usage；口径：约 4 字节 ≈ 1 token，非账单值）──
+
+/** 按天的用量汇总（本地日期，旧→新）。 */
+export interface TokenUsageDay {
+  /** "YYYY-MM-DD" */
+  date: string;
+  calls: number;
+  estInput: number;
+  estOutput: number;
+}
+
+/** 按工具的用量汇总（窗口期内，合计降序 Top 10）。 */
+export interface TokenUsageTool {
+  tool: string;
+  calls: number;
+  estInput: number;
+  estOutput: number;
+}
+
+/** get_token_usage 返回的用量报告。 */
+export interface TokenUsageReport {
+  days: TokenUsageDay[];
+  tools: TokenUsageTool[];
 }
 
 /** get_file_diff 返回的单行 diff（行级红绿高亮）。 */

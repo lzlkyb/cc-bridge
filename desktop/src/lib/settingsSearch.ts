@@ -37,6 +37,7 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-audit", label: "审计日志", icon: "file", group: "设置 · 备份与审计", tab: "settings", anchor: "audit", keywords: "audit 日志 记录 留痕" },
   { id: "set-audit-days", label: "审计保留天数", icon: "clock", group: "设置 · 备份与审计", tab: "settings", anchor: "audit", keywords: "retention 保留 天数 过期" },
   { id: "set-audit-clean", label: "清理早于…（审计）", icon: "trash", group: "设置 · 备份与审计", tab: "settings", anchor: "audit", keywords: "清理 删除旧日志 cleanup" },
+  { id: "set-tokenusage", label: "Token 用量（估算）", icon: "activity", group: "设置 · 备份与审计", tab: "settings", anchor: "set-tokenusage", keywords: "token 用量 消耗 估算 usage 成本 明细 排行" },
 
   { id: "set-notify-cmd", label: "后台命令完成通知", icon: "activity", group: "设置 · 通知", tab: "settings", anchor: "notify-command", keywords: "notify 通知 toast 推送" },
   { id: "set-notify-task", label: "任务完成通知", icon: "activity", group: "设置 · 通知", tab: "settings", anchor: "notify-task", keywords: "notify push_notification 通知 推送" },

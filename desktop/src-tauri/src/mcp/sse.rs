@@ -236,9 +236,14 @@ pub async fn sse_message_handler(
                     match result {
                         Ok(content) => {
                             if audit_enabled {
+                                // Token 用量估算埋点：结果 Value 序列化后的字节数（与 http 通道同口径）。
+                                let result_bytes = serde_json::to_vec(&content)
+                                    .map(|v| v.len() as u64)
+                                    .ok();
                                 write_audit_for_call(
                                     &state.data_dir, &tool_name, &arguments, true, None,
                                     Some(source_ip.clone()), elapsed, server_ms, io_ms, None,
+                                    result_bytes,
                                 );
                                 state.inc_audit_count();
                             }
@@ -247,9 +252,12 @@ pub async fn sse_message_handler(
                         Err(e) => {
                             state.increment_errors().await;
                             if audit_enabled {
+                                // 错误文案会进入模型上下文，按 "Error: {e}" 长度估算（与 http 通道同口径）。
+                                let result_bytes = Some(("Error: ".len() + e.len()) as u64);
                                 write_audit_for_call(
                                     &state.data_dir, &tool_name, &arguments, false, Some(e.clone()),
                                     Some(source_ip.clone()), elapsed, server_ms, io_ms, None,
+                                    result_bytes,
                                 );
                                 state.inc_audit_count();
                             }

@@ -44,6 +44,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "set-security", label: "安全", icon: "shield", group: 1 },
   { id: "set-mcpbridge", label: "外挂 MCP 桥", icon: "plug", group: 1 },
   { id: "set-backupaudit", label: "备份与审计", icon: "history", group: 2 },
+  { id: "set-tokenusage", label: "Token 用量", icon: "activity", group: 2 },
   { id: "set-notify", label: "通知", icon: "activity", group: 2 },
   { id: "set-advanced", label: "高级", icon: "sliders", group: 3 },
   { id: "set-terminal", label: "终端", icon: "terminal", group: 3 },

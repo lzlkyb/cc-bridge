@@ -604,6 +604,107 @@ body {
   transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* ── 设置页「Token 用量」分区（组合方案 A+B，TokenUsageGroup.tsx）──
+   KPI 头 + 14 天堆叠趋势 + 90 天热力图 + 工具排行。全部走现有 HSL token，
+   深/亮色主题自动跟随；窄窗口 KPI 折两列、双栏折单栏。 */
+
+/* KPI 头：四张小指标卡。 */
+.usage-kpis {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+}
+.usage-kpi {
+  min-width: 0; border: 1px solid hsl(var(--border));
+  border-radius: 11px; padding: 10px 12px;
+}
+.usage-kpi-lb {
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: hsl(var(--muted-foreground));
+}
+.usage-kpi-v { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.usage-kpi-v small { font-size: 10px; font-weight: 600; color: hsl(var(--muted-foreground)); margin-left: 2px; }
+.usage-kpi-delta { font-size: 9.5px; margin-top: 2px; font-weight: 700; }
+.usage-kpi-delta--flat { color: hsl(var(--muted-foreground)); font-weight: 600; }
+.usage-kpi-delta--up { color: hsl(var(--success)); }
+.usage-kpi-delta--down { color: hsl(var(--destructive)); }
+/* 迷你趋势线（KPI 卡底部）。 */
+.usage-spark { display: flex; align-items: flex-end; gap: 2px; height: 16px; margin-top: 6px; }
+.usage-spark i { flex: 1; min-width: 0; background: hsl(var(--primary) / 0.28); border-radius: 2px 2px 0 0; }
+.usage-spark i:last-child { background: hsl(var(--primary)); }
+
+/* 14 天堆叠趋势：输入浅色在下、输出深色在上。 */
+.usage-trend { display: flex; align-items: flex-end; gap: 9px; height: 96px; }
+/* 列必须自持 100% 高：父容器 align-items:flex-end 会把列高塌成内容高，
+   子段的 height:% 百分比失去基准 → 全部跌到 min-height，柱子等高（实测 bug）。 */
+.usage-trend-col { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; }
+.usage-trend-in { background: hsl(var(--primary) / 0.28); border-radius: 4px 4px 0 0; min-height: 2px; }
+.usage-trend-out { background: hsl(var(--primary)); opacity: 0.9; border-radius: 0 0 4px 4px; min-height: 2px; }
+.usage-trend-col--today .usage-trend-in { background: hsl(var(--primary) / 0.4); }
+.usage-xdays { display: flex; gap: 9px; margin-top: 4px; }
+.usage-xdays span {
+  flex: 1; min-width: 0; overflow: hidden; text-align: center;
+  font-size: 8.5px; color: hsl(var(--muted-foreground));
+}
+.usage-xdays span.usage-xdays--today { font-weight: 800; color: hsl(var(--foreground)); }
+.usage-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 10px; color: hsl(var(--muted-foreground)); }
+.usage-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 4px; }
+
+/* 微动画：柱子挂载时自底「生长」（scaleY 不触发 layout，比动 height 便宜），
+   数据 30s 轮询更新时高度平滑过渡。错落 delay 由各柱 inline animationDelay 控制
+   （react 复用 DOM 节点，动画只在首次挂载跑一次，轮询重渲不会反复闪）。
+   prefers-reduced-motion 的全局降级（文件尾）已覆盖，无需单独处理。 */
+@keyframes bar-rise { from { transform: scaleY(0); } }
+.usage-minibars > div,
+.usage-trend-col {
+  transform-origin: bottom;
+  animation: bar-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.usage-minibars > div { transition: height 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+.usage-trend-in, .usage-trend-out { transition: height 0.45s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* 下方双栏：热力图 + 工具排行。 */
+.usage-duo { display: grid; grid-template-columns: 1.4fr 1fr; gap: 20px; margin-top: 16px; align-items: start; }
+/* 90 天热力图：周列 × 星期行，深度 = 当日用量分位（分位阈值由 usageMath 算）。 */
+.usage-heat {
+  display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 11px);
+  gap: 3px; justify-content: start;
+}
+.usage-heat i { width: 11px; height: 11px; border-radius: 2.5px; background: hsl(var(--muted)); }
+.usage-heat .l1 { background: hsl(var(--primary) / 0.22); }
+.usage-heat .l2 { background: hsl(var(--primary) / 0.45); }
+.usage-heat .l3 { background: hsl(var(--primary) / 0.7); }
+.usage-heat .l4 { background: hsl(var(--primary)); }
+.usage-heat-scale { display: flex; align-items: center; gap: 3px; margin-top: 8px; font-size: 9px; color: hsl(var(--muted-foreground)); }
+.usage-heat-scale i { width: 10px; height: 10px; border-radius: 2.5px; background: hsl(var(--muted)); }
+.usage-heat-scale .l1 { background: hsl(var(--primary) / 0.22); }
+.usage-heat-scale .l2 { background: hsl(var(--primary) / 0.45); }
+.usage-heat-scale .l3 { background: hsl(var(--primary) / 0.7); }
+.usage-heat-scale .l4 { background: hsl(var(--primary)); }
+
+/* 工具排行：色点 + 占比条（复用 .tool-bar）+ 数值。 */
+.usage-rank-row { display: flex; align-items: center; gap: 8px; font-size: 10px; margin-bottom: 7px; }
+.usage-rank-dot { width: 8px; height: 8px; border-radius: 3px; flex-shrink: 0; }
+.usage-rank-name {
+  width: 70px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: hsl(var(--muted-foreground));
+}
+.usage-rank-val { width: 52px; flex-shrink: 0; text-align: right; color: hsl(var(--muted-foreground)); font-variant-numeric: tabular-nums; }
+/* 排行固定四色 + 其他灰，避免动态配色失控。 */
+.usage-c0 { background: hsl(var(--primary)); }
+.usage-c1 { background: hsl(var(--primary) / 0.45); }
+.usage-c2 { background: hsl(199 89% 48%); }
+.usage-c3 { background: hsl(var(--success)); }
+.usage-c-other { background: hsl(var(--muted-foreground)); }
+.tool-bar > i.usage-c0 { background: hsl(var(--primary)); }
+.tool-bar > i.usage-c1 { background: hsl(var(--primary) / 0.45); }
+.tool-bar > i.usage-c2 { background: hsl(199 89% 48%); }
+.tool-bar > i.usage-c3 { background: hsl(var(--success)); }
+.tool-bar > i.usage-c-other { background: hsl(var(--muted-foreground)); }
+/* 窄窗口降级：KPI 折两列、双栏折单栏（设置面板本身有 min 宽，这两条兜底小窗）。 */
+@media (max-width: 640px) {
+  .usage-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-duo { grid-template-columns: 1fr; }
+}
+
 /* E1. 连接页 Bento 的状态主卡（StatusCard.tsx）
    四种基调对应 computeChain() 的 tone。为何不用 Tailwind 行内渐变：
    四套渐变 × 两个色停点写成原子类会是四串长得读不下去的 class，

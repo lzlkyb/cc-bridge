@@ -10,6 +10,7 @@ import { NetworkGroup } from "./settings/NetworkGroup";
 import { SecurityGroup } from "./settings/SecurityGroup";
 import { McpBridgeGroup } from "./settings/mcpbridge/McpBridgeGroup";
 import { BackupAuditGroup } from "./settings/BackupAuditGroup";
+import { TokenUsageGroup } from "./settings/TokenUsageGroup";
 import { NotifyGroup } from "./settings/NotifyGroup";
 import { AdvancedGroup } from "./settings/AdvancedGroup";
 import { TerminalGroup } from "./settings/TerminalGroup";
@@ -153,6 +154,9 @@ export function SettingsTab({
             开关就会把所有 server 的 PATH 扫一遍）。 */}
         <McpBridgeGroup status={status} />
         <BackupAuditGroup status={status} onSaved={onSaved} />
+        {/* 紧跟备份与审计：同为「发生过什么」的回看类信息，数据同源（审计日志）。
+            首页 Bento 用量卡点击即落到这里（anchor: set-tokenusage）。 */}
+        <TokenUsageGroup />
         <NotifyGroup status={status} onSaved={onSaved} />
         <AdvancedGroup status={status} onSaved={onSaved} />
         {/* 紧跟「高级」：终端拖拽即选在那张卡里，终端相关的两项挨着放。

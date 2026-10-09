@@ -46,6 +46,12 @@ pub struct AuditEntry {
     /// 关联备份：被备份/覆盖的目标文件绝对路径（同一次操作的原文件，用于回滚写回定位）。
     #[serde(rename = "targetPath", skip_serializing_if = "Option::is_none")]
     pub target_path: Option<String>,
+    /// Token 用量估算埋点：工具返回结果的序列化字节数（http/sse 两处 dispatch 后计得）。
+    /// 与 `params`（请求参数全文）一起构成「经桥交互增量」的估算基础：
+    /// est_tokens = (params.len() + result_bytes) / 4。旧日志无此字段 → None，
+    /// 聚合时按 0 计（估算偏低，与「估算非账单值」的口径一致）。
+    #[serde(rename = "resultBytes", skip_serializing_if = "Option::is_none")]
+    pub result_bytes: Option<u64>,
 }
 
 /// 关联备份传递：在同一次工具调用（同一 async 任务）内，由写工具把本次生成的备份路径 +
@@ -379,6 +385,10 @@ pub fn new_entry(
         session_id,
         backup_path: None,
         target_path: None,
+        // Token 用量估算：new_entry 拿不到响应体（dispatch 返回值在调用方手里），
+        // 由 write_audit_for_call 在构造后补写（同 serverMs/auditMs 的补写模式）。
+        // batch.rs 的子操作条目走不到那条路，保持 None → 只按请求侧估算。
+        result_bytes: None,
     }
 }
 
@@ -451,6 +461,188 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<u64, 
     Ok(removed)
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Token 用量估算（首页用量卡 + 设置页详情）
+//
+// 口径：桥只看得到 MCP 请求参数与工具返回结果，模型侧的真实 token 消耗发生在
+// 远程 Claude Code 与 Anthropic 之间，这里**只能估算**：
+//   est_input  ≈ params.len() / 4（请求参数进入模型上下文）
+//   est_output ≈ result_bytes / 4（工具结果返回后进入下一轮上下文）
+// 4 字节 ≈ 1 token 是 JSON/英文为主的粗略经验值；中文内容（~3 字节/字）会略低估。
+// UI 全程标注「估算」，绝不呈现为账单值。
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// 折算基准：约多少字节 ≈ 1 token。
+pub const BYTES_PER_TOKEN: u64 = 4;
+
+/// 字节数 → 估算 token 数（纯函数，收口换算常数便于将来调整与单测）。
+pub fn est_tokens(bytes: u64) -> u64 {
+    bytes / BYTES_PER_TOKEN
+}
+
+/// 按天的用量汇总（天为本地日期）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenUsageDay {
+    /// 本地日期 "YYYY-MM-DD"。
+    pub date: String,
+    pub calls: u64,
+    #[serde(rename = "estInput")]
+    pub est_input: u64,
+    #[serde(rename = "estOutput")]
+    pub est_output: u64,
+}
+
+/// 按工具的用量汇总（窗口期内）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenUsageTool {
+    pub tool: String,
+    pub calls: u64,
+    #[serde(rename = "estInput")]
+    pub est_input: u64,
+    #[serde(rename = "estOutput")]
+    pub est_output: u64,
+}
+
+/// Token 用量估算报告：按天序列（旧→新）+ 按工具排行（合计降序，Top 10）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenUsageReport {
+    pub days: Vec<TokenUsageDay>,
+    pub tools: Vec<TokenUsageTool>,
+}
+
+/// 审计时间戳（RFC3339）→ 本地日期键 "YYYY-MM-DD"。解析失败返回 None（该条不计入）。
+fn entry_date_key(ts: &str) -> Option<String> {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|dt| dt.with_timezone(&Local).format("%Y-%m-%d").to_string())
+}
+
+/// 把已解析条目聚合进日期桶与工具桶。纯聚合，不做 IO——单独抽出便于单测。
+fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport {
+    let idx_of: std::collections::HashMap<&str, usize> = date_keys
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.as_str(), i))
+        .collect();
+    let mut days: Vec<TokenUsageDay> = date_keys
+        .iter()
+        .map(|d| TokenUsageDay {
+            date: d.clone(),
+            calls: 0,
+            est_input: 0,
+            est_output: 0,
+        })
+        .collect();
+    // value: [calls, est_input, est_output]
+    let mut tools: std::collections::HashMap<&str, [u64; 3]> = std::collections::HashMap::new();
+
+    for e in all {
+        let Some(dk) = entry_date_key(&e.timestamp) else {
+            continue;
+        };
+        // 不在窗口内的条目只跳过日期桶，仍计入工具排行？不——工具排行与天序列必须
+        // 是同一个窗口，否则两处数字对不上（设置页表与排行并列展示）。
+        let Some(&i) = idx_of.get(dk.as_str()) else {
+            continue;
+        };
+        let inp = est_tokens(e.params.len() as u64);
+        let out = est_tokens(e.result_bytes.unwrap_or(0));
+        let d = &mut days[i];
+        d.calls += 1;
+        d.est_input += inp;
+        d.est_output += out;
+        let t = tools.entry(e.tool.as_str()).or_insert([0, 0, 0]);
+        t[0] += 1;
+        t[1] += inp;
+        t[2] += out;
+    }
+
+    let mut tools: Vec<TokenUsageTool> = tools
+        .into_iter()
+        .map(|(tool, c)| TokenUsageTool {
+            tool: tool.to_string(),
+            calls: c[0],
+            est_input: c[1],
+            est_output: c[2],
+        })
+        .collect();
+    tools.sort_by(|a, b| {
+        (b.est_input + b.est_output)
+            .cmp(&(a.est_input + a.est_output))
+            .then_with(|| a.tool.cmp(&b.tool))
+    });
+    tools.truncate(10);
+
+    TokenUsageReport { days, tools }
+}
+
+/// Token 用量估算报告（近 `days` 天，含今天；clamp 1..=120）。
+///
+/// 上限 120 覆盖设置页热力图的 90 天视图；实际能取到多少天受审计日志保留期
+/// （`audit_retention_days`，默认 30）限制——窗口内没有数据的天就是 0，前端照实显示。
+///
+/// 复用 `AUDIT_CACHE`（与日志页 read_page 同一份 (path,mtime,len) 缓存）：
+/// 首页用量卡 30s 轮询，稳态（日志未变）时零解析；日志活跃时与日志页共享同一次
+/// 全量解析成本。聚合本身在持锁内完成——遍历数千条只是内存计数，远快于重新解析。
+pub fn read_usage_report(data_dir: &Path, days: u32) -> Result<TokenUsageReport, String> {
+    let days = days.clamp(1, 120) as usize;
+    let log_path = data_dir.join("audit.log");
+
+    // 日期桶：旧→新，最后一天是今天。
+    let today = Local::now().date_naive();
+    let date_keys: Vec<String> = (0..days)
+        .rev()
+        .map(|i| {
+            (today - chrono::Duration::days(i as i64))
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .collect();
+
+    if !log_path.exists() {
+        // 与 read_page 同策略：文件不存在先失效缓存，再返回全零报告。
+        if let Some(m) = AUDIT_CACHE.get() {
+            if let Ok(mut g) = m.lock() {
+                *g = None;
+            }
+        }
+        return Ok(aggregate_usage(&[], &date_keys));
+    }
+
+    let meta =
+        std::fs::metadata(&log_path).map_err(|e| format!("Failed to stat audit log: {e}"))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let len = meta.len();
+
+    // 判命中与聚合在同一次持锁内完成（与 read_page 同样的 TOCTOU 防线）。
+    let cache = AUDIT_CACHE.get_or_init(|| Mutex::new(None));
+    let hit: Option<TokenUsageReport> = {
+        let g = cache.lock().unwrap();
+        match g.as_ref() {
+            Some((p, mt, ln, all))
+                if p.as_path() == log_path.as_path() && *mt == mtime && *ln == len =>
+            {
+                Some(aggregate_usage(all, &date_keys))
+            }
+            _ => None,
+        }
+    };
+    if let Some(report) = hit {
+        return Ok(report);
+    }
+
+    // 未命中：全量解析 → 聚合 → 回填缓存。
+    let parsed = parse_all_entries(&log_path)?;
+    let report = aggregate_usage(&parsed, &date_keys);
+    *cache.lock().unwrap() = Some((log_path, mtime, len, parsed));
+    Ok(report)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,6 +705,152 @@ mod tests {
         assert_eq!(entry.audit_ms, None);
         assert_eq!(entry.net_ms, None);
         assert_eq!(entry.overhead_ms, None);
+        // Token 用量估算字段同属向后兼容范畴：旧行无 resultBytes → None。
+        assert_eq!(entry.result_bytes, None);
+    }
+
+    /// est_tokens：换算常数收口。0/不足一个 token 的零头都向下取整。
+    #[test]
+    fn est_tokens_divides_by_bytes_per_token() {
+        assert_eq!(est_tokens(0), 0);
+        assert_eq!(est_tokens(3), 0);
+        assert_eq!(est_tokens(BYTES_PER_TOKEN), 1);
+        assert_eq!(est_tokens(BYTES_PER_TOKEN * 3 + 2), 3);
+    }
+
+    /// entry_date_key：合法 RFC3339 → Some("YYYY-MM-DD")；垃圾串 → None（不计入）。
+    /// 带时区偏移的时间戳须正确换算到本地日期（+08:00 的中午 12 点在 GMT+8 机器上
+    /// 就是当天；本测试在非 GMT+8 机器上只断言「能解析出 10 位日期」，不断言具体值）。
+    #[test]
+    fn entry_date_key_parses_rfc3339() {
+        let key = entry_date_key("2026-09-27T12:00:00+08:00").expect("合法时间戳应可解析");
+        assert_eq!(key.len(), 10);
+        assert_eq!(key.as_bytes()[4], b'-');
+        assert_eq!(key.as_bytes()[7], b'-');
+        assert_eq!(entry_date_key("not-a-date"), None);
+    }
+
+    /// aggregate_usage：日期桶计数 / 输入输出拆分 / 旧日志(None)按 0 计 / 窗口外
+    /// 条目整体跳过（天数序列与工具排行必须是同一窗口）/ 工具排行按合计降序。
+    #[test]
+    fn aggregate_usage_buckets_days_and_ranks_tools() {
+        let today = Local::now().date_naive();
+        let dk = |offset: i64| {
+            (today - chrono::Duration::days(offset))
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+        let ts = |offset: i64| (Local::now() - chrono::Duration::days(offset)).to_rfc3339();
+        let date_keys = vec![dk(1), dk(0)]; // 昨天、今天
+
+        let mk = |tool: &str, ts: String, params_len: usize, rb: Option<u64>| AuditEntry {
+            timestamp: ts,
+            tool: tool.into(),
+            params: "x".repeat(params_len),
+            success: true,
+            error: None,
+            source_ip: None,
+            duration_ms: None,
+            server_ms: None,
+            io_ms: None,
+            audit_ms: None,
+            net_ms: None,
+            overhead_ms: None,
+            session_id: None,
+            backup_path: None,
+            target_path: None,
+            result_bytes: rb,
+        };
+        let entries = vec![
+            // 今天：read_files 参数 40B→10 tok，结果 80B→20 tok
+            mk("read_files", ts(0), 40, Some(80)),
+            // 今天：write_file 无结果字节（旧日志/批次子操作）→ 输出按 0
+            mk("write_file", ts(0), 20, None),
+            // 昨天：read_files
+            mk("read_files", ts(1), 8, Some(12)),
+            // 窗口外（前天）：不应出现在任何桶里
+            mk("read_files", ts(2), 999, Some(999)),
+        ];
+
+        let report = aggregate_usage(&entries, &date_keys);
+        assert_eq!(report.days.len(), 2);
+        let yesterday = &report.days[0];
+        assert_eq!(yesterday.calls, 1);
+        assert_eq!(yesterday.est_input, 2);
+        assert_eq!(yesterday.est_output, 3);
+        let td = &report.days[1];
+        assert_eq!(td.calls, 2);
+        assert_eq!(td.est_input, 10 + 5);
+        assert_eq!(td.est_output, 20);
+
+        // 排行：read_files 合计 35 > write_file 合计 5；窗口外的 999 不计入。
+        assert_eq!(report.tools.len(), 2);
+        assert_eq!(report.tools[0].tool, "read_files");
+        assert_eq!(report.tools[0].calls, 2);
+        assert_eq!(report.tools[0].est_input, 12);
+        assert_eq!(report.tools[0].est_output, 23);
+        assert_eq!(report.tools[1].tool, "write_file");
+        assert_eq!(report.tools[1].est_output, 0);
+    }
+
+    /// read_usage_report：写真实日志 → 近 7 天报告正确；文件不存在 → 7 个全零天。
+    #[test]
+    fn usage_report_reads_log_and_zeroes_when_missing() {
+        let dir = tmp_data_dir("usage-report");
+        let _ = clear_all(&dir);
+
+        // 文件不存在：全零 7 天，最后一天是今天。
+        let empty = read_usage_report(&dir, 7).expect("empty");
+        assert_eq!(empty.days.len(), 7);
+        assert!(empty.days.iter().all(|d| d.calls == 0));
+        let today_key = Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(empty.days[6].date, today_key);
+
+        // 写两条今天的真实条目（带 resultBytes），再读。
+        let mut e1 = new_entry(
+            "read_files",
+            "xxxx",
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        e1.result_bytes = Some(40);
+        write_audit_log(&dir, &e1).expect("write 1");
+        let e2 = new_entry(
+            "list_dir", "{}", true, None, None, None, None, None, None, None, None,
+        );
+        write_audit_log(&dir, &e2).expect("write 2");
+
+        let report = read_usage_report(&dir, 7).expect("report");
+        assert_eq!(report.days.len(), 7);
+        let td = &report.days[6];
+        assert_eq!(td.date, today_key);
+        assert_eq!(td.calls, 2);
+        assert_eq!(td.est_input, 1); // "xxxx" 4B → 1 tok；"{}" 2B → 0 tok
+        assert_eq!(td.est_output, 10);
+        assert_eq!(report.tools[0].tool, "read_files");
+        assert_eq!(report.tools[0].est_output, 10);
+        assert_eq!(report.tools[1].tool, "list_dir");
+
+        // 追加一条 → 缓存失效 → 计数增长（缓存回填路径正确）。
+        // 排行不变：list_dir 合计 0 tok，read_files（11 tok）仍是第一。
+        let e3 = new_entry(
+            "list_dir", "{}", true, None, None, None, None, None, None, None, None,
+        );
+        write_audit_log(&dir, &e3).expect("write 3");
+        let again = read_usage_report(&dir, 7).expect("report again");
+        assert_eq!(again.days[6].calls, 3);
+        assert_eq!(again.tools[0].tool, "read_files");
+        assert_eq!(again.tools[1].tool, "list_dir");
+        assert_eq!(again.tools[1].calls, 2);
+
+        let _ = clear_all(&dir);
     }
 
     /// O1：new_entry 应正确派生 overheadMs = server − duration − audit。

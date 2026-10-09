@@ -42,7 +42,7 @@ describe("groupSettingsSections", () => {
     expect(groups.map((g) => g.map((s) => s.label))).toEqual([
       ["关于"],
       ["网络", "防火墙", "安全", "外挂 MCP 桥"],
-      ["备份与审计", "通知"],
+      ["备份与审计", "Token 用量", "通知"],
       ["高级", "终端"],
       ["应用", "安装与快捷方式", "配置"],
     ]);

@@ -92,6 +92,25 @@ export function toolLabel(tool: string): string {
   return TOOL_LABELS[tool] ?? tool;
 }
 
+/* ─── Token 用量展示（纯函数，UsageCard 与 TokenUsageGroup 共用，规则 11）─── */
+
+/**
+ * token 数格式化：≥1 万显示「x.x万」（保留 1 位小数，去尾随 .0），否则千分位原值。
+ * 口径是估算值（见后端 audit.rs），展示层不做任何「账单」暗示。
+ */
+export function fmtTokens(n: number): string {
+  if (n < 10000) return n.toLocaleString("en-US");
+  const w = n / 10000;
+  return `${w >= 100 ? Math.round(w) : Math.round(w * 10) / 10}万`;
+}
+
+/** 日期键 "2026-09-27" → 短标签 "9/27"。非法输入原样返回。 */
+export function shortDateKey(date: string): string {
+  const m = /^\d{4}-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) return date;
+  return `${Number(m[1])}/${Number(m[2])}`;
+}
+
 /* ─── 连接页命令拼接（纯函数，ConnectTab 与 TokenManager 共用，规则 11）─── */
 
 /** 展示用主机地址：监听全网卡(0.0.0.0)时取用户选中的 IP，否则用配置的 host。 */

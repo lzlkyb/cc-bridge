@@ -14,6 +14,8 @@ import {
   buildTokenSedCommand,
   buildPermissionGrantCommand,
   formatUptime,
+  fmtTokens,
+  shortDateKey,
 } from "./utils";
 import type { StatusResponse } from "./types";
 
@@ -184,5 +186,34 @@ describe("formatUptime（中文时长）", () => {
   it("负数与小数不产生怪值", () => {
     expect(formatUptime(-5)).toBe("0秒");
     expect(formatUptime(45.9)).toBe("45秒");
+  });
+});
+
+describe("fmtTokens（估算用量格式化）", () => {
+  it("万以下给千分位原值", () => {
+    expect(fmtTokens(0)).toBe("0");
+    expect(fmtTokens(9999)).toBe("9,999");
+  });
+
+  it("万级保留 1 位小数并去尾随 0", () => {
+    expect(fmtTokens(842000)).toBe("84.2万");
+    expect(fmtTokens(10000)).toBe("1万");
+    expect(fmtTokens(100500)).toBe("10.1万");
+  });
+
+  it("百万级不再带小数（避免数字过长的视觉噪声）", () => {
+    expect(fmtTokens(1234500)).toBe("123万");
+  });
+});
+
+describe("shortDateKey（日期键短标签）", () => {
+  it("去前导零转斜杠格式", () => {
+    expect(shortDateKey("2026-09-27")).toBe("9/27");
+    expect(shortDateKey("2026-12-05")).toBe("12/5");
+  });
+
+  it("非法输入原样返回（容错不抛错）", () => {
+    expect(shortDateKey("今天")).toBe("今天");
+    expect(shortDateKey("")).toBe("");
   });
 });
