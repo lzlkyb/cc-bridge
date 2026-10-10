@@ -4,6 +4,15 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.7.7",
+    date: "2026-10-10",
+    items: [
+      { category: "feat", text: "首页 Token 用量卡。第二行新增用量卡：今日估算 token 大数字、调用次数、输入/输出拆分与近 7 天柱状图，数据每 30 秒自动刷新，点击直达设置页详情。" },
+      { category: "feat", text: "设置页「Token 用量」仪表盘。四张 KPI 卡（今日 / 近 7 天合计，含与上一周期的环比涨跌）、近 14 天输入+输出堆叠趋势、90 天节奏热力图（深度 = 当日用量分位）、按工具排行（近 7 天 Top 4，其余并入「其他」）。" },
+      { category: "improve", text: "健康度与安全治理合并为一张卡，为用量卡腾出位置；安全治理的各个入口胶囊全部保留，跳转行为不变。" },
+    ],
+  },
+  {
     version: "2.7.6",
     date: "2026-09-16",
     items: [
@@ -153,20 +162,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "纯 CR（经典 Mac）换行的行为从隐含前提变成明写契约：它会被转成 LF 且不还原（`crlf` 标志只看 `\\r\\n`），对这类文件改一个词会把全文行尾换掉。行为未变（该格式已基本绝迹，不值得为它多开一条还原路径），但现在有注释和测试钉着，日后想改必须先面对那条断言" },
       { category: "improve", text: "空白告警改为算在归一化后的 `oldString` 上（上一条修复的实现）" },
       { category: "improve", text: "更正 v2.6.2 的一条发版说明。原文把“空操作不再报成功”写成了修复旧缺陷，事实不是：老代码按原串比较 `oldString`/`newString`，`\"gamma\\r\\n\"` 与 `\"gamma\\n\"` 不相等会被放过，然后拿未归一化的原串去匹配、报 `oldString not found`——从不会假报成功。那道检查实际是为了堵住归一化自身新开出的口子。已将 2.6.2 那条从「修复」移到「技术细节」并改写；已发布的 GitHub Release 说明改不了，故在此留档 ---" },
-    ],
-  },
-  {
-    version: "2.6.2",
-    date: "2026-08-12",
-    items: [
-      { category: "fix", text: "编辑 Windows 换行（CRLF）的文件时可能莫名报“找不到要替换的内容”。内容就在那里，只是行尾的表示方式对不上。现在两种行尾都能正常匹配，不用再猜" },
-      { category: "fix", text: "一条会误导人的报错。替换内容里带回车符时，以前报的是“字符在当前编码下无法表示”——这个诊断是错的，会把人引到编码问题上去查。现在直接说清楚真实原因与怎么改" },
-      { category: "improve", text: "根因：文件读进来就被归一化成 LF（`read_text`），而 `read_files` 又在内容旁边报 `newline: \"CRLF\"`——看到 CRLF 就在 `oldString` 里写 `\\r\\n`，而被匹配的文本里一个 `\\r` 都没有，于是必然失败" },
-      { category: "improve", text: "`oldString` 现在按与文件内容同一套规则归一化再匹配。这不是“宽容”：匹配是查询，归一化只是把针和草垛放进同一个坐标系，零信息损失（“只匹配 CRLF 不匹配 LF”这个能力本来就不存在）" },
-      { category: "improve", text: "`newString` 里的 `\\r` 则仍然拒绝，只是提前到碰文件之前并给真实原因：写入是改写，静默把调用方要求的 `\\r\\n` 换成别的东西，与本模块“宁可拒写也不静默损坏”的原则相冲" },
-      { category: "improve", text: "归一化规则抽成 `encoding::normalize_newlines` 单一定义，`read_text` 与 `edit_files` 共用——两边规则一旦脱钩就会重现“看着一模一样却匹配不上”，现在物理上不可能" },
-      { category: "improve", text: "写入行为完全未变：CRLF 文件改完仍是 CRLF（回写时按探测到的行尾还原）" },
-      { category: "improve", text: "同时加了一道防回归检查：归一化后的 `oldString` 若与 `newString` 相同，在碰文件之前就拦下。这不是修旧缺陷，而是归一化本身会新开出的一个口子：两边归一化后变得相同时，替换会“成功”但文件一字未变 ---" },
     ],
   },
 ];
