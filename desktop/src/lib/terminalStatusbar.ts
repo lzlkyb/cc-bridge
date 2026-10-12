@@ -18,7 +18,7 @@ import type { Theme } from "./theme";
  */
 
 /** 段类型。新增段只需在这里加一个 key，并在下面四套 token 里各补一个色。 */
-export type SegKind = "host" | "path" | "git" | "exit" | "exitBad" | "muted";
+export type SegKind = "host" | "path" | "git" | "exit" | "exitBad" | "muted" | "tui";
 
 export interface StatusbarSkin {
   /** 状态栏容器。 */
@@ -66,6 +66,7 @@ const INDIGO: Record<Theme, StatusbarSkin> = {
       exit: "#22c55e",
       exitBad: "#ef4444",
       muted: "#8a90a2",
+      tui: "#fbbf24",
     },
     text: "",
   },
@@ -86,6 +87,7 @@ const INDIGO: Record<Theme, StatusbarSkin> = {
       exit: "#15803c",
       exitBad: "#dc2626",
       muted: "#6b7280",
+      tui: "#b45309",
     },
     text: "",
   },
@@ -108,6 +110,7 @@ const MONO: Record<Theme, StatusbarSkin> = {
       exit: "#22c55e",
       exitBad: "#ef4444",
       muted: "#7a8090",
+      tui: "#d97706",
     },
     text: "",
   },
@@ -125,6 +128,7 @@ const MONO: Record<Theme, StatusbarSkin> = {
       exit: "#15803c",
       exitBad: "#dc2626",
       muted: "#6b7280",
+      tui: "#b45309",
     },
     text: "",
   },
@@ -152,6 +156,7 @@ const CLASSIC: Record<Theme, StatusbarSkin> = {
       exit: "#22c55e",
       exitBad: "#ff5f56",
       muted: "#4a8a5c",
+      tui: "#fbbf24",
     },
     text: "",
   },
@@ -169,6 +174,7 @@ const CLASSIC: Record<Theme, StatusbarSkin> = {
       exit: "#15803c",
       exitBad: "#b91c1c",
       muted: "#6b6255",
+      tui: "#b45309",
     },
     text: "",
   },
@@ -191,6 +197,7 @@ const CONTRAST: Record<Theme, StatusbarSkin> = {
       exit: "#86efac",
       exitBad: "#fca5a5",
       muted: "#9ca3af",
+      tui: "#fcd34d",
     },
     text: "#0b0d11",
   },
@@ -208,6 +215,7 @@ const CONTRAST: Record<Theme, StatusbarSkin> = {
       exit: "#15803c",
       exitBad: "#b91c1c",
       muted: "#4b5563",
+      tui: "#d97706",
     },
     text: "#ffffff",
   },

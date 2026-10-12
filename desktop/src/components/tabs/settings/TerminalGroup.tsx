@@ -3,6 +3,7 @@ import { Icon } from "../../ui/icon";
 import { SettingsRow } from "../../ui/SettingsRow";
 import { ToggleRow } from "../../ui/ToggleRow";
 import { OptionChip } from "../../ui/OptionChip";
+import { InlineNotice } from "../../ui/notice";
 import { useTerminalPreset, useTerminalInject } from "../../../hooks/useTerminalPreset";
 import { PRESETS, setPreset, setInjectEnabled } from "../../../lib/terminalPreset";
 
@@ -43,8 +44,11 @@ export function TerminalGroup() {
           sub="会话连上后向远端 shell 注入一段轻量钩子，读取当前目录与 git 分支显示在状态栏。只读取、不改提示符、不写任何文件；远端非 bash/zsh 或注入失败时自动降级。关掉后状态栏只显示本地可算的信息。"
           checked={inject}
           onChange={setInjectEnabled}
-          last
         />
+        <InlineNotice variant="info" className="mt-3">
+          进入 Claude Code 等全屏程序时，滚动条会自动切换为「TUI 滚动」：拖动它直接滚动程序里的内容（如对话），拖到顶/底跳到最早/最新。若你更想用终端原生回滚看完整历史，可在
+          Claude Code 里运行 <code className="rounded bg-foreground/10 px-1 py-0.5 font-mono text-[11.5px]">/tui default</code>，对话会回到普通缓冲区。
+        </InlineNotice>
       </CardContent>
     </Card>
   );

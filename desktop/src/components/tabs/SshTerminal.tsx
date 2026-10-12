@@ -9,6 +9,7 @@ import { useTerminalSearch } from "./useTerminalSearch";
 import { useTerminalFontSize } from "./useTerminalFontSize";
 import { SshTerminalFind } from "./SshTerminalFind";
 import { TerminalStatusBar } from "./TerminalStatusBar";
+import { attachTuiScrollbar } from "../../lib/terminalScroll";
 import { useThemeMode } from "../../hooks/useThemeMode";
 import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
 import { useTerminalOsc } from "../../hooks/useTerminalOsc";
@@ -100,6 +101,19 @@ export function SshTerminal({
     onCwdRef.current(status.cwd);
   }, [status.cwd]);
 
+  // TUI 态虚拟滚动条：进 Claude Code 这类 fullscreen 程序（备用屏）时，
+  // 原生滚动条没有东西可滚——覆盖一条虚拟滚动条，拖动翻译成 wheel 事件转发给 TUI。
+  // 逻辑全在 lib/terminalScroll.ts；这里只管挂载与把激活态给状态栏当徽标。
+  // 本 effect 声明在 useSshTerminalSession 之后，运行时终端已 open，termRef 必有值。
+  const [tuiScrollActive, setTuiScrollActive] = useState(false);
+  useEffect(() => {
+    const term = termRef.current;
+    const container = containerRef.current;
+    if (!term || !container) return;
+    return attachTuiScrollbar(term, container, { onActiveChange: setTuiScrollActive });
+    // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），只需挂一次。
+  }, []);
+
   // 右键：阻掉默认菜单，改弹自己的复制/粘贴/全选。用视口坐标定位，
   // 因为终端容器带 overflow-hidden，菜单挂在容器内会被裁掉。
   useEffect(() => {
@@ -141,6 +155,7 @@ export function SshTerminal({
         status={status}
         state={state}
         closed={closed}
+        tuiScroll={tuiScrollActive}
       />
       {closedReason !== null && (
         <SshDisconnectedBar

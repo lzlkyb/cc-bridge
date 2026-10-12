@@ -23,6 +23,8 @@ interface Props {
   state: OscState;
   /** 会话已断开。断开后冻结时长并显示「已断开」，不再展示远端探测提示。 */
   closed: boolean;
+  /** TUI 态（Claude Code 等 fullscreen 程序）激活：滚动条走虚拟转发路径，显示徽标提示。 */
+  tuiScroll?: boolean;
 }
 
 /**
@@ -38,7 +40,16 @@ interface Props {
  * 写成 CSS 类就得往 `index.css` 里塞 8 个选择器块，改一处要翻两个文件。
  * token 集中在 `lib/terminalStatusbar.ts`，这里只做「取 token → 贴样式」。
  */
-export function TerminalStatusBar({ sessionId, conn, preset, mode, status, state, closed }: Props) {
+export function TerminalStatusBar({
+  sessionId,
+  conn,
+  preset,
+  mode,
+  status,
+  state,
+  closed,
+  tuiScroll,
+}: Props) {
   const skin = STATUSBAR_SKINS[preset][mode];
   const uptime = useUptime(sessionId, closed);
   const host = conn.name || conn.host;
@@ -70,6 +81,15 @@ export function TerminalStatusBar({ sessionId, conn, preset, mode, status, state
 
       {/* 右：关键段（会话时长、状态提示）锁定在最右，绝不被挤出视口。 */}
       <span className="ml-3 flex shrink-0 items-center">
+        {tuiScroll && !closed && (
+          <Seg
+            skin={skin}
+            kind="tui"
+            title="TUI 滚动已启用：拖动右侧滚动条即可滚动当前全屏程序（如 Claude Code）的内容"
+          >
+            TUI 滚动
+          </Seg>
+        )}
         <Seg skin={skin} kind="muted" icon="clock" title="会话时长">
           {formatUptime(uptime)}
         </Seg>
