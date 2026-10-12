@@ -42,6 +42,8 @@ export function SettingsTab({
   onOpenSearch?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // 最近一次导航点击的时间戳：其后的程序化 smooth 滚动期间 scrollspy 暂停（见 onScroll）。
+  const programmaticScrollAt = useRef(0);
   // 左栏导航当前高亮项（scrollspy：判定线以上最近的卡片）。
   const [activeSection, setActiveSection] = useState<string>(SETTINGS_SECTIONS[0]?.id ?? "");
 
@@ -88,6 +90,12 @@ export function SettingsTab({
       if (raf.current) return;
       raf.current = requestAnimationFrame(() => {
         raf.current = 0;
+        // 程序化滚动窗口：导航点击后的 smooth 滚动期间不抢高亮（点谁亮谁由
+        // handleNavSelect 直接置定）。不区分的话，页面底部「最后一张卡够不到
+        // 判定线」的几何会与「点击倒数第二张 / 最后一张」的意图互相矛盾
+        // （真实浏览器实测：点 install 被滚到底兜底抢成 config、点 config 被
+        // 判定线判成 install，二选一必错一个）。
+        if (Date.now() - programmaticScrollAt.current < 1000) return;
         const main = containerRef.current?.closest("main");
         if (!main) return;
         const ids = sections.map((s) => s.id);
@@ -97,9 +105,11 @@ export function SettingsTab({
           const el = document.getElementById(id);
           if (el && el.getBoundingClientRect().top <= line) current = id;
         }
-        // 滚到底：最后一张卡可能仍够不到判定线，强制高亮最后一项。
+        // 滚到底：最后几张卡可能仍够不到判定线，强制高亮最后一项。
         // 前提是内容真的可滚——不足一屏时 scrollTop+clientHeight 恒等 scrollHeight，
-        // 不加这个判断会永远高亮最后一项。
+        // 不加这个判断会永远高亮最后一项。此兜底只服务**滚轮滚动**（视觉已在页尾，
+        // 亮最后一张符合直觉）；导航点击的场景由 handleNavSelect 的程序化滚动窗口
+        // 屏蔽 spy，点谁亮谁，不会走到这里。
         if (
           main.scrollHeight > main.clientHeight &&
           main.scrollTop + main.clientHeight >= main.scrollHeight - 4
@@ -119,8 +129,17 @@ export function SettingsTab({
   }, [sections]);
 
   const handleNavSelect = (id: string) => {
-    // 与 highlightAnchor 定位同一套行为（smooth + center），视觉一致。
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // 🔴 必须 block:"start" 而非 "center"：scrollspy 判定线是 main 顶下方 120px，
+    // center 会把卡**中心**对齐视口中心——卡高 < ~430px 的卡滚完后卡顶仍在线下
+    // （940×760 窗口实测：13 项中 7 项），scrollspy 会把高亮判给上一张卡，
+    // 观感就是「点了菜单高亮跳回上一项 / 再点没响应」。start 让卡顶停在判定线上方。
+    // 同时立即置高亮 + 开 1s 程序化滚动窗口（见 programmaticScrollAt）：页面底部
+    // 「最后一张卡够不到判定线」的几何与点击倒数第二/第一张的意图无法用纯几何
+    // 同时满足，点击意图优先，滚完窗口过期后 scrollspy 自动接管滚轮。
+    // 右列容器的 [&>*]:scroll-mt-2 给卡顶留 8px 呼吸位。
+    programmaticScrollAt.current = Date.now();
+    setActiveSection(id);
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   return (
@@ -132,7 +151,8 @@ export function SettingsTab({
         onOpenSearch={onOpenSearch}
         searchShortcut={shortcutLabel(status?.platform, "K")}
       />
-      <div className="min-w-0 flex-1 space-y-4">
+      {/* [&>*]:scroll-mt-2：导航点击 block:"start" 定位时给卡顶留 8px 呼吸位（只作用于本页卡片） */}
+      <div className="min-w-0 flex-1 space-y-4 [&>*]:scroll-mt-2">
         {/* 风险总览从原「功能开关」卡内提到页面级：它汇总的是**跨卡**风险，
             拆卡后待在某一张卡里就不合适了。不进左栏导航：它是告警横幅而非设置卡，
             且常驻页面顶部，无需导航。 */}
