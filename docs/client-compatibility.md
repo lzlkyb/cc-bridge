@@ -30,3 +30,4 @@
 2. **Token 重生成**：TokenManager 的 sed 只替换 Bearer，与 scheme 无关，各工具通用（前提：该工具的配置文件里嵌了 token）。
 3. **Codex 启动超时**：`startup_timeout_sec` 默认 10s；桥冷启动慢时可调大。
 4. 工具支持度以「先直连、失败上反代」为排障顺序。
+5. **亮色主题 × Claude Code**：Claude Code 自带主题系统（默认 dark），用户消息块的底色由它用 truecolor 硬画，不跟随终端 ANSI 色盘；它的 `theme: auto` 靠 OSC 11 查询探测终端背景，而 xterm.js 不应答该查询。桥端已在终端数据流里代答 OSC 10/11（按当前主题返回前景/背景色），所以 `theme: auto` 现在能正确跟随桥的亮暗主题；若远端 Claude Code 版本过旧无 auto 模式，在会话里手动 `/theme light` 即可。

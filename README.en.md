@@ -119,6 +119,7 @@ The 5th tab is a real interactive SSH terminal (system OpenSSH + PTY + xterm.js)
 - Public-internet access is supported only via the built-in self-signed HTTPS or a reverse proxy + Let's Encrypt; no built-in tunneling/NAT traversal, and plain HTTP must not be exposed publicly.
 - Self-signed-certificate compatibility varies by client — see the [honest compatibility matrix](docs/client-compatibility.md) instead of promises.
 - `analyze_file` uses regex heuristics, not a parser. `delete_files` only deletes single files, not directories (by design).
+- **Light theme × Claude Code theme tracking**: the terminal answers OSC 10/11 color queries on behalf of xterm.js, so Claude Code's `theme: auto` correctly follows the bridge's light/dark theme (no black user-message blocks on light backgrounds). Older Claude Code versions without auto mode need a manual `/theme light`.
 - MCP is implemented as manual JSON-RPC dispatch (no rmcp SDK macros, no protocol negotiation).
 
 ## Docs (Chinese, more detailed)

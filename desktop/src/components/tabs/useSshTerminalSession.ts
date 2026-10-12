@@ -23,6 +23,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke, listen } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { healMouseTracking } from "../../lib/terminalMouse";
+import { createOscQueryResponder, paletteColors } from "../../lib/terminalOscQuery";
+import { watchResolutionChanges } from "../../lib/terminalDpr";
 import { attachTerminalKeymap, type TerminalKeyActions } from "./terminalKeymap";
 import { sshOutputEvent } from "../../lib/terminalEvents";
 import {
@@ -274,24 +276,13 @@ export function useSshTerminalSession({
     };
     const ro = new ResizeObserver(scheduleFit);
     ro.observe(container);
-    // 拖到不同缩放的显示器时 devicePixelRatio 变化，xterm 的字体度量作废，必须重量一次。
-    // 这种情况容器尺寸可能不变，ResizeObserver 不会触发，所以得单独监听。
-    // matchMedia 只能监听“离开当前 dppx”，所以每次触发后要重新绑定到新值。
-    let dprMq: MediaQueryList | null = null;
-    const onDpr = () => {
-      watchDpr();
-      scheduleFit();
-    };
-    const watchDpr = () => {
-      dprMq?.removeEventListener("change", onDpr);
-      dprMq = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
-      dprMq.addEventListener("change", onDpr);
-    };
-    watchDpr();
+    // 拖到不同缩放的显示器时 devicePixelRatio 变化，xterm 字体度量作废，需单独重量
+    // （ResizeObserver 盖不住这种容器尺寸不变的情况）——逻辑在 lib/terminalDpr.ts。
+    const offDpr = watchResolutionChanges(scheduleFit);
 
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
-      dprMq?.removeEventListener("change", onDpr);
+      offDpr();
       detachSelect();
       detachSearch();
       container.removeEventListener("focusin", onFocusIn);
@@ -333,6 +324,14 @@ export function useSshTerminalSession({
     // 连上后立即把真实尺寸告诉后端，避免初始 80x24 与面板不符。
     void invoke("ssh_resize", { sessionId, rows: term.rows, cols: term.cols }).catch(() => {});
 
+    // OSC 10/11 颜色查询应答（lib/terminalOscQuery.ts）：xterm.js 不实现 OSC 11 应答，
+    // Claude Code 的 theme:auto 探不到背景色就恒用 dark——亮色主题下用户消息黑块的根因。
+    // 查询在数据入站路径上被拦下并按**当前**主题回写（modeRef/presetRef 热切换后自动跟随）。
+    const oscQuery = createOscQueryResponder({
+      colors: () => paletteColors(terminalTheme(modeRef.current, presetRef.current)),
+      reply: (data) => void invoke("ssh_input", { sessionId, data }).catch(() => {}),
+    });
+
     const offData = term.onData((data) => {
       void invoke("ssh_input", { sessionId, data })
         .then(() => {
@@ -368,7 +367,8 @@ export function useSshTerminalSession({
     track(
       listen<SshOutput>(sshOutputEvent(sessionId), (p) => {
         if (p.sessionId !== sessionId) return;
-        term.write(p.data);
+        // 先过颜色查询拦截（剥离查询并回写应答），剩余数据才进 xterm。
+        term.write(oscQuery.feed(p.data));
         // 选择态期间，远端 TUI（如 Claude Code）会在重绘输出里重设鼠标报告（ESC[?1006h），
         // 导致本地 mouseTrackingMode 重新打开、拖选又被吃掉。故每帧输出后再关一次。
         if (selectActiveRef.current) healMouseTracking(term);

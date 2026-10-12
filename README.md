@@ -664,6 +664,7 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 - **平台**：仅 Windows 10/11 与 macOS（Apple Silicon）；没有 Intel Mac（x86_64）和 Linux 构建。mac 版的差异见 [已知差异](#已知差异与-windows-版相比)。
 - 跨公网访问只有两种受支持的形态：**内置 HTTPS 自签**（无域名）或**反向代理 + Let's Encrypt**（有域名，见 [reverse-proxy.md](docs/reverse-proxy.md)）。桥本身不做内网穿透、不开裸 HTTP 公网暴露；自签证书对部分 AI 工具的兼容性以 [实测矩阵](docs/client-compatibility.md) 为准。
 - `analyze_file` 的函数/类计数是正则启发式估算，不是语法解析。
+- **亮色主题 × Claude Code 主题跟随**：终端会在数据流里代答 OSC 10/11 颜色查询，Claude Code 的 `theme: auto` 能正确跟随桥的亮/暗主题（亮色下用户消息不再是黑块）；过旧的 Claude Code 版本无 auto 模式，需在会话里手动 `/theme light`。详见 [兼容性矩阵](docs/client-compatibility.md)。
 - `delete_files` 只删单个文件，不支持删目录（安全设计）。
 - MCP 协议实现为手动 JSON-RPC dispatch（非 rmcp SDK 宏），不做协议协商。
 - `run_command` 的跨调用 shell 会话持久化（拿 `sessionId` 带住 `cwd` + 环境变量）**默认关闭**，不开时必须每次显式传绝对 `cwd`。
