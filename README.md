@@ -1,11 +1,16 @@
-# cc-bridge — 让远程 Claude Code 直接读写你本机文件
+# cc-bridge — 把桥装在文件所在的地方，让 AI 从任何地方接入
 
 [![最新版本](https://img.shields.io/github/v/release/lzlkyb/cc-bridge)](https://github.com/lzlkyb/cc-bridge/releases)
 [![开源协议](https://img.shields.io/github/license/lzlkyb/cc-bridge)](LICENSE)
 [![Star 数](https://img.shields.io/github/stars/lzlkyb/cc-bridge)](https://github.com/lzlkyb/cc-bridge/stargazers)
 [![下载量](https://img.shields.io/github/downloads/lzlkyb/cc-bridge/total)](https://github.com/lzlkyb/cc-bridge/releases)
 
-> 你在本地 Windows / macOS 写代码，Claude Code 跑在远程 Linux？别再 scp 来回倒腾文件了——装个 cc-bridge，让远端的 Claude Code 像在本地一样直接读、写、搜你的文件，全程有白名单、审计日志、还能一键还原。安装包 **4.5MB**（Windows）/ **5.7MB**（macOS）。
+> **English** | [README.en.md](README.en.md)
+
+> 一座**双向 MCP 桥**：装在**文件所在的那台机器**上（Windows / macOS 桌面应用），Claude Code / Codex / WorkBuddy 等任意 MCP 客户端从**任何地方**接入——
+> **模式 A**：远程 Linux 上的 Claude Code 直接读写你本地 Windows/macOS 的文件（免 scp、免 SSHFS）；
+> **模式 B**：你本地 AI 的工具接进家里 NAS / 公司 Windows 工作机的文件与环境（跨公网走内置 HTTPS 自签）。
+> 全程有路径白名单、审计日志、自动备份、一键还原。安装包 **4.5MB**（Windows）/ **5.7MB**（macOS）。
 
 ### 界面一览
 
@@ -17,57 +22,89 @@
 
 ## 这是什么
 
-**cc-bridge** 是一个运行在本地开发机上的 MCP（Model Context Protocol）文件桥接服务，以原生桌面应用形式运行（Tauri 2）。**支持 Windows 10/11 与 macOS（Apple Silicon）**，同一套 Rust 代码，两个平台功能一致（防火墙一键放行等 Windows 专属功能除外，详见 [已知差异](#已知差异与-windows-版相比)）。远程 Claude Code 通过 `claude mcp add --transport http` 接入后，可直接操作本地文件系统——不再需要 scp 传文件或 SSHFS 挂载。
+**cc-bridge** 是一个运行在「文件所在机器」上的 MCP（Model Context Protocol）桥接服务，以原生桌面应用形式运行（Tauri 2）。**支持 Windows 10/11 与 macOS（Apple Silicon）**，同一套 Rust 代码，两个平台功能一致（防火墙一键放行等 Windows 专属功能除外，详见 [已知差异](#已知差异与-windows-版相比)）。任意支持 MCP 的 AI 工具（Claude Code / Codex / WorkBuddy / 通用客户端）通过 MCP 端点接入后，可以直接操作这台机器上白名单内的文件与环境——**同一个软件，两个方向都能用**。
 
 ## 背景 / 解决的问题
 
-团队在本地（Windows / macOS）写代码，Claude Code 部署在远程 Linux 上。原来的痛点：
+**模式 A（最常见）**：团队在本地（Windows / macOS）写代码，Claude Code 部署在远程 Linux 上。原来的痛点：
 
 1. **文件传输效率低**：每次改动都要 scp，大文件慢，容易版本混乱。
 2. **SSHFS 不稳定**：网络一断挂载点卡死，终端被阻塞。
 3. **缺少智能化操作**：只能终端命令操作文件，没有批量重构、代码分析能力。
 4. **操作无法审计**：不知道 Claude 改了哪些文件，误操作后无法追溯恢复。
 
+**模式 B（反方向）**：你的 AI（Claude Code / Codex…）在云端或笔记本上，但目标环境在另一台 Windows/macOS 机器上——家里的工作机、公司的台式机、跑着特定工具链的 Mac。ssh 过去操作 Windows 很别扭，SFTP 一堆手工步骤。cc-bridge 装在那台机器上，AI 从任何地方接进来，同样的白名单 + 审计 + 备份保护，跨公网时用内置的 HTTPS 自签加密。
+
+## 两种模式怎么选
+
+| 问题 | 模式 A（远程 AI → 本地文件） | 模式 B（本地 AI → 远程文件） |
+|---|---|---|
+| **AI 跑在哪** | 远程 Linux 服务器（租的 VPS / 公司集群） | 你的笔记本 / 本机 |
+| **要操作的文件在哪** | 本地这台 Windows/macOS | 另一台 Windows/macOS（家里、公司） |
+| **是否跨公网** | 通常否（同一内网 / VPN） | 通常**是**（不同网络） |
+| **传输安全** | HTTP + Bearer（内网） | **HTTPS 自签**（内置，一键开启）或反向代理 + Let's Encrypt |
+| **桥装在哪** | 你的本地开发机 | 目标机器（文件所在的那台） |
+
+> 核心原则只有一条：**桥装在文件所在的那台机器上，AI 从对面接过来。** 两个方向用的是同一个安装包、同一套安全模型。
+
 ## 快速开始（约 1 分钟）
 
-1. **下载安装**：到 [Releases](https://github.com/lzlkyb/cc-bridge/releases) 按你的系统选一个：
+**第 1 步（两个模式相同）**：在**文件所在的那台机器**上下载安装。到 [Releases](https://github.com/lzlkyb/cc-bridge/releases) 按系统选一个：
 
-   | 系统 | 下载 | 安装 |
-   |---|---|---|
-   | **Windows 10/11** | `cc-bridge_x.x.x_x64-setup.exe` | 双击安装并启动 |
-   | **macOS**（Apple Silicon） | `cc-bridge_x.x.x_aarch64-apple-darwin.zip` | 解压后拖进「应用程序」；首次打开会被系统拦下，先看 [macOS 安装与更新说明](#macos-安装与更新说明) |
+| 系统 | 下载 | 安装 |
+|---|---|---|
+| **Windows 10/11** | `cc-bridge_x.x.x_x64-setup.exe` | 双击安装并启动 |
+| **macOS**（Apple Silicon） | `cc-bridge_x.x.x_aarch64-apple-darwin.zip` | 解压后拖进「应用程序」；首次打开会被系统拦下，先看 [macOS 安装与更新说明](#macos-安装与更新说明) |
 
-   > **国内用户**：GitHub 下载慢的话走 Gitee 镜像
-   > [gitee.com/lzul/cc-bridge 的 releases 分支](https://gitee.com/lzul/cc-bridge/tree/releases/latest)（发版时由 CI 自动同步到 `latest/` 目录）。
-   > 注意那里只有 Windows 的 `.exe` 与 mac 的 `.app.tar.gz`（自动更新用的包，解开也能用），
-   > **没有** mac 的 `.zip`——mac 首次安装请从 GitHub Releases 拿。
-   > 安装后的**自动更新**也是 Gitee 优先，失败才退回 ghproxy / GitHub，无需手动配置。
+> **国内用户**：GitHub 下载慢的话走 Gitee 镜像
+> [gitee.com/lzul/cc-bridge 的 releases 分支](https://gitee.com/lzul/cc-bridge/tree/releases/latest)（发版时由 CI 自动同步到 `latest/` 目录）。
+> 注意那里只有 Windows 的 `.exe` 与 mac 的 `.app.tar.gz`（自动更新用的包，解开也能用），
+> **没有** mac 的 `.zip`——mac 首次安装请从 GitHub Releases 拿。
+> 安装后的**自动更新**也是 Gitee 优先，失败才退回 ghproxy / GitHub，无需手动配置。
 
-   > 暂无 Intel Mac（x86_64）和 Linux 构建。
+> 暂无 Intel Mac（x86_64）和 Linux 构建。
 
-2. **开放目录**：打开「安全」页 → 点「浏览」把你的工作目录加进白名单（默认拒绝一切访问，安全优先）。
-3. **复制连接命令**：切到「连接」页，复制给出的 `claude mcp add ...` 命令。
-4. **远端接入**：粘贴到远程 Linux 终端执行，Claude Code 立刻就能读写你本机的文件了。
+**第 2 步**：打开「安全」页 → 点「浏览」把要开放的工作目录加进白名单（默认拒绝一切访问，安全优先）。
+
+### 模式 A：远程 AI → 读写本地文件（同一内网 / VPN）
+
+3. 切到「连接」页，复制给出的 `claude mcp add ...` 命令。
+4. 粘贴到远程 Linux 终端执行，Claude Code 立刻就能读写你本机的文件了。
 
 > 仅建议在同一内网 / VPN 下使用，不要暴露到公网（详见文末「已知限制」）。
+
+### 模式 B：本地 AI → 接入远程机器的文件（跨公网）
+
+3. 在 cc-bridge 的「设置 › 安全 › HTTPS 远程访问」**一键开启 HTTPS**：自动生成自签证书（绑定本机网卡 IP），显示 SHA-256 指纹。
+4. 在**装桥那台机器**的面板「连接」页选你的 AI 工具，复制对应的配置片段（URL 已自动切 `https://`）；再把 URL 与 token 抄进你本地 AI 工具的配置里。
+5. **核对指纹**：把设置页显示的证书指纹与你本地记录的比对一致后再连，防中间人。
+6. 接入方式按工具不同——Claude Code 用 CLI 命令（配 `NODE_EXTRA_CA_CERTS` 信任自签证书）、Codex 写 `~/.codex/config.toml`、WorkBuddy 写 `~/.workbuddy/mcp.json`，详见 [兼容性矩阵](docs/client-compatibility.md)。
+
+> 公网暴露面有底线保护：远程访问开启时强制强 token、连续 401 自动封禁 IP（默认 5 次 → 15 分钟）、路径白名单 fail-closed。有域名时也可改走反向代理 + Let's Encrypt（[模板](docs/reverse-proxy.md)）。
 
 ## 架构
 
 ```
-远程 Linux 服务器（Claude Code）
-        │  MCP 协议 / Streamable HTTP（同一内网/VPN 直连）
-        ▼
-本地开发机（Windows / macOS）
-        │
-        └─ cc-bridge.exe / cc-bridge.app ── 单进程 Tauri 2 桌面应用
-              │
-              ├─ 嵌入式 axum HTTP 服务器 ── MCP JSON-RPC 协议 + 18 个工具
-              │                             + 安全校验 + 自动备份 + 限流 + 审计
-              │
-              ├─ SQLite 配置存储 ── 原子更新，无竞态
-              │
-              └─ React 前端 ── Tauri IPC 通信，管理面板
+模式 A：远程 AI → 本地文件                模式 B：本地 AI → 远程文件
+┌──────────────────────┐                ┌──────────────────────┐
+│ 远程 Linux（Claude Code）│              │ 你的笔记本（Claude Code / Codex）│
+└──────────┬───────────┘                └──────────┬───────────┘
+           │  MCP / Streamable HTTP                │  MCP / HTTPS（自签或反代）
+           │  （同一内网 / VPN 直连）                │  （跨公网，TLS 加密）
+           ▼                                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│  文件所在机器（Windows / macOS）                                │
+│  │                                                           │
+│  └─ cc-bridge.exe / cc-bridge.app ── 单进程 Tauri 2 桌面应用    │
+│       │                                                      │
+│       ├─ 嵌入式 axum HTTP(S) 服务器 ── MCP JSON-RPC + 20 个工具 │
+│       │        + 安全校验 + 自动备份 + 限流 + 401 封禁 + 审计      │
+│       ├─ SQLite 配置存储 ── 原子更新，无竞态                     │
+│       └─ React 前端 ── Tauri IPC 通信，管理面板                 │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+同一个安装包、同一个端口、同一套安全模型——方向只取决于 **AI 在哪一侧、文件在哪一侧**。
 
 **关键架构决策**：
 - **纯 Rust 后端**编译进 Tauri 二进制，不再有 Node.js sidecar（安装包 4.5MB / mac zip 5.7MB）
@@ -124,9 +161,9 @@ cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
 │  (MCP 客户端)       │────────────────▶│                                  │
 │                     │   内网:7823     │   ┌─ axum HTTP 服务器 ─┐         │
 │  通过 MCP 协议       │                 │   │  POST /mcp         │         │
-│  调用 17 个文件工具   │                 │   │  Bearer token 认证  │         │
+│  调用 20 个 MCP 工具  │                 │   │  Bearer token 认证  │         │
 │                     │                 │   │  JSON-RPC dispatch │         │
-└─────────────────────┘                 │   │  → 17 个工具处理器  │──┐      │
+└─────────────────────┘                 │   │  → 20 个工具处理器  │──┐      │
                                         │   │  → 安全校验         │  │      │
                                         │   │  → 审计日志         │  │      │
                                         │   └────────────────────┘  │      │
@@ -173,7 +210,7 @@ Claude Code 对话中触发工具调用:
         │
         ▼
   POST /mcp  ──  tools/list (发现可用工具)
-        │          返回 17 个工具的 name + description + inputSchema
+        │          返回 20 个工具的 name + description + inputSchema
         ▼
   POST /mcp  ──  tools/call (实际调用)
         │
@@ -282,7 +319,7 @@ Claude Code 对话中触发工具调用:
 
 ## 功能清单
 
-### 18 个 MCP 工具（远程 Claude Code 直接调用）
+### 20 个 MCP 工具（任意接入的 AI 工具直接调用）
 
 | 工具 | 作用 |
 |---|---|
@@ -304,10 +341,12 @@ Claude Code 对话中触发工具调用:
 | `get_command_output` | 增量拉取后台命令的 stdout/stderr（按偏移量），附带是否已结束、退出码 |
 | `stop_command` | 强制终止一个后台命令的整个进程树（Windows = TerminateJobObject，macOS = 向整个 POSIX 进程组发 SIGKILL，孙进程一并死），并从注册表移除 |
 | `push_notification` | 向本机推桌面通知（Windows = 系统 toast，macOS = 通知中心），让远程 Claude Code 干完活能主动叫你；编译期 `notifications` feature 关闭时不注册 |
+| `mcp_list_servers` | 列出经桥接入的**外挂 MCP server**（本机已装的工具，如代码索引、文档检索）及其暴露的工具清单；默认返回紧凑索引，可按 server/tool 展开完整 inputSchema |
+| `mcp_proxy` | 调用某个外挂 MCP server 上的工具（先用 `mcp_list_servers` 发现）。⚠️ 外挂 server 是独立进程，**不受路径白名单约束**、桥无法审计其文件操作，仅审计转发调用本身；只读模式下整体禁用 |
 
 ### SSH 终端（本地人操作，非 MCP 工具）
 
-第 5 个 Tab「终端」提供一个真正的**交互式终端**，让你在 cc-bridge 面板里直接连远端 Linux 敲命令——**这是给人手动用的，不是给远程 Claude Code 用的 MCP 工具**（所以不计入上面的 18 个 MCP 工具）。
+第 5 个 Tab「终端」提供一个真正的**交互式终端**，让你在 cc-bridge 面板里直接连远端 Linux 敲命令——**这是给人手动用的，不是给 AI 用的 MCP 工具**（所以不计入上面的 20 个 MCP 工具）。
 
 - **后端**：调用本机系统自带 OpenSSH（Windows 10/11 自带 `C:\Windows\System32\OpenSSH\ssh.exe`，macOS 永远有），用 `portable-pty` 开本地 PTY（Windows = ConPTY / Unix = pty）把 ssh 的输入输出接到 xterm.js。零新网络协议、零重依赖，体积代价可忽略（portable-pty 0.9 只引 `windows-sys` 0.61.2 等小库）。
 - **连接**：支持两种认证方式——
@@ -332,9 +371,14 @@ Claude Code 对话中触发工具调用:
 - **审计日志**：JSONL 格式，记录每次操作的时间/工具/参数/结果/来源 IP/耗时（`durationMs`）；成功与失败调用均记录真实参数；按保留天数（默认 30 天，0=永久）在启动时自动清理。
 - **单文件大小上限**：默认 20MB。
 - **写锁**：`DashMap<PathBuf, Arc<Mutex<()>>>`，同一文件并发写串行化。
+- **401 封禁**：远程访问开启时，连续 5 次认证失败封禁来源 IP（默认 15 分钟窗口，成功认证即清零），防爆破。
 
-> ⚠️ **传输安全提醒**：默认监听 `0.0.0.0`（方便跨网连接），且 `/mcp` 目前是明文 HTTP，Bearer token 全程以明文传输。
-> 同网段内可被嗅探。**请务必只在 VPN 或受信任的内网环境中使用**，不要直接暴露到公网或不受信任的网段。
+### 传输安全（模式 B 必读）
+
+- **默认 HTTP + Bearer**：明文传输，**只适合内网 / VPN**，不要暴露公网。
+- **内置 HTTPS 自签**（「设置 › 安全 › HTTPS 远程访问」一键开启）：rcgen 自签证书（825 天，SAN 绑定全部网卡 IP + 127.0.0.1），跨公网全程 TLS。接入侧务必**核对设置页显示的 SHA-256 指纹**防中间人；各 AI 工具对自签证书的信任路径见 [兼容性矩阵](docs/client-compatibility.md)。
+- **反向代理 + Let's Encrypt**（有域名时推荐）：桥只出 HTTP，由 Caddy / nginx 终结 TLS，模板见 [reverse-proxy.md](docs/reverse-proxy.md)。
+- **公网底线组合**：强 token 强制轮换 + 401 封禁 + 路径白名单 fail-closed（空名单拒绝一切）+ 写类工具可关 + 命令执行默认关。
 
 ### HTTP 接口
 
@@ -464,7 +508,7 @@ cc-bridge/
             └── mcp/                    # MCP 协议实现
                 ├── mod.rs
                 ├── http.rs             # axum 路由 + JSON-RPC dispatch
-                └── tools/              # 17 个工具处理器
+                └── tools/              # 20 个工具处理器
                     ├── mod.rs
                     ├── list_allowed_roots.rs
                     ├── list_directory.rs
@@ -523,13 +567,26 @@ npx tauri build --bundles app     # 必须用 --bundles 覆盖
 > `ditto -c -k --sequesterRsrc --keepParent <path>/cc-bridge.app out.zip`。
 > 普通 `zip` 会破坏 `.app` 的资源叉与符号链接，解压后打不开。
 
-### 连接远程 Claude Code
+### 接入 AI 工具
 
-安装并启动 cc-bridge 后，面板会显示连接命令，在远程 Linux 执行：
+安装并启动 cc-bridge 后，连接页的**接入向导**会按你选的工具生成配置片段（Claude Code / WorkBuddy / Codex / 通用 MCP 四选一），HTTPS 开启时自动切 `https://` 并附「复制 PEM」步骤。
+
+**模式 A（内网，Claude Code）**——在远程 Linux 执行面板给出的命令：
 
 ```bash
 claude mcp add --transport http cc-bridge http://<局域网IP>:7823/mcp --header "Authorization: Bearer <token>"
 ```
+
+**模式 B（跨公网，HTTPS）**——连接页选工具复制片段；Claude Code 需先信任自签证书：
+
+```bash
+# 1. 从向导「复制 PEM」保存证书，随后在远程/本地 shell 导出信任变量
+export NODE_EXTRA_CA_CERTS=/path/to/cc-bridge.crt
+# 2. 面板给出的命令（URL 已是 https）
+claude mcp add --transport http cc-bridge https://<IP或域名>:7823/mcp --header "Authorization: Bearer <token>"
+```
+
+其他工具（Codex = TOML、WorkBuddy = JSON）的完整片段与各工具自签信任路径，见 [兼容性矩阵](docs/client-compatibility.md)。
 
 ## macOS 安装与更新说明
 
@@ -605,7 +662,7 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 ## 已知限制
 
 - **平台**：仅 Windows 10/11 与 macOS（Apple Silicon）；没有 Intel Mac（x86_64）和 Linux 构建。mac 版的差异见 [已知差异](#已知差异与-windows-版相比)。
-- 只支持同一内网/VPN 直连，没做公网穿透。
+- 跨公网访问只有两种受支持的形态：**内置 HTTPS 自签**（无域名）或**反向代理 + Let's Encrypt**（有域名，见 [reverse-proxy.md](docs/reverse-proxy.md)）。桥本身不做内网穿透、不开裸 HTTP 公网暴露；自签证书对部分 AI 工具的兼容性以 [实测矩阵](docs/client-compatibility.md) 为准。
 - `analyze_file` 的函数/类计数是正则启发式估算，不是语法解析。
 - `delete_files` 只删单个文件，不支持删目录（安全设计）。
 - MCP 协议实现为手动 JSON-RPC dispatch（非 rmcp SDK 宏），不做协议协商。
