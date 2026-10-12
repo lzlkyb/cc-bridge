@@ -3,6 +3,7 @@ import { invoke } from "../../lib/tauri";
 import type { BackupCleanupResult } from "../../lib/types";
 import { formatBytes } from "../../lib/utils";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { InlineNotice } from "../ui/notice";
 import { useToast } from "../ui/toast";
 
 /**
@@ -99,10 +100,10 @@ export function BackupDeleteConfirm({
     >
       {/* 版本历史是按**文件名**分组的（不区分目录），所以这一键可能涵盖
           多个目录下的同名文件。不写清的话，文案读起来像只影响一个文件。 */}
-      <p className="rounded-r-lg border-l-[3px] border-warning bg-warning/10 px-3 py-2 text-[11.5px] leading-relaxed">
+      <InlineNotice variant="warning">
         该分组按文件名归类，<b>不区分目录</b>——如果多个目录下存在同名文件，
         它们的备份会一并删除。
-      </p>
+      </InlineNotice>
     </ConfirmDialog>
   );
 }

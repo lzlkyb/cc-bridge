@@ -22,6 +22,10 @@ const ToastContext = createContext<ToastContextValue>({ toast: () => {} });
  *  - warning：需提醒但非阻断（保留）
  *  - info：   中性提示（保留）
  * 约定：文案简洁、动宾结构；成功态不重复写"成功"二字（图标已表达）。
+ *
+ * 统一通知方案升级（design/统一通知系统设计稿.html）：
+ *  - 容器从 top-16 移到右下角（远离主操作区，不遮 Header / 横幅区）；
+ *  - 图标带语义底色块，底部倒计时进度条，error 入场附带 shake 强调。
  */
 export function useToast() {
   return useContext(ToastContext);
@@ -51,6 +55,20 @@ const variantIcons: Record<ToastVariant, string> = {
   info: "activity",
 };
 
+const variantIconBoxes: Record<ToastVariant, string> = {
+  success: "bg-success/[0.14] text-success",
+  error: "bg-destructive/[0.14] text-destructive",
+  warning: "bg-warning/[0.14] text-warning",
+  info: "bg-accent text-primary",
+};
+
+const variantProgress: Record<ToastVariant, string> = {
+  success: "bg-success",
+  error: "bg-destructive",
+  warning: "bg-warning",
+  info: "bg-primary",
+};
+
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
@@ -74,9 +92,9 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={{ toast: addToast }}>
       {children}
-      {/* Toast 容器：z-[2000] 在 Header 之上，错误项用 role=alert 走 assertive 播报 */}
+      {/* Toast 容器：右下角堆叠，z-[2000] 在 Header 之上，错误项用 role=alert 走 assertive 播报 */}
       <div
-        className="fixed right-4 top-16 z-[2000] flex flex-col gap-2 pointer-events-none toast-stack"
+        className="pointer-events-none fixed bottom-4 right-4 z-[2000] flex flex-col gap-2 toast-stack"
         role="region"
         aria-label="通知"
         aria-live="polite"
@@ -109,25 +127,32 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: () => 
     <div
       onClick={onDismiss}
       role={item.variant === "error" ? "alert" : undefined}
-      className={`pointer-events-auto flex items-center gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm font-medium shadow-pop backdrop-blur-md cursor-pointer select-none transition-all duration-300 max-w-[380px] toast ${
-        item.variant === "error" ? "err" : item.variant === "warning" ? "warn" : ""
-      } ${
-        variantStyles[item.variant]
-      } ${
-        visible ? "translate-x-0 opacity-100" : "translate-x-4 opacity-0"
-      }`}
+      className={`pointer-events-auto relative flex w-[320px] max-w-[calc(100vw-2rem)] cursor-pointer select-none items-start gap-2.5 overflow-hidden rounded-lg border px-3.5 pb-3.5 pt-3 text-sm font-medium shadow-pop backdrop-blur-md transition-all duration-300 toast ${
+        item.variant === "error" ? "err animate-shake" : item.variant === "warning" ? "warn" : ""
+      } ${variantStyles[item.variant]} ${visible ? "translate-x-0 opacity-100" : "translate-x-4 opacity-0"}`}
     >
-      <Icon name={variantIcons[item.variant] as any} size={15} className="shrink-0" />
-      <span className="leading-snug">{item.message}</span>
+      <span
+        className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-lg ${variantIconBoxes[item.variant]}`}
+      >
+        <Icon name={variantIcons[item.variant] as any} size={15} />
+      </span>
+      <span className="min-w-0 flex-1 break-words py-1 leading-snug">{item.message}</span>
       <button
         onClick={(e) => {
           e.stopPropagation();
           onDismiss();
         }}
-        className="ml-1 shrink-0 rounded p-0.5 opacity-60 hover:opacity-100 transition-opacity"
+        className="shrink-0 rounded p-0.5 opacity-60 transition-opacity hover:opacity-100"
+        aria-label="关闭"
       >
         <Icon name="close" size={12} />
       </button>
+      {/* 倒计时进度条：3.5s 与父级移除时刻对齐；width 动画由全局减弱动效守卫降级 */}
+      <span
+        aria-hidden
+        className={`absolute bottom-0 left-0 h-[2.5px] rounded-full ${variantProgress[item.variant]}`}
+        style={{ animation: "toast-progress 3.5s linear forwards" }}
+      />
     </div>
   );
 }

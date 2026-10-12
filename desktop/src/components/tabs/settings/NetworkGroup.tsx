@@ -2,13 +2,13 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "../../../lib/tauri";
 import type { StaticStatus, ConfigSaveResult } from "../../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
-import { Alert } from "../../ui/alert";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Icon } from "../../ui/icon";
 import { useToast } from "../../ui/toast";
 import { SettingsRow } from "../../ui/SettingsRow";
 import { SavedHint } from "../../ui/SavedHint";
+import { InlineNotice } from "../../ui/notice";
 import { TransportRow } from "./TransportRow";
 
 
@@ -135,12 +135,10 @@ export function NetworkGroup({
           last
         />
         {status?.firewallEnabled === false && (
-          <Alert variant="warning">
-            <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-            <span>
-              <b>检测到 Windows 防火墙已关闭。</b>远程仍可连入，但本机缺少网络层防护，建议仅在可信网络下保持此状态，并尽快重新启用防火墙。
-            </span>
-          </Alert>
+          <InlineNotice variant="warning">
+            <b>检测到 Windows 防火墙已关闭。</b>
+            远程仍可连入，但本机缺少网络层防护，建议仅在可信网络下保持此状态，并尽快重新启用防火墙。
+          </InlineNotice>
         )}
         {/* 重启警告只在端口真被改过时出现。
             原来是常驻的，但用户没改端口时这句话毫无作用，却每次进设置页占
@@ -148,12 +146,9 @@ export function NetworkGroup({
             按钮文案就是「保存并重启」，且真正需要提醒的时刻（刚改完）它会立即出现——
             比常驻在那里被忽略更醒目。 */}
         {dirty && (
-          <div className="warn-box flex items-start gap-2.5 rounded-lg p-3">
-            <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-            <p className="text-[11px] leading-relaxed">
-              <b>保存将重启服务</b>，已连接的客户端会短暂断开。
-            </p>
-          </div>
+          <InlineNotice variant="warning">
+            <b>保存将重启服务</b>，已连接的客户端会短暂断开。
+          </InlineNotice>
         )}
       </CardContent>
     </Card>

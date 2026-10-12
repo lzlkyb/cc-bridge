@@ -4,6 +4,7 @@ import { Button } from "../../../ui/button";
 import { Icon } from "../../../ui/icon";
 import { Spinner } from "../../../ui/Spinner";
 import { ConfirmModal } from "../../../ui/ConfirmModal";
+import { InlineNotice } from "../../../ui/notice";
 import { useToast } from "../../../ui/toast";
 import { CandidateRow } from "./CandidateRow";
 import {
@@ -105,9 +106,9 @@ export function ImportWizard({
         从已有配置导入
       </h4>
 
-      <div className="mb-3 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
+      <InlineNotice variant="warning" className="mb-3">
         导入只是把配置<b>抄过来</b>，全部保持关闭。导入后需要你逐个开启，每个都会再确认一次。
-      </div>
+      </InlineNotice>
 
       {!scan && (
         <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">

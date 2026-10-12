@@ -4,6 +4,7 @@ import { Button } from "../../../ui/button";
 import { Icon } from "../../../ui/icon";
 import { ToggleRow } from "../../../ui/ToggleRow";
 import { ConfirmModal } from "../../../ui/ConfirmModal";
+import { InlineNotice } from "../../../ui/notice";
 import { useMcpBridge } from "./useMcpBridge";
 import { ServerRow } from "./ServerRow";
 import { ImportWizard } from "./ImportWizard";
@@ -74,9 +75,9 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
         {/* 总开关关、但已有勾选项时要说清楚「现在不生效」，
             否则用户会以为那几个开着的开关就是生效的。 */}
         {!master && onCount > 0 && (
-          <div className="mt-3 rounded-lg bg-warning/10 px-3 py-2 text-[11.5px] text-warning">
+          <InlineNotice variant="warning" className="mt-3">
             总开关关闭中 · 下方 {onCount} 个已勾选的 server <b>当前不生效</b>，远程调用会直接被拒。
-          </div>
+          </InlineNotice>
         )}
 
         <div className="mt-3">

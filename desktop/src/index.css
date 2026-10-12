@@ -311,6 +311,19 @@ body {
 }
 .animate-shake { animation: shake 0.4s ease; }
 
+/* 通知图标呼吸光圈（ActionCard 折叠细条未处理态）：currentColor 随语义色，减弱动效由全局守卫降级 */
+@keyframes notice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 28%, transparent); }
+  50%      { box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 0%, transparent); }
+}
+.notice-pulse { animation: notice-pulse 2.4s ease-in-out infinite; }
+
+/* Toast 倒计时进度条（宽度 100%→0，时长由内联 animation-duration 控制） */
+@keyframes toast-progress {
+  from { width: 100%; }
+  to   { width: 0%; }
+}
+
 /* Tab 切换入场：新面板从右微移入 + 淡入（替代硬切；退场由父级卸载驱动即时消失，可接受）*/
 @keyframes tab-in {
   from { opacity: 0; transform: translateX(10px); }
@@ -470,17 +483,8 @@ body {
 
 /* A5. 运行态顶部流光 — 已移除（transform: translateX 动画，CPU 占用 ~1%）。 */
 
-/* 网络卡片：端口重启警告框（深浅主题适配）*/
-.warn-box {
-  background: hsl(var(--warning) / 0.1);
-  border: 1px solid hsl(var(--warning) / 0.45);
-  color: hsl(27 90% 36%);
-}
-.dark .warn-box {
-  background: hsl(var(--warning) / 0.12);
-  border-color: hsl(var(--warning) / 0.5);
-  color: hsl(27 95% 68%);
-}
+/* 网络卡片端口重启警告框 .warn-box — 已删除（改用统一组件 components/ui/notice.tsx 的
+   InlineNotice，配色走语义 token，不再需要这份独立深浅适配） */
 
 /* A4. 运行时间秒数颜色闪动（数码钟感）—— 已删除。
    两个原因：

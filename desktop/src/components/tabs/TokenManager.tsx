@@ -4,8 +4,8 @@ import type { StaticStatus } from "../../lib/types";
 import { McpScope, buildTokenSedCommand, copyText } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
-import { Alert, AlertDescription } from "../ui/alert";
 import { useToast } from "../ui/toast";
+import { InlineNotice } from "../ui/notice";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { SavedHint } from "../ui/SavedHint";
 
@@ -123,8 +123,8 @@ export function TokenManager({
           </div>
 
           {regenDone && (
-            <Alert variant="warning">
-              <AlertDescription className="space-y-2">
+            <InlineNotice variant="warning">
+              <div className="space-y-2">
                 <p>Token 已更新。请复制下方命令到远程服务器执行，原地替换 Bearer（不重新授权）：</p>
                 <div className="flex flex-wrap gap-2 items-start">
                   <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded-md bg-background border px-3 py-2 text-xs font-mono leading-relaxed">
@@ -152,20 +152,20 @@ export function TokenManager({
                     {copied ? <SavedHint>已复制</SavedHint> : "复制"}
                   </Button>
                 </div>
-              </AlertDescription>
-            </Alert>
+              </div>
+            </InlineNotice>
           )}
 
           {confirmingRegen && (
-            <Alert variant="destructive">
-              <AlertDescription className="flex items-center justify-between gap-3">
-                <span>旧 Token 将立即失效，远程 Claude Code 会断开连接。确定？</span>
+            <InlineNotice variant="error">
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex-1">旧 Token 将立即失效，远程 Claude Code 会断开连接。确定？</span>
                 <span className="flex gap-2 shrink-0">
                   <Button variant="destructive" size="sm" onClick={handleRegenToken}>确定</Button>
                   <Button variant="outline" size="sm" onClick={() => setConfirmingRegen(false)}>取消</Button>
                 </span>
-              </AlertDescription>
-            </Alert>
+              </div>
+            </InlineNotice>
           )}
         </div>
       )}

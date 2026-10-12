@@ -12,6 +12,7 @@ import { Button } from "./components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { Icon } from "./components/ui/icon";
 import { ToastProvider, useToast, toast } from "./components/ui/toast";
+import { ActionCard } from "./components/ui/notice";
 import { ConnectTab } from "./components/tabs/ConnectTab";
 import { Skeleton } from "./components/ui/Skeleton";
 // 非首屏 Tab 懒加载：减小首屏 JS，切到对应 Tab 时才加载（fallback 用骨架屏）
@@ -225,16 +226,15 @@ function AppContent() {
       <Header status={status} onChanged={refetchStatus} onNavigate={handleNavigate} onOpenSearch={() => setShowCommandPalette(true)} />
       {statusError && (
         <div className="shrink-0 px-5 pt-2">
-          <div className="flex items-center gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
-            <Icon name="alertTriangle" size={14} className="shrink-0" />
-            <span className="flex-1">
-              <b className="text-foreground">与本地服务失联</b>
-              <span className="text-muted-foreground"> · {`无法获取状态，请检查 ${APP_INFO.name} 进程是否在运行。`}</span>
-            </span>
+          <ActionCard
+            tone="destructive"
+            title="与本地服务失联"
+            summary={`无法获取状态，请检查 ${APP_INFO.name} 进程是否在运行。`}
+          >
             <Button variant="outline" size="sm" className="h-6 px-2.5 text-[11px]" onClick={() => refetchStatus()}>
               重试
             </Button>
-          </div>
+          </ActionCard>
         </div>
       )}
       {/* S3: 全局链路中断横幅（任意页可见，不只连接页）。与 statusError 并列但语义不同：
@@ -243,16 +243,19 @@ function AppContent() {
           远程不可达→Header 红胶囊+徽章），故在该页不再重复这条全局横幅与「前往连接」按钮（方案 A）。 */}
       {status && status.running && (status.ipChanged || status.remoteReachable === false) && activeTab !== "connect" && (
         <div className="shrink-0 px-5 pt-2">
-          <div className="flex items-center gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 px-3.5 py-2 text-xs text-destructive">
-            <Icon name="alertTriangle" size={14} className="shrink-0" />
-            <span className="flex-1">
-              <b className="text-foreground">远程连接中断</b>
-              <span className="text-muted-foreground"> · {status.ipChanged ? "连接地址已失效，远程 Claude Code 已断开，请重选地址。" : "本机服务在运行，但远程连不回，请检查本机网络。"} 点击前往连接页处理。</span>
-            </span>
+          <ActionCard
+            tone="destructive"
+            title="远程连接中断"
+            summary={
+              status.ipChanged
+                ? "连接地址已失效，远程 Claude Code 已断开，请重选地址。"
+                : "本机服务在运行，但远程连不回，请检查本机网络。"
+            }
+          >
             <Button variant="outline" size="sm" className="h-6 px-2.5 text-[11px]" onClick={() => handleNavigate("connect")}>
               前往连接
             </Button>
-          </div>
+          </ActionCard>
         </div>
       )}
       <Tabs

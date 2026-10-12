@@ -1,6 +1,7 @@
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
 import { ConfirmModal } from "../../ui/ConfirmModal";
+import { InlineNotice } from "../../ui/notice";
 
 export function WhitelistOffModal({
   onCancel,
@@ -52,12 +53,9 @@ export function ShellRiskModal({
       </h4>
       {/* fix #3：只读模式与命令执行互斥的主动提示 */}
       {readonly && (
-        <div className="mb-3 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
-          <Icon name="lock" size={14} className="mt-0.5 shrink-0" />
-          <span>
-            当前<b>只读模式已开启</b>，命令执行会被<b>强制禁止</b>而不会生效。如需真正启用，请先在上方关闭只读模式。
-          </span>
-        </div>
+        <InlineNotice variant="warning" icon="lock" className="mb-3">
+          当前<b>只读模式已开启</b>，命令执行会被<b>强制禁止</b>而不会生效。如需真正启用，请先在上方关闭只读模式。
+        </InlineNotice>
       )}
       <p className="mb-3 text-sm text-muted-foreground">
         开启后远程 Claude Code 可在白名单目录内执行<b>任意 Shell 命令</b>，包括但不限于安装软件、
