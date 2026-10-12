@@ -1,5 +1,7 @@
 import { useState } from "react";
-import type { StaticStatus } from "../../../lib/types";
+import { useQuery } from "@tanstack/react-query";
+import type { StaticStatus, TlsStatus } from "../../../lib/types";
+import { invoke } from "../../../lib/tauri";
 import {
   McpScope,
   buildDisplayHost,
@@ -45,11 +47,17 @@ export function StepConnectCmd({
   const [copied, setCopied] = useState(false);
   const [permCopied, setPermCopied] = useState(false);
   const { toast } = useToast();
+  // P1 遗留修复：TLS 开启时接入命令须切 https（与设置页共享 ["tls-status"] 缓存）。
+  const { data: tls } = useQuery({
+    queryKey: ["tls-status"],
+    queryFn: () => invoke<TlsStatus>("get_tls_status"),
+  });
+  const tlsEnabled = !!tls?.enabled;
 
   const displayHost = buildDisplayHost(status, selectedIp);
   const port = status?.port ?? 7823;
   const token = status?.token ?? "";
-  const baseCommand = buildBaseCommand(displayHost, port, token, status?.transport);
+  const baseCommand = buildBaseCommand(displayHost, port, token, status?.transport, tlsEnabled);
   const connectCommand = buildConnectCommand(baseCommand, scope);
   const permissionCommand = buildPermissionGrantCommand(scope, "", false);
 
@@ -114,6 +122,13 @@ export function StepConnectCmd({
       <div className="space-y-1.5">
         <p className="text-xs font-medium text-foreground/80">连接命令（复制后到远程执行）</p>
         <CommandBox command={connectCommand} copied={copied} onCopy={copyConnect} />
+        {tlsEnabled && (
+          <p className="rounded-lg bg-warning/8 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
+            <b className="text-warning">HTTPS 自签</b>
+            ：远程 Claude Code 需先信任桥的自签证书——在「设置 › 安全 › HTTPS 远程访问」复制证书 PEM
+            保存为 cc-bridge.crt，并在启动 claude 前设置 NODE_EXTRA_CA_CERTS=证书路径。
+          </p>
+        )}
       </div>
 
       <div className="space-y-2 rounded-lg border bg-muted/30 p-3">

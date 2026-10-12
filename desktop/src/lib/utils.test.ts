@@ -11,6 +11,7 @@ import {
   buildBaseCommand,
   buildConnectCommand,
   buildHealthCheck,
+  buildIpSedCommand,
   buildTokenSedCommand,
   buildPermissionGrantCommand,
   formatUptime,
@@ -87,6 +88,36 @@ describe("buildConnectCommand", () => {
 describe("buildHealthCheck", () => {
   it("拼出 curl 健康检查命令", () => {
     expect(buildHealthCheck("192.168.1.5", 8848)).toBe("curl http://192.168.1.5:8848/health");
+  });
+
+  it("tls 开启时切 https 并加 -k（自签证书）", () => {
+    expect(buildHealthCheck("192.168.1.5", 8848, true)).toBe(
+      "curl -k https://192.168.1.5:8848/health",
+    );
+  });
+});
+
+describe("buildIpSedCommand", () => {
+  it("http 模式：匹配段兼容 http/https 旧值，替换目标为 http", () => {
+    expect(buildIpSedCommand("10.0.0.8", 7823, "user", "")).toBe(
+      "sed -i 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.claude.json",
+    );
+  });
+
+  it("tls 模式：替换目标切 https", () => {
+    expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", true)).toBe(
+      "sed -i 's#https\\?://[0-9.]*:7823/mcp#https://10.0.0.8:7823/mcp#g' ~/.claude.json",
+    );
+  });
+
+  it("project 作用域：配置文件指 .mcp.json，带项目路径时拼 cd 前缀", () => {
+    expect(buildIpSedCommand("10.0.0.8", 7823, "project", "/home/u/app")).toBe(
+      "cd \"/home/u/app\" && sed -i 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' .mcp.json",
+    );
+  });
+
+  it("selectedIp 为空返回空串（不生成半截命令）", () => {
+    expect(buildIpSedCommand("", 7823, "user", "")).toBe("");
   });
 });
 

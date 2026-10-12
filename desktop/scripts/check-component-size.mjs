@@ -42,7 +42,8 @@ const BASELINE = {
   "src/components/backup/VersionHistoryModal.tsx": { lines: 575, hooks: 11 },
   // 2026-09-16：509 → 487（参数摘要 / 性能摘要两条纯函数 → lib/logFormat.ts，本次顺带补了单测）。
   "src/components/tabs/LogTab.tsx": { lines: 487, hooks: 11 },
-  "src/components/tabs/ConnectTab.tsx": { lines: 502, hooks: 13 },
+  // 2026-10-12：502 → 470（PermissionCard → connect/PermissionCard.tsx；卡片外壳移交 ToolGuide.tsx）。
+  "src/components/tabs/ConnectTab.tsx": { lines: 470, hooks: 13 },
   // 2026-09-16：475 → 411（内联的「关于」弹窗 → AboutInfoModal.tsx）。
   "src/components/tabs/AboutGroup.tsx": { lines: 411 },
   // 🔴 514 行，而且是 2026-09-02 本次重构**新建**的。当时把 621 行的

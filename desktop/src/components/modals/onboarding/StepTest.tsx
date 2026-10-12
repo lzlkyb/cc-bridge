@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect } from "react";
-import type { StaticStatus } from "../../../lib/types";
+import { useQuery } from "@tanstack/react-query";
+import type { StaticStatus, TlsStatus } from "../../../lib/types";
+import { invoke } from "../../../lib/tauri";
 import { buildDisplayHost } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
@@ -40,6 +42,12 @@ export function StepTest({
   const probeHost = displayHost && displayHost !== "0.0.0.0" ? displayHost : "127.0.0.1";
   const port = status?.port ?? 7823;
   const token = status?.token ?? "";
+  // TLS 开启时探针切 https；自签证书在 webview 里校验必失败，失败文案要如实说明。
+  const { data: tls } = useQuery({
+    queryKey: ["tls-status"],
+    queryFn: () => invoke<TlsStatus>("get_tls_status"),
+  });
+  const scheme = tls?.enabled ? "https" : "http";
 
   const runTest = async () => {
     setState("testing");
@@ -49,7 +57,7 @@ export function StepTest({
     const timer = setTimeout(() => ctrl.abort(), 5000);
     timerRef.current = timer;
     try {
-      const res = await fetch(`http://${probeHost}:${port}/health`, {
+      const res = await fetch(`${scheme}://${probeHost}:${port}/health`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: ctrl.signal,
       });
@@ -74,7 +82,11 @@ export function StepTest({
     } catch {
       if (mountedRef.current) {
         setState("fail");
-        setDetail("无法连接到本机服务。请确认已点击「启动服务」，且端口未被占用。");
+        setDetail(
+          tls?.enabled
+            ? "无法完成 HTTPS 探测。自签证书会被浏览器拒验，本探针在 HTTPS 模式下不可用——不代表服务异常；可用远程服务器执行 curl -k https://…:端口/health 验证。"
+            : "无法连接到本机服务。请确认已点击「启动服务」，且端口未被占用。",
+        );
       }
     } finally {
       clearTimeout(timer);

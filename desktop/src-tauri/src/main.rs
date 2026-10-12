@@ -903,6 +903,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::get_audit_log,
             commands::get_token_usage,
             commands::get_tls_status,
+            commands::read_tls_cert_pem,
             commands::regen_tls_cert,
             commands::browse_directory,
             commands::restart_mcp_server,

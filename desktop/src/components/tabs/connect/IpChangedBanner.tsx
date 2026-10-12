@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Icon } from "../../ui/icon";
-import { McpScope, copyText } from "../../../lib/utils";
+import { McpScope, copyText, buildIpSedCommand } from "../../../lib/utils";
 import { ActionCard, InlineNotice } from "../../ui/notice";
 import { CommandBlock } from "./widgets";
 import { useToast } from "../../ui/toast";
@@ -24,6 +24,7 @@ export function IpChangedBanner({
   port,
   scope,
   projectPath,
+  tls = false,
   onResolved,
   onSedResolved,
   onDismiss,
@@ -34,6 +35,8 @@ export function IpChangedBanner({
   port: number;
   scope: McpScope;
   projectPath: string;
+  /** P2-3 TLS 感知：HTTPS 开启时替换目标切 https（匹配段同时覆盖 http/https 旧值）。 */
+  tls?: boolean;
   onResolved: (ip: string) => void;
   onSedResolved: () => void;
   onDismiss?: () => void;
@@ -67,15 +70,11 @@ export function IpChangedBanner({
     );
   }
 
-  // 原地替换 url 里的 host：sed 匹配任意旧 IP（[0-9.]*），幂等可重跑，
-  // 不动 Bearer、不 remove+add，因此服务器条目与授权状态保留、不会重新授权。
+  // 原地替换 url 里的 host：sed 匹配任意旧 IP（[0-9.]*）且同时覆盖 http/https（TLS 切换后也能修），
+  // 幂等可重跑，不动 Bearer、不 remove+add，因此服务器条目与授权状态保留、不会重新授权。
   // 作用域直接读下方选择卡当前选中的 scope（方案 A：实时联动），始终输出单条精确命令。
-  const buildSed = (scp: "user" | "project") => {
-    const cfgFile = scp === "user" ? "~/.claude.json" : ".mcp.json";
-    const cdPrefix =
-      scp === "project" && projectPath.trim() ? `cd "${projectPath.trim()}" && ` : "";
-    return `${cdPrefix}sed -i 's#http://[0-9.]*:${port}/mcp#http://${selectedIp}:${port}/mcp#g' ${cfgFile}`;
-  };
+  // 纯函数收口 lib/utils.ts（R11，带单测）。
+  const buildSed = (scp: "user" | "project") => buildIpSedCommand(selectedIp, port, scp, projectPath, tls);
 
   const cmdLabel = scope === "user" ? "全局（~/.claude.json）" : "项目（.mcp.json）";
   const cmd = buildSed(scope);

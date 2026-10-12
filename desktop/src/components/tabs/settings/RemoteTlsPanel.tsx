@@ -185,7 +185,7 @@ export function RemoteTlsPanel({
       {/* 自签兼容性口径：不打包票，指路反代文档 */}
       <p className="rounded-lg bg-warning/8 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
         <b className="text-warning">自签证书兼容性</b>
-        ：Claude Code 可配置信任（见接入向导）；Cursor / Cline 的支持度以实测矩阵为准。有域名时优先用反向代理 +
+        ：Claude Code 可配置信任（见接入向导）；WorkBuddy / Codex 的支持度以实测矩阵为准。有域名时优先用反向代理 +
         Let&apos;s Encrypt（全工具无感信任），见 <code>docs/reverse-proxy.md</code>。
       </p>
     </div>

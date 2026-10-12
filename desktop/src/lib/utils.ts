@@ -120,9 +120,17 @@ export function buildDisplayHost(status: StaticStatus | undefined, selectedIp: s
 }
 
 /** 基础接入命令（不含作用域开关），用于拼接到 claude mcp add。 */
-export function buildBaseCommand(displayHost: string, port: number, token: string, transport: string = "http"): string {
-  const urlSuffix = transport === "sse" ? "/mcp/sse" : "/mcp";
-  return `claude mcp add --transport ${transport} cc-bridge http://${displayHost}:${port}${urlSuffix} --header "Authorization: Bearer ${token}"`;
+export function buildBaseCommand(
+  displayHost: string,
+  port: number,
+  token: string,
+  transport: string = "http",
+  /** P1 HTTPS 远程访问：true 时端点为 https（与 get_tls_status.enabled 对应）。 */
+  tls: boolean = false,
+): string {
+  const suffix = transport === "sse" ? "/mcp/sse" : "/mcp";
+  const scheme = tls ? "https" : "http";
+  return `claude mcp add --transport ${transport} cc-bridge ${scheme}://${displayHost}:${port}${suffix} --header "Authorization: Bearer ${token}"`;
 }
 
 /**
@@ -139,9 +147,30 @@ export function buildConnectCommand(baseCommand: string, scope: McpScope): strin
     : baseCommand.replace("claude mcp add", "claude mcp add --scope project");
 }
 
-/** 服务器侧连通性验证命令。 */
-export function buildHealthCheck(displayHost: string, port: number): string {
-  return `curl http://${displayHost}:${port}/health`;
+/** 服务器侧连通性验证命令。TLS 开启时切 https 并加 -k（自签证书，curl 默认拒验）。 */
+export function buildHealthCheck(displayHost: string, port: number, tls = false): string {
+  return tls
+    ? `curl -k https://${displayHost}:${port}/health`
+    : `curl http://${displayHost}:${port}/health`;
+}
+
+/**
+ * 网络地址变化后「原地更新 IP」的远程 sed 命令（P2 TLS 感知版，IpChangedBanner 消费）。
+ * 匹配段用 `https\?://` 同时覆盖 http/https 两种旧值（切换 TLS 协议后也能原地修）；
+ * 替换段按当前 TLS 状态生成目标 scheme。不动 Bearer、不 remove+add，幂等可重跑。
+ */
+export function buildIpSedCommand(
+  selectedIp: string,
+  port: number,
+  scope: McpScope,
+  projectPath: string,
+  tls = false,
+): string {
+  if (!selectedIp) return "";
+  const cfgFile = scope === "user" ? "~/.claude.json" : ".mcp.json";
+  const cdPrefix = scope === "project" && projectPath.trim() ? `cd "${projectPath.trim()}" && ` : "";
+  const target = `${tls ? "https" : "http"}://${selectedIp}:${port}/mcp`;
+  return `${cdPrefix}sed -i 's#https\\?://[0-9.]*:${port}/mcp#${target}#g' ${cfgFile}`;
 }
 
 /** 网络地址友好提示：帮助用户判断远程服务器该选哪个 IP 连回本机。ConnectTab 与引导向导共用。 */

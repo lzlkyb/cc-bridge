@@ -195,6 +195,12 @@ fn regenerate(data_dir: &Path, sans: &[String], reason: &str) -> std::io::Result
     Ok(info)
 }
 
+/// 读取证书 PEM 文本（接入向导「复制 PEM」步骤用）。文件缺失时返回原始 IO 错误。
+pub fn read_cert_pem(data_dir: &Path) -> std::io::Result<String> {
+    let (crt, _, _) = cert_paths(data_dir);
+    std::fs::read_to_string(&crt)
+}
+
 /// 从磁盘载入证书与私钥，构造 axum-server 的 RustlsConfig。
 pub async fn load_rustls_config(
     data_dir: &Path,
@@ -347,5 +353,20 @@ mod tests {
         let short = info.fingerprint_short();
         assert!(short.ends_with("…"));
         assert_eq!(short.chars().count(), 17); // 16 hex + …
+    }
+
+    #[test]
+    fn read_cert_pem_returns_pem_text() {
+        let dir = temp_dir("pem");
+        ensure_cert(&dir, &[]).expect("生成");
+        let pem = read_cert_pem(&dir).expect("读取 PEM");
+        assert!(pem.starts_with("-----BEGIN CERTIFICATE-----"));
+        assert!(pem.trim_end().ends_with("-----END CERTIFICATE-----"));
+    }
+
+    #[test]
+    fn read_cert_pem_missing_file_errors() {
+        let dir = temp_dir("pem-missing");
+        assert!(read_cert_pem(&dir).is_err());
     }
 }

@@ -40,6 +40,12 @@ pub async fn get_tls_status(state: State<'_, Arc<AppState>>) -> Result<serde_jso
     }))
 }
 
+/// 读取自签证书 PEM 文本（接入向导「复制 PEM」用；http 模式证书可能不存在，报原始错误）。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn read_tls_cert_pem(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    tls::read_cert_pem(&state.data_dir).map_err(|e| e.to_string())
+}
+
 /// 手动重新生成自签证书（怀疑泄露 / 想换指纹场景），返回新证书信息。
 #[tauri::command(rename_all = "snake_case")]
 pub async fn regen_tls_cert(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {

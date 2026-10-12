@@ -1,5 +1,7 @@
 import { useState } from "react";
-import type { StaticStatus } from "../../../lib/types";
+import { useQuery } from "@tanstack/react-query";
+import type { StaticStatus, TlsStatus } from "../../../lib/types";
+import { invoke } from "../../../lib/tauri";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
 import { ConfirmModal } from "../../ui/ConfirmModal";
@@ -108,7 +110,12 @@ function SseMigrationModal({
   const host = status?.host ?? "0.0.0.0";
   const port = status?.port ?? 7823;
   const token = status?.token ?? "";
-  const sseCmd = buildBaseCommand(host, port, token, "sse");
+  // TLS 开启时迁移命令同样切 https（否则远程按 http 连会被拒）。
+  const { data: tls } = useQuery({
+    queryKey: ["tls-status"],
+    queryFn: () => invoke<TlsStatus>("get_tls_status"),
+  });
+  const sseCmd = buildBaseCommand(host, port, token, "sse", !!tls?.enabled);
   const migrationCmd = `claude mcp remove cc-bridge && ${sseCmd}`;
 
   const copyMigration = async () => {

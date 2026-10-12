@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, memo, useRef } from "react";
-import { invokeOrToast } from "../../lib/tauri";
-import type { StaticStatus } from "../../lib/types";
+import { useQuery } from "@tanstack/react-query";
+import { invokeOrToast, invoke } from "../../lib/tauri";
+import type { StaticStatus, TlsStatus } from "../../lib/types";
 import {
   McpScope,
   buildDisplayHost,
@@ -10,10 +11,7 @@ import {
   buildPermissionGrantCommand,
   copyText,
 } from "../../lib/utils";
-import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Icon } from "../ui/icon";
-import { Switch } from "../ui/switch";
-import { Alert } from "../ui/alert";
 import { useToast } from "../ui/toast";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { ConnectBento } from "./ConnectBento";
@@ -22,8 +20,10 @@ import { IpChangedBanner } from "./connect/IpChangedBanner";
 import { FirewallAlertBlock } from "./connect/FirewallAlertBlock";
 import { isWindows } from "../../lib/platform";
 import { AddressPicker } from "./connect/AddressPicker";
-import { OptionCard, CommandBlock } from "./connect/widgets";
+import { OptionCard } from "./connect/widgets";
 import { GlobalSteps, ProjectSteps } from "./connect/Steps";
+import { ToolGuide } from "./connect/ToolGuide";
+import { PermissionCard } from "./connect/PermissionCard";
 
 function ConnectTabImpl({
   status,
@@ -61,6 +61,13 @@ function ConnectTabImpl({
   const [permCopied, setPermCopied] = useState(false);
   const lanIps = status?.lanIps ?? [];
   const { toast } = useToast();
+
+  // P2-3：TLS 开关状态（与设置页共享 ["tls-status"] 缓存）。决定 URL/命令用 http 还是 https。
+  const { data: tls } = useQuery({
+    queryKey: ["tls-status"],
+    queryFn: () => invoke<TlsStatus>("get_tls_status"),
+  });
+  const tlsEnabled = !!tls?.enabled;
 
   type Section = "scope" | "steps" | "token" | "perm";
   // 默认折叠（单选聚焦）：进连接页四块均收起，用户按需点开。
@@ -143,8 +150,8 @@ function ConnectTabImpl({
   const token = status?.token ?? "";
 
   const baseCommand = useMemo(
-    () => buildBaseCommand(displayHost, port, token, status?.transport),
-    [displayHost, port, token, status?.transport],
+    () => buildBaseCommand(displayHost, port, token, status?.transport, tlsEnabled),
+    [displayHost, port, token, status?.transport, tlsEnabled],
   );
 
   const connectCommand = useMemo(
@@ -153,8 +160,8 @@ function ConnectTabImpl({
   );
 
   const healthCheck = useMemo(
-    () => buildHealthCheck(displayHost, port),
-    [displayHost, port],
+    () => buildHealthCheck(displayHost, port, tlsEnabled),
+    [displayHost, port, tlsEnabled],
   );
 
   const permissionCommand = useMemo(
@@ -235,6 +242,7 @@ function ConnectTabImpl({
           port={status?.port ?? 7823}
           scope={scope}
           projectPath={projectPath}
+          tls={tlsEnabled}
           onResolved={onSelectIp}
           onSedResolved={onSedResolved}
           onDismiss={onDismissIpChange}
@@ -242,7 +250,8 @@ function ConnectTabImpl({
       )}
 
       {/* Bento 网格：状态主卡 + 四张指标卡 + 健康/治理 + 接入向导。
-          向导作为插槽传入（它的一大堆 props 仍由本组件持有，Bento 不关心）。 */}
+          P2-3：向导外壳换 ToolGuide（四工具选择器 + 非 Claude 工具的片段渲染），
+          原有 claude-code 内容（scope/steps/token/perm）作为 children 仅在该工具下渲染。 */}
       <ConnectBento
         status={status}
         displayHost={displayHost}
@@ -250,19 +259,27 @@ function ConnectTabImpl({
         onChanged={onRefresh}
         onNavigate={onNavigate}
         guide={
-          <ConnectGuide
-            status={status}
-            listenAll={listenAll} lanIps={lanIps} selectedIp={selectedIp}
-            onSelectIp={onSelectIp} healthCheck={healthCheck}
-            scope={scope} setScope={setScope}
-            connectCommand={connectCommand} copied={copied} handleCopy={handleCopy}
-            projectPath={projectPath} setProjectPath={setProjectPath}
-            onRefresh={onRefresh}
-            includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
-            permissionCommand={permissionCommand} permCopied={permCopied}
-            handlePermCopy={handlePermCopy}
-            expanded={expanded} onToggle={handleToggle}
-          />
+          <ToolGuide
+            host={displayHost}
+            port={port}
+            token={token}
+            transport={status?.transport === "sse" ? "sse" : "http"}
+            tls={tls}
+          >
+            <ConnectGuide
+              status={status}
+              listenAll={listenAll} lanIps={lanIps} selectedIp={selectedIp}
+              onSelectIp={onSelectIp} healthCheck={healthCheck}
+              scope={scope} setScope={setScope}
+              connectCommand={connectCommand} copied={copied} handleCopy={handleCopy}
+              projectPath={projectPath} setProjectPath={setProjectPath}
+              onRefresh={onRefresh}
+              includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
+              permissionCommand={permissionCommand} permCopied={permCopied}
+              handlePermCopy={handlePermCopy}
+              expanded={expanded} onToggle={handleToggle}
+            />
+          </ToolGuide>
         }
       />
     </div>
@@ -274,7 +291,7 @@ export function ConnectGuide({
   scope, setScope, connectCommand, copied, handleCopy,
   projectPath, setProjectPath, onRefresh,
   includeShellTools, setIncludeShellTools, permissionCommand, permCopied, handlePermCopy,
-  expanded, onToggle, bare = false,
+  expanded, onToggle,
 }: {
   status?: StaticStatus;
   listenAll: boolean; lanIps: string[]; selectedIp: string;
@@ -286,7 +303,6 @@ export function ConnectGuide({
   includeShellTools: boolean; setIncludeShellTools: (v: boolean) => void;
   permissionCommand: string; permCopied: boolean; handlePermCopy: () => void;
   expanded: string | null; onToggle: (s: "scope" | "steps" | "token" | "perm") => void;
-  bare?: boolean;
 }) {
   const isOpen = (k: "scope" | "steps" | "token" | "perm") => expanded === k;
   const scopeOpen = isOpen("scope");
@@ -447,56 +463,8 @@ export function ConnectGuide({
         </div>
     </>
   );
-
-  if (bare) return <div className="card-content space-y-4">{guideInner}</div>;
-  return (
-    <Card className="card-primary">
-      <CardHeader>
-        <CardTitle icon={<Icon name="plug" />}>接入 Claude Code</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">{guideInner}</CardContent>
-    </Card>
-  );
-}
-
-function PermissionCard({
-  scope, projectPath, includeShellTools, setIncludeShellTools,
-  permissionCommand, permCopied, handlePermCopy,
-}: {
-  scope: McpScope; projectPath: string;
-  includeShellTools: boolean; setIncludeShellTools: (v: boolean) => void;
-  permissionCommand: string; permCopied: boolean; handlePermCopy: () => void;
-}) {
-  return (
-    <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
-      <div className="s-sec-label">权限自动授权</div>
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        复制命令到远端终端执行一次，即可免去 Claude Code 对 cc-bridge 全部工具的重复授权。
-      </p>
-      {scope === "project" && !projectPath.trim() && (
-        <Alert variant="warning" className="flex items-start gap-2 p-3 text-xs">
-          <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-          <span>上方路径未填写——命令不带 <code className="rounded bg-background px-1">cd</code>，写错位置不会报错。</span>
-        </Alert>
-      )}
-      <div className="s-row">
-        <div className="min-w-0 flex-1">
-          <p className="s-label">同时免确认命令执行工具</p>
-          <p className="s-row-desc mt-0.5">
-            开启后 <code className="rounded bg-muted px-1">run_command</code> 等命令类工具也免确认。
-          </p>
-        </div>
-        <Switch checked={includeShellTools} onChange={setIncludeShellTools} variant="danger" ariaLabel="同时免确认命令执行工具" />
-      </div>
-      {includeShellTools && (
-        <Alert variant="destructive" className="flex items-start gap-2 p-3 text-xs">
-          <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-          <span className="leading-relaxed">已开启：生成的命令会免确认全部 17 个工具（含命令执行）。请仅在完全信任该连接时开启。</span>
-        </Alert>
-      )}
-      <CommandBlock command={permissionCommand} copied={permCopied} onCopy={handlePermCopy} />
-    </div>
-  );
+  // P2-3：卡片外壳（标题 + 工具选择器）由 ToolGuide 渲染，本组件只出 claude-code 内容。
+  return guideInner;
 }
 
 export const ConnectTab = memo(ConnectTabImpl);
