@@ -97,6 +97,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
 
   const openSession = (sessionId: string) => {
     ssh.setActiveId(sessionId);
+    ssh.patchMeta(sessionId, { bellAt: null }); // 激活即读，未读铃点清零。
     setFileConn(null);
   };
   const connect = (conn: SshConnection) => {
@@ -219,6 +220,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
           {sessions.length > 0 && (
             <TerminalTabsBar
               sessions={sessions}
+              metaBySession={ssh.metaBySession}
               activeId={activeId}
               onActivate={openSession}
               onDisconnect={(sessionId) => void ssh.disconnect(sessionId)}
@@ -256,6 +258,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
                     fullscreen={fullscreen}
                     onToggleFullscreen={() => setFullscreen((v) => !v)}
                     onCwd={(cwd) => onCwd(s.sessionId, cwd)}
+                    onMeta={(p) => ssh.patchMeta(s.sessionId, p)}
                   />
                 </div>
               ))

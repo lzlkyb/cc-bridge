@@ -9,7 +9,9 @@ import { useTerminalSearch } from "./useTerminalSearch";
 import { useTerminalFontSize } from "./useTerminalFontSize";
 import { SshTerminalFind } from "./SshTerminalFind";
 import { TerminalStatusBar } from "./TerminalStatusBar";
-import { attachTuiScrollbar } from "../../lib/terminalScroll";
+import { attachTuiScrollbar, attachShiftWheel } from "../../lib/terminalScroll";
+import { useTerminalTabMeta, type TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
+import { toast } from "../ui/toast";
 import { useThemeMode } from "../../hooks/useThemeMode";
 import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
 import { useTerminalOsc } from "../../hooks/useTerminalOsc";
@@ -34,6 +36,8 @@ interface Props {
   onToggleFullscreen: () => void;
   /** 远端 cwd 变化（OSC 7 探测结果，探不到时为 null）。父级拿它当拖拽上传的目标目录。 */
   onCwd: (cwd: string | null) => void;
+  /** 标签 meta 上报（OSC 标题 / OSC 9;4 进度 / BEL 铃）。父级存进会话状态供标签栏展示。 */
+  onMeta: (patch: TermTabMetaPatch) => void;
 }
 
 /**
@@ -55,6 +59,7 @@ export function SshTerminal({
   fullscreen,
   onToggleFullscreen,
   onCwd,
+  onMeta,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -110,9 +115,24 @@ export function SshTerminal({
     const term = termRef.current;
     const container = containerRef.current;
     if (!term || !container) return;
+    // Shift+滚轮强制滚本地 scrollback（业界惯例）：与 TUI 滚动条互不干扰——
+    // 合成 wheel 不带 shiftKey，会原样走转发路径。
+    attachShiftWheel(term);
     return attachTuiScrollbar(term, container, { onActiveChange: setTuiScrollActive });
     // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），只需挂一次。
   }, []);
+
+  // 标签 meta 上报（标题/进度/铃）。后台标签收到 BEL 才 toast：用户正盯着这个终端时
+  // 响铃不需要再弹一条「有铃声」，那反而是打扰。onMeta 由 hook 用 ref 承接，闭包读到最新 visible。
+  useTerminalTabMeta({
+    termRef,
+    closed,
+    onMeta: (p) => {
+      if (p.bellAt != null && !visible)
+        toast(`${conn.name || conn.host}：终端有铃声（可能需要关注）`, "info");
+      onMeta(p);
+    },
+  });
 
   // 右键：阻掉默认菜单，改弹自己的复制/粘贴/全选。用视口坐标定位，
   // 因为终端容器带 overflow-hidden，菜单挂在容器内会被裁掉。

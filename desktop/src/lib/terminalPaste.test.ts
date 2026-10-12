@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizePaste, preparePaste } from "./terminalPaste";
+import { normalizePaste, preparePaste, shouldConfirmPaste } from "./terminalPaste";
 
 const START = "\x1b[200~";
 const END = "\x1b[201~";
@@ -58,5 +58,21 @@ describe("preparePaste", () => {
 
   it("空串在支持模式下也成对包裹", () => {
     expect(preparePaste("", true)).toBe(`${START}${END}`);
+  });
+});
+
+describe("shouldConfirmPaste（两段式粘贴确认判定）", () => {
+  it("远端开了 bracketed paste：多行也放行（整块插入不执行）", () => {
+    expect(shouldConfirmPaste("line1\nline2\nrm -rf /", true)).toBe(false);
+    expect(shouldConfirmPaste("a\rb", true)).toBe(false);
+  });
+  it("远端没开 bracketed paste 且含换行：需要确认（唯一危险场景）", () => {
+    expect(shouldConfirmPaste("line1\nline2", false)).toBe(true);
+    expect(shouldConfirmPaste("a\rb", false)).toBe(true);
+    expect(shouldConfirmPaste("a\r\nb", false)).toBe(true);
+  });
+  it("单行内容永不确认", () => {
+    expect(shouldConfirmPaste("rm -rf /", false)).toBe(false);
+    expect(shouldConfirmPaste("", false)).toBe(false);
   });
 });

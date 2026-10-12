@@ -1,9 +1,13 @@
 import { useEffect, useRef } from "react";
 import { Icon } from "../ui/icon";
 import type { SshSessionRef } from "./TerminalConnectionItem";
+import type { TermTabMeta } from "../../lib/terminalTabMeta";
+import type { IProgressState } from "@xterm/addon-progress";
 
 interface TerminalTabsBarProps {
   sessions: SshSessionRef[];
+  /** 各会话的标签 meta（标题/进度/铃），由 SshTerminal 上报。 */
+  metaBySession: Record<string, TermTabMeta>;
   activeId: string | null;
   onActivate: (sessionId: string) => void;
   /** 已连接的会话点 ×：断开（但保留标签）。 */
@@ -14,15 +18,36 @@ interface TerminalTabsBarProps {
   onNewTerminal: (() => void) | null;
 }
 
+/** OSC 9;4 进度条在标签底部的配色与几何（进度条条宽按 value%）。 */
+function progressStyle(p: IProgressState): { className: string; width: string } {
+  switch (p.state) {
+    case 1:
+      return { className: "bg-primary", width: `${Math.min(100, Math.max(0, p.value))}%` };
+    case 2:
+      return { className: "bg-destructive", width: `${Math.min(100, Math.max(0, p.value)) || 100}%` };
+    case 3:
+      return { className: "bg-primary animate-pulse", width: "100%" };
+    case 4:
+      return { className: "bg-amber-500", width: `${Math.min(100, Math.max(0, p.value)) || 100}%` };
+    default:
+      return { className: "", width: "0%" };
+  }
+}
+
 /**
  * 终端标签栏：多会话时顶部横向标签。
  *
  * × 的语义分两档：**已连接 → 断开（标签保留）；已断开 → 关闭标签**。
  * 这个 11px 的 × 本来是一点就断、无确认；现在第一下只是进入可重连的断开态，
  * 误点不再丢历史输出——比加二次确认好，不多一步点击。
+ *
+ * meta 增强（P0 批次）：标题（OSC 0/2，显示为 `主机 ▸ 程序名`——标题**只作附加段**，
+ * 不可顶替主机名，防「标题诈骗」）、进度条（OSC 9;4，贴标签底部）、未读铃点（BEL，
+ * 激活标签即清零）。
  */
 export function TerminalTabsBar({
   sessions,
+  metaBySession,
   activeId,
   onActivate,
   onDisconnect,
@@ -50,11 +75,16 @@ export function TerminalTabsBar({
         const seq = (seenPerConn.get(s.conn.id) ?? 0) + 1;
         seenPerConn.set(s.conn.id, seq);
         const showSeq = (totalPerConn.get(s.conn.id) ?? 0) > 1;
+        const meta = metaBySession[s.sessionId];
+        const title = !closed ? meta?.title : null;
+        const hasBell = !closed && meta?.bellAt != null;
+        const progress = !closed ? meta?.progress : null;
+        const bar = progress && progress.state !== 0 ? progressStyle(progress) : null;
         return (
           <div
             key={s.tabId}
             ref={active ? activeRef : undefined}
-            className={`flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ${
+            className={`relative flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1 text-xs ${
               active ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-muted"
             }`}
           >
@@ -75,12 +105,17 @@ export function TerminalTabsBar({
               <span className={closed ? "line-through opacity-70" : undefined}>
                 {s.conn.name || s.conn.host}
               </span>
+              {/* 标题只作主机名的附加段：正常程序可显示，恶意标题顶不掉主机名。 */}
+              {title && (
+                <span className="max-w-40 truncate font-mono opacity-60">▸ {title}</span>
+              )}
               {showSeq && (
                 <span className="rounded bg-muted-foreground/15 px-1 font-mono text-[10px]">
                   #{seq}
                 </span>
               )}
               {s.conn.authType === "key" && <span>🔑</span>}
+              {hasBell && <Icon name="bell" size={11} className="text-amber-500" />}
             </button>
             <button
               type="button"
@@ -90,6 +125,15 @@ export function TerminalTabsBar({
             >
               <Icon name="close" size={11} />
             </button>
+            {/* OSC 9;4 进度：贴标签底缘的 2px 细条，激活与否都显示（后台任务也要看得见）。 */}
+            {bar && (
+              <div className="absolute inset-x-1.5 bottom-0 h-0.5 overflow-hidden rounded-full bg-muted-foreground/15">
+                <div
+                  className={`h-full rounded-full transition-[width] duration-300 ${bar.className}`}
+                  style={{ width: bar.width }}
+                />
+              </div>
+            )}
           </div>
         );
       })}

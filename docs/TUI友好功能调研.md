@@ -30,7 +30,7 @@
 | 2 | **BEL 铃 → 统一通知** | Claude Code 设置 terminal_bell 后任务完成/等待输入发 BEL；vim/长命令同理。直接接入已建成的统一通知系统 | `term.onBell` → Toast/标签角标；防抖（vi 内 Esc 不轰炸） |
 | 3 | **OSC 9;4 进度 → 标签页/状态栏** | 长任务（构建、claude 长操作）进度直接可见，不用盯屏幕 | `@xterm/addon-progress`（官方）→ 标签页小进度条 + 状态栏段 |
 | 4 | **OSC 0/2 标题 → 标签页程序名** | 标签自动显示 `claude` / `vim` / `htop`，多标签辨识度大增 | `term.onTitleChange` → 标签文本（白名单过滤，防诈骗标题） |
-| 5 | **多行粘贴确认** | 粘贴含换行的命令（尤其 root 会话）先确认，防脚本炸弹；iTerm2/Warp 标配 | onData 前检测 paste 内容含 `\n` → InlineNotice 确认（可勾选"本次会话不再问"） |
+| 5 | **智能粘贴保护**（Ghostty 式，替代"一刀切确认"） | 粘贴含换行时：**目标已启用 bracketed paste（DECSET 2004）→ 视为安全直接粘贴**（bash/zsh/fish/vim/Claude Code 全在此列，多行粘贴是正常操作，零打扰）；**未启用 → 弹确认**（这才是真正危险的裸交互程序场景，换行即执行）。Ghostty 1.0.1+ 默认行为（`clipboard-paste-protection` + `clipboard-paste-bracketed-safe`），一刀切弹窗已被业界证明太烦、用户只会关掉 | xterm 6 公开 `term.modes.bracketedPasteMode`（ typings 1919 行），paste 链路里判一次即可：`含\n && !modes.bracketedPasteMode` → InlineNotice 确认（可勾选"本会话不再问"）。约半天 |
 
 ### P1 · 中成本中高感知（纯前端为主，2-4 天/项）
 
@@ -58,7 +58,7 @@
 
 ## 四、推荐路线
 
-**第一批（P0 全做，约 1 周）**：①Shift+滚轮 ②BEL 通知 ③OSC 9;4 进度 ④标题→标签名 ⑤多行粘贴确认。
+**第一批（P0 全做，约 1 周）**：①Shift+滚轮 ②BEL 通知 ③OSC 9;4 进度 ④标题→标签名 ⑤智能粘贴保护（bracketed-paste 感知版，见 P0 表第 5 行）。
 理由：全部是「协议透传/交互补课」类，风险低、复用已有基建（统一通知系统、状态栏、标签组件、paste 链路），且每一项都能在 Claude Code 场景立刻感知。
 
 **第二批（P1 择 2）**：⑥命令导航（数据免费）+ ⑦路径点击跳文件浏览器（cc-bridge 差异化，别的终端做不了）。

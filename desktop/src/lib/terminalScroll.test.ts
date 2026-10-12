@@ -9,6 +9,7 @@ import {
   clampPos,
   planDrag,
   wheelCounts,
+  shiftWheelLines,
 } from "./terminalScroll";
 
 describe("isTuiScrollActive", () => {
@@ -125,5 +126,25 @@ describe("re-arm 常量", () => {
   it("re-arm 行数为正且小于虚拟总行数", () => {
     expect(TUI_EDGE_REARM_LINES).toBeGreaterThan(0);
     expect(TUI_EDGE_REARM_LINES).toBeLessThan(TUI_VIRTUAL_TOTAL);
+  });
+});
+
+describe("shiftWheelLines（Shift+滚轮 → 本地滚动行数）", () => {
+  it("deltaMode=1（行）：1 格 = 1 行，与 SGR 转发同口径", () => {
+    expect(shiftWheelLines(1, 1)).toBe(1);
+    expect(shiftWheelLines(-1, 1)).toBe(-1);
+    expect(shiftWheelLines(-5, 1)).toBe(-5);
+  });
+  it("deltaMode=0（像素）：约 3 行/格，34px 一行", () => {
+    expect(shiftWheelLines(102, 0)).toBe(3);
+    expect(shiftWheelLines(-120, 0)).toBe(-3);
+  });
+  it("像素不足一行时保底 ±1（否则慢滚没反应）", () => {
+    expect(shiftWheelLines(20, 0)).toBe(1);
+    expect(shiftWheelLines(-20, 0)).toBe(-1);
+  });
+  it("deltaY=0 不动", () => {
+    expect(shiftWheelLines(0, 0)).toBe(0);
+    expect(shiftWheelLines(0, 1)).toBe(0);
   });
 });

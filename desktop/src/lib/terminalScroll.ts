@@ -289,3 +289,42 @@ export function attachTuiScrollbar(
     if (active) opts.onActiveChange?.(false);
   };
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * Shift+滚轮强制滚本地 scrollback（TUI 态救急）
+ *
+ * WHY：wheel→SGR 转发只在备用屏+鼠标跟踪时把滚动交给 TUI，而 TUI 的对话流一旦
+ * 滚走，想看「刚才那段输出」只能靠程序自己（Claude Code 的翻页各有各的键）。
+ * Shift+滚轮强制滚**本地** scrollback 是 WezTerm/iTerm2/Ghostty 的通行惯例
+ * （Zeron 项目把它写进验收标准）——备用屏下 scrollback 也可能有历史（进 TUI 前
+ * 的输出都在），primary 屏（普通 shell）下更是直接生效。
+ *
+ * 实现：xterm 6 的 `attachCustomWheelEventHandler` 返回 false 即短路本次 wheel
+ * （不转发 SGR、不滚动）。这里 Shift 按下 → 自己调 scrollLines 滚本地 → false。
+ * TUI 滚动条拖动合成的事件不带 shiftKey，不受影响，两条路径互不干扰。
+ */
+
+/**
+ * wheel 事件 → 本地滚动行数（带符号，正=向下）。
+ * deltaMode 0（像素）：一格 ≈ ±100px，按 3 行/格换算并保留最小 1 行；
+ * deltaMode 1（行）：1 格 = 1 行（与 SGR 转发路径同口径）。
+ * 纯函数便于单测。
+ */
+export function shiftWheelLines(deltaY: number, deltaMode: number): number {
+  if (deltaY === 0) return 0;
+  if (deltaMode === 1) return Math.trunc(deltaY);
+  // 像素模式：每 34px 记 1 行（WheelEvent 一格通常 100~120px ≈ 3 行），不足 1 行按 1 行算。
+  const lines = Math.trunc(deltaY / 34);
+  if (lines === 0) return deltaY > 0 ? 1 : -1;
+  return lines;
+}
+
+/** 给终端挂上 Shift+滚轮本地滚动。返回卸载函数（xterm 只有一个 custom wheel 槽位，重复挂会顶掉前一个）。 */
+export function attachShiftWheel(term: Terminal): void {
+  term.attachCustomWheelEventHandler((e) => {
+    if (!e.shiftKey) return true;
+    const lines = shiftWheelLines(e.deltaY, e.deltaMode);
+    if (lines !== 0) term.scrollLines(lines);
+    return false;
+  });
+}

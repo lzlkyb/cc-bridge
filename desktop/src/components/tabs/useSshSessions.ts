@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import type { SshConnection } from "../../lib/types";
+import { EMPTY_TAB_META, type TermTabMeta } from "../../lib/terminalTabMeta";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 
 /** 新建会话的初始 PTY 尺寸；终端挂载后会立即用真实尺寸 resize 一次。 */
@@ -25,6 +26,9 @@ export function useSshSessions() {
   const [activeId, setActiveId] = useState<string | null>(null);
   // 连接进行中：列表项灰显「连接中…」+ 按钮 loading（纯前端态，无后端依赖）。
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  // 标签 meta（OSC 标题 / 进度 / 铃），由 SshTerminal 经 patchMeta 上报，标签栏展示。
+  // 按 sessionId 存：重连换 sessionId，旧 key 随 closeTab / dropConnection 清理。
+  const [metaBySession, setMetaBySession] = useState<Record<string, TermTabMeta>>({});
 
   // 事件回调（ssh_closed / ssh_connect_failed）需要读到**当下**的会话列表来去重，
   // 而它们是稳定回调、拿不到最新的 state。所有写入都走 patch，ref 与 state 始终同步。
@@ -32,6 +36,27 @@ export function useSshSessions() {
   const patch = useCallback((fn: (prev: SshSessionRef[]) => SshSessionRef[]) => {
     sessionsRef.current = fn(sessionsRef.current);
     setSessions(sessionsRef.current);
+  }, []);
+
+  /** 上报/修改某会话的标签 meta（标题、进度、铃）。浅合并，只写传入的字段。 */
+  const patchMeta = useCallback((sessionId: string, p: Partial<TermTabMeta>) => {
+    setMetaBySession((m) => {
+      const cur = m[sessionId] ?? EMPTY_TAB_META;
+      const next: TermTabMeta = { ...cur, ...p };
+      // 值没变就不产生新对象，避免标签栏无谓重渲染。
+      // 🔴 progress 要按值比（state/value）而不是比引用：addon 每次 onChange 都造新对象，
+      // 有的程序（如 rsync 包装器）会周期性重发同一进度值。
+      const progressSame =
+        next.progress === cur.progress ||
+        (next.progress != null &&
+          cur.progress != null &&
+          next.progress.state === cur.progress.state &&
+          next.progress.value === cur.progress.value);
+      if (next.title === cur.title && progressSame && next.bellAt === cur.bellAt) {
+        return m;
+      }
+      return { ...m, [sessionId]: next };
+    });
   }, []);
 
   /**
@@ -129,6 +154,11 @@ export function useSshSessions() {
       const idx = prev.findIndex((s) => s.sessionId === sessionId);
       const next = prev.filter((s) => s.sessionId !== sessionId);
       patch(() => next);
+      setMetaBySession((m) => {
+        if (!(sessionId in m)) return m;
+        const { [sessionId]: _drop, ...rest } = m;
+        return rest;
+      });
       // 关掉当前标签后激活相邻会话（优先右邻、没有则左邻），而不是掉进空面板——
       // 以前直接置 null，于是标签栏上明明还剩几个会话，右边却显示「从左侧选择一个连接开始」。
       setActiveId((cur) =>
@@ -151,6 +181,19 @@ export function useSshSessions() {
       }
       const next = sessionsRef.current.filter((s) => s.conn.id !== connId);
       patch(() => next);
+      setMetaBySession((m) => {
+        const drop = new Set(linked.map((s) => s.sessionId));
+        let changed = false;
+        const rest: Record<string, TermTabMeta> = {};
+        for (const k of Object.keys(m)) {
+          if (drop.has(k)) {
+            changed = true;
+          } else {
+            rest[k] = m[k];
+          }
+        }
+        return changed ? rest : m;
+      });
       setActiveId((cur) =>
         linked.some((s) => s.sessionId === cur) ? (next[0]?.sessionId ?? null) : cur,
       );
@@ -162,11 +205,13 @@ export function useSshSessions() {
     sessions,
     activeId,
     connectingId,
+    metaBySession,
     setActiveId,
     connect,
     disconnect,
     closeTab,
     markClosed,
     dropConnection,
+    patchMeta,
   };
 }

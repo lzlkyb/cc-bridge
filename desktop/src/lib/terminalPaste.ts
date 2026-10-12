@@ -47,3 +47,15 @@ export function preparePaste(text: string, bracketed: boolean): string {
   if (!bracketed) return normalized;
   return PASTE_START + normalized.replace(PASTE_MARKERS, "") + PASTE_END;
 }
+
+/**
+ * 是否需要「两段式确认」：内容含换行 **且** 远端没开 bracketed paste。
+ *
+ * bracketed paste 开着（bash/zsh/fish/vim/Claude Code……）→ 整块插入不执行，放行；
+ * 没开 → 换行会逐行执行，这是唯一真正危险的场景（脚本炸弹）。
+ * 判定用原始文本（含 `\n` 或 `\r`），而不是 normalize 后的——语义是「用户要粘多行」。
+ */
+export function shouldConfirmPaste(text: string, bracketed: boolean): boolean {
+  if (bracketed) return false;
+  return /\r|\n/.test(text);
+}
