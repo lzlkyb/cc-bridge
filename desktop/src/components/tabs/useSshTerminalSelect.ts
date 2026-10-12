@@ -16,6 +16,10 @@ import { toast } from "../ui/toast";
  * 发给远端 PTY(stdin)，xterm 从来不会解析它，而 xterm 的 mouseTrackingMode 只由「输出流」里的
  * 转义控制；Claude Code 在自己的输出里反复 ESC[?1006h，于是本地鼠标报告一直开着、
  * 拖选被吃掉、`term.getSelection()` 恒空 → 复制不出来。
+ *
+ * ⚠️ 但仅"关掉"还不够（headless xterm 6.0 实测）：选区只能在 mousedown 时由
+ * SelectionService 启动，中途关报告后本次手势的 mousemove 无法凭空建选区——
+ * 拖拽路径必须在关报告的 write 回调里补发合成 mousedown（见 replaySelectionStart）。
  */
 export const MOUSE_REPORT_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
@@ -148,6 +152,32 @@ export function useSshTerminalSelect({
       // 拖拽即选择：终端内按住左键并移动超过阈值即自动进选择态关本地鼠标报告，松手自动复制；
       // 纯点击（不移动）仍当普通点击，不影响 Claude Code 定位光标。
       // window 级监听：拖拽移出容器也能持续收到 move/up。
+      //
+      // 🔴 鼠标报告活跃时（Claude Code 每帧重绘 ?1006h），关报告**必须补发合成 mousedown**：
+      // xterm 选区只能在 mousedown 时启动（SelectionService.handleMouseDown），拖拽中途关报告
+      // 后 mousemove 只延伸"已存在"的选区、无法凭空新建——headless 实测中途关后选区恒空
+      // （关前报告已发给 TUI 无法避免；合成 mousedown 复用原始按点坐标，只驱动本地选区，
+      // 此时报告已关不会二次发送）。pointerDownRef 守卫防"松手后迟到的回调"补出幽灵选区。
+      const replaySelectionStart = (x: number, y: number) => {
+        term.write(MOUSE_REPORT_OFF, () => {
+          if (!pointerDownRef.current) return;
+          if (term.modes.mouseTrackingMode !== "none") return;
+          const target = (term.element?.querySelector(".xterm-screen") ?? term.element) as HTMLElement | null;
+          if (!target) return;
+          target.dispatchEvent(
+            new MouseEvent("mousedown", {
+              bubbles: true,
+              cancelable: true,
+              view: window,
+              clientX: x,
+              clientY: y,
+              button: 0,
+              buttons: 1,
+              detail: 1,
+            }),
+          );
+        });
+      };
       const onPointerMove = (e: PointerEvent) => {
         // 开关关闭时拖拽不触发选择态——保持默认交互（拖拽不误伤 TUI 点击）；
         // 仍可按住 Shift 或点「选择模式」进入选择态。两条路径不受此开关影响。
@@ -160,7 +190,8 @@ export function useSshTerminalSelect({
         selectActiveRef.current = true;
         dragSelectRef.current = true;
         setDragSelecting(true);
-        term.write(MOUSE_REPORT_OFF);
+        if (term.modes.mouseTrackingMode === "none") return; // 无鼠标报告，原生拖选直接可用
+        replaySelectionStart(downPosRef.current.x, downPosRef.current.y);
       };
       window.addEventListener("pointermove", onPointerMove);
 
