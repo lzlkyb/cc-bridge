@@ -99,6 +99,18 @@ pub struct ConfigPatch {
     /// 终端拖拽即选开关。前端「高级」卡写入。
     #[serde(rename = "sshDragSelectEnabled")]
     pub ssh_drag_select_enabled: Option<bool>,
+    /// P1：HTTPS 远程访问开关（自签证书）。前端「安全」页写入。
+    #[serde(rename = "remoteTlsEnabled")]
+    pub remote_tls_enabled: Option<bool>,
+    /// P1：401 封禁开关。前端「安全」页写入。
+    #[serde(rename = "remoteBanEnabled")]
+    pub remote_ban_enabled: Option<bool>,
+    /// P1：封禁阈值（连续 401 次数）。
+    #[serde(rename = "remoteBanThreshold")]
+    pub remote_ban_threshold: Option<u32>,
+    /// P1：封禁窗口（分钟）。
+    #[serde(rename = "remoteBanWindowMin")]
+    pub remote_ban_window_min: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -226,6 +238,27 @@ pub async fn save_config(
         ssh_drag_select_enabled,
         "ssh_drag_select_enabled",
         &patch.ssh_drag_select_enabled
+    );
+    // P1 远程访问四字段（纯布尔/数值，无凭据，安全可走通用 patch；生效经 restart_mcp_server）。
+    apply_field!(
+        remote_tls_enabled,
+        "remote_tls_enabled",
+        &patch.remote_tls_enabled
+    );
+    apply_field!(
+        remote_ban_enabled,
+        "remote_ban_enabled",
+        &patch.remote_ban_enabled
+    );
+    apply_field!(
+        remote_ban_threshold,
+        "remote_ban_threshold",
+        &patch.remote_ban_threshold
+    );
+    apply_field!(
+        remote_ban_window_min,
+        "remote_ban_window_min",
+        &patch.remote_ban_window_min
     );
     // 🔴 这个开关必须是**断路器**：由开变关时立刻杀掉全部活会话。
     // 否则关掉后已经开着的终端照样能输入、能操作远程主机，开关就只是

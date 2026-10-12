@@ -190,6 +190,15 @@ pub struct BridgeConfig {
     /// 默认关——保持默认交互（拖拽不误触发选择，避免与 Claude Code 等 TUI 点击冲突）；
     /// 开启后无需记 Shift / 点「选择模式」即可拖选复制。Shift / 选择模式两条路径不受此开关影响。
     pub ssh_drag_select_enabled: bool,
+    /// P1 远程访问：HTTPS（自签证书）serve 总开关。**默认关**——HTTP 路径行为不变，
+    /// 开启后 MCP 监听整体切换为 TLS（单端口，无并存）。
+    pub remote_tls_enabled: bool,
+    /// P1 远程访问：401 连续失败封禁开关。默认开（仅 0.0.0.0 绑定时实际生效）。
+    pub remote_ban_enabled: bool,
+    /// P1 封禁阈值：连续 401 次数达该值即封禁该 IP。默认 5。
+    pub remote_ban_threshold: u32,
+    /// P1 封禁窗口（分钟）：封禁持续时长，窗口过期自动解封。默认 15。
+    pub remote_ban_window_min: u32,
 }
 
 impl Default for BridgeConfig {
@@ -239,6 +248,10 @@ impl Default for BridgeConfig {
             ssh_enabled: false,
             ssh_connections: vec![],
             ssh_drag_select_enabled: false,
+            remote_tls_enabled: false,
+            remote_ban_enabled: true,
+            remote_ban_threshold: 5,
+            remote_ban_window_min: 15,
         }
     }
 }
@@ -339,6 +352,12 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "ssh_connections" => config.ssh_connections = parse_or_warn(key, value, vec![]),
             "ssh_drag_select_enabled" => {
                 config.ssh_drag_select_enabled = parse_or_warn(key, value, false)
+            }
+            "remote_tls_enabled" => config.remote_tls_enabled = parse_or_warn(key, value, false),
+            "remote_ban_enabled" => config.remote_ban_enabled = parse_or_warn(key, value, true),
+            "remote_ban_threshold" => config.remote_ban_threshold = parse_or_warn(key, value, 5u32),
+            "remote_ban_window_min" => {
+                config.remote_ban_window_min = parse_or_warn(key, value, 15u32)
             }
             "transport" => {
                 let s = parse_or_warn::<String>(key, value, "http".into());
@@ -631,6 +650,26 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         conn,
         "ssh_drag_select_enabled",
         &to_value(config.ssh_drag_select_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "remote_tls_enabled",
+        &to_value(config.remote_tls_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "remote_ban_enabled",
+        &to_value(config.remote_ban_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "remote_ban_threshold",
+        &to_value(config.remote_ban_threshold).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "remote_ban_window_min",
+        &to_value(config.remote_ban_window_min).unwrap(),
     )?;
     // 外挂 MCP 桥的两个键。漏写的后果不是“少存一个字段”：调用方（`import_config_inner`）
     // 是先落库再整体替换内存，漏一个就会造成内存领先于 DB——界面上已生效、

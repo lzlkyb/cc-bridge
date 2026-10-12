@@ -163,6 +163,10 @@ pub struct AppState {
     /// 与 firewall_cache 同款的短临界区 StdMutex，不跨 await。
     pub lan_ips: StdMutex<Vec<String>>,
 
+    /// P1 远程访问：401 连续失败封禁注册表（内存态，重启清零）。
+    /// 仅 0.0.0.0 绑定时生效；阈值/窗口经 update_policy 随配置热更新。
+    pub ban: crate::security::ban::BanRegistry,
+
     /// 白名单根目录 canonicalize 缓存（白名单校验性能优化）。
     /// 由 new() 启动时初始化一次 + 配置变更（save_config/import_config）时刷新；
     /// 工具层白名单校验直接读此缓存，避免每个工具调用都对所有 root 各做一次 stat 级 canonicalize。
@@ -204,6 +208,11 @@ impl AppState {
     pub fn new(db: Connection, config: BridgeConfig, data_dir: PathBuf) -> Self {
         // 白名单根目录缓存初始化：在 config 被移入 RwLock 前取一次 canonicalize。
         let canonicalized_roots = crate::security::path::canonicalize_roots(&config.allowed_roots);
+        let ban = crate::security::ban::BanRegistry::new(
+            config.remote_ban_enabled,
+            config.remote_ban_threshold,
+            config.remote_ban_window_min as u64,
+        );
         Self {
             db: Mutex::new(db),
             config: RwLock::new(config),
@@ -221,6 +230,7 @@ impl AppState {
             ssh_helper_blocked: DashMap::new(),
             startup_error: StdMutex::new(None),
             mcp_bridge: crate::mcp::bridge::McpBridge::new(),
+            ban,
             firewall_cache: StdMutex::new(FirewallCache {
                 enabled: None,
                 port_open: None,

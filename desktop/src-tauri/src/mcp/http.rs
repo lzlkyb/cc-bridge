@@ -47,10 +47,10 @@ pub async fn build_router(state: Arc<AppState>) -> Router {
 }
 
 pub async fn spawn_mcp_server(state: Arc<AppState>) {
-    let config = state.config.read().await;
-    let host = config.host.clone();
-    let port = config.port;
-    drop(config);
+    let (host, port, tls_enabled) = {
+        let config = state.config.read().await;
+        (config.host.clone(), config.port, config.remote_tls_enabled)
+    };
 
     // 保留一份用于翻转运行状态标志（router 会 move 掉 state）。
     let running_state = state.clone();
@@ -58,6 +58,67 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
     let app = build_router(state.clone()).await;
 
     let addr = format!("{}:{}", host, port);
+    let sock: std::net::SocketAddr = match addr.parse() {
+        Ok(a) => a,
+        Err(e) => {
+            log::error!("Invalid MCP bind address {}: {}", addr, e);
+            running_state
+                .mcp_running
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            *running_state.startup_error.lock().unwrap() = Some(format!("监听地址无效：{}", addr));
+            return;
+        }
+    };
+
+    // P1：remote_tls_enabled 开启时整条监听切 TLS（单端口，无 HTTP/HTTPS 并存）。
+    if tls_enabled {
+        crate::mcp::tls::install_crypto_provider();
+        let ips = crate::mcp::tls::detect_local_ips();
+        let cert = match crate::mcp::tls::ensure_cert(&state.data_dir, &ips) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("自签证书生成失败: {}", e);
+                running_state
+                    .mcp_running
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                *running_state.startup_error.lock().unwrap() =
+                    Some(format!("HTTPS 证书生成失败：{}", e));
+                return;
+            }
+        };
+        let tls_cfg = match crate::mcp::tls::load_rustls_config(&state.data_dir).await {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("载入 TLS 配置失败: {}", e);
+                running_state
+                    .mcp_running
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                *running_state.startup_error.lock().unwrap() = Some(e);
+                return;
+            }
+        };
+        log::info!(
+            "MCP HTTPS server listening on {} (cert fp {})",
+            addr,
+            cert.fingerprint_short()
+        );
+        *running_state.startup_error.lock().unwrap() = None;
+        running_state
+            .mcp_running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        if let Err(e) = axum_server::bind_rustls(sock, tls_cfg)
+            .serve(app.into_make_service_with_connect_info::<std::net::SocketAddr>())
+            .await
+        {
+            log::error!("MCP HTTPS server error: {}", e);
+        }
+        running_state
+            .mcp_running
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        return;
+    }
+
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
@@ -98,6 +159,15 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
 /// 是否需要顺带置 `mcp_running`/发 `mcp-status-changed` 事件由调用方自行决定（各处现有
 /// 行为不同，本函数不假设、不改变）。
 pub async fn restart_server(state: &Arc<AppState>) {
+    // P1：封禁策略随每次重启同步热更新（save_config → restart 是所有配置生效的收口）。
+    {
+        let c = state.config.read().await;
+        state.ban.update_policy(
+            c.remote_ban_enabled,
+            c.remote_ban_threshold,
+            c.remote_ban_window_min as u64,
+        );
+    }
     let mut handle = state.mcp_server_handle.lock().await;
     if let Some(h) = handle.take() {
         h.abort();
@@ -174,9 +244,22 @@ async fn auth_middleware(
     let max_req = config.rate_limit_max_requests;
     let window_ms = config.rate_limit_window_ms;
     let rate_limit_enabled = config.rate_limit_enabled;
+    // P1 封禁仅在跨网可达（0.0.0.0）时激活；127.0.0.1 场景无意义且可能误伤本地代理。
+    let ban_active = config.remote_ban_enabled && config.host == "0.0.0.0";
+    let peer_ip = addr.ip();
     drop(config);
 
     if !skip_token {
+        // P1 封禁检查先于鉴权（见 security/ban.rs 头注释：不进鉴权逻辑，防爆破省校验）。
+        if ban_active && !state.ban.check(peer_ip) {
+            return Response::builder()
+                .status(StatusCode::TOO_MANY_REQUESTS)
+                .body(Body::from(
+                    r#"{"error":"Banned: too many failed attempts"}"#,
+                ))
+                .unwrap();
+        }
+
         let auth_header = req
             .headers()
             .get("authorization")
@@ -188,10 +271,16 @@ async fn auth_middleware(
         if !auth::verify_token(provided_token, &expected_token) {
             // 方案 A：鉴权拒绝（401）= 拒绝未授权访问，计入治理指标。
             state.inc_auth_denies();
+            if ban_active {
+                state.ban.record_failure(peer_ip);
+            }
             return Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .body(Body::from(r#"{"error":"Unauthorized"}"#))
                 .unwrap();
+        }
+        if ban_active {
+            state.ban.record_success(peer_ip);
         }
     }
 
@@ -920,7 +1009,7 @@ mod over_wire_tests {
         let srv = spawn_server(test_config(&root), root.clone()).await;
         let r = rpc(&srv.base, &srv.token, "tools/list", json!({})).await;
         let tools = r["result"]["tools"].as_array().expect("tools 应是数组");
-        assert_eq!(tools.len(), 17, "tools/list 必须暴露全部 17 个工具");
+        assert_eq!(tools.len(), 19, "tools/list 必须暴露全部 19 个工具");
         for t in tools {
             assert!(
                 !t["name"].as_str().unwrap_or("").is_empty(),
@@ -1810,5 +1899,130 @@ mod over_wire_tests {
             .await
             .unwrap();
         assert_eq!(msg_resp.status(), 404, "无效 session 应返回 404");
+    }
+
+    /// P1 HTTPS 全链路：自签证书起 TLS server → reqwest（以自签为 root）→
+    /// /health 免 token、/mcp 带 token 正常分发、错 token 401。
+    /// reqwest rustls 校验含 IP SAN——这条测试同时验证 SAN 与证书链格式正确。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn https_full_chain_serves_mcp() {
+        let root = unique_temp_root("https-chain");
+        // 生成自签证书（SAN 含 127.0.0.1，client 将按 IP 校验）。
+        let cert = crate::mcp::tls::ensure_cert(&root, &[std::net::IpAddr::from([127, 0, 0, 1])])
+            .expect("ensure_cert");
+        let cfg = test_config(&root);
+
+        let conn = rusqlite::Connection::open_in_memory().expect("in-mem db");
+        let state = Arc::new(AppState::new(conn, cfg, root.clone()));
+        let router = build_router(state).await;
+        let tls_cfg = crate::mcp::tls::load_rustls_config(&root)
+            .await
+            .expect("tls cfg");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().unwrap();
+        // 把 TCP listener 交给 axum-server 的 TLS 层（与 spawn_mcp_server 的 HTTPS 分支同路径）。
+        // 注意 from_tcp_rustls 收 std TcpListener，tokio 的要从 std_fd 转换。
+        let std_listener = listener.into_std().expect("to std listener");
+        let handle = tokio::spawn(async move {
+            axum_server::from_tcp_rustls(std_listener, tls_cfg)
+                .expect("from_tcp_rustls")
+                .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
+                .await
+                .ok();
+        });
+
+        let base = format!("https://{addr}");
+        let tls_client = reqwest::Client::builder()
+            .gzip(true)
+            .use_rustls_tls()
+            .add_root_certificate(
+                reqwest::Certificate::from_pem(
+                    std::fs::read(root.join("certs").join("self-signed.crt"))
+                        .expect("read crt")
+                        .as_slice(),
+                )
+                .expect("parse root cert"),
+            )
+            .build()
+            .expect("tls client");
+
+        // /health 免 token。
+        let health = tls_client
+            .get(format!("{base}/health"))
+            .send()
+            .await
+            .expect("health request");
+        assert_eq!(health.status(), 200, "HTTPS /health 应 200");
+
+        // /mcp 带 token：真实 JSON-RPC 分发。
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
+        let resp = tls_client
+            .post(format!("{base}/mcp"))
+            .header("Authorization", "Bearer ow-test-token")
+            .json(&body)
+            .send()
+            .await
+            .expect("mcp request");
+        assert_eq!(resp.status(), 200, "HTTPS /mcp 应 200");
+
+        // 错 token → 401。
+        let bad = tls_client
+            .post(format!("{base}/mcp"))
+            .header("Authorization", "Bearer wrong-token")
+            .json(&body)
+            .send()
+            .await
+            .expect("bad token request");
+        assert_eq!(bad.status(), 401, "HTTPS 错 token 应 401");
+
+        // 证书信息 sanity：指纹 64 hex。
+        assert_eq!(cert.fingerprint_sha256.len(), 64);
+        handle.abort();
+    }
+
+    /// P1 封禁：host=0.0.0.0 + 阈值 2 → 连续 2 次 401 后，**正确 token 也被 429 拦截**；
+    /// 封禁不误伤其他开关下的常规路径（对照：默认配置下 3 次错 token 仍是 401）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn ban_blocks_after_threshold() {
+        let root = unique_temp_root("ban");
+        let mut cfg = test_config(&root);
+        cfg.host = "0.0.0.0".into(); // 激活封禁（ban_active 条件）
+        cfg.remote_ban_enabled = true;
+        cfg.remote_ban_threshold = 2;
+        cfg.remote_ban_window_min = 15;
+        let srv = spawn_server(cfg, root).await;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+
+        // 两次错 token → 401（同时计数）。
+        for i in 0..2 {
+            let resp = raw_post(&srv.base, Some("wrong"), body.clone()).await;
+            assert_eq!(resp.status(), 401, "第 {} 次错 token 应 401", i + 1);
+        }
+        // 第 3 次：**正确 token** 也应被 429（封禁窗口内 IP 级隔离，不看 token）。
+        let blocked = raw_post(&srv.base, Some("ow-test-token"), body.clone()).await;
+        assert_eq!(blocked.status(), 429, "封禁窗口内正确 token 也应 429");
+    }
+
+    /// P1 对照：封禁关（remote_ban_enabled=false）时同样次数的错 token 全部 401、不升级 429。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore]
+    async fn ban_disabled_keeps_401() {
+        let root = unique_temp_root("ban-off");
+        let mut cfg = test_config(&root);
+        cfg.host = "0.0.0.0".into();
+        cfg.remote_ban_enabled = false;
+        let srv = spawn_server(cfg, root).await;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+        for i in 0..4 {
+            let resp = raw_post(&srv.base, Some("wrong"), body.clone()).await;
+            assert_eq!(
+                resp.status(),
+                401,
+                "封禁关闭时第 {} 次错 token 仍应 401",
+                i + 1
+            );
+        }
     }
 }

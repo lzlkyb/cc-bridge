@@ -33,6 +33,14 @@ axum = "0.8"
 tower = { version = "0.5", features = ["limit"] }  # E-P0-4: ConcurrencyLimitLayer
 tower-http = { version = "0.6", features = ["limit", "compression-gzip"] }
 
+# P1 HTTPS 远程连接：TLS serve + 自签证书生成 + 指纹 + 本机 IP 探测
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rcgen = "0.13"
+rustls = "0.23"
+rustls-pemfile = "2"
+sha2 = "0.10"
+time = "0.3"  # rcgen 证书有效期字段类型（OffsetDateTime）
+
 # Async runtime
 tokio = { version = "1", features = ["fs", "sync", "net", "rt", "macros", "process", "time", "io-util"] }
 
@@ -147,7 +155,7 @@ process-wrap = { version = "=8.0.2", default-features = false, features = ["proc
 # schannel，无需 openssl 编译；gzip(false) 用于强制观察压缩响应头。
 [dev-dependencies]
 axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "default-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "default-tls", "rustls-tls-manual-roots"] }
 
 [profile.release]
 # codegen-units 用默认 16 而不是 1：跨单元优化已由下面的 lto = "thin" 提供，

@@ -274,6 +274,31 @@ export interface AuditEntry {
   resultBytes?: number;
 }
 
+/* ─── P1 HTTPS 远程访问（get_tls_status 返回）─── */
+
+/** 自签证书 + 远程访问开关状态。设置页「安全」卡「HTTPS 远程访问」区消费。 */
+export interface TlsStatus {
+  /** HTTPS 是否开启（= config.remote_tls_enabled）。 */
+  enabled: boolean;
+  /** 桥是否绑定 0.0.0.0（封禁仅此情形实际生效）。 */
+  boundToAll: boolean;
+  /** 证书 SHA-256 指纹（64 位十六进制，hover 展示全量）。 */
+  fingerprintSha256: string;
+  /** 指纹短格式（卡片直显）。 */
+  fingerprintShort: string;
+  /** 证书到期 Unix 秒。 */
+  notAfterEpoch: number;
+  /** 证书 SAN 列表（IP + 127.0.0.1）。 */
+  sans: string[];
+  /** 本次调用是否触发了重新生成（IP 变化 / 临近过期自动重生成）。 */
+  regenerated: boolean;
+  regenerateReason: string | null;
+  /** 401 封禁配置（与 config 三字段同源）。 */
+  banEnabled: boolean;
+  banThreshold: number;
+  banWindowMin: number;
+}
+
 // ── Token 用量估算（get_token_usage；口径：约 4 字节 ≈ 1 token，非账单值）──
 
 /** 按天的用量汇总（本地日期，旧→新）。 */

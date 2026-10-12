@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../../lib/tauri";
-import type { StaticStatus, ConfigSaveResult } from "../../../lib/types";
+import type { StaticStatus, ConfigSaveResult, TlsStatus } from "../../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
@@ -11,6 +12,7 @@ import { useSettingSave } from "./useSettingSave";
 import { SubSetting } from "./SubSetting";
 import { ShellTypeRow } from "./ShellTypeRow";
 import { WhitelistOffModal, ShellRiskModal, ResetModal } from "./modals";
+import { RemoteTlsPanel } from "./RemoteTlsPanel";
 
 /**
  * 「安全」卡：白名单校验 / 只读模式 / 命令执行（+ 壳层子项）。
@@ -43,6 +45,27 @@ export function SecurityGroup({
 
   const readonly = status?.readonlyMode ?? false;
   const shellOn = status?.shellEnabled ?? false;
+  // P1 HTTPS 远程访问：开关状态与证书信息同一来源（get_tls_status）。
+  // staleTime 30s：本卡内保存后会手动 refetch，不需要跟随 5s 轮询。
+  const tlsQuery = useQuery({
+    queryKey: ["tls-status"],
+    queryFn: () => invoke<TlsStatus>("get_tls_status"),
+    staleTime: 30_000,
+  });
+  const tlsOn = tlsQuery.data?.enabled ?? false;
+
+  const handleRemoteTls = async (next: boolean) => {
+    await save({ remoteTlsEnabled: next }, "remote-tls");
+    // 监听协议切换必须重启才生效（与 host/port 变更同路径）。
+    try {
+      await invoke("restart_mcp_server");
+      tlsQuery.refetch();
+      toast(next ? "HTTPS 已开启，服务已重启" : "已切回 HTTP，服务已重启", "success");
+    } catch (e) {
+      toast(`重启服务失败：${e}`, "error");
+    }
+    onSaved();
+  };
 
   const handleWhitelist = (next: boolean) => {
     // 打开直接保存；关闭需二次确认（放开对整机文件的保护）。
@@ -156,9 +179,35 @@ export function SecurityGroup({
             }}
             refreshingBash={refreshingBash}
             saved={savedKey === "shelltype"}
-            last
           />
         </SubSetting>
+        {/* P1 双向桥：HTTPS 远程访问。跨网使用的前提（RFC bidirectional_bridge P1）。
+            关闭态给风险提示；开启态渲染接入地址/指纹/封禁子面板。 */}
+        <ToggleRow
+          id="toggle-remote-tls"
+          label="HTTPS 远程访问"
+          sub={
+            tlsOn
+              ? "⚠ 已开启 · 监听端口已切换为 TLS，仅供信任的 AI 工具连接"
+              : "开启后 MCP 监听整体切换为 HTTPS（自签证书），供跨网的 AI 工具连接；关闭时行为与旧版完全一致"
+          }
+          checked={tlsOn}
+          onChange={handleRemoteTls}
+          saved={savedKey === "remote-tls"}
+        />
+        {tlsOn && tlsQuery.data ? (
+          <RemoteTlsPanel
+            status={status}
+            tls={tlsQuery.data}
+            onSaved={onSaved}
+            onRefetch={() => tlsQuery.refetch()}
+          />
+        ) : (
+          <p className="mb-3 rounded-lg bg-muted px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+            开启后会显示接入地址、证书指纹与封禁设置。跨网暴露请务必保持路径白名单与 Token
+            保护开启；有域名时优先阅读 docs/reverse-proxy.md 的反代方案（证书全自动）。
+          </p>
+        )}
       </CardContent>
 
       {confirmWhitelistOff && (

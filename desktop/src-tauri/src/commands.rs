@@ -29,6 +29,7 @@ mod config_cmds;
 mod firewall_cmds;
 /// 外挂 MCP 桥（名字带 `_cmds`：`crate::mcp::bridge` 下已有同名概念）。
 mod mcp_bridge_cmds;
+mod remote_cmds;
 mod running;
 mod server;
 /// SSH 终端（面板内交互终端，首版密码登录）。
@@ -42,6 +43,7 @@ pub use backup_cmds::*;
 pub use config_cmds::*;
 pub use firewall_cmds::*;
 pub use mcp_bridge_cmds::*;
+pub use remote_cmds::*;
 pub use running::*;
 pub use server::*;
 pub use ssh_cmds::*;

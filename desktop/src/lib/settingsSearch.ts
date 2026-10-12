@@ -32,6 +32,7 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-readonly", label: "只读模式", icon: "lock", group: "设置 · 安全", tab: "settings", anchor: "readonly", keywords: "readonly 禁止写入 不允许删除" },
   { id: "set-shell", label: "命令执行", icon: "terminal", group: "设置 · 安全", tab: "settings", anchor: "shell", keywords: "shell rce run_command 执行命令" },
   { id: "set-shelltype", label: "命令执行壳层", icon: "terminal", group: "设置 · 安全", tab: "settings", anchor: "shell", keywords: "shell cmd bash sh git bash 壳层" },
+  { id: "set-remote-tls", label: "HTTPS 远程访问", icon: "lock", group: "设置 · 安全", tab: "settings", anchor: "remote-tls", keywords: "https tls ssl 自签 证书 指纹 远程 跨网 封禁 401" },
 
   { id: "set-backup", label: "写操作自动备份", icon: "history", group: "设置 · 备份与审计", tab: "settings", anchor: "backup", keywords: "backup 备份 快照" },
   { id: "set-audit", label: "审计日志", icon: "file", group: "设置 · 备份与审计", tab: "settings", anchor: "audit", keywords: "audit 日志 记录 留痕" },
