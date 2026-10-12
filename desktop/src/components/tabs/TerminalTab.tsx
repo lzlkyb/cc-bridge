@@ -43,6 +43,8 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   const [check, setCheck] = useState<SshCheckResult | null>(null);
   // 文件管理面板：选中某连接后显示其 SFTP 浏览器（覆盖在右侧）。
   const [fileConn, setFileConn] = useState<SshConnection | null>(null);
+  // 终端路径点击的初始定位（SshFileBrowser initialPath）。null = 走「上次上传目录」。
+  const [filePath, setFilePath] = useState<string | null>(null);
   const [showDialog, setShowDialog] = useState(false);
   const [editing, setEditing] = useState<SshConnection | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -259,6 +261,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
                     onToggleFullscreen={() => setFullscreen((v) => !v)}
                     onCwd={(cwd) => onCwd(s.sessionId, cwd)}
                     onMeta={(p) => ssh.patchMeta(s.sessionId, p)}
+                    onOpenFilePath={(p) => (setFileConn(s.conn), setFilePath(p))}
                   />
                 </div>
               ))
@@ -273,9 +276,10 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
                 组件不会重挂，path / entries 还是上一条的——而当前目录会被回写成
                 「上次上传目录」，等于把 A 的目录存成了 B 的。 */}
             <SshFileBrowser
-              key={fileConn.id}
+              key={`${fileConn.id}:${filePath ?? ""}`}
               conn={fileConn}
-              onBack={() => setFileConn(null)}
+              initialPath={filePath ?? undefined}
+              onBack={() => (setFileConn(null), setFilePath(null))}
             />
           </div>
         )}

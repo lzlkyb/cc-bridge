@@ -10,6 +10,8 @@ import { useTerminalFontSize } from "./useTerminalFontSize";
 import { SshTerminalFind } from "./SshTerminalFind";
 import { TerminalStatusBar } from "./TerminalStatusBar";
 import { attachTuiScrollbar, attachShiftWheel } from "../../lib/terminalScroll";
+import { navJump } from "../../lib/terminalCommandNav";
+import { registerPathLinkProvider } from "../../lib/terminalPathLink";
 import { useTerminalTabMeta, type TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
 import { toast } from "../ui/toast";
 import { useThemeMode } from "../../hooks/useThemeMode";
@@ -38,6 +40,8 @@ interface Props {
   onCwd: (cwd: string | null) => void;
   /** 标签 meta 上报（OSC 标题 / OSC 9;4 进度 / BEL 铃）。父级存进会话状态供标签栏展示。 */
   onMeta: (patch: TermTabMetaPatch) => void;
+  /** 点击输出里的远端绝对路径 → 父级打开该连接的文件浏览器并定位。 */
+  onOpenFilePath: (path: string) => void;
 }
 
 /**
@@ -60,6 +64,7 @@ export function SshTerminal({
   onToggleFullscreen,
   onCwd,
   onMeta,
+  onOpenFilePath,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -111,6 +116,9 @@ export function SshTerminal({
   // 逻辑全在 lib/terminalScroll.ts；这里只管挂载与把激活态给状态栏当徽标。
   // 本 effect 声明在 useSshTerminalSession 之后，运行时终端已 open，termRef 必有值。
   const [tuiScrollActive, setTuiScrollActive] = useState(false);
+  // onOpenFilePath 用 ref 承接：调用方传内联箭头函数，不能进挂载 effect 的依赖。
+  const onOpenFilePathRef = useRef(onOpenFilePath);
+  onOpenFilePathRef.current = onOpenFilePath;
   useEffect(() => {
     const term = termRef.current;
     const container = containerRef.current;
@@ -118,8 +126,36 @@ export function SshTerminal({
     // Shift+滚轮强制滚本地 scrollback（业界惯例）：与 TUI 滚动条互不干扰——
     // 合成 wheel 不带 shiftKey，会原样走转发路径。
     attachShiftWheel(term);
-    return attachTuiScrollbar(term, container, { onActiveChange: setTuiScrollActive });
+    // 输出里的远端绝对路径 → 可点击（注册在 web-links 之后，URL 仍归它）。
+    const offLinks = registerPathLinkProvider(term, (p) => onOpenFilePathRef.current(p));
+    const offTui = attachTuiScrollbar(term, container, { onActiveChange: setTuiScrollActive });
+    return () => {
+      offLinks();
+      offTui();
+    };
     // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），只需挂一次。
+  }, []);
+
+  // 命令导航快捷键：Ctrl+Shift+↑/↓ 跳到上一条/下一条命令的提示符行。
+  // 🔴 不能走 attachTerminalKeymap——xterm 的 custom key handler 是单槽位（Terminal.ts:914
+  // 直接赋值），再挂会顶掉 session hook 装的那份。window capture 阶段先于 xterm 的
+  // textarea 处理，preventDefault + stopPropagation 就能整条拦下，不往远端发 CSI。
+  // focusedRef 守卫：只在终端聚焦时拦，搜索框/输入框里的这两个组合不受影响。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!focusedRef.current) return;
+      if (!(e.ctrlKey && e.shiftKey) || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const term = termRef.current;
+      if (!term) return;
+      const dir = e.key === "ArrowUp" ? -1 : 1;
+      if (!navJump(term, dir)) {
+        toast(dir === -1 ? "没有更早的命令了" : "已经是最新的命令了", "info");
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, []);
 
   // 标签 meta 上报（标题/进度/铃）。后台标签收到 BEL 才 toast：用户正盯着这个终端时

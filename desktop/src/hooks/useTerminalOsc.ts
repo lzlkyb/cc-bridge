@@ -4,10 +4,12 @@ import { invoke } from "../lib/tauri";
 import {
   HOOK_CMD,
   PROBE_CMD,
+  isOsc133A,
   parseOsc7,
   parseOsc133,
   parseOsc1337,
 } from "../lib/terminalStatusbar";
+import { navCmdStart, navCmdEnd } from "../lib/terminalCommandNav";
 
 /**
  * 状态栏可见的远端信息。未拿到的字段保持 null，由状态栏决定要不要显示。
@@ -19,6 +21,8 @@ export interface TerminalStatus {
   branch: string | null;
   /** 上一条命令退出码（OSC 133;D）。null = 还没收到。 */
   exitCode: number | null;
+  /** 上一条命令耗时毫秒（OSC 133;A→D 配对），null = 还没完成过一条命令。 */
+  lastCmdMs: number | null;
 }
 
 /**
@@ -76,6 +80,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     cwd: null,
     branch: null,
     exitCode: null,
+    lastCmdMs: null,
   });
   const [state, setState] = useState<OscState>("pending");
   // 探针回执：收到 `Shell=` 才说明远端是 bash/zsh，可以安全地发钩子。
@@ -90,7 +95,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
   const reset = useCallback(() => {
     typedRef.current = false;
     setProbeOk(false);
-    setStatus({ cwd: null, branch: null, exitCode: null });
+    setStatus({ cwd: null, branch: null, exitCode: null, lastCmdMs: null });
   }, []);
 
   // ── 注册 OSC 处理器 ──
@@ -127,11 +132,18 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
         return true; // 已消费：不要让 xterm 再处理
       });
       // 只把「命令结束」当钩子生效的信号（D 带退出码，也是我们要显示的那段）。
+      // 顺路喂命令导航：A 钉 marker（跳转锚点），D 配对算耗时给状态栏显示。
       const d133 = term.parser.registerOscHandler(133, (data) => {
         if (!enabledRef.current) return true;
+        if (isOsc133A(data)) {
+          navCmdStart(term);
+          setState((s) => (s === "ready" ? s : "ready"));
+          return true;
+        }
         const code = parseOsc133(data);
         if (code === null) return false;
-        setStatus((s) => ({ ...s, exitCode: code }));
+        const durMs = navCmdEnd(term);
+        setStatus((s) => ({ ...s, exitCode: code, lastCmdMs: durMs ?? s.lastCmdMs }));
         setState((s) => (s === "ready" ? s : "ready"));
         return true;
       });

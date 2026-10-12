@@ -13,11 +13,17 @@ import { OverwriteConfirmDialog, TransferBar } from "./SshTransferBar";
 import { SshDropOverlay } from "./SshDropOverlay";
 import { useFileBrowserDrop } from "./useFileBrowserDrop";
 import { useSshFileForms } from "./useSshFileForms";
+import { useSshFileInitialPath } from "../../hooks/useSshFileInitialPath";
 import { loadUploadDir, saveUploadDir } from "../../lib/uploadDir";
 
 interface Props {
   conn: SshConnection;
   onBack: () => void;
+  /**
+   * 初始定位路径（终端路径点击入口传入）。**可能是文件**：列目录失败时回退到其
+   * 父目录再列一次（文件浏览器只管目录）。undefined = 用「上次上传目录」。
+   */
+  initialPath?: string;
 }
 
 /** 远程路径拼接（Linux 风格）。 */
@@ -38,11 +44,11 @@ function parentRemote(dir: string): string {
  * 走后端 `ssh_sftp_*` 命令（ssh 跑远程命令 + scp 传文件，PTY 自动填凭据）。
  * 本机路径用内联文本框输入（不依赖系统文件选择器插件）。
  */
-export function SshFileBrowser({ conn, onBack }: Props) {
+export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
   // 起始路径用「上次上传目录」而不是写死的 `/`：面板一关就 unmount，
   // 每次重开都从根目录开始本来就难用；而且这份状态与终端拖拽共用，
-  // 两个入口才不会各自漂移。
-  const [path, setPath] = useState(() => loadUploadDir(conn.id));
+  // 两个入口才不会各自漂移。终端路径点击进来则优先用它指定的路径。
+  const [path, setPath] = useState(() => initialPath ?? loadUploadDir(conn.id));
   const [entries, setEntries] = useState<SshFileEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,6 +103,7 @@ export function SshFileBrowser({ conn, onBack }: Props) {
   useEffect(() => {
     void list(path);
   }, [list, path]);
+  useSshFileInitialPath(initialPath, error, path, setPath);
 
   // 当前目录回写成「上次上传目录」：下次重开面板与终端拖拽都从这里起。
   useEffect(() => {

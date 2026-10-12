@@ -9,6 +9,7 @@ import {
   type StatusbarSkin,
 } from "../../lib/terminalStatusbar";
 import type { TerminalStatus, OscState } from "../../hooks/useTerminalOsc";
+import { formatCmdDuration } from "../../lib/terminalCommandNav";
 import type { TerminalPreset } from "../../lib/terminalTheme";
 import type { Theme } from "../../lib/theme";
 import type { SshConnection } from "../../lib/types";
@@ -77,6 +78,13 @@ export function TerminalStatusBar({
         )}
         {/* Starship 默认行为：退出码只在失败时显示，成功不占位置。 */}
         {status.exitCode !== null && status.exitCode !== 0 && <ExitSeg skin={skin} code={status.exitCode} />}
+        {/* 上一条命令耗时（OSC 133;A→D 配对）。会话时长是钟表时间，这个是「上一条跑了多久」——
+            长命令挂后台时一眼看出它刚结束没有、跑了多久。 */}
+        {formatCmdDuration(status.lastCmdMs) !== null && (
+          <Seg skin={skin} kind="muted" icon="activity" title="上一条命令耗时（Ctrl+Shift+↑ 跳到它的输出起点）">
+            {formatCmdDuration(status.lastCmdMs)}
+          </Seg>
+        )}
       </div>
 
       {/* 右：关键段（会话时长、状态提示）锁定在最右，绝不被挤出视口。 */}

@@ -346,3 +346,8 @@ export const HOOK_CMD = [
   `precmd_functions+=("__ccb_p");`,
   `fi`,
 ].join(" ");
+
+/** OSC 133 的 A 事件（新提示符 / 命令起点）。命令导航（terminalCommandNav）用它钉 marker。 */
+export function isOsc133A(data: string): boolean {
+  return data === "A" || data.startsWith("A;");
+}
