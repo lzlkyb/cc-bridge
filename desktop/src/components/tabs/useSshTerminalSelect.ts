@@ -8,20 +8,7 @@ import {
 } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { toast } from "../ui/toast";
-
-/**
- * 关掉本地 xterm 的鼠标报告，让拖选建立**本地选区**（而不是把鼠标事件发回远端 TUI）。
- *
- * 关键：这串转义必须用 `term.write()` 写给**本地 xterm 的输出流**。曾经错误地经 `ssh_input`
- * 发给远端 PTY(stdin)，xterm 从来不会解析它，而 xterm 的 mouseTrackingMode 只由「输出流」里的
- * 转义控制；Claude Code 在自己的输出里反复 ESC[?1006h，于是本地鼠标报告一直开着、
- * 拖选被吃掉、`term.getSelection()` 恒空 → 复制不出来。
- *
- * ⚠️ 但仅"关掉"还不够（headless xterm 6.0 实测）：选区只能在 mousedown 时由
- * SelectionService 启动，中途关报告后本次手势的 mousemove 无法凭空建选区——
- * 拖拽路径必须在关报告的 write 回调里补发合成 mousedown（见 replaySelectionStart）。
- */
-export const MOUSE_REPORT_OFF = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+import { MOUSE_REPORT_OFF } from "../../lib/terminalMouse";
 
 /** 拖拽超过这个像素数才算「拖选」，以下当普通点击（不影响 TUI 定位光标）。 */
 const DRAG_THRESHOLD = 4;

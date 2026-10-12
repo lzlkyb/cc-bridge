@@ -22,7 +22,7 @@ import "@xterm/xterm/css/xterm.css";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke, listen } from "../../lib/tauri";
 import { toast } from "../ui/toast";
-import { MOUSE_REPORT_OFF } from "./useSshTerminalSelect";
+import { healMouseTracking } from "../../lib/terminalMouse";
 import { attachTerminalKeymap, type TerminalKeyActions } from "./terminalKeymap";
 import { sshOutputEvent } from "../../lib/terminalEvents";
 import {
@@ -32,6 +32,7 @@ import {
   type TerminalPreset,
 } from "../../lib/terminalTheme";
 import { loadFontSize } from "../../lib/terminalFontSize";
+import { screenToText } from "../../lib/terminalScreen";
 import { useTerminalFit } from "../../hooks/useTerminalFit";
 import { useTerminalPaste } from "./useTerminalPaste";
 import type { Theme } from "../../lib/theme";
@@ -325,6 +326,9 @@ export function useSshTerminalSession({
       writtenInputErrRef.current = null;
     }
     wiredSessionRef.current = sessionId;
+    // 接线即治愈：上个会话的 TUI（Claude Code）可能开着 ?1003 任意移动追踪并随断连死亡、
+    // 来不及发 DECRST，残留的 "any" 会把新会话里鼠标移动/滚轮编码成 SGR 乱码发给裸 bash。
+    healMouseTracking(term);
 
     // 连上后立即把真实尺寸告诉后端，避免初始 80x24 与面板不符。
     void invoke("ssh_resize", { sessionId, rows: term.rows, cols: term.cols }).catch(() => {});
@@ -367,7 +371,7 @@ export function useSshTerminalSession({
         term.write(p.data);
         // 选择态期间，远端 TUI（如 Claude Code）会在重绘输出里重设鼠标报告（ESC[?1006h），
         // 导致本地 mouseTrackingMode 重新打开、拖选又被吃掉。故每帧输出后再关一次。
-        if (selectActiveRef.current) term.write(MOUSE_REPORT_OFF);
+        if (selectActiveRef.current) healMouseTracking(term);
       }),
     );
     // 🔴 断开/失败的原因不能只 `term.write` 完事——xterm 的 write 是攒到 rAF 才刷的，
@@ -377,6 +381,9 @@ export function useSshTerminalSession({
       listen<SshClosed>("ssh_closed", (p) => {
         if (p.sessionId !== sessionId) return;
         term.write("\r\n\x1b[33m[连接已断开]\x1b[0m\r\n");
+        // 断开即治愈：会话已死，残留的鼠标报告只会吞掉滚轮（disableStdin 拦掉数据、
+        // 历史滚不动）；用户点「重新连接」后更是直接变成 SGR 乱码。
+        healMouseTracking(term);
         onClosedRef.current("连接已断开");
       }),
     );
@@ -401,14 +408,7 @@ export function useSshTerminalSession({
   const copyScreen = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
-    const buf = term.buffer.active;
-    const start = buf.viewportY;
-    const lines: string[] = [];
-    for (let i = start; i < start + term.rows; i++) {
-      const line = buf.getLine(i);
-      lines.push(line ? line.translateToString(true) : "");
-    }
-    const text = lines.join("\n").replace(/[ \t]+$/gm, "");
+    const text = screenToText(term.buffer, term.rows);
     if (!text.trim()) {
       toast("终端为空", "error");
       return;
