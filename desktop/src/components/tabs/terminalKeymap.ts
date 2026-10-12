@@ -33,6 +33,11 @@ export function attachTerminalKeymap(
     const ctrl = e.ctrlKey || e.metaKey;
     // e.key 在 Ctrl+Shift+V 下是 "V"，故一条判定同时覆盖 Ctrl+V 与 Ctrl+Shift+V。
     if (ctrl && (e.key === "v" || e.key === "V")) {
+      // 🔴 必须 preventDefault：xterm 的 keydown 监听丢弃返回值且从不 preventDefault，
+      // 返回 false 只是不让 xterm 发 \x16，浏览器的默认粘贴动作照常执行 → 往 xterm
+      // 隐藏 textarea 派发 paste 事件 → xterm 原生路径（handlePasteEvent → onData）
+      // 会把剪贴板再发一次 → 粘贴内容重复两条。掐掉默认动作，只留 Tauri 读剪贴板这一条路。
+      e.preventDefault();
       actionsRef.current.paste();
       return false;
     }
