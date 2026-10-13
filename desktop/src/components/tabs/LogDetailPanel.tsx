@@ -101,14 +101,14 @@ export function DetailPanel({
   );
 }
 
-/** O1 结构化耗时拆解：单条审计日志的 5 维耗时可视化。无 O1 数据时显示灰色提示。 */
+/** 结构化耗时拆解：单条审计日志的 5 维耗时可视化。无数据时显示灰色提示。 */
 function TimingBreakdown({ entry }: { entry: AuditEntry }) {
   const serverMs = entry.serverMs;
   if (serverMs == null) {
     return (
       <div className="flex items-center gap-1.5 rounded-md border border-dashed border-border bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
         <Icon name="activity" size={12} />
-        此记录无结构化耗时数据（O1 字段在后端 v2.2.20 后才写入，旧条目不包含 serverMs / ioMs 等）
+        此记录无结构化耗时数据（较新版本的桥接才写入此类数据，旧条目不包含 serverMs / ioMs 等）
       </div>
     );
   }
@@ -135,7 +135,7 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
       <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-primary">
         <Icon name="activity" size={13} />
         耗时拆解
-        <span className="ml-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold">O1</span>
+        <span className="ml-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold">结构化耗时</span>
         <span className="ml-auto text-[11px] font-normal text-muted-foreground">
           服务端 <strong className="font-semibold text-foreground">{formatDurationMs(serverMs)}</strong>
           {entry.durationMs != null && <> · 客户端测 {formatDurationMs(entry.durationMs)}</>}

@@ -1,6 +1,7 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 
 interface ModalProps {
   open: boolean;
@@ -44,6 +45,12 @@ export function Modal({
   const [mounted, setMounted] = useState(open);
   const [entered, setEntered] = useState(false);
   const reduced = usePrefersReducedMotion();
+  // 焦点陷阱（a11y）：Tab 环绕在弹窗内、关闭后焦点归还触发元素。
+  // enabled 跟 mounted 走：内容延迟挂载/退场延迟卸载，陷阱只在内容真正存在时生效。
+  // Esc 不在这里接管（onEscape 不传）：window 级关闭监听保持现状，与 ConfirmDialog
+  // 的 node 级 stopPropagation 不冲突——嵌套时确认框仍优先关自己。
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(surfaceRef, { enabled: mounted });
 
   // 进场：open 变 true → 挂载 → 下一帧切到 entered 触发过渡
   useEffect(() => {
@@ -93,6 +100,7 @@ export function Modal({
       onClick={closeOnOverlay ? onClose : undefined}
     >
       <div
+        ref={surfaceRef}
         className={`mx-4 transition-all duration-200 ease-out-expo ${surfaceState} ${className}`}
         onClick={(e) => e.stopPropagation()}
       >

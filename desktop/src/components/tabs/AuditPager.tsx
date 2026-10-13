@@ -43,7 +43,6 @@ export function AuditPager({ page, pageSize, total, onPageChange, onPageSizeChan
       <div className="text-xs text-muted-foreground">
         共 <b className="font-semibold text-foreground">{total.toLocaleString()}</b> 条 · 第{" "}
         <b className="font-semibold text-foreground">{cur}</b> / {tp} 页
-        <span className="ml-1 text-muted-foreground/70">（筛选作用于当前页）</span>
       </div>
       <div className="flex flex-wrap items-center gap-3">
         {/* 每页条数分段控件 */}

@@ -1,26 +1,26 @@
-import { useState, useMemo, useEffect, useRef, Fragment, memo } from "react";
+import { useState, useMemo, useEffect, useRef, memo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
-import { toolLabel, formatDurationMs, formatVersion, copyText } from "../../lib/utils";
-import { APP_INFO } from "../../lib/about";
-import type { AuditEntry, AuditPage, StatusResponse } from "../../lib/types";
+import { toolLabel } from "../../lib/utils";
+import type { AuditEntry, AuditPage } from "../../lib/types";
 import { useToast } from "../ui/toast";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
-import { Badge } from "../ui/badge";
 import { Icon } from "../ui/icon";
 import { EmptyState } from "../ui/EmptyState";
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
+import { Table, TableHeader, TableBody, TableRow, TableHead } from "../ui/table";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { useAppHidden } from "../../lib/appVisibility";
+import { useSlashFocus } from "../../hooks/useSlashFocus";
 import { Combobox } from "../ui/combobox";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { PerfCharts } from "./PerfCharts";
 import { AuditPager } from "./AuditPager";
-import { DetailPanel } from "./LogDetailPanel";
+import { LogRow } from "./LogRow";
+import { LogExportMenu } from "./LogExportMenu";
 import { LogDiffModal } from "./LogDiffModal";
 import { LogRestoreDialog } from "./LogRestoreDialog";
-import { summarizeParams, perfSummaryLine } from "../../lib/logFormat";
+import { auditRowKey, perfSummaryLine } from "../../lib/logFormat";
 
 function LogTabImpl({
   highlightAnchor,
@@ -53,6 +53,8 @@ function LogTabImpl({
   const [toolFilter, setToolFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "success" | "error">("all");
   const [search, setSearch] = useState("");
+  // 展开行的稳定标识（timestamp-tool-sourceIp，见 auditRowKey）：10s 轮询重拉
+  // 数据后按 key 重认领，展开态不再静默收起。
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [showPerf, setShowPerf] = useState(false);
@@ -68,6 +70,18 @@ function LogTabImpl({
       perfBtnRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   }, [highlightAnchor?.anchor, highlightAnchor?.nonce]);
+
+  // 工具筛选选项：**独立查询最近 500 条**再去重——不从当前页 entries 派生，
+  // 否则「想筛的工具不在当前页就选不到」。60s 内复用缓存，不参与 10s 轮询。
+  const { data: toolPage } = useQuery<AuditPage>({
+    queryKey: ["auditToolNames"],
+    queryFn: () => invoke<AuditPage>("get_audit_log", { page: 1, page_size: 500 }),
+    staleTime: 60_000,
+  });
+  const toolNames = useMemo(
+    () => [...new Set((toolPage?.entries ?? []).map((e) => e.tool))].sort(),
+    [toolPage],
+  );
 
   // 性能分析面板独立拉取最近 500 条（后端 page_size 上限），避免统计口径只覆盖当前分页页。
   // 仅在面板展开时启用，关闭时不轮询、不占用请求。
@@ -85,6 +99,42 @@ function LogTabImpl({
   // 审计列表增删/筛选/清空时 FLIP 平滑进出场（动画质感升级；减弱动效时自动关闭）。
   const auditBody = useAutoAnimateRM<HTMLTableSectionElement>();
 
+  // `/` 聚焦搜索框；Esc 在框内清空并失焦（a11y，见 hooks/useSlashFocus）。
+  const searchRef = useRef<HTMLInputElement>(null);
+  useSlashFocus(searchRef, () => setSearch(""));
+
+  // 筛选是否生效（供 info chip 展示当前条件）。
+  const hasFilter = !!toolFilter || statusFilter !== "all" || !!search.trim();
+  const filterSummary = [
+    toolFilter && `工具=${toolLabel(toolFilter)}`,
+    statusFilter !== "all" && `状态=${statusFilter === "success" ? "成功" : "失败"}`,
+    search.trim() && `关键词「${search.trim()}」`,
+  ].filter(Boolean).join(" · ");
+
+  // 翻页 / 改每页条数时筛选自动重置 + toast 明示（P2：原来筛选跨页静默残留，
+  // 用户以为还在筛选全量，实际只筛了上一页——靠记忆假设必然出错）。
+  const resetFilters = () => {
+    setToolFilter("");
+    setStatusFilter("all");
+    setSearch("");
+    setExpandedRow(null); // 旧页的展开 key 在新页无对应条目，顺手清掉
+  };
+  const handlePageChange = (p: number) => {
+    if (p !== page && hasFilter) {
+      resetFilters();
+      toast(`已切换到第 ${p} 页，筛选已重置`, "info");
+    }
+    setPage(p);
+  };
+  const handlePageSizeChange = (s: number) => {
+    if (hasFilter) {
+      resetFilters();
+      toast(`已改为每页 ${s} 条，筛选已重置`, "info");
+    }
+    setPageSize(s);
+    setPage(1);
+  };
+
   const handleClear = async () => {
     // 之前无 try/catch：失败是 unhandled rejection，确认框关了日志却没清、界面毫无反应。
     try {
@@ -98,16 +148,6 @@ function LogTabImpl({
       setConfirmClear(false);
     }
   };
-
-  const handlePageSizeChange = (s: number) => {
-    setPageSize(s);
-    setPage(1);
-  };
-
-  const toolNames = useMemo(() => {
-    if (!entries) return [];
-    return [...new Set(entries.map((e) => e.tool))].sort();
-  }, [entries]);
 
   const filtered = useMemo(() => {
     if (!entries) return [];
@@ -124,145 +164,27 @@ function LogTabImpl({
     });
   }, [entries, toolFilter, statusFilter, search]);
 
-  const handleExport = (format: "json" | "csv" = "json") => {
-    // 空数据以前是静默 return，点了没任何反应；至少给一句提示。
-    if (filtered.length === 0) {
-      toast("当前没有可导出的日志", "info");
-      return;
-    }
-    try {
-      if (format === "csv") {
-        const header = "时间,工具,工具名,参数,来源IP,耗时(ms),状态,错误\n";
-        const rows = filtered.map((e) => {
-          const esc = (s: string) => {
-            const v = String(s ?? "");
-            const guarded = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
-            return `"${guarded.replace(/"/g, '""')}"`;
-          };
-          return [
-            e.timestamp,
-            e.tool,
-            toolLabel(e.tool),
-            esc(e.params),
-            e.sourceIp ?? "",
-            e.durationMs ?? "",
-            e.success ? "成功" : "失败",
-            esc(e.error ?? ""),
-          ].join(",");
-        }).join("\n");
-        const csv = "\uFEFF" + header + rows; // BOM for Excel Chinese support
-        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "cc-bridge-audit-log.csv";
-        a.click();
-        URL.revokeObjectURL(url);
-      } else {
-        const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "cc-bridge-audit-log.json";
-        a.click();
-        URL.revokeObjectURL(url);
-      }
-      // 与「导出诊断报告」对齐：导出要有成功反馈，否则瞬间下完时不知道导没导出。
-      toast(`已导出 ${filtered.length} 条审计日志（${format.toUpperCase()}）`, "success");
-    } catch (e) {
-      toast(`导出失败：${String(e)}`, "error");
-    }
-  };
-
-  // O3：导出诊断报告——基于已有的日志聚合拼 Markdown（版本 + 性能摘要 + 按工具耗时 + 错误列表），
-  // 下载为 .md 文件同时复制到剪贴板，方便直接粘进 issue/反馈。LogTab 本身不持有 status，临时 invoke 一次拿版本。
-  const handleExportDiagnostic = async () => {
-    if (filtered.length === 0) return;
-    try {
-      const status = await invoke<StatusResponse>("get_status");
-      const byTool = new Map<string, { count: number; totalMs: number; errors: number }>();
-      for (const e of filtered) {
-        const cur = byTool.get(e.tool) ?? { count: 0, totalMs: 0, errors: 0 };
-        cur.count += 1;
-        if (typeof e.durationMs === "number") cur.totalMs += e.durationMs;
-        if (!e.success) cur.errors += 1;
-        byTool.set(e.tool, cur);
-      }
-      const toolRows = [...byTool.entries()]
-        .sort((a, b) => b[1].totalMs - a[1].totalMs)
-        .map(
-          ([tool, s]) =>
-            `| ${toolLabel(tool)} (${tool}) | ${s.count} | ${s.totalMs > 0 ? formatDurationMs(s.totalMs) : "—"} | ${s.errors} |`,
-        );
-      const errorRows = filtered
-        .filter((e) => !e.success)
-        .slice(0, 50)
-        .map(
-          (e) =>
-            `- [${new Date(e.timestamp).toLocaleString()}] ${toolLabel(e.tool)} (${e.tool}): ${e.error ?? "(无详情)"}`,
-        );
-
-      const lines: string[] = [
-        `# ${APP_INFO.name} 诊断报告`,
-        "",
-        `- 版本：${formatVersion(status?.version)}`,
-        `- 导出时间：${new Date().toLocaleString()}`,
-        `- 范围：当前筛选结果 ${filtered.length} 条（本页 ${entries.length} / 总计 ${total}）`,
-        `- audit.log 位置：安装目录下的数据目录内（设置页「安装与快捷方式」可查看安装目录）`,
-        "",
-        "## 性能摘要",
-        "",
-        perfSummaryLine(filtered),
-        "",
-        "## 按工具统计",
-        "",
-        "| 工具 | 调用次数 | 总耗时 | 错误数 |",
-        "| --- | --- | --- | --- |",
-        ...(toolRows.length ? toolRows : ["| （无耗时数据） | | | |"]),
-        "",
-        `## 错误记录（最多列 50 条，共 ${filtered.filter((e) => !e.success).length} 条）`,
-        "",
-        ...(errorRows.length ? errorRows : ["（当前筛选范围内无错误记录）"]),
-        "",
-      ];
-      const md = lines.join("\n");
-
-      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "cc-bridge-diagnostic-report.md";
-      a.click();
-      URL.revokeObjectURL(url);
-
-      await copyText(
-        md,
-        () => toast("诊断报告已导出并复制到剪贴板", "success"),
-        () => toast("诊断报告已导出为文件（复制到剪贴板失败）", "warning"),
-      );
-    } catch (e) {
-      toast(`导出诊断报告失败：${e}`, "error");
-    }
-  };
-
   return (
     <Card className="flex flex-col log-tab h-full min-h-0 overflow-hidden">
       <CardHeader className="flex-row items-center justify-between space-y-0 gap-3 flex-wrap">
         <CardTitle icon={<Icon name="log" />}>审计日志</CardTitle>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Search */}
+          {/* Search：aria-label 是给读屏的（placeholder 不算可访问名称）；`/` 快捷键见 useSlashFocus */}
           <div className="flex items-center gap-1.5 h-8 rounded-md bg-background px-2 transition-shadow focus-within:ring-2 focus-within:ring-ring">
             <Icon name="search" size={13} className="text-muted-foreground shrink-0" />
             <input
+              ref={searchRef}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              aria-label="搜索审计日志"
               placeholder="搜索工具 / 参数 / IP…"
               className="w-28 bg-transparent text-xs outline-none log-search-input placeholder:text-muted-foreground"
             />
           </div>
-          {/* Tool filter */}
+          {/* Tool filter：选项来自独立查询的全量工具名（近 500 条去重） */}
           <Combobox
             value={toolFilter}
+            ariaLabel="按工具筛选"
             options={[
               { value: "", label: "全部工具" },
               ...toolNames.map((t) => ({ value: t, label: toolLabel(t) })),
@@ -289,38 +211,8 @@ function LogTabImpl({
             <Icon name="refresh" size={14} />
             刷新
           </Button>
-          <div className="relative group">
-            <Button variant="outline" size="sm" disabled={filtered.length === 0} onClick={() => handleExport("json")}>
-              <Icon name="download" size={14} />
-              导出 JSON
-            </Button>
-            <div className="absolute right-0 top-full mt-1 hidden group-hover:flex flex-col rounded-md border bg-popover p-1 shadow-pop z-10 min-w-[120px]">
-              <button
-                onClick={() => handleExport("json")}
-                disabled={filtered.length === 0}
-                className="flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs hover:bg-accent transition-colors"
-              >
-                <Icon name="file" size={12} />
-                导出 JSON
-              </button>
-              <button
-                onClick={() => handleExport("csv")}
-                disabled={filtered.length === 0}
-                className="flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs hover:bg-accent transition-colors"
-              >
-                <Icon name="download" size={12} />
-                导出 CSV (Excel)
-              </button>
-              <button
-                onClick={() => void handleExportDiagnostic()}
-                disabled={filtered.length === 0}
-                className="flex items-center gap-2 rounded-sm px-2.5 py-1.5 text-xs hover:bg-accent transition-colors"
-              >
-                <Icon name="activity" size={12} />
-                导出诊断报告 (Markdown)
-              </button>
-            </div>
-          </div>
+          {/* 导出（JSON/CSV/诊断报告）：受控下拉 + 键盘导航，实现见 LogExportMenu */}
+          <LogExportMenu filtered={filtered} entriesCount={entries.length} total={total} />
           <Button
             variant="outline"
             size="sm"
@@ -333,6 +225,12 @@ function LogTabImpl({
           </Button>
         </div>
       </CardHeader>
+      {/* 常驻说明（原在分页器里的 10.5px 灰字没人看见，上移到工具栏正下方） */}
+      <div className="flex shrink-0 items-center gap-1.5 border-b bg-primary/5 px-5 py-1.5 text-[11px] text-muted-foreground">
+        <Icon name="info" size={12} className="shrink-0" />
+        <span>筛选只作用于当前页 · 翻页 / 改每页条数时自动重置并提示</span>
+        {hasFilter && <span className="text-foreground">当前：{filterSummary}</span>}
+      </div>
       <CardContent className="flex flex-col flex-1 min-h-0 overflow-y-auto">
         {entries && entries.some((e) => typeof e.durationMs === "number") && (
           <div className="mb-3">
@@ -391,59 +289,25 @@ function LogTabImpl({
                 <TableHead className="w-[100px]">来源</TableHead>
                 <TableHead className="w-[64px]">耗时</TableHead>
                 <TableHead className="w-[64px]">状态</TableHead>
+                <TableHead className="w-9">
+                  <span className="sr-only">详情</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody ref={auditBody}>
-              {filtered.map((entry, i) => {
-                const rowKey = `${entry.timestamp}-${entry.tool}-${entry.sourceIp ?? ""}-${entry.durationMs ?? ""}`;
-                return (
-                <Fragment key={rowKey}>
-                  <TableRow
-                    className={`cursor-pointer ${
-                      entry.success
-                        ? i % 2 === 0 ? "bg-muted/20" : ""
-                        : "bg-destructive/5 log-err"
-                    }`}
-                    onClick={() => setExpandedRow(expandedRow === rowKey ? null : rowKey)}
-                  >
-                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
-                      {new Date(entry.timestamp).toLocaleTimeString()}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex flex-col gap-0.5">
-                        <span className="text-xs font-medium">{toolLabel(entry.tool)}</span>
-                        <span className="font-mono text-[10px] text-muted-foreground">{entry.tool}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="truncate text-xs text-muted-foreground">
-                      {summarizeParams(entry.params)}
-                    </TableCell>
-                    <TableCell className="truncate font-mono text-[11px] text-muted-foreground">
-                      {entry.sourceIp ?? "—"}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">
-                      {entry.durationMs != null ? formatDurationMs(entry.durationMs) : "—"}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <Badge variant={entry.success ? "success" : "destructive"}>
-                        {entry.success ? "成功" : "失败"}
-                      </Badge>
-                    </TableCell>
-                  </TableRow>
-                  {expandedRow === rowKey && (
-                    <TableRow key={`${rowKey}-detail`}>
-                      <TableCell colSpan={6} className="bg-muted/30">
-                        <DetailPanel
-                          entry={entry}
-                          onViewDiff={setDiffEntry}
-                          onRestore={setRestoreEntry}
-                        />
-                      </TableCell>
-                    </TableRow>
-                  )}
-                </Fragment>
-                );
-              })}
+              {filtered.map((entry, i) => (
+                <LogRow
+                  key={auditRowKey(entry)}
+                  entry={entry}
+                  index={i}
+                  expanded={expandedRow === auditRowKey(entry)}
+                  onToggle={() =>
+                    setExpandedRow(expandedRow === auditRowKey(entry) ? null : auditRowKey(entry))
+                  }
+                  onViewDiff={setDiffEntry}
+                  onRestore={setRestoreEntry}
+                />
+              ))}
             </TableBody>
           </Table>
         )}
@@ -454,7 +318,7 @@ function LogTabImpl({
             page={page}
             pageSize={pageSize}
             total={total}
-            onPageChange={setPage}
+            onPageChange={handlePageChange}
             onPageSizeChange={handlePageSizeChange}
           />
         </div>

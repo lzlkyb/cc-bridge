@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { summarizeParams, perfSummaryLine, prettyParams } from "./logFormat";
+import { summarizeParams, perfSummaryLine, prettyParams, auditRowKey } from "./logFormat";
 import type { AuditEntry } from "./types";
 
 const mk = (o: Partial<AuditEntry>): AuditEntry => ({
@@ -111,5 +111,30 @@ describe("prettyParams", () => {
 
   it("非法 JSON 原样返回（不抛、不吞）", () => {
     expect(prettyParams("{oops")).toBe("{oops");
+  });
+});
+
+describe("auditRowKey", () => {
+  const base = {
+    timestamp: "2026-10-13T06:20:41.000Z",
+    tool: "delete_files",
+    sourceIp: "192.168.1.7",
+    params: "{}",
+    success: false,
+  };
+
+  it("同一条目多次计算 key 稳定一致", () => {
+    expect(auditRowKey(base)).toBe(auditRowKey({ ...base }));
+  });
+
+  it("durationMs / success / params 变化不影响 key（轮询重拉不丢展开态）", () => {
+    const k1 = auditRowKey(base);
+    const k2 = auditRowKey({ ...base, durationMs: 8, success: true, params: "{changed}" });
+    expect(k1).toBe(k2);
+  });
+
+  it("不同条目 key 不同", () => {
+    expect(auditRowKey(base)).not.toBe(auditRowKey({ ...base, tool: "run_command" }));
+    expect(auditRowKey(base)).not.toBe(auditRowKey({ ...base, sourceIp: undefined }));
   });
 });

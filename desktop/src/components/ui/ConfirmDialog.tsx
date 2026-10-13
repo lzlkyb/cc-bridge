@@ -1,7 +1,8 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "./button";
 import { Icon } from "./icon";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 
 export type ConfirmDialogVariant = "default" | "destructive";
 
@@ -50,41 +51,11 @@ export function ConfirmDialog({
   // 入依赖会让 effect 随父组件每次重渲染重跑，反复抢焦点到第一个按钮。
   const cancelRef = useRef(onCancel);
   cancelRef.current = onCancel;
-  // 焦点陷阱 + 关闭后焦点归还（单套 UI 始终启用，提升键盘可达性）
-  useEffect(() => {
-    const prev = document.activeElement as HTMLElement | null;
-    const node = dialogRef.current;
-    if (!node) return;
-    const focusables = node.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    );
-    focusables[0]?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      // Esc 关自己，并阻止继续冒泡。嵌在 `Modal` 里时尤其重要：
-      // Modal 把 Esc 监听挂在 window 上，不拦住的话按一下 Esc 关掉的是**父弹框**，
-      // 确认框自己的 state 反而残留下来，下次打开父弹框时会自己弹出来。
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        cancelRef.current();
-        return;
-      }
-      if (e.key !== "Tab" || focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    node.addEventListener("keydown", onKey);
-    return () => {
-      node.removeEventListener("keydown", onKey);
-      prev?.focus?.();
-    };
-  }, []);
+  // 焦点陷阱 + 关闭后焦点归还（单套 UI 始终启用，提升键盘可达性）。
+  // 实现抽到了 useFocusTrap（与 Modal 共用）；Esc 走 node 级 stopPropagation——
+  // 嵌在 Modal 里时 Modal 的 Esc 监听挂在 window 上，不拦住的话按一下 Esc
+  // 关掉的是父弹框，确认框自己的 state 反而残留下来。
+  useFocusTrap(dialogRef, { onEscape: () => cancelRef.current() });
 
   return createPortal(
     <div

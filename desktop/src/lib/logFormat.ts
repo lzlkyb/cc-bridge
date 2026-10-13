@@ -79,3 +79,15 @@ export function prettyParams(raw: string): string {
     return raw;
   }
 }
+
+/**
+ * 审计条目的**稳定**行 key：时间 + 工具 + 来源 IP。
+ *
+ * 曾用过「拼上 durationMs」的版本——10s 轮询重拉数据后，凡 key 的任一段变化
+ * 就整行（连同展开的详情行）重挂载，展开态静默收起。durationMs 是**同一条
+ * 历史记录的固有属性**，不该进身份；timestamp+tool+sourceIp 才是它「是哪一次
+ * 调用」的标识。同秒同工具且同 IP 的极端碰撞按同一条处理，代价可忽略。
+ */
+export function auditRowKey(e: AuditEntry): string {
+  return `${e.timestamp}-${e.tool}-${e.sourceIp ?? ""}`;
+}

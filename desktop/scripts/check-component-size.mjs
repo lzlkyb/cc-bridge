@@ -40,8 +40,9 @@ const MAX_HOOKS = 8;
 const BASELINE = {
   // ── 行数超标 ──
   "src/components/backup/VersionHistoryModal.tsx": { lines: 575, hooks: 11 },
-  // 2026-09-16：509 → 487（参数摘要 / 性能摘要两条纯函数 → lib/logFormat.ts，本次顺带补了单测）。
-  "src/components/tabs/LogTab.tsx": { lines: 487, hooks: 11 },
+  // 2026-10-13：487 → 351（日志页 a11y 批次：导出菜单/行渲染拆 LogExportMenu、LogRow，
+  // 翻页重置与工具名独立查询收进组件内联 helper）。
+  "src/components/tabs/LogTab.tsx": { lines: 351, hooks: 11 },
   // 2026-10-12：502 → 470（PermissionCard → connect/PermissionCard.tsx；卡片外壳移交 ToolGuide.tsx）。
   "src/components/tabs/ConnectTab.tsx": { lines: 470, hooks: 13 },
   // 2026-09-16：475 → 411（内联的「关于」弹窗 → AboutInfoModal.tsx）。
