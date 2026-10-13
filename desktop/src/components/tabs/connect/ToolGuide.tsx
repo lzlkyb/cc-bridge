@@ -5,6 +5,7 @@ import {
   CLIENT_LABELS,
   CLIENT_SELFSIGNED,
   CLIENT_VERIFY,
+  SELFSIGNED_BADGE,
   type McpClientTool,
   type SnippetInput,
 } from "../../../lib/mcpClients";
@@ -12,7 +13,7 @@ import { useCopyFeedback } from "../../../hooks/useCopyFeedback";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
 import { Button } from "../../ui/button";
-import { CertPemStep, StepNumber } from "./widgets";
+import { CertPemStep, CopySegs, StepNumber } from "./widgets";
 import { GenericSteps } from "./GenericSteps";
 
 const TOOLS: McpClientTool[] = ["claude-code", "workbuddy", "codex", "generic"];
@@ -46,6 +47,8 @@ export function ToolGuide({
 }) {
   const [tool, setTool] = useState<McpClientTool>("claude-code");
   const input: SnippetInput = { host, port, token, transport, tls: tlsEnabled };
+  /** 当前工具的自签兼容性条目（徽章行 + 信任步骤的唯一数据源）。 */
+  const sel = CLIENT_SELFSIGNED[tool];
 
   return (
     <Card className="card-primary">
@@ -77,20 +80,29 @@ export function ToolGuide({
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* 自签兼容性徽章行（与 docs/client-compatibility.md 同源口径） */}
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
-          自签兼容性：
-          <span
-            className={`ml-1 mr-1 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-              CLIENT_SELFSIGNED[tool].level === "ok"
-                ? "bg-success/12 text-success"
-                : "bg-warning/12 text-warning"
-            }`}
-          >
-            {CLIENT_SELFSIGNED[tool].level === "ok" ? "可信任" : "待实测"}
-          </span>
-          {CLIENT_SELFSIGNED[tool].note}
-        </p>
+        {/* 自签兼容性徽章行（三态，与 docs/client-compatibility.md 同源口径）。
+            仅在 HTTPS 远程访问开启时出现：这一行讲的是「自签证书能否被该工具信任」，
+            只有桥切到 HTTPS（get_tls_status.enabled）时才成立。未开 TLS 时提示"自签
+            信任"是纯噪音——用户根本没有证书可信任，也无从判断该不该关心。
+            与下方 CertPemStep / snippet.notes 同一收口口径（都挂 tlsEnabled/tls）。 */}
+        {tlsEnabled && (
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            自签兼容性：
+            <span
+              className={`mx-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${SELFSIGNED_BADGE[sel.level].className}`}
+            >
+              <Icon name={SELFSIGNED_BADGE[sel.level].icon} size={10} aria-hidden="true" />
+              {SELFSIGNED_BADGE[sel.level].label}
+            </span>
+            {/* 未实测的态不装「已验证」——文档依据与真机结论分开标。 */}
+            {!sel.verified && (
+              <span className="mr-1 inline-flex items-center rounded border bg-background px-1 py-px text-[9px] font-semibold text-muted-foreground">
+                文档依据 · 待实测
+              </span>
+            )}
+            <CopySegs segs={sel.note} />
+          </p>
+        )}
 
         {/* Tab 内容切换微动画：key={tool} 换工具时重挂 → animate-tab-in 播入场
             （与顶层 Tab 页切换同一套语言，复用现有 keyframes，零新增 CSS）。
@@ -100,7 +112,7 @@ export function ToolGuide({
           {tool === "claude-code" ? (
             <>
               {children}
-              {tlsEnabled && <ClaudeTlsNote input={input} />}
+              {tlsEnabled && <ClaudeTlsNote />}
             </>
           ) : tool === "generic" ? (
             <GenericSteps input={input} />
@@ -113,19 +125,21 @@ export function ToolGuide({
   );
 }
 
-/** claude-code 的 HTTPS 附加说明（现有 Global/ProjectSteps 不感知 TLS，补在这里）。 */
-function ClaudeTlsNote({ input }: { input: SnippetInput }) {
-  const notes = buildClientSnippet("claude-code", input).notes;
-  if (notes.length === 0) return null;
+/**
+ * claude-code 的 HTTPS 附加说明（Global/ProjectSteps 不感知 TLS，补在这里）。
+ * 文案与信任步骤统一取自 CLIENT_SELFSIGNED["claude-code"]——不再走 buildClientSnippet 的 notes，
+ * 免得同一件事在片段 note 与信任步骤里各说一遍。
+ */
+function ClaudeTlsNote() {
+  const sel = CLIENT_SELFSIGNED["claude-code"];
   return (
     <div className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
-      {notes.map((n, i) => (
-        <p key={i} className="text-[11px] leading-relaxed text-muted-foreground">
-          <b className="text-warning">HTTPS 自签</b>
-          ：{n}
-        </p>
-      ))}
-      <CertPemStep compact />
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        <b className="text-warning-ink">HTTPS 自签</b>
+        ：
+        <CopySegs segs={sel.note} />
+      </p>
+      <CertPemStep compact steps={sel.steps} />
     </div>
   );
 }
@@ -168,11 +182,17 @@ function ManualSteps({ tool, input }: { tool: McpClientTool; input: SnippetInput
           </div>
           {snippet.notes.map((n, i) => (
             <p key={i} className="rounded-lg bg-warning/8 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
-              <b className="text-warning">注意</b>
+              <b className="text-warning-ink">注意</b>
               ：{n}
             </p>
           ))}
-          {input.tls && <CertPemStep copied={pemCopied} onCopied={() => setPemCopied(true)} />}
+          {input.tls && (
+            <CertPemStep
+              copied={pemCopied}
+              onCopied={() => setPemCopied(true)}
+              steps={CLIENT_SELFSIGNED[tool].steps}
+            />
+          )}
         </div>
       </div>
 

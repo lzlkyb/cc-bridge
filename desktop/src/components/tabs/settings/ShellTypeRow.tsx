@@ -53,7 +53,7 @@ export function ShellTypeRow({
         </div>
         {!bashAvailable && (
           <div className="mt-1.5 flex items-center gap-2">
-            <span className="text-xs text-warning">{copy.unavailableWarn}</span>
+            <span className="text-xs text-warning-ink">{copy.unavailableWarn}</span>
             {onRefreshBash && (
               <button
                 type="button"

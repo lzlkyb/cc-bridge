@@ -158,7 +158,7 @@ function Field({
       <div className="mb-1 text-xs font-medium">{label}</div>
       {children}
       {hint && (
-        <div className={`mt-1 text-[11px] ${error ? "text-destructive" : "text-muted-foreground"}`}>
+        <div className={`mt-1 text-[11px] ${error ? "text-destructive-ink" : "text-muted-foreground"}`}>
           {hint}
         </div>
       )}

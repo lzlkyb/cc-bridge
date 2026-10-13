@@ -69,7 +69,7 @@ export function WheelOwnerPopover({ sessionId, initialStep, onSent, onClose }: P
       {step === "info" ? (
         <>
           <p className="flex items-center gap-1.5 font-semibold">
-            <span aria-hidden className="rounded-full bg-warning/[0.14] px-1.5 text-warning">⚠</span>
+            <span aria-hidden className="rounded-full bg-warning/[0.14] px-1.5 text-warning-ink">⚠</span>
             滚轮此刻不可用
           </p>
           <p className="mt-1.5 text-[11.5px] text-muted-foreground">

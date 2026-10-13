@@ -38,7 +38,7 @@ export function ToggleRow({
           <span className="t text-sm font-medium">{label}</span>
           {saved && <SavedHint>已保存</SavedHint>}
         </div>
-        <div className={`d mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>
+        <div className={`d mt-0.5 text-xs ${danger ? "text-destructive-ink" : "text-muted-foreground"}`}>
           {sub}
         </div>
       </div>

@@ -23,6 +23,13 @@
   --color-success-foreground: hsl(var(--success-foreground));
   --color-warning: hsl(var(--warning));
   --color-warning-foreground: hsl(var(--warning-foreground));
+  /* 语义色「墨色」变体：给「12% 淡底 + 小字号」的标签/徽章当文字色用。
+     基础色（如 --success hsl(142 71% 45%)）在白底 10px 上实测只有 ≈2.1~3.3:1，不达 WCAG AA；
+     -ink 是配套的加深/提亮版本（浅色主题加深、深色主题提亮），底色透明度不变。
+     实测比值与取值理由见 :root / .dark 里的注释。与终端 ANSI 亮色校准（2026-10-13）同一套原则。 */
+  --color-success-ink: hsl(var(--success-ink));
+  --color-warning-ink: hsl(var(--warning-ink));
+  --color-destructive-ink: hsl(var(--destructive-ink));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
@@ -60,7 +67,9 @@
   --secondary: 220 20% 94%;
   --secondary-foreground: 222 47% 11%;
   --muted: 214 25% 95%;
-  --muted-foreground: 215 16% 47%;
+  /* 47%→43%：原值在白卡上 4.72:1 达标，但叠 bg-muted(214 25% 95%) / bg-secondary(220 20% 94%)
+     只有 4.20 / 4.09，不达 AA 小字 4.5:1。压到 43% 后全场景 4.72–5.45:1 达标（WCAG 实算）。 */
+  --muted-foreground: 215 16% 43%;
   --accent: 226 100% 97%;           /* 靛蓝淡底 #EEF2FF */
   --accent-foreground: 243 75% 59%;
   --destructive: 0 84% 60%;
@@ -69,6 +78,13 @@
   --success-foreground: 0 0% 100%;
   --warning: 25 95% 53%;
   --warning-foreground: 27 90% 36%;
+  /* 淡底标签文字色：对「本色 12% 淡底 + 白卡」实测对比度（WCAG 计算，非目测）
+     success 4.88:1 · warning 4.81:1 · destructive 6.11:1 —— 均 ≥ AA 小字门槛 4.5:1。
+     注意不能照抄 -foreground：那些是「实底上的文字」（warning-foreground 亮色下是深琥珀，
+     拿来当淡底文字只有 4.37:1 仍不达标），故单列 -ink。 */
+  --success-ink: 142 71% 28%;
+  --warning-ink: 27 90% 35%;
+  --destructive-ink: 0 72% 40%;
   --border: 216 20% 90%;
   --input: 216 20% 90%;
   --ring: 243 75% 59%;
@@ -160,6 +176,10 @@
   --success-foreground: 240 6% 10%;
   --warning: 27 96% 61%;
   --warning-foreground: 240 6% 10%;
+  /* 深色下 -ink 反向提亮（暗底上要「浅色文字」，否则 12% 淡底里的深字读不出来）*/
+  --success-ink: 142 69% 65%;
+  --warning-ink: 27 96% 68%;
+  --destructive-ink: 0 72% 76%;
   --border: 240 4% 22%;            /* B6: 19→22 分隔线更清晰 */
   --input: 240 4% 22%;
   --ring: 239 84% 74%;
@@ -1176,18 +1196,20 @@ body {
   box-shadow: 0 2px 6px rgba(255,255,255,0.04);
 }
 
-/* 芯片分色 */
+/* 芯片分色 —— 浅色文字色需 ≥4.5:1（AA 小字）。原 .c-back #D55B0C 在 #FFF5ED 上仅 3.66:1、
+   .c-doc #07889B 在 #EDFAFC 上仅 3.93:1，均不达标；下方按同色相压暗亮度后 4.77–4.80:1。
+   .c-front(5.45) / .c-conf(4.64) 原本已达标，不动。深色侧全部 ≥8:1，亦不动。 */
 .c-front { background: #EBEEFF; color: #4F46E5; }
 .c-front .chip-x { color: #4F46E5; }
 .dark .c-front { background: #1C1946; color: #A5B4FC; }
 .dark .c-front .chip-x { color: #A5B4FC; }
 .c-front .chip-x:hover { background: #4F46E5; color: #fff; }
 
-.c-back { background: #FFF5ED; color: #D55B0C; }
-.c-back .chip-x { color: #D55B0C; }
+.c-back { background: #FFF5ED; color: #B54F0B; }
+.c-back .chip-x { color: #B54F0B; }
 .dark .c-back { background: #3B1406; color: #FDBA74; }
 .dark .c-back .chip-x { color: #FDBA74; }
-.c-back .chip-x:hover { background: #D55B0C; color: #fff; }
+.c-back .chip-x:hover { background: #B54F0B; color: #fff; }
 
 .c-conf { background: #E9FBF3; color: #078051; }
 .c-conf .chip-x { color: #078051; }
@@ -1195,11 +1217,11 @@ body {
 .dark .c-conf .chip-x { color: #6EE7B7; }
 .c-conf .chip-x:hover { background: #078051; color: #fff; }
 
-.c-doc { background: #EDFAFC; color: #07889B; }
-.c-doc .chip-x { color: #07889B; }
+.c-doc { background: #EDFAFC; color: #07798B; }
+.c-doc .chip-x { color: #07798B; }
 .dark .c-doc { background: #0A2630; color: #67E8F9; }
 .dark .c-doc .chip-x { color: #67E8F9; }
-.c-doc .chip-x:hover { background: #07889B; color: #fff; }
+.c-doc .chip-x:hover { background: #07798B; color: #fff; }
 
 /* 默认芯片（自定义输入，不分类） */
 .chip:not(.c-front):not(.c-back):not(.c-conf):not(.c-doc) {
@@ -1219,9 +1241,9 @@ body {
 .cat-btn .chevron { transition: transform 0.15s; }
 .cat-btn.open .chevron { transform: rotate(180deg); }
 .cat-front.open { background: #EBEEFF; color: #4F46E5; border-color: #4F46E5; }
-.cat-back.open  { background: #FFF5ED; color: #D55B0C; border-color: #D55B0C; }
+.cat-back.open  { background: #FFF5ED; color: #B54F0B; border-color: #B54F0B; }
 .cat-conf.open  { background: #E9FBF3; color: #078051; border-color: #078051; }
-.cat-doc.open   { background: #EDFAFC; color: #07889B; border-color: #07889B; }
+.cat-doc.open   { background: #EDFAFC; color: #07798B; border-color: #07798B; }
 .dark .cat-front.open { background: #1C1946; }
 .dark .cat-back.open  { background: #3B1406; }
 .dark .cat-conf.open  { background: #042B14; }
@@ -1231,9 +1253,9 @@ body {
 .ext-tag { transition: all 0.12s; }
 .ext-tag.checked { font-weight: 600; }
 .tag-front.checked { background: #EBEEFF; color: #4F46E5; border-color: #4F46E5; }
-.tag-back.checked  { background: #FFF5ED; color: #D55B0C; border-color: #D55B0C; }
+.tag-back.checked  { background: #FFF5ED; color: #B54F0B; border-color: #B54F0B; }
 .tag-conf.checked  { background: #E9FBF3; color: #078051; border-color: #078051; }
-.tag-doc.checked   { background: #EDFAFC; color: #07889B; border-color: #07889B; }
+.tag-doc.checked   { background: #EDFAFC; color: #07798B; border-color: #07798B; }
 .dark .tag-front.checked { background: #1C1946; }
 .dark .tag-back.checked  { background: #3B1406; }
 .dark .tag-conf.checked  { background: #042B14; }
@@ -1260,9 +1282,10 @@ body {
   cursor: pointer;
 }
 
-.tag-purple { background: rgba(99,102,241,0.1); color: #6366F1; }
-.tag-green  { background: rgba(22,163,74,0.1); color: #16A34A; }
-.tag-orange { background: rgba(245,158,11,0.1); color: #D97706; }
+/* 项目信息标签：浅色侧原 2.95–3.94:1 不达标，按同色相压暗后 4.72–4.78:1（深色侧不动）*/
+.tag-purple { background: rgba(99,102,241,0.1); color: #5154F0; }
+.tag-green  { background: rgba(22,163,74,0.1); color: #117B38; }
+.tag-orange { background: rgba(245,158,11,0.1); color: #A75B04; }
 .dark .tag-purple { background: rgba(129,140,248,0.15); color: #A5B4FC; }
 .dark .tag-green  { background: rgba(74,222,128,0.15); color: #6EE7B7; }
 .dark .tag-orange { background: rgba(251,191,36,0.15); color: #FCD34D; }
@@ -1276,10 +1299,11 @@ body {
 .cl-badge {
   /* base 由内联 style 控制 */;
 }
-.cl-badge-feat    { background: rgba(129,140,248,0.1); color: #6366F1; }
-.cl-badge-improve { background: rgba(6,182,212,0.1); color: #0891B2; }
-.cl-badge-fix     { background: rgba(245,158,11,0.1); color: #D97706; }
-.cl-badge-sec     { background: rgba(239,68,68,0.1); color: #DC2626; }
+/* 更新历史分类徽章：浅色侧原 2.95–4.24:1 不达标，压暗后 4.72–4.80:1（深色侧不动）*/
+.cl-badge-feat    { background: rgba(129,140,248,0.1); color: #5154F0; }
+.cl-badge-improve { background: rgba(6,182,212,0.1); color: #077692; }
+.cl-badge-fix     { background: rgba(245,158,11,0.1); color: #A75B04; }
+.cl-badge-sec     { background: rgba(239,68,68,0.1); color: #CE2222; }
 .dark .cl-badge-feat    { background: rgba(129,140,248,0.18); color: #A5B4FC; }
 .dark .cl-badge-improve { background: rgba(6,182,212,0.18); color: #22D3EE; }
 .dark .cl-badge-fix     { background: rgba(251,191,36,0.18); color: #FCD34D; }

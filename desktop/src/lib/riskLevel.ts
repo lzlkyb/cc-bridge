@@ -36,9 +36,10 @@ export interface RiskVerdict {
 }
 
 const PILL: Record<RiskLevel, string> = {
-  safe: "border-success/30 bg-success/10 text-success",
-  warn: "border-warning/30 bg-warning/10 text-warning",
-  high: "border-destructive/30 bg-destructive/10 text-destructive",
+  // 文字用 -ink：与 ui/badge、ui/notice 同一口径（基础语义色浅色淡底不达 AA）
+  safe: "border-success/30 bg-success/10 text-success-ink",
+  warn: "border-warning/30 bg-warning/10 text-warning-ink",
+  high: "border-destructive/30 bg-destructive/10 text-destructive-ink",
 };
 
 export function riskLevel(status: SecurityFlags): RiskVerdict {

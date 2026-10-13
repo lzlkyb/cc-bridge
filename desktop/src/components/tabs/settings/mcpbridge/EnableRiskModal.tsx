@@ -47,7 +47,7 @@ export function EnableRiskModal({
 
   return (
     <ConfirmModal open onClose={onCancel}>
-      <h4 className="mb-3 flex items-center gap-2 text-base font-semibold text-destructive">
+      <h4 className="mb-3 flex items-center gap-2 text-base font-semibold text-destructive-ink">
         <Icon name="alertTriangle" size={18} />
         {title}
       </h4>
@@ -73,7 +73,7 @@ export function EnableRiskModal({
         />
       )}
 
-      <div className="mb-3 mt-3 rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
+      <div className="mb-3 mt-3 rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive-ink">
         <div className="mb-1.5 font-semibold">启用后会发生什么：</div>
         <div className="mb-1">① 远程 Claude Code 将获得这个 server 的<b>全部能力</b>。</div>
         <div className="mb-1">

@@ -41,10 +41,12 @@ export function toast(message: string, variant: ToastVariant = "info") {
 
 let toastId = 0;
 
+// 文字用 -ink 变体：基础语义色在 12–14px 淡底上只有 2.3–3.8:1（浅色），不达 AA 4.5:1。
+// info 走 primary（浅色 5.33:1）本就达标，故保持基础色。
 const variantStyles: Record<ToastVariant, string> = {
-  success: "border-success/30 bg-success/10 text-success",
-  error: "border-destructive/30 bg-destructive/10 text-destructive",
-  warning: "border-warning/30 bg-warning/10 text-warning",
+  success: "border-success/30 bg-success/10 text-success-ink",
+  error: "border-destructive/30 bg-destructive/10 text-destructive-ink",
+  warning: "border-warning/30 bg-warning/10 text-warning-ink",
   info: "border-primary/30 bg-primary/10 text-primary",
 };
 
@@ -56,9 +58,9 @@ const variantIcons: Record<ToastVariant, string> = {
 };
 
 const variantIconBoxes: Record<ToastVariant, string> = {
-  success: "bg-success/[0.14] text-success",
-  error: "bg-destructive/[0.14] text-destructive",
-  warning: "bg-warning/[0.14] text-warning",
+  success: "bg-success/[0.14] text-success-ink",
+  error: "bg-destructive/[0.14] text-destructive-ink",
+  warning: "bg-warning/[0.14] text-warning-ink",
   info: "bg-accent text-primary",
 };
 

@@ -135,7 +135,7 @@ function ChainNode({
       {solid ? (
         <span
           className={`relative grid h-full w-full place-items-center rounded-full bg-white/95 ${
-            tone === "ok" ? "text-success" : "text-destructive"
+            tone === "ok" ? "text-success-ink" : "text-destructive-ink"
           }`}
         >
           <Icon name={tone === "ok" ? "check" : "close"} size={15} />

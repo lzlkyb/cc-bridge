@@ -105,8 +105,8 @@ export function CommandAllowlistCard({
                 !shellOn
                   ? "bg-muted text-muted-foreground"
                   : allowOn
-                    ? "bg-success/10 text-success"
-                    : "bg-warning/10 text-warning"
+                    ? "bg-success/10 text-success-ink"
+                    : "bg-warning/10 text-warning-ink"
               }`}
             >
               {!shellOn ? "命令执行未开启" : allowOn ? "已启用" : "未启用"}
@@ -142,7 +142,7 @@ export function CommandAllowlistCard({
                   <span className="text-sm font-medium">启用命令白名单</span>
                   {savedKey === "allowlist" && <SavedHint>已保存</SavedHint>}
                 </div>
-                <div className={`mt-0.5 text-xs ${allowOn ? "text-muted-foreground" : "text-warning"}`}>
+                <div className={`mt-0.5 text-xs ${allowOn ? "text-muted-foreground" : "text-warning-ink"}`}>
                   {allowOn
                     ? "仅允许白名单内程序执行命令，其余一律拒绝（不削弱内置破坏性命令拦截）"
                     : "未启用 · 远程可执行任意程序，仅受内置破坏性命令拦截兜底"}
@@ -186,7 +186,7 @@ export function CommandAllowlistCard({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="text-destructive hover:text-destructive"
+                        className="text-destructive-ink hover:text-destructive-ink"
                         onClick={() => setPendingRemove(prog)}
                       >
                         <Icon name="trash" size={14} />

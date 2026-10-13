@@ -16,7 +16,7 @@ import { DiffView, type DiffState, countDiff } from "./DiffView";
 const VIEW_BTN_CLASS =
   "rounded-md border border-primary/35 bg-card px-2 py-1 text-[11px] text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:border-input disabled:text-foreground";
 const DANGER_BTN_CLASS =
-  "rounded-md border border-destructive/40 bg-card px-2 py-1 text-[11px] text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:border-input disabled:text-foreground";
+  "rounded-md border border-destructive/40 bg-card px-2 py-1 text-[11px] text-destructive-ink transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:border-input disabled:text-foreground";
 
 /**
  * 版本历史弹框（居中大弹框，沿用 UpdateNotesDialog 视觉）。
@@ -395,12 +395,12 @@ export function VersionHistoryModal({
                                     {st && !st.guard && (
                                       <span className="flex items-center gap-1 text-[11px]">
                                         {cs?.added ? (
-                                          <span className="rounded bg-success/15 px-1.5 py-0.5 text-success">
+                                          <span className="rounded bg-success/15 px-1.5 py-0.5 text-success-ink">
                                             +{cs.added}
                                           </span>
                                         ) : null}
                                         {cs?.removed ? (
-                                          <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-destructive">
+                                          <span className="rounded bg-destructive/15 px-1.5 py-0.5 text-destructive-ink">
                                             −{cs.removed}
                                           </span>
                                         ) : null}
@@ -447,7 +447,7 @@ export function VersionHistoryModal({
                                       </button>
                                     </div>
                                     {!canDiff && (
-                                      <p className="flex basis-full items-start gap-1 text-[10.5px] leading-snug text-warning">
+                                      <p className="flex basis-full items-start gap-1 text-[10.5px] leading-snug text-warning-ink">
                                         <Icon name="alertTriangle" size={11} className="mt-0.5 shrink-0" />
                                         无法定位当前文件（白名单关闭 / 路径已不在白名单内 / 无索引记录的历史备份），“看改了什么”与“还原”暂不可用
                                       </p>
@@ -530,7 +530,7 @@ export function VersionHistoryModal({
                               删除
                             </button>
                             {!canDiff && (
-                              <p className="flex basis-full items-start gap-1 text-[10.5px] leading-snug text-warning">
+                              <p className="flex basis-full items-start gap-1 text-[10.5px] leading-snug text-warning-ink">
                                 <Icon name="alertTriangle" size={11} className="mt-0.5 shrink-0" />
                                 无法定位当前文件，“看改了什么”暂不可用（“与上一版比”不受影响）
                               </p>

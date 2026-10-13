@@ -102,7 +102,7 @@ export function SshFileRow({
               ev.stopPropagation();
               onRemove(entry);
             }}
-            className="rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-md px-2 py-1 text-xs text-destructive-ink hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
             删除
           </button>
@@ -144,7 +144,7 @@ export function FileTable({
   return (
     <div className="min-h-0 flex-1 animate-fade-in overflow-y-auto">
       {error && (
-        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-ink">
           {error}
         </div>
       )}

@@ -79,8 +79,8 @@ function buildSegments(lines: NumberedLine[]): Segment[] {
 }
 
 function diffLineClass(kind: DiffLine["kind"]): string {
-  if (kind === "added") return "bg-success/10 text-success";
-  if (kind === "removed") return "bg-destructive/10 text-destructive";
+  if (kind === "added") return "bg-success/10 text-success-ink";
+  if (kind === "removed") return "bg-destructive/10 text-destructive-ink";
   return "bg-muted/40 text-foreground";
 }
 
@@ -131,7 +131,7 @@ export function DiffView({ state, title }: { state?: DiffState; title: string })
           </div>
         )}
         {state?.error && (
-          <div className="break-all bg-destructive/10 p-2 text-destructive">加载失败：{state.error}</div>
+          <div className="break-all bg-destructive/10 p-2 text-destructive-ink">加载失败：{state.error}</div>
         )}
         {state?.result && state.result.guard && (
           <div className="bg-muted p-2 text-muted-foreground">
@@ -144,8 +144,8 @@ export function DiffView({ state, title }: { state?: DiffState; title: string })
             <div className="flex items-center gap-2 divider-x bg-muted/20 px-2 py-1.5 font-sans">
               {(state.added || state.removed) ? (
                 <span className="flex gap-1.5 text-[11px]">
-                  {state.added ? <span className="text-success">+{state.added}</span> : null}
-                  {state.removed ? <span className="text-destructive">−{state.removed}</span> : null}
+                  {state.added ? <span className="text-success-ink">+{state.added}</span> : null}
+                  {state.removed ? <span className="text-destructive-ink">−{state.removed}</span> : null}
                 </span>
               ) : null}
               <div className="ml-auto flex overflow-hidden rounded-md border border-border">

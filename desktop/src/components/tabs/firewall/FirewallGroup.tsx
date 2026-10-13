@@ -35,9 +35,9 @@ export function FirewallGroup({ onRefresh }: { onRefresh?: () => void }) {
 
   const badgeClass =
     badge.tone === "ok"
-      ? "border-success/40 bg-success/10 text-success"
+      ? "border-success/40 bg-success/10 text-success-ink"
       : badge.tone === "bad"
-        ? "border-destructive/40 bg-destructive/10 text-destructive"
+        ? "border-destructive/40 bg-destructive/10 text-destructive-ink"
         : "border-border bg-secondary/60 text-muted-foreground";
 
   const checkedHint =

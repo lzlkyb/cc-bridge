@@ -216,7 +216,7 @@ function LogTabImpl({
           <Button
             variant="outline"
             size="sm"
-            className="text-destructive hover:text-destructive"
+            className="text-destructive-ink hover:text-destructive-ink"
             disabled={!entries || entries.length === 0}
             onClick={() => setConfirmClear(true)}
           >

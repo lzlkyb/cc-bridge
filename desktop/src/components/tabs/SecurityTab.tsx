@@ -103,8 +103,8 @@ export function SecurityTab({
               <span
                 className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
                   status.whitelistEnabled
-                    ? "bg-success/10 text-success"
-                    : "bg-destructive/10 text-destructive"
+                    ? "bg-success/10 text-success-ink"
+                    : "bg-destructive/10 text-destructive-ink"
                 }`}
               >
                 {status.whitelistEnabled ? "校验已开启" : "校验已关闭"}
@@ -168,7 +168,7 @@ export function SecurityTab({
           {filteredRoots.map((root) => (
               <div key={root} className="dir-item flex items-center gap-2">
                 <code className="flex-1 rounded-md bg-muted px-3 py-1.5 text-xs font-mono truncate" title={root}>{root}</code>
-                <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setPendingRemoveRoot(root)}>
+                <Button variant="ghost" size="sm" className="text-destructive-ink hover:text-destructive-ink" onClick={() => setPendingRemoveRoot(root)}>
                   <Icon name="trash" size={14} />
                   删除
                 </Button>

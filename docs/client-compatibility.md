@@ -6,12 +6,13 @@
 
 | 工具 | 配置载体 | 片段形态 | HTTP | SSE | HTTPS 自签 | 备注 |
 | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | `claude mcp add` CLI 命令 | command | ✅ | ✅ | ✅ 可信任（`NODE_EXTRA_CA_CERTS`） | 全局/项目两种 scope；`curl` 生态，信任自签路径明确 |
-| WorkBuddy | `~/.workbuddy/mcp.json` | JSON | ✅ | ✅ | ⚠️ 待实测 | `mcpServers.url + headers` 形态；改完重启生效 |
-| Codex | `~/.codex/config.toml` | TOML | ✅ | ❌ 不支持 | ⚠️ 待实测 | 仅 streamable HTTP；`[mcp_servers.cc-bridge]` + `url` + `http_headers`（或 `bearer_token_env_var`）；旧版本需顶层 `experimental_use_rmcp_client = true`；`codex mcp list` 验证 |
-| 通用 MCP 工具 | 各工具的 MCP 设置界面 | JSON（裸 url+headers+transport） | ✅ | 视工具 | 视工具 | 任何支持 Streamable HTTP 的客户端 |
+| Claude Code | `claude mcp add` CLI 命令 | command | ✅ | ✅ | ✅ 可信任 · `NODE_EXTRA_CA_CERTS`（已实测） | 全局/项目两种 scope；`curl` 生态，信任自签路径明确 |
+| WorkBuddy | `~/.workbuddy/mcp.json` | JSON | ✅ | ✅ | 🟡 需额外步骤 · `NODE_EXTRA_CA_CERTS`（文档依据，待实测） | 基于 `@modelcontextprotocol/sdk`（Node/undici）→ 走 Node 证书库；`mcpServers.url + headers` 形态；改完重启生效 |
+| Codex | `~/.codex/config.toml` | TOML | ✅ | ❌ 不支持 | 🟡 需额外步骤 · `CODEX_CA_CERTIFICATE` → `SSL_CERT_FILE` → 系统根证书（文档依据，待实测） | 仅 streamable HTTP；`[mcp_servers.cc-bridge]` + `url` + `http_headers`（或 `bearer_token_env_var`）；旧版本需顶层 `experimental_use_rmcp_client = true`；`codex mcp list` 验证 |
+| 通用 MCP 工具 | 各工具的 MCP 设置界面 | JSON（裸 url+headers+transport） | ✅ | 视工具 | 🟡 需额外步骤 · Node 系 `NODE_EXTRA_CA_CERTS` / Rust 系 `SSL_CERT_FILE` | 任何支持 Streamable HTTP 的客户端 |
 
-图例：✅ 已验证可用 · ⚠️ 待实测（不打包票）· ❌ 不支持
+图例：✅ 可信任 · 🟡 需额外步骤（可信任，但需手动信任证书）· ⛔ 不支持自签（只能反代 + Let's Encrypt）
+三态口径与接入向导徽章一一对应（`CLIENT_SELFSIGNED` 的 `level`）；标「文档依据」的条目尚未真机实测。
 
 ## SSE 传输限制
 
@@ -19,9 +20,16 @@
 
 ## HTTPS 自签证书（P1）
 
+> 接入向导里的自签徽章与「信任步骤」**只在 HTTPS 远程访问开启时渲染**（HTTP 模式整块不出现，
+> 收口口径 `get_tls_status.enabled`）——证书是 HTTPS 的伴生概念。
+
 - 证书：rcgen 自签，825 天，SAN = 全网卡 IP + 127.0.0.1；指纹见「设置 › 安全 › HTTPS 远程访问」，接入侧请核对指纹防中间人。
-- **Claude Code**：导出证书 PEM（向导「复制 PEM」按钮，后端 `read_tls_cert_pem`）保存为 `cc-bridge.crt`，启动前 `NODE_EXTRA_CA_CERTS=/path/cc-bridge.crt`。
-- **WorkBuddy / Codex**：自签信任路径待实测。失败时的通用解法是**反向代理 + Let's Encrypt**（全工具无感信任），模板见 [reverse-proxy.md](./reverse-proxy.md)。
+- **信任做法**（与向导「信任步骤」同源）：
+  - **Claude Code**（已实测）：导出证书 PEM（向导「复制 PEM」按钮，后端 `read_tls_cert_pem`）保存为 `cc-bridge.crt`，启动前设 `NODE_EXTRA_CA_CERTS=/path/cc-bridge.crt`。
+  - **WorkBuddy**（文档依据，待实测）：基于 `@modelcontextprotocol/sdk`（Node/undici），走 Node 证书库 → 同样认 `NODE_EXTRA_CA_CERTS`，在启动 WorkBuddy 前指向 `cc-bridge.crt`。
+  - **Codex**（文档依据，待实测）：**优先 `CODEX_CA_CERTIFICATE`**（PEM bundle），未设时回退 `SSL_CERT_FILE`，再回退系统根证书；Codex 会校验证书，不信任即拒连。
+  - **通用工具**：Node 系认 `NODE_EXTRA_CA_CERTS`；Rust 系常认 `SSL_CERT_FILE` 或系统根证书。
+- **无法信任自签时**：改用**反向代理 + Let's Encrypt**（全工具无感信任），模板见 [reverse-proxy.md](./reverse-proxy.md)。
 - 指纹随时可重置：设置页「重新生成」。
 
 ## 已知注意点

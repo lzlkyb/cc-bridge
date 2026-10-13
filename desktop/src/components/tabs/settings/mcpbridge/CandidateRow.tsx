@@ -52,7 +52,7 @@ export function CandidateRow({
             <span className="flex flex-wrap items-center gap-1.5 text-[13px] font-semibold">
               {c.name}
               {c.renamedFrom && (
-                <span className="rounded-full bg-warning/14 px-2 py-0.5 text-[10px] font-normal text-warning">
+                <span className="rounded-full bg-warning/14 px-2 py-0.5 text-[10px] font-normal text-warning-ink">
                   已存在同名，导入为此名（原：{c.renamedFrom}）
                 </span>
               )}
@@ -64,7 +64,7 @@ export function CandidateRow({
             {c.envKeys.length > 0 && (
               <span className="mt-1 block text-[11px] text-muted-foreground">
                 环境变量：{c.envKeys.join("、")}
-                <span className="ml-1.5 text-success">值已隐藏</span>
+                <span className="ml-1.5 text-success-ink">值已隐藏</span>
               </span>
             )}
           </button>

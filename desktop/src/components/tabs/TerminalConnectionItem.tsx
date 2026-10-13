@@ -116,7 +116,7 @@ export function ConnectionListItem({
           <button
             type="button"
             onClick={() => onDisconnect(session.sessionId)}
-            className="flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+            className="flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs text-destructive-ink hover:bg-destructive/10"
           >
             <Icon name="power" size={12} /> 断开
           </button>
@@ -210,7 +210,7 @@ export function ConnectionListItem({
                     type="button"
                     role="menuitem"
                     onClick={() => { closeMenu(); onDeleteRequest(); }}
-                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-destructive-ink transition-colors hover:bg-destructive/10"
                   >
                     <Icon name="trash" size={12} /> 删除连接
                   </button>

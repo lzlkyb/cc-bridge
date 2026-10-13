@@ -110,7 +110,7 @@ export function SecurityGroup({
           sub={
             tlsOn
               ? "⚠ 已开启 · 监听端口已切换为 TLS，仅供信任的 AI 工具连接"
-              : "开启后 MCP 监听整体切换为 HTTPS（自签证书），供跨网的 AI 工具连接；关闭时行为与旧版完全一致"
+              : "开启后 MCP 监听整体切换为 HTTPS，供跨网的 AI 工具连接；关闭时行为与旧版完全一致"
           }
           checked={tlsOn}
           onChange={handleRemoteTls}
@@ -125,8 +125,8 @@ export function SecurityGroup({
           />
         ) : (
           <p className="mb-3 rounded-lg bg-muted px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-            开启后会显示接入地址、证书指纹与封禁设置。跨网暴露请务必保持路径白名单与 Token
-            保护开启；有域名时优先阅读 docs/reverse-proxy.md 的反代方案（证书全自动）。
+            开启后会显示接入地址与封禁设置。跨网暴露请务必保持路径白名单与 Token 保护开启；有
+            域名时可优先用反向代理（见 docs/reverse-proxy.md）。
           </p>
         )}
 

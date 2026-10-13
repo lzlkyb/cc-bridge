@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   buildClientSnippet,
   buildGenericPrompt,
+  CLIENT_SELFSIGNED,
   CLIENT_VERIFY,
   type SnippetInput,
 } from "../../../lib/mcpClients";
@@ -95,11 +96,17 @@ export function GenericSteps({ input }: { input: SnippetInput }) {
                 key={i}
                 className="rounded-lg bg-warning/8 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground"
               >
-                <b className="text-warning">注意</b>
+                <b className="text-warning-ink">注意</b>
                 ：{n}
               </p>
             ))}
-            {input.tls && <CertPemStep copied={pemCopied} onCopied={() => setPemCopied(true)} />}
+            {input.tls && (
+              <CertPemStep
+                copied={pemCopied}
+                onCopied={() => setPemCopied(true)}
+                steps={CLIENT_SELFSIGNED.generic.steps}
+              />
+            )}
           </div>
         )}
       </div>

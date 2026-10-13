@@ -137,7 +137,7 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="whitespace-nowrap text-destructive hover:text-destructive"
+                        className="whitespace-nowrap text-destructive-ink hover:text-destructive-ink"
                         disabled={stopping.has(cmd.handle)}
                         onClick={(e) => { e.stopPropagation(); stop(cmd.handle, cmd.pid); }}
                       >
@@ -159,7 +159,7 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
           </TableBody>
         </Table>
         {danger && (
-          <p className="mt-3 flex items-start gap-1.5 text-xs text-destructive">
+          <p className="mt-3 flex items-start gap-1.5 text-xs text-destructive-ink">
             <Icon name="alertTriangle" size={13} className="mt-0.5 shrink-0" />
             命令执行已开启，请确认以上进程均来自你信任的会话。
           </p>

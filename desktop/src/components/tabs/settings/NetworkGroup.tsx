@@ -116,7 +116,7 @@ export function NetworkGroup({
             </div>
           }
         />
-        {invalid && <p className="text-xs text-destructive">端口范围 1 – 65535</p>}
+        {invalid && <p className="text-xs text-destructive-ink">端口范围 1 – 65535</p>}
         {/* 传输协议从原「功能开关 › 兼容与性能」搬到这里：它决定远程怎么连，
             与监听端口同类，和“兼容”无关。 */}
         <TransportRow

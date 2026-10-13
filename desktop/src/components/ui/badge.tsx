@@ -3,8 +3,9 @@ import type { HTMLAttributes } from "react";
 const variants = {
   default: "bg-primary text-primary-foreground",
   secondary: "bg-secondary text-secondary-foreground",
-  destructive: "bg-destructive/10 text-destructive border border-destructive/30",
-  success: "bg-success/10 text-success border border-success/30",
+  // 文字用 -ink：基础语义色在 12px 淡底上仅 2.1–3.3:1（浅色），不达 AA 4.5:1
+  destructive: "bg-destructive/10 text-destructive-ink border border-destructive/30",
+  success: "bg-success/10 text-success-ink border border-success/30",
   accent: "bg-accent text-accent-foreground",
   outline: "border text-foreground",
 };

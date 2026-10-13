@@ -110,13 +110,13 @@ export function StepTest({
       </Button>
 
       {state === "ok" && (
-        <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success">
+        <div className="flex items-start gap-2 rounded-lg border border-success/30 bg-success/10 p-3 text-sm text-success-ink">
           <Icon name="check" size={16} className="mt-0.5 shrink-0" />
           <span>{detail}</span>
         </div>
       )}
       {state === "fail" && (
-        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive-ink">
           <Icon name="alertTriangle" size={16} className="mt-0.5 shrink-0" />
           <span>{detail}</span>
         </div>

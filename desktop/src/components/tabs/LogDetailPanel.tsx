@@ -47,7 +47,7 @@ export function DetailPanel({
           <Button
             size="sm"
             variant="outline"
-            className="text-destructive hover:text-destructive"
+            className="text-destructive-ink hover:text-destructive-ink"
             onClick={() => onRestore(entry)}
           >
             <Icon name="restore" size={14} />
@@ -93,7 +93,7 @@ export function DetailPanel({
         </pre>
       </div>
       {entry.error && (
-        <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive break-all">
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive-ink break-all">
           {entry.error}
         </div>
       )}

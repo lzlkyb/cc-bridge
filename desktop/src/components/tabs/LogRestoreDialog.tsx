@@ -57,7 +57,7 @@ export function LogRestoreDialog({ entry, onClose }: { entry: AuditEntry; onClos
         className="animate-scale-in mx-4 w-full max-w-md rounded-xl modal-surface p-5 dlg"
         onClick={(e) => e.stopPropagation()}
       >
-        <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
+        <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive-ink">
           <Icon name="restore" size={18} />
           {isDelete ? "恢复被删文件？" : "确认回滚到操作前？"}
         </h4>
@@ -77,7 +77,7 @@ export function LogRestoreDialog({ entry, onClose }: { entry: AuditEntry; onClos
           </div>
         </div>
         {err && (
-          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive break-all">
+          <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive-ink break-all">
             {err}
           </div>
         )}

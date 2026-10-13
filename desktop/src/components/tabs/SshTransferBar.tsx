@@ -55,7 +55,7 @@ export function TransferBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-7 shrink-0 px-3 text-xs text-destructive hover:bg-destructive/10"
+        className="h-7 shrink-0 px-3 text-xs text-destructive-ink hover:bg-destructive/10"
         onClick={onCancel}
       >
         取消

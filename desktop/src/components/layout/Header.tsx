@@ -83,14 +83,14 @@ function HeaderImpl({
     () =>
       `status-pill inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold${
         startupError
-          ? " border-destructive/30 bg-destructive/10 text-destructive"
+          ? " border-destructive/30 bg-destructive/10 text-destructive-ink"
           : !running
           ? " border-border bg-muted text-muted-foreground"
           : linkDown
-          ? " border-destructive/30 bg-destructive/10 text-destructive"
+          ? " border-destructive/30 bg-destructive/10 text-destructive-ink"
           : firewallBlocked
-          ? " border-warning/30 bg-warning/10 text-warning"
-          : " border-success/30 bg-success/10 text-success"
+          ? " border-warning/30 bg-warning/10 text-warning-ink"
+          : " border-success/30 bg-success/10 text-success-ink"
       }`,
     [startupError, running, linkDown, firewallBlocked],
   );
@@ -139,8 +139,8 @@ function HeaderImpl({
             onClick={() => onNavigate?.(b.tab, b.anchor)}
             className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-colors ${
               b.danger
-                ? "border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/20"
-                : "border-warning/30 bg-warning/10 text-warning hover:bg-warning/20"
+                ? "border-destructive/30 bg-destructive/10 text-destructive-ink hover:bg-destructive/20"
+                : "border-warning/30 bg-warning/10 text-warning-ink hover:bg-warning/20"
             }`}
           >
             <Icon name={b.icon} size={11} />

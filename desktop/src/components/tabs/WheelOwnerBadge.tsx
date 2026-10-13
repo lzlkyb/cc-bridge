@@ -60,7 +60,7 @@ export function WheelOwnerBadge({
           onClick={onGuideHintClick}
           aria-label="展开滚轮归属提示"
           title="滚轮归属提示已收起，点击展开"
-          className="grid h-[17px] w-[17px] shrink-0 place-items-center rounded-full border border-warning/50 bg-warning/15 text-[10px] font-bold leading-none text-warning transition-colors hover:bg-warning/30"
+          className="grid h-[17px] w-[17px] shrink-0 place-items-center rounded-full border border-warning/50 bg-warning/15 text-[10px] font-bold leading-none text-warning-ink transition-colors hover:bg-warning/30"
         >
           !
         </button>

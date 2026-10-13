@@ -70,13 +70,13 @@ export function ConfirmDialog({
       >
         <h4
           className={`mb-2 flex items-center gap-2 text-base font-semibold ${
-            variant === "destructive" ? "text-destructive" : ""
+            variant === "destructive" ? "text-destructive-ink" : ""
           }`}
         >
           <Icon
             name="alertTriangle"
             size={18}
-            className={variant === "default" ? "text-warning" : undefined}
+            className={variant === "default" ? "text-warning-ink" : undefined}
           />
           {title}
         </h4>

@@ -31,7 +31,7 @@ export function RestoreBackupDialog({ entry, onClose }: { entry: BackupFileInfo;
 
   return (
     <ConfirmModal open onClose={onClose} maxWidth="md" zIndex={1001}>
-      <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
+      <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive-ink">
         <Icon name="restore" size={18} />
         还原备份
       </h4>
@@ -75,7 +75,7 @@ export function RestoreBackupDialog({ entry, onClose }: { entry: BackupFileInfo;
         </p>
       )}
       {err && (
-        <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive break-all">
+        <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive-ink break-all">
           {err}
         </div>
       )}

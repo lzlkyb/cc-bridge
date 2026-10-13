@@ -50,11 +50,11 @@ export function FirewallAlertBlock({
   return (
     <div className="animate-fade-in space-y-3 rounded-lg border border-destructive/40 bg-destructive/10 p-4">
       <div className="flex items-start gap-2.5">
-        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-destructive/15 text-destructive">
+        <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-destructive/15 text-destructive-ink">
           <Icon name="shield" size={15} />
         </div>
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-destructive">{firewallHeadline(diag.issues)}</p>
+          <p className="text-sm font-semibold text-destructive-ink">{firewallHeadline(diag.issues)}</p>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
             本机 Windows 防火墙已开启，但 <code className="rounded bg-background px-1">{port}/TCP</code>{" "}
             的入站放行在当前网络下没有生效。远程服务器上 Claude Code

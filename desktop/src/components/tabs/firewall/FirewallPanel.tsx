@@ -129,10 +129,10 @@ export function FirewallIssueList({ issues }: { issues: FirewallIssue[] }) {
             <Icon
               name={blocking ? "alertTriangle" : "info"}
               size={13}
-              className={`mt-0.5 shrink-0 ${blocking ? "text-destructive" : "text-muted-foreground"}`}
+              className={`mt-0.5 shrink-0 ${blocking ? "text-destructive-ink" : "text-muted-foreground"}`}
             />
             <span className="text-muted-foreground">
-              <b className={blocking ? "text-destructive" : "text-foreground"}>{issueTitle(issue.code)}</b>
+              <b className={blocking ? "text-destructive-ink" : "text-foreground"}>{issueTitle(issue.code)}</b>
               {"："}
               {issue.detail}
               {!issue.fixable && <span className="ml-1 text-muted-foreground">（无法自动修复）</span>}
@@ -166,8 +166,8 @@ export function FirewallProfileMatrix({ profiles }: { profiles: FirewallProfileI
         const tone = !p.active
           ? "border-border bg-secondary/40 text-muted-foreground"
           : p.covered
-            ? "border-success/40 bg-success/10 text-success"
-            : "border-destructive/40 bg-destructive/10 text-destructive";
+            ? "border-success/40 bg-success/10 text-success-ink"
+            : "border-destructive/40 bg-destructive/10 text-destructive-ink";
         return (
           <span
             key={p.name}
@@ -256,7 +256,7 @@ export function FirewallActions({
       </div>
 
       {policyBlocked && (
-        <p className="text-xs leading-relaxed text-destructive">
+        <p className="text-xs leading-relaxed text-destructive-ink">
           注意：当前网络的组策略禁止本地防火墙规则生效，上面的修复也会被系统忽略。请联系 IT
           用域策略下发放行规则，或改用反向连接（出站）方式接入。
         </p>

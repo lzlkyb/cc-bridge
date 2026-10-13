@@ -82,7 +82,7 @@ export function StepAddDir({
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-destructive hover:text-destructive"
+                className="text-destructive-ink hover:text-destructive-ink"
                 onClick={() => removeRoot(i)}
                 disabled={busy}
               >

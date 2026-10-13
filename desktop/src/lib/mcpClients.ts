@@ -54,23 +54,115 @@ export const CLIENT_VERIFY: Record<McpClientTool, string> = {
   generic: "在工具的 MCP 设置里确认 cc-bridge 显示已连接",
 };
 
-/** 自签兼容性标注（docs/client-compatibility.md 的 UI 摘要；实测推进后在此更新）。 */
-export const CLIENT_SELFSIGNED: Record<McpClientTool, { level: "ok" | "untested"; note: string }> = {
+/**
+ * 自签兼容性等级（接入向导徽章三态）。
+ * - `ok`：已确认可信任（有明确、已验证的信任路径）
+ * - `setup`：可信任，但需手动信任证书（设环境变量 / 导入根证书）
+ * - `unsupported`：确认无法信任自签 → 只能反代 + Let's Encrypt（**暂无实例**，由 P0-3 真机实测回填）
+ */
+export type SelfSignedLevel = "ok" | "setup" | "unsupported";
+
+/**
+ * 文案片段：字符串按普通文本渲染，`{ env }` 渲染为等宽 chip。
+ *
+ * WHY 用片段数组而不是「模板字符串 + 占位符替换」：generic 的一句话里要出现两个
+ * **不同**的环境变量，占位符方案要么退化成 `{env0}`/`{env1}`，要么得再切一次字符串；
+ * 片段数组直接、可类型检查，多个变量也不用特例。
+ */
+export type CopySeg = string | { env: string };
+
+/** 单条信任步骤（片段数组，便于在步骤正文里嵌环境变量 chip）。 */
+export type CopyStep = CopySeg[];
+
+export interface SelfSignedInfo {
+  level: SelfSignedLevel;
+  /** 一句话结论（徽章行正文，可嵌 `{ env }` chip）。 */
+  note: CopySeg[];
+  /** 信任步骤（`CertPemStep` 的「信任步骤」有序列表）。 */
+  steps: CopyStep[];
+  /** `true` = 已真机实测；`false` = 仅文档依据，UI 追加「文档依据 · 待实测」小标签。 */
+  verified: boolean;
+}
+
+/** 三态徽章的展示映射（纯数据放在 lib，便于单测；组件只做渲染）。 */
+export const SELFSIGNED_BADGE: Record<
+  SelfSignedLevel,
+  { label: string; className: string; icon: string }
+> = {
+  ok: { label: "可信任", className: "bg-success/12 text-success-ink", icon: "check" },
+  setup: { label: "需额外步骤", className: "bg-warning/12 text-warning-ink", icon: "alertTriangle" },
+  unsupported: {
+    label: "不支持自签",
+    className: "bg-destructive/10 text-destructive-ink",
+    icon: "close",
+  },
+};
+
+/**
+ * 自签兼容性标注（`docs/client-compatibility.md` 的 UI 摘要；实测推进后**两处同步更新**）。
+ *
+ * - 徽章行的文字色用 `-ink` 变体（比 `-foreground`/基础色深）：10px 字号 + 12% 淡底上，
+ *   基础 `--success hsl(142 71% 45%)` 在白底只有 ≈2.6:1，不达 WCAG AA，详见 index.css 注释。
+ * - 整块只在 HTTPS 远程访问开启时渲染（显示条件见 ToolGuide 的 `tlsEnabled` 守卫）。
+ */
+export const CLIENT_SELFSIGNED: Record<McpClientTool, SelfSignedInfo> = {
   "claude-code": {
     level: "ok",
-    note: "可通过 NODE_EXTRA_CA_CERTS 信任自签证书",
+    verified: true,
+    note: [
+      "启动 claude 前设 ",
+      { env: "NODE_EXTRA_CA_CERTS" },
+      " 指向导出的 cc-bridge.crt 即可。",
+    ],
+    steps: [
+      ["导出 cc-bridge.crt 到本地（下方按钮）"],
+      ["启动前导出环境变量：", { env: "NODE_EXTRA_CA_CERTS=/path/cc-bridge.crt" }],
+    ],
   },
   workbuddy: {
-    level: "untested",
-    note: "自签兼容性待实测；有域名时建议反代 + Let's Encrypt",
+    level: "setup",
+    verified: false,
+    note: ["运行在 Node 上，认 ", { env: "NODE_EXTRA_CA_CERTS" }, " 指向 cc-bridge.crt。"],
+    steps: [
+      ["导出 cc-bridge.crt 到本地（下方按钮）"],
+      ["以该环境变量启动 WorkBuddy：", { env: "NODE_EXTRA_CA_CERTS=/path/cc-bridge.crt" }],
+    ],
   },
   codex: {
-    level: "untested",
-    note: "自签兼容性待实测；有域名时建议反代 + Let's Encrypt",
+    level: "setup",
+    verified: false,
+    note: [
+      "Codex 会校验证书；设 ",
+      { env: "CODEX_CA_CERTIFICATE" },
+      " 指向 cc-bridge.crt（未设时回退 ",
+      { env: "SSL_CERT_FILE" },
+      "，再回退系统根证书）。",
+    ],
+    steps: [
+      ["导出 cc-bridge.crt 到本地（下方按钮）"],
+      ["启动前导出环境变量：", { env: "CODEX_CA_CERTIFICATE=/path/cc-bridge.crt" }],
+    ],
   },
   generic: {
-    level: "untested",
-    note: "视工具的 TLS 策略而定",
+    level: "setup",
+    verified: false,
+    note: [
+      "Node 类工具认 ",
+      { env: "NODE_EXTRA_CA_CERTS" },
+      "；Rust 类工具常认 ",
+      { env: "SSL_CERT_FILE" },
+      " 或系统根证书。无法信任时改用反向代理 + Let's Encrypt。",
+    ],
+    steps: [
+      ["导出 cc-bridge.crt 到本地（下方按钮）"],
+      [
+        "按工具的 TLS 策略导入该证书（Node 系设 ",
+        { env: "NODE_EXTRA_CA_CERTS" },
+        "，Rust 系设 ",
+        { env: "SSL_CERT_FILE" },
+        "）",
+      ],
+    ],
   },
 };
 
@@ -92,7 +184,9 @@ export function buildGenericPrompt(input: SnippetInput): string {
     "按你自己的配置方式接入并验证，完成后告诉我结果。",
   ];
   if (input.tls) {
-    lines.push("注意：HTTPS 为自签证书，无法信任时告知用户先信任 cc-bridge.crt。");
+    lines.push(
+      "注意：HTTPS 为自签证书；无法信任时先让用户信任 cc-bridge.crt（Node 系设 NODE_EXTRA_CA_CERTS，Rust 系设 SSL_CERT_FILE 或导入系统根证书）。",
+    );
   }
   return lines.join("\n");
 }
@@ -119,20 +213,13 @@ export function buildClientSnippet(tool: McpClientTool, input: SnippetInput): Cl
   switch (tool) {
     case "claude-code": {
       // scope 沿用 lib/utils.ts 的 buildConnectCommand（在基础命令上替换补全）。
+      // 自签信任指引不在这里出：统一由 CLIENT_SELFSIGNED["claude-code"] 承载
+      // （徽章行 note + CertPemStep 的信任步骤），避免同一件事在片段 note 里再说一遍。
       const cmd = buildBaseCommand(input.host, input.port, input.token, input.transport, input.tls);
-      if (input.tls) {
-        notes.push(
-          "自签证书需先信任：把桥导出的 cc-bridge.crt 保存到本地，并在启动 claude 前设置 NODE_EXTRA_CA_CERTS=证书路径",
-        );
-      }
       return { kind: "command", target: CLIENT_TARGETS[tool], code: cmd, notes };
     }
     case "workbuddy":
-      if (input.tls) {
-        notes.push(
-          "WorkBuddy 对自签证书的信任策略待实测（见兼容性矩阵）；失败时优先改用反代 + Let's Encrypt",
-        );
-      }
+      // 同上：自签信任指引归 CLIENT_SELFSIGNED.workbuddy（env = NODE_EXTRA_CA_CERTS）。
       return {
         kind: "json",
         target: CLIENT_TARGETS[tool],
@@ -145,11 +232,7 @@ export function buildClientSnippet(tool: McpClientTool, input: SnippetInput): Cl
           "Codex 仅支持 streamable HTTP（不支持 SSE），请在桥端连接设置切回 HTTP 传输后再接入",
         );
       }
-      if (input.tls) {
-        notes.push(
-          "Codex 对自签证书的信任策略待实测（见兼容性矩阵）；失败时优先改用反代 + Let's Encrypt",
-        );
-      }
+      // 自签信任指引归 CLIENT_SELFSIGNED.codex（env = CODEX_CA_CERTIFICATE → SSL_CERT_FILE → 系统根证书）。
       // Streamable HTTP 形态（url + http_headers）。旧版本若报不支持远程服务器，
       // 需在 config.toml 顶层加 experimental_use_rmcp_client = true。
       const toml = [

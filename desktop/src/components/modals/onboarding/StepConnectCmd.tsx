@@ -124,7 +124,7 @@ export function StepConnectCmd({
         <CommandBox command={connectCommand} copied={copied} onCopy={copyConnect} />
         {tlsEnabled && (
           <p className="rounded-lg bg-warning/8 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
-            <b className="text-warning">HTTPS 自签</b>
+            <b className="text-warning-ink">HTTPS 自签</b>
             ：远程 Claude Code 需先信任桥的自签证书——在「设置 › 安全 › HTTPS 远程访问」复制证书 PEM
             保存为 cc-bridge.crt，并在启动 claude 前设置 NODE_EXTRA_CA_CERTS=证书路径。
           </p>

@@ -279,7 +279,7 @@ export function BackupAuditGroup({
             else void handleCleanBefore(p.days, p.origin);
           }}
         >
-          <div className="flex gap-2 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2 text-[11px] leading-relaxed text-warning">
+          <div className="flex gap-2 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2 text-[11px] leading-relaxed text-warning-ink">
             <Icon name="alert" size={13} className="mt-0.5 shrink-0" />
             <span>删除后无法在日志页追溯历史调用。如想留档，可先到日志页导出 JSON / CSV。</span>
           </div>

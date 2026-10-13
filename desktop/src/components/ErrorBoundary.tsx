@@ -44,7 +44,7 @@ export class ErrorBoundary extends Component<Props, State> {
         <div className="eb-mask flex h-screen flex-col items-center justify-center gap-4 bg-background p-8 text-center">
           <div className="eb flex flex-col items-center gap-4 text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10 eb-ico">
-              <Icon name="alertTriangle" size={32} className="text-destructive" />
+              <Icon name="alertTriangle" size={32} className="text-destructive-ink" />
             </div>
             <div className="space-y-1.5">
               <h3 className="text-lg font-semibold text-foreground">应用遇到错误</h3>

@@ -74,7 +74,7 @@ export function MetricCards({
         unit=" 毫秒"
         sub={avg > 0 ? `平均 ${avg}毫秒 · 尾部慢 ${tailRatio.toFixed(1)} 倍` : "暂无数据"}
         seriesKey="p95"
-        color="text-success"
+        color="text-success-ink"
         chart="bars"
         onNavigate={onNavigate}
         nav={{ tab: "log", anchor: "perf", title: "去日志页看性能分析" }}
@@ -95,7 +95,7 @@ export function MetricCards({
         value={running ? String(s?.activeCommands ?? 0) : "0"}
         sub={(s?.activeCommands ?? 0) > 0 ? "后台运行中" : "当前无后台命令"}
         seriesKey="active"
-        color="text-warning"
+        color="text-warning-ink"
         chart="step"
         onNavigate={onNavigate}
         nav={{ tab: "security", title: "去安全页看运行中的后台命令" }}

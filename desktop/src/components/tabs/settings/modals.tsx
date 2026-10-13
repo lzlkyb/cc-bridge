@@ -20,7 +20,7 @@ export function ResetModal({
   return (
     <ConfirmModal open onClose={onCancel} maxWidth="sm">
       <h4 className="mb-2 flex items-center gap-2 text-base font-semibold">
-        <Icon name="alertTriangle" size={18} className="text-warning" />
+        <Icon name="alertTriangle" size={18} className="text-warning-ink" />
         重置功能开关为默认？
       </h4>
       <p className="mb-4 text-sm text-muted-foreground">

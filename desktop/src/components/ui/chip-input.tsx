@@ -201,7 +201,7 @@ export function ChipInput({
         </button>
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-[11px] font-semibold tracking-wide text-destructive transition-all hover:border-destructive"
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-[11px] font-semibold tracking-wide text-destructive-ink transition-all hover:border-destructive"
           onClick={() => onChange([])}
         >
           清空

@@ -80,7 +80,7 @@ export function HealthCard({
         健康度 · 安全治理
         <span
           className={`ml-auto text-[10px] font-bold normal-case tracking-normal ${
-            recommended ? "text-success" : "text-warning"
+            recommended ? "text-success-ink" : "text-warning-ink"
           }`}
         >
           {recommended ? "推荐状态 ✓" : "有防线未开"}

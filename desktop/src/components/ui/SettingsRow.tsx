@@ -45,7 +45,7 @@ export function SettingsRow({
           {saved && <SavedHint>已保存</SavedHint>}
         </div>
         {!isStack && sub && (
-          <div className={`d mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>
+          <div className={`d mt-0.5 text-xs ${danger ? "text-destructive-ink" : "text-muted-foreground"}`}>
             {sub}
           </div>
         )}
@@ -56,7 +56,7 @@ export function SettingsRow({
 
       {/* 竖排时说明置于控制区下方 */}
       {isStack && sub && (
-        <div className={`d text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>{sub}</div>
+        <div className={`d text-xs ${danger ? "text-destructive-ink" : "text-muted-foreground"}`}>{sub}</div>
       )}
     </div>
   );

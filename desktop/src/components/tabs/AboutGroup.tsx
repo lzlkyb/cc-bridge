@@ -290,7 +290,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 function UpdateStatusPill({ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, onOpenNotes }: { status: UpdateStatus; update: UpdateInfo | null; progress: number; progressIndeterminate: boolean; bytesPerSec: number; downloadedBytes: number; onOpenNotes?: () => void }) {
   if (status === "uptodate") {
     return (
-      <span className="status-pill flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success">
+      <span className="status-pill flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success-ink">
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
         已是最新
       </span>
@@ -299,7 +299,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
   if (status === "available") {
     return (
       <span
-        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-[3px] text-[11px] font-semibold text-warning transition-colors hover:bg-warning/20"
+        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-[3px] text-[11px] font-semibold text-warning-ink transition-colors hover:bg-warning/20"
         title="查看本次更新内容"
         onClick={(e) => {
           e.stopPropagation();
@@ -320,7 +320,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
             <span className="relative h-1 w-12 overflow-hidden rounded-full bg-primary/20">
               <span className="indet-fill" />
             </span>
-            <span className="font-normal text-primary/70">{`已下载 ${formatBytes(downloadedBytes)} · ${formatBytesPerSec(bytesPerSec)}`}</span>
+            <span className="font-normal text-primary">{`已下载 ${formatBytes(downloadedBytes)} · ${formatBytesPerSec(bytesPerSec)}`}</span>
           </>
         ) : (
           <>
@@ -331,7 +331,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
                 style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
               />
             </span>
-            {bytesPerSec > 0 && <span className="font-normal text-primary/70">{formatBytesPerSec(bytesPerSec)}</span>}
+            {bytesPerSec > 0 && <span className="font-normal text-primary">{formatBytesPerSec(bytesPerSec)}</span>}
           </>
         )}
       </span>
@@ -339,7 +339,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
   }
   if (status === "ready") {
     return (
-      <span className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success">
+      <span className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success-ink">
         已下载
       </span>
     );
@@ -348,7 +348,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
   // 「重试」按钮，用户不知道发生了什么、更不知道为什么要点它。
   if (status === "error") {
     return (
-      <span className="flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-[3px] text-[11px] font-semibold text-destructive">
+      <span className="flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-[3px] text-[11px] font-semibold text-destructive-ink">
         <Icon name="alertTriangle" size={11} />
         更新失败
       </span>

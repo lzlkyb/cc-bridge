@@ -8,6 +8,9 @@ import { Icon } from "./icon";
  *                  （复制命令）直接放在细条上、免展开一步完成；点击其余区域展开详情；
  *                  autoCollapseSec > 0 时带可视倒计时环，到 0 自动收起（细条常驻不消失）。
  * 配色只用语义 token（warning/destructive/success/primary），深浅主题天然适配；
+ * 文字/图标一律用 -ink 变体：基础语义色在浅色淡底上仅 2.3–3.9:1（不达 AA 4.5:1 与
+ * 非文本 3:1），且 --warning-foreground 在深色下是近黑（叠淡底只有 1.05:1，完全不可读）。
+ * -ink 是配套的「浅色加深 / 深色提亮」版本，底透明度不变。info 走 primary，本就达标。
  * 动效由 index.css 尾部的 prefers-reduced-motion 全局降级兜底。
  */
 
@@ -21,18 +24,18 @@ const noticeStyles: Record<NoticeVariant, { box: string; icon: string; iconName:
     iconName: "info",
   },
   warning: {
-    box: "border-warning/35 bg-warning/[0.08] text-warning-foreground",
-    icon: "text-warning",
+    box: "border-warning/35 bg-warning/[0.08] text-warning-ink",
+    icon: "text-warning-ink",
     iconName: "alertTriangle",
   },
   error: {
-    box: "border-destructive/35 bg-destructive/[0.08] text-destructive",
-    icon: "text-destructive",
+    box: "border-destructive/35 bg-destructive/[0.08] text-destructive-ink",
+    icon: "text-destructive-ink",
     iconName: "alertTriangle",
   },
   success: {
-    box: "border-success/35 bg-success/[0.08] text-success",
-    icon: "text-success",
+    box: "border-success/35 bg-success/[0.08] text-success-ink",
+    icon: "text-success-ink",
     iconName: "check",
   },
 };
@@ -64,15 +67,15 @@ export function InlineNotice({
 const toneStyles: Record<Tone, { bar: string; iconBox: string; title: string; pill: string }> = {
   warning: {
     bar: "border-warning/35 hover:border-warning/60",
-    iconBox: "bg-warning/[0.14] text-warning",
-    title: "text-warning-foreground",
-    pill: "bg-warning/[0.13] text-warning",
+    iconBox: "bg-warning/[0.14] text-warning-ink",
+    title: "text-warning-ink",
+    pill: "bg-warning/[0.13] text-warning-ink",
   },
   destructive: {
     bar: "border-destructive/35 hover:border-destructive/60",
-    iconBox: "bg-destructive/[0.14] text-destructive",
-    title: "text-destructive",
-    pill: "bg-destructive/[0.13] text-destructive",
+    iconBox: "bg-destructive/[0.14] text-destructive-ink",
+    title: "text-destructive-ink",
+    pill: "bg-destructive/[0.13] text-destructive-ink",
   },
   info: {
     bar: "border-primary/30 hover:border-primary/60",
@@ -86,7 +89,7 @@ const RING_CIRC = 2 * Math.PI * 10.5; // r=10.5 → 周长 65.97
 
 /** 倒计时进度环：resolved 变绿示意「已处理」 */
 function CountdownRing({ remain, total, resolved, tone }: { remain: number; total: number; resolved: boolean; tone: Tone }) {
-  const color = resolved ? "stroke-success" : tone === "destructive" ? "stroke-destructive" : "stroke-warning";
+  const color = resolved ? "stroke-success-ink" : tone === "destructive" ? "stroke-destructive-ink" : "stroke-warning-ink";
   return (
     <span className="relative h-[26px] w-[26px] shrink-0" aria-hidden>
       <svg viewBox="0 0 26 26" className="h-full w-full -rotate-90">
@@ -105,7 +108,7 @@ function CountdownRing({ remain, total, resolved, tone }: { remain: number; tota
       </svg>
       <span
         className={`absolute inset-0 grid place-items-center text-[9px] font-bold tabular-nums ${
-          resolved ? "text-success" : "text-muted-foreground"
+          resolved ? "text-success-ink" : "text-muted-foreground"
         }`}
       >
         {resolved ? "✓" : remain}
@@ -223,8 +226,8 @@ export function ActionCard({
             disabled={copyDisabled}
             className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11.5px] font-semibold transition-all hover:-translate-y-px hover:shadow-card disabled:cursor-not-allowed disabled:opacity-40 ${
               copied || resolved
-                ? "border-success/50 bg-success/10 text-success"
-                : "border-warning/45 bg-warning/[0.09] text-warning-foreground hover:border-warning"
+                ? "border-success/50 bg-success/10 text-success-ink"
+                : "border-warning/45 bg-warning/[0.09] text-warning-ink hover:border-warning"
             } ${copied ? "animate-scale-in" : ""}`}
           >
             <Icon name={copied || resolved ? "check" : "copy"} size={12} />

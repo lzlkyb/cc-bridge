@@ -31,7 +31,7 @@ export function BackupCleanupPreviewPanel({
 
   if (error) {
     return (
-      <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[11.5px] text-destructive">
+      <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[11.5px] text-destructive-ink">
         预览失败：{error}
       </div>
     );
@@ -66,7 +66,7 @@ export function BackupCleanupPreviewPanel({
 
       {losing.length > 0 && (
         <div className="rounded-r-lg border-l-[3px] border-destructive bg-destructive/10 px-3 py-2.5 text-[11.5px]">
-          <div className="flex items-start gap-1.5 font-semibold text-destructive">
+          <div className="flex items-start gap-1.5 font-semibold text-destructive-ink">
             <Icon name="alertTriangle" size={13} className="mt-0.5 shrink-0" />
             其中 {losing.length} 个文件将不再有任何备份
           </div>
@@ -91,7 +91,7 @@ export function BackupCleanupPreviewPanel({
 
       {!stale && preview && losing.length === 0 && preview.count > 0 && (
         <div className="flex items-start gap-1.5 rounded-r-lg border-l-[3px] border-success bg-success/10 px-3 py-2.5 text-[11.5px]">
-          <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success" />
+          <Icon name="check" size={13} className="mt-0.5 shrink-0 text-success-ink" />
           <span>没有文件会失去全部备份。</span>
         </div>
       )}

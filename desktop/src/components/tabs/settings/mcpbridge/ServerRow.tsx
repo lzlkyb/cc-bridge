@@ -15,17 +15,17 @@ function badgeOf(s: McpBridgeServer, master: boolean): { text: string; cls: stri
   const map: Record<ServerState, { text: string; cls: string; dot: string }> = {
     ready: {
       text: `已就绪 · ${s.toolCount} 个工具`,
-      cls: "bg-success/12 text-success",
+      cls: "bg-success/12 text-success-ink",
       dot: "bg-success",
     },
-    stale: { text: "需刷新", cls: "bg-warning/14 text-warning", dot: "bg-warning" },
+    stale: { text: "需刷新", cls: "bg-warning/14 text-warning-ink", dot: "bg-warning" },
     unknown: { text: "未探测", cls: "bg-muted text-muted-foreground", dot: "bg-muted-foreground/50" },
     not_installed: {
       text: "命令未找到",
-      cls: "bg-destructive/12 text-destructive",
+      cls: "bg-destructive/12 text-destructive-ink",
       dot: "bg-destructive",
     },
-    failed: { text: "连接失败", cls: "bg-destructive/12 text-destructive", dot: "bg-destructive" },
+    failed: { text: "连接失败", cls: "bg-destructive/12 text-destructive-ink", dot: "bg-destructive" },
   };
   return map[s.state];
 }
@@ -144,7 +144,7 @@ export function ServerRow({
               让远程按项目切——每个目录会各起一个进程。只能选白名单根目录内的位置。
             </div>
             {server.allowRemoteCwd && (
-              <div className="mt-1 text-[11px] text-destructive">
+              <div className="mt-1 text-[11px] text-destructive-ink">
                 ⚠ 白名单<b>只限它从哪里启动，不限它启动后能碰什么</b>。
               </div>
             )}
@@ -160,7 +160,7 @@ export function ServerRow({
 
       {/* 错误原文就地展，不只弹 toast——toast 一闪就没了，而这里的错误往往得照着改命令。 */}
       {server.error && (
-        <div className="mt-1.5 whitespace-pre-wrap break-all rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-[11px] text-destructive">
+        <div className="mt-1.5 whitespace-pre-wrap break-all rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-[11px] text-destructive-ink">
           {server.error}
         </div>
       )}

@@ -17,7 +17,7 @@ export function SshDisconnectedBar({
 }) {
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs">
-      <Icon name="alertTriangle" size={13} className="shrink-0 text-destructive" />
+      <Icon name="alertTriangle" size={13} className="shrink-0 text-destructive-ink" />
       <span className="shrink-0 font-medium">连接已断开</span>
       {/* 原因可能很长（ssh 的诊断输出），截断显示，title 里放全文 */}
       <span title={reason} className="min-w-0 flex-1 truncate text-muted-foreground">

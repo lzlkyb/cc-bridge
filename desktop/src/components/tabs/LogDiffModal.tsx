@@ -85,7 +85,7 @@ export function LogDiffModal({ entry, onClose }: { entry: AuditEntry; onClose: (
             </div>
           )}
           {err && (
-            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive break-all">
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive-ink break-all">
               {err}
             </div>
           )}

@@ -60,7 +60,7 @@ export function SshUploadSheet({ files, initialDir, onCancel, onConfirm }: Sheet
           className="font-mono text-xs"
         />
         {err ? (
-          <p className="mt-1 text-xs text-destructive">{err}</p>
+          <p className="mt-1 text-xs text-destructive-ink">{err}</p>
         ) : (
           <p className="mt-1 text-xs text-muted-foreground">
             终端里 <code className="rounded bg-muted px-1">cd</code> 到哪里本地无法探知，

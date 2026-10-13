@@ -141,7 +141,7 @@ export function OnboardingGuide({
             <h3 className="text-base font-semibold leading-tight">{current.title}</h3>
           </div>
           {currentDone && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success-ink">
               <Icon name="check" size={12} /> 已完成
             </span>
           )}
@@ -178,7 +178,7 @@ export function OnboardingGuide({
 
         {/* H3：未完成时的轻量提示（不阻断继续）*/}
         {!currentDone && (
-          <p className="mt-3 flex items-center gap-1.5 text-xs text-warning">
+          <p className="mt-3 flex items-center gap-1.5 text-xs text-warning-ink">
             <Icon name="info" size={13} className="shrink-0" />
             {stepHints[step]}
           </p>

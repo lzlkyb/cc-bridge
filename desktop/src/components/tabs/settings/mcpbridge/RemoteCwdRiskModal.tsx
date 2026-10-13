@@ -33,7 +33,7 @@ export function RemoteCwdRiskModal({
 
   return (
     <ConfirmModal open onClose={onCancel} maxWidth="lg">
-      <h4 className="mb-3 flex items-center gap-2 text-base font-semibold text-destructive">
+      <h4 className="mb-3 flex items-center gap-2 text-base font-semibold text-destructive-ink">
         <Icon name="alertTriangle" size={18} />
         让远程自己选「{name}」的工作目录？
       </h4>
@@ -43,7 +43,7 @@ export function RemoteCwdRiskModal({
         <div className="mt-0.5 break-all font-mono text-[11.5px]">{currentCwd}</div>
       </div>
 
-      <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive">
+      <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive-ink">
         <div className="mb-1.5 font-semibold">开启后会变成：</div>
         <div className="mb-1">
           ① 远程可以每次调用指定一个目录，<b>每个目录会各起一个进程</b>。
@@ -70,7 +70,7 @@ export function RemoteCwdRiskModal({
       ) : (
         /* 白名单关着时这道护栏根本不存在，得说清楚——
            不说的话，用户会以为自己只开了白名单那么大的口子。 */
-        <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive">
+        <div className="mb-3 rounded-lg bg-destructive/10 px-3 py-2 text-xs text-destructive-ink">
           ⚠ <b>路径白名单当前是关的</b>，所以远程可以指定<b>任意目录</b>。
           想要那道护栏的话，先去安全卡里把白名单开回来。
         </div>

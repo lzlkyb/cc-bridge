@@ -125,7 +125,7 @@ export function RemoveConfirmDialog({
         <code className="mx-1 rounded bg-muted px-1.5 py-0.5 text-foreground">
           {target?.name}
         </code>
-        吗？该操作会<strong className="text-destructive">递归删除且不可恢复</strong>。
+        吗？该操作会<strong className="text-destructive-ink">递归删除且不可恢复</strong>。
       </p>
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onCancel}>

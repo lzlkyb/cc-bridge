@@ -44,7 +44,7 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
           外挂 MCP 桥
           <span
             className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-normal ${
-              master && onCount ? "bg-destructive/12 text-destructive" : "bg-muted text-muted-foreground"
+              master && onCount ? "bg-destructive/12 text-destructive-ink" : "bg-muted text-muted-foreground"
             }`}
           >
             {!master ? "未启用" : onCount ? `${onCount} 个已启用` : "已开启 · 无生效项"}
