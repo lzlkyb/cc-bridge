@@ -86,7 +86,9 @@ const INDIGO_LIGHT: ITheme = {
   yellow: "#9a6700",
   blue: "#0451a5",
   magenta: "#8250df",
-  cyan: "#0598bc",
+  // cyan 用 VS Code Light+ 的 #0598bc 时只有 3.37:1（低于 AA）。压亮度到 #027f9e → 4.63:1，
+  // 色相（≈192°）与饱和度不变，只是暗了一档。
+  cyan: "#027f9e",
   white: "#6e7781",
   brightBlack: "#6e7781",
   brightRed: "#cd3131",
@@ -94,7 +96,7 @@ const INDIGO_LIGHT: ITheme = {
   brightYellow: "#9a6700",
   brightBlue: "#0451a5",
   brightMagenta: "#8250df",
-  brightCyan: "#0598bc",
+  brightCyan: "#027f9e",
   brightWhite: "#24292f",
 };
 
@@ -152,13 +154,15 @@ const MONO_LIGHT: ITheme = {
   magenta: "#7a4fa0",
   cyan: "#2a7d8f",
   white: "#6b7280",
-  brightBlack: "#9aa0ab",
-  brightRed: "#b85c5c",
-  brightGreen: "#47874f",
-  brightYellow: "#9c7a24",
+  // 亮色盘 16 色 + 正文全部按 WCAG AA 4.5:1 校准过（回归断言在 terminalTheme.test.ts）。
+  // 下面这 5 项是原本不达标的，只压亮度、保色相。
+  brightBlack: "#6b7383",
+  brightRed: "#c34a4a",
+  brightGreen: "#2f8239",
+  brightYellow: "#916d13",
   brightBlue: "#4169ad",
   brightMagenta: "#8a5ab5",
-  brightCyan: "#2f8ba0",
+  brightCyan: "#1a7d94",
   brightWhite: "#3a3f4a",
 };
 
@@ -211,15 +215,16 @@ const CLASSIC_LIGHT: ITheme = {
   black: "#2b2b2b",
   red: "#b03a2e",
   green: "#1e7a3c",
-  yellow: "#8a6d1f",
+  // 米黄底比纯白更暗，黄系要再压一档才够 4.5:1（原 #8a6d1f 只有 4.34:1）。
+  yellow: "#886811",
   blue: "#1f4e79",
   magenta: "#7d3c98",
   cyan: "#0e6b6b",
   white: "#5a5a5a",
-  brightBlack: "#a0937f",
-  brightRed: "#c24434",
-  brightGreen: "#248a45",
-  brightYellow: "#9c7a24",
+  brightBlack: "#7b6a51",
+  brightRed: "#cb331f",
+  brightGreen: "#137d35",
+  brightYellow: "#896712",
   brightBlue: "#245a8a",
   brightMagenta: "#8e46ad",
   brightCyan: "#107a7a",
@@ -308,6 +313,50 @@ export const TERMINAL_SURFACE: Record<TerminalPreset, Record<Theme, string>> = {
 /** 取「主题 + 预设」对应的 xterm 调色板。 */
 export function terminalTheme(mode: Theme, preset: TerminalPreset = "indigo"): ITheme {
   return TERMINAL_PALETTES[preset][mode];
+}
+
+/**
+ * 亮色主题下的对比度兜底阈值（xterm `minimumContrastRatio`）。
+ *
+ * WHY 只有亮色开：这是兜底网，**不是主力**。主力是上面四套亮色盘本身的色值——它们已按
+ * WCAG AA 4.5:1 校准（`terminalTheme.test.ts` 有回归断言），所以对**终端自己的 ANSI 16 色**，
+ * 兜底在亮色下一次都不会触发（实测 0/16）。真会触发的是**远端程序自带的 truecolor 颜色**：
+ * Claude Code 等 TUI 有自己的主题系统，若它判定自己该用深色配色（默认值就是 `dark`，或
+ * `auto` 判明暗失败），就会把为黑底设计的近白文字画到白底上。实测 `#e6e6e6` 压在白底
+ * `#ffffff` 上只有 1.25:1（等于看不见），开着兜底会被拉到 `#6c6c6c`（≈5.5:1）——从「读不到」
+ * 变成「能读」。这是本方案里唯一能救「远端主题选错」的机制。
+ *
+ * 🔴 WHY 深色保持 1（xterm 默认 = 什么都不做），别顺手改成全局：
+ * 1. 四套深色盘的 `black` **恒等于 `background`** ——这是刻意设计（`\x1b[40m` 应与底色一致）。
+ *    一旦开兜底，xterm 会认定 1:1 需要修正并把 ANSI black 推成灰色（实测
+ *    `#1e1e1e→#8a8a8a`、`#16181d→#85868a`、`#0b110b→#7f837f`、`#000000→#797979`），
+ *    等于改写 ANSI black 在深色下的语义。
+ * 2. `CLASSIC_DARK.brightBlack`（2.40:1）是该预设刻意的低亮度暗调，会被拉到 4.86:1，
+ *    TUI 的边框与次要文字观感直接变掉。
+ * 3. 深色配色是 2.7.x 以来的成品，本次要修的是亮色可读性，不该顺带改深色。
+ *
+ * 阈值取 4.5 与 VS Code 对齐（`terminal.integrated.minimumContrastRatio` 自 1.66 起的默认值，
+ * 官方定位是「默认开启的无障碍特性」）。
+ */
+export const TERMINAL_MIN_CONTRAST_LIGHT = 4.5;
+
+/** 该主题下要用的 `minimumContrastRatio`。深色固定 1（关闭兜底，理由见上）。 */
+export function terminalContrastRatio(mode: Theme): number {
+  return mode === "light" ? TERMINAL_MIN_CONTRAST_LIGHT : 1;
+}
+
+/**
+ * 终端「主题相关」的 xterm 选项，一次给全。
+ *
+ * WHY 打包成一个函数而不是让调用方分别取：这两个值必须**始终一起更新**。
+ * 单独设 `theme` 而忘了改 `minimumContrastRatio`，就会在亮→暗切换后把 4.5 留在深色下生效，
+ * 触发上面注释里那串深色观感回归（ANSI black 变灰等）。合成一处调用，就没法只改一半。
+ */
+export function terminalThemeOptions(mode: Theme, preset: TerminalPreset = "indigo") {
+  return {
+    theme: terminalTheme(mode, preset),
+    minimumContrastRatio: terminalContrastRatio(mode),
+  };
 }
 
 /**
