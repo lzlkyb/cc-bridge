@@ -25,7 +25,9 @@ export function SshTerminalFind({ search }: { search: TerminalSearch }) {
   const label = !query ? "" : result.count === 0 ? "无结果" : `${result.index + 1} / ${result.count}`;
 
   return (
-    <div className="absolute right-3 top-3 z-20 flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
+    // animate-scale-in：弹出从锚点缩放淡入（0.16s）。只加动画类，不动浮层定位——
+    // 改占行布局会触发 fit → PTY 重排（见组件注释的警告）。
+    <div className="animate-scale-in absolute right-3 top-3 z-20 flex items-center gap-1 rounded-lg border border-border bg-card p-1 shadow-lg">
       <input
         ref={inputRef}
         value={query}
@@ -49,7 +51,9 @@ export function SshTerminalFind({ search }: { search: TerminalSearch }) {
         }}
         className="h-6 w-36 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
       />
-      <span className="min-w-[46px] text-center font-mono text-[10.5px] text-muted-foreground">
+      {/* key={label}：命中数变化重触发 metric-pop 微弹，提示「结果变了」。
+          .metric-pop 自带 inline-block（纯行内元素上 transform 不生效）。 */}
+      <span key={label} className="metric-pop min-w-[46px] text-center font-mono text-[10.5px] text-muted-foreground">
         {label}
       </span>
       <FindBtn title="上一个（Shift+Enter）" onClick={search.findPrev}>

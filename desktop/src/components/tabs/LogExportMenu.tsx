@@ -236,7 +236,7 @@ export function LogExportMenu({ filtered, entriesCount, total }: LogExportMenuPr
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-20 mt-1 flex min-w-[190px] flex-col rounded-md border bg-popover p-1 shadow-pop"
+          className="animate-scale-in absolute right-0 top-full z-20 mt-1 flex min-w-[190px] origin-top-right flex-col rounded-md border bg-popover p-1 shadow-pop"
         >
           {items.map((item, i) => (
             <button

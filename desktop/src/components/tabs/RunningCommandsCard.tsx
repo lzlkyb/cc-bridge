@@ -9,6 +9,7 @@ import { Icon } from "../ui/icon";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 import { Badge } from "../ui/badge";
 import { useAppHidden } from "../../lib/appVisibility";
+import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { CommandOutputPanel } from "./RunningCommandOutput";
 
 /**
@@ -26,6 +27,11 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
     refetchInterval: appHidden ? false : 3000,
   });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // tbody FLIP（设计稿：design/微动画补全-P0P1-设计稿.html）：轮询发现新命令行插入 /
+  // 清理宽限期行移除 / 展开输出行插入收回时平滑过渡，而不是闪现闪没。
+  // TableBody 已 forwardRef（ui/table 注释里就有审计日志 FLIP 的先例）。
+  // （hook 必须在下方条件 return 之前调用——React hooks 规则。）
+  const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>();
 
   const toggle = (handle: string) =>
     setExpanded((prev) => {
@@ -66,7 +72,7 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
               <TableHead className="w-[210px]" />
             </TableRow>
           </TableHeader>
-          <TableBody>
+          <TableBody ref={tbodyRef}>
             {commands.map((cmd, i) => (
               <Fragment key={cmd.handle}>
                 <TableRow

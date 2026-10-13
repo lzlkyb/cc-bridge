@@ -4,6 +4,7 @@ import type { RootProfile } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { useToast } from "../ui/toast";
+import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 
 /**
@@ -34,6 +35,10 @@ export function RootProfilePanel({
 }) {
   const { toast } = useToast();
   const [creating, setCreating] = useState(false);
+  // 面板根：animate-fade-in 播展开进场（父级条件渲染挂载时触发）；
+  // 同一 ref 挂 auto-animate FLIP——「+新建组 ↔ 表单」swap、重命名行替换、
+  // 删组后的行移除都平滑过渡。退场不做：需改父级延迟卸载，不成比例。
+  const listRef = useAutoAnimateRM<HTMLDivElement>();
   const [newName, setNewName] = useState("");
   const [copyCurrent, setCopyCurrent] = useState(true);
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -98,7 +103,7 @@ export function RootProfilePanel({
   };
 
   return (
-    <div className="overflow-hidden rounded-lg border border-border">
+    <div ref={listRef} className="animate-fade-in overflow-hidden rounded-lg border border-border">
       {profiles.map((p) => (
         <div
           key={p.name}

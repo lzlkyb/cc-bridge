@@ -1,5 +1,6 @@
-import { useEffect, type CSSProperties } from "react";
+import { type CSSProperties } from "react";
 import { Icon } from "../ui/icon";
+import { Modal } from "../ui/Modal";
 import { APP_INFO } from "../../lib/about";
 import { aboutCopy } from "../../lib/platform";
 
@@ -9,6 +10,10 @@ import { aboutCopy } from "../../lib/platform";
  * 2026-09-16：从 AboutGroup.tsx 原位抽出。它是自成一体的独立弹窗（遮罩 + Esc 关闭 +
  * 固定文案），原来内联在那个 495 行的组件里，既撑破了体量棘轮基线，也让「关于卡」
  * 的展开态布局与「了解一下这个软件」的说明内容混在一个函数里。
+ *
+ * 2026-10-13：手搓遮罩换统一 <Modal> 原语（设计稿：design/微动画补全-P0P1-设计稿.html）
+ * ——补上内容 scale 弹入与关闭退场动画（原先关闭是硬消失），顺带获得焦点陷阱；
+ * 自管 Esc 逻辑删除（Modal 内置）。表面类沿用 modal-surface（与 Dialog 一致的基底）。
  */
 
 /** 弹框内核心能力数据 */
@@ -34,33 +39,19 @@ export function AboutInfoModal({
   /** 决定统计口径与两条卖点的平台差异（见 lib/platform.ts 的 aboutCopy）。 */
   platform?: string;
 }) {
-  // Esc 关闭（项目内 Modal/ConfirmDialog 均有此行为，补齐一致性）。
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
   // 统计口径（安装包体积、内存、进程隔离机制）在 Windows 与 macOS 上都不一样，
   // 所以放在这里算、由 platform 决定，而不是写死在文案里。
   const about = aboutCopy(platform);
 
   return (
-    <div
-      className="modal-overlay fixed inset-0 z-[1000] flex items-center justify-center"
-      onClick={onClose}
+    <Modal
+      open={open}
+      onClose={onClose}
+      zIndex={1000}
+      className="mx-4 max-h-[80vh] w-[480px] max-w-[90vw] overflow-y-auto rounded-2xl modal-surface p-7"
     >
-      <div
-        className="modal-box mx-4 max-h-[80vh] w-[480px] max-w-[90vw] overflow-y-auto rounded-2xl border border-border p-7 shadow-pop"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* 标题 */}
-        <div className="modal-header mb-[18px] flex items-center justify-between">
+      {/* 标题 */}
+      <div className="modal-header mb-[18px] flex items-center justify-between">
           <div className="flex items-center gap-2.5 text-lg font-extrabold text-foreground">
             <div
               className="flex h-8 w-8 items-center justify-center rounded-lg text-base text-white"
@@ -115,7 +106,6 @@ export function AboutInfoModal({
             ))}
           </div>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

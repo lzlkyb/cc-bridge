@@ -238,8 +238,10 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
         <TransferBar transfer={xfer.transfer} onCancel={xfer.cancel} />
       )}
 
-      {/* 文件列表 */}
+      {/* 文件列表。key={path}：换目录重挂 → FileTable 根的 animate-fade-in 播整列淡入；
+          同时顺带把滚动位置归位（新目录从顶部看起是正确语义）。 */}
       <FileTable
+        key={path}
         entries={entries}
         loading={loading}
         error={error}

@@ -1,4 +1,5 @@
 import { Icon } from "../ui/icon";
+import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import type { SshFileEntry } from "../../lib/types";
 
 /** 字节数 → 人类可读（B/KB/MB/GB/TB）。 */
@@ -123,6 +124,12 @@ interface FileTableProps {
 
 /**
  * 文件列表表格：错误条 + 空态 + 表头 + 行。
+ *
+ * 动画（设计稿：design/微动画补全-P0P1-设计稿.html）：
+ * - 根容器 `animate-fade-in`：换目录时由父组件 `key={path}` 重挂触发整列淡入；
+ * - tbody 接 auto-animate FLIP：新建/删除后 list 刷新时的**增量**行增删平滑过渡。
+ *   ⚠ tr 的 transform 度量在个别环境有兼容性差异（已探明风险），若真机失效
+ *   退级方案 = 仅保留换目录淡入（去掉 ref 即可）。
  */
 export function FileTable({
   entries,
@@ -133,8 +140,9 @@ export function FileTable({
   onDownload,
   onRemove,
 }: FileTableProps) {
+  const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>();
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="min-h-0 flex-1 animate-fade-in overflow-y-auto">
       {error && (
         <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {error}
@@ -152,7 +160,7 @@ export function FileTable({
             <th className="w-44 py-1.5 pr-3 text-right font-medium">操作</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody ref={tbodyRef}>
           {entries.map((e) => (
             <SshFileRow
               key={e.name}
