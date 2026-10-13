@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import type { Terminal } from "@xterm/xterm";
 import {
   TUI_VIRTUAL_TOTAL,
   TUI_THUMB_MIN_PX,
@@ -11,6 +12,10 @@ import {
   planDrag,
   wheelCounts,
   shiftWheelLines,
+  wheelPoint,
+  markSynthWheel,
+  isSynthWheel,
+  attachSelectWheelGuard,
 } from "./terminalScroll";
 
 describe("isTuiScrollActive", () => {
@@ -169,5 +174,158 @@ describe("shiftWheelLines（Shift+滚轮 → 本地滚动行数）", () => {
   it("deltaY=0 不动", () => {
     expect(shiftWheelLines(0, 0)).toBe(0);
     expect(shiftWheelLines(0, 1)).toBe(0);
+  });
+});
+
+describe("wheelPoint（合成 wheel 的命中坐标）", () => {
+  const rect = { left: 100, top: 50, width: 800, height: 400 };
+
+  it("指针在屏幕内：原样使用真实指针坐标", () => {
+    expect(wheelPoint(rect, { x: 300, y: 200 })).toEqual({ x: 300, y: 200 });
+  });
+
+  it("🔴 不再钉在屏幕中心：有指针就用指针", () => {
+    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    expect(wheelPoint(rect, { x: 110, y: 60 })).not.toEqual(center);
+  });
+
+  it("指针落在屏幕外时夹回矩形内（1px 内缩，避免命中测试落空）", () => {
+    expect(wheelPoint(rect, { x: 0, y: 0 })).toEqual({ x: 101, y: 51 });
+    expect(wheelPoint(rect, { x: 9999, y: 9999 })).toEqual({ x: 899, y: 449 });
+  });
+
+  it("没有指针时回退屏幕中心", () => {
+    expect(wheelPoint(rect, null)).toEqual({ x: 500, y: 250 });
+  });
+
+  it("没有屏幕矩形时退化为指针原值（无指针则 0,0）", () => {
+    expect(wheelPoint(null, { x: 7, y: 9 })).toEqual({ x: 7, y: 9 });
+    expect(wheelPoint(null, null)).toEqual({ x: 0, y: 0 });
+  });
+
+  it("矩形退化（宽高 ≤2px）时不夹紧，直接用中心", () => {
+    const tiny = { left: 10, top: 10, width: 2, height: 2 };
+    expect(wheelPoint(tiny, { x: 999, y: 999 })).toEqual({ x: 11, y: 11 });
+  });
+});
+
+describe("合成 wheel 标记", () => {
+  it("markSynthWheel 后 isSynthWheel 为真，未标记事件为假", () => {
+    const plain = { deltaY: -1 } as unknown as WheelEvent;
+    expect(isSynthWheel(plain)).toBe(false);
+    markSynthWheel(plain);
+    expect(isSynthWheel(plain)).toBe(true);
+  });
+});
+
+/** 记录型 fake 容器：既要断言注册参数（capture/passive），也要手动触发监听。 */
+function fakeContainer() {
+  const listeners: { type: string; fn: (e: unknown) => void; opts?: AddEventListenerOptions }[] = [];
+  return {
+    listeners,
+    addEventListener(type: string, fn: (e: unknown) => void, opts?: AddEventListenerOptions) {
+      listeners.push({ type, fn, opts });
+    },
+    removeEventListener(type: string, fn: (e: unknown) => void) {
+      const i = listeners.findIndex((l) => l.type === type && l.fn === fn);
+      if (i >= 0) listeners.splice(i, 1);
+    },
+    fireWheel(e: unknown) {
+      for (const l of listeners.filter((x) => x.type === "wheel")) l.fn(e);
+    },
+  };
+}
+
+interface FakeWheel {
+  deltaY: number;
+  deltaMode: number;
+  shiftKey: boolean;
+  prevented: boolean;
+  stopped: boolean;
+  preventDefault(): void;
+  stopPropagation(): void;
+}
+
+function fakeWheel(over: Partial<FakeWheel> = {}): FakeWheel {
+  return {
+    deltaY: -1,
+    deltaMode: 1,
+    shiftKey: false,
+    prevented: false,
+    stopped: false,
+    preventDefault() {
+      this.prevented = true;
+    },
+    stopPropagation() {
+      this.stopped = true;
+    },
+    ...over,
+  };
+}
+
+describe("attachSelectWheelGuard（选择态滚轮守卫）", () => {
+  const setup = (active: boolean) => {
+    const container = fakeContainer();
+    const scrollLines = vi.fn();
+    const detach = attachSelectWheelGuard(
+      container as unknown as HTMLElement,
+      () => active,
+      () => ({ scrollLines } as unknown as Terminal),
+    );
+    return { container, scrollLines, detach };
+  };
+
+  it("挂在捕获阶段且非 passive（否则拦不住 xterm 的默认行为）", () => {
+    const { container } = setup(false);
+    const wheels = container.listeners.filter((l) => l.type === "wheel");
+    expect(wheels).toHaveLength(1);
+    expect(wheels[0].opts?.capture).toBe(true);
+    expect(wheels[0].opts?.passive).toBe(false);
+  });
+
+  it("选择态：吞掉滚轮，不让它退化成 ↑/↓ 穿到远端", () => {
+    const { container } = setup(true);
+    const e = fakeWheel();
+    container.fireWheel(e);
+    expect(e.prevented).toBe(true);
+    expect(e.stopped).toBe(true);
+  });
+
+  it("选择态：顺手滚本地（主屏下仍有反应）", () => {
+    const { container, scrollLines } = setup(true);
+    container.fireWheel(fakeWheel({ deltaY: -5, deltaMode: 1 }));
+    expect(scrollLines).toHaveBeenCalledWith(-5);
+  });
+
+  it("非选择态：完全放行（普通滚动不受影响）", () => {
+    const { container, scrollLines } = setup(false);
+    const e = fakeWheel();
+    container.fireWheel(e);
+    expect(e.prevented).toBe(false);
+    expect(e.stopped).toBe(false);
+    expect(scrollLines).not.toHaveBeenCalled();
+  });
+
+  it("Shift+滚轮放行：交给 attachShiftWheel 的本地滚动路径", () => {
+    const { container, scrollLines } = setup(true);
+    const e = fakeWheel({ shiftKey: true });
+    container.fireWheel(e);
+    expect(e.prevented).toBe(false);
+    expect(scrollLines).not.toHaveBeenCalled();
+  });
+
+  it("🔴 合成的滚动条 wheel 不被自己吞掉（否则拖动滚动条失效）", () => {
+    const { container } = setup(true);
+    const e = fakeWheel();
+    markSynthWheel(e as unknown as WheelEvent);
+    container.fireWheel(e);
+    expect(e.prevented).toBe(false);
+    expect(e.stopped).toBe(false);
+  });
+
+  it("卸载后监听移除", () => {
+    const { container, detach } = setup(true);
+    detach();
+    expect(container.listeners.filter((l) => l.type === "wheel")).toHaveLength(0);
   });
 });

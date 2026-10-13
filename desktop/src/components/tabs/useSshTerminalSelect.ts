@@ -9,6 +9,7 @@ import {
 import type { Terminal } from "@xterm/xterm";
 import { toast } from "../ui/toast";
 import { MOUSE_REPORT_OFF } from "../../lib/terminalMouse";
+import { attachSelectWheelGuard } from "../../lib/terminalScroll";
 import { trimCopyText } from "../../lib/terminalPaste";
 
 /** 拖拽超过这个像素数才算「拖选」，以下当普通点击（不影响 TUI 定位光标）。 */
@@ -137,6 +138,15 @@ export function useSshTerminalSelect({
       container.addEventListener("mousedown", onDown);
       container.addEventListener("pointerdown", onDown);
 
+      // 选择态期间吞掉滚轮：只关了本地鼠标报告，远端仍以为跟踪开着，xterm 会把
+      // wheel 退化成 ↑/↓ 发给程序（Claude Code 拿它当输入框历史导航）——详见
+      // attachSelectWheelGuard 的说明。放在这里是因为守卫要读选择态。
+      const detachWheelGuard = attachSelectWheelGuard(
+        container,
+        () => selectActiveRef.current,
+        () => termRef.current,
+      );
+
       // 拖拽即选择：终端内按住左键并移动超过阈值即自动进选择态关本地鼠标报告，松手自动复制；
       // 纯点击（不移动）仍当普通点击，不影响 Claude Code 定位光标。
       // window 级监听：拖拽移出容器也能持续收到 move/up。
@@ -243,6 +253,7 @@ export function useSshTerminalSelect({
       return () => {
         container.removeEventListener("mousedown", onDown);
         container.removeEventListener("pointerdown", onDown);
+        detachWheelGuard();
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", copyOnRelease);
         window.removeEventListener("keydown", onKeyDownShift);

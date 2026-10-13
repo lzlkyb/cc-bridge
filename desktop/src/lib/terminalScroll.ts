@@ -115,6 +115,54 @@ export function wheelCounts(fromPos: number, toPos: number): { up: number; down:
   return delta < 0 ? { up: Math.round(-delta), down: 0 } : { up: 0, down: Math.round(delta) };
 }
 
+/** 屏幕矩形的几何子集（只取合成坐标要用的四项，便于单测喂假值）。 */
+export interface RectLike {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * 合成 wheel 的触发坐标。
+ *
+ * 🔴 为什么不能一律用屏幕中心：Claude Code 的滚轮处理是**按坐标做命中测试**的——
+ * `dispatchWheelEvent` 拿 (col,row) 反查命中的节点，再往上找带 onWheel 的祖先，
+ * 找不到才退回聚焦元素。屏幕正中恰好是权限对话框 / 多选项列表的常规位置，于是
+ * 「拖滚动条」变成「移动对话框选项」，甚至一路滚到 "No"（对应 TUI 内滚动视图的
+ * wheelup/wheeldown 绑定只在滚动视图获得焦点时才生效）。
+ *
+ * 优先取真实指针位置（拖 thumb / 点轨道时的鼠标坐标）并夹进屏幕矩形：夹紧是必需的，
+ * 落在屏幕外的坐标不会命中任何节点，等于把滚轮丢给未知的 fallback。
+ * 没有指针可用时（程序化滚动）才回退屏幕中心。
+ */
+export function wheelPoint(
+  rect: RectLike | null,
+  pointer: { x: number; y: number } | null,
+): { x: number; y: number } {
+  if (!rect) return { x: pointer?.x ?? 0, y: pointer?.y ?? 0 };
+  const cx = rect.left + rect.width / 2;
+  const cy = rect.top + rect.height / 2;
+  if (!pointer) return { x: cx, y: cy };
+  if (rect.width <= 2 || rect.height <= 2) return { x: cx, y: cy };
+  return {
+    x: Math.min(Math.max(pointer.x, rect.left + 1), rect.left + rect.width - 1),
+    y: Math.min(Math.max(pointer.y, rect.top + 1), rect.top + rect.height - 1),
+  };
+}
+
+const SYNTH_WHEEL_FLAG = "__ccbSynthWheel";
+
+/** 给本模块合成的滚动条 wheel 打标记：选择态守卫据此放行，否则会把自己的事件吞掉。 */
+export function markSynthWheel(e: WheelEvent): void {
+  (e as WheelEvent & Record<string, unknown>)[SYNTH_WHEEL_FLAG] = true;
+}
+
+/** 是否为本模块合成的滚动条 wheel。 */
+export function isSynthWheel(e: WheelEvent): boolean {
+  return Boolean((e as WheelEvent & Record<string, unknown>)[SYNTH_WHEEL_FLAG]);
+}
+
 /** 边界跳转的转义序列（xterm 编码：修饰参数 5 = Ctrl）。 */
 export const TUI_EDGE_SEQ = {
   /** Ctrl+Home：跳到最早。 */
@@ -184,22 +232,24 @@ export function attachTuiScrollbar(
     thumb.style.height = `${heightPx}px`;
   };
 
-  /** 合成 wheel 事件：deltaMode=LINE，1 次 = 1 行（探针实证 1:1 转 SGR）。 */
-  const sendWheel = (up: boolean) => {
+  /**
+   * 合成 wheel 事件：deltaMode=LINE，1 次 = 1 行（探针实证 1:1 转 SGR）。
+   * pointer：真实指针坐标（拖 thumb / 点轨道时传入），见 wheelPoint 的命中测试说明。
+   */
+  const sendWheel = (up: boolean, pointer: { x: number; y: number } | null) => {
     const screen = element.querySelector(".xterm-screen");
     const r = screen instanceof HTMLElement ? screen.getBoundingClientRect() : null;
-    const cx = r ? r.left + r.width / 2 : 0;
-    const cy = r ? r.top + r.height / 2 : 0;
-    element.dispatchEvent(
-      new WheelEvent("wheel", {
-        deltaMode: 1 /* DOM_DELTA_LINE */,
-        deltaY: up ? -1 : 1,
-        clientX: cx,
-        clientY: cy,
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
+    const { x, y } = wheelPoint(r, pointer);
+    const ev = new WheelEvent("wheel", {
+      deltaMode: 1 /* DOM_DELTA_LINE */,
+      deltaY: up ? -1 : 1,
+      clientX: x,
+      clientY: y,
+      bubbles: true,
+      cancelable: true,
+    });
+    markSynthWheel(ev); // 选择态守卫要认出自产事件并放行
+    element.dispatchEvent(ev);
   };
 
   const sendEdge = (edge: "home" | "end") => {
@@ -207,10 +257,10 @@ export function attachTuiScrollbar(
   };
 
   /** 前向：把 pos 从 from 推到 to（夹紧），按需发 wheel 与边界命令。 */
-  const forwardTo = (from: number, plan: DragPlan) => {
+  const forwardTo = (from: number, plan: DragPlan, pointer: { x: number; y: number } | null = null) => {
     const { up, down } = wheelCounts(from, plan.target);
-    for (let i = 0; i < up; i++) sendWheel(true);
-    for (let i = 0; i < down; i++) sendWheel(false);
+    for (let i = 0; i < up; i++) sendWheel(true, pointer);
+    for (let i = 0; i < down; i++) sendWheel(false, pointer);
     if (plan.overflowUp > 0 && topArmed) {
       sendEdge("home");
       topArmed = false;
@@ -246,7 +296,7 @@ export function attachTuiScrollbar(
     if (pos >= TUI_EDGE_REARM_LINES) topArmed = true;
     if (pos <= TUI_VIRTUAL_TOTAL - TUI_EDGE_REARM_LINES) bottomArmed = true;
     if (plan.target !== lastSentPos || plan.overflowUp > 0 || plan.overflowDown > 0) {
-      forwardTo(lastSentPos, plan);
+      forwardTo(lastSentPos, plan, { x: e.clientX, y: e.clientY });
       lastSentPos = plan.target;
     }
   };
@@ -269,7 +319,7 @@ export function attachTuiScrollbar(
     // 点 thumb 上方 → 向上翻一屏（deltaLinesUp 为正 = 向上滚）。
     const above = e.clientY - barRect.top < thumbTop;
     const jump = Math.max(1, term.rows) * (above ? 1 : -1);
-    forwardTo(pos, planDrag(pos, jump, TUI_VIRTUAL_TOTAL));
+    forwardTo(pos, planDrag(pos, jump, TUI_VIRTUAL_TOTAL), { x: e.clientX, y: e.clientY });
   };
   bar.addEventListener("pointerdown", onBarPointerDown);
 
@@ -354,4 +404,50 @@ export function attachShiftWheel(term: Terminal): void {
     if (lines !== 0) term.scrollLines(lines);
     return false;
   });
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 选择态滚轮守卫（别让滚轮把 ↑/↓ 灌进 TUI）
+ *
+ * WHY：选择模式 / 按住 Shift / 拖拽即选期间，我们只关**本地** xterm 的鼠标报告
+ * （`MOUSE_REPORT_OFF`），远端程序对此毫不知情，仍以为自己有鼠标跟踪。此时 xterm
+ * 手里没有可转发的鼠标协议（本地报告关了），备用屏又没有 scrollback，于是落进它
+ * 自己的兜底分支：把 wheel 改写成方向键 `\x1b[A/\x1b[B` 直接发给远端
+ * （xterm `CoreBrowserTerminal.cancel(ev, true)` 那条路，headless 探针实测）。
+ *
+ * 而 Claude Code 把 ↑/↓ 当**输入框历史导航**（官方 issue #66601，它内置的告警文案
+ * 就是 "Scroll wheel is sending arrow keys · use PgUp/PgDn to scroll"）——滚一下就把
+ * 草稿换成上一条 prompt，回车再把这个旧 prompt 提交出去。这就是「滚轮打断对话」。
+ *
+ * 实现：容器**捕获**阶段短路。xterm 的 wheel 监听挂在终端根元素上，捕获先于它执行，
+ * 一旦 stopPropagation，整条路径（SGR 转发 / 方向键兜底 / 本地滚动）都不会发生。
+ * 有本地 scrollback 时顺手滚本地（主屏下开选择模式仍能滚），备用屏无 scrollback 时
+ * 静默——总之不让任何东西穿到远端。
+ *
+ * 放行两种：① 本模块合成的滚动条 wheel（否则拖动滚动条会被自己吞掉）；
+ * ② Shift+滚轮，那条路径由 attachShiftWheel 的 custom wheel handler 接管。
+ *   🔴 守卫挂在容器上，而 custom wheel handler 在 xterm 内部执行——捕获阶段一吞，
+ *   Shift+滚轮本地滚动会一起失效，所以必须显式放行。
+ *
+ * ⚠️ 与其它容器级监听的顺序：本守卫在捕获阶段 stopPropagation，注册在它之后的
+ * 容器级 wheel 监听（无论捕获还是冒泡）在选择态下都收不到事件。将来若把 Ctrl+滚轮
+ * 缩放（useTerminalFontSize，现挂冒泡阶段）改成容器捕获监听，要么放在本守卫之前
+ * 注册，要么在此处显式放行 Ctrl/Meta，否则缩放会在选择态静默失效。
+ */
+export function attachSelectWheelGuard(
+  container: HTMLElement,
+  isSelectActive: () => boolean,
+  getTerm: () => Terminal | null,
+): () => void {
+  const onWheel = (e: WheelEvent) => {
+    if (isSynthWheel(e)) return;
+    if (e.shiftKey) return;
+    if (!isSelectActive()) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const lines = shiftWheelLines(e.deltaY, e.deltaMode);
+    if (lines !== 0) getTerm()?.scrollLines(lines);
+  };
+  container.addEventListener("wheel", onWheel, { capture: true, passive: false });
+  return () => container.removeEventListener("wheel", onWheel, { capture: true });
 }
