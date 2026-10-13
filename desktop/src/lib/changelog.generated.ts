@@ -4,6 +4,35 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.8.0",
+    date: "2026-10-13",
+    items: [
+      { category: "feat", text: "连接页评审修复——has_onboarded 新用户判定、本机探测三态角标、结构收敛、CJK 排版、generic 提示词接入" },
+      { category: "feat", text: "设置 tab 移到最末位（导航末位惯例）+ Ctrl+, 键位" },
+      { category: "feat", text: "终端滚轮归属四态徽章+翻转引导+救急面板；stty 残渣常驻吞除" },
+      { category: "feat", text: "微动画补全第二批——工具tab/引导步骤体/版本历史视图切换入场" },
+      { category: "feat", text: "微动画补全 P0+P1（设计稿 design/微动画补全-P0P1-设计稿.html）" },
+      { category: "feat", text: "设置页信息架构重排（簇标题 + 用户任务分簇 + 五入口确认）" },
+      { category: "feat", text: "日志页 a11y 键盘交互批次（设计稿 8 项全落地）" },
+      { category: "feat", text: "P0 四项 + P1 两项——Claude Code 用户痛点批次" },
+      { category: "feat", text: "代答 OSC 10/11 颜色查询，Claude Code theme:auto 跟随桥主题" },
+      { category: "feat", text: "P1 批次命令导航 + 路径点击跳文件浏览器" },
+      { category: "feat", text: "P0 批次 TUI 友好功能五项" },
+      { category: "feat", text: "TUI 态虚拟滚动条（Claude Code 等全屏程序滚动）" },
+      { category: "feat", text: "接入向导多工具化（Claude Code/WorkBuddy/Codex/通用）+ 接入命令 TLS 感知" },
+      { category: "feat", text: "P1 HTTPS 远程访问（自签 TLS + 401 封禁）+ 双向桥 RFC" },
+      { category: "feat", text: "统一通知系统——三级分级模型收敛 12 处分散通知实现" },
+      { category: "improve", text: "文件管控卡渐进披露拆分，移出体量基线（301→117 行）" },
+      { category: "improve", text: "安全页去重统一——三核心开关唯一家，风险判定单一源" },
+      { category: "fix", text: "终端 UI critique 修复——引导条覆盖层化、语义色分诊、卡片动作收口、快捷键面板" },
+      { category: "fix", text: "SSH 钩子注入回显治理（stty 舞步）+ 六处截断/竖排 UI 缺陷" },
+      { category: "fix", text: "终端重连后鼠标移动/滚轮变 SGR 乱码" },
+      { category: "fix", text: "终端拖选 Claude Code 输出内容复制不出文字" },
+      { category: "fix", text: "设置页侧栏导航点击高亮错位/无响应" },
+      { category: "fix", text: "终端 Ctrl+V 粘贴内容重复两条" },
+    ],
+  },
+  {
     version: "2.7.7",
     date: "2026-10-10",
     items: [
@@ -150,18 +179,6 @@ export const CHANGELOG: ChangelogEntry[] = [
     items: [
       { category: "feat", text: "关于页新增赞助开发者入口 + mcp_proxy 描述带上已挂载外挂工具名" },
       { category: "feat", text: "`mcp_proxy` 的描述会带上当前已挂载外挂 server 的工具名（如 `codegraph: codegraph_explore, codegraph_callers, ...`）。这不是给人读的文案，是喂给客户端工具检索的领域词：Claude Code v2.1.7+ 默认开启 Tool Search，工具描述不再常驻上下文而是按需检索，而 `mcp_proxy` 原描述里一个领域词都没有，模型查代码结构时根本检索不到它，外挂 server 等于隐身。没挂任何 server 时描述与改动前逐字相同" },
-    ],
-  },
-  {
-    version: "2.6.3",
-    date: "2026-08-12",
-    items: [
-      { category: "fix", text: "成功的编辑不再顶着一句矛盾的提醒。上版让带 Windows 换行的替换能匹配了，但成功响应里还会带一句“含 N 个回车符……重试可避免匹配失败”，容易让人（和模型）以为没成功而白跑一轮" },
-      { category: "improve", text: "补上真正的端到端回归测试。上版那条标着“回归”的单测只调了两次 `normalize_newlines` 断言字符串包含关系，把 `needle` 全改回 `f.old_string` 它照样全绿——等于零防护。现在在 `http.rs` 里真起服务、真读写文件，一次钉住三件事：CRLF 文件能匹配、写回仍是 CRLF、LF 文件不会被升成 CRLF" },
-      { category: "improve", text: "归一化规则真正收口。上版声称“两边不可能再脱钩”，实际四个使用点只改了两个；`encode_text` 的 round-trip 守卫与 `write_files` 还各自内联着一份拷贝，而 `encoding.rs` 里那句“不要在别处再抄一遍”的注释在同一个文件往下 93 行就被自己违反了。现已全部改调 `normalize_newlines`" },
-      { category: "improve", text: "纯 CR（经典 Mac）换行的行为从隐含前提变成明写契约：它会被转成 LF 且不还原（`crlf` 标志只看 `\\r\\n`），对这类文件改一个词会把全文行尾换掉。行为未变（该格式已基本绝迹，不值得为它多开一条还原路径），但现在有注释和测试钉着，日后想改必须先面对那条断言" },
-      { category: "improve", text: "空白告警改为算在归一化后的 `oldString` 上（上一条修复的实现）" },
-      { category: "improve", text: "更正 v2.6.2 的一条发版说明。原文把“空操作不再报成功”写成了修复旧缺陷，事实不是：老代码按原串比较 `oldString`/`newString`，`\"gamma\\r\\n\"` 与 `\"gamma\\n\"` 不相等会被放过，然后拿未归一化的原串去匹配、报 `oldString not found`——从不会假报成功。那道检查实际是为了堵住归一化自身新开出的口子。已将 2.6.2 那条从「修复」移到「技术细节」并改写；已发布的 GitHub Release 说明改不了，故在此留档 ---" },
     ],
   },
 ];
