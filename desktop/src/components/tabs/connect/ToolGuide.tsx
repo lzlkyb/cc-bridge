@@ -88,14 +88,20 @@ export function ToolGuide({
           {CLIENT_SELFSIGNED[tool].note}
         </p>
 
-        {tool === "claude-code" ? (
-          <>
-            {children}
-            {tlsEnabled && <ClaudeTlsNote input={input} />}
-          </>
-        ) : (
-          <ClientSteps tool={tool} input={input} />
-        )}
+        {/* Tab 内容切换微动画：key={tool} 换工具时重挂 → animate-tab-in 播入场
+            （与顶层 Tab 页切换同一套语言，复用现有 keyframes，零新增 CSS）。
+            wrapper 接管了 CardContent 的 space-y-4（后者现在只隔 wrapper 与上方两兄弟），
+            故 wrapper 自带 space-y-4 保住 guide 块之间原本的间距。 */}
+        <div key={tool} className="animate-tab-in space-y-4">
+          {tool === "claude-code" ? (
+            <>
+              {children}
+              {tlsEnabled && <ClaudeTlsNote input={input} />}
+            </>
+          ) : (
+            <ClientSteps tool={tool} input={input} />
+          )}
+        </div>
       </CardContent>
     </Card>
   );

@@ -276,7 +276,7 @@ export function VersionHistoryModal({
               </div>
 
               {view === "file" ? (
-                <div className="grid grid-cols-[200px_1fr] gap-3">
+                <div key="file" className="animate-tab-in grid grid-cols-[200px_1fr] gap-3">
                   {/* 文件索引栏 */}
                   <div
                     className="overflow-y-auto max-h-[62vh] rounded-xl border border-border bg-muted/40 p-2"
@@ -473,7 +473,7 @@ export function VersionHistoryModal({
                 </div>
               ) : (
                 /* 按时间视图 */
-                <div className="overflow-hidden rounded-xl border border-border">
+                <div key="time" className="animate-tab-in overflow-hidden rounded-xl border border-border">
                   {groups
                     .flatMap((g) => g.entries.map((e, ei) => ({ g, e, ei })))
                     .sort((a, b) => b.e.createdAt.localeCompare(a.e.createdAt))

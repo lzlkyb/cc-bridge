@@ -159,18 +159,21 @@ export function OnboardingGuide({
           ))}
         </div>
 
-        {/* Body（可滚动，容纳步骤内容）*/}
+        {/* Body（可滚动，容纳步骤内容）。key={step}：换步重挂 → animate-tab-in 播入场，
+            与顶层 Tab / 工具 tab 同一套语言（微动画补全第二批）。 */}
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          {step === 0 && <StepAddDir status={status} onRefresh={onRefresh} />}
-          {step === 1 && (
-            <StepPickAddress status={status} selectedIp={selectedIp} onSelectIp={onSelectIp} />
-          )}
-          {step === 2 && (
-            <StepConnectCmd status={status} selectedIp={selectedIp} onCopied={() => setCopiedCmd(true)} />
-          )}
-          {step === 3 && (
-            <StepTest status={status} selectedIp={selectedIp} onTested={() => setTested(true)} />
-          )}
+          <div key={step} className="animate-tab-in">
+            {step === 0 && <StepAddDir status={status} onRefresh={onRefresh} />}
+            {step === 1 && (
+              <StepPickAddress status={status} selectedIp={selectedIp} onSelectIp={onSelectIp} />
+            )}
+            {step === 2 && (
+              <StepConnectCmd status={status} selectedIp={selectedIp} onCopied={() => setCopiedCmd(true)} />
+            )}
+            {step === 3 && (
+              <StepTest status={status} selectedIp={selectedIp} onTested={() => setTested(true)} />
+            )}
+          </div>
         </div>
 
         {/* H3：未完成时的轻量提示（不阻断继续）*/}
