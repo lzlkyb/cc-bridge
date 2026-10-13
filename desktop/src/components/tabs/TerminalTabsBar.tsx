@@ -102,7 +102,10 @@ export function TerminalTabsBar({
                       : "bg-muted-foreground/40"
                 }`}
               />
-              <span className={closed ? "line-through opacity-70" : undefined}>
+              <span
+                className={`min-w-0 max-w-48 truncate ${closed ? "line-through opacity-70" : ""}`}
+                title={s.conn.name || s.conn.host}
+              >
                 {s.conn.name || s.conn.host}
               </span>
               {/* 标题只作主机名的附加段：正常程序可显示，恶意标题顶不掉主机名。 */}

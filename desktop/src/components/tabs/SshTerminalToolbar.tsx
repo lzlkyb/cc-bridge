@@ -65,30 +65,35 @@ export function SshTerminalToolbar({
 }: Props) {
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2">
-      <Icon name="terminal" size={14} className="text-muted-foreground" />
-      <span className="text-sm font-medium">{conn.name || conn.host}</span>
-      <span className="hidden text-xs text-muted-foreground sm:inline">
+      <Icon name="terminal" size={14} className="shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate text-sm font-medium" title={conn.name || conn.host}>
+        {conn.name || conn.host}
+      </span>
+      <span
+        className="hidden min-w-0 truncate text-xs text-muted-foreground sm:inline"
+        title={`${conn.username}@${conn.host}:${conn.port}`}
+      >
         {conn.username}@{conn.host}:{conn.port}
       </span>
       {closed ? (
-        <span className="inline-flex items-center gap-1 rounded-full bg-destructive/15 px-2 py-0.5 text-[11px] font-medium text-destructive">
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-destructive/15 px-2 py-0.5 text-[11px] font-medium text-destructive">
           <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
           已断开
         </span>
       ) : (
-        <span className="inline-flex items-center gap-1 rounded-full bg-green-500/15 px-2 py-0.5 text-[11px] font-medium text-green-600 dark:text-green-400">
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-green-500/15 px-2 py-0.5 text-[11px] font-medium text-green-600 dark:text-green-400">
           <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
           已连接
         </span>
       )}
       {fullscreen && (
-        <span className="inline-flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">
           全屏 · F11 退出
         </span>
       )}
       {(selectMode || shiftActive || dragSelecting) && (
-        <span className="inline-flex items-center gap-1 rounded-full bg-indigo-500/15 px-2 py-0.5 text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
-          <span className="h-1.5 w-1.5 rounded-full bg-indigo-500" />
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-indigo-500/15 px-2 py-0.5 text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500" />
           {dragSelecting
             ? "拖选复制"
             : shiftActive && !selectMode
@@ -99,21 +104,21 @@ export function SshTerminalToolbar({
       {inputErr ? (
         <span
           title={inputErr}
-          className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-600 dark:text-red-400"
+          className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-600 dark:text-red-400"
         >
-          <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
           输入失败
         </span>
       ) : (
         !focused &&
         !closed && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+          <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
             点击终端以输入
           </span>
         )
       )}
-      <div className="ml-auto flex items-center gap-1 border-l border-border pl-2">
+      <div className="ml-auto flex shrink-0 items-center gap-1 border-l border-border pl-2">
         <ButtonIcon title="复制选中（Ctrl+Shift+C）" onClick={onCopy}>
           <Icon name="copy" size={14} />
         </ButtonIcon>

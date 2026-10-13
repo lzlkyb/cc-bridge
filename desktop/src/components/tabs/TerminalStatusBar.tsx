@@ -168,7 +168,8 @@ function Seg({
   return (
     <>
       {!isFirst && <Divider skin={skin} />}
-      <span style={style} title={title}>
+      {/* shrink-0 + nowrap：段宁可横向滚动（左区 overflow-x-auto）也不许折行撑高状态栏 */}
+      <span style={style} title={title} className="shrink-0 whitespace-nowrap">
         {skin.icons && icon && <Icon name={icon} size={11} />}
         {children}
       </span>

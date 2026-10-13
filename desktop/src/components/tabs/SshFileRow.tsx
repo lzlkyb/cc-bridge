@@ -50,18 +50,22 @@ export function SshFileRow({
       }`}
       onClick={() => clickable && onOpenDir(entry.name)}
     >
-      <td className="py-1.5 pl-3">
-        <span className="flex items-center gap-2 text-left">
+      {/* max-w 约束列宽：超长文件名截断（title 看全文），不把右侧列挤出面板 */}
+      <td className="max-w-[340px] py-1.5 pl-3">
+        <span className="flex min-w-0 items-center gap-2 text-left">
           <Icon
             name={entry.isDir ? "folder" : "file"}
             size={15}
-            className={entry.isDir ? "text-blue-500" : "text-muted-foreground"}
+            className={`shrink-0 ${entry.isDir ? "text-blue-500" : "text-muted-foreground"}`}
           />
-          <span className={entry.isDir ? "font-medium text-foreground" : ""}>
+          <span
+            className={`min-w-0 truncate ${entry.isDir ? "font-medium text-foreground" : ""}`}
+            title={entry.name}
+          >
             {entry.name}
           </span>
           {entry.isSymlink && (
-            <span className="text-[10px] text-muted-foreground">链接</span>
+            <span className="shrink-0 text-[10px] text-muted-foreground">链接</span>
           )}
         </span>
       </td>

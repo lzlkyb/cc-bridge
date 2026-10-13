@@ -47,7 +47,7 @@ export function FileHeader({
         <span className="text-sm font-medium" title={`${conn.username}@${conn.host}:${conn.port}`}>
           {conn.name || conn.host}
         </span>
-        <span className="truncate text-xs text-muted-foreground">
+        <span className="min-w-0 truncate text-xs text-muted-foreground" title={`${conn.username}@${conn.host}:${conn.port}`}>
           {conn.username}@{conn.host}:{conn.port}
         </span>
         <div className="ml-auto flex items-center gap-1">
@@ -90,7 +90,9 @@ export function FileHeader({
         >
           上一级
         </button>
-        <code className="truncate rounded bg-muted px-2 py-0.5 text-xs">{path}</code>
+        <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-0.5 text-xs" title={path}>
+          {path}
+        </code>
         {loading && <span className="text-xs text-muted-foreground">加载中…</span>}
       </div>
     </>

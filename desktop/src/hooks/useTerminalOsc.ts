@@ -10,6 +10,14 @@ import {
   parseOsc1337,
 } from "../lib/terminalStatusbar";
 import { navCmdStart, navCmdEnd } from "../lib/terminalCommandNav";
+import {
+  DANCE,
+  ECHO_OFF_CMD,
+  ECHO_ON_CMD,
+  attachEchoStrip,
+  danceNext,
+  type DancePhase,
+} from "../lib/terminalSttyDance";
 
 /**
  * 状态栏可见的远端信息。未拿到的字段保持 null，由状态栏决定要不要显示。
@@ -34,13 +42,6 @@ export interface TerminalStatus {
  */
 export type OscState = "pending" | "ready" | "off" | "unsupported" | "termNotReady";
 
-/** 等远端登录流程（banner / MOTD）走完再探测，太早发会被登录脚本吞掉。 */
-const PROBE_DELAY_MS = 900;
-/** 探针发出后多久没回执就判定「不是 bash/zsh」。 */
-const PROBE_TIMEOUT_MS = 1200;
-/** 注入后再发一个空回车，逼 shell 立刻重绘一次提示符 —— 否则要等用户自己按回车才收得到 OSC。 */
-const KICK_DELAY_MS = 300;
-
 interface Args {
   /** 会话 id。变化时（含重连）重置状态并重新探测。 */
   sessionId: string;
@@ -56,21 +57,17 @@ interface Args {
  *
  * ## 为什么是「会话刚连上时注入」而不是「随时注入」
  *
- * `lib/uploadDir.ts` 早就记过一条结论：「终端的 cwd 对我们是不可知的，往终端注入 `pwd`
- * 等于往一个**活着的 shell** 里打字」。那条结论没错，但它说的是会话**进行中**——
- * 那时用户可能正在 vim 里、正在输 sudo 密码，注入的字符会被当成输入。
+ * 注入是往一个**活着的 shell** 里打字，只在会话刚建立、用户一个字都还没敲时做一次
+ * （此时远端是干净的提示符）。这也是 VS Code / iTerm2 / Warp 的通行做法。
+ * 保险起见仍用 `typedRef` 兜底：xterm 收到过一次用户输入就**永久放弃注入**。
  *
- * 这里只在**会话刚建立、用户一个字都还没敲**时注入一次：此时远端是干净的提示符，
- * 不存在「打断用户在做的事」的问题。这也是 VS Code / iTerm2 / Warp 的通行做法。
- * 保险起见仍然用 `typedRef` 兜底：只要 xterm 收到过一次用户输入（onData），
- * 本次会话**永久放弃注入**。
+ * ## 回显治理（stty 舞步，见 lib/terminalSttyDance.ts 与 docs/SSH钩子注入回显治理方案.md）
  *
- * ## 已知代价（零 Rust 改动的必然结果）
- *
- * 注入是经已有的 `ssh_input` 发的，远端 PTY 的 echo 还开着，所以**回显会留在屏幕上**：
- * 探针一行、钩子一行。要彻底消除回显，得让后端在建立 SSH 连接时就带上远程命令
- * （如 `exec bash --init-file <(...)`），那需要改 `ssh_cmds.rs`。
- * 当前取舍：接受两行回显，换来零后端改动。
+ * 注入经 PTY 的行规程，ECHO=on 会把打入的字节回显到屏幕。治理时序：
+ * `stty -echo`（唯一可见残渣，前端剥除）→ 探针 → 钩子 → kick → `stty echo`，
+ * 全程静默。四条异常路径（用户敲键 / 探针超时 / 钩子超时 / 断开重连）都会强制恢复
+ * ECHO；restore 单次消费（echoOffRef），因为 ECHO 恢复后再发的 `stty echo`
+ * 会被回显成第二行残渣。
  */
 export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
   status: TerminalStatus;
@@ -83,10 +80,17 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     lastCmdMs: null,
   });
   const [state, setState] = useState<OscState>("pending");
-  // 探针回执：收到 `Shell=` 才说明远端是 bash/zsh，可以安全地发钩子。
-  const [probeOk, setProbeOk] = useState(false);
   // 用户是否已经在本次会话里敲过字。敲过就永不注入（见文件头注释）。
   const typedRef = useRef(false);
+  // 探针回执 / 第一条 133;A 的 ref 镜像：舞步定时器触发时读 ref，不读 setState 闭包。
+  const probeOkRef = useRef(false);
+  const readyRef = useRef(false);
+  // ECHO 是否处于关闭期：restore 的单次消费闸门（红线见 lib/terminalSttyDance.ts）。
+  const echoOffRef = useRef(false);
+  // 用户敲键时的紧急恢复回调（会话 effect 每轮重挂；restore 后置 null）。
+  const abortRef = useRef<(() => void) | null>(null);
+  // 探针回执到达时的续步回调：hook/kick/restore 时序从这里接棒。
+  const probeGoRef = useRef<(() => void) | null>(null);
   // 注入开关的实时镜像：OSC 处理器挂在 term 实例上、生命周期比本 hook 长，
   // 必须靠 ref 读到开关的最新值，否则关掉探测后处理器仍在偷偷更新状态。
   const enabledRef = useRef(enabled);
@@ -94,7 +98,10 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
 
   const reset = useCallback(() => {
     typedRef.current = false;
-    setProbeOk(false);
+    probeOkRef.current = false;
+    readyRef.current = false;
+    echoOffRef.current = false;
+    abortRef.current = null;
     setStatus({ cwd: null, branch: null, exitCode: null, lastCmdMs: null });
   }, []);
 
@@ -136,6 +143,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
       const d133 = term.parser.registerOscHandler(133, (data) => {
         if (!enabledRef.current) return true;
         if (isOsc133A(data)) {
+          readyRef.current = true; // 舞步钩子超时判死用
           navCmdStart(term);
           setState((s) => (s === "ready" ? s : "ready"));
           return true;
@@ -150,7 +158,10 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
       const d1337 = term.parser.registerOscHandler(1337, (data) => {
         if (!enabledRef.current) return true;
         const { shell, git } = parseOsc1337(data);
-        if (shell) setProbeOk(true);
+        if (shell) {
+          probeOkRef.current = true;
+          probeGoRef.current?.(); // 回执到达 → 舞步后半场接棒
+        }
         if (git) {
           // git 分支是按目录缓存的：钩子只在 cwd 变化时才发，
           // 所以这里收到分支就直接替换（旧分支属于旧目录）。
@@ -158,9 +169,10 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
         }
         return true;
       });
-      // 用户输入监听：一旦敲过字就永久放弃注入。
+      // 用户输入监听：一旦敲过字就永久放弃注入；若 ECHO 正处于关闭期，立即恢复。
       const onData = term.onData(() => {
         typedRef.current = true;
+        abortRef.current?.();
       });
       dispose = () => {
         d7.dispose();
@@ -177,7 +189,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     };
   }, [termRef]);
 
-  // ── 会话流程：重置 → 探测 → 注入 ──
+  // ── 会话流程：stty 舞步（探针 → 注入 → kick 全静默，异常路径强制恢复 ECHO）──
   useEffect(() => {
     if (!enabled) {
       setState("off");
@@ -186,46 +198,93 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     if (closed) return; // 断开：保留最后一次的状态，不再折腾
     reset();
     setState("pending");
+    const term = termRef.current;
+    const send = (data: string): Promise<void> => invoke("ssh_input", { sessionId, data });
 
-    const probe = window.setTimeout(() => {
+    // ── 残渣吞除（fail-open，实现见 lib/terminalSttyDance.ts）──
+    // 唯一会回显的是 t0 的 `stty -echo`，write 包装精确剥除；回显缺席就整体
+    // 透传——剥不掉也只是留一行 10 字符残渣，绝不丢用户数据。
+    // 窗口 = PROBE_DELAY + STRIP_TIMEOUT：包装早于 t0 挂上，回显 t0+RTT 才到，
+    // 只按 STRIP_TIMEOUT 计时会在高延迟链路上提前撤窗。
+    const stripHandle = term ? attachEchoStrip(term, DANCE.PROBE_DELAY + DANCE.STRIP_TIMEOUT) : null;
+
+    // ── 舞步状态机接线 ──
+    let phase: DancePhase = "idle";
+    // 恢复 ECHO。单次消费：第二句 stty echo 会被回显成残渣（红线）。
+    const restore = () => {
+      if (!echoOffRef.current) return;
+      echoOffRef.current = false;
+      abortRef.current = null;
+      phase = danceNext(phase, "restoreSent").phase;
+      void send(`${ECHO_ON_CMD}\n`).catch(() => {});
+      stripHandle?.end();
+    };
+    // 异常退出：恢复 ECHO + 判 unsupported（已 ready 则不动）。
+    const abortDance = () => {
+      restore();
+      phase = danceNext(phase, "abort").phase;
+      setState((s) => (s === "pending" ? "unsupported" : s));
+    };
+    abortRef.current = abortDance;
+    const timers: number[] = [];
+    const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
+
+    at(DANCE.PROBE_DELAY, () => {
       if (typedRef.current) {
-        setState("unsupported");
+        abortDance();
         return;
       }
-      void invoke("ssh_input", { sessionId, data: `${PROBE_CMD}\n` }).catch(() =>
-        setState("unsupported"),
-      );
-    }, PROBE_DELAY_MS);
-    const giveUp = window.setTimeout(() => {
-      setState((s) => (s === "pending" ? "unsupported" : s));
-    }, PROBE_DELAY_MS + PROBE_TIMEOUT_MS);
-
-    return () => {
-      clearTimeout(probe);
-      clearTimeout(giveUp);
-    };
-  }, [sessionId, enabled, closed, reset]);
-
-  // 探针确认是 bash/zsh 之后才发钩子。这是防止往 fish/csh 里塞 bash 语法的关键闸门。
-  useEffect(() => {
-    if (!probeOk) return;
-    const inject = window.setTimeout(() => {
-      if (typedRef.current) return;
-      void invoke("ssh_input", { sessionId, data: `${HOOK_CMD}\n` }).catch(() => {
+      echoOffRef.current = true;
+      void send(`${ECHO_OFF_CMD}\n`).catch(() => {
+        // 发送失败 = 字节根本没到远端，回显从未被关——闸门必须复位，
+        // 否则后续 restore 会补发一句 stty echo，被回显成残渣；同时中止舞步，
+        // 免得 +250ms 的探针在「回显还开着」的状态下照发、留下可见残渣。
+        echoOffRef.current = false;
+        phase = danceNext(phase, "abort").phase;
         setState("unsupported");
       });
-    }, 60);
-    // 钩子挂上后要等**下一条提示符**才会跑。用户不动的话状态栏会一直停在 pending，
-    // 所以补一个空回车让 shell 重绘一次提示符。此刻用户还没敲过字，空回车完全无害。
-    const kick = window.setTimeout(() => {
-      if (typedRef.current) return;
-      void invoke("ssh_input", { sessionId, data: "\n" }).catch(() => {});
-    }, 60 + KICK_DELAY_MS);
-    return () => {
-      clearTimeout(inject);
-      clearTimeout(kick);
+      phase = danceNext(phase, "echoOffSent").phase;
+    });
+    at(DANCE.PROBE_DELAY + DANCE.ECHO_GAP, () => {
+      if (typedRef.current || phase !== "echoOffSent") return;
+      void send(`${PROBE_CMD}\n`).catch(() => abortDance());
+      phase = danceNext(phase, "probeSent").phase;
+    });
+    at(DANCE.PROBE_DELAY + DANCE.ECHO_GAP + DANCE.PROBE_TIMEOUT, () => {
+      if (probeOkRef.current) return;
+      abortDance(); // 回执没到：恢复 ECHO + 走 unsupported 降级
+    });
+    // 探针回执到达（OSC 处理器回调）→ 舞步后半场：
+    probeGoRef.current = () => {
+      at(DANCE.HOOK_DELAY, () => {
+        if (typedRef.current || phase !== "probeSent") return; // 回执迟到/已中止：不注入
+        void send(`${HOOK_CMD}\n`).catch(() => abortDance());
+        phase = danceNext(phase, "hookSent").phase;
+      });
+      at(DANCE.HOOK_DELAY + DANCE.KICK_DELAY, () => {
+        if (typedRef.current || phase !== "hookSent") return;
+        void send("\n").catch(() => {}); // 空回车逼 shell 重绘提示符（echo 关，静默）
+        phase = danceNext(phase, "kickSent").phase;
+      });
+      at(DANCE.HOOK_DELAY + DANCE.KICK_DELAY + DANCE.RESTORE_DELAY, restore);
+      at(DANCE.HOOK_DELAY + DANCE.KICK_DELAY + DANCE.RESTORE_DELAY + DANCE.HOOK_TIMEOUT, () => {
+        if (!readyRef.current) abortDance(); // ECHO 已由 restore 恢复，这里只是判死
+      });
     };
-  }, [probeOk, sessionId]);
+
+    return () => {
+      timers.forEach((t) => window.clearTimeout(t));
+      // 兜底：卸载/重连/开关切换时 ECHO 仍关闭就尽力恢复一次（会话已死则 invoke
+      // 失败即忽略；PTY 销毁本身也会重置 termios）。
+      if (echoOffRef.current) {
+        echoOffRef.current = false;
+        void invoke("ssh_input", { sessionId, data: `${ECHO_ON_CMD}\n` }).catch(() => {});
+      }
+      abortRef.current = null;
+      probeGoRef.current = null;
+      stripHandle?.end();
+    };
+  }, [sessionId, enabled, closed, reset, termRef]);
 
   return { status, state };
 }

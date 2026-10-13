@@ -85,7 +85,8 @@ export function ConnectionListItem({
                 : "bg-muted-foreground/40"
           }`}
         />
-        <span className="truncate text-sm font-medium">{conn.name || conn.host}</span>
+        {/* min-w-0 是 truncate 的前置条件：flex 子项默认 min-width:auto，缺了它 truncate 永不生效 */}
+        <span className="min-w-0 truncate text-sm font-medium">{conn.name || conn.host}</span>
         {jumpName && (
           <span
             title={`经跳板机「${jumpName}」中转`}
@@ -102,13 +103,17 @@ export function ConnectionListItem({
         {conn.authType === "key" ? "🔑 " : ""}
         {conn.username}@{conn.host}:{conn.port}
       </div>
-      <div className="mt-2 flex items-center gap-1 pl-4">
+      {/* 操作行：288px 侧栏下可用宽度只有 250px，五个按钮按 px-2/gap-1 排是 256px，
+          放不下会把 CJK 文本压成竖排（断/开）。px-1.5 + gap-0.5 收进 206px，
+          whitespace-nowrap 保证任何字体度量下都不竖排；flex-wrap 是极端窄度的兜底
+          （宁可整颗按钮换行，不许按钮内文字竖排）。 */}
+      <div className="mt-2 flex flex-wrap items-center gap-0.5 gap-y-1 pl-4">
         {session && !session.closedReason ? (
           <>
             <button
               type="button"
               onClick={() => onDisconnect(session.sessionId)}
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+              className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-destructive hover:bg-destructive/10"
             >
               <Icon name="power" size={12} /> 断开
             </button>
@@ -118,7 +123,7 @@ export function ConnectionListItem({
               type="button"
               title="对这台机器再开一个终端"
               onClick={() => onNewTerminal(conn)}
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+              className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               <Icon name="plus" size={12} />
             </button>
@@ -128,7 +133,7 @@ export function ConnectionListItem({
             type="button"
             onClick={() => onConnect(conn)}
             disabled={connecting}
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {connecting ? (
               <>
@@ -148,30 +153,30 @@ export function ConnectionListItem({
             session && !session.closedReason ? "管理该连接的远程文件" : "请先连接后再管理文件"
           }
           onClick={() => session && !session.closedReason && onOpenFiles(conn)}
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Icon name="folder" size={12} /> 文件
         </button>
         <button
           type="button"
           onClick={() => onEdit(conn)}
-          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+          className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted"
         >
           <Icon name="settings" size={12} /> 编辑
         </button>
         {confirmingDelete ? (
-          <span className="ml-auto flex items-center gap-1">
+          <span className="ml-auto flex items-center gap-0.5">
             <button
               type="button"
               onClick={onConfirmDelete}
-              className="rounded-md bg-destructive px-2 py-1 text-xs text-white"
+              className="whitespace-nowrap rounded-md bg-destructive px-1.5 py-1 text-xs text-white"
             >
               确认
             </button>
             <button
               type="button"
               onClick={onCancelDelete}
-              className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
+              className="whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted"
             >
               取消
             </button>
@@ -180,7 +185,7 @@ export function ConnectionListItem({
           <button
             type="button"
             onClick={onDeleteRequest}
-            className="ml-auto rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-destructive"
+            className="ml-auto whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-destructive"
           >
             <Icon name="trash" size={12} />
           </button>
