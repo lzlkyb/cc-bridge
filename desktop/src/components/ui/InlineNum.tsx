@@ -7,11 +7,14 @@ export function InlineNum({
   saved,
   unit,
   onSave,
+  ariaLabel,
 }: {
   value: number;
   saved: boolean;
   unit: string;
   onSave: (v: number) => Promise<void>;
+  /** 读屏标签：不带的话读屏只报「数字输入框」，用户不知道在改什么。 */
+  ariaLabel?: string;
 }) {
   const [value, setValue] = useState(initial);
   const initialized = useRef(false);
@@ -32,6 +35,7 @@ export function InlineNum({
       <input
         type="number"
         className="s-input"
+        aria-label={ariaLabel}
         value={value}
         onChange={(e) => handleChange(Number(e.target.value))}
         onBlur={() => {

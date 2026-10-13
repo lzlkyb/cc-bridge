@@ -61,7 +61,10 @@ const BASELINE = {
   // 2026-09-16：325 → 303（类型契约→lib/transferTypes.ts；覆盖提问编排→useTransferPrompt.ts）。
   "src/components/tabs/useSshTransfer.ts": { lines: 303 },
   "src/components/modals/CommandPalette.tsx": { lines: 345, hooks: 9 },
-  "src/components/tabs/FileControlCard.tsx": { lines: 301 },
+  // 2026-10-13：`FileControlCard.tsx` 已从本表**移除**。它原本登记 301 行（贴线），
+  // 本次把备份/限流/后台命令三节改成 SumRow 摘要行（渐进披露）、展开区拆到
+  // `tabs/filecontrol/`（BackupSection 210 行 / LimitSections 83 行）后降到 117 行，
+  // 重新落在默认上限之内——不需要豁免了。
   // ── 行数合格、但状态数超标 ──
   // 🔴 这两个是“行数拦不住”的活证据：它们都在 300 行以内，
   // 却各自有十几个互相牵扯的状态。SshFileBrowser 就是在这上面出过真 bug 的那个。
