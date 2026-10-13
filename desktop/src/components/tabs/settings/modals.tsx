@@ -1,92 +1,15 @@
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
 import { ConfirmModal } from "../../ui/ConfirmModal";
-import { InlineNotice } from "../../ui/notice";
 
-export function WhitelistOffModal({
-  onCancel,
-  onConfirm,
-}: {
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <ConfirmModal open onClose={onCancel}>
-      <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
-        <Icon name="alertTriangle" size={18} />
-        确定关闭路径白名单？
-      </h4>
-      <p className="mb-4 text-sm text-muted-foreground">
-        关闭后远程 Claude Code 可读写本机<b>全部文件</b>，风险显著上升。
-        请确认你正处于完全可信的网络环境，用完及时开回。
-      </p>
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          取消
-        </Button>
-        <Button variant="destructive" size="sm" onClick={onConfirm}>
-          确定关闭
-        </Button>
-      </div>
-    </ConfirmModal>
-  );
-}
-
-export function ShellRiskModal({
-  readonly,
-  ackRisk,
-  onAckChange,
-  onCancel,
-  onConfirm,
-}: {
-  readonly: boolean;
-  ackRisk: boolean;
-  onAckChange: (next: boolean) => void;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <ConfirmModal open onClose={onCancel}>
-      <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive">
-        <Icon name="alertTriangle" size={18} />
-        确定开启命令执行？
-      </h4>
-      {/* fix #3：只读模式与命令执行互斥的主动提示 */}
-      {readonly && (
-        <InlineNotice variant="warning" icon="lock" className="mb-3">
-          当前<b>只读模式已开启</b>，命令执行会被<b>强制禁止</b>而不会生效。如需真正启用，请先在上方关闭只读模式。
-        </InlineNotice>
-      )}
-      <p className="mb-3 text-sm text-muted-foreground">
-        开启后远程 Claude Code 可在白名单目录内执行<b>任意 Shell 命令</b>，包括但不限于安装软件、
-        修改系统设置、访问网络。这等同于授予<b>远程任意代码执行权限（RCE）</b>。
-      </p>
-      <ul className="mb-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-        <li>路径白名单 / 扩展名限制等约束可被命令绕过</li>
-        <li>Bearer token 鉴权 + 限流是唯一准入防线</li>
-        <li>每条命令都会被强制记入审计日志</li>
-      </ul>
-      <label className="mb-4 flex items-start gap-2 text-xs">
-        <input
-          type="checkbox"
-          className="mt-0.5"
-          checked={ackRisk}
-          onChange={(e) => onAckChange(e.target.checked)}
-        />
-        我已知晓风险，仅在完全可信的网络环境中开启
-      </label>
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel}>
-          取消
-        </Button>
-        <Button variant="destructive" size="sm" disabled={!ackRisk} onClick={onConfirm}>
-          确定开启
-        </Button>
-      </div>
-    </ConfirmModal>
-  );
-}
-
+/**
+ * 设置页弹窗收纳。
+ *
+ * 2026-10-13（去重统一）：WhitelistOffModal / ShellRiskModal 已删除——三个核心开关
+ * （白名单 / 只读 / 命令执行）的唯一家是安全页，其二次确认统一为 SecurityOverview
+ * 内联的 ConfirmDialog 实现（焦点陷阱 + Esc + 焦点归还）。设置页安全卡瘦身后
+ * 不再触发这两个弹窗；ResetModal 保留（重置覆盖多张卡，仍属设置页职责）。
+ */
 export function ResetModal({
   onCancel,
   onConfirm,

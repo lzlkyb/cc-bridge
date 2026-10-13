@@ -21,7 +21,7 @@ interface CommandItem {
   tab?: string;
   /**
    * 跳转后要定位+高亮的锚点。与 Header 安全徽章同一套机制（`highlightAnchor`）：
-   * 开关类传裸名（`shell` → `toggle-shell`），卡级传完整 id（`set-network`）。
+   * 开关类传裸名（`remote-tls` → `toggle-remote-tls`），卡级传完整 id（`set-network`）。
    */
   anchor?: string;
   /**

@@ -3,17 +3,42 @@ import { invoke } from "../../lib/tauri";
 import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Icon } from "../ui/icon";
-import { Switch } from "../ui/switch";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
-import { SavedHint } from "../ui/SavedHint";
 import { InlineNotice } from "../ui/notice";
+import { ToggleRow } from "../ui/ToggleRow";
+import { RiskBand } from "../ui/RiskBand";
 
 /**
  * 安全概览卡（方案 A 顶部）。
  * 把「路径白名单 / 命令执行 / 只读模式」三个核心安全开关从设置页搬到安全页，
  * 复用同一 save_config 通道与二次确认弹窗（不削弱安全）。
- * 顶部风险总览沿用设置页 RiskSummary 的判定。
+ * 顶部风险总览消费 lib/riskLevel.ts（与设置页 RiskBand 同一判定源）。
+ *
+ * 2026-10-13（去重统一）：删本地 ToggleRow / RiskSummary 两份私有副本，改 import
+ * ui/ 原语；折叠头由 div+onClick 改真 <button aria-expanded>（键盘可达）；
+ * 展开态默认开并按 lib/terminalPreset.ts 先例记忆到 localStorage。
  */
+
+/** 概览展开态持久化 key。默认展开：常驻用户不再每次多点一下；收起选择被记住。 */
+const OVERVIEW_OPEN_KEY = "cc-bridge.security-overview-open";
+
+function loadOverviewOpen(): boolean {
+  try {
+    const v = localStorage.getItem(OVERVIEW_OPEN_KEY);
+    return v === null ? true : v === "1";
+  } catch {
+    return true; // 隐私模式：回落默认展开，不抛
+  }
+}
+
+function saveOverviewOpen(open: boolean): void {
+  try {
+    localStorage.setItem(OVERVIEW_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    /* 存不下就算了，不影响功能 */
+  }
+}
+
 export function SecurityOverview({
   status,
   onSaved,
@@ -25,7 +50,7 @@ export function SecurityOverview({
   const [confirmShellOn, setConfirmShellOn] = useState(false);
   const [ackShellRisk, setAckShellRisk] = useState(false);
   const [savedKey, setSavedKey] = useState<string | null>(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(loadOverviewOpen);
 
   const save = async (patch: Record<string, unknown>, key?: string) => {
     await invoke<ConfigSaveResult>("save_config", { patch });
@@ -47,21 +72,33 @@ export function SecurityOverview({
     else save({ shellEnabled: false }, "shell");
   };
 
+  const toggleOpen = () =>
+    setOpen((o) => {
+      saveOverviewOpen(!o);
+      return !o;
+    });
+
   return (
-    <Card>
-      <CardHeader
-        className="flex-row items-center justify-between cursor-pointer select-none"
-        onClick={() => setOpen((o) => !o)}
-      >
-        <CardTitle icon={<Icon name="shield" />}>安全概览</CardTitle>
-        <Icon
-          name="chevronDown"
-          size={16}
-          className={`text-muted-foreground transition-transform ${open ? "" : "-rotate-90"}`}
-        />
+    <Card id="sec-overview">
+      <CardHeader>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2.5 text-left"
+          aria-expanded={open}
+          onClick={toggleOpen}
+        >
+          <CardTitle icon={<Icon name="shield" />} className="flex-1">
+            安全概览
+          </CardTitle>
+          <Icon
+            name="chevronDown"
+            size={16}
+            className={`shrink-0 text-muted-foreground transition-transform ${open ? "" : "-rotate-90"}`}
+          />
+        </button>
       </CardHeader>
       <CardContent className="space-y-3">
-        <RiskSummary status={status} />
+        <RiskBand status={status} />
         {open && (
           <>
             <ToggleRow
@@ -165,83 +202,3 @@ export function SecurityOverview({
     </Card>
   );
 }
-
-/* 风险总览：三档（较安全 / 有风险 / 高风险），视觉与设计稿一致 */
-function RiskSummary({ status }: { status?: StaticStatus }) {
-  if (!status) return null;
-  const readonlyOn = status.readonlyMode;
-  // 只读模式会强制禁用命令执行（后端拦截 run_command），因此风险判定应看“有效”命令执行
-  // 状态；否则只要配置 flag 为开，即使实际被只读拦住，也会误报“高风险 RCE”。
-  const shellOn = status.shellEnabled && !readonlyOn;
-  const whitelistOff = !status.whitelistEnabled;
-
-  let level: string;
-  let desc: string;
-  let pill: string;
-
-  if (shellOn || whitelistOff) {
-    level = "高风险";
-    pill = "border-destructive/30 bg-destructive/10 text-destructive";
-    if (shellOn && whitelistOff) desc = "命令执行已开启且白名单已关闭，风险极高。";
-    else if (shellOn) desc = "命令执行已开启，存在远程代码执行（RCE）风险。";
-    else desc = "路径白名单已关闭，远程可读写本机全部文件。";
-  } else if (!readonlyOn) {
-    level = "有风险";
-    pill = "border-warning/30 bg-warning/10 text-warning";
-    desc = "白名单校验已开启，但处于可写状态，远程可修改白名单内文件。";
-  } else {
-    level = "较安全";
-    pill = "border-success/30 bg-success/10 text-success";
-    desc = "核心高危功能已关闭，远程仅能在白名单内做只读访问。";
-  }
-
-  return (
-    <div className="risk-band flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-      <span className="text-muted-foreground">当前风险等级：</span>
-      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 font-semibold ${pill}`}>
-        {level}
-      </span>
-      <span className="text-muted-foreground">{desc}</span>
-    </div>
-  );
-}
-
-function ToggleRow({
-  label,
-  sub,
-  checked,
-  onChange,
-  variant = "default",
-  danger = false,
-  last = false,
-  saved = false,
-}: {
-  label: string;
-  sub: string;
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  variant?: "default" | "danger";
-  danger?: boolean;
-  last?: boolean;
-  saved?: boolean;
-}) {
-  return (
-    <div
-      className={`flex items-center justify-between gap-4 py-3.5 ${
-        last ? "" : "border-b"
-      } ${danger ? "-mx-3 rounded-lg bg-destructive/5 px-3" : ""}`}
-    >
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{label}</span>
-          {saved && <SavedHint>已保存</SavedHint>}
-        </div>
-        <div className={`mt-0.5 text-xs ${danger ? "text-destructive" : "text-muted-foreground"}`}>
-          {sub}
-        </div>
-      </div>
-      <Switch checked={checked} onChange={onChange} variant={variant} ariaLabel={label} />
-    </div>
-  );
-}
-

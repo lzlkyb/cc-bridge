@@ -46,11 +46,12 @@ function HeaderImpl({
     anchor?: string;
     title: string;
   }[] = useMemo(() => [
-    { key: "whitelist", show: !!status && !status.whitelistEnabled, label: "白名单关闭", icon: "alertTriangle" as IconName, danger: true, tab: "settings", anchor: "whitelist", title: "白名单已关闭，点击前往设置页开启" },
+    // 三个核心开关的唯一家在安全页（2026-10-13 去重统一）：徽章直达安全页概览锚点。
+    { key: "whitelist", show: !!status && !status.whitelistEnabled, label: "白名单关闭", icon: "alertTriangle" as IconName, danger: true, tab: "security", anchor: "sec-overview", title: "白名单已关闭，点击前往安全页开启" },
     { key: "ip", show: !!status?.ipChanged, label: "IP 已变化", icon: "alertTriangle" as IconName, danger: true, tab: "connect", title: "连接地址已变化，点击前往连接页查看" },
     { key: "link", show: !!status?.running && status?.remoteReachable === false && !status?.ipChanged, label: "远程不可达", icon: "alertTriangle" as IconName, danger: true, tab: "connect", title: "远程连接不可达，点击前往连接页查看" },
-    { key: "readonly", show: !!status?.readonlyMode, label: "只读", icon: "lock" as IconName, danger: false, tab: "settings", anchor: "readonly", title: "只读模式已开启，点击前往设置页查看" },
-    { key: "shell", show: !!status?.shellEnabled, label: "命令执行已开启", icon: "terminal" as IconName, danger: true, tab: "settings", anchor: "shell", title: "命令执行已开启，点击前往设置页关闭" },
+    { key: "readonly", show: !!status?.readonlyMode, label: "只读", icon: "lock" as IconName, danger: false, tab: "security", anchor: "sec-overview", title: "只读模式已开启，点击前往安全页查看" },
+    { key: "shell", show: !!status?.shellEnabled, label: "命令执行已开启", icon: "terminal" as IconName, danger: true, tab: "security", anchor: "sec-overview", title: "命令执行已开启，点击前往安全页关闭" },
   ], [status]);
 
   const toggleServer = async () => {

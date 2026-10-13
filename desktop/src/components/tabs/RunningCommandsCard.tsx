@@ -9,6 +9,7 @@ import { Icon } from "../ui/icon";
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from "../ui/table";
 import { Badge } from "../ui/badge";
 import { useAppHidden } from "../../lib/appVisibility";
+import { useToast } from "../ui/toast";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { CommandOutputPanel } from "./RunningCommandOutput";
 
@@ -27,11 +28,16 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
     refetchInterval: appHidden ? false : 3000,
   });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // 各行的「终止中」态（可多行同时终止）；toast 带 PID——cleanupSecs=0 时行立即
+  // 消失，PID 是用户唯一能对回的线索。
+  const [stopping, setStopping] = useState<Set<string>>(new Set());
   // tbody FLIP（设计稿：design/微动画补全-P0P1-设计稿.html）：轮询发现新命令行插入 /
   // 清理宽限期行移除 / 展开输出行插入收回时平滑过渡，而不是闪现闪没。
   // TableBody 已 forwardRef（ui/table 注释里就有审计日志 FLIP 的先例）。
-  // （hook 必须在下方条件 return 之前调用——React hooks 规则。）
   const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>();
+  // 终止最后一条后的 2s「已清空」过渡：否则卡片瞬间消失，用户以为点到没反应。
+  const [justCleared, setJustCleared] = useState(false);
+  const { toast } = useToast();
 
   const toggle = (handle: string) =>
     setExpanded((prev) => {
@@ -41,15 +47,33 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
       return next;
     });
 
-  const stop = async (handle: string) => {
-    await invoke("stop_running_command", { handle });
-    refetch();
+  const stop = async (handle: string, pid: number) => {
+    setStopping((prev) => new Set(prev).add(handle));
+    try {
+      await invoke("stop_running_command", { handle });
+      refetch();
+      toast(`已终止 PID ${pid}`, "success");
+      if ((commands?.length ?? 0) <= 1) {
+        setJustCleared(true);
+        setTimeout(() => setJustCleared(false), 2000);
+      }
+    } catch (e) {
+      // 之前静默无反馈：用户点了「终止」什么都没发生，也无法知道该不该重试。
+      toast(`终止失败：${e}，请重试`, "error");
+    } finally {
+      setStopping((prev) => {
+        const next = new Set(prev);
+        next.delete(handle);
+        return next;
+      });
+    }
   };
 
-  if (!commands || commands.length === 0) return null;
+  const empty = !commands || commands.length === 0;
+  if (empty && !justCleared) return null;
 
   return (
-    <Card className={danger ? "border-destructive/30" : ""}>
+    <Card id="sec-running" className={danger ? "border-destructive/30" : ""}>
       <CardHeader>
         <CardTitle icon={<Icon name="terminal" />}>运行中的后台命令</CardTitle>
         <p className="text-xs text-muted-foreground">
@@ -57,6 +81,10 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
         </p>
       </CardHeader>
       <CardContent>
+        {empty ? (
+          <p className="py-4 text-center text-sm text-muted-foreground">命令已清空</p>
+        ) : (
+        <>
         {/* table-fixed 不能省：默认的 auto 布局下列宽由内容决定，命令列那句 `truncate`
             带的 `white-space:nowrap` 会把该列的 min-content 宽度顶成整条命令的长度，
             单元格拿不到可截断的约束宽度 → 省略号彻底失效，整张表把卡片撑宽，整页出现
@@ -78,6 +106,15 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
                 <TableRow
                   className={`cursor-pointer crow ${i % 2 === 0 ? "bg-muted/20 zebra" : ""}`}
                   onClick={() => toggle(cmd.handle)}
+                  onKeyDown={(e) => {
+                    // 键盘可达：整行是展开开关（与日志页行展开同一范式）。
+                    if (e.key !== "Enter" && e.key !== " ") return;
+                    e.preventDefault();
+                    toggle(cmd.handle);
+                  }}
+                  tabIndex={0}
+                  role="button"
+                  aria-expanded={expanded.has(cmd.handle)}
                   title="点击整行任意位置展开/收起输出"
                 >
                   <TableCell className="font-mono text-xs">{cmd.pid}</TableCell>
@@ -101,10 +138,11 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
                         variant="ghost"
                         size="sm"
                         className="whitespace-nowrap text-destructive hover:text-destructive"
-                        onClick={(e) => { e.stopPropagation(); stop(cmd.handle); }}
+                        disabled={stopping.has(cmd.handle)}
+                        onClick={(e) => { e.stopPropagation(); stop(cmd.handle, cmd.pid); }}
                       >
                         <Icon name="power" size={14} />
-                        终止
+                        {stopping.has(cmd.handle) ? "终止中…" : "终止"}
                       </Button>
                     </div>
                   </TableCell>
@@ -125,6 +163,8 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
             <Icon name="alertTriangle" size={13} className="mt-0.5 shrink-0" />
             命令执行已开启，请确认以上进程均来自你信任的会话。
           </p>
+        )}
+        </>
         )}
       </CardContent>
     </Card>

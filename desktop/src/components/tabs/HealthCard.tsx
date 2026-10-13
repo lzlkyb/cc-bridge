@@ -19,15 +19,16 @@ import { Icon } from "../ui/icon";
  * 设置项，用 StopClick 阻断冒泡（点胶囊不得触发整卡跳日志页）。
  */
 
-/** 九个治理胶囊各自的跳转目标（anchor 全部取自 lib/settingsSearch.ts，勿另起一套）。 */
+/** 九个治理胶囊各自的跳转目标（anchor 全部取自 lib/settingsSearch.ts，勿另起一套）。
+ *  2026-10-13：只读 / 命令执行两个开关的唯一家是安全页（去重统一），胶囊随迁。 */
 const NAV = {
   roots: { tab: "security", title: "去安全页管理白名单目录" },
   audit: { tab: "settings", anchor: "audit", title: "去设置调整审计日志" },
   ratelimit: { tab: "settings", anchor: "ratelimit", title: "去设置调整限流" },
   backup: { tab: "settings", anchor: "backup", title: "去设置调整写备份" },
   encoding: { tab: "settings", anchor: "encoding", title: "去设置调整读取编码自适应" },
-  readonly: { tab: "settings", anchor: "readonly", title: "去设置调整只读模式" },
-  shell: { tab: "settings", anchor: "shell", title: "去设置调整命令执行" },
+  readonly: { tab: "security", anchor: "sec-overview", title: "去安全页调整只读模式" },
+  shell: { tab: "security", anchor: "sec-overview", title: "去安全页调整命令执行" },
   session: { tab: "settings", anchor: "session-persist", title: "去设置调整命令会话持久化" },
 } as const;
 

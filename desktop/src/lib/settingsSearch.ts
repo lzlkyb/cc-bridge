@@ -18,9 +18,10 @@ export interface SettingSearchItem {
   group: string;
   tab: string;
   /**
-   * 定位锚点。开关类传裸名（`shell` → 命中 `toggle-shell`），卡级传完整 id
+   * 定位锚点。开关类传裸名（`remote-tls` → 命中 `toggle-remote-tls`），卡级传完整 id
    * （`set-network`）——SettingsTab 的定位 effect 先试 `toggle-<a>` 再回退字面 id。
-   * 安全页尚未重构，那两条不带 anchor，仅跳页。
+   * 安全页锚点（`sec-overview` / `set-roots` / `set-backup`）由 SecurityTab 的定位
+   * effect 按字面 id 命中（安全页没有 toggle- 前缀的开关 id）。
    */
   anchor?: string;
   /** 额外搜索词（不展示）。用户想到的词往往不是标题：rce / GBK / 端口 / 内存。 */
@@ -28,10 +29,12 @@ export interface SettingSearchItem {
 }
 
 export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
-  { id: "set-whitelist", label: "路径白名单校验", icon: "shield", group: "设置 · 安全", tab: "settings", anchor: "whitelist", keywords: "whitelist 目录限制 路径校验" },
-  { id: "set-readonly", label: "只读模式", icon: "lock", group: "设置 · 安全", tab: "settings", anchor: "readonly", keywords: "readonly 禁止写入 不允许删除" },
-  { id: "set-shell", label: "命令执行", icon: "terminal", group: "设置 · 安全", tab: "settings", anchor: "shell", keywords: "shell rce run_command 执行命令" },
-  { id: "set-shelltype", label: "命令执行壳层", icon: "terminal", group: "设置 · 安全", tab: "settings", anchor: "shell", keywords: "shell cmd bash sh git bash 壳层" },
+  // 三个核心开关的唯一家在安全页（2026-10-13 去重统一）：跳 sec-overview 锚点。
+  { id: "set-whitelist", label: "路径白名单校验", icon: "shield", group: "安全页", tab: "security", anchor: "sec-overview", keywords: "whitelist 目录限制 路径校验" },
+  { id: "set-readonly", label: "只读模式", icon: "lock", group: "安全页", tab: "security", anchor: "sec-overview", keywords: "readonly 禁止写入 不允许删除" },
+  { id: "set-shell", label: "命令执行", icon: "terminal", group: "安全页", tab: "security", anchor: "sec-overview", keywords: "shell rce run_command 执行命令" },
+  // 壳层是命令执行的参数、留在设置页安全卡（卡级锚点：toggle-shell 已随开关搬去安全页）。
+  { id: "set-shelltype", label: "命令执行壳层", icon: "terminal", group: "设置 · 安全", tab: "settings", anchor: "set-security", keywords: "shell cmd bash sh git bash 壳层" },
   { id: "set-remote-tls", label: "HTTPS 远程访问", icon: "lock", group: "设置 · 安全", tab: "settings", anchor: "remote-tls", keywords: "https tls ssl 自签 证书 指纹 远程 跨网 封禁 401" },
 
   { id: "set-backup", label: "写操作自动备份", icon: "history", group: "设置 · 备份与审计", tab: "settings", anchor: "backup", keywords: "backup 备份 快照" },
@@ -58,7 +61,7 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-about", label: "版本信息 / 检查更新", icon: "info", group: "设置 · 其它", tab: "settings", anchor: "set-about", keywords: "version update 更新 版本 更新历史 changelog" },
   { id: "set-terminal", label: "终端风格与状态栏", icon: "sliders", group: "设置 · 其它", tab: "settings", anchor: "set-terminal", keywords: "terminal preset 终端风格 starship 状态栏 注入 探测 远端 shell" },
 
-  // 安全页未重构，暂不加卡级锚点，先只跳页——至少不让用户在设置页白找。
-  { id: "set-roots", label: "白名单目录与配置组", icon: "folder", group: "安全页", tab: "security", keywords: "root 根目录 白名单 配置组 项目切换" },
-  { id: "set-backup-mgmt", label: "备份份数 / 目录 / 版本历史 / 清理", icon: "history", group: "安全页", tab: "security", keywords: "backup retention 备份目录 版本历史 清理备份 还原" },
+  // 安全页两张卡带卡级锚点（SecurityTab 的定位 effect 直接按 id 命中）。
+  { id: "set-roots", label: "白名单目录与配置组", icon: "folder", group: "安全页", tab: "security", anchor: "set-roots", keywords: "root 根目录 白名单 配置组 项目切换" },
+  { id: "set-backup-mgmt", label: "备份份数 / 目录 / 版本历史 / 清理", icon: "history", group: "安全页", tab: "security", anchor: "set-backup", keywords: "backup retention 备份目录 版本历史 清理备份 还原" },
 ];

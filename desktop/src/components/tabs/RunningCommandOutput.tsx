@@ -66,6 +66,10 @@ export function CommandOutputPanel({
   const appHidden = useAppHidden();
   const [stdout, setStdout] = useState("");
   const [stderr, setStderr] = useState("");
+  // 轮询失败显式态：停止刷新时说清楚，并给重试。之前静默 clearInterval——
+  // stale 输出被当成 live 是运维场景里最贵的错觉。
+  const [pollFailed, setPollFailed] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
   const [meta, setMeta] = useState<{
     running: boolean;
     exitCode: number | null;
@@ -103,16 +107,18 @@ export function CommandOutputPanel({
           stdoutTotalBytes: out.stdoutTotalBytes,
           stderrTotalBytes: out.stderrTotalBytes,
         });
+        setPollFailed(false);
         if (!out.running && timer) {
           clearInterval(timer);
           timer = undefined;
         }
       } catch {
-        // handle 已被清理或读取失败：停止轮询，避免无意义重试。
+        // handle 已被清理或读取失败：停止轮询 + 进入显式失败态（不再伪装"实时"）。
         if (timer) {
           clearInterval(timer);
           timer = undefined;
         }
+        setPollFailed(true);
       }
     };
 
@@ -122,7 +128,7 @@ export function CommandOutputPanel({
       cancelled = true;
       if (timer) clearInterval(timer);
     };
-  }, [handle, appHidden]);
+  }, [handle, appHidden, retryNonce]);
 
   return (
     <div className="space-y-3 p-3">
@@ -141,8 +147,24 @@ export function CommandOutputPanel({
               : ""}
           </span>
         )}
-        <span className="text-[11px] text-muted-foreground">实时输出（3s 刷新）</span>
+        {!pollFailed && (
+          <span className="text-[11px] text-muted-foreground">实时输出（3s 刷新）</span>
+        )}
       </div>
+      {pollFailed && (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/8 px-3 py-2 text-[11px] text-destructive">
+          <Icon name="alertTriangle" size={12} className="shrink-0" />
+          <span>输出获取失败，已停止自动刷新——以下内容可能已过期。</span>
+          <Button
+            variant="outline"
+            size="sm"
+            className="ml-auto shrink-0 whitespace-nowrap"
+            onClick={() => setRetryNonce((n) => n + 1)}
+          >
+            重试
+          </Button>
+        </div>
+      )}
       {meta && (meta.stdoutTruncated || meta.stderrTruncated) && (
         <p className="flex items-center gap-1.5 text-[11px] text-warning">
           <Icon name="alertTriangle" size={12} />

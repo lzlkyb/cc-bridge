@@ -312,12 +312,14 @@ function AppContent() {
           </TabsContent>
           <TabsContent value="security">
             <Suspense fallback={<TabFallback />}>
-              <SecurityTab status={status} onSaved={refetchStatus} />
+              {/* highlightAnchor：安全概览 / 白名单目录等锚点（Header 徽章、命令面板、
+                  HealthCard 胶囊、设置页安全卡跳转按钮都走这条链路定位高亮）。 */}
+              <SecurityTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} />
             </Suspense>
           </TabsContent>
           <TabsContent value="settings">
             <Suspense fallback={<TabFallback />}>
-              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} onOpenSearch={() => setShowCommandPalette(true)} />
+              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} onOpenSearch={() => setShowCommandPalette(true)} onNavigate={handleNavigate} />
             </Suspense>
           </TabsContent>
           <TabsContent value="log" className="h-full">

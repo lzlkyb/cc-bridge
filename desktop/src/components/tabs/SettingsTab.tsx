@@ -4,7 +4,7 @@ import { isWindows, shortcutLabel } from "../../lib/platform";
 import { SETTINGS_SECTIONS } from "../../lib/settingsSections";
 import { FirewallGroup } from "./firewall/FirewallGroup";
 import { AboutGroup } from "./AboutGroup";
-import { RiskSummary } from "./settings/RiskSummary";
+import { RiskBand } from "../ui/RiskBand";
 import { SettingsNav } from "./settings/SettingsNav";
 import { NetworkGroup } from "./settings/NetworkGroup";
 import { SecurityGroup } from "./settings/SecurityGroup";
@@ -27,6 +27,7 @@ export function SettingsTab({
   onMarkSeen,
   changelogOpenToken,
   onOpenSearch,
+  onNavigate,
 }: {
   status?: StaticStatus;
   onSaved: () => void;
@@ -40,7 +41,7 @@ export function SettingsTab({
   changelogOpenToken?: number;
   /** 打开命令面板（左栏「搜索设置」入口，Ctrl+K 的页面内可见入口）。 */
   onOpenSearch?: () => void;
-  /** 跨 tab 导航（卡片指路按钮用；不传则相关按钮回退静态文案）。 */
+  /** 跨 tab 导航（安全卡跳转按钮用；不传则按钮不可点）。 */
   onNavigate?: (tab: string, anchor?: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -158,7 +159,7 @@ export function SettingsTab({
         {/* 风险总览从原「功能开关」卡内提到页面级：它汇总的是**跨卡**风险，
             拆卡后待在某一张卡里就不合适了。不进左栏导航：它是告警横幅而非设置卡，
             且常驻页面顶部，无需导航。 */}
-        <RiskSummary status={status} />
+        <RiskBand status={status} />
         {/* 关于卡置顶（用户指定）。在风险总览**之后**：那一条是告警横幅而非卡片，
             把告警压到卡片下面就失去了意义。 */}
         <AboutGroup status={status} unreadCount={unreadCount} onMarkSeen={onMarkSeen} changelogOpenToken={changelogOpenToken} />
@@ -171,8 +172,8 @@ export function SettingsTab({
         {/* 防火墙卡片仅 Windows：macOS 的防火墙是**按应用授权**而非按端口开洞，
             且默认不拦本机监听端口的入站连接，整套 netsh 诊断/修复在那里无意义。 */}
         {isWindows(status?.platform) && <FirewallGroup onRefresh={onSaved} />}
-        <SecurityGroup status={status} onSaved={onSaved} />
         {/* ── 每天会用 ── */}
+        <SecurityGroup status={status} onSaved={onSaved} onNavigate={onNavigate} />
         {/* 紧邻安全卡：它的风险不低于「命令执行」——后者还有三道闸
             （shell_enabled / 危险命令拦截 / 命令白名单），而桥接的 spawn 一道都不走。
             不传 `onSaved`：它自己管自己的刷新，不能挂在全局刷新链上（每改一个

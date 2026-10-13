@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
@@ -19,9 +19,13 @@ import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 export function SecurityTab({
   status,
   onSaved,
+  highlightAnchor,
 }: {
   status?: StaticStatus;
   onSaved: () => void;
+  /** 由 Header 徽章 / 命令面板 / HealthCard 胶囊 / 设置页安全卡跳转按钮带入的定位锚点
+   *  （App 的 pendingAnchor）。与 SettingsTab / LogTab 同一套机制：切到本页即定位 + 高亮。 */
+  highlightAnchor?: { anchor: string; nonce: number } | null;
 }) {
   const [newRoot, setNewRoot] = useState("");
   const [browserOpen, setBrowserOpen] = useState(false);
@@ -56,14 +60,33 @@ export function SecurityTab({
     try {
       await invoke<ConfigSaveResult>("save_config", { patch: { allowedRoots: roots } });
       onSaved();
+      toast("已删除目录", "success");
     } catch (e) {
       toast(`删除目录失败：${e}`, "error");
     }
   };
 
   const filteredRoots = status?.allowedRoots.filter((r) =>
-    rootSearch ? r.toLowerCase().includes(rootSearch.toLowerCase()) : true,
+    // 搜索框只在目录 > 3 时渲染；≤3 时**忽略**搜索词而不是清空 state——
+    // 从 4 个删到 3 个的一瞬间搜索框会消失，若关键词残留在 state 里，
+    // filteredRoots 恒空、页面显示「没有匹配的目录」且用户再没有输入框可改。
+    rootSearch && status.allowedRoots.length > 3
+      ? r.toLowerCase().includes(rootSearch.toLowerCase())
+      : true,
   ) ?? [];
+
+  // 锚点定位 + 高亮（与 SettingsTab 同款逻辑：卡级 id 直接命中，动滚动 + 黄框 2s）。
+  // 非激活 Tab 在 Tabs 中为 return null（完全卸载），切到安全页时本组件才挂载，
+  // 子组件先于父 effect 挂载完成，所以挂载即可定位，无需额外延时。
+  useEffect(() => {
+    if (!highlightAnchor?.anchor) return;
+    const el = document.getElementById(highlightAnchor.anchor);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("anchor-highlight");
+    const t = setTimeout(() => el.classList.remove("anchor-highlight"), 2000);
+    return () => clearTimeout(t);
+  }, [highlightAnchor]);
 
   return (
     <div className="space-y-4 security-tab">
@@ -72,7 +95,7 @@ export function SecurityTab({
 
       <RunningCommandsCard danger={status?.shellEnabled ?? false} />
 
-      <Card>
+      <Card id="set-roots">
         <CardHeader className="flex-row items-center justify-between space-y-0 gap-3 flex-wrap">
           <div className="flex items-center gap-2">
             <CardTitle icon={<Icon name="folder" />}>白名单根目录</CardTitle>

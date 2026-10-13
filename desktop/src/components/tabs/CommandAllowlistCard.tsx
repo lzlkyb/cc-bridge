@@ -87,12 +87,15 @@ export function CommandAllowlistCard({
     }
   };
 
-  const filtered = progSearch
-    ? allowlist.filter((a) => a.toLowerCase().includes(progSearch.toLowerCase()))
-    : allowlist;
+  // 与白名单目录卡同款：搜索框只在 >3 时渲染，≤3 时忽略搜索词，
+  // 避免删到 3 个以下后关键词残留把列表卡死（输入框已消失，无法清除）。
+  const filtered =
+    progSearch && allowlist.length > 3
+      ? allowlist.filter((a) => a.toLowerCase().includes(progSearch.toLowerCase()))
+      : allowlist;
 
   return (
-    <Card>
+    <Card id="sec-allowlist">
       <CardHeader className="flex-row items-center justify-between space-y-0 gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <CardTitle icon={<Icon name="terminal" />}>命令白名单</CardTitle>
@@ -141,8 +144,8 @@ export function CommandAllowlistCard({
                 </div>
                 <div className={`mt-0.5 text-xs ${allowOn ? "text-muted-foreground" : "text-warning"}`}>
                   {allowOn
-                    ? "仅允许白名单内程序执行命令，其余一律拒绝（不削弱 Layer 1 破坏性拦截）"
-                    : "未启用 · 远程可执行任意程序，仅受 Layer 1 破坏性拦截兜底"}
+                    ? "仅允许白名单内程序执行命令，其余一律拒绝（不削弱内置破坏性命令拦截）"
+                    : "未启用 · 远程可执行任意程序，仅受内置破坏性命令拦截兜底"}
                 </div>
               </div>
               <Switch checked={allowOn} onChange={setAllow} ariaLabel="启用命令白名单" />
@@ -155,7 +158,7 @@ export function CommandAllowlistCard({
                   <span>
                     白名单按程序名（大小写不敏感）匹配。即使列入{" "}
                     <code className="rounded bg-background/60 px-1 font-mono text-[11px]">rm</code>，
-                    <b>Layer 1 破坏性拦截仍生效</b>——{" "}
+                    <b>内置破坏性命令拦截仍生效</b>——{" "}
                     <code className="rounded bg-background/60 px-1 font-mono text-[11px]">
                       {dangerousCommandExample(status?.platform)}
                     </code>{" "}
