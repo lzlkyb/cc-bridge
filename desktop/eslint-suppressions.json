@@ -21,7 +21,7 @@
   },
   "src/components/tabs/ConnectTab.tsx": {
     "react-hooks/exhaustive-deps": {
-      "count": 3
+      "count": 2
     }
   },
   "src/components/tabs/LogTab.tsx": {

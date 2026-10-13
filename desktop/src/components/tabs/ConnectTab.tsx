@@ -1,29 +1,13 @@
-import { useState, useEffect, useMemo, memo, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { invokeOrToast, invoke } from "../../lib/tauri";
-import type { StaticStatus, TlsStatus } from "../../lib/types";
-import {
-  McpScope,
-  buildDisplayHost,
-  buildBaseCommand,
-  buildConnectCommand,
-  buildHealthCheck,
-  buildPermissionGrantCommand,
-  copyText,
-} from "../../lib/utils";
+import { memo, useEffect, useRef } from "react";
+import type { StaticStatus } from "../../lib/types";
 import { Icon } from "../ui/icon";
-import { useToast } from "../ui/toast";
-import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
+import { useConnectGuideState } from "../../hooks/useConnectGuideState";
 import { ConnectBento } from "./ConnectBento";
-import { TokenManager } from "./TokenManager";
 import { IpChangedBanner } from "./connect/IpChangedBanner";
 import { FirewallAlertBlock } from "./connect/FirewallAlertBlock";
 import { isWindows } from "../../lib/platform";
-import { AddressPicker } from "./connect/AddressPicker";
-import { OptionCard } from "./connect/widgets";
-import { GlobalSteps, ProjectSteps } from "./connect/Steps";
 import { ToolGuide } from "./connect/ToolGuide";
-import { PermissionCard } from "./connect/PermissionCard";
+import { ConnectGuide } from "./connect/ConnectGuide";
 
 function ConnectTabImpl({
   status,
@@ -54,30 +38,11 @@ function ConnectTabImpl({
    */
   onNavigate?: (tab: string, anchor?: string) => void;
 }) {
-  const [copied, setCopied] = useState(false);
-  const [scope, setScope] = useState<McpScope>("project");
-  const [projectPath, setProjectPath] = useState("");
-  const [includeShellTools, setIncludeShellTools] = useState(false);
-  const [permCopied, setPermCopied] = useState(false);
   const lanIps = status?.lanIps ?? [];
-  const { toast } = useToast();
 
-  // P2-3：TLS 开关状态（与设置页共享 ["tls-status"] 缓存）。决定 URL/命令用 http 还是 https。
-  const { data: tls } = useQuery({
-    queryKey: ["tls-status"],
-    queryFn: () => invoke<TlsStatus>("get_tls_status"),
-  });
-  const tlsEnabled = !!tls?.enabled;
-
-  type Section = "scope" | "steps" | "token" | "perm";
-  // 默认折叠（单选聚焦）：进连接页四块均收起，用户按需点开。
-  // 原「首次接入四块全展开」引导依赖 localStorage 标记，无法区分「真新用户」与「升级的老用户」
-  // （旧版没写过该标记，老用户升级后首次进入会被误判为新用户全展开），且 scope / lastSelectedIp
-  // 均会被首启自动副作用污染，故改为默认折叠，更贴合老用户习惯。
-  const [expanded, setExpanded] = useState<Section | null>(null);
-  const handleToggle = (section: Section) => {
-    setExpanded((prev) => (prev === section ? null : section));
-  };
+  // ⑤ 结构收敛：向导的 scope/路径/展开态/命令拼接/复制反馈全部下沉
+  // useConnectGuideState（含 ① P0 的 has_onboarded 初始展开），本组件不再透传 18 个 props。
+  const guide = useConnectGuideState(status, selectedIp);
 
   // 链路是否真正中断（红态）：服务在跑，但地址变了或探针不通（远程连不回本机）。
   // 防火墙告警块在链路未中断时才显示——红态优先于橙态，避免叠加制造混乱（设计稿规则）。
@@ -120,94 +85,11 @@ function ConnectTabImpl({
     }
   }, [listenAll, lanIps.join(","), selectedIp, status?.lastSelectedIp]);
 
-  // H1 修复：从后端回填 scope / projectPath，避免每次进入连接页被静默重置为默认值。
-  // status 异步加载，挂载时可能 undefined，故在 status 就绪后回填一次（仅当后端有值时）。
-  useEffect(() => {
-    if (status?.scope) setScope(status.scope as McpScope);
-    if (status?.projectPath != null) setProjectPath(status.projectPath);
-  }, [status?.scope, status?.projectPath]);
-
-  // 方案 A：作用域/项目路径一变更立即落盘，使托盘端复制的 IP 命令与连接页一致。
-  // 否则连接页用 UI 本地 scope（默认 project），托盘读持久化 config.scope（默认 None→user），
-  // 两者来源不同会不一致。此处让 config.scope 始终等于 UI 选择。
-  // H1 修复：status 未加载时不保存，避免挂载即用默认值（project/""）覆盖后端已存的值。
-  useEffect(() => {
-    if (!status) return;
-    const t = setTimeout(() => {
-      // 注意：save_config 命令的形参名为 patch，前端必须把字段包进 { patch: {...} }，
-      // 否则 Tauri 取到的是空 ConfigPatch（全部 None），scope 静默不落盘且不报错（曾因此漏改）。
-      void invokeOrToast("save_config", { patch: { scope, projectPath: projectPath || null } });
-    }, 300);
-    return () => clearTimeout(t);
-  }, [scope, projectPath]);
-
-  // E-P2-8: useMemo 避免每渲染重复拼接命令字符串（纯函数见 lib/utils）
-  const displayHost = useMemo(
-    () => buildDisplayHost(status, selectedIp),
-    [status, selectedIp],
-  );
-  const port = status?.port ?? 7823;
-  const token = status?.token ?? "";
-
-  const baseCommand = useMemo(
-    () => buildBaseCommand(displayHost, port, token, status?.transport, tlsEnabled),
-    [displayHost, port, token, status?.transport, tlsEnabled],
-  );
-
-  const connectCommand = useMemo(
-    () => buildConnectCommand(baseCommand, scope),
-    [baseCommand, scope],
-  );
-
-  const healthCheck = useMemo(
-    () => buildHealthCheck(displayHost, port, tlsEnabled),
-    [displayHost, port, tlsEnabled],
-  );
-
-  const permissionCommand = useMemo(
-    () => buildPermissionGrantCommand(scope, projectPath, includeShellTools),
-    [scope, projectPath, includeShellTools],
-  );
-
-  const handleCopy = (cmd?: string) => {
-    // H1 修复：允许调用方指定要复制的命令（ProjectSteps 传含 cd 前缀的完整命令），
-    // 缺省则复制 connectCommand。避免此前 ProjectSteps 先自行 writeText(fullCommand) 再调
-    // 本函数二次 writeText(connectCommand) 造成的双写覆盖（cd 前缀丢失）。
-    const target = cmd ?? connectCommand;
-    if (!target) return;
-    void copyText(
-      target,
-      () => {
-        setCopied(true);
-        toast("连接命令已复制到剪贴板", "success");
-    // 首次接入复制命令时，把当前选中的作用域落盘到后端配置，
-    // 供后续 IP 变化 banner / Token 重生成生成精确 sed 命令（方案 A）。
-        void invokeOrToast("save_config", { patch: { scope, projectPath: projectPath || null } });
-        setTimeout(() => setCopied(false), 2000);
-      },
-      (e) => toast(`复制失败：${e}`, "error"),
-    );
-  };
-
-  const handlePermCopy = () => {
-    if (!permissionCommand) return;
-    void copyText(
-      permissionCommand,
-      () => {
-        setPermCopied(true);
-        toast("授权命令已复制到剪贴板", "success");
-        setTimeout(() => setPermCopied(false), 2000);
-      },
-      (e) => toast(`复制失败：${e}`, "error"),
-    );
-  };
-
   return (
     <div className="space-y-3 connect-tab">
       {/* 防火墙告警块：是否现身由组件内部根据后端结构化诊断自己判定（无阻塞类问题则返回 null）。
           不再在这里看 firewallPortOpen 布尔值：旧条件在「规则只覆盖 Public / 指向旧路径 / 存在
-          Block 规则」这三种常见情形下会假绿，导致用户只能去关整个防火墙。仍保留 linkDown 互斥。
-          诚实暴露本机探针对远程入站拦截的盲点——不再谎报绿色「已连接」。 */}
+          Block 规则」这三种常见情形下会假绿，导致用户只能去关整个防火墙。仍保留 linkDown 互斥。 */}
       {/* 仅 Windows：macOS 防火墙按应用授权、默认不拦本机监听端口的入站连接，
           netsh 诊断整套在那里没有对应物。 */}
       {status?.running && !linkDown && isWindows(status.platform) && (
@@ -240,9 +122,9 @@ function ConnectTabImpl({
           selectedIp={selectedIp}
           previousIp={prevIpRef.current}
           port={status?.port ?? 7823}
-          scope={scope}
-          projectPath={projectPath}
-          tls={tlsEnabled}
+          scope={guide.scope}
+          projectPath={guide.projectPath}
+          tls={guide.tlsEnabled}
           onResolved={onSelectIp}
           onSedResolved={onSedResolved}
           onDismiss={onDismissIpChange}
@@ -254,217 +136,33 @@ function ConnectTabImpl({
           原有 claude-code 内容（scope/steps/token/perm）作为 children 仅在该工具下渲染。 */}
       <ConnectBento
         status={status}
-        displayHost={displayHost}
-        port={port}
+        displayHost={guide.displayHost}
+        port={guide.port}
         onChanged={onRefresh}
         onNavigate={onNavigate}
         guide={
           <ToolGuide
-            host={displayHost}
-            port={port}
-            token={token}
+            host={guide.displayHost}
+            port={guide.port}
+            token={guide.token}
             transport={status?.transport === "sse" ? "sse" : "http"}
-            tls={tls}
+            tlsEnabled={guide.tlsEnabled}
           >
             <ConnectGuide
               status={status}
-              listenAll={listenAll} lanIps={lanIps} selectedIp={selectedIp}
-              onSelectIp={onSelectIp} healthCheck={healthCheck}
-              scope={scope} setScope={setScope}
-              connectCommand={connectCommand} copied={copied} handleCopy={handleCopy}
-              projectPath={projectPath} setProjectPath={setProjectPath}
+              guide={guide}
+              listenAll={listenAll}
+              lanIps={lanIps}
+              selectedIp={selectedIp}
+              onSelectIp={onSelectIp}
+              onToggle={guide.toggleSection}
               onRefresh={onRefresh}
-              includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
-              permissionCommand={permissionCommand} permCopied={permCopied}
-              handlePermCopy={handlePermCopy}
-              expanded={expanded} onToggle={handleToggle}
             />
           </ToolGuide>
         }
       />
     </div>
   );
-}
-
-export function ConnectGuide({
-  status, listenAll, lanIps, selectedIp, onSelectIp, healthCheck,
-  scope, setScope, connectCommand, copied, handleCopy,
-  projectPath, setProjectPath, onRefresh,
-  includeShellTools, setIncludeShellTools, permissionCommand, permCopied, handlePermCopy,
-  expanded, onToggle,
-}: {
-  status?: StaticStatus;
-  listenAll: boolean; lanIps: string[]; selectedIp: string;
-  onSelectIp: (ip: string) => void; healthCheck: string;
-  scope: McpScope; setScope: (s: McpScope) => void;
-  connectCommand: string; copied: boolean; handleCopy: (command?: string) => void;
-  projectPath: string; setProjectPath: (p: string) => void;
-  onRefresh: () => void;
-  includeShellTools: boolean; setIncludeShellTools: (v: boolean) => void;
-  permissionCommand: string; permCopied: boolean; handlePermCopy: () => void;
-  expanded: string | null; onToggle: (s: "scope" | "steps" | "token" | "perm") => void;
-}) {
-  const isOpen = (k: "scope" | "steps" | "token" | "perm") => expanded === k;
-  const scopeOpen = isOpen("scope");
-  const stepsOpen = isOpen("steps");
-  const permOpen = isOpen("perm");
-  const scopeBody = useAutoAnimateRM<HTMLDivElement>();
-  const stepsBody = useAutoAnimateRM<HTMLDivElement>();
-  const permBody = useAutoAnimateRM<HTMLDivElement>();
-  const scopeBtn = useRef<HTMLButtonElement>(null);
-  const stepsBtn = useRef<HTMLButtonElement>(null);
-  const permBtn = useRef<HTMLButtonElement>(null);
-
-  const scrollToBtn = (el: HTMLElement | null) => {
-    if (!el) return;
-    requestAnimationFrame(() => {
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-      window.scrollBy({ top: -60, behavior: "instant" });
-    });
-  };
-
-  // 首屏不自动滚动（避免进入即跳动）；仅用户主动展开对应块时才平滑滚动到该块
-  const scopeMounted = useRef(false);
-  const stepsMounted = useRef(false);
-  const permMounted = useRef(false);
-  useEffect(() => { if (!scopeMounted.current) { scopeMounted.current = true; return; } if (scopeOpen) scrollToBtn(scopeBtn.current); }, [scopeOpen]);
-  useEffect(() => { if (!stepsMounted.current) { stepsMounted.current = true; return; } if (stepsOpen) scrollToBtn(stepsBtn.current); }, [stepsOpen]);
-  useEffect(() => { if (!permMounted.current) { permMounted.current = true; return; } if (permOpen) scrollToBtn(permBtn.current); }, [permOpen]);
-  const guideInner = (
-    <>
-        {listenAll && lanIps.length > 0 && (
-          <div className="guide-block guide-block--raw">
-            <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp} healthCheck={healthCheck} onRefresh={onRefresh} />
-          </div>
-        )}
-        <div className="guide-block">
-          <button
-            type="button"
-            onClick={() => onToggle("scope")}
-            className="collapsible-head w-full text-left"
-            aria-expanded={scopeOpen}
-            ref={scopeBtn}
-          >
-            <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-primary to-primary/70">
-              <Icon name="sliders" size={14} aria-hidden="true" />
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="ui-h-sub text-foreground">接入模式</div>
-              {!scopeOpen && (
-                <div className="text-[11px] text-muted-foreground">
-                  {scope === "project" ? "项目级 · 仅指定项目生效" : "全局模式 · 所有项目可用"}
-                </div>
-              )}
-            </div>
-            <Icon
-              name="chevronDown"
-              size={16}
-              className={`collapsible-chev ${scopeOpen ? "open" : ""}`}
-              aria-hidden="true"
-            />
-          </button>
-          <div ref={scopeBody}>
-            {scopeOpen && (
-              <div className="collapsible-body pl-9">
-                <div className="grid grid-cols-2 gap-3">
-                  {([
-                    { key: "project", title: "项目级", desc: "仅指定项目生效", badge: "推荐" as const },
-                    { key: "user", title: "全局模式", desc: "一次配置，所有项目都能使用" },
-                  ] as const).map((o) => (
-                    <OptionCard key={o.key} selected={scope===o.key} title={o.title} desc={o.desc}
-                      badge={"badge" in o ? o.badge : undefined} onClick={()=>setScope(o.key)} />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="my-3.5 h-px bg-border guide-divider" />
-        <div className="guide-block">
-          <button
-            type="button"
-            onClick={() => onToggle("steps")}
-            className="collapsible-head w-full text-left"
-            aria-expanded={stepsOpen}
-            ref={stepsBtn}
-          >
-            <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-primary to-primary/70">
-              <Icon name="terminal" size={14} aria-hidden="true" />
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="ui-h-sub text-foreground">
-                接入步骤
-                <span className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${status?.transport === "sse" ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200" : "bg-indigo-50 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-200"}`}>
-                  {status?.transport === "sse" ? "SSE 流式" : "HTTP"}
-                </span>
-              </div>
-              {!stepsOpen && (
-                <div className="text-[11px] text-muted-foreground">点击展开查看连接命令</div>
-              )}
-            </div>
-            <Icon
-              name="chevronDown"
-              size={16}
-              className={`collapsible-chev ${stepsOpen ? "open" : ""}`}
-              aria-hidden="true"
-            />
-          </button>
-          <div ref={stepsBody}>
-            {stepsOpen && (
-              <div className="collapsible-body pl-9">
-                {scope === "user" ? (
-                  <GlobalSteps command={connectCommand} copied={copied} onCopy={handleCopy} />
-                ) : (
-                  <ProjectSteps command={connectCommand} copied={copied} onCopy={handleCopy}
-                    projectPath={projectPath} setProjectPath={setProjectPath} />
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-        <div className="my-3.5 h-px bg-border guide-divider" />
-        <div className="guide-block">
-          <TokenManager status={status} onRefresh={onRefresh} projectPath={projectPath}
-            expanded={isOpen("token")} onToggle={() => onToggle("token")} />
-        </div>
-        <div className="guide-block">
-          <button
-            type="button"
-            onClick={() => onToggle("perm")}
-            className="collapsible-head w-full text-left"
-            aria-expanded={permOpen}
-            ref={permBtn}
-          >
-            <span className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-emerald-500 to-emerald-600">
-              <Icon name="check" size={14} aria-hidden="true" />
-            </span>
-            <div className="flex-1 min-w-0">
-              <div className="ui-h-sub text-foreground">权限自动授权</div>
-              {!permOpen && (
-                <div className="text-[11px] text-muted-foreground">点击展开查看授权命令</div>
-              )}
-            </div>
-            <Icon
-              name="chevronDown"
-              size={16}
-              className={`collapsible-chev ${permOpen ? "open" : ""}`}
-              aria-hidden="true"
-            />
-          </button>
-          <div ref={permBody}>
-            {permOpen && (
-              <div className="collapsible-body pl-9">
-                <PermissionCard scope={scope} projectPath={projectPath}
-                  includeShellTools={includeShellTools} setIncludeShellTools={setIncludeShellTools}
-                  permissionCommand={permissionCommand} permCopied={permCopied} handlePermCopy={handlePermCopy} />
-              </div>
-            )}
-          </div>
-        </div>
-    </>
-  );
-  // P2-3：卡片外壳（标题 + 工具选择器）由 ToolGuide 渲染，本组件只出 claude-code 内容。
-  return guideInner;
 }
 
 export const ConnectTab = memo(ConnectTabImpl);

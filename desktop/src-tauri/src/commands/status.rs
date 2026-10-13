@@ -106,6 +106,10 @@ pub struct StatusResponse {
     /// None 表示未指定；连接页据此回填，避免每次进入被重置为 null。
     #[serde(rename = "projectPath")]
     pub project_path: Option<String>,
+    /// 首次接入完成标记（首次复制连接命令成功时落盘，只增不减）。
+    /// false = 真新用户，连接页「接入步骤」默认展开；老用户升级后按「已接入」为 true。
+    #[serde(rename = "hasOnboarded")]
+    pub has_onboarded: bool,
     /// A3 修复：启动期错误（如端口被占用）。None 表示启动正常。
     #[serde(rename = "startupError")]
     pub startup_error: Option<String>,
@@ -427,6 +431,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         remote_reachable,
         scope: config.scope.clone(),
         project_path: config.project_path.clone(),
+        has_onboarded: config.has_onboarded,
         startup_error,
         lan_ips,
         firewall_enabled,

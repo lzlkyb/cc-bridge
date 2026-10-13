@@ -67,6 +67,12 @@ export interface StatusResponse {
   scope: string | null;
   /** 用户接入时确认的项目路径（project 作用域时生效）。由连接页保存，前端据此回填避免每次进入被重置为 null。 */
   projectPath: string | null;
+  /**
+   * 是否已完成首次接入（首次复制连接命令成功时后端落盘，**只增不减**，无 UI 开关）。
+   * false = 真新用户：连接页「接入步骤」默认展开。
+   * 老用户升级后配置里缺这个键，后端按「已接入」下发 true，行为与升级前一致。
+   */
+  hasOnboarded: boolean;
   /** A3 修复：启动期错误（如端口被占用）。null = 正常 */
   startupError: string | null;
   /** 防火墙状态（仅 Windows 真实查询，其它平台为 null）。
@@ -231,6 +237,8 @@ export interface ConfigPatch {
   scope?: string;
   /** 用户接入时确认的项目路径（项目级 scope 时用于 cd 前缀）。跟随连接页选择，供托盘生成精确 sed 命令。 */
   projectPath?: string;
+  /** 首次接入完成标记（只增不减）。后端仅接受 true，false 请求被忽略——升级老用户永不回退为新用户。 */
+  hasOnboarded?: boolean;
   /** Layer 2 命令白名单开关（④P0-1）。前端「安全」页写入。 */
   commandAllowlistEnabled?: boolean;
   /** Layer 2 命令白名单程序列表（④P0-1）。前端「安全」页写入。 */
@@ -435,6 +443,19 @@ export interface BrowseResult {
   path: string;
   parent: string | null;
   entries: BrowseEntry[];
+}
+
+/* ─── AddressPicker 本机连通探测（probe_lan_ips，评审修复 ④）─── */
+
+/** 单个本机网卡地址对 port 的 TCP 探测结论（三态，诚实兜底）。 */
+export type LanProbeState = "ok" | "fail" | "unknown";
+
+export interface LanProbeItem {
+  ip: string;
+  /** ok=端口可达；fail=明确拒绝（RST）；unknown=超时或未知错误（不谎报通/不通）。 */
+  state: LanProbeState;
+  /** 探测耗时（毫秒），IP 卡 hover title 展示。 */
+  ms: number;
 }
 
 /* ─── SSH 终端（面板内交互终端，首版密码登录）─── */

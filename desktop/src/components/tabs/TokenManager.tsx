@@ -1,12 +1,14 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StaticStatus } from "../../lib/types";
-import { McpScope, buildTokenSedCommand, copyText } from "../../lib/utils";
+import { McpScope, buildTokenSedCommand } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
 import { InlineNotice } from "../ui/notice";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback";
+import { useAutoScrollOnExpand } from "../../hooks/useAutoScrollOnExpand";
 import { SavedHint } from "../ui/SavedHint";
 
 /**
@@ -31,10 +33,14 @@ export function TokenManager({
   const [confirmingRegen, setConfirmingRegen] = useState(false);
   const [regenDone, setRegenDone] = useState(false);
   const [oldToken, setOldToken] = useState("");
-  const [copied, setCopied] = useState(false);
   const { toast } = useToast();
+  // 复制反馈统一走 useCopyFeedback（评审修复 ⑤）：原先的 SavedHint 无 toast 方案收敛进来，
+  // 反馈时长与其余复制点一致（2s），失败有 toast 兜底。
+  const fb = useCopyFeedback();
   const tokenBody = useAutoAnimateRM<HTMLDivElement>();
-  const btnRef = useRef<HTMLButtonElement>(null);
+  const showBody = expanded || confirmingRegen || regenDone;
+  // 首次渲染不自动滚动（hook 内置挂载守卫），仅后续展开才平滑滚动到块头。
+  const btnRef = useAutoScrollOnExpand<HTMLButtonElement>(showBody);
 
   // 原地替换 Bearer，不 remove+add（保留服务器条目与授权状态，避免重新授权）。
   // 作用域读持久化的 status.scope（当初接入确认的作用域），而非 UI 开关，避免匹配错文件。
@@ -53,20 +59,6 @@ export function TokenManager({
     setShowToken(false);
     toast("Token 已重新生成，请复制新连接命令到远程服务器", "warning");
   };
-
-  const showBody = expanded || confirmingRegen || regenDone;
-
-  // 首次渲染（如首次接入四块全开展示态）不自动滚动，避免首屏跳动；仅后续展开才平滑滚动
-  const mounted = useRef(false);
-  useEffect(() => {
-    if (!mounted.current) { mounted.current = true; return; }
-    if (showBody) {
-      requestAnimationFrame(() => {
-        btnRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-        window.scrollBy({ top: -60, behavior: "instant" });
-      });
-    }
-  }, [showBody]);
 
   return (
     <>
@@ -101,7 +93,7 @@ export function TokenManager({
           <div className="collapsible-body pl-9">
           <div className="step-row flex items-center gap-3">
             <div className="flex flex-1 items-center gap-2 min-w-0">
-              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">机密信息</span>
+              <span className="shrink-0 text-[11px] font-semibold text-muted-foreground/50">机密信息</span>
               <code className={`flex-1 min-w-0 rounded-md px-3 py-2 text-xs font-mono ${showToken ? "bg-background border" : "bg-muted/60"}`}>
                 {showToken ? (status?.token ?? "") : "●●●●●●●●●●●●●●●●●●●●"}
               </code>
@@ -135,21 +127,12 @@ export function TokenManager({
                     size="sm"
                     className="shrink-0 mt-0.5"
                     onClick={() => {
-                      // H6 修复：之前未 await/catch，剪贴板权限被拒绝时会出现"显示已复制但其实没复制"。
-                      if (tokenSedCommand) {
-                        void copyText(
-                          tokenSedCommand,
-                          () => {
-                            setCopied(true);
-                            setTimeout(() => setCopied(false), 2000);
-                          },
-                          (e) => toast(`复制失败：${e}`, "error"),
-                        );
-                      }
+                      if (tokenSedCommand) fb.copy("sed", tokenSedCommand);
                     }}
                     disabled={!tokenSedCommand}
+                    aria-live="polite"
                   >
-                    {copied ? <SavedHint>已复制</SavedHint> : "复制"}
+                    {fb.isCopied("sed") ? <SavedHint>已复制</SavedHint> : "复制"}
                   </Button>
                 </div>
               </div>

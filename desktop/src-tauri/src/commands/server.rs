@@ -8,8 +8,12 @@
 //! 本文件是**纯搬动**：函数体逐字节未改。
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
+use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 use crate::browse;
 use crate::config::save_config_field;
@@ -65,6 +69,61 @@ pub async fn start_mcp_server(
 #[tauri::command]
 pub async fn get_lan_ips() -> Result<Vec<String>, String> {
     Ok(network::get_lan_ips())
+}
+
+/// 单个本机网卡地址对 port 的 TCP 连通探测结论。
+/// state 三态诚实兜底：ok / fail / unknown（unknown 不谎报通或不通）。
+#[derive(Debug, Serialize)]
+pub struct LanProbeResult {
+    pub ip: String,
+    pub state: String,
+    /// 探测耗时（毫秒），前端 IP 卡 hover title 展示。
+    pub ms: u64,
+}
+
+/// 评审修复 ④：对本机每个网卡 IPv4 的 `port` 做 TCP 连通探测（800ms 超时，并发执行）。
+///
+/// 「占位即算通」——TCP 能建立就说明该地址的桥端口可达，无需真发 HTTP。
+/// **目标仅限本机网卡地址**（`network::get_lan_ips`），不新增任何外部连接面。
+///
+/// 三态语义：ok = 端口可达；fail = 明确被拒（RST，如服务未监听该地址）；
+/// unknown = 超时或其它错误（如宿主机防火墙拦本机自连）——诚实返回未知，
+/// 前端据此退回「默认」推荐而不是瞎猜。结果顺序与 get_lan_ips 一致。
+#[tauri::command]
+pub async fn probe_lan_ips(port: u16) -> Result<Vec<LanProbeResult>, String> {
+    let ips = network::get_lan_ips();
+    let tasks: Vec<_> = ips
+        .into_iter()
+        .map(|ip| {
+            tokio::spawn(async move {
+                let started = Instant::now();
+                let state = match timeout(
+                    Duration::from_millis(800),
+                    TcpStream::connect((ip.as_str(), port)),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => "ok",
+                    Ok(Err(_)) => "fail",
+                    Err(_) => "unknown",
+                };
+                LanProbeResult {
+                    ip,
+                    state: state.to_string(),
+                    ms: started.elapsed().as_millis() as u64,
+                }
+            })
+        })
+        .collect();
+    // 按提交顺序收集，保持与 get_lan_ips 相同的排列（默认路由网卡第一）。
+    let mut out = Vec::new();
+    for t in tasks {
+        // join 失败（探测任务 panic）极少见：跳过该条，不让单点异常拖垮整次探测。
+        if let Ok(r) = t.await {
+            out.push(r);
+        }
+    }
+    Ok(out)
 }
 
 /// 强制重新探测 Git Bash（供设置页「刷新检测」按钮调用）。

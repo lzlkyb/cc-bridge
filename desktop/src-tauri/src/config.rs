@@ -152,6 +152,15 @@ pub struct BridgeConfig {
     /// 用户接入时确认的项目路径（项目级 scope 时用于 cd 前缀）。
     /// 跟随连接页选择，供托盘「复制 IP 替换命令」生成带 cd 的精确命令，与 IpChangedBanner 对齐。
     pub project_path: Option<String>,
+    /// 首次接入完成标记：**首次复制连接命令成功**时由前端经 save_config 置 true，
+    /// 只增不减（后端仅接受 true，false 请求被忽略；无 UI 开关）。
+    ///
+    /// 用于区分「真新用户」（连接页「接入步骤」默认展开）与「升级上来的老用户」——
+    /// 旧方案用 localStorage 标记，无法区分两者且会被首启副作用污染，故判定权交给后端。
+    ///
+    /// 兼容语义见 `load_config`：老配置库缺这个键时按「已接入」处理（true），
+    /// 只有全新安装才从 false 起步。
+    pub has_onboarded: bool,
     /// 命令白名单开关（Layer 2，opt-in，④P0-1）。默认关闭——开启后 run_command 的每个子命令
     /// 首 token 必须在 `command_allowlist` 内，否则被拦截。仅缩小可执行程序面、抬高地板；
     /// 不削弱 Layer 1（常开破坏性检测）与既有安全围栏（规则7）。注意 `shell_enabled` 已自承授予
@@ -240,6 +249,7 @@ impl Default for BridgeConfig {
             last_selected_ip: None,
             scope: None,
             project_path: None,
+            has_onboarded: false,
             command_allowlist_enabled: false,
             command_allowlist: vec![],
             notify_command_complete: true,
@@ -337,6 +347,7 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "last_selected_ip" => config.last_selected_ip = parse_or_warn(key, value, None),
             "scope" => config.scope = parse_or_warn(key, value, None),
             "project_path" => config.project_path = parse_or_warn(key, value, None),
+            "has_onboarded" => config.has_onboarded = parse_or_warn(key, value, false),
             "command_allowlist_enabled" => {
                 config.command_allowlist_enabled = parse_or_warn(key, value, false)
             }
@@ -369,6 +380,18 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             }
             _ => {}
         }
+    }
+
+    // has_onboarded 的**老库隐式迁移**：容器级 serde(default) 只能给出 false（新安装语义），
+    // 但「配置库里已有任意键、唯独缺 has_onboarded」说明这是一个升级上来的老用户——
+    // 它们早已接入（甚至只是用过一段时间），绝不能被误判成新用户而在升级后第一次
+    // 打开连接页时看到「接入步骤」自动展开。反之 rows 为空 = 全新安装，保持 false。
+    // 局限（有意接受）：新安装后、首次复制前若先写过其它配置键（改过设置），会被
+    // 当作老用户折叠处理——此时用户已在主动使用应用，折叠反而是对的。
+    // import_config 不走此路径：导入老版本导出的配置时该键缺省为 false，最多多展开
+    // 一次向导，无功能影响。
+    if !rows.is_empty() && !rows.iter().any(|(k, _)| k == "has_onboarded") {
+        config.has_onboarded = true;
     }
 
     normalize_profiles(&mut config);

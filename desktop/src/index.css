@@ -562,16 +562,17 @@ body {
   padding: 14px 16px;
   box-shadow: var(--sh-card);
 }
+/* 中文 eyebrow（评审修复 ③）：≥11px、去 uppercase/字距——大小写转换与加宽字距
+   对汉字都是噪声；层级靠 700 字重保住。 */
 .bento-eyebrow {
   display: flex; align-items: center;
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em;
-  text-transform: uppercase; color: hsl(var(--muted-foreground));
+  font-size: 11px; font-weight: 700; color: hsl(var(--muted-foreground));
 }
 
-/* 治理胶囊。 */
+/* 治理胶囊（评审修复 ③：10.5px → 11px，中文可读下限；+0.5px 不破行高）。 */
 .gov-pill {
   display: inline-flex; align-items: center; gap: 4px;
-  font-size: 10.5px; font-weight: 700;
+  font-size: 11px; font-weight: 700;
   border-radius: 999px; padding: 4px 10px;
   background: hsl(var(--muted)); color: hsl(var(--muted-foreground));
 }
@@ -646,7 +647,7 @@ body {
 .usage-xdays { display: flex; gap: 9px; margin-top: 4px; }
 .usage-xdays span {
   flex: 1; min-width: 0; overflow: hidden; text-align: center;
-  font-size: 8.5px; color: hsl(var(--muted-foreground));
+  font-size: 9.5px; color: hsl(var(--muted-foreground));
 }
 .usage-xdays span.usage-xdays--today { font-weight: 800; color: hsl(var(--foreground)); }
 .usage-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 10px; color: hsl(var(--muted-foreground)); }
@@ -1497,7 +1498,10 @@ body {
   border: 1px solid hsl(var(--border)); background: hsl(var(--muted));
   cursor: pointer; transition: background 0.12s; text-align: left;
 }
-.collapsible-head:hover { background: hsl(214 25% 91%); }
+/* 评审修复 ②：hover 走 token。原写死浅灰 hsl(214 25% 91%) 是全项目唯一绕开 token 的
+   hover 色，暗色主题下会闪一块亮灰。muted-foreground/0.12 在亮色下是淡灰层、暗色下
+   是柔和亮层，与 .step-row:hover 的 muted 同族；亮色视觉与旧值几乎无差。 */
+.collapsible-head:hover { background: hsl(var(--muted-foreground) / 0.12); }
 .collapsible-chev { color: hsl(var(--muted-foreground)); transition: transform 0.2s ease; }
 .collapsible-chev.open { transform: rotate(180deg); }
 .collapsible-body { padding: 10px 4px 2px; }
@@ -1526,12 +1530,18 @@ select:focus-visible,
   border-radius: 8px; padding: 9px 12px;
 }
 
-/* ═══ 字体层级刻度（A 层统一）═══ */
+/* ═══ 字体层级刻度（A 层统一）═══
+   ── A 层排版规则（中文，评审修复 ③ 立规）──
+   1. 中文文本字号下限 11px：9.5px/8px 汉字在 1080p 缩放下发虚，不可读；
+   2. 中文 eyebrow 一律不加 uppercase / letter-spacing——大小写转换对汉字无效，
+      字距会拆散笔画，纯噪声。bento-eyebrow / ui-eyebrow 均按此实现；
+      若未来出现纯拉丁缩写标签（HTTP / SSE / UTF-8 之类），另开带 uppercase 的变体，
+      不要在中文上复用。 */
 .ui-h-section { font-size: 14px; font-weight: 600; line-height: 1.4; }
 .ui-h-sub { font-size: 13px; font-weight: 600; line-height: 1.4; }
 .ui-eyebrow {
-  font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
-  text-transform: uppercase; color: hsl(var(--muted-foreground));
+  font-size: 11px; font-weight: 700;
+  color: hsl(var(--muted-foreground));
 }
 
 /* ═══ 已保存反馈（统一组件 SavedHint）═══ */

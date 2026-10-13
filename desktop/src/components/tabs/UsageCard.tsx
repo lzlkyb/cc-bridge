@@ -91,7 +91,7 @@ export function UsageCard({
               {days.map((d, i) => (
                 <span
                   key={d.date}
-                  className="min-w-0 flex-1 truncate text-center text-[8px] text-muted-foreground"
+                  className="min-w-0 flex-1 truncate text-center text-[9.5px] text-muted-foreground"
                 >
                   {i === days.length - 1 ? "今天" : shortDateKey(d.date)}
                 </span>

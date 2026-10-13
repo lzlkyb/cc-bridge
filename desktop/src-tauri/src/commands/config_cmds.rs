@@ -78,6 +78,10 @@ pub struct ConfigPatch {
     /// 跟随连接页选择，供托盘「复制 IP 替换命令」生成带 cd 的精确命令，与 IpChangedBanner 对齐。
     #[serde(rename = "projectPath")]
     pub project_path: Option<String>,
+    /// 首次接入完成标记（只增不减）。仅接受 true：false 请求被静默忽略，
+    /// 保证「升级上来的老用户」永不回退为新用户。由首次复制连接命令成功的前端写入。
+    #[serde(rename = "hasOnboarded")]
+    pub has_onboarded: Option<bool>,
     /// 命令白名单开关（Layer 2，④P0-1）。前端「安全」页写入。
     #[serde(rename = "commandAllowlistEnabled")]
     pub command_allowlist_enabled: Option<bool>,
@@ -282,6 +286,13 @@ pub async fn save_config(
         save_config_field(&db, "project_path", &serde_json::to_value(p).unwrap())?;
         config.project_path = Some(p.clone());
         changed.push("project_path".into());
+    }
+    // 首次接入完成标记：只增不减——仅接受 true 且当前为 false 时才落库。
+    // 已是 true 时跳过（不再产生 changed 噪声）；false 请求一律忽略。
+    if patch.has_onboarded == Some(true) && !config.has_onboarded {
+        save_config_field(&db, "has_onboarded", &serde_json::to_value(true).unwrap())?;
+        config.has_onboarded = true;
+        changed.push("has_onboarded".into());
     }
 
     if let Some(ref h) = patch.host {

@@ -43,8 +43,10 @@ const BASELINE = {
   // 2026-10-13：487 → 351（日志页 a11y 批次：导出菜单/行渲染拆 LogExportMenu、LogRow，
   // 翻页重置与工具名独立查询收进组件内联 helper）。
   "src/components/tabs/LogTab.tsx": { lines: 351, hooks: 11 },
-  // 2026-10-12：502 → 470（PermissionCard → connect/PermissionCard.tsx；卡片外壳移交 ToolGuide.tsx）。
-  "src/components/tabs/ConnectTab.tsx": { lines: 470, hooks: 13 },
+  // 2026-10-13：`ConnectTab.tsx` 已从本表**移除**。它原本登记 470 行 / 13 hooks，
+  // 本次（连接页评审修复 ⑤）把向导状态整体下沉 `hooks/useConnectGuideState.ts`、
+  // ConnectGuide 独立成 `connect/ConnectGuide.tsx` 后降到 168 行 / 2 hooks，
+  // 重新落在 300 行 / 8 hooks 的默认上限之内——不需要豁免了。
   // 2026-09-16：475 → 411（内联的「关于」弹窗 → AboutInfoModal.tsx）。
   "src/components/tabs/AboutGroup.tsx": { lines: 411 },
   // 🔴 514 行，而且是 2026-09-02 本次重构**新建**的。当时把 621 行的

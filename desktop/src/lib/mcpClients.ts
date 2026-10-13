@@ -74,6 +74,29 @@ export const CLIENT_SELFSIGNED: Record<McpClientTool, { level: "ok" | "untested"
   },
 };
 
+/**
+ * 通用工具的「复制给 AI 代接入」提示词（精简版：AI 自己懂 MCP，只给事实不给教程）。
+ * URL / token / 备用端点 / TLS 注意事项动态内嵌（与片段同策略：本机配置不脱敏）。
+ */
+export function buildGenericPrompt(input: SnippetInput): string {
+  const url = buildMcpUrl(input);
+  const altUrl = buildMcpUrl({ ...input, transport: input.transport === "sse" ? "http" : "sse" });
+  const mainTransport = input.transport === "sse" ? "SSE" : "Streamable HTTP";
+  const altTransport = input.transport === "sse" ? "Streamable HTTP" : "SSE";
+
+  const lines: string[] = [
+    "请把我接入 MCP 服务器 cc-bridge：",
+    `- 端点：${url}（${mainTransport}；若你不支持，改用${altTransport}：${altUrl}）`,
+    `- 认证：请求头 Authorization: Bearer ${input.token}`,
+    "",
+    "按你自己的配置方式接入并验证，完成后告诉我结果。",
+  ];
+  if (input.tls) {
+    lines.push("注意：HTTPS 为自签证书，无法信任时告知用户先信任 cc-bridge.crt。");
+  }
+  return lines.join("\n");
+}
+
 export interface ClientSnippet {
   /** 展示形态：命令块 / JSON 块 / TOML 块（向导据此选渲染组件）。 */
   kind: "command" | "json" | "toml";

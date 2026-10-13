@@ -148,7 +148,8 @@ function MetricCard({
       title={nav.title}
       className={`metric-card ${color}`}
     >
-      <div className="text-[9.5px] font-bold uppercase tracking-[0.12em] text-muted-foreground">
+      {/* 评审修复 ③：中文标签 11px、去 uppercase/字距（对汉字无效），层级靠 700 字重。 */}
+      <div className="text-[11px] font-bold text-muted-foreground">
         {label}
       </div>
       <div className="mt-1 text-[24px] font-extrabold leading-none tracking-tight text-foreground">

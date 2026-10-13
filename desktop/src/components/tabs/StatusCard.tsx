@@ -151,9 +151,11 @@ export function StatusCard({
 
   return (
     <div className={`status-card ${TONE_CLASS[chain.tone]} ${toneSwitch}`}>
-      <div className="flex items-center text-[9.5px] font-bold uppercase tracking-[0.12em] opacity-90">
+      {/* 评审修复 ③：中文 eyebrow 11px、去 uppercase/字距（对汉字无效）；层级靠字重。
+          右侧时长是配套的西文数字+中文单位，10.5px 与 eyebrow 同行保持次级感。 */}
+      <div className="flex items-center text-[11px] font-bold opacity-90">
         服务状态
-        <span className="ml-auto text-[10px] font-semibold normal-case tracking-normal">
+        <span className="ml-auto text-[10.5px] font-semibold">
           {running ? `已运行 ${formatUptime(liveUptime)}` : "未运行"}
         </span>
       </div>

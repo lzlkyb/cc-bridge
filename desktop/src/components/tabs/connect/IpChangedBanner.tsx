@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Icon } from "../../ui/icon";
-import { McpScope, copyText, buildIpSedCommand } from "../../../lib/utils";
+import { McpScope, buildIpSedCommand } from "../../../lib/utils";
 import { ActionCard, InlineNotice } from "../../ui/notice";
 import { CommandBlock } from "./widgets";
-import { useToast } from "../../ui/toast";
+import { useCopyFeedback } from "../../../hooks/useCopyFeedback";
 
 /**
  * 地址变化通知（L3 ActionCard）：仅 status.ipChanged 为真（或 ipResolvedByUser 兜底）时渲染。
@@ -41,8 +41,11 @@ export function IpChangedBanner({
   onSedResolved: () => void;
   onDismiss?: () => void;
 }) {
-  const [copiedCmd, setCopiedCmd] = useState("");
-  const { toast } = useToast();
+  // 复制反馈统一走 useCopyFeedback（评审修复 ⑤，原 copiedCmd 字符串比对 + 1.5s 特例时长
+  // 收敛进来，统一 2s）。「已处理」是业务状态而非反馈：复制成功即永久置位（banner 可能
+  // 还要等下一轮轮询才消失），由 onCopied 回调承担——与 2s 自动回滚的内联反馈解耦。
+  const fb = useCopyFeedback();
+  const [resolved, setResolved] = useState(false);
 
   // 网卡全部消失时，下方选择控件与确认按钮会永久 disabled 形成死局。
   // 此时只给说明、不渲染选择控件；网络恢复、网卡重新出现后会自动回到正常分支。
@@ -84,19 +87,17 @@ export function IpChangedBanner({
   // selectedIp 为空或仍是已消失的旧地址时，sed 无意义，禁用复制。
   const newIpValid = !!selectedIp && lanIps.includes(selectedIp);
 
-  // H6 修复：之前未 await/catch，剪贴板写入失败时仍会调 onResolved/onSedResolved 让 banner 消失，用户其实
-  // 没拿到更新命令却以为已处理完。现只在真正复制成功后才收口。
+  // H6 修复（语义保留）：只在真正复制成功后才调 onResolved/onSedResolved 收口，用户其实
+  // 没拿到更新命令时 banner 不消失。
   const copyOne = () => {
     if (!cmd || !newIpValid) return;
-    void copyText(
-      cmd,
-      () => {
-        setCopiedCmd(cmd);
+    fb.copy("sed", cmd, {
+      onCopied: () => {
+        setResolved(true);
         onResolved(selectedIp);
         onSedResolved(); // 收口——复制远程更新命令后允许 banner 自然消失
       },
-      (e) => toast(`复制失败：${e}`, "error"),
-    );
+    });
   };
 
   return (
@@ -113,7 +114,7 @@ export function IpChangedBanner({
       copyLabel="复制命令"
       onCopy={copyOne}
       copyDisabled={!newIpValid}
-      resolved={!!copiedCmd}
+      resolved={resolved}
       onDismiss={onDismiss}
     >
       <div className="space-y-3">
@@ -125,7 +126,7 @@ export function IpChangedBanner({
         {newIpValid ? (
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-foreground/80">{cmdLabel}</p>
-            <CommandBlock command={cmd} copied={copiedCmd === cmd} onCopy={copyOne} />
+            <CommandBlock command={cmd} copied={fb.isCopied("sed")} onCopy={copyOne} />
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">

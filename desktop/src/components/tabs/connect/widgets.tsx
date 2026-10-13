@@ -1,6 +1,10 @@
+import { useState } from "react";
+import { invoke } from "../../../lib/tauri";
+import { copyText } from "../../../lib/utils";
 import { Icon } from "../../ui/icon";
 import { Button } from "../../ui/button";
 import { Badge } from "../../ui/badge";
+import { useToast } from "../../ui/toast";
 
 /** 步骤序号圆点：done 时显示对勾 */
 export function StepNumber({ n, done }: { n: number; done?: boolean }) {
@@ -50,7 +54,7 @@ export function OptionCard({
   );
 }
 
-/** 终端风格命令块：命令 + 复制按钮 */
+/** 终端风格命令块：命令 + 复制按钮。按钮文案变化经 aria-live 播报（复制反馈规范 ⑤）。 */
 export function CommandBlock({
   command,
   copied,
@@ -66,9 +70,59 @@ export function CommandBlock({
       <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-foreground">
         {command || "加载中..."}
       </code>
-      <Button variant="outline" size="sm" className="shrink-0" onClick={onCopy} disabled={!command}>
+      <Button variant="outline" size="sm" className="shrink-0" onClick={onCopy} disabled={!command} aria-live="polite">
         <Icon name={copied ? "check" : "copy"} size={14} />
         {copied ? "已复制" : "复制"}
+      </Button>
+    </div>
+  );
+}
+
+/** 「复制 PEM」步骤：HTTPS 自签时把证书内容交给用户保存为 .crt 信任用（ToolGuide / GenericSteps 共用）。 */
+export function CertPemStep({
+  compact,
+  copied,
+  onCopied,
+}: {
+  compact?: boolean;
+  copied?: boolean;
+  onCopied?: () => void;
+}) {
+  const [innerCopied, setInnerCopied] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const { toast } = useToast();
+  const done = copied ?? innerCopied;
+
+  const copyPem = () => {
+    setLoading(true);
+    invoke<string>("read_tls_cert_pem")
+      .then((pem) =>
+        copyText(
+          pem,
+          () => {
+            setInnerCopied(true);
+            onCopied?.();
+            toast("证书 PEM 已复制，保存为 cc-bridge.crt 后按工具要求信任", "success");
+          },
+          (e) => toast(`复制失败：${e}`, "error"),
+        ),
+      )
+      .catch((e) => toast(`读取证书失败：${e}`, "error"))
+      .finally(() => setLoading(false));
+  };
+
+  return (
+    <div
+      className={`flex items-center justify-between gap-2 ${compact ? "" : "rounded-lg border bg-muted/30 px-2.5 py-2"}`}
+    >
+      <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-muted-foreground">
+        {compact
+          ? "把下方证书内容保存为 cc-bridge.crt 供工具信任："
+          : "导出桥的自签证书（PEM），保存后按各工具要求信任"}
+      </p>
+      <Button variant="outline" size="sm" className="shrink-0" onClick={copyPem} disabled={loading}>
+        <Icon name={done ? "check" : "copy"} size={12} />
+        {loading ? "读取中…" : done ? "已复制" : "复制 PEM"}
       </Button>
     </div>
   );
