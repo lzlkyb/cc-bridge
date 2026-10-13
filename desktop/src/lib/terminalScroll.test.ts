@@ -5,6 +5,7 @@ import {
   TUI_EDGE_REARM_LINES,
   TUI_EDGE_SEQ,
   isTuiScrollActive,
+  wheelOwner,
   thumbMetrics,
   clampPos,
   planDrag,
@@ -22,6 +23,28 @@ describe("isTuiScrollActive", () => {
   it("普通缓冲区（即使鼠标跟踪残留）不激活", () => {
     expect(isTuiScrollActive("normal", true)).toBe(false);
     expect(isTuiScrollActive("normal", false)).toBe(false);
+  });
+});
+
+describe("wheelOwner（滚轮归属四态，设计稿屏6）", () => {
+  it("normal × 无跟踪 = local（缺省态，不出徽章）", () => {
+    expect(wheelOwner("normal", false)).toBe("local");
+  });
+  it("alternate × 跟踪开 = forward（现有 TUI 态）", () => {
+    expect(wheelOwner("alternate", true)).toBe("forward");
+  });
+  it("normal × 跟踪开 = forwardMain（xterm 原生转发给 less 等）", () => {
+    expect(wheelOwner("normal", true)).toBe("forwardMain");
+  });
+  it("alternate × 无跟踪 = dead（备用屏无 scrollback，滚轮无处可去）", () => {
+    expect(wheelOwner("alternate", false)).toBe("dead");
+  });
+  it("isTuiScrollActive 恰为 forward 态（别名语义不漂移）", () => {
+    for (const buffer of ["normal", "alternate"]) {
+      for (const mouse of [true, false]) {
+        expect(isTuiScrollActive(buffer, mouse)).toBe(wheelOwner(buffer, mouse) === "forward");
+      }
+    }
   });
 });
 

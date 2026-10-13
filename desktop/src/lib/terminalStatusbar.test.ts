@@ -3,6 +3,7 @@ import {
   parseOsc7,
   parseOsc133,
   parseOsc1337,
+  isSupportedShell,
   shortenPath,
   formatUptime,
 } from "./terminalStatusbar";
@@ -52,6 +53,33 @@ describe("parseOsc1337（私有键值）", () => {
   it("其它键忽略", () => {
     expect(parseOsc1337("Foo=bar")).toEqual({});
     expect(parseOsc1337("no-equals-sign")).toEqual({});
+  });
+});
+
+describe("isSupportedShell（钩子注入门禁）", () => {
+  it("bash/zsh 支持，登录 shell 的 - 前缀剥掉", () => {
+    expect(isSupportedShell("bash")).toBe(true);
+    expect(isSupportedShell("zsh")).toBe(true);
+    expect(isSupportedShell("-bash")).toBe(true);
+    expect(isSupportedShell("-zsh")).toBe(true);
+  });
+  it("fish/csh/tcsh/ksh/sh 一律不支持（盲发会喷语法错误）", () => {
+    expect(isSupportedShell("fish")).toBe(false);
+    expect(isSupportedShell("csh")).toBe(false);
+    expect(isSupportedShell("tcsh")).toBe(false);
+    expect(isSupportedShell("ksh")).toBe(false);
+    expect(isSupportedShell("sh")).toBe(false);
+    expect(isSupportedShell("dash")).toBe(false);
+    expect(isSupportedShell("pwsh")).toBe(false);
+  });
+  it("宽容处理：首尾空白与大小写", () => {
+    expect(isSupportedShell(" bash ")).toBe(true);
+    expect(isSupportedShell("BASH")).toBe(true);
+    expect(isSupportedShell("Fish")).toBe(false);
+  });
+  it("空串/畸形值不支持", () => {
+    expect(isSupportedShell("")).toBe(false);
+    expect(isSupportedShell("-")).toBe(false);
   });
 });
 

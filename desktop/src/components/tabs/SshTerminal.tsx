@@ -9,13 +9,14 @@ import { useTerminalSearch } from "./useTerminalSearch";
 import { useTerminalFontSize } from "./useTerminalFontSize";
 import { SshTerminalFind } from "./SshTerminalFind";
 import { TerminalStatusBar } from "./TerminalStatusBar";
-import { attachTuiScrollbar, attachShiftWheel } from "../../lib/terminalScroll";
+import { TuiGuideBar } from "./TuiGuideBar";
+import { WheelOwnerPopover } from "./WheelOwnerPopover";
+import { useWheelGuide } from "../../hooks/useWheelGuide";
 import { navJump } from "../../lib/terminalCommandNav";
 import { registerPathLinkProvider } from "../../lib/terminalPathLink";
 import { useTerminalTabMeta, type TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
 import { useClipboardImagePaste } from "../../hooks/useClipboardImagePaste";
 import { forceRepaint } from "../../lib/terminalRepaint";
-import { loadTuiScrollSpeed } from "../../lib/terminalScrollSpeed";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { useThemeMode } from "../../hooks/useThemeMode";
@@ -124,33 +125,18 @@ export function SshTerminal({
     onCwdRef.current(status.cwd);
   }, [status.cwd]);
 
-  // TUI 态虚拟滚动条：进 Claude Code 这类 fullscreen 程序（备用屏）时，
-  // 原生滚动条没有东西可滚——覆盖一条虚拟滚动条，拖动翻译成 wheel 事件转发给 TUI。
-  // 逻辑全在 lib/terminalScroll.ts；这里只管挂载与把激活态给状态栏当徽标。
-  // 本 effect 声明在 useSshTerminalSession 之后，运行时终端已 open，termRef 必有值。
-  const [tuiScrollActive, setTuiScrollActive] = useState(false);
+  // 滚轮归属四态 + 翻转引导 + 救急面板开关（含 TUI 滚动条 / Shift+滚轮的挂载）。
+  // 逻辑在 hooks/useWheelGuide.ts；这里只消费它渲染徽章 / 引导条 / 面板。
+  const wheel = useWheelGuide({ sessionId, closed, termRef, containerRef });
+  // 输出里的远端绝对路径 → 可点击（注册在 web-links 之后，URL 仍归它）。
   // onOpenFilePath 用 ref 承接：调用方传内联箭头函数，不能进挂载 effect 的依赖。
   const onOpenFilePathRef = useRef(onOpenFilePath);
   onOpenFilePathRef.current = onOpenFilePath;
+  // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），只需挂一次。
   useEffect(() => {
     const term = termRef.current;
-    const container = containerRef.current;
-    if (!term || !container) return;
-    // Shift+滚轮强制滚本地 scrollback（业界惯例）：与 TUI 滚动条互不干扰——
-    // 合成 wheel 不带 shiftKey，会原样走转发路径。
-    attachShiftWheel(term);
-    // 输出里的远端绝对路径 → 可点击（注册在 web-links 之后，URL 仍归它）。
-    const offLinks = registerPathLinkProvider(term, (p) => onOpenFilePathRef.current(p));
-    const offTui = attachTuiScrollbar(term, container, {
-      onActiveChange: setTuiScrollActive,
-      // getter 而不是值：设置页改速度热生效，不必重挂（重挂会丢拖动位置）。
-      speed: loadTuiScrollSpeed,
-    });
-    return () => {
-      offLinks();
-      offTui();
-    };
-    // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），只需挂一次。
+    if (!term) return;
+    return registerPathLinkProvider(term, (p) => onOpenFilePathRef.current(p));
   }, []);
 
   // 终端聚焦时的 window capture 快捷键（🔴 不能走 attachTerminalKeymap——xterm 的
@@ -251,6 +237,9 @@ export function SshTerminal({
         onClear={() => termRef.current?.clear()}
         onToggleFullscreen={onToggleFullscreen}
       />
+      {wheel.guide === "open" && !closed && (
+        <TuiGuideBar flips={wheel.flips} onSend={wheel.openSendConfirm} onDismiss={wheel.dismissForever} onCollapse={wheel.collapseGuide} />
+      )}
       <TerminalStatusBar
         sessionId={sessionId}
         conn={conn}
@@ -259,7 +248,11 @@ export function SshTerminal({
         status={status}
         state={state}
         closed={closed}
-        tuiScroll={tuiScrollActive}
+        owner={wheel.owner}
+        onDeadClick={wheel.openPopover}
+        deadBadgeExpanded={wheel.popoverOpen}
+        tuiGuideHint={wheel.guide === "collapsed"}
+        onGuideHintClick={wheel.expandGuide}
       />
       {closedReason !== null && (
         <SshDisconnectedBar
@@ -277,6 +270,9 @@ export function SshTerminal({
       >
         <div ref={containerRef} className="h-full w-full" />
         <SshTerminalFind search={search} />
+        {wheel.popoverOpen && !closed && (
+          <WheelOwnerPopover sessionId={sessionId} initialStep={wheel.popStep} onSent={wheel.markSent} onClose={wheel.closePopover} />
+        )}
         {font.badge !== null && (
           <div className="pointer-events-none absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2 rounded-lg bg-black/70 px-3.5 py-1.5 text-xs tracking-wide text-white">
             字号 {font.badge}

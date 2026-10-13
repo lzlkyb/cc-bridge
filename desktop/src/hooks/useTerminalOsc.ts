@@ -5,6 +5,7 @@ import {
   HOOK_CMD,
   PROBE_CMD,
   isOsc133A,
+  isSupportedShell,
   parseOsc7,
   parseOsc133,
   parseOsc1337,
@@ -19,9 +20,7 @@ import {
   type DancePhase,
 } from "../lib/terminalSttyDance";
 
-/**
- * 状态栏可见的远端信息。未拿到的字段保持 null，由状态栏决定要不要显示。
- */
+/** 状态栏可见的远端信息。未拿到的字段保持 null，由状态栏决定要不要显示。 */
 export interface TerminalStatus {
   /** 远端当前目录（OSC 7）。null = 还没收到。 */
   cwd: string | null;
@@ -67,7 +66,8 @@ interface Args {
  * `stty -echo`（唯一可见残渣，前端剥除）→ 探针 → 钩子 → kick → `stty echo`，
  * 全程静默。四条异常路径（用户敲键 / 探针超时 / 钩子超时 / 断开重连）都会强制恢复
  * ECHO；restore 单次消费（echoOffRef），因为 ECHO 恢复后再发的 `stty echo`
- * 会被回显成第二行残渣。
+ * 会被回显成第二行残渣。剥离器**整个会话常驻**压 ConPTY 整屏重发
+ * （见 terminalSttyDance.ts 头注；曾试过 restore 时远端 printf 清屏，用户不要，已废弃）。
  */
 export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
   status: TerminalStatus;
@@ -159,8 +159,15 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
         if (!enabledRef.current) return true;
         const { shell, git } = parseOsc1337(data);
         if (shell) {
-          probeOkRef.current = true;
-          probeGoRef.current?.(); // 回执到达 → 舞步后半场接棒
+          // 🔴 门禁：回执 ≠ 支持——fish/ksh 也能执行探针并回执，钩子（bash 语法）
+          // 盲发会在对方屏幕喷语法错误。立即 abortDance：恢复 ECHO 不能等探针超时
+          // （PROBE_TIMEOUT 内 ECHO 是关的，用户敲键会隐形）。
+          if (isSupportedShell(shell)) {
+            probeOkRef.current = true;
+            probeGoRef.current?.(); // 回执到达 → 舞步后半场接棒
+          } else {
+            abortRef.current?.();
+          }
         }
         if (git) {
           // git 分支是按目录缓存的：钩子只在 cwd 变化时才发，
@@ -201,23 +208,23 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     const term = termRef.current;
     const send = (data: string): Promise<void> => invoke("ssh_input", { sessionId, data });
 
-    // ── 残渣吞除（fail-open，实现见 lib/terminalSttyDance.ts）──
-    // 唯一会回显的是 t0 的 `stty -echo`，write 包装精确剥除；回显缺席就整体
-    // 透传——剥不掉也只是留一行 10 字符残渣，绝不丢用户数据。
-    // 窗口 = PROBE_DELAY + STRIP_TIMEOUT：包装早于 t0 挂上，回显 t0+RTT 才到，
-    // 只按 STRIP_TIMEOUT 计时会在高延迟链路上提前撤窗。
-    const stripHandle = term ? attachEchoStrip(term, DANCE.PROBE_DELAY + DANCE.STRIP_TIMEOUT) : null;
+    // ── 残渣常驻吞除（fail-open，实现见 lib/terminalSttyDance.ts）──
+    // 会回显的只有 t0 的 `stty -echo`（慢 shell 下还有 ECHO 生效前的探针行）。
+    // 剥离器**整个会话常驻**：ConPTY 缓冲区里的残渣会在整屏重绘时反复重发，
+    // 常驻才能每次都吞掉。命中行整行擦除，其余字节原样透传，绝不丢用户数据。
+    const stripHandle = term ? attachEchoStrip(term, [ECHO_OFF_CMD, PROBE_CMD]) : null;
 
     // ── 舞步状态机接线 ──
     let phase: DancePhase = "idle";
     // 恢复 ECHO。单次消费：第二句 stty echo 会被回显成残渣（红线）。
+    // 注意不在这里撤剥离器——它常驻整个会话（ConPTY 重发残渣的时刻不可预知），
+    // 撤包装只在会话 effect 的 cleanup 里做。
     const restore = () => {
       if (!echoOffRef.current) return;
       echoOffRef.current = false;
       abortRef.current = null;
       phase = danceNext(phase, "restoreSent").phase;
-      void send(`${ECHO_ON_CMD}\n`).catch(() => {});
-      stripHandle?.end();
+      void send(` ${ECHO_ON_CMD}\n`).catch(() => {});
     };
     // 异常退出：恢复 ECHO + 判 unsupported（已 ready 则不动）。
     const abortDance = () => {
@@ -235,10 +242,12 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
         return;
       }
       echoOffRef.current = true;
-      void send(`${ECHO_OFF_CMD}\n`).catch(() => {
-        // 发送失败 = 字节根本没到远端，回显从未被关——闸门必须复位，
-        // 否则后续 restore 会补发一句 stty echo，被回显成残渣；同时中止舞步，
-        // 免得 +250ms 的探针在「回显还开着」的状态下照发、留下可见残渣。
+      // 🔴 每条注入命令都带**前导空格**：bash 的 HISTCONTROL=ignoreboth（Ubuntu 默认）
+      // 忽略带空格的命令——不进 history，按 ↑ 翻不到（否则会调出 stty -echo，误执行
+      // 还把回显关死）。zsh 需 HIST_IGNORE_SPACE，默认无——尽力而为。空格不影响剥除：
+      void send(` ${ECHO_OFF_CMD}\n`).catch(() => {
+        // 发送失败 = 字节没到远端，回显从未关——闸门必须复位（否则 restore 补发
+        // stty echo 被回显成残渣），并中止舞步免得探针在回显开着时照发。
         echoOffRef.current = false;
         phase = danceNext(phase, "abort").phase;
         setState("unsupported");
@@ -247,7 +256,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     });
     at(DANCE.PROBE_DELAY + DANCE.ECHO_GAP, () => {
       if (typedRef.current || phase !== "echoOffSent") return;
-      void send(`${PROBE_CMD}\n`).catch(() => abortDance());
+      void send(` ${PROBE_CMD}\n`).catch(() => abortDance());
       phase = danceNext(phase, "probeSent").phase;
     });
     at(DANCE.PROBE_DELAY + DANCE.ECHO_GAP + DANCE.PROBE_TIMEOUT, () => {
@@ -258,7 +267,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     probeGoRef.current = () => {
       at(DANCE.HOOK_DELAY, () => {
         if (typedRef.current || phase !== "probeSent") return; // 回执迟到/已中止：不注入
-        void send(`${HOOK_CMD}\n`).catch(() => abortDance());
+        void send(` ${HOOK_CMD}\n`).catch(() => abortDance());
         phase = danceNext(phase, "hookSent").phase;
       });
       at(DANCE.HOOK_DELAY + DANCE.KICK_DELAY, () => {
@@ -278,7 +287,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
       // 失败即忽略；PTY 销毁本身也会重置 termios）。
       if (echoOffRef.current) {
         echoOffRef.current = false;
-        void invoke("ssh_input", { sessionId, data: `${ECHO_ON_CMD}\n` }).catch(() => {});
+        void invoke("ssh_input", { sessionId, data: ` ${ECHO_ON_CMD}\n` }).catch(() => {});
       }
       abortRef.current = null;
       probeGoRef.current = null;

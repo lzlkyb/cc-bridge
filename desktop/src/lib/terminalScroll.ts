@@ -39,11 +39,28 @@ export const TUI_THUMB_MIN_PX = 24;
 export const TUI_EDGE_REARM_LINES = 8;
 
 /**
- * TUI 滚动条激活判定：备用屏 + 鼠标跟踪（xterm 的 enable-mouse-events class）。
- * 纯函数便于单测；接线层负责喂这两个信号。
+ * 滚轮归属四态（设计稿《终端滚轮归属徽章与一键fullscreen》屏6）：
+ * - local       主屏 × 无跟踪：滚本地 scrollback（xterm 默认，不出徽章）
+ * - forward     备用屏 × 跟踪开：现有 TUI 态，虚拟滚动条 + wheel 转 SGR
+ * - forwardMain 主屏 × 跟踪开：xterm 原生把滚轮发给程序（less 等），行为正确
+ * - dead        备用屏 × 跟踪关：备用屏没有 scrollback、又没开转发 → 死滚轮
+ */
+export type WheelOwner = "local" | "forward" | "forwardMain" | "dead";
+
+/**
+ * 滚轮归属判定：纯函数便于单测；接线层负责喂这两个信号（零轮询）。
+ */
+export function wheelOwner(bufferType: string, mouseEventsClass: boolean): WheelOwner {
+  if (bufferType === "alternate") return mouseEventsClass ? "forward" : "dead";
+  return mouseEventsClass ? "forwardMain" : "local";
+}
+
+/**
+ * TUI 滚动条激活判定（= wheelOwner 为 forward）。保留为独立导出：
+ * 滚动条本体只关心「画不画」，归属徽章才关心四态。
  */
 export function isTuiScrollActive(bufferType: string, mouseEventsClass: boolean): boolean {
-  return bufferType === "alternate" && mouseEventsClass;
+  return wheelOwner(bufferType, mouseEventsClass) === "forward";
 }
 
 /**
@@ -107,8 +124,11 @@ export const TUI_EDGE_SEQ = {
 } as const;
 
 export interface TuiScrollbarOptions {
-  /** 激活态变化（进入/退出 TUI 态）时回调，供状态栏徽标使用。 */
-  onActiveChange?: (active: boolean) => void;
+  /**
+   * 滚轮归属变化时回调（含挂载后首次计算）。四态枚举见 WheelOwner：
+   * 状态栏徽章与翻转引导（hooks/useWheelGuide）都从这里拿信号。
+   */
+  onOwnerChange?: (owner: WheelOwner) => void;
   /**
    * 拖动速度倍率 getter（1 = 1px 物理位移对应 1 行）。
    * 🔴 getter 而不是值：设置页热切换速度时不必拆掉重挂滚动条（重挂会丢当前位置）。
@@ -148,7 +168,7 @@ export function attachTuiScrollbar(
   // 边界跳转 re-arm：触发过 Ctrl+Home/End 后，须往回离开边界若干行才允许再触发。
   let topArmed = true;
   let bottomArmed = true;
-  let active = false;
+  let active = false; // = owner 为 forward（滚动条可见）
 
   const cellPx = (): number => {
     const screen = element.querySelector(".xterm-screen");
@@ -253,14 +273,16 @@ export function attachTuiScrollbar(
   };
   bar.addEventListener("pointerdown", onBarPointerDown);
 
-  // ── 激活检测：buffer 切换 + enable-mouse-events class（零轮询） ──
+  // ── 归属检测：buffer 切换 + enable-mouse-events class（零轮询） ──
+  let owner: WheelOwner | null = null;
   const recompute = () => {
-    const next = isTuiScrollActive(
+    const next = wheelOwner(
       term.buffer.active.type,
       element.classList.contains("enable-mouse-events"),
     );
-    if (next === active) return;
-    active = next;
+    if (next === owner) return;
+    owner = next;
+    active = next === "forward";
     bar.style.display = active ? "block" : "none";
     if (active) {
       pos = TUI_VIRTUAL_TOTAL; // 进入 TUI 态：用户通常在最新消息处
@@ -268,7 +290,7 @@ export function attachTuiScrollbar(
       bottomArmed = true;
       requestAnimationFrame(renderThumb);
     }
-    opts.onActiveChange?.(active);
+    opts.onOwnerChange?.(next);
   };
   const offBuffer = term.buffer.onBufferChange(() => recompute());
   const mo = new MutationObserver(recompute);
@@ -292,7 +314,6 @@ export function attachTuiScrollbar(
     thumb.removeEventListener("pointercancel", onThumbPointerUp);
     bar.removeEventListener("pointerdown", onBarPointerDown);
     bar.remove();
-    if (active) opts.onActiveChange?.(false);
   };
 }
 

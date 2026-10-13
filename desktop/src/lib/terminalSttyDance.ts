@@ -1,5 +1,5 @@
 /**
- * SSH 钩子注入回显治理（方案 A）：`stty -echo` 舞步时序 + 残渣吞除。
+ * SSH 钩子注入回显治理（方案 A）：`stty -echo` 舞步时序 + 残渣常驻吞除。
  *
  * ## 背景
  *
@@ -11,12 +11,26 @@
  * 1. **舞步时序**：t0 先发 `stty -echo` 关回显，探针/钩子/kick 全程静默，
  *    最后 `stty echo` 恢复。回显发生在行规程层（比 shell 读输入还早），
  *    与提示符时机无关——所以「掐时机注入」治不了本，只有开关 ECHO 治得了。
- * 2. **残渣吞除**：关掉回显后，唯一会回显的只剩 t0 那行 `stty -echo`
- *    （它自己执行前必须先被回显）。内容完全已知、每次会话只出现一次，
+ * 2. **残渣常驻吞除**：关掉回显后，唯一会回显的只剩 t0 那行 `stty -echo`
+ *    （慢 shell 下还有 ECHO 生效前被整行回显的探针行）。内容完全已知，
  *    用 `createEchoStripper` 在前端 write 路径上识别它：命中时不逐字节抠——
  *    前面的旧提示符（带颜色序列）早已渲染上屏、内容不可预知——而是输出
  *    「回车 + 整行擦除」(`\r\x1b[2K`) 把旧提示符连同命令一起从屏幕抹掉，
  *    随后的换行照常放行，新提示符落在下一行（fail-open）。
+ *
+ * ## 为什么剥离器必须「常驻」整个会话（2026-10-13 二次修复）
+ *
+ * Windows 上 ssh 跑在 ConPTY（portable_pty）里：远端输出先被 ConPTY 渲染进
+ * **它自己的屏幕缓冲区**再流给前端。前端剥离器擦掉的只是 xterm 的显示，
+ * ConPTY 缓冲区里的残渣还在——之后任何整屏重绘（resize / 字号 / CC fullscreen
+ * 进出）都会把缓冲区原样重发，残渣「时不时自己再输入一遍」（用户实测）。
+ * 曾试过「restore 时趁 ECHO 还关着让远端 printf 清屏」把两边缓冲区一起清掉，
+ * 用户不要清屏动作（连接后屏幕跳变），改为剥离器**常驻**：重发多少次就吞
+ * 多少次，屏幕其余内容分毫不动。
+ *
+ * 误剥代价（可接受）：输出流里恰好出现字面 `stty -echo` / 探针 printf 原文的
+ * 那一行会被整行擦掉（只碰输出路径，命令执行不受影响）。正常工作内容几乎
+ * 不含这两条字面量；确有顾虑时在设置里关掉注入开关。
  *
  * ## 红线：restore 绝不能发两次
  *
@@ -47,8 +61,6 @@ export const DANCE = {
   PROBE_TIMEOUT: 1200,
   /** 钩子发出后多久没等到 133;A 就降级（ECHO 此时已被 restore 恢复，这里只判死）。 */
   HOOK_TIMEOUT: 2000,
-  /** 残渣吞除窗口：超时把扣留的尾部整体透传（回显缺席时不无限扣留输出）。 */
-  STRIP_TIMEOUT: 1500,
 } as const;
 
 /* ============================== 时序状态机 ============================== */
@@ -102,12 +114,14 @@ export function danceNext(
 /* ============================== 残渣吞除 ============================== */
 
 /**
- * 剥除目标：`stty -echo` 这个 token 本身。**不要求换行结尾**——
- * Windows 上本地 ssh 跑在 ConPTY 里（portable_pty），ConPTY 会把输出流
- * 重新渲染：换行可能被改写成光标定位序列（`\x1b[3;1H`），转义序列也可能
- * 穿插在文本中间。字节级精确匹配在这个管道上必然漏网（2026-10-13 实测）。
+ * 剥除目标由调用方给定（stty 舞步 = `stty -echo`；慢 shell 下探针行也会被
+ * 回显，所以探针命令原文同样是一个 token），本模块不硬编码。
+ *
+ * **不要求换行结尾**——Windows 上本地 ssh 跑在 ConPTY 里（portable_pty），
+ * ConPTY 会把输出流重新渲染：换行可能被改写成光标定位序列（`\x1b[3;1H`），
+ * 转义序列也可能穿插在文本中间。字节级精确匹配在这个管道上必然漏网
+ * （2026-10-13 实测）。
  */
-const TOKEN = "stty -echo";
 
 /**
  * 从 s[i] 起解析一条 VT 转义序列。返回 null = 不是序列起点；
@@ -139,32 +153,37 @@ function vtSeqLen(s: string, i: number): { len: number; complete: boolean } | nu
 }
 
 export interface EchoStripper {
-  /** 喂入一段输出，返回应当真正交给 xterm 渲染的部分。命中剥除后自动失效。 */
+  /** 喂入一段输出，返回应当真正交给 xterm 渲染的部分。 */
   feed(chunk: string): string;
   /** 失效并交还扣留的尾部（调用方负责把它 write 出去，不丢数据）。 */
   flush(): string;
+  /** flush 之前恒为 true：常驻语义，命中不再自动失效。 */
   readonly active: boolean;
 }
 
 /**
- * 残渣剥除器：在 `term.write` 外面滚一个滑动窗口，识别唯一一处 `stty -echo` 回显。
+ * 残渣剥除器（常驻）：在 `term.write` 外面滚一个滑动窗口，识别 token 的
+ * 回显行并整行擦除；命中后复位继续扫——ConPTY 整屏重发多少次就吞多少次。
  *
  * ConPTY 容忍策略（fail-open 三原则不变）：
- * 1. 只识别内容完全已知的一个 token，其余字节原样透传；
- * 2. token 内部允许穿插 VT 序列（跳过、不进输出）；
- * 3. 命中即输出 `\r\x1b[2K`（回车 + 整行擦除）——旧提示符已经上屏、字节
- *    收不回来，从渲染层整行抹掉才是干净做法；命中后的所有字节（包括
- *    ConPTY 的换行/光标定位）照常透传，新提示符自然落到下一行。
+ * 1. 只识别内容完全已知的 token，其余字节原样透传；
+ * 2. token 内部允许穿插 VT 序列（跳过、不进输出；失配时**如数归还**）；
+ * 3. 候选区间之外的 VT 序列（颜色、光标定位……）原样透传——常驻模式下若
+ *    吞掉它们，整场会话的渲染都会坏掉（一次性窗口时代无所谓，常驻后是红线）；
+ * 4. 命中时用**等宽空格覆盖** token 所占的列（光标与 ConPTY 保持同步，提示符
+ *    与同行其余内容完好，视觉上只是一段空白）；token 内穿插过 VT 序列时列数
+ *    不可信，退回 `\r\x1b[2K` 整行擦除。命中后的所有字节照常透传。
  *    失配的内容全部原样吐回，绝不扣留数据；扣留只发生在「疑似部分匹配」时，
  *    且由下个 chunk 立即见分晓。
  *
- * 误剥风险：登录后 2.4s 窗口内输出流里恰好出现字面 `stty -echo`——MOTD
- * 不可能包含它，可忽略；就算误中，代价也只是擦掉一行 MOTD（纯外观）。
+ * 误剥风险：输出流里恰好出现字面 token——正常工作内容几乎不含，见文件头注。
  */
-export function createEchoStripper(): EchoStripper {
+export function createEchoStripper(token: string): EchoStripper {
   let active = true;
-  let pending = ""; // 疑似部分匹配的扣留（MATCH 态）
-  let k = 0; // 已匹配 TOKEN 的前缀长度；k === TOKEN.length 表示进入尾部吞除
+  let pending = ""; // 疑似部分匹配的扣留（候选起点起的整段）
+  let k = 0; // 已匹配 token 的前缀长度
+  let matchStart = 0; // 当前候选匹配在 buf 中的起点（k>0 时有效）
+  let vtInside = false; // 当前候选内是否跳过过 VT 序列（决定命中时的擦除策略）
   return {
     get active() {
       return active;
@@ -173,49 +192,66 @@ export function createEchoStripper(): EchoStripper {
       if (!active) return chunk;
       const buf = pending + chunk;
       pending = "";
+      if (k > 0) matchStart = 0; // 上个 chunk 扣留的前缀拼到 buf 头部，候选从 0 重新起算
       let out = "";
       let i = 0;
       while (i < buf.length) {
         const ch = buf[i]!;
-        if (k === TOKEN.length) {
-          // 命中：整行擦除（见上方 doc）。token 前缀从未进 out，本行已上屏的
-          // 旧提示符由 \r\x1b[2K 从渲染层抹掉；余下字节（换行/定位序列/新提示符）
-          // 全部照常透传。命中即失效，后续输出零开销。
-          active = false;
-          out += "\r\x1b[2K";
-          out += buf.slice(i);
-          break;
-        }
-        if (ch === TOKEN[k]) {
+        if (k > 0 && ch === token[k]) {
           i++;
           k++;
+          if (k === token.length) {
+            // 命中 + 复位继续扫（常驻：ConPTY 重发多少次吞多少次）。
+            // 擦除策略：token 连续（无 VT 穿插）时用**等宽空格覆盖**——token 字节
+            // 从未渲染，xterm 光标正停在 token 起点；写 L 个空格后光标停在 token
+            // 终点，与 ConPTY 的光标完全同步（ConPTY 认为自己写了这 L 列）。
+            // 旧方案 `\r\x1b[2K` 把 xterm 光标搬回行首而 ConPTY 不动——两边从此
+            // 错位：①已渲染的提示符被整行抹掉后，ConPTY 的增量更新不会补发；
+            // ②readline 之后的退格/重绘增量全部画歪（2026-10-13 实测：按 ↑ 翻
+            // 历史时提示符消失、残渣正文反而露出来）。空格覆盖则两边列数一致，
+            // 视觉上只是一段空白，提示符完好。
+            // token 内穿插过 VT 序列时列数不可信，退回整行擦除（罕见路径）。
+            out += vtInside ? "\r\x1b[2K" : " ".repeat(token.length);
+            k = 0;
+          }
           continue;
         }
         if (ch === "\x1b") {
           const vt = vtSeqLen(buf, i);
           if (vt) {
             if (!vt.complete) {
-              // 序列被 chunk 边界切断：连同等匹配前缀一起扣住等下一段
-              pending = buf.slice(i - k);
+              // 序列被 chunk 边界切断：从候选起点（或序列起点）扣住等下一段
+              pending = buf.slice(k > 0 ? matchStart : i);
+              if (k > 0) matchStart = 0;
               break;
             }
-            i += vt.len; // token 内部的 VT 噪声：跳过
+            if (k > 0) {
+              vtInside = true; // token 内部的 VT 噪声：跳过（失配时由 slice 归还）
+              i += vt.len;
+              continue;
+            }
+            // 候选之外的转义序列：原样透传（常驻红线，见函数 doc 第 3 条）
+            out += buf.slice(i, i + vt.len);
+            i += vt.len;
             continue;
           }
         }
-        // 失配：扣住的前缀原样吐回，当前字符按「新起点 or 普通字符」处理
-        out += buf.slice(i - k, i);
-        k = 0;
-        if (ch === TOKEN[0]) {
+        // 失配：候选区间（前缀 + 中间跳过的 VT 序列）原样吐回
+        if (k > 0) {
+          out += buf.slice(matchStart, i);
+          k = 0;
+        }
+        if (ch === token[0]) {
+          matchStart = i;
           k = 1;
+          vtInside = false;
           i++;
           continue;
         }
         out += ch;
         i++;
       }
-      // chunk 结束仍在匹配中：扣住未决前缀等下一段
-      if (active && k > 0 && k < TOKEN.length) pending = buf.slice(i - k);
+      if (k > 0) pending = buf.slice(matchStart);
       return out;
     },
     flush(): string {
@@ -233,35 +269,36 @@ export interface EchoStripHandle {
 }
 
 /**
- * 把 `term.write` 临时包一层剥除器。舞步期间的所有输出（banner / 探针回显 /
- * 远端欢迎信息）都走这里，只有 `stty -echo` 回显命中会被整行擦除。
+ * 把 `term.write` 包一层**常驻**剥除链：tokens 里每个 token 一个剥除器串行
+ * 过滤，命中行整行擦除，其余字节原样透传。会话期间不撤包装（ConPTY 重发
+ * 残渣的时刻不可预知——resize / 字号 / CC fullscreen 进出都可能触发），
+ * 由调用方在会话销毁/重连时 `end()`。
  *
  * - 非字符串数据（Uint8Array，本项目当前不会出现，防御性保留）原样透传；
- * - `timeoutMs` 后自动撤包装（回显缺席时兜底）。调用方应传
- *   `PROBE_DELAY + STRIP_TIMEOUT`：包装从接线时刻就开始（早于 t0），
- *   而回显要到 t0+RTT 才到，只按 STRIP_TIMEOUT 计时会在高延迟链路上提前撤窗；
- * - 提前命中（回显到达）时在**当次调用内**就撤包装，后续输出零开销。
+ * - 串行链保持输出顺序：前级扣留的尾部会在后续 chunk 到达时流经后级；
+ * - end() 按链序 flush，扣留尾部不丢。
  */
-export function attachEchoStrip(term: Terminal, timeoutMs: number): EchoStripHandle {
-  const strip = createEchoStripper();
+export function attachEchoStrip(term: Terminal, tokens: readonly string[]): EchoStripHandle {
+  const strippers = tokens.map(createEchoStripper);
   const real = term.write.bind(term);
   let ended = false;
   const end = () => {
     if (ended) return;
     ended = true;
-    window.clearTimeout(timer);
     term.write = real; // 撤包装（先撤再补写，扣留尾部走原始路径）
-    const tail = strip.flush();
+    let tail = "";
+    for (const s of strippers) {
+      tail = s.feed(tail) + s.flush(); // feed 出已定部分，flush 交还扣留的尾部
+    }
     if (tail) real(tail);
   };
-  const timer = window.setTimeout(end, timeoutMs);
   term.write = (data, cb) => {
     if (typeof data !== "string") {
       real(data, cb);
       return;
     }
-    const out = strip.feed(data);
-    if (!strip.active) end(); // 命中：当次调用内撤包装，本次数据照常写出
+    let out = data;
+    for (const s of strippers) out = s.feed(out);
     real(out, cb);
   };
   return { end };

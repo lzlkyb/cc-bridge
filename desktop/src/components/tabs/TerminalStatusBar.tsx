@@ -1,11 +1,8 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
-import type { IconName } from "../ui/icon";
-import { Icon } from "../ui/icon";
+import { useEffect, useRef, useState } from "react";
 import {
   STATUSBAR_SKINS,
   formatUptime,
   shortenPath,
-  type SegKind,
   type StatusbarSkin,
 } from "../../lib/terminalStatusbar";
 import type { TerminalStatus, OscState } from "../../hooks/useTerminalOsc";
@@ -13,7 +10,10 @@ import { formatCmdDuration } from "../../lib/terminalCommandNav";
 import type { TerminalPreset } from "../../lib/terminalTheme";
 import type { Theme } from "../../lib/theme";
 import type { SshConnection } from "../../lib/types";
+import type { WheelOwner } from "../../lib/terminalScroll";
 import { useAppHidden } from "../../lib/appVisibility";
+import { Seg } from "./StatusSeg";
+import { WheelOwnerBadge } from "./WheelOwnerBadge";
 
 interface Props {
   sessionId: string;
@@ -24,8 +24,15 @@ interface Props {
   state: OscState;
   /** 会话已断开。断开后冻结时长并显示「已断开」，不再展示远端探测提示。 */
   closed: boolean;
-  /** TUI 态（Claude Code 等 fullscreen 程序）激活：滚动条走虚拟转发路径，显示徽标提示。 */
-  tuiScroll?: boolean;
+  /** 滚轮归属四态（hooks/useWheelGuide）。缺省 local：不出任何滚轮徽章（缺省态不占位）。 */
+  owner?: WheelOwner;
+  /** DEAD 态 ⚠ 徽章点击 → 打开救急面板。 */
+  onDeadClick?: () => void;
+  /** ⚠ 徽章 aria-expanded（面板开合状态在父级）。 */
+  deadBadgeExpanded?: boolean;
+  /** 翻转引导条收起后的「!」小徽章（点击重新展开）。 */
+  tuiGuideHint?: boolean;
+  onGuideHintClick?: () => void;
 }
 
 /**
@@ -49,7 +56,11 @@ export function TerminalStatusBar({
   status,
   state,
   closed,
-  tuiScroll,
+  owner,
+  onDeadClick,
+  deadBadgeExpanded,
+  tuiGuideHint,
+  onGuideHintClick,
 }: Props) {
   const skin = STATUSBAR_SKINS[preset][mode];
   const uptime = useUptime(sessionId, closed);
@@ -87,16 +98,17 @@ export function TerminalStatusBar({
         )}
       </div>
 
-      {/* 右：关键段（会话时长、状态提示）锁定在最右，绝不被挤出视口。 */}
-      <span className="ml-3 flex shrink-0 items-center">
-        {tuiScroll && !closed && (
-          <Seg
+      {/* 右：关键段（滚轮归属、会话时长、状态提示）锁定在最右，绝不被挤出视口。 */}
+      <span className="ml-3 flex shrink-0 items-center gap-1">
+        {!closed && (
+          <WheelOwnerBadge
             skin={skin}
-            kind="tui"
-            title="TUI 滚动已启用：拖动右侧滚动条即可滚动当前全屏程序（如 Claude Code）的内容"
-          >
-            TUI 滚动
-          </Seg>
+            owner={owner ?? "local"}
+            deadBadgeExpanded={deadBadgeExpanded}
+            onDeadClick={onDeadClick}
+            guideHint={tuiGuideHint}
+            onGuideHintClick={onGuideHintClick}
+          />
         )}
         <Seg skin={skin} kind="muted" icon="clock" title="会话时长">
           {formatUptime(uptime)}
@@ -139,67 +151,6 @@ function ExitSeg({ skin, code }: { skin: StatusbarSkin; code: number }) {
     <Seg skin={skin} kind="exitBad" title="上一条命令失败">
       {skin.icons ? `✘ ${code}` : `exit ${code}`}
     </Seg>
-  );
-}
-
-function Seg({
-  skin,
-  kind,
-  icon,
-  title,
-  isFirst,
-  children,
-}: {
-  skin: StatusbarSkin;
-  kind: SegKind;
-  icon?: IconName;
-  title?: string;
-  /** 首个段（host）之前不画分隔线，避免依赖 DOM 顺序的 nth-of-type 魔法。 */
-  isFirst?: boolean;
-  children: React.ReactNode;
-}) {
-  const style: CSSProperties = { ...skin.seg };
-  if (skin.solid) {
-    style.background = skin.colors[kind];
-    style.color = skin.text;
-  } else {
-    style.color = skin.colors[kind];
-  }
-  return (
-    <>
-      {!isFirst && <Divider skin={skin} />}
-      {/* shrink-0 + nowrap：段宁可横向滚动（左区 overflow-x-auto）也不许折行撑高状态栏 */}
-      <span style={style} title={title} className="shrink-0 whitespace-nowrap">
-        {skin.icons && icon && <Icon name={icon} size={11} />}
-        {children}
-      </span>
-    </>
-  );
-}
-
-/**
- * 段间分隔：靖蓝/高对比用竖线（高对比是色块，靠 margin 分开，不再画线），
- * 极简用 `·`、经典用 `│`。首段之前不画 —— 由 Seg 的 `isFirst` 控制，不靠 CSS 选择器猜顺序。
- */
-function Divider({ skin }: { skin: StatusbarSkin }) {
-  if (skin.solid) return null;
-  if (skin.divider === null) {
-    return (
-      <span
-        aria-hidden
-        className="h-3 w-px shrink-0"
-        style={{ background: skin.dividerColor }}
-      />
-    );
-  }
-  return (
-    <span
-      aria-hidden
-      className="shrink-0"
-      style={{ color: skin.dividerColor }}
-    >
-      {skin.divider}
-    </span>
   );
 }
 

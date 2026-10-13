@@ -18,7 +18,7 @@ import type { Theme } from "./theme";
  */
 
 /** 段类型。新增段只需在这里加一个 key，并在下面四套 token 里各补一个色。 */
-export type SegKind = "host" | "path" | "git" | "exit" | "exitBad" | "muted" | "tui";
+export type SegKind = "host" | "path" | "git" | "exit" | "exitBad" | "muted" | "tui" | "warn";
 
 export interface StatusbarSkin {
   /** 状态栏容器。 */
@@ -67,6 +67,7 @@ const INDIGO: Record<Theme, StatusbarSkin> = {
       exitBad: "#ef4444",
       muted: "#8a90a2",
       tui: "#fbbf24",
+      warn: "#f2c268",
     },
     text: "",
   },
@@ -88,6 +89,7 @@ const INDIGO: Record<Theme, StatusbarSkin> = {
       exitBad: "#dc2626",
       muted: "#6b7280",
       tui: "#b45309",
+      warn: "#a3620a",
     },
     text: "",
   },
@@ -111,6 +113,7 @@ const MONO: Record<Theme, StatusbarSkin> = {
       exitBad: "#ef4444",
       muted: "#7a8090",
       tui: "#d97706",
+      warn: "#e0a94f",
     },
     text: "",
   },
@@ -129,6 +132,7 @@ const MONO: Record<Theme, StatusbarSkin> = {
       exitBad: "#dc2626",
       muted: "#6b7280",
       tui: "#b45309",
+      warn: "#a3620a",
     },
     text: "",
   },
@@ -157,6 +161,7 @@ const CLASSIC: Record<Theme, StatusbarSkin> = {
       exitBad: "#ff5f56",
       muted: "#4a8a5c",
       tui: "#fbbf24",
+      warn: "#f2c268",
     },
     text: "",
   },
@@ -175,6 +180,7 @@ const CLASSIC: Record<Theme, StatusbarSkin> = {
       exitBad: "#b91c1c",
       muted: "#6b6255",
       tui: "#b45309",
+      warn: "#8a5a0c",
     },
     text: "",
   },
@@ -198,6 +204,7 @@ const CONTRAST: Record<Theme, StatusbarSkin> = {
       exitBad: "#fca5a5",
       muted: "#9ca3af",
       tui: "#fcd34d",
+      warn: "#f0b429",
     },
     text: "#0b0d11",
   },
@@ -216,6 +223,7 @@ const CONTRAST: Record<Theme, StatusbarSkin> = {
       exitBad: "#b91c1c",
       muted: "#4b5563",
       tui: "#d97706",
+      warn: "#b45309",
     },
     text: "#ffffff",
   },
@@ -300,15 +308,31 @@ export function parseOsc1337(data: string): { shell?: string; git?: string } {
 /* ============================== 注入的 shell 钩子 ============================== */
 
 /**
- * 探针：判断远端是不是 bash/zsh。
+ * 探针：向远端询问 shell 类型（OSC 1337;Shell=$0）。
  *
- * WHY 要先探再注入：注入串是 bash/zsh 语法，直接发给 fish / csh 会当场语法报错，
- * 在用户屏幕上留一段垃圾输出。探针只输出一条 OSC（被前端吞掉，屏幕上什么都没有），
- * 收不到回执就说明不是 bash/zsh，直接放弃注入——**绝不盲发**。
+ * ⚠️ 回执**不等于**「远端是 bash/zsh」：本命令只要求远端 shell 能执行 printf，
+ * fish / ksh / dash 同样能执行并回执（回执值就是它们的 $0，如 "fish"）。
+ * 所以「收到回执才注入钩子」挡不住非 bash/zsh —— 真正的门禁是
+ * `isSupportedShell()`（钩子是 bash/zsh 语法，盲发会在 fish/csh/sh 屏幕上
+ * 喷语法错误，与回显残渣同类）。探针的价值是拿到 shell 名给门禁判定 + 时序同步。
  *
- * 注意 `$0` 在登录 shell 下通常是 `-bash` / `-zsh`，够用来分辨。
+ * 注意 `$0` 在登录 shell 下通常是 `-bash` / `-zsh`（带前导 `-`），判定时要剥掉。
  */
 export const PROBE_CMD = `printf '\\033]1337;Shell=%s\\007' "$0"`;
+
+/**
+ * 探针回执 → 该 shell 是否可以注入钩子。
+ *
+ * 白名单只收 bash / zsh（容忍登录 shell 的 `-` 前缀）。其余一律 false：
+ * - fish/csh/tcsh：语法不通，盲发 = 屏幕喷错；
+ * - sh/dash/ksh/ash：能定义函数，但 PROMPT_COMMAND 与 precmd_functions 都不存在，
+ *   `precmd_functions+=(...)` 这句要么语法报错要么静默无效——注入零收益、纯风险；
+ * - pwsh/cmd 等：同理。
+ */
+export function isSupportedShell(name: string): boolean {
+  const s = name.trim().replace(/^-/, "").toLowerCase();
+  return s === "bash" || s === "zsh";
+}
 
 /**
  * 提示符钩子（bash 走 PROMPT_COMMAND，zsh 走 precmd_functions）。
