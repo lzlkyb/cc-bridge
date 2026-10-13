@@ -91,7 +91,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             list_allowed_roots,
             ListAllowedRootsArgs,
-            r#"List the server's access whitelist (allowed root directories, allowed file extensions, max file size). If an allowed root has a top-level CLAUDE.md, its content is inlined under projectInstructions (or a path pointer if it exceeds the size cap). Call this FIRST to discover accessible directories and pick up project rules before attempting any file operation."#,
+            r#"List the server's access whitelist (allowed root directories, allowed file extensions, max file size). If an allowed root has a top-level project rules file (AGENTS.md or CLAUDE.md), its content is inlined under projectInstructions — each entry carries a `file` field naming the source (or a path pointer if it exceeds the size cap). Call this FIRST to discover accessible directories and pick up project rules before attempting any file operation."#,
             false
         ),
         register_tool!(

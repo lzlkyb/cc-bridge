@@ -173,7 +173,9 @@ pub async fn sse_message_handler(
                     "protocolVersion": protocol_version,
                     "capabilities": { "tools": { "listChanged": false } },
                     "serverInfo": { "name": "cc-bridge", "version": env!("CARGO_PKG_VERSION") },
-                    "instructions": crate::mcp::http::server_instructions()
+                    "instructions": crate::mcp::http::server_instructions(
+                        crate::mcp::client_kind::ClientKind::from_initialize(&body)
+                    )
                 }
             });
             let _ = tx.send(sse_data_frame(&resp));
