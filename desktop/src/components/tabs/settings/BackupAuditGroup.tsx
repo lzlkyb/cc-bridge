@@ -9,6 +9,7 @@ import { ToggleRow } from "../../ui/ToggleRow";
 import { useToast } from "../../ui/toast";
 import { SettingsRow } from "../../ui/SettingsRow";
 import { NumBox } from "../../ui/NumBox";
+import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { useSettingSave } from "./useSettingSave";
 import { SubSetting } from "./SubSetting";
 
@@ -17,6 +18,11 @@ const BEFORE_PRESETS = [7, 30, 90];
 
 /** 正在跑的「清理早于…」来源。存来源而不是天数：否则自定义值恰好等于某预设时两个按钮会一起转圈。 */
 type BeforeBusy = { src: "preset" | "custom"; days: number } | null;
+
+/** 待确认的清理动作（P1-3：五个清理入口全部过确认，不再点击即永久删除）。 */
+type PendingClean =
+  | { src: "now" }
+  | { src: "before"; days: number; origin: "preset" | "custom" };
 
 /**
  * 「备份与审计」卡：两个开关 + 审计的两个参数。
@@ -31,15 +37,19 @@ type BeforeBusy = { src: "preset" | "custom"; days: number } | null;
 export function BackupAuditGroup({
   status,
   onSaved,
+  onNavigate,
 }: {
   status?: StaticStatus;
   onSaved: () => void;
+  /** 跨 tab 跳转（备份指路按钮用；不传则回退为静态指路文案）。 */
+  onNavigate?: (tab: string, anchor?: string) => void;
 }) {
   const { savedKey, save } = useSettingSave(onSaved);
   const [days, setDays] = useState(30);
   const [cleaning, setCleaning] = useState(false);
   const [beforeDays, setBeforeDays] = useState(180);
   const [busyBefore, setBusyBefore] = useState<BeforeBusy>(null);
+  const [pendingClean, setPendingClean] = useState<PendingClean | null>(null);
   const { toast } = useToast();
   const initialized = useRef(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -136,10 +146,25 @@ export function BackupAuditGroup({
           onChange={(v) => save({ backupEnabled: v }, "backup")}
           saved={savedKey === "backup"}
         />
-        {/* 备份的份数/目录/清理在安全页（本次不跨 tab 搬），至少把路指清楚 */}
-        <p className="mb-3 rounded-lg bg-primary/8 px-3 py-2 text-[11px] text-primary">
-          → 份数 / 目录 / 版本历史 / 清理在「安全页 › 文件管控」
-        </p>
+        {/* 备份的份数/目录/清理在安全页（本次不跨 tab 搬）。P2-5：指路从静态 <p>
+            升级为按钮——走 App 已有 pendingAnchor/highlightAnchor 机制，切 tab +
+            滚动 + 黄框高亮一气呵成，不让用户自己去别的 tab 找。onNavigate 缺省
+            （理论上不会）回退为静态文案，信息量不丢。 */}
+        {onNavigate ? (
+          <button
+            type="button"
+            onClick={() => onNavigate("security", "set-backup")}
+            className="mb-3 flex w-full items-center gap-2 rounded-lg border border-primary/30 bg-primary/8 px-3 py-2 text-left text-[11px] font-semibold text-primary transition-colors hover:bg-primary/12"
+          >
+            <Icon name="external" size={13} className="shrink-0" />
+            前往：安全页 › 文件管控
+            <span className="font-normal text-muted-foreground">（份数 / 目录 / 版本历史 / 清理）</span>
+          </button>
+        ) : (
+          <p className="mb-3 rounded-lg bg-primary/8 px-3 py-2 text-[11px] text-primary">
+            → 份数 / 目录 / 版本历史 / 清理在「安全页 › 文件管控」
+          </p>
+        )}
 
         <ToggleRow
           id="toggle-audit"
@@ -170,7 +195,14 @@ export function BackupAuditGroup({
                   className="shrink-0"
                   isLoading={cleaning}
                   loadingText="清理中..."
-                  onClick={handleCleanNow}
+                  onClick={() => {
+                    // 保留天数 0 = 永久保留：点了必是「已清理 0 条」，先拦下别弹确认框。
+                    if (days === 0) {
+                      toast("当前设为永久保留（保留天数 0），未清理。可用下方「清理早于…」按临时天数清", "error");
+                      return;
+                    }
+                    setPendingClean({ src: "now" });
+                  }}
                 >
                   立即清理
                 </Button>
@@ -193,7 +225,7 @@ export function BackupAuditGroup({
                     isLoading={busyBefore?.src === "preset" && busyBefore.days === d}
                     loadingText="清理中..."
                     disabled={busyBefore !== null}
-                    onClick={() => handleCleanBefore(d, "preset")}
+                    onClick={() => setPendingClean({ src: "before", days: d, origin: "preset" })}
                   >
                     {d} 天前
                   </Button>
@@ -206,7 +238,7 @@ export function BackupAuditGroup({
                   isLoading={busyBefore?.src === "custom"}
                   loadingText="清理中..."
                   disabled={busyBefore !== null}
-                  onClick={() => handleCleanBefore(beforeDays, "custom")}
+                  onClick={() => setPendingClean({ src: "before", days: beforeDays, origin: "custom" })}
                 >
                   清理自定义天数
                 </Button>
@@ -216,6 +248,43 @@ export function BackupAuditGroup({
           />
         </SubSetting>
       </CardContent>
+
+      {/* P1-3：五个清理入口共用一个确认框（与日志页「清空日志」同标准），描述按
+          入口动态生成——「自定义天数」最易误点，必须确认。确认后才真正调
+          handleCleanNow / handleCleanBefore，行为不变；先关框再执行，按钮上的
+          loading 仍可见（框是 portal 的，关闭后 spinner 在原按钮上转）。 */}
+      {pendingClean && (
+        <ConfirmDialog
+          title="删除审计记录？"
+          variant="destructive"
+          confirmLabel="确定删除"
+          description={
+            pendingClean.src === "now" ? (
+              <>
+                「立即清理」将删除<b>超过保留天数（{days} 天）</b>的全部审计记录，删除后
+                <b>不可恢复</b>。
+              </>
+            ) : (
+              <>
+                将删除<b>早于 {pendingClean.days} 天</b>的全部审计记录（不会修改保留天数设置），
+                删除后<b>不可恢复</b>。
+              </>
+            )
+          }
+          onCancel={() => setPendingClean(null)}
+          onConfirm={() => {
+            const p = pendingClean;
+            setPendingClean(null);
+            if (p.src === "now") void handleCleanNow();
+            else void handleCleanBefore(p.days, p.origin);
+          }}
+        >
+          <div className="flex gap-2 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2 text-[11px] leading-relaxed text-warning">
+            <Icon name="alert" size={13} className="mt-0.5 shrink-0" />
+            <span>删除后无法在日志页追溯历史调用。如想留档，可先到日志页导出 JSON / CSV。</span>
+          </div>
+        </ConfirmDialog>
+      )}
     </Card>
   );
 }

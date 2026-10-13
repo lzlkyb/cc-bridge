@@ -40,6 +40,8 @@ export function SettingsTab({
   changelogOpenToken?: number;
   /** 打开命令面板（左栏「搜索设置」入口，Ctrl+K 的页面内可见入口）。 */
   onOpenSearch?: () => void;
+  /** 跨 tab 导航（卡片指路按钮用；不传则相关按钮回退静态文案）。 */
+  onNavigate?: (tab: string, anchor?: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // 最近一次导航点击的时间戳：其后的程序化 smooth 滚动期间 scrollspy 暂停（见 onScroll）。
@@ -160,30 +162,34 @@ export function SettingsTab({
         {/* 关于卡置顶（用户指定）。在风险总览**之后**：那一条是告警横幅而非卡片，
             把告警压到卡片下面就失去了意义。 */}
         <AboutGroup status={status} unreadCount={unreadCount} onMarkSeen={onMarkSeen} changelogOpenToken={changelogOpenToken} />
-        {/* 其余顺序按「风险 + 改动频率」排（设计稿：design/设置页布局重组-方案A-设计稿.html）；
-            左栏导航顺序与此保持一致（lib/settingsSections.ts）。 */}
+        {/* 其余按「用户任务」分簇重排（设计稿：design/设置页-信息架构重排-设计稿.html）；
+            左栏导航顺序与簇标题同源（lib/settingsSections.ts，改数据即改两边）。
+            ── 开始使用：首次接入顺着往下配。安装上移到第 2 位（找安装目录 / 重看引导
+            是第一站，旧版埋在第 12 位）。── */}
+        <InstallGroup platform={status?.platform} onReopenOnboarding={onReopenOnboarding} />
         <NetworkGroup status={status} onSaved={onSaved} />
         {/* 防火墙卡片仅 Windows：macOS 的防火墙是**按应用授权**而非按端口开洞，
-            且默认不拦本机监听端口的入站连接，整套 netsh 诊断/修复在那里无意义。
-            紧跟网络：两者回答的是同一个问题——远程能不能连进来。 */}
+            且默认不拦本机监听端口的入站连接，整套 netsh 诊断/修复在那里无意义。 */}
         {isWindows(status?.platform) && <FirewallGroup onRefresh={onSaved} />}
         <SecurityGroup status={status} onSaved={onSaved} />
+        {/* ── 每天会用 ── */}
         {/* 紧邻安全卡：它的风险不低于「命令执行」——后者还有三道闸
             （shell_enabled / 危险命令拦截 / 命令白名单），而桥接的 spawn 一道都不走。
             不传 `onSaved`：它自己管自己的刷新，不能挂在全局刷新链上（每改一个
             开关就会把所有 server 的 PATH 扫一遍）。 */}
         <McpBridgeGroup status={status} />
-        <BackupAuditGroup status={status} onSaved={onSaved} />
+        {/* ── 记录与回溯 ── */}
+        <BackupAuditGroup status={status} onSaved={onSaved} onNavigate={onNavigate} />
         {/* 紧跟备份与审计：同为「发生过什么」的回看类信息，数据同源（审计日志）。
             首页 Bento 用量卡点击即落到这里（anchor: set-tokenusage）。 */}
         <TokenUsageGroup />
         <NotifyGroup status={status} onSaved={onSaved} />
-        <AdvancedGroup status={status} onSaved={onSaved} />
-        {/* 紧跟「高级」：终端拖拽即选在那张卡里，终端相关的两项挨着放。
-            风格是低频但会回头改的项，故不塞进「装完很少再动」的高级卡。 */}
+        {/* ── 终端与应用 ──
+            终端紧跟应用卡：都是「用起来什么手感」的偏好，风格是低频但会回头改的项。 */}
         <TerminalGroup />
         <AppGroup />
-        <InstallGroup platform={status?.platform} onReopenOnboarding={onReopenOnboarding} />
+        {/* ── 高级与配置：装完很少再动的收尾簇 ── */}
+        <AdvancedGroup status={status} onSaved={onSaved} />
         <ConfigGroup status={status} onSaved={onSaved} />
       </div>
     </div>

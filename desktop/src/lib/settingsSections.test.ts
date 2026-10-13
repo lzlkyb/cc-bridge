@@ -1,10 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { SETTINGS_SECTIONS, groupSettingsSections } from "./settingsSections";
+import { SETTINGS_SECTIONS, SETTINGS_CLUSTERS, groupSettingsSections } from "./settingsSections";
 
 /**
- * 左栏导航引入 group 分簇后（设计稿：设置页左侧导航-视觉语言对齐-方案ABC-设计稿.html），
- * 这些断言锁的是「簇边界会静默错掉」的契约——簇划错了只是细线悄悄跑偏，不报错、不崩，
- * 肉眼在 12 项里也很难看出来。
+ * 左栏导航引入簇标题后（设计稿：设置页-信息架构重排-设计稿.html），这些断言
+ * 锁的是「簇边界/标题会静默错掉」的契约——簇划错了只是细线与标题悄悄跑偏，
+ * 不报错、不崩，肉眼在 13 项里也很难看出来。
  */
 describe("设置页导航数据", () => {
   it("id 不得重复", () => {
@@ -15,7 +15,7 @@ describe("设置页导航数据", () => {
 
   it("同 group 的项必须相邻（不允许 0,1,0 这种回跳）", () => {
     // groupSettingsSections 判定的是「相邻且同 group」。数据写成 0,1,0 会切出两个
-    // group=0 的簇、白多一条细线，而不会报任何错。
+    // 同 group 的簇、白多一条细线，而不会报任何错。
     const seen = new Set<number>();
     let prevGroup: number | null = null;
     for (const s of SETTINGS_SECTIONS) {
@@ -34,24 +34,63 @@ describe("设置页导航数据", () => {
     expect(firewall).toBeTruthy();
     expect(firewall?.group).toBe(network?.group);
   });
-});
 
-describe("groupSettingsSections", () => {
-  it("Windows 全量切成 5 簇（渲染成 4 条簇间细线）", () => {
-    const groups = groupSettingsSections(SETTINGS_SECTIONS);
-    expect(groups.map((g) => g.map((s) => s.label))).toEqual([
-      ["关于"],
-      ["网络", "防火墙", "安全", "外挂 MCP 桥"],
-      ["备份与审计", "Token 用量", "通知"],
-      ["高级", "终端"],
-      ["应用", "安装与快捷方式", "配置"],
+  it("每个用到的 group 都有簇元数据（漏登记的簇没有标题、渲染层不报错但静默缺标题）", () => {
+    const used = new Set(SETTINGS_SECTIONS.map((s) => s.group));
+    const declared = new Set(SETTINGS_CLUSTERS.map((c) => c.group));
+    for (const g of used) expect(declared.has(g), `group ${g} 缺 SETTINGS_CLUSTERS 登记`).toBe(true);
+  });
+
+  it("簇标题全量锁定（信息架构重排的核心契约）", () => {
+    expect(SETTINGS_CLUSTERS.map((c) => c.title ?? null)).toEqual([
+      null, // 关于独立置顶，无标题
+      "开始使用",
+      "每天会用",
+      "记录与回溯",
+      "终端与应用",
+      "高级与配置",
     ]);
   });
 
-  it("非 Windows 过滤掉防火墙后仍是 5 簇", () => {
+  it("「通知」与「Token 用量」不撞图标", () => {
+    const notify = SETTINGS_SECTIONS.find((s) => s.id === "set-notify");
+    const token = SETTINGS_SECTIONS.find((s) => s.id === "set-tokenusage");
+    expect(notify?.icon).not.toBe(token?.icon);
+  });
+
+  it("「安装与快捷方式」在「关于」之后（首次接入第一站，重排核心）", () => {
+    const order = SETTINGS_SECTIONS.map((s) => s.id);
+    expect(order.indexOf("set-install")).toBe(1);
+    expect(order[0]).toBe("set-about");
+  });
+});
+
+describe("groupSettingsSections", () => {
+  it("Windows 全量切成 6 簇（关于 + 5 个带标题簇），顺序与设计稿一致", () => {
+    const groups = groupSettingsSections(SETTINGS_SECTIONS);
+    expect(groups.map((g) => g.items.map((s) => s.label))).toEqual([
+      ["关于"],
+      ["安装与快捷方式", "网络", "防火墙"],
+      ["安全", "外挂 MCP 桥"],
+      ["备份与审计", "Token 用量", "通知"],
+      ["终端", "应用"],
+      ["高级", "配置"],
+    ]);
+    expect(groups.map((g) => g.title ?? null)).toEqual([
+      null,
+      "开始使用",
+      "每天会用",
+      "记录与回溯",
+      "终端与应用",
+      "高级与配置",
+    ]);
+  });
+
+  it("非 Windows 过滤掉防火墙后仍是 6 簇、标题不变", () => {
     const groups = groupSettingsSections(SETTINGS_SECTIONS.filter((s) => !s.windowsOnly));
-    expect(groups.length).toBe(5);
-    expect(groups[1].map((s) => s.label)).toEqual(["网络", "安全", "外挂 MCP 桥"]);
+    expect(groups.length).toBe(6);
+    expect(groups[1].items.map((s) => s.label)).toEqual(["安装与快捷方式", "网络"]);
+    expect(groups[1].title).toBe("开始使用");
   });
 
   it("空输入返回空数组（不抛错）", () => {

@@ -20,52 +20,79 @@ export interface SettingsSection {
   /** 仅 Windows 渲染的卡（防火墙），非 Windows 平台导航项同步隐藏。 */
   windowsOnly?: boolean;
   /**
-   * 视觉分簇编号。相邻两项 group 不同时，左栏在两者之间画一条 1px 细线。
+   * 视觉分簇编号，语义见 {@link SETTINGS_CLUSTERS}。
    *
-   * 这是**纯视觉**分簇，不是逻辑归组：不加分组标题、不折叠、不改变项顺序，
-   * 也不影响卡片渲染顺序（卡片顺序在 SettingsTab，与本表无关）。目的是让
-   * 12 项平铺的长列表有呼吸感，扫起来能分簇。
-   *
-   * 分簇依据是「概念亲疏」，与卡片既有排序理由（风险 + 改动频率）一致：
-   *   0 关于        —— 独立（置顶卡，版本/更新）
-   *   1 连通性      —— 网络 / 防火墙 / 安全 / 外挂 MCP 桥
-   *                    都回答「远程能不能连进来、连进来能干什么」
-   *   2 记录        —— 备份与审计 / 通知（都是"发生过什么"的回看）
-   *   3 进阶        —— 高级 / 终端（低频但会回头改）
-   *   4 收尾        —— 应用 / 安装与快捷方式 / 配置（装完很少再动）
+   * 这是**纯视觉**分簇，不是逻辑归组：不折叠、不改变导航/卡片顺序之外的任何行为。
+   * 分簇依据从「概念亲疏」升级为「用户任务」（信息架构重排设计稿）：
+   * 第一次装完顺着「开始使用」往下配；日常动「每天会用」；回溯看「记录与回溯」。
    */
   group: number;
 }
 
-export const SETTINGS_SECTIONS: SettingsSection[] = [
-  { id: "set-about", label: "关于", icon: "info", group: 0 },
-  { id: "set-network", label: "网络", icon: "server", group: 1 },
-  { id: "set-firewall", label: "防火墙", icon: "shield", windowsOnly: true, group: 1 },
-  { id: "set-security", label: "安全", icon: "shield", group: 1 },
-  { id: "set-mcpbridge", label: "外挂 MCP 桥", icon: "plug", group: 1 },
-  { id: "set-backupaudit", label: "备份与审计", icon: "history", group: 2 },
-  { id: "set-tokenusage", label: "Token 用量", icon: "activity", group: 2 },
-  { id: "set-notify", label: "通知", icon: "activity", group: 2 },
-  { id: "set-advanced", label: "高级", icon: "sliders", group: 3 },
-  { id: "set-terminal", label: "终端", icon: "terminal", group: 3 },
-  { id: "set-app", label: "应用", icon: "monitor", group: 4 },
-  { id: "set-install", label: "安装与快捷方式", icon: "package", group: 4 },
-  { id: "set-config", label: "配置", icon: "download", group: 4 },
+/**
+ * 簇元数据：group 编号 → 簇标题。
+ *
+ * 2026-10-13（信息架构重排设计稿）：左栏从 13 项平铺升级为「簇标题 + 项」。
+ * `title` 缺省的簇（关于）不渲染标题行——「关于」置顶是既有用户决定，它
+ * 独自一簇且无需归群。
+ */
+export const SETTINGS_CLUSTERS: { group: number; title?: string }[] = [
+  { group: 0 }, // 关于——独立置顶，无标题
+  { group: 1, title: "开始使用" }, // 第一次装完顺着往下配
+  { group: 2, title: "每天会用" },
+  { group: 3, title: "记录与回溯" },
+  { group: 4, title: "终端与应用" },
+  { group: 5, title: "高级与配置" },
 ];
 
 /**
- * 按 group 把导航项切成簇（相邻且 group 相同的项归为一簇）。
+ * 顺序即导航顺序，也是 SettingsTab 右列卡片顺序（两边同源，改这里即改两边）。
+ *
+ * 与旧版（2026-09 风险排序）的差异：「安装与快捷方式」从第 12 项**上移**到
+ * 第 2 项——首次接入的第一站（装完找安装目录 / 重看引导），却埋在收尾簇里；
+ * 「通知」图标 activity → bell（原与 Token 用量撞图标）。
+ */
+export const SETTINGS_SECTIONS: SettingsSection[] = [
+  { id: "set-about", label: "关于", icon: "info", group: 0 },
+  { id: "set-install", label: "安装与快捷方式", icon: "package", group: 1 },
+  { id: "set-network", label: "网络", icon: "server", group: 1 },
+  { id: "set-firewall", label: "防火墙", icon: "shield", windowsOnly: true, group: 1 },
+  { id: "set-security", label: "安全", icon: "shield", group: 2 },
+  { id: "set-mcpbridge", label: "外挂 MCP 桥", icon: "plug", group: 2 },
+  { id: "set-backupaudit", label: "备份与审计", icon: "history", group: 3 },
+  { id: "set-tokenusage", label: "Token 用量", icon: "activity", group: 3 },
+  { id: "set-notify", label: "通知", icon: "bell", group: 3 },
+  { id: "set-terminal", label: "终端", icon: "terminal", group: 4 },
+  { id: "set-app", label: "应用", icon: "monitor", group: 4 },
+  { id: "set-advanced", label: "高级", icon: "sliders", group: 5 },
+  { id: "set-config", label: "配置", icon: "download", group: 5 },
+];
+
+/** 一个渲染簇：标题（可缺省）+ 该簇的导航项。 */
+export interface SettingsClusterGroup {
+  title?: string;
+  items: SettingsSection[];
+}
+
+/**
+ * 按 group 把导航项切成簇（相邻且 group 相同的项归为一簇），并挂上簇标题。
  *
  * 为何单独成函数而不写在 SettingsNav 里：切簇必须基于**过滤后**的列表算——
  * 「防火墙非 Windows 不渲染」这类过滤发生在渲染之前。抽出来才能单测覆盖
  * 「过滤器把中间某一项拿掉」的情形，否则簇数/细线位置错了也没人发现。
  */
-export function groupSettingsSections(sections: SettingsSection[]): SettingsSection[][] {
-  const groups: SettingsSection[][] = [];
+export function groupSettingsSections(sections: SettingsSection[]): SettingsClusterGroup[] {
+  const groups: SettingsClusterGroup[] = [];
   for (const s of sections) {
     const last = groups[groups.length - 1];
-    if (!last || last[0].group !== s.group) groups.push([s]);
-    else last.push(s);
+    if (!last || last.items[0].group !== s.group) {
+      groups.push({
+        title: SETTINGS_CLUSTERS.find((c) => c.group === s.group)?.title,
+        items: [s],
+      });
+    } else {
+      last.items.push(s);
+    }
   }
   return groups;
 }
