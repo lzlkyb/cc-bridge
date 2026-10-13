@@ -3,8 +3,16 @@ import {
   STATUSBAR_SKINS,
   formatUptime,
   shortenPath,
+  type SegKind,
   type StatusbarSkin,
 } from "../../lib/terminalStatusbar";
+import {
+  programStateLabel,
+  programStateTitle,
+  type ProgramState,
+  type ProgramStatus,
+} from "../../lib/terminalProgramStatus";
+import type { IconName } from "../ui/icon";
 import type { TerminalStatus, OscState } from "../../hooks/useTerminalOsc";
 import { formatCmdDuration } from "../../lib/terminalCommandNav";
 import type { TerminalPreset } from "../../lib/terminalTheme";
@@ -22,6 +30,11 @@ interface Props {
   mode: Theme;
   status: TerminalStatus;
   state: OscState;
+  /**
+   * 远端程序自报的运行状态（OSC 7501）。null = 远端没上报（非 Claude Code 或版本过旧）。
+   * 只在 blocked/working/done/error 时显示，idle 与 clear 不出段。
+   */
+  agent?: ProgramStatus | null;
   /** 会话已断开。断开后冻结时长并显示「已断开」，不再展示远端探测提示。 */
   closed: boolean;
   /** 滚轮归属四态（hooks/useWheelGuide）。缺省 local：不出任何滚轮徽章（缺省态不占位）。 */
@@ -55,6 +68,7 @@ export function TerminalStatusBar({
   mode,
   status,
   state,
+  agent,
   closed,
   owner,
   onDeadClick,
@@ -77,6 +91,9 @@ export function TerminalStatusBar({
         <Seg skin={skin} kind="host" icon="server" title={`${conn.username}@${conn.host}:${conn.port}`} isFirst>
           {host}
         </Seg>
+        {/* 远端程序自报状态（OSC 7501）。紧跟主机名：左区空间不足时横向滚动，
+            要紧的信息必须排在最前面才不会被滚出视口。断开后不再显示（会变成陈旧值）。 */}
+        {!closed && <AgentSeg skin={skin} agent={agent} />}
         {status.cwd !== null && (
           <Seg skin={skin} kind="path" icon="folder" title={status.cwd}>
             {shortenPath(status.cwd)}
@@ -150,6 +167,48 @@ function ExitSeg({ skin, code }: { skin: StatusbarSkin; code: number }) {
   return (
     <Seg skin={skin} kind="exitBad" title="上一条命令失败">
       {skin.icons ? `✘ ${code}` : `exit ${code}`}
+    </Seg>
+  );
+}
+
+/**
+ * 远端程序状态段（OSC 7501）。文案为 null（idle / clear）或还没上报时不渲染——
+ * 状态栏不能为了「有个段」而常驻一行无信息量的「就绪」。
+ *
+ * 段色刻意复用既有语义 token：blocked → warn（需要你动手，与滚轮故障同一套「要关注」语义）、
+ * error → exitBad、done → exit、working → tui（纯信息色）。这样四套皮肤都不用改，
+ * 也避免新造一个撞语义的色。⚠️ 不能把 working 也用成琥珀——那是 warn 的专属语义色。
+ */
+const AGENT_KIND: Record<ProgramState, SegKind> = {
+  idle: "muted",
+  working: "tui",
+  done: "exit",
+  blocked: "warn",
+  error: "exitBad",
+  clear: "muted",
+};
+
+const AGENT_ICON: Record<ProgramState, IconName> = {
+  idle: "info",
+  working: "spinner",
+  done: "check",
+  blocked: "pause",
+  error: "alertTriangle",
+  clear: "info",
+};
+
+function AgentSeg({ skin, agent }: { skin: StatusbarSkin; agent?: ProgramStatus | null }) {
+  if (!agent) return null;
+  const label = programStateLabel(agent);
+  if (label === null) return null;
+  return (
+    <Seg
+      skin={skin}
+      kind={AGENT_KIND[agent.state]}
+      icon={AGENT_ICON[agent.state]}
+      title={programStateTitle(agent, label)}
+    >
+      {label}
     </Seg>
   );
 }

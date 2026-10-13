@@ -898,6 +898,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
+            // 前端主动推桌面通知（终端 OSC 7501 的 blocked）。受 notify_task_complete 开关控制。
+            commands::notify_desktop,
             commands::save_config,
             commands::regenerate_token,
             commands::get_audit_log,

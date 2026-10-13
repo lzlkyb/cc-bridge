@@ -216,3 +216,49 @@ pub async fn temp_file_remove(path: String) -> Result<(), String> {
     .await
     .map_err(|e| format!("删除临时文件任务异常终止：{e}"))?
 }
+
+/// 前端主动推一条系统桌面通知（当前唯一调用方：终端 OSC 7501 的 `blocked` 状态——
+/// 远端 Claude Code 卡在权限确认/提问/登录，用户已经走开了）。
+///
+/// **为什么前端需要这个命令**：整条通知通路（`tauri-plugin-notification`）此前只对
+/// Rust 侧与 MCP `push_notification` 开放，前端没有可达路径；而「用户不在窗口前」
+/// 恰恰是前端才有的上下文（谁被聚焦、哪个标签可见）。
+///
+/// **为什么复用 `notify_task_complete`**：桌面通知是「打扰用户的预算」，不该因为来源
+/// 不同就多出一套偏好。用户在设置里说「不要 AI 的桌面通知」，就该连这一条一起关掉。
+/// 关闭时静默返回 `false`（不报错），与 MCP 工具的语义保持一致。
+///
+/// 返回值 = 是否真的推了。发送失败返回 `Ok(false)` 而非 `Err`：推不出去不是调用方的错
+/// （mac 上常见于应用不在 LaunchServices 认得的位置），调用方也无从补救。
+#[tauri::command]
+pub async fn notify_desktop(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, std::sync::Arc<crate::state::AppState>>,
+    title: String,
+    body: String,
+) -> Result<bool, String> {
+    if !state.config.read().await.notify_task_complete {
+        return Ok(false);
+    }
+    notify_desktop_impl(app, &title, &body)
+}
+
+/// `notifications` feature 关闭时是 no-op，**不链接**通知插件——与 `push_notification`
+/// 同理，否则 `cargo test --no-default-features` 会以 `0xc0000139` 崩在 DLL 装载上。
+#[cfg(feature = "notifications")]
+fn notify_desktop_impl(app: tauri::AppHandle, title: &str, body: &str) -> Result<bool, String> {
+    use tauri_plugin_notification::NotificationExt;
+    match app.notification().builder().title(title).body(body).show() {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            // 不吞错：理由见 main.rs::notify_toast —— mac 上这是唯一能看出授权失败的信号。
+            log::warn!("桌面通知发送失败：{e}");
+            Ok(false)
+        }
+    }
+}
+
+#[cfg(not(feature = "notifications"))]
+fn notify_desktop_impl(_app: tauri::AppHandle, _title: &str, _body: &str) -> Result<bool, String> {
+    Ok(false)
+}

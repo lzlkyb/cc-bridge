@@ -268,7 +268,9 @@ export function formatUptime(ms: number): string {
  * - OSC 1337 `Key=Value`           → 私有扩展，这里用 Shell=（探针）与 Git=（分支）
  *
  * xterm.js 的 `parser.registerOscHandler(ident, cb)` 回调收到的 data 是
- * **ident 之后的全部内容**（含第一个 `;`），与 ident 本身无关。
+ * **ident 与紧随其后的那个 `;` 之后**的内容（**不含**分号），与 ident 本身无关。
+ * 实证：`ESC]7;file://h/p` → data=`file://h/p`、`ESC]7501;?` → data=`?`
+ * （无头 Edge + 真实 xterm 测过；此处曾误写为「含第一个 `;`」）。
  */
 
 /** OSC 7 → 绝对路径。非 file:// 或无可解析路径时返回 null。 */

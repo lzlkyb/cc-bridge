@@ -22,6 +22,7 @@ import { toast } from "../ui/toast";
 import { useThemeMode } from "../../hooks/useThemeMode";
 import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
 import { useTerminalOsc } from "../../hooks/useTerminalOsc";
+import { useTerminalProtocol } from "../../hooks/useTerminalProtocol";
 import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
 import type { SshConnection } from "../../lib/types";
 
@@ -107,6 +108,8 @@ export function SshTerminal({
   const font = useTerminalFontSize({ termRef, containerRef, doFit });
   // 远端状态探测：注入钩子 + 解析 OSC。钩子关闭 / 不支持时自动降级，终端本身不受影响。
   const { status, state } = useTerminalOsc({ sessionId, enabled: inject, closed, termRef });
+  // 终端协议接缝：OSC 7501（远端自报「在干活 / 在等确认」）+ DEC 2031（主题变化通知）。
+  const agent = useTerminalProtocol({ sessionId, closed, mode, termRef, visible, label: conn.name || conn.host });
   // closed / cwd 用 ref 承接：window 键盘监听只挂一次，闭包要总读到最新值。
   const closedRef = useRef(closed);
   closedRef.current = closed;
@@ -117,19 +120,16 @@ export function SshTerminal({
   const pasteImageRef = useRef(pasteImage);
   pasteImageRef.current = pasteImage;
 
-  // 把远端 cwd 上报给父级：拖拽上传要拿它当目标目录，有了它就不用每次拖文件都问一遍。
-  // 用 ref 承接回调——调用方传的是内联箭头函数，进依赖会让这个 effect 每次渲染都重跑。
+  // 把远端 cwd 上报给父级（拖拽上传的目标目录）。ref 承接：内联箭头不能进依赖。
   const onCwdRef = useRef(onCwd);
   onCwdRef.current = onCwd;
   useEffect(() => {
     onCwdRef.current(status.cwd);
   }, [status.cwd]);
 
-  // 滚轮归属四态 + 翻转引导 + 救急面板开关（含 TUI 滚动条 / Shift+滚轮的挂载）。
-  // 逻辑在 hooks/useWheelGuide.ts；这里只消费它渲染徽章 / 引导条 / 面板。
+  // 滚轮归属四态 + 翻转引导 + 救急面板开关（逻辑在 hooks/useWheelGuide.ts，这里只消费）。
   const wheel = useWheelGuide({ sessionId, closed, termRef, containerRef });
   // 输出里的远端绝对路径 → 可点击（注册在 web-links 之后，URL 仍归它）。
-  // onOpenFilePath 用 ref 承接：调用方传内联箭头函数，不能进挂载 effect 的依赖。
   const onOpenFilePathRef = useRef(onOpenFilePath);
   onOpenFilePathRef.current = onOpenFilePath;
   // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），只需挂一次。
@@ -186,8 +186,7 @@ export function SshTerminal({
     return () => window.removeEventListener("keydown", onKey, true);
   }, [sessionId]);
 
-  // 标签 meta 上报（标题/进度/铃）。后台标签收到 BEL 才 toast：用户正盯着这个终端时
-  // 响铃不需要再弹一条「有铃声」，那反而是打扰。onMeta 由 hook 用 ref 承接，闭包读到最新 visible。
+  // 标签 meta 上报（标题/进度/铃）。后台标签收到 BEL 才 toast：正盯着看时不必再弹。
   useTerminalTabMeta({
     termRef,
     closed,
@@ -243,6 +242,7 @@ export function SshTerminal({
         preset={preset}
         mode={mode}
         status={status}
+        agent={agent}
         state={state}
         closed={closed}
         owner={wheel.owner}
