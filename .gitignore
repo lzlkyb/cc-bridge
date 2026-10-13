@@ -47,3 +47,6 @@ s[0-9]*.log
 
 # codegraph 索引产物（本地生成，勿入库）
 .codegraph/
+
+# impeccable 技能工作目录（审查/批评的临时产物，勿入库）
+.impeccable/
