@@ -346,7 +346,7 @@ Claude Code 对话中触发工具调用:
 
 ### SSH 终端（本地人操作，非 MCP 工具）
 
-第 5 个 Tab「终端」提供一个真正的**交互式终端**，让你在 cc-bridge 面板里直接连远端 Linux 敲命令——**这是给人手动用的，不是给 AI 用的 MCP 工具**（所以不计入上面的 20 个 MCP 工具）。
+第 4 个 Tab「终端」提供一个真正的**交互式终端**，让你在 cc-bridge 面板里直接连远端 Linux 敲命令——**这是给人手动用的，不是给 AI 用的 MCP 工具**（所以不计入上面的 20 个 MCP 工具）。
 
 - **后端**：调用本机系统自带 OpenSSH（Windows 10/11 自带 `C:\Windows\System32\OpenSSH\ssh.exe`，macOS 永远有），用 `portable-pty` 开本地 PTY（Windows = ConPTY / Unix = pty）把 ssh 的输入输出接到 xterm.js。零新网络协议、零重依赖，体积代价可忽略（portable-pty 0.9 只引 `windows-sys` 0.61.2 等小库）。
 - **连接**：支持两种认证方式——
@@ -421,7 +421,7 @@ Claude Code 对话中触发工具调用:
 - **安全**：白名单根目录 CRUD + 目录浏览器弹窗；扩展名/文件大小/限流/备份目录/备份保留，全部即时保存（防抖 800ms + 失焦）
 - **设置**：网络（host/port，改后一键保存并重启）+ 应用（开机自启开关）+ 审计（日志保留天数）
 - **日志**：审计日志表，6 列（时间 / 操作 / 参数摘要 / 来源 / 耗时 / 状态）；操作列显示中文名（如「读取文件」）+ 原始工具名；支持按操作/状态下拉筛选 + 关键字搜索（匹配参数与错误）+ 一键导出 JSON；点击行展开结构化详情（参数 KV + 格式化 JSON + 复制 + 错误块）
-- **终端**：SSH 终端（第 5 个 Tab，Ctrl+5）。人在面板里手动操作远端 Linux 的终端——左栏 SSH 连接列表（名称 + user@host:port + 在线/离线点），右栏 xterm.js 深色终端（复制 / 清屏 / 断开）。支持密码登录、记住密码（aes-gcm 加密落盘）、窗口缩放、`ServerAliveInterval` 保活；总开关 `ssh_enabled` 默认关，首次进入弹启用确认（遵循「默认关 + 多层闸」）。**仅本地 Tauri IPC 调用，不经过 MCP，远端 Claude Code 无法用它**
+- **终端**：SSH 终端（第 4 个 Tab，Ctrl+4）。人在面板里手动操作远端 Linux 的终端——左栏 SSH 连接列表（名称 + user@host:port + 在线/离线点），右栏 xterm.js 深色终端（复制 / 清屏 / 断开）。支持密码登录、记住密码（aes-gcm 加密落盘）、窗口缩放、`ServerAliveInterval` 保活；总开关 `ssh_enabled` 默认关，首次进入弹启用确认（遵循「默认关 + 多层闸」）。**仅本地 Tauri IPC 调用，不经过 MCP，远端 Claude Code 无法用它**
 - 深色/浅色主题切换（localStorage 持久化）
 
 ## 技术栈
@@ -474,7 +474,7 @@ cc-bridge/
 │       │   ├── SettingsTab.tsx     # 网络 + 应用(开机自启) + 审计
 │       │   ├── SettingsToggles.tsx # 设置页功能开关卡
 │       │   ├── LogTab.tsx
-│       │   ├── TerminalTab.tsx      # 第 5 个 Tab：SSH 终端（连接列表 + xterm）
+│       │   ├── TerminalTab.tsx      # 第 4 个 Tab：SSH 终端（连接列表 + xterm）
 │       │   ├── SshTerminal.tsx      # xterm.js 终端组件（输入/输出/缩放/复制清空）
 │       │   └── SshConnectionDialog.tsx # 新建/编辑 SSH 连接弹框
     │       └── modals/
@@ -670,7 +670,7 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 - `run_command` 的跨调用 shell 会话持久化（拿 `sessionId` 带住 `cwd` + 环境变量）**默认关闭**，不开时必须每次显式传绝对 `cwd`。
 - 后台命令（`run_command(background=true)`）注册表 v1 无自动回收：命令结束后 handle 仍占位，需显式 `stop_command` 移除，或等并发上限（5个）触发拒绝新建后再清理。
 - `run_command` 前台模式超时后仍会强杀命令（不会自动转后台继续跑）；但超时前已产生的输出会连同 `timedOut: true` 一起返回（默认超时 120s）。长任务请用 `background: true`。
-- **SSH 终端**是本地人操作的交互终端（第 5 个 Tab），**不是**给远程 Claude Code 的 MCP 工具，远端无法用它；它需要本机装有 OpenSSH 客户端（Windows 10/11 / macOS 均自带，极少数精简镜像需 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` 安装）。
+- **SSH 终端**是本地人操作的交互终端（第 4 个 Tab），**不是**给远程 Claude Code 的 MCP 工具，远端无法用它；它需要本机装有 OpenSSH 客户端（Windows 10/11 / macOS 均自带，极少数精简镜像需 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` 安装）。
 
 ## 版本历史
 

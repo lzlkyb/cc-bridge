@@ -96,7 +96,7 @@ External MCP bridging: `mcp_list_servers` (list bridged external MCP servers + t
 
 ## Built-in SSH terminal (for humans, not the AI)
 
-The 5th tab is a real interactive SSH terminal (system OpenSSH + PTY + xterm.js): password or key auth (credentials encrypted at rest with aes-gcm), multi-tab sessions with keepalive, and an SFTP drawer (browse/upload/download/mkdir/delete). It goes over local Tauri IPC only — remote AI clients cannot touch it.
+The 4th tab is a real interactive SSH terminal (system OpenSSH + PTY + xterm.js): password or key auth (credentials encrypted at rest with aes-gcm), multi-tab sessions with keepalive, and an SFTP drawer (browse/upload/download/mkdir/delete). It goes over local Tauri IPC only — remote AI clients cannot touch it.
 
 ## Tech stack
 

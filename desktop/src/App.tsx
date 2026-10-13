@@ -190,21 +190,28 @@ function AppContent() {
         e.preventDefault();
         setShowCommandPalette((v) => !v);
       }
-      // Ctrl+1~5 切换 Tab；输入框/可编辑元素聚焦时不拦截，避免覆盖正常输入（如密码、命令参数）
+      // Ctrl+1~4 切工作区 Tab、Ctrl+, 打开设置（桌面应用标准键位，mac 下 ⌘,）；
+      // 设置排 Tab 栏末位不占数字位（导航末位惯例，见 VS Code/Discord）。
+      // 输入框/可编辑元素聚焦时不拦截，避免覆盖正常输入（如密码、命令参数）
       if (
         isCtrlOrMeta &&
         e.key >= "1" &&
-        e.key <= "5" &&
+        e.key <= "4" &&
         !isEditableTarget(e.target)
       ) {
         e.preventDefault();
-        const tabs = ["connect", "security", "settings", "log", "terminal"];
+        const tabs = ["connect", "security", "log", "terminal"];
         setActiveTab(tabs[parseInt(e.key) - 1]);
+      }
+      // 走 handleNavigate 而非 setActiveTab：进设置需触发标已读/开更新历史的副作用
+      if (isCtrlOrMeta && e.key === "," && !isEditableTarget(e.target)) {
+        e.preventDefault();
+        handleNavigate("settings");
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [handleNavigate]);
 
   // 方案 C: 网络变化 / 切回窗口时主动刷新状态，确保连接页 IP 立即更新（不依赖 5s 轮询）。
   useEffect(() => {
@@ -274,6 +281,11 @@ function AppContent() {
           <TabsList>
             <TabsTrigger value="connect"><Icon name="plug" /> 连接</TabsTrigger>
             <TabsTrigger value="security"><Icon name="shield" /> 安全</TabsTrigger>
+            <TabsTrigger value="log"><Icon name="log" /> 日志</TabsTrigger>
+            <TabsTrigger value="terminal"><Icon name="terminal" /> 终端</TabsTrigger>
+            {/* 设置排最末位（导航末位惯例：VS Code/Discord/Telegram 均把设置放导航尾部）——
+                与「干活的页面」在视觉上分层。进入副作用（标已读/开更新历史）在 Tabs
+                onValueChange 里，Trigger 交互照常触发。 */}
             <TabsTrigger value="settings">
               <span className="relative inline-flex items-center">
                 <Icon name="settings" /> 设置
@@ -302,8 +314,6 @@ function AppContent() {
                 )}
               </span>
             </TabsTrigger>
-            <TabsTrigger value="log"><Icon name="log" /> 日志</TabsTrigger>
-            <TabsTrigger value="terminal"><Icon name="terminal" /> 终端</TabsTrigger>
           </TabsList>
         </div>
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-5">

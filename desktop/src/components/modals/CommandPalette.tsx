@@ -139,14 +139,14 @@ export function CommandPalette({
   // 快捷键标签的平台来源；首帧 status 为 undefined 时先显示 Ctrl（见 lib/platform.ts 的取舍）。
   const platform = status?.platform;
 
-  // E-P1-11: useMemo 避免 11 个 CommandItem 每渲染重建
   const items = useMemo<CommandItem[]>(() => [
     // 快捷键标签按平台变（mac 显示 ⌘1）。功能本身早已兼容——App.tsx 的键盘
     // 监听用的是 `e.ctrlKey || e.metaKey`，这里仅修正显示。
     { id: "nav-connect", label: "前往：连接页", icon: "plug", group: "导航", tab: "connect", shortcut: shortcutLabel(platform, "1") },
     { id: "nav-security", label: "前往：安全页", icon: "shield", group: "导航", tab: "security", shortcut: shortcutLabel(platform, "2") },
-    { id: "nav-settings", label: "前往：设置页", icon: "settings", group: "导航", tab: "settings", shortcut: shortcutLabel(platform, "3") },
-    { id: "nav-log", label: "前往：日志页", icon: "log", group: "导航", tab: "log", shortcut: shortcutLabel(platform, "4") },
+    { id: "nav-log", label: "前往：日志页", icon: "log", group: "导航", tab: "log", shortcut: shortcutLabel(platform, "3") },
+    { id: "nav-terminal", label: "前往：终端页", icon: "terminal", group: "导航", tab: "terminal", shortcut: shortcutLabel(platform, "4") },
+    { id: "nav-settings", label: "前往：设置页", icon: "settings", group: "导航", tab: "settings", shortcut: shortcutLabel(platform, ",") },
     {
       id: "act-token",
       label: "重新生成访问令牌",
