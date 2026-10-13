@@ -975,6 +975,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_sftp_remove,
             // 拖拽上传：只读本机路径的元数据（分辨文件/目录），不读内容。
             commands::local_path_info,
+            // 剪贴板图片上传的中转文件（写/删临时目录，带前缀+目录双守卫）。
+            commands::temp_file_write,
+            commands::temp_file_remove,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {

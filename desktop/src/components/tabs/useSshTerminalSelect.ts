@@ -9,6 +9,7 @@ import {
 import type { Terminal } from "@xterm/xterm";
 import { toast } from "../ui/toast";
 import { MOUSE_REPORT_OFF } from "../../lib/terminalMouse";
+import { trimCopyText } from "../../lib/terminalPaste";
 
 /** 拖拽超过这个像素数才算「拖选」，以下当普通点击（不影响 TUI 定位光标）。 */
 const DRAG_THRESHOLD = 4;
@@ -109,7 +110,7 @@ export function useSshTerminalSelect({
       return;
     }
     navigator.clipboard
-      .writeText(sel)
+      .writeText(trimCopyText(sel))
       .then(() => toast("已复制选中文字", "success"))
       .catch(() => toast("复制失败", "error"));
   }, [termRef, cachedSelection]);
@@ -205,7 +206,7 @@ export function useSshTerminalSelect({
         lastCopyAtRef.current = now;
         // 成功**不弹 toast**：拖选即复制是自动行为，每次松手弹一条会把屏幕刷满，
         // 而且用户本来就知道它复制了。失败仍必须报，不吞。
-        navigator.clipboard.writeText(sel).catch(() => toast("复制失败", "error"));
+        navigator.clipboard.writeText(trimCopyText(sel)).catch(() => toast("复制失败", "error"));
         // 拖拽临时选择：复制后退出选择态，恢复 TUI 鼠标（远端下次重绘自行重设 ?1006h）。
         if (dragSelectRef.current) {
           selectActiveRef.current = false;

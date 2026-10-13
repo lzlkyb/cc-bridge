@@ -148,3 +148,71 @@ fn create_desktop_shortcut_impl(app: tauri::AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// 剪贴板图片中转文件：把前端编码好的 PNG 字节写进系统临时目录，返回完整路径。
+///
+/// WHY 存在：剪贴板图片上传走 `ssh_sftp_put`（scp 只认**本机路径**），而剪贴板里
+/// 只有字节没有路径——必须有落盘一步。为什么不引 `plugin-fs`：与 `local_path_info`
+/// 同一个判断，为写一个临时文件把整块文件系统权限面开给前端，代价远大于收益。
+///
+/// 文件名带 `cc-bridge-clip-` 前缀 + 纳秒时间戳，碰撞即覆盖也无害（同一意图）。
+/// 清理是双保险：上传成功后前端调 `temp_file_remove`，漏删的交给系统临时目录回收。
+///
+/// 仅本机面板经 Tauri IPC 调用，不注册为 MCP 工具（不给远端任何本机文件系统入口）。
+#[tauri::command]
+pub async fn temp_file_write(data: Vec<u8>, ext: String) -> Result<String, String> {
+    if data.is_empty() {
+        return Err("内容为空，拒绝写入".into());
+    }
+    // 扩展名白名单：只放行 ASCII 字母数字，防路径穿越与文件名注入。
+    if ext.is_empty() || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("非法扩展名：{ext}"));
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!("cc-bridge-clip-{nanos}.{ext}"));
+    tokio::task::spawn_blocking(move || {
+        std::fs::write(&path, &data).map_err(|e| format!("写临时文件失败：{e}"))?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| format!("写临时文件任务异常终止：{e}"))?
+}
+
+/// 删除 `temp_file_write` 落下的中转文件。
+///
+/// 双保险守卫：路径必须在系统临时目录内（canonicalize 后比较，符号链接绕不过）、
+/// 文件名必须以我们的前缀开头——两条件缺一拒绝。删除失败（文件已不在）不报错，
+/// 幂等：调用方只是收尾，不值得为它弹一次错误提示。
+#[tauri::command]
+pub async fn temp_file_remove(path: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let p = std::path::PathBuf::from(&path);
+        // 文件已不存在 → canonicalize 必然失败。「删一个已经不在的文件」按文档
+        // 幂等成功返回，不能拿失败回退的原始路径去比前缀（Windows 下 canonicalize
+        // 结果带 \\?\ 前缀，回退路径没有，必然失配误报「不在临时目录内」）。
+        let canon = match p.canonicalize() {
+            Ok(c) => c,
+            Err(_) => return Ok(()),
+        };
+        let tmp = std::env::temp_dir();
+        let tmp_canon = tmp.canonicalize().unwrap_or(tmp);
+        if !canon.starts_with(&tmp_canon) {
+            return Err("拒绝删除：目标不在临时目录内".into());
+        }
+        let name_ok = canon
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with("cc-bridge-clip-"))
+            .unwrap_or(false);
+        if !name_ok {
+            return Err("拒绝删除：不是 cc-bridge 的临时文件".into());
+        }
+        let _ = std::fs::remove_file(&canon);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("删除临时文件任务异常终止：{e}"))?
+}

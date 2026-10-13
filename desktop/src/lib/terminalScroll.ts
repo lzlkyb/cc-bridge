@@ -109,6 +109,11 @@ export const TUI_EDGE_SEQ = {
 export interface TuiScrollbarOptions {
   /** 激活态变化（进入/退出 TUI 态）时回调，供状态栏徽标使用。 */
   onActiveChange?: (active: boolean) => void;
+  /**
+   * 拖动速度倍率 getter（1 = 1px 物理位移对应 1 行）。
+   * 🔴 getter 而不是值：设置页热切换速度时不必拆掉重挂滚动条（重挂会丢当前位置）。
+   */
+  speed?: () => number;
 }
 
 /**
@@ -214,7 +219,8 @@ export function attachTuiScrollbar(
   };
   const onThumbPointerMove = (e: PointerEvent) => {
     if (!thumb.hasPointerCapture(e.pointerId)) return;
-    const deltaUp = (dragStartY - e.clientY) / cellPx();
+    // 速度倍率：每 1px 物理位移对应 speed 行（1=精细，3/5=长对话省手）。
+    const deltaUp = ((dragStartY - e.clientY) / cellPx()) * (opts.speed?.() ?? 1);
     const plan = planDrag(dragStartPos, deltaUp, TUI_VIRTUAL_TOTAL);
     // re-arm：位置离开边界足够远后重新允许跳转。
     if (pos >= TUI_EDGE_REARM_LINES) topArmed = true;

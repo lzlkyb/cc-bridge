@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
 import { SettingsRow } from "../../ui/SettingsRow";
@@ -6,6 +7,11 @@ import { OptionChip } from "../../ui/OptionChip";
 import { InlineNotice } from "../../ui/notice";
 import { useTerminalPreset, useTerminalInject } from "../../../hooks/useTerminalPreset";
 import { PRESETS, setPreset, setInjectEnabled } from "../../../lib/terminalPreset";
+import {
+  TUI_SCROLL_SPEEDS,
+  loadTuiScrollSpeed,
+  saveTuiScrollSpeed,
+} from "../../../lib/terminalScrollSpeed";
 
 /**
  * 「终端」卡：终端风格预设。
@@ -19,6 +25,7 @@ import { PRESETS, setPreset, setInjectEnabled } from "../../../lib/terminalPrese
 export function TerminalGroup() {
   const preset = useTerminalPreset();
   const inject = useTerminalInject();
+  const [speed, setSpeed] = useState(loadTuiScrollSpeed);
   return (
     <Card id="set-terminal">
       <CardHeader>
@@ -44,6 +51,27 @@ export function TerminalGroup() {
           sub="会话连上后向远端 shell 注入一段轻量钩子，读取当前目录与 git 分支显示在状态栏。只读取、不改提示符、不写任何文件；远端非 bash/zsh 或注入失败时自动降级。关掉后状态栏只显示本地可算的信息。"
           checked={inject}
           onChange={setInjectEnabled}
+        />
+        <SettingsRow
+          label="TUI 滚动速度"
+          sub="「TUI 滚动」状态下拖动滚动条的速度：拖动一个字高的距离对应几行内容。1 = 精细跟手；对话很长时选 3 或 5 更省手。改动即时生效，正在拖动的滚动条下一次移动就用新值。"
+          layout="stack"
+          control={
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {TUI_SCROLL_SPEEDS.map((v) => (
+                <OptionChip
+                  key={v}
+                  on={speed === v}
+                  onClick={() => {
+                    saveTuiScrollSpeed(v);
+                    setSpeed(v);
+                  }}
+                >
+                  {v} 行
+                </OptionChip>
+              ))}
+            </div>
+          }
         />
         <InlineNotice variant="info" className="mt-3">
           进入 Claude Code 等全屏程序时，滚动条会自动切换为「TUI 滚动」：拖动它直接滚动程序里的内容（如对话），拖到顶/底跳到最早/最新。若你更想用终端原生回滚看完整历史，可在

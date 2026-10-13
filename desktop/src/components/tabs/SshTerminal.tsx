@@ -13,6 +13,10 @@ import { attachTuiScrollbar, attachShiftWheel } from "../../lib/terminalScroll";
 import { navJump } from "../../lib/terminalCommandNav";
 import { registerPathLinkProvider } from "../../lib/terminalPathLink";
 import { useTerminalTabMeta, type TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
+import { useClipboardImagePaste } from "../../hooks/useClipboardImagePaste";
+import { forceRepaint } from "../../lib/terminalRepaint";
+import { loadTuiScrollSpeed } from "../../lib/terminalScrollSpeed";
+import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { useThemeMode } from "../../hooks/useThemeMode";
 import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
@@ -102,6 +106,15 @@ export function SshTerminal({
   const font = useTerminalFontSize({ termRef, containerRef, doFit });
   // 远端状态探测：注入钩子 + 解析 OSC。钩子关闭 / 不支持时自动降级，终端本身不受影响。
   const { status, state } = useTerminalOsc({ sessionId, enabled: inject, closed, termRef });
+  // closed / cwd 用 ref 承接：window 键盘监听只挂一次，闭包要总读到最新值。
+  const closedRef = useRef(closed);
+  closedRef.current = closed;
+  const cwdRef = useRef(status.cwd);
+  cwdRef.current = status.cwd;
+  // 剪贴板图片 → SFTP 上传远端 → 路径插入输入行（Ctrl+Shift+V / 工具栏按钮）。
+  const { busy: imgBusy, pasteImage } = useClipboardImagePaste({ sessionId, connId: conn.id, closed });
+  const pasteImageRef = useRef(pasteImage);
+  pasteImageRef.current = pasteImage;
 
   // 把远端 cwd 上报给父级：拖拽上传要拿它当目标目录，有了它就不用每次拖文件都问一遍。
   // 用 ref 承接回调——调用方传的是内联箭头函数，进依赖会让这个 effect 每次渲染都重跑。
@@ -128,7 +141,11 @@ export function SshTerminal({
     attachShiftWheel(term);
     // 输出里的远端绝对路径 → 可点击（注册在 web-links 之后，URL 仍归它）。
     const offLinks = registerPathLinkProvider(term, (p) => onOpenFilePathRef.current(p));
-    const offTui = attachTuiScrollbar(term, container, { onActiveChange: setTuiScrollActive });
+    const offTui = attachTuiScrollbar(term, container, {
+      onActiveChange: setTuiScrollActive,
+      // getter 而不是值：设置页改速度热生效，不必重挂（重挂会丢拖动位置）。
+      speed: loadTuiScrollSpeed,
+    });
     return () => {
       offLinks();
       offTui();
@@ -136,27 +153,52 @@ export function SshTerminal({
     // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），只需挂一次。
   }, []);
 
-  // 命令导航快捷键：Ctrl+Shift+↑/↓ 跳到上一条/下一条命令的提示符行。
-  // 🔴 不能走 attachTerminalKeymap——xterm 的 custom key handler 是单槽位（Terminal.ts:914
-  // 直接赋值），再挂会顶掉 session hook 装的那份。window capture 阶段先于 xterm 的
-  // textarea 处理，preventDefault + stopPropagation 就能整条拦下，不往远端发 CSI。
-  // focusedRef 守卫：只在终端聚焦时拦，搜索框/输入框里的这两个组合不受影响。
+  // 终端聚焦时的 window capture 快捷键（🔴 不能走 attachTerminalKeymap——xterm 的
+  // custom key handler 是单槽位，session hook 已占用；capture 阶段先于 xterm 的
+  // textarea 处理，preventDefault + stopPropagation 就能整条拦下）。
   useEffect(() => {
+    const send = (data: string) => {
+      if (closedRef.current) return;
+      void invoke("ssh_input", { sessionId, data });
+    };
     const onKey = (e: KeyboardEvent) => {
-      if (!focusedRef.current) return;
-      if (!(e.ctrlKey && e.shiftKey) || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const term = termRef.current;
-      if (!term) return;
-      const dir = e.key === "ArrowUp" ? -1 : 1;
-      if (!navJump(term, dir)) {
-        toast(dir === -1 ? "没有更早的命令了" : "已经是最新的命令了", "info");
+      if (!focusedRef.current || e.isComposing) return;
+      // 命令导航：Ctrl+Shift+↑/↓ 跳到上一条/下一条命令的提示符行。
+      if (e.ctrlKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        e.preventDefault();
+        e.stopPropagation();
+        const term = termRef.current;
+        if (!term) return;
+        const dir = e.key === "ArrowUp" ? -1 : 1;
+        if (!navJump(term, dir)) {
+          toast(dir === -1 ? "没有更早的命令了" : "已经是最新的命令了", "info");
+        }
+        return;
+      }
+      // Shift+Enter → LF / Alt+Enter → ESC+CR：多行换行。Claude Code 把 LF 当换行、
+      // \r 当提交（shell readline 对 LF 同样 accept-line，与 Ctrl+J 等价，零副作用）。
+      // 🔴 必须绕开 useTerminalPaste——preparePaste 会把 \n 规范成 \r，语义就错了。
+      if (e.key === "Enter" && !e.ctrlKey) {
+        const seq = e.shiftKey && !e.altKey ? "\n" : e.altKey && !e.shiftKey ? "\x1b\r" : null;
+        if (seq !== null) {
+          e.preventDefault();
+          e.stopPropagation();
+          send(seq);
+          return;
+        }
+      }
+      // Ctrl+Shift+V → 剪贴板图片上传远端。必须在 xterm keymap 的 Ctrl+V 分支
+      // （ctrl+key 是 v/V 都命中）之前拦下，否则会当成文本粘贴。
+      if (e.ctrlKey && e.shiftKey && (e.key === "V" || e.key === "v")) {
+        e.preventDefault();
+        e.stopPropagation();
+        void pasteImageRef.current(cwdRef.current);
+        return;
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, []);
+  }, [sessionId]);
 
   // 标签 meta 上报（标题/进度/铃）。后台标签收到 BEL 才 toast：用户正盯着这个终端时
   // 响铃不需要再弹一条「有铃声」，那反而是打扰。onMeta 由 hook 用 ref 承接，闭包读到最新 visible。
@@ -168,6 +210,9 @@ export function SshTerminal({
         toast(`${conn.name || conn.host}：终端有铃声（可能需要关注）`, "info");
       onMeta(p);
     },
+    // OSC 9 通知带正文，是远端程序的显式提醒（如 Claude 的「任务完成/需要确认」）：
+    // 无论标签是否活跃都弹——用户盯着看时多一条 toast 无伤大雅，切走了错过才是损失。
+    onNotify: (text) => toast(`${conn.name || conn.host}：${text}`, "info"),
   });
 
   // 右键：阻掉默认菜单，改弹自己的复制/粘贴/全选。用视口坐标定位，
@@ -198,6 +243,9 @@ export function SshTerminal({
         onCopy={select.copySelection}
         onCopyScreen={copyScreen}
         onPaste={paste}
+        onPasteImage={() => void pasteImage(cwdRef.current)}
+        imgBusy={imgBusy}
+        onRepaint={() => forceRepaint(termRef.current)}
         onSearch={search.openSearch}
         onToggleSelectMode={select.toggleSelectMode}
         onClear={() => termRef.current?.clear()}

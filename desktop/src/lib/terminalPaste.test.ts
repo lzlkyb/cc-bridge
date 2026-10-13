@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizePaste, preparePaste, shouldConfirmPaste } from "./terminalPaste";
+import { normalizePaste, preparePaste, shouldConfirmPaste, trimCopyText, quoteShellArgIfNeeded } from "./terminalPaste";
 
 const START = "\x1b[200~";
 const END = "\x1b[201~";
@@ -74,5 +74,39 @@ describe("shouldConfirmPaste（两段式粘贴确认判定）", () => {
   it("单行内容永不确认", () => {
     expect(shouldConfirmPaste("rm -rf /", false)).toBe(false);
     expect(shouldConfirmPaste("", false)).toBe(false);
+  });
+});
+
+describe("trimCopyText（复制去尾随空白）", () => {
+  it("逐行剥行尾空格/制表符，行内空白不动", () => {
+    expect(trimCopyText("foo  \nbar\t\n  baz qux ")).toBe("foo\nbar\n  baz qux");
+  });
+  it("🔴 Windows 下 xterm 用 \\r\\n 连行（SelectionService.ts:259）：\\r 前的行尾空白也要剥", () => {
+    expect(trimCopyText("foo  \r\nbar\t\r\nbaz")).toBe("foo\r\nbar\r\nbaz");
+  });
+  it("对齐用的列内空白保留（ASCII 表格不毁）", () => {
+    const table = "| a | b |\n| 1 | 2 |";
+    expect(trimCopyText(table)).toBe(table);
+  });
+  it("空串与无空白串原样返回", () => {
+    expect(trimCopyText("")).toBe("");
+    expect(trimCopyText("plain")).toBe("plain");
+    expect(trimCopyText("\n\n")).toBe("\n\n"); // 空行没有行尾空白可剥
+  });
+});
+
+describe("quoteShellArgIfNeeded（路径按需加 POSIX 引号）", () => {
+  it("安全字符集（字母数字 + _@%+=:,./-）不加引号", () => {
+    expect(quoteShellArgIfNeeded("/tmp/clipboard-20261013-083500123.png")).toBe(
+      "/tmp/clipboard-20261013-083500123.png",
+    );
+  });
+  it("含空格/括号/$ 等字符的路径加单引号", () => {
+    expect(quoteShellArgIfNeeded("/home/u/my dir/x.png")).toBe("'/home/u/my dir/x.png'");
+    expect(quoteShellArgIfNeeded("/tmp/a(b).png")).toBe("'/tmp/a(b).png'");
+    expect(quoteShellArgIfNeeded("/tmp/a$b.png")).toBe("'/tmp/a$b.png'");
+  });
+  it("已含单引号的路径按 '\\'' 拼接", () => {
+    expect(quoteShellArgIfNeeded("/tmp/it's.png")).toBe("'/tmp/it'\\''s.png'");
   });
 });

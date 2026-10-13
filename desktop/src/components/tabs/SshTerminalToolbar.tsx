@@ -20,6 +20,12 @@ interface Props {
   onCopy: () => void;
   onCopyScreen: () => void;
   onPaste: () => void;
+  /** 剪贴板图片上传远端（无图/断开时由 hook 侧 toast 说明）。 */
+  onPasteImage: () => void;
+  /** 图片上传进行中：按钮禁用防连按。 */
+  imgBusy: boolean;
+  /** 强制全量重绘（Claude Code 差分渲染残影的社区共识自救）。 */
+  onRepaint: () => void;
   onSearch: () => void;
   onToggleSelectMode: () => void;
   onClear: () => void;
@@ -49,6 +55,9 @@ export function SshTerminalToolbar({
   onCopy,
   onCopyScreen,
   onPaste,
+  onPasteImage,
+  imgBusy,
+  onRepaint,
   onSearch,
   onToggleSelectMode,
   onClear,
@@ -115,6 +124,15 @@ export function SshTerminalToolbar({
         >
           <Icon name="clipboard" size={14} />
         </ButtonIcon>
+        <ButtonIcon
+          title={
+            closed ? "连接已断开，无法发送图片" : "粘贴剪贴板图片到远端（Ctrl+Shift+V）"
+          }
+          disabled={closed || imgBusy}
+          onClick={onPasteImage}
+        >
+          <Icon name="image" size={14} />
+        </ButtonIcon>
         <ButtonIcon title="搜索（Ctrl+Shift+F）" onClick={onSearch}>
           <Icon name="search" size={14} />
         </ButtonIcon>
@@ -131,6 +149,7 @@ export function SshTerminalToolbar({
           onCopyScreen={onCopyScreen}
           onToggleSelectMode={onToggleSelectMode}
           onClear={onClear}
+          onRepaint={onRepaint}
         />
       </div>
     </div>
@@ -198,17 +217,19 @@ function PresetSwatch({ preset }: { preset: TerminalPreset }) {
   );
 }
 
-/** 「更多」下拉：不常用的三个操作，菜单项带文字。 */
+/** 「更多」下拉：不常用的四个操作，菜单项带文字。 */
 function MoreMenu({
   selectMode,
   onCopyScreen,
   onToggleSelectMode,
   onClear,
+  onRepaint,
 }: {
   selectMode: boolean;
   onCopyScreen: () => void;
   onToggleSelectMode: () => void;
   onClear: () => void;
+  onRepaint: () => void;
 }) {
   return (
     <Menu
@@ -229,6 +250,12 @@ function MoreMenu({
             onClick={() => { onToggleSelectMode(); close(); }}
           />
           <MenuItem label="清屏" icon="refresh" onClick={() => { onClear(); close(); }} />
+          <MenuItem
+            label="强制重绘"
+            hint="画面残影/花屏时用"
+            icon="paintbrush"
+            onClick={() => { onRepaint(); close(); }}
+          />
         </>
       )}
     </Menu>

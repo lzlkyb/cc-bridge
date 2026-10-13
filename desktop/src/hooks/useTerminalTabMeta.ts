@@ -21,6 +21,12 @@ export interface TermTabMetaPatch {
 interface Args {
   termRef: RefObject<Terminal | null>;
   onMeta: (patch: TermTabMetaPatch) => void;
+  /**
+   * OSC 9 通知（iTerm2 协议）：远端程序主动发的通知正文。
+   * Claude Code 的 preferredNotifChannel=iterm2 走这条；与 BEL 互补——BEL 只知道
+   * 「响铃了」，这条带正文。弹不弹 toast 由组件决定（本 hook 只转发）。
+   */
+  onNotify?: (text: string) => void;
   /** 会话已断开：不再挂事件（重连由父组件换 sessionId 重挂组件承接）。 */
   closed: boolean;
 }
@@ -38,9 +44,11 @@ interface Args {
  * WHY onMeta 用 ref 承接：调用方传内联箭头函数，进依赖会让本 effect 每次
  * 渲染重跑（反复 loadAddon / 重挂监听）。
  */
-export function useTerminalTabMeta({ termRef, onMeta, closed }: Args) {
+export function useTerminalTabMeta({ termRef, onMeta, onNotify, closed }: Args) {
   const onMetaRef = useRef(onMeta);
   onMetaRef.current = onMeta;
+  const onNotifyRef = useRef(onNotify);
+  onNotifyRef.current = onNotify;
 
   useEffect(() => {
     const term = termRef.current;
@@ -57,10 +65,20 @@ export function useTerminalTabMeta({ termRef, onMeta, closed }: Args) {
     const offBell = term.onBell(() => {
       onMetaRef.current({ bellAt: Date.now() });
     });
+    // 🔴 OSC 9 命名空间与 ConEmu 进度（9;4）共享：payload 以 "4;" 开头的是进度事件，
+    // 必须放行（返回 false 让 xterm 继续问下一个 handler，即 ProgressAddon），
+    // 否则标签进度条会被这里整条截胡。
+    const offNotify = term.parser.registerOscHandler(9, (data) => {
+      if (data.startsWith("4;")) return false;
+      // 正文超长截断：toast 不是阅读区，200 字符足够传达「什么结束了」。
+      onNotifyRef.current?.(data.slice(0, 200));
+      return true;
+    });
     return () => {
       offTitle.dispose();
       offProgress.dispose();
       offBell.dispose();
+      offNotify.dispose();
       progressAddon.dispose();
     };
     // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），termRef 必有值。

@@ -59,3 +59,32 @@ export function shouldConfirmPaste(text: string, bracketed: boolean): boolean {
   if (bracketed) return false;
   return /\r|\n/.test(text);
 }
+
+/**
+ * 复制前逐行剥掉**行尾**空白（空格/制表符）。
+ *
+ * 依据：Claude Code 用户高频抱怨复制内容带尾随空格与缩进（anthropics/claude-code#18170），
+ * 粘进编辑器/文档很脏。行**内部**的空白（对齐列、ASCII 表格）一律不动，
+ * 只处理「光标到行尾之间」的部分——xterm 选区按 cell 网格取字，行尾空白来自
+ * 未写字符的底色 cell，几乎从来不是内容本身。
+ */
+export function trimCopyText(text: string): string {
+  return text
+    .split("\n")
+    .map((line) =>
+      // (?=\r?$)：xterm 在 Windows 上用 \r\n 连行（SelectionService.ts:259），
+      // 行尾空白在 \r 之前——不用前瞻就永远剥不到（本机实测假绿过）。
+      line.replace(/[ \t]+(?=\r?$)/, ""),
+    )
+    .join("\n");
+}
+
+/**
+ * 路径按需加 POSIX 单引号：插入终端输入行的远端路径若含空格/括号/`$` 等，
+ * 会被 shell 切词或展开。安全字符集 = bash 手册里「无需引用」的集合
+ * （字母数字 + `_@%+=:,./-`）；已含单引号的用 `'\''` 拼接。
+ */
+export function quoteShellArgIfNeeded(path: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(path)) return path;
+  return `'${path.replace(/'/g, `'\\''`)}'`;
+}
