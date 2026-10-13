@@ -237,9 +237,6 @@ export function SshTerminal({
         onClear={() => termRef.current?.clear()}
         onToggleFullscreen={onToggleFullscreen}
       />
-      {wheel.guide === "open" && !closed && (
-        <TuiGuideBar flips={wheel.flips} onSend={wheel.openSendConfirm} onDismiss={wheel.dismissForever} onCollapse={wheel.collapseGuide} />
-      )}
       <TerminalStatusBar
         sessionId={sessionId}
         conn={conn}
@@ -270,6 +267,13 @@ export function SshTerminal({
       >
         <div ref={containerRef} className="h-full w-full" />
         <SshTerminalFind search={search} />
+        {/* 引导条是覆盖层不是流内元素：占布局高度会触发 fit→rows 变化→远端 TUI 重排
+            （与 SshTerminalFind.tsx 头注是同一坑）——教用户别毁屏幕的提示自己先别毁屏幕。 */}
+        {wheel.guide === "open" && !closed && (
+          <div className="absolute inset-x-0 top-0 z-20 p-2">
+            <TuiGuideBar flips={wheel.flips} onSend={wheel.openSendConfirm} onDismiss={wheel.dismissForever} onCollapse={wheel.collapseGuide} />
+          </div>
+        )}
         {wheel.popoverOpen && !closed && (
           <WheelOwnerPopover sessionId={sessionId} initialStep={wheel.popStep} onSent={wheel.markSent} onClose={wheel.closePopover} />
         )}

@@ -4,6 +4,7 @@ import { useTerminalPreset } from "../../hooks/useTerminalPreset";
 import { setPreset, PRESETS } from "../../lib/terminalPreset";
 import { TERMINAL_PALETTES, type TerminalPreset } from "../../lib/terminalTheme";
 import type { SshConnection } from "../../lib/types";
+import { MoreMenu, ButtonIcon } from "./SshTerminalMoreMenu";
 
 interface Props {
   conn: SshConnection;
@@ -222,75 +223,4 @@ function PresetSwatch({ preset }: { preset: TerminalPreset }) {
   );
 }
 
-/** 「更多」下拉：不常用的四个操作，菜单项带文字。 */
-function MoreMenu({
-  selectMode,
-  onCopyScreen,
-  onToggleSelectMode,
-  onClear,
-  onRepaint,
-}: {
-  selectMode: boolean;
-  onCopyScreen: () => void;
-  onToggleSelectMode: () => void;
-  onClear: () => void;
-  onRepaint: () => void;
-}) {
-  return (
-    <Menu
-      trigger={(open, toggle) => (
-        <ButtonIcon title="更多" highlight={open} onClick={toggle}>
-          <Icon name="more" size={14} />
-        </ButtonIcon>
-      )}
-    >
-      {(close) => (
-        <>
-          <MenuItem label="复制整屏" icon="monitor" onClick={() => { onCopyScreen(); close(); }} />
-          <MenuItem
-            label={selectMode ? "退出选择模式" : "选择模式"}
-            hint={selectMode ? "恢复鼠标报告" : "拖选复制"}
-            icon="sliders"
-            active={selectMode}
-            onClick={() => { onToggleSelectMode(); close(); }}
-          />
-          <MenuItem label="清屏" icon="refresh" onClick={() => { onClear(); close(); }} />
-          <MenuItem
-            label="强制重绘"
-            hint="画面残影/花屏时用"
-            icon="paintbrush"
-            onClick={() => { onRepaint(); close(); }}
-          />
-        </>
-      )}
-    </Menu>
-  );
-}
-
-function ButtonIcon({
-  title,
-  onClick,
-  highlight,
-  disabled,
-  children,
-}: {
-  title: string;
-  onClick: () => void;
-  highlight?: boolean;
-  disabled?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      disabled={disabled}
-      onClick={onClick}
-      className={`flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
-        highlight ? "bg-primary/15 text-primary hover:bg-primary/20" : ""
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
+/** 「更多」下拉与 ButtonIcon 已迁至 SshTerminalMoreMenu.tsx（含快捷键面板）。 */

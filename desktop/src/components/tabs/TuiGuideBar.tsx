@@ -16,9 +16,10 @@ interface Props {
 }
 
 /**
- * 滚轮归属翻转引导条（设计稿屏4）：本会话归属态切换 ≥2 次时出现在工具栏下方。
- * 复用 InlineNotice 的 warning 语感（warning 色调 + 倒计时环），但行为是
- * 「10s 后收起为小徽章」而非 ActionCard 的「收起为细条常驻」，故单独成组件。
+ * 滚轮归属翻转引导条：本会话「含 dead 参与」的归属切换 ≥2 次时出现。
+ * 由父级渲染为画布顶部**覆盖层**（absolute，不占布局高度——占高度会触发
+ * fit→远端 TUI 重排，见 SshTerminal.tsx），10s 后收起为状态栏「!」小徽章。
+ * 文案统一「本地 ←→ 应用」一对轴（critique P2-1：勿再引入「内/外」等第三套词汇）。
  */
 export function TuiGuideBar({ flips, onSend, onDismiss, onCollapse }: Props) {
   const [remain, setRemain] = useState(GUIDE_VISIBLE_SEC);
@@ -41,7 +42,7 @@ export function TuiGuideBar({ flips, onSend, onDismiss, onCollapse }: Props) {
   return (
     <div
       role="status"
-      className="mx-2 mt-2 flex items-center gap-2.5 rounded-[calc(var(--radius)+2px)] border border-warning/35 bg-warning/[0.08] p-2.5 text-warning-foreground"
+      className="animate-fade-in pointer-events-auto flex items-center gap-2.5 rounded-[calc(var(--radius)+2px)] border border-warning/35 bg-warning/[0.08] p-2.5 text-warning-foreground"
     >
       <span
         aria-hidden
@@ -50,9 +51,9 @@ export function TuiGuideBar({ flips, onSend, onDismiss, onCollapse }: Props) {
         !
       </span>
       <div className="min-w-0 flex-1">
-        <p className="text-[12.5px] font-semibold">滚轮归属已切换 {flips} 次，忽内忽外多半源于此</p>
+        <p className="text-[12.5px] font-semibold">滚轮 {flips} 次落到了两边都不接的去处</p>
         <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">
-          Claude Code 在 fullscreen 与经典渲染器间切换时，滚轮的去处会跟着变。运行一次{" "}
+          Claude Code 在 fullscreen 与经典渲染器间切换时，滚轮的去处会跟着变——忽而在<b>本地</b>、忽而在<b>应用</b>，偶尔落在两边都不接的去处。运行一次{" "}
           <b>/tui fullscreen</b> 锁定后即恒定转发；也可按 <b>Shift</b>+滚轮随时强制滚本地历史。
         </p>
       </div>

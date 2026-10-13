@@ -47,7 +47,10 @@ const SEG_BASE: CSSProperties = {
 };
 
 /* ============================== 靖蓝 Indigo ============================== */
-/** 与连接页同语言：indigo 主色 + cyan 辅助，玻璃渐变底。默认。 */
+/** 与连接页同语言：indigo 主色 + cyan 辅助，玻璃渐变底。默认。
+ * 🔴 tui（信息段）任何皮肤都不得用琥珀系——那是 warn/dead 的专属语义色，
+ * 「TUI 滚动」(正常) 与「⚠ 滚轮不可用」(故障) 撞色会废掉状态栏的分诊通道
+ *（2026-10-13 critique P1-2）。各皮肤 tui 统一走各自的冷色系信息色。 */
 const INDIGO: Record<Theme, StatusbarSkin> = {
   dark: {
     bar: {
@@ -66,7 +69,7 @@ const INDIGO: Record<Theme, StatusbarSkin> = {
       exit: "#22c55e",
       exitBad: "#ef4444",
       muted: "#8a90a2",
-      tui: "#fbbf24",
+      tui: "#5eead4",
       warn: "#f2c268",
     },
     text: "",
@@ -88,7 +91,7 @@ const INDIGO: Record<Theme, StatusbarSkin> = {
       exit: "#15803c",
       exitBad: "#dc2626",
       muted: "#6b7280",
-      tui: "#b45309",
+      tui: "#0d9488",
       warn: "#a3620a",
     },
     text: "",
@@ -112,7 +115,7 @@ const MONO: Record<Theme, StatusbarSkin> = {
       exit: "#22c55e",
       exitBad: "#ef4444",
       muted: "#7a8090",
-      tui: "#d97706",
+      tui: "#5eead4",
       warn: "#e0a94f",
     },
     text: "",
@@ -131,7 +134,7 @@ const MONO: Record<Theme, StatusbarSkin> = {
       exit: "#15803c",
       exitBad: "#dc2626",
       muted: "#6b7280",
-      tui: "#b45309",
+      tui: "#0d9488",
       warn: "#a3620a",
     },
     text: "",
@@ -160,7 +163,7 @@ const CLASSIC: Record<Theme, StatusbarSkin> = {
       exit: "#22c55e",
       exitBad: "#ff5f56",
       muted: "#4a8a5c",
-      tui: "#fbbf24",
+      tui: "#7dfce0",
       warn: "#f2c268",
     },
     text: "",
@@ -179,7 +182,7 @@ const CLASSIC: Record<Theme, StatusbarSkin> = {
       exit: "#15803c",
       exitBad: "#b91c1c",
       muted: "#6b6255",
-      tui: "#b45309",
+      tui: "#0f766e",
       warn: "#8a5a0c",
     },
     text: "",
@@ -203,7 +206,7 @@ const CONTRAST: Record<Theme, StatusbarSkin> = {
       exit: "#86efac",
       exitBad: "#fca5a5",
       muted: "#9ca3af",
-      tui: "#fcd34d",
+      tui: "#5eead4",
       warn: "#f0b429",
     },
     text: "#0b0d11",
@@ -222,7 +225,7 @@ const CONTRAST: Record<Theme, StatusbarSkin> = {
       exit: "#15803c",
       exitBad: "#b91c1c",
       muted: "#4b5563",
-      tui: "#d97706",
+      tui: "#0f766e",
       warn: "#b45309",
     },
     text: "#ffffff",

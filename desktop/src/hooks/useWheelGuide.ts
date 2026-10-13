@@ -62,11 +62,16 @@ export function useWheelGuide({ sessionId, closed, termRef, containerRef }: Para
       speed: loadTuiScrollSpeed,
       onOwnerChange: (next) => {
         setOwner(next);
-        if (next === prevOwnerRef.current) return; // 挂载首次回值若与缺省相同，不计翻转
+        const prev = prevOwnerRef.current;
+        if (next === prev) return; // 挂载首次回值若与缺省相同，不计翻转
         prevOwnerRef.current = next;
+        // 触发只认「含 dead 参与」的翻转：forward↔forwardMain 只是滚轮在两个都
+        // 能用的去处之间切换（如在 TUI 里开 less），/tui fullscreen 对它不对症——
+        // 对那种翻转弹「一键根治」是教用户拿万能锤敲所有钉子（critique P1-1）。
+        if (next !== "dead" && prev !== "dead") return;
         flipsRef.current += 1;
         setFlips(flipsRef.current);
-        // 归属切换 ≥ 阈值 → 弹引导条。触发瞬间再查 dismissed/sent（用户可能刚点过）。
+        // 翻转 ≥ 阈值 → 弹引导条。触发瞬间再查 dismissed/sent（用户可能刚点过）。
         if (
           flipsRef.current >= TUI_GUIDE_FLIP_THRESHOLD &&
           !closedRef.current &&

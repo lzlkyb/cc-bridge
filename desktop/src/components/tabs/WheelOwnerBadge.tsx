@@ -38,7 +38,7 @@ export function WheelOwnerBadge({
         <Seg
           skin={skin}
           kind="tui"
-          title="TUI 滚动已启用：拖动右侧滚动条即可滚动当前全屏程序（如 Claude Code）的内容"
+          title="滚轮→应用：拖动右侧滚动条即可滚动当前全屏程序（如 Claude Code）的内容；Shift+滚轮随时强制滚本地历史"
         >
           TUI 滚动
         </Seg>

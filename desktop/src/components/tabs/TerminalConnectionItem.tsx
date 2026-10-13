@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Icon } from "../ui/icon";
 import type { SshConnection } from "../../lib/types";
 
@@ -67,6 +68,11 @@ export function ConnectionListItem({
   onConfirmDelete,
   onCancelDelete,
 }: ConnectionListItemProps) {
+  // 「更多」菜单（另开终端/编辑/删除）的开合。低频操作折进菜单：
+  // 常驻只留「连接/断开」+「文件」两个高频键（critique P1-3：20 连接 × 5 常驻键
+  // 的扫描噪声，以及删除与编辑同权重并排的误触面）。
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = () => setMenuOpen(false);
   return (
     <div
       className={`rounded-lg border p-2.5 transition-colors ${
@@ -103,37 +109,23 @@ export function ConnectionListItem({
         {conn.authType === "key" ? "🔑 " : ""}
         {conn.username}@{conn.host}:{conn.port}
       </div>
-      {/* 操作行：288px 侧栏下可用宽度只有 250px，五个按钮按 px-2/gap-1 排是 256px，
-          放不下会把 CJK 文本压成竖排（断/开）。px-1.5 + gap-0.5 收进 206px，
-          whitespace-nowrap 保证任何字体度量下都不竖排；flex-wrap 是极端窄度的兜底
-          （宁可整颗按钮换行，不许按钮内文字竖排）。 */}
-      <div className="mt-2 flex flex-wrap items-center gap-0.5 gap-y-1 pl-4">
+      {/* 操作行（critique P1-3 渐进披露）：常驻只留「连接/断开」+「文件」。
+          原五键版需 px-1.5/gap-0.5 才塞进 250px；减到三键后恢复正常命中区。 */}
+      <div className="mt-2 flex flex-wrap items-center gap-1 pl-4">
         {session && !session.closedReason ? (
-          <>
-            <button
-              type="button"
-              onClick={() => onDisconnect(session.sessionId)}
-              className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-destructive hover:bg-destructive/10"
-            >
-              <Icon name="power" size={12} /> 断开
-            </button>
-            {/* 另开一个。以前同一台机器只能开一个终端，想一边 tail -f 一边敲命令做不到。
-                只在已连接时出现：没连的时候旁边就是「连接」，再放一个「＋」只会让人猜它们的区别。 */}
-            <button
-              type="button"
-              title="对这台机器再开一个终端"
-              onClick={() => onNewTerminal(conn)}
-              className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <Icon name="plus" size={12} />
-            </button>
-          </>
+          <button
+            type="button"
+            onClick={() => onDisconnect(session.sessionId)}
+            className="flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+          >
+            <Icon name="power" size={12} /> 断开
+          </button>
         ) : (
           <button
             type="button"
             onClick={() => onConnect(conn)}
             disabled={connecting}
-            className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {connecting ? (
               <>
@@ -153,42 +145,79 @@ export function ConnectionListItem({
             session && !session.closedReason ? "管理该连接的远程文件" : "请先连接后再管理文件"
           }
           onClick={() => session && !session.closedReason && onOpenFiles(conn)}
-          className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Icon name="folder" size={12} /> 文件
         </button>
-        <button
-          type="button"
-          onClick={() => onEdit(conn)}
-          className="flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted"
-        >
-          <Icon name="settings" size={12} /> 编辑
-        </button>
         {confirmingDelete ? (
-          <span className="ml-auto flex items-center gap-0.5">
+          <span className="ml-auto flex items-center gap-1">
             <button
               type="button"
               onClick={onConfirmDelete}
-              className="whitespace-nowrap rounded-md bg-destructive px-1.5 py-1 text-xs text-white"
+              className="whitespace-nowrap rounded-md bg-destructive px-2 py-1 text-xs text-white"
             >
-              确认
+              确认删除
             </button>
             <button
               type="button"
               onClick={onCancelDelete}
-              className="whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted"
+              className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted"
             >
               取消
             </button>
           </span>
         ) : (
-          <button
-            type="button"
-            onClick={onDeleteRequest}
-            className="ml-auto whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-destructive"
-          >
-            <Icon name="trash" size={12} />
-          </button>
+          <span className="relative ml-auto">
+            <button
+              type="button"
+              aria-label="更多操作"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              title="另开终端 / 编辑 / 删除"
+              onClick={() => setMenuOpen((o) => !o)}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <Icon name="more" size={13} />
+            </button>
+            {menuOpen && (
+              <>
+                {/* 透明遮罩：点菜单外任意处收起（不挡滚动，只挡一次点击） */}
+                <div className="fixed inset-0 z-30" aria-hidden onClick={closeMenu} />
+                <div
+                  role="menu"
+                  aria-label="连接更多操作"
+                  className="animate-scale-in absolute bottom-full right-0 z-40 mb-1 w-36 rounded-lg border bg-popover p-1 shadow-pop"
+                >
+                  {session && !session.closedReason && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => { closeMenu(); onNewTerminal(conn); }}
+                      className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-foreground transition-colors hover:bg-muted"
+                    >
+                      <Icon name="plus" size={12} /> 另开终端
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { closeMenu(); onEdit(conn); }}
+                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-foreground transition-colors hover:bg-muted"
+                  >
+                    <Icon name="settings" size={12} /> 编辑连接
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => { closeMenu(); onDeleteRequest(); }}
+                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+                  >
+                    <Icon name="trash" size={12} /> 删除连接
+                  </button>
+                </div>
+              </>
+            )}
+          </span>
         )}
       </div>
     </div>
