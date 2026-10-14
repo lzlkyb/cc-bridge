@@ -21,7 +21,9 @@ const TOOLS: McpClientTool[] = ["claude-code", "workbuddy", "codex", "generic"];
 /**
  * P2-3 接入向导多工具化：卡头四工具分段选择器 + 非 Claude 工具的配置片段渲染。
  *
- * - 工具选择态是 UI 本地 state（不落盘——scope 影响托盘命令，工具不影响）；
+ * - 工具选择态**落盘**（`config.connect_client`）：托盘「复制命令/复制 IP」与连接页
+ *   IpChangedBanner 都要按同一个工具出内容，选择必须跨重启保持——早先只当纯 UI state，
+ *   于是托盘永远按 Claude Code 出命令，选了 Codex 的用户会拿到一条用不上的 CLI 命令。
  * - claude-code 沿用现有向导内容（scope 切换 / Global/ProjectSteps / Token / 权限），
  *   由 children 传入，仅 claude-code 时渲染；
  * - WorkBuddy / Codex 走 ManualSteps（JSON/TOML 片段）；generic 走 GenericSteps
@@ -34,6 +36,8 @@ export function ToolGuide({
   token,
   transport,
   tlsEnabled = false,
+  defaultTool = "claude-code",
+  onToolChange,
   children,
 }: {
   host: string;
@@ -42,10 +46,14 @@ export function ToolGuide({
   transport: "http" | "sse";
   /** HTTPS 远程访问开关（父层读 get_tls_status.enabled 后传入布尔，本组件不重复查询）。 */
   tlsEnabled?: boolean;
+  /** 初始选中的工具（来自 `config.connect_client`，刷新后保持上次选择）。 */
+  defaultTool?: McpClientTool;
+  /** 切换工具时上报——父层落盘 `connect_client`，托盘/横幅的命令形态随之改变。 */
+  onToolChange?: (tool: McpClientTool) => void;
   /** claude-code 现有向导内容（scope / steps / token / perm），仅该工具渲染。 */
   children: ReactNode;
 }) {
-  const [tool, setTool] = useState<McpClientTool>("claude-code");
+  const [tool, setTool] = useState<McpClientTool>(defaultTool);
   const input: SnippetInput = { host, port, token, transport, tls: tlsEnabled };
   /** 当前工具的自签兼容性条目（徽章行 + 信任步骤的唯一数据源）。 */
   const sel = CLIENT_SELFSIGNED[tool];
@@ -65,7 +73,11 @@ export function ToolGuide({
               <button
                 key={t}
                 type="button"
-                onClick={() => setTool(t)}
+                onClick={() => {
+                  setTool(t);
+                  // 上报给父层落盘（connect_client）——托盘与 IpChangedBanner 依赖它。
+                  onToolChange?.(t);
+                }}
                 aria-pressed={tool === t}
                 className={`whitespace-nowrap rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
                   tool === t

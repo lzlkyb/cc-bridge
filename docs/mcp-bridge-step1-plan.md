@@ -408,9 +408,18 @@ stdin/stdout 是**单一流**。第一步用 `Mutex<Connection>` 串行请求-�
 | Claude Code | `~/.claude.json` 的 `mcpServers`，及 `projects.*.mcpServers` | ✅ 3 个 |
 | Claude Desktop | `%APPDATA%/Claude/claude_desktop_config.json` | 未安装 |
 | Cursor | `~/.cursor/mcp.json` | 未安装 |
+| Codex | `~/.codex/config.toml` 的 `[mcp_servers.*]`（**TOML**） | ✅ 1 个 |
+| WorkBuddy | `~/.workbuddy/mcp.json` 的 `mcpServers` | ✅ 3 个（1 个 stdio 可导入，2 个 url 型置灰） |
 | 项目级 | 白名单根目录下的 `.mcp.json` | — |
 
-字段几乎 1:1 对应（`command` / `args` / `env` / `type`），映射不需要猜。
+字段几乎 1:1 对应（`command` / `args` / `env` / `cwd`），映射不需要猜。
+Codex 那份没有 `type` 字段（缺省按 `stdio`），且多出 `env_vars` / `startup_timeout_sec`
+等我们不认识的键——解析时**忽略不认识的键**，不能让它们把整条拖垮。
+
+> 后记（v2.8.x，身份转为「通用双向 MCP 桥」）：Codex / WorkBuddy 两行是后补的。
+> Codex 走 `import::parse_codex`（先把 `toml::Value` 转成 `serde_json::Value`，
+> 再复用 `from_map` 那套分类/命名逻辑，不另写第二份映射）；
+> WorkBuddy 的 `mcp.json` 与 Cursor 同形状，直接 `parse_flat`。
 
 导入的硬规矩：
 - **默认全部不启用**，逐个勾（S2）。

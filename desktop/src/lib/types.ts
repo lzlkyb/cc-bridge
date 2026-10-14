@@ -41,6 +41,8 @@ export interface StatusResponse {
     topTools: { name: string; count: number }[];
   };
   connectCommand: string;
+  /** 连接页选定的接入工具（决定托盘/横幅的命令形态）。后端已把旧配置的 null 折算为 "claude-code"。 */
+  connectClient: string;
   token: string;
   whitelistEnabled: boolean;
   readonlyMode: boolean;
@@ -237,6 +239,8 @@ export interface ConfigPatch {
   scope?: string;
   /** 用户接入时确认的项目路径（项目级 scope 时用于 cd 前缀）。跟随连接页选择，供托盘生成精确 sed 命令。 */
   projectPath?: string;
+  /** 接入工具（"claude-code" / "workbuddy" / "codex" / "generic"）。决定托盘与横幅的命令形态。 */
+  connectClient?: string;
   /** 首次接入完成标记（只增不减）。后端仅接受 true，false 请求被忽略——升级老用户永不回退为新用户。 */
   hasOnboarded?: boolean;
   /** Layer 2 命令白名单开关（④P0-1）。前端「安全」页写入。 */

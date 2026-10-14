@@ -570,7 +570,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let state = tray_state.clone();
                         let app_h = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            let (host, port, token, last_selected_ip, transport) = {
+                            let (host, port, token, last_selected_ip, transport, tls, client) = {
                                 let cfg = state.config.read().await;
                                 (
                                     cfg.host.clone(),
@@ -578,20 +578,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     cfg.token.clone(),
                                     cfg.last_selected_ip.clone(),
                                     cfg.transport.clone(),
+                                    cfg.remote_tls_enabled,
+                                    cfg.connect_client
+                                        .clone()
+                                        .unwrap_or_else(|| "claude-code".into()),
                                 )
                             };
                             let lan_ips = network::get_lan_ips();
-                            let cmd = network::build_connect_command(
-                                &host,
+                            let cmd = network::build_connect_command(network::ConnectTarget {
+                                host: &host,
                                 port,
-                                &token,
-                                &lan_ips,
-                                last_selected_ip.as_deref(),
-                                &transport,
-                            );
+                                token: &token,
+                                transport: &transport,
+                                tls,
+                                client: &client,
+                                lan_ips: &lan_ips,
+                                selected_ip: last_selected_ip.as_deref(),
+                            });
                             match app_h.clipboard().write_text(cmd) {
                                 Ok(_) => {
-                                    notify_toast(&app_h, "连接命令已复制到剪贴板");
+                                    // 复制到的内容随接入工具而变（CLI 命令 / JSON / TOML 片段），
+                                    // toast 如实说明，免得用户以为拿到的是一条命令。
+                                    let what = match client.as_str() {
+                                        "workbuddy" => "WorkBuddy 配置片段",
+                                        "codex" => "Codex 配置片段",
+                                        "generic" => "接入信息",
+                                        _ => "Claude Code 连接命令",
+                                    };
+                                    notify_toast(&app_h, &format!("{what}已复制到剪贴板"));
                                 }
                                 Err(e) => {
                                     notify_toast(&app_h, &format!("复制失败，请手动复制：{e}"));
@@ -607,7 +621,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let state = tray_state.clone();
                         let app_h = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            let (host, port, last_selected_ip, scope, project_path) = {
+                            let (host, port, last_selected_ip, scope, project_path, tls, client) = {
                                 let cfg = state.config.read().await;
                                 (
                                     cfg.host.clone(),
@@ -615,6 +629,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     cfg.last_selected_ip.clone(),
                                     cfg.scope.clone(),
                                     cfg.project_path.clone(),
+                                    cfg.remote_tls_enabled,
+                                    cfg.connect_client
+                                        .clone()
+                                        .unwrap_or_else(|| "claude-code".into()),
                                 )
                             };
                             let lan_ips = network::get_lan_ips();
@@ -624,22 +642,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 last_selected_ip.as_deref(),
                             );
                             let scope_str = scope.as_deref().unwrap_or("user");
-                            let cmd =
-                                network::build_ip_sed_command(port, &display_host, scope_str, &project_path);
-                            let scope_label = if scope_str == "project" {
-                                if project_path
-                                    .as_ref()
-                                    .map(|p| p.trim())
-                                    .unwrap_or("")
-                                    .is_empty()
-                                {
-                                    "项目级 .mcp.json（请在项目目录下执行）"
-                                } else {
-                                    "项目级 .mcp.json"
+                            let cmd = network::build_ip_sed_command(
+                                port,
+                                &display_host,
+                                scope_str,
+                                &project_path,
+                                tls,
+                                &client,
+                            );
+                            // 目标文件随客户端而变（Claude Code 两档作用域 / WorkBuddy / Codex）。
+                            // generic 没有约定路径，build_ip_sed_command 返回空串 → 只给手动更新的提示。
+                            let scope_label = match client.as_str() {
+                                "workbuddy" => "WorkBuddy ~/.workbuddy/mcp.json".to_string(),
+                                "codex" => "Codex ~/.codex/config.toml".to_string(),
+                                "generic" => String::new(),
+                                _ => {
+                                    if scope_str == "project" {
+                                        if project_path
+                                            .as_ref()
+                                            .map(|p| p.trim())
+                                            .unwrap_or("")
+                                            .is_empty()
+                                        {
+                                            "项目级 .mcp.json（请在项目目录下执行）".to_string()
+                                        } else {
+                                            "项目级 .mcp.json".to_string()
+                                        }
+                                    } else {
+                                        "用户级 ~/.claude.json".to_string()
+                                    }
                                 }
-                            } else {
-                                "用户级 ~/.claude.json"
                             };
+                            if cmd.is_empty() {
+                                notify_toast(
+                                    &app_h,
+                                    "通用 MCP 工具没有约定的配置文件，请手动把配置里的地址改成新 IP",
+                                );
+                                return;
+                            }
                             match app_h.clipboard().write_text(cmd) {
                                 Ok(_) => {
                                     notify_toast(

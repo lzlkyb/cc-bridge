@@ -152,6 +152,10 @@ pub struct BridgeConfig {
     /// 用户接入时确认的项目路径（项目级 scope 时用于 cd 前缀）。
     /// 跟随连接页选择，供托盘「复制 IP 替换命令」生成带 cd 的精确命令，与 IpChangedBanner 对齐。
     pub project_path: Option<String>,
+    /// 用户在连接页选定的接入工具（"claude-code"（默认）/ "workbuddy" / "codex" / "generic"）。
+    /// 决定托盘「复制连接命令」与两处「原地更新 IP」命令的形态：Claude Code 出 CLI 命令、
+    /// 其余工具出配置片段 / 各自配置文件的 sed。None = 旧配置（本字段之前不存在），按 claude-code 处理。
+    pub connect_client: Option<String>,
     /// 首次接入完成标记：**首次复制连接命令成功**时由前端经 save_config 置 true，
     /// 只增不减（后端仅接受 true，false 请求被忽略；无 UI 开关）。
     ///
@@ -249,6 +253,7 @@ impl Default for BridgeConfig {
             last_selected_ip: None,
             scope: None,
             project_path: None,
+            connect_client: None,
             has_onboarded: false,
             command_allowlist_enabled: false,
             command_allowlist: vec![],

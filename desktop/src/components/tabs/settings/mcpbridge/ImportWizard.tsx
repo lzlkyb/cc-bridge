@@ -120,7 +120,9 @@ export function ImportWizard({
       {scan && ok.length === 0 && bad.length === 0 && (
         <p className="py-6 text-sm text-muted-foreground">
           没扫到任何 MCP 配置。已查看 <code className="font-mono">~/.claude.json</code>、
-          <code className="font-mono">~/.cursor/mcp.json</code> 与 Claude Desktop 的配置文件。
+          <code className="font-mono">~/.cursor/mcp.json</code>、
+          <code className="font-mono">~/.codex/config.toml</code>、
+          <code className="font-mono">~/.workbuddy/mcp.json</code> 与 Claude Desktop 的配置文件。
         </p>
       )}
 

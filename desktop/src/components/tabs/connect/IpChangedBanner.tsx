@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Icon } from "../../ui/icon";
 import { McpScope, buildIpSedCommand } from "../../../lib/utils";
+// 仅类型导入，避免 utils ⇄ mcpClients 的运行时循环（见 utils.ts 同一处说明）。
+import type { McpClientTool } from "../../../lib/mcpClients";
 import { ActionCard, InlineNotice } from "../../ui/notice";
 import { CommandBlock } from "./widgets";
 import { useCopyFeedback } from "../../../hooks/useCopyFeedback";
@@ -16,6 +18,10 @@ import { useCopyFeedback } from "../../../hooks/useCopyFeedback";
  *  - 点细条其余区域展开详情（完整说明 + 命令块），展开重置 60s 倒计时环，到 0 自动收起
  *    （细条常驻不消失）；复制成功 / 点 × 仍按原逻辑收口 / 忽略；
  *  - 语义色改为琥珀警告（destructive 红只留给真正失败）。
+ *
+ * 多客户端（身份转变后）：sed 的**目标文件**随接入工具而变（Claude Code 两档作用域 /
+ * WorkBuddy / Codex），三种都是文本配置，同一条 sed 通用。通用 MCP 工具没有约定路径，
+ * 此时不给命令，只提示手动更新。
  */
 export function IpChangedBanner({
   lanIps,
@@ -25,6 +31,7 @@ export function IpChangedBanner({
   scope,
   projectPath,
   tls = false,
+  client = "claude-code",
   onResolved,
   onSedResolved,
   onDismiss,
@@ -37,6 +44,8 @@ export function IpChangedBanner({
   projectPath: string;
   /** P2-3 TLS 感知：HTTPS 开启时替换目标切 https（匹配段同时覆盖 http/https 旧值）。 */
   tls?: boolean;
+  /** 接入工具（`status.connectClient`）——决定 sed 目标文件与命令标签。 */
+  client?: McpClientTool;
   onResolved: (ip: string) => void;
   onSedResolved: () => void;
   onDismiss?: () => void;
@@ -77,20 +86,33 @@ export function IpChangedBanner({
   // 幂等可重跑，不动 Bearer、不 remove+add，因此服务器条目与授权状态保留、不会重新授权。
   // 作用域直接读下方选择卡当前选中的 scope（方案 A：实时联动），始终输出单条精确命令。
   // 纯函数收口 lib/utils.ts（R11，带单测）。
-  const buildSed = (scp: "user" | "project") => buildIpSedCommand(selectedIp, port, scp, projectPath, tls);
+  const buildSed = (scp: "user" | "project") =>
+    buildIpSedCommand(selectedIp, port, scp, projectPath, tls, client);
 
-  const cmdLabel = scope === "user" ? "全局（~/.claude.json）" : "项目（.mcp.json）";
+  // 命令标签按接入工具分流：Claude Code 才有 user/project 两档作用域之分。
+  const cmdLabel =
+    client === "workbuddy"
+      ? "WorkBuddy（~/.workbuddy/mcp.json）"
+      : client === "codex"
+        ? "Codex（~/.codex/config.toml）"
+        : client === "generic"
+          ? "通用 MCP 工具"
+          : scope === "user"
+            ? "全局（~/.claude.json）"
+            : "项目（.mcp.json）";
   const cmd = buildSed(scope);
 
   // 仅当用户已在下方 AddressPicker 选中一个当前在网卡列表中的「新」地址时，
   // 才允许生成/复制 sed（把远程配置里的旧 IP 替换为选中的新 IP）。
   // selectedIp 为空或仍是已消失的旧地址时，sed 无意义，禁用复制。
+  // 通用工具没有约定配置文件 → cmd 为空串，同样禁用（改为给出手动更新提示）。
   const newIpValid = !!selectedIp && lanIps.includes(selectedIp);
+  const canCopy = newIpValid && !!cmd;
 
   // H6 修复（语义保留）：只在真正复制成功后才调 onResolved/onSedResolved 收口，用户其实
   // 没拿到更新命令时 banner 不消失。
   const copyOne = () => {
-    if (!cmd || !newIpValid) return;
+    if (!canCopy) return;
     fb.copy("sed", cmd, {
       onCopied: () => {
         setResolved(true);
@@ -113,7 +135,7 @@ export function IpChangedBanner({
       autoCollapseSec={60}
       copyLabel="复制命令"
       onCopy={copyOne}
-      copyDisabled={!newIpValid}
+      copyDisabled={!canCopy}
       resolved={resolved}
       onDismiss={onDismiss}
     >
@@ -123,7 +145,26 @@ export function IpChangedBanner({
           已不在本机网卡列表中（大概率是网络重新连接后分配了新地址）。复制以下命令到远程服务器执行即可
           <b className="text-foreground">原地更新 IP，无需重新授权</b>；也可在下方「选择远程服务器能连回本机的地址」中换选其他地址。
         </p>
-        {newIpValid ? (
+        {client === "generic" ? (
+          // selectedIp 可能为 null（用户还没在下方选新地址）——此时不渲染地址，避免「https://:7823」空 host。
+          selectedIp ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              通用 MCP 工具没有约定的配置文件，无法生成原地更新命令——请手动把该工具配置里的地址改成{" "}
+              <code className="rounded bg-background px-1 text-foreground">
+                {tls ? "https" : "http"}://{selectedIp}:{port}/mcp
+              </code>
+              。
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              通用 MCP 工具没有约定的配置文件——选好新地址后，请手动把该工具配置里的地址改成{" "}
+              <code className="rounded bg-background px-1 text-foreground">
+                {tls ? "https" : "http"}://&lt;新地址&gt;:{port}/mcp
+              </code>
+              。
+            </p>
+          )
+        ) : newIpValid ? (
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-foreground/80">{cmdLabel}</p>
             <CommandBlock command={cmd} copied={fb.isCopied("sed")} onCopy={copyOne} />

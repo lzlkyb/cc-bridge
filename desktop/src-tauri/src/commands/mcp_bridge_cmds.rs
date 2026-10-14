@@ -807,26 +807,53 @@ pub async fn mcp_bridge_inspect(
     }
 }
 
+/// 扫描源的解析方式。
+#[derive(Clone, Copy)]
+enum SourceFormat {
+    /// `~/.claude.json`：顶层 `mcpServers` + `projects.*.mcpServers`。
+    ClaudeCode,
+    /// 只有顶层 `mcpServers`（Cursor / Claude Desktop / WorkBuddy）。
+    FlatJson,
+    /// Codex 的 `[mcp_servers.<name>]`（TOML，`~/.codex/config.toml`）。
+    CodexToml,
+}
+
 /// 扫描各个已知位置。读不到 / 解不开的**静默跳过**：
 /// 用户没装 Cursor 不是错误，不该报给他看。
+///
+/// **身份转变后补的两个源**（原来只认 Claude 系三家）：
+/// - `~/.codex/config.toml`：Codex 的 mcp_servers 是 TOML 表，字段名（command/args/env）
+///   与 Claude 系相同，只是外壳不同 → 交给 `import::parse_codex`。
+/// - `~/.workbuddy/mcp.json`：与 Cursor 同形状的 JSON，直接走 `parse_flat`。
 fn scan_sources() -> (Vec<import::ImportCandidate>, Vec<String>) {
     let mut out = Vec::new();
     let mut hit = Vec::new();
 
     let home = home_dir();
-    let mut try_one = |path: Option<PathBuf>, label: &str, claude_code: bool| {
+    let mut try_one = |path: Option<PathBuf>, label: &str, fmt: SourceFormat| {
         let Some(p) = path else { return };
         let Ok(text) = std::fs::read_to_string(&p) else {
             return;
         };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else {
-            log::warn!("{label} 不是合法 JSON，已跳过");
-            return;
-        };
-        let found = if claude_code {
-            import::parse_claude_code(&v, label)
-        } else {
-            import::parse_flat(&v, label)
+        let found = match fmt {
+            SourceFormat::CodexToml => {
+                let Ok(v) = toml::from_str::<toml::Value>(&text) else {
+                    log::warn!("{label} 不是合法 TOML，已跳过");
+                    return;
+                };
+                import::parse_codex(&v, label)
+            }
+            SourceFormat::ClaudeCode | SourceFormat::FlatJson => {
+                let Ok(v) = serde_json::from_str::<Value>(&text) else {
+                    log::warn!("{label} 不是合法 JSON，已跳过");
+                    return;
+                };
+                if matches!(fmt, SourceFormat::ClaudeCode) {
+                    import::parse_claude_code(&v, label)
+                } else {
+                    import::parse_flat(&v, label)
+                }
+            }
         };
         if !found.is_empty() {
             hit.push(label.to_string());
@@ -837,17 +864,27 @@ fn scan_sources() -> (Vec<import::ImportCandidate>, Vec<String>) {
     try_one(
         home.as_ref().map(|h| h.join(".claude.json")),
         "~/.claude.json",
-        true,
+        SourceFormat::ClaudeCode,
     );
     try_one(
         home.as_ref().map(|h| h.join(".cursor").join("mcp.json")),
         "~/.cursor/mcp.json",
-        false,
+        SourceFormat::FlatJson,
     );
     try_one(
         claude_desktop_config(home.as_ref()),
         "Claude Desktop",
-        false,
+        SourceFormat::FlatJson,
+    );
+    try_one(
+        home.as_ref().map(|h| h.join(".codex").join("config.toml")),
+        "~/.codex/config.toml",
+        SourceFormat::CodexToml,
+    );
+    try_one(
+        home.as_ref().map(|h| h.join(".workbuddy").join("mcp.json")),
+        "~/.workbuddy/mcp.json",
+        SourceFormat::FlatJson,
     );
 
     (out, hit)

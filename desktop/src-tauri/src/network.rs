@@ -71,61 +71,115 @@ pub fn resolve_display_host(host: &str, lan_ips: &[String], selected_ip: Option<
 ///   避免顶栏/托盘复制出死地址(O4)。
 ///
 /// lan_ips 由调用方传入,避免重复枚举网卡(P3)。
-pub fn build_connect_command(
-    host: &str,
-    port: u16,
-    token: &str,
-    lan_ips: &[String],
-    selected_ip: Option<&str>,
-    transport: &str,
-) -> String {
-    let display_host = resolve_display_host(host, lan_ips, selected_ip);
-    let url_suffix = if transport == "sse" {
+///
+/// **多客户端（身份转变后）**：产物形态按 `client` 分支——Claude Code 出 CLI 命令，
+/// WorkBuddy / Codex / 通用工具出各自配置文件的片段（它们没有等价的 CLI 注册命令）。
+///
+/// 打包成结构体而非 8 个裸参数：这些字段本就描述同一件事（「给谁、用哪个地址、
+/// 以什么形态生成接入内容」），且 8 参已触发 `clippy::too_many_arguments`——
+/// 与其 `#[allow]`，不如让调用点显式写出字段名，读起来也清楚哪个值是哪个。
+pub struct ConnectTarget<'a> {
+    /// 监听地址；`"0.0.0.0"` 表示监听全部网卡。
+    pub host: &'a str,
+    pub port: u16,
+    pub token: &'a str,
+    /// `"http"` | `"sse"`（决定 URL 后缀）。
+    pub transport: &'a str,
+    /// 是否已开启 HTTPS（决定 scheme）。此前这里硬编码 `http://`，开了 HTTPS 的
+    /// 用户从托盘复制到的命令是连不上的（前端一直 TLS 感知，只有托盘漏了）。
+    pub tls: bool,
+    /// 接入工具：`"claude-code"`（默认）/ `"workbuddy"` / `"codex"` / `"generic"`。
+    pub client: &'a str,
+    /// 本机可用 IPv4（由调用方传入，避免重复枚举网卡）。
+    pub lan_ips: &'a [String],
+    /// 用户上次确认的 IP（多网卡场景）。
+    pub selected_ip: Option<&'a str>,
+}
+
+pub fn build_connect_command(t: ConnectTarget<'_>) -> String {
+    let display_host = resolve_display_host(t.host, t.lan_ips, t.selected_ip);
+    let url_suffix = if t.transport == "sse" {
         "/mcp/sse"
     } else {
         "/mcp"
     };
+    let scheme = if t.tls { "https" } else { "http" };
+    let url = format!("{scheme}://{display_host}:{}{url_suffix}", t.port);
+    let token = t.token;
 
-    format!(
-        "claude mcp add --transport {} cc-bridge http://{}:{}{} --header \"Authorization: Bearer {}\"",
-        transport, display_host, port, url_suffix, token
-    )
+    match t.client {
+        "workbuddy" => {
+            let snippet = serde_json::json!({
+                "mcpServers": {
+                    "cc-bridge": {
+                        "url": url,
+                        "headers": { "Authorization": format!("Bearer {token}") }
+                    }
+                }
+            });
+            format!(
+                "// 写入 ~/.workbuddy/mcp.json（保存后重启 WorkBuddy）\n{}",
+                serde_json::to_string_pretty(&snippet).unwrap_or_default()
+            )
+        }
+        "codex" => format!(
+            "# 写入 ~/.codex/config.toml（保存后重启 Codex）\n[mcp_servers.cc-bridge]\nurl = \"{url}\"\nhttp_headers = {{ Authorization = \"Bearer {token}\" }}"
+        ),
+        // 通用工具没有约定的配置载体，给「事实清单」而不是假装这是一条命令。
+        "generic" => format!("URL: {url}\nHeader: Authorization: Bearer {token}"),
+        // 默认（含 None / 未知值）：Claude Code 的 CLI 命令。
+        _ => format!(
+            "claude mcp add --transport {} cc-bridge {url} --header \"Authorization: Bearer {token}\"",
+            t.transport
+        ),
+    }
 }
 
 /// 生成「网络变动时原地更新 IP」的 sed 命令，**严格对齐前端 `IpChangedBanner.buildSed`**：
-/// - user 级：`sed -i 's#...#...#g' ~/.claude.json`
-/// - project 级 + 有项目路径：`cd "<path>" && sed -i 's#...#...#g' .mcp.json`
-/// - project 级 + 无路径：`sed -i 's#...#...#g' .mcp.json`（提示在项目目录执行）
+/// - Claude Code · user 级：`sed -i 's#...#...#g' ~/.claude.json`
+/// - Claude Code · project 级 + 有项目路径：`cd "<path>" && sed -i 's#...#...#g' .mcp.json`
+/// - Claude Code · project 级 + 无路径：`sed -i 's#...#...#g' .mcp.json`（提示在项目目录执行）
+/// - WorkBuddy：`~/.workbuddy/mcp.json`；Codex：`~/.codex/config.toml`（两家的 url 都是文本，
+///   同一条 sed 适用，无需重装 client）；**generic 返回空串**——没有约定路径，只能让用户手动改。
 ///
-/// 作用域与项目路径**跟随用户在连接页的选择**（方案 A）：托盘读 `config.scope` / `config.project_path`，
-/// 与连接页复制的命令逐字等价（含 cd 前缀），不再是固定用户级。
+/// 作用域与项目路径**跟随用户在连接页的选择**（方案 A）：托盘读 `config.scope` / `config.project_path`。
+/// 匹配段用 `https\?://` 同时覆盖 http/https 两种旧值、替换段按当前 TLS 状态生成 scheme——
+/// 此前这里只匹配 `http://` 且替换成 `http://`，开了 HTTPS 的用户跑完命令等于没修。
 pub fn build_ip_sed_command(
     port: u16,
     display_host: &str,
     scope: &str,
     project_path: &Option<String>,
+    tls: bool,
+    client: &str,
 ) -> String {
-    let cfg_file = if scope == "project" {
-        ".mcp.json"
-    } else {
-        "~/.claude.json"
-    };
-    let cd_prefix = if scope == "project" {
-        if let Some(p) = project_path {
-            let t = p.trim();
-            if !t.is_empty() {
-                format!("cd \"{t}\" && ")
+    let (cfg_file, cd_prefix) = match client {
+        "workbuddy" => ("~/.workbuddy/mcp.json".to_string(), String::new()),
+        "codex" => ("~/.codex/config.toml".to_string(), String::new()),
+        // 通用工具没有约定配置文件 → 空串，由调用方改为「请手动更新」提示。
+        "generic" => return String::new(),
+        _ => {
+            let cfg = if scope == "project" {
+                ".mcp.json"
+            } else {
+                "~/.claude.json"
+            };
+            let cd = if scope == "project" {
+                project_path
+                    .as_ref()
+                    .map(|p| p.trim())
+                    .filter(|t| !t.is_empty())
+                    .map(|t| format!("cd \"{t}\" && "))
+                    .unwrap_or_default()
             } else {
                 String::new()
-            }
-        } else {
-            String::new()
+            };
+            (cfg.to_string(), cd)
         }
-    } else {
-        String::new()
     };
+    let scheme = if tls { "https" } else { "http" };
     format!(
-        "{cd_prefix}sed -i 's#http://[0-9.]*:{port}/mcp#http://{display_host}:{port}/mcp#g' {cfg_file}"
+        "{cd_prefix}sed -i 's#https\\?://[0-9.]*:{port}/mcp#{scheme}://{display_host}:{port}/mcp#g' {cfg_file}"
     )
 }
 
@@ -135,12 +189,12 @@ mod tests {
 
     #[test]
     fn build_ip_sed_command_user_scope() {
-        let cmd = build_ip_sed_command(7823, "192.168.1.100", "user", &None);
+        let cmd = build_ip_sed_command(7823, "192.168.1.100", "user", &None, false, "claude-code");
         // 合法 sed 分隔符 # 必须恰好 3 个（s#pat#rep#g），且 /mcp 应位于 pattern 与 replacement 内部。
         assert_eq!(cmd.matches('#').count(), 3, "sed 分隔符 # 应为 3 个");
         assert!(
-            cmd.contains("http://[0-9.]*:7823/mcp"),
-            "pattern 应内嵌 /mcp"
+            cmd.contains("https\\?://[0-9.]*:7823/mcp"),
+            "pattern 应内嵌 /mcp，且用 https\\? 同时覆盖 http/https 旧值"
         );
         assert!(
             cmd.contains("http://192.168.1.100:7823/mcp"),
@@ -164,6 +218,8 @@ mod tests {
             "192.168.1.100",
             "project",
             &Some("/d/work/my-proj".into()),
+            false,
+            "claude-code",
         );
         assert!(
             cmd.starts_with("cd \"/d/work/my-proj\" && "),
@@ -178,11 +234,39 @@ mod tests {
 
     #[test]
     fn build_ip_sed_command_project_without_path() {
-        let cmd = build_ip_sed_command(7823, "192.168.1.100", "project", &None);
+        let cmd = build_ip_sed_command(
+            7823,
+            "192.168.1.100",
+            "project",
+            &None,
+            false,
+            "claude-code",
+        );
         assert!(!cmd.contains("cd "), "project+无路径不应含 cd 前缀");
         assert!(
             cmd.ends_with(".mcp.json"),
             "project 级目标文件应为 .mcp.json"
+        );
+    }
+
+    /// 多客户端（身份转变后新增）：目标文件随 client 分流；generic 无约定路径 → 空串。
+    #[test]
+    fn build_ip_sed_command_multi_client() {
+        let wb = build_ip_sed_command(7823, "192.168.1.100", "user", &None, false, "workbuddy");
+        assert!(wb.ends_with("~/.workbuddy/mcp.json"), "WorkBuddy 目标文件");
+        assert!(!wb.contains("cd "), "WorkBuddy 是全局配置，不应有 cd 前缀");
+
+        let cx = build_ip_sed_command(7823, "192.168.1.100", "user", &None, true, "codex");
+        assert!(cx.ends_with("~/.codex/config.toml"), "Codex 目标文件");
+        assert!(
+            cx.contains("https://192.168.1.100:7823/mcp"),
+            "TLS 开启时替换段应为 https（且 Codex 忽略 scope）"
+        );
+
+        assert_eq!(
+            build_ip_sed_command(7823, "192.168.1.100", "user", &None, false, "generic"),
+            "",
+            "通用工具无约定配置文件 → 空串（调用方转成手动更新提示）"
         );
     }
 }

@@ -3,6 +3,9 @@
  */
 
 import type { StaticStatus } from "./types";
+// 仅类型导入：utils ⇄ mcpClients 互为引用（mcpClients 用这里的 buildBaseCommand），
+// `import type` 在编译后完全擦除，不会产生运行时循环依赖。
+import type { McpClientTool } from "./mcpClients";
 
 /** 接入作用域：用户级（~/.claude.json）或项目级（.mcp.json）。 */
 export type McpScope = "user" | "project";
@@ -165,10 +168,27 @@ export function buildIpSedCommand(
   scope: McpScope,
   projectPath: string,
   tls = false,
+  client: McpClientTool = "claude-code",
 ): string {
   if (!selectedIp) return "";
-  const cfgFile = scope === "user" ? "~/.claude.json" : ".mcp.json";
-  const cdPrefix = scope === "project" && projectPath.trim() ? `cd "${projectPath.trim()}" && ` : "";
+  // 配置文件按接入工具分流：WorkBuddy / Codex 的 url 也都是文本，同一条 sed 适用（无需重装 client）。
+  // generic 没有约定路径 → 返回空串，由调用方改为「请手动更新」提示。
+  const cfgFile =
+    client === "workbuddy"
+      ? "~/.workbuddy/mcp.json"
+      : client === "codex"
+        ? "~/.codex/config.toml"
+        : client === "generic"
+          ? ""
+          : scope === "user"
+            ? "~/.claude.json"
+            : ".mcp.json";
+  if (!cfgFile) return "";
+  // cd 前缀只对 Claude Code 的项目级有意义（其余工具都是全局配置文件）。
+  const cdPrefix =
+    client === "claude-code" && scope === "project" && projectPath.trim()
+      ? `cd "${projectPath.trim()}" && `
+      : "";
   const target = `${tls ? "https" : "http"}://${selectedIp}:${port}/mcp`;
   return `${cdPrefix}sed -i 's#https\\?://[0-9.]*:${port}/mcp#${target}#g' ${cfgFile}`;
 }

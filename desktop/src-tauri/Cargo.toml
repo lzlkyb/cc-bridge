@@ -50,6 +50,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# TOML：只为读 Codex 的 ~/.codex/config.toml（导入扫描）。
+# ⚠️ 这不是新增依赖：tauri-utils 2.9.3 已把 toml 1.1.2 作为**运行时**依赖，
+# 且 default / parse / serde / display 四个 feature 在依赖树里已全部启用 →
+# 代码本就链在二进制里，这里只是让本项目能按下这个名字引用，体积增量 0 字节
+# （`cargo tree -e normal -i toml@1.1.2` 可复核；改版本前请先重跑这句）。
+toml = "1"
 
 # SSE transport
 tokio-stream = { version = "0.1", features = ["sync"] }

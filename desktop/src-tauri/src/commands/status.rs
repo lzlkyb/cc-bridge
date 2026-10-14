@@ -60,6 +60,10 @@ pub struct StatusResponse {
     pub stats: StatsInfo,
     #[serde(rename = "connectCommand")]
     pub connect_command: String,
+    /// 连接页选定的接入工具（决定托盘/横幅的命令形态）。
+    /// 后端在构造响应时已把旧配置的 None 折算为 "claude-code"，前端拿到的永远是具体值。
+    #[serde(rename = "connectClient")]
+    pub connect_client: String,
     pub token: String,
     // ── 功能开关 + 运行状态（v2.1）──
     #[serde(rename = "whitelistEnabled")]
@@ -299,14 +303,21 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         || (config.host != "0.0.0.0"
             && config.host != "127.0.0.1"
             && !lan_ips.contains(&config.host));
-    let connect_cmd = network::build_connect_command(
-        &config.host,
-        config.port,
-        &config.token,
-        &lan_ips,
-        config.last_selected_ip.as_deref(),
-        &config.transport,
-    );
+    // 旧配置没有该字段（None）→ 按 claude-code 处理，托盘/横幅的形态与升级前一致。
+    let connect_client = config
+        .connect_client
+        .clone()
+        .unwrap_or_else(|| "claude-code".into());
+    let connect_cmd = network::build_connect_command(network::ConnectTarget {
+        host: &config.host,
+        port: config.port,
+        token: &config.token,
+        transport: &config.transport,
+        tls: config.remote_tls_enabled,
+        client: &connect_client,
+        lan_ips: &lan_ips,
+        selected_ip: config.last_selected_ip.as_deref(),
+    });
 
     // ── 方案 A 运行卡实时指标聚合（全做真，无伪造）──
     let total = stats.total_requests;
@@ -414,6 +425,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
             top_tools,
         },
         connect_command: connect_cmd,
+        connect_client,
         token: config.token.clone(),
         whitelist_enabled: config.whitelist_enabled,
         readonly_mode: config.readonly_mode,

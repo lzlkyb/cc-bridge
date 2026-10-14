@@ -8,6 +8,8 @@ import { FirewallAlertBlock } from "./connect/FirewallAlertBlock";
 import { isWindows } from "../../lib/platform";
 import { ToolGuide } from "./connect/ToolGuide";
 import { ConnectGuide } from "./connect/ConnectGuide";
+import { invoke } from "../../lib/tauri";
+import type { McpClientTool } from "../../lib/mcpClients";
 
 function ConnectTabImpl({
   status,
@@ -125,6 +127,7 @@ function ConnectTabImpl({
           scope={guide.scope}
           projectPath={guide.projectPath}
           tls={guide.tlsEnabled}
+          client={(status?.connectClient as McpClientTool | undefined) ?? "claude-code"}
           onResolved={onSelectIp}
           onSedResolved={onSedResolved}
           onDismiss={onDismissIpChange}
@@ -147,6 +150,12 @@ function ConnectTabImpl({
             token={guide.token}
             transport={status?.transport === "sse" ? "sse" : "http"}
             tlsEnabled={guide.tlsEnabled}
+            defaultTool={(status?.connectClient as McpClientTool | undefined) ?? "claude-code"}
+            onToolChange={(t) => {
+              // 必须落盘：托盘「复制命令 / 复制 IP」与 IpChangedBanner 都按这个值出内容。
+              // 只存在组件本地 state 时，界面选了 Codex、托盘仍会复制一条 claude mcp add。
+              void invoke("save_config", { patch: { connectClient: t } }).then(onRefresh);
+            }}
           >
             <ConnectGuide
               status={status}

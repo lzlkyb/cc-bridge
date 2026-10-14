@@ -130,6 +130,48 @@ pub fn parse_flat(root: &Value, source: &str) -> Vec<ImportCandidate> {
     from_map(root.get("mcpServers"), source, None)
 }
 
+/// 解析 Codex 的 `~/.codex/config.toml`：顶层 `[mcp_servers.<name>]` 表。
+///
+/// 与上面两个 JSON 解析器**共用** `from_map` 那套（分类、命名、来源标注、
+/// env 只给键名）——Codex 条目的字段名（`command` / `args` / `env` / `cwd`）
+/// 与 Claude 系是一样的，只有「外壳是 TOML、表名是 `mcp_servers`」两处不同。
+/// 另写一套映射等于把 S2/S7/S8 那几条硬规矩复制一份，迟早两边跑偏。
+///
+/// 用 `toml` crate 而不是自己扫文本：TOML 有内联表、多行数组、点号键、
+/// 基本串/字面串、`#` 出现在字符串里等写法，手写的子集解析器遇到没覆盖的写法
+/// 会**把值解错**——而错的命令会被用户勾选后真的执行。用现成的解析器，
+/// 解不开就是解不开（调用方跳过并记日志），不会造假值。
+///
+/// ⚠️ 非新增依赖：`tauri-utils` 已把 `toml` 作为运行时依赖链进二进制（见 Cargo.toml）。
+pub fn parse_codex(root: &toml::Value, source: &str) -> Vec<ImportCandidate> {
+    let json = toml_to_json(root);
+    from_map(json.get("mcp_servers"), source, None)
+}
+
+/// `toml::Value` → `serde_json::Value`。
+///
+/// 自己写这 10 行而不是 `serde_json::to_value(toml_value)`：后者会把
+/// `toml::Value::Datetime` 走 TOML 的私有序列化路径（吐出一个带魔法字段名的对象），
+/// 依赖对方的实现细节。这里显式展开，每个分支都看得见，也便于单测。
+///
+/// `Datetime` 转字符串（RFC 3339）：我们在意的字段里没有日期，转出来只是为了让
+/// 「不认识的键」能原样带过去、不 panic。Codex 的 mcp_servers 条目也用不到它。
+fn toml_to_json(v: &toml::Value) -> Value {
+    match v {
+        toml::Value::String(s) => Value::String(s.clone()),
+        toml::Value::Integer(i) => json!(i),
+        toml::Value::Float(f) => json!(f),
+        toml::Value::Boolean(b) => json!(b),
+        toml::Value::Datetime(d) => Value::String(d.to_string()),
+        toml::Value::Array(a) => Value::Array(a.iter().map(toml_to_json).collect()),
+        toml::Value::Table(t) => Value::Object(
+            t.iter()
+                .map(|(k, x)| (k.clone(), toml_to_json(x)))
+                .collect(),
+        ),
+    }
+}
+
 fn from_map(map: Option<&Value>, source: &str, project: Option<&str>) -> Vec<ImportCandidate> {
     let Some(obj) = map.and_then(|m| m.as_object()) else {
         return vec![];
@@ -627,6 +669,184 @@ mod tests {
         let v = serde_json::json!({ "mcpServers": { "x": { "url": "https://y" } } });
         let c = parse_flat(&v, "s");
         assert!(matches!(c[0].status, CandidateStatus::Unavailable(_)));
+    }
+
+    /// 一份与 Codex `~/.codex/config.toml` 同形状的样本。
+    ///
+    /// 刻意塞进几种**手写子集解析器最容易解错**的写法：
+    /// 顶层非 server 键（`model`）、多行数组（尾随逗号）、内联 env 表、
+    /// 数字字段、以及 `#` 之外的普通注释——解错一条就会生成错的命令。
+    fn codex_sample() -> toml::Value {
+        toml::from_str(
+            r#"
+# Codex 全局配置
+model = "gpt-5"
+
+[mcp_servers.filesystem]
+command = "npx"
+args = [
+  "-y",
+  "@modelcontextprotocol/server-filesystem",
+  "D:",
+]
+startup_timeout_sec = 20
+
+[mcp_servers.paper_search]
+command = "python.exe"
+args = ["-m", "paper_search_mcp.server"]
+env = { SEMANTIC_SCHOLAR_API_KEY = "sk-live-DO-NOT-LEAK" }
+
+[mcp_servers.remote]
+url = "https://example.com/mcp"
+bearer_token_env_var = "REMOTE_TOKEN"
+"#,
+        )
+        .expect("样本应是合法 TOML")
+    }
+
+    /// B-TOML：Codex 的三条都能解出来，形状与 JSON 路径一致，且**一律不自动启用**。
+    #[test]
+    fn codex_toml_parses_servers_like_the_json_paths() {
+        let c = parse_codex(&codex_sample(), "~/.codex/config.toml");
+        // 顶层 `model` 不是 server，不能混进来。
+        let names: Vec<&str> = c.iter().map(|x| x.spec.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["filesystem", "paper_search", "remote"],
+            "只应解出 mcp_servers 下的表，且按名字排序（UI 列表不能每次打开都变序）"
+        );
+
+        for x in &c {
+            assert!(
+                !x.spec.enabled,
+                "{} 被自动启用了——扫到就开是灾难",
+                x.spec.name
+            );
+            assert_eq!(
+                x.spec.transport, "stdio",
+                "Codex 条目无 type 字段时按 stdio"
+            );
+        }
+
+        let fs = &c[0];
+        assert_eq!(fs.spec.command, "npx");
+        assert_eq!(
+            fs.spec.args,
+            ["-y", "@modelcontextprotocol/server-filesystem", "D:"],
+            "多行数组 + 尾随逗号必须解对，解错就是给远程开了错目录（S0）"
+        );
+        assert!(
+            fs.spec.args.last().map(|s| s.as_str()) == Some("D:"),
+            "根目录参数要原样保留并展给用户看"
+        );
+        // 我们不认识的数字字段不能把整条拖垮。
+        assert_eq!(fs.status, CandidateStatus::Importable);
+    }
+
+    /// Codex 里也有基于 url 的条目（streamable HTTP）→ 列出但不可用，与 JSON 路径同口径。
+    #[test]
+    fn codex_toml_url_entry_is_listed_but_unavailable() {
+        let c = parse_codex(&codex_sample(), "~/.codex/config.toml");
+        let remote = c
+            .iter()
+            .find(|x| x.spec.name == "remote")
+            .expect("应解出来");
+        assert!(matches!(remote.status, CandidateStatus::Unavailable(_)));
+    }
+
+    /// env 值只留键名（S7），预览与 Debug 都不能泄。
+    #[test]
+    fn codex_toml_env_values_never_leak() {
+        let c = parse_codex(&codex_sample(), "~/.codex/config.toml");
+        let paper = c
+            .iter()
+            .find(|x| x.spec.name == "paper_search")
+            .expect("应解出来");
+
+        // 值必须留着（否则导入后启动缺环境变量）……
+        assert_eq!(paper.spec.env[0].1, "sk-live-DO-NOT-LEAK");
+        // ……但不得流到任何展示路径。
+        let preview = paper.to_preview().to_string();
+        assert!(!preview.contains("sk-live"), "预览里泄了密钥：{preview}");
+        assert!(preview.contains("SEMANTIC_SCHOLAR_API_KEY"), "键名要给");
+        let dbg = format!("{paper:?}");
+        assert!(!dbg.contains("sk-live"), "Debug 里泄了密钥：{dbg}");
+    }
+
+    /// `toml_to_json` 的每个分支都过一遍：解不开就跳过，不许造假值。
+    #[test]
+    fn toml_values_convert_without_panicking() {
+        let v: toml::Value = toml::from_str(
+            r#"
+s = "x"
+i = 3
+f = 1.5
+b = true
+when = 1979-05-27T07:32:00Z
+arr = [1, "two"]
+[tbl]
+inner = "y"
+"#,
+        )
+        .expect("合法 TOML");
+        let j = toml_to_json(&v);
+        assert_eq!(j["s"], serde_json::json!("x"));
+        assert_eq!(j["i"], serde_json::json!(3));
+        assert_eq!(j["f"], serde_json::json!(1.5));
+        assert_eq!(j["b"], serde_json::json!(true));
+        assert!(
+            j["when"].is_string(),
+            "日期时间转字符串即可，我们不在意的字段不能把转换搞崩：{}",
+            j["when"]
+        );
+        assert_eq!(j["arr"], serde_json::json!([1, "two"]));
+        assert_eq!(j["tbl"]["inner"], serde_json::json!("y"));
+    }
+
+    /// `mcp_servers` 写成非表（用户手滑）→ 空结果，不 panic。
+    #[test]
+    fn codex_toml_with_wrong_shape_yields_nothing() {
+        let v: toml::Value = toml::from_str(r#"mcp_servers = "oops""#).expect("合法 TOML");
+        assert!(parse_codex(&v, "~/.codex/config.toml").is_empty());
+        let empty: toml::Value = toml::from_str("").expect("空文件也是合法 TOML");
+        assert!(parse_codex(&empty, "~/.codex/config.toml").is_empty());
+    }
+
+    /// 真机校验：拿本机**真实的** `~/.codex/config.toml` 跑一遍解析器。
+    ///
+    /// 标 `#[ignore]`：依赖开发机装了什么，CI 上没这个文件。手动跑：
+    /// `cargo test --no-default-features parses_real_codex_toml -- --ignored --nocapture`
+    ///
+    /// 样本测试只能证明「我写的形状能解」，证明不了**真文件**的形状跟我想的一样——
+    /// 本机这份的 `[mcp_servers.node_repl]` 带 `args`/`env`/`env_vars`/`startup_timeout_sec`
+    /// 五个键，其中 `env_vars` 是我们不认识的，正好验证「不认识的键不能拖垮整条」。
+    /// 输出只用 `to_preview()`，所以不会把密钥刷到终端上。
+    #[test]
+    #[ignore]
+    fn parses_real_codex_toml_on_this_machine() {
+        let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
+        else {
+            println!("（拿不到家目录，跳过）");
+            return;
+        };
+        let path = std::path::PathBuf::from(home)
+            .join(".codex")
+            .join("config.toml");
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            println!("（{} 不存在，跳过）", path.display());
+            return;
+        };
+        let v: toml::Value = toml::from_str(&raw).expect("真文件应是合法 TOML");
+
+        let mut c = parse_codex(&v, "~/.codex/config.toml");
+        mark_self(&mut c);
+        dedupe_names(&mut c);
+
+        println!("解出 {} 条：", c.len());
+        for x in &c {
+            println!("  {}", x.to_preview());
+            assert!(!x.spec.enabled, "任何情况下都不得自动启用");
+        }
     }
 
     /// 真机校验：拿本机**真实的** `~/.claude.json` 跑一遍解析器。
