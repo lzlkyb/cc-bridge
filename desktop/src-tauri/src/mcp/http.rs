@@ -235,8 +235,10 @@ async fn auth_middleware(
         return next.run(req).await;
     }
 
-    // M17 修复：/mcp/messages 免 token（SSE 握手时已验 session），但仍须受限流约束，
-    // 不能像此前那样整体放行——否则 SSE 工具调用面完全不受 rate_limit 约束。
+    // M17：/mcp/messages 的 **token 校验在 handler 里做**（`sse::sse_message_handler`）——
+    // 它需要同时看 query 与 `Authorization` 头，而这层只有头、够不着 query。
+    // 这里跳过**只表示「这一层不拦」**，不代表该端点不需要 token（此前确实是完全免 token，
+    // 已于 2026-10-14 补上）。限流仍照走，否则 SSE 工具调用面不受 rate_limit 约束。
     let skip_token = path == "/mcp/messages";
 
     let config = state.config.read().await;
@@ -324,11 +326,118 @@ async fn auth_middleware(
     next.run(req).await
 }
 
+/// 本服务支持的协议版本，新 → 旧排列（`server/discover` 会原样返回给客户端）。
+///
+/// - `2026-07-28`：**现代**（无 `initialize` 握手，每个请求自带 `_meta`）。
+/// - 其余为 legacy（握手式）。cc-bridge 只实现 `tools/list` + `tools/call`，
+///   这两个方法在各 legacy 版本行为一致，故可一并声明支持——回显客户端的
+///   版本号（见 `initialize` 分支）本身也是这个道理。
+const SUPPORTED_VERSIONS: &[&str] = &["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"];
+
+/// `_meta` 里的协议版本键（规范固定字符串，勿改）。
+const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+const META_SERVER_INFO: &str = "io.modelcontextprotocol/serverInfo";
+
+/// 规范定义的错误码（`-32020`~`-32099` 归规范所有，实现不得自造）。
+const ERR_HEADER_MISMATCH: i64 = -32020;
+const ERR_UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
+
+/// 从 `params._meta` 取协议版本。`None` = 这是一个 legacy（握手式）请求。
+///
+/// 判定只看 `_meta`，不看 `MCP-Protocol-Version` 头——**stdio 传输没有头**，
+/// 而头天然可被伪造（见 `handle_standard_headers` 的安全说明）。将来若接 rmcp
+/// 也是同一套判定，不会分叉。
+fn request_protocol_version(body: &serde_json::Value) -> Option<&str> {
+    body.pointer("/params/_meta")
+        .and_then(|m| m.get(META_PROTOCOL_VERSION))
+        .and_then(|v| v.as_str())
+}
+
+/// `UnsupportedProtocolVersionError`（`-32022`）。
+///
+/// `data.supported` 必须给全，客户端据此挑一个双方都支持的版本重试。
+fn unsupported_version_error(id: Option<&serde_json::Value>, requested: &str) -> serde_json::Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": ERR_UNSUPPORTED_PROTOCOL_VERSION,
+            "message": "Unsupported protocol version",
+            "data": { "supported": SUPPORTED_VERSIONS, "requested": requested }
+        }
+    })
+}
+
+/// `HeaderMismatchError`（`-32020`）。
+fn header_mismatch_error(
+    id: Option<&serde_json::Value>,
+    header: &str,
+    got: &str,
+    expected: &str,
+) -> serde_json::Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": ERR_HEADER_MISMATCH,
+            "message": format!("Header mismatch: {header}"),
+            "data": { "header": header, "received": got, "expected": expected }
+        }
+    })
+}
+
+/// 🔒 **标准请求头：只校验，不路由。**
+///
+/// 这些头（`Mcp-Method` / `Mcp-Name` / `MCP-Protocol-Version`）是给反向代理和网关
+/// 做路由用的，**天然可被任何调用方伪造**。所以分发**永远以 body 为准**，
+/// 头只用来做一致性校验——若拿头决定执行哪个工具，等于把 `run_command` 的分发权
+/// 交给一个未鉴权、可任意伪造的字符串，会直接掀翻整套安全模型。
+/// `rate_limit_key` 同理，**继续忽略所有头**（D1 修复，别动）。
+///
+/// 宽松度：**只在头存在且与 body 不符时才报错，缺头放行**。规范对现代请求要求
+/// 必带头，但我们是 dual-era 服务器，严格拒绝会误伤 legacy 客户端（它们根本不发这些头），
+/// 而规范本身也允许支持早期客户端的服务器对缺头请求作宽松处理。
+///
+/// 返回 `Some(错误响应)` 表示校验失败。
+fn handle_standard_headers(
+    headers: &axum::http::HeaderMap,
+    method: &str,
+    body: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if let Some(h) = headers.get("mcp-method").and_then(|v| v.to_str().ok()) {
+        if h != method {
+            return Some(header_mismatch_error(
+                body.get("id"),
+                "Mcp-Method",
+                h,
+                method,
+            ));
+        }
+    }
+    // `Mcp-Name` 只对 tools/call 有意义（规范：其它方法可缺省）。
+    if let Some(h) = headers.get("mcp-name").and_then(|v| v.to_str().ok()) {
+        let expected = body
+            .pointer("/params/name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+        if h != expected {
+            return Some(header_mismatch_error(
+                body.get("id"),
+                "Mcp-Name",
+                h,
+                expected,
+            ));
+        }
+    }
+    None
+}
+
 async fn mcp_handler(
     State(state): State<Arc<AppState>>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
-) -> impl IntoResponse {
+) -> Response<Body> {
     state.increment_requests().await;
     // 方案 A：记录请求到达时间（rpm 统计）。
     state.record_request_time();
@@ -337,7 +446,52 @@ async fn mcp_handler(
 
     let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
+    // ── 现代请求判定（规范明确允许 dual-era 服务器在同一端点并存两代语义）──────
+    // 现代（`2026-07-28` 起）= 无握手、每个请求自带 `_meta`；legacy = 走 initialize。
+    // 缺口方向提示：`Mcp-Session-Id` **不是**缺口——新协议反而移除了协议级 session，
+    // 我们的无状态实现正好命中；真正 MUST 实现而我们此前没有的是 `server/discover`。
+    let modern_version = request_protocol_version(&body);
+    if let Some(v) = modern_version {
+        if !SUPPORTED_VERSIONS.contains(&v) {
+            // 规范要求 HTTP 400 + `-32022`，客户端据此挑一个双方都支持的版本重试。
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(unsupported_version_error(body.get("id"), v)),
+            )
+                .into_response();
+        }
+    }
+    if let Some(err) = handle_standard_headers(&headers, method, &body) {
+        return (StatusCode::BAD_REQUEST, Json(err)).into_response();
+    }
+
     match method {
+        // 现代协议的入口：服务器能力 + 版本清单 + instructions 的新家（MUST 实现）。
+        // 与 initialize 的区别是它不带握手语义、可被任意时刻调用，故 `_meta` 也走这条。
+        "server/discover" => Json(json!({
+            "jsonrpc": "2.0",
+            "id": body.get("id"),
+            "result": {
+                "resultType": "complete",
+                "supportedVersions": SUPPORTED_VERSIONS,
+                "capabilities": { "tools": { "listChanged": false } },
+                "_meta": {
+                    META_SERVER_INFO: {
+                        "name": "cc-bridge",
+                        "version": env!("CARGO_PKG_VERSION")
+                    }
+                },
+                // 与 initialize 共用同一份文案（`server_instructions`），杜绝两处漂移。
+                // 客户端识别走 `from_request`：现代请求的 clientInfo 在 `_meta` 里。
+                "instructions": server_instructions(
+                    crate::mcp::client_kind::ClientKind::from_request(&body)
+                ),
+                // 这段文案描述的是**这台机器**的白名单与 shell 语义，不该被共享中间层
+                // 缓存后发给别人。
+                "cacheScope": "private"
+            }
+        }))
+        .into_response(),
         "initialize" => {
             // 回显客户端请求的协议版本，保证版本协商总能成功。
             // WHY: 写死版本号会在客户端升级/降级后协商失败（历史 bug:
@@ -366,11 +520,13 @@ async fn mcp_handler(
                     )
                 }
             }))
+            .into_response()
         }
         "notifications/initialized" => Json(json!({
             "jsonrpc": "2.0",
             "id": null
-        })),
+        }))
+        .into_response(),
         "tools/list" => {
             // 按当前 shell_type 动态生成工具描述，确保（重新）连接时模型拿到准确的壳层信息。
             let shell_type = state.config.read().await.shell_type.clone();
@@ -379,25 +535,36 @@ async fn mcp_handler(
                 "jsonrpc": "2.0",
                 "id": body.get("id"),
                 "result": {
+                    // 规范第 8 条：所有 result 必带 resultType；缺失时客户端按 complete 处理，
+                    // 所以无条件加、不需要按 era 分支。
+                    "resultType": "complete",
                     "tools": get_tool_definitions(&shell_type, proxy_hint.as_deref()),
                     // list-caching 提示（MCP 2025-11-05+，向后兼容：旧客户端忽略未知字段）。
-                    // 缓存 1 小时、跨用户会话共享，减少远程隧道重复拉取。
+                    // 缓存 1 小时，减少远程隧道重复拉取。
                     //
                     // ⚠ 目录不再“静态不变”：`mcp_proxy` 的描述随已挂载的外挂 server 变化。
                     // 叠上 initialize 里声明的 `listChanged: false`，会话中途新启用一个 server 后，
                     // 已连接的客户端最多要等 1 小时（或重连）才看得到。这是有意接受的取舍：
                     // 启用 server 是低频的管理动作，为它把每次连接的缓存都丢掉不划算。
                     "ttlMs": 3_600_000,
-                    "cacheScope": "user"
+                    // "private" 而非早先的 "user"：规范的 `cacheScope` 只有
+                    // public / private 两个取值，"user" 不是合法枚举值（客户端会按未知值忽略，
+                    // 于是「别跨用户共享」这个意图其实没生效）。工具描述里带本机路径与 shell
+                    // 语义，正是该 private 的那类。
+                    "cacheScope": "private"
                 }
             }))
+            .into_response()
         }
-        "tools/call" => handle_tools_call(state, source_ip, body).await,
+        "tools/call" => handle_tools_call(state, source_ip, body)
+            .await
+            .into_response(),
         _ => Json(json!({
             "jsonrpc": "2.0",
             "id": body.get("id"),
             "error": { "code": -32601, "message": format!("Method not found: {}", method) }
-        })),
+        }))
+        .into_response(),
     }
 }
 
@@ -483,10 +650,17 @@ pub async fn handle_tools_call(
                         );
                         state.inc_audit_count();
                     }
+                    let mut result = content;
+                    // 规范第 8 条：所有 result 必带 `resultType`。缺失时客户端**按 complete 处理**
+                    // （规范自带兜底），legacy 客户端也会按 JSON 惯例忽略多出来的字段
+                    // → 无条件加即可，不需要按 era 分支。
+                    if let Some(obj) = result.as_object_mut() {
+                        obj.insert("resultType".into(), json!("complete"));
+                    }
                     Json(json!({
                         "jsonrpc": "2.0",
                         "id": body.get("id"),
-                        "result": content
+                        "result": result
                     }))
                 }
                 Err(e) => {
@@ -513,6 +687,7 @@ pub async fn handle_tools_call(
                         "jsonrpc": "2.0",
                         "id": body.get("id"),
                         "result": {
+                            "resultType": "complete",
                             "isError": true,
                             "content": [{ "type": "text", "text": format!("Error: {}", e) }]
                         }
@@ -2078,5 +2253,149 @@ mod over_wire_tests {
                 i + 1
             );
         }
+    }
+
+    // ── MCP 2026-07-28 协议适配（Phase 1 + M17 补洞）──────────────────
+
+    /// `server/discover`（新协议 MUST 实现）：版本清单首项为现代版本、
+    /// resultType 必带、instructions 与 initialize 共源、cacheScope=private。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn server_discover_returns_capabilities() {
+        let root = unique_temp_root("discover");
+        let srv = spawn_server(test_config(&root), root).await;
+        let v = rpc(&srv.base, &srv.token, "server/discover", json!({})).await;
+        let r = &v["result"];
+        assert_eq!(
+            r["supportedVersions"].as_array().map(|a| a.len()),
+            Some(4),
+            "版本清单数量变了——若是增删版本，请同步 SUPPORTED_VERSIONS 与本断言: {v}"
+        );
+        assert_eq!(
+            r["supportedVersions"][0].as_str(),
+            Some("2026-07-28"),
+            "首项必须是现代版本（新 → 旧排列）"
+        );
+        assert_eq!(r["resultType"].as_str(), Some("complete"));
+        assert!(
+            r["instructions"].as_str().is_some_and(|s| !s.is_empty()),
+            "instructions 缺失或为空: {v}"
+        );
+        assert_eq!(r["cacheScope"].as_str(), Some("private"));
+        assert_eq!(
+            r["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+            "cc-bridge"
+        );
+    }
+
+    /// 现代请求带了不支持的版本 → HTTP 400 + `-32022`，data.supported 给全。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn modern_request_unsupported_version_is_400_32022() {
+        let root = unique_temp_root("proto-bad");
+        let srv = spawn_server(test_config(&root), root).await;
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/list",
+            "params": { "_meta": { "io.modelcontextprotocol/protocolVersion": "1999-01-01" } }
+        });
+        let resp = raw_post(&srv.base, Some(&srv.token), body).await;
+        assert_eq!(resp.status(), 400, "规范要求 HTTP 400");
+        let v: Value = resp.json().await.expect("响应非 JSON");
+        assert_eq!(v["error"]["code"].as_i64(), Some(-32022));
+        assert_eq!(v["id"].as_i64(), Some(7));
+        assert!(
+            v["error"]["data"]["supported"].as_array().is_some(),
+            "客户端要靠 supported 挑重试版本: {v}"
+        );
+    }
+
+    /// 现代请求（`_meta` 带受支持版本）不再走 initialize 也能完成 tools/list——
+    /// 这是 dual-era 服务器的核心行为：同一端点并存两代语义。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn modern_request_without_handshake_lists_tools() {
+        let root = unique_temp_root("proto-mod");
+        let srv = spawn_server(test_config(&root), root).await;
+        let v = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/list",
+            json!({ "_meta": { "io.modelcontextprotocol/protocolVersion": "2026-07-28" } }),
+        )
+        .await;
+        let tools = v["result"]["tools"].as_array().expect("tools 缺失");
+        assert!(!tools.is_empty(), "现代请求应能直接拿到工具清单");
+    }
+
+    /// 头只校验不路由（🔴 安全红线）：`Mcp-Method` 头与 body 不符 → `-32020`，
+    /// 且**不执行**任何方法。若按头路由，伪造的头能决定执行哪个工具。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mcp_method_header_mismatch_is_32020() {
+        let root = unique_temp_root("hdr-bad");
+        let srv = spawn_server(test_config(&root), root).await;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+        let resp = client()
+            .post(format!("{}/mcp", srv.base))
+            .header("Authorization", format!("Bearer {}", srv.token))
+            .header("Mcp-Method", "tools/call")
+            .json(&body)
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(resp.status(), 400);
+        let v: Value = resp.json().await.expect("响应非 JSON");
+        assert_eq!(v["error"]["code"].as_i64(), Some(-32020));
+        assert_eq!(v["error"]["data"]["header"].as_str(), Some("Mcp-Method"));
+    }
+
+    /// `Mcp-Name` 头与 `params.name` 不符 → `-32020`（只对 tools/call 有意义）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mcp_name_header_mismatch_is_32020() {
+        let root = unique_temp_root("hdr-name");
+        let srv = spawn_server(test_config(&root), root).await;
+        let body = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "list_allowed_roots", "arguments": {} }
+        });
+        let resp = client()
+            .post(format!("{}/mcp", srv.base))
+            .header("Authorization", format!("Bearer {}", srv.token))
+            .header("Mcp-Name", "run_command")
+            .json(&body)
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(resp.status(), 400);
+        let v: Value = resp.json().await.expect("响应非 JSON");
+        assert_eq!(v["error"]["code"].as_i64(), Some(-32020));
+    }
+
+    /// M17 补洞：`/mcp/messages` 不再整体放行——无 token 401；
+    /// 带 token 但会话不存在 404（证明 token 关已过、卡在会话层）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sse_messages_requires_token() {
+        let root = unique_temp_root("sse-msg");
+        let srv = spawn_server(test_config(&root), root).await;
+        let body = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+
+        let no_token = client()
+            .post(format!("{}/mcp/messages?sessionId=nope", srv.base))
+            .json(&body)
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(
+            no_token.status(),
+            401,
+            "sessionId 不能替代 token（它出现在 URL 上，泄露面大）"
+        );
+
+        let with_token = client()
+            .post(format!("{}/mcp/messages?sessionId=nope", srv.base))
+            .header("Authorization", format!("Bearer {}", srv.token))
+            .json(&body)
+            .send()
+            .await
+            .expect("request failed");
+        assert_eq!(with_token.status(), 404, "token 过了才该轮到会话层报 404");
     }
 }

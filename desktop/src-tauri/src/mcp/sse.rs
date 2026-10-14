@@ -83,7 +83,10 @@ pub async fn sse_handler(
         );
     }
 
-    let endpoint_url = format!("/mcp/messages?sessionId={}", session_id);
+    // 🔴 端点 URL 里带上 token：`/mcp/messages` 现在**必须**带 token（见下方
+    // `sse_message_handler` 的鉴权），而客户端只会照搬这里给它的 URL。
+    // 不算新增暴露面——token 本来就已经在这次握手的 query 里（`?token=`）。
+    let endpoint_url = format!("/mcp/messages?sessionId={}&token={}", session_id, expected);
 
     // 用 BroadcastStream 把 broadcast::Receiver 转为 axum Body stream。
     // M18：cleanup 随 stream 存活，连接断开 stream 被 drop 时移除注册表里的 session。
@@ -125,12 +128,39 @@ pub async fn sse_handler(
 }
 
 /// SSE 消息投递：POST /mcp/messages?sessionId=xxx
+///
+/// 🔴 **鉴权（M17 的后半段）**：此前这个端点完全免 token，只认 URL 里的 `sessionId`——
+/// 而 sessionId 会出现在 URL 上（代理、访问日志、浏览器历史都可能留存），
+/// 拿到它等于拿到这条会话的工具调用权（`tools/call` 就在这条路径上）。
+/// 现在与其它端点同口径校验 token：优先 `Authorization: Bearer`（标准做法），
+/// 其次 query 的 `token`（端点 URL 自带，兼容只会照搬 URL 的客户端）。
 pub async fn sse_message_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
+    let expected = state.config.read().await.token.clone();
+    let from_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+    let provided = if from_header.is_empty() {
+        params.get("token").map(|s| s.as_str()).unwrap_or("")
+    } else {
+        from_header
+    };
+    if !crate::security::auth::verify_token(provided, &expected) {
+        // 与 /mcp 同一治理口径：鉴权拒绝计入 authDenies。
+        state.inc_auth_denies();
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "Unauthorized"})),
+        );
+    }
+
     let session_id = match params.get("sessionId") {
         Some(id) => id.clone(),
         None => {

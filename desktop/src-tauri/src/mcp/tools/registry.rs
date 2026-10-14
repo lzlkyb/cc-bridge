@@ -338,4 +338,39 @@ mod tests {
             "maxDepth has serde(default) -> must NOT be in 'required'"
         );
     }
+
+    /// 🔴 `tools/list` 的**顺序必须确定性**（MCP 2026-07-28 的次要变更之一：
+    /// 确定性顺序能同时提升客户端缓存与 LLM prompt cache 的命中率）。
+    ///
+    /// 现状是「靠 `all_tools()` 里 `register_tool!` 的字面量顺序碰巧确定」——
+    /// 碰巧的东西会被下一次重构悄悄改掉，所以用断言钉住，而不是去改动顺序本身。
+    ///
+    /// 刻意**不**按名字排序：现在的顺序是语义分组（先读后写、外挂桥垫后），
+    /// 按名字排会把这份可读性打乱，反而降低模型选工具的准确率。
+    /// 顺序要变就必须显式改这条测试，改动因此可见。
+    #[test]
+    fn tool_order_is_deterministic() {
+        let a: Vec<&str> = all_tools().iter().map(|t| t.name).collect();
+        let b: Vec<&str> = all_tools().iter().map(|t| t.name).collect();
+        assert_eq!(a, b, "同进程内两次 all_tools() 的顺序必须完全一致");
+
+        // 语义分组的第一个是「先让模型摸清白名单」的 list_allowed_roots。
+        assert_eq!(
+            a.first().copied(),
+            Some("list_allowed_roots"),
+            "首项顺序变了——若是有意调整，请同步这条断言"
+        );
+        // 外挂桥的两个工具相邻且顺序固定：先发现（list）再调用（proxy）。
+        let i_list = a
+            .iter()
+            .position(|n| *n == "mcp_list_servers")
+            .expect("mcp_list_servers must be registered");
+        assert_eq!(
+            a.get(i_list + 1).copied(),
+            Some("mcp_proxy"),
+            "mcp_proxy 应紧跟 mcp_list_servers——若是有意调整，请同步这条断言"
+        );
+        // ⚠️ 刻意不钉「最后一项」：`push_notification` 带 feature 门控
+        // （`notifications`，CI 用 --no-default-features 跑），末尾随 feature 变。
+    }
 }
