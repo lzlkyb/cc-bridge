@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { Terminal } from "@xterm/xterm";
-import { SshTerminalMenu, type TerminalMenuPos } from "./SshTerminalMenu";
+import { SshTerminalContextMenu } from "./SshTerminalContextMenu";
 import { SshTerminalToolbar } from "./SshTerminalToolbar";
 import { SshDisconnectedBar } from "./SshDisconnectedBar";
 import { useSshTerminalSelect } from "./useSshTerminalSelect";
@@ -14,6 +14,10 @@ import { WheelOwnerPopover } from "./WheelOwnerPopover";
 import { useWheelGuide } from "../../hooks/useWheelGuide";
 import { navJump } from "../../lib/terminalCommandNav";
 import { registerPathLinkProvider } from "../../lib/terminalPathLink";
+import { registerTerminal } from "../../lib/terminalRegistry";
+import { useTerminalExport } from "./useTerminalExport";
+import { SshCommandBlocksPanel } from "./SshCommandBlocksPanel";
+import { setCmdPanelOpen, useCmdPanelOpen } from "../../lib/terminalPanelStore";
 import { useTerminalTabMeta, type TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
 import { useClipboardImagePaste } from "../../hooks/useClipboardImagePaste";
 import { forceRepaint } from "../../lib/terminalRepaint";
@@ -79,8 +83,6 @@ export function SshTerminal({
   // 且不让它进入 effect 依赖导致 xterm 重建。
   const dragSelectEnabledRef = useRef(dragSelectEnabled);
   dragSelectEnabledRef.current = dragSelectEnabled;
-  // 右键菜单锚点（视口坐标），null = 不显示。
-  const [menuPos, setMenuPos] = useState<TerminalMenuPos | null>(null);
   const mode = useThemeMode();
   const preset = useTerminalPreset();
   const inject = useTerminalInject();
@@ -123,25 +125,29 @@ export function SshTerminal({
   // 把远端 cwd 上报给父级（拖拽上传的目标目录）。ref 承接：内联箭头不能进依赖。
   const onCwdRef = useRef(onCwd);
   onCwdRef.current = onCwd;
-  useEffect(() => {
-    onCwdRef.current(status.cwd);
-  }, [status.cwd]);
+  useEffect(() => onCwdRef.current(status.cwd), [status.cwd]);
 
   // 滚轮归属四态 + 翻转引导 + 救急面板开关（逻辑在 hooks/useWheelGuide.ts，这里只消费）。
   const wheel = useWheelGuide({ sessionId, closed, termRef, containerRef });
   // 输出里的远端绝对路径 → 可点击（注册在 web-links 之后，URL 仍归它）。
   const onOpenFilePathRef = useRef(onOpenFilePath);
   onOpenFilePathRef.current = onOpenFilePath;
-  // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），只需挂一次。
+  // 🔴 依赖从 `[]` 改成 `[sessionId]`：本 effect 同时管两处登记，而重连会换 sessionId，
+  // 全局终端注册表（跨标签搜索取实例用）的 key 必须跟着换。重挂路径链接无害（dispose 摘旧的）。
+  // （term 由 session hook 的 effect 创建，它先于本 effect 运行，所以这里 termRef 一定有值。）
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    return registerPathLinkProvider(term, (p) => onOpenFilePathRef.current(p));
-  }, []);
+    const offLink = registerPathLinkProvider(term, (p) => onOpenFilePathRef.current(p));
+    const offRegistry = registerTerminal(sessionId, term);
+    return () => {
+      offLink();
+      offRegistry();
+    };
+  }, [sessionId]);
 
-  // 终端聚焦时的 window capture 快捷键（🔴 不能走 attachTerminalKeymap——xterm 的
-  // custom key handler 是单槽位，session hook 已占用；capture 阶段先于 xterm 的
-  // textarea 处理，preventDefault + stopPropagation 就能整条拦下）。
+  // 终端聚焦时的 window capture 快捷键（🔴 不能走 attachTerminalKeymap——xterm 的 custom
+  // key handler 是单槽位、session hook 已占用；capture 先于 xterm 的 textarea 处理）。
   useEffect(() => {
     const send = (data: string) => {
       if (closedRef.current) return;
@@ -200,18 +206,10 @@ export function SshTerminal({
     onNotify: (text) => toast(`${conn.name || conn.host}：${text}`, "info"),
   });
 
-  // 右键：阻掉默认菜单，改弹自己的复制/粘贴/全选。用视口坐标定位，
-  // 因为终端容器带 overflow-hidden，菜单挂在容器内会被裁掉。
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const onContextMenu = (e: MouseEvent) => {
-      e.preventDefault();
-      setMenuPos({ x: e.clientX, y: e.clientY });
-    };
-    container.addEventListener("contextmenu", onContextMenu);
-    return () => container.removeEventListener("contextmenu", onContextMenu);
-  }, []);
+  // 导出整个滚动历史（「更多」菜单里的「导出终端内容…」）。断开态也能用。
+  const exportSession = useTerminalExport(termRef, conn.name || conn.host);
+  // 命令历史面板：开关在模块级 store（触发按钮在工具栏），面板挂在本会话容器内。
+  const cmdOpen = useCmdPanelOpen();
 
   const surface = TERMINAL_SURFACE[preset][mode];
   return (
@@ -235,6 +233,7 @@ export function SshTerminal({
         onToggleSelectMode={select.toggleSelectMode}
         onClear={() => termRef.current?.clear()}
         onToggleFullscreen={onToggleFullscreen}
+        onExport={exportSession}
       />
       <TerminalStatusBar
         sessionId={sessionId}
@@ -267,10 +266,13 @@ export function SshTerminal({
       >
         <div ref={containerRef} className="h-full w-full" />
         <SshTerminalFind search={search} />
-        {/* 引导条是覆盖层不是流内元素：占布局高度会触发 fit→rows 变化→远端 TUI 重排
-            （与 SshTerminalFind.tsx 头注是同一坑）——教用户别毁屏幕的提示自己先别毁屏幕。 */}
+        {cmdOpen && (
+          <SshCommandBlocksPanel termRef={termRef} name={conn.name || conn.host} closed={closed} onClose={() => setCmdPanelOpen(false)} />
+        )}
+        {/* 覆盖层，不占布局（占高度会 fit→远端 TUI 重排，详见 TuiGuideBar 头注）。
+            外层 padding 也要 pointer-events-none，否则终端顶部一整条横带成点击/选中死区。 */}
         {wheel.guide === "open" && !closed && (
-          <div className="absolute inset-x-0 top-0 z-20 p-2">
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-2">
             <TuiGuideBar flips={wheel.flips} onSend={wheel.openSendConfirm} onDismiss={wheel.dismissForever} onCollapse={wheel.collapseGuide} />
           </div>
         )}
@@ -283,17 +285,15 @@ export function SshTerminal({
           </div>
         )}
       </div>
-      {menuPos && (
-        <SshTerminalMenu
-          pos={menuPos}
-          hasSelection={select.hasSelection()}
-          pasteDisabled={closed}
-          onCopy={select.copySelection}
-          onPaste={paste}
-          onSelectAll={() => termRef.current?.selectAll()}
-          onClose={() => setMenuPos(null)}
-        />
-      )}
+      {/* 右键菜单层已抽到 SshTerminalContextMenu.tsx（本文件紧贴 300 行棘轮线）。 */}
+      <SshTerminalContextMenu
+        containerRef={containerRef}
+        hasSelection={select.hasSelection}
+        pasteDisabled={closed}
+        onCopy={select.copySelection}
+        onPaste={paste}
+        onSelectAll={() => termRef.current?.selectAll()}
+      />
     </div>
   );
 }

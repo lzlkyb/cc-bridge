@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import {
   getInjectEnabled,
   getPreset,
+  getTmuxBridgeEnabled,
   subscribeInject,
   subscribePreset,
+  subscribeTmuxBridge,
 } from "../lib/terminalPreset";
 import type { TerminalPreset } from "../lib/terminalTheme";
 
@@ -24,5 +26,12 @@ export function useTerminalPreset(): TerminalPreset {
 export function useTerminalInject(): boolean {
   const [on, setOn] = useState<boolean>(getInjectEnabled);
   useEffect(() => subscribeInject(() => setOn(getInjectEnabled())), []);
+  return on;
+}
+
+/** 订阅「tmux 桥接」开关（默认关）。见 lib/terminalPreset.ts 里为什么默认关。 */
+export function useTerminalTmuxBridge(): boolean {
+  const [on, setOn] = useState<boolean>(getTmuxBridgeEnabled);
+  useEffect(() => subscribeTmuxBridge(() => setOn(getTmuxBridgeEnabled())), []);
   return on;
 }

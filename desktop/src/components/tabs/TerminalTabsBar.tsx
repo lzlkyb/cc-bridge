@@ -1,5 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon";
+import { TerminalGlobalSearch } from "./TerminalGlobalSearch";
+import { setCmdPanelOpen } from "../../lib/terminalPanelStore";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 import type { TermTabMeta } from "../../lib/terminalTabMeta";
 import type { IProgressState } from "@xterm/addon-progress";
@@ -55,6 +57,9 @@ export function TerminalTabsBar({
   onNewTerminal,
 }: TerminalTabsBarProps) {
   const activeRef = useRef<HTMLDivElement>(null);
+  // 跨标签搜索浮层。它是 `fixed` 定位，所以放在这条 `overflow-x-auto` 里也不会被裁剪
+  // （定位于视口，不参与这条 flex 布局）——省掉一层 Fragment 包裹与整块缩进。
+  const [searchOpen, setSearchOpen] = useState(false);
   // 标签多了会溢出横向滚动区，新连的会话可能落在可视区外，看着像「没反应」。
   // block: "nearest" 避免把页面垂直方向也拉跑了。
   useEffect(() => {
@@ -122,8 +127,14 @@ export function TerminalTabsBar({
             </button>
             <button
               type="button"
-              onClick={() => (closed ? onCloseTab(s.sessionId) : onDisconnect(s.sessionId))}
-              className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => {
+                // 真正移除标签时顺手收起「命令历史」面板：那是个全局开关，而面板本体挂在
+                // 各会话自己的容器里——不关的话，标签一消失它就在相邻标签上自己打开，
+                // 用户没点过任何东西。断开（保留标签）不关，那时继续看记录是合理的。
+                if (closed) setCmdPanelOpen(false);
+                return closed ? onCloseTab(s.sessionId) : onDisconnect(s.sessionId);
+              }}
+              className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive-ink"
               title={closed ? "关闭标签" : "断开（标签保留，可重连）"}
             >
               <Icon name="close" size={11} />
@@ -140,6 +151,16 @@ export function TerminalTabsBar({
           </div>
         );
       })}
+      {/* 跨标签搜索入口（ml-auto 把它和「新终端」一起推到右侧）。
+          与工具栏的「搜索」区别：那个只搜当前标签，这个横跨所有会话的滚动历史。 */}
+      <button
+        type="button"
+        onClick={() => setSearchOpen(true)}
+        title="搜索所有标签的终端内容（含已断开标签的历史）"
+        className="ml-auto flex shrink-0 items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <Icon name="search" size={12} /> 搜索所有标签
+      </button>
       {onNewTerminal && (
         <button
           type="button"
@@ -149,6 +170,13 @@ export function TerminalTabsBar({
         >
           <Icon name="plus" size={12} /> 新终端
         </button>
+      )}
+      {searchOpen && (
+        <TerminalGlobalSearch
+          sessions={sessions}
+          onActivate={onActivate}
+          onClose={() => setSearchOpen(false)}
+        />
       )}
     </div>
   );

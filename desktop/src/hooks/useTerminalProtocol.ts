@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "../lib/tauri";
+import { parseOsc52 } from "../lib/terminalClipboard";
 import {
   PROGRAM_STATUS_OSC,
   PROGRAM_STATUS_PROBE_REPLY,
@@ -157,6 +159,19 @@ export function useTerminalProtocol({
         return true; // 已消费：别让 xterm 再去渲染这条序列
       });
 
+      // OSC 52：全屏 TUI（Claude Code）接管鼠标后，拖选失效，复制只能靠这条序列请求终端代写。
+      // 只开「写」半边；读 / 空 payload / 超大一律拒绝（红线见 lib/terminalClipboard.ts 头注）。
+      const d52 = term.parser.registerOscHandler(52, (data) => {
+        const req = parseOsc52(data);
+        if (req.kind === "write") {
+          // 走 Tauri 插件写系统剪贴板而不是 navigator.clipboard：后台标签收到远端复制请求时，
+          // WebView2 的 navigator.clipboard 会因文档未聚焦而静默失败（与 H6 修复同因）。
+          void writeText(req.text).catch(() => {});
+        }
+        // 🔴 被拒绝的请求也必须 return true，否则序列会继续落到别的 handler / 被渲染成乱码。
+        return true;
+      });
+
       // DECSET / DECRST 2031。非 2031 一律返回 false 回退给 xterm 的 built-in，
       // 否则会把 ?1000h（鼠标）/ ?1049h（备用屏）等全截胡，终端直接坏掉。
       const dH = term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => {
@@ -176,6 +191,7 @@ export function useTerminalProtocol({
 
       dispose = () => {
         dOsc.dispose();
+        d52.dispose();
         dH.dispose();
         dL.dispose();
       };

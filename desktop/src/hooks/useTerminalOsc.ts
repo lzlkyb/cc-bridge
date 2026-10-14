@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { Terminal } from "@xterm/xterm";
 import { invoke } from "../lib/tauri";
 import {
-  HOOK_CMD,
   PROBE_CMD,
+  hookCmd,
   isOsc133A,
   isSupportedShell,
   parseOsc7,
@@ -150,7 +150,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
         }
         const code = parseOsc133(data);
         if (code === null) return false;
-        const durMs = navCmdEnd(term);
+        const durMs = navCmdEnd(term, code);
         setStatus((s) => ({ ...s, exitCode: code, lastCmdMs: durMs ?? s.lastCmdMs }));
         setState((s) => (s === "ready" ? s : "ready"));
         return true;
@@ -267,7 +267,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     probeGoRef.current = () => {
       at(DANCE.HOOK_DELAY, () => {
         if (typedRef.current || phase !== "probeSent") return; // 回执迟到/已中止：不注入
-        void send(` ${HOOK_CMD}\n`).catch(() => abortDance());
+        void send(` ${hookCmd()}\n`).catch(() => abortDance());
         phase = danceNext(phase, "hookSent").phase;
       });
       at(DANCE.HOOK_DELAY + DANCE.KICK_DELAY, () => {

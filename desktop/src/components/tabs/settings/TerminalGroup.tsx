@@ -5,8 +5,17 @@ import { SettingsRow } from "../../ui/SettingsRow";
 import { ToggleRow } from "../../ui/ToggleRow";
 import { OptionChip } from "../../ui/OptionChip";
 import { InlineNotice } from "../../ui/notice";
-import { useTerminalPreset, useTerminalInject } from "../../../hooks/useTerminalPreset";
-import { PRESETS, setPreset, setInjectEnabled } from "../../../lib/terminalPreset";
+import {
+  useTerminalInject,
+  useTerminalPreset,
+  useTerminalTmuxBridge,
+} from "../../../hooks/useTerminalPreset";
+import {
+  PRESETS,
+  setInjectEnabled,
+  setPreset,
+  setTmuxBridgeEnabled,
+} from "../../../lib/terminalPreset";
 import {
   TUI_SCROLL_SPEEDS,
   loadTuiScrollSpeed,
@@ -25,6 +34,7 @@ import {
 export function TerminalGroup() {
   const preset = useTerminalPreset();
   const inject = useTerminalInject();
+  const tmuxBridge = useTerminalTmuxBridge();
   const [speed, setSpeed] = useState(loadTuiScrollSpeed);
   return (
     <Card id="set-terminal">
@@ -51,6 +61,12 @@ export function TerminalGroup() {
           sub="会话连上后向远端 shell 注入一段轻量钩子，读取当前目录与 git 分支显示在状态栏。只读取、不改提示符、不写任何文件；远端非 bash/zsh 或注入失败时自动降级。关掉后状态栏只显示本地可算的信息。"
           checked={inject}
           onChange={setInjectEnabled}
+        />
+        <ToggleRow
+          label="tmux 桥接"
+          sub="会话检测到远端跑在 tmux 里时，注入三行 tmux 全局设置，让桌面通知、进度条、Shift+Enter 换行与 OSC 52 复制能穿透到外层终端。⚠️ 这是对运行中 tmux server 的全局设置，会影响同一台机器上你的其它 tmux 会话；在共享主机上请确认后再开。新开或重连的会话生效。"
+          checked={tmuxBridge}
+          onChange={setTmuxBridgeEnabled}
         />
         <SettingsRow
           label="TUI 滚动速度"

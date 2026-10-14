@@ -35,12 +35,15 @@ export function MoreMenu({
   onToggleSelectMode,
   onClear,
   onRepaint,
+  onExport,
 }: {
   selectMode: boolean;
   onCopyScreen: () => void;
   onToggleSelectMode: () => void;
   onClear: () => void;
   onRepaint: () => void;
+  /** 导出整个滚动历史为 .txt（断开态也能用——读的是本地缓冲区）。 */
+  onExport: () => void;
 }) {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   return (
@@ -68,6 +71,12 @@ export function MoreMenu({
               hint="画面残影/花屏时用"
               icon="paintbrush"
               onClick={() => { onRepaint(); close(); }}
+            />
+            <MenuItem
+              label="导出终端内容…"
+              hint="滚动历史 → .txt"
+              icon="download"
+              onClick={() => { onExport(); close(); }}
             />
             <MenuItem
               label="快捷键"

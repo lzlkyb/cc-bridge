@@ -1,6 +1,7 @@
 import { Icon } from "../ui/icon";
 import { Menu, MenuItem } from "../ui/Menu";
 import { useTerminalPreset } from "../../hooks/useTerminalPreset";
+import { setCmdPanelOpen, useCmdPanelOpen } from "../../lib/terminalPanelStore";
 import { setPreset, PRESETS } from "../../lib/terminalPreset";
 import { TERMINAL_PALETTES, type TerminalPreset } from "../../lib/terminalTheme";
 import type { SshConnection } from "../../lib/types";
@@ -31,6 +32,8 @@ interface Props {
   onToggleSelectMode: () => void;
   onClear: () => void;
   onToggleFullscreen: () => void;
+  /** 导出整个滚动历史为 .txt（「更多」菜单项）。 */
+  onExport: () => void;
 }
 
 /**
@@ -63,7 +66,11 @@ export function SshTerminalToolbar({
   onToggleSelectMode,
   onClear,
   onToggleFullscreen,
+  onExport,
 }: Props) {
+  // 命令历史面板的开关在模块级 store 里：按钮在每个会话自己的工具栏上，面板本体挂在
+  // 会话容器（SshTerminal）里——两端不同子树，靠 props 串会把 SshTerminal.tsx 撑破 300 行线。
+  const cmdOpen = useCmdPanelOpen();
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2">
       <Icon name="terminal" size={14} className="shrink-0 text-muted-foreground" />
@@ -77,7 +84,7 @@ export function SshTerminalToolbar({
         {conn.username}@{conn.host}:{conn.port}
       </span>
       {closed ? (
-        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-destructive/15 px-2 py-0.5 text-[11px] font-medium text-destructive">
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-destructive/15 px-2 py-0.5 text-[11px] font-medium text-destructive-ink">
           <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
           已断开
         </span>
@@ -142,6 +149,15 @@ export function SshTerminalToolbar({
         <ButtonIcon title="搜索（Ctrl+Shift+F）" onClick={onSearch}>
           <Icon name="search" size={14} />
         </ButtonIcon>
+        {/* 命令历史（OSC 133 命令块）。⚠️ 只有普通 shell 会话有记录，全屏 TUI 里为空——
+            面板空态里写了这条限制。 */}
+        <ButtonIcon
+          title="命令历史（普通 shell 会话）"
+          highlight={cmdOpen}
+          onClick={() => setCmdPanelOpen(!cmdOpen)}
+        >
+          <Icon name="history" size={14} />
+        </ButtonIcon>
         <ButtonIcon
           title={fullscreen ? "退出全屏（F11）" : "全屏（F11）"}
           highlight={fullscreen}
@@ -156,6 +172,7 @@ export function SshTerminalToolbar({
           onToggleSelectMode={onToggleSelectMode}
           onClear={onClear}
           onRepaint={onRepaint}
+          onExport={onExport}
         />
       </div>
     </div>

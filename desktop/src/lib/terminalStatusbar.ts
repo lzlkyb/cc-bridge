@@ -1,6 +1,8 @@
 import type { CSSProperties } from "react";
 import type { TerminalPreset } from "./terminalTheme";
-import type { Theme } from "./theme";
+import { getStoredTheme, type Theme } from "./theme";
+import { getTmuxBridgeEnabled } from "./terminalPreset";
+import { loadTuiScrollSpeed } from "./terminalScrollSpeed";
 
 /**
  * 终端状态栏：四套风格的样式 token + OSC 解析纯函数。
@@ -340,6 +342,51 @@ export function isSupportedShell(name: string): boolean {
 }
 
 /**
+ * 会话环境注入：在远端 shell 里 `export` 变量，供 Claude Code 等程序读取。
+ *
+ * WHY 用「注入 export」而不是 spawn 时设 env：SSH 的远端环境由 sshd 决定，本地
+ * `Command::env()` 传不过去（`ssh -o SetEnv` 还要服务端 AcceptEnv，默认拒绝）。
+ * 我们自己往**活 shell** 里打字，这是别的终端没有的位置优势。
+ *
+ * 注入三件事：
+ * - `COLORFGBG`：`theme: auto` 走**异步** OSC 11 时高亮层拿不到结果 → 代码块白底白字（#56848）。
+ *   这个变量是**同步可见**的（首帧就有值），SSH 过来默认不存在。取值 `fg;bg`（暗 `15;0`、亮 `0;15`）。
+ *   ⚠️ 只在会话建立时注入一次，之后热切主题不会重发：运行中的 Claude Code 由 OSC 2031 通知兜底。
+ * - `CLAUDE_CODE_SCROLL_SPEED`：决定 TUI 内滚轮每格滚几行（对方内部 clamp 到 20）。
+ *   直接复用用户在设置页选的 TUI 滚动速度，两处手感一致。
+ * - `CLAUDE_CODE_DISABLE_NOTIFICATION_PRESENCE_CHECK`：Claude Code 自己也有一层
+ *   「用户在场就不通知」的判定，与 `useTerminalProtocol` 里的 `visible && document.hasFocus()`
+ *   静默**叠加会漏通知**（人走开了两边都不发）。关掉远端那层，由我们统一决定弹不弹原生通知。
+ */
+export function envInjectCmd(): string {
+  const colorfgbg = getStoredTheme() === "dark" ? "15;0" : "0;15";
+  return (
+    `export COLORFGBG='${colorfgbg}'` +
+    ` CLAUDE_CODE_SCROLL_SPEED='${loadTuiScrollSpeed()}'` +
+    ` CLAUDE_CODE_DISABLE_NOTIFICATION_PRESENCE_CHECK='1';`
+  );
+}
+
+/**
+ * tmux 桥接：tmux 内默认坏三件事 —— ① 桌面通知与进度条到不了外层终端；
+ * ② Shift+Enter 被当成提交；③ OSC 52 复制被吞（Claude Code 在 tmux 内会把 OSC 52
+ * 包进 DCS passthrough，不开 passthrough 就丢）。
+ *
+ * 三条 `tmux set` 作用于**运行中的 server**、不改用户的 `.tmux.conf`；但它们是**全局**设置，
+ * 会影响该用户同机的其它 tmux 会话 —— 故只在用户开启「tmux 桥接」时注入（默认关）。
+ * `2>/dev/null` 吃掉旧版 tmux 不认某选项时的报错，避免污染屏幕。
+ */
+export function tmuxBridgeCmd(): string {
+  return [
+    `if [ -n "$TMUX" ]; then`,
+    `tmux set -g allow-passthrough on 2>/dev/null;`,
+    `tmux set -s extended-keys on 2>/dev/null;`,
+    `tmux set -as terminal-features 'xterm*:extkeys' 2>/dev/null;`,
+    `fi;`,
+  ].join(" ");
+}
+
+/**
  * 提示符钩子（bash 走 PROMPT_COMMAND，zsh 走 precmd_functions）。
  *
  * 设计取舍，改动前请三思：
@@ -348,15 +395,25 @@ export function isSupportedShell(name: string): boolean {
  *    不动 .bashrc/.zshrc。改 PS1 是另一量级的侵入，产品上明确不做。
  * 2. **git 分支按目录缓存**：`git rev-parse` 每次提示符都跑会拖慢手感（大仓库几十毫秒），
  *    所以只在 `$PWD` 变化时重跑。这正是 Starship「每段独立探测 + 缓存」的做法。
- * 3. **不做命令耗时**：那需要 bash 的 DEBUG trap / zsh 的 preexec 再多加一条序列，
- *    而 DEBUG trap 在钩子函数内部也会被触发，得用标志位过滤，脆弱且易误报。
- *    收益（一个 ⏱ 段）不值得这个风险，故只做路径 / 分支 / 退出码三段。
+ * 3. **耗时口径是「提示符→提示符」而非「命令执行」**：精确测出命令本身的执行时间需要
+ *    `133;C`（bash 的 DEBUG trap / zsh 的 preexec），而 DEBUG trap 在钩子函数内部也会被
+ *    触发，得用标志位过滤，脆弱且易误报 —— 明确不做。所以耗时是 A 钉点 → D 到达的间隔，
+ *    含用户敲命令的时间。状态栏文案据此写「上一条」而非「本条执行」，不宣称精确。
+ *
+ * 🔴 **每次提示符必须连发 `133;D;<code>` 与 `133;A`，且 D 在前**：
+ *    `terminalCommandNav` 靠 D 把退出码/耗时回填到「刚跑完的那一块」，靠 A 钉下一块的
+ *    起点 marker。两者顺序反了，退出码与耗时会整体错位一格。
+ *    （2026-10-13 修：此前只发 D 没发 A → 命令导航与耗时**从未生效**过。）
  */
-export const HOOK_CMD = [
-  `__ccb_p(){`,
+export function hookCmd(): string {
+  return [
+    envInjectCmd(),
+    ...(getTmuxBridgeEnabled() ? [tmuxBridgeCmd()] : []),
+    `__ccb_p(){`,
   `local e=$?;`,
   `local d="$PWD";`,
-  `printf '\\033]133;D;%s\\007\\033]7;file://%s%s\\007' "$e" "$HOSTNAME" "$d";`,
+  // 🔴 D 在前、A 在后（顺序不能换）：D 落在刚跑完的那一块上，A 钉下一块的起点。
+  `printf '\\033]133;D;%s\\007\\033]133;A\\007\\033]7;file://%s%s\\007' "$e" "$HOSTNAME" "$d";`,
   `if [ "$d" != "$__ccb_d" ]; then`,
   `__ccb_d="$d";`,
   `local b="";`,
@@ -374,7 +431,8 @@ export const HOOK_CMD = [
   `else`,
   `precmd_functions+=("__ccb_p");`,
   `fi`,
-].join(" ");
+  ].join(" ");
+}
 
 /** OSC 133 的 A 事件（新提示符 / 命令起点）。命令导航（terminalCommandNav）用它钉 marker。 */
 export function isOsc133A(data: string): boolean {

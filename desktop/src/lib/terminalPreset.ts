@@ -13,6 +13,7 @@ import type { TerminalPreset } from "./terminalTheme";
 
 const PRESET_KEY = "cc-bridge.terminal-preset";
 const INJECT_KEY = "cc-bridge.terminal-inject";
+const TMUX_KEY = "cc-bridge.terminal-tmux-bridge";
 
 /** 默认预设。**必须与 `terminalTheme.ts` 里 2.7.x 时代的老配色一致**，老用户升级后观感不变。 */
 export const DEFAULT_PRESET: TerminalPreset = "indigo";
@@ -72,6 +73,33 @@ export function saveInjectEnabled(on: boolean): void {
   }
 }
 
+/**
+ * tmux 桥接开关（默认**关**）。
+ *
+ * 开启后，会话检测到远端 `$TMUX` 存在时会注入三行 `tmux set`：
+ * `allow-passthrough on` / `extended-keys on` / `terminal-features 'xterm*:extkeys'`，
+ * 解锁 tmux 内的桌面通知、进度条、Shift+Enter 换行，以及 OSC 52 复制的 DCS 穿透。
+ *
+ * 🔴 为什么默认关而不是默认开：`tmux set` 作用于**运行中的 tmux server**，
+ * 会影响该机器上用户的**其它 tmux 会话**；而 `allow-passthrough on` 的语义是
+ * 「允许转义序列穿透到外层终端」，共享/多用户主机上必须用户知情后再开。
+ */
+export function loadTmuxBridgeEnabled(): boolean {
+  try {
+    return localStorage.getItem(TMUX_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+export function saveTmuxBridgeEnabled(on: boolean): void {
+  try {
+    localStorage.setItem(TMUX_KEY, on ? "on" : "off");
+  } catch {
+    /* 同上 */
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * 模块级小 store
  *
@@ -81,8 +109,10 @@ export function saveInjectEnabled(on: boolean): void {
 
 const presetListeners = new Set<() => void>();
 const injectListeners = new Set<() => void>();
+const tmuxListeners = new Set<() => void>();
 let presetCache = loadPreset();
 let injectCache = loadInjectEnabled();
+let tmuxCache = loadTmuxBridgeEnabled();
 
 function emit(listeners: Set<() => void>): void {
   listeners.forEach((l) => l());
@@ -99,6 +129,13 @@ export function subscribeInject(l: () => void): () => void {
   injectListeners.add(l);
   return () => {
     injectListeners.delete(l);
+  };
+}
+
+export function subscribeTmuxBridge(l: () => void): () => void {
+  tmuxListeners.add(l);
+  return () => {
+    tmuxListeners.delete(l);
   };
 }
 
@@ -122,4 +159,15 @@ export function setInjectEnabled(on: boolean): void {
   injectCache = on;
   saveInjectEnabled(on);
   emit(injectListeners);
+}
+
+export function getTmuxBridgeEnabled(): boolean {
+  return tmuxCache;
+}
+
+export function setTmuxBridgeEnabled(on: boolean): void {
+  if (tmuxCache === on) return;
+  tmuxCache = on;
+  saveTmuxBridgeEnabled(on);
+  emit(tmuxListeners);
 }
