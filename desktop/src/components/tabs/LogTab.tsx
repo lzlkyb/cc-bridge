@@ -276,7 +276,7 @@ function LogTabImpl({
             iconSize={28}
             icon={entries?.length === 0 ? "file" : "search"}
             description={entries?.length === 0
-              ? "暂无审计记录，远程 Claude Code 连接后操作记录将显示在这里。"
+              ? "暂无审计记录，远程 AI 工具连接后操作记录将显示在这里。"
               : "没有匹配的记录，试试调整筛选条件。"}
           />
         ) : (

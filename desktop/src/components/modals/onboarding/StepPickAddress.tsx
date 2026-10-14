@@ -43,7 +43,7 @@ export function StepPickAddress({
   return (
     <div className="space-y-4">
       <p className="text-sm leading-relaxed text-muted-foreground">
-        在远程 Linux 上执行连接命令时，要通过下面某个地址连回本机。选错了 Claude Code 会连不上——拿不准就先选默认的，或到服务器上用下方命令逐个试。
+        在远程 Linux 上执行连接命令时，要通过下面某个地址连回本机。选错了 AI 工具会连不上——拿不准就先选默认的，或到服务器上用下方命令逐个试。
       </p>
 
       <div>

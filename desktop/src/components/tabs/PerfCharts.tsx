@@ -193,7 +193,7 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
       <Card className="bg-muted/30">
         <CardContent className="py-6 text-center text-sm text-muted-foreground">
           <Icon name="activity" size={20} className="mx-auto mb-2 opacity-40" />
-          暂无带「耗时」的审计记录，连接远程 Claude Code 并操作后将自动生成性能分析。
+          暂无带「耗时」的审计记录，连接远程 AI 工具并操作后将自动生成性能分析。
         </CardContent>
       </Card>
     );

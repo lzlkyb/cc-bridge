@@ -109,7 +109,7 @@
 **关键架构决策**：
 - **纯 Rust 后端**编译进 Tauri 二进制，不再有 Node.js sidecar（安装包 4.5MB / mac zip 5.7MB）
 - **单一代码库跑两个平台**：平台差异用 `cfg(windows)` / `cfg(target_os = "macos")` 在 Rust 侧切开，前端按后端下发的平台信息隐藏不适用的开关，CI 在 windows-latest 与 macos-latest 上各跑一遍 clippy + 测试
-- **axum 嵌入 Tauri 进程**：对外暴露 HTTP 端口供远程 Claude Code 连接
+- **axum 嵌入 Tauri 进程**：对外暴露 HTTP 端口供远程 AI 工具连接
 - **前端走 Tauri IPC**：不走 HTTP，token 只用于远程认证
 - **SQLite 替换 config.json**：原子更新，无 read-modify-write 竞态
 - **审计日志保持 JSONL 文件**：append-only，人类可读
@@ -189,18 +189,18 @@ cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
                                         └──────────────────────────────────┘
 ```
 
-**关键设计**：两条路径共享同一个 `AppState`——远程 Claude Code 的文件操作会实时反映在本地面板的审计日志和统计数据中。
+**关键设计**：两条路径共享同一个 `AppState`——远程 AI 工具的文件操作会实时反映在本地面板的审计日志和统计数据中。
 
 ### MCP 工具调用链路
 
-远程 Claude Code 调用文件工具时的完整请求链路：
+远程 AI 工具调用文件工具时的完整请求链路：
 
 ```
 远程 Linux:
   claude mcp add --transport http cc-bridge http://192.168.1.100:7823/mcp \
     --header "Authorization: Bearer abc123..."
 
-Claude Code 对话中触发工具调用:
+AI 工具对话中触发工具调用:
         │
         ▼
   POST /mcp  ──  initialize (首次连接握手)
@@ -233,7 +233,7 @@ Claude Code 对话中触发工具调用:
         └─ stats.increment_requests()     ← 更新统计
         │
         ▼
-  返回 JSON-RPC 响应 → Claude Code 拿到结果
+  返回 JSON-RPC 响应 → AI 工具拿到结果
 ```
 
 ### 用户操作场景
@@ -246,18 +246,18 @@ Claude Code 对话中触发工具调用:
 3. 进入"安全"页，在白名单根目录点"浏览…"
    → DirectoryBrowser 弹窗 → 导航选择工作目录 → 添加
 4. 回到"连接"页，选择 scope（全局 / 项目级），复制连接命令
-5. 粘贴到远程 Linux 终端执行，Claude Code 连上 cc-bridge 即可开始工作
+5. 粘贴到远程 Linux 终端执行，AI 工具连上 cc-bridge 即可开始工作
 ```
 
 #### 日常使用
 
 ```
 开机 → 双击 cc-bridge → 窗口打开，MCP 服务器自动启动
-     → 远程 Claude Code 自动重连
+     → 远程 AI 工具自动重连
      → 最小化到托盘（点 X = 隐藏，不退出）
 
 两件事并行:
-  ┌── 远程 Claude Code 在后台读写文件
+  ┌── 远程 AI 工具在后台读写文件
   │     每次操作 → 审计日志 + 统计计数
   │
   └── 用户偶尔打开面板查看
@@ -340,7 +340,7 @@ Claude Code 对话中触发工具调用:
 | `run_command` | 执行 Shell 命令（壳层按平台与配置：Windows = `cmd /C` 或 Git Bash，macOS = `sh` / `bash`），前台等待结果或 `background=true` 后台运行；**默认关闭**，需在『安全』页开启「命令执行」开关（等同于授予远程任意代码执行权限），只读模式下无条件禁止 |
 | `get_command_output` | 增量拉取后台命令的 stdout/stderr（按偏移量），附带是否已结束、退出码 |
 | `stop_command` | 强制终止一个后台命令的整个进程树（Windows = TerminateJobObject，macOS = 向整个 POSIX 进程组发 SIGKILL，孙进程一并死），并从注册表移除 |
-| `push_notification` | 向本机推桌面通知（Windows = 系统 toast，macOS = 通知中心），让远程 Claude Code 干完活能主动叫你；编译期 `notifications` feature 关闭时不注册 |
+| `push_notification` | 向本机推桌面通知（Windows = 系统 toast，macOS = 通知中心），让远程 AI 工具干完活能主动叫你；编译期 `notifications` feature 关闭时不注册 |
 | `mcp_list_servers` | 列出经桥接入的**外挂 MCP server**（本机已装的工具，如代码索引、文档检索）及其暴露的工具清单；默认返回紧凑索引，可按 server/tool 展开完整 inputSchema |
 | `mcp_proxy` | 调用某个外挂 MCP server 上的工具（先用 `mcp_list_servers` 发现）。⚠️ 外挂 server 是独立进程，**不受路径白名单约束**、桥无法审计其文件操作，仅审计转发调用本身；只读模式下整体禁用 |
 
@@ -384,7 +384,9 @@ Claude Code 对话中触发工具调用:
 
 | 路径 | 方法 | 认证 | 作用 |
 |---|---|---|---|
-| `/mcp` | POST | Bearer token | MCP JSON-RPC 入口（Streamable HTTP） |
+| `/mcp` | POST | Bearer token | MCP JSON-RPC 入口（Streamable HTTP，默认传输） |
+| `/mcp/sse` | GET | Bearer token | MCP JSON-RPC 入口（HTTP+SSE 传输；规范已弃用，仅存量配置保留） |
+| `/mcp/messages` | POST | Bearer token（或 URL 内置 token） | SSE 传输的上行消息端点 |
 | `/health` | GET | 不需要 | 存活检测 |
 
 ### Tauri IPC 命令（前端 → 后端）
@@ -421,7 +423,7 @@ Claude Code 对话中触发工具调用:
 - **安全**：白名单根目录 CRUD + 目录浏览器弹窗；扩展名/文件大小/限流/备份目录/备份保留，全部即时保存（防抖 800ms + 失焦）
 - **设置**：网络（host/port，改后一键保存并重启）+ 应用（开机自启开关）+ 审计（日志保留天数）
 - **日志**：审计日志表，6 列（时间 / 操作 / 参数摘要 / 来源 / 耗时 / 状态）；操作列显示中文名（如「读取文件」）+ 原始工具名；支持按操作/状态下拉筛选 + 关键字搜索（匹配参数与错误）+ 一键导出 JSON；点击行展开结构化详情（参数 KV + 格式化 JSON + 复制 + 错误块）
-- **终端**：SSH 终端（第 4 个 Tab，Ctrl+4）。人在面板里手动操作远端 Linux 的终端——左栏 SSH 连接列表（名称 + user@host:port + 在线/离线点），右栏 xterm.js 深色终端（复制 / 清屏 / 断开）。支持密码登录、记住密码（aes-gcm 加密落盘）、窗口缩放、`ServerAliveInterval` 保活；总开关 `ssh_enabled` 默认关，首次进入弹启用确认（遵循「默认关 + 多层闸」）。**仅本地 Tauri IPC 调用，不经过 MCP，远端 Claude Code 无法用它**
+- **终端**：SSH 终端（第 4 个 Tab，Ctrl+4）。人在面板里手动操作远端 Linux 的终端——左栏 SSH 连接列表（名称 + user@host:port + 在线/离线点），右栏 xterm.js 深色终端（复制 / 清屏 / 断开）。支持密码登录、记住密码（aes-gcm 加密落盘）、窗口缩放、`ServerAliveInterval` 保活；总开关 `ssh_enabled` 默认关，首次进入弹启用确认（遵循「默认关 + 多层闸」）。**仅本地 Tauri IPC 调用，不经过 MCP，远端 AI 工具无法用它**
 - 深色/浅色主题切换（localStorage 持久化）
 
 ## 技术栈
@@ -670,7 +672,7 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 - `run_command` 的跨调用 shell 会话持久化（拿 `sessionId` 带住 `cwd` + 环境变量）**默认关闭**，不开时必须每次显式传绝对 `cwd`。
 - 后台命令（`run_command(background=true)`）注册表 v1 无自动回收：命令结束后 handle 仍占位，需显式 `stop_command` 移除，或等并发上限（5个）触发拒绝新建后再清理。
 - `run_command` 前台模式超时后仍会强杀命令（不会自动转后台继续跑）；但超时前已产生的输出会连同 `timedOut: true` 一起返回（默认超时 120s）。长任务请用 `background: true`。
-- **SSH 终端**是本地人操作的交互终端（第 4 个 Tab），**不是**给远程 Claude Code 的 MCP 工具，远端无法用它；它需要本机装有 OpenSSH 客户端（Windows 10/11 / macOS 均自带，极少数精简镜像需 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` 安装）。
+- **SSH 终端**是本地人操作的交互终端（第 4 个 Tab），**不是**给远程 AI 工具的 MCP 工具，远端无法用它；它需要本机装有 OpenSSH 客户端（Windows 10/11 / macOS 均自带，极少数精简镜像需 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` 安装）。
 
 ## 版本历史
 

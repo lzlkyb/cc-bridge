@@ -43,7 +43,7 @@ Installer size: **4.5 MB** (Windows) / **5.7 MB** (macOS).
    claude mcp add --transport http cc-bridge http://<LAN-IP>:7823/mcp --header "Authorization: Bearer <token>"
    ```
 
-4. Done — the remote Claude Code can now read, search, and edit your local files.
+4. Done — the remote AI client can now read, search, and edit your local files.
 
 ### Mode B: local AI → remote files (across the internet)
 
@@ -59,7 +59,7 @@ Installer size: **4.5 MB** (Windows) / **5.7 MB** (macOS).
 ```
 Mode A                                Mode B
 ┌──────────────────────┐             ┌────────────────────────────┐
-│ Remote Linux (Claude Code) │       │ Laptop (Claude Code/Codex) │
+│ Remote Linux (any MCP AI)  │       │ Laptop (any MCP client)    │
 └──────────┬───────────┘             └──────────┬─────────────────┘
            │ MCP / HTTP (LAN/VPN)               │ MCP / HTTPS (self-signed or proxy)
            ▼                                    ▼
@@ -116,6 +116,7 @@ The 4th tab is a real interactive SSH terminal (system OpenSSH + PTY + xterm.js)
 ## Known limitations
 
 - Windows 10/11 and macOS (Apple Silicon) only — no Intel Mac or Linux builds yet.
+- **Platform differences.** Firewall auto-allow, desktop-shortcut creation, and instant IP-change events are Windows-only. On macOS the app polls for IP changes every 5 s, and desktop notifications have not been verified on real hardware yet (they may report `pushed: false`).
 - Public-internet access is supported only via the built-in self-signed HTTPS or a reverse proxy + Let's Encrypt; no built-in tunneling/NAT traversal, and plain HTTP must not be exposed publicly.
 - Self-signed-certificate compatibility varies by client — see the [honest compatibility matrix](docs/client-compatibility.md) instead of promises.
 - `analyze_file` uses regex heuristics, not a parser. `delete_files` only deletes single files, not directories (by design).

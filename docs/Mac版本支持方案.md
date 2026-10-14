@@ -9,6 +9,13 @@
 ## 0. 实施进度与对本文的修正
 
 > 本节由实际实施回写。**下文步骤 1 的三处风险评估偏低了**，以本节为准。
+>
+> ⚠️ **架构口径修正（2026-10-14）**：本文 §265 / §436 / §465 写的是「单 target
+> `universal-apple-darwin`，一份二进制覆盖 Intel + Apple Silicon」，但**实际发布的是
+> `aarch64-apple-darwin`（仅 Apple Silicon）**，产物 `cc-bridge_X.Y.Z_aarch64-apple-darwin.zip`
+> —— 与 `README.md` 的下载表、「已知限制」一致。全文出现的 `macOS_universal.zip` /
+> `universal-apple-darwin` 均按此理解；日后若要补 Intel 支持，需改回 universal target
+> 并同步 CI 与两份 README。
 
 ### 已完成：CI macOS 门禁 + Rust 平台分支
 - 新增 `check-macos` job（`macos-latest` + `cargo check`）。仓库是 public，

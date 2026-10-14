@@ -51,7 +51,7 @@ export function TokenUsageGroup() {
           <>
             <EmptyKpis />
             <p className="text-[12px] text-muted-foreground">
-              暂无调用记录。远程 Claude Code 接入并调用工具后，这里会出现趋势、节奏与工具排行。
+              暂无调用记录。远程 AI 工具接入并调用工具后，这里会出现趋势、节奏与工具排行。
             </p>
           </>
         ) : (

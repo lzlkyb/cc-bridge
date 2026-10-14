@@ -36,7 +36,7 @@ export function ConnectBento({
   onChanged: () => void;
   /** 跨 Tab 跳转（可带锚点）。各卡点击后调它。 */
   onNavigate?: (tab: string, anchor?: string) => void;
-  /** 「接入 Claude Code」卡。作为插槽传入，本组件不关心它的内部状态。 */
+  /** 「接入」卡（内含多工具接入向导 ToolGuide）。作为插槽传入，本组件不关心它的内部状态。 */
   guide: ReactNode;
 }) {
   return (

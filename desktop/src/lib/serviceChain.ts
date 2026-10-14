@@ -48,7 +48,7 @@ export interface ChainSegment {
  * 那是卡片还是展开式时的写法；改成折叠后，照这句话往下找只能看到几行折叠标题，
  * 既没命令也没复制按钮。两处返回点共用同一个常量，免得日后只改一处。
  */
-const FIRST_RUN_HINT = "展开下方「接入 Claude Code」→「接入步骤」，复制命令到远程执行";
+const FIRST_RUN_HINT = "展开下方接入卡片 →「接入步骤」，复制命令到远程执行";
 
 /** 卡片整体基调，决定背景渐变。 */
 export type ChainTone = "live" | "warn" | "error" | "stopped";
@@ -171,7 +171,7 @@ export function computeChain(input: ChainInput): ChainState {
   if (!withFirewall) {
     return {
       tone: "live",
-      headline: hasCalled ? "远程 Claude Code 可以正常调用" : "本机已就绪，等远程接入",
+      headline: hasCalled ? "远程 AI 工具可以正常调用" : "本机已就绪，等远程接入",
       sub: hasCalled
         ? `本次运行已调用 ${input.totalRequests.toLocaleString("en-US")} 次`
         : FIRST_RUN_HINT,
@@ -203,7 +203,7 @@ export function computeChain(input: ChainInput): ChainState {
 
   return {
     tone: "live",
-    headline: hasCalled ? "远程 Claude Code 可以正常调用" : "本机已就绪，等远程接入",
+    headline: hasCalled ? "远程 AI 工具可以正常调用" : "本机已就绪，等远程接入",
     sub: hasCalled
       ? fwUnknown
         ? "防火墙状态查不到，但远程已成功调用过，实际不影响"

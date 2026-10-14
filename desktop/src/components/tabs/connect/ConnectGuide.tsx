@@ -10,7 +10,7 @@ import { TokenManager } from "../TokenManager";
 import { PermissionCard } from "./PermissionCard";
 
 /**
- * Claude Code 接入向导正文（评审修复 ⑤ 结构收敛）。
+ * 接入向导正文（Claude Code 分支；多工具分流由外层 ToolGuide 负责）。
  *
  * 自 ConnectTab.tsx 独立成文件：原来 18 个 props 逐个透传，现在向导局部状态整体
  * 收进 useConnectGuideState（`guide` 一个对象），收敛为 8 个 props——

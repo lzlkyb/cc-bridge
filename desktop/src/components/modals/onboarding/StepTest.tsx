@@ -73,7 +73,7 @@ export function StepTest({
         setState("ok");
         onTested?.();
         setDetail(
-          "服务正常监听，连接命令里的地址与令牌有效。到远程服务器执行连接命令后，Claude Code 即可连回本机读写文件。",
+          "服务正常监听，连接命令里的地址与令牌有效。到远程服务器执行连接命令后，AI 工具即可连回本机读写文件。",
         );
       } else {
         setState("fail");

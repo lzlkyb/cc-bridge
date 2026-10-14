@@ -57,7 +57,7 @@ export function FirewallAlertBlock({
           <p className="text-sm font-semibold text-destructive-ink">{firewallHeadline(diag.issues)}</p>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
             本机 Windows 防火墙已开启，但 <code className="rounded bg-background px-1">{port}/TCP</code>{" "}
-            的入站放行在当前网络下没有生效。远程服务器上 Claude Code
+            的入站放行在当前网络下没有生效。远程机器上 AI 工具
             发来的请求会被拦截（即使本地服务正常运行）。
           </p>
         </div>

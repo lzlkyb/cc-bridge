@@ -66,7 +66,7 @@ export function StepAddDir({
   return (
     <div className="space-y-4">
       <p className="text-sm leading-relaxed text-muted-foreground">
-        先告诉 {APP_INFO.name} 远程的 Claude Code 能访问哪些<b className="text-foreground">本地</b>文件夹。这是安全锁——AI 只能读写你勾选的目录，其余文件碰不到。
+        先告诉 {APP_INFO.name} 远程的 AI 工具能访问哪些<b className="text-foreground">本地</b>文件夹。这是安全锁——AI 只能读写你勾选的目录，其余文件碰不到。
       </p>
 
       {roots.length === 0 ? (

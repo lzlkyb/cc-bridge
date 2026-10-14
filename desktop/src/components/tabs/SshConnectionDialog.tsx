@@ -191,7 +191,7 @@ export function SshConnectionDialog({ open, initial, connections, onClose, onSav
         />
 
         <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          🔒 密码/密码短语仅在「记住」时于本机加密存储（aes-gcm），明文只经本面板输入，绝不暴露给远程 Claude Code。
+          🔒 密码/密码短语仅在「记住」时于本机加密存储（aes-gcm），明文只经本面板输入，绝不暴露给远程 AI 工具。
         </div>
       </div>
 

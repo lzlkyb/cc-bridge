@@ -75,7 +75,7 @@ export function EnableRiskModal({
 
       <div className="mb-3 mt-3 rounded-lg bg-destructive/10 px-3 py-2.5 text-xs text-destructive-ink">
         <div className="mb-1.5 font-semibold">启用后会发生什么：</div>
-        <div className="mb-1">① 远程 Claude Code 将获得这个 server 的<b>全部能力</b>。</div>
+        <div className="mb-1">① 远程 AI 工具将获得这个 server 的<b>全部能力</b>。</div>
         <div className="mb-1">
           ② cc-bridge 的路径白名单<b>管不着它</b>——它是独立进程，能碰到什么由上面那行参数决定。
         </div>

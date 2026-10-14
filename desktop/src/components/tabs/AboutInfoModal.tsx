@@ -93,7 +93,7 @@ export function AboutInfoModal({
             · <strong className="text-foreground">极轻量：</strong>{about.lightweight}<br/>
             · <strong className="text-foreground">全离线：</strong>无需网络，纯本地运行，数据不出设备<br/>
             · <strong className="text-foreground">安全沙箱：</strong>{about.sandbox}<br/>
-            · <strong className="text-foreground">标准协议：</strong>兼容 Cursor / Claude / VS Code 等 MCP 客户端<br/>
+            · <strong className="text-foreground">标准协议：</strong>兼容 Claude Code / Codex / WorkBuddy 等任意 MCP 客户端<br/>
             · <strong className="text-foreground">MIT 开源：</strong>完全免费，代码透明可审计
           </p>
 

@@ -152,7 +152,7 @@ export function SecurityTab({
               <Icon name="folder" size={24} className="relative z-[1] text-muted-foreground/40" />
               <p className="relative z-[1] text-sm text-muted-foreground text-center max-w-[280px]">
                 {status.whitelistEnabled
-                  ? "添加工作目录后，远程 Claude Code 才能访问本地文件。"
+                  ? "添加工作目录后，远程 AI 工具才能访问本地文件。"
                   : "白名单校验已关闭，远程可访问本机任意路径，无需添加目录。"}
               </p>
               <Button variant="outline" size="sm" className="relative z-[1] mt-1" onClick={() => setBrowserOpen(true)}>
@@ -213,7 +213,7 @@ export function SecurityTab({
           title="确定删除这个白名单目录？"
           description={
             <>
-              <code className="break-all">{pendingRemoveRoot}</code> 将从白名单中移除，远程 Claude Code 将立即
+              <code className="break-all">{pendingRemoveRoot}</code> 将从白名单中移除，远程 AI 工具将立即
               失去该目录的访问权限。
             </>
           }

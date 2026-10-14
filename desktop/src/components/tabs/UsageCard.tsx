@@ -7,9 +7,9 @@ import { NavTarget } from "../ui/NavTarget";
 /**
  * Bento 行2 的「Token 用量（估算）」卡（4/12 列，方案 B 布局的右侧新卡）。
  *
- * 展示外部 Claude Code 经桥调用工具所消耗 token 的**估算值**：请求参数与工具返回
+ * 展示外部 AI 工具经桥调用工具所消耗 token 的**估算值**：请求参数与工具返回
  * 结果按约 4 字节 ≈ 1 token 折算（口径见后端 audit.rs）。它**不是账单值**——
- * 模型侧的真实消耗发生在远程 Claude Code 与 Anthropic 之间，桥看不到，UI 全程
+ * 模型侧的真实消耗发生在远程 AI 工具与模型服务之间，桥看不到，UI 全程
  * 标注「估算」。
  *
  * 数据：`get_token_usage`（近 7 天按日聚合），复用后端审计解析缓存，30s 轮询。

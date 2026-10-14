@@ -145,7 +145,7 @@ export function SecurityOverview({
           title="确定关闭路径白名单？"
           description={
             <>
-              关闭后远程 Claude Code 可读写本机<b>全部文件</b>，风险显著上升。
+              关闭后远程 AI 工具可读写本机<b>全部文件</b>，风险显著上升。
               请确认你正处于完全可信的网络环境，用完及时开回。
             </>
           }
@@ -180,7 +180,7 @@ export function SecurityOverview({
             </InlineNotice>
           )}
           <p className="mb-3 text-sm text-muted-foreground">
-            开启后远程 Claude Code 可在白名单目录内执行<b>任意 Shell 命令</b>，包括但不限于安装软件、
+            开启后远程 AI 工具可在白名单目录内执行<b>任意 Shell 命令</b>，包括但不限于安装软件、
             修改系统设置、访问网络。这等同于授予<b>远程任意代码执行权限（RCE）</b>。
           </p>
           <ul className="mb-3 list-disc space-y-1 pl-5 text-xs text-muted-foreground">

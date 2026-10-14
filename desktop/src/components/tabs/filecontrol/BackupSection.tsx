@@ -143,7 +143,7 @@ export function BackupSection({
         </div>
       </div>
       <p className="s-row-desc px-2.5 pb-1 text-[10.5px]">
-        备份仅存于本机该目录，远程 Claude Code 无法读取；目录名由程序固定管理，无需手动修改。
+        备份仅存于本机该目录，远程 AI 工具无法读取；目录名由程序固定管理，无需手动修改。
       </p>
 
       {/* 实时统计 + 规则说明 */}

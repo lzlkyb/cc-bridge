@@ -142,7 +142,7 @@ export function TokenManager({
           {confirmingRegen && (
             <InlineNotice variant="error">
               <div className="flex items-center justify-between gap-3">
-                <span className="flex-1">旧 Token 将立即失效，远程 Claude Code 会断开连接。确定？</span>
+                <span className="flex-1">旧 Token 将立即失效，远程 AI 工具会断开连接。确定？</span>
                 <span className="flex gap-2 shrink-0">
                   <Button variant="destructive" size="sm" onClick={handleRegenToken}>确定</Button>
                   <Button variant="outline" size="sm" onClick={() => setConfirmingRegen(false)}>取消</Button>

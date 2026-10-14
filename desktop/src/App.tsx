@@ -255,7 +255,7 @@ function AppContent() {
             title="远程连接中断"
             summary={
               status.ipChanged
-                ? "连接地址已失效，远程 Claude Code 已断开，请重选地址。"
+                ? "连接地址已失效，远程 AI 工具已断开，请重选地址。"
                 : "本机服务在运行，但远程连不回，请检查本机网络。"
             }
           >
@@ -401,7 +401,7 @@ function LinkStateWatcher({
         // 仅当服务仍在运行时，linkDown→false 才是真正的「网络恢复」；若 running=false
         // 则是用户主动停服，不应误报恢复、更不应自动重启用户刚停掉的服务。
         // S4: 链路由中断恢复（且服务仍在运行）。自动重新选中已记录的 IP。
-        toast("网络已恢复，Claude Code 可重新连接", "success");
+        toast("网络已恢复，AI 工具可重新连接", "success");
         if (status.lastSelectedIp) {
           // byUser=false: 自动恢复只更新选中/落盘，不触发 IP 变化 banner
           onReselectIp(status.lastSelectedIp, false);

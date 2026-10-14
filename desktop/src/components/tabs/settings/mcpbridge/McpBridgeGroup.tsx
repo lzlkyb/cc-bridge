@@ -65,7 +65,7 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
           sub={
             master
               ? "⚠ 已开启 · 远程可调用下方已勾选的 server，它们不受路径白名单约束"
-              : "把本机已装的 MCP server 转给远程 Claude Code 使用。默认关闭。"
+              : "把本机已装的 MCP server 转给远程 AI 工具使用。默认关闭。"
           }
           checked={master}
           onChange={(v) => void bridge.setMaster(v)}

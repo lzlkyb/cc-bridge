@@ -15,7 +15,7 @@ export function SshEnableGate({ onEnable }: { onEnable: () => void }) {
         <h3 className="text-lg font-semibold">启用 SSH 终端</h3>
         <p className="mt-2 text-sm text-muted-foreground">
           在面板内直接连接远程 Linux 主机并操作终端。启用后，连接凭据仅存于本机，
-          且<strong className="text-foreground">不会</strong>暴露给远程 Claude Code。
+          且<strong className="text-foreground">不会</strong>暴露给远程 AI 工具。
         </p>
         <Button className="mt-5 w-full" onClick={onEnable}>
           启用终端
