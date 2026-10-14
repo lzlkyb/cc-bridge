@@ -431,7 +431,7 @@ export function attachShiftWheel(term: Terminal): void {
  *
  * ⚠️ 与其它容器级监听的顺序：本守卫在捕获阶段 stopPropagation，注册在它之后的
  * 容器级 wheel 监听（无论捕获还是冒泡）在选择态下都收不到事件。将来若把 Ctrl+滚轮
- * 缩放（useTerminalFontSize，现挂冒泡阶段）改成容器捕获监听，要么放在本守卫之前
+ * 缩放（useTerminalTypography，现挂冒泡阶段）改成容器捕获监听，要么放在本守卫之前
  * 注册，要么在此处显式放行 Ctrl/Meta，否则缩放会在选择态静默失效。
  */
 export function attachSelectWheelGuard(

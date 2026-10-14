@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
 import { SettingsRow } from "../../ui/SettingsRow";
@@ -10,12 +10,23 @@ import {
   useTerminalPreset,
   useTerminalTmuxBridge,
 } from "../../../hooks/useTerminalPreset";
+import { useTerminalThemeSetting } from "../../../hooks/useTerminalAppearance";
 import {
   PRESETS,
   setInjectEnabled,
   setPreset,
   setTmuxBridgeEnabled,
 } from "../../../lib/terminalPreset";
+import { TERMINAL_MODES, setTerminalMode } from "../../../lib/terminalAppearance";
+import { TerminalFontOptions } from "./TerminalFontOptions";
+import {
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  clampFontSize,
+  loadFontSize,
+  saveFontSize,
+  subscribeFontSize,
+} from "../../../lib/terminalFontSize";
 import {
   TUI_SCROLL_SPEEDS,
   loadTuiScrollSpeed,
@@ -23,19 +34,27 @@ import {
 } from "../../../lib/terminalScrollSpeed";
 
 /**
- * 「终端」卡：终端风格预设。
+ * 「终端」卡：外观（明暗 / 风格 / 字体 / 字号）+ 两项远端探测开关 + TUI 滚动速度。
  *
- * WHY 单独成卡而不是塞进「高级」：风格是**会反复回来看一眼**的项（换环境、投影、夜间），
+ * WHY 单独成卡而不是塞进「高级」：这些都是**会反复回来看一眼**的项（换环境、投影、夜间），
  * 而「高级」那张卡是「装完很少再动」的四项，两者改动频率不同，混在一起会被埋掉。
  *
- * WHY 这两项走 localStorage 而非后端 config：见 `lib/terminalPreset.ts` 顶部注释。
- * 代价是它不进备份/恢复——偏好丢了会回到默认预设，不影响功能。
+ * WHY 走 localStorage 而非后端 config：见 `lib/terminalPreset.ts` 顶部注释。
+ * 代价是它们不进备份/恢复——偏好丢了会回到默认值，不影响功能。
+ *
+ * 「明暗」与「风格」是**正交**的两轴：明暗管底色深浅（可脱离应用主题独立选），
+ * 风格管配色语言（靖蓝 / 极简 / 经典 / 高对比）。两者相乘才是最终观感。
  */
 export function TerminalGroup() {
   const preset = useTerminalPreset();
+  const modeSetting = useTerminalThemeSetting();
   const inject = useTerminalInject();
   const tmuxBridge = useTerminalTmuxBridge();
   const [speed, setSpeed] = useState(loadTuiScrollSpeed);
+  const [size, setSize] = useState(loadFontSize);
+  // 字号可能在终端上用 Ctrl+滚轮改过，这里要跟着变，否则设置页会显示一个陈旧值。
+  useEffect(() => subscribeFontSize(setSize), []);
+
   return (
     <Card id="set-terminal">
       <CardHeader>
@@ -43,8 +62,26 @@ export function TerminalGroup() {
       </CardHeader>
       <CardContent>
         <SettingsRow
+          label="终端明暗"
+          sub="终端画布单独选深浅，与应用界面的明暗互不影响（例如应用浅色 + 终端深色）。改动即时生效，不重连、不丢已滚动的历史输出。注意：正在运行的全屏程序（如 Claude Code）只在启动时探测一次背景明暗，需要重启它才会用上新配色。"
+          layout="stack"
+          control={
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {TERMINAL_MODES.map((m) => (
+                <OptionChip
+                  key={m.id}
+                  on={modeSetting === m.id}
+                  onClick={() => setTerminalMode(m.id)}
+                >
+                  {m.name}
+                </OptionChip>
+              ))}
+            </div>
+          }
+        />
+        <SettingsRow
           label="终端风格"
-          sub="同时决定状态栏与终端内容的配色，包括远端程序输出的 ANSI 颜色。切换即时生效，不会重连，也不会丢失已滚动的历史输出。注意：已经在跑的全屏程序（如 Claude Code）不会跟着变——它们在启动时探测一次背景明暗，重启才会用上新配色。"
+          sub="决定配色语言（终端内容与状态栏的 ANSI 配色）。底色深浅由上面「终端明暗」决定，这里只换风格。切换即时生效，不会重连，也不会丢失已滚动的历史输出。"
           layout="stack"
           control={
             <div className="flex flex-wrap gap-1.5 pt-1">
@@ -53,6 +90,30 @@ export function TerminalGroup() {
                   {p.name}
                 </OptionChip>
               ))}
+            </div>
+          }
+        />
+        <TerminalFontOptions />
+        <SettingsRow
+          label="终端字号"
+          sub="也可以在终端上按住 Ctrl 滚滚轮直接缩放（效果相同，会同步到这里）。"
+          control={
+            <div className="flex items-center gap-1.5">
+              <SizeButton
+                label="减小字号"
+                disabled={size <= FONT_SIZE_MIN}
+                onClick={() => saveFontSize(clampFontSize(size - 1))}
+              >
+                −
+              </SizeButton>
+              <span className="w-9 text-center text-[13px] tabular-nums">{size}</span>
+              <SizeButton
+                label="增大字号"
+                disabled={size >= FONT_SIZE_MAX}
+                onClick={() => saveFontSize(clampFontSize(size + 1))}
+              >
+                +
+              </SizeButton>
             </div>
           }
         />
@@ -95,5 +156,30 @@ export function TerminalGroup() {
         </InlineNotice>
       </CardContent>
     </Card>
+  );
+}
+
+/** 字号步进按钮。到边界时禁用（而不是点了没反应），边界值来自 lib/terminalFontSize。 */
+function SizeButton({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="h-7 w-7 rounded-md border border-border bg-card text-[13px] leading-none transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {children}
+    </button>
   );
 }

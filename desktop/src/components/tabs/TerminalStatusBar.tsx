@@ -20,6 +20,7 @@ import type { Theme } from "../../lib/theme";
 import type { SshConnection } from "../../lib/types";
 import type { WheelOwner } from "../../lib/terminalScroll";
 import { useAppHidden } from "../../lib/appVisibility";
+import { useTerminalFontStack } from "../../hooks/useTerminalAppearance";
 import { Seg } from "./StatusSeg";
 import { WheelOwnerBadge } from "./WheelOwnerBadge";
 
@@ -77,13 +78,16 @@ export function TerminalStatusBar({
   onGuideHintClick,
 }: Props) {
   const skin = STATUSBAR_SKINS[preset][mode];
+  // 字体跟用户在设置里选的终端字体走。设在**容器**上而不是段样式里：
+  // 段的内联 style 会盖掉继承值，只有放容器才能一处生效、Seg 与 Divider 一起跟随。
+  const fontFamily = useTerminalFontStack();
   const uptime = useUptime(sessionId, closed);
   const host = conn.name || conn.host;
 
   return (
     <div
       className="flex shrink-0 items-center overflow-hidden px-3 py-1 text-[11px]"
-      style={{ ...skin.bar }}
+      style={{ ...skin.bar, fontFamily }}
     >
       {/* 左：随远端信息增多而变长的段，空间不足时单独横向滚动（滚动条隐藏）。
           用 flex-1 + min-w-0 让它自适应，右侧关键段因此永不被挤出视口。 */}

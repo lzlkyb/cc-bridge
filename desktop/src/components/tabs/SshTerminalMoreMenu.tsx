@@ -12,7 +12,7 @@ import { Modal } from "../ui/Modal";
  * 快捷键面板的动机（critique P2-2）：全部救急键此前只存在于各按钮的 hover
  * title 里，而最需要它们的键盘用户恰恰看不到 title。这里是唯一汇总处。
  * 清单必须与真实键位同步：改动键位时同步维护（来源：SshTerminal.tsx 键盘
- * 处理 / lib/terminalScroll.ts / useTerminalFontSize / TerminalTab）。
+ * 处理 / lib/terminalScroll.ts / useTerminalTypography / TerminalTab）。
  */
 const SHORTCUTS: { keys: string; desc: string }[] = [
   { keys: "Ctrl+Shift+F", desc: "查找终端内容（Enter / Shift+Enter 切下/上一个）" },

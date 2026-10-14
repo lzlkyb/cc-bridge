@@ -6,7 +6,7 @@ import { SshDisconnectedBar } from "./SshDisconnectedBar";
 import { useSshTerminalSelect } from "./useSshTerminalSelect";
 import { useSshTerminalSession } from "./useSshTerminalSession";
 import { useTerminalSearch } from "./useTerminalSearch";
-import { useTerminalFontSize } from "./useTerminalFontSize";
+import { useTerminalTypography } from "./useTerminalTypography";
 import { SshTerminalFind } from "./SshTerminalFind";
 import { TerminalStatusBar } from "./TerminalStatusBar";
 import { TuiGuideBar } from "./TuiGuideBar";
@@ -23,7 +23,7 @@ import { useClipboardImagePaste } from "../../hooks/useClipboardImagePaste";
 import { forceRepaint } from "../../lib/terminalRepaint";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
-import { useThemeMode } from "../../hooks/useThemeMode";
+import { useTerminalThemeMode } from "../../hooks/useTerminalAppearance";
 import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
 import { useTerminalOsc } from "../../hooks/useTerminalOsc";
 import { useTerminalProtocol } from "../../hooks/useTerminalProtocol";
@@ -83,7 +83,7 @@ export function SshTerminal({
   // 且不让它进入 effect 依赖导致 xterm 重建。
   const dragSelectEnabledRef = useRef(dragSelectEnabled);
   dragSelectEnabledRef.current = dragSelectEnabled;
-  const mode = useThemeMode();
+  const mode = useTerminalThemeMode();
   const preset = useTerminalPreset();
   const inject = useTerminalInject();
   const closed = closedReason !== null;
@@ -107,7 +107,7 @@ export function SshTerminal({
     attachSearch: search.attach,
     openSearch: search.openSearch,
   });
-  const font = useTerminalFontSize({ termRef, containerRef, doFit });
+  const font = useTerminalTypography({ termRef, containerRef, doFit });
   // 远端状态探测：注入钩子 + 解析 OSC。钩子关闭 / 不支持时自动降级，终端本身不受影响。
   const { status, state } = useTerminalOsc({ sessionId, enabled: inject, closed, termRef });
   // 终端协议接缝：OSC 7501（远端自报「在干活 / 在等确认」）+ DEC 2031（主题变化通知）。

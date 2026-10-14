@@ -39,13 +39,18 @@ export interface StatusbarSkin {
   text: string;
 }
 
+/**
+ * 段的基础样式。**刻意不含 `fontFamily`**：用户可以在设置里换终端字体，
+ * 而段的内联样式会盖掉继承值——写死在这里就会和终端画布用上两套字体。
+ * 字体由状态栏容器统一设置（`TerminalStatusBar`），Seg / Divider 从它继承。
+ *
+ * 顺带修掉了旧值缺中文回退的问题（旧值只到 Consolas，中文会掉到系统默认字体）。
+ */
 const SEG_BASE: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
   gap: 4,
   whiteSpace: "nowrap",
-  fontFamily:
-    'ui-monospace, SFMono-Regular, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace',
 };
 
 /* ============================== 靖蓝 Indigo ============================== */

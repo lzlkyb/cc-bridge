@@ -28,13 +28,13 @@ import { watchResolutionChanges } from "../../lib/terminalDpr";
 import { attachTerminalKeymap, type TerminalKeyActions } from "./terminalKeymap";
 import { sshOutputEvent } from "../../lib/terminalEvents";
 import {
-  TERMINAL_FONT,
   TERMINAL_SCROLLBACK,
   terminalTheme,
   terminalThemeOptions,
   type TerminalPreset,
 } from "../../lib/terminalTheme";
 import { loadFontSize } from "../../lib/terminalFontSize";
+import { loadFontStack } from "../../lib/terminalFontFamily";
 import { screenToText } from "../../lib/terminalScreen";
 import { useTerminalFit } from "../../hooks/useTerminalFit";
 import { useTerminalPaste } from "./useTerminalPaste";
@@ -178,7 +178,7 @@ export function useSshTerminalSession({
     const container = containerRef.current;
     if (!container) return;
     const term = new Terminal({
-      fontFamily: TERMINAL_FONT,
+      fontFamily: loadFontStack(),
       // 初值直接取已保存的字号，避免先按默认值渲染一帧再跳到用户字号。
       fontSize: loadFontSize(),
       lineHeight: 1.2,

@@ -1,11 +1,8 @@
 import { Icon } from "../ui/icon";
-import { Menu, MenuItem } from "../ui/Menu";
-import { useTerminalPreset } from "../../hooks/useTerminalPreset";
 import { setCmdPanelOpen, useCmdPanelOpen } from "../../lib/terminalPanelStore";
-import { setPreset, PRESETS } from "../../lib/terminalPreset";
-import { TERMINAL_PALETTES, type TerminalPreset } from "../../lib/terminalTheme";
 import type { SshConnection } from "../../lib/types";
 import { MoreMenu, ButtonIcon } from "./SshTerminalMoreMenu";
+import { TerminalAppearanceMenu } from "./TerminalAppearanceMenu";
 
 interface Props {
   conn: SshConnection;
@@ -43,7 +40,7 @@ interface Props {
  * 收进「更多」菜单并**带上文字**——纯图标并列时 `sliders` 代表「选择模式」基本猜不出来。
  * 清屏收进去也顺带降了误点风险（它会清掉滚动历史且无法撤销）。
  *
- * 另有一枚常驻「风格」按钮：在终端页面内一步切换预设，避免每次都进设置页。
+ * 另有一枚常驻「外观」按钮：终端页面内一步切换风格 / 明暗 / 字体，避免每次都进设置页。
  *
  * 注意这里**没有「断开」按钮**：断开入口在标签栏的 × 与左侧连接列表。
  */
@@ -165,7 +162,7 @@ export function SshTerminalToolbar({
         >
           <Icon name={fullscreen ? "collapse" : "expand"} size={14} />
         </ButtonIcon>
-        <PresetMenu />
+        <TerminalAppearanceMenu />
         <MoreMenu
           selectMode={selectMode}
           onCopyScreen={onCopyScreen}
@@ -179,65 +176,4 @@ export function SshTerminalToolbar({
   );
 }
 
-/**
- * 终端风格快切：工具条常驻按钮，弹层列 4 套预设（小色板预览 + 名称 + 描述），
- * 当前项打勾。点击即走全局 store（`setPreset`），所有终端同时换肤、不断连、不丢历史。
- */
-function PresetMenu() {
-  const current = useTerminalPreset();
-  return (
-    <Menu
-      width="w-60"
-      trigger={(open, toggle) => (
-        <ButtonIcon title="终端风格（点此切换）" highlight={open} onClick={toggle}>
-          <Icon name="palette" size={14} />
-        </ButtonIcon>
-      )}
-    >
-      {(close) =>
-        PRESETS.map((p) => (
-          <MenuItem
-            key={p.id}
-            active={current === p.id}
-            onClick={() => {
-              setPreset(p.id);
-              close();
-            }}
-            trailing={
-              current === p.id ? (
-                <Icon name="check" size={13} className="text-primary" />
-              ) : null
-            }
-            label={
-              <span className="flex min-w-0 flex-1 items-center gap-2">
-                <PresetSwatch preset={p.id} />
-                <span className="flex min-w-0 flex-col leading-tight">
-                  <span className="truncate text-[13px]">{p.name}</span>
-                  <span className="truncate text-[11px] text-muted-foreground">{p.desc}</span>
-                </span>
-              </span>
-            }
-          />
-        ))
-      }
-    </Menu>
-  );
-}
-
-/** 预设小色板预览：背景 + 几个代表 ANSI 色拼一行，一眼区分四套风格。 */
-function PresetSwatch({ preset }: { preset: TerminalPreset }) {
-  const pal = TERMINAL_PALETTES[preset].dark;
-  const colors = [pal.background, pal.green, pal.cyan, pal.magenta, pal.yellow];
-  return (
-    <span
-      className="flex shrink-0 overflow-hidden rounded border border-border"
-      style={{ width: 22, height: 14 }}
-    >
-      {colors.map((c, i) => (
-        <span key={i} style={{ background: c, flex: 1 }} />
-      ))}
-    </span>
-  );
-}
-
-/** 「更多」下拉与 ButtonIcon 已迁至 SshTerminalMoreMenu.tsx（含快捷键面板）。 */
+/** 「更多」下拉与 ButtonIcon 已迁至 SshTerminalMoreMenu.tsx（含快捷键面板）；「外观」菜单在 TerminalAppearanceMenu.tsx。 */

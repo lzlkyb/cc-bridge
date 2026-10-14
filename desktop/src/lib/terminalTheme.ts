@@ -351,6 +351,11 @@ export function terminalContrastRatio(mode: Theme): number {
  * WHY 打包成一个函数而不是让调用方分别取：这两个值必须**始终一起更新**。
  * 单独设 `theme` 而忘了改 `minimumContrastRatio`，就会在亮→暗切换后把 4.5 留在深色下生效，
  * 触发上面注释里那串深色观感回归（ANSI black 变灰等）。合成一处调用，就没法只改一半。
+ *
+ * 🔴 传进来的 `mode` 必须是**终端自己的明暗**（`hooks/useTerminalAppearance` 的
+ * `useTerminalThemeMode()`），不是应用主题。终端明暗可以脱离应用独立设置，
+ * 配错就会同时踩两处：把 4.5 兜底留在深色下（ANSI black 变灰），
+ * 以及让远端（OSC 11 / DEC 2031）以为我们在用另一套明暗。
  */
 export function terminalThemeOptions(mode: Theme, preset: TerminalPreset = "indigo") {
   return {

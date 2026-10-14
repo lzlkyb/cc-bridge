@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
-import { useThemeMode } from "../../hooks/useThemeMode";
+import { useTerminalThemeMode } from "../../hooks/useTerminalAppearance";
 import { useTerminalPreset } from "../../hooks/useTerminalPreset";
 import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
 import type {
@@ -49,7 +49,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   const [editing, setEditing] = useState<SshConnection | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const mode = useThemeMode();
+  const mode = useTerminalThemeMode();
   const preset = useTerminalPreset();
   const surface = TERMINAL_SURFACE[preset][mode];
 
