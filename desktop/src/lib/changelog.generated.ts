@@ -4,6 +4,26 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.8.1",
+    date: "2026-10-14",
+    items: [
+      { category: "feat", text: "身份转变批3——MCP 2026-07-28 协议适配 Phase 1 + /mcp/messages 补 token" },
+      { category: "feat", text: "身份转变批2——运维闭环（托盘/导入/SSE 警告多客户端覆盖）" },
+      { category: "feat", text: "身份转变批1——接入口径统一（通用 MCP 工具）" },
+      { category: "feat", text: "外观中心——明暗/风格/字体三轴独立设置 + 字体内置化" },
+      { category: "feat", text: "终端能力批——OSC 52 复制 / 环境注入 / tmux 桥接 / 命令块 / 跨标签搜索 / 导出" },
+      { category: "feat", text: "通用双向桥 P0——客户端识别 + 项目规则多格式 + 自适应 instructions" },
+      { category: "feat", text: "终端接入 OSC 7501 程序状态 + DEC 2031 主题通知" },
+      { category: "improve", text: "砍 Cascadia 预设收尾——注释 5→4 套 + 测试补 cascadia 窄化断言" },
+      { category: "improve", text: "砍掉 Cascadia 独立预设（7→5→4 套）" },
+      { category: "improve", text: "docs: 新功能规划 2026-10-14（R17 安全设计拍板：无弹窗确认的自动化安全模型）" },
+      { category: "fix", text: "终端滚轮引导条——底色透字修掉 + A+ 单行可展开 + 倒计时可见" },
+      { category: "fix", text: "全站小字对比度达标 + 自签兼容性徽章三态" },
+      { category: "fix", text: "终端亮色主题可读性——12 个 ANSI 色值校准到 WCAG AA + 亮色开启对比度兜底" },
+      { category: "fix", text: "终端滚轮不再打断 Claude Code——滚动条用真实指针坐标 + 选择态守卫" },
+    ],
+  },
+  {
     version: "2.8.0",
     date: "2026-10-13",
     items: [
@@ -171,14 +191,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "SSH 连接列表「编辑」按钮图标上下错位。该按钮漏了 `flex items-center gap-1`，svg 与文字未被 flex 约束导致换行堆叠；已与同组其他按钮对齐。" },
       { category: "fix", text: "收起按钮与设计稿不一致（样式 / 字形 / 位置）。改为带边框 ghost 按钮 + chevron 箭头（新增 `chevronLeft` 图标，展开按钮旋转 180°），并调整头部按钮顺序为「新建 → 收起」与设计稿一致。" },
       { category: "fix", text: "终端区域「雾蒙蒙」对比度不足。xterm 主题对齐设计稿调色板：主文本 `#d4d4d4`→`#e6e6e6`、green `#6a9955`→`#22c55e`、blue `#569cd6`→`#60a5fa`、magenta `#c586c0`→`#c4b5fd`，背景保持 `#1e1e1e`（已确认非蒙版/拉伸所致，ResizeObserver 早已处理画布重算）。" },
-    ],
-  },
-  {
-    version: "2.6.4",
-    date: "2026-08-20",
-    items: [
-      { category: "feat", text: "关于页新增赞助开发者入口 + mcp_proxy 描述带上已挂载外挂工具名" },
-      { category: "feat", text: "`mcp_proxy` 的描述会带上当前已挂载外挂 server 的工具名（如 `codegraph: codegraph_explore, codegraph_callers, ...`）。这不是给人读的文案，是喂给客户端工具检索的领域词：Claude Code v2.1.7+ 默认开启 Tool Search，工具描述不再常驻上下文而是按需检索，而 `mcp_proxy` 原描述里一个领域词都没有，模型查代码结构时根本检索不到它，外挂 server 等于隐身。没挂任何 server 时描述与改动前逐字相同" },
     ],
   },
 ];
