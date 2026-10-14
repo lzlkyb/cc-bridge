@@ -21,7 +21,7 @@ import { TERMINAL_FONT } from "./terminalTheme";
  */
 const CJK_FALLBACK = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC"';
 
-export type TerminalFontId = "default" | "cascadia" | "consolas" | "jetbrains" | "fira";
+export type TerminalFontId = "default" | "consolas" | "jetbrains" | "fira";
 
 export interface TerminalFont {
   id: TerminalFontId;
@@ -46,10 +46,15 @@ export const FONT_SAMPLE = "Ag 0O 1lI 中文,.";
  * 字体预设。第 0 项就是 2.7.x 以来的那份字体栈（`terminalTheme.ts` 的 `TERMINAL_FONT`），
  * **一个字符都不要改**：它是默认项，改了等于强迫所有老用户换字体。
  *
- * 🔴 全部 5 套**开箱即用**，不存在「未安装」状态：
+ * 🔴 全部 4 套**开箱即用**，不存在「未安装」状态：
  * - JetBrains Mono / Fira Code 随安装包内置（`lib/bundledFonts.ts` 用 FontFace 注册）；
- * - Cascadia Code / Consolas 是 Windows 常见/自带字体，缺了就走栈内回退。
+ * - Consolas 是 Windows 自带字体，缺了就走栈内回退。
  * 因此这里不设 probe/url 之类的安装状态字段——曾经的检测 + 下载引导已随内置化删除。
+ *
+ * 🔴 不设独立的「Cascadia Code」预设：装了 Cascadia 的机器上它与「系统默认」渲染
+ * 同一个字体（默认栈首就是 ui-monospace/Cascadia）；没装的机器上它回退 Consolas、
+ * 与 Consolas 预设重复——**任何机器上都与另一项重复**，留着只会让人疑惑。
+ * 旧版本存过 `cascadia` 的用户由 `toFontId` 窄化回默认项（视觉上无变化）。
  *
  * ⚠️ 中文向预设（Maple Mono、更纱黑体）曾因「无法内置（CJK ttf 动辄 10MB+）」而
  * 依赖用户自装，内置化决策时一并移除；旧版本存过 `maple` / `cjk` 的用户会被
@@ -61,12 +66,6 @@ export const FONT_STACKS: ReadonlyArray<TerminalFont> = [
     name: "系统默认",
     desc: "Cascadia Code → JetBrains Mono → Consolas，含中文回退",
     stack: TERMINAL_FONT,
-  },
-  {
-    id: "cascadia",
-    name: "Cascadia Code",
-    desc: "随 Windows Terminal / VS 安装，字面偏宽；没有时回退 Consolas",
-    stack: `"Cascadia Code", "Cascadia Mono", Consolas, ${CJK_FALLBACK}, monospace`,
   },
   {
     id: "consolas",
