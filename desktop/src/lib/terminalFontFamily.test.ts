@@ -74,7 +74,10 @@ describe("fontStackOf / toFontId", () => {
     }
   });
 
-  it("旧版本的中文向预设 id（maple/cjk）窄化回默认项，无残留影响", () => {
+  it("旧版本遗留的预设 id（cascadia/maple/cjk）窄化回默认项，无残留影响", () => {
+    // cascadia：装了 Cascadia 的机器上与系统默认渲染同一字体；没装的机器上它回退
+    // Consolas、与 Consolas 预设重复——任何机器上都与另一项重复，故预设已删
+    expect(toFontId("cascadia")).toBe(DEFAULT_FONT_ID);
     expect(toFontId("maple")).toBe(DEFAULT_FONT_ID);
     expect(toFontId("cjk")).toBe(DEFAULT_FONT_ID);
   });

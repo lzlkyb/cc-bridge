@@ -13,7 +13,7 @@ import { ButtonIcon } from "./SshTerminalMoreMenu";
 /**
  * 终端「外观」快切菜单：工具条上那枚常驻的调色板按钮。
  *
- * 三段——**风格**（4 套预设）/ **明暗**（跟随应用 · 深色 · 浅色）/ **字体**（5 套等宽栈，
+ * 三段——**风格**（4 套预设）/ **明暗**（跟随应用 · 深色 · 浅色）/ **字体**（4 套等宽栈，
  * 全部开箱即用：JetBrains Mono / Fira Code 随安装包内置）。
  *
  * WHY 三段挤一个菜单而不是各给一个按钮：工具条右侧已有 8 个控件，再加会把中间
@@ -97,7 +97,7 @@ export function TerminalAppearanceMenu() {
   );
 }
 
-/** 分组小标题。12 个平铺项没有分组会糊成一片，这一行是菜单能读的前提。 */
+/** 分组小标题。11 个平铺项没有分组会糊成一片，这一行是菜单能读的前提。 */
 function GroupLabel({ children }: { children: ReactNode }) {
   return (
     <div className="px-2.5 pb-0.5 pt-1.5 text-[11px] font-medium text-muted-foreground">
