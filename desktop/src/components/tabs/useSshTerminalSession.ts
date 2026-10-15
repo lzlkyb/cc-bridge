@@ -36,6 +36,7 @@ import {
 import { loadFontSize } from "../../lib/terminalFontSize";
 import { loadFontStack } from "../../lib/terminalFontFamily";
 import { screenToText } from "../../lib/terminalScreen";
+import { trimCopyText } from "../../lib/terminalPaste";
 import { useTerminalFit } from "../../hooks/useTerminalFit";
 import { useTerminalPaste } from "./useTerminalPaste";
 import type { Theme } from "../../lib/theme";
@@ -414,7 +415,9 @@ export function useSshTerminalSession({
       return;
     }
     navigator.clipboard
-      .writeText(text)
+      // 与「复制选中」同走 trimCopyText：两条复制路径行为必须一致，
+      // 整屏快照按 cell 网格取字，行尾空白只会更多不会更少。
+      .writeText(trimCopyText(text))
       .then(() => toast("已复制整屏", "success"))
       .catch(() => toast("复制失败", "error"));
   }, [termRef]);
