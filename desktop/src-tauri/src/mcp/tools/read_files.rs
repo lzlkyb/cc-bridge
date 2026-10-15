@@ -25,6 +25,12 @@ pub enum FileRef {
 
 #[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct ReadFilesArgs {
+    /// 容错：部分客户端把数组 stringify 成字符串再发（审计实锤，含 `paths` 别名误用），
+    /// 见 `flex_args::vec_from_json_or_string`。
+    #[serde(
+        deserialize_with = "crate::mcp::tools::flex_args::vec_from_json_or_string",
+        alias = "paths"
+    )]
     pub files: Vec<FileRef>,
     #[serde(rename = "startLine")]
     pub start_line: Option<u32>,

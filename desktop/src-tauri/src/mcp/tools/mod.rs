@@ -5,6 +5,7 @@ pub mod copy_files;
 pub mod create_directory;
 pub mod delete_files;
 pub mod edit_files;
+pub mod flex_args;
 pub mod get_command_output;
 pub mod list_allowed_roots;
 pub mod list_directory;

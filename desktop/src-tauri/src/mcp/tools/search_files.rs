@@ -18,11 +18,13 @@ use std::io;
 
 #[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct SearchFilesArgs {
-    #[serde(rename = "rootPath")]
+    /// 别名 `path`：客户端按 native Grep 词汇传参的实测误用（审计实锤）。
+    #[serde(rename = "rootPath", alias = "path")]
     pub root_path: String,
     #[serde(rename = "namePattern")]
     pub name_pattern: Option<String>,
-    #[serde(rename = "contentPattern")]
+    /// 别名 `pattern`：同上，对齐 native Grep 的词汇。
+    #[serde(rename = "contentPattern", alias = "pattern")]
     pub content_pattern: Option<String>,
     #[serde(rename = "maxResults", default = "default_max_results")]
     pub max_results: usize,
@@ -93,7 +95,14 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     let metadata = tokio::fs::metadata(&root_resolved)
         .await
         .map_err(|e| format!("Cannot stat: {e}"))?;
-    if !metadata.is_dir() {
+    // C 类容错：rootPath 指向**文件**（客户端按文件精确搜索的常见误用，native Grep
+    // 的 path 参数本就允许是文件）→ 降级为单文件搜索，不再报 "rootPath is not a directory"。
+    let single_file = if metadata.is_file() {
+        Some(root_resolved.clone())
+    } else {
+        None
+    };
+    if !metadata.is_file() && !metadata.is_dir() {
         return Err("rootPath is not a directory".into());
     }
 
@@ -145,6 +154,15 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     let io_nanos = Arc::new(AtomicU64::new(0));
     let io_tracker = Arc::clone(&io_nanos);
     let (matches, truncated) = tokio::task::spawn_blocking(move || {
+        if let Some(file) = single_file {
+            return search_single_file_blocking(
+                &file,
+                content_regex.as_ref(),
+                &grep,
+                max_file_size,
+                &allowed_extensions,
+            );
+        }
         walk_search_blocking_tracked(
             &root_resolved,
             name_matcher.as_ref(),
@@ -405,6 +423,58 @@ fn walk_search_blocking_tracked(
         }
     }
     (out, truncated.load(Ordering::Relaxed))
+}
+
+/// 单文件模式：rootPath 指向**文件**时直接搜该文件（C 类容错）。
+///
+/// 安全约束与 walk 路径完全一致（H6）：扩展名白名单 + 大小上限照常生效——
+/// 否则 `outputMode=content` 单文件模式可绕过白名单逐行读 .env/.pem 等敏感文件。
+/// 区别在于违规时**不静默跳过**而是返回带 reason 的说明块：这是客户端点名的文件，
+/// 静默空结果会让模型误判「无匹配」。无 content_pattern 时文件本身即 name 命中。
+fn search_single_file_blocking(
+    file: &Path,
+    content_regex: Option<&grep_regex::RegexMatcher>,
+    grep: &GrepOptions,
+    max_file_size: u64,
+    allowed_extensions: &[String],
+) -> (Vec<Value>, bool) {
+    let path_str = file.to_string_lossy().to_string();
+    if let Err(e) = security::extension::assert_extension_allowed(file, allowed_extensions) {
+        return (
+            vec![json!({ "path": path_str, "type": "skipped", "reason": e })],
+            false,
+        );
+    }
+    match std::fs::metadata(file) {
+        Ok(m) if m.len() > max_file_size => {
+            return (
+                vec![json!({
+                    "path": path_str, "type": "skipped",
+                    "reason": format!("文件大小 {} 超过上限 {max_file_size}", m.len()),
+                })],
+                false,
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            return (
+                vec![
+                    json!({ "path": path_str, "type": "error", "reason": format!("Cannot stat: {e}") }),
+                ],
+                false,
+            );
+        }
+    }
+    let Some(matcher) = content_regex else {
+        // 无 content_pattern：文件本身即命中（对齐 name 模式的输出形状）。
+        return (vec![json!({ "path": path_str, "type": "name" })], false);
+    };
+    let counter = AtomicUsize::new(0);
+    // 单文件无并行遍历，I/O 追踪交给 grep_file 内部（tracker 传 None，
+    // O1 计时本就只在并行 walker 路径做跨线程累加，这里丢失的耗时归入 server 整体）。
+    let results = grep_file(file, matcher, grep, grep.head_limit, &counter, None);
+    let truncated = results.len() >= grep.head_limit;
+    (results, truncated)
 }
 
 /// P1-12：在 grep-searcher 的**同一次扫描**内直接收集命中行及其前/后上下文，
@@ -1178,5 +1248,109 @@ mod tests {
             matches.iter().all(|m| m.get("_mtime").is_none()),
             "内部 _mtime 字段不应出现在对外结果里：{matches:?}"
         );
+    }
+
+    /// D 类容错：客户端按 native Grep 词汇发 `path`/`pattern` 也能解析（审计实锤 2 例）。
+    /// 注意 serde 语义：主名与别名**同时出现会报 duplicate field**——这只影响
+    /// 两种词汇混发的病态客户端，各发其一都正常。
+    #[test]
+    fn aliases_accept_native_grep_vocab() {
+        let a: SearchFilesArgs = serde_json::from_value(json!({
+            "path": "C:\\work\\aier\\newar\\src",
+            "pattern": "class EyeComBGWorkPlugin",
+            "outputMode": "files_with_matches"
+        }))
+        .expect("path/pattern 别名应被接受");
+        assert_eq!(a.root_path, "C:\\work\\aier\\newar\\src");
+        assert_eq!(
+            a.content_pattern.as_deref(),
+            Some("class EyeComBGWorkPlugin")
+        );
+        // 正规字段名不受影响。
+        let b: SearchFilesArgs = serde_json::from_value(json!({
+            "rootPath": "C:\\x",
+            "contentPattern": "a"
+        }))
+        .expect("正规字段名应继续工作");
+        assert_eq!(b.root_path, "C:\\x");
+        assert_eq!(b.content_pattern.as_deref(), Some("a"));
+    }
+
+    /// C 类容错：rootPath 指向文件 → 单文件搜索命中。
+    #[test]
+    fn single_file_mode_searches_that_file() {
+        let dir = unique_subdir("single-file");
+        let f = dir.join("needle.txt");
+        touch(&f, "hello world\nfindme 42\nother line\n");
+        let grep = GrepOptions::default();
+        let (matches, truncated) = search_single_file_blocking(
+            &f,
+            Some(&matcher("findme")),
+            &grep,
+            1_000_000,
+            &[], // 空白名单放行（与 walk 测试同语义）
+        );
+        assert!(!truncated);
+        assert_eq!(matches.len(), 1, "应命中 1 行：{matches:?}");
+        assert!(collected_paths(&matches)[0].ends_with("needle.txt"));
+    }
+
+    /// 单文件 + 无 content_pattern：文件本身即 name 命中。
+    #[test]
+    fn single_file_mode_without_content_pattern_lists_file_itself() {
+        let dir = unique_subdir("single-file-name");
+        let f = dir.join("justme.txt");
+        touch(&f, "anything\n");
+        let (matches, truncated) =
+            search_single_file_blocking(&f, None, &GrepOptions::default(), 1_000_000, &[]);
+        assert!(!truncated);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].get("type").and_then(|v| v.as_str()),
+            Some("name")
+        );
+    }
+
+    /// 单文件模式的扩展名白名单必须生效（H6：否则单文件模式可绕过白名单读敏感文件）。
+    #[test]
+    fn single_file_mode_enforces_extension_whitelist() {
+        let dir = unique_subdir("single-file-ext");
+        let f = dir.join("secret.env");
+        touch(&f, "TOKEN=xyz\n");
+        let (matches, _) = search_single_file_blocking(
+            &f,
+            Some(&matcher("TOKEN")),
+            &GrepOptions::default(),
+            1_000_000,
+            &["rs".to_string(), "toml".to_string()],
+        );
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].get("type").and_then(|v| v.as_str()),
+            Some("skipped"),
+            "白名单外扩展名不得返回内容，应返回 skipped 说明块"
+        );
+        assert!(matches[0].get("reason").is_some());
+    }
+
+    /// 单文件模式的大小上限必须生效。
+    #[test]
+    fn single_file_mode_enforces_max_file_size() {
+        let dir = unique_subdir("single-file-size");
+        let f = dir.join("big.txt");
+        touch(&f, "findme\n"); // 7 字节
+        let (matches, _) = search_single_file_blocking(
+            &f,
+            Some(&matcher("findme")),
+            &GrepOptions::default(),
+            1, // 上限 1 字节：非空文件必超限
+            &[],
+        );
+        assert_eq!(
+            matches[0].get("type").and_then(|v| v.as_str()),
+            Some("skipped"),
+            "超限文件不得返回内容：{matches:?}"
+        );
+        assert!(matches[0].get("reason").is_some());
     }
 }

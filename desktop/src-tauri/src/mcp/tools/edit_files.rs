@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
 use crate::backup;
@@ -20,8 +20,76 @@ pub struct EditEntry {
     pub replace_all: bool,
 }
 
+/// 分组形态的内部 edit 项：{oldString, newString, replaceAll?}（path 由外层提供）。
+#[derive(Debug, Deserialize)]
+struct GroupedEdit {
+    #[serde(rename = "oldString")]
+    old_string: String,
+    #[serde(rename = "newString")]
+    new_string: String,
+    #[serde(default, rename = "replaceAll")]
+    replace_all: bool,
+}
+
+/// 客户端实际发过的两种 item 形态（untagged 按序尝试）：
+/// - Flat：{path, oldString, newString, replaceAll?} —— 即 [`EditEntry`] 本身；
+/// - Grouped：{path, edits: [{oldString, newString, ...}, ...]} —— 按文件分组
+///   （审计实锤，native Edit 语义下模型容易这么组织）。
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum FlexEditItem {
+    Flat(EditEntry),
+    Grouped {
+        path: String,
+        edits: Vec<GroupedEdit>,
+    },
+}
+
+/// `files` 字段的容错反序列化：接受数组 / JSON 字符串化的数组（审计实锤：
+/// `{"edits": "[{...}]"}`），item 兼容 Flat 与 Grouped 两种形态，Grouped 展平为逐条 EditEntry。
+fn flex_edit_files<'de, D>(deserializer: D) -> Result<Vec<EditEntry>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let arr: Vec<serde_json::Value> = match value {
+        arr @ serde_json::Value::Array(_) => {
+            serde_json::from_value(arr).map_err(serde::de::Error::custom)?
+        }
+        serde_json::Value::String(s) => {
+            let parsed: serde_json::Value = serde_json::from_str(s.trim())
+                .map_err(|e| serde::de::Error::custom(format!("参数是字符串但解不出 JSON：{e}")))?;
+            serde_json::from_value(parsed).map_err(serde::de::Error::custom)?
+        }
+        _ => {
+            return Err(serde::de::Error::custom(
+                "期望 files 数组（或 JSON 字符串化的数组）",
+            ))
+        }
+    };
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        match serde_json::from_value::<FlexEditItem>(item).map_err(serde::de::Error::custom)? {
+            FlexEditItem::Flat(e) => out.push(e),
+            FlexEditItem::Grouped { path, edits } => {
+                for e in edits {
+                    out.push(EditEntry {
+                        path: path.clone(),
+                        old_string: e.old_string,
+                        new_string: e.new_string,
+                        replace_all: e.replace_all,
+                    });
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct EditFilesArgs {
+    /// 容错见 [`flex_edit_files`]：字符串化数组 / `edits` 别名 / 按文件分组形态均可接受。
+    #[serde(deserialize_with = "flex_edit_files", alias = "edits")]
     pub files: Vec<EditEntry>,
 }
 
@@ -343,5 +411,59 @@ mod tests {
     fn whitespace_warning_tab_counts() {
         let w = whitespace_warning("\tfn()").expect("应检测到前导制表符");
         assert!(w.contains("制表符 1"), "应统计出 1 个制表符：{w}");
+    }
+
+    /// A 类容错：`{"edits": "[...]"}`（错误键 + 字符串化 + Flat 形态）——审计实锤样本。
+    #[test]
+    fn flex_accepts_stringified_flat_form_under_alias() {
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "edits": "[{\"path\": \"D:\\\\x\\\\NcSvn.java\", \"oldString\": \"a\", \"newString\": \"b\"}]"
+        }))
+        .expect("edits 别名 + 字符串化数组应被接受");
+        assert_eq!(args.files.len(), 1);
+        assert_eq!(args.files[0].path, "D:\\x\\NcSvn.java");
+        assert_eq!(args.files[0].old_string, "a");
+    }
+
+    /// Grouped 形态：{path, edits: [{oldString, newString}, ...]} —— 审计实锤「missing field oldString」的根因。
+    #[test]
+    fn flex_accepts_grouped_form() {
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{
+                "path": "a.java",
+                "edits": [
+                    { "oldString": "x", "newString": "y" },
+                    { "oldString": "p", "newString": "q", "replaceAll": true }
+                ]
+            }]
+        }))
+        .expect("分组形态应被接受并展平");
+        assert_eq!(
+            args.files.len(),
+            2,
+            "分组内 2 条 edit 应展平为 2 个 EditEntry"
+        );
+        assert_eq!(args.files[0].path, "a.java");
+        assert_eq!(args.files[1].old_string, "p");
+        assert!(args.files[1].replace_all);
+    }
+
+    /// 正规 Flat 形态不受影响（回归保护）。
+    #[test]
+    fn flex_keeps_plain_flat_form() {
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": "a.java", "oldString": "x", "newString": "y" }]
+        }))
+        .expect("正规形态必须继续工作");
+        assert_eq!(args.files.len(), 1);
+        assert_eq!(args.files[0].new_string, "y");
+    }
+
+    /// 解不出 JSON 的字符串照样报错（不静默兜底）。
+    #[test]
+    fn flex_rejects_non_json_string() {
+        let r: Result<EditFilesArgs, _> =
+            serde_json::from_value(serde_json::json!({ "files": "not json" }));
+        assert!(r.is_err());
     }
 }
