@@ -41,6 +41,10 @@ export function MetricCards({
   const s = live?.stats;
   const running = status?.running ?? false;
   const fmt = (n: number) => n.toLocaleString("en-US");
+  // 延迟人读化：≥1 秒就换算成秒（8251 毫秒 → 8.25 秒）。P95 常在秒级，
+  // 四位毫秒数既要心算、又跟日志页的「8.25s」写法对不上（设计稿核对时发现的不一致）。
+  const fmtLatency = (ms: number): { value: string; unit: string } =>
+    ms >= 1000 ? { value: (ms / 1000).toFixed(2), unit: " 秒" } : { value: String(ms), unit: " 毫秒" };
 
   // 未运行时实时类指标置 "--"：显示 0 会让人以为“在跑但没流量”。
   const dash = (v: string) => (running ? v : "--");
@@ -48,6 +52,8 @@ export function MetricCards({
   const avg = s?.avgLatencyMs ?? 0;
   // 尾部倍数：P95 ÷ 平均。比孤零零的 142ms 有信息量——它告诉你尾延迟拉得多长。
   const tailRatio = avg > 0 ? p95 / avg : 0;
+  const p95Fmt = fmtLatency(p95);
+  const avgFmt = fmtLatency(avg);
 
   // “调用增量”的主数字就是序列末项（后端没这个标量，只能从采样里取）。
   // 必须在组件顶层调 hook，不能写在 JSX 属性里——那样一旦那张卡被包进条件分支，
@@ -70,9 +76,9 @@ export function MetricCards({
       />
       <MetricCard
         label="P95 延迟"
-        value={dash(String(p95))}
-        unit=" 毫秒"
-        sub={avg > 0 ? `平均 ${avg}毫秒 · 尾部慢 ${tailRatio.toFixed(1)} 倍` : "暂无数据"}
+        value={dash(p95Fmt.value)}
+        unit={p95Fmt.unit}
+        sub={avg > 0 ? `平均 ${avgFmt.value}${avgFmt.unit} · 尾部慢 ${tailRatio.toFixed(1)} 倍` : "暂无数据"}
         seriesKey="p95"
         color="text-success-ink"
         chart="bars"

@@ -35,6 +35,14 @@
   --color-ring: hsl(var(--ring));
   --radius: var(--radius);
 
+  /* 圆角档位覆写（2026-10-15 拍板）：把「控件档」从 Tailwind 默认 6px 抬到 8px，
+     对齐设计稿的控件圆角（稿子 .nav-button / 真按钮 = 8px）。
+     影响面 = 全部 `rounded-md`（144 处）。⚠️ 其中约 29 处是 18–20px 高的小元素
+     （版本胶囊 / 信息标签 / 图标按钮盒 / 行内 code），8px 已占其高度近半、会明显
+     变圆接近胶囊 —— 该代价用户已确认接受（对照实测 design/圆角对照-6px-vs-8px.html）。
+     其余档位未动：rounded-sm 4px / rounded-lg 8px / rounded 9.6px / xl 12px / 2xl 16px。 */
+  --radius-md: 0.5rem;
+
   /* P1-3 阴影 token（值指向 :root / .dark 的 --sh-*，深浅主题自适应）*/
   --shadow-card: var(--sh-card);
   --shadow-pop: var(--sh-pop);
@@ -89,6 +97,22 @@
   --input: 216 20% 90%;
   --ring: 243 75% 59%;
   --radius: 0.6rem;
+
+  /* 圆角 token（2026-10-14 侧栏改造）。
+     ⚠️ 准确说明：这**不是**「把全站圆角收口成三档」。全站圆角仍由 Tailwind scale
+     主导（2026-10-15 起：rounded-sm 4px / **md 8px** / lg 8px / rounded 9.6px /
+     xl 12px / 2xl 16px，约 400 处；md 档覆写见文件顶部 @theme 段）。本组 token 只
+     覆盖两个具体用途：
+       - --r-card   ：.bento-card / .status-card / .metric-card。这三处早已写
+                      `var(--r-card, 14px)` 但变量从未定义、一直走 fallback；
+                      此处补定义与 fallback 同值 ⇒ 零视觉变化。
+       - --r-control：侧栏导航项 + 底部服务状态胶囊（值 8px，对齐设计稿
+                      `.nav-button` 的 8px）。
+     2026-10-15 复核：稿子分级 5/6/8/12/14 与 app 的 4/8/8/9.6/12/14 已对齐（仅徽章
+     档差 1px）；一度加入的 --r-panel:12px 因全仓零引用已删。
+     对照实测见 design/圆角对照-6px-vs-8px.html。 */
+  --r-control: 8px;
+  --r-card: 14px;
 
   /* 视觉增强专用（非 Tailwind 语义色）*/
   --hero-gradient: linear-gradient(135deg, #6366F1 0%, #4F46E5 52%, #0EA5E9 100%);
@@ -539,6 +563,21 @@ body {
   background: rgba(14, 165, 233, 0.22); border-color: rgba(14, 165, 233, 0.4);
 }
 
+/* ═══ 内容区容器（2026-10-14 侧栏改造）═══
+   加侧栏后「视口宽度」不再等于「内容区宽度」：940 窗口 + 200 侧栏 → 内容区只剩约 700px，
+   而 .bento 的 `@media (max-width:820px)` 按视口判断仍是 940 > 820 → **永不触发**，
+   12 列硬挤进 700px。改用容器查询，以内容区实际宽度为准，与侧栏展开/折叠解耦。
+
+   容器由 App.tsx 的 TabsContent 承载（只加在 connect / settings 两个含响应式布局的页）。
+
+   🔴 容器绝不能加在 <main> 上：main 内有 TerminalTab 的 `fixed inset-0` 全屏态，
+   container-type 自带的 layout containment 会把它的包含块从视口改成 main，
+   全屏终端会缩成只覆盖内容区。故下沉到「无 fixed 后代」的 TabsContent 层。 */
+.app-content-box {
+  container-type: inline-size;
+  container-name: app-content;
+}
+
 /* E0. 连接页 Bento 网格（ConnectBento.tsx）
    12 列：行1 = 状态卡(4) + 四张指标卡(2×4)；行2 = 状态卡继续占 + 健康(4) + 治理(4)；
    行3 = 接入向导(12)。列跨度用**子选择器**而不是给每张卡加 class：
@@ -566,6 +605,15 @@ body {
    链路图三段平分，列宽低于约 300px 时段名与副标题会挤在一起；
    单列下它反而摊得更开。 */
 @media (max-width: 820px) {
+  .bento { grid-template-columns: 1fr; }
+  .bento > .status-card,
+  .bento > .metric-card,
+  .bento > .bento-card,
+  .bento > .bento-span12 { grid-column: span 1; grid-row: auto; }
+}
+/* 容器查询版：判据换成「内容区宽度」。上面 @media 版保留作无容器支持时的兜底——
+   内容区宽度恒小于视口宽度，故 @media 命中必然是 @container 命中集的子集，两者不会打架。 */
+@container app-content (max-width: 820px) {
   .bento { grid-template-columns: 1fr; }
   .bento > .status-card,
   .bento > .metric-card,
@@ -726,6 +774,11 @@ body {
 .tool-bar > i.usage-c-other { background: hsl(var(--muted-foreground)); }
 /* 窄窗口降级：KPI 折两列、双栏折单栏（设置面板本身有 min 宽，这两条兜底小窗）。 */
 @media (max-width: 640px) {
+  .usage-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-duo { grid-template-columns: 1fr; }
+}
+/* 容器查询版（同上：@media 作为无容器支持时的兜底）。 */
+@container app-content (max-width: 640px) {
   .usage-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .usage-duo { grid-template-columns: 1fr; }
 }
@@ -1487,7 +1540,7 @@ body {
 .s-row-desc { font-size: 11px; color: hsl(var(--muted-foreground)); line-height: 1.4; }
 .s-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .s-input {
-  width: 68px; height: 32px; padding: 0 8px; border-radius: 6px;
+  width: 68px; height: 32px; padding: 0 8px; border-radius: 8px;
   border: 1px solid hsl(var(--input)); background: hsl(var(--card));
   font-size: 13px; text-align: center; font-weight: 600;
   color: hsl(var(--foreground)); font-family: "SF Mono", monospace;
@@ -1709,3 +1762,225 @@ select:focus-visible,
     width: 100%;
   }
 }
+/* 容器查询版：判据换成「内容区宽度」。@media 版保留作无容器支持时的兜底。
+   ⚠️ 这里改的是 .settings-tab 自身（flex-direction），它能被查询是因为
+   .settings-tab 是 .app-content-box（TabsContent）的**后代**，而非容器本身——
+   容器自身的样式无法被自己的 @container 命中。 */
+@container app-content (max-width: 820px) {
+  .settings-tab {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .settings-tab .settings-nav {
+    position: static;
+    width: 100%;
+  }
+  .settings-tab .settings-nav-box {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    overflow-x: auto;
+  }
+  .settings-tab .settings-nav-cluster-title,
+  .settings-tab .settings-nav-cluster-sep {
+    display: none;
+  }
+  .settings-tab .settings-nav-item {
+    width: auto;
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .settings-tab .settings-nav-item-active {
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+  }
+  .settings-tab .settings-nav-item-active .settings-nav-chip {
+    background: hsl(var(--primary) / 0.2);
+    color: hsl(var(--primary-foreground));
+  }
+  .settings-tab .settings-nav > .settings-nav-search {
+    width: 100%;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   侧栏外壳（2026-10-14：顶部横向 TabsList → 左侧竖排侧栏）
+   结构：.app-shell = grid[ 侧栏 .app-side | 主列 .app-main ]
+   宽度由 .app-side 自己持有（展开 200 / 图标栏 56），grid 首列用 auto 跟随，
+   这样侧栏宽度只有一个真源，不必往 grid 容器上挂状态属性。
+   ═══════════════════════════════════════════════════════════════ */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.app-side {
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  min-height: 0;
+  overflow: hidden;
+  background: hsl(var(--card));
+  border-right: 1px solid hsl(var(--border));
+  user-select: none;
+  transition: width 180ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.app-side[data-collapsed] { width: 56px; }
+
+.app-main {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 品牌区：兼作窗口拖拽区（decorations:false，无系统标题栏，必须留出可拖区域） */
+.app-side-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  height: 52px;
+  padding: 0 12px;
+  border-bottom: 1px solid hsl(var(--border));
+  overflow: hidden;
+}
+.app-side-logo { flex-shrink: 0; border-radius: 7px; }
+.app-side-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.app-side-name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: hsl(var(--foreground));
+  white-space: nowrap;
+}
+.app-side[data-collapsed] .app-side-head { justify-content: center; padding: 0; }
+.app-side[data-collapsed] .app-side-brand { display: none; }
+
+/* 导航列表 */
+.app-side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.app-side-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--r-control);
+  font-size: 13px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms linear, color 140ms linear;
+}
+.app-side-item:hover { background: hsl(var(--secondary)); color: hsl(var(--foreground)); }
+/* 选中态：淡靛蓝底 + 靛蓝字。accent-foreground on accent 实测浅色 ≈6.8:1、深色 ≈5.5:1，均过 AA。 */
+.app-side-item[data-active] {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+  font-weight: 600;
+}
+.app-side-icon { flex-shrink: 0; }
+.app-side-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 设置入口的更新未读红点：展开态在行尾；图标栏态缩成图标右上角一个小点 */
+.app-side-badge {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: hsl(var(--destructive));
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+.app-side[data-collapsed] .app-side-badge {
+  position: absolute;
+  top: 3px;
+  right: 6px;
+  margin-left: 0;
+  min-width: 7px;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  font-size: 0;
+  box-shadow: 0 0 0 2px hsl(var(--card));
+}
+
+/* 底部：设置入口 + 服务状态 */
+.app-side-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 8px;
+  border-top: 1px solid hsl(var(--border));
+}
+.app-side-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: var(--r-control);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: default;
+}
+/* 四态统一走 -ink 变体（对「本色 12% 淡底 + 卡片底」实测均 ≥ AA 小字门槛）：
+   注意不能用基础色或 -foreground —— 后者是「实底上的字」，深色下近黑，放淡底读不出来。 */
+.app-side-status[data-tone="ok"]   { background: hsl(var(--success) / 0.14);     color: hsl(var(--success-ink)); }
+.app-side-status[data-tone="warn"] { background: hsl(var(--warning) / 0.16);     color: hsl(var(--warning-ink)); }
+.app-side-status[data-tone="bad"]  { background: hsl(var(--destructive) / 0.12); color: hsl(var(--destructive-ink)); }
+.app-side-status[data-tone="idle"] { background: hsl(var(--muted));              color: hsl(var(--muted-foreground)); }
+.app-side-status[data-clickable] { cursor: pointer; }
+.app-side-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.app-side-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 图标栏态：状态胶囊只留一个点，导航项只留图标并居中 */
+.app-side[data-collapsed] .app-side-status { justify-content: center; padding: 8px 0; }
+.app-side[data-collapsed] .app-side-status-text { display: none; }
+.app-side[data-collapsed] .app-side-item { justify-content: center; gap: 0; padding: 8px 0; }
+.app-side[data-collapsed] .app-side-label { display: none; }
+
+/* 顶栏：固定 52px，与侧栏品牌区等高，两者底边连线贯通成一条水平分割线 */
+.app-topbar { height: 52px; }

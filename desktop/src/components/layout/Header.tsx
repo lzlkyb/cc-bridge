@@ -4,21 +4,36 @@ import type { StaticStatus } from "../../lib/types";
 import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
 import { Icon, type IconName } from "../ui/icon";
-import { APP_INFO } from "../../lib/about";
-import { UpdateBadge } from "./UpdateBadge";
 import { TitleBarControls } from "./TitleBarControls";
 
+/**
+ * 应用顶栏（2026-10-14 侧栏改造后，由原「Header」瘦身而来）。
+ *
+ * 迁移去向：
+ *  - 品牌区（logo + 应用名 + 版本徽章）→ `SideNav` 顶部品牌区
+ *  - 服务状态胶囊 → `SideNav` 底部（那里有纵向空间放完整文案，且不挤顶栏）
+ *  - 安全徽章（最多 5 枚）→ **留在顶栏**：200px 宽的侧栏塞不下五枚徽章
+ *  - 新增侧栏折叠 / 展开按钮（图标栏态下这是唯一的展开入口）
+ *
+ * ⚠️ 组件文件名与导出名仍保持 `Header`，只为把本次结构改造的 diff 限制在必要范围内
+ *    （App.tsx 的 import 不必变动）。语义上它就是「顶栏」。
+ */
 function HeaderImpl({
   status,
   onChanged,
   onNavigate,
   onOpenSearch,
+  collapsed,
+  onToggleCollapse,
 }: {
   status?: StaticStatus;
   onChanged?: () => void;
   onNavigate?: (tab: string, anchor?: string) => void;
   /** 打开命令面板：给 Ctrl+K 一个可见入口，否则不知道快捷键的人发现不了它。 */
   onOpenSearch?: () => void;
+  /** 侧栏当前是否处于图标栏（收起）态。 */
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   const [dark, setDark] = useState(() => getStoredTheme() === "dark");
   const [busy, setBusy] = useState(false);
@@ -33,7 +48,6 @@ function HeaderImpl({
 
   // S5: 未知态(轮询间隙/首帧)一律视为未运行，避免 `?? true` 制造"总在运行"的错觉
   const running = status?.running ?? false;
-  const startupError = status?.startupError ?? null;
 
   // E-P1-10: useMemo 避免每帧重建 badge 数组
   const securityBadges: {
@@ -65,72 +79,26 @@ function HeaderImpl({
     }
   };
 
-  // S2: 链路状态机。linkDown = 服务在跑，但地址变了或探针不通（远程连不回本机）。
-  // 这正是此前"服务显示运行却连不上"的真相——用醒目的红态暴露出来，绝不淹没。
-  const linkDown = !!status && !!running && (status.ipChanged || status.remoteReachable === false);
-
-  // 防火墙未放行：本机服务正常，但 Windows 防火墙挡住了远程入站（探针盲点的诚实降级）。
-  // 仅当「服务在跑 + 链路未中断 + 防火墙开 + 7823 未放行」时成立，橙态，绝不谎报绿色。
-  const firewallBlocked =
-    !!status &&
-    running &&
-    !linkDown &&
-    status.firewallEnabled === true &&
-    status.firewallPortOpen === false;
-
-  // E-P2-9: useMemo 避免每渲染拼接 className 三元链
-  const pillClassName = useMemo(
-    () =>
-      `status-pill inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold${
-        startupError
-          ? " border-destructive/30 bg-destructive/10 text-destructive-ink"
-          : !running
-          ? " border-border bg-muted text-muted-foreground"
-          : linkDown
-          ? " border-destructive/30 bg-destructive/10 text-destructive-ink"
-          : firewallBlocked
-          ? " border-warning/30 bg-warning/10 text-warning-ink"
-          : " border-success/30 bg-success/10 text-success-ink"
-      }`,
-    [startupError, running, linkDown, firewallBlocked],
-  );
-  const pillText = !status
-    ? "连接中"
-    : startupError
-    ? "启动失败"
-    : !running
-    ? "已停止"
-    : linkDown
-    ? "远程连接中断"
-    : firewallBlocked
-    ? "远程未确认连接"
-    : "已连接";
-
   return (
-    <header data-tauri-drag-region className="app-header flex shrink-0 items-center justify-between border-b px-5 py-3.5">
-      <div data-tauri-drag-region className="flex items-center gap-2.5">
-        <img src="/icon.png" alt={APP_INFO.name} width={40} height={40} className="shrink-0 rounded-lg" draggable={false} />
-        {/* 走 APP_INFO.name，不再硬编码：旁边 img 的 alt 本来就用它，两者值恰好一样而已，改常量时这里会漏 */}
-        <h1 className="text-base font-semibold tracking-tight">{APP_INFO.name}</h1>
-        <UpdateBadge currentVersion={status?.version} />
-
-        {/* 运行状态胶囊：启动失败=红, 运行=绿+脉冲, 停止=灰 (A3) */}
-        <span
-          className={pillClassName}
-          title={startupError ?? (linkDown ? "网络地址已失效，远程连接中断" : firewallBlocked ? "本机服务正常，但防火墙可能拦截远程入站，远程可能无法连入" : undefined)}
-          {...(startupError && onNavigate
-            ? { onClick: () => onNavigate("settings"), style: { cursor: "pointer" } }
-            : linkDown && onNavigate
-            ? { onClick: () => onNavigate("connect"), style: { cursor: "pointer" } }
-            : firewallBlocked && onNavigate
-            ? { onClick: () => onNavigate("connect"), style: { cursor: "pointer" } }
-            : {})}
-        >
-          <span className={`h-1.5 w-1.5 rounded-full bg-current ${running && !startupError && !linkDown && !firewallBlocked ? "p-dot" : ""}`} />
-          {pillText}
-        </span>
-
-        {/* 安全状态小徽章：任意页可见，点击跳转到对应设置页（白名单/只读/命令执行→安全页，IP 变化→连接页） */}
+    <header
+      data-tauri-drag-region
+      className="app-header app-topbar flex shrink-0 items-center gap-2 border-b px-3"
+    >
+      {/* 左侧：侧栏开关 + 安全徽章（徽章仅在异常态出现，正常时这一区很窄） */}
+      <div data-tauri-drag-region="false" className="flex shrink-0 items-center gap-1.5">
+        {onToggleCollapse && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onToggleCollapse}
+            title={collapsed ? "展开侧栏" : "收起侧栏"}
+            aria-label={collapsed ? "展开侧栏" : "收起侧栏"}
+            aria-expanded={!collapsed}
+          >
+            {/* 图标集里只有 chevronLeft（无 chevronRight），收起态靠翻转表达 */}
+            <Icon name="chevronLeft" size={16} className={collapsed ? "rotate-180" : ""} />
+          </Button>
+        )}
         {securityBadges.filter((b) => b.show).map((b) => (
           <button
             key={b.key}
@@ -149,8 +117,11 @@ function HeaderImpl({
         ))}
       </div>
 
-      <div data-tauri-drag-region="false" className="flex items-center gap-2">
-        {/* 启停按钮 */}
+      {/* 中部：纯拖拽空白（无系统标题栏，需要留足可拖区域） */}
+      <div data-tauri-drag-region className="min-w-0 flex-1 self-stretch" />
+
+      {/* 右侧：启停 / 搜索 / 主题 / 窗口控件 */}
+      <div data-tauri-drag-region="false" className="flex shrink-0 items-center gap-2">
         {status && (
           <Button
             variant={running ? "outline" : "default"}

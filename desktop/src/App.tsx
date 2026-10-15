@@ -5,12 +5,12 @@ import type { StatusResponse, StaticStatus } from "./lib/types";
 import { APP_INFO, CHANGELOG } from "./lib/about";
 import { getLastSeenVersion, setLastSeenVersion, countUnreadVersions } from "./lib/utils";
 import { Header } from "./components/layout/Header";
+import { SideNav, WORKSPACE_NAV } from "./components/layout/SideNav";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAppHiddenFlag } from "./hooks/useAppHiddenFlag";
 import { useAppHidden } from "./lib/appVisibility";
 import { Button } from "./components/ui/button";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
-import { Icon } from "./components/ui/icon";
+import { Tabs, TabsContent } from "./components/ui/tabs";
 import { ToastProvider, useToast, toast } from "./components/ui/toast";
 import { ActionCard } from "./components/ui/notice";
 import { ConnectTab } from "./components/tabs/ConnectTab";
@@ -120,6 +120,19 @@ function AppContent() {
   // 命令面板 (Ctrl+K)
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [activeTab, setActiveTab] = useState("connect");
+
+  // 侧栏形态（2026-10-14）：宽窗展开 200px，窄窗自动收成 56px 图标栏。
+  // 阈值 1080 的由来：展开态内容区 = 视口 − 200(侧栏) − 40(内容区 px-5)，
+  // 要 ≥ 820px 才能保住连接页 Bento 的 12 列布局 → 展开态需视口 ≥ 1060，
+  // 取 1080 留 20px 余量（1060 时内容区正好 820，会踩到 @container 的 max-width:820 边界）。
+  const [sideCollapsed, setSideCollapsed] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 1080px)");
+    const apply = () => setSideCollapsed(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
   // 安全徽章点击带入的定位锚点（带 nonce 以便重复点击同一徽章也能重新触发高亮）
   const [pendingAnchor, setPendingAnchor] = useState<{ anchor: string; nonce: number } | null>(null);
 
@@ -190,18 +203,19 @@ function AppContent() {
         e.preventDefault();
         setShowCommandPalette((v) => !v);
       }
-      // Ctrl+1~4 切工作区 Tab、Ctrl+, 打开设置（桌面应用标准键位，mac 下 ⌘,）；
-      // 设置排 Tab 栏末位不占数字位（导航末位惯例，见 VS Code/Discord）。
+      // Ctrl+1~4 切工作区页、Ctrl+, 打开设置（桌面应用标准键位，mac 下 ⌘,）；
+      // 设置排导航末位不占数字位（导航末位惯例，见 VS Code/Discord）。
       // 输入框/可编辑元素聚焦时不拦截，避免覆盖正常输入（如密码、命令参数）
       if (
         isCtrlOrMeta &&
         e.key >= "1" &&
-        e.key <= "4" &&
+        e.key <= String(WORKSPACE_NAV.length) &&
         !isEditableTarget(e.target)
       ) {
         e.preventDefault();
-        const tabs = ["connect", "security", "log", "terminal"];
-        setActiveTab(tabs[parseInt(e.key) - 1]);
+        // 复用侧栏的导航数组，保证「侧栏展示顺序」与「快捷键顺序」永远一致
+        const target = WORKSPACE_NAV[parseInt(e.key) - 1];
+        if (target) setActiveTab(target.key);
       }
       // 走 handleNavigate 而非 setActiveTab：进设置需触发标已读/开更新历史的副作用
       if (isCtrlOrMeta && e.key === "," && !isEditableTarget(e.target)) {
@@ -226,11 +240,28 @@ function AppContent() {
 
   return (
     <ToastProvider>
-    {/* h-screen flex-col：Header 与 Tab 栏固定，仅内容区滚动（横向锁死、纵向可滚） */}
+    {/* h-screen flex-col：外壳纵向排布，.app-shell（grid）撑满余下空间；
+        顶栏与侧栏固定，仅内容区滚动（横向锁死、纵向可滚）。 */}
     {/* app-boot-fade：接替 index.html 里的首帧骨架屏时做一次很短的淡入，
         磨掉「骨架灰块 → 真实文字」那下硬切换。 */}
     <div className="app-boot-fade flex h-screen flex-col overflow-hidden bg-background text-foreground">
-      <Header status={status} onChanged={refetchStatus} onNavigate={handleNavigate} onOpenSearch={() => setShowCommandPalette(true)} />
+      <Tabs value={activeTab} onValueChange={handleNavigate} className="app-shell">
+        <SideNav
+          activeTab={activeTab}
+          onNavigate={handleNavigate}
+          unreadCount={unreadCount}
+          status={status}
+          collapsed={sideCollapsed}
+        />
+        <div className="app-main flex min-h-0 min-w-0 flex-col">
+          <Header
+            status={status}
+            onChanged={refetchStatus}
+            onNavigate={handleNavigate}
+            onOpenSearch={() => setShowCommandPalette(true)}
+            collapsed={sideCollapsed}
+            onToggleCollapse={() => setSideCollapsed((v) => !v)}
+          />
       {statusError && (
         <div className="shrink-0 px-5 pt-2">
           <ActionCard
@@ -265,59 +296,8 @@ function AppContent() {
           </ActionCard>
         </div>
       )}
-      <Tabs
-        value={activeTab}
-        onValueChange={(v) => {
-          setActiveTab(v);
-          // 进设置页即标记已读；仅当有未读（红点）时才自动展开「关于卡片/更新历史」引导。
-          if (v === "settings") {
-            if (unreadCount > 0) setChangelogOpenToken((t) => t + 1);
-            markSeenOnEnter();
-          }
-        }}
-        className="flex min-h-0 flex-1 flex-col"
-      >
-        <div className="shrink-0 px-5 pb-3 pt-4">
-          <TabsList>
-            <TabsTrigger value="connect"><Icon name="plug" /> 连接</TabsTrigger>
-            <TabsTrigger value="security"><Icon name="shield" /> 安全</TabsTrigger>
-            <TabsTrigger value="log"><Icon name="log" /> 日志</TabsTrigger>
-            <TabsTrigger value="terminal"><Icon name="terminal" /> 终端</TabsTrigger>
-            {/* 设置排最末位（导航末位惯例：VS Code/Discord/Telegram 均把设置放导航尾部）——
-                与「干活的页面」在视觉上分层。进入副作用（标已读/开更新历史）在 Tabs
-                onValueChange 里，Trigger 交互照常触发。 */}
-            <TabsTrigger value="settings">
-              <span className="relative inline-flex items-center">
-                <Icon name="settings" /> 设置
-                {unreadCount > 0 && (
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (activeTab !== "settings") setActiveTab("settings");
-                      setChangelogOpenToken((t) => t + 1);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (activeTab !== "settings") setActiveTab("settings");
-                        setChangelogOpenToken((t) => t + 1);
-                      }
-                    }}
-                    title={`${unreadCount} 项新更新，点击查看更新历史`}
-                    className="changelog-dot absolute -right-2.5 -top-1.5 flex h-4 min-w-[16px] cursor-pointer items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white"
-                  >
-                    {unreadCount > 9 ? "9+" : unreadCount}
-                  </span>
-                )}
-              </span>
-            </TabsTrigger>
-          </TabsList>
-        </div>
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-5">
-          <TabsContent value="connect">
+          <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-5">
+          <TabsContent value="connect" className="app-content-box">
             <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} />
           </TabsContent>
           <TabsContent value="security">
@@ -327,7 +307,7 @@ function AppContent() {
               <SecurityTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} />
             </Suspense>
           </TabsContent>
-          <TabsContent value="settings">
+          <TabsContent value="settings" className="app-content-box">
             <Suspense fallback={<TabFallback />}>
               <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} onOpenSearch={() => setShowCommandPalette(true)} onNavigate={handleNavigate} />
             </Suspense>
@@ -346,7 +326,8 @@ function AppContent() {
               <TerminalTab status={status} />
             </Suspense>
           </div>
-        </main>
+          </main>
+        </div>
       </Tabs>
 
       {/* 首次使用引导 */}
