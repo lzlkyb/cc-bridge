@@ -115,10 +115,10 @@ export function TerminalTabsBar({
               </span>
               {/* 标题只作主机名的附加段：正常程序可显示，恶意标题顶不掉主机名。 */}
               {title && (
-                <span className="max-w-40 truncate font-mono opacity-60">▸ {title}</span>
+                <span className="max-w-40 truncate font-mono text-muted-foreground">▸ {title}</span>
               )}
               {showSeq && (
-                <span className="rounded bg-muted-foreground/15 px-1 font-mono text-[10px]">
+                <span className="rounded bg-muted-foreground/15 px-1 font-mono text-[11px]">
                   #{seq}
                 </span>
               )}

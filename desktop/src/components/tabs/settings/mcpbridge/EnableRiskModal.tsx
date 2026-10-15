@@ -58,7 +58,7 @@ export function EnableRiskModal({
       <div className="mb-2 break-all rounded-lg bg-muted px-3 py-2 font-mono text-[11.5px] leading-relaxed">
         {fullCommand(command, args)}
       </div>
-      <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+      <div className="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span>工作目录：{effectiveCwd || "跟随 cc-bridge"}</span>
         <span>环境变量：{envKeys.length ? envKeys.join("、") : "无"}</span>
       </div>

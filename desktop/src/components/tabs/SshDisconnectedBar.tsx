@@ -28,14 +28,14 @@ export function SshDisconnectedBar({
         <button
           type="button"
           onClick={onReconnect}
-          className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
         >
           <Icon name="plug" size={12} /> 重新连接
         </button>
         <button
           type="button"
           onClick={onCloseTab}
-          className="rounded-md border border-border bg-card px-2.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="rounded-md border border-border bg-card px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           关闭标签
         </button>

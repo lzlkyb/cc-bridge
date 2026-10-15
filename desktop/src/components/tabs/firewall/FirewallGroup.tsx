@@ -56,7 +56,7 @@ export function FirewallGroup({ onRefresh }: { onRefresh?: () => void }) {
         <CardTitle icon={<Icon name="shield" />}>
           防火墙
           <span
-            className={`ml-auto inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-normal fw-badge ${badge.tone} ${badgeClass}`}
+            className={`ml-auto inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-normal fw-badge ${badge.tone} ${badgeClass}`}
           >
             {badge.tone !== "muted" && (
               <Icon name={badge.tone === "ok" ? "check" : "alertTriangle"} size={11} />

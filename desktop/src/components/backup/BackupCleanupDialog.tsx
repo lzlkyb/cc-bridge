@@ -153,7 +153,7 @@ export function BackupCleanupDialog({
       </div>
 
       <div className="max-h-[70vh] space-y-3 overflow-y-auto px-5 py-4">
-        <div className="text-[11px] text-muted-foreground">清理方式</div>
+        <div className="text-xs text-muted-foreground">清理方式</div>
         <div className="flex flex-wrap gap-1.5">
           <OptionChip on={mode === "olderThanDays"} onClick={() => setMode("olderThanDays")}>
             按时间
@@ -168,7 +168,7 @@ export function BackupCleanupDialog({
 
         {mode === "olderThanDays" && (
           <>
-            <div className="text-[11px] text-muted-foreground">删除早于</div>
+            <div className="text-xs text-muted-foreground">删除早于</div>
             <div className="flex flex-wrap items-center gap-1.5">
               {DAY_PRESETS.map((d) => (
                 <OptionChip
@@ -192,7 +192,7 @@ export function BackupCleanupDialog({
 
         {mode === "toTotalMb" && (
           <>
-            <div className="text-[11px] text-muted-foreground">清到目标大小以下</div>
+            <div className="text-xs text-muted-foreground">清到目标大小以下</div>
             <div className="flex flex-wrap items-center gap-1.5">
               {MB_PRESETS.map((mb) => (
                 <OptionChip
@@ -213,7 +213,7 @@ export function BackupCleanupDialog({
                   想全删必须显式选「全部清空」（后端也会拒）。 */}
               {customMb && <NumBox value={targetMb} min={1} unit="MB" onCommit={setTargetMb} />}
             </div>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               最旧优先删，直到降到目标以下。同样受下面的保留底线约束。
             </p>
           </>
@@ -222,7 +222,7 @@ export function BackupCleanupDialog({
         <div className="flex items-center gap-2 rounded-lg border border-border px-3 py-2.5">
           <div className="min-w-0 flex-1">
             <div className="text-[12.5px] font-medium">至少保留每个文件最近 1 份</div>
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-xs text-muted-foreground">
               开着时即使某文件所有备份都超期，也会给它留最新一份；关掉后才可能删光
             </div>
           </div>

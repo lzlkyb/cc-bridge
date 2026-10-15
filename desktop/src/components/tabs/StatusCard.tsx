@@ -153,7 +153,7 @@ export function StatusCard({
     <div className={`status-card ${TONE_CLASS[chain.tone]} ${toneSwitch}`}>
       {/* 评审修复 ③：中文 eyebrow 11px、去 uppercase/字距（对汉字无效）；层级靠字重。
           右侧时长是配套的西文数字+中文单位，10.5px 与 eyebrow 同行保持次级感。 */}
-      <div className="flex items-center text-[11px] font-bold opacity-90">
+      <div className="flex items-center text-xs font-bold opacity-90">
         服务状态
         <span className="ml-auto text-[10.5px] font-semibold">
           {running ? `已运行 ${formatUptime(liveUptime)}` : "未运行"}
@@ -166,7 +166,7 @@ export function StatusCard({
 
       <p className="text-[13.5px] font-bold leading-normal">{chain.headline}</p>
       {/* break-all：startupError 可能是很长的系统错误串，不断行会撑破窄卡。 */}
-      <p className="mt-1 break-all text-[11px] leading-relaxed opacity-90">{chain.sub}</p>
+      <p className="mt-1 break-all text-xs leading-relaxed opacity-90">{chain.sub}</p>
 
       {status && running && (
         // 传输 / Bearer 并进地址行。它俩原来各占一行，而「HTTP 传输 · Bearer 已启用」

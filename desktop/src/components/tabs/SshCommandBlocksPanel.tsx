@@ -175,7 +175,7 @@ function ExitBadge({ code }: { code: number | null }) {
     return (
       <span
         title="还在执行，或远端没有回执"
-        className="flex h-4 w-6 shrink-0 items-center justify-center rounded bg-muted font-mono text-[10px] text-muted-foreground"
+        className="flex h-4 w-6 shrink-0 items-center justify-center rounded bg-muted font-mono text-[11px] text-muted-foreground"
       >
         …
       </span>
@@ -185,7 +185,7 @@ function ExitBadge({ code }: { code: number | null }) {
   return (
     <span
       title={`退出码 ${code}`}
-      className={`flex h-4 w-6 shrink-0 items-center justify-center rounded font-mono text-[10px] ${
+      className={`flex h-4 w-6 shrink-0 items-center justify-center rounded font-mono text-[11px] ${
         ok
           ? "bg-green-500/15 text-green-600 dark:text-green-400"
           : "bg-destructive/15 text-destructive-ink"

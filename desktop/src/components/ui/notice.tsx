@@ -107,7 +107,7 @@ function CountdownRing({ remain, total, resolved, tone }: { remain: number; tota
         />
       </svg>
       <span
-        className={`absolute inset-0 grid place-items-center text-[9px] font-bold tabular-nums ${
+        className={`absolute inset-0 grid place-items-center text-[10px] font-bold tabular-nums ${
           resolved ? "text-success-ink" : "text-muted-foreground"
         }`}
       >
@@ -210,7 +210,7 @@ export function ActionCard({
           <span className={`flex items-center gap-2 text-[13px] font-semibold ${ts.title}`}>
             <span className="truncate">{title}</span>
             {pill && (
-              <span className={`shrink-0 rounded-full px-2 py-px text-[10px] font-bold ${ts.pill}`}>{pill}</span>
+              <span className={`shrink-0 rounded-full px-2 py-px text-[11px] font-bold ${ts.pill}`}>{pill}</span>
             )}
           </span>
           {summary && <span className="mt-0.5 block truncate text-[11.5px] text-muted-foreground">{summary}</span>}

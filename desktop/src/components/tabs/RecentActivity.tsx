@@ -37,13 +37,13 @@ export function RecentActivity({ onViewAll }: { onViewAll?: () => void }) {
       {/* 渐变分隔线：中段可见、两端渐隐。整幅实线（原本的 border-t）压在渐变卡上
           对比度偏高、显得很“硬”；与卡内其它分隔处理保持一致。 */}
       <div className="mb-2 h-px bg-gradient-to-r from-transparent via-white/[0.14] to-transparent" />
-      <div className="flex items-center text-[9px] font-bold tracking-[0.12em] opacity-90">
+      <div className="flex items-center text-xs font-bold tracking-[0.12em]">
         最近活动 · 历史记录
         {onViewAll && (
           <button
             type="button"
             onClick={onViewAll}
-            className="ml-auto text-[10px] font-bold tracking-normal underline-offset-2 hover:underline"
+            className="ml-auto text-[11px] font-bold tracking-normal underline-offset-2 hover:underline"
           >
             日志页查看全部 →
           </button>

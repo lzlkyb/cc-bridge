@@ -113,7 +113,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
             <span className="ui-h-section text-foreground">关于 {APP_INFO.name}</span>
             <span
-              className="inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px] font-bold tracking-wide text-white"
+              className="inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[11px] font-bold tracking-wide text-white"
               style={STYLE_VERSION_BADGE}
             >
               {formatVersion(status?.version)}
@@ -135,7 +135,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                   }
                 }}
                 title={`${unreadCount} 项新更新，点击查看更新历史`}
-                className="changelog-dot flex h-4 min-w-[16px] cursor-pointer items-center justify-center rounded-full bg-destructive px-1 text-[9px] font-bold leading-none text-white"
+                className="changelog-dot flex h-4 min-w-[16px] cursor-pointer items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-bold leading-none text-white"
               >
                 {unreadCount > 9 ? "9+" : unreadCount}
               </span>
@@ -177,7 +177,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                   title="查看完整更新说明"
                 >
                   <Icon name="sparkles" size={12} /> 本次更新内容
-                  <span className="ml-auto text-[10px] font-normal normal-case tracking-normal text-primary opacity-80">查看详情 ›</span>
+                  <span className="ml-auto text-[11px] font-normal normal-case tracking-normal text-primary opacity-80">查看详情 ›</span>
                 </div>
                 <div className="max-h-[180px] overflow-y-auto rounded-xl border border-border bg-muted px-3.5 py-1">
                   <ReleaseNotes body={update.body ?? null} />
@@ -202,8 +202,8 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                       >
                         {t.icon}
                       </div>
-                      <div className="text-[11px] font-bold text-foreground">{t.name}</div>
-                      <div className="text-[9px] text-muted-foreground">{t.desc}</div>
+                      <div className="text-xs font-bold text-foreground">{t.name}</div>
+                      <div className="text-xs text-muted-foreground">{t.desc}</div>
                     </div>
                   ))}
                 </div>
@@ -216,12 +216,12 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
                     <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_INDIGO}><Icon name="user" size={14} aria-hidden="true" /></div>
                     <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>作者</span>
-                    <span className="info-val ml-auto text-right"><span className="info-tag tag-purple inline-block rounded-md px-2 py-0.5 text-[11px] font-bold">lzlkyb</span></span>
+                    <span className="info-val ml-auto text-right"><span className="info-tag tag-purple inline-block rounded-md px-2 py-0.5 text-xs font-bold">lzlkyb</span></span>
                   </div>
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
                     <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_GREEN}><Icon name="file" size={14} aria-hidden="true" /></div>
                     <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>开源协议</span>
-                    <span className="info-val ml-auto text-right"><span className="info-tag tag-green inline-block rounded-md px-2 py-0.5 text-[11px] font-bold">MIT</span></span>
+                    <span className="info-val ml-auto text-right"><span className="info-tag tag-green inline-block rounded-md px-2 py-0.5 text-xs font-bold">MIT</span></span>
                   </div>
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
                     <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_ORANGE}><Icon name="package" size={14} aria-hidden="true" /></div>
@@ -230,7 +230,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                       <button
                         type="button"
                         onClick={openRepo}
-                        className="info-tag info-tag-clickable tag-orange inline-block cursor-pointer rounded-md px-2 py-0.5 text-[11px] font-bold transition-all hover:translate-y-[-1px] hover:shadow-hover"
+                        className="info-tag info-tag-clickable tag-orange inline-block cursor-pointer rounded-md px-2 py-0.5 text-xs font-bold transition-all hover:translate-y-[-1px] hover:shadow-hover"
                       >
                         GitHub ↗
                       </button>
@@ -239,7 +239,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
                     <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_ACCENT}><Icon name="info" size={14} aria-hidden="true" /></div>
                     <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>简介</span>
-                    <span className="info-desc ml-auto max-w-[160px] truncate text-[11px] text-muted-foreground" title={APP_INFO.description}>
+                    <span className="info-desc ml-auto max-w-[160px] truncate text-xs text-muted-foreground" title={APP_INFO.description}>
                       {APP_INFO.description}
                     </span>
                     <button
@@ -271,7 +271,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 
             {/* Footer */}
             <div className="about-footer flex items-center justify-between divider-x-top px-[22px] py-2.5">
-              <span className="text-[10px] text-muted-foreground">© 2026 {APP_INFO.name} · MIT License · by {APP_INFO.author}</span>
+              <span className="text-[11px] text-muted-foreground">© 2026 {APP_INFO.name} · MIT License · by {APP_INFO.author}</span>
             </div>
           </div></Collapse>
       </Card>
@@ -290,7 +290,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 function UpdateStatusPill({ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, onOpenNotes }: { status: UpdateStatus; update: UpdateInfo | null; progress: number; progressIndeterminate: boolean; bytesPerSec: number; downloadedBytes: number; onOpenNotes?: () => void }) {
   if (status === "uptodate") {
     return (
-      <span className="status-pill flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success-ink">
+      <span className="status-pill flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-xs font-semibold text-success-ink">
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
         已是最新
       </span>
@@ -299,7 +299,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
   if (status === "available") {
     return (
       <span
-        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-[3px] text-[11px] font-semibold text-warning-ink transition-colors hover:bg-warning/20"
+        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-[3px] text-xs font-semibold text-warning-ink transition-colors hover:bg-warning/20"
         title="查看本次更新内容"
         onClick={(e) => {
           e.stopPropagation();
@@ -312,7 +312,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
   }
   if (status === "downloading") {
     return (
-      <span className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-[3px] text-[11px] font-semibold text-primary">
+      <span className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-[3px] text-xs font-semibold text-primary">
         <Icon name="download" size={11} />
         {progressIndeterminate ? (
           // 无总大小（如 Gitee 源 chunked 不返回 Content-Length）：条纹滚动动画条 + 真实已下载字节/速率
@@ -339,7 +339,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
   }
   if (status === "ready") {
     return (
-      <span className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-[11px] font-semibold text-success-ink">
+      <span className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-xs font-semibold text-success-ink">
         已下载
       </span>
     );
@@ -348,7 +348,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
   // 「重试」按钮，用户不知道发生了什么、更不知道为什么要点它。
   if (status === "error") {
     return (
-      <span className="flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-[3px] text-[11px] font-semibold text-destructive-ink">
+      <span className="flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-[3px] text-xs font-semibold text-destructive-ink">
         <Icon name="alertTriangle" size={11} />
         更新失败
       </span>

@@ -101,7 +101,7 @@ export function CommandAllowlistCard({
           <CardTitle icon={<Icon name="terminal" />}>命令白名单</CardTitle>
           {status && (
             <span
-              className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+              className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                 !shellOn
                   ? "bg-muted text-muted-foreground"
                   : allowOn
@@ -157,9 +157,9 @@ export function CommandAllowlistCard({
                   <Icon name="info" size={15} className="mt-0.5 shrink-0 text-primary" />
                   <span>
                     白名单按程序名（大小写不敏感）匹配。即使列入{" "}
-                    <code className="rounded bg-background/60 px-1 font-mono text-[11px]">rm</code>，
+                    <code className="rounded bg-background/60 px-1 font-mono text-xs">rm</code>，
                     <b>内置破坏性命令拦截仍生效</b>——{" "}
-                    <code className="rounded bg-background/60 px-1 font-mono text-[11px]">
+                    <code className="rounded bg-background/60 px-1 font-mono text-xs">
                       {dangerousCommandExample(status?.platform)}
                     </code>{" "}
                     依然会被拦截。

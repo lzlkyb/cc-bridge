@@ -137,11 +137,11 @@ export function OnboardingGuide({
             <Icon name={current.icon} size={18} className="text-primary" />
           </div>
           <div className="flex-1">
-            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">首次使用引导</p>
+            <p className="text-xs uppercase tracking-wide text-muted-foreground">首次使用引导</p>
             <h3 className="text-base font-semibold leading-tight">{current.title}</h3>
           </div>
           {currentDone && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success-ink">
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success-ink">
               <Icon name="check" size={12} /> 已完成
             </span>
           )}

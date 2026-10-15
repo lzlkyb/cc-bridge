@@ -168,7 +168,7 @@ function LogTabImpl({
         </div>
       </CardHeader>
       {/* 常驻说明（原在分页器里的 10.5px 灰字没人看见，上移到工具栏正下方） */}
-      <div className="flex shrink-0 items-center gap-1.5 border-b bg-primary/5 px-5 py-1.5 text-[11px] text-muted-foreground">
+      <div className="flex shrink-0 items-center gap-1.5 border-b bg-primary/5 px-5 py-1.5 text-xs text-muted-foreground">
         <Icon name="info" size={12} className="shrink-0" />
         <span>{audit.pending ? "正在查询…" : `全部历史 · 匹配 ${total.toLocaleString()} 条`}</span>
         {hasFilter && <button type="button" className="ml-auto text-primary hover:underline" onClick={resetFilters}>重置筛选</button>}

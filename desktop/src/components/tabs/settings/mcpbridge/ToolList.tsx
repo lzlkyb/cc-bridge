@@ -35,7 +35,7 @@ export function ToolList({
 
   return (
     <div className="mt-2 border-t border-dashed pt-2">
-      {title && <div className="mb-1.5 text-[11px] text-muted-foreground">{title}</div>}
+      {title && <div className="mb-1.5 text-xs text-muted-foreground">{title}</div>}
 
       {instructions && (
         <div className="mb-2 rounded-md bg-accent px-2 py-1.5 text-[11.5px] leading-relaxed text-accent-foreground">
@@ -43,7 +43,7 @@ export function ToolList({
           {longInstr && (
             <button
               type="button"
-              className="ml-1.5 text-[11px] underline"
+              className="ml-1.5 text-xs underline"
               onClick={() => setFullInstr((v) => !v)}
             >
               {fullInstr ? "收起" : "展开全文"}
@@ -55,7 +55,7 @@ export function ToolList({
       {shown.map((t) => (
         <div key={t.name} className="flex gap-2.5 py-0.5 text-[11.5px]">
           {/* 定宽：名字列对齐才扫得快；太长的名字宁可溢出也不拆行。 */}
-          <code className="w-[148px] shrink-0 truncate font-mono text-[11px]">{t.name}</code>
+          <code className="w-[148px] shrink-0 truncate font-mono text-xs">{t.name}</code>
           <span className="min-w-0 text-muted-foreground">{t.summary}</span>
         </div>
       ))}
@@ -63,7 +63,7 @@ export function ToolList({
       {rest > 0 && (
         <button
           type="button"
-          className="pt-1 text-[11px] text-primary"
+          className="pt-1 text-xs text-primary"
           onClick={() => setAll(true)}
         >
           …另 {rest} 个

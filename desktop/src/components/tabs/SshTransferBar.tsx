@@ -32,7 +32,7 @@ export function TransferBar({
         <Icon name={transfer.kind === "up" ? "upload" : "download"} size={12} />
       </span>
       {transfer.total != null && transfer.total > 1 && (
-        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+        <span className="shrink-0 font-mono text-xs text-muted-foreground">
           {transfer.index}/{transfer.total}
         </span>
       )}
@@ -49,7 +49,7 @@ export function TransferBar({
           />
         )}
       </span>
-      <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
+      <span className="shrink-0 font-mono text-xs text-muted-foreground">
         {pct == null ? "连接中…" : eta ? `${pct}% 剩余 ${eta}` : `${pct}%`}
       </span>
       <Button

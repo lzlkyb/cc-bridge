@@ -53,7 +53,7 @@ function CodeBox({
       {prompt && (
         <span className="mt-[1px] shrink-0 font-mono text-xs font-semibold text-primary/30">$</span>
       )}
-      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-foreground">
+      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-foreground">
         {code || "加载中..."}
       </code>
       <Button variant="outline" size="sm" className="shrink-0" onClick={onCopy} disabled={!code}>
@@ -154,7 +154,7 @@ export function StepConnectCmd({
                 setCopied(false);
               }}
               aria-pressed={tool === t}
-              className={`whitespace-nowrap rounded-md px-2 py-0.5 text-[10px] font-semibold transition-colors ${
+              className={`whitespace-nowrap rounded-md px-2 py-0.5 text-[11px] font-semibold transition-colors ${
                 tool === t
                   ? "bg-background text-foreground shadow-sm"
                   : "text-muted-foreground hover:text-foreground"
@@ -182,7 +182,7 @@ export function StepConnectCmd({
               }`}
             >
               <span className="text-sm font-medium">项目级</span>
-              <span className="ml-2 rounded-full bg-secondary px-1.5 py-0.5 text-[10px]">推荐</span>
+              <span className="ml-2 rounded-full bg-secondary px-1.5 py-0.5 text-[11px]">推荐</span>
               <p className="mt-1 text-xs text-muted-foreground">仅当前项目生效</p>
             </button>
             <button
@@ -209,7 +209,7 @@ export function StepConnectCmd({
               Claude Code 每次调用工具都会弹窗确认。复制下面命令到远程执行一次，即可免去后续所有工具调用的重复授权（不改连接命令本身）。
             </p>
             <CodeBox code={permissionCommand} copied={permCopied} onCopy={copyPerm} prompt />
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               想进一步免确认「命令执行」能力（等价于授予远程任意命令执行权限），可到「连接」页的权限授权区块开启。
             </p>
           </div>
@@ -231,17 +231,17 @@ export function StepConnectCmd({
           {snippet.notes.map((n, i) => (
             <p
               key={i}
-              className="rounded-lg bg-warning/8 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground"
+              className="rounded-lg bg-warning/8 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground"
             >
               <b className="text-warning-ink">注意</b>：{n}
             </p>
           ))}
 
-          <p className="text-[11px] leading-relaxed text-muted-foreground">
+          <p className="text-xs leading-relaxed text-muted-foreground">
             验证：{CLIENT_VERIFY[tool]}
           </p>
 
-          <p className="text-[11px] leading-relaxed text-muted-foreground">
+          <p className="text-xs leading-relaxed text-muted-foreground">
             想换成其它工具？所有工具的完整接入步骤与自签证书信任方式，都在「连接」页的接入向导里。
           </p>
         </>
@@ -250,7 +250,7 @@ export function StepConnectCmd({
       {/* 自签信任提示按工具取文案（与连接页徽章行同一数据源）。只在开 HTTPS 时出现：
           HTTP 模式下没有证书可信任，提示纯属噪音。 */}
       {tlsEnabled && (
-        <p className="rounded-lg bg-warning/8 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="rounded-lg bg-warning/8 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
           <b className="text-warning-ink">HTTPS 自签</b>：
           <CopySegs segs={CLIENT_SELFSIGNED[tool].note} />
         </p>

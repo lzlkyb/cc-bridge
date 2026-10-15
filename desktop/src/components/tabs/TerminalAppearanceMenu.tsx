@@ -100,7 +100,7 @@ export function TerminalAppearanceMenu() {
 /** 分组小标题。11 个平铺项没有分组会糊成一片，这一行是菜单能读的前提。 */
 function GroupLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="px-2.5 pb-0.5 pt-1.5 text-[11px] font-medium text-muted-foreground">
+    <div className="px-2.5 pb-0.5 pt-1.5 text-xs font-medium text-muted-foreground">
       {children}
     </div>
   );
@@ -117,7 +117,7 @@ function PresetRow({ preset, name, desc }: { preset: TerminalPreset; name: strin
       <PresetSwatch preset={preset} />
       <span className="flex min-w-0 flex-col leading-tight">
         <span className="truncate text-[13px]">{name}</span>
-        <span className="truncate text-[11px] text-muted-foreground">{desc}</span>
+        <span className="truncate text-xs text-muted-foreground">{desc}</span>
       </span>
     </span>
   );

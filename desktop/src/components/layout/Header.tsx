@@ -108,7 +108,7 @@ function HeaderImpl({
             type="button"
             title={b.title}
             onClick={() => onNavigate?.(b.tab, b.anchor)}
-            className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold transition-colors ${
+            className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold transition-colors ${
               b.danger
                 ? "border-destructive/30 bg-destructive/10 text-destructive-ink hover:bg-destructive/20"
                 : "border-warning/30 bg-warning/10 text-warning-ink hover:bg-warning/20"

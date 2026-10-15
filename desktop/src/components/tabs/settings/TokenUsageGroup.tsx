@@ -50,11 +50,11 @@ export function TokenUsageGroup() {
       </CardHeader>
       <CardContent className="space-y-4">
         {isLoading ? (
-          <p className="text-[12px] text-muted-foreground">加载中…</p>
+          <p className="text-xs text-muted-foreground">加载中…</p>
         ) : !hasData ? (
           <>
             <EmptyKpis />
-            <p className="text-[12px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               暂无调用记录。远程 AI 工具接入并调用工具后，这里会出现趋势、节奏与工具排行。
             </p>
           </>
@@ -68,7 +68,7 @@ export function TokenUsageGroup() {
             </div>
           </>
         )}
-        <p className="rounded-lg bg-muted/60 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="rounded-lg bg-muted/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
           按「约 4 字节 ≈ 1 token」折算的<strong className="text-foreground">估算值</strong>，
           反映经桥交互的上下文增量；模型侧的真实消耗（系统提示词、对话历史等）不经过桥，
           无法统计，因此它不是账单值。
@@ -154,8 +154,8 @@ function TrendSection({ days }: { days: TokenUsageReport["days"] }) {
   const cols = buildTrend(days, 14);
   return (
     <div>
-      <div className="mb-2 text-[12px] font-semibold">
-        近 14 天趋势<span className="ml-1.5 text-[10px] font-medium text-muted-foreground">输入 + 输出（估）</span>
+      <div className="mb-2 text-xs font-semibold">
+        近 14 天趋势<span className="ml-1.5 text-[11px] font-medium text-muted-foreground">输入 + 输出（估）</span>
       </div>
       <div className="usage-trend">
         {cols.map((c, i) => (
@@ -197,8 +197,8 @@ function HeatSection({ days }: { days: TokenUsageReport["days"] }) {
   const cells = buildHeatmap(days);
   return (
     <div className="min-w-0">
-      <div className="mb-2 text-[12px] font-semibold">
-        近 90 天节奏<span className="ml-1.5 text-[10px] font-medium text-muted-foreground">深度 = 当日用量分位</span>
+      <div className="mb-2 text-xs font-semibold">
+        近 90 天节奏<span className="ml-1.5 text-[11px] font-medium text-muted-foreground">深度 = 当日用量分位</span>
       </div>
       <div className="usage-heat">
         {cells.map((c) => (
@@ -219,13 +219,13 @@ function RankSection({ tools }: { tools: TokenUsageReport["tools"] }) {
   if (rows.length === 0) return null;
   return (
     <div className="min-w-0">
-      <div className="mb-2 text-[12px] font-semibold">
-        按工具排行<span className="ml-1.5 text-[10px] font-medium text-muted-foreground">近 7 天</span>
+      <div className="mb-2 text-xs font-semibold">
+        按工具排行<span className="ml-1.5 text-[11px] font-medium text-muted-foreground">近 7 天</span>
       </div>
       {rows.map((r) => (
         <RankRowView key={r.label} row={r} />
       ))}
-      <p className="mt-1 text-[9.5px] text-muted-foreground">仅显示 Top 4，其余并入「其他」</p>
+      <p className="mt-1 text-[11px] text-muted-foreground">仅显示 Top 4，其余并入「其他」</p>
     </div>
   );
 }

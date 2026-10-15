@@ -88,14 +88,14 @@ export function WheelOwnerPopover({ sessionId, initialStep, onSent, onClose }: P
             <button
               type="button"
               onClick={() => setStep("confirm")}
-              className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90"
             >
               发送 /tui fullscreen
             </button>
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-muted"
+              className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
             >
               知道了
             </button>
@@ -117,14 +117,14 @@ export function WheelOwnerPopover({ sessionId, initialStep, onSent, onClose }: P
             <button
               type="button"
               onClick={send}
-              className="rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-primary-foreground transition-opacity hover:opacity-90"
+              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90"
             >
               发送
             </button>
             <button
               type="button"
               onClick={onClose}
-              className="rounded-lg border px-3 py-1.5 text-[12px] font-medium transition-colors hover:bg-muted"
+              className="rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-muted"
             >
               取消
             </button>
@@ -138,7 +138,7 @@ export function WheelOwnerPopover({ sessionId, initialStep, onSent, onClose }: P
 /** 键帽样式（面板内的小 kbd）。 */
 function Kbd({ children }: { children: React.ReactNode }) {
   return (
-    <kbd className="mx-0.5 rounded border border-b-2 bg-background px-1.5 py-px font-mono text-[11px]">
+    <kbd className="mx-0.5 rounded border border-b-2 bg-background px-1.5 py-px font-mono text-xs">
       {children}
     </kbd>
   );

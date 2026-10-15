@@ -11,7 +11,7 @@ import { useToast } from "../../ui/toast";
 export function StepNumber({ n, done }: { n: number; done?: boolean }) {
   return (
     <span
-      className={`step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-white ${done ? "step-num--done" : ""}`}
+      className={`step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${done ? "step-num--done" : ""}`}
     >
       {done ? "✓" : n}
     </span>
@@ -68,7 +68,7 @@ export function CommandBlock({
   return (
     <div className="code-box flex items-start gap-2">
       <span className="mt-[1px] shrink-0 font-mono text-xs font-semibold text-primary/30">$</span>
-      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-foreground">
+      <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-foreground">
         {command || "加载中..."}
       </code>
       <Button variant="outline" size="sm" className="shrink-0" onClick={onCopy} disabled={!command} aria-live="polite">
@@ -141,7 +141,7 @@ export function CertPemStep({
   return (
     <div className={compact ? "" : "rounded-lg border bg-muted/30 px-2.5 py-2"}>
       <div className="flex items-center justify-between gap-2">
-        <p className="min-w-0 flex-1 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
           {compact
             ? "把下方证书内容保存为 cc-bridge.crt 供工具信任："
             : "导出桥的自签证书（PEM），保存后按各工具要求信任"}
@@ -153,8 +153,8 @@ export function CertPemStep({
       </div>
       {steps && steps.length > 0 && (
         <div className="mt-2 border-t border-dashed pt-2">
-          <b className="text-[11px] font-semibold text-foreground">信任步骤</b>
-          <ol className="ml-4 mt-1 list-decimal space-y-0.5 text-[11px] leading-relaxed text-muted-foreground">
+          <b className="text-xs font-semibold text-foreground">信任步骤</b>
+          <ol className="ml-4 mt-1 list-decimal space-y-0.5 text-xs leading-relaxed text-muted-foreground">
             {steps.map((step, i) => (
               <li key={i}>
                 <CopySegs segs={step} />

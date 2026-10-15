@@ -79,7 +79,7 @@ export function ToolGuide({
                   onToolChange?.(t);
                 }}
                 aria-pressed={tool === t}
-                className={`whitespace-nowrap rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+                className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-semibold transition-colors ${
                   tool === t
                     ? "bg-background text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
@@ -98,17 +98,17 @@ export function ToolGuide({
             信任"是纯噪音——用户根本没有证书可信任，也无从判断该不该关心。
             与下方 CertPemStep / snippet.notes 同一收口口径（都挂 tlsEnabled/tls）。 */}
         {tlsEnabled && (
-          <p className="text-[11px] leading-relaxed text-muted-foreground">
+          <p className="text-xs leading-relaxed text-muted-foreground">
             自签兼容性：
             <span
-              className={`mx-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${SELFSIGNED_BADGE[sel.level].className}`}
+              className={`mx-1 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${SELFSIGNED_BADGE[sel.level].className}`}
             >
               <Icon name={SELFSIGNED_BADGE[sel.level].icon} size={10} aria-hidden="true" />
               {SELFSIGNED_BADGE[sel.level].label}
             </span>
             {/* 未实测的态不装「已验证」——文档依据与真机结论分开标。 */}
             {!sel.verified && (
-              <span className="mr-1 inline-flex items-center rounded border bg-background px-1 py-px text-[9px] font-semibold text-muted-foreground">
+              <span className="mr-1 inline-flex items-center rounded border bg-background px-1 py-px text-[10px] font-semibold text-muted-foreground">
                 文档依据 · 待实测
               </span>
             )}
@@ -146,7 +146,7 @@ function ClaudeTlsNote() {
   const sel = CLIENT_SELFSIGNED["claude-code"];
   return (
     <div className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
-      <p className="text-[11px] leading-relaxed text-muted-foreground">
+      <p className="text-xs leading-relaxed text-muted-foreground">
         <b className="text-warning-ink">HTTPS 自签</b>
         ：
         <CopySegs segs={sel.note} />
@@ -178,7 +178,7 @@ function ManualSteps({ tool, input }: { tool: McpClientTool; input: SnippetInput
         <div className="flex-1 space-y-2">
           <p className="ui-h-sub">粘贴以下{snippet.kind === "toml" ? " TOML" : " JSON"}配置</p>
           <div className="code-box flex items-start gap-2">
-            <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-foreground">
+            <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-foreground">
               {snippet.code}
             </code>
             <Button
@@ -193,7 +193,7 @@ function ManualSteps({ tool, input }: { tool: McpClientTool; input: SnippetInput
             </Button>
           </div>
           {snippet.notes.map((n, i) => (
-            <p key={i} className="rounded-lg bg-warning/8 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
+            <p key={i} className="rounded-lg bg-warning/8 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
               <b className="text-warning-ink">注意</b>
               ：{n}
             </p>

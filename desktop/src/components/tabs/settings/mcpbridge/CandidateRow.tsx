@@ -52,17 +52,17 @@ export function CandidateRow({
             <span className="flex flex-wrap items-center gap-1.5 text-[13px] font-semibold">
               {c.name}
               {c.renamedFrom && (
-                <span className="rounded-full bg-warning/14 px-2 py-0.5 text-[10px] font-normal text-warning-ink">
+                <span className="rounded-full bg-warning/14 px-2 py-0.5 text-[11px] font-normal text-warning-ink">
                   已存在同名，导入为此名（原：{c.renamedFrom}）
                 </span>
               )}
             </span>
             {/* 完整命令（S0）：`D:` 这种参数必须在勾选前就看得见。 */}
-            <span className="mt-1 block break-all rounded-md bg-muted px-2 py-1 font-mono text-[11px]">
+            <span className="mt-1 block break-all rounded-md bg-muted px-2 py-1 font-mono text-xs">
               {fullCommand(c.command, c.args)}
             </span>
             {c.envKeys.length > 0 && (
-              <span className="mt-1 block text-[11px] text-muted-foreground">
+              <span className="mt-1 block text-xs text-muted-foreground">
                 环境变量：{c.envKeys.join("、")}
                 <span className="ml-1.5 text-success-ink">值已隐藏</span>
               </span>

@@ -64,14 +64,14 @@ function FontCard({ font, on }: { font: TerminalFont; on: boolean }) {
         {on && <Icon name="check" size={13} className="ml-auto shrink-0 text-primary" />}
       </span>
       <span className="flex w-full min-w-0 items-center gap-1.5">
-        <span className="truncate text-[11px] text-muted-foreground">{font.name}</span>
+        <span className="truncate text-xs text-muted-foreground">{font.name}</span>
         {builtin && (
-          <span className="shrink-0 rounded bg-primary/10 px-1 text-[10px] leading-4 text-primary">
+          <span className="shrink-0 rounded bg-primary/10 px-1 text-[11px] leading-4 text-primary">
             内置
           </span>
         )}
       </span>
-      <span className="truncate text-[11px] text-muted-foreground/80">{font.desc}</span>
+      <span className="truncate text-xs text-muted-foreground/80">{font.desc}</span>
     </button>
   );
 }

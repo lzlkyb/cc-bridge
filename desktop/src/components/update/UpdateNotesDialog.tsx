@@ -115,7 +115,7 @@ export function ReleaseNotes({ body }: { body: string | null | undefined }) {
               className="notes-rise mb-3 mt-0.5 rounded-xl border-l-[3px] border-[#6366f1] bg-[#4f46e5]/[0.07] px-3.5 py-2.5 dark:bg-[#4f46e5]/[0.16]"
               style={{ animationDelay: `${animIdx++ * 0.07}s` }}
             >
-              <div className="mb-1 flex items-center gap-1.5 text-[11px] font-bold tracking-wide text-[#6366f1]">
+              <div className="mb-1 flex items-center gap-1.5 text-xs font-bold tracking-wide text-[#6366f1]">
                 <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M12 3l2.5 5.5L20 9l-4 4 1 6-5-3-5 3 1-6-4-4 5.5-.5z" /></svg>
                 本次更新
               </div>
@@ -212,7 +212,7 @@ export function UpdateNotesDialog({
           </div>
 
           <div
-            className="mb-2.5 inline-block rounded-full bg-primary/[0.12] px-3 py-[3px] text-[11px] font-bold tracking-[0.5px] text-primary"
+            className="mb-2.5 inline-block rounded-full bg-primary/[0.12] px-3 py-[3px] text-xs font-bold tracking-[0.5px] text-primary"
           >
             新版本可用
           </div>
@@ -228,11 +228,11 @@ export function UpdateNotesDialog({
               </span>
               <span className="flex flex-col items-center text-[#4f46e5]">
                 <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
-                <span className="text-[9px] font-extrabold tracking-[1px]">升级</span>
+                <span className="text-[10px] font-extrabold tracking-[1px]">升级</span>
               </span>
               <span className="relative rounded-xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] px-[14px] py-[7px] text-[22px] font-extrabold leading-none tracking-[0.3px] text-white shadow-glow-primary-lg">
                 v{ver}
-                <span className="absolute -right-2 -top-2 rounded-full bg-[#ff4d4f] px-1.5 py-0.5 text-[9px] font-extrabold leading-none text-white">NEW</span>
+                <span className="absolute -right-2 -top-2 rounded-full bg-[#ff4d4f] px-1.5 py-0.5 text-[10px] font-extrabold leading-none text-white">NEW</span>
               </span>
             </div>
           )}
@@ -248,13 +248,13 @@ export function UpdateNotesDialog({
         </div>
 
         {/* 底部轻提示：稍后行为说明 */}
-        <div className="px-9 pb-1 pt-3 text-center text-[11px] text-muted-foreground/70">
+        <div className="px-9 pb-1 pt-3 text-center text-xs text-muted-foreground/70">
           点「稍后」后，本版本不再自动弹框；有新版本时仍会提醒你
         </div>
 
         {/* ═══ 底部操作（下载按钮加 ↓ 图标） ═══ */}
         <div className="flex items-center gap-2.5 px-9 pb-6 pt-2">
-          <span className="flex-1 text-xs text-muted-foreground opacity-60">下载完成后自动安装并重启</span>
+          <span className="flex-1 text-xs text-muted-foreground">下载完成后自动安装并重启</span>
           <button
             type="button"
             onClick={() => {

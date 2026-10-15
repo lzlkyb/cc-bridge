@@ -56,12 +56,12 @@ export function RemoteCwdRiskModal({
 
       {whitelistEnabled ? (
         <div className="mb-3">
-          <div className="mb-1 text-[11px] text-muted-foreground">
+          <div className="mb-1 text-xs text-muted-foreground">
             远程只能在这 {allowedRoots.length} 个白名单根目录内挑：
           </div>
           <div className="max-h-32 overflow-y-auto rounded-lg border">
             {allowedRoots.map((r) => (
-              <div key={r} className="break-all border-b px-2.5 py-1.5 font-mono text-[11px] last:border-0">
+              <div key={r} className="break-all border-b px-2.5 py-1.5 font-mono text-xs last:border-0">
                 {r}
               </div>
             ))}

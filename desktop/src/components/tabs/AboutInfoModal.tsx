@@ -101,7 +101,7 @@ export function AboutInfoModal({
             {about.stats.map((s) => (
               <div key={s.label} className="flex flex-1 flex-col items-center text-center">
                 <div className="text-lg font-extrabold text-foreground">{s.val}</div>
-                <div className="mt-0.5 text-[10px] text-muted-foreground">{s.label}</div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">{s.label}</div>
               </div>
             ))}
           </div>

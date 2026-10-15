@@ -112,7 +112,7 @@ export function ChipInput({
       {/* 已选芯片 */}
       <div className="chip-bar flex min-h-[40px] flex-wrap items-center gap-[5px] rounded-lg border border-border bg-card px-2.5 py-[7px]">
         {value.length === 0 && (
-          <span className="text-xs text-muted-foreground opacity-60">未选择扩展名</span>
+          <span className="text-xs text-muted-foreground">未选择扩展名</span>
         )}
         {value.map((ext) => {
           const catKey = getCatForExt(ext);
@@ -122,7 +122,7 @@ export function ChipInput({
               {ext}
               <button
                 type="button"
-                className="chip-x ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full border-0 text-[11px] leading-none opacity-50 transition-all"
+                className="chip-x ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full border-0 text-xs leading-none opacity-50 transition-all"
                 onClick={() => remove(ext)}
               >
                 &times;
@@ -143,7 +143,7 @@ export function ChipInput({
           >
             <span className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: cat.dot }} />
             {cat.label}
-            <span className="text-[10px] font-bold opacity-80">
+            <span className="text-[11px] font-bold opacity-80">
               {value.filter((v) => cat.exts.includes(v)).length}
             </span>
             <svg className="chevron h-2.5 w-2.5 transition-transform" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -163,7 +163,7 @@ export function ChipInput({
                 <button
                   key={ext}
                   type="button"
-                  className={`ext-tag inline-flex items-center gap-1 rounded-md border-1.5 border-transparent bg-muted px-2 py-[3px] font-mono text-[11px] font-medium tracking-wide text-muted-foreground transition-all hover:border-border hover:text-foreground ${cat.tagClass} ${sel ? "checked" : ""}`}
+                  className={`ext-tag inline-flex items-center gap-1 rounded-md border-1.5 border-transparent bg-muted px-2 py-[3px] font-mono text-xs font-medium tracking-wide text-muted-foreground transition-all hover:border-border hover:text-foreground ${cat.tagClass} ${sel ? "checked" : ""}`}
                   onClick={() => toggleExt(ext)}
                 >
                   {sel ? "✓ " : ""}{ext}
@@ -176,7 +176,7 @@ export function ChipInput({
 
       {/* 自定义输入 */}
       <div className="mt-2 flex items-center gap-2">
-        <span className="shrink-0 text-[11px] font-medium text-foreground">自定义</span>
+        <span className="shrink-0 text-xs font-medium text-foreground">自定义</span>
         <input
           ref={inputRef}
           className="h-[34px] min-w-0 flex-1 rounded-md border border-input bg-card px-2.5 font-mono text-xs text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-primary"
@@ -188,7 +188,7 @@ export function ChipInput({
         />
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-[11px] font-semibold tracking-wide text-muted-foreground transition-all hover:border-primary hover:bg-muted hover:text-foreground"
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-xs font-semibold tracking-wide text-muted-foreground transition-all hover:border-primary hover:bg-muted hover:text-foreground"
           onClick={() => {
             input
               .split(/[,;\s]+/)
@@ -201,7 +201,7 @@ export function ChipInput({
         </button>
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-[11px] font-semibold tracking-wide text-destructive-ink transition-all hover:border-destructive"
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-xs font-semibold tracking-wide text-destructive-ink transition-all hover:border-destructive"
           onClick={() => onChange([])}
         >
           清空

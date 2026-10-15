@@ -46,7 +46,7 @@ export function NumBox({
         }}
         onBlur={() => setText(String(value))}
       />
-      {unit && <span className="shrink-0 text-[11px] text-muted-foreground">{unit}</span>}
+      {unit && <span className="shrink-0 text-xs text-muted-foreground">{unit}</span>}
     </div>
   );
 }

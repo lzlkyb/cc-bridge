@@ -116,7 +116,7 @@ export function RemoteTlsPanel({
           <Icon name="lock" size={13} className="text-primary" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+          <div className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
             证书指纹 SHA-256
           </div>
           <div
@@ -125,7 +125,7 @@ export function RemoteTlsPanel({
           >
             {tls.fingerprintShort}…
           </div>
-          <div className="truncate text-[10px] text-muted-foreground" title={tls.sans.join(", ")}>
+          <div className="truncate text-[11px] text-muted-foreground" title={tls.sans.join(", ")}>
             到期 {fmtExpiry(tls.notAfterEpoch)} · SAN: {tls.sans.join(", ")}
           </div>
         </div>
@@ -157,7 +157,7 @@ export function RemoteTlsPanel({
           onChange={(v) => saveAndRestart({ remoteBanEnabled: v }, v ? "封禁已开启" : "封禁已关闭")}
         />
         <div className="flex items-center justify-between py-2">
-          <span className="text-[12px] font-semibold">封禁阈值（连续 401 次数）</span>
+          <span className="text-xs font-semibold">封禁阈值（连续 401 次数）</span>
           <Input
             type="number"
             min={1}
@@ -169,7 +169,7 @@ export function RemoteTlsPanel({
           />
         </div>
         <div className="flex items-center justify-between py-2">
-          <span className="text-[12px] font-semibold">封禁窗口（分钟）</span>
+          <span className="text-xs font-semibold">封禁窗口（分钟）</span>
           <Input
             type="number"
             min={1}

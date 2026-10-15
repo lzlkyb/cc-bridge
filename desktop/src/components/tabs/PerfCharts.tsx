@@ -385,7 +385,7 @@ export function PerfCharts({ entries }: { entries: AuditEntry[] }) {
 function StatTile({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md border bg-background/60 px-3 py-2">
-      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div className="text-xs text-muted-foreground">{label}</div>
       <div className="font-mono text-sm font-semibold">{value}</div>
     </div>
   );

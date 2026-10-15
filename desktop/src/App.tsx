@@ -307,7 +307,7 @@ function AppContent() {
             title="与本地服务失联"
             summary={`无法获取状态，请检查 ${APP_INFO.name} 进程是否在运行。`}
           >
-            <Button variant="outline" size="sm" className="h-6 px-2.5 text-[11px]" onClick={() => refetchStatus()}>
+            <Button variant="outline" size="sm" className="h-6 px-2.5 text-xs" onClick={() => refetchStatus()}>
               重试
             </Button>
           </ActionCard>
@@ -328,7 +328,7 @@ function AppContent() {
                 : "本机服务在运行，但远程连不回，请检查本机网络。"
             }
           >
-            <Button variant="outline" size="sm" className="h-6 px-2.5 text-[11px]" onClick={() => handleNavigate("connect")}>
+            <Button variant="outline" size="sm" className="h-6 px-2.5 text-xs" onClick={() => handleNavigate("connect")}>
               前往连接
             </Button>
           </ActionCard>

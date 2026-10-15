@@ -63,10 +63,10 @@ export function SshTerminalFind({ search }: { search: TerminalSearch }) {
         <Icon name="chevronDown" size={12} />
       </FindBtn>
       <FindBtn title="区分大小写" active={search.caseSensitive} onClick={search.toggleCase}>
-        <span className="text-[10px] font-semibold leading-none">Aa</span>
+        <span className="text-[11px] font-semibold leading-none">Aa</span>
       </FindBtn>
       <FindBtn title="正则表达式" active={search.regex} onClick={search.toggleRegex}>
-        <span className="font-mono text-[10px] leading-none">.*</span>
+        <span className="font-mono text-[11px] leading-none">.*</span>
       </FindBtn>
       <FindBtn title="关闭（Esc）" onClick={search.close}>
         <Icon name="close" size={12} />

@@ -103,14 +103,14 @@ function TerminalShortcutsModal({ onClose }: { onClose: () => void }) {
       <div className="max-h-[60vh] space-y-1.5 overflow-y-auto pr-1">
         {SHORTCUTS.map((s) => (
           <div key={s.keys} className="flex items-center gap-3 text-xs">
-            <kbd className="shrink-0 whitespace-nowrap rounded border border-b-2 bg-background px-1.5 py-px font-mono text-[11px] text-foreground">
+            <kbd className="shrink-0 whitespace-nowrap rounded border border-b-2 bg-background px-1.5 py-px font-mono text-xs text-foreground">
               {s.keys}
             </kbd>
             <span className="min-w-0 flex-1 leading-relaxed text-muted-foreground">{s.desc}</span>
           </div>
         ))}
       </div>
-      <p className="mt-3 border-t border-border pt-2.5 text-[11px] leading-relaxed text-muted-foreground">
+      <p className="mt-3 border-t border-border pt-2.5 text-xs leading-relaxed text-muted-foreground">
         除 Ctrl+K 外，快捷键在终端聚焦时生效。Shift+滚轮与 Ctrl+Shift+↑/↓ 是 TUI
         全屏程序（如 Claude Code）里的滚动救急键。
       </p>

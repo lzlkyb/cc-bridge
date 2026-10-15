@@ -85,7 +85,7 @@ export function LogDiffModal({ entry, onClose: onClosed }: { entry: AuditEntry; 
             </div>
           )}
           {result && !result.guard && (
-            <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-[12px] leading-relaxed text-background diff">
+            <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-xs leading-relaxed text-background diff">
               {result.lines.map((l, i) => (
                 <div
                   key={i}

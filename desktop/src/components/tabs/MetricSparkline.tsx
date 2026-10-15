@@ -52,7 +52,7 @@ export function Sparkline({
   const minPoints = kind === "area" || kind === "step" ? 2 : 1;
   if (series.length < minPoints) {
     return (
-      <div className="flex min-h-[30px] flex-1 items-end pb-1 text-[9.5px] text-muted-foreground opacity-70">
+      <div className="flex min-h-[30px] flex-1 items-end pb-1 text-xs text-muted-foreground">
         采样中…
       </div>
     );

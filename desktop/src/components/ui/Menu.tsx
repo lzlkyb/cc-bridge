@@ -84,7 +84,7 @@ export function MenuItem({
       {typeof label === "string" ? <span className="truncate">{label}</span> : label}
       {trailing && <span className="ml-auto flex shrink-0 items-center pl-2">{trailing}</span>}
       {hint && !trailing && (
-        <span className="ml-auto text-[11px] text-muted-foreground">{hint}</span>
+        <span className="ml-auto text-xs text-muted-foreground">{hint}</span>
       )}
     </button>
   );

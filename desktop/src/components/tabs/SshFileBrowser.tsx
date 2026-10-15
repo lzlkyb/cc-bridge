@@ -206,7 +206,7 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
         }}
       />
       {loading && slow && (
-        <div className="shrink-0 border-b border-border bg-muted/50 px-3 py-1.5 text-[11px] text-muted-foreground">
+        <div className="shrink-0 border-b border-border bg-muted/50 px-3 py-1.5 text-xs text-muted-foreground">
           正在读取远程目录…首次需要建立一条常驻会话，后续操作会快很多；若服务器不支持常驻会话会自动退回旧方式，最长可能等一分钟。
         </div>
       )}

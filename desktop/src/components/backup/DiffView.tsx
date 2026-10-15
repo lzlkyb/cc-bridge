@@ -123,7 +123,7 @@ export function DiffView({ state, title }: { state?: DiffState; title: string })
 
   return (
     <div className="mt-2">
-      <div className="mb-1 text-[11px] font-semibold text-muted-foreground">{title}</div>
+      <div className="mb-1 text-xs font-semibold text-muted-foreground">{title}</div>
       <div className="overflow-hidden rounded-lg border border-border font-mono text-[11.5px]">
         {state?.loading && (
           <div className="flex items-center gap-2 bg-muted/30 p-2 text-muted-foreground">
@@ -143,7 +143,7 @@ export function DiffView({ state, title }: { state?: DiffState; title: string })
           <>
             <div className="flex items-center gap-2 divider-x bg-muted/20 px-2 py-1.5 font-sans">
               {(state.added || state.removed) ? (
-                <span className="flex gap-1.5 text-[11px]">
+                <span className="flex gap-1.5 text-xs">
                   {state.added ? <span className="text-success-ink">+{state.added}</span> : null}
                   {state.removed ? <span className="text-destructive-ink">−{state.removed}</span> : null}
                 </span>
@@ -181,7 +181,7 @@ export function DiffView({ state, title }: { state?: DiffState; title: string })
                     key={seg.key}
                     type="button"
                     onClick={() => setExpandedGaps((prev) => new Set(prev).add(seg.key))}
-                    className="flex w-full items-center justify-center bg-transparent px-2 py-1 font-sans text-[11px] text-muted-foreground transition-colors hover:bg-muted/30"
+                    className="flex w-full items-center justify-center bg-transparent px-2 py-1 font-sans text-xs text-muted-foreground transition-colors hover:bg-muted/30"
                   >
                     ⋯ 还有 {seg.lines.length} 行未变更，点击展开 ⋯
                   </button>

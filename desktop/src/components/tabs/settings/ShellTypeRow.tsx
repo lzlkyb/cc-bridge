@@ -57,7 +57,7 @@ export function ShellTypeRow({
             {onRefreshBash && (
               <button
                 type="button"
-                className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+                className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:border-primary hover:text-primary"
                 onClick={onRefreshBash}
                 disabled={refreshingBash}
               >
@@ -74,7 +74,7 @@ export function ShellTypeRow({
                 )}
               </button>
             )}
-            <span className="text-[11px] text-muted-foreground/60">安装后点击即生效，无需重启</span>
+            <span className="text-xs text-muted-foreground/60">安装后点击即生效，无需重启</span>
           </div>
         )}
       </div>

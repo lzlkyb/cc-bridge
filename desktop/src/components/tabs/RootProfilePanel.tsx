@@ -141,7 +141,7 @@ export function RootProfilePanel({
               >
                 <span className="truncate text-xs font-semibold">{p.name}</span>
               </button>
-              <span className="shrink-0 text-[10px] text-muted-foreground">
+              <span className="shrink-0 text-[11px] text-muted-foreground">
                 {p.roots.length} 个目录{p.name === active ? " · 当前" : ""}
               </span>
               <Button
@@ -174,7 +174,7 @@ export function RootProfilePanel({
             placeholder="组名，如：NC 项目"
             className="h-7 flex-1 text-xs"
           />
-          <label className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+          <label className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
             <input
               type="checkbox"
               checked={copyCurrent}

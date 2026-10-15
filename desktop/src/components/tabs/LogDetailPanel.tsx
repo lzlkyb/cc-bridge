@@ -51,12 +51,12 @@ export function DetailPanel({
         <span className="text-muted-foreground">操作</span>
         <span className="break-all">
           {toolLabel(entry.tool)}{" "}
-          <span className="font-mono text-[11px] text-muted-foreground">({entry.tool})</span>
+          <span className="font-mono text-xs text-muted-foreground">({entry.tool})</span>
         </span>
         {entry.sourceIp && (
           <>
             <span className="text-muted-foreground">来源 IP</span>
-            <span className="break-all font-mono text-[11px]">{entry.sourceIp}</span>
+            <span className="break-all font-mono text-xs">{entry.sourceIp}</span>
           </>
         )}
         {entry.durationMs != null && (
@@ -68,7 +68,7 @@ export function DetailPanel({
       </div>
       <TimingBreakdown entry={entry} />
       <div>
-        <div className="mb-1.5 flex items-center justify-between text-[11px] text-muted-foreground">
+        <div className="mb-1.5 flex items-center justify-between text-xs text-muted-foreground">
           <span>参数</span>
           <button
             onClick={copy}
@@ -78,7 +78,7 @@ export function DetailPanel({
             {copied ? "已复制" : "复制"}
           </button>
         </div>
-        <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-[11px] leading-relaxed text-background pre">
+        <pre className="overflow-auto rounded-md bg-foreground/90 p-3 text-xs leading-relaxed text-background pre">
           {prettyParams(entry.params)}
         </pre>
       </div>
@@ -96,7 +96,7 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
   const serverMs = entry.serverMs;
   if (serverMs == null) {
     return (
-      <div className="flex items-center gap-1.5 rounded-md border border-dashed border-border bg-muted/20 p-2.5 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-1.5 rounded-md border border-dashed border-border bg-muted/20 p-2.5 text-xs text-muted-foreground">
         <Icon name="activity" size={12} />
         此记录无结构化耗时数据（较新版本的桥接才写入此类数据，旧条目不包含 serverMs / ioMs 等）
       </div>
@@ -125,8 +125,8 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
       <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-primary">
         <Icon name="activity" size={13} />
         耗时拆解
-        <span className="ml-1 rounded bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold">结构化耗时</span>
-        <span className="ml-auto text-[11px] font-normal text-muted-foreground">
+        <span className="ml-1 rounded bg-primary/15 px-1.5 py-0.5 text-[11px] font-semibold">结构化耗时</span>
+        <span className="ml-auto text-xs font-normal text-muted-foreground">
           服务端 <strong className="font-semibold text-foreground">{formatDurationMs(serverMs)}</strong>
           {entry.durationMs != null && <> · 客户端测 {formatDurationMs(entry.durationMs)}</>}
         </span>
@@ -137,7 +137,7 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
           return (
             <div
               key={s.label}
-              className="flex items-center justify-center overflow-hidden whitespace-nowrap text-[9px] font-semibold text-white transition-all"
+              className="flex items-center justify-center overflow-hidden whitespace-nowrap text-[10px] font-semibold text-white transition-all"
               style={{ width: `${pct}%`, background: s.color }}
               title={`${s.label}: ${formatDurationMs(s.ms)}`}
             >
@@ -150,7 +150,7 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
         {items.map((s) => {
           const pct = (s.ms / total) * 100;
           return (
-            <div key={s.label} className="flex items-center gap-2 text-[11px] tb-item">
+            <div key={s.label} className="flex items-center gap-2 text-xs tb-item">
               <span className="h-2 w-2 shrink-0 rounded-sm sw2" style={{ background: s.color }} />
               <span className="w-20 shrink-0 text-muted-foreground nm">{s.label}</span>
               <div className="h-1.5 flex-1 overflow-hidden rounded bg-muted">
@@ -160,7 +160,7 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
                 />
               </div>
               <span className="w-16 shrink-0 text-right font-mono font-semibold ms">{formatDurationMs(s.ms)}</span>
-              <span className="w-10 shrink-0 text-right text-[10px] text-muted-foreground pc">{pct.toFixed(1)}%</span>
+              <span className="w-10 shrink-0 text-right text-[11px] text-muted-foreground pc">{pct.toFixed(1)}%</span>
             </div>
           );
         })}

@@ -171,7 +171,7 @@ export function FirewallProfileMatrix({ profiles }: { profiles: FirewallProfileI
         return (
           <span
             key={p.name}
-            className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] fw-p ${!p.active ? "" : p.covered ? "ok" : "bad"} ${tone}`}
+            className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs fw-p ${!p.active ? "" : p.covered ? "ok" : "bad"} ${tone}`}
             title={
               p.active
                 ? p.covered
@@ -182,8 +182,8 @@ export function FirewallProfileMatrix({ profiles }: { profiles: FirewallProfileI
           >
             {p.active && <Icon name={p.covered ? "check" : "alertTriangle"} size={11} />}
             {label}
-            {p.active && <span className="opacity-70">· 当前</span>}
-            {!p.enabled && <span className="opacity-70">· 已关</span>}
+            {p.active && <span className="text-muted-foreground">· 当前</span>}
+            {!p.enabled && <span className="text-muted-foreground">· 已关</span>}
           </span>
         );
       })}
@@ -266,7 +266,7 @@ export function FirewallActions({
         <div className="space-y-1.5">
           <p className="text-xs text-muted-foreground">在管理员终端执行（已带 profile=any，三个配置文件一次覆盖）：</p>
           <div className="flex items-start gap-2 rounded-md border border-border bg-secondary/40 p-2">
-            <code className="min-w-0 flex-1 break-all font-mono text-[11px] leading-relaxed text-foreground">
+            <code className="min-w-0 flex-1 break-all font-mono text-xs leading-relaxed text-foreground">
               {manual || "—"}
             </code>
             <Button variant="ghost" size="sm" onClick={copyManual} disabled={!manual}>

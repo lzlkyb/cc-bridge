@@ -14,9 +14,9 @@ import { DiffView, type DiffState, countDiff } from "./DiffView";
 
 /** 查看类操作（看改了什么/与上一版比）用蓝色，与不可逆的“还原”做视觉分级，避免手滑点错。 */
 const VIEW_BTN_CLASS =
-  "rounded-md border border-primary/35 bg-card px-2 py-1 text-[11px] text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:border-input disabled:text-foreground";
+  "rounded-md border border-primary/35 bg-card px-2 py-1 text-xs text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:border-input disabled:text-foreground";
 const DANGER_BTN_CLASS =
-  "rounded-md border border-destructive/40 bg-card px-2 py-1 text-[11px] text-destructive-ink transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:border-input disabled:text-foreground";
+  "rounded-md border border-destructive/40 bg-card px-2 py-1 text-xs text-destructive-ink transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40 disabled:border-input disabled:text-foreground";
 
 /**
  * 版本历史弹框（居中大弹框，沿用 UpdateNotesDialog 视觉）。
@@ -281,7 +281,7 @@ export function VersionHistoryModal({
                   <div
                     className="overflow-y-auto max-h-[62vh] rounded-xl border border-border bg-muted/40 p-2"
                   >
-                    <div className="px-1 pb-1 text-[11px] font-semibold text-muted-foreground">
+                    <div className="px-1 pb-1 text-xs font-semibold text-muted-foreground">
                       文件索引（点击跳转）
                     </div>
                     {groups.map((g) => (
@@ -294,10 +294,10 @@ export function VersionHistoryModal({
                             : "hover:bg-card"
                         }`}
                       >
-                        <div className="truncate font-mono text-[12px] font-semibold">
+                        <div className="truncate font-mono text-xs font-semibold">
                           {g.originalFile}
                         </div>
-                        <div className="text-[11px] text-muted-foreground">
+                        <div className="text-xs text-muted-foreground">
                           {formatRelativeTime(g.entries[0].createdAt)} · {g.count} 份
                         </div>
                       </div>
@@ -359,7 +359,7 @@ export function VersionHistoryModal({
                                 <span className="text-[13px] font-semibold text-foreground">
                                   {g.originalFile}
                                 </span>
-                                <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+                                <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                                   当前文件
                                 </span>
                               </div>
@@ -378,7 +378,7 @@ export function VersionHistoryModal({
                                   <span className="absolute -left-[7px] top-3 h-3 w-3 rounded-full border-2 bg-card border-primary" />
                                   <div className="flex flex-wrap items-center gap-2">
                                     <span
-                                      className="font-mono text-[12px] font-semibold"
+                                      className="font-mono text-xs font-semibold"
                                       title={e.backupPath}
                                     >
                                       {e.backupPath.split(/[\\/]/).pop()}
@@ -393,7 +393,7 @@ export function VersionHistoryModal({
                                       {formatBytes(e.sizeBytes)}
                                     </span>
                                     {st && !st.guard && (
-                                      <span className="flex items-center gap-1 text-[11px]">
+                                      <span className="flex items-center gap-1 text-xs">
                                         {cs?.added ? (
                                           <span className="rounded bg-success/15 px-1.5 py-0.5 text-success-ink">
                                             +{cs.added}
@@ -553,7 +553,7 @@ export function VersionHistoryModal({
 
               {/* 白名单关闭提示 */}
               {!status?.whitelistEnabled && (
-                <p className="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                <p className="mt-3 flex items-start gap-1.5 text-xs leading-relaxed text-muted-foreground">
                   <Icon name="info" size={13} className="mt-0.5 shrink-0" />
                   白名单当前已关闭，出于安全考虑禁用「看改了什么」与「还原」（无法确认目标文件归属）。如需操作，可在「审计日志」中对应操作的详情里进行；「与上一版比」仍可正常使用。
                 </p>

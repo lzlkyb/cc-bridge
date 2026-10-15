@@ -80,13 +80,13 @@ export function ServerRow({
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${b.cls}`}
+            className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${b.cls}`}
             title={open ? "收起工具清单" : "展开工具清单"}
           >
             {b.text} {open ? "▴" : "▾"}
           </button>
         ) : (
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${b.cls}`}>{b.text}</span>
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${b.cls}`}>{b.text}</span>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {/* 总开关关着时禁用：这是本卡里**唯一会真的启动子进程**的按钮。 */}
@@ -119,7 +119,7 @@ export function ServerRow({
         {fullCommand(server.command, server.args)}
       </div>
 
-      <div className="mt-1.5 flex flex-wrap gap-x-3.5 gap-y-1 text-[11px] text-muted-foreground">
+      <div className="mt-1.5 flex flex-wrap gap-x-3.5 gap-y-1 text-xs text-muted-foreground">
         <span>工作目录：{server.cwd || `跟随 cc-bridge${server.effectiveCwd ? `（${server.effectiveCwd}）` : ""}`}</span>
         <span>环境变量：{server.envKeys.length ? server.envKeys.join("、") : "无"}</span>
         {server.state === "stale" && <span>命令或参数已变，需重新探测</span>}
@@ -140,11 +140,11 @@ export function ServerRow({
         <div className="flex items-start gap-3 py-2">
           <div className="min-w-0 flex-1">
             <div className="text-[12.5px] font-medium">允许远程指定工作目录</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">
+            <div className="mt-0.5 text-xs text-muted-foreground">
               让远程按项目切——每个目录会各起一个进程。只能选白名单根目录内的位置。
             </div>
             {server.allowRemoteCwd && (
-              <div className="mt-1 text-[11px] text-destructive-ink">
+              <div className="mt-1 text-xs text-destructive-ink">
                 ⚠ 白名单<b>只限它从哪里启动，不限它启动后能碰什么</b>。
               </div>
             )}
@@ -160,7 +160,7 @@ export function ServerRow({
 
       {/* 错误原文就地展，不只弹 toast——toast 一闪就没了，而这里的错误往往得照着改命令。 */}
       {server.error && (
-        <div className="mt-1.5 whitespace-pre-wrap break-all rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-[11px] text-destructive-ink">
+        <div className="mt-1.5 whitespace-pre-wrap break-all rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-xs text-destructive-ink">
           {server.error}
         </div>
       )}

@@ -34,7 +34,7 @@ export function GenericSteps({ input }: { input: SnippetInput }) {
             适用于任意支持 MCP 的工具：整段粘贴后，AI 会自己识别配置载体（命令 / json / toml）、写入并验证。
           </p>
           <div className="code-box flex items-start gap-2">
-            <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-foreground">
+            <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-foreground">
               {prompt}
             </code>
             <Button
@@ -75,9 +75,9 @@ export function GenericSteps({ input }: { input: SnippetInput }) {
         </button>
         {showManual && (
           <div className="space-y-2 border-t px-2.5 py-2.5">
-            <p className="text-[11px] text-muted-foreground">{snippet.target}</p>
+            <p className="text-xs text-muted-foreground">{snippet.target}</p>
             <div className="code-box flex items-start gap-2">
-              <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-foreground">
+              <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-foreground">
                 {snippet.code}
               </code>
               <Button
@@ -94,7 +94,7 @@ export function GenericSteps({ input }: { input: SnippetInput }) {
             {snippet.notes.map((n, i) => (
               <p
                 key={i}
-                className="rounded-lg bg-warning/8 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground"
+                className="rounded-lg bg-warning/8 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground"
               >
                 <b className="text-warning-ink">注意</b>
                 ：{n}

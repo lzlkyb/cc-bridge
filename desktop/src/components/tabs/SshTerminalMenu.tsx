@@ -104,7 +104,7 @@ function Item({
       className="flex w-full items-center justify-between gap-4 rounded-md px-2.5 py-1.5 text-left text-[13px] text-foreground transition-colors hover:bg-muted disabled:cursor-default disabled:text-muted-foreground disabled:hover:bg-transparent"
     >
       <span>{label}</span>
-      <span className="font-mono text-[11px] text-muted-foreground">{hint}</span>
+      <span className="font-mono text-xs text-muted-foreground">{hint}</span>
     </button>
   );
 }

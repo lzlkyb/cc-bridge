@@ -40,7 +40,7 @@ export function SubSetting({
         {children}
       </fieldset>
       {disabled && hint && (
-        <p className="pb-2 text-[11px] text-muted-foreground">{hint}</p>
+        <p className="pb-2 text-xs text-muted-foreground">{hint}</p>
       )}
     </div>
   );

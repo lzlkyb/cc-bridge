@@ -49,7 +49,7 @@ export function SumRow({
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-xs font-semibold text-foreground">{label}</span>
-        <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{value}</span>
+        <span className="mt-0.5 block truncate text-xs text-muted-foreground">{value}</span>
       </span>
       <Icon
         name="chevronDown"

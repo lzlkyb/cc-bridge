@@ -138,7 +138,7 @@ export function AddressPicker({
               )}
               {badge && (
                 <span
-                  className={`absolute right-1.5 top-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none ${badge.className}`}
+                  className={`absolute right-1.5 top-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-bold leading-none ${badge.className}`}
                 >
                   {badge.label}
                 </span>

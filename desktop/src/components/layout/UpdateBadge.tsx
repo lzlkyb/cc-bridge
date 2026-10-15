@@ -6,7 +6,8 @@ import { Spinner } from "../ui/Spinner";
 import { formatBytesPerSec } from "../../lib/utils";
 
 /**
- * Header 上的更新状态徽章。
+ * 侧栏底部（foot 区）的更新状态徽章。2026-10-15 从品牌区迁入：
+ * 应用级元信息与服务状态胶囊同区，品牌区保持安静（B 方案）。
  *
  * 7 种状态全覆盖：
  * - idle        → null（不显示，版本号由 Header 的 version-badge 展示）

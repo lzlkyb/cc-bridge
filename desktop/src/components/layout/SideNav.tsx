@@ -93,7 +93,7 @@ function SideNavImpl({
   const unreadLabel = unreadCount > 9 ? "9+" : String(unreadCount);
 
   // 设置目录模式：进设置页时侧栏整体切换为设置目录（返回 + 搜索 + 簇导航）。
-  // 状态胶囊两种模式都保留（链路状态不该因为进设置而消失）。
+  // 状态胶囊异常态两种模式口径一致（见 foot 区注释）。
   const settingsMode = activeTab === "settings" && !!settingsSections && !!onSelectSection;
 
   return (
@@ -111,7 +111,6 @@ function SideNavImpl({
         />
         <div data-tauri-drag-region className="app-side-brand">
           <span className="app-side-name">{APP_INFO.name}</span>
-          <UpdateBadge currentVersion={status?.version} />
         </div>
       </div>
 
@@ -143,6 +142,10 @@ function SideNavImpl({
       )}
 
       <div className="app-side-foot">
+        {/* 更新状态徽章（B 方案 2026-10-15）：品牌区 → foot 区。应用级元信息
+            （版本/更新进度）与服务状态胶囊同区，200px 全宽放得下「下载中 45%」
+            这类长文案；品牌区恢复 logo + 名字的安静头部。折叠态整行隐藏。 */}
+        <UpdateBadge currentVersion={status?.version} />
         {/* 设置排最末位（导航末位惯例：VS Code / Discord / Telegram 均如此）——
             与「干活的页面」在视觉上分层。进设置的副作用（标已读 / 开更新历史）
             在 App.tsx 的 handleNavigate 里，这里只管导航。
@@ -167,18 +170,23 @@ function SideNavImpl({
           </button>
         )}
 
-        {/* 服务状态：可点击时跳到处置页（启动失败→设置，链路中断 / 防火墙→连接页） */}
-        <button
-          type="button"
-          className="app-side-status status-pill"
-          data-tone={statusTone}
-          title={statusTitle}
-          data-clickable={statusTarget ? true : undefined}
-          onClick={() => statusTarget && onNavigate(statusTarget)}
-        >
-          <span className={`app-side-status-dot ${statusTone === "ok" ? "p-dot" : ""}`} />
-          <span className="app-side-status-text">{statusText}</span>
-        </button>
+        {/* 服务状态胶囊（E 方案 2026-10-15）：异常才现。运行中/已停止不渲染——
+            绿点脉冲是常驻壁纸、零信息增量，常态反馈由连接页运行卡片与托盘承担；
+            启动失败/链路中断（红）、防火墙未放行（橙）自动出现 + 可点击直达处置页。
+            两种模式（工作区/设置目录）口径一致：异常时不因进设置而消失。 */}
+        {(statusTone === "bad" || statusTone === "warn") && (
+          <button
+            type="button"
+            className="app-side-status status-pill"
+            data-tone={statusTone}
+            title={statusTitle}
+            data-clickable={statusTarget ? true : undefined}
+            onClick={() => statusTarget && onNavigate(statusTarget)}
+          >
+            <span className="app-side-status-dot" />
+            <span className="app-side-status-text">{statusText}</span>
+          </button>
+        )}
       </div>
     </aside>
   );

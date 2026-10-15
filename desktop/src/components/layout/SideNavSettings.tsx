@@ -93,7 +93,7 @@ export function SideNavSettings({
         {query.trim() ? results.map(item => (
           <button key={item.id} type="button" className="app-side-item" onClick={() => { setQuery(""); onSelect(item.sectionId!, item.anchor); }} title={item.label}>
             <Icon name={item.icon} size={16} className="app-side-icon" />
-            <span className="app-side-label flex flex-col"><span>{item.label}</span><small className="text-[11px] text-muted-foreground">{item.group}</small></span>
+            <span className="app-side-label flex flex-col"><span>{item.label}</span><small className="text-xs text-muted-foreground">{item.group}</small></span>
           </button>
         )) : groups.map((group, gi) => (
           <div key={group.items[0].id}>

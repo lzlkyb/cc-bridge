@@ -100,7 +100,7 @@ export function TuiGuideBar({ flips, onSend, onDismiss, onCollapse }: Props) {
         <span
           title={paused ? "倒计时已暂停（移开鼠标继续）" : "10 秒后收起为状态栏徽章"}
           className={
-            "shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-semibold tabular-nums transition-colors " +
+            "shrink-0 rounded-md px-1.5 py-0.5 text-xs font-semibold tabular-nums transition-colors " +
             (paused ? "bg-muted text-muted-foreground" : "bg-warning/[0.16] text-warning-ink")
           }
         >

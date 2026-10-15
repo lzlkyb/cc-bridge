@@ -264,7 +264,7 @@ export function CommandPalette({
               placeholder="搜索页面或执行操作..."
               className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
             />
-            <kbd className="hidden sm:inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+            <kbd className="hidden sm:inline-flex items-center rounded border bg-muted px-1.5 py-0.5 text-[11px] font-mono text-muted-foreground">
               ESC
             </kbd>
           </div>
@@ -281,7 +281,7 @@ export function CommandPalette({
                 return (
                   <Fragment key={item.id}>
                     {showHeader && (
-                      <div className="px-4 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground pal-g">
+                      <div className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground pal-g">
                         {item.group}
                       </div>
                     )}
@@ -297,7 +297,7 @@ export function CommandPalette({
                       <span className="flex-1 text-left">{item.label}</span>
                       {isBusy && <Icon name="spinner" size={14} className="animate-spin" />}
                       {item.shortcut && (
-                        <kbd className="text-[10px] font-mono text-muted-foreground">{item.shortcut}</kbd>
+                        <kbd className="text-[11px] font-mono text-muted-foreground">{item.shortcut}</kbd>
                       )}
                     </button>
                   </Fragment>
@@ -308,7 +308,7 @@ export function CommandPalette({
 
           {/* Footer hint */}
           <div className="border-t px-4 py-2 pal-ft">
-            <p className="text-[10px] text-muted-foreground">
+            <p className="text-[11px] text-muted-foreground">
               <kbd className="rounded bg-muted px-1 py-0.5 font-mono">↑↓</kbd> 导航 ·{" "}
               <kbd className="rounded bg-muted px-1 py-0.5 font-mono">Enter</kbd> 执行 ·{" "}
               <kbd className="rounded bg-muted px-1 py-0.5 font-mono">Esc</kbd> 关闭

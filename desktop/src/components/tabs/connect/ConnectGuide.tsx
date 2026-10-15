@@ -80,7 +80,7 @@ export function ConnectGuide({
           <div className="flex-1 min-w-0">
             <div className="ui-h-sub text-foreground">接入模式</div>
             {!scopeOpen && (
-              <div className="text-[11px] text-muted-foreground">
+              <div className="text-xs text-muted-foreground">
                 {guide.scope === "project" ? "项目级 · 仅指定项目生效" : "全局模式 · 所有项目可用"}
               </div>
             )}
@@ -123,14 +123,14 @@ export function ConnectGuide({
           <div className="flex-1 min-w-0">
             <div className="ui-h-sub text-foreground">
               接入步骤
-              <span className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${status?.transport === "sse" ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200" : "bg-indigo-50 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-200"}`}>
+              <span className={`ml-2 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${status?.transport === "sse" ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200" : "bg-indigo-50 text-indigo-600 dark:bg-indigo-900 dark:text-indigo-200"}`}>
                 {status?.transport === "sse" ? "SSE 流式" : "HTTP"}
               </span>
             </div>
             {!stepsOpen && (
               // ① P0 峰值时刻：远程首次调用成功（totalRequests 0→1 事件）时摘要换文案，
               // aria-live 让读屏用户也能听到「配置生效」的确认。
-              <div className="text-[11px] text-muted-foreground" aria-live="polite">
+              <div className="text-xs text-muted-foreground" aria-live="polite">
                 {guide.firstCallSeen ? "✓ 已收到首次调用，配置生效" : "点击展开查看连接命令"}
               </div>
             )}
@@ -174,7 +174,7 @@ export function ConnectGuide({
           <div className="flex-1 min-w-0">
             <div className="ui-h-sub text-foreground">权限自动授权</div>
             {!permOpen && (
-              <div className="text-[11px] text-muted-foreground">点击展开查看授权命令</div>
+              <div className="text-xs text-muted-foreground">点击展开查看授权命令</div>
             )}
           </div>
           <Icon

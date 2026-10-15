@@ -30,10 +30,10 @@ function FullCommandRow({ command }: { command: string }) {
 
   return (
     <div className="flex items-start gap-2 rounded-md border bg-card p-2.5">
-      <span className="w-12 shrink-0 pt-0.5 text-[10px] text-muted-foreground">完整命令</span>
+      <span className="w-12 shrink-0 pt-0.5 text-[11px] text-muted-foreground">完整命令</span>
       {/* min-w-0 必须有：flex 子项默认 min-width:auto，不置 0 就会被长命令的 min-content
           宽度撑破容器——跟表格那个溢出是同一个坑。 */}
-      <span className="min-w-0 flex-1 select-text whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed">
+      <span className="min-w-0 flex-1 select-text whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">
         {command}
       </span>
       <Button
@@ -135,12 +135,12 @@ export function CommandOutputPanel({
       <FullCommandRow command={command} />
       <div className="flex items-center gap-2">
         {meta?.running ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success-ink">
+          <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-xs font-medium text-success-ink">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
             运行中
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">
+          <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
             已结束
             {meta && meta.exitCode !== null && meta.exitCode !== undefined
               ? ` · ExitCode ${meta.exitCode}`
@@ -148,11 +148,11 @@ export function CommandOutputPanel({
           </span>
         )}
         {!pollFailed && (
-          <span className="text-[11px] text-muted-foreground">实时输出（3s 刷新）</span>
+          <span className="text-xs text-muted-foreground">实时输出（3s 刷新）</span>
         )}
       </div>
       {pollFailed && (
-        <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/8 px-3 py-2 text-[11px] text-destructive-ink">
+        <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/8 px-3 py-2 text-xs text-destructive-ink">
           <Icon name="alertTriangle" size={12} className="shrink-0" />
           <span>输出获取失败，已停止自动刷新——以下内容可能已过期。</span>
           <Button
@@ -166,7 +166,7 @@ export function CommandOutputPanel({
         </div>
       )}
       {meta && (meta.stdoutTruncated || meta.stderrTruncated) && (
-        <p className="flex items-center gap-1.5 text-[11px] text-warning-ink">
+        <p className="flex items-center gap-1.5 text-xs text-warning-ink">
           <Icon name="alertTriangle" size={12} />
           输出已超过 1MB 上限，早期内容已自动截断。
         </p>
@@ -210,7 +210,7 @@ function LogBox({
   }, [text]);
   return (
     <div className="space-y-1">
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground term-meta">
+      <div className="flex items-center justify-between text-xs text-muted-foreground term-meta">
         <span>
           {label} · {bytes.toLocaleString()} 字节
         </span>
@@ -218,11 +218,11 @@ function LogBox({
       </div>
       <pre
         ref={ref}
-        className={`termbox max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border bg-[#0d1117] p-2.5 font-mono text-[11px] leading-relaxed ${
+        className={`termbox max-h-[200px] overflow-auto whitespace-pre-wrap break-all rounded-md border bg-[#0d1117] p-2.5 font-mono text-xs leading-relaxed ${
           isError ? "text-destructive" : "text-[#d4d4d4]"
         }`}
       >
-        {text ? (isError ? <span className="e">{text}</span> : text) : <span className="opacity-40">（暂无输出）</span>}
+        {text ? (isError ? <span className="e">{text}</span> : text) : <span className="text-muted-foreground">（暂无输出）</span>}
       </pre>
     </div>
   );

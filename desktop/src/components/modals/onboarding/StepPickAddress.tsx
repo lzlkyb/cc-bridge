@@ -73,7 +73,7 @@ export function StepPickAddress({
                   )}
                   <div className="flex items-center gap-2">
                     <code className={`text-sm font-mono ${sel ? "text-primary" : ""}`}>{ip}</code>
-                    {i === 0 && <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px]">默认</span>}
+                    {i === 0 && <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[11px]">默认</span>}
                   </div>
                   <p className="mt-0.5 text-xs text-muted-foreground">{ipHint(ip)}</p>
                 </button>

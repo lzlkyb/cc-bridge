@@ -100,10 +100,10 @@ export function TerminalGlobalSearch({ sessions, onActivate, onClose }: Props) {
             {scanning ? "扫描中…" : count}
           </span>
           <ToggleBtn title="区分大小写" active={caseSensitive} onClick={() => setCaseSensitive((v) => !v)}>
-            <span className="text-[10px] font-semibold leading-none">Aa</span>
+            <span className="text-[11px] font-semibold leading-none">Aa</span>
           </ToggleBtn>
           <ToggleBtn title="正则表达式" active={regex} onClick={() => setRegex((v) => !v)}>
-            <span className="font-mono text-[10px] leading-none">.*</span>
+            <span className="font-mono text-[11px] leading-none">.*</span>
           </ToggleBtn>
           <ToggleBtn title="关闭（Esc）" onClick={onClose}>
             <Icon name="close" size={12} />

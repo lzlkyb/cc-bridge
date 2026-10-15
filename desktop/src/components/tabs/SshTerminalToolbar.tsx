@@ -81,23 +81,23 @@ export function SshTerminalToolbar({
         {conn.username}@{conn.host}:{conn.port}
       </span>
       {closed ? (
-        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-destructive/15 px-2 py-0.5 text-[11px] font-medium text-destructive-ink">
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-medium text-destructive-ink">
           <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
           已断开
         </span>
       ) : (
-        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-green-500/15 px-2 py-0.5 text-[11px] font-medium text-green-600 dark:text-green-400">
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-green-500/15 px-2 py-0.5 text-xs font-medium text-green-600 dark:text-green-400">
           <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
           已连接
         </span>
       )}
       {fullscreen && (
-        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-primary/15 px-2 py-0.5 text-[11px] font-medium text-primary">
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-primary/15 px-2 py-0.5 text-xs font-medium text-primary">
           全屏 · F11 退出
         </span>
       )}
       {(selectMode || shiftActive || dragSelecting) && (
-        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-indigo-500/15 px-2 py-0.5 text-[11px] font-medium text-indigo-600 dark:text-indigo-400">
+        <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-indigo-500/15 px-2 py-0.5 text-xs font-medium text-indigo-600 dark:text-indigo-400">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-500" />
           {dragSelecting
             ? "拖选复制"
@@ -109,7 +109,7 @@ export function SshTerminalToolbar({
       {inputErr ? (
         <span
           title={inputErr}
-          className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-600 dark:text-red-400"
+          className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-medium text-red-600 dark:text-red-400"
         >
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
           输入失败
@@ -117,7 +117,7 @@ export function SshTerminalToolbar({
       ) : (
         !focused &&
         !closed && (
-          <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+          <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
             <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
             点击终端以输入
           </span>

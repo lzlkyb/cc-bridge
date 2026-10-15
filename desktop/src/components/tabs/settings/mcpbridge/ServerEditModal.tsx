@@ -118,7 +118,7 @@ export function ServerEditModal({
           {/* 不给这个勾选框的话，「清空 env」就根本没有表达方式——
               留空被定义为「保持不变」了。 */}
           {editing && initial.envKeys.length > 0 && !envText.trim() && (
-            <label className="mt-1.5 flex items-center gap-2 text-[11px]">
+            <label className="mt-1.5 flex items-center gap-2 text-xs">
               <input
                 type="checkbox"
                 checked={clearEnv}
@@ -158,7 +158,7 @@ function Field({
       <div className="mb-1 text-xs font-medium">{label}</div>
       {children}
       {hint && (
-        <div className={`mt-1 text-[11px] ${error ? "text-destructive-ink" : "text-muted-foreground"}`}>
+        <div className={`mt-1 text-xs ${error ? "text-destructive-ink" : "text-muted-foreground"}`}>
           {hint}
         </div>
       )}

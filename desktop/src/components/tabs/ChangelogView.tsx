@@ -34,17 +34,17 @@ export function ChangelogView() {
           style={STYLE_CL_VERSIONBar}
         >
           <span
-            className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[10px] font-bold text-white"
+            className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[11px] font-bold text-white"
             style={STYLE_CL_CAPSULE}
           >
             v{CHANGELOG[0].version}
           </span>
-          <span className="cl-date shrink-0 text-[10px] text-muted-foreground" style={STYLE_CL_DATE}>
+          <span className="cl-date shrink-0 text-[11px] text-muted-foreground" style={STYLE_CL_DATE}>
             {CHANGELOG[0].date}
           </span>
           <span className="flex-1" />
           <span
-            className="cl-latest-tag shrink-0 rounded px-1.5 text-[8px] font-bold tracking-wider text-white"
+            className="cl-latest-tag shrink-0 rounded px-1.5 text-[10px] font-bold tracking-wider text-white"
             style={STYLE_CL_CAPSULE}
           >
             最新
@@ -57,7 +57,7 @@ export function ChangelogView() {
             <Icon name="sparkles" size={14} className="mt-0.5 shrink-0 text-white" aria-hidden="true" />
             <ul className="flex-1 space-y-0.5">
               {CHANGELOG[0].highlights.map((h, i) => (
-                <li key={i} className="text-[11px] font-medium leading-snug text-white">
+                <li key={i} className="text-xs font-medium leading-snug text-white">
                   {h}
                 </li>
               ))}
@@ -68,11 +68,11 @@ export function ChangelogView() {
         {CHANGELOG[0].items.map((item, j) => (
           <div
             key={j}
-            className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:bg-muted"
+            className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-xs leading-relaxed text-muted-foreground transition-colors hover:bg-muted"
             style={STYLE_CL_ITEM_PAD}
           >
             <span
-              className={`cl-badge shrink-0 rounded px-1.5 text-[9px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}
+              className={`cl-badge shrink-0 rounded px-1.5 text-[10px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}
             >
               {CATEGORY_LABELS[item.category]}
             </span>
@@ -87,12 +87,12 @@ export function ChangelogView() {
           <div key={entry.version} className="cl-version-block mb-1.5">
             <div className="cl-version-bar flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
               <span
-                className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[10px] font-bold text-muted-foreground"
+                className="cl-version-capsule shrink-0 rounded-md px-2 py-0.5 font-mono text-[11px] font-bold text-muted-foreground"
                 style={STYLE_CL_CAPSULE_MUTED}
               >
                 v{entry.version}
               </span>
-              <span className="cl-date shrink-0 text-[10px] text-muted-foreground" style={STYLE_CL_DATE}>
+              <span className="cl-date shrink-0 text-[11px] text-muted-foreground" style={STYLE_CL_DATE}>
                 {entry.date}
               </span>
               <span className="flex-1" />
@@ -102,7 +102,7 @@ export function ChangelogView() {
                 <Icon name="sparkles" size={14} className="mt-0.5 shrink-0 text-white" aria-hidden="true" />
                 <ul className="flex-1 space-y-0.5">
                   {entry.highlights.map((h, i) => (
-                    <li key={i} className="text-[11px] font-medium leading-snug text-white">
+                    <li key={i} className="text-xs font-medium leading-snug text-white">
                       {h}
                     </li>
                   ))}
@@ -112,11 +112,11 @@ export function ChangelogView() {
             {entry.items.map((item, j) => (
               <div
                 key={j}
-                className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-[11px] leading-relaxed text-muted-foreground transition-colors hover:bg-muted"
+                className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-xs leading-relaxed text-muted-foreground transition-colors hover:bg-muted"
                 style={STYLE_CL_ITEM_PAD}
               >
                 <span
-                  className={`cl-badge shrink-0 rounded px-1.5 text-[9px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}
+                  className={`cl-badge shrink-0 rounded px-1.5 text-[10px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}
                 >
                   {CATEGORY_LABELS[item.category]}
                 </span>
@@ -131,7 +131,7 @@ export function ChangelogView() {
         <button
           type="button"
           onClick={() => setShowMoreHistory(!showMoreHistory)}
-          className="changelog-toggle mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border bg-transparent px-2 py-1.5 text-[11px] font-semibold text-muted-foreground transition-colors hover:border-primary hover:bg-muted hover:text-foreground"
+          className="changelog-toggle mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border bg-transparent px-2 py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary hover:bg-muted hover:text-foreground"
         >
           <Icon
             name="chevronDown"

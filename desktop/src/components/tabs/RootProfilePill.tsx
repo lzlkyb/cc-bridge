@@ -38,7 +38,7 @@ export function RootProfilePill({
       {/* 组名可能很长，截断而不是把标题行顶宽 */}
       <span className="max-w-[120px] truncate">{active || "—"}</span>
       {current && (
-        <span className="shrink-0 text-[10px] font-normal text-muted-foreground">
+        <span className="shrink-0 text-[11px] font-normal text-muted-foreground">
           · {current.roots.length} 个目录
         </span>
       )}

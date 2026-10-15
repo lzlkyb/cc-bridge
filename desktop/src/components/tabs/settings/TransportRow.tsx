@@ -139,28 +139,28 @@ function SseMigrationModal({
 
       {/* Codex 的 SSE 警告必须出现在**切换入口**，而不是只留在接入向导里：
           用户在向导里读到的提示，等真要切换时早忘了，而代价是「切完 Codex 直接连不上」。 */}
-      <p className="mb-3 rounded-lg bg-warning/8 px-2.5 py-2 text-[11px] leading-relaxed text-muted-foreground">
+      <p className="mb-3 rounded-lg bg-warning/8 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
         <b className="text-warning-ink">Codex 不支持 SSE</b>
         ：Codex 只有 Streamable HTTP 一种传输。若你已用 Codex 接入本桥，切到 SSE 后它连不上——
         这种情况请保持 HTTP，或先把 Codex 换成支持 SSE 的工具。
       </p>
 
       <div className="relative mb-2">
-        <pre className="rounded-md bg-slate-900 px-3 py-2.5 text-[11px] leading-relaxed text-slate-200 overflow-x-auto whitespace-pre-wrap break-all">
+        <pre className="rounded-md bg-slate-900 px-3 py-2.5 text-xs leading-relaxed text-slate-200 overflow-x-auto whitespace-pre-wrap break-all">
 {migrationCmd}
         </pre>
         <button
           type="button"
-          className="absolute right-2 top-2 rounded px-2 py-0.5 text-[11px] text-slate-300 hover:bg-slate-700 transition-colors"
+          className="absolute right-2 top-2 rounded px-2 py-0.5 text-xs text-slate-300 hover:bg-slate-700 transition-colors"
           onClick={copyMigration}
         >
           📋 复制
         </button>
       </div>
-      <p className="mb-2 text-[11px] text-muted-foreground">
+      <p className="mb-2 text-xs text-muted-foreground">
         💡 如果之前用了 <code>--scope project</code>，请在 remove 命令后也加上
       </p>
-      <p className="mb-4 text-[11px] leading-relaxed text-muted-foreground">
+      <p className="mb-4 text-xs leading-relaxed text-muted-foreground">
         用 <b className="text-foreground">WorkBuddy</b> 或<b className="text-foreground">通用 MCP 工具</b>
         接入的：无需重装，把配置文件里的地址从{" "}
         <code className="rounded bg-foreground/10 px-1">/mcp</code> 改成{" "}

@@ -80,7 +80,7 @@ export function HealthCard({
       <div className="bento-eyebrow">
         健康度 · 安全治理
         <span
-          className={`ml-auto text-[10px] font-bold normal-case tracking-normal ${
+          className={`ml-auto text-[11px] font-bold normal-case tracking-normal ${
             recommended ? "text-success-ink" : "text-warning-ink"
           }`}
         >

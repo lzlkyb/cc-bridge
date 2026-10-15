@@ -59,16 +59,16 @@ export function LogRow({ entry, index, expanded, onToggle, onViewDiff, onRestore
         <TableCell>
           <div className="flex flex-col gap-0.5">
             <span className="text-xs font-medium">{toolLabel(entry.tool)}</span>
-            <span className="font-mono text-[10px] text-muted-foreground">{entry.tool}</span>
+            <span className="font-mono text-[11px] text-muted-foreground">{entry.tool}</span>
           </div>
         </TableCell>
         <TableCell className="truncate text-xs text-muted-foreground">
           {summarizeParams(entry.params)}
         </TableCell>
-        <TableCell className="truncate font-mono text-[11px] text-muted-foreground">
+        <TableCell className="truncate font-mono text-xs text-muted-foreground">
           {entry.sourceIp ?? "—"}
         </TableCell>
-        <TableCell className="whitespace-nowrap text-[11px] text-muted-foreground">
+        <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
           {entry.durationMs != null ? formatDurationMs(entry.durationMs) : "—"}
         </TableCell>
         <TableCell className="whitespace-nowrap">

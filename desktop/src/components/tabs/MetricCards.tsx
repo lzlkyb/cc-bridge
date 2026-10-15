@@ -157,12 +157,12 @@ function MetricCard({
       className={`metric-card ${color}`}
     >
       {/* 评审修复 ③：中文标签 11px、去 uppercase/字距（对汉字无效），层级靠 700 字重。 */}
-      <div className="text-[11px] font-bold text-muted-foreground">
+      <div className="text-xs font-bold text-muted-foreground">
         {label}
       </div>
       <div className="mt-1 text-[24px] font-extrabold leading-none tracking-tight text-foreground">
         <span className={pop}>{value}</span>
-        {unit && <small className="text-[12px] font-bold text-muted-foreground">{unit}</small>}
+        {unit && <small className="text-xs font-bold text-muted-foreground">{unit}</small>}
       </div>
       <div className="mt-0.5 truncate text-[10.5px] text-muted-foreground" title={sub}>
         {sub}

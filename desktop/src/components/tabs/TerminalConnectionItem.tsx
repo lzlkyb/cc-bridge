@@ -96,13 +96,13 @@ export function ConnectionListItem({
         {jumpName && (
           <span
             title={`经跳板机「${jumpName}」中转`}
-            className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-[9.5px] font-bold text-primary"
+            className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-[10px] font-bold text-primary"
           >
             经 {jumpName}
           </span>
         )}
         {connecting && (
-          <span className="text-[10px] text-muted-foreground">连接中…</span>
+          <span className="text-[11px] text-muted-foreground">连接中…</span>
         )}
       </div>
       <div className="mt-0.5 truncate pl-4 text-xs text-muted-foreground">

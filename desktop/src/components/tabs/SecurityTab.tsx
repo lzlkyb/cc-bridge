@@ -101,7 +101,7 @@ export function SecurityTab({
             <CardTitle icon={<Icon name="folder" />}>白名单根目录</CardTitle>
             {status && (
               <span
-                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                className={`rounded-full px-2 py-0.5 text-xs font-medium ${
                   status.whitelistEnabled
                     ? "bg-success/10 text-success-ink"
                     : "bg-destructive/10 text-destructive-ink"

@@ -86,7 +86,7 @@ export function TerminalStatusBar({
 
   return (
     <div
-      className="flex shrink-0 items-center overflow-hidden px-2 py-1 text-[11px]"
+      className="flex shrink-0 items-center overflow-hidden px-2 py-1 text-xs"
       style={{ ...skin.bar, fontFamily }}
     >
       {/* 左：随远端信息增多而变长的段，空间不足时单独横向滚动（滚动条隐藏）。

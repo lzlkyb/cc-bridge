@@ -126,7 +126,7 @@ export function BackupSection({
         <span className="title-chip"><Icon name="folder" size={15} aria-hidden="true" /></span>
         <div className="s-body">
           <div className="s-label">备份目录</div>
-          <div className="s-row-desc font-mono text-[11px] break-all" title={status?.backupDirAbs}>
+          <div className="s-row-desc font-mono text-xs break-all" title={status?.backupDirAbs}>
             {status?.backupDirAbs || status?.backupDir || "未设置"}
           </div>
         </div>
@@ -176,7 +176,7 @@ export function BackupSection({
         <div>
           <b className="text-primary">备份怎么产生的？</b> 你（或远程会话）每次
           <b>改写 / 删除一个已存在的受保护文件</b>前，程序会自动把原文件复制一份到上面的目录，命名为
-          <code className="mx-0.5 rounded bg-background/60 px-1 font-mono text-[11px]">原文件名.时间戳.bak</code>
+          <code className="mx-0.5 rounded bg-background/60 px-1 font-mono text-xs">原文件名.时间戳.bak</code>
           。同一文件被改多次会留多个版本，<b>只按份数保留最近 N 份，与日期无关</b>。
         </div>
       </div>

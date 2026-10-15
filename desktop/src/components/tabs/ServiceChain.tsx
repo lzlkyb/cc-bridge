@@ -96,7 +96,7 @@ export function ServiceChain({
             pulse={s.key === "remote" && s.tone === "ok"}
             popClass={nodePop}
           />
-          <span className="text-[10px] font-bold opacity-95">{s.name}</span>
+          <span className="text-[11px] font-bold opacity-95">{s.name}</span>
           {/* 评审修复 ③：链路副标题 9.5 → 10.5px。字数由 computeChain 控制在 8 字内，不会撑破卡。 */}
           <span className="min-h-[14px] text-center text-[10.5px] leading-snug opacity-85">
             {s.detail}

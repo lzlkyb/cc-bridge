@@ -193,7 +193,7 @@
   --secondary: 222 5% 18%;         /* B6: 16→18 */
   --secondary-foreground: 222 5% 90%;
   --muted: 222 5% 18%;             /* B6: 16→18 增强对比 */
-  --muted-foreground: 222 5% 65%;  /* B6: 55→65 正文更可读 */
+  --muted-foreground: 222 5% 68%;  /* B6: 55→65→68 次要文字对比达标（卡片底约 5.9:1） */
   --accent: 243 47% 20%;           /* 靛蓝深底 #1E1B4B */
   --accent-foreground: 239 84% 74%;
   --destructive: 0 72% 71%;
@@ -1809,7 +1809,9 @@ select:focus-visible,
   padding: 8px 10px;
   border-radius: var(--r-control);
   font-size: 13px;
-  font-weight: 500;
+  /* 550：Segoe UI Variable 的半粗档——灰字观感更「实」；层级仍靠选中态的
+     靛蓝底 + 600 区分。非可变字体回退到 500/600 取近。 */
+  font-weight: 550;
   color: hsl(var(--muted-foreground));
   text-align: left;
   cursor: pointer;
@@ -1901,8 +1903,11 @@ select:focus-visible,
   white-space: nowrap;
 }
 /* 图标栏态：状态胶囊只留一个点，导航项只留图标并居中 */
-.app-side[data-collapsed] .app-side-status { justify-content: center; padding: 8px 0; }
+.app-side[data-collapsed] .app-side-status { justify-content: center; padding: 4px 0; background: transparent; }
 .app-side[data-collapsed] .app-side-status-text { display: none; }
+/* 更新徽章（foot 区）：全宽居中对齐状态胶囊；折叠态 56px 装不下长文案，整行隐藏 */
+.app-side-foot .header-badge { justify-content: center; }
+.app-side[data-collapsed] .app-side-foot .header-badge { display: none; }
 .app-side[data-collapsed] .app-side-item { justify-content: center; gap: 0; padding: 8px 0; }
 .app-side[data-collapsed] .app-side-label { display: none; }
 

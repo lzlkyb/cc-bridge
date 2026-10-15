@@ -72,7 +72,7 @@ export function BackupCleanupPreviewPanel({
           </div>
           <div className="mt-1.5 space-y-0.5">
             {(showAll ? losing : losing.slice(0, 5)).map((f) => (
-              <div key={f} className="break-all font-mono text-[11px] text-muted-foreground">
+              <div key={f} className="break-all font-mono text-xs text-muted-foreground">
                 {f}
               </div>
             ))}
@@ -80,7 +80,7 @@ export function BackupCleanupPreviewPanel({
               <button
                 type="button"
                 onClick={() => setShowAll((v) => !v)}
-                className="text-[11px] font-medium text-primary hover:underline"
+                className="text-xs font-medium text-primary hover:underline"
               >
                 {showAll ? "收起" : `展开全部 ${losing.length} 个`}
               </button>

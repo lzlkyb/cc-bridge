@@ -128,7 +128,7 @@ export function ImportWizard({
 
       <div className="max-h-[46vh] overflow-y-auto">
         {ok.length > 0 && (
-          <div className="mb-1.5 text-[11px] text-muted-foreground">
+          <div className="mb-1.5 text-xs text-muted-foreground">
             可导入 {ok.length} 项{scan?.sources.length ? ` · 来自 ${scan.sources.join("、")}` : ""}
           </div>
         )}
@@ -147,7 +147,7 @@ export function ImportWizard({
         {bad.length > 0 && (
           <>
             {/* 已导入的不是“无法桥接”（它本就桥着），混在一起时标题得改口径。*/}
-            <div className="mb-1.5 mt-3.5 text-[11px] text-muted-foreground">
+            <div className="mb-1.5 mt-3.5 text-xs text-muted-foreground">
               以下 {bad.length} 项不可勾选
               {bad.some((c) => c.state === "already_imported") ? "（已导入 / 无法桥接）" : "：无法桥接"}
             </div>
@@ -184,8 +184,8 @@ function UnavailableRow({ c }: { c: McpBridgeCandidate }) {
     <div className="mb-1.5 rounded-lg border bg-muted/60 px-2.5 py-2 opacity-70">
       <div className="text-[13px] font-semibold">{c.name}</div>
       {/* 原文可能是多行的 stderr，不能当成一行渲染。 */}
-      <div className="mt-0.5 whitespace-pre-wrap text-[11px] text-muted-foreground">{c.reason}</div>
-      <div className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+      <div className="mt-0.5 whitespace-pre-wrap text-xs text-muted-foreground">{c.reason}</div>
+      <div className="mt-1 break-all font-mono text-xs text-muted-foreground">
         {fullCommand(c.command, c.args)}
       </div>
     </div>

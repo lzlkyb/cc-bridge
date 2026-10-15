@@ -43,7 +43,7 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
         <CardTitle icon={<Icon name="plug" />}>
           外挂 MCP 桥
           <span
-            className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-normal ${
+            className={`ml-2 rounded-full px-2 py-0.5 text-xs font-normal ${
               master && onCount ? "bg-destructive/12 text-destructive-ink" : "bg-muted text-muted-foreground"
             }`}
           >

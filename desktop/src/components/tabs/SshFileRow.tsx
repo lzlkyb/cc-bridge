@@ -66,7 +66,7 @@ export function SshFileRow({
             {entry.name}
           </span>
           {entry.isSymlink && (
-            <span className="shrink-0 text-[10px] text-muted-foreground">链接</span>
+            <span className="shrink-0 text-[11px] text-muted-foreground">链接</span>
           )}
         </span>
       </td>

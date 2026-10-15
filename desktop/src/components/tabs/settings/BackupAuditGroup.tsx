@@ -154,14 +154,14 @@ export function BackupAuditGroup({
           <button
             type="button"
             onClick={() => onNavigate("security", "set-backup")}
-            className="mb-3 flex w-full items-center gap-2 rounded-lg border border-primary/30 bg-primary/8 px-3 py-2 text-left text-[11px] font-semibold text-primary transition-colors hover:bg-primary/12"
+            className="mb-3 flex w-full items-center gap-2 rounded-lg border border-primary/30 bg-primary/8 px-3 py-2 text-left text-xs font-semibold text-primary transition-colors hover:bg-primary/12"
           >
             <Icon name="external" size={13} className="shrink-0" />
             前往：安全页 › 文件管控
             <span className="font-normal text-muted-foreground">（份数 / 目录 / 版本历史 / 清理）</span>
           </button>
         ) : (
-          <p className="mb-3 rounded-lg bg-primary/8 px-3 py-2 text-[11px] text-primary">
+          <p className="mb-3 rounded-lg bg-primary/8 px-3 py-2 text-xs text-primary">
             → 份数 / 目录 / 版本历史 / 清理在「安全页 › 文件管控」
           </p>
         )}
@@ -279,7 +279,7 @@ export function BackupAuditGroup({
             else void handleCleanBefore(p.days, p.origin);
           }}
         >
-          <div className="flex gap-2 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2 text-[11px] leading-relaxed text-warning-ink">
+          <div className="flex gap-2 rounded-lg border border-warning/30 bg-warning/8 px-3 py-2 text-xs leading-relaxed text-warning-ink">
             <Icon name="alert" size={13} className="mt-0.5 shrink-0" />
             <span>删除后无法在日志页追溯历史调用。如想留档，可先到日志页导出 JSON / CSV。</span>
           </div>

@@ -124,7 +124,7 @@ export function SecurityGroup({
             onRefetch={() => tlsQuery.refetch()}
           />
         ) : (
-          <p className="mb-3 rounded-lg bg-muted px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+          <p className="mb-3 rounded-lg bg-muted px-3 py-2 text-xs leading-relaxed text-muted-foreground">
             开启后会显示接入地址与封禁设置。跨网暴露请务必保持路径白名单与 Token 保护开启；有
             域名时可优先用反向代理（见 docs/reverse-proxy.md）。
           </p>
