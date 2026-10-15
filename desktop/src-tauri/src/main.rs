@@ -105,7 +105,7 @@ fn apply_window_decorations(window: &tauri::WebviewWindow) {
             DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE,
         };
         if let Ok(hwnd) = window.hwnd() {
-            let preference: i32 = 2; // DWMWCP_ROUNDSMALL = 2
+            let preference: i32 = 2; // DWMWCP_ROUND = 2（标准圆角，DWM 绘制约 8px；ROUNDSMALL 实为 3）
             unsafe {
                 if let Err(e) = DwmSetWindowAttribute(
                     HWND(hwnd.0 as isize),
