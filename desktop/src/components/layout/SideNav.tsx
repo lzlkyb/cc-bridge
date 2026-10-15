@@ -16,9 +16,9 @@ type NavItem = { key: string; label: string; icon: IconName };
  */
 export const WORKSPACE_NAV: NavItem[] = [
   { key: "connect", label: "连接", icon: "plug" },
+  { key: "terminal", label: "终端", icon: "terminal" },
   { key: "security", label: "安全", icon: "shield" },
   { key: "log", label: "日志", icon: "log" },
-  { key: "terminal", label: "终端", icon: "terminal" },
 ];
 
 /**
@@ -52,7 +52,7 @@ function SideNavImpl({
   settingsSections?: SettingsSection[];
   /** scrollspy 上报的当前高亮卡 id（App 层持有，SettingsTab 上报）。 */
   settingsActiveId?: string;
-  onSelectSection?: (id: string) => void;
+  onSelectSection?: (id: string, anchor?: string) => void;
   /** 返回工作区：App 决定回到离开设置前的工作区 tab。 */
   onBackFromSettings?: () => void;
 }) {
@@ -80,7 +80,7 @@ function SideNavImpl({
     ? "远程连接中断"
     : firewallBlocked
     ? "远程未确认"
-    : "已连接";
+    : "本机服务运行中";
   const statusTarget = startupError ? "settings" : linkDown || firewallBlocked ? "connect" : null;
   const statusTitle = startupError
     ? "服务启动失败，点击前往设置查看"

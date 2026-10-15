@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { createContext, useContext } from "react";
+import { ActivityPanel } from "./ActivityPanel";
 
 interface TabsProps {
   defaultValue?: string;
@@ -125,8 +126,9 @@ export function TabsTrigger({ value, children, className = "" }: { value: string
   );
 }
 
-export function TabsContent({ value, children, className = "" }: { value: string; children: ReactNode; className?: string }) {
+export function TabsContent({ value, children, className = "", keepMounted = false }: { value: string; children: ReactNode; className?: string; keepMounted?: boolean }) {
   const { active } = useContext(TabsContext);
+  if (keepMounted) return <ActivityPanel active={active === value} data-scroll-viewport className={`animate-tab-in ${className}`}>{children}</ActivityPanel>;
   if (active !== value) return null;
   return <div className={`animate-tab-in ${className}`}>{children}</div>;
 }

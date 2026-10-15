@@ -11,6 +11,7 @@ import {
 import { fmtTokens, toolLabel } from "../../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
+import { useAppHidden } from "../../../lib/appVisibility";
 
 /**
  * 设置页「Token 用量（估算）」分区（卡级 id: set-tokenusage，首页用量卡点进来）。
@@ -25,15 +26,18 @@ import { Icon } from "../../ui/icon";
  * 环比/分位/占比是纯函数，收口在 lib/usageMath.ts（带单测），本文件只负责取数与布局。
  */
 export function TokenUsageGroup() {
+  const hidden = useAppHidden();
   const { data, isLoading } = useQuery<TokenUsageReport>({
-    queryKey: ["token-usage"],
+    queryKey: ["token-usage", 90],
     queryFn: () => invoke<TokenUsageReport>("get_token_usage", { days: 90 }),
-    refetchInterval: 30_000,
+    enabled: !hidden,
+    refetchInterval: hidden ? false : 30_000,
   });
   const { data: data7 } = useQuery<TokenUsageReport>({
-    queryKey: ["token-usage-7"],
+    queryKey: ["token-usage", 7],
     queryFn: () => invoke<TokenUsageReport>("get_token_usage", { days: 7 }),
-    refetchInterval: 30_000,
+    enabled: !hidden,
+    refetchInterval: hidden ? false : 30_000,
   });
 
   const days = data?.days ?? [];

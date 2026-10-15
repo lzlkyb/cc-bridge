@@ -27,8 +27,9 @@ export type GuideSection = "scope" | "steps" | "token" | "perm";
  * 老用户（字段缺省 true）行为与现状完全一致。
  */
 export function useConnectGuideState(status: StaticStatus | undefined, selectedIp: string) {
-  const [scope, setScope] = useState<McpScope>("project");
-  const [projectPath, setProjectPath] = useState("");
+  const [{ scope, projectPath }, setLocation] = useState({ scope: "project" as McpScope, projectPath: "" });
+  const setScope = (scope: McpScope) => setLocation(previous => ({ ...previous, scope }));
+  const setProjectPath = (projectPath: string) => setLocation(previous => ({ ...previous, projectPath }));
   const [includeShellTools, setIncludeShellTools] = useState(false);
   // 默认折叠（单选聚焦）：展开「接入步骤」时其余收起。此处只定初始值——
   // 真新用户（后端 has_onboarded=false）进门即展开「接入步骤」；老用户全收起，
@@ -63,17 +64,20 @@ export function useConnectGuideState(status: StaticStatus | undefined, selectedI
     if (prev === 0 && (totalRequests ?? 0) > 0) setFirstCallSeen(true);
   }, [totalRequests]);
 
-  // H1 修复（语义保留）：status 就绪后**一次性**回填 scope / projectPath，避免每次进入
-  // 连接页被静默重置为默认值；status 异步加载、挂载时可能 undefined，故等首个非空值。
-  // 同一时机做新用户兜底：挂载时 status 未就绪导致 expanded 初始值为 null 的
-  // 真新用户（has_onboarded=false）在此补展开——该路径会触发展开滚动，仅发生在
-  // 全新安装后的首启，落在「接入步骤」正是期望行为。
+  // 保活后也可能在设置页导入配置：只在后端这两个字段实际改变时回填，
+  // 不能由每次 status 轮询触发旧草稿自动保存，覆盖刚导入的作用域和路径。
+  const savedScope = status ? (status.scope as McpScope | null) ?? "project" : null;
+  const savedPath = status?.projectPath ?? "";
+  useEffect(() => {
+    if (savedScope == null) return;
+    setLocation({ scope: savedScope, projectPath: savedPath });
+  }, [savedScope, savedPath]);
+
+  // 首次加载仅处理新用户的展开状态；配置值由上方字段级同步负责。
   const statusInitRef = useRef(false);
   useEffect(() => {
     if (statusInitRef.current || status == null) return;
     statusInitRef.current = true;
-    if (status.scope) setScope(status.scope as McpScope);
-    if (status.projectPath != null) setProjectPath(status.projectPath);
     if (!status.hasOnboarded && expanded == null) setExpanded("steps");
   }, [status, expanded]);
 
@@ -82,12 +86,12 @@ export function useConnectGuideState(status: StaticStatus | undefined, selectedI
   // 注意：save_config 的形参名为 patch，字段必须包进 { patch: {...} }，平铺直传
   // 会得到全 None 的 ConfigPatch，静默不落盘（曾因此漏改）。
   useEffect(() => {
-    if (status == null) return;
+    if (savedScope == null || (scope === savedScope && projectPath === savedPath)) return;
     const t = setTimeout(() => {
       void invokeOrToast("save_config", { patch: { scope, projectPath: projectPath || null } });
     }, 300);
     return () => clearTimeout(t);
-  }, [scope, projectPath, status]);
+  }, [scope, projectPath, savedScope, savedPath]);
 
   // E-P2-8：useMemo 避免每渲染重复拼接命令字符串（纯函数见 lib/utils）。
   const displayHost = useMemo(

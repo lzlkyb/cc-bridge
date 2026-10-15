@@ -5,6 +5,7 @@ import type { StatusResponse, StaticStatus } from "./lib/types";
 import { APP_INFO, CHANGELOG } from "./lib/about";
 import { getLastSeenVersion, setLastSeenVersion, countUnreadVersions } from "./lib/utils";
 import { SETTINGS_SECTIONS, type SettingsSection } from "./lib/settingsSections";
+import { settingsSectionForAnchor } from "./lib/settingsNavigation";
 import { isWindows } from "./lib/platform";
 import { Header } from "./components/layout/Header";
 import { SideNav, WORKSPACE_NAV } from "./components/layout/SideNav";
@@ -126,21 +127,16 @@ function AppContent() {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [activeTab, setActiveTab] = useState("connect");
 
-  // ── 设置目录模式（B 方案，2026-10-15）──
-  // 目录高亮 id 由 App 层持有：scrollspy 在 SettingsTab 里跑，结果上报到这里，
-  // 侧栏目录与内容卡共用同一份高亮状态。
+  // 设置连续滚动，侧栏选择和滚动跟随共用当前分类。
   const [settingsActiveId, setSettingsActiveId] = useState<string>(SETTINGS_SECTIONS[0].id);
-  // 侧栏目录点击信号：SettingsTab 收到后执行程序化滚动（block:"start" + 1s
-  // scrollspy 屏蔽窗口，几何细节见其 handleNavSelect 注释）。
-  const [settingsNavSignal, setSettingsNavSignal] = useState<{ id: string; nonce: number } | null>(null);
   // 目录项按平台过滤（防火墙卡仅 Windows），侧栏与 SettingsTab 共用同一份。
   const settingsSections = useMemo<SettingsSection[]>(
     () => SETTINGS_SECTIONS.filter((s) => !s.windowsOnly || isWindows(status?.platform)),
     [status?.platform],
   );
-  const handleSettingsSelect = useCallback((id: string) => {
+  const handleSettingsSelect = useCallback((id: string, anchor?: string) => {
     setSettingsActiveId(id);
-    setSettingsNavSignal({ id, nonce: Date.now() });
+    setPendingAnchor({ anchor: anchor ?? id, nonce: Date.now() });
   }, []);
 
   // 侧栏形态（2026-10-14）：宽窗展开 200px，窄窗自动收成 56px 图标栏。
@@ -201,11 +197,16 @@ function AppContent() {
     // 进设置页即标记已读；仅当有未读（红点）时才自动展开「关于卡片/更新历史」引导。
     // 无红点时不展开，恢复"只有小红点才打开关于卡片"的行为。
     if (tab === "settings") {
-      if (unreadCount > 0) setChangelogOpenToken((t) => t + 1);
+      const section = anchor ? settingsSectionForAnchor(anchor) : undefined;
+      if (section && settingsSections.some(s => s.id === section)) setSettingsActiveId(section);
+      else if (!anchor && unreadCount > 0) {
+        setSettingsActiveId("set-about");
+        setChangelogOpenToken((t) => t + 1);
+      }
       markSeenOnEnter();
     }
     setPendingAnchor(anchor ? { anchor, nonce: Date.now() } : null);
-  }, [markSeenOnEnter, unreadCount]);
+  }, [markSeenOnEnter, unreadCount, settingsSections]);
 
   // 「返回工作区」回到离开设置前的那个工作区 tab（而不是硬编码 connect）。
   // 必须声明在 handleNavigate 之后（引用它）。
@@ -247,7 +248,7 @@ function AppContent() {
         e.preventDefault();
         // 复用侧栏的导航数组，保证「侧栏展示顺序」与「快捷键顺序」永远一致
         const target = WORKSPACE_NAV[parseInt(e.key) - 1];
-        if (target) setActiveTab(target.key);
+        if (target) handleNavigate(target.key);
       }
       // 走 handleNavigate 而非 setActiveTab：进设置需触发标已读/开更新历史的副作用
       if (isCtrlOrMeta && e.key === "," && !isEditableTarget(e.target)) {
@@ -297,6 +298,7 @@ function AppContent() {
             onOpenSearch={() => setShowCommandPalette(true)}
             collapsed={sideCollapsed}
             onToggleCollapse={() => setSideCollapsed((v) => !v)}
+            location={activeTab === "settings" ? `设置 / ${settingsSections.find(s => s.id === settingsActiveId)?.label ?? "关于"}` : WORKSPACE_NAV.find(n => n.key === activeTab)?.label}
           />
       {statusError && (
         <div className="shrink-0 px-5 pt-2">
@@ -332,23 +334,23 @@ function AppContent() {
           </ActionCard>
         </div>
       )}
-          <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden px-5 pb-5">
-          <TabsContent value="connect" className="app-content-box">
+          <main className="min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-5">
+          <TabsContent value="connect" keepMounted className="app-content-box h-full overflow-y-auto overflow-x-hidden">
             <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} />
           </TabsContent>
-          <TabsContent value="security">
+          <TabsContent value="security" keepMounted className="h-full overflow-y-auto overflow-x-hidden">
             <Suspense fallback={<TabFallback />}>
               {/* highlightAnchor：安全概览 / 白名单目录等锚点（Header 徽章、命令面板、
                   HealthCard 胶囊、设置页安全卡跳转按钮都走这条链路定位高亮）。 */}
               <SecurityTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} />
             </Suspense>
           </TabsContent>
-          <TabsContent value="settings" className="app-content-box">
+          <TabsContent value="settings" keepMounted className="app-content-box h-full overflow-hidden">
             <Suspense fallback={<TabFallback />}>
-              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} sections={settingsSections} onActiveSectionChange={setSettingsActiveId} navSelectSignal={settingsNavSignal} onNavigate={handleNavigate} />
+              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} sections={settingsSections} onActiveSectionChange={setSettingsActiveId} onNavigate={handleNavigate} />
             </Suspense>
           </TabsContent>
-          <TabsContent value="log" className="h-full">
+          <TabsContent value="log" keepMounted className="h-full overflow-hidden">
             <Suspense fallback={<TabFallback />}>
               {/* highlightAnchor 传同一份 pendingAnchor：本页只认 "perf"（展开性能面板）。 */}
               <LogTab highlightAnchor={pendingAnchor} />
@@ -357,11 +359,11 @@ function AppContent() {
           {/* 终端常驻挂载：切 app tab 用 CSS 隐藏而非卸载，保活 SSH 会话。
               避免 TabsContent 在 active!==value 时 return null 卸载 TerminalTab、
               导致前端 sessions state 丢失需重新连接。复用 TerminalTab 内部已验证的 display:none 模式。 */}
-          <div className="h-full" style={{ display: activeTab === "terminal" ? "block" : "none" }}>
+          <TabsContent value="terminal" keepMounted className="h-full overflow-hidden">
             <Suspense fallback={<TabFallback />}>
               <TerminalTab status={status} />
             </Suspense>
-          </div>
+          </TabsContent>
           </main>
         </div>
       </Tabs>

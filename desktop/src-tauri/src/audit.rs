@@ -165,6 +165,95 @@ pub struct AuditPage {
     /// 每页条数（已 clamp 到 1..=500）
     #[serde(rename = "pageSize")]
     pub page_size: usize,
+    #[serde(rename = "toolNames")]
+    pub tool_names: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, serde::Deserialize)]
+pub struct AuditFilter {
+    pub query: Option<String>,
+    pub tool: Option<String>,
+    pub success: Option<bool>,
+}
+
+fn tool_search_label(tool: &str) -> &str {
+    match tool {
+        "read_files" => "读取文件",
+        "write_files" => "写入文件",
+        "edit_files" => "编辑文件",
+        "list_directory" => "列目录",
+        "list_allowed_roots" => "列出白名单",
+        "run_command" => "执行命令",
+        "get_command_output" => "拉取命令输出",
+        "stop_command" => "终止命令",
+        "search_files" => "搜索文件",
+        "batch" => "批量操作",
+        "create_directory" => "创建目录",
+        "remove_directory" => "删除目录",
+        "delete_files" => "删除文件",
+        "move_files" => "移动/重命名",
+        "copy_files" => "复制文件",
+        "notebook_edit" => "编辑笔记本",
+        "analyze_file" => "分析文件",
+        _ => tool,
+    }
+}
+
+fn filtered_slice(
+    all: &[AuditEntry],
+    start: usize,
+    size: usize,
+    filter: &AuditFilter,
+) -> (usize, Vec<AuditEntry>, Vec<String>) {
+    let query = filter.query.as_deref().unwrap_or("").trim().to_lowercase();
+    let tool = filter.tool.as_deref().unwrap_or("");
+    let mut tools = std::collections::BTreeSet::new();
+    if query.is_empty() && tool.is_empty() && filter.success.is_none() {
+        let names = all
+            .iter()
+            .map(|e| e.tool.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        return (all.len(), page_slice(all, start, size), names);
+    }
+    let mut total = 0;
+    let mut entries = Vec::new();
+    for entry in all.iter().rev() {
+        tools.insert(entry.tool.as_str());
+        if (!tool.is_empty() && entry.tool != tool)
+            || filter
+                .success
+                .is_some_and(|success| success != entry.success)
+        {
+            continue;
+        }
+        if !query.is_empty()
+            && !format!(
+                "{}\n{}\n{}\n{}\n{}\n{}",
+                entry.timestamp,
+                entry.tool,
+                tool_search_label(&entry.tool),
+                entry.params,
+                entry.source_ip.as_deref().unwrap_or(""),
+                entry.error.as_deref().unwrap_or("")
+            )
+            .to_lowercase()
+            .contains(&query)
+        {
+            continue;
+        }
+        if total >= start && entries.len() < size {
+            entries.push(entry.clone());
+        }
+        total += 1;
+    }
+    (
+        total,
+        entries,
+        tools.into_iter().map(str::to_owned).collect(),
+    )
 }
 
 /// 从已解析的全量条目里取一页（倒序：最新在前，与 read_recent_entries 旧行为一致）。
@@ -257,6 +346,15 @@ pub fn read_recent_tail(data_dir: &Path, n: usize) -> Result<Vec<AuditEntry>, St
 /// （mtime 或 len 变化）时才重新全量解析。clear_all / cleanup_old_entries 在改写文件后
 /// 主动失效缓存，避免返回 stale 数据。
 pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<AuditPage, String> {
+    read_filtered_page(data_dir, page, page_size, &AuditFilter::default())
+}
+
+pub fn read_filtered_page(
+    data_dir: &Path,
+    page: usize,
+    page_size: usize,
+    filter: &AuditFilter,
+) -> Result<AuditPage, String> {
     let page = page.max(1);
     let page_size = page_size.max(1);
     let log_path = data_dir.join("audit.log");
@@ -272,6 +370,7 @@ pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<Audit
             total: 0,
             page,
             page_size,
+            tool_names: vec![],
         });
     }
 
@@ -289,7 +388,7 @@ pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<Audit
     // 取数，两次之间若 clear_all/cleanup 把缓存置 None，`.as_ref().unwrap()` 会 panic 并在
     // 持锁时毒化互斥锁，导致后续所有 lock().unwrap() 跟着 panic。
     let cache = AUDIT_CACHE.get_or_init(|| Mutex::new(None));
-    let start = (page - 1) * page_size;
+    let start = (page - 1).saturating_mul(page_size);
 
     // 取页务必在持锁内完成，**只克隆本页需要的那几条**。
     //
@@ -300,13 +399,13 @@ pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<Audit
     //
     // 持锁时长反而变短：从“克隆全量”降为“克隆 page_size 条”。
     // 仍然是单次持锁完成判命中 + 取数，没有旧实现那种分两次持锁的 TOCTOU 窗口。
-    let hit: Option<(usize, Vec<AuditEntry>)> = {
+    let hit = {
         let g = cache.lock().unwrap();
         match g.as_ref() {
             Some((p, mt, ln, all))
                 if p.as_path() == log_path.as_path() && *mt == mtime && *ln == len =>
             {
-                Some((all.len(), page_slice(all, start, page_size)))
+                Some(filtered_slice(all, start, page_size, filter))
             }
             _ => None,
         }
@@ -314,14 +413,13 @@ pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<Audit
 
     // 未命中：释锁后做 IO 解析，先取本页再把全量移进缓存（避免旧实现那次额外的
     // `parsed.clone()`——那是第二次全量克隆）。
-    let (total, entries) = match hit {
+    let (total, entries, tool_names) = match hit {
         Some(v) => v,
         None => {
             let parsed = parse_all_entries(&log_path)?;
-            let total = parsed.len();
-            let entries = page_slice(&parsed, start, page_size);
+            let selected = filtered_slice(&parsed, start, page_size, filter);
             *cache.lock().unwrap() = Some((log_path.clone(), mtime, len, parsed));
-            (total, entries)
+            selected
         }
     };
 
@@ -330,6 +428,7 @@ pub fn read_page(data_dir: &Path, page: usize, page_size: usize) -> Result<Audit
         total,
         page,
         page_size,
+        tool_names,
     })
 }
 
@@ -645,6 +744,87 @@ pub fn read_usage_report(data_dir: &Path, days: u32) -> Result<TokenUsageReport,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chinese_tool_labels_are_searchable_as_displayed() {
+        let labels = [
+            ("list_directory", "列目录"),
+            ("move_files", "移动/重命名"),
+            ("get_command_output", "拉取命令输出"),
+            ("stop_command", "终止命令"),
+        ];
+        let entries: Vec<super::AuditEntry> = labels
+            .iter()
+            .map(|(tool, _)| {
+                serde_json::from_value(serde_json::json!({
+                    "timestamp": "2026-10-15T10:00:00+08:00", "tool": tool,
+                    "params": "", "success": true
+                }))
+                .unwrap()
+            })
+            .collect();
+        for (tool, label) in labels {
+            let filter = super::AuditFilter {
+                query: Some(label.into()),
+                ..Default::default()
+            };
+            let (total, result, _) = super::filtered_slice(&entries, 0, 50, &filter);
+            assert_eq!(total, 1, "{label}");
+            assert_eq!(result[0].tool, tool);
+        }
+    }
+
+    #[test]
+    fn filters_all_history_before_pagination_and_keeps_tool_choices() {
+        let entries: Vec<super::AuditEntry> = (0..8).map(|i| serde_json::from_value(serde_json::json!({
+            "timestamp": format!("2026-10-15T10:00:0{i}+08:00"),
+            "tool": if i % 2 == 0 { "read_files" } else { "run_command" },
+            "params": if i == 1 { "src/Legacy.ts" } else { "src/current.ts" },
+            "success": i % 2 == 0, "sourceIp": "10.0.0.8", "error": if i % 2 == 0 { None } else { Some("denied") }
+        })).unwrap()).collect();
+        let filter = super::AuditFilter {
+            query: Some("legacy".into()),
+            success: Some(false),
+            ..Default::default()
+        };
+        let (total, result, tools) = super::filtered_slice(&entries, 0, 2, &filter);
+        assert_eq!(total, 1);
+        assert_eq!(result[0].params, "src/Legacy.ts");
+        assert_eq!(tools, vec!["read_files", "run_command"]);
+        let filter = super::AuditFilter {
+            success: Some(false),
+            ..Default::default()
+        };
+        let (total, result, _) = super::filtered_slice(&entries, 2, 2, &filter);
+        assert_eq!(total, 4);
+        assert_eq!(
+            result
+                .iter()
+                .map(|e| e.timestamp.as_str())
+                .collect::<Vec<_>>(),
+            vec!["2026-10-15T10:00:03+08:00", "2026-10-15T10:00:01+08:00"]
+        );
+        let filter = super::AuditFilter {
+            query: Some("读取文件".into()),
+            ..Default::default()
+        };
+        assert_eq!(super::filtered_slice(&entries, 0, usize::MAX, &filter).0, 4);
+        let filter = super::AuditFilter {
+            query: Some("10.0.0.8".into()),
+            tool: Some("run_command".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::filtered_slice(&entries, 0, usize::MAX, &filter)
+                .1
+                .len(),
+            4
+        );
+        let filter = super::AuditFilter {
+            query: Some("missing".into()),
+            ..Default::default()
+        };
+        assert_eq!(super::filtered_slice(&entries, 0, 50, &filter).0, 0);
+    }
     use super::*;
 
     /// cleanup_old_entries 必须返回**实际删除条数**，且无过期条目时返回 0 并

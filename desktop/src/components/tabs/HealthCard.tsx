@@ -48,13 +48,14 @@ export function HealthCard({
 
   const running = status?.running ?? false;
   const s = live?.stats;
-  const rate = s?.successRate ?? 100;
+  const rate = s?.successRate ?? 0;
+  const hasSamples = (s?.totalRequests ?? 0) > 0;
 
   // 入场数字滚动（仅首次挂载，后续 5s 轮询直接跟随终值）。JS 驱动的动画
   // CSS 全局兜底管不到，所以要自己查 reduced-motion。
   const reduced = usePrefersReducedMotion();
-  const rateAnim = useCountUp(rate, { enabled: running && !reduced, duration: 900 });
-  const rateText = running ? `成功率 ${rateAnim.toFixed(1)}%` : "服务未运行";
+  const rateAnim = useCountUp(rate, { enabled: running && hasSamples && !reduced, duration: 900 });
+  const rateText = !running ? "服务未运行" : !hasSamples ? "暂无调用 · 待评估" : `成功率 ${rateAnim.toFixed(1)}%`;
   const ratePop = usePopClass(rateText);
 
   // 「推荐状态 ✓」只在四道基础防线全开时给——不能因为「大部分开了」就撞绿。
@@ -88,7 +89,7 @@ export function HealthCard({
       </div>
 
       <div className="mt-1.5 flex items-center gap-3.5">
-        <HealthRing rate={rate} running={running} />
+        <HealthRing rate={rate} running={running} hasSamples={hasSamples} />
         <div className="min-w-0">
           <div className="text-[12.5px] font-bold">
             <span className={ratePop}>{rateText}</span>
@@ -96,7 +97,7 @@ export function HealthCard({
           <div className="mt-0.5 text-[10.5px] leading-relaxed text-muted-foreground">
             限流命中 {s?.rateLimitHits ?? 0} · 越权拒绝 {s?.authDenies ?? 0}
             <br />
-            失败 {(s?.totalErrors ?? 0).toLocaleString("en-US")} · 审计{" "}
+            本次运行 · 失败 {(s?.totalErrors ?? 0).toLocaleString("en-US")} · 审计{" "}
             {(s?.auditCount ?? 0).toLocaleString("en-US")} 条
           </div>
         </div>
@@ -204,13 +205,13 @@ function Pill({
  * 原版的轨道是 `rgba(255,255,255,.18)`、中心字是 `#fff`，那是为深色 hero 背景调的，
  * 压在白底卡上看不见。现改为 token 取色，自动适应浅/深两个主题。
  */
-function HealthRing({ rate, running }: { rate: number; running: boolean }) {
+function HealthRing({ rate, running, hasSamples }: { rate: number; running: boolean; hasSamples: boolean }) {
   const C = 2 * Math.PI * 24;
-  const pct = running ? Math.min(100, Math.max(0, rate)) : 0;
+  const pct = running && hasSamples ? Math.min(100, Math.max(0, rate)) : 0;
   const offset = C * (1 - pct / 100);
   const label = !running
     ? "停"
-    : rate >= 99.5
+    : !hasSamples ? "—" : rate >= 99.5
       ? "优"
       : rate >= 98
         ? "良"

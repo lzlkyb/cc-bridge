@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useAppHidden } from "../lib/appVisibility";
 
 interface CountUpOptions {
   /** 入场动画时长(ms)，默认 700 */
@@ -14,11 +15,13 @@ interface CountUpOptions {
  * 用于 Hero 指标数字入场，提升「质感」。
  */
 export function useCountUp(target: number, { duration = 700, enabled = true }: CountUpOptions = {}): number {
+  const hidden = useAppHidden();
+  const animate = enabled && !hidden;
   const [val, setVal] = useState(enabled ? 0 : target);
   const isFirst = useRef(true);
 
   useEffect(() => {
-    if (!enabled) {
+    if (!animate) {
       setVal(target);
       return;
     }
@@ -44,7 +47,7 @@ export function useCountUp(target: number, { duration = 700, enabled = true }: C
     }
     // 后续更新：直接跟随，不重播
     setVal(target);
-  }, [target, enabled, duration]);
+  }, [target, animate, duration]);
 
   return val;
 }

@@ -36,6 +36,8 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   // 壳层是命令执行的参数、留在设置页安全卡（卡级锚点：toggle-shell 已随开关搬去安全页）。
   { id: "set-shelltype", label: "命令执行壳层", icon: "terminal", group: "设置 · 安全", tab: "settings", anchor: "set-security", keywords: "shell cmd bash sh git bash 壳层" },
   { id: "set-remote-tls", label: "HTTPS 远程访问", icon: "lock", group: "设置 · 安全", tab: "settings", anchor: "remote-tls", keywords: "https tls ssl 自签 证书 指纹 远程 跨网 封禁 401" },
+  { id: "set-security-links", label: "安全权限与目录管理", icon: "shield", group: "设置 · 安全", tab: "settings", anchor: "set-security", keywords: "白名单 只读 权限 路径 目录 命令执行" },
+  { id: "set-mcpbridge", label: "外挂 MCP 服务器", icon: "plug", group: "设置 · 外挂 MCP 桥", tab: "settings", anchor: "set-mcpbridge", keywords: "server 工具 导入 探测 cwd 远程工作目录 启动命令" },
 
   { id: "set-backup", label: "写操作自动备份", icon: "history", group: "设置 · 备份与审计", tab: "settings", anchor: "backup", keywords: "backup 备份 快照" },
   { id: "set-audit", label: "审计日志", icon: "file", group: "设置 · 备份与审计", tab: "settings", anchor: "audit", keywords: "audit 日志 记录 留痕" },
@@ -59,7 +61,7 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-install", label: "安装与快捷方式", icon: "package", group: "设置 · 其它", tab: "settings", anchor: "set-install", keywords: "install 快捷方式 桌面 安装目录" },
   { id: "set-config", label: "导入 / 导出 / 重置配置", icon: "download", group: "设置 · 其它", tab: "settings", anchor: "set-config", keywords: "import export reset 备份配置 恢复默认" },
   { id: "set-about", label: "版本信息 / 检查更新", icon: "info", group: "设置 · 其它", tab: "settings", anchor: "set-about", keywords: "version update 更新 版本 更新历史 changelog" },
-  { id: "set-terminal", label: "终端风格与状态栏", icon: "sliders", group: "设置 · 其它", tab: "settings", anchor: "set-terminal", keywords: "terminal preset 终端风格 starship 状态栏 注入 探测 远端 shell" },
+  { id: "set-terminal", label: "终端风格与状态栏", icon: "sliders", group: "设置 · 其它", tab: "settings", anchor: "set-terminal", keywords: "terminal preset 终端风格 starship 状态栏 注入 探测 远端 shell 字体 字号 font 明暗 配色 主题 tmux" },
 
   // 安全页两张卡带卡级锚点（SecurityTab 的定位 effect 直接按 id 命中）。
   { id: "set-roots", label: "白名单目录与配置组", icon: "folder", group: "安全页", tab: "security", anchor: "set-roots", keywords: "root 根目录 白名单 配置组 项目切换" },

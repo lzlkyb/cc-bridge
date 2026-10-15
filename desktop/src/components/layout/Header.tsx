@@ -25,6 +25,7 @@ function HeaderImpl({
   onOpenSearch,
   collapsed,
   onToggleCollapse,
+  location,
 }: {
   status?: StaticStatus;
   onChanged?: () => void;
@@ -34,6 +35,7 @@ function HeaderImpl({
   /** 侧栏当前是否处于图标栏（收起）态。 */
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  location?: string;
 }) {
   const [dark, setDark] = useState(() => getStoredTheme() === "dark");
   const [busy, setBusy] = useState(false);
@@ -91,14 +93,15 @@ function HeaderImpl({
             variant="ghost"
             size="icon"
             onClick={onToggleCollapse}
-            title={collapsed ? "展开侧栏" : "收起侧栏"}
-            aria-label={collapsed ? "展开侧栏" : "收起侧栏"}
+            title={collapsed ? "展开工作区导航" : "收起工作区导航"}
+            aria-label={collapsed ? "展开工作区导航" : "收起工作区导航"}
             aria-expanded={!collapsed}
           >
             {/* 图标集里只有 chevronLeft（无 chevronRight），收起态靠翻转表达 */}
             <Icon name="chevronLeft" size={16} className={collapsed ? "rotate-180" : ""} />
           </Button>
         )}
+        <span className="max-w-40 truncate text-xs font-medium text-muted-foreground" data-tauri-drag-region>{location}</span>
         {securityBadges.filter((b) => b.show).map((b) => (
           <button
             key={b.key}

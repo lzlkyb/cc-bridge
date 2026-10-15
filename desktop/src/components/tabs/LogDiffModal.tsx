@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import { createPortal } from "react-dom";
+import { Modal } from "../ui/Modal";
+import { useDialogDismiss } from "../../hooks/useDialogDismiss";
 import { invoke } from "../../lib/tauri";
 import { friendlyAuditError } from "../../lib/auditError";
 import type { AuditEntry, FileDiffResult } from "../../lib/types";
@@ -14,7 +15,9 @@ import { Skeleton } from "../ui/Skeleton";
  * 各自带 useEffect 与自成一体的弹窗生命周期，混在详情面板里让那个文件既超
  * 300 行红线、又逼近「单文件 8 个 useState/useEffect」的上限。
  */
-export function LogDiffModal({ entry, onClose }: { entry: AuditEntry; onClose: () => void }) {
+export function LogDiffModal({ entry, onClose: onClosed }: { entry: AuditEntry; onClose: () => void }) {
+  const { closing, dismiss } = useDialogDismiss(onClosed);
+  const onClose = () => dismiss();
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<FileDiffResult | null>(null);
@@ -39,26 +42,10 @@ export function LogDiffModal({ entry, onClose }: { entry: AuditEntry; onClose: (
     };
   }, [entry]);
 
-  // Esc 关闭（与项目内 Modal/ConfirmDialog 行为对齐）。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   const fileName = entry.targetPath?.split(/[\\/]/).pop() ?? "文件";
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        className="animate-scale-in flex h-[80vh] w-full max-w-3xl flex-col rounded-xl modal-surface"
-        onClick={(e) => e.stopPropagation()}
-      >
+  return (
+    <Modal open={!closing} onClose={onClose} className="flex h-[80vh] w-full max-w-3xl flex-col rounded-xl modal-surface" zIndex={50}>
         <div className="flex items-center justify-between border-b px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-semibold">
             <Icon name="history" size={16} className="text-primary" />
@@ -116,8 +103,6 @@ export function LogDiffModal({ entry, onClose }: { entry: AuditEntry; onClose: (
             </pre>
           )}
         </div>
-      </div>
-    </div>,
-    document.body,
+    </Modal>
   );
 }

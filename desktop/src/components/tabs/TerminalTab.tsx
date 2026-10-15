@@ -239,7 +239,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
           {/* 全部会话都挂载，仅当前可见；后台会话继续收输出 */}
           <div className="relative min-h-0 flex-1">
             {sessions.length === 0 ? (
-              <TerminalEmptyState collapsed={collapsed} onExpand={() => setCollapsed(false)} />
+              <TerminalEmptyState collapsed={collapsed} onExpand={() => setCollapsed(false)} connections={connections} connectingId={ssh.connectingId} onNew={() => { setEditing(null); setShowDialog(true); }} onConnect={connect} />
             ) : (
               sessions.map((s) => (
                 // 🔴 key 用 tabId 而不是 sessionId：重连会换 sessionId，key 一变组件就重挂、

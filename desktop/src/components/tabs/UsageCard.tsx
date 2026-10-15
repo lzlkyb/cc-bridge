@@ -3,6 +3,7 @@ import { invoke } from "../../lib/tauri";
 import type { TokenUsageDay, TokenUsageReport } from "../../lib/types";
 import { fmtTokens, shortDateKey } from "../../lib/utils";
 import { NavTarget } from "../ui/NavTarget";
+import { useAppHidden } from "../../lib/appVisibility";
 
 /**
  * Bento 行2 的「Token 用量（估算）」卡（4/12 列，方案 B 布局的右侧新卡）。
@@ -20,10 +21,12 @@ export function UsageCard({
 }: {
   onNavigate?: (tab: string, anchor?: string) => void;
 }) {
+  const hidden = useAppHidden();
   const { data } = useQuery<TokenUsageReport>({
-    queryKey: ["token-usage"],
+    queryKey: ["token-usage", 7],
     queryFn: () => invoke<TokenUsageReport>("get_token_usage", { days: 7 }),
-    refetchInterval: 30_000,
+    enabled: !hidden,
+    refetchInterval: hidden ? false : 30_000,
   });
 
   const days = data?.days ?? [];

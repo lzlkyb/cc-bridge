@@ -35,19 +35,20 @@ export function useFocusTrap(
     const node = ref.current;
     if (!enabled || !node) return;
     const prev = document.activeElement as HTMLElement | null;
-    const focusables = node.querySelectorAll<HTMLElement>(
+    const focusables = () => Array.from(node.querySelectorAll<HTMLElement>(
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    );
-    focusables[0]?.focus();
+    )).filter(el => !el.matches(":disabled") && !el.closest("[inert]") && el.getClientRects().length > 0);
+    focusables()[0]?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && escapeRef.current) {
         e.stopPropagation();
         escapeRef.current();
         return;
       }
-      if (e.key !== "Tab" || focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
+      const controls = focusables();
+      if (e.key !== "Tab" || controls.length === 0) return;
+      const first = controls[0];
+      const last = controls[controls.length - 1];
       if (e.shiftKey && document.activeElement === first) {
         e.preventDefault();
         last.focus();

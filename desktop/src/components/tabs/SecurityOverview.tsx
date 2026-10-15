@@ -7,6 +7,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { InlineNotice } from "../ui/notice";
 import { ToggleRow } from "../ui/ToggleRow";
 import { RiskBand } from "../ui/RiskBand";
+import { Collapse } from "../ui/Collapse";
 
 /**
  * 安全概览卡（方案 A 顶部）。
@@ -99,8 +100,7 @@ export function SecurityOverview({
       </CardHeader>
       <CardContent className="space-y-3">
         <RiskBand status={status} />
-        {open && (
-          <>
+        <Collapse open={open}>
             <ToggleRow
               label="路径白名单校验"
               danger={status ? !status.whitelistEnabled : false}
@@ -136,8 +136,7 @@ export function SecurityOverview({
               saved={savedKey === "shell"}
               last
             />
-          </>
-        )}
+        </Collapse>
       </CardContent>
 
       {confirmWhitelistOff && (

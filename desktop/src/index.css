@@ -372,10 +372,10 @@ body {
 
 /* Tab 切换入场：新面板从右微移入 + 淡入（替代硬切；退场由父级卸载驱动即时消失，可接受）*/
 @keyframes tab-in {
-  from { opacity: 0; transform: translateX(10px); }
-  to   { opacity: 1; transform: translateX(0); }
+  from { opacity: .6; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
-.animate-tab-in { animation: tab-in 0.22s cubic-bezier(0.16, 1, 0.3, 1); }
+.animate-tab-in { animation: tab-in 0.18s cubic-bezier(0.16, 1, 0.3, 1); }
 
 /* 按钮 ripple 水波（pointer 位置）*/
 .ripple {

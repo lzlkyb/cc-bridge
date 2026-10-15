@@ -1,12 +1,13 @@
-import { useRef, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { type ReactNode } from "react";
 import { Button } from "./button";
 import { Icon } from "./icon";
-import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { Modal } from "./Modal";
+import { useDialogDismiss } from "../../hooks/useDialogDismiss";
 
 export type ConfirmDialogVariant = "default" | "destructive";
 
 interface ConfirmDialogProps {
+  open?: boolean;
   title: string;
   description?: ReactNode;
   /** 额外内容（风险提示条、复选框、清单等），渲染在 description 和按钮之间。 */
@@ -35,6 +36,7 @@ interface ConfirmDialogProps {
  * 一律走 createPortal(document.body)，避免祖先层叠上下文影响 `fixed inset-0` 定位。
  */
 export function ConfirmDialog({
+  open = true,
   title,
   description,
   children,
@@ -46,28 +48,9 @@ export function ConfirmDialog({
   onCancel,
   onConfirm,
 }: ConfirmDialogProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  // 用 ref 拿最新的 onCancel，而不是把它入 effect 依赖：调用方普遍传内联箭头函数，
-  // 入依赖会让 effect 随父组件每次重渲染重跑，反复抢焦点到第一个按钮。
-  const cancelRef = useRef(onCancel);
-  cancelRef.current = onCancel;
-  // 焦点陷阱 + 关闭后焦点归还（单套 UI 始终启用，提升键盘可达性）。
-  // 实现抽到了 useFocusTrap（与 Modal 共用）；Esc 走 node 级 stopPropagation——
-  // 嵌在 Modal 里时 Modal 的 Esc 监听挂在 window 上，不拦住的话按一下 Esc
-  // 关掉的是父弹框，确认框自己的 state 反而残留下来。
-  useFocusTrap(dialogRef, { onEscape: () => cancelRef.current() });
-
-  return createPortal(
-    <div
-      className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm dlg-mask"
-      style={{ zIndex }}
-      onClick={onCancel}
-    >
-      <div
-        ref={dialogRef}
-        className="animate-scale-in mx-4 w-full max-w-md rounded-xl modal-surface p-5 dlg"
-        onClick={(e) => e.stopPropagation()}
-      >
+  const { closing, dismiss } = useDialogDismiss(onCancel, open);
+  return (
+    <Modal open={open && !closing} ariaLabel={title} onClose={() => dismiss()} zIndex={zIndex} className="w-full max-w-md rounded-xl modal-surface p-5 dlg">
         <h4
           className={`mb-2 flex items-center gap-2 text-base font-semibold ${
             variant === "destructive" ? "text-destructive-ink" : ""
@@ -83,20 +66,18 @@ export function ConfirmDialog({
         {description && <p className="mb-3 text-sm text-muted-foreground">{description}</p>}
         {children}
         <div className="mt-4 flex justify-end gap-2 dlg-act">
-          <Button variant="outline" size="sm" onClick={onCancel}>
+          <Button variant="outline" size="sm" onClick={() => dismiss()}>
             {cancelLabel}
           </Button>
           <Button
             variant={variant === "destructive" ? "destructive" : "default"}
             size="sm"
-            disabled={confirmDisabled}
-            onClick={onConfirm}
+            disabled={confirmDisabled || closing}
+            onClick={() => dismiss(onConfirm)}
           >
             {confirmLabel ?? "确定"}
           </Button>
         </div>
-      </div>
-    </div>,
-    document.body,
+    </Modal>
   );
 }

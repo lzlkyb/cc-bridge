@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { useViewActive } from "./viewActivity";
 
 /**
  * 全局窗口可见性 store。
@@ -58,7 +59,9 @@ export function isAppHidden(): boolean {
 export function useAppHidden(): boolean {
   // 第三个参数（getServerSnapshot）固定返回 false：本应用无 SSR，但组件测试里可能没有
   // document，给个安全默认值避免报错。
-  return useSyncExternalStore(subscribeAppVisibility, isAppHidden, () => false);
+  const hidden = useSyncExternalStore(subscribeAppVisibility, isAppHidden, () => false);
+  const active = useViewActive();
+  return hidden || !active;
 }
 
 let initialized = false;

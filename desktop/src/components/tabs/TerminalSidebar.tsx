@@ -3,6 +3,7 @@ import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import type { SshConnection } from "../../lib/types";
 import { ConnectionListItem, type SshSessionRef } from "./TerminalConnectionItem";
+import { useSidebarWidth } from "../../hooks/useSidebarWidth";
 
 /** 连接数达到这个量才显示搜索框。 */
 const SEARCH_THRESHOLD = 6;
@@ -68,13 +69,15 @@ export function TerminalSidebar({
     );
   }, [connections, query, showSearch]);
 
-  const width = collapsed ? 48 : 288;
+  const sizing = useSidebarWidth();
+  const width = collapsed ? 48 : sizing.width;
   return (
     <div
-      className="flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-300 ease-out"
+      className="terminal-sidebar relative flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200 ease-out"
       style={{ width }}
     >
       {/* 固定宽 inner：外层 transition 宽度时 inner 不重排，被 overflow-hidden 裁切做擦除动画 */}
+      {!collapsed && <button type="button" role="separator" aria-label="调整 SSH 连接列表宽度" aria-orientation="vertical" aria-valuemin={180} aria-valuemax={360} aria-valuenow={sizing.width} className="terminal-side-resizer" title="拖动调宽；方向键微调，双击恢复" onPointerDown={sizing.start} onPointerMove={sizing.move} onPointerUp={sizing.end} onPointerCancel={sizing.end} onDoubleClick={() => sizing.resize(240)} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); sizing.resize(sizing.width + (e.key === "ArrowLeft" ? -10 : 10)); } }} />}
       <div className="flex h-full flex-col" style={{ width }}>
         {collapsed ? (
           <CollapsedRail
@@ -100,7 +103,8 @@ export function TerminalSidebar({
                 <button
                   type="button"
                   onClick={() => onSetCollapsed(true)}
-                  title="收起侧栏 (Ctrl/Cmd+Shift+B)"
+                  title="收起 SSH 连接列表 (Ctrl/Cmd+Shift+B)"
+                  aria-label="收起 SSH 连接列表"
                   className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   <Icon name="chevronLeft" size={16} />

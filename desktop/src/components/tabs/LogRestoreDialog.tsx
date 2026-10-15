@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
-import { createPortal } from "react-dom";
+import { useState } from "react";
+import { Modal } from "../ui/Modal";
+import { useDialogDismiss } from "../../hooks/useDialogDismiss";
 import { invoke } from "../../lib/tauri";
 import { friendlyAuditError } from "../../lib/auditError";
 import type { AuditEntry } from "../../lib/types";
@@ -12,21 +13,12 @@ import { useToast } from "../ui/toast";
  *
  * 2026-09-16：从 LogDetailPanel.tsx 抽出成独立文件（原因见 LogDiffModal）。
  */
-export function LogRestoreDialog({ entry, onClose }: { entry: AuditEntry; onClose: () => void }) {
+export function LogRestoreDialog({ entry, onClose: onClosed }: { entry: AuditEntry; onClose: () => void }) {
+  const { closing, dismiss } = useDialogDismiss(onClosed);
+  const onClose = () => dismiss();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const { toast } = useToast();
-
-  // Esc = 取消（危险操作确认的最低预期）；执行中（busy）不响应，避免误关。
-  // 必须在下方 early return 之前声明（rules-of-hooks）。
-  useEffect(() => {
-    if (busy) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, busy]);
 
   if (!entry.backupPath || !entry.targetPath) return null;
   const isDelete = entry.tool === "delete_files";
@@ -48,15 +40,8 @@ export function LogRestoreDialog({ entry, onClose }: { entry: AuditEntry; onClos
     }
   };
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm dlg-mask"
-      onClick={onClose}
-    >
-      <div
-        className="animate-scale-in mx-4 w-full max-w-md rounded-xl modal-surface p-5 dlg"
-        onClick={(e) => e.stopPropagation()}
-      >
+  return (
+    <Modal open={!closing} onClose={() => { if (!busy) onClose(); }} closeOnOverlay={!busy} className="w-full max-w-md rounded-xl modal-surface p-5 dlg" zIndex={50}>
         <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive-ink">
           <Icon name="restore" size={18} />
           {isDelete ? "恢复被删文件？" : "确认回滚到操作前？"}
@@ -90,8 +75,6 @@ export function LogRestoreDialog({ entry, onClose }: { entry: AuditEntry; onClos
             {isDelete ? "恢复文件" : "确认还原"}
           </Button>
         </div>
-      </div>
-    </div>,
-    document.body,
+    </Modal>
   );
 }

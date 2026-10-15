@@ -40,9 +40,6 @@ const MAX_HOOKS = 8;
 const BASELINE = {
   // ── 行数超标 ──
   "src/components/backup/VersionHistoryModal.tsx": { lines: 575, hooks: 11 },
-  // 2026-10-13：487 → 351（日志页 a11y 批次：导出菜单/行渲染拆 LogExportMenu、LogRow，
-  // 翻页重置与工具名独立查询收进组件内联 helper）。
-  "src/components/tabs/LogTab.tsx": { lines: 351, hooks: 11 },
   // 2026-10-13：`ConnectTab.tsx` 已从本表**移除**。它原本登记 470 行 / 13 hooks，
   // 本次（连接页评审修复 ⑤）把向导状态整体下沉 `hooks/useConnectGuideState.ts`、
   // ConnectGuide 独立成 `connect/ConnectGuide.tsx` 后降到 168 行 / 2 hooks，
@@ -62,7 +59,7 @@ const BASELINE = {
   // 后降到 180 行、1 个 hook，重新落在 300 行 / 8 状态的默认上限之内——不需要豁免了。
   // 2026-09-16：325 → 303（类型契约→lib/transferTypes.ts；覆盖提问编排→useTransferPrompt.ts）。
   "src/components/tabs/useSshTransfer.ts": { lines: 303 },
-  "src/components/modals/CommandPalette.tsx": { lines: 345, hooks: 9 },
+  "src/components/modals/CommandPalette.tsx": { lines: 343, hooks: 9 },
   // 2026-10-13：`FileControlCard.tsx` 已从本表**移除**。它原本登记 301 行（贴线），
   // 本次把备份/限流/后台命令三节改成 SumRow 摘要行（渐进披露）、展开区拆到
   // `tabs/filecontrol/`（BackupSection 210 行 / LimitSections 83 行）后降到 117 行，

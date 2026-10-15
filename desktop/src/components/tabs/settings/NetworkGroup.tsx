@@ -75,6 +75,8 @@ export function NetworkGroup({
         toast("端口已保存", "success");
       }
       onSaved();
+    } catch (e) {
+      toast(`保存失败：${String(e)}`, "error");
     } finally {
       setSaving(false);
     }
@@ -90,14 +92,16 @@ export function NetworkGroup({
         <SettingsRow
           label="端口"
           control={
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <Input
                 type="number"
                 min={1}
                 max={65535}
                 value={port}
                 onChange={(e) => setPort(Number(e.target.value))}
-                className={`max-w-[120px] ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                className={`w-28! flex-none ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
+                aria-label="监听端口"
+                aria-invalid={invalid}
               />
               {/* 原先旁边还有一个常驻的「无更改」文字，已删：按钮 disabled 表达的是
                   同一件事。信息没丢，搬到了 title（悬停仍能知道为何不可点）。 */}
@@ -107,7 +111,7 @@ export function NetworkGroup({
                 isLoading={saving}
                 loadingText="保存中..."
                 size="sm"
-                className="shrink-0 whitespace-nowrap"
+                className="min-w-24 shrink-0 whitespace-nowrap"
                 title={invalid ? "端口超出 1 – 65535" : dirty ? undefined : "端口未修改"}
               >
                 {dirty ? "保存并重启" : "保存"}

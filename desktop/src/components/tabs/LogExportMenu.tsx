@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "../../lib/tauri";
 import { toolLabel, formatDurationMs, formatVersion, copyText } from "../../lib/utils";
 import { APP_INFO } from "../../lib/about";
+import type { AuditFilter } from "../../lib/auditQuery";
 import type { AuditEntry, StatusResponse } from "../../lib/types";
 import { useToast } from "../ui/toast";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { perfSummaryLine } from "../../lib/logFormat";
+import { useViewActive } from "../../lib/viewActivity";
 
 interface LogExportMenuProps {
   /** 当前筛选结果（导出范围）。空数组时菜单项整体 disabled。 */
@@ -14,6 +16,8 @@ interface LogExportMenuProps {
   /** 当前页未筛选条数（诊断报告里「本页 N / 总计 M」用）。 */
   entriesCount: number;
   total: number;
+  filter: AuditFilter;
+  pending: boolean;
 }
 
 interface ExportItem {
@@ -23,33 +27,30 @@ interface ExportItem {
   run: () => void | Promise<void>;
 }
 
-/**
- * 审计日志导出下拉（受控）。
- *
- * 原实现是 hover-only 浮层（CSS group-hover），键盘完全不可达、鼠标用户也未必
- * 发现「导出 JSON 主按钮下面还藏着两个格式」（impeccable critique P1）。改成
- * 受控下拉：触发器 aria-haspopup/aria-expanded，浮层 role=menu，↑/↓ 移动高亮、
- * Enter 确认、Esc 关闭并归还焦点；与原「独立导出 JSON 按钮」合并为菜单第一项。
- *
- * 导出逻辑（JSON/CSV/诊断报告）从 LogTab 整体迁入——它们只为这个菜单服务，
- * 搬走后 LogTab 才能落回体量上限内（棘轮 487 只许变小）。
- */
-export function LogExportMenu({ filtered, entriesCount, total }: LogExportMenuProps) {
+/** 导出范围由用户明确选择；全部/匹配结果从后端一次快照读取。 */
+export function LogExportMenu({ filtered, entriesCount, total, filter, pending }: LogExportMenuProps) {
   const [open, setOpen] = useState(false);
+  const active = useViewActive();
+  const [scope, setScope] = useState("page");
+  const [busy, setBusy] = useState(false);
   /** 键盘高亮项（↑/↓ 移动，Enter 确认）。-1 = 无高亮。 */
   const [activeIdx, setActiveIdx] = useState(-1);
   const boxRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
 
-  const empty = filtered.length === 0;
+  const empty = pending || busy || (scope === "page" ? filtered.length === 0 : scope === "results" && total === 0);
+  const scopeLabel = scope === "page" ? `当前页 ${filtered.length} 条` : scope === "results" ? `匹配结果 ${total} 条` : "全部历史（忽略筛选）";
+  const loadEntries = () => scope === "page" ? Promise.resolve(filtered) : invoke<AuditEntry[]>("get_audit_export", { filter: scope === "results" ? filter : null });
   const disabledTitle = "当前没有可导出的日志";
 
-  const handleExport = (format: "json" | "csv" = "json") => {
+  const handleExport = async (format: "json" | "csv" = "json") => {
     if (empty) {
       toast("当前没有可导出的日志", "info");
       return;
     }
+    setBusy(true);
     try {
+      const filtered = await loadEntries();
       if (format === "csv") {
         const header = "时间,工具,工具名,参数,来源IP,耗时(ms),状态,错误\n";
         const rows = filtered.map((e) => {
@@ -90,14 +91,16 @@ export function LogExportMenu({ filtered, entriesCount, total }: LogExportMenuPr
       toast(`已导出 ${filtered.length} 条审计日志（${format.toUpperCase()}）`, "success");
     } catch (e) {
       toast(`导出失败：${String(e)}`, "error");
-    }
+    } finally { setBusy(false); }
   };
 
   // O3：导出诊断报告——基于已有的日志聚合拼 Markdown（版本 + 性能摘要 + 按工具耗时 + 错误列表），
   // 下载为 .md 文件同时复制到剪贴板，方便直接粘进 issue/反馈。LogTab 不持有 status，这里 invoke 一次拿版本。
   const handleExportDiagnostic = async () => {
     if (empty) return;
+    setBusy(true);
     try {
+      const filtered = await loadEntries();
       const status = await invoke<StatusResponse>("get_status");
       const byTool = new Map<string, { count: number; totalMs: number; errors: number }>();
       for (const e of filtered) {
@@ -126,7 +129,7 @@ export function LogExportMenu({ filtered, entriesCount, total }: LogExportMenuPr
         "",
         `- 版本：${formatVersion(status?.version)}`,
         `- 导出时间：${new Date().toLocaleString()}`,
-        `- 范围：当前筛选结果 ${filtered.length} 条（本页 ${entriesCount} / 总计 ${total}）`,
+        `- 范围：${scopeLabel}，实际导出 ${filtered.length} 条（本页 ${entriesCount} / 匹配 ${total}）`,
         `- audit.log 位置：安装目录下的数据目录内（设置页「安装与快捷方式」可查看安装目录）`,
         "",
         "## 性能摘要",
@@ -161,7 +164,7 @@ export function LogExportMenu({ filtered, entriesCount, total }: LogExportMenuPr
       );
     } catch (e) {
       toast(`导出诊断报告失败：${e}`, "error");
-    }
+    } finally { setBusy(false); }
   };
 
   const items: ExportItem[] = [
@@ -181,13 +184,18 @@ export function LogExportMenu({ filtered, entriesCount, total }: LogExportMenuPr
     if (refocus) boxRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
   };
 
-  // 展开期：点击外部关闭（捕获阶段，与 ui/Menu 同款）+ ↑/↓/Enter/Esc 键盘导航。
   useEffect(() => {
-    if (!open) return;
+    if (!active) { setOpen(false); setActiveIdx(-1); }
+  }, [active]);
+
+  // 保活的隐藏页面必须解绑捕获监听，避免拦截其他页面按键或触发隐藏导出。
+  useEffect(() => {
+    if (!open || !active) return;
     const onDown = (e: MouseEvent) => {
       if (!boxRef.current?.contains(e.target as Node)) close();
     };
     const onKey = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLSelectElement) return;
       const list = itemsRef.current;
       if (e.key === "Escape") {
         e.stopPropagation(); // 别让同一下 Esc 顺手关掉底下的弹窗
@@ -213,13 +221,15 @@ export function LogExportMenu({ filtered, entriesCount, total }: LogExportMenuPr
       window.removeEventListener("mousedown", onDown, true);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [open, activeIdx, empty]);
+  }, [open, activeIdx, empty, active]);
 
   return (
     <div ref={boxRef} className="relative">
       <Button
         variant="outline"
         size="sm"
+        disabled={pending || busy}
+        aria-busy={busy}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => {
@@ -238,6 +248,11 @@ export function LogExportMenu({ filtered, entriesCount, total }: LogExportMenuPr
           role="menu"
           className="animate-scale-in absolute right-0 top-full z-20 mt-1 flex min-w-[190px] origin-top-right flex-col rounded-md border bg-popover p-1 shadow-pop"
         >
+          <label className="mb-1 border-b px-2 py-2 text-xs text-muted-foreground">导出范围
+            <select aria-label="导出范围" className="mt-1 w-full rounded border bg-popover p-1.5 text-xs text-foreground" value={scope} onChange={e => setScope(e.target.value)}>
+              <option value="page">当前页 · {filtered.length} 条</option><option value="results">当前筛选结果 · {total} 条</option><option value="all">全部历史（忽略筛选）</option>
+            </select>
+          </label>
           {items.map((item, i) => (
             <button
               key={item.key}

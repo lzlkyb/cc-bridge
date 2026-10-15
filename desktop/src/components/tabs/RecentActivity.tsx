@@ -38,7 +38,7 @@ export function RecentActivity({ onViewAll }: { onViewAll?: () => void }) {
           对比度偏高、显得很“硬”；与卡内其它分隔处理保持一致。 */}
       <div className="mb-2 h-px bg-gradient-to-r from-transparent via-white/[0.14] to-transparent" />
       <div className="flex items-center text-[9px] font-bold tracking-[0.12em] opacity-90">
-        最近活动
+        最近活动 · 历史记录
         {onViewAll && (
           <button
             type="button"

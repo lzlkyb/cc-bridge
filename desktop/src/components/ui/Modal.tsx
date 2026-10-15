@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { useViewActive } from "../../lib/viewActivity";
 
 interface ModalProps {
   open: boolean;
@@ -17,6 +18,7 @@ interface ModalProps {
   animation?: "scale" | "fade";
   /** 层级，默认 1000（原 UpdateNotesDialog/VersionHistoryModal 用 1000，Dialog/ConfirmModal 用 50） */
   zIndex?: number;
+  ariaLabel?: string;
 }
 
 /**
@@ -41,67 +43,55 @@ export function Modal({
   closeOnOverlay = true,
   animation = "scale",
   zIndex = 1000,
+  ariaLabel,
 }: ModalProps) {
-  const [mounted, setMounted] = useState(open);
+  const active = useViewActive();
+  const visible = open && active;
+  const [mounted, setMounted] = useState(visible);
   const [entered, setEntered] = useState(false);
   const reduced = usePrefersReducedMotion();
   // 焦点陷阱（a11y）：Tab 环绕在弹窗内、关闭后焦点归还触发元素。
   // enabled 跟 mounted 走：内容延迟挂载/退场延迟卸载，陷阱只在内容真正存在时生效。
-  // Esc 不在这里接管（onEscape 不传）：window 级关闭监听保持现状，与 ConfirmDialog
-  // 的 node 级 stopPropagation 不冲突——嵌套时确认框仍优先关自己。
+  // Esc 在内容节点处理并停止冒泡，嵌套弹窗优先关闭自己。
   const surfaceRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(surfaceRef, { enabled: mounted });
+  useFocusTrap(surfaceRef, { enabled: mounted, onEscape: onClose });
 
   // 进场：open 变 true → 挂载 → 下一帧切到 entered 触发过渡
   useEffect(() => {
-    if (open) {
+    if (visible) {
       setMounted(true);
       const raf = requestAnimationFrame(() => setEntered(true));
       return () => cancelAnimationFrame(raf);
     }
-  }, [open]);
+  }, [visible]);
 
   // 退场：open 变 false → entered=false → 延时卸载（reduced 时即时）
   useEffect(() => {
-    if (!open && mounted) {
+    if (!visible && mounted) {
       setEntered(false);
-      const delay = reduced ? 0 : 200;
+      const delay = reduced ? 0 : 140;
       const t = setTimeout(() => setMounted(false), delay);
       return () => clearTimeout(t);
     }
-  }, [open, mounted, reduced]);
-
-  // Esc 关闭
-  useEffect(() => {
-    if (!mounted) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [mounted, onClose]);
+  }, [visible, mounted, reduced]);
 
   if (!mounted) return null;
 
   const overlayState = entered ? "opacity-100" : "opacity-0";
-  const surfaceState =
-    animation === "scale"
-      ? entered
-        ? "opacity-100 scale-100"
-        : "opacity-0 scale-95"
-      : entered
-        ? "opacity-100"
-        : "opacity-0";
+  const surfaceState = entered ? "opacity-100" : "opacity-0";
+  const transform = animation === "scale" ? entered ? "translateY(0) scale(1)" : "translateY(4px) scale(.985)" : undefined;
 
   return createPortal(
     <div
-      className={`fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm transition-opacity duration-200 ${overlayState} ${overlayClassName}`}
-      style={{ zIndex }}
+      className={`fixed inset-0 flex items-center justify-center bg-black/45 transition-opacity ${overlayState} ${overlayClassName}`}
+      style={{ zIndex, transitionDuration: visible ? "180ms" : "140ms" }}
       onClick={closeOnOverlay ? onClose : undefined}
     >
       <div
         ref={surfaceRef}
-        className={`mx-4 transition-all duration-200 ease-out-expo ${surfaceState} ${className}`}
+        role="dialog" aria-modal="true" aria-label={ariaLabel}
+        style={{ transform, transitionDuration: visible ? "180ms" : "140ms" }}
+        className={`mx-4 transition-[opacity,transform] ease-out-expo ${surfaceState} ${className}`}
         onClick={(e) => e.stopPropagation()}
       >
         {children}

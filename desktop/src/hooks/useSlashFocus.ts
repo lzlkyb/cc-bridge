@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from "react";
+import { useViewActive } from "../lib/viewActivity";
 
 const isEditable = (el: EventTarget | null): boolean =>
   el instanceof HTMLElement &&
@@ -16,11 +17,13 @@ export function useSlashFocus(
   inputRef: RefObject<HTMLInputElement | null>,
   onEscape?: () => void,
 ): void {
+  const active = useViewActive();
   // 回调走 ref：调用方普遍传内联箭头函数，入 effect 依赖会反复重订阅。
   const escapeRef = useRef(onEscape);
   escapeRef.current = onEscape;
 
   useEffect(() => {
+    if (!active) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "/" && !isEditable(e.target)) {
         e.preventDefault(); // 拦掉即将打进页面的 `/`
@@ -32,5 +35,5 @@ export function useSlashFocus(
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [inputRef]);
+  }, [inputRef, active]);
 }

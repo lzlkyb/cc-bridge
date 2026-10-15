@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, type CSSProperties } from "react";
 import { Card } from "../ui/card";
+import { Collapse } from "../ui/Collapse";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
@@ -163,7 +164,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
         </button>
 
         {/* ═══ 展开态内容 ═══ */}
-        {expanded && (
+        <Collapse open={expanded}>
           <div className="about-expanded">
             <div className="about-divider h-px bg-border" />
 
@@ -272,8 +273,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
             <div className="about-footer flex items-center justify-between divider-x-top px-[22px] py-2.5">
               <span className="text-[10px] text-muted-foreground">© 2026 {APP_INFO.name} · MIT License · by {APP_INFO.author}</span>
             </div>
-          </div>
-        )}
+          </div></Collapse>
       </Card>
 
       {/* ═══ 弹框：关于 CC Bridge ═══ */}

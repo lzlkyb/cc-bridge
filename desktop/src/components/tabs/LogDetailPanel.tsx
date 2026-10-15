@@ -1,10 +1,9 @@
-import { useState } from "react";
 import { toolLabel, formatDurationMs } from "../../lib/utils";
 import { prettyParams } from "../../lib/logFormat";
 import type { AuditEntry } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
-import { useToast } from "../ui/toast";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 
 /** D10：从 LogTab.tsx 拆出——展开行详情 + 耗时拆解，都是同一个 "审计条目详情" 工作流的
  *  组成部分，收拢到一个文件。
@@ -24,18 +23,9 @@ export function DetailPanel({
   onViewDiff: (e: AuditEntry) => void;
   onRestore: (e: AuditEntry) => void;
 }) {
-  const [copied, setCopied] = useState(false);
-  const { toast } = useToast();
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(entry.params);
-      setCopied(true);
-      toast("参数已复制到剪贴板", "success");
-      setTimeout(() => setCopied(false), 1500);
-    } catch (e) {
-      toast(`复制失败：${e}`, "error");
-    }
-  };
+  const feedback = useCopyFeedback();
+  const copied = feedback.isCopied("params");
+  const copy = () => feedback.copy("params", entry.params);
   return (
     <div className="space-y-3 py-1 detail">
       {entry.backupPath && entry.targetPath && (

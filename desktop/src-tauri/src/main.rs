@@ -943,6 +943,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::save_config,
             commands::regenerate_token,
             commands::get_audit_log,
+            commands::get_audit_export,
             commands::get_token_usage,
             commands::get_tls_status,
             commands::read_tls_cert_pem,

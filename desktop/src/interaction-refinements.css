@@ -1,0 +1,48 @@
+/* 操作界面的动效只表达状态，滚动和输入位置保持稳定。 */
+.ui-collapse { display:grid; grid-template-rows:0fr; opacity:0; transition:grid-template-rows 200ms cubic-bezier(.2,.8,.2,1),opacity 160ms; }
+.ui-collapse[data-open="true"] { grid-template-rows:1fr; opacity:1; }
+.ui-collapse-inner { min-height:0; overflow:hidden; }
+.settings-category { scrollbar-gutter:stable; }
+.terminal-side-resizer { position:absolute;right:0;top:0;bottom:0;width:7px;z-index:4;border:0;padding:0;background:transparent;cursor:col-resize;touch-action:none; }
+.terminal-side-resizer:hover,.terminal-side-resizer:focus-visible { background:hsl(var(--primary) / .25); }
+.terminal-empty[data-mode="dark"] { --empty-fill:#ffffff09; --empty-hover:#ffffff14; --empty-border:#ffffff20; --empty-muted:#b5bfce; }
+.terminal-empty[data-mode="light"] { --empty-fill:#00000004; --empty-hover:#0000000a; --empty-border:#00000022; --empty-muted:#536075; }
+.terminal-empty { display:grid;align-items:safe center;justify-items:center;height:100%;min-height:0;overflow:auto;padding:32px;font-size:14px; }
+.terminal-empty-content { width:100%;max-width:420px;min-width:0;text-align:left; }
+.terminal-empty-symbol { display:block;margin-bottom:18px;opacity:.6; }
+.terminal-empty h2 { margin:0;font-size:18px;font-weight:600;line-height:1.5; }
+.terminal-empty .terminal-empty-description { margin:8px 0 0;color:var(--empty-muted);font-size:14px;line-height:1.6; }
+.terminal-picker { margin-top:24px; }
+.terminal-picker-heading { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;color:var(--empty-muted);font-size:12px; }
+.terminal-picker-expand { display:inline-flex;align-items:center;gap:6px;flex-shrink:0;padding:4px 0;background:transparent;color:inherit;font-size:12px;white-space:nowrap;cursor:pointer; }
+.terminal-picker-expand:hover { text-decoration:underline;text-underline-offset:4px; }
+.terminal-picker-list { display:grid;gap:8px; }
+.terminal-picker-host { display:grid;grid-template-columns:18px minmax(0,1fr) auto;align-items:center;gap:12px;width:100%;min-width:0;min-height:60px;padding:10px 14px;border:1px solid var(--empty-border);border-radius:9px;background:var(--empty-fill);color:inherit;text-align:left;cursor:pointer;transition:background-color 150ms,border-color 150ms; }
+.terminal-picker-host:hover:not(:disabled) { background:var(--empty-hover);border-color:var(--empty-muted); }
+.terminal-picker-copy { min-width:0; }
+.terminal-picker-name,.terminal-picker-address { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.terminal-picker-name { font-size:14px;font-weight:500;line-height:1.4; }
+.terminal-picker-address { margin-top:2px;font:12px/1.5 ui-monospace,Consolas,monospace;color:var(--empty-muted); }
+.terminal-picker-arrow { opacity:.65; }
+.terminal-picker-progress { display:inline-flex;align-items:center;gap:6px;color:var(--empty-muted);font-size:12px;white-space:nowrap; }
+.terminal-picker-host:disabled { cursor:wait; }
+.terminal-picker-host:disabled:not([aria-busy]) { opacity:.6; }
+.terminal-empty .terminal-empty-new { height:36px;margin-top:16px;padding:0 12px;border-radius:8px;font-size:13px; }
+.terminal-empty .terminal-empty-new:not([data-primary]) { border-color:var(--empty-border);background:transparent;color:inherit; }
+.terminal-empty .terminal-empty-new:not([data-primary]):hover { background:var(--empty-hover);border-color:var(--empty-muted); }
+.terminal-empty button:focus-visible { outline:2px solid currentColor;outline-offset:3px; }
+.log-tab .audit th { position:sticky;top:0;z-index:1;background:hsl(var(--card));font-size:12px; }
+.log-tab .audit td { font-size:12px;font-variant-numeric:tabular-nums; }
+.log-tab .log-search-input { min-width:140px; }
+.app-side .app-side-label { opacity:1;max-width:170px;transition:opacity 120ms,max-width 180ms; }
+.app-side[data-collapsed] .app-side-label { display:block!important;max-width:0;opacity:0;overflow:hidden; }
+.app-shell .app-side[data-collapsed] .app-side-item { justify-content:flex-start;gap:0;padding:8px 12px;overflow:hidden; }
+.app-side[data-collapsed] .app-side-item>svg { flex-shrink:0; }
+@media(max-width:700px) {
+ .app-topbar .max-w-40 { max-width:100px; }
+ .settings-category .srow { flex-wrap:wrap; }
+ .settings-category .srow>div.shrink-0 { max-width:100%; }
+ .log-tab .log-search-input { min-width:100px;width:100%; }
+ .terminal-empty { padding:16px; }
+}
+@media(prefers-reduced-motion:reduce) { .ui-collapse { transition:none; } }

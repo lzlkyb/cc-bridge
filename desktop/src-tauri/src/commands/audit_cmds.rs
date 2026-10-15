@@ -21,6 +21,7 @@ pub async fn get_audit_log(
     page_size: Option<u32>,
     // 兼容旧前端：传 limit 等价于 (page=1, page_size=limit)
     limit: Option<u32>,
+    filter: Option<audit::AuditFilter>,
 ) -> Result<audit::AuditPage, String> {
     // 策略 A：页码分页。page 默认 1；page_size 默认 50；兼容旧 limit 参数。clamp 到 1..=500。
     let page = page.unwrap_or(1).max(1) as usize;
@@ -30,7 +31,28 @@ pub async fn get_audit_log(
         (None, None) => 50,
     }
     .clamp(1, 500);
-    audit::read_page(&state.data_dir, page, page_size)
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || match filter {
+        Some(filter) => audit::read_filtered_page(&data_dir, page, page_size, &filter),
+        None => audit::read_page(&data_dir, page, page_size),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// 按一次缓存快照导出，避免前端逐页抓取时被新日志插入而漏行/重复。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn get_audit_export(
+    state: State<'_, Arc<AppState>>,
+    filter: Option<audit::AuditFilter>,
+) -> Result<Vec<audit::AuditEntry>, String> {
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        audit::read_filtered_page(&data_dir, 1, usize::MAX, &filter.unwrap_or_default())
+            .map(|page| page.entries)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 连接页「最近活动」：尾部读取最近 n 条审计（默认 3）。

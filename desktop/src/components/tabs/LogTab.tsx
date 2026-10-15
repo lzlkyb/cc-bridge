@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, memo } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toolLabel } from "../../lib/utils";
@@ -10,7 +10,8 @@ import { Icon } from "../ui/icon";
 import { EmptyState } from "../ui/EmptyState";
 import { Table, TableHeader, TableBody, TableRow, TableHead } from "../ui/table";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
-import { useAppHidden } from "../../lib/appVisibility";
+import { useAuditLog } from "../../hooks/useAuditLog";
+import { Collapse } from "../ui/Collapse";
 import { useSlashFocus } from "../../hooks/useSlashFocus";
 import { Combobox } from "../ui/combobox";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -34,25 +35,12 @@ function LogTabImpl({
    */
   highlightAnchor?: { anchor: string; nonce: number } | null;
 }) {
-  // 分页状态（策略 A：页码分页）。page/pageSize 变化即触发按页重新拉取。
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
-  // 窗口不可见时停掉日志轮询（本页 10s + 性能面板 30s）。
-  const appHidden = useAppHidden();
-
-  const { data: pageData, refetch } = useQuery<AuditPage>({
-    queryKey: ["auditLog", page, pageSize],
-    queryFn: () => invoke<AuditPage>("get_audit_log", { page, page_size: pageSize }),
-    refetchInterval: appHidden ? false : 10000,
-  });
-
-  // 本页数据 + 总数（供分页器算总页数）。筛选仅作用于当前页 entries。
-  const entries = pageData?.entries ?? [];
-  const total = pageData?.total ?? 0;
-
-  const [toolFilter, setToolFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "success" | "error">("all");
-  const [search, setSearch] = useState("");
+  const audit = useAuditLog();
+  const { page, pageSize, search, setSearch, setPage, setToolFilter, setStatusFilter, resetFilters, appHidden } = audit;
+  const pageData = audit.data, refetch = audit.refetch;
+  const toolFilter = audit.tool, statusFilter = audit.status;
+  const entries = pageData?.entries ?? [], total = pageData?.total ?? 0;
+  const toolNames = pageData?.toolNames ?? [];
   // 展开行的稳定标识（timestamp-tool-sourceIp，见 auditRowKey）：10s 轮询重拉
   // 数据后按 key 重认领，展开态不再静默收起。
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
@@ -63,32 +51,20 @@ function LogTabImpl({
   // 深链到性能面板：连接页的「P95 延迟」卡点击后跳这里。
   // 依赖 nonce 而不是 anchor：同一个锚点连点两次也要再触发一次（anchor 不变，nonce 变）。
   useEffect(() => {
-    if (highlightAnchor?.anchor !== "perf") return;
+    if (appHidden || highlightAnchor?.anchor !== "perf") return;
     setShowPerf(true);
     // rAF 等展开后的布局落定再滚，否则滚到的是展开前的位置。
     requestAnimationFrame(() => {
-      perfBtnRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      perfBtnRef.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "nearest" });
     });
-  }, [highlightAnchor?.anchor, highlightAnchor?.nonce]);
-
-  // 工具筛选选项：**独立查询最近 500 条**再去重——不从当前页 entries 派生，
-  // 否则「想筛的工具不在当前页就选不到」。60s 内复用缓存，不参与 10s 轮询。
-  const { data: toolPage } = useQuery<AuditPage>({
-    queryKey: ["auditToolNames"],
-    queryFn: () => invoke<AuditPage>("get_audit_log", { page: 1, page_size: 500 }),
-    staleTime: 60_000,
-  });
-  const toolNames = useMemo(
-    () => [...new Set((toolPage?.entries ?? []).map((e) => e.tool))].sort(),
-    [toolPage],
-  );
+  }, [highlightAnchor?.anchor, highlightAnchor?.nonce, appHidden]);
 
   // 性能分析面板独立拉取最近 500 条（后端 page_size 上限），避免统计口径只覆盖当前分页页。
   // 仅在面板展开时启用，关闭时不轮询、不占用请求。
   const { data: perfPage } = useQuery<AuditPage>({
     queryKey: ["auditLogPerf"],
     queryFn: () => invoke<AuditPage>("get_audit_log", { page: 1, page_size: 500 }),
-    enabled: showPerf,
+    enabled: showPerf && !appHidden,
     refetchInterval: appHidden ? false : 30000,
   });
   const perfEntries = perfPage?.entries ?? entries;
@@ -111,29 +87,8 @@ function LogTabImpl({
     search.trim() && `关键词「${search.trim()}」`,
   ].filter(Boolean).join(" · ");
 
-  // 翻页 / 改每页条数时筛选自动重置 + toast 明示（P2：原来筛选跨页静默残留，
-  // 用户以为还在筛选全量，实际只筛了上一页——靠记忆假设必然出错）。
-  const resetFilters = () => {
-    setToolFilter("");
-    setStatusFilter("all");
-    setSearch("");
-    setExpandedRow(null); // 旧页的展开 key 在新页无对应条目，顺手清掉
-  };
-  const handlePageChange = (p: number) => {
-    if (p !== page && hasFilter) {
-      resetFilters();
-      toast(`已切换到第 ${p} 页，筛选已重置`, "info");
-    }
-    setPage(p);
-  };
-  const handlePageSizeChange = (s: number) => {
-    if (hasFilter) {
-      resetFilters();
-      toast(`已改为每页 ${s} 条，筛选已重置`, "info");
-    }
-    setPageSize(s);
-    setPage(1);
-  };
+  const handlePageChange = setPage;
+  const handlePageSizeChange = audit.setPageSize;
 
   const handleClear = async () => {
     // 之前无 try/catch：失败是 unhandled rejection，确认框关了日志却没清、界面毫无反应。
@@ -149,20 +104,7 @@ function LogTabImpl({
     }
   };
 
-  const filtered = useMemo(() => {
-    if (!entries) return [];
-    const kw = search.trim().toLowerCase();
-    return entries.filter((e) => {
-      if (toolFilter && e.tool !== toolFilter) return false;
-      if (statusFilter === "success" && !e.success) return false;
-      if (statusFilter === "error" && e.success) return false;
-      if (kw) {
-        const hay = `${e.tool}\n${toolLabel(e.tool)}\n${e.params}\n${e.sourceIp ?? ""}\n${e.error ?? ""}`.toLowerCase();
-        if (!hay.includes(kw)) return false;
-      }
-      return true;
-    });
-  }, [entries, toolFilter, statusFilter, search]);
+  const filtered = entries;
 
   return (
     <Card className="flex flex-col log-tab h-full min-h-0 overflow-hidden">
@@ -176,9 +118,9 @@ function LogTabImpl({
               ref={searchRef}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              aria-label="搜索审计日志"
-              placeholder="搜索工具 / 参数 / IP…"
-              className="w-28 bg-transparent text-xs outline-none log-search-input placeholder:text-muted-foreground"
+              aria-label="搜索全部历史日志"
+              placeholder="搜索全部历史：工具 / 参数 / IP…"
+              className="w-52 max-w-full bg-transparent text-xs outline-none log-search-input placeholder:text-muted-foreground"
             />
           </div>
           {/* Tool filter：选项来自独立查询的全量工具名（近 500 条去重） */}
@@ -212,7 +154,7 @@ function LogTabImpl({
             刷新
           </Button>
           {/* 导出（JSON/CSV/诊断报告）：受控下拉 + 键盘导航，实现见 LogExportMenu */}
-          <LogExportMenu filtered={filtered} entriesCount={entries.length} total={total} />
+          <LogExportMenu filtered={filtered} entriesCount={entries.length} total={total} filter={audit.filter} pending={audit.pending} />
           <Button
             variant="outline"
             size="sm"
@@ -228,7 +170,8 @@ function LogTabImpl({
       {/* 常驻说明（原在分页器里的 10.5px 灰字没人看见，上移到工具栏正下方） */}
       <div className="flex shrink-0 items-center gap-1.5 border-b bg-primary/5 px-5 py-1.5 text-[11px] text-muted-foreground">
         <Icon name="info" size={12} className="shrink-0" />
-        <span>筛选只作用于当前页 · 翻页 / 改每页条数时自动重置并提示</span>
+        <span>{audit.pending ? "正在查询…" : `全部历史 · 匹配 ${total.toLocaleString()} 条`}</span>
+        {hasFilter && <button type="button" className="ml-auto text-primary hover:underline" onClick={resetFilters}>重置筛选</button>}
         {hasFilter && <span className="text-foreground">当前：{filterSummary}</span>}
       </div>
       <CardContent className="flex flex-col flex-1 min-h-0 overflow-y-auto">
@@ -252,14 +195,10 @@ function LogTabImpl({
                 className={`shrink-0 text-muted-foreground transition-transform ${showPerf ? "rotate-180" : ""}`}
               />
             </button>
-            {showPerf && (
-              <div className="mt-2">
-                <PerfCharts entries={perfEntries} />
-              </div>
-            )}
+            <Collapse open={showPerf}><div className="mt-2"><p className="mb-2 text-xs text-muted-foreground">独立统计：最近最多 500 条记录，不随列表筛选变化。</p><PerfCharts entries={perfEntries} /></div></Collapse>
           </div>
         )}
-        {!pageData ? (
+        {audit.isError ? <div role="alert" className="py-8 text-sm text-destructive-ink">日志读取失败：{String(audit.error)} <button className="underline" onClick={() => void refetch()}>重试</button></div> : !pageData ? (
           <div className="space-y-1.5 py-2" aria-hidden="true">
             {Array.from({ length: 9 }).map((_, i) => (
               <div key={i} className="skel-row flex items-center gap-3 px-1">
@@ -312,7 +251,7 @@ function LogTabImpl({
           </Table>
         )}
       </CardContent>
-      {total > 0 && (
+      {pageData && (
         <div className="shrink-0 border-t bg-card px-5 py-3">
           <AuditPager
             page={page}
@@ -324,8 +263,7 @@ function LogTabImpl({
         </div>
       )}
 
-      {confirmClear && (
-        <ConfirmDialog
+      <ConfirmDialog open={confirmClear}
           title="确定清空全部审计日志？"
           description={
             <>
@@ -337,7 +275,6 @@ function LogTabImpl({
           onCancel={() => setConfirmClear(false)}
           onConfirm={handleClear}
         />
-      )}
       {diffEntry && <LogDiffModal entry={diffEntry} onClose={() => setDiffEntry(null)} />}
       {restoreEntry && (
         <LogRestoreDialog entry={restoreEntry} onClose={() => setRestoreEntry(null)} />

@@ -415,6 +415,7 @@ export interface RunningCommandInfo {
 
 /** get_audit_log 返回的审计日志分页结果（策略 A：页码分页）。 */
 export interface AuditPage {
+  toolNames?: string[];
   entries: AuditEntry[];
   /** 审计日志总条数（用于前端算总页数，不受当前页大小影响） */
   total: number;

@@ -23,10 +23,5 @@
     "react-hooks/exhaustive-deps": {
       "count": 2
     }
-  },
-  "src/components/tabs/LogTab.tsx": {
-    "react-hooks/exhaustive-deps": {
-      "count": 1
-    }
   }
 }
