@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import type { StaticStatus } from "../../lib/types";
-import { isWindows, shortcutLabel } from "../../lib/platform";
-import { SETTINGS_SECTIONS } from "../../lib/settingsSections";
+import { isWindows } from "../../lib/platform";
+import type { SettingsSection } from "../../lib/settingsSections";
 import { FirewallGroup } from "./firewall/FirewallGroup";
 import { AboutGroup } from "./AboutGroup";
 import { RiskBand } from "../ui/RiskBand";
-import { SettingsNav } from "./settings/SettingsNav";
 import { NetworkGroup } from "./settings/NetworkGroup";
 import { SecurityGroup } from "./settings/SecurityGroup";
 import { McpBridgeGroup } from "./settings/mcpbridge/McpBridgeGroup";
@@ -26,7 +25,9 @@ export function SettingsTab({
   onReopenOnboarding,
   onMarkSeen,
   changelogOpenToken,
-  onOpenSearch,
+  sections,
+  onActiveSectionChange,
+  navSelectSignal,
   onNavigate,
 }: {
   status?: StaticStatus;
@@ -39,22 +40,18 @@ export function SettingsTab({
   onMarkSeen?: () => void;
   /** 自增信号：变化时自动展开关于卡片并滚动到更新历史。 */
   changelogOpenToken?: number;
-  /** 打开命令面板（左栏「搜索设置」入口，Ctrl+K 的页面内可见入口）。 */
-  onOpenSearch?: () => void;
+  /** 目录项（已按平台过滤）。B 方案 2026-10-15：导航搬进主侧栏（SideNavSettings），
+      App 层把侧栏与卡片共用的同一份目录传下来。 */
+  sections: SettingsSection[];
+  onActiveSectionChange: (id: string) => void;
+  /** 侧栏目录点击信号：收到后执行程序化滚动定位。 */
+  navSelectSignal: { id: string; nonce: number } | null;
   /** 跨 tab 导航（安全卡跳转按钮用；不传则按钮不可点）。 */
   onNavigate?: (tab: string, anchor?: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // 最近一次导航点击的时间戳：其后的程序化 smooth 滚动期间 scrollspy 暂停（见 onScroll）。
   const programmaticScrollAt = useRef(0);
-  // 左栏导航当前高亮项（scrollspy：判定线以上最近的卡片）。
-  const [activeSection, setActiveSection] = useState<string>(SETTINGS_SECTIONS[0]?.id ?? "");
-
-  // 导航项按平台过滤：防火墙卡仅 Windows 渲染，导航项同步隐藏。
-  const sections = useMemo(
-    () => SETTINGS_SECTIONS.filter((s) => !s.windowsOnly || isWindows(status?.platform)),
-    [status?.platform],
-  );
 
   // 由 Header 安全徽章 / 命令面板触发的定位 + 高亮。
   //
@@ -119,7 +116,7 @@ export function SettingsTab({
         ) {
           current = ids[ids.length - 1] ?? current;
         }
-        setActiveSection(current);
+        onActiveSectionChange(current);
       });
     };
     const main = containerRef.current?.closest("main");
@@ -129,33 +126,20 @@ export function SettingsTab({
       main?.removeEventListener("scroll", onScroll);
       if (raf.current) cancelAnimationFrame(raf.current);
     };
-  }, [sections]);
+  }, [sections, onActiveSectionChange]);
 
-  const handleNavSelect = (id: string) => {
-    // 🔴 必须 block:"start" 而非 "center"：scrollspy 判定线是 main 顶下方 120px，
-    // center 会把卡**中心**对齐视口中心——卡高 < ~430px 的卡滚完后卡顶仍在线下
-    // （940×760 窗口实测：13 项中 7 项），scrollspy 会把高亮判给上一张卡，
-    // 观感就是「点了菜单高亮跳回上一项 / 再点没响应」。start 让卡顶停在判定线上方。
-    // 同时立即置高亮 + 开 1s 程序化滚动窗口（见 programmaticScrollAt）：页面底部
-    // 「最后一张卡够不到判定线」的几何与点击倒数第二/第一张的意图无法用纯几何
-    // 同时满足，点击意图优先，滚完窗口过期后 scrollspy 自动接管滚轮。
-    // 右列容器的 [&>*]:scroll-mt-2 给卡顶留 8px 呼吸位。
+  // 侧栏目录点击 → 程序化滚动。高亮由 App 层在 handleSettingsSelect 里先行置定，
+  // 这里只负责滚动 + 开 scrollspy 屏蔽窗口（与旧 handleNavSelect 同一几何策略）。
+  useEffect(() => {
+    if (!navSelectSignal) return;
     programmaticScrollAt.current = Date.now();
-    setActiveSection(id);
-    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
+    document.getElementById(navSelectSignal.id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [navSelectSignal]);
 
   return (
-    <div ref={containerRef} className="settings-tab flex items-start gap-4">
-      <SettingsNav
-        sections={sections}
-        activeId={activeSection}
-        onSelect={handleNavSelect}
-        onOpenSearch={onOpenSearch}
-        searchShortcut={shortcutLabel(status?.platform, "K")}
-      />
-      {/* [&>*]:scroll-mt-2：导航点击 block:"start" 定位时给卡顶留 8px 呼吸位（只作用于本页卡片） */}
-      <div className="min-w-0 flex-1 space-y-4 [&>*]:scroll-mt-2">
+    // B 方案 2026-10-15：旧 172px SettingsNav 撤出内容区（目录进主侧栏），
+    // 卡片列独占内容区宽度。[&>*]:scroll-mt-2 给导航定位 block:"start" 留 8px 呼吸位。
+    <div ref={containerRef} className="settings-tab min-w-0 space-y-4 [&>*]:scroll-mt-2">
         {/* 风险总览从原「功能开关」卡内提到页面级：它汇总的是**跨卡**风险，
             拆卡后待在某一张卡里就不合适了。不进左栏导航：它是告警横幅而非设置卡，
             且常驻页面顶部，无需导航。 */}
@@ -192,7 +176,6 @@ export function SettingsTab({
         {/* ── 高级与配置：装完很少再动的收尾簇 ── */}
         <AdvancedGroup status={status} onSaved={onSaved} />
         <ConfigGroup status={status} onSaved={onSaved} />
-      </div>
     </div>
   );
 }

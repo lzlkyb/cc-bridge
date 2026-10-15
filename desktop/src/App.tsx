@@ -4,6 +4,8 @@ import { invoke } from "./lib/tauri";
 import type { StatusResponse, StaticStatus } from "./lib/types";
 import { APP_INFO, CHANGELOG } from "./lib/about";
 import { getLastSeenVersion, setLastSeenVersion, countUnreadVersions } from "./lib/utils";
+import { SETTINGS_SECTIONS, type SettingsSection } from "./lib/settingsSections";
+import { isWindows } from "./lib/platform";
 import { Header } from "./components/layout/Header";
 import { SideNav, WORKSPACE_NAV } from "./components/layout/SideNav";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -124,6 +126,23 @@ function AppContent() {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [activeTab, setActiveTab] = useState("connect");
 
+  // ── 设置目录模式（B 方案，2026-10-15）──
+  // 目录高亮 id 由 App 层持有：scrollspy 在 SettingsTab 里跑，结果上报到这里，
+  // 侧栏目录与内容卡共用同一份高亮状态。
+  const [settingsActiveId, setSettingsActiveId] = useState<string>(SETTINGS_SECTIONS[0].id);
+  // 侧栏目录点击信号：SettingsTab 收到后执行程序化滚动（block:"start" + 1s
+  // scrollspy 屏蔽窗口，几何细节见其 handleNavSelect 注释）。
+  const [settingsNavSignal, setSettingsNavSignal] = useState<{ id: string; nonce: number } | null>(null);
+  // 目录项按平台过滤（防火墙卡仅 Windows），侧栏与 SettingsTab 共用同一份。
+  const settingsSections = useMemo<SettingsSection[]>(
+    () => SETTINGS_SECTIONS.filter((s) => !s.windowsOnly || isWindows(status?.platform)),
+    [status?.platform],
+  );
+  const handleSettingsSelect = useCallback((id: string) => {
+    setSettingsActiveId(id);
+    setSettingsNavSignal({ id, nonce: Date.now() });
+  }, []);
+
   // 侧栏形态（2026-10-14）：宽窗展开 200px，窄窗自动收成 56px 图标栏。
   // 阈值 1080 的由来：展开态内容区 = 视口 − 200(侧栏) − 40(内容区 px-5)，
   // 要 ≥ 820px 才能保住连接页 Bento 的 12 列布局 → 展开态需视口 ≥ 1060，
@@ -187,6 +206,16 @@ function AppContent() {
     }
     setPendingAnchor(anchor ? { anchor, nonce: Date.now() } : null);
   }, [markSeenOnEnter, unreadCount]);
+
+  // 「返回工作区」回到离开设置前的那个工作区 tab（而不是硬编码 connect）。
+  // 必须声明在 handleNavigate 之后（引用它）。
+  const lastWorkspaceTabRef = useRef("connect");
+  useEffect(() => {
+    if (activeTab !== "settings") lastWorkspaceTabRef.current = activeTab;
+  }, [activeTab]);
+  const handleBackFromSettings = useCallback(() => {
+    handleNavigate(lastWorkspaceTabRef.current);
+  }, [handleNavigate]);
 
   // 全局键盘快捷键
   useEffect(() => {
@@ -255,6 +284,10 @@ function AppContent() {
           unreadCount={unreadCount}
           status={status}
           collapsed={sideCollapsed}
+          settingsSections={settingsSections}
+          settingsActiveId={settingsActiveId}
+          onSelectSection={handleSettingsSelect}
+          onBackFromSettings={handleBackFromSettings}
         />
         <div className="app-main flex min-h-0 min-w-0 flex-col">
           <Header
@@ -312,7 +345,7 @@ function AppContent() {
           </TabsContent>
           <TabsContent value="settings" className="app-content-box">
             <Suspense fallback={<TabFallback />}>
-              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} onOpenSearch={() => setShowCommandPalette(true)} onNavigate={handleNavigate} />
+              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} sections={settingsSections} onActiveSectionChange={setSettingsActiveId} navSelectSignal={settingsNavSignal} onNavigate={handleNavigate} />
             </Suspense>
           </TabsContent>
           <TabsContent value="log" className="h-full">

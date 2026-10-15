@@ -1727,91 +1727,7 @@ select:focus-visible,
   to   { opacity: 1; }
 }
 
-/* ═══ 设置页窄窗降级（信息架构重排设计稿屏 6）═══
-   .settings-tab 原本无断点：172px 左栏 + 卡片挤在 ~370px 可用宽度里。
-   820px 断点与 .bento 一致（最小窗宽 560px 时右列仍有 ~520px）：
-   左栏 sticky 改静态、拉满宽度，内部改横排滚动 chip 行；
-   簇标题与簇间细线隐藏（chip 行自带分隔语义）；当前项改实心 primary
-   （竖排时「白卡浮起」在灰底滚动条上不够醒目，横排 chip 需要更强的选中表达）。
-   覆盖 Tailwind 原子类靠双类名选择器特异性（0,2,0 > 0,1,0），不用 !important。 */
-@media (max-width: 820px) {
-  .settings-tab {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .settings-tab .settings-nav {
-    position: static;
-    width: 100%;
-  }
-  .settings-tab .settings-nav-box {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    overflow-x: auto;
-  }
-  .settings-tab .settings-nav-cluster-title,
-  .settings-tab .settings-nav-cluster-sep {
-    display: none;
-  }
-  .settings-tab .settings-nav-item {
-    width: auto;
-    flex-shrink: 0;
-    white-space: nowrap;
-  }
-  .settings-tab .settings-nav-item-active {
-    background: hsl(var(--primary));
-    color: hsl(var(--primary-foreground));
-  }
-  .settings-tab .settings-nav-item-active .settings-nav-chip {
-    background: hsl(var(--primary) / 0.2);
-    color: hsl(var(--primary-foreground));
-  }
-  .settings-tab .settings-nav > .settings-nav-search {
-    width: 100%;
-  }
-}
-/* 容器查询版：判据换成「内容区宽度」。@media 版保留作无容器支持时的兜底。
-   ⚠️ 这里改的是 .settings-tab 自身（flex-direction），它能被查询是因为
-   .settings-tab 是 .app-content-box（TabsContent）的**后代**，而非容器本身——
-   容器自身的样式无法被自己的 @container 命中。 */
-@container app-content (max-width: 820px) {
-  .settings-tab {
-    flex-direction: column;
-    align-items: stretch;
-  }
-  .settings-tab .settings-nav {
-    position: static;
-    width: 100%;
-  }
-  .settings-tab .settings-nav-box {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    overflow-x: auto;
-  }
-  .settings-tab .settings-nav-cluster-title,
-  .settings-tab .settings-nav-cluster-sep {
-    display: none;
-  }
-  .settings-tab .settings-nav-item {
-    width: auto;
-    flex-shrink: 0;
-    white-space: nowrap;
-  }
-  .settings-tab .settings-nav-item-active {
-    background: hsl(var(--primary));
-    color: hsl(var(--primary-foreground));
-  }
-  .settings-tab .settings-nav-item-active .settings-nav-chip {
-    background: hsl(var(--primary) / 0.2);
-    color: hsl(var(--primary-foreground));
-  }
-  .settings-tab .settings-nav > .settings-nav-search {
-    width: 100%;
-  }
-}
-
-/* ═══════════════════════════════════════════════════════════════
+/* ═════════════════════════════════════════════════════════════
    侧栏外壳（2026-10-14：顶部横向 TabsList → 左侧竖排侧栏）
    结构：.app-shell = grid[ 侧栏 .app-side | 主列 .app-main ]
    宽度由 .app-side 自己持有（展开 200 / 图标栏 56），grid 首列用 auto 跟随，
@@ -1989,6 +1905,70 @@ select:focus-visible,
 .app-side[data-collapsed] .app-side-status-text { display: none; }
 .app-side[data-collapsed] .app-side-item { justify-content: center; gap: 0; padding: 8px 0; }
 .app-side[data-collapsed] .app-side-label { display: none; }
+
+/* ── 侧栏「设置目录」模式（B 方案 2026-10-15）──
+   进设置页时主侧栏切换为设置目录（SideNavSettings）：返回工作区 + 搜索过滤 +
+   簇分组导航。导航项直接复用 .app-side-item，这里只补目录专属的三件套。 */
+/* 返回工作区：ghost 态（比导航项弱一档），底部细线与目录区分隔 */
+.app-side-back {
+  margin: 4px 8px 0;
+  width: calc(100% - 16px);
+  padding: 7px 10px;
+  color: hsl(var(--muted-foreground) / 0.85);
+}
+.app-side-back:hover { color: hsl(var(--foreground)); }
+/* 搜索过滤框：展开态独占一行；图标栏态整个隐藏（56px 放不下输入框） */
+.app-side-search {
+  position: relative;
+  margin: 6px 8px 2px;
+}
+.app-side-search-icon {
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  translate: 0 -50%;
+  color: hsl(var(--muted-foreground));
+  pointer-events: none;
+}
+.app-side-search input {
+  width: 100%;
+  padding: 6px 8px 6px 28px;
+  border-radius: var(--r-control);
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary) / 0.55);
+  font-size: 12px;
+  color: hsl(var(--foreground));
+}
+.app-side-search input::placeholder { color: hsl(var(--muted-foreground)); }
+.app-side-search input:focus-visible {
+  outline: none;
+  border-color: hsl(var(--primary) / 0.55);
+  background: hsl(var(--background));
+}
+/* 簇标题 + 簇间细线：与旧 SettingsNav 同语义（线管分隔、标题管语义） */
+.app-side-cluster-title {
+  padding: 8px 18px 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: hsl(var(--muted-foreground));
+}
+.app-side-cluster-sep {
+  height: 1px;
+  margin: 5px 10px;
+  background: hsl(var(--border));
+}
+/* 搜索无结果占位 */
+.app-side-empty {
+  padding: 14px 18px;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+/* 图标栏态：隐藏搜索框、簇标题、簇间线（只留图标导航，title 提示兜底） */
+.app-side[data-collapsed] .app-side-search,
+.app-side[data-collapsed] .app-side-cluster-title,
+.app-side[data-collapsed] .app-side-cluster-sep,
+.app-side[data-collapsed] .app-side-empty { display: none; }
 
 /* 顶栏：固定 52px，与侧栏品牌区等高，两者底边连线贯通成一条水平分割线 */
 .app-topbar { height: 52px; }
