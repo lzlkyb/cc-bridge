@@ -207,7 +207,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
         ref={termAreaRef}
         className={
           fullscreen
-            ? "fixed inset-0 z-50 overflow-hidden"
+            ? "fixed inset-0 z-50 overflow-hidden rounded-xl"
             : "relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-xl border border-border"
         }
         style={{ background: surface }}

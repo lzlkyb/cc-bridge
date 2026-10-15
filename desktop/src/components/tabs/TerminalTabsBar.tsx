@@ -157,7 +157,7 @@ export function TerminalTabsBar({
         type="button"
         onClick={() => setSearchOpen(true)}
         title="搜索所有标签的终端内容（含已断开标签的历史）"
-        className="ml-auto flex shrink-0 items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        className="ml-auto flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <Icon name="search" size={12} /> 搜索所有标签
       </button>
@@ -166,7 +166,7 @@ export function TerminalTabsBar({
           type="button"
           onClick={onNewTerminal}
           title="对当前连接再开一个终端"
-          className="flex shrink-0 items-center gap-1 rounded-md border border-dashed border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <Icon name="plus" size={12} /> 新终端
         </button>
