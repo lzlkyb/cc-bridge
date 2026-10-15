@@ -133,6 +133,9 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     // - 开关关：忽略 session_id，cwd 必传，行为与旧版完全一致。
     // - 开关开 + 给定有效 session_id：复用其绑定 cwd（每次仍重校验白名单，规则7 不削弱）。
     // - 开关开 + 无/无效 session_id：cwd 必传，解析后新建 session 并返回新 id。
+    // B 类容错标记：cwd 未传或已消失而回退到 allowed_root 时置位，
+    // 响应里注入 cwdFallback + 实际 cwd，让模型知道自己在哪跑的（审计可对照）。
+    let mut cwd_fallback = false;
     let (resolved_cwd, cwd_display, effective_session_id) = if config.session_cwd_enabled {
         if let Some(sid) = &args.session_id {
             match state.cwd_sessions.get(sid) {
@@ -177,27 +180,50 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             (resolved, cwd.clone(), Some(new_id))
         }
     } else {
-        let cwd = args
-            .cwd
-            .as_ref()
-            .ok_or_else(|| "cwd 必传（会话持久化未开启时）".to_string())?;
-        let resolved = security::path::resolve_safe_path_cached(
-            cwd,
-            &state.cached_roots(),
-            config.whitelist_enabled,
-        )?;
-        (resolved, cwd.clone(), None)
+        match args.cwd.as_ref() {
+            Some(cwd) => {
+                let resolved = security::path::resolve_safe_path_cached(
+                    cwd,
+                    &state.cached_roots(),
+                    config.whitelist_enabled,
+                )?;
+                (resolved, cwd.clone(), None)
+            }
+            None => {
+                // B 类容错（审计近 30 天实锤 27 条「cwd 必传」报错）：cwd 缺失时
+                // 回退到第一个存在的 allowed_root 继续执行——与下方「cwd 消失恢复」
+                // 同一先例（回退目标天然在白名单内，不削弱安全围栏）。
+                // 白名单无可用目录时维持原报错，不猜 home 之类的魔法值。
+                let fallback = allowed_roots
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .find(|p| p.is_dir())
+                    .ok_or_else(|| {
+                        "cwd 必传（会话持久化未开启时），且白名单中不存在可用目录作为回退"
+                            .to_string()
+                    })?;
+                cwd_fallback = true;
+                let display = fallback.to_string_lossy().into_owned();
+                (fallback, display, None)
+            }
+        }
     };
 
     // cwd 消失恢复：白名单校验通过后，若 cwd 已不在磁盘（如上一命令 rm -rf 了它），
     // 回退到第一个存在的 allowed_root 再继续（对齐 Claude Code 的 cwd 恢复），避免每次硬报错。
     // 回退目标仍在白名单内，不削弱安全围栏。
     let resolved_cwd = if !resolved_cwd.exists() {
-        allowed_roots
+        match allowed_roots
             .iter()
             .map(std::path::PathBuf::from)
             .find(|p| p.exists())
-            .unwrap_or(resolved_cwd)
+        {
+            Some(fb) => {
+                cwd_fallback = true;
+                fb
+            }
+            None => resolved_cwd,
+        }
     } else {
         resolved_cwd
     };
@@ -307,7 +333,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
         obj.insert("shell".into(), json!(shell.as_str()));
     }
 
-    inject_session_info(Ok(value), effective_session_id, &resolved_cwd)
+    inject_session_info(Ok(value), effective_session_id, &resolved_cwd, cwd_fallback)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -690,6 +716,7 @@ fn inject_session_info(
     result: Result<Value, String>,
     session_id: Option<String>,
     resolved_cwd: &std::path::Path,
+    cwd_fallback: bool,
 ) -> Result<Value, String> {
     let mut v = result?;
     if let Some(obj) = v.as_object_mut() {
@@ -697,11 +724,16 @@ fn inject_session_info(
             if let Some(first) = arr.first_mut() {
                 if let Some(text) = first.get_mut("text").and_then(|t| t.as_str()) {
                     if let Ok(mut info) = serde_json::from_str::<serde_json::Value>(text) {
-                        // 仅当确有 session 时才注入 sessionId / cwd 回显字段。
-                        // 默认关（session_id = None）时不做任何注入，响应与原版完全一致，
+                        // 仅当确有 session 或发生了 cwd 回退时才注入字段。
+                        // 默认关（session_id = None 且未回退）时不做任何注入，响应与原版完全一致，
                         // 满足「零行为变化」要求（不在 JSON 里留下 null 占位）。
-                        if let Some(sid) = session_id {
-                            info["sessionId"] = json!(sid);
+                        if session_id.is_some() || cwd_fallback {
+                            if let Some(sid) = session_id {
+                                info["sessionId"] = json!(sid);
+                            }
+                            if cwd_fallback {
+                                info["cwdFallback"] = json!(true);
+                            }
                             info["cwd"] = json!(resolved_cwd.to_string_lossy().to_string());
                             let new_text = serde_json::to_string_pretty(&info)
                                 .unwrap_or_else(|_| text.to_string());
@@ -1041,6 +1073,82 @@ mod tests {
         );
         assert_eq!(info.get("exitCode").and_then(|e| e.as_i64()), Some(0));
         assert_eq!(info.get("timedOut").and_then(|t| t.as_bool()), Some(false));
+    }
+
+    /// B 类容错：cwd 缺失时回退到第一个存在的 allowed_root 继续执行，
+    /// 响应注入 cwdFallback=true + 实际 cwd（审计近 30 天实锤 27 条「cwd 必传」报错）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn missing_cwd_falls_back_to_allowed_root() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let v = handle(
+            RunCommandArgs {
+                command: "echo hello".into(),
+                cwd: None,
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await
+        .expect("cwd 缺失应回退到 allowed_root 而非报错");
+
+        let text = v
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .expect("response must have text payload");
+        let info: serde_json::Value = serde_json::from_str(text).expect("text payload is JSON");
+
+        assert_eq!(
+            info.get("cwdFallback").and_then(|f| f.as_bool()),
+            Some(true),
+            "回退发生时必须显式标记：{info}"
+        );
+        assert_eq!(
+            info.get("cwd").and_then(|c| c.as_str()),
+            Some(dir.to_string_lossy().as_ref()),
+            "回显的实际 cwd 应为回退目标"
+        );
+        let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(
+            stdout.contains("hello"),
+            "命令应在回退目录正常执行：{stdout:?}"
+        );
+    }
+
+    /// B 类容错的边界：白名单无可用目录时维持「cwd 必传」报错，不猜魔法值。
+    #[tokio::test]
+    async fn missing_cwd_without_roots_still_errors() {
+        let (state, _dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.allowed_roots.clear();
+        });
+        let err = handle(
+            RunCommandArgs {
+                command: "echo hello".into(),
+                cwd: None,
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await
+        .expect_err("无 cwd 且无可用回退目录时应报错");
+        assert!(err.contains("cwd 必传"), "报错应说明 cwd 必传的根因：{err}");
     }
 
     /// 真实 .exe 子进程（不是 cmd 内置命令）的 stdout 必须能拿到。
