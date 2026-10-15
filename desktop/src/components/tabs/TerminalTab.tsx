@@ -13,7 +13,7 @@ import type {
 } from "../../lib/types";
 import { SshConnectionDialog } from "./SshConnectionDialog";
 import { SshTerminal } from "./SshTerminal";
-import { SshFileBrowser } from "./SshFileBrowser";
+import { TerminalFilePanel } from "./TerminalFilePanel";
 import { TerminalSidebar } from "./TerminalSidebar";
 import { SshEnableGate, SshMissingCard } from "./TerminalGates";
 import { useTerminalViewState } from "./useTerminalViewState";
@@ -171,7 +171,10 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
 
   // ── 主界面：两栏 ──
   return (
-    <div ref={rootRef} className="flex h-full min-h-0 gap-4">
+    <div
+      ref={rootRef}
+      className="flex h-full min-h-0 overflow-hidden rounded-xl border border-border bg-card"
+    >
       <TerminalSidebar
         connections={connections}
         sessions={sessions}
@@ -208,7 +211,9 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
         className={
           fullscreen
             ? "fixed inset-0 z-50 overflow-hidden rounded-xl"
-            : "relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-xl border border-border"
+            : // 合卡后圆角与边框由外层大卡提供（overflow-hidden 裁切深色画布的直角），
+              // 这里只保留定位与裁切职责。
+              "relative min-h-0 min-w-0 flex-1 overflow-hidden"
         }
         style={{ background: surface }}
       >
@@ -271,17 +276,11 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
 
         {/* 文件管理面板（覆盖在终端之上） */}
         {fileConn && (
-          <div className="absolute inset-0 z-10 bg-card">
-            {/* key 不能省：侧栏在文件面板打开时仍可点，直接换到另一条连接时
-                组件不会重挂，path / entries 还是上一条的——而当前目录会被回写成
-                「上次上传目录」，等于把 A 的目录存成了 B 的。 */}
-            <SshFileBrowser
-              key={`${fileConn.id}:${filePath ?? ""}`}
-              conn={fileConn}
-              initialPath={filePath ?? undefined}
-              onBack={() => (setFileConn(null), setFilePath(null))}
-            />
-          </div>
+          <TerminalFilePanel
+            conn={fileConn}
+            initialPath={filePath ?? undefined}
+            onBack={() => (setFileConn(null), setFilePath(null))}
+          />
         )}
       </div>
 

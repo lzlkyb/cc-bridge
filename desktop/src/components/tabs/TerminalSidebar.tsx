@@ -71,7 +71,7 @@ export function TerminalSidebar({
   const width = collapsed ? 48 : 288;
   return (
     <div
-      className="flex shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card transition-[width] duration-300 ease-out"
+      className="flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-300 ease-out"
       style={{ width }}
     >
       {/* 固定宽 inner：外层 transition 宽度时 inner 不重排，被 overflow-hidden 裁切做擦除动画 */}
