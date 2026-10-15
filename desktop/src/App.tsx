@@ -8,6 +8,7 @@ import { Header } from "./components/layout/Header";
 import { SideNav, WORKSPACE_NAV } from "./components/layout/SideNav";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAppHiddenFlag } from "./hooks/useAppHiddenFlag";
+import { useWindowSizePersistence } from "./hooks/useWindowSizePersistence";
 import { useAppHidden } from "./lib/appVisibility";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsContent } from "./components/ui/tabs";
@@ -27,6 +28,8 @@ function AppContent() {
   // 窗口收进托盘/最小化时给 <html> 打 data-app-hidden，暂停全部 CSS 动画。
   // WebView2 不会自己为隐藏窗口节流动画，实测不做这事会白烧约 0.6 个 CPU 核。
   useAppHiddenFlag();
+  // 窗口尺寸持久化：启动恢复上次尺寸 + resize 防抖落盘（纯前端方案）
+  useWindowSizePersistence();
   // 窗口不可见时停掉全部定时轮询（本层 5s / 日志 10s / 防火墙 30s / 后台命令 3s）。
   // 最重的是本层：`get_status` 里带一次可达性探针（真开 TCP 连接，200ms 超时）。
   const appHidden = useAppHidden();
