@@ -26,8 +26,9 @@ fn default_title() -> String {
 }
 
 /// 按 MCP tools/call 规范包成 `content` 数组；裸返回对象会被客户端判为格式错误。
+/// 用 `to_string_pretty` 与其他工具（read_files 等）的可读性惯例保持一致。
 fn text_result(info: Value) -> Value {
-    json!({ "content": [{ "type": "text", "text": serde_json::to_string(&info).unwrap() }] })
+    json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&info).unwrap() }] })
 }
 
 pub async fn handle(args: PushNotificationArgs, state: &Arc<AppState>) -> Result<Value, String> {
