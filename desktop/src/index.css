@@ -180,36 +180,38 @@
 }
 
 .dark {
-  --background: 240 6% 6%;          /* #09090B */
-  --foreground: 240 5% 90%;
-  --card: 240 6% 12%;              /* B6: 10→12 略提亮卡片 */
-  --card-foreground: 240 5% 90%;
-  --popover: 240 6% 12%;
-  --popover-foreground: 240 5% 90%;
+  /* 深色底吸收设计稿的蓝灰层次：#09090B → #121620（hue 240 → 222，带蓝）。
+     所有灰阶仅做 hue 平移，S/L 不动 → 现有对比度关系全部保持。 */
+  --background: 223 28% 10%;        /* #121620 */
+  --foreground: 222 5% 90%;
+  --card: 221 28% 14%;              /* #191F2C 设计稿卡片底 */
+  --card-foreground: 222 5% 90%;
+  --popover: 221 28% 14%;
+  --popover-foreground: 222 5% 90%;
   --primary: 239 84% 74%;          /* 靛蓝 #818CF8 */
   --primary-foreground: 240 6% 10%;
-  --secondary: 240 4% 18%;         /* B6: 16→18 */
-  --secondary-foreground: 240 5% 90%;
-  --muted: 240 4% 18%;             /* B6: 16→18 增强对比 */
-  --muted-foreground: 240 5% 65%;  /* B6: 55→65 正文更可读 */
+  --secondary: 222 5% 18%;         /* B6: 16→18 */
+  --secondary-foreground: 222 5% 90%;
+  --muted: 222 5% 18%;             /* B6: 16→18 增强对比 */
+  --muted-foreground: 222 5% 65%;  /* B6: 55→65 正文更可读 */
   --accent: 243 47% 20%;           /* 靛蓝深底 #1E1B4B */
   --accent-foreground: 239 84% 74%;
   --destructive: 0 72% 71%;
-  --destructive-foreground: 240 6% 10%;
+  --destructive-foreground: 222 6% 10%;
   --success: 142 69% 58%;
-  --success-foreground: 240 6% 10%;
+  --success-foreground: 222 6% 10%;
   --warning: 27 96% 61%;
-  --warning-foreground: 240 6% 10%;
+  --warning-foreground: 222 6% 10%;
   /* 深色下 -ink 反向提亮（暗底上要「浅色文字」，否则 12% 淡底里的深字读不出来）*/
   --success-ink: 142 69% 65%;
   --warning-ink: 27 96% 68%;
   --destructive-ink: 0 72% 76%;
-  --border: 240 4% 22%;            /* B6: 19→22 分隔线更清晰 */
-  --input: 240 4% 22%;
+  --border: 222 5% 22%;            /* B6: 19→22 分隔线更清晰 */
+  --input: 222 5% 22%;
   --ring: 239 84% 74%;
   --radius: 0.6rem;
 
-  /* 暗色下 Hero 运行态：降饱和 + 加深底色，避免在 #09090b 上刺眼 */
+  /* 暗色下 Hero 运行态：降饱和 + 加深底色，避免在深蓝底上刺眼 */
   --hero-gradient: linear-gradient(135deg, #4F46E5 0%, #3730A3 55%, #0C4A6E 100%);
   /* 黑底色下黑色阴影基本无效——改为黑压暗 + 半透明白边让它从背景里"切"出来 */
   --hero-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
@@ -223,8 +225,8 @@
   --hero-addr-border: rgba(255, 255, 255, 0.14);
   --version-gradient: linear-gradient(135deg, #818CF8, #6366F1);
   --version-shadow: rgba(129, 140, 248, 0.35);
-  --header-start: #18181b;
-  --header-end: #09090b;
+  --header-start: #1a202e;
+  --header-end: #121620;
 
   /* 暗色下 Hero 停止态：深灰但加白边避免融入背景 */
   --hero-stopped-bg: linear-gradient(135deg, #2C2F36 0%, #1F2127 60%, #15171C 100%);
@@ -541,7 +543,7 @@ body {
 /* ── 方案 A 分组布局（运行卡指标重排）── */
 /* Hero 内的分区小标题：白字变体（覆盖卡片场景的深色 .s-sec-label）*/
 .hero-sec-label {
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.6px; color: rgba(255, 255, 255, 0.72); margin-bottom: 5px;
 }
 /* 概览卡（成功率）略降透明底，与主指标卡区分 */
@@ -690,12 +692,12 @@ body {
   border-radius: 11px; padding: 10px 12px;
 }
 .usage-kpi-lb {
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
   text-transform: uppercase; color: hsl(var(--muted-foreground));
 }
 .usage-kpi-v { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: 2px; }
-.usage-kpi-v small { font-size: 10px; font-weight: 600; color: hsl(var(--muted-foreground)); margin-left: 2px; }
-.usage-kpi-delta { font-size: 9.5px; margin-top: 2px; font-weight: 700; }
+.usage-kpi-v small { font-size: 11px; font-weight: 600; color: hsl(var(--muted-foreground)); margin-left: 2px; }
+.usage-kpi-delta { font-size: 11px; margin-top: 2px; font-weight: 700; }
 .usage-kpi-delta--flat { color: hsl(var(--muted-foreground)); font-weight: 600; }
 .usage-kpi-delta--up { color: hsl(var(--success)); }
 .usage-kpi-delta--down { color: hsl(var(--destructive)); }
@@ -715,10 +717,11 @@ body {
 .usage-xdays { display: flex; gap: 9px; margin-top: 4px; }
 .usage-xdays span {
   flex: 1; min-width: 0; overflow: hidden; text-align: center;
-  font-size: 9.5px; color: hsl(var(--muted-foreground));
+  /* 10px：7 等分格子里放不下 11px 的两字标签（会裁边），保 10px */
+  font-size: 10px; color: hsl(var(--muted-foreground));
 }
 .usage-xdays span.usage-xdays--today { font-weight: 800; color: hsl(var(--foreground)); }
-.usage-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 10px; color: hsl(var(--muted-foreground)); }
+.usage-legend { display: flex; gap: 14px; margin-top: 8px; font-size: 11px; color: hsl(var(--muted-foreground)); }
 .usage-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 4px; }
 
 /* 微动画：柱子挂载时自底「生长」（scaleY 不触发 layout，比动 height 便宜），
@@ -746,7 +749,7 @@ body {
 .usage-heat .l2 { background: hsl(var(--primary) / 0.45); }
 .usage-heat .l3 { background: hsl(var(--primary) / 0.7); }
 .usage-heat .l4 { background: hsl(var(--primary)); }
-.usage-heat-scale { display: flex; align-items: center; gap: 3px; margin-top: 8px; font-size: 9px; color: hsl(var(--muted-foreground)); }
+.usage-heat-scale { display: flex; align-items: center; gap: 3px; margin-top: 8px; font-size: 10px; color: hsl(var(--muted-foreground)); }
 .usage-heat-scale i { width: 10px; height: 10px; border-radius: 2.5px; background: hsl(var(--muted)); }
 .usage-heat-scale .l1 { background: hsl(var(--primary) / 0.22); }
 .usage-heat-scale .l2 { background: hsl(var(--primary) / 0.45); }
@@ -754,7 +757,7 @@ body {
 .usage-heat-scale .l4 { background: hsl(var(--primary)); }
 
 /* 工具排行：色点 + 占比条（复用 .tool-bar）+ 数值。 */
-.usage-rank-row { display: flex; align-items: center; gap: 8px; font-size: 10px; margin-bottom: 7px; }
+.usage-rank-row { display: flex; align-items: center; gap: 8px; font-size: 11px; margin-bottom: 7px; }
 .usage-rank-dot { width: 8px; height: 8px; border-radius: 3px; flex-shrink: 0; }
 .usage-rank-name {
   width: 70px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -1522,7 +1525,7 @@ body {
 
 /* ═══ PastePanda 风格设置行 ═══ */
 .s-sec-label {
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.6px; color: hsl(var(--muted-foreground)); margin-bottom: 8px;
 }
 .s-row {
@@ -1623,7 +1626,7 @@ select:focus-visible,
 
 /* ═══ 已保存反馈（统一组件 SavedHint）═══ */
 .saved-hint { animation: saved-in 0.22s ease both; }
-.saved-hint--icon { font-size: 10px; gap: 0; }
+.saved-hint--icon { font-size: 11px; gap: 0; }
 @keyframes saved-in {
   from { opacity: 0; transform: translateY(1px); }
   to { opacity: 1; transform: none; }

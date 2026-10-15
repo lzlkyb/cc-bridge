@@ -6,12 +6,23 @@ import { Icon } from "../ui/icon";
  * 自定义窗口控件：最小化、最大化/还原、关闭（隐藏到托盘）。
  * 无系统标题栏（decorations: false）时替代原生按钮。
  */
+
+/** 纯浏览器 dev（非 Tauri WebView）里 getCurrentWindow 会同步抛错——兜住返回 null。 */
+function tryWin(): ReturnType<typeof getCurrentWindow> | null {
+  try {
+    return getCurrentWindow();
+  } catch {
+    return null;
+  }
+}
+
 export function TitleBarControls() {
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    const win = getCurrentWindow();
+    const win = tryWin();
+    if (!win) return;
 
     // 初始化：查询当前最大化状态
     win.isMaximized().then((m) => {
@@ -32,11 +43,11 @@ export function TitleBarControls() {
   }, []);
 
   const minimize = useCallback(() => {
-    getCurrentWindow().minimize().catch(() => {});
+    tryWin()?.minimize().catch(() => {});
   }, []);
 
   const toggleMaximize = useCallback(() => {
-    getCurrentWindow().toggleMaximize().catch(() => {});
+    tryWin()?.toggleMaximize().catch(() => {});
   }, []);
 
   const close = useCallback(() => {
@@ -50,7 +61,7 @@ export function TitleBarControls() {
     // 改成 close() 后，销毁/隐藏的判断回归到 CloseRequested 单一处，与托盘入口统一。
     // 注意：这靠 `capabilities/default.json` 里的 `core:window:allow-close`，
     // 没那条权限的话 IPC 会被 ACL 拦掉、按钮变成完全没反应。
-    getCurrentWindow().close().catch(() => {});
+    tryWin()?.close().catch(() => {});
   }, []);
 
   const btnCls = "flex items-center justify-center w-8 h-8 rounded-lg transition-all hover:bg-accent hover:text-accent-foreground active:scale-95";

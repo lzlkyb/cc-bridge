@@ -80,7 +80,9 @@ export function MetricCards({
         unit={p95Fmt.unit}
         sub={avg > 0 ? `平均 ${avgFmt.value}${avgFmt.unit} · 尾部慢 ${tailRatio.toFixed(1)} 倍` : "暂无数据"}
         seriesKey="p95"
-        color="text-success-ink"
+        // tone 跟语义走：≥1s（与 fmtLatency 的秒级阈值一致）是「尾部慢」的坏消息 → 橙；
+        // 正常范围 → 绿。设计稿缺陷②：静态绿会把 8.25s 也画成好消息。
+        color={p95 >= 1000 ? "text-warning-ink" : "text-success-ink"}
         chart="bars"
         onNavigate={onNavigate}
         nav={{ tab: "log", anchor: "perf", title: "去日志页看性能分析" }}
