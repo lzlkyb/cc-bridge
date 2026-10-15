@@ -769,11 +769,38 @@ pub(crate) fn write_audit_for_call(
     }
 }
 
+/// 容错解析客户端发来的工具名。
+///
+/// 部分客户端会把 server 名拼进工具名再发 `tools/call`（审计日志实锤：
+/// WorkBuddy 类客户端发过 `mcp__cc-bridge__search_files` → 原名查找直接
+/// Unknown tool）。MCP 服务端注册的工具名不含前缀，所以**仅在精确名未命中时**
+/// 剥掉 `mcp__<server>__` 前缀重试一次；精确命中永远优先（防碰撞）。
+/// 返回 None 表示两种查法都没命中。
+fn resolve_tool_name<'a>(
+    name: &'a str,
+    tools: &'a [crate::mcp::tools::registry::ToolSpec],
+) -> Option<&'a crate::mcp::tools::registry::ToolSpec> {
+    if let Some(spec) = tools.iter().find(|t| t.name == name) {
+        return Some(spec);
+    }
+    let rest = name.strip_prefix("mcp__")?;
+    let idx = rest.find("__")?;
+    let stripped = &rest[idx + 2..];
+    if stripped.is_empty() {
+        return None;
+    }
+    tools.iter().find(|t| t.name == stripped)
+}
+
 pub async fn dispatch_tool(
     name: &str,
     args: serde_json::Value,
     state: &Arc<AppState>,
 ) -> Result<serde_json::Value, String> {
+    // 数据驱动：从注册表查找工具并分发（registry.rs 单点维护，加工具不再改此 match）。
+    // 查找带前缀容错（见 resolve_tool_name），只读/写判断与分发都用解析后的真名。
+    let tools = crate::mcp::tools::registry::all_tools();
+    let spec = resolve_tool_name(name, &tools).ok_or_else(|| format!("Unknown tool: {name}"))?;
     // 只读模式：拒绝一切写操作（默认关闭）。读取/列目录/搜索/分析不受影响。
     // 写工具集合由 registry 单一来源驱动（下方一次性缓存），不再硬编码常量，
     // 避免日后新增写工具只改 registry 漏改此处导致只读模式失效。
@@ -785,20 +812,15 @@ pub async fn dispatch_tool(
             .map(|t| t.name)
             .collect::<HashSet<&'static str>>()
     });
-    if write_set.contains(name) {
+    if write_set.contains(spec.name) {
         let readonly = state.config.read().await.readonly_mode;
         if readonly {
             return Err(format!(
-                "只读模式已开启，已拒绝写操作 `{name}`。如需写入，请在 CC Bridge 设置页关闭「只读模式」。"
+                "只读模式已开启，已拒绝写操作 `{}`。如需写入，请在 CC Bridge 设置页关闭「只读模式」。",
+                spec.name
             ));
         }
     }
-    // 数据驱动：从注册表查找工具并分发（registry.rs 单点维护，加工具不再改此 match）。
-    let tools = crate::mcp::tools::registry::all_tools();
-    let spec = tools
-        .iter()
-        .find(|t| t.name == name)
-        .ok_or_else(|| format!("Unknown tool: {name}"))?;
     (spec.run)(args, state).await
 }
 
@@ -983,7 +1005,7 @@ mod tests {
 /// 根目录放在 `std::env::temp_dir()` 下，所有文件操作都收在根内，测试结束即弃。
 #[cfg(test)]
 mod over_wire_tests {
-    use super::build_router;
+    use super::{build_router, resolve_tool_name};
     use crate::config::BridgeConfig;
     use crate::state::AppState;
     use serde_json::{json, Value};
@@ -2050,6 +2072,40 @@ mod over_wire_tests {
         let srv = spawn_server(test_config(&root), root).await;
         let sid = extract_session_from_sse(&srv.base, &srv.token).await;
         assert!(!sid.is_empty(), "sessionId 不应为空");
+    }
+
+    /// 工具名前缀容错：精确名优先；未命中时剥 `mcp__<server>__` 前缀重试。
+    /// 背景见 resolve_tool_name 文档（审计日志实锤 WorkBuddy 类客户端会发前缀名）。
+    #[test]
+    fn resolve_tool_name_strips_client_prefix() {
+        let tools = crate::mcp::tools::registry::all_tools();
+        // 精确名直接命中，不走剥离。
+        assert_eq!(
+            resolve_tool_name("search_files", &tools)
+                .expect("search_files 应存在")
+                .name,
+            "search_files"
+        );
+        // 审计日志实锤的前缀形态。
+        assert_eq!(
+            resolve_tool_name("mcp__cc-bridge__search_files", &tools)
+                .expect("前缀名应被剥离解析")
+                .name,
+            "search_files"
+        );
+        // 工具名本身以 mcp_ 开头（mcp_proxy / mcp_list_servers）不与此机制冲突。
+        assert_eq!(
+            resolve_tool_name("mcp__cc-bridge__mcp_proxy", &tools)
+                .expect("mcp_proxy 前缀名应被解析")
+                .name,
+            "mcp_proxy"
+        );
+        // 前缀形态但真名不存在 → None（报 Unknown tool 时保留原始名，便于排错）。
+        assert!(resolve_tool_name("mcp__cc-bridge__no_such_tool", &tools).is_none());
+        // 畸形前缀：无第二段 / 空真名 → None。
+        assert!(resolve_tool_name("mcp__", &tools).is_none());
+        assert!(resolve_tool_name("mcp__x__", &tools).is_none());
+        assert!(resolve_tool_name("mcp__nodoubleunder", &tools).is_none());
     }
 
     /// SSE 握手拒绝错误 token。
