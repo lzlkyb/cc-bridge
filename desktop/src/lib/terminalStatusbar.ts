@@ -23,7 +23,12 @@ import { loadTuiScrollSpeed } from "./terminalScrollSpeed";
 export type SegKind = "host" | "path" | "git" | "exit" | "exitBad" | "muted" | "tui" | "warn";
 
 export interface StatusbarSkin {
-  /** 状态栏容器。 */
+  /**
+   * 状态栏容器。融卡设计（2026-10-15）：统一 transparent、无底线——状态栏与
+   * xterm 画布同底色（surface）同边距（px-2），视觉上是一张无缝大卡；
+   * 独立底色/分隔线会让它看起来像「贴在卡上的另一条」。段色对比由各皮肤
+   * colors 直接对 surface 保证。
+   */
   bar: CSSProperties;
   /** 单个段的基础样式（颜色另按 SegKind 取）。 */
   seg: CSSProperties;
@@ -54,16 +59,13 @@ const SEG_BASE: CSSProperties = {
 };
 
 /* ============================== 靖蓝 Indigo ============================== */
-/** 与连接页同语言：indigo 主色 + cyan 辅助，玻璃渐变底。默认。
+/** 段色沿用连接页语言：indigo 主色 + cyan 辅助。默认。容器融卡（见 bar 注）。
  * 🔴 tui（信息段）任何皮肤都不得用琥珀系——那是 warn/dead 的专属语义色，
  * 「TUI 滚动」(正常) 与「⚠ 滚轮不可用」(故障) 撞色会废掉状态栏的分诊通道
  *（2026-10-13 critique P1-2）。各皮肤 tui 统一走各自的冷色系信息色。 */
 const INDIGO: Record<Theme, StatusbarSkin> = {
   dark: {
-    bar: {
-      background: "linear-gradient(90deg, rgba(99,102,241,.14), rgba(34,211,238,.07))",
-      borderBottom: "1px solid rgba(255,255,255,.09)",
-    },
+    bar: { background: "transparent" },
     seg: { ...SEG_BASE, padding: "1px 9px" },
     divider: null,
     dividerColor: "rgba(255,255,255,.09)",
@@ -82,10 +84,7 @@ const INDIGO: Record<Theme, StatusbarSkin> = {
     text: "",
   },
   light: {
-    bar: {
-      background: "linear-gradient(90deg, rgba(99,102,241,.10), rgba(34,211,238,.06))",
-      borderBottom: "1px solid rgba(0,0,0,.08)",
-    },
+    bar: { background: "transparent" },
     seg: { ...SEG_BASE, padding: "1px 9px" },
     divider: null,
     dividerColor: "rgba(0,0,0,.08)",
@@ -109,7 +108,7 @@ const INDIGO: Record<Theme, StatusbarSkin> = {
 /** 无底色、无图标、细点分隔。给不想被打扰的重度用户。 */
 const MONO: Record<Theme, StatusbarSkin> = {
   dark: {
-    bar: { background: "transparent", borderBottom: "1px solid rgba(255,255,255,.06)" },
+    bar: { background: "transparent" },
     seg: { ...SEG_BASE, padding: "0 8px" },
     divider: "·",
     dividerColor: "#4b5162",
@@ -128,7 +127,7 @@ const MONO: Record<Theme, StatusbarSkin> = {
     text: "",
   },
   light: {
-    bar: { background: "transparent", borderBottom: "1px solid rgba(0,0,0,.07)" },
+    bar: { background: "transparent" },
     seg: { ...SEG_BASE, padding: "0 8px" },
     divider: "·",
     dividerColor: "#c3c8d4",
@@ -157,7 +156,7 @@ const MONO: Record<Theme, StatusbarSkin> = {
  */
 const CLASSIC: Record<Theme, StatusbarSkin> = {
   dark: {
-    bar: { background: "#0a0f0a", borderBottom: "1px solid #1b2a1b" },
+    bar: { background: "transparent" },
     seg: { ...SEG_BASE, padding: "1px 9px", textShadow: "0 0 6px rgba(34,197,94,.35)" },
     divider: "│",
     dividerColor: "#1f3d24",
@@ -176,7 +175,7 @@ const CLASSIC: Record<Theme, StatusbarSkin> = {
     text: "",
   },
   light: {
-    bar: { background: "#efe9da", borderBottom: "1px solid #d8cfb8" },
+    bar: { background: "transparent" },
     seg: { ...SEG_BASE, padding: "1px 9px" },
     divider: "│",
     dividerColor: "#c8bfa5",
@@ -200,7 +199,7 @@ const CLASSIC: Record<Theme, StatusbarSkin> = {
 /** 实心色块 + 深/浅反色字，对比度最高。弱光、投影、无障碍场景。 */
 const CONTRAST: Record<Theme, StatusbarSkin> = {
   dark: {
-    bar: { background: "#101216", borderBottom: "1px solid #3a4050" },
+    bar: { background: "transparent" },
     seg: { ...SEG_BASE, padding: "2px 8px", marginRight: 5, borderRadius: 4, fontWeight: 700 },
     divider: null,
     dividerColor: "transparent",
@@ -219,7 +218,7 @@ const CONTRAST: Record<Theme, StatusbarSkin> = {
     text: "#0b0d11",
   },
   light: {
-    bar: { background: "#ffffff", borderBottom: "1px solid #3a4050" },
+    bar: { background: "transparent" },
     seg: { ...SEG_BASE, padding: "2px 8px", marginRight: 5, borderRadius: 4, fontWeight: 700 },
     divider: null,
     dividerColor: "transparent",
