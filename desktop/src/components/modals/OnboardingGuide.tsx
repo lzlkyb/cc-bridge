@@ -126,7 +126,7 @@ export function OnboardingGuide({
       onClick={handleOverlayClick}
     >
       <div
-        className={`mx-4 flex max-h-[88vh] w-full max-w-md flex-col rounded-2xl modal-surface p-6 transition-all duration-300 ${
+        className={`mx-4 flex max-h-[88vh] w-full max-w-md flex-col rounded-2xl modal-surface p-6 transition-[transform,opacity] duration-200 ${
           visible ? "translate-y-0 opacity-100 scale-100" : "translate-y-4 opacity-0 scale-95"
         } ${shake ? "animate-shake" : ""}`}
         onClick={(e) => e.stopPropagation()}
@@ -152,7 +152,7 @@ export function OnboardingGuide({
           {steps.map((_, i) => (
             <i
               key={i}
-              className={`h-1.5 rounded-full transition-all duration-300 ${
+              className={`h-1.5 rounded-full transition-[width] duration-200 ${
                 i === step ? "w-6 bg-primary now" : i < step ? "w-1.5 bg-primary/40 todo" : "w-1.5 bg-muted-foreground/25 todo"
               }`}
             />

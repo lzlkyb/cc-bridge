@@ -118,7 +118,7 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: () => 
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  // 退场：父级在 3500ms 移除前，于 3200ms 先触发滑出（与 transition duration-300 对齐），
+  // 退场：父级在 3500ms 移除前，于 3200ms 先触发滑出（与 transition duration-200 对齐），
   // 补齐此前缺失的退场动画（原 toast 只有进场、关闭是瞬间消失）。
   useEffect(() => {
     const hideTimer = window.setTimeout(() => setVisible(false), 3200);
@@ -129,7 +129,7 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: () => 
     <div
       onClick={onDismiss}
       role={item.variant === "error" ? "alert" : undefined}
-      className={`pointer-events-auto relative flex w-[320px] max-w-[calc(100vw-2rem)] cursor-pointer select-none items-start gap-2.5 overflow-hidden rounded-lg border px-3.5 pb-3.5 pt-3 text-sm font-medium shadow-pop backdrop-blur-md transition-all duration-300 toast ${
+      className={`pointer-events-auto relative flex w-[320px] max-w-[calc(100vw-2rem)] cursor-pointer select-none items-start gap-2.5 overflow-hidden rounded-lg border px-3.5 pb-3.5 pt-3 text-sm font-medium shadow-pop backdrop-blur-md transition-[transform,opacity,background-color,border-color] duration-200 toast ${
         item.variant === "error" ? "err animate-shake" : item.variant === "warning" ? "warn" : ""
       } ${variantStyles[item.variant]} ${visible ? "translate-x-0 opacity-100" : "translate-x-4 opacity-0"}`}
     >

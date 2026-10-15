@@ -271,7 +271,7 @@ export function UpdateNotesDialog({
               onDownload();
               onClose();
             }}
-            className="inline-flex items-center gap-1.5 rounded-[10px] bg-[var(--color-primary)] px-5 py-2.5 text-[13px] font-semibold text-white shadow-glow-primary transition-all hover:-translate-y-px hover:bg-[hsl(243,75%,53%)] hover:shadow-glow-primary-strong"
+            className="inline-flex items-center gap-1.5 rounded-[10px] bg-[var(--color-primary)] px-5 py-2.5 text-[13px] font-semibold text-white shadow-glow-primary transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:-translate-y-px hover:bg-[hsl(243,75%,53%)] hover:shadow-glow-primary-strong"
           >
             <svg className="h-[15px] w-[15px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round"><path d="M12 4v12M7 11l5 5 5-5M5 20h14" /></svg>
             下载并更新

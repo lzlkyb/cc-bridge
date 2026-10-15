@@ -90,7 +90,7 @@ export function TabsList({ children, className = "" }: { children: ReactNode; cl
     <div ref={listRef} className={`app-tabs relative flex w-full gap-0.5 rounded-xl bg-secondary p-1 ${className}`}>
       {/* 滑动指示器 — 绝对定位的高亮块，带 transform 过渡 */}
       <div
-        className="app-tabs-ind absolute top-1 h-[calc(100%-8px)] rounded-lg bg-card shadow-card transition-all duration-250 ease-out pointer-events-none"
+        className="app-tabs-ind absolute top-1 h-[calc(100%-8px)] rounded-lg bg-card shadow-card transition-[left,width] duration-200 ease-[var(--ease)] pointer-events-none"
         style={{ left: indicatorStyle.left, width: indicatorStyle.width }}
       />
       {children}

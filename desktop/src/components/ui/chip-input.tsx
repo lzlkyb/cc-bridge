@@ -122,7 +122,7 @@ export function ChipInput({
               {ext}
               <button
                 type="button"
-                className="chip-x ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full border-0 text-xs leading-none opacity-50 transition-all"
+                className="chip-x ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full border-0 text-xs leading-none opacity-50 transition-[color,background-color,border-color,transform,box-shadow,opacity]"
                 onClick={() => remove(ext)}
               >
                 &times;
@@ -138,7 +138,7 @@ export function ChipInput({
           <button
             key={cat.key}
             type="button"
-            className={`cat-btn inline-flex items-center gap-1.5 rounded-lg border-1.5 border-border bg-card px-3 py-1.5 text-xs font-semibold tracking-wide text-muted-foreground transition-all hover:bg-muted hover:text-foreground ${cat.btnClass} ${openCat === cat.key ? "open" : ""}`}
+            className={`cat-btn inline-flex items-center gap-1.5 rounded-lg border-1.5 border-border bg-card px-3 py-1.5 text-xs font-semibold tracking-wide text-muted-foreground transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:bg-muted hover:text-foreground ${cat.btnClass} ${openCat === cat.key ? "open" : ""}`}
             onClick={() => toggleCat(cat.key)}
           >
             <span className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: cat.dot }} />
@@ -163,7 +163,7 @@ export function ChipInput({
                 <button
                   key={ext}
                   type="button"
-                  className={`ext-tag inline-flex items-center gap-1 rounded-md border-1.5 border-transparent bg-muted px-2 py-[3px] font-mono text-xs font-medium tracking-wide text-muted-foreground transition-all hover:border-border hover:text-foreground ${cat.tagClass} ${sel ? "checked" : ""}`}
+                  className={`ext-tag inline-flex items-center gap-1 rounded-md border-1.5 border-transparent bg-muted px-2 py-[3px] font-mono text-xs font-medium tracking-wide text-muted-foreground transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:border-border hover:text-foreground ${cat.tagClass} ${sel ? "checked" : ""}`}
                   onClick={() => toggleExt(ext)}
                 >
                   {sel ? "✓ " : ""}{ext}
@@ -188,7 +188,7 @@ export function ChipInput({
         />
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-xs font-semibold tracking-wide text-muted-foreground transition-all hover:border-primary hover:bg-muted hover:text-foreground"
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-xs font-semibold tracking-wide text-muted-foreground transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:border-primary hover:bg-muted hover:text-foreground"
           onClick={() => {
             input
               .split(/[,;\s]+/)
@@ -201,7 +201,7 @@ export function ChipInput({
         </button>
         <button
           type="button"
-          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-xs font-semibold tracking-wide text-destructive-ink transition-all hover:border-destructive"
+          className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-3 py-0.5 text-xs font-semibold tracking-wide text-destructive-ink transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:border-destructive"
           onClick={() => onChange([])}
         >
           清空

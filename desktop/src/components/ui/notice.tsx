@@ -101,7 +101,7 @@ function CountdownRing({ remain, total, resolved, tone }: { remain: number; tota
           fill="none"
           strokeWidth="2.5"
           strokeLinecap="round"
-          className={`${color} transition-[stroke-dashoffset] duration-300 ease-linear`}
+          className={`${color} transition-[stroke-dashoffset] duration-200 ease-linear`}
           strokeDasharray={RING_CIRC}
           strokeDashoffset={RING_CIRC * (1 - remain / Math.max(total, 1))}
         />
@@ -224,7 +224,7 @@ export function ActionCard({
               handleCopy();
             }}
             disabled={copyDisabled}
-            className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11.5px] font-semibold transition-all hover:-translate-y-px hover:shadow-card disabled:cursor-not-allowed disabled:opacity-40 ${
+            className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11.5px] font-semibold transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:-translate-y-px hover:shadow-card disabled:cursor-not-allowed disabled:opacity-40 ${
               copied || resolved
                 ? "border-success/50 bg-success/10 text-success-ink"
                 : "border-warning/45 bg-warning/[0.09] text-warning-ink hover:border-warning"
@@ -237,7 +237,7 @@ export function ActionCard({
         <Icon
           name="chevronDown"
           size={14}
-          className={`shrink-0 text-muted-foreground transition-transform duration-300 ${expanded ? "rotate-180" : ""}`}
+          className={`shrink-0 text-muted-foreground transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
         />
         {onDismiss && (
           <button
@@ -257,7 +257,7 @@ export function ActionCard({
 
       {/* 展开详情：grid-rows 0fr→1fr 平滑高度过渡 */}
       <div
-        className={`grid transition-[grid-template-rows] duration-[420ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        className={`grid transition-[grid-template-rows] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
           expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
         }`}
       >

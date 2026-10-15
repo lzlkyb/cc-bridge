@@ -277,7 +277,7 @@ function AppContent() {
         顶栏与侧栏固定，仅内容区滚动（横向锁死、纵向可滚）。 */}
     {/* app-boot-fade：接替 index.html 里的首帧骨架屏时做一次很短的淡入，
         磨掉「骨架灰块 → 真实文字」那下硬切换。 */}
-    <div className="app-boot-fade flex h-screen flex-col overflow-hidden bg-background text-foreground">
+    <div data-app-hidden={appHidden || undefined} className="app-boot-fade flex h-screen flex-col overflow-hidden bg-background text-foreground">
       <Tabs value={activeTab} onValueChange={handleNavigate} className="app-shell">
         <SideNav
           activeTab={activeTab}

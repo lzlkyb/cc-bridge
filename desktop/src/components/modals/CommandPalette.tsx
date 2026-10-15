@@ -157,13 +157,8 @@ export function CommandPalette({
     { id: "act-server", label: running ? "停止 MCP 服务" : "启动 MCP 服务", icon: running ? "pause" : "play", group: "操作", run: runToggleServer },
     { id: "act-restart", label: "重启 MCP 服务", icon: "refresh", group: "操作", run: runRestartServer },
     {
-      id: "act-clearlog",
-      label: "清空审计日志",
-      icon: "trash",
-      group: "操作",
-      run: runClearAudit,
-      confirmTitle: "确定清空全部审计日志？",
-      confirmDescription: "此操作会删除本机所有历史调用记录，且不可恢复。",
+      id: "act-clearlog", label: "清空审计日志", icon: "trash", group: "操作", run: runClearAudit,
+      confirmTitle: "确定清空全部审计日志？", confirmDescription: "此操作会删除本机所有历史调用记录，且不可恢复。",
     },
     { id: "act-addroot", label: "添加允许访问的根目录", icon: "plus", group: "操作", run: () => setShowDirBrowser(true) },
     { id: "act-onboarding", label: "重新查看使用引导", icon: "info", group: "操作", run: () => onReopenOnboarding?.() },
@@ -248,7 +243,7 @@ export function CommandPalette({
         onClick={onClose}
       >
         <div
-          className={`mx-4 w-full max-w-md overflow-hidden rounded-xl modal-surface transition-all duration-200 pal ${
+          className={`mx-4 w-full max-w-md overflow-hidden rounded-xl modal-surface transition-[transform,opacity] duration-200 pal ${
             visible ? "translate-y-0 opacity-100 scale-100" : "translate-y-2 opacity-0 scale-98"
           }`}
           onClick={(e) => e.stopPropagation()}
@@ -281,7 +276,10 @@ export function CommandPalette({
                 return (
                   <Fragment key={item.id}>
                     {showHeader && (
-                      <div className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground pal-g">
+                      <div
+                        className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground pal-g"
+                        style={{ animationDelay: `${Math.min(i, 12) * 10}ms` }}
+                      >
                         {item.group}
                       </div>
                     )}
@@ -289,6 +287,7 @@ export function CommandPalette({
                       onClick={() => selectItem(item)}
                       onMouseEnter={() => setSelectedIndex(i)}
                       disabled={isBusy}
+                      style={{ animationDelay: `${Math.min(i, 12) * 10}ms` }}
                       className={`flex w-full items-center gap-3 px-4 py-2.5 text-sm transition-colors disabled:opacity-60 pal-it ${
                         i === selectedIndex ? "sel bg-accent text-accent-foreground" : "text-foreground hover:bg-muted/60"
                       }`}

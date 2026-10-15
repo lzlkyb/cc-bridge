@@ -143,7 +143,7 @@ export function TerminalTabsBar({
             {bar && (
               <div className="absolute inset-x-1.5 bottom-0 h-0.5 overflow-hidden rounded-full bg-muted-foreground/15">
                 <div
-                  className={`h-full rounded-full transition-[width] duration-300 ${bar.className}`}
+                  className={`h-full rounded-full transition-[width] duration-200 ${bar.className}`}
                   style={{ width: bar.width }}
                 />
               </div>

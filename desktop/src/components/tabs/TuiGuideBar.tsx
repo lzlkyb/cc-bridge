@@ -117,7 +117,7 @@ export function TuiGuideBar({ flips, onSend, onDismiss, onCollapse }: Props) {
           <Icon
             name="chevronDown"
             size={14}
-            className={"transition-transform duration-300 " + (open ? "rotate-180" : "")}
+            className={"transition-transform duration-200 " + (open ? "rotate-180" : "")}
           />
         </button>
         <button
@@ -141,7 +141,7 @@ export function TuiGuideBar({ flips, onSend, onDismiss, onCollapse }: Props) {
       {/* 展开区：`grid-rows 0fr↔1fr` 平滑开合（ui/notice.tsx 同款机制）。缩进 pl-11 对齐
           图标右侧（px-2.5=10 + 图标 24 + gap 10 = 44px）；外层 overflow-hidden 兜住。 */}
       <div
-        className="grid transition-[grid-template-rows] duration-300 ease-out"
+        className="grid transition-[grid-template-rows] duration-200 ease-[var(--ease)]"
         style={{ gridTemplateRows: open ? "1fr" : "0fr" }}
       >
         <div className="overflow-hidden">

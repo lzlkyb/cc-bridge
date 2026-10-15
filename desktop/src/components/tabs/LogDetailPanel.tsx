@@ -137,7 +137,7 @@ function TimingBreakdown({ entry }: { entry: AuditEntry }) {
           return (
             <div
               key={s.label}
-              className="flex items-center justify-center overflow-hidden whitespace-nowrap text-[10px] font-semibold text-white transition-all"
+              className="flex items-center justify-center overflow-hidden whitespace-nowrap text-[10px] font-semibold text-white transition-[color,background-color,border-color,transform,box-shadow,opacity]"
               style={{ width: `${pct}%`, background: s.color }}
               title={`${s.label}: ${formatDurationMs(s.ms)}`}
             >

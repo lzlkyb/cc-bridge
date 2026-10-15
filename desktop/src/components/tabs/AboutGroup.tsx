@@ -194,7 +194,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                   {TECH_STACK.map((t) => (
                     <div
                       key={t.name}
-                      className="flex flex-col items-center gap-1 rounded-lg border border-transparent bg-muted px-1.5 py-2.5 text-center transition-all hover:translate-y-[-1px] hover:border-border"
+                      className="flex flex-col items-center gap-1 rounded-lg border border-transparent bg-muted px-1.5 py-2.5 text-center transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:translate-y-[-1px] hover:border-border"
                     >
                       <div
                         className="flex h-7 w-7 items-center justify-center rounded-md text-[13px] font-bold"
@@ -230,7 +230,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                       <button
                         type="button"
                         onClick={openRepo}
-                        className="info-tag info-tag-clickable tag-orange inline-block cursor-pointer rounded-md px-2 py-0.5 text-xs font-bold transition-all hover:translate-y-[-1px] hover:shadow-hover"
+                        className="info-tag info-tag-clickable tag-orange inline-block cursor-pointer rounded-md px-2 py-0.5 text-xs font-bold transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:translate-y-[-1px] hover:shadow-hover"
                       >
                         GitHub ↗
                       </button>

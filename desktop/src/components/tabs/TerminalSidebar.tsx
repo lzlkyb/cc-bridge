@@ -73,7 +73,7 @@ export function TerminalSidebar({
   const width = collapsed ? 48 : sizing.width;
   return (
     <div
-      className="terminal-sidebar relative flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200 ease-out"
+      className="terminal-sidebar relative flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200 ease-[var(--ease)]"
       style={{ width }}
     >
       {/* 固定宽 inner：外层 transition 宽度时 inner 不重排，被 overflow-hidden 裁切做擦除动画 */}
@@ -211,7 +211,7 @@ function CollapsedRail({
             type="button"
             title={`${c.username}@${c.host}:${c.port}`}
             onClick={() => onPick(c)}
-            className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-sm font-medium transition-all hover:bg-muted ${
+            className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-sm font-medium transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:bg-muted ${
               isActive ? "bg-primary/15 text-primary" : ""
             }`}
           >

@@ -5,6 +5,7 @@ import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
 import { Icon, type IconName } from "../ui/icon";
 import { TitleBarControls } from "./TitleBarControls";
+import { SecurityBadgeGroup } from "./SecurityBadgeGroup";
 
 /**
  * 应用顶栏（2026-10-14 侧栏改造后，由原「Header」瘦身而来）。
@@ -102,22 +103,10 @@ function HeaderImpl({
           </Button>
         )}
         <span className="max-w-40 truncate text-xs font-medium text-muted-foreground" data-tauri-drag-region>{location}</span>
-        {securityBadges.filter((b) => b.show).map((b) => (
-          <button
-            key={b.key}
-            type="button"
-            title={b.title}
-            onClick={() => onNavigate?.(b.tab, b.anchor)}
-            className={`inline-flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold transition-colors ${
-              b.danger
-                ? "border-destructive/30 bg-destructive/10 text-destructive-ink hover:bg-destructive/20"
-                : "border-warning/30 bg-warning/10 text-warning-ink hover:bg-warning/20"
-            }`}
-          >
-            <Icon name={b.icon} size={11} />
-            {b.label}
-          </button>
-        ))}
+        {/* C 方案 2026-10-15：5 枚散徽章聚合为一枚入口——徽章群原紧邻侧栏开关与
+            服务启停两个高危邻居，窄窗下弹性空白被压没后直接顶上「停止服务」，
+            误触代价重。面板内各项保留完整语义与原跳转逻辑。 */}
+        <SecurityBadgeGroup badges={securityBadges} onNavigate={onNavigate} />
       </div>
 
       {/* 中部：纯拖拽空白（无系统标题栏，需要留足可拖区域） */}

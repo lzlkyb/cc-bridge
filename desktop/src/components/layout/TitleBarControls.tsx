@@ -64,7 +64,7 @@ export function TitleBarControls() {
     tryWin()?.close().catch(() => {});
   }, []);
 
-  const btnCls = "flex items-center justify-center w-8 h-8 rounded-lg transition-all hover:bg-accent hover:text-accent-foreground active:scale-95";
+  const btnCls = "flex items-center justify-center w-8 h-8 rounded-lg transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:bg-accent hover:text-accent-foreground active:scale-95";
 
   return (
     <div className="flex items-center gap-0.5" data-tauri-drag-region="false">

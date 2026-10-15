@@ -91,7 +91,7 @@ export function Modal({
         ref={surfaceRef}
         role="dialog" aria-modal="true" aria-label={ariaLabel}
         style={{ transform, transitionDuration: visible ? "180ms" : "140ms" }}
-        className={`mx-4 transition-[opacity,transform] ease-out-expo ${surfaceState} ${className}`}
+        className={`mx-4 transition-[opacity,transform] ease-[var(--ease)]-expo ${surfaceState} ${className}`}
         onClick={(e) => e.stopPropagation()}
       >
         {children}
