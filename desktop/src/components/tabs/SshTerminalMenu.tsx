@@ -18,6 +18,15 @@ interface Props {
   onClose: () => void;
 }
 
+interface ItemProps {
+  label: string;
+  hint: string;
+  disabled?: boolean;
+  /** 主操作视觉引导：有选区时的「复制」行用主色填充，右键直通复制。 */
+  primary?: boolean;
+  onClick: () => void;
+}
+
 const MENU_W = 176;
 const MENU_H = 124;
 
@@ -77,34 +86,30 @@ export function SshTerminalMenu({
       {/* 快捷键提示必须与 useSshTerminalSession 里真正拦下的组合键一致。
           曾经这里写的是 Ctrl+Shift+C / Ctrl+A 但一个都没实现，而 xterm 会把它们发成
           \x03（SIGINT，中断命令）与 \x01（跳行首 / tmux 前缀）——相当于教用户按一个会打断自己任务的键。 */}
-      <Item label="复制" hint={hasSelection ? "Ctrl+Shift+C" : "无选中"} disabled={!hasSelection} onClick={run(onCopy)} />
+      <Item label="复制" hint={hasSelection ? "Ctrl+Shift+C" : "无选中"} disabled={!hasSelection} primary={hasSelection} onClick={run(onCopy)} />
       <Item label="粘贴" hint={pasteDisabled ? "已断开" : "Ctrl+V"} disabled={pasteDisabled} onClick={run(onPaste)} />
       <Item label="全选" hint="Ctrl+Shift+A" onClick={run(onSelectAll)} />
     </div>
   );
 }
 
-function Item({
-  label,
-  hint,
-  disabled,
-  onClick,
-}: {
-  label: string;
-  hint: string;
-  disabled?: boolean;
-  onClick: () => void;
-}) {
+function Item({ label, hint, disabled, primary, onClick }: ItemProps) {
+  // 主色行：hint 也要换成主色系（primary-foreground 的 70% 透明度），否则在实底上对比度不足。
+  const primaryCls = primary
+    ? "bg-primary text-primary-foreground hover:bg-primary/90"
+    : "text-foreground hover:bg-muted";
   return (
     <button
       type="button"
       role="menuitem"
       disabled={disabled}
       onClick={onClick}
-      className="flex w-full items-center justify-between gap-4 rounded-md px-2.5 py-1.5 text-left text-[13px] text-foreground transition-colors hover:bg-muted disabled:cursor-default disabled:text-muted-foreground disabled:hover:bg-transparent"
+      className={`flex w-full items-center justify-between gap-4 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors disabled:cursor-default disabled:text-muted-foreground disabled:hover:bg-transparent ${primaryCls}`}
     >
       <span>{label}</span>
-      <span className="font-mono text-xs text-muted-foreground">{hint}</span>
+      <span className={`font-mono text-xs ${primary ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+        {hint}
+      </span>
     </button>
   );
 }

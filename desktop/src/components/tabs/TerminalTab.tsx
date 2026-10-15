@@ -261,7 +261,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
                     }}
                     onCloseTab={() => ssh.closeTab(s.sessionId)}
                     visible={s.sessionId === activeId}
-                    dragSelectEnabled={status?.sshDragSelectEnabled ?? false}
+                    dragSelectEnabled={status?.sshDragSelectEnabled ?? true}
                     fullscreen={fullscreen}
                     onToggleFullscreen={() => setFullscreen((v) => !v)}
                     onCwd={(cwd) => onCwd(s.sessionId, cwd)}

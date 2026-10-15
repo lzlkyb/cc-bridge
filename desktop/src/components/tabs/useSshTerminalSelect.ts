@@ -11,6 +11,7 @@ import { toast } from "../ui/toast";
 import { MOUSE_REPORT_OFF } from "../../lib/terminalMouse";
 import { attachSelectWheelGuard } from "../../lib/terminalScroll";
 import { trimCopyText } from "../../lib/terminalPaste";
+import { attachShiftCapture, replaySelectionStart as replayTermSelectionStart } from "../../lib/terminalShiftCapture";
 
 /** 拖拽超过这个像素数才算「拖选」，以下当普通点击（不影响 TUI 定位光标）。 */
 const DRAG_THRESHOLD = 4;
@@ -151,31 +152,11 @@ export function useSshTerminalSelect({
       // 纯点击（不移动）仍当普通点击，不影响 Claude Code 定位光标。
       // window 级监听：拖拽移出容器也能持续收到 move/up。
       //
-      // 🔴 鼠标报告活跃时（Claude Code 每帧重绘 ?1006h），关报告**必须补发合成 mousedown**：
-      // xterm 选区只能在 mousedown 时启动（SelectionService.handleMouseDown），拖拽中途关报告
-      // 后 mousemove 只延伸"已存在"的选区、无法凭空新建——headless 实测中途关后选区恒空
-      // （关前报告已发给 TUI 无法避免；合成 mousedown 复用原始按点坐标，只驱动本地选区，
-      // 此时报告已关不会二次发送）。pointerDownRef 守卫防"松手后迟到的回调"补出幽灵选区。
-      const replaySelectionStart = (x: number, y: number) => {
-        term.write(MOUSE_REPORT_OFF, () => {
-          if (!pointerDownRef.current) return;
-          if (term.modes.mouseTrackingMode !== "none") return;
-          const target = (term.element?.querySelector(".xterm-screen") ?? term.element) as HTMLElement | null;
-          if (!target) return;
-          target.dispatchEvent(
-            new MouseEvent("mousedown", {
-              bubbles: true,
-              cancelable: true,
-              view: window,
-              clientX: x,
-              clientY: y,
-              button: 0,
-              buttons: 1,
-              detail: 1,
-            }),
-          );
-        });
-      };
+      // 🔴 鼠标报告活跃时中途关报告必须补发合成 mousedown（xterm 选区只能在
+      // mousedown 时启动）——实现抽在 lib/terminalShiftCapture.ts 的 replaySelectionStart，
+      // pointerDownRef 守卫防"松手后迟到的回调"补出幽灵选区。
+      const replaySelectionStart = (x: number, y: number) =>
+        replayTermSelectionStart(term, x, y, () => pointerDownRef.current);
       const onPointerMove = (e: PointerEvent) => {
         // 开关关闭时拖拽不触发选择态——保持默认交互（拖拽不误伤 TUI 点击）；
         // 仍可按住 Shift 或点「选择模式」进入选择态。两条路径不受此开关影响。
@@ -192,6 +173,18 @@ export function useSshTerminalSelect({
         replaySelectionStart(downPosRef.current.x, downPosRef.current.y);
       };
       window.addEventListener("pointermove", onPointerMove);
+
+      // Shift 拦截层抽在 lib/terminalShiftCapture.ts（capture 级，防首击泄漏）：
+      // Shift+mousedown 置选择态并关报告补发合成 mousedown；move/up 转发无
+      // Shift 版驱动 xterm 选区延伸/提交。
+      const detachShiftCapture = attachShiftCapture(term, container, {
+        onShiftDown: (x, y) => {
+          shiftActiveRef.current = true;
+          setShiftActive(true);
+          selectActiveRef.current = true;
+          replaySelectionStart(x, y);
+        },
+      });
 
       // 松手自动复制：选择态期间鼠标抬起即把选区写入剪贴板，无需再点「复制选中」。
       // 空选区静默跳过（普通点击 / 非选择态不触发），避免误提示。
@@ -234,6 +227,15 @@ export function useSshTerminalSelect({
         if (shiftActiveRef.current) return;
         shiftActiveRef.current = true;
         setShiftActive(true);
+        // 🔴 中途按 Shift：指针已按下且未进选择态时立即补建选区——拖到一半想复制
+        // 不再失败（此前只在 mousedown 时检测 shiftKey，先拖后按 Shift 无效）。
+        // 无鼠标报告时 xterm 原生拖选本就能建区，无需合成；报告开着必须补发。
+        if (pointerDownRef.current && !selectActiveRef.current) {
+          selectActiveRef.current = true;
+          if (term.modes.mouseTrackingMode !== "none") {
+            replaySelectionStart(downPosRef.current.x, downPosRef.current.y);
+          }
+        }
       };
       const onKeyUpShift = (e: KeyboardEvent) => {
         if (e.key !== "Shift") return;
@@ -253,6 +255,7 @@ export function useSshTerminalSelect({
       return () => {
         container.removeEventListener("mousedown", onDown);
         container.removeEventListener("pointerdown", onDown);
+        detachShiftCapture();
         detachWheelGuard();
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", copyOnRelease);

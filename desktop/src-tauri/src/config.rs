@@ -262,7 +262,7 @@ impl Default for BridgeConfig {
             release_webview_on_close: true,
             ssh_enabled: false,
             ssh_connections: vec![],
-            ssh_drag_select_enabled: false,
+            ssh_drag_select_enabled: true,
             remote_tls_enabled: false,
             remote_ban_enabled: true,
             remote_ban_threshold: 5,
@@ -367,7 +367,7 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "ssh_enabled" => config.ssh_enabled = parse_or_warn(key, value, false),
             "ssh_connections" => config.ssh_connections = parse_or_warn(key, value, vec![]),
             "ssh_drag_select_enabled" => {
-                config.ssh_drag_select_enabled = parse_or_warn(key, value, false)
+                config.ssh_drag_select_enabled = parse_or_warn(key, value, true)
             }
             "remote_tls_enabled" => config.remote_tls_enabled = parse_or_warn(key, value, false),
             "remote_ban_enabled" => config.remote_ban_enabled = parse_or_warn(key, value, true),
