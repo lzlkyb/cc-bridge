@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
@@ -382,10 +382,18 @@ fn run_scp(
     hooks: TransferHooks,
 ) -> Result<(), String> {
     const SCP_TIMEOUT: Duration = Duration::from_secs(600);
-    let build = |sftp_mode: bool| -> Vec<String> {
+    // `no_strict` = 遗留协议下载时带 `-T`（关掉 strict filename check）。
+    // 🔴 远端 shell 会剥掉路径引号，本地 scp **收到的**文件名与**请求的**带引号名
+    // 不一致，这道检查（CVE-2019-6111 缓解）会直接拒收——本机 OpenSSH 8.1 实测，
+    // 每一次下载都秒失败：`protocol error: filename does not match request`。
+    // 下载目标名由本端指定（`local.ccbpart` 临时名，传完才 rename），远端发来的
+    // 名字不会被用于落盘，关掉检查的风险可控。
+    let build = |sftp_mode: bool, no_strict: bool| -> Vec<String> {
         let mut a: Vec<String> = Vec::new();
         if sftp_mode {
             a.push("-s".into());
+        } else if no_strict && !job.upload {
+            a.push("-T".into());
         }
         a.extend(ssh_base_args(job.link, "-P"));
         let endpoint = scp_endpoint(&job.link.conn, job.remote, !sftp_mode);
@@ -400,14 +408,33 @@ fn run_scp(
     };
 
     if scp_supports_sftp_protocol(scp) {
-        match spawn_capture(scp, &build(true), creds.clone(), SCP_TIMEOUT, hooks.clone()) {
+        match spawn_capture(
+            scp,
+            &build(true, false),
+            creds.clone(),
+            SCP_TIMEOUT,
+            hooks.clone(),
+        ) {
             Ok(_) => return Ok(()),
             // 探测说支持却仍报未知选项：探测判错了，退回遗留协议再试一次。
             Err(e) if is_unknown_option_err(&e) => {}
             Err(e) => return Err(e),
         }
     }
-    spawn_capture(scp, &build(false), creds, SCP_TIMEOUT, hooks).map(|_| ())
+    match spawn_capture(
+        scp,
+        &build(false, true),
+        creds.clone(),
+        SCP_TIMEOUT,
+        hooks.clone(),
+    ) {
+        Ok(_) => Ok(()),
+        // scp 7.x 不认识 `-T`——但它也没有 strict filename check，去掉重跑即可。
+        Err(e) if is_unknown_option_err(&e) => {
+            spawn_capture(scp, &build(false, false), creds, SCP_TIMEOUT, hooks).map(|_| ())
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// 列目录命令（GNU coreutils）。
@@ -453,14 +480,67 @@ fn shell_quote(p: &str) -> String {
 /// 认证要么在几秒内完成、要么就是失败了，用时间窗口才是对的语义。
 const CREDENTIAL_FILL_WINDOW: Duration = Duration::from_secs(30);
 
+/// 剥掉 VT 转义序列（CSI / OSC / 两字节 ESC 序列），只留正文。
+///
+/// 🔴 为什么必须有它：密码提示是**子 ssh 进程**打到继承控制台上的，而 Windows
+/// 的 ConPTY 会把控制台状态变化（清屏、光标、以及 OpenSSH for Windows 设置的
+/// **控制台标题**）一并转译成转义序列塞进输出流。实测一段提示长这样：
+///
+/// ```text
+/// \x1b[2J\x1b[m\x1b[Hlizuliang@host's password:\x1b[1C\x1b]0;C:\...\scp.exe\x07\x1b[?25h
+/// ```
+///
+/// 提示**不以冒号结尾**（后面跟着 `\x1b[1C`、设标题 OSC 和 `\x1b[?25h`），
+/// 「尾部冒号」判据永远不命中 → 自动填密码静默失效 → 一次性传输路径（scp）
+/// 没有手输的机会，表现为进度条永远停在「连接中」，直到 600s 超时。
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            // CSI：参数字节 0x30–0x3F、中间字节 0x20–0x2F，终止字节 0x40–0x7E。
+            Some('[') => loop {
+                match it.next() {
+                    None => break,
+                    Some(n) if ('@'..='~').contains(&n) => break,
+                    _ => {}
+                }
+            },
+            // OSC：到 BEL（\x07）或 ST（ESC \）为止。
+            Some(']') => loop {
+                match it.next() {
+                    None | Some('\x07') => break,
+                    Some('\x1b') => {
+                        it.next();
+                        break;
+                    }
+                    _ => {}
+                }
+            },
+            // 其余两字节转义（\x1bM、\x1b7、\x1b= 之类）：丢掉引入符即可。
+            Some(_) => {}
+            None => {}
+        }
+    }
+    out
+}
+
 /// 若这一块输出看着是**进程正阻塞等待输入的提示**，返回它的小写文本。
 ///
 /// 判据是「去掉尾部空白后以冒号结尾」：真提示写完就阻塞等输入，所以它一定压在
 /// 这一块的末尾；而 `grep password: foo.conf` 这类输出后面还跟着别的内容与换行，
 /// 不会以冒号收尾。单靠 `contains("password:")` 无法区分二者——这正是原实现的漏洞。
+///
+/// 🔴 匹配前必须先 `strip_ansi`：ConPTY 会把控制台标题/光标状态的转义序列追加在
+/// 提示后面（见 `strip_ansi` 文档），不剥掉的话尾部永远是 `\x1b[?25h` 而不是冒号。
 fn prompt_tail(chunk: &[u8]) -> Option<String> {
     let s = String::from_utf8_lossy(chunk);
-    let t = s.trim_end();
+    let t = strip_ansi(&s);
+    let t = t.trim_end();
     if t.ends_with(':') || t.ends_with('：') {
         Some(t.to_lowercase())
     } else {
@@ -775,7 +855,7 @@ fn spawn_capture(
     } = hooks;
     let progress_target = app.zip(transfer_id);
     let pty_system = native_pty_system();
-    let pair = pty_system
+    let PtyPair { master, slave } = pty_system
         .openpty(PtySize {
             rows: 40,
             cols: 160,
@@ -789,22 +869,27 @@ fn spawn_capture(
         cmd.arg(a);
     }
 
-    let mut reader = pair
-        .master
+    let mut reader = master
         .try_clone_reader()
         .map_err(|e| format!("获取 PTY 读取端失败：{e}"))?;
-    let master = pair.master; // 移入 reader 线程，供 take_writer 自动填凭据
-    let mut child = pair
-        .slave
+    // writer 必须先取（Windows 上 inner.writable 是 Option，只此一份），
+    // 移入 reader 线程供凭据自动填充。
+    let writer = master
+        .take_writer()
+        .map_err(|e| format!("获取 PTY 写入端失败：{e}"))?;
+    let mut child = slave
         .spawn_command(cmd)
         .map_err(|e| format!("启动 {} 失败：{e}", program.display()))?;
+    // 🔴 子进程已拿到自己的 slave 副本，父进程这份必须立刻关掉：留着它，
+    // Unix 上 master 读端在子进程退出后永远等不到 EIO/EOF。
+    drop(slave);
 
     let captured = Arc::new(StdMutex::new(String::new()));
     let cap_for_reader = captured.clone();
 
     // reader：持续读 → 累积输出；出现密码/密码短语提示则自动写对应凭据。
-    let (prompt_tx, prompt_rx) = mpsc::channel::<()>();
     let reader_handle = std::thread::spawn(move || {
+        let mut writer = writer;
         let mut buf = [0u8; 4096];
         let mut creds = auto_creds;
         let mut last_percent: Option<u8> = None;
@@ -859,11 +944,9 @@ fn spawn_capture(
                             None
                         };
                         if let Some(secret) = filled {
-                            if let Ok(mut w) = master.take_writer() {
-                                let _ = w.write_all(secret.as_bytes());
-                                let _ = w.write_all(b"\n");
-                                let _ = w.flush();
-                            }
+                            let _ = writer.write_all(secret.as_bytes());
+                            let _ = writer.write_all(b"\n");
+                            let _ = writer.flush();
                         }
                     }
                 }
@@ -877,46 +960,55 @@ fn spawn_capture(
             s.push_str(&tail);
             collapse_progress(&mut s);
         }
-        let _ = prompt_tx.send(());
     });
 
-    // monitor：等 reader 收尾（=进程退出）或超时；超时则强杀。
+    // monitor：短轮询等子进程退出 / 取消 / 超时。本线程独占 child，kill 不需要锁。
+    // 🔴 不能在这里等 reader 收尾：Windows 的 conhost 要等 master（HPC）关掉才退出，
+    // 而 master 只有等子进程退出后由主线程显式 drop 才会关——先等 reader 就死锁了。
     let (done_tx, done_rx) = mpsc::channel::<Result<portable_pty::ExitStatus, String>>();
-    // 🔴 不能直接 `recv_timeout(timeout)` 等满全程：那样取消请求要等到 600s 超时才生效。
-    // 改成短轮询，每轮查一次取消标志。本线程**独占** child，所以 kill 不需要任何锁。
     let deadline = Instant::now() + timeout;
     std::thread::spawn(move || loop {
-        match prompt_rx.recv_timeout(Duration::from_millis(200)) {
-            // reader 收尾 = 进程已退出（正常结束路径）。
-            Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let st = child.wait().map_err(|e| format!("等待进程失败：{e}"));
-                let _ = done_tx.send(st);
+        match child.try_wait() {
+            Ok(Some(st)) => {
+                let _ = done_tx.send(Ok(st));
                 return;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if cancel
-                    .as_ref()
-                    .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
-                {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = done_tx.send(Err(format!("{ERR_CANCELLED}: 传输已取消")));
-                    return;
-                }
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = done_tx.send(Err("操作超时（网络不通或远程无响应），请重试".into()));
-                    return;
-                }
+            Ok(None) => {}
+            Err(e) => {
+                let _ = done_tx.send(Err(format!("等待进程失败：{e}")));
+                return;
             }
         }
+        if cancel
+            .as_ref()
+            .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = done_tx.send(Err(format!("{ERR_CANCELLED}: 传输已取消")));
+            return;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = done_tx.send(Err("操作超时（网络不通或远程无响应），请重试".into()));
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
     });
 
-    let _ = reader_handle.join();
     let exit = done_rx
         .recv()
         .unwrap_or_else(|_| Err("内部通道异常".into()));
+    // 子进程已结束。此刻才关 master：Windows 上这一步触发 ClosePseudoConsole，
+    // conhost 随之退出、输出管道关闭，reader 才能看到 EOF。
+    // 原实现把 master 挪进了 reader 线程、又在收尾前 join reader——conhost 因
+    // HPC 未关而常驻，reader 永远等不到 EOF，整个调用（连同 600s 超时与取消
+    // 按钮）在子进程退光之后依然永久卡死，表现为进度条永远停在「连接中」。
+    // 留一小段宽限让 conhost 把最后一批输出冲进管道，错误信息不至于被截断。
+    std::thread::sleep(Duration::from_millis(200));
+    drop(master);
+    let _ = reader_handle.join();
     let output = captured.lock().unwrap().clone();
 
     match exit {
@@ -2235,5 +2327,48 @@ lrwxr-xr-x  1 u  g    7 Apr  5 10:02 link -> /tmp/target\n";
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
         // 典型注入尝试：先闭引号再用分号接命令
         assert_eq!(shell_quote("a'; rm -rf /; '"), "'a'\\''; rm -rf /; '\\'''");
+    }
+
+    // ── 提示匹配：ConPTY 转义污染 ────────────────────────────────
+
+    /// 🔴 回归：ConPTY 会把控制台标题 / 光标状态的转义序列追加在密码提示后面。
+    /// 本机实测 scp（传输路径）的提示 chunk 是：
+    /// `\x1b[2J\x1b[m\x1b[Huser@host's password:\x1b[1C\x1b]0;C:\...\scp.exe\x07\x1b[?25h`
+    /// 不剥转义的话尾部永远不是冒号 → 自动填密静默失效 → scp 传输永远卡在
+    /// 「连接中」（一次性路径没有手输机会）。
+    #[test]
+    fn conpty_polluted_password_prompt_is_recognized() {
+        let chunk = b"\x1b[2J\x1b[m\x1b[Hlizuliang@10.0.19.194's password:\x1b[1C\x1b]0;C:\\Windows\\System32\\OpenSSH\\scp.exe\x07\x1b[?25h";
+        assert!(password_prompt_in(chunk), "污染 chunk 必须命中密码提示");
+        assert!(
+            !passphrase_prompt_in(chunk),
+            "密码提示不能被认成密码短语提示"
+        );
+    }
+
+    /// 密码短语的 ConPTY 形态同理：`Enter passphrase for key '...':` + 尾随转义。
+    #[test]
+    fn conpty_polluted_passphrase_prompt_is_recognized() {
+        let chunk = b"\x1b[2J\x1b[m\x1b[HEnter passphrase for key '/c/Users/me/id_ed25519': \x1b]0;ssh.exe\x07\x1b[?25h";
+        assert!(
+            passphrase_prompt_in(chunk),
+            "污染 chunk 必须命中密码短语提示"
+        );
+        assert!(
+            !password_prompt_in(chunk),
+            "passphrase 不能被认成登录密码（避免把登录密码填进密码短语框）"
+        );
+    }
+
+    /// 干净提示（winpty / Unix PTY 形态）不受剥离逻辑影响，照常命中。
+    #[test]
+    fn clean_prompts_still_match_after_strip() {
+        assert!(password_prompt_in(b"user@host's password: "));
+        assert!(password_prompt_in("密码：".as_bytes()));
+        assert!(passphrase_prompt_in(
+            b"Enter passphrase for key '/c/Users/me/id_ed25519': "
+        ));
+        // 非提示的输出不能因为剥离而变得误命中。
+        assert!(!password_prompt_in(b"grep password: foo\r\nnext line"));
     }
 }
