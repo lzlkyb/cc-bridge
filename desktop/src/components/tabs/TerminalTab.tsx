@@ -12,14 +12,18 @@ import type {
   StaticStatus,
 } from "../../lib/types";
 import { SshConnectionDialog } from "./SshConnectionDialog";
-import { SshTerminal } from "./SshTerminal";
+import type { SshSessionRef } from "./TerminalConnectionItem";
 import { TerminalFilePanel } from "./TerminalFilePanel";
 import { TerminalSidebar } from "./TerminalSidebar";
+import { TerminalPanes } from "./TerminalPanes";
+import { useTerminalSplit } from "./useTerminalSplit";
 import { SshEnableGate, SshMissingCard } from "./TerminalGates";
 import { useTerminalViewState } from "./useTerminalViewState";
 import { useSshSessions } from "./useSshSessions";
 import { TerminalTabsBar } from "./TerminalTabsBar";
 import { TerminalEmptyState } from "./TerminalEmptyState";
+import { RestoreBanner } from "./TerminalRestore";
+import { useSessionRestore } from "../../hooks/useSessionRestore";
 import { useFileDrop } from "./useFileDrop";
 import { useTerminalUpload } from "./useTerminalUpload";
 import { TerminalDropLayer } from "./TerminalDropLayer";
@@ -55,6 +59,8 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
 
   const ssh = useSshSessions();
   const { sessions, activeId } = ssh;
+  // 会话恢复：连接列表就绪后按快照重建占位标签（不自动连接），之后 debounce 写快照。
+  useSessionRestore({ ssh, connections, ready: data !== undefined });
   // 侧栏折叠 + 软件内全屏两个视图开关（含 Ctrl+B / F11 快捷键）。
   // 全屏选「盖住」而不是把状态提到 App 去条件隐藏：后者会让 Header/Tabs 卸载重挂，
   // 触发 TabsList 指示器重算与状态轮询抖动，而收益为零。
@@ -67,6 +73,8 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   // 没有会话就没有「传到哪台机器」。
   const termAreaRef = useRef<HTMLDivElement>(null);
   const activeSession = sessions.find((s) => s.sessionId === activeId);
+  // 轻量双栏分屏（方案 A）：副格会话 splitOnly、不出现在标签栏，详见 useTerminalSplit。
+  const splitCtl = useTerminalSplit({ ssh, activeSession: activeSession ?? null });
   const activeConn =
     activeSession && !activeSession.closedReason ? activeSession.conn : null;
   // 各会话的远端 cwd（OSC 7 探测，见 hooks/useTerminalOsc.ts）。拖拽上传拿它当目标目录，
@@ -111,6 +119,11 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
     setFileConn(null);
     void ssh.connect(conn, { newTab: true });
   };
+  // 重连某会话回它自己的标签（终端断开横幅 / 恢复横幅 / 恢复占位卡共用）。
+  const reconnectSession = useCallback((s: SshSessionRef) => {
+    setFileConn(null);
+    void ssh.connect(s.conn, { intoTab: s.tabId, forSplit: !!s.splitOnly });
+  }, [ssh]);
 
   // 启用后探测系统 ssh 可用性（决定降级卡片）。
   useEffect(() => {
@@ -224,6 +237,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
             dropping={drop.zone === "terminal"}
             count={drop.count}
           />
+          <RestoreBanner sessions={sessions} onReconnect={reconnectSession} />
           {sessions.length > 0 && (
             <TerminalTabsBar
               sessions={sessions}
@@ -234,44 +248,32 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
               onCloseTab={ssh.closeTab}
               // 只在当前标签还连着时给「新终端」：已断开的标签旁边已经有「重新连接」了。
               onNewTerminal={activeConn ? () => newTerminal(activeConn) : null}
+              onToggleSplit={activeSession ? splitCtl.toggleSplit : null}
+              splitActive={splitCtl.split !== null}
             />
           )}
-          {/* 全部会话都挂载，仅当前可见；后台会话继续收输出 */}
-          <div className="relative min-h-0 flex-1">
-            {sessions.length === 0 ? (
-              <TerminalEmptyState collapsed={collapsed} onExpand={() => setCollapsed(false)} connections={connections} connectingId={ssh.connectingId} onNew={() => { setEditing(null); setShowDialog(true); }} onConnect={connect} />
-            ) : (
-              sessions.map((s) => (
-                // 🔴 key 用 tabId 而不是 sessionId：重连会换 sessionId，key 一变组件就重挂、
-                // xterm 跟着重建，断开前的历史输出全没——而保留标签就是为了那些输出。
-                <div
-                  key={s.tabId}
-                  className="absolute inset-0"
-                  style={{ display: s.sessionId === activeId ? "block" : "none" }}
-                >
-                  <SshTerminal
-                    sessionId={s.sessionId}
-                    conn={s.conn}
-                    closedReason={s.closedReason}
-                    onClosed={(reason) => ssh.markClosed(s.sessionId, reason)}
-                    // 重连回**这个**标签：同一连接可能有多个标签，不指定就可能接到别人头上。
-                    onReconnect={() => {
-                      setFileConn(null);
-                      void ssh.connect(s.conn, { intoTab: s.tabId });
-                    }}
-                    onCloseTab={() => ssh.closeTab(s.sessionId)}
-                    visible={s.sessionId === activeId}
-                    dragSelectEnabled={status?.sshDragSelectEnabled ?? true}
-                    fullscreen={fullscreen}
-                    onToggleFullscreen={() => setFullscreen((v) => !v)}
-                    onCwd={(cwd) => onCwd(s.sessionId, cwd)}
-                    onMeta={(p) => ssh.patchMeta(s.sessionId, p)}
-                    onOpenFilePath={(p) => (setFileConn(s.conn), setFilePath(p))}
-                  />
-                </div>
-              ))
-            )}
-          </div>
+          {/* 全部会话都挂载在 TerminalPanes 内（含分屏副格），仅当前可见；后台会话继续收输出 */}
+          <TerminalPanes
+            sessions={sessions}
+            activeId={activeId}
+            split={splitCtl.split}
+            connections={connections}
+            connectingId={ssh.connectingId}
+            emptyState={<TerminalEmptyState collapsed={collapsed} onExpand={() => setCollapsed(false)} connections={connections} connectingId={ssh.connectingId} onNew={() => { setEditing(null); setShowDialog(true); }} onConnect={connect} />}
+            dragSelectEnabled={status?.sshDragSelectEnabled ?? true}
+            fullscreen={fullscreen}
+            onToggleFullscreen={() => setFullscreen((v) => !v)}
+            onClosed={(s, reason) => ssh.markClosed(s.sessionId, reason)}
+            onReconnect={reconnectSession}
+            onCloseTab={(s) => (s.splitOnly ? splitCtl.closeSplit(s.tabId) : ssh.closeTab(s.sessionId))}
+            onCwd={onCwd}
+            onMeta={(sessionId, p) => ssh.patchMeta(sessionId, p)}
+            onOpenFilePath={(conn, p) => (setFileConn(conn), setFilePath(p))}
+            onPickSplitConn={(conn) => void splitCtl.openSplit(conn, splitCtl.split?.dir ?? "h")}
+            onCloseSplit={() => activeSession && splitCtl.closeSplit(activeSession.tabId)}
+            onToggleDir={splitCtl.toggleDir}
+            onSplitRatio={splitCtl.setRatio}
+          />
         </div>
 
         {/* 文件管理面板（覆盖在终端之上） */}

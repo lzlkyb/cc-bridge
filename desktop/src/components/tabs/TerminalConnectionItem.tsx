@@ -21,6 +21,11 @@ export interface SshSessionRef {
    * 并提供「重新连接」。这也让误点 × 不再是不可逆的事故。
    */
   closedReason: string | null;
+  /**
+   * 分屏专属会话：不出现在标签栏，只活在宿主标签的分屏格里（轻量双栏，方案 A）。
+   * 宿主标签关闭 / 分屏关闭 / 连接被删时一并回收。
+   */
+  splitOnly?: boolean;
 }
 
 interface ConnectionListItemProps {

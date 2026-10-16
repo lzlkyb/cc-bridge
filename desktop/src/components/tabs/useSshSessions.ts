@@ -87,12 +87,12 @@ export function useSshSessions() {
    *   再否则追加。
    */
   const connect = useCallback(
-    async (conn: SshConnection, opts?: { newTab?: boolean; intoTab?: string }) => {
-      if (!opts?.newTab && !opts?.intoTab) {
+    async (conn: SshConnection, opts?: { newTab?: boolean; intoTab?: string; forSplit?: boolean }) => {
+      if (!opts?.newTab && !opts?.intoTab && !opts?.forSplit) {
         const live = sessionsRef.current.find((s) => s.conn.id === conn.id && !s.closedReason);
         if (live) {
           setActiveId(live.sessionId);
-          return;
+          return null;
         }
       }
       setConnectingId(conn.id);
@@ -100,30 +100,58 @@ export function useSshSessions() {
         const sessionId = await invoke<string>("ssh_connect", {
           args: { connectionId: conn.id, rows: INITIAL_ROWS, cols: INITIAL_COLS },
         });
+        let createdTabId: string | null = null;
         patch((prev) => {
           // 找要复用的标签：指定了就找它，否则找本连接第一个已断开的；newTab 不复用。
-          const idx = opts?.newTab
+          const idx = opts?.newTab || opts?.forSplit
             ? -1
             : opts?.intoTab
               ? prev.findIndex((s) => s.tabId === opts.intoTab)
               : prev.findIndex((s) => s.conn.id === conn.id && s.closedReason);
           if (idx < 0) {
-            return [...prev, { tabId: nextTabId(), sessionId, conn, closedReason: null }];
+            createdTabId = nextTabId();
+            return [
+              ...prev,
+              { tabId: createdTabId, sessionId, conn, closedReason: null, splitOnly: opts?.forSplit || undefined },
+            ];
           }
           const next = [...prev];
           // 展开旧项以**保留 tabId**，这正是历史输出能活下来的原因。
           next[idx] = { ...next[idx], sessionId, conn, closedReason: null };
           return next;
         });
-        setActiveId(sessionId);
+        // 分屏会话不抢焦点：主视图仍停在宿主标签（forSplit 语义，见 SshSessionRef.splitOnly）。
+        if (!opts?.forSplit) setActiveId(sessionId);
         // 前台可见的连接成功提示（注意：进程起来不等于认证成功，
         // 宽限期内失败会由 ssh_connect_failed 补一条带原因的错误提示）。
         toast(`SSH 已连接 ${conn.username}@${conn.host}:${conn.port}`, "success");
+        return createdTabId;
       } catch (e) {
         toast(`连接失败：${e}`, "error");
+        return null;
       } finally {
         setConnectingId(null);
       }
+    },
+    [patch],
+  );
+
+  /**
+   * 会话恢复（lib/terminalSessionRestore）：按快照重建「未连接」占位标签。
+   *
+   * 占位项用假 sessionId（`restore:` 前缀）+ `closedReason: "restored"` 哨兵：
+   * 渲染层（TerminalPanes）见到 restored 哨兵就不挂 SshTerminal，改挂恢复占位卡。
+   * 用户点「恢复连接」走 intoTab —— connect 按 tabId 展开旧项换真 sessionId，
+   * 占位转正，正是「重连保留标签」的现成路径。
+   */
+  const addRestoredTab = useCallback(
+    (conn: SshConnection): string => {
+      const tabId = nextTabId();
+      patch((prev) => [
+        ...prev,
+        { tabId, sessionId: `restore:${tabId}`, conn, closedReason: "restored" },
+      ]);
+      return tabId;
     },
     [patch],
   );
@@ -161,11 +189,13 @@ export function useSshSessions() {
       });
       // 关掉当前标签后激活相邻会话（优先右邻、没有则左邻），而不是掉进空面板——
       // 以前直接置 null，于是标签栏上明明还剩几个会话，右边却显示「从左侧选择一个连接开始」。
+      // 🔴 跳过 splitOnly：那是别的标签分屏里的会话，激活它主视图会落到一个不存在的标签上。
       setActiveId((cur) =>
         cur === sessionId
-          ? next.length
-            ? next[Math.min(idx, next.length - 1)].sessionId
-            : null
+          ? (() => {
+              const visible = next.filter((s) => !s.splitOnly);
+              return visible.length ? visible[Math.min(idx, visible.length - 1)].sessionId : null;
+            })()
           : cur,
       );
     },
@@ -213,5 +243,6 @@ export function useSshSessions() {
     markClosed,
     dropConnection,
     patchMeta,
+    addRestoredTab,
   };
 }

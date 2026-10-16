@@ -18,6 +18,10 @@ interface TerminalTabsBarProps {
   onCloseTab: (sessionId: string) => void;
   /** 对当前活动连接另开一个终端；null = 没有可另开的目标（按钮隐藏）。 */
   onNewTerminal: (() => void) | null;
+  /** 开/关当前标签的分屏（轻量双栏）；null = 没有活动标签（按钮隐藏）。 */
+  onToggleSplit: (() => void) | null;
+  /** 当前标签是否处于分屏态（按钮高亮）。 */
+  splitActive: boolean;
 }
 
 /** OSC 9;4 进度条在标签底部的配色与几何（进度条条宽按 value%）。 */
@@ -55,6 +59,8 @@ export function TerminalTabsBar({
   onDisconnect,
   onCloseTab,
   onNewTerminal,
+  onToggleSplit,
+  splitActive,
 }: TerminalTabsBarProps) {
   const activeRef = useRef<HTMLDivElement>(null);
   // 跨标签搜索浮层。它是 `fixed` 定位，所以放在这条 `overflow-x-auto` 里也不会被裁剪
@@ -66,15 +72,19 @@ export function TerminalTabsBar({
     activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeId]);
 
+  // 🔴 分屏副格（splitOnly）不是标签：不渲染、也不参与「同连接多个终端」的序号统计
+  // （副格与宿主同连接时，序号会把宿主标成 #1/#2，凭空多出噪音）。
+  const tabSessions = sessions.filter((s) => !s.splitOnly);
+
   // 同一连接开了多个终端时给个序号，否则两个标签长得一模一样。
   // 只有一个时不显示，不给单终端的常见情况增噪。
   const totalPerConn = new Map<string, number>();
-  for (const s of sessions) totalPerConn.set(s.conn.id, (totalPerConn.get(s.conn.id) ?? 0) + 1);
+  for (const s of tabSessions) totalPerConn.set(s.conn.id, (totalPerConn.get(s.conn.id) ?? 0) + 1);
   const seenPerConn = new Map<string, number>();
 
   return (
     <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border bg-card px-2 py-1.5">
-      {sessions.map((s) => {
+      {tabSessions.map((s) => {
         const closed = !!s.closedReason;
         const active = s.sessionId === activeId;
         const seq = (seenPerConn.get(s.conn.id) ?? 0) + 1;
@@ -169,6 +179,20 @@ export function TerminalTabsBar({
           className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <Icon name="plus" size={12} /> 新终端
+        </button>
+      )}
+      {onToggleSplit && (
+        <button
+          type="button"
+          onClick={onToggleSplit}
+          title="分屏：在旁边再开一个会话（Ctrl+Shift+D）"
+          className={`flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
+            splitActive
+              ? "bg-primary/10 text-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground"
+          }`}
+        >
+          <Icon name="monitor" size={12} /> 分屏
         </button>
       )}
       {searchOpen && (
