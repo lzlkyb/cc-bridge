@@ -3,7 +3,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke } from "../lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { UpdateNotesDialog } from "../components/update/UpdateNotesDialog";
-import { UpdateProgressBar } from "../components/update/UpdateProgressBar";
+import { UpdateProgressLine } from "../components/update/UpdateProgressLine";
 import { RestartOverlay } from "../components/update/RestartOverlay";
 
 // ─── 类型定义 ────────────────────────────
@@ -253,8 +253,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
         await listen<{ downloaded: number; total: number | null; bytesPerSec?: number }>("update:progress", (e) => {
           const { downloaded, total, bytesPerSec: bps } = e.payload;
           setDownloadedBytes(downloaded);
-          // totalBytes 是状态条算「已下载/总量」与「剩余时间」的唯一来源；
-          // total 为 null（源未返回 Content-Length）时保持 null ⇒ 状态条走不确定态。
+          // totalBytes 是顶栏读数算「已下载/总量」与「剩余时间」的唯一来源；
+          // total 为 null（源未返回 Content-Length）时保持 null ⇒ 读数走不确定态。
           setTotalBytes(total);
           if (total) {
             setProgress(Math.round((downloaded / total) * 100));
@@ -387,11 +387,12 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   return (
     <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, error, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
       {children}
-      {/* 下载期窗口级反馈（方案 B + B+，2026-10-16）：2px 通栏进度线 + 28px 网速状态条。
-          两者都是 fixed 零占位浮层，挂在 Provider 内部与 UpdateNotesDialog 同级，
-          这样折叠态 / 任何页面下都随更新状态出现，不依赖具体页面是否挂载。 */}
-      <UpdateProgressBar variant="line" />
-      <UpdateProgressBar variant="bar" />
+      {/* 下载期进度线（方案 B，2026-10-16 二次改造后**仅剩这一种窗口级浮层**）：
+          2px 通栏 + fixed 零占位，挂在 Provider 内部与 UpdateNotesDialog 同级 ⇒
+          折叠态 / 任何页面 / 全屏终端态都随更新状态出现，不依赖具体页面是否挂载。
+          （网速读数不在这里 —— 它已搬进顶栏中段的空白区，几何冲突的实测证据见
+          UpdateReadout 的头注释。） */}
+      <UpdateProgressLine />
       {restarting && <RestartOverlay current={update?.currentVersion} next={update?.version} />}
       <UpdateNotesDialog open={showNotes} update={update} onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate} />
     </UpdateContext.Provider>

@@ -1705,7 +1705,7 @@ select:focus-visible,
 /* 2026-10-16 更新体验新增（见文件尾「更新体验」一节）：
    下载期扫光 ×2、槽位呼吸光圈、重启过渡层扫光，以及所有 spinner。 */
 :root[data-app-hidden] .update-line-sweep,
-:root[data-app-hidden] .ub-sweep,
+:root[data-app-hidden] .ur-sweep,
 :root[data-app-hidden] .ro-bar > i,
 :root[data-app-hidden] .update-slot .header-badge-update::after,
 :root[data-app-hidden] .update-slot .header-badge-ready::after,
@@ -2068,18 +2068,28 @@ select:focus-visible,
 .app-topbar { height: 52px; }
 
 /* ===================================================================
-   更新体验：下载期窗口级反馈 + 重启过渡 + 升级后首启欢迎
-   （方案 B / B+ / C / D，2026-10-16）
+   更新体验：下载期反馈 + 重启过渡 + 升级后首启欢迎
+   （方案 B / B+ / C / D，2026-10-16；B+ 于同日二次改造）
 
-   🔴 本节所有浮层一律 position:fixed，绝不参与布局（只有欢迎条需要点击，
-      其余全程 pointer-events:none）。理由：更新总是发生在终端会话旁边，
-      只要给内容区让出 1–2px —— 哪怕只是一条 border-top —— 终端面板就会触发
-      一次 fit ⇒ 远端 TUI 重排。这是本项目踩过的坑，所以宁可短暂遮挡也不让位。
+   🔴 浮层一律 position:fixed，绝不参与布局（只有欢迎条需要点击，其余全程
+      pointer-events:none）。理由：更新总是发生在终端会话旁边，只要给内容区让出
+      1–2px —— 哪怕只是一条 border-top —— 终端面板就会触发一次 fit ⇒ 远端 TUI
+      重排。这是本项目踩过的坑，所以宁可短暂遮挡也不让位。
+
+   🔴 但「宁可遮挡」有边界：**不能遮住顶栏控件**（同日二次改造，CDP 实测）。
+      顶栏 52px、控件垂直居中 ⇒ 图标按钮(36px) 占 y=8–44、窗口控件与 sm 按钮
+      (32px) 占 y=10–42，**所有字形/文字都落在 y=18–34**。原先 28px 的贴顶通栏
+      状态条下沿到 y=30 ⇒ 压掉字高 78%，连窗口的关闭/最小化按钮一起切。
+      取证：design/2026-10-16-状态条遮顶栏-取证.html（三形态并排 + 探针量重叠）。
+      结论：网速读数改为挂在**顶栏中段的空白 flex 区**里 —— 那里本来空着、高度由
+      恒定 52px 的顶栏兜住 ⇒ 零遮挡 + 零布局影响，红线仍成立。
+      窗口级浮层只剩 ① 的 2px 进度线（在 y=0–2，压不到 y≥8 的控件）。
    =================================================================== */
 
 /* ── ① 2px 通栏进度线（方案 B）：只回答「走了多远」──
-   位在窗口最顶。它是窗口级元素，侧栏折叠时依然可见 —— 这正是它比
-   「侧栏内进度条」更好的地方。 */
+   位在窗口最顶。它是**唯一的窗口级浮层**，也是全屏终端态（fixed inset-0 z-50
+   盖住顶栏与侧栏）下唯一还报着进度的地方 —— 这正是它比「侧栏内进度条」更好的
+   地方。 */
 .update-line {
   position: fixed;
   left: 0;
@@ -2110,44 +2120,43 @@ select:focus-visible,
   animation: upd-line-sweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
-/* ── ② 28px 网速状态条（方案 B+）：回答「还要多久」──
-   紧贴进度线下方。它确实会盖住侧栏 header 与内容区顶部，缓解靠三点：
-   ① 半透明 + 毛玻璃（90% 是实测折中：84% 时下方文字与读数叠成噪点、
-   100% 则完全失去浮层感）；② 全程点击穿透；③ 只在下载期存在，秒级。 */
-.update-bar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 2px;
-  height: 28px;
-  z-index: 60;
+/* ── ② 顶栏中段的网速读数（方案 B+）：回答「还要多久」──
+   它不是浮层，而是顶栏中段那块**空白 flex 区**里的内容：零遮挡、零布局影响
+   （顶栏高度恒定 52px，塞进去不改变任何盒）。读数铺满中段 ⇒ 轨道长度随窗口自适应。
+   为什么不能做成贴顶通栏条：见本节开头那条 🔴（顶栏控件字形带 y=18–34）。 */
+.upd-readout {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 9px;
-  padding: 0 11px;
+  overflow: hidden;
   white-space: nowrap;
+  /* 中段是窗口拖拽区：读数必须点击穿透，否则往数字上一拖窗口不动 */
   pointer-events: none;
   font-size: 11px;
   color: hsl(var(--foreground));
-  background: color-mix(in srgb, hsl(var(--card)) 90%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, hsl(var(--primary)) 30%, transparent);
-  backdrop-filter: blur(12px) saturate(1.15);
-  -webkit-backdrop-filter: blur(12px) saturate(1.15);
   opacity: 0;
-  transform: translateY(-6px);
-  transition: opacity var(--dur-slow) var(--ease), transform var(--dur-slow) var(--ease);
+  visibility: hidden;
+  /* visibility 用「0s + 延迟」切换：显示时立即可见（否则淡入整段被剪掉），
+     隐藏时等 320ms 淡出走完再真正隐藏。 */
+  transition: opacity var(--dur-slow) var(--ease), visibility 0s linear var(--dur-slow);
 }
-.update-bar.is-on { opacity: 1; transform: none; }
+.upd-readout.is-on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity var(--dur-slow) var(--ease), visibility 0s linear 0s;
+}
 
-.update-bar .ub-ring { flex-shrink: 0; color: hsl(var(--primary)); }
-.update-bar .ub-status {
+.upd-readout .ur-ring { flex-shrink: 0; color: hsl(var(--primary)); }
+.upd-readout .ur-status {
   flex-shrink: 0;
   font-weight: 700;
   color: hsl(var(--primary));
   font-variant-numeric: tabular-nums;
 }
 /* 轨道是唯一可压缩段：窗口变窄先压它（下限 34px），压到底再按断点丢信息。 */
-.update-bar .ub-track {
+.upd-readout .ur-track {
   flex: 1 1 auto;
   min-width: 34px;
   height: 3px;
@@ -2155,45 +2164,56 @@ select:focus-visible,
   background: hsl(var(--border));
   overflow: hidden;
 }
-.update-bar .ub-track > i {
+.upd-readout .ur-track > i {
   display: block;
   height: 100%;
   border-radius: 999px;
   background: linear-gradient(90deg, #4f46e5, #7c3aed, #3b82f6);
   transition: width 0.2s linear;
 }
-@keyframes upd-bar-sweep {
+@keyframes upd-sweep {
   from { transform: translateX(-100%); }
   to   { transform: translateX(294%); }
 }
-.update-bar .ub-sweep {
+.upd-readout .ur-sweep {
   width: 34%;
-  animation: upd-bar-sweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: upd-sweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 /* 速率段：等宽数字 + 定宽 68px。250ms 一跳的数字若不定宽，整条会左右抽动 ——
    68px 是实测值：最短态「—」与最长态「↓ 999.9 MB/s」(66.9px) 同宽。 */
-.update-bar .ub-spd {
+.upd-readout .ur-spd {
   flex-shrink: 0;
   min-width: 68px;
   font-weight: 700;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
-.update-bar .ub-spd[data-stalled] {
+.upd-readout .ur-spd[data-stalled] {
   font-weight: 600;
   color: hsl(var(--muted-foreground));
 }
-.update-bar .ub-rest {
+.upd-readout .ur-rest {
   flex-shrink: 0;
   font-size: 10.5px;
   color: hsl(var(--muted-foreground));
   font-variant-numeric: tabular-nums;
 }
-/* 窄窗口兜底：窗口最小宽 560 下本就不会挤（固定段合计约 314px），留一条保险。
-   真要更窄，按「先丢已下载/剩余 → 最后丢状态文字」退；绝不靠 flex 换行 ——
-   换行会让条从 28px 变两行，直接破坏「零占位」前提。 */
-@media (max-width: 620px) {
-  .update-bar .ub-rest { display: none; }
+/* 窄窗口退化（断点由实测推得）：中段可用宽 = W − 侧栏(200/56) − 左组 108
+   − 右组 270 − 内边距与间距 46（CDP 实测：1280 下 618、900 下 382、740 下 222，
+   见 design/2026-10-16-状态条遮顶栏-取证.html）。顶栏高度全程恒定 52px ——
+   读数出现/消失不改变任何盒。
+   · 全读数自然宽实测 349px ⇒ 中段 ≥349 才不裁（W ≥870）；断点取 **900** 留 30px
+     余量：`ur-rest` 的文本随数字位数浮动（「8.6 MB / 20.4 MB · 剩余 4 秒」→
+     至多再宽 ~26px），卡在 870 上会切掉末尾半个字。
+   · 丢掉「已下载/剩余」后只剩 环+百分比+轨道+网速（实测 201px）⇒ W ≥741；
+     断点取 **740**（此时中段 222px，轨道仍有 55px+，不是贴地硬撑）。
+   · 再窄就整块收起 —— 靠侧栏槽位的百分比 + 顶部进度线兜底。
+   绝不靠 flex 换行：换行会把读数撑成两行、顶破恒定 52px 的顶栏。 */
+@media (max-width: 900px) {
+  .upd-readout .ur-rest { display: none; }
+}
+@media (max-width: 740px) {
+  .upd-readout { display: none; }
 }
 
 /* ── ③ 重启过渡层（方案 C）：把「闪一下 → 空白 1–3 秒」变成被看见的升级 ──
@@ -2270,11 +2290,17 @@ select:focus-visible,
 }
 
 /* ── ④ 升级后首启欢迎条（方案 D）：给升级流程补一个「结束」──
-   右上角一次性卡片（不是通栏条）：不遮挡侧栏品牌区与内容区左半，9s 自动隐去。
-   只在「启动版本 ≠ 上次记录」时出现，首次安装不显示。 */
+   右上角一次性卡片（不是通栏条）：9s 自动隐去，只在「启动版本 ≠ 上次记录」时出现，
+   首次安装不显示。
+   🔴 `top: 60px` 不是 `top: 10px`：顶栏 52px 且窗口控件（最小化/最大化/关闭，
+   3×32px 定宽）就钉在它的最右端。卡片放 10px 会**整块盖住窗口控件** 9 秒 ——
+   它自身还带一枚「关闭」按钮，正好落在系统关闭按钮上，用户点「关窗」实际点掉的是
+   本卡片（改动前实测：卡片宽约 330px，控件区仅占最右 112px，完全被吞）。
+   压到顶栏下沿之后只遮挡内容区右上角（各页签工具栏），不再碰系统窗口框架，
+   且卡片自带关闭按钮，遮挡可被用户一秒解除。 */
 .upgrade-welcome {
   position: fixed;
-  top: 10px;
+  top: 60px;
   right: 12px;
   z-index: 2100;
   display: flex;

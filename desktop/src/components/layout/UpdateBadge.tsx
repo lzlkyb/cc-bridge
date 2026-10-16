@@ -139,7 +139,8 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   // ─── downloading ──────────────────────────
   if (status === "downloading") {
     // 槽位只放得下百分比，完整读数（速率 / 已下载 / 总量）进 title；
-    // 下载期的窗口级明细由 UpdateProgressBar 的 28px 状态条承担。
+    // 下载期的明细由 Header 中段的 UpdateReadout 承担（窗口太窄放不下时，
+    // 本槽位的百分比 + 顶部进度线就是全部反馈）。
     const dl = totalBytes
       ? `已下载 ${formatBytes(downloadedBytes)} / ${formatBytes(totalBytes)}`
       : `已下载 ${formatBytes(downloadedBytes)}`;
