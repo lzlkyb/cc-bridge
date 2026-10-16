@@ -36,12 +36,28 @@ function snapshot(term: Terminal | null): Row[] {
     const block = navBlockAt(term, i);
     if (!block) continue;
     const output = navBlockOutput(term, i) ?? "";
-    // 预览取**第一个非空行**：很多命令输出的第一行是空的（换行、清屏序列残留），
-    // 直接取首行等于什么都没显示。
-    const preview = output.split("\n").find((l) => l.trim() !== "") ?? "";
+    // 优先显示**命令本身**（钩子经 1337;Cmd= 回报）——扫面板找「那条 grep」时，
+    // 看输出首行等于什么都没看到。没有回报（旧钩子 / TUI 会话）才退回输出首行。
+    const preview = block.cmd ?? output.split("\n").find((l) => l.trim() !== "") ?? "";
     rows.push({ ...block, index: i, preview });
   }
   return rows.reverse();
+}
+
+/**
+ * 视口顶当前落在哪个块上（「line <= viewportY 的最后一个块」）。
+ * entries 按 line 递增，顺序扫到第一个越界的为止。
+ */
+function visibleBlockIndex(term: Terminal): number {
+  const vy = term.buffer.active.viewportY;
+  let best = -1;
+  const total = navBlockCount(term);
+  for (let i = 0; i < total; i++) {
+    const b = navBlockAt(term, i);
+    if (!b || b.line > vy) break;
+    best = i;
+  }
+  return best;
 }
 
 /**
@@ -59,19 +75,31 @@ export function SshCommandBlocksPanel({ termRef, name, closed, onClose }: Props)
   const [rows, setRows] = useState<Row[]>(() => snapshot(termRef.current));
   // 上次快照时的块数：用它当「有没有新命令」的哨兵，避免每 700ms 都重建一次数组。
   const countRef = useRef(rows.length);
+  // 视口当前所在的块（跟随滚动高亮）。onScroll 实时更新 + 轮询兜底。
+  const [activeIdx, setActiveIdx] = useState(-1);
 
   // 块在 lib 层累积（不是 React state），只能轮询它的长度。轮询本身很轻（读数组
   // length），只有真的变了才做快照。
   useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const syncActive = () => setActiveIdx(visibleBlockIndex(term));
+    syncActive();
+    const offScroll = term.onScroll(syncActive);
     const id = setInterval(() => {
       const term = termRef.current;
       if (!term) return;
       const n = navBlockCount(term);
-      if (n === countRef.current) return;
-      countRef.current = n;
-      setRows(snapshot(term));
+      if (n !== countRef.current) {
+        countRef.current = n;
+        setRows(snapshot(term));
+        syncActive();
+      }
     }, 700);
-    return () => clearInterval(id);
+    return () => {
+      offScroll.dispose();
+      clearInterval(id);
+    };
   }, [termRef]);
 
   const jump = useCallback(
@@ -135,7 +163,7 @@ export function SshCommandBlocksPanel({ termRef, name, closed, onClose }: Props)
 
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
         {rows.length === 0 ? <EmptyHint closed={closed} /> : rows.map((r) => (
-          <BlockRow key={`${r.index}:${r.line}`} row={r} onJump={jump} onCopy={copyOutput} />
+          <BlockRow key={`${r.index}:${r.line}`} row={r} active={r.index === activeIdx} onJump={jump} onCopy={copyOutput} />
         ))}
       </div>
 
@@ -198,10 +226,13 @@ function ExitBadge({ code }: { code: number | null }) {
 
 function BlockRow({
   row,
+  active,
   onJump,
   onCopy,
 }: {
   row: Row;
+  /** 视口当前停在这一块上（跟随滚动高亮，与 Ctrl+Shift+↑/↓ 跳转配套）。 */
+  active: boolean;
   onJump: (line: number) => void;
   onCopy: (index: number) => void;
 }) {
@@ -218,8 +249,11 @@ function BlockRow({
         }
       }}
       title={`跳到这一条（缓冲区第 ${row.line + 1} 行）`}
-      className="group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted"
+      className={`group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted ${
+        active ? "bg-primary/10" : ""
+      }`}
     >
+      <span className={`h-3.5 w-0.5 shrink-0 rounded-full ${active ? "bg-primary" : "bg-transparent"}`} />
       <ExitBadge code={row.exitCode} />
       <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-foreground">
         {row.preview || <span className="text-muted-foreground">（无输出）</span>}

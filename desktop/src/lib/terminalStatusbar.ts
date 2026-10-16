@@ -305,14 +305,15 @@ export function parseOsc133(data: string): number | null {
   return Number.isFinite(code) ? code : null;
 }
 
-/** OSC 1337 → 私有键值。只认 Shell=（探针回执）与 Git=（分支）。 */
-export function parseOsc1337(data: string): { shell?: string; git?: string } {
+/** OSC 1337 → 私有键值。只认 Shell=（探针回执）、Git=（分支）与 Cmd=（上一条命令文本）。 */
+export function parseOsc1337(data: string): { shell?: string; git?: string; cmd?: string } {
   const eq = data.indexOf("=");
   if (eq === -1) return {};
   const key = data.slice(0, eq);
   const val = data.slice(eq + 1);
   if (key === "Shell") return { shell: val };
   if (key === "Git") return { git: val };
+  if (key === "Cmd") return { cmd: val };
   return {};
 }
 
@@ -416,8 +417,13 @@ export function hookCmd(): string {
     `__ccb_p(){`,
   `local e=$?;`,
   `local d="$PWD";`,
+  // 上一条命令文本：fc -ln -1 = history 最新一条（PROMPT_COMMAND 自身不进 history，时机正好）。
+  // 多行命令压成一行（OSC 内容不能含换行）；剥掉 zsh fc 的前导缩进；BEL/ESC 会截断 OSC，直接删。
+  `local c="";`,
+  `c=$(fc -ln -1 2>/dev/null | sed 's/^[[:space:]]*//' | tr '\\n' ' ' | tr -d '\\007\\033');`,
   // 🔴 D 在前、A 在后（顺序不能换）：D 落在刚跑完的那一块上，A 钉下一块的起点。
-  `printf '\\033]133;D;%s\\007\\033]133;A\\007\\033]7;file://%s%s\\007' "$e" "$HOSTNAME" "$d";`,
+  // Cmd= 夹在中间：与 D 同轮回报，命令导航把它回填到 D 刚填退出码的那一块上。
+  `printf '\\033]133;D;%s\\007\\033]1337;Cmd=%s\\007\\033]133;A\\007\\033]7;file://%s%s\\007' "$e" "$c" "$HOSTNAME" "$d";`,
   `if [ "$d" != "$__ccb_d" ]; then`,
   `__ccb_d="$d";`,
   `local b="";`,

@@ -33,6 +33,8 @@ export interface CmdBlock {
   exitCode: number | null;
   /** 该命令耗时毫秒。null = 还没结束。 */
   durMs: number | null;
+  /** 命令文本（钩子经 1337;Cmd= 回报）。undefined = 远端没回报（旧钩子 / 全屏 TUI）。 */
+  cmd?: string;
 }
 
 interface Entry {
@@ -41,6 +43,7 @@ interface Entry {
   at: number;
   exitCode: number | null;
   durMs: number | null;
+  cmd?: string;
 }
 
 interface NavState {
@@ -100,6 +103,17 @@ export function navLastDuration(term: Terminal): number | null {
 }
 
 /**
+ * 回填最后一块的命令文本（钩子在 133;D 之后立刻发 1337;Cmd=，两事件同一轮到达）。
+ * 与 navCmdEnd 同守卫：没有块、marker 已被截断都静默丢弃。
+ */
+export function navCmdText(term: Terminal, text: string): void {
+  if (!text) return;
+  const last = NAV_STATES.get(term)?.entries[NAV_STATES.get(term)!.entries.length - 1];
+  if (!last || last.marker.line === -1) return;
+  last.cmd = text;
+}
+
+/**
  * 跳到上一条（dir=-1）/下一条（dir=+1）命令的提示符行。
  * 以当前视口顶（viewportY）为参照，返回是否跳了（供调用方给 toast 反馈）。
  */
@@ -131,7 +145,7 @@ export function navBlockCount(term: Terminal): number {
 export function navBlockAt(term: Terminal, index: number): CmdBlock | null {
   const e = NAV_STATES.get(term)?.entries[index];
   if (!e || e.marker.line < 0) return null;
-  return { line: e.marker.line, exitCode: e.exitCode, durMs: e.durMs };
+  return { line: e.marker.line, exitCode: e.exitCode, durMs: e.durMs, cmd: e.cmd };
 }
 
 /** 缓冲区最后一行的行号（滚动历史底 = baseY，视口内光标偏移 = cursorY）。 */

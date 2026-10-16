@@ -10,7 +10,7 @@ import {
   parseOsc133,
   parseOsc1337,
 } from "../lib/terminalStatusbar";
-import { navCmdStart, navCmdEnd } from "../lib/terminalCommandNav";
+import { navCmdStart, navCmdEnd, navCmdText } from "../lib/terminalCommandNav";
 import {
   DANCE,
   ECHO_OFF_CMD,
@@ -157,7 +157,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
       });
       const d1337 = term.parser.registerOscHandler(1337, (data) => {
         if (!enabledRef.current) return true;
-        const { shell, git } = parseOsc1337(data);
+        const { shell, git, cmd } = parseOsc1337(data);
         if (shell) {
           // 🔴 门禁：回执 ≠ 支持——fish/ksh 也能执行探针并回执，钩子（bash 语法）
           // 盲发会在对方屏幕喷语法错误。立即 abortDance：恢复 ECHO 不能等探针超时
@@ -169,11 +169,9 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
             abortRef.current?.();
           }
         }
-        if (git) {
-          // git 分支是按目录缓存的：钩子只在 cwd 变化时才发，
-          // 所以这里收到分支就直接替换（旧分支属于旧目录）。
-          setStatus((s) => ({ ...s, branch: git }));
-        }
+        if (git) setStatus((s) => ({ ...s, branch: git })); // 分支按目录缓存：钩子只在 cwd 变化时才发，直接替换（旧分支属旧目录）
+        // 命令文本与 133;D 同轮到达（钩子一次 printf 连发），回填到 D 刚填退出码的那一块。
+        if (cmd) navCmdText(term, cmd);
         return true;
       });
       // 用户输入监听：一旦敲过字就永久放弃注入；若 ECHO 正处于关闭期，立即恢复。
