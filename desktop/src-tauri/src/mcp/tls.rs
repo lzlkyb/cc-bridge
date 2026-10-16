@@ -11,7 +11,7 @@
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -256,10 +256,6 @@ fn write_private(path: &Path, content: &str) -> std::io::Result<()> {
 fn io_err(msg: &'static str) -> impl Fn(rcgen::Error) -> std::io::Error {
     move |e| std::io::Error::other(format!("{}：{}", msg, e))
 }
-
-/// 生成 serve 用的 keep-alive（占位：暂无特殊需求）。
-#[allow(dead_code)]
-pub(crate) const TLS_KEEPALIVE: Option<Duration> = Some(Duration::from_secs(60));
 
 #[cfg(test)]
 mod tests {

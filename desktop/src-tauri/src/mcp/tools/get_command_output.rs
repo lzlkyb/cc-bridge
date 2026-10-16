@@ -60,34 +60,11 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
-    use crate::state::AppState;
-    use std::path::Path;
-    use std::sync::atomic::AtomicU64;
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn unique_subdir(label: &str) -> std::path::PathBuf {
-        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "cc-bridge-mcp-test-{label}-{}-{}",
-            std::process::id(),
-            n
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("tempdir create");
-        dir
-    }
-
-    fn make_state() -> Arc<AppState> {
-        let dir = unique_subdir("get_cmd");
-        let conn = db::init_database(Path::new(&dir)).expect("init db");
-        Arc::new(AppState::new(conn, Default::default(), dir))
-    }
+    use crate::mcp::tools::testutil::make_state_default;
 
     #[tokio::test]
     async fn unknown_handle_returns_error() {
-        let state = make_state();
+        let state = make_state_default();
         let result = handle(
             GetCommandOutputArgs {
                 handle: "cmd_missing".to_string(),

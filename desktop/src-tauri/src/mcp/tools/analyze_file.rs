@@ -239,36 +239,7 @@ fn count_functions_classes(text: &str, language: &str) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BridgeConfig;
-    use crate::db;
-    use crate::state::AppState;
-    use std::path::Path;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn unique_subdir(label: &str) -> std::path::PathBuf {
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "cc-bridge-analyze-test-{label}-{}-{}",
-            std::process::id(),
-            n
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("tempdir create");
-        dir
-    }
-
-    fn make_state(f: impl FnOnce(&mut BridgeConfig)) -> (Arc<AppState>, std::path::PathBuf) {
-        let dir = unique_subdir("analyze");
-        let conn = db::init_database(Path::new(&dir)).expect("init db");
-        let mut cfg = BridgeConfig {
-            allowed_roots: vec![dir.to_string_lossy().into_owned()],
-            ..BridgeConfig::default()
-        };
-        f(&mut cfg);
-        (Arc::new(AppState::new(conn, cfg, dir.clone())), dir)
-    }
+    use crate::mcp::tools::testutil::make_state;
 
     /// 小文件：line/function/class 计数全部给出，analysisNote 是正常的启发式提示。
     #[tokio::test]

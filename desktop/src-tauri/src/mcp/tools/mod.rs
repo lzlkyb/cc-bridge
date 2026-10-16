@@ -1,3 +1,5 @@
+use serde_json::{json, Value};
+
 pub mod analyze_file;
 pub mod batch;
 pub mod command_policy;
@@ -23,6 +25,92 @@ pub mod search_files;
 pub mod shell;
 pub mod stop_command;
 pub mod write_files;
+
+/// 按 MCP `tools/call` 规范把结果包成 `content` 数组（`content[0].text` 是一段 JSON 文本）。
+///
+/// 🔴 裸返回对象会被客户端判为格式错误，所以**每个**工具的结果都必须走这里。
+/// 以前这段壳散在 3 个私有同名函数 + 18 处内联里，改一次 envelope 形状要改 21 处。
+///
+/// `text_result` = pretty 缩进（人读友好：日志与手工调试能看清结构）；
+/// `text_result_compact` = 紧凑（结构化输出的工具用，见 `read_files`／`batch`）。
+///
+/// 泛型收 `&impl Serialize`：既接受 `json!(...)` 临时值，也接受 `Vec<Value>` 之类的容器，
+/// 调用方不必为了迎合签名先把它包成 `Value`。
+pub(crate) fn text_result(value: &impl serde::Serialize) -> Value {
+    json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(value).unwrap() }] })
+}
+
+pub(crate) fn text_result_compact(value: &impl serde::Serialize) -> Value {
+    json!({ "content": [{ "type": "text", "text": serde_json::to_string(value).unwrap() }] })
+}
+
+/// `mcp/tools/*` 各 `mod tests` 共用的测试脚手架。
+///
+/// 2026-10-16 前 `unique_subdir` 与 `make_state` 各被抄了 7 份（只有 label 不同），
+/// 改一次临时目录命名规则要改 14 处。
+#[cfg(test)]
+pub(crate) mod testutil {
+    use crate::config::BridgeConfig;
+    use crate::db;
+    use crate::state::AppState;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    /// 全局自增，保证并发跑的测试拿到互不相同的目录名。
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// 唯一、可写的临时目录。
+    ///
+    /// 用 `std::env::temp_dir()` 而非 tempfile crate——cc-bridge 没有 dev-deps 段，
+    /// 而测试只需要一棵「独立、唯一、可写」的目录树，stdlib 足够。
+    pub(crate) fn unique_subdir(label: &str) -> PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "cc-bridge-test-{label}-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tempdir create");
+        dir
+    }
+
+    /// 造 `AppState`：临时目录里建库，白名单根预置为该目录，再让 `f` 覆写其余配置。
+    ///
+    /// 返回 `(state, dir)`；`dir` 即白名单根，测试可往里写 fixture。
+    pub(crate) fn make_state(f: impl FnOnce(&mut BridgeConfig)) -> (Arc<AppState>, PathBuf) {
+        let dir = unique_subdir("state");
+        let conn = db::init_database(Path::new(&dir)).expect("init db");
+        let mut cfg = BridgeConfig {
+            allowed_roots: vec![dir.to_string_lossy().into_owned()],
+            ..BridgeConfig::default()
+        };
+        f(&mut cfg);
+        (Arc::new(AppState::new(conn, cfg, dir.clone())), dir)
+    }
+
+    /// 造 `AppState`：`BridgeConfig::default()`（白名单为空），无自定义。
+    pub(crate) fn make_state_default() -> Arc<AppState> {
+        let dir = unique_subdir("default");
+        let conn = db::init_database(Path::new(&dir)).expect("init db");
+        Arc::new(AppState::new(conn, Default::default(), dir))
+    }
+
+    /// 造 `AppState`：白名单根替换为给定的 `roots`。
+    pub(crate) fn make_state_with_roots(roots: Vec<PathBuf>) -> Arc<AppState> {
+        let dir = unique_subdir("roots");
+        let conn = db::init_database(Path::new(&dir)).expect("init db");
+        let cfg = BridgeConfig {
+            allowed_roots: roots
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect(),
+            ..BridgeConfig::default()
+        };
+        Arc::new(AppState::new(conn, cfg, dir))
+    }
+}
 
 #[cfg(test)]
 mod schema_tests {

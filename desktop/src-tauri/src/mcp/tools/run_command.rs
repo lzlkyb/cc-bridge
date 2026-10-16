@@ -10,6 +10,7 @@ use crate::mcp::tools::command_policy::validate_command_policy;
 use crate::mcp::tools::shell::{
     build_invocation, normalize_cwd_from_shell, parse_shell_type, ShellType,
 };
+use crate::mcp::tools::text_result;
 
 // 这两个是跨平台的 trait，两边都要。
 use process_wrap::std::{StdChildWrapper, StdCommandWrap};
@@ -547,7 +548,7 @@ fn run_foreground(
                 None
             };
             Ok((
-                text_result(json!({
+                text_result(&json!({
                     "stdout": String::from_utf8_lossy(&stdout),
                     "stderr": String::from_utf8_lossy(&stderr),
                     "exitCode": status.code(),
@@ -581,7 +582,7 @@ fn run_foreground(
             let stdout = stdout_buf.blocking_lock().clone();
             let stderr = stderr_buf.blocking_lock().clone();
             Ok((
-                text_result(json!({
+                text_result(&json!({
                     "stdout": String::from_utf8_lossy(&stdout),
                     "stderr": String::from_utf8_lossy(&stderr),
                     "exitCode": Value::Null,
@@ -701,13 +702,7 @@ fn spawn_background(
         },
     );
 
-    Ok(text_result(json!({ "handle": handle_id, "pid": pid })))
-}
-
-fn text_result(info: Value) -> Value {
-    json!({
-        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&info).unwrap() }]
-    })
+    Ok(text_result(&json!({ "handle": handle_id, "pid": pid })))
 }
 
 /// 把会话 id 与本次生效 cwd 注入 run_command 返回的 JSON 文本
@@ -750,39 +745,7 @@ fn inject_session_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BridgeConfig;
-    use crate::db;
-    use crate::state::AppState;
-    use std::path::Path;
-    use std::sync::atomic::AtomicU64;
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn unique_subdir(label: &str) -> std::path::PathBuf {
-        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "cc-bridge-mcp-test-{label}-{}-{}",
-            std::process::id(),
-            n
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("tempdir create");
-        dir
-    }
-
-    fn make_state_with_config(
-        f: impl FnOnce(&mut BridgeConfig),
-    ) -> (Arc<AppState>, std::path::PathBuf) {
-        let dir = unique_subdir("run_cmd");
-        let conn = db::init_database(Path::new(&dir)).expect("init db");
-        let mut cfg = BridgeConfig {
-            allowed_roots: vec![dir.to_string_lossy().into_owned()],
-            ..BridgeConfig::default()
-        };
-        f(&mut cfg);
-        let state = Arc::new(AppState::new(conn, cfg, dir.clone()));
-        (state, dir)
-    }
+    use crate::mcp::tools::testutil::make_state as make_state_with_config;
 
     /// 关 shell_enabled 时 run_command 必须立刻拒绝、与 cwd 白名单无关。
     /// 这是默认状态——所有"命令执行"调用方默认全拒，等用户在面板显式开开关。

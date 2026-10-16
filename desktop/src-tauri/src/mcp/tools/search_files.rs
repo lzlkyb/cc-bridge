@@ -684,25 +684,8 @@ fn grep_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::tools::testutil::unique_subdir;
     use std::fs;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    /// 用 std::env::temp_dir() 而非 tempfile crate——cc-bridge 没有 dev-deps 段，
-    /// 且本测试只需要一个"独立、唯一、可写"的目录树，stdlib 足够。每个 case 走
-    /// unique_subdir 保证并发跑不出错。
-    fn unique_subdir(label: &str) -> std::path::PathBuf {
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "cc-bridge-search-test-{label}-{}-{}",
-            std::process::id(),
-            n
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("tempdir create");
-        dir
-    }
 
     /// 写文件（含父目录），方便造 fixture。
     fn touch(p: &Path, body: &str) {

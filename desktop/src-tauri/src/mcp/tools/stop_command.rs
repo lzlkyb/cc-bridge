@@ -45,38 +45,13 @@ pub async fn handle(args: StopCommandArgs, state: &Arc<AppState>) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db;
-    use crate::state::AppState;
-    use std::path::Path;
-    use std::sync::atomic::AtomicU64;
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    /// 用 std::env::temp_dir() 而非 tempfile crate——cc-bridge 没有 dev-deps 段。
-    /// 每个 case 走 unique_subdir 保证并发跑不出错。
-    fn unique_subdir(label: &str) -> std::path::PathBuf {
-        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "cc-bridge-mcp-test-{label}-{}-{}",
-            std::process::id(),
-            n
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("tempdir create");
-        dir
-    }
-
-    fn make_state() -> Arc<AppState> {
-        let dir = unique_subdir("stop_cmd");
-        let conn = db::init_database(Path::new(&dir)).expect("init db");
-        Arc::new(AppState::new(conn, Default::default(), dir))
-    }
+    use crate::mcp::tools::testutil::make_state_default;
 
     #[tokio::test]
     async fn unknown_handle_returns_error() {
         // stop_command 一定不能对未知 handle 静默成功——若返回 ok 但注册表没动，
         // 客户端会以为"已停止"再去 get_command_output 仍拿到旧输出，状态机错乱。
-        let state = make_state();
+        let state = make_state_default();
         let result = handle(
             StopCommandArgs {
                 handle: "cmd_does_not_exist".to_string(),

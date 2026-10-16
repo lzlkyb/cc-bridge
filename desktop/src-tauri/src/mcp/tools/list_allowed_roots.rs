@@ -103,38 +103,7 @@ pub async fn handle(_args: ListAllowedRootsArgs, state: &Arc<AppState>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BridgeConfig;
-    use crate::db;
-    use crate::state::AppState;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn unique_subdir(label: &str) -> PathBuf {
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "cc-bridge-rules-test-{label}-{}-{}",
-            std::process::id(),
-            n
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("tempdir create");
-        dir
-    }
-
-    fn make_state(roots: Vec<PathBuf>) -> Arc<AppState> {
-        let dir = unique_subdir("state");
-        let conn = db::init_database(Path::new(&dir)).expect("init db");
-        let cfg = BridgeConfig {
-            allowed_roots: roots
-                .iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect(),
-            ..BridgeConfig::default()
-        };
-        Arc::new(AppState::new(conn, cfg, dir))
-    }
+    use crate::mcp::tools::testutil::{make_state_with_roots as make_state, unique_subdir};
 
     /// 跑一次工具，返回解析后的 info。
     async fn run(state: &Arc<AppState>) -> Value {

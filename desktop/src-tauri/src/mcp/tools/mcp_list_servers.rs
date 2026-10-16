@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::mcp::bridge::{config::ExternalMcpServer, manifest, spawn, DEFAULT_TIMEOUT};
+use crate::mcp::tools::text_result;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
@@ -38,11 +39,11 @@ pub async fn handle(args: McpListServersArgs, state: &Arc<AppState>) -> Result<V
     };
 
     if !enabled {
-        return text(json!({
+        return Ok(text_result(&json!({
             "enabled": false,
             "servers": [],
             "note": "外挂 MCP server 功能未启用。它等于给远程多开一条执行通道，必须由本机管理员在设置页显式开启。"
-        }));
+        })));
     }
 
     if args.refresh {
@@ -71,7 +72,7 @@ pub async fn handle(args: McpListServersArgs, state: &Arc<AppState>) -> Result<V
         }
     }
 
-    text(json!({ "enabled": true, "servers": out }))
+    Ok(text_result(&json!({ "enabled": true, "servers": out })))
 }
 
 /// 描述一个 server。**不启进程**：只查命令在不在 + 读 manifest。
@@ -208,13 +209,4 @@ async fn refresh_all(specs: &[ExternalMcpServer], state: &Arc<AppState>) {
 
 fn now_secs() -> i64 {
     chrono::Utc::now().timestamp()
-}
-
-fn text(v: Value) -> Result<Value, String> {
-    Ok(json!({
-        "content": [{
-            "type": "text",
-            "text": serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?
-        }]
-    }))
 }

@@ -140,36 +140,7 @@ fn source_to_json(src: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BridgeConfig;
-    use crate::db;
-    use crate::state::AppState;
-    use std::path::Path;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-
-    fn unique_subdir(label: &str) -> std::path::PathBuf {
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "cc-bridge-nb-test-{label}-{}-{}",
-            std::process::id(),
-            n
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("tempdir create");
-        dir
-    }
-
-    fn make_state(f: impl FnOnce(&mut BridgeConfig)) -> (Arc<AppState>, std::path::PathBuf) {
-        let dir = unique_subdir("nb");
-        let conn = db::init_database(Path::new(&dir)).expect("init db");
-        let mut cfg = BridgeConfig::default();
-        f(&mut cfg);
-        // 测试固定：把白名单根设为该临时目录，避免 "not within any allowed root"。
-        cfg.allowed_roots = vec![dir.to_string_lossy().into_owned()];
-        let state = Arc::new(AppState::new(conn, cfg, dir.clone()));
-        (state, dir)
-    }
+    use crate::mcp::tools::testutil::make_state;
 
     /// 最小合法 ipynb（nbformat 4）。
     fn sample_nb() -> Value {

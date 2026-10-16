@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
 
 use crate::encoding;
+use crate::mcp::tools::text_result_compact;
 use crate::security;
 use crate::state::AppState;
 
@@ -75,7 +76,7 @@ pub async fn handle(args: ReadFilesArgs, state: &Arc<AppState>) -> Result<Value,
         }
     }
 
-    Ok(json!({ "content": [{ "type": "text", "text": serde_json::to_string(&results).unwrap() }] }))
+    Ok(text_result_compact(&results))
 }
 
 async fn read_single_file(
