@@ -1902,6 +1902,23 @@ select:focus-visible,
   padding: 8px;
   border-top: 1px solid hsl(var(--border));
 }
+/* 方案 A（2026-10-16）：设置行 + 版本 pill 同行。idle 的版本徽章从整行
+   缩为 auto 宽 pill 嵌在设置行右端（样式沿用 header-badge-idle 渐变）；
+   有更新活动时整行徽章接管，本行不带 pill（见 SideNav foot）。 */
+.app-side-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.app-side-settings-row .app-side-item {
+  flex: 1;
+  min-width: 0;
+}
+.app-side-settings-row .header-badge-idle {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  font-size: 10.5px;
+}
 .app-side-status {
   display: flex;
   align-items: center;

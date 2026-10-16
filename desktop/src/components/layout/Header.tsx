@@ -26,7 +26,6 @@ function HeaderImpl({
   onOpenSearch,
   collapsed,
   onToggleCollapse,
-  location,
 }: {
   status?: StaticStatus;
   onChanged?: () => void;
@@ -36,7 +35,6 @@ function HeaderImpl({
   /** 侧栏当前是否处于图标栏（收起）态。 */
   collapsed?: boolean;
   onToggleCollapse?: () => void;
-  location?: string;
 }) {
   const [dark, setDark] = useState(() => getStoredTheme() === "dark");
   const [busy, setBusy] = useState(false);
@@ -102,7 +100,9 @@ function HeaderImpl({
             <Icon name="chevronLeft" size={16} className={collapsed ? "rotate-180" : ""} />
           </Button>
         )}
-        <span className="max-w-40 truncate text-xs font-medium text-muted-foreground" data-tauri-drag-region>{location}</span>
+        {/* A 方案 2026-10-16：location 文本删除——当前页名侧栏本就有高亮项，
+            这里的「< 连接」读作「返回到连接」的误导 + 信息纯冗余；左侧只留
+            折叠开关 + 安全徽章组，顶栏更干净。 */}
         {/* C 方案 2026-10-15：5 枚散徽章聚合为一枚入口——徽章群原紧邻侧栏开关与
             服务启停两个高危邻居，窄窗下弹性空白被压没后直接顶上「停止服务」，
             误触代价重。面板内各项保留完整语义与原跳转逻辑。 */}

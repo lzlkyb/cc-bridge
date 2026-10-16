@@ -3,7 +3,8 @@ import type { StaticStatus } from "../../lib/types";
 import type { SettingsSection } from "../../lib/settingsSections";
 import { Icon, type IconName } from "../ui/icon";
 import { APP_INFO } from "../../lib/about";
-import { UpdateBadge } from "./UpdateBadge";
+import { UpdateBadge, IdleVersionPill } from "./UpdateBadge";
+import { useUpdate } from "../../contexts/UpdateContext";
 import { SideNavSettings } from "./SideNavSettings";
 
 type NavItem = { key: string; label: string; icon: IconName };
@@ -96,6 +97,10 @@ function SideNavImpl({
   // 状态胶囊异常态两种模式口径一致（见 foot 区注释）。
   const settingsMode = activeTab === "settings" && !!settingsSections && !!onSelectSection;
 
+  // 更新状态（方案 A 2026-10-16）：idle 的版本 pill 并入设置行右端；
+  // 非 idle（发现更新/下载中/待重启/出错…）整行徽章接管，醒目不减。
+  const { status: updateStatus } = useUpdate();
+
   return (
     <aside className="app-side" data-collapsed={collapsed || undefined} data-mode={settingsMode ? "settings" : undefined}>
       {/* 品牌区：整块可拖窗口（decorations:false，无系统标题栏，必须留出拖拽区域） */}
@@ -142,32 +147,37 @@ function SideNavImpl({
       )}
 
       <div className="app-side-foot">
-        {/* 更新状态徽章（B 方案 2026-10-15）：品牌区 → foot 区。应用级元信息
-            （版本/更新进度）与服务状态胶囊同区，200px 全宽放得下「下载中 45%」
-            这类长文案；品牌区恢复 logo + 名字的安静头部。折叠态整行隐藏。 */}
-        <UpdateBadge currentVersion={status?.version} />
+        {/* 更新状态徽章（方案 A 2026-10-16）：idle 时版本 pill 并入设置行右端
+            （IdleVersionPill），foot 常态只剩一行；非 idle（发现更新/下载中/
+            待重启/出错）整行徽章接管——长文案与醒目度不减。设置目录模式下
+            设置入口隐藏、pill 无处可依 → 整行徽章原样保留（含 idle 版本号）。
+            折叠态由 index.css 的 [data-collapsed] .header-badge{display:none} 兜底。 */}
+        {(settingsMode || updateStatus !== "idle") && <UpdateBadge currentVersion={status?.version} />}
         {/* 设置排最末位（导航末位惯例：VS Code / Discord / Telegram 均如此）——
             与「干活的页面」在视觉上分层。进设置的副作用（标已读 / 开更新历史）
             在 App.tsx 的 handleNavigate 里，这里只管导航。
             目录模式下隐藏本入口（已在设置里，出口是「返回工作区」）。 */}
         {!settingsMode && (
-          <button
-            type="button"
-            className="app-side-item"
-            data-active={activeTab === "settings" || undefined}
-            aria-current={activeTab === "settings" ? "page" : undefined}
-            title={collapsed ? `设置${unreadCount > 0 ? `（${unreadCount} 项新更新）` : ""}` : undefined}
-            onClick={() => onNavigate("settings")}
-          >
-            <Icon name="settings" size={16} className="app-side-icon" />
-            <span className="app-side-label">设置</span>
-            {/* changelog-dot：沿用更新未读红点的脉冲动画 + hover 放大（index.css 已有定义） */}
-            {unreadCount > 0 && (
-              <span className="app-side-badge changelog-dot" title={`${unreadCount} 项新更新`}>
-                {unreadLabel}
-              </span>
-            )}
-          </button>
+          <div className="app-side-settings-row">
+            <button
+              type="button"
+              className="app-side-item"
+              data-active={activeTab === "settings" || undefined}
+              aria-current={activeTab === "settings" ? "page" : undefined}
+              title={collapsed ? `设置${unreadCount > 0 ? `（${unreadCount} 项新更新）` : ""}` : undefined}
+              onClick={() => onNavigate("settings")}
+            >
+              <Icon name="settings" size={16} className="app-side-icon" />
+              <span className="app-side-label">设置</span>
+              {/* changelog-dot：沿用更新未读红点的脉冲动画 + hover 放大（index.css 已有定义） */}
+              {unreadCount > 0 && (
+                <span className="app-side-badge changelog-dot" title={`${unreadCount} 项新更新`}>
+                  {unreadLabel}
+                </span>
+              )}
+            </button>
+            {updateStatus === "idle" && <IdleVersionPill currentVersion={status?.version} />}
+          </div>
         )}
 
         {/* 服务状态胶囊（E 方案 2026-10-15）：异常才现。运行中/已停止不渲染——

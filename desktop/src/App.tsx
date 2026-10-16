@@ -298,7 +298,6 @@ function AppContent() {
             onOpenSearch={() => setShowCommandPalette(true)}
             collapsed={sideCollapsed}
             onToggleCollapse={() => setSideCollapsed((v) => !v)}
-            location={activeTab === "settings" ? `设置 / ${settingsSections.find(s => s.id === settingsActiveId)?.label ?? "关于"}` : WORKSPACE_NAV.find(n => n.key === activeTab)?.label}
           />
       {statusError && (
         <div className="shrink-0 px-5 pt-2">

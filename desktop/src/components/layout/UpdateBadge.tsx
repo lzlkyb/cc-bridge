@@ -154,6 +154,25 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   return null;
 }
 
+/**
+ * idle 态紧凑版版本 pill（方案 A，2026-10-16）：嵌在侧栏「设置」行右端，
+ * auto 宽不占整行——foot 常态只剩一行。有更新活动时由整行 UpdateBadge 接管
+ * （见 SideNav 的分支），pill 让位。样式沿用 header-badge-idle 渐变，只缩宽。
+ */
+export function IdleVersionPill({ currentVersion }: { currentVersion?: string }) {
+  const { manualCheckForUpdate } = useUpdate();
+  if (!currentVersion) return null;
+  return (
+    <button
+      className="header-badge header-badge-idle cursor-pointer"
+      title={`v${currentVersion} — 点击检查更新`}
+      onClick={() => manualCheckForUpdate()}
+    >
+      <span>v{currentVersion}</span>
+    </button>
+  );
+}
+
 /** Header 下载进度环：渐变底上使用白色描边。indeterminate 时整体旋转，不显数字。 */
 function DownloadRing({ progress, indeterminate }: { progress: number; indeterminate: boolean }) {
   const size = 14;
