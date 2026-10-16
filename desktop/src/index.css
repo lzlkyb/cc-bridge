@@ -1701,7 +1701,15 @@ select:focus-visible,
 :root[data-app-hidden] .changelog-dot,
 :root[data-app-hidden] .update-glow::after,
 :root[data-app-hidden] .vh-skel,
-:root[data-app-hidden] .skeleton {
+:root[data-app-hidden] .skeleton,
+/* 2026-10-16 更新体验新增（见文件尾「更新体验」一节）：
+   下载期扫光 ×2、槽位呼吸光圈、重启过渡层扫光，以及所有 spinner。 */
+:root[data-app-hidden] .update-line-sweep,
+:root[data-app-hidden] .ub-sweep,
+:root[data-app-hidden] .ro-bar > i,
+:root[data-app-hidden] .update-slot .header-badge-update::after,
+:root[data-app-hidden] .update-slot .header-badge-ready::after,
+:root[data-app-hidden] .animate-spin {
   animation-play-state: paused;
 }
 
@@ -1902,9 +1910,7 @@ select:focus-visible,
   padding: 8px;
   border-top: 1px solid hsl(var(--border));
 }
-/* 方案 A（2026-10-16）：设置行 + 版本 pill 同行。idle 的版本徽章从整行
-   缩为 auto 宽 pill 嵌在设置行右端（样式沿用 header-badge-idle 渐变）；
-   有更新活动时整行徽章接管，本行不带 pill（见 SideNav foot）。 */
+/* 方案 A（2026-10-16 二次改造）：设置行 + 更新槽位同行。 */
 .app-side-settings-row {
   display: flex;
   align-items: center;
@@ -1914,11 +1920,46 @@ select:focus-visible,
   flex: 1;
   min-width: 0;
 }
-.app-side-settings-row .header-badge-idle {
+/* ── 更新槽位：七态原地变形，让 foot 高度恒定 ──
+   更新徽章曾经是 foot 里的**一整行**：非 idle 时就插进来，把 foot 从 53.8px
+   撑到 79.7px、导航区压扁 25.9px（用户看到的就是「一点更新侧栏就跳一下」）。
+   现在它是设置行右端一个**定宽格子**，七种状态在格子里原地变形 ⇒ 零位移。
+   锁 min-width:66px 的依据：最长态「检查中」（spinner + 三字）实测 62.5px，
+   留 3.5px 字体度量容差；其余六态自然宽 42–54px，锁宽后差异不可见 —— 正是目的。
+   min-height 保证「版本号还没拿到」时格子也在，设置按钮不会横跳。 */
+.update-slot {
   flex-shrink: 0;
+  min-width: 66px;
+  min-height: 22px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+}
+.update-slot .header-badge {
+  position: relative;
   padding: 2px 8px;
   font-size: 10.5px;
 }
+/* 设置目录模式下设置行不存在，槽位改为单占一行（常驻、高度恒定） */
+.app-side-foot > .update-slot { align-self: center; }
+/* available / ready 在槽位里只剩两个字，用呼吸光圈把「醒目度」补回来（2.1s）。
+   走伪元素而不是 badge 自身的 box-shadow：后者已承载立体阴影与 hover 变化，
+   被动画覆盖会丢。 */
+@keyframes upd-breathe {
+  0%, 100% { box-shadow: 0 0 0 0 var(--upd-glow); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in srgb, var(--upd-glow) 0%, transparent); }
+}
+.update-slot .header-badge-update::after,
+.update-slot .header-badge-ready::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  animation: upd-breathe 2.1s ease-in-out infinite;
+}
+.update-slot .header-badge-update { --upd-glow: color-mix(in srgb, hsl(var(--primary)) 42%, transparent); }
+.update-slot .header-badge-ready  { --upd-glow: color-mix(in srgb, hsl(var(--success)) 46%, transparent); }
 .app-side-status {
   display: flex;
   align-items: center;
@@ -1954,9 +1995,8 @@ select:focus-visible,
 /* 图标栏态：状态胶囊只留一个点，导航项只留图标并居中 */
 .app-side[data-collapsed] .app-side-status { justify-content: center; padding: 4px 0; background: transparent; }
 .app-side[data-collapsed] .app-side-status-text { display: none; }
-/* 更新徽章（foot 区）：全宽居中对齐状态胶囊；折叠态 56px 装不下长文案，整行隐藏 */
-.app-side-foot .header-badge { justify-content: center; }
-.app-side[data-collapsed] .app-side-foot .header-badge { display: none; }
+/* 更新槽位：折叠态 56px 装不下 66px 格子，整格收起（display:none 不占位、不计 gap） */
+.app-side[data-collapsed] .update-slot { display: none; }
 .app-side[data-collapsed] .app-side-item { justify-content: center; gap: 0; padding: 8px 0; }
 .app-side[data-collapsed] .app-side-label { display: none; }
 
@@ -2026,3 +2066,287 @@ select:focus-visible,
 
 /* 顶栏：固定 52px，与侧栏品牌区等高，两者底边连线贯通成一条水平分割线 */
 .app-topbar { height: 52px; }
+
+/* ===================================================================
+   更新体验：下载期窗口级反馈 + 重启过渡 + 升级后首启欢迎
+   （方案 B / B+ / C / D，2026-10-16）
+
+   🔴 本节所有浮层一律 position:fixed，绝不参与布局（只有欢迎条需要点击，
+      其余全程 pointer-events:none）。理由：更新总是发生在终端会话旁边，
+      只要给内容区让出 1–2px —— 哪怕只是一条 border-top —— 终端面板就会触发
+      一次 fit ⇒ 远端 TUI 重排。这是本项目踩过的坑，所以宁可短暂遮挡也不让位。
+   =================================================================== */
+
+/* ── ① 2px 通栏进度线（方案 B）：只回答「走了多远」──
+   位在窗口最顶。它是窗口级元素，侧栏折叠时依然可见 —— 这正是它比
+   「侧栏内进度条」更好的地方。 */
+.update-line {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  z-index: 59;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+.update-line.is-on { opacity: 1; }
+.update-line > i {
+  display: block;
+  height: 100%;
+  transform-origin: left center;
+  transition: transform 0.2s linear;
+  background: linear-gradient(90deg, #4f46e5, #7c3aed, #3b82f6);
+  box-shadow: 0 0 8px color-mix(in srgb, hsl(var(--primary)) 45%, transparent);
+}
+/* 不确定态（源未返回 Content-Length）：改循环扫光。宽度 34% ⇒ 位移 100%/34% ≈ 294% */
+@keyframes upd-line-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(294%); }
+}
+.update-line .update-line-sweep {
+  width: 34%;
+  animation: upd-line-sweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* ── ② 28px 网速状态条（方案 B+）：回答「还要多久」──
+   紧贴进度线下方。它确实会盖住侧栏 header 与内容区顶部，缓解靠三点：
+   ① 半透明 + 毛玻璃（90% 是实测折中：84% 时下方文字与读数叠成噪点、
+   100% 则完全失去浮层感）；② 全程点击穿透；③ 只在下载期存在，秒级。 */
+.update-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: 2px;
+  height: 28px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  font-size: 11px;
+  color: hsl(var(--foreground));
+  background: color-mix(in srgb, hsl(var(--card)) 90%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, hsl(var(--primary)) 30%, transparent);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity var(--dur-slow) var(--ease), transform var(--dur-slow) var(--ease);
+}
+.update-bar.is-on { opacity: 1; transform: none; }
+
+.update-bar .ub-ring { flex-shrink: 0; color: hsl(var(--primary)); }
+.update-bar .ub-status {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: hsl(var(--primary));
+  font-variant-numeric: tabular-nums;
+}
+/* 轨道是唯一可压缩段：窗口变窄先压它（下限 34px），压到底再按断点丢信息。 */
+.update-bar .ub-track {
+  flex: 1 1 auto;
+  min-width: 34px;
+  height: 3px;
+  border-radius: 999px;
+  background: hsl(var(--border));
+  overflow: hidden;
+}
+.update-bar .ub-track > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4f46e5, #7c3aed, #3b82f6);
+  transition: width 0.2s linear;
+}
+@keyframes upd-bar-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(294%); }
+}
+.update-bar .ub-sweep {
+  width: 34%;
+  animation: upd-bar-sweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+/* 速率段：等宽数字 + 定宽 68px。250ms 一跳的数字若不定宽，整条会左右抽动 ——
+   68px 是实测值：最短态「—」与最长态「↓ 999.9 MB/s」(66.9px) 同宽。 */
+.update-bar .ub-spd {
+  flex-shrink: 0;
+  min-width: 68px;
+  font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.update-bar .ub-spd[data-stalled] {
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+}
+.update-bar .ub-rest {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+}
+/* 窄窗口兜底：窗口最小宽 560 下本就不会挤（固定段合计约 314px），留一条保险。
+   真要更窄，按「先丢已下载/剩余 → 最后丢状态文字」退；绝不靠 flex 换行 ——
+   换行会让条从 28px 变两行，直接破坏「零占位」前提。 */
+@media (max-width: 620px) {
+  .update-bar .ub-rest { display: none; }
+}
+
+/* ── ③ 重启过渡层（方案 C）：把「闪一下 → 空白 1–3 秒」变成被看见的升级 ──
+   z-index 高于 Modal(1000) 与 Toast(2000)：重启期间不该有东西盖在它上面。 */
+.restart-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background:
+    radial-gradient(120% 85% at 50% 28%, rgba(99, 102, 241, 0.14), rgba(124, 58, 237, 0.05) 42%, transparent 72%),
+    hsl(var(--background));
+  animation: ro-in 250ms var(--ease) both;
+}
+@keyframes ro-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.restart-overlay .ro-logo {
+  border-radius: 17px;
+  box-shadow: 0 12px 34px color-mix(in srgb, hsl(var(--primary)) 42%, transparent);
+  animation: ro-pop 420ms var(--ease-spring) both;
+}
+@keyframes ro-pop {
+  from { opacity: 0.6; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.restart-overlay .ro-title {
+  margin-top: 18px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: hsl(var(--foreground));
+}
+.restart-overlay .ro-ver {
+  margin-top: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+}
+.restart-overlay .ro-ver i { font-style: normal; }
+.restart-overlay .ro-ver b { font-weight: 700; color: hsl(var(--primary)); }
+.restart-overlay .ro-bar {
+  margin-top: 20px;
+  width: 190px;
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: hsl(var(--border));
+}
+.restart-overlay .ro-bar > i {
+  display: block;
+  width: 40%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4f46e5, #7c3aed, #3b82f6);
+  animation: ro-sweep 1.05s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes ro-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(250%); }
+}
+.restart-overlay .ro-hint {
+  margin-top: 14px;
+  font-size: 11.5px;
+  color: hsl(var(--muted-foreground));
+}
+
+/* ── ④ 升级后首启欢迎条（方案 D）：给升级流程补一个「结束」──
+   右上角一次性卡片（不是通栏条）：不遮挡侧栏品牌区与内容区左半，9s 自动隐去。
+   只在「启动版本 ≠ 上次记录」时出现，首次安装不显示。 */
+.upgrade-welcome {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 2100;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px 7px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, hsl(var(--primary)) 26%, hsl(var(--border)));
+  background: hsl(var(--popover));
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+  font-size: 12px;
+  color: hsl(var(--foreground));
+  animation: uw-in 300ms var(--ease) both;
+}
+@keyframes uw-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: none; }
+}
+.upgrade-welcome .uw-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  color: var(--hero-text);
+  background: var(--version-gradient);
+  box-shadow: 0 2px 6px var(--version-shadow);
+}
+.upgrade-welcome .uw-text {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.upgrade-welcome .uw-text b { color: hsl(var(--primary)); }
+.upgrade-welcome .uw-text em {
+  margin-left: 6px;
+  font-style: normal;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.upgrade-welcome .uw-link {
+  flex-shrink: 0;
+  padding: 4px 9px;
+  border: none;
+  border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--hero-text);
+  background: var(--version-gradient);
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.upgrade-welcome .uw-link:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px var(--version-shadow);
+}
+.upgrade-welcome .uw-close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  color: hsl(var(--muted-foreground));
+  background: transparent;
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.upgrade-welcome .uw-close:hover {
+  color: hsl(var(--foreground));
+  background: hsl(var(--muted));
+}

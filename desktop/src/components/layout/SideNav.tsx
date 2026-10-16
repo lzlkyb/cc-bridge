@@ -3,8 +3,7 @@ import type { StaticStatus } from "../../lib/types";
 import type { SettingsSection } from "../../lib/settingsSections";
 import { Icon, type IconName } from "../ui/icon";
 import { APP_INFO } from "../../lib/about";
-import { UpdateBadge, IdleVersionPill } from "./UpdateBadge";
-import { useUpdate } from "../../contexts/UpdateContext";
+import { UpdateBadge } from "./UpdateBadge";
 import { SideNavSettings } from "./SideNavSettings";
 
 type NavItem = { key: string; label: string; icon: IconName };
@@ -97,10 +96,6 @@ function SideNavImpl({
   // 状态胶囊异常态两种模式口径一致（见 foot 区注释）。
   const settingsMode = activeTab === "settings" && !!settingsSections && !!onSelectSection;
 
-  // 更新状态（方案 A 2026-10-16）：idle 的版本 pill 并入设置行右端；
-  // 非 idle（发现更新/下载中/待重启/出错…）整行徽章接管，醒目不减。
-  const { status: updateStatus } = useUpdate();
-
   return (
     <aside className="app-side" data-collapsed={collapsed || undefined} data-mode={settingsMode ? "settings" : undefined}>
       {/* 品牌区：整块可拖窗口（decorations:false，无系统标题栏，必须留出拖拽区域） */}
@@ -147,16 +142,12 @@ function SideNavImpl({
       )}
 
       <div className="app-side-foot">
-        {/* 更新状态徽章（方案 A 2026-10-16）：idle 时版本 pill 并入设置行右端
-            （IdleVersionPill），foot 常态只剩一行；非 idle（发现更新/下载中/
-            待重启/出错）整行徽章接管——长文案与醒目度不减。设置目录模式下
-            设置入口隐藏、pill 无处可依 → 整行徽章原样保留（含 idle 版本号）。
-            折叠态由 index.css 的 [data-collapsed] .header-badge{display:none} 兜底。 */}
-        {(settingsMode || updateStatus !== "idle") && <UpdateBadge currentVersion={status?.version} />}
-        {/* 设置排最末位（导航末位惯例：VS Code / Discord / Telegram 均如此）——
-            与「干活的页面」在视觉上分层。进设置的副作用（标已读 / 开更新历史）
-            在 App.tsx 的 handleNavigate 里，这里只管导航。
-            目录模式下隐藏本入口（已在设置里，出口是「返回工作区」）。 */}
+        {/* 更新槽位（方案 A 2026-10-16 二次改造）：设置行右端一个**定宽格子**，
+            七种状态在同一个格子里原地变形 ⇒ foot 高度恒定、导航区零位移。
+            （改前：只要 updateStatus !== "idle" 就插入一整行徽章，把 foot 从
+            53.8px 撑到 79.7px、导航区压扁 25.9px —— 用户看到的就是侧栏跳一下。）
+            设置目录模式下设置行不存在，槽位单占一行（常驻，idle 也显示版本号），
+            高度同样恒定。折叠态由 index.css 的 .update-slot{display:none} 收起。 */}
         {!settingsMode && (
           <div className="app-side-settings-row">
             <button
@@ -176,9 +167,10 @@ function SideNavImpl({
                 </span>
               )}
             </button>
-            {updateStatus === "idle" && <IdleVersionPill currentVersion={status?.version} />}
+            <UpdateBadge currentVersion={status?.version} />
           </div>
         )}
+        {settingsMode && <UpdateBadge currentVersion={status?.version} />}
 
         {/* 服务状态胶囊（E 方案 2026-10-15）：异常才现。运行中/已停止不渲染——
             绿点脉冲是常驻壁纸、零信息增量，常态反馈由连接页运行卡片与托盘承担；

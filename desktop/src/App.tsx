@@ -26,6 +26,7 @@ const LogTab = lazy(() => import("./components/tabs/LogTab").then((m) => ({ defa
 const TerminalTab = lazy(() => import("./components/tabs/TerminalTab").then((m) => ({ default: m.TerminalTab })));
 import { OnboardingGuide, isOnboardingDone } from "./components/modals/OnboardingGuide";
 import { CommandPalette } from "./components/modals/CommandPalette";
+import { UpgradeWelcomeBar } from "./components/update/UpgradeWelcomeBar";
 
 function AppContent() {
   // 窗口收进托盘/最小化时给 <html> 打 data-app-hidden，暂停全部 CSS 动画。
@@ -388,6 +389,13 @@ function AppContent() {
           onReopenOnboarding={openOnboarding}
         />
       )}
+
+      {/* 升级后首启欢迎条（方案 D）：只在「版本号变了」的那次启动浮出一次，
+          补上升级流程缺的那个「结束」。fixed 零占位，不挤压内容区。 */}
+      <UpgradeWelcomeBar
+        currentVersion={status?.version}
+        onOpenHistory={() => handleNavigate("settings")}
+      />
 
       {/* S3+S4: 链路状态跃迁监听（无 UI），弹 Toast + IP 自动恢复闭环 */}
       <LinkStateWatcher status={status} onReselectIp={handleSelectIp} />

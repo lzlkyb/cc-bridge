@@ -3,6 +3,8 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke } from "../lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { UpdateNotesDialog } from "../components/update/UpdateNotesDialog";
+import { UpdateProgressBar } from "../components/update/UpdateProgressBar";
+import { RestartOverlay } from "../components/update/RestartOverlay";
 
 // ─── 类型定义 ────────────────────────────
 
@@ -29,6 +31,10 @@ export interface UpdateState {
   bytesPerSec: number;
   /** 已下载字节数（后端每 chunk 都发 downloaded）；无总大小时用于展示"已下载 X MB" */
   downloadedBytes: number;
+  /** 下载总量（字节）；后端拿不到 Content-Length 时为 null ⇒ UI 走不确定态 */
+  totalBytes: number | null;
+  /** 重启过渡层可见：点击重启后先播 1.1 秒仪式感过渡，再真正 relaunch */
+  restarting: boolean;
   error: string | null;
   checkForUpdate: () => Promise<void>;
   downloadAndInstall: () => Promise<void>;
@@ -89,6 +95,8 @@ const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const LAST_CHECK_KEY = "ccbridge_last_update_check";
 /** 「稍后」抑制记忆：记录的版本号（本版本不再弹框，换版本自动解除） */
 const DISMISSED_KEY = "ccbridge_dismissed_update_version";
+/** 重启过渡层停留时长：这段刻意的等待本身就是「正在应用更新」的载体（方案 C） */
+const RESTART_OVERLAY_MS = 1100;
 
 // ─── Provider ────────────────────────────
 
@@ -99,7 +107,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [progressIndeterminate, setProgressIndeterminate] = useState(false);
   const [bytesPerSec, setBytesPerSec] = useState(0);
   const [downloadedBytes, setDownloadedBytes] = useState(0);
+  const [totalBytes, setTotalBytes] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [restarting, setRestarting] = useState(false);
   const [showNotes, setShowNotes] = useState(false);
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(() => {
     try {
@@ -234,12 +244,16 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           setProgressIndeterminate(false);
           setBytesPerSec(0);
           setDownloadedBytes(0);
+          setTotalBytes(null);
         }),
       );
       track(
         await listen<{ downloaded: number; total: number | null; bytesPerSec?: number }>("update:progress", (e) => {
           const { downloaded, total, bytesPerSec: bps } = e.payload;
           setDownloadedBytes(downloaded);
+          // totalBytes 是状态条算「已下载/总量」与「剩余时间」的唯一来源；
+          // total 为 null（源未返回 Content-Length）时保持 null ⇒ 状态条走不确定态。
+          setTotalBytes(total);
           if (total) {
             setProgress(Math.round((downloaded / total) * 100));
             setProgressIndeterminate(false);
@@ -316,15 +330,24 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ─── 重启应用 ────────────────────────────
+  // ─── 重启应用（方案 C 2026-10-16：先播 1.1s 过渡层，再真正 relaunch）────
 
   const restart = useCallback(async () => {
+    if (restarting) return;
+    setRestarting(true);
+    // 让过渡层播完再重启 —— 这段刻意的等待本身就是「仪式感」的载体。
+    await new Promise((r) => setTimeout(r, RESTART_OVERLAY_MS));
     try {
       await relaunch();
     } catch (e) {
+      // 🔴 必须复位。忘了这一步，过渡层会永久盖住界面、用户只能杀进程 ——
+      // 那比现在「闪一下」更糟，也是本方案唯一需要专门验收的失败路径。
       console.error("[Update] 重启失败:", e);
+      setRestarting(false);
+      setError(String(e));
+      setStatus("error");
     }
-  }, []);
+  }, [restarting]);
 
   // ─── 更新内容弹窗 ────────────────────────
 
@@ -352,8 +375,14 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, error, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, error, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
       {children}
+      {/* 下载期窗口级反馈（方案 B + B+，2026-10-16）：2px 通栏进度线 + 28px 网速状态条。
+          两者都是 fixed 零占位浮层，挂在 Provider 内部与 UpdateNotesDialog 同级，
+          这样折叠态 / 任何页面下都随更新状态出现，不依赖具体页面是否挂载。 */}
+      <UpdateProgressBar variant="line" />
+      <UpdateProgressBar variant="bar" />
+      {restarting && <RestartOverlay current={update?.currentVersion} next={update?.version} />}
       <UpdateNotesDialog open={showNotes} update={update} onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate} />
     </UpdateContext.Provider>
   );
