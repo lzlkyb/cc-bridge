@@ -365,16 +365,6 @@ export function terminalThemeOptions(mode: Theme, preset: TerminalPreset = "indi
 }
 
 /**
- * 滚动历史行数。
- *
- * xterm 默认只有 **1000 行**，`tail -f` 或构建日志一冲就没了。
- * 但它**有真实内存代价**：xterm 的 BufferLine 每个 cell 占约 12 字节，
- * 5000 行 × 200 列 ≈ 12 MB/会话，开四个会话就是 50 MB 量级。
- * 所以取 5000 而不是 10000——再大应该做成设置项而不是默认值。
- */
-export const TERMINAL_SCROLLBACK = 5000;
-
-/**
  * 搜索命中项的高亮色。
  *
  * 注意 `matchOverviewRuler` 与 `activeMatchColorOverviewRuler` 在 `ISearchDecorationOptions`

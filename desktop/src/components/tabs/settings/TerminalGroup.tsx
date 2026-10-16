@@ -32,6 +32,12 @@ import {
   loadTuiScrollSpeed,
   saveTuiScrollSpeed,
 } from "../../../lib/terminalScrollSpeed";
+import {
+  SCROLLBACK_OPTIONS,
+  loadScrollback,
+  saveScrollback,
+  subscribeScrollback,
+} from "../../../lib/terminalScrollback";
 
 /**
  * 「终端」卡：外观（明暗 / 风格 / 字体 / 字号）+ 两项远端探测开关 + TUI 滚动速度。
@@ -52,8 +58,10 @@ export function TerminalGroup() {
   const tmuxBridge = useTerminalTmuxBridge();
   const [speed, setSpeed] = useState(loadTuiScrollSpeed);
   const [size, setSize] = useState(loadFontSize);
+  const [scrollback, setScrollback] = useState(loadScrollback);
   // 字号可能在终端上用 Ctrl+滚轮改过，这里要跟着变，否则设置页会显示一个陈旧值。
   useEffect(() => subscribeFontSize(setSize), []);
+  useEffect(() => subscribeScrollback(setScrollback), []);
 
   return (
     <Card id="set-terminal">
@@ -114,6 +122,24 @@ export function TerminalGroup() {
               >
                 +
               </SizeButton>
+            </div>
+          }
+        />
+        <SettingsRow
+          label="回滚缓冲"
+          sub="保留多少行可往上翻的历史输出。跑构建日志、tail 大文件选大一点。改动即时生效：调大会扩容，调小从最旧的开始裁，不重连不断会话。注意行数有内存代价（5000 行约 12 MB/会话）。"
+          layout="stack"
+          control={
+            <div className="flex flex-wrap gap-1.5 pt-1">
+              {SCROLLBACK_OPTIONS.map((n) => (
+                <OptionChip
+                  key={n}
+                  on={scrollback === n}
+                  onClick={() => saveScrollback(n)}
+                >
+                  {n >= 10000 ? `${n / 10000} 万行` : `${n} 行`}
+                </OptionChip>
+              ))}
             </div>
           }
         />

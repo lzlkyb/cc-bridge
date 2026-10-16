@@ -28,16 +28,17 @@ import { watchResolutionChanges } from "../../lib/terminalDpr";
 import { attachTerminalKeymap, type TerminalKeyActions } from "./terminalKeymap";
 import { sshOutputEvent } from "../../lib/terminalEvents";
 import {
-  TERMINAL_SCROLLBACK,
   terminalTheme,
   terminalThemeOptions,
   type TerminalPreset,
 } from "../../lib/terminalTheme";
+import { loadScrollback } from "../../lib/terminalScrollback";
 import { loadFontSize } from "../../lib/terminalFontSize";
 import { loadFontStack } from "../../lib/terminalFontFamily";
 import { screenToText } from "../../lib/terminalScreen";
 import { trimCopyText } from "../../lib/terminalPaste";
 import { useTerminalFit } from "../../hooks/useTerminalFit";
+import { useTerminalRuntimeOptions } from "../../hooks/useTerminalRuntimeOptions";
 import { useTerminalPaste } from "./useTerminalPaste";
 import type { Theme } from "../../lib/theme";
 import type { SshOutput, SshClosed, SshConnectFailed } from "../../lib/types";
@@ -160,11 +161,7 @@ export function useSshTerminalSession({
     return () => cancelAnimationFrame(id);
   }, [fullscreen, doFit]);
 
-  // 主题/预设热切换：只改 options，不重建终端（历史输出与连接保留）；颜色不影响 rows/cols，无需 fit。
-  useEffect(() => {
-    const term = termRef.current;
-    if (term) Object.assign(term.options, terminalThemeOptions(mode, preset));
-  }, [mode, preset, termRef]);
+  useTerminalRuntimeOptions(termRef, mode, preset); // 主题/回滚缓冲热切换（只改 options，不重建终端）
 
   // 断开后禁掉键入与光标闪烁：终端保留只是为了让历史输出可读可复制，
   // 再让它看起来像能敲东西就是误导（敲下去只会得到一堆「输入失败」）。
@@ -185,7 +182,7 @@ export function useSshTerminalSession({
       lineHeight: 1.2,
       cursorBlink: true,
       allowProposedApi: true,
-      scrollback: TERMINAL_SCROLLBACK,
+      scrollback: loadScrollback(),
       ...terminalThemeOptions(modeRef.current, presetRef.current), // 主题 + 亮色可读性兜底
     });
     const fit = new FitAddon();
