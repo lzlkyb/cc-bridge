@@ -27,7 +27,7 @@ import { formatBytes, formatBytesPerSec } from "../../lib/utils";
  * - error       `重试`      → 点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, error, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
+  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, error, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -54,6 +54,24 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
       toast(fe?.friendly ?? "更新检查失败，请重试", "error");
     }
   }, [status]);
+
+  // ─── 重启失败提示 ────────────────────────
+  // UpdateContext.restart 在 relaunch 抛错时**刻意保留 status = "ready"**（否则徽章
+  // 会退化成「重试」，用户被迫重走一遍检查 + 下载）。于是这里不能靠 status 变化提示，
+  // 改监听 `restarting` 回落：过渡层收起 + 仍是 ready + 有 error 三条同时成立，
+  // 只可能是「relaunch 抛了」。用 ref 记上一拍，避免初始化（false → false）误报。
+  // 依赖写全是安全的：多出来的那几次运行都在 `!was` 处直接返回，不会重复弹。
+  const prevRestartingRef = useRef(restarting);
+  useEffect(() => {
+    const was = prevRestartingRef.current;
+    prevRestartingRef.current = restarting;
+    if (!was || restarting) return;
+    if (status !== "ready" || !error) return;
+    // 刻意不用 friendlyError：那套文案是给「下载/检查」失败写的（网络、DNS、403…），
+    // 套到重启失败上会得到「更新失败，请重试」—— 而更新**早已下载安装完成**，
+    // 让用户再去「重试」只会白走一轮检查 + 下载。这里说的必须是「重启」这件事。
+    toast("重启失败，请手动重启应用", "error");
+  }, [restarting, status, error, toast]);
 
   const handleClick = async () => {
     if (status === "available") {

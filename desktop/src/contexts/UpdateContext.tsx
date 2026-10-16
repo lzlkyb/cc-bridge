@@ -120,6 +120,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   });
   const checkingRef = useRef(false);
   const downloadingRef = useRef(false);
+  /** 重启重入防护（与 downloadingRef 同理：state 在同帧内是旧值，挡不住连点） */
+  const restartingRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const uptodateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 标记当前这次检查是否为用户手动触发（区分自动/手动，决定是否弹「已是最新」框） */
@@ -333,7 +335,11 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   // ─── 重启应用（方案 C 2026-10-16：先播 1.1s 过渡层，再真正 relaunch）────
 
   const restart = useCallback(async () => {
-    if (restarting) return;
+    // 重入防护用 ref 而非 state：state 在同一次渲染里恒为旧值，双击 / 连按 Enter
+    // 会在同一帧内拿到两次 `restarting === false` ⇒ 两次 relaunch（双杀进程）。
+    // 本文件对下载用的是同一个套路（downloadingRef），保持一致。
+    if (restartingRef.current) return;
+    restartingRef.current = true;
     setRestarting(true);
     // 让过渡层播完再重启 —— 这段刻意的等待本身就是「仪式感」的载体。
     await new Promise((r) => setTimeout(r, RESTART_OVERLAY_MS));
@@ -343,11 +349,15 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       // 🔴 必须复位。忘了这一步，过渡层会永久盖住界面、用户只能杀进程 ——
       // 那比现在「闪一下」更糟，也是本方案唯一需要专门验收的失败路径。
       console.error("[Update] 重启失败:", e);
+      restartingRef.current = false;
       setRestarting(false);
       setError(String(e));
-      setStatus("error");
+      // 🔴 刻意**不**把 status 打成 "error"：更新已经下载并安装完成，最准确的语义
+      // 仍是「ready —— 再点一次重启」。打成 error 会让徽章变成「重试」，而那个
+      // 分支触发的是 check_update，用户被迫重走「检查 → 下载」一整轮，纯属多余。
+      // 失败反馈改由 UpdateBadge 监听 restarting 回落 + error 弹 toast。
     }
-  }, [restarting]);
+  }, []);
 
   // ─── 更新内容弹窗 ────────────────────────
 
