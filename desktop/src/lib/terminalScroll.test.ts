@@ -17,6 +17,7 @@ import {
   isSynthWheel,
   attachSelectWheelGuard,
 } from "./terminalScroll";
+import { setSelectHold, isSelectHold } from "./terminalInputHold";
 
 describe("isTuiScrollActive", () => {
   it("备用屏 + 鼠标跟踪（enable-mouse-events）才激活", () => {
@@ -240,6 +241,8 @@ interface FakeWheel {
   deltaY: number;
   deltaMode: number;
   shiftKey: boolean;
+  clientX: number;
+  clientY: number;
   prevented: boolean;
   stopped: boolean;
   preventDefault(): void;
@@ -251,6 +254,8 @@ function fakeWheel(over: Partial<FakeWheel> = {}): FakeWheel {
     deltaY: -1,
     deltaMode: 1,
     shiftKey: false,
+    clientX: 0,
+    clientY: 0,
     prevented: false,
     stopped: false,
     preventDefault() {
@@ -263,42 +268,87 @@ function fakeWheel(over: Partial<FakeWheel> = {}): FakeWheel {
   };
 }
 
-describe("attachSelectWheelGuard（选择态滚轮守卫）", () => {
-  const setup = (active: boolean) => {
+describe("attachSelectWheelGuard（滚轮守卫）", () => {
+  const setup = (extra?: Partial<Terminal>) => {
     const container = fakeContainer();
     const scrollLines = vi.fn();
-    const detach = attachSelectWheelGuard(
-      container as unknown as HTMLElement,
-      () => active,
-      () => ({ scrollLines } as unknown as Terminal),
-    );
-    return { container, scrollLines, detach };
+    const term = { scrollLines, ...extra } as unknown as Terminal;
+    const detach = attachSelectWheelGuard(container as unknown as HTMLElement, () => term);
+    return { container, scrollLines, term, detach };
   };
 
+  it("🔴 非选择态：输入闸残留（收尾被异常路径漏掉）→ 顺手松开，不让终端一直哑着", () => {
+    const { container, term } = setup({
+      options: { disableStdin: false },
+    } as unknown as Partial<Terminal>);
+    setSelectHold(term, true);
+    expect(isSelectHold(term)).toBe(true);
+    container.fireWheel(fakeWheel());
+    expect(isSelectHold(term)).toBe(false);
+    expect((term.options as unknown as { disableStdin: boolean }).disableStdin).toBe(false);
+  });
+
+  it("非选择态且无残留 → 纯放行：不改任何状态、不吞事件", () => {
+    const { container, term } = setup({
+      options: { disableStdin: false },
+    } as unknown as Partial<Terminal>);
+    const e = fakeWheel();
+    container.fireWheel(e);
+    expect(isSelectHold(term)).toBe(false);
+    expect(e.prevented).toBe(false);
+    expect(e.stopped).toBe(false);
+  });
+
+  it("Shift+滚轮滚本地且必须 preventDefault（否则备用屏下会滚外层页面）", () => {
+    const { container, scrollLines } = setup();
+    const e = fakeWheel({ shiftKey: true, deltaY: -3, deltaMode: 1 });
+    container.fireWheel(e);
+    expect(scrollLines).toHaveBeenCalledWith(-3);
+    expect(e.prevented).toBe(true);
+    expect(e.stopped).toBe(true);
+  });
+
+  it("非选择态且 TUI 正常（本地追踪开着）→ 放行，零写入", () => {
+    const write = vi.fn();
+    const { container } = setup({
+      write,
+      modes: { mouseTrackingMode: "any" },
+      buffer: { active: { type: "alternate" } },
+    } as unknown as Partial<Terminal>);
+    const e = fakeWheel();
+    container.fireWheel(e);
+    expect(write).not.toHaveBeenCalled();
+    expect(e.prevented).toBe(false);
+    expect(e.stopped).toBe(false);
+  });
+
   it("挂在捕获阶段且非 passive（否则拦不住 xterm 的默认行为）", () => {
-    const { container } = setup(false);
+    const { container } = setup();
     const wheels = container.listeners.filter((l) => l.type === "wheel");
     expect(wheels).toHaveLength(1);
     expect(wheels[0].opts?.capture).toBe(true);
     expect(wheels[0].opts?.passive).toBe(false);
   });
 
-  it("选择态：吞掉滚轮，不让它退化成 ↑/↓ 穿到远端", () => {
-    const { container } = setup(true);
+  it("🔴 选择态不再吞滚轮（第六轮）：滚轮归属与选择态解耦，选择态泄漏也不会让整片滚不动", () => {
+    const { container } = setup();
     const e = fakeWheel();
     container.fireWheel(e);
-    expect(e.prevented).toBe(true);
-    expect(e.stopped).toBe(true);
+    expect(e.prevented).toBe(false);
+    expect(e.stopped).toBe(false);
   });
 
-  it("选择态：顺手滚本地（主屏下仍有反应）", () => {
-    const { container, scrollLines } = setup(true);
-    container.fireWheel(fakeWheel({ deltaY: -5, deltaMode: 1 }));
-    expect(scrollLines).toHaveBeenCalledWith(-5);
+  it("🔴 输入闸残留 → 守卫顺手开闸（收尾被异常路径漏掉时的第二道保险）", () => {
+    const { container, term } = setup({
+      options: { disableStdin: false },
+    } as unknown as Partial<Terminal>);
+    setSelectHold(term, true);
+    container.fireWheel(fakeWheel());
+    expect(isSelectHold(term)).toBe(false);
   });
 
   it("非选择态：完全放行（普通滚动不受影响）", () => {
-    const { container, scrollLines } = setup(false);
+    const { container, scrollLines } = setup();
     const e = fakeWheel();
     container.fireWheel(e);
     expect(e.prevented).toBe(false);
@@ -306,16 +356,17 @@ describe("attachSelectWheelGuard（选择态滚轮守卫）", () => {
     expect(scrollLines).not.toHaveBeenCalled();
   });
 
-  it("Shift+滚轮放行：交给 attachShiftWheel 的本地滚动路径", () => {
-    const { container, scrollLines } = setup(true);
-    const e = fakeWheel({ shiftKey: true });
+  it("Shift+滚轮：守卫内就地滚本地并吞掉（不再放行给 xterm —— 那条路不 preventDefault，会滚外层）", () => {
+    const { container, scrollLines } = setup();
+    const e = fakeWheel({ shiftKey: true, deltaY: -3, deltaMode: 1 });
     container.fireWheel(e);
-    expect(e.prevented).toBe(false);
-    expect(scrollLines).not.toHaveBeenCalled();
+    expect(scrollLines).toHaveBeenCalledWith(-3);
+    expect(e.prevented).toBe(true);
+    expect(e.stopped).toBe(true);
   });
 
   it("🔴 合成的滚动条 wheel 不被自己吞掉（否则拖动滚动条失效）", () => {
-    const { container } = setup(true);
+    const { container } = setup();
     const e = fakeWheel();
     markSynthWheel(e as unknown as WheelEvent);
     container.fireWheel(e);
@@ -324,7 +375,7 @@ describe("attachSelectWheelGuard（选择态滚轮守卫）", () => {
   });
 
   it("卸载后监听移除", () => {
-    const { container, detach } = setup(true);
+    const { container, detach } = setup();
     detach();
     expect(container.listeners.filter((l) => l.type === "wheel")).toHaveLength(0);
   });

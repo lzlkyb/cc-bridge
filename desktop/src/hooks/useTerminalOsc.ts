@@ -12,11 +12,13 @@ import {
 } from "../lib/terminalStatusbar";
 import { navCmdStart, navCmdEnd, navCmdText } from "../lib/terminalCommandNav";
 import {
+  attachEchoStripWhenReady,
+  claimInjection,
   DANCE,
   ECHO_OFF_CMD,
   ECHO_ON_CMD,
-  attachEchoStrip,
   danceNext,
+  tuiOnScreen,
   type DancePhase,
 } from "../lib/terminalSttyDance";
 
@@ -33,11 +35,8 @@ export interface TerminalStatus {
 }
 
 /**
- * 钩子状态机。
- * - `pending`：刚连上，正在探测远端 shell 类型（或已注入、等第一条提示符）
- * - `ready`：收到了 OSC，钩子生效
- * - `off`：用户在设置里关掉了注入
- * - `unsupported`：远端不是 bash/zsh，或注入过程中出错 —— **自动降级，不重试**
+ * 钩子状态机：`pending` 探测中 / `ready` 钩子已生效 / `off` 设置里关了注入 /
+ * `unsupported` 远端不是 bash/zsh 或注入出错（**自动降级，不重试**）。
  */
 export type OscState = "pending" | "ready" | "off" | "unsupported" | "termNotReady";
 
@@ -54,20 +53,15 @@ interface Args {
 /**
  * 远端提示符钩子：注入 + OSC 解析。
  *
- * ## 为什么是「会话刚连上时注入」而不是「随时注入」
- *
  * 注入是往一个**活着的 shell** 里打字，只在会话刚建立、用户一个字都还没敲时做一次
- * （此时远端是干净的提示符）。这也是 VS Code / iTerm2 / Warp 的通行做法。
- * 保险起见仍用 `typedRef` 兜底：xterm 收到过一次用户输入就**永久放弃注入**。
+ * （VS Code / iTerm2 / Warp 通行做法），`typedRef` 兜底：收到过一次用户输入即永久放弃。
+ * 🔴 另两条硬前置见 lib/terminalSttyDance.ts 的 `claimInjection` / `tuiOnScreen`：
+ * 同一会话只注入一次（HMR / 重挂 / 会话恢复都会重跑本 effect），且屏幕上有全屏 TUI 时
+ * 绝不注入——否则命令会被 TUI 的输入行吃掉并显示出来（2026-10-16 报障）。
  *
- * ## 回显治理（stty 舞步，见 lib/terminalSttyDance.ts 与 docs/SSH钩子注入回显治理方案.md）
- *
- * 注入经 PTY 的行规程，ECHO=on 会把打入的字节回显到屏幕。治理时序：
- * `stty -echo`（唯一可见残渣，前端剥除）→ 探针 → 钩子 → kick → `stty echo`，
- * 全程静默。四条异常路径（用户敲键 / 探针超时 / 钩子超时 / 断开重连）都会强制恢复
- * ECHO；restore 单次消费（echoOffRef），因为 ECHO 恢复后再发的 `stty echo`
- * 会被回显成第二行残渣。剥离器**整个会话常驻**压 ConPTY 整屏重发
- * （见 terminalSttyDance.ts 头注；曾试过 restore 时远端 printf 清屏，用户不要，已废弃）。
+ * 回显治理（stty 舞步时序 + 残渣常驻剥除）见 lib/terminalSttyDance.ts 头注与
+ * docs/SSH钩子注入回显治理方案.md。restore 单次消费（echoOffRef）：ECHO 已恢复后
+ * 再发的 `stty echo` 会被回显成第二行残渣。
  */
 export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
   status: TerminalStatus;
@@ -91,8 +85,8 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
   const abortRef = useRef<(() => void) | null>(null);
   // 探针回执到达时的续步回调：hook/kick/restore 时序从这里接棒。
   const probeGoRef = useRef<(() => void) | null>(null);
-  // 注入开关的实时镜像：OSC 处理器挂在 term 实例上、生命周期比本 hook 长，
-  // 必须靠 ref 读到开关的最新值，否则关掉探测后处理器仍在偷偷更新状态。
+  // 注入开关的实时镜像：OSC 处理器挂在 term 实例上、生命周期比本 hook 长，必须靠 ref
+  // 读到开关最新值，否则关掉探测后处理器仍在偷偷更新状态。
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
 
@@ -106,9 +100,8 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
   }, []);
 
   // ── 注册 OSC 处理器 ──
-  //
-  // 挂在 term 实例上，与 sessionId 无关（OSC 数据来自这个终端的输出流），
-  // 所以这里**按终端实例注册一次**，重连时不重挂。
+  // 挂在 term 实例上，与 sessionId 无关（OSC 数据来自这个终端的输出流），故按终端实例
+  // 注册一次，重连不重挂。
   useEffect(() => {
     let raf = 0;
     let tries = 0;
@@ -119,9 +112,8 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
       // term 由 useSshTerminalSession 的创建 effect 填好，那个 effect 声明在更前面，
       // 正常情况下此刻已就绪。这里重试只是不把「hook 声明顺序」当成硬依赖。
       if (!term) {
-        // 30 帧（约 0.5s）还没就绪就放弃注册 OSC 处理器。此时不是「远端不支持」，
-        // 而是 xterm 实例本身没建好（罕见：会话创建慢 / 连接失败）。
-        // 给一个独立的态，避免状态栏把「终端未就绪」误报成「远端不支持」。
+        // 30 帧（约 0.5s）还没就绪就放弃：此时不是「远端不支持」，而是 xterm 实例本身
+        // 没建好（罕见）。给独立态，避免状态栏把「终端未就绪」误报成「远端不支持」。
         if (tries++ > 30) {
           setState((s) => (s === "pending" ? "termNotReady" : s));
           return;
@@ -201,16 +193,21 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
       return;
     }
     if (closed) return; // 断开：保留最后一次的状态，不再折腾
+    // 🔴 同一会话只注入一次（台账见 lib/terminalSttyDance.claimInjection）：本 effect 会在
+    // HMR / 重挂 / 会话恢复时重跑，重跑再打一遍命令就会打进正在运行的 TUI 输入行。
+    if (!claimInjection(sessionId)) {
+      setState("ready");
+      return;
+    }
     reset();
     setState("pending");
-    const term = termRef.current;
     const send = (data: string): Promise<void> => invoke("ssh_input", { sessionId, data });
 
     // ── 残渣常驻吞除（fail-open，实现见 lib/terminalSttyDance.ts）──
-    // 会回显的只有 t0 的 `stty -echo`（慢 shell 下还有 ECHO 生效前的探针行）。
-    // 剥离器**整个会话常驻**：ConPTY 缓冲区里的残渣会在整屏重绘时反复重发，
-    // 常驻才能每次都吞掉。命中行整行擦除，其余字节原样透传，绝不丢用户数据。
-    const stripHandle = term ? attachEchoStrip(term, [ECHO_OFF_CMD, PROBE_CMD]) : null;
+    // 三条命令原文全部入 token 表（含 `stty echo`：异常路径下它会在 ECHO 已恢复后发出，
+    // 是唯一会自己回显的收尾命令）。剥离器整个会话常驻——ConPTY 整屏重绘会把缓冲区里的
+    // 残渣反复重发，常驻才能每次都吞掉；命中行整行擦除，其余字节原样透传，不丢数据。
+    const stripHandle = attachEchoStripWhenReady(termRef, [ECHO_OFF_CMD, PROBE_CMD, ECHO_ON_CMD]);
 
     // ── 舞步状态机接线 ──
     let phase: DancePhase = "idle";
@@ -236,6 +233,12 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
 
     at(DANCE.PROBE_DELAY, () => {
       if (typedRef.current) {
+        abortDance();
+        return;
+      }
+      // 🔴 屏幕上有全屏 TUI（备用屏）时绝不注入：字节会被 TUI 输入行吃进去并显示出来
+      // （2026-10-16 报障）。正常新会话此刻停在干净提示符（主屏），不会命中这条。
+      if (tuiOnScreen(termRef.current)) {
         abortDance();
         return;
       }

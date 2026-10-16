@@ -8,25 +8,18 @@ import {
 } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { toast } from "../ui/toast";
-import { MOUSE_REPORT_OFF } from "../../lib/terminalMouse";
+import { createSelectionCache } from "../../lib/terminalSelectionCache";
+import {
+  cancelPendingRelease,
+  releaseSelectHoldNow,
+  releaseSelectHoldSoon,
+  setSelectHold,
+} from "../../lib/terminalInputHold";
 import { attachSelectWheelGuard } from "../../lib/terminalScroll";
-import { trimCopyText } from "../../lib/terminalPaste";
-import { attachShiftCapture, replaySelectionStart as replayTermSelectionStart } from "../../lib/terminalShiftCapture";
+import { forceSelectAt, isSynthMouse, replayMouseUp } from "../../lib/terminalSelectGesture";
 
 /** 拖拽超过这个像素数才算「拖选」，以下当普通点击（不影响 TUI 定位光标）。 */
 const DRAG_THRESHOLD = 4;
-/**
- * 选区缓存的有效期。
- *
- * 🔴 没有这条线时缓存只增不减，是一个真实的误操作陷阱：按过一次 Ctrl+Shift+A
- * 全选之后，之后任何一次「复制选中」只要当下没有选区，都会静默回退到那份
- * **整个滚动历史（5000 行）**的缓存——用户以为复制的是刚拖选的内容。
- * 缓存的唯一用途是抵御 TUI 每帧重绘冲空 live selection，那是毫秒级的事，
- * 10 秒远远够用。
- */
-const SELECTION_CACHE_TTL_MS = 10_000;
-/** 同一次松手可能触发多个 pointerup（或 HMR 累积的多个监听闭包），窗口内只复制一次。 */
-const COPY_DEDUP_MS = 500;
 
 interface Args {
   termRef: RefObject<Terminal | null>;
@@ -44,7 +37,7 @@ export interface SshTerminalSelect {
   /** 本次拖拽临时进入了选择态 */
   dragSelecting: boolean;
   toggleSelectMode: () => void;
-  /** 三条路径任一为真；ssh_output 每帧要读它决定要不要重关鼠标报告。 */
+  /** 选择态镜像（手动选择模式 / 按住 Shift / 拖拽中，任一为真）。仅供观察，不参与滚轮判定。 */
   selectActiveRef: MutableRefObject<boolean>;
   /** 复制选中（工具栏 / 右键菜单共用） */
   copySelection: () => void;
@@ -66,7 +59,8 @@ export function useSshTerminalSelect({
   dragSelectEnabledRef,
 }: Args): SshTerminalSelect {
   // 选择模式：TUI（如 Claude Code）开启鼠标报告模式后会吃掉鼠标拖选，xterm 选区建不起来、
-  // 复制按钮读 term.getSelection() 恒为空。开启时把「关闭鼠标报告」写到本地 xterm。
+  // 复制按钮读 term.getSelection() 恒为空。开启后本 hook 对每次起手都补一枚带强制修饰键的
+  // mousedown 起本地选区（见 lib/terminalSelectGesture.ts）——**不改本地鼠标协议**。
   const [selectMode, setSelectMode] = useState(false);
   // Shift 自动选择：按住 Shift 期间临时关鼠标报告、松开恢复。
   const [shiftActive, setShiftActive] = useState(false);
@@ -75,23 +69,12 @@ export function useSshTerminalSelect({
 
   const shiftActiveRef = useRef(false);
   const selectActiveRef = useRef(false);
-  // 选区缓存：远端 TUI（Claude Code）每帧重绘会清空刚建立的本地选区，导致点「复制选中」时
-  // term.getSelection() 已被冲空（而右键在 mouseup 瞬间复制故成功）。用 onSelectionChange 把最近
-  // 一次非空选区缓存下来，按钮优先读缓存。带时间戳，过期即废（见 SELECTION_CACHE_TTL_MS）。
-  const lastSelectionRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
-
-  /** 读缓存的选区；超期就当没有，并顺手丢掉（不让一份 5000 行的字符串常驻）。 */
-  const cachedSelection = useCallback(() => {
-    const c = lastSelectionRef.current;
-    if (!c.text) return "";
-    if (Date.now() - c.at > SELECTION_CACHE_TTL_MS) {
-      lastSelectionRef.current = { text: "", at: 0 };
-      return "";
-    }
-    return c.text;
-  }, []);
-  // 复制去重时间戳：跨所有松手监听实例共享（HMR 可能累积多个闭包）。
-  const lastCopyAtRef = useRef(0);
+  /** 选择模式的状态镜像：capture 级的 mousedown 处理器要读到最新值（闭包只挂一次）。 */
+  const selectModeRef = useRef(false);
+  selectModeRef.current = selectMode;
+  // 选区缓存 + 复制去重（实现见 lib/terminalSelectionCache.ts）：远端 TUI（Claude Code）
+  // 每帧重绘会冲空刚建立的本地选区，缓存是「复制选中」按钮的最后一道兜底。
+  const cache = useRef(createSelectionCache()).current;
   const pointerDownRef = useRef(false);
   const downPosRef = useRef({ x: 0, y: 0 });
   const dragSelectRef = useRef(false);
@@ -99,64 +82,57 @@ export function useSshTerminalSelect({
   const toggleSelectMode = useCallback(() => setSelectMode((v) => !v), []);
 
   const hasSelection = useCallback(
-    () => Boolean(termRef.current?.getSelection() || cachedSelection()),
-    [termRef, cachedSelection],
+    () => Boolean(termRef.current?.getSelection() || cache.read()),
+    [termRef, cache],
   );
 
   const copySelection = useCallback(() => {
     // 优先读 live selection；被 TUI 重绘冲空时回退到缓存的最近非空选区。
     const live = termRef.current?.getSelection() ?? "";
-    const sel = live || cachedSelection();
+    const sel = live || cache.read();
     if (!sel) {
       toast("未选中文字：请先拖选，或点「复制整屏」", "error");
       return;
     }
-    navigator.clipboard
-      .writeText(trimCopyText(sel))
-      .then(() => toast("已复制选中文字", "success"))
-      .catch(() => toast("复制失败", "error"));
-  }, [termRef, cachedSelection]);
+    cache.write(sel, (ok) => toast(ok ? "已复制选中文字" : "复制失败", ok ? "success" : "error"));
+  }, [termRef, cache]);
 
   const attach = useCallback(
     (term: Terminal, container: HTMLElement) => {
-      // 终端重建（切会话 / HMR）后，把当前选择态重新落到新 term 上，
-      // 否则 selectActiveRef 还是 true 但新终端的鼠标报告没关，拖选又会被吃掉。
-      if (selectActiveRef.current) term.write(MOUSE_REPORT_OFF);
+      // 起手按下：先记指针状态（拖拽阈值判定要用）。
+      const onPointerDown = (e: PointerEvent) => {
+        pointerDownRef.current = true;
+        downPosRef.current = { x: e.clientX, y: e.clientY };
+      };
+      container.addEventListener("pointerdown", onPointerDown, true);
 
-      // 起手按住 Shift 时：立即关本地鼠标报告并进入选择态，确保拖选建立本地选区——
-      // 不依赖 onKeyDownShift 的聚焦门槛（终端未聚焦时 keydown 不触发，会导致 Shift 拖选失效）。
+      // 起手就带 Shift（或开着选择模式）：立刻闭输入闸 + 强制起本地选区。
+      // 🔴 **capture** 阶段：xterm 的鼠标监听在子元素上，capture 先于它执行，闸门先闭合，
+      // 这一按不会被编码成鼠标报告发给远端；而这里不 stopPropagation，xterm 仍要拿到它起选区。
       const onDown = (e: Event) => {
+        if (isSynthMouse(e)) return; // 本模块合成的 mousedown（见 forceSelectAt）不再进一次手势
         const ev = e as MouseEvent;
+        if (!ev.shiftKey && !selectModeRef.current) return;
         pointerDownRef.current = true;
         downPosRef.current = { x: ev.clientX, y: ev.clientY };
         if (ev.shiftKey) {
           shiftActiveRef.current = true;
           setShiftActive(true);
-          selectActiveRef.current = true;
-          term.write(MOUSE_REPORT_OFF);
         }
+        selectActiveRef.current = true;
+        cancelPendingRelease(term); // 上一次手势的延时开闸可能还没跑，先撤掉
+        setSelectHold(term, true);
+        forceSelectAt(term, ev.clientX, ev.clientY);
       };
-      container.addEventListener("mousedown", onDown);
-      container.addEventListener("pointerdown", onDown);
+      container.addEventListener("mousedown", onDown, true);
 
-      // 选择态期间吞掉滚轮：只关了本地鼠标报告，远端仍以为跟踪开着，xterm 会把
-      // wheel 退化成 ↑/↓ 发给程序（Claude Code 拿它当输入框历史导航）——详见
-      // attachSelectWheelGuard 的说明。放在这里是因为守卫要读选择态。
-      const detachWheelGuard = attachSelectWheelGuard(
-        container,
-        () => selectActiveRef.current,
-        () => termRef.current,
-      );
+      // 滚轮守卫：只做「Shift+滚轮 → 本地历史」与「输入闸漏松手」的兜底自检。
+      // 🔴 它**不再**按选择态吞滚轮（第六轮改动）：吞的收益是「选字时内容不动」，代价是
+      // 选择态一旦泄漏就整片滚不动（2026-10-16 报障）。详见 attachSelectWheelGuard 头注。
+      const detachWheelGuard = attachSelectWheelGuard(container, () => termRef.current);
 
-      // 拖拽即选择：终端内按住左键并移动超过阈值即自动进选择态关本地鼠标报告，松手自动复制；
-      // 纯点击（不移动）仍当普通点击，不影响 Claude Code 定位光标。
-      // window 级监听：拖拽移出容器也能持续收到 move/up。
-      //
-      // 🔴 鼠标报告活跃时中途关报告必须补发合成 mousedown（xterm 选区只能在
-      // mousedown 时启动）——实现抽在 lib/terminalShiftCapture.ts 的 replaySelectionStart，
-      // pointerDownRef 守卫防"松手后迟到的回调"补出幽灵选区。
-      const replaySelectionStart = (x: number, y: number) =>
-        replayTermSelectionStart(term, x, y, () => pointerDownRef.current);
+      // 拖拽即选择：按住左键移动超过阈值即自动进选择态（松手自动复制），纯点击不移动
+      // 仍当普通点击、不影响 TUI 定位光标；window 级监听，拖出容器也持续收 move/up。
       const onPointerMove = (e: PointerEvent) => {
         // 开关关闭时拖拽不触发选择态——保持默认交互（拖拽不误伤 TUI 点击）；
         // 仍可按住 Shift 或点「选择模式」进入选择态。两条路径不受此开关影响。
@@ -169,55 +145,66 @@ export function useSshTerminalSelect({
         selectActiveRef.current = true;
         dragSelectRef.current = true;
         setDragSelecting(true);
-        if (term.modes.mouseTrackingMode === "none") return; // 无鼠标报告，原生拖选直接可用
-        replaySelectionStart(downPosRef.current.x, downPosRef.current.y);
+        // 🔴 顺序要紧：先补一枚 mouseup 收尾远端**已经收到**的那次按下（裸拖前 4px 里真实
+        // mousedown 已被发出去，见 replayMouseUp），再闭闸——闭闸后报告会被 disableStdin
+        // 拦在 triggerDataEvent 门口，就再也补不出去了。补发的报告会触发 xterm 的
+        // onUserInput → clearSelection，所以必须早于 forceSelectAt（此刻还没有选区要保）。
+        // 🔴 用**按下点**坐标补，不能用当前指针位置：远端收到的 mousedown 报告就是按下点，
+        // 若抬起点已移动 4px+，远端会把它读成一次拖拽而不是点击。
+        replayMouseUp(term, downPosRef.current.x, downPosRef.current.y);
+        cancelPendingRelease(term);
+        // 闭输入闸：此后 mousemove 不会再被编码成鼠标报告灌进 TUI（否则远端也在拖选一份、
+        // 两个选区打架）。再按**拖拽起点**补一枚带强制修饰键的 mousedown 起本地选区——
+        // xterm 的选区只能由 mousedown 启动，而真实那枚没带修饰键（判据见 forceSelectAt）。
+        setSelectHold(term, true);
+        forceSelectAt(term, downPosRef.current.x, downPosRef.current.y);
       };
       window.addEventListener("pointermove", onPointerMove);
 
-      // Shift 拦截层抽在 lib/terminalShiftCapture.ts（capture 级，防首击泄漏）：
-      // Shift+mousedown 置选择态并关报告补发合成 mousedown；move/up 转发无
-      // Shift 版驱动 xterm 选区延伸/提交。
-      const detachShiftCapture = attachShiftCapture(term, container, {
-        onShiftDown: (x, y) => {
-          shiftActiveRef.current = true;
-          setShiftActive(true);
-          selectActiveRef.current = true;
-          replaySelectionStart(x, y);
-        },
-      });
-
-      // 松手自动复制：选择态期间鼠标抬起即把选区写入剪贴板，无需再点「复制选中」。
-      // 空选区静默跳过（普通点击 / 非选择态不触发），避免误提示。
+      // 松手收尾：选择态期间抬起即写入剪贴板；空选区静默跳过（普通点击不触发）。
       const copyOnRelease = () => {
         pointerDownRef.current = false;
         if (!selectActiveRef.current) return;
         const t = termRef.current;
         if (!t) return;
         const live = t.getSelection() ?? "";
-        const sel = live || cachedSelection();
-        if (!sel) {
-          // 空选区：拖拽临时选择态直接退出（不复制、不提示）；手动/Shift 选择态保留供后续操作。
-          if (dragSelectRef.current) {
-            selectActiveRef.current = false;
-            dragSelectRef.current = false;
-            setDragSelecting(false);
-          }
-          return;
-        }
-        const now = Date.now();
-        if (now - lastCopyAtRef.current < COPY_DEDUP_MS) return;
-        lastCopyAtRef.current = now;
-        // 成功**不弹 toast**：拖选即复制是自动行为，每次松手弹一条会把屏幕刷满，
-        // 而且用户本来就知道它复制了。失败仍必须报，不吞。
-        navigator.clipboard.writeText(trimCopyText(sel)).catch(() => toast("复制失败", "error"));
-        // 拖拽临时选择：复制后退出选择态，恢复 TUI 鼠标（远端下次重绘自行重设 ?1006h）。
-        if (dragSelectRef.current) {
-          selectActiveRef.current = false;
-          dragSelectRef.current = false;
-          setDragSelecting(false);
+        const sel = live || cache.read();
+        dragSelectRef.current = false;
+        setDragSelecting(false);
+        // 松手后只剩「手动选择模式」和「还按着 Shift」两种持续态。
+        selectActiveRef.current = selectModeRef.current || shiftActiveRef.current;
+        // 🔴 开闸必须**延后一拍**（releaseSelectHoldSoon）：xterm 把鼠标报告当**用户输入**发
+        // （triggerMouseEvent → triggerDataEvent(report, true)），立刻开闸会让紧随 pointerup
+        // 的 mouseup 报告一路走到 SelectionService 的 onUserInput → clearSelection()，
+        // 用户看到的就是「一松手选区自己没了、来不及复制」。延后一拍把它拦在闸内。
+        releaseSelectHoldSoon(t);
+        if (!sel) return;
+        // 去重只跳过重复写剪贴板（同一次松手可能触发多个 pointerup）；状态退出照常执行。
+        if (cache.claim()) {
+          // 成功也给一条轻提示：拖选即复制是**无按钮**的自动行为，不给反馈用户无从知道
+          // 剪贴板里已经有东西（2026-10-16 报障）。去重窗口已保证不会刷屏。
+          cache.write(sel, (ok, n) => toast(ok ? `已复制 ${n} 字` : "复制失败", ok ? "success" : "error"));
         }
       };
-      window.addEventListener("pointerup", copyOnRelease);
+      // 🔴 capture 阶段：xterm 的视口与鼠标服务会对指针事件做捕获/短路，冒泡监听有时
+      // 收不到 pointerup → 退出收尾不跑 → 滚轮卡在 dead（2026-10-16 用户报障：松手后
+      // 滚不动、点终端外面才恢复）；capture 阶段必达，下游 stopPropagation 拦不住。
+      window.addEventListener("pointerup", copyOnRelease, true);
+
+      // 兜底出口：拖到窗口外松手 / 系统抢走指针 / 切窗口（Shift 的 keyup 会丢在别的窗口）时
+      // 不会有 pointerup——闸与三个状态都必须另有一条复位路径，否则键盘一直哑、守卫一直
+      // 以为还在选字（那正是「滚轮彻底滚不动」的成因，2026-10-16 报障）。
+      const releaseHold = () => {
+        pointerDownRef.current = false;
+        dragSelectRef.current = false;
+        shiftActiveRef.current = false;
+        selectActiveRef.current = false;
+        setShiftActive(false);
+        setDragSelecting(false);
+        releaseSelectHoldNow(term);
+      };
+      window.addEventListener("pointercancel", releaseHold);
+      window.addEventListener("blur", releaseHold);
 
       // Shift 自动选择：xterm v6 下「Shift 原生选择 fallback」无效（画布文本不可选），
       // 故手动用转义序列实现；只响应聚焦的终端会话，多会话并存时互不误触。
@@ -229,12 +216,14 @@ export function useSshTerminalSelect({
         setShiftActive(true);
         // 🔴 中途按 Shift：指针已按下且未进选择态时立即补建选区——拖到一半想复制
         // 不再失败（此前只在 mousedown 时检测 shiftKey，先拖后按 Shift 无效）。
-        // 无鼠标报告时 xterm 原生拖选本就能建区，无需合成；报告开着必须补发。
         if (pointerDownRef.current && !selectActiveRef.current) {
           selectActiveRef.current = true;
-          if (term.modes.mouseTrackingMode !== "none") {
-            replaySelectionStart(downPosRef.current.x, downPosRef.current.y);
-          }
+          // 裸按后中途按 Shift：xterm 已经把那枚 mousedown 发给了远端，先补 mouseup 收尾
+          // （必须在闭闸前），否则远端会永远停在「按着左键」。
+          replayMouseUp(term, downPosRef.current.x, downPosRef.current.y);
+          cancelPendingRelease(term);
+          setSelectHold(term, true);
+          forceSelectAt(term, downPosRef.current.x, downPosRef.current.y);
         }
       };
       const onKeyUpShift = (e: KeyboardEvent) => {
@@ -247,33 +236,36 @@ export function useSshTerminalSelect({
       window.addEventListener("keyup", onKeyUpShift);
 
       // 选区缓存：选区一旦变化且非空即记入，抵御 TUI 持续重绘清空 live selection。
-      const offSel = term.onSelectionChange(() => {
-        const s = term.getSelection();
-        if (s) lastSelectionRef.current = { text: s, at: Date.now() };
-      });
+      const offSel = term.onSelectionChange(() => cache.remember(term.getSelection()));
 
       return () => {
-        container.removeEventListener("mousedown", onDown);
-        container.removeEventListener("pointerdown", onDown);
-        detachShiftCapture();
+        container.removeEventListener("mousedown", onDown, true);
+        container.removeEventListener("pointerdown", onPointerDown, true);
         detachWheelGuard();
         window.removeEventListener("pointermove", onPointerMove);
-        window.removeEventListener("pointerup", copyOnRelease);
+        window.removeEventListener("pointerup", copyOnRelease, true);
+        window.removeEventListener("pointercancel", releaseHold);
+        window.removeEventListener("blur", releaseHold);
         window.removeEventListener("keydown", onKeyDownShift);
         window.removeEventListener("keyup", onKeyUpShift);
         offSel.dispose();
+        // 卸载时松开输入闸：终端还在（跨重连保留）但手势监听没了，闸门留在闭合态
+        // 就再也没人来开。松开是幂等的，代价为零。
+        releaseSelectHoldNow(term);
       };
     },
-    [termRef, focusedRef, dragSelectEnabledRef, cachedSelection],
+    [termRef, focusedRef, dragSelectEnabledRef, cache],
   );
 
-  // 选择态（手动选择模式 或 按住 Shift）开关：直接写到【本地 xterm】关闭鼠标报告。
-  // 退出选择态时无需本地重开——远端 TUI 下次重绘会自行重设 ?1006h，bash 下本就不需鼠标报告。
+  // 选择态（手动选择模式 / 按住 Shift）开关：只做状态记账，**不再动本地鼠标报告**——
+  // 选择期间的数据旁路由 terminalInputHold 的输入闸负责（在手势起止处开关），
+  // 于是本地协议状态永远等于远端意图，滚轮归属不会因为选字而翻成 dead。
   useEffect(() => {
+    // 🔴 拖拽临时态必须一起参与：本 effect 只依赖这两个 state，拖拽期间它们不变，可一旦
+    // 别处触发重跑就会把正在进行的拖拽态抹掉（手势判据随之错位）。
+    selectActiveRef.current = selectMode || shiftActive || dragSelectRef.current;
     const term = termRef.current;
-    const active = selectMode || shiftActive;
-    selectActiveRef.current = active;
-    if (term && active) term.write(MOUSE_REPORT_OFF);
+    if (term && !selectActiveRef.current) releaseSelectHoldNow(term);
   }, [selectMode, shiftActive, termRef]);
 
   return {

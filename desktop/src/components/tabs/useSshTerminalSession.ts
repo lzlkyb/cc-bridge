@@ -23,6 +23,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke, listen } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { healMouseTracking } from "../../lib/terminalMouse";
+import { setInputHoldBase } from "../../lib/terminalInputHold";
 import { createOscQueryResponder, paletteColors } from "../../lib/terminalOscQuery";
 import { watchResolutionChanges } from "../../lib/terminalDpr";
 import { attachTerminalKeymap, type TerminalKeyActions } from "./terminalKeymap";
@@ -60,8 +61,6 @@ interface Args {
   containerRef: RefObject<HTMLDivElement>;
   termRef: MutableRefObject<Terminal | null>;
   focusedRef: MutableRefObject<boolean>;
-  /** 选择态：ssh_output 每帧要读它决定要不要重关鼠标报告。 */
-  selectActiveRef: MutableRefObject<boolean>;
   attachSelect: (term: Terminal, container: HTMLElement) => () => void;
   /** 复制选中（供 Ctrl+Shift+C 调用）。 */
   copySelection: () => void;
@@ -88,7 +87,6 @@ export function useSshTerminalSession({
   containerRef,
   termRef,
   focusedRef,
-  selectActiveRef,
   attachSelect,
   copySelection,
   attachSearch,
@@ -165,10 +163,12 @@ export function useSshTerminalSession({
 
   // 断开后禁掉键入与光标闪烁：终端保留只是为了让历史输出可读可复制，
   // 再让它看起来像能敲东西就是误导（敲下去只会得到一堆「输入失败」）。
+  // 🔴 走 setInputHoldBase 而不是直接写 options：选择手势也用这个开关（terminalInputHold
+  // 求和两路来源），各写各的会互相覆盖。
   useEffect(() => {
     const term = termRef.current;
     if (!term) return;
-    term.options.disableStdin = closed;
+    setInputHoldBase(term, closed);
     term.options.cursorBlink = !closed;
   }, [closed, termRef]);
 
@@ -315,8 +315,7 @@ export function useSshTerminalSession({
       writtenInputErrRef.current = null;
     }
     wiredSessionRef.current = sessionId;
-    // 接线即治愈：上个会话的 TUI（Claude Code）可能开着 ?1003 任意移动追踪并随断连死亡、
-    // 来不及发 DECRST，残留的 "any" 会把新会话里鼠标移动/滚轮编码成 SGR 乱码发给裸 bash。
+    // 接线即治愈：上个会话 TUI 残留的 "any" 会把新会话的鼠标移动编码成 SGR 乱码发给裸 bash。
     healMouseTracking(term);
 
     // 连上后立即把真实尺寸告诉后端，避免初始 80x24 与面板不符。
@@ -366,10 +365,9 @@ export function useSshTerminalSession({
       listen<SshOutput>(sshOutputEvent(sessionId), (p) => {
         if (p.sessionId !== sessionId) return;
         // 先过颜色查询拦截（剥离查询并回写应答），剩余数据才进 xterm。
+        // （鼠标报告的旁路不在这里做：选择手势靠 terminalInputHold 的输入闸，
+        //  它是同步入口闸，与输出流时序无关，不受 TUI 每帧重绘影响。）
         term.write(oscQuery.feed(p.data));
-        // 选择态期间，远端 TUI（如 Claude Code）会在重绘输出里重设鼠标报告（ESC[?1006h），
-        // 导致本地 mouseTrackingMode 重新打开、拖选又被吃掉。故每帧输出后再关一次。
-        if (selectActiveRef.current) healMouseTracking(term);
       }),
     );
     // 🔴 断开/失败的原因不能只 `term.write` 完事——xterm 的 write 是攒到 rAF 才刷的，
@@ -400,7 +398,7 @@ export function useSshTerminalSession({
       offResize.dispose();
       unlistens.forEach((u) => u());
     };
-  }, [sessionId, termRef, selectActiveRef]);
+  }, [sessionId, termRef]);
 
   /** 整屏快照复制：从 xterm 缓冲区导出可视区域纯文本，不依赖选区（鼠标报告模式下也必成）。 */
   const copyScreen = useCallback(() => {

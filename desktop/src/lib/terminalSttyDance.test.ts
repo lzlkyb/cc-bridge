@@ -2,9 +2,12 @@ import type { Terminal } from "@xterm/xterm";
 import { describe, expect, it } from "vitest";
 import {
   attachEchoStrip,
+  claimInjection,
   createEchoStripper,
   danceNext,
   ECHO_OFF_CMD,
+  ECHO_ON_CMD,
+  tuiOnScreen,
   type DanceEvent,
   type DancePhase,
 } from "./terminalSttyDance";
@@ -213,5 +216,38 @@ describe("attachEchoStrip（write 包装 + 多 token 串行链）", () => {
     term.write("$ stty -ech"); // 部分匹配，扣住
     h.end();
     expect(writes).toEqual(["$ ", "stty -ech"]);
+  });
+
+  it("🔴 `stty echo` 也必须是 token：异常路径下它会在 ECHO 已恢复后发出并自我回显", () => {
+    const { term, writes } = fakeTerm();
+    const h = attachEchoStrip(term, [ECHO_OFF_CMD, ECHO_ON_CMD]);
+    term.write(`$ ${ECHO_ON_CMD}\r\n`);
+    h.end();
+    expect(writes[0]).toBe(`$ ${" ".repeat(ECHO_ON_CMD.length)}\r\n`);
+  });
+});
+
+/* ============================== 注入前置条件 ============================== */
+
+describe("claimInjection —— 同一会话只注入一次", () => {
+  it("首次认领成功，第二次（effect 重跑 / HMR）拒绝", () => {
+    expect(claimInjection("sess-A")).toBe(true);
+    expect(claimInjection("sess-A")).toBe(false);
+  });
+
+  it("不同会话各自独立认领（重连拿到新 sessionId → 该重新注入）", () => {
+    expect(claimInjection("sess-B")).toBe(true);
+    expect(claimInjection("sess-C")).toBe(true);
+    expect(claimInjection("sess-B")).toBe(false);
+  });
+});
+
+describe("tuiOnScreen —— 全屏 TUI 在屏时禁止注入", () => {
+  it("备用屏 = TUI 在跑", () => {
+    expect(tuiOnScreen({ buffer: { active: { type: "alternate" } } } as unknown as Terminal)).toBe(true);
+  });
+  it("主屏（干净提示符）/ 无终端 → 允许", () => {
+    expect(tuiOnScreen({ buffer: { active: { type: "normal" } } } as unknown as Terminal)).toBe(false);
+    expect(tuiOnScreen(null)).toBe(false);
   });
 });

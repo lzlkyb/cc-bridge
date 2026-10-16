@@ -1,4 +1,5 @@
 import type { Terminal } from "@xterm/xterm";
+import { isSelectHold, setSelectHold } from "./terminalInputHold";
 
 /**
  * TUI 态虚拟滚动条（终端滚动条 × Claude Code 等 fullscreen 程序）。
@@ -407,46 +408,59 @@ export function attachShiftWheel(term: Terminal): void {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
- * 选择态滚轮守卫（别让滚轮把 ↑/↓ 灌进 TUI）
+ * 终端滚轮守卫（容器捕获阶段，所有 wheel 都先过这里）
  *
- * WHY：选择模式 / 按住 Shift / 拖拽即选期间，我们只关**本地** xterm 的鼠标报告
- * （`MOUSE_REPORT_OFF`），远端程序对此毫不知情，仍以为自己有鼠标跟踪。此时 xterm
- * 手里没有可转发的鼠标协议（本地报告关了），备用屏又没有 scrollback，于是落进它
- * 自己的兜底分支：把 wheel 改写成方向键 `\x1b[A/\x1b[B` 直接发给远端
- * （xterm `CoreBrowserTerminal.cancel(ev, true)` 那条路，headless 探针实测）。
+ * 三档去向，按顺序判：
+ * ① 自产事件（TUI 虚拟滚动条合成的 wheel）→ 放行，交给 xterm 原生协议路径；
+ * ② Shift+滚轮 → 本地 scrollback（WezTerm/iTerm2 惯例），并**必须 preventDefault**：
+ *    鼠标协议不在时 xterm 的 custom wheel handler 返回 false 之后它自己**不再**
+ *    preventDefault（CoreBrowserTerminal 的 alt-buffer 分支 806-842 行直接 `return false`），
+ *    事件会冒泡到外层可滚容器——用户看到的「滚动的是终端整个外层的内容」。
+ * ③ 其余 → **一律放行**，交给 xterm 原生：协议开着时它按 SGR 转发给 TUI（正确路径）；
+ *    主屏走本地 scrollback；只有「备用屏 × 协议没开」才是死窗，而那是远端程序自己
+ *    没要鼠标事件（无 mouse 的 vim/less 等），由归属徽章提示用户，不归本守卫管。
  *
- * 而 Claude Code 把 ↑/↓ 当**输入框历史导航**（官方 issue #66601，它内置的告警文案
- * 就是 "Scroll wheel is sending arrow keys · use PgUp/PgDn to scroll"）——滚一下就把
- * 草稿换成上一条 prompt，回车再把这个旧 prompt 提交出去。这就是「滚轮打断对话」。
+ * 🔴 **选择态不再吞滚轮**（2026-10-16 第六轮拍板，此前吞）。吞的两个理由如今都不成立：
+ *    - 「选择时内容在选区底下滚走」——主流终端（WezTerm/iTerm2/Ghostty）选中后滚轮就是
+ *      滚内容，xterm 自己也会在滚动时调整选区，属正常观感；
+ *    - 「备用屏下落进方向键兜底被 Claude Code 当历史导航」——那只发生在协议**没开**时，
+ *      而那时用户本来就滚不动，吞掉只会更滚不动。
+ *    反过来，吞滚轮的代价是致命的：选择态一旦因异常路径（Shift 的 keyup 丢在别的窗口、
+ *    HMR、指针取消）泄漏，**滚轮在整片终端区域彻底失效**（2026-10-16 报障）。放行之后
+ *    这类故障在结构上消失——滚轮归属永远由协议状态决定，与选择态解耦。
  *
- * 实现：容器**捕获**阶段短路。xterm 的 wheel 监听挂在终端根元素上，捕获先于它执行，
- * 一旦 stopPropagation，整条路径（SGR 转发 / 方向键兜底 / 本地滚动）都不会发生。
- * 有本地 scrollback 时顺手滚本地（主屏下开选择模式仍能滚），备用屏无 scrollback 时
- * 静默——总之不让任何东西穿到远端。
+ * 实现：容器**捕获**阶段短路（仅 Shift 分支）。xterm 的 wheel 监听挂在终端根元素上，
+ * 捕获先于它执行，一旦 stopPropagation，整条路径（SGR 转发 / 方向键兜底 / 本地滚动）
+ * 都不会发生。
  *
- * 放行两种：① 本模块合成的滚动条 wheel（否则拖动滚动条会被自己吞掉）；
- * ② Shift+滚轮，那条路径由 attachShiftWheel 的 custom wheel handler 接管。
- *   🔴 守卫挂在容器上，而 custom wheel handler 在 xterm 内部执行——捕获阶段一吞，
- *   Shift+滚轮本地滚动会一起失效，所以必须显式放行。
- *
- * ⚠️ 与其它容器级监听的顺序：本守卫在捕获阶段 stopPropagation，注册在它之后的
- * 容器级 wheel 监听（无论捕获还是冒泡）在选择态下都收不到事件。将来若把 Ctrl+滚轮
+ * ⚠️ 与其它容器级监听的顺序：Shift 分支在捕获阶段 stopPropagation，注册在它之后的
+ * 容器级 wheel 监听（无论捕获还是冒泡）在按住 Shift 时都收不到事件。将来若把 Ctrl+滚轮
  * 缩放（useTerminalTypography，现挂冒泡阶段）改成容器捕获监听，要么放在本守卫之前
- * 注册，要么在此处显式放行 Ctrl/Meta，否则缩放会在选择态静默失效。
+ * 注册，要么在此处显式放行 Ctrl/Meta，否则缩放会静默失效。
  */
 export function attachSelectWheelGuard(
   container: HTMLElement,
-  isSelectActive: () => boolean,
   getTerm: () => Terminal | null,
 ): () => void {
-  const onWheel = (e: WheelEvent) => {
-    if (isSynthWheel(e)) return;
-    if (e.shiftKey) return;
-    if (!isSelectActive()) return;
+  const swallow = (e: WheelEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const lines = shiftWheelLines(e.deltaY, e.deltaMode);
-    if (lines !== 0) getTerm()?.scrollLines(lines);
+  };
+  const onWheel = (e: WheelEvent) => {
+    if (isSynthWheel(e)) return;
+    const term = getTerm();
+    // Shift+滚轮 = 本地 scrollback（WezTerm/iTerm2 惯例），必须 preventDefault，
+    // 成因见上面 ③（xterm 的 alt-buffer 分支返回 false 后不再 cancel，事件会滚外层页面）。
+    if (e.shiftKey) {
+      swallow(e);
+      const lines = shiftWheelLines(e.deltaY, e.deltaMode);
+      if (lines !== 0) term?.scrollLines(lines);
+      return;
+    }
+    if (!term) return;
+    // 兜底自检：选择手势收尾若被异常路径漏掉，输入闸会一直闭着（键盘鼠标全哑）。
+    // 用户滚了一格就是「已经不在选择」的最强信号——顺手松开，下一次点击/输入即恢复。
+    if (isSelectHold(term)) setSelectHold(term, false);
   };
   container.addEventListener("wheel", onWheel, { capture: true, passive: false });
   return () => container.removeEventListener("wheel", onWheel, { capture: true });

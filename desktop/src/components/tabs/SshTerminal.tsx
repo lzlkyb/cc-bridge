@@ -101,7 +101,6 @@ export function SshTerminal({
     containerRef,
     termRef,
     focusedRef,
-    selectActiveRef: select.selectActiveRef,
     attachSelect: select.attach,
     copySelection: select.copySelection,
     attachSearch: search.attach,

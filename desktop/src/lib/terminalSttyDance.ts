@@ -303,3 +303,67 @@ export function attachEchoStrip(term: Terminal, tokens: readonly string[]): Echo
   };
   return { end };
 }
+
+/* ============================== 注入前置条件 ============================== */
+
+/**
+ * 注入的前提是「往一个停在提示符上的干净 shell 里打字」。屏幕已经是备用屏（全屏 TUI，
+ * 如 Claude Code）时**绝不能注入**：那串字节会被 TUI 的输入行吃进去、原样显示出来
+ * （2026-10-16 用户报障：「终端会在输入栏自己输入 `printf '\033]1337;…' "$0" stty -echo`」）。
+ * 触发它的都不是新会话，而是注入 effect 重跑——那时 shell 里可能正跑着 TUI。
+ */
+export function tuiOnScreen(term: Terminal | null): boolean {
+  return term?.buffer?.active?.type === "alternate";
+}
+
+/**
+ * 注入台账。挂在 `globalThis` 上（**故意**不用模块级变量）：HMR 会重新求值本模块，
+ * 模块级 Set 会被清掉，于是热更新一次就往活会话里重打一遍命令。
+ *
+ * 键是 sessionId——它按**连接**生成，重连自然拿到新键（那时确实该重新注入）。
+ */
+function ledger(): Set<string> {
+  const g = globalThis as Record<string, unknown>;
+  return (g.__ccbOscInjected ??= new Set<string>()) as Set<string>;
+}
+
+/** 认领本次会话的注入权：false = 本会话注入过（effect 重跑），调用方必须直接跳过。 */
+export function claimInjection(sessionId: string): boolean {
+  const set = ledger();
+  if (set.has(sessionId)) return false;
+  set.add(sessionId);
+  return true;
+}
+
+/**
+ * 尽早挂上残渣剥除器。终端的创建 effect 与注入的会话 effect 谁先跑不由本模块决定，
+ * 而**漏挂的代价是整场会话残渣可见**——老写法 `term ? attachEchoStrip(term) : null`
+ * 在拿不到 term 时静默降级成一个空 handle，屏幕上的命令原文再没人擦。
+ * 这里改成 rAF 重试：termRef 一就绪就挂（t0 在 900ms 之后，时间绰绰有余）。
+ * tokens 由调用方给（探针命令原文在 terminalStatusbar，本模块不反向依赖它）。
+ */
+export function attachEchoStripWhenReady(
+  termRef: { current: Terminal | null },
+  tokens: readonly string[],
+): EchoStripHandle {
+  let handle: EchoStripHandle | null = null;
+  let raf = 0;
+  let ended = false;
+  const tryAttach = () => {
+    if (ended) return;
+    const term = termRef.current;
+    if (!term) {
+      raf = requestAnimationFrame(tryAttach);
+      return;
+    }
+    handle = attachEchoStrip(term, tokens);
+  };
+  tryAttach();
+  return {
+    end() {
+      ended = true;
+      if (raf) cancelAnimationFrame(raf);
+      handle?.end();
+    },
+  };
+}
