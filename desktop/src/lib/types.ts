@@ -110,9 +110,16 @@ export interface StatusResponse {
    */
   releaseWebviewOnClose: boolean;
   /**
-   * 终端拖拽即选：在 xterm 内拖拽即自动进选择态复制。默认关闭。
+   * 终端拖拽即选：在 xterm 内拖拽即自动进选择态。默认开启。
    */
   sshDragSelectEnabled: boolean;
+  /**
+   * 终端选中即复制：选择手势结束时自动把选中文字写入剪贴板。默认开启。
+   *
+   * 与 `sshDragSelectEnabled` 正交：那一项决定「能不能裸拖选」，这一项决定「松手要不要
+   * 自动写剪贴板」。关掉后复制改走右键菜单 / 工具栏 / 快捷键。
+   */
+  sshCopyOnSelectEnabled: boolean;
   /**
    * 运行平台：`"windows"` / `"macos"` / `"linux"`（后端 `std::env::consts::OS`）。
    * 用于隐藏 Windows 专属 UI 与切换快捷键标签，见 `lib/platform.ts`。
@@ -255,6 +262,8 @@ export interface ConfigPatch {
   releaseWebviewOnClose?: boolean;
   /** 终端拖拽即选开关。前端「高级」分组写入。 */
   sshDragSelectEnabled?: boolean;
+  /** 终端选中即复制开关。前端「高级」分组写入。 */
+  sshCopyOnSelectEnabled?: boolean;
 }
 
 export interface ConfigSaveResult {

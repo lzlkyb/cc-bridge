@@ -261,6 +261,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
             connectingId={ssh.connectingId}
             emptyState={<TerminalEmptyState collapsed={collapsed} onExpand={() => setCollapsed(false)} connections={connections} connectingId={ssh.connectingId} onNew={() => { setEditing(null); setShowDialog(true); }} onConnect={connect} />}
             dragSelectEnabled={status?.sshDragSelectEnabled ?? true}
+            copyOnSelectEnabled={status?.sshCopyOnSelectEnabled ?? true}
             fullscreen={fullscreen}
             onToggleFullscreen={() => setFullscreen((v) => !v)}
             onClosed={(s, reason) => ssh.markClosed(s.sessionId, reason)}

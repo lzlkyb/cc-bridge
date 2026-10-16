@@ -103,6 +103,9 @@ pub struct ConfigPatch {
     /// 终端拖拽即选开关。前端「高级」卡写入。
     #[serde(rename = "sshDragSelectEnabled")]
     pub ssh_drag_select_enabled: Option<bool>,
+    /// 终端选中即复制开关。前端「高级」卡写入。
+    #[serde(rename = "sshCopyOnSelectEnabled")]
+    pub ssh_copy_on_select_enabled: Option<bool>,
     /// P1：HTTPS 远程访问开关（自签证书）。前端「安全」页写入。
     #[serde(rename = "remoteTlsEnabled")]
     pub remote_tls_enabled: Option<bool>,
@@ -242,6 +245,12 @@ pub async fn save_config(
         ssh_drag_select_enabled,
         "ssh_drag_select_enabled",
         &patch.ssh_drag_select_enabled
+    );
+    // 终端选中即复制（纯布尔，无副作用，安全可走通用 patch）。
+    apply_field!(
+        ssh_copy_on_select_enabled,
+        "ssh_copy_on_select_enabled",
+        &patch.ssh_copy_on_select_enabled
     );
     // P1 远程访问四字段（纯布尔/数值，无凭据，安全可走通用 patch；生效经 restart_mcp_server）。
     apply_field!(

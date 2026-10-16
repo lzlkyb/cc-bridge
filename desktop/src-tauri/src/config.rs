@@ -199,10 +199,14 @@ pub struct BridgeConfig {
     /// 🔴 只经 Tauri IPC 修改（前端 save_config patch），绝不走 MCP（对齐 external_mcp_servers 注释）。
     /// 凭据以加密形式存于每条连接的 `encrypted_password`，明文密码不经此结构。
     pub ssh_connections: Vec<SshConnection>,
-    /// 终端拖拽即选：在 xterm 内按住左键移动超阈值即自动进选择态、松手复制。
-    /// 默认关——保持默认交互（拖拽不误触发选择，避免与 Claude Code 等 TUI 点击冲突）；
-    /// 开启后无需记 Shift / 点「选择模式」即可拖选复制。Shift / 选择模式两条路径不受此开关影响。
+    /// 终端拖拽即选：在 xterm 内按住左键移动超阈值即自动进选择态。
+    /// 默认开（对齐主流终端习惯）；关闭后仍可按 Shift 或点「选择模式」进入选择态。
     pub ssh_drag_select_enabled: bool,
+    /// 终端选中即复制：选择手势结束（松手）时自动把选中文字写入剪贴板。默认开。
+    ///
+    /// 与 `ssh_drag_select_enabled` **正交**：那一项决定「能不能裸拖选」，这一项决定
+    /// 「松手要不要自动写剪贴板」。关掉后拖选照常建选区，复制改走右键菜单 / 工具栏 / 快捷键。
+    pub ssh_copy_on_select_enabled: bool,
     /// P1 远程访问：HTTPS（自签证书）serve 总开关。**默认关**——HTTP 路径行为不变，
     /// 开启后 MCP 监听整体切换为 TLS（单端口，无并存）。
     pub remote_tls_enabled: bool,
@@ -263,6 +267,7 @@ impl Default for BridgeConfig {
             ssh_enabled: false,
             ssh_connections: vec![],
             ssh_drag_select_enabled: true,
+            ssh_copy_on_select_enabled: true,
             remote_tls_enabled: false,
             remote_ban_enabled: true,
             remote_ban_threshold: 5,
@@ -368,6 +373,9 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "ssh_connections" => config.ssh_connections = parse_or_warn(key, value, vec![]),
             "ssh_drag_select_enabled" => {
                 config.ssh_drag_select_enabled = parse_or_warn(key, value, true)
+            }
+            "ssh_copy_on_select_enabled" => {
+                config.ssh_copy_on_select_enabled = parse_or_warn(key, value, true)
             }
             "remote_tls_enabled" => config.remote_tls_enabled = parse_or_warn(key, value, false),
             "remote_ban_enabled" => config.remote_ban_enabled = parse_or_warn(key, value, true),
@@ -678,6 +686,11 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         conn,
         "ssh_drag_select_enabled",
         &to_value(config.ssh_drag_select_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "ssh_copy_on_select_enabled",
+        &to_value(config.ssh_copy_on_select_enabled).unwrap(),
     )?;
     save_config_field(
         conn,

@@ -16,6 +16,7 @@ interface TerminalPanesProps {
   connectingId: string | null;
   emptyState: ReactNode;
   dragSelectEnabled: boolean;
+  copyOnSelectEnabled: boolean;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
   onClosed: (s: SshSessionRef, reason: string) => void;
@@ -48,6 +49,7 @@ export function TerminalPanes({
   connectingId,
   emptyState,
   dragSelectEnabled,
+  copyOnSelectEnabled,
   fullscreen,
   onToggleFullscreen,
   onClosed,
@@ -134,6 +136,7 @@ export function TerminalPanes({
                     onCloseTab={() => onCloseTab(s)}
                     visible={s.sessionId === activeId || isSec}
                     dragSelectEnabled={dragSelectEnabled}
+                    copyOnSelectEnabled={copyOnSelectEnabled}
                     fullscreen={fullscreen}
                     onToggleFullscreen={onToggleFullscreen}
                     onCwd={(cwd) => onCwd(s.sessionId, cwd)}

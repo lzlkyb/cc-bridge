@@ -41,8 +41,9 @@ interface Props {
   onCloseTab: () => void;
   /** 该终端当前是否可见（多标签切换时从 display:none → block，需重新 fit）。 */
   visible: boolean;
-  /** 终端拖拽即选开关（设置项 ssh_drag_select_enabled）。 */
+  /** 复制行为设置项：拖拽即选 / 选中即复制（ref 承接与消费都在 useSshTerminalSelect，这里只透传）。 */
   dragSelectEnabled: boolean;
+  copyOnSelectEnabled: boolean;
   /** 是否处于软件内全屏（布局由 TerminalTab 控制，这里只管图标/徽标与重新 fit）。 */
   fullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -70,6 +71,7 @@ export function SshTerminal({
   onCloseTab,
   visible,
   dragSelectEnabled,
+  copyOnSelectEnabled,
   fullscreen,
   onToggleFullscreen,
   onCwd,
@@ -79,16 +81,12 @@ export function SshTerminal({
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const focusedRef = useRef(false); // 供 window 级键盘监听判断本会话是否聚焦
-  // dragSelectEnabled 来自父组件 props（设置项），用 ref 承接，使监听闭包总能读到最新值，
-  // 且不让它进入 effect 依赖导致 xterm 重建。
-  const dragSelectEnabledRef = useRef(dragSelectEnabled);
-  dragSelectEnabledRef.current = dragSelectEnabled;
   const mode = useTerminalThemeMode();
   const preset = useTerminalPreset();
   const inject = useTerminalInject();
   const closed = closedReason !== null;
 
-  const select = useSshTerminalSelect({ termRef, focusedRef, dragSelectEnabledRef });
+  const select = useSshTerminalSelect({ termRef, focusedRef, dragSelectEnabled, copyOnSelectEnabled });
   const search = useTerminalSearch(termRef, mode);
   const { focused, inputErr, paste, copyScreen, doFit } = useSshTerminalSession({
     sessionId,

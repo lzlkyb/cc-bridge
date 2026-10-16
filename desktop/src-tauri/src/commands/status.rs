@@ -146,9 +146,12 @@ pub struct StatusResponse {
     /// 关窗时释放界面内存。默认开启（关窗销毁 webview，托盘常驻约 85MB → 5.5MB）。
     #[serde(rename = "releaseWebviewOnClose")]
     pub release_webview_on_close: bool,
-    /// 终端拖拽即选：在 xterm 内拖拽即自动进选择态复制。默认关闭。
+    /// 终端拖拽即选：在 xterm 内拖拽即自动进选择态。默认开启。
     #[serde(rename = "sshDragSelectEnabled")]
     pub ssh_drag_select_enabled: bool,
+    /// 终端选中即复制：选择手势结束时自动写剪贴板。默认开启。
+    #[serde(rename = "sshCopyOnSelectEnabled")]
+    pub ssh_copy_on_select_enabled: bool,
     /// 运行平台：`"windows"` / `"macos"` / `"linux"`（取 `std::env::consts::OS`）。
     ///
     /// 为何由后端下发而不是前端自己探：这是**编译期常量**，比嗅探
@@ -455,6 +458,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         notify_task_complete: config.notify_task_complete,
         release_webview_on_close: config.release_webview_on_close,
         ssh_drag_select_enabled: config.ssh_drag_select_enabled,
+        ssh_copy_on_select_enabled: config.ssh_copy_on_select_enabled,
         platform: std::env::consts::OS.to_string(),
     })
 }
