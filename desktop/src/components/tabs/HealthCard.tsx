@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
-import { invoke } from "../../lib/tauri";
-import type { StatusResponse, StaticStatus, LiveStatus } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
 import { useCountUp } from "../../hooks/useCountUp";
+import { useLiveStatus } from "../../hooks/useLiveStatus";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { usePopClass } from "../../hooks/useChangeClass";
 import { NavTarget, StopClick } from "../ui/NavTarget";
@@ -40,11 +39,7 @@ export function HealthCard({
   status?: StaticStatus;
   onNavigate?: (tab: string, anchor?: string) => void;
 }) {
-  const { data: live } = useQuery<StatusResponse, Error, LiveStatus>({
-    queryKey: ["status"],
-    queryFn: () => invoke<StatusResponse>("get_status"),
-    select: (s) => ({ uptimeSeconds: s.uptimeSeconds, stats: s.stats }),
-  });
+  const { data: live } = useLiveStatus();
 
   const running = status?.running ?? false;
   const s = live?.stats;

@@ -1,7 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { invoke } from "../../lib/tauri";
-import type { StatusResponse, LiveStatus } from "../../lib/types";
+import { useLiveStatus } from "../../hooks/useLiveStatus";
 import { pushSample } from "../../lib/metricHistory";
 
 /**
@@ -19,11 +17,7 @@ import { pushSample } from "../../lib/metricHistory";
  * 重新可见后的首次采样会被 `pushSample` 当作断层处理（清空重来）。
  */
 export function MetricSampler() {
-  const { data, dataUpdatedAt } = useQuery<StatusResponse, Error, LiveStatus>({
-    queryKey: ["status"],
-    queryFn: () => invoke<StatusResponse>("get_status"),
-    select: (s) => ({ uptimeSeconds: s.uptimeSeconds, stats: s.stats }),
-  });
+  const { data, dataUpdatedAt } = useLiveStatus();
 
   // stats 放 ref：effect 不能以它为依赖（原因见下），但回调里要读到最新值。
   const statsRef = useRef(data?.stats);

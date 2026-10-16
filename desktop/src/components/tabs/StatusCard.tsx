@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { formatUptime } from "../../lib/utils";
-import type { StatusResponse, StaticStatus, LiveStatus } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
+import { useLiveStatus } from "../../hooks/useLiveStatus";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { useAppHidden } from "../../lib/appVisibility";
@@ -66,11 +66,7 @@ export function StatusCard({
    */
   onNavigate?: (tab: string, anchor?: string) => void;
 }) {
-  const { data: live } = useQuery<StatusResponse, Error, LiveStatus>({
-    queryKey: ["status"],
-    queryFn: () => invoke<StatusResponse>("get_status"),
-    select: (s) => ({ uptimeSeconds: s.uptimeSeconds, stats: s.stats }),
-  });
+  const { data: live } = useLiveStatus();
 
   const running = status?.running ?? false;
   const { lastIncreaseAt } = useRemoteActivity();

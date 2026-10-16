@@ -1,6 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { invoke } from "../../lib/tauri";
-import type { StatusResponse, StaticStatus, LiveStatus } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
+import { useLiveStatus } from "../../hooks/useLiveStatus";
 import { useMetricSeries, type MetricKey } from "../../lib/metricHistory";
 import { usePopClass } from "../../hooks/useChangeClass";
 import { Sparkline, type ChartKind } from "./MetricSparkline";
@@ -32,11 +31,7 @@ export function MetricCards({
   onNavigate?: (tab: string, anchor?: string) => void;
 }) {
   // live 字段在本组件订阅（共享 App 层的 ["status"] 缓存与轮询，不多发请求）。
-  const { data: live } = useQuery<StatusResponse, Error, LiveStatus>({
-    queryKey: ["status"],
-    queryFn: () => invoke<StatusResponse>("get_status"),
-    select: (s) => ({ uptimeSeconds: s.uptimeSeconds, stats: s.stats }),
-  });
+  const { data: live } = useLiveStatus();
 
   const s = live?.stats;
   const running = status?.running ?? false;
