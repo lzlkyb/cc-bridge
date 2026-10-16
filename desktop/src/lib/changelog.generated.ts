@@ -4,6 +4,16 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "2.9.1",
+    date: "2026-10-16",
+    items: [
+      { category: "feat", text: "「选中即复制」开关（设置 → 高级，默认开），与「终端拖拽即选」正交" },
+      { category: "feat", text: "连接工作台 A 方案高保真预览入口（仅开发模式，不进正式包）" },
+      { category: "fix", text: "右键复制失效——xterm 把右键的鼠标报告当用户输入，按下即清空本地选区" },
+      { category: "fix", text: "选择手势改走输入闸，修滚轮死窗 / 松手清选区 / 注入回显" },
+    ],
+  },
+  {
     version: "2.9.0",
     date: "2026-10-16",
     items: [
@@ -192,25 +202,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "improve", text: "文件管理快了一个量级。列目录/建目录/删除不再每次重新登录服务器，而是复用一条常驻会话。" },
       { category: "improve", text: "大量输出时不再掉帧（`tail -f`、构建日志），改用 GPU 渲染。" },
       { category: "improve", text: "中文/emoji/框线字符的宽度排版修正，减少 TUI 串位。" },
-    ],
-  },
-  {
-    version: "2.7.1",
-    date: "2026-08-31",
-    items: [
-      { category: "feat", text: "SSH 终端支持粘贴。Ctrl+V、Ctrl+Shift+V、右键菜单（复制 / 粘贴 / 全选）、工具栏按钮四条路径。此前终端里没有任何粘贴通路：xterm 把 Ctrl+V 当作 SYN 控制字符发给远端并 `preventDefault`，浏览器因此不会产生 `paste` 事件，xterm 自带的两个 paste 监听器永远收不到。改用官方钩子 `attachCustomKeyEventHandler` 在 xterm 之前截获。代价是远端不再收到 Ctrl+V（readline 的 quoted-insert 失效）。另：`Shift+Insert` 在旧版本上本来就能粘贴，xterm 对它不设按键结果因而不拦截原生事件。" },
-      { category: "feat", text: "文件传输进度条 + 取消。传输期间在文件头下方显示百分比与剩余时间，可随时取消（后端置标志，monitor 线程 ≤200ms 内终止进程）。此前传输期间界面只有一个 busy 态，看不出在传还是卡死，也停不下来。" },
-      { category: "feat", text: "覆盖前二次确认。下载与上传遇到同名文件都会先弹确认框——此前删除有二次确认、覆盖却静默执行，而两者丢数据的后果是一样的。下载改为先写 `.ccbpart` 临时文件、传完才替换，中途取消或失败不会碰到原文件。" },
-      { category: "fix", text: "带空格 / 特殊字符的文件名无法上传下载。scp 的远程路径没加 shell 引号，而同一文件里的 `ls`/`mkdir`/`rm` 都加了，于是这类文件在列表里看得见、点下载却失败。遗留 SCP 协议下远程路径由远端 shell 展开，`a b.txt` 会被拆成两个参数。" },
-      { category: "fix", text: "传输失败时错误信息几乎是空的。scp 的 `-q` 会把进度条和 ssh 的警告/诊断信息一起关掉，失败只剩一句「退出码 1」。已去掉 `-q`，噪声交给前端本就写好的清理函数。" },
-      { category: "fix", text: "远端是 macOS/BSD 时列目录直接报错。BSD 的 `ls` 拒绝 `--time-style` 时以非零码退出，而降级判断写在 `spawn_capture(..)?` 之后，永远走不到——降级路径是死代码。" },
-      { category: "fix", text: "每次上传/下载都白跑一次握手。强制 SFTP 协议的 `-s` 在本机 OpenSSH 8.1p1 上不存在，原实现每次传输都先试一次（一次完整 TCP + 认证）才回退。改为探测一次、进程内缓存；探测只读 scp 的 usage 输出，不建立网络连接。" },
-      { category: "improve", text: "`clipboard-manager:default` 自述是“No features are enabled by default … Clipboard interaction needs to be explicitly enabled”，即什么都不授予——这解释了为何全项目都在用 `navigator.clipboard.writeText` 绕开插件。已补 `clipboard-manager:allow-read-text`（只加读文本，不加读图片 / HTML）。" },
-      { category: "improve", text: "取消标志用 `DashMap<String, Arc<AtomicBool>>` 注册，不放 `Child`：`spawn_capture` 的 monitor 线程本就独占 Child，共享出去要处理 `kill(&mut self)` 的可变借用、多套一层锁。" },
-      { category: "improve", text: "传输改用 `spawn_blocking`：原先最长 600s 阻塞在 tokio worker 上，加了取消后会导致 `ssh_sftp_cancel` 自己排不上队。" },
-      { category: "improve", text: "「取消 / 超时 / 失败」用错误前缀常量区分，不靠匹配中文文案——文案会改，前缀不会。" },
-      { category: "improve", text: "进度只解析 `(\\d+)%`，不解析速率与 ETA 的列位：各版本 scp 的进度行格式不一致，百分比是唯一稳定项；剩余时间由前端按变化率算并做 EMA 平滑。去掉 `-q` 后进度条会涌进捕获缓冲，故只折叠「当前未完成行」，已换行的真实错误一律不动。" },
-      { category: "improve", text: "留档：旧的 `xterm` / `xterm-addon-fit` 已被官方废弃（npm 标注 “Move to @xterm/xterm instead”、冻结在 5.3.0），已迁移到 `@xterm/xterm@6` + `@xterm/addon-fit@0.11`。这步实际随 v2.7.0 一同发出，但当时未记入发版说明，在此补记。" },
     ],
   },
 ];
