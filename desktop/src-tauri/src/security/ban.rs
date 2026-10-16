@@ -163,7 +163,14 @@ mod tests {
         b.record_failure(ip);
         b.record_failure(ip);
         // 两次失败拨到窗口之外 → 第三次失败时计数重置再 +1，不应封禁。
-        let long_ago = Instant::now() - Duration::from_secs(3600);
+        //
+        // 🔴 这里减的必须是「略大于窗口」的时长，不能图省事写 3600s：`Instant` 在 Windows 上
+        // 以**系统启动**为原点，`Instant::now() - 3600s` 在开机不满 1 小时的机器上会
+        // 直接 panic（`overflow when subtracting duration from instant`）——
+        // 测试挂在本机环境而不是被测逻辑上。窗口是 1 分钟（见 `reg()`），拨 2 分钟
+        // 就足够落在窗口外，且与相邻用例 `reaching_threshold_bans_then_expires` 的
+        // 60s 保持同一量级（那个用例只需要开机满 1 分钟）。
+        let long_ago = Instant::now() - Duration::from_secs(120);
         {
             let mut e = b.inner.get_mut(&ip).unwrap();
             e.last_fail = long_ago;
