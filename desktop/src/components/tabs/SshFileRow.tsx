@@ -3,7 +3,7 @@ import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import type { SshFileEntry } from "../../lib/types";
 
 /** 字节数 → 人类可读（B/KB/MB/GB/TB）。 */
-export function formatSize(n: number): string {
+function formatSize(n: number): string {
   if (n < 1024) return `${n} B`;
   const u = ["KB", "MB", "GB", "TB"];
   let v = n / 1024;
@@ -16,7 +16,7 @@ export function formatSize(n: number): string {
 }
 
 /** Unix 秒 → 本地化时间；0/无效返回「—」。 */
-export function formatDate(s: number): string {
+function formatDate(s: number): string {
   if (!s) return "—";
   try {
     return new Date(s * 1000).toLocaleString();

@@ -1,4 +1,4 @@
-import type { HTMLAttributes, ReactNode } from "react";
+import type { HTMLAttributes } from "react";
 
 const variants = {
   default: "bg-background text-foreground border",
@@ -29,12 +29,4 @@ export function Alert({ variant = "default", className = "", ...props }: AlertPr
       {...props}
     />
   );
-}
-
-export function AlertTitle({ className = "", children }: { className?: string; children: ReactNode }) {
-  return <h5 className={`mb-1 font-medium leading-none ${className}`}>{children}</h5>;
-}
-
-export function AlertDescription({ className = "", children }: { className?: string; children: ReactNode }) {
-  return <div className={`text-sm opacity-90 ${className}`}>{children}</div>;
 }
