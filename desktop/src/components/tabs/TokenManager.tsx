@@ -142,7 +142,12 @@ export function TokenManager({
           {confirmingRegen && (
             <InlineNotice variant="error">
               <div className="flex items-center justify-between gap-3">
-                <span className="flex-1">旧 Token 将立即失效，远程 AI 工具会断开连接。确定？</span>
+                {/* 多设备模式（opt-in）开启时提及跨设备影响；关闭时维持既有文案（兼容性契约）。 */}
+                <span className="flex-1">
+                  旧 Token 将立即失效，远程 AI 工具会断开连接
+                  {status?.multiDeviceMode ? "；若另一台电脑也接入了，那台机器的连接会一并断开" : ""}
+                  。确定？
+                </span>
                 <span className="flex gap-2 shrink-0">
                   <Button variant="destructive" size="sm" onClick={handleRegenToken}>确定</Button>
                   <Button variant="outline" size="sm" onClick={() => setConfirmingRegen(false)}>取消</Button>

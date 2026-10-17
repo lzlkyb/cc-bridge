@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Icon } from "../../ui/icon";
-import { McpScope, buildIpSedCommand } from "../../../lib/utils";
+import { McpScope, buildIpSedCommand, buildMultiDeviceCommand } from "../../../lib/utils";
 // 仅类型导入，避免 utils ⇄ mcpClients 的运行时循环（见 utils.ts 同一处说明）。
 import type { McpClientTool } from "../../../lib/mcpClients";
 import { ActionCard, InlineNotice } from "../../ui/notice";
@@ -22,6 +22,10 @@ import { useCopyFeedback } from "../../../hooks/useCopyFeedback";
  * 多客户端（身份转变后）：sed 的**目标文件**随接入工具而变（Claude Code 两档作用域 /
  * WorkBuddy / Codex），三种都是文本配置，同一条 sed 通用。通用 MCP 工具没有约定路径，
  * 此时不给命令，只提示手动更新。
+ *
+ * 多设备模式（opt-in，仅 claude-code）：产物从 sed 换条目级 remove+add（sed 按 URL
+ * 全局替换会把远端的双条目一起改写，多设备下必须条目级）；标签与说明同步换。
+ * 关闭时走原 sed 路径，逐字与旧版一致（兼容性契约）。
  */
 export function IpChangedBanner({
   lanIps,
@@ -32,6 +36,10 @@ export function IpChangedBanner({
   projectPath,
   tls = false,
   client = "claude-code",
+  transport = "http",
+  token = "",
+  multiDevice = false,
+  deviceId = "",
   onResolved,
   onSedResolved,
   onDismiss,
@@ -46,6 +54,13 @@ export function IpChangedBanner({
   tls?: boolean;
   /** 接入工具（`status.connectClient`）——决定 sed 目标文件与命令标签。 */
   client?: McpClientTool;
+  /** MCP 传输协议（http/sse）：仅多设备条目级命令消费（URL 后缀与 --transport）。 */
+  transport?: string;
+  /** 多设备模式条目级命令需要内联 Bearer（sed 形态不需要）。 */
+  token?: string;
+  /** 多设备模式开关（opt-in）。true 且 client=claude-code 时产物换条目级命令。 */
+  multiDevice?: boolean;
+  deviceId?: string;
   onResolved: (ip: string) => void;
   onSedResolved: () => void;
   onDismiss?: () => void;
@@ -86,12 +101,21 @@ export function IpChangedBanner({
   // 幂等可重跑，不动 Bearer、不 remove+add，因此服务器条目与授权状态保留、不会重新授权。
   // 作用域直接读下方选择卡当前选中的 scope（方案 A：实时联动），始终输出单条精确命令。
   // 纯函数收口 lib/utils.ts（R11，带单测）。
+  // 多设备模式：claude-code 换条目级 remove+add（固定 user 级，忽略 scope）；codex/workbuddy
+  // 换条目锚定 scoped sed（URL 全局替换会殃及远端同文件里其它设备的条目）——与 Rust
+  // ip_update_command 分流一致。关闭时走原 sed 路径，逐字与旧版一致（兼容性契约）。
+  const multiDeviceOn = multiDevice && !!deviceId && client !== "generic";
   const buildSed = (scp: "user" | "project") =>
-    buildIpSedCommand(selectedIp, port, scp, projectPath, tls, client);
+    multiDeviceOn
+      ? client === "claude-code"
+        ? buildMultiDeviceCommand(selectedIp, port, token, transport, tls, deviceId)
+        : buildIpSedCommand(selectedIp, port, scp, projectPath, tls, client, deviceId)
+      : buildIpSedCommand(selectedIp, port, scp, projectPath, tls, client);
 
   // 命令标签按接入工具分流：Claude Code 才有 user/project 两档作用域之分。
-  const cmdLabel =
-    client === "workbuddy"
+  const cmdLabel = multiDeviceOn
+    ? `多设备模式 · 条目 cc-bridge-${deviceId}`
+    : client === "workbuddy"
       ? "WorkBuddy（~/.workbuddy/mcp.json）"
       : client === "codex"
         ? "Codex（~/.codex/config.toml）"

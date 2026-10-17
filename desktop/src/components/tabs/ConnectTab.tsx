@@ -4,6 +4,7 @@ import { Icon } from "../ui/icon";
 import { useConnectGuideState } from "../../hooks/useConnectGuideState";
 import { ConnectBento } from "./ConnectBento";
 import { IpChangedBanner } from "./connect/IpChangedBanner";
+import { MultiDeviceCard } from "./connect/MultiDeviceCard";
 import { FirewallAlertBlock } from "./connect/FirewallAlertBlock";
 import { isWindows } from "../../lib/platform";
 import { ToolGuide } from "./connect/ToolGuide";
@@ -128,6 +129,10 @@ function ConnectTabImpl({
           projectPath={guide.projectPath}
           tls={guide.tlsEnabled}
           client={(status?.connectClient as McpClientTool | undefined) ?? "claude-code"}
+          transport={status?.transport === "sse" ? "sse" : "http"}
+          token={status?.token ?? ""}
+          multiDevice={!!status?.multiDeviceMode}
+          deviceId={status?.deviceId ?? ""}
           onResolved={onSelectIp}
           onSedResolved={onSedResolved}
           onDismiss={onDismissIpChange}
@@ -151,6 +156,8 @@ function ConnectTabImpl({
             transport={status?.transport === "sse" ? "sse" : "http"}
             tlsEnabled={guide.tlsEnabled}
             defaultTool={(status?.connectClient as McpClientTool | undefined) ?? "claude-code"}
+            multiDevice={!!status?.multiDeviceMode}
+            deviceId={status?.deviceId ?? ""}
             onToolChange={(t) => {
               // 必须落盘：托盘「复制命令 / 复制 IP」与 IpChangedBanner 都按这个值出内容。
               // 只存在组件本地 state 时，界面选了 Codex、托盘仍会复制一条 claude mcp add。
@@ -170,6 +177,9 @@ function ConnectTabImpl({
           </ToolGuide>
         }
       />
+
+      {/* 多设备接入模式（opt-in）：关闭时只渲染开关行、无任何身份 UI，命令形态不变（兼容性契约）。 */}
+      <MultiDeviceCard status={status} onChanged={onRefresh} />
     </div>
   );
 }

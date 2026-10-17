@@ -74,6 +74,21 @@ describe("buildClientSnippet · WorkBuddy / Codex / 通用", () => {
     expect(s.notes.join()).toContain("不支持 SSE");
   });
 
+  it("多设备模式（批3-2）：deviceId 非空时条目名带尾号，与其它设备并存", () => {
+    const wb = JSON.parse(buildClientSnippet("workbuddy", { ...base, deviceId: "a3f2" }).code);
+    expect(Object.keys(wb.mcpServers)).toEqual(["cc-bridge-a3f2"]);
+
+    const cx = buildClientSnippet("codex", { ...base, deviceId: "a3f2" });
+    expect(cx.code).toContain("[mcp_servers.cc-bridge-a3f2]");
+    expect(cx.code).not.toContain("[mcp_servers.cc-bridge]");
+  });
+
+  it("兼容性契约：deviceId 缺省/为空时条目名维持 cc-bridge，逐字与旧版一致", () => {
+    const wb = JSON.parse(buildClientSnippet("workbuddy", { ...base, deviceId: "" }).code);
+    expect(Object.keys(wb.mcpServers)).toEqual(["cc-bridge"]);
+    expect(buildClientSnippet("codex", base).code).toContain("[mcp_servers.cc-bridge]");
+  });
+
   it("通用：裸 url + headers + transport 标注", () => {
     const s = buildClientSnippet("generic", base);
     const parsed = JSON.parse(s.code);

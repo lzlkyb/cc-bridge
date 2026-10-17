@@ -127,6 +127,18 @@ export interface StatusResponse {
    * 用于隐藏 Windows 专属 UI 与切换快捷键标签，见 `lib/platform.ts`。
    */
   platform: string;
+  /** 本机设备身份尾号（4 位 hex，首启后端生成持久化）。多设备模式的主键；关闭模式不得呈现。 */
+  deviceId: string;
+  /** 本机机器名（后端 COMPUTERNAME/HOSTNAME 兜底）。多设备模式身份卡展示用。 */
+  deviceName: string;
+  /** 多设备接入模式开关（opt-in，默认关）。关闭时无任何多设备 UI、命令形态不变（兼容性契约）。 */
+  multiDeviceMode: boolean;
+  /**
+   * 近期鉴权失败来源数（批3-1）：封禁窗口内仍有 401 失败记录的来源 IP 数。
+   * 多设备模式「令牌失效」的证据信号（区别于 TCP 探测的 remoteReachable——
+   * 令牌失效时服务可达，探针是绿的）。多设备模式关闭时不得消费（兼容性契约）。
+   */
+  authFailureSources: number;
 }
 
 /* ─── 状态分层：高频字段 vs 稳定字段 ─── */

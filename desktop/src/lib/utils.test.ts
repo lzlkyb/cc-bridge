@@ -13,6 +13,7 @@ import {
   buildConnectCommand,
   buildHealthCheck,
   buildIpSedCommand,
+  buildMultiDeviceCommand,
   buildTokenSedCommand,
   buildPermissionGrantCommand,
   formatUptime,
@@ -119,6 +120,50 @@ describe("buildIpSedCommand", () => {
 
   it("selectedIp 为空返回空串（不生成半截命令）", () => {
     expect(buildIpSedCommand("", 7823, "user", "")).toBe("");
+  });
+});
+
+describe("buildMultiDeviceCommand", () => {
+  it("条目级 remove+add：条目名带 deviceId、固定 user 级、token 内联", () => {
+    expect(buildMultiDeviceCommand("10.0.0.8", 7823, "tok", "http", false, "a3f2")).toBe(
+      'claude mcp remove cc-bridge-a3f2 2>/dev/null\nclaude mcp add cc-bridge-a3f2 -s user --transport http --header "Authorization: Bearer tok" http://10.0.0.8:7823/mcp',
+    );
+  });
+
+  it("sse + tls：URL 后缀与 --transport 跟随，scheme 切 https", () => {
+    const cmd = buildMultiDeviceCommand("10.0.0.8", 7823, "tok", "sse", true, "b7c1");
+    expect(cmd).toContain("--transport sse");
+    expect(cmd).toContain("https://10.0.0.8:7823/mcp/sse");
+  });
+
+  it("deviceId 为空返回空串（宁可空也不出坏命令）", () => {
+    expect(buildMultiDeviceCommand("10.0.0.8", 7823, "tok", "http", false, "")).toBe("");
+  });
+});
+
+describe("buildIpSedCommand · 多设备 scoped（批3-2）", () => {
+  it("codex：地址范围锚定 TOML 段头，只替换本条目块（与 Rust build_scoped_sed_command 逐字一致）", () => {
+    expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", false, "codex", "a3f2")).toBe(
+      "sed -i '/^\\[mcp_servers\\.cc-bridge-a3f2\\]/,/^\\[/ s#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.codex/config.toml",
+    );
+  });
+
+  it("workbuddy：地址范围锚定 JSON 条目键到 Authorization 行", () => {
+    expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", true, "workbuddy", "b7c1")).toBe(
+      "sed -i '/\"cc-bridge-b7c1\": \\{/,/\"Authorization\"/ s#https\\?://[0-9.]*:7823/mcp#https://10.0.0.8:7823/mcp#g' ~/.workbuddy/mcp.json",
+    );
+  });
+
+  it("claude-code 不走 scoped（它有条目级 CLI）：传 deviceId 也维持全局 sed", () => {
+    expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", false, "claude-code", "a3f2")).toBe(
+      "sed -i 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.claude.json",
+    );
+  });
+
+  it("deviceId 为空时 codex/workbuddy 维持全局 sed（兼容性契约）", () => {
+    expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", false, "codex")).toBe(
+      "sed -i 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.codex/config.toml",
+    );
   });
 });
 

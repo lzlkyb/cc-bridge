@@ -229,6 +229,16 @@ pub struct BridgeConfig {
     pub remote_ban_threshold: u32,
     /// P1 封禁窗口（分钟）：封禁持续时长，窗口过期自动解封。默认 15。
     pub remote_ban_window_min: u32,
+    /// 本机设备身份尾号（4 位小写十六进制，首启生成持久化，见 main.rs 启动补齐）。
+    /// 多设备模式的主键：接入条目名 `cc-bridge-<device_id>`、身份卡展示、导出聚合
+    /// 都靠它区分设备。空串 = 尚未生成。与 `multi_device_mode` 正交——多设备模式
+    /// 关闭时本字段静默存在，不产生任何 UI（兼容性契约）。
+    pub device_id: String,
+    /// 多设备接入模式总开关（opt-in，连接页写入，默认关）。
+    /// 🔴 兼容性契约（2026-10-17 用户拍板）：**关闭时产品行为与引入前逐字一致**——
+    /// 接入命令保持 sed 形态、冲突文案维持两分支、确认弹窗维持现有文案、无任何
+    /// 「本机身份」UI。开启后接入命令变为条目级并出现身份卡 / 三分支文案。
+    pub multi_device_mode: bool,
 }
 
 impl Default for BridgeConfig {
@@ -286,6 +296,8 @@ impl Default for BridgeConfig {
             remote_ban_enabled: true,
             remote_ban_threshold: 5,
             remote_ban_window_min: 15,
+            device_id: String::new(),
+            multi_device_mode: false,
         }
     }
 }
@@ -398,6 +410,8 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "remote_ban_window_min" => {
                 config.remote_ban_window_min = parse_or_warn(key, value, 15u32)
             }
+            "device_id" => config.device_id = parse_or_warn(key, value, String::new()),
+            "multi_device_mode" => config.multi_device_mode = parse_or_warn(key, value, false),
             "transport" => {
                 let s = parse_or_warn::<String>(key, value, "http".into());
                 config.transport = if s == "sse" {
@@ -749,6 +763,12 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         "remote_ban_window_min",
         &to_value(config.remote_ban_window_min).unwrap(),
     )?;
+    save_config_field(conn, "device_id", &to_value(&config.device_id).unwrap())?;
+    save_config_field(
+        conn,
+        "multi_device_mode",
+        &to_value(config.multi_device_mode).unwrap(),
+    )?;
     // 外挂 MCP 桥的两个键。漏写的后果不是“少存一个字段”：调用方（`import_config_inner`）
     // 是先落库再整体替换内存，漏一个就会造成内存领先于 DB——界面上已生效、
     // 重启后又变回去（已删的 server 复活）。
@@ -766,4 +786,48 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
     tx.commit()
         .map_err(|e| format!("Failed to commit full config: {e}"))?;
     Ok(())
+}
+
+/// 生成本机设备身份尾号：4 位小写十六进制。只取 4 位是刻意的——它要被人读、
+/// 被人抄进条目名（`cc-bridge-<id>`），碰撞概率 1/65536 对「同一个用户的两三台
+/// 设备」足够；全局唯一性不是目标（那才需要 uuid，但没人愿意抄 36 位进终端）。
+pub fn generate_device_id() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..4)
+        .map(|_| format!("{:x}", rng.gen_range(0..16)))
+        .collect()
+}
+
+/// 本机机器名（跨平台兜底）：Windows 取 COMPUTERNAME，类 Unix 取 HOSTNAME，
+/// 都没有时回落 "PC"。仅用于多设备模式身份卡的展示，不参与任何协议/判定。
+pub fn device_hostname() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "PC".into())
+}
+
+#[cfg(test)]
+mod device_identity_tests {
+    use super::*;
+
+    #[test]
+    fn device_id_is_four_lowercase_hex() {
+        for _ in 0..32 {
+            let id = generate_device_id();
+            assert_eq!(id.len(), 4, "应为 4 位：{id}");
+            assert!(
+                id.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "应为小写十六进制：{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_device_mode_defaults_off() {
+        // 兼容性契约的兜底断言：缺字段（老配置库）时必须是关。
+        assert!(!BridgeConfig::default().multi_device_mode);
+        assert!(BridgeConfig::default().device_id.is_empty());
+    }
 }

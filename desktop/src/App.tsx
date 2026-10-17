@@ -325,23 +325,36 @@ function AppContent() {
       {/* S3: 全局链路中断横幅（任意页可见，不只连接页）。与 statusError 并列但语义不同：
           这里是「服务在跑但远程连不回」，statusError 是「连不上本地服务进程」。 */}
       {/* 连接页本身已内联展示等价信息（地址失效→IpChangedBanner+AddressPicker；
-          远程不可达→Header 红胶囊+徽章），故在该页不再重复这条全局横幅与「前往连接」按钮（方案 A）。 */}
-      {status && status.running && (status.ipChanged || status.remoteReachable === false) && activeTab !== "connect" && (
+          远程不可达→Header 红胶囊+徽章），故在该页不再重复这条全局横幅与「前往连接」按钮（方案 A）。
+          批3-1：多设备模式额外认「近期有 401 失败来源」为渲染条件——令牌失效时服务可达、
+          TCP 探针是绿的，没有这条就永远弹不出来。多设备关闭时条件与引入前逐字一致（契约）。 */}
+      {status &&
+        status.running &&
+        (status.ipChanged ||
+          status.remoteReachable === false ||
+          (status.multiDeviceMode && status.authFailureSources > 0)) &&
+        activeTab !== "connect" && (
         <div className="shrink-0 px-5 pt-2">
           <ActionCard
             tone="destructive"
-            title="远程连接中断"
+            title={status.multiDeviceMode && !status.ipChanged && status.authFailureSources > 0 ? "远程 AI 工具鉴权失败" : "远程连接中断"}
             summary={
               status.ipChanged
                 ? "连接地址已失效，远程 AI 工具已断开，请重选地址。"
-                : "本机服务在运行，但远程连不回，请检查本机网络。"
+                : status.multiDeviceMode && status.authFailureSources > 0
+                  ? "检测到有连接在用失效的令牌访问本机服务——通常是另一台设备重新生成令牌后，远端配置还没更新。重新执行本机的接入命令即可带上新令牌。"
+                  : status.multiDeviceMode
+                    ? "本机服务在运行，但远程连不回。多设备模式下，这可能是另一台设备完成了接入（远端配置已指向它）——若要用本机，请在远端重新执行本机的接入命令。"
+                    : "本机服务在运行，但远程连不回，请检查本机网络。"
             }
           >
             {/* IP 变化分支直接给「复制命令」（托盘同款 Rust 生成）——不用回连接页、
-                即使连接页 banner 被关掉这里也拿得到。远程不可达分支无命令可给，只导航。 */}
-            {status.ipChanged && (
+                即使连接页 banner 被关掉这里也拿得到。多设备模式的远程不可达分支给
+                「复制本机接入命令」（多设备模式下 Rust 产物即条目级命令，在远端重跑
+                即可把条目指回本机）；关闭模式维持原状：远程不可达无命令可给，只导航。 */}
+            {(status.ipChanged || status.multiDeviceMode) && (
               <Button variant="outline" size="sm" className="h-6 px-2.5 text-xs" onClick={() => void copyIpSed()}>
-                复制命令
+                {status.ipChanged ? "复制命令" : "复制本机接入命令"}
               </Button>
             )}
             <Button variant="outline" size="sm" className="h-6 px-2.5 text-xs" onClick={() => handleNavigate("connect")}>

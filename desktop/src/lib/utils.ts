@@ -158,9 +158,38 @@ export function buildHealthCheck(displayHost: string, port: number, tls = false)
 }
 
 /**
+ * 多设备模式（opt-in）的接入/更新命令：条目级 remove+add，幂等可重跑。
+ * 条目名 cc-bridge-<deviceId> → 两台机器的条目在远端配置中并存、互不覆盖，
+ * 把「互踢」（sed 按 URL 全局替换、后写者赢）变成「并存 + 显式切换」。
+ * 固定 user 作用域（project 级跟随目录走，天然按机器隔离）。deviceId 为空返回空串。
+ * 🔴 与 Rust `network.rs build_multi_device_command` 逐字一致——双端各生成一份，
+ * 改一处必须同步另一处（同 buildIpSedCommand 的既有约定）。
+ */
+export function buildMultiDeviceCommand(
+  displayHost: string,
+  port: number,
+  token: string,
+  transport: string = "http",
+  tls = false,
+  deviceId = "",
+): string {
+  if (!deviceId) return "";
+  const suffix = transport === "sse" ? "/mcp/sse" : "/mcp";
+  const scheme = tls ? "https" : "http";
+  const entry = `cc-bridge-${deviceId}`;
+  return `claude mcp remove ${entry} 2>/dev/null\nclaude mcp add ${entry} -s user --transport ${transport} --header "Authorization: Bearer ${token}" ${scheme}://${displayHost}:${port}${suffix}`;
+}
+
+/**
  * 网络地址变化后「原地更新 IP」的远程 sed 命令（P2 TLS 感知版，IpChangedBanner 消费）。
  * 匹配段用 `https\?://` 同时覆盖 http/https 两种旧值（切换 TLS 协议后也能原地修）；
  * 替换段按当前 TLS 状态生成目标 scheme。不动 Bearer、不 remove+add，幂等可重跑。
+ *
+ * 多设备模式（opt-in，批3-2）：deviceId 非空且 client 为 codex/workbuddy 时升级为
+ * **条目锚定 scoped sed**——地址范围把替换收窄到单个条目块内，远端同文件里其它
+ * 设备的条目不再被殃及（互踢根因）。Claude Code 不走这里（它有条目级 CLI，见
+ * buildMultiDeviceCommand）；generic 无约定路径仍返回空串。
+ * 🔴 与 Rust `network.rs build_scoped_sed_command` 逐字一致（双端各一份，改一处必须同步）。
  */
 export function buildIpSedCommand(
   selectedIp: string,
@@ -169,6 +198,8 @@ export function buildIpSedCommand(
   projectPath: string,
   tls = false,
   client: McpClientTool = "claude-code",
+  /** 多设备身份尾号（4 位 hex）。空 = 单设备，走原全局 sed（兼容性契约）。 */
+  deviceId = "",
 ): string {
   if (!selectedIp) return "";
   // 配置文件按接入工具分流：WorkBuddy / Codex 的 url 也都是文本，同一条 sed 适用（无需重装 client）。
@@ -190,7 +221,18 @@ export function buildIpSedCommand(
       ? `cd "${projectPath.trim()}" && `
       : "";
   const target = `${tls ? "https" : "http"}://${selectedIp}:${port}/mcp`;
-  return `${cdPrefix}sed -i 's#https\\?://[0-9.]*:${port}/mcp#${target}#g' ${cfgFile}`;
+  const sub = `s#https\\?://[0-9.]*:${port}/mcp#${target}#g`;
+  // 多设备 scoped：codex 用 TOML 段头行锚点（规范保证）；workbuddy 用 JSON 条目键 +
+  // "Authorization" 行锚点（依赖 url 先于 headers 的规范序列化顺序）。范围失配 =
+  // sed 无匹配 = 什么都不改（良性失败，不会改坏相邻条目）。
+  if (deviceId && (client === "codex" || client === "workbuddy")) {
+    const range =
+      client === "codex"
+        ? `/^\\[mcp_servers\\.cc-bridge-${deviceId}\\]/,/^\\[/`
+        : `/"cc-bridge-${deviceId}": \\{/,/"Authorization"/`;
+    return `sed -i '${range} ${sub}' ${cfgFile}`;
+  }
+  return `${cdPrefix}sed -i '${sub}' ${cfgFile}`;
 }
 
 /** 网络地址友好提示：帮助用户判断远程服务器该选哪个 IP 连回本机。ConnectTab 与引导向导共用。 */

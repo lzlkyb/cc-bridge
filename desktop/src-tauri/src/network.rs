@@ -94,6 +94,23 @@ pub struct ConnectTarget<'a> {
     pub lan_ips: &'a [String],
     /// 用户上次确认的 IP（多网卡场景）。
     pub selected_ip: Option<&'a str>,
+    /// 多设备模式开关（opt-in，批3-2）。true 且 device_id 非空时，WorkBuddy/Codex 的
+    /// **手动接入片段**条目名带尾号（cc-bridge-<id>，与其它设备并存互不覆盖）。
+    /// claude-code 不消费这两个字段——多设备 CLI 命令由调用方直接走
+    /// `build_multi_device_command` 分流，此处 claude 分支保持单设备形态。
+    pub multi_device: bool,
+    /// 本机设备身份尾号（4 位 hex；空 = 单设备/未生成，条目名维持 cc-bridge）。
+    pub device_id: &'a str,
+}
+
+/// 多设备条目名（单一拼装点）：尾号非空 → `cc-bridge-<id>`，空 → `cc-bridge`。
+/// 🔴 前端 `lib/mcpClients.ts` 片段条目名与此语义一致（双端各一份，改一处同步另一处）。
+fn entry_name(device_id: &str) -> String {
+    if device_id.is_empty() {
+        "cc-bridge".to_string()
+    } else {
+        format!("cc-bridge-{device_id}")
+    }
 }
 
 pub fn build_connect_command(t: ConnectTarget<'_>) -> String {
@@ -109,9 +126,10 @@ pub fn build_connect_command(t: ConnectTarget<'_>) -> String {
 
     match t.client {
         "workbuddy" => {
+            let entry = entry_name(if t.multi_device { t.device_id } else { "" });
             let snippet = serde_json::json!({
                 "mcpServers": {
-                    "cc-bridge": {
+                    (entry): {
                         "url": url,
                         "headers": { "Authorization": format!("Bearer {token}") }
                     }
@@ -122,9 +140,12 @@ pub fn build_connect_command(t: ConnectTarget<'_>) -> String {
                 serde_json::to_string_pretty(&snippet).unwrap_or_default()
             )
         }
-        "codex" => format!(
-            "# 写入 ~/.codex/config.toml（保存后重启 Codex）\n[mcp_servers.cc-bridge]\nurl = \"{url}\"\nhttp_headers = {{ Authorization = \"Bearer {token}\" }}"
-        ),
+        "codex" => {
+            let entry = entry_name(if t.multi_device { t.device_id } else { "" });
+            format!(
+                "# 写入 ~/.codex/config.toml（保存后重启 Codex）\n[mcp_servers.{entry}]\nurl = \"{url}\"\nhttp_headers = {{ Authorization = \"Bearer {token}\" }}"
+            )
+        }
         // 通用工具没有约定的配置载体，给「事实清单」而不是假装这是一条命令。
         "generic" => format!("URL: {url}\nHeader: Authorization: Bearer {token}"),
         // 默认（含 None / 未知值）：Claude Code 的 CLI 命令。
@@ -183,41 +204,157 @@ pub fn build_ip_sed_command(
     )
 }
 
-/// 当前配置 → 「原地替换 IP」的 sed 命令 + 作用域标签（展示给用户的后缀说明）。
-///
-/// 托盘「复制IP替换命令」与 `get_ip_sed_command` 命令共用这里（2026-10-17 单一真源化）：
-/// 此前 sed 生成走本函数、但「读 config 七字段 + 标签文案」那层是托盘内联的，
-/// 前端全局入口要复用就得抄一遍 → 抽出来。
-/// `cmd` 为空 = 通用 MCP 工具无约定路径，调用方给「手动更新」提示而不是复制空串。
-pub fn ip_sed_for(
-    host: &str,
+/// 多设备模式（opt-in）的接入/更新命令：条目级 remove + add，**幂等可重跑**。
+/// 条目名 `cc-bridge-<device_id>` —— 两台机器生成的条目名不同，在远端配置中
+/// 并存、互不覆盖，把「互踢」（sed 按 URL 全局替换的后写者赢）变成
+/// 「并存 + 显式切换」。仅 user 作用域：多设备语义建立在全局条目上，
+/// project 级配置跟随目录走、天然按机器隔离，没有互踢问题。
+/// token 为明文内联——与单设备 `claude mcp add` 的既有形态一致。
+/// 🔴 前端 `lib/utils.ts buildMultiDeviceCommand` 与此逐字一致（双端各生成一份，
+/// 改一处必须同步另一处，同 buildIpSedCommand 的既有约定）。
+pub fn build_multi_device_command(
     port: u16,
-    last_selected_ip: Option<&str>,
-    scope: Option<&str>,
-    project_path: Option<&str>,
+    display_host: &str,
+    token: &str,
+    transport: &str,
+    tls: bool,
+    device_id: &str,
+) -> String {
+    if device_id.is_empty() {
+        return String::new();
+    }
+    let url_suffix = if transport == "sse" {
+        "/mcp/sse"
+    } else {
+        "/mcp"
+    };
+    let scheme = if tls { "https" } else { "http" };
+    let entry = format!("cc-bridge-{device_id}");
+    format!(
+        "claude mcp remove {entry} 2>/dev/null\nclaude mcp add {entry} -s user --transport {transport} --header \"Authorization: Bearer {token}\" {scheme}://{display_host}:{port}{url_suffix}"
+    )
+}
+
+/// 条目锚定的 scoped sed（批3-2）：把「URL 全局替换」收窄到**单个条目块内**。
+///
+/// 为什么需要：多设备模式下远端配置可能同时存在 cc-bridge-<甲> 与 cc-bridge-<乙>
+/// 两个条目（共用同一份配置的远程机/共享目录场景），原有 sed 按 URL 全局替换会
+/// 把两台的条目一起改写——正是「互踢」的根因。scoped sed 用地址范围限定：
+/// - Codex（TOML）：从 `[mcp_servers.cc-bridge-<id>]` 段头到下一个段头——段头
+///   行首 `[` 是 TOML 规范保证的行锚点，最可靠；
+/// - WorkBuddy（JSON）：从条目键行到 `"Authorization"` 行——依赖条目内 url 先于
+///   headers 的规范序列化顺序（双端生成器都是这个顺序）。用户手工改乱格式时
+///   范围失配 → **sed 无匹配 = 什么都不改**，失败是良性的（IP 没修上，横幅还在），
+///   不会像全局替换那样改坏相邻条目。
+///
+/// 替换段与 `build_ip_sed_command` 逐字同款（`https\?` 双协议匹配 + 按当前 TLS 出目标）。
+/// 🔴 前端 `lib/utils.ts buildIpSedCommand` 的多设备分支与此逐字一致。
+pub fn build_scoped_sed_command(
+    port: u16,
+    display_host: &str,
     tls: bool,
     client: &str,
-) -> (String, String) {
+    device_id: &str,
+) -> String {
+    if device_id.is_empty() {
+        return String::new();
+    }
+    let cfg_file = match client {
+        "workbuddy" => "~/.workbuddy/mcp.json",
+        "codex" => "~/.codex/config.toml",
+        _ => return String::new(),
+    };
+    let entry = entry_name(device_id);
+    let range = match client {
+        "codex" => format!("/^\\[mcp_servers\\.{entry}\\]/,/^\\[/"),
+        _ => format!("/\"{entry}\": \\{{/,/\"Authorization\"/"),
+    };
+    let scheme = if tls { "https" } else { "http" };
+    format!(
+        "sed -i '{range} s#https\\?://[0-9.]*:{port}/mcp#{scheme}://{display_host}:{port}/mcp#g' {cfg_file}"
+    )
+}
+
+/// 当前配置 → 「原地更新接入」的命令 + 作用域标签（展示给用户的后缀说明）。
+///
+/// 托盘「复制IP替换命令」与 `get_ip_sed_command` 命令共用这里（单一真源）。
+/// `cmd` 为空 = 通用 MCP 工具无约定路径，调用方给「手动更新」提示而不是复制空串。
+///
+/// 多设备模式（opt-in，仅 claude-code）：产物从 sed（URL 全局替换会改写双条目）
+/// 换成条目级 remove+add；标签同步换「多设备模式 · 条目 cc-bridge-<id>」。
+/// 关闭时走原 sed 路径，逐字与旧版一致。
+pub struct IpUpdateTarget<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub token: &'a str,
+    /// `"http"` | `"sse"`（多设备命令的 --transport 参数与 URL 后缀）。
+    pub transport: &'a str,
+    pub last_selected_ip: Option<&'a str>,
+    pub scope: Option<&'a str>,
+    pub project_path: Option<&'a str>,
+    pub tls: bool,
+    pub client: &'a str,
+    /// 多设备模式开关（opt-in）。true 且 device_id 非空时：claude-code 换条目级
+    /// remove+add；codex/workbuddy 换条目锚定 scoped sed；generic 维持原路径。
+    pub multi_device: bool,
+    pub device_id: &'a str,
+}
+
+pub fn ip_update_command(t: IpUpdateTarget<'_>) -> (String, String) {
     let lan_ips = get_lan_ips();
-    let display_host = resolve_display_host(host, &lan_ips, last_selected_ip);
-    let scope_str = scope.unwrap_or("user");
-    let project_path_owned = project_path.map(str::to_string);
+    let display_host = resolve_display_host(t.host, &lan_ips, t.last_selected_ip);
+    if t.multi_device && !t.device_id.is_empty() {
+        match t.client {
+            "claude-code" => {
+                let cmd = build_multi_device_command(
+                    t.port,
+                    &display_host,
+                    t.token,
+                    t.transport,
+                    t.tls,
+                    t.device_id,
+                );
+                let label = if cmd.is_empty() {
+                    String::new()
+                } else {
+                    format!("多设备模式 · 条目 cc-bridge-{}", t.device_id)
+                };
+                return (cmd, label);
+            }
+            // 批3-2：Codex/WorkBuddy 没有可靠的条目级 CLI（Codex CLI 令牌只能走环境
+            // 变量、WorkBuddy CLI 写入路径与品牌路径分歧），IP 修复用条目锚定 scoped
+            // sed——与 claude-code 的 CLI 形态同缺一不可的「只动自己条目」性质。
+            "codex" | "workbuddy" => {
+                let cmd =
+                    build_scoped_sed_command(t.port, &display_host, t.tls, t.client, t.device_id);
+                let label = if cmd.is_empty() {
+                    String::new()
+                } else {
+                    format!("多设备模式 · 条目 cc-bridge-{}", t.device_id)
+                };
+                return (cmd, label);
+            }
+            _ => {}
+        }
+    }
+    let scope_str = t.scope.unwrap_or("user");
+    let project_path_owned = t.project_path.map(str::to_string);
     let cmd = build_ip_sed_command(
-        port,
+        t.port,
         &display_host,
         scope_str,
         &project_path_owned,
-        tls,
-        client,
+        t.tls,
+        t.client,
     );
     // 目标文件随客户端而变（Claude Code 两档作用域 / WorkBuddy / Codex）。
-    let scope_label = match client {
+    let scope_label = match t.client {
         "workbuddy" => "WorkBuddy ~/.workbuddy/mcp.json".to_string(),
         "codex" => "Codex ~/.codex/config.toml".to_string(),
         "generic" => String::new(),
         _ => {
             if scope_str == "project" {
-                if project_path.map(str::trim).unwrap_or("").is_empty() {
+                if t.project_path.map(str::trim).unwrap_or("").is_empty() {
                     "项目级 .mcp.json（请在项目目录下执行）".to_string()
                 } else {
                     "项目级 .mcp.json".to_string()
@@ -320,36 +457,312 @@ mod tests {
     #[test]
     fn ip_sed_for_labels() {
         // 标签文案是展示层合同的一部分，跟命令一起随客户端/作用域变。
-        let (_, label) = ip_sed_for("127.0.0.1", 7823, None, None, None, false, "claude-code");
+        let (_, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "t",
+            transport: "http",
+            last_selected_ip: None,
+            scope: None,
+            project_path: None,
+            tls: false,
+            client: "claude-code",
+            multi_device: false,
+            device_id: "",
+        });
         assert_eq!(label, "用户级 ~/.claude.json");
 
-        let (_, label) = ip_sed_for(
-            "127.0.0.1",
-            7823,
-            None,
-            Some("project"),
-            Some("  "), // 空白路径视同无路径
-            false,
-            "claude-code",
-        );
+        let (_, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "t",
+            transport: "http",
+            last_selected_ip: None,
+            scope: Some("project"),
+            project_path: Some("  "), // 空白路径视同无路径
+            tls: false,
+            client: "claude-code",
+            multi_device: false,
+            device_id: "",
+        });
         assert_eq!(label, "项目级 .mcp.json（请在项目目录下执行）");
 
-        let (_, label) = ip_sed_for(
-            "127.0.0.1",
-            7823,
-            None,
-            Some("project"),
-            Some("D:/proj"),
-            false,
-            "claude-code",
-        );
+        let (_, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "t",
+            transport: "http",
+            last_selected_ip: None,
+            scope: Some("project"),
+            project_path: Some("D:/proj"),
+            tls: false,
+            client: "claude-code",
+            multi_device: false,
+            device_id: "",
+        });
         assert_eq!(label, "项目级 .mcp.json");
 
-        let (_, label) = ip_sed_for("127.0.0.1", 7823, None, None, None, false, "workbuddy");
+        let (_, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "t",
+            transport: "http",
+            last_selected_ip: None,
+            scope: None,
+            project_path: None,
+            tls: false,
+            client: "workbuddy",
+            multi_device: false,
+            device_id: "",
+        });
         assert_eq!(label, "WorkBuddy ~/.workbuddy/mcp.json");
 
-        let (cmd, label) = ip_sed_for("127.0.0.1", 7823, None, None, None, false, "generic");
+        let (cmd, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "t",
+            transport: "http",
+            last_selected_ip: None,
+            scope: None,
+            project_path: None,
+            tls: false,
+            client: "generic",
+            multi_device: false,
+            device_id: "",
+        });
         assert_eq!(cmd, "");
         assert_eq!(label, "");
+    }
+
+    /// 多设备模式（opt-in）命令形态：条目级 remove+add，标签带条目名。
+    #[test]
+    fn multi_device_update_command() {
+        let (cmd, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "tok",
+            transport: "http",
+            last_selected_ip: None,
+            scope: Some("project"), // 多设备模式忽略 scope，固定 user 级
+            project_path: Some("/d/proj"),
+            tls: false,
+            client: "claude-code",
+            multi_device: true,
+            device_id: "a3f2",
+        });
+        assert!(
+            cmd.starts_with("claude mcp remove cc-bridge-a3f2 2>/dev/null\nclaude mcp add cc-bridge-a3f2 -s user --transport http"),
+            "应为条目级 remove+add 且固定 user 级：{cmd}"
+        );
+        // 展示 IP 由 resolve_display_host 依真实网卡回退，测试机相关——只断言端口/路径结构。
+        assert!(cmd.contains(":7823/mcp"), "URL 应含端口与 /mcp：{cmd}");
+        assert!(cmd.contains("Bearer tok"), "token 应内联");
+        assert!(
+            !cmd.contains("sed -i"),
+            "多设备模式不应再出 sed（会全局改写双条目）"
+        );
+        assert_eq!(label, "多设备模式 · 条目 cc-bridge-a3f2");
+    }
+
+    /// 兼容性契约：开关关闭时产物与旧版逐字一致（同入参走 sed 路径）。
+    #[test]
+    fn multi_device_off_keeps_sed() {
+        let (cmd, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "tok",
+            transport: "http",
+            last_selected_ip: None,
+            scope: None,
+            project_path: None,
+            tls: false,
+            client: "claude-code",
+            multi_device: false,
+            device_id: "a3f2",
+        });
+        assert!(cmd.starts_with("sed -i "), "关闭时必须仍是 sed：{cmd}");
+        assert!(!cmd.contains("claude mcp"), "关闭时不得混入条目级命令");
+        assert_eq!(label, "用户级 ~/.claude.json");
+    }
+
+    /// 开关开启但 device_id 尚未生成（遗留配置异常态）：回退原 sed 路径而不是出坏命令。
+    /// 批3 起与前端 IpChangedBanner 的 fallback 语义对齐（此前 Rust 返空串、前端回退
+    /// sed，双端不一致）——sed 对本机永远是正确的单设备命令，比空串有用。
+    #[test]
+    fn multi_device_without_device_id_falls_back_to_sed() {
+        let (cmd, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "tok",
+            transport: "http",
+            last_selected_ip: None,
+            scope: None,
+            project_path: None,
+            tls: false,
+            client: "claude-code",
+            multi_device: true,
+            device_id: "",
+        });
+        assert!(cmd.starts_with("sed -i "), "device_id 缺失应回退 sed：{cmd}");
+        assert!(!cmd.contains("claude mcp"), "不得出半截条目级命令：{cmd}");
+        assert_eq!(label, "用户级 ~/.claude.json");
+    }
+
+    /// 多设备命令的 SSE/TLS 形态：URL 后缀与 --transport 跟随，scheme 跟随 TLS。
+    #[test]
+    fn multi_device_sse_tls_variants() {
+        let sse = build_multi_device_command(7823, "10.0.0.5", "tok", "sse", false, "b7c1");
+        assert!(sse.contains("--transport sse"), "{sse}");
+        assert!(sse.contains("http://10.0.0.5:7823/mcp/sse"), "{sse}");
+        let tls = build_multi_device_command(7823, "10.0.0.5", "tok", "http", true, "b7c1");
+        assert!(tls.contains("https://10.0.0.5:7823/mcp"), "{tls}");
+    }
+
+    /// 批3-2：多设备模式下 Codex 的 IP 修复 = 条目锚定 scoped sed（TOML 段头行锚点）。
+    #[test]
+    fn multi_device_scoped_sed_codex() {
+        let (cmd, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "tok",
+            transport: "http",
+            last_selected_ip: None,
+            scope: None,
+            project_path: None,
+            tls: false,
+            client: "codex",
+            multi_device: true,
+            device_id: "a3f2",
+        });
+        // 地址范围：从本条目段头到下一个段头（TOML 规范保证段头行首 [）。
+        assert!(
+            cmd.starts_with(
+                "sed -i '/^\\[mcp_servers\\.cc-bridge-a3f2\\]/,/^\\[/ s#https\\?://[0-9.]*:7823/mcp#"
+            ),
+            "应为条目锚定的 scoped sed：{cmd}"
+        );
+        assert!(cmd.ends_with("' ~/.codex/config.toml"), "目标文件：{cmd}");
+        assert!(!cmd.contains("sed -i 's#"), "不得退回全局替换形态：{cmd}");
+        assert_eq!(label, "多设备模式 · 条目 cc-bridge-a3f2");
+    }
+
+    /// 批3-2：多设备模式下 WorkBuddy 的 IP 修复 = JSON 条目键锚定的 scoped sed。
+    #[test]
+    fn multi_device_scoped_sed_workbuddy() {
+        let (cmd, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "tok",
+            transport: "http",
+            last_selected_ip: None,
+            scope: None,
+            project_path: None,
+            tls: true,
+            client: "workbuddy",
+            multi_device: true,
+            device_id: "b7c1",
+        });
+        assert!(
+            cmd.starts_with("sed -i '/\"cc-bridge-b7c1\": \\{/,/\"Authorization\"/ s#"),
+            "应为 JSON 条目键锚定：{cmd}"
+        );
+        assert!(
+            cmd.contains("#https://"),
+            "TLS 开启时替换段应为 https：{cmd}"
+        );
+        assert!(cmd.ends_with("' ~/.workbuddy/mcp.json"), "目标文件：{cmd}");
+        assert_eq!(label, "多设备模式 · 条目 cc-bridge-b7c1");
+    }
+
+    /// 批3-2：多设备但 device_id 为空（异常态）→ codex/workbuddy 退回原 sed，不出坏范围。
+    #[test]
+    fn multi_device_scoped_sed_without_device_id_falls_back() {
+        let (cmd, label) = ip_update_command(IpUpdateTarget {
+            host: "127.0.0.1",
+            port: 7823,
+            token: "tok",
+            transport: "http",
+            last_selected_ip: None,
+            scope: None,
+            project_path: None,
+            tls: false,
+            client: "codex",
+            multi_device: true,
+            device_id: "",
+        });
+        assert!(cmd.starts_with("sed -i 's#"), "应退回全局 sed：{cmd}");
+        assert_eq!(label, "Codex ~/.codex/config.toml");
+    }
+
+    /// 批3-2：多设备模式下接入片段的条目名带尾号（WorkBuddy JSON / Codex TOML）。
+    #[test]
+    fn connect_snippet_entry_suffix_in_multi_device() {
+        let lan = vec!["192.168.1.100".to_string()];
+        let wb = build_connect_command(ConnectTarget {
+            host: "0.0.0.0",
+            port: 7823,
+            token: "tok",
+            transport: "http",
+            tls: false,
+            client: "workbuddy",
+            lan_ips: &lan,
+            selected_ip: None,
+            multi_device: true,
+            device_id: "a3f2",
+        });
+        assert!(
+            wb.contains("\"cc-bridge-a3f2\""),
+            "WorkBuddy 条目名应带尾号：{wb}"
+        );
+        assert!(!wb.contains("\"cc-bridge\""), "不得残留无尾号条目名：{wb}");
+
+        let cx = build_connect_command(ConnectTarget {
+            host: "0.0.0.0",
+            port: 7823,
+            token: "tok",
+            transport: "http",
+            tls: false,
+            client: "codex",
+            lan_ips: &lan,
+            selected_ip: None,
+            multi_device: true,
+            device_id: "a3f2",
+        });
+        assert!(
+            cx.contains("[mcp_servers.cc-bridge-a3f2]"),
+            "Codex 段头应带尾号：{cx}"
+        );
+
+        // 兼容性契约：开关关闭（或 device_id 空）→ 条目名维持 cc-bridge，逐字与旧版一致。
+        let off = build_connect_command(ConnectTarget {
+            host: "0.0.0.0",
+            port: 7823,
+            token: "tok",
+            transport: "http",
+            tls: false,
+            client: "workbuddy",
+            lan_ips: &lan,
+            selected_ip: None,
+            multi_device: false,
+            device_id: "a3f2",
+        });
+        assert!(
+            off.contains("\"cc-bridge\""),
+            "关闭时条目名必须保持 cc-bridge：{off}"
+        );
+    }
+
+    /// 批3-2：scoped sed 的裸函数边界——device_id 空/未知客户端返回空串。
+    #[test]
+    fn scoped_sed_edge_cases() {
+        assert_eq!(
+            build_scoped_sed_command(7823, "10.0.0.5", false, "codex", ""),
+            ""
+        );
+        assert_eq!(
+            build_scoped_sed_command(7823, "10.0.0.5", false, "claude-code", "a3f2"),
+            "",
+            "claude-code 不走 scoped sed（它有条目级 CLI）"
+        );
     }
 }

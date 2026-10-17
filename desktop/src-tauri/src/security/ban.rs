@@ -109,6 +109,22 @@ impl BanRegistry {
             .filter(|e| e.banned_until.is_some_and(|u| now < u))
             .count()
     }
+
+    /// 近期（`within` 内仍有失败记录的）鉴权失败来源 IP 列表（只读快照）。
+    ///
+    /// 批3-1 多设备「令牌失效」证据：远端 AI 工具带着旧令牌连接时，每次请求都会
+    /// 走 `record_failure`（401 记账带 `last_fail` 时间戳），且成功后 `record_success`
+    /// 会清掉记录——所以「窗口内仍有失败记录」天然等价于「问题还没解决」，无需额外状态。
+    /// 消费方（get_status）自己决定窗口与展示；封禁开关关闭时（127.0.0.1 绑定）
+    /// `record_failure` 本就不记账，这里恒为空，前端自动退回启发式文案。
+    pub fn recent_failure_ips(&self, within: Duration) -> Vec<IpAddr> {
+        let now = Instant::now();
+        self.inner
+            .iter()
+            .filter(|e| now.duration_since(e.last_fail) <= within)
+            .map(|e| *e.key())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +226,33 @@ mod tests {
         }
         assert!(!b.check(a));
         assert!(b.check(c), "封禁必须按 IP 隔离");
+    }
+
+    /// 批3-1：近期失败来源查询——多设备「令牌失效」证据的数据源语义。
+    #[test]
+    fn recent_failure_ips_window_and_success_clear() {
+        let b = reg();
+        let ip: IpAddr = "203.0.113.15".parse().unwrap();
+        assert!(b.recent_failure_ips(Duration::from_secs(60)).is_empty());
+
+        b.record_failure(ip);
+        let recent = b.recent_failure_ips(Duration::from_secs(60));
+        assert_eq!(recent, vec![ip], "窗口内的失败来源应被列出");
+
+        // 窗口为 0：任何已流逝的时间都超出窗口 → 过滤生效（时间推进不可注入，用零窗口代替）。
+        assert!(b.recent_failure_ips(Duration::ZERO).is_empty());
+
+        // 认证成功清记录 → 证据消失（问题已解决，不应再展示「令牌失效」）。
+        b.record_success(ip);
+        assert!(b.recent_failure_ips(Duration::from_secs(60)).is_empty());
+    }
+
+    /// 封禁开关关闭时（127.0.0.1 绑定场景）不记账 → 证据恒空，前端退回启发式文案。
+    #[test]
+    fn recent_failure_ips_empty_when_disabled() {
+        let b = BanRegistry::new(false, 1, 1);
+        let ip: IpAddr = "203.0.113.16".parse().unwrap();
+        b.record_failure(ip);
+        assert!(b.recent_failure_ips(Duration::from_secs(60)).is_empty());
     }
 }

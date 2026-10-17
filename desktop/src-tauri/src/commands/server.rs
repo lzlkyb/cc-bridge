@@ -153,22 +153,27 @@ pub struct IpSedCommandResult {
     pub scope_label: String,
 }
 
-/// 原地替换 IP 的 sed 命令（2026-10-17）：托盘「复制IP替换命令」的同源只读版，
-/// 生成逻辑单一真源在 `network::ip_sed_for`。供前端任意页入口（S3 横幅 / 命令面板）
-/// 复用——两处此前只能让托盘能复制，关掉 banner 后用户无处拿命令。
+/// 原地更新接入的命令（2026-10-17）：托盘「复制IP替换命令」的同源只读版，
+/// 生成逻辑单一真源在 `network::ip_update_command`。供前端任意页入口（S3 横幅 /
+/// 命令面板）复用——两处此前只能让托盘能复制，关掉 banner 后用户无处拿命令。
+/// 多设备模式（opt-in）开启时产物自动换条目级命令（同一真源内分流）。
 #[tauri::command]
 pub async fn get_ip_sed_command(
     state: State<'_, Arc<AppState>>,
 ) -> Result<IpSedCommandResult, String> {
     let cfg = state.config.read().await;
-    let (cmd, scope_label) = crate::network::ip_sed_for(
-        &cfg.host,
-        cfg.port,
-        cfg.last_selected_ip.as_deref(),
-        cfg.scope.as_deref(),
-        cfg.project_path.as_deref(),
-        cfg.remote_tls_enabled,
-        cfg.connect_client.as_deref().unwrap_or("claude-code"),
-    );
+    let (cmd, scope_label) = crate::network::ip_update_command(crate::network::IpUpdateTarget {
+        host: &cfg.host,
+        port: cfg.port,
+        token: &cfg.token,
+        transport: &cfg.transport,
+        last_selected_ip: cfg.last_selected_ip.as_deref(),
+        scope: cfg.scope.as_deref(),
+        project_path: cfg.project_path.as_deref(),
+        tls: cfg.remote_tls_enabled,
+        client: cfg.connect_client.as_deref().unwrap_or("claude-code"),
+        multi_device: cfg.multi_device_mode,
+        device_id: &cfg.device_id,
+    });
     Ok(IpSedCommandResult { cmd, scope_label })
 }

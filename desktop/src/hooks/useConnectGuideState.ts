@@ -9,6 +9,7 @@ import {
   buildConnectCommand,
   buildHealthCheck,
   buildPermissionGrantCommand,
+  buildMultiDeviceCommand,
 } from "../lib/utils";
 import { useCopyFeedback } from "./useCopyFeedback";
 
@@ -106,9 +107,14 @@ export function useConnectGuideState(status: StaticStatus | undefined, selectedI
     [displayHost, port, token, status?.transport, tlsEnabled],
   );
 
+  // 多设备模式（opt-in）且 Claude Code：连接命令换条目级 remove+add（可并存），
+  // 固定 user 作用域（忽略下方 scope 选择）；其余客户端/关闭模式走原路径（兼容性契约）。
   const connectCommand = useMemo(
-    () => buildConnectCommand(baseCommand, scope),
-    [baseCommand, scope],
+    () =>
+      status?.multiDeviceMode && (status?.connectClient ?? "claude-code") === "claude-code"
+        ? buildMultiDeviceCommand(displayHost, port, token, status?.transport, tlsEnabled, status?.deviceId)
+        : buildConnectCommand(baseCommand, scope),
+    [baseCommand, scope, status?.multiDeviceMode, status?.connectClient, status?.deviceId, displayHost, port, token, status?.transport, tlsEnabled],
   );
 
   const healthCheck = useMemo(

@@ -161,6 +161,23 @@ pub struct StatusResponse {
     /// `navigator.userAgent` 可靠，也不用为此引入 `@tauri-apps/plugin-os` 依赖。
     /// 前端据此隐藏 Windows 专属 UI（防火墙卡片/告警）与切换快捷键标签（⌘ / Ctrl）。
     pub platform: String,
+    /// 本机设备身份尾号（4 位 hex，首启后端生成持久化）。多设备模式的主键；
+    /// 多设备模式关闭时前端不得呈现（兼容性契约）。
+    #[serde(rename = "deviceId")]
+    pub device_id: String,
+    /// 本机机器名（COMPUTERNAME/HOSTNAME 兜底）。多设备模式身份卡展示用。
+    #[serde(rename = "deviceName")]
+    pub device_name: String,
+    /// 多设备接入模式开关（opt-in，默认关）。关闭时前端不渲染任何多设备 UI，
+    /// 接入命令保持既有形态——与引入前逐字一致。
+    #[serde(rename = "multiDeviceMode")]
+    pub multi_device_mode: bool,
+    /// 近期鉴权失败来源数（批3-1）：封禁窗口内仍有 401 失败记录的来源 IP 数。
+    /// 多设备模式「令牌失效」的证据信号——远端 AI 工具带旧令牌连接时每次请求都
+    /// 记账、认证成功即清除，窗口内非空 ≈ 问题仍在。封禁关闭（127.0.0.1 绑定）时
+    /// 不记账恒为 0；多设备模式关闭时前端不得消费（兼容性契约）。
+    #[serde(rename = "authFailureSources")]
+    pub auth_failure_sources: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -314,16 +331,36 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         .connect_client
         .clone()
         .unwrap_or_else(|| "claude-code".into());
-    let connect_cmd = network::build_connect_command(network::ConnectTarget {
-        host: &config.host,
-        port: config.port,
-        token: &config.token,
-        transport: &config.transport,
-        tls: config.remote_tls_enabled,
-        client: &connect_client,
-        lan_ips: &lan_ips,
-        selected_ip: config.last_selected_ip.as_deref(),
-    });
+    // 多设备模式（opt-in）且 Claude Code：连接命令换条目级 remove+add（可并存）。
+    // 其余客户端保持原形态（WorkBuddy/Codex 的多设备条目化是后续工作）。
+    let connect_cmd = if config.multi_device_mode && connect_client == "claude-code" {
+        let display_host = network::resolve_display_host(
+            &config.host,
+            &lan_ips,
+            config.last_selected_ip.as_deref(),
+        );
+        network::build_multi_device_command(
+            config.port,
+            &display_host,
+            &config.token,
+            &config.transport,
+            config.remote_tls_enabled,
+            &config.device_id,
+        )
+    } else {
+        network::build_connect_command(network::ConnectTarget {
+            host: &config.host,
+            port: config.port,
+            token: &config.token,
+            transport: &config.transport,
+            tls: config.remote_tls_enabled,
+            client: &connect_client,
+            lan_ips: &lan_ips,
+            selected_ip: config.last_selected_ip.as_deref(),
+            multi_device: config.multi_device_mode,
+            device_id: &config.device_id,
+        })
+    };
 
     // ── 方案 A 运行卡实时指标聚合（全做真，无伪造）──
     let total = stats.total_requests;
@@ -464,5 +501,18 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         ssh_drag_select_enabled: config.ssh_drag_select_enabled,
         ssh_copy_on_select_enabled: config.ssh_copy_on_select_enabled,
         platform: std::env::consts::OS.to_string(),
+        device_id: config.device_id.clone(),
+        device_name: crate::config::device_hostname(),
+        multi_device_mode: config.multi_device_mode,
+        // 批3-1：多设备「令牌失效」证据。窗口对齐封禁窗口（remote_ban_window_min）——
+        // 失败记账的清零周期本就按它走，两个窗口用同一个值语义才自洽。纯内存读，
+        // BanRegistry 是 DashMap，与 config 读锁无交叉。
+        auth_failure_sources: {
+            let window_min = config.remote_ban_window_min.max(1) as u64;
+            state
+                .ban
+                .recent_failure_ips(Duration::from_secs(window_min * 60))
+                .len() as u32
+        },
     })
 }

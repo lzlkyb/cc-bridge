@@ -38,6 +38,8 @@ export function ToolGuide({
   tlsEnabled = false,
   defaultTool = "claude-code",
   onToolChange,
+  multiDevice = false,
+  deviceId = "",
   children,
 }: {
   host: string;
@@ -50,11 +52,22 @@ export function ToolGuide({
   defaultTool?: McpClientTool;
   /** 切换工具时上报——父层落盘 `connect_client`，托盘/横幅的命令形态随之改变。 */
   onToolChange?: (tool: McpClientTool) => void;
+  /** 多设备模式开关（opt-in）：开启时 WorkBuddy/Codex 手动片段条目名带本机尾号。 */
+  multiDevice?: boolean;
+  /** 本机身份尾号（多设备模式主键；空 = 单设备，片段条目名维持 cc-bridge）。 */
+  deviceId?: string;
   /** claude-code 现有向导内容（scope / steps / token / perm），仅该工具渲染。 */
   children: ReactNode;
 }) {
   const [tool, setTool] = useState<McpClientTool>(defaultTool);
-  const input: SnippetInput = { host, port, token, transport, tls: tlsEnabled };
+  const input: SnippetInput = {
+    host,
+    port,
+    token,
+    transport,
+    tls: tlsEnabled,
+    deviceId: multiDevice ? deviceId : undefined,
+  };
   /** 当前工具的自签兼容性条目（徽章行 + 信任步骤的唯一数据源）。 */
   const sel = CLIENT_SELFSIGNED[tool];
 

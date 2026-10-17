@@ -147,7 +147,7 @@ export function CommandPalette({
       group: "操作",
       run: runRegenerateToken,
       confirmTitle: "确定重新生成访问令牌？",
-      confirmDescription: "旧令牌立即失效，所有使用旧令牌连接的 AI 工具会需要重新配置。",
+      confirmDescription: status?.multiDeviceMode ? "旧令牌立即失效，所有使用旧令牌连接的 AI 工具会需要重新配置。如果你在另一台电脑也接入了同一个 AI 工具，那台机器的连接会一并断开，需要在那台机器上重新执行接入命令。" : "旧令牌立即失效，所有使用旧令牌连接的 AI 工具会需要重新配置。",
     },
     { id: "act-server", label: running ? "停止 MCP 服务" : "启动 MCP 服务", icon: running ? "pause" : "play", group: "操作", run: runToggleServer },
     { id: "act-restart", label: "重启 MCP 服务", icon: "refresh", group: "操作", run: runRestartServer },

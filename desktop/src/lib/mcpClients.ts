@@ -22,6 +22,13 @@ export interface SnippetInput {
   transport: "http" | "sse";
   /** P1 HTTPS 远程访问开关状态（get_tls_status.enabled）。 */
   tls: boolean;
+  /**
+   * 多设备模式（opt-in，批3-2）：本机身份尾号（4 位 hex）。
+   * 非空时 WorkBuddy/Codex 手动片段的条目名带尾号（cc-bridge-<id>，与其它设备
+   * 并存互不覆盖）；空/缺省 = 条目名维持 cc-bridge（兼容性契约，逐字与旧版一致）。
+   * 🔴 条目名拼装语义与 Rust `network::entry_name` 一致（双端各一份，改一处同步另一处）。
+   */
+  deviceId?: string;
 }
 
 /** MCP 端点 URL（SSE 传输带 /mcp/sse 后缀）。 */
@@ -209,6 +216,8 @@ export function buildClientSnippet(tool: McpClientTool, input: SnippetInput): Cl
   const url = buildMcpUrl(input);
   const headers = { Authorization: `Bearer ${input.token}` };
   const notes: string[] = [];
+  // 多设备条目名（批3-2）：尾号非空才带（语义对齐 Rust network::entry_name）。
+  const entry = input.deviceId ? `cc-bridge-${input.deviceId}` : "cc-bridge";
 
   switch (tool) {
     case "claude-code": {
@@ -223,7 +232,7 @@ export function buildClientSnippet(tool: McpClientTool, input: SnippetInput): Cl
       return {
         kind: "json",
         target: CLIENT_TARGETS[tool],
-        code: JSON.stringify({ mcpServers: { "cc-bridge": { url, headers } } }, null, 2),
+        code: JSON.stringify({ mcpServers: { [entry]: { url, headers } } }, null, 2),
         notes,
       };
     case "codex": {
@@ -236,7 +245,7 @@ export function buildClientSnippet(tool: McpClientTool, input: SnippetInput): Cl
       // Streamable HTTP 形态（url + http_headers）。旧版本若报不支持远程服务器，
       // 需在 config.toml 顶层加 experimental_use_rmcp_client = true。
       const toml = [
-        "[mcp_servers.cc-bridge]",
+        `[mcp_servers.${entry}]`,
         `url = "${url}"`,
         `http_headers = { Authorization = "Bearer ${input.token}" }`,
       ].join("\n");

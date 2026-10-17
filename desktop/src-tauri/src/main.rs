@@ -395,8 +395,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let db_conn = db::init_database(&data_dir)
                 .map_err(|e| std::io::Error::other(format!("初始化数据库失败：{e}")))?;
-            let bridge_config = config::load_config(&db_conn)
+            let mut bridge_config = config::load_config(&db_conn)
                 .map_err(|e| std::io::Error::other(format!("加载配置失败：{e}")))?;
+
+            // 多设备（P0）：device_id 首启静默生成落盘，此后幂等跳过。兼容性契约：
+            // 此步无任何 UI 呈现，multi_device_mode 关闭（默认）时行为与旧版逐字一致。
+            if bridge_config.device_id.is_empty() {
+                bridge_config.device_id = config::generate_device_id();
+                config::save_config_field(
+                    &db_conn,
+                    "device_id",
+                    &serde_json::to_value(&bridge_config.device_id).unwrap(),
+                )
+                .map_err(|e| std::io::Error::other(format!("写入设备标识失败：{e}")))?;
+                log::info!("已生成本机设备身份尾号：{}", bridge_config.device_id);
+            }
 
             // E-P2-4: 审计清理移到后台，避免大 audit.log 阻塞窗口显示
             {
@@ -570,7 +583,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let state = tray_state.clone();
                         let app_h = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            let (host, port, token, last_selected_ip, transport, tls, client) = {
+                            let (host, port, token, last_selected_ip, transport, tls, client, multi_device, device_id) = {
                                 let cfg = state.config.read().await;
                                 (
                                     cfg.host.clone(),
@@ -582,19 +595,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     cfg.connect_client
                                         .clone()
                                         .unwrap_or_else(|| "claude-code".into()),
+                                    cfg.multi_device_mode,
+                                    cfg.device_id.clone(),
                                 )
                             };
                             let lan_ips = network::get_lan_ips();
-                            let cmd = network::build_connect_command(network::ConnectTarget {
-                                host: &host,
-                                port,
-                                token: &token,
-                                transport: &transport,
-                                tls,
-                                client: &client,
-                                lan_ips: &lan_ips,
-                                selected_ip: last_selected_ip.as_deref(),
-                            });
+                            // 多设备模式（opt-in）且 Claude Code：换条目级命令（可并存，不再互踢）。
+                            let cmd = if multi_device && client == "claude-code" {
+                                let display_host = network::resolve_display_host(
+                                    &host,
+                                    &lan_ips,
+                                    last_selected_ip.as_deref(),
+                                );
+                                network::build_multi_device_command(
+                                    port,
+                                    &display_host,
+                                    &token,
+                                    &transport,
+                                    tls,
+                                    &device_id,
+                                )
+                            } else {
+                                network::build_connect_command(network::ConnectTarget {
+                                    host: &host,
+                                    port,
+                                    token: &token,
+                                    transport: &transport,
+                                    tls,
+                                    client: &client,
+                                    lan_ips: &lan_ips,
+                                    selected_ip: last_selected_ip.as_deref(),
+                                    multi_device,
+                                    device_id: &device_id,
+                                })
+                            };
                             match app_h.clipboard().write_text(cmd) {
                                 Ok(_) => {
                                     // 复制到的内容随接入工具而变（CLI 命令 / JSON / TOML 片段），
@@ -614,18 +648,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         });
                     }
                     "copy_ip_sed" => {
-                        // 网络变动时在 Rust 端直接生成「原地替换 IP」的 sed 命令并写入剪贴板，
-                        // 与连接页 IpChangedBanner 的 user 级 sed 等价；不依赖前端 webview 焦点。
-                        // 生成逻辑在 network::ip_sed_for（2026-10-17 单一真源化），
+                        // 网络变动时在 Rust 端直接生成「原地更新接入」命令并写入剪贴板，
+                        // 与连接页 IpChangedBanner 等价；不依赖前端 webview 焦点。
+                        // 生成逻辑在 network::ip_update_command（单一真源），
                         // 前端 `get_ip_sed_command` 命令与之共用，三者永远逐字一致。
+                        // 多设备模式（opt-in）开启时产物自动换条目级命令（同一真源内分流）。
                         let state = tray_state.clone();
                         let app_h = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            let (host, port, last_selected_ip, scope, project_path, tls, client) = {
+                            let (host, port, token, transport, last_selected_ip, scope, project_path, tls, client, multi_device, device_id) = {
                                 let cfg = state.config.read().await;
                                 (
                                     cfg.host.clone(),
                                     cfg.port,
+                                    cfg.token.clone(),
+                                    cfg.transport.clone(),
                                     cfg.last_selected_ip.clone(),
                                     cfg.scope.clone(),
                                     cfg.project_path.clone(),
@@ -633,16 +670,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     cfg.connect_client
                                         .clone()
                                         .unwrap_or_else(|| "claude-code".into()),
+                                    cfg.multi_device_mode,
+                                    cfg.device_id.clone(),
                                 )
                             };
-                            let (cmd, scope_label) = network::ip_sed_for(
-                                &host,
-                                port,
-                                last_selected_ip.as_deref(),
-                                scope.as_deref(),
-                                project_path.as_deref(),
-                                tls,
-                                &client,
+                            let (cmd, scope_label) = network::ip_update_command(
+                                network::IpUpdateTarget {
+                                    host: &host,
+                                    port,
+                                    token: &token,
+                                    transport: &transport,
+                                    last_selected_ip: last_selected_ip.as_deref(),
+                                    scope: scope.as_deref(),
+                                    project_path: project_path.as_deref(),
+                                    tls,
+                                    client: &client,
+                                    multi_device,
+                                    device_id: &device_id,
+                                },
                             );
                             if cmd.is_empty() {
                                 notify_toast(

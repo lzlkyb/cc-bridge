@@ -121,6 +121,10 @@ pub struct ConfigPatch {
     /// P1：封禁窗口（分钟）。
     #[serde(rename = "remoteBanWindowMin")]
     pub remote_ban_window_min: Option<u32>,
+    /// 多设备接入模式开关（opt-in，默认关）。连接页「多设备接入模式」卡写入。
+    /// 关闭时后端行为与引入前逐字一致（兼容性契约）。
+    #[serde(rename = "multiDeviceMode")]
+    pub multi_device_mode: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -281,6 +285,12 @@ pub async fn save_config(
         remote_ban_window_min,
         "remote_ban_window_min",
         &patch.remote_ban_window_min
+    );
+    // 多设备接入模式开关（纯布尔，无凭据，安全可走通用 patch；无重启副作用）。
+    apply_field!(
+        multi_device_mode,
+        "multi_device_mode",
+        &patch.multi_device_mode
     );
     // 🔴 这个开关必须是**断路器**：由开变关时立刻杀掉全部活会话。
     // 否则关掉后已经开着的终端照样能输入、能操作远程主机，开关就只是
