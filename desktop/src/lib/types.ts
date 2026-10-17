@@ -2,6 +2,8 @@ export interface StatusResponse {
   version: string;
   uptimeSeconds: number;
   allowedRoots: string[];
+  /** 白名单排除规则（当前生效集合，.mcpignore 式 glob）。命中 = 拒绝，与后端 path.rs 同语义。 */
+  excludePatterns: string[];
   allowedExtensions: string[];
   maxFileSizeBytes: number;
   rateLimit: { maxRequests: number; windowMs: number };
@@ -148,6 +150,8 @@ export type StaticStatus = Omit<StatusResponse, "uptimeSeconds" | "stats">;
 export interface RootProfile {
   name: string;
   roots: string[];
+  /** 本组排除规则存档（字段名与 Rust 侧保持 snake_case，RootProfile 无 rename_all）。 */
+  exclude_patterns: string[];
 }
 
 /* ─── 防火墙结构化诊断（get_firewall_diagnosis）─── */
@@ -222,6 +226,8 @@ export interface FirewallDiagnosisResponse {
 
 export interface ConfigPatch {
   allowedRoots?: string[];
+  /** 白名单排除规则（.mcpignore 式 glob）。后端入库前 normalize。 */
+  excludePatterns?: string[];
   allowedExtensions?: string[];
   maxFileSizeBytes?: number;
   rateLimitMaxRequests?: number;

@@ -142,7 +142,9 @@ export function RootProfilePanel({
                 <span className="truncate text-xs font-semibold">{p.name}</span>
               </button>
               <span className="shrink-0 text-[11px] text-muted-foreground">
-                {p.roots.length} 个目录{p.name === active ? " · 当前" : ""}
+                {p.roots.length} 个目录
+                {(p.exclude_patterns?.length ?? 0) > 0 && ` · ${p.exclude_patterns.length} 条排除`}
+                {p.name === active ? " · 当前" : ""}
               </span>
               <Button
                 variant="outline"

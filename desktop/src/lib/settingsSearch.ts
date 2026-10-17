@@ -64,6 +64,6 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-terminal", label: "终端风格与状态栏", icon: "sliders", group: "设置 · 其它", tab: "settings", anchor: "set-terminal", keywords: "terminal preset 终端风格 starship 状态栏 注入 探测 远端 shell 字体 字号 font 明暗 配色 主题 tmux" },
 
   // 安全页两张卡带卡级锚点（SecurityTab 的定位 effect 直接按 id 命中）。
-  { id: "set-roots", label: "白名单目录与配置组", icon: "folder", group: "安全页", tab: "security", anchor: "set-roots", keywords: "root 根目录 白名单 配置组 项目切换" },
+  { id: "set-roots", label: "白名单目录与配置组", icon: "folder", group: "安全页", tab: "security", anchor: "set-roots", keywords: "root 根目录 白名单 配置组 项目切换 排除 exclude 忽略 ignore mcpignore" },
   { id: "set-backup-mgmt", label: "备份份数 / 目录 / 版本历史 / 清理", icon: "history", group: "安全页", tab: "security", anchor: "set-backup", keywords: "backup retention 备份目录 版本历史 清理备份 还原" },
 ];

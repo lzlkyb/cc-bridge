@@ -373,3 +373,50 @@ export function cleanErr(raw: unknown): string {
     .join("\n")
     .trim();
 }
+
+/* ─── 白名单排除规则 glob（与 Rust 侧 security/path.rs 同语义，编辑器实时预览用）─── */
+
+/**
+ * fnmatch 式 glob：`**` 跨层（零或多段）、`*` 单段内任意字符、`?` 单段内单字符。
+ * 与 Rust 实现的对齐约定：
+ * - 模式含 `/` → 对相对路径整体匹配；不含 `/` → 对任意一段的段名匹配；
+ * - 本应用是 Windows 桌面端，匹配统一不区分大小写；
+ * - `\` 与 `/` 都视作路径分隔符。
+ * 🔴 预览仅供人工参考，**强制执行在后端 path.rs**——两处语义如需调整必须同步改。
+ */
+export function globMatch(pattern: string, path: string): boolean {
+  const norm = (s: string) => s.replace(/\\/g, "/").toLowerCase();
+  const p = norm(pattern);
+  const t = norm(path);
+  const segMatch = (pat: string[], txt: string[]): boolean => {
+    const [ph, ...prest] = pat;
+    if (ph === undefined) return txt.length === 0;
+    if (ph === "**") {
+      for (let n = 0; n <= txt.length; n++) {
+        if (segMatch(prest, txt.slice(n))) return true;
+      }
+      return false;
+    }
+    const [th, ...trest] = txt;
+    if (th === undefined) return false;
+    return segFnmatch(ph, th) && segMatch(prest, trest);
+  };
+  if (p.includes("/")) return segMatch(p.split("/"), t.split("/"));
+  return t.split("/").some((seg) => segMatch([p], [seg]));
+}
+
+/** 单段内 fnmatch：`*` 任意串、`?` 单字符、其余字面量相等（递归回溯，段很短）。 */
+function segFnmatch(pattern: string, text: string): boolean {
+  if (pattern.length === 0) return text.length === 0;
+  const c = pattern[0];
+  const rest = pattern.slice(1);
+  if (c === "*") {
+    for (let n = 0; n <= text.length; n++) {
+      if (segFnmatch(rest, text.slice(n))) return true;
+    }
+    return false;
+  }
+  if (text.length === 0) return false;
+  if (c === "?") return segFnmatch(rest, text.slice(1));
+  return text[0] === c && segFnmatch(rest, text.slice(1));
+}

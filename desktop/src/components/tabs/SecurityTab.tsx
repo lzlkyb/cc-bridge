@@ -4,6 +4,7 @@ import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { RootProfilePill } from "./RootProfilePill";
 import { RootProfilePanel } from "./RootProfilePanel";
+import { ExcludePatternsEditor } from "./ExcludePatternsEditor";
 import { Input } from "../ui/input";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
@@ -192,6 +193,23 @@ export function SecurityTab({
               添加
             </Button>
           </div>
+
+          {/* ══ 排除规则（.mcpignore 式）：命中即拒绝，随当前配置组存档 ══ */}
+          {status && (
+            <>
+              <div className="my-1 h-px bg-border" />
+              <div className="flex items-center gap-2">
+                <Icon name="shield" size={14} className="text-muted-foreground" />
+                <span className="text-xs font-semibold">排除规则</span>
+                <span className="text-[10.5px] text-muted-foreground">
+                  {status.excludePatterns?.length
+                    ? `${status.excludePatterns.length} 条 · 命中即拒绝`
+                    : "白名单内的敏感目录 / 文件对 AI 不可见"}
+                </span>
+              </div>
+              <ExcludePatternsEditor patterns={status.excludePatterns ?? []} onSaved={onSaved} />
+            </>
+          )}
         </CardContent>
       </Card>
 

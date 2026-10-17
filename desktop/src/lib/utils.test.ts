@@ -6,6 +6,7 @@
  * 运行：npm run test（vitest run，仅开发期执行，不进产物）。
  */
 import { describe, it, expect } from "vitest";
+import { globMatch } from "./utils";
 import {
   buildDisplayHost,
   buildBaseCommand,
@@ -246,5 +247,39 @@ describe("shortDateKey（日期键短标签）", () => {
   it("非法输入原样返回（容错不抛错）", () => {
     expect(shortDateKey("今天")).toBe("今天");
     expect(shortDateKey("")).toBe("");
+  });
+});
+
+/* ─── globMatch（白名单排除规则，与 Rust path.rs 同语义）─── */
+
+
+describe("globMatch 排除规则匹配", () => {
+  it("** 跨层（含零层）", () => {
+    expect(globMatch("src/**/x.ts", "src/x.ts")).toBe(true);
+    expect(globMatch("src/**/x.ts", "src/a/b/x.ts")).toBe(true);
+    expect(globMatch("build/**", "build")).toBe(true);
+    expect(globMatch("build/**", "build/a/b/c.obj")).toBe(true);
+    expect(globMatch("build/**", "builder/a")).toBe(false);
+  });
+
+  it("* 不跨层、? 单字符", () => {
+    expect(globMatch("logs/*.log", "logs/app.log")).toBe(true);
+    expect(globMatch("logs/*.log", "logs/sub/app.log")).toBe(false);
+    expect(globMatch("file?.txt", "file1.txt")).toBe(true);
+    expect(globMatch("file?.txt", "file10.txt")).toBe(false);
+  });
+
+  it("不含 / 的模式按段名匹配任意层", () => {
+    expect(globMatch("*.key", "api.key")).toBe(true);
+    expect(globMatch("*.key", "secrets/api.key")).toBe(true);
+    expect(globMatch("*.key", "secrets/api.key.bak")).toBe(false);
+    expect(globMatch("node_modules", "a/node_modules/b.js")).toBe(true);
+    expect(globMatch(".env*", "config/.env.production")).toBe(true);
+  });
+
+  it("分隔符等价与大小写不敏感（Windows）", () => {
+    expect(globMatch("src/**/x.ts", "src\\a\\x.ts")).toBe(true);
+    expect(globMatch("*.KEY", "secrets.Api.key")).toBe(true);
+    expect(globMatch("Build/**", "BUILD/a/b")).toBe(true);
   });
 });
