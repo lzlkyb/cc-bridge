@@ -22,6 +22,8 @@ function ConnectTabImpl({
   dismissed,
   onDismissIpChange,
   onNavigate,
+  pendingSuspended,
+  onSuspendCmd,
 }: {
   status?: StaticStatus;
   onRefresh: () => void;
@@ -40,6 +42,10 @@ function ConnectTabImpl({
    * Bento 各卡靠它跳到对应的设置项 / 页面；不传则所有卡退化为不可点。
    */
   onNavigate?: (tab: string, anchor?: string) => void;
+  /** IP 横幅命令已挂起到顶栏胶囊（App 层 pendingCmd 非空）：横幅整体收起。 */
+  pendingSuspended?: boolean;
+  /** 倒计时归零且未复制：把命令升级为顶栏挂起胶囊（App 层接住存 pendingCmd）。 */
+  onSuspendCmd?: (payload: { ip: string; cmd: string }) => void;
 }) {
   const lanIps = status?.lanIps ?? [];
 
@@ -136,6 +142,8 @@ function ConnectTabImpl({
           onResolved={onSelectIp}
           onSedResolved={onSedResolved}
           onDismiss={onDismissIpChange}
+          suspended={pendingSuspended}
+          onSuspend={onSuspendCmd}
         />
       )}
 

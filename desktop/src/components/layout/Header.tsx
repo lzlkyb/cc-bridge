@@ -7,6 +7,7 @@ import { Icon, type IconName } from "../ui/icon";
 import { TitleBarControls } from "./TitleBarControls";
 import { SecurityBadgeGroup } from "./SecurityBadgeGroup";
 import { UpdateReadout } from "../update/UpdateReadout";
+import { PendingCommandPill } from "../update/PendingCommandPill";
 
 /**
  * 应用顶栏（2026-10-14 侧栏改造后，由原「Header」瘦身而来）。
@@ -27,6 +28,8 @@ function HeaderImpl({
   onOpenSearch,
   collapsed,
   onToggleCollapse,
+  pendingCmd,
+  onPendingResolved,
 }: {
   status?: StaticStatus;
   onChanged?: () => void;
@@ -36,6 +39,10 @@ function HeaderImpl({
   /** 侧栏当前是否处于图标栏（收起）态。 */
   collapsed?: boolean;
   onToggleCollapse?: () => void;
+  /** 挂起命令（IP 横幅倒计时归零未复制时升级而来，2026-10-17）：非空即在中段
+   *  右端渲染挂起胶囊，跨页可见、点一下复制。与 UpdateReadout 互斥（index.css）。 */
+  pendingCmd?: { ip: string; cmd: string } | null;
+  onPendingResolved?: () => void;
 }) {
   const [dark, setDark] = useState(() => getStoredTheme() === "dark");
   const [busy, setBusy] = useState(false);
@@ -116,6 +123,9 @@ function HeaderImpl({
           （不触发终端 fit）。为何不放窗口级浮层见 UpdateReadout 头注释。 */}
       <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center self-stretch">
         <UpdateReadout />
+        {pendingCmd && onPendingResolved && (
+          <PendingCommandPill pending={pendingCmd} onResolved={onPendingResolved} />
+        )}
       </div>
 
       {/* 右侧：启停 / 搜索 / 主题 / 窗口控件 */}

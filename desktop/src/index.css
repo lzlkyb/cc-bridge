@@ -2153,6 +2153,21 @@ select:focus-visible,
   .upd-readout { display: none; }
 }
 
+/* ── 顶栏挂起胶囊（.pending-pill，2026-10-17 方案 A）────────────────────────
+   IP 横幅倒计时归零未复制 → 命令挂起到顶栏中段右端（PendingCommandPill）。
+   · 与 UpdateReadout 互斥：更新下载读数在场（is-on）时胶囊暂避——读数退场
+     （淡出后 is-on 移除）胶囊自动回归，状态不丢。兄弟选择器零 props 链
+     （两者同住 Header 中段容器）。
+   · 窄窗退化与读数同一套曲线：≤900px 截断 IP 文本（max-width 收紧）、
+     ≤740px 整条隐藏（那时连读数都收了，顶栏没有空间承载第二组常驻字形）。 */
+.upd-readout.is-on ~ .pending-pill { display: none; }
+@media (max-width: 900px) {
+  .pending-pill .pending-pill-text { max-width: 92px; }
+}
+@media (max-width: 740px) {
+  .pending-pill { display: none; }
+}
+
 /* ── ③ 重启过渡层（方案 C）：把「闪一下 → 空白 1–3 秒」变成被看见的升级 ──
    z-index 高于 Modal(1000) 与 Toast(2000)：重启期间不该有东西盖在它上面。 */
 .restart-overlay {

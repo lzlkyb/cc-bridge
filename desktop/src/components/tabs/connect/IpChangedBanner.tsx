@@ -43,6 +43,8 @@ export function IpChangedBanner({
   onResolved,
   onSedResolved,
   onDismiss,
+  suspended = false,
+  onSuspend,
 }: {
   lanIps: string[];
   selectedIp: string;
@@ -64,12 +66,23 @@ export function IpChangedBanner({
   onResolved: (ip: string) => void;
   onSedResolved: () => void;
   onDismiss?: () => void;
+  /** 命令已挂起到顶栏胶囊（App 层 pendingCmd 非空）：细条整体收起（内容区零占用），
+   *  命令由 PendingCommandPill 跨页承载——同一状态的两种呈现，互斥。 */
+  suspended?: boolean;
+  /** 60s 倒计时归零且未复制：命令升级为顶栏挂起胶囊（方案 A，2026-10-17）。
+   *  时机上 ipChanged 已被乐观清除（选新 IP 落盘）、由 ipResolvedByUser 维持可见，
+   *  所以挂起不会与「轮询 ipChanged」打架；App 层在 sedResolved/selectIp/dismiss/
+   *  ipChanged 重新变 true 时清除。 */
+  onSuspend?: (payload: { ip: string; cmd: string }) => void;
 }) {
   // 复制反馈统一走 useCopyFeedback（评审修复 ⑤，原 copiedCmd 字符串比对 + 1.5s 特例时长
   // 收敛进来，统一 2s）。「已处理」是业务状态而非反馈：复制成功即永久置位（banner 可能
   // 还要等下一轮轮询才消失），由 onCopied 回调承担——与 2s 自动回滚的内联反馈解耦。
   const fb = useCopyFeedback();
   const [resolved, setResolved] = useState(false);
+
+  // 已挂起到顶栏胶囊：细条整体收起（内容区零占用，见设计稿决策表「归零后零占用」）。
+  if (suspended) return null;
 
   // 网卡全部消失时，下方选择控件与确认按钮会永久 disabled 形成死局。
   // 此时只给说明、不渲染选择控件；网络恢复、网卡重新出现后会自动回到正常分支。
@@ -146,6 +159,12 @@ export function IpChangedBanner({
     });
   };
 
+  // 倒计时归零且未复制：命令升级为顶栏挂起胶囊（方案 A）。仅在有命令可给时挂起
+  // （generic 无命令 → 细条兜底常驻，见设计稿决策表「generic 无命令挂起」行）。
+  const handleZero = () => {
+    if (canCopy && cmd) onSuspend?.({ ip: selectedIp, cmd });
+  };
+
   return (
     <ActionCard
       tone="warning"
@@ -162,6 +181,7 @@ export function IpChangedBanner({
       copyDisabled={!canCopy}
       resolved={resolved}
       onDismiss={onDismiss}
+      onCountdownZero={handleZero}
     >
       <div className="space-y-3">
         <p className="text-xs leading-relaxed text-muted-foreground">

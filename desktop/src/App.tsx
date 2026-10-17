@@ -93,7 +93,11 @@ function AppContent() {
     if (!ip) return;
     // 方案 Q: 仅用户主动点选新地址时标记"已处理待复制"，让 IpChangedBanner + sed 命令块
     // 在 O2 乐观清除 ipChanged 后仍保持可见，直到复制远程更新命令。
-    if (byUser) setIpResolvedByUser(true);
+    // 挂起胶囊同步撤下：细条回来了，命令回到横幅承载（两种呈现互斥）。
+    if (byUser) {
+      setIpResolvedByUser(true);
+      setPendingCmd(null);
+    }
     invoke("set_selected_ip", { ip })
       .then(() => {
         // O2: 落盘成功后乐观更新缓存,立即消除 IP 变化警告,无需等下一次 5s 轮询
@@ -106,7 +110,18 @@ function AppContent() {
   }, [queryClient]);
 
   // 方案 Q: 用户复制了远程更新 sed 命令后收口，允许 banner 随乐观状态/下次轮询自然消失。
-  const handleSedResolved = useCallback(() => setIpResolvedByUser(false), []);
+  // 挂起胶囊（2026-10-17 方案 A）：胶囊复制成功也走这里收口（绿态 1.4s 淡出后卸载）。
+  const handleSedResolved = useCallback(() => {
+    setIpResolvedByUser(false);
+    setPendingCmd(null);
+  }, []);
+
+  // 挂起命令（2026-10-17 方案 A，design/2026-10-17-倒计时归零挂起胶囊-设计稿.html）：
+  // IP 横幅 60s 倒计时归零且用户还没复制 → 命令升级为顶栏挂起胶囊（Header 中段），
+  // 跨页可见、点一下复制；细条收起（内容区零占用）。清除时机全部收口在下面三个
+  // 回调 + ipChanged 重新变 true 的 effect：复制成功 / 重选 IP / 忽略 / IP 再变。
+  const [pendingCmd, setPendingCmd] = useState<{ ip: string; cmd: string } | null>(null);
+  const handleSuspendCmd = useCallback((p: { ip: string; cmd: string }) => setPendingCmd(p), []);
 
   // 「复制 IP 替换命令」的全局入口（S3 横幅用，2026-10-17）：托盘同款 Rust 生成，
   // 关掉连接页 banner / 人在终端页时也能复制，不用再回连接页。
@@ -114,10 +129,17 @@ function AppContent() {
 
   // 方案 R: 用户点关闭后仅本次会话隐藏 banner。当出现「新的」地址变化(false→true)时
   // 自动解除隐藏,避免关一次就永久屏蔽后续变化;停留为 true 的轮询不会重复触发重置。
+  // 挂起胶囊：IP 重新变化 = 旧命令作废（新 IP 需要新命令），一并清除。
   useEffect(() => {
-    if (status?.ipChanged) setIpChangeDismissed(false);
+    if (status?.ipChanged) {
+      setIpChangeDismissed(false);
+      setPendingCmd(null);
+    }
   }, [status?.ipChanged]);
-  const handleDismissIpChange = useCallback(() => setIpChangeDismissed(true), []);
+  const handleDismissIpChange = useCallback(() => {
+    setIpChangeDismissed(true);
+    setPendingCmd(null);
+  }, []);
 
 
   // 首次使用引导
@@ -308,6 +330,8 @@ function AppContent() {
             onOpenSearch={() => setShowCommandPalette(true)}
             collapsed={sideCollapsed}
             onToggleCollapse={() => setSideCollapsed((v) => !v)}
+            pendingCmd={pendingCmd}
+            onPendingResolved={handleSedResolved}
           />
       {statusError && (
         <div className="shrink-0 px-5 pt-2">
@@ -365,7 +389,7 @@ function AppContent() {
       )}
           <main className="min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-5">
           <TabsContent value="connect" keepMounted className="app-content-box h-full overflow-y-auto overflow-x-hidden">
-            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} />
+            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} pendingSuspended={!!pendingCmd} onSuspendCmd={handleSuspendCmd} />
           </TabsContent>
           <TabsContent value="security" keepMounted className="h-full overflow-y-auto overflow-x-hidden">
             <Suspense fallback={<TabFallback />}>

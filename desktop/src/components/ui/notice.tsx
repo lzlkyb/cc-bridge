@@ -131,6 +131,7 @@ export function ActionCard({
   onCopy,
   copyDisabled = false,
   onDismiss,
+  onCountdownZero,
   children,
 }: {
   tone?: Tone;
@@ -148,6 +149,10 @@ export function ActionCard({
   onCopy?: () => void;
   copyDisabled?: boolean;
   onDismiss?: () => void;
+  /** 倒计时归零且**未复制过**时触发一次（挂起胶囊等「用户错过时机」的升级动作，
+   *  见 IpChangedBanner）。复制过 = 命令已到手，不触发。ref 中转避免回调引用
+   *  变化重置倒计时。 */
+  onCountdownZero?: () => void;
   children?: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -155,6 +160,11 @@ export function ActionCard({
   const [cycle, setCycle] = useState(0);
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<number>(0);
+  const copiedRef = useRef(false);
+  const zeroRef = useRef(onCountdownZero);
+  useEffect(() => {
+    zeroRef.current = onCountdownZero;
+  }, [onCountdownZero]);
   const ts = toneStyles[tone];
 
   // 倒计时：每次展开（cycle 变化）重新计满；到 0 自动收起；resolved 后停止
@@ -168,6 +178,7 @@ export function ActionCard({
       if (left <= 0) {
         window.clearInterval(id);
         setExpanded(false);
+        if (!copiedRef.current) zeroRef.current?.();
       }
     }, 250);
     return () => window.clearInterval(id);
@@ -183,6 +194,7 @@ export function ActionCard({
   const handleCopy = () => {
     if (!onCopy || copyDisabled) return;
     onCopy();
+    copiedRef.current = true;
     setCopied(true);
     window.clearTimeout(copiedTimer.current);
     copiedTimer.current = window.setTimeout(() => setCopied(false), 1800);
