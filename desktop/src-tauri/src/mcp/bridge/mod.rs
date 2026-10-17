@@ -333,6 +333,7 @@ mod tests {
             cwd: cwd.map(|s| s.to_string()),
             enabled: true,
             allow_remote_cwd: false,
+            allowed_tools: vec![],
         }
     }
 

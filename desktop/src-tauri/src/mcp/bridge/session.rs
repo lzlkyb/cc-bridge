@@ -270,6 +270,7 @@ mod tests {
             cwd: None,
             enabled: true,
             allow_remote_cwd: false,
+            allowed_tools: vec![],
         };
         let err = connect(&spec, None, Duration::from_secs(1)).expect_err("应拒绝");
         assert!(err.contains("stdio"), "实际：{err}");
@@ -289,6 +290,7 @@ mod tests {
             cwd: None,
             enabled: true,
             allow_remote_cwd: false,
+            allowed_tools: vec![],
         };
         let err = connect(&spec, None, Duration::from_secs(1)).expect_err("应拒绝");
         assert!(err.contains("cc-bridge 自己"), "实际：{err}");

@@ -231,6 +231,7 @@ fn one(name: &str, v: &Value, source: &str, project: Option<&str>) -> ImportCand
         // 🔴 恒为 false（S2）。导入只负责把已有配置读出来展示，开不开由用户逐个决定。
         enabled: false,
         allow_remote_cwd: false,
+        allowed_tools: vec![],
     };
 
     let status = classify(&spec);
@@ -404,6 +405,7 @@ mod name_tests {
                 cwd: None,
                 enabled: false,
                 allow_remote_cwd: false,
+                allowed_tools: vec![],
             },
             source: "t".into(),
             status: CandidateStatus::Importable,
@@ -454,6 +456,7 @@ mod name_tests {
             cwd: None,
             enabled: false,
             allow_remote_cwd: false,
+            allowed_tools: vec![],
         }
     }
 

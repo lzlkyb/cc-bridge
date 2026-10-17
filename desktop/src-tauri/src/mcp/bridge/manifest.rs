@@ -299,6 +299,7 @@ mod tests {
             cwd: None,
             enabled: true,
             allow_remote_cwd: false,
+            allowed_tools: vec![],
         }
     }
 
