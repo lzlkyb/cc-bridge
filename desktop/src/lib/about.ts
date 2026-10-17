@@ -13,6 +13,9 @@ export const APP_INFO = {
   // 注意它不等于标识符 `cc-bridge`（仓库名 / 安装目录 / exe 名 / MCP serverInfo.name），
   // 两层的边界与为何不合并，那个文件的头注释里写了。
   name: "CC Bridge",
+  // 侧栏品牌区标语（2026-10-17）：对齐「双向 MCP 桥 + 白名单边界」的产品定位，
+  // 取代设计稿初版的「本地与 AI，自在连接」（偏营销，丢了桥与安全的语义）。
+  tagline: "连接有桥，访问有界",
   author: "lzlkyb",
   repoUrl: "https://github.com/lzlkyb/cc-bridge",
   license: "MIT",
