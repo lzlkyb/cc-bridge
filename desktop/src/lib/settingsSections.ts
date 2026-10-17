@@ -23,8 +23,8 @@ export interface SettingsSection {
    * 视觉分簇编号，语义见 {@link SETTINGS_CLUSTERS}。
    *
    * 这是**纯视觉**分簇，不是逻辑归组：不折叠、不改变导航/卡片顺序之外的任何行为。
-   * 分簇依据从「概念亲疏」升级为「用户任务」（信息架构重排设计稿）：
-   * 第一次装完顺着「开始使用」往下配；日常动「每天会用」；回溯看「记录与回溯」。
+   * 2026-10-17 起簇按「概念族」划分（安全与接入 / 数据与记录 / 体验…），
+   * 与卡片语义同轴，见 SETTINGS_CLUSTERS 注释。
    */
   group: number;
 }
@@ -32,17 +32,20 @@ export interface SettingsSection {
 /**
  * 簇元数据：group 编号 → 簇标题。
  *
- * 2026-10-13（信息架构重排设计稿）：左栏从 13 项平铺升级为「簇标题 + 项」。
- * `title` 缺省的簇（关于）不渲染标题行——「关于」置顶是既有用户决定，它
- * 独自一簇且无需归群。
+ * 2026-10-17（设置页信息架构与文案分层方案）：簇名从「任务导向」改回与卡片一致的
+ * 「概念族」——旧的「每天会用 / 记录与回溯」装着概念卡（安全 / 通知），扫视对不上号：
+ * - 「安全与接入」：安全 + 外挂 MCP 桥（桥本质是给 AI 开权限，属安全域）；
+ * - 「数据与记录」：备份与审计 + Token 用量（通知移去「体验」）；
+ * - 「体验」：通知 + 终端 + 应用。
+ * `title` 缺省的簇（关于）不渲染标题行——「关于」置顶是既有用户决定，它独自一簇。
  */
 export const SETTINGS_CLUSTERS: { group: number; title?: string }[] = [
   { group: 0 }, // 关于——独立置顶，无标题
-  { group: 1, title: "开始使用" }, // 第一次装完顺着往下配
-  { group: 2, title: "每天会用" },
-  { group: 3, title: "记录与回溯" },
-  { group: 4, title: "终端与应用" },
-  { group: 5, title: "高级与配置" },
+  { group: 1, title: "开始使用" }, // 安装 / 网络 / 防火墙
+  { group: 2, title: "安全与接入" }, // 安全 / 外挂 MCP 桥
+  { group: 3, title: "数据与记录" }, // 备份与审计 / Token 用量
+  { group: 4, title: "体验" }, // 通知 / 终端 / 应用
+  { group: 5, title: "高级" }, // 高级 / 配置
 ];
 
 /**
@@ -61,7 +64,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "set-mcpbridge", label: "外挂 MCP 桥", icon: "plug", group: 2 },
   { id: "set-backupaudit", label: "备份与审计", icon: "history", group: 3 },
   { id: "set-tokenusage", label: "Token 用量", icon: "activity", group: 3 },
-  { id: "set-notify", label: "通知", icon: "bell", group: 3 },
+  { id: "set-notify", label: "通知", icon: "bell", group: 4 },
   { id: "set-terminal", label: "终端", icon: "terminal", group: 4 },
   { id: "set-app", label: "应用", icon: "monitor", group: 4 },
   { id: "set-advanced", label: "高级", icon: "sliders", group: 5 },
