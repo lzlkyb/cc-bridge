@@ -104,6 +104,8 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
                 onToggleRemoteCwd={(next) =>
                   next ? setConfirmRemoteCwd(s) : void bridge.setRemoteCwd(s.name, false)
                 }
+                // 勾选即时落库（默认态是全暴露，勾/取消都是收紧或回到原点，无需确认框）。
+                onSetAllowedTools={(tools) => void bridge.setAllowedTools(s.name, tools)}
               />
             ))
           )}

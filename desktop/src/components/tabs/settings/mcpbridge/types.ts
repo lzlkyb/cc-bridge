@@ -46,6 +46,8 @@ export interface McpBridgeServer {
    * 开了之后由远程在白名单根目录内挑。
    */
   allowRemoteCwd: boolean;
+  /** 工具级暴露白名单。**空数组 = 全暴露**。未探测时也可能非空（配置在先、探测在后）。 */
+  allowedTools: string[];
   /** 当前活着的实例（各自的工作目录）。不展示的话，用户不知道自己开了几个进程。 */
   liveCwds: string[];
   /** 工具清单。没探测过时为空数组——不会为了填它去启进程。 */

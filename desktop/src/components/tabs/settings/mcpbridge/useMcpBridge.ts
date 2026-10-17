@@ -85,6 +85,17 @@ export function useMcpBridge() {
     [run],
   );
 
+  /** 工具级暴露：空数组 = 全暴露。不摘会话，配置即时生效。 */
+  const setAllowedTools = useCallback(
+    (name: string, tools: string[]) =>
+      run(
+        name,
+        () => invoke("mcp_bridge_set_allowed_tools", { name, tools }),
+        `${name}：已更新工具暴露清单`,
+      ),
+    [run],
+  );
+
   const remove = useCallback(
     (name: string) => run(name, () => invoke("mcp_bridge_remove", { name }), `已删除 ${name}`),
     [run],
@@ -138,6 +149,7 @@ export function useMcpBridge() {
     setMaster,
     setEnabled,
     setRemoteCwd,
+    setAllowedTools,
     remove,
     upsert,
     importSelected,

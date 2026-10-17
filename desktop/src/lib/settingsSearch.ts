@@ -37,7 +37,7 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-shelltype", label: "命令执行壳层", icon: "terminal", group: "设置 · 安全", tab: "settings", anchor: "set-security", keywords: "shell cmd bash sh git bash 壳层" },
   { id: "set-remote-tls", label: "HTTPS 远程访问", icon: "lock", group: "设置 · 安全", tab: "settings", anchor: "remote-tls", keywords: "https tls ssl 自签 证书 指纹 远程 跨网 封禁 401" },
   { id: "set-security-links", label: "安全权限与目录管理", icon: "shield", group: "设置 · 安全", tab: "settings", anchor: "set-security", keywords: "白名单 只读 权限 路径 目录 命令执行" },
-  { id: "set-mcpbridge", label: "外挂 MCP 服务器", icon: "plug", group: "设置 · 外挂 MCP 桥", tab: "settings", anchor: "set-mcpbridge", keywords: "server 工具 导入 探测 cwd 远程工作目录 启动命令" },
+  { id: "set-mcpbridge", label: "外挂 MCP 服务器", icon: "plug", group: "设置 · 外挂 MCP 桥", tab: "settings", anchor: "set-mcpbridge", keywords: "server 工具 导入 探测 cwd 远程工作目录 启动命令 工具过滤 暴露 允许清单" },
 
   { id: "set-backup", label: "写操作自动备份", icon: "history", group: "设置 · 备份与审计", tab: "settings", anchor: "backup", keywords: "backup 备份 快照" },
   { id: "set-audit", label: "审计日志", icon: "file", group: "设置 · 备份与审计", tab: "settings", anchor: "audit", keywords: "audit 日志 记录 留痕" },

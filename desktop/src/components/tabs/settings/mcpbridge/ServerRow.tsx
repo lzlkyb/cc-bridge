@@ -5,6 +5,7 @@ import { Switch } from "../../../ui/switch";
 import { Spinner } from "../../../ui/Spinner";
 import { SubSetting } from "../SubSetting";
 import { ToolList } from "./ToolList";
+import { ToolFilterEditor } from "./ToolFilterEditor";
 import { fullCommand, type McpBridgeServer, type ServerState } from "./types";
 
 /** 徽章文案与颜色。全部可由**不启进程**的信息算出来。 */
@@ -52,6 +53,7 @@ export function ServerRow({
   onEdit,
   onRemove,
   onToggleRemoteCwd,
+  onSetAllowedTools,
 }: {
   server: McpBridgeServer;
   master: boolean;
@@ -61,6 +63,7 @@ export function ServerRow({
   onEdit: () => void;
   onRemove: () => void;
   onToggleRemoteCwd: (next: boolean) => void;
+  onSetAllowedTools: (tools: string[]) => void;
 }) {
   const b = badgeOf(server, master);
   const when = stamp(server.fetchedAt);
@@ -133,6 +136,17 @@ export function ServerRow({
       </div>
 
       {open && <ToolList tools={server.tools} instructions={server.instructions} />}
+
+      {/* 工具级暴露：与工具清单同一个展开开关——配过滤的人必然先要看清单。 */}
+      {open && (
+        <ToolFilterEditor
+          tools={server.tools}
+          allowed={server.allowedTools}
+          disabled={!server.enabled}
+          busy={busy}
+          onSave={onSetAllowedTools}
+        />
+      )}
 
       {/* 🔴 本特性里唯一放宽边界的开关。做成子项：它是这个 server 的参数，
           不是独立开关；server 未启用时跟着置灰。 */}
