@@ -12,6 +12,7 @@ import { Header } from "./components/layout/Header";
 import { SideNav, WORKSPACE_NAV } from "./components/layout/SideNav";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAppHiddenFlag } from "./hooks/useAppHiddenFlag";
+import { useIpSedCopy } from "./hooks/useIpSedCopy";
 import { useWindowSizePersistence } from "./hooks/useWindowSizePersistence";
 import { useAppHidden } from "./lib/appVisibility";
 import { Button } from "./components/ui/button";
@@ -106,6 +107,10 @@ function AppContent() {
 
   // 方案 Q: 用户复制了远程更新 sed 命令后收口，允许 banner 随乐观状态/下次轮询自然消失。
   const handleSedResolved = useCallback(() => setIpResolvedByUser(false), []);
+
+  // 「复制 IP 替换命令」的全局入口（S3 横幅用，2026-10-17）：托盘同款 Rust 生成，
+  // 关掉连接页 banner / 人在终端页时也能复制，不用再回连接页。
+  const copyIpSed = useIpSedCopy();
 
   // 方案 R: 用户点关闭后仅本次会话隐藏 banner。当出现「新的」地址变化(false→true)时
   // 自动解除隐藏,避免关一次就永久屏蔽后续变化;停留为 true 的轮询不会重复触发重置。
@@ -332,6 +337,13 @@ function AppContent() {
                 : "本机服务在运行，但远程连不回，请检查本机网络。"
             }
           >
+            {/* IP 变化分支直接给「复制命令」（托盘同款 Rust 生成）——不用回连接页、
+                即使连接页 banner 被关掉这里也拿得到。远程不可达分支无命令可给，只导航。 */}
+            {status.ipChanged && (
+              <Button variant="outline" size="sm" className="h-6 px-2.5 text-xs" onClick={() => void copyIpSed()}>
+                复制命令
+              </Button>
+            )}
             <Button variant="outline" size="sm" className="h-6 px-2.5 text-xs" onClick={() => handleNavigate("connect")}>
               前往连接
             </Button>

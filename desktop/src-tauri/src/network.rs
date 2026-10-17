@@ -183,6 +183,53 @@ pub fn build_ip_sed_command(
     )
 }
 
+/// 当前配置 → 「原地替换 IP」的 sed 命令 + 作用域标签（展示给用户的后缀说明）。
+///
+/// 托盘「复制IP替换命令」与 `get_ip_sed_command` 命令共用这里（2026-10-17 单一真源化）：
+/// 此前 sed 生成走本函数、但「读 config 七字段 + 标签文案」那层是托盘内联的，
+/// 前端全局入口要复用就得抄一遍 → 抽出来。
+/// `cmd` 为空 = 通用 MCP 工具无约定路径，调用方给「手动更新」提示而不是复制空串。
+pub fn ip_sed_for(
+    host: &str,
+    port: u16,
+    last_selected_ip: Option<&str>,
+    scope: Option<&str>,
+    project_path: Option<&str>,
+    tls: bool,
+    client: &str,
+) -> (String, String) {
+    let lan_ips = get_lan_ips();
+    let display_host = resolve_display_host(host, &lan_ips, last_selected_ip);
+    let scope_str = scope.unwrap_or("user");
+    let project_path_owned = project_path.map(str::to_string);
+    let cmd = build_ip_sed_command(
+        port,
+        &display_host,
+        scope_str,
+        &project_path_owned,
+        tls,
+        client,
+    );
+    // 目标文件随客户端而变（Claude Code 两档作用域 / WorkBuddy / Codex）。
+    let scope_label = match client {
+        "workbuddy" => "WorkBuddy ~/.workbuddy/mcp.json".to_string(),
+        "codex" => "Codex ~/.codex/config.toml".to_string(),
+        "generic" => String::new(),
+        _ => {
+            if scope_str == "project" {
+                if project_path.map(str::trim).unwrap_or("").is_empty() {
+                    "项目级 .mcp.json（请在项目目录下执行）".to_string()
+                } else {
+                    "项目级 .mcp.json".to_string()
+                }
+            } else {
+                "用户级 ~/.claude.json".to_string()
+            }
+        }
+    };
+    (cmd, scope_label)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +315,41 @@ mod tests {
             "",
             "通用工具无约定配置文件 → 空串（调用方转成手动更新提示）"
         );
+    }
+
+    #[test]
+    fn ip_sed_for_labels() {
+        // 标签文案是展示层合同的一部分，跟命令一起随客户端/作用域变。
+        let (_, label) = ip_sed_for("127.0.0.1", 7823, None, None, None, false, "claude-code");
+        assert_eq!(label, "用户级 ~/.claude.json");
+
+        let (_, label) = ip_sed_for(
+            "127.0.0.1",
+            7823,
+            None,
+            Some("project"),
+            Some("  "), // 空白路径视同无路径
+            false,
+            "claude-code",
+        );
+        assert_eq!(label, "项目级 .mcp.json（请在项目目录下执行）");
+
+        let (_, label) = ip_sed_for(
+            "127.0.0.1",
+            7823,
+            None,
+            Some("project"),
+            Some("D:/proj"),
+            false,
+            "claude-code",
+        );
+        assert_eq!(label, "项目级 .mcp.json");
+
+        let (_, label) = ip_sed_for("127.0.0.1", 7823, None, None, None, false, "workbuddy");
+        assert_eq!(label, "WorkBuddy ~/.workbuddy/mcp.json");
+
+        let (cmd, label) = ip_sed_for("127.0.0.1", 7823, None, None, None, false, "generic");
+        assert_eq!(cmd, "");
+        assert_eq!(label, "");
     }
 }

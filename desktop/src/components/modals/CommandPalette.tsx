@@ -15,6 +15,7 @@ import { WORKSPACE_NAV } from "../layout/SideNav";
 import { useDialogDismiss } from "../../hooks/useDialogDismiss";
 import { usePresence } from "../../hooks/usePresence";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { useIpSedCopy } from "../../hooks/useIpSedCopy";
 
 interface CommandItem {
   id: string;
@@ -23,10 +24,7 @@ interface CommandItem {
   group: string;
   shortcut?: string;
   tab?: string;
-  /**
-   * 跳转后要定位+高亮的锚点。与 Header 安全徽章同一套机制（`highlightAnchor`）：
-   * 开关类传裸名（`remote-tls` → `toggle-remote-tls`），卡级传完整 id（`set-network`）。
-   */
+  /** 跳转后要定位+高亮的锚点（Header 安全徽章同一套 `highlightAnchor` 机制）：开关类传裸名（`remote-tls` → `toggle-remote-tls`），卡级传完整 id（`set-network`）。 */
   anchor?: string;
   /** 额外搜索词（不展示，只参与匹配）：用户想到的词往往不是标题——搜「rce」找命令执行、搜「GBK」找编码自适应；只比标题的搜索等于只能搜你已经知道的名字。 */
   keywords?: string;
@@ -52,6 +50,7 @@ export function CommandPalette({
   onReopenOnboarding?: () => void;
 }) {
   const { toast } = useToast();
+  const copyIpSed = useIpSedCopy();
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -138,8 +137,7 @@ export function CommandPalette({
   const platform = status?.platform;
 
   const items = useMemo<CommandItem[]>(() => [
-    // 快捷键标签按平台变（mac 显示 ⌘1）。功能本身早已兼容——App.tsx 的键盘
-    // 监听用的是 `e.ctrlKey || e.metaKey`，这里仅修正显示。
+    // 快捷键标签按平台变（mac 显示 ⌘1）；功能本身早已兼容（App.tsx 键盘监听用 `e.ctrlKey || e.metaKey`），这里仅修正显示。
     ...WORKSPACE_NAV.map((item, index) => ({ id: `nav-${item.key}`, label: `前往：${item.label}页`, icon: item.icon, group: "导航", tab: item.key, shortcut: shortcutLabel(platform, String(index + 1)) })),
     { id: "nav-settings", label: "前往：设置页", icon: "settings", group: "导航", tab: "settings", shortcut: shortcutLabel(platform, ",") },
     {
@@ -153,6 +151,8 @@ export function CommandPalette({
     },
     { id: "act-server", label: running ? "停止 MCP 服务" : "启动 MCP 服务", icon: running ? "pause" : "play", group: "操作", run: runToggleServer },
     { id: "act-restart", label: "重启 MCP 服务", icon: "refresh", group: "操作", run: runRestartServer },
+    // IP 变化后不用回连接页也能拿命令（全屏终端态下命令面板是唯一可达入口）。
+    { id: "act-ipsed", label: "复制 IP 替换命令", icon: "copy", group: "操作", run: copyIpSed, keywords: "ip 地址 替换 sed 修复 重连 中断" },
     {
       id: "act-clearlog", label: "清空审计日志", icon: "trash", group: "操作", run: runClearAudit,
       confirmTitle: "确定清空全部审计日志？", confirmDescription: "此操作会删除本机所有历史调用记录，且不可恢复。",
@@ -162,7 +162,7 @@ export function CommandPalette({
     { id: "act-theme", label: isDark ? "切换到浅色主题" : "切换到深色主题", icon: isDark ? "sun" : "moon", group: "外观", run: toggleTheme },
     // 设置项索引（纯数据，见 lib/settingsSearch.ts）。只跳转、不代操——原因写在那个文件里。
     ...SETTING_SEARCH_ITEMS,
-  ], [running, isDark, platform, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding]);
+  ], [running, isDark, platform, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding, copyIpSed]);
 
   // 标题 + keywords 一起匹配（keywords 不展示）。20 多条量级下简单 includes 就够，不上模糊匹配库。
   const filtered = (() => {

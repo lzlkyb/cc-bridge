@@ -616,8 +616,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "copy_ip_sed" => {
                         // 网络变动时在 Rust 端直接生成「原地替换 IP」的 sed 命令并写入剪贴板，
                         // 与连接页 IpChangedBanner 的 user 级 sed 等价；不依赖前端 webview 焦点。
-                        // 托盘项跟随用户在连接页选择的作用域（config.scope / config.project_path），
-                        // 与连接页 IpChangedBanner.buildSed 逐字等价（含 cd 前缀）；方案 A 已对齐，不再是固定用户级。
+                        // 生成逻辑在 network::ip_sed_for（2026-10-17 单一真源化），
+                        // 前端 `get_ip_sed_command` 命令与之共用，三者永远逐字一致。
                         let state = tray_state.clone();
                         let app_h = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
@@ -635,44 +635,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         .unwrap_or_else(|| "claude-code".into()),
                                 )
                             };
-                            let lan_ips = network::get_lan_ips();
-                            let display_host = network::resolve_display_host(
+                            let (cmd, scope_label) = network::ip_sed_for(
                                 &host,
-                                &lan_ips,
-                                last_selected_ip.as_deref(),
-                            );
-                            let scope_str = scope.as_deref().unwrap_or("user");
-                            let cmd = network::build_ip_sed_command(
                                 port,
-                                &display_host,
-                                scope_str,
-                                &project_path,
+                                last_selected_ip.as_deref(),
+                                scope.as_deref(),
+                                project_path.as_deref(),
                                 tls,
                                 &client,
                             );
-                            // 目标文件随客户端而变（Claude Code 两档作用域 / WorkBuddy / Codex）。
-                            // generic 没有约定路径，build_ip_sed_command 返回空串 → 只给手动更新的提示。
-                            let scope_label = match client.as_str() {
-                                "workbuddy" => "WorkBuddy ~/.workbuddy/mcp.json".to_string(),
-                                "codex" => "Codex ~/.codex/config.toml".to_string(),
-                                "generic" => String::new(),
-                                _ => {
-                                    if scope_str == "project" {
-                                        if project_path
-                                            .as_ref()
-                                            .map(|p| p.trim())
-                                            .unwrap_or("")
-                                            .is_empty()
-                                        {
-                                            "项目级 .mcp.json（请在项目目录下执行）".to_string()
-                                        } else {
-                                            "项目级 .mcp.json".to_string()
-                                        }
-                                    } else {
-                                        "用户级 ~/.claude.json".to_string()
-                                    }
-                                }
-                            };
                             if cmd.is_empty() {
                                 notify_toast(
                                     &app_h,
@@ -957,6 +928,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::probe_lan_ips,
             commands::refresh_bash_detection,
             commands::set_selected_ip,
+            commands::get_ip_sed_command,
             commands::refresh_firewall,
             commands::open_firewall_port,
             commands::get_firewall_diagnosis,

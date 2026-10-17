@@ -143,3 +143,32 @@ pub async fn set_selected_ip(state: State<'_, Arc<AppState>>, ip: String) -> Res
     config.last_selected_ip = Some(ip);
     Ok(())
 }
+
+/// 「IP 替换命令」的生成结果（前端自行写剪贴板，本命令只读不写，保持可测）。
+#[derive(Debug, Serialize)]
+pub struct IpSedCommandResult {
+    /// 通用 MCP 工具无约定路径时为空串——调用方给「手动更新」提示。
+    pub cmd: String,
+    #[serde(rename = "scopeLabel")]
+    pub scope_label: String,
+}
+
+/// 原地替换 IP 的 sed 命令（2026-10-17）：托盘「复制IP替换命令」的同源只读版，
+/// 生成逻辑单一真源在 `network::ip_sed_for`。供前端任意页入口（S3 横幅 / 命令面板）
+/// 复用——两处此前只能让托盘能复制，关掉 banner 后用户无处拿命令。
+#[tauri::command]
+pub async fn get_ip_sed_command(
+    state: State<'_, Arc<AppState>>,
+) -> Result<IpSedCommandResult, String> {
+    let cfg = state.config.read().await;
+    let (cmd, scope_label) = crate::network::ip_sed_for(
+        &cfg.host,
+        cfg.port,
+        cfg.last_selected_ip.as_deref(),
+        cfg.scope.as_deref(),
+        cfg.project_path.as_deref(),
+        cfg.remote_tls_enabled,
+        cfg.connect_client.as_deref().unwrap_or("claude-code"),
+    );
+    Ok(IpSedCommandResult { cmd, scope_label })
+}
