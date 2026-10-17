@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../../lib/tauri";
 import type { TokenUsageReport } from "../../../lib/types";
@@ -14,6 +15,7 @@ import { Icon } from "../../ui/icon";
 import { Skeleton } from "../../ui/Skeleton";
 import { InfoPopover } from "../../ui/InfoPopover";
 import { useAppHidden } from "../../../lib/appVisibility";
+import { UsageMatrixSection } from "./UsageMatrixSection";
 
 /**
  * 设置页「Token 用量（估算）」分区（卡级 id: set-tokenusage，首页用量卡点进来）。
@@ -29,6 +31,8 @@ import { useAppHidden } from "../../../lib/appVisibility";
  */
 export function TokenUsageGroup() {
   const hidden = useAppHidden();
+  // 维度切换（批D）：概览（趋势+热力+排行）/ 按天×工具矩阵。KPI 头两态共用。
+  const [view, setView] = useState<"overview" | "matrix">("overview");
   const { data, isLoading } = useQuery<TokenUsageReport>({
     queryKey: ["token-usage", 90],
     queryFn: () => invoke<TokenUsageReport>("get_token_usage", { days: 90 }),
@@ -47,8 +51,31 @@ export function TokenUsageGroup() {
 
   return (
     <Card id="set-tokenusage">
-      <CardHeader>
+      <CardHeader className="flex-row items-center justify-between space-y-0">
         <CardTitle icon={<Icon name="activity" />}>Token 用量（估算）</CardTitle>
+        {/* 维度切换：分段控件（两个 state 的小视图，不值得上 Tabs）。 */}
+        <div className="flex shrink-0 items-center rounded-md border border-border bg-muted/40 p-0.5 text-[11px]">
+          {(
+            [
+              ["overview", "概览"],
+              ["matrix", "按天×工具"],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={view === v}
+              className={`rounded px-2 py-0.5 transition-colors ${
+                view === v
+                  ? "bg-background font-semibold text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => setView(v)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
         {isLoading ? (
@@ -71,6 +98,11 @@ export function TokenUsageGroup() {
             <p className="text-xs text-muted-foreground">
               暂无调用记录。远程 AI 工具接入并调用工具后，这里会出现趋势、节奏与工具排行。
             </p>
+          </>
+        ) : view === "matrix" ? (
+          <>
+            <KpiHead days={days} />
+            <UsageMatrixSection report={data!} />
           </>
         ) : (
           <>

@@ -1,4 +1,4 @@
-import type { TokenUsageDay, TokenUsageTool } from "./types";
+import type { TokenUsageDay, TokenUsageReport, TokenUsageTool } from "./types";
 import { shortDateKey } from "./utils";
 
 /**
@@ -189,4 +189,72 @@ export function rankTools(tools: TokenUsageTool[], topN = 4): RankRow[] {
       calls: restAgg.calls,
     },
   ];
+}
+
+/* ── 按天×工具矩阵 + CSV 导出（2026-10-17 四项增强·批D）── */
+
+/** 矩阵视图数据：行 = 工具（按合计降序），列 = 日期（旧→新），格值 = 估算 tokens。 */
+export interface UsageMatrix {
+  tools: string[];
+  dates: string[];
+  /** key = `${tool}|${date}`。 */
+  cell: Map<string, { calls: number; estTokens: number }>;
+  /** 全表最大格值（热力底色归一化用）。 */
+  max: number;
+  /** 每个工具的合计（行尾汇总列），与 tools 同序。 */
+  toolTotals: number[];
+}
+
+/**
+ * 从报告搭矩阵。工具全集取自 byDayTool（比 tools 排行更全——排行只留 Top10），
+ * 按各自合计降序；日期取 days 序列（与后端窗口一致，旧→新）。
+ */
+export function buildMatrix(report: TokenUsageReport): UsageMatrix {
+  const cell = new Map<string, { calls: number; estTokens: number }>();
+  const totals = new Map<string, number>();
+  for (const c of report.byDayTool ?? []) {
+    cell.set(`${c.tool}|${c.date}`, { calls: c.calls, estTokens: c.estTokens });
+    totals.set(c.tool, (totals.get(c.tool) ?? 0) + c.estTokens);
+  }
+  const tools = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+  let max = 1;
+  for (const v of cell.values()) max = Math.max(max, v.estTokens);
+  return {
+    tools,
+    dates: (report.days ?? []).map((d) => d.date),
+    cell,
+    max,
+    toolTotals: tools.map((t) => totals.get(t) ?? 0),
+  };
+}
+
+/** CSV 单元格转义：含逗号 / 引号 / 换行时包引号并把内部引号翻倍（RFC 4180）。 */
+function csvField(v: string | number): string {
+  const s = String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/**
+ * 三张表打包一个 CSV（UTF-8 **含 BOM**——Excel 直接双击打开中文才不乱码）。
+ * 纯字符串拼装，下载触发在组件层。
+ */
+export function buildUsageCsv(report: TokenUsageReport, generatedAt: Date = new Date()): string {
+  const L: string[] = [];
+  L.push(`# cc-bridge Token 用量导出（估算值，按 约4字节≈1token 折算；生成于 ${generatedAt.toLocaleString("zh-CN")}）`);
+  L.push("# ## 按天");
+  L.push("date,calls,estInput,estOutput");
+  for (const d of report.days ?? []) {
+    L.push(`${d.date},${d.calls},${d.estInput},${d.estOutput}`);
+  }
+  L.push("# ## 按工具（合计降序）");
+  L.push("tool,calls,estInput,estOutput");
+  for (const t of report.tools ?? []) {
+    L.push(`${csvField(t.tool)},${t.calls},${t.estInput},${t.estOutput}`);
+  }
+  L.push("# ## 按天×工具（仅非零格）");
+  L.push("date,tool,calls,estTokens");
+  for (const c of report.byDayTool ?? []) {
+    L.push(`${c.date},${csvField(c.tool)},${c.calls},${c.estTokens}`);
+  }
+  return "\uFEFF" + L.join("\r\n") + "\r\n";
 }

@@ -349,6 +349,16 @@ export interface TokenUsageTool {
 export interface TokenUsageReport {
   days: TokenUsageDay[];
   tools: TokenUsageTool[];
+  /** 按天×工具细分的稀疏矩阵（只含非零格，按工具+日期排序）。旧日志向前兼容：缺省为空。 */
+  byDayTool: TokenUsageCell[];
+}
+
+/** 「按天×工具」矩阵单格：某天某工具的调用数与 token 估算（输入+输出合计）。 */
+export interface TokenUsageCell {
+  date: string;
+  tool: string;
+  calls: number;
+  estTokens: number;
 }
 
 /** get_file_diff 返回的单行 diff（行级红绿高亮）。 */

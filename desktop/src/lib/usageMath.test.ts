@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { buildMatrix, buildUsageCsv } from "./usageMath";
+import type { TokenUsageReport } from "./types";
 import type { TokenUsageDay, TokenUsageTool } from "./types";
 import {
   buildHeatmap,
@@ -182,5 +184,65 @@ describe("rankTools", () => {
 
   it("空列表返回空数组", () => {
     expect(rankTools([])).toEqual([]);
+  });
+});
+
+/* ── buildMatrix / buildUsageCsv（批D）── */
+
+
+const report: TokenUsageReport = {
+  days: [
+    { date: "2026-10-16", calls: 2, estInput: 10, estOutput: 20 },
+    { date: "2026-10-17", calls: 1, estInput: 5, estOutput: 0 },
+  ],
+  tools: [
+    { tool: "read_files", calls: 2, estInput: 10, estOutput: 20 },
+    { tool: "write_files", calls: 1, estInput: 5, estOutput: 0 },
+  ],
+  byDayTool: [
+    { date: "2026-10-17", tool: "write_files", calls: 1, estTokens: 5 },
+    { date: "2026-10-16", tool: "read_files", calls: 1, estTokens: 20 },
+    { date: "2026-10-16", tool: "write_files", calls: 1, estTokens: 10 },
+  ],
+};
+
+describe("buildMatrix 用量矩阵", () => {
+  it("工具按合计降序，格值可按 tool|date 查到，max 归一化正确", () => {
+    const m = buildMatrix(report);
+    expect(m.tools).toEqual(["read_files", "write_files"]);
+    expect(m.toolTotals).toEqual([20, 15]);
+    expect(m.dates).toEqual(["2026-10-16", "2026-10-17"]);
+    expect(m.cell.get("read_files|2026-10-16")).toEqual({ calls: 1, estTokens: 20 });
+    expect(m.cell.has("read_files|2026-10-17")).toBe(false);
+    expect(m.max).toBe(20);
+  });
+
+  it("空报告不炸：零工具、max=1", () => {
+    const m = buildMatrix({ days: [], tools: [], byDayTool: [] });
+    expect(m.tools).toEqual([]);
+    expect(m.max).toBe(1);
+  });
+});
+
+describe("buildUsageCsv 导出", () => {
+  it("以 UTF-8 BOM 开头，三张表齐全，字段转义符合 RFC 4180", () => {
+    const csv = buildUsageCsv(report, new Date("2026-10-17T12:00:00"));
+    expect(csv.charCodeAt(0)).toBe(0xfeff);
+    expect(csv).toContain("# ## 按天");
+    expect(csv).toContain("# ## 按工具");
+    expect(csv).toContain("# ## 按天×工具");
+    expect(csv).toContain("2026-10-16,2,10,20");
+    expect(csv).toContain("2026-10-16,write_files,1,10");
+    // CRLF 行尾（Excel 友好）。
+    expect(csv.includes("\r\n")).toBe(true);
+  });
+
+  it("含逗号的工具名被包引号", () => {
+    const csv = buildUsageCsv({
+      days: [],
+      tools: [{ tool: 'a,"b",c', calls: 1, estInput: 0, estOutput: 0 }],
+      byDayTool: [],
+    });
+    expect(csv).toContain('"a,""b"",c",1,0,0');
   });
 });
