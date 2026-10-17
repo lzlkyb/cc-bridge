@@ -150,9 +150,8 @@ export function RemoteTlsPanel({
         <ToggleRow
           id="toggle-remote-ban"
           label="连续鉴权失败封禁 IP"
-          sub={`连续 401 达阈值后该 IP 在窗口内直接 429；认证成功即清零。${
-            tls.boundToAll ? "" : "当前未绑定 0.0.0.0，封禁不生效。"
-          }重启后清零`}
+          sub={tls.boundToAll ? undefined : "当前未绑定 0.0.0.0，封禁不生效"}
+          info="连续 401 达阈值后该 IP 在窗口内直接 429；认证成功即清零，重启后清零。仅监听 0.0.0.0 时后端实际执行封禁。"
           checked={tls.banEnabled}
           onChange={(v) => saveAndRestart({ remoteBanEnabled: v }, v ? "封禁已开启" : "封禁已关闭")}
         />

@@ -67,7 +67,7 @@ export function ConfigGroup({
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-xs text-muted-foreground">
-          导出当前配置为 JSON 文件，或导入之前导出的配置。导入会覆盖当前设置并自动重启服务。
+          导入将覆盖当前设置并自动重启服务
         </p>
         <div className="flex items-center gap-3">
           <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">

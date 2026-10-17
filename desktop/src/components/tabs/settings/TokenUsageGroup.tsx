@@ -11,6 +11,8 @@ import {
 import { fmtTokens, toolLabel } from "../../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
+import { Skeleton } from "../../ui/Skeleton";
+import { InfoPopover } from "../../ui/InfoPopover";
 import { useAppHidden } from "../../../lib/appVisibility";
 
 /**
@@ -50,7 +52,19 @@ export function TokenUsageGroup() {
       </CardHeader>
       <CardContent className="space-y-4">
         {isLoading ? (
-          <p className="text-xs text-muted-foreground">加载中…</p>
+          /* Skeleton（2026-10-17）：替代「加载中…」纯文本——骨架形状预示即将出现的
+             KPI 卡布局，加载完成内容原地接上，不再「空白→内容跳出」。 */
+          <div className="space-y-2" aria-hidden="true">
+            <Skeleton className="h-3 w-24" />
+            <div className="usage-kpis">
+              {[0, 1, 2, 3].map((i) => (
+                <div className="usage-kpi" key={i}>
+                  <Skeleton className="h-2.5 w-16" />
+                  <Skeleton className="mt-2 h-5 w-20" />
+                </div>
+              ))}
+            </div>
+          </div>
         ) : !hasData ? (
           <>
             <EmptyKpis />
@@ -68,11 +82,14 @@ export function TokenUsageGroup() {
             </div>
           </>
         )}
-        <p className="rounded-lg bg-muted/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-          按「约 4 字节 ≈ 1 token」折算的<strong className="text-foreground">估算值</strong>，
-          反映经桥交互的上下文增量；模型侧的真实消耗（系统提示词、对话历史等）不经过桥，
-          无法统计，因此它不是账单值。
-        </p>
+        <div className="flex items-start justify-between gap-2 rounded-lg bg-muted/60 px-3 py-2">
+          <span className="text-xs leading-relaxed text-muted-foreground">
+            按「约 4 字节 ≈ 1 token」折算的<strong className="text-foreground">估算值</strong>，不是账单
+          </span>
+          <InfoPopover label="Token 用量口径">
+            按「约 4 字节 ≈ 1 token」折算的估算值，反映经桥交互的上下文增量；模型侧的真实消耗（系统提示词、对话历史等）不经过桥，无法统计，因此它不是账单值。
+          </InfoPopover>
+        </div>
       </CardContent>
     </Card>
   );
@@ -112,10 +129,10 @@ function KpiHead({ days }: { days: TokenUsageReport["days"] }) {
   );
 }
 
-/** 环比行：无对比基准时显示占位空白，保持四卡视觉对齐。 */
+/** 环比行：无对比基准时显示「—」（全应用空值统一记号，宽度≈一个数字位）。 */
 function Delta({ pct, vs }: { pct: number | null; vs: string }) {
   if (pct === null) {
-    return <p className="usage-kpi-delta usage-kpi-delta--flat">&nbsp;</p>;
+    return <p className="usage-kpi-delta usage-kpi-delta--flat">—</p>;
   }
   const up = pct >= 0;
   return (

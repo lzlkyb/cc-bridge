@@ -26,7 +26,8 @@ export function NotifyGroup({
         <ToggleRow
           id="toggle-notify-command"
           label="后台命令完成通知"
-          sub={notifyCommandCompleteSub(status?.platform)}
+          sub="命令结束后弹系统通知"
+          info={notifyCommandCompleteSub(status?.platform)}
           checked={status?.notifyCommandComplete ?? true}
           onChange={(v) => save({ notifyCommandComplete: v }, "notify-cmd")}
           saved={savedKey === "notify-cmd"}
@@ -34,7 +35,8 @@ export function NotifyGroup({
         <ToggleRow
           id="toggle-notify-task"
           label="任务完成通知"
-          sub="AI 完成任务后可主动调用 push_notification 工具推送桌面通知。关闭后 AI 的推送请求会被静默忽略。默认开启"
+          sub="关闭后 AI 的推送请求会被静默忽略"
+          info="AI 完成任务后可主动调用 push_notification 工具推送桌面通知。关闭后 AI 的推送请求会被静默忽略。默认开启"
           checked={status?.notifyTaskComplete ?? true}
           onChange={(v) => save({ notifyTaskComplete: v }, "notify-task")}
           saved={savedKey === "notify-task"}

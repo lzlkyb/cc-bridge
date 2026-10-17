@@ -38,7 +38,7 @@ export function AdvancedGroup({
         <ToggleRow
           id="toggle-encoding"
           label="读取编码自适应"
-          sub="开启：自动识别 GBK/GB18030（适合 NC65 等旧系统源码）；关闭：固定按 UTF-8 读取，避免误判。显式指定编码不受影响"
+          info="开启：自动识别 GBK/GB18030（适合 NC65 等旧系统源码）；关闭：固定按 UTF-8 读取，避免误判。显式指定编码不受影响"
           checked={status?.encodingDetectEnabled ?? false}
           onChange={(v) => save({ encodingDetectEnabled: v }, "encoding")}
           saved={savedKey === "encoding"}
@@ -46,7 +46,11 @@ export function AdvancedGroup({
         <ToggleRow
           id="toggle-session-persist"
           label="命令会话持久化"
-          sub="开启后 run_command 可用 session_id 跨调用保留工作目录，并通过 env 参数（key=value）持久化环境变量（如 venv / PATH），解决 source venv / export 每调用丢失的问题。默认关闭"
+          info={
+            <>
+              开启后 run_command 可用 session_id 跨调用保留工作目录，并通过 env 参数（key=value）持久化环境变量（如 venv / PATH），解决 source venv / export 每调用丢失的问题。默认关闭
+            </>
+          }
           checked={status?.sessionCwdEnabled ?? false}
           onChange={(v) => save({ sessionCwdEnabled: v }, "session-persist")}
           saved={savedKey === "session-persist"}
@@ -54,7 +58,8 @@ export function AdvancedGroup({
         <ToggleRow
           id="toggle-release-webview"
           label="关窗时释放界面内存"
-          sub={releaseWebviewHint(status?.platform)}
+          sub="关窗释放内存，再开需重新加载"
+          info={releaseWebviewHint(status?.platform)}
           checked={status?.releaseWebviewOnClose ?? true}
           onChange={(v) => save({ releaseWebviewOnClose: v }, "release-webview")}
           saved={savedKey === "release-webview"}
@@ -62,7 +67,7 @@ export function AdvancedGroup({
         <ToggleRow
           id="toggle-ssh-drag-select"
           label="终端拖拽即选"
-          sub="开启：在 SSH 终端内直接拖选文字即建立选区，无需按住 Shift 或点「选择模式」。关闭后这两条路径仍然可用"
+          info="开启：在 SSH 终端内直接拖选文字即建立选区，无需按住 Shift 或点「选择模式」。关闭后这两条路径仍然可用"
           checked={status?.sshDragSelectEnabled ?? true}
           onChange={(v) => save({ sshDragSelectEnabled: v }, "ssh-drag-select")}
           saved={savedKey === "ssh-drag-select"}
@@ -70,7 +75,7 @@ export function AdvancedGroup({
         <ToggleRow
           id="toggle-ssh-copy-on-select"
           label="选中即复制"
-          sub="开启：选择手势结束（松手）即自动把选中文字写入剪贴板，并提示复制的字数。关闭后选区照常保留，复制改走右键菜单 / 工具栏按钮 / Ctrl+Shift+C"
+          info="开启：选择手势结束（松手）即自动把选中文字写入剪贴板，并提示复制的字数。关闭后选区照常保留，复制改走右键菜单 / 工具栏按钮 / Ctrl+Shift+C"
           checked={status?.sshCopyOnSelectEnabled ?? true}
           onChange={(v) => save({ sshCopyOnSelectEnabled: v }, "ssh-copy-on-select")}
           saved={savedKey === "ssh-copy-on-select"}

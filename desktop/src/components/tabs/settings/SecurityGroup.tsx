@@ -107,27 +107,25 @@ export function SecurityGroup({
         <ToggleRow
           id="toggle-remote-tls"
           label="HTTPS 远程访问"
-          sub={
-            tlsOn
-              ? "⚠ 已开启 · 监听端口已切换为 TLS，仅供信任的 AI 工具连接"
-              : "开启后 MCP 监听整体切换为 HTTPS，供跨网的 AI 工具连接；关闭时行为与旧版完全一致"
+          sub={tlsOn ? "已开启 · 监听端口已切换为 TLS" : "跨公网接入时开启"}
+          info={
+            <>
+              开启后 MCP 监听整体切换为 HTTPS，供跨网的 AI 工具连接；关闭时行为与旧版完全一致。开启后会显示接入地址与封禁设置。
+              <br />
+              跨网暴露请务必保持路径白名单与 Token 保护开启；有域名时可优先用反向代理（见 docs/reverse-proxy.md）。
+            </>
           }
           checked={tlsOn}
           onChange={handleRemoteTls}
           saved={savedKey === "remote-tls"}
         />
-        {tlsOn && tlsQuery.data ? (
+        {tlsOn && tlsQuery.data && (
           <RemoteTlsPanel
             status={status}
             tls={tlsQuery.data}
             onSaved={onSaved}
             onRefetch={() => tlsQuery.refetch()}
           />
-        ) : (
-          <p className="mb-3 rounded-lg bg-muted px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-            开启后会显示接入地址与封禁设置。跨网暴露请务必保持路径白名单与 Token 保护开启；有
-            域名时可优先用反向代理（见 docs/reverse-proxy.md）。
-          </p>
         )}
 
         {/* 壳层是命令执行的参数，命令执行关着时调它不产生任何效果 */}

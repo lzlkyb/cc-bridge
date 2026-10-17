@@ -1,6 +1,7 @@
 import { Icon } from "../../ui/icon";
 import { Spinner } from "../../ui/Spinner";
 import { SavedHint } from "../../ui/SavedHint";
+import { InfoPopover } from "../../ui/InfoPopover";
 import { shellTypeCopy } from "../../../lib/platform";
 
 /* 命令执行壳层分段选择：cmd（默认）/ bash（Git Bash）。
@@ -47,9 +48,12 @@ export function ShellTypeRow({
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium">命令执行壳层</span>
           {saved && <SavedHint>已保存</SavedHint>}
+          <InfoPopover label="命令执行壳层">
+            默认 <b>{copy.defaultLabel}</b>（{copy.defaultNote}）。选 <b>{copy.altLabel}</b>：{copy.altNote}
+          </InfoPopover>
         </div>
         <div className="mt-0.5 text-xs text-muted-foreground">
-          默认 <b>{copy.defaultLabel}</b>（{copy.defaultNote}）；选 <b>{copy.altLabel}</b> {copy.altNote}
+          默认 <b>{copy.defaultLabel}</b>（{copy.defaultNote}）
         </div>
         {!bashAvailable && (
           <div className="mt-1.5 flex items-center gap-2">
