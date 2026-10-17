@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { SavedHint } from "./SavedHint";
+import { InfoPopover } from "./InfoPopover";
 
 /**
  * 设置页通用「行」骨架：左侧标签 + 说明，右侧控制区。
@@ -10,10 +11,15 @@ import { SavedHint } from "./SavedHint";
  * - layout="stack"：竖排，标签在上、控制区在中、说明在下，适合「数值输入 + 说明」。
  * - danger：左侧红底（与 ToggleRow 一致），用于高风险项。
  * - last：去掉底边框（卡片内最后一行时传 true，与 ToggleRow 约定一致）。
+ *
+ * 文案三层分级（2026-10-17，与 ToggleRow 同批）：
+ * - `sub` 改为可选；原理 / 边界类长解释改传 `info`（ⓘ popover，L1 层）；
+ * - `info` 的 ⓘ 挂在标签行尾，stack 布局同样生效。
  */
 export function SettingsRow({
   label,
   sub,
+  info,
   control,
   saved = false,
   danger = false,
@@ -21,7 +27,10 @@ export function SettingsRow({
   layout = "row",
 }: {
   label: ReactNode;
+  /** L0 常显短句：≤20 字结果性描述；原理/边界请改传 info。 */
   sub?: ReactNode;
+  /** L1 按需说明：传入后标签行尾渲染 ⓘ，点击弹 popover 显示全文。 */
+  info?: ReactNode;
   control?: ReactNode;
   saved?: boolean;
   danger?: boolean;
@@ -43,6 +52,7 @@ export function SettingsRow({
         <div className="flex items-center gap-2">
           <span className="t text-sm font-medium">{label}</span>
           {saved && <SavedHint>已保存</SavedHint>}
+          {info && <InfoPopover label={typeof label === "string" ? label : "详细说明"}>{info}</InfoPopover>}
         </div>
         {!isStack && sub && (
           <div className={`d mt-0.5 text-xs ${danger ? "text-destructive-ink" : "text-muted-foreground"}`}>
