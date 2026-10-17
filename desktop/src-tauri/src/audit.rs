@@ -602,11 +602,26 @@ pub struct TokenUsageTool {
     pub est_output: u64,
 }
 
-/// Token 用量估算报告：按天序列（旧→新）+ 按工具排行（合计降序，Top 10）。
+/// Token 用量估算报告：按天序列（旧→新）+ 按工具排行（合计降序，Top 10）
+/// + 按天×工具细分的稀疏矩阵（只含非零格）。
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenUsageReport {
     pub days: Vec<TokenUsageDay>,
     pub tools: Vec<TokenUsageTool>,
+    /// 按（工具，日期）排序的非零格。与 days/tools **同一窗口**，三处合计必然一致。
+    #[serde(rename = "byDayTool")]
+    pub by_day_tool: Vec<TokenUsageCell>,
+}
+
+/// 「按天 × 工具」矩阵的单格：某天某工具的调用数与 token 估算（输入+输出合计）。
+/// 稀疏输出——没调用的组合不出现，前端按需铺表。
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenUsageCell {
+    pub date: String,
+    pub tool: String,
+    pub calls: u64,
+    #[serde(rename = "estTokens")]
+    pub est_tokens: u64,
 }
 
 /// 审计时间戳（RFC3339）→ 本地日期键 "YYYY-MM-DD"。解析失败返回 None（该条不计入）。
@@ -634,6 +649,10 @@ fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport
         .collect();
     // value: [calls, est_input, est_output]
     let mut tools: std::collections::HashMap<&str, [u64; 3]> = std::collections::HashMap::new();
+    // key: (date_idx, tool) → [calls, est_input+output]。与 days/tools 同一次遍历填充，
+    // 保证三个视图的合计口径必然一致（窗口内条目三方全计，窗口外三方全不计）。
+    let mut grid: std::collections::HashMap<(usize, &str), [u64; 2]> =
+        std::collections::HashMap::new();
 
     for e in all {
         let Some(dk) = entry_date_key(&e.timestamp) else {
@@ -654,6 +673,9 @@ fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport
         t[0] += 1;
         t[1] += inp;
         t[2] += out;
+        let g = grid.entry((i, e.tool.as_str())).or_insert([0, 0]);
+        g[0] += 1;
+        g[1] += inp + out;
     }
 
     let mut tools: Vec<TokenUsageTool> = tools
@@ -672,7 +694,23 @@ fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport
     });
     tools.truncate(10);
 
-    TokenUsageReport { days, tools }
+    // 矩阵按（工具，日期）排序：前端按工具分组铺行最省事，同工具内日期天然有序。
+    let mut by_day_tool: Vec<TokenUsageCell> = grid
+        .into_iter()
+        .map(|((i, tool), c)| TokenUsageCell {
+            date: date_keys[i].clone(),
+            tool: tool.to_string(),
+            calls: c[0],
+            est_tokens: c[1],
+        })
+        .collect();
+    by_day_tool.sort_by(|a, b| a.tool.cmp(&b.tool).then_with(|| a.date.cmp(&b.date)));
+
+    TokenUsageReport {
+        days,
+        tools,
+        by_day_tool,
+    }
 }
 
 /// Token 用量估算报告（近 `days` 天，含今天；clamp 1..=120）。
@@ -971,6 +1009,24 @@ mod tests {
         assert_eq!(report.tools[0].est_output, 23);
         assert_eq!(report.tools[1].tool, "write_file");
         assert_eq!(report.tools[1].est_output, 0);
+
+        // 矩阵：只含非零格；窗口外的条目不出现；与天序列同口径（today 的
+        // read_files = 10+20=30 tok、1 次；write_file = 5 tok、1 次；昨天 read_files = 5）。
+        assert_eq!(report.by_day_tool.len(), 3);
+        // 排序：先工具后日期。
+        let cells: Vec<(&str, &str, u64, u64)> = report
+            .by_day_tool
+            .iter()
+            .map(|c| (c.tool.as_str(), c.date.as_str(), c.calls, c.est_tokens))
+            .collect();
+        assert_eq!(
+            cells,
+            vec![
+                ("read_files", dk(1).as_str(), 1, 2 + 3),
+                ("read_files", dk(0).as_str(), 1, 10 + 20),
+                ("write_file", dk(0).as_str(), 1, 5),
+            ]
+        );
     }
 
     /// read_usage_report：写真实日志 → 近 7 天报告正确；文件不存在 → 7 个全零天。
