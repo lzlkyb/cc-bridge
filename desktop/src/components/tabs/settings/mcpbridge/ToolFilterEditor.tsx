@@ -44,7 +44,11 @@ export function ToolFilterEditor({
         ? allowed.filter((n) => n !== name)
         : [...allowed, name];
       // 全勾上等价于清空清单（回到全暴露语义），别留一份冗余存档。
-      onSave(next.length === tools.length ? [] : next);
+      // 🔴 只比对**现存**工具（排除陈旧项）：清单里存着升级前的旧名时，
+      // next.length 会永远多出陈旧项数量，用原始长度比对会漏掉换算，
+      // 反向更糟——陈旧项恰好凑数时会把「部分暴露」误判成「全暴露」。
+      const knownCount = next.filter((n) => known.has(n)).length;
+      onSave(knownCount === tools.length ? [] : next);
     }
   };
 
