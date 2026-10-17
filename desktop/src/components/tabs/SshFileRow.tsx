@@ -1,4 +1,5 @@
 import { Icon } from "../ui/icon";
+import { EmptyState } from "../ui/EmptyState";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import type { SshFileEntry } from "../../lib/types";
 
@@ -149,7 +150,13 @@ export function FileTable({
         </div>
       )}
       {!error && !loading && entries.length === 0 && (
-        <p className="p-4 text-center text-sm text-muted-foreground">空目录</p>
+        // EmptyState（2026-10-17）：替代「空目录」一行灰字——给得出路的空态才友好，
+        // 且和「没加载完」在视觉上一眼可分。
+        <EmptyState
+          className="py-10"
+          icon="folder"
+          description="目录为空。把文件拖进来，或点上方「上传」。"
+        />
       )}
       <table className="w-full text-sm">
         <thead>

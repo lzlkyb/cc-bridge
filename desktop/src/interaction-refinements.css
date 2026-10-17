@@ -1,7 +1,46 @@
 /* 操作界面的动效只表达状态，滚动和输入位置保持稳定。 */
-.ui-collapse { display:grid; grid-template-rows:0fr; opacity:0; transition:grid-template-rows 200ms cubic-bezier(.2,.8,.2,1),opacity 160ms; }
+.ui-overlay, .ui-surface {
+  opacity:1;
+  transition:opacity var(--dur-enter) var(--ease),transform var(--dur-enter) var(--ease);
+}
+.ui-overlay { transition-property:opacity; }
+.ui-surface { transform:none; }
+.ui-overlay[data-state="closed"], .ui-surface[data-state="closed"] { opacity:0; }
+.ui-surface[data-state="closed"] { transform:translateY(4px) scale(.985); }
+.ui-surface[data-motion="fade"] { transform:none; }
+.ui-overlay[data-exiting], .ui-surface[data-exiting] {
+  transition-duration:var(--dur-exit);
+  transition-timing-function:var(--ease-exit);
+  pointer-events:none;
+}
+.ui-button {
+  transition:color var(--dur-fast) var(--ease),background-color var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),box-shadow var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease);
+}
+.ui-button:active:not(:disabled) { transform:translateY(1px);transition-duration:var(--dur-press); }
+.ui-button[data-loading] { cursor:wait; }
+.ui-button-loader { animation:ui-feedback-in var(--dur-fast) var(--ease); }
+.sw { transition:background-color var(--dur) var(--ease),box-shadow var(--dur-fast) var(--ease); }
+.sw-thumb { transform:translateX(2px);transition:transform var(--dur-enter) var(--ease); }
+.sw.on .sw-thumb { transform:translateX(22px); }
+.sw:active:not(:disabled) .sw-thumb { transform:translateX(3px) scale(.92);transition-duration:var(--dur-press); }
+.sw.on:active:not(:disabled) .sw-thumb { transform:translateX(21px) scale(.92); }
+.sw:disabled { cursor:not-allowed; }
+.app-side-item:active:not(:disabled), [role="menuitem"]:active:not(:disabled) { background:hsl(var(--accent)); }
+@keyframes ui-feedback-in { from { opacity:.4; } to { opacity:1; } }
+.toast { transition:opacity var(--dur-enter) var(--ease),transform var(--dur-enter) var(--ease); }
+.toast[data-state="closed"] { opacity:0;transform:translateX(8px); }
+.toast[data-exiting] { transition-duration:var(--dur-exit);transition-timing-function:var(--ease-exit);pointer-events:none; }
+.toast-countdown { width:100%;transform-origin:left;animation:toast-progress linear forwards; }
+.ui-collapse { display:grid; grid-template-rows:0fr; opacity:0; transition:grid-template-rows var(--dur-enter) var(--ease),opacity var(--dur); }
 .ui-collapse[data-open="true"] { grid-template-rows:1fr; opacity:1; }
 .ui-collapse-inner { min-height:0; overflow:hidden; }
+/* 顶栏安全徽章槽位（横向版 Collapse）：空闲 0 宽、出现 280ms 平滑展开，
+   顶栏中段被平滑让位而不是一瞬间跳。不能常驻裁剪——Menu 弹层要向下伸展，
+   只在动画窗口内裁横向（组件用 data-clip 控制），稳态（含面板展开时）放开。 */
+.sec-slot { display:grid; grid-template-columns:0fr; opacity:0; transition:grid-template-columns 280ms cubic-bezier(.2,.8,.2,1),opacity 200ms ease; }
+.sec-slot[data-open="true"] { grid-template-columns:1fr; opacity:1; }
+.sec-slot-item { min-width:0; }
+.sec-slot[data-clip] .sec-slot-item { overflow-x:clip; }
 .settings-category { scrollbar-gutter:stable; }
 .terminal-side-resizer { position:absolute;right:0;top:0;bottom:0;width:7px;z-index:4;border:0;padding:0;background:transparent;cursor:col-resize;touch-action:none; }
 .terminal-side-resizer:hover,.terminal-side-resizer:focus-visible { background:hsl(var(--primary) / .25); }
@@ -45,4 +84,13 @@
  .log-tab .log-search-input { min-width:100px;width:100%; }
  .terminal-empty { padding:16px; }
 }
-@media(prefers-reduced-motion:reduce) { .ui-collapse { transition:none; } }
+@media(prefers-reduced-motion:reduce) { .ui-collapse, .sec-slot { transition:none; } }
+@media(prefers-reduced-motion:reduce) {
+ .ui-surface[data-state], .toast[data-state], .ui-button:active:not(:disabled), .interactive:active:not(:disabled):not([aria-disabled="true"]) { transform:none; }
+ .sw:active:not(:disabled) .sw-thumb { transform:translateX(2px); }
+ .sw.on:active:not(:disabled) .sw-thumb { transform:translateX(22px); }
+ /* 保留颜色与文字反馈；取消倒计时、骨架和循环装饰。 */
+ .toast-countdown { animation:none;display:none; }
+ .skeleton, .vh-skel { animation:none; }
+ .ui-overlay[data-state], .ui-surface[data-state], .toast[data-state] { transition-duration:0s; }
+}

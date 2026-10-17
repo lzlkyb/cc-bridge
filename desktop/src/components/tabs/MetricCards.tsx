@@ -41,8 +41,9 @@ export function MetricCards({
   const fmtLatency = (ms: number): { value: string; unit: string } =>
     ms >= 1000 ? { value: (ms / 1000).toFixed(2), unit: " 秒" } : { value: String(ms), unit: " 毫秒" };
 
-  // 未运行时实时类指标置 "--"：显示 0 会让人以为“在跑但没流量”。
-  const dash = (v: string) => (running ? v : "--");
+  // 未运行时实时类指标置 "—"：显示 0 会让人以为“在跑但没流量”。
+  // 用 EM DASH 而非 "--"：宽度≈一个数字位，与数字态切换时横跳最小（全应用空值统一记号）。
+  const dash = (v: string) => (running ? v : "—");
   const p95 = s?.p95LatencyMs ?? 0;
   const avg = s?.avgLatencyMs ?? 0;
   // 尾部倍数：P95 ÷ 平均。比孤零零的 142ms 有信息量——它告诉你尾延迟拉得多长。
@@ -155,11 +156,14 @@ function MetricCard({
       <div className="text-xs font-bold text-muted-foreground">
         {label}
       </div>
+      {/* tabular-nums + 锁宽（min-w-[5ch]≈最长样本 12.34@24px/800）：5s 采样一跳时
+          数值段不再横跳推挤 sub 行与 spark；空值「—」也落在同一段宽里。左对齐让
+          右侧留白呼吸，而不是居中抖。 */}
       <div className="mt-1 text-[24px] font-extrabold leading-none tracking-tight text-foreground">
-        <span className={pop}>{value}</span>
+        <span className={`inline-block min-w-[5ch] tabular-nums ${pop}`}>{value}</span>
         {unit && <small className="text-xs font-bold text-muted-foreground">{unit}</small>}
       </div>
-      <div className="mt-0.5 truncate text-[10.5px] text-muted-foreground" title={sub}>
+      <div className="mt-0.5 truncate text-[10.5px] tabular-nums text-muted-foreground" title={sub}>
         {sub}
       </div>
       <Sparkline series={series} kind={chart} threshold={threshold} />

@@ -247,13 +247,12 @@ export function SshTerminal({
         tuiGuideHint={wheel.guide === "collapsed"}
         onGuideHintClick={wheel.expandGuide}
       />
-      {closedReason !== null && (
-        <SshDisconnectedBar
-          reason={closedReason}
-          onReconnect={onReconnect}
-          onCloseTab={onCloseTab}
-        />
-      )}
+      {/* 槽位化横幅（2026-10-17）：reason 为 null 时收起为 0 高，展开/收起 200ms 平滑 */}
+      <SshDisconnectedBar
+        reason={closedReason}
+        onReconnect={onReconnect}
+        onCloseTab={onCloseTab}
+      />
       {/* 内边距与底色放外层；内层是 fit 的测量基准，**必须无 padding**。
           FitAddon 读的是 parentElement 的 computed height（不含 padding），而 doFit 的实测用的是
           clientHeight（含 padding）——两者对 padding 的口径不一样，分层之后就不存在这个陷阱。 */}

@@ -1,6 +1,7 @@
 import { useEffect, type RefCallback } from "react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
+import { MOTION } from "../lib/motion";
 
 /**
  * useAutoAnimate 的「减弱动效」安全封装。
@@ -11,7 +12,7 @@ import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
  * 用法：const parent = useAutoAnimateRM<HTMLDivElement>(); 然后 <div ref={parent}>...</div>
  */
 export function useAutoAnimateRM<T extends HTMLElement = HTMLDivElement>(): RefCallback<T> {
-  const [parent, enable] = useAutoAnimate<T>();
+  const [parent, enable] = useAutoAnimate<T>({ duration: MOTION.standard, easing: MOTION.ease });
   const reduced = usePrefersReducedMotion();
 
   useEffect(() => {

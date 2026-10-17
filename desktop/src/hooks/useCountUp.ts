@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useAppHidden } from "../lib/appVisibility";
+import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
 
 interface CountUpOptions {
   /** 入场动画时长(ms)，默认 700 */
@@ -16,8 +17,9 @@ interface CountUpOptions {
  */
 export function useCountUp(target: number, { duration = 700, enabled = true }: CountUpOptions = {}): number {
   const hidden = useAppHidden();
-  const animate = enabled && !hidden;
-  const [val, setVal] = useState(enabled ? 0 : target);
+  const reduced = usePrefersReducedMotion();
+  const animate = enabled && !hidden && !reduced;
+  const [val, setVal] = useState(animate ? 0 : target);
   const isFirst = useRef(true);
 
   useEffect(() => {

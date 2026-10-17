@@ -151,7 +151,8 @@ export function StatusCard({
           右侧时长是配套的西文数字+中文单位，10.5px 与 eyebrow 同行保持次级感。 */}
       <div className="flex items-center text-xs font-bold opacity-90">
         服务状态
-        <span className="ml-auto text-[10.5px] font-semibold">
+        {/* tabular-nums：时长每秒自增，等宽数字位让秒针跳动不再横推左侧「服务状态」。 */}
+        <span className="ml-auto text-[10.5px] font-semibold tabular-nums">
           {running ? `已运行 ${formatUptime(liveUptime)}` : "未运行"}
         </span>
       </div>

@@ -40,7 +40,8 @@ export function AuditPager({ page, pageSize, total, onPageChange, onPageSizeChan
 
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <div className="text-xs text-muted-foreground">
+      {/* tabular-nums：新日志写入 / 翻页时「共 N 条」与页码变宽不再横推右侧按钮组。 */}
+      <div className="text-xs tabular-nums text-muted-foreground">
         共 <b className="font-semibold text-foreground">{total.toLocaleString()}</b> 条 · 第{" "}
         <b className="font-semibold text-foreground">{cur}</b> / {tp} 页
       </div>

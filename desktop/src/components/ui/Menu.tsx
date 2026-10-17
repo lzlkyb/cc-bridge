@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { usePresence } from "../../hooks/usePresence";
 import { Icon, type IconName } from "./icon";
 
 /**
@@ -7,6 +8,8 @@ import { Icon, type IconName } from "./icon";
  *
  * 关闭逻辑照搬自原 SshTerminalToolbar 的 MoreMenu：mousedown 用捕获阶段监听，
  * 因为终端容器在 mousedown 上会夺焦点，冒泡阶段才关菜单会慢一拍。
+ *
+ * 与 Modal 共用可中断的进退场；退场菜单保持视觉连续，但立即停止接受操作。
  */
 export function Menu({
   trigger,
@@ -22,6 +25,7 @@ export function Menu({
   width?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const { mounted, entered } = usePresence(open);
   const boxRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -30,7 +34,21 @@ export function Menu({
       if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        // 先关菜单；不要让同一次 Esc 穿透到外层弹窗或终端。
+        e.preventDefault();
+        e.stopPropagation();
+        setOpen(false);
+        boxRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
+        return;
+      }
+      if (!boxRef.current?.contains(e.target as Node) || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+      const items = Array.from(boxRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'));
+      if (!items.length) return;
+      e.preventDefault();
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      const index = e.key === "Home" ? 0 : e.key === "End" ? items.length - 1 : e.key === "ArrowDown" ? (current + 1) % items.length : (current <= 0 ? items.length : current) - 1;
+      items[index].focus({ preventScroll: true });
     };
     window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey, true);
@@ -43,10 +61,14 @@ export function Menu({
   return (
     <div ref={boxRef} className="relative">
       {trigger(open, () => setOpen((v) => !v))}
-      {open && (
+      {mounted && (
         <div
           role="menu"
-          className={`absolute top-full z-20 mt-1 ${align === "right" ? "right-0" : "left-0"} ${width} max-h-[70vh] overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg`}
+          aria-hidden={!open || undefined}
+          ref={node => { if (node) node.inert = !open; }}
+          data-state={entered ? "open" : "closed"}
+          data-exiting={!open || undefined}
+          className={`ui-surface absolute top-full z-20 mt-1 ${align === "right" ? "right-0 origin-top-right" : "left-0 origin-top-left"} ${width} max-h-[70vh] overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg`}
         >
           {children(() => setOpen(false))}
         </div>

@@ -1,5 +1,8 @@
-import { useState, useCallback, useEffect, createContext, useContext, type ReactNode } from "react";
+import { useState, useCallback, useEffect, useRef, createContext, useContext, type ReactNode } from "react";
 import { Icon } from "./icon";
+import { usePresence } from "../../hooks/usePresence";
+import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
+import { useAppHidden } from "../../lib/appVisibility";
 
 type ToastVariant = "success" | "error" | "warning" | "info";
 
@@ -25,7 +28,7 @@ const ToastContext = createContext<ToastContextValue>({ toast: () => {} });
  *
  * 统一通知方案升级（design/统一通知系统设计稿.html）：
  *  - 容器从 top-16 移到右下角（远离主操作区，不遮 Header / 横幅区）；
- *  - 图标带语义底色块，底部倒计时进度条，error 入场附带 shake 强调。
+ *  - 图标带语义底色块，底部倒计时与实际驻留同步；悬停/聚焦时暂停，关闭统一退场。
  */
 export function useToast() {
   return useContext(ToastContext);
@@ -40,6 +43,7 @@ export function toast(message: string, variant: ToastVariant = "info") {
 }
 
 let toastId = 0;
+const TOAST_LIFETIME = 3500;
 
 // 文字用 -ink 变体：基础语义色在 12–14px 淡底上只有 2.3–3.8:1（浅色），不达 AA 4.5:1。
 // info 走 primary（浅色 5.33:1）本就达标，故保持基础色。
@@ -73,13 +77,11 @@ const variantProgress: Record<ToastVariant, string> = {
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const stackRef = useAutoAnimateRM<HTMLDivElement>();
 
   const addToast = useCallback((message: string, variant: ToastVariant = "info") => {
     const id = ++toastId;
     setToasts((prev) => [...prev, { id, message, variant }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 3500);
   }, []);
 
   const removeToast = useCallback((id: number) => {
@@ -89,6 +91,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   // 将实现暴露给模块级单例（供非组件调用，如 invokeOrToast）
   useEffect(() => {
     toastImpl = addToast;
+    return () => { if (toastImpl === addToast) toastImpl = null; };
   }, [addToast]);
 
   return (
@@ -96,42 +99,57 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       {/* Toast 容器：右下角堆叠，z-[2000] 在 Header 之上，错误项用 role=alert 走 assertive 播报 */}
       <div
+        ref={stackRef}
         className="pointer-events-none fixed bottom-4 right-4 z-[2000] flex flex-col gap-2 toast-stack"
         role="region"
         aria-label="通知"
         aria-live="polite"
       >
         {toasts.map((t) => (
-          <ToastItemView key={t.id} item={t} onDismiss={() => removeToast(t.id)} />
+          // FLIP 只移动槽位，避免覆盖通知自身的 transform 进退场。
+          <div key={t.id}><ToastItemView item={t} onDismiss={removeToast} /></div>
         ))}
       </div>
     </ToastContext.Provider>
   );
 }
 
-function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: () => void }) {
-  const [visible, setVisible] = useState(false);
+function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: (id: number) => void }) {
+  const [open, setOpen] = useState(true);
+  const [interaction, setInteraction] = useState({ hover: false, focus: false });
+  const { mounted, entered } = usePresence(open);
+  const hidden = useAppHidden();
+  const paused = interaction.hover || interaction.focus || hidden;
+  const remaining = useRef(TOAST_LIFETIME);
 
+  // 计时归通知自身所有：手动关闭、卸载及暂停均清理同一个时钟。
   useEffect(() => {
-    // 下一帧触发入场动画
-    const raf = requestAnimationFrame(() => setVisible(true));
-    return () => cancelAnimationFrame(raf);
-  }, []);
+    if (!open || paused) return;
+    const started = performance.now();
+    const timer = window.setTimeout(() => setOpen(false), remaining.current);
+    return () => {
+      window.clearTimeout(timer);
+      remaining.current = Math.max(0, remaining.current - (performance.now() - started));
+    };
+  }, [open, paused]);
 
-  // 退场：父级在 3500ms 移除前，于 3200ms 先触发滑出（与 transition duration-200 对齐），
-  // 补齐此前缺失的退场动画（原 toast 只有进场、关闭是瞬间消失）。
-  useEffect(() => {
-    const hideTimer = window.setTimeout(() => setVisible(false), 3200);
-    return () => window.clearTimeout(hideTimer);
-  }, []);
+  useEffect(() => { if (!mounted) onDismiss(item.id); }, [mounted, item.id, onDismiss]);
+
+  if (!mounted) return null;
 
   return (
     <div
-      onClick={onDismiss}
-      role={item.variant === "error" ? "alert" : undefined}
-      className={`pointer-events-auto relative flex w-[320px] max-w-[calc(100vw-2rem)] cursor-pointer select-none items-start gap-2.5 overflow-hidden rounded-lg border px-3.5 pb-3.5 pt-3 text-sm font-medium shadow-pop backdrop-blur-md transition-[transform,opacity,background-color,border-color] duration-200 toast ${
-        item.variant === "error" ? "err animate-shake" : item.variant === "warning" ? "warn" : ""
-      } ${variantStyles[item.variant]} ${visible ? "translate-x-0 opacity-100" : "translate-x-4 opacity-0"}`}
+      onClick={() => setOpen(false)}
+      onMouseEnter={() => setInteraction(v => ({ ...v, hover: true }))}
+      onMouseLeave={() => setInteraction(v => ({ ...v, hover: false }))}
+      onFocusCapture={() => setInteraction(v => ({ ...v, focus: true }))}
+      onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setInteraction(v => ({ ...v, focus: false })); }}
+      data-state={entered ? "open" : "closed"}
+      data-exiting={!open || undefined}
+      role={item.variant === "error" ? "alert" : "status"}
+      className={`pointer-events-auto relative flex w-[320px] max-w-[calc(100vw-2rem)] cursor-pointer select-none items-start gap-2.5 overflow-hidden rounded-lg border px-3.5 pb-3.5 pt-3 text-sm font-medium shadow-pop backdrop-blur-md toast ${
+        item.variant === "error" ? "err" : item.variant === "warning" ? "warn" : ""
+      } ${variantStyles[item.variant]}`}
     >
       <span
         className={`grid h-[30px] w-[30px] shrink-0 place-items-center rounded-lg ${variantIconBoxes[item.variant]}`}
@@ -142,18 +160,18 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: () => 
       <button
         onClick={(e) => {
           e.stopPropagation();
-          onDismiss();
+          setOpen(false);
         }}
         className="shrink-0 rounded p-0.5 opacity-60 transition-opacity hover:opacity-100"
         aria-label="关闭"
       >
         <Icon name="close" size={12} />
       </button>
-      {/* 倒计时进度条：3.5s 与父级移除时刻对齐；width 动画由全局减弱动效守卫降级 */}
+      {/* CSS 与 JS 共用暂停条件，剩余时间不会在阅读通知时悄悄流逝。 */}
       <span
         aria-hidden
-        className={`absolute bottom-0 left-0 h-[2.5px] rounded-full ${variantProgress[item.variant]}`}
-        style={{ animation: "toast-progress 3.5s linear forwards" }}
+        className={`toast-countdown absolute bottom-0 left-0 h-[2.5px] rounded-full ${variantProgress[item.variant]}`}
+        style={{ animationDuration: `${TOAST_LIFETIME}ms`, animationPlayState: paused || !open ? "paused" : "running" }}
       />
     </div>
   );

@@ -11,7 +11,12 @@
   --dur-fast: 100ms;
   --dur: 160ms;
   --dur-slow: 320ms;
+  --dur-press: 70ms;
+  --dur-enter: 180ms;
+  --dur-exit: 140ms;
+  --dur-page: 200ms;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 }
 
 @theme inline {
@@ -67,8 +72,8 @@
   --shadow-ring-inset-primary: var(--sh-ring-inset-primary);
 
   /* P2-1 微交互：全局默认过渡时长/缓动集中定义（统一 hover/focus/active 反馈基准）*/
-  --default-transition-duration: 150ms;
-  --default-transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  --default-transition-duration: var(--dur-fast);
+  --default-transition-timing-function: var(--ease);
 
   /* 动画质感升级：统一缓动 token（生成 ease-spring / ease-out-expo 工具类，弹窗/微交互共用）*/
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -126,25 +131,15 @@
   --r-control: 8px;
   --r-card: 14px;
 
-  /* 视觉增强专用（非 Tailwind 语义色）*/
-  --hero-gradient: linear-gradient(135deg, #6366F1 0%, #4F46E5 52%, #0EA5E9 100%);
-  --hero-shadow: rgba(79, 70, 229, 0.32);
+  /* 视觉增强专用（非 Tailwind 语义色）
+     （2026-10-17 清理：--hero-gradient、--hero-shadow、--hero-glow-*、--hero-metric-*、
+     --hero-addr-*、--hero-stopped-* 随 Hero 卡下线一并删除，全仓零引用；
+     --hero-text 保留——version-badge / header-badge / upgrade-welcome 在用）*/
   --hero-text: #fff;
-  /* Hero 装饰光晕浅色版 + 指标卡玻璃（白色半透白底）*/
-  --hero-glow-1: rgba(255, 255, 255, 0.14);
-  --hero-glow-2: rgba(255, 255, 255, 0.08);
-  --hero-metric-bg: rgba(255, 255, 255, 0.16);
-  --hero-metric-border: rgba(255, 255, 255, 0.22);
-  --hero-addr-bg: rgba(255, 255, 255, 0.18);
-  --hero-addr-border: rgba(255, 255, 255, 0.25);
   --version-gradient: linear-gradient(135deg, #6366F1, #4F46E5);
   --version-shadow: rgba(79, 70, 229, 0.32);
   --header-start: #ffffff;
   --header-end: #f4f6f9;
-
-  /* 浅色下 Hero 停止态：中性灰渐变 + 黑色阴影 */
-  --hero-stopped-bg: linear-gradient(135deg, #64748b 0%, #475569 60%, #334155 100%);
-  --hero-stopped-shadow: 0 12px 32px rgba(0,0,0,0.28);
 
   /* 图表/数据可视化固定调色板（PerfCharts / TimingBreakdown 共用；主题无关、深浅一致，
      改配色只动此处）。SVG fill 与 inline style background 均直接引用 var()。 */
@@ -161,7 +156,6 @@
   --chart-compare: #94a3b8; /* 对比柱（P95）/ 中性灰 */
 
   /* 浅色下卡片阴影 */
-  --card-lift-shadow: 0 8px 24px rgba(0,0,0,0.10);
   --card-primary-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 1px color-mix(in srgb, hsl(var(--primary)) 12%, transparent);
 
   /* 浅色下 Header Logo 阴影 */
@@ -223,29 +217,13 @@
   --ring: 239 84% 74%;
   --radius: 0.6rem;
 
-  /* 暗色下 Hero 运行态：降饱和 + 加深底色，避免在深蓝底上刺眼 */
-  --hero-gradient: linear-gradient(135deg, #4F46E5 0%, #3730A3 55%, #0C4A6E 100%);
-  /* 黑底色下黑色阴影基本无效——改为黑压暗 + 半透明白边让它从背景里"切"出来 */
-  --hero-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
   --hero-text: #fff;
-  /* 暗色下装饰光晕强度砍半避免刺眼 + 玻璃卡收紧 */
-  --hero-glow-1: rgba(255, 255, 255, 0.06);
-  --hero-glow-2: rgba(255, 255, 255, 0.04);
-  --hero-metric-bg: rgba(255, 255, 255, 0.05);
-  --hero-metric-border: rgba(255, 255, 255, 0.09);
-  --hero-addr-bg: rgba(255, 255, 255, 0.08);
-  --hero-addr-border: rgba(255, 255, 255, 0.14);
   --version-gradient: linear-gradient(135deg, #818CF8, #6366F1);
   --version-shadow: rgba(129, 140, 248, 0.35);
   --header-start: #1a202e;
   --header-end: #121620;
 
-  /* 暗色下 Hero 停止态：深灰但加白边避免融入背景 */
-  --hero-stopped-bg: linear-gradient(135deg, #2C2F36 0%, #1F2127 60%, #15171C 100%);
-  --hero-stopped-shadow: 0 12px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.08);
-
   /* 暗色下卡片阴影：黑色变白色半透明 */
-  --card-lift-shadow: 0 8px 24px rgba(255,255,255,0.04);
   --card-primary-shadow: 0 1px 3px rgba(255,255,255,0.03), 0 0 0 1px color-mix(in srgb, hsl(var(--primary)) 12%, transparent);
 
   /* 暗色下 Header Logo 阴影 */
@@ -311,53 +289,23 @@ body {
    视觉增强层（对标设计稿 A–F）—— 语义组件类，Tailwind 之外补充
    =================================================================== */
 
-/* 脉冲点涟漪：纯合成实现（只动 transform + opacity），不触发重绘。
-
-   旧实现是动画 box-shadow 的 spread（0 → 8px）。box-shadow 无法走合成层，每帧都要重绘；
-   而当时两个使用点（Header 的 `.status-pill .p-dot`、运行卡的 `.hero-dot`）恰好都紧邻
-   `backdrop-filter: blur(4px)` 的元素（`.hero-metric` / `.hero-addr`），重绘会连带
-   大面积背景重新模糊。改成只动 transform/opacity 后走纯合成，这是原理层面的改善。
-
-   现在只剩 Header 那一个使用点：`.hero-dot` 随 Hero 卡一起下了，连接页的光晕
-   换成了 `.chain-ripple`（见 E4，同样只动 transform/opacity）。
-
-   ╔═ 关于实测（别拿这段当定量结论）
-   已确认的事实：两个 webview 进程曾实测常驻共约 0.6 个 CPU 核，且窗口收进托盘后
-   基本不降（61.7% → 60.4% 单核）。
-   未能确认的：这 0.6 核到底有多少是这两个脉冲点贡献的。后续变量对比实验发现
-   **测量被窗口遮挡状态支配**：同一份 60fps 配置在两轮里 GPU 占用从 6.8% 到 0.4%
-   波动（WebView2 在窗口被遮挡时会停止合成）。想量化得先把窗口强制置顶不遮挡、
-   环境安静、延长采样，见「功能优化清单.md」M10。
-
-   现在用与小点同尺寸的伪元素放大 + 淡出模拟同样的涟漪观感。
-   颜色取 `currentColor`（旧实现硬编码天蓝），顺带让 Header 那个点的涟漪跟随状态色。 */
-.status-pill .p-dot::after {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: currentColor;
-  pointer-events: none;
-  /* 不写 `will-change`：动画 transform/opacity 本就会在动画期间自动提升合成层，
-     显式写反而让层在动画暂停（data-app-hidden）后也无法被回收。 */
-  animation: pulse-ring-ripple 2s ease-out infinite;
-}
-@keyframes pulse-ring-ripple {
-  0%   { opacity: 0.55; transform: scale(1); }
-  70%  { opacity: 0;    transform: scale(3.6); }
-  100% { opacity: 0;    transform: scale(3.6); }
-}
+/* 脉冲点涟漪 `.status-pill .p-dot` 已删（2026-10-17）：`.p-dot` 全仓 TSX 零引用
+   （侧栏胶囊的点用的是 `.app-side-status-dot`，无动画），整条链路是死代码。
+   技巧存档：点状涟漪用「同尺寸伪元素 scale+opacity 模拟」，别动画 box-shadow spread
+   （无法走合成层，每帧重绘）；也别写 will-change（动画结束后层无法回收）。
+   同类活例见 `.chain-ripple`（E4）。 */
 
 @keyframes fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.animate-fade-in { animation: fade-in 0.22s ease; }
+.animate-fade-in { animation: fade-in var(--dur-enter) var(--ease); }
 
 @keyframes scale-in {
   from { opacity: 0; transform: scale(0.96); }
   to   { opacity: 1; transform: scale(1); }
 }
-.animate-scale-in { animation: scale-in 0.16s ease; }
+.animate-scale-in { animation: scale-in var(--dur) var(--ease); }
 
 /* 新手引导（H3）：点遮罩不再关闭，改为轻微抖动提示“请用下方按钮”。减弱动效时由全局守卫自动降级。*/
 @keyframes shake {
@@ -376,18 +324,33 @@ body {
 }
 .notice-pulse { animation: notice-pulse 2.4s ease-in-out infinite; }
 
-/* Toast 倒计时进度条（宽度 100%→0，时长由内联 animation-duration 控制） */
+/* 倒计时只缩放，不在每帧重排通知及其相邻元素。 */
 @keyframes toast-progress {
-  from { width: 100%; }
-  to   { width: 0%; }
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
 }
 
-/* Tab 切换入场：新面板从右微移入 + 淡入（替代硬切；退场由父级卸载驱动即时消失，可接受）*/
+/* 旧环境回退：恢复可感知的短距离入场；终端仍保留固定定位上下文。 */
 @keyframes tab-in {
-  from { opacity: .6; transform: translateY(3px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from { opacity: .45; transform:translateY(6px); }
+  to   { opacity: 1; transform:none; }
 }
-.animate-tab-in { animation: tab-in 0.18s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes tab-fade-in { from { opacity:.45; } to { opacity:1; } }
+.animate-tab-in { animation: tab-in var(--dur-page) var(--ease); }
+.animate-tab-in[data-page-motion="fade"] { animation-name:tab-fade-in; }
+[data-page-panel] { view-transition-name:workspace-page; }
+/* 外壳继续实时响应。只捕获内容区，不冻结顶栏、侧栏与通知。 */
+:root[data-page-transitions] { view-transition-name:none; }
+:root[data-page-transitions] .animate-tab-in { animation:none; }
+::view-transition { pointer-events:none; }
+::view-transition-group(workspace-page) { animation-duration:var(--dur-page);animation-timing-function:var(--ease); }
+::view-transition-old(workspace-page) { animation:page-out var(--dur-fast) var(--ease-exit) both;mix-blend-mode:normal; }
+::view-transition-new(workspace-page) { animation:tab-in var(--dur-page) var(--ease) both;mix-blend-mode:normal; }
+@keyframes page-out { to { opacity:0;transform:translateY(-3px); } }
+@media(prefers-reduced-motion:reduce) {
+ .animate-tab-in { animation:none; }
+ ::view-transition-group(workspace-page), ::view-transition-old(workspace-page), ::view-transition-new(workspace-page) { animation:none; }
+}
 
 /* 按钮 ripple 水波（pointer 位置）*/
 .ripple {
@@ -427,9 +390,7 @@ body {
   box-shadow: 0 2px 6px var(--version-shadow);
 }
 
-/* 状态胶囊 + 脉冲点（C）*/
-.status-pill .p-dot { position: relative; }
-.status-pill .p-dot::after { content: ""; }
+/* 状态胶囊的脉冲点 `.status-pill .p-dot` 已删（2026-10-17，见文件上部存档注） */
 
 /* 更新下载「不确定进度」态：条纹滚动动画条（无 Content-Length 时，如 Gitee 源） */
 .indet-fill {
@@ -454,12 +415,8 @@ body {
   color: hsl(var(--primary));
 }
 
-/* 卡片 hover 抬升（F）*/
-.card-lift { transition: box-shadow var(--dur) var(--ease), transform var(--dur) var(--ease), border-color var(--dur) var(--ease); }
-.card-lift:hover { box-shadow: var(--card-lift-shadow); transform: translateY(-1px); }
-
-/* 所有卡片统一 hover 微交互（仅阴影加深，不抬升，避免与 card-lift 冲突）*/
-.card-lift:not(:hover) + .card-lift { /* no-op placeholder */ }
+/* 卡片 hover 抬升 `.card-lift`（F）已删（2026-10-17）：全仓 TSX 零引用，
+   连同其 no-op 占位规则与 --card-lift-shadow 两份 token 一起清理。 */
 
 /* 主卡分级（B）*/
 .card-primary {
@@ -469,60 +426,16 @@ body {
     linear-gradient(180deg, color-mix(in srgb, hsl(var(--primary)) 5%, hsl(var(--card))), hsl(var(--card)) 60px);
 }
 
-/* A. Hero 渐变头卡 */
-.hero {
-  position: relative; overflow: hidden;
-  border-radius: 14px; padding: 14px 20px; color: var(--hero-text);
-  background: var(--hero-gradient);
-  box-shadow: 0 12px 32px var(--hero-shadow);
-  transition: background var(--dur-slow) var(--ease), box-shadow var(--dur-slow) var(--ease);
-}
-/* 光晕圆：用 radial-gradient 自带的软边，而不是纯色圆 + `filter: blur(2px)`。
-   `filter` 会把元素提升成独立合成层并额外申请中间缓冲（计入 gpu-process 的
-   私有内存与专用显存），而 2px 实际只软化了 180px 圆的边缘——换成渐变后
-   边缘本身就是渐隐的，观感等价且零合成层。 */
-.hero::before, .hero::after {
-  content: ""; position: absolute; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(circle,
-    var(--hero-glow-1) 0%, var(--hero-glow-1) 62%, transparent 72%);
-  transition: background var(--dur-slow) var(--ease);
-}
-.hero::before { width: 180px; height: 180px; top: -70px; right: -40px; }
-.hero::after  {
-  width: 120px; height: 120px; bottom: -60px; left: 30%;
-  background: radial-gradient(circle,
-    var(--hero-glow-2) 0%, var(--hero-glow-2) 62%, transparent 72%);
-}
-.hero-dot { position: relative; }
-.hero-dot::after { content: ""; }
-/* 这两个卡片原本带 `backdrop-filter: blur(4px)`，已删。
-   删得起的理由：它们背后只有 `.hero` 的平滑 linear-gradient 加两个
-   rgba(255,255,255,0.14) / 0.08 的极淡光晕——**模糊一个平滑渐变，结果还是
-   那个平滑渐变**，没有高频细节可糊，视觉上看不出差别（深色下光晕只有
-   0.06/0.04 透明度，更看不见）。而 backdrop-filter 是 Chromium 里最贵的合成
-   操作之一：下层每次重绘都要重新模糊一遍背景。
-   若将来背景改成含高频细节的图片/纹理，再评估是否加回。 */
-.hero-metric {
-  background: var(--hero-metric-bg); border: 1px solid var(--hero-metric-border);
-  border-radius: 11px; padding: 9px 10px;
-  transition: background var(--dur-slow) var(--ease), border-color var(--dur-slow) var(--ease);
-}
-.hero-addr {
-  background: var(--hero-addr-bg); border: 1px solid var(--hero-addr-border);
-  transition: background var(--dur-slow) var(--ease), border-color var(--dur-slow) var(--ease);
-}
-/* 停止态：渐变改用中性灰，弱化视觉存在感 */
-.hero-stopped {
-  background: var(--hero-stopped-bg);
-  box-shadow: var(--hero-stopped-shadow);
-}
+/* A. Hero 渐变头卡 — 已整体删除（2026-10-17）。
+   Hero 卡早已随主页改版下线，`.hero` / `.hero::before|after`（光晕圆）/ `.hero-dot` /
+   `.hero-metric` / `.hero-addr` / `.hero-stopped` / `.hero-sec-label` / `.hero-overview` /
+   `.hero-val-*` / `.hero-pill` 全家在 TSX 里零引用，属于纯死装饰 CSS；
+   配套 token（--hero-gradient、--hero-shadow、--hero-glow-*、--hero-metric-*、
+   --hero-addr-*、--hero-stopped-*，深浅两份）一并删除。
+   技巧存档：装饰光晕用 radial-gradient 自带软边，别用 filter:blur（会提升合成层）；
+   玻璃卡 backdrop-filter 模糊平滑渐变毫无收益，是 Chromium 最贵的合成操作之一。 */
 
-/* ── 方案 A：Hero 运行时动态效果 ───────────────── */
-
-/* A1. 整卡呼吸 — 已移除（box-shadow 动画持续 paint，CPU 占用 ~3%）。
-   改为静态 box-shadow：见 .hero 基础样式，运行态由 A5 流光 + .hero-dot 脉冲表达动态感。 */
-
-/* A2. 指标数字弹跳 — 值变化时 scale 1→1.08→1。事件驱动，值不变就不跑。
+/* A2. 指标数字弹跳 — 值变化时 scale 1→1.08→1。事件驱动，值不变就不跑。（活）
    类名从 `.hero-metric-pop` 改成 `.metric-pop`：hero 卡已不存在，前缀只会误导。
    驱动它的 hook 在 `hooks/useChangeClass.ts`（usePopClass）。 */
 @keyframes metric-pop {
@@ -536,46 +449,9 @@ body {
   display: inline-block;
 }
 
-/* A3. 地址胶囊流光 — 已移除（background-position 动画持续 paint，CPU 占用 ~2%）。
-   .hero-addr--live 保留静态渐变描边色，运行态视觉差异足够。 */
-
-/* A5. 运行态顶部流光 — 已移除（transform: translateX 动画，CPU 占用 ~1%）。 */
-
-/* 网络卡片端口重启警告框 .warn-box — 已删除（改用统一组件 components/ui/notice.tsx 的
-   InlineNotice，配色走语义 token，不再需要这份独立深浅适配） */
-
-/* A4. 运行时间秒数颜色闪动（数码钟感）—— 已删除。
-   两个原因：
-   1. 死代码：运行态表达改纯 CSS 后，`.hero-uptime--live` 已不再被任何 TSX 引用；
-   2. 即使再用也不应该这么写：动画 `color` 无法走合成层，每帧都要重绘，
-      而这段文字就在 `.hero` 里——当时那里还有 `backdrop-filter: blur(4px)` 的
-      `.hero-metric` / `.hero-addr`，一次重绘就要连带大面积背景重新模糊。
-   若以后要恢复这类效果，只用 opacity / transform（参考下方 pulse-ring-ripple）。 */
-
-/* ── 方案 A 分组布局（运行卡指标重排）── */
-/* Hero 内的分区小标题：白字变体（覆盖卡片场景的深色 .s-sec-label）*/
-.hero-sec-label {
-  font-size: 11px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: 0.6px; color: rgba(255, 255, 255, 0.72); margin-bottom: 5px;
-}
-/* 概览卡（成功率）略降透明底，与主指标卡区分 */
-.hero-overview { background: rgba(255, 255, 255, 0.10); }
-/* 指标数字字号分级 */
-.hero-val-xl { font-size: 30px; font-weight: 800; line-height: 1; letter-spacing: -0.03em; }
-.hero-val-lg { font-size: 28px; font-weight: 800; line-height: 1.05; letter-spacing: -0.02em; }
-.hero-val-sm { font-size: 18px; font-weight: 800; line-height: 1.1; }
-/* 治理条 / 热门工具的胶囊 */
-.hero-pill {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 3px 9px; border-radius: 999px; font-size: 11px;
-  background: rgba(255, 255, 255, 0.18); border: 1px solid rgba(255, 255, 255, 0.28);
-  color: #fff; white-space: nowrap;
-}
-.hero-pill b { font-weight: 800; }
-/* 热门工具胶囊：青色变体，与「安全治理」胶囊区分 */
-.hero-pill.tool {
-  background: rgba(14, 165, 233, 0.22); border-color: rgba(14, 165, 233, 0.4);
-}
+/* 历史移除存档（都曾属于 Hero 家族）：A1 整卡呼吸（box-shadow 动画持续 paint）、
+   A3 地址胶囊流光、A5 顶部流光、A4 运行秒数颜色闪动（动画 color 每帧重绘，
+   `.hero-uptime--live` 本身也是死代码）。恢复同类效果只用 opacity / transform。 */
 
 /* ═══ 内容区容器（2026-10-14 侧栏改造）═══
    加侧栏后「视口宽度」不再等于「内容区宽度」：940 窗口 + 200 侧栏 → 内容区只剩约 700px，
@@ -713,7 +589,7 @@ body {
 }
 .usage-kpi-v { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; margin-top: 2px; }
 .usage-kpi-v small { font-size: 11px; font-weight: 600; color: hsl(var(--muted-foreground)); margin-left: 2px; }
-.usage-kpi-delta { font-size: 11px; margin-top: 2px; font-weight: 700; }
+.usage-kpi-delta { font-size: 11px; margin-top: 2px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .usage-kpi-delta--flat { color: hsl(var(--muted-foreground)); font-weight: 600; }
 .usage-kpi-delta--up { color: hsl(var(--success)); }
 .usage-kpi-delta--down { color: hsl(var(--destructive)); }
@@ -980,9 +856,6 @@ body {
 /* “通”节点的光晕。只给链路末段（远程调用）且 tone=ok 时用——全屏只保留这一个
    常驻动画。只动 transform/opacity，走纯合成不重绘。
 
-   为何不直接复用 `.status-pill .p-dot::after` 那条：那个点只有 6px，scale(3.6)
-   放到 ~22px 正合适；链路节点是 26px，同样倍数会摊到 93px，糊满整段。
-
    为何是独立元素而不是节点的 ::after：节点是白底圆 + 绿色✓，在它自己的
    ::after 上画扩散色块会盖住图标；独立元素放在节点**之后绘制顺序的下层**，
    从背后扩散出去，才是光晕而不是遮罩。 */
@@ -1204,10 +1077,10 @@ body {
 .theme-transition *,
 .theme-transition *::before,
 .theme-transition *::after {
-  transition: background-color var(--dur-slow) var(--ease), color var(--dur-slow) var(--ease),
-    border-color 0.45s ease, fill 0.45s ease, stroke 0.45s ease,
-    box-shadow 0.45s ease !important;
-  transition-delay: 0s !important;
+  /* 颜色覆盖不应取消正在进行的弹层进退场、开关位移。 */
+  transition-property: background-color, color, border-color, fill, stroke, box-shadow;
+  transition-duration: var(--dur-slow);
+  transition-timing-function: var(--ease);
 }
 
 /* ===================================================================
@@ -1496,11 +1369,12 @@ body {
    替代散落的 transition-colors；:active 轻微缩放提供按压感，hover/focus 过渡与时长基准一致。 */
 .interactive {
   transition-property: color, background-color, border-color, box-shadow, transform;
-  transition-duration: 150ms;
-  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease);
 }
-.interactive:active {
+.interactive:active:not(:disabled):not([aria-disabled="true"]) {
   transform: scale(0.98);
+  transition-duration: var(--dur-press);
 }
 
 /* P2-3 分隔线语义类：统一 border-border 分隔线，深浅主题自适应；末条自动去边框。
@@ -1661,7 +1535,7 @@ select:focus-visible,
 .pal-it, .pal-g { animation: pal-in var(--dur-fast) var(--ease) both; }
 
 /* ═══ 已保存反馈（统一组件 SavedHint）═══ */
-.saved-hint { animation: saved-in 0.22s ease both; }
+.saved-hint { animation: saved-in var(--dur-enter) var(--ease) both; }
 .saved-hint--icon { font-size: 11px; gap: 0; }
 @keyframes saved-in {
   from { opacity: 0; transform: translateY(1px); }
@@ -1695,7 +1569,6 @@ select:focus-visible,
    入场 keyframe 停在第一帧。而暂停的初衷只是省 CPU，L4 实测也证明烧 CPU 的是
    **常驻无限动画**；一次性动画与 transition 本来跑完即停，暂停它们只有坏处。
    新增 infinite 动画时记得往下面补一行。 */
-:root[data-app-hidden] .status-pill .p-dot::after,
 :root[data-app-hidden] .chain-ripple,
 :root[data-app-hidden] .indet-fill,
 :root[data-app-hidden] .changelog-dot,
@@ -1800,7 +1673,8 @@ select:focus-visible,
   min-height: 0;
 }
 
-/* 品牌区：兼作窗口拖拽区（decorations:false，无系统标题栏，必须留出可拖区域） */
+/* 品牌区：兼作窗口拖拽区（decorations:false，无系统标题栏，必须留出可拖区域）
+   无底线（2026-10-17）：品牌区与导航融为一体；顶栏底线从侧栏分界竖线处起笔 */
 .app-side-head {
   display: flex;
   align-items: center;
@@ -1808,23 +1682,33 @@ select:focus-visible,
   flex-shrink: 0;
   height: 52px;
   padding: 0 12px;
-  border-bottom: 1px solid hsl(var(--border));
   overflow: hidden;
 }
 .app-side-logo { flex-shrink: 0; border-radius: 7px; }
 .app-side-brand {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
   min-width: 0;
   overflow: hidden;
 }
 .app-side-name {
   font-size: 14px;
+  line-height: 1.3;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: hsl(var(--foreground));
   white-space: nowrap;
+}
+/* 品牌标语（2026-10-17）： muted 色小字，超宽省略；折叠态随 .app-side-brand 整体隐藏 */
+.app-side-tagline {
+  font-size: 11px;
+  line-height: 1.2;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .app-side[data-collapsed] .app-side-head { justify-content: center; padding: 0; }
 .app-side[data-collapsed] .app-side-brand { display: none; }
@@ -1899,6 +1783,25 @@ select:focus-visible,
   padding: 0;
   font-size: 0;
   box-shadow: 0 0 0 2px hsl(var(--card));
+}
+/* 无未读时红点缩为零宽（常驻渲染 + scale 过渡）：出现/消失不再硬插入挤压「设置」二字。
+   放在折叠态覆盖规则之后，同特异性时靠源序覆盖其 min-width/width。 */
+.app-side-badge {
+  transition: transform var(--dur-fast), opacity var(--dur-fast),
+    width var(--dur-fast), min-width var(--dur-fast), padding var(--dur-fast);
+}
+.app-side-badge--off,
+.app-side[data-collapsed] .app-side-badge--off {
+  transform: scale(0);
+  opacity: 0;
+  min-width: 0;
+  width: 0;
+  padding: 0;
+  pointer-events: none;
+  animation: none; /* 停掉 reddot-ring：零宽红点没必要空转脉冲 */
+}
+.app-side-badge--off:hover {
+  transform: scale(0);
 }
 
 /* 底部：设置入口 + 服务状态 */

@@ -6,6 +6,7 @@ import { APP_INFO, CHANGELOG } from "./lib/about";
 import { getLastSeenVersion, setLastSeenVersion, countUnreadVersions } from "./lib/utils";
 import { SETTINGS_SECTIONS, type SettingsSection } from "./lib/settingsSections";
 import { settingsSectionForAnchor } from "./lib/settingsNavigation";
+import { transitionPage } from "./lib/pageTransition";
 import { isWindows } from "./lib/platform";
 import { Header } from "./components/layout/Header";
 import { SideNav, WORKSPACE_NAV } from "./components/layout/SideNav";
@@ -194,20 +195,23 @@ function AppContent() {
   }, []);
 
   const handleNavigate = useCallback((tab: string, anchor?: string) => {
-    setActiveTab(tab);
-    // 进设置页即标记已读；仅当有未读（红点）时才自动展开「关于卡片/更新历史」引导。
-    // 无红点时不展开，恢复"只有小红点才打开关于卡片"的行为。
-    if (tab === "settings") {
-      const section = anchor ? settingsSectionForAnchor(anchor) : undefined;
-      if (section && settingsSections.some(s => s.id === section)) setSettingsActiveId(section);
-      else if (!anchor && unreadCount > 0) {
-        setSettingsActiveId("set-about");
-        setChangelogOpenToken((t) => t + 1);
+    const update = () => {
+      setActiveTab(tab);
+      // 进设置页即标记已读；仅当有未读（红点）时才自动展开「关于卡片/更新历史」引导。
+      // 无红点时不展开，恢复"只有小红点才打开关于卡片"的行为。
+      if (tab === "settings") {
+        const section = anchor ? settingsSectionForAnchor(anchor) : undefined;
+        if (section && settingsSections.some(s => s.id === section)) setSettingsActiveId(section);
+        else if (!anchor && unreadCount > 0) {
+          setSettingsActiveId("set-about");
+          setChangelogOpenToken((t) => t + 1);
+        }
+        markSeenOnEnter();
       }
-      markSeenOnEnter();
-    }
-    setPendingAnchor(anchor ? { anchor, nonce: Date.now() } : null);
-  }, [markSeenOnEnter, unreadCount, settingsSections]);
+      setPendingAnchor(anchor ? { anchor, nonce: Date.now() } : null);
+    };
+    transitionPage(update, activeTab !== tab);
+  }, [activeTab, markSeenOnEnter, unreadCount, settingsSections]);
 
   // 「返回工作区」回到离开设置前的那个工作区 tab（而不是硬编码 connect）。
   // 必须声明在 handleNavigate 之后（引用它）。

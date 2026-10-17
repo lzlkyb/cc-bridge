@@ -9,7 +9,7 @@ import { MkdirForm, UploadForm, DownloadForm } from "./SshFileForms";
 import { FileHeader, RemoveConfirmDialog } from "./SshFileToolbar";
 import { useSshTransfer } from "./useSshTransfer";
 import { cleanErr } from "../../lib/utils";
-import { OverwriteConfirmDialog, TransferBar } from "./SshTransferBar";
+import { OverwriteConfirmDialog, TransferBarSlot } from "./SshTransferBar";
 import { SshDropOverlay } from "./SshDropOverlay";
 import { useFileBrowserDrop } from "./useFileBrowserDrop";
 import { useSshFileForms } from "./useSshFileForms";
@@ -233,10 +233,10 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
         />
       )}
 
-      {/* 传输中：进度 + 取消。一次只会有一条。 */}
-      {xfer.transfer && (
-        <TransferBar transfer={xfer.transfer} onCancel={xfer.cancel} />
-      )}
+      {/* 传输中：进度 + 取消。一次只会有一条。槽位行平滑展开/收起（2026-10-17），
+          不再硬切推挤文件列表；终端 pane 上方那处挂载点保持硬切（fit 红线，见
+          TransferBarSlot 头注释）。 */}
+      <TransferBarSlot transfer={xfer.transfer} onCancel={xfer.cancel} />
 
       {/* 文件列表。key={path}：换目录重挂 → FileTable 根的 animate-fade-in 播整列淡入；
           同时顺带把滚动位置归位（新目录从顶部看起是正确语义）。 */}

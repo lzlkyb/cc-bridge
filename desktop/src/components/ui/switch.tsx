@@ -29,9 +29,7 @@ export function Switch({
       }`}
     >
       <span
-        className={`sw-thumb inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-          checked ? "translate-x-[22px]" : "translate-x-0.5"
-        }`}
+        className="sw-thumb inline-block h-5 w-5 rounded-full bg-white shadow"
       />
     </button>
   );

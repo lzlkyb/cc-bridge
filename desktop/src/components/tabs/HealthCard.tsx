@@ -86,10 +86,11 @@ export function HealthCard({
       <div className="mt-1.5 flex items-center gap-3.5">
         <HealthRing rate={rate} running={running} hasSamples={hasSamples} />
         <div className="min-w-0">
-          <div className="text-[12.5px] font-bold">
+          {/* tabular-nums：900ms countup 期间数字持续变宽，等宽后只有数字本身在变。 */}
+          <div className="text-[12.5px] font-bold tabular-nums">
             <span className={ratePop}>{rateText}</span>
           </div>
-          <div className="mt-0.5 text-[10.5px] leading-relaxed text-muted-foreground">
+          <div className="mt-0.5 text-[10.5px] leading-relaxed tabular-nums text-muted-foreground">
             限流命中 {s?.rateLimitHits ?? 0} · 越权拒绝 {s?.authDenies ?? 0}
             <br />
             本次运行 · 失败 {(s?.totalErrors ?? 0).toLocaleString("en-US")} · 审计{" "}

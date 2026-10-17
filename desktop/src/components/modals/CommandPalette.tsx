@@ -12,6 +12,9 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { shortcutLabel } from "../../lib/platform";
 import { SETTING_SEARCH_ITEMS } from "../../lib/settingsSearch";
 import { WORKSPACE_NAV } from "../layout/SideNav";
+import { useDialogDismiss } from "../../hooks/useDialogDismiss";
+import { usePresence } from "../../hooks/usePresence";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 
 interface CommandItem {
   id: string;
@@ -25,12 +28,7 @@ interface CommandItem {
    * 开关类传裸名（`remote-tls` → `toggle-remote-tls`），卡级传完整 id（`set-network`）。
    */
   anchor?: string;
-  /**
-   * 额外搜索词（不展示，只参与匹配）。
-   *
-   * 为何需要：用户想到的词往往不是标题——搜「rce」找命令执行、搜「GBK」找编码自适应。
-   * 只比标题的搜索等于只能搜你已经知道的名字。
-   */
+  /** 额外搜索词（不展示，只参与匹配）：用户想到的词往往不是标题——搜「rce」找命令执行、搜「GBK」找编码自适应；只比标题的搜索等于只能搜你已经知道的名字。 */
   keywords?: string;
   run?: () => void | Promise<void>;
   /** H1 修复：不可逆/高风险操作，需先过 ConfirmDialog 而不是直接 invoke（对齐 LogTab/TokenManager 已有确认弹窗）。 */
@@ -56,17 +54,16 @@ export function CommandPalette({
   const { toast } = useToast();
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [visible, setVisible] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showDirBrowser, setShowDirBrowser] = useState(false);
   const [pendingConfirm, setPendingConfirm] = useState<CommandItem | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
   const listRef = useAutoAnimateRM<HTMLDivElement>();
-
-  useEffect(() => {
-    const raf = requestAnimationFrame(() => setVisible(true));
-    return () => cancelAnimationFrame(raf);
-  }, []);
+  const { closing, dismiss } = useDialogDismiss(onClose);
+  const { entered } = usePresence(!closing);
+  const close = () => dismiss();
+  useFocusTrap(surfaceRef, { onEscape: !showDirBrowser && !pendingConfirm ? close : undefined });
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -130,7 +127,7 @@ export function CommandPalette({
       toast("添加失败：" + String(e), "error");
     } finally {
       setShowDirBrowser(false);
-      onClose();
+      close();
     }
   };
 
@@ -167,11 +164,10 @@ export function CommandPalette({
     ...SETTING_SEARCH_ITEMS,
   ], [running, isDark, platform, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding]);
 
+  // 标题 + keywords 一起匹配（keywords 不展示）。20 多条量级下简单 includes 就够，不上模糊匹配库。
   const filtered = (() => {
     const q = query.trim().toLowerCase();
     if (!q) return items;
-    // 标题 + keywords 一起匹配（keywords 不展示）。
-    // 20 多条量级下简单 includes 就够，不上模糊匹配库。
     return items.filter(
       (c) =>
         c.label.toLowerCase().includes(q) ||
@@ -191,14 +187,15 @@ export function CommandPalette({
       await item.run();
     } finally {
       setBusyId(null);
-      onClose();
+      close();
     }
   };
 
   const selectItem = async (item: CommandItem) => {
+    if (closing || busyId) return;
     if (item.tab) {
       onNavigate(item.tab, item.anchor);
-      onClose();
+      close();
       return;
     }
     if (!item.run) return;
@@ -230,22 +227,25 @@ export function CommandPalette({
     } else if (e.key === "Escape") {
       if (showDirBrowser) return; // 交给 DirectoryBrowser 处理
       if (pendingConfirm) return; // 交给 ConfirmDialog 处理
-      onClose();
+      close();
     }
   };
 
   let lastGroup = "";
-
   return (
     <>
       <div
-        className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm pt-[15vh] pal-mask"
-        onClick={onClose}
+        className="ui-overlay fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm pt-[15vh] pal-mask"
+        data-state={entered ? "open" : "closed"}
+        data-exiting={closing || undefined}
+        onClick={close}
       >
         <div
-          className={`mx-4 w-full max-w-md overflow-hidden rounded-xl modal-surface transition-[transform,opacity] duration-200 pal ${
-            visible ? "translate-y-0 opacity-100 scale-100" : "translate-y-2 opacity-0 scale-98"
-          }`}
+          ref={surfaceRef}
+          role="dialog" aria-modal="true" aria-label="搜索命令"
+          data-state={entered ? "open" : "closed"}
+          data-exiting={closing || undefined}
+          className="ui-surface mx-4 w-full max-w-md overflow-hidden rounded-xl modal-surface pal"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Search input */}

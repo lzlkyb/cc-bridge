@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { usePresence } from "../../hooks/usePresence";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useViewActive } from "../../lib/viewActivity";
 
@@ -47,51 +47,30 @@ export function Modal({
 }: ModalProps) {
   const active = useViewActive();
   const visible = open && active;
-  const [mounted, setMounted] = useState(visible);
-  const [entered, setEntered] = useState(false);
-  const reduced = usePrefersReducedMotion();
+  const { mounted, entered } = usePresence(visible);
   // 焦点陷阱（a11y）：Tab 环绕在弹窗内、关闭后焦点归还触发元素。
   // enabled 跟 mounted 走：内容延迟挂载/退场延迟卸载，陷阱只在内容真正存在时生效。
   // Esc 在内容节点处理并停止冒泡，嵌套弹窗优先关闭自己。
   const surfaceRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(surfaceRef, { enabled: mounted, onEscape: onClose });
-
-  // 进场：open 变 true → 挂载 → 下一帧切到 entered 触发过渡
-  useEffect(() => {
-    if (visible) {
-      setMounted(true);
-      const raf = requestAnimationFrame(() => setEntered(true));
-      return () => cancelAnimationFrame(raf);
-    }
-  }, [visible]);
-
-  // 退场：open 变 false → entered=false → 延时卸载（reduced 时即时）
-  useEffect(() => {
-    if (!visible && mounted) {
-      setEntered(false);
-      const delay = reduced ? 0 : 140;
-      const t = setTimeout(() => setMounted(false), delay);
-      return () => clearTimeout(t);
-    }
-  }, [visible, mounted, reduced]);
+  useFocusTrap(surfaceRef, { enabled: mounted, onEscape: visible ? onClose : undefined });
 
   if (!mounted) return null;
 
-  const overlayState = entered ? "opacity-100" : "opacity-0";
-  const surfaceState = entered ? "opacity-100" : "opacity-0";
-  const transform = animation === "scale" ? entered ? "translateY(0) scale(1)" : "translateY(4px) scale(.985)" : undefined;
-
   return createPortal(
     <div
-      className={`fixed inset-0 flex items-center justify-center bg-black/45 transition-opacity ${overlayState} ${overlayClassName}`}
-      style={{ zIndex, transitionDuration: visible ? "180ms" : "140ms" }}
-      onClick={closeOnOverlay ? onClose : undefined}
+      className={`ui-overlay fixed inset-0 flex items-center justify-center bg-black/45 ${overlayClassName}`}
+      data-state={entered ? "open" : "closed"}
+      data-exiting={!visible || undefined}
+      style={{ zIndex }}
+      onClick={visible && closeOnOverlay ? onClose : undefined}
     >
       <div
         ref={surfaceRef}
         role="dialog" aria-modal="true" aria-label={ariaLabel}
-        style={{ transform, transitionDuration: visible ? "180ms" : "140ms" }}
-        className={`mx-4 transition-[opacity,transform] ease-[var(--ease)]-expo ${surfaceState} ${className}`}
+        data-state={entered ? "open" : "closed"}
+        data-exiting={!visible || undefined}
+        data-motion={animation}
+        className={`ui-surface mx-4 ${className}`}
         onClick={(e) => e.stopPropagation()}
       >
         {children}

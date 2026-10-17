@@ -41,7 +41,7 @@ export function Tabs({ defaultValue, value: controlledValue, onValueChange, chil
 
 export function TabsContent({ value, children, className = "", keepMounted = false }: { value: string; children: ReactNode; className?: string; keepMounted?: boolean }) {
   const { active } = useContext(TabsContext);
-  if (keepMounted) return <ActivityPanel active={active === value} data-scroll-viewport className={`animate-tab-in ${className}`}>{children}</ActivityPanel>;
+  if (keepMounted) return <ActivityPanel active={active === value} data-page-panel data-page-motion={value === "terminal" ? "fade" : "slide"} data-scroll-viewport className={`animate-tab-in ${className}`}>{children}</ActivityPanel>;
   if (active !== value) return null;
-  return <div className={`animate-tab-in ${className}`}>{children}</div>;
+  return <div data-page-panel data-page-motion={value === "terminal" ? "fade" : "slide"} className={`animate-tab-in ${className}`}>{children}</div>;
 }

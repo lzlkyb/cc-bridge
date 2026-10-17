@@ -6,6 +6,7 @@
  */
 
 export type Theme = "dark" | "light";
+let transitionTimer: ReturnType<typeof setTimeout>;
 
 export function getStoredTheme(): Theme {
   return localStorage.getItem("theme") === "dark" ? "dark" : "light";
@@ -13,12 +14,14 @@ export function getStoredTheme(): Theme {
 
 export function applyTheme(theme: Theme): void {
   const root = document.documentElement;
-  // 切换主题时启用一次性过渡，避免硬闪；transitionend 后移除 class。
-  root.classList.add("theme-transition");
-  const onEnd = (e: TransitionEvent) => {
-    if (e.target === root) root.classList.remove("theme-transition");
-  };
-  root.addEventListener("transitionend", onEnd, { once: true });
+  // transitionend 会从子元素冒泡，也可能根本不触发；用有界计时器清理，连切可续期。
+  clearTimeout(transitionTimer);
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    root.classList.add("theme-transition");
+    transitionTimer = setTimeout(() => root.classList.remove("theme-transition"), 320);
+  } else {
+    root.classList.remove("theme-transition");
+  }
   root.classList.toggle("dark", theme === "dark");
   localStorage.setItem("theme", theme);
   window.dispatchEvent(new CustomEvent<Theme>("themechange", { detail: theme }));

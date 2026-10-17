@@ -16,6 +16,7 @@ export function SavedHint({
 }) {
   return (
     <span
+      role="status"
       className={`saved-hint inline-flex items-center gap-1 text-xs font-medium text-success-ink${
         iconOnly ? " saved-hint--icon" : ""
       } ${className}`}

@@ -1,7 +1,8 @@
-import { memo } from "react";
+import { useLayoutEffect, useState, memo } from "react";
 import type { StaticStatus } from "../../lib/types";
 import type { SettingsSection } from "../../lib/settingsSections";
 import { Icon, type IconName } from "../ui/icon";
+import { Collapse } from "../ui/Collapse";
 import { APP_INFO } from "../../lib/about";
 import { UpdateBadge } from "./UpdateBadge";
 import { SideNavSettings } from "./SideNavSettings";
@@ -92,9 +93,31 @@ function SideNavImpl({
 
   const unreadLabel = unreadCount > 9 ? "9+" : String(unreadCount);
 
+  // 未读红点 scale 过渡（2026-10-17）：不再条件渲染——硬插入会把「设置」两个字挤一下。
+  // 常驻渲染、0 时缩到 0 宽；退场动画期间保留最后一个非零计数（内容瞬间变 0 会在
+  // 收缩中闪现「0」）。稳态隐藏时 scale(0)+0 宽，无占位（样式 .app-side-badge--off）。
+  const [lastUnread, setLastUnread] = useState(0);
+  useLayoutEffect(() => {
+    if (unreadCount > 0) setLastUnread(unreadCount);
+  }, [unreadCount]);
+
   // 设置目录模式：进设置页时侧栏整体切换为设置目录（返回 + 搜索 + 簇导航）。
   // 状态胶囊异常态两种模式口径一致（见 foot 区注释）。
   const settingsMode = activeTab === "settings" && !!settingsSections && !!onSelectSection;
+
+  // 服务状态胶囊槽位化（2026-10-17）：异常态出现/消失套 Collapse 行槽位（0fr→1fr），
+  // foot 高度从「啪地长高一截」变成 200ms 平滑展开/收起。退场期间保留最后一份异常
+  // 快照渲染——收起时若跟着状态变回正常态文案，胶囊会在收缩中闪现「本机服务运行中」。
+  const pillShown = statusTone === "bad" || statusTone === "warn";
+  const [heldPill, setHeldPill] = useState<{
+    tone: string;
+    text: string;
+    target: string | null;
+    title: string;
+  } | null>(null);
+  useLayoutEffect(() => {
+    if (pillShown) setHeldPill({ tone: statusTone, text: statusText, target: statusTarget, title: statusTitle });
+  }, [pillShown, statusTone, statusText, statusTarget, statusTitle]);
 
   return (
     <aside className="app-side" data-collapsed={collapsed || undefined} data-mode={settingsMode ? "settings" : undefined}>
@@ -111,6 +134,7 @@ function SideNavImpl({
         />
         <div data-tauri-drag-region className="app-side-brand">
           <span className="app-side-name">{APP_INFO.name}</span>
+          <span className="app-side-tagline">{APP_INFO.tagline}</span>
         </div>
       </div>
 
@@ -160,12 +184,14 @@ function SideNavImpl({
             >
               <Icon name="settings" size={16} className="app-side-icon" />
               <span className="app-side-label">设置</span>
-              {/* changelog-dot：沿用更新未读红点的脉冲动画 + hover 放大（index.css 已有定义） */}
-              {unreadCount > 0 && (
-                <span className="app-side-badge changelog-dot" title={`${unreadCount} 项新更新`}>
-                  {unreadLabel}
-                </span>
-              )}
+              {/* changelog-dot：沿用更新未读红点的脉冲动画 + hover 放大（index.css 已有定义）。
+                  无未读时也渲染（--off 缩为零宽），出现/消失都是 scale 过渡。 */}
+              <span
+                className={`app-side-badge changelog-dot ${unreadCount > 0 ? "" : "app-side-badge--off"}`}
+                title={unreadCount > 0 ? `${unreadCount} 项新更新` : undefined}
+              >
+                {unreadCount > 0 ? unreadLabel : lastUnread > 0 ? (lastUnread > 9 ? "9+" : String(lastUnread)) : ""}
+              </span>
             </button>
             <UpdateBadge currentVersion={status?.version} />
           </div>
@@ -175,20 +201,23 @@ function SideNavImpl({
         {/* 服务状态胶囊（E 方案 2026-10-15）：异常才现。运行中/已停止不渲染——
             绿点脉冲是常驻壁纸、零信息增量，常态反馈由连接页运行卡片与托盘承担；
             启动失败/链路中断（红）、防火墙未放行（橙）自动出现 + 可点击直达处置页。
-            两种模式（工作区/设置目录）口径一致：异常时不因进设置而消失。 */}
-        {(statusTone === "bad" || statusTone === "warn") && (
-          <button
-            type="button"
-            className="app-side-status status-pill"
-            data-tone={statusTone}
-            title={statusTitle}
-            data-clickable={statusTarget ? true : undefined}
-            onClick={() => statusTarget && onNavigate(statusTarget)}
-          >
-            <span className="app-side-status-dot" />
-            <span className="app-side-status-text">{statusText}</span>
-          </button>
-        )}
+            两种模式（工作区/设置目录）口径一致：异常时不因进设置而消失。
+            2026-10-17：套 Collapse 行槽位平滑展开/收起（见上方 pillShown 注释）。 */}
+        <Collapse open={pillShown}>
+          {heldPill && (
+            <button
+              type="button"
+              className="app-side-status status-pill"
+              data-tone={heldPill.tone}
+              title={heldPill.title}
+              data-clickable={heldPill.target ? true : undefined}
+              onClick={() => heldPill.target && onNavigate(heldPill.target)}
+            >
+              <span className="app-side-status-dot" />
+              <span className="app-side-status-text">{heldPill.text}</span>
+            </button>
+          )}
+        </Collapse>
       </div>
     </aside>
   );

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../ui/icon";
 import { groupSettingsSections, type SettingsSection } from "../../lib/settingsSections";
-import { searchSettings } from "../../lib/settingsNavigation";
+import { searchSettings, stepSettingsSection } from "../../lib/settingsNavigation";
 import { Modal } from "../ui/Modal";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 
@@ -53,6 +53,35 @@ export function SideNavSettings({
   }, [sections, query]);
   const groups = useMemo(() => groupSettingsSections(filtered), [filtered]);
 
+  // 滚轮换区（2026-10-17）：设置目录上滚滚轮 = 切上/下一个分区，同浏览器标签条的手感。
+  // 边界优先：nav 自己还能往该方向滚（矮窗溢出）时放行原生滚动，滚到边缘继续滚才切换。
+  // 阈值累计（60，一格滚轮 delta≈100 即切）+ 350ms 冷却（一甩不连跳）+ 200ms 衰减
+  // （上一手势的触控板小 delta 余额不带进下一手势）。不 preventDefault：到边缘后
+  // 原生滚动本就是 no-op（.app-side overflow:hidden 断开滚动链），被动监听即可。
+  const wheelAcc = useRef(0);
+  const wheelAt = useRef({ wheel: 0, fire: 0 });
+  const handleNavWheel = (e: React.WheelEvent<HTMLElement>) => {
+    if (e.deltaX !== 0 || query.trim()) return;
+    const nav = navRef.current;
+    if (!nav || Math.abs(e.deltaY) < 1) return;
+    const now = performance.now();
+    const t = wheelAt.current;
+    if (now - t.wheel > 200) wheelAcc.current = 0;
+    t.wheel = now;
+    const canScroll = e.deltaY > 0
+      ? nav.scrollTop + nav.clientHeight < nav.scrollHeight - 1
+      : nav.scrollTop > 0;
+    if (canScroll) { wheelAcc.current = 0; return; }
+    if (now - t.fire < 350) return;
+    wheelAcc.current += e.deltaY;
+    if (Math.abs(wheelAcc.current) < 60) return;
+    const dir: 1 | -1 = wheelAcc.current > 0 ? 1 : -1;
+    wheelAcc.current = 0;
+    t.fire = now;
+    const next = stepSettingsSection(sections, activeId, dir);
+    if (next) onSelect(next.id);
+  };
+
   return (
     <>
       {/* 返回工作区：目录模式的第一项，视觉弱于导航项（ghost 按钮） */}
@@ -89,7 +118,7 @@ export function SideNavSettings({
         </div>
       )}
 
-      <nav ref={navRef} className="app-side-nav" aria-label="设置目录">
+      <nav ref={navRef} className="app-side-nav" aria-label="设置目录" onWheel={handleNavWheel}>
         {query.trim() ? results.map(item => (
           <button key={item.id} type="button" className="app-side-item" onClick={() => { setQuery(""); onSelect(item.sectionId!, item.anchor); }} title={item.label}>
             <Icon name={item.icon} size={16} className="app-side-icon" />

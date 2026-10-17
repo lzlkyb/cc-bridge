@@ -87,7 +87,9 @@ export function TerminalStatusBar({
   return (
     <div
       className="flex shrink-0 items-center overflow-hidden px-2 py-1 text-xs"
-      style={{ ...skin.bar, fontFamily }}
+      // fontVariantNumeric 设在容器上与 fontFamily 同理：继承覆盖全部段，
+      // cwd/branch/时长等数字变化时等宽数字位，不再左右横跳。
+      style={{ ...skin.bar, fontFamily, fontVariantNumeric: "tabular-nums" }}
     >
       {/* 左：随远端信息增多而变长的段，空间不足时单独横向滚动（滚动条隐藏）。
           用 flex-1 + min-w-0 让它自适应，右侧关键段因此永不被挤出视口。 */}

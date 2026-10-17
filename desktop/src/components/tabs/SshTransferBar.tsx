@@ -1,6 +1,8 @@
+import { useLayoutEffect, useState } from "react";
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogTitle } from "../ui/dialog";
+import { Collapse } from "../ui/Collapse";
 import type { OverwritePrompt, TransferState } from "../../lib/transferTypes";
 
 /** 把剩余秒数格成 `mm:ss`。超过一小时就不报了——那个量级的估值没有参考价值。 */
@@ -61,6 +63,34 @@ export function TransferBar({
         取消
       </Button>
     </div>
+  );
+}
+
+/**
+ * 传输条槽位（2026-10-17）：传输条出现/消失从「硬切推挤文件列表」变成 200ms
+ * 平滑展开/收起（Collapse 行槽位 0fr→1fr）。退场期间保留最后一次传输快照渲染
+ * （held），收起动画不播空气。
+ *
+ * 🔴 只给**文件浏览器挂载点**用（SshFileBrowser）：那块推的是文件列表，没有终端
+ * fit 约束。终端 pane 上方的挂载点（TerminalDropLayer）**保持硬切**——动画高度
+ * 会让 xterm 在 200ms 里连续重跑 fit，一次硬切只 fit 一次反而是对的（§七红线）。
+ */
+export function TransferBarSlot({
+  transfer,
+  onCancel,
+}: {
+  transfer: TransferState | null;
+  onCancel: () => void;
+}) {
+  const [held, setHeld] = useState<TransferState | null>(null);
+  useLayoutEffect(() => {
+    if (transfer) setHeld(transfer);
+  }, [transfer]);
+  const shown = transfer ?? held;
+  return (
+    <Collapse open={!!transfer}>
+      {shown && <TransferBar transfer={shown} onCancel={onCancel} />}
+    </Collapse>
   );
 }
 
