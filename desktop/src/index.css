@@ -1718,22 +1718,27 @@ select:focus-visible,
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 1px;
+  /* 排印（2026-10-17 设计稿 B 案）：两行墨迹间隙 1px→3px，层级分组才成立 */
+  gap: 3px;
   min-width: 0;
   overflow: hidden;
 }
 .app-side-name {
-  font-size: 14px;
-  line-height: 1.3;
+  font-size: 13.5px;
+  line-height: 1.25;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  /* 归零负字距：Latin 名在 13.5px 下负距发挤，微正距更稳 */
+  letter-spacing: 0.005em;
   color: hsl(var(--foreground));
   white-space: nowrap;
 }
-/* 品牌标语（2026-10-17）： muted 色小字，超宽省略；折叠态随 .app-side-brand 整体隐藏 */
+/* 品牌标语（2026-10-17）：muted 色小字，超宽省略；折叠态随 .app-side-brand 整体隐藏。
+   10px + 字距 .045em + 透明度 .8——与名称拉开字号差与明度差两级，做「注」不做「行」。 */
 .app-side-tagline {
-  font-size: 11px;
-  line-height: 1.2;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.045em;
+  opacity: 0.8;
   color: hsl(var(--muted-foreground));
   white-space: nowrap;
   overflow: hidden;
