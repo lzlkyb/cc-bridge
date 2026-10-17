@@ -5,17 +5,35 @@ import { toolLabel } from "../../../lib/utils";
 import { Icon } from "../../ui/icon";
 import { useToast } from "../../ui/toast";
 
+/** 矩阵可选时间范围（天）。90 是取数上限（后端 clamp 1..=120）内的长窗档。 */
+const RANGES = [7, 30, 90] as const;
+
 /**
  * 「按天 × 工具」矩阵视图（TokenUsageGroup 的第二维度，批D）。
  *
  * 行 = 工具（按合计降序，与排行同口径但**全集**——排行只留 Top10），
- * 列 = 日期（旧→新，与 90 天查询窗口一致），格底色深浅 = 格值 / 全表最大。
+ * 列 = 日期（旧→新，与所选范围查询窗口一致），格底色深浅 = 格值 / 全表最大。
  * 横向可滚：90 天 × 24px 塞不下视口，第一列 sticky 保证滚动了也知道看的是哪行。
  *
+ * 时间范围独立于概览的 90 天长窗（默认 30 天，对齐审计保留期）：明细表的
+ * 用户心智是「最近我用了多少」，铺保留期外的零列没有信息量。
+ *
+ * 空态分层：本组件只处理「所选范围内无数据」（整卡空态在父组件按 90 天判定）——
+ * 更早有调用、范围内没有时，给一键放宽到 90 天的出口。
+ *
  * CSV 导出是纯前端拼装（usageMath.buildUsageCsv，三张表 + UTF-8 BOM），
- * 与日志页导出同一交互范式：Blob → a.download，不需要后端参与。
+ * 与日志页导出同一交互范式：Blob → a.download，不需要后端参与；
+ * 文件名带所选范围（如 usage-30d），导出口径与当前所见一致。
  */
-export function UsageMatrixSection({ report }: { report: TokenUsageReport }) {
+export function UsageMatrixSection({
+  report,
+  rangeDays,
+  onRangeChange,
+}: {
+  report: TokenUsageReport;
+  rangeDays: 7 | 30 | 90;
+  onRangeChange: (next: 7 | 30 | 90) => void;
+}) {
   const { toast } = useToast();
   const m = useMemo(() => buildMatrix(report), [report]);
 
@@ -26,33 +44,69 @@ export function UsageMatrixSection({ report }: { report: TokenUsageReport }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `cc-bridge-token-usage-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.download = `cc-bridge-token-usage-${rangeDays}d-${new Date().toISOString().slice(0, 10)}.csv`;
       a.click();
       URL.revokeObjectURL(url);
-      toast("已导出 CSV（按天 / 按工具 / 按天×工具 三张表）", "success");
+      toast(`已导出 CSV（最近 ${rangeDays} 天 · 三张表）`, "success");
     } catch (e) {
       toast(`导出失败：${e}`, "error");
     }
   };
 
   if (m.tools.length === 0) {
-    return <p className="text-xs text-muted-foreground">窗口内暂无按工具的调用明细。</p>;
+    return (
+      <div className="rounded-md border border-dashed px-3 py-5 text-center">
+        <p className="text-xs text-muted-foreground">
+          最近 {rangeDays} 天暂无调用记录
+          {rangeDays < 90 && "——更早的调用不会出现在这个窗口里"}
+        </p>
+        {rangeDays < 90 && (
+          <button
+            type="button"
+            className="mt-2 rounded-md border border-border bg-card px-2.5 py-1 text-[11px] text-primary transition-colors hover:bg-muted"
+            onClick={() => onRangeChange(90)}
+          >
+            查看最近 90 天
+          </button>
+        )}
+      </div>
+    );
   }
 
   return (
     <div>
-      <div className="mb-2 flex items-center gap-2">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
         <div className="text-xs font-semibold">
           按天 × 工具
           <span className="ml-1.5 text-[11px] font-medium text-muted-foreground">
-            深度 = 格内估算 tokens
+            最近 {rangeDays} 天 · 深度 = 格内估算 tokens
           </span>
         </div>
+
+        {/* 时间范围：与卡片级维度切换同款分段控件样式（小 state 不值得上 Tabs）。 */}
+        <div className="ml-auto flex shrink-0 items-center rounded-md border border-border bg-muted/40 p-0.5 text-[11px]">
+          {RANGES.map((r) => (
+            <button
+              key={r}
+              type="button"
+              aria-pressed={rangeDays === r}
+              className={`rounded px-2 py-0.5 transition-colors ${
+                rangeDays === r
+                  ? "bg-background font-semibold text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              onClick={() => onRangeChange(r)}
+            >
+              {r} 天
+            </button>
+          ))}
+        </div>
+
         <button
           type="button"
           onClick={exportCsv}
-          className="ml-auto inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary hover:bg-muted hover:text-foreground"
-          title="导出三张表：按天 / 按工具 / 按天×工具（UTF-8 CSV，Excel 可直接打开）"
+          className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary hover:bg-muted hover:text-foreground"
+          title={`导出最近 ${rangeDays} 天的三张表：按天 / 按工具 / 按天×工具（UTF-8 CSV，Excel 可直接打开）`}
         >
           <Icon name="download" size={12} />
           导出 CSV

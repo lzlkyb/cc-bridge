@@ -68,7 +68,7 @@ pub async fn get_recent_activity(
     audit::read_recent_tail(&state.data_dir, n.unwrap_or(3) as usize)
 }
 
-/// Token 用量估算报告（近 `days` 天按日聚合 + 按工具排行 Top 10，days 默认 7、clamp 1..=30）。
+/// Token 用量估算报告（近 `days` 天按日聚合 + 按工具排行 Top 10，days 默认 7、clamp 1..=120，见 audit.rs）。
 ///
 /// 复用 `AUDIT_CACHE`，与日志页共享解析缓存；首页用量卡 30s 轮询，稳态零解析。
 /// 口径是**估算**（约 4 字节 ≈ 1 token），见 `audit::read_usage_report` 头注释。

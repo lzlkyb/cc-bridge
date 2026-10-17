@@ -5,7 +5,6 @@ import type { TokenUsageReport } from "../../../lib/types";
 import {
   buildHeatmap,
   buildTrend,
-  computeKpis,
   rankTools,
   type RankRow,
 } from "../../../lib/usageMath";
@@ -16,6 +15,7 @@ import { Skeleton } from "../../ui/Skeleton";
 import { InfoPopover } from "../../ui/InfoPopover";
 import { useAppHidden } from "../../../lib/appVisibility";
 import { UsageMatrixSection } from "./UsageMatrixSection";
+import { KpiHead, EmptyKpis } from "./UsageKpiHead";
 
 /**
  * 设置页「Token 用量（估算）」分区（卡级 id: set-tokenusage，首页用量卡点进来）。
@@ -33,6 +33,10 @@ export function TokenUsageGroup() {
   const hidden = useAppHidden();
   // 维度切换（批D）：概览（趋势+热力+排行）/ 按天×工具矩阵。KPI 头两态共用。
   const [view, setView] = useState<"overview" | "matrix">("overview");
+  // 矩阵视图独立时间范围（默认 30 天）。概览保持 90 天长窗（热力图设计意图）；
+  // 矩阵是明细表——铺 90 列首屏全是保留期外的零列（默认保留 30 天），没有信息量。
+  // 30 对齐 audit_retention_days 默认值：窗口内基本都有真实数据。
+  const [matrixDays, setMatrixDays] = useState<7 | 30 | 90>(30);
   const { data, isLoading } = useQuery<TokenUsageReport>({
     queryKey: ["token-usage", 90],
     queryFn: () => invoke<TokenUsageReport>("get_token_usage", { days: 90 }),
@@ -44,6 +48,14 @@ export function TokenUsageGroup() {
     queryFn: () => invoke<TokenUsageReport>("get_token_usage", { days: 7 }),
     enabled: !hidden,
     refetchInterval: hidden ? false : 30_000,
+  });
+  // 矩阵按所选范围取数：只在矩阵视图激活时拉（切档即换 key 重查）。
+  // 与主查询同族 key——matrixDays=90 时自动与主查询去重共用，零额外成本。
+  const { data: matrixReport, isLoading: matrixLoading } = useQuery<TokenUsageReport>({
+    queryKey: ["token-usage", matrixDays],
+    queryFn: () => invoke<TokenUsageReport>("get_token_usage", { days: matrixDays }),
+    enabled: view === "matrix" && !hidden,
+    refetchInterval: view === "matrix" && !hidden ? 30_000 : false,
   });
 
   const days = data?.days ?? [];
@@ -100,10 +112,30 @@ export function TokenUsageGroup() {
             </p>
           </>
         ) : view === "matrix" ? (
-          <>
-            <KpiHead days={days} />
-            <UsageMatrixSection report={data!} />
-          </>
+          matrixLoading || !matrixReport ? (
+            /* 矩阵按需取数有自己的加载窗口（切档/首次进入），骨架形状预示 KPI + 表。 */
+            <div className="space-y-2" aria-hidden="true">
+              <div className="usage-kpis">
+                {[0, 1, 2, 3].map((i) => (
+                  <div className="usage-kpi" key={i}>
+                    <Skeleton className="h-2.5 w-16" />
+                    <Skeleton className="mt-2 h-5 w-20" />
+                  </div>
+                ))}
+              </div>
+              <Skeleton className="h-28 w-full" />
+            </div>
+          ) : (
+            <>
+              {/* KPI 跟随矩阵口径：表是「最近 30 天」而 KPI 是 90 天会互相打架。 */}
+              <KpiHead days={matrixReport.days} />
+              <UsageMatrixSection
+                report={matrixReport}
+                rangeDays={matrixDays}
+                onRangeChange={setMatrixDays}
+              />
+            </>
+          )
         ) : (
           <>
             <KpiHead days={days} />
@@ -124,76 +156,6 @@ export function TokenUsageGroup() {
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-/* ── ① KPI 头 ── */
-
-function KpiHead({ days }: { days: TokenUsageReport["days"] }) {
-  const k = computeKpis(days);
-  const spark = days.slice(-7).map((d) => d.estInput + d.estOutput);
-  const sparkMax = Math.max(...spark, 1);
-  return (
-    <div className="usage-kpis">
-      <div className="usage-kpi">
-        <div className="usage-kpi-lb">今日估算</div>
-        <div className="usage-kpi-v">{fmtTokens(k.today)}</div>
-        <Delta pct={k.todayDelta} vs="vs 昨日" />
-        <Spark values={spark} max={sparkMax} />
-      </div>
-      <div className="usage-kpi">
-        <div className="usage-kpi-lb">近 7 天合计</div>
-        <div className="usage-kpi-v">{fmtTokens(k.week)}</div>
-        <Delta pct={k.weekDelta} vs="vs 上周" />
-        <Spark values={spark} max={sparkMax} />
-      </div>
-      <div className="usage-kpi">
-        <div className="usage-kpi-lb">输入(估) · 7天</div>
-        <div className="usage-kpi-v">{fmtTokens(k.input7)}</div>
-        <p className="usage-kpi-delta usage-kpi-delta--flat">占 {k.inputShare}%</p>
-      </div>
-      <div className="usage-kpi">
-        <div className="usage-kpi-lb">输出(估) · 7天</div>
-        <div className="usage-kpi-v">{fmtTokens(k.output7)}</div>
-        <p className="usage-kpi-delta usage-kpi-delta--flat">占 {k.outputShare}%</p>
-      </div>
-    </div>
-  );
-}
-
-/** 环比行：无对比基准时显示「—」（全应用空值统一记号，宽度≈一个数字位）。 */
-function Delta({ pct, vs }: { pct: number | null; vs: string }) {
-  if (pct === null) {
-    return <p className="usage-kpi-delta usage-kpi-delta--flat">—</p>;
-  }
-  const up = pct >= 0;
-  return (
-    <p className={`usage-kpi-delta ${up ? "usage-kpi-delta--up" : "usage-kpi-delta--down"}`}>
-      {up ? "▲" : "▼"} {Math.abs(pct)}% {vs}
-    </p>
-  );
-}
-
-function Spark({ values, max }: { values: number[]; max: number }) {
-  return (
-    <div className="usage-spark">
-      {values.map((v, i) => (
-        <i key={i} style={{ height: `${Math.max(v > 0 ? 12 : 3, (v / max) * 100)}%` }} />
-      ))}
-    </div>
-  );
-}
-
-function EmptyKpis() {
-  return (
-    <div className="usage-kpis">
-      {["今日估算", "近 7 天合计", "输入(估) · 7天", "输出(估) · 7天"].map((lb) => (
-        <div className="usage-kpi" key={lb}>
-          <div className="usage-kpi-lb">{lb}</div>
-          <div className="usage-kpi-v">0</div>
-        </div>
-      ))}
-    </div>
   );
 }
 
