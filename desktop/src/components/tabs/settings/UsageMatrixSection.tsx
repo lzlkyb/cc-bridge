@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import type { TokenUsageReport } from "../../../lib/types";
 import { buildMatrix, buildUsageCsv, fmtWan } from "../../../lib/usageMath";
 import { toolLabel } from "../../../lib/utils";
@@ -36,6 +36,16 @@ export function UsageMatrixSection({
 }) {
   const { toast } = useToast();
   const m = useMemo(() => buildMatrix(report), [report]);
+
+  // 进入/切档/数据到达时自动滚到最右（今天列贴右缘）：矩阵的核心问题是
+  // 「最近用了多少」，初始停在最左等于让用户每次手动拖到底。scrollLeft 超界
+  // 会被浏览器 clamp，7 天档不溢出时设置无害；只在这两个依赖变化时执行，
+  // 用户之后往左翻旧日期不会被拽回。首列 sticky 保证滚到最右行归属依然清晰。
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollLeft = el.scrollWidth - el.clientWidth;
+  }, [rangeDays, report]);
 
   const exportCsv = () => {
     try {
@@ -113,7 +123,7 @@ export function UsageMatrixSection({
         </button>
       </div>
 
-      <div className="overflow-x-auto rounded-md border border-border">
+      <div ref={scrollRef} className="overflow-x-auto rounded-md border border-border">
         <table className="usage-matrix border-collapse text-[11px]" style={{ borderSpacing: 0 }}>
           <thead>
             <tr>
