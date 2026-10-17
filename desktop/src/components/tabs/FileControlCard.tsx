@@ -9,6 +9,7 @@ import { toast } from "../ui/toast";
 import { SumRow } from "../ui/SumRow";
 import { BackupSection } from "./filecontrol/BackupSection";
 import { RateLimitSection, CleanupSection } from "./filecontrol/LimitSections";
+import { RecentAiChanges } from "./filecontrol/RecentAiChanges";
 
 /**
  * 「文件管控」卡：扩展名限制 + 备份 / 请求限流 / 后台命令三节（渐进披露）。
@@ -87,6 +88,16 @@ export function FileControlCard({ status, onSaved }: { status?: StaticStatus; on
             lastSavedField={lastSavedField}
           />
         )}
+
+        {/* ══ 近期 AI 改动：改动留档时间线（对比 / 还原复用日志页弹窗）══ */}
+        <SumRow
+          icon="activity"
+          label="近期 AI 改动"
+          value="AI 写入 / 删除留档时间线 · 可对比 · 可一键还原"
+          expanded={expanded.has("changes")}
+          onToggle={() => toggleSection("changes")}
+        />
+        {expanded.has("changes") && <RecentAiChanges active />}
 
         {/* ══ 请求限流 ══ */}
         <SumRow
