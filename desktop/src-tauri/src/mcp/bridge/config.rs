@@ -40,6 +40,17 @@ pub struct ExternalMcpServer {
     /// **不进指纹**：它不影响进程怎么启动，也不会改变工具清单。
     #[serde(default)]
     pub allow_remote_cwd: bool,
+    /// 工具级暴露白名单。**空 = 全部暴露**（向后兼容：老配置无此字段即全暴露）。
+    ///
+    /// 服务端强制（不靠前端隐藏）：
+    /// - `mcp_list_servers` 只列清单内工具（未列入的对远程不存在）；
+    /// - `mcp_proxy` 收到清单外工具名直接拒绝；
+    /// - `keyword_hint` 不喂清单外工具名（不给检索索引留下线索）。
+    ///
+    /// **不进指纹**：它不改变 server 真实的工具清单（manifest 缓存仍完整有效），
+    /// 改它不该触发重抓。
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
 }
 
 fn default_transport() -> String {
@@ -72,6 +83,11 @@ impl ExternalMcpServer {
 
     pub fn is_stdio(&self) -> bool {
         self.transport == "stdio"
+    }
+
+    /// 工具是否对远程暴露。**空清单 = 全暴露**（默认语义，向后兼容）。
+    pub fn allows_tool(&self, tool: &str) -> bool {
+        self.allowed_tools.is_empty() || self.allowed_tools.iter().any(|t| t == tool)
     }
 
     /// 指纹：决定已缓存的工具清单还算不算数。
@@ -119,7 +135,30 @@ mod tests {
             cwd: None,
             enabled: false,
             allow_remote_cwd: false,
+            allowed_tools: vec![],
         }
+    }
+
+    /// 工具级暴露：空 = 全暴露；非空 = 只暴露清单内。
+    #[test]
+    fn allowed_tools_semantics() {
+        let s = spec();
+        assert!(s.allows_tool("anything"), "空清单 = 全暴露");
+
+        let mut s = spec();
+        s.allowed_tools = vec!["search".into(), "fetch".into()];
+        assert!(s.allows_tool("search"));
+        assert!(!s.allows_tool("delete_all"));
+        assert!(!s.allows_tool(""), "空工具名也不能放行");
+    }
+
+    /// allowed_tools 不进指纹：改清单不该让 manifest 缓存失效重抓。
+    #[test]
+    fn fingerprint_ignores_allowed_tools() {
+        let a = spec();
+        let mut b = spec();
+        b.allowed_tools = vec!["search".into()];
+        assert_eq!(a.fingerprint(), b.fingerprint());
     }
 
     #[test]

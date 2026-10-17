@@ -51,6 +51,9 @@ pub struct BridgeServerView {
     /// 是否允许远程按调用指定工作目录（多项目支持）。
     #[serde(rename = "allowRemoteCwd")]
     pub allow_remote_cwd: bool,
+    /// 工具级暴露白名单（空 = 全暴露）。前端复选框组的当前值。
+    #[serde(rename = "allowedTools")]
+    pub allowed_tools: Vec<String>,
     /// 当前活着的实例（各自的工作目录）。不展示的话，用户不知道自己开了几个进程。
     #[serde(rename = "liveCwds")]
     pub live_cwds: Vec<String>,
@@ -223,6 +226,7 @@ fn view_of(
         },
         enabled: spec.enabled,
         allow_remote_cwd: spec.allow_remote_cwd,
+        allowed_tools: spec.allowed_tools.clone(),
         live_cwds: pool
             .live_cwds(&spec.name)
             .into_iter()
@@ -461,6 +465,7 @@ pub async fn mcp_bridge_upsert(
         cwd: server.cwd.clone(),
         enabled: false,
         allow_remote_cwd: false,
+        allowed_tools: vec![],
     };
     if let Err(e) = validate(&probe) {
         audit_change(state, "mcp_bridge_upsert", brief(&probe), Some(e.clone()));
@@ -483,6 +488,7 @@ pub async fn mcp_bridge_upsert(
             // 同 `enabled`：沿用旧值。写死 false 的话，用户每改一次启动参数
             // 就会把这个开关悄悄关掉——而他并没打算动它。
             allow_remote_cwd: old.as_ref().map(|o| o.allow_remote_cwd).unwrap_or(false),
+            allowed_tools: vec![],
         };
         // 启动参数变了就得断掉旧进程，否则界面上写着新命令、实际跑的还是旧的。
         let changed = old.as_ref().map(|o| o.fingerprint()) != Some(spec.fingerprint());
@@ -599,6 +605,45 @@ pub async fn mcp_bridge_set_remote_cwd(
     let mut params = brief_v;
     params["allowRemoteCwd"] = json!(allowed);
     audit_change(state, "mcp_bridge_set_remote_cwd", params, None);
+    Ok(())
+}
+
+/// 设置某个 server 的工具级暴露白名单。**空 = 全暴露**。
+///
+/// 只收紧 / 放宽「哪些工具对远程可见可调」，不改 server 的真实工具清单——
+/// 所以**不需要摘会话**：过滤在 mcp_list_servers / mcp_proxy / keyword_hint
+/// 三处按当前配置实时生效，已起的进程与缓存的 manifest 都不受影响。
+#[tauri::command]
+pub async fn mcp_bridge_set_allowed_tools(
+    state: State<'_, Arc<AppState>>,
+    name: String,
+    tools: Vec<String>,
+) -> Result<(), String> {
+    let state = state.inner();
+    let n = name.clone();
+    // 去空白 / 丢空串 / 去重（保序）——与 exclude_patterns 同一套 normalize 纪律。
+    let clean: Vec<String> = {
+        let mut out: Vec<String> = Vec::new();
+        for t in tools {
+            let t = t.trim().to_string();
+            if !t.is_empty() && !out.contains(&t) {
+                out.push(t);
+            }
+        }
+        out
+    };
+    let brief_v = mutate(state, move |servers| {
+        let Some(slot) = servers.iter_mut().find(|s| s.name == n) else {
+            return Err(format!("没有叫 `{n}` 的外挂 server。"));
+        };
+        slot.allowed_tools = clean;
+        Ok(brief(slot))
+    })
+    .await?;
+
+    let mut params = brief_v;
+    params["change"] = json!("allowed_tools");
+    audit_change(state, "mcp_bridge_set_allowed_tools", params, None);
     Ok(())
 }
 
@@ -934,6 +979,7 @@ mod tests {
             cwd: None,
             enabled: false,
             allow_remote_cwd: false,
+            allowed_tools: vec![],
         }
     }
 

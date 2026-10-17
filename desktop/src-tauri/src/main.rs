@@ -991,6 +991,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::mcp_bridge_set_enabled,
             commands::mcp_bridge_set_master,
             commands::mcp_bridge_set_remote_cwd,
+            commands::mcp_bridge_set_allowed_tools,
             commands::mcp_bridge_probe,
             commands::mcp_bridge_inspect,
             commands::import_config,

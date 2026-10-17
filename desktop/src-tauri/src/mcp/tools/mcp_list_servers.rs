@@ -113,12 +113,31 @@ async fn describe(
         }));
     }
 
+    // 工具级暴露（服务端强制）：管理员配了 allowed_tools 时，未列入的工具对远程
+    // 不存在——列表不显示、详情查不到，而不是显示了再去 mcp_proxy 吃拒绝。
+    // manifest 缓存保持完整（指纹不含 allowed_tools），只是展示面收窄。
+    let visible: Vec<Value> = m
+        .tools
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|t| {
+                    t.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|n| spec.allows_tool(n))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
     // 默认紧凑；指定了 server 才给完整 schema。
+    let visible_arr = Value::Array(visible);
     let tools = if !detailed {
-        manifest::compact_index(&m.tools)
+        manifest::compact_index(&visible_arr)
     } else if let Some(t) = only_tool {
-        let one: Vec<Value> = m
-            .tools
+        let one: Vec<Value> = visible_arr
             .as_array()
             .map(|a| a.as_slice())
             .unwrap_or(&[])
@@ -128,7 +147,7 @@ async fn describe(
             .collect();
         Value::Array(one)
     } else {
-        m.tools.clone()
+        visible_arr
     };
 
     let mut e = json!({
@@ -138,6 +157,11 @@ async fn describe(
         "serverInfo": m.server_info,
         "tools": tools,
     });
+    if !spec.allowed_tools.is_empty() {
+        // 让模型知道可见面是被收窄的：toolCount 是 server 的完整数，tools 是可见数，
+        // 两者不一致时有一行解释，免得它以为自己拿到了脏数据。
+        e["toolVisibility"] = json!("管理员已配置工具级允许清单，仅列出清单内工具");
+    }
     if detailed {
         // instructions 只在详情里给：它是一段 Markdown，N 个 server 全拼进索引会很重。
         e["instructions"] = json!(m.instructions);

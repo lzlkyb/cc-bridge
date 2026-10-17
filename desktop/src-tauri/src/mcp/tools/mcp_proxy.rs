@@ -155,6 +155,14 @@ pub async fn handle(args: McpProxyArgs, state: &Arc<AppState>) -> Result<Value, 
     if !spec.enabled {
         return Err(format!("外挂 server `{}` 未启用。", spec.name));
     }
+    // 工具级暴露（服务端强制）：清单外的工具在这里就拒绝，绝不 spawn 进程去问。
+    // 措辞按「没有这个工具」的语义写，不给探测清单外功能留想象空间。
+    if !spec.allows_tool(&args.tool) {
+        return Err(format!(
+            "外挂 server `{}` 没有叫 `{}` 的工具（或该工具未被管理员列入允许清单）。",
+            spec.name, args.tool
+        ));
+    }
 
     // 多项目：远程指定的工作目录。
     let cwd = resolve_remote_cwd(&args, &spec, state).await?;
@@ -269,7 +277,12 @@ pub async fn keyword_hint(state: &Arc<AppState>) -> Option<String> {
                 .flatten()
         };
         let Some(m) = cached else { continue };
-        let names = searchable_tool_names(&m.tools);
+        // 工具级暴露：清单外的名字不喂检索索引——模型按名字检索命中后去调，
+        // 只会吃一个拒绝，还白灼一次上下文。
+        let names = searchable_tool_names(&m.tools)
+            .into_iter()
+            .filter(|n| spec.allows_tool(n))
+            .collect::<Vec<_>>();
         if names.is_empty() {
             continue;
         }
@@ -366,6 +379,51 @@ mod tests {
             cwd: Some("C:/fixed".into()),
             enabled: true,
             allow_remote_cwd: allow,
+            allowed_tools: vec![],
+        }
+    }
+
+    /// 🔴 工具级暴露：清单外工具在 spawn **之前**就拒绝（报错点名「允许清单」），
+    /// 清单内 / 空清单放行到后续流程（这里会在 cwd/spawn 处失败，断言只看错误文案）。
+    #[tokio::test]
+    async fn rejects_tool_outside_allowed_list() {
+        use crate::mcp::tools::testutil::*;
+        let mut srv = spec(false);
+        srv.allowed_tools = vec!["safe_tool".into()];
+        let state = make_state_default();
+        {
+            let mut c = state.config.write().await;
+            c.external_mcp_enabled = true;
+            c.external_mcp_servers = vec![srv.clone()];
+        }
+
+        // 清单外：拒绝，且发生在进程启动之前（错误里是清单语义，不是 spawn 失败）。
+        let e = handle(
+            McpProxyArgs {
+                server: "s".into(),
+                tool: "danger_tool".into(),
+                args: json!({}),
+                cwd: None,
+            },
+            &state,
+        )
+        .await
+        .expect_err("应拒绝");
+        assert!(e.contains("允许清单"), "错误文案不对：{e}");
+
+        // 清单内：通过本闸门（后续会因程序不存在等失败，但那已不属于本闸）。
+        let r = handle(
+            McpProxyArgs {
+                server: "s".into(),
+                tool: "safe_tool".into(),
+                args: json!({}),
+                cwd: None,
+            },
+            &state,
+        )
+        .await;
+        if let Err(e) = &r {
+            assert!(!e.contains("允许清单"), "清单内工具不该被本闸拦下：{e}");
         }
     }
 
