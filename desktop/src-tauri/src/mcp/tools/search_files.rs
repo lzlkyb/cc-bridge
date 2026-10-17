@@ -89,6 +89,7 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     let root_resolved = security::path::resolve_safe_path_cached(
         &args.root_path,
         &state.cached_roots(),
+        &config.exclude_patterns,
         config.whitelist_enabled,
     )?;
 

@@ -44,11 +44,13 @@ async fn move_single(
     let from_resolved = security::path::resolve_safe_path_cached(
         &item.from,
         &state.cached_roots(),
+        &config.exclude_patterns,
         config.whitelist_enabled,
     )?;
     let to_resolved = security::path::resolve_safe_path_cached(
         &item.to,
         &state.cached_roots(),
+        &config.exclude_patterns,
         config.whitelist_enabled,
     )?;
     security::extension::assert_extension_allowed(&from_resolved, &config.allowed_extensions)?;

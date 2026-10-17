@@ -17,6 +17,7 @@ pub async fn handle(args: AnalyzeFileArgs, state: &Arc<AppState>) -> Result<Valu
     let resolved = security::path::resolve_safe_path_cached(
         &args.path,
         &state.cached_roots(),
+        &config.exclude_patterns,
         config.whitelist_enabled,
     )?;
     security::extension::assert_extension_allowed(&resolved, &config.allowed_extensions)?;

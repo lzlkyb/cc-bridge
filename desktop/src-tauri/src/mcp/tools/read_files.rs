@@ -91,6 +91,7 @@ async fn read_single_file(
     let resolved = security::path::resolve_safe_path_cached(
         file_path,
         cached_roots,
+        &config.exclude_patterns,
         config.whitelist_enabled,
     )?;
     security::extension::assert_extension_allowed(&resolved, &config.allowed_extensions)?;

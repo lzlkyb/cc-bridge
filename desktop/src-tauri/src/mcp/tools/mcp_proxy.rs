@@ -104,21 +104,23 @@ async fn resolve_remote_cwd(
     let Some(requested) = gate_remote_cwd(args.cwd.as_deref(), spec)? else {
         return Ok(None);
     };
-    let (roots, enforce, listed) = {
+    let (roots, excludes, enforce, listed) = {
         let c = state.config.read().await;
         (
             state.cached_roots(),
+            c.exclude_patterns.clone(),
             c.whitelist_enabled,
             c.allowed_roots.clone(),
         )
     };
-    let resolved = path::resolve_safe_path_cached(requested, &roots, enforce).map_err(|e| {
-        format!(
-            "工作目录 `{requested}` 不可用：{e}
+    let resolved =
+        path::resolve_safe_path_cached(requested, &roots, &excludes, enforce).map_err(|e| {
+            format!(
+                "工作目录 `{requested}` 不可用：{e}
 可用的白名单根目录：{}",
-            listed.join("、")
-        )
-    })?;
+                listed.join("、")
+            )
+        })?;
     // 目录不存在时早报错：否则进程会以一个莫名其妙的 cwd 起来，
     // 而对方吐出的错误往往看不出根因（真机联调里就吃过这个亏）。
     if !resolved.is_dir() {

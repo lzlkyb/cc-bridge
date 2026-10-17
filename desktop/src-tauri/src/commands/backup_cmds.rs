@@ -339,10 +339,12 @@ pub async fn restore_file(
 
     // 1) 安全校验 backup_path
     let bak_canon = assert_backup_path_in_scope(&backup_path, &data_dir, &backup_dir)?;
-    // 2) 白名单校验 target（安全模块不削弱）
+    // 2) 白名单校验 target（安全模块不削弱）。排除规则只约束远程 MCP 访问，
+    //    不拦本机面板的还原操作（排除生效后 AI 改不了该文件，也就不会有新备份）。
     let resolved = path::resolve_safe_path_cached(
         &target_path,
         &state.cached_roots(),
+        &[],
         config.whitelist_enabled,
     )?;
     drop(config);
@@ -546,9 +548,12 @@ pub async fn list_backups(state: State<'_, Arc<AppState>>) -> Result<BackupListR
             for e in g.entries.iter_mut() {
                 if let Some(original_path) = index.get(&e.backup_path) {
                     // 仍需核实该路径当前确实落在白名单内（root 配置可能在备份之后被改过）。
-                    if let Ok(resolved) =
-                        path::resolve_safe_path_cached(original_path, &state.cached_roots(), true)
-                    {
+                    if let Ok(resolved) = path::resolve_safe_path_cached(
+                        original_path,
+                        &state.cached_roots(),
+                        &[],
+                        true,
+                    ) {
                         e.targets = vec![path::display_path(&resolved)];
                     }
                 }
@@ -613,10 +618,11 @@ pub async fn get_file_diff(
 
     // 1) 校验 backup_path
     let bak_canon = assert_backup_path_in_scope(&backup_path, &data_dir, &backup_dir)?;
-    // 2) 白名单校验 target
+    // 2) 白名单校验 target（本地 Diff 只读展示，不套排除规则，理由同上）
     let resolved = path::resolve_safe_path_cached(
         &target_path,
         &state.cached_roots(),
+        &[],
         config.whitelist_enabled,
     )?;
 

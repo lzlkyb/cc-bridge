@@ -9,6 +9,12 @@ use crate::db;
 pub struct RootProfile {
     pub name: String,
     pub roots: Vec<String>,
+    /// 本组的排除规则存档（glob：`*` / `**` / `?`，相对根目录匹配）。
+    /// 切换组 = roots 与 exclude_patterns 一起写进生效字段。`#[serde(default)]`
+    /// 保证老配置 JSON（缺此字段）反序列化不失败——与 BridgeConfig 容器级
+    /// default 同一个兼容动机（import_config 老配置导入）。
+    #[serde(default)]
+    pub exclude_patterns: Vec<String>,
 }
 
 /// 一条 SSH 连接配置（面板内终端，首版密码登录）。
@@ -91,6 +97,13 @@ pub const DEFAULT_PROFILE_NAME: &str = "默认";
 #[serde(default)]
 pub struct BridgeConfig {
     pub allowed_roots: Vec<String>,
+    /// 白名单**排除规则**（.mcpignore 式，当前生效集合）。glob：`*`（单层）/
+    /// `**`（跨层）/ `?`（单字符），相对命中的白名单根目录匹配；不含 `/` 的
+    /// 模式对任意一层的段名生效（如 `*.key` 拦所有 .key 文件）。命中 = 拒绝，
+    /// 只收紧、不放宽：根外路径本来就被拒，不受排除影响。
+    /// 🔴 安全语义：经 `resolve_safe_path_cached` 强制，远程 MCP 全部文件类工具生效。
+    /// 存档在 `root_profiles[].exclude_patterns`，切换组时一起换入。
+    pub exclude_patterns: Vec<String>,
     /// 白名单配置组（存档）。与 `allowed_roots` 的关系：切换组 = 把该组 roots
     /// 写进 `allowed_roots`；在当前组里增删目录则反向同步回本字段。
     pub root_profiles: Vec<RootProfile>,
@@ -222,6 +235,7 @@ impl Default for BridgeConfig {
     fn default() -> Self {
         Self {
             allowed_roots: vec![],
+            exclude_patterns: vec![],
             root_profiles: vec![],
             external_mcp_enabled: false,
             external_mcp_servers: vec![],
@@ -307,6 +321,7 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
                     .collect();
             }
             "root_profiles" => config.root_profiles = parse_or_warn(key, value, vec![]),
+            "exclude_patterns" => config.exclude_patterns = parse_or_warn(key, value, vec![]),
             "external_mcp_enabled" => config.external_mcp_enabled = value == "true",
             "external_mcp_servers" => {
                 config.external_mcp_servers = parse_or_warn(key, value, vec![])
@@ -425,6 +440,7 @@ pub(crate) fn normalize_profiles(config: &mut BridgeConfig) {
         config.root_profiles = vec![RootProfile {
             name: DEFAULT_PROFILE_NAME.to_string(),
             roots: config.allowed_roots.clone(),
+            exclude_patterns: config.exclude_patterns.clone(),
         }];
     }
     if !config
@@ -434,6 +450,19 @@ pub(crate) fn normalize_profiles(config: &mut BridgeConfig) {
     {
         config.active_profile = config.root_profiles[0].name.clone();
     }
+}
+
+/// 排除规则入库名一化：去空白、丢空串、去重（保序）。save_config / 导入 /
+/// 组切换共用，保证库存的模式永远可直接参与匹配。
+pub(crate) fn normalize_patterns(patterns: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in patterns {
+        let t = p.trim().to_string();
+        if !t.is_empty() && !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
 }
 
 // 故意把这组测试紧贴在 `normalize_profiles` 下方（而不是文件末尾）：它们验的是
@@ -471,10 +500,12 @@ mod profile_tests {
                 RootProfile {
                     name: "A".into(),
                     roots: vec![],
+                    exclude_patterns: vec![],
                 },
                 RootProfile {
                     name: "B".into(),
                     roots: vec![],
+                    exclude_patterns: vec![],
                 },
             ],
             active_profile: "已被删除的组".into(),
@@ -491,6 +522,7 @@ mod profile_tests {
             root_profiles: vec![RootProfile {
                 name: "X".into(),
                 roots: vec!["/a".into()],
+                exclude_patterns: vec![],
             }],
             active_profile: "X".into(),
             ..BridgeConfig::default()
@@ -658,6 +690,11 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         conn,
         "root_profiles",
         &to_value(&config.root_profiles).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "exclude_patterns",
+        &to_value(&config.exclude_patterns).unwrap(),
     )?;
     save_config_field(
         conn,

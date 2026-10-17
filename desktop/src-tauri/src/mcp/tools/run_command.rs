@@ -144,6 +144,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
                     let resolved = security::path::resolve_safe_path_cached(
                         &s.cwd.to_string_lossy(),
                         &state.cached_roots(),
+                        &config.exclude_patterns,
                         config.whitelist_enabled,
                     )
                     .map_err(|e| format!("session 绑定的 cwd 已不在白名单：{e}"))?;
@@ -163,6 +164,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             let resolved = security::path::resolve_safe_path_cached(
                 cwd,
                 &state.cached_roots(),
+                &config.exclude_patterns,
                 config.whitelist_enabled,
             )?;
             let new_id = format!("cwd_{:032x}", rand::random::<u128>());
@@ -186,6 +188,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
                 let resolved = security::path::resolve_safe_path_cached(
                     cwd,
                     &state.cached_roots(),
+                    &config.exclude_patterns,
                     config.whitelist_enabled,
                 )?;
                 (resolved, cwd.clone(), None)
@@ -317,6 +320,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
                 if let Ok(resolved) = security::path::resolve_safe_path(
                     new_cwd_str,
                     &cfg.allowed_roots,
+                    &cfg.exclude_patterns,
                     cfg.whitelist_enabled,
                 ) {
                     if let Some(mut s) = state.cwd_sessions.get_mut(sid) {

@@ -33,6 +33,9 @@ use crate::state::AppState;
 pub struct ConfigPatch {
     #[serde(rename = "allowedRoots")]
     pub allowed_roots: Option<Vec<String>>,
+    /// 白名单排除规则（.mcpignore 式）。入库前 normalize（去空白/丢空串/去重）。
+    #[serde(rename = "excludePatterns")]
+    pub exclude_patterns: Option<Vec<String>>,
     #[serde(rename = "allowedExtensions")]
     pub allowed_extensions: Option<Vec<String>>,
     #[serde(rename = "maxFileSizeBytes")]
@@ -152,6 +155,12 @@ pub async fn save_config(
     }
 
     apply_field!(allowed_roots, "allowed_roots", &patch.allowed_roots);
+    // 排除规则：先 normalize 再入库，保证参与匹配的模式永远干净可用。
+    let normalized_excludes = patch
+        .exclude_patterns
+        .as_ref()
+        .map(|v| crate::config::normalize_patterns(v.clone()));
+    apply_field!(exclude_patterns, "exclude_patterns", &normalized_excludes);
     apply_field!(
         allowed_extensions,
         "allowed_extensions",
@@ -337,6 +346,21 @@ pub async fn save_config(
         )?;
     }
 
+    // 排除规则与 roots 同款反向同步：生效集合是唯一事实源，存档跟上它。
+    // 不同步的后果：切走再切回来，旧存档会把刚改的排除规则覆盖掉。
+    if patch.exclude_patterns.is_some() {
+        let active = config.active_profile.clone();
+        let excludes = config.exclude_patterns.clone();
+        if let Some(p) = config.root_profiles.iter_mut().find(|p| p.name == active) {
+            p.exclude_patterns = excludes;
+        }
+        save_config_field(
+            &db,
+            "root_profiles",
+            &serde_json::to_value(&config.root_profiles).unwrap(),
+        )?;
+    }
+
     // 保留天数一变就后台跑一次清理，不再等下次启动。
     // 原行为：`save_config` 只存值，而清理只在启动时跑——用户把 30 天改成 7 天后
     // 什么都不会发生，很容易误以为改完就生效了。
@@ -411,14 +435,18 @@ pub async fn create_root_profile(
     let db = state.db.lock().await;
     let mut config = state.config.write().await;
     let clean = validate_profile_name(&name, &config.root_profiles, None)?;
-    let roots = if copy_current {
-        config.allowed_roots.clone()
+    let (roots, excludes) = if copy_current {
+        (
+            config.allowed_roots.clone(),
+            config.exclude_patterns.clone(),
+        )
     } else {
-        vec![]
+        (vec![], vec![])
     };
     config.root_profiles.push(crate::config::RootProfile {
         name: clean.clone(),
         roots: roots.clone(),
+        exclude_patterns: excludes.clone(),
     });
     save_config_field(
         &db,
@@ -426,7 +454,7 @@ pub async fn create_root_profile(
         &serde_json::to_value(&config.root_profiles).unwrap(),
     )?;
     if switch {
-        apply_profile_switch(&db, &mut config, &clean, roots)?;
+        apply_profile_switch(&db, &mut config, &clean, roots, excludes)?;
     }
     drop(config);
     state.refresh_canonicalized_roots(&state.config.read().await.allowed_roots);
@@ -513,15 +541,14 @@ pub(crate) async fn switch_root_profile_inner(
     let db = state.db.lock().await;
     let mut config = state.config.write().await;
     let from = config.active_profile.clone();
-    let roots = config
+    let (roots, excludes) = config
         .root_profiles
         .iter()
         .find(|p| p.name == name)
-        .ok_or_else(|| format!("配置组「{name}」不存在"))?
-        .roots
-        .clone();
+        .ok_or_else(|| format!("配置组「{name}」不存在"))
+        .map(|p| (p.roots.clone(), p.exclude_patterns.clone()))?;
     let count = roots.len();
-    apply_profile_switch(&db, &mut config, &name, roots)?;
+    apply_profile_switch(&db, &mut config, &name, roots, excludes)?;
     drop(config);
     drop(db);
 
@@ -547,17 +574,25 @@ pub(crate) async fn switch_root_profile_inner(
 }
 
 /// 切换的共用写入：先落盘再改内存（与 save_config 的 apply_field! 同一约定，
-/// 避免写盘失败时内存领先于 DB）。不在此刷缓存：谁持有锁谁负责，由调用方
-/// 释锁后统一刷。
+/// 避免写盘失败时内存领先于 DB）。roots 与排除规则**一起**换入生效集合——
+/// 两者同属一个配置组的语义整体，只换一半会让「切回来」出现混合状态。
+/// 不在此刷缓存：谁持有锁谁负责，由调用方释锁后统一刷。
 fn apply_profile_switch(
     db: &rusqlite::Connection,
     config: &mut crate::config::BridgeConfig,
     name: &str,
     roots: Vec<String>,
+    excludes: Vec<String>,
 ) -> Result<(), String> {
     save_config_field(db, "allowed_roots", &serde_json::to_value(&roots).unwrap())?;
+    save_config_field(
+        db,
+        "exclude_patterns",
+        &serde_json::to_value(&excludes).unwrap(),
+    )?;
     save_config_field(db, "active_profile", &serde_json::to_value(name).unwrap())?;
     config.allowed_roots = roots;
+    config.exclude_patterns = excludes;
     config.active_profile = name.to_string();
     Ok(())
 }
@@ -627,7 +662,7 @@ pub(crate) async fn import_config_inner(
     let incoming_roots = crate::security::path::canonicalize_roots(&incoming.allowed_roots);
     for root in &incoming.allowed_roots {
         if let Err(e) =
-            path::resolve_safe_path_cached(root, &incoming_roots, incoming.whitelist_enabled)
+            path::resolve_safe_path_cached(root, &incoming_roots, &[], incoming.whitelist_enabled)
         {
             return Err(format!("白名单目录校验失败「{}」：{}", root, e));
         }
@@ -721,10 +756,12 @@ mod tests {
                 crate::config::RootProfile {
                     name: "A组".into(),
                     roots: vec![root_a.clone()],
+                    exclude_patterns: vec![],
                 },
                 crate::config::RootProfile {
                     name: "B组".into(),
                     roots: vec![root_b.clone()],
+                    exclude_patterns: vec![],
                 },
             ],
             active_profile: "A组".into(),

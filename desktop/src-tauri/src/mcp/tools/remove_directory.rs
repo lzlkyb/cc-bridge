@@ -20,6 +20,7 @@ pub async fn handle(args: RemoveDirectoryArgs, state: &Arc<AppState>) -> Result<
     let resolved = security::path::resolve_safe_path_cached(
         &args.path,
         &state.cached_roots(),
+        &config.exclude_patterns,
         config.whitelist_enabled,
     )?;
 
