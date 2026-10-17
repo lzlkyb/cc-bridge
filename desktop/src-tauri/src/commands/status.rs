@@ -28,6 +28,9 @@ pub struct StatusResponse {
     pub uptime_seconds: u64,
     #[serde(rename = "allowedRoots")]
     pub allowed_roots: Vec<String>,
+    /// 白名单排除规则（当前生效集合，.mcpignore 式）。命中 = 拒绝，见 path.rs。
+    #[serde(rename = "excludePatterns")]
+    pub exclude_patterns: Vec<String>,
     /// 白名单配置组（存档）与当前组名。仅服务「按项目切换」这个 UI 能力，
     /// **不参与安全判定**——当前生效集合永远是上面的 `allowed_roots`。
     #[serde(rename = "rootProfiles")]
@@ -397,6 +400,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         version: env!("CARGO_PKG_VERSION").into(),
         uptime_seconds: uptime,
         allowed_roots: config.allowed_roots.clone(),
+        exclude_patterns: config.exclude_patterns.clone(),
         root_profiles: config.root_profiles.clone(),
         active_profile: config.active_profile.clone(),
         allowed_extensions: config.allowed_extensions.clone(),
