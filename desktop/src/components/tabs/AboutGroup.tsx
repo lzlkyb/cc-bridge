@@ -4,6 +4,7 @@ import { Collapse } from "../ui/Collapse";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
+import { StarPromptRow, StarPromptChip, readStarPromptDismissed, dismissStarPrompt } from "./StarPromptRow";
 import { useUpdate, type UpdateStatus, type UpdateInfo } from "../../contexts/UpdateContext";
 import type { StaticStatus } from "../../lib/types";
 import { formatVersion, formatBytes, formatBytesPerSec } from "../../lib/utils";
@@ -32,7 +33,6 @@ const TECH_STACK = [
 const STYLE_VERSION_BADGE: CSSProperties = { background: "var(--version-gradient)", boxShadow: "0 2px 6px var(--version-shadow)" };
 const STYLE_ICON_INDIGO: CSSProperties = { background: "rgba(99,102,241,0.12)", color: "var(--color-primary)" };
 const STYLE_ICON_GREEN: CSSProperties = { background: "rgba(22,163,74,0.12)", color: "#16A34A" };
-const STYLE_ICON_ORANGE: CSSProperties = { background: "rgba(245,158,11,0.12)", color: "#F59E0B" };
 const STYLE_ICON_ACCENT: CSSProperties = { background: "var(--color-accent)", color: "var(--color-primary)" };
 const STYLE_INFO_KEY: CSSProperties = { minWidth: 52 };
 
@@ -46,7 +46,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 }) {
   const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true); // 默认展开（2026-10-17）：收起态只有一行头部，默认折叠反而多一次点击
   const [showModal, setShowModal] = useState(false);
   const changelogRef = useRef<HTMLDivElement>(null);
 
@@ -60,19 +60,12 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
   }, []);
 
   // 外部信号（点设置 tab 红点 / 进设置页有未读）→ 自动展开更新历史。
-  //
-  // 必须比对「上次处理过的 token」而不能只判 `> 0`：React effect **在挂载时必然
-  // 执行一次**，不管依赖值有没变；而 SettingsTab 是 lazy + TabsContent，切走就卸载。
-  // 于是只要 token 停在 >0，**每次从其它 tab 切回来都会自动展开**。
-  //
-  // 为何 token 会永久停在 >0（两个各自正确的修复叠加出的第三个 bug）：
-  //   1. 首次带红点进设置页 → token+1，同时 App.tsx 的 markSeenOnEnter() 写 lastSeen
-  //      → unreadCount 立刻变 0；
-  //   2. 负责把 token 归零的 markChangelogSeen 由下方那个 effect 触发，条件是
-  //      `expanded && unreadCount > 0`——unreadCount 已经是 0，它再也不会被调用；
-  //   3. token 永久停在 1。
-  // 用「值 > 0」当一次性信号，就要求每条消费路径都记得归零，漏一条就复发
-  // （已经漏了两次）。比对 ref 后，挂载天然是 no-op，谁忘了归零也不会再复发。
+  // 必须比对「上次处理过的 token」而不能只判 `> 0`：挂载时 effect 必然执行一次，
+  // 而 token 会永久停在 >0（两个各自正确的修复叠加出的第三个 bug）——首次带红点
+  // 进设置页 token+1，同时 App 的 markSeenOnEnter 写 lastSeen 令 unreadCount 归 0；
+  // 负责归零的 markChangelogSeen 条件是 `expanded && unreadCount > 0`，从此不再被
+  // 触发 ⇒ 每次从其它 tab 切回都会误展开。「值>0 当一次性信号」要求每条消费路径
+  // 都记得归零，漏一条就复发（已漏两次）；比对 ref 后挂载天然 no-op，忘了归零也不复发。
   const handledTokenRef = useRef(changelogOpenToken);
   useEffect(() => {
     // 首次挂载（ref 初值 = 当前 token）或 token 未变 → 不动。
@@ -97,6 +90,13 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
     }
   };
 
+  // 邀 Star 的关闭状态在收起态胶囊与展开态信息行之间共享（× 在展开行，胶囊随关隐）
+  const [starDismissed, setStarDismissed] = useState(readStarPromptDismissed);
+  const dismissStar = useCallback(() => {
+    setStarDismissed(true);
+    dismissStarPrompt();
+  }, []);
+
   return (
     <>
       <Card id="set-about" className="about-card overflow-hidden">
@@ -106,7 +106,6 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
           className="about-collapsed flex w-full cursor-pointer items-center gap-3 px-[18px] py-3.5 text-left select-none"
           onClick={() => setExpanded(!expanded)}
         >
-          {/* 图标 */}
           <img src="/icon.png" alt="" className="h-10 w-10 shrink-0 rounded-lg object-contain" />
 
           {/* 名称 + 版本 + 状态 */}
@@ -142,22 +141,25 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
             )}
           </div>
 
-          {/* 操作按钮区（阻止冒泡，不触发展开） */}
+          {/* 操作按钮区（阻止冒泡，不触发展开）。邀 Star 未关闭时 GitHub 图标钮让位给胶囊 */}
           <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
             <UpdateActionBtn status={updateStatus} onCheck={manualCheckForUpdate} onDownload={downloadAndInstall} onRestart={restart} />
-            <button
-              type="button"
-              onClick={openRepo}
-              className="github-btn flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
-              title="GitHub 项目主页"
-            >
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
-              </svg>
-            </button>
+            {starDismissed ? (
+              <button
+                type="button"
+                onClick={openRepo}
+                className="github-btn flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
+                title="GitHub 项目主页"
+              >
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                  <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
+                </svg>
+              </button>
+            ) : (
+              <StarPromptChip onOpenRepo={openRepo} />
+            )}
           </div>
 
-          {/* 展开箭头 */}
           <div className={`expand-chevron flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}>
             <Icon name="chevronDown" size={16} />
           </div>
@@ -223,19 +225,8 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
                     <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>开源协议</span>
                     <span className="info-val ml-auto text-right"><span className="info-tag tag-green inline-block rounded-md px-2 py-0.5 text-xs font-bold">MIT</span></span>
                   </div>
-                  <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
-                    <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_ORANGE}><Icon name="package" size={14} aria-hidden="true" /></div>
-                    <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>仓库地址</span>
-                    <span className="info-val ml-auto text-right">
-                      <button
-                        type="button"
-                        onClick={openRepo}
-                        className="info-tag info-tag-clickable tag-orange inline-block cursor-pointer rounded-md px-2 py-0.5 text-xs font-bold transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:translate-y-[-1px] hover:shadow-hover"
-                      >
-                        GitHub ↗
-                      </button>
-                    </span>
-                  </div>
+                  {/* 邀 Star 行（学习 cc-switch）：关闭后退化为仓库地址 · GitHub ↗，入口不消失 */}
+                  <StarPromptRow dismissed={starDismissed} onDismiss={dismissStar} onOpenRepo={openRepo} />
                   <div className="info-row flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-muted">
                     <div className="info-icon-wrap flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[13px]" style={STYLE_ICON_ACCENT}><Icon name="info" size={14} aria-hidden="true" /></div>
                     <span className="info-key shrink-0 text-xs font-medium text-muted-foreground" style={STYLE_INFO_KEY}>简介</span>
@@ -344,8 +335,7 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
       </span>
     );
   }
-  // error 也要有可见状态：之前直接 return null，失败后页面只剩一个孤零零的
-  // 「重试」按钮，用户不知道发生了什么、更不知道为什么要点它。
+  // error 也要有可见状态：之前直接 return null，失败后只剩孤零零的「重试」，用户不知道为什么要点它。
   if (status === "error") {
     return (
       <span className="flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-[3px] text-xs font-semibold text-destructive-ink">

@@ -45,7 +45,7 @@ const BASELINE = {
   // ConnectGuide 独立成 `connect/ConnectGuide.tsx` 后降到 168 行 / 2 hooks，
   // 重新落在 300 行 / 8 hooks 的默认上限之内——不需要豁免了。
   // 2026-09-16：475 → 411（内联的「关于」弹窗 → AboutInfoModal.tsx）。
-  "src/components/tabs/AboutGroup.tsx": { lines: 411 },
+  "src/components/tabs/AboutGroup.tsx": { lines: 401 },
   // 🔴 514 行，而且是 2026-09-02 本次重构**新建**的。当时把 621 行的
   // `SshTerminal.tsx` 拆成 115 行 + 这个 hook，并声称“符合规则 7”——
   // 那只是因为当时的规则只管 `.tsx`。这正是本脚本要堵的“搬家”。
