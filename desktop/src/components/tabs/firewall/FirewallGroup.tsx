@@ -75,7 +75,8 @@ export function FirewallGroup({ onRefresh }: { onRefresh?: () => void }) {
                 <span className="text-xs font-normal text-muted-foreground">{checkedHint}</span>
               </span>
             }
-            sub="Windows 规则只在「当前活动配置文件」下生效——规则在、却没覆盖当前网络是最常见的连不上原因"
+            sub="规则未覆盖当前网络是最常见的连不上原因"
+            info="Windows 规则只在「当前活动配置文件」下生效——规则在、却没覆盖当前网络（如公用/专用配置文件不一致）时，连接会被系统静默拦截，这是最常见的「规则加了却连不上」原因。下方矩阵即当前网络逐配置文件的命中情况。"
             control={
               <div className="space-y-2">
                 <FirewallProfileMatrix profiles={diag.profiles} />
@@ -89,7 +90,8 @@ export function FirewallGroup({ onRefresh }: { onRefresh?: () => void }) {
           last
           layout="stack"
           label="规则管理"
-          sub="一键修复是幂等的「重建为正确规则」（profile=any，三个配置文件一次覆盖），随时可点，不会重复堆积"
+          sub="幂等重建，不会堆积重复规则"
+          info="一键修复是幂等的「重建为正确规则」（profile=any，三个配置文件一次覆盖），随时可点，不会重复堆积。"
           control={<FirewallActions data={data} refetch={refetch} onRefresh={onRefresh} />}
         />
 

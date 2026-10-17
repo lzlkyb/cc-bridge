@@ -77,7 +77,7 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
       <CardHeader>
         <CardTitle icon={<Icon name="terminal" />}>运行中的后台命令</CardTitle>
         <p className="text-xs text-muted-foreground">
-          已结束的命令会保留一段时间供查看输出（看右侧“状态”区分是否还在跑），之后自动清理。
+          已结束的命令保留片刻供查看，随后自动清理
         </p>
       </CardHeader>
       <CardContent>
