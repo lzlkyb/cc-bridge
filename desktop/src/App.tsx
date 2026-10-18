@@ -88,18 +88,31 @@ function AppContent() {
   // useCallback 稳定化：供链路状态跃迁 effect 安全引用，避免每次渲染重建导致 effect 误触发
   // byUser: 用户主动点选(默认 true)时置 ipResolvedByUser，保持 banner+sed 可见；
   //         S4 自动恢复(false)不置位，避免网络恢复后误弹 sed banner。
+  // 🔴 双保险（审查 B9）：「用户点选」还不够——只有**地址真的变过**（ipChanged）
+  // 才存在「待复制的更新命令」。首装自动预选第一个 IP 时 ipChanged 为 false，
+  // 若无条件置位，橙色告警会在首屏凭空弹出（且只有复制 sed 才能复位）。
+  // 用 ref 读最新值：status 每 5s 轮询换对象，写进 deps 会让本回调不停重建。
+  const ipChangedRef = useRef(false);
+  useEffect(() => {
+    ipChangedRef.current = !!status?.ipChanged;
+  }, [status?.ipChanged]);
   const handleSelectIp = useCallback((ip: string, byUser = true) => {
     setSelectedIp(ip);
     if (!ip) return;
     // 方案 Q: 仅用户主动点选新地址时标记"已处理待复制"，让 IpChangedBanner + sed 命令块
     // 在 O2 乐观清除 ipChanged 后仍保持可见，直到复制远程更新命令。
     // 挂起胶囊同步撤下：细条回来了，命令回到横幅承载（两种呈现互斥）。
-    if (byUser) {
+    if (byUser && ipChangedRef.current) {
       setIpResolvedByUser(true);
       setPendingCmd(null);
     }
     invoke("set_selected_ip", { ip })
-      .then(() => {
+      .then(async () => {
+        // 🔴 先取消在途轮询再写缓存（审查 P2）：5s 轮询的响应可能正好在这一刻落地，
+        // 它带的是「写盘前」的旧快照（ipChanged: true），会把乐观值覆盖回去 →
+        // 横幅闪回一下又消失。cancelQueries 让在途请求的落地被丢弃，随后的 invalidate
+        // 由调用方的 refetch 接管。
+        await queryClient.cancelQueries({ queryKey: ["status"] });
         // O2: 落盘成功后乐观更新缓存,立即消除 IP 变化警告,无需等下一次 5s 轮询
         queryClient.setQueryData<StatusResponse>(["status"], (old) =>
           old ? { ...old, ipChanged: false, lastSelectedIp: ip } : old,
@@ -125,7 +138,7 @@ function AppContent() {
 
   // 「复制 IP 替换命令」的全局入口（S3 横幅用，2026-10-17）：托盘同款 Rust 生成，
   // 关掉连接页 banner / 人在终端页时也能复制，不用再回连接页。
-  const copyIpSed = useIpSedCopy();
+  const copyIpSed = useIpSedCopy(handleSedResolved);
 
   // 方案 R: 用户点关闭后仅本次会话隐藏 banner。当出现「新的」地址变化(false→true)时
   // 自动解除隐藏,避免关一次就永久屏蔽后续变化;停留为 true 的轮询不会重复触发重置。
@@ -332,6 +345,7 @@ function AppContent() {
             onToggleCollapse={() => setSideCollapsed((v) => !v)}
             pendingCmd={pendingCmd}
             onPendingResolved={handleSedResolved}
+            onPendingDismiss={handleDismissIpChange}
           />
       {statusError && (
         <div className="shrink-0 px-5 pt-2">
@@ -457,8 +471,13 @@ function AppContent() {
   );
 }
 
-/** S3+S4: 追踪链路状态跃迁（断↔通），弹 Toast 并提供 IP 自动恢复闭环。
- * 必须渲染在 ToastProvider 内部才能使用 useToast。无 UI，仅处理副作用。 */
+/** 探针采样确认次数：间隔 5s 的轮询下，连续 2 次 ≈ 10s 才判定「断了/通了」。 */
+const CONFIRM_SAMPLES = 2;
+
+/**
+ * S3+S4: 追踪链路状态跃迁（断↔通），弹 Toast 并提供 IP 自动恢复闭环。
+ * 必须渲染在 ToastProvider 内部才能使用 useToast。无 UI，仅处理副作用。
+ */
 function LinkStateWatcher({
   status,
   onReselectIp,
@@ -468,26 +487,49 @@ function LinkStateWatcher({
 }) {
   const { toast } = useToast();
   const prevLinkDown = useRef<boolean | null>(null);
+  // 🔴 探针滞回（审查 P2）：`remoteReachable` 是一次 200ms TCP 探测，一次抖动
+  // 就会误报「远程连接已中断」，恢复时又误报「已恢复」并自动重选 IP。
+  // 因此探针不可达要**连续 CONFIRM_SAMPLES 次采样**（约 10s）才算断；
+  // 而 `ipChanged` 是确定信号（地址列表里真的没有它了），一次即可。
+  const lastRawDown = useRef(false);
+  const streak = useRef(0);
   useEffect(() => {
     if (!status) return;
+    // 服务没在跑：既不报中断也不报恢复，状态归零（避免下次启动误报）。
+    if (!status.running) {
+      prevLinkDown.current = null;
+      lastRawDown.current = false;
+      streak.current = 0;
+      return;
+    }
     // linkDown = 服务在跑，但地址变了或探针不通（远程连不回本机）
-    const linkDown = !!status.running && (status.ipChanged || status.remoteReachable === false);
+    const rawDown = !!status.ipChanged || status.remoteReachable === false;
+    if (rawDown === lastRawDown.current) {
+      streak.current += 1;
+    } else {
+      lastRawDown.current = rawDown;
+      streak.current = 1;
+    }
+    // ipChanged 属确定信号，一次就够；只有探针抖动才要求连续确认。
+    const need = status.ipChanged ? 1 : CONFIRM_SAMPLES;
+    if (streak.current < need) return;
+
+    const confirmed = rawDown;
     const wasDown = prevLinkDown.current;
-    if (wasDown !== null && wasDown !== linkDown) {
-      if (linkDown) {
-        toast("远程连接已中断，请检查本机网络连接", "error");
-      } else if (status.running) {
-        // 仅当服务仍在运行时，linkDown→false 才是真正的「网络恢复」；若 running=false
-        // 则是用户主动停服，不应误报恢复、更不应自动重启用户刚停掉的服务。
-        // S4: 链路由中断恢复（且服务仍在运行）。自动重新选中已记录的 IP。
-        toast("网络已恢复，AI 工具可重新连接", "success");
-        if (status.lastSelectedIp) {
-          // byUser=false: 自动恢复只更新选中/落盘，不触发 IP 变化 banner
-          onReselectIp(status.lastSelectedIp, false);
-        }
+    prevLinkDown.current = confirmed;
+    if (wasDown === null || wasDown === confirmed) return;
+    if (confirmed) {
+      toast("远程连接已中断，请检查本机网络连接", "error");
+    } else {
+      // 仅当服务仍在运行时，linkDown→false 才是真正的「网络恢复」；若 running=false
+      // 则是用户主动停服，不应误报恢复、更不应自动重启用户刚停掉的服务。
+      // S4: 链路由中断恢复（且服务仍在运行）。自动重新选中已记录的 IP。
+      toast("网络已恢复，AI 工具可重新连接", "success");
+      if (status.lastSelectedIp) {
+        // byUser=false: 自动恢复只更新选中/落盘，不触发 IP 变化 banner
+        onReselectIp(status.lastSelectedIp, false);
       }
     }
-    prevLinkDown.current = linkDown;
   }, [status, toast, onReselectIp]);
   return null;
 }

@@ -175,6 +175,8 @@ export interface FirewallIssue {
     | "noRule"
     | "profileGap"
     | "blockRule"
+    /** 阻断规则存在，但**不属于** cc-bridge（第三方/组策略），一键修复不会动它。 */
+    | "blockRuleForeign"
     | "staleRule"
     | "duplicateRule"
     | "localPolicyBlocked"

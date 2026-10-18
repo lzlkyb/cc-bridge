@@ -9,6 +9,7 @@ import { useMcpBridge } from "./useMcpBridge";
 import { ServerRow } from "./ServerRow";
 import { ImportWizard } from "./ImportWizard";
 import { EnableRiskModal } from "./EnableRiskModal";
+import { MasterRiskModal } from "./MasterRiskModal";
 import { ServerEditModal } from "./ServerEditModal";
 import { RemoteCwdRiskModal } from "./RemoteCwdRiskModal";
 import type { StaticStatus } from "../../../../lib/types";
@@ -28,6 +29,7 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
   const bridge = useMcpBridge();
   const [importing, setImporting] = useState(false);
   const [editing, setEditing] = useState<McpBridgeServer | "new" | null>(null);
+  const [confirmMaster, setConfirmMaster] = useState(false);
   const [confirmEnable, setConfirmEnable] = useState<McpBridgeServer | null>(null);
   const [confirmSave, setConfirmSave] = useState<ServerInput | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<McpBridgeServer | null>(null);
@@ -35,7 +37,8 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
 
   const master = bridge.data?.enabled ?? false;
   const servers = bridge.data?.servers ?? [];
-  const onCount = servers.filter((s) => s.enabled).length;
+  const enabledServers = servers.filter((s) => s.enabled);
+  const onCount = enabledServers.length;
 
   return (
     <Card id="set-mcpbridge">
@@ -68,7 +71,8 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
               : "把本机已装的 MCP server 转给远程 AI 工具使用。默认关闭。"
           }
           checked={master}
-          onChange={(v) => void bridge.setMaster(v)}
+          // 开→二次确认（一次性放开全部勾选项，风险高于单条），关→直接执行。
+          onChange={(v) => (v ? setConfirmMaster(true) : void bridge.setMaster(false))}
           last
         />
 
@@ -133,6 +137,17 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
           onSubmit={(input) => {
             setEditing(null);
             setConfirmSave(input);
+          }}
+        />
+      )}
+
+      {confirmMaster && (
+        <MasterRiskModal
+          servers={enabledServers}
+          onCancel={() => setConfirmMaster(false)}
+          onConfirm={() => {
+            void bridge.setMaster(true);
+            setConfirmMaster(false);
           }}
         />
       )}

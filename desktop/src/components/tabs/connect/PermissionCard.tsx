@@ -49,7 +49,7 @@ export function PermissionCard({
       {includeShellTools && (
         <Alert variant="destructive" className="flex items-start gap-2 p-3 text-xs">
           <Icon name="alertTriangle" size={14} className="mt-0.5 shrink-0" />
-          <span className="leading-relaxed">已开启：生成的命令会免确认全部 19 个工具（含命令执行）。请仅在完全信任该连接时开启。</span>
+          <span className="leading-relaxed">已开启：生成的命令会免确认全部工具（含命令执行）。请仅在完全信任该连接时开启。</span>
         </Alert>
       )}
       <CommandBlock command={permissionCommand} copied={permCopied} onCopy={handlePermCopy} />

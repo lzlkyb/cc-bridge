@@ -52,7 +52,7 @@ export function AddressPicker({
   // 复制反馈统一走 useCopyFeedback（评审修复 ⑤）。
   const fb = useCopyFeedback();
   // 本机探测：目标仅限本机网卡地址（不新增外部连接面），30s 内复用缓存。
-  const { data: probe, refetch, isFetching } = useQuery<LanProbeItem[]>({
+  const { data: probe, refetch, isFetching, isError } = useQuery<LanProbeItem[]>({
     queryKey: ["lan-probe", port],
     queryFn: () => invoke<LanProbeItem[]>("probe_lan_ips", { port }),
     staleTime: 30_000,
@@ -105,6 +105,18 @@ export function AddressPicker({
           </Button>
         )}
       </div>
+
+      {/* 探测失败要说出来（审查 U8）：原来失败与「全部未定」在界面上长得一模一样，
+          用户看到只有「默认」徽章，会以为是网络不通。 */}
+      {isError && (
+        <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 text-xs text-warning-ink">
+          <Icon name="alertTriangle" size={12} aria-hidden="true" />
+          <span className="flex-1">本机端口探测失败（地址仍可手动选择）</span>
+          <button type="button" className="underline hover:no-underline" onClick={() => void refetch()}>
+            重试
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2">
         {ips.map((ip, i) => {

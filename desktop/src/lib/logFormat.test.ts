@@ -127,10 +127,25 @@ describe("auditRowKey", () => {
     expect(auditRowKey(base)).toBe(auditRowKey({ ...base }));
   });
 
-  it("durationMs / success / params 变化不影响 key（轮询重拉不丢展开态）", () => {
+  it("durationMs / success 不影响 key（轮询重拉不丢展开态）", () => {
     const k1 = auditRowKey(base);
-    const k2 = auditRowKey({ ...base, durationMs: 8, success: true, params: "{changed}" });
+    const k2 = auditRowKey({ ...base, durationMs: 8, success: true });
     expect(k1).toBe(k2);
+  });
+
+  /// 🔴 回归（审查 P2）：同一秒、同一工具、同一 IP 的**两条不同记录**必须有两个 key。
+  ///
+  /// 旧 key = `时间-工具-IP`：两条这样的记录完全重合，展开态联动、详情串位。
+  /// 现在把 params 也压进 key，它们分得开了。
+  it("同秒同工具同 IP 的两条记录 params 不同 → key 不同", () => {
+    const a = auditRowKey({ ...base, params: '{"path":"a.txt"}' });
+    const b = auditRowKey({ ...base, params: '{"path":"b.txt"}' });
+    expect(a).not.toBe(b);
+  });
+
+  /// 同一个条目重复读取（params 原样返回）时 key 必须稳定，否则展开态会被重置。
+  it("同一记录重读 key 稳定", () => {
+    expect(auditRowKey({ ...base })).toBe(auditRowKey({ ...base }));
   });
 
   it("不同条目 key 不同", () => {

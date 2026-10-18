@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, memo } from "react";
 import { invoke } from "../../lib/tauri";
+import { toast } from "../ui/toast";
 import type { StaticStatus } from "../../lib/types";
 import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
@@ -30,6 +31,7 @@ function HeaderImpl({
   onToggleCollapse,
   pendingCmd,
   onPendingResolved,
+  onPendingDismiss,
 }: {
   status?: StaticStatus;
   onChanged?: () => void;
@@ -42,7 +44,10 @@ function HeaderImpl({
   /** 挂起命令（IP 横幅倒计时归零未复制时升级而来，2026-10-17）：非空即在中段
    *  右端渲染挂起胶囊，跨页可见、点一下复制。与 UpdateReadout 互斥（index.css）。 */
   pendingCmd?: { ip: string; cmd: string } | null;
+  /** 胶囊复制成功后的收口（App 清 pendingCmd）。 */
   onPendingResolved?: () => void;
+  /** 胶囊「忽略」出口（等同连接页横幅的 ×）：不复制、直接收走本次提示。 */
+  onPendingDismiss?: () => void;
 }) {
   const [dark, setDark] = useState(() => getStoredTheme() === "dark");
   const [busy, setBusy] = useState(false);
@@ -83,6 +88,10 @@ function HeaderImpl({
       await invoke(running ? "stop_mcp_server" : "start_mcp_server");
       // 启停后立刻刷新状态；后端 running 标志已同步更新。
       onChanged?.();
+    } catch (e) {
+      // 🔴 必须 catch（审查 U1）：原来只有 try/finally，失败时图标闪一下就没了，
+      // 控制台留一条 unhandled rejection，用户永远不知道是端口被占还是权限不足。
+      toast(`服务${running ? "停止" : "启动"}失败：${String(e)}`, "error");
     } finally {
       setBusy(false);
     }
@@ -124,7 +133,11 @@ function HeaderImpl({
       <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center self-stretch">
         <UpdateReadout />
         {pendingCmd && onPendingResolved && (
-          <PendingCommandPill pending={pendingCmd} onResolved={onPendingResolved} />
+          <PendingCommandPill
+            pending={pendingCmd}
+            onResolved={onPendingResolved}
+            onDismiss={onPendingDismiss}
+          />
         )}
       </div>
 

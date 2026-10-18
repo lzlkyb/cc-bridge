@@ -37,6 +37,16 @@ const empty = (): SshConnection => ({
 });
 
 /**
+ * 未保存草稿（仅「新建」），存在模块级而不是 state 里：弹框关闭后组件可能被卸载，
+ * state 随之消失——这正是「填了主机/端口/私钥，手滑点遮罩全部重填」的原因（审查 U7）。
+ *
+ * 为什么不弹「放弃未保存的修改？」确认框：项目红线 R17 明确不做二次确认弹窗。
+ * 改成**不丢数据**更彻底：遮罩/Esc/× 关闭时草稿留在内存里，下次打开新建弹框自动回填；
+ * 只有「保存成功」或显式点「取消」（明确表达放弃意图）才清空。
+ */
+let newConnDraft: { form: SshConnection; password: string; passphrase: string } | null = null;
+
+/**
  * 新建 / 编辑 SSH 连接弹框。
  * 密码仅「记住密码」时随 save 一并发往后端加密落盘；不记住时忽略，明文不出本弹框。
  */
@@ -48,11 +58,36 @@ export function SshConnectionDialog({ open, initial, connections, onClose, onSav
 
   useEffect(() => {
     if (open) {
-      setForm(initial ? { ...initial } : empty());
-      setPassword("");
-      setPassphrase("");
+      if (initial) {
+        setForm({ ...initial });
+        setPassword("");
+        setPassphrase("");
+      } else if (newConnDraft) {
+        // 上次填一半被关掉：回填，不让用户重填。
+        setForm({ ...newConnDraft.form });
+        setPassword(newConnDraft.password);
+        setPassphrase(newConnDraft.passphrase);
+      } else {
+        setForm(empty());
+        setPassword("");
+        setPassphrase("");
+      }
     }
   }, [open, initial]);
+
+  /**
+   * 关闭并保留草稿（点遮罩 / Esc / × / 右上角关闭）。仅新建态需要保留。
+   */
+  const handleCloseKeepDraft = () => {
+    if (!initial) newConnDraft = { form, password, passphrase };
+    onClose();
+  };
+
+  /** 显式取消 = 明确放弃：清草稿再关。 */
+  const handleCancel = () => {
+    newConnDraft = null;
+    onClose();
+  };
 
   const set = <K extends keyof SshConnection>(k: K, v: SshConnection[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
@@ -107,6 +142,8 @@ export function SshConnectionDialog({ open, initial, connections, onClose, onSav
             form.authType === "key" && form.rememberPassphrase ? passphrase : null,
         },
       });
+      // 保存成功：草稿使命结束，清掉避免下次新建时又回填旧值。
+      newConnDraft = null;
       onSaved();
       onClose();
     } catch (e) {
@@ -117,12 +154,12 @@ export function SshConnectionDialog({ open, initial, connections, onClose, onSav
   };
 
   return (
-    <Dialog open={open} onClose={onClose}>
+    <Dialog open={open} onClose={handleCloseKeepDraft}>
       <DialogHeader>
         <DialogTitle>{initial ? "编辑 SSH 连接" : "新建 SSH 连接"}</DialogTitle>
         <button
           type="button"
-          onClick={onClose}
+          onClick={handleCloseKeepDraft}
           className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
         >
           <Icon name="close" size={16} />
@@ -196,7 +233,7 @@ export function SshConnectionDialog({ open, initial, connections, onClose, onSav
       </div>
 
       <div className="mt-5 flex justify-end gap-2">
-        <Button variant="outline" onClick={onClose}>
+        <Button variant="outline" onClick={handleCancel}>
           取消
         </Button>
         <Button onClick={handleSave} disabled={saving}>

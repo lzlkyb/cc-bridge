@@ -1,5 +1,4 @@
 import type { Terminal } from "@xterm/xterm";
-import { isMac } from "./platform";
 import { mouseTrackingActive } from "./terminalMouse";
 
 /**
@@ -51,9 +50,22 @@ export function isSynthMouse(e: Event): boolean {
 
 /** macOS 的强制选择判据是 Option+click，且要先打开这个选项（xterm 官方语义：鼠标模式下强制本地选择）。 */
 function macForceSelection(term: Terminal): boolean {
-  if (!isMac(typeof navigator === "undefined" ? undefined : navigator.platform)) return false;
+  // 🔴 这里**不能**用 platform.ts 的 isMac(navigator.platform)：那个函数认的是后端
+  // 下发的 "macos"，而浏览器给的 platform 是 "MacIntel"/"iPhone"……——
+  // 传进去恒 false，mac 上「TUI 内强制拖选」永远不生效，还会把 mousedown 直接
+  // 转给远端（审查 P2）。
+  if (!isMacBrowser()) return false;
   if (!term.options.macOptionClickForcesSelection) term.options.macOptionClickForcesSelection = true;
   return true;
+}
+
+/** 浏览器侧判 mac（与后端 platform 字段无关，两者来源不同）。 */
+function isMacBrowser(): boolean {
+  if (typeof navigator === "undefined") return false;
+  // userAgentData.platform 是首选（"macOS"）；旧内核回落到 navigator.platform（"MacIntel"）。
+  const uaData = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  const raw = uaData?.platform || navigator.platform || "";
+  return /mac/i.test(raw);
 }
 
 /**

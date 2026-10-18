@@ -205,66 +205,76 @@ export function ActionCard({
 
   return (
     <div className={`animate-fade-in overflow-hidden rounded-[calc(var(--radius)+3px)] border bg-card shadow-card ${ts.bar}`}>
-      {/* 折叠细条：整条可点展开；复制按钮独立、免展开 */}
-      <div
-        onClick={toggle}
-        role={tone === "destructive" ? "alert" : undefined}
-        className="flex cursor-pointer select-none items-center gap-2.5 py-2 pl-3 pr-2.5 transition-shadow duration-200 hover:shadow-pop"
-      >
-        <span
-          className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${ts.iconBox} ${
-            !resolved ? "notice-pulse" : ""
-          }`}
-        >
-          <Icon name={icon as any} size={15} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className={`flex items-center gap-2 text-[13px] font-semibold ${ts.title}`}>
-            <span className="truncate">{title}</span>
-            {pill && (
-              <span className={`shrink-0 rounded-full px-2 py-px text-[11px] font-bold ${ts.pill}`}>{pill}</span>
-            )}
-          </span>
-          {summary && <span className="mt-0.5 block truncate text-[11.5px] text-muted-foreground">{summary}</span>}
-        </span>
-        {showRing && <CountdownRing remain={remain} total={autoCollapseSec} resolved={resolved} tone={tone} />}
-        {copyLabel && onCopy && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleCopy();
-            }}
-            disabled={copyDisabled}
-            className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11.5px] font-semibold transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:-translate-y-px hover:shadow-card disabled:cursor-not-allowed disabled:opacity-40 ${
-              copied || resolved
-                ? "border-success/50 bg-success/10 text-success-ink"
-                : "border-warning/45 bg-warning/[0.09] text-warning-ink hover:border-warning"
-            } ${copied ? "animate-scale-in" : ""}`}
-          >
-            <Icon name={copied || resolved ? "check" : "copy"} size={12} />
-            {copied ? "已复制" : copyLabel}
-          </button>
-        )}
-        <Icon
-          name="chevronDown"
-          size={14}
-          className={`shrink-0 text-muted-foreground transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+      {/* 折叠细条：整条可点展开；复制按钮独立、免展开。
+          🔴 展开热区必须是真的 `<button>`（可 Tab 聚焦 + Enter/Space + aria-expanded）。
+          不能直接把整条做成 button——里面还嵌着「复制」「关闭」两个 button，
+          HTML 不允许 button 套 button。所以采用「绝对定位覆盖层」：
+          可点按钮铺满整条（z-0），内容层 `pointer-events-none` 浮在上面，
+          只有真正的按钮再把 pointer-events 打开。视觉零变化，键盘可达。 */}
+      <div role={tone === "destructive" ? "alert" : undefined} className="relative">
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={expanded}
+          aria-label={expanded ? "收起详情" : "展开详情"}
+          className="absolute inset-0 z-0 cursor-pointer rounded-[inherit] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
         />
-        {onDismiss && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onDismiss();
-            }}
-            aria-label="关闭提示"
-            title="本次会话忽略此提示"
-            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        <div className="pointer-events-none relative z-10 flex select-none items-center gap-2.5 py-2 pl-3 pr-2.5 transition-shadow duration-200 hover:shadow-pop">
+          <span
+            className={`grid h-7 w-7 shrink-0 place-items-center rounded-lg ${ts.iconBox} ${
+              !resolved ? "notice-pulse" : ""
+            }`}
           >
-            <Icon name="close" size={13} />
-          </button>
-        )}
+            <Icon name={icon as any} size={15} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className={`flex items-center gap-2 text-[13px] font-semibold ${ts.title}`}>
+              <span className="truncate">{title}</span>
+              {pill && (
+                <span className={`shrink-0 rounded-full px-2 py-px text-[11px] font-bold ${ts.pill}`}>{pill}</span>
+              )}
+            </span>
+            {summary && <span className="mt-0.5 block truncate text-[11.5px] text-muted-foreground">{summary}</span>}
+          </span>
+          {showRing && <CountdownRing remain={remain} total={autoCollapseSec} resolved={resolved} tone={tone} />}
+          {copyLabel && onCopy && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleCopy();
+              }}
+              disabled={copyDisabled}
+              className={`pointer-events-auto flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11.5px] font-semibold transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:-translate-y-px hover:shadow-card disabled:cursor-not-allowed disabled:opacity-40 ${
+                copied || resolved
+                  ? "border-success/50 bg-success/10 text-success-ink"
+                  : "border-warning/45 bg-warning/[0.09] text-warning-ink hover:border-warning"
+              } ${copied ? "animate-scale-in" : ""}`}
+            >
+              <Icon name={copied || resolved ? "check" : "copy"} size={12} />
+              {copied ? "已复制" : copyLabel}
+            </button>
+          )}
+          <Icon
+            name="chevronDown"
+            size={14}
+            className={`shrink-0 text-muted-foreground transition-transform duration-200 ${expanded ? "rotate-180" : ""}`}
+          />
+          {onDismiss && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDismiss();
+              }}
+              aria-label="关闭提示"
+              title="本次会话忽略此提示"
+              className="pointer-events-auto grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <Icon name="close" size={13} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 展开详情：grid-rows 0fr→1fr 平滑高度过渡 */}

@@ -79,19 +79,20 @@ export function OnboardingGuide({
 
   const handleSkip = () => finish();
 
-  // Esc = 跳过引导（与项目内弹窗 Esc 可关的行为对齐；跳过与「跳过引导」按钮同义，
-  // 都走 finish 写入已完成标记，不会出现「Esc 关了下次又弹」）。
+  // Esc = 仅**收起本次**引导（内存态），不写「已完成」标记（审查 U7）。
   //
-  // finish 用 useCallback 固定、并进依赖：此前是空依赖 + eslint-disable，把首次渲染的
-  // onClose 锁死。现在 onClose 只是 `setState` 包装所以侥幸正确，但将来它若带上别的逻辑
-  // （例如上报或前置校验），这个 effect 会静默用旧闭包。
+  // 原来的 Esc 走 finish()，等于把「顺手按 Esc 看看界面」变成了永久跳过——
+  // 引导从此再也不出现，用户连「重看引导」的入口在哪都不知道。
+  // 现在永久完成只由「跳过引导」/ 走完最后一步写入。
+  //
+  // onClose 进依赖（不再空依赖 + eslint-disable）：此前把首次渲染的 onClose 锁死在闭包里。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") finish();
+      if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [finish]);
+  }, [onClose]);
 
   // H3：点遮罩不再永久关闭引导，仅轻微抖动提示改用下方按钮（跳过 / 下一步）。
   const handleOverlayClick = () => {

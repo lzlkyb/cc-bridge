@@ -79,6 +79,9 @@ export function SecurityGroup({
         },
       });
       setConfirmReset(false);
+      // 恢复默认是「批量把若干个开关改掉」，改完没有任何反馈的话，用户看不出
+      // 到底生效了没有（审查 U8）。
+      toast("已恢复安全默认设置", "success");
       onSaved();
     } catch (e) {
       toast(`恢复默认失败：${e}`, "error");

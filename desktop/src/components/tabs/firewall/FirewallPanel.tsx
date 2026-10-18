@@ -89,6 +89,7 @@ const ISSUE_TITLE: Record<string, string> = {
   noRule: "未放行端口",
   profileGap: "规则未覆盖当前网络",
   blockRule: "存在阻止规则",
+  blockRuleForeign: "被其它软件的阻止规则挡住",
   staleRule: "残留废规则",
   duplicateRule: "重复规则",
   localPolicyBlocked: "组策略禁止本地规则",
@@ -96,7 +97,14 @@ const ISSUE_TITLE: Record<string, string> = {
 };
 
 /** true = 这条问题直接导致远程连不上（红）；false = 仅影响健康度/判断准确度（黄/灰）。 */
-const BLOCKING_CODES = new Set(["noRule", "profileGap", "blockRule", "localPolicyBlocked"]);
+const BLOCKING_CODES = new Set([
+  "noRule",
+  "profileGap",
+  "blockRule",
+  // 外来阻断规则同样会真的让远程连不上（只是修不了），连接页必须现身。
+  "blockRuleForeign",
+  "localPolicyBlocked",
+]);
 
 function issueTitle(code: string) {
   return ISSUE_TITLE[code] ?? "防火墙问题";

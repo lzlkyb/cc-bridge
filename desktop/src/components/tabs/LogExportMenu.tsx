@@ -51,25 +51,37 @@ export function LogExportMenu({ filtered, entriesCount, total, filter, pending }
     setBusy(true);
     try {
       const filtered = await loadEntries();
+      // 🔴 不能只看 `empty`（审查 U6）：「全部历史」这一档的范围是运行时才知道的，
+      // 菜单项永远是可点的。原实现会把空数组导出成一个 0 行 CSV 再提示「已导出 0 条」，
+      // 用户打开是一张空表。这里改为真加载后判空、直接取消并说明原因。
+      if (filtered.length === 0) {
+        toast("所选范围内没有日志，已取消导出", "info");
+        return;
+      }
       if (format === "csv") {
         const header = "时间,工具,工具名,参数,来源IP,耗时(ms),状态,错误\n";
-        const rows = filtered.map((e) => {
-          const esc = (s: string) => {
-            const v = String(s ?? "");
-            const guarded = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
-            return `"${guarded.replace(/"/g, '""')}"`;
-          };
-          return [
-            e.timestamp,
-            e.tool,
-            toolLabel(e.tool),
-            esc(e.params),
-            e.sourceIp ?? "",
-            e.durationMs ?? "",
-            e.success ? "成功" : "失败",
-            esc(e.error ?? ""),
-          ].join(",");
-        }).join("\n");
+        // 统一转义**所有**列（审查 U6）：原来只对 params / error 做 esc，
+        // 其余列裸拼——含逗号或引号时整行错列，审计记录在 Excel 里串位。
+        // 顺带做公式注入防护（= + - @ 开头加单引号）。
+        const cell = (v: string | number | undefined | null) => {
+          const raw = v === undefined || v === null ? "" : String(v);
+          const guarded = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
+          return `"${guarded.replace(/"/g, '""')}"`;
+        };
+        const rows = filtered
+          .map((e) =>
+            [
+              cell(e.timestamp),
+              cell(e.tool),
+              cell(toolLabel(e.tool)),
+              cell(e.params),
+              cell(e.sourceIp ?? ""),
+              cell(e.durationMs ?? ""),
+              cell(e.success ? "成功" : "失败"),
+              cell(e.error ?? ""),
+            ].join(","),
+          )
+          .join("\n");
         const csv = "\uFEFF" + header + rows; // BOM for Excel Chinese support
         const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
         const url = URL.createObjectURL(blob);
@@ -101,6 +113,10 @@ export function LogExportMenu({ filtered, entriesCount, total, filter, pending }
     setBusy(true);
     try {
       const filtered = await loadEntries();
+      if (filtered.length === 0) {
+        toast("所选范围内没有日志，已取消导出", "info");
+        return;
+      }
       const status = await invoke<StatusResponse>("get_status");
       const byTool = new Map<string, { count: number; totalMs: number; errors: number }>();
       for (const e of filtered) {

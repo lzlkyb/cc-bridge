@@ -9,7 +9,7 @@ import { FirewallAlertBlock } from "./connect/FirewallAlertBlock";
 import { isWindows } from "../../lib/platform";
 import { ToolGuide } from "./connect/ToolGuide";
 import { ConnectGuide } from "./connect/ConnectGuide";
-import { invoke } from "../../lib/tauri";
+import { invokeOrToast } from "../../lib/tauri";
 import type { McpClientTool } from "../../lib/mcpClients";
 
 function ConnectTabImpl({
@@ -28,7 +28,12 @@ function ConnectTabImpl({
   status?: StaticStatus;
   onRefresh: () => void;
   selectedIp: string;
-  onSelectIp: (ip: string) => void;
+  /**
+   * `byUser` 区分「用户主动点选」与「组件自动预选」（审查 B9）。
+   * 只有用户主动点选才该置「已处理待复制」——首装自动选第一个 IP 若被当成用户点选，
+   * 会立刻弹出「网络地址已变化」橙色横幅，而地址根本没变。
+   */
+  onSelectIp: (ip: string, byUser?: boolean) => void;
   /** 方案 Q: 用户已点选新地址但未复制远程更新命令的中间态（App 层提升），用于保持 banner 可见 */
   ipResolvedByUser: boolean;
   /** 方案 Q: 复制远程更新 sed 命令后收口，通知 App 清除 ipResolvedByUser */
@@ -82,7 +87,10 @@ function ConnectTabImpl({
     // 会导致每次启动都把后端 last_selected_ip 覆盖成 lan_ips[0]（物理网卡 IP，永不
     // 消失），从而让 ip_changed 永远无法触发，弱提示全部失效（见诊断报告）。
     if (!selectedIp && !status?.lastSelectedIp) {
-      onSelectIp(lanIps[0]);
+      // 🔴 byUser=false：这是**组件自动预选**，不是用户点选（审查 B9）。
+      // 传 true 会让 App 置 ipResolvedByUser → 首屏直接弹「网络地址已变化」，
+      // 而首次安装根本没有发生过地址变化。
+      onSelectIp(lanIps[0], false);
       return;
     }
     // 场景 2：当前选中 IP 已不在网卡列表（地址变化，如 DHCP 续租 / 换网）——
@@ -90,7 +98,9 @@ function ConnectTabImpl({
     // 用户仍可在 AddressPicker 中改选。仅当「当前选中已失效」时触发，绝不覆盖用户
     // 确认过的有效地址（避免静默切换）。
     if (selectedIp && !lanIps.includes(selectedIp)) {
-      onSelectIp(lanIps[0]);
+      // 同理：自动候选不是用户点选，不置「已处理」。（此时横幅本来就该显示，
+      // 由 status.ipChanged 驱动，不依赖这个标记。）
+      onSelectIp(lanIps[0], false);
     }
   }, [listenAll, lanIps.join(","), selectedIp, status?.lastSelectedIp]);
 
@@ -169,7 +179,15 @@ function ConnectTabImpl({
             onToolChange={(t) => {
               // 必须落盘：托盘「复制命令 / 复制 IP」与 IpChangedBanner 都按这个值出内容。
               // 只存在组件本地 state 时，界面选了 Codex、托盘仍会复制一条 claude mcp add。
-              void invoke("save_config", { patch: { connectClient: t } }).then(onRefresh);
+              // 失败必须可见（审查 U1）：裸 invoke 失败只留一条 unhandled rejection，
+              // 用户看到的是「选了 Codex，托盘还是 claude 命令」而毫无线索。
+              void invokeOrToast(
+                "save_config",
+                { patch: { connectClient: t } },
+                "切换接入工具失败，托盘命令可能仍是旧工具",
+              ).then((r) => {
+                if (r) onRefresh();
+              });
             }}
           >
             <ConnectGuide

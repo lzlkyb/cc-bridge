@@ -52,3 +52,31 @@ export function saveSize(width: number, height: number): void {
     JSON.stringify({ width: Math.floor(width), height: Math.floor(height) }),
   );
 }
+
+/**
+ * 把保存的尺寸夹进当前显示器工作区（逻辑像素）。
+ *
+ * 为什么需要：只校验 `[560, 20000]` 是不够的——用户换到更小/更低分的屏幕（或改了
+ * 系统缩放）后，上次的 2400×1400 会恢复成比屏幕还大的窗口，标题栏跑到屏幕外、
+ * 右下角永远拖不到（审查 P2）。这里按可用尺寸留 80px 余量（任务栏/窗口边框）。
+ *
+ * 纯函数：便于单测；`avail*` 传入 `Number.POSITIVE_INFINITY` 表示拿不到显示器信息
+ * （纯浏览器 dev / 权限缺失），此时只做最小尺寸兜底、不缩小。
+ */
+export function clampToWorkArea(
+  saved: SavedSize,
+  availWidth: number,
+  availHeight: number,
+): SavedSize {
+  const MARGIN = 80;
+  const maxW = Number.isFinite(availWidth)
+    ? Math.max(MIN_WIDTH, Math.floor(availWidth) - MARGIN)
+    : Number.POSITIVE_INFINITY;
+  const maxH = Number.isFinite(availHeight)
+    ? Math.max(MIN_HEIGHT, Math.floor(availHeight) - MARGIN)
+    : Number.POSITIVE_INFINITY;
+  return {
+    width: Math.min(Math.max(saved.width, MIN_WIDTH), maxW),
+    height: Math.min(Math.max(saved.height, MIN_HEIGHT), maxH),
+  };
+}

@@ -119,10 +119,11 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
     setFileConn(null);
     void ssh.connect(conn, { newTab: true });
   };
-  // 重连某会话回它自己的标签（终端断开横幅 / 恢复横幅 / 恢复占位卡共用）。
+  // 重连某会话回它自己的标签（断开横幅 / 恢复横幅 / 恢复占位卡共用）。
+  // 🔴 返回 Promise：「全部恢复」靠它 await 出串行，`void` 掉就变成并发。
   const reconnectSession = useCallback((s: SshSessionRef) => {
     setFileConn(null);
-    void ssh.connect(s.conn, { intoTab: s.tabId, forSplit: !!s.splitOnly });
+    return ssh.connect(s.conn, { intoTab: s.tabId, forSplit: !!s.splitOnly });
   }, [ssh]);
 
   // 启用后探测系统 ssh 可用性（决定降级卡片）。

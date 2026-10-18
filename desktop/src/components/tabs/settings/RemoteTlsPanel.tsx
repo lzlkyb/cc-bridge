@@ -49,8 +49,13 @@ export function RemoteTlsPanel({
   const url = `https://${ip}:${status?.port ?? 7823}/mcp`;
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(url);
-    toast("接入地址已复制", "success");
+    // 复制失败必须如实说（审查 U8）：原来没 catch，写剪贴板被拒时仍提示「已复制」。
+    try {
+      await navigator.clipboard.writeText(url);
+      toast("接入地址已复制", "success");
+    } catch (e) {
+      toast(`复制失败：${String(e)}`, "error");
+    }
   };
 
   // 保存 + 重启监听。TLS 开关 / 封禁策略都经 restart_server 生效，统一走这条。

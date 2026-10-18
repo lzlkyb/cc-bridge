@@ -67,8 +67,11 @@ export function perfSummaryLine(entries: AuditEntry[]): string {
       topSum = s;
       topTool = t;
     }
-  const errRate = (entries.filter((e) => !e.success).length / entries.length) * 100;
-  return `P95 ${Math.round(p95)}ms · ${toolLabel(topTool)} 占 ${((topSum / total) * 100).toFixed(1)}% · 错误率 ${errRate.toFixed(1)}%`;
+  const errRate = entries.length ? (entries.filter((e) => !e.success).length / entries.length) * 100 : 0;
+  // 🔴 全 0 耗时（or 全部条目耗时为 0）时 total=0 → topSum/total = NaN，界面上会出现
+  // 「占 NaN%」（审查 P2）。占比无意义时直接写 0.0%（而不是隐藏整段——其余指标仍有用）。
+  const topShare = total > 0 ? ((topSum / total) * 100).toFixed(1) : "0.0";
+  return `P95 ${Math.round(p95)}ms · ${toolLabel(topTool)} 占 ${topShare}% · 错误率 ${errRate.toFixed(1)}%`;
 }
 
 /** 尝试 pretty-print JSON；失败退回原文。 */
@@ -81,13 +84,29 @@ export function prettyParams(raw: string): string {
 }
 
 /**
- * 审计条目的**稳定**行 key：时间 + 工具 + 来源 IP。
+ * 审计条目的**稳定**行 key：时间 + 工具 + 来源 IP + params 短哈希。
  *
  * 曾用过「拼上 durationMs」的版本——10s 轮询重拉数据后，凡 key 的任一段变化
  * 就整行（连同展开的详情行）重挂载，展开态静默收起。durationMs 是**同一条
  * 历史记录的固有属性**，不该进身份；timestamp+tool+sourceIp 才是它「是哪一次
- * 调用」的标识。同秒同工具且同 IP 的极端碰撞按同一条处理，代价可忽略。
+ * 调用」的标识。
+ *
+ * 🔴 但只有这三段仍会撞（审查 P2）：batch / 循环里同一秒调用同一工具两次很常见，
+ * 撞了之后两条行共用一个 key → React 认为同一条，展开一条另一条跟着展开、详情串位。
+ * 加入 params 短哈希后，碰撞要求「同秒同工具同 IP 且参数完全一致」——那种情况两行
+ * 内容本来就一样，共用展开态无副作用。params 是历史记录的固定值，不随轮询变化，
+ * 因此仍满足「稳定」要求。（不用 durationMs：它从「进行中」变「已完成」时会变。）
  */
 export function auditRowKey(e: AuditEntry): string {
-  return `${e.timestamp}-${e.tool}-${e.sourceIp ?? ""}`;
+  return `${e.timestamp}-${e.tool}-${e.sourceIp ?? ""}-${hash32(e.params)}`;
+}
+
+/** 32 位 FNV-1a：只为把 params 压成短串当 key 用，不用于安全场景。 */
+function hash32(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
 }

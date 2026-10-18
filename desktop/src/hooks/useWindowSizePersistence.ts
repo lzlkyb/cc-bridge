@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
-import { parseSavedSize, saveSize, WINDOW_SIZE_KEY } from "../lib/windowState";
+import { clampToWorkArea, parseSavedSize, saveSize, WINDOW_SIZE_KEY } from "../lib/windowState";
 
 /** 拖拽缩放时 onResized 每像素都触发，防抖后再写 localStorage */
 const SAVE_DEBOUNCE_MS = 400;
@@ -29,7 +29,25 @@ export function useWindowSizePersistence(): void {
       try {
         const saved = parseSavedSize(localStorage.getItem(WINDOW_SIZE_KEY));
         if (!saved || (await win.isMaximized())) return;
-        await win.setSize(new LogicalSize(saved.width, saved.height));
+        // 🔴 按当前显示器尺寸夹取（审查 P2）：换到更小的屏幕后，上次的 2400×1400
+        // 会让窗口比屏幕还大，标题栏跑到屏幕外、右下角永远拖不到。
+        // 拿不到显示器信息时传 Infinity，clampToWorkArea 只做最小尺寸兜底。
+        let availW = Number.POSITIVE_INFINITY;
+        let availH = Number.POSITIVE_INFINITY;
+        try {
+          // `currentMonitor` 是模块级函数（`Window` 实例上没有这个方法，只有
+          // `availableMonitors()` 这类静态导出）。
+          const monitor = await currentMonitor();
+          const scale = monitor?.scaleFactor && monitor.scaleFactor > 0 ? monitor.scaleFactor : 1;
+          if (monitor) {
+            availW = monitor.size.width / scale;
+            availH = monitor.size.height / scale;
+          }
+        } catch {
+          // 权限缺失/纯浏览器：不夹取，保持原尺寸
+        }
+        const size = clampToWorkArea(saved, availW, availH);
+        await win.setSize(new LogicalSize(size.width, size.height));
       } catch {
         // Tauri API 不可用时静默跳过
       }

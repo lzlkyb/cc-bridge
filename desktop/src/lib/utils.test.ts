@@ -9,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import { globMatch } from "./utils";
 import {
   buildDisplayHost,
+  escapeDoubleQuoted,
   buildBaseCommand,
   buildConnectCommand,
   buildHealthCheck,
@@ -102,24 +103,37 @@ describe("buildHealthCheck", () => {
 describe("buildIpSedCommand", () => {
   it("http 模式：匹配段兼容 http/https 旧值，替换目标为 http", () => {
     expect(buildIpSedCommand("10.0.0.8", 7823, "user", "")).toBe(
-      "sed -i 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.claude.json",
+      "sed -i.bak 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.claude.json && rm -f ~/.claude.json.bak",
     );
   });
 
   it("tls 模式：替换目标切 https", () => {
     expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", true)).toBe(
-      "sed -i 's#https\\?://[0-9.]*:7823/mcp#https://10.0.0.8:7823/mcp#g' ~/.claude.json",
+      "sed -i.bak 's#https\\?://[0-9.]*:7823/mcp#https://10.0.0.8:7823/mcp#g' ~/.claude.json && rm -f ~/.claude.json.bak",
     );
   });
 
   it("project 作用域：配置文件指 .mcp.json，带项目路径时拼 cd 前缀", () => {
     expect(buildIpSedCommand("10.0.0.8", 7823, "project", "/home/u/app")).toBe(
-      "cd \"/home/u/app\" && sed -i 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' .mcp.json",
+      "cd \"/home/u/app\" && sed -i.bak 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' .mcp.json && rm -f .mcp.json.bak",
     );
   });
 
   it("selectedIp 为空返回空串（不生成半截命令）", () => {
     expect(buildIpSedCommand("", 7823, "user", "")).toBe("");
+  });
+
+  // 回归（审查 P2）：BSD/macOS 的 sed -i 必须带备份后缀，否则命令直接失败。
+  it("原地编辑用 -i.bak + rm -f（GNU/BSD 通吃）", () => {
+    const cmd = buildIpSedCommand("10.0.0.8", 7823, "user", "");
+    expect(cmd).toContain("sed -i.bak '");
+    expect(cmd.endsWith("~/.claude.json && rm -f ~/.claude.json.bak")).toBe(true);
+  });
+
+  // 回归（审查 P2）：路径含引号 / $() / 反引号时必须在双引号内转义，否则被截断或命令替换。
+  it("项目路径在 cd 双引号内转义", () => {
+    const cmd = buildIpSedCommand("10.0.0.8", 7823, "project", '/tmp/a "b" $(whoami) `id`');
+    expect(cmd.startsWith('cd "/tmp/a \\"b\\" \\$(whoami) \\`id\\`" && ')).toBe(true);
   });
 });
 
@@ -144,25 +158,39 @@ describe("buildMultiDeviceCommand", () => {
 describe("buildIpSedCommand · 多设备 scoped（批3-2）", () => {
   it("codex：地址范围锚定 TOML 段头，只替换本条目块（与 Rust build_scoped_sed_command 逐字一致）", () => {
     expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", false, "codex", "a3f2")).toBe(
-      "sed -i '/^\\[mcp_servers\\.cc-bridge-a3f2\\]/,/^\\[/ s#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.codex/config.toml",
+      "sed -i.bak '/^\\[mcp_servers\\.cc-bridge-a3f2\\]/,/^\\[/ s#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.codex/config.toml && rm -f ~/.codex/config.toml.bak",
     );
   });
 
-  it("workbuddy：地址范围锚定 JSON 条目键到 Authorization 行", () => {
+  it("workbuddy：地址范围锚定 JSON 条目键到条目闭合花括号", () => {
     expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", true, "workbuddy", "b7c1")).toBe(
-      "sed -i '/\"cc-bridge-b7c1\": \\{/,/\"Authorization\"/ s#https\\?://[0-9.]*:7823/mcp#https://10.0.0.8:7823/mcp#g' ~/.workbuddy/mcp.json",
+      "sed -i.bak '/\"cc-bridge-b7c1\": {/,/^ *}/ s#https\\?://[0-9.]*:7823/mcp#https://10.0.0.8:7823/mcp#g' ~/.workbuddy/mcp.json && rm -f ~/.workbuddy/mcp.json.bak",
     );
+  });
+
+  // 🔴 回归（审查 B3）：反斜杠花括号在 BRE 是区间量词开头，GNU sed 直接报 Unmatched，
+  // 曾让「多设备 + WorkBuddy」的 IP 修复命令 100% 失败。
+  it("workbuddy 范围里不得出现非法的反斜杠花括号", () => {
+    const cmd = buildIpSedCommand("10.0.0.8", 7823, "user", "", true, "workbuddy", "b7c1");
+    expect(cmd).not.toContain("\\{");
+  });
+
+  // 🔴 回归（审查 P2）：结束锚不能依赖可选的 Authorization 行——
+  // 条目缺 headers 时范围会一路作用到文件末尾，把其它设备的条目一起改写。
+  it("workbuddy 结束锚不依赖 Authorization 行", () => {
+    const cmd = buildIpSedCommand("10.0.0.8", 7823, "user", "", true, "workbuddy", "b7c1");
+    expect(cmd).not.toContain('"Authorization"');
   });
 
   it("claude-code 不走 scoped（它有条目级 CLI）：传 deviceId 也维持全局 sed", () => {
     expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", false, "claude-code", "a3f2")).toBe(
-      "sed -i 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.claude.json",
+      "sed -i.bak 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.claude.json && rm -f ~/.claude.json.bak",
     );
   });
 
   it("deviceId 为空时 codex/workbuddy 维持全局 sed（兼容性契约）", () => {
     expect(buildIpSedCommand("10.0.0.8", 7823, "user", "", false, "codex")).toBe(
-      "sed -i 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.codex/config.toml",
+      "sed -i.bak 's#https\\?://[0-9.]*:7823/mcp#http://10.0.0.8:7823/mcp#g' ~/.codex/config.toml && rm -f ~/.codex/config.toml.bak",
     );
   });
 });
@@ -175,11 +203,15 @@ describe("buildTokenSedCommand", () => {
 
   it("user 作用域：目标 ~/.claude.json 且无 cd 前缀", () => {
     const cmd = buildTokenSedCommand("old", "new", "user", "");
-    expect(cmd).toBe("sed -i 's#Bearer old#Bearer new#g' ~/.claude.json");
+    expect(cmd).toBe(
+      "sed -i.bak 's#Bearer old#Bearer new#g' ~/.claude.json && rm -f ~/.claude.json.bak",
+    );
   });
 
-  it("project 作用域 + 项目路径：cd 加双引号（含空格路径不拆参）", () => {
+  it("project 作用域 + 项目路径：cd 加双引号（含空格路径不拆参，反斜杠不翻倍）", () => {
     const cmd = buildTokenSedCommand("old", "new", "project", "C:\\My Project\\app");
+    // 双引号内 `\M` 本来就是字面反斜杠 + M，无需转义；翻倍反而让用户看到的路径
+    // 跟资源管理器里复制的不一致（转义只针对 `\` `"` `` ` `` `$` 四种组合）。
     expect(cmd.startsWith('cd "C:\\My Project\\app" && ')).toBe(true);
     expect(cmd).toContain(".mcp.json");
     expect(cmd).not.toContain("~/.claude.json");
@@ -193,6 +225,23 @@ describe("buildTokenSedCommand", () => {
   it("路径首尾空白被 trim 后再包引号", () => {
     const cmd = buildTokenSedCommand("old", "new", "project", "  /srv/app  ");
     expect(cmd.startsWith('cd "/srv/app" && ')).toBe(true);
+  });
+});
+
+describe("escapeDoubleQuoted", () => {
+  it("只转义双引号内真正有意义的字符", () => {
+    expect(escapeDoubleQuoted('a"b')).toBe('a\\"b');
+    expect(escapeDoubleQuoted("a$b")).toBe("a\\$b");
+    expect(escapeDoubleQuoted("a`b")).toBe("a\\`b");
+    // `\b` 不是双引号内的特殊序列 → 原样保留（只有 `\` `"` `` ` `` `$` 才翻倍）
+    expect(escapeDoubleQuoted("a\\b")).toBe("a\\b");
+  });
+
+  /// 反斜杠只在其后跟 `\ " ` $` 或位于末尾时翻倍——普通 Windows 路径保持原样，
+  /// 否则用户看到的 `C:\\My Project` 与资源管理器里复制的对不上，排查时容易误判。
+  it("普通 Windows 路径不翻倍反斜杠", () => {
+    expect(escapeDoubleQuoted("C:\\My Project\\app")).toBe("C:\\My Project\\app");
+    expect(escapeDoubleQuoted("D:\\proj\\")).toBe("D:\\proj\\\\");
   });
 });
 

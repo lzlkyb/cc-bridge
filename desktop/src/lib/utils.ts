@@ -181,6 +181,46 @@ export function buildMultiDeviceCommand(
 }
 
 /**
+ * 双引号内的 shell 转义：`\` `"` `` ` `` `$` 前加反斜杠。
+ * 项目路径含这些字符时裸拼进 `cd "…"` 会截断字符串或触发命令替换（`$(…)` / 反引号）。
+ * 🔴 与 Rust `network.rs escape_double_quoted` 逐字一致（双端各一份，改一处必须同步）。
+ */
+export function escapeDoubleQuoted(s: string): string {
+  // 🔴 双引号内 `\` 只对 `\ " ` $` 与换行有转义意义，所以只在这几种情况下翻倍
+  // （外加末尾那个——它会吃掉收尾引号）。一律翻倍会把 `C:\My Project` 变成
+  // `C:\\My Project`：语义等价，但用户看到的路径跟资源管理器里复制的不一样。
+  // 🔴 与 Rust `network.rs escape_double_quoted` 逐字一致。
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === "\\") {
+      const next = s[i + 1];
+      if (next === undefined || next === "\\" || next === '"' || next === "`" || next === "$") {
+        out += "\\";
+      }
+      out += "\\";
+    } else if (c === '"' || c === "`" || c === "$") {
+      out += "\\" + c;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+/**
+ * 可移植的原地编辑：`sed -i.bak EXPR FILE && rm -f FILE.bak`。
+ *
+ * 为什么不用 `sed -i`：GNU sed 可省略后缀，而 **BSD/macOS 的 `-i` 必须跟备份后缀**，
+ * 否则把下一个参数当后缀、报 `invalid command code`——远端是 macOS 时所有 IP / 令牌
+ * 修复命令都失效。带 `.bak` 的写法 GNU/BSD/busybox 通吃；成功后顺手删掉备份。
+ * 🔴 与 Rust `network.rs sed_in_place` 逐字一致。
+ */
+export function sedInPlace(expr: string, file: string): string {
+  return `sed -i.bak '${expr}' ${file} && rm -f ${file}.bak`;
+}
+
+/**
  * 网络地址变化后「原地更新 IP」的远程 sed 命令（P2 TLS 感知版，IpChangedBanner 消费）。
  * 匹配段用 `https\?://` 同时覆盖 http/https 两种旧值（切换 TLS 协议后也能原地修）；
  * 替换段按当前 TLS 状态生成目标 scheme。不动 Bearer、不 remove+add，幂等可重跑。
@@ -218,21 +258,22 @@ export function buildIpSedCommand(
   // cd 前缀只对 Claude Code 的项目级有意义（其余工具都是全局配置文件）。
   const cdPrefix =
     client === "claude-code" && scope === "project" && projectPath.trim()
-      ? `cd "${projectPath.trim()}" && `
+      ? `cd "${escapeDoubleQuoted(projectPath.trim())}" && `
       : "";
   const target = `${tls ? "https" : "http"}://${selectedIp}:${port}/mcp`;
   const sub = `s#https\\?://[0-9.]*:${port}/mcp#${target}#g`;
   // 多设备 scoped：codex 用 TOML 段头行锚点（规范保证）；workbuddy 用 JSON 条目键 +
-  // "Authorization" 行锚点（依赖 url 先于 headers 的规范序列化顺序）。范围失配 =
-  // sed 无匹配 = 什么都不改（良性失败，不会改坏相邻条目）。
+  // 「行首 }」收尾。🔴 不能用 `"Authorization"` 收尾（原实现）：条目缺 headers 时
+  // 该地址永不命中，范围会一路作用到文件末尾、把其它设备的条目一起改写（互踢）；
+  // 裸 `{` 才是字面花括号，`\{` 是 BRE 区间量词开头，会让 sed 直接报 Unmatched \{。
   if (deviceId && (client === "codex" || client === "workbuddy")) {
     const range =
       client === "codex"
         ? `/^\\[mcp_servers\\.cc-bridge-${deviceId}\\]/,/^\\[/`
-        : `/"cc-bridge-${deviceId}": \\{/,/"Authorization"/`;
-    return `sed -i '${range} ${sub}' ${cfgFile}`;
+        : `/"cc-bridge-${deviceId}": {/,/^ *}/`;
+    return sedInPlace(`${range} ${sub}`, cfgFile);
   }
-  return `${cdPrefix}sed -i '${sub}' ${cfgFile}`;
+  return `${cdPrefix}${sedInPlace(sub, cfgFile)}`;
 }
 
 /** 网络地址友好提示：帮助用户判断远程服务器该选哪个 IP 连回本机。ConnectTab 与引导向导共用。 */
@@ -252,8 +293,11 @@ export function buildTokenSedCommand(
 ): string {
   if (!oldToken || !token) return "";
   const cfgFile = scope === "user" ? "~/.claude.json" : ".mcp.json";
-  const cdPrefix = scope === "project" && projectPath.trim() ? `cd "${projectPath.trim()}" && ` : "";
-  return `${cdPrefix}sed -i 's#Bearer ${oldToken}#Bearer ${token}#g' ${cfgFile}`;
+  const cdPrefix =
+    scope === "project" && projectPath.trim()
+      ? `cd "${escapeDoubleQuoted(projectPath.trim())}" && `
+      : "";
+  return `${cdPrefix}${sedInPlace(`s#Bearer ${oldToken}#Bearer ${token}#g`, cfgFile)}`;
 }
 
 /** cc-bridge 除命令执行三元组外的 14 个文件/列表类工具，用于权限授权命令默认不包含命令执行能力。 */
@@ -292,7 +336,7 @@ export function buildPermissionGrantCommand(
   const targetFile = scope === "user" ? "~/.claude/settings.json" : ".claude/settings.local.json";
   const trimmed = projectPath.trim();
   // cd 目标路径加双引号，避免含空格或特殊字符的项目路径拆成多个参数。
-  const cdPrefix = scope === "project" && trimmed ? `cd "${trimmed}" && ` : "";
+  const cdPrefix = scope === "project" && trimmed ? `cd "${escapeDoubleQuoted(trimmed)}" && ` : "";
 
   const toolsBlock = includeShellTools
     ? `if 'mcp__cc-bridge__*' not in allow:\n    allow.append('mcp__cc-bridge__*')`

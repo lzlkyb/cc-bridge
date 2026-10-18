@@ -33,6 +33,16 @@ export function TokenManager({
   const [confirmingRegen, setConfirmingRegen] = useState(false);
   const [regenDone, setRegenDone] = useState(false);
   const [oldToken, setOldToken] = useState("");
+  /**
+   * 重生成**返回值**（审查 B10）。
+   *
+   * 后端 `regenerate_token` 直接返回新 token，但原实现把它丢了、改用
+   * `status.token`；而 `onRefresh()` 是异步的，命令在 refetch 落地前就按
+   * **旧值**算好了 → 界面上是一条 `s#Bearer old#Bearer old#g` 的空操作，
+   * 复制到远端执行完照样 401，用户却以为已经换好了。
+   */
+  const [newToken, setNewToken] = useState("");
+  const [regenerating, setRegenerating] = useState(false);
   const { toast } = useToast();
   // 复制反馈统一走 useCopyFeedback（评审修复 ⑤）：原先的 SavedHint 无 toast 方案收敛进来，
   // 反馈时长与其余复制点一致（2s），失败有 toast 兜底。
@@ -44,20 +54,34 @@ export function TokenManager({
 
   // 原地替换 Bearer，不 remove+add（保留服务器条目与授权状态，避免重新授权）。
   // 作用域读持久化的 status.scope（当初接入确认的作用域），而非 UI 开关，避免匹配错文件。
+  // 🔴 新 token 优先用重生成的**返回值**（B10）：refetch 未落地时 status.token 还是旧值，
+  // 用它会把命令算成空操作。
+  const currentToken = newToken || (status?.token ?? "");
   const tokenSedCommand = useMemo(
-    () => buildTokenSedCommand(oldToken, status?.token ?? "", (status?.scope ?? "user") as McpScope, projectPath),
-    [oldToken, status?.token, status?.scope, projectPath],
+    () => buildTokenSedCommand(oldToken, currentToken, (status?.scope ?? "user") as McpScope, projectPath),
+    [oldToken, currentToken, status?.scope, projectPath],
   );
 
   const handleRegenToken = async () => {
     const old = status?.token ?? "";
-    await invoke("regenerate_token");
-    setOldToken(old);
-    onRefresh();
-    setConfirmingRegen(false);
-    setRegenDone(true);
-    setShowToken(false);
-    toast("Token 已重新生成，请复制新连接命令到远程服务器", "warning");
+    // 生成中态：避免用户连点两次（第二次会把第一次的新 token 又换掉，
+    // 而界面上的命令只对得上其中一次）。
+    setRegenerating(true);
+    try {
+      const next = await invoke<string>("regenerate_token");
+      setOldToken(old);
+      setNewToken(next);
+      onRefresh();
+      setConfirmingRegen(false);
+      setRegenDone(true);
+      setShowToken(false);
+      toast("Token 已重新生成，请复制新连接命令到远程服务器", "warning");
+    } catch (e) {
+      // 失败必须可见：静默失败时用户会以为 token 已换、去远端执行一条不存在的命令。
+      toast(`Token 重生成失败：${e}`, "error");
+    } finally {
+      setRegenerating(false);
+    }
   };
 
   return (
@@ -94,8 +118,12 @@ export function TokenManager({
           <div className="step-row flex items-center gap-3">
             <div className="flex flex-1 items-center gap-2 min-w-0">
               <span className="shrink-0 text-xs font-semibold text-muted-foreground/50">机密信息</span>
-              <code className={`flex-1 min-w-0 rounded-md px-3 py-2 text-xs font-mono ${showToken ? "bg-background border" : "bg-muted/60"}`}>
-                {showToken ? (status?.token ?? "") : "●●●●●●●●●●●●●●●●●●●●"}
+              <code className={`flex-1 min-w-0 rounded-md px-3 py-2 text-xs font-mono ${showToken && !regenerating ? "bg-background border" : "bg-muted/60"}`}>
+                {regenerating
+                  ? "生成中…"
+                  : showToken
+                    ? (status?.token ?? "")
+                    : "●●●●●●●●●●●●●●●●●●●●"}
               </code>
               <Button variant="ghost" size="sm" onClick={() => setShowToken(!showToken)}>
                 <Icon name={showToken ? "eyeOff" : "eye"} size={14} />
@@ -149,8 +177,22 @@ export function TokenManager({
                   。确定？
                 </span>
                 <span className="flex gap-2 shrink-0">
-                  <Button variant="destructive" size="sm" onClick={handleRegenToken}>确定</Button>
-                  <Button variant="outline" size="sm" onClick={() => setConfirmingRegen(false)}>取消</Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleRegenToken}
+                    disabled={regenerating}
+                  >
+                    {regenerating ? "生成中…" : "确定"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setConfirmingRegen(false)}
+                    disabled={regenerating}
+                  >
+                    取消
+                  </Button>
                 </span>
               </div>
             </InlineNotice>

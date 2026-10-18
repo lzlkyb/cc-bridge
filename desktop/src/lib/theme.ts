@@ -8,8 +8,30 @@
 export type Theme = "dark" | "light";
 let transitionTimer: ReturnType<typeof setTimeout>;
 
+/**
+ * 安全读 localStorage：DOM Storage 可能被策略禁用（企业策略 / 隐私模式 /
+ * 第三方上下文），此时**访问 `localStorage` 属性本身就抛 SecurityError**。
+ * 本模块在 `main.tsx` 的模块初始化阶段就被调用，一次未捕获异常 = 整个应用白屏
+ * （审查 P2）。主题偏好属于纯装饰，读不到就用默认值，绝不能让应用挂掉。
+ */
+function safeGetItem(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetItem(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // 配额满 / 被禁用：主题仍在本次会话内生效（class 已切），只是不记忆。
+  }
+}
+
 export function getStoredTheme(): Theme {
-  return localStorage.getItem("theme") === "dark" ? "dark" : "light";
+  return safeGetItem("theme") === "dark" ? "dark" : "light";
 }
 
 export function applyTheme(theme: Theme): void {
@@ -23,7 +45,7 @@ export function applyTheme(theme: Theme): void {
     root.classList.remove("theme-transition");
   }
   root.classList.toggle("dark", theme === "dark");
-  localStorage.setItem("theme", theme);
+  safeSetItem("theme", theme);
   window.dispatchEvent(new CustomEvent<Theme>("themechange", { detail: theme }));
 }
 
