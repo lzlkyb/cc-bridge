@@ -15,6 +15,7 @@ import { Icon } from "../../ui/icon";
 import { Button } from "../../ui/button";
 import { CertPemStep, CopySegs, StepNumber } from "./widgets";
 import { GenericSteps } from "./GenericSteps";
+import { MultiDeviceToggle } from "./MultiDeviceToggle";
 
 const TOOLS: McpClientTool[] = ["claude-code", "workbuddy", "codex", "generic"];
 
@@ -40,6 +41,8 @@ export function ToolGuide({
   onToolChange,
   multiDevice = false,
   deviceId = "",
+  deviceName = "",
+  onToggleMultiDevice,
   children,
 }: {
   host: string;
@@ -56,6 +59,10 @@ export function ToolGuide({
   multiDevice?: boolean;
   /** 本机身份尾号（多设备模式主键；空 = 单设备，片段条目名维持 cc-bridge）。 */
   deviceId?: string;
+  /** 本机身份名（多设备 chip 悬停展示与复制用）。 */
+  deviceName?: string;
+  /** 多设备开关回调（ConnectTab 落盘 save_config + onRefresh）。不传则不渲染开关。 */
+  onToggleMultiDevice?: (next: boolean) => void;
   /** claude-code 现有向导内容（scope / steps / token / perm），仅该工具渲染。 */
   children: ReactNode;
 }) {
@@ -74,14 +81,24 @@ export function ToolGuide({
   return (
     <Card className="card-primary">
       <CardHeader>
-        {/* 分段选择器嵌标题行右侧（与设计稿一致：guide-title + ml-auto，不再独占一整行） */}
-        <div className="flex items-center justify-between gap-3">
+        {/* 卡头右侧：多设备开关（紧贴命令产出地——它决定接入命令的形态）+ 四工具分段器。
+            flex-wrap：窄窗时开关组折到第二行，绝不挤压/截断分段器。 */}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <CardTitle icon={<Icon name="plug" />}>接入 {CLIENT_LABELS[tool]}</CardTitle>
-          <div
-            role="group"
-            aria-label="选择接入工具"
-            className="flex shrink-0 rounded-lg border bg-muted p-0.5"
-          >
+          <div className="flex shrink-0 items-center gap-3">
+            {onToggleMultiDevice && (
+              <MultiDeviceToggle
+                enabled={multiDevice}
+                deviceId={deviceId}
+                deviceName={deviceName}
+                onToggle={onToggleMultiDevice}
+              />
+            )}
+            <div
+              role="group"
+              aria-label="选择接入工具"
+              className="flex shrink-0 rounded-lg border bg-muted p-0.5"
+            >
             {TOOLS.map((t) => (
               <button
                 key={t}
@@ -101,6 +118,7 @@ export function ToolGuide({
                 {CLIENT_LABELS[t]}
               </button>
             ))}
+            </div>
           </div>
         </div>
       </CardHeader>

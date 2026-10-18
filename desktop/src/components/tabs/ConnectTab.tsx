@@ -4,7 +4,6 @@ import { Icon } from "../ui/icon";
 import { useConnectGuideState } from "../../hooks/useConnectGuideState";
 import { ConnectBento } from "./ConnectBento";
 import { IpChangedBanner } from "./connect/IpChangedBanner";
-import { MultiDeviceCard } from "./connect/MultiDeviceCard";
 import { FirewallAlertBlock } from "./connect/FirewallAlertBlock";
 import { isWindows } from "../../lib/platform";
 import { ToolGuide } from "./connect/ToolGuide";
@@ -181,6 +180,14 @@ function ConnectTabImpl({
             defaultTool={(status?.connectClient as McpClientTool | undefined) ?? "claude-code"}
             multiDevice={!!status?.multiDeviceMode}
             deviceId={status?.deviceId ?? ""}
+            deviceName={status?.deviceName ?? ""}
+            onToggleMultiDevice={(next) => {
+              // 🔴 save_config 形参名为 patch，必须包进 { patch: {...} }，平铺静默不落盘。
+              // 失败必须可见（invokeOrToast），成功才刷新 status（横幅/托盘/片段随之换形态）。
+              void invokeOrToast("save_config", { patch: { multiDeviceMode: next } }).then((r) => {
+                if (r) onRefresh();
+              });
+            }}
             onToolChange={(t) => {
               // 必须落盘：托盘「复制命令 / 复制 IP」与 IpChangedBanner 都按这个值出内容。
               // 只存在组件本地 state 时，界面选了 Codex、托盘仍会复制一条 claude mcp add。
@@ -209,9 +216,6 @@ function ConnectTabImpl({
           </ToolGuide>
         }
       />
-
-      {/* 多设备接入模式（opt-in）：关闭时只渲染开关行、无任何身份 UI，命令形态不变（兼容性契约）。 */}
-      <MultiDeviceCard status={status} onChanged={onRefresh} />
     </div>
   );
 }
