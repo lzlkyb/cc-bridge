@@ -1601,6 +1601,7 @@ select:focus-visible,
 :root[data-app-hidden] .chain-ripple,
 :root[data-app-hidden] .indet-fill,
 :root[data-app-hidden] .changelog-dot,
+:root[data-app-hidden] .upd-dot::before,
 :root[data-app-hidden] .update-glow::after,
 :root[data-app-hidden] .vh-skel,
 :root[data-app-hidden] .skeleton,
@@ -1838,6 +1839,51 @@ select:focus-visible,
   transform: scale(0);
 }
 
+/* 折叠态更新状态点（2026-10-18 混合交互）：overlay 按钮盖在设置按钮右上角
+   （锚点与 changelog-dot 一致：8px 点心 @ top:3 right:6）。22×22 热区保证
+   可命中性；视觉点用 ::before 画。点状态点 = 直接执行更新动作（UpdateCollapsedDot
+   分支控制），点齿轮本体仍进设置页 —— 设置入口永不被劫持（available/error 可
+   挂数天，整按钮替换方案因「设置入口长期消失 + ready 误触重启」被否决）。
+   absolute 零占位 —— 不碰 foot 高度、不触终端 fit。仅折叠态渲染。
+   热区坐标推导：点心中心在 top 7px / 右 10px，22px 热区中心对齐 ⇒ top:-4 right:-1。 */
+.upd-dot {
+  position: absolute;
+  top: -4px;
+  right: -1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.upd-dot::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px hsl(var(--card));
+}
+.upd-dot--available::before { background: hsl(var(--primary)); animation: upd-dot-ring 2.1s infinite; }
+.upd-dot--error::before     { background: hsl(var(--destructive)); animation: upd-dot-ring 1.2s infinite; --upd-ring: var(--destructive); }
+.upd-dot--ready::before     { background: hsl(var(--success)); }
+/* downloading：不可点（span），只有 11px 进度环，无点心 */
+.upd-dot--dl {
+  pointer-events: none;
+  cursor: default;
+}
+.upd-dot--dl::before { display: none; }
+.upd-dot--dl svg     { display: block; }
+@keyframes upd-dot-ring {
+  0%   { box-shadow: 0 0 0 0 hsl(var(--upd-ring, var(--primary)) / 0.45), 0 0 0 2px hsl(var(--card)); }
+  70%  { box-shadow: 0 0 0 6px hsl(var(--upd-ring, var(--primary)) / 0),    0 0 0 2px hsl(var(--card)); }
+  100% { box-shadow: 0 0 0 0 hsl(var(--upd-ring, var(--primary)) / 0),      0 0 0 2px hsl(var(--card)); }
+}
+
 /* 底部：设置入口 + 服务状态 */
 .app-side-foot {
   display: flex;
@@ -1852,6 +1898,9 @@ select:focus-visible,
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 折叠态更新状态点（upd-dot overlay）的定位上下文。折叠时 update-slot 为
+     display:none、按钮 flex:1 占满整行 ⇒ 行坐标系 ≈ 按钮坐标系。 */
+  position: relative;
 }
 .app-side-settings-row .app-side-item {
   flex: 1;

@@ -5,6 +5,7 @@ import { Icon, type IconName } from "../ui/icon";
 import { Collapse } from "../ui/Collapse";
 import { APP_INFO } from "../../lib/about";
 import { UpdateBadge } from "./UpdateBadge";
+import { UpdateCollapsedDot } from "./UpdateCollapsedDot";
 import { SideNavSettings } from "./SideNavSettings";
 
 type NavItem = { key: string; label: string; icon: IconName };
@@ -185,7 +186,8 @@ function SideNavImpl({
               <Icon name="settings" size={16} className="app-side-icon" />
               <span className="app-side-label">设置</span>
               {/* changelog-dot：沿用更新未读红点的脉冲动画 + hover 放大（index.css 已有定义）。
-                  无未读时也渲染（--off 缩为零宽），出现/消失都是 scale 过渡。 */}
+                  无未读时也渲染（--off 缩为零宽），出现/消失都是 scale 过渡。
+                  两种模式共用：折叠态被 overlay 的更新状态点盖住时优先级让位（见下）。 */}
               <span
                 className={`app-side-badge changelog-dot ${unreadCount > 0 ? "" : "app-side-badge--off"}`}
                 title={unreadCount > 0 ? `${unreadCount} 项新更新` : undefined}
@@ -193,6 +195,11 @@ function SideNavImpl({
                 {unreadCount > 0 ? unreadLabel : lastUnread > 0 ? (lastUnread > 9 ? "9+" : String(lastUnread)) : ""}
               </span>
             </button>
+            {/* 折叠态更新状态点（UpdateCollapsedDot，2026-10-18）：overlay 按钮，
+                覆盖设置按钮右上角（同 changelog-dot 锚点），点状态点=直接执行
+                更新动作（一步直达），点齿轮本体仍进设置页。无更新态返回 null，
+                未读提示由上方 changelog-dot 承担。展开态不渲染（update-slot 可见）。 */}
+            {collapsed && <UpdateCollapsedDot />}
             <UpdateBadge currentVersion={status?.version} />
           </div>
         )}
