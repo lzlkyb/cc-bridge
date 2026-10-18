@@ -173,13 +173,27 @@ pub async fn cleanup_backups(
 
     // 每一条路径都重新过一次「必须落在备份目录内且是 .bak」的校验。
     // 前端传什么都不能直接信，复用已有的 `assert_backup_path_in_scope`（安全模块不另写一套）。
+    //
+    // 🔴 单条校验失败**不能掀翻整批**（审查 P2）：预览到确认之间，清单里的某一份
+    // 可能已被自动 prune 掉（文件不在了）。原来一句 `?` 就让用户点了「确认」
+    // 却一个都删不成，还只看到一句莫名的报错。现在跳过并计入 failed。
     let mut targets: Vec<PathBuf> = Vec::with_capacity(victims.len());
+    let mut scope_rejected = 0u32;
     for v in &victims {
-        targets.push(assert_backup_path_in_scope(
-            v,
-            &state.data_dir,
-            &backup_dir_name,
-        )?);
+        match assert_backup_path_in_scope(v, &state.data_dir, &backup_dir_name) {
+            Ok(p) => targets.push(p),
+            Err(e) => {
+                log::warn!("跳过一个清理目标（校验未通过）：{v} — {e}");
+                scope_rejected += 1;
+            }
+        }
+    }
+    // 一个都没有效目标时才是真失败：这时「删了 0 个」会被误读成「本来就没有」。
+    if targets.is_empty() {
+        return Err(format!(
+            "清单里的 {} 个路径都无法处理（可能已被自动裁剪删除），请重新预览后再试",
+            victims.len()
+        ));
     }
 
     // 删文件全程**不持 db 锁**，并且丢到 spawn_blocking：备份可能上万，
@@ -190,6 +204,8 @@ pub async fn cleanup_backups(
             .await
             .map_err(|e| format!("清理任务异常结束：{e}"))?;
     let removed = deleted.len() as u32;
+    // 校验阶段被跳过的那几条也算「失败」，否则用户看到 removed+failed ≠ 确认总数。
+    let failed = failed + scope_rejected;
 
     let db = state.db.lock().await;
     backup::purge_index_rows(&db, &deleted);

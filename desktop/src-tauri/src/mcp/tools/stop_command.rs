@@ -23,15 +23,34 @@ pub struct StopCommandArgs {
 /// 两者都能连子孙进程一起杀（不管嵌套几层）。
 /// entry 在离开作用域时 drop，顺带关闭 Job 句柄（无害，因为进程已先被杀）。
 pub async fn handle(args: StopCommandArgs, state: &Arc<AppState>) -> Result<Value, String> {
-    let entry = state
-        .running_commands
-        .remove(&args.handle)
-        .ok_or_else(|| format!("未知的 handle: {}", args.handle))?;
+    // 先取出 pid / child 句柄 / exit_code（克隆 Arc 后立刻释放 DashMap 的 Ref，
+    // 不在持有 Ref 期间跑 kill，也不再一上来就 `remove`）。
+    let (pid, child, exit_code) = {
+        let entry = state
+            .running_commands
+            .get(&args.handle)
+            .ok_or_else(|| format!("未知的 handle: {}", args.handle))?;
+        (entry.pid, entry.child.clone(), entry.exit_code.clone())
+    };
 
-    let pid = entry.1.pid;
-    // 显式杀整树（含孙进程）。start_kill 走 TerminateJobObject，不依赖 drop。
-    let _ = entry.1.child.lock().unwrap().start_kill();
-    drop(entry);
+    // 🔴 **先杀、杀成功再摘注册表**（审查 P2）。原来是「先 `remove` 再
+    // `let _ = start_kill()`」：杀失败时进程变成孤儿，而模型与面板都拿到
+    // `killed: true`、注册表里也查不到它了——之后谁都没有手段再管这个进程。
+    // 已经跑完的命令不需要 kill（对已退出的进程调 start_kill 在部分平台会报错，
+    // 而用户此时只想把它从列表里清掉），所以先看 exit_code。
+    let already_done = exit_code.lock().await.is_some();
+    if !already_done {
+        let mut guard = child.lock().map_err(|_| {
+            format!("终止进程 {pid} 失败：无法获取进程句柄锁。该命令仍在运行列表中。")
+        })?;
+        if let Err(e) = guard.start_kill() {
+            return Err(format!(
+                "终止进程 {pid} 失败：{e}。该命令仍在运行列表中，可稍后重试或手动结束。"
+            ));
+        }
+    }
+
+    state.running_commands.remove(&args.handle);
 
     Ok(json!({
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&json!({

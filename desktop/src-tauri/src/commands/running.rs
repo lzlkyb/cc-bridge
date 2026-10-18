@@ -85,17 +85,32 @@ pub async fn stop_running_command(
     state: State<'_, Arc<AppState>>,
     handle: String,
 ) -> Result<(), String> {
-    let entry = state
-        .running_commands
-        .remove(&handle)
-        .ok_or_else(|| format!("未知的 handle: {handle}"))?;
-    // 必须显式 start_kill：process-wrap 的 JobObject 默认不 kill-on-close，drop 不会杀进程
-    // （见 Cargo.toml:95 注释）。仅 drop 会让后台命令成孤儿进程、输出读取线程泄漏。
-    // child 是 Box<dyn StdChildWrapper>，对 trait object 调 start_kill 无需额外 use。
-    if let Ok(mut guard) = entry.1.child.lock() {
-        let _ = guard.start_kill();
+    // 🔴 与 MCP 的 `stop_command` 同一套顺序（审查 P2）：先取句柄 → 杀 → 成功才摘注册表。
+    // 原来是「先 remove 再 `let _ = start_kill()`」，杀失败时进程变孤儿，而面板已经
+    // 把它从列表里抹掉了——用户再无手段看见/处理这个进程。
+    let (pid, child, exit_code) = {
+        let entry = state
+            .running_commands
+            .get(&handle)
+            .ok_or_else(|| format!("未知的 handle: {handle}"))?;
+        (entry.pid, entry.child.clone(), entry.exit_code.clone())
+    };
+
+    // 已结束的命令不必 kill（对已退出的进程调 start_kill 可能报错，用户只想清掉列表项）。
+    let already_done = exit_code.lock().await.is_some();
+    if !already_done {
+        // 必须显式 start_kill：process-wrap 的 JobObject 默认不 kill-on-close，drop 不会杀进程
+        // （见 Cargo.toml:95 注释）。仅 drop 会让后台命令成孤儿进程、输出读取线程泄漏。
+        let mut guard = child
+            .lock()
+            .map_err(|_| format!("终止进程 {pid} 失败：无法获取进程句柄锁"))?;
+        if let Err(e) = guard.start_kill() {
+            return Err(format!(
+                "终止进程 {pid} 失败：{e}。该命令仍在运行列表中，可稍后重试。"
+            ));
+        }
     }
-    drop(entry);
+    state.running_commands.remove(&handle);
     Ok(())
 }
 

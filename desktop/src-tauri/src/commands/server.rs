@@ -56,14 +56,22 @@ pub async fn start_mcp_server(
     state: State<'_, Arc<AppState>>,
     app: AppHandle,
 ) -> Result<(), String> {
+    // 清掉上一轮的启动错误，否则 `wait_listening` 会立刻判失败（旧原因盖新结果）。
+    *state.startup_error.lock().unwrap() = None;
     crate::mcp::http::restart_server(state.inner()).await;
 
-    // 乐观置运行态并即时通知托盘（serve 失败会在 http.rs 回退 false）
-    state
-        .mcp_running
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // 🔴 **不再乐观置 running=true**（审查 P2）：原来先点亮再回退，端口被占时
+    // 用户会先看到「运行中」、几秒后莫名变灰。这里等 bind 的确定结果，
+    // 失败就把原因（`startup_error`）直接抛给前端 toast，而不是只留一个灰灯。
+    let ok =
+        crate::mcp::http::wait_listening(state.inner(), std::time::Duration::from_secs(2)).await;
+    let err = state.startup_error.lock().unwrap().clone();
     let _ = app.emit("mcp-status-changed", ());
-    Ok(())
+    match (ok, err) {
+        (true, _) => Ok(()),
+        (false, Some(e)) => Err(e),
+        (false, None) => Err("服务未能在 2 秒内开始监听，请查看日志后重试".to_string()),
+    }
 }
 
 #[tauri::command]

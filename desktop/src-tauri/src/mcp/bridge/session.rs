@@ -17,6 +17,13 @@ use super::spawn;
 /// stderr 最多留多少行给诊断用。
 const STDERR_KEEP_LINES: usize = 30;
 
+/// stderr **单行**上限（截断）。
+///
+/// 🔴 必须截断而不是无限累积（审查 P2）：有些 server 的进度输出只吐 `\r` 不吐 `\n`，
+/// 旧的 `read_until(b'\n')` 在这类输出上永不返回，`line` 一直涨——stderr 本来只用来
+/// 兜诊断，不该成为内存放大器。日志行没有道理超过 64KB。
+const STDERR_LINE_CAP: usize = 64 * 1024;
+
 /// 关闭时等它自己退的宽限。实测 codegraph 在此期间两个 node 都干净退了。
 pub const GRACE: Duration = Duration::from_secs(3);
 
@@ -174,18 +181,20 @@ fn drain_stderr<R: Read + Send + 'static>(r: R) -> Arc<Mutex<VecDeque<String>>> 
     let sink = Arc::clone(&tail);
     std::thread::spawn(move || {
         let mut buf = std::io::BufReader::new(r);
-        let mut line = Vec::new();
         loop {
-            line.clear();
-            // 按字节读：stderr 上的 GBK 日志很常见，不能因为不是 UTF-8 就停下来。
-            match std::io::BufRead::read_until(&mut buf, b'\n', &mut line) {
-                Ok(0) => return,  // EOF
-                Err(_) => return, // 管道出错，收工
-                Ok(_) => {}
-            }
-            let s = String::from_utf8_lossy(&line).trim_end().to_string();
-            if s.is_empty() {
+            // 按字节读 + 边读边截断：不因为不是 UTF-8 就停下（stderr 上的 GBK 日志很常见），
+            // 也不会被只吐 `\r` 的进度型 server 拖成无界增长（见 STDERR_LINE_CAP）。
+            let (line, truncated) = match read_line_capped_lossy(&mut buf, STDERR_LINE_CAP) {
+                Ok(Some(v)) => v,
+                Ok(None) => return, // EOF
+                Err(_) => return,   // 管道出错，收工
+            };
+            let mut s = String::from_utf8_lossy(&line).trim_end().to_string();
+            if s.is_empty() && !truncated {
                 continue;
+            }
+            if truncated {
+                s.push_str(" …（该行过长，已截断）");
             }
             let Ok(mut q) = sink.lock() else { return };
             if q.len() == STDERR_KEEP_LINES {
@@ -195,6 +204,54 @@ fn drain_stderr<R: Read + Send + 'static>(r: R) -> Arc<Mutex<VecDeque<String>>> 
         }
     });
     tail
+}
+
+/// 读到 `\n` 或 EOF，**最多保留 `cap` 字节**；超出部分继续读到换行为止（丢掉）。
+///
+/// 返回值第二项表示是否发生了截断。`Ok(None)` = EOF。
+fn read_line_capped_lossy<R: Read>(
+    r: &mut std::io::BufReader<R>,
+    cap: usize,
+) -> std::io::Result<Option<(Vec<u8>, bool)>> {
+    use std::io::BufRead;
+    let mut out: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    let mut seen = false;
+    loop {
+        let available = match r.fill_buf() {
+            Ok(b) => b,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            return Ok(if seen { Some((out, truncated)) } else { None });
+        }
+        seen = true;
+        match available.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                for &b in &available[..i] {
+                    if out.len() < cap {
+                        out.push(b);
+                    } else {
+                        truncated = true;
+                    }
+                }
+                r.consume(i + 1);
+                return Ok(Some((out, truncated)));
+            }
+            None => {
+                let n = available.len();
+                for &b in available {
+                    if out.len() < cap {
+                        out.push(b);
+                    } else {
+                        truncated = true;
+                    }
+                }
+                r.consume(n);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

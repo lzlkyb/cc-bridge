@@ -97,10 +97,19 @@ async fn write_single(
                 _ => UTF_8,
             },
         };
-        // 归一化换行用于 round-trip 守卫；若原文含 CRLF，则写回时还原 CRLF，
+        // 归一化换行用于 round-trip 守卫；写回时**沿用原文件的换行风格**，
         // 保证内容（含换行风格）不丢失，且不触发 encode_text 错误的有损拒绝
         // （其守卫要求输入为 LF 归一化文本）。utf8 默认路径与改动前 as_bytes() 行为一致。
-        let crlf = f.content.contains("\r\n");
+        //
+        // 🔴 判据必须是**原文件**是否含 CRLF，不是新内容（审查 P2）。原实现
+        // `f.content.contains("\r\n")` 看的是模型给的新内容——模型普遍按 LF 组织，
+        // 于是覆盖一个 CRLF 文件时全文被翻成 LF：`.bat/.cmd` 语义改变、git diff 全红。
+        // 新建文件（读不到原内容）才回退看新内容，让调用方仍能显式要 CRLF。
+        let crlf = match &existing_raw {
+            // 按字节判断，不依赖原文件是合法 UTF-8（GBK 文件同样适用）。
+            Some(bytes) => bytes.windows(2).any(|w| w == b"\r\n"),
+            None => f.content.contains("\r\n"),
+        };
         let normalized = enc_mod::normalize_newlines(&f.content);
         enc_mod::encode_text(&normalized, enc, crlf, false)
             .map_err(|e| format!("Failed to encode content as {}: {e}", enc.name()))?
@@ -153,11 +162,20 @@ async fn write_single(
     crate::timing::record_io(t0.elapsed());
 
     let diff = if !is_base64 {
-        diff_utils::unified_diff(
-            &f.path,
-            old_content_for_diff.as_deref().unwrap_or(""),
-            &f.content,
-        )
+        // 🔴 三种情形要分开（审查 P2）。旧实现把「新建」和「原文件不是合法 UTF-8」
+        // 都折成 `old = ""`，于是覆盖一个 20MB 的 GBK 文件时，整份新内容都成了 `+` 行
+        // ——响应体≈全文，直接把模型上下文打爆。
+        match (existing_raw.is_some(), old_content_for_diff.as_deref()) {
+            // 新建文件：整份 `+` 是正常的（第一次落盘）。
+            (false, _) => diff_utils::unified_diff(&f.path, "", &f.content),
+            // 已有文件但解不出 UTF-8（GBK / Big5 / 二进制误判）：只回一行摘要。
+            (true, None) => format!(
+                "（未生成逐行 diff：原文件不是 UTF-8，已整份覆盖。原 {} 字节 → 新 {} 字节）",
+                existing_raw.as_ref().map(|b| b.len()).unwrap_or(0),
+                data.len()
+            ),
+            (true, Some(old)) => diff_utils::unified_diff(&f.path, old, &f.content),
+        }
     } else {
         String::new()
     };
@@ -205,4 +223,129 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     }
 
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::tools::testutil::*;
+
+    /// 从 `handle` 的返回里读出第一个文件的 `ok` 标志。
+    ///
+    /// `handle` 把 `results` 用 `to_string_pretty` 塞进 `content[0].text`，所以要二次解析。
+    /// 存在的意义：`.expect("write")` 只证明 `handle` 返回 Ok，而单文件失败是**软失败**
+    /// （`ok:false`）——不查这个标志，所有「写完后读回文件」的断言都可能落在没被写过的
+    /// 原文件上，测试假绿。
+    fn written_ok(out: &Value) -> bool {
+        out["content"][0]["text"]
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .and_then(|v| v[0]["ok"].as_bool())
+            .unwrap_or(false)
+    }
+
+    /// 🔴 回归（审查 P2）：覆盖 CRLF 文件时**必须保留 CRLF**（即使新内容全是 LF）。
+    ///
+    /// 原判据是 `f.content.contains("\r\n")`——看的是模型给的新内容，而模型普遍按
+    /// LF 组织，于是 CRLF 文件被整份翻成 LF：`.bat/.cmd` 语义改变、diff 全红。
+    #[tokio::test]
+    async fn preserves_crlf_of_existing_file() {
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        // 🔴 扩展名必须在**默认白名单**内（`.txt` 在，`.bat` 不在）。
+        // 这条测试原来用 `run.bat`：默认 `allowed_extensions` 不含 `.bat`，写入被
+        // `assert_extension_allowed` 直接拒掉，而 `handle` 把错误吞进 `results.ok=false`
+        // 仍返回 Ok——于是"读回的还是没被碰过的原文件"，CRLF 当然完好，测试**永远绿**。
+        // 实测：把判据改回 `f.content.contains("\r\n")` 它也不红。所以下面必须同时断言
+        // 写入真的成功，否则这条测试等于没写。
+        let file = dir.join("run.txt");
+        std::fs::write(&file, b"@echo off\r\necho hi\r\n").expect("seed");
+
+        let args = WriteFilesArgs {
+            files: vec![WriteFileEntry {
+                path: file.to_string_lossy().into_owned(),
+                // 模型给的是 LF 内容。
+                content: "@echo off\necho hello\n".into(),
+                encoding: None,
+            }],
+        };
+        let out = handle(args, &state).await.expect("write");
+        // ⚠️ `handle` 把**单个文件**的失败塞进 results（`ok:false`）而不是返回 Err，
+        // 所以 `.expect("write")` 通过不代表写成功。这里必须解析结构确认——否则
+        // 写入被拒时读回的是没被碰过的原文件，断言永远成立（假绿）。
+        assert!(
+            written_ok(&out),
+            "写入必须真的成功，否则下面读到的只是原文件（假绿）：{out}"
+        );
+
+        let bytes = std::fs::read(&file).expect("read back");
+        assert!(
+            bytes.windows(2).any(|w| w == b"\r\n"),
+            "CRLF 原文被翻成 LF 了：{:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert!(
+            !bytes.windows(2).any(|w| w == b"\n\n"),
+            "不应出现裸 LF 混入"
+        );
+    }
+
+    /// 相反方向：原文件是 LF 时不得被写成 CRLF（否则每次写都污染整仓 diff）。
+    #[tokio::test]
+    async fn keeps_lf_of_existing_file() {
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, b"one\ntwo\n").expect("seed");
+
+        let args = WriteFilesArgs {
+            files: vec![WriteFileEntry {
+                path: file.to_string_lossy().into_owned(),
+                content: "one\r\ntwo\r\nthree\r\n".into(),
+                encoding: None,
+            }],
+        };
+        let out = handle(args, &state).await.expect("write");
+        assert!(
+            written_ok(&out),
+            "写入必须真的成功（否则断言读到的只是原文件）：{out}"
+        );
+
+        let bytes = std::fs::read(&file).expect("read back");
+        assert!(
+            !bytes.windows(2).any(|w| w == b"\r\n"),
+            "LF 原文不应被翻成 CRLF：{:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+
+    /// 🔴 回归（审查 P2）：覆盖**非 UTF-8**（GBK）文件时，响应里不能把整份内容当 `+` 行回显。
+    ///
+    /// 旧实现把「原文件解不出 UTF-8」折成 `old = ""`，于是整份新内容都成了 `+` 行——
+    /// 写一个 20MB 的 GBK 文件，响应≈全文，模型上下文直接被撑爆。
+    #[tokio::test]
+    async fn non_utf8_overwrite_does_not_echo_whole_content() {
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("gbk.txt");
+        // 合法的 GBK 中文（非 UTF-8）：旧内容解不出来。
+        let gbk_old = [0xD6, 0xD0, 0xCE, 0xC4]; // 「中文」
+        std::fs::write(&file, gbk_old).expect("seed");
+
+        let args = WriteFilesArgs {
+            files: vec![WriteFileEntry {
+                path: file.to_string_lossy().into_owned(),
+                content: "新的内容".into(),
+                encoding: Some("gbk".into()),
+            }],
+        };
+        let out = handle(args, &state).await.expect("write");
+        let text = serde_json::to_string(&out).expect("serialize");
+
+        assert!(
+            text.contains("未生成逐行 diff"),
+            "非 UTF-8 覆盖应给一行摘要而不是逐行 diff：{text}"
+        );
+        assert!(
+            !text.contains("+新的内容"),
+            "绝不能把整份新内容当 diff 回显：{text}"
+        );
+    }
 }

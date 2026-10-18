@@ -129,18 +129,46 @@ pub fn prune_backups(
     // Sort by name (timestamp is embedded) — oldest first
     backups.sort();
 
-    let mut removed = 0u32;
-    while backups.len() > retention as usize {
-        if let Some(oldest) = backups.first() {
-            let _ = std::fs::remove_file(oldest);
-            // 同步清理索引记录，避免孤儿索引行堆积
+    // 🔴 先把「索引有、磁盘没有」的孤儿行摘掉（审查 P2）。
+    //
+    // 原实现直接拿索引结果当候选：一条孤儿索引行也占一个名额，于是
+    // `len() > retention` 会更早成立——明明是孤儿，却让**真实备份被提前删掉一份**
+    // （孤儿文件名新时尤其明显）。顺手把孤儿索引清掉，避免下次还来捣乱。
+    backups.retain(|p| {
+        if p.is_file() {
+            true
+        } else {
             let _ = db.execute(
                 "DELETE FROM backup_index WHERE backup_path = ?1",
-                params![oldest.to_string_lossy().into_owned()],
+                params![p.to_string_lossy().into_owned()],
             );
-            backups.remove(0);
-            removed += 1;
+            false
         }
+    });
+
+    let mut removed = 0u32;
+    while backups.len() > retention as usize {
+        let oldest = backups.remove(0);
+        // 🔴 计数必须按**真实删除成功**算（审查 P2）。原实现 `let _ = remove_file(..)`
+        // 后在下一行无条件 `removed += 1`，删失败也报「已清理 N 份」。
+        match std::fs::remove_file(&oldest) {
+            Ok(()) => removed += 1,
+            // 已经不存在：视作孤儿，只清索引行，不计入清理数。
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                // 其它错误（占用/权限）：保留索引，下次还能重试；不计数。
+                log::warn!(
+                    "清理旧备份失败（保留索引，下次再试）{}：{e}",
+                    oldest.display()
+                );
+                continue;
+            }
+        }
+        // 同步清理索引记录，避免孤儿索引行堆积
+        let _ = db.execute(
+            "DELETE FROM backup_index WHERE backup_path = ?1",
+            params![oldest.to_string_lossy().into_owned()],
+        );
     }
 
     Ok(removed)
@@ -748,5 +776,117 @@ mod cleanup_tests {
         assert_eq!(a.victims, b.victims);
         assert_eq!(a.freed_bytes, b.freed_bytes);
         assert_eq!(a.files_losing_all, b.files_losing_all);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// 建一份最小可用的库（只需 backup_index 表）。
+    fn mem_db() -> Connection {
+        let c = Connection::open_in_memory().expect("mem db");
+        c.execute_batch(
+            "CREATE TABLE backup_index (
+                backup_path   TEXT PRIMARY KEY NOT NULL,
+                original_path TEXT NOT NULL
+            );",
+        )
+        .expect("create table");
+        c
+    }
+
+    fn tmp_dir(label: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "cc-bridge-backup-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("mkdir");
+        d
+    }
+
+    /// 写一份真实备份文件并登记索引。
+    fn seed_backup(dir: &Path, db: &Connection, ts: &str) -> PathBuf {
+        let name = format!("target.rs.20260101_{ts}_000.bak");
+        let p = dir.join(&name);
+        std::fs::write(&p, b"old").expect("write backup");
+        db.execute(
+            "INSERT INTO backup_index (backup_path, original_path) VALUES (?1, ?2)",
+            params![p.to_string_lossy().into_owned(), "D:\\p\\target.rs"],
+        )
+        .expect("index");
+        p
+    }
+
+    /// 🔴 回归（审查 P2）：索引里的**孤儿行**不得让真实备份被提前删掉。
+    ///
+    /// 原实现把索引结果直接当候选，孤儿行也占名额 → `len() > retention` 提前成立，
+    /// 于是明明只该保留 N 份，却多删一份真实备份。
+    #[test]
+    fn orphan_index_rows_do_not_evict_real_backups() {
+        let data_dir = tmp_dir("orphan");
+        let backup_dir = data_dir.join(".bak");
+        std::fs::create_dir_all(&backup_dir).expect("mkdir bak");
+        let db = mem_db();
+
+        // 3 份真实备份（时间戳递增）+ 1 条指向不存在文件的孤儿索引行（文件名最新）。
+        let mut reals = Vec::new();
+        for ts in ["010101", "020202", "030303"] {
+            reals.push(seed_backup(&backup_dir, &db, ts));
+        }
+        let ghost = backup_dir.join("target.rs.20260202_090909_000.bak");
+        db.execute(
+            "INSERT INTO backup_index (backup_path, original_path) VALUES (?1, ?2)",
+            params![ghost.to_string_lossy().into_owned(), "D:\\p\\target.rs"],
+        )
+        .expect("ghost index");
+
+        // retention=3 → 应该一份都不删（真实的正好 3 份）。
+        let removed =
+            prune_backups(Path::new("D:\\p\\target.rs"), ".bak", &data_dir, 3, &db).expect("prune");
+        assert_eq!(removed, 0, "孤儿行不得触发真实备份清理");
+        for p in &reals {
+            assert!(p.exists(), "真实备份被误删：{}", p.display());
+        }
+        // 孤儿索引行应被顺手清掉。
+        let left: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM backup_index WHERE backup_path = ?1",
+                params![ghost.to_string_lossy().into_owned()],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(left, 0, "孤儿索引行应被清理");
+
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    /// 正常裁剪：超出 retention 的最旧备份被删，计数准确。
+    #[test]
+    fn prunes_oldest_and_counts_real_removals() {
+        let data_dir = tmp_dir("prune");
+        let backup_dir = data_dir.join(".bak");
+        std::fs::create_dir_all(&backup_dir).expect("mkdir bak");
+        let db = mem_db();
+        let mut reals = Vec::new();
+        for ts in ["010101", "020202", "030303", "040404"] {
+            reals.push(seed_backup(&backup_dir, &db, ts));
+        }
+
+        let removed =
+            prune_backups(Path::new("D:\\p\\target.rs"), ".bak", &data_dir, 2, &db).expect("prune");
+        assert_eq!(removed, 2, "应真实删除 2 份");
+        assert!(!reals[0].exists());
+        assert!(!reals[1].exists());
+        assert!(reals[2].exists());
+        assert!(reals[3].exists());
+
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 }

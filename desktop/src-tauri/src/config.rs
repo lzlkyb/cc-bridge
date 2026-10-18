@@ -384,6 +384,9 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "last_selected_ip" => config.last_selected_ip = parse_or_warn(key, value, None),
             "scope" => config.scope = parse_or_warn(key, value, None),
             "project_path" => config.project_path = parse_or_warn(key, value, None),
+            // 🔴 曾漏读（审查 B1 的另一半）：只写了 save 通道、load 里没有这一支，
+            // 于是「切到 Codex」当场生效、重启又变回 claude-code。save/load 必须成对。
+            "connect_client" => config.connect_client = parse_or_warn(key, value, None),
             "has_onboarded" => config.has_onboarded = parse_or_warn(key, value, false),
             "command_allowlist_enabled" => {
                 config.command_allowlist_enabled = parse_or_warn(key, value, false)
@@ -769,6 +772,20 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         "multi_device_mode",
         &to_value(config.multi_device_mode).unwrap(),
     )?;
+    // 🔴 这两个键曾漏写（审查 B7）：`import_config_inner` 是「先落库再整体替换内存」，
+    // 漏写即造成内存领先于 DB——导入后界面按新配置跑、重启又变回旧值；`has_onboarded`
+    // 丢失还会让老用户重新看到引导。字段清单必须与 `ConfigPatch` 的 apply_field!
+    // 分支保持同步，`save_full_config_roundtrip_preserves_every_patchable_field` 守这条。
+    save_config_field(
+        conn,
+        "connect_client",
+        &to_value(&config.connect_client).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "has_onboarded",
+        &to_value(config.has_onboarded).unwrap(),
+    )?;
     // 外挂 MCP 桥的两个键。漏写的后果不是“少存一个字段”：调用方（`import_config_inner`）
     // 是先落库再整体替换内存，漏一个就会造成内存领先于 DB——界面上已生效、
     // 重启后又变回去（已删的 server 复活）。
@@ -829,5 +846,176 @@ mod device_identity_tests {
         // 兼容性契约的兜底断言：缺字段（老配置库）时必须是关。
         assert!(!BridgeConfig::default().multi_device_mode);
         assert!(BridgeConfig::default().device_id.is_empty());
+    }
+}
+
+/// save/load 成对性回归（审查 B1 / B7）。
+///
+/// 守的是同一条不变量：**`save_full_config` 写下去的每个键，`load_config` 都必须读回来**。
+/// 历史上两次踩坑都在这里——`connect_client` 有 save 无 load、`has_onboarded` 有 load
+/// 无 save，表现都是「界面已生效、重启后变回旧值」，而门禁全绿。这个测试把
+/// 每个字段都设成与默认值不同的值，然后跑一遍 save→load，任一侧漏掉就红。
+#[cfg(test)]
+mod save_load_contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn mem_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-mem db");
+        conn.execute_batch(
+            "CREATE TABLE config (
+                key   TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
+            );",
+        )
+        .expect("create config table");
+        conn
+    }
+
+    #[test]
+    fn save_full_config_roundtrip_preserves_every_field() {
+        let conn = mem_conn();
+        // 每个字段都设成非默认值，才能证明 save/load 两边键名与类型都没错位。
+        // （用结构体字面量而非逐行 `c.x = …`：clippy 的 field_reassign_with_default。）
+        let c = BridgeConfig {
+            allowed_roots: vec!["D:\\proj".into()],
+            exclude_patterns: vec!["**/node_modules/**".into()],
+            root_profiles: vec![RootProfile {
+                name: "工作".into(),
+                roots: vec!["D:\\proj".into()],
+                exclude_patterns: vec!["*.log".into()],
+            }],
+            active_profile: "工作".into(),
+            token: "tok-roundtrip".into(),
+            allowed_extensions: vec!["rs".into()],
+            max_file_size_bytes: 1234,
+            rate_limit_max_requests: 7,
+            rate_limit_window_ms: 4321,
+            backup_dir: ".bak-x".into(),
+            backup_retention: 3,
+            audit_retention_days: 9,
+            command_cleanup_secs: 30,
+            host: "192.168.1.9".into(),
+            port: 7890,
+            whitelist_enabled: false,
+            readonly_mode: true,
+            backup_enabled: false,
+            audit_enabled: false,
+            rate_limit_enabled: false,
+            encoding_detect_enabled: true,
+            shell_enabled: true,
+            session_cwd_enabled: true,
+            shell_type: "bash".into(),
+            transport: "sse".into(),
+            last_selected_ip: Some("192.168.1.9".into()),
+            scope: Some("project".into()),
+            project_path: Some("D:\\proj".into()),
+            // 🔴 B1/B7 的核心两字段
+            connect_client: Some("codex".into()),
+            has_onboarded: true,
+            command_allowlist_enabled: true,
+            command_allowlist: vec!["git".into()],
+            notify_command_complete: false,
+            notify_task_complete: false,
+            release_webview_on_close: false,
+            ssh_enabled: true,
+            ssh_drag_select_enabled: false,
+            ssh_copy_on_select_enabled: false,
+            remote_tls_enabled: true,
+            remote_ban_enabled: false,
+            remote_ban_threshold: 11,
+            remote_ban_window_min: 42,
+            device_id: "ab12".into(),
+            multi_device_mode: true,
+            external_mcp_enabled: true,
+            ..Default::default()
+        };
+
+        save_full_config(&conn, &c).expect("save_full_config");
+        let loaded = load_config(&conn).expect("load_config");
+
+        assert_eq!(loaded.allowed_roots, c.allowed_roots);
+        assert_eq!(loaded.exclude_patterns, c.exclude_patterns);
+        assert_eq!(loaded.root_profiles.len(), 1);
+        assert_eq!(loaded.root_profiles[0].exclude_patterns, vec!["*.log"]);
+        assert_eq!(loaded.active_profile, "工作");
+        assert_eq!(loaded.token, "tok-roundtrip");
+        assert_eq!(loaded.allowed_extensions, c.allowed_extensions);
+        assert_eq!(loaded.max_file_size_bytes, 1234);
+        assert_eq!(loaded.rate_limit_max_requests, 7);
+        assert_eq!(loaded.rate_limit_window_ms, 4321);
+        assert_eq!(loaded.backup_dir, ".bak-x");
+        assert_eq!(loaded.backup_retention, 3);
+        assert_eq!(loaded.audit_retention_days, 9);
+        assert_eq!(loaded.command_cleanup_secs, 30);
+        assert_eq!(loaded.host, "192.168.1.9");
+        assert_eq!(loaded.port, 7890);
+        assert!(!loaded.whitelist_enabled);
+        assert!(loaded.readonly_mode);
+        assert!(!loaded.backup_enabled);
+        assert!(!loaded.audit_enabled);
+        assert!(!loaded.rate_limit_enabled);
+        assert!(loaded.encoding_detect_enabled);
+        assert!(loaded.shell_enabled);
+        assert!(loaded.session_cwd_enabled, "session_cwd_enabled 必须往返");
+        assert_eq!(loaded.shell_type, "bash");
+        assert_eq!(loaded.transport, "sse");
+        assert_eq!(loaded.last_selected_ip.as_deref(), Some("192.168.1.9"));
+        assert_eq!(loaded.scope.as_deref(), Some("project"));
+        assert_eq!(loaded.project_path.as_deref(), Some("D:\\proj"));
+        assert_eq!(
+            loaded.connect_client.as_deref(),
+            Some("codex"),
+            "connect_client 必须往返（B1：有 save 无 load 时重启回退 claude-code）"
+        );
+        assert!(loaded.has_onboarded, "has_onboarded 必须往返（B7）");
+        assert!(loaded.command_allowlist_enabled);
+        assert_eq!(loaded.command_allowlist, vec!["git"]);
+        assert!(!loaded.notify_command_complete);
+        assert!(!loaded.notify_task_complete);
+        assert!(!loaded.release_webview_on_close);
+        assert!(loaded.ssh_enabled);
+        assert!(!loaded.ssh_drag_select_enabled);
+        assert!(!loaded.ssh_copy_on_select_enabled);
+        assert!(loaded.remote_tls_enabled);
+        assert!(!loaded.remote_ban_enabled);
+        assert_eq!(loaded.remote_ban_threshold, 11);
+        assert_eq!(loaded.remote_ban_window_min, 42);
+        assert_eq!(loaded.device_id, "ab12");
+        assert!(loaded.multi_device_mode);
+        assert!(loaded.external_mcp_enabled);
+    }
+
+    /// 空库（全新安装）语义：所有值取默认，且不得被 load 过程改写成奇怪的东西。
+    #[test]
+    fn load_config_on_empty_db_yields_defaults() {
+        let conn = mem_conn();
+        let loaded = load_config(&conn).expect("load_config");
+        let default = BridgeConfig::default();
+        assert_eq!(loaded.port, default.port);
+        assert_eq!(loaded.host, default.host);
+        assert_eq!(loaded.connect_client, None);
+        assert!(!loaded.has_onboarded, "全新安装必须是新用户");
+        assert!(!loaded.session_cwd_enabled);
+    }
+
+    /// `BridgeConfig` 的序列化键名是导入/导出的对外契约。这里锁住
+    /// 「导出 JSON 里绝不出现密文」的脱敏不变量所需前提（字段名可枚举），
+    /// 并顺带断言新增敏感字段时序列化名不会意外变形成带明文语义的名字。
+    #[test]
+    fn serialized_config_shape_is_stable() {
+        let v = serde_json::to_value(BridgeConfig::default()).expect("serialize");
+        let obj = v.as_object().expect("object");
+        for key in [
+            "connect_client",
+            "session_cwd_enabled",
+            "multi_device_mode",
+            "ssh_connections",
+        ] {
+            assert!(obj.contains_key(key), "序列化缺键：{key}");
+        }
+        // 默认配置的 JSON 是可被自身反序列化回来的（导入路径的前提）。
+        let round: BridgeConfig = serde_json::from_value(json!(v)).expect("deserialize back");
+        assert_eq!(round.port, BridgeConfig::default().port);
     }
 }

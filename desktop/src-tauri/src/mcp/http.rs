@@ -24,11 +24,17 @@ use tower_http::compression::CompressionLayer;
 /// （gzip 响应头、batch 合并、审计留痕等），无需走 Tauri GUI。
 pub async fn build_router(state: Arc<AppState>) -> Router {
     let config = state.config.read().await;
-    // HTTP body limit follows max file size (plus headroom for base64/JSON overhead)
-    // so writing a file up to max_file_size_bytes is never rejected at the HTTP layer.
+    // HTTP body 上限。
+    //
+    // 🔴 `max_file_size × 2` 只够**一个**文件（base64 膨胀 + JSON 外壳），而
+    // `write_files` 收的是**文件数组**：3 个 20MB 文件的请求约 80MB，旧上限 40MB
+    // 把完全合法的调用挡成 413（审查 P2）。这里按「单次最多 3 个满额文件」给余量，
+    // 再用绝对上限压住内存——Body limit 是整包缓冲，乘上 256 并发不能无界。
+    const MAX_BODY_LIMIT: usize = 96 * 1024 * 1024;
     let body_limit = (config.max_file_size_bytes as usize)
         .saturating_mul(2)
-        .max(1024 * 1024);
+        .saturating_mul(3)
+        .clamp(1024 * 1024, MAX_BODY_LIMIT);
     drop(config);
 
     axum::Router::new()
@@ -43,7 +49,35 @@ pub async fn build_router(state: Arc<AppState>) -> Router {
         .layer(tower_http::limit::RequestBodyLimitLayer::new(body_limit))
         .layer(CompressionLayer::new().gzip(true)) // 响应体 gzip 压缩（客户端 Accept-Encoding 支持时才生效，否则透明跳过）
         .layer(tower::limit::ConcurrencyLimitLayer::new(256)) // E-P0-4: 防止无界并发耗尽 tokio 工作线程
+        // 最外层：把 body-limit 的裸 413 改成 JSON-RPC 错误（见函数头注释）。
+        .layer(axum::middleware::from_fn(jsonrpc_oversize_middleware))
         .with_state(state)
+}
+
+/// 把 `RequestBodyLimitLayer` 的 413 改写成 **JSON-RPC 错误**。
+///
+/// 🔴 为什么必须改写：413 原本是纯文本 `length limit exceeded`，模型看到的不是工具错误、
+/// 也拿不到任何可执行信息——它只会重试同一个请求。写成 JSON-RPC 错误并给出
+/// 「拆成多次调用」的指引，模型才有自纠路径。拿不到请求 id（body 都没读完）时
+/// `id: null` 是规范允许的形态。
+async fn jsonrpc_oversize_middleware(req: Request<Body>, next: Next) -> Response<Body> {
+    let is_mcp = req.uri().path().starts_with("/mcp");
+    let resp = next.run(req).await;
+    if !is_mcp || resp.status() != StatusCode::PAYLOAD_TOO_LARGE {
+        return resp;
+    }
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Json(json!({
+            "jsonrpc": "2.0",
+            "id": null,
+            "error": {
+                "code": -32600,
+                "message": "请求体超出上限。请拆成多次调用：write_files 一次少传几个文件，每个文件不超过 maxFileSizeBytes 配置值。"
+            }
+        })),
+    )
+        .into_response()
 }
 
 pub async fn spawn_mcp_server(state: Arc<AppState>) {
@@ -112,6 +146,11 @@ pub async fn spawn_mcp_server(state: Arc<AppState>) {
             .await
         {
             log::error!("MCP HTTPS server error: {}", e);
+            // 🔴 必须落 startup_error：HTTPS 的 bind 是在 `.serve()` 里做的，
+            // 端口被占 / 权限不足都从这里返回。此前只打日志 → 界面只有「已停止」，
+            // 用户完全不知道为什么（HTTP 分支写了，这里漏了）。
+            *running_state.startup_error.lock().unwrap() =
+                Some(format!("HTTPS 监听 {} 失败：{}", addr, e));
         }
         running_state
             .mcp_running
@@ -180,6 +219,33 @@ pub async fn restart_server(state: &Arc<AppState>) {
     *handle = Some(new_handle);
 }
 
+/// 等监听真正就绪（成 / 败），最多 `timeout`，返回是否已在监听。
+///
+/// 🔴 为什么需要它（审查 P2）：`spawn_mcp_server` 是 spawn 出去的，
+/// `restart_server` 返回时**还没 bind**。调用方若紧接着乐观置
+/// `mcp_running = true`，端口被占时用户会先看到「运行中」、几秒后莫名变灰，
+/// 中间还以为是自己网络的问题。这里等的是「成或败」这个**确定结果**——
+/// 正常路径几十毫秒就返回。
+///
+/// 调用前**必须**先把 `startup_error` 清空，否则上一轮的旧错误会让它立刻返回 false。
+pub async fn wait_listening(state: &AppState, timeout: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if state.mcp_running.load(std::sync::atomic::Ordering::Relaxed) {
+            return true;
+        }
+        let failed = state
+            .startup_error
+            .lock()
+            .map(|g| g.is_some())
+            .unwrap_or(false);
+        if failed || tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 async fn health_handler() -> impl IntoResponse {
     Json(json!({ "status": "ok", "version": env!("CARGO_PKG_VERSION") }))
 }
@@ -196,6 +262,17 @@ pub fn rate_limit_key(addr: SocketAddr, headers: &axum::http::HeaderMap) -> Stri
     // 不应被读"，未来如果有人想动这里加 header 逻辑，函数签名就在面前。
     let _ = headers;
     addr.ip().to_string()
+}
+
+/// 封禁策略是否生效：跨网可达（0.0.0.0）+ 开关打开。
+///
+/// 127.0.0.1 场景无意义（封本地自己只会把用户锁在外面）且可能误伤本地代理。
+///
+/// 🔴 抽成函数是为了让**所有入口**用同一判据。此前只有 `/mcp` 那条主路径算过它，
+/// SSE 两个端点（`/mcp/sse` 握手、`/mcp/messages` + handler 内 401）各算一次很容易漏，
+/// 结果就是「换个 transport 就能无限爆破」。
+pub(crate) fn is_ban_active(config: &crate::config::BridgeConfig) -> bool {
+    config.remote_ban_enabled && config.host == "0.0.0.0"
 }
 
 async fn auth_middleware(
@@ -229,6 +306,31 @@ async fn auth_middleware(
         return next.run(req).await;
     }
 
+    let (expected_token, max_req, window_ms, rate_limit_enabled, ban_active) = {
+        let config = state.config.read().await;
+        (
+            config.token.clone(),
+            config.rate_limit_max_requests,
+            config.rate_limit_window_ms,
+            config.rate_limit_enabled,
+            is_ban_active(&config),
+        )
+    };
+    let peer_ip = addr.ip();
+
+    // 🔴 封禁检查必须在**所有**鉴权端点之前，包括下面提前返回的 `/mcp/sse` 与
+    // `/mcp/messages`。它只看对端 IP、不需要 token，因此与 token 校验顺序无关；
+    // 此前它写在 `if !skip_token` 里，而 SSE 两个端点早于它分支出去，
+    // 于是封禁对 SSE 通道完全无效——换个 transport 就能无限爆破。
+    if ban_active && !state.ban.check(peer_ip) {
+        return Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .body(Body::from(
+                r#"{"error":"Banned: too many failed attempts"}"#,
+            ))
+            .unwrap();
+    }
+
     // /mcp/sse GET 握手免 token 校验（token 通过 query param 传入并由 sse_handler 自行校验；
     // 长连接握手，不计入限流）。
     if path == "/mcp/sse" && req.method() == axum::http::Method::GET {
@@ -241,27 +343,7 @@ async fn auth_middleware(
     // 已于 2026-10-14 补上）。限流仍照走，否则 SSE 工具调用面不受 rate_limit 约束。
     let skip_token = path == "/mcp/messages";
 
-    let config = state.config.read().await;
-    let expected_token = config.token.clone();
-    let max_req = config.rate_limit_max_requests;
-    let window_ms = config.rate_limit_window_ms;
-    let rate_limit_enabled = config.rate_limit_enabled;
-    // P1 封禁仅在跨网可达（0.0.0.0）时激活；127.0.0.1 场景无意义且可能误伤本地代理。
-    let ban_active = config.remote_ban_enabled && config.host == "0.0.0.0";
-    let peer_ip = addr.ip();
-    drop(config);
-
     if !skip_token {
-        // P1 封禁检查先于鉴权（见 security/ban.rs 头注释：不进鉴权逻辑，防爆破省校验）。
-        if ban_active && !state.ban.check(peer_ip) {
-            return Response::builder()
-                .status(StatusCode::TOO_MANY_REQUESTS)
-                .body(Body::from(
-                    r#"{"error":"Banned: too many failed attempts"}"#,
-                ))
-                .unwrap();
-        }
-
         let auth_header = req
             .headers()
             .get("authorization")
@@ -522,11 +604,11 @@ async fn mcp_handler(
             }))
             .into_response()
         }
-        "notifications/initialized" => Json(json!({
-            "jsonrpc": "2.0",
-            "id": null
-        }))
-        .into_response(),
+        // 🔴 通知**不得**回 JSON-RPC 对象（规范：notifications MUST NOT 被回复）。
+        // 此前回 `{jsonrpc, id:null}`——既无 result 也无 error，是两头不靠的畸形响应；
+        // 严格 SDK 做 union 校验时会直接解析失败并抛错（客户端刚握手完就报错）。
+        // 规范没有规定 HTTP 状态码，回 202 Accepted + 空体是各家实现的通行做法。
+        "notifications/initialized" => StatusCode::ACCEPTED.into_response(),
         "tools/list" => {
             // 按当前 shell_type 动态生成工具描述，确保（重新）连接时模型拿到准确的壳层信息。
             let shell_type = state.config.read().await.shell_type.clone();
@@ -776,7 +858,10 @@ pub(crate) fn write_audit_for_call(
 /// Unknown tool）。MCP 服务端注册的工具名不含前缀，所以**仅在精确名未命中时**
 /// 剥掉 `mcp__<server>__` 前缀重试一次；精确命中永远优先（防碰撞）。
 /// 返回 None 表示两种查法都没命中。
-fn resolve_tool_name<'a>(
+///
+/// `pub(crate)`：`batch::validate_batch` 必须用**同一套**解析判定嵌套 batch，
+/// 否则 `mcp__cc-bridge__batch` 这种带前缀写法会被字面量比较漏掉（审查 B8）。
+pub(crate) fn resolve_tool_name<'a>(
     name: &'a str,
     tools: &'a [crate::mcp::tools::registry::ToolSpec],
 ) -> Option<&'a crate::mcp::tools::registry::ToolSpec> {

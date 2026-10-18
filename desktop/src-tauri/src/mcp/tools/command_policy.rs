@@ -47,6 +47,15 @@ pub fn validate_command_policy(
         if let Some(reason) = destructive_reason(&prog, args) {
             return Err(policy_error(&reason));
         }
+        // 🔴 Layer 1 还要看**被藏起来的命令**（审查 P2）：`echo "$(rm -rf /)"` 的
+        // 破坏性在命令替换里，顶层 token 只有 `echo`；`bash -c "rm -rf /"` 也一样。
+        // 只对 Layer 1 做展开：白名单（Layer 2）不跟着展开，是因为它问的是
+        // 「这条命令能不能跑」而不是「里面有没有毁灭性操作」，跟着展开会把
+        // `bash -c "python x.py"` 里的 python 也当成必须白名单的程序，
+        // 与「白名单不是沙箱」的既有声明不符（本模块目标只是抬高地板）。
+        if let Some(reason) = nested_destructive_reason(seg, shell) {
+            return Err(policy_error(&reason));
+        }
 
         // Layer 2：白名单（opt-in）。开启即生效——空列表拒绝全部命令（fail-closed，
         // 避免「已开启却允许全部」的虚假安全感）。prog 为空（空子命令）不拦。
@@ -74,6 +83,125 @@ fn policy_error(detail: &str) -> String {
 fn is_fork_bomb(command: &str) -> bool {
     let compact: String = command.chars().filter(|c| !c.is_whitespace()).collect();
     compact.contains(":(){:|:&};:") || compact.contains(":(){:|:&}:")
+}
+
+/// 递归（深度上限 3）把 `seg` 里被包起来的命令也过一遍 Layer 1。
+///
+/// 覆盖三种最常见绕过写法：`echo "$(rm -rf /)"`、反引号版本、`bash -c "rm -rf /"`。
+/// 深度上限防病态嵌套（`$($($(...)))`）把检测拖成指数级。
+fn nested_destructive_reason(seg: &str, shell: ShellType) -> Option<String> {
+    const MAX_DEPTH: u32 = 3;
+    let mut queue: Vec<(String, u32)> = wrapped_commands(seg, shell)
+        .into_iter()
+        .map(|s| (s, 0u32))
+        .collect();
+    while let Some((s, depth)) = queue.pop() {
+        for sub in split_into_subcommands(&s, shell) {
+            let tokens = tokenize(&sub, shell);
+            if let Some((prog, args)) = program_and_args(&tokens) {
+                if let Some(reason) = destructive_reason(&prog, args) {
+                    return Some(format!("{reason}（位于命令替换 / 子 shell 内）"));
+                }
+            }
+            if depth < MAX_DEPTH {
+                for inner in wrapped_commands(&sub, shell) {
+                    queue.push((inner, depth + 1));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 一段命令里「被包起来、但实际会被执行」的文本。
+///
+/// ① `$( … )` 命令替换（括号配平，跳过 `$((` 算术的内部层级）；
+/// ② `` `…` `` 反引号；
+/// ③ `bash -c "…"` / `cmd /c "…"` 的脚本串——**只**在程序名本身就是 shell 时才取，
+///    否则 `grep -c pattern file` 的计数参数会被当成一条命令。
+fn wrapped_commands(seg: &str, shell: ShellType) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let chars: Vec<char> = seg.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
+            let mut depth = 0usize;
+            let mut body = String::new();
+            let mut j = i + 1;
+            let mut closed = false;
+            while j < chars.len() {
+                let c = chars[j];
+                match c {
+                    '(' => {
+                        depth += 1;
+                        if depth > 1 {
+                            body.push(c);
+                        }
+                    }
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            closed = true;
+                            break;
+                        }
+                        body.push(c);
+                    }
+                    _ => body.push(c),
+                }
+                j += 1;
+            }
+            if closed {
+                out.push(body);
+                i = j + 1;
+                continue;
+            }
+        }
+        if chars[i] == '`' {
+            let mut body = String::new();
+            let mut j = i + 1;
+            let mut closed = false;
+            while j < chars.len() {
+                if chars[j] == '`' {
+                    closed = true;
+                    break;
+                }
+                body.push(chars[j]);
+                j += 1;
+            }
+            if closed {
+                out.push(body);
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // ③ 交给子 shell 执行的脚本串。
+    const SHELLS: &[&str] = &[
+        "bash",
+        "sh",
+        "zsh",
+        "dash",
+        "ksh",
+        "cmd",
+        "powershell",
+        "pwsh",
+    ];
+    let tokens = tokenize(seg, shell);
+    if let Some(head) = tokens.first().map(|t| program_basename(t)) {
+        if SHELLS.contains(&head.as_str()) {
+            if let Some(pos) = tokens
+                .iter()
+                .position(|t| t == "-c" || t.eq_ignore_ascii_case("/c"))
+            {
+                if let Some(script) = tokens.get(pos + 1) {
+                    out.push(script.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// 白名单大小写不敏感包含（比较程序名 basename）。
@@ -219,13 +347,35 @@ fn split_cmd_tokens(segment: &str) -> Vec<String> {
     tokens
 }
 
-/// 跳过包装前缀（sudo/doas），返回 (程序名 basename 小写, 参数切片)。
+/// 跳过包装前缀（`sudo`/`doas`/`env`/`nohup`/`command`/`exec`），返回 (程序名 basename 小写, 参数切片)。
+///
+/// 🔴 `env` 必须在这里跳过（审查 P2）：`env rm -rf /` 的真程序是 `rm`，
+/// 旧实现只跳 `sudo`/`doas`，于是 prog 被认成 `env`、`destructive_reason` 走 `_ => {}`
+/// 直接放行——Layer 1 是唯一常开的拦截，它被绕过等于没有这层。
+/// `env` 还允许 `env FOO=1 rm …` / `env -i rm …`，所以跳过后要继续吃掉
+/// 「KEY=VALUE 赋值」与「-x 选项」，直到遇见真正的程序名。
 fn program_and_args(tokens: &[String]) -> Option<(String, &[String])> {
     let mut idx = 0;
     while idx < tokens.len() {
         let name = program_basename(&tokens[idx]);
-        if name == "sudo" || name == "doas" {
+        if matches!(
+            name.as_str(),
+            "sudo" | "doas" | "env" | "nohup" | "command" | "exec"
+        ) {
+            let is_env = name == "env";
             idx += 1;
+            while idx < tokens.len() {
+                let t = &tokens[idx];
+                if t.starts_with('-') {
+                    idx += 1; // env -i / -u NAME / sudo -E …
+                    continue;
+                }
+                if is_env && is_env_assignment(t) {
+                    idx += 1; // env FOO=1 …
+                    continue;
+                }
+                break;
+            }
             continue;
         }
         break;
@@ -233,6 +383,14 @@ fn program_and_args(tokens: &[String]) -> Option<(String, &[String])> {
     let prog_tok = tokens.get(idx)?;
     let prog = program_basename(prog_tok);
     Some((prog, &tokens[idx + 1..]))
+}
+
+/// `KEY=VALUE` 形态的环境变量赋值（env 的参数）。键只允许字母数字下划线。
+fn is_env_assignment(tok: &str) -> bool {
+    let Some((k, _)) = tok.split_once('=') else {
+        return false;
+    };
+    !k.is_empty() && k.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// 取程序名 basename：去路径前缀（`/` 或 `\`）、去 Windows 可执行后缀、转小写。
@@ -636,5 +794,38 @@ mod tests {
         let list = vec!["rm".to_string()];
         // 即便 rm 在白名单，Layer 1 仍拦毁灭性 rm。
         assert!(validate_command_policy("rm -rf /", ShellType::Bash, Some(&list)).is_err());
+    }
+
+    // ── 回归（审查 P2）：包装前缀与命令替换不能绕过 Layer 1 ──
+
+    /// `env rm -rf /`：真程序是 rm，旧实现把它认成 env 直接放行。
+    #[test]
+    fn env_wrapper_does_not_bypass_layer1() {
+        assert!(bash_block("env rm -rf /"));
+        assert!(bash_block("env FOO=1 rm -rf /"));
+        assert!(bash_block("env -i rm -rf /"));
+        // 正常用法仍然放行（env 只是设变量）
+        assert!(!bash_block("env FOO=1 make build"));
+    }
+
+    /// `echo "$(rm -rf /)"`：破坏性藏在命令替换里，顶层 token 只有 echo。
+    #[test]
+    fn command_substitution_does_not_bypass_layer1() {
+        assert!(bash_block(r#"echo "$(rm -rf /)""#));
+        assert!(bash_block("echo $(rm -rf ~)"));
+        // 反引号版本
+        assert!(bash_block("echo \"`rm -rf /`\""));
+        // 交给子 shell 执行
+        assert!(bash_block(r#"bash -c "rm -rf /""#));
+        assert!(bash_block(r#"sh -c "rm -rf /""#));
+    }
+
+    /// 命令替换里是**无害命令**时不能误拦（否则 `echo "$(git rev-parse HEAD)"` 都跑不了）。
+    #[test]
+    fn benign_command_substitution_allowed() {
+        assert!(!bash_block(r#"echo "$(git rev-parse --short HEAD)""#));
+        assert!(!bash_block("docker ps $(echo -q)"));
+        // `grep -c` 的计数参数不是脚本，不能被当成子 shell 内容
+        assert!(!bash_block("grep -c pattern file.txt"));
     }
 }

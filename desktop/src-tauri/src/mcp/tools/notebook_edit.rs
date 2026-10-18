@@ -48,6 +48,18 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
     let backup_retention = config.backup_retention;
     drop(config);
 
+    // 🔴 读 → 改 → 写必须与其它写工具**共用同一把 path_locks**（审查 P2）。
+    // 原来全程不取锁：面板回滚 / 批量写同一份 .ipynb 时，两边的「读-改-写」交错，
+    // 后写者会把先写者的单元格整段覆盖掉（典型的 lost update，且无任何报错）。
+    // 锁在解析后立刻取、直到写完才释放（_guard 随函数返回 drop）。
+    let lock = state
+        .path_locks
+        .entry(resolved.clone())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .value()
+        .clone();
+    let _guard = lock.lock().await;
+
     // 读 .ipynb（JSON）。
     let content = tokio::fs::read_to_string(&resolved)
         .await

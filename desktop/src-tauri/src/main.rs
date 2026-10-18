@@ -295,7 +295,10 @@ async fn refresh_and_report_ip_change(
     // 只在「从未变到已变」的边沿弹一次，否则轮询会每 5s 弹一个。
     let was = alerting.swap(changed, std::sync::atomic::Ordering::Relaxed);
     if changed && !was {
-        notify_toast(handle, "网络地址已变化，点击查看新连接命令");
+        // 🔴 文案不能承诺点击：`tauri-plugin-notification` 的桌面通知**没有点击回调**
+        // （Windows 侧只透传 toast XML，不带 activation handler）。写「点击查看…」
+        // 用户点了没反应，等于把「去哪找」这条唯一有用的指引也弄丢了。
+        notify_toast(handle, "网络地址已变化，请从托盘菜单复制 IP 替换命令");
     }
 }
 
@@ -1118,10 +1121,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 用 `Exit` 而非 `ExitRequested`：后者会被下面那条拦住（关窗不算退出）。
             // 写在前面：`ExitRequested` 的模式会把 `api` 从 `event` 里 move 走。
             if matches!(event, tauri::RunEvent::Exit) {
-                app_handle
-                    .state::<std::sync::Arc<state::AppState>>()
-                    .mcp_bridge
-                    .shutdown_all();
+                let st = app_handle.state::<std::sync::Arc<state::AppState>>();
+                st.mcp_bridge.shutdown_all();
+                // 🔴 SSH 也必须在这里收尾：`SshSession` 没有 `Drop`，`ssh` 子进程
+                // 与远端登录会话在父进程退出后**不会**跟着死（Windows 上尤其明显）。
+                // 用户退了应用却还能从别处看到一个活着的 sshd 会话，是安全错觉。
+                // 顺序无关：helper 是按连接 id 存在的 SFTP 会话，会话是 pty 主进程。
+                st.kill_all_ssh_sessions();
+                st.kill_all_ssh_helpers();
             }
             // 关掉最后一个窗口**不应**退出应用。
             //

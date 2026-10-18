@@ -15,6 +15,11 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 
+/// 封禁表条目硬上限（超过就清扫，见 `gc`）。
+///
+/// 4096 个来源 IP 已经远超「家里/办公室几台设备」的真实规模；再往上只可能是扫描。
+const MAX_ENTRIES: usize = 4096;
+
 #[derive(Debug)]
 struct Entry {
     fails: u32,
@@ -85,13 +90,39 @@ impl BanRegistry {
             last_fail: now,
         });
         // 上次失败距今太久：视为新一轮尝试，计数重置（避免极低频慢扫也被累计）。
-        if now.duration_since(entry.last_fail) > window {
+        if now.saturating_duration_since(entry.last_fail) > window {
             entry.fails = 0;
         }
         entry.last_fail = now;
         entry.fails += 1;
         if entry.fails >= threshold {
             entry.banned_until = Some(now + window);
+        }
+        drop(entry);
+        self.gc(now, window);
+    }
+
+    /// 机会式清扫，**把表的大小钉在上限内**（审查 P2）。
+    ///
+    /// 🔴 为什么必须有：这张表原来只增不减——`check` 只在「封禁窗口刚好过期且该 IP
+    /// 又来请求」时删条目，`record_success` 只在猜对 token 时删。换源扫描
+    /// （每次来自新 IP、每次只错一次）能让 DashMap 无界增长，而 `get_status` 每 5s
+    /// 要全表遍历一次 `recent_failure_ips`——内存和每轮延迟一起涨。
+    ///
+    /// 两级：先丢「窗口外且没在封禁中」的过期条目（真正的垃圾）；
+    /// 若清完仍超上限，说明是真实的广源扫描，再丢**未封禁**的纯计数条目
+    /// （代价是那些 IP 的失败数重新计——它们的封禁本来就没生效，不损失保护强度）。
+    fn gc(&self, now: Instant, window: Duration) {
+        if self.inner.len() <= MAX_ENTRIES {
+            return;
+        }
+        self.inner.retain(|_, e| {
+            e.banned_until.is_some_and(|u| now < u)
+                || now.saturating_duration_since(e.last_fail) <= window
+        });
+        if self.inner.len() > MAX_ENTRIES {
+            self.inner
+                .retain(|_, e| e.banned_until.is_some_and(|u| now < u));
         }
     }
 
@@ -254,5 +285,35 @@ mod tests {
         let ip: IpAddr = "203.0.113.16".parse().unwrap();
         b.record_failure(ip);
         assert!(b.recent_failure_ips(Duration::from_secs(60)).is_empty());
+    }
+
+    /// 回归：换源扫描不能让封禁表无界增长（原来是只增不减，`get_status` 每 5s 全表遍历）。
+    #[test]
+    fn table_stays_bounded_under_wide_scan() {
+        let b = reg();
+        let bad: IpAddr = "203.0.113.99".parse().unwrap();
+        let scan = |from: u32| {
+            // 阈值 3 + 每源只错一次 ⇒ 全是「未封禁的纯计数条目」，正是最坏情形。
+            for n in from..(from + MAX_ENTRIES as u32 * 3) {
+                b.record_failure(IpAddr::V4(std::net::Ipv4Addr::from(n)));
+            }
+        };
+
+        scan(0);
+        assert!(
+            b.inner.len() <= MAX_ENTRIES,
+            "封禁表必须被钉在上限内，实际 {}",
+            b.inner.len()
+        );
+
+        // 清扫不能把「已经封禁中」的条目丢掉——那才是真正在起作用的保护。
+        for _ in 0..3 {
+            b.record_failure(bad);
+        }
+        assert!(!b.check(bad), "达阈值的来源应被封禁");
+
+        scan(MAX_ENTRIES as u32 * 3); // 再来一轮扫描
+        assert!(b.inner.len() <= MAX_ENTRIES, "第二轮扫描后仍须在上限内");
+        assert!(!b.check(bad), "仍在封禁窗口内的 IP 不能被清扫掉");
     }
 }

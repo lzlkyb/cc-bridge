@@ -107,7 +107,17 @@ async fn read_single_file(
     // E-P0-8: 行范围读取走流式（仅读需要的行），大文件不把整文件载入内存。
     // 触发条件：指定了 start/end 且编码可确定（显式 override，或 detect 关闭→强制 UTF-8）。
     // 自动探测（detect_enabled 且未指定编码）需全文件扫描，回退下面的全读路径。
-    let streamable = start_line.is_some() || end_line.is_some();
+    //
+    // 🔴 还有一个排除项（审查 P2）：**UTF-16 不能走流式**。流式是按**字节** `\n` 切段的，
+    // 而 UTF-16 的换行是 `0A 00` —— 切点落在码元中间，逐段 decode 出来是错位乱码
+    // （奇偶字节互换，且不报错）。这类编码回退全读路径：先整体解码，再按字符行切。
+    let ascii_compatible = match encoding_override {
+        Some(label) => crate::encoding::label_to_encoding(label)
+            .map(|e| e.is_ascii_compatible())
+            .unwrap_or(true), // 未知标签：交给下游统一报错
+        None => true, // 未指定 → utf-8（ASCII 兼容）
+    };
+    let streamable = (start_line.is_some() || end_line.is_some()) && ascii_compatible;
     let enc_determinable = encoding_override.is_some() || !detect_enabled;
     if streamable && enc_determinable {
         return read_range_streaming(
@@ -273,4 +283,55 @@ async fn read_range_streaming(
         "encoding": enc_name,
         "newline": newline,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::tools::testutil::*;
+
+    /// 🔴 回归（审查 P2）：UTF-16 + 行范围曾走「按字节切 `\n`」的流式路径。
+    ///
+    /// UTF-16LE 的换行是 `0A 00`，按字节切会让每段长度错位，逐段 `decode` 出来是
+    /// 奇偶互换的乱码——而且**不报错**，用户只看到一堆看不懂的字。
+    /// 现在这类编码（`!is_ascii_compatible()`）强制走全读路径：整体解码后按字符行切。
+    ///
+    /// 注意必须带 BOM：二进制守卫把「含 0x00 且无 UTF-16/32 BOM」判为二进制，
+    /// 而真实世界的 UTF-16 文本文件基本都带 BOM。
+    #[tokio::test]
+    async fn utf16_line_range_is_not_garbled() {
+        let (state, dir) = make_state(|c| c.encoding_detect_enabled = false);
+        let file = dir.join("u16.txt");
+        let mut bytes: Vec<u8> = vec![0xFF, 0xFE]; // UTF-16LE BOM
+        for u in "first\nsecond\nthird\n".encode_utf16() {
+            bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        std::fs::write(&file, &bytes).expect("seed");
+
+        let args = ReadFilesArgs {
+            files: vec![FileRef::Detailed {
+                path: file.to_string_lossy().into_owned(),
+                start_line: Some(2),
+                end_line: Some(2),
+            }],
+            start_line: None,
+            end_line: None,
+            encoding: Some("utf-16le".into()),
+        };
+        let out = handle(args, &state).await.expect("read");
+        let s = serde_json::to_string(&out).expect("serialize");
+        assert!(s.contains("second"), "行范围应取到第二行，实际：{s}");
+        assert!(!s.contains('\u{FFFD}'), "不应出现替换字符：{s}");
+    }
+
+    /// 流式路径的适用条件（`is_ascii_compatible`）单独钉住：
+    /// 只要它误判成 true，上面那条就会重新变成乱码。
+    #[test]
+    fn only_ascii_compatible_encodings_can_stream_by_bytes() {
+        use encoding_rs::{GBK, UTF_16BE, UTF_16LE, UTF_8};
+        assert!(!UTF_16LE.is_ascii_compatible());
+        assert!(!UTF_16BE.is_ascii_compatible());
+        assert!(UTF_8.is_ascii_compatible());
+        assert!(GBK.is_ascii_compatible());
+    }
 }

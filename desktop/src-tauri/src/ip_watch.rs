@@ -58,7 +58,13 @@ mod imp {
     pub fn spawn(tx: mpsc::UnboundedSender<()>) {
         thread::spawn(move || {
             // 初始值减去一个间隔，使首次事件不被限流延迟。
-            let mut last_event = Instant::now() - MIN_EVENT_INTERVAL;
+            // 🔴 必须是 checked_sub：Windows 的 Instant 以**系统启动**为原点，开机不满
+            // MIN_EVENT_INTERVAL 时减法下溢 panic（审查 B4 同款）。开机自启时本函数
+            // 恰好在启动早期执行，退化为 `now` 的后果只是「首次事件可能被限流一次」，
+            // 完全可以接受。
+            let mut last_event = Instant::now()
+                .checked_sub(MIN_EVENT_INTERVAL)
+                .unwrap_or_else(Instant::now);
             loop {
                 // SAFETY: 两个指针参数均传 NULL（同步模式），不涉及任何缓冲区读写。
                 let ret = unsafe { NotifyAddrChange(std::ptr::null_mut(), std::ptr::null_mut()) };

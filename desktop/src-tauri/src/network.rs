@@ -56,12 +56,31 @@ pub fn resolve_display_host(host: &str, lan_ips: &[String], selected_ip: Option<
             .map(|s| s.to_string())
             .or_else(|| lan_ips.first().cloned())
             .unwrap_or_else(|| "127.0.0.1".into())
+    } else if is_loopback_host(host) {
+        // 🔴 显式绑回环就**原样返回**（审查 P2）：服务只监听 127.0.0.1，
+        // 而 `lan_ips` 明确排除了 127.*（见 `is_usable_ipv4`），所以「在网卡里」
+        // 这条判据对它恒假 → 旧实现会回退到 LAN IP，托盘复制出一个**没在监听**的地址。
+        // 前端同语义函数返回 127.0.0.1，这里必须一致（R11）。
+        host.to_string()
     } else if lan_ips.iter().any(|x| x == host) {
         host.to_string()
     } else {
         // 配置的具体地址已不可用,回退到默认路由网卡
         lan_ips.first().cloned().unwrap_or_else(|| host.to_string())
     }
+}
+
+/// 是否指回环地址（`127.0.0.0/8`、`::1`、`localhost`，含 IPv6 方括号写法）。
+///
+/// 不能靠 `lan_ips.contains` 判断：`get_lan_ips` 本身就排除回环。
+fn is_loopback_host(host: &str) -> bool {
+    let h = host.trim().trim_start_matches('[').trim_end_matches(']');
+    if h.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    h.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 /// 构造给远程服务器粘贴的连接命令。
@@ -156,10 +175,52 @@ pub fn build_connect_command(t: ConnectTarget<'_>) -> String {
     }
 }
 
+/// 双引号内的 shell 转义：`\` `"` `` ` `` `$` 前加反斜杠。
+///
+/// 项目路径是用户输入（也来自系统路径），含这些字符时裸拼进 `cd "…"` 会截断字符串
+/// 或触发命令替换（`$(…)` / 反引号）——审查 P2「network.rs:188 路径未转义」。
+/// 🔴 前端 `lib/utils.ts escapeDoubleQuoted` 与此逐字一致。
+pub fn escape_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    let chars: Vec<char> = s.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        match c {
+            // 🔴 双引号内 `\` **只**对 `\ " ` $` 与换行有转义意义。这里只在这几种情况下
+            // 翻倍（外加末尾那个——它会吃掉收尾引号），其它保持原样。
+            // 一律翻倍会把 `C:\My Project` 变成 `C:\\My Project`：语义等价但用户
+            // 看到的路径和资源管理器里复制的不一样，排查时极易误判「命令被改坏了」。
+            '\\' => {
+                let next = chars.get(i + 1);
+                if next.is_none() || matches!(next, Some('\\' | '"' | '`' | '$')) {
+                    out.push('\\');
+                }
+                out.push('\\');
+            }
+            '"' | '`' | '$' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// 可移植的原地编辑：`sed -i.bak EXPR FILE && rm -f FILE.bak`。
+///
+/// 为什么不用 `sed -i`：GNU sed 的 `-i` 可省略后缀，而 **BSD/macOS 的 `-i` 必须跟
+/// 备份后缀**，否则把下一个参数当后缀、报 `invalid command code`——远端是 macOS 时
+/// 所有 IP/令牌修复命令都失效（审查 P2）。带 `.bak` 的写法 GNU/BSD/busybox 通吃，
+/// 成功后顺手删掉备份，用户看不到多余文件；sed 失败时 `&&` 挡住 rm，备份留着可回滚。
+/// 🔴 前端 `lib/utils.ts sedInPlace` 与此逐字一致。
+fn sed_in_place(expr: &str, file: &str) -> String {
+    format!("sed -i.bak '{expr}' {file} && rm -f {file}.bak")
+}
+
 /// 生成「网络变动时原地更新 IP」的 sed 命令，**严格对齐前端 `IpChangedBanner.buildSed`**：
-/// - Claude Code · user 级：`sed -i 's#...#...#g' ~/.claude.json`
-/// - Claude Code · project 级 + 有项目路径：`cd "<path>" && sed -i 's#...#...#g' .mcp.json`
-/// - Claude Code · project 级 + 无路径：`sed -i 's#...#...#g' .mcp.json`（提示在项目目录执行）
+/// - Claude Code · user 级：`sed -i.bak 's#...#...#g' ~/.claude.json && rm -f ~/.claude.json.bak`
+/// - Claude Code · project 级 + 有项目路径：`cd "<path>" && sed -i.bak …`
+/// - Claude Code · project 级 + 无路径：`sed -i.bak … .mcp.json`（提示在项目目录执行）
 /// - WorkBuddy：`~/.workbuddy/mcp.json`；Codex：`~/.codex/config.toml`（两家的 url 都是文本，
 ///   同一条 sed 适用，无需重装 client）；**generic 返回空串**——没有约定路径，只能让用户手动改。
 ///
@@ -190,7 +251,7 @@ pub fn build_ip_sed_command(
                     .as_ref()
                     .map(|p| p.trim())
                     .filter(|t| !t.is_empty())
-                    .map(|t| format!("cd \"{t}\" && "))
+                    .map(|t| format!("cd \"{}\" && ", escape_double_quoted(t)))
                     .unwrap_or_default()
             } else {
                 String::new()
@@ -199,9 +260,8 @@ pub fn build_ip_sed_command(
         }
     };
     let scheme = if tls { "https" } else { "http" };
-    format!(
-        "{cd_prefix}sed -i 's#https\\?://[0-9.]*:{port}/mcp#{scheme}://{display_host}:{port}/mcp#g' {cfg_file}"
-    )
+    let expr = format!("s#https\\?://[0-9.]*:{port}/mcp#{scheme}://{display_host}:{port}/mcp#g");
+    format!("{cd_prefix}{}", sed_in_place(&expr, &cfg_file))
 }
 
 /// 多设备模式（opt-in）的接入/更新命令：条目级 remove + add，**幂等可重跑**。
@@ -265,14 +325,24 @@ pub fn build_scoped_sed_command(
         _ => return String::new(),
     };
     let entry = entry_name(device_id);
+    // 🔴 WorkBuddy 的结束锚用「行首可空白的 `}`」而不是原来的 `"Authorization"`：
+    // 后者在条目缺 headers 时**永不命中**，GNU sed 的地址范围会一路作用到文件末尾，
+    // 把后面其它设备的 url 一起改写——正是 scoped sed 要防的互踢（审查 P2）。
+    // JSON 里每个条目必然有闭合花括号，它比「可选内容」可靠。
+    // 只要求「行首 }」而不是精确缩进：任何合法排版下都能收住，最坏是提前结束
+    // （url 行在 headers 之前，替换照常发生），永远不会越界。
+    //
+    // 🔴 另：原实现写 `\\{{`（输出 `\{`），而 `\{` 在 BRE 里是区间量词的开始，
+    // 单独出现时 GNU sed 直接 `Unmatched \{` 退出 1——**多设备 + WorkBuddy 的
+    // IP 修复命令 100% 失败**（审查 B3）。裸 `{` 才是字面花括号。
     let range = match client {
         "codex" => format!("/^\\[mcp_servers\\.{entry}\\]/,/^\\[/"),
-        _ => format!("/\"{entry}\": \\{{/,/\"Authorization\"/"),
+        _ => format!("/\"{entry}\": {{/,/^ *}}/"),
     };
     let scheme = if tls { "https" } else { "http" };
-    format!(
-        "sed -i '{range} s#https\\?://[0-9.]*:{port}/mcp#{scheme}://{display_host}:{port}/mcp#g' {cfg_file}"
-    )
+    let expr =
+        format!("{range} s#https\\?://[0-9.]*:{port}/mcp#{scheme}://{display_host}:{port}/mcp#g");
+    sed_in_place(&expr, cfg_file)
 }
 
 /// 当前配置 → 「原地更新接入」的命令 + 作用域标签（展示给用户的后缀说明）。
@@ -371,6 +441,29 @@ pub fn ip_update_command(t: IpUpdateTarget<'_>) -> (String, String) {
 mod tests {
     use super::*;
 
+    /// 🔴 回归（审查 P2）：显式绑回环时**不能**回退到 LAN IP。
+    ///
+    /// `get_lan_ips` 排除 127.*，所以旧实现里「host 在网卡里」这条恒假 →
+    /// 托盘会复制出一个服务根本没在监听的地址。
+    #[test]
+    fn resolve_display_host_keeps_loopback() {
+        let lan = vec!["192.168.1.20".to_string(), "10.0.0.5".to_string()];
+        assert_eq!(
+            resolve_display_host("127.0.0.1", &lan, None),
+            "127.0.0.1",
+            "绑回环时必须原样给出回环地址"
+        );
+        assert_eq!(resolve_display_host("[::1]", &lan, None), "[::1]");
+        assert_eq!(resolve_display_host("localhost", &lan, None), "localhost");
+        // 0.0.0.0 仍按原语义取 LAN 首选地址
+        assert_eq!(resolve_display_host("0.0.0.0", &lan, None), "192.168.1.20");
+        // 已失效的具体地址仍回退到首选网卡
+        assert_eq!(
+            resolve_display_host("192.168.9.9", &lan, None),
+            "192.168.1.20"
+        );
+    }
+
     #[test]
     fn build_ip_sed_command_user_scope() {
         let cmd = build_ip_sed_command(7823, "192.168.1.100", "user", &None, false, "claude-code");
@@ -384,9 +477,13 @@ mod tests {
             cmd.contains("http://192.168.1.100:7823/mcp"),
             "replacement 应内嵌 /mcp"
         );
+        // 目标文件在命令尾部，但末尾还跟着便携式清理（`&& rm -f <file>.bak`），
+        // 所以判据用 contains 而不是 ends_with。
         assert!(
-            cmd.ends_with("~/.claude.json"),
-            "user 级目标文件应为 ~/.claude.json"
+            cmd.contains("sed -i.bak")
+                && cmd.contains("~/.claude.json ")
+                && cmd.contains("~/.claude.json.bak"),
+            "user 级目标文件应为 ~/.claude.json（GNU/BSD 通用写法 + 清理备份）：{cmd}"
         );
         assert!(!cmd.contains("cd "), "user 级不应含 cd 前缀");
         assert!(
@@ -410,8 +507,8 @@ mod tests {
             "project+路径应含 cd 前缀"
         );
         assert!(
-            cmd.ends_with(".mcp.json"),
-            "project 级目标文件应为 .mcp.json"
+            cmd.contains(".mcp.json ") && cmd.contains(".mcp.json.bak"),
+            "project 级目标文件应为 .mcp.json：{cmd}"
         );
         assert_eq!(cmd.matches('#').count(), 3, "sed 分隔符 # 应为 3 个");
     }
@@ -428,8 +525,8 @@ mod tests {
         );
         assert!(!cmd.contains("cd "), "project+无路径不应含 cd 前缀");
         assert!(
-            cmd.ends_with(".mcp.json"),
-            "project 级目标文件应为 .mcp.json"
+            cmd.contains(".mcp.json ") && cmd.contains(".mcp.json.bak"),
+            "project 级目标文件应为 .mcp.json：{cmd}"
         );
     }
 
@@ -437,11 +534,17 @@ mod tests {
     #[test]
     fn build_ip_sed_command_multi_client() {
         let wb = build_ip_sed_command(7823, "192.168.1.100", "user", &None, false, "workbuddy");
-        assert!(wb.ends_with("~/.workbuddy/mcp.json"), "WorkBuddy 目标文件");
+        assert!(
+            wb.contains("~/.workbuddy/mcp.json ") && wb.contains("~/.workbuddy/mcp.json.bak"),
+            "WorkBuddy 目标文件：{wb}"
+        );
         assert!(!wb.contains("cd "), "WorkBuddy 是全局配置，不应有 cd 前缀");
 
         let cx = build_ip_sed_command(7823, "192.168.1.100", "user", &None, true, "codex");
-        assert!(cx.ends_with("~/.codex/config.toml"), "Codex 目标文件");
+        assert!(
+            cx.contains("~/.codex/config.toml ") && cx.contains("~/.codex/config.toml.bak"),
+            "Codex 目标文件：{cx}"
+        );
         assert!(
             cx.contains("https://192.168.1.100:7823/mcp"),
             "TLS 开启时替换段应为 https（且 Codex 忽略 scope）"
@@ -580,7 +683,7 @@ mod tests {
             multi_device: false,
             device_id: "a3f2",
         });
-        assert!(cmd.starts_with("sed -i "), "关闭时必须仍是 sed：{cmd}");
+        assert!(cmd.starts_with("sed -i.bak '"), "关闭时必须仍是 sed：{cmd}");
         assert!(!cmd.contains("claude mcp"), "关闭时不得混入条目级命令");
         assert_eq!(label, "用户级 ~/.claude.json");
     }
@@ -603,7 +706,10 @@ mod tests {
             multi_device: true,
             device_id: "",
         });
-        assert!(cmd.starts_with("sed -i "), "device_id 缺失应回退 sed：{cmd}");
+        assert!(
+            cmd.starts_with("sed -i.bak '"),
+            "device_id 缺失应回退 sed：{cmd}"
+        );
         assert!(!cmd.contains("claude mcp"), "不得出半截条目级命令：{cmd}");
         assert_eq!(label, "用户级 ~/.claude.json");
     }
@@ -637,11 +743,14 @@ mod tests {
         // 地址范围：从本条目段头到下一个段头（TOML 规范保证段头行首 [）。
         assert!(
             cmd.starts_with(
-                "sed -i '/^\\[mcp_servers\\.cc-bridge-a3f2\\]/,/^\\[/ s#https\\?://[0-9.]*:7823/mcp#"
+                "sed -i.bak '/^\\[mcp_servers\\.cc-bridge-a3f2\\]/,/^\\[/ s#https\\?://[0-9.]*:7823/mcp#"
             ),
             "应为条目锚定的 scoped sed：{cmd}"
         );
-        assert!(cmd.ends_with("' ~/.codex/config.toml"), "目标文件：{cmd}");
+        assert!(
+            cmd.ends_with("' ~/.codex/config.toml && rm -f ~/.codex/config.toml.bak"),
+            "目标文件与便携收尾：{cmd}"
+        );
         assert!(!cmd.contains("sed -i 's#"), "不得退回全局替换形态：{cmd}");
         assert_eq!(label, "多设备模式 · 条目 cc-bridge-a3f2");
     }
@@ -662,16 +771,58 @@ mod tests {
             multi_device: true,
             device_id: "b7c1",
         });
+        // 🔴 回归断言（审查 B3）：输出里绝不能出现 `\{`。
+        // `\{` 在 BRE 是区间量词的开始，单独出现时 GNU sed 直接 `Unmatched \{` 退出 1，
+        // 曾让「多设备 + WorkBuddy」的 IP 修复命令 100% 失败。
+        assert!(!cmd.contains("\\{"), "不得出现 \\{{（非法 BRE）：{cmd}");
         assert!(
-            cmd.starts_with("sed -i '/\"cc-bridge-b7c1\": \\{/,/\"Authorization\"/ s#"),
-            "应为 JSON 条目键锚定：{cmd}"
+            cmd.starts_with("sed -i.bak '/\"cc-bridge-b7c1\": {/,/^ *}/ s#"),
+            "应为 JSON 条目键锚定 + 花括号收尾：{cmd}"
+        );
+        assert!(
+            !cmd.contains("\"Authorization\""),
+            "结束锚不得依赖可选的 Authorization 行（缺它时会一路作用到文件末尾）：{cmd}"
         );
         assert!(
             cmd.contains("#https://"),
             "TLS 开启时替换段应为 https：{cmd}"
         );
-        assert!(cmd.ends_with("' ~/.workbuddy/mcp.json"), "目标文件：{cmd}");
+        assert!(
+            cmd.ends_with("' ~/.workbuddy/mcp.json && rm -f ~/.workbuddy/mcp.json.bak"),
+            "目标文件与便携收尾：{cmd}"
+        );
         assert_eq!(label, "多设备模式 · 条目 cc-bridge-b7c1");
+    }
+
+    /// 回归（审查 P2）：路径含双引号 / `$()` / 反引号时必须转义，
+    /// 否则 `cd "…"` 会被截断，甚至把 `$(…)` 当命令执行。
+    #[test]
+    fn ip_sed_escapes_project_path() {
+        let cmd = build_ip_sed_command(
+            7823,
+            "10.0.0.8",
+            "project",
+            &Some("/tmp/a \"b\" $(whoami) `id`".to_string()),
+            false,
+            "claude-code",
+        );
+        assert!(
+            cmd.starts_with("cd \"/tmp/a \\\"b\\\" \\$(whoami) \\`id\\`\" && "),
+            "{cmd}"
+        );
+        assert!(cmd.contains(".mcp.json"), "{cmd}");
+    }
+
+    /// 回归（审查 P2）：原地编辑必须用 `-i.bak && rm -f` 形态，
+    /// BSD/macOS 的 `sed -i` 不带后缀参数会直接报错。
+    #[test]
+    fn ip_sed_is_portable_across_gnu_and_bsd() {
+        let cmd = build_ip_sed_command(7823, "10.0.0.8", "user", &None, false, "claude-code");
+        assert!(cmd.contains("sed -i.bak '"), "{cmd}");
+        assert!(
+            cmd.ends_with("~/.claude.json && rm -f ~/.claude.json.bak"),
+            "{cmd}"
+        );
     }
 
     /// 批3-2：多设备但 device_id 为空（异常态）→ codex/workbuddy 退回原 sed，不出坏范围。
@@ -690,7 +841,7 @@ mod tests {
             multi_device: true,
             device_id: "",
         });
-        assert!(cmd.starts_with("sed -i 's#"), "应退回全局 sed：{cmd}");
+        assert!(cmd.starts_with("sed -i.bak 's#"), "应退回全局 sed：{cmd}");
         assert_eq!(label, "Codex ~/.codex/config.toml");
     }
 

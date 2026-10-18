@@ -29,7 +29,15 @@ use crate::security::auth;
 use crate::security::path;
 use crate::state::AppState;
 
+/// 🔴 `deny_unknown_fields` **是契约守卫，不是风格**：本结构体此前没有它，前端
+/// 写了一个这里不存在的键（`connectClient` / `sessionCwdEnabled`）时 serde 会**静默
+/// 丢弃**，`save_config` 照样返回 `ok:true, changed:[]`——界面显示已切换、后端仍是旧值，
+/// 属于最难查的一类 bug（2026-10-18 审查 B1/B2）。加上后同样的漂移会直接报错。
+///
+/// 新增前端 patch 键时必须同时在此加字段，否则保存会失败——这是刻意的：
+/// 宁可保存报错，也不要「看起来保存成功」。
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigPatch {
     #[serde(rename = "allowedRoots")]
     pub allowed_roots: Option<Vec<String>>,
@@ -125,6 +133,15 @@ pub struct ConfigPatch {
     /// 关闭时后端行为与引入前逐字一致（兼容性契约）。
     #[serde(rename = "multiDeviceMode")]
     pub multi_device_mode: Option<bool>,
+    /// 连接页选定的接入工具（claude-code / workbuddy / codex / generic）。
+    /// 决定托盘「复制 IP 替换命令」与 IP 横幅的命令形态。缺了它 → 切到 Codex 后
+    /// 托盘仍生成 `claude mcp add`（审查 B1）。
+    #[serde(rename = "connectClient")]
+    pub connect_client: Option<String>,
+    /// 会话级 cwd 持久化开关（run_command 的 session_id handle）。
+    /// 缺了它 → 设置页拨开关不落盘、弹回，「会话持久化」胶囊永远显示关（审查 B2）。
+    #[serde(rename = "sessionCwdEnabled")]
+    pub session_cwd_enabled: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -292,6 +309,21 @@ pub async fn save_config(
         "multi_device_mode",
         &patch.multi_device_mode
     );
+    // 会话级 cwd 持久化。默认关；开启等同于让客户端用 session_id 沿用工作目录
+    // （每次使用前仍重校验白名单，规则 7 不削弱）。
+    apply_field!(
+        session_cwd_enabled,
+        "session_cwd_enabled",
+        &patch.session_cwd_enabled
+    );
+    // 接入工具（connect_client 在 config 中是 Option<String>，与 apply_field! 宏的
+    // "T vs Option<T>" 假设不符，故单独处理——同 scope / project_path）。
+    // 合法值由 config.rs 侧解析兜底：未知值按 claude-code 处理。
+    if let Some(ref c) = patch.connect_client {
+        save_config_field(&db, "connect_client", &serde_json::to_value(c).unwrap())?;
+        config.connect_client = Some(c.clone());
+        changed.push("connect_client".into());
+    }
     // 🔴 这个开关必须是**断路器**：由开变关时立刻杀掉全部活会话。
     // 否则关掉后已经开着的终端照样能输入、能操作远程主机，开关就只是
     // 「能不能新建」而不是安全边界。此处仍持有 config 写锁，而该方法只碰
@@ -632,6 +664,19 @@ pub(crate) fn export_config_json(config: &crate::config::BridgeConfig) -> Result
     // 避免导出的配置文件被备份/转发/入库时泄露凭证。导入端 token 为空时会保留现有或重新生成。
     let mut export = config.clone();
     export.token = String::new();
+    // 🔴 SSH 凭据密文**必须一并抹掉**（审查 B5）。`ssh_connections` 里的
+    // `encrypted_password` / `encrypted_passphrase` 是 aes-gcm 密文，密钥在本机
+    // `ssh_key.bin`——密文外发等于把凭据交出去（同一台机器上导入即可还原明文）。
+    // 这与 token、外挂 `env` 里的 API key 是同一类不变量：**导出文件不得含任何机密**。
+    // 记忆标记：抹掉后仍保留 host/user 等非机密字段，导入端照常恢复连接列表，
+    // 只是密码/密码短语需要重新输入（remember 标记同步置 false，避免出现「记住密码=True
+    // 但密文为空」的半残状态）。
+    for conn in export.ssh_connections.iter_mut() {
+        conn.encrypted_password.clear();
+        conn.remember_password = false;
+        conn.encrypted_passphrase.clear();
+        conn.remember_passphrase = false;
+    }
     // 🔴 外挂 MCP 桥的配置**不导出**，两个理由，任一个单独成立：
     //
     // 1. `env` 里是真的 API key（本机 `paper_search_mcp` 就带一个）。不摸掉的话，
@@ -644,6 +689,32 @@ pub(crate) fn export_config_json(config: &crate::config::BridgeConfig) -> Result
     export.external_mcp_enabled = false;
     export.external_mcp_servers = vec![];
     serde_json::to_string_pretty(&export).map_err(|e| format!("序列化配置失败：{e}"))
+}
+
+/// 导入后需要拆掉 SFTP helper 的连接 id（审查 B6）。
+///
+/// 判定两条：**被删掉**，或**关键连接字段变了**（id 保持不变但连接的已经是另一台机器）。
+/// 只看 id 会漏后者：用户编辑同一台机器的 host 时 id 不变，helper 仍在旧主机上待命，
+/// 之后文件面板的删除/写入会打在旧机器上。
+/// 纯函数：便于直接单测（不依赖 AppState / 真 SSH 会话）。
+pub(crate) fn stale_ssh_helper_ids(
+    old: &[crate::config::SshConnection],
+    new: &[crate::config::SshConnection],
+) -> Vec<String> {
+    old.iter()
+        .filter(|o| match new.iter().find(|n| n.id == o.id) {
+            None => true,
+            Some(n) => {
+                n.host != o.host
+                    || n.port != o.port
+                    || n.username != o.username
+                    || n.key_path != o.key_path
+                    || n.auth_type != o.auth_type
+                    || n.proxy_jump_id != o.proxy_jump_id
+            }
+        })
+        .map(|o| o.id.clone())
+        .collect()
 }
 
 /// `import_config` 的纯逻辑入口：解析 → 白名单兜底校验 → 落库 → 写 config → 刷新白名单缓存。
@@ -665,6 +736,17 @@ pub(crate) async fn import_config_inner(
         } else {
             cur
         };
+    }
+
+    // 🔴 导入**不改变本机身份**（审查 P2）：`device_id` 是「这一份安装」的标识，
+    // 多设备场景下它决定 `cc-bridge-<id>` 条目名。导入一份别的机器的配置会把它一起带进来，
+    // 于是两台机器同尾号，互相覆盖对方的条目（而且都以为自己还是原来那台）。
+    // 本机已有 id 就保留本机的；为空（新装尚未生成）时才接受导入值。
+    {
+        let cur = state.config.read().await.device_id.clone();
+        if !cur.trim().is_empty() {
+            incoming.device_id = cur;
+        }
     }
 
     // 白名单兜底校验（复用 security::path 白名单逻辑，不可绕过）。
@@ -697,7 +779,29 @@ pub(crate) async fn import_config_inner(
     crate::config::save_full_config(&db, &incoming)?;
     drop(db);
 
+    // 🔴 导入前快照旧配置，用于下面「拆 helper / 断路器」的差集判定（审查 B6）。
+    // 不拆的后果很实在：导入一份改过 host 的配置后，常驻 SFTP helper 仍连着**旧主机**，
+    // 文件面板的删除操作打在旧机器上；导入一份 `ssh_enabled: false` 也不会触发断路器
+    // （save_config 那条有专门逻辑，导入路径漏了）。
+    let (old_conns, old_ssh_enabled) = {
+        let cur = state.config.read().await;
+        (cur.ssh_connections.clone(), cur.ssh_enabled)
+    };
+    let new_ssh_enabled = incoming.ssh_enabled;
+    // 需要重连的判定：连接被删、或连到另一台机器的关键字段变了。只看 id 不够——
+    // id 不变而 host/port/user/key 变了的场景（用户编辑同一台机器的配置）同样要拆。
+    let stale_ids = stale_ssh_helper_ids(&old_conns, &incoming.ssh_connections);
+
     *state.config.write().await = incoming;
+
+    // 先拆受影响的 helper，再按总开关决定要不要整体断路。
+    for id in &stale_ids {
+        state.drop_ssh_helper(id);
+    }
+    if !new_ssh_enabled && old_ssh_enabled {
+        state.kill_all_ssh_sessions();
+        state.kill_all_ssh_helpers();
+    }
 
     // 白名单根缓存随导入刷新（性能优化）：与 save_config 一致，写完 config 后用最新 roots 重算，
     // 否则缓存仍指向旧 roots，导致后续工具校验误放行/误拒绝。
@@ -719,10 +823,13 @@ pub async fn import_config(
     let result = import_config_inner(state.inner(), &json).await;
     // 仅成功时重启服务使 host/port 等配置生效（失败时不重启，与原语义一致）
     if result.is_ok() {
+        // 清旧错误 + 等 bind 结果：配置已经落盘，这里**不**再把 bind 失败当导入失败，
+        // 但也不能乐观置 running（审查 P2，端口可能被新 host/port 占着）。
+        *state.startup_error.lock().unwrap() = None;
         crate::mcp::http::restart_server(state.inner()).await;
-        state
-            .mcp_running
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // 等它落定，避免前端刷新状态时读到「还没起来」的中间态。
+        let _ = crate::mcp::http::wait_listening(state.inner(), std::time::Duration::from_secs(2))
+            .await;
     }
     result
 }
@@ -898,6 +1005,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir_b);
     }
 
+    /// 🔴 回归测试：导入**不得改变本机 device_id**。
+    ///
+    /// 旧实现整体替换 config，把导出方的 `device_id` 也一并带进来 →
+    /// 两台机器同尾号，多设备条目 `cc-bridge-<id>` 互相覆盖。
+    #[tokio::test]
+    async fn import_keeps_local_device_id() {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir: PathBuf = std::env::temp_dir().join(format!(
+            "cc-bridge-device-import-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let conn = db::init_database(&dir).expect("init db");
+        let cfg = BridgeConfig {
+            device_id: "local-id".into(),
+            ..BridgeConfig::default()
+        };
+        let state = Arc::new(AppState::new(conn, cfg, dir.clone()));
+
+        let incoming = BridgeConfig {
+            device_id: "other-machine-id".into(),
+            ..BridgeConfig::default()
+        };
+        let json = serde_json::to_string(&incoming).expect("serialize");
+        let r = super::import_config_inner(&state, &json).await;
+        assert!(r.is_ok(), "导入应成功：{:?}", r.err());
+        assert_eq!(
+            state.config.read().await.device_id,
+            "local-id",
+            "导入不能把别人的 device_id 搬到本机"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn mcp_spec() -> crate::mcp::bridge::config::ExternalMcpServer {
         crate::mcp::bridge::config::ExternalMcpServer {
             name: "paper".into(),
@@ -983,5 +1128,141 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 🔴 契约守卫（审查 B1/B2 回归）：前端 `save_config` 用到的**每一个** camelCase
+    /// 键都必须能被 `ConfigPatch` 解析。
+    ///
+    /// 这条测试的价值不在「现在能过」，而在「以后加键忘了加字段时会红」：
+    /// 本结构体带 `deny_unknown_fields`，一旦前端写了一个这里没有的键，
+    /// 保存会**直接报错**而不是静默丢弃——把「看起来保存成功、实际没落盘」
+    /// 那类最难查的 bug 变成一次显式失败。下面这份键清单直接抄自 `src/`
+    /// 里的 `patch: {...}` 字面量，前端新增键请一并加进来。
+    #[test]
+    fn config_patch_accepts_every_frontend_key() {
+        let json = serde_json::json!({
+            "allowedRoots": [],
+            "excludePatterns": [],
+            "allowedExtensions": [],
+            "maxFileSizeBytes": 1,
+            "rateLimitMaxRequests": 1,
+            "rateLimitWindowMs": 1,
+            "backupDir": "b",
+            "backupRetention": 1,
+            "auditRetentionDays": 1,
+            "commandCleanupSecs": 1,
+            "host": "0.0.0.0",
+            "port": 7823,
+            "whitelistEnabled": true,
+            "readonlyMode": false,
+            "backupEnabled": true,
+            "auditEnabled": true,
+            "rateLimitEnabled": true,
+            "encodingDetectEnabled": false,
+            "shellEnabled": false,
+            "shellType": "cmd",
+            "transport": "http",
+            "scope": "user",
+            "projectPath": null,
+            "hasOnboarded": true,
+            "commandAllowlistEnabled": false,
+            "commandAllowlist": [],
+            "notifyCommandComplete": true,
+            "notifyTaskComplete": true,
+            "releaseWebviewOnClose": true,
+            "sshEnabled": false,
+            "sshDragSelectEnabled": true,
+            "sshCopyOnSelectEnabled": true,
+            "remoteTlsEnabled": false,
+            "remoteBanEnabled": true,
+            "remoteBanThreshold": 5,
+            "remoteBanWindowMin": 15,
+            "multiDeviceMode": false,
+            // 下面两个正是历史上被静默吞掉的键。
+            "connectClient": "codex",
+            "sessionCwdEnabled": true
+        });
+        let p: ConfigPatch = serde_json::from_value(json).expect("前端契约键必须全部可解析");
+        assert_eq!(
+            p.connect_client.as_deref(),
+            Some("codex"),
+            "connectClient 必须能真正落到字段上（B1）"
+        );
+        assert_eq!(
+            p.session_cwd_enabled,
+            Some(true),
+            "sessionCwdEnabled 必须能真正落到字段上（B2）"
+        );
+        assert_eq!(p.project_path, None, "null 应解析为 None 而不是报错");
+    }
+
+    /// 🔴 回归（审查 B5）：导出 JSON **不得**包含 SSH 凭据密文。
+    ///
+    /// `ssh_connections` 里的 encrypted_* 是 aes-gcm 密文，密钥就在本机
+    /// `ssh_key.bin`——导出文件一旦被转发/备份，等于外发凭据。与 token、
+    /// 外挂 server 的 env API key 是同一条脱敏不变量。
+    #[test]
+    fn export_strips_ssh_credentials() {
+        let cfg = BridgeConfig {
+            token: "tok-secret".into(),
+            ssh_connections: vec![crate::config::SshConnection {
+                id: "c1".into(),
+                name: "测试机".into(),
+                host: "10.0.0.9".into(),
+                username: "root".into(),
+                remember_password: true,
+                encrypted_password: "CIPHER_PW_VALUE".into(),
+                remember_passphrase: true,
+                encrypted_passphrase: "CIPHER_PP_VALUE".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let json = export_config_json(&cfg).expect("export");
+        assert!(!json.contains("CIPHER_PW_VALUE"), "密码密文泄露：{json}");
+        assert!(
+            !json.contains("CIPHER_PP_VALUE"),
+            "密码短语密文泄露：{json}"
+        );
+        assert!(!json.contains("tok-secret"), "token 泄露：{json}");
+        // 非机密字段必须保留，否则导入后连接列表整段消失。
+        assert!(json.contains("10.0.0.9"), "主机应保留：{json}");
+        assert!(json.contains("root"), "用户名应保留：{json}");
+        // 记住密码标记必须跟着密文一起清，避免「记住=true 但密文空」的半残状态。
+        assert!(!json.contains("\"rememberPassword\": true"));
+        assert!(!json.contains("\"rememberPassphrase\": true"));
+    }
+
+    /// 🔴 回归（审查 B6）：导入后必须识别「被删」与「换了机器」两类陈旧 helper。
+    #[test]
+    fn stale_ssh_helper_ids_flags_deleted_and_moved() {
+        let mk = |id: &str, host: &str| crate::config::SshConnection {
+            id: id.into(),
+            host: host.into(),
+            ..Default::default()
+        };
+        let old = vec![mk("a", "h1"), mk("b", "h2"), mk("c", "h3"), mk("d", "h4")];
+        // a 原样保留；b 换了 host；c 被删；d 只改了展示名（不需要重连）。
+        let mut d = mk("d", "h4");
+        d.name = "改了名字".into();
+        let new = vec![mk("a", "h1"), mk("b", "h2-new"), d];
+        assert_eq!(
+            stale_ssh_helper_ids(&old, &new),
+            vec!["b".to_string(), "c".to_string()],
+            "removed + moved 都要拆，仅改展示名不该拆"
+        );
+    }
+
+    /// `deny_unknown_fields` 的存在性断言：未知键必须报错，而不是静默丢弃。
+    #[test]
+    fn config_patch_rejects_unknown_key() {
+        let err = serde_json::from_value::<ConfigPatch>(serde_json::json!({
+            "connectClientTypo": "codex"
+        }))
+        .expect_err("未知键必须解析失败");
+        assert!(
+            err.to_string().contains("unknown field"),
+            "错误应指明未知字段，实际：{err}"
+        );
     }
 }

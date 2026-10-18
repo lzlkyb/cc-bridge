@@ -59,14 +59,26 @@ impl Drop for SessionCleanup {
 pub async fn sse_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
 ) -> Response<Body> {
     let provided = params.get("token").map(|s| s.as_str()).unwrap_or("");
-    let expected = state.config.read().await.token.clone();
+    let (expected, ban_active) = {
+        let c = state.config.read().await;
+        (c.token.clone(), crate::mcp::http::is_ban_active(&c))
+    };
     if !crate::security::auth::verify_token(provided, &expected) {
+        // 与 /mcp 同口径：握手 401 也算一次鉴权失败（否则可以先爆破握手再爆破消息端点）。
+        state.inc_auth_denies();
+        if ban_active {
+            state.ban.record_failure(addr.ip());
+        }
         return Response::builder()
             .status(StatusCode::UNAUTHORIZED)
             .body(Body::from(r#"{"error":"Unauthorized"}"#))
             .unwrap();
+    }
+    if ban_active {
+        state.ban.record_success(addr.ip());
     }
 
     let session_id = uuid::Uuid::new_v4().to_string();
@@ -141,7 +153,10 @@ pub async fn sse_message_handler(
     headers: axum::http::HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let expected = state.config.read().await.token.clone();
+    let (expected, ban_active) = {
+        let c = state.config.read().await;
+        (c.token.clone(), crate::mcp::http::is_ban_active(&c))
+    };
     let from_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -153,12 +168,19 @@ pub async fn sse_message_handler(
         from_header
     };
     if !crate::security::auth::verify_token(provided, &expected) {
-        // 与 /mcp 同一治理口径：鉴权拒绝计入 authDenies。
+        // 与 /mcp 同一治理口径：鉴权拒绝计入 authDenies，并计入封禁表的失败计数
+        // （这条端点是 SSE 的工具调用面，封禁若要生效就必须在这里记账）。
         state.inc_auth_denies();
+        if ban_active {
+            state.ban.record_failure(addr.ip());
+        }
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({"error": "Unauthorized"})),
         );
+    }
+    if ban_active {
+        state.ban.record_success(addr.ip());
     }
 
     let session_id = match params.get("sessionId") {
@@ -224,7 +246,11 @@ pub async fn sse_message_handler(
                     // list-caching 提示（MCP 2025-11-05+，向后兼容：旧客户端忽略未知字段）。
                     // 目录不再静态，取舍理由见 http.rs 同位置注释。
                     "ttlMs": 3_600_000,
-                    "cacheScope": "user"
+                    // 🔴 必须是 `"private"`（枚举只有 public / private）。
+                    // 这里曾写 `"user"`：http 通道早已判定该值非法并改掉，SSE 漏改 →
+                    // 客户端按未知值忽略整段提示，「别跨会话共享工具描述」的意图不生效。
+                    // 两通道此字段必须逐字一致。
+                    "cacheScope": "private"
                 }
             });
             let _ = tx.send(sse_data_frame(&resp));
@@ -250,8 +276,9 @@ pub async fn sse_message_handler(
             let source_ip = addr.ip().to_string();
             let t_recv = std::time::Instant::now();
 
-            let resp = crate::timing::with_io_timer(async move {
-                crate::audit::with_op_backup(async {
+            let resp =
+                crate::timing::with_io_timer(async move {
+                    crate::audit::with_op_backup(async {
                     let start = std::time::Instant::now();
                     // 注入 source_ip 作用域，使 SSE 通道下 batch 子操作的审计也能拿到 sourceIp。
                     let result = crate::audit::with_source_ip(
@@ -279,7 +306,13 @@ pub async fn sse_message_handler(
                                 );
                                 state.inc_audit_count();
                             }
-                            json!({ "jsonrpc": "2.0", "id": request_id, "result": content })
+                            // 与 HTTP 通道同形状：`result` 必带 `resultType`（规范第 8 条，
+                            // 缺失时客户端按 complete 处理，无条件加即可）。
+                            let mut result = content;
+                            if let Some(obj) = result.as_object_mut() {
+                                obj.insert("resultType".into(), json!("complete"));
+                            }
+                            json!({ "jsonrpc": "2.0", "id": request_id, "result": result })
                         }
                         Err(e) => {
                             state.increment_errors().await;
@@ -293,13 +326,25 @@ pub async fn sse_message_handler(
                                 );
                                 state.inc_audit_count();
                             }
-                            json!({ "jsonrpc": "2.0", "id": request_id, "error": { "code": -32000, "message": e } })
+                            // 🔴 **工具级失败要回 result{isError:true}，不是协议级 -32000**。
+                            // 同一个错误在 http 通道是「工具跑失败了、这是诊断信息」，
+                            // 到 SSE 变成「协议故障」——客户端按协议错误处理，模型拿不到
+                            // 可自纠的文案。两条通道必须同一语义（审查 §二·协议层）。
+                            json!({
+                                "jsonrpc": "2.0",
+                                "id": request_id,
+                                "result": {
+                                    "resultType": "complete",
+                                    "isError": true,
+                                    "content": [{ "type": "text", "text": format!("Error: {}", e) }]
+                                }
+                            })
                         }
                     }
                 })
                 .await
-            })
-            .await;
+                })
+                .await;
             let _ = tx.send(sse_data_frame(&resp));
         }
         _ => {

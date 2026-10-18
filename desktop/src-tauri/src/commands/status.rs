@@ -83,6 +83,10 @@ pub struct StatusResponse {
     pub encoding_detect_enabled: bool,
     #[serde(rename = "shellEnabled")]
     pub shell_enabled: bool,
+    /// 会话级 cwd 持久化开关。设置页「高级」卡读写、治理胶囊展示。
+    /// 此前只在 `BridgeConfig`/DB 里有、既不下发也不写入，导致开关拨了弹回（审查 B2）。
+    #[serde(rename = "sessionCwdEnabled")]
+    pub session_cwd_enabled: bool,
     /// 命令执行壳层：cmd（默认）或 bash（Git Bash）。前端「命令执行壳层」分段控件读写。
     #[serde(rename = "shellType")]
     pub shell_type: String,
@@ -257,20 +261,37 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
     // 防火墙状态：优先读缓存（后台定时刷新）。缓存尚未初始化时做一次同步查询，
     // 保证首屏即可拿到真实状态，避免前几次轮询都返回 unknown。
     // netsh 不可用时（启动探测失败）跳过查询，状态保持 unknown（不再弹窗 / 反复 spawn）。
-    let (firewall_enabled, firewall_port_open) = {
-        let mut cache = state.firewall_cache.lock().unwrap();
-        if cache.checked_at.is_none() {
-            #[cfg(windows)]
-            let available = *state.firewall_available.lock().unwrap();
-            #[cfg(not(windows))]
-            let available = true;
-            if available {
-                let (e, p) = crate::firewall::query_firewall_state(port);
+    //
+    // 🔴 netsh 是**同步阻塞**调用（spawn 子进程 + 等输出，无超时），实测可达数百 ms。
+    // 它绝不能在 `firewall_cache` 这把 std 同步锁里跑（审查 P2）：后台刷新、托盘、
+    // 前端 5s 轮询都要读这份缓存，锁一被罩住就整条链路跟着卡。
+    // 现在的顺序是「短锁判定 → 锁外 query（spawn_blocking）→ 短锁写回」。
+    let need_query = {
+        let cache = state.firewall_cache.lock().unwrap();
+        cache.checked_at.is_none()
+    };
+    if need_query {
+        #[cfg(windows)]
+        let available = *state.firewall_available.lock().unwrap();
+        #[cfg(not(windows))]
+        let available = true;
+        if available {
+            // spawn_blocking：这是 IO 型阻塞，不该占 tokio worker 线程。
+            let (e, p) =
+                tokio::task::spawn_blocking(move || crate::firewall::query_firewall_state(port))
+                    .await
+                    .unwrap_or((None, None));
+            let mut cache = state.firewall_cache.lock().unwrap();
+            // 只有还是「未检查」时才写：期间后台刷新可能已经填了更新的结果，不能覆盖。
+            if cache.checked_at.is_none() {
                 cache.enabled = e;
                 cache.port_open = p;
+                cache.checked_at = Some(Instant::now());
             }
-            cache.checked_at = Some(Instant::now());
         }
+    }
+    let (firewall_enabled, firewall_port_open) = {
+        let cache = state.firewall_cache.lock().unwrap();
         (cache.enabled, cache.port_open)
     };
     // netsh 可用性：仅 Windows 有意义（非 Windows 为 None）。
@@ -374,8 +395,14 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
     // rpm：按 60s 窗口滑动计数（就地 prune 旧时间戳，避免无界增长）。
     let requests_per_min = {
         let mut q = state.recent_requests.lock().unwrap();
-        let cutoff = Instant::now() - Duration::from_secs(60);
-        q.retain(|t| *t > cutoff);
+        // 🔴 不能写 `Instant::now() - Duration`：Windows 的 Instant 以**系统启动**
+        // 为原点，开机不满 60s 时减法下溢直接 panic，而本函数被前端每 5s 调用一次
+        // ——开机自启场景首轮必中（审查 B4）。`checked_sub` 在开机初期退化为「不裁剪」，
+        // 语义上完全正确（窗口还没满 60s，队列里不可能有过期项）。
+        let cutoff = Instant::now().checked_sub(Duration::from_secs(60));
+        if let Some(cutoff) = cutoff {
+            q.retain(|t| *t > cutoff);
+        }
         q.len() as u64
     };
 
@@ -478,6 +505,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         rate_limit_enabled: config.rate_limit_enabled,
         encoding_detect_enabled: config.encoding_detect_enabled,
         shell_enabled: config.shell_enabled,
+        session_cwd_enabled: config.session_cwd_enabled,
         shell_type: config.shell_type.clone(),
         transport: config.transport.clone(),
         bash_available: crate::mcp::tools::shell::detect_bash_exe().is_some(),

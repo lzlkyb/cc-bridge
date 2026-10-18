@@ -502,8 +502,22 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<u64, 
         return Ok(0);
     }
 
-    // E-P0-7: 轮换前释放共享写句柄，避免 Windows 下 rename 因文件被占用而失败。
-    close_audit_writer();
+    // 🔴 清理必须与**追加写**互斥（审查 P2）。
+    //
+    // 原实现只调 `close_audit_writer()` 放掉句柄，然后就自己读→写 tmp→rename：
+    // 这中间的窗口里，并发的一次 `write_audit_log` 会重新打开 audit.log 追加，
+    // 随后 rename 把 tmp 盖上去——那一行审计**静默丢失**；而审计是安全留痕，
+    // 丢一行等于给攻击者留了一个「在清理窗口里动作」的缝。
+    //
+    // 复用 AUDIT_WRITER 这把锁（write_audit_log 也拿它）：持有期间追加写会阻塞，
+    // rename 完成后它们重新打开的是新文件，追加不会丢。
+    // ⚠️ 不能再调 `close_audit_writer()`——它会去锁同一个 Mutex，直接自死锁。
+    let lock = AUDIT_WRITER.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    // 关句柄（Windows 下 rename 不能有打开的句柄），语义等同 close_audit_writer。
+    if let Some((_, mut w)) = guard.take() {
+        let _ = w.flush();
+    }
     let log_path = data_dir.join("audit.log");
     if !log_path.exists() {
         return Ok(0);
@@ -538,7 +552,16 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<u64, 
         return Ok(0);
     }
 
-    let tmp_path = data_dir.join("audit.log.tmp");
+    // 临时文件名带 pid + 纳秒：固定 `audit.log.tmp` 时两个清理任务（启动清理 +
+    // 改保留天数后的后台清理）会共用同一个 tmp，互相截断出半份日志（审查 P2）。
+    let tmp_path = data_dir.join(format!(
+        "audit.log.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
     {
         let mut tmp = std::fs::File::create(&tmp_path)
             .map_err(|e| format!("Failed to create temp audit log: {e}"))?;
@@ -547,8 +570,11 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<u64, 
                 .map_err(|e| format!("Failed to write temp audit log: {e}"))?;
         }
     }
-    std::fs::rename(&tmp_path, &log_path)
-        .map_err(|e| format!("Failed to replace audit log: {e}"))?;
+    // rename 失败时不能留下垃圾 tmp（否则备份目录/数据目录里越积越多）。
+    if let Err(e) = std::fs::rename(&tmp_path, &log_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Failed to replace audit log: {e}"));
+    }
 
     // E-P4: 文件已被 rewrite，mtime/len 已变，失效解析缓存（下次读取会重建）。
     if let Some(m) = AUDIT_CACHE.get() {
@@ -782,6 +808,110 @@ pub fn read_usage_report(data_dir: &Path, days: u32) -> Result<TokenUsageReport,
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
+    fn tmp_dir(label: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "cc-bridge-audit-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("mkdir");
+        d
+    }
+
+    /// 🔴 回归（审查 P2）：清理与并发追加必须互斥，**不得丢审计行**。
+    ///
+    /// 原实现 close_audit_writer() 后自己读→写 tmp→rename，窗口里并发追加的那几行
+    /// 会被 rename 覆盖掉（审计丢失 = 安全留痕缺口）。现在两边共用 AUDIT_WRITER 锁。
+    #[test]
+    fn cleanup_does_not_drop_concurrent_appends() {
+        let dir = tmp_dir("cleanup-race");
+        // 先放一条很旧的记录，保证 cleanup 真的会走「重写文件」那条路。
+        let mut old_entry = new_entry(
+            "read_files",
+            "{}",
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        old_entry.timestamp = "2000-01-01T00:00:00+08:00".into();
+        write_audit_log(&dir, &old_entry).expect("seed old");
+
+        const WRITERS: usize = 4;
+        const PER_WRITER: usize = 40;
+        let mut handles = Vec::new();
+        for w in 0..WRITERS {
+            let d = dir.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..PER_WRITER {
+                    let marker = format!("probe-{w}-{i}");
+                    let e = new_entry(
+                        &marker, "{}", true, None, None, None, None, None, None, None, None,
+                    );
+                    write_audit_log(&d, &e).expect("append");
+                }
+            }));
+        }
+        // 与写入并发地清理（保留 1 天：只清掉那条 2000 年的）。
+        let d2 = dir.clone();
+        let cleanup = std::thread::spawn(move || cleanup_old_entries(&d2, 1).expect("cleanup"));
+        for h in handles {
+            h.join().expect("writer");
+        }
+        cleanup.join().expect("cleanup thread");
+
+        let text = std::fs::read_to_string(dir.join("audit.log")).expect("read log");
+        for w in 0..WRITERS {
+            for i in 0..PER_WRITER {
+                let marker = format!("probe-{w}-{i}");
+                assert!(text.contains(&marker), "并发写入的审计行丢失：{marker}");
+            }
+        }
+        assert!(!text.contains("2000-01-01"), "过期行应被清理");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 固定 tmp 名会让两个清理互相截断；这里断言清理后目录里不留 tmp 垃圾。
+    #[test]
+    fn cleanup_leaves_no_tmp_file() {
+        let dir = tmp_dir("cleanup-tmp");
+        let mut old_entry = new_entry(
+            "read_files",
+            "{}",
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        old_entry.timestamp = "2000-01-01T00:00:00+08:00".into();
+        write_audit_log(&dir, &old_entry).expect("seed");
+        cleanup_old_entries(&dir, 1).expect("cleanup");
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留 tmp：{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn chinese_tool_labels_are_searchable_as_displayed() {
         let labels = [

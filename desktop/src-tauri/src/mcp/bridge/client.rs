@@ -299,7 +299,13 @@ impl Client {
 /// ③ EOF 与读错各自分支，无 `let _ = …`；④ 一次管道读，无轮询无定时器；
 /// ⑤ 单行 8MB 上限；⑥ 无平台分支。
 fn spawn_reader<R: Read + Send + 'static>(reader: R) -> Receiver<Msg> {
-    let (tx, rx) = mpsc::channel();
+    // 🔴 **有界** channel（审查 P2）。原来是 `mpsc::channel()` 无界：两次调用之间
+    // 没人消费（`pump` 只在**发请求后**才 recv），于是一个爱往 stdout 写日志的
+    // server 能让内存无界增长——进程活着、界面正常，只是 RSS 一直涨。
+    // 有界之后发送端阻塞 = 反压到管道 = server 自己卡在 write 上，正是想要的行为。
+    // 容量取 256：协议响应是「一来一回」，正常永远填不满；填满即说明对方在灌日志。
+    const READ_BACKLOG: usize = 256;
+    let (tx, rx) = mpsc::sync_channel(READ_BACKLOG);
     std::thread::spawn(move || {
         let mut buf = BufReader::new(reader);
         loop {

@@ -106,7 +106,12 @@ impl FirewallDiagnosis {
     ///
     /// 注意 netsh 按名删除会删掉**同名的全部规则**（安全警报弹窗建的规则常是 TCP+UDP 成对、
     /// 同名且可能指向不同路径）。这是可接受的：删完立即会写入我们自己那条正确规则，
-    /// 覆盖不会断；且 `is_ours` 已把范围限在名字或程序路径含 `cc-bridge` 的规则上，不会误删别人的。
+    /// 覆盖不会断。
+    ///
+    /// 🔴 范围由**两个条件同时**守住：`block_rules` 只收 `is_ours` 的规则（名字或程序路径
+    /// 含 `cc-bridge`），`stale_rules` 同理。此前 `block_rules` 只看 `program_matches`，
+    /// 而它对 `program=None` 恒为 true——一条「不限程序」的第三方/组策略阻止规则会被
+    /// 当作我们的规则删掉（审查 P2，这是「一键修复」最危险的一处）。
     pub fn removable_rule_names(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
         for r in self.block_rules.iter().chain(self.stale_rules.iter()) {
@@ -607,16 +612,19 @@ fn program_matches(program: &Option<String>, exe: &str) -> bool {
 }
 
 #[cfg(windows)]
-/// 是否是 cc-bridge 自己的规则（用于判定「废规则」范围，避免误删别人的规则）。
+/// 是否是 cc-bridge 自己的规则（用于判定「废规则」/「可删的阻止规则」范围，避免误删别人的）。
+///
+/// 🔴 判据是「名字或程序路径是否指向 cc-bridge」，**不排除当前程序路径**。
+/// 曾经写成 `lower.contains("cc-bridge") && !paths_equal(p, exe)` ——那等于把
+/// 「program 就是我们自己」的规则判成「不是我们的」，而它恰恰是最该被一键修复处理的一类
+/// （用户在 Windows 安全警报上点了「取消」后系统自动生成的那条，program 正是本程序）。
 fn is_ours(r: &RawRule, exe: &str) -> bool {
+    let _ = exe; // 保留参数：调用点都按「(规则, 当前程序路径)」提问，签名不因判据微调而变。
     if r.name.to_lowercase().contains("cc-bridge") {
         return true;
     }
     match &r.program {
-        Some(p) => {
-            let lower = expand_env(p).to_lowercase();
-            lower.contains("cc-bridge") && !paths_equal(p, exe)
-        }
+        Some(p) => expand_env(p).to_lowercase().contains("cc-bridge"),
         None => false,
     }
 }
@@ -715,11 +723,25 @@ fn analyze(
         .filter(|r| is_allow(r) && program_matches(&r.program, exe))
         .map(to_info)
         .collect();
+    // 🔴 `block_rules` 只收**我们自己的**规则（审查 P2）：它的用途是「一键修复删除」，
+    // 而 `program_matches(None, _) == true`——「不限程序」的阻止规则（第三方软件、
+    // 组策略下发）同样会命中我们，但它根本不归 cc-bridge 管，删掉就是破坏别人的配置。
+    // 同样命中我们、却不属于我们的阻断规则单独列为 `blockRuleForeign`（不可修复，
+    // 只能提示用户/IT 手动处理），它们仍然算「确实有东西在拦」，所以下面判断
+    // 「未放行」时要一起考虑。
     let block_rules: Vec<RuleInfo> = raw_rules
         .iter()
-        .filter(|r| is_block(r) && r.enabled && program_matches(&r.program, exe))
+        .filter(|r| is_block(r) && r.enabled && program_matches(&r.program, exe) && is_ours(r, exe))
         .map(to_info)
         .collect();
+    let foreign_block_rules: Vec<RuleInfo> = raw_rules
+        .iter()
+        .filter(|r| {
+            is_block(r) && r.enabled && program_matches(&r.program, exe) && !is_ours(r, exe)
+        })
+        .map(to_info)
+        .collect();
+    let any_block = !block_rules.is_empty() || !foreign_block_rules.is_empty();
     let stale_rules: Vec<RuleInfo> = raw_rules
         .iter()
         .filter(|r| {
@@ -753,13 +775,29 @@ fn analyze(
         });
     }
 
+    // 不属于我们、但确实拦住了本程序的阻断规则：**不能删**，只能告诉用户是谁拦的。
+    if !foreign_block_rules.is_empty() {
+        let names: Vec<&str> = foreign_block_rules
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        issues.push(Issue {
+            code: "blockRuleForeign".into(),
+            detail: format!(
+                "阻止规则「{}」不归 cc-bridge 管（名称与程序路径都和我们无关，多为其他软件或组策略下发），但它的范围包含本程序，所以同样会挡住远程连接。一键修复不会动它——请联系软件管理员，或由你确认后手动在「高级安全 Windows Defender 防火墙」里处理。",
+                names.join("、")
+            ),
+            fixable: false,
+        });
+    }
+
     // 活动配置文件里没被覆盖的那些，是「必须关防火墙才能用」的真正来源。
     let gap: Vec<&ProfileInfo> = active_profiles
         .iter()
         .copied()
         .filter(|p| p.enabled && !p.covered)
         .collect();
-    if !gap.is_empty() && block_rules.is_empty() {
+    if !gap.is_empty() && !any_block {
         let names: Vec<String> = gap
             .iter()
             .map(|p| profile_label(&p.name).to_string())
@@ -930,6 +968,46 @@ mod tests {
         );
         assert_eq!(d.port_open, Some(false));
         assert!(d.issues.iter().any(|i| i.code == "blockRule"));
+    }
+
+    /// 🔴 回归（审查 P2）：`program` 为「不限程序」的阻断规则不归我们管，一键修复**不能删**它。
+    ///
+    /// 旧实现 `block_rules` 只看 `program_matches`，而它对 `program=None` 恒为 true ⇒
+    /// 第三方软件 / 组策略下发的阻断规则会进「可删清单」，点一次「一键修复」
+    /// 就把别人的防火墙配置删了。
+    #[test]
+    #[cfg(windows)]
+    fn foreign_block_rule_is_reported_but_not_removable() {
+        let mut r = rule("Block", "Any", None);
+        r.name = "Block all inbound".into();
+        let d = analyze(7823, EXE, profs(), vec!["Private".into()], vec![r]);
+        assert_eq!(d.port_open, Some(false), "它确实拦着我们，结论必须是不通");
+        assert!(d.block_rules.is_empty(), "不是我们的规则，不能进可删清单");
+        assert!(
+            !d.removable_rule_names()
+                .iter()
+                .any(|n| n == "Block all inbound"),
+            "外来阻断规则绝不能出现在删除清单里"
+        );
+        let issue = d
+            .issues
+            .iter()
+            .find(|i| i.code == "blockRuleForeign")
+            .expect("应报告外来阻断规则");
+        assert!(!issue.fixable, "外来规则只能提示，不能承诺修复");
+        assert!(!d.has_fixable(), "没有可一键修复的动作");
+    }
+
+    /// 我们自己那条阻断规则（program 就是本程序、名字是我们）仍然要能一键删除。
+    #[test]
+    #[cfg(windows)]
+    fn own_block_rule_stays_removable() {
+        let mut r = rule("Block", "Any", Some(EXE));
+        r.name = "cc-bridge.exe".into();
+        let d = analyze(7823, EXE, profs(), vec!["Private".into()], vec![r]);
+        assert_eq!(d.block_rules.len(), 1);
+        assert_eq!(d.removable_rule_names(), vec!["cc-bridge.exe".to_string()]);
+        assert!(d.has_fixable());
     }
 
     /// program= 指向旧路径的规则既不算放行，也要被识别成废规则。

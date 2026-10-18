@@ -166,15 +166,33 @@ impl HelperSession {
         // 不把 writer 分享给线程——否则写命令与写密码会竞争同一个写端。
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            // 🔴 增量解码（审查 P2）：裸 `from_utf8_lossy(&buf[..n])` 会把跨 4096 字节
+            // 边界的中文字符劈成两个 U+FFFD —— 中文文件名 / 中文错误提示都会烂，
+            // 而「密码：」这类中文提示被烂掉会让自动填密码静默失效。
+            // `ssh_cmds.rs` 早已改用 `Utf8Stream`，这条 helper 快路径漏改。
+            let mut dec = crate::utf8_stream::Utf8Stream::new();
             loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let mut s = out_for_reader.lock().unwrap();
-                        if s.len() < MAX_BUF {
-                            s.push_str(&String::from_utf8_lossy(&buf[..n]));
+                let n = match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => {
+                        // EOF：把最后挂着的残字节吐出来再收工。
+                        let tail = dec.flush();
+                        if !tail.is_empty() {
+                            let mut s = out_for_reader.lock().unwrap();
+                            if s.len() < MAX_BUF {
+                                s.push_str(&tail);
+                            }
                         }
+                        break;
                     }
+                    Ok(n) => n,
+                };
+                let text = dec.push(&buf[..n]);
+                if text.is_empty() {
+                    continue;
+                }
+                let mut s = out_for_reader.lock().unwrap();
+                if s.len() < MAX_BUF {
+                    s.push_str(&text);
                 }
             }
         });
@@ -301,7 +319,16 @@ impl Drop for HelperSession {
 /// 错误提示只带末尾一小段：完整的 ssh 诊断输出可能很长，而有用信息总在最后。
 fn tail_of(s: &str) -> String {
     let t = s.trim();
-    let start = t.len().saturating_sub(200);
+    if t.len() <= 200 {
+        return t.replace('\n', " ");
+    }
+    // 🔴 必须落到**字符边界**再切（审查 P2）：`&t[t.len()-200..]` 若落在一个
+    // 3 字节中文字符的中间会直接 panic，而远端返回中文错误提示很常见——
+    // 结果是可读的错误退化成一句「任务调度失败」。
+    let mut start = t.len() - 200;
+    while start < t.len() && !t.is_char_boundary(start) {
+        start += 1;
+    }
     t[start..].replace('\n', " ")
 }
 
@@ -310,6 +337,20 @@ mod tests {
     use super::*;
 
     const N: &str = "abc123";
+
+    /// 🔴 回归（审查 P2）：截尾位置落在多字节字符中间时**不能 panic**。
+    ///
+    /// `"中"` 是 3 字节，300 字节时 `len - 200 == 100`，而字符边界在 3 的倍数上——
+    /// 100 正落在一个字符内部，旧实现 `&t[100..]` 直接 panic。
+    #[test]
+    fn tail_of_never_panics_on_multibyte_boundary() {
+        let s = "中".repeat(100);
+        let t = tail_of(&s);
+        assert!(!t.is_empty());
+        assert!(t.chars().all(|c| c == '中'), "切出来的必须是完整字符");
+        // 切点只会**向后**对齐到字符边界，所以长度最多比 200 少 2 字节（3 字节字符）。
+        assert!((198..=200).contains(&t.len()), "尾部长度异常：{}", t.len());
+    }
 
     /// 🔴 核心回归：**PTY 回显行不得被当成哨兵**。
     ///
