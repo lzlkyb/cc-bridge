@@ -28,7 +28,8 @@ interface CommandItem {
   anchor?: string;
   /** 额外搜索词（不展示，只参与匹配）：用户想到的词往往不是标题——搜「rce」找命令执行、搜「GBK」找编码自适应；只比标题的搜索等于只能搜你已经知道的名字。 */
   keywords?: string;
-  run?: () => void | Promise<void>;
+  /** 返回值允许 boolean：useIpSedCopy 用它向「有按钮面」的调用方回传复制成败（面板自身只 void 消费）。 */
+  run?: () => void | boolean | Promise<void | boolean>;
   /** H1 修复：不可逆/高风险操作，需先过 ConfirmDialog 而不是直接 invoke（对齐 LogTab/TokenManager 已有确认弹窗）。 */
   confirmTitle?: string;
   confirmDescription?: string;

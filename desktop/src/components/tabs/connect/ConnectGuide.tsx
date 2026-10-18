@@ -29,6 +29,7 @@ export function ConnectGuide({
   onSelectIp,
   onToggle,
   onRefresh,
+  onCopySed,
 }: {
   status?: StaticStatus;
   /** useConnectGuideState 返回值整体（scope/命令/展开态/复制反馈……）。 */
@@ -39,6 +40,9 @@ export function ConnectGuide({
   onSelectIp: (ip: string) => void;
   onToggle: (s: GuideSection) => void;
   onRefresh: () => void;
+  /** 透传 AddressPicker「复制命令」按钮（App 层 useIpSedCopy，带收口）。
+   *  返回 true = 已写入剪贴板（供按钮内联「已复制」反馈）。 */
+  onCopySed?: () => boolean | Promise<boolean>;
 }) {
   const isOpen = (k: GuideSection) => guide.expanded === k;
   const scopeOpen = isOpen("scope");
@@ -63,6 +67,7 @@ export function ConnectGuide({
             healthCheck={guide.healthCheck}
             port={guide.port}
             onRefresh={onRefresh}
+            onCopySed={onCopySed}
           />
         </div>
       )}

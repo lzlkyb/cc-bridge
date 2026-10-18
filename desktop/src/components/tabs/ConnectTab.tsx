@@ -24,6 +24,7 @@ function ConnectTabImpl({
   onNavigate,
   pendingSuspended,
   onSuspendCmd,
+  onCopySed,
 }: {
   status?: StaticStatus;
   onRefresh: () => void;
@@ -51,6 +52,10 @@ function ConnectTabImpl({
   pendingSuspended?: boolean;
   /** 倒计时归零且未复制：把命令升级为顶栏挂起胶囊（App 层接住存 pendingCmd）。 */
   onSuspendCmd?: (payload: { ip: string; cmd: string }) => void;
+  /** 「复制 IP 替换命令」全局入口（App 层 useIpSedCopy，带横幅/挂起胶囊收口），
+   *  透传到 AddressPicker 的「复制命令」按钮——不依赖 IP 变化横幅也能直接复制。
+   *  返回 true = 已写入剪贴板（供按钮内联「已复制」反馈）。 */
+  onCopySed?: () => boolean | Promise<boolean>;
 }) {
   const lanIps = status?.lanIps ?? [];
 
@@ -199,6 +204,7 @@ function ConnectTabImpl({
               onSelectIp={onSelectIp}
               onToggle={guide.toggleSection}
               onRefresh={onRefresh}
+              onCopySed={onCopySed}
             />
           </ToolGuide>
         }

@@ -88,21 +88,28 @@ function AppContent() {
   // useCallback 稳定化：供链路状态跃迁 effect 安全引用，避免每次渲染重建导致 effect 误触发
   // byUser: 用户主动点选(默认 true)时置 ipResolvedByUser，保持 banner+sed 可见；
   //         S4 自动恢复(false)不置位，避免网络恢复后误弹 sed banner。
-  // 🔴 双保险（审查 B9）：「用户点选」还不够——只有**地址真的变过**（ipChanged）
-  // 才存在「待复制的更新命令」。首装自动预选第一个 IP 时 ipChanged 为 false，
-  // 若无条件置位，橙色告警会在首屏凭空弹出（且只有复制 sed 才能复位）。
+  // 🔴 弹横幅的判据（审查 B9 修订，2026-10-18）：原 B9 闸门 `byUser && ipChanged`
+  // 误伤了「在两个都存活的 IP 之间切换」——后端 ip_changed 只判「旧 IP 已从网卡消失」，
+  // 活 IP 互切永远不触发，导致用户点新地址后不再出现「复制命令」横幅（v2.9.1 有）。
+  // 正确语义：**存在上次确认过的地址基线、且这次点的不是它**，远端就可能还指着旧地址，
+  // sed 命令就有价值 → 弹；首装第一次选（无基线，含引导页）→ 静默，B9 的原始目的保留；
+  // 重复点同一 IP → 不弹。自动预选 / S4 恢复走 byUser=false，不经过此闸门。
   // 用 ref 读最新值：status 每 5s 轮询换对象，写进 deps 会让本回调不停重建。
   const ipChangedRef = useRef(false);
   useEffect(() => {
     ipChangedRef.current = !!status?.ipChanged;
   }, [status?.ipChanged]);
+  const lastSelectedIpRef = useRef<string | null>(null);
+  useEffect(() => {
+    lastSelectedIpRef.current = status?.lastSelectedIp ?? null;
+  }, [status?.lastSelectedIp]);
   const handleSelectIp = useCallback((ip: string, byUser = true) => {
     setSelectedIp(ip);
     if (!ip) return;
     // 方案 Q: 仅用户主动点选新地址时标记"已处理待复制"，让 IpChangedBanner + sed 命令块
     // 在 O2 乐观清除 ipChanged 后仍保持可见，直到复制远程更新命令。
     // 挂起胶囊同步撤下：细条回来了，命令回到横幅承载（两种呈现互斥）。
-    if (byUser && ipChangedRef.current) {
+    if (byUser && (ipChangedRef.current || (!!lastSelectedIpRef.current && lastSelectedIpRef.current !== ip))) {
       setIpResolvedByUser(true);
       setPendingCmd(null);
     }
@@ -403,7 +410,7 @@ function AppContent() {
       )}
           <main className="min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-5">
           <TabsContent value="connect" keepMounted className="app-content-box h-full overflow-y-auto overflow-x-hidden">
-            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} pendingSuspended={!!pendingCmd} onSuspendCmd={handleSuspendCmd} />
+            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} pendingSuspended={!!pendingCmd} onSuspendCmd={handleSuspendCmd} onCopySed={copyIpSed} />
           </TabsContent>
           <TabsContent value="security" keepMounted className="h-full overflow-y-auto overflow-x-hidden">
             <Suspense fallback={<TabFallback />}>

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../../lib/tauri";
 import type { LanProbeItem, LanProbeState } from "../../../lib/types";
@@ -40,6 +40,7 @@ export function AddressPicker({
   healthCheck,
   port,
   onRefresh,
+  onCopySed,
 }: {
   ips: string[];
   selected: string;
@@ -48,9 +49,42 @@ export function AddressPicker({
   /** 探测目标端口（桥监听端口），与 status.port 同源。 */
   port: number;
   onRefresh?: () => void;
+  /** 「复制 IP 替换命令」全局入口（App 层 useIpSedCopy，带横幅/挂起胶囊收口）。
+   *  返回 true = 已写入剪贴板（失败路径由入口自行 toast）。不传则不渲染按钮。 */
+  onCopySed?: () => boolean | Promise<boolean>;
 }) {
   // 复制反馈统一走 useCopyFeedback（评审修复 ⑤）。
   const fb = useCopyFeedback();
+  // 「复制命令」的内联成功反馈：复制动作在 App 层全局入口里完成，这里只根据返回值
+  // 亮「已复制」2s（与 useCopyFeedback 同款形态——有按钮面的复制，成功反馈必须在按钮上，
+  // 不能只靠右下角 toast；失败入口已 toast，按钮保持原样不谎报）。
+  const [sedCopied, setSedCopied] = useState(false);
+  const [refreshed, setRefreshed] = useState(false);
+  const fbTimer = useRef<number | null>(null);
+  const flashTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (fbTimer.current != null) window.clearTimeout(fbTimer.current);
+      if (flashTimer.current != null) window.clearTimeout(flashTimer.current);
+    },
+    [],
+  );
+  const handleCopySed = async () => {
+    if (!onCopySed || !(await onCopySed())) return;
+    setSedCopied(true);
+    if (fbTimer.current != null) window.clearTimeout(fbTimer.current);
+    fbTimer.current = window.setTimeout(() => setSedCopied(false), 2000);
+  };
+  // 「刷新地址」的完成反馈：探测是本机自连 TCP（常 <100ms，30s 缓存命中更快），
+  // 单靠 spinner 闪一下毫无感知；完成后短暂亮「已刷新」让用户确认动作生效了。
+  const handleRefresh = async () => {
+    if (!onRefresh) return;
+    onRefresh();
+    await refetch();
+    setRefreshed(true);
+    if (flashTimer.current != null) window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setRefreshed(false), 2000);
+  };
   // 本机探测：目标仅限本机网卡地址（不新增外部连接面），30s 内复用缓存。
   const { data: probe, refetch, isFetching, isError } = useQuery<LanProbeItem[]>({
     queryKey: ["lan-probe", port],
@@ -90,19 +124,37 @@ export function AddressPicker({
             全部「未定」时维持原「默认」推荐。若远程与本机不在同一网络，用下方命令在服务器上二次确认。
           </p>
         </div>
-        {onRefresh && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0"
-            onClick={() => {
-              void refetch();
-              onRefresh();
-            }}
-          >
-            <Icon name="refresh" size={14} className={isFetching ? "animate-spin" : ""} />
-            {isFetching ? "探测中" : "刷新地址"}
-          </Button>
+        {(onRefresh || onCopySed) && (
+          <div className="flex shrink-0 items-center gap-2">
+            {onCopySed && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleCopySed()}
+                aria-live="polite"
+                title="复制「原地更新 IP」的远程替换命令，粘贴到服务器执行即可把旧地址换成当前选中地址"
+              >
+                <Icon name={sedCopied ? "check" : "copy"} size={14} />
+                {sedCopied ? "已复制" : "复制命令"}
+              </Button>
+            )}
+            {onRefresh && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => void handleRefresh()}
+                aria-live="polite"
+              >
+                <Icon
+                  name={refreshed && !isFetching ? "check" : "refresh"}
+                  size={14}
+                  className={isFetching ? "animate-spin" : ""}
+                />
+                {isFetching ? "探测中" : refreshed ? "已刷新" : "刷新地址"}
+              </Button>
+            )}
+          </div>
         )}
       </div>
 
