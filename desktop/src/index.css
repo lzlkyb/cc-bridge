@@ -1606,8 +1606,8 @@ select:focus-visible,
 :root[data-app-hidden] .vh-skel,
 :root[data-app-hidden] .skeleton,
 /* 2026-10-16 更新体验新增（见文件尾「更新体验」一节）：
-   下载期扫光 ×2、槽位呼吸光圈、重启过渡层扫光，以及所有 spinner。 */
-:root[data-app-hidden] .update-line-sweep,
+   读数扫光、槽位呼吸光圈、重启过渡层扫光，以及所有 spinner。
+   （原通栏进度线 .update-line-sweep 已随组件于 2026-10-18 删除。） */
 :root[data-app-hidden] .ur-sweep,
 :root[data-app-hidden] .ro-bar > i,
 :root[data-app-hidden] .update-slot .header-badge-update::after,
@@ -2072,44 +2072,11 @@ select:focus-visible,
       窗口级浮层只剩 ① 的 2px 进度线（在 y=0–2，压不到 y≥8 的控件）。
    =================================================================== */
 
-/* ── ① 2px 通栏进度线（方案 B）：只回答「走了多远」──
-   位在窗口最顶。它是**唯一的窗口级浮层**，也是全屏终端态（fixed inset-0 z-50
-   盖住顶栏与侧栏）下唯一还报着进度的地方 —— 这正是它比「侧栏内进度条」更好的
-   地方。 */
-.update-line {
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 2px;
-  z-index: 59;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity var(--dur-slow) var(--ease);
-}
-.update-line.is-on { opacity: 1; }
-.update-line > i {
-  display: block;
-  height: 100%;
-  transform-origin: left center;
-  transition: transform 0.2s linear;
-  background: linear-gradient(90deg, #4f46e5, #7c3aed, #3b82f6);
-  box-shadow: 0 0 8px color-mix(in srgb, hsl(var(--primary)) 45%, transparent);
-}
-/* 不确定态（源未返回 Content-Length）：改循环扫光。宽度 34% ⇒ 位移 100%/34% ≈ 294% */
-@keyframes upd-line-sweep {
-  from { transform: translateX(-100%); }
-  to   { transform: translateX(294%); }
-}
-.update-line .update-line-sweep {
-  width: 34%;
-  animation: upd-line-sweep 1.15s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-}
-
-/* ── ② 顶栏中段的网速读数（方案 B+）：回答「还要多久」──
+/* ── 顶栏中段的网速读数（方案 B+）：回答「还要多久」──
    它不是浮层，而是顶栏中段那块**空白 flex 区**里的内容：零遮挡、零布局影响
    （顶栏高度恒定 52px，塞进去不改变任何盒）。读数铺满中段 ⇒ 轨道长度随窗口自适应。
-   为什么不能做成贴顶通栏条：见本节开头那条 🔴（顶栏控件字形带 y=18–34）。 */
+   为什么不能做成贴顶通栏条：顶栏控件字形带 y=18–34，任何 ≥18px 的贴顶通栏
+   元素都会切掉控件字高（2026-10-16 实测证据，见 UI.md / 更新徽章方案）。 */
 .upd-readout {
   flex: 1 1 auto;
   min-width: 0;

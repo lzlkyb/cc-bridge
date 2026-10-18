@@ -56,7 +56,6 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 vi.mock("../components/update/UpdateNotesDialog", () => ({ UpdateNotesDialog: () => null }));
-vi.mock("../components/update/UpdateProgressLine", () => ({ UpdateProgressLine: () => null }));
 vi.mock("../components/update/RestartOverlay", () => ({ RestartOverlay: () => null }));
 
 const EVENTS = [  "update:checking",
