@@ -7,6 +7,7 @@ import { Button } from "../../ui/button";
 import { Badge } from "../../ui/badge";
 import { ipHint } from "../../../lib/utils";
 import { useCopyFeedback } from "../../../hooks/useCopyFeedback";
+import { InfoPopover } from "../../ui/InfoPopover";
 
 /** 探测三态角标的文案与配色（bg/色值走语义 token，亮暗主题自动跟随）。 */
 const PROBE_BADGE: Record<LanProbeState, { label: string; className: string }> = {
@@ -115,13 +116,25 @@ export function AddressPicker({
   return (
     <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
       <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-medium">选择远程服务器能连回本机的地址</p>
+        <div className="min-w-0">
+          <p className="flex items-center gap-1.5 text-sm font-medium">
+            选择远程服务器能连回本机的地址
+            <InfoPopover label="地址选择与探测角标">
+              <ul className="list-disc space-y-1 pl-4">
+                <li>
+                  <b className="text-success-ink">✓ 通</b> /{" "}
+                  <b className="text-destructive-ink">× 不通</b> /{" "}
+                  <b className="text-foreground">？ 未定</b>
+                  ：本机对每个地址发起的端口探测结果（超时 800ms；仅本机自连，不新增外部连接）。
+                </li>
+                <li>全部「未定」时保留「默认」推荐，不谎报结论。</li>
+                <li>探测失败会单独提示，地址仍可手动选择。</li>
+                <li>服务器与本机不在同一网络时，用下方命令在服务器上二次确认。</li>
+              </ul>
+            </InfoPopover>
+          </p>
           <p className="text-xs text-muted-foreground mt-1">
-            <Icon name="plug" size={13} className="inline-block align-[-2px] mr-1" aria-hidden="true" /> 通过 <b>VPN</b> 连服务器 → 选 VPN 网段（多为 10.x）；
-            <Icon name="monitor" size={13} className="inline-block align-[-2px] mr-1" aria-hidden="true" /> <b>内网直连</b> → 选内网 IP（192.168.x / 172.x）。
-            角标是<b>本机探测</b>结果：<b className="text-success-ink">通</b> = 该地址端口可达；
-            全部「未定」时维持原「默认」推荐。若远程与本机不在同一网络，用下方命令在服务器上二次确认。
+            拿不准就选带「✓ 通」角标的地址；VPN 连服务器选 10.x，内网直连选 192.168.x / 172.x。
           </p>
         </div>
         {(onRefresh || onCopySed) && (
