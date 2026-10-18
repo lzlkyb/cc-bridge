@@ -6,6 +6,9 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: "2.9.1",
     date: "2026-10-16",
+    highlights: [
+      "复制，更符合你的习惯：新增“选中即复制”开关，修复右键复制与选择异常。",
+    ],
     items: [
       { category: "feat", text: "「选中即复制」开关（设置 → 高级，默认开），与「终端拖拽即选」正交" },
       { category: "feat", text: "连接工作台 A 方案高保真预览入口（仅开发模式，不进正式包）" },
@@ -16,6 +19,9 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: "2.9.0",
     date: "2026-10-16",
+    highlights: [
+      "两个会话，并排处理：轻量双栏分屏，重启后可手动恢复会话连接。",
+    ],
     items: [
       { category: "feat", text: "版本徽章并入设置行 + 顶栏删冗余位置文本" },
       { category: "feat", text: "轻量双栏分屏 + 会话恢复（骨架 + 手动重连）" },
@@ -53,6 +59,9 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: "2.8.1",
     date: "2026-10-14",
+    highlights: [
+      "外观，按你的喜好：明暗、风格与字体独立设置，内置字体随时可用。",
+    ],
     items: [
       { category: "feat", text: "身份转变批3——MCP 2026-07-28 协议适配 Phase 1 + /mcp/messages 补 token" },
       { category: "feat", text: "身份转变批2——运维闭环（托盘/导入/SSE 警告多客户端覆盖）" },
@@ -73,6 +82,9 @@ export const CHANGELOG: ChangelogEntry[] = [
   {
     version: "2.8.0",
     date: "2026-10-13",
+    highlights: [
+      "接入你常用的 AI 工具：接入向导覆盖 Claude Code、WorkBuddy、Codex 与通用工具。",
+    ],
     items: [
       { category: "feat", text: "连接页评审修复——has_onboarded 新用户判定、本机探测三态角标、结构收敛、CJK 排版、generic 提示词接入" },
       { category: "feat", text: "设置 tab 移到最末位（导航末位惯例）+ Ctrl+, 键位" },

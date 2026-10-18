@@ -24,6 +24,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildUpdateNotes } from "./update-release-notes.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -149,7 +150,12 @@ function loadMergeBase() {
 function main() {
   const version = readVersionFromConf();
   const tag = process.env.GITHUB_RELEASE_TAG || `v${version}`;
-  const notes = process.env.UPDATER_NOTES || `cc-bridge v${version}`;
+  const changelogPath = path.join(ROOT, "..", "CHANGELOG.md");
+  const notes = buildUpdateNotes(
+    process.env.UPDATER_NOTES || `cc-bridge v${version}`,
+    version,
+    fs.existsSync(changelogPath) ? fs.readFileSync(changelogPath, "utf-8") : "",
+  );
 
   info(`仓库: ${REPO_OWNER}/${REPO_NAME}`);
   info(`版本: ${version}`);

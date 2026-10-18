@@ -1,6 +1,6 @@
-import { Icon } from "../ui/icon";
 import { Modal } from "../ui/Modal";
-import { APP_INFO } from "../../lib/about";
+import { UpdateDialogContent } from "./UpdateDialogContent";
+import type { UpdateNotesInfo } from "../../lib/updateNotes";
 
 /** 将文本中的 **...** 转换为 <strong> 标签，其余保持纯文本。 */
 function renderBold(text: string): React.ReactNode {
@@ -13,17 +13,6 @@ function renderBold(text: string): React.ReactNode {
   });
 }
 
-/** 把 ISO 日期字符串格式化为中文可读格式（如 "2026年7月17日"）。 */
-function formatDate(iso?: string | null): string {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return "";
-    return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
-  } catch {
-    return "";
-  }
-}
 
 /** 分类标题的视觉元数据：品类色 + 左侧色条 + bullet + 语义图标。 */
 const CAT_META: Record<string, {
@@ -170,113 +159,16 @@ export function ReleaseNotes({ body }: { body: string | null | undefined }) {
   );
 }
 
-/** 「查看更新内容」弹窗 —— v3 排版驱动风格（参考 Linear / Clerk / macOS 更新页）。 */
-export function UpdateNotesDialog({
-  open,
-  update,
-  onClose,
-  onDownload,
-  onDismiss,
-}: {
+/** 更新下载行为沿用现有通道；展示层单独解析版本范围。 */
+export function UpdateNotesDialog({ open, update, onClose, onDownload, onDismiss }: {
   open: boolean;
-  update: { version?: string; body?: string | null; date?: string | null; currentVersion?: string } | null;
+  update: UpdateNotesInfo | null;
   onClose: () => void;
   onDownload: () => void;
   onDismiss: () => void;
 }) {
   if (!update) return null;
-  const ver = update.version ?? "";
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      zIndex={1000}
-      className="modal-box relative mx-4 w-[488px] max-w-[90vw] overflow-hidden rounded-[20px] modal-surface update-glow before:absolute before:left-0 before:right-0 before:top-0 before:z-10 before:h-[3px] before:bg-gradient-to-r before:from-[#4f46e5] before:to-[#7c3aed] before:content-['']"
-    >
-        {/* ── 关闭按钮（绝对定位右上角） ── */}
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-4 top-4 z-20 flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground interactive hover:bg-accent hover:text-foreground"
-        >
-          <Icon name="close" size={18} />
-        </button>
-
-        {/* ═══ Hero 区（居中布局，带径向渐变光晕） ═══ */}
-        <div className="bg-[radial-gradient(120%_85%_at_50%_0%,rgba(99,102,241,0.10),rgba(124,58,237,0.04)_38%,transparent_70%)] px-9 pb-0 pt-9 text-center">
-          <div
-            className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl text-white bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] shadow-glow-primary-lg"
-          >
-            <img src="/icon.png" alt="" className="h-8 w-8 object-contain" />
-          </div>
-
-          <div
-            className="mb-2.5 inline-block rounded-full bg-primary/[0.12] px-3 py-[3px] text-xs font-bold tracking-[0.5px] text-primary"
-          >
-            新版本可用
-          </div>
-
-          <div className="mt-1.5 text-[13px] text-muted-foreground">
-            {update.date ? formatDate(update.date) : `${APP_INFO.name} 软件更新`}
-          </div>
-
-          {update.currentVersion && (
-            <div className="notes-rise mb-6 mt-4 inline-flex items-center gap-3 rounded-2xl bg-[#f5f5f7] px-4 py-2.5 dark:bg-white/[0.06]">
-              <span className="rounded-lg bg-white px-2.5 py-1 text-[15px] font-semibold text-muted-foreground dark:bg-white/[0.10]">
-                v{update.currentVersion}
-              </span>
-              <span className="flex flex-col items-center text-[#4f46e5]">
-                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
-                <span className="text-[10px] font-extrabold tracking-[1px]">升级</span>
-              </span>
-              <span className="relative rounded-xl bg-gradient-to-br from-[#4f46e5] to-[#7c3aed] px-[14px] py-[7px] text-[22px] font-extrabold leading-none tracking-[0.3px] text-white shadow-glow-primary-lg">
-                v{ver}
-                <span className="absolute -right-2 -top-2 rounded-full bg-[#ff4d4f] px-1.5 py-0.5 text-[10px] font-extrabold leading-none text-white">NEW</span>
-              </span>
-            </div>
-          )}
-          {!update.currentVersion && <div className="mb-6 mt-4" />}
-        </div>
-
-        {/* ── 分隔线 ── */}
-        <div className="mx-9 h-px bg-[linear-gradient(to_right,transparent,var(--color-border)_15%,var(--color-border)_85%,transparent)]" />
-
-        {/* ═══ 更新内容滚动区 ═══ */}
-        <div className="max-h-[320px] overflow-y-auto px-9 pb-0 pt-7">
-          <ReleaseNotes body={update.body ?? null} />
-        </div>
-
-        {/* 底部轻提示：稍后行为说明 */}
-        <div className="px-9 pb-1 pt-3 text-center text-xs text-muted-foreground/70">
-          点「稍后」后，本版本不再自动弹框；有新版本时仍会提醒你
-        </div>
-
-        {/* ═══ 底部操作（下载按钮加 ↓ 图标） ═══ */}
-        <div className="flex items-center gap-2.5 px-9 pb-6 pt-2">
-          <span className="flex-1 text-xs text-muted-foreground">下载完成后自动安装并重启</span>
-          <button
-            type="button"
-            onClick={() => {
-              onDismiss();
-              onClose();
-            }}
-            className="rounded-[10px] bg-transparent px-4 py-2.5 text-[13px] font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          >
-            稍后
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onDownload();
-              onClose();
-            }}
-            className="inline-flex items-center gap-1.5 rounded-[10px] bg-[var(--color-primary)] px-5 py-2.5 text-[13px] font-semibold text-white shadow-glow-primary transition-[color,background-color,border-color,transform,box-shadow,opacity] hover:-translate-y-px hover:bg-[hsl(243,75%,53%)] hover:shadow-glow-primary-strong"
-          >
-            <svg className="h-[15px] w-[15px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round"><path d="M12 4v12M7 11l5 5 5-5M5 20h14" /></svg>
-            下载并更新
-          </button>
-        </div>
-    </Modal>
-  );
+  return <Modal open={open} onClose={onClose} zIndex={1000} ariaLabel="CC Bridge 软件更新" className="modal-surface update-dialog">
+    <UpdateDialogContent key={`${update.currentVersion ?? ""}/${update.version ?? ""}`} update={update} onClose={onClose} onDownload={onDownload} onDismiss={onDismiss} />
+  </Modal>;
 }
