@@ -14,6 +14,33 @@ use tauri::Emitter;
 
 // ===== 自动更新（后台线程，不阻塞 UI），採自 PastePanda 实现 =====
 
+/// 单飞闸：同一时刻只允许一个更新 / 检查任务在跑。
+///
+/// 🔴 为什么需要（审查 P2）：`start_update` / `check_update` 是 **spawn 后立即返回**的，
+/// 前端却把 `await invoke(...)` 当成「做完了」的信号。于是连点两次徽章 = 两个任务并发，
+/// 一边下载一边又被另一个重试覆盖，`update:*` 事件交叉推送，前端状态机直接乱掉。
+/// RAII 式持有：任务（含所有提前 return 分支）结束自动释放。
+struct SingleFlight(&'static std::sync::atomic::AtomicBool);
+
+impl SingleFlight {
+    fn acquire(flag: &'static std::sync::atomic::AtomicBool) -> Option<Self> {
+        flag.compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .ok()
+        .map(|_| Self(flag))
+    }
+}
+
+impl Drop for SingleFlight {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// 指数退避重试辅助函数
 async fn retry_with_backoff<F, Fut, T, E>(
     max_retries: u32,
@@ -121,7 +148,14 @@ fn build_updater(
 /// 每个候选内检查最多重试 2 次、下载安装最多重试 2 次。
 #[tauri::command]
 pub fn start_update(app: tauri::AppHandle) {
+    // 已有任务在跑就直接忽略本次触发（事件由在跑的那个推送，不重复发状态）。
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Some(guard) = SingleFlight::acquire(&RUNNING) else {
+        log::info!("更新任务已在进行，忽略重复触发");
+        return;
+    };
     tauri::async_runtime::spawn(async move {
+        let _guard = guard; // 持有到任务结束（含所有 early return）
         let _ = app.emit("update:checking", ());
 
         let groups = match candidate_endpoint_groups() {
@@ -183,11 +217,9 @@ pub fn start_update(app: tauri::AppHandle) {
             let _ = app.emit("update:downloading", ());
 
             let app_progress = app.clone();
-            let app_ready = app.clone();
             let result = retry_with_backoff(2, "下载安装", || {
                 let u = update.clone();
                 let ap = app_progress.clone();
-                let ar = app_ready.clone();
                 async move {
                     let mut downloaded_total: u64 = 0;
                     // 下载速度：窗口限流计算（~250ms 重算一次），不是每个 chunk 都重算——
@@ -216,8 +248,12 @@ pub fn start_update(app: tauri::AppHandle) {
                                 }),
                             );
                         },
-                        move || {
-                            let _ = ar.emit("update:ready", ());
+                        || {
+                            // 🔴 插件这个回调是 on_download_finish（updater.rs:712），触发点在
+                            // verify_signature **之前**。绝不能在这里发 update:ready——验签失败
+                            // 时前端会误进自动重启倒计时并 relaunch，而更新根本没装上
+                            // （2026-10-18 假签名实测：失败后 +9.2s app 被自行重启）。
+                            // update:ready 改到 download_and_install 成功返回之后发（见 match）。
                         },
                     )
                     .await
@@ -226,7 +262,13 @@ pub fn start_update(app: tauri::AppHandle) {
             .await;
 
             match result {
-                Ok(()) => return, // 这个源成功，结束
+                Ok(()) => {
+                    // 下载 + 验签 + 安装全部成功才宣告 ready，前端据此起自动重启倒计时。
+                    // Windows NSIS 路径走不到这里：install_inner 以 process::exit(0) 收尾，
+                    // 重启由安装器负责；macOS/Linux 走到这里，事件才有意义。
+                    let _ = app.emit("update:ready", ());
+                    return; // 这个源成功，结束
+                }
                 Err(e) => {
                     last_message = Some(format!("下载安装失败: {e}"));
                     continue; // 换下一个候选源重试
@@ -251,7 +293,14 @@ pub fn start_update(app: tauri::AppHandle) {
 /// 只有这一处实现（单一真相源）。
 #[tauri::command]
 pub fn check_update(app: tauri::AppHandle) {
+    // 与下载任务**分开**的闸：检查和下载可以并存，但各自不能重入。
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let Some(guard) = SingleFlight::acquire(&RUNNING) else {
+        log::info!("更新检查已在进行，忽略重复触发");
+        return;
+    };
     tauri::async_runtime::spawn(async move {
+        let _guard = guard;
         let _ = app.emit("update:checking", ());
 
         let groups = match candidate_endpoint_groups() {

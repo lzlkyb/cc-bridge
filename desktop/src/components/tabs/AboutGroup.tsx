@@ -44,7 +44,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
   /** 自增信号：变化时自动展开本卡片并滚动到更新历史。 */
   changelogOpenToken?: number;
 }) {
-  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
+  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, autoRestartIn, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(true); // 默认展开（2026-10-17）：收起态只有一行头部，默认折叠反而多一次点击
   const [showModal, setShowModal] = useState(false);
@@ -117,7 +117,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
             >
               {formatVersion(status?.version)}
             </span>
-            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} bytesPerSec={bytesPerSec} downloadedBytes={downloadedBytes} onOpenNotes={() => openUpdateNotes()} />
+            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} bytesPerSec={bytesPerSec} downloadedBytes={downloadedBytes} autoRestartIn={autoRestartIn} onOpenNotes={() => openUpdateNotes()} />
             {unreadCount !== undefined && unreadCount > 0 && (
               <span
                 role="button"
@@ -278,7 +278,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 }
 
 /* ── 更新状态胶囊 ── */
-function UpdateStatusPill({ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, onOpenNotes }: { status: UpdateStatus; update: UpdateInfo | null; progress: number; progressIndeterminate: boolean; bytesPerSec: number; downloadedBytes: number; onOpenNotes?: () => void }) {
+function UpdateStatusPill({ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, autoRestartIn, onOpenNotes }: { status: UpdateStatus; update: UpdateInfo | null; progress: number; progressIndeterminate: boolean; bytesPerSec: number; downloadedBytes: number; autoRestartIn?: number | null; onOpenNotes?: () => void }) {
   if (status === "uptodate") {
     return (
       <span className="status-pill flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-xs font-semibold text-success-ink">
@@ -330,8 +330,8 @@ function UpdateStatusPill({ status, update, progress, progressIndeterminate, byt
   }
   if (status === "ready") {
     return (
-      <span className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-xs font-semibold text-success-ink">
-        已下载
+      <span className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-xs font-semibold text-success-ink tabular-nums">
+        {autoRestartIn ? `${autoRestartIn} 秒后重启` : "已下载"}
       </span>
     );
   }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { useUpdate, friendlyError } from "../../contexts/UpdateContext";
+import { useUpdate, friendlyError, AUTO_RESTART_DELAY_SECS } from "../../contexts/UpdateContext";
 import { useToast } from "../ui/toast";
 import { Icon } from "../ui/icon";
 import { Spinner } from "../ui/Spinner";
@@ -27,7 +27,7 @@ import { formatBytes, formatBytesPerSec } from "../../lib/utils";
  * - error       `重试`      → 点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, error, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
+  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -48,7 +48,8 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
         acknowledgeUptodate();
       }
     } else if (status === "ready") {
-      toast("更新已下载完成，点击重启以应用", "success");
+      // 与弹窗文案对齐：安装已完成，倒计时结束后自动重启（点徽章可取消）。
+      toast(`更新已安装，${AUTO_RESTART_DELAY_SECS} 秒后自动重启（点徽章可取消）`, "success");
     } else if (status === "error") {
       const fe = error ? friendlyError(error) : null;
       toast(fe?.friendly ?? "更新检查失败，请重试", "error");
@@ -159,16 +160,26 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   }
 
   // ─── ready ────────────────────────────────
+  // 两种子态共用一个 66px 槽位：
+  // - 倒计时中 `8s`（时钟图标）：点击 = **取消**自动重启。这里必须让点击语义
+  //   变成「撤销」，否则用户看到「8s 后重启」的第一反应点下去反而立即重启。
+  // - 已取消/手动 `重启`（对勾图标）：点击 = 立即重启。
+  // 文案都是 2-3 字符，槽位宽度不变 ⇒ foot 高度与导航区零位移。
   if (status === "ready") {
+    const counting = autoRestartIn !== null;
     return (
       <Slot>
         <button
-          className="header-badge header-badge-ready cursor-pointer"
-          title="更新已安装，点击重启"
-          onClick={handleClick}
+          className="header-badge header-badge-ready cursor-pointer tabular-nums"
+          title={
+            counting
+              ? `${autoRestartIn} 秒后自动重启 · 点击取消`
+              : "更新已安装，点击重启"
+          }
+          onClick={counting ? cancelAutoRestart : handleClick}
         >
-          <Icon name="check" size={10} />
-          <span>重启</span>
+          <Icon name={counting ? "clock" : "check"} size={10} />
+          <span>{counting ? `${autoRestartIn}s` : "重启"}</span>
         </button>
       </Slot>
     );

@@ -35,6 +35,11 @@ export interface UpdateState {
   totalBytes: number | null;
   /** 重启过渡层可见：点击重启后先播 1.1 秒仪式感过渡，再真正 relaunch */
   restarting: boolean;
+  /** 距自动重启剩余秒数；null = 不在倒计时（手动态 / 用户已取消 / 正在重启）。
+   *  更新安装完成后给一个**可见、可撤销**的 8 秒窗口，而不是无限期停在「重启」。 */
+  autoRestartIn: number | null;
+  /** 取消本轮自动重启：徽章回到「重启」按钮，本轮不再自动触发（下次安装完成重置）。 */
+  cancelAutoRestart: () => void;
   error: string | null;
   checkForUpdate: () => Promise<void>;
   downloadAndInstall: () => Promise<void>;
@@ -97,6 +102,17 @@ const LAST_CHECK_KEY = "ccbridge_last_update_check";
 const DISMISSED_KEY = "ccbridge_dismissed_update_version";
 /** 重启过渡层停留时长：这段刻意的等待本身就是「正在应用更新」的载体（方案 C） */
 const RESTART_OVERLAY_MS = 1100;
+/**
+ * 安装完成后的自动重启延迟（秒）。
+ *
+ * 为什么要有这一段：更新弹窗的文案承诺「下载完成后自动安装并重启」，而实现一直
+ * 只做到「安装」，重启得用户自己回来点——用户去忙别的，回来发现还是旧版本。
+ * 这里补上最后一步，同时给一个**可见、可撤销**的窗口：倒计时显示在徽章上，
+ * 期间点一下就取消（退回手动「重启」按钮），避免用户正在跑终端命令时被打断。
+ *
+ * 8 秒的取值：短到用户离开前基本一定执行（不然等于没自动），长到够看到并反应。
+ */
+export const AUTO_RESTART_DELAY_SECS = 8;
 
 // ─── Provider ────────────────────────────
 
@@ -110,6 +126,10 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [totalBytes, setTotalBytes] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  /** 自动重启倒计时（null = 不在倒计时），见 AUTO_RESTART_DELAY_SECS 注释。 */
+  const [autoRestartIn, setAutoRestartIn] = useState<number | null>(null);
+  /** 本轮 ready 是否被用户取消过自动重启。只在下一次 `update:ready` 时复位。 */
+  const autoRestartCancelledRef = useRef(false);
   const [showNotes, setShowNotes] = useState(false);
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(() => {
     try {
@@ -271,6 +291,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           setProgress(100);
           setStatus("ready");
           downloadingRef.current = false;
+          // 新一轮安装完成：清掉上一轮的「已取消」标记，重新给自动重启窗口。
+          autoRestartCancelledRef.current = false;
         }),
       );
       track(
@@ -340,6 +362,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     // 本文件对下载用的是同一个套路（downloadingRef），保持一致。
     if (restartingRef.current) return;
     restartingRef.current = true;
+    // 无论入口是「用户点重启」还是「倒计时到点」，都先撤下倒计时显示/定时器，
+    // 避免过渡层盖住界面后徽章还在背后倒数。
+    setAutoRestartIn(null);
     setRestarting(true);
     // 让过渡层播完再重启 —— 这段刻意的等待本身就是「仪式感」的载体。
     await new Promise((r) => setTimeout(r, RESTART_OVERLAY_MS));
@@ -357,6 +382,32 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       // 分支触发的是 check_update，用户被迫重走「检查 → 下载」一整轮，纯属多余。
       // 失败反馈改由 UpdateBadge 监听 restarting 回落 + error 弹 toast。
     }
+  }, []);
+
+  // ─── 安装完成后自动重启（AUTO_RESTART_DELAY_SECS 可见窗口，可取消）────
+  //
+  // 倒计时只由 status 驱动：进入 ready 时起一轮；用户取消后由 ref 拦住重来
+  // （只在下一次 update:ready 复位），所以取消后徽章停在「重启」按钮，必须手动点。
+  useEffect(() => {
+    if (status !== "ready" || autoRestartCancelledRef.current) return;
+    setAutoRestartIn(AUTO_RESTART_DELAY_SECS);
+    // 递减放在 updater 里（而不是用闭包里的 autoRestartIn），不受 StrictMode 双跑影响。
+    const id = window.setInterval(() => {
+      setAutoRestartIn((n) => (n === null ? null : n - 1));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [status]);
+
+  // 归零 → 真正重启。单独一个 effect 而不是在 interval 回调里调 restart：
+  // 在 setState 更新函数里跑异步副作用，StrictMode 下会被调用两次（双 relaunch）。
+  useEffect(() => {
+    if (autoRestartIn !== 0) return;
+    void restart();
+  }, [autoRestartIn, restart]);
+
+  const cancelAutoRestart = useCallback(() => {
+    autoRestartCancelledRef.current = true;
+    setAutoRestartIn(null);
   }, []);
 
   // ─── 更新内容弹窗 ────────────────────────
@@ -385,7 +436,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, error, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
       {children}
       {/* 下载期进度线（方案 B，2026-10-16 二次改造后**仅剩这一种窗口级浮层**）：
           2px 通栏 + fixed 零占位，挂在 Provider 内部与 UpdateNotesDialog 同级 ⇒
