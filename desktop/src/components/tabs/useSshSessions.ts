@@ -89,7 +89,7 @@ export function useSshSessions() {
   const connect = useCallback(
     async (conn: SshConnection, opts?: { newTab?: boolean; intoTab?: string; forSplit?: boolean }) => {
       if (!opts?.newTab && !opts?.intoTab && !opts?.forSplit) {
-        const live = sessionsRef.current.find((s) => s.conn.id === conn.id && !s.closedReason);
+        const live = sessionsRef.current.find((s) => s.conn.id === conn.id && !s.closedReason && !s.splitOnly);
         if (live) {
           setActiveId(live.sessionId);
           return null;
@@ -103,11 +103,11 @@ export function useSshSessions() {
         let createdTabId: string | null = null;
         patch((prev) => {
           // 找要复用的标签：指定了就找它，否则找本连接第一个已断开的；newTab 不复用。
-          const idx = opts?.newTab || opts?.forSplit
-            ? -1
-            : opts?.intoTab
-              ? prev.findIndex((s) => s.tabId === opts.intoTab)
-              : prev.findIndex((s) => s.conn.id === conn.id && s.closedReason);
+          const idx = opts?.intoTab
+            ? prev.findIndex((s) => s.tabId === opts.intoTab)
+            : opts?.newTab || opts?.forSplit
+              ? -1
+              : prev.findIndex((s) => s.conn.id === conn.id && s.closedReason && !s.splitOnly);
           if (idx < 0) {
             createdTabId = nextTabId();
             return [

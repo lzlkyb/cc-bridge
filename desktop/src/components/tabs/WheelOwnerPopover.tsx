@@ -64,7 +64,7 @@ export function WheelOwnerPopover({ sessionId, initialStep, onSent, onClose }: P
       ref={ref}
       role="dialog"
       aria-label="滚轮救急面板"
-      className="absolute right-3 top-3 z-30 w-[330px] rounded-xl border bg-card p-3.5 text-[12.5px] leading-relaxed shadow-pop"
+      className="absolute right-3 bottom-3 z-30 w-[330px] max-h-[calc(100%-24px)] overflow-y-auto rounded-xl border bg-card p-3.5 text-[12.5px] leading-relaxed shadow-pop"
     >
       {step === "info" ? (
         <>

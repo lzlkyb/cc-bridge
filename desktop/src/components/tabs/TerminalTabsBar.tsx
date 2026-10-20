@@ -7,6 +7,7 @@ import type { TermTabMeta } from "../../lib/terminalTabMeta";
 import type { IProgressState } from "@xterm/addon-progress";
 
 interface TerminalTabsBarProps {
+  onToolbarReady?: (node: HTMLDivElement | null) => void;
   sessions: SshSessionRef[];
   /** 各会话的标签 meta（标题/进度/铃），由 SshTerminal 上报。 */
   metaBySession: Record<string, TermTabMeta>;
@@ -52,6 +53,7 @@ function progressStyle(p: IProgressState): { className: string; width: string } 
  * 激活标签即清零）。
  */
 export function TerminalTabsBar({
+  onToolbarReady,
   sessions,
   metaBySession,
   activeId,
@@ -83,7 +85,8 @@ export function TerminalTabsBar({
   const seenPerConn = new Map<string, number>();
 
   return (
-    <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border bg-card px-2 py-1.5">
+    <div className="terminal-tabs-header flex shrink-0 items-center gap-1 border-b border-border bg-card px-2 py-1.5">
+      <div className="terminal-tabs-scroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="终端会话">
       {tabSessions.map((s) => {
         const closed = !!s.closedReason;
         const active = s.sessionId === activeId;
@@ -105,6 +108,8 @@ export function TerminalTabsBar({
           >
             <button
               type="button"
+              role="tab"
+              aria-selected={active}
               onClick={() => onActivate(s.sessionId)}
               className="flex items-center gap-1.5"
             >
@@ -161,24 +166,28 @@ export function TerminalTabsBar({
           </div>
         );
       })}
-      {/* 跨标签搜索入口（ml-auto 把它和「新终端」一起推到右侧）。
+      </div>
+      <div className="terminal-tabs-actions flex shrink-0 items-center gap-1">
+      {/* 跨标签搜索入口（和当前终端查找分开）。
           与工具栏的「搜索」区别：那个只搜当前标签，这个横跨所有会话的滚动历史。 */}
       <button
         type="button"
         onClick={() => setSearchOpen(true)}
         title="搜索所有标签的终端内容（含已断开标签的历史）"
+        aria-label="搜索所有标签"
         className="ml-auto flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
-        <Icon name="search" size={12} /> 搜索所有标签
+        <Icon name="search" size={14} /><span className="terminal-action-label">搜索所有标签</span>
       </button>
       {onNewTerminal && (
         <button
           type="button"
           onClick={onNewTerminal}
           title="对当前连接再开一个终端"
+          aria-label="新终端"
           className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
-          <Icon name="plus" size={12} /> 新终端
+          <Icon name="plus" size={15} /><span className="terminal-action-label">新终端</span>
         </button>
       )}
       {onToggleSplit && (
@@ -186,15 +195,19 @@ export function TerminalTabsBar({
           type="button"
           onClick={onToggleSplit}
           title="分屏：在旁边再开一个会话（Ctrl+Shift+D）"
+          aria-label="分屏"
+          aria-pressed={splitActive}
           className={`flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors ${
             splitActive
               ? "bg-primary/10 text-foreground"
               : "text-muted-foreground hover:bg-muted hover:text-foreground"
           }`}
         >
-          <Icon name="monitor" size={12} /> 分屏
+          <Icon name="monitor" size={14} /><span className="terminal-action-label">分屏</span>
         </button>
       )}
+      </div>
+      <div className="terminal-toolbar-host" ref={onToolbarReady} aria-label="当前窗格操作"/>
       {searchOpen && (
         <TerminalGlobalSearch
           sessions={sessions}

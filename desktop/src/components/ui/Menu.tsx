@@ -1,4 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { useViewActive } from "../../lib/viewActivity";
 import { usePresence } from "../../hooks/usePresence";
 import { Icon, type IconName } from "./icon";
 
@@ -16,6 +18,7 @@ export function Menu({
   children,
   align = "right",
   width = "w-44",
+  portal = false,
 }: {
   /** 渲染触发器；open 为当前是否展开，toggle 切换展开状态。 */
   trigger: (open: boolean, toggle: () => void) => ReactNode;
@@ -23,15 +26,29 @@ export function Menu({
   children: (close: () => void) => ReactNode;
   align?: "left" | "right";
   width?: string;
+  /** Escape a scrollable connection list without changing ordinary toolbar menus. */
+  portal?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const { mounted, entered } = usePresence(open);
   const boxRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
+  const viewActive = useViewActive();
+  useEffect(() => { if (portal && !viewActive) setOpen(false); }, [portal, viewActive]);
+  useLayoutEffect(() => {
+    if (!portal || !mounted || !open || !boxRef.current || !menuRef.current) return;
+    const anchor = boxRef.current.getBoundingClientRect();
+    const menu = menuRef.current;
+    const left = Math.max(4, Math.min(align === "right" ? anchor.right - menu.offsetWidth : anchor.left, window.innerWidth - menu.offsetWidth - 4));
+    const top = anchor.bottom + menu.offsetHeight + 4 > window.innerHeight ? Math.max(4, anchor.top - menu.offsetHeight - 4) : anchor.bottom + 4;
+    setPosition({ left, top });
+  }, [portal, mounted, open, align]);
 
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!boxRef.current?.contains(e.target as Node)) setOpen(false);
+      if (!boxRef.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -42,8 +59,8 @@ export function Menu({
         boxRef.current?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true });
         return;
       }
-      if (!boxRef.current?.contains(e.target as Node) || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
-      const items = Array.from(boxRef.current.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'));
+      if ((!boxRef.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) || !["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+      const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
       if (!items.length) return;
       e.preventDefault();
       const current = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -52,27 +69,26 @@ export function Menu({
     };
     window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey, true);
+    const onMove = (e: Event) => { if (portal && (!(e.target instanceof Node) || !menuRef.current?.contains(e.target))) setOpen(false); };
+    if (portal) { window.addEventListener("resize", onMove); window.addEventListener("scroll", onMove, true); }
     return () => {
       window.removeEventListener("mousedown", onDown, true);
       window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", onMove);
+      window.removeEventListener("scroll", onMove, true);
     };
-  }, [open]);
+  }, [open, portal]);
+
+  const menu = mounted && <div role="menu" aria-hidden={!open || undefined} ref={node => { menuRef.current = node; if (node) node.inert = !open; }} data-state={entered ? "open" : "closed"} data-exiting={!open || undefined}
+    style={portal ? { ...position, visibility: position ? "visible" : "hidden" } : undefined}
+    className={`ui-surface ${portal ? "fixed z-50" : `absolute top-full z-20 mt-1 ${align === "right" ? "right-0 origin-top-right" : "left-0 origin-top-left"}`} ${width} max-h-[70vh] overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg`}>
+    {children(() => setOpen(false))}
+  </div>;
 
   return (
     <div ref={boxRef} className="relative">
       {trigger(open, () => setOpen((v) => !v))}
-      {mounted && (
-        <div
-          role="menu"
-          aria-hidden={!open || undefined}
-          ref={node => { if (node) node.inert = !open; }}
-          data-state={entered ? "open" : "closed"}
-          data-exiting={!open || undefined}
-          className={`ui-surface absolute top-full z-20 mt-1 ${align === "right" ? "right-0 origin-top-right" : "left-0 origin-top-left"} ${width} max-h-[70vh] overflow-auto rounded-lg border border-border bg-card p-1 shadow-lg`}
-        >
-          {children(() => setOpen(false))}
-        </div>
-      )}
+      {portal ? menu && createPortal(menu, document.body) : menu}
     </div>
   );
 }
@@ -84,6 +100,7 @@ export function MenuItem({
   active,
   onClick,
   trailing,
+  disabled,
 }: {
   label: ReactNode;
   hint?: string;
@@ -92,13 +109,15 @@ export function MenuItem({
   onClick: () => void;
   /** 右侧附加内容（如当前项打勾），自带 ml-auto 推到最右。 */
   trailing?: ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       role="menuitem"
+      disabled={disabled}
       onClick={onClick}
-      className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors hover:bg-muted ${
+      className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50 ${
         active ? "text-primary" : "text-foreground"
       }`}
     >

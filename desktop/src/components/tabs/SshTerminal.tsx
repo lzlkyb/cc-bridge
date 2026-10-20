@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import type { Terminal } from "@xterm/xterm";
 import { SshTerminalContextMenu } from "./SshTerminalContextMenu";
 import { SshTerminalToolbar } from "./SshTerminalToolbar";
@@ -31,6 +32,8 @@ import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
 import type { SshConnection } from "../../lib/types";
 
 interface Props {
+  toolbarHost: HTMLDivElement | null;
+  toolbarActive: boolean;
   sessionId: string;
   conn: SshConnection;
   /** 会话已断开时的原因；null = 还连着。 */
@@ -63,6 +66,8 @@ interface Props {
  * - `useSshTerminalSelect`：选择模式 / Shift 拖选 / 拖拽即选 / 松手自动复制
  */
 export function SshTerminal({
+  toolbarHost,
+  toolbarActive,
   sessionId,
   conn,
   closedReason,
@@ -210,8 +215,9 @@ export function SshTerminal({
 
   const surface = TERMINAL_SURFACE[preset][mode];
   return (
-    <div className="flex h-full min-h-0 flex-col" style={{ background: surface }}>
-      <SshTerminalToolbar
+    <div className="ssh-terminal flex h-full min-h-0 flex-col" style={{ background: surface }}>
+      {toolbarHost && toolbarActive && createPortal(<SshTerminalToolbar
+        compact
         conn={conn}
         closed={closed}
         focused={focused}
@@ -231,7 +237,7 @@ export function SshTerminal({
         onClear={() => termRef.current?.clear()}
         onToggleFullscreen={onToggleFullscreen}
         onExport={exportSession}
-      />
+      />, toolbarHost)}
       <TerminalStatusBar
         sessionId={sessionId}
         conn={conn}
@@ -262,7 +268,7 @@ export function SshTerminal({
       >
         <div ref={containerRef} className="h-full w-full" />
         <SshTerminalFind search={search} />
-        {cmdOpen && (
+        {cmdOpen && toolbarActive && (
           <SshCommandBlocksPanel termRef={termRef} name={conn.name || conn.host} closed={closed} onClose={() => setCmdPanelOpen(false)} />
         )}
         {/* 覆盖层，不占布局（占高度会 fit→远端 TUI 重排，详见 TuiGuideBar 头注）。
@@ -281,7 +287,6 @@ export function SshTerminal({
           </div>
         )}
       </div>
-      {/* 右键菜单层已抽到 SshTerminalContextMenu.tsx（本文件紧贴 300 行棘轮线）。 */}
       <SshTerminalContextMenu
         containerRef={containerRef}
         hasSelection={select.hasSelection}

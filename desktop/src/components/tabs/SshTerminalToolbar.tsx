@@ -5,6 +5,7 @@ import { MoreMenu, ButtonIcon } from "./SshTerminalMoreMenu";
 import { TerminalAppearanceMenu } from "./TerminalAppearanceMenu";
 
 interface Props {
+  compact?: boolean;
   conn: SshConnection;
   /** 会话已断开（终端保留、仅可读） */
   closed: boolean;
@@ -45,6 +46,7 @@ interface Props {
  * 注意这里**没有「断开」按钮**：断开入口在标签栏的 × 与左侧连接列表。
  */
 export function SshTerminalToolbar({
+  compact = false,
   conn,
   closed,
   focused,
@@ -69,8 +71,8 @@ export function SshTerminalToolbar({
   // 会话容器（SshTerminal）里——两端不同子树，靠 props 串会把 SshTerminal.tsx 撑破 300 行线。
   const cmdOpen = useCmdPanelOpen();
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2">
-      <Icon name="terminal" size={14} className="shrink-0 text-muted-foreground" />
+    <div className="terminal-session-toolbar flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2" data-compact={compact || undefined} aria-label={`${conn.name || conn.host}终端操作`}>
+      {!compact && <><Icon name="terminal" size={14} className="shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate text-sm font-medium" title={conn.name || conn.host}>
         {conn.name || conn.host}
       </span>
@@ -80,12 +82,13 @@ export function SshTerminalToolbar({
       >
         {conn.username}@{conn.host}:{conn.port}
       </span>
+      </>}
       {closed ? (
         <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-medium text-destructive-ink">
           <span className="h-1.5 w-1.5 rounded-full bg-destructive" />
           已断开
         </span>
-      ) : (
+      ) : !compact && (
         <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-green-500/15 px-2 py-0.5 text-xs font-medium text-green-600 dark:text-green-400">
           <span className="h-1.5 w-1.5 rounded-full bg-green-500" />
           已连接
@@ -115,7 +118,7 @@ export function SshTerminalToolbar({
           输入失败
         </span>
       ) : (
-        !focused &&
+        !compact && !focused &&
         !closed && (
           <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
             <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />

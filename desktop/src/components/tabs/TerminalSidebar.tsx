@@ -4,11 +4,14 @@ import { Button } from "../ui/button";
 import type { SshConnection } from "../../lib/types";
 import { ConnectionListItem, type SshSessionRef } from "./TerminalConnectionItem";
 import { useSidebarWidth } from "../../hooks/useSidebarWidth";
+import { TerminalConnectionRow } from "./TerminalConnectionRow";
+import { connectionSessions } from "../../lib/terminalWorkspace";
 
 /** 连接数达到这个量才显示搜索框。 */
 const SEARCH_THRESHOLD = 6;
 
 interface Props {
+  embedded?: boolean;
   connections: SshConnection[];
   sessions: SshSessionRef[];
   activeId: string | null;
@@ -35,6 +38,7 @@ interface Props {
  * 宽度过渡由外层控制，内层固定宽，过渡时不重排、被 overflow-hidden 裁切做擦除动画。
  */
 export function TerminalSidebar({
+  embedded = false,
   connections,
   sessions,
   activeId,
@@ -57,7 +61,7 @@ export function TerminalSidebar({
   // 连接多了就靠肉眼找不到了。数量少时不显示搜索框——288px 的侧栏本来就紧，
   // 三两个连接时它只是噪声。
   const [query, setQuery] = useState("");
-  const showSearch = connections.length >= SEARCH_THRESHOLD;
+  const showSearch = embedded || connections.length >= SEARCH_THRESHOLD;
   const shown = useMemo(() => {
     const k = query.trim().toLowerCase();
     if (!k || !showSearch) return connections;
@@ -70,14 +74,14 @@ export function TerminalSidebar({
   }, [connections, query, showSearch]);
 
   const sizing = useSidebarWidth();
-  const width = collapsed ? 48 : sizing.width;
+  const width = embedded ? "100%" : collapsed ? 48 : sizing.width;
   return (
     <div
-      className="terminal-sidebar relative flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200 ease-[var(--ease)]"
+      className={`terminal-sidebar relative flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200 ease-[var(--ease)] ${embedded ? "terminal-sidebar-embedded" : ""}`}
       style={{ width }}
     >
       {/* 固定宽 inner：外层 transition 宽度时 inner 不重排，被 overflow-hidden 裁切做擦除动画 */}
-      {!collapsed && <button type="button" role="separator" aria-label="调整 SSH 连接列表宽度" aria-orientation="vertical" aria-valuemin={180} aria-valuemax={360} aria-valuenow={sizing.width} className="terminal-side-resizer" title="拖动调宽；方向键微调，双击恢复" onPointerDown={sizing.start} onPointerMove={sizing.move} onPointerUp={sizing.end} onPointerCancel={sizing.end} onDoubleClick={() => sizing.resize(240)} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); sizing.resize(sizing.width + (e.key === "ArrowLeft" ? -10 : 10)); } }} />}
+      {!embedded && !collapsed && <button type="button" role="separator" aria-label="调整 SSH 连接列表宽度" aria-orientation="vertical" aria-valuemin={180} aria-valuemax={360} aria-valuenow={sizing.width} className="terminal-side-resizer" title="拖动调宽；方向键微调，双击恢复" onPointerDown={sizing.start} onPointerMove={sizing.move} onPointerUp={sizing.end} onPointerCancel={sizing.end} onDoubleClick={() => sizing.resize(240)} onKeyDown={e => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); sizing.resize(sizing.width + (e.key === "ArrowLeft" ? -10 : 10)); } }} />}
       <div className="flex h-full flex-col" style={{ width }}>
         {collapsed ? (
           <CollapsedRail
@@ -86,42 +90,43 @@ export function TerminalSidebar({
             activeId={activeId}
             onExpand={() => onSetCollapsed(false)}
             onPick={(conn) => {
-              const session = sessions.find((s) => s.conn.id === conn.id);
+              const { session } = connectionSessions(sessions, conn.id, activeId);
               if (session) onActivate(session.sessionId);
               else onConnect(conn);
-              onSetCollapsed(false);
+              if (!embedded) onSetCollapsed(false);
             }}
           />
         ) : (
           <>
-            <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+            <div className="terminal-connections-heading flex items-center justify-between border-b border-border px-3 py-2.5">
               <span className="text-sm font-medium">SSH 连接</span>
               <div className="flex items-center gap-1">
-                <Button size="sm" className="h-7 px-2 text-xs" onClick={onNew}>
-                  <Icon name="plus" size={14} /> 新建
+                <Button variant={embedded ? "ghost" : "default"} size="sm" className={embedded ? "h-7 w-7 px-0" : "h-7 px-2 text-xs"} title="新建 SSH 连接" aria-label="新建 SSH 连接" onClick={onNew}>
+                  <Icon name="plus" size={14} />{!embedded && "新建"}
                 </Button>
                 <button
                   type="button"
                   onClick={() => onSetCollapsed(true)}
                   title="收起 SSH 连接列表 (Ctrl/Cmd+Shift+B)"
                   aria-label="收起 SSH 连接列表"
-                  className="flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="terminal-connections-collapse flex h-7 w-7 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                   <Icon name="chevronLeft" size={16} />
                 </button>
               </div>
             </div>
             {showSearch && (
-              <div className="shrink-0 border-b border-border px-2 py-1.5">
+              <div className="terminal-connections-search shrink-0 border-b border-border px-2 py-1.5">
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder={`搜索 ${connections.length} 个连接（名称 / 主机 / 用户）`}
+                  placeholder={embedded ? "搜索名称或主机" : `搜索 ${connections.length} 个连接（名称 / 主机 / 用户）`}
+                  aria-label="搜索 SSH 连接"
                   className="h-7 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-primary"
                 />
               </div>
             )}
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+            <div className={`min-h-0 flex-1 overflow-y-auto p-2 ${embedded ? "space-y-1" : "space-y-2"}`}>
               {isLoading && <p className="p-2 text-xs text-muted-foreground">加载中…</p>}
               {!isLoading && connections.length === 0 && (
                 <p className="p-3 text-center text-xs text-muted-foreground">
@@ -134,19 +139,22 @@ export function TerminalSidebar({
                 </p>
               )}
               {shown.map((c) => {
-                const session = sessions.find((s) => s.conn.id === c.id);
+                const { session, liveCount, active } = connectionSessions(sessions, c.id, activeId);
+                const Item = embedded ? TerminalConnectionRow : ConnectionListItem;
                 // 跳板机名字在这里解（侧栏手里本来就有全量连接），
                 // 不让列表项为一个名字去接整个连接数组。
                 const jumpName = c.proxyJumpId
                   ? (connections.find((j) => j.id === c.proxyJumpId)?.name ?? "已失效")
                   : undefined;
                 return (
-                  <ConnectionListItem
+                  <Item
                     key={c.id}
                     conn={c}
                     jumpName={jumpName}
                     session={session}
-                    isActive={!!session && session.sessionId === activeId}
+                    liveCount={liveCount}
+                    onActivate={onActivate}
+                    isActive={active}
                     connecting={connectingId === c.id}
                     confirmingDelete={confirmingDelete === c.id}
                     onConnect={onConnect}
@@ -191,14 +199,13 @@ function CollapsedRail({
         type="button"
         onClick={onExpand}
         title="展开 SSH 连接 (Ctrl/Cmd+Shift+B)"
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        className="terminal-rail-expand flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
         <Icon name="chevronLeft" size={16} style={{ transform: "rotate(180deg)" }} />
       </button>
       <div className="my-0.5 h-px w-6 shrink-0 bg-border" />
       {connections.map((c) => {
-        const session = sessions.find((s) => s.conn.id === c.id);
-        const isActive = !!session && session.sessionId === activeId;
+        const { session, active: isActive } = connectionSessions(sessions, c.id, activeId);
         // 🔴 必须连 `closedReason` 一起判。只看「有没有 session」的话，断开后保留的标签
         // 会让这里一直亮绿点——而展开态的 `ConnectionListItem` 是判了的，
         // 同一份数据两处口径不一致。

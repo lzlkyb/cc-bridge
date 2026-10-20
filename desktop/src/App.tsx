@@ -29,6 +29,7 @@ const TerminalTab = lazy(() => import("./components/tabs/TerminalTab").then((m) 
 import { OnboardingGuide, isOnboardingDone } from "./components/modals/OnboardingGuide";
 import { CommandPalette } from "./components/modals/CommandPalette";
 import { UpgradeWelcomeBar } from "./components/update/UpgradeWelcomeBar";
+import "./terminal-workspace.css";
 
 function AppContent() {
   // 窗口收进托盘/最小化时给 <html> 打 data-app-hidden，暂停全部 CSS 动画。
@@ -193,6 +194,7 @@ function AppContent() {
   // 要 ≥ 820px 才能保住连接页 Bento 的 12 列布局 → 展开态需视口 ≥ 1060，
   // 取 1080 留 20px 余量（1060 时内容区正好 820，会踩到 @container 的 max-width:820 边界）。
   const [sideCollapsed, setSideCollapsed] = useState(false);
+  const [terminalSidebarHost, setTerminalSidebarHost] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 1080px)");
     const apply = () => setSideCollapsed(mq.matches);
@@ -337,6 +339,7 @@ function AppContent() {
           unreadCount={unreadCount}
           status={status}
           collapsed={sideCollapsed}
+          onTerminalSidebarReady={setTerminalSidebarHost}
           settingsSections={settingsSections}
           settingsActiveId={settingsActiveId}
           onSelectSection={handleSettingsSelect}
@@ -408,7 +411,7 @@ function AppContent() {
           </ActionCard>
         </div>
       )}
-          <main className="min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-5">
+          <main className="app-main-content min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-5" data-terminal={activeTab === "terminal" || undefined}>
           <TabsContent value="connect" keepMounted className="app-content-box h-full overflow-y-auto overflow-x-hidden">
             <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} pendingSuspended={!!pendingCmd} onSuspendCmd={handleSuspendCmd} onCopySed={copyIpSed} />
           </TabsContent>
@@ -435,7 +438,7 @@ function AppContent() {
               导致前端 sessions state 丢失需重新连接。复用 TerminalTab 内部已验证的 display:none 模式。 */}
           <TabsContent value="terminal" keepMounted className="h-full overflow-hidden">
             <Suspense fallback={<TabFallback />}>
-              <TerminalTab status={status} />
+              <TerminalTab status={status} sidebarHost={terminalSidebarHost} sidebarCollapsed={sideCollapsed} onSidebarCollapsedChange={setSideCollapsed} />
             </Suspense>
           </TabsContent>
           </main>

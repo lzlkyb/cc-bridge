@@ -42,6 +42,7 @@ function SideNavImpl({
   settingsActiveId,
   onSelectSection,
   onBackFromSettings,
+  onTerminalSidebarReady,
 }: {
   activeTab: string;
   onNavigate: (tab: string, anchor?: string) => void;
@@ -57,6 +58,7 @@ function SideNavImpl({
   onSelectSection?: (id: string, anchor?: string) => void;
   /** 返回工作区：App 决定回到离开设置前的工作区 tab。 */
   onBackFromSettings?: () => void;
+  onTerminalSidebarReady?: (node: HTMLDivElement | null) => void;
 }) {
   // 服务状态口径与改造前的 Header 完全一致：
   // 启动失败 / 链路中断 = 红，防火墙未放行 = 橙，已停止 = 灰，正常 = 绿。
@@ -121,7 +123,7 @@ function SideNavImpl({
   }, [pillShown, statusTone, statusText, statusTarget, statusTitle]);
 
   return (
-    <aside className="app-side" data-collapsed={collapsed || undefined} data-mode={settingsMode ? "settings" : undefined}>
+    <aside className="app-side" data-collapsed={collapsed || undefined} data-mode={settingsMode ? "settings" : activeTab === "terminal" ? "terminal" : undefined}>
       {/* 品牌区：整块可拖窗口（decorations:false，无系统标题栏，必须留出拖拽区域） */}
       <div data-tauri-drag-region className="app-side-head">
         <img
@@ -166,6 +168,8 @@ function SideNavImpl({
         </nav>
       )}
 
+      {/* Keep the portal host mounted when changing pages so the SSH list retains its search state. */}
+      <div ref={onTerminalSidebarReady} className="app-terminal-connections" hidden={activeTab !== "terminal"}/>
       <div className="app-side-foot">
         {/* 更新槽位（方案 A 2026-10-16 二次改造）：设置行右端一个**定宽格子**，
             七种状态在同一个格子里原地变形 ⇒ foot 高度恒定、导航区零位移。

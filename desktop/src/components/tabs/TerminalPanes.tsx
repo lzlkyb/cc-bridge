@@ -6,12 +6,16 @@ import type { SplitInfo } from "./useTerminalSplit";
 import type { SshConnection } from "../../lib/types";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 import type { TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
+import { focusedTerminalSession } from "../../lib/terminalWorkspace";
 
 interface TerminalPanesProps {
   sessions: SshSessionRef[];
   activeId: string | null;
   /** 活动标签的分屏信息；null = 单格。 */
   split: SplitInfo | null;
+  toolbarHost: HTMLDivElement | null;
+  focusedTabId: string | null;
+  onFocusPane: (tabId: string) => void;
   connections: SshConnection[];
   connectingId: string | null;
   emptyState: ReactNode;
@@ -45,6 +49,9 @@ export function TerminalPanes({
   sessions,
   activeId,
   split,
+  toolbarHost,
+  focusedTabId,
+  onFocusPane,
   connections,
   connectingId,
   emptyState,
@@ -68,6 +75,7 @@ export function TerminalPanes({
   const sec = split?.secTabId ? (sessions.find((s) => s.tabId === split.secTabId) ?? null) : null;
   const splitActive = split !== null && primary !== null;
   const vertical = split?.dir === "v";
+  const focused = focusedTerminalSession(sessions, activeId, split, focusedTabId);
 
   // 会话包装 div 的定位：非分屏 = 绝对定位叠放（原行为）；分屏的两个格 = flex 项。
   const wrapStyle = (s: SshSessionRef): CSSProperties => {
@@ -103,7 +111,7 @@ export function TerminalPanes({
   return (
     <div
       ref={areaRef}
-      className={`relative min-h-0 flex-1 ${splitActive ? (vertical ? "flex flex-col" : "flex") : ""}`}
+      className={`terminal-panes relative min-h-0 flex-1 ${splitActive ? (vertical ? "flex flex-col" : "flex") : ""}`}
     >
       {sessions.length === 0 ? (
         emptyState
@@ -112,10 +120,12 @@ export function TerminalPanes({
           {sessions.map((s) => {
             const isSec = splitActive && sec != null && s.tabId === sec.tabId;
             return (
-              <div key={s.tabId} style={wrapStyle(s)}>
-                {isSec && (
+              <div key={s.tabId} style={wrapStyle(s)} onPointerDown={() => onFocusPane(s.tabId)} onFocusCapture={() => onFocusPane(s.tabId)} data-focused={focused?.tabId === s.tabId || undefined}>
+                {splitActive && (isSec || s.sessionId === activeId) && (
                   <PaneHead
                     s={s}
+                    focused={focused?.tabId === s.tabId}
+                    secondary={isSec}
                     vertical={!!vertical}
                     onToggleDir={onToggleDir}
                     onClose={onCloseSplit}
@@ -128,6 +138,8 @@ export function TerminalPanes({
                 ) : (
                   <SshTerminal
                     sessionId={s.sessionId}
+                    toolbarHost={toolbarHost}
+                    toolbarActive={focused?.tabId === s.tabId}
                     conn={s.conn}
                     closedReason={s.closedReason}
                     onClosed={(reason) => onClosed(s, reason)}
@@ -177,27 +189,32 @@ export function TerminalPanes({
   );
 }
 
-/** 副格窄条头：主机身份 + 方向切换 + 关闭分屏。主格不带头——它的工具栏已含身份信息。 */
+/** Both split panes retain their host identity when sharing a single toolbar. */
 function PaneHead({
   s,
+  focused,
+  secondary,
   vertical,
   onToggleDir,
   onClose,
 }: {
   s: SshSessionRef;
+  focused: boolean;
+  secondary: boolean;
   vertical: boolean;
   onToggleDir: () => void;
   onClose: () => void;
 }) {
   const closed = s.closedReason !== null;
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-1 text-xs">
+    <div className="terminal-pane-head flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-1 text-xs" data-focused={focused || undefined}>
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${closed ? "bg-destructive" : "bg-green-500"}`} />
       <span className="min-w-0 truncate font-medium">{s.conn.name || s.conn.host}</span>
       <span className="min-w-0 truncate text-muted-foreground">
         {s.conn.username}@{s.conn.host}
       </span>
-      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+      {focused && <span className="ml-auto shrink-0 text-[10px] text-primary">当前操作</span>}
+      {secondary && <div className="ml-auto flex shrink-0 items-center gap-0.5">
         <button
           type="button"
           onClick={onToggleDir}
@@ -214,7 +231,7 @@ function PaneHead({
         >
           <Icon name="close" size={11} />
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

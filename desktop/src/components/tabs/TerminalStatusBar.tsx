@@ -86,7 +86,7 @@ export function TerminalStatusBar({
 
   return (
     <div
-      className="flex shrink-0 items-center overflow-hidden px-2 py-1 text-xs"
+      className="ssh-terminal-statusbar flex shrink-0 items-center overflow-hidden px-2 py-1 text-xs"
       // fontVariantNumeric 设在容器上与 fontFamily 同理：继承覆盖全部段，
       // cwd/branch/时长等数字变化时等宽数字位，不再左右横跳。
       style={{ ...skin.bar, fontFamily, fontVariantNumeric: "tabular-nums" }}

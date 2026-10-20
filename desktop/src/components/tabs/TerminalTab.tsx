@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { createPortal } from "react-dom";
+import { useTerminalWorkspace } from "../../hooks/useTerminalWorkspace";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
@@ -30,11 +32,9 @@ import { TerminalDropLayer } from "./TerminalDropLayer";
 import { zoneOf, type DropZone } from "../../lib/dropHit";
 
 /**
- * 第 5 个 Tab「终端」：人在面板里手动操作 SSH 交互终端。
- * 结构：启用闸（默认关）→ 两栏（左连接列表 / 右 xterm 终端）→ Windows 未装 ssh 降级卡片。
- * 遵循「默认关 + 多层闸」：ssh_enabled 默认关，首次进入需显式启用。
+ * SSH 工作区：连接列表投到应用侧栏，终端始终留在本页保活；首次使用仍需显式启用。
  */
-export function TerminalTab({ status }: { status?: StaticStatus }) {
+export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCollapsedChange }: { status?: StaticStatus; sidebarHost: HTMLDivElement | null; sidebarCollapsed: boolean; onSidebarCollapsedChange: Dispatch<SetStateAction<boolean>> }) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery<SshConnectionList, Error>({
     queryKey: ["sshConnections"],
@@ -61,13 +61,8 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   const { sessions, activeId } = ssh;
   // 会话恢复：连接列表就绪后按快照重建占位标签（不自动连接），之后 debounce 写快照。
   useSessionRestore({ ssh, connections, ready: data !== undefined });
-  // 侧栏折叠 + 软件内全屏两个视图开关（含 Ctrl+B / F11 快捷键）。
-  // 全屏选「盖住」而不是把状态提到 App 去条件隐藏：后者会让 Header/Tabs 卸载重挂，
-  // 触发 TabsList 指示器重算与状态轮询抖动，而收益为零。
-  const { collapsed, setCollapsed, fullscreen, setFullscreen } = useTerminalViewState(
-    rootRef,
-    activeId,
-  );
+  // Ctrl+Shift+B 折叠共享侧栏；F11 只覆盖布局，不卸载终端。
+  const { collapsed, setCollapsed, fullscreen, setFullscreen } = useTerminalViewState(rootRef, activeId, { collapsed: sidebarCollapsed, setCollapsed: onSidebarCollapsedChange });
 
   // 拖拽上传（终端侧）。只对**当前活动且未断开**的会话生效：
   // 没有会话就没有「传到哪台机器」。
@@ -75,6 +70,7 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   const activeSession = sessions.find((s) => s.sessionId === activeId);
   // 轻量双栏分屏（方案 A）：副格会话 splitOnly、不出现在标签栏，详见 useTerminalSplit。
   const splitCtl = useTerminalSplit({ ssh, activeSession: activeSession ?? null });
+  const workspace = useTerminalWorkspace(sessions, activeId, splitCtl.split);
   const activeConn =
     activeSession && !activeSession.closedReason ? activeSession.conn : null;
   // 各会话的远端 cwd（OSC 7 探测，见 hooks/useTerminalOsc.ts）。拖拽上传拿它当目标目录，
@@ -106,16 +102,19 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   });
 
   const openSession = (sessionId: string) => {
+    workspace.setFocusedTabId(null);
     ssh.setActiveId(sessionId);
     ssh.patchMeta(sessionId, { bellAt: null }); // 激活即读，未读铃点清零。
     setFileConn(null);
   };
   const connect = (conn: SshConnection) => {
+    workspace.setFocusedTabId(null);
     setFileConn(null);
     void ssh.connect(conn);
   };
   // 另开一个（不复用现有标签）。
   const newTerminal = (conn: SshConnection) => {
+    workspace.setFocusedTabId(null);
     setFileConn(null);
     void ssh.connect(conn, { newTab: true });
   };
@@ -187,9 +186,10 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
   return (
     <div
       ref={rootRef}
-      className="flex h-full min-h-0 overflow-hidden rounded-xl border border-border bg-card"
+      className="terminal-workspace flex h-full min-h-0 overflow-hidden bg-card"
     >
-      <TerminalSidebar
+      {sidebarHost && createPortal(<TerminalSidebar
+        embedded
         connections={connections}
         sessions={sessions}
         activeId={activeId}
@@ -214,20 +214,15 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
         onDeleteRequest={setConfirmingDelete}
         onConfirmDelete={(id) => void removeConnection(id)}
         onCancelDelete={() => setConfirmingDelete(null)}
-      />
+      />, sidebarHost)}
 
-      {/* 右：终端标签栏 + 终端（叠加文件管理面板）。
-          overflow-hidden 不能省：里面的标签栏（bg-card）与终端画布都是不透明的直角子元素，
-          不裁就会盖在父级圆角上——这正是「一连接圆角就消失」的原因（没连接时里面只有无背景
-          的空状态，圆角露得出来，所以看着像是连接之后才坏的）。 */}
+      {/* Portal only the connection list and toolbar; terminal panes keep their stable parents. */}
       <div
         ref={termAreaRef}
         className={
           fullscreen
-            ? "fixed inset-0 z-50 overflow-hidden rounded-xl"
-            : // 合卡后圆角与边框由外层大卡提供（overflow-hidden 裁切深色画布的直角），
-              // 这里只保留定位与裁切职责。
-              "relative min-h-0 min-w-0 flex-1 overflow-hidden"
+            ? "fixed inset-0 z-50 overflow-hidden"
+            : "relative min-h-0 min-w-0 flex-1 overflow-hidden"
         }
         style={{ background: surface }}
       >
@@ -247,10 +242,11 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
               onActivate={openSession}
               onDisconnect={(sessionId) => void ssh.disconnect(sessionId)}
               onCloseTab={ssh.closeTab}
-              // 只在当前标签还连着时给「新终端」：已断开的标签旁边已经有「重新连接」了。
-              onNewTerminal={activeConn ? () => newTerminal(activeConn) : null}
+              // 新终端跟随当前操作的窗格，而分屏开关始终属于宿主标签。
+              onNewTerminal={workspace.focusedSession && !workspace.focusedSession.closedReason ? () => newTerminal(workspace.focusedSession!.conn) : null}
               onToggleSplit={activeSession ? splitCtl.toggleSplit : null}
               splitActive={splitCtl.split !== null}
+              onToolbarReady={workspace.setToolbarHost}
             />
           )}
           {/* 全部会话都挂载在 TerminalPanes 内（含分屏副格），仅当前可见；后台会话继续收输出 */}
@@ -258,6 +254,9 @@ export function TerminalTab({ status }: { status?: StaticStatus }) {
             sessions={sessions}
             activeId={activeId}
             split={splitCtl.split}
+            toolbarHost={workspace.toolbarHost}
+            focusedTabId={workspace.focusedTabId}
+            onFocusPane={workspace.setFocusedTabId}
             connections={connections}
             connectingId={ssh.connectingId}
             emptyState={<TerminalEmptyState collapsed={collapsed} onExpand={() => setCollapsed(false)} connections={connections} connectingId={ssh.connectingId} onNew={() => { setEditing(null); setShowDialog(true); }} onConnect={connect} />}
