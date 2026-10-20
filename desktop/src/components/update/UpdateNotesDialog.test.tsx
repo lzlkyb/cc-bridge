@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UpdateNotesDialog } from "./UpdateNotesDialog";
+import type { UpdateNotesInfo } from "../../lib/updateNotes";
 
 vi.mock("../../hooks/usePrefersReducedMotion", () => ({ usePrefersReducedMotion: () => true }));
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -13,7 +14,7 @@ const button = (text: string) => [...document.querySelectorAll("button")].find(n
 
 beforeEach(() => { vi.clearAllMocks(); root = createRoot(document.createElement("div")); });
 afterEach(async () => { await act(async () => root.unmount()); });
-async function mount(update = props.update) { await act(async () => root.render(<UpdateNotesDialog {...props} update={update} />)); }
+async function mount(update: UpdateNotesInfo = props.update) { await act(async () => root.render(<UpdateNotesDialog {...props} update={update} />)); }
 
 describe("update dialog behavior", () => {
   it("关闭不抑制当前版本，也不会触发下载", async () => {
@@ -45,13 +46,26 @@ describe("update dialog behavior", () => {
     expect(button("本次发布").getAttribute("aria-expanded")).toBe("false");
     expect(document.querySelector('.update-release-notes')).toBeNull();
   });
-  it("纯文字保留，缺少说明时没有虚假统计与亮点", async () => {
+  it("纯文字说明原样保留，无从汇总时不伪造统计与亮点", async () => {
     await mount({ ...props.update, body: "plain note" });
     await act(async () => button("本次发布").click());
     expect(document.querySelector('.update-release-notes')?.textContent).toContain('plain note');
-    await mount({ ...props.update, body: "" });
+    // 🔴 必须显式去掉 currentVersion：只要给了它，模型就会按 2.9.1 → 99.0.0 汇总**随包的** CHANGELOG，
+    // 记录数与亮点条目随每次发版变化 —— 原断言（指望 .update-stats 为空）因此成了时间炸弹，
+    // 2026-10-20 发版后实际渲染出「55 条更新记录 / 28 改进」而变红。
+    // 拿不到当前版本 = 无从判断升级范围 ⇒ 不做跨版本汇总，这才是「没有说明就没有统计」的真实前提。
+    await mount({ ...props.update, body: "", currentVersion: undefined });
     expect(document.body.textContent).toContain("此版本未提供详细说明");
     expect(document.querySelector('.update-stats')).toBeNull();
     expect(document.querySelector('.update-benefits')).toBeNull();
+  });
+
+  it("有当前版本时按区间汇总随包记录（stats 与亮点反映累计，不是本次发布的伪统计）", async () => {
+    // 与上一条互补：证明 stats 的出现条件是「存在可汇总的区间」，而不是 body 里有没有字。
+    await mount({ ...props.update, body: "", currentVersion: "2.9.1" });
+    expect(document.body.textContent).toContain("汇总已收录的");
+    expect(document.querySelector('.update-stats')).not.toBeNull();
+    // 本次发布没有说明 ⇒ 详情区仍要诚实地说没有，不能用汇总内容冒充。
+    expect(document.body.textContent).toContain("此版本未提供详细说明");
   });
 });
