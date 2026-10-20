@@ -126,13 +126,19 @@ pub struct StatusResponse {
     pub startup_error: Option<String>,
     /// 防火墙状态（仅 Windows 真实查询，其它平台为 None）。
     /// firewall_enabled：防火墙是否开启（任一配置文件启用即 true）。
-    /// firewall_port_open：7823/TCP 入站是否被放行（存在 allow 规则即 true）。
-    /// 两者均为 None 表示无法判断（非 Windows / 查询失败 / netsh 不可用）。
+    /// firewall_port_open：入站 TCP 是否**确实**放行（结构化诊断结论：计入 program 绑定、
+    /// 配置文件覆盖与阻止规则）。None = 无法判断（非 Windows / 诊断不可用）。
     /// 这是「远程未确认连接」状态机的信号源——诚实暴露本机探针对远程入站拦截的盲点。
     #[serde(rename = "firewallEnabled")]
     pub firewall_enabled: Option<bool>,
     #[serde(rename = "firewallPortOpen")]
     pub firewall_port_open: Option<bool>,
+    /// 距上次防火墙检查的秒数。None = **尚未检查完**（冷启动头一两秒）。
+    ///
+    /// 前端靠它把「检测中」与「无法检测」分开：两者都是 `portOpen == null`，
+    /// 但对用户的意义完全不同（等一会儿 vs 这台机器上查不了）。
+    #[serde(rename = "firewallCheckedSecondsAgo")]
+    pub firewall_checked_seconds_ago: Option<u64>,
     /// 系统 netsh 是否可用（仅 Windows 有意义）。Some(true)=可用；Some(false)=netsh 异常
     /// （已停用查询，状态恒为 unknown）；None=非 Windows。前端据此在 netsh 损坏时给出温和
     /// 提示，而非让用户反复看到「应用程序错误」弹窗。
@@ -258,41 +264,40 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         (probe_host, config.port, config.backup_dir.clone())
     };
 
-    // 防火墙状态：优先读缓存（后台定时刷新）。缓存尚未初始化时做一次同步查询，
-    // 保证首屏即可拿到真实状态，避免前几次轮询都返回 unknown。
-    // netsh 不可用时（启动探测失败）跳过查询，状态保持 unknown（不再弹窗 / 反复 spawn）。
+    // 防火墙状态：**只读缓存**，不再自己跑一遍粗粒度 netsh 查询。
     //
-    // 🔴 netsh 是**同步阻塞**调用（spawn 子进程 + 等输出，无超时），实测可达数百 ms。
-    // 它绝不能在 `firewall_cache` 这把 std 同步锁里跑（审查 P2）：后台刷新、托盘、
-    // 前端 5s 轮询都要读这份缓存，锁一被罩住就整条链路跟着卡。
-    // 现在的顺序是「短锁判定 → 锁外 query（spawn_blocking）→ 短锁写回」。
+    // 🔴 为什么不能再查一遍（2026-10-20）：粗粒度解析只能看到「方向/操作/协议/本地端口」，
+    // 看不到规则的 `Program` / `Profiles` / `Enabled`。于是一条 `program=` 指向不存在文件的
+    // 废规则（安装器写错 exe 名的典型产物）会被判成「已放行」，而结构化诊断判它未放行——
+    // 连接页链路图绿、告警块红，绿色的那个是错的。现在全站只有一个真相源：
+    // `firewall::refresh_cache` 写入的结构化诊断，本函数只负责读。
+    //
+    // 缓存还没填（冷启动最初一两秒）：**不阻塞等待**。结构化诊断要 1〜4s（PowerShell 冷启动
+    // + 三次全量规则枚举），等它会直接拖慢首屏。这里触发一次后台刷新，本次返回
+    // `portOpen = None` + `checkedSecondsAgo = None`，前端据此显示「检测中」（区别于「无法检测」）。
+    // 启动时后台任务本来就已经先跑了一次（main.rs），这个分支只在它还没来得及写完时命中。
     let need_query = {
         let cache = state.firewall_cache.lock().unwrap();
         cache.checked_at.is_none()
     };
     if need_query {
         #[cfg(windows)]
-        let available = *state.firewall_available.lock().unwrap();
-        #[cfg(not(windows))]
-        let available = true;
-        if available {
-            // spawn_blocking：这是 IO 型阻塞，不该占 tokio worker 线程。
-            let (e, p) =
-                tokio::task::spawn_blocking(move || crate::firewall::query_firewall_state(port))
-                    .await
-                    .unwrap_or((None, None));
-            let mut cache = state.firewall_cache.lock().unwrap();
-            // 只有还是「未检查」时才写：期间后台刷新可能已经填了更新的结果，不能覆盖。
-            if cache.checked_at.is_none() {
-                cache.enabled = e;
-                cache.port_open = p;
-                cache.checked_at = Some(Instant::now());
+        {
+            if *state.firewall_available.lock().unwrap() {
+                let st = state.inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::firewall::refresh_cache(&st, port).await;
+                });
             }
         }
     }
-    let (firewall_enabled, firewall_port_open) = {
+    let (firewall_enabled, firewall_port_open, firewall_checked_seconds_ago) = {
         let cache = state.firewall_cache.lock().unwrap();
-        (cache.enabled, cache.port_open)
+        (
+            cache.enabled,
+            cache.port_open,
+            cache.checked_at.map(|t| t.elapsed().as_secs()),
+        )
     };
     // netsh 可用性：仅 Windows 有意义（非 Windows 为 None）。
     let firewall_available: Option<bool> = {
@@ -520,6 +525,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         lan_ips,
         firewall_enabled,
         firewall_port_open,
+        firewall_checked_seconds_ago,
         firewall_available,
         command_allowlist_enabled: config.command_allowlist_enabled,
         command_allowlist: config.command_allowlist.clone(),

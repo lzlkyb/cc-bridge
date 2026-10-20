@@ -68,10 +68,18 @@ export interface ChainInput {
   /** 本机探针：仅表达“地址已绑定”，见模块头注释。 */
   remoteReachable: boolean;
   platform: string | undefined;
-  /** null / undefined = 无法检测（非 Windows 或 netsh 异常）。 */
+  /** null / undefined = 无结论（无法检测或仍在检测，靠 firewallCheckedSecondsAgo 区分）。 */
   firewallPortOpen: boolean | null | undefined;
-  /** false = 探测不可用（netsh 异常）。 */
+  /** false = 探测不可用（结构化诊断不可用）。 */
   firewallAvailable: boolean | null | undefined;
+  /**
+   * 距上次防火墙检查的秒数；null/undefined = **尚未检查完**。
+   *
+   * 为何需要这个字段：`portOpen == null` 有两种完全不同的含义——「还在查」
+   * （冷启动 1〜4s）和「这台机器查不了」（组策略 / 安全软件拦了 PowerShell）。
+   * 前者说「无法检测」是错的，用户会被误导去修一个没坏的东西。
+   */
+  firewallCheckedSecondsAgo?: number | null;
   /** 本次运行累计请求数。进程内计数，重启归零。 */
   totalRequests: number;
   /** 本会话最近一次观测到新调用的壁钟；null = 未观测到。 */
@@ -179,14 +187,24 @@ export function computeChain(input: ChainInput): ChainState {
     };
   }
 
-  // netsh 异常或查不到：显式“未知”。撞绿是谎报，报红是惊吓用户。
-  const fwUnknown = input.firewallAvailable === false || input.firewallPortOpen == null;
+  // 「还在查」与「查不了」必须分开说：两者都是 portOpen == null，
+  // 但对用户的意义完全不同（等一两秒 vs 这台机器上永远查不到）。
+  const fwAvailable = input.firewallAvailable !== false;
+  const fwPending = fwAvailable && input.firewallPortOpen == null && input.firewallCheckedSecondsAgo == null;
+  // 探测不可用或查过但无结论：显式“未知”。撞绿是谎报，报红是惊吓用户。
+  const fwUnknown = !fwAvailable || input.firewallPortOpen == null;
   const fwOpen = input.firewallPortOpen === true;
   const firewall: ChainSegment = {
     key: "firewall",
     name: "防火墙",
     tone: fwUnknown ? "unknown" : fwOpen ? "ok" : "bad",
-    detail: fwUnknown ? "无法检测" : fwOpen ? "已放行" : `${input.port}/TCP 未放行`,
+    detail: fwPending
+      ? "检测中"
+      : fwUnknown
+        ? "无法检测"
+        : fwOpen
+          ? "已放行"
+          : `${input.port}/TCP 未放行`,
   };
 
   // 防火墙明确没放行且远程确实从未调用过 → 高置信地指出卡在哪里。
@@ -201,14 +219,18 @@ export function computeChain(input: ChainInput): ChainState {
     };
   }
 
+  // 远程已调用成功时，防火墙段即便无结论也不影响结论——事实胜于探测。
+  // 但「检测中」和「查不到」的措辞要分开，别把还在查说成查不了。
+  const calledSub = fwPending
+    ? "防火墙状态检测中，但远程已成功调用过，实际不影响"
+    : fwUnknown
+      ? "防火墙状态查不到，但远程已成功调用过，实际不影响"
+      : `本次运行已调用 ${input.totalRequests.toLocaleString("en-US")} 次`;
+
   return {
     tone: "live",
     headline: hasCalled ? "远程 AI 工具可以正常调用" : "本机已就绪，等远程接入",
-    sub: hasCalled
-      ? fwUnknown
-        ? "防火墙状态查不到，但远程已成功调用过，实际不影响"
-        : `本次运行已调用 ${input.totalRequests.toLocaleString("en-US")} 次`
-      : FIRST_RUN_HINT,
+    sub: hasCalled ? calledSub : FIRST_RUN_HINT,
     segments: [service, firewall, remote],
   };
 }

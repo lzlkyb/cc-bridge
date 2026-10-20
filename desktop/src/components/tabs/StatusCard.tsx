@@ -134,6 +134,7 @@ export function StatusCard({
     platform: status?.platform,
     firewallPortOpen: status?.firewallPortOpen,
     firewallAvailable: status?.firewallAvailable,
+    firewallCheckedSecondsAgo: status?.firewallCheckedSecondsAgo,
     totalRequests: live?.stats.totalRequests ?? 0,
     lastIncreaseAt,
     now: Date.now(),

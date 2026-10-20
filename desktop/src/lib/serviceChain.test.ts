@@ -12,6 +12,7 @@ function input(over: Partial<ChainInput> = {}): ChainInput {
     platform: "windows",
     firewallPortOpen: true,
     firewallAvailable: true,
+    firewallCheckedSecondsAgo: 3,
     totalRequests: 1284,
     lastIncreaseAt: NOW - 15_000,
     now: NOW,
@@ -71,6 +72,32 @@ describe("serviceChain", () => {
     expect(seg(r, "firewall").detail).toBe("无法检测");
     expect(r.tone).toBe("live");
     expect(r.sub).toContain("实际不影响");
+  });
+
+  it("🔴 冷启动尚未检查完 → 「检测中」，不得说成「无法检测」", () => {
+    // 后端 get_status 在缓存未填时返回 portOpen=null + checkedSecondsAgo=null，
+    // 这是「还在查」（1〜4s），不是「查不了」。两者混为一谈会让用户去修没坏的东西。
+    const r = computeChain(
+      input({
+        firewallAvailable: true,
+        firewallPortOpen: null,
+        firewallCheckedSecondsAgo: null,
+        totalRequests: 0,
+        lastIncreaseAt: null,
+      }),
+    );
+    expect(seg(r, "firewall").tone).toBe("unknown");
+    expect(seg(r, "firewall").detail).toBe("检测中");
+    expect(r.tone).toBe("live");
+    expect(r.headline).not.toContain("防火墙挡着");
+  });
+
+  it("🔴 查过但没结论 → 「无法检测」，且不说成检测中", () => {
+    const r = computeChain(
+      input({ firewallAvailable: true, firewallPortOpen: null, firewallCheckedSecondsAgo: 12 }),
+    );
+    expect(seg(r, "firewall").tone).toBe("unknown");
+    expect(seg(r, "firewall").detail).toBe("无法检测");
   });
 
   it("macOS 不画防火墙段", () => {

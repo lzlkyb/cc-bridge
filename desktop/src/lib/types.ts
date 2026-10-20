@@ -80,10 +80,14 @@ export interface StatusResponse {
   /** A3 修复：启动期错误（如端口被占用）。null = 正常 */
   startupError: string | null;
   /** 防火墙状态（仅 Windows 真实查询，其它平台为 null）。
-   *  firewallEnabled：防火墙是否开启；firewallPortOpen：7823/TCP 入站是否放行。
-   *  null 表示无法判断（非 Windows / 查询失败）。 */
+   *  firewallEnabled：防火墙是否开启；firewallPortOpen：入站 TCP 是否**确实**放行
+   *  （结构化诊断结论，已计入 program 绑定 / 配置文件覆盖 / 阻止规则）。
+   *  null 表示无法判断（非 Windows / 诊断不可用）。 */
   firewallEnabled: boolean | null;
   firewallPortOpen: boolean | null;
+  /** 距上次防火墙检查的秒数。null = **尚未检查完**（冷启动头一两秒）。
+   *  与 firewallPortOpen === null 组合使用：null+null 是「检测中」，null+已检查是「无法检测」。 */
+  firewallCheckedSecondsAgo?: number | null;
   /** 防火墙探测是否可用。false = 后端启动探测发现 netsh 异常，此后停用查询以避免反复弹系统错误框。
    *  由后端启动时写入（state.firewall_available，默认 true）。undefined/null = 未确定，按可用处理。 */
   firewallAvailable?: boolean | null;

@@ -938,6 +938,34 @@ mod tests {
         assert!(d.has_fixable());
     }
 
+    /// 🔴 回归（2026-10-20）：`program=` 指向别的 cc-bridge 路径 → 不算放行 + 报 staleRule。
+    ///
+    /// 这是安装器写错 exe 名（`cc-bridge.exe` vs 实际 `cc-bridge-desktop.exe`）之后的真实形态：
+    /// 方向 / 操作 / 协议 / 本地端口全对，只有 program 对不上。旧的「粗粒度 netsh 文本解析」
+    /// 只看后四项，于是把它判成「已放行」——连接页显示绿灯，远程却连不进来。
+    #[test]
+    #[cfg(windows)]
+    fn stale_program_rule_is_not_an_allow() {
+        let wrong = "C:\\soft\\cc-bridge\\cc-bridge.exe";
+        let d = analyze(
+            7823,
+            "C:\\soft\\cc-bridge\\cc-bridge-desktop.exe",
+            profs(),
+            vec!["Private".into()],
+            vec![rule("Allow", "Any", Some(wrong))],
+        );
+        assert_eq!(
+            d.port_open,
+            Some(false),
+            "program 不匹配的规则不得判为已放行"
+        );
+        assert!(d.allow_rules.is_empty(), "废规则不能进 allow 清单");
+        assert_eq!(d.stale_rules.len(), 1, "应把它识别为废规则");
+        assert!(d.issues.iter().any(|i| i.code == "noRule"));
+        assert!(d.issues.iter().any(|i| i.code == "staleRule"));
+        assert!(d.has_fixable(), "应可被一键修复清理并重建");
+    }
+
     #[test]
     #[cfg(windows)]
     fn any_profile_rule_covers_private_network() {

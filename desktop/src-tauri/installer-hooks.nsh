@@ -16,11 +16,20 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   DetailPrint "配置 Windows 防火墙入站规则 (7823/TCP)..."
+  ; 🔴 program 必须用 ${MAINBINARYNAME}（Tauri 模板顶部已 !define），不得写死
+  ; cc-bridge.exe：productName 是 "cc-bridge"，但落地的主二进制取 Cargo package 名，
+  ; 实际文件是 cc-bridge-desktop.exe。写死会让规则的 program= 指向不存在的文件——
+  ; netsh 照样返回 0、规则看着也在，却永远不生效，于是每次重装后用户都得手动点
+  ; 一次「一键修复」才能连通（2026-10-20 修复）。
+  ;
+  ; 为何仍是「先删同名再加」而不是「存在就跳过」：安装器读不出规则里的 program
+  ; 是否对得上（解析 netsh 文本太脆），跳过就会把上一版写错的废规则一直留着。
+  ; 删+加是幂等的重建，路径正确后对用户已修好的规则无损。
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="cc-bridge" dir=in'
   Pop $0
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="cc-bridge (7823/TCP)" dir=in'
   Pop $0
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="cc-bridge (7823/TCP)" dir=in action=allow protocol=TCP localport=7823 profile=any enable=yes program="$INSTDIR\cc-bridge.exe"'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="cc-bridge (7823/TCP)" dir=in action=allow protocol=TCP localport=7823 profile=any enable=yes program="$INSTDIR\${MAINBINARYNAME}.exe"'
   Pop $0
   ${If} $0 == 0
     DetailPrint "防火墙规则已写入。"

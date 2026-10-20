@@ -13,28 +13,6 @@ use crate::state::AppState;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-/// 防火墙状态查询结果：(防火墙是否启用, 7823 入站是否放行)。
-/// 两者均为 `Option<bool>`：`None` 表示「无法判断」（非 Windows 平台 / 查询命令失败 / 解析失败）。
-pub type FirewallState = (Option<bool>, Option<bool>);
-
-#[cfg(windows)]
-pub fn query_firewall_state(port: u16) -> FirewallState {
-    let enabled = query_firewall_enabled();
-    // 防火墙已确认关闭 → 端口必然可达，跳过规则枚举（关了任何规则都不挡）。
-    // 否则才去 netsh 枚举全部规则判断放行与否——这一步在关闭场景完全多余。
-    let port_open = if enabled == Some(false) {
-        Some(true)
-    } else {
-        query_port_allowed(port)
-    };
-    (enabled, port_open)
-}
-
-#[cfg(not(windows))]
-pub fn query_firewall_state(_port: u16) -> FirewallState {
-    (None, None)
-}
-
 /// 抑制子进程（如 netsh）初始化失败时的「应用程序错误」硬弹窗（0xc0000142）。
 ///
 /// `0xc0000142` 是 `netsh.exe` 在**进程创建 / DLL 初始化阶段**就崩了，该错误框由 Windows
@@ -77,41 +55,41 @@ pub fn current_exe_string() -> String {
         .unwrap_or_default()
 }
 
-/// 完整查询：优先 PowerShell 结构化诊断，不可用时回退 netsh 文本解析。
+/// 完整查询：只采信结构化诊断（PowerShell 的 NetSecurity cmdlet）。
 ///
-/// 回退路径只能得到粗粒度结论（有没有一条命中端口的 allow 规则），拿不到配置文件覆盖
-/// 与阻止规则信息，因此 `source` 会标为 `netsh`，前端据此提示「诊断能力受限」。
+/// 🔴 为什么不再用 netsh 文本解析兜底（2026-10-20）：那份解析只能看到
+/// 「方向 / 操作 / 协议 / 本地端口」，看不到 `Program` / `Profiles` / `Enabled`。
+/// 于是一条 `program=` 指向不存在文件的废规则（安装器写错 exe 名的典型产物）会被
+/// 判成「已放行」，而结构化诊断判它未放行 —— 连接页链路图与告警块各说一套，
+/// 而绿色的那个是错的。用户看到「防火墙已放行」却连不上，正是这个假绿。
+///
+/// 拿不到结构化事实时**不给结论**（`port_open = None`），前端显示「无法检测」。
+/// 宁可不说话，也不谎报放行。
 pub fn query_full(port: u16) -> FirewallDiagnosis {
     let exe = current_exe_string();
     if let Some(d) = firewall_diag::query_diagnosis(port, &exe) {
         return d;
     }
-    let (enabled, port_open) = query_firewall_state(port);
-    let mut issues: Vec<Issue> = Vec::new();
-    let source = if enabled.is_none() && port_open.is_none() {
-        issues.push(Issue {
-            code: "probeUnavailable".into(),
-            detail: "无法读取本机防火墙状态（PowerShell 与 netsh 均不可用）。请用下方手动命令在管理员终端自行添加规则。".into(),
-            fixable: false,
-        });
-        "unavailable"
-    } else {
-        if port_open == Some(false) {
-            issues.push(Issue {
-                code: "noRule".into(),
-                detail: format!("未找到放行 {port}/TCP 入站的规则。"),
-                fixable: true,
-            });
-        }
-        "netsh"
-    };
+    // 防火墙开关本身可以安全读取（只读 allprofiles state，不做规则匹配），保留它对用户
+    // 仍有信息量；端口是否放行则必须是 unknown —— 没有规则明细就没资格下这个结论。
+    #[cfg(windows)]
+    let enabled = query_firewall_enabled();
+    #[cfg(not(windows))]
+    let enabled = None;
     FirewallDiagnosis {
         port,
         exe,
         enabled,
-        port_open,
-        issues,
-        source: source.into(),
+        port_open: None,
+        issues: vec![Issue {
+            code: "probeUnavailable".into(),
+            detail: format!(
+                "无法读取 {port}/TCP 的规则明细（结构化诊断不可用），因此不判断是否已放行。\
+                 可在下方复制手动命令到管理员终端核对，或直接点「一键修复」。"
+            ),
+            fixable: false,
+        }],
+        source: "unavailable".into(),
         ..Default::default()
     }
 }
@@ -156,73 +134,6 @@ fn query_firewall_enabled() -> Option<bool> {
     }
 }
 
-#[cfg(windows)]
-fn query_port_allowed(port: u16) -> Option<bool> {
-    let out = Command::new("netsh")
-        .args(["advfirewall", "firewall", "show", "rule", "name=all"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let port_str = port.to_string();
-    // 解析失败（netsh 异常）时回退 unknown，避免误报「已放行」。
-    Some(parse_inbound_allow(&text, &port_str))
-}
-
-/// 解析 netsh 规则列表，判断是否存在「入站 + 允许 + TCP + 本地端口==port」的规则。
-#[cfg(windows)]
-fn parse_inbound_allow(text: &str, port: &str) -> bool {
-    // Windows netsh 输出为 CRLF（\r\n\r\n）换行，先规整为 LF 再按空行分块，
-    // 否则 split("\n\n") 在 CRLF 下不分割、所有规则混为一 block、字段被覆盖。
-    let text = text.replace("\r\n", "\n");
-    for block in text.split("\n\n") {
-        let mut direction = String::new();
-        let mut action = String::new();
-        let mut proto = String::new();
-        let mut localport = String::new();
-        for line in block.lines() {
-            if let Some((k, v)) = split_kv(line) {
-                // 同时兑配中文与英文 netsh 键名（英文系统上为 Direction/Action/Protocol/Local Port，
-                // 旧实现只匹配中文键名，英文 locale 下所有字段解不出来、恒判“未放行”）。
-                let kn = k.to_lowercase().replace(' ', "");
-                match k.as_str() {
-                    "方向" => direction = v,
-                    "操作" => action = v,
-                    "协议" => proto = v,
-                    "本地端口" => localport = v,
-                    _ => match kn.as_str() {
-                        "direction" => direction = v,
-                        "action" => action = v,
-                        "protocol" => proto = v,
-                        "localport" => localport = v,
-                        _ => {}
-                    },
-                }
-            }
-        }
-        let dir_ok = direction.contains("入站") || direction.to_lowercase().contains("in");
-        let act_ok = action.contains("允许") || action.to_lowercase().contains("allow");
-        let proto_ok = proto.is_empty() || proto.to_uppercase().contains("TCP");
-        let port_ok = localport == port || localport.split(',').any(|p| p.trim() == port);
-        if dir_ok && act_ok && proto_ok && port_ok {
-            return true;
-        }
-    }
-    false
-}
-
-/// 按首个冒号（ASCII 或全角）切分 "键: 值"，返回 (键, 去空格值)。
-#[cfg(windows)]
-fn split_kv(line: &str) -> Option<(String, String)> {
-    let idx = line.find(':')?;
-    let key = line[..idx].trim().to_string();
-    let val = line[idx + 1..].trim().to_string();
-    if key.is_empty() {
-        return None;
-    }
-    Some((key, val))
-}
-
 /// 启动探测：只要 PowerShell 或 netsh 有一个能用，防火墙功能就可用。
 /// 两者都不可用才把 `firewall_available` 置 false（停用后续查询）。
 #[cfg(windows)]
@@ -265,27 +176,4 @@ pub fn elevate_cmd_script(script: &str) -> Result<(), String> {
         return Err(format!("写入防火墙规则失败：{msg}"));
     }
     Ok(())
-}
-
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_inbound_allow_recognizes_crlf_multi_rule() {
-        // Windows netsh 输出为 CRLF；多个规则以 \r\n\r\n 分隔。
-        // 修复前 split("\n\n") 在 CRLF 下不分割 → 多规则字段互相覆盖 → 误判“未放行”。
-        let text = "规则名称: rule-allow\r\n方向: 入站\r\n操作: 允许\r\n协议: TCP\r\n本地端口: 7823\r\n\r\n规则名称: rule-other\r\n方向: 入站\r\n操作: 允许\r\n协议: TCP\r\n本地端口: 9999";
-        assert!(
-            parse_inbound_allow(text, "7823"),
-            "CRLF 多规则下应识别放行规则"
-        );
-    }
-
-    #[test]
-    fn parse_inbound_allow_crlf_no_match() {
-        let text =
-            "规则名称: rule-allow\r\n方向: 入站\r\n操作: 允许\r\n协议: TCP\r\n本地端口: 9999";
-        assert!(!parse_inbound_allow(text, "7823"), "端口不匹配应判未放行");
-    }
 }
