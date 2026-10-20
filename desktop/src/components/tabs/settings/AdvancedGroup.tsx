@@ -67,7 +67,7 @@ export function AdvancedGroup({
         <ToggleRow
           id="toggle-ssh-drag-select"
           label="终端拖拽即选"
-          info="开启：在 SSH 终端内直接拖选文字即建立选区，无需按住 Shift 或点「选择模式」。关闭后这两条路径仍然可用"
+          info="开启：在 SSH 终端内直接拖选文字即建立选区，无需按住 Shift 或点「选择模式」（远端没开鼠标追踪的会话，原生拖选本来就能用）。关闭后 Shift 与「选择模式」两条路径仍然可用"
           checked={status?.sshDragSelectEnabled ?? true}
           onChange={(v) => save({ sshDragSelectEnabled: v }, "ssh-drag-select")}
           saved={savedKey === "ssh-drag-select"}
@@ -75,7 +75,7 @@ export function AdvancedGroup({
         <ToggleRow
           id="toggle-ssh-copy-on-select"
           label="选中即复制"
-          info="开启：选择手势结束（松手）即自动把选中文字写入剪贴板，并提示复制的字数。关闭后选区照常保留，复制改走右键菜单 / 工具栏按钮 / Ctrl+Shift+C"
+          info="开启：拖拽选中文字后松手即自动写入剪贴板并提示字数（双击选词、三击选行不触发）。关闭后选区照常保留，复制改走右键菜单 / 工具栏按钮 / Ctrl+Shift+C"
           checked={status?.sshCopyOnSelectEnabled ?? true}
           onChange={(v) => save({ sshCopyOnSelectEnabled: v }, "ssh-copy-on-select")}
           saved={savedKey === "ssh-copy-on-select"}

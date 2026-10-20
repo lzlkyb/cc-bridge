@@ -52,6 +52,8 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-encoding", label: "读取编码自适应", icon: "file", group: "设置 · 高级", tab: "settings", anchor: "encoding", keywords: "encoding gbk gb18030 utf-8 乱码 编码" },
   { id: "set-session", label: "命令会话持久化", icon: "terminal", group: "设置 · 高级", tab: "settings", anchor: "session-persist", keywords: "session cwd venv env 环境变量 工作目录" },
   { id: "set-release-webview", label: "关窗时释放界面内存", icon: "monitor", group: "设置 · 高级", tab: "settings", anchor: "release-webview", keywords: "内存 memory webview 占用 关窗" },
+  { id: "set-terminal-drag-select", label: "终端拖拽即选", icon: "terminal", group: "设置 · 高级", tab: "settings", anchor: "ssh-drag-select", keywords: "终端 拖选 拖拽 select drag 选择模式 shift 鼠标" },
+  { id: "set-terminal-copy-on-select", label: "选中即复制", icon: "copy", group: "设置 · 高级", tab: "settings", anchor: "ssh-copy-on-select", keywords: "终端 复制 剪贴板 clipboard copy on select 自动复制 松手" },
 
   { id: "set-network", label: "监听端口 / MCP 传输协议", icon: "server", group: "设置 · 其它", tab: "settings", anchor: "set-network", keywords: "port 7823 端口 transport http sse 协议" },
   // 仅 Windows 渲染（`SettingsTab` 里有 isWindows 守卫）。非 Windows 上点了会跳到设置页但

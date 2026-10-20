@@ -6,7 +6,7 @@ const owners: Record<string, string> = {
   backup: "set-backupaudit", audit: "set-backupaudit",
   "notify-command": "set-notify", "notify-task": "set-notify",
   ratelimit: "set-advanced", encoding: "set-advanced", "session-persist": "set-advanced",
-  "release-webview": "set-advanced", "ssh-drag-select": "set-advanced",
+  "release-webview": "set-advanced", "ssh-drag-select": "set-advanced", "ssh-copy-on-select": "set-advanced",
 };
 
 export function settingsSectionForAnchor(anchor: string): string | undefined {

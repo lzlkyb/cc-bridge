@@ -1,4 +1,5 @@
 import type { Terminal } from "@xterm/xterm";
+import { cancelPendingRelease, setSelectHold } from "./terminalInputHold";
 import { mouseTrackingActive } from "./terminalMouse";
 
 /**
@@ -125,4 +126,76 @@ export function replayMouseUp(term: Terminal, x: number, y: number): void {
   });
   markSynthMouse(ev);
   target.dispatchEvent(ev);
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 手势起手：把「闭闸 + 起选区（+ 必要时补 mouseup）」收成两个入口
+ *
+ * WHY 收成 lib：这三步在 useSshTerminalSelect 里出现三次（Shift/选择模式起手、
+ * 裸拖过阈值、拖到一半按 Shift），而那个 hook 在 300 行棘轮线上。收进来还能顺带
+ * 让「要不要补 mouseup」这条判据只有一处、可单测。
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * 起手就带强制修饰键（Shift / 选择模式）：闭闸 + 强制起本地选区。
+ *
+ * 这里**不**补 mouseup：真实那枚 mousedown 被 xterm 的 `shouldForceSelection` 拦下、
+ * 压根没发给远端（见 forceSelectAt 头注），没有要收尾的按下。
+ */
+export function beginSelection(term: Terminal, x: number, y: number): void {
+  cancelPendingRelease(term);
+  setSelectHold(term, true);
+  forceSelectAt(term, x, y);
+}
+
+/**
+ * 裸拖越过阈值 / 拖到一半按 Shift：先把**已经泄漏给远端**的那次按下补抬起来，再闭闸、
+ * 起本地选区。
+ *
+ * 🔴 补发只在**远端真开着鼠标追踪**时做（2026-10-20 修）：没开追踪的会话（普通 bash、
+ * 没要鼠标的 vim/less）里，xterm 的原生选区由**真实 mousedown** 启动，并在 document 上
+ * 挂着 mousemove/mouseup（`SelectionService._addMouseDownListeners`）。我们这枚合成
+ * mouseup 冒泡到 document 会命中 `_handleMouseUp`，它第一件事就是
+ * `_removeMouseDownListeners()` ⇒ **原生拖选的延伸监听被摘掉**，用户拖到 4px 处就断了
+ * （headless Edge + 真 xterm 探针：不补发选中 209 字符，补发后只剩 5 字符）。
+ * 而没开追踪时远端根本没收到过「按下」，`forceSelectAt` 也只在这种情况下才动手——
+ * 三者是同一条前提，必须一起判。
+ */
+export function beginDragSelection(term: Terminal, x: number, y: number): void {
+  if (mouseTrackingActive(term)) replayMouseUp(term, x, y);
+  cancelPendingRelease(term);
+  setSelectHold(term, true);
+  forceSelectAt(term, x, y);
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * 选择手势簿记：同一次手势只自动复制一次
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+export interface SelectGestureTicket {
+  /** 进入新手势。同一次手势内的重复 pointerup 共享这个编号。 */
+  begin(): void;
+  /** 领取本手势的自动复制额度；同一手势内第二次调用返回 false。 */
+  claimCopy(): boolean;
+}
+
+/**
+ * WHY 不用时间窗（2026-10-20 改）：「500ms 内第二次 claim 返回 false」与手势无关，
+ * 用户快速连续拖选两段（间隔 <500ms）时第二次会被静默跳过——不写剪贴板也不提示，
+ * 与「松手即复制」的承诺相反。它真正要挡的只有「同一次松手触发多个 pointerup」
+ * （HMR 累积的监听闭包等），那是**同一个手势**：自增手势号是精确判据。
+ */
+export function createSelectGesture(): SelectGestureTicket {
+  let id = 0;
+  let copied = -1;
+  return {
+    begin() {
+      id += 1;
+    },
+    claimCopy() {
+      if (copied === id) return false;
+      copied = id;
+      return true;
+    },
+  };
 }
