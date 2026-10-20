@@ -61,7 +61,9 @@ const BASELINE = {
   // 后降到 180 行、1 个 hook，重新落在 300 行 / 8 状态的默认上限之内——不需要豁免了。
   // 2026-09-16：325 → 303（类型契约→lib/transferTypes.ts；覆盖提问编排→useTransferPrompt.ts）。
   "src/components/tabs/useSshTransfer.ts": { lines: 303 },
-  "src/components/modals/CommandPalette.tsx": { lines: 342, hooks: 9 },
+  // 2026-10-20：343 → 336（搜索过滤的 IIFE + 三行 filter 收成两行，语义不变）。
+  // 上一版基线 342 在提交 d4bb165 时就被突破到 343 却没人跑门禁 —— 棘轮只在被跑到时才转。
+  "src/components/modals/CommandPalette.tsx": { lines: 336, hooks: 9 },
   // 2026-10-13：`FileControlCard.tsx` 已从本表**移除**。它原本登记 301 行（贴线），
   // 本次把备份/限流/后台命令三节改成 SumRow 摘要行（渐进披露）、展开区拆到
   // `tabs/filecontrol/`（BackupSection 210 行 / LimitSections 83 行）后降到 117 行，

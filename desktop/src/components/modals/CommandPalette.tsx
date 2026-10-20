@@ -166,15 +166,8 @@ export function CommandPalette({
   ], [running, isDark, platform, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding, copyIpSed]);
 
   // 标题 + keywords 一起匹配（keywords 不展示）。20 多条量级下简单 includes 就够，不上模糊匹配库。
-  const filtered = (() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter(
-      (c) =>
-        c.label.toLowerCase().includes(q) ||
-        (c.keywords ? c.keywords.toLowerCase().includes(q) : false),
-    );
-  })();
+  const q = query.trim().toLowerCase();
+  const filtered = !q ? items : items.filter((c) => c.label.toLowerCase().includes(q) || (c.keywords?.toLowerCase().includes(q) ?? false));
 
   // 重置选中项当搜索变化
   useEffect(() => {
