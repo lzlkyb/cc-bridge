@@ -18,7 +18,7 @@
 |---|---|---|---|
 | ![连接页](docs/images/connect.png) | ![安全页](docs/images/security.png) | ![设置页](docs/images/settings.png) | ![日志页](docs/images/logs.png) |
 
-> 截图存放于 `docs/images/`：`connect.png`（连接页：状态 / 一键复制命令）、`security.png`（安全页：白名单 + 开关）、`settings.png`（设置页：IP 变更检测 / 备份浏览器 / 启动项等开关）、`logs.png`（日志页：审计时间线）。建议单张压缩到 500KB 以内。
+> 以上为 v2.10.0 Windows 实际界面：连接工作台、安全与白名单、设置（关于页）、审计日志。原图存放于 `docs/images/`。
 
 ## 这是什么
 
