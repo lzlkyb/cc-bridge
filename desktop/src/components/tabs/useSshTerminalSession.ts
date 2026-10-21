@@ -39,6 +39,7 @@ import { loadFontStack } from "../../lib/terminalFontFamily";
 import { screenToText } from "../../lib/terminalScreen";
 import { trimCopyText } from "../../lib/terminalPaste";
 import { useTerminalFit } from "../../hooks/useTerminalFit";
+import { useTerminalVisibility } from "../../hooks/useTerminalVisibility";
 import { useTerminalRuntimeOptions } from "../../hooks/useTerminalRuntimeOptions";
 import { useTerminalPaste } from "./useTerminalPaste";
 import type { Theme } from "../../lib/theme";
@@ -48,6 +49,7 @@ interface Args {
   sessionId: string;
   /** 该终端当前是否可见（多标签切换时从 display:none → block，需重新 fit）。 */
   visible: boolean;
+  active: boolean;
   /** 软件内全屏态：变化时容器尺寸剧变，需要重新 fit。 */
   fullscreen: boolean;
   /** 亮/暗主题。 */
@@ -79,6 +81,7 @@ interface Args {
 export function useSshTerminalSession({
   sessionId,
   visible,
+  active,
   fullscreen,
   mode,
   preset,
@@ -130,27 +133,7 @@ export function useSshTerminalSession({
   // 上一次接好线的会话：null = 还没接过。用它分辨「首次挂载」与「重连」。
   const wiredSessionRef = useRef<string | null>(null);
 
-  // 多标签切换：该终端从隐藏(display:none)变为可见时，容器重新获得尺寸，
-  // 需要主动 fit 一次并把新尺寸告知后端，否则切回的终端会显示挤压/错位。
-  useEffect(() => {
-    if (!visible) return;
-    const t = setTimeout(() => {
-      doFit();
-      const term = termRef.current;
-      if (!term) return;
-      // 已断开的会话不抢焦点：此时键入无意义，焦点应当留给横幅上的「重新连接」。
-      if (!closedRef.current) {
-        try {
-          term.textarea?.focus();
-        } catch {
-          /* textarea 未就绪 */
-        }
-        term.focus();
-      }
-      void invoke("ssh_resize", { sessionId, rows: term.rows, cols: term.cols }).catch(() => {});
-    }, 0);
-    return () => clearTimeout(t);
-  }, [visible, sessionId, doFit, termRef]);
+  const canFocusRef = useTerminalVisibility({ visible, active, sessionId, termRef, closedRef, doFit });
 
   // 全屏切换会改变容器尺寸。ResizeObserver 会盖住这条，但再延一帧量一次更稳：
   // 切到全屏后布局、滚动条、字体度量未必在同一帧内全部稳定。
@@ -225,7 +208,7 @@ export function useSshTerminalSession({
     // onData 不触发、键入无法回传后端（输出正常但无法输入）。
     // 同步 focus 偶尔因“open 后初始布局未完成”落空，用 rAF + 短延时双保险。
     const grabFocus = () => {
-      if (closedRef.current) return;
+      if (closedRef.current || !canFocusRef.current) return;
       try {
         term.textarea?.focus();
       } catch {
@@ -298,7 +281,7 @@ export function useSshTerminalSession({
     // 而以前 sessionId 一变就重建 xterm，等于点一下「重新连接」就把它们全清了。
     // 会话相关的接线（输入/输出/断开事件）在下面另一个 effect 里按 sessionId 重挂。
     // 其余依赖均为稳定引用（ref / useCallback）。
-  }, [doFit, attachSelect, attachSearch, containerRef, termRef, focusedRef]);
+  }, [doFit, attachSelect, attachSearch, containerRef, termRef, focusedRef, canFocusRef]);
 
   // ── 会话接线：按 sessionId 重挂，终端实例不动 ──
   //

@@ -220,6 +220,13 @@ export function sedInPlace(expr: string, file: string): string {
   return `sed -i.bak '${expr}' ${file} && rm -f ${file}.bak`;
 }
 
+/** 保留家目录简写的含义，其余字符仍按双引号内容转义，禁止路径触发命令替换。 */
+export function quoteRemotePath(path: string): string {
+  if (path === "~") return '"$HOME"';
+  if (path.startsWith("~/")) return `"$HOME/${escapeDoubleQuoted(path.slice(2))}"`;
+  return `"${escapeDoubleQuoted(path)}"`;
+}
+
 /**
  * 网络地址变化后「原地更新 IP」的远程 sed 命令（P2 TLS 感知版，IpChangedBanner 消费）。
  * 匹配段用 `https\?://` 同时覆盖 http/https 两种旧值（切换 TLS 协议后也能原地修）；
@@ -258,7 +265,7 @@ export function buildIpSedCommand(
   // cd 前缀只对 Claude Code 的项目级有意义（其余工具都是全局配置文件）。
   const cdPrefix =
     client === "claude-code" && scope === "project" && projectPath.trim()
-      ? `cd "${escapeDoubleQuoted(projectPath.trim())}" && `
+      ? `cd ${quoteRemotePath(projectPath.trim())} && `
       : "";
   const target = `${tls ? "https" : "http"}://${selectedIp}:${port}/mcp`;
   const sub = `s#https\\?://[0-9.]*:${port}/mcp#${target}#g`;
@@ -295,7 +302,7 @@ export function buildTokenSedCommand(
   const cfgFile = scope === "user" ? "~/.claude.json" : ".mcp.json";
   const cdPrefix =
     scope === "project" && projectPath.trim()
-      ? `cd "${escapeDoubleQuoted(projectPath.trim())}" && `
+      ? `cd ${quoteRemotePath(projectPath.trim())} && `
       : "";
   return `${cdPrefix}${sedInPlace(`s#Bearer ${oldToken}#Bearer ${token}#g`, cfgFile)}`;
 }
@@ -336,7 +343,7 @@ export function buildPermissionGrantCommand(
   const targetFile = scope === "user" ? "~/.claude/settings.json" : ".claude/settings.local.json";
   const trimmed = projectPath.trim();
   // cd 目标路径加双引号，避免含空格或特殊字符的项目路径拆成多个参数。
-  const cdPrefix = scope === "project" && trimmed ? `cd "${escapeDoubleQuoted(trimmed)}" && ` : "";
+  const cdPrefix = scope === "project" && trimmed ? `cd ${quoteRemotePath(trimmed)} && ` : "";
 
   const toolsBlock = includeShellTools
     ? `if 'mcp__cc-bridge__*' not in allow:\n    allow.append('mcp__cc-bridge__*')`

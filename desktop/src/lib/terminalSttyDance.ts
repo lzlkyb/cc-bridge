@@ -45,6 +45,22 @@ import type { Terminal } from "@xterm/xterm";
 export const ECHO_OFF_CMD = "stty -echo";
 export const ECHO_ON_CMD = "stty echo";
 
+/**
+ * **正常收尾**用的恢复命令：先把光标所在行擦掉，再恢复回显（2026-10-20 修「连接后两个 $」）。
+ *
+ * WHY 要擦这一行：`stty echo` 是最后一条注入命令，它执行完 bash 必然重画一次提示符。
+ * 回显关闭期间 readline 不写换行，整场注入只攒下「登录提示符」那一行；一旦 ECHO 恢复，
+ * 这个新提示符就落到下一行 ⇒ 用户看到「每次连接有两个提示符」。
+ * 清行必须赶在 ECHO 仍关闭时发出（这行命令自己不被回显），并且**只擦当前行、不回退**：
+ * 新提示符随后原地重画在同一行，屏幕只剩一个。
+ *
+ * 🔴 只用于正常收尾（kick 已发出、shell 正停在提示符上）。异常路径（探针超时 / 发送失败）
+ * 屏幕状态未知，退回 ECHO_ON_CMD 不擦行。
+ * 🔴 序列走**远端输出流**（不是本地 xterm 注入），ConPTY 处理的是同一份字节、两边不错位——
+ * 与文件头注里「别用 `\r\x1b[2K` 去擦本地已渲染内容」的教训不冲突。
+ */
+export const ECHO_ON_CLEAN_CMD = "printf '\\r\\033[2K'; stty echo";
+
 /** 舞步时序（毫秒）。t0 = 会话接线完成（等 banner / MOTD 走完再起舞）。 */
 export const DANCE = {
   /** t0：发 `stty -echo`。太早发会被登录脚本吞掉（沿用原探针延时）。 */

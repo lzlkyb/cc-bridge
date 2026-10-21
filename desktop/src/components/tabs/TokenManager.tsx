@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useId, useState, useMemo, useEffect } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StaticStatus } from "../../lib/types";
 import { McpScope, buildTokenSedCommand } from "../../lib/utils";
@@ -8,26 +8,19 @@ import { useToast } from "../ui/toast";
 import { InlineNotice } from "../ui/notice";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
-import { useAutoScrollOnExpand } from "../../hooks/useAutoScrollOnExpand";
 import { SavedHint } from "../ui/SavedHint";
 
 /**
- * 访问令牌管理（可折叠）。从 ConnectTab 抽离，收口 Token 相关的 5 个局部状态，
- * 通过 props 接收 status / onRefresh / scope / projectPath，自身不依赖父组件状态，
- * 因此父组件无需透传任何 Token 状态，可直接替换整段 Token 区块。
+ * 令牌操作常驻，内容默认掩码；重生成继续保留确认与远程修复命令。
  */
 export function TokenManager({
   status,
   onRefresh,
   projectPath,
-  expanded,
-  onToggle,
 }: {
   status?: StaticStatus;
   onRefresh: () => void;
   projectPath: string;
-  expanded: boolean;
-  onToggle: () => void;
 }) {
   const [showToken, setShowToken] = useState(false);
   const [confirmingRegen, setConfirmingRegen] = useState(false);
@@ -48,22 +41,22 @@ export function TokenManager({
   // 反馈时长与其余复制点一致（2s），失败有 toast 兜底。
   const fb = useCopyFeedback();
   const tokenBody = useAutoAnimateRM<HTMLDivElement>();
-  const showBody = expanded || confirmingRegen || regenDone;
-  // 首次渲染不自动滚动（hook 内置挂载守卫），仅后续展开才平滑滚动到块头。
-  const btnRef = useAutoScrollOnExpand<HTMLButtonElement>(showBody);
+  const headingId = useId();
 
   // 原地替换 Bearer，不 remove+add（保留服务器条目与授权状态，避免重新授权）。
   // 作用域读持久化的 status.scope（当初接入确认的作用域），而非 UI 开关，避免匹配错文件。
   // 🔴 新 token 优先用重生成的**返回值**（B10）：refetch 未落地时 status.token 还是旧值，
   // 用它会把命令算成空操作。
   const currentToken = newToken || (status?.token ?? "");
+  // 返回值只用于等待刷新；后端令牌变化后应跟随最新配置，避免一直显示旧的临时值。
+  useEffect(() => { setNewToken(""); }, [status?.token]);
   const tokenSedCommand = useMemo(
     () => buildTokenSedCommand(oldToken, currentToken, (status?.scope ?? "user") as McpScope, projectPath),
     [oldToken, currentToken, status?.scope, projectPath],
   );
 
   const handleRegenToken = async () => {
-    const old = status?.token ?? "";
+    const old = currentToken;
     // 生成中态：避免用户连点两次（第二次会把第一次的新 token 又换掉，
     // 而界面上的命令只对得上其中一次）。
     setRegenerating(true);
@@ -85,54 +78,28 @@ export function TokenManager({
   };
 
   return (
-    <>
-      <button
-        type="button"
-        className="collapsible-head w-full text-left"
-        onClick={onToggle}
-        aria-expanded={showBody}
-        ref={btnRef}
-      >
-        <span
-          className="step-num inline-flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-white bg-gradient-to-br from-[#F59E0B] to-[#D97706] shadow-glow-warning"
-          role="img"
-          aria-label="访问令牌"
-        >
-          <Icon name="key" size={14} aria-hidden="true" />
-        </span>
-        <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-semibold text-foreground">访问令牌</div>
-          <div className="text-xs text-muted-foreground">已配置 · 点击展开管理（显示 / 重生成）</div>
-        </div>
-        <Icon
-          name="chevronDown"
-          size={16}
-          className={`collapsible-chev ${showBody ? "open" : ""}`}
-          aria-hidden="true"
-        />
-      </button>
+    <section className="connect-token" aria-labelledby={headingId}>
+      <div className="connect-section-heading"><h3 id={headingId}>访问令牌</h3></div>
+      <p className="connect-support-desc">{currentToken ? "已配置 · 默认隐藏令牌内容" : "正在加载令牌…"}</p>
 
       <div ref={tokenBody}>
-        {showBody && (
-          <div className="collapsible-body pl-9">
-          <div className="step-row flex items-center gap-3">
+          <div className="connect-token-actions flex items-center gap-3">
             <div className="flex flex-1 items-center gap-2 min-w-0">
-              <span className="shrink-0 text-xs font-semibold text-muted-foreground/50">机密信息</span>
               <code className={`flex-1 min-w-0 rounded-md px-3 py-2 text-xs font-mono ${showToken && !regenerating ? "bg-background border" : "bg-muted/60"}`}>
                 {regenerating
                   ? "生成中…"
                   : showToken
-                    ? (status?.token ?? "")
+                    ? currentToken
                     : "●●●●●●●●●●●●●●●●●●●●"}
               </code>
-              <Button variant="ghost" size="sm" onClick={() => setShowToken(!showToken)}>
+              <Button type="button" variant="ghost" size="sm" disabled={regenerating || !currentToken} onClick={() => setShowToken(!showToken)}>
                 <Icon name={showToken ? "eyeOff" : "eye"} size={14} />
                 {showToken ? "隐藏" : "显示"}
               </Button>
             </div>
             <div className="shrink-0">
               {!confirmingRegen ? (
-                <Button variant="outline" size="sm" onClick={() => setConfirmingRegen(true)}>
+                <Button type="button" variant="outline" size="sm" disabled={!currentToken} onClick={() => setConfirmingRegen(true)}>
                   <Icon name="refresh" size={14} />
                   重生成
                 </Button>
@@ -169,7 +136,7 @@ export function TokenManager({
 
           {confirmingRegen && (
             <InlineNotice variant="error">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 {/* 多设备模式（opt-in）开启时提及跨设备影响；关闭时维持既有文案（兼容性契约）。 */}
                 <span className="flex-1">
                   旧 Token 将立即失效，远程 AI 工具会断开连接
@@ -178,6 +145,7 @@ export function TokenManager({
                 </span>
                 <span className="flex gap-2 shrink-0">
                   <Button
+                    type="button"
                     variant="destructive"
                     size="sm"
                     onClick={handleRegenToken}
@@ -186,6 +154,7 @@ export function TokenManager({
                     {regenerating ? "生成中…" : "确定"}
                   </Button>
                   <Button
+                    type="button"
                     variant="outline"
                     size="sm"
                     onClick={() => setConfirmingRegen(false)}
@@ -197,9 +166,7 @@ export function TokenManager({
               </div>
             </InlineNotice>
           )}
-        </div>
-      )}
       </div>
-    </>
+    </section>
   );
 }

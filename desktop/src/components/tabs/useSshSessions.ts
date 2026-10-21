@@ -202,6 +202,14 @@ export function useSshSessions() {
     [patch],
   );
 
+  /** 收起分屏仅把副格变为独立标签；稳定的 tabId 让画布与历史继续存活。 */
+  const releaseSplit = useCallback((tabId: string) => {
+    const session = sessionsRef.current.find(s => s.tabId === tabId);
+    if (!session) return;
+    patch(prev => prev.map(s => s.tabId === tabId ? { ...s, splitOnly: undefined } : s));
+    setActiveId(current => current ?? session.sessionId);
+  }, [patch]);
+
   /** 连接被删除：断掉它的全部会话并移除标签（连接都没了，留着死标签无意义）。 */
   const dropConnection = useCallback(
     (connId: string) => {
@@ -240,6 +248,7 @@ export function useSshSessions() {
     connect,
     disconnect,
     closeTab,
+    releaseSplit,
     markClosed,
     dropConnection,
     patchMeta,

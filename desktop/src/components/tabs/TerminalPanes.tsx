@@ -6,7 +6,9 @@ import type { SplitInfo } from "./useTerminalSplit";
 import type { SshConnection } from "../../lib/types";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 import type { TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
-import { focusedTerminalSession } from "../../lib/terminalWorkspace";
+import { focusedTerminalSession, terminalSessionOrdinal } from "../../lib/terminalWorkspace";
+import { TerminalPaneFrame } from "./TerminalPaneFrame";
+import { useTerminalPaneLayout } from "../../hooks/useTerminalPaneLayout";
 
 interface TerminalPanesProps {
   sessions: SshSessionRef[];
@@ -33,6 +35,8 @@ interface TerminalPanesProps {
   onCloseSplit: () => void;
   onToggleDir: () => void;
   onSplitRatio: (ratio: number) => void;
+  onZoomPane: (tabId: string) => void;
+  onDisconnect: (sessionId: string) => void;
 }
 
 /**
@@ -69,6 +73,8 @@ export function TerminalPanes({
   onCloseSplit,
   onToggleDir,
   onSplitRatio,
+  onZoomPane,
+  onDisconnect,
 }: TerminalPanesProps) {
   const areaRef = useRef<HTMLDivElement>(null);
   const primary = split ? (sessions.find((s) => s.sessionId === activeId) ?? null) : null;
@@ -76,36 +82,21 @@ export function TerminalPanes({
   const splitActive = split !== null && primary !== null;
   const vertical = split?.dir === "v";
   const focused = focusedTerminalSession(sessions, activeId, split, focusedTabId);
+  const zoomed = splitActive && (split?.zoomedTabId === primary?.tabId || split?.zoomedTabId === sec?.tabId) ? split?.zoomedTabId : null;
+  const layout = useTerminalPaneLayout(areaRef, split, onSplitRatio);
 
   // 会话包装 div 的定位：非分屏 = 绝对定位叠放（原行为）；分屏的两个格 = flex 项。
   const wrapStyle = (s: SshSessionRef): CSSProperties => {
+    if (zoomed && (s.tabId === primary?.tabId || s.tabId === sec?.tabId)) {
+      return { display: s.tabId === zoomed ? "flex" : "none", flexDirection: "column", flex: 1, minWidth: 0, minHeight: 0 };
+    }
     if (splitActive && primary && s.tabId === primary.tabId) {
-      return { display: "flex", flexDirection: "column", order: 0, flex: `0 0 calc(${split.ratio}% - 3px)`, minWidth: 0 };
+      return { display: "flex", flexDirection: "column", order: 0, flex: `0 0 calc(${layout.ratio}% - ${6 * layout.ratio / 100}px)`, minWidth: 0, minHeight: 0 };
     }
     if (splitActive && sec && s.tabId === sec.tabId) {
-      return { display: "flex", flexDirection: "column", order: 2, flex: 1, minWidth: 0 };
+      return { display: "flex", flexDirection: "column", order: 2, flex: 1, minWidth: 0, minHeight: 0 };
     }
     return { position: "absolute", inset: 0, display: s.sessionId === activeId ? "block" : "none" };
-  };
-
-  const onSplitterDown = (e: React.PointerEvent) => {
-    e.preventDefault();
-    const area = areaRef.current;
-    if (!area) return;
-    const rect = area.getBoundingClientRect();
-    const move = (ev: PointerEvent) => {
-      const pct =
-        vertical === false
-          ? ((ev.clientX - rect.left) / rect.width) * 100
-          : ((ev.clientY - rect.top) / rect.height) * 100;
-      onSplitRatio(pct);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
   };
 
   return (
@@ -119,18 +110,13 @@ export function TerminalPanes({
         <>
           {sessions.map((s) => {
             const isSec = splitActive && sec != null && s.tabId === sec.tabId;
+            const isPane = splitActive && (isSec || s.sessionId === activeId);
+            const ordinal = terminalSessionOrdinal(sessions, s);
+            const label = `${s.conn.name || s.conn.host}${ordinal ? ` #${ordinal}` : ""}`;
             return (
-              <div key={s.tabId} style={wrapStyle(s)} onPointerDown={() => onFocusPane(s.tabId)} onFocusCapture={() => onFocusPane(s.tabId)} data-focused={focused?.tabId === s.tabId || undefined}>
-                {splitActive && (isSec || s.sessionId === activeId) && (
-                  <PaneHead
-                    s={s}
-                    focused={focused?.tabId === s.tabId}
-                    secondary={isSec}
-                    vertical={!!vertical}
-                    onToggleDir={onToggleDir}
-                    onClose={onCloseSplit}
-                  />
-                )}
+              <TerminalPaneFrame key={s.tabId} session={s} label={label} splitPane={isPane} focused={focused?.tabId === s.tabId} zoomed={zoomed === s.tabId}
+                style={wrapStyle(s)} onFocus={() => onFocusPane(s.tabId)} onZoom={() => { onFocusPane(s.tabId); onZoomPane(s.tabId); }}>
+                {localHost => <>
                 {/* 会话恢复占位（closedReason: "restored" 哨兵）：不挂 SshTerminal——
                     假 sessionId 没有对应 PTY，挂上去只会拿到一堆报错。 */}
                 {s.closedReason === "restored" ? (
@@ -138,15 +124,17 @@ export function TerminalPanes({
                 ) : (
                   <SshTerminal
                     sessionId={s.sessionId}
-                    toolbarHost={toolbarHost}
+                    toolbarHost={isPane ? localHost : toolbarHost}
                     toolbarActive={focused?.tabId === s.tabId}
+                    pane={isPane ? (vertical ? "stacked" : "pane") : undefined}
+                    onDisconnect={() => onDisconnect(s.sessionId)}
                     conn={s.conn}
                     closedReason={s.closedReason}
                     onClosed={(reason) => onClosed(s, reason)}
                     // 重连回**这个**标签：同一连接可能有多个标签，不指定就可能接到别人头上。
                     onReconnect={() => onReconnect(s)}
                     onCloseTab={() => onCloseTab(s)}
-                    visible={s.sessionId === activeId || isSec}
+                    visible={zoomed ? s.tabId === zoomed : s.sessionId === activeId || isSec}
                     dragSelectEnabled={dragSelectEnabled}
                     copyOnSelectEnabled={copyOnSelectEnabled}
                     fullscreen={fullscreen}
@@ -156,12 +144,13 @@ export function TerminalPanes({
                     onOpenFilePath={(p) => onOpenFilePath(s.conn, p)}
                   />
                 )}
-              </div>
+                </>}
+              </TerminalPaneFrame>
             );
           })}
           {/* 分屏选择态：副格还没选连接 */}
-          {splitActive && !sec && (
-            <div style={{ order: 2, flex: 1, minWidth: 0 }} className="relative">
+          {splitActive && !sec && !zoomed && (
+            <div style={{ order: 2, flex: 1, minWidth: 0, minHeight: 0 }} className="relative overflow-auto">
               <SplitPicker
                 connections={connections}
                 connectingId={connectingId}
@@ -172,66 +161,20 @@ export function TerminalPanes({
               />
             </div>
           )}
-          {splitActive && (
+          {splitActive && !zoomed && (
             <div
-              onPointerDown={onSplitterDown}
-              className={`z-10 flex shrink-0 items-center justify-center ${
-                vertical ? "h-1.5 cursor-row-resize flex-col" : "w-1.5 cursor-col-resize"
-              }`}
-              title="拖动调整比例"
+              role="separator" tabIndex={0} aria-label="调整分屏比例" aria-orientation={vertical ? "horizontal" : "vertical"}
+              aria-valuenow={Math.round(layout.ratio)} aria-valuemin={Math.round(layout.min)} aria-valuemax={Math.round(layout.max)}
+              onPointerDown={e => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={layout.move}
+              onPointerUp={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }} onKeyDown={layout.keyDown}
+              onDoubleClick={() => onSplitRatio(50)} className="terminal-splitter" data-direction={vertical ? "v" : "h"}
+              title="拖动或方向键调整比例，双击恢复均分"
             >
-              <div className={`rounded-full bg-border transition-colors hover:bg-primary ${vertical ? "h-0.5 w-8" : "h-8 w-0.5"}`} />
+              <div className="terminal-splitter-handle"/>
             </div>
           )}
         </>
       )}
-    </div>
-  );
-}
-
-/** Both split panes retain their host identity when sharing a single toolbar. */
-function PaneHead({
-  s,
-  focused,
-  secondary,
-  vertical,
-  onToggleDir,
-  onClose,
-}: {
-  s: SshSessionRef;
-  focused: boolean;
-  secondary: boolean;
-  vertical: boolean;
-  onToggleDir: () => void;
-  onClose: () => void;
-}) {
-  const closed = s.closedReason !== null;
-  return (
-    <div className="terminal-pane-head flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-1 text-xs" data-focused={focused || undefined}>
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${closed ? "bg-destructive" : "bg-green-500"}`} />
-      <span className="min-w-0 truncate font-medium">{s.conn.name || s.conn.host}</span>
-      <span className="min-w-0 truncate text-muted-foreground">
-        {s.conn.username}@{s.conn.host}
-      </span>
-      {focused && <span className="ml-auto shrink-0 text-[10px] text-primary">当前操作</span>}
-      {secondary && <div className="ml-auto flex shrink-0 items-center gap-0.5">
-        <button
-          type="button"
-          onClick={onToggleDir}
-          title={vertical ? "改为左右并排" : "改为上下堆叠"}
-          className="rounded px-1.5 py-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          {vertical ? "⇆" : "⇅"}
-        </button>
-        <button
-          type="button"
-          onClick={onClose}
-          title="关闭分屏（Ctrl+Shift+D）"
-          className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive-ink"
-        >
-          <Icon name="close" size={11} />
-        </button>
-      </div>}
     </div>
   );
 }
@@ -253,7 +196,7 @@ function SplitPicker({
   onClose: () => void;
 }) {
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2.5 bg-card/70 p-4">
+    <div className="absolute inset-0 flex flex-col items-center gap-2.5 overflow-y-auto bg-card/70 p-4">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         选择要在旁边打开的连接
         <button

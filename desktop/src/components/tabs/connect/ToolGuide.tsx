@@ -25,7 +25,7 @@ const TOOLS: McpClientTool[] = ["claude-code", "workbuddy", "codex", "generic"];
  * - 工具选择态**落盘**（`config.connect_client`）：托盘「复制命令/复制 IP」与连接页
  *   IpChangedBanner 都要按同一个工具出内容，选择必须跨重启保持——早先只当纯 UI state，
  *   于是托盘永远按 Claude Code 出命令，选了 Codex 的用户会拿到一条用不上的 CLI 命令。
- * - claude-code 沿用现有向导内容（scope 切换 / Global/ProjectSteps / Token / 权限），
+ * - claude-code 沿用现有向导内容（scope 切换 / ConnectCommand / Token / 权限），
  *   由 children 传入，仅 claude-code 时渲染；
  * - WorkBuddy / Codex 走 ManualSteps（JSON/TOML 片段）；generic 走 GenericSteps
  *   （「复制提示词发给 AI 代接入」为主、手动 JSON 折叠备用）；
@@ -169,7 +169,7 @@ export function ToolGuide({
 }
 
 /**
- * claude-code 的 HTTPS 附加说明（Global/ProjectSteps 不感知 TLS，补在这里）。
+ * claude-code 的 HTTPS 附加说明（ConnectCommand 不感知 TLS，补在这里）。
  * 文案与信任步骤统一取自 CLIENT_SELFSIGNED["claude-code"]——不再走 buildClientSnippet 的 notes，
  * 免得同一件事在片段 note 与信任步骤里各说一遍。
  */

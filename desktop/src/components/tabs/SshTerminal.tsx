@@ -32,6 +32,8 @@ import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
 import type { SshConnection } from "../../lib/types";
 
 interface Props {
+  pane?: "pane" | "stacked";
+  onDisconnect?: () => void;
   toolbarHost: HTMLDivElement | null;
   toolbarActive: boolean;
   sessionId: string;
@@ -58,14 +60,9 @@ interface Props {
   onOpenFilePath: (path: string) => void;
 }
 
-/**
- * xterm.js 终端面板：渲染单个 SSH 会话。
- *
- * 本文件只管组装与布局，两块重逻辑各自成 hook：
- * - `useSshTerminalSession`：终端生命周期、输入输出回路、尺寸同步、主题热切换、粘贴
- * - `useSshTerminalSelect`：选择模式 / Shift 拖选 / 拖拽即选 / 松手自动复制
- */
+/** xterm.js 会话布局；生命周期、输入输出与选择行为由专用 hooks 管理。 */
 export function SshTerminal({
+  pane, onDisconnect,
   toolbarHost,
   toolbarActive,
   sessionId,
@@ -96,6 +93,7 @@ export function SshTerminal({
   const { focused, inputErr, paste, copyScreen, doFit } = useSshTerminalSession({
     sessionId,
     visible,
+    active: toolbarActive,
     fullscreen,
     mode,
     preset,
@@ -216,8 +214,9 @@ export function SshTerminal({
   const surface = TERMINAL_SURFACE[preset][mode];
   return (
     <div className="ssh-terminal flex h-full min-h-0 flex-col" style={{ background: surface }}>
-      {toolbarHost && toolbarActive && createPortal(<SshTerminalToolbar
+      {toolbarHost && (pane || toolbarActive) && createPortal(<SshTerminalToolbar
         compact
+        pane={!!pane} onDisconnect={onDisconnect}
         conn={conn}
         closed={closed}
         focused={focused}
@@ -240,6 +239,7 @@ export function SshTerminal({
       />, toolbarHost)}
       <TerminalStatusBar
         sessionId={sessionId}
+        compact={pane}
         conn={conn}
         preset={preset}
         mode={mode}

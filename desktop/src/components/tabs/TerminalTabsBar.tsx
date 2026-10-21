@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "../ui/icon";
 import { TerminalGlobalSearch } from "./TerminalGlobalSearch";
 import { setCmdPanelOpen } from "../../lib/terminalPanelStore";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 import type { TermTabMeta } from "../../lib/terminalTabMeta";
 import type { IProgressState } from "@xterm/addon-progress";
+import { terminalSessionOrdinal } from "../../lib/terminalWorkspace";
 
 interface TerminalTabsBarProps {
+  splitControls?: ReactNode;
   onToolbarReady?: (node: HTMLDivElement | null) => void;
   sessions: SshSessionRef[];
   /** 各会话的标签 meta（标题/进度/铃），由 SshTerminal 上报。 */
@@ -53,6 +55,7 @@ function progressStyle(p: IProgressState): { className: string; width: string } 
  * 激活标签即清零）。
  */
 export function TerminalTabsBar({
+  splitControls,
   onToolbarReady,
   sessions,
   metaBySession,
@@ -74,15 +77,8 @@ export function TerminalTabsBar({
     activeRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [activeId]);
 
-  // 🔴 分屏副格（splitOnly）不是标签：不渲染、也不参与「同连接多个终端」的序号统计
-  // （副格与宿主同连接时，序号会把宿主标成 #1/#2，凭空多出噪音）。
+  // 副格不占标签位置，但与窗格标题共用会话序号，避免同一会话出现两个名字。
   const tabSessions = sessions.filter((s) => !s.splitOnly);
-
-  // 同一连接开了多个终端时给个序号，否则两个标签长得一模一样。
-  // 只有一个时不显示，不给单终端的常见情况增噪。
-  const totalPerConn = new Map<string, number>();
-  for (const s of tabSessions) totalPerConn.set(s.conn.id, (totalPerConn.get(s.conn.id) ?? 0) + 1);
-  const seenPerConn = new Map<string, number>();
 
   return (
     <div className="terminal-tabs-header flex shrink-0 items-center gap-1 border-b border-border bg-card px-2 py-1.5">
@@ -90,9 +86,7 @@ export function TerminalTabsBar({
       {tabSessions.map((s) => {
         const closed = !!s.closedReason;
         const active = s.sessionId === activeId;
-        const seq = (seenPerConn.get(s.conn.id) ?? 0) + 1;
-        seenPerConn.set(s.conn.id, seq);
-        const showSeq = (totalPerConn.get(s.conn.id) ?? 0) > 1;
+        const seq = terminalSessionOrdinal(sessions, s);
         const meta = metaBySession[s.sessionId];
         const title = !closed ? meta?.title : null;
         const hasBell = !closed && meta?.bellAt != null;
@@ -132,7 +126,7 @@ export function TerminalTabsBar({
               {title && (
                 <span className="max-w-40 truncate font-mono text-muted-foreground">▸ {title}</span>
               )}
-              {showSeq && (
+              {seq && (
                 <span className="rounded bg-muted-foreground/15 px-1 font-mono text-[11px]">
                   #{seq}
                 </span>
@@ -190,7 +184,7 @@ export function TerminalTabsBar({
           <Icon name="plus" size={15} /><span className="terminal-action-label">新终端</span>
         </button>
       )}
-      {onToggleSplit && (
+      {onToggleSplit && !splitActive && (
         <button
           type="button"
           onClick={onToggleSplit}
@@ -207,6 +201,7 @@ export function TerminalTabsBar({
         </button>
       )}
       </div>
+      {splitControls}
       <div className="terminal-toolbar-host" ref={onToolbarReady} aria-label="当前窗格操作"/>
       {searchOpen && (
         <TerminalGlobalSearch

@@ -7,6 +7,7 @@ import {
   danceNext,
   ECHO_OFF_CMD,
   ECHO_ON_CMD,
+  ECHO_ON_CLEAN_CMD,
   tuiOnScreen,
   type DanceEvent,
   type DancePhase,
@@ -249,5 +250,19 @@ describe("tuiOnScreen —— 全屏 TUI 在屏时禁止注入", () => {
   it("主屏（干净提示符）/ 无终端 → 允许", () => {
     expect(tuiOnScreen({ buffer: { active: { type: "normal" } } } as unknown as Terminal)).toBe(false);
     expect(tuiOnScreen(null)).toBe(false);
+  });
+});
+
+describe("正常收尾命令（ECHO_ON_CLEAN_CMD，修「连接后两个提示符」）", () => {
+  it("先清当前行、后恢复回显——顺序反了这行命令自己就会被回显成残渣", () => {
+    const clearAt = ECHO_ON_CLEAN_CMD.indexOf("\\r\\033[2K");
+    expect(clearAt).toBeGreaterThan(-1);
+    expect(ECHO_ON_CLEAN_CMD.indexOf(ECHO_ON_CMD)).toBeGreaterThan(clearAt);
+  });
+
+  it("原样入剥除表：异常路径下它被回显时整条吞掉，不留 printf 残渣", () => {
+    const out = createEchoStripper(ECHO_ON_CLEAN_CMD).feed(`$ ${ECHO_ON_CLEAN_CMD}\r\nNEXT`);
+    expect(out).not.toContain("printf");
+    expect(out).toContain("NEXT");
   });
 });

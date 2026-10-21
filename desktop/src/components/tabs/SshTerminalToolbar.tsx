@@ -3,8 +3,11 @@ import { setCmdPanelOpen, useCmdPanelOpen } from "../../lib/terminalPanelStore";
 import type { SshConnection } from "../../lib/types";
 import { MoreMenu, ButtonIcon } from "./SshTerminalMoreMenu";
 import { TerminalAppearanceMenu } from "./TerminalAppearanceMenu";
+import { TerminalPaneActions } from "./TerminalPaneActions";
 
-interface Props {
+export interface SshTerminalToolbarProps {
+  pane?: boolean;
+  onDisconnect?: () => void;
   compact?: boolean;
   conn: SshConnection;
   /** 会话已断开（终端保留、仅可读） */
@@ -46,6 +49,8 @@ interface Props {
  * 注意这里**没有「断开」按钮**：断开入口在标签栏的 × 与左侧连接列表。
  */
 export function SshTerminalToolbar({
+  pane,
+  onDisconnect,
   compact = false,
   conn,
   closed,
@@ -66,10 +71,11 @@ export function SshTerminalToolbar({
   onClear,
   onToggleFullscreen,
   onExport,
-}: Props) {
+}: SshTerminalToolbarProps) {
   // 命令历史面板的开关在模块级 store 里：按钮在每个会话自己的工具栏上，面板本体挂在
   // 会话容器（SshTerminal）里——两端不同子树，靠 props 串会把 SshTerminal.tsx 撑破 300 行线。
   const cmdOpen = useCmdPanelOpen();
+  if (pane) return <TerminalPaneActions {...{ conn, closed, inputErr, selectMode, shiftActive, dragSelecting, onCopy, onCopyScreen, onPaste, onPasteImage, imgBusy, onRepaint, onSearch, onToggleSelectMode, onClear, onExport, fullscreen, onToggleFullscreen, onDisconnect, cmdOpen }}/>;
   return (
     <div className="terminal-session-toolbar flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2" data-compact={compact || undefined} aria-label={`${conn.name || conn.host}终端操作`}>
       {!compact && <><Icon name="terminal" size={14} className="shrink-0 text-muted-foreground" />

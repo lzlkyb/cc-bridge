@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectionSessions, focusedTerminalSession } from "./terminalWorkspace";
+import { connectionSessions, focusedTerminalSession, terminalSessionOrdinal } from "./terminalWorkspace";
 import type { SshSessionRef } from "../components/tabs/TerminalConnectionItem";
 import type { SshConnection } from "./types";
 
@@ -23,6 +23,13 @@ describe("shared terminal toolbar target", () => {
   it("断开的副格仍可成为只读操作目标，不默默粘贴到主格", () => {
     const closed = { ...secondary, closedReason: "disconnected" };
     expect(focusedTerminalSession([primary, closed], primary.sessionId, split, "b")).toBe(closed);
+  });
+  it("放大窗格优先于先前的焦点，顶部标签与窗格标题序号一致", () => {
+    expect(focusedTerminalSession([primary, secondary], primary.sessionId, { ...split, zoomedTabId: "a" }, "b")).toBe(primary);
+    expect(focusedTerminalSession([primary, secondary], primary.sessionId, { ...split, zoomedTabId: "b" }, "a")).toBe(secondary);
+    expect(terminalSessionOrdinal([primary, secondary], primary)).toBe(1);
+    expect(terminalSessionOrdinal([primary, secondary], secondary)).toBe(2);
+    expect(terminalSessionOrdinal([primary], primary)).toBeNull();
   });
 });
 

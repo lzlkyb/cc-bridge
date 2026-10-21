@@ -29,11 +29,10 @@ import { useSessionRestore } from "../../hooks/useSessionRestore";
 import { useFileDrop } from "./useFileDrop";
 import { useTerminalUpload } from "./useTerminalUpload";
 import { TerminalDropLayer } from "./TerminalDropLayer";
+import { TerminalSplitControls } from "./TerminalSplitControls";
 import { zoneOf, type DropZone } from "../../lib/dropHit";
 
-/**
- * SSH 工作区：连接列表投到应用侧栏，终端始终留在本页保活；首次使用仍需显式启用。
- */
+/** SSH 工作区：共享侧栏，终端保活；首次使用仍需显式启用。 */
 export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCollapsedChange }: { status?: StaticStatus; sidebarHost: HTMLDivElement | null; sidebarCollapsed: boolean; onSidebarCollapsedChange: Dispatch<SetStateAction<boolean>> }) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery<SshConnectionList, Error>({
@@ -69,7 +68,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
   const termAreaRef = useRef<HTMLDivElement>(null);
   const activeSession = sessions.find((s) => s.sessionId === activeId);
   // 轻量双栏分屏（方案 A）：副格会话 splitOnly、不出现在标签栏，详见 useTerminalSplit。
-  const splitCtl = useTerminalSplit({ ssh, activeSession: activeSession ?? null });
+  const splitCtl = useTerminalSplit({ ssh, activeSession: activeSession ?? null, areaRef: termAreaRef });
   const workspace = useTerminalWorkspace(sessions, activeId, splitCtl.split);
   const activeConn =
     activeSession && !activeSession.closedReason ? activeSession.conn : null;
@@ -246,6 +245,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
               onNewTerminal={workspace.focusedSession && !workspace.focusedSession.closedReason ? () => newTerminal(workspace.focusedSession!.conn) : null}
               onToggleSplit={activeSession ? splitCtl.toggleSplit : null}
               splitActive={splitCtl.split !== null}
+              splitControls={splitCtl.split && <TerminalSplitControls split={splitCtl.split} onDirection={splitCtl.setDirection} onEqualize={() => splitCtl.setRatio(50)} onCollapse={() => activeSession && splitCtl.closeSplit(activeSession.tabId)}/>}
               onToolbarReady={workspace.setToolbarHost}
             />
           )}
@@ -266,7 +266,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
             onToggleFullscreen={() => setFullscreen((v) => !v)}
             onClosed={(s, reason) => ssh.markClosed(s.sessionId, reason)}
             onReconnect={reconnectSession}
-            onCloseTab={(s) => (s.splitOnly ? splitCtl.closeSplit(s.tabId) : ssh.closeTab(s.sessionId))}
+            onCloseTab={(s) => ssh.closeTab(s.sessionId)}
             onCwd={onCwd}
             onMeta={(sessionId, p) => ssh.patchMeta(sessionId, p)}
             onOpenFilePath={(conn, p) => (setFileConn(conn), setFilePath(p))}
@@ -274,6 +274,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
             onCloseSplit={() => activeSession && splitCtl.closeSplit(activeSession.tabId)}
             onToggleDir={splitCtl.toggleDir}
             onSplitRatio={splitCtl.setRatio}
+            onZoomPane={splitCtl.toggleZoom} onDisconnect={(sessionId) => void ssh.disconnect(sessionId)}
           />
         </div>
 

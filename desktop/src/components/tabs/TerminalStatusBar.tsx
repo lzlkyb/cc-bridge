@@ -25,6 +25,7 @@ import { Seg } from "./StatusSeg";
 import { WheelOwnerBadge } from "./WheelOwnerBadge";
 
 interface Props {
+  compact?: "pane" | "stacked";
   sessionId: string;
   conn: SshConnection;
   preset: TerminalPreset;
@@ -50,7 +51,7 @@ interface Props {
 }
 
 /**
- * 终端状态栏：坐在工具栏与 xterm 画布之间的一行 Starship 风格模块化状态。
+ * 终端底部状态栏：单窗格显示完整信息，分屏时省略标题栏已有的主机名与会话时长。
  *
  * 显示哪些段由**有没有数据**决定，不由用户配置决定 —— 用户只选风格（产品决策：
  * 内置几套预设，不要求用户手写 TOML）。钩子没生效时自动降级到「连接名 + 会话时长 + 提示」，
@@ -63,6 +64,7 @@ interface Props {
  * token 集中在 `lib/terminalStatusbar.ts`，这里只做「取 token → 贴样式」。
  */
 export function TerminalStatusBar({
+  compact,
   sessionId,
   conn,
   preset,
@@ -87,6 +89,7 @@ export function TerminalStatusBar({
   return (
     <div
       className="ssh-terminal-statusbar flex shrink-0 items-center overflow-hidden px-2 py-1 text-xs"
+      data-compact={compact}
       // fontVariantNumeric 设在容器上与 fontFamily 同理：继承覆盖全部段，
       // cwd/branch/时长等数字变化时等宽数字位，不再左右横跳。
       style={{ ...skin.bar, fontFamily, fontVariantNumeric: "tabular-nums" }}
@@ -94,9 +97,9 @@ export function TerminalStatusBar({
       {/* 左：随远端信息增多而变长的段，空间不足时单独横向滚动（滚动条隐藏）。
           用 flex-1 + min-w-0 让它自适应，右侧关键段因此永不被挤出视口。 */}
       <div className="flex min-w-0 flex-1 items-center overflow-x-auto" style={{ scrollbarWidth: "none" }}>
-        <Seg skin={skin} kind="host" icon="server" title={`${conn.username}@${conn.host}:${conn.port}`} isFirst>
+        {!compact && <Seg skin={skin} kind="host" icon="server" title={`${conn.username}@${conn.host}:${conn.port}`} isFirst>
           {host}
-        </Seg>
+        </Seg>}
         {/* 远端程序自报状态（OSC 7501）。紧跟主机名：左区空间不足时横向滚动，
             要紧的信息必须排在最前面才不会被滚出视口。断开后不再显示（会变成陈旧值）。 */}
         {!closed && <AgentSeg skin={skin} agent={agent} />}
@@ -133,9 +136,9 @@ export function TerminalStatusBar({
             onGuideHintClick={onGuideHintClick}
           />
         )}
-        <Seg skin={skin} kind="muted" icon="clock" title="会话时长">
+        {!compact && <Seg skin={skin} kind="muted" icon="clock" title="会话时长">
           {formatUptime(uptime)}
-        </Seg>
+        </Seg>}
         {closed ? (
           <Seg skin={skin} kind="exitBad" icon="alertTriangle" title="会话已断开">
             已断开

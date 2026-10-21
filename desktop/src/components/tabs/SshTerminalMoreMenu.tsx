@@ -36,6 +36,8 @@ export function MoreMenu({
   onClear,
   onRepaint,
   onExport,
+  extraItems,
+  portal = false,
 }: {
   selectMode: boolean;
   onCopyScreen: () => void;
@@ -44,11 +46,15 @@ export function MoreMenu({
   onRepaint: () => void;
   /** 导出整个滚动历史为 .txt（断开态也能用——读的是本地缓冲区）。 */
   onExport: () => void;
+  extraItems?: (close: () => void) => React.ReactNode;
+  portal?: boolean;
 }) {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   return (
     <>
       <Menu
+        portal={portal}
+        width={portal ? "w-72" : undefined}
         trigger={(open, toggle) => (
           <ButtonIcon title="更多" highlight={open} onClick={toggle}>
             <Icon name="more" size={14} />
@@ -57,6 +63,7 @@ export function MoreMenu({
       >
         {(close) => (
           <>
+            {extraItems?.(close)}
             <MenuItem label="复制整屏" icon="monitor" onClick={() => { onCopyScreen(); close(); }} />
             <MenuItem
               label={selectMode ? "退出选择模式" : "选择模式"}
@@ -135,6 +142,7 @@ export function ButtonIcon({
     <button
       type="button"
       title={title}
+      aria-label={title}
       disabled={disabled}
       onClick={onClick}
       className={`flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${

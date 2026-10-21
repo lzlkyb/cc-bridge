@@ -17,6 +17,7 @@ import {
   DANCE,
   ECHO_OFF_CMD,
   ECHO_ON_CMD,
+  ECHO_ON_CLEAN_CMD,
   danceNext,
   tuiOnScreen,
   type DancePhase,
@@ -204,22 +205,21 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     const send = (data: string): Promise<void> => invoke("ssh_input", { sessionId, data });
 
     // ── 残渣常驻吞除（fail-open，实现见 lib/terminalSttyDance.ts）──
-    // 三条命令原文全部入 token 表（含 `stty echo`：异常路径下它会在 ECHO 已恢复后发出，
-    // 是唯一会自己回显的收尾命令）。剥离器整个会话常驻——ConPTY 整屏重绘会把缓冲区里的
-    // 残渣反复重发，常驻才能每次都吞掉；命中行整行擦除，其余字节原样透传，不丢数据。
-    const stripHandle = attachEchoStripWhenReady(termRef, [ECHO_OFF_CMD, PROBE_CMD, ECHO_ON_CMD]);
+    // 命令原文全部入 token 表（含两条 stty echo：异常路径会在 ECHO 已恢复后发出，是唯一会自己回显的收尾命令）。
+    // 剥离器常驻整个会话：ConPTY 整屏重绘会把残渣反复重发，常驻才每次都吞掉。长 token 排前——
+    // `stty echo` 是正常收尾命令的尾部，先擦短串会把前半截留在屏上。
+    const stripHandle = attachEchoStripWhenReady(termRef, [ECHO_OFF_CMD, PROBE_CMD, ECHO_ON_CLEAN_CMD, ECHO_ON_CMD]);
 
     // ── 舞步状态机接线 ──
     let phase: DancePhase = "idle";
-    // 恢复 ECHO。单次消费：第二句 stty echo 会被回显成残渣（红线）。
-    // 注意不在这里撤剥离器——它常驻整个会话（ConPTY 重发残渣的时刻不可预知），
-    // 撤包装只在会话 effect 的 cleanup 里做。
-    const restore = () => {
+    // 恢复 ECHO。单次消费（echoOffRef 闸门）：第二句 stty echo 会被回显成残渣（红线）。
+    // 剥离器不在这里撤——它常驻整个会话，撤包装只在 cleanup 里做。
+    const restore = (clean = false) => {
       if (!echoOffRef.current) return;
       echoOffRef.current = false;
       abortRef.current = null;
       phase = danceNext(phase, "restoreSent").phase;
-      void send(` ${ECHO_ON_CMD}\n`).catch(() => {});
+      void send(` ${clean ? ECHO_ON_CLEAN_CMD : ECHO_ON_CMD}\n`).catch(() => {});
     };
     // 异常退出：恢复 ECHO + 判 unsupported（已 ready 则不动）。
     const abortDance = () => {
@@ -276,7 +276,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
         void send("\n").catch(() => {}); // 空回车逼 shell 重绘提示符（echo 关，静默）
         phase = danceNext(phase, "kickSent").phase;
       });
-      at(DANCE.HOOK_DELAY + DANCE.KICK_DELAY + DANCE.RESTORE_DELAY, restore);
+      at(DANCE.HOOK_DELAY + DANCE.KICK_DELAY + DANCE.RESTORE_DELAY, () => restore(true));
       at(DANCE.HOOK_DELAY + DANCE.KICK_DELAY + DANCE.RESTORE_DELAY + DANCE.HOOK_TIMEOUT, () => {
         if (!readyRef.current) abortDance(); // ECHO 已由 restore 恢复，这里只是判死
       });

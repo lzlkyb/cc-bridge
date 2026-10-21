@@ -209,7 +209,6 @@ function ConnectTabImpl({
               lanIps={lanIps}
               selectedIp={selectedIp}
               onSelectIp={onSelectIp}
-              onToggle={guide.toggleSection}
               onRefresh={onRefresh}
               onCopySed={onCopySed}
             />
