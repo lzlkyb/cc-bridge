@@ -14,6 +14,8 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAppHiddenFlag } from "./hooks/useAppHiddenFlag";
 import { useIpSedCopy } from "./hooks/useIpSedCopy";
 import { useWindowSizePersistence } from "./hooks/useWindowSizePersistence";
+import { useScrollActivity } from "./hooks/useScrollActivity";
+import { usePageInertia } from "./hooks/usePageInertia";
 import { useAppHidden } from "./lib/appVisibility";
 import { Button } from "./components/ui/button";
 import { Tabs, TabsContent } from "./components/ui/tabs";
@@ -37,6 +39,8 @@ function AppContent() {
   useAppHiddenFlag();
   // 窗口尺寸持久化：启动恢复上次尺寸 + resize 防抖落盘（纯前端方案）
   useWindowSizePersistence();
+  const handleScrollActivity = useScrollActivity();
+  usePageInertia();
   // 窗口不可见时停掉全部定时轮询（本层 5s / 日志 10s / 防火墙 30s / 后台命令 3s）。
   // 最重的是本层：`get_status` 里带一次可达性探针（真开 TCP 连接，200ms 超时）。
   const appHidden = useAppHidden();
@@ -411,11 +415,11 @@ function AppContent() {
           </ActionCard>
         </div>
       )}
-          <main className="app-main-content min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-5" data-terminal={activeTab === "terminal" || undefined}>
-          <TabsContent value="connect" keepMounted className="app-content-box h-full overflow-y-auto overflow-x-hidden">
+          <main className="app-main-content min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-5" data-page={activeTab} data-terminal={activeTab === "terminal" || undefined} onScrollCapture={handleScrollActivity}>
+          <TabsContent value="connect" keepMounted className="page-scroll app-content-box h-full overflow-y-auto overflow-x-hidden">
             <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} pendingSuspended={!!pendingCmd} onSuspendCmd={handleSuspendCmd} onCopySed={copyIpSed} />
           </TabsContent>
-          <TabsContent value="security" keepMounted className="h-full overflow-y-auto overflow-x-hidden">
+          <TabsContent value="security" keepMounted className="page-scroll h-full overflow-y-auto overflow-x-hidden">
             <Suspense fallback={<TabFallback />}>
               {/* highlightAnchor：安全概览 / 白名单目录等锚点（Header 徽章、命令面板、
                   HealthCard 胶囊、设置页安全卡跳转按钮都走这条链路定位高亮）。 */}

@@ -174,7 +174,7 @@ function LogTabImpl({
         {hasFilter && <button type="button" className="ml-auto text-primary hover:underline" onClick={resetFilters}>重置筛选</button>}
         {hasFilter && <span className="text-foreground">当前：{filterSummary}</span>}
       </div>
-      <CardContent className="log-reading-surface flex flex-col flex-1 min-h-0 overflow-y-auto">
+      <CardContent className="page-scroll log-reading-surface flex flex-col flex-1 min-h-0 overflow-y-auto">
         {entries && entries.some((e) => typeof e.durationMs === "number") && (
           <div className="mb-3">
             <button

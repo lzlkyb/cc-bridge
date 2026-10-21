@@ -288,6 +288,39 @@ body {
 .option-chip[aria-pressed="true"] { border-color: hsl(var(--primary) / .45); }
 .info-trigger:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
 
+/* Page rails share the outer gutter: 12px native hit area with a 4px visible thumb.
+   Reset the standard properties here, otherwise Chromium ignores the pseudo-element sizing. */
+.page-scroll {
+  --page-scroll-thumb: hsl(var(--muted-foreground) / .28);
+  --page-scroll-active: hsl(var(--muted-foreground) / .56);
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+  scrollbar-gutter: stable;
+}
+.page-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
+.page-scroll::-webkit-scrollbar-track { background: transparent; margin-block: 8px; }
+.page-scroll::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  border: 4px solid transparent;
+  border-radius: 999px;
+  background-color: var(--page-scroll-thumb);
+  background-clip: padding-box;
+}
+.page-scroll[data-scrolling]::-webkit-scrollbar-thumb,
+.page-scroll:has(:focus-visible)::-webkit-scrollbar-thumb,
+.page-scroll::-webkit-scrollbar-thumb:hover,
+.page-scroll::-webkit-scrollbar-thumb:active { background-color: var(--page-scroll-active); }
+.page-scroll::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+.page-scroll::-webkit-scrollbar-corner { background: transparent; }
+@supports not selector(::-webkit-scrollbar) {
+  .page-scroll { scrollbar-width: thin; scrollbar-color: var(--page-scroll-thumb) transparent; }
+  .page-scroll[data-scrolling], .page-scroll:has(:focus-visible) { scrollbar-color: var(--page-scroll-active) transparent; }
+}
+@media (forced-colors: active) {
+  .page-scroll { --page-scroll-thumb: CanvasText; --page-scroll-active: CanvasText; scrollbar-color: auto; }
+  .page-scroll::-webkit-scrollbar-thumb { background-color: CanvasText; }
+}
+
 /* ===================================================================
    视觉增强层（对标设计稿 A–F）—— 语义组件类，Tailwind 之外补充
    =================================================================== */
@@ -469,6 +502,10 @@ body {
 /* 顶部留隙放在共享内容区：四个页面一致，滚动时保留；终端继续贴合顶栏。 */
 .app-main-content:not([data-terminal]) {
   padding-top: 12px;
+}
+/* Long pages reserve the rail inside the existing edge space; log cards keep their own gutter. */
+.app-main-content:is([data-page="connect"], [data-page="security"], [data-page="settings"]) {
+  padding-right: 4px;
 }
 
 .app-content-box {

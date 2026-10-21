@@ -76,6 +76,7 @@ export function MetricCards({
         unit={p95Fmt.unit}
         sub={avg > 0 ? `平均 ${avgFmt.value}${avgFmt.unit} · 尾部慢 ${tailRatio.toFixed(1)} 倍` : "暂无数据"}
         seriesKey="p95"
+        noData={!s || s.totalRequests === 0}
         // tone 跟语义走：≥1s（与 fmtLatency 的秒级阈值一致）是「尾部慢」的坏消息 → 橙；
         // 正常范围 → 绿。设计稿缺陷②：静态绿会把 8.25s 也画成好消息。
         color={p95 >= 1000 ? "text-warning-ink" : "text-success-ink"}
@@ -99,7 +100,7 @@ export function MetricCards({
         value={running ? String(s?.activeCommands ?? 0) : "0"}
         sub={(s?.activeCommands ?? 0) > 0 ? "后台运行中" : "当前无后台命令"}
         seriesKey="active"
-        color="text-warning-ink"
+        color="text-primary"
         chart="step"
         onNavigate={onNavigate}
         nav={{ tab: "security", title: "去安全页看运行中的后台命令" }}
@@ -122,6 +123,7 @@ function MetricCard({
   color,
   chart,
   threshold,
+  noData,
   onNavigate,
   nav,
 }: {
@@ -136,6 +138,7 @@ function MetricCard({
   chart: ChartKind;
   /** 仅 area 用：阈值参考线的数值（限流阈值）。 */
   threshold?: number;
+  noData?: boolean;
   onNavigate?: (tab: string, anchor?: string) => void;
   /** 点击后跳哪。内部无交互元素，所以整卡可点。 */
   nav: { tab: string; anchor?: string; title: string };
@@ -166,7 +169,7 @@ function MetricCard({
       <div className="mt-0.5 truncate text-[10.5px] tabular-nums text-muted-foreground" title={sub}>
         {sub}
       </div>
-      <Sparkline series={series} kind={chart} threshold={threshold} />
+      <Sparkline series={series} kind={chart} threshold={threshold} noData={noData} />
     </NavTarget>
   );
 }

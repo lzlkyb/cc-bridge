@@ -13,8 +13,7 @@ import { isWindows } from "../../lib/platform";
  * 为何不用简单的三个彩色圆点：圆点只能说“通/不通”，而用户真正需要知道的是
  * **卡在哪一环**。连线的实/虚把“从哪里开始断的”直接画在了脸上。
  *
- * 卡内背景是深色渐变，所以色彩全走 white/透明度，不用语义色 token
- * （那些 token 是按白底调的，压在渐变上对比度不够）。
+ * 经典卡片沿用白色节点；柔光材质通过节点状态属性适配深浅阅读面。
  */
 /**
  * 三段各自的跳转目标。
@@ -134,14 +133,15 @@ function ChainNode({
       {pulse && <span aria-hidden="true" className="chain-ripple" />}
       {solid ? (
         <span
-          className={`relative grid h-full w-full place-items-center rounded-full bg-white/95 ${
+          data-tone={tone}
+          className={`chain-node-face relative grid h-full w-full place-items-center rounded-full bg-white/95 ${
             tone === "ok" ? "text-success-ink" : "text-destructive-ink"
           }`}
         >
           <Icon name={tone === "ok" ? "check" : "close"} size={15} />
         </span>
       ) : (
-        <span className="relative grid h-full w-full place-items-center rounded-full bg-white/25 text-[13px] font-extrabold text-white">
+        <span data-tone={tone} className="chain-node-face relative grid h-full w-full place-items-center rounded-full bg-white/25 text-[13px] font-extrabold text-white">
           {tone === "unknown" ? "?" : "–"}
         </span>
       )}

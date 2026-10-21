@@ -31,10 +31,12 @@ export function Sparkline({
   series,
   kind,
   threshold,
+  noData = false,
 }: {
   series: number[];
   kind: ChartKind;
   threshold?: number;
+  noData?: boolean;
 }) {
   // 阶梯线的“重画”触发：只看末值（当前活跃命令数）变没变。
   // hook 必须在任何 return 之前调用。
@@ -50,10 +52,24 @@ export function Sparkline({
   // 而且那一格是真实数据，不是占位。之前一律要求 2 点，配合“首次采样不产出”，
   // 意味着最快也要 15s 才出图——这是“大半时间在采样中”的另一半原因。
   const minPoints = kind === "area" || kind === "step" ? 2 : 1;
+  // Current inactivity must not erase earlier nonzero samples in the visible history.
+  if (noData && !series.some(value => value > 0)) {
+    return <div className="metric-chart flex min-h-[30px] flex-1 items-end pb-1 text-xs text-muted-foreground" data-state="empty">暂无调用数据</div>;
+  }
   if (series.length < minPoints) {
     return (
-      <div className="flex min-h-[30px] flex-1 items-end pb-1 text-xs text-muted-foreground">
+      <div className="metric-chart flex min-h-[30px] flex-1 items-end pb-1 text-xs text-muted-foreground" data-state="pending">
         采样中…
+      </div>
+    );
+  }
+
+  if (series.every(value => value === 0)) {
+    return (
+      <div className="metric-chart relative flex min-h-[30px] flex-1 text-muted-foreground" data-state="zero" role="img" aria-label="当前采样均为 0">
+        <svg className="metric-spark" viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" aria-hidden="true">
+          <line x1={0} x2={SPARK_W} y1={SPARK_H - 2} y2={SPARK_H - 2} stroke="currentColor" strokeWidth="1" opacity=".4" vectorEffect="non-scaling-stroke" />
+        </svg>
       </div>
     );
   }
@@ -61,7 +77,7 @@ export function Sparkline({
   return (
     // 包一层相对容器：面积图的末端标点是绝对定位的 HTML 圆点，不能放进 SVG
     // （preserveAspectRatio="none" 会把正圆抻成椭圆，详见 index.css 里的说明）。
-    <div className="relative flex min-h-[30px] flex-1">
+    <div className="metric-chart relative flex min-h-[30px] flex-1" data-state="data">
       <svg
         className="metric-spark"
         viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}

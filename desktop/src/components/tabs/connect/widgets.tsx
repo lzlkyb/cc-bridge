@@ -34,20 +34,22 @@ export function OptionCard({
 }) {
   return (
     <button
+      type="button"
+      aria-pressed={selected}
       onClick={onClick}
-      className={`relative rounded-lg border-2 p-3 text-left transition-colors ${
+      className={`selection-card relative rounded-lg border-2 p-3 text-left transition-colors ${
         selected
           ? "border-primary bg-accent shadow-ring-focus"
           : "border-transparent bg-muted/50 hover:bg-muted"
       }`}
     >
       {selected && (
-        <span className="absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full bg-primary text-primary-foreground">
+        <span aria-hidden="true" className="selection-card-check absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full bg-primary text-primary-foreground">
           <Icon name="check" size={12} />
         </span>
       )}
-      <div className="mb-1 flex items-center gap-2">
-        <span className={`text-sm font-medium ${selected ? "text-primary" : ""}`}>{title}</span>
+      <div className="mb-1 flex flex-wrap items-center gap-2 pr-7">
+        <span className={`selection-card-title text-sm font-medium ${selected ? "text-primary" : ""}`}>{title}</span>
         {badge && <Badge variant="secondary">{badge}</Badge>}
       </div>
       <p className="text-xs text-muted-foreground">{desc}</p>

@@ -33,10 +33,10 @@ export function RecentActivity({ onViewAll }: { onViewAll?: () => void }) {
   return (
     // pt-4 是关键：`mt-auto` 只在卡片有富余高度时才把本区顶到底部，没富余时它等于 0，
     // 分隔线会直接贴上启停按钮的底边。用内边距而不是外边距：外边距会与 mt-auto 打架。
-    <div className="mt-auto flex flex-col gap-0.5 pt-4">
+    <div className="recent-activity mt-auto flex flex-col gap-0.5 pt-4">
       {/* 渐变分隔线：中段可见、两端渐隐。整幅实线（原本的 border-t）压在渐变卡上
           对比度偏高、显得很“硬”；与卡内其它分隔处理保持一致。 */}
-      <div className="mb-2 h-px bg-gradient-to-r from-transparent via-white/[0.14] to-transparent" />
+      <div className="recent-activity-divider mb-2 h-px bg-gradient-to-r from-transparent via-white/[0.14] to-transparent" />
       <div className="flex items-center text-xs font-bold tracking-[0.12em]">
         最近活动 · 历史记录
         {onViewAll && (
@@ -79,10 +79,10 @@ export function RecentActivity({ onViewAll }: { onViewAll?: () => void }) {
                 {toolLabel(e.tool)}
               </span>
               {/* min-w-0 必须有：flex 子项默认 min-width:auto，不置 0 会被长参数撑破卡片。 */}
-              <span className="min-w-0 flex-1 truncate font-mono opacity-95">{summarize(e)}</span>
+              <span className="recent-activity-params min-w-0 flex-1 truncate font-mono opacity-95">{summarize(e)}</span>
               {/* 用 formatDurationMs 而不是拼 `${ms}ms`：它是日志页同一个格式化函数，
                   输出中文单位并自动换算（微秒/毫秒/秒/分），两处叫法一致。 */}
-              <span className="shrink-0 font-mono tabular-nums opacity-90">
+              <span className="recent-activity-duration shrink-0 font-mono tabular-nums opacity-90">
                 {e.durationMs != null ? formatDurationMs(e.durationMs) : "—"}
               </span>
             </div>

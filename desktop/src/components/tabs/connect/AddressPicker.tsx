@@ -27,7 +27,7 @@ const PROBE_TITLE: Record<LanProbeState, string> = {
  *
  * 评审修复 ④：桥跑在本机，对每个 lanIp:port 发起 TCP 探测零成本——此前却让用户
  * 「拿不准就逐个试，或 ssh 上服务器验证」。现在 Rust 侧 probe_lan_ips 并发探测
- * （800ms 超时，三态诚实兜底），IP 卡右上角标出 通/不通/未定：
+ * （800ms 超时，三态诚实兜底），IP 卡信息行标出 通/不通/未定：
  * - 默认选中自动落到第一个「通」的地址（仅当当前选中还是朴素默认的第一个 IP 时，
  *   绝不覆盖用户确认过的地址）；
  * - 全部「未定」时退回现状：第一个 IP + 「默认」徽章，不谎报；
@@ -192,6 +192,8 @@ export function AddressPicker({
           return (
             <button
               key={ip}
+              type="button"
+              aria-pressed={sel}
               onClick={() => onSelect(ip)}
               title={
                 st
@@ -200,31 +202,30 @@ export function AddressPicker({
                     ? "本机探测中…"
                     : undefined
               }
-              className={`relative rounded-md border-2 px-3 py-2 text-left transition-colors ${
+              className={`address-option selection-card relative rounded-lg border-2 p-3 text-left transition-colors ${
                 sel
                   ? "border-primary bg-accent shadow-ring-focus"
                   : "border-transparent bg-background hover:bg-muted"
               }`}
             >
-              {/* 选中角标与探测角标同占右上角：有探测结论时角标本身就是更强的选中信号
-                  （边框高亮 + IP 变色仍在），让位给通/不通的结论；无结论时保留对勾。 */}
-              {sel && !badge && (
-                <span className="absolute right-1.5 top-1.5 grid h-4 w-4 place-items-center rounded-full bg-primary text-primary-foreground">
-                  <Icon name="check" size={10} />
+              {/* 选择与可达性可以同时成立，分开放置以免探测徽章遮住选中标记。 */}
+              {sel && (
+                <span aria-hidden="true" className="selection-card-check absolute right-2 top-2 grid h-5 w-5 place-items-center rounded-full bg-primary text-primary-foreground">
+                  <Icon name="check" size={12} />
                 </span>
               )}
-              {badge && (
-                <span
-                  className={`absolute right-1.5 top-1.5 inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-bold leading-none ${badge.className}`}
-                >
-                  {badge.label}
-                </span>
-              )}
-              <div className="flex items-center gap-2">
-                <code className={`text-sm font-mono ${sel ? "text-primary" : ""}`}>{ip}</code>
+              <div className="mb-1 flex flex-wrap items-center gap-2 pr-7">
+                <code className={`selection-card-title break-all text-sm font-mono ${sel ? "text-primary" : ""}`}>{ip}</code>
                 {!probeUsable && i === 0 && <Badge variant="secondary">默认</Badge>}
               </div>
-              <p className="text-xs text-muted-foreground mt-0.5">{ipHint(ip)}</p>
+              <div className="flex flex-wrap items-center justify-between gap-1">
+                <p className="text-xs text-muted-foreground">{ipHint(ip)}</p>
+                {badge && (
+                  <span className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-bold leading-none ${badge.className}`}>
+                    {badge.label}
+                  </span>
+                )}
+              </div>
             </button>
           );
         })}

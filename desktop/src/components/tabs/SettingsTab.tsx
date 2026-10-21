@@ -68,7 +68,7 @@ export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onR
     }
   };
   return (
-    <div ref={containerRef} data-scroll-viewport className="settings-tab settings-category h-full min-h-0 space-y-4 overflow-y-auto overflow-x-hidden pb-1">
+    <div ref={containerRef} data-scroll-viewport className="page-scroll settings-tab settings-category h-full min-h-0 space-y-4 overflow-y-auto overflow-x-hidden pb-1">
       <RiskBand status={status} />
       {sections.map(section => (
         <div key={section.id} data-settings-section={section.id} className="scroll-mt-3">

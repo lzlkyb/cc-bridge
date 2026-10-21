@@ -97,7 +97,7 @@ export function ToolGuide({
             <div
               role="group"
               aria-label="选择接入工具"
-              className="flex min-w-0 max-w-full flex-wrap rounded-lg border bg-muted p-0.5"
+              className="client-selector flex min-w-0 max-w-full flex-wrap rounded-lg border bg-muted p-0.5"
             >
             {TOOLS.map((t) => (
               <button

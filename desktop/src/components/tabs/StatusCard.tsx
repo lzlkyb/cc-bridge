@@ -150,7 +150,7 @@ export function StatusCard({
     <div className={`status-card ${TONE_CLASS[chain.tone]} ${toneSwitch}`}>
       {/* 评审修复 ③：中文 eyebrow 11px、去 uppercase/字距（对汉字无效）；层级靠字重。
           右侧时长是配套的西文数字+中文单位，10.5px 与 eyebrow 同行保持次级感。 */}
-      <div className="flex items-center text-xs font-bold opacity-90">
+      <div className="status-eyebrow flex items-center text-xs font-bold opacity-90">
         服务状态
         {/* tabular-nums：时长每秒自增，等宽数字位让秒针跳动不再横推左侧「服务状态」。 */}
         <span className="ml-auto text-[10.5px] font-semibold tabular-nums">
@@ -164,7 +164,7 @@ export function StatusCard({
 
       <p className="text-[13.5px] font-bold leading-normal">{chain.headline}</p>
       {/* break-all：startupError 可能是很长的系统错误串，不断行会撑破窄卡。 */}
-      <p className="mt-1 break-all text-xs leading-relaxed opacity-90">{chain.sub}</p>
+      <p className="status-summary mt-1 break-all text-xs leading-relaxed opacity-90">{chain.sub}</p>
 
       {status && running && (
         // 传输 / Bearer 并进地址行。它俩原来各占一行，而「HTTP 传输 · Bearer 已启用」
@@ -173,7 +173,7 @@ export function StatusCard({
         //
         // truncate 的降级方向正好是对的：宽度不够时先吃掉尾部的元信息，
         // 地址（用户要复制的那串）保住。所以不需要拆 flex 子项去控优先级。
-        <div className="mt-3 truncate rounded-lg bg-white/[0.14] px-2.5 py-1.5 font-mono text-[11.5px]">
+        <div className="status-address mt-3 truncate rounded-lg bg-white/[0.14] px-2.5 py-1.5 font-mono text-[11.5px]">
           {displayHost} : {port}
           {/* 元信息不跟 font-mono：等宽字体下 CJK 既偏宽也难看（与最近活动同一理由）。
               顺带也拉开了层次：地址是等宽的数据，后面两项是标签。 */}
@@ -214,7 +214,7 @@ export function StatusCard({
 
       {err && (
         // animate-shake：启停失败是需要被看见的事，震一下比默默出现有效。一次性动画。
-        <div className="animate-shake mt-2 flex items-start gap-1.5 rounded-lg border border-white/25 bg-black/25 px-2.5 py-1.5 text-[11.5px]">
+        <div className="status-error animate-shake mt-2 flex items-start gap-1.5 rounded-lg border border-white/25 bg-black/25 px-2.5 py-1.5 text-[11.5px]">
           <Icon name="alertTriangle" size={13} className="mt-px shrink-0" />
           <span className="break-all">{err}</span>
         </div>

@@ -53,7 +53,7 @@ export function HealthCard({
   const rateText = !running ? "服务未运行" : !hasSamples ? "暂无调用 · 待评估" : `成功率 ${rateAnim.toFixed(1)}%`;
   const ratePop = usePopClass(rateText);
 
-  // 「推荐状态 ✓」只在四道基础防线全开时给——不能因为「大部分开了」就撞绿。
+  // 基础防线的开启情况与命令执行等整体风险分别展示，避免把配置齐全说成安全推荐。
   const roots = status?.allowedRoots.length ?? 0;
   const windowSec = Math.round((status?.rateLimit.windowMs ?? 0) / 1000);
   const recommended =
@@ -79,7 +79,7 @@ export function HealthCard({
             recommended ? "text-success-ink" : "text-warning-ink"
           }`}
         >
-          {recommended ? "推荐状态 ✓" : "有防线未开"}
+          {recommended ? "基础防护已开启" : "基础防护未齐"}
         </span>
       </div>
 
@@ -123,8 +123,8 @@ export function HealthCard({
           {...NAV.backup}
         />
         <Pill
-          on={status.encodingDetectEnabled}
-          text="编码探测"
+          on={false}
+          text={`编码探测 ${status.encodingDetectEnabled ? "开" : "关"}`}
           onNavigate={onNavigate}
           {...NAV.encoding}
         />
@@ -135,11 +135,9 @@ export function HealthCard({
           onNavigate={onNavigate}
           {...NAV.backup}
         />
-        {/* 下三项是「开了才需要留神」的项：传进去的 on 已取过反，
-            配上 warnWhenOn 后——开启时报警色，关闭是中性。 */}
+        {/* 绿色只表达已开启的防护；普通配置保留真实开关文案，使用中性材质。 */}
         <Pill
-          on={!status.readonlyMode}
-          warnWhenOn
+          on={status.readonlyMode}
           text={`只读模式 ${status.readonlyMode ? "开" : "关"}`}
           onNavigate={onNavigate}
           {...NAV.readonly}
@@ -152,8 +150,7 @@ export function HealthCard({
           {...NAV.shell}
         />
         <Pill
-          on={!status.sessionCwdEnabled}
-          warnWhenOn
+          on={false}
           text={`会话持久化 ${status.sessionCwdEnabled ? "开" : "关"}`}
           onNavigate={onNavigate}
           {...NAV.session}
