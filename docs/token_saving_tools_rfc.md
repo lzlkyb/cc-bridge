@@ -130,7 +130,8 @@ AI 端(Linux)                                cc-bridge(Windows)
 2. **鉴权**：`auth_middleware` 对 `/transfer/` 前缀跳过 Bearer 校验（参照现有 `/mcp/messages` 的 `skip_token` 写法），**改在 handler 里校验票据**。
    - 原因：curl 端不应持有长期 token（之前发现 `run_command` 的 `env` 参数会静默变空，传 token 容易出错；且长期 token 出现在 shell 历史里不安全）。票据一次性、短时效、绑定单个路径和方法，泄露面小得多。
    - 限流和封禁照走：无效票据计入 `inc_auth_denies()` 和 `ban.record_failure(peer_ip)`，防暴力猜票据。
-3. **Body 上限**：现有 `RequestBodyLimitLayer` 是整包缓冲、上限 96MB。`/transfer` 必须**流式读取**（`Body` → `into_data_stream()`），由 handler 自己按 `max_file_size_bytes` 截断，不能被全局层整包缓冲。做法：把 `/transfer` 放到单独的子 Router，只套鉴权/限流/并发层，不套 `RequestBodyLimitLayer`，也不套 `jsonrpc_oversize_middleware`（它会把 413 改写成 JSON-RPC 错误，对 curl 没意义）。
+3. **Body 上限**：现有 `RequestBodyLimitLayer` 的上限是 `6 × max_file_size`（≥1MB、≤96MB）。`/transfer` 必须**流式读取**（`Body` → `into_data_stream()`），由 handler 自己按 `max_file_size_bytes` 截断。做法：把 `/transfer` 放到单独的子 Router，只套鉴权/限流/并发层，不套 `RequestBodyLimitLayer`（它给的 413 是 `text/plain`，对 curl 没有可执行信息），也不套 `jsonrpc_oversize_middleware`（它把 413 改写成 JSON-RPC 错误，对 curl 同样没意义），更不套 `CompressionLayer`（一压缩就会删掉 `Content-Length`，而那是我们承诺给调用方的校验值）。
+   > 更正（2026-10-21 复查）：本条原文写的「`RequestBodyLimitLayer` 是整包缓冲」是**错的**。它是**流式**上限（内部只是 `http_body_util::Limited` 包一层），不缓存整包；真正整包缓冲的是 `/mcp` 上的 `Json<Value>` extractor。拆路由的收益因此不是「省内存」，而是上面那三条：结构化错误、`Content-Length` 不被改写、以及不需要一个永远触发不了的多余上限。
 4. **压缩层**：GET 下载已压缩格式（pptx/zip/png）时 gzip 无收益，可对 `/transfer` 不套 `CompressionLayer`。
 
 ## 六、票据实现
@@ -407,7 +408,7 @@ NC 的 ecj 编译要 3~4 分钟，`run_command` 前台超时只有一两分钟�
 
 ## 未做
 
-- 第一部分的文件直传（`prepare_upload` / `prepare_download` + `/transfer/{ticket}`）——仍卡在 §七 的前置决策：`ToolRunner` 签名 `fn(Value, &Arc<AppState>)` 拿不到请求头，要么引入 per-request ctx（task_local），要么退回 `config.host + port` 拼 URL（端口转发场景会拼错）。
+- ~~第一部分的文件直传~~ —— **已实施，见 §二十三**。原文担心的「`ToolRunner` 拿不到请求头」不成立：`mcp_handler` 本来就有 `HeaderMap`，一个 task_local 即可，既不用 per-request ctx 也不用退回 `config.host + port`。
 - `render`（依赖 Edge/Office + COM 生命周期，风险最高）
 - `file_hash`（`copy_files` 加 `verify` 与它二选一，倾向新工具）
 
@@ -420,3 +421,187 @@ NC 的 ecj 编译要 3~4 分钟，`run_command` 前台超时只有一两分钟�
 - 唯一的行为变化：默认配置（无 session、无 cwd 回退）下 `run_command` 的响应现在必然带 `shell` 字段。`sessionId` / `cwdFallback` / `cwd` 仍按原条件注入，不留 `null` 占位。
 - `run_command_description` 补一句「返回中的 shell 字段是本次实际生效的壳层」，让模型在描述与实际不一致时有明确的取值优先级。
 - 回归测试：`shell_echo_lands_inside_content_text`（顶层无 `shell`、内层有、无 `null` 占位）、`shell_field_visible_in_real_response`（真跑 `echo`，期望值由 `config.shell_type` 推出）。
+
+---
+
+# 二十三、第一部分实施记录（2026-10-21 落地）
+
+原文一~十二节保留不动（作为问题与目标的记录）。这一节写**实际做了什么、和原文哪里不一样**，以代码为准。
+
+## 23.1 落地清单
+
+| 文件 | 内容 |
+|---|---|
+| `mcp/transfer.rs`（新） | 票据表 `TicketStore` + `/transfer/{ticket}` 的 PUT/GET 处理 + 基地址推导 + 传输审计 |
+| `mcp/tools/prepare_upload.rs`（新） | 签发上传票据（发票据前把白名单/扩展名/只读/大小/覆盖全验一遍） |
+| `mcp/tools/prepare_download.rs`（新） | 签发下载票据，当场返回 `bytes` + `sha256` |
+| `mcp/http.rs` | `build_router` 拆成两条子路由后 `merge`；`auth_middleware` 对 `/transfer/` 跳过 Bearer；`mcp_handler` 把 Host 带进工具作用域；`instructions` 补两条工具 |
+| `state.rs` | `AppState.transfer_tickets` |
+| `registry.rs` | 两个 `register_tool!`（`prepare_upload` is_write=true，`prepare_download` is_write=false） |
+
+工具数 22 → 24；`PUT|GET /transfer/{ticket}` 与 MCP 同端口同进程。
+
+## 23.2 与原文不一致之处（逐条说明）
+
+**① 返回 URL 的基地址（原文 §七）：不需要横切改动。**
+
+原文认为「`ToolRunner` 签名拿不到请求头」是个要拍板的前置决策（per-request ctx 还是退回 `config.host + port`）。实际两个都不用：
+- `mcp_handler` 本来就收 `headers: HeaderMap`（它要做标准头一致性校验），把 Host 读出来即可；
+- 只需要一个 task_local：`mcp_handler` 里 `with_base_url(base, handle_tools_call(..))`，工具侧 `current_base_url()` 取。
+- 前提是 `prepare_*` 是**纯 async、不经 `spawn_blocking`**（`spawn_blocking` 会丢 task_local 作用域）。这条已写进 `transfer.rs` 的注释，别往里跳。
+- 拿不到时（无 Host / 单测直调）回退 `config.host + port`；`host == 0.0.0.0` 时改取第一张网卡的 IPv4——否则给出的是 AI 端连不上的地址。
+- Host 值过一道字符白名单（`[A-Za-z0-9.\-:\[\]_]`）：它会被拼进单引号包裹的 `curl` 示例，不能让 `'` 逃逸。
+
+**② 票据不用无状态 HMAC（原文 §六）：更明确地否决。**
+
+曾考虑「票据 = HMAC(路径+方法+过期)」省掉内存表。否决理由不是实现成本，而是**它会变成一个可无限次使用的凭据**：工具返回值会进对话、审计日志会落盘（AI 自己就能 `read_files` 读日志），票据 URL 必然泄漏。一次性 + 短时效 + 绑单路径单方法才是全部防线，而这需要服务端状态。故仍是内存表：
+- 32 字节 CSPRNG → base64url（`u_` / `d_` 前缀），进程重启全失效，不落盘；
+- `take()` **先 `remove` 再判**，同一票据并发两个 PUT 只有一个拿到；对外的错误文案里「不存在」与「已用过」是同一句，不给猜票据的人判别器；
+- 上限 64 条，签发时顺手 `retain` 清过期。
+
+**③ 拒绝 multipart，坚持裸 body（原文 §三的 `curl -T`）。**
+
+`curl -T` 发的是原始文件内容，不是 multipart。改成 multipart 要多引一个解析器、还要把「临时文件 + 流式」重新实现一遍。现在 `Body::into_data_stream()` 直接落到 `.part` 文件，边写边算 sha256。
+
+**④ 下载是「两遍读、同一个句柄」，不是一遍流式，也不是两次 open。**
+
+要在响应头里给出**真实**的 `Content-Length` 与 `X-Content-SHA256`，就必须在开始发 body 之前知道整个文件的哈希——这只能先完整读一遍。原文 §四说「复用发票据时的值」不成立：文件可能在票据有效期内被改过。
+
+但「hash 一遍 + 重新 open 再发」还有第二个坑（复查时修掉）：**两次 open 之间文件被改写就会让 `Content-Length` 与实际发出字节数不符**——多了被 hyper 截断，少了客户端一直等不到结束，两种都表现为传输卡死。现在在 `spawn_blocking` 里读完算哈希后 `seek(0)`，**把同一个 `File` 句柄交给发送任务**（`tokio::fs::File::from_std`），长度与内容天然一致。回归测试 `download_headers_match_bytes_even_if_file_changed_after_issue` 专门造这个场景。
+
+**⑤ 审计的 `tool` 字段是 `transfer`，不是 `prepare_upload`。**
+
+传输发生在票据签发之后、可能是另一个 HTTP 请求，与那次 `tools/call` 无关。用 `prepare_upload` 记会让审计里的时间线错位。所以 `/transfer` 自己写一条 `tool: "transfer"` 的条目，`params` 里带 `path` / `bytes` / `sha256` / `via: "transfer"`——**不带票据值**（否则审计日志本身就成了票据库）。前端 `TOOL_LABELS` 已加「文件直传」。
+
+**⑥ 处理前重校验，且只读判定按方向区分。**
+
+票据最长有效 30 分钟，期间用户可能收紧白名单 / 关掉只读。处理时重跑 `resolve_safe_path_cached` + `assert_extension_allowed`，并把**重新解析后**的路径用于写盘。这里踩了一个自己造的坑：一开始只读判定写在共用的 `revalidate` 里，于是「只读模式下取个文件」变成 403——票据签得出来却取不走。现在 `require_writable` 参数按上传/下载区分，并各有一条回归测试。
+
+**⑦ `/transfer` 的层挂载是「两条子路由 + merge」，不是「一条路由 + 条件跳过」。**
+
+axum 的 `.layer()` 只作用于它之前注册的路由，所以行为无法按路径分段。做法：JSON-RPC 那条子路由套 `RequestBodyLimitLayer` + `gzip` + 413 改写；`/transfer` 那条什么都不套；`merge` 之后再统一套 `auth_middleware` + `ConcurrencyLimitLayer`。
+顺带修正了一个次序问题：原实现里 body-limit 挂在 auth 外层，未鉴权的请求要走完 body 读取路径（`/mcp` 上是 `Json<Value>` 整包缓冲）才判 401。现在 auth 在外、body 相关层在内，先拒后读。
+
+**⑧ 大小判据只有一个来源：`max_file_size_bytes`。**
+
+`Content-Length` 只用于「提前拒绝」，真正的中止靠流式累计超限（413 + 删临时文件）。票据里若带 `size`，完成后比对，不符 409 且目标文件不动。
+
+## 23.3 测试（16 条新增）
+
+单测（`transfer.rs` / 两个工具模块）：票据一次性、种类不符、过期、猜不出、上限 64、id 可进文件名、Host 白名单、任务作用域、流式落盘的字数/哈希/超限、跨块哈希、基地址回退与 TLS 方案、签发工具的各种拒绝路径、sha256 规整、ttl 夹取。
+
+端到端（真起 axum + reqwest，`transfer.rs::over_wire`）：
+- 上传成功→重放 401→无 `.part` 残留；哈希不符 409 且目标文件保持原样；超限 413（**断言响应体是我们的 JSON、不是 `RequestBodyLimitLayer` 的 `text/plain`**，这条才是「`/transfer` 没被挂上 `/mcp` 那组层」的证据）；3MB 直传成功；
+- 下载的 `Content-Length` / `X-Content-SHA256` / 字节内容都对，且只能取一次；PUT 票据拿去 GET → 401；乱猜票据 → 401 且 `auth_denies` 递增；
+- 只读模式下下载照常、上传在票据签发后被开只读则 403；
+- 审计留 `tool: "transfer"` 条目且日志里搜不到票据值。
+
+前后端门禁：`cargo fmt --check` / `cargo clippy --all-targets --no-default-features -- -D warnings` / `cargo test --no-default-features`（516 + 4 通过）、组件体量 / `eslint` / `tsc --noEmit` / `vitest run`（899 通过）。
+
+## 23.4 仍未做
+
+- `render`（HTML 侧 CDP、Office 侧 LibreOffice headless）
+- `analyze_file` 的 `hash` / `compareWith`（`file_hash` 并入它，不加工具）
+- 断点续传、目录打包（原文 §十二 仍然有效）
+- 扩展名白名单仍是配置项：不把 `.pptx/.png/.zip` 加进 `allowed_extensions`，新工具对它们同样会被拒（原文 §九）
+
+## 23.5 复查与修复（2026-10-21 晚，提交前逐行过关）
+
+四处真 bug、两处会主动误导调用方的文案。
+
+**① 下载的哈希与发送用了两个 `File` 句柄。**
+见 §23.2 ④。两遍各自 `open`，中途被改写就 `Content-Length` 与实际字节不符 → 客户端卡死/被截断，而且两边都不报明显错误。改成同句柄 `hash → seek(0) → 发送`。
+回归：`download_headers_match_bytes_even_if_file_changed_after_issue`（签发后把 5000 字节改成 777 字节，断言 `Content-Length`/`X-Content-SHA256`/正文三者都是新的）。
+
+**② 过期票据被当成鉴权失败记账 —— 会把合法调用方封掉。**
+票据默认 5 分钟有效，AI 想久一点再来 `curl` 就拿到「已过期」；旧实现一律 `inc_auth_denies` + `ban.record_failure` → 同一 IP 攒够 `remote_ban_threshold`（默认 5）次就被封 `remote_ban_window_min` 分钟。而 `/transfer` 被封等于**桥端自己不可用**，界面看不出原因，用户只能干等。
+修法：`take()` 返回 `TicketReject{ NotFound | Expired | WrongMethod }`，只有 `NotFound`（猜票、重放）计入封禁，另两类只计入 `auth_denies` 指标。这不削弱防爆破：猜不到真票据的调用方永远落在 `NotFound`，能拿到真票据的调用方永远落在另外两档。
+回归：`only_unknown_tickets_count_as_auth_failure`、`expired_ticket_is_401_but_does_not_ban`（阈值压到 1：过期 401 后仍不封，随机票 401 后立刻封）。
+
+**③ `/transfer` 成功从不 `record_success`。**
+`auth_middleware` 对 `/transfer` 走 `skip_token` 分支，不会替我们清失败计数。后果有两个：一次手误之后治理页的「令牌失效」提示一直亮着（它靠「窗口内还有失败记录」判断问题是否已解决），失败计数也永远不清零。修法：`take()` 成功后 `state.ban.record_success(peer)`。
+
+**④ `curl -sS` 对 4xx/5xx 仍返回退出码 0。**
+上传失败（401 票据无效 / 409 哈希不符 / 413 超限）时 curl 退出码是 0，只看退出码的调用方会把失败当成功——这是最能让人误判的一条。
+- 上传：`curl -sS --fail-with-body -T …`，退出码非 0 且仍能打印服务端 JSON。
+- 下载：`curl -sS -f -o …`。**不能**用 `--fail-with-body`：那正好会把错误 JSON 写进 `-o` 指定的文件，得到一个「内容是报错」的假文件。
+回归：`curl_command_fails_on_http_error`（两个工具各一条，顺带断言命令行没有连续空格）。
+
+**⑤ SSE 通道没注入 `base_url`。**
+`/mcp/messages` 的 `tools/call` 只注入了 `source_ip`。`prepare_*` 因此走回退路径（`config.host + port`，绑 `0.0.0.0` 时取首张网卡）——客户端从 `localhost:自定义端口` 或反向代理进来时，拼出的 URL 直接连不上。修法：`sse_message_handler` 里先算 `transfer_base` 再包 `with_base_url`（与 HTTP 通道同形状）。
+
+**⑥ 超限提示指去 `read_files`。**
+`read_files` 也调 `assert_file_size_ok(max_file_size_bytes)`，换它一样读不出来。文案改成「上调设置里的『最大文件大小』」，并加断言防止再指回去。
+
+顺带两处小改：失败审计的 `bytes` 从写死 0 改成**实际已收字节**（「0 字节」与「3.2MB 后中断」是两个完全不同的排查结论），`stream_into` 的错误返回因此多了第三个字段；`sha256_file` 抽出 `hash_reader`，与 `hash_and_rewind` 共用一个实现。
+
+新增 6 条测试，Rust 516 + 4 全绿，前端 899 全绿。
+
+## 23.6 第二轮复查（2026-10-21 深夜，含全工具广度测试）
+
+上一轮是「严格盯着改动逐行走」，这一轮换了两个角度：**反向问「什么情况下这套承诺会崩」**，以及**把默认门禁里根本不会跑的测试真跑一遍**。
+
+### A. 三处代码修复
+
+**① 下载流的发送端没有上限（真 bug，与 §23.5 ① 同一族）。**
+§23.5 把「哈希与发送」合到了同一个 `File` 句柄，解决了「中途被换掉」；但发送循环仍是 `read → 直到 EOF`。文件在**同句柄**下变长（另一个进程追加/覆盖）时，实际发出的字节数会超过已写死的 `Content-Length`，hyper 对「声明 N、实发 >N」的处理是终止连接丢掉响应 —— 客户端只看到卡死/截断。
+修法：`pump_file(file, bytes, tx)`，按 `bytes` 精确截断（`remaining` 递减、读缓冲按剩余量收窄）。变短那一半无法补救（少发同样不符），但「多发」必须堵死。
+回归：`pump_file_stops_at_declared_length`（文件 4096 而声明 100 → 只发 100；声明 4096 而文件被截到 10 → 只发 10、不补零）。
+
+**② `overwrite=false` 只在流式落盘**之前**判一次。**
+落盘耗时与文件大小成正比（几十 MB 就是几百毫秒），期间别的工具或另一个上传完全可能把目标建出来，随后 `rename` 静默覆盖。这个开关是调用方用来**保证不覆盖已有文件**的，落在窗口里等于把承诺作废。
+修法：拿到路径锁后、备份与改名前再判一次（与 `write_files` 共用同一把 `path_locks`，所以对工具并发同样有效）。
+回归：`overwrite_false_wins_when_file_appears_mid_stream` —— 用裸 TCP 发 chunked 请求，第一块之后停顿 250ms，趁停顿把目标文件建出来再发剩下的字节。**这个窗口是确定性复现的**，不靠大文件抢时序。
+
+**③ `prepare_upload` 没有拦住「目标是个目录」。**
+带扩展名的目录（`looks-like.pptx/`）能过扩展名白名单，一路走到最后的 `rename` 才炸成 500（Windows 不允许把文件改名到已存在的目录上），临时文件清了、错误文案却毫无指导性。
+修法：解析出路径后**先判 `is_dir()`**（在扩展名检查之前，否则只会报一句「File has no extension」）。
+回归：`rejects_directory_target`（普通目录 + 带扩展名的目录各一例）。
+
+### B. 测试基建：22 条 `#[ignore]` 里有 4 条早就坏了
+
+`mcp/http.rs` 的 `over_wire_tests` 整体带 `#[ignore]`，默认门禁从不执行。真跑一遍（`cargo test -- --ignored`）发现：
+
+| 测试 | 症状 | 根因 |
+| --- | --- | --- |
+| `tools_list_returns_17_tools_with_schemas` | 断言 19，实际 23/24 | 工具数从 17 → 19 → 23 一路漂，没人改（因为不跑）。顺带 `push_notification` 在 `notifications` feature 之后，`--no-default-features` 下是 23 |
+| `sse_messages_tools_list` / `sse_messages_run_command` | 断言 202，实际 404 | `extract_session_from_sse` 读完首块就把响应 drop 了 → SSE 连接关闭 → 会话被注销 → 后续 POST 一律 404 |
+| `sse_messages_bad_session` | 断言 404，实际 401 | M17 给 `/mcp/messages` 加了 token 校验，测试没带 token |
+
+四条全修：计数改成「与 `registry::all_tools()` 对齐 + 一个 feature 感知的硬数字」；`open_sse_session` 把响应句柄一起返回并让调用方持有；三条 SSE 测试补 `Authorization`。现在 `--ignored` 23/23 全绿。
+
+**这件事的教训比 bug 本身重要**：`#[ignore]` 的测试和不存在没有区别，而它们恰好覆盖的是真实 HTTP 路径（鉴权、限流、封禁、SSE、HTTPS 全链路、15 个工具的真实副作用）。建议把这批（除 4 条依赖本机 `~/.codex`/`~/.claude` 配置的）提到 pre-push 门禁里单独跑 —— 2.6 秒，代价可忽略。
+
+### C. 新增广度冒烟（进默认门禁）
+
+`every_registered_tool_is_callable_and_validates_args`：对注册表里**每一个**工具发一次空参数 `tools/call`，断言
+- 必须是合法 JSON-RPC 结果（不能是协议 `error`）；
+- `result.content` 是非空数组；
+- 默认是「工具级错误」（`isError: true`），只有 `list_allowed_roots` 与 `mcp_list_servers` 例外。
+
+它守的是「加了 registry 却忘了接线」和「某个工具的参数反序列化把整个请求打成 500」。写出来第一次跑就发现了一个我不知道的事实：`mcp_list_servers` 也是无必填参数的，原本预期的成功清单只有一项。
+
+### D. 用真 curl 跑一遍（`real_curl_exits_nonzero_on_http_error`）
+
+§23.5 ④ 的 `--fail-with-body` / `-f` 之前只有「命令行字符串里包含某个 flag」的断言 —— 那证明不了 curl 的行为。现在真起 server、真执行 curl：首次上传退出码 0，重放票据退出码 **22**；下载首次字节一致，重放退出码非 0。
+
+写这条时踩了一个坑：`#[tokio::test]` 默认是**单线程**运行时，就地 `std::process::Command::output()` 会占死唯一的线程，同一运行时里的 axum server 再也拿不到时间片 → curl 等响应、测试等 curl，双向死锁（实测整个 `cargo test` 挂 14 分钟不动，进程表里只剩一个 23MB 的测试二进制）。修法：`spawn_blocking` 里跑 curl。
+
+### E. 查过、确认没问题的
+
+- `RequestBodyLimitLayer` 是不是整包缓冲 —— **不是**，见 23.1 的更正。原文与记忆里的说法都改掉了。
+- axum `.layer()` 只作用于「之前注册的路由」：拆两个 Router 再 `merge` 确实做到了「`/mcp` 有多层、`/transfer` 一个都不挂」，且 `merge` 后挂的全局层（auth / concurrency）两边都生效。
+- 只读模式按方向区分、票据一次性、`.part` 同目录 + rename 前 `drop(file)`、`TicketReject` 的封禁口径、审计不含票据值。
+- 23 条被 ignore 的集成测试真跑一遍全绿（修完上面 4 条后）。
+
+### F. 已知未修（都要单独立项，不适合塞进这个特性）
+
+1. **路径白名单对「尾部的 junction / 符号链接」不设防（既有问题，`write_files` 同源）。** `resolve_safe_path_cached` 对不存在的路径走「最近存在祖先 canonicalize + 原样拼接尾部」，尾部里的 junction 不会被解链接；`/root/link → C:\Windows` 这种布局能写到根目录之外（`ensure_parent` 还会先在根外建目录）。利用前提是攻击方已经能在白名单根内造出 junction（需要 shell 能力）。正确修法是**逐级 canonicalize**，属于 `security/path.rs` 的语义变更，会影响所有工具，必须单独出方案。
+2. 下载的审计在开始发 body **之前**就写了 `ok: true`，客户端中途断开也算成功。改成「传完再写」会让审计滞后、测试变抖。
+3. 无 `Range`（断点续传）；同名路径两次并发上传时后 rename 的覆盖前者（`overwrite=true` 时的既定语义）。
+4. 下载响应头里的哈希是「此刻」的值；文件在签发后被改，会与 `prepare_download` 返回值不同（这是正确行为，但 AI 会看到两个数）。
+5. `/transfer` 与 `/mcp` 共用同一条限流窗口（`rate_limit_max_requests`），一次「签票 + curl」占 2 个额度。
+
+### G. 门禁
+
+`cargo fmt --check` / `cargo clippy --all-targets --no-default-features -- -D warnings` / `cargo test --no-default-features`（**521 + 4**）/ `cargo test -- --ignored`（**23**）/ 组件体量 / `eslint` / `tsc --noEmit` / `vitest run`（899）—— 全绿。

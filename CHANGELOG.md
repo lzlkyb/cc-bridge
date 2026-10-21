@@ -8,6 +8,7 @@
 ## [Unreleased]
 
 ### 新增
+- 新增 `prepare_upload` / `prepare_download` 工具与 `PUT|GET /transfer/{ticket}` 端点：大文件与二进制文件的字节改走 MCP 之外的 HTTP 通道直传，不再经过对话上下文（169KB 的 pptx 走 base64 要十几万 token，直传只要几十个）。工具只负责签发一次性票据并返回可直接执行的 `curl` 命令；上传流式落盘、边写边算 sha256（可由服务端比对，不符整次作废）、超限立即中止、覆盖前自动备份、临时文件原子改名，下载返回文件大小与 sha256 供本地校验。票据一次性、默认 5 分钟失效、只绑单路径单方法，`/transfer` 因此不要求长期 Bearer token；审计另记 `transfer` 条目（含字节数与哈希，不含票据本身）。
 - 新增 `wait_command` 工具：用一次调用等后台命令结束再返回结果，替代反复轮询 `get_command_output`。支持 `untilPattern`（输出命中正则就提前返回）、`timeoutSec`（默认 120 秒、上限 600）与输出过滤；**超时不会杀进程**，返回里标明命令仍在运行，可继续等或用 `stop_command` 结束。
 - 新增 `view_image` 工具：把图片（png/jpg/gif/webp/bmp）**当图片**返回给 AI，而不是 base64 文本——同一张图当文本要十几万字符，当图片内容块只要一两千 token。支持按原图像素 `crop`、`maxWidth` 等比缩放与 png/jpeg 重编码，核对截图与渲染效果不再需要 AI 手写截图脚本。
 - 设置增加应用材质预览、独立终端实时预览和系统通知测试；终端明暗、字体与字号变化保留现有会话。

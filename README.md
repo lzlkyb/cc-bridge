@@ -97,7 +97,7 @@
 │  │                                                           │
 │  └─ cc-bridge.exe / cc-bridge.app ── 单进程 Tauri 2 桌面应用    │
 │       │                                                      │
-│       ├─ 嵌入式 axum HTTP(S) 服务器 ── MCP JSON-RPC + 22 个工具 │
+│       ├─ 嵌入式 axum HTTP(S) 服务器 ── MCP JSON-RPC + 24 个工具 │
 │       │        + 安全校验 + 自动备份 + 限流 + 401 封禁 + 审计      │
 │       ├─ SQLite 配置存储 ── 原子更新，无竞态                     │
 │       └─ React 前端 ── Tauri IPC 通信，管理面板                 │
@@ -161,9 +161,9 @@ cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
 │  (MCP 客户端)       │────────────────▶│                                  │
 │                     │   内网:7823     │   ┌─ axum HTTP 服务器 ─┐         │
 │  通过 MCP 协议       │                 │   │  POST /mcp         │         │
-│  调用 22 个 MCP 工具  │                 │   │  Bearer token 认证  │         │
+│  调用 24 个 MCP 工具  │                 │   │  Bearer token 认证  │         │
 │                     │                 │   │  JSON-RPC dispatch │         │
-└─────────────────────┘                 │   │  → 22 个工具处理器  │──┐      │
+└─────────────────────┘                 │   │  → 24 个工具处理器  │──┐      │
                                         │   │  → 安全校验         │  │      │
                                         │   │  → 审计日志         │  │      │
                                         │   └────────────────────┘  │      │
@@ -210,7 +210,7 @@ AI 工具对话中触发工具调用:
         │
         ▼
   POST /mcp  ──  tools/list (发现可用工具)
-        │          返回 22 个工具的 name + description + inputSchema
+        │          返回 24 个工具的 name + description + inputSchema
         ▼
   POST /mcp  ──  tools/call (实际调用)
         │
@@ -319,7 +319,7 @@ AI 工具对话中触发工具调用:
 
 ## 功能清单
 
-### 22 个 MCP 工具（任意接入的 AI 工具直接调用）
+### 24 个 MCP 工具（任意接入的 AI 工具直接调用）
 
 | 工具 | 作用 |
 |---|---|
@@ -338,6 +338,8 @@ AI 工具对话中触发工具调用:
 | `batch` | 一次往返批量执行多个工具调用，把 N 次网络往返合并为 1 次（远程链路最大延迟优化）；每个子操作复用同样的白名单 / 只读校验；非事务，出错即停但不回滚已完成写入 |
 | `analyze_file` | 编码检测 + 语言识别 + 函数/类数量启发式估算 |
 | `view_image` | 把图片（png/jpg/gif/webp/bmp）**当图片**返回给 AI，而不是 base64 文本——一张图约一两千 token，同一张图转 base64 文本要十几万字符。支持 `crop` 按原图像素裁剪、`maxWidth` 等比缩放（默认 1600）、`format` 选 png/jpeg；核对截图、渲染效果、图表时用它，别再让 AI 手写截图脚本 |
+| `prepare_upload` | 签发**一次性上传地址**：给桥端目标路径，跑返回的 `curl -T` 命令把文件直接推过来，**字节不经过对话上下文**（169KB 的 pptx 走 base64 要十几万 token，直传只要几十个）。发票据时已校验白名单/扩展名/只读/大小/覆盖；上传流式落盘、边写边算 sha256（传 `sha256` 由服务端比对，不符整次作废）、超限立即中止、覆盖前自动备份、临时文件原子改名。票据一次性、默认 5 分钟失效 |
+| `prepare_download` | 签发**一次性下载地址**：返回文件大小 + sha256 + 可直接执行的 `curl -o` 命令，字节同样不过上下文。二进制/大文件（图片、Office 文档、压缩包）用它替代 `read_files` |
 | `run_command` | 执行 Shell 命令（壳层按平台与配置：Windows = `cmd /C` 或 Git Bash，macOS = `sh` / `bash`），前台等待结果或 `background=true` 后台运行；前台输出可用 `include` / `exclude` 正则与 `tailLines` 在服务端过滤，被剔除的行只报数量；**默认关闭**，需在『安全』页开启「命令执行」开关（等同于授予远程任意代码执行权限），只读模式下无条件禁止 |
 | `get_command_output` | 增量拉取后台命令的 stdout/stderr（按偏移量），附带是否已结束、退出码；同样支持 `include` / `exclude` / `tailLines` 服务端过滤 |
 | `wait_command` | 等后台命令结束再一次性返回（`timeoutSec` 默认 120、上限 600），支持 `untilPattern` 命中即返回（如等到 `EXIT=\d+`）与输出过滤；**超时不杀进程**（`timedOut:true` + `running:true`，可继续等）。长构建用它替代反复轮询 `get_command_output` |
@@ -348,7 +350,7 @@ AI 工具对话中触发工具调用:
 
 ### SSH 终端（本地人操作，非 MCP 工具）
 
-第 4 个 Tab「终端」提供一个真正的**交互式终端**，让你在 cc-bridge 面板里直接连远端 Linux 敲命令——**这是给人手动用的，不是给 AI 用的 MCP 工具**（所以不计入上面的 22 个 MCP 工具）。
+第 4 个 Tab「终端」提供一个真正的**交互式终端**，让你在 cc-bridge 面板里直接连远端 Linux 敲命令——**这是给人手动用的，不是给 AI 用的 MCP 工具**（所以不计入上面的 24 个 MCP 工具）。
 
 - **后端**：调用本机系统自带 OpenSSH（Windows 10/11 自带 `C:\Windows\System32\OpenSSH\ssh.exe`，macOS 永远有），用 `portable-pty` 开本地 PTY（Windows = ConPTY / Unix = pty）把 ssh 的输入输出接到 xterm.js。零新网络协议、零重依赖，体积代价可忽略（portable-pty 0.9 只引 `windows-sys` 0.61.2 等小库）。
 - **连接**：支持两种认证方式——
@@ -512,7 +514,8 @@ cc-bridge/
             └── mcp/                    # MCP 协议实现
                 ├── mod.rs
                 ├── http.rs             # axum 路由 + JSON-RPC dispatch
-                └── tools/              # 22 个工具处理器
+                ├── transfer.rs         # 文件直传：一次性票据 + PUT|GET /transfer/{ticket}
+                └── tools/              # 24 个工具处理器
                     ├── mod.rs
                     ├── list_allowed_roots.rs
                     ├── list_directory.rs
