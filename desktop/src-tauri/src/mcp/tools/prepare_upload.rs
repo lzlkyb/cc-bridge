@@ -207,7 +207,10 @@ mod tests {
         let err = handle(args(&target.to_string_lossy()), &state)
             .await
             .expect_err("must reject");
-        assert!(err.to_lowercase().contains("extension"), "{err}");
+        // 文案必须点名扩展名与「去哪儿改」：原来只回一句英文 "Extension ... is not in
+        // the allowed list"，AI 端只会原地重试或改用 base64 绕路。
+        assert!(err.contains(".exe"), "{err}");
+        assert!(err.contains("文件管控"), "必须给出可操作指引：{err}");
         assert_eq!(state.transfer_tickets.len(), 0, "失败不发票据");
     }
 

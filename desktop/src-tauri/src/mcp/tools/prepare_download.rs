@@ -45,9 +45,15 @@ pub async fn handle(args: PrepareDownloadArgs, state: &Arc<AppState>) -> Result<
     )?;
     // 先判「是不是普通文件」再查扩展名：目录本来没有扩展名，先查白名单只会报一句
     // 「File has no extension」，对调用方毫无指导意义。
-    let meta = tokio::fs::metadata(&resolved)
-        .await
-        .map_err(|e| format!("读取文件失败：{e}"))?;
+    // 报错必须**带路径**：`metadata()` 的 io error 只会说「系统找不到指定的文件」，
+    // 多文件场景下调用方根本不知道是哪一个；「不存在」与「没权限」也不该糊成一句。
+    let meta = tokio::fs::metadata(&resolved).await.map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!("文件不存在：{}", resolved.display())
+        } else {
+            format!("读取文件失败：{}（{e}）", resolved.display())
+        }
+    })?;
     if !meta.is_file() {
         return Err(format!("不是普通文件：{}", resolved.display()));
     }
@@ -161,10 +167,13 @@ mod tests {
     #[tokio::test]
     async fn rejects_missing_file() {
         let (state, dir) = make_state(|_| {});
-        let err = handle(args(&dir.join("nope.txt").to_string_lossy()), &state)
+        let missing = dir.join("nope.txt");
+        let err = handle(args(&missing.to_string_lossy()), &state)
             .await
             .expect_err("must reject");
-        assert!(!err.is_empty());
+        // 报错必须点名是哪个文件：只说「系统找不到指定的文件」等于什么都没说。
+        assert!(err.contains("不存在"), "{err}");
+        assert!(err.contains("nope.txt"), "报错必须带路径，实际：{err}");
         assert_eq!(state.transfer_tickets.len(), 0);
     }
 

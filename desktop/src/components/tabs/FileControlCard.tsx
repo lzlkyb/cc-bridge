@@ -66,7 +66,8 @@ export function FileControlCard({ status, onSaved }: { status?: StaticStatus; on
             }}
           />
           <p className="text-xs text-muted-foreground">
-            留空表示不限制扩展名；所有设置修改后自动保存。
+            留空表示不限制扩展名，所有设置修改后自动保存。这份列表同时约束文件读写与「文件直传」；
+            AI 若要用的格式不在其中，会提示你在这里添加。
           </p>
         </div>
 

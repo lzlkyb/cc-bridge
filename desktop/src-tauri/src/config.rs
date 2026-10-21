@@ -251,10 +251,27 @@ impl Default for BridgeConfig {
             external_mcp_servers: vec![],
             active_profile: String::new(),
             token: String::new(),
+            // 🔴 默认白名单必须覆盖「工具对外承诺能处理的东西」。MCP instructions 明确写
+            // 「需要传 pptx、xlsx、pdf、图片、压缩包时优先用 prepare_upload/prepare_download」，
+            // `notebook_edit` 又专治 .ipynb——这些默认缺席等于新用户照着 instructions 操作
+            // 必然撞墙（2026-10-21 真机测试实测）。`view_image` 曾经踩过同一个坑，当时用
+            // 「独立内置清单」绕开，本处改为从根上把默认值补齐（内置清单仍保留作存量兜底）。
+            //
+            // ⚠️ 只加「数据/文档/图片」类。可执行与脚本投放类（.exe/.dll/.bat/.ps1/.cmd/
+            // .vbs/.msi/.scr/.jar/.lnk）**永不进默认**，由 `default_extensions_tests` 守门。
             allowed_extensions: vec![
-                ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".json", ".py", ".java", ".go",
-                ".rs", ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".sh", ".bash", ".yml",
-                ".yaml", ".toml", ".ini", ".md", ".txt", ".html", ".css", ".scss", ".sql", ".xml",
+                // —— 源码 / 配置（原始 30 项，内容一律不动，避免存量配置对比噪声）——
+                ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".json", ".py", ".java", ".go", ".rs",
+                ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".sh", ".bash", ".yml", ".yaml",
+                ".toml", ".ini", ".md", ".txt", ".html", ".css", ".scss", ".sql", ".xml",
+                // —— Notebook（notebook_edit 的唯一目标格式）与办公文档 / PDF ——
+                ".ipynb", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf",
+                // —— 压缩包（直传最常见的载荷）——
+                ".zip", ".tar", ".gz", ".7z", ".rar",
+                // —— 图片（与 view_image 的 IMAGE_EXTENSIONS 对齐）——
+                ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg",
+                // —— 表格 / 日志（analyze_file 与 search_files 的常见输入）——
+                ".csv", ".tsv", ".log",
             ]
             .into_iter()
             .map(String::from)
@@ -846,6 +863,82 @@ mod device_identity_tests {
         // 兼容性契约的兜底断言：缺字段（老配置库）时必须是关。
         assert!(!BridgeConfig::default().multi_device_mode);
         assert!(BridgeConfig::default().device_id.is_empty());
+    }
+}
+
+/// 默认扩展名白名单的守门测试（2026-10-21 真机测试教训）。
+///
+/// 背景：`notebook_edit` 在默认配置下 100% 不可用——默认 30 项里没有 `.ipynb`，而
+/// `http.rs::test_config` 当时用一行 `ext.push(".ipynb")` 私自补上，于是单测永久绿、
+/// 真机必红。这类「默认值与工具能力脱节」的洞，只能靠直接断言默认值本身来堵。
+#[cfg(test)]
+mod default_extensions_tests {
+    use super::*;
+
+    fn defaults() -> Vec<String> {
+        BridgeConfig::default().allowed_extensions
+    }
+
+    fn lower() -> Vec<String> {
+        defaults().iter().map(|e| e.to_lowercase()).collect()
+    }
+
+    /// 默认白名单必须覆盖「工具 / MCP instructions 明确承诺能处理」的格式。
+    /// 缺一个 = 用户照着文档操作必然撞墙，且单测不会红（这正是上面说的洞）。
+    #[test]
+    fn covers_documented_capabilities() {
+        let ext = lower();
+        let required = [
+            ".ipynb", // notebook_edit 的唯一目标格式
+            ".pptx",  // ↓ instructions 点名的直传格式
+            ".xlsx",  //
+            ".docx",  //
+            ".pdf",   //
+            ".zip",   // 「压缩包」
+            ".png",   // 「图片」
+            ".jpg",   //
+        ];
+        for r in required {
+            assert!(
+                ext.iter().any(|e| e == r),
+                "默认白名单缺 {r}：依赖它的能力在默认配置下不可用"
+            );
+        }
+    }
+
+    /// 可执行 / 脚本投放类**永不进默认**。默认值会自我传播（新装用户全量继承），
+    /// 一次误加等于把所有人置于风险中。
+    ///
+    /// 注：`.sh` / `.bash` 是早期遗留（与其它源码扩展名同批），不在本断言范围内——
+    /// 把它们摘掉属于安全语义变更，需要单独评估，不混在这一笔里。
+    #[test]
+    fn excludes_executable_payloads() {
+        let ext = lower();
+        for banned in [
+            ".exe", ".dll", ".sys", ".msi", ".scr", ".com", ".bat", ".cmd", ".ps1", ".vbs", ".vbe",
+            ".wsf", ".wsh", ".hta", ".jar", ".lnk", ".reg",
+        ] {
+            assert!(
+                !ext.iter().any(|e| e == banned),
+                "{banned} 不能进默认白名单"
+            );
+        }
+    }
+
+    /// 形状守门：一律点开头、小写、非空、无重复。写错了（如 `"ipynb"` 少点、
+    /// `".PNG"` 大写）会让 `assert_extension_allowed` 的精确比较永远不命中。
+    #[test]
+    fn every_default_entry_is_well_formed() {
+        let ext = defaults();
+        for e in &ext {
+            assert!(e.starts_with('.'), "扩展名必须以点开头：{e}");
+            assert!(e.len() > 1, "扩展名不能只有点：{e}");
+            assert_eq!(e.to_lowercase(), *e, "扩展名必须小写：{e}");
+        }
+        let mut uniq = ext.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), ext.len(), "默认白名单有重复项");
     }
 }
 

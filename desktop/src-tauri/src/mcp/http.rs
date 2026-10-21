@@ -1165,13 +1165,15 @@ mod over_wire_tests {
     }
 
     /// 测试用配置：已知 token、临时白名单根、关闭审计/备份副作用、开启 shell 以测命令工具。
+    ///
+    /// 🔴 这里**不许**再对 `allowed_extensions` 做任何补丁。历史上有一行
+    /// `ext.push(".ipynb") // notebook_edit 需要`，让 `notebook_edit` 的单测永久绿，
+    /// 而默认配置下该工具 100% 不可用（真机测试才暴露）。扩展名能力现在由
+    /// `config.rs::default_extensions_tests` 直接守默认值，工具侧用内置清单兜底。
     fn test_config(root: &Path) -> BridgeConfig {
-        let mut ext = BridgeConfig::default().allowed_extensions;
-        ext.push(".ipynb".to_string()); // notebook_edit 需要
         BridgeConfig {
             allowed_roots: vec![root.to_string_lossy().into_owned()],
             token: "ow-test-token".to_string(),
-            allowed_extensions: ext,
             whitelist_enabled: true,
             readonly_mode: false,
             shell_enabled: true,   // run_command / stop_command

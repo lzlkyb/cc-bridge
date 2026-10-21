@@ -76,6 +76,9 @@ pub fn init_database(data_dir: &Path) -> Result<Connection, String> {
 
     // Ensure defaults exist
     ensure_defaults(&conn)?;
+    // 一次性回填本版新增的默认扩展名。`ensure_defaults` 用的是 INSERT OR IGNORE，
+    // 只对新装用户生效，存量用户永远拿不到新默认值——见函数注释。
+    backfill_default_extensions(&conn)?;
 
     Ok(conn)
 }
@@ -226,6 +229,59 @@ fn ensure_defaults(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// 本版（2026-10-21）新增的默认扩展名。必须与 `BridgeConfig::default().allowed_extensions`
+/// 的新增部分一致——`backfill_tests::additions_are_all_in_default_extensions` 守这条一致性。
+const EXTENSIONS_ADDED_V2: &[&str] = &[
+    ".ipynb", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".pdf", ".zip", ".tar", ".gz",
+    ".7z", ".rar", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".csv", ".tsv",
+    ".log",
+];
+
+/// 回填标记。故意不进 `BridgeConfig`，这样它不会出现在导出/导入的配置 JSON 里。
+const EXTENSIONS_BACKFILL_MARKER: &str = "extensions_backfilled_v2";
+
+/// 一次性把「本版新增的默认扩展名」回填进**存量**用户的配置。
+///
+/// WHY：`ensure_defaults` 用的是 `INSERT OR IGNORE`，改 `BridgeConfig::default()` 只对
+/// 新装用户生效。2026-10-21 真机测试实测：存量配置里没有 `.ipynb`，`notebook_edit` 因此
+/// 100% 不可用；没有 `.pptx/.pdf/.png`，`prepare_upload` / `prepare_download` 按 MCP
+/// instructions 的承诺操作时同样撞墙。
+///
+/// 三条边界：
+/// 1. **只追加本版新增项**，不复活用户主动删掉的旧默认项（如 `.sh`）。
+/// 2. **不删除、不改写**用户自定义项。
+/// 3. 🔴 现有列表为空 = 用户在设置页选了「不限制扩展名」。这时**绝不动**，否则等于把
+///    「不限制」偷偷改回「限制 23 项」，属于最严重的那类安全语义倒退。
+fn backfill_default_extensions(conn: &Connection) -> Result<(), String> {
+    if get_config_value(conn, EXTENSIONS_BACKFILL_MARKER).is_some() {
+        return Ok(());
+    }
+
+    let current: Vec<String> = match get_config_value(conn, "allowed_extensions") {
+        Some(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+        None => Vec::new(),
+    };
+
+    // 空列表 = 「不限制」的显式选择，保持原样（仍然写标记，避免每次启动重算一遍）。
+    if !current.is_empty() {
+        let mut next = current.clone();
+        for ext in EXTENSIONS_ADDED_V2 {
+            if !next.iter().any(|e| e.trim().eq_ignore_ascii_case(ext)) {
+                next.push((*ext).to_string());
+            }
+        }
+        if next.len() != current.len() {
+            let json = serde_json::to_string(&next)
+                .map_err(|e| format!("序列化回填后的扩展名列表失败：{e}"))?;
+            set_config_value(conn, "allowed_extensions", &json)?;
+            log::info!("回填默认扩展名：{} → {} 项", current.len(), next.len());
+        }
+    }
+
+    set_config_value(conn, EXTENSIONS_BACKFILL_MARKER, "true")?;
+    Ok(())
+}
+
 pub fn get_config_value(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row(
         "SELECT value FROM config WHERE key = ?1",
@@ -242,4 +298,103 @@ pub fn set_config_value(conn: &Connection, key: &str, value: &str) -> Result<(),
     )
     .map_err(|e| format!("Failed to set config value {key}: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod backfill_tests {
+    use super::*;
+    use crate::config::BridgeConfig;
+
+    fn mem_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-mem db");
+        conn.execute_batch(
+            "CREATE TABLE config (
+                key   TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL
+            );",
+        )
+        .expect("create config table");
+        conn
+    }
+
+    fn read_ext(conn: &Connection) -> Vec<String> {
+        serde_json::from_str(&get_config_value(conn, "allowed_extensions").expect("present"))
+            .expect("json")
+    }
+
+    fn seed(conn: &Connection, exts: &[&str]) {
+        set_config_value(
+            conn,
+            "allowed_extensions",
+            &serde_json::to_string(exts).expect("json"),
+        )
+        .expect("seed");
+    }
+
+    /// 回填清单里的每一项都必须真的在默认白名单里。否则回填会给用户配置塞进一个
+    /// 默认值本身都不包含的扩展名——等于凭空放宽安全边界。
+    #[test]
+    fn additions_are_all_in_default_extensions() {
+        let defaults: Vec<String> = BridgeConfig::default()
+            .allowed_extensions
+            .iter()
+            .map(|e| e.to_lowercase())
+            .collect();
+        for ext in EXTENSIONS_ADDED_V2 {
+            assert!(
+                defaults.iter().any(|d| d == ext),
+                "{ext} 在回填清单里但不在默认白名单里，两处已漂移"
+            );
+        }
+    }
+
+    /// 存量用户（旧 30 项 + 一个自定义项）升级后：新能力补齐，自定义项与旧项一个不少。
+    #[test]
+    fn backfill_appends_missing_and_keeps_everything_else() {
+        let conn = mem_conn();
+        seed(&conn, &[".js", ".md", ".mycustom"]);
+        backfill_default_extensions(&conn).expect("backfill");
+
+        let ext = read_ext(&conn);
+        for required in [".ipynb", ".pdf", ".png", ".zip"] {
+            assert!(ext.iter().any(|e| e == required), "缺 {required}：{ext:?}");
+        }
+        for kept in [".js", ".md", ".mycustom"] {
+            assert!(ext.iter().any(|e| e == kept), "丢了 {kept}：{ext:?}");
+        }
+    }
+
+    /// 🔴 空列表 = 「不限制扩展名」。回填必须原样放过，否则等于把「不限制」偷偷改成
+    /// 「限制 N 项」——最严重的那类安全语义倒退。
+    #[test]
+    fn backfill_never_touches_empty_list() {
+        let conn = mem_conn();
+        seed(&conn, &[]);
+        backfill_default_extensions(&conn).expect("backfill");
+        assert!(read_ext(&conn).is_empty(), "空列表被改写了");
+    }
+
+    /// 只跑一次：第二次调用不再改动（用户随后手删的项不会被重新加回来）。
+    #[test]
+    fn backfill_runs_only_once() {
+        let conn = mem_conn();
+        seed(&conn, &[".js"]);
+        backfill_default_extensions(&conn).expect("first");
+        let after_first = read_ext(&conn);
+        assert!(after_first.iter().any(|e| e == ".ipynb"));
+
+        // 模拟用户升级后主动删掉 .ipynb。
+        let trimmed: Vec<&str> = after_first
+            .iter()
+            .map(|s| s.as_str())
+            .filter(|e| *e != ".ipynb")
+            .collect();
+        seed(&conn, &trimmed);
+
+        backfill_default_extensions(&conn).expect("second");
+        assert!(
+            !read_ext(&conn).iter().any(|e| e == ".ipynb"),
+            "第二次运行不该复活用户已删除的项"
+        );
+    }
 }

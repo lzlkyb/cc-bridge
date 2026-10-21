@@ -6,6 +6,15 @@ use serde_json::{json, Value};
 use crate::security;
 use crate::state::AppState;
 
+/// `.ipynb` 是本工具**唯一**能处理的目标格式，所以固定允许，与配置白名单求并集。
+///
+/// 🔴 为什么需要这一层：`db.rs::ensure_defaults` 用 `INSERT OR IGNORE` 写默认值，
+/// 改 `BridgeConfig::default()` 只对**新装**用户生效，存量用户的配置永远停在旧值。
+/// 2026-10-21 真机测试实测：默认配置（以及当时已存的 40 项配置）都没有 `.ipynb`，
+/// 本工具 100% 被扩展名校验挡回。而单测看不出来——`http.rs::test_config` 当时偷偷
+/// `ext.push(".ipynb")` 补上了，门禁永久绿。
+const BUILTIN_EXTENSIONS: &[&str] = &["ipynb"];
+
 #[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct NotebookEditArgs {
     /// 目标 .ipynb 文件路径（需在白名单根内、且扩展名被允许）。
@@ -39,7 +48,11 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
         &config.exclude_patterns,
         config.whitelist_enabled,
     )?;
-    security::extension::assert_extension_allowed(&resolved, &config.allowed_extensions)?;
+    security::extension::assert_extension_allowed_with_builtin(
+        &resolved,
+        &config.allowed_extensions,
+        BUILTIN_EXTENSIONS,
+    )?;
     // M10 修复：与其它文件工具一致，读入前校验文件大小，避免超大 .ipynb 全量读入 OOM。
     security::filesize::assert_file_size_ok(&resolved, config.max_file_size_bytes)?;
     // M11 修复：覆写前需备份 + 审计关联，先取出相关配置再 drop。
@@ -166,6 +179,39 @@ mod tests {
             "nbformat": 4,
             "nbformat_minor": 5
         })
+    }
+
+    /// 🔴 回归（2026-10-21 真机测试）：配置白名单里**没有** `.ipynb` 时也必须能编辑。
+    ///
+    /// 守的是 `BUILTIN_EXTENSIONS` 兜底。这条兜底曾经不存在——默认配置 30 项无 `.ipynb`，
+    /// 而 `db.rs::ensure_defaults` 用 `INSERT OR IGNORE`，存量用户永远拿不到新的默认值，
+    /// 于是本工具对所有人都是「扩展名不在允许列表」。而单测看不出来，因为当时的
+    /// `http.rs::test_config` 自己 `ext.push(".ipynb")` 把洞补上了。
+    #[tokio::test]
+    async fn works_when_config_lacks_ipynb() {
+        let (state, dir) = make_state(|c| {
+            // 模拟存量用户的配置：只有一个无关扩展名，不含 .ipynb。
+            c.allowed_extensions = vec![".txt".to_string()];
+            c.whitelist_enabled = true;
+        });
+        let p = dir.join("n.ipynb");
+        std::fs::write(&p, serde_json::to_string_pretty(&sample_nb()).unwrap()).unwrap();
+
+        handle(
+            NotebookEditArgs {
+                path: p.to_string_lossy().into_owned(),
+                cell: 0,
+                new_source: "print(9)".into(),
+                mode: "replace".into(),
+                cell_type: "code".into(),
+            },
+            &state,
+        )
+        .await
+        .expect("内置清单必须让 .ipynb 通过扩展名校验");
+
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(written["cells"][0]["source"].as_str().unwrap(), "print(9)");
     }
 
     #[tokio::test]
