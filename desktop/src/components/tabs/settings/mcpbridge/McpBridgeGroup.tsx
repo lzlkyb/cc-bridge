@@ -39,10 +39,11 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
   const servers = bridge.data?.servers ?? [];
   const enabledServers = servers.filter((s) => s.enabled);
   const onCount = enabledServers.length;
+  const unavailable = bridge.loading || !!bridge.error || !!bridge.busy;
 
   return (
     <Card id="set-mcpbridge">
-      <CardHeader className="flex-row items-center justify-between gap-3 space-y-0">
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-3 space-y-0">
         <CardTitle icon={<Icon name="plug" />}>
           外挂 MCP 桥
           <span
@@ -50,10 +51,10 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
               master && onCount ? "bg-destructive/12 text-destructive-ink" : "bg-muted text-muted-foreground"
             }`}
           >
-            {!master ? "未启用" : onCount ? `${onCount} 个已启用` : "已开启 · 无生效项"}
+            {!bridge.data ? "尚未读取" : !master ? "未启用" : onCount ? `${onCount} 个已启用` : "已开启 · 无生效项"}
           </span>
         </CardTitle>
-        <Button variant="outline" size="sm" onClick={() => setImporting(true)}>
+        <Button variant="outline" size="sm" disabled={unavailable} onClick={() => setImporting(true)}>
           <Icon name="download" size={13} />
           导入
         </Button>
@@ -71,8 +72,10 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
               : "把本机已装的 MCP server 转给远程 AI 工具使用。默认关闭。"
           }
           checked={master}
+          disabled={unavailable}
+          pending={bridge.busy === "master"}
           // 开→二次确认（一次性放开全部勾选项，风险高于单条），关→直接执行。
-          onChange={(v) => (v ? setConfirmMaster(true) : void bridge.setMaster(false))}
+          onChange={(v) => { bridge.clearSaveError(); if (v) setConfirmMaster(true); else void bridge.setMaster(false); }}
           last
         />
 
@@ -85,7 +88,16 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
         )}
 
         <div className="mt-3">
-          {servers.length === 0 ? (
+          {bridge.saveError && !confirmSave && !confirmEnable && <InlineNotice variant="error" className="mb-3">操作未完成：{bridge.saveError}</InlineNotice>}
+          {bridge.error && (
+            <InlineNotice variant="error" className="mb-3">
+              <p className="break-words">{bridge.error}</p>
+              {bridge.data && <p>下方为上次读取的状态，重新读取前暂停操作。</p>}
+              <Button variant="outline" size="sm" className="mt-2" disabled={bridge.loading || !!bridge.busy} onClick={() => void bridge.reload()}>重新读取</Button>
+            </InlineNotice>
+          )}
+          {bridge.loading && <p role="status" className="py-3 text-sm text-muted-foreground">正在读取外挂 MCP 配置…</p>}
+          {bridge.data && servers.length === 0 && !bridge.error && !bridge.loading ? (
             <div className="rounded-lg bg-primary/8 px-3 py-2 text-[11.5px] text-primary">
               尚未配置任何 server。可从 <code className="font-mono">~/.claude.json</code> 等已有配置一键导入，
               导入后均保持关闭。
@@ -97,12 +109,11 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
                 server={s}
                 master={master}
                 busy={bridge.busy === s.name}
+                disabled={unavailable}
                 // 开→需二次确认（S1）；关→直接执行，收紧边界不需要摩擦。
-                onToggle={(next) =>
-                  next ? setConfirmEnable(s) : void bridge.setEnabled(s.name, false)
-                }
+                onToggle={(next) => { bridge.clearSaveError(); if (next) setConfirmEnable(s); else void bridge.setEnabled(s.name, false); }}
                 onProbe={() => void bridge.probe(s.name)}
-                onEdit={() => setEditing(s)}
+                onEdit={() => { bridge.clearSaveError(); setEditing(s); }}
                 onRemove={() => setConfirmRemove(s)}
                 // 开→二次确认（这是放宽边界）；关→直接执行，收回权限不需要摩擦。
                 onToggleRemoteCwd={(next) =>
@@ -115,7 +126,7 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
           )}
         </div>
 
-        <Button variant="outline" size="sm" className="mt-1" onClick={() => setEditing("new")}>
+        <Button variant="outline" size="sm" className="mt-1" disabled={unavailable} onClick={() => { bridge.clearSaveError(); setEditing("new"); }}>
           <Icon name="plus" size={13} />
           手动添加
         </Button>
@@ -162,10 +173,11 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
           effectiveCwd={confirmEnable.cwd ?? confirmEnable.effectiveCwd}
           tools={confirmEnable.tools}
           instructions={confirmEnable.instructions}
+          pending={!!bridge.busy}
+          error={bridge.saveError}
           onCancel={() => setConfirmEnable(null)}
-          onConfirm={() => {
-            void bridge.setEnabled(confirmEnable.name, true);
-            setConfirmEnable(null);
+          onConfirm={async () => {
+            if (await bridge.setEnabled(confirmEnable.name, true)) setConfirmEnable(null);
           }}
         />
       )}
@@ -178,10 +190,11 @@ export function McpBridgeGroup({ status }: { status?: StaticStatus }) {
           args={confirmSave.args}
           envKeys={(confirmSave.env ?? []).map(([k]) => k)}
           effectiveCwd={confirmSave.cwd}
+          pending={!!bridge.busy}
+          error={bridge.saveError}
           onCancel={() => setConfirmSave(null)}
-          onConfirm={() => {
-            void bridge.upsert(confirmSave);
-            setConfirmSave(null);
+          onConfirm={async () => {
+            if (await bridge.upsert(confirmSave)) setConfirmSave(null);
           }}
         />
       )}

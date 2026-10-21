@@ -25,6 +25,8 @@ export function EnableRiskModal({
   mode,
   onCancel,
   onConfirm,
+  pending = false,
+  error,
 }: {
   name: string;
   command: string;
@@ -41,12 +43,14 @@ export function EnableRiskModal({
   mode: "enable" | "save";
   onCancel: () => void;
   onConfirm: () => void;
+  pending?: boolean;
+  error?: string | null;
 }) {
   const [ack, setAck] = useState(false);
   const title = mode === "enable" ? `启用「${name}」？` : `保存「${name}」的启动参数？`;
 
   return (
-    <ConfirmModal open onClose={onCancel}>
+    <ConfirmModal open onClose={() => { if (!pending) onCancel(); }}>
       <h4 className="mb-3 flex items-center gap-2 text-base font-semibold text-destructive-ink">
         <Icon name="alertTriangle" size={18} />
         {title}
@@ -87,17 +91,19 @@ export function EnableRiskModal({
           type="checkbox"
           className="mt-0.5"
           checked={ack}
+          disabled={pending}
           onChange={(e) => setAck(e.target.checked)}
         />
         我已逐字确认上面的命令与参数，包括它可能包含的目录范围
       </label>
 
-      <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel}>
+      {error && <p role="alert" className="mb-3 break-words text-xs text-destructive-ink">保存未完成：{error}。请重试，或取消后修改参数。</p>}
+      <div className="flex justify-end gap-2" aria-busy={pending || undefined}>
+        <Button variant="outline" size="sm" disabled={pending} onClick={onCancel}>
           取消
         </Button>
-        <Button variant="destructive" size="sm" disabled={!ack} onClick={onConfirm}>
-          {mode === "enable" ? "启用" : "保存"}
+        <Button variant="destructive" size="sm" disabled={!ack || pending} onClick={onConfirm}>
+          {pending ? "处理中…" : mode === "enable" ? "启用" : "保存"}
         </Button>
       </div>
     </ConfirmModal>

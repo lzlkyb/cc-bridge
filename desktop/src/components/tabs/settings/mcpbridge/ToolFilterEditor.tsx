@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { McpTool } from "./types";
 
 /**
@@ -27,6 +28,7 @@ export function ToolFilterEditor({
   busy: boolean;
   onSave: (next: string[]) => void;
 }) {
+  const [query, setQuery] = useState("");
   const fullExposure = allowed.length === 0;
   const allowedSet = new Set(allowed);
   // 陈旧项：配置里有、清单里没有。
@@ -34,8 +36,11 @@ export function ToolFilterEditor({
   const stale = allowed.filter((n) => !known.has(n));
   // 复选框组的选中数：全暴露时视为「全部选中」。
   const selectedCount = fullExposure ? tools.length : allowed.filter((n) => known.has(n)).length;
+  const shown = tools.filter(t => `${t.name} ${t.summary}`.toLowerCase().includes(query.trim().toLowerCase()));
 
   const toggle = (name: string) => {
+    // 空清单在后端表示全部开放，不能用取消最后一项来表达关闭全部。
+    if ((fullExposure && tools.length <= 1) || (!fullExposure && allowed.length === 1 && allowedSet.has(name))) return;
     if (fullExposure) {
       // 从「全暴露」收窄：第一次取消勾选 = 允许清单变为「其余全部」。
       onSave(tools.filter((t) => t.name !== name).map((t) => t.name));
@@ -53,15 +58,15 @@ export function ToolFilterEditor({
   };
 
   return (
-    <div className="mt-2 border-t border-dashed pt-2">
+    <div className="mcp-tool-filter mt-2 border-t pt-3">
       <div className="mb-1.5 flex flex-wrap items-center gap-2">
-        <span className="text-xs font-semibold text-foreground">工具级暴露</span>
-        <span className="text-[11px] text-muted-foreground">
-          {fullExposure ? "全部暴露" : `暴露 ${selectedCount}/${tools.length}`}
+        <span className="text-sm font-semibold text-foreground">允许远程调用的工具</span>
+        <span className="text-xs text-muted-foreground" role="status">
+          {fullExposure ? `全部开放 · ${tools.length} 个` : `已选 ${selectedCount} / ${tools.length}`}
         </span>
         <button
           type="button"
-          className="ml-auto rounded px-1.5 py-0.5 text-[11px] text-primary transition-colors hover:bg-muted disabled:opacity-40"
+          className="ml-auto min-h-8 rounded px-2 text-xs text-primary transition-colors hover:bg-muted disabled:opacity-50"
           disabled={disabled || busy || fullExposure}
           onClick={() => onSave([])}
           title="清空允许清单 = 恢复全部暴露（逃生门：server 升级改了工具名后，用它一键回到全暴露）"
@@ -69,33 +74,40 @@ export function ToolFilterEditor({
           恢复全部暴露
         </button>
       </div>
+      {tools.length > 8 && (
+        <input type="search" aria-label="搜索工具名称或说明" placeholder="搜索工具名称或说明…" value={query} onChange={e => setQuery(e.target.value)} className="mb-2 w-full rounded-md border bg-background px-3 py-2 text-sm" />
+      )}
 
       {tools.length === 0 ? (
         <p className="py-1 text-[11px] text-muted-foreground">
           还没有工具清单——先点「探测」让 cc-bridge 启动它一次，才能在这里逐个勾选。
         </p>
       ) : (
-        <div className="space-y-0.5">
-          {tools.map((t) => {
+        <div className="mcp-tool-options" role="group" aria-label="允许远程调用的工具">
+          {shown.map((t) => {
             const checked = fullExposure || allowedSet.has(t.name);
+            const lastSelected = checked && (fullExposure ? tools.length === 1 : allowed.length === 1);
             return (
               <label
                 key={t.name}
-                className="flex cursor-pointer items-center gap-2.5 rounded px-1 py-0.5 text-[11.5px] transition-colors hover:bg-muted/60"
+                className="mcp-tool-option flex cursor-pointer items-start gap-3 rounded-md px-2 py-2.5 text-xs transition-colors hover:bg-muted/60"
               >
                 <input
                   type="checkbox"
-                  className="shrink-0 accent-primary"
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
                   checked={checked}
-                  disabled={disabled || busy}
+                  disabled={disabled || busy || lastSelected}
                   onChange={() => toggle(t.name)}
                   aria-label={`暴露工具 ${t.name}`}
                 />
-                <code className="w-[136px] shrink-0 truncate font-mono text-xs">{t.name}</code>
-                <span className="min-w-0 truncate text-muted-foreground">{t.summary}</span>
+                <span className="min-w-0 break-words">
+                  <code className="block break-all font-mono text-xs font-medium">{t.name}</code>
+                  <span className="mt-1 block leading-relaxed text-muted-foreground">{t.summary}</span>
+                </span>
               </label>
             );
           })}
+          {!shown.length && <p role="status" className="py-3 text-sm text-muted-foreground">没有匹配的工具，请更换关键词。</p>}
         </div>
       )}
 
@@ -109,10 +121,11 @@ export function ToolFilterEditor({
               <code className="font-mono text-muted-foreground line-through">{n}</code>
               <button
                 type="button"
-                disabled={disabled || busy}
+                disabled={disabled || busy || allowed.length === 1}
                 className="ml-auto rounded px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-background hover:text-foreground disabled:opacity-40"
                 onClick={() => onSave(allowed.filter((x) => x !== n))}
-                title="从允许清单移除这条陈旧项"
+                title={allowed.length === 1 ? "移除最后一项会恢复全部开放，请明确选择「恢复全部暴露」" : "从允许清单移除这条陈旧项"}
+                aria-label={`移除陈旧工具 ${n}`}
               >
                 移除
               </button>
@@ -121,8 +134,9 @@ export function ToolFilterEditor({
         </div>
       )}
 
-      <p className="mt-1.5 text-[10.5px] text-muted-foreground">
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
         勾选即时生效：未勾选的工具对远程不可见、调用会被服务端拒绝并留痕日志页。
+        如需关闭全部工具，请停用该服务；空允许清单代表全部开放，因此不能取消最后一项。
       </p>
     </div>
   );

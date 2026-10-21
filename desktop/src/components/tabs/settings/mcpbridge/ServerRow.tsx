@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Button } from "../../../ui/button";
 import { Icon } from "../../../ui/icon";
 import { Switch } from "../../../ui/switch";
@@ -11,11 +11,14 @@ import { fullCommand, type McpBridgeServer, type ServerState } from "./types";
 /** 徽章文案与颜色。全部可由**不启进程**的信息算出来。 */
 function badgeOf(s: McpBridgeServer, master: boolean): { text: string; cls: string; dot: string } {
   if (!master && s.enabled) {
-    return { text: "已勾选，未生效", cls: "bg-muted text-muted-foreground", dot: "bg-muted-foreground/50" };
+    return { text: "桥已关闭 · 暂不生效", cls: "bg-muted text-muted-foreground", dot: "bg-muted-foreground/50" };
+  }
+  if (!s.enabled) {
+    return { text: "已停用", cls: "bg-muted text-muted-foreground", dot: "bg-muted-foreground/50" };
   }
   const map: Record<ServerState, { text: string; cls: string; dot: string }> = {
     ready: {
-      text: `已就绪 · ${s.toolCount} 个工具`,
+      text: `已探测 · ${s.toolCount} 个工具`,
       cls: "bg-success/12 text-success-ink",
       dot: "bg-success",
     },
@@ -48,6 +51,7 @@ export function ServerRow({
   server,
   master,
   busy,
+  disabled = false,
   onToggle,
   onProbe,
   onEdit,
@@ -58,6 +62,7 @@ export function ServerRow({
   server: McpBridgeServer;
   master: boolean;
   busy: boolean;
+  disabled?: boolean;
   onToggle: (next: boolean) => void;
   onProbe: () => void;
   onEdit: () => void;
@@ -69,60 +74,52 @@ export function ServerRow({
   const when = stamp(server.fetchedAt);
   // 展开工具清单。默认收起：一行就铺开十几个工具会把其它 server 顶出视口。
   const [open, setOpen] = useState(false);
-  const hasTools = server.tools.length > 0 || !!server.instructions;
+  const detailsId = useId();
+  const locked = disabled || busy;
 
   return (
     <div
-      className={`mb-2 rounded-lg border px-3 py-2.5 ${server.enabled && master ? "" : "opacity-75"}`}
+      className="mcp-server mb-3 rounded-lg border p-4"
+      role="group" aria-label={`MCP 服务 ${server.name}`} aria-busy={busy || undefined}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${b.dot}`} />
-        <span className="truncate text-[13px] font-semibold">{server.name}</span>
-        {/* 徽章可点：已探测时展开具体清单。光一个“8 个工具”不回答“它能干什么”。 */}
-        {hasTools ? (
-          <button
-            type="button"
-            onClick={() => setOpen((v) => !v)}
-            className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${b.cls}`}
-            title={open ? "收起工具清单" : "展开工具清单"}
-          >
-            {b.text} {open ? "▴" : "▾"}
-          </button>
-        ) : (
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${b.cls}`}>{b.text}</span>
-        )}
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        <span className="min-w-0 break-all text-sm font-semibold">{server.name}</span>
+        <span className={`rounded-full px-2 py-0.5 text-xs ${b.cls}`}>{b.text}</span>
+        <span className="ml-auto flex flex-wrap items-center gap-1.5">
           {/* 总开关关着时禁用：这是本卡里**唯一会真的启动子进程**的按钮。 */}
           <Button
             variant="outline"
             size="sm"
-            disabled={!master || busy}
+            disabled={!master || locked}
             onClick={onProbe}
             title={master ? "启动它一次、拓下工具清单、再关掉" : "总开关关闭时不允许启动子进程"}
           >
-            {busy ? <Spinner size={12} /> : <Icon name="refresh" size={12} />}
+            <Icon name="refresh" size={12} />
             探测
           </Button>
-          <Button variant="ghost" size="sm" onClick={onEdit} title="编辑启动参数">
+          <Button variant="ghost" size="sm" disabled={locked} onClick={onEdit} title="编辑启动参数" aria-label={`编辑 ${server.name} 启动参数`}>
             <Icon name="settings" size={12} />
           </Button>
-          <Button variant="ghost" size="sm" onClick={onRemove} title="删除">
+          <Button variant="ghost" size="sm" disabled={locked} onClick={onRemove} title="删除" aria-label={`删除 ${server.name}`}>
             <Icon name="trash" size={12} />
           </Button>
           <Switch
             checked={server.enabled}
+            disabled={locked}
             onChange={onToggle}
             variant="danger"
             ariaLabel={`启用 ${server.name}`}
           />
         </span>
       </div>
+      {busy && <p role="status" className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><Spinner size={12} />正在处理，请稍候…</p>}
 
-      <div className="mt-1.5 break-all rounded-md bg-muted px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed">
+      <div className="mt-3 break-all rounded-md bg-muted px-3 py-2 font-mono text-xs leading-relaxed" aria-label="完整启动命令">
         {fullCommand(server.command, server.args)}
       </div>
 
-      <div className="mt-1.5 flex flex-wrap gap-x-3.5 gap-y-1 text-xs text-muted-foreground">
+      <div className="mt-2 flex flex-wrap gap-x-3.5 gap-y-1 break-words text-xs text-muted-foreground">
         <span>工作目录：{server.cwd || `跟随 cc-bridge${server.effectiveCwd ? `（${server.effectiveCwd}）` : ""}`}</span>
         <span>环境变量：{server.envKeys.length ? server.envKeys.join("、") : "无"}</span>
         {server.state === "stale" && <span>命令或参数已变，需重新探测</span>}
@@ -135,17 +132,22 @@ export function ServerRow({
         )}
       </div>
 
-      {open && <ToolList tools={server.tools} instructions={server.instructions} />}
+      <button type="button" className="mcp-details-toggle mt-3 flex min-h-8 items-center gap-2 text-sm font-medium text-primary" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(v => !v)}>
+        <Icon name="chevronDown" size={14} className={open ? "rotate-180" : ""} />工具与暴露范围 · {server.toolCount} 个工具
+      </button>
 
       {/* 工具级暴露：与工具清单同一个展开开关——配过滤的人必然先要看清单。 */}
       {open && (
-        <ToolFilterEditor
-          tools={server.tools}
-          allowed={server.allowedTools}
-          disabled={!server.enabled}
-          busy={busy}
-          onSave={onSetAllowedTools}
-        />
+        <div id={detailsId}>
+          {server.instructions && <ToolList tools={[]} instructions={server.instructions} />}
+          <ToolFilterEditor
+            tools={server.tools}
+            allowed={server.allowedTools}
+            disabled={!server.enabled}
+            busy={locked}
+            onSave={onSetAllowedTools}
+          />
+        </div>
       )}
 
       {/* 🔴 本特性里唯一放宽边界的开关。做成子项：它是这个 server 的参数，
@@ -165,6 +167,7 @@ export function ServerRow({
           </div>
           <Switch
             checked={server.allowRemoteCwd}
+            disabled={locked}
             onChange={onToggleRemoteCwd}
             variant="danger"
             ariaLabel={`允许远程为 ${server.name} 指定工作目录`}
@@ -174,7 +177,7 @@ export function ServerRow({
 
       {/* 错误原文就地展，不只弹 toast——toast 一闪就没了，而这里的错误往往得照着改命令。 */}
       {server.error && (
-        <div className="mt-1.5 whitespace-pre-wrap break-all rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-xs text-destructive-ink">
+        <div role="alert" className="mt-1.5 whitespace-pre-wrap break-all rounded-md bg-destructive/10 px-2.5 py-1.5 font-mono text-xs text-destructive-ink">
           {server.error}
         </div>
       )}

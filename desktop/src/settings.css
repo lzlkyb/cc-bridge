@@ -60,6 +60,14 @@
 .settings-category .srow input,.settings-category .srow select { max-width:100%; }
 .settings-category .srow input[type=number] { min-height:34px; }
 .settings-category .srow .truncate { overflow-wrap:anywhere;white-space:normal; }
+.settings-category .mcp-server { border-color:var(--settings-line);background:hsl(var(--card)/.32); }
+.settings-category .mcp-server fieldset:disabled { opacity:1; }
+.settings-category .mcp-details-toggle:focus-visible,.settings-category .mcp-tool-filter button:focus-visible { outline:2px solid hsl(var(--primary));outline-offset:3px; }
+.settings-category .mcp-tool-options { display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr));gap:2px 12px; }
+.settings-category .mcp-tool-option { border-bottom:1px solid var(--settings-line); }
+.settings-category .mcp-tool-option:has(input:focus-visible) { outline:2px solid hsl(var(--primary));outline-offset:1px; }
+/* Dark glass lifts its reading surface; small action text needs a lighter ink. */
+@media(forced-colors:none) { html.dark[data-ui-style=glass] .settings-category .text-primary { color:hsl(240 100% 85%); } }
 html[data-ui-style=glass] .settings-reading { background:var(--glass-reading);box-shadow:var(--glass-depth); }
 html[data-ui-style=glass] .settings-choice { background:var(--glass-inset);border-color:var(--glass-chrome-edge); }
 html[data-ui-style=glass] .appearance-choice .settings-choice { background:transparent;border-color:transparent; }

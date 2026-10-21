@@ -17,24 +17,37 @@ import type { McpBridgeList, McpBridgeProbe, ServerInput } from "./types";
 export function useMcpBridge() {
   const [data, setData] = useState<McpBridgeList | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const writing = useRef(false);
+  const readVersion = useRef(0);
   const { toast } = useToast();
   // 卸载后不能再 setState：探测最长能跑 60s，用户早就切走了。
   const alive = useRef(true);
+  const cancelRead = useCallback(() => { readVersion.current++; }, []);
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
+      cancelRead();
     };
-  }, []);
+  }, [cancelRead]);
 
   const reload = useCallback(async () => {
+    const version = ++readVersion.current;
+    if (alive.current) setLoading(true);
     try {
       const r = await invoke<McpBridgeList>("mcp_bridge_list");
-      if (alive.current) setData(r);
+      if (alive.current && version === readVersion.current) { setData(r); setError(null); }
+      return true;
     } catch (e) {
-      toast(`读取外挂 MCP 列表失败：${e}`, "error");
+      if (alive.current && version === readVersion.current) setError(`读取外挂 MCP 列表失败：${e}`);
+      return false;
+    } finally {
+      if (alive.current && version === readVersion.current) setLoading(false);
     }
-  }, [toast]);
+  }, []);
 
   useEffect(() => {
     void reload();
@@ -42,17 +55,26 @@ export function useMcpBridge() {
 
   /** 包一层：置 busy → 跑 → 刷新。失败时把**原文**报出去。 */
   const run = useCallback(
-    async (key: string, fn: () => Promise<void>, okMsg?: string) => {
+    async (key: string, fn: () => Promise<void>, okMsg?: string | (() => void)) => {
+      // 同步锁拦住同一帧的重复提交，避免后一个操作覆盖 busy 与权限状态。
+      if (writing.current) return false;
+      writing.current = true;
+      setSaveError(null);
       setBusy(key);
       try {
         await fn();
-        await reload();
-        if (okMsg) toast(okMsg, "success");
+        const refreshed = await reload();
+        if (!refreshed) toast("操作已完成，但列表刷新失败。请重新读取后再继续操作。", "warning");
+        else if (typeof okMsg === "string") toast(okMsg, "success");
+        else okMsg?.();
+        // 返回值表示写入结果；刷新失败不能诱导用户重复写入。
         return true;
       } catch (e) {
+        if (alive.current) setSaveError(String(e));
         toast(`${e}`, "error");
         return false;
       } finally {
+        writing.current = false;
         if (alive.current) setBusy(null);
       }
     },
@@ -108,34 +130,40 @@ export function useMcpBridge() {
   );
 
   const importSelected = useCallback(
-    (names: string[]) =>
-      run("import", async () => {
-        const r = await invoke<{ imported: string[]; skipped: { name: string; reason: string }[] }>(
-          "mcp_bridge_import",
-          { names },
-        );
+    (names: string[]) => {
+      let result: { imported: string[]; skipped: { name: string; reason: string }[] };
+      return run("import", async () => {
+        result = await invoke("mcp_bridge_import", { names });
+      }, () => {
         // 部分失败不能静默：用户勾了三条只进去两条得有个交代。
-        if (r.skipped.length) {
-          toast(`${r.imported.length} 条已导入，${r.skipped.length} 条跳过：${r.skipped[0].reason}`, "warning");
+        if (result.skipped.length) {
+          toast(`${result.imported.length} 条已导入，${result.skipped.length} 条跳过：${result.skipped[0].reason}`, "warning");
         } else {
-          toast(`已导入 ${r.imported.length} 条，均保持关闭`, "success");
+          toast(`已导入 ${result.imported.length} 条，均保持关闭`, "success");
         }
-      }),
+      });
+    },
     [run, toast],
   );
 
   /** 探测。**唯一会真的启动子进程的操作**，所以它必须是用户显式点的。 */
   const probe = useCallback(
     async (name: string) => {
+      if (writing.current) return;
+      writing.current = true;
+      setSaveError(null);
       setBusy(name);
       try {
         const r = await invoke<McpBridgeProbe>("mcp_bridge_probe", { name });
-        await reload();
-        if (r.state === "ready") toast(`${name}：拓到 ${r.toolCount} 个工具`, "success");
+        const refreshed = await reload();
+        if (!refreshed) toast("探测已完成，但列表刷新失败。请重新读取。", "warning");
+        else if (r.state === "ready") toast(`${name}：探测到 ${r.toolCount} 个工具`, "success");
         else toast(`${name} 探测失败，详情见该行`, "error");
       } catch (e) {
+        if (alive.current) setSaveError(String(e));
         toast(`${e}`, "error");
       } finally {
+        writing.current = false;
         if (alive.current) setBusy(null);
       }
     },
@@ -145,6 +173,10 @@ export function useMcpBridge() {
   return {
     data,
     busy,
+    loading,
+    error,
+    saveError,
+    clearSaveError: () => setSaveError(null),
     reload,
     setMaster,
     setEnabled,
