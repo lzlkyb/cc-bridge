@@ -259,7 +259,7 @@ describe("buildPermissionGrantCommand", () => {
     expect(cmd).not.toContain("~/.claude/settings.json");
   });
 
-  it("不含命令执行工具时：逐条列出 15 个文件/列表/图片类工具，且不含 run_command", () => {
+  it("不含命令执行工具时：逐条列出 17 个文件/列表/图片/直传类工具，且不含 run_command", () => {
     const cmd = buildPermissionGrantCommand("user", "", false);
     expect(cmd).toContain("'read_files'");
     expect(cmd).toContain("'search_files'");
@@ -267,13 +267,13 @@ describe("buildPermissionGrantCommand", () => {
     expect(cmd).toContain("'view_image'");
     expect(cmd).not.toContain("run_command");
     expect(cmd).not.toContain("mcp__cc-bridge__*");
-    // 15 个工具一个不少
+    // 17 个工具一个不少
     const toolCount = (cmd.match(/'[a-z_]+'/g) ?? []).filter((t) =>
-      /^'(list_allowed_roots|list_directory|read_files|write_files|edit_files|create_directory|remove_directory|delete_files|move_files|copy_files|search_files|batch|notebook_edit|analyze_file|view_image)'$/.test(
+      /^'(list_allowed_roots|list_directory|read_files|write_files|edit_files|create_directory|remove_directory|delete_files|move_files|copy_files|search_files|batch|notebook_edit|analyze_file|view_image|prepare_upload|prepare_download)'$/.test(
         t,
       ),
     ).length;
-    expect(toolCount).toBe(15);
+    expect(toolCount).toBe(17);
   });
 
   it("含命令执行工具时：改用 mcp__cc-bridge__* 通配符单条规则", () => {

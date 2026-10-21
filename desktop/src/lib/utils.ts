@@ -87,6 +87,9 @@ const TOOL_LABELS: Record<string, string> = {
   search_files: "搜索文件",
   analyze_file: "分析文件",
   view_image: "查看图片",
+  prepare_upload: "申请上传地址",
+  prepare_download: "申请下载地址",
+  transfer: "文件直传",
   run_command: "执行命令",
   get_command_output: "拉取命令输出",
   wait_command: "等待命令结束",
@@ -309,7 +312,7 @@ export function buildTokenSedCommand(
   return `${cdPrefix}${sedInPlace(`s#Bearer ${oldToken}#Bearer ${token}#g`, cfgFile)}`;
 }
 
-/** cc-bridge 除命令执行三元组外的 15 个文件/列表/图片类工具，用于权限授权命令默认不包含命令执行能力。 */
+/** cc-bridge 除命令执行三元组外的 17 个文件/列表/图片/直传类工具，用于权限授权命令默认不包含命令执行能力。 */
 const NON_SHELL_TOOLS = [
   "list_allowed_roots",
   "list_directory",
@@ -326,6 +329,8 @@ const NON_SHELL_TOOLS = [
   "notebook_edit",
   "analyze_file",
   "view_image",
+  "prepare_upload",
+  "prepare_download",
 ];
 
 /**
