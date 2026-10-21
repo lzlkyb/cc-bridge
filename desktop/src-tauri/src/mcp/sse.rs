@@ -295,10 +295,10 @@ pub async fn sse_message_handler(
                     match result {
                         Ok(content) => {
                             if audit_enabled {
-                                // Token 用量估算埋点：结果 Value 序列化后的字节数（与 http 通道同口径）。
-                                let result_bytes = serde_json::to_vec(&content)
-                                    .map(|v| v.len() as u64)
-                                    .ok();
+                                // Token 用量估算埋点：结果里 text 块的字符数（与 http 通道同口径，
+                                // 图片块按 0 计——见 `tools::result_text_bytes`）。
+                                let result_bytes =
+                                    Some(crate::mcp::tools::result_text_bytes(&content));
                                 write_audit_for_call(
                                     &state.data_dir, &tool_name, &arguments, true, None,
                                     Some(source_ip.clone()), elapsed, server_ms, io_ms, None,

@@ -26,15 +26,45 @@ pub struct WriteFilesArgs {
     /// 见 `flex_args::vec_from_json_or_string`。
     #[serde(deserialize_with = "crate::mcp::tools::flex_args::vec_from_json_or_string")]
     pub files: Vec<WriteFileEntry>,
+    /// 回显档位：`none` | `stat` | `hunks` | `full` | `auto`（省略 = `auto`）。
+    /// `auto`：新建文件只回 `+N/-M 行`，覆盖已有文件回截断到 4KB 的 hunk。
+    /// 详见 [`crate::diff_utils::DiffMode`]。
+    pub diff: Option<String>,
+}
+
+/// `write_single` 的落盘结果。回显档位的解释放在 `handle` 里做，工具函数只管事实。
+struct WriteOutcome {
+    /// 写之前目标文件是否存在（决定 `auto` 落成 `stat` 还是 `hunks`）。
+    existed: bool,
+    old_bytes: usize,
+    new_bytes: usize,
+    /// 原文件内容——仅当它是合法 UTF-8 时 `Some`。`None` 且 `existed` 为真 ＝ 非 UTF-8 原文，
+    /// 无法逐行比较（GBK / Big5 / 被误判成文本的二进制）。
+    old_text: Option<String>,
+    /// base64 写入的是二进制原文，逐行 diff 无意义。
+    binary: bool,
 }
 
 pub async fn handle(args: WriteFilesArgs, state: &Arc<AppState>) -> Result<Value, String> {
+    // 档位解析失败要整次拒绝（而不是静默回落 auto）：调用方拼错 "stat " 之外的写法时，
+    // 悄悄按 auto 处理会让它以为拿到了 stat，实际收到的却是 diff 正文。
+    let mode = match args.diff.as_deref() {
+        Some(raw) => diff_utils::DiffMode::parse(raw)?,
+        None => diff_utils::DiffMode::Auto,
+    };
     let config = state.config.read().await;
     let mut results = Vec::new();
 
     for f in &args.files {
         match write_single(f, &config, state).await {
-            Ok(diff) => results.push(json!({ "path": f.path, "ok": true, "diff": diff })),
+            Ok(out) => {
+                let mut row = json!({ "path": f.path, "ok": true });
+                // `none` 档位不带 diff 字段（而不是给个空串）——免得模型以为「改了但没变化」。
+                if let Some(d) = render_diff(mode, f, &out) {
+                    row["diff"] = json!(d);
+                }
+                results.push(row);
+            }
             Err(e) => results.push(json!({ "path": f.path, "ok": false, "error": e })),
         }
     }
@@ -44,11 +74,44 @@ pub async fn handle(args: WriteFilesArgs, state: &Arc<AppState>) -> Result<Value
     )
 }
 
+/// 按档位渲染单个文件的 `diff` 字段；`None` ＝ 结果里不出现该字段。
+fn render_diff(
+    mode: diff_utils::DiffMode,
+    f: &WriteFileEntry,
+    out: &WriteOutcome,
+) -> Option<String> {
+    if out.binary {
+        // 改造前就返回空串，保持不变（二进制没有可比的文本行）。
+        return Some(String::new());
+    }
+    match mode.resolve(out.existed) {
+        // 🔴 原文件非 UTF-8：既不能拿空串当 old（那会把整份新内容标成 `+` 行，20MB 文件的
+        // 响应≈全文），也不能假装 diff 成功。给一句带字节数的摘要，行为与改造前一致。
+        diff_utils::DiffMode::Hunks | diff_utils::DiffMode::Full
+            if out.existed && out.old_text.is_none() =>
+        {
+            Some(format!(
+                "（未生成逐行 diff：原文件不是 UTF-8，已整份覆盖。原 {} 字节 → 新 {} 字节）",
+                out.old_bytes, out.new_bytes
+            ))
+        }
+        resolved => diff_utils::render(
+            resolved,
+            out.existed,
+            &f.path,
+            out.old_text.as_deref().unwrap_or(""),
+            &f.content,
+            out.old_bytes,
+            out.new_bytes,
+        ),
+    }
+}
+
 async fn write_single(
     f: &WriteFileEntry,
     config: &crate::config::BridgeConfig,
     state: &Arc<AppState>,
-) -> Result<String, String> {
+) -> Result<WriteOutcome, String> {
     let resolved = security::path::resolve_safe_path_cached(
         &f.path,
         &state.cached_roots(),
@@ -161,26 +224,15 @@ async fn write_single(
         .map_err(|e| format!("Write failed: {e}"))?;
     crate::timing::record_io(t0.elapsed());
 
-    let diff = if !is_base64 {
-        // 🔴 三种情形要分开（审查 P2）。旧实现把「新建」和「原文件不是合法 UTF-8」
-        // 都折成 `old = ""`，于是覆盖一个 20MB 的 GBK 文件时，整份新内容都成了 `+` 行
-        // ——响应体≈全文，直接把模型上下文打爆。
-        match (existing_raw.is_some(), old_content_for_diff.as_deref()) {
-            // 新建文件：整份 `+` 是正常的（第一次落盘）。
-            (false, _) => diff_utils::unified_diff(&f.path, "", &f.content),
-            // 已有文件但解不出 UTF-8（GBK / Big5 / 二进制误判）：只回一行摘要。
-            (true, None) => format!(
-                "（未生成逐行 diff：原文件不是 UTF-8，已整份覆盖。原 {} 字节 → 新 {} 字节）",
-                existing_raw.as_ref().map(|b| b.len()).unwrap_or(0),
-                data.len()
-            ),
-            (true, Some(old)) => diff_utils::unified_diff(&f.path, old, &f.content),
-        }
-    } else {
-        String::new()
-    };
-
-    Ok(diff)
+    // 回显档位的选择交给调用方（见 `render_diff`）；这里只把「改前/改后」的事实带出去。
+    // 旧实现在这里无条件算完整 diff，于是新建文件＝整份内容第二次进上下文。
+    Ok(WriteOutcome {
+        existed: existing_raw.is_some(),
+        old_bytes: existing_raw.as_ref().map(|b| b.len()).unwrap_or(0),
+        new_bytes: data.len(),
+        old_text: old_content_for_diff,
+        binary: is_base64,
+    })
 }
 
 fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
@@ -267,6 +319,7 @@ mod tests {
                 content: "@echo off\necho hello\n".into(),
                 encoding: None,
             }],
+            diff: None,
         };
         let out = handle(args, &state).await.expect("write");
         // ⚠️ `handle` 把**单个文件**的失败塞进 results（`ok:false`）而不是返回 Err，
@@ -302,6 +355,7 @@ mod tests {
                 content: "one\r\ntwo\r\nthree\r\n".into(),
                 encoding: None,
             }],
+            diff: None,
         };
         let out = handle(args, &state).await.expect("write");
         assert!(
@@ -335,6 +389,7 @@ mod tests {
                 content: "新的内容".into(),
                 encoding: Some("gbk".into()),
             }],
+            diff: None,
         };
         let out = handle(args, &state).await.expect("write");
         let text = serde_json::to_string(&out).expect("serialize");
@@ -347,5 +402,109 @@ mod tests {
             !text.contains("+新的内容"),
             "绝不能把整份新内容当 diff 回显：{text}"
         );
+    }
+
+    /// 从 `handle` 的返回里取出 `content[0].text`（再解析出结构用）。
+    fn result_text(out: &Value) -> String {
+        out["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// 🔴 token 回归：新建文件默认**不得**把内容当 `+` 行回显。
+    ///
+    /// 这是 RFC 里最省 token 的一条——模型刚写进去的内容它自己知道，回显纯属第二次付费。
+    #[tokio::test]
+    async fn new_file_default_diff_is_stat_only() {
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("big.md");
+        let body = "这是一行正文，不该出现在响应里\n".repeat(40);
+
+        let args = WriteFilesArgs {
+            files: vec![WriteFileEntry {
+                path: file.to_string_lossy().into_owned(),
+                content: body.clone(),
+                encoding: None,
+            }],
+            diff: None, // 省略 = auto
+        };
+        let out = handle(args, &state).await.expect("write");
+        assert!(written_ok(&out), "写入必须真的成功：{out}");
+        let text = result_text(&out);
+        assert!(
+            text.contains("+40/-0 行"),
+            "新建文件默认应给行数统计：{text}"
+        );
+        assert!(
+            !text.contains("这是一行正文"),
+            "新建文件默认不得回显内容（省 token 的全部意义就在这里）：{text}"
+        );
+    }
+
+    /// 显式 `full` 必须回到改造前的行为（整份 `+` 行），否则想要精确核对的人无从下手。
+    #[tokio::test]
+    async fn explicit_full_diff_echoes_content() {
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("full.txt");
+
+        let args = WriteFilesArgs {
+            files: vec![WriteFileEntry {
+                path: file.to_string_lossy().into_owned(),
+                content: "alpha\nbeta\n".into(),
+                encoding: None,
+            }],
+            diff: Some("full".into()),
+        };
+        let out = handle(args, &state).await.expect("write");
+        assert!(written_ok(&out), "写入必须真的成功：{out}");
+        let text = result_text(&out);
+        assert!(text.contains("+alpha"), "full 应回显内容：{text}");
+        assert!(
+            text.contains("+++ b/"),
+            "full 应保留 unified diff 头：{text}"
+        );
+    }
+
+    /// `none` 是「连 diff 字段都不要」——不能退化成空串字段，
+    /// 否则模型会把它读成「改了但内容没变」。
+    #[tokio::test]
+    async fn diff_none_omits_field_entirely() {
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("silent.txt");
+
+        let args = WriteFilesArgs {
+            files: vec![WriteFileEntry {
+                path: file.to_string_lossy().into_owned(),
+                content: "hello\n".into(),
+                encoding: None,
+            }],
+            diff: Some("none".into()),
+        };
+        let out = handle(args, &state).await.expect("write");
+        let rows: Value = serde_json::from_str(&result_text(&out)).expect("rows json");
+        assert_eq!(rows[0]["ok"], json!(true));
+        assert!(
+            rows[0].get("diff").is_none(),
+            "diff:\"none\" 时结果里不应出现 diff 字段：{rows}"
+        );
+    }
+
+    /// 档位拼错必须整次报错，并列出合法值（静默回落 auto 会让调用方误判拿到的是 stat）。
+    #[tokio::test]
+    async fn unknown_diff_mode_is_rejected() {
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let args = WriteFilesArgs {
+            files: vec![WriteFileEntry {
+                path: dir.join("x.txt").to_string_lossy().into_owned(),
+                content: "x".into(),
+                encoding: None,
+            }],
+            diff: Some("short".into()),
+        };
+        let err = handle(args, &state)
+            .await
+            .expect_err("非法 diff 档位必须报错");
+        assert!(err.contains("hunks"), "错误文案要列出合法值：{err}");
     }
 }

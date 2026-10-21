@@ -109,13 +109,13 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             write_files,
             WriteFilesArgs,
-            r#"Write or create files. Automatically creates parent directories and backs up before overwriting. Encoding: omit `encoding` and — when overwriting an EXISTING file with server-side encoding auto-detection ON — the file's original encoding is detected and preserved (a GBK file stays GBK instead of being silently converted to UTF-8); otherwise defaults to utf8. Pass `encoding` (e.g. "gbk", "gb18030", "utf-16le") to force a specific on-disk encoding, or "base64" to write raw binary from a base64 string."#,
+            r#"Write or create files. Automatically creates parent directories and backs up before overwriting. Encoding: omit `encoding` and — when overwriting an EXISTING file with server-side encoding auto-detection ON — the file's original encoding is detected and preserved (a GBK file stays GBK instead of being silently converted to UTF-8); otherwise defaults to utf8. Pass `encoding` (e.g. "gbk", "gb18030", "utf-16le") to force a specific on-disk encoding, or "base64" to write raw binary from a base64 string. `diff` ("auto" default | "none" | "stat" | "hunks" | "full") controls how much of the change is echoed back — "auto" returns only a +N/-M line count for newly created files and a size-capped hunk for overwrites; ask for "full" when you need to eyeball the exact change."#,
             true
         ),
         register_tool!(
             edit_files,
             EditFilesArgs,
-            r#"Edit files in place by exact string replacement (like native Edit). For each file, `oldString` must match EXACTLY ONCE unless `replaceAll` is true — include enough surrounding context to be unique. Preserves the file's original encoding (a GBK file stays GBK). Backs up before writing. Far cheaper than rewriting whole files with write_files."#,
+            r#"Edit files in place by exact string replacement (like native Edit). For each file, `oldString` must match EXACTLY ONCE unless `replaceAll` is true — include enough surrounding context to be unique. Preserves the file's original encoding (a GBK file stays GBK). Backs up before writing. Far cheaper than rewriting whole files with write_files. `diff` ("auto" default | "none" | "stat" | "hunks" | "full") controls how much of the change is echoed back."#,
             true
         ),
         register_tool!(
@@ -182,6 +182,12 @@ pub fn all_tools() -> Vec<ToolSpec> {
             analyze_file,
             AnalyzeFileArgs,
             r#"Analyze a file: encoding, language, line/function/class counts (heuristic)"#,
+            false
+        ),
+        register_tool!(
+            view_image,
+            ViewImageArgs,
+            r#"Look at an image: returns it as an IMAGE content block (a few thousand tokens) instead of base64 text (hundreds of thousands). Supports png/jpg/jpeg/gif/webp/bmp. Optional `crop` [x,y,w,h] in source pixels, `maxWidth` (default 1600, 0 = no downscale) and `format` ("jpeg" default | "png" — prefer png for screenshots and line art). Use this to actually SEE a screenshot, a rendered page/chart or a generated figure instead of guessing from text."#,
             false
         ),
         register_tool!(

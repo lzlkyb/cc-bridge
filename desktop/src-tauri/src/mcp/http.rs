@@ -714,9 +714,9 @@ pub async fn handle_tools_call(
             let response = match result {
                 Ok(content) => {
                     if audit_enabled {
-                        // Token 用量估算埋点：结果 Value 序列化后的字节数。
-                        let result_bytes =
-                            serde_json::to_vec(&content).map(|v| v.len() as u64).ok();
+                        // Token 用量估算埋点：结果里 **text 块**的字符数。图片块按 0 计
+                        // （见 `tools::result_text_bytes` 的注释：base64 长度与 token 量无关）。
+                        let result_bytes = Some(crate::mcp::tools::result_text_bytes(&content));
                         write_audit_for_call(
                             &state.data_dir,
                             tool_name,

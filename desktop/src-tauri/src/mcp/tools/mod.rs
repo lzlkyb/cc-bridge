@@ -24,6 +24,7 @@ pub mod run_command;
 pub mod search_files;
 pub mod shell;
 pub mod stop_command;
+pub mod view_image;
 pub mod write_files;
 
 /// 按 MCP `tools/call` 规范把结果包成 `content` 数组（`content[0].text` 是一段 JSON 文本）。
@@ -42,6 +43,27 @@ pub(crate) fn text_result(value: &impl serde::Serialize) -> Value {
 
 pub(crate) fn text_result_compact(value: &impl serde::Serialize) -> Value {
     json!({ "content": [{ "type": "text", "text": serde_json::to_string(value).unwrap() }] })
+}
+
+/// 估算「这次结果给下一轮上下文添了多少字符」——**只数 text 块**。
+///
+/// 🔴 不能拿 `to_vec(&content).len()`：`view_image` 之类返回 image 内容块的工具，块里是
+/// 一整段 base64，按字节记会让审计里的 estTokens 虚高两个数量级（一张 200KB 的图 ≈ 27 万
+/// 「token」，实际客户端按像素计费、只有一千上下），Token 用量页会直接失去参考价值。
+/// 图片块按 0 计：它与字符数无关，估不准就别估，好过给个错得离谱的数。
+pub(crate) fn result_text_bytes(result: &Value) -> u64 {
+    match result.get("content").and_then(|c| c.as_array()) {
+        Some(blocks) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .map(|s| s.len() as u64)
+            .sum(),
+        // 没有 content 数组（异常形状）：回退到整体序列化长度，别把用量记成 0。
+        None => serde_json::to_vec(result)
+            .map(|v| v.len() as u64)
+            .unwrap_or(0),
+    }
 }
 
 /// `mcp/tools/*` 各 `mod tests` 共用的测试脚手架。
@@ -109,6 +131,44 @@ pub(crate) mod testutil {
             ..BridgeConfig::default()
         };
         Arc::new(AppState::new(conn, cfg, dir))
+    }
+}
+
+#[cfg(test)]
+mod result_bytes_tests {
+    //! `result_text_bytes` 的口径：只数 text 块。
+    //!
+    //! 这条之所以要测，是因为它的错误方向很隐蔽——把 image 块里的 base64 也算进去不会报错，
+    //! 只会让审计的 estTokens 在用了 `view_image` 的会话里虚高两个数量级，
+    //! 看起来「正常」但数字全是错的。
+
+    use super::*;
+
+    #[test]
+    fn counts_only_text_blocks() {
+        let r = json!({
+            "content": [
+                { "type": "image", "data": "A".repeat(10_000), "mimeType": "image/png" },
+                { "type": "text", "text": "abc" },
+            ]
+        });
+        assert_eq!(result_text_bytes(&r), 3, "图片块的 base64 不该被计入");
+    }
+
+    #[test]
+    fn sums_multiple_text_blocks() {
+        let r = json!({ "content": [{ "type": "text", "text": "ab" }, { "type": "text", "text": "cde" }] });
+        assert_eq!(result_text_bytes(&r), 5);
+    }
+
+    #[test]
+    fn falls_back_to_serialized_len_without_content_array() {
+        let r = json!({ "ok": true });
+        assert_eq!(
+            result_text_bytes(&r),
+            serde_json::to_vec(&r).unwrap().len() as u64,
+            "异常形状要回退到整体长度，不能记成 0"
+        );
     }
 }
 

@@ -67,6 +67,11 @@ rand = "0.8"
 
 # Filesystem
 regex = "1"
+# view_image：图片解码/裁剪/缩放/重编码。
+# ⚠️ 不是全新依赖：`image 0.25.10` 已随 arboard（tauri-plugin-clipboard-manager）链在
+# 运行时树里，且 bmp/png 两个 codec 已启用（`cargo tree -e normal -i image -f "{p} {f}"` 可复核）。
+# 这里只补 jpeg/gif/webp 三个 codec；`rayon` 显式关掉（单图处理没有并行收益，纯增体积）。
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # 目录遍历(自动跳过 .gitignore 列出的目录) + 完整 glob 语义，替换手写 walker/通配符
 # （P4-2，仅限 search_files，见 功能优化清单.md）
 ignore = "0.4"

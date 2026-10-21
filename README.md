@@ -97,7 +97,7 @@
 │  │                                                           │
 │  └─ cc-bridge.exe / cc-bridge.app ── 单进程 Tauri 2 桌面应用    │
 │       │                                                      │
-│       ├─ 嵌入式 axum HTTP(S) 服务器 ── MCP JSON-RPC + 20 个工具 │
+│       ├─ 嵌入式 axum HTTP(S) 服务器 ── MCP JSON-RPC + 21 个工具 │
 │       │        + 安全校验 + 自动备份 + 限流 + 401 封禁 + 审计      │
 │       ├─ SQLite 配置存储 ── 原子更新，无竞态                     │
 │       └─ React 前端 ── Tauri IPC 通信，管理面板                 │
@@ -161,9 +161,9 @@ cc-bridge 内部有两条独立的通信路径，共享同一个 `AppState`：
 │  (MCP 客户端)       │────────────────▶│                                  │
 │                     │   内网:7823     │   ┌─ axum HTTP 服务器 ─┐         │
 │  通过 MCP 协议       │                 │   │  POST /mcp         │         │
-│  调用 20 个 MCP 工具  │                 │   │  Bearer token 认证  │         │
+│  调用 21 个 MCP 工具  │                 │   │  Bearer token 认证  │         │
 │                     │                 │   │  JSON-RPC dispatch │         │
-└─────────────────────┘                 │   │  → 20 个工具处理器  │──┐      │
+└─────────────────────┘                 │   │  → 21 个工具处理器  │──┐      │
                                         │   │  → 安全校验         │  │      │
                                         │   │  → 审计日志         │  │      │
                                         │   └────────────────────┘  │      │
@@ -210,7 +210,7 @@ AI 工具对话中触发工具调用:
         │
         ▼
   POST /mcp  ──  tools/list (发现可用工具)
-        │          返回 20 个工具的 name + description + inputSchema
+        │          返回 21 个工具的 name + description + inputSchema
         ▼
   POST /mcp  ──  tools/call (实际调用)
         │
@@ -319,15 +319,15 @@ AI 工具对话中触发工具调用:
 
 ## 功能清单
 
-### 20 个 MCP 工具（任意接入的 AI 工具直接调用）
+### 21 个 MCP 工具（任意接入的 AI 工具直接调用）
 
 | 工具 | 作用 |
 |---|---|
 | `list_allowed_roots` | 列出服务端白名单（允许根目录 + 扩展名 + 大小上限），远程首选调用以发现可访问范围，免盲猜 |
 | `list_directory` | 列目录，支持递归 + 深度限制 |
 | `read_files` | 批量读文件，支持指定行范围（1-based）；返回内容 + 编码 + 换行风格；「读取编码自适应」开关开启时自动识别 GBK/GB18030 统一转 UTF-8（默认关，按 UTF-8 读），可传 `encoding` 强制指定（始终生效） |
-| `write_files` | 批量写/新建文件，自动建父目录，覆盖前自动备份 |
-| `edit_files` | 精准字符串替换（对标 native Edit），`oldString` 需唯一匹配（或 `replaceAll`），保留原文件编码（GBK 改完仍 GBK），改前备份 |
+| `write_files` | 批量写/新建文件，自动建父目录，覆盖前自动备份；`diff` 控制改动回显量（默认新建文件只回 `+N/-M 行`、覆盖回截断 hunk，`full` 回到逐行全文，`none` 完全不回） |
+| `edit_files` | 精准字符串替换（对标 native Edit），`oldString` 需唯一匹配（或 `replaceAll`），保留原文件编码（GBK 改完仍 GBK），改前备份；同样支持 `diff` 回显档位 |
 | `notebook_edit` | 编辑 Jupyter 笔记本（`.ipynb`）：按索引替换/插入/删除单元格，保留其它元数据 |
 | `delete_files` | 批量删除文件（不删目录），删前自动备份 |
 | `move_files` | 批量移动/重命名，跨盘自动 copy+delete 降级 |
@@ -337,6 +337,7 @@ AI 工具对话中触发工具调用:
 | `search_files` | 按文件名 glob + 内容关键字/正则全文搜索 |
 | `batch` | 一次往返批量执行多个工具调用，把 N 次网络往返合并为 1 次（远程链路最大延迟优化）；每个子操作复用同样的白名单 / 只读校验；非事务，出错即停但不回滚已完成写入 |
 | `analyze_file` | 编码检测 + 语言识别 + 函数/类数量启发式估算 |
+| `view_image` | 把图片（png/jpg/gif/webp/bmp）**当图片**返回给 AI，而不是 base64 文本——一张图约一两千 token，同一张图转 base64 文本要十几万字符。支持 `crop` 按原图像素裁剪、`maxWidth` 等比缩放（默认 1600）、`format` 选 png/jpeg；核对截图、渲染效果、图表时用它，别再让 AI 手写截图脚本 |
 | `run_command` | 执行 Shell 命令（壳层按平台与配置：Windows = `cmd /C` 或 Git Bash，macOS = `sh` / `bash`），前台等待结果或 `background=true` 后台运行；**默认关闭**，需在『安全』页开启「命令执行」开关（等同于授予远程任意代码执行权限），只读模式下无条件禁止 |
 | `get_command_output` | 增量拉取后台命令的 stdout/stderr（按偏移量），附带是否已结束、退出码 |
 | `stop_command` | 强制终止一个后台命令的整个进程树（Windows = TerminateJobObject，macOS = 向整个 POSIX 进程组发 SIGKILL，孙进程一并死），并从注册表移除 |
@@ -346,7 +347,7 @@ AI 工具对话中触发工具调用:
 
 ### SSH 终端（本地人操作，非 MCP 工具）
 
-第 4 个 Tab「终端」提供一个真正的**交互式终端**，让你在 cc-bridge 面板里直接连远端 Linux 敲命令——**这是给人手动用的，不是给 AI 用的 MCP 工具**（所以不计入上面的 20 个 MCP 工具）。
+第 4 个 Tab「终端」提供一个真正的**交互式终端**，让你在 cc-bridge 面板里直接连远端 Linux 敲命令——**这是给人手动用的，不是给 AI 用的 MCP 工具**（所以不计入上面的 21 个 MCP 工具）。
 
 - **后端**：调用本机系统自带 OpenSSH（Windows 10/11 自带 `C:\Windows\System32\OpenSSH\ssh.exe`，macOS 永远有），用 `portable-pty` 开本地 PTY（Windows = ConPTY / Unix = pty）把 ssh 的输入输出接到 xterm.js。零新网络协议、零重依赖，体积代价可忽略（portable-pty 0.9 只引 `windows-sys` 0.61.2 等小库）。
 - **连接**：支持两种认证方式——
@@ -510,7 +511,7 @@ cc-bridge/
             └── mcp/                    # MCP 协议实现
                 ├── mod.rs
                 ├── http.rs             # axum 路由 + JSON-RPC dispatch
-                └── tools/              # 20 个工具处理器
+                └── tools/              # 21 个工具处理器
                     ├── mod.rs
                     ├── list_allowed_roots.rs
                     ├── list_directory.rs

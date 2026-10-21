@@ -91,23 +91,36 @@ pub struct EditFilesArgs {
     /// 容错见 [`flex_edit_files`]：字符串化数组 / `edits` 别名 / 按文件分组形态均可接受。
     #[serde(deserialize_with = "flex_edit_files", alias = "edits")]
     pub files: Vec<EditEntry>,
+    /// 回显档位：`none` | `stat` | `hunks` | `full` | `auto`（省略 = `auto`，编辑场景落成 `hunks`）。
+    /// 详见 [`crate::diff_utils::DiffMode`]。
+    pub diff: Option<String>,
 }
 
 pub async fn handle(args: EditFilesArgs, state: &Arc<AppState>) -> Result<Value, String> {
+    // 与 write_files 一致：拼错档位整次拒绝，不静默回落。
+    let mode = match args.diff.as_deref() {
+        Some(raw) => diff_utils::DiffMode::parse(raw)?,
+        None => diff_utils::DiffMode::Auto,
+    };
     let config = state.config.read().await;
     let mut results = Vec::new();
 
     for f in &args.files {
-        match edit_single(f, &config, state).await {
-            Ok(outcome) => results.push(json!({
-                "path": f.path,
-                "ok": true,
-                "replacements": outcome.replacements,
-                "encoding": outcome.encoding,
-                "newline": outcome.newline,
-                "diff": outcome.diff,
-                "warning": outcome.warning,
-            })),
+        match edit_single(f, &config, state, mode).await {
+            Ok(outcome) => {
+                let mut row = json!({
+                    "path": f.path,
+                    "ok": true,
+                    "replacements": outcome.replacements,
+                    "encoding": outcome.encoding,
+                    "newline": outcome.newline,
+                    "warning": outcome.warning,
+                });
+                if let Some(d) = outcome.diff {
+                    row["diff"] = json!(d);
+                }
+                results.push(row);
+            }
             Err(e) => results.push(
                 json!({ "path": f.path, "ok": false, "error": e.message, "warning": e.warning }),
             ),
@@ -123,7 +136,8 @@ struct EditOutcome {
     replacements: usize,
     encoding: String,
     newline: &'static str,
-    diff: String,
+    /// `diff:"none"` 时为 `None`，结果里不出现该字段。
+    diff: Option<String>,
     /// 对 old_string 的首尾空白告警（模型多带空白导致匹配失败时给的提示）。仅 Some 时输出。
     warning: Option<String>,
 }
@@ -156,6 +170,7 @@ async fn edit_single(
     f: &EditEntry,
     config: &crate::config::BridgeConfig,
     state: &Arc<AppState>,
+    mode: diff_utils::DiffMode,
 ) -> Result<EditOutcome, EditError> {
     // 🔴 告警算在**归一化后**的串上。
     //
@@ -299,7 +314,17 @@ async fn edit_single(
     // 原子写：先写临时文件再 rename，避免写一半崩溃损坏原文件。
     write_atomic(&resolved, &out_bytes).await?;
 
-    let diff = diff_utils::unified_diff(&f.path, content, &updated);
+    // 回显档位由调用方定（`auto` 在编辑场景恒落成 `hunks`：目标文件必然存在）。
+    // 字节数用真实落盘长度，不是 `str::len()`——GBK 下两者差一倍。
+    let diff = diff_utils::render(
+        mode,
+        true,
+        &f.path,
+        content,
+        &updated,
+        raw.len(),
+        out_bytes.len(),
+    );
 
     Ok(EditOutcome {
         replacements,
@@ -466,5 +491,45 @@ mod tests {
         let r: Result<EditFilesArgs, _> =
             serde_json::from_value(serde_json::json!({ "files": "not json" }));
         assert!(r.is_err());
+    }
+
+    /// 回显档位（RFC 十五）：`none` 让结果里**没有** diff 字段，`full` 与改造前一致。
+    ///
+    /// 两条断言合在一个测试里是有意的——它们共享同一次目录与配置准备，而各自独立造
+    /// `AppState` 会让这条本已很轻的测试多开两个临时库。
+    #[tokio::test]
+    async fn diff_mode_controls_echoed_change() {
+        use crate::mcp::tools::testutil::*;
+
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "one\ntwo\nthree\n").expect("seed");
+        let path = file.to_string_lossy().into_owned();
+
+        // ① none：连字段都不给。
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": path, "oldString": "two", "newString": "TWO" }],
+            "diff": "none"
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("edit");
+        let rows: Value =
+            serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).expect("rows");
+        assert_eq!(rows[0]["ok"], json!(true), "编辑应成功：{rows}");
+        assert!(
+            rows[0].get("diff").is_none(),
+            "diff:\"none\" 时不应出现 diff 字段：{rows}"
+        );
+
+        // ② full：必须给出 -two / +TWO 的完整 hunk（改造前行为）。
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": path, "oldString": "three", "newString": "THREE" }],
+            "diff": "full"
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("edit");
+        let text = out["content"][0]["text"].as_str().unwrap_or_default();
+        assert!(text.contains("-three"), "full 应回显被删行：{text}");
+        assert!(text.contains("+THREE"), "full 应回显新增行：{text}");
     }
 }

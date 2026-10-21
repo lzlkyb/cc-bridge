@@ -86,6 +86,7 @@ const TOOL_LABELS: Record<string, string> = {
   remove_directory: "删除目录",
   search_files: "搜索文件",
   analyze_file: "分析文件",
+  view_image: "查看图片",
   run_command: "执行命令",
   get_command_output: "拉取命令输出",
   stop_command: "终止命令",
@@ -307,7 +308,7 @@ export function buildTokenSedCommand(
   return `${cdPrefix}${sedInPlace(`s#Bearer ${oldToken}#Bearer ${token}#g`, cfgFile)}`;
 }
 
-/** cc-bridge 除命令执行三元组外的 14 个文件/列表类工具，用于权限授权命令默认不包含命令执行能力。 */
+/** cc-bridge 除命令执行三元组外的 15 个文件/列表/图片类工具，用于权限授权命令默认不包含命令执行能力。 */
 const NON_SHELL_TOOLS = [
   "list_allowed_roots",
   "list_directory",
@@ -323,6 +324,7 @@ const NON_SHELL_TOOLS = [
   "batch",
   "notebook_edit",
   "analyze_file",
+  "view_image",
 ];
 
 /**
@@ -332,8 +334,8 @@ const NON_SHELL_TOOLS = [
  * 目标文件固定落 gitignore 的 settings.local.json（项目级）/settings.json（全局），
  * 不是连接命令用的 .mcp.json——权限规则属个人本地免打扰设置，不适合和团队共享的
  * MCP 服务器配置混在一起。
- * includeShellTools=false 时逐个列出 14 个文件/列表类工具规则，run_command 系列不包含；
- * =true 时改成单条 mcp__cc-bridge__* 通配符（等价于全部 17 个，且自动覆盖未来新增工具）。
+ * includeShellTools=false 时逐个列出 15 个文件/列表/图片类工具规则，run_command 系列不包含；
+ * =true 时改成单条 mcp__cc-bridge__* 通配符（等价于全部 21 个，且自动覆盖未来新增工具）。
  */
 export function buildPermissionGrantCommand(
   scope: McpScope,
