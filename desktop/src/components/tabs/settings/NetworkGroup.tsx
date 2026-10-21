@@ -26,6 +26,7 @@ export function NetworkGroup({
   const [restarted, setRestarted] = useState(false);
   const [transportSaved, setTransportSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [restartNeeded, setRestartNeeded] = useState(false);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   useEffect(() => () => { timers.current.forEach(clearTimeout); }, []);
   const { toast } = useToast();
@@ -38,9 +39,11 @@ export function NetworkGroup({
   useEffect(() => {
     if (!status) return;
     const serverPort = status.port;
+    const previousPort = syncedRef.current;
+    syncedRef.current = serverPort;
     setPort((prev) => {
-      const follow = syncedRef.current === null || prev === String(syncedRef.current);
-      syncedRef.current = serverPort;
+      // Updaters may run twice in StrictMode; compare against the captured snapshot.
+      const follow = previousPort === null || prev === String(previousPort);
       return follow ? String(serverPort) : prev;
     });
   }, [status]);
@@ -60,6 +63,7 @@ export function NetworkGroup({
         patch: { port: Number(port) },
       });
       persisted = true;
+      setRestartNeeded(result.restartRequired);
       if (result.restartRequired) {
         await invoke("restart_mcp_server");
         // 防火墙联动：端口变了 → 旧端口规则残留、新端口无放行规则。主动刷新
@@ -68,6 +72,7 @@ export function NetworkGroup({
           toast(`刷新防火墙失败：${e}`, "error"),
         );
         setRestarted(true);
+        setRestartNeeded(false);
         if (status?.firewallEnabled === true) {
           toast(
             "端口已更新，服务已重启。若远程无法连接，请到「连接」页为新端口开放防火墙",
@@ -91,6 +96,21 @@ export function NetworkGroup({
     }
   };
 
+  const retryRestart = async () => {
+    if (saving) return;
+    setSaving(true); setSaveError("");
+    try {
+      // Retry the already-saved configuration, without submitting the form again.
+      await invoke("restart_mcp_server");
+      await invoke("refresh_firewall").catch(e => toast(`刷新防火墙失败：${e}`, "error"));
+      setRestartNeeded(false); setRestarted(true); onSaved();
+      timers.current.push(setTimeout(() => setRestarted(false), 3000));
+      toast("服务已重启，已保存的端口配置已生效", "success");
+    } catch (e) {
+      setSaveError(`端口已保存，但服务重启失败：${String(e)}。请重试重启服务。`);
+    } finally { setSaving(false); }
+  };
+
   return (
     <Card id="set-network">
       <CardHeader>
@@ -110,7 +130,7 @@ export function NetworkGroup({
                 max={65535}
                 value={port}
                 onChange={(e) => setPort(e.target.value)}
-                disabled={saving || !status}
+                disabled={saving || !status || restartNeeded}
                 className={`w-28! flex-none ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
                 aria-label="监听端口"
                 aria-invalid={invalid}
@@ -118,15 +138,15 @@ export function NetworkGroup({
               {/* 原先旁边还有一个常驻的「无更改」文字，已删：按钮 disabled 表达的是
                   同一件事。信息没丢，搬到了 title（悬停仍能知道为何不可点）。 */}
               <Button
-                onClick={handleSaveAndRestart}
-                disabled={!dirty || saving || invalid}
+                onClick={restartNeeded ? retryRestart : handleSaveAndRestart}
+                disabled={saving || !status || !restartNeeded && (!dirty || invalid)}
                 isLoading={saving}
                 loadingText="保存中..."
                 size="sm"
                 className="min-w-24 shrink-0 whitespace-nowrap"
-                title={invalid ? "端口超出 1 – 65535" : dirty ? undefined : "端口未修改"}
+                title={restartNeeded ? "重试应用已经保存的端口配置" : invalid ? "端口超出 1 – 65535" : dirty ? undefined : "端口未修改"}
               >
-                {dirty ? "保存并重启" : "保存"}
+                {restartNeeded ? "重试重启服务" : dirty ? "保存并重启" : "保存"}
               </Button>
               {restarted && <SavedHint className="whitespace-nowrap">已保存并重启</SavedHint>}
             </div>

@@ -42,7 +42,8 @@ export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onR
     const frame = requestAnimationFrame(() => {
       const panel = root.current?.querySelector<HTMLElement>(`[data-category="${CSS.escape(current)}"]`);
       const key = highlightAnchor.anchor;
-      if (key === current) { if (panel) panel.scrollTop = 0; return; }
+      // Category panels retain their own scroll offset; only a concrete deep link scrolls.
+      if (key === current) return;
       const target = panel?.querySelector<HTMLElement>(`#toggle-${CSS.escape(key)}, #${CSS.escape(key)}`);
       if (!target || !target.getClientRects().length) return;
       target.scrollIntoView({ block: "center", behavior: "auto" });
