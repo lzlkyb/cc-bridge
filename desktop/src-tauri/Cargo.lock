@@ -708,6 +708,7 @@ dependencies = [
  "dashmap",
  "encoding_rs",
  "env_logger",
+ "futures-util",
  "globset",
  "grep-regex",
  "grep-searcher",

@@ -16,6 +16,8 @@ pub mod mcp_proxy;
 pub mod move_files;
 pub mod notebook_edit;
 pub mod output_filter;
+pub mod prepare_download;
+pub mod prepare_upload;
 #[cfg(feature = "notifications")]
 pub mod push_notification;
 pub mod read_files;

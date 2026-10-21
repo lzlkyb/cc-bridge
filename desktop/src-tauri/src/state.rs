@@ -177,6 +177,11 @@ pub struct AppState {
     /// GET /mcp/sse 握手时注册，POST /mcp/messages 结果投递时查找，连接断开后自动过期。
     pub sse_registry: crate::mcp::sse::SseRegistry,
 
+    /// 文件直传的一次性票据表（`prepare_upload` / `prepare_download` 签发，
+    /// `PUT|GET /transfer/{ticket}` 消费）。纯内存，进程重启全部失效——票据本身
+    /// 会随工具返回值进对话与审计日志，不落盘 + 短时效 + 一次性是它的全部防线。
+    pub transfer_tickets: crate::mcp::transfer::TicketStore,
+
     /// Tauri AppHandle，供 MCP 工具调用 Tauri 插件（notification 等）。
     /// new() 时为 None，main.rs 在 setup 中注入。StdMutex 短临界区，不跨 await。
     /// 用 feature 门控：AppHandle 会引入 tao/webview2-com 的 GUI DLL 链，
@@ -241,6 +246,7 @@ impl AppState {
             lan_ips: StdMutex::new(network::get_lan_ips()),
             canonicalized_roots: StdMutex::new(canonicalized_roots),
             sse_registry: crate::mcp::sse::new_registry(),
+            transfer_tickets: crate::mcp::transfer::TicketStore::new(),
             recent_requests: StdMutex::new(VecDeque::new()),
             latency_sum_ms: AtomicU64::new(0),
             latency_count: AtomicU64::new(0),

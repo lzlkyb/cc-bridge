@@ -276,6 +276,13 @@ pub async fn sse_message_handler(
             let source_ip = addr.ip().to_string();
             let t_recv = std::time::Instant::now();
 
+            // 🔴 必须在进入 `async move` 之前算好：`prepare_upload` / `prepare_download`
+            // 靠 base_url 作用域拼出「调用方真能连上」的 /transfer 绝对地址。缺这个作用域
+            // 时它们会回退到「配置 host + 端口」（绑 0.0.0.0 时取首张网卡），一旦客户端是从
+            // localhost:自定义端口 / 反向代理进来的，拼出的 URL 就直接连不上。
+            // HTTP 通道早已注入（`mcp_handler`），SSE 通道此前漏了 —— 同一个工具换 transport 就坏。
+            let transfer_base = crate::mcp::transfer::base_url(&headers, &state).await;
+
             let resp =
                 crate::timing::with_io_timer(async move {
                     crate::audit::with_op_backup(async {
@@ -283,7 +290,10 @@ pub async fn sse_message_handler(
                     // 注入 source_ip 作用域，使 SSE 通道下 batch 子操作的审计也能拿到 sourceIp。
                     let result = crate::audit::with_source_ip(
                         Some(source_ip.clone()),
-                        dispatch_tool(&tool_name, arguments.clone(), &state),
+                        crate::mcp::transfer::with_base_url(
+                            transfer_base,
+                            dispatch_tool(&tool_name, arguments.clone(), &state),
+                        ),
                     )
                     .await;
                     let elapsed = start.elapsed().as_millis() as u64;

@@ -61,6 +61,12 @@ toml = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
 uuid = { version = "1", features = ["v4"] }
 
+# 文件直传（/transfer）：上传侧要 `StreamExt::next()` 消费 axum 的请求体流。
+# ⚠️ 不是全新依赖：`futures-util 0.3.32` 已由 axum / hyper-util / tower / tower-http
+# 链在运行时树里，且 `std` feature 已启用（`cargo tree -e normal -i futures-util -f "{p} {f}"`
+# 可复核）→ 这里只是让本项目能按下这个名字引用，体积增量 0 字节、不新增编译单元。
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
 # Security
 subtle = "2"
 rand = "0.8"

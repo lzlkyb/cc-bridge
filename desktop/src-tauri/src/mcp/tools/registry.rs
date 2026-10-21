@@ -212,6 +212,18 @@ pub fn all_tools() -> Vec<ToolSpec> {
             false
         ),
         register_tool!(stop_command, StopCommandArgs, STOP_COMMAND_DESC, false),
+        register_tool!(
+            prepare_upload,
+            PrepareUploadArgs,
+            r#"Issue a one-time URL for uploading a file to this machine WITHOUT passing its bytes through the conversation. Validates the target path (whitelist, extension, read-only mode, size, overwrite) NOW and returns a `curl` command; run it from your own shell to PUT the file. The upload is streamed, size-limited, sha256-verified (pass `sha256` to have the server check it), and backs up any existing file before replacing it atomically. Prefer this over write_files with base64 for any binary or large file (pptx/xlsx/pdf/images/archives). The ticket works exactly ONCE and expires — if the HTTP call fails, call this tool again for a fresh URL. The HTTP response is JSON: check `ok`."#,
+            true
+        ),
+        register_tool!(
+            prepare_download,
+            PrepareDownloadArgs,
+            r#"Issue a one-time URL for downloading a file from this machine WITHOUT passing its bytes through the conversation. Returns the file's size and sha256 plus a ready-to-run `curl -o` command; run it from your own shell, then verify the hash locally. Prefer this over read_files for binary files (images, office documents, archives) or anything large. The ticket works exactly ONCE and expires — call this tool again if you need another copy."#,
+            false
+        ),
         #[cfg(feature = "notifications")]
         register_tool!(
             push_notification,

@@ -4,3 +4,4 @@ pub mod http;
 pub mod sse;
 pub mod tls;
 pub mod tools;
+pub mod transfer;

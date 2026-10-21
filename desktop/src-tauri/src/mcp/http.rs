@@ -37,20 +37,42 @@ pub async fn build_router(state: Arc<AppState>) -> Router {
         .clamp(1024 * 1024, MAX_BODY_LIMIT);
     drop(config);
 
-    axum::Router::new()
+    // ── 两条子路由，各自挂不同的层 ────────────────────────────────────────────
+    //
+    // 🔴 `/transfer` **不能**套 `/mcp` 这一组层（body-limit / gzip / 413 改写）：
+    //   · `RequestBodyLimitLayer` 给的是 `text/plain "length limit exceeded"`，而
+    //     `/transfer` 的调用方是 curl，需要结构化错误（`jsonrpc_oversize_middleware`
+    //     只改写 `/mcp*`，本来也管不到它）；
+    //   · `CompressionLayer` 一旦压缩响应就会**删掉 `Content-Length`**，而下载侧的
+    //     `Content-Length` + `X-Content-SHA256` 是我们承诺给调用方的校验值；
+    //   · 那个上限是 `6 × max_file_size`（≥1MB），对「单个 ≤ max_file_size」的上传
+    //     永远不会触发，纯属多余——真正的截断由 `stream_into` 边写边数。
+    //   （注：`RequestBodyLimitLayer` 本身是**流式**上限，不缓冲整包；会缓冲整包的是
+    //   `Json<Value>` extractor，那是 `/mcp` 才有的东西。）
+    //
+    // 抽成两个 Router 再 merge 是**唯一**能做到这件事的方式——axum 的 `.layer()`
+    // 只作用于「它之前注册的路由」，写在一个 Router 上就是全有或全无。
+    let jsonrpc: Router<Arc<AppState>> = axum::Router::new()
         .route("/health", get(health_handler))
         .route("/mcp", post(mcp_handler))
         .route("/mcp/sse", get(crate::mcp::sse::sse_handler))
         .route("/mcp/messages", post(crate::mcp::sse::sse_message_handler))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(body_limit))
+        .layer(CompressionLayer::new().gzip(true)) // 响应体 gzip 压缩（客户端 Accept-Encoding 支持时才生效，否则透明跳过）
+        // 最外层：把 body-limit 的裸 413 改成 JSON-RPC 错误（见函数头注释）。
+        .layer(axum::middleware::from_fn(jsonrpc_oversize_middleware));
+
+    let transfer: Router<Arc<AppState>> = crate::mcp::transfer::routes();
+
+    jsonrpc
+        .merge(transfer)
+        // 鉴权 / 限流 / 封禁仍是全局的：`/transfer` 只是**改用票据**校验
+        // （见 `auth_middleware` 的 `skip_token`），不代表这些端点不受管控。
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(body_limit))
-        .layer(CompressionLayer::new().gzip(true)) // 响应体 gzip 压缩（客户端 Accept-Encoding 支持时才生效，否则透明跳过）
         .layer(tower::limit::ConcurrencyLimitLayer::new(256)) // E-P0-4: 防止无界并发耗尽 tokio 工作线程
-        // 最外层：把 body-limit 的裸 413 改成 JSON-RPC 错误（见函数头注释）。
-        .layer(axum::middleware::from_fn(jsonrpc_oversize_middleware))
         .with_state(state)
 }
 
@@ -341,7 +363,13 @@ async fn auth_middleware(
     // 它需要同时看 query 与 `Authorization` 头，而这层只有头、够不着 query。
     // 这里跳过**只表示「这一层不拦」**，不代表该端点不需要 token（此前确实是完全免 token，
     // 已于 2026-10-14 补上）。限流仍照走，否则 SSE 工具调用面不受 rate_limit 约束。
-    let skip_token = path == "/mcp/messages";
+    //
+    // `/transfer/*` 同理，但**换了一套凭据**：一次性票据（`prepare_upload` /
+    // `prepare_download` 签发）取代长期 Bearer。原因：调用方是 AI 在自己 shell 里跑的
+    // curl，长期 token 进了 shell 历史不安全；而票据一次性、30 分钟内失效、只绑一个路径
+    // 和一个方法，泄露面小得多。票据校验在 `transfer.rs` 的 handler 里做，失败同样计入
+    // `auth_denies` 与封禁（见 `deny_ticket`）。
+    let skip_token = path == "/mcp/messages" || path.starts_with("/transfer/");
 
     if !skip_token {
         let auth_header = req
@@ -638,9 +666,16 @@ async fn mcp_handler(
             }))
             .into_response()
         }
-        "tools/call" => handle_tools_call(state, source_ip, body)
-            .await
-            .into_response(),
+        "tools/call" => {
+            // 工具 handler 拿不到 HTTP 请求，而 `prepare_upload`/`prepare_download` 必须
+            // 拼出「AI 端真能连上」的绝对 URL —— 只能把本次请求的 Host + 协议经
+            // task_local 带进工具作用域。`prepare_*` 是纯 async、不经 spawn_blocking，
+            // 作用域不会丢（`spawn_blocking` 会丢，这类工具不要往里跳）。
+            let base = crate::mcp::transfer::base_url(&headers, &state).await;
+            crate::mcp::transfer::with_base_url(base, handle_tools_call(state, source_ip, body))
+                .await
+                .into_response()
+        }
         _ => Json(json!({
             "jsonrpc": "2.0",
             "id": body.get("id"),
@@ -952,7 +987,7 @@ fn build_instructions(strong_notify: bool) -> String {
         "\n\n建议：用户可能已离开对话窗口时，可调用 push_notification 弹出桌面通知；若用户就在当前界面、可直接回复，则无需额外打扰。"
     };
     format!(
-        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / wait_command / get_command_output / stop_command:在本地执行命令、等待后台命令结束、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 {shells}，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在项目规则文件 AGENTS.md 或 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
+        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / wait_command / get_command_output / stop_command:在本地执行命令、等待后台命令结束、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 {shells}，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- prepare_upload / prepare_download:大文件或二进制文件直传。工具只返回一次性 URL 与 curl 命令,文件字节不经过对话上下文——远优于 write_files(base64) 与用 read_files 读二进制。需要传 pptx、xlsx、pdf、图片、压缩包到本地或取回时优先用它\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在项目规则文件 AGENTS.md 或 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
     )
 }
 
@@ -1345,14 +1380,90 @@ mod over_wire_tests {
         assert!(c.contains("list_allowed_roots"), "正文应含工具指引");
     }
 
+    /// 广度冒烟：注册表里的**每一个**工具都必须真的能通过 `tools/call` 调到，
+    /// 且空参数调用必须是「工具级错误」（`isError: true`，模型能据此自纠），
+    /// 而不是 500、协议错误或 panic。
+    ///
+    /// 这条守两件事：① 新加工具只改了 registry 却忘了接线（name 对不上 / handle 没写）；
+    /// ② 某个工具的参数反序列化把整个请求打成 500 而不是返回可读错误。
+    ///
+    /// 🔴 它**故意不加 `#[ignore]`**：整块 over_wire 测试长期被 ignore，`tools/list` 的
+    /// 数量断言才从 17 漂到 19 再到 23 都没人发现。广度测试不进默认门禁＝没有测试。
+    #[tokio::test]
+    async fn every_registered_tool_is_callable_and_validates_args() {
+        let root = unique_temp_root("smoke-all");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let names: Vec<&'static str> = crate::mcp::tools::registry::all_tools()
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.len() >= 20, "注册表工具数异常：{}", names.len());
+
+        let mut ran_with_empty_args = Vec::new();
+        for name in names {
+            let r = rpc(
+                &srv.base,
+                &srv.token,
+                "tools/call",
+                json!({ "name": name, "arguments": {} }),
+            )
+            .await;
+            assert!(
+                r.get("error").is_none(),
+                "{name} 返回了 JSON-RPC 协议错误（应为工具级错误）：{r}"
+            );
+            let result = r
+                .get("result")
+                .unwrap_or_else(|| panic!("{name} 响应里没有 result：{r}"));
+            assert!(
+                result
+                    .get("content")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|a| !a.is_empty()),
+                "{name} 的 result.content 必须是非空数组：{r}"
+            );
+            if result.get("isError").and_then(|v| v.as_bool()) != Some(true) {
+                ran_with_empty_args.push(name);
+            }
+        }
+
+        // 只有这两个是真的「无必填参数」：`list_allowed_roots`（纯查询）与
+        // `mcp_list_servers`（列外挂 server，没挂时返回空表）。清单变了说明有工具把
+        // 必填项改成了可选（或反之）——那属于 API 变更，必须显式确认。
+        assert_eq!(
+            ran_with_empty_args,
+            vec!["list_allowed_roots", "mcp_list_servers"],
+            "空参数下仍能执行的工具清单发生变化"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore]
-    async fn tools_list_returns_17_tools_with_schemas() {
+    async fn tools_list_returns_all_tools_with_schemas() {
         let root = unique_temp_root("list");
         let srv = spawn_server(test_config(&root), root.clone()).await;
         let r = rpc(&srv.base, &srv.token, "tools/list", json!({})).await;
         let tools = r["result"]["tools"].as_array().expect("tools 应是数组");
-        assert_eq!(tools.len(), 19, "tools/list 必须暴露全部 19 个工具");
+        // 🔴 加工具时这一行必须跟着改。它曾经从 17 漂到 19 再漂到现在的 24 却没人发现——
+        // 因为整块 over_wire 测试都带 `#[ignore]`，默认门禁根本不跑（见 tests 区块末尾说明）。
+        // 现在与 `registry::all_tools()` 双向对齐：数量对不上会直接红，不用靠记忆。
+        assert_eq!(
+            tools.len(),
+            crate::mcp::tools::registry::all_tools().len(),
+            "tools/list 必须与注册表逐个对齐"
+        );
+        // `push_notification` 挂在 `notifications` feature 之后，只有默认构建才注册。
+        // 门禁跑的是 `--no-default-features`（裸 `cargo test` 会崩 0xc0000139），故取 23。
+        let expected = if cfg!(feature = "notifications") {
+            24
+        } else {
+            23
+        };
+        assert_eq!(
+            tools.len(),
+            expected,
+            "tools/list 必须暴露全部 {expected} 个工具"
+        );
         for t in tools {
             assert!(
                 !t["name"].as_str().unwrap_or("").is_empty(),
@@ -2135,7 +2246,13 @@ mod over_wire_tests {
     // ── SSE transport 集成测试 ──
 
     /// 从 SSE 流的首块中提取 sessionId。
-    async fn extract_session_from_sse(base: &str, token: &str) -> String {
+    /// 打开一条 SSE 会话，返回 `(sessionId, 响应句柄)`。
+    ///
+    /// 🔴 **必须把响应句柄一起返回并让调用方持有**：`sse_handlers` 在连接断开时会注销
+    /// 会话（`sse_registry` 随之删除）。旧实现只返回 sid、函数结束时 `resp` 被 drop →
+    /// 连接关闭 → 会话立刻失效 → 后续 POST 一律 404「Unknown SSE session」。
+    /// 这三条测试因此长期失败，又因为 `#[ignore]` 一直没人看见。
+    async fn open_sse_session(base: &str, token: &str) -> (String, reqwest::Response) {
         let mut resp = reqwest::Client::new()
             .get(format!("{}/mcp/sse?token={}", base, token))
             .send()
@@ -2149,11 +2266,13 @@ mod over_wire_tests {
             .unwrap()
             .unwrap();
         let body = String::from_utf8_lossy(&chunk);
-        body.lines()
+        let sid = body
+            .lines()
             .find(|l| l.starts_with("data: /mcp/messages?sessionId="))
             .and_then(|l| l.split("sessionId=").nth(1))
             .map(|s| s.trim().to_string())
-            .expect("应包含 sessionId")
+            .expect("应包含 sessionId");
+        (sid, resp)
     }
 
     /// SSE 握手：GET /mcp/sse?token=xxx → 200 + endpoint 事件。
@@ -2162,7 +2281,7 @@ mod over_wire_tests {
     async fn sse_handshake_returns_endpoint_event() {
         let root = unique_temp_root("sse-handshake");
         let srv = spawn_server(test_config(&root), root).await;
-        let sid = extract_session_from_sse(&srv.base, &srv.token).await;
+        let (sid, _sse) = open_sse_session(&srv.base, &srv.token).await;
         assert!(!sid.is_empty(), "sessionId 不应为空");
     }
 
@@ -2216,14 +2335,19 @@ mod over_wire_tests {
     }
 
     /// SSE 消息端点：POST tools/list → 202 Accepted。
+    ///
+    /// ⚠️ 必须带 token（M17 起该端点与其它端点同口径鉴权）。此前这三条 SSE 测试都不带
+    /// token，一直是 401 却因 `#[ignore]` 从没人看见——正是「被 ignore 的测试等于没有测试」。
     #[tokio::test]
     #[ignore]
     async fn sse_messages_tools_list() {
         let root = unique_temp_root("sse-tools");
         let srv = spawn_server(test_config(&root), root).await;
-        let sid = extract_session_from_sse(&srv.base, &srv.token).await;
+        // 句柄必须活到 POST 之后，否则连接断开 → 会话被注销（见 open_sse_session 注释）。
+        let (sid, _sse) = open_sse_session(&srv.base, &srv.token).await;
         let msg_resp = reqwest::Client::new()
             .post(format!("{}/mcp/messages?sessionId={}", srv.base, sid))
+            .header("Authorization", format!("Bearer {}", srv.token))
             .json(&json!({
                 "jsonrpc": "2.0", "id": 1,
                 "method": "tools/list", "params": {}
@@ -2240,9 +2364,10 @@ mod over_wire_tests {
     async fn sse_messages_run_command() {
         let root = unique_temp_root("sse-run");
         let srv = spawn_server(test_config(&root), root.clone()).await;
-        let sid = extract_session_from_sse(&srv.base, &srv.token).await;
+        let (sid, _sse) = open_sse_session(&srv.base, &srv.token).await;
         let msg_resp = reqwest::Client::new()
             .post(format!("{}/mcp/messages?sessionId={}", srv.base, sid))
+            .header("Authorization", format!("Bearer {}", srv.token))
             .json(&json!({
                 "jsonrpc": "2.0", "id": 2,
                 "method": "tools/call",
@@ -2268,6 +2393,7 @@ mod over_wire_tests {
         let srv = spawn_server(test_config(&root), root).await;
         let msg_resp = reqwest::Client::new()
             .post(format!("{}/mcp/messages?sessionId=nonexistent", srv.base))
+            .header("Authorization", format!("Bearer {}", srv.token))
             .json(&json!({
                 "jsonrpc": "2.0", "id": 1,
                 "method": "tools/list", "params": {}
