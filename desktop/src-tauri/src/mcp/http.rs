@@ -400,7 +400,16 @@ async fn auth_middleware(
     // `x-forwarded-for`——那是客户端自己发的请求头，任何调用方都能伪造，
     // 换个假 IP 就能无限绕过限流（D1，2026-07-10 修复）。/mcp 与 /mcp/messages 共享同一
     // 对端 IP 的限流窗口（同一客户端的工具调用总量限流）。
-    let ip = rate_limit_key(addr, req.headers());
+    //
+    // `/transfer` 用**独立前缀**分桶：两者共用一个窗口时，一轮密集的工具调用/batch 就能
+    // 把配额耗到 429，紧接着的 `curl -T` 直接失败 —— 而传输是「一次调用一次请求」的
+    // 低频操作，被工具面的高频计数挤掉毫无道理。分桶后各自受同一个 `max_requests`
+    // 约束（不是放宽），键的构成仍只有对端 IP，伪造 header 依旧无效。
+    let ip = if path.starts_with("/transfer/") {
+        format!("transfer:{}", rate_limit_key(addr, req.headers()))
+    } else {
+        rate_limit_key(addr, req.headers())
+    };
 
     // 限流开关（默认开）。关闭时跳过整个计数逻辑，鉴权仍在上方独立生效。
     if rate_limit_enabled {

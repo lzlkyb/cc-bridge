@@ -594,14 +594,59 @@ axum 的 `.layer()` 只作用于它之前注册的路由，所以行为无法按
 - 只读模式按方向区分、票据一次性、`.part` 同目录 + rename 前 `drop(file)`、`TicketReject` 的封禁口径、审计不含票据值。
 - 23 条被 ignore 的集成测试真跑一遍全绿（修完上面 4 条后）。
 
-### F. 已知未修（都要单独立项，不适合塞进这个特性）
+### F. 已知未修（本轮已处理 / 已证伪，见 §23.7）
 
-1. **路径白名单对「尾部的 junction / 符号链接」不设防（既有问题，`write_files` 同源）。** `resolve_safe_path_cached` 对不存在的路径走「最近存在祖先 canonicalize + 原样拼接尾部」，尾部里的 junction 不会被解链接；`/root/link → C:\Windows` 这种布局能写到根目录之外（`ensure_parent` 还会先在根外建目录）。利用前提是攻击方已经能在白名单根内造出 junction（需要 shell 能力）。正确修法是**逐级 canonicalize**，属于 `security/path.rs` 的语义变更，会影响所有工具，必须单独出方案。
-2. 下载的审计在开始发 body **之前**就写了 `ok: true`，客户端中途断开也算成功。改成「传完再写」会让审计滞后、测试变抖。
-3. 无 `Range`（断点续传）；同名路径两次并发上传时后 rename 的覆盖前者（`overwrite=true` 时的既定语义）。
+1. ~~**路径白名单对「尾部的 junction / 符号链接」不设防。**~~ **实测证伪 —— 这是本文档里唯一一条我当初凭推断写下的错误结论。** 探针（真建 junction，`mklink /J`）跑出来的事实是：
+   - **目标存在**的 junction：`parent.exists()` 为真 ⇒ 走 `canonicalize` 分支 ⇒ 链接被解掉、真实路径落在根外 ⇒ **拒绝**。所谓「尾部 junction 不会被解链接」不成立。
+   - **悬空** junction（目标目录还不存在）：`parent.exists()` 为假 ⇒ 祖先退回上一级、链接作为未规范化 remainder 被拼进来 ⇒ 解析**放行**。但紧接着 `create_dir_all` 在链接目标处失败（实测 `dir_created=false wrote=false`），字节落不下去；而攻击方一旦把目标建出来，链接就变成「目标存在」，解析立刻转为拒绝。两侧都堵住。
+   
+   结论：**不构成逃逸，无需改 `security/path.rs`**。已把这三条行为固化成回归测试 `junction_cannot_escape_allowed_root`（断言最终效果，不断言「解析一定拒绝」——悬空期间那本就不成立）。教训见 §23.7。
+2. ~~下载的审计在开始发 body **之前**就写了 `ok: true`~~ —— **已修**，见 §23.7。
+3. 无 `Range`（断点续传）。**不做，是刻意的**：票据一次性，而续传天然要求「同一资源多次请求」。要让续传成立就得把票据改成可重用，那会直接毁掉「泄露的票据只能换一次传输」这条核心属性；换来的是「SSH 隧道偶尔断连时不用重新签票」。判断是得不偿失。
+   同名路径两次并发上传时后 rename 覆盖前者 —— `overwrite=true` 的既定语义（`overwrite=false` 的竞态已在 §23.6 修掉，锁内复判）。
 4. 下载响应头里的哈希是「此刻」的值；文件在签发后被改，会与 `prepare_download` 返回值不同（这是正确行为，但 AI 会看到两个数）。
-5. `/transfer` 与 `/mcp` 共用同一条限流窗口（`rate_limit_max_requests`），一次「签票 + curl」占 2 个额度。
+5. ~~`/transfer` 与 `/mcp` 共用同一条限流窗口~~ —— **已修**，见 §23.7。
 
 ### G. 门禁
 
-`cargo fmt --check` / `cargo clippy --all-targets --no-default-features -- -D warnings` / `cargo test --no-default-features`（**521 + 4**）/ `cargo test -- --ignored`（**23**）/ 组件体量 / `eslint` / `tsc --noEmit` / `vitest run`（899）—— 全绿。
+`cargo fmt --check` / `cargo clippy --all-targets --no-default-features -- -D warnings` / `cargo test --no-default-features`（**525 + 4**）/ `cargo test -- --ignored`（**23**）/ 组件体量 / `eslint` / `tsc --noEmit` / `vitest run`（899）—— 全绿。
+
+---
+
+## 23.7 第三轮：把「已知未修」逐条落地（2026-10-21 深夜）
+
+上一轮列的 5 条「已知未修」逐条处理，结果是**修 2 条、证伪 1 条、说明 2 条**。
+
+### ① 下载审计的时序（已修）
+
+原实现在**起发之前**就写 `success: true`，等于把「已经决定发」当成「已经发到」——客户端读到一半断开也记成功。审计日志正是用来事后判断「这个文件到底有没有出去」的，早写一步就失去这个能力。
+
+改法：`pump_file` 返回 `PumpOutcome { sent, complete, error }`，把 `write_audit` 挪进发送任务，在 `pump_file` 结束后按 `complete` 决定 `success`，`bytes` 记**实际已发字节**，中断时 `error` 写「传输中断：已发送 x/y 字节」。响应本身不受影响（审计仍在独立任务里，不阻塞 body）。
+
+两条回归测试：
+- `download_audit_records_success_after_body_completes` —— 正常读完断言 `success:true` + `bytes:8192`。
+- `download_audit_marks_abort_when_client_disconnects` —— **裸 TCP** 读 256 字节响应头就 close（不能用 reqwest：不读 body 时数据仍可能整块进内核缓冲区，服务端会误判为发完），4MB 文件远大于 4×64KB 的 channel 缓冲，断言 `success:false` + 含「传输中断」。
+
+⚠️ 踩坑：审核日志的 `params` 是**字符串**，内部引号被转义成 `\"`。断言必须写 `r#"\"bytes\":8192"#`，写 `"\"bytes\":8192"` 永远匹配不到（而日志肉眼看上去一模一样）。
+
+### ② `/transfer` 独立限流桶（已修）
+
+共用一条窗口时，一轮密集的工具调用 / batch 就能把 `rate_limit_max_requests` 耗到 429，紧接着的 `curl -T` 直接失败——而传输是「一次调用一次请求」的低频操作，被工具面的高频计数挤掉毫无道理。改成 `transfer:<ip>` 前缀分桶，各自受同一个 `max_requests` 约束（不是放宽），键的构成仍只有对端 IP，伪造 header 依旧无效。
+
+回归测试 `transfer_rate_limit_is_separate_from_mcp`：额度压到 2，两次 `prepare_download` 之后第三次 `/mcp` 断言 429，同一时刻 `/transfer` 仍 200。
+
+### ③ 路径白名单的 junction —— 实测证伪（最重要的一条）
+
+**我上一轮的判断是错的。** 当时没跑探针，只凭「remainder 是未规范化的原始尾部」推断出「尾部 junction 不会被解链接，能写到根外」，还写进了报告和记忆。
+
+真建 junction 跑出来的结果（见 §F.1）：目标存在时 canonicalize 早把链接解掉了；悬空时解析虽放行，但 `create_dir_all` 直接失败、字节落不下去。**两道门各自都堵住，不存在逃逸。**
+
+这条的教训不是「junction 怎么修」，而是：**安全结论必须跑出来，不能推出来**。哪怕推理链看着严密 —— `parent.exists()` 对 junction 会跟随目标，这一步就直接推翻了「链接作为未规范化尾部被拼接」的前提，而这一点只要建一个 junction 跑一次就能看见。原文保留下来当作反面记录。
+
+### ④ Range / 并发覆盖（说明，不改）
+
+见 §F.3：Range 与「票据一次性」在语义上冲突，做续传就得放弃一次性，不划算；`overwrite=true` 下后写覆盖前写是既定语义。
+
+### 门禁
+
+`cargo fmt --check` / `clippy -D warnings` / `cargo test --no-default-features`（**525 + 4**，新增 3 条）/ `--lib -- --ignored`（**23**）—— 全绿。

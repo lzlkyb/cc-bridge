@@ -247,6 +247,95 @@ mod tests {
         assert!(!contains_dotdot(Path::new("secret.txt")));
     }
 
+    /// 回归：junction（目录联接）不能把路径解析骗到白名单根之外。
+    ///
+    /// 三条断言都来自实测，不是推断：
+    /// - **目标存在**的 junction：`parent.exists()` 为真 ⇒ 走 canonicalize 分支 ⇒
+    ///   链接被解掉、真实路径落在根外 ⇒ 拒绝；
+    /// - **悬空** junction（链接指向的目录还不存在）：`parent.exists()` 为假 ⇒ 祖先退回
+    ///   上一级，链接作为未规范化的 remainder 被原样拼进来 ⇒ 解析这一层会**放行**。
+    ///   但此时 `create_dir_all` 在链接目标处失败，字节根本落不下去；而攻击方一旦把
+    ///   目标建出来，链接就变成「目标存在」，解析立刻转为拒绝。两侧都堵住。
+    ///
+    /// 所以此处断言的是**最终效果**（解析拒绝，或解析放行但写不下去），而不是
+    /// 「解析一定拒绝」——后者在悬空期间本就不成立，硬断言会让测试变成假的。
+    #[cfg(windows)]
+    #[test]
+    fn junction_cannot_escape_allowed_root() {
+        let base = std::env::temp_dir().join(format!("cc-bridge-junc-{}", std::process::id()));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let root_s = root.to_string_lossy().to_string();
+
+        let mk = |link: &Path, target: &Path| {
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "mklink 失败：{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+        };
+
+        // ① 目标存在：必须直接拒绝
+        let live = root.join("live");
+        mk(&live, &outside);
+        let live_file = live.join("a.txt");
+        assert!(
+            resolve_safe_path(
+                &live_file.to_string_lossy(),
+                std::slice::from_ref(&root_s),
+                &[],
+                true
+            )
+            .is_err(),
+            "指向根外的 junction 必须被拒"
+        );
+
+        // ② 悬空：允许解析放行，但绝不能让字节落到根外
+        let ghost_target = base.join("ghost-target");
+        let ghost = root.join("ghost");
+        mk(&ghost, &ghost_target);
+        let ghost_file = ghost.join("nested").join("escaped.txt");
+        if let Ok(p) = resolve_safe_path(
+            &ghost_file.to_string_lossy(),
+            std::slice::from_ref(&root_s),
+            &[],
+            true,
+        ) {
+            // 解析放行了 → 后续那一步必须失败，且根外不能长出任何东西
+            let _ = fs::create_dir_all(p.parent().unwrap());
+            let _ = fs::write(&p, b"escaped");
+            assert!(
+                !ghost_target.join("nested").join("escaped.txt").exists(),
+                "悬空 junction 不得让写入落到根外：{}",
+                p.display()
+            );
+        }
+
+        // ③ 目标一旦被建出来，解析必须转为拒绝
+        fs::create_dir_all(&ghost_target).unwrap();
+        assert!(
+            resolve_safe_path(
+                &ghost_file.to_string_lossy(),
+                std::slice::from_ref(&root_s),
+                &[],
+                true
+            )
+            .is_err(),
+            "链接目标存在后必须拒绝"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn test_whitelist_disabled_allows_outside() {
         // 关闭白名单后，允许解析白名单之外的已存在路径（鉴权由 HTTP 层负责）。

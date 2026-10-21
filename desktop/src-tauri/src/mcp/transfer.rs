@@ -765,23 +765,47 @@ async fn download(state: Arc<AppState>, peer: IpAddr, ticket_id: &str) -> Respon
         }
     };
 
-    write_audit(
-        &state,
-        &resolved,
-        None,
-        true,
-        None,
-        peer,
-        started,
-        UploadStats {
-            bytes,
-            sha256: &sha256,
-        },
-    )
-    .await;
-
+    // 审计**必须等发送结束再写**。原先在起发之前就记 `ok: true`，等于把「已经决定发」
+    // 当成「已经发到」，客户端中途断开也记成功 —— 审计日志正是用来事后判断「这个文件到底
+    // 有没有出去」的，早写一步就失去了这个能力。
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
-    tokio::spawn(pump_file(tokio::fs::File::from_std(std_file), bytes, tx));
+    {
+        let audit_state = state.clone();
+        let audit_path = resolved.clone();
+        let audit_sha = sha256.clone();
+        let declared = bytes;
+        let std_file = tokio::fs::File::from_std(std_file);
+        tokio::spawn(async move {
+            let out = pump_file(std_file, declared, tx).await;
+            let (ok, err) = if out.complete {
+                (true, None)
+            } else {
+                (
+                    false,
+                    Some(out.error.unwrap_or_else(|| {
+                        format!(
+                            "传输中断：已发送 {}/{} 字节（客户端断开，或文件在发送期间被截短）",
+                            out.sent, declared
+                        )
+                    })),
+                )
+            };
+            write_audit(
+                &audit_state,
+                &audit_path,
+                None,
+                ok,
+                err,
+                peer,
+                started,
+                UploadStats {
+                    bytes: out.sent,
+                    sha256: &audit_sha,
+                },
+            )
+            .await;
+        });
+    }
 
     let filename = resolved
         .file_name()
@@ -813,34 +837,68 @@ async fn download(state: Arc<AppState>, peer: IpAddr, ticket_id: &str) -> Respon
 /// 读到 EOF 就会比声明的多，而 hyper 对「声明 N、实发 >N」的处理是终止连接、丢掉响应——
 /// 客户端看到的只有「卡死 / 被截断」，服务端日志里只有一句含糊的连接错误。
 /// 变短这一半无法补救（少发照样是 content-length 不符），但「多发」这一半必须堵死。
+/// 一次下载发送的结果。审计要靠它判断「到底发完没有」。
+struct PumpOutcome {
+    /// 实际从文件读出并交给 hyper 的字节数（客户端提前断开时小于声明值）。
+    sent: u64,
+    /// 是否把声明的全部字节都发出去了。
+    complete: bool,
+    /// 读盘错误的原文（若有）。
+    error: Option<String>,
+}
+
 async fn pump_file(
     mut file: tokio::fs::File,
     bytes: u64,
     tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
-) {
+) -> PumpOutcome {
     let mut buf = vec![0u8; CHUNK];
     let mut remaining = bytes;
+    let mut sent: u64 = 0;
     while remaining > 0 {
         let want = (buf.len() as u64).min(remaining) as usize;
         match file.read(&mut buf[..want]).await {
             // 文件被截短：只能就此收手，剩下的字节已经不存在了。
-            Ok(0) => break,
+            Ok(0) => {
+                return PumpOutcome {
+                    sent,
+                    complete: false,
+                    error: None,
+                }
+            }
             Ok(n) => {
                 remaining -= n as u64;
+                sent += n as u64;
                 if tx
                     .send(Ok(Bytes::copy_from_slice(&buf[..n])))
                     .await
                     .is_err()
                 {
                     // 客户端提前断开：停手，别继续读磁盘。
-                    return;
+                    return PumpOutcome {
+                        sent,
+                        complete: false,
+                        error: None,
+                    };
                 }
             }
             Err(e) => {
-                let _ = tx.send(Err(e)).await;
-                return;
+                let msg = e.to_string();
+                let _ = tx
+                    .send(Err(std::io::Error::new(e.kind(), msg.clone())))
+                    .await;
+                return PumpOutcome {
+                    sent,
+                    complete: false,
+                    error: Some(msg),
+                };
             }
         }
+    }
+    PumpOutcome {
+        sent,
+        complete: true,
+        error: None,
     }
 }
 
@@ -2023,5 +2081,173 @@ mod over_wire {
         assert!(log.contains("\"tool\":\"transfer\""), "{log}");
         assert!(!log.contains(&ticket), "审计里不得出现完整票据值");
         assert!(log.contains("via"), "{log}");
+    }
+
+    /// 下载审计写在**发送任务**里（比响应返回晚），所以读日志要等一下。
+    async fn wait_audit_line(dir: &Path, needle: &str) -> String {
+        for _ in 0..200 {
+            if let Ok(s) = std::fs::read_to_string(dir.join("audit.log")) {
+                if s.contains(needle) {
+                    return s;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!(
+            "等了 4s 审计日志仍未出现 {needle}；当前内容：{:?}",
+            std::fs::read_to_string(dir.join("audit.log")).unwrap_or_default()
+        );
+    }
+
+    /// 下载成功后审计必须记 `success:true` 且字节数是**实际发出的量**。
+    ///
+    /// 这条守的是「审计时序」：原实现在起发之前就把 `success:true` 写死了。
+    #[tokio::test]
+    async fn download_audit_records_success_after_body_completes() {
+        let dir = crate::mcp::tools::testutil::unique_subdir("tr-audit-dl");
+        let srv = spawn(
+            cfg(&dir, |c| {
+                c.audit_enabled = true;
+                c.allowed_extensions.push(".dat".to_string());
+            }),
+            dir.clone(),
+        )
+        .await;
+        let target = dir.join("payload.dat");
+        let payload = vec![7u8; 8192];
+        std::fs::write(&target, &payload).unwrap();
+
+        let issued = call(
+            &srv.base,
+            "prepare_download",
+            json!({ "path": target.to_string_lossy() }),
+        )
+        .await;
+        let resp = reqwest::Client::new()
+            .get(format!("{}{}", srv.base, path_of(&issued)))
+            .send()
+            .await
+            .expect("get");
+        assert_eq!(resp.status(), 200);
+        let body = resp.bytes().await.expect("body").to_vec();
+        assert_eq!(body.len(), payload.len());
+
+        let log = wait_audit_line(&dir, "\"tool\":\"transfer\"").await;
+        assert!(log.contains("\"success\":true"), "{log}");
+        // `params` 在审计里是**字符串**，内部引号被转义成 \" —— 匹配要带反斜杠。
+        assert!(
+            log.contains(r#"\"bytes\":8192"#),
+            "审计要记实际发送字节：{log}"
+        );
+    }
+
+    /// 客户端读到一半就断开：审计必须记**失败**，并且带上实际已发字节。
+    ///
+    /// 用裸 TCP 而不是 reqwest——reqwest 不读 body 时数据仍可能整块进内核缓冲区，
+    /// 服务端会误判为「发完了」。裸 TCP 读个响应头就 close 才是确定的提前断开。
+    #[tokio::test]
+    async fn download_audit_marks_abort_when_client_disconnects() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = crate::mcp::tools::testutil::unique_subdir("tr-audit-abort");
+        let srv = spawn(
+            cfg(&dir, |c| {
+                c.audit_enabled = true;
+                c.allowed_extensions.push(".dat".to_string());
+            }),
+            dir.clone(),
+        )
+        .await;
+        let target = dir.join("big.dat");
+        // 4MB 远大于 4×CHUNK 的 channel 缓冲 + socket 缓冲，保证断开时还没发完。
+        let payload = vec![3u8; 4 * 1024 * 1024];
+        std::fs::write(&target, &payload).unwrap();
+
+        let issued = call(
+            &srv.base,
+            "prepare_download",
+            json!({ "path": target.to_string_lossy() }),
+        )
+        .await;
+
+        let addr = srv.base.trim_start_matches("http://").to_string();
+        let mut sock = tokio::net::TcpStream::connect(&addr)
+            .await
+            .expect("connect");
+        let req = format!(
+            "GET {} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n",
+            path_of(&issued)
+        );
+        sock.write_all(req.as_bytes()).await.expect("write req");
+        let mut head = [0u8; 256];
+        let _ = sock.read(&mut head).await;
+        drop(sock); // 立刻断开，body 只读了几百字节
+
+        let log = wait_audit_line(&dir, "\"tool\":\"transfer\"").await;
+        assert!(
+            log.contains("\"success\":false"),
+            "客户端中途断开必须记失败：{log}"
+        );
+        assert!(log.contains("传输中断"), "失败原因应说明传输中断：{log}");
+    }
+
+    /// `/transfer` 与 `/mcp` 分桶：工具调用把配额打满后，传输仍然可用。
+    ///
+    /// 共用一个桶时，一轮密集的工具轮询就能把窗口耗到 429，紧接着的 `curl -T`
+    /// 直接失败 —— 而传输是低频的一次性操作，被高频计数挤掉没有道理。
+    #[tokio::test]
+    async fn transfer_rate_limit_is_separate_from_mcp() {
+        let dir = crate::mcp::tools::testutil::unique_subdir("tr-rl");
+        let srv = spawn(
+            cfg(&dir, |c| {
+                c.rate_limit_enabled = true;
+                c.rate_limit_max_requests = 2;
+                c.rate_limit_window_ms = 60_000;
+                c.allowed_extensions.push(".dat".to_string());
+            }),
+            dir.clone(),
+        )
+        .await;
+        let target = dir.join("q.dat");
+        std::fs::write(&target, b"quota").unwrap();
+
+        // 用掉全部 /mcp 配额（两次），并留下一张待消费的票据
+        let issued = call(
+            &srv.base,
+            "prepare_download",
+            json!({ "path": target.to_string_lossy() }),
+        )
+        .await;
+        let _second = call(
+            &srv.base,
+            "prepare_download",
+            json!({ "path": target.to_string_lossy() }),
+        )
+        .await;
+
+        // 第三次 /mcp 必须 429
+        let third = reqwest::Client::new()
+            .post(format!("{}/mcp", srv.base))
+            .header("Authorization", format!("Bearer {TOKEN}"))
+            .json(&json!({
+                "jsonrpc": "2.0", "id": 9, "method": "tools/list", "params": {}
+            }))
+            .send()
+            .await
+            .expect("third");
+        assert_eq!(third.status(), 429, "/mcp 配额应已耗尽");
+
+        // 但 /transfer 不受影响
+        let resp = reqwest::Client::new()
+            .get(format!("{}{}", srv.base, path_of(&issued)))
+            .send()
+            .await
+            .expect("get");
+        assert_eq!(
+            resp.status(),
+            200,
+            "/transfer 不该被 /mcp 的配额挡住（分桶失效）"
+        );
+        assert_eq!(resp.bytes().await.unwrap().to_vec(), b"quota");
     }
 }
