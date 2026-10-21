@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { Switch } from "./switch";
 import { SavedHint } from "./SavedHint";
 import { InfoPopover } from "./InfoPopover";
@@ -23,6 +23,7 @@ export function ToggleRow({
   last = false,
   saved = false,
   id,
+  disabled = false, pending = false, error,
 }: {
   label: string;
   /** L0 常显短句：≤20 字结果性描述；原理/边界请改传 info。 */
@@ -36,10 +37,15 @@ export function ToggleRow({
   last?: boolean;
   saved?: boolean;
   id?: string;
+  disabled?: boolean;
+  pending?: boolean;
+  error?: string;
 }) {
+  const generatedId = useId();
+  const descriptionId = `${id ?? generatedId}-description`;
   return (
     <div
-      id={id}
+      id={id} tabIndex={id ? -1 : undefined} aria-busy={pending || undefined}
       className={`srow flex items-center justify-between gap-4 py-3.5 ${
         last ? "" : "border-b"
       } ${danger ? "-mx-3 rounded-lg bg-destructive/5 px-3" : ""}`}
@@ -51,12 +57,16 @@ export function ToggleRow({
           {info && <InfoPopover label={label}>{info}</InfoPopover>}
         </div>
         {sub && (
-          <div className={`d mt-0.5 text-xs ${danger ? "text-destructive-ink" : "text-muted-foreground"}`}>
+          <div id={descriptionId} className={`d mt-0.5 text-xs ${danger ? "text-destructive-ink" : "text-muted-foreground"}`}>
             {sub}
           </div>
         )}
       </div>
-      <Switch checked={checked} onChange={onChange} variant={variant} ariaLabel={label} />
+      <div className="srow-control flex shrink-0 items-center gap-2">
+        <span className="settings-toggle-state text-xs text-muted-foreground">{pending ? "保存中…" : checked ? "已开启" : "已关闭"}</span>
+        <Switch checked={checked} onChange={onChange} variant={variant} ariaLabel={label} disabled={disabled || pending} ariaDescribedBy={sub ? descriptionId : undefined} />
+      </div>
+      {error && <div className="settings-row-feedback text-xs text-destructive-ink" role="alert">{error}</div>}
     </div>
   );
 }

@@ -30,12 +30,14 @@ export function loadTuiScrollSpeed(): TuiScrollSpeed {
 }
 
 /** 保存速度并同步缓存（热生效，正在拖动的滚动条下一次 move 即用新值）。 */
-export function saveTuiScrollSpeed(v: TuiScrollSpeed): void {
+export function saveTuiScrollSpeed(v: TuiScrollSpeed): boolean {
   cache = v;
   try {
     localStorage.setItem(SPEED_KEY, String(v));
+    return true;
   } catch {
     // 写不进就只留在内存，本次会话仍然生效。
+    return false;
   }
 }
 

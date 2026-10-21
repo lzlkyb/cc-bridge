@@ -1,0 +1,43 @@
+.settings-category .terminal-settings-layout{display:grid;grid-template-columns:minmax(0,1.8fr) minmax(260px,1fr);gap:28px;align-items:start}
+.settings-category .terminal-settings-reading{min-width:0}
+.settings-category .terminal-settings-section{padding:23px 0 5px}
+.settings-category .terminal-settings-section+.terminal-settings-section{border-top:1px solid hsl(var(--foreground)/.09);margin-top:12px}
+.settings-category .terminal-settings-section h2{font-size:15px;font-weight:650;margin:0 0 9px}
+.settings-category .terminal-settings-intro{font-size:12px;color:hsl(var(--muted-foreground));margin:0 0 5px;line-height:1.7}
+.settings-category .terminal-preset-option{display:flex;flex-direction:column;align-items:flex-start;gap:7px}
+.settings-category .terminal-preset-colors{display:flex;gap:4px}
+.settings-category .terminal-preset-colors i{width:9px;height:9px;border-radius:50%}
+.settings-category #terminal-preset .settings-choice{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));width:100%;gap:7px;background:transparent;border:0;padding:3px}
+.settings-category #terminal-preset .settings-choice button{border:1px solid hsl(var(--border));padding:10px 8px;background:hsl(var(--card)/.65);font-size:11px;text-align:left}
+.settings-category #terminal-preset .settings-choice button[aria-checked=true]{background:hsl(var(--primary)/.08);border-color:hsl(var(--primary)/.25);box-shadow:0 0 0 3px hsl(var(--primary)/.08)}
+.settings-category #terminal-font .settings-choice{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:12px;background:transparent;border:0;padding:3px}
+.settings-category #terminal-font .settings-choice button{padding:0;white-space:normal;min-width:0;border:1px solid hsl(var(--border));background:hsl(var(--card)/.65);text-align:left;border-radius:10px}
+.settings-category #terminal-font .settings-choice button[aria-checked=true]{background:hsl(var(--primary)/.06);border-color:hsl(var(--primary)/.22);box-shadow:0 0 0 3px hsl(var(--primary)/.09)}
+.settings-category .terminal-font-card{position:relative;display:flex;flex-direction:column;gap:8px;min-width:0;padding:13px 14px}
+.settings-category .terminal-font-sample{font-size:17px;line-height:1.4;color:hsl(var(--foreground));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.settings-category .terminal-font-name{font-size:12px;line-height:1.5;color:hsl(var(--muted-foreground));padding-right:23px}
+.settings-category .terminal-font-name small{font-size:10px;margin-left:6px}
+.settings-category .terminal-font-description{font-size:11px;line-height:1.7;color:hsl(var(--muted-foreground));font-weight:400}
+.settings-category .terminal-font-check{position:absolute;right:10px;bottom:13px;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:hsl(var(--primary));color:hsl(var(--primary-foreground))}
+.settings-category .terminal-size-stepper{display:inline-flex;align-items:center;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--muted));overflow:hidden}
+.settings-category .terminal-size-stepper button{width:32px;height:33px;font-size:17px;background:transparent;border:0;border-radius:0;color:inherit}
+.settings-category .terminal-size-stepper button:disabled{opacity:.4;cursor:not-allowed}
+.settings-category .terminal-size-stepper button:hover:not(:disabled){background:hsl(var(--foreground)/.05)}
+.settings-category .terminal-size-stepper output{padding:0 10px;font-size:13px;font-variant-numeric:tabular-nums}
+.settings-category .terminal-size-stepper small{font-size:10px;color:hsl(var(--muted-foreground));margin-left:4px}
+.settings-category .terminal-settings-select{border:1px solid hsl(var(--border));background:hsl(var(--muted));color:inherit;border-radius:8px;padding:7px 12px;font-size:12px;min-height:34px}
+.settings-category .terminal-settings-preview{position:sticky;top:0;padding-top:7px;min-width:0}
+.settings-category .terminal-preview-heading{display:flex;align-items:center;gap:10px;margin-bottom:13px}
+.settings-category .terminal-preview-heading h2{font-size:13px;font-weight:600;margin:0}
+.settings-category .terminal-preview-heading>span{font-size:10px;color:hsl(var(--muted-foreground));margin-left:auto;background:hsl(var(--foreground)/.05);padding:3px 6px;border-radius:4px}
+.settings-category .terminal-preview-expand{display:none;border:1px solid hsl(var(--border));background:hsl(var(--card));color:inherit;padding:4px 8px;border-radius:6px;font-size:11px}
+.settings-category .terminal-preview-window{border-radius:10px;overflow:hidden;box-shadow:0 9px 22px -14px rgb(25 40 80/.4)}
+.settings-category .terminal-preview-caption{display:flex;align-items:center;gap:7px;background:hsl(var(--muted));font-size:11px;padding:10px 12px}
+.settings-category .terminal-preview-caption>span{margin-left:auto;font-size:10px;color:hsl(var(--muted-foreground))}
+.settings-category .terminal-preview-canvas{height:300px;padding:12px 9px;overflow:hidden}
+.settings-category .terminal-preview-canvas .xterm{height:100%}
+.settings-category .terminal-preview-help{font-size:12px;line-height:1.9;color:hsl(var(--muted-foreground));margin:15px 0 0}
+.settings-category .terminal-preview-advice{display:flex;align-items:flex-start;gap:8px;font-size:11px;border-top:1px solid hsl(var(--foreground)/.09);padding-top:16px;margin-top:20px}
+.settings-category .terminal-preview-advice svg{margin-top:4px;flex-shrink:0}
+@media(max-width:1250px){.settings-category .terminal-settings-layout{grid-template-columns:minmax(0,1fr)}.settings-category .terminal-settings-preview{position:static;grid-row:1;padding:13px 16px;background:hsl(var(--card)/.75);border-radius:12px}.settings-category .terminal-preview-heading{margin-bottom:0}.settings-category .terminal-preview-expand{display:inline-flex}.settings-category .terminal-settings-preview:not([data-expanded]) :is(.terminal-preview-window,.terminal-preview-help){display:none}.settings-category .terminal-settings-preview[data-expanded] .terminal-preview-heading{margin-bottom:13px}.settings-category .terminal-preview-window{max-width:540px}}
+@media(max-width:760px){.settings-category #terminal-preset .settings-choice{grid-template-columns:repeat(2,minmax(0,1fr))}.settings-category .terminal-font-card{padding:12px 9px;gap:7px}.settings-category .terminal-font-sample{font-size:13px}.settings-category .terminal-font-name{font-size:11px}.settings-category .terminal-font-description{font-size:10px}.settings-category .terminal-font-check{right:7px;bottom:12px;width:17px;height:17px}}

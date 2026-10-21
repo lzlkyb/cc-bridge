@@ -30,14 +30,18 @@ export function SecurityGroup({
   status,
   onSaved,
   onNavigate,
+  section = "all",
 }: {
   status?: StaticStatus;
   onSaved: () => void;
   onNavigate?: (tab: string, anchor?: string) => void;
+  section?: "all" | "network" | "files";
 }) {
-  const { savedKey, save } = useSettingSave(onSaved);
+  const { savedKey, save, isPending, errorFor } = useSettingSave(onSaved);
   const [confirmReset, setConfirmReset] = useState(false);
   const [refreshingBash, setRefreshingBash] = useState(false);
+  const [tlsChanging, setTlsChanging] = useState(false);
+  const [tlsError, setTlsError] = useState<string>();
   // 壳层相关的平台文案（toast 与 ShellTypeRow 共用同一份，避免两处各写一句逐渐跑偏）
   const shellCopy = shellTypeCopy(status?.platform);
   const { toast } = useToast();
@@ -49,20 +53,46 @@ export function SecurityGroup({
     queryKey: ["tls-status"],
     queryFn: () => invoke<TlsStatus>("get_tls_status"),
     staleTime: 30_000,
+    enabled: section !== "files",
   });
   const tlsOn = tlsQuery.data?.enabled ?? false;
 
   const handleRemoteTls = async (next: boolean) => {
-    await save({ remoteTlsEnabled: next }, "remote-tls");
-    // 监听协议切换必须重启才生效（与 host/port 变更同路径）。
+    if (tlsChanging) return;
+    setTlsChanging(true);
+    setTlsError(undefined);
     try {
+      if (!await save({ remoteTlsEnabled: next }, "remote-tls")) return;
+      // 配置落盘确认成功后才允许重启，避免失败请求继续执行并报告成功。
       await invoke("restart_mcp_server");
-      tlsQuery.refetch();
+      const result = await tlsQuery.refetch();
+      if (result.isError) {
+        setTlsError("服务已重启，但无法读取 HTTPS 状态，请重试读取。");
+        return;
+      }
       toast(next ? "HTTPS 已开启，服务已重启" : "已切回 HTTP，服务已重启", "success");
     } catch (e) {
-      toast(`重启服务失败：${e}`, "error");
+      const message = `配置已保存，但重启服务失败：${e}`;
+      setTlsError(message);
+      toast(message, "error");
+    } finally {
+      setTlsChanging(false);
     }
-    onSaved();
+  };
+
+  const retryTls = async () => {
+    if (tlsChanging) return;
+    setTlsChanging(true);
+    try {
+      // get_tls_status.enabled 来自配置，单纯重读不能证明失败的监听重启已恢复。
+      if (tlsError?.startsWith("配置已保存")) await invoke("restart_mcp_server");
+      const result = await tlsQuery.refetch();
+      if (!result.isError) setTlsError(undefined);
+    } catch (e) {
+      setTlsError(`配置已保存，但重启服务失败：${e}`);
+    } finally {
+      setTlsChanging(false);
+    }
   };
 
   const handleResetDefaults = async () => {
@@ -89,14 +119,14 @@ export function SecurityGroup({
   };
 
   return (
-    <Card id="set-security">
+    <Card id={section === "network" ? "set-remote-security" : "set-security"}>
       <CardHeader>
-        <CardTitle icon={<Icon name="shield" />}>安全</CardTitle>
+        <CardTitle icon={<Icon name="shield" />}>{section === "network" ? "HTTPS 远程访问" : section === "files" ? "命令与访问策略" : "安全"}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-0">
         {/* 三个核心开关的唯一家在安全页；此处给一条直达路（与 HealthCard 胶囊、
             命令面板同一条导航链路：App 的 pendingAnchor → SecurityTab 定位高亮）。 */}
-        <Button
+        {section !== "network" && <Button
           variant="outline"
           size="sm"
           className="mb-4 w-full justify-start gap-2 border-primary/30 bg-primary/8 text-xs font-semibold text-primary hover:bg-primary/12 hover:text-primary"
@@ -105,9 +135,9 @@ export function SecurityGroup({
           <Icon name="external" size={14} />
           去安全页管理核心开关
           <span className="font-normal text-muted-foreground">白名单 / 只读 / 命令执行</span>
-        </Button>
+        </Button>}
 
-        <ToggleRow
+        {section !== "files" && <><ToggleRow
           id="toggle-remote-tls"
           label="HTTPS 远程访问"
           sub={tlsOn ? "已开启 · 监听端口已切换为 TLS" : "跨公网接入时开启"}
@@ -121,7 +151,11 @@ export function SecurityGroup({
           checked={tlsOn}
           onChange={handleRemoteTls}
           saved={savedKey === "remote-tls"}
+          pending={tlsChanging}
+          disabled={tlsChanging || tlsQuery.isPending || tlsQuery.isError}
+          error={errorFor("remote-tls") ?? tlsError ?? (tlsQuery.isError ? "无法读取 HTTPS 状态，请重试读取。" : undefined)}
         />
+        {(tlsQuery.isError || tlsError) && <Button variant="outline" size="sm" disabled={tlsChanging} onClick={() => void retryTls()}>{tlsError?.startsWith("配置已保存") ? "重试重启服务" : "重试读取状态"}</Button>}
         {tlsOn && tlsQuery.data && (
           <RemoteTlsPanel
             status={status}
@@ -129,10 +163,10 @@ export function SecurityGroup({
             onSaved={onSaved}
             onRefetch={() => tlsQuery.refetch()}
           />
-        )}
+        )}</>}
 
         {/* 壳层是命令执行的参数，命令执行关着时调它不产生任何效果 */}
-        <SubSetting disabled={!shellOn} hint="命令执行已关闭，壳层设置暂不生效">
+        {section !== "network" && <div id="toggle-shelltype"><SubSetting disabled={!shellOn || isPending("shelltype")} hint={!shellOn ? "命令执行已关闭，壳层设置暂不生效" : "正在保存壳层设置"}>
           <ShellTypeRow
             platform={status?.platform}
             value={status?.shellType ?? "cmd"}
@@ -158,7 +192,8 @@ export function SecurityGroup({
             refreshingBash={refreshingBash}
             saved={savedKey === "shelltype"}
           />
-        </SubSetting>
+        </SubSetting></div>}
+        {section !== "network" && errorFor("shelltype") && <p role="alert" className="text-xs text-destructive-ink">{errorFor("shelltype")}</p>}
       </CardContent>
 
       {confirmReset && (
@@ -167,12 +202,12 @@ export function SecurityGroup({
 
       {/* 重置覆盖的是安全 + 数据保护 + 高级三张卡的开关（与原行为一致，未改范围），
           放在风险最高的这张卡底部；文案说清范围，不让用户以为只重置安全项。 */}
-      <div className="border-t px-5 py-3">
+      {section !== "network" && <div className="border-t px-5 py-3">
         <Button variant="outline" size="sm" onClick={() => setConfirmReset(true)}>
           <Icon name="refresh" size={13} />
           重置全部功能开关为默认
         </Button>
-      </div>
+      </div>}
     </Card>
   );
 }

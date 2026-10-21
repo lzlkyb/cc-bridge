@@ -1,80 +1,74 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { StaticStatus } from "../../lib/types";
 import type { SettingsSection } from "../../lib/settingsSections";
-import { useViewActive } from "../../lib/viewActivity";
-import { useSettingsScrollSpy } from "../../hooks/useSettingsScrollSpy";
-import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { CATEGORY_DESCRIPTIONS } from "../../lib/settingsCategories";
+import { settingsSectionForAnchor } from "../../lib/settingsNavigation";
+import { useViewActive, ViewActivityContext } from "../../lib/viewActivity";
+import { isWindows } from "../../lib/platform";
+import { Icon } from "../ui/icon";
 import { FirewallGroup } from "./firewall/FirewallGroup";
 import { AboutGroup } from "./AboutGroup";
-import { RiskBand } from "../ui/RiskBand";
 import { NetworkGroup } from "./settings/NetworkGroup";
 import { SecurityGroup } from "./settings/SecurityGroup";
 import { McpBridgeGroup } from "./settings/mcpbridge/McpBridgeGroup";
-import { BackupAuditGroup } from "./settings/BackupAuditGroup";
-import { TokenUsageGroup } from "./settings/TokenUsageGroup";
 import { NotifyGroup } from "./settings/NotifyGroup";
 import { AdvancedGroup } from "./settings/AdvancedGroup";
 import { TerminalGroup } from "./settings/TerminalGroup";
 import { AppGroup } from "./settings/AppGroup";
 import { InstallGroup } from "./settings/InstallGroup";
-import { ConfigGroup } from "./settings/ConfigGroup";
+import { SettingsDataPage } from "./settings/SettingsDataPage";
+import { ApplicationSettingsPreview } from "./settings/ApplicationSettingsPreview";
+import "../../settings.css";
 
 interface Props {
-  status?: StaticStatus;
-  onSaved: () => void;
+  status?: StaticStatus; onSaved: () => void;
   highlightAnchor?: { anchor: string; nonce: number } | null;
-  unreadCount?: number;
-  onReopenOnboarding?: () => void;
-  onMarkSeen?: () => void;
-  changelogOpenToken?: number;
-  sections: SettingsSection[];
-  onActiveSectionChange: (id: string) => void;
-  onNavigate?: (tab: string, anchor?: string) => void;
+  unreadCount?: number; onReopenOnboarding?: () => void; onMarkSeen?: () => void;
+  changelogOpenToken?: number; sections: SettingsSection[]; activeSection?: string;
+  onActiveSectionChange: (id: string) => void; onNavigate?: (tab: string, anchor?: string) => void;
 }
 
-export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onReopenOnboarding, onMarkSeen, changelogOpenToken, sections, onActiveSectionChange, onNavigate }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
+export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onReopenOnboarding, onMarkSeen, changelogOpenToken, sections, activeSection, onActiveSectionChange, onNavigate }: Props) {
+  const current = activeSection ?? sections[0]?.id;
+  const [visited, setVisited] = useState<string[]>([current]);
+  const root = useRef<HTMLDivElement>(null);
   const active = useViewActive();
-  const reduced = usePrefersReducedMotion();
-  const markNavigation = useSettingsScrollSpy(containerRef, onActiveSectionChange);
+  useEffect(() => { setVisited(previous => previous.includes(current) ? previous : [...previous, current]); }, [current]);
   useEffect(() => {
-    if (!active || !highlightAnchor?.anchor) return;
-    const anchor = highlightAnchor.anchor;
-    const target = containerRef.current?.querySelector<HTMLElement>(`#toggle-${CSS.escape(anchor)}, #${CSS.escape(anchor)}`);
-    if (!target) return;
-    markNavigation();
-    target.scrollIntoView({ behavior: reduced ? "auto" : "smooth", block: anchor.startsWith("set-") ? "start" : "center" });
-    target.classList.add("anchor-highlight");
-    const timer = setTimeout(() => target.classList.remove("anchor-highlight"), 1600);
-    return () => { clearTimeout(timer); target.classList.remove("anchor-highlight"); };
-  }, [highlightAnchor, active, reduced, markNavigation]);
+    if (!active || !highlightAnchor) return;
+    const owner = settingsSectionForAnchor(highlightAnchor.anchor);
+    if (owner && owner !== current) { onActiveSectionChange(owner); return; }
+    // Child subviews reveal their own target first (e.g. statistics/configuration).
+    const frame = requestAnimationFrame(() => {
+      const panel = root.current?.querySelector<HTMLElement>(`[data-category="${CSS.escape(current)}"]`);
+      const key = highlightAnchor.anchor;
+      if (key === current) { if (panel) panel.scrollTop = 0; return; }
+      const target = panel?.querySelector<HTMLElement>(`#toggle-${CSS.escape(key)}, #${CSS.escape(key)}`);
+      if (!target || !target.getClientRects().length) return;
+      target.scrollIntoView({ block: "center", behavior: "auto" });
+      if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
+      target.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [highlightAnchor, active, current, onActiveSectionChange]);
 
   const content = (id: string) => {
     switch (id) {
+      case "set-app": return <div className="settings-page-layout"><div className="settings-reading"><AppGroup status={status} onSaved={onSaved} /><InstallGroup platform={status?.platform} onReopenOnboarding={onReopenOnboarding} /></div><ApplicationSettingsPreview /></div>;
+      case "set-terminal": return <TerminalGroup status={status} onSaved={onSaved} />;
+      case "set-network": return <div className="settings-reading"><NetworkGroup status={status} onSaved={onSaved} /><SecurityGroup status={status} onSaved={onSaved} onNavigate={onNavigate} section="network" />{isWindows(status?.platform) && <FirewallGroup onRefresh={onSaved} />}<AdvancedGroup status={status} onSaved={onSaved} section="network" /></div>;
+      case "set-files": return <div className="settings-reading"><AdvancedGroup status={status} onSaved={onSaved} section="files" /><SecurityGroup status={status} onSaved={onSaved} onNavigate={onNavigate} section="files" /></div>;
+      case "set-data": return <SettingsDataPage status={status} onSaved={onSaved} onNavigate={onNavigate} anchor={highlightAnchor} />;
+      case "set-mcpbridge": return <div className="settings-reading"><McpBridgeGroup status={status} /></div>;
+      case "set-notify": return <div className="settings-reading"><NotifyGroup status={status} onSaved={onSaved} /></div>;
       case "set-about": return <AboutGroup status={status} unreadCount={unreadCount} onMarkSeen={onMarkSeen} changelogOpenToken={changelogOpenToken} />;
-      case "set-install": return <InstallGroup platform={status?.platform} onReopenOnboarding={onReopenOnboarding} />;
-      case "set-network": return <NetworkGroup status={status} onSaved={onSaved} />;
-      case "set-firewall": return <FirewallGroup onRefresh={onSaved} />;
-      case "set-security": return <SecurityGroup status={status} onSaved={onSaved} onNavigate={onNavigate} />;
-      case "set-mcpbridge": return <McpBridgeGroup status={status} />;
-      case "set-backupaudit": return <BackupAuditGroup status={status} onSaved={onSaved} onNavigate={onNavigate} />;
-      case "set-tokenusage": return <TokenUsageGroup />;
-      case "set-notify": return <NotifyGroup status={status} onSaved={onSaved} />;
-      case "set-terminal": return <TerminalGroup />;
-      case "set-app": return <AppGroup />;
-      case "set-advanced": return <AdvancedGroup status={status} onSaved={onSaved} />;
-      case "set-config": return <ConfigGroup status={status} onSaved={onSaved} />;
       default: return null;
     }
   };
-  return (
-    <div ref={containerRef} data-scroll-viewport className="page-scroll settings-tab settings-category h-full min-h-0 space-y-4 overflow-y-auto overflow-x-hidden pb-1">
-      <RiskBand status={status} />
-      {sections.map(section => (
-        <div key={section.id} data-settings-section={section.id} className="scroll-mt-3">
-          {content(section.id)}
-        </div>
-      ))}
-    </div>
-  );
+  return <div ref={root} className="settings-tab settings-category h-full min-h-0">
+    {sections.filter(section => section.id === current || visited.includes(section.id)).map(section => <div key={section.id} data-category={section.id} hidden={section.id !== current} data-scroll-viewport className="settings-category-panel page-scroll h-full overflow-y-auto overflow-x-hidden">
+      <header className="settings-page-heading"><div><h1>{section.label}</h1><p>{CATEGORY_DESCRIPTIONS[section.id]}</p></div><span><Icon name="monitor" size={14} />{["set-app", "set-terminal"].includes(section.id) ? "本机偏好" : "服务与配置"}</span></header>
+      <ViewActivityContext.Provider value={active && section.id === current}>{content(section.id)}</ViewActivityContext.Provider>
+    </div>)}
+  </div>;
 }

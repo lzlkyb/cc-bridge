@@ -22,11 +22,13 @@ function safeGetItem(key: string): string | null {
   }
 }
 
-function safeSetItem(key: string, value: string): void {
+function safeSetItem(key: string, value: string): boolean {
   try {
     localStorage.setItem(key, value);
+    return true;
   } catch {
     // 配额满 / 被禁用：主题仍在本次会话内生效（class 已切），只是不记忆。
+    return false;
   }
 }
 
@@ -34,7 +36,7 @@ export function getStoredTheme(): Theme {
   return safeGetItem("theme") === "dark" ? "dark" : "light";
 }
 
-export function applyTheme(theme: Theme): void {
+export function applyTheme(theme: Theme): boolean {
   const root = document.documentElement;
   // transitionend 会从子元素冒泡，也可能根本不触发；用有界计时器清理，连切可续期。
   clearTimeout(transitionTimer);
@@ -45,8 +47,9 @@ export function applyTheme(theme: Theme): void {
     root.classList.remove("theme-transition");
   }
   root.classList.toggle("dark", theme === "dark");
-  safeSetItem("theme", theme);
+  const stored = safeSetItem("theme", theme);
   window.dispatchEvent(new CustomEvent<Theme>("themechange", { detail: theme }));
+  return stored;
 }
 
 export function toggleTheme(): Theme {

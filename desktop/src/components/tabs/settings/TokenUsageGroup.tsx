@@ -14,6 +14,8 @@ import { Icon } from "../../ui/icon";
 import { Skeleton } from "../../ui/Skeleton";
 import { InfoPopover } from "../../ui/InfoPopover";
 import { useAppHidden } from "../../../lib/appVisibility";
+import { useViewActive } from "../../../lib/viewActivity";
+import { SettingsChoice } from "../../ui/SettingsChoice";
 import { UsageMatrixSection } from "./UsageMatrixSection";
 import { KpiHead, EmptyKpis } from "./UsageKpiHead";
 
@@ -30,7 +32,9 @@ import { KpiHead, EmptyKpis } from "./UsageKpiHead";
  * 环比/分位/占比是纯函数，收口在 lib/usageMath.ts（带单测），本文件只负责取数与布局。
  */
 export function TokenUsageGroup() {
-  const hidden = useAppHidden();
+  const appHidden = useAppHidden();
+  const active = useViewActive();
+  const hidden = appHidden || !active;
   // 维度切换（批D）：概览（趋势+热力+排行）/ 按天×工具矩阵。KPI 头两态共用。
   const [view, setView] = useState<"overview" | "matrix">("overview");
   // 矩阵视图独立时间范围（默认 30 天）。概览保持 90 天长窗（热力图设计意图）；
@@ -66,28 +70,7 @@ export function TokenUsageGroup() {
       <CardHeader className="flex-row items-center justify-between space-y-0">
         <CardTitle icon={<Icon name="activity" />}>Token 用量（估算）</CardTitle>
         {/* 维度切换：分段控件（两个 state 的小视图，不值得上 Tabs）。 */}
-        <div className="flex shrink-0 items-center rounded-md border border-border bg-muted/40 p-0.5 text-[11px]">
-          {(
-            [
-              ["overview", "概览"],
-              ["matrix", "按天×工具"],
-            ] as const
-          ).map(([v, label]) => (
-            <button
-              key={v}
-              type="button"
-              aria-pressed={view === v}
-              className={`rounded px-2 py-0.5 transition-colors ${
-                view === v
-                  ? "bg-background font-semibold text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-              onClick={() => setView(v)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <SettingsChoice label="用量统计维度" value={view} onChange={value => setView(value as "overview" | "matrix")} options={[{value:"overview",label:"概览"},{value:"matrix",label:"按天×工具"}]} />
       </CardHeader>
       <CardContent className="space-y-4">
         {isLoading ? (

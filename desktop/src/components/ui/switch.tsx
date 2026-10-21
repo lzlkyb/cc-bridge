@@ -8,12 +8,14 @@ export function Switch({
   variant = "default",
   disabled = false,
   ariaLabel,
+  ariaDescribedBy,
 }: {
   checked: boolean;
   onChange: (next: boolean) => void;
   variant?: "default" | "danger";
   disabled?: boolean;
   ariaLabel?: string;
+  ariaDescribedBy?: string;
 }) {
   const onColor = variant === "danger" ? "bg-destructive" : "bg-primary";
   return (
@@ -22,6 +24,7 @@ export function Switch({
       role="switch"
       aria-checked={checked}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={`sw ${checked ? "on" : ""} ${variant === "danger" ? "danger" : ""} relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${

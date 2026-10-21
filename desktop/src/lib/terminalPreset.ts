@@ -44,11 +44,12 @@ export function loadPreset(): TerminalPreset {
   }
 }
 
-export function savePreset(preset: TerminalPreset): void {
+export function savePreset(preset: TerminalPreset): boolean {
   try {
     localStorage.setItem(PRESET_KEY, preset);
+    return true;
   } catch {
-    /* 隐私模式 / 配额满：偏好存不下就算了，不影响功能 */
+    return false;
   }
 }
 
@@ -65,11 +66,12 @@ export function loadInjectEnabled(): boolean {
   }
 }
 
-export function saveInjectEnabled(on: boolean): void {
+export function saveInjectEnabled(on: boolean): boolean {
   try {
     localStorage.setItem(INJECT_KEY, on ? "on" : "off");
+    return true;
   } catch {
-    /* 同上 */
+    return false;
   }
 }
 
@@ -92,11 +94,12 @@ export function loadTmuxBridgeEnabled(): boolean {
   }
 }
 
-export function saveTmuxBridgeEnabled(on: boolean): void {
+export function saveTmuxBridgeEnabled(on: boolean): boolean {
   try {
     localStorage.setItem(TMUX_KEY, on ? "on" : "off");
+    return true;
   } catch {
-    /* 同上 */
+    return false;
   }
 }
 
@@ -143,31 +146,34 @@ export function getPreset(): TerminalPreset {
   return presetCache;
 }
 
-export function setPreset(preset: TerminalPreset): void {
-  if (presetCache === preset) return;
+export function setPreset(preset: TerminalPreset): boolean {
+  if (presetCache === preset) return savePreset(preset);
   presetCache = preset;
-  savePreset(preset);
+  const saved = savePreset(preset);
   emit(presetListeners);
+  return saved;
 }
 
 export function getInjectEnabled(): boolean {
   return injectCache;
 }
 
-export function setInjectEnabled(on: boolean): void {
-  if (injectCache === on) return;
+export function setInjectEnabled(on: boolean): boolean {
+  if (injectCache === on) return saveInjectEnabled(on);
   injectCache = on;
-  saveInjectEnabled(on);
+  const saved = saveInjectEnabled(on);
   emit(injectListeners);
+  return saved;
 }
 
 export function getTmuxBridgeEnabled(): boolean {
   return tmuxCache;
 }
 
-export function setTmuxBridgeEnabled(on: boolean): void {
-  if (tmuxCache === on) return;
+export function setTmuxBridgeEnabled(on: boolean): boolean {
+  if (tmuxCache === on) return saveTmuxBridgeEnabled(on);
   tmuxCache = on;
-  saveTmuxBridgeEnabled(on);
+  const saved = saveTmuxBridgeEnabled(on);
   emit(tmuxListeners);
+  return saved;
 }

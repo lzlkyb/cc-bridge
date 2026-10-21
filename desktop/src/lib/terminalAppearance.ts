@@ -58,11 +58,12 @@ export function loadTerminalMode(): TerminalMode {
   }
 }
 
-export function saveTerminalMode(mode: TerminalMode): void {
+export function saveTerminalMode(mode: TerminalMode): boolean {
   try {
     localStorage.setItem(KEY, mode);
+    return true;
   } catch {
-    /* 隐私模式 / 配额满：偏好存不下就算了，不影响功能 */
+    return false; // 当前会话仍应用，由调用方如实报告未持久化。
   }
 }
 
@@ -87,11 +88,12 @@ export function getTerminalMode(): TerminalMode {
   return cache;
 }
 
-export function setTerminalMode(mode: TerminalMode): void {
-  if (cache === mode) return;
+export function setTerminalMode(mode: TerminalMode): boolean {
+  if (cache === mode) return saveTerminalMode(mode);
   cache = mode;
-  saveTerminalMode(mode);
+  const saved = saveTerminalMode(mode);
   listeners.forEach((l) => l());
+  return saved;
 }
 
 /** 仅供测试：localStorage 被内存桩替换后必须重读，否则模块级缓存停在旧值上。 */

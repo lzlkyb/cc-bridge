@@ -34,15 +34,15 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-readonly", label: "只读模式", icon: "lock", group: "安全页", tab: "security", anchor: "sec-overview", keywords: "readonly 禁止写入 不允许删除" },
   { id: "set-shell", label: "命令执行", icon: "terminal", group: "安全页", tab: "security", anchor: "sec-overview", keywords: "shell rce run_command 执行命令" },
   // 壳层是命令执行的参数、留在设置页安全卡（卡级锚点：toggle-shell 已随开关搬去安全页）。
-  { id: "set-shelltype", label: "命令执行壳层", icon: "terminal", group: "设置 · 安全", tab: "settings", anchor: "set-security", keywords: "shell cmd bash sh git bash 壳层" },
+  { id: "set-shelltype", label: "命令执行壳层", icon: "terminal", group: "设置 · 文件与命令", tab: "settings", anchor: "shelltype", keywords: "shell cmd bash sh git bash 壳层" },
   { id: "set-remote-tls", label: "HTTPS 远程访问", icon: "lock", group: "设置 · 安全", tab: "settings", anchor: "remote-tls", keywords: "https tls ssl 自签 证书 指纹 远程 跨网 封禁 401" },
   { id: "set-security-links", label: "安全权限与目录管理", icon: "shield", group: "设置 · 安全", tab: "settings", anchor: "set-security", keywords: "白名单 只读 权限 路径 目录 命令执行" },
   { id: "set-mcpbridge", label: "外挂 MCP 服务器", icon: "plug", group: "设置 · 外挂 MCP 桥", tab: "settings", anchor: "set-mcpbridge", keywords: "server 工具 导入 探测 cwd 远程工作目录 启动命令 工具过滤 暴露 允许清单" },
 
   { id: "set-backup", label: "写操作自动备份", icon: "history", group: "设置 · 备份与审计", tab: "settings", anchor: "backup", keywords: "backup 备份 快照" },
   { id: "set-audit", label: "审计日志", icon: "file", group: "设置 · 备份与审计", tab: "settings", anchor: "audit", keywords: "audit 日志 记录 留痕" },
-  { id: "set-audit-days", label: "审计保留天数", icon: "clock", group: "设置 · 备份与审计", tab: "settings", anchor: "audit", keywords: "retention 保留 天数 过期" },
-  { id: "set-audit-clean", label: "清理早于…（审计）", icon: "trash", group: "设置 · 备份与审计", tab: "settings", anchor: "audit", keywords: "清理 删除旧日志 cleanup" },
+  { id: "set-audit-days", label: "审计保留天数", icon: "clock", group: "设置 · 数据与记录", tab: "settings", anchor: "audit-retention", keywords: "retention 保留 天数 过期 永久保留" },
+  { id: "set-audit-clean", label: "清理早于…（审计）", icon: "trash", group: "设置 · 数据与记录", tab: "settings", anchor: "audit-clean", keywords: "清理 删除旧日志 cleanup" },
   { id: "set-tokenusage", label: "Token 用量（估算）", icon: "activity", group: "设置 · 备份与审计", tab: "settings", anchor: "set-tokenusage", keywords: "token 用量 消耗 估算 usage 成本 明细 排行" },
 
   { id: "set-notify-cmd", label: "后台命令完成通知", icon: "activity", group: "设置 · 通知", tab: "settings", anchor: "notify-command", keywords: "notify 通知 toast 推送" },
@@ -55,16 +55,24 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-terminal-drag-select", label: "终端拖拽即选", icon: "terminal", group: "设置 · 高级", tab: "settings", anchor: "ssh-drag-select", keywords: "终端 拖选 拖拽 select drag 选择模式 shift 鼠标" },
   { id: "set-terminal-copy-on-select", label: "选中即复制", icon: "copy", group: "设置 · 高级", tab: "settings", anchor: "ssh-copy-on-select", keywords: "终端 复制 剪贴板 clipboard copy on select 自动复制 松手" },
 
-  { id: "set-network", label: "监听端口 / MCP 传输协议", icon: "server", group: "设置 · 其它", tab: "settings", anchor: "set-network", keywords: "port 7823 端口 transport http sse 协议" },
+  { id: "set-network", label: "监听端口", icon: "server", group: "设置 · 网络与接入", tab: "settings", anchor: "network-port", keywords: "port 7823 端口" },
+  { id: "set-transport", label: "MCP 传输协议", icon: "server", group: "设置 · 网络与接入", tab: "settings", anchor: "network-transport", keywords: "transport http sse 协议 流式" },
   // 仅 Windows 渲染（`SettingsTab` 里有 isWindows 守卫）。非 Windows 上点了会跳到设置页但
   // 找不到锚点——SettingsTab 的定位 effect 对找不到的 id 是静默返回的，不会报错。
   { id: "set-firewall", label: "防火墙规则与一键修复", icon: "shield", group: "设置 · 其它", tab: "settings", anchor: "set-firewall", keywords: "firewall netsh 入站 放行 端口 拦截 远程连不上" },
-  { id: "set-app", label: "开机自动启动", icon: "power", group: "设置 · 其它", tab: "settings", anchor: "set-app", keywords: "autostart 开机启动 开机自启" },
-  { id: "set-appearance", label: "外观 · 界面风格与明暗", icon: "monitor", group: "设置 · 应用", tab: "settings", anchor: "set-app", keywords: "appearance theme 外观 柔光 玻璃 经典 深色 浅色 主题 UI" },
+  { id: "set-app", label: "开机自动启动", icon: "power", group: "设置 · 应用", tab: "settings", anchor: "app-startup", keywords: "autostart 开机启动 开机自启" },
+  { id: "set-appearance", label: "外观 · 界面风格与明暗", icon: "monitor", group: "设置 · 应用", tab: "settings", anchor: "app-style", keywords: "appearance theme 外观 柔光 玻璃 经典 深色 浅色 主题 UI" },
   { id: "set-install", label: "安装与快捷方式", icon: "package", group: "设置 · 其它", tab: "settings", anchor: "set-install", keywords: "install 快捷方式 桌面 安装目录" },
   { id: "set-config", label: "导入 / 导出 / 重置配置", icon: "download", group: "设置 · 其它", tab: "settings", anchor: "set-config", keywords: "import export reset 备份配置 恢复默认" },
   { id: "set-about", label: "版本信息 / 检查更新", icon: "info", group: "设置 · 其它", tab: "settings", anchor: "set-about", keywords: "version update 更新 版本 更新历史 changelog" },
-  { id: "set-terminal", label: "终端风格与状态栏", icon: "sliders", group: "设置 · 其它", tab: "settings", anchor: "set-terminal", keywords: "terminal preset 终端风格 starship 状态栏 注入 探测 远端 shell 字体 字号 font 明暗 配色 主题 tmux" },
+  { id: "set-terminal-font", label: "终端字体", icon: "terminal", group: "设置 · 终端", tab: "settings", anchor: "terminal-font", keywords: "font 字体 Consolas JetBrains Fira" },
+  { id: "set-terminal-size", label: "终端字号", icon: "terminal", group: "设置 · 终端", tab: "settings", anchor: "terminal-size", keywords: "字号 字体大小 缩放 font size" },
+  { id: "set-terminal-mode", label: "终端明暗", icon: "terminal", group: "设置 · 终端", tab: "settings", anchor: "terminal-mode", keywords: "terminal 浅色 深色 跟随" },
+  { id: "set-terminal-preset", label: "终端风格", icon: "palette", group: "设置 · 终端", tab: "settings", anchor: "terminal-preset", keywords: "preset 靖蓝 极简 高对比 配色 主题" },
+  { id: "set-terminal", label: "终端历史与集成", icon: "sliders", group: "设置 · 终端", tab: "settings", anchor: "terminal-scrollback", keywords: "terminal starship 状态栏 缓冲 历史 回滚" },
+  { id: "set-terminal-speed", label: "TUI 滚动速度", icon: "sliders", group: "设置 · 终端", tab: "settings", anchor: "terminal-scroll-speed", keywords: "滚动 速度 TUI" },
+  { id: "set-terminal-inject", label: "远端路径/分支探测", icon: "gitBranch", group: "设置 · 终端", tab: "settings", anchor: "terminal-inject", keywords: "注入 探测 远端 shell 状态栏 git" },
+  { id: "set-terminal-tmux", label: "tmux 桥接", icon: "terminal", group: "设置 · 终端", tab: "settings", anchor: "terminal-tmux", keywords: "tmux 全局通知 穿透" },
 
   // 安全页两张卡带卡级锚点（SecurityTab 的定位 effect 直接按 id 命中）。
   { id: "set-roots", label: "白名单目录与配置组", icon: "folder", group: "安全页", tab: "security", anchor: "set-roots", keywords: "root 根目录 白名单 配置组 项目切换 排除 exclude 忽略 ignore mcpignore" },

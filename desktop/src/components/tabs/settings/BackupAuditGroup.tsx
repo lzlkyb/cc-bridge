@@ -8,7 +8,6 @@ import { Icon } from "../../ui/icon";
 import { ToggleRow } from "../../ui/ToggleRow";
 import { useToast } from "../../ui/toast";
 import { SettingsRow } from "../../ui/SettingsRow";
-import { NumBox } from "../../ui/NumBox";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { useSettingSave } from "./useSettingSave";
 import { SubSetting } from "./SubSetting";
@@ -22,6 +21,7 @@ type BeforeBusy = { src: "preset" | "custom"; days: number } | null;
 /** 待确认的清理动作（P1-3：五个清理入口全部过确认，不再点击即永久删除）。 */
 type PendingClean =
   | { src: "now" }
+  | { src: "policy"; days: number }
   | { src: "before"; days: number; origin: "preset" | "custom" };
 
 /**
@@ -44,53 +44,32 @@ export function BackupAuditGroup({
   /** 跨 tab 跳转（备份指路按钮用；不传则回退为静态指路文案）。 */
   onNavigate?: (tab: string, anchor?: string) => void;
 }) {
-  const { savedKey, save } = useSettingSave(onSaved);
-  const [days, setDays] = useState(30);
+  const { savedKey, save, isPending, errorFor } = useSettingSave(onSaved);
+  const [days, setDays] = useState(String(status?.auditRetentionDays ?? 30));
+  const [appliedDays, setAppliedDays] = useState(status?.auditRetentionDays ?? 30);
   const [cleaning, setCleaning] = useState(false);
-  const [beforeDays, setBeforeDays] = useState(180);
+  const [beforeDays, setBeforeDays] = useState("180");
   const [busyBefore, setBusyBefore] = useState<BeforeBusy>(null);
   const [pendingClean, setPendingClean] = useState<PendingClean | null>(null);
   const { toast } = useToast();
-  const initialized = useRef(false);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const syncedDays = useRef(status?.auditRetentionDays);
 
   const auditOn = status?.auditEnabled ?? true;
 
   useEffect(() => {
-    if (status && !initialized.current) {
-      setDays(status.auditRetentionDays);
-      initialized.current = true;
-    }
-  }, [status]);
-
-  // 卸载时清悬挂的保存 timer：不清的话改完天数立即切页签，800ms 后仍会发 save_config。
-  useEffect(
-    () => () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current);
-    },
-    [],
-  );
-
-  // 归一化：空输入 / NaN / 负值统一为 0（配合 Input min=0），并取整。
-  const normalize = (raw: number) => (Number.isNaN(raw) || raw < 0 ? 0 : Math.floor(raw));
-
-  const handleDaysChange = (raw: number) => {
-    const val = normalize(raw);
-    setDays(val);
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    // 触发后清空 ref，供 onBlur 判断是否已保存，避免双次保存。
-    debounceRef.current = setTimeout(() => {
-      debounceRef.current = undefined;
-      save({ auditRetentionDays: val }, "audit-days");
-    }, 800);
-  };
-
-  // onBlur 仅在 debounce 仍挂起（尚未保存）时立即保存，已保存则不重复。
-  const handleDaysBlur = () => {
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-      debounceRef.current = undefined;
-      save({ auditRetentionDays: days }, "audit-days");
+    if (status?.auditRetentionDays === undefined) return;
+    const next = status.auditRetentionDays;
+    const previous = syncedDays.current;
+    setDays(cur => previous === undefined || cur === String(previous) ? String(next) : cur);
+    setAppliedDays(next);
+    syncedDays.current = next;
+  }, [status?.auditRetentionDays]);
+  const validDays = days.trim() !== "" && Number.isSafeInteger(Number(days)) && Number(days) >= 0;
+  const dirtyDays = validDays && Number(days) !== appliedDays;
+  const applyPolicy = async (next: number) => {
+    if (await save({ auditRetentionDays: next }, "audit-days")) {
+      setAppliedDays(next);
+      setDays(String(next));
     }
   };
 
@@ -98,7 +77,7 @@ export function BackupAuditGroup({
   const handleCleanNow = async () => {
     // 保留天数 0 = 永久保留，后端会直接返回 0。不特处理的话用户只会看到
     // 「已清理 0 条」而不知道为什么，以为功能坏了。
-    if (days === 0) {
+    if (appliedDays === 0) {
       toast("当前设为永久保留（保留天数 0），未清理。可用下方「清理早于…」按临时天数清", "error");
       return;
     }
@@ -145,6 +124,9 @@ export function BackupAuditGroup({
           checked={status?.backupEnabled ?? true}
           onChange={(v) => save({ backupEnabled: v }, "backup")}
           saved={savedKey === "backup"}
+          pending={isPending("backup")}
+          disabled={isPending("backup") || !status}
+          error={errorFor("backup")}
         />
         {/* 备份的份数/目录/清理在安全页（本次不跨 tab 搬）。P2-5：指路从静态 <p>
             升级为按钮——走 App 已有 pendingAnchor/highlightAnchor 机制，切 tab +
@@ -173,22 +155,39 @@ export function BackupAuditGroup({
           checked={auditOn}
           onChange={(v) => save({ auditEnabled: v }, "audit")}
           saved={savedKey === "audit"}
+          pending={isPending("audit")}
+          disabled={isPending("audit") || !status}
+          error={errorFor("audit")}
           last
         />
-        <SubSetting disabled={!auditOn} hint="审计日志已关闭，下面两项暂不生效">
+        <SubSetting disabled={!auditOn || !status} hint="审计日志已关闭或尚未读取，下面两项暂不生效">
           <SettingsRow
-            label="保留天数"
+            id="audit-retention"
+            label="自动保留策略"
             saved={savedKey === "audit-days"}
+            pending={isPending("audit-days")}
+            error={errorFor("audit-days")}
             layout="stack"
             control={
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Input
                   type="number"
                   min={0}
                   value={days}
-                  onChange={(e) => handleDaysChange(Number(e.target.value))}
-                  onBlur={handleDaysBlur}
+                  aria-label="审计保留天数"
+                  aria-describedby="audit-retention-help"
+                  aria-invalid={!validDays}
+                  disabled={isPending("audit-days")}
+                  onChange={(e) => setDays(e.target.value)}
                 />
+                <span className="text-xs text-muted-foreground">天</span>
+                <Button variant="outline" size="sm" disabled={isPending("audit-days")} onClick={() => setDays("0")}>永久保留</Button>
+                <Button size="sm" disabled={!dirtyDays || isPending("audit-days")} isLoading={isPending("audit-days")} loadingText="应用中…" onClick={() => {
+                  const next = Number(days);
+                  // 后端收到保留期就会清理；缩短策略必须先明确确认，不能在输入/失焦触发。
+                  if (next !== 0 && (appliedDays === 0 || next < appliedDays)) setPendingClean({ src: "policy", days: next });
+                  else void applyPolicy(next);
+                }}>应用保留策略</Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -197,7 +196,7 @@ export function BackupAuditGroup({
                   loadingText="清理中..."
                   onClick={() => {
                     // 保留天数 0 = 永久保留：点了必是「已清理 0 条」，先拦下别弹确认框。
-                    if (days === 0) {
+                    if (appliedDays === 0) {
                       toast("当前设为永久保留（保留天数 0），未清理。可用下方「清理早于…」按临时天数清", "error");
                       return;
                     }
@@ -208,11 +207,12 @@ export function BackupAuditGroup({
                 </Button>
               </div>
             }
-            sub="设为 0 表示永久保留"
-            info="超过保留天数的审计记录会在启动时、以及之后每 24 小时自动清理；改完保留天数也会立即清理一次。设为 0 表示永久保留。想删得彻底一点可到日志页「清空全部」。"
+            sub={`当前生效：${appliedDays === 0 ? "永久保留" : `${appliedDays} 天`}。修改后点击应用。`}
+            info="超过保留天数的记录会在启动时、每 24 小时及应用保留策略后清理；设为 0 表示永久保留。"
           />
+          <p id="audit-retention-help" className="mb-3 text-xs leading-relaxed text-warning-ink">缩短保留期会永久删除超期记录，应用前需确认；输入和失焦不会触发清理。{!validDays && " 请输入大于或等于 0 的整数。"}</p>
           <SettingsRow
-            label="清理早于…"
+            id="audit-clean" label="清理早于…"
             layout="stack"
             last
             control={
@@ -231,15 +231,15 @@ export function BackupAuditGroup({
                     {d} 天前
                   </Button>
                 ))}
-                <NumBox value={beforeDays} min={1} unit="天" onCommit={setBeforeDays} />
+                <Input type="number" min={1} aria-label="自定义审计清理天数" value={beforeDays} className="w-24" onChange={e => setBeforeDays(e.target.value)} />
                 <Button
                   variant="outline"
                   size="sm"
                   className="shrink-0"
                   isLoading={busyBefore?.src === "custom"}
                   loadingText="清理中..."
-                  disabled={busyBefore !== null}
-                  onClick={() => setPendingClean({ src: "before", days: beforeDays, origin: "custom" })}
+                  disabled={busyBefore !== null || !Number.isSafeInteger(Number(beforeDays)) || Number(beforeDays) < 1}
+                  onClick={() => setPendingClean({ src: "before", days: Number(beforeDays), origin: "custom" })}
                 >
                   清理自定义天数
                 </Button>
@@ -257,15 +257,17 @@ export function BackupAuditGroup({
           loading 仍可见（框是 portal 的，关闭后 spinner 在原按钮上转）。 */}
       {pendingClean && (
         <ConfirmDialog
-          title="删除审计记录？"
+          title={pendingClean.src === "policy" ? "应用保留策略并清理？" : "删除审计记录？"}
           variant="destructive"
-          confirmLabel="确定删除"
+          confirmLabel={pendingClean.src === "policy" ? "应用并清理" : "确定删除"}
           description={
             pendingClean.src === "now" ? (
               <>
-                「立即清理」将删除<b>超过保留天数（{days} 天）</b>的全部审计记录，删除后
+                「立即清理」将删除<b>超过当前保留天数（{appliedDays} 天）</b>的全部审计记录，删除后
                 <b>不可恢复</b>。
               </>
+            ) : pendingClean.src === "policy" ? (
+              <>保留策略将改为 <b>{pendingClean.days} 天</b>，并立即删除早于 {pendingClean.days} 天的审计记录。删除后<b>不可恢复</b>。</>
             ) : (
               <>
                 将删除<b>早于 {pendingClean.days} 天</b>的全部审计记录（不会修改保留天数设置），
@@ -278,6 +280,7 @@ export function BackupAuditGroup({
             const p = pendingClean;
             setPendingClean(null);
             if (p.src === "now") void handleCleanNow();
+            else if (p.src === "policy") void applyPolicy(p.days);
             else void handleCleanBefore(p.days, p.origin);
           }}
         >

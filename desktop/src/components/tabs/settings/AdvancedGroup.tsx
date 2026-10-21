@@ -2,86 +2,27 @@ import type { StaticStatus } from "../../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
 import { ToggleRow } from "../../ui/ToggleRow";
-import { releaseWebviewHint } from "../../../lib/platform";
 import { useSettingSave } from "./useSettingSave";
 
-/**
- * 「高级」卡：真正的“装完很少再动”项。
- *
- * 原「兼容与性能」那一节是个筐：6 项横跨 4 个领域。其中两项已归位——
- * 壳层选择 → 安全卡（它是命令执行的子项），传输协议 → 网络卡（它决定远程怎么连）。
- * 剩下这四项才是名副其实的“高级”。
- */
-export function AdvancedGroup({
-  status,
-  onSaved,
-}: {
-  status?: StaticStatus;
-  onSaved: () => void;
+/** Backend preferences follow the task category; no second source of configuration. */
+export function AdvancedGroup({ status, onSaved, section = "files" }: {
+  status?: StaticStatus; onSaved: () => void; section?: "network" | "files";
 }) {
-  const { savedKey, save } = useSettingSave(onSaved);
-  // id 供设置页左栏导航 scrollspy 定位（lib/settingsSections.ts）。
-  return (
-    <Card id="set-advanced">
-      <CardHeader>
-        <CardTitle icon={<Icon name="sliders" />}>高级</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-0">
-        <ToggleRow
-          id="toggle-ratelimit"
-          label="限流保护"
-          sub="按窗口限制请求次数，防止异常高频调用"
-          checked={status?.rateLimitEnabled ?? true}
-          onChange={(v) => save({ rateLimitEnabled: v }, "ratelimit")}
-          saved={savedKey === "ratelimit"}
-        />
-        <ToggleRow
-          id="toggle-encoding"
-          label="读取编码自适应"
-          info="开启：自动识别 GBK/GB18030（适合 NC65 等旧系统源码）；关闭：固定按 UTF-8 读取，避免误判。显式指定编码不受影响"
-          checked={status?.encodingDetectEnabled ?? false}
-          onChange={(v) => save({ encodingDetectEnabled: v }, "encoding")}
-          saved={savedKey === "encoding"}
-        />
-        <ToggleRow
-          id="toggle-session-persist"
-          label="命令会话持久化"
-          info={
-            <>
-              开启后 run_command 可用 session_id 跨调用保留工作目录，并通过 env 参数（key=value）持久化环境变量（如 venv / PATH），解决 source venv / export 每调用丢失的问题。默认关闭
-            </>
-          }
-          checked={status?.sessionCwdEnabled ?? false}
-          onChange={(v) => save({ sessionCwdEnabled: v }, "session-persist")}
-          saved={savedKey === "session-persist"}
-        />
-        <ToggleRow
-          id="toggle-release-webview"
-          label="关窗时释放界面内存"
-          sub="关窗释放内存，再开需重新加载"
-          info={releaseWebviewHint(status?.platform)}
-          checked={status?.releaseWebviewOnClose ?? true}
-          onChange={(v) => save({ releaseWebviewOnClose: v }, "release-webview")}
-          saved={savedKey === "release-webview"}
-        />
-        <ToggleRow
-          id="toggle-ssh-drag-select"
-          label="终端拖拽即选"
-          info="开启：在 SSH 终端内直接拖选文字即建立选区，无需按住 Shift 或点「选择模式」（远端没开鼠标追踪的会话，原生拖选本来就能用）。关闭后 Shift 与「选择模式」两条路径仍然可用"
-          checked={status?.sshDragSelectEnabled ?? true}
-          onChange={(v) => save({ sshDragSelectEnabled: v }, "ssh-drag-select")}
-          saved={savedKey === "ssh-drag-select"}
-        />
-        <ToggleRow
-          id="toggle-ssh-copy-on-select"
-          label="选中即复制"
-          info="开启：拖拽选中文字后松手即自动写入剪贴板并提示字数（双击选词、三击选行不触发）。关闭后选区照常保留，复制改走右键菜单 / 工具栏按钮 / Ctrl+Shift+C"
-          checked={status?.sshCopyOnSelectEnabled ?? true}
-          onChange={(v) => save({ sshCopyOnSelectEnabled: v }, "ssh-copy-on-select")}
-          saved={savedKey === "ssh-copy-on-select"}
-          last
-        />
-      </CardContent>
-    </Card>
-  );
+  const { save, isSaved, isPending, errorFor } = useSettingSave(onSaved);
+  const settings = section === "network" ? [{
+    key: "ratelimit", field: "rateLimitEnabled", value: status?.rateLimitEnabled ?? true,
+    label: "限流保护", sub: "按窗口限制请求次数，防止异常高频调用", info: "保持限流可以防止远程工具的异常高频调用。",
+  }] : [{
+    key: "encoding", field: "encodingDetectEnabled", value: status?.encodingDetectEnabled ?? false,
+    label: "读取编码自适应", sub: "自动识别 GBK / GB18030，适合 NC65 等旧系统源码", info: "关闭时固定按 UTF-8 读取。显式指定编码不受此设置影响。",
+  }, {
+    key: "session-persist", field: "sessionCwdEnabled", value: status?.sessionCwdEnabled ?? false,
+    label: "命令会话持久化", sub: "使用 session_id 跨调用保留工作目录与环境变量", info: "作用于 MCP run_command，不是 SSH 会话保持。可通过 env 参数持久化 venv / PATH 等变量，默认关闭。",
+  }];
+  return <Card id={section === "files" ? "set-advanced" : "set-flow-protection"}>
+    <CardHeader><CardTitle icon={<Icon name={section === "network" ? "shield" : "sliders"} />}>{section === "network" ? "流量保护" : "文件读取与命令行为"}</CardTitle></CardHeader>
+    <CardContent>{settings.map((item, index) => <ToggleRow key={item.key} id={`toggle-${item.key}`} label={item.label} sub={item.sub} info={item.info}
+      checked={item.value} onChange={value => { void save({ [item.field]: value }, item.key); }} disabled={!status}
+      pending={isPending(item.key)} error={errorFor(item.key)} saved={isSaved(item.key)} last={index === settings.length - 1} />)}</CardContent>
+  </Card>;
 }

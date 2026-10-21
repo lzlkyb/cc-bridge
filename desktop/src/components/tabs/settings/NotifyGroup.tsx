@@ -1,7 +1,11 @@
+import { useState } from "react";
 import type { StaticStatus } from "../../../lib/types";
+import { invoke } from "../../../lib/tauri";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
 import { ToggleRow } from "../../ui/ToggleRow";
+import { SettingsRow } from "../../ui/SettingsRow";
+import { Button } from "../../ui/button";
 import { notifyCommandCompleteSub } from "../../../lib/platform";
 import { useSettingSave } from "./useSettingSave";
 
@@ -15,12 +19,23 @@ export function NotifyGroup({
   status?: StaticStatus;
   onSaved: () => void;
 }) {
-  const { savedKey, save } = useSettingSave(onSaved);
+  const { isSaved, isPending, errorFor, save } = useSettingSave(onSaved);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState("");
+  const testNotification = async () => {
+    if (testing) return;
+    setTesting(true); setTestResult("");
+    try {
+      const sent = await invoke<boolean>("notify_desktop", { title: "CC Bridge · 测试通知", body: "通知通道已提交测试提醒。" });
+      setTestResult(sent ? "已向系统提交通知；若未显示，请检查系统通知权限或勿扰模式。" : "未发送通知。请检查任务通知开关、系统通知权限及当前安装版本是否支持通知。");
+    } catch (e) { setTestResult(`通知测试失败：${e}。请稍后重试。`); }
+    finally { setTesting(false); }
+  };
   // id 供设置页左栏导航 scrollspy 定位（lib/settingsSections.ts）。
   return (
     <Card id="set-notify">
       <CardHeader>
-        <CardTitle icon={<Icon name="activity" />}>通知</CardTitle>
+        <CardTitle icon={<Icon name="bell" />}>完成提醒</CardTitle>
       </CardHeader>
       <CardContent className="space-y-0">
         <ToggleRow
@@ -30,7 +45,7 @@ export function NotifyGroup({
           info={notifyCommandCompleteSub(status?.platform)}
           checked={status?.notifyCommandComplete ?? true}
           onChange={(v) => save({ notifyCommandComplete: v }, "notify-cmd")}
-          saved={savedKey === "notify-cmd"}
+          saved={isSaved("notify-cmd")} pending={isPending("notify-cmd")} error={errorFor("notify-cmd")} disabled={!status}
         />
         <ToggleRow
           id="toggle-notify-task"
@@ -39,9 +54,10 @@ export function NotifyGroup({
           info="AI 完成任务后可主动调用 push_notification 工具推送桌面通知。关闭后 AI 的推送请求会被静默忽略。默认开启"
           checked={status?.notifyTaskComplete ?? true}
           onChange={(v) => save({ notifyTaskComplete: v }, "notify-task")}
-          saved={savedKey === "notify-task"}
-          last
+          saved={isSaved("notify-task")} pending={isPending("notify-task")} error={errorFor("notify-task")} disabled={!status}
         />
+        <SettingsRow label="测试系统通知" sub={status?.notifyTaskComplete === false ? "任务完成通知已关闭，启用后可测试。" : "仅在点击时发送，用于检查通知是否可用。"} last control={<Button variant="outline" size="sm" disabled={!status || !status.notifyTaskComplete || isPending("notify-task")} isLoading={testing} loadingText="发送中…" onClick={() => { void testNotification(); }}>发送测试通知</Button>} />
+        {testResult && <p role="status" className="text-xs leading-relaxed text-muted-foreground">{testResult}</p>}
       </CardContent>
     </Card>
   );

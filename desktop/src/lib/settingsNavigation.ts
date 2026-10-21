@@ -1,26 +1,22 @@
-import { SETTINGS_SECTIONS, type SettingsSection } from "./settingsSections";
+import type { SettingsSection } from "./settingsSections";
 import { SETTING_SEARCH_ITEMS } from "./settingsSearch";
-
-const owners: Record<string, string> = {
-  "remote-tls": "set-security", shell: "set-security", readonly: "set-security", whitelist: "set-security",
-  backup: "set-backupaudit", audit: "set-backupaudit",
-  "notify-command": "set-notify", "notify-task": "set-notify",
-  ratelimit: "set-advanced", encoding: "set-advanced", "session-persist": "set-advanced",
-  "release-webview": "set-advanced", "ssh-drag-select": "set-advanced", "ssh-copy-on-select": "set-advanced",
-};
+import { SETTINGS_CATEGORIES, SETTINGS_ANCHOR_CATEGORIES } from "./settingsCategories";
+import { isWindows } from "./platform";
 
 export function settingsSectionForAnchor(anchor: string): string | undefined {
   const key = anchor.replace(/^toggle-/, "");
-  return SETTINGS_SECTIONS.find(s => s.id === key)?.id ?? owners[key];
+  return SETTINGS_CATEGORIES.find(s => s.id === key)?.id ?? SETTINGS_ANCHOR_CATEGORIES[key];
 }
 
 /** 搜索结果复用全局命令面板索引，不建立会漂移的第二份开关定义。 */
-export function searchSettings(query: string, available: string[]) {
+export function searchSettings(query: string, available: string[], platform?: string) {
   const q = query.trim().toLowerCase();
   if (!q) return [];
   return SETTING_SEARCH_ITEMS.filter(item => item.tab === "settings")
+    .filter(item => item.id !== "set-firewall" || isWindows(platform))
     .map(item => ({ ...item, sectionId: settingsSectionForAnchor(item.anchor ?? "") }))
-    .filter(item => item.sectionId && available.includes(item.sectionId) && `${item.label} ${item.keywords ?? ""} ${SETTINGS_SECTIONS.find(s => s.id === item.sectionId)?.label ?? ""}`.toLowerCase().includes(q));
+    .map(item => ({ ...item, group: `设置 · ${SETTINGS_CATEGORIES.find(s => s.id === item.sectionId)?.label ?? item.group}` }))
+    .filter(item => item.sectionId && available.includes(item.sectionId) && `${item.label} ${item.keywords ?? ""} ${SETTINGS_CATEGORIES.find(s => s.id === item.sectionId)?.label ?? ""}`.toLowerCase().includes(q));
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { SavedHint } from "./SavedHint";
 import { InfoPopover } from "./InfoPopover";
 
@@ -25,6 +25,7 @@ export function SettingsRow({
   danger = false,
   last = false,
   layout = "row",
+  id, controlId, pending = false, error,
 }: {
   label: ReactNode;
   /** L0 常显短句：≤20 字结果性描述；原理/边界请改传 info。 */
@@ -36,10 +37,17 @@ export function SettingsRow({
   danger?: boolean;
   last?: boolean;
   layout?: "row" | "stack";
+  id?: string;
+  controlId?: string;
+  pending?: boolean;
+  error?: string;
 }) {
   const isStack = layout === "stack";
+  const generatedId = useId();
+  const labelId = `${id ?? generatedId}-label`;
   return (
     <div
+      id={id} tabIndex={id ? -1 : undefined} role="group" aria-labelledby={labelId} aria-busy={pending || undefined}
       className={[
         "srow flex gap-3 py-3",
         isStack ? "stack flex-col items-stretch" : "flex-row items-center justify-between",
@@ -50,7 +58,7 @@ export function SettingsRow({
       {/* 标签 + 说明（横排时说明在标签下方、控制区左侧；竖排时说明在控制区下方） */}
       <div className="grow min-w-0">
         <div className="flex items-center gap-2">
-          <span className="t text-sm font-medium">{label}</span>
+          {controlId ? <label id={labelId} htmlFor={controlId} className="t text-sm font-medium">{label}</label> : <span id={labelId} className="t text-sm font-medium">{label}</span>}
           {saved && <SavedHint>已保存</SavedHint>}
           {info && <InfoPopover label={typeof label === "string" ? label : "详细说明"}>{info}</InfoPopover>}
         </div>
@@ -62,12 +70,13 @@ export function SettingsRow({
       </div>
 
       {/* 控制区（横排时居右，竖排时置于标签下方） */}
-      {control && <div className="shrink-0">{control}</div>}
+      {control && <div className="srow-control shrink-0">{control}</div>}
 
       {/* 竖排时说明置于控制区下方 */}
       {isStack && sub && (
         <div className={`d text-xs ${danger ? "text-destructive-ink" : "text-muted-foreground"}`}>{sub}</div>
       )}
+      {(pending || error) && <div className={`settings-row-feedback text-xs ${error ? "text-destructive-ink" : "text-muted-foreground"}`} role={error ? "alert" : "status"}>{error ?? "保存中…"}</div>}
     </div>
   );
 }

@@ -3,46 +3,62 @@ import { invoke } from "../../../lib/tauri";
 import type { ConfigSaveResult } from "../../../lib/types";
 import { useToast } from "../../ui/toast";
 
-/**
- * 设置项保存 + 「已保存 ✓」行内反馈。拆卡后四张设置卡共用这一份，
- * 不让每张卡各写一遍 save。
- *
- * `savedKey` 用于定位反馈落在哪一行（同一张卡里多个开关共用一个 state）。
- *
- * try/catch 不能省：之前无 catch 时保存失败会静默抛未处理 rejection，
- * 开关看似生效实则未落盘。
- */
+type SaveState = { pending?: boolean; saved?: boolean; error?: string };
+
+/** 每项独立反馈；明确返回结果，调用方才能在保存失败时停止重启等后续动作。 */
 export function useSettingSave(onSaved: () => void) {
   const [savedKey, setSavedKey] = useState<string | null>(null);
+  const [states, setStates] = useState<Record<string, SaveState>>({});
   const { toast } = useToast();
-  // 卸载后不能再 setState；原实现的 setTimeout 没人清，切页签后仍会触发
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    },
-    [],
-  );
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const pending = useRef(new Set<string>());
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    const activeTimers = timers.current;
+    return () => { mounted.current = false; activeTimers.forEach(clearTimeout); };
+  }, []);
 
   const save = useCallback(
-    async (patch: Record<string, unknown>, key?: string) => {
+    async (patch: Record<string, unknown>, key = Object.keys(patch).sort().join("|")): Promise<boolean> => {
+      // 同一设置保存期间不再提交第二次；其它独立设置不受影响。
+      if (pending.current.has(key)) return false;
+      pending.current.add(key);
+      clearTimeout(timers.current.get(key));
+      setSavedKey(cur => cur === key ? null : cur);
+      setStates(cur => ({ ...cur, [key]: { pending: true } }));
       try {
         await invoke<ConfigSaveResult>("save_config", { patch });
         onSaved();
-        if (key) {
+        if (mounted.current) {
+          setStates(cur => ({ ...cur, [key]: { saved: true } }));
           setSavedKey(key);
-          if (timerRef.current) clearTimeout(timerRef.current);
-          timerRef.current = setTimeout(
-            () => setSavedKey((cur) => (cur === key ? null : cur)),
-            1500,
-          );
+          timers.current.set(key, setTimeout(() => {
+            timers.current.delete(key);
+            setStates(cur => ({ ...cur, [key]: {} }));
+            setSavedKey(cur => cur === key ? null : cur);
+          }, 1500));
         }
+        return true;
       } catch (e) {
-        toast(`保存失败：${e}`, "error");
+        const error = `保存失败：${e}`;
+        if (mounted.current) setStates(cur => ({ ...cur, [key]: { error } }));
+        toast(error, "error");
+        return false;
+      } finally {
+        pending.current.delete(key);
       }
     },
     [onSaved, toast],
   );
 
-  return { savedKey, save };
+  return {
+    savedKey, save,
+    pendingKeys: Object.keys(states).filter(key => states[key].pending),
+    savedKeys: Object.keys(states).filter(key => states[key].saved),
+    errors: Object.fromEntries(Object.entries(states).filter(([, state]) => state.error).map(([key, state]) => [key, state.error!])),
+    isPending: (key: string) => !!states[key]?.pending,
+    isSaved: (key: string) => !!states[key]?.saved,
+    errorFor: (key: string) => states[key]?.error,
+  };
 }

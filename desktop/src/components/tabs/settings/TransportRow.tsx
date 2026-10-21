@@ -24,28 +24,48 @@ export function TransportRow({
   last = false,
 }: {
   status?: StaticStatus;
-  onSelect: (next: "http" | "sse") => void;
+  onSelect: (next: "http" | "sse") => Promise<boolean>;
   saved?: boolean;
   last?: boolean;
 }) {
   const [confirmSse, setConfirmSse] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string>();
   const { toast } = useToast();
   const value = status?.transport ?? "http";
   const options: { key: "http" | "sse"; label: string }[] = [
     { key: "http", label: "HTTP" },
     { key: "sse", label: "SSE" },
   ];
+  const commit = async (next: "http" | "sse") => {
+    if (pending) return;
+    setPending(true);
+    setError(undefined);
+    try {
+      if (!await onSelect(next)) {
+        setError("协议未保存，请重试。当前运行协议未确认改变。");
+        return;
+      }
+      setConfirmSse(false);
+      toast(next === "sse" ? "已切换到 SSE，请到远端执行迁移命令" : "已切换到 HTTP", "success");
+    } catch (e) {
+      setError(`协议保存失败：${e}`);
+    } finally {
+      setPending(false);
+    }
+  };
   const handleSelect = (next: "http" | "sse") => {
+    if (pending || next === value) return;
     if (next === "sse") {
       setConfirmSse(true);
     } else {
-      onSelect("http");
+      void commit("http");
     }
   };
   return (
     <>
     <div
-      className={`flex items-center justify-between gap-4 py-3.5 ${
+      className={`srow flex items-center justify-between gap-4 py-3.5 ${
         last ? "" : "border-b"
       }`}
     >
@@ -60,14 +80,18 @@ export function TransportRow({
         <div className="mt-0.5 text-xs text-muted-foreground">
           默认 <b>HTTP</b>（稳定兼容）；<b>SSE</b> 让 run_command 输出实时推送
         </div>
+        {pending && <p role="status" className="mt-1 text-xs text-muted-foreground">正在保存协议…</p>}
+        {error && !confirmSse && <p role="alert" className="mt-1 text-xs text-destructive-ink">{error}</p>}
       </div>
-      <div className="flex shrink-0 rounded-lg border bg-muted p-0.5">
+      <div role="group" aria-label="MCP 传输协议" className="settings-segment flex shrink-0 rounded-lg border bg-muted p-0.5">
         {options.map((o) => {
           const active = value === o.key;
           return (
             <button
               key={o.key}
               type="button"
+              disabled={pending}
+              aria-pressed={active}
               onClick={() => handleSelect(o.key)}
               className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
                 active
@@ -85,12 +109,10 @@ export function TransportRow({
     {confirmSse && (
       <SseMigrationModal
         status={status}
-        onCancel={() => setConfirmSse(false)}
-        onConfirm={() => {
-          onSelect("sse");
-          setConfirmSse(false);
-          toast("已切换到 SSE，请到远端执行迁移命令", "success");
-        }}
+        pending={pending}
+        error={error}
+        onCancel={() => { if (!pending) setConfirmSse(false); }}
+        onConfirm={() => { void commit("sse"); }}
       />
     )}
     </>
@@ -101,10 +123,14 @@ function SseMigrationModal({
   status,
   onCancel,
   onConfirm,
+  pending,
+  error,
 }: {
   status?: StaticStatus;
   onCancel: () => void;
   onConfirm: () => void;
+  pending: boolean;
+  error?: string;
 }) {
   const { toast } = useToast();
   const host = status?.host ?? "0.0.0.0";
@@ -167,13 +193,14 @@ function SseMigrationModal({
         <code className="rounded bg-foreground/10 px-1">/mcp/sse</code>，重启该工具即可。
       </p>
       <div className="flex justify-end gap-2">
-        <Button variant="outline" size="sm" onClick={onCancel}>
+        <Button variant="outline" size="sm" disabled={pending} onClick={onCancel}>
           取消
         </Button>
-        <Button variant="default" size="sm" onClick={onConfirm}>
+        <Button variant="default" size="sm" disabled={pending} isLoading={pending} loadingText="保存中…" onClick={onConfirm}>
           我已复制，确认切换
         </Button>
       </div>
+      {error && <p role="alert" className="mt-3 text-xs text-destructive-ink">{error}</p>}
     </ConfirmModal>
   );
 }

@@ -4,7 +4,8 @@ import { invoke } from "./lib/tauri";
 import type { StatusResponse, StaticStatus } from "./lib/types";
 import { APP_INFO, CHANGELOG } from "./lib/about";
 import { getLastSeenVersion, setLastSeenVersion, countUnreadVersions } from "./lib/utils";
-import { SETTINGS_SECTIONS, type SettingsSection } from "./lib/settingsSections";
+import type { SettingsSection } from "./lib/settingsSections";
+import { SETTINGS_CATEGORIES } from "./lib/settingsCategories";
 import { settingsSectionForAnchor } from "./lib/settingsNavigation";
 import { transitionPage } from "./lib/pageTransition";
 import { isWindows } from "./lib/platform";
@@ -181,11 +182,11 @@ function AppContent() {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [activeTab, setActiveTab] = useState("connect");
 
-  // 设置连续滚动，侧栏选择和滚动跟随共用当前分类。
-  const [settingsActiveId, setSettingsActiveId] = useState<string>(SETTINGS_SECTIONS[0].id);
+  // 分类页常驻，切换目录不丢失正在编辑的表单或终端会话。
+  const [settingsActiveId, setSettingsActiveId] = useState<string>(SETTINGS_CATEGORIES[0].id);
   // 目录项按平台过滤（防火墙卡仅 Windows），侧栏与 SettingsTab 共用同一份。
   const settingsSections = useMemo<SettingsSection[]>(
-    () => SETTINGS_SECTIONS.filter((s) => !s.windowsOnly || isWindows(status?.platform)),
+    () => SETTINGS_CATEGORIES.filter((s) => !s.windowsOnly || isWindows(status?.platform)),
     [status?.platform],
   );
   const handleSettingsSelect = useCallback((id: string, anchor?: string) => {
@@ -428,7 +429,7 @@ function AppContent() {
           </TabsContent>
           <TabsContent value="settings" keepMounted className="app-content-box h-full overflow-hidden">
             <Suspense fallback={<TabFallback />}>
-              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} sections={settingsSections} onActiveSectionChange={setSettingsActiveId} onNavigate={handleNavigate} />
+              <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} sections={settingsSections} activeSection={settingsActiveId} onActiveSectionChange={setSettingsActiveId} onNavigate={handleNavigate} />
             </Suspense>
           </TabsContent>
           <TabsContent value="log" keepMounted className="h-full overflow-hidden">

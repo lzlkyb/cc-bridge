@@ -114,11 +114,12 @@ export function loadFontStack(): string {
   return fontStackOf(loadFontId());
 }
 
-export function saveFontId(id: TerminalFontId): void {
+export function saveFontId(id: TerminalFontId): boolean {
   try {
     localStorage.setItem(KEY, id);
+    return true;
   } catch {
-    /* 同上：存不下不影响功能 */
+    return false;
   }
 }
 
@@ -148,11 +149,12 @@ export function getFontStack(): string {
   return fontStackOf(cache);
 }
 
-export function setFontId(id: TerminalFontId): void {
-  if (cache === id) return;
+export function setFontId(id: TerminalFontId): boolean {
+  if (cache === id) return saveFontId(id);
   cache = id;
-  saveFontId(id);
+  const saved = saveFontId(id);
   listeners.forEach((l) => l());
+  return saved;
 }
 
 /** 仅供测试：localStorage 被内存桩替换后必须重读。 */

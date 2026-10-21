@@ -50,15 +50,18 @@ export function subscribeScrollback(fn: (n: number) => void): () => void {
 }
 
 /** 存盘并广播给所有开着的终端（热生效，xterm 自动裁剪旧缓冲）。 */
-export function saveScrollback(n: number): void {
+export function saveScrollback(n: number): boolean {
   const v = clampScrollback(n);
   cache = v;
+  let saved = false;
   try {
     localStorage.setItem(KEY, String(v));
+    saved = true;
   } catch {
     // 写不进就只留在内存，本次会话仍然生效。
   }
   listeners.forEach((fn) => fn(v));
+  return saved;
 }
 
 /** 仅供单测：清掉模块级缓存。 */

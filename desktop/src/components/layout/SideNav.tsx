@@ -143,6 +143,7 @@ function SideNavImpl({
 
       {settingsMode ? (
         <SideNavSettings
+          platform={status?.platform}
           sections={settingsSections}
           activeId={settingsActiveId ?? ""}
           onSelect={onSelectSection}

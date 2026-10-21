@@ -45,14 +45,17 @@ export function subscribeFontSize(fn: (n: number) => void): () => void {
 }
 
 /** 存盘并广播给所有开着的终端。 */
-export function saveFontSize(n: number): void {
+export function saveFontSize(n: number): boolean {
   const v = clampFontSize(n);
+  let saved = false;
   try {
     localStorage.setItem(KEY, String(v));
+    saved = true;
   } catch {
     /* 存不下就算了，不影响当前会话 */
   }
   // 广播不能放进上面的 try：没有 localStorage 时存盘失败是可接受的，
   // 但本次会话内的同步不能跟着一起挂。
   listeners.forEach((fn) => fn(v));
+  return saved;
 }

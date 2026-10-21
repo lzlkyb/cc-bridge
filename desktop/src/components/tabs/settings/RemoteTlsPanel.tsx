@@ -34,16 +34,22 @@ export function RemoteTlsPanel({
 }) {
   const { toast } = useToast();
   const [regenerating, setRegenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
   // 封禁数字：仅在首次拿到服务端值时回填；之后用户偏离值不被轮询冲掉。
-  const [threshold, setThreshold] = useState<number>(tls.banThreshold);
-  const [windowMin, setWindowMin] = useState<number>(tls.banWindowMin);
-  const syncedRef = useRef(false);
+  const [threshold, setThreshold] = useState(String(tls.banThreshold));
+  const [windowMin, setWindowMin] = useState(String(tls.banWindowMin));
+  const syncedRef = useRef({ threshold: tls.banThreshold, window: tls.banWindowMin });
   useEffect(() => {
-    if (syncedRef.current) return;
-    setThreshold(tls.banThreshold);
-    setWindowMin(tls.banWindowMin);
-    syncedRef.current = true;
-  }, [tls]);
+    const previous = syncedRef.current;
+    setThreshold(cur => cur === String(previous.threshold) ? String(tls.banThreshold) : cur);
+    setWindowMin(cur => cur === String(previous.window) ? String(tls.banWindowMin) : cur);
+    syncedRef.current = { threshold: tls.banThreshold, window: tls.banWindowMin };
+  }, [tls.banThreshold, tls.banWindowMin]);
+  const numbersValid = threshold.trim() !== "" && windowMin.trim() !== "" &&
+    Number.isInteger(Number(threshold)) && Number(threshold) >= 1 && Number(threshold) <= 1000 &&
+    Number.isInteger(Number(windowMin)) && Number(windowMin) >= 1 && Number(windowMin) <= 1440;
+  const numbersDirty = Number(threshold) !== tls.banThreshold || Number(windowMin) !== tls.banWindowMin;
 
   const ip = status?.lastSelectedIp ?? status?.lanIps?.[0] ?? "127.0.0.1";
   const url = `https://${ip}:${status?.port ?? 7823}/mcp`;
@@ -60,14 +66,24 @@ export function RemoteTlsPanel({
 
   // 保存 + 重启监听。TLS 开关 / 封禁策略都经 restart_server 生效，统一走这条。
   const saveAndRestart = async (patch: Record<string, unknown>, okMsg: string) => {
+    if (saving) return;
+    setSaving(true);
+    setError(undefined);
+    let saved = false;
     try {
       await invoke<ConfigSaveResult>("save_config", { patch });
+      saved = true;
       await invoke("restart_mcp_server");
       toast(okMsg, "success");
       onSaved();
       onRefetch();
     } catch (e) {
-      toast(`保存失败：${e}`, "error");
+      const message = saved ? `配置已保存，但重启服务失败：${e}` : `保存失败：${e}`;
+      setError(message);
+      toast(message, "error");
+      if (saved) onSaved();
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -82,21 +98,6 @@ export function RemoteTlsPanel({
     } finally {
       setRegenerating(false);
     }
-  };
-
-  // 数字失焦保存：与当前生效值相同（含非法输入回退）则跳过。
-  const handleNumberBlur = (kind: "threshold" | "window") => {
-    const isT = kind === "threshold";
-    const raw = isT ? threshold : windowMin;
-    const clamped = Math.min(Math.max(Math.round(raw) || 0, 1), isT ? 1000 : 1440);
-    if (isT) setThreshold(clamped);
-    else setWindowMin(clamped);
-    const current = isT ? tls.banThreshold : tls.banWindowMin;
-    if (clamped === current) return;
-    saveAndRestart(
-      isT ? { remoteBanThreshold: clamped } : { remoteBanWindowMin: clamped },
-      isT ? "封禁阈值已生效" : "封禁窗口已生效",
-    );
   };
 
   return (
@@ -158,32 +159,42 @@ export function RemoteTlsPanel({
           sub={tls.boundToAll ? undefined : "当前未绑定 0.0.0.0，封禁不生效"}
           info="连续 401 达阈值后该 IP 在窗口内直接 429；认证成功即清零，重启后清零。仅监听 0.0.0.0 时后端实际执行封禁。"
           checked={tls.banEnabled}
+          disabled={saving}
+          pending={saving}
           onChange={(v) => saveAndRestart({ remoteBanEnabled: v }, v ? "封禁已开启" : "封禁已关闭")}
         />
         <div className="flex items-center justify-between py-2">
-          <span className="text-xs font-semibold">封禁阈值（连续 401 次数）</span>
+          <label htmlFor="remote-ban-threshold" className="text-xs font-semibold">封禁阈值（连续 401 次数）</label>
           <Input
+            id="remote-ban-threshold"
             type="number"
             min={1}
             max={1000}
             value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
-            onBlur={() => handleNumberBlur("threshold")}
+            disabled={saving || !tls.banEnabled}
+            aria-describedby="remote-ban-help"
+            onChange={(e) => setThreshold(e.target.value)}
             className="w-16 px-1 text-center font-mono text-xs font-bold tabular-nums"
           />
         </div>
         <div className="flex items-center justify-between py-2">
-          <span className="text-xs font-semibold">封禁窗口（分钟）</span>
+          <label htmlFor="remote-ban-window" className="text-xs font-semibold">封禁窗口（分钟）</label>
           <Input
+            id="remote-ban-window"
             type="number"
             min={1}
             max={1440}
             value={windowMin}
-            onChange={(e) => setWindowMin(Number(e.target.value))}
-            onBlur={() => handleNumberBlur("window")}
+            disabled={saving || !tls.banEnabled}
+            aria-describedby="remote-ban-help"
+            onChange={(e) => setWindowMin(e.target.value)}
             className="w-16 px-1 text-center font-mono text-xs font-bold tabular-nums"
           />
         </div>
+        <p id="remote-ban-help" className="mb-2 text-xs text-muted-foreground">阈值 1–1000 次，窗口 1–1440 分钟。应用将重启服务，客户端会短暂断开。</p>
+        <Button size="sm" disabled={!tls.banEnabled || !numbersValid || !numbersDirty || saving} isLoading={saving} loadingText="应用中…" onClick={() => void saveAndRestart({ remoteBanThreshold: Number(threshold), remoteBanWindowMin: Number(windowMin) }, "封禁策略已应用，服务已重启")}>应用封禁策略</Button>
+        {!numbersValid && <p role="alert" className="mt-2 text-xs text-destructive-ink">请按范围输入整数。</p>}
+        {error && <p role="alert" className="mt-2 text-xs text-destructive-ink">{error}</p>}
       </div>
 
       {/* 自签兼容性口径：不打包票，指路反代文档 */}

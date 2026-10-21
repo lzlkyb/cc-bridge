@@ -63,11 +63,11 @@ export function ConfigGroup({
   return (
     <Card id="set-config">
       <CardHeader>
-        <CardTitle icon={<Icon name="download" />}>配置</CardTitle>
+        <CardTitle icon={<Icon name="download" />}>配置迁移</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-xs text-muted-foreground">
-          导入将覆盖当前设置并自动重启服务
+          导入将覆盖服务配置（包括白名单、Token 和命令执行设置）并重启服务。终端字体、配色等本机偏好不在此导入导出范围；导出的文件含凭据，请妥善保管。
         </p>
         <div className="flex items-center gap-3">
           <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">
@@ -104,7 +104,7 @@ export function ConfigGroup({
           title="确定导入此配置文件？"
           description={
             <>
-              将用 <b>{pendingFile.name}</b> 覆盖当前全部配置（白名单、Token、命令执行等安全开关）并自动重启服务，
+              将用 <b>{pendingFile.name}</b> 覆盖当前服务配置（白名单、Token、命令执行等安全开关，不含终端字体与配色等本机偏好）并自动重启服务，
               且不可撤销。请确认此文件来自可信来源。
             </>
           }

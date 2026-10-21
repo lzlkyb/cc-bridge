@@ -21,10 +21,13 @@ export function NetworkGroup({
   status?: StaticStatus;
   onSaved: () => void;
 }) {
-  const [port, setPort] = useState(7823);
+  const [port, setPort] = useState("7823");
   const [saving, setSaving] = useState(false);
   const [restarted, setRestarted] = useState(false);
   const [transportSaved, setTransportSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => { timers.current.forEach(clearTimeout); }, []);
   const { toast } = useToast();
 
   // 仅在用户未偏离（当前输入仍等于上次同步的服务端值）时跟随服务端回填；
@@ -36,24 +39,27 @@ export function NetworkGroup({
     if (!status) return;
     const serverPort = status.port;
     setPort((prev) => {
-      const follow = syncedRef.current === null || prev === syncedRef.current;
+      const follow = syncedRef.current === null || prev === String(syncedRef.current);
       syncedRef.current = serverPort;
-      return follow ? serverPort : prev;
+      return follow ? String(serverPort) : prev;
     });
   }, [status]);
 
-  const dirty = status ? port !== status.port : false;
+  const dirty = status ? port !== String(status.port) : false;
   // 端口范围校验：1–65535 的整数
-  const valid = Number.isInteger(port) && port >= 1 && port <= 65535;
+  const valid = /^\d+$/.test(port) && Number(port) >= 1 && Number(port) <= 65535;
   const invalid = !valid;
 
   const handleSaveAndRestart = async () => {
-    if (!valid) return;
+    if (!valid || saving) return;
+    setSaveError("");
     setSaving(true);
+    let persisted = false;
     try {
       const result = await invoke<ConfigSaveResult>("save_config", {
-        patch: { port },
+        patch: { port: Number(port) },
       });
+      persisted = true;
       if (result.restartRequired) {
         await invoke("restart_mcp_server");
         // 防火墙联动：端口变了 → 旧端口规则残留、新端口无放行规则。主动刷新
@@ -70,13 +76,16 @@ export function NetworkGroup({
         } else {
           toast("端口已更新，服务已重启", "success");
         }
-        setTimeout(() => setRestarted(false), 3000);
+        timers.current.push(setTimeout(() => setRestarted(false), 3000));
       } else {
         toast("端口已保存", "success");
       }
       onSaved();
     } catch (e) {
-      toast(`保存失败：${String(e)}`, "error");
+      const message = persisted ? `端口已保存，但服务重启失败：${String(e)}。请重试重启服务。` : `端口保存失败：${String(e)}`;
+      setSaveError(message);
+      toast(message, "error");
+      if (persisted) onSaved();
     } finally {
       setSaving(false);
     }
@@ -85,20 +94,23 @@ export function NetworkGroup({
   return (
     <Card id="set-network">
       <CardHeader>
-        <CardTitle icon={<Icon name="server" />}>网络</CardTitle>
+        <CardTitle icon={<Icon name="server" />}>服务监听</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         {/* 端口 + 按钮 同一行（统一到 SettingsRow）*/}
         <SettingsRow
+          id="network-port" controlId="network-port-input"
+          error={saveError} pending={saving}
           label="端口"
           control={
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <Input
+              <Input id="network-port-input"
                 type="number"
                 min={1}
                 max={65535}
                 value={port}
-                onChange={(e) => setPort(Number(e.target.value))}
+                onChange={(e) => setPort(e.target.value)}
+                disabled={saving || !status}
                 className={`w-28! flex-none ${invalid ? "border-destructive focus-visible:ring-destructive" : ""}`}
                 aria-label="监听端口"
                 aria-invalid={invalid}
@@ -131,9 +143,11 @@ export function NetworkGroup({
               await invoke<ConfigSaveResult>("save_config", { patch: { transport: v } });
               onSaved();
               setTransportSaved(true);
-              setTimeout(() => setTransportSaved(false), 1500);
+              timers.current.push(setTimeout(() => setTransportSaved(false), 1500));
+              return true;
             } catch (e) {
               toast(`保存失败：${e}`, "error");
+              return false;
             }
           }}
           last
