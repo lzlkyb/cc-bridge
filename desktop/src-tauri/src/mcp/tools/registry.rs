@@ -115,7 +115,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             edit_files,
             EditFilesArgs,
-            r#"Edit files in place by exact string replacement (like native Edit). For each file, `oldString` must match EXACTLY ONCE unless `replaceAll` is true — include enough surrounding context to be unique. Preserves the file's original encoding (a GBK file stays GBK). Backs up before writing. Far cheaper than rewriting whole files with write_files. `diff` ("auto" default | "none" | "stat" | "hunks" | "full") controls how much of the change is echoed back."#,
+            r#"Edit files in place by exact string replacement (like native Edit). For each file, `oldString` must match EXACTLY ONCE unless `replaceAll` is true — include enough surrounding context to be unique. Preserves the file's original encoding (a GBK file stays GBK). Backs up before writing. Far cheaper than rewriting whole files with write_files. Optional `encoding` (e.g. "gbk") forces that decoding for this call, overriding the server's auto-detect toggle — use it for GBK sources instead of changing global settings. Optional `expectCount` asserts how many times `oldString` must occur: a mismatch aborts the whole entry WITHOUT writing and reports the actual count plus line numbers. `diff` ("auto" default | "none" | "stat" | "hunks" | "full") controls how much of the change is echoed back."#,
             true
         ),
         register_tool!(
@@ -202,7 +202,13 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             get_command_output,
             GetCommandOutputArgs,
-            r#"Incrementally fetch stdout/stderr of a background command started by run_command(background=true). Pass stdoutOffset/stderrOffset (bytes already consumed) to get only new output since the last call."#,
+            r#"Incrementally fetch stdout/stderr of a background command started by run_command(background=true). Pass stdoutOffset/stderrOffset (bytes already consumed) to get only new output since the last call. Optional `include`/`exclude` regexes and `tailLines` filter the returned slice server-side (dropped lines are only counted, not shown) — this replaces piping the command through grep. If you just want to WAIT for the command to finish, call wait_command instead of polling this repeatedly."#,
+            false
+        ),
+        register_tool!(
+            wait_command,
+            WaitCommandArgs,
+            r#"Wait for a background command (run_command background=true) to finish, then return its filtered output in ONE round trip — use this instead of polling get_command_output while a long build runs. `timeoutSec` defaults to 120 (max 600; 0 = just peek without waiting). Optional `untilPattern` (regex) returns as soon as a matching line appears — useful when the command prints a completion marker long before it exits; check `matchedPattern` and `running` in the result. `include`/`exclude` regexes and `tailLines` (default 40) filter the output server-side and report how many lines were dropped/omitted. On timeout the process is NOT killed: `timedOut:true` + `running:true`, call again to keep waiting or use stop_command to end it. Prefer this over `run_command` foreground mode for anything longer than a couple of minutes."#,
             false
         ),
         register_tool!(stop_command, StopCommandArgs, STOP_COMMAND_DESC, false),

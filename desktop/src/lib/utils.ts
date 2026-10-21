@@ -89,6 +89,7 @@ const TOOL_LABELS: Record<string, string> = {
   view_image: "查看图片",
   run_command: "执行命令",
   get_command_output: "拉取命令输出",
+  wait_command: "等待命令结束",
   stop_command: "终止命令",
 };
 
@@ -335,7 +336,7 @@ const NON_SHELL_TOOLS = [
  * 不是连接命令用的 .mcp.json——权限规则属个人本地免打扰设置，不适合和团队共享的
  * MCP 服务器配置混在一起。
  * includeShellTools=false 时逐个列出 15 个文件/列表/图片类工具规则，run_command 系列不包含；
- * =true 时改成单条 mcp__cc-bridge__* 通配符（等价于全部 21 个，且自动覆盖未来新增工具）。
+ * =true 时改成单条 mcp__cc-bridge__* 通配符（等价于全部 22 个，且自动覆盖未来新增工具）。
  */
 export function buildPermissionGrantCommand(
   scope: McpScope,

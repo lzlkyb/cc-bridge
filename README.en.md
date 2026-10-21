@@ -67,7 +67,7 @@ Mode A                                Mode B
 │  The machine with the files (Windows / macOS)               │
 │  └─ cc-bridge ── single-process Tauri 2 desktop app         │
 │       ├─ Embedded axum HTTP(S) server ── MCP JSON-RPC       │
-│       │        + 21 tools + validation + backups + rate     │
+│       │        + 22 tools + validation + backups + rate     │
 │       │          limiting + 401 ban + audit log            │
 │       ├─ SQLite config store (atomic updates)               │
 │       └─ React frontend (Tauri IPC, management panel)       │
@@ -80,7 +80,7 @@ Key decisions: pure-Rust backend compiled into the Tauri binary (no Node sidecar
 
 File operations: `list_allowed_roots` (discover the whitelist), `list_directory`, `read_files` (batch, line ranges, encoding detection incl. GBK→UTF-8), `write_files` (auto-backup before overwrite), `edit_files` (unique-match string replace, preserves encoding), `notebook_edit` (Jupyter), `delete_files`, `move_files`, `copy_files`, `create_directory`, `remove_directory`, `search_files` (glob + content/regex), `analyze_file` (encoding + language + heuristic symbol counts), `view_image` (returns an image as an MCP image block — a few thousand tokens instead of hundreds of thousands of base64 chars; optional crop/downscale/re-encode).
 
-Efficiency & control: `batch` (N tool calls in one round trip), `run_command` (shell, **off by default**; foreground or background), `get_command_output` (incremental stdout/stderr pull), `stop_command` (kills the whole process tree), `push_notification` (desktop notification, optional compile-time feature).
+Efficiency & control: `batch` (N tool calls in one round trip), `run_command` (shell, **off by default**; foreground or background), `wait_command` (wait for a background command to finish, or until a regex matches, in one round trip — no polling loop; filters output server-side), `get_command_output` (incremental stdout/stderr pull), `stop_command` (kills the whole process tree), `push_notification` (desktop notification, optional compile-time feature).
 
 External MCP bridging: `mcp_list_servers` (list bridged external MCP servers + their tools), `mcp_proxy` (invoke a tool on an external server — ⚠️ separate process, **not** constrained by the path whitelist, blocked entirely in read-only mode).
 

@@ -15,6 +15,7 @@ pub mod mcp_list_servers;
 pub mod mcp_proxy;
 pub mod move_files;
 pub mod notebook_edit;
+pub mod output_filter;
 #[cfg(feature = "notifications")]
 pub mod push_notification;
 pub mod read_files;
@@ -25,6 +26,7 @@ pub mod search_files;
 pub mod shell;
 pub mod stop_command;
 pub mod view_image;
+pub mod wait_command;
 pub mod write_files;
 
 /// 按 MCP `tools/call` 规范把结果包成 `content` 数组（`content[0].text` 是一段 JSON 文本）。

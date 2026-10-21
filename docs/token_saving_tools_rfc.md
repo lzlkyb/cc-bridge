@@ -374,3 +374,49 @@ NC 的 ecj 编译要 3~4 分钟，`run_command` 前台超时只有一两分钟�
 - `wait_command`，以及 `run_command` / `get_command_output` 的 `include` / `exclude` / `tailLines`
 - 第一部分的文件直传（`prepare_upload` / `prepare_download` + `/transfer/{ticket}`）——前置决策见 §七：`ToolRunner` 签名拿不到请求头，得先定「task_local 传 per-request ctx」还是「回退 config.host+port」
 - `render`、`file_hash`
+
+---
+
+# 二十二、实施记录（2026-10-21，P1 两项）
+
+## 已落地
+
+### 十六：`edit_files` 的 `encoding` 与 `expectCount`
+
+- `EditEntry`（含 `GroupedEdit` 分组形态）新增两个可选字段。优先级：**显式 `encoding` > 服务端 `encoding_detect_enabled` > UTF-8**。显式值必须能盖住开关——否则「GBK 项目不想为改一个文件去改全局设置」这个用法直接失效。
+- 标签在碰文件之前先验：拼错时返回可用标签清单（`utf-8 / gbk / gb18030 / big5 / utf-16le / utf-16be / latin1` 及 encoding_rs 别名），而不是让 `read_text` 抛一句 `Unknown encoding label`。
+- `expectCount` 是**断言**，不改变替换规则（是否全替仍由 `replaceAll` 决定）。次数不符时整条拒写且不碰磁盘，错误里给实际次数与前 5 处行号（`位置：第 12、48 行`）。
+- 计数策略：`replaceAll` 或 `expectCount` 存在时全量扫描（要真实次数），否则沿用 `take(2)` 早停（E-P0-5）。
+- 顺带修掉一处**误导性错误信息**：非 `replaceAll` 的唯一性失败原本复用早停值，永远写「matched 2 times」；现在错误分支重新全量计数，报真实总数。
+- 换行子项**仍未改**，理由见 §二十一（`oldString` 早已归一化；`newString` 含 `\r` 是显式拒绝，属取舍不属 bug）。
+
+### 十七：`wait_command` + 输出过滤
+
+- 新模块 `mcp/tools/output_filter.rs`：`include` / `exclude`（正则，**按行**判定，匹配对象不含行尾，所以 `^ERR`、`ERR$` 都符合直觉）+ `tailLines`。先过滤再截尾；`split_inclusive('\n')` 拼接，CRLF 与末尾空行原样保留。
+- 无参数时 `is_active()` 为 false，`apply` 原样返回同一个字符串——**响应形状与改造前逐字段一致**，不会平白多出两个 0。
+- 正则写错**整次报错**（不静默当成「不匹配」，那会让调用方以为过滤生效了）。
+- `run_command`（前台）、`get_command_output`（本次增量）接入同一份过滤器；`get_command_output` 的 `tailLines` 作用在 offset 之后的那一段，不是整份缓冲。
+- `wait_command`：`timeoutSec` 默认 120 / 上限 600（0 = 只看一眼）；`untilPattern` 命中即返回，返回值用 `matchedPattern` + `running` 说明「命中了但命令还在跑」；**超时不杀进程**（`timedOut:true` + `running:true` + `note`）。
+- 轮询间隔 100ms；`untilPattern` 每跳对累积缓冲重扫（上限是 `maxOutputBytes`，默认 1MB）。没做增量扫描：跨缓冲边界的匹配要单独设计，收益不抵风险。
+
+## 偏差与取舍
+
+1. **`run_command` 的过滤参数对 `background=true` 无效**（那一刻还没有输出）。没有在运行时塞提醒字段，而是写进 `run_command_description`——模型读的是描述，多一个字段反而是噪音。
+2. **`wait_command` 默认 `tailLines=40`**：新工具的响应一定会带 `stdoutOmittedLines`。这与「老工具零参数零改动」的原则不冲突——那条约束只针对既有工具。
+3. **过滤统计字段全部用 `DroppedLines` / `OmittedLines` 两个名字**（分别对应「被正则剔除」与「被 tailLines 省略」），因为两者的含义对排查完全不同，合成一个数会看不出是规则太严还是行数太多。
+
+## 未做
+
+- 第一部分的文件直传（`prepare_upload` / `prepare_download` + `/transfer/{ticket}`）——仍卡在 §七 的前置决策：`ToolRunner` 签名 `fn(Value, &Arc<AppState>)` 拿不到请求头，要么引入 per-request ctx（task_local），要么退回 `config.host + port` 拼 URL（端口转发场景会拼错）。
+- `render`（依赖 Edge/Office + COM 生命周期，风险最高）
+- `file_hash`（`copy_files` 加 `verify` 与它二选一，倾向新工具）
+
+## 附带修复：`run_command` 的壳层回声从未生效
+
+审计 `run_command` 返回值时发现的既有缺陷（不属于本 RFC 的设计范围，但顺手改掉）：
+
+- 旧实现是 `value.as_object_mut().insert("shell", …)` —— `value` 是 `text_result` 的**包装层**（与 `content` 同级）。MCP 客户端只读 `content` 数组，顶层多余字段被直接丢弃，所以「回声当前壳层」这个功能**一次都没生效过**：模型永远不知道 `shell_type` 是 cmd 还是 bash，用户换壳后仍会按旧语法继续发命令。
+- 修法：注入并入 `inject_session_info`，写进 `content[0].text` 内层（与 `sessionId` / `cwd` 同一层），并改用 `info.as_object_mut()` 再写入，避免 `text` 万一不是 JSON 对象时 `info["k"] = …` panic。
+- 唯一的行为变化：默认配置（无 session、无 cwd 回退）下 `run_command` 的响应现在必然带 `shell` 字段。`sessionId` / `cwdFallback` / `cwd` 仍按原条件注入，不留 `null` 占位。
+- `run_command_description` 补一句「返回中的 shell 字段是本次实际生效的壳层」，让模型在描述与实际不一致时有明确的取值优先级。
+- 回归测试：`shell_echo_lands_inside_content_text`（顶层无 `shell`、内层有、无 `null` 占位）、`shell_field_visible_in_real_response`（真跑 `echo`，期望值由 `config.shell_type` 推出）。

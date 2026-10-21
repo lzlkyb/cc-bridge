@@ -18,9 +18,22 @@ pub struct EditEntry {
     pub new_string: String,
     #[serde(default, rename = "replaceAll")]
     pub replace_all: bool,
+    /// 显式编码（如 `"gbk"`、`"gb18030"`、`"utf-16le"`）：按它读、也按它写回，
+    /// **绕过**服务端「编码自动识别」开关——GBK 项目里不必为了改一个文件去改全局设置。
+    /// 省略时行为不变（开关关 → 按 UTF-8 读，与 `read_files` 同口径）。
+    #[serde(default)]
+    pub encoding: Option<String>,
+    /// 期望的出现次数：实际次数不等时**不写盘**，错误里给实际次数与前几处行号。
+    ///
+    /// WHY：模型改代码前最想确认的就是「这段原文是不是恰好出现 N 次」，没有这个参数时
+    /// 只能手写 `assert s.count(a) == N` 的脚本绕路。它是**断言**，不改变替换规则：
+    /// 是否全替换仍由 `replaceAll` 决定。
+    #[serde(default, rename = "expectCount")]
+    pub expect_count: Option<usize>,
 }
 
-/// 分组形态的内部 edit 项：{oldString, newString, replaceAll?}（path 由外层提供）。
+/// 分组形态的内部 edit 项：{oldString, newString, replaceAll?, encoding?, expectCount?}
+/// （path 由外层提供）。
 #[derive(Debug, Deserialize)]
 struct GroupedEdit {
     #[serde(rename = "oldString")]
@@ -29,6 +42,10 @@ struct GroupedEdit {
     new_string: String,
     #[serde(default, rename = "replaceAll")]
     replace_all: bool,
+    #[serde(default)]
+    encoding: Option<String>,
+    #[serde(default, rename = "expectCount")]
+    expect_count: Option<usize>,
 }
 
 /// 客户端实际发过的两种 item 形态（untagged 按序尝试）：
@@ -78,6 +95,8 @@ where
                         old_string: e.old_string,
                         new_string: e.new_string,
                         replace_all: e.replace_all,
+                        encoding: e.encoding,
+                        expect_count: e.expect_count,
                     });
                 }
             }
@@ -225,6 +244,20 @@ async fn edit_single(
         });
     }
 
+    // 显式编码先验标签，再碰文件：标签拼错时给「有哪些可用」而不是让 `read_text`
+    // 报一句 Unknown encoding label 之后模型还要猜。
+    if let Some(label) = f.encoding.as_deref() {
+        if crate::encoding::label_to_encoding(label).is_none() {
+            return Err(EditError {
+                message: format!(
+                    "未知编码 {label:?}。标签与 encoding_rs 一致，常用：utf-8 / gbk / gb18030 / big5 / \
+                     utf-16le / utf-16be / latin1（也可以是 windows-1252 这类别名）。"
+                ),
+                warning: warning.clone(),
+            });
+        }
+    }
+
     let resolved = security::path::resolve_safe_path_cached(
         &f.path,
         &state.cached_roots(),
@@ -259,15 +292,25 @@ async fn edit_single(
     // `config.encoding_detect_enabled`（默认关），关时强制按 UTF-8 读、不走 GBK/GB18030 启发式。两个工具对
     // 同一个文件可能得到不同的解码结果，导致“`read_files` 里看起来完全一样的内容，
     // `edit_files` 却匹配不到”这类诡异现象。现与 read_files.rs 保持同样的判断逻辑。
-    let effective_encoding = if config.encoding_detect_enabled {
-        None
-    } else {
-        Some("utf-8")
+    //
+    // 优先级：显式 `encoding` > 服务端开关 > UTF-8。显式值必须能盖住开关——这正是
+    // 「NC 项目一堆 GBK 源码，但不想为改文件去改全局设置」的用法，否则这个参数没有意义。
+    let effective_encoding: Option<&str> = match f.encoding.as_deref() {
+        Some(label) => Some(label),
+        None if config.encoding_detect_enabled => None,
+        None => Some("utf-8"),
     };
     let ft = encoding::read_text(&raw, effective_encoding)?;
     let content = &ft.text;
 
-    let match_count = content.matches(&needle).take(2).count(); // E-P0-5: 早停在 >1，避免全文件扫描
+    // 计数：只有需要精确值时才全量扫描（`replaceAll` 要上报真实次数、`expectCount` 要断言），
+    // 其余情况沿用早停（E-P0-5），避免对大文件做无谓的全串扫描。
+    let need_exact = f.replace_all || f.expect_count.is_some();
+    let match_count = if need_exact {
+        content.matches(&needle).count()
+    } else {
+        content.matches(&needle).take(2).count()
+    };
     if match_count == 0 {
         return Err(EditError {
             message: "oldString not found in file".into(),
@@ -275,16 +318,34 @@ async fn edit_single(
         });
     }
 
-    let (updated, replacements) = if f.replace_all {
-        // match_count 因 take(2) 早停最多为 2（仅用于唯一性判定）；replaceAll 需上报真实
-        // 替换次数，这里重新全量计数（replace 本身也会全串扫描，代价可忽）。
-        let actual = content.matches(&needle).count();
-        (content.replace(&needle, &f.new_string), actual)
-    } else {
-        if match_count > 1 {
+    // `expectCount` 是**断言**：不符就整条拒写。绝不能「照着头一次出现的位置改下去」——
+    // 调用方要的正是「确认这里恰好只有一处」，改错了位置比不改更糟。
+    if let Some(expected) = f.expect_count {
+        if match_count != expected {
             return Err(EditError {
                 message: format!(
-                    "oldString matched {match_count} times, not unique; add more surrounding context or set replaceAll=true"
+                    "expectCount={expected} 与实际情况不符：oldString 在文件里出现 {match_count} 次（{}）；未写盘。",
+                    occurrence_hint(content, &needle)
+                ),
+                warning: warning.clone(),
+            });
+        }
+    }
+
+    let (updated, replacements) = if f.replace_all {
+        (content.replace(&needle, &f.new_string), match_count)
+    } else {
+        if match_count > 1 {
+            // 早停时 `match_count` 只是「≥2」的下界；错误信息里报真实总数才有助于
+            // 判断该补多少上下文（这条路径已经是错误分支，多扫一次不影响正常开销）。
+            let total = if need_exact {
+                match_count
+            } else {
+                content.matches(&needle).count()
+            };
+            return Err(EditError {
+                message: format!(
+                    "oldString matched {total} times, not unique; add more surrounding context or set replaceAll=true"
                 ),
                 warning: warning.clone(),
             });
@@ -358,6 +419,29 @@ pub(crate) async fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<
         return Err(format!("Atomic rename failed: {e}"));
     }
     Ok(())
+}
+
+/// 给「次数不符」类错误定位的行号提示：按出现顺序最多列 5 处，如 `位置：第 12、48 行`。
+///
+/// 只在错误分支调用，代价无所谓；`needle` 为空时返回空串（调用方已挡掉空 oldString）。
+fn occurrence_hint(content: &str, needle: &str) -> String {
+    if needle.is_empty() {
+        return String::new();
+    }
+    let mut lines: Vec<usize> = Vec::new();
+    let mut from = 0usize;
+    while let Some(pos) = content[from..].find(needle) {
+        let abs = from + pos;
+        lines.push(content[..abs].matches('\n').count() + 1);
+        if lines.len() >= 5 {
+            break;
+        }
+        from = abs + needle.len();
+    }
+    let list: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    // 收满 5 处说明可能还有更多，用「等」而不是给出一个看起来完整的清单。
+    let tail = if lines.len() >= 5 { " 等" } else { "" };
+    format!("位置：第 {} 行{}", list.join("、"), tail)
 }
 
 /// 检测 old_string 首尾是否多带空白字符（空格 / 制表符 / 换行 / 回车），命中返回一条告警文案。
@@ -531,5 +615,173 @@ mod tests {
         let text = out["content"][0]["text"].as_str().unwrap_or_default();
         assert!(text.contains("-three"), "full 应回显被删行：{text}");
         assert!(text.contains("+THREE"), "full 应回显新增行：{text}");
+    }
+
+    /// 取 `content[0].text` 里那一行结果的 JSON。
+    fn row(out: &Value) -> Value {
+        let text = out["content"][0]["text"].as_str().expect("text 块");
+        serde_json::from_str::<Value>(text).expect("行结果是 JSON")
+    }
+
+    /// `expectCount` 不符：整条拒写，文件一个字节都不许变，并给出实际次数与位置。
+    ///
+    /// 🔴 「拒写」是本参数的全部价值：若允许它「照着第一次出现的位置改下去」，
+    /// 调用方以为在改唯一一处、实际改错了地方，比不执行危险得多。
+    #[tokio::test]
+    async fn expect_count_mismatch_refuses_to_write() {
+        use crate::mcp::tools::testutil::*;
+
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("dup.txt");
+        std::fs::write(&file, "foo\nbar\nfoo\n").expect("seed");
+        let path = file.to_string_lossy().into_owned();
+
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": path, "oldString": "foo", "newString": "zzz", "expectCount": 1 }]
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("工具调用本身成功");
+        let r = row(&out);
+        let err = r[0]["error"].as_str().unwrap_or_default();
+        assert!(r[0]["ok"].as_bool() == Some(false), "应失败：{r}");
+        assert!(err.contains("expectCount=1"), "应回显期望值：{err}");
+        assert!(err.contains("出现 2 次"), "应报实际次数：{err}");
+        assert!(err.contains("第 1、3 行"), "应给出行号：{err}");
+        assert_eq!(
+            std::fs::read_to_string(&file).expect("读回"),
+            "foo\nbar\nfoo\n",
+            "断言失败时文件必须原样"
+        );
+    }
+
+    /// `expectCount` 相符：正常写盘，`replacements` 应是真实替换数（配合 replaceAll）。
+    #[tokio::test]
+    async fn expect_count_match_writes_all_occurrences() {
+        use crate::mcp::tools::testutil::*;
+
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("dup.txt");
+        std::fs::write(&file, "foo\nbar\nfoo\n").expect("seed");
+        let path = file.to_string_lossy().into_owned();
+
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{
+                "path": path, "oldString": "foo", "newString": "zzz",
+                "replaceAll": true, "expectCount": 2
+            }]
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("edit");
+        let r = row(&out);
+        assert_eq!(r[0]["ok"].as_bool(), Some(true), "应成功：{r}");
+        assert_eq!(r[0]["replacements"].as_u64(), Some(2), "应替换 2 处：{r}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "zzz\nbar\nzzz\n");
+    }
+
+    /// `expectCount` 与 `replaceAll` 的组合校验：只错一处也不动文件。
+    #[tokio::test]
+    async fn expect_count_zero_occurrence_fails_without_write() {
+        use crate::mcp::tools::testutil::*;
+
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "alpha\n").expect("seed");
+        let path = file.to_string_lossy().into_owned();
+
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": path, "oldString": "beta", "newString": "x", "expectCount": 1 }]
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("工具调用本身成功");
+        let err = row(&out)[0]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(err.contains("not found"), "0 次仍是 not found：{err}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "alpha\n");
+    }
+
+    /// 显式 `encoding:"gbk"` 必须盖住「自动识别关闭」的默认值：
+    /// 按 GBK 读、按 GBK + 原换行写回，中文不乱码、字节仍是 GBK。
+    ///
+    /// 这是本参数存在的理由——GBK 项目不必为了改一个文件去改全局设置。
+    #[tokio::test]
+    async fn explicit_encoding_overrides_toggle_and_preserves_gbk_crlf() {
+        use crate::mcp::tools::testutil::*;
+
+        let (state, dir) = make_state(|c| {
+            c.backup_enabled = false;
+            c.encoding_detect_enabled = false; // 默认：强制 UTF-8，GBK 文件本该解不开
+        });
+        let file = dir.join("Nc.java");
+        let gbk = crate::encoding::label_to_encoding("gbk").expect("gbk 应可用");
+        let bytes = crate::encoding::encode_string("// 中文注释\r\nclass A {}\r\n", gbk);
+        std::fs::write(&file, &bytes).expect("seed");
+        let path = file.to_string_lossy().into_owned();
+
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{
+                "path": path, "oldString": "class A {}", "newString": "class B {}",
+                "encoding": "gbk"
+            }]
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("edit");
+        let r = row(&out);
+        assert_eq!(r[0]["ok"].as_bool(), Some(true), "显式 gbk 应能编辑：{r}");
+        assert_eq!(r[0]["encoding"].as_str(), Some("GBK"), "编码应是 GBK：{r}");
+        assert_eq!(r[0]["newline"].as_str(), Some("CRLF"), "换行应保住：{r}");
+
+        let after = std::fs::read(&file).expect("读回");
+        let decoded = crate::encoding::read_text(&after, Some("gbk")).expect("按 gbk 解");
+        let decoded_text = decoded.text.clone();
+        assert!(
+            decoded_text.contains("中文注释"),
+            "中文必须完好：{decoded_text}"
+        );
+        assert!(decoded.text.contains("class B {}"), "替换应生效");
+        assert!(decoded.crlf, "CRLF 必须保住");
+        assert!(
+            std::str::from_utf8(&after).is_err(),
+            "落盘字节必须仍是 GBK（中文的 GBK 字节不是合法 UTF-8）"
+        );
+    }
+
+    /// 编码标签拼错：报错要能自己解释，列出可用标签，而不是一句 Unknown encoding label。
+    #[tokio::test]
+    async fn unknown_encoding_label_lists_available_labels() {
+        use crate::mcp::tools::testutil::*;
+
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "alpha\n").expect("seed");
+        let path = file.to_string_lossy().into_owned();
+
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": path, "oldString": "alpha", "newString": "x", "encoding": "gb2312x" }]
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("工具调用本身成功");
+        let err = row(&out)[0]["error"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert!(err.contains("未知编码"), "应说是未知编码：{err}");
+        assert!(err.contains("gb18030"), "应列出可用标签：{err}");
+    }
+
+    /// 分组形态也要能把 encoding / expectCount 透传到展平后的条目。
+    #[test]
+    fn flex_grouped_carries_encoding_and_expect_count() {
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{
+                "path": "a.java",
+                "edits": [{ "oldString": "x", "newString": "y", "encoding": "gbk", "expectCount": 3 }]
+            }]
+        }))
+        .expect("分组形态应被接受");
+        assert_eq!(args.files.len(), 1);
+        assert_eq!(args.files[0].encoding.as_deref(), Some("gbk"));
+        assert_eq!(args.files[0].expect_count, Some(3));
     }
 }

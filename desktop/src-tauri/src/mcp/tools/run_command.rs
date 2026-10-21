@@ -7,6 +7,7 @@ use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
 use crate::mcp::tools::command_policy::validate_command_policy;
+use crate::mcp::tools::output_filter::OutputFilter;
 use crate::mcp::tools::shell::{
     build_invocation, normalize_cwd_from_shell, parse_shell_type, ShellType,
 };
@@ -96,6 +97,15 @@ pub struct RunCommandArgs {
     /// 不参与执行逻辑，仅作记录；缺省为 None。
     #[serde(default)]
     pub description: Option<String>,
+    /// 可选：只保留匹配该正则的 stdout/stderr 行（服务端过滤，被剔除的行只报数量）。
+    #[serde(default)]
+    pub include: Option<String>,
+    /// 可选：剔除匹配该正则的行。
+    #[serde(default)]
+    pub exclude: Option<String>,
+    /// 可选：只返回末尾 N 行（先过滤再截尾）。省略即不截尾。
+    #[serde(default, rename = "tailLines")]
+    pub tail_lines: Option<usize>,
 }
 
 const MAX_CONCURRENT_BACKGROUND: usize = 5;
@@ -258,6 +268,16 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     let background = args.background;
     let timeout_ms = args.timeout_ms;
     let description = args.description;
+    // 输出过滤（RFC 十七）：前台输出在**服务端**过滤后再返回，被剔除的行只报数量，
+    // 不进上下文——省掉「再跑一次 grep -v」的整轮往返。
+    //
+    // 后台模式下此刻还没有输出，这三个参数对 run_command 自身无效果；那一路请把
+    // 过滤参数传给 `wait_command` / `get_command_output`（工具描述里已写明）。
+    let filter = crate::mcp::tools::output_filter::OutputFilter::new(
+        args.include.as_deref(),
+        args.exclude.as_deref(),
+        args.tail_lines,
+    )?;
     if let Some(desc) = &description {
         log::info!(target: "mcp::run_command", "run_command(description={}): {}", desc, command);
     }
@@ -303,12 +323,13 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             track_cwd,
             session_env,
             notify_command_complete,
+            filter,
         )
     })
     .await
     .map_err(|e| format!("run_command 任务 panic: {e}"))?;
     // result: Result<(Value, Option<PathBuf>), String> —— 第二个元素是命令结束后的有效 cwd（仅 track_cwd 时 Some）。
-    let (mut value, effective_new_cwd) = result?;
+    let (value, effective_new_cwd) = result?;
 
     // 会话内 cwd 持久化：把命令结束后的有效 cwd 回写 session。
     // 关键：回写前用 resolve_safe_path 重校验白名单（规则 7 不削弱）——
@@ -332,13 +353,14 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
         }
     }
 
-    // 回声当前壳层，使已连会话无需重连即能从工具返回中获知当前 shell_type，
-    // 自动将后续命令语法从 cmd 纠正为 bash（或反之）。
-    if let Some(obj) = value.as_object_mut() {
-        obj.insert("shell".into(), json!(shell.as_str()));
-    }
-
-    inject_session_info(Ok(value), effective_session_id, &resolved_cwd, cwd_fallback)
+    // 回声当前壳层由 inject_session_info 一并写进 content[0].text（见该函数注释）。
+    inject_session_info(
+        Ok(value),
+        effective_session_id,
+        &resolved_cwd,
+        cwd_fallback,
+        shell,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -355,6 +377,7 @@ fn spawn_shell(
     track_cwd: bool,
     extra_env: Vec<(String, String)>,
     notify_command_complete: bool,
+    filter: OutputFilter,
 ) -> Result<(Value, Option<PathBuf>), String> {
     // 用 process-wrap 的 StdCommandWrap 组合包装（Windows 实测结论，见复现测试）：
     // - 关键陷阱：JobObject 的 pre_spawn 会重设 creation_flags 为 CREATE_SUSPENDED（且不合并
@@ -427,6 +450,7 @@ fn spawn_shell(
             max_output_bytes,
             track_cwd,
             inv.cwd_capture_file.as_deref(),
+            &filter,
         )
     }
 }
@@ -508,6 +532,7 @@ fn run_foreground(
     max_output_bytes: usize,
     track_cwd: bool,
     cwd_file: Option<&std::path::Path>,
+    filter: &OutputFilter,
 ) -> Result<(Value, Option<PathBuf>), String> {
     let (stdout_buf, stdout_trunc, stdout_done) =
         take_reader(child.stdout().take(), max_output_bytes);
@@ -552,14 +577,16 @@ fn run_foreground(
                 None
             };
             Ok((
-                text_result(&json!({
-                    "stdout": String::from_utf8_lossy(&stdout),
-                    "stderr": String::from_utf8_lossy(&stderr),
-                    "exitCode": status.code(),
-                    "stdoutTruncated": stdout_trunc.load(Ordering::Relaxed),
-                    "stderrTruncated": stderr_trunc.load(Ordering::Relaxed),
-                    "timedOut": false,
-                })),
+                build_output_result(
+                    &stdout,
+                    &stderr,
+                    json!(status.code()),
+                    false,
+                    None,
+                    stdout_trunc.load(Ordering::Relaxed),
+                    stderr_trunc.load(Ordering::Relaxed),
+                    filter,
+                ),
                 effective_cwd,
             ))
         }
@@ -586,22 +613,62 @@ fn run_foreground(
             let stdout = stdout_buf.blocking_lock().clone();
             let stderr = stderr_buf.blocking_lock().clone();
             Ok((
-                text_result(&json!({
-                    "stdout": String::from_utf8_lossy(&stdout),
-                    "stderr": String::from_utf8_lossy(&stderr),
-                    "exitCode": Value::Null,
-                    "stdoutTruncated": stdout_trunc.load(Ordering::Relaxed),
-                    "stderrTruncated": stderr_trunc.load(Ordering::Relaxed),
-                    "timedOut": true,
-                    "note": format!(
+                build_output_result(
+                    &stdout,
+                    &stderr,
+                    Value::Null,
+                    true,
+                    Some(format!(
                         "命令超过 {timeout_ms}ms 未结束，已强制终止（含子进程）。以上是超时前已产出的输出；\
-                         长任务请用 background:true 后用 get_command_output 轮询。"
-                    ),
-                })),
+                         长任务请用 background:true 后用 wait_command 等结果（超时不会杀进程）。"
+                    )),
+                    stdout_trunc.load(Ordering::Relaxed),
+                    stderr_trunc.load(Ordering::Relaxed),
+                    filter,
+                ),
                 None,
             ))
         }
     }
+}
+
+/// 前台结果组装：stdout/stderr 经服务端过滤后再回显。
+///
+/// 过滤统计字段只在**真的用了**参数时出现——零参数调用（绝大多数）的响应形状
+/// 与改造前逐字段一致，不会平白多出两个 0 让人怀疑「输出被截了」。
+#[allow(clippy::too_many_arguments)]
+fn build_output_result(
+    stdout: &[u8],
+    stderr: &[u8],
+    exit_code: Value,
+    timed_out: bool,
+    note: Option<String>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
+    filter: &OutputFilter,
+) -> Value {
+    let out = filter.apply(&String::from_utf8_lossy(stdout));
+    let err = filter.apply(&String::from_utf8_lossy(stderr));
+
+    let mut info = serde_json::Map::new();
+    info.insert("stdout".into(), json!(out.text));
+    info.insert("stderr".into(), json!(err.text));
+    info.insert("exitCode".into(), exit_code);
+    info.insert("stdoutTruncated".into(), json!(stdout_truncated));
+    info.insert("stderrTruncated".into(), json!(stderr_truncated));
+    info.insert("timedOut".into(), json!(timed_out));
+    if let Some(note) = note {
+        info.insert("note".into(), json!(note));
+    }
+    if filter.is_active() {
+        for (k, v) in filter.stats_fields("stdout", &out) {
+            info.insert(k, v);
+        }
+        for (k, v) in filter.stats_fields("stderr", &err) {
+            info.insert(k, v);
+        }
+    }
+    text_result(&Value::Object(info))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -716,6 +783,7 @@ fn inject_session_info(
     session_id: Option<String>,
     resolved_cwd: &std::path::Path,
     cwd_fallback: bool,
+    shell: ShellType,
 ) -> Result<Value, String> {
     let mut v = result?;
     if let Some(obj) = v.as_object_mut() {
@@ -723,17 +791,28 @@ fn inject_session_info(
             if let Some(first) = arr.first_mut() {
                 if let Some(text) = first.get_mut("text").and_then(|t| t.as_str()) {
                     if let Ok(mut info) = serde_json::from_str::<serde_json::Value>(text) {
-                        // 仅当确有 session 或发生了 cwd 回退时才注入字段。
-                        // 默认关（session_id = None 且未回退）时不做任何注入，响应与原版完全一致，
-                        // 满足「零行为变化」要求（不在 JSON 里留下 null 占位）。
-                        if session_id.is_some() || cwd_fallback {
-                            if let Some(sid) = session_id {
-                                info["sessionId"] = json!(sid);
+                        // 非对象（理论上不会出现，text_result 恒为 json!({..})）就不动，
+                        // 避免 `info["k"] = …` 在数组/标量上 panic。
+                        if let Some(fields) = info.as_object_mut() {
+                            // 🔴 必须写进 content[0].text 内层：模型只读这个字段。
+                            // 旧实现是 `value.as_object_mut().insert("shell", …)`，插在
+                            // text_result 的**包装层**（与 `content` 同级）——MCP 客户端只
+                            // 读 content 数组，顶层多余字段被直接丢弃，于是「回声当前壳层」
+                            // 从未真正生效（换壳后模型仍按旧语法写命令）。
+                            fields.insert("shell".into(), json!(shell.as_str()));
+                            // 其余字段仍只在确有会话或发生 cwd 回退时注入（不留 null 占位）。
+                            if session_id.is_some() || cwd_fallback {
+                                if let Some(sid) = session_id {
+                                    fields.insert("sessionId".into(), json!(sid));
+                                }
+                                if cwd_fallback {
+                                    fields.insert("cwdFallback".into(), json!(true));
+                                }
+                                fields.insert(
+                                    "cwd".into(),
+                                    json!(resolved_cwd.to_string_lossy().to_string()),
+                                );
                             }
-                            if cwd_fallback {
-                                info["cwdFallback"] = json!(true);
-                            }
-                            info["cwd"] = json!(resolved_cwd.to_string_lossy().to_string());
                             let new_text = serde_json::to_string_pretty(&info)
                                 .unwrap_or_else(|_| text.to_string());
                             first["text"] = json!(new_text);
@@ -770,6 +849,9 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -802,6 +884,9 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -832,6 +917,9 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -875,6 +963,9 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -892,6 +983,9 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -914,6 +1008,9 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -951,6 +1048,9 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -983,6 +1083,9 @@ mod tests {
                 background: false,
                 timeout_ms: 1000,
                 max_output_bytes: 1024,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1016,6 +1119,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1042,6 +1148,77 @@ mod tests {
         assert_eq!(info.get("timedOut").and_then(|t| t.as_bool()), Some(false));
     }
 
+    /// 壳层回声必须落在 `content[0].text` 内层——那是模型唯一会读的字段。
+    /// 旧实现插在 `text_result` 的包装层（与 `content` 同级），客户端只取 content 数组，
+    /// 顶层字段被直接丢弃，等于这个功能从未生效。
+    #[test]
+    fn shell_echo_lands_inside_content_text() {
+        let wrapped = crate::mcp::tools::text_result(&json!({ "stdout": "hi", "exitCode": 0 }));
+        let out = inject_session_info(
+            Ok(wrapped),
+            None,
+            std::path::Path::new("C:/tmp"),
+            false,
+            ShellType::Bash,
+        )
+        .expect("注入成功");
+
+        assert!(
+            out.get("shell").is_none(),
+            "包装层不该再有 shell（模型读不到）：{out}"
+        );
+        let info: Value = serde_json::from_str(
+            out["content"][0]["text"]
+                .as_str()
+                .expect("content[0].text 必须是字符串"),
+        )
+        .expect("解析内层 JSON");
+        assert_eq!(info["shell"], json!("bash"), "{info}");
+        // 默认（无 session、无 cwd 回退）不得留 sessionId/cwd 的 null 占位。
+        assert!(info.get("sessionId").is_none(), "{info}");
+        assert!(info.get("cwd").is_none(), "{info}");
+        // 原有字段原样保留。
+        assert_eq!(info["stdout"], json!("hi"), "{info}");
+    }
+
+    /// 真实执行路径同样要能读到 shell 字段（守住「注入点被回退成包装层」这类回归）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shell_field_visible_in_real_response() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let expected = {
+            let cfg = state.config.read().await;
+            crate::mcp::tools::shell::parse_shell_type(&cfg.shell_type)
+                .as_str()
+                .to_string()
+        };
+        let v = handle(
+            RunCommandArgs {
+                command: "echo shell_probe".into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await
+        .expect("echo 应成功");
+
+        assert!(v.get("shell").is_none(), "包装层不该有 shell：{v}");
+        let info: serde_json::Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().expect("text")).expect("json");
+        assert_eq!(info["shell"], json!(expected), "{info}");
+    }
+
     /// B 类容错：cwd 缺失时回退到第一个存在的 allowed_root 继续执行，
     /// 响应注入 cwdFallback=true + 实际 cwd（审计近 30 天实锤 27 条「cwd 必传」报错）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1058,6 +1235,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1108,6 +1288,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1135,6 +1318,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1176,6 +1362,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1213,6 +1402,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 10,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1257,6 +1449,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1298,6 +1493,9 @@ mod tests {
                 background: true,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1338,6 +1536,9 @@ mod tests {
                 handle: handle.clone(),
                 stdout_offset: 0,
                 stderr_offset: 0,
+                include: None,
+                exclude: None,
+                tail_lines: None,
             },
             &state,
         )
@@ -1374,6 +1575,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: Some("a deploy step".into()),
                 env: None,
             },
@@ -1416,6 +1620,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1458,6 +1665,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1501,6 +1711,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1536,6 +1749,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1567,6 +1783,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1604,6 +1823,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1666,6 +1888,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1707,6 +1932,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1729,6 +1957,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1768,6 +1999,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1792,6 +2026,9 @@ mod tests {
                 background: false,
                 timeout_ms: 5000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1843,6 +2080,9 @@ mod tests {
                 background: false,
                 timeout_ms: 2000,
                 max_output_bytes: 64 * 1024,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1893,6 +2133,9 @@ mod tests {
                 background: false,
                 timeout_ms: 10_000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1957,6 +2200,9 @@ mod tests {
                 background: false,
                 timeout_ms: 10_000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
@@ -1980,6 +2226,9 @@ mod tests {
                 background: false,
                 timeout_ms: 10_000,
                 max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
                 description: None,
                 env: None,
             },
