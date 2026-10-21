@@ -124,7 +124,7 @@ export function SecurityTab({
             )}
           </div>
           {status && status.allowedRoots.length > 3 && (
-            <div className="flex items-center gap-1.5 h-8 rounded-md border border-input bg-background px-2">
+            <div className="input-surface flex items-center gap-1.5 h-8 rounded-md border border-input bg-background px-2">
               <Icon name="search" size={13} className="text-muted-foreground shrink-0" />
               <input
                 value={rootSearch}

@@ -284,6 +284,9 @@ body {
 * {
   border-color: hsl(var(--border));
 }
+/* 选项需要覆盖未分层的通用边框色，否则选中与未选中显示同色。 */
+.option-chip[aria-pressed="true"] { border-color: hsl(var(--primary) / .45); }
+.info-trigger:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
 
 /* ===================================================================
    视觉增强层（对标设计稿 A–F）—— 语义组件类，Tailwind 之外补充
@@ -463,13 +466,16 @@ body {
    🔴 容器绝不能加在 <main> 上：main 内有 TerminalTab 的 `fixed inset-0` 全屏态，
    container-type 自带的 layout containment 会把它的包含块从视口改成 main，
    全屏终端会缩成只覆盖内容区。故下沉到「无 fixed 后代」的 TabsContent 层。 */
+/* 顶部留隙放在共享内容区：四个页面一致，滚动时保留；终端继续贴合顶栏。 */
+.app-main-content:not([data-terminal]) {
+  padding-top: 12px;
+}
+
 .app-content-box {
   container-type: inline-size;
   container-name: app-content;
-  /* viewport 呼吸（2026-10-15 恢复丢失的设计稿语义 .viewport padding）：
-     顶栏与内容之间及四周统一留隙。取 10/12 而非设计稿 18/20——呼吸感要
-     轻于卡片间 12px 的分组间距，不能抢层次（紧凑基调）。 */
-  padding: 10px 12px 12px;
+  /* 上间距由共享内容区提供，避免连接/设置页与安全/日志页重复或缺失。 */
+  padding: 0 0 12px;
 }
 
 /* E0. 连接页 Bento 网格（ConnectBento.tsx）
@@ -478,10 +484,12 @@ body {
    `MetricCards` 返回 Fragment，那四张卡拿不到外层包装，只能从父侧定位。 */
 .bento {
   display: grid;
-  grid-template-columns: repeat(12, 1fr);
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 12px;
   align-items: stretch;
 }
+/* Grid 的默认最小内容宽度会让接入工具栏撑出最小窗口。 */
+.bento > * { min-width: 0; }
 /* 布局（按设计稿，**两行**）：
      行1 = 状态(4) + 指标(2)×4 = 12
      行2 = 状态续  + 健康(4) + 治理(4) = 12
@@ -499,7 +507,7 @@ body {
    链路图三段平分，列宽低于约 300px 时段名与副标题会挤在一起；
    单列下它反而摊得更开。 */
 @media (max-width: 820px) {
-  .bento { grid-template-columns: 1fr; }
+  .bento { grid-template-columns: minmax(0, 1fr); }
   .bento > .status-card,
   .bento > .metric-card,
   .bento > .bento-card,
@@ -508,7 +516,7 @@ body {
 /* 容器查询版：判据换成「内容区宽度」。上面 @media 版保留作无容器支持时的兜底——
    内容区宽度恒小于视口宽度，故 @media 命中必然是 @container 命中集的子集，两者不会打架。 */
 @container app-content (max-width: 820px) {
-  .bento { grid-template-columns: 1fr; }
+  .bento { grid-template-columns: minmax(0, 1fr); }
   .bento > .status-card,
   .bento > .metric-card,
   .bento > .bento-card,

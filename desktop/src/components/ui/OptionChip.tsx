@@ -18,7 +18,7 @@ export function OptionChip({
       type="button"
       onClick={onClick}
       aria-pressed={on}
-      className={`rounded-full border px-2.5 py-1 text-[11.5px] transition-colors ${
+      className={`option-chip rounded-full border px-2.5 py-1 text-[11.5px] transition-colors ${
         on
           ? "border-primary/40 bg-primary/10 font-semibold text-primary"
           : "border-border bg-card text-muted-foreground hover:bg-muted"

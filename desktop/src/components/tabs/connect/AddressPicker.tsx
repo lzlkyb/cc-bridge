@@ -115,8 +115,8 @@ export function AddressPicker({
 
   return (
     <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 basis-80">
           <p className="flex items-center gap-1.5 text-sm font-medium">
             选择远程服务器能连回本机的地址
             <InfoPopover label="地址选择与探测角标">

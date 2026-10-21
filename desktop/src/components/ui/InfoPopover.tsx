@@ -72,13 +72,15 @@ export function InfoPopover({ label, children }: { label: string; children: Reac
         aria-label={`「${label}」的详细说明`}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border transition-colors ${
+        className="info-trigger grid h-6 w-6 shrink-0 place-items-center rounded-full text-muted-foreground hover:text-foreground"
+      >
+        <span className={`grid h-4 w-4 place-items-center rounded-full border transition-colors ${
           open
             ? "border-primary/50 bg-primary/10 text-primary"
             : "border-border text-muted-foreground hover:border-foreground/40 hover:text-foreground"
-        }`}
-      >
-        <Icon name="info" size={10} />
+        }`}>
+          <Icon name="info" size={10} />
+        </span>
       </button>
       {mounted && (
         <div

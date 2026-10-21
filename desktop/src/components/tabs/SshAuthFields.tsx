@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
 import { Icon } from "../ui/icon";
@@ -30,6 +30,7 @@ export function SshAuthFields({
   passphrase,
   setPassphrase,
 }: Props) {
+  const fieldId = useId();
   const [showPw, setShowPw] = useState(false);
   const [showPp, setShowPp] = useState(false);
 
@@ -41,8 +42,9 @@ export function SshAuthFields({
             <button
               key={t}
               type="button"
+              aria-pressed={form.authType === t}
               onClick={() => set("authType", t as SshConnection["authType"])}
-              className={`rounded-md border px-3 py-1.5 text-sm transition-colors ${
+              className={`option-chip rounded-md border px-3 py-1.5 text-sm transition-colors ${
                 form.authType === t
                   ? "border-primary bg-primary/10 text-foreground"
                   : "border-border bg-muted/40 text-muted-foreground hover:text-foreground"
@@ -56,16 +58,18 @@ export function SshAuthFields({
 
       {form.authType === "key" ? (
         <>
-          <Field label="私钥路径">
+          <Field label="私钥路径" htmlFor={`${fieldId}-key`}>
             <Input
+              id={`${fieldId}-key`}
               value={form.keyPath}
               placeholder="C:/Users/you/.ssh/id_rsa 或 /home/you/.ssh/id_rsa"
               onChange={(e) => set("keyPath", e.target.value)}
             />
           </Field>
-          <Field label="密钥密码短语">
+          <Field label="密钥密码短语" htmlFor={`${fieldId}-passphrase`}>
             <div className="relative">
               <Input
+                id={`${fieldId}-passphrase`}
                 type={showPp ? "text" : "password"}
                 value={passphrase}
                 placeholder={
@@ -78,6 +82,8 @@ export function SshAuthFields({
               />
               <button
                 type="button"
+                aria-label={showPp ? "隐藏密码短语" : "显示密码短语"}
+                aria-pressed={showPp}
                 onClick={() => setShowPp((v) => !v)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
@@ -95,9 +101,10 @@ export function SshAuthFields({
         </>
       ) : (
         <>
-          <Field label="密码">
+          <Field label="密码" htmlFor={`${fieldId}-password`}>
             <div className="relative">
               <Input
+                id={`${fieldId}-password`}
                 type={showPw ? "text" : "password"}
                 value={password}
                 placeholder={initial?.encryptedPassword ? "（留空则保留已保存的密码）" : ""}
@@ -106,6 +113,8 @@ export function SshAuthFields({
               />
               <button
                 type="button"
+                aria-label={showPw ? "隐藏密码" : "显示密码"}
+                aria-pressed={showPw}
                 onClick={() => setShowPw((v) => !v)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               >
@@ -132,10 +141,14 @@ export function SshAuthFields({
 }
 
 /** 弹框内的字段包装（小标题 + 控件）。与主弹框共用，避免两边各写一份。 */
-export function Field({ label, children }: { label: string; children: React.ReactNode }) {
+export function Field({ label, htmlFor, children }: { label: string; htmlFor?: string; children: React.ReactNode }) {
   return (
-    <div>
-      <label className="mb-1 block text-xs font-medium text-muted-foreground">{label}</label>
+    <div role={htmlFor ? undefined : "group"} aria-label={htmlFor ? undefined : label}>
+      {htmlFor ? (
+        <label htmlFor={htmlFor} className="mb-1 block text-xs font-medium text-muted-foreground">{label}</label>
+      ) : (
+        <div className="mb-1 text-xs font-medium text-muted-foreground">{label}</div>
+      )}
       {children}
     </div>
   );

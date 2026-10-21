@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { Dialog, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -51,6 +51,7 @@ let newConnDraft: { form: SshConnection; password: string; passphrase: string } 
  * 密码仅「记住密码」时随 save 一并发往后端加密落盘；不记住时忽略，明文不出本弹框。
  */
 export function SshConnectionDialog({ open, initial, connections, onClose, onSaved }: Props) {
+  const fieldId = useId();
   const [form, setForm] = useState<SshConnection>(empty());
   const [password, setPassword] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -160,6 +161,7 @@ export function SshConnectionDialog({ open, initial, connections, onClose, onSav
         <button
           type="button"
           onClick={handleCloseKeepDraft}
+          aria-label="关闭 SSH 连接设置"
           className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
         >
           <Icon name="close" size={16} />
@@ -167,23 +169,26 @@ export function SshConnectionDialog({ open, initial, connections, onClose, onSav
       </DialogHeader>
 
       <div className="space-y-3.5">
-        <Field label="名称">
+        <Field label="名称" htmlFor={`${fieldId}-name`}>
           <Input
+            id={`${fieldId}-name`}
             value={form.name}
             placeholder="例如：生产服务器"
             onChange={(e) => set("name", e.target.value)}
           />
         </Field>
         <div className="grid grid-cols-[1fr_120px] gap-3">
-          <Field label="主机">
+          <Field label="主机" htmlFor={`${fieldId}-host`}>
             <Input
+              id={`${fieldId}-host`}
               value={form.host}
               placeholder="192.168.1.10 或 example.com"
               onChange={(e) => set("host", e.target.value)}
             />
           </Field>
-          <Field label="端口">
+          <Field label="端口" htmlFor={`${fieldId}-port`}>
             <Input
+              id={`${fieldId}-port`}
               type="text"
               inputMode="numeric"
               value={String(form.port)}
@@ -196,8 +201,9 @@ export function SshConnectionDialog({ open, initial, connections, onClose, onSav
             />
           </Field>
         </div>
-        <Field label="用户名">
+        <Field label="用户名" htmlFor={`${fieldId}-username`}>
           <Input
+            id={`${fieldId}-username`}
             value={form.username}
             placeholder="root"
             onChange={(e) => set("username", e.target.value)}
@@ -206,6 +212,7 @@ export function SshConnectionDialog({ open, initial, connections, onClose, onSav
 
         <Field label="跳板机">
           <Combobox
+            ariaLabel={`跳板机：${jumpOptions.find((option) => option.value === form.proxyJumpId)?.label ?? form.proxyJumpId}`}
             fullWidth
             value={form.proxyJumpId}
             options={jumpOptions}

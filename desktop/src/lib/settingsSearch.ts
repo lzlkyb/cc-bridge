@@ -60,6 +60,7 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   // 找不到锚点——SettingsTab 的定位 effect 对找不到的 id 是静默返回的，不会报错。
   { id: "set-firewall", label: "防火墙规则与一键修复", icon: "shield", group: "设置 · 其它", tab: "settings", anchor: "set-firewall", keywords: "firewall netsh 入站 放行 端口 拦截 远程连不上" },
   { id: "set-app", label: "开机自动启动", icon: "power", group: "设置 · 其它", tab: "settings", anchor: "set-app", keywords: "autostart 开机启动 开机自启" },
+  { id: "set-appearance", label: "外观 · 界面风格与明暗", icon: "monitor", group: "设置 · 应用", tab: "settings", anchor: "set-app", keywords: "appearance theme 外观 柔光 玻璃 经典 深色 浅色 主题 UI" },
   { id: "set-install", label: "安装与快捷方式", icon: "package", group: "设置 · 其它", tab: "settings", anchor: "set-install", keywords: "install 快捷方式 桌面 安装目录" },
   { id: "set-config", label: "导入 / 导出 / 重置配置", icon: "download", group: "设置 · 其它", tab: "settings", anchor: "set-config", keywords: "import export reset 备份配置 恢复默认" },
   { id: "set-about", label: "版本信息 / 检查更新", icon: "info", group: "设置 · 其它", tab: "settings", anchor: "set-about", keywords: "version update 更新 版本 更新历史 changelog" },

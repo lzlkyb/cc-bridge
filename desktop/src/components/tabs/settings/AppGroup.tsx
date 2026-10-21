@@ -5,6 +5,7 @@ import { Icon } from "../../ui/icon";
 import { Switch } from "../../ui/switch";
 import { SettingsRow } from "../../ui/SettingsRow";
 import { useToast } from "../../ui/toast";
+import { AppearanceSettings } from "./AppearanceSettings";
 
 /* ─── 应用 ─── */
 
@@ -44,6 +45,7 @@ export function AppGroup() {
         <CardTitle icon={<Icon name="monitor" />}>应用</CardTitle>
       </CardHeader>
       <CardContent>
+        <AppearanceSettings />
         <SettingsRow
           label="开机自动启动"
           last

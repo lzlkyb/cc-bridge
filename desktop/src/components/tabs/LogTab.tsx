@@ -112,7 +112,7 @@ function LogTabImpl({
         <CardTitle icon={<Icon name="log" />}>审计日志</CardTitle>
         <div className="flex items-center gap-2 flex-wrap">
           {/* Search：aria-label 是给读屏的（placeholder 不算可访问名称）；`/` 快捷键见 useSlashFocus */}
-          <div className="flex items-center gap-1.5 h-8 rounded-md bg-background px-2 transition-shadow focus-within:ring-2 focus-within:ring-ring">
+          <div className="input-surface flex items-center gap-1.5 h-8 rounded-md bg-background px-2 transition-shadow focus-within:ring-2 focus-within:ring-ring">
             <Icon name="search" size={13} className="text-muted-foreground shrink-0" />
             <input
               ref={searchRef}
@@ -174,7 +174,7 @@ function LogTabImpl({
         {hasFilter && <button type="button" className="ml-auto text-primary hover:underline" onClick={resetFilters}>重置筛选</button>}
         {hasFilter && <span className="text-foreground">当前：{filterSummary}</span>}
       </div>
-      <CardContent className="flex flex-col flex-1 min-h-0 overflow-y-auto">
+      <CardContent className="log-reading-surface flex flex-col flex-1 min-h-0 overflow-y-auto">
         {entries && entries.some((e) => typeof e.durationMs === "number") && (
           <div className="mb-3">
             <button

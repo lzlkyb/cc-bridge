@@ -85,7 +85,7 @@ export function ToolGuide({
             flex-wrap：窄窗时开关组折到第二行，绝不挤压/截断分段器。 */}
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <CardTitle icon={<Icon name="plug" />}>接入 {CLIENT_LABELS[tool]}</CardTitle>
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-3">
             {onToggleMultiDevice && (
               <MultiDeviceToggle
                 enabled={multiDevice}
@@ -97,7 +97,7 @@ export function ToolGuide({
             <div
               role="group"
               aria-label="选择接入工具"
-              className="flex shrink-0 rounded-lg border bg-muted p-0.5"
+              className="flex min-w-0 max-w-full flex-wrap rounded-lg border bg-muted p-0.5"
             >
             {TOOLS.map((t) => (
               <button
