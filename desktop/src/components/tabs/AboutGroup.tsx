@@ -5,9 +5,10 @@ import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
 import { StarPromptRow, StarPromptChip, readStarPromptDismissed, dismissStarPrompt } from "./StarPromptRow";
-import { useUpdate, type UpdateStatus, type UpdateInfo } from "../../contexts/UpdateContext";
+import { useUpdate, type UpdateStatus } from "../../contexts/UpdateContext";
+import { UpdateStatusPill } from "../update/UpdateStatusPill";
 import type { StaticStatus } from "../../lib/types";
-import { formatVersion, formatBytes, formatBytesPerSec } from "../../lib/utils";
+import { formatVersion } from "../../lib/utils";
 import { APP_INFO } from "../../lib/about";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChangelogView } from "./ChangelogView";
@@ -44,7 +45,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
   /** 自增信号：变化时自动展开本卡片并滚动到更新历史。 */
   changelogOpenToken?: number;
 }) {
-  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, autoRestartIn, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
+  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, autoRestartIn, error, errorCode, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(true); // 默认展开（2026-10-17）：收起态只有一行头部，默认折叠反而多一次点击
   const [showModal, setShowModal] = useState(false);
@@ -117,7 +118,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
             >
               {formatVersion(status?.version)}
             </span>
-            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} bytesPerSec={bytesPerSec} downloadedBytes={downloadedBytes} autoRestartIn={autoRestartIn} onOpenNotes={() => openUpdateNotes()} />
+            <UpdateStatusPill status={updateStatus} update={update} progress={progress} progressIndeterminate={progressIndeterminate} bytesPerSec={bytesPerSec} downloadedBytes={downloadedBytes} autoRestartIn={autoRestartIn} error={error} errorCode={errorCode} onOpenNotes={() => openUpdateNotes()} />
             {unreadCount !== undefined && unreadCount > 0 && (
               <span
                 role="button"
@@ -275,76 +276,6 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
       />
     </>
   );
-}
-
-/* ── 更新状态胶囊 ── */
-function UpdateStatusPill({ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, autoRestartIn, onOpenNotes }: { status: UpdateStatus; update: UpdateInfo | null; progress: number; progressIndeterminate: boolean; bytesPerSec: number; downloadedBytes: number; autoRestartIn?: number | null; onOpenNotes?: () => void }) {
-  if (status === "uptodate") {
-    return (
-      <span className="status-pill flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-xs font-semibold text-success-ink">
-        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
-        已是最新
-      </span>
-    );
-  }
-  if (status === "available") {
-    return (
-      <span
-        className="flex cursor-pointer items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-[3px] text-xs font-semibold text-warning-ink transition-colors hover:bg-warning/20"
-        title="查看本次更新内容"
-        onClick={(e) => {
-          e.stopPropagation();
-          onOpenNotes?.();
-        }}
-      >
-        有新版本 v{update?.version}
-      </span>
-    );
-  }
-  if (status === "downloading") {
-    return (
-      <span className="flex items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-[3px] text-xs font-semibold text-primary">
-        <Icon name="download" size={11} />
-        {progressIndeterminate ? (
-          // 无总大小（如 Gitee 源 chunked 不返回 Content-Length）：条纹滚动动画条 + 真实已下载字节/速率
-          <>
-            <span className="relative h-1 w-12 overflow-hidden rounded-full bg-primary/20">
-              <span className="indet-fill" />
-            </span>
-            <span className="font-normal text-primary">{`已下载 ${formatBytes(downloadedBytes)} · ${formatBytesPerSec(bytesPerSec)}`}</span>
-          </>
-        ) : (
-          <>
-            <span>{progress}%</span>
-            <span className="h-1 w-12 overflow-hidden rounded-full bg-primary/20">
-              <span
-                className="block h-1 rounded-full bg-primary transition-[width] duration-200"
-                style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
-              />
-            </span>
-            {bytesPerSec > 0 && <span className="font-normal text-primary">{formatBytesPerSec(bytesPerSec)}</span>}
-          </>
-        )}
-      </span>
-    );
-  }
-  if (status === "ready") {
-    return (
-      <span className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-xs font-semibold text-success-ink tabular-nums">
-        {autoRestartIn ? `${autoRestartIn} 秒后重启` : "已下载"}
-      </span>
-    );
-  }
-  // error 也要有可见状态：之前直接 return null，失败后只剩孤零零的「重试」，用户不知道为什么要点它。
-  if (status === "error") {
-    return (
-      <span className="flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-[3px] text-xs font-semibold text-destructive-ink">
-        <Icon name="alertTriangle" size={11} />
-        更新失败
-      </span>
-    );
-  }
-  return null;
 }
 
 /* ── 更新操作按钮 ── */

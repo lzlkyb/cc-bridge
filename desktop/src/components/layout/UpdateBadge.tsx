@@ -27,7 +27,7 @@ import { formatBytes, formatBytesPerSec } from "../../lib/utils";
  * - error       `重试`      → 点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
+  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, errorCode, errorToastAllowed, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -51,8 +51,12 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
       // 与弹窗文案对齐：安装已完成，倒计时结束后自动重启（点徽章可取消）。
       toast(`更新已安装，${AUTO_RESTART_DELAY_SECS} 秒后自动重启（点徽章可取消）`, "success");
     } else if (status === "error") {
-      const fe = error ? friendlyError(error) : null;
-      toast(fe?.friendly ?? "更新检查失败，请重试", "error");
+      const fe = error ? friendlyError(error, errorCode) : null;
+      // 自动检查失败不弹：用户没点任何东西，不该收到红色警报（详见 UpdateContext 的
+      // errorToastAllowed 注释）。徽章与关于页仍会变成「重试」，信息不会丢。
+      if (errorToastAllowed) {
+        toast(fe?.friendly ?? "更新检查失败，请重试", "error");
+      }
     }
   }, [status]);
 
@@ -199,11 +203,16 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
 
   // ─── error ────────────────────────────────
   if (status === "error") {
+    // title 里带上原始错误串：用户反馈时能直接复制。否则界面上只剩一句
+    // 「更新失败」，我们无从判断是 Gitee 404、代理 502 还是验签失败。
+    const errorTitle = error
+      ? `${friendlyError(error, errorCode).friendly}\n\n原因：${error}`
+      : "更新检查失败，点击重试";
     return (
       <Slot>
         <button
           className="header-badge header-badge-error cursor-pointer"
-          title={error ? friendlyError(error).friendly : "更新检查失败，点击重试"}
+          title={errorTitle}
           onClick={handleClick}
         >
           <Icon name="alertTriangle" size={10} />

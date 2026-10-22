@@ -40,6 +40,17 @@ export interface UpdateState {
   /** 取消本轮自动重启：徽章回到「重启」按钮，本轮不再自动触发（下次安装完成重置）。 */
   cancelAutoRestart: () => void;
   error: string | null;
+  /** 错误原因码（见 `UpdateErrorCode`）；旧后端或未知错误为 null */
+  errorCode: string | null;
+  /**
+   * 本次失败是否该弹 toast。
+   *
+   * 自动检查（启动自检 / 24 小时定时）失败时**只更新徽章与关于页状态**，不弹红 toast ——
+   * 用户什么都没点，不该在开机时收到「更新服务器连不上」的警报（尤其在公司网络封了
+   * Gitee/GitHub 的环境里，那会是每天都来一次的噪音）。用户主动点击的检查、以及
+   * 下载安装失败，仍然弹。
+   */
+  errorToastAllowed: boolean;
   checkForUpdate: () => Promise<void>;
   downloadAndInstall: () => Promise<void>;
   restart: () => Promise<void>;
@@ -66,20 +77,70 @@ export interface FriendlyError {
   raw: string;
 }
 
-/** 将原始错误信息拆分为友好提示 + 原始错误 */
-export function friendlyError(raw: string): FriendlyError {
+/**
+ * 后端 `update:error` 的机器可读原因码（Rust 侧 `classify_update_error` 产出）。
+ *
+ * 为什么要有它：原先只有一段原始英文错误，前端靠 `includes("fetch")` 猜原因。
+ * 插件的 manifest 错误文案恰好含 "fetch"，于是「源上 404」被翻译成「你的网络有问题」，
+ * 而真正的 `error sending request` 反而落到兜底 —— 两个方向都错（2026-10-22 实测）。
+ * 有了 code 之后文案由后端定性、前端只负责措辞。
+ */
+export type UpdateErrorCode =
+  | "manifest"
+  | "network"
+  | "timeout"
+  | "signature"
+  | "install"
+  | "config"
+  | "stale"
+  | "unknown";
+
+/** code → 用户文案。键必须与 Rust 侧 `classify_update_error` 的返回值一一对应。 */
+const ERROR_TEXT: Record<string, string> = {
+  manifest: "更新服务器上暂时没有可用的更新信息，请稍后重试",
+  network: "无法连接更新服务器，请检查网络或代理设置",
+  timeout: "连接更新服务器超时，请稍后重试",
+  signature: "更新包校验失败，已阻止安装，请重试",
+  install: "更新包安装失败，请重试，或到 GitHub Releases 手动下载",
+  config: "更新源配置有误，请检查更新源设置",
+  stale: "这个版本刚有变动，请重新检查更新",
+};
+
+/**
+ * 将原始错误信息拆分为友好提示 + 原始错误。
+ *
+ * `code` 优先；缺失或为 `unknown` 时回退到字符串启发式（兼容旧后端与未覆盖的错误类型）。
+ * 🔴 回退分支的**判断顺序不能换**：具体判定必须排在泛化的 "fetch" 之前，否则插件那句
+ * `Could not fetch a valid release JSON from the remote` 又会被当成网络故障。
+ */
+export function friendlyError(raw: string, code?: string | null): FriendlyError {
+  const mapped = code ? ERROR_TEXT[code] : undefined;
+  if (mapped) return { friendly: mapped, raw };
+
   const lower = raw.toLowerCase();
-  if (lower.includes("networkerror") || lower.includes("failed to fetch") || lower.includes("fetch")) {
-    return { friendly: "网络连接失败，请检查网络后重试", raw };
+  if (lower.includes("could not fetch a valid release json")) {
+    return { friendly: ERROR_TEXT.manifest, raw };
+  }
+  if (lower.includes("signature") || lower.includes("minisign")) {
+    return { friendly: ERROR_TEXT.signature, raw };
   }
   if (lower.includes("enotfound") || lower.includes("getaddrinfo") || lower.includes("dns")) {
     return { friendly: "无法解析更新服务器地址，请检查网络连接", raw };
   }
   if (lower.includes("timeout") || lower.includes("timed out")) {
-    return { friendly: "连接超时，请稍后重试", raw };
+    return { friendly: ERROR_TEXT.timeout, raw };
+  }
+  if (
+    lower.includes("networkerror") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("error sending request") ||
+    lower.includes("connection")
+  ) {
+    return { friendly: ERROR_TEXT.network, raw };
   }
   if (lower.includes("403") || lower.includes("rate limit")) {
-    return { friendly: "GitHub API 访问受限，请稍后重试", raw };
+    // 第一候选源是 Gitee，文案不再写死 GitHub。
+    return { friendly: "更新服务器拒绝访问（可能触发了限流），请稍后重试", raw };
   }
   return { friendly: "更新失败，请重试", raw };
 }
@@ -124,6 +185,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [errorToastAllowed, setErrorToastAllowed] = useState(true);
   const [restarting, setRestarting] = useState(false);
   /** 自动重启倒计时（null = 不在倒计时），见 AUTO_RESTART_DELAY_SECS 注释。 */
   const [autoRestartIn, setAutoRestartIn] = useState<number | null>(null);
@@ -145,6 +208,13 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const uptodateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 标记当前这次检查是否为用户手动触发（区分自动/手动，决定是否弹「已是最新」框） */
   const manualCheckRef = useRef(false);
+  /**
+   * 本轮更新动作是否由用户主动发起（手动检查 / 点「下载安装」）。
+   *
+   * 与 `manualCheckRef` 分开：后者只服务「已是最新」弹框，下载不经过它。
+   * 失败 toast 一律看这个 —— 自动检查失败只更新状态，不弹红条。
+   */
+  const userInitiatedRef = useRef(true);
   const [manualCheck, setManualCheck] = useState(false);
 
   // ─── 静默检查（不改变 UI 状态，仅内部记录）─────
@@ -153,6 +223,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const silentCheck = useCallback(async () => {
     if (checkingRef.current) return;
     checkingRef.current = true;
+    userInitiatedRef.current = false; // 这一轮失败不弹 toast
     try {
       await invoke("check_update");
     } catch {
@@ -173,8 +244,10 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     if (checkingRef.current) return;
     checkingRef.current = true;
     manualCheckRef.current = manual;
+    userInitiatedRef.current = manual;
     setStatus("checking");
     setError(null);
+    setErrorCode(null);
 
     try {
       await invoke("check_update");
@@ -182,6 +255,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[Update] 检查更新失败:", msg);
       setError(msg);
+      setErrorCode(null); // invoke 直接 reject 时没有 code，走字符串启发式
+      // 只有用户主动点击才弹 toast；启动时「超过 24 小时」的那次自动检查也算自动。
+      setErrorToastAllowed(manual);
       setStatus("error");
     } finally {
       checkingRef.current = false;
@@ -217,13 +293,17 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const downloadAndInstall = useCallback(async () => {
     if (!update || downloadingRef.current) return;
     downloadingRef.current = true;
+    userInitiatedRef.current = true; // 下载是明确的手动动作，失败必须告知
     setStatus("downloading");
     setError(null);
+    setErrorCode(null);
     try {
       await invoke("start_update");
     } catch (e) {
       console.error("[Update] start_update invoke 失败:", e);
       setError(String(e));
+      setErrorCode(null);
+      setErrorToastAllowed(true);
       setStatus("error");
       downloadingRef.current = false;
     }
@@ -248,6 +328,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           if (downloadingRef.current) return;
           setStatus("checking");
           setError(null);
+          setErrorCode(null);
         }),
       );
       track(
@@ -295,9 +376,16 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
         }),
       );
       track(
-        await listen<{ message: string }>("update:error", (e) => {
-          console.error("[Update] 更新失败:", e.payload.message);
-          setError(e.payload.message);
+        await listen<{ message: string; code?: string }>("update:error", (e) => {
+          const { message, code } = e.payload;
+          console.error("[Update] 更新失败:", code ?? "unknown", message);
+          setError(message);
+          setErrorCode(code ?? null);
+          // 自动检查（启动自检 / 24h 定时）失败只更新状态，不弹红 toast；
+          // 用户主动发起的检查与下载失败仍然弹。
+          setErrorToastAllowed(userInitiatedRef.current);
+          // 复位手动标记：不清掉的话，下一次自动检查命中 uptodate 会误弹「已是最新」框。
+          manualCheckRef.current = false;
           setStatus("error");
           downloadingRef.current = false;
         }),
@@ -435,7 +523,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, errorCode, errorToastAllowed, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
       {children}
       {restarting && <RestartOverlay current={update?.currentVersion} next={update?.version} />}
       <UpdateNotesDialog open={showNotes} update={update} onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate} />

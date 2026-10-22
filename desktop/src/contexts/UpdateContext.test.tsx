@@ -19,7 +19,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AUTO_RESTART_DELAY_SECS, UpdateProvider, useUpdate, type UpdateState } from "./UpdateContext";
+import { AUTO_RESTART_DELAY_SECS, UpdateProvider, friendlyError, useUpdate, type UpdateState } from "./UpdateContext";
 
 // ─── 事件总线与 IPC 打桩 ────────────────────
 // vi.hoisted：mock 工厂会被提升到 import 之前，所以共享状态必须一起提升。
@@ -451,5 +451,97 @@ describe("「稍后」按版本抑制", () => {
     localStorage.setItem(DISMISSED_KEY, "99.9.9");
     await mount();
     expect(state().isDismissed("99.9.9")).toBe(true);
+  });
+});
+
+/**
+ * 错误文案（2026-10-22）。
+ *
+ * 这三组断言锁的是同一件事：**别再把「源上没有 manifest」说成「你的网络有问题」**。
+ * 插件对非 2xx 只打日志、最后统一抛 `ReleaseNotFound`，其中文/英文文案固定为
+ * `Could not fetch a valid release JSON from the remote`；旧实现看到 "fetch" 就判网络，
+ * 于是 Gitee 404 被翻译成「网络连接失败」，而真正的 `error sending request` 落到兜底。
+ * 现在由后端 code 定性，字符串启发式只在旧后端/未知类型时兜底。
+ */
+describe("friendlyError", () => {
+  const RELEASE_NOT_FOUND = "Could not fetch a valid release JSON from the remote";
+
+  it("按 code 出文案：manifest 不甩锅给用户网络", () => {
+    const fe = friendlyError(`全部更新源均检查失败: ${RELEASE_NOT_FOUND}`, "manifest");
+    expect(fe.friendly).toContain("更新");
+    expect(fe.friendly).not.toContain("网络");
+    // 原始错误必须原样保留，UI 的 title 靠它给用户复制。
+    expect(fe.raw).toContain("Could not fetch");
+  });
+
+  it("按 code 出文案：network / timeout / signature 各自可辨", () => {
+    expect(friendlyError("x", "network").friendly).toContain("网络");
+    expect(friendlyError("x", "timeout").friendly).toContain("超时");
+    expect(friendlyError("x", "signature").friendly).toContain("校验失败");
+    // 验签失败绝不能提示成「网络」——用户会一直重试，永远装不上。
+    expect(friendlyError("x", "signature").friendly).not.toContain("网络");
+  });
+
+  it("无 code 时回退：插件那句 manifest 错误不能被当成网络故障", () => {
+    const fe = friendlyError(`全部更新源均检查失败: ${RELEASE_NOT_FOUND}`);
+    expect(fe.friendly).not.toContain("网络连接失败");
+    expect(fe.friendly).toContain("更新");
+  });
+
+  it("无 code 时回退：真正的请求失败仍识别为网络问题", () => {
+    const fe = friendlyError("下载安装失败: error sending request for url (https://x)");
+    expect(fe.friendly).toContain("网络");
+  });
+
+  it("未知 code 不炸，落到兜底文案", () => {
+    const fe = friendlyError("某个没见过的错误", "unknown");
+    expect(fe.friendly).toBe("更新失败，请重试");
+    expect(fe.raw).toBe("某个没见过的错误");
+  });
+});
+
+/**
+ * 「失败该不该打扰用户」（2026-10-22）。
+ *
+ * 自动检查（启动自检 / 24h 定时）失败曾经会弹红色 toast：用户什么都没点，开机就收到
+ * 「更新服务器连不上」的警报。在公司网络封了 Gitee/GitHub 的环境里，这是每天一次的噪音。
+ * 现在只有用户主动发起的动作（手动检查 / 点下载）才弹，状态本身仍然进 error，
+ * 徽章与关于页照常显示「重试」，信息不丢。
+ */
+describe("失败提示的打扰程度", () => {
+  it("启动自检失败：状态进 error，但不弹 toast", async () => {
+    await mount(); // mount 内部会发起启动自检（自动）
+    await emit("update:error", {
+      message: "全部更新源均检查失败（已依次尝试）: x",
+      code: "manifest",
+    });
+
+    expect(state().status).toBe("error");
+    expect(state().errorCode).toBe("manifest");
+    expect(state().errorToastAllowed).toBe(false);
+  });
+
+  it("用户手动检查失败：要弹", async () => {
+    await mount();
+    await act(async () => {
+      await state().manualCheckForUpdate();
+    });
+    await emit("update:error", { message: "x", code: "network" });
+
+    expect(state().status).toBe("error");
+    expect(state().errorCode).toBe("network");
+    expect(state().errorToastAllowed).toBe(true);
+  });
+
+  it("下载安装失败：要弹（下载是明确的手动动作）", async () => {
+    await mount();
+    await emit("update:available", available("9.9.9"));
+    await act(async () => {
+      await state().downloadAndInstall();
+    });
+    await emit("update:error", { message: "x", code: "signature" });
+
+    expect(state().errorCode).toBe("signature");
+    expect(state().errorToastAllowed).toBe(true);
   });
 });

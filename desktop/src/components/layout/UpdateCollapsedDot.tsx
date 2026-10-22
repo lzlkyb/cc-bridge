@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useUpdate } from "../../contexts/UpdateContext";
+import { friendlyError, useUpdate } from "../../contexts/UpdateContext";
 
 /**
  * 折叠态侧栏的更新状态点（2026-10-18，混合交互方案）。
@@ -27,7 +27,7 @@ import { useUpdate } from "../../contexts/UpdateContext";
  * - error       → 红色快脉冲点，点击直接重试
  */
 export function UpdateCollapsedDot() {
-  const { status, update, progress, progressIndeterminate, isDismissed, openUpdateNotes, downloadAndInstall, cancelAutoRestart, manualCheckForUpdate } = useUpdate();
+  const { status, update, progress, progressIndeterminate, error, errorCode, isDismissed, openUpdateNotes, downloadAndInstall, cancelAutoRestart, manualCheckForUpdate } = useUpdate();
 
   // downloading：无需行动（顶栏读数 + 本环就是全部反馈），渲染为不可点元素
   if (status === "downloading") {
@@ -61,12 +61,17 @@ export function UpdateCollapsedDot() {
     );
   }
   if (status === "error") {
+    // 折叠态只有一个 8px 点，title 是唯一的信息出口 —— 必须带上原因，
+    // 否则用户只看到一个一直闪的红点，既不知道出了什么事，也不知道是不是自己网络的问题。
+    const label = error
+      ? `更新失败：${friendlyError(error, errorCode).friendly}`
+      : "更新失败，点击重试";
     return (
       <button
         type="button"
         className="upd-dot upd-dot--error"
-        title="更新失败，点击重试"
-        aria-label="更新失败，点击重试"
+        title={error ? `${label}\n\n原因：${error}` : label}
+        aria-label={label}
         onClick={() => manualCheckForUpdate()}
       />
     );
