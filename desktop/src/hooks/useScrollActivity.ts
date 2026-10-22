@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, type UIEvent } from "react";
 
-/** Only tint native page scrollbars; scrolling never triggers React renders or layout changes. */
+/** Track scrollbars and the page edge without React renders or layout changes. */
 export function useScrollActivity() {
   const timers = useRef(new Map<HTMLElement, ReturnType<typeof setTimeout>>());
   useEffect(() => {
@@ -16,6 +16,8 @@ export function useScrollActivity() {
   return useCallback((event: UIEvent<HTMLElement>) => {
     const element = event.target;
     if (!(element instanceof HTMLElement) || !element.classList.contains("page-scroll")) return;
+    // Persistent offset belongs to the viewport, so returning to a category restores its edge too.
+    element.toggleAttribute("data-scroll-started", element.scrollTop > 8);
     clearTimeout(timers.current.get(element));
     element.dataset.scrolling = "";
     timers.current.set(element, setTimeout(() => {

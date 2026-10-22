@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon";
 import type { SettingsSection } from "../../lib/settingsSections";
-import { searchSettings } from "../../lib/settingsNavigation";
+import { searchSettings, stepSettingsSection } from "../../lib/settingsNavigation";
 import { CATEGORY_DESCRIPTIONS } from "../../lib/settingsCategories";
 import { Modal } from "../ui/Modal";
 
@@ -10,7 +10,7 @@ const summaries: Record<string, string> = {
   "set-files": "编码与命令行为", "set-mcpbridge": "服务与工具范围", "set-data": "备份、审计与迁移", "set-notify": "命令与任务完成提醒",
 };
 
-/** Categories are explicit navigation; wheel gestures remain ordinary scrolling. */
+/** 设置目录支持滚轮逐项切换，溢出列表优先保留原生滚动。 */
 export function SideNavSettings({ sections, activeId, onSelect, onBack, collapsed, platform }: {
   sections: SettingsSection[]; activeId: string; onSelect: (id: string, anchor?: string) => void;
   onBack: () => void; collapsed: boolean; platform?: string;
@@ -18,12 +18,36 @@ export function SideNavSettings({ sections, activeId, onSelect, onBack, collapse
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const navRef = useRef<HTMLElement>(null);
+  const wheel = useRef({ accumulated: 0, lastEvent: -Infinity, lastSwitch: -Infinity });
   const results = searchSettings(query, sections.map(s => s.id), platform);
   useEffect(() => {
     navRef.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: "nearest" });
   }, [activeId]);
   const selectResult = (sectionId: string, anchor?: string) => {
     setQuery(""); setSearchOpen(false); onSelect(sectionId, anchor);
+  };
+  const handleNavWheel = (e: React.WheelEvent<HTMLElement>) => {
+    const state = wheel.current;
+    if (query.trim() || searchOpen || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.deltaX !== 0 || Math.abs(e.deltaY) < 1) {
+      state.accumulated = 0;
+      return;
+    }
+    const nav = e.currentTarget;
+    const now = performance.now();
+    const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? nav.clientHeight || 800 : 1);
+    if (now - state.lastEvent > 200 || Math.sign(delta) !== Math.sign(state.accumulated)) state.accumulated = 0;
+    state.lastEvent = now;
+    // 矮窗口先让用户滚完目录；到边缘再切分类，不抢列表自身的滚动。
+    const canScroll = delta > 0 ? nav.scrollTop + nav.clientHeight < nav.scrollHeight - 1 : nav.scrollTop > 0;
+    if (canScroll) { state.accumulated = 0; return; }
+    // 一格滚轮即可切换，小幅输入累计；冷却避免一次甩动跳过多个菜单。
+    if (now - state.lastSwitch < 350) return;
+    state.accumulated += delta;
+    if (Math.abs(state.accumulated) < 60) return;
+    const next = stepSettingsSection(sections, activeId, state.accumulated > 0 ? 1 : -1);
+    state.accumulated = 0;
+    state.lastSwitch = now;
+    if (next) onSelect(next.id);
   };
   return <>
     <button type="button" className="app-side-item app-side-back" title={collapsed ? "返回工作区" : undefined} onClick={onBack}>
@@ -33,7 +57,7 @@ export function SideNavSettings({ sections, activeId, onSelect, onBack, collapse
       <div className="app-side-search"><Icon name="search" size={13} className="app-side-search-icon" />
         <input type="search" value={query} placeholder="搜索设置…" aria-label="搜索设置" onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") setQuery(""); }} />
       </div>}
-    <nav ref={navRef} className="app-side-nav settings-side-nav" aria-label="设置目录">
+    <nav ref={navRef} className="app-side-nav settings-side-nav" aria-label="设置目录" onWheel={handleNavWheel}>
       {query.trim() ? <>
         <p className="app-side-cluster-title">{results.length} 个设置结果</p>
         {results.map(item => <button key={item.id} type="button" className="app-side-item" onClick={() => selectResult(item.sectionId!, item.anchor)}>

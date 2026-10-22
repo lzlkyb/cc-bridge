@@ -5,6 +5,7 @@ import { CATEGORY_DESCRIPTIONS } from "../../lib/settingsCategories";
 import { settingsSectionForAnchor } from "../../lib/settingsNavigation";
 import { useViewActive, ViewActivityContext } from "../../lib/viewActivity";
 import { isWindows } from "../../lib/platform";
+import { useSettingsWheelNavigation } from "../../hooks/useSettingsWheelNavigation";
 import { Icon } from "../ui/icon";
 import { FirewallGroup } from "./firewall/FirewallGroup";
 import { AboutGroup } from "./AboutGroup";
@@ -32,14 +33,18 @@ export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onR
   const current = activeSection ?? sections[0]?.id;
   const [visited, setVisited] = useState<string[]>([current]);
   const root = useRef<HTMLDivElement>(null);
+  const appliedAnchor = useRef<Props["highlightAnchor"]>(null);
   const active = useViewActive();
+  useSettingsWheelNavigation(root, sections, current, onActiveSectionChange);
   useEffect(() => { setVisited(previous => previous.includes(current) ? previous : [...previous, current]); }, [current]);
   useEffect(() => {
-    if (!active || !highlightAnchor) return;
+    if (!active || !highlightAnchor || appliedAnchor.current === highlightAnchor) return;
     const owner = settingsSectionForAnchor(highlightAnchor.anchor);
     if (owner && owner !== current) { onActiveSectionChange(owner); return; }
     // Child subviews reveal their own target first (e.g. statistics/configuration).
     const frame = requestAnimationFrame(() => {
+      // A consumed click/search target must not pull wheel navigation back to the old category.
+      appliedAnchor.current = highlightAnchor;
       const panel = root.current?.querySelector<HTMLElement>(`[data-category="${CSS.escape(current)}"]`);
       const key = highlightAnchor.anchor;
       // Category panels retain their own scroll offset; only a concrete deep link scrolls.

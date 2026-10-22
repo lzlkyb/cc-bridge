@@ -25,6 +25,7 @@ const mount = () => act(async () => root.render(<ToastProvider><textarea default
 
 describe("设置 → 应用 → 外观", () => {
   it("从经典切换到玻璃并记住选择，草稿节点和值保持不变", async () => {
+    applyAppearance("classic");
     await mount();
     const draft = host.querySelector("textarea")!;
     draft.value = "正在编辑的内容";
@@ -34,6 +35,15 @@ describe("设置 → 应用 → 外观", () => {
     expect(localStorage.getItem("cc-bridge.ui-style")).toBe("glass");
     expect(host.querySelector("textarea")).toBe(draft);
     expect(draft.value).toBe("正在编辑的内容");
+  });
+
+  it("默认选中柔光玻璃，用户仍可切回经典并记住选择", async () => {
+    await mount();
+    expect(button("柔光玻璃").getAttribute("aria-checked")).toBe("true");
+    expect(localStorage.getItem("cc-bridge.ui-style")).toBeNull();
+    await act(async () => button("经典").click());
+    expect(button("经典").getAttribute("aria-checked")).toBe("true");
+    expect(localStorage.getItem("cc-bridge.ui-style")).toBe("classic");
   });
 
   it("外部风格和顶栏明暗切换都会同步选择状态，且两者互不覆盖", async () => {
@@ -49,6 +59,7 @@ describe("设置 → 应用 → 外观", () => {
   });
 
   it("存储写失败仍选中玻璃，并提示没有记住选择", async () => {
+    applyAppearance("classic");
     await mount();
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Full"); });
     await act(async () => button("柔光玻璃").click());

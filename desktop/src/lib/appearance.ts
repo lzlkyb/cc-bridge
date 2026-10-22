@@ -6,14 +6,14 @@ const EVENT = "appearancechange";
 
 export function getStoredAppearance(): Appearance {
   try {
-    return localStorage.getItem(KEY) === "glass" ? "glass" : "classic";
+    return localStorage.getItem(KEY) === "classic" ? "classic" : "glass";
   } catch {
-    return "classic";
+    return "glass";
   }
 }
 
 export function getAppearance(): Appearance {
-  return document.documentElement.dataset.uiStyle === "glass" ? "glass" : "classic";
+  return document.documentElement.dataset.uiStyle === "classic" ? "classic" : "glass";
 }
 
 /** 在 React 挂载前恢复，避免先绘制经典界面再闪成玻璃。初始化不写偏好。 */

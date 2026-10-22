@@ -1,10 +1,9 @@
-/* Scoped material layer: classic keeps its existing surfaces. */
+/* Shared window shell; glass materials stay scoped so classic keeps its solid surfaces. */
 html[data-ui-style="glass"] {
   --glass-panel: linear-gradient(145deg, rgb(255 255 255 / .64), rgb(255 255 255 / .30));
   --glass-edge: rgb(255 255 255 / .20);
   --glass-chrome-edge: rgb(65 84 127 / .12);
   --glass-depth: inset 0 1px 0 rgb(255 255 255 / .18), 0 1px 2px -1px rgb(45 61 101 / .10), 0 6px 16px -9px rgb(55 70 114 / .22);
-  --glass-chrome: rgb(247 252 255 / .42);
   --glass-reading: linear-gradient(145deg, rgb(249 252 255 / .84), rgb(244 247 253 / .72));
   --glass-inset: rgb(241 246 253 / .86);
   --glass-status-panel: linear-gradient(145deg, rgb(182 211 240 / .94), rgb(193 188 232 / .91));
@@ -24,7 +23,6 @@ html.dark[data-ui-style="glass"] {
   --glass-edge: rgb(191 215 255 / .12);
   --glass-chrome-edge: rgb(164 188 224 / .12);
   --glass-depth: inset 0 1px 0 rgb(215 232 255 / .10), 0 1px 2px rgb(0 4 20 / .14), 0 6px 16px -9px rgb(0 4 20 / .36);
-  --glass-chrome: rgb(28 40 61 / .47);
   --glass-reading: linear-gradient(145deg, rgb(42 57 82 / .90), rgb(30 43 65 / .86));
   --glass-inset: rgb(51 68 94 / .88);
   --glass-status-panel: linear-gradient(145deg, rgb(54 80 121 / .96), rgb(66 58 107 / .94));
@@ -42,25 +40,64 @@ html.dark[data-ui-style="glass"] {
 /* Soft gradients already contain blurred color: cards need no live blur layer. */
 html[data-ui-style="glass"] .app-boot-fade {
   background:
-    radial-gradient(ellipse at 18% 10%, rgb(101 203 216 / .64), transparent 53%),
-    radial-gradient(ellipse at 88% 17%, rgb(166 143 226 / .55), transparent 54%),
-    radial-gradient(ellipse at 92% 98%, rgb(241 178 151 / .48), transparent 53%),
-    #e1eaf5;
+    radial-gradient(ellipse at 12% 4%, rgb(111 203 213 / .46), transparent 61%),
+    radial-gradient(ellipse at 92% 8%, rgb(166 151 219 / .40), transparent 64%),
+    radial-gradient(ellipse at 95% 100%, rgb(232 189 171 / .30), transparent 60%),
+    #e7edf6;
 }
 
 html.dark[data-ui-style="glass"] .app-boot-fade {
   background:
-    radial-gradient(ellipse at 18% 10%, rgb(25 133 156 / .57), transparent 53%),
-    radial-gradient(ellipse at 88% 17%, rgb(105 78 177 / .48), transparent 54%),
-    radial-gradient(ellipse at 92% 98%, rgb(156 93 69 / .39), transparent 53%),
-    #152034;
+    radial-gradient(ellipse at 12% 4%, rgb(25 133 156 / .40), transparent 61%),
+    radial-gradient(ellipse at 92% 8%, rgb(105 78 177 / .34), transparent 64%),
+    radial-gradient(ellipse at 95% 100%, rgb(156 93 69 / .22), transparent 60%),
+    #18243a;
 }
 
-html[data-ui-style="glass"] :is(.app-side, .app-topbar) {
-  background: var(--glass-chrome);
-  /* Frame separators should recede; reserve soft reflected light for card surfaces. */
-  border-color: var(--glass-chrome-edge);
+/* One shared backdrop avoids separate tinted sheets and visible window seams. */
+.app-shell :is(.app-side, .app-topbar, .app-side-foot) {
+  background: transparent;
+  border-color: transparent;
   box-shadow: none;
+  backdrop-filter: none;
+}
+.app-shell .app-side-head { padding-inline: 16px; }
+.app-shell .app-side[data-collapsed] .app-side-head { padding-inline: 0; }
+.app-shell .app-side-foot { padding-bottom: 12px; }
+
+/* Put breathing room inside each scrolling page, rather than in a fixed colored strip. */
+.app-shell .app-main-content:not([data-terminal]) { padding: 0; }
+.app-shell .app-main-content:is([data-page="connect"], [data-page="security"]) > [data-page-panel]:not([hidden]) {
+  padding: 16px 4px 16px 16px;
+}
+.app-shell .app-main-content[data-page="log"] > [data-page-panel]:not([hidden]) { padding: 16px; }
+.app-shell .settings-category-panel { padding: 20px 20px 16px 16px; }
+.app-shell .app-content-box { padding-bottom: 0; }
+.app-shell .page-scroll { scrollbar-gutter: auto; }
+
+/* Only the active page's outer viewport can reveal the toolbar's quiet scroll edge.
+   Hidden categories retain their offset without bleeding an edge into the next page. */
+.app-shell .app-topbar { position: relative; z-index: 20; }
+.app-shell .app-topbar::after {
+  content: ""; position: absolute; inset: auto 0 -14px; height: 16px;
+  background: linear-gradient(to bottom, hsl(var(--background) / .85), transparent);
+  pointer-events: none; opacity: 0; transition: opacity 140ms ease-out;
+}
+html[data-ui-style="glass"] .app-topbar::after {
+  background: linear-gradient(to bottom, rgb(231 237 246 / .72), transparent);
+}
+html.dark[data-ui-style="glass"] .app-topbar::after {
+  background: linear-gradient(to bottom, rgb(24 36 58 / .80), transparent);
+}
+.app-shell .app-main:has(
+  .app-main-content > [data-page-panel]:not([hidden])[data-scroll-started],
+  .app-main-content > [data-page-panel]:not([hidden]) .settings-category-panel:not([hidden])[data-scroll-started]
+) .app-topbar::after { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .app-shell .app-topbar::after { transition: none; }
+}
+@media (forced-colors: active) {
+  .app-shell .app-topbar::after { display: none; }
 }
 
 html[data-ui-style="glass"] .app-side-item[data-active] {

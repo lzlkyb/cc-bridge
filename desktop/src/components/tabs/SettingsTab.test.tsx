@@ -59,4 +59,17 @@ describe("设置分类导航", () => {
     expect(select).toHaveBeenCalledWith("set-files");
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
+  it("右侧滚轮切换后，已处理的旧导航锚点不会把分类拉回去", async () => {
+    const anchor = { anchor: "set-app", nonce: ++nonce };
+    const show = async (category: string) => {
+      await act(async () => root.render(<SettingsTab sections={SETTINGS_CATEGORIES} activeSection={category} onActiveSectionChange={select} onSaved={() => {}} highlightAnchor={anchor} />));
+      await act(async () => vi.runAllTimers());
+    };
+    await show("set-app");
+    await act(async () => { host.querySelector('[data-category="set-app"]')!.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: 100 })); });
+    expect(select).toHaveBeenCalledExactlyOnceWith("set-terminal");
+    await show("set-terminal");
+    expect(select).toHaveBeenCalledExactlyOnceWith("set-terminal");
+    expect(host.querySelector<HTMLElement>('[data-category="set-terminal"]')!.hidden).toBe(false);
+  });
 });

@@ -184,7 +184,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
   // ── 主界面：两栏 ──
   return (
     <div
-      ref={rootRef}
+      ref={rootRef} data-fullscreen={fullscreen || undefined}
       className="terminal-workspace flex h-full min-h-0 overflow-hidden bg-card"
     >
       {sidebarHost && createPortal(<TerminalSidebar

@@ -12,8 +12,16 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("应用外观偏好", () => {
-  it.each([null, "", "GLASS", "unknown"])("缺省或非法存值 %s 保留经典界面", value => {
+  it.each([null, "", "GLASS", "unknown"])("缺省或非法存值 %s 默认使用柔光玻璃，初始化不写偏好", value => {
     if (value !== null) localStorage.setItem("cc-bridge.ui-style", value);
+    initializeAppearance();
+    expect(getAppearance()).toBe("glass");
+    expect(localStorage.getItem("cc-bridge.ui-style")).toBe(value);
+  });
+
+  it("首次读取界面风格也默认柔光，已保存经典则启动恢复经典", () => {
+    expect(getAppearance()).toBe("glass");
+    localStorage.setItem("cc-bridge.ui-style", "classic");
     initializeAppearance();
     expect(getAppearance()).toBe("classic");
   });
@@ -43,10 +51,10 @@ describe("应用外观偏好", () => {
     expect(document.documentElement.classList.contains("dark")).toBe(false);
   });
 
-  it("存储读取被禁用时安全回到经典", () => {
+  it("存储读取被禁用时仍可使用默认柔光", () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new DOMException("Blocked", "SecurityError"); });
     expect(initializeAppearance).not.toThrow();
-    expect(getAppearance()).toBe("classic");
+    expect(getAppearance()).toBe("glass");
   });
 
   it("localStorage 属性本身被禁用也不会阻断启动或切换", () => {
@@ -57,6 +65,7 @@ describe("应用外观偏好", () => {
   });
 
   it("写入失败时本次风格仍生效并广播，返回未保存", () => {
+    applyAppearance("classic");
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("Full", "QuotaExceededError"); });
     const listener = vi.fn();
     const off = subscribeAppearance(listener);
@@ -67,6 +76,7 @@ describe("应用外观偏好", () => {
   });
 
   it("同值不重复广播，退订后不再接收；不触发明暗主题事件", () => {
+    applyAppearance("classic");
     const listener = vi.fn(), themeListener = vi.fn();
     const off = subscribeAppearance(listener);
     window.addEventListener("themechange", themeListener);
