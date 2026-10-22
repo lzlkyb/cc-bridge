@@ -72,6 +72,18 @@ function readCargoVersion() {
   if (!m) throw new Error("Cargo.toml 未找到 version 字段");
   return m[1];
 }
+/**
+ * 读文本并统一成 LF。
+ *
+ * 🔴 必须做这一步：CHANGELOG.md 在工作区是 CRLF（core.autocrlf），而下面解析
+ * `[Unreleased]` 用的 `/^\s*[-*]\s+(.*)$/` 里，JS 的 `.` **不匹配 `\r`**、`$` 又只认
+ * 字符串真正的结尾 —— 于是 "‑ 某条改动\r" 这种行一条都匹配不上，`items` 恒为空。
+ * 后果不是报错而是**静默丢数据**：整段 [Unreleased] 被删掉、条目一条没并进新版本段
+ * （2026-10-22 v3.0.0 发版实测，43 条手写条目全丢，靠 git 历史才捞回来）。
+ */
+function readTextNormalized(p) {
+  return fs.readFileSync(p, "utf-8").replace(/\r\n/g, "\n");
+}
 function bumpSemver(cur, type, next) {
   if (next) return next;
   const [a, b, c] = cur.split(".").map(Number);
@@ -161,7 +173,7 @@ async function main() {
   const fallbackSections = `### 变更\n- 见 git 提交历史`;
 
   // 4. 插入 CHANGELOG.md
-  let changelog = fs.readFileSync(CHANGELOG_PATH, "utf-8");
+  let changelog = readTextNormalized(CHANGELOG_PATH);
 
   // 消费 ## [Unreleased]：把其用户向小节并入本次发布，并从 CHANGELOG 删除该段，
   // 避免「Unreleased 永远留着 / 下次又踩」以及本次发布漏写已积累条目。
@@ -178,6 +190,7 @@ async function main() {
     ]);
     const secRe = /###\s+([^\n]+)\n([\s\S]*?)(?=\n###\s+|\n##\s+|$)/g;
     let m;
+    let collected = 0;
     while ((m = secRe.exec(body))) {
       const name = m[1].trim();
       if (skipSec.has(name)) continue;
@@ -189,16 +202,30 @@ async function main() {
       if (items.length) {
         if (!sections[name]) sections[name] = [];
         sections[name].push(...items);
+        collected += items.length;
       }
     }
+    // 🔴 硬闸：找到了 [Unreleased] 段却一条条目都没解析出来，说明是格式/换行把解析
+    // 搞坏了（历史上就是 CRLF）。此时若继续往下走，下面 replace 会把整段删掉、
+    // 条目一条不进新版本段 —— 静默丢数据，远比直接失败糟糕。
+    if (collected === 0) {
+      console.error(
+        "\x1b[31m[RELEASE ERROR]\x1b[0m 找到 ## [Unreleased] 但没解析出任何条目，" +
+          "已中止以免把该段整段删掉。请检查换行符（CRLF）与条目格式（每行必须是 `- xxx`）。",
+      );
+      process.exit(1);
+    }
     changelog = changelog.replace(unrelMatch[0] + "\n", "");
-    console.log(`\x1b[32m[4/7]\x1b[0m 已消费并归档 ## [Unreleased]`);
+    console.log(
+      `\x1b[32m[4/7]\x1b[0m 已消费并归档 ## [Unreleased]（并入 ${collected} 条）`,
+    );
   }
 
   const sectionLines = Object.entries(sections)
     .filter(([, items]) => items.length)
     .map(([name, items]) => `### ${name}\n${items.join("\n")}`)
-    .join("\n");
+    // 用两个 \n：单个 \n 会让下一个 "###" 紧贴上一条列表项，Markdown 渲染成一整段。
+    .join("\n\n");
   const newBlock = `## [${next}] - ${todayISO()}\n\n### 更新摘要\n${summary}\n\n${
     sectionLines || fallbackSections
   }\n\n`;
@@ -214,7 +241,7 @@ async function main() {
   console.log(`\x1b[32m[4/7]\x1b[0m CHANGELOG.md 插入 [${next}] 段`);
 
   // 5. 插入 README 版本历史行
-  let readme = fs.readFileSync(README_PATH, "utf-8");
+  let readme = readTextNormalized(README_PATH);
   const readmeRow = `| v${next} | ${summary} |`;
   readme = readme.replace(/(\n\| v[\d.]+\s*\|)/, `\n${readmeRow}$1`);
   fs.writeFileSync(README_PATH, readme, "utf-8");
