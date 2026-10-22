@@ -9,7 +9,7 @@ import {
   BAR_TOP,
 } from "../../lib/sparkline";
 import { MAX_POINTS } from "../../lib/metricHistory";
-import { useChangeClass } from "../../hooks/useChangeClass";
+import { useAnimatedNumbers } from "../../hooks/useAnimatedNumbers";
 
 /**
  * 指标卡里的趋势小图，按形态分派到四种画法。坐标全部由 `lib/sparkline.ts` 算（已单测）。
@@ -38,13 +38,9 @@ export function Sparkline({
   threshold?: number;
   noData?: boolean;
 }) {
-  // 阶梯线的“重画”触发：只看末值（当前活跃命令数）变没变。
-  // hook 必须在任何 return 之前调用。
-  const stepRedraw = useChangeClass(
-    series.length > 0 ? series[series.length - 1] : -1,
-    "metric-spark__step--redraw",
-    500,
-  );
+  // Bars/heat already have CSS transitions. Only continuous paths need frame interpolation.
+  // Raw samples below decide empty/zero/gap states; intermediate frames never invent data.
+  const drawn = useAnimatedNumbers(series, { enabled: !noData && (kind === "area" || kind === "step"), resetKey: kind });
 
   // 🔴 出图门槛按形态区分，而不是一律 2 点。
   //
@@ -84,7 +80,7 @@ export function Sparkline({
         preserveAspectRatio="none"
         aria-hidden="true"
       >
-        {kind === "area" && <AreaShape series={series} threshold={threshold} />}
+        {kind === "area" && <AreaShape series={drawn} threshold={threshold} />}
         {/* 柱：画满高的 rect + scaleY 缩放。为何不直接给 height——
             height 变化是重绘，transform 走纯合成，过渡才不掉帧。 */}
         {kind === "bars" &&
@@ -111,16 +107,15 @@ export function Sparkline({
               opacity={c.level}
             />
           ))}
-        {/* 阶梯线：points 无法过渡，所以值变化时用「重画一遍」表达变化
-            （redraw 类由下方 useChangeClass 在末值变化时挂 450ms）。 */}
+        {/* Preserve the stair shape while its known samples move to their new positions. */}
         {kind === "step" && (
           <polyline
-            className={`metric-spark__line metric-spark__step ${stepRedraw}`}
-            points={sparkStep(series, MAX_POINTS) ?? ""}
+            className="metric-spark__line metric-spark__step"
+            points={sparkStep(drawn, MAX_POINTS) ?? ""}
           />
         )}
       </svg>
-      {kind === "area" && <AreaTip series={series} />}
+      {kind === "area" && <AreaTip series={drawn} />}
     </div>
   );
 }

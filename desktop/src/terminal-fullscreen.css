@@ -1,0 +1,68 @@
+/* Hide the original chrome only for the visible terminal page. Keep its layout slot and
+   the terminal's DOM stable: changing stacking order alone leaves two competing bars. */
+.app-shell:has(.app-main-content[data-terminal] > [data-page-panel]:not([hidden]) .terminal-workspace[data-fullscreen]) > .app-main > .app-topbar,
+.app-shell:has(.app-main-content[data-terminal] > [data-page-panel]:not([hidden]) .terminal-workspace[data-fullscreen]) > .app-side {
+  visibility: hidden;
+  pointer-events: none;
+}
+.terminal-fullscreen-area { container-type: inline-size; container-name: fullscreen-terminal; }
+.terminal-workspace .terminal-tabs-header[data-fullscreen] {
+  height: 48px; min-height: 48px; padding: 0 0 0 10px; gap: 4px;
+  background: hsl(var(--card)); color: hsl(var(--foreground));
+  border-bottom: 1px solid hsl(var(--border));
+}
+html[data-ui-style="glass"] .terminal-workspace .terminal-tabs-header[data-fullscreen] {
+  background: var(--glass-terminal-chrome);
+  border-color: var(--glass-chrome-edge);
+}
+.terminal-tabs-header[data-fullscreen] .terminal-tabs-scroll { flex: 0 1 auto; max-width: 60%; min-width: 96px; order: 0; scrollbar-width: none; }
+.terminal-tabs-header[data-fullscreen] .terminal-tabs-scroll::-webkit-scrollbar { display: none; }
+.terminal-tabs-header[data-fullscreen] .terminal-tabs-scroll > div { max-width: 330px; height: 32px; }
+.terminal-tabs-header[data-fullscreen] .terminal-session-tab { min-width: 0; }
+.terminal-tabs-header[data-fullscreen] .terminal-session-tab > span:first-child { flex-shrink: 0; }
+.terminal-tabs-header[data-fullscreen] .terminal-session-tab > span:nth-child(2) { flex-shrink: 0; max-width: 160px; }
+.terminal-tabs-header[data-fullscreen] .terminal-session-close { flex-shrink: 0; display: grid; place-items: center; width: 22px; height: 26px; }
+.terminal-tabs-header[data-fullscreen] .terminal-tabs-actions { display: contents; }
+.terminal-tabs-header[data-fullscreen] [aria-label="新终端"] { order: 1; width: 32px; height: 32px; }
+.terminal-tabs-header[data-fullscreen] [aria-label="分屏"] { order: 4; width: 32px; height: 32px; }
+.terminal-fullscreen-drag { flex: 1 0 40px; align-self: stretch; order: 2; }
+.terminal-fullscreen-safety { order: 3; flex-shrink: 0; }
+.terminal-fullscreen-safety .sec-slot-item > div > button {
+  display: flex; justify-content: center; height: 32px; min-width: 38px; padding: 0 6px;
+  border: 0; border-radius: 6px; background: transparent;
+}
+.terminal-tabs-header[data-fullscreen] .terminal-split-controls { order: 4; border: 0; padding: 0; }
+.terminal-tabs-header[data-fullscreen] .terminal-layout-button { height: 32px; }
+.terminal-tabs-header[data-fullscreen] .terminal-toolbar-host { order: 5; }
+.terminal-fullscreen-tools { display: flex; align-items: center; gap: 3px; }
+.terminal-fullscreen-tools > button, .terminal-fullscreen-tools > div > button { width: 32px; height: 32px; }
+.terminal-fullscreen-alert { display: grid; place-items: center; width: 24px; }
+.terminal-fullscreen-window { display: flex; flex-shrink: 0; align-items: center; align-self: stretch; gap: 9px; order: 6; }
+.terminal-fullscreen-exit {
+  display: flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 10px;
+  border-radius: 7px; white-space: nowrap; font-size: 12px; color: hsl(var(--primary)); background: hsl(var(--primary) / .07);
+}
+.terminal-fullscreen-exit:hover { background: hsl(var(--primary) / .14); }
+.terminal-fullscreen-exit kbd { color: hsl(var(--muted-foreground)); font-size: 10px; font-family: inherit; }
+.terminal-fullscreen-window > div { height: 100%; gap: 0; padding-left: 5px; border-left: 1px solid hsl(var(--border)); }
+.terminal-fullscreen-window > div > button { width: 42px; height: 100%; border-radius: 0; }
+.terminal-fullscreen-area > .terminal-file-panel { top: 48px; }
+/* Local pane headers still identify the input target; their actions now live above. */
+.terminal-workspace[data-fullscreen] .terminal-pane-tools:empty { display: none; }
+@container fullscreen-terminal (max-width: 1100px) {
+  .terminal-tabs-header[data-fullscreen] .terminal-session-title { display: none; }
+  .terminal-tabs-header[data-fullscreen] .terminal-tabs-scroll { max-width: 46%; }
+  .terminal-fullscreen-exit kbd { display: none; }
+}
+@container fullscreen-terminal (max-width: 760px) {
+  .terminal-tabs-header[data-fullscreen] .terminal-tabs-scroll { flex: 1 1 96px; max-width: none; }
+  .terminal-tabs-header[data-fullscreen] .terminal-session-tab > span:nth-child(2) { max-width: 112px; }
+  .terminal-tabs-header[data-fullscreen] [aria-label="分屏"] { display: none; }
+  .terminal-fullscreen-drag { flex: 0 0 20px; }
+  .terminal-fullscreen-exit { width: 32px; padding: 0; }
+  .terminal-fullscreen-exit > span { display: none; }
+  .terminal-fullscreen-window { gap: 4px; }
+  .terminal-fullscreen-window > div { padding-left: 2px; }
+  .terminal-fullscreen-window > div > button { width: 34px; }
+  .terminal-tabs-header[data-fullscreen] .terminal-layout-button > span { display: none; }
+}

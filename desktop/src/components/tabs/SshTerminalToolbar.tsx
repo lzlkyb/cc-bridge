@@ -4,6 +4,7 @@ import type { SshConnection } from "../../lib/types";
 import { MoreMenu, ButtonIcon } from "./SshTerminalMoreMenu";
 import { TerminalAppearanceMenu } from "./TerminalAppearanceMenu";
 import { TerminalPaneActions } from "./TerminalPaneActions";
+import { TerminalFullscreenTools } from "./TerminalFullscreenTools";
 
 export interface SshTerminalToolbarProps {
   pane?: boolean;
@@ -75,6 +76,7 @@ export function SshTerminalToolbar({
   // 命令历史面板的开关在模块级 store 里：按钮在每个会话自己的工具栏上，面板本体挂在
   // 会话容器（SshTerminal）里——两端不同子树，靠 props 串会把 SshTerminal.tsx 撑破 300 行线。
   const cmdOpen = useCmdPanelOpen();
+  if (fullscreen && compact) return <TerminalFullscreenTools {...{ pane, conn, closed, focused, inputErr, selectMode, shiftActive, dragSelecting, fullscreen, onCopy, onCopyScreen, onPaste, onPasteImage, imgBusy, onRepaint, onSearch, onToggleSelectMode, onClear, onToggleFullscreen, onExport, onDisconnect, cmdOpen }}/>;
   if (pane) return <TerminalPaneActions {...{ conn, closed, inputErr, selectMode, shiftActive, dragSelecting, onCopy, onCopyScreen, onPaste, onPasteImage, imgBusy, onRepaint, onSearch, onToggleSelectMode, onClear, onExport, fullscreen, onToggleFullscreen, onDisconnect, cmdOpen }}/>;
   return (
     <div className="terminal-session-toolbar flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2" data-compact={compact || undefined} aria-label={`${conn.name || conn.host}终端操作`}>

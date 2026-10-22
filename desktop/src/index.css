@@ -881,18 +881,6 @@ body {
   stroke-dasharray: none;
   animation: none;
 }
-/* 值变化时重画一遍。
-   为何只能用“重画”而不是形状过渡：polyline 的 `points` **不是可过渡属性**。
-   dasharray 给 400：阶梯线弧长约是水平跨度 ×2 加纵向跳变，400 能盖住最坏情况。 */
-.metric-spark__step--redraw {
-  stroke-dasharray: 400;
-  animation: spark-redraw 0.5s cubic-bezier(0.16, 1, 0.3, 1);
-}
-@keyframes spark-redraw {
-  from { stroke-dashoffset: 400; }
-  to   { stroke-dashoffset: 0; }
-}
-
 /* E4. 连接页 Bento 的微动画。
 
    立场：**能事件驱动的绝不做成常驻**。本文件 A1/A3/A5 三处删除记录带着实测数字
@@ -994,22 +982,19 @@ body {
 
 /* 白底卡 hover 微抬起。仅 hover 触发，零常驻。
    只动 transform + box-shadow；前者纯合成，后者仅在悬停那一下重绘。 */
-.metric-card, .bento-card {
+.metric-card, .bento-card, .status-card {
   transition: transform var(--dur) var(--ease),
               box-shadow 160ms cubic-bezier(0.4, 0, 0.2, 1),
               border-color 160ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 /* 阴影加深给所有卡：表达「这是一块整体」。边框点亮跟设计稿（.native-metric:hover
    border-color → primary）：悬停那一下整个卡「亮」出轮廓，比单纯加深阴影更明确。 */
-.metric-card:hover, .bento-card:hover {
+.metric-card:hover, .bento-card:hover, .status-card:hover {
   box-shadow: var(--sh-hover);
   border-color: color-mix(in srgb, hsl(var(--primary)) 55%, hsl(var(--border)));
 }
-/* 抬起只给**真的可点**的卡。NavTarget 渲染出来正好带 .nav-target，
-   所以指标卡 / 健康度卡（nav-target + 卡类）抬，
-   治理卡（纯 bento-card，只有九个胶囊各自可点）不抬——整卡抬起却点不动是个撒谎的暗示。
-   onNavigate 不传时 NavTarget 渲染纯 div，也自动不抬。新增卡片不用再记这条。 */
-.metric-card.nav-target:hover, .bento-card.nav-target:hover { transform: translateY(-2px); }
+/* The service surface shares the dashboard's elevation; its individual controls retain their own targets. */
+.metric-card.nav-target:hover, .bento-card.nav-target:hover, .status-card:hover { transform: translateY(-2px); }
 
 /* sparkline 末端标点：静态，**不脉动**。标明“这是当前值”而不引入常驻动画。
 

@@ -35,9 +35,11 @@ export interface SecurityBadge {
 export function SecurityBadgeGroup({
   badges,
   onNavigate,
+  compact = false,
 }: {
   badges: SecurityBadge[];
   onNavigate?: (tab: string, anchor?: string) => void;
+  compact?: boolean;
 }) {
   const visible = useMemo(() => badges.filter((b) => b.show), [badges]);
   const hasAny = visible.length > 0;
@@ -66,7 +68,7 @@ export function SecurityBadgeGroup({
 
   return (
     <div
-      className="sec-slot"
+      className={`sec-slot ${compact ? "terminal-fullscreen-safety" : ""}`}
       data-open={hasAny}
       data-clip={clip || undefined}
       aria-hidden={!hasAny}
@@ -77,7 +79,8 @@ export function SecurityBadgeGroup({
       <div className="sec-slot-item">
         {shown && (
           <Menu
-            align="left"
+            align={compact ? "right" : "left"}
+            portal={compact}
             width="w-72"
             trigger={(open, toggle) => (
               <button
@@ -85,6 +88,7 @@ export function SecurityBadgeGroup({
                 onClick={toggle}
                 aria-expanded={open}
                 aria-haspopup="menu"
+                aria-label={compact ? `${count} 项${anyDanger ? "安全" : ""}提醒` : undefined}
                 title={shown.map((b) => b.label).join("、")}
                 className={`inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-semibold transition-colors ${
                   anyDanger
@@ -92,10 +96,10 @@ export function SecurityBadgeGroup({
                     : "border-warning/30 bg-warning/10 text-warning-ink hover:bg-warning/20"
                 }`}
               >
-                <Icon name={anyDanger ? "alertTriangle" : "lock"} size={11} />
+                <Icon name={compact ? "shield" : anyDanger ? "alertTriangle" : "lock"} size={compact ? 15 : 11} />
                 {/* 计数位锁宽：1↔2 位数变化不横推「项…提醒」文字与右侧中段。 */}
                 <span className="min-w-[1.3ch] text-center tabular-nums">{count}</span>
-                项{anyDanger ? "安全" : ""}提醒
+                {!compact && <>项{anyDanger ? "安全" : ""}提醒</>}
               </button>
             )}
           >

@@ -16,7 +16,7 @@ export function TerminalFilePanel({
   onBack: () => void;
 }) {
   return (
-    <div className="absolute inset-0 z-10 bg-card">
+    <div className="terminal-file-panel absolute inset-0 z-10 bg-card">
       {/* key 不能省：侧栏在文件面板打开时仍可点，直接换到另一条连接时
           组件不会重挂，path / entries 还是上一条的——而当前目录会被回写成
           「上次上传目录」，等于把 A 的目录存成了 B 的。 */}

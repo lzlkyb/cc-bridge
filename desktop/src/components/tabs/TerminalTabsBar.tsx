@@ -6,8 +6,12 @@ import type { SshSessionRef } from "./TerminalConnectionItem";
 import type { TermTabMeta } from "../../lib/terminalTabMeta";
 import type { IProgressState } from "@xterm/addon-progress";
 import { terminalSessionOrdinal } from "../../lib/terminalWorkspace";
+import { TitleBarControls } from "../layout/TitleBarControls";
+import { useTerminalFullscreenActions } from "./TerminalFullscreenContext";
 
 interface TerminalTabsBarProps {
+  fullscreen?: boolean;
+  onExitFullscreen?: () => void;
   splitControls?: ReactNode;
   onToolbarReady?: (node: HTMLDivElement | null) => void;
   sessions: SshSessionRef[];
@@ -55,6 +59,8 @@ function progressStyle(p: IProgressState): { className: string; width: string } 
  * 激活标签即清零）。
  */
 export function TerminalTabsBar({
+  fullscreen = false,
+  onExitFullscreen,
   splitControls,
   onToolbarReady,
   sessions,
@@ -67,6 +73,7 @@ export function TerminalTabsBar({
   onToggleSplit,
   splitActive,
 }: TerminalTabsBarProps) {
+  const fullscreenActions = useTerminalFullscreenActions();
   const activeRef = useRef<HTMLDivElement>(null);
   // 跨标签搜索浮层。它是 `fixed` 定位，所以放在这条 `overflow-x-auto` 里也不会被裁剪
   // （定位于视口，不参与这条 flex 布局）——省掉一层 Fragment 包裹与整块缩进。
@@ -81,7 +88,7 @@ export function TerminalTabsBar({
   const tabSessions = sessions.filter((s) => !s.splitOnly);
 
   return (
-    <div className="terminal-tabs-header flex shrink-0 items-center gap-1 border-b border-border bg-card px-2 py-1.5">
+    <div className="terminal-tabs-header flex shrink-0 items-center gap-1 border-b border-border bg-card px-2 py-1.5" data-fullscreen={fullscreen || undefined}>
       <div className="terminal-tabs-scroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="终端会话">
       {tabSessions.map((s) => {
         const closed = !!s.closedReason;
@@ -105,7 +112,7 @@ export function TerminalTabsBar({
               role="tab"
               aria-selected={active}
               onClick={() => onActivate(s.sessionId)}
-              className="flex items-center gap-1.5"
+              className="terminal-session-tab flex items-center gap-1.5"
             >
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
@@ -124,7 +131,7 @@ export function TerminalTabsBar({
               </span>
               {/* 标题只作主机名的附加段：正常程序可显示，恶意标题顶不掉主机名。 */}
               {title && (
-                <span className="max-w-40 truncate font-mono text-muted-foreground">▸ {title}</span>
+                <span className="terminal-session-title max-w-40 truncate font-mono text-muted-foreground" title={title}>▸ {title}</span>
               )}
               {seq && (
                 <span className="rounded bg-muted-foreground/15 px-1 font-mono text-[11px]">
@@ -143,10 +150,10 @@ export function TerminalTabsBar({
                 if (closed) setCmdPanelOpen(false);
                 return closed ? onCloseTab(s.sessionId) : onDisconnect(s.sessionId);
               }}
-              className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive-ink"
+              className="terminal-session-close rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive-ink"
               title={closed ? "关闭标签" : "断开（标签保留，可重连）"}
             >
-              <Icon name="close" size={11} />
+              <Icon name="close" size={14} />
             </button>
             {/* OSC 9;4 进度：贴标签底缘的 2px 细条，激活与否都显示（后台任务也要看得见）。 */}
             {bar && (
@@ -164,15 +171,15 @@ export function TerminalTabsBar({
       <div className="terminal-tabs-actions flex shrink-0 items-center gap-1">
       {/* 跨标签搜索入口（和当前终端查找分开）。
           与工具栏的「搜索」区别：那个只搜当前标签，这个横跨所有会话的滚动历史。 */}
-      <button
+      {!fullscreen && <button
         type="button"
         onClick={() => setSearchOpen(true)}
         title="搜索所有标签的终端内容（含已断开标签的历史）"
         aria-label="搜索所有标签"
         className="ml-auto flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >
-        <Icon name="search" size={14} /><span className="terminal-action-label">搜索所有标签</span>
-      </button>
+        <Icon name="search" size={16} /><span className="terminal-action-label">搜索所有标签</span>
+      </button>}
       {onNewTerminal && (
         <button
           type="button"
@@ -181,7 +188,7 @@ export function TerminalTabsBar({
           aria-label="新终端"
           className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
-          <Icon name="plus" size={15} /><span className="terminal-action-label">新终端</span>
+          <Icon name="plus" size={16} /><span className="terminal-action-label">新终端</span>
         </button>
       )}
       {onToggleSplit && !splitActive && (
@@ -197,12 +204,17 @@ export function TerminalTabsBar({
               : "text-muted-foreground hover:bg-muted hover:text-foreground"
           }`}
         >
-          <Icon name="monitor" size={14} /><span className="terminal-action-label">分屏</span>
+          <Icon name="monitor" size={16} /><span className="terminal-action-label">分屏</span>
         </button>
       )}
       </div>
+      {fullscreen && <><div className="terminal-fullscreen-drag" data-tauri-drag-region title="拖动窗口"/>{fullscreenActions.safety}</>}
       {splitControls}
       <div className="terminal-toolbar-host" ref={onToolbarReady} aria-label="当前窗格操作"/>
+      {fullscreen && <div className="terminal-fullscreen-window" data-tauri-drag-region="false">
+        <button type="button" className="terminal-fullscreen-exit" aria-label="退出终端全屏（F11）" title="退出终端全屏（F11）" onClick={onExitFullscreen}><Icon name="collapse" size={16}/><span>退出全屏</span><kbd>F11</kbd></button>
+        <TitleBarControls/>
+      </div>}
       {searchOpen && (
         <TerminalGlobalSearch
           sessions={sessions}

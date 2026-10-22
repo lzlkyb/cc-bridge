@@ -4,6 +4,7 @@ import type { TokenUsageDay, TokenUsageReport } from "../../lib/types";
 import { fmtTokens, shortDateKey } from "../../lib/utils";
 import { NavTarget } from "../ui/NavTarget";
 import { useAppHidden } from "../../lib/appVisibility";
+import { useAnimatedNumbers } from "../../hooks/useAnimatedNumbers";
 
 /**
  * Bento 行2 的「Token 用量（估算）」卡（4/12 列，方案 B 布局的右侧新卡）。
@@ -32,6 +33,7 @@ export function UsageCard({
   const days = data?.days ?? [];
   const today = days[days.length - 1];
   const todayTotal = today ? today.estInput + today.estOutput : 0;
+  const shownTotal = useAnimatedNumbers([todayTotal], { enabled: !!today, resetKey: today?.date ?? "empty" })[0];
   const hasData = days.some((d) => d.calls > 0);
   const max = Math.max(...days.map(dayTotal), 1);
 
@@ -41,7 +43,7 @@ export function UsageCard({
       tab="settings"
       anchor="set-tokenusage"
       title="去设置页看按日明细与工具排行"
-      className="bento-card"
+      className="bento-card dashboard-usage"
     >
       <div className="bento-eyebrow">
         Token 用量
@@ -64,7 +66,7 @@ export function UsageCard({
         <>
           <div className="mt-1.5">
             <div className="text-[22px] font-extrabold leading-tight tabular-nums">
-              {fmtTokens(todayTotal)}
+              {fmtTokens(Math.round(shownTotal))}
               <span className="ml-1 text-xs font-semibold text-muted-foreground">
                 tokens · 今日
               </span>
@@ -122,6 +124,7 @@ function UsageBar({ day, pct, today, delay }: { day: TokenUsageDay; pct: number;
   return (
     <div
       className={`min-w-0 flex-1 rounded-t-[3px] ${today ? "bg-primary" : "bg-primary/25"}`}
+      data-today={today || undefined}
       style={{ height: `${pct}%`, animationDelay: delay ? `${delay}ms` : undefined }}
       title={label}
     />

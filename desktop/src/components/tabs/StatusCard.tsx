@@ -13,6 +13,8 @@ import { ServiceChain } from "./ServiceChain";
 import { RecentActivity } from "./RecentActivity";
 import { StopClick } from "../ui/NavTarget";
 import { useToast } from "../ui/toast";
+import { DashboardSync } from "./DashboardSync";
+import { useDashboardMotion } from "../../hooks/useDashboardMotion";
 
 /** 四种基调对应的背景渐变。定义在 index.css（需要 dark 变体，Tailwind 行内写不下）。 */
 const TONE_CLASS: Record<ChainTone, string> = {
@@ -70,6 +72,8 @@ export function StatusCard({
 
   const running = status?.running ?? false;
   const { lastIncreaseAt } = useRemoteActivity();
+  const motion = useDashboardMotion();
+  const traffic = useChangeClass(lastIncreaseAt ?? 0, "dashboard-traffic", 900, motion && running && lastIncreaseAt !== null);
 
   // 运行时长本地每秒自增，5s 轮询回来时以后端为准校准，实现平滑跳秒。
   const [liveUptime, setLiveUptime] = useState(0);
@@ -144,14 +148,14 @@ export function StatusCard({
   const busy = pending !== null;
   // 基调真的变了时播一次淡入（400ms）。
   // 为何不用 `transition: background`：linear-gradient 不是可插值属性，写了也是硬切。
-  const toneSwitch = useChangeClass(chain.tone, "status-card--switch", 400);
+  const toneSwitch = useChangeClass(chain.tone, "status-card--switch", 400, motion);
 
   return (
-    <div className={`status-card ${TONE_CLASS[chain.tone]} ${toneSwitch}`}>
+    <div className={`status-card ${TONE_CLASS[chain.tone]} ${toneSwitch} ${traffic}`}>
       {/* 评审修复 ③：中文 eyebrow 11px、去 uppercase/字距（对汉字无效）；层级靠字重。
           右侧时长是配套的西文数字+中文单位，10.5px 与 eyebrow 同行保持次级感。 */}
       <div className="status-eyebrow flex items-center text-xs font-bold opacity-90">
-        服务状态
+        <DashboardSync running={running}/>
         {/* tabular-nums：时长每秒自增，等宽数字位让秒针跳动不再横推左侧「服务状态」。 */}
         <span className="ml-auto text-[10.5px] font-semibold tabular-nums">
           {running ? `已运行 ${formatUptime(liveUptime)}` : "未运行"}

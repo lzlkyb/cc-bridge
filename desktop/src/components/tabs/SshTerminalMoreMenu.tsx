@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon";
 import { Menu, MenuItem } from "../ui/Menu";
 import { Modal } from "../ui/Modal";
+import { TerminalAppearanceOptions } from "./TerminalAppearanceMenu";
 
 /**
  * 工具条「更多」下拉 + 终端快捷键面板（critique P2-2）。
@@ -38,6 +39,8 @@ export function MoreMenu({
   onExport,
   extraItems,
   portal = false,
+  appearance = false,
+  footerItems,
 }: {
   selectMode: boolean;
   onCopyScreen: () => void;
@@ -48,22 +51,32 @@ export function MoreMenu({
   onExport: () => void;
   extraItems?: (close: () => void) => React.ReactNode;
   portal?: boolean;
+  appearance?: boolean;
+  footerItems?: (close: () => void) => React.ReactNode;
 }) {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [appearanceView, setAppearanceView] = useState(false);
+  const pageRef = useRef<HTMLDivElement>(null);
+  // Changing menu pages removes the focused item; keep keyboard navigation inside the menu.
+  useLayoutEffect(() => { pageRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus({ preventScroll: true }); }, [appearanceView]);
   return (
     <>
       <Menu
         portal={portal}
-        width={portal ? "w-72" : undefined}
+        width={appearanceView ? "w-[300px]" : portal ? "w-72" : undefined}
         trigger={(open, toggle) => (
-          <ButtonIcon title="更多" highlight={open} onClick={toggle}>
+          <ButtonIcon title="更多" expanded={open} highlight={open} onClick={() => { setAppearanceView(false); toggle(); }}>
             <Icon name="more" size={14} />
           </ButtonIcon>
         )}
       >
-        {(close) => (
+        {(close) => <div ref={pageRef}>{appearanceView ? <>
+          <MenuItem label="返回终端操作" icon="chevronLeft" onClick={() => setAppearanceView(false)}/>
+          <TerminalAppearanceOptions close={close}/>
+        </> : (
           <>
             {extraItems?.(close)}
+            {appearance && <MenuItem label="终端外观…" icon="palette" onClick={() => setAppearanceView(true)}/>}
             <MenuItem label="复制整屏" icon="monitor" onClick={() => { onCopyScreen(); close(); }} />
             <MenuItem
               label={selectMode ? "退出选择模式" : "选择模式"}
@@ -91,8 +104,9 @@ export function MoreMenu({
               icon="info"
               onClick={() => { setShortcutsOpen(true); close(); }}
             />
+            {footerItems?.(close)}
           </>
-        )}
+        )}</div>}
       </Menu>
       {shortcutsOpen && <TerminalShortcutsModal onClose={() => setShortcutsOpen(false)} />}
     </>
@@ -130,12 +144,14 @@ export function ButtonIcon({
   onClick,
   highlight,
   disabled,
+  expanded,
   children,
 }: {
   title: string;
   onClick: () => void;
   highlight?: boolean;
   disabled?: boolean;
+  expanded?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -143,9 +159,11 @@ export function ButtonIcon({
       type="button"
       title={title}
       aria-label={title}
+      aria-haspopup={expanded === undefined ? undefined : "menu"}
+      aria-expanded={expanded}
       disabled={disabled}
       onClick={onClick}
-      className={`flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
+      className={`terminal-icon-button flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
         highlight ? "bg-primary/15 text-primary hover:bg-primary/20" : ""
       }`}
     >

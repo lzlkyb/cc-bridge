@@ -5,6 +5,7 @@ import { StatusCard } from "./StatusCard";
 import { MetricCards } from "./MetricCards";
 import { HealthCard } from "./HealthCard";
 import { UsageCard } from "./UsageCard";
+import "../../dashboard-motion.css";
 
 /**
  * 连接页 Bento 布局。取代旧的整幅 `ConnectHero`（已删）。
@@ -40,7 +41,7 @@ export function ConnectBento({
   guide: ReactNode;
 }) {
   return (
-    <div className="bento">
+    <div className="bento dashboard-motion">
       {/* 采样器：渲染 null，不产生网格项，位置无关。
           放在最前面只为了读代码时先看到它。 */}
       <MetricSampler />

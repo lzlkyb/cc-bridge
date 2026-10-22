@@ -27,21 +27,19 @@ import { ButtonIcon } from "./SshTerminalMoreMenu";
  * 样例取 `FONT_SAMPLE`（`Ag 0O 1lI 中文,.`）——字形差异最大的组合，一行就能分辨五套字。
  */
 export function TerminalAppearanceMenu() {
+  return <Menu width="w-[300px]" trigger={(open, toggle) => (
+    <ButtonIcon title="终端外观（风格 / 明暗 / 字体）" highlight={open} onClick={toggle}><Icon name="palette" size={14}/></ButtonIcon>
+  )}>{close => <TerminalAppearanceOptions close={close}/>}</Menu>;
+}
+
+/** Shared options let the full-screen More menu drill into appearance without opening a second menu. */
+export function TerminalAppearanceOptions({close}: {close: () => void}) {
   const preset = useTerminalPreset();
   const modeSetting = useTerminalThemeSetting();
   const fontStack = useTerminalFontStack();
 
   return (
-    <Menu
-      width="w-[300px]"
-      trigger={(open, toggle) => (
-        <ButtonIcon title="终端外观（风格 / 明暗 / 字体）" highlight={open} onClick={toggle}>
-          <Icon name="palette" size={14} />
-        </ButtonIcon>
-      )}
-    >
-      {(close) => (
-        <>
+    <>
           <GroupLabel>风格</GroupLabel>
           {PRESETS.map((p) => (
             <MenuItem
@@ -92,8 +90,6 @@ export function TerminalAppearanceMenu() {
             />
           ))}
         </>
-      )}
-    </Menu>
   );
 }
 

@@ -1,3 +1,4 @@
+@import "./terminal-fullscreen.css";
 /* Terminal mode shares the existing application sidebar rather than adding a second rail. */
 /* Round only the workspace silhouette; full-screen terminals remain edge-to-edge. */
 .terminal-workspace:not([data-fullscreen]) { border-radius: 16px; }
@@ -43,6 +44,7 @@
 .terminal-workspace .terminal-action-label { display: none; }
 .terminal-workspace .terminal-tabs-actions > button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; }
 .terminal-toolbar-host { flex-shrink: 0; }
+.terminal-icon-button > svg { width: 16px; height: 16px; }
 .terminal-session-toolbar[data-compact] { padding: 0; border: 0; background: transparent; gap: 4px; }
 .terminal-session-toolbar[data-compact] > div { padding-left: 7px; gap: 1px; }
 .terminal-pane-frame[data-pane] { position: relative; }

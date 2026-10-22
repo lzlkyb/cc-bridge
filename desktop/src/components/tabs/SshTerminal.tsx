@@ -214,7 +214,7 @@ export function SshTerminal({
   const surface = TERMINAL_SURFACE[preset][mode];
   return (
     <div className="ssh-terminal flex h-full min-h-0 flex-col" style={{ background: surface }}>
-      {toolbarHost && (pane || toolbarActive) && createPortal(<SshTerminalToolbar
+      {toolbarHost && ((pane && !fullscreen) || toolbarActive) && createPortal(<SshTerminalToolbar
         compact
         pane={!!pane} onDisconnect={onDisconnect}
         conn={conn}

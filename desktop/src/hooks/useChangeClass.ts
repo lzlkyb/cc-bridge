@@ -11,17 +11,18 @@ import { useEffect, useRef, useState } from "react";
  * （把所有元素的 `animation-duration` 压到 0.001ms）。JS 驱动的动画（如 `useCountUp`）
  * 才需要自己查该偏好。
  */
-export function useChangeClass(value: string | number, cls: string, ms = 300): string {
+export function useChangeClass(value: string | number, cls: string, ms = 300, enabled = true): string {
   const prev = useRef(value);
   const [on, setOn] = useState(false);
   useEffect(() => {
+    if (!enabled) { prev.current = value; setOn(false); return; }
     if (prev.current === value) return;
     prev.current = value;
     setOn(true);
     const t = setTimeout(() => setOn(false), ms);
     return () => clearTimeout(t);
-  }, [value, ms]);
-  return on ? cls : "";
+  }, [value, ms, enabled]);
+  return enabled && on ? cls : "";
 }
 
 /**

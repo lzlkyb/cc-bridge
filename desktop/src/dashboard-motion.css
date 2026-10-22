@@ -1,0 +1,44 @@
+/* One bounded entrance; later polls update stable nodes instead of replaying the board. */
+.dashboard-motion > :is(.status-card, .metric-card, .bento-card) { animation: dashboard-enter 250ms var(--ease) backwards; }
+.dashboard-motion > .metric-card:nth-child(2) { animation-delay: 20ms; }
+.dashboard-motion > .metric-card:nth-child(3) { animation-delay: 40ms; }
+.dashboard-motion > .metric-card:nth-child(4) { animation-delay: 60ms; }
+.dashboard-motion > .metric-card:nth-child(5) { animation-delay: 80ms; }
+.dashboard-motion > .bento-card { animation-delay: 90ms; }
+.dashboard-motion > .status-card.status-card--switch { animation: tone-switch 400ms var(--ease); }
+.dashboard-motion .chain-seg { animation: none; }
+/* The data paths now move between known samples; full redraws would compete with that movement. */
+.dashboard-motion .metric-spark__line { animation: none; stroke-dasharray: none; }
+.dashboard-motion .chain-ripple { display: none; animation: none; }
+.dashboard-sync { display: inline-flex; min-width: 0; align-items: center; gap: 6px; }
+.dashboard-sync > i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+.dashboard-sync[data-tone="live"] > i { background: hsl(var(--success)); }
+.dashboard-sync[data-tone="error"] > i { background: hsl(var(--warning)); }
+.dashboard-sync[data-tone="idle"] > i { opacity: .55; }
+.dashboard-sync-time { font-size: 10px; font-weight: 400; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dashboard-sync--updated > i { animation: dashboard-sync 650ms var(--ease); }
+.dashboard-traffic .chain-link:not(.chain-link--cut)::after {
+  content: ""; position: absolute; top: -2px; left: 0; width: 9px; height: 6px;
+  border-radius: 4px; background: currentColor; animation: dashboard-packet 650ms var(--ease) both;
+}
+html[data-ui-style="glass"] .dashboard-traffic .chain-link:not(.chain-link--cut)::after { background: hsl(var(--primary)); }
+.dashboard-traffic .chain-seg:last-child .chain-node-face { animation: dashboard-node 650ms var(--ease); }
+.dashboard-new-activity > div:last-child > div:first-child { animation: dashboard-record 850ms var(--ease); border-radius: 4px; }
+.dashboard-usage .usage-minibars > div { animation: none; transition: none; }
+.dashboard-usage .usage-minibars > div[data-today] { transition: height 330ms var(--ease); }
+@keyframes dashboard-enter { from { opacity: .65; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes dashboard-sync { 0% { opacity: .55; transform: scale(1); } 40% { opacity: 1; transform: scale(1.5); } 100% { opacity: 1; transform: scale(1); } }
+@keyframes dashboard-packet { from { left: 0; opacity: 0; } 15% { opacity: 1; } to { left: calc(100% - 9px); opacity: 0; } }
+@keyframes dashboard-node { 0%, 100% { transform: scale(1); } 40% { transform: scale(1.09); } }
+@keyframes dashboard-record { from { background: hsl(var(--primary) / .15); } to { background: transparent; } }
+@container app-content (max-width: 1000px) { .dashboard-sync-time { display: none; } }
+/* Kept pages can receive shared query updates; their CSS feedback must stay dormant. */
+[data-page-panel][hidden] .dashboard-motion * { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-motion, .dashboard-motion * { animation: none !important; transition: none !important; }
+  .dashboard-motion > :is(.status-card, .metric-card, .bento-card):hover { transform: none; }
+}
+@media (forced-colors: active) {
+  .dashboard-sync > i { background: CanvasText; }
+  .dashboard-traffic .chain-link::after { display: none; }
+}

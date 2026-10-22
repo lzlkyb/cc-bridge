@@ -4,7 +4,8 @@ import { toast } from "../ui/toast";
 import type { StaticStatus } from "../../lib/types";
 import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
-import { Icon, type IconName } from "../ui/icon";
+import { Icon } from "../ui/icon";
+import { headerSecurityBadges } from "../../lib/headerSecurityBadges";
 import { TitleBarControls } from "./TitleBarControls";
 import { SecurityBadgeGroup } from "./SecurityBadgeGroup";
 import { UpdateReadout } from "../update/UpdateReadout";
@@ -64,23 +65,7 @@ function HeaderImpl({
   const running = status?.running ?? false;
 
   // E-P1-10: useMemo 避免每帧重建 badge 数组
-  const securityBadges: {
-    key: string;
-    show: boolean;
-    label: string;
-    icon: IconName;
-    danger: boolean;
-    tab: string;
-    anchor?: string;
-    title: string;
-  }[] = useMemo(() => [
-    // 三个核心开关的唯一家在安全页（2026-10-13 去重统一）：徽章直达安全页概览锚点。
-    { key: "whitelist", show: !!status && !status.whitelistEnabled, label: "白名单关闭", icon: "alertTriangle" as IconName, danger: true, tab: "security", anchor: "sec-overview", title: "白名单已关闭，点击前往安全页开启" },
-    { key: "ip", show: !!status?.ipChanged, label: "IP 已变化", icon: "alertTriangle" as IconName, danger: true, tab: "connect", title: "连接地址已变化，点击前往连接页查看" },
-    { key: "link", show: !!status?.running && status?.remoteReachable === false && !status?.ipChanged, label: "远程不可达", icon: "alertTriangle" as IconName, danger: true, tab: "connect", title: "远程连接不可达，点击前往连接页查看" },
-    { key: "readonly", show: !!status?.readonlyMode, label: "只读", icon: "lock" as IconName, danger: false, tab: "security", anchor: "sec-overview", title: "只读模式已开启，点击前往安全页查看" },
-    { key: "shell", show: !!status?.shellEnabled, label: "命令执行已开启", icon: "terminal" as IconName, danger: true, tab: "security", anchor: "sec-overview", title: "命令执行已开启，点击前往安全页关闭" },
-  ], [status]);
+  const securityBadges = useMemo(() => headerSecurityBadges(status), [status]);
 
   const toggleServer = async () => {
     setBusy(true);
@@ -114,7 +99,7 @@ function HeaderImpl({
             aria-expanded={!collapsed}
           >
             {/* 图标集里只有 chevronLeft（无 chevronRight），收起态靠翻转表达 */}
-            <Icon name="chevronLeft" size={16} className={collapsed ? "rotate-180" : ""} />
+            <Icon name="chevronLeft" size={22} strokeWidth={2.25} className={collapsed ? "rotate-180" : ""} />
           </Button>
         )}
         {/* A 方案 2026-10-16：location 文本删除——当前页名侧栏本就有高亮项，
@@ -166,7 +151,7 @@ function HeaderImpl({
             aria-label="搜索（Ctrl+K）"
             className="gap-1.5 text-muted-foreground"
           >
-            <Icon name="search" size={14} />
+            <Icon name="search" size={18} />
           </Button>
         )}
         <Button

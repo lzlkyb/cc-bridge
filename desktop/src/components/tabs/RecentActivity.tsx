@@ -4,6 +4,8 @@ import type { AuditEntry } from "../../lib/types";
 import { toolLabel, formatDurationMs } from "../../lib/utils";
 import { useAppHidden } from "../../lib/appVisibility";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
+import { useChangeClass } from "../../hooks/useChangeClass";
+import { useDashboardMotion } from "../../hooks/useDashboardMotion";
 
 /**
  * 状态主卡底部的「最近活动」三行。
@@ -28,12 +30,15 @@ export function RecentActivity({ onViewAll }: { onViewAll?: () => void }) {
   // 新审计进来时给行列表做 FLIP 过渡（新行淡入 / 剩下的行平滑下移 / 被挤掉的行淡出）。
   // 不加就是整表瞬变：剩下的行直接跳到新位置、掉队的那行凭空消失。
   // 用项目已有的 `useAutoAnimateRM`（审计日志表同一个），它自带减弱动效开关。
-  const listRef = useAutoAnimateRM<HTMLDivElement>();
+  const motion = useDashboardMotion();
+  const listRef = useAutoAnimateRM<HTMLDivElement>(motion);
+  const newest = rows[0] ? `${rows[0].timestamp}-${rows[0].tool}` : "";
+  const arrived = useChangeClass(newest, "dashboard-new-activity", 850, motion && !!newest);
 
   return (
     // pt-4 是关键：`mt-auto` 只在卡片有富余高度时才把本区顶到底部，没富余时它等于 0，
     // 分隔线会直接贴上启停按钮的底边。用内边距而不是外边距：外边距会与 mt-auto 打架。
-    <div className="recent-activity mt-auto flex flex-col gap-0.5 pt-4">
+    <div className={`recent-activity mt-auto flex flex-col gap-0.5 pt-4 ${arrived}`}>
       {/* 渐变分隔线：中段可见、两端渐隐。整幅实线（原本的 border-t）压在渐变卡上
           对比度偏高、显得很“硬”；与卡内其它分隔处理保持一致。 */}
       <div className="recent-activity-divider mb-2 h-px bg-gradient-to-r from-transparent via-white/[0.14] to-transparent" />

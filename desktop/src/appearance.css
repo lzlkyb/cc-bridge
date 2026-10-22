@@ -123,11 +123,6 @@ html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--st
   color: var(--glass-status-ink);
   box-shadow: var(--glass-depth);
 }
-html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--stopped) .status-eyebrow::before {
-  content: ""; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%;
-  background: hsl(var(--muted-foreground));
-}
-html[data-ui-style="glass"] .status-card.status-card--live .status-eyebrow::before { background: hsl(var(--success-ink)); }
 html[data-ui-style="glass"] .status-card--live > p:not(.status-summary) { font-size: 16px; line-height: 1.5; }
 html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--stopped) :is(.status-summary, .recent-activity-params, .recent-activity-duration) {
   color: var(--glass-status-muted); opacity: 1;
@@ -195,7 +190,7 @@ html[data-ui-style="glass"] .selection-card[aria-pressed="true"] { background: h
 html.dark[data-ui-style="glass"] .selection-card[aria-pressed="true"] .selection-card-title { color: #c1c4ff; }
 
 /* Keep the material on hover; existing navigation targets retain their lift. */
-html[data-ui-style="glass"] :is(.metric-card, .bento-card):hover {
+html[data-ui-style="glass"] :is(.metric-card, .bento-card, .status-card):hover {
   box-shadow: var(--glass-depth);
 }
 

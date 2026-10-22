@@ -443,7 +443,7 @@ function AppContent() {
               导致前端 sessions state 丢失需重新连接。复用 TerminalTab 内部已验证的 display:none 模式。 */}
           <TabsContent value="terminal" keepMounted className="h-full overflow-hidden">
             <Suspense fallback={<TabFallback />}>
-              <TerminalTab status={status} sidebarHost={terminalSidebarHost} sidebarCollapsed={sideCollapsed} onSidebarCollapsedChange={setSideCollapsed} />
+              <TerminalTab status={status} sidebarHost={terminalSidebarHost} sidebarCollapsed={sideCollapsed} onSidebarCollapsedChange={setSideCollapsed} onNavigate={handleNavigate} onChanged={refetchStatus} />
             </Suspense>
           </TabsContent>
           </main>

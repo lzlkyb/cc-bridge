@@ -11,13 +11,13 @@ import { MOTION } from "../lib/motion";
  *
  * 用法：const parent = useAutoAnimateRM<HTMLDivElement>(); 然后 <div ref={parent}>...</div>
  */
-export function useAutoAnimateRM<T extends HTMLElement = HTMLDivElement>(): RefCallback<T> {
+export function useAutoAnimateRM<T extends HTMLElement = HTMLDivElement>(enabled = true): RefCallback<T> {
   const [parent, enable] = useAutoAnimate<T>({ duration: MOTION.standard, easing: MOTION.ease });
   const reduced = usePrefersReducedMotion();
 
   useEffect(() => {
-    enable(!reduced);
-  }, [reduced, enable]);
+    enable(enabled && !reduced);
+  }, [enabled, reduced, enable]);
 
   return parent;
 }

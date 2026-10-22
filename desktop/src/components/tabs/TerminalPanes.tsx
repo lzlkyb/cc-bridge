@@ -124,7 +124,7 @@ export function TerminalPanes({
                 ) : (
                   <SshTerminal
                     sessionId={s.sessionId}
-                    toolbarHost={isPane ? localHost : toolbarHost}
+                    toolbarHost={isPane && !fullscreen ? localHost : toolbarHost}
                     toolbarActive={focused?.tabId === s.tabId}
                     pane={isPane ? (vertical ? "stacked" : "pane") : undefined}
                     onDisconnect={() => onDisconnect(s.sessionId)}

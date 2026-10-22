@@ -30,10 +30,11 @@ import { useFileDrop } from "./useFileDrop";
 import { useTerminalUpload } from "./useTerminalUpload";
 import { TerminalDropLayer } from "./TerminalDropLayer";
 import { TerminalSplitControls } from "./TerminalSplitControls";
+import { TerminalFullscreenProvider } from "./TerminalFullscreenContext";
 import { zoneOf, type DropZone } from "../../lib/dropHit";
 
 /** SSH 工作区：共享侧栏，终端保活；首次使用仍需显式启用。 */
-export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCollapsedChange }: { status?: StaticStatus; sidebarHost: HTMLDivElement | null; sidebarCollapsed: boolean; onSidebarCollapsedChange: Dispatch<SetStateAction<boolean>> }) {
+export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCollapsedChange, onNavigate, onChanged }: { status?: StaticStatus; sidebarHost: HTMLDivElement | null; sidebarCollapsed: boolean; onSidebarCollapsedChange: Dispatch<SetStateAction<boolean>>; onNavigate?: (tab: string, anchor?: string) => void; onChanged?: () => void }) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery<SshConnectionList, Error>({
     queryKey: ["sshConnections"],
@@ -60,14 +61,12 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
   const { sessions, activeId } = ssh;
   // 会话恢复：连接列表就绪后按快照重建占位标签（不自动连接），之后 debounce 写快照。
   useSessionRestore({ ssh, connections, ready: data !== undefined });
-  // Ctrl+Shift+B 折叠共享侧栏；F11 只覆盖布局，不卸载终端。
   const { collapsed, setCollapsed, fullscreen, setFullscreen } = useTerminalViewState(rootRef, activeId, { collapsed: sidebarCollapsed, setCollapsed: onSidebarCollapsedChange });
 
   // 拖拽上传（终端侧）。只对**当前活动且未断开**的会话生效：
   // 没有会话就没有「传到哪台机器」。
   const termAreaRef = useRef<HTMLDivElement>(null);
   const activeSession = sessions.find((s) => s.sessionId === activeId);
-  // 轻量双栏分屏（方案 A）：副格会话 splitOnly、不出现在标签栏，详见 useTerminalSplit。
   const splitCtl = useTerminalSplit({ ssh, activeSession: activeSession ?? null, areaRef: termAreaRef });
   const workspace = useTerminalWorkspace(sessions, activeId, splitCtl.split);
   const activeConn =
@@ -181,8 +180,8 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
     );
   }
 
-  // ── 主界面：两栏 ──
   return (
+    <TerminalFullscreenProvider fullscreen={fullscreen} status={status} sessions={sessions} onActivate={openSession} onNavigate={onNavigate} onChanged={onChanged} onExit={() => setFullscreen(false)} onToggleSplit={activeSession ? splitCtl.toggleSplit : undefined}>
     <div
       ref={rootRef} data-fullscreen={fullscreen || undefined}
       className="terminal-workspace flex h-full min-h-0 overflow-hidden bg-card"
@@ -215,12 +214,11 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
         onCancelDelete={() => setConfirmingDelete(null)}
       />, sidebarHost)}
 
-      {/* Portal only the connection list and toolbar; terminal panes keep their stable parents. */}
       <div
         ref={termAreaRef}
         className={
           fullscreen
-            ? "fixed inset-0 z-50 overflow-hidden"
+            ? "terminal-fullscreen-area fixed inset-0 z-50 overflow-hidden"
             : "relative min-h-0 min-w-0 flex-1 overflow-hidden"
         }
         style={{ background: surface }}
@@ -232,9 +230,9 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
             dropping={drop.zone === "terminal"}
             count={drop.count}
           />
-          <RestoreBanner sessions={sessions} onReconnect={reconnectSession} />
           {sessions.length > 0 && (
             <TerminalTabsBar
+              fullscreen={fullscreen} onExitFullscreen={() => setFullscreen(false)}
               sessions={sessions}
               metaBySession={ssh.metaBySession}
               activeId={activeId}
@@ -245,10 +243,11 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
               onNewTerminal={workspace.focusedSession && !workspace.focusedSession.closedReason ? () => newTerminal(workspace.focusedSession!.conn) : null}
               onToggleSplit={activeSession ? splitCtl.toggleSplit : null}
               splitActive={splitCtl.split !== null}
-              splitControls={splitCtl.split && <TerminalSplitControls split={splitCtl.split} onDirection={splitCtl.setDirection} onEqualize={() => splitCtl.setRatio(50)} onCollapse={() => activeSession && splitCtl.closeSplit(activeSession.tabId)}/>}
+              splitControls={splitCtl.split && <TerminalSplitControls compact={fullscreen} split={splitCtl.split} onDirection={splitCtl.setDirection} onEqualize={() => splitCtl.setRatio(50)} onCollapse={() => activeSession && splitCtl.closeSplit(activeSession.tabId)}/>}
               onToolbarReady={workspace.setToolbarHost}
             />
           )}
+          <RestoreBanner sessions={sessions} onReconnect={reconnectSession} />
           {/* 全部会话都挂载在 TerminalPanes 内（含分屏副格），仅当前可见；后台会话继续收输出 */}
           <TerminalPanes
             sessions={sessions}
@@ -295,6 +294,6 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
         onClose={() => setShowDialog(false)}
         onSaved={() => void queryClient.invalidateQueries({ queryKey: ["sshConnections"] })}
       />
-    </div>
+    </div></TerminalFullscreenProvider>
   );
 }

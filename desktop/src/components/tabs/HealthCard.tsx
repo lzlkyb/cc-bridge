@@ -1,8 +1,6 @@
 import type { StaticStatus } from "../../lib/types";
-import { useCountUp } from "../../hooks/useCountUp";
+import { useAnimatedNumbers } from "../../hooks/useAnimatedNumbers";
 import { useLiveStatus } from "../../hooks/useLiveStatus";
-import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
-import { usePopClass } from "../../hooks/useChangeClass";
 import { NavTarget, StopClick } from "../ui/NavTarget";
 import { Icon } from "../ui/icon";
 
@@ -46,12 +44,8 @@ export function HealthCard({
   const rate = s?.successRate ?? 0;
   const hasSamples = (s?.totalRequests ?? 0) > 0;
 
-  // 入场数字滚动（仅首次挂载，后续 5s 轮询直接跟随终值）。JS 驱动的动画
-  // CSS 全局兜底管不到，所以要自己查 reduced-motion。
-  const reduced = usePrefersReducedMotion();
-  const rateAnim = useCountUp(rate, { enabled: running && hasSamples && !reduced, duration: 900 });
+  const rateAnim = useAnimatedNumbers([rate], { enabled: running && hasSamples })[0];
   const rateText = !running ? "服务未运行" : !hasSamples ? "暂无调用 · 待评估" : `成功率 ${rateAnim.toFixed(1)}%`;
-  const ratePop = usePopClass(rateText);
 
   // 基础防线的开启情况与命令执行等整体风险分别展示，避免把配置齐全说成安全推荐。
   const roots = status?.allowedRoots.length ?? 0;
@@ -86,9 +80,9 @@ export function HealthCard({
       <div className="mt-1.5 flex items-center gap-3.5">
         <HealthRing rate={rate} running={running} hasSamples={hasSamples} />
         <div className="min-w-0">
-          {/* tabular-nums：900ms countup 期间数字持续变宽，等宽后只有数字本身在变。 */}
+          {/* 等宽数字避免数值过渡时推挤旁边的状态信息。 */}
           <div className="text-[12.5px] font-bold tabular-nums">
-            <span className={ratePop}>{rateText}</span>
+            <span className="tabular-nums">{rateText}</span>
           </div>
           <div className="mt-0.5 text-[10.5px] leading-relaxed tabular-nums text-muted-foreground">
             限流命中 {s?.rateLimitHits ?? 0} · 越权拒绝 {s?.authDenies ?? 0}

@@ -1,7 +1,7 @@
 import type { StaticStatus } from "../../lib/types";
 import { useLiveStatus } from "../../hooks/useLiveStatus";
 import { useMetricSeries, type MetricKey } from "../../lib/metricHistory";
-import { usePopClass } from "../../hooks/useChangeClass";
+import { MetricValue } from "./MetricValue";
 import { Sparkline, type ChartKind } from "./MetricSparkline";
 import { NavTarget } from "../ui/NavTarget";
 
@@ -60,6 +60,7 @@ export function MetricCards({
     <>
       <MetricCard
         label="请求速率"
+        motionReady={running && !!s}
         value={dash(String(s?.requestsPerMin ?? 0))}
         unit=" 次/分"
         sub={status ? `限流 ${fmt(status.rateLimit.maxRequests)} 次/${Math.round(status.rateLimit.windowMs / 1000)}秒` : "—"}
@@ -72,6 +73,7 @@ export function MetricCards({
       />
       <MetricCard
         label="P95 延迟"
+        motionReady={running && !!s && s.totalRequests > 0}
         value={dash(p95Fmt.value)}
         unit={p95Fmt.unit}
         sub={avg > 0 ? `平均 ${avgFmt.value}${avgFmt.unit} · 尾部慢 ${tailRatio.toFixed(1)} 倍` : "暂无数据"}
@@ -86,6 +88,7 @@ export function MetricCards({
       />
       <MetricCard
         label="调用增量"
+        motionReady={running && !!s}
         value={dash(`+${deltaNow}`)}
         unit=" 次/5秒"
         sub={s ? `累计 ${fmt(s.totalRequests)} · 失败 ${fmt(s.totalErrors)}` : "—"}
@@ -97,6 +100,7 @@ export function MetricCards({
       />
       <MetricCard
         label="活跃命令"
+        motionReady={running && !!s}
         value={running ? String(s?.activeCommands ?? 0) : "0"}
         sub={(s?.activeCommands ?? 0) > 0 ? "后台运行中" : "当前无后台命令"}
         seriesKey="active"
@@ -115,6 +119,7 @@ function lastOf(series: number[]): number {
 }
 
 function MetricCard({
+  motionReady,
   label,
   value,
   unit,
@@ -127,6 +132,7 @@ function MetricCard({
   onNavigate,
   nav,
 }: {
+  motionReady: boolean;
   label: string;
   value: string;
   unit?: string;
@@ -144,8 +150,6 @@ function MetricCard({
   nav: { tab: string; anchor?: string; title: string };
 }) {
   const series = useMetricSeries(seriesKey);
-  // 值变化时弹一下（300ms）。事件驱动：数字不变就完全不动。
-  const pop = usePopClass(value);
   return (
     // 整卡可点：这张卡内部没有任何交互元素，所以不需要 StopClick。
     <NavTarget
@@ -162,10 +166,7 @@ function MetricCard({
       {/* tabular-nums + 锁宽（min-w-[5ch]≈最长样本 12.34@24px/800）：5s 采样一跳时
           数值段不再横跳推挤 sub 行与 spark；空值「—」也落在同一段宽里。左对齐让
           右侧留白呼吸，而不是居中抖。 */}
-      <div className="mt-1 text-[24px] font-extrabold leading-none tracking-tight text-foreground">
-        <span className={`inline-block min-w-[5ch] tabular-nums ${pop}`}>{value}</span>
-        {unit && <small className="text-xs font-bold text-muted-foreground">{unit}</small>}
-      </div>
+      <MetricValue value={value} unit={unit} enabled={motionReady}/>
       <div className="mt-0.5 truncate text-[10.5px] tabular-nums text-muted-foreground" title={sub}>
         {sub}
       </div>

@@ -10,9 +10,9 @@ import type { SshConnection } from "../../lib/types";
 
 const h = vi.hoisted(() => ({ mount: vi.fn(), unmount: vi.fn(), action: vi.fn(), ratio: vi.fn(), zoom: vi.fn(), focus: vi.fn() }));
 vi.mock("../../lib/terminalRegistry", () => ({ getTerminal: (id: string) => ({ focus: () => h.focus(id) }) }));
-vi.mock("./SshTerminal", () => ({ SshTerminal: ({ sessionId, toolbarHost, toolbarActive, pane, visible }: { sessionId: string; toolbarHost: HTMLDivElement | null; toolbarActive: boolean; pane?: string; visible: boolean }) => {
+vi.mock("./SshTerminal", () => ({ SshTerminal: ({ sessionId, toolbarHost, toolbarActive, pane, visible, fullscreen }: { sessionId: string; toolbarHost: HTMLDivElement | null; toolbarActive: boolean; pane?: string; visible: boolean; fullscreen:boolean }) => {
   useEffect(() => { h.mount(sessionId); return () => { h.unmount(sessionId); }; }, [sessionId]);
-  return <div tabIndex={0} data-session={sessionId} data-visible={visible}>{sessionId}{toolbarHost && (pane || toolbarActive) && createPortal(<button onClick={() => h.action(sessionId)}>操作 {sessionId}</button>, toolbarHost)}</div>;
+  return <div tabIndex={0} data-session={sessionId} data-visible={visible}>{sessionId}{toolbarHost && ((pane && !fullscreen) || toolbarActive) && createPortal(<button onClick={() => h.action(sessionId)}>操作 {sessionId}</button>, toolbarHost)}</div>;
 } }));
 vi.mock("./TerminalRestore", () => ({ RestoredTabPlaceholder: () => <div>恢复占位</div> }));
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,11 +21,11 @@ const sessions: SshSessionRef[] = ["a", "b", "c"].map(id => ({ sessionId: id, ta
 const split: SplitInfo = { secTabId: "tab-b", ratio: 58, dir: "h" };
 let root: Root, container: HTMLDivElement, host: HTMLDivElement;
 const noop = () => {};
-function Harness({ activeId, splitState, data = sessions }: { activeId: string; splitState: SplitInfo | null; data?: SshSessionRef[] }) {
+function Harness({ activeId, splitState, data = sessions, fullscreen=false }: { activeId: string; splitState: SplitInfo | null; data?: SshSessionRef[]; fullscreen?: boolean }) {
   const [focus, setFocus] = useState<string | null>(null);
-  return <TerminalPanes sessions={data} activeId={activeId} split={splitState} toolbarHost={host} focusedTabId={focus} onFocusPane={setFocus} connections={[conn]} connectingId={null} emptyState={<div>空态</div>} dragSelectEnabled copyOnSelectEnabled fullscreen={false} onToggleFullscreen={noop} onClosed={noop} onReconnect={noop} onCloseTab={noop} onCwd={noop} onMeta={noop} onOpenFilePath={noop} onPickSplitConn={noop} onCloseSplit={noop} onToggleDir={noop} onSplitRatio={h.ratio} onZoomPane={h.zoom} onDisconnect={noop}/>;
+  return <TerminalPanes sessions={data} activeId={activeId} split={splitState} toolbarHost={host} focusedTabId={focus} onFocusPane={setFocus} connections={[conn]} connectingId={null} emptyState={<div>空态</div>} dragSelectEnabled copyOnSelectEnabled fullscreen={fullscreen} onToggleFullscreen={noop} onClosed={noop} onReconnect={noop} onCloseTab={noop} onCwd={noop} onMeta={noop} onOpenFilePath={noop} onPickSplitConn={noop} onCloseSplit={noop} onToggleDir={noop} onSplitRatio={h.ratio} onZoomPane={h.zoom} onDisconnect={noop}/>;
 }
-async function render(activeId = "a", splitState: SplitInfo | null = null, data = sessions) { await act(async () => root.render(<Harness activeId={activeId} splitState={splitState} data={data}/>)); }
+async function render(activeId = "a", splitState: SplitInfo | null = null, data = sessions, fullscreen=false) { await act(async () => root.render(<Harness activeId={activeId} splitState={splitState} data={data} fullscreen={fullscreen}/>)); }
 async function focus(id: string) { await act(async () => container.querySelector<HTMLElement>(`[data-session="${id}"]`)!.focus()); }
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
@@ -43,6 +43,15 @@ describe("terminal workspace lifecycle and shared actions", () => {
     await render("c", null); expect(host.textContent).toBe("操作 c");
     await render("a", null); expect(host.textContent).toBe("操作 a");
     expect(container.querySelector('[data-session="a"]')).toBe(original);
+    expect(h.mount).toHaveBeenCalledTimes(3); expect(h.unmount).not.toHaveBeenCalled();
+  });
+  it("全屏共用一套焦点工具栏，切换全屏、焦点与分屏不重建终端", async () => {
+    await render("a", split); await focus("b");
+    const a = container.querySelector('[data-session="a"]'), b = container.querySelector('[data-session="b"]');
+    await render("a", split, sessions, true); expect(host.textContent).toBe("操作 b"); expect(host.querySelectorAll("button")).toHaveLength(1);
+    await focus("a"); expect(host.textContent).toBe("操作 a");
+    await render("a", split); expect(host.textContent).toBe("");
+    expect(container.querySelector('[data-session="a"]')).toBe(a); expect(container.querySelector('[data-session="b"]')).toBe(b);
     expect(h.mount).toHaveBeenCalledTimes(3); expect(h.unmount).not.toHaveBeenCalled();
   });
   it("关闭或移除焦点副格，工具栏回主格；已断开会话保持原节点", async () => {

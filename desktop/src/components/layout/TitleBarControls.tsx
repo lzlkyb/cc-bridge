@@ -85,7 +85,7 @@ export function TitleBarControls() {
         title={maximized ? "还原" : "最大化"}
         aria-label={maximized ? "还原" : "最大化"}
       >
-        <Icon name={maximized ? "restore" : "maximize"} size={14} />
+        <Icon name={maximized ? "restore" : "maximize"} size={16} />
       </button>
 
       {/* 关闭（隐藏到托盘） */}
