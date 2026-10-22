@@ -45,6 +45,8 @@
 .terminal-workspace .terminal-tabs-actions > button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; }
 .terminal-toolbar-host { flex-shrink: 0; }
 .terminal-icon-button > svg { width: 16px; height: 16px; }
+.terminal-session-close { display:grid;place-items:center;width:28px;height:28px;flex-shrink:0; }
+.terminal-session-tab { min-height:28px; }
 .terminal-session-toolbar[data-compact] { padding: 0; border: 0; background: transparent; gap: 4px; }
 .terminal-session-toolbar[data-compact] > div { padding-left: 7px; gap: 1px; }
 .terminal-pane-frame[data-pane] { position: relative; }

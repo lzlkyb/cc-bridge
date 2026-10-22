@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { isMac } from "../../lib/platform";
@@ -16,6 +16,9 @@ import { useFileBrowserDrop } from "./useFileBrowserDrop";
 import { useSshFileForms } from "./useSshFileForms";
 import { useSshFileInitialPath } from "../../hooks/useSshFileInitialPath";
 import { loadUploadDir, saveUploadDir } from "../../lib/uploadDir";
+import { useSshFileListing } from "../../hooks/useSshFileListing";
+import { isInitialFileListing } from "../../lib/sshFilePaths";
+import { useRemoteNavigation } from "../../hooks/useRemoteNavigation";
 
 interface Props {
   conn: SshConnection;
@@ -49,17 +52,16 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
   // 起始路径用「上次上传目录」而不是写死的 `/`：面板一关就 unmount，
   // 每次重开都从根目录开始本来就难用；而且这份状态与终端拖拽共用，
   // 两个入口才不会各自漂移。终端路径点击进来则优先用它指定的路径。
-  const [path, setPath] = useState(() => initialPath ?? loadUploadDir(conn.id));
-  const [entries, setEntries] = useState<SshFileEntry[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const navigation = useRemoteNavigation(initialPath ?? loadUploadDir(conn.id));
+  const { path, navigate: setPath } = navigation;
+  const { entries, loading, error, refresh } = useSshFileListing(conn.id, path);
   // 传输态交给 useSshTransfer 管，这里只管 mkdir / 删除这类瞬时操作。
   const [busyOp, setBusyOp] = useState(false);
   // 新建文件夹名。
   const [mkdirOpen, setMkdirOpen] = useState(false);
   const [mkdirName, setMkdirName] = useState("");
   // 删除确认：待删除条目（项目内 Dialog 二次确认，避免 window.confirm 与 Tauri 风格割裂）。
-  const [removeTarget, setRemoveTarget] = useState<SshFileEntry | null>(null);
+  const [removeTarget, setRemoveTarget] = useState<(SshFileEntry & { remotePath: string }) | null>(null);
   // 列目录超过这个时长还没回来，就在界面上解释一下（而不是让圈一直转）。
   const SLOW_HINT_MS = 2500;
 
@@ -71,46 +73,19 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
   });
   const mac = isMac(status?.platform);
   const xfer = useSshTransfer();
-  const forms = useSshFileForms({connectionId:conn.id, path, entries, xfer, joinRemote, onUploaded:() => void list(path)});
+  const forms = useSshFileForms({connectionId:conn.id, path, entries, xfer, joinRemote, onUploaded:() => void refresh()});
   // 传输进行中也算忙：期间禁掉新建/上传/删除，避免并发多条 ssh 握手
   // （本机 OpenSSH 不支持连接复用，并发只会把握手成本乘以 N）。
   // 含 `xfer.prompt`（覆盖确认框）：否则确认框开着时还能接第二批拖放，
   // 第二次 setPrompt 会覆盖第一次，第一批的 Promise 永远不 resolve。
-  const busy = busyOp || !!xfer.transfer || !!xfer.prompt || forms.download.busy;
-
-  const list = useCallback(
-    async (p: string) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const r = await invoke<SshFileEntry[]>("ssh_sftp_list", {
-          connectionId: conn.id,
-          path: p,
-        });
-        const sorted = [...r].sort((a, b) => {
-          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-        setEntries(sorted);
-      } catch (e) {
-        setError(`列目录失败：${cleanErr(e)}`);
-        setEntries([]);
-      } finally {
-        setLoading(false);
-      }
-    },
-    [conn.id],
-  );
-
-  useEffect(() => {
-    void list(path);
-  }, [list, path]);
-  const highlightName = useSshFileInitialPath(initialPath, error, path, setPath, entries);
+  const operationBusy = busyOp || !!xfer.transfer || !!xfer.prompt || forms.download.busy;
+  const busy = operationBusy || loading || !!error;
+  const highlightName = useSshFileInitialPath(initialPath, error, path, navigation.replace, entries);
 
   // 当前目录回写成「上次上传目录」：下次重开面板与终端拖拽都从这里起。
   useEffect(() => {
-    saveUploadDir(conn.id, path);
-  }, [conn.id, path]);
+    if (!loading && !error && !isInitialFileListing(path, entries)) saveUploadDir(conn.id, path);
+  }, [conn.id, path, entries, loading, error]);
 
   const { paneRef, ...drop } = useFileBrowserDrop({
     connectionId: conn.id,
@@ -118,7 +93,7 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
     entries,
     busy,
     uploadMany: xfer.uploadMany,
-    onDone: () => void list(path),
+    onDone: () => void refresh(),
   });
 
   // 超过 SLOW_HINT_MS 还在加载就补一句解释。
@@ -136,10 +111,10 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
     return () => clearTimeout(t);
   }, [loading]);
 
-  const openDir = (name: string) => setPath(joinRemote(path, name));
+  const openDir = (name: string) => { if (!busy) setPath(joinRemote(path, name)); };
 
   const doMkdir = async () => {
-    if (!mkdirName.trim()) return;
+    if (busy || !mkdirName.trim()) return;
     setBusyOp(true);
     try {
       await invoke("ssh_sftp_mkdir", {
@@ -149,7 +124,7 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
       toast("已创建文件夹", "success");
       setMkdirOpen(false);
       setMkdirName("");
-      void list(path);
+      void refresh();
     } catch (e) {
       toast(`创建失败：${cleanErr(e)}`, "error");
     } finally {
@@ -159,16 +134,16 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
 
   const confirmRemove = async () => {
     const e = removeTarget;
-    if (!e) return;
+    if (!e || busy) return;
     setRemoveTarget(null);
     setBusyOp(true);
     try {
       await invoke("ssh_sftp_remove", {
         connectionId: conn.id,
-        path: joinRemote(path, e.name),
+        path: e.remotePath,
       });
       toast(`已删除：${e.name}`, "success");
-      void list(path);
+      void refresh();
     } catch (err) {
       toast(`删除失败：${cleanErr(err)}`, "error");
     } finally {
@@ -184,10 +159,14 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
         conn={conn}
         path={path}
         loading={loading}
-        busy={busy}
+        busy={operationBusy}
+        directoryReady={!error}
         onBack={onBack}
         onUp={() => setPath(parentRemote(path))}
-        onRefresh={() => void list(path)}
+        onNavigate={target => { if (!operationBusy && !loading) setPath(target); }}
+        canBack={navigation.canBack} canForward={navigation.canForward}
+        onHistoryBack={navigation.back} onHistoryForward={navigation.forward}
+        onRefresh={() => void refresh()}
         onNewFolder={() => {
           setMkdirOpen((v) => !v);
           setMkdirName("");
@@ -236,7 +215,8 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
         highlightName={highlightName}
         onOpenDir={openDir}
         onDownload={forms.handleDownload}
-        onRemove={setRemoveTarget}
+        onRemove={entry => setRemoveTarget({ ...entry, remotePath: joinRemote(path, entry.name) })}
+        onRetry={() => void refresh()}
       />
 
       <TransferBarSlot transfer={xfer.transfer} onCancel={xfer.cancel} />

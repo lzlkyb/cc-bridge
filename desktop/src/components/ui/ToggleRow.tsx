@@ -63,7 +63,7 @@ export function ToggleRow({
         )}
       </div>
       <div className="srow-control flex shrink-0 items-center gap-2">
-        <span className="settings-toggle-state text-xs text-muted-foreground">{pending ? "保存中…" : checked ? "已开启" : "已关闭"}</span>
+        <span data-pending={pending || undefined} role={pending ? "status" : undefined} className="settings-toggle-state text-xs text-muted-foreground">{pending ? "保存中…" : checked ? "已开启" : "已关闭"}</span>
         <Switch checked={checked} onChange={onChange} variant={variant} ariaLabel={label} disabled={disabled || pending} ariaDescribedBy={sub ? descriptionId : undefined} />
       </div>
       {error && <div className="settings-row-feedback text-xs text-destructive-ink" role="alert">{error}</div>}

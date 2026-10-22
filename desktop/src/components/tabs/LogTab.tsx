@@ -14,6 +14,7 @@ import { useAuditLog } from "../../hooks/useAuditLog";
 import { Collapse } from "../ui/Collapse";
 import { useSlashFocus } from "../../hooks/useSlashFocus";
 import { Combobox } from "../ui/combobox";
+import { SettingsChoice } from "../ui/SettingsChoice";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { PerfCharts } from "./PerfCharts";
 import { AuditPager } from "./AuditPager";
@@ -134,21 +135,7 @@ function LogTabImpl({
             onChange={(v) => setToolFilter(v)}
           />
           {/* Status filter */}
-          <div className="flex items-center gap-0.5 rounded-md bg-muted p-0.5">
-            {([["all", "全部"], ["success", "成功"], ["error", "失败"]] as const).map(([val, label]) => (
-              <button
-                key={val}
-                onClick={() => setStatusFilter(val)}
-                className={`rounded px-2 py-1 text-xs font-medium transition-colors ${
-                  statusFilter === val
-                    ? "bg-background text-foreground shadow-card"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <SettingsChoice label="日志状态筛选" value={statusFilter} onChange={value => setStatusFilter(value as "all" | "success" | "error")} options={[{ value:"all", label:"全部" }, { value:"success", label:"成功" }, { value:"error", label:"失败" }]}/>
           <Button variant="outline" size="sm" onClick={() => refetch()}>
             <Icon name="refresh" size={14} />
             刷新
@@ -213,10 +200,9 @@ function LogTabImpl({
             className="h-52 empty"
             bigIconSize={96}
             iconSize={28}
-            icon={entries?.length === 0 ? "file" : "search"}
-            description={entries?.length === 0
-              ? "暂无审计记录，远程 AI 工具连接后操作记录将显示在这里。"
-              : "没有匹配的记录，试试调整筛选条件。"}
+            icon={hasFilter ? "search" : "file"}
+            description={hasFilter ? "没有匹配的记录，试试调整筛选条件。" : "暂无审计记录，远程 AI 工具连接后操作记录将显示在这里。"}
+            action={hasFilter ? <Button variant="outline" size="sm" onClick={resetFilters}>清除筛选</Button> : undefined}
           />
         ) : (
           <Table className="table-fixed audit">

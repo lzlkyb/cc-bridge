@@ -37,6 +37,13 @@ async function render(category: string, anchor = category) {
   await act(async () => vi.runAllTimers());
 }
 describe("设置分类导航", () => {
+  it("页首和页尾说明相邻分类，也可点击直接进入", async () => {
+    await render("set-terminal");
+    const panel=host.querySelector<HTMLElement>('[data-category="set-terminal"]')!;
+    expect(panel.querySelector('.settings-wheel-previous')?.textContent).toContain("应用");
+    const next=panel.querySelector<HTMLButtonElement>('.settings-wheel-next')!;
+    expect(next.textContent).toContain("网络与接入");await act(async()=>next.click());expect(select).toHaveBeenCalledWith("set-network");
+  });
   it("返回分类保留草稿节点与滚动位置，而不是导航后清零", async () => {
     await render("set-app");
     const panel = host.querySelector<HTMLElement>('[data-category="set-app"]')!;

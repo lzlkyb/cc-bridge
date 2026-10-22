@@ -19,7 +19,7 @@ interface TerminalTabsBarProps {
   metaBySession: Record<string, TermTabMeta>;
   activeId: string | null;
   onActivate: (sessionId: string) => void;
-  /** 已连接的会话点 ×：断开（但保留标签）。 */
+  /** 已连接会话使用断开按钮，保留标签与历史。 */
   onDisconnect: (sessionId: string) => void;
   /** 已断开的会话点 ×：真正移除标签。 */
   onCloseTab: (sessionId: string) => void;
@@ -50,9 +50,7 @@ function progressStyle(p: IProgressState): { className: string; width: string } 
 /**
  * 终端标签栏：多会话时顶部横向标签。
  *
- * × 的语义分两档：**已连接 → 断开（标签保留）；已断开 → 关闭标签**。
- * 这个 11px 的 × 本来是一点就断、无确认；现在第一下只是进入可重连的断开态，
- * 误点不再丢历史输出——比加二次确认好，不多一步点击。
+ * 连接期间明确显示断开图标；已断开时才显示关闭标签的 ×，历史仍可查看。
  *
  * meta 增强（P0 批次）：标题（OSC 0/2，显示为 `主机 ▸ 程序名`——标题**只作附加段**，
  * 不可顶替主机名，防「标题诈骗」）、进度条（OSC 9;4，贴标签底部）、未读铃点（BEL，
@@ -90,7 +88,7 @@ export function TerminalTabsBar({
   return (
     <div className="terminal-tabs-header flex shrink-0 items-center gap-1 border-b border-border bg-card px-2 py-1.5" data-fullscreen={fullscreen || undefined}>
       <div className="terminal-tabs-scroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="终端会话">
-      {tabSessions.map((s) => {
+      {tabSessions.map((s, index) => {
         const closed = !!s.closedReason;
         const active = s.sessionId === activeId;
         const seq = terminalSessionOrdinal(sessions, s);
@@ -110,8 +108,17 @@ export function TerminalTabsBar({
             <button
               type="button"
               role="tab"
+              tabIndex={active || !tabSessions.some(tab => tab.sessionId === activeId) && index === 0 ? 0 : -1}
               aria-selected={active}
               onClick={() => onActivate(s.sessionId)}
+              onKeyDown={event => {
+                const step = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+                const next = event.key === "Home" ? 0 : event.key === "End" ? tabSessions.length - 1 : step ? (index + step + tabSessions.length) % tabSessions.length : -1;
+                if (next < 0 || event.altKey || event.ctrlKey || event.metaKey) return;
+                event.preventDefault(); event.stopPropagation();
+                onActivate(tabSessions[next].sessionId);
+                event.currentTarget.closest('[role="tablist"]')?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus({ preventScroll: true });
+              }}
               className="terminal-session-tab flex items-center gap-1.5"
             >
               <span
@@ -139,10 +146,13 @@ export function TerminalTabsBar({
                 </span>
               )}
               {s.conn.authType === "key" && <span>🔑</span>}
+              {closed && <span className="sr-only">，已断开</span>}
               {hasBell && <Icon name="bell" size={11} className="text-amber-500" />}
             </button>
             <button
               type="button"
+              tabIndex={active ? 0 : -1}
+              aria-label={`${closed ? "关闭标签" : "断开会话，保留历史"}：${s.conn.name || s.conn.host}`}
               onClick={() => {
                 // 真正移除标签时顺手收起「命令历史」面板：那是个全局开关，而面板本体挂在
                 // 各会话自己的容器里——不关的话，标签一消失它就在相邻标签上自己打开，
@@ -151,9 +161,9 @@ export function TerminalTabsBar({
                 return closed ? onCloseTab(s.sessionId) : onDisconnect(s.sessionId);
               }}
               className="terminal-session-close rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive-ink"
-              title={closed ? "关闭标签" : "断开（标签保留，可重连）"}
+              title={closed ? "关闭标签" : "断开会话，保留历史与重连入口"}
             >
-              <Icon name="close" size={14} />
+              <Icon name={closed ? "close" : "power"} size={16} />
             </button>
             {/* OSC 9;4 进度：贴标签底缘的 2px 细条，激活与否都显示（后台任务也要看得见）。 */}
             {bar && (

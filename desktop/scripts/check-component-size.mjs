@@ -70,10 +70,8 @@ const BASELINE = {
   // `tabs/filecontrol/`（BackupSection 210 行 / LimitSections 83 行）后降到 117 行，
   // 重新落在默认上限之内——不需要豁免了。
   // ── 行数合格、但状态数超标 ──
-  // 🔴 这两个是“行数拦不住”的活证据：它们都在 300 行以内，
-  // 却各自有十几个互相牵扯的状态。SshFileBrowser 就是在这上面出过真 bug 的那个。
+  // 状态数同样采用棘轮；SshFileBrowser 的目录请求已独立，现已回到默认上限内。
   "src/components/backup/BackupCleanupDialog.tsx": { hooks: 13 },
-  "src/components/tabs/SshFileBrowser.tsx": { hooks: 12 },
 };
 
 function walk(dir, out = []) {

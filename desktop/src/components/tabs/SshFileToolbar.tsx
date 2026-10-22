@@ -2,17 +2,21 @@ import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { Dialog, DialogHeader, DialogTitle } from "../ui/dialog";
 import type { SshConnection, SshFileEntry } from "../../lib/types";
+import { FilePathBar } from "./FilePathBar";
 
 interface FileHeaderProps {
   conn: SshConnection;
   path: string;
   loading: boolean;
   busy: boolean;
+  directoryReady?: boolean;
   onBack: () => void;
   onUp: () => void;
   onRefresh: () => void;
   onNewFolder: () => void;
   onUpload: () => void;
+  onNavigate: (path: string) => void;
+  canBack: boolean; canForward: boolean; onHistoryBack: () => void; onHistoryForward: () => void;
 }
 
 /**
@@ -23,11 +27,13 @@ export function FileHeader({
   path,
   loading,
   busy,
+  directoryReady = true,
   onBack,
   onUp,
   onRefresh,
   onNewFolder,
   onUpload,
+  onNavigate, canBack, canForward, onHistoryBack, onHistoryForward,
 }: FileHeaderProps) {
   return (
     <>
@@ -63,7 +69,7 @@ export function FileHeader({
             size="sm"
             className="h-7 px-2 text-xs"
             variant="outline"
-            disabled={loading || busy}
+            disabled={loading || busy || !directoryReady}
             onClick={onNewFolder}
           >
             <Icon name="plus" size={13} /> 新建
@@ -72,7 +78,7 @@ export function FileHeader({
             size="sm"
             className="h-7 px-2 text-xs"
             variant="outline"
-            disabled={loading || busy}
+            disabled={loading || busy || !directoryReady}
             onClick={onUpload}
           >
             <Icon name="upload" size={13} /> 上传
@@ -80,21 +86,7 @@ export function FileHeader({
         </div>
       </div>
 
-      {/* 路径条 */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/30 px-3 py-1.5">
-        <button
-          type="button"
-          disabled={loading || busy}
-          onClick={onUp}
-          className="rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          上一级
-        </button>
-        <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-0.5 text-xs" title={path}>
-          {path}
-        </code>
-        {loading && <span className="text-xs text-muted-foreground">加载中…</span>}
-      </div>
+      <FilePathBar path={path} disabled={loading || busy} loading={loading} onUp={onUp} onNavigate={onNavigate} canBack={canBack} canForward={canForward} onBack={onHistoryBack} onForward={onHistoryForward}/>
     </>
   );
 }

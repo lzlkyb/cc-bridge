@@ -6,8 +6,7 @@ import { isInitialFileListing, remoteFileName, remoteParentPath } from "../lib/s
  * 终端路径点击的「文件回退」：initialPath 往往是**文件**（日志/配置），而文件浏览器
  * 只能列目录——识别 ls(file) 成功结果或首次失败，回退父目录并定位文件。
  *
- * WHY 独立 hook：`SshFileBrowser` 的 useState/useEffect 数在体量棘轮基线上（12），
- * 一行都不能加；这个回退又只有「一个布尔 + 一个 effect」，搬出去零成本。
+ * 文件定位回退与目录请求状态分开，避免普通导航失败也触发自动返回父目录。
  * 只兜 initialPath 一层：正常导航中用户自己输错的路径照常报错，不受影响。
  */
 export function useSshFileInitialPath(

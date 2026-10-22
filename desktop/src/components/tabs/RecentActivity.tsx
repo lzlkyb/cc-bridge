@@ -69,7 +69,7 @@ export function RecentActivity({ onViewAll }: { onViewAll?: () => void }) {
             // 不再加 `animate-fade-in`：auto-animate 自己就会做入场，两套叠一起反而乱。
             <div
               key={`${e.timestamp}-${e.tool}`}
-              className="flex items-center gap-1.5 py-px text-[10.5px]"
+              className="flex items-center gap-1.5 py-px text-[11.5px] leading-relaxed"
             >
               <span
                 aria-hidden="true"

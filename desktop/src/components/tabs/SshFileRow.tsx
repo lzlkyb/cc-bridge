@@ -54,9 +54,9 @@ export function SshFileRow({
     <tr
       ref={row} aria-selected={highlighted || undefined}
       className={`border-b border-border/60 ${
-        clickable ? "cursor-pointer hover:bg-muted/30" : "hover:bg-muted/20"
+        clickable && !busy ? "cursor-pointer hover:bg-muted/30" : "hover:bg-muted/20"
       } ${highlighted ? "bg-accent" : ""}`}
-      onClick={() => clickable && onOpenDir(entry.name)}
+      onClick={() => clickable && !busy && onOpenDir(entry.name)}
     >
       {/* max-w 约束列宽：超长文件名截断（title 看全文），不把右侧列挤出面板 */}
       <td className="max-w-[340px] py-1.5 pl-3">
@@ -66,12 +66,10 @@ export function SshFileRow({
             size={15}
             className={`shrink-0 ${entry.isDir ? "text-blue-500" : "text-muted-foreground"}`}
           />
-          <span
-            className={`min-w-0 truncate ${entry.isDir ? "font-medium text-foreground" : ""}`}
-            title={entry.name}
-          >
-            {entry.name}
-          </span>
+          {clickable ? <button type="button" disabled={busy} title={entry.name} aria-label={`打开${entry.isDir ? "文件夹" : "链接"} ${entry.name}`}
+            className="min-w-0 truncate rounded text-left font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            onClick={event => { event.stopPropagation(); onOpenDir(entry.name); }}>{entry.name}</button>
+            : <span className="min-w-0 truncate" title={entry.name}>{entry.name}</span>}
           {entry.isSymlink && (
             <span className="shrink-0 text-[11px] text-muted-foreground">链接</span>
           )}
@@ -128,6 +126,7 @@ interface FileTableProps {
   onOpenDir: (name: string) => void;
   onDownload: (name: string) => void;
   onRemove: (entry: SshFileEntry) => void;
+  onRetry?: () => void;
 }
 
 /**
@@ -148,13 +147,15 @@ export function FileTable({
   onOpenDir,
   onDownload,
   onRemove,
+  onRetry,
 }: FileTableProps) {
   const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>();
   return (
-    <div className="min-h-0 flex-1 animate-fade-in overflow-y-auto">
+    <div aria-busy={loading || undefined} className="min-h-0 flex-1 animate-fade-in overflow-y-auto">
       {error && (
-        <div className="m-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-ink">
+        <div role="alert" className="m-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-ink">
           {error}
+          {onRetry && <button type="button" onClick={onRetry} disabled={loading} className="ml-3 rounded underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-ring">重试</button>}
         </div>
       )}
       {!error && !loading && entries.length === 0 && (
@@ -181,7 +182,7 @@ export function FileTable({
               key={e.name}
               entry={e}
               highlighted={e.name === highlightName}
-              busy={busy}
+              busy={busy || loading}
               onOpenDir={onOpenDir}
               onDownload={onDownload}
               onRemove={onRemove}

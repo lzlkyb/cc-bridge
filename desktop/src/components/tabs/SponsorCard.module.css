@@ -106,12 +106,13 @@
   border: 1px solid hsl(var(--border));
   border-radius: 16px;
   box-shadow: var(--shadow-pop);
-  animation: sponsorDialogIn 0.22s cubic-bezier(0.34, 1.4, 0.64, 1);
+  animation: sponsorDialogIn var(--dur-enter) var(--ease);
 }
 @keyframes sponsorDialogIn {
   from { opacity: 0; transform: scale(0.94) translateY(8px); }
   to   { opacity: 1; transform: scale(1) translateY(0); }
 }
+@media (prefers-reduced-motion: reduce) { .dialog { animation:none; } }
 
 .dialogHead {
   display: flex;

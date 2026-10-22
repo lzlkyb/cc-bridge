@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import "../../settings-choice.css";
 
 /** Short exclusive settings share radio semantics and arrow-key navigation. */
 export function SettingsChoice({ label, value, options, onChange, disabled = false }: {

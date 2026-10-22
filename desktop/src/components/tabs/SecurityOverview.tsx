@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { invoke } from "../../lib/tauri";
-import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
+import type { StaticStatus } from "../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Icon } from "../ui/icon";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -8,6 +7,7 @@ import { InlineNotice } from "../ui/notice";
 import { ToggleRow } from "../ui/ToggleRow";
 import { RiskBand } from "../ui/RiskBand";
 import { Collapse } from "../ui/Collapse";
+import { useSettingSave } from "./settings/useSettingSave";
 
 /**
  * 安全概览卡（方案 A 顶部）。
@@ -50,27 +50,23 @@ export function SecurityOverview({
   const [confirmWhitelistOff, setConfirmWhitelistOff] = useState(false);
   const [confirmShellOn, setConfirmShellOn] = useState(false);
   const [ackShellRisk, setAckShellRisk] = useState(false);
-  const [savedKey, setSavedKey] = useState<string | null>(null);
+  const { save, isSaved, isPending, errorFor, pendingKeys } = useSettingSave(onSaved);
   const [open, setOpen] = useState(loadOverviewOpen);
 
-  const save = async (patch: Record<string, unknown>, key?: string) => {
-    await invoke<ConfigSaveResult>("save_config", { patch });
-    onSaved();
-    if (key) {
-      setSavedKey(key);
-      setTimeout(() => setSavedKey((cur) => (cur === key ? null : cur)), 1500);
-    }
-  };
+  // These switches affect each other's effective permissions; serialize their visible controls.
+  const disabled = !status || pendingKeys.length > 0;
 
   const readonly = status?.readonlyMode ?? false;
 
   const handleWhitelist = (next: boolean) => {
-    if (next) save({ whitelistEnabled: true }, "whitelist");
+    if (disabled) return;
+    if (next) void save({ whitelistEnabled: true }, "whitelist");
     else setConfirmWhitelistOff(true);
   };
   const handleShell = (next: boolean) => {
+    if (disabled) return;
     if (next) setConfirmShellOn(true);
-    else save({ shellEnabled: false }, "shell");
+    else void save({ shellEnabled: false }, "shell");
   };
 
   const toggleOpen = () =>
@@ -111,14 +107,14 @@ export function SecurityOverview({
               }
               checked={status?.whitelistEnabled ?? true}
               onChange={handleWhitelist}
-              saved={savedKey === "whitelist"}
+              saved={isSaved("whitelist")} pending={isPending("whitelist")} error={errorFor("whitelist")} disabled={disabled}
             />
             <ToggleRow
               label="只读模式"
               sub="开启后禁止写入 / 删除 / 移动 / 复制，仅允许读取、列目录、搜索"
               checked={readonly}
-              onChange={(v) => save({ readonlyMode: v }, "readonly")}
-              saved={savedKey === "readonly"}
+              onChange={(v) => { if (!disabled) void save({ readonlyMode: v }, "readonly"); }}
+              saved={isSaved("readonly")} pending={isPending("readonly")} error={errorFor("readonly")} disabled={disabled}
             />
             <ToggleRow
               label="命令执行"
@@ -133,7 +129,7 @@ export function SecurityOverview({
               }
               checked={status?.shellEnabled ?? false}
               onChange={handleShell}
-              saved={savedKey === "shell"}
+              saved={isSaved("shell")} pending={isPending("shell")} error={errorFor("shell")} disabled={disabled}
               last
             />
         </Collapse>
@@ -150,9 +146,10 @@ export function SecurityOverview({
           }
           variant="destructive"
           confirmLabel="确定关闭"
+          confirmDisabled={disabled}
           onCancel={() => setConfirmWhitelistOff(false)}
           onConfirm={() => {
-            save({ whitelistEnabled: false }, "whitelist");
+            void save({ whitelistEnabled: false }, "whitelist");
             setConfirmWhitelistOff(false);
           }}
         />
@@ -162,13 +159,13 @@ export function SecurityOverview({
           title="确定开启命令执行？"
           variant="destructive"
           confirmLabel="确定开启"
-          confirmDisabled={!ackShellRisk}
+          confirmDisabled={disabled || !ackShellRisk}
           onCancel={() => {
             setConfirmShellOn(false);
             setAckShellRisk(false);
           }}
           onConfirm={() => {
-            save({ shellEnabled: true }, "shell");
+            void save({ shellEnabled: true }, "shell");
             setConfirmShellOn(false);
             setAckShellRisk(false);
           }}

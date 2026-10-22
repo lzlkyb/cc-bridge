@@ -1,0 +1,8 @@
+.settings-choice {display:inline-flex;max-width:100%;flex-wrap:wrap;gap:2px;padding:3px;border:1px solid hsl(var(--border));border-radius:9px;background:hsl(var(--muted))}
+.settings-choice button {border:0;background:transparent;padding:6px 12px;border-radius:7px;min-height:31px;font-size:12px;color:hsl(var(--muted-foreground));white-space:nowrap}
+.settings-choice button[aria-checked=true] {background:hsl(var(--card));color:hsl(var(--foreground));font-weight:600;box-shadow:0 1px 3px rgb(30 45 80/.12)}
+.settings-choice button:hover:not(:disabled) {background:hsl(var(--primary)/.06)}
+.settings-choice button[aria-checked=true]:hover {background:hsl(var(--card))}
+.settings-choice button:focus-visible {outline:2px solid hsl(var(--primary));outline-offset:3px}
+.settings-choice button:disabled {cursor:not-allowed;opacity:.5}
+html[data-ui-style=glass] .settings-choice {background:var(--glass-inset);border-color:var(--glass-chrome-edge)}

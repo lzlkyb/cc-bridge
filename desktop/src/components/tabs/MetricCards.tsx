@@ -163,11 +163,11 @@ function MetricCard({
       <div className="text-xs font-bold text-muted-foreground">
         {label}
       </div>
-      {/* tabular-nums + 锁宽（min-w-[5ch]≈最长样本 12.34@24px/800）：5s 采样一跳时
+      {/* tabular-nums + 数值区最小宽度：5s 采样一跳时
           数值段不再横跳推挤 sub 行与 spark；空值「—」也落在同一段宽里。左对齐让
           右侧留白呼吸，而不是居中抖。 */}
       <MetricValue value={value} unit={unit} enabled={motionReady}/>
-      <div className="mt-0.5 truncate text-[10.5px] tabular-nums text-muted-foreground" title={sub}>
+      <div className="mt-0.5 truncate text-xs tabular-nums text-muted-foreground" title={sub}>
         {sub}
       </div>
       <Sparkline series={series} kind={chart} threshold={threshold} noData={noData} />

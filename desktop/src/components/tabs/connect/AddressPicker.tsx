@@ -148,7 +148,7 @@ export function AddressPicker({
                 title="复制「原地更新 IP」的远程替换命令，粘贴到服务器执行即可把旧地址换成当前选中地址"
               >
                 <Icon name={sedCopied ? "check" : "copy"} size={14} />
-                {sedCopied ? "已复制" : "复制命令"}
+                {sedCopied ? "已复制" : "复制地址更新命令"}
               </Button>
             )}
             {onRefresh && (

@@ -21,7 +21,7 @@ html[data-ui-style="glass"] .terminal-workspace .terminal-tabs-header[data-fulls
 .terminal-tabs-header[data-fullscreen] .terminal-session-tab { min-width: 0; }
 .terminal-tabs-header[data-fullscreen] .terminal-session-tab > span:first-child { flex-shrink: 0; }
 .terminal-tabs-header[data-fullscreen] .terminal-session-tab > span:nth-child(2) { flex-shrink: 0; max-width: 160px; }
-.terminal-tabs-header[data-fullscreen] .terminal-session-close { flex-shrink: 0; display: grid; place-items: center; width: 22px; height: 26px; }
+.terminal-tabs-header[data-fullscreen] .terminal-session-close { flex-shrink: 0; display: grid; place-items: center; width: 28px; height: 28px; }
 .terminal-tabs-header[data-fullscreen] .terminal-tabs-actions { display: contents; }
 .terminal-tabs-header[data-fullscreen] [aria-label="新终端"] { order: 1; width: 32px; height: 32px; }
 .terminal-tabs-header[data-fullscreen] [aria-label="分屏"] { order: 4; width: 32px; height: 32px; }

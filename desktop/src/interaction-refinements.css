@@ -1,4 +1,5 @@
 /* 操作界面的动效只表达状态，滚动和输入位置保持稳定。 */
+.animate-tab-in[data-page-motion="slide"] {animation-name:tab-fade-in;animation-duration:var(--dur-exit)}
 .ui-overlay, .ui-surface {
   opacity:1;
   transition:opacity var(--dur-enter) var(--ease),transform var(--dur-enter) var(--ease);
@@ -94,3 +95,7 @@
  .skeleton, .vh-skel { animation:none; }
  .ui-overlay[data-state], .ui-surface[data-state], .toast[data-state] { transition-duration:0s; }
 }
+.settings-toggle-state[data-pending] { display:inline;white-space:nowrap; }
+/* Errors occupy their own row, keeping safety switches aligned while failures remain readable. */
+.security-tab #sec-overview .srow { display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 16px; }
+.security-tab #sec-overview .settings-row-feedback { grid-column:1/-1;overflow-wrap:anywhere;line-height:1.7; }

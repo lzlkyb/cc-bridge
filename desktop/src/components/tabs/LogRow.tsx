@@ -85,11 +85,11 @@ export function LogRow({ entry, index, expanded, onToggle, onViewDiff, onRestore
               e.stopPropagation();
               onToggle();
             }}
-            className="grid h-6 w-6 place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="grid h-[30px] w-[30px] place-items-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Icon
               name="chevronDown"
-              size={13}
+              size={16}
               className={`transition-transform ${expanded ? "rotate-180" : ""}`}
             />
           </button>
