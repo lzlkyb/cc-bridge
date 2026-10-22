@@ -5,7 +5,8 @@ import { isMac } from "../../lib/platform";
 import { toast } from "../ui/toast";
 import type { SshConnection, SshFileEntry } from "../../lib/types";
 import { FileTable } from "./SshFileRow";
-import { MkdirForm, UploadForm, DownloadForm } from "./SshFileForms";
+import { MkdirForm, UploadForm } from "./SshFileForms";
+import { SshDownloadStatus } from "./SshDownloadStatus";
 import { FileHeader, RemoveConfirmDialog } from "./SshFileToolbar";
 import { useSshTransfer } from "./useSshTransfer";
 import { cleanErr } from "../../lib/utils";
@@ -42,7 +43,7 @@ function parentRemote(dir: string): string {
 /**
  * SFTP 文件管理器：列目录 / 进入 / 上一级 / 下载 / 上传 / 新建文件夹 / 删除。
  * 走后端 `ssh_sftp_*` 命令（ssh 跑远程命令 + scp 传文件，PTY 自动填凭据）。
- * 本机路径用内联文本框输入（不依赖系统文件选择器插件）。
+ * 下载通过系统另存为选择位置，传输状态与结果留在文件列表底部。
  */
 export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
   // 起始路径用「上次上传目录」而不是写死的 `/`：面板一关就 unmount，
@@ -70,11 +71,12 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
   });
   const mac = isMac(status?.platform);
   const xfer = useSshTransfer();
+  const forms = useSshFileForms({connectionId:conn.id, path, entries, xfer, joinRemote, onUploaded:() => void list(path)});
   // 传输进行中也算忙：期间禁掉新建/上传/删除，避免并发多条 ssh 握手
   // （本机 OpenSSH 不支持连接复用，并发只会把握手成本乘以 N）。
   // 含 `xfer.prompt`（覆盖确认框）：否则确认框开着时还能接第二批拖放，
   // 第二次 setPrompt 会覆盖第一次，第一批的 Promise 永远不 resolve。
-  const busy = busyOp || !!xfer.transfer || !!xfer.prompt;
+  const busy = busyOp || !!xfer.transfer || !!xfer.prompt || forms.download.busy;
 
   const list = useCallback(
     async (p: string) => {
@@ -103,7 +105,7 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
   useEffect(() => {
     void list(path);
   }, [list, path]);
-  useSshFileInitialPath(initialPath, error, path, setPath);
+  const highlightName = useSshFileInitialPath(initialPath, error, path, setPath, entries);
 
   // 当前目录回写成「上次上传目录」：下次重开面板与终端拖拽都从这里起。
   useEffect(() => {
@@ -117,16 +119,6 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
     busy,
     uploadMany: xfer.uploadMany,
     onDone: () => void list(path),
-  });
-
-  // 「上传 / 下载表单」那一组状态与动作（规则 7 拆分，纯搬运）。
-  const forms = useSshFileForms({
-    connectionId: conn.id,
-    path,
-    entries,
-    xfer,
-    joinRemote,
-    onUploaded: () => void list(path),
   });
 
   // 超过 SLOW_HINT_MS 还在加载就补一句解释。
@@ -233,11 +225,6 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
         />
       )}
 
-      {/* 传输中：进度 + 取消。一次只会有一条。槽位行平滑展开/收起（2026-10-17），
-          不再硬切推挤文件列表；终端 pane 上方那处挂载点保持硬切（fit 红线，见
-          TransferBarSlot 头注释）。 */}
-      <TransferBarSlot transfer={xfer.transfer} onCancel={xfer.cancel} />
-
       {/* 文件列表。key={path}：换目录重挂 → FileTable 根的 animate-fade-in 播整列淡入；
           同时顺带把滚动位置归位（新目录从顶部看起是正确语义）。 */}
       <FileTable
@@ -246,23 +233,14 @@ export function SshFileBrowser({ conn, onBack, initialPath }: Props) {
         loading={loading}
         error={error}
         busy={busy}
+        highlightName={highlightName}
         onOpenDir={openDir}
         onDownload={forms.handleDownload}
         onRemove={setRemoveTarget}
       />
 
-      {/* 下载目标表单 */}
-      {forms.downloadFor && (
-        <DownloadForm
-          name={forms.downloadFor}
-          value={forms.downloadLocal}
-          busy={busy}
-          mac={mac}
-          onChange={forms.setDownloadLocal}
-          onSubmit={() => void forms.doDownload(forms.downloadFor!)}
-          onCancel={() => forms.setDownloadFor(null)}
-        />
-      )}
+      <TransferBarSlot transfer={xfer.transfer} onCancel={xfer.cancel} />
+      {!xfer.transfer && !xfer.prompt && <SshDownloadStatus download={forms.download} busy={busy} />}
 
       {/* 删除二次确认（项目内 Dialog，统一 Tauri 风格） */}
       <RemoveConfirmDialog

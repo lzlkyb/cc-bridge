@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Icon } from "../ui/icon";
 import { EmptyState } from "../ui/EmptyState";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
@@ -27,6 +28,7 @@ function formatDate(s: number): string {
 }
 
 interface SshFileRowProps {
+  highlighted?: boolean;
   entry: SshFileEntry;
   busy: boolean;
   onOpenDir: (name: string) => void;
@@ -38,6 +40,7 @@ interface SshFileRowProps {
  * 远程文件表格行：名称（目录/软链整行可点进入）+ 大小 + 修改时间 + 下载/删除。
  */
 export function SshFileRow({
+  highlighted,
   entry,
   busy,
   onOpenDir,
@@ -45,11 +48,14 @@ export function SshFileRow({
   onRemove,
 }: SshFileRowProps) {
   const clickable = entry.isDir || entry.isSymlink;
+  const row = useRef<HTMLTableRowElement>(null);
+  useEffect(() => { if (highlighted) row.current?.scrollIntoView({block:"nearest"}); }, [highlighted]);
   return (
     <tr
+      ref={row} aria-selected={highlighted || undefined}
       className={`border-b border-border/60 ${
         clickable ? "cursor-pointer hover:bg-muted/30" : "hover:bg-muted/20"
-      }`}
+      } ${highlighted ? "bg-accent" : ""}`}
       onClick={() => clickable && onOpenDir(entry.name)}
     >
       {/* max-w 约束列宽：超长文件名截断（title 看全文），不把右侧列挤出面板 */}
@@ -114,6 +120,7 @@ export function SshFileRow({
 }
 
 interface FileTableProps {
+  highlightName?: string;
   entries: SshFileEntry[];
   loading: boolean;
   error: string | null;
@@ -133,6 +140,7 @@ interface FileTableProps {
  *   退级方案 = 仅保留换目录淡入（去掉 ref 即可）。
  */
 export function FileTable({
+  highlightName,
   entries,
   loading,
   error,
@@ -172,6 +180,7 @@ export function FileTable({
             <SshFileRow
               key={e.name}
               entry={e}
+              highlighted={e.name === highlightName}
               busy={busy}
               onOpenDir={onOpenDir}
               onDownload={onDownload}

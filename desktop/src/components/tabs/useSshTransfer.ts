@@ -113,9 +113,8 @@ export function useSshTransfer() {
    * 此时**不弹错误**，而是置一个覆盖确认提示，用户确认后带 overwrite 重跑。
    */
   const download = useCallback(
-    async (a: StartArgs): Promise<boolean> => {
-      // 三态返回而不是在 catch 里直接 await 弹框：那样 `finally { end() }` 会拖到
-      // 对话框关闭之后才执行，进度条会一直挂在确认框后面不消失。
+    async (a: StartArgs, onFailure?: (message: string) => void, nativeSaveConfirmed = false): Promise<boolean> => {
+      // 先结束传输态再等待覆盖确认，避免进度条一直挂在确认框后面。
       const run = async (overwrite: boolean): Promise<"ok" | "exists" | "fail"> => {
         const id = begin("down", a.name);
         try {
@@ -132,14 +131,15 @@ export function useSshTransfer() {
           if (!overwrite && isTargetExists(e)) {
             return "exists";
           }
+          if (!isCancelled(e)) onFailure?.(cleanErr(e));
           report(e, "down", a.name);
           return "fail";
         } finally {
           end();
         }
       };
-
-      const first = await run(false);
+      // Native Save confirms this exact destination, including replacement; avoid a second prompt.
+      const first = await run(nativeSaveConfirmed);
       if (first !== "exists") return first === "ok";
       const decision = await askOverwrite({ kind: "down", path: a.local, names: [a.name] });
       if (decision !== "overwrite") return false;

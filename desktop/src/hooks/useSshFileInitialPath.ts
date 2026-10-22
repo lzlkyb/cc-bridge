@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import type { SshFileEntry } from "../lib/types";
+import { isInitialFileListing, remoteFileName, remoteParentPath } from "../lib/sshFilePaths";
 
 /**
  * 终端路径点击的「文件回退」：initialPath 往往是**文件**（日志/配置），而文件浏览器
- * 只能列目录——首次列目录失败时回退到父目录再列一次。
+ * 只能列目录——识别 ls(file) 成功结果或首次失败，回退父目录并定位文件。
  *
  * WHY 独立 hook：`SshFileBrowser` 的 useState/useEffect 数在体量棘轮基线上（12），
  * 一行都不能加；这个回退又只有「一个布尔 + 一个 effect」，搬出去零成本。
@@ -13,15 +15,14 @@ export function useSshFileInitialPath(
   error: string | null,
   path: string,
   setPath: (p: string) => void,
-): void {
+  entries: SshFileEntry[],
+): string | undefined {
   const [fallbackTried, setFallbackTried] = useState(false);
   useEffect(() => {
-    if (!error || fallbackTried || !initialPath || path !== initialPath) return;
+    if (fallbackTried || !initialPath || path !== initialPath || (!error && !isInitialFileListing(initialPath, entries))) return;
     setFallbackTried(true);
-    // parentRemote 与 SshFileBrowser 内部是同一套规则（剥尾斜杠取父级），这里内联一份
-    // 最小实现避免为两行代码反向导出："/" 与 "" 都是根，其余剥掉最后一个 / 的后半段。
-    const trimmed = initialPath.replace(/\/$/, "");
-    const i = trimmed.lastIndexOf("/");
-    setPath(i <= 0 ? "/" : trimmed.slice(0, i));
-  }, [error, fallbackTried, initialPath, path, setPath]);
+    // ls(file) succeeds too; reveal the file in its parent instead of treating it as a directory.
+    setPath(remoteParentPath(initialPath));
+  }, [error, fallbackTried, initialPath, path, setPath, entries]);
+  return fallbackTried && initialPath && path === remoteParentPath(initialPath) ? remoteFileName(initialPath) : undefined;
 }

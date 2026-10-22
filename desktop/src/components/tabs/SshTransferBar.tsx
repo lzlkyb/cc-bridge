@@ -29,7 +29,7 @@ export function TransferBar({
   const eta = fmtEta(transfer.eta);
   const pct = transfer.percent;
   return (
-    <div className="flex shrink-0 items-center gap-3 border-b border-border bg-muted/40 px-3 py-2">
+    <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-3 border-y border-border bg-muted/40 px-3 py-3">
       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
         <Icon name={transfer.kind === "up" ? "upload" : "download"} size={12} />
       </span>
@@ -38,10 +38,10 @@ export function TransferBar({
           {transfer.index}/{transfer.total}
         </span>
       )}
-      <span className="max-w-[190px] truncate text-xs" title={transfer.name}>
+      <span className="min-w-0 max-w-[190px] flex-1 truncate text-xs" title={transfer.name}>
         {transfer.name}
       </span>
-      <span className="h-1.5 min-w-[120px] flex-1 overflow-hidden rounded-full bg-border">
+      <span role="progressbar" aria-label={transfer.kind === "down" ? "下载进度" : "上传进度"} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined} className="h-1.5 min-w-[120px] flex-1 overflow-hidden rounded-full bg-border">
         {pct == null ? (
           <span className="block h-full w-1/3 animate-pulse rounded-full bg-primary/70" />
         ) : (
@@ -57,10 +57,10 @@ export function TransferBar({
       <Button
         size="sm"
         variant="outline"
-        className="h-7 shrink-0 px-3 text-xs text-destructive-ink hover:bg-destructive/10"
+        className="h-9 shrink-0 whitespace-nowrap px-3 text-xs text-destructive-ink hover:bg-destructive/10"
         onClick={onCancel}
       >
-        取消
+        {transfer.kind === "down" ? "取消下载" : "取消上传"}
       </Button>
     </div>
   );
