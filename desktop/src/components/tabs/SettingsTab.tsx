@@ -6,6 +6,8 @@ import { settingsSectionForAnchor } from "../../lib/settingsNavigation";
 import { useViewActive, ViewActivityContext } from "../../lib/viewActivity";
 import { isWindows } from "../../lib/platform";
 import { useSettingsWheelNavigation } from "../../hooks/useSettingsWheelNavigation";
+import { useSettingsCategoryMotion } from "../../hooks/useSettingsCategoryMotion";
+import "../../settings-motion.css";
 import { Icon } from "../ui/icon";
 import { FirewallGroup } from "./firewall/FirewallGroup";
 import { AboutGroup } from "./AboutGroup";
@@ -35,6 +37,8 @@ export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onR
   const root = useRef<HTMLDivElement>(null);
   const appliedAnchor = useRef<Props["highlightAnchor"]>(null);
   const active = useViewActive();
+  const deepLink = !!highlightAnchor && settingsSectionForAnchor(highlightAnchor.anchor) === current && highlightAnchor.anchor !== current && appliedAnchor.current !== highlightAnchor;
+  useSettingsCategoryMotion(root, sections, current, active, deepLink);
   useSettingsWheelNavigation(root, sections, current, onActiveSectionChange);
   useEffect(() => { setVisited(previous => previous.includes(current) ? previous : [...previous, current]); }, [current]);
   useEffect(() => {
@@ -75,9 +79,11 @@ export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onR
     {sections.filter(section => section.id === current || visited.includes(section.id)).map(section => {
       const index = sections.findIndex(item => item.id === section.id), previous = sections[index - 1], next = sections[index + 1];
       return <div key={section.id} data-category={section.id} hidden={section.id !== current} data-scroll-viewport className="settings-category-panel page-scroll h-full overflow-y-auto overflow-x-hidden">
+      <div className="settings-category-content">
       <header className="settings-page-heading"><div><h1>{section.label}</h1><p>{CATEGORY_DESCRIPTIONS[section.id]}</p>{previous && <button type="button" className="settings-wheel-previous" onClick={() => onActiveSectionChange(previous.id)}><Icon name="arrowUp" size={12}/>继续向上滚动进入：{previous.label}</button>}</div><span><Icon name="monitor" size={14} />{["set-app", "set-terminal"].includes(section.id) ? "本机偏好" : "服务与配置"}</span></header>
       <ViewActivityContext.Provider value={active && section.id === current}>{content(section.id)}</ViewActivityContext.Provider>
       {next && <button type="button" className="settings-wheel-next" onClick={() => onActiveSectionChange(next.id)}>继续向下滚动进入：{next.label}<Icon name="chevronDown" size={14}/></button>}
+      </div>
     </div>; })}
   </div>;
 }

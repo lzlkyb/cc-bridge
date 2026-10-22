@@ -1,0 +1,7 @@
+.settings-side-nav {position:relative;isolation:isolate}
+.settings-side-nav .app-side-item {position:relative;z-index:1;transition:color 160ms var(--ease),background-color 160ms var(--ease)}
+.settings-side-nav[data-selection-plate] .app-side-item[data-active] {background:transparent!important;box-shadow:none!important;border-color:transparent!important}
+.settings-selection-plate {position:absolute;z-index:0;border-radius:10px;background:hsl(var(--primary)/.1);border:1px solid hsl(var(--primary)/.12);pointer-events:none;transform-origin:center top}
+.settings-selection-plate[hidden] {display:none}
+html[data-ui-style=glass] .settings-selection-plate {background:hsl(var(--primary)/.13);border-color:hsl(var(--primary)/.1)}
+.settings-category-content {min-width:0}

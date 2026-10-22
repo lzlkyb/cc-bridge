@@ -1,0 +1,6 @@
+{
+  "name": "prompt-polish",
+  "version": "0.1.0",
+  "description": "提示词打磨：读输入框草稿 → 模型改写 → 回填",
+  "author": { "name": "cc-bridge" }
+}

@@ -195,13 +195,12 @@ function AppContent() {
   }, []);
 
   // 侧栏形态（2026-10-14）：宽窗展开 200px，窄窗自动收成 56px 图标栏。
-  // 阈值 1080 的由来：展开态内容区 = 视口 − 200(侧栏) − 40(内容区 px-5)，
-  // 要 ≥ 820px 才能保住连接页 Bento 的 12 列布局 → 展开态需视口 ≥ 1060，
-  // 取 1080 留 20px 余量（1060 时内容区正好 820，会踩到 @container 的 max-width:820 边界）。
+  // 看板最低可读宽度为 920px；加上侧栏与页面留白后，窄于 1160px 先收起侧栏，
+  // 尽量把空间留给固定排列的卡片，而不是过早出现横向滚动。
   const [sideCollapsed, setSideCollapsed] = useState(false);
   const [terminalSidebarHost, setTerminalSidebarHost] = useState<HTMLDivElement | null>(null);
   useEffect(() => {
-    const mq = window.matchMedia("(max-width: 1080px)");
+    const mq = window.matchMedia("(max-width: 1160px)");
     const apply = () => setSideCollapsed(mq.matches);
     apply();
     mq.addEventListener("change", apply);

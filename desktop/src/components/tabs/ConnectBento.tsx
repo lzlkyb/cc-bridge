@@ -14,7 +14,7 @@ import "../../dashboard-motion.css";
  * ```
  *   行1: [状态主卡 span4 ][指标1][指标2][指标3][指标4]   ← 4 + 2×4 = 12
  *   行2: [   同上（row span 2） ][ 健康度·治理 span4 ][ 用量 span4 ]   ← 4+4+4 = 12
- *   行3: [        接入 Claude Code（span 12）              ]
+ *   接入向导独立适配，不参与看板横向滚动。
  * ```
  * 原 GovCard（安全治理）已并入 HealthCard（设计稿方案 B），腾出的 4 列给了用量卡。
  *
@@ -41,6 +41,8 @@ export function ConnectBento({
   guide: ReactNode;
 }) {
   return (
+    <div className="connect-layout">
+    <div className="dashboard-scroll" role="region" aria-label="服务看板，小窗口可横向滚动" tabIndex={0}>
     <div className="bento dashboard-motion">
       {/* 采样器：渲染 null，不产生网格项，位置无关。
           放在最前面只为了读代码时先看到它。 */}
@@ -61,8 +63,10 @@ export function ConnectBento({
       <HealthCard status={status} onNavigate={onNavigate} />
       <UsageCard onNavigate={onNavigate} />
 
-      {/* 接入向导是外部传入的 ReactNode，拿不到它的根 class，只能包一层。 */}
-      <div className="bento-span12">{guide}</div>
+    </div>
+    </div>
+      {/* Guide stays fluid even when the dashboard needs horizontal scrolling. */}
+      <div>{guide}</div>
     </div>
   );
 }

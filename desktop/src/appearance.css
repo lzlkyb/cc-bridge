@@ -7,6 +7,7 @@ html[data-ui-style="glass"] {
   --glass-reading: linear-gradient(145deg, rgb(249 252 255 / .84), rgb(244 247 253 / .72));
   --glass-inset: rgb(241 246 253 / .86);
   --glass-status-panel: linear-gradient(145deg, rgb(182 211 240 / .94), rgb(193 188 232 / .91));
+  --glass-status-depth: inset 0 1px 0 rgb(255 255 255 / .28), 0 1px 2px -1px rgb(45 61 101 / .12), 0 8px 20px -10px rgb(55 70 114 / .28);
   --glass-status-ink: #1b2948;
   --glass-status-muted: #354768;
   --glass-data-header: #eef3fa;
@@ -26,6 +27,7 @@ html.dark[data-ui-style="glass"] {
   --glass-reading: linear-gradient(145deg, rgb(42 57 82 / .90), rgb(30 43 65 / .86));
   --glass-inset: rgb(51 68 94 / .88);
   --glass-status-panel: linear-gradient(145deg, rgb(54 80 121 / .96), rgb(66 58 107 / .94));
+  --glass-status-depth: inset 0 1px 0 rgb(215 232 255 / .16), 0 1px 2px rgb(0 4 20 / .18), 0 8px 20px -10px rgb(0 4 20 / .44);
   --glass-status-ink: #edf2fc;
   --glass-status-muted: #bdcbe2;
   --glass-data-header: #2c3d56;
@@ -66,14 +68,20 @@ html.dark[data-ui-style="glass"] .app-boot-fade {
 .app-shell .app-side-foot { padding-bottom: 12px; }
 
 /* Put breathing room inside each scrolling page, rather than in a fixed colored strip. */
+.app-shell { --shell-page-gap: 12px; }
+@media (min-width: 1600px) { .app-shell { --shell-page-gap: 16px; } }
+@media (max-width: 900px) { .app-shell { --shell-page-gap: 8px; } }
 .app-shell .app-main-content:not([data-terminal]) { padding: 0; }
 .app-shell .app-main-content:is([data-page="connect"], [data-page="security"]) > [data-page-panel]:not([hidden]) {
-  padding: 16px 4px 16px 16px;
+  /* The native 12px scrollbar hit area is part of the right edge, not extra whitespace. */
+  padding: var(--shell-page-gap) max(0px, calc(var(--shell-page-gap) - 12px)) var(--shell-page-gap) var(--shell-page-gap);
 }
-.app-shell .app-main-content[data-page="log"] > [data-page-panel]:not([hidden]) { padding: 16px; }
-.app-shell .settings-category-panel { padding: 20px 20px 16px 16px; }
+.app-shell .app-main-content[data-page="log"] > [data-page-panel]:not([hidden]) { padding: var(--shell-page-gap); }
+.app-shell .settings-category-panel { padding: var(--shell-page-gap) max(0px, calc(var(--shell-page-gap) - 12px)) var(--shell-page-gap) var(--shell-page-gap); }
 .app-shell .app-content-box { padding-bottom: 0; }
 .app-shell .page-scroll { scrollbar-gutter: auto; }
+.app-shell .app-main-content:not([data-terminal]) > .page-scroll,
+.app-shell .settings-category-panel { scrollbar-gutter: stable; }
 
 /* Only the active page's outer viewport can reveal the toolbar's quiet scroll edge.
    Hidden categories retain their offset without bleeding an edge into the next page. */
@@ -119,6 +127,8 @@ html[data-ui-style="glass"] .ui-card { background: var(--glass-reading); }
 
 /* Normal and stopped services share the reading material; warning/error retain their signal. */
 html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--stopped) {
+  /* Inset edge preserves content geometry; local depth also survives the shared hover rule. */
+  --glass-depth: inset 0 0 0 1px var(--glass-edge), var(--glass-status-depth);
   background: var(--glass-status-panel);
   color: var(--glass-status-ink);
   box-shadow: var(--glass-depth);
@@ -236,7 +246,72 @@ html[data-ui-style="glass"] :is(.modal-surface, .ui-surface, [role="listbox"], [
   }
 }
 
+/* Update badges share the connection cards' material, scaled to a stable sidebar slot. */
+html[data-ui-style="glass"] .update-slot .header-badge {
+  width: 66px;
+  height: 22px;
+  justify-content: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 7px;
+  background: var(--glass-panel);
+  color: #465974;
+  /* Scale the connection cards' highlight and directional depth to a 22px surface. */
+  --badge-depth: inset 0 1px 0 rgb(255 255 255 / .56), inset 0 -1px 0 rgb(63 82 125 / .10), 0 1px 2px rgb(45 61 101 / .10), 0 4px 8px -4px rgb(55 70 114 / .28);
+  --badge-hover-depth: inset 0 1px 0 rgb(255 255 255 / .72), inset 0 -1px 0 rgb(63 82 125 / .10), 0 2px 3px rgb(45 61 101 / .10), 0 5px 10px -4px rgb(55 70 114 / .30);
+  --badge-pressed-depth: inset 0 1px 3px rgb(45 61 101 / .18), 0 1px 0 rgb(255 255 255 / .26);
+  box-shadow: var(--badge-depth);
+  animation: none;
+  transform: none;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  transition: box-shadow 140ms ease, filter 140ms ease;
+}
+html.dark[data-ui-style="glass"] .update-slot .header-badge {
+  --badge-depth: inset 0 1px 0 rgb(215 232 255 / .22), inset 0 -1px 0 rgb(0 4 20 / .22), 0 1px 2px rgb(0 4 20 / .22), 0 4px 8px -4px rgb(0 4 20 / .48);
+  --badge-hover-depth: inset 0 1px 0 rgb(215 232 255 / .30), inset 0 -1px 0 rgb(0 4 20 / .22), 0 2px 3px rgb(0 4 20 / .22), 0 5px 10px -4px rgb(0 4 20 / .50);
+  --badge-pressed-depth: inset 0 1px 3px rgb(0 4 20 / .38), 0 1px 0 rgb(215 232 255 / .12);
+  background: var(--glass-panel);
+  color: #c5d2e6;
+}
+html[data-ui-style="glass"] .update-slot :is(.header-badge-update,.header-badge-downloading) {
+  background: var(--glass-status-panel);
+  color: #323b70;
+}
+html.dark[data-ui-style="glass"] .update-slot :is(.header-badge-update,.header-badge-downloading) {
+  background: var(--glass-status-panel);
+  color: #eeeaff;
+}
+html[data-ui-style="glass"] .update-slot .header-badge-ready {
+  background: linear-gradient(145deg, rgb(191 225 227 / .94), rgb(183 215 201 / .92));
+  color: #21695f;
+}
+html.dark[data-ui-style="glass"] .update-slot .header-badge-ready {
+  background: linear-gradient(145deg, rgb(47 86 96 / .96), rgb(44 75 69 / .94));
+  color: #a0e2cb;
+}
+html[data-ui-style="glass"] .update-slot .header-badge-error {
+  background: linear-gradient(145deg, rgb(242 216 223 / .94), rgb(227 198 213 / .92));
+  color: #a13342;
+}
+html.dark[data-ui-style="glass"] .update-slot .header-badge-error {
+  background: linear-gradient(145deg, rgb(101 63 81 / .96), rgb(76 49 69 / .94));
+  color: #ffb8bf;
+}
+html[data-ui-style="glass"] .update-slot .header-badge-uptodate > svg { color: hsl(var(--success-ink)); }
+html[data-ui-style="glass"] .update-slot button.header-badge:hover { box-shadow: var(--badge-hover-depth); filter: brightness(1.04); }
+html[data-ui-style="glass"] .update-slot button.header-badge:active { box-shadow: var(--badge-pressed-depth); filter: brightness(.98); }
+html[data-ui-style="glass"] .update-slot button:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 3px; }
+html[data-ui-style="glass"] .update-slot .header-badge::after { content: none; }
+html[data-ui-style="glass"] .header-badge-downloading circle { stroke: currentColor; }
+html[data-ui-style="glass"] .header-badge-downloading circle:first-child { opacity: .23; }
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-ui-style="glass"] .update-slot .header-badge { transition: none; }
+}
+
 @media (prefers-reduced-transparency: reduce) {
+  html:root[data-ui-style="glass"] .update-slot .header-badge { background: hsl(var(--card)); }
   html:root[data-ui-style="glass"] {
     --glass-status-panel: hsl(var(--card));
     --glass-reading: hsl(var(--card));
@@ -249,6 +324,14 @@ html[data-ui-style="glass"] :is(.modal-surface, .ui-surface, [role="listbox"], [
   }
 }
 @media (forced-colors: active) {
+  html:root[data-ui-style="glass"] .update-slot .header-badge {
+    background: ButtonFace;
+    color: ButtonText;
+    box-shadow: none;
+    filter: none;
+    outline: 1px solid ButtonText;
+  }
+  html:root[data-ui-style="glass"] .update-slot .header-badge-uptodate > svg { color: ButtonText; }
   html:root[data-ui-style="glass"] {
     --glass-status-panel: Canvas;
     --glass-status-ink: CanvasText;

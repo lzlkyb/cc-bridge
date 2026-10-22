@@ -1,0 +1,4 @@
+{
+  "description": "prompt-polish 的 hooks 模块（mod 与设置 hook 的根本区别就在这个 modules 键）",
+  "modules": ["./register.js"]
+}

@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Icon } from "../ui/icon";
 import type { SettingsSection } from "../../lib/settingsSections";
 import { searchSettings, stepSettingsSection } from "../../lib/settingsNavigation";
 import { CATEGORY_DESCRIPTIONS } from "../../lib/settingsCategories";
 import { Modal } from "../ui/Modal";
+import { useSettingsMenuMotion } from "../../hooks/useSettingsMenuMotion";
+import "../../settings-motion.css";
 
 const summaries: Record<string, string> = {
   "set-app": "外观、启动与资源", "set-terminal": "配色、字体与操作", "set-network": "端口、HTTPS 与防火墙",
@@ -18,11 +20,9 @@ export function SideNavSettings({ sections, activeId, onSelect, onBack, collapse
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const navRef = useRef<HTMLElement>(null);
+  const selectionPlate = useSettingsMenuMotion(navRef, activeId, query, collapsed);
   const wheel = useRef({ accumulated: 0, lastEvent: -Infinity, lastSwitch: -Infinity });
   const results = searchSettings(query, sections.map(s => s.id), platform);
-  useEffect(() => {
-    navRef.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: "nearest" });
-  }, [activeId]);
   const selectResult = (sectionId: string, anchor?: string) => {
     setQuery(""); setSearchOpen(false); onSelect(sectionId, anchor);
   };
@@ -58,6 +58,7 @@ export function SideNavSettings({ sections, activeId, onSelect, onBack, collapse
         <input type="search" value={query} placeholder="搜索设置…" aria-label="搜索设置" onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === "Escape") setQuery(""); }} />
       </div>}
     <nav ref={navRef} className="app-side-nav settings-side-nav" aria-label="设置目录" onWheel={handleNavWheel}>
+      <div ref={selectionPlate} className="settings-selection-plate" aria-hidden="true" hidden />
       {query.trim() ? <>
         <p className="app-side-cluster-title">{results.length} 个设置结果</p>
         {results.map(item => <button key={item.id} type="button" className="app-side-item" onClick={() => selectResult(item.sectionId!, item.anchor)}>
