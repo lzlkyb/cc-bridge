@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -38,7 +39,7 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
     )?;
 
     // 先克隆出需要的 Arc，再释放 DashMap 的 Ref，避免在持有 Ref 期间跨 await。
-    let (stdout_arc, stderr_arc, exit_code_arc, pid) = {
+    let (stdout_arc, stderr_arc, exit_code_arc, pid, stop_requested, out_done, err_done) = {
         let entry = state
             .running_commands
             .get(&args.handle)
@@ -48,12 +49,19 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
             entry.stderr.clone(),
             entry.exit_code.clone(),
             entry.pid,
+            entry.stop_requested.clone(),
+            entry.stdout_done.clone(),
+            entry.stderr_done.clone(),
         )
     };
 
     let stdout = stdout_arc.lock().await;
     let stderr = stderr_arc.lock().await;
     let exit_code = *exit_code_arc.lock().await;
+    let terminated = stop_requested.load(Ordering::Relaxed);
+    // 🔴 exit ≠ close：进程退出后管道里可能还有残余字节没读完。只有两路都见 EOF 才算完整。
+    let output_complete =
+        exit_code.is_some() && out_done.load(Ordering::Relaxed) && err_done.load(Ordering::Relaxed);
 
     // 偏移按**整条输出的真实字节位置**算：落在保存缓冲的缺口里时，`read_from` 会插一行
     // 「中间 N 字节已被省略」的标记再从尾部保留区接着给，`next_offset` 仍是真实位置。
@@ -76,9 +84,27 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
     if stderr.dropped_bytes() > 0 {
         info.insert("stderrDroppedBytes".into(), json!(stderr.dropped_bytes()));
     }
-    info.insert("running".into(), json!(exit_code.is_none()));
+    // 已被请求终止的条目不算「运行中」：即使还没 wait 到退出码，它也不再是有效进程，
+    // 报 running:true 会让调用方以为还要继续等。
+    info.insert("running".into(), json!(exit_code.is_none() && !terminated));
     info.insert("exitCode".into(), json!(exit_code));
     info.insert("pid".into(), json!(pid));
+    info.insert("terminated".into(), json!(terminated));
+    info.insert("outputComplete".into(), json!(output_complete));
+    if terminated {
+        let note = if output_complete {
+            "该命令是被 stop_command 主动终止的；下面是它被杀之前已经产出的输出。"
+        } else {
+            "该命令已被终止，输出仍在收尾（管道未完全关闭）。稍等片刻再取可拿到完整尾部。"
+        };
+        info.insert("note".into(), json!(note));
+    } else if exit_code.is_some() && !output_complete {
+        // 进程已退出但管道还没读完：此刻的 stdout/stderr 可能少最后几行，别当成最终结果。
+        info.insert(
+            "note".into(),
+            json!("进程已结束，但输出仍在收尾（管道未完全关闭）。稍等片刻再取一次可拿到完整尾部。"),
+        );
+    }
     if filter.is_active() {
         for (k, v) in filter.stats_fields("stdout", &out) {
             info.insert(k, v);
@@ -95,7 +121,8 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
         &FitOpts {
             limit: MAX_RETURN_LIMIT,
             extract_key_lines: !filter.is_active(),
-            tail_is_final: exit_code.is_some(),
+            // 只有两路都读到 EOF，尾部才算最终结果；否则尾部还会继续长。
+            tail_is_final: output_complete,
             next_offsets: true,
         },
     );

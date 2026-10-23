@@ -452,6 +452,8 @@ export interface RunningCommandInfo {
   command: string;
   cwd: string;
   running: boolean;
+  /** 是否被主动终止过；终止后条目会保留到清理宽容期，仍可展开查看被杀前的输出 */
+  stopped: boolean;
   exitCode: number | null;
   elapsedSeconds: number;
 }

@@ -511,9 +511,11 @@ fn take_reader(
 ) -> (Arc<AsyncMutex<Capture>>, Arc<AtomicBool>) {
     match pipe {
         Some(s) => spawn_reader_thread(Box::new(s)),
+        // 没有管道 = 没有待读数据，done 必须一开始就是 true。
+        // 若给 false，「输出是否完整」这类判据会永久为假（继承 stdio 的场景）。
         None => (
             Arc::new(AsyncMutex::new(Capture::with_default_cap())),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(true)),
         ),
     }
 }
@@ -550,6 +552,9 @@ struct FinishCtx<'a> {
     started_at: Instant,
     stdout: &'a Arc<AsyncMutex<Capture>>,
     stderr: &'a Arc<AsyncMutex<Capture>>,
+    /// 两路读线程的 EOF 标记，随快照条目一起登记，供 `get_command_output` 判「输出是否完整」。
+    stdout_done: &'a Arc<AtomicBool>,
+    stderr_done: &'a Arc<AtomicBool>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -578,6 +583,8 @@ fn run_foreground(
         started_at,
         stdout: &stdout_buf,
         stderr: &stderr_buf,
+        stdout_done: &stdout_done,
+        stderr_done: &stderr_done,
     };
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -632,6 +639,7 @@ fn run_foreground(
                     ),
                     &ctx,
                     code,
+                    false,
                 ),
                 effective_cwd,
             ))
@@ -675,6 +683,7 @@ fn run_foreground(
                     ),
                     &ctx,
                     None,
+                    true,
                 ),
                 None,
             ))
@@ -752,7 +761,12 @@ fn build_output_result(
 /// 不再重新裁剪：`handle` + 一句说明约 200 字节，32KB 上再叠这点仍是 33KB，
 /// 离客户端 5 万字符的落盘门槛还有很远；二次裁剪只会在已裁过的文本上再切一刀，
 /// 留下嵌套的「省略」标记。
-fn register_truncated_output(value: Value, ctx: &FinishCtx<'_>, exit_code: Option<i32>) -> Value {
+fn register_truncated_output(
+    value: Value,
+    ctx: &FinishCtx<'_>,
+    exit_code: Option<i32>,
+    terminated: bool,
+) -> Value {
     let Some(text) = value
         .get("content")
         .and_then(|c| c.as_array())
@@ -783,6 +797,19 @@ fn register_truncated_output(value: Value, ctx: &FinishCtx<'_>, exit_code: Optio
             stdout: ctx.stdout.clone(),
             stderr: ctx.stderr.clone(),
             exit_code: Arc::new(AsyncMutex::new(exit_code)),
+            // 前台超时被杀的那条：`exit_code` 只能是 None（我们没 wait 到状态），
+            // 若不打终止标记，清理任务只按「已结束」判断 ⇒ 这条永久占位、缓冲也泄漏。
+            // 打上标记后由 `cleanup_finished_commands` 的兜底分支按宽容期回收。
+            stop_requested: Arc::new(AtomicBool::new(terminated)),
+            stop_requested_at: Arc::new(AsyncMutex::new(if terminated {
+                Some(Instant::now())
+            } else {
+                None
+            })),
+            // 前台路径在返回前已经等过两路 reader 排空（见 run_foreground 的 done 等待），
+            // 把真实标记带进去而不是硬写 true：万一没排空，`outputComplete` 会如实报 false。
+            stdout_done: ctx.stdout_done.clone(),
+            stderr_done: ctx.stderr_done.clone(),
             started_at: ctx.started_at,
             finished_elapsed_secs: Arc::new(AsyncMutex::new(Some(
                 ctx.started_at.elapsed().as_secs(),
@@ -816,8 +843,8 @@ fn spawn_background(
     state: &Arc<AppState>,
     notify_command_complete: bool,
 ) -> Result<Value, String> {
-    let (stdout_buf, _stdout_done) = take_reader(child.stdout().take());
-    let (stderr_buf, _stderr_done) = take_reader(child.stderr().take());
+    let (stdout_buf, stdout_done) = take_reader(child.stdout().take());
+    let (stderr_buf, stderr_done) = take_reader(child.stderr().take());
 
     let pid = child.id();
     let started_at = Instant::now();
@@ -898,6 +925,10 @@ fn spawn_background(
             stdout: stdout_buf,
             stderr: stderr_buf,
             exit_code,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            stop_requested_at: Arc::new(AsyncMutex::new(None)),
+            stdout_done,
+            stderr_done,
             started_at,
             finished_elapsed_secs: finished_elapsed,
         },

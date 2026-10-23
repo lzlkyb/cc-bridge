@@ -23,6 +23,9 @@ pub struct RunningCommandInfo {
     pub command: String,
     pub cwd: String,
     pub running: bool,
+    /// 是否被主动终止过（`stop_command` / 面板「终止」）。条目会保留到宽容期结束，
+    /// 让面板仍能展开看被杀前的输出。
+    pub stopped: bool,
     #[serde(rename = "exitCode")]
     pub exit_code: Option<i32>,
     #[serde(rename = "elapsedSeconds")]
@@ -49,13 +52,22 @@ pub async fn list_running_commands(
                 cmd.exit_code.clone(),
                 cmd.finished_elapsed_secs.clone(),
                 cmd.started_at.elapsed().as_secs(),
+                cmd.stop_requested.clone(),
             )
         })
         .collect();
 
     let mut result = Vec::with_capacity(snapshot.len());
-    for (handle, pid, command, cwd, exit_code_arc, finished_elapsed_arc, live_elapsed_seconds) in
-        snapshot
+    for (
+        handle,
+        pid,
+        command,
+        cwd,
+        exit_code_arc,
+        finished_elapsed_arc,
+        live_elapsed_seconds,
+        stop_requested,
+    ) in snapshot
     {
         let exit_code = *exit_code_arc.lock().await;
         // 修复：进程已结束时优先用 wait 线程写入的定格值，不再用 started_at.elapsed() 实时计算，
@@ -70,6 +82,8 @@ pub async fn list_running_commands(
             command,
             cwd,
             running: exit_code.is_none(),
+            // stop 之后条目仍在注册表里（保留输出），带出标记让面板区分「自己跑完」与「被终止」。
+            stopped: stop_requested.load(std::sync::atomic::Ordering::Relaxed),
             exit_code,
             elapsed_seconds,
         });
@@ -79,43 +93,18 @@ pub async fn list_running_commands(
 
 // G5: cleanup_finished_commands / evict_finished_commands moved to state.rs (AppState methods).
 
-/// 本机面板的「终止」按钮：移除注册表条目并显式整树终止，逻辑与 MCP 的 stop_command 工具一致。
+/// 本机面板的「终止」按钮：整树终止并**保留条目**（输出仍可在面板里展开查看）。
+///
+/// 与 MCP 的 `stop_command` 共用 `stop_command::terminate` 同一份实现——两条入口各写一遍
+/// 逻辑的话，语义迟早漂移（之前就出现过面板删除、MCP 保留这类不一致）。
 #[tauri::command]
 pub async fn stop_running_command(
     state: State<'_, Arc<AppState>>,
     handle: String,
 ) -> Result<(), String> {
-    // 🔴 与 MCP 的 `stop_command` 同一套顺序（审查 P2）：先取句柄 → 杀 → 成功才摘注册表。
-    // 原来是「先 remove 再 `let _ = start_kill()`」，杀失败时进程变孤儿，而面板已经
-    // 把它从列表里抹掉了——用户再无手段看见/处理这个进程。
-    let (pid, child, exit_code) = {
-        let entry = state
-            .running_commands
-            .get(&handle)
-            .ok_or_else(|| format!("未知的 handle: {handle}"))?;
-        (entry.pid, entry.child.clone(), entry.exit_code.clone())
-    };
-
-    // 已结束的命令不必 kill（对已退出的进程调 start_kill 可能报错，用户只想清掉列表项）。
-    let already_done = exit_code.lock().await.is_some();
-    if !already_done {
-        // 必须显式 start_kill：process-wrap 的 JobObject 默认不 kill-on-close，drop 不会杀进程
-        // （见 Cargo.toml:95 注释）。仅 drop 会让后台命令成孤儿进程、输出读取线程泄漏。
-        // `child` 为 None 的只有「前台输出被裁后留下的只读快照」，它们的 exit_code 必然已是
-        // Some（进程早结束），所以走到这里一定拿得到句柄。
-        let child =
-            child.ok_or_else(|| format!("进程 {pid} 的句柄已释放，可能已经结束，请刷新列表"))?;
-        let mut guard = child
-            .lock()
-            .map_err(|_| format!("终止进程 {pid} 失败：无法获取进程句柄锁"))?;
-        if let Err(e) = guard.start_kill() {
-            return Err(format!(
-                "终止进程 {pid} 失败：{e}。该命令仍在运行列表中，可稍后重试。"
-            ));
-        }
-    }
-    state.running_commands.remove(&handle);
-    Ok(())
+    crate::mcp::tools::stop_command::terminate(state.inner(), &handle)
+        .await
+        .map(|_| ())
 }
 
 /// 本机面板实时拉取后台命令（run_command background=true）的输出，与远程 MCP 的

@@ -8,6 +8,7 @@
 //! 🔴 超时**不杀进程**：与 `run_command` 前台超时（`start_kill()` 杀整棵树）刻意相反。
 //! 这里的语义是「我这个请求没等到」，不是「这条命令该结束」——构建可能还想让它继续跑。
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -75,7 +76,16 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
 
     // 与 get_command_output 同做法：先克隆出需要的 Arc 再释放 DashMap 的 Ref，
     // 避免持有 Ref 期间跨 await。
-    let (stdout_arc, stderr_arc, exit_code_arc, finished_elapsed, started_at) = {
+    let (
+        stdout_arc,
+        stderr_arc,
+        exit_code_arc,
+        finished_elapsed,
+        started_at,
+        out_done,
+        err_done,
+        stop_requested,
+    ) = {
         let entry = state
             .running_commands
             .get(&args.handle)
@@ -86,13 +96,25 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
             entry.exit_code.clone(),
             entry.finished_elapsed_secs.clone(),
             entry.started_at,
+            entry.stdout_done.clone(),
+            entry.stderr_done.clone(),
+            entry.stop_requested.clone(),
         )
     };
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_sec);
     let mut matched = false;
     loop {
-        if exit_code_arc.lock().await.is_some() {
+        // 🔴 等到「退出 **且** 两路管道都读到 EOF」才算真结束。只看 exit_code 会在
+        // 管道残余没读完时提前返回半截输出（exit ≠ close）。这条必须与 stop 的
+        // 保留语义配套：被杀进程同样走这条判定，才不会读到缺尾巴的内容。
+        //
+        // 已被请求终止的条目也算「不会再等下去」——否则在 stop 之后调 wait 会白等满
+        // 整个 timeout（kill 未生效的顽固进程根本不会写 exit_code）。
+        let exited = exit_code_arc.lock().await.is_some() || stop_requested.load(Ordering::Relaxed);
+        let exited_and_drained =
+            exited && out_done.load(Ordering::Relaxed) && err_done.load(Ordering::Relaxed);
+        if exited_and_drained {
             break;
         }
         if let Some(re) = &until {
@@ -121,6 +143,10 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
     let stdout_buf = stdout_arc.lock().await;
     let stderr_buf = stderr_arc.lock().await;
     let exit_code = *exit_code_arc.lock().await;
+    let terminated = stop_requested.load(Ordering::Relaxed);
+    // exit ≠ close：进程退出后管道可能还有残余字节，只有两路 EOF 才算输出完整。
+    let output_complete =
+        exit_code.is_some() && out_done.load(Ordering::Relaxed) && err_done.load(Ordering::Relaxed);
     let elapsed = match *finished_elapsed.lock().await {
         Some(secs) => secs,
         None => started_at.elapsed().as_secs(),
@@ -133,10 +159,17 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
     info.insert("handle".into(), json!(args.handle));
     info.insert("timeoutSec".into(), json!(timeout_sec));
     info.insert("finished".into(), json!(exit_code.is_some()));
-    info.insert("running".into(), json!(exit_code.is_none()));
+    info.insert("terminated".into(), json!(terminated));
+    // 已被终止的条目不算「运行中」：即便还没取到退出码，它也不再是有效进程。
+    info.insert("running".into(), json!(exit_code.is_none() && !terminated));
     info.insert("exitCode".into(), json!(exit_code));
-    // 超时 = 没等到结束。`untilPattern` 命中属于「等到了想等的东西」，不算超时。
-    info.insert("timedOut".into(), json!(exit_code.is_none() && !matched));
+    info.insert("outputComplete".into(), json!(output_complete));
+    // 超时 = 没等到结束。`untilPattern` 命中属于「等到了想等的东西」，不算超时；
+    // 已被终止的命令是「等不到退出码」而不是「等到超时」，同样不算。
+    info.insert(
+        "timedOut".into(),
+        json!(exit_code.is_none() && !matched && !terminated),
+    );
     info.insert("matchedPattern".into(), json!(matched));
     info.insert("elapsedSecs".into(), json!(elapsed));
     info.insert("stdout".into(), json!(out.text));
@@ -159,13 +192,37 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
     info.insert("stdoutOmittedLines".into(), json!(out.omitted));
     info.insert("stderrDroppedLines".into(), json!(err.dropped));
     info.insert("stderrOmittedLines".into(), json!(err.omitted));
-    if exit_code.is_none() && !matched {
+    // terminated 必须放最前：否则「已被终止但没拿到退出码」会落进「仍在后台运行（未被终止）」
+    // 那个分支，把状态说反。
+    if terminated {
+        let note = if exit_code.is_none() {
+            "该命令已被终止（pid 已不在运行），但还没拿到退出状态。可稍后再调一次 \
+             get_command_output 取回被杀之前的输出。"
+                .to_string()
+        } else if !output_complete {
+            "该命令已被终止，输出仍在收尾（管道未完全关闭）。稍等片刻再调一次可拿到完整尾部。"
+                .to_string()
+        } else {
+            format!(
+                "该命令是被 stop_command 主动终止的；以上是它被杀之前产出的输出（退出码 {}）。",
+                exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "无".into())
+            )
+        };
+        info.insert("note".into(), json!(note));
+    } else if exit_code.is_none() && !matched {
         info.insert(
             "note".into(),
             json!(format!(
                 "等待 {timeout_sec}s 未结束，命令仍在后台运行（未被终止）。可再调一次 wait_command 继续等，\
                  或用 get_command_output 看增量、stop_command 结束它。"
             )),
+        );
+    } else if exit_code.is_some() && !output_complete {
+        info.insert(
+            "note".into(),
+            json!("进程已结束，但输出仍在收尾（管道未完全关闭）。稍等片刻再调一次可拿到完整尾部。"),
         );
     }
 
@@ -176,7 +233,8 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
         &FitOpts {
             limit: DEFAULT_RETURN_LIMIT,
             extract_key_lines: !filter.is_active(),
-            tail_is_final: exit_code.is_some(),
+            // 尾部只有读到 EOF 之后才是最终结果，否则还会继续长。
+            tail_is_final: output_complete,
             next_offsets: false,
         },
     );
@@ -265,6 +323,9 @@ mod tests {
         assert_eq!(info["finished"], json!(true), "{info}");
         assert_eq!(info["exitCode"], json!(0), "{info}");
         assert_eq!(info["timedOut"], json!(false), "{info}");
+        // 🔴 必须等到「退出 + 两路管道 EOF」才返回：只看 exit_code 会漏掉管道尾部，
+        // 那个坑在 stop 之后取被杀进程输出时最明显（尾部整段丢）。
+        assert_eq!(info["outputComplete"], json!(true), "{info}");
         assert!(
             info["stdout"]
                 .as_str()

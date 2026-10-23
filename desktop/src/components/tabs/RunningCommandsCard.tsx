@@ -35,8 +35,6 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
   // 清理宽限期行移除 / 展开输出行插入收回时平滑过渡，而不是闪现闪没。
   // TableBody 已 forwardRef（ui/table 注释里就有审计日志 FLIP 的先例）。
   const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>();
-  // 终止最后一条后的 2s「已清空」过渡：否则卡片瞬间消失，用户以为点到没反应。
-  const [justCleared, setJustCleared] = useState(false);
   const { toast } = useToast();
 
   const toggle = (handle: string) =>
@@ -52,11 +50,9 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
     try {
       await invoke("stop_running_command", { handle });
       refetch();
-      toast(`已终止 PID ${pid}`, "success");
-      if ((commands?.length ?? 0) <= 1) {
-        setJustCleared(true);
-        setTimeout(() => setJustCleared(false), 2000);
-      }
+      // 终止后条目**不会**立即消失：它转成「已终止」并保留到清理宽容期，
+      // 用户可以继续展开看被杀之前的输出（与 MCP 侧 stop_command 同一语义）。
+      toast(`已终止 PID ${pid}，输出已保留`, "success");
     } catch (e) {
       // 之前静默无反馈：用户点了「终止」什么都没发生，也无法知道该不该重试。
       toast(`终止失败：${e}，请重试`, "error");
@@ -70,7 +66,7 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
   };
 
   const empty = !commands || commands.length === 0;
-  if (empty && !justCleared) return null;
+  if (empty) return null;
 
   return (
     <Card id="sec-running" className={danger ? "border-destructive/30" : ""}>
@@ -81,10 +77,6 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
         </p>
       </CardHeader>
       <CardContent>
-        {empty ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">命令已清空</p>
-        ) : (
-        <>
         {/* table-fixed 不能省：默认的 auto 布局下列宽由内容决定，命令列那句 `truncate`
             带的 `white-space:nowrap` 会把该列的 min-content 宽度顶成整条命令的长度，
             单元格拿不到可截断的约束宽度 → 省略号彻底失效，整张表把卡片撑宽，整页出现
@@ -122,7 +114,11 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
                     {cmd.command}
                   </TableCell>
                   <TableCell>
-                    <CommandStatusBadge running={cmd.running} exitCode={cmd.exitCode} />
+                    <CommandStatusBadge
+                      running={cmd.running}
+                      stopped={cmd.stopped}
+                      exitCode={cmd.exitCode}
+                    />
                   </TableCell>
                   {/* fixed 布局下列宽不再随内容撑开，不加 nowrap 的话跨天的时长会折行。 */}
                   <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
@@ -138,7 +134,9 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
                         variant="ghost"
                         size="sm"
                         className="whitespace-nowrap text-destructive-ink hover:text-destructive-ink"
-                        disabled={stopping.has(cmd.handle)}
+                        // 已终止的行保留显示（输出还能看），按钮没有意义，直接禁用。
+                        disabled={stopping.has(cmd.handle) || cmd.stopped}
+                        title={cmd.stopped ? "该命令已终止" : undefined}
                         onClick={(e) => { e.stopPropagation(); stop(cmd.handle, cmd.pid); }}
                       >
                         <Icon name="power" size={14} />
@@ -164,26 +162,35 @@ export function RunningCommandsCard({ danger = false }: { danger?: boolean }) {
             命令执行已开启，请确认以上进程均来自你信任的会话。
           </p>
         )}
-        </>
-        )}
       </CardContent>
     </Card>
   );
 }
 
 /**
- * 后台命令状态徽章：区分“还在跑”/“已成功结束”/“已失败结束”三种状态，
+ * 后台命令状态徽章：区分“运行中”/“被终止”/“已成功结束”/“已失败结束”，
  * 避免用户把处于清理宽限期内的已结束命令误以为还在运行。
+ * 被终止单独一档：kill 掉的进程退出码通常非 0，混进「失败」会误导成命令自己出错。
  */
 function CommandStatusBadge({
   running,
+  stopped,
   exitCode,
 }: {
   running: boolean;
+  stopped: boolean;
   exitCode: number | null;
 }) {
   if (running) {
-    return <Badge variant="default">运行中</Badge>;
+    // 终止请求已发出但进程还没退出的极短窗口。
+    return stopped ? (
+      <Badge variant="secondary">终止中</Badge>
+    ) : (
+      <Badge variant="default">运行中</Badge>
+    );
+  }
+  if (stopped) {
+    return <Badge variant="secondary">已终止</Badge>;
   }
   if (exitCode === 0) {
     return <Badge variant="success">已结束</Badge>;

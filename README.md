@@ -343,7 +343,7 @@ AI 工具对话中触发工具调用:
 | `run_command` | 执行 Shell 命令（壳层按平台与配置：Windows = `cmd /C` 或 Git Bash，macOS = `sh` / `bash`），前台等待结果或 `background=true` 后台运行；前台输出可用 `include` / `exclude` 正则与 `tailLines` 在服务端过滤，被剔除的行只报数量；**默认关闭**，需在『安全』页开启「命令执行」开关（等同于授予远程任意代码执行权限），只读模式下无条件禁止 |
 | `get_command_output` | 增量拉取后台命令的 stdout/stderr（按偏移量），附带是否已结束、退出码；同样支持 `include` / `exclude` / `tailLines` 服务端过滤 |
 | `wait_command` | 等后台命令结束再一次性返回（`timeoutSec` 默认 120、上限 600），支持 `untilPattern` 命中即返回（如等到 `EXIT=\d+`）与输出过滤；**超时不杀进程**（`timedOut:true` + `running:true`，可继续等）。长构建用它替代反复轮询 `get_command_output` |
-| `stop_command` | 强制终止一个后台命令的整个进程树（Windows = TerminateJobObject，macOS = 向整个 POSIX 进程组发 SIGKILL，孙进程一并死），并从注册表移除 |
+| `stop_command` | 强制终止一个后台命令的整个进程树（Windows = TerminateJobObject，macOS = 向整个 POSIX 进程组发 SIGKILL，孙进程一并死）；**终止后条目保留**到清理宽容期（默认 120s），所以被杀进程的最后一段输出仍能用 `get_command_output` 取回，重复调用幂等（`alreadyFinished`） |
 | `push_notification` | 向本机推桌面通知（Windows = 系统 toast，macOS = 通知中心），让远程 AI 工具干完活能主动叫你；编译期 `notifications` feature 关闭时不注册 |
 | `mcp_list_servers` | 列出经桥接入的**外挂 MCP server**（本机已装的工具，如代码索引、文档检索）及其暴露的工具清单；默认返回紧凑索引，可按 server/tool 展开完整 inputSchema |
 | `mcp_proxy` | 调用某个外挂 MCP server 上的工具（先用 `mcp_list_servers` 发现）。⚠️ 外挂 server 是独立进程，**不受路径白名单约束**、桥无法审计其文件操作，仅审计转发调用本身；只读模式下整体禁用 |
@@ -677,7 +677,8 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 - `delete_files` 只删单个文件，不支持删目录（安全设计）。
 - MCP 协议实现为手动 JSON-RPC dispatch（非 rmcp SDK 宏），不做协议协商。
 - `run_command` 的跨调用 shell 会话持久化（拿 `sessionId` 带住 `cwd` + 环境变量）**默认关闭**，不开时必须每次显式传绝对 `cwd`。
-- 后台命令（`run_command(background=true)`）注册表 v1 无自动回收：命令结束后 handle 仍占位，需显式 `stop_command` 移除，或等并发上限（5个）触发拒绝新建后再清理。
+- `get_command_output` / `wait_command` 用 `outputComplete` 区分「进程已退出」与「管道已读完」（exit ≠ close）——前者为 false 时尾部可能还会长，别当最终结果。
+- 后台命令（`run_command(background=true)`）注册表由周期任务按 `command_cleanup_secs`（默认 120s）自动回收；`stop_command` **只打终止标记、不删条目**，被杀进程的输出在宽容期内仍可取回。kill 未生效的顽固进程也会在宽容期后被清理（否则永久占用并发名额）。
 - `run_command` 前台模式超时后仍会强杀命令（不会自动转后台继续跑）；但超时前已产生的输出会连同 `timedOut: true` 一起返回（默认超时 120s）。长任务请用 `background: true`。
 - **SSH 终端**是本地人操作的交互终端（第 4 个 Tab），**不是**给远程 AI 工具的 MCP 工具，远端无法用它；它需要本机装有 OpenSSH 客户端（Windows 10/11 / macOS 均自带，极少数精简镜像需 `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` 安装）。
 

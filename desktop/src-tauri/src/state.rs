@@ -73,6 +73,23 @@ pub struct RunningCommand {
     pub stdout: Arc<Mutex<crate::mcp::tools::output_clip::Capture>>,
     pub stderr: Arc<Mutex<crate::mcp::tools::output_clip::Capture>>,
     pub exit_code: Arc<Mutex<Option<i32>>>,
+    /// 是否已被主动终止（`stop_command` / 面板「终止」置 true）。
+    ///
+    /// 🔴 终止**不再摘除注册表条目**：条目保留到清理宽容期，让调用方仍能凭 handle 取回
+    /// 被杀进程的最后一段输出。对齐 mcp-shell / run-command-mcp / host-shell-mcp 的做法
+    /// ——kill 只改状态，清理是独立动作。原来的「杀完即 remove」把已读进缓冲区的输出
+    /// 一起变成不可达，模型永远看不到「为什么被杀之前它停在哪」。
+    pub stop_requested: Arc<AtomicBool>,
+    /// stop 请求时刻。给清理任务兜底用：kill 可能没生效（顽固进程），这类条目
+    /// `exit_code` 永远是 `None`，只按「已结束」清理会让它永久占位。
+    pub stop_requested_at: Arc<Mutex<Option<Instant>>>,
+    /// 两路读线程是否已读到 EOF（管道关闭）。
+    ///
+    /// 🔴 **`exit_code` 只说明进程退出了，不等于 stdio 已关闭**（exit ≠ close）：管道里
+    /// 可能还有残余数据没被读走。要判断「输出是否完整」必须再看这两个位，否则会把
+    /// 半截输出当成最终结果。
+    pub stdout_done: Arc<AtomicBool>,
+    pub stderr_done: Arc<AtomicBool>,
     pub started_at: Instant,
     /// 进程结束那一刻定格的“已运行秒数”（由 wait 线程与 exit_code 同时写入）。
     /// 修复：之前面板的“已运行”一直用 started_at.elapsed() 实时计算，即使进程早已结束
@@ -417,15 +434,14 @@ impl AppState {
 
     /// 后台定时清理：从配置读宽容期（默认 2 分钟），命令结束后超过该时间自动从注册表移除。
     /// 0 表示立即清理（不保留宽容期）。
-    /// 仅清理已结束（exit_code 为 Some）且超过宽容期的条目，运行中的不动。
+    /// 仅清理已结束（exit_code 为 Some）且超过宽限期的条目，运行中的不动。
     /// 由 main.rs 里的周期任务调用（每 60s 一次）。
+    ///
+    /// 兜底一类特殊条目：**已请求终止但 kill 没生效**（`exit_code` 永远为 None）的顽固进程。
+    /// 只按「已结束」判断会让它永久占位、一直吃掉后台并发名额，所以 stop 请求超过宽限期
+    /// 也一并清掉（此时条目已不是有效进程，留着只会挡住新命令）。
     pub async fn cleanup_finished_commands(&self) {
         let cleanup_secs = self.config.read().await.command_cleanup_secs;
-        if cleanup_secs == 0 {
-            // 宽容期为 0：仅保留仍在运行的，已结束的全清
-            self.evict_finished_commands().await;
-            return;
-        }
         let grace_period = Duration::from_secs(cleanup_secs);
 
         let snapshot: Vec<_> = self
@@ -438,14 +454,24 @@ impl AppState {
                     cmd.exit_code.clone(),
                     cmd.finished_elapsed_secs.clone(),
                     cmd.started_at,
+                    cmd.stop_requested_at.clone(),
                 )
             })
             .collect();
 
         let mut to_remove = Vec::new();
-        for (handle, exit_code_arc, finished_elapsed_arc, started_at) in snapshot {
+        for (handle, exit_code_arc, finished_elapsed_arc, started_at, stop_at_arc) in snapshot {
             if exit_code_arc.lock().await.is_none() {
-                continue; // 还在跑，不清
+                // 还在跑，不清 —— 除非已被请求终止却迟迟不退出（kill 未生效）。
+                if let Some(at) = *stop_at_arc.lock().await {
+                    if at.elapsed() >= grace_period {
+                        log::warn!(
+                            "清理 kill 未生效的已终止命令：{handle}（宽容期 {cleanup_secs}s 已过）"
+                        );
+                        to_remove.push(handle);
+                    }
+                }
+                continue;
             }
             let Some(finished_secs) = *finished_elapsed_arc.lock().await else {
                 continue; // exit_code 已写但 finished_elapsed 还没来得及写入（极短窗口），下一轮再看
@@ -532,5 +558,68 @@ impl AppState {
     /// 读缓存（工具层白名单校验用，零重复 canonicalize）。
     pub fn cached_roots(&self) -> Vec<PathBuf> {
         self.canonicalized_roots.lock().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::tools::output_clip::Capture;
+    use crate::mcp::tools::testutil::make_state;
+
+    fn entry(
+        exit_code: Option<i32>,
+        stop_requested: bool,
+        stop_at: Option<Instant>,
+    ) -> RunningCommand {
+        RunningCommand {
+            pid: 0,
+            command: "test".into(),
+            cwd: String::new(),
+            description: None,
+            child: None,
+            stdout: Arc::new(Mutex::new(Capture::with_default_cap())),
+            stderr: Arc::new(Mutex::new(Capture::with_default_cap())),
+            exit_code: Arc::new(Mutex::new(exit_code)),
+            stop_requested: Arc::new(AtomicBool::new(stop_requested)),
+            stop_requested_at: Arc::new(Mutex::new(stop_at)),
+            stdout_done: Arc::new(AtomicBool::new(false)),
+            stderr_done: Arc::new(AtomicBool::new(false)),
+            started_at: Instant::now(),
+            finished_elapsed_secs: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// 🔴 被请求终止但 kill 没生效的条目：`exit_code` 永远是 None（进程还在，或不响应）。
+    /// 只按「已结束」清理会让它永久占住后台并发名额 ⇒ stop 请求超过宽容期必须清掉。
+    /// 宽容期取 0 是最严格的一档：请求过就该清。
+    #[tokio::test]
+    async fn cleanup_removes_stuck_stopped_entry() {
+        let (state, _dir) = make_state(|c| c.command_cleanup_secs = 0);
+        state.running_commands.insert(
+            "cmd_stuck".into(),
+            entry(None, true, Some(Instant::now())), // 不拿 now() 减 Duration：Windows 上
+                                                     // 原点在系统启动，开机不足时长会 panic
+        );
+        state.cleanup_finished_commands().await;
+        assert!(
+            state.running_commands.get("cmd_stuck").is_none(),
+            "kill 未生效的已终止条目必须被清掉，否则永久占位"
+        );
+    }
+
+    /// 反向守卫：还在跑、且没人请求终止的条目，即便宽容期为 0 也**绝不能**清。
+    /// 清掉运行中的条目等于让模型再也取不到它的输出。
+    #[tokio::test]
+    async fn cleanup_keeps_live_entry_even_at_zero_grace() {
+        let (state, _dir) = make_state(|c| c.command_cleanup_secs = 0);
+        state
+            .running_commands
+            .insert("cmd_live".into(), entry(None, false, None));
+        state.cleanup_finished_commands().await;
+        assert!(
+            state.running_commands.get("cmd_live").is_some(),
+            "运行中的条目不能被清理"
+        );
     }
 }
