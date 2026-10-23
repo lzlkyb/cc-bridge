@@ -7,6 +7,7 @@ use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
 use crate::mcp::tools::command_policy::validate_command_policy;
+use crate::mcp::tools::output_clip::{fit_result, Capture, FitOpts};
 use crate::mcp::tools::output_filter::OutputFilter;
 use crate::mcp::tools::shell::{
     build_invocation, normalize_cwd_from_shell, parse_shell_type, ShellType,
@@ -56,8 +57,14 @@ fn default_timeout_ms() -> u64 {
     120_000
 }
 
+/// 单次返回的默认上限，单位是**序列化后的 UTF-8 字节**（不是「每路捕获多少」）。
+///
+/// 32KB 的依据：客户端对单次 MCP 结果的序列化文本超过约 5 万字符就**整条落盘**、对话里
+/// 只给前 2KB 预览（实测 49,823 字符原样内联；52,116 字节只剩 2,373 字符）。32KB 换算
+/// 下来英文约 3.2 万字符、中文约 1.1 万字符，两种都留有余量。
+/// 而旧的 1MB 上限在历史 833 次调用里**一次都没触发过**——它既不省也不防。
 fn default_max_output_bytes() -> usize {
-    1024 * 1024
+    crate::mcp::tools::output_clip::DEFAULT_RETURN_LIMIT
 }
 
 /// 会话级环境变量条目（key=value），用于 run_command 的 `env` 参数。
@@ -84,6 +91,11 @@ pub struct RunCommandArgs {
     pub background: bool,
     #[serde(default = "default_timeout_ms", rename = "timeoutMs")]
     pub timeout_ms: u64,
+    /// 本次**返回正文**的上限，单位是序列化后的 UTF-8 字节：默认 32KB，封顶 45KB。
+    ///
+    /// 超出时只给头 1/8 + 尾 7/8（中段省略并摘出关键行），完整输出可用返回的 `handle`
+    /// 配 `get_command_output` 翻页取回。**旧语义是「每路捕获多少字节」，已废弃**——
+    /// 捕获缓冲的大小不再由调用方控制（后端固定约 1MB，保头 1/8 + 真尾 7/8）。
     #[serde(default = "default_max_output_bytes", rename = "maxOutputBytes")]
     pub max_output_bytes: usize,
     /// 环境变量（key=value 映射）。**本次调用总是生效**（与会话开关无关）；
@@ -248,7 +260,9 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     if !resolved_cwd.is_dir() {
         return Err(format!("cwd 不是一个目录: {}", resolved_cwd.display()));
     }
-    let max_output_bytes = args.max_output_bytes.max(1);
+    let max_output_bytes = args
+        .max_output_bytes
+        .clamp(1, crate::mcp::tools::output_clip::MAX_RETURN_LIMIT);
     // 壳层类型（cmd/bash）与是否追踪命令结束后的有效 cwd（= 会话内）。
     // track_cwd 仅当存在有效 session_id 时为 true——所有新行为都藏在会话后，
     // 默认关 / 无会话时命令原样透传，现有测试零回归。
@@ -442,7 +456,6 @@ fn spawn_shell(
     if background {
         spawn_background(
             child,
-            max_output_bytes,
             command.to_string(),
             cwd_display,
             description,
@@ -458,56 +471,48 @@ fn spawn_shell(
             track_cwd,
             inv.cwd_capture_file.as_deref(),
             &filter,
+            state,
+            command,
+            &cwd_display,
+            description,
         )
     }
 }
 
 /// 起一个专门的 OS 线程持续读取管道输出（Read trait 是同步阻塞的，不能直接 await）。
-/// 累积缓冲区用 tokio::sync::Mutex 以便复用 get_command_output.rs 的 `.lock().await` 路径。
+///
+/// 累积缓冲用 [`Capture`]（头 1/8 固定 + 尾 7/8 滚动，约 1MB），不再是「攒满就丢后面」——
+/// 后者会把**结尾**丢掉，而构建/测试日志的错误恰恰在结尾。缓冲大小与「返回上限」是两件事：
+/// 后台命令的 `untilPattern` / 过滤 / 偏移都要在完整内容上工作，只有进上下文的那一段受
+/// 32KB 约束（方案 §3.3 定稿 ①）。
 fn spawn_reader_thread(
     mut reader: Box<dyn Read + Send>,
-    max_output_bytes: usize,
-) -> (Arc<AsyncMutex<Vec<u8>>>, Arc<AtomicBool>, Arc<AtomicBool>) {
-    let buf = Arc::new(AsyncMutex::new(Vec::<u8>::new()));
-    let truncated = Arc::new(AtomicBool::new(false));
+) -> (Arc<AsyncMutex<Capture>>, Arc<AtomicBool>) {
+    let buf = Arc::new(AsyncMutex::new(Capture::with_default_cap()));
     let done = Arc::new(AtomicBool::new(false));
     let buf_clone = buf.clone();
-    let truncated_clone = truncated.clone();
     let done_clone = done.clone();
     std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
         loop {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
-                Ok(n) => {
-                    let mut b = buf_clone.blocking_lock();
-                    if b.len() >= max_output_bytes {
-                        truncated_clone.store(true, Ordering::Relaxed);
-                        continue;
-                    }
-                    let take = (max_output_bytes - b.len()).min(n);
-                    b.extend_from_slice(&chunk[..take]);
-                    if take < n {
-                        truncated_clone.store(true, Ordering::Relaxed);
-                    }
-                }
+                Ok(n) => buf_clone.blocking_lock().push(&chunk[..n]),
                 Err(_) => break,
             }
         }
         done_clone.store(true, Ordering::Relaxed);
     });
-    (buf, truncated, done)
+    (buf, done)
 }
 
 fn take_reader(
     pipe: Option<impl Read + Send + 'static>,
-    max_output_bytes: usize,
-) -> (Arc<AsyncMutex<Vec<u8>>>, Arc<AtomicBool>, Arc<AtomicBool>) {
+) -> (Arc<AsyncMutex<Capture>>, Arc<AtomicBool>) {
     match pipe {
-        Some(s) => spawn_reader_thread(Box::new(s), max_output_bytes),
+        Some(s) => spawn_reader_thread(Box::new(s)),
         None => (
-            Arc::new(AsyncMutex::new(Vec::new())),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(AsyncMutex::new(Capture::with_default_cap())),
             Arc::new(AtomicBool::new(false)),
         ),
     }
@@ -533,6 +538,21 @@ fn read_cwd_file(cwd_file: Option<&std::path::Path>) -> Option<PathBuf> {
     result
 }
 
+/// 前台命令结束时把「输出被裁」的那份保存缓冲登记进注册表，好让模型凭 handle 翻页取回
+/// 完整内容（方案 §3.3 定稿 ⑤）。条目按 `command_cleanup_secs`（默认 120s）回收，
+/// 名额满时 `evict_finished_commands` 会先清掉它们，不会挡住新的后台命令。
+struct FinishCtx<'a> {
+    state: &'a Arc<AppState>,
+    pid: u32,
+    command: &'a str,
+    cwd: &'a str,
+    description: Option<String>,
+    started_at: Instant,
+    stdout: &'a Arc<AsyncMutex<Capture>>,
+    stderr: &'a Arc<AsyncMutex<Capture>>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_foreground(
     mut child: Box<dyn StdChildWrapper>,
     timeout_ms: u64,
@@ -540,11 +560,25 @@ fn run_foreground(
     track_cwd: bool,
     cwd_file: Option<&std::path::Path>,
     filter: &OutputFilter,
+    state: &Arc<AppState>,
+    command: &str,
+    cwd_display: &str,
+    description: Option<String>,
 ) -> Result<(Value, Option<PathBuf>), String> {
-    let (stdout_buf, stdout_trunc, stdout_done) =
-        take_reader(child.stdout().take(), max_output_bytes);
-    let (stderr_buf, stderr_trunc, stderr_done) =
-        take_reader(child.stderr().take(), max_output_bytes);
+    let pid = child.id();
+    let started_at = Instant::now();
+    let (stdout_buf, stdout_done) = take_reader(child.stdout().take());
+    let (stderr_buf, stderr_done) = take_reader(child.stderr().take());
+    let ctx = FinishCtx {
+        state,
+        pid,
+        command,
+        cwd: cwd_display,
+        description,
+        started_at,
+        stdout: &stdout_buf,
+        stderr: &stderr_buf,
+    };
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let status = loop {
@@ -574,8 +608,8 @@ fn run_foreground(
                 std::thread::sleep(Duration::from_millis(2));
                 spins += 1;
             }
-            let stdout = stdout_buf.blocking_lock().clone();
-            let stderr = stderr_buf.blocking_lock().clone();
+            let stdout = stdout_buf.blocking_lock();
+            let stderr = stderr_buf.blocking_lock();
             // 会话内：读回命令结束后的有效 cwd（bash 经 `pwd -W` 写 Windows 风格路径，规整回
             // 原生 PathBuf；cmd 经 `cd` 写原生路径）。文件不存在说明命令提前失败，None（不更新）。
             let effective_cwd = if track_cwd {
@@ -583,16 +617,21 @@ fn run_foreground(
             } else {
                 None
             };
+            let code = status.code();
             Ok((
-                build_output_result(
-                    &stdout,
-                    &stderr,
-                    json!(status.code()),
-                    false,
-                    None,
-                    stdout_trunc.load(Ordering::Relaxed),
-                    stderr_trunc.load(Ordering::Relaxed),
-                    filter,
+                register_truncated_output(
+                    build_output_result(
+                        &stdout,
+                        &stderr,
+                        json!(code),
+                        false,
+                        None,
+                        filter,
+                        max_output_bytes,
+                        true,
+                    ),
+                    &ctx,
+                    code,
                 ),
                 effective_cwd,
             ))
@@ -617,21 +656,25 @@ fn run_foreground(
                 std::thread::sleep(Duration::from_millis(2));
                 spins += 1;
             }
-            let stdout = stdout_buf.blocking_lock().clone();
-            let stderr = stderr_buf.blocking_lock().clone();
+            let stdout = stdout_buf.blocking_lock();
+            let stderr = stderr_buf.blocking_lock();
             Ok((
-                build_output_result(
-                    &stdout,
-                    &stderr,
-                    Value::Null,
-                    true,
-                    Some(format!(
-                        "命令超过 {timeout_ms}ms 未结束，已强制终止（含子进程）。以上是超时前已产出的输出；\
-                         长任务请用 background:true 后用 wait_command 等结果（超时不会杀进程）。"
-                    )),
-                    stdout_trunc.load(Ordering::Relaxed),
-                    stderr_trunc.load(Ordering::Relaxed),
-                    filter,
+                register_truncated_output(
+                    build_output_result(
+                        &stdout,
+                        &stderr,
+                        Value::Null,
+                        true,
+                        Some(format!(
+                            "命令超过 {timeout_ms}ms 未结束，已强制终止（含子进程）。以上是超时前已产出的输出；\
+                             长任务请用 background:true 后用 wait_command 等结果（超时不会杀进程）。"
+                        )),
+                        filter,
+                        max_output_bytes,
+                        true,
+                    ),
+                    &ctx,
+                    None,
                 ),
                 None,
             ))
@@ -639,30 +682,40 @@ fn run_foreground(
     }
 }
 
-/// 前台结果组装：stdout/stderr 经服务端过滤后再回显。
+/// 前台结果组装：stdout/stderr 经服务端过滤后，再压进返回上限（方案 §3.3）。
+///
+/// 顺序固定「**先过滤、再裁剪**」：`include` 先把无关行剔掉，剩下的才是要挤进上下文的内容；
+/// 反过来做会把过滤本来能救回来的信息先裁掉。
 ///
 /// 过滤统计字段只在**真的用了**参数时出现——零参数调用（绝大多数）的响应形状
 /// 与改造前逐字段一致，不会平白多出两个 0 让人怀疑「输出被截了」。
 #[allow(clippy::too_many_arguments)]
 fn build_output_result(
-    stdout: &[u8],
-    stderr: &[u8],
+    stdout: &Capture,
+    stderr: &Capture,
     exit_code: Value,
     timed_out: bool,
     note: Option<String>,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
     filter: &OutputFilter,
+    max_output_bytes: usize,
+    tail_is_final: bool,
 ) -> Value {
-    let out = filter.apply(&String::from_utf8_lossy(stdout));
-    let err = filter.apply(&String::from_utf8_lossy(stderr));
+    let out = filter.apply(&stdout.text());
+    let err = filter.apply(&stderr.text());
 
     let mut info = serde_json::Map::new();
     info.insert("stdout".into(), json!(out.text));
     info.insert("stderr".into(), json!(err.text));
     info.insert("exitCode".into(), exit_code);
-    info.insert("stdoutTruncated".into(), json!(stdout_truncated));
-    info.insert("stderrTruncated".into(), json!(stderr_truncated));
+    // 总量报**真实**产出（不是保留量，也不是本次展示量），另给被丢弃的中段字节数。
+    info.insert("stdoutTotalBytes".into(), json!(stdout.total_bytes()));
+    info.insert("stderrTotalBytes".into(), json!(stderr.total_bytes()));
+    if stdout.dropped_bytes() > 0 {
+        info.insert("stdoutDroppedBytes".into(), json!(stdout.dropped_bytes()));
+    }
+    if stderr.dropped_bytes() > 0 {
+        info.insert("stderrDroppedBytes".into(), json!(stderr.dropped_bytes()));
+    }
     info.insert("timedOut".into(), json!(timed_out));
     if let Some(note) = note {
         info.insert("note".into(), json!(note));
@@ -675,24 +728,96 @@ fn build_output_result(
             info.insert(k, v);
         }
     }
+    // `stdoutTruncated` / `stderrTruncated` 由 fit_result 统一写：含义是「本次返回不完整」，
+    // 无论是保存缓冲丢了中段还是返回层裁了头尾。
+    let info = fit_result(
+        info,
+        &FitOpts {
+            limit: max_output_bytes,
+            extract_key_lines: !filter.is_active(),
+            tail_is_final,
+            next_offsets: false,
+        },
+    );
     text_result(&Value::Object(info))
+}
+
+/// 输出被裁时把保存缓冲登记进注册表，并在返回里补 `handle`（方案 §3.3 定稿 ⑤）。
+///
+/// 为什么值得多这一步：模型几乎不会主动翻第二页（arXiv 2608.26130），所以「中段关键行」
+/// 才是主手段；但「构建日志里唯一那行 FAILED 恰好在省掉的中段、又不含关键词」这种情况
+/// 只能靠取回全文。写盘已被否决——没有安全的落盘位置，还要自己管清理；注册表是现成的，
+/// 且已结束的条目会被 `command_cleanup_secs`（默认 120s）自动回收。
+///
+/// 不再重新裁剪：`handle` + 一句说明约 200 字节，32KB 上再叠这点仍是 33KB，
+/// 离客户端 5 万字符的落盘门槛还有很远；二次裁剪只会在已裁过的文本上再切一刀，
+/// 留下嵌套的「省略」标记。
+fn register_truncated_output(value: Value, ctx: &FinishCtx<'_>, exit_code: Option<i32>) -> Value {
+    let Some(text) = value
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|b| b.get("text"))
+        .and_then(|t| t.as_str())
+    else {
+        return value;
+    };
+    let Ok(mut info) = serde_json::from_str::<Value>(text) else {
+        return value;
+    };
+    if info.get("stdoutTruncated").and_then(|v| v.as_bool()) != Some(true)
+        && info.get("stderrTruncated").and_then(|v| v.as_bool()) != Some(true)
+    {
+        return value;
+    }
+
+    let handle_id = format!("cmd_{:016x}", rand::random::<u64>());
+    ctx.state.running_commands.insert(
+        handle_id.clone(),
+        RunningCommand {
+            pid: ctx.pid,
+            command: ctx.command.to_string(),
+            cwd: ctx.cwd.to_string(),
+            description: ctx.description.clone(),
+            child: None,
+            stdout: ctx.stdout.clone(),
+            stderr: ctx.stderr.clone(),
+            exit_code: Arc::new(AsyncMutex::new(exit_code)),
+            started_at: ctx.started_at,
+            finished_elapsed_secs: Arc::new(AsyncMutex::new(Some(
+                ctx.started_at.elapsed().as_secs(),
+            ))),
+        },
+    );
+
+    if let Some(fields) = info.as_object_mut() {
+        fields.insert("handle".into(), json!(handle_id));
+        let existing = fields
+            .get("note")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let extra = "完整输出已保留：可用 get_command_output(handle) 按 stdoutOffset / stderrOffset 翻页取回（约 2 分钟内有效）。";
+        fields.insert(
+            "note".into(),
+            json!(format!("{existing} {extra}").trim().to_string()),
+        );
+    }
+    text_result(&info)
 }
 
 #[allow(clippy::too_many_arguments)]
 #[cfg_attr(not(feature = "notifications"), allow(unused_variables))]
 fn spawn_background(
     mut child: Box<dyn StdChildWrapper>,
-    max_output_bytes: usize,
     command: String,
     cwd: String,
     description: Option<String>,
     state: &Arc<AppState>,
     notify_command_complete: bool,
 ) -> Result<Value, String> {
-    let (stdout_buf, stdout_trunc, _stdout_done) =
-        take_reader(child.stdout().take(), max_output_bytes);
-    let (stderr_buf, stderr_trunc, _stderr_done) =
-        take_reader(child.stderr().take(), max_output_bytes);
+    let (stdout_buf, _stdout_done) = take_reader(child.stdout().take());
+    let (stderr_buf, _stderr_done) = take_reader(child.stderr().take());
 
     let pid = child.id();
     let started_at = Instant::now();
@@ -769,11 +894,9 @@ fn spawn_background(
             command,
             cwd,
             description,
-            child,
+            child: Some(child),
             stdout: stdout_buf,
             stderr: stderr_buf,
-            stdout_truncated: stdout_trunc,
-            stderr_truncated: stderr_trunc,
             exit_code,
             started_at,
             finished_elapsed_secs: finished_elapsed,
@@ -827,8 +950,10 @@ fn inject_session_info(
                                     json!("「命令会话持久化」未开启，sessionId 已忽略：工作目录与 env 不会带到下一次调用，请每次显式传 cwd。本次传入的 env 仍已生效。"),
                                 );
                             }
-                            let new_text = serde_json::to_string_pretty(&info)
-                                .unwrap_or_else(|_| text.to_string());
+                            // 与 `text_result` 同档位（compact）：这里是把字段补回已经序列化好的
+                            // content[0].text，用 pretty 会让同一个返回前后两种格式并存。
+                            let new_text =
+                                serde_json::to_string(&info).unwrap_or_else(|_| text.to_string());
                             first["text"] = json!(new_text);
                         }
                     }
@@ -1449,21 +1574,25 @@ mod tests {
         assert!(code != 0, "非 0 退出码应透传：{code}");
     }
 
-    /// max_output_bytes 截断：开 10 字节上限跑长输出，期望 stdoutTruncated:true 且 stdout 长度 ≤ 10。
+    /// maxOutputBytes 的新语义 = **返回正文**上限（序列化后 UTF-8 字节，方案 §3.3）：
+    /// 跑一段远超上限的输出，期望 ① 序列化结果压进「上限 + 登记说明开销」；
+    /// ② stdoutTruncated:true；③ 头尾标记都在（头 1/8 + 真尾 7/8，错误结论在尾）；
+    /// ④ 返回带 handle，且凭 handle 用 get_command_output 能翻页取回完整输出（定稿 ⑤）。
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn foreground_max_output_bytes_truncates() {
         let (state, dir) = make_state_with_config(|c| {
             c.shell_enabled = true;
             c.whitelist_enabled = true;
         });
+        let payload = format!("HEAD_MARK_{}", "x".repeat(6000));
         let v = handle(
             RunCommandArgs {
-                command: "echo a_long_string_to_ensure_truncation".into(),
+                command: format!("echo {payload}_TAIL_MARK"),
                 cwd: Some(dir.to_string_lossy().into_owned()),
                 session_id: None,
                 background: false,
                 timeout_ms: 5000,
-                max_output_bytes: 10,
+                max_output_bytes: 2048,
                 include: None,
                 exclude: None,
                 tail_lines: None,
@@ -1481,18 +1610,60 @@ mod tests {
             .and_then(|x| x.get("text"))
             .and_then(|x| x.as_str())
             .unwrap();
-        let info: serde_json::Value = serde_json::from_str(text).unwrap();
-        let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        // register_truncated_output 在 fit 之后追加 handle 与取回说明（约 300 字节），不重裁。
         assert!(
-            stdout.len() <= 10,
-            "stdout 应 ≤ 10 字节，实际 {} 字节：{stdout:?}",
-            stdout.len()
+            text.len() <= 2048 + 512,
+            "返回应压在上限+登记说明内，实际 {} 字节",
+            text.len()
         );
+        let info: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(
             info.get("stdoutTruncated").and_then(|t| t.as_bool()),
             Some(true),
             "stdoutTruncated 字段必须是 true"
         );
+        let stdout = info.get("stdout").and_then(|s| s.as_str()).unwrap_or("");
+        assert!(stdout.contains("HEAD_MARK"), "头部要保留：{stdout:?}");
+        assert!(stdout.contains("TAIL_MARK"), "真尾要保留：{stdout:?}");
+        // ⑤ 登记的 handle 能翻页取回完整输出。
+        let handle_id = info
+            .get("handle")
+            .and_then(|h| h.as_str())
+            .expect("截断时必须登记 handle")
+            .to_string();
+        let full = crate::mcp::tools::get_command_output::handle(
+            crate::mcp::tools::get_command_output::GetCommandOutputArgs {
+                handle: handle_id,
+                stdout_offset: 0,
+                stderr_offset: 0,
+                include: None,
+                exclude: None,
+                tail_lines: None,
+            },
+            &state,
+        )
+        .await
+        .expect("凭 handle 应能取回完整输出");
+        let full_text = full
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|x| x.get("text"))
+            .and_then(|x| x.as_str())
+            .unwrap();
+        let full_info: serde_json::Value = serde_json::from_str(full_text).unwrap();
+        let full_stdout = full_info
+            .get("stdout")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+        assert!(
+            full_stdout.len() > stdout.len(),
+            "翻页取回的应比截断后的更完整：{} vs {}",
+            full_stdout.len(),
+            stdout.len()
+        );
+        assert!(full_stdout.contains("HEAD_MARK"));
+        assert!(full_stdout.contains("TAIL_MARK"));
     }
 
     /// stderr 必须正确分离——往 stderr 写的东西不应混进 stdout。

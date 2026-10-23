@@ -1,9 +1,9 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use crate::mcp::tools::output_clip::{fit_result, FitOpts, MAX_RETURN_LIMIT};
 use crate::mcp::tools::output_filter::OutputFilter;
 use crate::mcp::tools::text_result;
 use crate::state::AppState;
@@ -38,7 +38,7 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
     )?;
 
     // 先克隆出需要的 Arc，再释放 DashMap 的 Ref，避免在持有 Ref 期间跨 await。
-    let (stdout_arc, stderr_arc, stdout_trunc, stderr_trunc, exit_code_arc, pid) = {
+    let (stdout_arc, stderr_arc, exit_code_arc, pid) = {
         let entry = state
             .running_commands
             .get(&args.handle)
@@ -46,8 +46,6 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
         (
             entry.stdout.clone(),
             entry.stderr.clone(),
-            entry.stdout_truncated.clone(),
-            entry.stderr_truncated.clone(),
             entry.exit_code.clone(),
             entry.pid,
         )
@@ -57,26 +55,27 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
     let stderr = stderr_arc.lock().await;
     let exit_code = *exit_code_arc.lock().await;
 
-    let stdout_slice = &stdout[args.stdout_offset.min(stdout.len())..];
-    let stderr_slice = &stderr[args.stderr_offset.min(stderr.len())..];
+    // 偏移按**整条输出的真实字节位置**算：落在保存缓冲的缺口里时，`read_from` 会插一行
+    // 「中间 N 字节已被省略」的标记再从尾部保留区接着给，`next_offset` 仍是真实位置。
+    let out_read = stdout.read_from(args.stdout_offset as u64);
+    let err_read = stderr.read_from(args.stderr_offset as u64);
+
     // tailLines 作用在**本次增量**上（offset 之后的那一段），不是整份缓冲：
     // 调用方要的是「这次多了什么」的最后几行。
-    let out = filter.apply(&String::from_utf8_lossy(stdout_slice));
-    let err = filter.apply(&String::from_utf8_lossy(stderr_slice));
+    let out = filter.apply(&out_read.text);
+    let err = filter.apply(&err_read.text);
 
     let mut info = Map::new();
     info.insert("stdout".into(), json!(out.text));
     info.insert("stderr".into(), json!(err.text));
-    info.insert("stdoutTotalBytes".into(), json!(stdout.len()));
-    info.insert("stderrTotalBytes".into(), json!(stderr.len()));
-    info.insert(
-        "stdoutTruncated".into(),
-        json!(stdout_trunc.load(Ordering::Relaxed)),
-    );
-    info.insert(
-        "stderrTruncated".into(),
-        json!(stderr_trunc.load(Ordering::Relaxed)),
-    );
+    info.insert("stdoutTotalBytes".into(), json!(stdout.total_bytes()));
+    info.insert("stderrTotalBytes".into(), json!(stderr.total_bytes()));
+    if stdout.dropped_bytes() > 0 {
+        info.insert("stdoutDroppedBytes".into(), json!(stdout.dropped_bytes()));
+    }
+    if stderr.dropped_bytes() > 0 {
+        info.insert("stderrDroppedBytes".into(), json!(stderr.dropped_bytes()));
+    }
     info.insert("running".into(), json!(exit_code.is_none()));
     info.insert("exitCode".into(), json!(exit_code));
     info.insert("pid".into(), json!(pid));
@@ -88,6 +87,18 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
             info.insert(k, v);
         }
     }
+
+    // 这个工具是唯一一处「本来就靠翻页取全量」的入口，所以返回上限给得比 run_command
+    // 宽（45KB 顶），并回传 nextOffsets 让调用方接着往下读（方案 §3.3 定稿 ⑤）。
+    let info = fit_result(
+        info,
+        &FitOpts {
+            limit: MAX_RETURN_LIMIT,
+            extract_key_lines: !filter.is_active(),
+            tail_is_final: exit_code.is_some(),
+            next_offsets: true,
+        },
+    );
 
     Ok(text_result(&Value::Object(info)))
 }

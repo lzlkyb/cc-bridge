@@ -63,11 +63,15 @@ pub struct RunningCommand {
     // exit_code；stop_command 持有它调 start_kill() 触发 TerminateJobObject 杀整树。
     // 与前版手写 win32job Job（KillOnJobClose）不同，process-wrap 的 std JobObject 默认
     // 不 kill-on-close，drop 不会杀进程，必须显式 start_kill()（见 stop_command.rs）。
-    pub child: Arc<StdMutex<Box<dyn process_wrap::std::StdChildWrapper>>>,
-    pub stdout: Arc<Mutex<Vec<u8>>>,
-    pub stderr: Arc<Mutex<Vec<u8>>>,
-    pub stdout_truncated: Arc<AtomicBool>,
-    pub stderr_truncated: Arc<AtomicBool>,
+    //
+    // `None` = 前台命令结束后为「输出被截断」而登记的只读快照条目：进程早没了，
+    // 只剩缓冲供 `get_command_output` 翻页取回（方案 §3.3 定稿 ⑤）。
+    pub child: Option<Arc<StdMutex<Box<dyn process_wrap::std::StdChildWrapper>>>>,
+    /// 一路输出的保存缓冲：头 1/8 固定 + 尾 7/8 滚动（见 `mcp::tools::output_clip::Capture`）。
+    /// 不再是裸 `Vec<u8>`：后者「攒满就丢后面」会把**结尾**丢掉，而错误恰恰在结尾；
+    /// 截断与否看 `Capture::dropped_bytes()`，不必再单独维护 AtomicBool。
+    pub stdout: Arc<Mutex<crate::mcp::tools::output_clip::Capture>>,
+    pub stderr: Arc<Mutex<crate::mcp::tools::output_clip::Capture>>,
     pub exit_code: Arc<Mutex<Option<i32>>>,
     pub started_at: Instant,
     /// 进程结束那一刻定格的“已运行秒数”（由 wait 线程与 exit_code 同时写入）。

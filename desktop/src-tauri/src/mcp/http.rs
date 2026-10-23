@@ -995,8 +995,12 @@ fn build_instructions(strong_notify: bool) -> String {
     } else {
         "\n\n建议：用户可能已离开对话窗口时，可调用 push_notification 弹出桌面通知；若用户就在当前界面、可直接回复，则无需额外打扰。"
     };
+    // 提示层引导（方案 §3.7）：`run_command` 占 46% 的调用次数而 avg 仅 5.2KB——模型在拿
+    // shell 干文件活，每次都是一去一回。三条规则必须放在**最前面**（顺序影响遵循度），且
+    // 总长要远低于客户端 4,096 字符的 instructions 截断线（见 `instructions_under_client_limit`）。
+    let rules = "\n\n工具使用硬规则（优先于下文任何描述）：\n1. 文件读写 / 查找 / 列目录一律用专用工具（read_files / write_files / edit_files / search_files / list_directory），不要用 shell 的 cat / ls / grep / find / head / tail；命令输出可能很大时先加 include / tailLines 或管道过滤。\n2. 超过约 500 行的文件先用 search_files 定位，再按 startLine / endLine 读需要的段；比较两个文件用 diff（如 git diff --no-index），不要把两份全文都读进上下文。\n3. 禁止用 base64 走 run_command 传文件，文件进出必须用 prepare_upload / prepare_download。";
     format!(
-        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / wait_command / get_command_output / stop_command:在本地执行命令、等待后台命令结束、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 {shells}，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- prepare_upload / prepare_download:大文件或二进制文件直传。工具只返回一次性 URL 与 curl 命令,文件字节不经过对话上下文——远优于 write_files(base64) 与用 read_files 读二进制。需要传 pptx、xlsx、pdf、图片、压缩包到本地或取回时优先用它\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在项目规则文件 AGENTS.md 或 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
+        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。{rules}当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / wait_command / get_command_output / stop_command:在本地执行命令、等待后台命令结束、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 {shells}，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- prepare_upload / prepare_download:大文件或二进制文件直传。工具只返回一次性 URL 与 curl 命令,文件字节不经过对话上下文——远优于 write_files(base64) 与用 read_files 读二进制。需要传 pptx、xlsx、pdf、图片、压缩包到本地或取回时优先用它\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在项目规则文件 AGENTS.md 或 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
     )
 }
 
@@ -1024,11 +1028,17 @@ pub fn get_tool_definitions(shell_type: &str, proxy_hint: Option<&str>) -> serde
             } else {
                 std::borrow::Cow::Borrowed(t.desc)
             };
-            json!({
+            // 只读 / 幂等提示（方案 §3.8）：客户端据此并行执行只读调用、对幂等工具自动重试。
+            // 清单在 registry 里显式维护，**不能**由 `is_write` 反推（见 `READ_ONLY_TOOLS` 注释）。
+            let mut entry = json!({
                 "name": t.name,
                 "description": desc,
                 "inputSchema": t.schema,
-            })
+            });
+            if let Some(ann) = crate::mcp::tools::registry::annotations_for(t.name) {
+                entry["annotations"] = ann;
+            }
+            entry
         })
         .collect();
     // 确定性排序：稳定 tools/list 输出顺序。MCP 新协议（2026-07-28）明确要求列表确定性
@@ -1141,7 +1151,7 @@ mod tests {
 /// 根目录放在 `std::env::temp_dir()` 下，所有文件操作都收在根内，测试结束即弃。
 #[cfg(test)]
 mod over_wire_tests {
-    use super::{build_router, resolve_tool_name};
+    use super::{build_router, resolve_tool_name, server_instructions};
     use crate::config::BridgeConfig;
     use crate::state::AppState;
     use serde_json::{json, Value};
@@ -1389,6 +1399,31 @@ mod over_wire_tests {
         let head = |s: &str| s.split("\n\n").next().unwrap_or("").to_string();
         assert_eq!(head(c), head(w), "除通知段外，正文应完全一致");
         assert!(c.contains("list_allowed_roots"), "正文应含工具指引");
+    }
+
+    /// 🔴 客户端在 **4,096 字符**处截断 server instructions（官方文档「MCP output limits and
+    /// warnings」），超出的部分模型根本看不到。提示层引导（方案 §3.7）往里加了三条硬规则，
+    /// 这条测试用来防止下次继续堆内容时**静默**失效——规则写了但模型没收到，是最难发现的。
+    #[test]
+    fn instructions_under_client_limit() {
+        use crate::mcp::client_kind::ClientKind;
+        for kind in [ClientKind::ClaudeCode, ClientKind::WorkBuddy] {
+            let s = server_instructions(kind);
+            let n = s.chars().count();
+            assert!(
+                n <= 4096,
+                "instructions 已到 {n} 字符，超过客户端 4096 截断线（超出部分模型看不到）"
+            );
+            // 三条规则的标志片段：它们被放在最前面，但顺序/完整性仍可能被后续改动破坏。
+            for key in [
+                "工具使用硬规则",
+                "不要用 shell 的 cat",
+                "git diff --no-index",
+                "禁止用 base64",
+            ] {
+                assert!(s.contains(key), "instructions 缺少规则片段：{key}");
+            }
+        }
     }
 
     /// 广度冒烟：注册表里的**每一个**工具都必须真的能通过 `tools/call` 调到，

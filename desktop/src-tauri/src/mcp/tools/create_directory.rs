@@ -27,7 +27,7 @@ pub async fn handle(args: CreateDirectoryArgs, state: &Arc<AppState>) -> Result<
         .await
         .map_err(|e| format!("Create directory failed: {e}"))?;
 
-    Ok(
-        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&json!({ "path": args.path, "ok": true })).unwrap() }] }),
-    )
+    Ok(crate::mcp::tools::text_result(
+        &json!({ "path": args.path, "ok": true }),
+    ))
 }

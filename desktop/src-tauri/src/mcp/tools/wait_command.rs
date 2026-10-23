@@ -8,7 +8,6 @@
 //! 🔴 超时**不杀进程**：与 `run_command` 前台超时（`start_kill()` 杀整棵树）刻意相反。
 //! 这里的语义是「我这个请求没等到」，不是「这条命令该结束」——构建可能还想让它继续跑。
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,6 +15,7 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use crate::mcp::tools::output_clip::{fit_result, FitOpts, DEFAULT_RETURN_LIMIT};
 use crate::mcp::tools::output_filter::OutputFilter;
 use crate::mcp::tools::text_result;
 use crate::state::AppState;
@@ -75,15 +75,7 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
 
     // 与 get_command_output 同做法：先克隆出需要的 Arc 再释放 DashMap 的 Ref，
     // 避免持有 Ref 期间跨 await。
-    let (
-        stdout_arc,
-        stderr_arc,
-        stdout_trunc,
-        stderr_trunc,
-        exit_code_arc,
-        finished_elapsed,
-        started_at,
-    ) = {
+    let (stdout_arc, stderr_arc, exit_code_arc, finished_elapsed, started_at) = {
         let entry = state
             .running_commands
             .get(&args.handle)
@@ -91,8 +83,6 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
         (
             entry.stdout.clone(),
             entry.stderr.clone(),
-            entry.stdout_truncated.clone(),
-            entry.stderr_truncated.clone(),
             entry.exit_code.clone(),
             entry.finished_elapsed_secs.clone(),
             entry.started_at,
@@ -106,15 +96,16 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
             break;
         }
         if let Some(re) = &until {
-            // 每次轮询都对**累积缓冲**重扫一遍。缓冲上限是 `maxOutputBytes`（默认 1MB），
-            // 100ms 一次完全可接受；换成「增量扫描」要为跨越缓冲边界的匹配单独设计，
-            // 不值得为这点收益引入一类新 bug。
+            // 每次轮询都对**保存缓冲**重扫一遍（头 1/8 + 尾 7/8，约 1MB），100ms 一次完全
+            // 可接受；换成「增量扫描」要为跨越缓冲边界的匹配单独设计，不值得为这点收益引入
+            // 一类新 bug。已知边界：两次轮询之间新产出超过约 900KB 时，中段的完成标记可能被
+            // 挤掉（实际几乎碰不到，方案 §3.3 定稿 ② 已写明不修）。
             let hit = {
                 let out = stdout_arc.lock().await;
-                re.is_match(&String::from_utf8_lossy(&out))
+                re.is_match(&out.text())
             } || {
                 let err = stderr_arc.lock().await;
-                re.is_match(&String::from_utf8_lossy(&err))
+                re.is_match(&err.text())
             };
             if hit {
                 matched = true;
@@ -127,16 +118,16 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
         tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
 
-    let stdout_buf = stdout_arc.lock().await.clone();
-    let stderr_buf = stderr_arc.lock().await.clone();
+    let stdout_buf = stdout_arc.lock().await;
+    let stderr_buf = stderr_arc.lock().await;
     let exit_code = *exit_code_arc.lock().await;
     let elapsed = match *finished_elapsed.lock().await {
         Some(secs) => secs,
         None => started_at.elapsed().as_secs(),
     };
 
-    let out = filter.apply(&String::from_utf8_lossy(&stdout_buf));
-    let err = filter.apply(&String::from_utf8_lossy(&stderr_buf));
+    let out = filter.apply(&stdout_buf.text());
+    let err = filter.apply(&stderr_buf.text());
 
     let mut info = Map::new();
     info.insert("handle".into(), json!(args.handle));
@@ -150,16 +141,20 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
     info.insert("elapsedSecs".into(), json!(elapsed));
     info.insert("stdout".into(), json!(out.text));
     info.insert("stderr".into(), json!(err.text));
-    info.insert("stdoutTotalBytes".into(), json!(stdout_buf.len()));
-    info.insert("stderrTotalBytes".into(), json!(stderr_buf.len()));
-    info.insert(
-        "stdoutTruncated".into(),
-        json!(stdout_trunc.load(Ordering::Relaxed)),
-    );
-    info.insert(
-        "stderrTruncated".into(),
-        json!(stderr_trunc.load(Ordering::Relaxed)),
-    );
+    info.insert("stdoutTotalBytes".into(), json!(stdout_buf.total_bytes()));
+    info.insert("stderrTotalBytes".into(), json!(stderr_buf.total_bytes()));
+    if stdout_buf.dropped_bytes() > 0 {
+        info.insert(
+            "stdoutDroppedBytes".into(),
+            json!(stdout_buf.dropped_bytes()),
+        );
+    }
+    if stderr_buf.dropped_bytes() > 0 {
+        info.insert(
+            "stderrDroppedBytes".into(),
+            json!(stderr_buf.dropped_bytes()),
+        );
+    }
     info.insert("stdoutDroppedLines".into(), json!(out.dropped));
     info.insert("stdoutOmittedLines".into(), json!(out.omitted));
     info.insert("stderrDroppedLines".into(), json!(err.dropped));
@@ -173,6 +168,18 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
             )),
         );
     }
+
+    // tailLines 默认 40 时基本不会超限，但 `tailLines:0` 或 `include` 命中大量行时就没有
+    // 上限了——所以同样过一遍裁剪（方案 §3.3 定稿 ③）。
+    let info = fit_result(
+        info,
+        &FitOpts {
+            limit: DEFAULT_RETURN_LIMIT,
+            extract_key_lines: !filter.is_active(),
+            tail_is_final: exit_code.is_some(),
+            next_offsets: false,
+        },
+    );
 
     Ok(text_result(&Value::Object(info)))
 }

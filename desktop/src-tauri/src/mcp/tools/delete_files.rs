@@ -23,9 +23,7 @@ pub async fn handle(args: DeleteFilesArgs, state: &Arc<AppState>) -> Result<Valu
         }
     }
 
-    Ok(
-        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&results).unwrap() }] }),
-    )
+    Ok(crate::mcp::tools::text_result(&results))
 }
 
 async fn delete_single(

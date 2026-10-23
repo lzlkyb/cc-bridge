@@ -101,6 +101,10 @@ pub async fn stop_running_command(
     if !already_done {
         // 必须显式 start_kill：process-wrap 的 JobObject 默认不 kill-on-close，drop 不会杀进程
         // （见 Cargo.toml:95 注释）。仅 drop 会让后台命令成孤儿进程、输出读取线程泄漏。
+        // `child` 为 None 的只有「前台输出被裁后留下的只读快照」，它们的 exit_code 必然已是
+        // Some（进程早结束），所以走到这里一定拿得到句柄。
+        let child =
+            child.ok_or_else(|| format!("进程 {pid} 的句柄已释放，可能已经结束，请刷新列表"))?;
         let mut guard = child
             .lock()
             .map_err(|_| format!("终止进程 {pid} 失败：无法获取进程句柄锁"))?;
@@ -125,11 +129,10 @@ pub async fn get_command_output(
     stdout_offset: Option<usize>,
     stderr_offset: Option<usize>,
 ) -> Result<CommandOutput, String> {
-    use std::sync::atomic::Ordering;
     let stdout_offset = stdout_offset.unwrap_or(0);
     let stderr_offset = stderr_offset.unwrap_or(0);
     // 先克隆出需要的 Arc，再释放 DashMap 的 Ref，避免在持有 Ref 期间跨 await。
-    let (stdout_arc, stderr_arc, stdout_trunc, stderr_trunc, exit_code_arc, pid) = {
+    let (stdout_arc, stderr_arc, exit_code_arc, pid) = {
         let entry = state
             .running_commands
             .get(&handle)
@@ -137,8 +140,6 @@ pub async fn get_command_output(
         (
             entry.stdout.clone(),
             entry.stderr.clone(),
-            entry.stdout_truncated.clone(),
-            entry.stderr_truncated.clone(),
             entry.exit_code.clone(),
             entry.pid,
         )
@@ -148,16 +149,18 @@ pub async fn get_command_output(
     let stderr = stderr_arc.lock().await;
     let exit_code = *exit_code_arc.lock().await;
 
-    let stdout_slice = &stdout[stdout_offset.min(stdout.len())..];
-    let stderr_slice = &stderr[stderr_offset.min(stderr.len())..];
+    // 与 MCP 侧 get_command_output 同一条读取路径：偏移按整条输出的真实字节位置算，
+    // 落在保存缓冲的缺口里时文本里会带一行「中间 N 字节已被省略」的标记。
+    let out = stdout.read_from(stdout_offset as u64);
+    let err = stderr.read_from(stderr_offset as u64);
 
     Ok(CommandOutput {
-        stdout: String::from_utf8_lossy(stdout_slice).to_string(),
-        stderr: String::from_utf8_lossy(stderr_slice).to_string(),
-        stdout_total_bytes: stdout.len(),
-        stderr_total_bytes: stderr.len(),
-        stdout_truncated: stdout_trunc.load(Ordering::Relaxed),
-        stderr_truncated: stderr_trunc.load(Ordering::Relaxed),
+        stdout: out.text,
+        stderr: err.text,
+        stdout_total_bytes: stdout.total_bytes() as usize,
+        stderr_total_bytes: stderr.total_bytes() as usize,
+        stdout_truncated: stdout.dropped_bytes() > 0,
+        stderr_truncated: stderr.dropped_bytes() > 0,
         running: exit_code.is_none(),
         exit_code,
         pid,

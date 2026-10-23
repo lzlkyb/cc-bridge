@@ -95,9 +95,7 @@ pub async fn handle(_args: ListAllowedRootsArgs, state: &Arc<AppState>) -> Resul
         info["projectInstructions"] = json!(project_instructions);
     }
 
-    Ok(json!({
-        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&info).unwrap() }]
-    }))
+    Ok(crate::mcp::tools::text_result(&info))
 }
 
 #[cfg(test)]

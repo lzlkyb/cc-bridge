@@ -40,6 +40,11 @@ pub async fn handle(args: StopCommandArgs, state: &Arc<AppState>) -> Result<Valu
     // 而用户此时只想把它从列表里清掉），所以先看 exit_code。
     let already_done = exit_code.lock().await.is_some();
     if !already_done {
+        // 只有前台命令留给「翻页取回」的快照条目没有 child，而它们的 exit_code 必然已是
+        // Some（进程早结束），所以走到这里的条目一定拿得到句柄。
+        let child = child.ok_or_else(|| {
+            format!("进程 {pid} 的句柄已释放，无法终止；它可能已经结束，请刷新运行列表。")
+        })?;
         let mut guard = child.lock().map_err(|_| {
             format!("终止进程 {pid} 失败：无法获取进程句柄锁。该命令仍在运行列表中。")
         })?;
@@ -52,13 +57,11 @@ pub async fn handle(args: StopCommandArgs, state: &Arc<AppState>) -> Result<Valu
 
     state.running_commands.remove(&args.handle);
 
-    Ok(json!({
-        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&json!({
-            "handle": args.handle,
-            "pid": pid,
-            "killed": true,
-        })).unwrap() }]
-    }))
+    Ok(crate::mcp::tools::text_result(&json!({
+        "handle": args.handle,
+        "pid": pid,
+        "killed": true,
+    })))
 }
 
 #[cfg(test)]

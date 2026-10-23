@@ -84,6 +84,53 @@ const PUSH_NOTIFICATION_DESC: &str = r#"Push a desktop notification to the user.
 #[cfg(all(not(windows), feature = "notifications"))]
 const PUSH_NOTIFICATION_DESC: &str = r#"Push a desktop notification to the user. You MUST call this after you complete ANY task for the user (coding, analysis, file generation, command execution, etc.) to let them know the result without them needing to check the conversation — do not assume they are watching the chat; proactively inform them of the outcome. The notification appears in the native OS notification centre (macOS Notification Center). If the result says pushed:false with a reason, the notification could NOT be delivered — tell the user the outcome in your reply instead. Both title and body are optional — defaults to "CC Bridge" and empty body respectively."#;
 
+/// 下发给 `tools/list` 的只读工具清单（`annotations.readOnlyHint`）。
+///
+/// 依据（Claude Code 文档「MCP output limits and warnings」）：标了 `readOnlyHint` 的工具
+/// 客户端可以与其他只读调用**并行**执行，远程链路下能省掉串行往返。
+///
+/// 🔴 **不能用 `ToolSpec.is_write` 反推**：`is_write` 是**只读模式门禁**的真源，语义是
+/// 「会不会写盘，要不要在只读模式下拦住」——`stop_command` / `get_command_output` /
+/// `wait_command` 都注册为 `false`（只读模式当然不该拦读取和停止），但直接映射会把
+/// 「杀整个进程树」也标成只读工具。所以要显式列名单。
+///
+/// `wait_command` 只读但会**阻塞等待**，标成只读后客户端可能同时发出互相等待的调用，
+/// 暂不下发，等上线实测（方案 §3.8）。
+pub const READ_ONLY_TOOLS: &[&str] = &[
+    "read_files",
+    "list_directory",
+    "search_files",
+    "analyze_file",
+    "list_allowed_roots",
+    "view_image",
+    "get_command_output",
+    "mcp_list_servers",
+];
+
+/// 重复执行结果不变的写工具（`annotations.idempotentHint`）。客户端连接中断时可自动重试一次。
+///
+/// 只放真正幂等的：`create_directory` 重复建同一目录恒成功。`edit_files`（第二次匹配不到
+/// `oldString`）、`run_command`（重复执行就是执行两次）、`move_files`（第二次源已不存在）
+/// 都不能标。
+pub const IDEMPOTENT_TOOLS: &[&str] = &["create_directory"];
+
+/// 某个工具该下发的 `annotations`；两者都没命中时返回 `None`，整个字段不下发
+/// （保持与改动前逐字节相同的 tools/list 条目，避免凭空多出空对象）。
+pub fn annotations_for(name: &str) -> Option<Value> {
+    let mut map = serde_json::Map::new();
+    if READ_ONLY_TOOLS.contains(&name) {
+        map.insert("readOnlyHint".into(), Value::Bool(true));
+    }
+    if IDEMPOTENT_TOOLS.contains(&name) {
+        map.insert("idempotentHint".into(), Value::Bool(true));
+    }
+    if map.is_empty() {
+        None
+    } else {
+        Some(Value::Object(map))
+    }
+}
+
 /// All registered tools. The ONLY place that lists tools — one line per tool.
 /// Returns an owned `Vec` because `schema` is derived at runtime (not a `&'static`).
 pub fn all_tools() -> Vec<ToolSpec> {
@@ -396,5 +443,63 @@ mod tests {
         );
         // ⚠️ 刻意不钉「最后一项」：`push_notification` 带 feature 门控
         // （`notifications`，CI 用 --no-default-features 跑），末尾随 feature 变。
+    }
+
+    /// 🔴 `readOnlyHint` 清单必须与注册表对得上，且**不是** `is_write` 的反面。
+    ///
+    /// 这条测试存在的理由：`is_write` 与 `readOnlyHint` 看着是一对反义词，实际不是——
+    /// `stop_command` 的 `is_write` 是 `false`（只读模式不该拦住停止命令），但它会杀掉
+    /// 整个进程树，绝不能标成只读。哪天有人图省事写成 `read_only: !is_write`，功能上
+    /// 不会报错，只会让客户端把「杀进程」当成可以并行、可以自动重试的只读调用。
+    #[test]
+    fn read_only_hints_match_registry() {
+        let tools = all_tools();
+
+        for name in READ_ONLY_TOOLS.iter().chain(IDEMPOTENT_TOOLS.iter()) {
+            assert!(
+                tools.iter().any(|t| t.name == *name),
+                "annotations 清单里的 {name} 没有注册（改名/删工具后忘同步？）"
+            );
+        }
+        for t in &tools {
+            if READ_ONLY_TOOLS.contains(&t.name) {
+                assert!(
+                    !t.is_write,
+                    "{} 标成了只读，却又注册为写工具——只读模式会漏拦",
+                    t.name
+                );
+            }
+        }
+
+        // 反推会出错的那几个：`is_write=false` 但绝不是只读工具。
+        let stop = tools
+            .iter()
+            .find(|t| t.name == "stop_command")
+            .expect("stop_command must be registered");
+        assert!(
+            !stop.is_write,
+            "stop_command 在只读模式下不应被拦（它的 is_write 是 false）"
+        );
+        for name in ["stop_command", "wait_command", "mcp_proxy"] {
+            assert!(
+                !READ_ONLY_TOOLS.contains(&name),
+                "{name} 不能下发 readOnlyHint：客户端会据此并行调用甚至自动重试"
+            );
+        }
+
+        assert!(
+            annotations_for("read_files").is_some_and(|a| a["readOnlyHint"] == Value::Bool(true)),
+            "read_files 必须标只读"
+        );
+        assert!(
+            annotations_for("run_command").is_none(),
+            "写工具不下发 annotations（保持既有 tools/list 条目形状）"
+        );
+        let cd = annotations_for("create_directory").expect("create_directory 应标幂等");
+        assert_eq!(cd["idempotentHint"], Value::Bool(true));
+        assert!(
+            cd.get("readOnlyHint").is_none(),
+            "create_directory 是写工具，不能同时标只读"
+        );
     }
 }

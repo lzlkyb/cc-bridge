@@ -87,8 +87,29 @@ impl Default for GrepOptions {
     }
 }
 
+/// 内容命中的条数上限默认值。
+///
+/// 100 → 50（方案 §3.6）：`context:12` 时单次返回实测可达 133KB，远超客户端约 5 万
+/// 字符的整条降级线；100 条只让「一次搜到很多」这种本来就要分页的场景更贵，不带来能力。
 fn default_max_results() -> usize {
-    100
+    50
+}
+
+/// `context` / `beforeContext` / `afterContext` 的上限（方案 §3.6）。
+///
+/// 超出时**压到上限并注明**，不报错：报错会让模型多来回一轮重试，正是要省的往返。
+const MAX_CONTEXT_LINES: usize = 5;
+
+/// 把请求的上下文行数压到 [`MAX_CONTEXT_LINES`]，返回 `(生效值, 被压掉的原值)`。
+///
+/// 原值只在真的超出时才是 `Some`，用于在返回里写明「已从 N 压到 5」——不静默改变语义。
+fn clamp_context(requested: Option<usize>) -> (usize, Option<usize>) {
+    let want = requested.unwrap_or(2);
+    if want > MAX_CONTEXT_LINES {
+        (MAX_CONTEXT_LINES, Some(want))
+    } else {
+        (want, None)
+    }
 }
 
 pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Value, String> {
@@ -152,9 +173,13 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
 
     // 富 Grep 选项：从 SearchFilesArgs 解析。`context` 同时覆盖 before/after；
     // `head_limit` 缺省时回退到 `max_results`（保持原有 maxResults 语义）。
+    // 上下文行数有硬上限（见 MAX_CONTEXT_LINES），超出压值并在返回里注明。
+    let (before, before_clamped) = clamp_context(args.before_context.or(args.context));
+    let (after, after_clamped) = clamp_context(args.after_context.or(args.context));
+    let context_clamped = before_clamped.or(after_clamped);
     let grep = GrepOptions {
-        before: args.before_context.or(args.context).unwrap_or(2),
-        after: args.after_context.or(args.context).unwrap_or(2),
+        before,
+        after,
         line_numbers: args.line_numbers.unwrap_or(true),
         head_limit: args.head_limit.unwrap_or(args.max_results),
         output_mode: match args.output_mode.as_deref() {
@@ -213,7 +238,7 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     // `truncated=true`，结果不完整。追加一个文本块告知远程 CC「结果被截断、可缩小范围或分页」，
     // 不动 matches 数组结构，模型读自然语言即可理解（不做精确 totalMatched 二次扫描，避免性能回退）。
     let mut content_blocks =
-        vec![json!({ "type": "text", "text": serde_json::to_string_pretty(&matches).unwrap() })];
+        vec![json!({ "type": "text", "text": serde_json::to_string(&matches).unwrap() })];
     if truncated {
         content_blocks.push(json!({
             "type": "text",
@@ -221,6 +246,15 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
                 "搜索结果已被截断：本次返回 {} 条（上限 {}）。结果可能不完整——建议缩小 rootPath / namePattern / contentPattern 范围，或调小 maxResults 进一步分页。",
                 matches.len(),
                 grep.head_limit
+            )
+        }));
+    }
+    // context 超上限被压：必须注明，否则模型以为自己拿到的是 12 行上下文而误判命中情况。
+    if let Some(want) = context_clamped {
+        content_blocks.push(json!({
+            "type": "text",
+            "text": format!(
+                "context 已从 {want} 压到 {MAX_CONTEXT_LINES} 行：单次返回过大时客户端会整条降级、只给前 2KB 预览。需要更多上下文请缩小 contentPattern 范围，或对命中的文件用 read_files 按行范围读。"
             )
         }));
     }

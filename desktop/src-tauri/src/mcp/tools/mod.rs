@@ -15,6 +15,7 @@ pub mod mcp_list_servers;
 pub mod mcp_proxy;
 pub mod move_files;
 pub mod notebook_edit;
+pub mod output_clip;
 pub mod output_filter;
 pub mod prepare_download;
 pub mod prepare_upload;
@@ -36,17 +37,24 @@ pub mod write_files;
 /// 🔴 裸返回对象会被客户端判为格式错误，所以**每个**工具的结果都必须走这里。
 /// 以前这段壳散在 3 个私有同名函数 + 18 处内联里，改一次 envelope 形状要改 21 处。
 ///
-/// `text_result` = pretty 缩进（人读友好：日志与手工调试能看清结构）；
-/// `text_result_compact` = 紧凑（结构化输出的工具用，见 `read_files`／`batch`）。
+/// 🔴 **默认 compact，不是 pretty（2026-10-23，方案 §3.2）**：缩进对模型解析毫无帮助，
+/// 却实打实占字节（结构化返回实测膨胀 21–37%，`list_allowed_roots` 最高 36.8%）。
+/// 这里是**唯一**的默认档位，`text_result_compact` 保留为显式别名——存量调用点不必全改，
+/// 新代码写哪个都行。
+///
+/// 刻意**不**提供 `text_result_pretty`：全仓没有任何「人读原始返回」的消费方（前端和审计页都
+/// `JSON.parse` 后用字段渲染），有调用点才有必要存在，否则就是一个立刻会被 `-D warnings`
+/// 判死的死函数。要人读就 `jq` 一下审计页里的原始返回。
 ///
 /// 泛型收 `&impl Serialize`：既接受 `json!(...)` 临时值，也接受 `Vec<Value>` 之类的容器，
 /// 调用方不必为了迎合签名先把它包成 `Value`。
 pub(crate) fn text_result(value: &impl serde::Serialize) -> Value {
-    json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(value).unwrap() }] })
+    json!({ "content": [{ "type": "text", "text": serde_json::to_string(value).unwrap() }] })
 }
 
+/// [`text_result`] 的显式别名（语义相同：紧凑序列化）。
 pub(crate) fn text_result_compact(value: &impl serde::Serialize) -> Value {
-    json!({ "content": [{ "type": "text", "text": serde_json::to_string(value).unwrap() }] })
+    text_result(value)
 }
 
 /// 估算「这次结果给下一轮上下文添了多少字符」——**只数 text 块**。

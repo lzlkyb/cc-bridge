@@ -69,9 +69,7 @@ pub async fn handle(args: WriteFilesArgs, state: &Arc<AppState>) -> Result<Value
         }
     }
 
-    Ok(
-        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&results).unwrap() }] }),
-    )
+    Ok(crate::mcp::tools::text_result(&results))
 }
 
 /// 按档位渲染单个文件的 `diff` 字段；`None` ＝ 结果里不出现该字段。
@@ -284,7 +282,7 @@ mod tests {
 
     /// 从 `handle` 的返回里读出第一个文件的 `ok` 标志。
     ///
-    /// `handle` 把 `results` 用 `to_string_pretty` 塞进 `content[0].text`，所以要二次解析。
+    /// `handle` 把 `results` 序列化后塞进 `content[0].text`，所以要二次解析。
     /// 存在的意义：`.expect("write")` 只证明 `handle` 返回 Ok，而单文件失败是**软失败**
     /// （`ok:false`）——不查这个标志，所有「写完后读回文件」的断言都可能落在没被写过的
     /// 原文件上，测试假绿。

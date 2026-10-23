@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::security;
 use crate::state::AppState;
@@ -64,9 +64,7 @@ pub async fn handle(args: ListDirectoryArgs, state: &Arc<AppState>) -> Result<Va
     let max_depth = args.max_depth.min(MAX_DEPTH_CAP);
     let counter = Arc::new(AtomicUsize::new(0));
     let entries = walk_dir(&resolved, args.recursive, max_depth, 0, counter).await?;
-    Ok(
-        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&entries).unwrap() }] }),
-    )
+    Ok(crate::mcp::tools::text_result(&entries))
 }
 
 fn walk_dir(

@@ -107,9 +107,7 @@ pub async fn handle(args: AnalyzeFileArgs, state: &Arc<AppState>) -> Result<Valu
         "analysisNote": analysis_note,
     });
 
-    Ok(
-        json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&result).unwrap() }] }),
-    )
+    Ok(crate::mcp::tools::text_result(&result))
 }
 
 /// 只读文件前 `max` 字节（供大文件编码探测，避免整文件载入）。
