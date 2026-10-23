@@ -147,7 +147,19 @@ fn guess_encoding(data: &[u8]) -> &'static str {
 
     match std::str::from_utf8(sample) {
         Ok(_) => "utf8",
-        Err(_) => "unknown",
+        // 采样刚好截在多字节字符中间（error_len 为 None）不算非法 UTF-8。
+        Err(e) if e.error_len().is_none() => "utf8",
+        Err(_) => {
+            // 与 read_files/edit_files 共用 encoding::detect_encoding，避免两套探测结果不一致
+            // （旧版这里对 GBK 一律报 unknown，read_files 却报 GBK）。采样尾部可能截断半个
+            // 双字节字符，故满采样时退一字节再试一次。
+            let is_gbk = |s: &[u8]| crate::encoding::detect_encoding(s) == encoding_rs::GBK;
+            if is_gbk(sample) || (sample_len == 8192 && is_gbk(&sample[..sample_len - 1])) {
+                "gbk"
+            } else {
+                "unknown"
+            }
+        }
     }
 }
 
@@ -241,6 +253,21 @@ fn count_functions_classes(text: &str, language: &str) -> (usize, usize) {
 mod tests {
     use super::*;
     use crate::mcp::tools::testutil::make_state;
+
+    /// GBK 源码应报 gbk（与 read_files 一致），而不是 unknown。
+    #[test]
+    fn guess_encoding_detects_gbk() {
+        let (bytes, _, _) = encoding_rs::GBK.encode("// 中文注释\nString s = \"爱尔眼科\";\n");
+        assert_eq!(guess_encoding(&bytes), "gbk");
+    }
+
+    /// 采样边界截在 UTF-8 多字节字符中间时仍应判 utf8。
+    #[test]
+    fn guess_encoding_utf8_split_at_sample_boundary() {
+        let mut data = vec![b'a'; 8191];
+        data.extend_from_slice("中文".as_bytes());
+        assert_eq!(guess_encoding(&data), "utf8");
+    }
 
     /// 小文件：line/function/class 计数全部给出，analysisNote 是正常的启发式提示。
     #[tokio::test]

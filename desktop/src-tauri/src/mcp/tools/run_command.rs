@@ -86,10 +86,11 @@ pub struct RunCommandArgs {
     pub timeout_ms: u64,
     #[serde(default = "default_max_output_bytes", rename = "maxOutputBytes")]
     pub max_output_bytes: usize,
-    /// 会话级持久环境变量（key=value 映射）。仅当 session_cwd_enabled 开启且提供有效
-    /// session_id（或新建会话）时生效：首次随 cwd 设立会话时作为初始 env，后续调用与既有
-    /// env_overrides 合并（后写覆盖）。跨调用保留，解决 source venv / export PATH 每调用
-    /// 丢失的问题。注意：无法自动捕获 shell 内 `source` 激活的虚拟环境（每次起重壳激活即
+    /// 环境变量（key=value 映射）。**本次调用总是生效**（与会话开关无关）；
+    /// 仅当 session_cwd_enabled 开启且有效 session_id（或新建会话）时才额外跨调用持久：
+    /// 首次随 cwd 设立会话时作为初始 env，后续调用与既有 env_overrides 合并（后写覆盖）。
+    /// 旧版在开关关闭时把 env 整个丢掉且不报错，传密钥会静默发出空凭证。
+    /// 注意：无法自动捕获 shell 内 `source` 激活的虚拟环境（每次起重壳激活即
     /// 丢失），请用 env 显式持久化 VIRTUAL_ENV / PATH 等。
     #[serde(default, rename = "env")]
     pub env: Option<Vec<EnvEntry>>,
@@ -147,6 +148,8 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     // B 类容错标记：cwd 未传或已消失而回退到 allowed_root 时置位，
     // 响应里注入 cwdFallback + 实际 cwd，让模型知道自己在哪跑的（审计可对照）。
     let mut cwd_fallback = false;
+    // 开关关闭却传了 sessionId：照旧忽略，但在响应里明说，免得模型以为 cwd 会被记住。
+    let session_ignored = !config.session_cwd_enabled && args.session_id.is_some();
     let (resolved_cwd, cwd_display, effective_session_id) = if config.session_cwd_enabled {
         if let Some(sid) = &args.session_id {
             match state.cwd_sessions.get(sid) {
@@ -283,8 +286,9 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     }
     let state = state.clone();
 
-    // 会话级环境变量持久化：收集 session 既有 env_overrides，并合并本次传入的 env 写回 session。
-    // 注入子进程时不绕过白名单（仅环境变量，与路径无关）；cwd 仍每次重校验（规则 7 不削弱）。
+    // 环境变量：先叠会话既有 env_overrides，再叠本次传入的 env（后写覆盖）。
+    // 本次的 env 无论有无会话都注入；只有在会话内才写回 session 跨调用保留。
+    // 注入子进程时不绕过白名单（仅环境变量，与路径无关；命令本身就能 export）；cwd 仍每次重校验。
     let mut session_env: Vec<(String, String)> = Vec::new();
     if let Some(sid) = &effective_session_id {
         if let Some(s) = state.cwd_sessions.get(sid) {
@@ -298,9 +302,11 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
                     s.env_overrides.insert(e.key.clone(), e.value.clone());
                 }
             }
-            for e in env {
-                session_env.push((e.key.clone(), e.value.clone()));
-            }
+        }
+    }
+    if let Some(env) = &args.env {
+        for e in env {
+            session_env.push((e.key.clone(), e.value.clone()));
         }
     }
 
@@ -359,6 +365,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
         effective_session_id,
         &resolved_cwd,
         cwd_fallback,
+        session_ignored,
         shell,
     )
 }
@@ -783,6 +790,7 @@ fn inject_session_info(
     session_id: Option<String>,
     resolved_cwd: &std::path::Path,
     cwd_fallback: bool,
+    session_ignored: bool,
     shell: ShellType,
 ) -> Result<Value, String> {
     let mut v = result?;
@@ -811,6 +819,12 @@ fn inject_session_info(
                                 fields.insert(
                                     "cwd".into(),
                                     json!(resolved_cwd.to_string_lossy().to_string()),
+                                );
+                            }
+                            if session_ignored {
+                                fields.insert(
+                                    "sessionNote".into(),
+                                    json!("「命令会话持久化」未开启，sessionId 已忽略：工作目录与 env 不会带到下一次调用，请每次显式传 cwd。本次传入的 env 仍已生效。"),
                                 );
                             }
                             let new_text = serde_json::to_string_pretty(&info)
@@ -1159,6 +1173,7 @@ mod tests {
             None,
             std::path::Path::new("C:/tmp"),
             false,
+            false,
             ShellType::Bash,
         )
         .expect("注入成功");
@@ -1217,6 +1232,53 @@ mod tests {
         let info: serde_json::Value =
             serde_json::from_str(v["content"][0]["text"].as_str().expect("text")).expect("json");
         assert_eq!(info["shell"], json!(expected), "{info}");
+    }
+
+    /// 回归：会话持久化关闭（默认）时 env 曾被整个丢掉、子进程里变量为空且不报错。
+    /// 同时传了 sessionId 时应回 sessionNote 说明它被忽略。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn env_applies_without_session_and_notes_ignored_session() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+            c.session_cwd_enabled = false;
+        });
+        let command = {
+            let cfg = state.config.read().await;
+            match crate::mcp::tools::shell::parse_shell_type(&cfg.shell_type) {
+                ShellType::Bash => "echo \"[$CCB_ENV_PROBE]\"",
+                _ => "echo [%CCB_ENV_PROBE%]",
+            }
+        };
+        let v = handle(
+            RunCommandArgs {
+                command: command.into(),
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: Some("cwd_whatever".into()),
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
+                description: None,
+                env: Some(vec![EnvEntry {
+                    key: "CCB_ENV_PROBE".into(),
+                    value: "probe_ok".into(),
+                }]),
+            },
+            &state,
+        )
+        .await
+        .expect("echo 应成功");
+        let info: serde_json::Value =
+            serde_json::from_str(v["content"][0]["text"].as_str().expect("text")).expect("json");
+        let stdout = info["stdout"].as_str().unwrap_or("");
+        assert!(stdout.contains("[probe_ok]"), "env 未注入：{info}");
+        assert!(
+            info.get("sessionNote").is_some(),
+            "应提示 sessionId 被忽略：{info}"
+        );
     }
 
     /// B 类容错：cwd 缺失时回退到第一个存在的 allowed_root 继续执行，

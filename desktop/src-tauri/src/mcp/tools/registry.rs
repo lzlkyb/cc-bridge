@@ -151,7 +151,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             search_files,
             SearchFilesArgs,
-            r#"Search files by name glob and/or content regex with context lines"#,
+            r#"Search files by name glob and/or content regex with context lines. Matching is on raw bytes, so a CJK pattern never matches inside GBK/other non-UTF-8 files — pass `encoding` (e.g. "gbk") to transcode those files first; valid UTF-8 files are never transcoded, so mixed-encoding trees are safe."#,
             false
         ),
         register_tool!(

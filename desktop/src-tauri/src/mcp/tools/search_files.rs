@@ -45,6 +45,10 @@ pub struct SearchFilesArgs {
     pub output_mode: Option<String>,
     #[serde(rename = "multiline", default)]
     pub multiline: Option<bool>,
+    /// 可选：非 UTF-8 文件按该编码转码后再匹配（如 "gbk"）。不传时按原始字节匹配，
+    /// 中文 pattern 在 GBK 文件里必然命不中。合法 UTF-8 的文件始终不转码，混合编码目录也安全。
+    #[serde(default)]
+    pub encoding: Option<String>,
 }
 
 /// 文件内容 Grep 的输出模式（对标 native Claude Code 的 Grep `output_mode`）。
@@ -66,6 +70,8 @@ pub struct GrepOptions {
     line_numbers: bool,
     head_limit: usize,
     output_mode: OutputMode,
+    /// 非 UTF-8 文件的转码编码（见 `SearchFilesArgs::encoding`）。
+    encoding: Option<&'static encoding_rs::Encoding>,
 }
 
 impl Default for GrepOptions {
@@ -76,6 +82,7 @@ impl Default for GrepOptions {
             line_numbers: true,
             head_limit: usize::MAX,
             output_mode: OutputMode::Content,
+            encoding: None,
         }
     }
 }
@@ -133,6 +140,15 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
             }
         })
         .transpose()?;
+    let encoding = args
+        .encoding
+        .as_deref()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            crate::encoding::label_to_encoding(l)
+                .ok_or_else(|| format!("Unknown encoding label: {l}"))
+        })
+        .transpose()?;
 
     // 富 Grep 选项：从 SearchFilesArgs 解析。`context` 同时覆盖 before/after；
     // `head_limit` 缺省时回退到 `max_results`（保持原有 maxResults 语义）。
@@ -146,7 +162,12 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
             Some("count") => OutputMode::Count,
             _ => OutputMode::Content,
         },
+        encoding,
     };
+    let pattern_non_ascii = args
+        .content_pattern
+        .as_deref()
+        .is_some_and(|p| !p.is_ascii());
 
     // ignore::Walk 是同步/阻塞迭代器（内部基于 walkdir），丢进 spawn_blocking 避免
     // 占用 tokio 工作线程；文件内容读取也相应改用 std::fs（同一个 blocking 任务里）。
@@ -179,6 +200,15 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
 
     timing::record_io(Duration::from_nanos(io_nanos.load(Ordering::Relaxed)));
 
+    // 对外路径剥掉 canonicalize 带出的 `\\?\` 前缀（仅展示，不影响安全校验）。
+    let mut matches = matches;
+    for m in matches.iter_mut() {
+        if let Some(p) = m.get("path").and_then(|p| p.as_str()) {
+            let shown = security::path::display_path(Path::new(p));
+            m["path"] = json!(shown);
+        }
+    }
+
     // ④ 截断回显：walker 触及 head_limit（= head_limit.unwrap_or(max_results)）提前终止时
     // `truncated=true`，结果不完整。追加一个文本块告知远程 CC「结果被截断、可缩小范围或分页」，
     // 不动 matches 数组结构，模型读自然语言即可理解（不做精确 totalMatched 二次扫描，避免性能回退）。
@@ -192,6 +222,14 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
                 matches.len(),
                 grep.head_limit
             )
+        }));
+    }
+    // 中文等非 ASCII pattern 零命中且没指定编码：很可能是 GBK 文件按字节对不上，给出可操作提示，
+    // 免得模型把空结果当成「代码里没有」。
+    if matches.is_empty() && pattern_non_ascii && grep.encoding.is_none() {
+        content_blocks.push(json!({
+            "type": "text",
+            "text": "未命中。pattern 含非 ASCII 字符且未指定 encoding：若目标文件是 GBK 等非 UTF-8 编码，按字节匹配必然命不中，请加 encoding:\"gbk\" 重试（UTF-8 文件不受影响）。"
         }));
     }
 
@@ -589,6 +627,36 @@ fn strip_line_term(mut s: String) -> String {
     s
 }
 
+/// 按 `grep.encoding` 构造 searcher：只有非 UTF-8 文件才转码，UTF-8 文件照旧按原始字节搜。
+/// 这样 `encoding="gbk"` 在 UTF-8/GBK 混合目录（如 aier 老工程）里也不会把 UTF-8 文件解成乱码。
+/// 未指定编码时不做任何额外 I/O，行为与旧版一致。
+fn searcher_builder(path: &Path, grep: &GrepOptions) -> SearcherBuilder {
+    let mut b = SearcherBuilder::new();
+    b.binary_detection(BinaryDetection::quit(0));
+    if let Some(enc) = grep.encoding {
+        if enc != encoding_rs::UTF_8 && !looks_utf8(path) {
+            if let Ok(e) = grep_searcher::Encoding::new(enc.name()) {
+                b.encoding(Some(e));
+            }
+        }
+    }
+    b
+}
+
+/// 取前 8KB 判断是否合法 UTF-8；采样截在多字节字符中间不算非法。读失败按 UTF-8 处理（不转码）。
+fn looks_utf8(path: &Path) -> bool {
+    use std::io::Read;
+    let mut buf = [0u8; 8192];
+    let n = match std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) {
+        Ok(n) => n,
+        Err(_) => return true,
+    };
+    match std::str::from_utf8(&buf[..n]) {
+        Ok(_) => true,
+        Err(e) => e.error_len().is_none(),
+    }
+}
+
 /// 用 grep-searcher（ripgrep 同款引擎）对单文件做内容搜索。
 ///
 /// 相较旧版「逐行 `BufReader.lines()` + `regex`」，本实现获得：
@@ -611,9 +679,7 @@ fn grep_file(
 ) -> Vec<Value> {
     match grep.output_mode {
         OutputMode::FilesWithMatches => {
-            let mut searcher = SearcherBuilder::new()
-                .binary_detection(BinaryDetection::quit(0))
-                .build();
+            let mut searcher = searcher_builder(path, grep).build();
             let mut found = false;
             let res = searcher.search_path(
                 matcher,
@@ -629,9 +695,7 @@ fn grep_file(
             vec![json!({ "path": path.to_string_lossy(), "type": "content" })]
         }
         OutputMode::Count => {
-            let mut searcher = SearcherBuilder::new()
-                .binary_detection(BinaryDetection::quit(0))
-                .build();
+            let mut searcher = searcher_builder(path, grep).build();
             let mut count = 0usize;
             let res = searcher.search_path(
                 matcher,
@@ -656,8 +720,7 @@ fn grep_file(
             // `std::fs::read` 整文件进堆内存切片上下文」的 O(file_size) 内存峰值——大文件
             // 不再为取几行上下文而把整个文件读进内存。行为对齐 native ripgrep（相邻匹配
             // 自动合并上下文，第二个匹配不再重复前一个匹配的重叠行）。
-            let mut searcher = SearcherBuilder::new()
-                .binary_detection(BinaryDetection::quit(0))
+            let mut searcher = searcher_builder(path, grep)
                 .before_context(grep.before)
                 .after_context(grep.after)
                 .build();
@@ -846,6 +909,43 @@ mod tests {
         assert!(
             !ci_matches.is_empty(),
             "大小写不敏感应匹配 hello，结果：{ci_matches:?}"
+        );
+    }
+
+    /// 回归：中文 pattern 在 GBK 文件里曾静默返回空。传 encoding=gbk 后应命中 GBK 文件，
+    /// 且同目录的 UTF-8 文件不被转码、照样命中（混合编码目录）。
+    #[test]
+    fn encoding_gbk_matches_cjk_in_mixed_dir() {
+        let root = unique_subdir("enc_gbk");
+        let (gbk, _, _) = encoding_rs::GBK.encode("// 注释\nString s = \"爱尔医院\";\n");
+        fs::write(root.join("a_gbk.java"), &gbk).unwrap();
+        touch(&root.join("b_utf8.java"), "String t = \"爱尔医院\";\n");
+        let re = matcher("医院");
+
+        let plain =
+            walk_search_blocking(&root, None, Some(&re), &GrepOptions::default(), 1_000_000);
+        assert_eq!(plain.len(), 1, "不传编码只能命中 UTF-8 文件：{plain:?}");
+
+        let opts = GrepOptions {
+            encoding: Some(encoding_rs::GBK),
+            ..Default::default()
+        };
+        let hits = walk_search_blocking(&root, None, Some(&re), &opts, 1_000_000);
+        let paths = collected_paths(&hits);
+        assert_eq!(hits.len(), 2, "两个文件都应命中：{hits:?}");
+        assert!(paths.iter().any(|p| p.ends_with("a_gbk.java")), "{paths:?}");
+        assert!(
+            paths.iter().any(|p| p.ends_with("b_utf8.java")),
+            "{paths:?}"
+        );
+        let gbk_line = hits
+            .iter()
+            .find(|m| m["path"].as_str().unwrap_or("").ends_with("a_gbk.java"))
+            .and_then(|m| m["line"].as_str())
+            .unwrap_or("");
+        assert!(
+            gbk_line.contains("爱尔医院"),
+            "GBK 行应转码为正常中文：{gbk_line:?}"
         );
     }
 

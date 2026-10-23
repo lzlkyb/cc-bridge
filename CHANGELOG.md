@@ -5,6 +5,17 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+- `search_files` 增加 `encoding` 参数（如 `"gbk"`）：非 UTF-8 文件按指定编码转码后再匹配，中文关键字终于能搜到 GBK 老工程源码；合法 UTF-8 文件始终不转码，混合编码目录也安全。中文关键字零命中且未指定编码时，返回里会提示加 `encoding` 重试。
+
+### 修复
+- `run_command` 的 `env` 参数在未开启「命令会话持久化」（默认）时被整个丢弃且不报错，子进程里变量为空——传密钥会静默发出空凭证。现在本次传入的 env 总是生效，开启持久化时才额外跨调用保留；开关关闭却传了 `sessionId` 时，返回里会说明它被忽略。
+- `analyze_file` 对 GBK 文件报 `encoding: "unknown"`，与 `read_files` 的识别结果不一致；改为共用同一套编码探测，并修正采样截在多字节字符中间时把 UTF-8 误报为 unknown 的问题。
+- `search_files` 返回的路径不再带 `\\?\` 前缀。
+- `edit_files` 的首尾空白告警只在失败时返回：此前成功的多行编辑也顶着「去掉首尾空白后重试」，还把首尾换行算成制表符；成功结果也不再带 `"warning": null` 占位。
+
 ## [3.0.0] - 2026-10-22
 
 ### 更新摘要

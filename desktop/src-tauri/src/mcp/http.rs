@@ -1048,7 +1048,7 @@ pub fn get_tool_definitions(shell_type: &str, proxy_hint: Option<&str>) -> serde
 /// 请用 Windows 语法与 `C:\Users\...` 路径」，AI 会持续生成 Windows 命令，
 /// 哪怕后端已经换成 `/bin/sh` 执行——命令会全部失败，且失败原因对 AI 不可见。
 fn run_command_description(shell_type: &str) -> String {
-    let common = "开启「命令会话持久化」后：cwd 由 session_id 在会话内跨命令持久化；并通过 env 参数（key=value 映射）持久化环境变量（如 VIRTUAL_ENV / PATH），解决 source venv / export 每调用丢失的问题（注意：env 仅接受显式 key=value，无法自动捕获 shell 内 source 激活）。";
+    let common = "env 参数（key=value 映射）对本次命令总是生效。开启「命令会话持久化」后：cwd 由 session_id 在会话内跨命令持久化，env 也随会话保留（如 VIRTUAL_ENV / PATH），解决 source venv / export 每调用丢失的问题（注意：env 仅接受显式 key=value，无法自动捕获 shell 内 source 激活）。";
 
     #[cfg(windows)]
     let shell_part = if shell_type == "bash" {

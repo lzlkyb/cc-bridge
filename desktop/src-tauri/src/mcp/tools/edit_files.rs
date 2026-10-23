@@ -133,16 +133,19 @@ pub async fn handle(args: EditFilesArgs, state: &Arc<AppState>) -> Result<Value,
                     "replacements": outcome.replacements,
                     "encoding": outcome.encoding,
                     "newline": outcome.newline,
-                    "warning": outcome.warning,
                 });
                 if let Some(d) = outcome.diff {
                     row["diff"] = json!(d);
                 }
                 results.push(row);
             }
-            Err(e) => results.push(
-                json!({ "path": f.path, "ok": false, "error": e.message, "warning": e.warning }),
-            ),
+            Err(e) => {
+                let mut row = json!({ "path": f.path, "ok": false, "error": e.message });
+                if let Some(w) = e.warning {
+                    row["warning"] = json!(w);
+                }
+                results.push(row);
+            }
         }
     }
 
@@ -157,11 +160,11 @@ struct EditOutcome {
     newline: &'static str,
     /// `diff:"none"` 时为 `None`，结果里不出现该字段。
     diff: Option<String>,
-    /// 对 old_string 的首尾空白告警（模型多带空白导致匹配失败时给的提示）。仅 Some 时输出。
-    warning: Option<String>,
 }
 
 /// edit_single 的错误：携带可选的首尾空白告警，让匹配失败的提示更有指导性。
+/// 告警只随错误返回：成功时多行 oldString 带缩进/换行再正常不过，旧版在成功响应里也顶着
+/// 「去掉首尾空白后重试」，会诱导模型白发一轮重试（正是这条告警想省掉的往返）。
 struct EditError {
     message: String,
     warning: Option<String>,
@@ -392,7 +395,6 @@ async fn edit_single(
         encoding: ft.encoding.name().to_string(),
         newline: ft.newline_label(),
         diff,
-        warning,
     })
 }
 
@@ -454,26 +456,24 @@ fn whitespace_warning(s: &str) -> Option<String> {
     if lead == 0 && trail == 0 {
         return None;
     }
+    // 逐类计数。旧版用「总数 − 空格」当制表符数，把首尾换行也算成了制表符；
+    // 另外「含 N 个换行符」统计的是整串而非首尾，对多行 oldString 没有信息量。
+    let breakdown = |part: &str| {
+        let n = |c: char| part.chars().filter(|x| *x == c).count();
+        format!(
+            "{} 个字符（空格 {} / 制表符 {} / 换行符 {}）",
+            part.chars().count(),
+            n(' '),
+            n('\t'),
+            n('\n')
+        )
+    };
     let mut parts: Vec<String> = Vec::new();
     if lead > 0 {
-        let spaces = s[..lead].chars().filter(|c| *c == ' ').count();
-        let tabs = lead - spaces;
-        parts.push(format!(
-            "前导 {lead} 个字符（空格 {spaces} / 制表符 {tabs}）"
-        ));
+        parts.push(format!("前导 {}", breakdown(&s[..lead])));
     }
     if trail > 0 {
-        let trail_part = &s[s.len() - trail..];
-        let spaces = trail_part.chars().filter(|c| *c == ' ').count();
-        let tabs = trail - spaces;
-        parts.push(format!(
-            "尾随 {trail} 个字符（空格 {spaces} / 制表符 {tabs}）"
-        ));
-    }
-    let nl = s.matches('\n').count();
-    let cr = s.matches('\r').count();
-    if nl > 0 || cr > 0 {
-        parts.push(format!("含 {nl} 个换行符 / {cr} 个回车符"));
+        parts.push(format!("尾随 {}", breakdown(&s[s.len() - trail..])));
     }
     Some(format!(
         "oldString 首尾检测到空白字符：{}。若非故意多带，去掉首尾空白后重试可避免匹配失败。",
@@ -521,6 +521,14 @@ mod tests {
     fn whitespace_warning_tab_counts() {
         let w = whitespace_warning("\tfn()").expect("应检测到前导制表符");
         assert!(w.contains("制表符 1"), "应统计出 1 个制表符：{w}");
+    }
+
+    /// 回归：首尾换行曾被算成「制表符」。
+    #[test]
+    fn whitespace_warning_newline_not_counted_as_tab() {
+        let w = whitespace_warning("\nfoo\n").expect("应检测到首尾换行");
+        assert!(w.contains("制表符 0 / 换行符 1"), "{w}");
+        assert!(!w.contains("制表符 1"), "{w}");
     }
 
     /// A 类容错：`{"edits": "[...]"}`（错误键 + 字符串化 + Flat 形态）——审计实锤样本。
