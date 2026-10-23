@@ -106,9 +106,16 @@ fn mcp_call(tool: &str, args: Value) -> Value {
 async fn gzip_compression_over_the_wire() {
     let srv = start().await;
 
-    // 写一个 ~120KB 高冗余源码文本（压缩率应很好）
+    // 写一个 ~32KB 高冗余源码文本（压缩率应很好）。
+    //
+    // 🔴 尺寸必须留在 read_files 的**内联上限**（`MAX_INLINE_CHARS` = 45,000 字符）以内：
+    // 超限时 read_files 会按设计拒绝返回正文、改给分段读取指引（方案 §3.5「超限即拒」），
+    // 那样响应里就没有可压缩的大文本，这条 gzip 测试会失去意义。
+    // ⚠️ 上限按**序列化后**的字符数算：每行 3 个 `\n` 与 2 个 `"` 转义后各多占 1 字符，
+    // 所以 700 行原文 ≈ 32.2KB，序列化后约 35.7K 字符——离 45,000 还有余量。
+    // 32KB 的高冗余文本压到几百字节，断言「< 明文一半」照样成立。
     let line = "fn main() {\n    println!(\"hello cc-bridge\");\n}\n";
-    let big = line.repeat(4000);
+    let big = line.repeat(700);
     let big_path = srv.root.join("big_source.rs");
     std::fs::write(&big_path, &big).unwrap();
 

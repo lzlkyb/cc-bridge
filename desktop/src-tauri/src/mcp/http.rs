@@ -996,9 +996,14 @@ fn build_instructions(strong_notify: bool) -> String {
         "\n\n建议：用户可能已离开对话窗口时，可调用 push_notification 弹出桌面通知；若用户就在当前界面、可直接回复，则无需额外打扰。"
     };
     // 提示层引导（方案 §3.7）：`run_command` 占 46% 的调用次数而 avg 仅 5.2KB——模型在拿
-    // shell 干文件活，每次都是一去一回。三条规则必须放在**最前面**（顺序影响遵循度），且
+    // shell 干文件活，每次都是一去一回。四条规则必须放在**最前面**（顺序影响遵循度），且
     // 总长要远低于客户端 4,096 字符的 instructions 截断线（见 `instructions_under_client_limit`）。
-    let rules = "\n\n工具使用硬规则（优先于下文任何描述）：\n1. 文件读写 / 查找 / 列目录一律用专用工具（read_files / write_files / edit_files / search_files / list_directory），不要用 shell 的 cat / ls / grep / find / head / tail；命令输出可能很大时先加 include / tailLines 或管道过滤。\n2. 超过约 500 行的文件先用 search_files 定位，再按 startLine / endLine 读需要的段；比较两个文件用 diff（如 git diff --no-index），不要把两份全文都读进上下文。\n3. 禁止用 base64 走 run_command 传文件，文件进出必须用 prepare_upload / prepare_download。";
+    // 第 4 条（后台化）针对的是耗时而非字节：`run_command` 里 19% 的调用吃掉 81% 的墙钟，
+    // 换任何实现都要跑那么久，**只能不等待**——把串行空等改成并行推进。
+    // 🔴 规则里引用的**参数名 / 返回字段名必须对着工具源码核**：这里写错一个字，模型就会去
+    // 找一个不存在的字段（已踩过：`run_command` 后台返回的是 `handle`，写成 `commandId`
+    // 模型只会反复试错，白烧往返，且报错信息里看不出是提示层写错了）。
+    let rules = "\n\n工具使用硬规则（优先于下文任何描述）：\n1. 文件读写 / 查找 / 列目录一律用专用工具（read_files / write_files / edit_files / search_files / list_directory），不要用 shell 的 cat / ls / grep / find / head / tail；命令输出可能很大时先加 include / tailLines 或管道过滤。\n2. 超过约 500 行的文件先用 search_files 定位，再按 startLine / endLine 读需要的段；比较两个文件用 diff（如 git diff --no-index），不要把两份全文都读进上下文。\n3. 禁止用 base64 走 run_command 传文件，文件进出必须用 prepare_upload / prepare_download。\n4. 预计超过约 10 秒的命令（构建、安装依赖、全量测试、全盘扫描、批量处理）用 run_command 的 background:true 发出——它立即返回 handle，随后你先并行推进其他工具调用，最后用 wait_command 拿 handle 收结果；不要用默认的前台方式空等几十秒。等待仍应靠 wait_command，不要反复轮询 get_command_output。";
     format!(
         "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。{rules}当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / wait_command / get_command_output / stop_command:在本地执行命令、等待后台命令结束、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 {shells}，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- prepare_upload / prepare_download:大文件或二进制文件直传。工具只返回一次性 URL 与 curl 命令,文件字节不经过对话上下文——远优于 write_files(base64) 与用 read_files 读二进制。需要传 pptx、xlsx、pdf、图片、压缩包到本地或取回时优先用它\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在项目规则文件 AGENTS.md 或 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
     )
@@ -1414,12 +1419,13 @@ mod over_wire_tests {
                 n <= 4096,
                 "instructions 已到 {n} 字符，超过客户端 4096 截断线（超出部分模型看不到）"
             );
-            // 三条规则的标志片段：它们被放在最前面，但顺序/完整性仍可能被后续改动破坏。
+            // 四条规则的标志片段：它们被放在最前面，但顺序/完整性仍可能被后续改动破坏。
             for key in [
                 "工具使用硬规则",
                 "不要用 shell 的 cat",
                 "git diff --no-index",
                 "禁止用 base64",
+                "background:true",
             ] {
                 assert!(s.contains(key), "instructions 缺少规则片段：{key}");
             }

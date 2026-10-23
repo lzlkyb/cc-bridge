@@ -5,7 +5,30 @@ use serde_json::{json, Value};
 
 use crate::audit;
 use crate::mcp::http::dispatch_tool;
+use crate::mcp::tools::wire_chars;
 use crate::state::AppState;
+
+/// batch 整条返回的**内容预算**（字符，wire 口径，与 [`crate::mcp::tools::MAX_INLINE_CHARS`] 同源）。
+///
+/// 🔴 不能比单条 `read_files` 的上限更严。容器比内容还严会出现这种荒谬情形：
+/// 直接调 `read_files` 能拿到 40,000 字符的正文，同样的调用**放进 batch 反而变成 stub**
+/// ——而 `instructions` 正引导模型优先用 batch，那等于亲手把内容挡在门外，
+/// 白换一次「组装 stub → 单独重调」的往返。所以取 `MAX_INLINE_CHARS + 1,024`，
+/// 多出的 1KB 是子结果外壳（`{"index":0,"tool":…,"ok":true,"result":…}`）的开销。
+/// 客户端实测门槛 49,823 字符，此处仍留约 2.8K 余量（预算按 [`wire_chars`] 扣，
+/// 已含 text 外层二次转义，见该函数注释）。
+const MAX_BATCH_RETURN_CHARS: usize = crate::mcp::tools::MAX_INLINE_CHARS + 1024;
+
+/// 给「未内联」说明预留的字符预算。裁剪时先扣掉它，否则说明一写就把总长顶回超限。
+const NOTE_RESERVE_CHARS: usize = 320;
+
+/// 预算耗尽后的**聚合收尾条目**长度上界（含前 20 个 index）。
+const TAIL_RESERVE_CHARS: usize = 640;
+
+/// error 子结果的额外溢出额度：预算被前面的内容吃光后，**小体积**错误仍然完整放行
+/// （错误原因对模型纠错至关重要，截掉等于没报错）；但额度有上限——
+/// 100 个子操作最坏能堆出几万字符的报错文本，无界放行会把整条结果顶过客户端门槛。
+const ERROR_OVERFLOW_CAP: usize = 2_000;
 
 #[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct BatchArgs {
@@ -185,16 +208,165 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
         }
     }
 
+    // 返回预算层（方案 §3.4）：整条结果超过内联上限时，按顺序内联、放不下的换成
+    // 「未内联」stub。**绝不切字符串**——子结果里是嵌套 JSON，切一半会产出无法解析的
+    // 残文，模型拿到的只会是一段坏数据；而子操作天然可独立重跑，指回去比切碎便宜。
+    // total 必须是**原始子结果数**：预算层可能把末尾多条合并成一条聚合收尾
+    // （`tail` 条目），此时 results.len() < 子结果数——「被省略不等于不存在」。
+    let total = results.len();
+    let (results, budget_note) = apply_return_budget(results);
+    let mut envelope = json!({
+        "executed": executed,
+        "total": total,
+        "results": results,
+    });
+    if let Some(note) = budget_note {
+        envelope["note"] = json!(note);
+    }
     Ok(json!({
         "content": [{
             "type": "text",
-            "text": serde_json::to_string(&json!({
-                "executed": executed,
-                "total": results.len(),
-                "results": results,
-            })).unwrap_or_default()
+            "text": serde_json::to_string(&envelope).unwrap_or_default()
         }]
     }))
+}
+
+/// 按预算裁剪 batch 的 `results`。返回 `(结果, 说明)`。
+///
+/// 三条规则，顺序即优先级：
+/// 1. **error 子结果优先完整内联**——它的全部价值就是失败原因，切掉等于没报错。
+///    但「优先」不是「无界」：预算外还有 [`ERROR_OVERFLOW_CAP`] 的溢出额度，
+///    否则一条超长堆栈就能吃掉整个返回；额度也耗尽时并入末尾聚合收尾并注明条数。
+/// 2. 其余按**声明顺序**依次内联，放不下的换成 stub（可预测：前面的优先）。
+/// 3. 全部放得下（实测大多数：batch 平均 16.6KB）时**一个字节都不动**，行为与改动前一致。
+fn apply_return_budget(results: Vec<Value>) -> (Vec<Value>, Option<String>) {
+    let n = results.len();
+    // 外层 envelope（`executed` / `total` / `results` 三个字段 + 括号）不计入内容预算：
+    // 它是固定的几十个字符，若把它算进去，一条恰好顶到上限的子结果就会被无端判成超限。
+    // 元素逐个序列化后再补 n-1 个逗号，就是整条内容长度（线性，不做 n 次全量序列化）。
+    let sizes: Vec<usize> = results.iter().map(wire_chars).collect();
+    let overhead = n.saturating_sub(1);
+    if sizes.iter().sum::<usize>() + overhead <= MAX_BATCH_RETURN_CHARS {
+        return (results, None);
+    }
+
+    let mut budget =
+        MAX_BATCH_RETURN_CHARS.saturating_sub(overhead + NOTE_RESERVE_CHARS + TAIL_RESERVE_CHARS);
+    let mut out = Vec::with_capacity(n);
+    let mut stubbed = 0usize;
+    let mut error_overflow = 0usize;
+    // 预算彻底枯竭后剩余条目的 (index, is_error)：不再逐条写 stub——
+    // 🔴 100 个子操作最坏能堆出 ~23,000 字符的 stub（每条约 230），
+    // 把整条结果顶过客户端门槛，正是本函数要防的事故（read_files 的
+    // `skipped_marker` 同款教训：用防越线的机制造成越线）。
+    let mut tail: Vec<(usize, bool)> = Vec::new();
+    let mut tail_started = false;
+
+    for (entry, size) in results.into_iter().zip(sizes) {
+        let idx = entry.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+        let is_error = entry.get("ok").and_then(|v| v.as_bool()) == Some(false);
+        if tail_started {
+            tail.push((idx, is_error));
+            continue;
+        }
+        if is_error {
+            // 错误优先保完整（截掉原因等于没报错）：预算内直接放，
+            // 预算外还有 ERROR_OVERFLOW_CAP 的溢出额度，额度也耗尽才进聚合。
+            if size <= budget {
+                budget -= size;
+                out.push(entry);
+            } else if error_overflow + size <= ERROR_OVERFLOW_CAP {
+                error_overflow += size;
+                out.push(entry);
+            } else {
+                tail.push((idx, is_error));
+                tail_started = true;
+            }
+        } else if size <= budget {
+            budget -= size;
+            out.push(entry);
+        } else {
+            let stub = omitted_stub(&entry, size);
+            let ssize = wire_chars(&stub);
+            if ssize <= budget {
+                budget -= ssize;
+                out.push(stub);
+                stubbed += 1;
+            } else {
+                // 连一条 stub（约 230 字符）都放不下：剩余条目全部并入聚合收尾。
+                tail.push((idx, is_error));
+                tail_started = true;
+            }
+        }
+    }
+
+    let tail_errored = tail.iter().filter(|(_, e)| *e).count();
+    if !tail.is_empty() {
+        // index 列表截前 20 个：100 个子操作全列出来会把 TAIL_RESERVE 撑爆。
+        let indexes: Vec<u64> = tail.iter().map(|(i, _)| *i as u64).take(20).collect();
+        let more = tail.len().saturating_sub(20);
+        let mut marker = json!({
+            "omitted": true,
+            "tail": true,
+            "count": tail.len(),
+            "errored": tail_errored,
+            "indexes": indexes,
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": format!(
+                        "…[预算已满，后 {} 个子结果未内联（{}）。请按 indexes（从 0 计）单独调用对应工具取回{}]…",
+                        tail.len(),
+                        if tail_errored > 0 {
+                            format!("含 {tail_errored} 个执行失败的子操作，单独重跑可见完整错误原因")
+                        } else {
+                            "未内联 ≠ 未执行".to_string()
+                        },
+                        if more > 0 { format!("；共 {more}+ 个省略未列全") } else { String::new() },
+                    ),
+                }]
+            },
+        });
+        if more > 0 {
+            marker["indexesTruncated"] = json!(true);
+        }
+        out.push(marker);
+    }
+
+    // 极端场景：超限全是 error 子结果撑起来的（错误全保留、没省略任何东西）。
+    // 写一句「0 个子结果未内联」只会让模型以为漏了东西——干脆不加说明。
+    // 说明里不罗列 index：每条 stub 自带 index，聚合条目自带前 20 个，
+    // 罗列一遍只会把 NOTE_RESERVE 撑爆（上一版就踩过）。
+    if stubbed == 0 && tail.is_empty() {
+        return (out, None);
+    }
+    let note = format!(
+        "{} 个子结果超出 batch 单次内联上限（约 {MAX_BATCH_RETURN_CHARS} 字符）未内联：results 里 omitted:true 的条目（含末尾的聚合条目）就是它们，未内联 ≠ 未执行。被省略的请**单独调用对应工具**取回——batch 的子操作彼此独立，单独重跑只重做那一项，不影响已执行的操作。",
+        stubbed + tail.len()
+    );
+    (out, Some(note))
+}
+
+/// 「未内联」占位：保持 `{index, tool, ok, result}` 形状不变（客户端/模型无需特判），
+/// 只是把正文换成一句指路的话。
+fn omitted_stub(entry: &Value, chars: usize) -> Value {
+    let tool = entry
+        .get("tool")
+        .and_then(|v| v.as_str())
+        .unwrap_or("该工具");
+    json!({
+        "index": entry.get("index").cloned().unwrap_or(Value::Null),
+        "tool": tool,
+        "ok": true,
+        "omitted": true,
+        "chars": chars,
+        "result": {
+            "content": [{
+                "type": "text",
+                "text": format!("…[子结果约 {chars} 字符，超出 batch 单次内联上限，未内联；请单独调用 {tool} 取回]…"),
+            }]
+        },
+    })
 }
 
 #[cfg(test)]
@@ -440,5 +612,195 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Unknown tool"));
+    }
+
+    /// 返回预算层：整条超限时「按顺序内联 + 其余换 stub」，且**整条 JSON 必须仍可解析**。
+    ///
+    /// 这条要挡的是最诱人的错误做法——把返回字符串从中间截断。子结果里套的是 JSON
+    /// （`result.content[0].text` 又是一段 JSON 文本），截中间得到的是不可解析的残文，
+    /// 模型会当成完整数据去用。所以断言三件事：可解析、第二项带 omitted、给了取回指引。
+    #[tokio::test]
+    async fn oversized_batch_is_budgeted_not_truncated() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|_| {});
+        let mut paths = Vec::new();
+        for name in ["a.txt", "b.txt"] {
+            let p = dir.join(name);
+            // 每份约 32,000 字符：单独看没超 read_files 的 45,000，但两份合计必超 batch 的内容预算。
+            let body: String = (0..400).map(|i| format!("{i:0>79}\n")).collect();
+            std::fs::write(&p, body).expect("seed");
+            paths.push(p.to_string_lossy().into_owned());
+        }
+        let args = BatchArgs {
+            operations: paths
+                .iter()
+                .map(|p| BatchOp {
+                    tool: "read_files".into(),
+                    arguments: json!({ "files": [p] }),
+                })
+                .collect(),
+            stop_on_error: true,
+        };
+        let res = handle(args, &state).await.expect("batch");
+        let text = res["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).expect("整条结果必须仍是合法 JSON");
+        assert_eq!(parsed["total"], 2, "被省略不等于不存在，total 不能变");
+        assert!(
+            parsed["results"][0]["result"]["content"].is_array(),
+            "第一项应正常内联：{}",
+            parsed["results"][0]
+        );
+        assert_eq!(parsed["results"][1]["omitted"], true, "第二项应换成 stub");
+        assert!(
+            parsed["results"][1]["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("单独调用"),
+            "stub 必须指回去哪取：{}",
+            parsed["results"][1]
+        );
+        assert!(
+            parsed["note"].as_str().unwrap_or("").contains("未内联"),
+            "必须说明哪些被省略：{}",
+            parsed["note"]
+        );
+        let n = text.chars().count();
+        assert!(
+            n <= MAX_BATCH_RETURN_CHARS + NOTE_RESERVE_CHARS,
+            "裁剪后仍越线：{n} 字符"
+        );
+    }
+
+    /// 🔴 预算枯竭后的 stub 无界累积回归（2026-10-23 复查实测）：上一版预算归零后
+    /// 仍逐条给剩余子结果写 stub（每条约 230 字符），100 个子操作最坏堆出 ~23,000 字符，
+    /// 把整条结果顶过客户端门槛（≈49,823）→ 整条被降级成 2KB 预览——
+    /// 用防越线的机制造成了越线。修法：预算枯竭后剩余条目并入**一条**聚合收尾
+    /// （read_files `skipped_marker` 同款）。这条测试用 100 个操作贴着 `MAX_BATCH_OPS`
+    /// 上限打满它。
+    #[tokio::test]
+    async fn hundred_oversized_ops_stay_under_client_threshold() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|_| {});
+        // 一个 15 行 × 80 列的文件：单个子结果远小于预算，但 100 份合计必然超。
+        let mut body = String::new();
+        for i in 0..15 {
+            body.push_str(&format!("{i:0>79}\n"));
+        }
+        let p = dir.join("f.txt");
+        std::fs::write(&p, body).expect("seed");
+        let args = BatchArgs {
+            operations: (0..100)
+                .map(|_| BatchOp {
+                    tool: "read_files".into(),
+                    arguments: json!({ "files": [p.to_string_lossy()] }),
+                })
+                .collect(),
+            stop_on_error: true,
+        };
+        let res = handle(args, &state).await.expect("batch");
+        let text = res["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).expect("整条结果必须仍是合法 JSON");
+        assert_eq!(parsed["total"], 100, "被省略不等于不存在，total 不能变");
+        // 聚合收尾必须存在：results 数组条目数 < 100，末条带 tail:true。
+        let arr = parsed["results"].as_array().unwrap();
+        let last = arr.last().unwrap();
+        assert_eq!(last["tail"], true, "末条应是聚合收尾：{last}");
+        assert!(arr.len() < 100, "预算枯竭后不该逐条写 100 个 stub");
+        // 内联 + stub + 聚合收尾 + note 的总长必须有界（无界版本实测 ~64,000）。
+        let n = text.chars().count();
+        assert!(
+            n <= MAX_BATCH_RETURN_CHARS + ERROR_OVERFLOW_CAP,
+            "裁剪后仍越线：{n} 字符"
+        );
+        // 没有一个子结果被丢掉：内联条数 + stub 条数 + tail.count == 100。
+        let inlined = arr
+            .iter()
+            .filter(|e| e.get("omitted").is_none() && e.get("tail").is_none())
+            .count();
+        let stubs = arr
+            .iter()
+            .filter(|e| e.get("omitted").is_some() && e.get("tail").is_none())
+            .count();
+        let tail_count = last["count"].as_u64().unwrap_or(0) as usize;
+        assert_eq!(
+            inlined + stubs + tail_count,
+            100,
+            "内联 {inlined} + stub {stubs} + tail {tail_count} 必须等于 total"
+        );
+    }
+
+    /// 放得下就一个字节都不动：绝大多数 batch（实测平均 16.6KB）走的都是这条路。
+    #[tokio::test]
+    async fn small_batch_result_has_no_budget_note() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|_| {});
+        let p = dir.join("s.txt");
+        std::fs::write(&p, "hello\n").expect("seed");
+        let args = BatchArgs {
+            operations: vec![BatchOp {
+                tool: "read_files".into(),
+                arguments: json!({ "files": [p.to_string_lossy()] }),
+            }],
+            stop_on_error: true,
+        };
+        let res = handle(args, &state).await.expect("batch");
+        let parsed: Value =
+            serde_json::from_str(res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(parsed.get("note").is_none(), "未超限时不该插说明");
+        assert!(parsed["results"][0].get("omitted").is_none());
+        assert_eq!(parsed["executed"], 1);
+    }
+
+    /// 单个子结果只要 **read_files 自己放行**，batch 就必须原样内联。
+    ///
+    /// 回归：内容预算原本取 32KB（比 read_files 的 45,000 更严），于是「直接调 read_files
+    /// 能拿到 40,000 字符、放进 batch 变成 stub」——而 instructions 正引导模型优先用 batch，
+    /// 等于把内容挡在门外，还多花一次「拿到 stub → 单独重调」的往返。
+    #[tokio::test]
+    async fn single_large_sub_result_is_not_punished_by_container_limit() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|_| {});
+        let p = dir.join("big.txt");
+        // 500 行 × 80 列 ≈ 40,000 字符（序列化后 ≈ 40,100），在 read_files 的 45,000 以内。
+        let body: String = (0..500).map(|i| format!("{i:0>79}\n")).collect();
+        std::fs::write(&p, body).expect("seed");
+
+        // 前提：单独调用 read_files 确实能拿到正文。
+        let solo = crate::mcp::tools::read_files::handle(
+            crate::mcp::tools::read_files::ReadFilesArgs {
+                files: vec![crate::mcp::tools::read_files::FileRef::Simple(
+                    p.to_string_lossy().into_owned(),
+                )],
+                start_line: None,
+                end_line: None,
+                encoding: None,
+            },
+            &state,
+        )
+        .await
+        .expect("read_files");
+        let solo_json: Value =
+            serde_json::from_str(solo["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            solo_json[0].get("content").is_some(),
+            "前提不成立：read_files 自己就拒了，这条测试失去意义：{}",
+            solo_json[0]
+        );
+
+        let args = BatchArgs {
+            operations: vec![BatchOp {
+                tool: "read_files".into(),
+                arguments: json!({ "files": [p.to_string_lossy()] }),
+            }],
+            stop_on_error: true,
+        };
+        let res = handle(args, &state).await.expect("batch");
+        let parsed: Value =
+            serde_json::from_str(res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(
+            parsed["results"][0].get("omitted").is_none(),
+            "单独调用能拿到的内容，放进 batch 不该变成 stub：{}",
+            parsed["results"][0]
+        );
+        assert!(
+            parsed.get("note").is_none(),
+            "只有一个子结果且放得下，不该有说明"
+        );
     }
 }

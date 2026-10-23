@@ -49,7 +49,26 @@ pub struct SearchFilesArgs {
     /// 中文 pattern 在 GBK 文件里必然命不中。合法 UTF-8 的文件始终不转码，混合编码目录也安全。
     #[serde(default)]
     pub encoding: Option<String>,
+    /// 软超时（毫秒）。0 = 不限时。
+    ///
+    /// 超时**不报错**，而是把已经找到的部分结果照常返回，并在结果最前面加一条说明
+    /// （见 `handle` 里 `timed_out` 分支）——报错会把找到的东西一起丢掉，
+    /// 再让模型重搜一次，更慢更贵。
+    #[serde(rename = "deadlineMs", default = "default_deadline_ms")]
+    pub deadline_ms: u64,
 }
+
+/// 单次搜索的默认软超时。
+///
+/// 取 20s 而不是 2–5s：审计里 `search_files` 的 p95 就是 19s（全盘正则），门槛压在
+/// 常态量级上会把正常搜索也切成残次结果。20s 只切真正的长尾（实测最长 57s，且那一次
+/// 49s 只换回 2.6KB），把「不可控的空等」变成「有界 + 已知不完整」。
+fn default_deadline_ms() -> u64 {
+    20_000
+}
+
+/// 软超时的硬上限：再长就等于不限时，而模型误填一个巨大值会让本次调用挂到客户端超时。
+const MAX_DEADLINE_MS: u64 = 120_000;
 
 /// 文件内容 Grep 的输出模式（对标 native Claude Code 的 Grep `output_mode`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,25 +219,35 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     // 闭包内累加，回到 tokio 任务后再 record_io（仍在 with_io_timer 作用域内）。
     let io_nanos = Arc::new(AtomicU64::new(0));
     let io_tracker = Arc::clone(&io_nanos);
-    let (matches, truncated) = tokio::task::spawn_blocking(move || {
+    // 0 = 不限时（显式关闭）；其余压在 [1s, MAX_DEADLINE_MS] 内，避免误填一个巨大值
+    // 变成「客户端那边先超时」。
+    let deadline = match args.deadline_ms {
+        0 => None,
+        ms => Some(Duration::from_millis(ms.clamp(1_000, MAX_DEADLINE_MS))),
+    };
+    let deadline_ms_eff = deadline.map(|d| d.as_millis() as u64).unwrap_or(0);
+    let (matches, truncated, timed_out) = tokio::task::spawn_blocking(move || {
         if let Some(file) = single_file {
-            return search_single_file_blocking(
+            // 单文件模式：一次搜索最多一个文件，耗时有界，不需要截止时间。
+            let (v, t) = search_single_file_blocking(
                 &file,
                 content_regex.as_ref(),
                 &grep,
                 max_file_size,
                 &allowed_extensions,
             );
+            return (v, t, false);
         }
-        walk_search_blocking_tracked(
-            &root_resolved,
-            name_matcher.as_ref(),
-            content_regex.as_ref(),
-            &grep,
+        walk_search_blocking_tracked(WalkSpec {
+            root: &root_resolved,
+            name_matcher: name_matcher.as_ref(),
+            content_regex: content_regex.as_ref(),
+            grep: &grep,
             max_file_size,
-            &allowed_extensions,
-            Some(&io_tracker),
-        )
+            allowed_extensions: &allowed_extensions,
+            io_tracker: Some(&io_tracker),
+            deadline,
+        })
     })
     .await
     .map_err(|e| format!("search task panicked: {e}"))?;
@@ -237,8 +266,22 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     // ④ 截断回显：walker 触及 head_limit（= head_limit.unwrap_or(max_results)）提前终止时
     // `truncated=true`，结果不完整。追加一个文本块告知远程 CC「结果被截断、可缩小范围或分页」，
     // 不动 matches 数组结构，模型读自然语言即可理解（不做精确 totalMatched 二次扫描，避免性能回退）。
-    let mut content_blocks =
-        vec![json!({ "type": "text", "text": serde_json::to_string(&matches).unwrap() })];
+    let mut content_blocks: Vec<Value> = Vec::new();
+    // 超时说明放在**最前面**，因为它改变的是对后面全部内容的解读方式：
+    // 「没匹配」在这种情形下不等于「不存在」。放在末尾很容易被模型跳过。
+    if timed_out {
+        content_blocks.push(json!({
+            "type": "text",
+            "text": format!(
+                "⚠️ 搜索在 {}s 软超时处中止：下面是**已经扫到的部分结果，不完整**，剩余目录还没扫。\
+                 \n- 不要用「没有匹配」推断文件里没有这个内容——很可能只是还没扫到。\
+                 \n- 需要完整结果时：缩小 rootPath 到子目录、加 namePattern 限定扩展名（如 *.rs）、收紧 contentPattern，或增大 deadlineMs（单位毫秒，上限 {MAX_DEADLINE_MS}）重试；deadlineMs:0 表示不限时。",
+                deadline_ms_eff / 1000
+            )
+        }));
+    }
+    content_blocks
+        .push(json!({ "type": "text", "text": serde_json::to_string(&matches).unwrap() }));
     if truncated {
         content_blocks.push(json!({
             "type": "text",
@@ -278,6 +321,24 @@ fn compile_glob(pattern: &str) -> Result<globset::GlobMatcher, String> {
         .map(|g| g.compile_matcher())
 }
 
+/// 一次遍历搜索的全部输入。
+///
+/// 打成结构体而不是继续加形参：形参到 8 个后调用点会变成
+/// `(&root, None, Some(&re), &opts, 1_000_000, &[], None, None)`——四个 `None` / `&[]`
+/// 摆在一起全靠位置辨认，加一个参数就静默错位（本轮就踩过：三处旧测试少传 deadline）。
+/// 具名字段让「填错」变成编译错误。
+struct WalkSpec<'a> {
+    root: &'a Path,
+    name_matcher: Option<&'a globset::GlobMatcher>,
+    content_regex: Option<&'a grep_regex::RegexMatcher>,
+    grep: &'a GrepOptions,
+    max_file_size: u64,
+    allowed_extensions: &'a [String],
+    io_tracker: Option<&'a Arc<AtomicU64>>,
+    /// `None` = 不限时。
+    deadline: Option<Duration>,
+}
+
 /// 测试友好包装：保持原函数签名（无 io 追踪），便于现有单元测试零改动。
 /// 生产路径请调用 [`walk_search_blocking_tracked`] 以收集 O1 I/O 耗时。
 pub fn walk_search_blocking(
@@ -288,36 +349,44 @@ pub fn walk_search_blocking(
     max_file_size: u64,
 ) -> Vec<Value> {
     // 测试包装：不限扩展名（传空白名单，assert_extension_allowed 对空白名单放行），保现有测试零改动。
-    walk_search_blocking_tracked(
+    walk_search_blocking_tracked(WalkSpec {
         root,
         name_matcher,
         content_regex,
         grep,
         max_file_size,
-        &[],
-        None,
-    )
+        allowed_extensions: &[],
+        io_tracker: None,
+        deadline: None, // 测试不限时：时长断言/结果数断言不该被墙钟抖动影响
+    })
     .0
 }
 
-/// 带 O1 I/O 追踪的遍历实现。`io_tracker` 为 `Some` 时，文件读取耗时累加到其中
+/// 带 O1 I/O 追踪的遍历实现。`spec.io_tracker` 为 `Some` 时，文件读取耗时累加到其中
 /// （跨 rayon 线程安全），供 [`handle`] 在 spawn_blocking 返回后 [`timing::record_io`]。
 ///
-/// 返回 `(matches, truncated)`：`truncated` 为 `true` 表示遍历因触及 `head_limit` 而提前
-/// 终止（结果不完整）。并行 walker 的 `head_limit` 是软上限（线程竞态下结果数可能略多于/少于
-/// limit），故用「是否触发过 limit 早停」而非「结果数 >= limit」来判定截断，避免误判。
-fn walk_search_blocking_tracked(
-    root: &Path,
-    name_matcher: Option<&globset::GlobMatcher>,
-    content_regex: Option<&grep_regex::RegexMatcher>,
-    grep: &GrepOptions,
-    max_file_size: u64,
-    allowed_extensions: &[String],
-    io_tracker: Option<&Arc<AtomicU64>>,
-) -> (Vec<Value>, bool) {
+/// 返回 `(matches, truncated, timed_out)`：
+/// - `truncated`：遍历因触及 `head_limit` 而提前终止（结果不完整）。并行 walker 的
+///   `head_limit` 是软上限（线程竞态下结果数可能略多于/少于 limit），故用「是否触发过
+///   limit 早停」而非「结果数 >= limit」来判定截断，避免误判。
+/// - `timed_out`：因 `deadline` 到期而提前终止（结果同样不完整，但**原因不同**——分页
+///   救不了，只能缩小范围或放宽时限，所以两者必须分开报）。
+fn walk_search_blocking_tracked(spec: WalkSpec<'_>) -> (Vec<Value>, bool, bool) {
+    let WalkSpec {
+        root,
+        name_matcher,
+        content_regex,
+        grep,
+        max_file_size,
+        allowed_extensions,
+        io_tracker,
+        deadline,
+    } = spec;
     let matches: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let counter: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
     let truncated: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let timed_out: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let started = std::time::Instant::now();
     let head_limit = grep.head_limit;
 
     // ignore::WalkBuilder 默认开启 git_ignore（吃 .gitignore）。hidden(false) 保留
@@ -358,12 +427,22 @@ fn walk_search_blocking_tracked(
     let counter_arc = Arc::clone(&counter);
     let truncated_arc = Arc::clone(&truncated);
     let tracker_clone = io_tracker.map(Arc::clone);
+    let timed_out_arc = Arc::clone(&timed_out);
     builder.build_parallel().run(|| {
         let matches = Arc::clone(&matches_arc);
         let counter = Arc::clone(&counter_arc);
         let truncated = Arc::clone(&truncated_arc);
+        let timed_out = Arc::clone(&timed_out_arc);
         let tracker = tracker_clone.clone();
         Box::new(move |entry| {
+            // 软超时：每个 entry 检查一次（`Instant::now()` 约 20–30ns，相对一次文件读取可忽略）。
+            // 到期用 Quit 截断，而不是继续扫完再丢——目标正是「有界等待」，不是「更慢的有界等待」。
+            if let Some(limit) = deadline {
+                if started.elapsed() >= limit {
+                    timed_out.store(true, Ordering::Relaxed);
+                    return ignore::WalkState::Quit;
+                }
+            }
             if counter.load(Ordering::Relaxed) >= head_limit {
                 truncated.store(true, Ordering::Relaxed);
                 return ignore::WalkState::Quit;
@@ -495,7 +574,11 @@ fn walk_search_blocking_tracked(
             obj.remove("_mtime");
         }
     }
-    (out, truncated.load(Ordering::Relaxed))
+    (
+        out,
+        truncated.load(Ordering::Relaxed),
+        timed_out.load(Ordering::Relaxed),
+    )
 }
 
 /// 单文件模式：rootPath 指向**文件**时直接搜该文件（C 类容错）。
@@ -1038,8 +1121,16 @@ mod tests {
             head_limit: 5,
             ..Default::default()
         };
-        let (matches, truncated) =
-            walk_search_blocking_tracked(&root, None, Some(&re), &opts, 1_000_000, &[], None);
+        let (matches, truncated, _) = walk_search_blocking_tracked(WalkSpec {
+            root: &root,
+            name_matcher: None,
+            content_regex: Some(&re),
+            grep: &opts,
+            max_file_size: 1_000_000,
+            allowed_extensions: &[],
+            io_tracker: None,
+            deadline: None, // 这条测的是 head_limit 截断，墙钟不该干扰断言
+        });
         assert!(
             truncated,
             "content 模式应在 head_limit=5 触发截断标记，结果数：{}",
@@ -1063,8 +1154,16 @@ mod tests {
             head_limit: 5,
             ..Default::default()
         };
-        let (matches, truncated) =
-            walk_search_blocking_tracked(&root, Some(&glob), None, &opts, 1_000_000, &[], None);
+        let (matches, truncated, _) = walk_search_blocking_tracked(WalkSpec {
+            root: &root,
+            name_matcher: Some(&glob),
+            content_regex: None,
+            grep: &opts,
+            max_file_size: 1_000_000,
+            allowed_extensions: &[],
+            io_tracker: None,
+            deadline: None, // 同上
+        });
         assert!(
             truncated,
             "name 模式应在 head_limit=5 触发截断标记，结果数：{}",
@@ -1084,8 +1183,16 @@ mod tests {
             head_limit: 100,
             ..Default::default()
         };
-        let (matches, truncated) =
-            walk_search_blocking_tracked(&root, None, Some(&re), &opts, 1_000_000, &[], None);
+        let (matches, truncated, _) = walk_search_blocking_tracked(WalkSpec {
+            root: &root,
+            name_matcher: None,
+            content_regex: Some(&re),
+            grep: &opts,
+            max_file_size: 1_000_000,
+            allowed_extensions: &[],
+            io_tracker: None,
+            deadline: None, // 这条测的是 head_limit 截断，墙钟不该干扰断言
+        });
         assert!(!truncated, "命中数(3) < head_limit(100) 不应标记截断");
         assert_eq!(matches.len(), 3, "应返回全部 3 条，结果：{matches:?}");
     }
@@ -1470,5 +1577,52 @@ mod tests {
             "超限文件不得返回内容：{matches:?}"
         );
         assert!(matches[0].get("reason").is_some());
+    }
+
+    /// 软超时必须**早停并置位 timed_out**，而不是扫完再丢。
+    ///
+    /// 用 `Duration::ZERO` 让第一个 entry 就判定到期：这条断言「到期即 Quit」这个语义，
+    /// 而不是「多少秒搜完」——后者是墙钟，在 CI 上不可靠。
+    ///
+    /// 🔴 顺带钉住 `truncated` 与 `timed_out` 是**两个不同的位**：超时不是「命中太多被截断」，
+    /// 两者的补救方式完全不同（前者缩小范围/放宽时限，后者调大 maxResults），
+    /// 混成一个位就会给出错误的下一步建议。
+    #[test]
+    fn deadline_quits_early_and_sets_timed_out() {
+        let root = build_fixture();
+        let re = matcher("fn main");
+        let (matches, truncated, timed_out) = walk_search_blocking_tracked(WalkSpec {
+            root: &root,
+            name_matcher: None,
+            content_regex: Some(&re),
+            grep: &GrepOptions::default(),
+            max_file_size: 1_000_000,
+            allowed_extensions: &[],
+            io_tracker: None,
+            deadline: Some(Duration::ZERO),
+        });
+        assert!(timed_out, "到期必须置位 timed_out");
+        assert!(matches.is_empty(), "到期即停，不应再收结果");
+        assert!(!truncated, "超时不应冒充 head_limit 截断");
+    }
+
+    /// 不传 deadline（None）时行为与改动前完全一致：扫完、不置位。
+    #[test]
+    fn no_deadline_scans_to_completion() {
+        let root = build_fixture();
+        let re = matcher("fn main");
+        let (matches, truncated, timed_out) = walk_search_blocking_tracked(WalkSpec {
+            root: &root,
+            name_matcher: None,
+            content_regex: Some(&re),
+            grep: &GrepOptions::default(),
+            max_file_size: 1_000_000,
+            allowed_extensions: &[],
+            io_tracker: None,
+            deadline: None,
+        });
+        assert!(!timed_out, "不限时不得置位 timed_out");
+        assert!(!truncated);
+        assert!(!matches.is_empty(), "fixture 里应有 fn main");
     }
 }
