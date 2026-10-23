@@ -657,6 +657,11 @@ fn entry_date_key(ts: &str) -> Option<String> {
         .map(|dt| dt.with_timezone(&Local).format("%Y-%m-%d").to_string())
 }
 
+/// 是否为 batch **容器**条目（兼容客户端加前缀的写法 `mcp__<server>__batch`）。
+fn is_batch_container(tool: &str) -> bool {
+    tool == "batch" || tool.ends_with("__batch")
+}
+
 /// 把已解析条目聚合进日期桶与工具桶。纯聚合，不做 IO——单独抽出便于单测。
 fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport {
     let idx_of: std::collections::HashMap<&str, usize> = date_keys
@@ -689,8 +694,23 @@ fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport
         let Some(&i) = idx_of.get(dk.as_str()) else {
             continue;
         };
-        let inp = est_tokens(e.params.len() as u64);
-        let out = est_tokens(e.result_bytes.unwrap_or(0));
+        // 🔴 batch 是**容器**：params 里裹着全部子操作参数，返回体里裹着全部子结果文本；
+        // 而 batch.rs 已为每条子操作单独落了审计（各自带 params 与 resultBytes，
+        // 字节按「实际进入上下文」记，被 stub 的只记那句指路话）。
+        // 若外层也计入 token，同一次调用会被记两遍：一次 4 子操作的 batch 会让
+        // input/output 各虚高近一倍，正好把 batch 省下来的量在账上抹平。
+        // 因此外层只保留 calls（它确实被调用了一次），token 全部由子条目的同源分母承担。
+        let is_container = is_batch_container(&e.tool);
+        let inp = if is_container {
+            0
+        } else {
+            est_tokens(e.params.len() as u64)
+        };
+        let out = if is_container {
+            0
+        } else {
+            est_tokens(e.result_bytes.unwrap_or(0))
+        };
         let d = &mut days[i];
         d.calls += 1;
         d.est_input += inp;
@@ -1157,6 +1177,50 @@ mod tests {
                 ("write_file", dk(0).as_str(), 1, 5),
             ]
         );
+    }
+
+    /// batch 容器条目不重复计 token：子操作已各自落审计（带自己的 params 与
+    /// resultBytes），外层若也计入，同一次调用会被记两遍。calls 仍保留 1
+    /// （它确实被调用了一次，日志页要看得到这行）。
+    #[test]
+    fn batch_container_entry_only_counts_calls() {
+        let date_keys = vec![Local::now().format("%Y-%m-%d").to_string()];
+        let mk = |tool: &str, params_len: usize, rb: Option<u64>| AuditEntry {
+            timestamp: Local::now().to_rfc3339(),
+            tool: tool.into(),
+            params: "x".repeat(params_len),
+            success: true,
+            error: None,
+            source_ip: None,
+            duration_ms: None,
+            server_ms: None,
+            io_ms: None,
+            audit_ms: None,
+            net_ms: None,
+            overhead_ms: None,
+            session_id: None,
+            backup_path: None,
+            target_path: None,
+            result_bytes: rb,
+        };
+        let entries = vec![
+            // 外层容器：params 裹着全部子操作参数（400B），返回体是全部子结果（800B）
+            mk("batch", 400, Some(800)),
+            // 两个子操作：各 100B 参数 / 200B 结果
+            mk("read_files", 100, Some(200)),
+            mk("search_files", 100, Some(200)),
+            // 带客户端前缀的写法同样归为容器
+            mk("mcp__cc-bridge__batch", 400, Some(800)),
+        ];
+
+        let report = aggregate_usage(&entries, &date_keys);
+        let td = &report.days[0];
+        // 输出只等于两条子条目之和（200+200 = 400B → 100 tok），外层 800B 不计。
+        assert_eq!(td.est_output, 100);
+        // 输入同理：只算子条目的 100+100 = 200B → 50 tok。
+        assert_eq!(td.est_input, 50);
+        // calls 不归零：4 条调用各自计数（外层 2 次 + 子操作 2 次）。
+        assert_eq!(td.calls, 4);
     }
 
     /// read_usage_report：写真实日志 → 近 7 天报告正确；文件不存在 → 7 个全零天。

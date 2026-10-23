@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::audit;
 use crate::mcp::http::dispatch_tool;
-use crate::mcp::tools::wire_chars;
+use crate::mcp::tools::{result_text_bytes, wire_chars};
 use crate::state::AppState;
 
 /// batch 整条返回的**内容预算**（字符，wire 口径，与 [`crate::mcp::tools::MAX_INLINE_CHARS`] 同源）。
@@ -108,6 +108,8 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
     let source_ip = audit::current_source_ip();
 
     let mut results = Vec::with_capacity(args.operations.len());
+    // 审计条目延后到预算层之后写（见循环内注释）：先收集，等知道「哪条被内联」再记字节。
+    let mut pending: Vec<PendingAudit> = Vec::new();
     let mut executed = 0usize;
 
     for (idx, op) in args.operations.into_iter().enumerate() {
@@ -132,56 +134,33 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
         // 显示“—”的问题。
         let duration_ms = t0.elapsed().as_millis() as u64;
 
-        // 逐子操作补审计：外层工具调用只记一条，写操作必须单独留痕，否则绕过审计。
+        // 逐子操作留痕：外层工具调用只记一条，写操作必须单独留痕，否则绕过审计。
         // server_ms/io_ms/audit_ms/net_ms 仍不单独测（io 归并到 batch 外层审计的 ioMs，作用域
         // 穿透生效），但 duration_ms 现在具体测了，日志列表不再一片“—”。
+        //
+        // 🔴 审计**不在这里写**，只暂存：子操作的输出字节取决于它最后是否被
+        // `apply_return_budget` 内联——被换成 stub 的子结果，模型只看到一句指路话（约 100B），
+        // 而不是几十 KB 正文。若在循环里就按原始子结果记账，统计会凭空多出几 MB 的
+        // 「已消耗」（正是 batch 想省的量被记成花了），把优化效果从账上抹掉。
         if audit_enabled {
-            let mut entry = match &res {
-                Ok(_) => audit::new_entry(
-                    &op.tool,
-                    &op.arguments.to_string(),
-                    true,
-                    None,
-                    source_ip.clone(),
-                    Some(duration_ms),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-                Err(e) => audit::new_entry(
-                    &op.tool,
-                    &op.arguments.to_string(),
-                    false,
-                    Some(e.clone()),
-                    source_ip.clone(),
-                    Some(duration_ms),
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-            };
-            // 把子操作自己的备份路径挂到**子操作这条审计**上（审查 P2）。
-            // 之前这里恒为 None，于是「一键回滚」对 batch 完全失效：用户在日志里
-            // 只看到一堆 null 的备份列。sub-op 的备份是逐文件生成的，
-            // 挂到各自的条目上才谈得上「回滚哪一份」。
-            entry.backup_path = op_backup
-                .as_ref()
-                .and_then(|(bp, _)| bp.as_ref())
-                .map(|p| p.to_string_lossy().into_owned());
-            entry.target_path = op_backup
-                .as_ref()
-                .and_then(|(_, tp)| tp.as_ref())
-                .map(|p| p.to_string_lossy().into_owned());
-            // 同步落盘：与 http.rs::write_audit_for_call 一致。单条写盘约 6.8µs，
-            // 比 spawn_blocking 的跨线程调度（~20-50µs）更省，且请求返回前审计已落盘，
-            // 消除异步落盘在并发测试下的时序竞争（perf_real::batch_writes_are_audited）。
-            if let Err(e) = audit::write_audit_log(&state.data_dir, &entry) {
-                log::error!("batch 子操作审计写入失败：{e}");
-            }
+            pending.push(PendingAudit {
+                index: idx,
+                tool: op.tool.clone(),
+                params: op.arguments.to_string(),
+                err: res.as_ref().err().cloned(),
+                duration_ms,
+                // 备份信息必须在 with_op_backup 作用域内取（审查 P2）：`take_op_backup`
+                // 读的是 task_local 槽，一旦作用域结束，外面再取恒为 None——原实现
+                // 正是这样让 batch 的**每条**审计都丢了 backupPath，一键回滚对 batch 完全失效。
+                backup_path: op_backup
+                    .as_ref()
+                    .and_then(|(bp, _)| bp.as_ref())
+                    .map(|p| p.to_string_lossy().into_owned()),
+                target_path: op_backup
+                    .as_ref()
+                    .and_then(|(_, tp)| tp.as_ref())
+                    .map(|p| p.to_string_lossy().into_owned()),
+            });
         }
 
         match res {
@@ -215,6 +194,16 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
     // （`tail` 条目），此时 results.len() < 子结果数——「被省略不等于不存在」。
     let total = results.len();
     let (results, budget_note) = apply_return_budget(results);
+    // 预算层定型后，每条子结果「实际发出多少字节」才成为定局——此时补审计。
+    // 写盘仍在本函数内、响应返回前完成（与 http.rs::write_audit_for_call 同款同步写，
+    // 约 6.8µs/条，比 spawn_blocking 的跨线程调度更省），审计时序不变。
+    write_sub_op_audits(
+        &pending,
+        &results,
+        audit_enabled,
+        source_ip,
+        &state.data_dir,
+    );
     let mut envelope = json!({
         "executed": executed,
         "total": total,
@@ -229,6 +218,87 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
             "text": serde_json::to_string(&envelope).unwrap_or_default()
         }]
     }))
+}
+
+/// batch 子操作的待写审计条目。
+///
+/// 之所以延后写：子操作的输出字节取决于预算层是否把它的结果换成了 stub，
+/// 循环内还不知道（见 `handle_inner`）。除字节外的字段都在循环里定好。
+struct PendingAudit {
+    index: usize,
+    tool: String,
+    params: String,
+    /// `None` = 子操作成功；`Some(msg)` = 失败原因。
+    err: Option<String>,
+    duration_ms: u64,
+    backup_path: Option<String>,
+    target_path: Option<String>,
+}
+
+/// 把每条子操作按**实际进入上下文**的字节写入审计。
+///
+/// 🔴 这是「同源分母」的关键一环：`audit::aggregate_usage` 对 batch 外层条目
+/// 不再计 token（它的 params/结果已由这里的子条目逐条计入），所以子条目的字节
+/// 必须是真实的最终量，否则整份用量统计会失真：
+/// - 内联的子结果 → 子结果文本字节；
+/// - 被换成 stub 的 → stub 那句指路话的字节（模型只看到这些）；
+/// - 并入末尾聚合收尾的 → 0（一个字都没发出，`tail` 条目不含原文）。
+fn write_sub_op_audits(
+    pending: &[PendingAudit],
+    results: &[Value],
+    audit_enabled: bool,
+    source_ip: Option<String>,
+    data_dir: &std::path::Path,
+) {
+    if !audit_enabled {
+        return;
+    }
+    let bytes = final_result_bytes(results);
+    for p in pending {
+        let mut entry = audit::new_entry(
+            &p.tool,
+            &p.params,
+            p.err.is_none(),
+            p.err.clone(),
+            source_ip.clone(),
+            Some(p.duration_ms),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // 未出现在 `final_result_bytes` 里（进了聚合收尾）→ 0，不是「未知」：
+        // 未知（None）会被聚合当 0 计，与真实 0 在 UI 上无法区分，这里直接落 0 更诚实。
+        entry.result_bytes = Some(bytes.get(&p.index).copied().unwrap_or(0));
+        entry.backup_path = p.backup_path.clone();
+        entry.target_path = p.target_path.clone();
+        if let Err(e) = audit::write_audit_log(data_dir, &entry) {
+            log::error!("batch 子操作审计写入失败：{e}");
+        }
+    }
+}
+
+/// 预算层输出 → `index → 实际发出字节`。
+///
+/// 口径与 `http.rs` 的 `result_bytes` 一致（text 块字节和；失败按 `"Error: " + msg`）。
+/// `tail` 聚合条目整条跳过：它只带条数与前 20 个 index，被它收走的子结果原文一个字都没发出。
+fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, u64> {
+    let mut m = std::collections::HashMap::new();
+    for e in results {
+        if e.get("tail").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(idx) = e.get("index").and_then(Value::as_u64) else {
+            continue;
+        };
+        let bytes = match e.get("error").and_then(Value::as_str) {
+            Some(err) => ("Error: ".len() + err.len()) as u64,
+            None => e.get("result").map(result_text_bytes).unwrap_or(0),
+        };
+        m.insert(idx as usize, bytes);
+    }
+    m
 }
 
 /// 按预算裁剪 batch 的 `results`。返回 `(结果, 说明)`。
@@ -746,6 +816,109 @@ mod tests {
         assert!(parsed.get("note").is_none(), "未超限时不该插说明");
         assert!(parsed["results"][0].get("omitted").is_none());
         assert_eq!(parsed["executed"], 1);
+    }
+
+    /// `final_result_bytes`：内联 / stub / 错误 / 聚合收尾 四种形态的字节口径。
+    #[test]
+    fn final_result_bytes_matches_what_model_sees() {
+        let results = vec![
+            // 内联：原文还在 → 记子结果文本字节
+            json!({
+                "index": 0,
+                "tool": "read_files",
+                "ok": true,
+                "result": { "content": [{ "type": "text", "text": "0123456789" }] },
+            }),
+            // 被换成 stub：原文已丢弃，只剩一句指路话 → 记那句话，不是 chars 里的 30,000
+            json!({
+                "index": 1,
+                "tool": "read_files",
+                "ok": true,
+                "omitted": true,
+                "chars": 30_000,
+                "result": { "content": [{ "type": "text", "text": "未内联请单独调用" }] },
+            }),
+            // 失败子结果：与 http.rs 同口径（"Error: " + 文案）
+            json!({ "index": 2, "tool": "read_files", "ok": false, "error": "nope" }),
+        ];
+        let m = final_result_bytes(&results);
+        assert_eq!(m.get(&0).copied(), Some(10));
+        assert_eq!(m.get(&1).copied(), Some("未内联请单独调用".len() as u64));
+        assert_eq!(m.get(&2).copied(), Some(("Error: ".len() + 4) as u64));
+
+        // 聚合收尾只带条数与前 20 个 index，被它收走的子结果一个字都没发出
+        // → 不在表里（调用方按 0 计），绝不能记成原文大小。
+        let tail = vec![json!({
+            "omitted": true,
+            "tail": true,
+            "count": 3,
+            "indexes": [3, 4, 5],
+            "result": { "content": [{ "type": "text", "text": "…[预算已满]…" }] },
+        })];
+        assert!(final_result_bytes(&tail).is_empty());
+    }
+
+    /// 子操作审计的 `resultBytes` 必须是**实际进入上下文**的量。
+    ///
+    /// 回归：原先传 None（聚合时按 0 计），batch 内的 read_files 全被记成 0 输出，
+    /// 按工具算平均时被拉低（历史 avg 7.9KB vs 实 15.3KB 的偏差来源之一）。
+    /// 但也不能简单改成原始子结果大小：被预算层换成 stub 的子操作，模型只看到
+    /// 一句指路话，记成几十 KB 等于把 batch 省下来的量记成花了。
+    #[tokio::test]
+    async fn sub_op_audit_records_actual_inlined_bytes() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|c| c.audit_enabled = true);
+        // 两个各约 30,000 字符的文件：单个都在 read_files 的 45,000 以内，
+        // 但加起来超过 batch 的 46,024 → 第二个必被换成 stub。
+        let seed = |name: &str| {
+            let p = dir.join(name);
+            let body: String = (0..400).map(|i| format!("{i:0>74}\n")).collect();
+            std::fs::write(&p, body).expect("seed");
+            p
+        };
+        let p1 = seed("audit_a.txt");
+        let p2 = seed("audit_b.txt");
+        let args = BatchArgs {
+            operations: vec![
+                BatchOp {
+                    tool: "read_files".into(),
+                    arguments: json!({ "files": [p1.to_string_lossy()] }),
+                },
+                BatchOp {
+                    tool: "read_files".into(),
+                    arguments: json!({ "files": [p2.to_string_lossy()] }),
+                },
+            ],
+            stop_on_error: true,
+        };
+        let res = handle(args, &state).await.expect("batch");
+        let parsed: Value =
+            serde_json::from_str(res["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            parsed["results"][1]["omitted"], true,
+            "前提不成立：第二条没被 stub，本测试失去意义"
+        );
+
+        let log = std::fs::read_to_string(dir.join("audit.log")).expect("audit.log");
+        let entries: Vec<Value> = log
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+        let rf: Vec<&Value> = entries
+            .iter()
+            .filter(|e| e["tool"] == "read_files")
+            .collect();
+        assert_eq!(rf.len(), 2, "每条子操作都应有独立审计");
+        let inlined = rf[0]["resultBytes"]
+            .as_u64()
+            .expect("内联那条必须有字节（None = 统计按 0 计，正是本 bug）");
+        let stubbed = rf[1]["resultBytes"]
+            .as_u64()
+            .expect("被 stub 那条也必须有字节（记 0 比记 None 诚实）");
+        assert!(inlined > 25_000, "内联那条应记真实内容量，实得 {inlined}");
+        assert!(
+            stubbed < 1_000,
+            "被 stub 那条只该记指路话的字节，实得 {stubbed}（记成 30,000 就是把省下的量记成花了）"
+        );
     }
 
     /// 单个子结果只要 **read_files 自己放行**，batch 就必须原样内联。
