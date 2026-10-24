@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { ccReducer, initialCcView, pendingApprovals, type CcView } from "./ccReducer";
+import {
+  buildAnswers,
+  ccReducer,
+  initialCcView,
+  pendingApprovals,
+  type CcView,
+} from "./ccReducer";
 import type { CcEvent } from "./ccEventTypes";
 
 const run = (events: CcEvent[], from: CcView = initialCcView): CcView =>
@@ -167,5 +173,95 @@ describe("ccReducer", () => {
   it("未知事件被忽略，不炸也不改状态", () => {
     const v = run([{ kind: "nope" } as unknown as CcEvent]);
     expect(v).toEqual(initialCcView);
+  });
+});
+
+/** 真机抓到的 `AskUserQuestion` 入参（2026-10-24 探针），字段顺序也照抄。 */
+const askInput = {
+  questions: [
+    {
+      question: "今天午饭吃什么？",
+      header: "午饭",
+      multiSelect: false,
+      options: [
+        { label: "面", description: "热汤面" },
+        { label: "饭", description: "米饭" },
+      ],
+    },
+  ],
+};
+
+describe("提问卡", () => {
+  it("question 事件带出题目，工具名标记为 AskUserQuestion", () => {
+    const v = run([
+      { kind: "question", requestId: "q-1", toolUseId: "t-1", input: askInput },
+    ]);
+    expect(v.messages).toHaveLength(1);
+    const card = v.messages[0];
+    expect(card).toMatchObject({ kind: "approval", id: "q-1", toolName: "AskUserQuestion" });
+    if (card.kind !== "approval") throw new Error("应为审批卡");
+    expect(card.questions).toEqual([
+      {
+        question: "今天午饭吃什么？",
+        header: "午饭",
+        multiSelect: false,
+        options: [
+          { label: "面", description: "热汤面" },
+          { label: "饭", description: "米饭" },
+        ],
+      },
+    ]);
+  });
+
+  /// 重放幂等：切页回来同一张提问不能长出第二张。
+  it("同一 requestId 的提问只成一张卡", () => {
+    const v = run([
+      { kind: "question", requestId: "q-1", toolUseId: null, input: askInput },
+      { kind: "question", requestId: "q-1", toolUseId: null, input: askInput },
+    ]);
+    expect(v.messages).toHaveLength(1);
+  });
+
+  /// 入参来自 CLI，字段不可假设。读不出题目时卡片仍在（用户还能跳过），
+  /// 但 questions 为空 —— 渲染层据此退回「只能跳过」的形态。
+  it("脏入参不炸，questions 为空", () => {
+    for (const bad of [{}, { questions: "nope" }, { questions: [{ question: "  " }] }]) {
+      const v = run([{ kind: "question", requestId: "q-2", toolUseId: null, input: bad }]);
+      const card = v.messages[0];
+      if (card.kind !== "approval") throw new Error("应为审批卡");
+      expect(card.questions).toEqual([]);
+    }
+  });
+
+  /// 没有 options 的题保留（问题文本仍然可读），只是渲染成「没给选项」。
+  it("题没有 options 时保留题目本身", () => {
+    const v = run([
+      { kind: "question", requestId: "q-3", toolUseId: null, input: { questions: [{ question: "继续吗" }] } },
+    ]);
+    const card = v.messages[0];
+    if (card.kind !== "approval") throw new Error("应为审批卡");
+    expect(card.questions?.[0]).toMatchObject({ question: "继续吗", options: [], multiSelect: false });
+  });
+});
+
+describe("buildAnswers", () => {
+  const questions = [
+    { question: "今天午饭吃什么？", options: [], multiSelect: false },
+    { question: "能接受哪些主食？", options: [], multiSelect: true },
+  ];
+
+  it("只保留有答案的题，多选保留多个", () => {
+    expect(buildAnswers(questions, { "能接受哪些主食？": ["面", "饭"] })).toEqual({
+      "能接受哪些主食？": ["面", "饭"],
+    });
+  });
+
+  /// 点了又取消会留下空数组 —— 回 `[]` 会被 Rust 当成「既没答也没跳过」。
+  it("空数组与空白 label 都被剔除", () => {
+    expect(buildAnswers(questions, { "今天午饭吃什么？": [], "能接受哪些主食？": ["  "] })).toEqual({});
+  });
+
+  it("没有勾选时返回空对象", () => {
+    expect(buildAnswers(questions, {})).toEqual({});
   });
 });

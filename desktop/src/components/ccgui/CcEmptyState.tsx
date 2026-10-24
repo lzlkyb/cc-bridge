@@ -22,7 +22,7 @@ export function CcEmptyState({
   onSend,
   cwd,
   onCwdChange,
-  cwdEditable,
+  isRemote,
 }: {
   probe: CcProbe | null;
   probing: boolean;
@@ -30,8 +30,11 @@ export function CcEmptyState({
   onSend: (text: string) => void;
   cwd: string;
   onCwdChange: (v: string) => void;
-  /** 远端模式下工作目录由远端 shell 决定，本机才可编辑。 */
-  cwdEditable: boolean;
+  /**
+   * 远端目标。**只管文案**，不管禁用 —— 两端都能填目录，区别只是
+   * 「留空」落在哪儿（本机是家目录，远端是非登录 shell 的登录目录）。
+   */
+  isRemote: boolean;
 }) {
   const missing = probe !== null && !probe.found;
 
@@ -80,16 +83,18 @@ export function CcEmptyState({
 
           <label className="mt-2 flex w-full max-w-[420px] flex-col items-start gap-1 text-left">
             <span className="text-[10.5px] text-muted-foreground">
-              工作目录{cwdEditable ? "" : "（远端，由远端 shell 决定）"}
+              工作目录
+              <span className="ml-1 opacity-70">
+                {isRemote ? "（写远端路径，留空为登录目录）" : "（留空为家目录）"}
+              </span>
             </span>
             <input
               value={cwd}
               onChange={(e) => onCwdChange(e.target.value)}
-              disabled={!cwdEditable}
               spellCheck={false}
-              placeholder={cwdEditable ? "留空 = 家用目录" : "留空 = 登录目录"}
+              placeholder={isRemote ? "留空 = 登录目录" : "留空 = 家目录"}
               data-cc-inset
-              className="w-full rounded-lg border border-border bg-card px-2.5 py-1.5 font-mono text-[11.5px] text-foreground outline-none transition-colors focus:border-primary/40 disabled:opacity-60"
+              className="w-full rounded-lg border border-border bg-card px-2.5 py-1.5 font-mono text-[11.5px] text-foreground outline-none transition-colors focus:border-primary/40"
             />
           </label>
         </>

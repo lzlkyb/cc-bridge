@@ -2,6 +2,7 @@ import { memo } from "react";
 import type { CcApproval } from "../../lib/ccGuiTypes";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { QuestionCard } from "./QuestionCard";
 import { asString } from "./summarize";
 
 /**
@@ -11,16 +12,26 @@ import { asString } from "./summarize";
  * 1. **必须显示 `decision_reason`** —— 用户要知道"为什么问我"，否则只会条件反射按允许。
  * 2. **必须显示超时** —— CLI 侧 60s 到点自动拒绝，静默转圈会让人以为还在等。
  * 3. **允许/拒绝不做主次强调** —— 把「允许」画成主按钮等于引导放行，风险由界面承担。
+ *
+ * `AskUserQuestion` 不走这里：它要选项，不是放行。分派给 `QuestionCard`。
  */
 function ApprovalCardImpl({
   approval,
   onAllow,
   onDeny,
+  onAnswer,
 }: {
   approval: CcApproval;
   onAllow: () => void;
   onDeny: () => void;
+  /** 提问的答案：`{问题文本: [选项 label…]}`。普通审批不会调它。 */
+  onAnswer: (answers: Record<string, string[]>) => void;
 }) {
+  // 提问一律走选项卡（哪怕一道题都没读出来 —— 那也有「跳过」这条路，
+  // 而「允许」在协议上无法表达一个答案）。
+  if (approval.toolName === "AskUserQuestion") {
+    return <QuestionCard approval={approval} onSubmit={onAnswer} onSkip={onDeny} />;
+  }
   const command = asString(approval.input.command);
   const detail = command || JSON.stringify(approval.input, null, 2);
 

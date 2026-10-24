@@ -16,7 +16,7 @@ import {
   type CcEvent,
   type CcRetryInfo,
 } from "./ccEventTypes";
-import type { CcMessage } from "./ccGuiTypes";
+import type { CcMessage, CcQuestion } from "./ccGuiTypes";
 
 export type CcView = {
   messages: CcMessage[];
@@ -98,6 +98,70 @@ function upsertText(messages: CcMessage[], blockId: string, text: string, stream
   const copy = messages.slice();
   copy[idx] = { ...cur, text: next };
   return copy;
+}
+
+/**
+ * 从 `AskUserQuestion` 的入参里读出题目。
+ *
+ * 入参来自 CLI（`control_request.input`），字段形状**不能假设**：模型偶尔给
+ * 没有 `options` 的题、`multiSelect` 缺失、`question` 为空。这里逐字段判型，
+ * 读不出来的题直接丢掉 —— 卡片少一道题总比渲染出 `undefined` 好。
+ *
+ * 导出的目的是给 `readQuestions` 单独写测试：这段解析决定「用户能选什么」，
+ * 而选项 label 又会被原样回传成答案，错了模型收到的是不存在的选项。
+ */
+export function readQuestions(input: Record<string, unknown>): CcQuestion[] {
+  const raw = input.questions;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item): CcQuestion[] => {
+    if (!item || typeof item !== "object") return [];
+    const q = item as Record<string, unknown>;
+    const question = typeof q.question === "string" ? q.question.trim() : "";
+    if (!question) return [];
+    const options = Array.isArray(q.options)
+      ? q.options.flatMap((opt) => {
+          if (!opt || typeof opt !== "object") return [];
+          const o = opt as Record<string, unknown>;
+          const label = typeof o.label === "string" ? o.label.trim() : "";
+          if (!label) return [];
+          return [
+            {
+              label,
+              description: typeof o.description === "string" ? o.description : undefined,
+            },
+          ];
+        })
+      : [];
+    return [
+      {
+        question,
+        header: typeof q.header === "string" ? q.header : undefined,
+        multiSelect: q.multiSelect === true,
+        options,
+      },
+    ];
+  });
+}
+
+/**
+ * 把勾选状态压成回传形状：`{问题文本: [选项 label…]}`。
+ *
+ * 和 `readQuestions` 是一进一出的一对：那边解 CLI 的入参，这边拼我们回传的
+ * `updatedInput.answers`。空答案的题直接不出现 —— 回一个 `[]` 会让 Rust 侧
+ * 既不算「回答」也不算「跳过」，卡在中间。
+ *
+ * 不复用勾选 state 的原因：那里面可能有用户点了又取消留下的空数组。
+ */
+export function buildAnswers(
+  questions: CcQuestion[],
+  picked: Record<string, string[]>,
+): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const q of questions) {
+    const labels = (picked[q.question] ?? []).map((l) => l.trim()).filter((l) => l.length > 0);
+    if (labels.length > 0) out[q.question] = labels;
+  }
+  return out;
 }
 
 function applyEvent(view: CcView, event: CcEvent): CcView {
@@ -193,10 +257,12 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
     }
 
     case "question": {
-      // `AskUserQuestion` 与审批同构（都是 `control_request`），v1 借用审批卡呈现。
-      // 差别在语义：这里是「选一个」，不是「放行」。文案上区分开。
+      // `AskUserQuestion` 与审批同构（都是 `control_request`），但语义是「选择」。
+      // 题目解析出来才渲染成选项；解析不出来就退回普通审批形态 ——
+      // 宁可显示原始 JSON 让用户看着放行，也不要画出几张点不动的空卡。
       const id = event.requestId;
       if (view.messages.some((m) => m.kind === "approval" && m.id === id)) return view;
+      const questions = readQuestions(event.input);
       return {
         ...view,
         messages: [
@@ -206,8 +272,12 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
             id,
             toolName: "AskUserQuestion",
             input: event.input,
-            reason: "CC 在问你一个问题。允许 = 按问题里的默认选项继续，拒绝 = 让它别问、自己决定。",
+            reason:
+              questions.length > 0
+                ? "选好之后提交。不想答就跳过 —— 跳过后 CC 会自己决定。"
+                : "这条提问没有可读的选项，只能整体放行或拒绝。",
             expiresInSec: APPROVAL_TIMEOUT_SEC,
+            questions,
           },
         ],
       };

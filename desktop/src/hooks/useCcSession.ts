@@ -7,6 +7,7 @@ import {
   type CcSnapshot,
 } from "../lib/ccEventTypes";
 import { ccReducer, initialCcView, pendingApprovals } from "../lib/ccReducer";
+import { pickClaudePath } from "../lib/ccTarget";
 import type { CcPermissionMode } from "../lib/ccGuiTypes";
 
 /** 起一轮要传给后端的东西。 */
@@ -45,6 +46,15 @@ export function useCcSession(target: CcTarget) {
   const [ready, setReady] = useState(false);
   /** 已消化的最大序号 + 1。快照与实时事件的去重全靠它。 */
   const seqRef = useRef(0);
+  /**
+   * 最近一次探测到的 claude 绝对路径 + 它属于哪个目标。
+   *
+   * 远端**必须**用绝对路径执行：真正跑起来的 bash 是非登录的，拿不到
+   * `~/.local/bin` 那份 PATH，直接写 `claude` 会「命令不存在」。
+   * 记 `connId` 是为了防止换了连接还用上一个目标的路径 —— 那会让它 exec 一个
+   * 根本没装在这台机器上的文件。
+   */
+  const probeRef = useRef<{ connId: string | null; path: string } | null>(null);
   /** 起一轮时读最新配置，避免把 target 塞进依赖导致反复重订阅。 */
   const targetRef = useRef(target);
   targetRef.current = target;
@@ -104,6 +114,9 @@ export function useCcSession(target: CcTarget) {
         claudePath: t.claudePath,
       });
       setProbe(res);
+      // 路径要留着给 `start` 用：远端靠它才能 exec 到 claude。
+      probeRef.current =
+        res.found && res.path.trim() ? { connId: t.connectionId, path: res.path.trim() } : null;
       if (!res.found) dispatch({ type: "error", message: res.message });
       return res;
     } catch (e) {
@@ -118,6 +131,9 @@ export function useCcSession(target: CcTarget) {
     const t = targetRef.current;
     const trimmed = text.trim();
     if (!trimmed) return;
+    // 调用方显式给的优先；否则用**同一目标**探到的绝对路径 —— 远端非登录 shell
+    // 没有 `~/.local/bin` 那份 PATH，不带就起不来。判断逻辑见 `pickClaudePath`。
+    const claudePath = pickClaudePath(t.claudePath, probeRef.current, t.connectionId);
     setBusy(true);
     dispatch({ type: "sending" });
     try {
@@ -127,7 +143,7 @@ export function useCcSession(target: CcTarget) {
           cwd: t.cwd,
           model: t.model,
           permissionMode: t.permissionMode,
-          claudePath: t.claudePath,
+          claudePath,
           text: trimmed,
         },
       });
@@ -139,14 +155,29 @@ export function useCcSession(target: CcTarget) {
     }
   }, []);
 
-  const respond = useCallback(async (requestId: string, decision: "allow" | "deny", message?: string) => {
-    try {
-      await invoke<void>("cc_respond", { requestId, decision, message });
-    } catch (e) {
-      // 常见原因：这一轮已经结束（60s 超时 / 用户中断），请求 id 随之失效。
-      dispatch({ type: "error", message: String(e) });
-    }
-  }, []);
+  /**
+   * 裁决一条审批，或回答一条提问。
+   *
+   * `answers` 只在提问时给：形状 `{问题文本: [选项 label…]}`，Rust 侧会并进
+   * `updatedInput.answers`。给普通工具带 answers 会被后端拒掉（那是防止这条路
+   * 变成「给任意工具入参塞任意字段」的闸门）。
+   */
+  const respond = useCallback(
+    async (
+      requestId: string,
+      decision: "allow" | "deny",
+      message?: string,
+      answers?: Record<string, string[]>,
+    ) => {
+      try {
+        await invoke<void>("cc_respond", { requestId, decision, message, answers });
+      } catch (e) {
+        // 常见原因：这一轮已经结束（60s 超时 / 用户中断），请求 id 随之失效。
+        dispatch({ type: "error", message: String(e) });
+      }
+    },
+    [],
+  );
 
   const interrupt = useCallback(async () => {
     try {

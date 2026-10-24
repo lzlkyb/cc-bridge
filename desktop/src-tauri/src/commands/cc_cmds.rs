@@ -24,7 +24,7 @@ use super::ssh_cmds::ssh_link_args;
 use crate::cc_session::channel::{self, LaunchSpec};
 use crate::cc_session::manager::{self, Launch, SnapshotDto, TauriSink};
 use crate::cc_session::proto::CcEvent;
-use crate::cc_session::session::Verdict;
+use crate::cc_session::session::{with_answers, Verdict};
 use crate::mcp::bridge::spawn;
 use crate::state::AppState;
 
@@ -314,11 +314,16 @@ pub async fn cc_send(
     Ok(())
 }
 
-/// 批准 / 拒绝。
+/// 批准 / 拒绝 / 回答提问。
 ///
 /// 🔴 `allow` 的入参**从 Rust 侧取**（sink 收到 `PermissionAsk` 时登记的），
 /// 不让前端回传：那份入参决定了「批准的是哪条命令」，交给一个可能被旧状态污染的
 /// 图层去重述，等于把安全判据外包。
+///
+/// 唯一的例外是 `answers`：`AskUserQuestion` 的答案在协议里就是
+/// `updatedInput.answers`，没有第二条通道（2026-10-24 真机探针）。所以它只能
+/// 在「登记时就是一条提问」的前提下并入，且键必须落在本次问过的问题里 ——
+/// 放行条件由 `PendingAsk::accepts_answers` 定死，不由这一次调用声明。
 #[tauri::command]
 pub async fn cc_respond(
     app: AppHandle,
@@ -326,6 +331,7 @@ pub async fn cc_respond(
     request_id: String,
     decision: String,
     message: Option<String>,
+    answers: Option<serde_json::Value>,
 ) -> Result<(), String> {
     let request_id = request_id.trim().to_string();
     if request_id.is_empty() {
@@ -334,11 +340,28 @@ pub async fn cc_respond(
     let decision = decision.trim().to_ascii_lowercase();
     let verdict = match decision.as_str() {
         "allow" => {
-            let input = state
+            let ask = state
                 .cc
                 .shared()
-                .pending_input(&request_id)
+                .pending_ask(&request_id)
                 .ok_or("这条请求已经失效（进程已退出或已处理过），请重新发起")?;
+            let input = match answers {
+                Some(given) => {
+                    if !ask.accepts_answers {
+                        return Err(
+                            "这个工具不接受回答：只有提问（AskUserQuestion）能带 answers".into(),
+                        );
+                    }
+                    with_answers(&ask.input, &given)?
+                }
+                // 提问却没带答案：CLI 会认定「用户没回答」（真机实测回执
+                // `The user did not answer the questions.`），模型拿不到任何选择。
+                // 与其让它误以为用户放弃了，不如让前端明确走「跳过」。
+                None if ask.accepts_answers => {
+                    return Err("这是一条提问，请先选择答案，或点「跳过」".into());
+                }
+                None => ask.input,
+            };
             Verdict::allow_as_is(&input)
         }
         "deny" => Verdict::deny(message.unwrap_or_default()),

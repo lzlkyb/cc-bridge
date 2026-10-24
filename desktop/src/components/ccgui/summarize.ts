@@ -55,3 +55,16 @@ export function editPair(input: Record<string, unknown>): { oldText: string; new
   }
   return null;
 }
+
+/**
+ * 已落定卡片的落款。
+ *
+ * 提问说「回答 / 跳过」，审批说「允许 / 拒绝」—— 两件事用一个词会让人分不清
+ * 自己刚才是放行了一条命令，还是回答了一个问题。落款留在历史里，事后回看
+ * 只能靠它判断当时发生了什么。
+ */
+export function verdictLabel(toolName: string, verdict: "allow" | "deny"): string {
+  const ask = toolName === "AskUserQuestion";
+  if (verdict === "allow") return ask ? "已回答" : "已允许一次";
+  return ask ? "已跳过" : "已拒绝";
+}

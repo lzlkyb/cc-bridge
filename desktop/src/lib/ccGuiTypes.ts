@@ -27,6 +27,17 @@ export type CcToolCall = {
 /** 权限模式：与 CLI 的 `--permission-mode` 取值同名。 */
 export type CcPermissionMode = "plan" | "default" | "acceptEdits" | "bypassPermissions";
 
+/**
+ * `AskUserQuestion` 的一道题。形状来自真机 `control_request.input.questions`
+ * （2026-10-24 探针），不是照文档写的。
+ */
+export type CcQuestion = {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: { label: string; description?: string }[];
+};
+
 export type CcApproval = {
   kind: "approval";
   id: string;
@@ -36,6 +47,14 @@ export type CcApproval = {
   reason: string;
   /** 审批有超时（CLI 侧 60s），到点自动拒绝。界面必须显式呈现，不能只转圈。 */
   expiresInSec: number;
+  /**
+   * 提问的题目。只有 `AskUserQuestion` 非空；普通工具审批没有这个字段。
+   *
+   * 答案要按 `{问题文本: [选项 label…]}` 回传 —— 协议里它走
+   * `updatedInput.answers`，没有独立通道（实测：不带 answers 回 allow，
+   * 模型收到的是「用户没有回答」）。
+   */
+  questions?: CcQuestion[];
 };
 
 export type CcMessage =

@@ -95,12 +95,25 @@ pub struct Shared {
     /// 所以「进程活着」只说明可以复用，不代表正在跑；拿它当忙碌判据会把
     /// 后续每一条消息都拒绝掉。
     turn_active: AtomicBool,
-    /// 待批单：`request_id` → 工具原始入参。
+    /// 待批单：`request_id` → 工具原始入参（外加「能不能补 answers」的判据）。
     ///
     /// 🔴 存在这里是**为了不信任前端**：`allow` 必须把**完整入参**回给 CLI，
     /// 让前端把入参再传一遍，等于把「批准的是哪条命令」这个判据交给了一个可能
     /// 被旧状态污染的图层。sink 收到 `PermissionAsk` 时登记，批准/撤回时消费。
-    pending: StdMutex<HashMap<String, serde_json::Value>>,
+    pending: StdMutex<HashMap<String, PendingAsk>>,
+}
+
+/// 一条待批请求。
+///
+/// `accepts_answers` 在**登记那一刻**由事件类型定死（只有 `AskUserQuestion` 是 true），
+/// 而不是等 `cc_respond` 时再问前端「这是什么工具」—— 那样前端一句谎话就能给
+/// `Bash` 的入参塞进去任意字段。
+#[derive(Debug, Clone, Default)]
+pub struct PendingAsk {
+    /// `true` = 这是提问，允许把用户的回答写进 `updatedInput.answers`。
+    pub accepts_answers: bool,
+    /// 工具原始入参，批准时原样回传（除非上一条为 true 且带了回答）。
+    pub input: serde_json::Value,
 }
 
 impl Shared {
@@ -143,15 +156,26 @@ impl Shared {
         self.turn_active.store(on, Ordering::SeqCst);
     }
 
-    fn ask(&self, request_id: &str, input: &serde_json::Value) {
+    fn ask(&self, request_id: &str, accepts_answers: bool, input: &serde_json::Value) {
         if let Ok(mut g) = self.pending.lock() {
-            g.insert(request_id.to_string(), input.clone());
+            g.insert(
+                request_id.to_string(),
+                PendingAsk {
+                    accepts_answers,
+                    input: input.clone(),
+                },
+            );
         }
     }
 
-    /// 取回待批单的入参。**不删除**：写失败（进程刚好退出）时用户还能再点一次。
-    pub fn pending_input(&self, request_id: &str) -> Option<serde_json::Value> {
+    /// 取回待批单。**不删除**：写失败（进程刚好退出）时用户还能再点一次。
+    pub fn pending_ask(&self, request_id: &str) -> Option<PendingAsk> {
         self.pending.lock().ok()?.get(request_id).cloned()
+    }
+
+    /// 只要入参（大多数调用方）。
+    pub fn pending_input(&self, request_id: &str) -> Option<serde_json::Value> {
+        self.pending_ask(request_id).map(|a| a.input)
     }
 
     pub fn forget(&self, request_id: &str) {
@@ -210,10 +234,12 @@ fn bookkeep(shared: &Shared, event: &CcEvent) {
         CcEvent::Init { session_id, .. } => shared.set_resume_id(session_id),
         CcEvent::PermissionAsk {
             request_id, input, ..
-        }
-        | CcEvent::Question {
+        } => shared.ask(request_id, false, input),
+        // 提问是**唯一**允许回传 `answers` 的请求：协议里答案就走
+        // `updatedInput.answers`，不是另一条通道（2026-10-24 真机探针确认）。
+        CcEvent::Question {
             request_id, input, ..
-        } => shared.ask(request_id, input),
+        } => shared.ask(request_id, true, input),
         CcEvent::PermissionCancel { request_id } => shared.forget(request_id),
         // 一轮结束（正常或崩溃）后，任何还挂着的待批单都**永远不会到达**了
         // —— CLI 那只 60s 计时器已经跟着这一轮结束。留着只会让卡片一直转圈。
@@ -517,7 +543,7 @@ mod tests {
         s.shared.ring.push(CcEvent::Exit { code: Some(0) });
         s.shared.set_resume_id("s-1");
         s.shared
-            .ask("r-1", &serde_json::json!({"command": "rm -rf /"}));
+            .ask("r-1", false, &serde_json::json!({"command": "rm -rf /"}));
         s.reset();
         let snap = s.snapshot();
         assert!(snap.events.is_empty());
@@ -530,12 +556,26 @@ mod tests {
     fn pending_input_roundtrip() {
         let shared = Shared::new();
         let input = serde_json::json!({"command": "ls", "cwd": "/tmp"});
-        shared.ask("r-7", &input);
+        shared.ask("r-7", false, &input);
         assert_eq!(shared.pending_input("r-7"), Some(input));
         // 取不删除：写失败时用户还能再点一次。
         assert!(shared.pending_input("r-7").is_some());
         shared.forget("r-7");
         assert!(shared.pending_input("r-7").is_none());
+    }
+
+    /// 只有提问允许补答案。这条判据必须在登记时定死，不能由调用方在回写时自行声明。
+    #[test]
+    fn only_questions_accept_answers() {
+        let shared = Shared::new();
+        shared.ask("ask-1", false, &serde_json::json!({"command": "ls"}));
+        shared.ask(
+            "q-1",
+            true,
+            &serde_json::json!({"questions": [{"question": "吃什么"}]}),
+        );
+        assert!(!shared.pending_ask("ask-1").expect("有单").accepts_answers);
+        assert!(shared.pending_ask("q-1").expect("有单").accepts_answers);
     }
 
     #[test]

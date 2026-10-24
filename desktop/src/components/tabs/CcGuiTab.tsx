@@ -15,10 +15,21 @@ import { CcEmptyState } from "../ccgui/CcEmptyState";
 import { Composer } from "../ccgui/Composer";
 import { MessageText } from "../ccgui/MessageText";
 import { SessionBar } from "../ccgui/SessionBar";
+import { verdictLabel } from "../ccgui/summarize";
 import { ToolCard } from "../ccgui/ToolCard";
 
 const MODE_KEY = "cc-bridge.ccgui.mode";
 const cwdKey = (target: string) => `cc-bridge.ccgui.cwd.${target || "local"}`;
+
+/**
+ * 跳过提问时告诉模型的话。
+ *
+ * 不能只回一个空 deny —— `Verdict::deny` 的默认文案是「用户拒绝了这次调用，
+ * 请换一种做法」，对提问来说会让模型以为选项被否掉，转头再来问一次。
+ * 说清「跳过」它才会自己决定。
+ */
+const SKIP_ASK =
+  "用户跳过了这个问题（没有选择任何选项）。请按你认为最合理的方式继续，不要重复提问。";
 
 function readMode(): CcPermissionMode {
   const raw = localStorage.getItem(MODE_KEY);
@@ -93,6 +104,8 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
   const session = useCcSession({
     connectionId: targetId || null,
     cwd: cwd.trim() || null,
+    // 留空由 hook 内部的探测结果补：远端必须用绝对路径执行，
+    // 而路径只有 probe 拿得到（这里不该再探一次）。
     claudePath: null,
     model: null,
     permissionMode: mode,
@@ -202,7 +215,7 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
               onSend={session.start}
               cwd={cwd}
               onCwdChange={setCwdPersist}
-              cwdEditable={!targetId}
+              isRemote={Boolean(targetId)}
             />
           ) : (
             view.messages.map((m: CcMessage) => {
@@ -243,7 +256,7 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
                   >
                     <Icon name={verdict === "allow" ? "check" : "close"} size={11} />
                     <span className="font-mono">{m.toolName}</span>
-                    {verdict === "allow" ? (m.toolName === "AskUserQuestion" ? "已回答" : "已允许一次") : "已拒绝"}
+                    {verdictLabel(m.toolName, verdict)}
                   </div>
                 );
               }
@@ -252,7 +265,16 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
                   key={m.id}
                   approval={m}
                   onAllow={() => void session.respond(m.id, "allow")}
-                  onDeny={() => void session.respond(m.id, "deny")}
+                  onDeny={() =>
+                    void session.respond(
+                      m.id,
+                      "deny",
+                      m.toolName === "AskUserQuestion" ? SKIP_ASK : undefined,
+                    )
+                  }
+                  onAnswer={(answers) =>
+                    void session.respond(m.id, "allow", undefined, answers)
+                  }
                 />
               );
             })
