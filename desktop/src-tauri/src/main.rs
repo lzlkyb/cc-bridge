@@ -1043,6 +1043,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 剪贴板图片上传的中转文件（写/删临时目录，带前缀+目录双守卫）。
             commands::temp_file_write,
             commands::temp_file_remove,
+            // CC 对话：一轮一进程 + --resume，内容全走 `cc-event` 事件 + `cc_snapshot` 快照。
+            commands::cc_probe,
+            commands::cc_start,
+            commands::cc_send,
+            commands::cc_respond,
+            commands::cc_interrupt,
+            commands::cc_snapshot,
+            commands::cc_reset,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
@@ -1129,6 +1137,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 顺序无关：helper 是按连接 id 存在的 SFTP 会话，会话是 pty 主进程。
                 st.kill_all_ssh_sessions();
                 st.kill_all_ssh_helpers();
+                // CC 对话轮次同理：`Run` 没有 `Drop` 杀，claude 还会再拉 Bash 子进程。
+                // 宽限期给短一点 —— 用户已经关窗，多等只会拖慢退出。
+                st.cc.shutdown(std::time::Duration::from_millis(600));
             }
             // 关掉最后一个窗口**不应**退出应用。
             //

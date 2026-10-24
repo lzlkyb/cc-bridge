@@ -172,6 +172,12 @@ pub struct AppState {
     /// 外挂 MCP server 的连接池（通用桥）。懒启动，列工具不碰它。
     pub mcp_bridge: crate::mcp::bridge::McpBridge,
 
+    /// CC 对话会话（一轮一进程）。**唯一**持有进行中轮次与事件流水的地方。
+    ///
+    /// 放在 AppState 而不是前端：切 tab 会卸载组件，只有这里活得过卸载；
+    /// 事件流水让「切页回来 / 断线重连」靠重放重建，不需要为两者各写一套逻辑。
+    pub cc: crate::cc_session::CcSession,
+
     /// 防火墙状态缓存（规则级，仅 Windows 真实查询）。见 `FirewallCache`。
     pub firewall_cache: StdMutex<FirewallCache>,
     /// 系统 netsh 是否可用（启动探测一次）。false 时停止后台/手动防火墙查询，
@@ -256,6 +262,7 @@ impl AppState {
             ssh_helper_blocked: DashMap::new(),
             startup_error: StdMutex::new(None),
             mcp_bridge: crate::mcp::bridge::McpBridge::new(),
+            cc: crate::cc_session::CcSession::new(),
             ban,
             firewall_cache: StdMutex::new(FirewallCache {
                 enabled: None,

@@ -13,21 +13,24 @@ type NavItem = { key: string; label: string; icon: IconName };
 /**
  * 工作区导航项。
  *
- * 🔴 数组顺序即 Ctrl+1~4 的映射顺序 —— App.tsx 直接复用本数组生成快捷键表，
+ * 🔴 数组顺序即 Ctrl+1~N 的映射顺序 —— App.tsx 直接复用本数组生成快捷键表，
  *    改顺序/增删项只改这一处，避免「侧栏顺序」与「快捷键顺序」两处漂移。
+ * 🔴 新项只能追加在末尾：插到中间会把既有 Ctrl+2/3/4 全改一遍，是破坏性变更。
  */
 export const WORKSPACE_NAV: NavItem[] = [
   { key: "connect", label: "连接", icon: "plug" },
   { key: "terminal", label: "终端", icon: "terminal" },
   { key: "security", label: "安全", icon: "shield" },
   { key: "log", label: "日志", icon: "log" },
+  // 实验功能（2026-10-24）：CC 对话页，与原「终端」页并列而非替代。
+  { key: "ccgui", label: "对话", icon: "message" },
 ];
 
 /**
  * 左侧主导航栏（2026-10-14 由顶部 TabsList 改造而来）。
  *
- * 承载：品牌区（拖拽区）、4 项工作区导航、设置入口（带更新未读红点）、
- * 底部服务状态胶囊（点击可跳到对应处置页）。
+ * 承载：品牌区（拖拽区）、5 项工作区导航（末项「对话」为实验功能）、
+ * 设置入口（带更新未读红点）、底部服务状态胶囊（点击可跳到对应处置页）。
  *
  * 安全徽章（白名单关闭 / IP 已变化 / 远程不可达 / 只读 / 命令执行）**不在这里**：
  * 最多 5 枚，200px 宽的侧栏塞不下，仍留在顶栏。

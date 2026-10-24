@@ -1,0 +1,392 @@
+//! 一轮 = 一个进程。
+//!
+//! ## 为什么不是长驻进程
+//!
+//! 长驻（stdio 一直开着）在 SSH 场景下有个致命缺陷：**连接一断，整场会话就死**，
+//! 只能靠 `--resume` 抢救。而「一轮一进程 + `--resume`」只死当前这一轮，下一轮照常
+//! 接上；进程泄漏也天然自愈（每轮重新核对）。代价是每轮启动开销 + 依赖 CLI 自己
+//! 持久化的 `~/.claude/projects/<proj>/<id>.jsonl`。
+//!
+//! 出处：`docs/desktop-cc-gui源码分析-2026-10-24.md` §二。它把这个称作「最值得抄的
+//! 架构决策」，我们照抄。
+//!
+//! ## 副作用：审批窗口只在 turn 内存在
+//!
+//! 这是**好事**：60s 超时语义清晰，卡片不会跨轮次挂着。但也意味着「用户离开一小时
+//! 后回来批准」不可能 —— 界面必须把过期说清楚，不能留个转圈的卡。
+
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use process_wrap::std::StdChildWrapper;
+use serde_json::{json, Value};
+
+use super::proto::{CcEvent, ProtoState};
+use crate::mcp::bridge::session::{drain_stderr, ShutdownHow, StderrTail};
+use crate::mcp::bridge::spawn;
+
+/// 往 stdin 写一行 NDJSON 的句柄。
+pub type StdinBox = Box<dyn Write + Send>;
+
+/// 事件出口。生产实现推到 Tauri 事件，测试实现攒进 Vec。
+pub trait EventSink: Send + Sync + 'static {
+    fn emit(&self, event: CcEvent);
+}
+
+/// 用户的裁决。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Verdict {
+    /// `updated_input` 是回给 CLI 的**完整**工具入参（不是 patch）。
+    /// 允许时可以直接原样回传，也可以在 UI 里改（净化命令、改路径）后再回传。
+    Allow { updated_input: Value },
+    /// deny 必须带 message：CLI 会把它喂给模型，模型据此绕路或解释。
+    Deny { message: String },
+}
+
+impl Verdict {
+    /// 「允许一次」：入参原样回传。
+    pub fn allow_as_is(input: &Value) -> Self {
+        Self::Allow {
+            updated_input: input.clone(),
+        }
+    }
+
+    pub fn deny(reason: impl Into<String>) -> Self {
+        let message = reason.into();
+        Self::Deny {
+            message: if message.trim().is_empty() {
+                "用户拒绝了这次调用。请换一种做法，或告诉我你需要什么。".to_string()
+            } else {
+                message
+            },
+        }
+    }
+}
+
+/// 构造 `control_response` 的一行 JSON。
+///
+/// 🔴 **形状错的表现是「审批卡永远转圈」**：CLI 收不到可用的裁决就不往下走，
+/// 而它自己那侧会一直 park 到超时（60s），界面上什么错都看不到。
+/// 上游只实现了 deny 分支（`reader.rs:700-720`），allow 的 `updatedInput` 取自协议
+/// 文档的对称性 —— 这是全模块**最需要真机复核**的一处。
+pub fn control_response_line(request_id: &str, verdict: &Verdict) -> String {
+    let inner = match verdict {
+        Verdict::Allow { updated_input } => json!({
+            "behavior": "allow",
+            "updatedInput": updated_input,
+        }),
+        Verdict::Deny { message } => json!({
+            "behavior": "deny",
+            "message": message,
+        }),
+    };
+    json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": request_id,
+            "response": inner,
+        },
+    })
+    .to_string()
+}
+
+/// 一条用户消息。
+pub fn user_message_line(text: &str) -> String {
+    json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{ "type": "text", "text": text }],
+        },
+    })
+    .to_string()
+}
+
+/// 一个活着的轮次。
+pub struct Run {
+    child: Box<dyn StdChildWrapper>,
+    stdin: Arc<Mutex<Option<StdinBox>>>,
+    stderr_tail: StderrTail,
+    alive: Arc<AtomicBool>,
+}
+
+impl Run {
+    /// 拉起进程并把 stdout 接到事件出口上。
+    ///
+    /// 从 `spawn` 成功那一刻起，**任何失败都必须亲手杀掉它** —— 不然一次管道接管
+    /// 失败就残留一棵进程树（claude 会再拉 Bash 工具进程）。
+    pub fn start(
+        program: &Path,
+        args: &[String],
+        env: &[(String, String)],
+        cwd: Option<&Path>,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<Self, String> {
+        let mut child = spawn::spawn_piped(program, args, env, cwd, "claude")?;
+
+        let stdin: StdinBox = Box::new(child.stdin().take().ok_or("拿不到 claude 的 stdin")?);
+        let stdout = match child.stdout().take() {
+            Some(s) => s,
+            None => {
+                let _ = child.start_kill();
+                let _ = child.wait();
+                return Err("拿不到 claude 的 stdout".into());
+            }
+        };
+        let stderr = match child.stderr().take() {
+            Some(s) => s,
+            None => {
+                let _ = child.start_kill();
+                let _ = child.wait();
+                return Err("拿不到 claude 的 stderr".into());
+            }
+        };
+
+        let stderr_tail = drain_stderr(stderr);
+        let alive = Arc::new(AtomicBool::new(true));
+
+        // 读线程：吃 stdout，直到 EOF。
+        let reader_sink = Arc::clone(&sink);
+        let reader_tail = Arc::clone(&stderr_tail);
+        let reader_alive = Arc::clone(&alive);
+        std::thread::spawn(move || {
+            pump(stdout, |event| reader_sink.emit(event));
+            // stdout 关了，进程也就到头了。stderr 的尾巴这时才是完整的。
+            let lines: Vec<String> = reader_tail
+                .lock()
+                .map(|q| q.iter().cloned().collect())
+                .unwrap_or_default();
+            if !lines.is_empty() {
+                reader_sink.emit(CcEvent::Stderr { lines });
+            }
+            reader_alive.store(false, Ordering::SeqCst);
+            reader_sink.emit(CcEvent::Exit { code: None });
+        });
+
+        Ok(Self {
+            child,
+            stdin: Arc::new(Mutex::new(Some(stdin))),
+            stderr_tail,
+            alive,
+        })
+    }
+
+    /// 进程还在读 stdout 吗。
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+
+    pub fn stderr_tail(&self) -> Vec<String> {
+        self.stderr_tail
+            .lock()
+            .map(|q| q.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// 写一行进 stdin。turn 结束后会关掉 stdin，那时写失败是**预期**的。
+    fn write_line(&self, line: &str) -> Result<(), String> {
+        let mut guard = self
+            .stdin
+            .lock()
+            .map_err(|_| "claude 的 stdin 已锁死".to_string())?;
+        let Some(stdin) = guard.as_mut() else {
+            return Err("这一轮已经结束，不再接收输入".into());
+        };
+        stdin
+            .write_all(line.as_bytes())
+            .and_then(|_| stdin.write_all(b"\n"))
+            .and_then(|_| stdin.flush())
+            .map_err(|e| format!("写入 claude 失败：{e}"))
+    }
+
+    pub fn send_user(&self, text: &str) -> Result<(), String> {
+        self.write_line(&user_message_line(text))
+    }
+
+    pub fn respond(&self, request_id: &str, verdict: &Verdict) -> Result<(), String> {
+        self.write_line(&control_response_line(request_id, verdict))
+    }
+
+    /// 关 stdin = 给 CLI 送 EOF。它会把这轮跑完再自己退。
+    ///
+    /// 🔴 顺序不能反成「先 kill」：直接 kill 会让这一轮已经产出的内容停在半路，
+    /// 而且 CLI 来不及写 `~/.claude/projects` 的 JSONL，下一轮 `--resume` 就接不上。
+    pub fn close_stdin(&self) {
+        if let Ok(mut guard) = self.stdin.lock() {
+            drop(guard.take());
+        }
+    }
+
+    /// 强制结束（用户点「中断」或超时）。杀整棵进程树。
+    pub fn kill(&mut self) {
+        self.close_stdin();
+        let _ = self.child.start_kill();
+        let _ = self.child.wait();
+        self.alive.store(false, Ordering::SeqCst);
+    }
+
+    /// 等它自己退，宽限期过了就强杀。
+    pub fn shutdown(&mut self, grace: Duration) -> ShutdownHow {
+        self.close_stdin();
+        let deadline = Instant::now() + grace;
+        while Instant::now() < deadline {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return ShutdownHow::Graceful,
+                Ok(None) => std::thread::sleep(Duration::from_millis(30)),
+                Err(_) => break,
+            }
+        }
+        let _ = self.child.start_kill();
+        let _ = self.child.wait();
+        self.alive.store(false, Ordering::SeqCst);
+        ShutdownHow::Forced
+    }
+}
+
+/// 把 stdout 的每一行喂给解析器。**纯函数式**：不碰进程，测试可以直接喂字节。
+///
+/// 用 `read_until` 而不是 `read_line`：后者要求 UTF-8，一行脏字节会让整个读取
+/// 循环 `Err` 退出，而 CLI 的 stdout 上偶尔真会混进非 UTF-8 的诊断残迹。
+pub fn pump<R: Read, F: FnMut(CcEvent)>(reader: R, mut sink: F) {
+    let mut reader = BufReader::new(reader);
+    let mut proto = ProtoState::new();
+    let mut raw: Vec<u8> = Vec::new();
+    loop {
+        raw.clear();
+        match reader.read_until(b'\n', &mut raw) {
+            Ok(0) => return, // EOF
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&raw);
+                for event in proto.feed(&line) {
+                    sink(event);
+                }
+            }
+            Err(ref e) if e.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 收集型 sink，测试用。
+    #[derive(Default)]
+    struct Collect(Mutex<Vec<CcEvent>>);
+
+    impl EventSink for Collect {
+        fn emit(&self, event: CcEvent) {
+            if let Ok(mut v) = self.0.lock() {
+                v.push(event);
+            }
+        }
+    }
+
+    #[test]
+    fn allow_carries_updated_input_verbatim() {
+        let input = json!({ "command": "ls -la", "cwd": "/tmp" });
+        let line = control_response_line("req-1", &Verdict::allow_as_is(&input));
+        let v: Value = serde_json::from_str(&line).expect("合法 JSON");
+        assert_eq!(v["type"], "control_response");
+        assert_eq!(v["response"]["subtype"], "success");
+        assert_eq!(v["response"]["request_id"], "req-1");
+        assert_eq!(v["response"]["response"]["behavior"], "allow");
+        assert_eq!(v["response"]["response"]["updatedInput"], input);
+    }
+
+    /// deny 的 `message` 是**模型的唯一线索**，不能被吞掉或截断。
+    #[test]
+    fn deny_keeps_message() {
+        let line = control_response_line("req-2", &Verdict::deny("不要删这个目录"));
+        let v: Value = serde_json::from_str(&line).expect("合法 JSON");
+        assert_eq!(v["response"]["response"]["behavior"], "deny");
+        assert_eq!(v["response"]["response"]["message"], "不要删这个目录");
+        // deny 分支不能混进 updatedInput —— CLI 会当成 allow 处理。
+        assert!(v["response"]["response"]["updatedInput"].is_null());
+    }
+
+    #[test]
+    fn empty_deny_reason_still_gives_model_something() {
+        let line = control_response_line("r", &Verdict::deny("   "));
+        let v: Value = serde_json::from_str(&line).expect("合法 JSON");
+        let msg = v["response"]["response"]["message"]
+            .as_str()
+            .expect("有文案");
+        assert!(!msg.trim().is_empty(), "空 deny 会让模型无从下手");
+    }
+
+    /// 用户消息必须是 `content` 数组形态；写成裸字符串 CLI 不认。
+    #[test]
+    fn user_message_shape() {
+        let line = user_message_line("你好\n第二行");
+        let v: Value = serde_json::from_str(&line).expect("合法 JSON");
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["role"], "user");
+        assert_eq!(v["message"]["content"][0]["type"], "text");
+        // 换行必须被 JSON 转义，不能变成两行 —— 否则协议流被劈开。
+        assert!(!line.contains('\n'), "一行一条，不能含裸换行：{line}");
+    }
+
+    /// pump 要能容忍坏行、BOM、非 UTF-8 残迹，并且读满整段。
+    #[test]
+    fn pump_survives_dirty_lines() {
+        let payload = concat!(
+            "\u{feff}{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s-1\"}\n",
+            "not json at all\n",
+            "\n",
+            "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n"
+        );
+        let sink = Arc::new(Collect::default());
+        let s2 = Arc::clone(&sink);
+        pump(payload.as_bytes(), move |e| s2.emit(e));
+        let got = sink.0.lock().expect("锁").clone();
+        assert!(
+            got.iter()
+                .any(|e| matches!(e, CcEvent::Init { session_id, .. } if session_id == "s-1")),
+            "{got:?}"
+        );
+        assert!(
+            got.iter().any(|e| matches!(e, CcEvent::TurnEnd { .. })),
+            "{got:?}"
+        );
+    }
+
+    /// 末行没有换行时不能丢。CLI 退出的最后一行常常就是这样。
+    #[test]
+    fn pump_keeps_unterminated_last_line() {
+        let sink = Arc::new(Collect::default());
+        let s2 = Arc::clone(&sink);
+        pump(
+            br#"{"type":"result","subtype":"success","is_error":true}"#.as_slice(),
+            move |e| s2.emit(e),
+        );
+        let got = sink.0.lock().expect("锁").clone();
+        assert!(
+            got.iter().any(|e| matches!(e, CcEvent::TurnEnd { .. })),
+            "{got:?}"
+        );
+    }
+
+    /// 非 UTF-8 字节不能中断读取循环（`read_line` 会，`read_until` 不会）。
+    #[test]
+    fn pump_survives_invalid_utf8() {
+        let mut payload: Vec<u8> = vec![0xff, 0xfe, b'\n'];
+        payload.extend_from_slice(br#"{"type":"system","subtype":"init","session_id":"s-9"}"#);
+        payload.push(b'\n');
+        let sink = Arc::new(Collect::default());
+        let s2 = Arc::clone(&sink);
+        pump(payload.as_slice(), move |e| s2.emit(e));
+        let got = sink.0.lock().expect("锁").clone();
+        assert!(
+            got.iter()
+                .any(|e| matches!(e, CcEvent::Init { session_id, .. } if session_id == "s-9")),
+            "{got:?}"
+        );
+    }
+}

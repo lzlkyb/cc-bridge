@@ -268,6 +268,21 @@ pub fn spawn_stdio_server(
     env: &[(String, String)],
     cwd: Option<&Path>,
 ) -> Result<Box<dyn StdChildWrapper>, String> {
+    spawn_piped(program, args, env, cwd, "MCP server")
+}
+
+/// 拉起一个 stdin/stdout/stderr 全接管的子进程，挂上 JobObject / 进程组包装。
+///
+/// 与 `spawn_stdio_server` 唯一的差别是**错误文案里的主语**：`cc_session` 拉的是
+/// claude 而不是 MCP server，报错里写「启动 MCP server 失败」会把人带偏到错误的排查方向。
+/// 包装逻辑只有一份 —— JobObject 的 wrap 顺序、CREATE_NO_WINDOW 这些坑不该抄第二遍。
+pub fn spawn_piped(
+    program: &Path,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: Option<&Path>,
+    what: &str,
+) -> Result<Box<dyn StdChildWrapper>, String> {
     let mut cmd = StdCommandWrap::with_new(program.as_os_str(), |c| {
         c.args(args);
         c.stdin(Stdio::piped());
@@ -299,7 +314,7 @@ pub fn spawn_stdio_server(
     cmd.wrap(ProcessGroup::leader());
 
     cmd.spawn()
-        .map_err(|e| format!("启动 MCP server 失败（{}）：{e}", program.display()))
+        .map_err(|e| format!("启动 {what} 失败（{}）：{e}", program.display()))
 }
 
 /// 把 `env` 里的键名拼成一串，**只给键名、不给值**。

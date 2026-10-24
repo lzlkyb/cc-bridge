@@ -1622,30 +1622,51 @@ pub async fn ssh_disconnect(
 /// 跳板机缺失时给的是**能照着做的错误**，而不是默默退回直连（那会表现成
 /// 一句看不懂的超时），也不是让 ssh 带着一个空主机去报原始错误。
 async fn fetch_link(state: &State<'_, Arc<AppState>>, id: &str) -> Result<SshLink, String> {
-    let (conn, jump) = {
-        let c = state.config.read().await;
-        let conn = c
-            .ssh_connections
-            .iter()
-            .find(|x| x.id == id)
-            .cloned()
-            .ok_or_else(|| format!("未找到 SSH 连接：{id}"))?;
-        let jump = if conn.proxy_jump_id.is_empty() {
-            None
-        } else {
-            Some(
-                c.ssh_connections
-                    .iter()
-                    .find(|x| x.id == conn.proxy_jump_id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!("连接「{}」的跳板机已不存在，请在编辑里重新指定", conn.name)
-                    })?,
-            )
-        };
-        (conn, jump)
-    };
+    let (conn, jump) = load_link_parts(state.inner(), id).await?;
     SshLink::new(conn, jump)
+}
+
+/// 取连接配置 + 它的跳板机。**与 `fetch_link` 同源**，只是不吃 `State` ——
+/// 非命令层（`cc_session`）需要同一份解析，而它没有 `State` 可给。
+async fn load_link_parts(
+    state: &Arc<AppState>,
+    id: &str,
+) -> Result<(SshConnection, Option<SshConnection>), String> {
+    let c = state.config.read().await;
+    let conn = c
+        .ssh_connections
+        .iter()
+        .find(|x| x.id == id)
+        .cloned()
+        .ok_or_else(|| format!("未找到 SSH 连接：{id}"))?;
+    let jump = if conn.proxy_jump_id.is_empty() {
+        None
+    } else {
+        Some(
+            c.ssh_connections
+                .iter()
+                .find(|x| x.id == conn.proxy_jump_id)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("连接「{}」的跳板机已不存在，请在编辑里重新指定", conn.name)
+                })?,
+        )
+    };
+    Ok((conn, jump))
+}
+
+/// 给 `cc_session` 用：按连接 id 拼出喂 `Command` 的 ssh 参数与 destination。
+///
+/// 与 `fetch_link` 共用解析（跳板机缺失时同样给「能照着做」的错误），
+/// 差别只是返回原始参数，而不是给 PTY 用的 `SshLink`。
+pub(crate) async fn ssh_link_args(
+    state: &Arc<AppState>,
+    id: &str,
+) -> Result<(Vec<String>, String), String> {
+    let (conn, jump) = load_link_parts(state, id).await?;
+    let link = SshLink::new(conn, jump)?;
+    let destination = format!("{}@{}", link.conn.username, link.conn.host);
+    Ok((ssh_base_args(&link, "-p"), destination))
 }
 
 /// 列出远程目录内容。

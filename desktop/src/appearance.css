@@ -14,6 +14,11 @@ html[data-ui-style="glass"] {
   --glass-switch-off: #758ba9;
   --glass-switch-edge: rgb(55 75 111 / .26);
   --glass-floating: rgb(248 251 255 / .95);
+  /* 对话页长时停留的阅读画布：reading 那档是纯白叠纯白，一大张卡铺满主区时
+     会把背景光晕全盖成一片死白（实测 64% 白叠在 #e7edf6 上仍是 246,249,252）。
+     这里换成带色相的淡青→淡紫，与 --glass-terminal-chrome 同一路做法，
+     既保住可读性又让壳自己带上「柔光」的颜色。 */
+  --glass-canvas: linear-gradient(145deg, rgb(228 243 251 / .90), rgb(230 232 250 / .84));
   --glass-terminal-chrome: linear-gradient(115deg, #edf8fc, #efedfa);
   --glass-terminal-focus: linear-gradient(115deg, #e4efff, #e9e5fc);
   --muted-foreground: 217 24% 31%;
@@ -34,6 +39,7 @@ html.dark[data-ui-style="glass"] {
   --glass-switch-off: #566c89;
   --glass-switch-edge: rgb(202 220 248 / .26);
   --glass-floating: rgb(29 39 56 / .96);
+  --glass-canvas: linear-gradient(145deg, rgb(32 50 68 / .80), rgb(42 39 66 / .76));
   --glass-terminal-chrome: linear-gradient(115deg, #233348, #2c2945);
   --glass-terminal-focus: linear-gradient(115deg, #2b3c58, #393354);
   --muted-foreground: 218 25% 79%;
@@ -77,6 +83,10 @@ html.dark[data-ui-style="glass"] .app-boot-fade {
   padding: var(--shell-page-gap) max(0px, calc(var(--shell-page-gap) - 12px)) var(--shell-page-gap) var(--shell-page-gap);
 }
 .app-shell .app-main-content[data-page="log"] > [data-page-panel]:not([hidden]) { padding: var(--shell-page-gap); }
+/* CC 对话页（实验，2026-10-24）：与日志页同为通高面板，留白同样交给 page-panel。
+   🔴 新页面必须自己声明这条 —— 上面 74 行已把 main 的 px-5 清零，
+   漏了就会变成「内容贴到窗口边缘」，而且只有真实构建才看得出来。 */
+.app-shell .app-main-content[data-page="ccgui"] > [data-page-panel]:not([hidden]) { padding: var(--shell-page-gap); }
 .app-shell .settings-category-panel { padding: var(--shell-page-gap) max(0px, calc(var(--shell-page-gap) - 12px)) var(--shell-page-gap) var(--shell-page-gap); }
 .app-shell .app-content-box { padding-bottom: 0; }
 .app-shell .page-scroll { scrollbar-gutter: auto; }
@@ -310,12 +320,97 @@ html[data-ui-style="glass"] .header-badge-downloading circle:first-child { opaci
   html[data-ui-style="glass"] .update-slot .header-badge { transition: none; }
 }
 
+/* ── 对话页（CC GUI）柔光玻璃材质 ───────────────────────────────────────────
+   壳走 reading 一档（与连接页大卡同档），实体感只留三处：审批卡 / composer /
+   用户气泡。工具行与正文一律无底 —— 对话页是长时停留的阅读面，卡中卡会把正文
+   挤成碎屑（判据见 ToolCard.tsx 里 MonoBlock 的注释）。
+
+   🔴 只认 data-cc-* 属性，不改组件里的 Tailwind 类 ⇒ classic 主题零变化。
+      这也是为什么不能直接复用「.card-primary 后代 .bg-muted → inset」那条：
+      它只认精确类名，命中不了 bg-muted/60 这类带透明度的写法，而把它们全改成
+      bg-muted 会让 classic 下的层次一起消失。
+   🔴 属性清单（加属性前先确认这里有权重压过原类，否则改了没反应）：
+      data-cc-panel / entity / composer / inset / data / bubble / seg / row / rule */
+html[data-ui-style="glass"] [data-cc-panel] {
+  background: var(--glass-canvas);
+  border-color: var(--glass-edge);
+  box-shadow: var(--glass-depth);
+}
+
+/* 中性分隔线：--border 压在偏蓝的玻璃面上会泛出一圈灰脏，统一降为 chrome-edge。
+   ⚠️ 只对挂了 data-cc-rule 的生效 —— 审批卡头那条是有意的 warning 色，不能一起改。 */
+html[data-ui-style="glass"] [data-cc-panel] [data-cc-rule] { border-bottom-color: var(--glass-chrome-edge); }
+
+/* L1 实体件：审批卡 = 暖白玻璃 + 3px 光环；composer = floating（要输入，必须实心）。
+   ⚠️ 底色不能用「透明橙叠在蓝白壳上」：实测混合后是 (230,227,235) 的灰粉，
+   看着像 error 而不是 warning。改暖白实底，橙只留在边框和文字上。 */
+html[data-ui-style="glass"] [data-cc-entity] {
+  background: linear-gradient(180deg, rgb(255 251 246 / .97), rgb(255 247 240 / .92));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .60), 0 0 0 3px hsl(var(--warning) / .07), var(--glass-depth);
+}
+html.dark[data-ui-style="glass"] [data-cc-entity] {
+  background: linear-gradient(180deg, rgb(62 47 40 / .95), rgb(52 40 36 / .92));
+  box-shadow: inset 0 1px 0 rgb(255 226 180 / .14), 0 0 0 3px hsl(var(--warning) / .09), var(--glass-depth);
+}
+/* ⚠️ composer 自带 .ui-card（=reading 档），这里必须多挂一级祖先才压得住；
+   只写 [data-cc-composer] 会与 .ui-card 平手，靠文件顺序赢 —— 那是运气不是设计。 */
+html[data-ui-style="glass"] [data-cc-panel] [data-cc-composer] { background: var(--glass-floating); }
+html[data-ui-style="glass"] [data-cc-panel] [data-cc-composer]:focus-within {
+  border-color: hsl(var(--primary) / .55);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / .12), var(--glass-depth);
+}
+
+/* L2 数据块：等宽内容必须稳，这是全页唯一允许接近不透明的地方
+   （与 .status-address 同一做法，appearance.css 上方已有先例）。 */
+html[data-ui-style="glass"] [data-cc-inset] { background-color: var(--glass-inset); }
+html[data-ui-style="glass"] [data-cc-data] { background-color: var(--glass-data-header); }
+
+/* L2′ 用户气泡：玻璃阅读面偏蓝白，primary/.12 会混成脏紫 ⇒ 同色系高一档 + 顶部高光。 */
+html[data-ui-style="glass"] [data-cc-bubble] {
+  background: var(--glass-inset);
+  border-color: var(--glass-chrome-edge);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .30);
+}
+/* ⚠️ 深色下 --glass-canvas 比 --glass-inset 更暗，直接套 inset 会「气泡比壳还暗」，
+   气泡就消失了。单独给一档更亮的，让层次关系与浅色一致：壳暗、内容块亮。 */
+html.dark[data-ui-style="glass"] [data-cc-bubble] {
+  background: rgb(64 84 116 / .92);
+  box-shadow: inset 0 1px 0 rgb(215 232 255 / .12);
+}
+/* 同理 --glass-floating 在深色下比壳更暗（29,39,56 vs 32,50,68），composer 会陷进壳里。 */
+html.dark[data-ui-style="glass"] [data-cc-panel] [data-cc-composer] { background: rgb(46 63 88 / .96); }
+
+/* 分段控件照 .client-selector：3.5% 压深轨 + floating 选中块（bg-card 压不住玻璃底）。 */
+html[data-ui-style="glass"] [data-cc-seg] { background: hsl(var(--foreground) / .035); border-color: var(--glass-chrome-edge); }
+html[data-ui-style="glass"] [data-cc-seg] button[aria-pressed="true"] {
+  background: var(--glass-floating);
+  box-shadow: 0 1px 3px hsl(var(--foreground) / .10);
+}
+
+/* L3 工具行：hover 用 primary/.07 —— accent 在玻璃下偏紫，与正文混成一片。 */
+html[data-ui-style="glass"] [data-cc-row]:hover { background-color: hsl(var(--primary) / .07); }
+
+/* 语义色补偿：壳比 solid 卡暗一档，同色文字在这层上会掉对比（浅色实测
+   success 4.49 / warning 4.25，都差在 11px 小字上）。只在对话页内压深，
+   不动全局 token —— 别处没有这层玻璃，改了反而过。
+   ⚠️ 用 [class*=] 而不是改组件的 /80 /90 类名：classic 主题必须零变化。 */
+html[data-ui-style="glass"] [data-cc-panel] [class*="text-success-ink"] {
+  color: color-mix(in srgb, hsl(var(--success-ink)) 88%, black);
+}
+html[data-ui-style="glass"] [data-cc-panel] [class*="text-warning-ink"] {
+  color: color-mix(in srgb, hsl(var(--warning-ink)) 92%, black);
+}
+
 @media (prefers-reduced-transparency: reduce) {
   html:root[data-ui-style="glass"] .update-slot .header-badge { background: hsl(var(--card)); }
   html:root[data-ui-style="glass"] {
     --glass-status-panel: hsl(var(--card));
     --glass-reading: hsl(var(--card));
     --glass-inset: hsl(var(--muted));
+    /* 对话页新增的三档：不补就会在「减少透明」下仍然半透，与其它卡不一致。 */
+    --glass-floating: hsl(var(--card));
+    --glass-data-header: hsl(var(--card));
+    --glass-canvas: hsl(var(--card));
   }
   html:root[data-ui-style="glass"] :is(.app-side, .app-topbar, .ui-card, .bento-card, .metric-card, .terminal-tabs-header, .terminal-pane-head, .modal-surface, .ui-surface, [role="listbox"], [role="dialog"].bg-card, .toast),
   html[data-ui-style="glass"] .terminal-workspace .terminal-pane-frame[data-focused] > .terminal-pane-head {
@@ -339,6 +434,14 @@ html[data-ui-style="glass"] .header-badge-downloading circle:first-child { opaci
     --glass-reading: Canvas;
     --glass-inset: Canvas;
     --glass-data-header: Canvas;
+    --glass-canvas: Canvas;
+  }
+  /* 对话页的壳与实体件在强制配色下同样要退回系统色，暖白审批卡尤其不能留。 */
+  html:root[data-ui-style="glass"] [data-cc-panel] :is([data-cc-entity], [data-cc-bubble], [data-cc-composer], [data-cc-inset], [data-cc-data]),
+  html:root[data-ui-style="glass"] [data-cc-panel] {
+    background: Canvas;
+    border-color: CanvasText;
+    box-shadow: none;
   }
   html:root[data-ui-style="glass"] .sw:not(.on) { background: ButtonFace; box-shadow: none; outline: 1px solid ButtonText; }
   html:root[data-ui-style="glass"] :is(.app-boot-fade, .app-side, .app-topbar, .ui-card, .bento-card, .metric-card, .status-card, .terminal-tabs-header, .terminal-pane-head, .modal-surface, .ui-surface, [role="listbox"], [role="dialog"].bg-card, .toast),

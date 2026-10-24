@@ -2,6 +2,8 @@ pub mod audit;
 pub mod backup;
 pub mod branding;
 pub mod browse;
+/// CC 对话（Claude Code 图形客户端）。协议解析 / 进程 / 事件流水 / 会话管理。
+pub mod cc_session;
 pub mod commands;
 pub mod config;
 pub mod db;

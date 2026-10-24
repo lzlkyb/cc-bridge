@@ -176,7 +176,11 @@ fn handshake_on(
 ///
 /// 对照 CLAUDE.md §8.1：阻塞读为让出点；读到 EOF / 出错都**显式退出线程**；
 /// 无轮询无定时器；行数有上限（VecDeque 定长），不会无限增长。
-fn drain_stderr<R: Read + Send + 'static>(r: R) -> Arc<Mutex<VecDeque<String>>> {
+///
+/// `pub(crate)`：`cc_session` 的对话进程复用它。两边面对的是同一个问题 ——
+/// 一个不读 stderr 的子进程会在管道写满后**阻塞在 write 上**，表现是它什么都不干了，
+/// 而我们在等 stdout 直到超时（源码分析 §四.2 记的就是这个坑）。所以别再实现第二份。
+pub(crate) fn drain_stderr<R: Read + Send + 'static>(r: R) -> Arc<Mutex<VecDeque<String>>> {
     let tail = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_KEEP_LINES)));
     let sink = Arc::clone(&tail);
     std::thread::spawn(move || {

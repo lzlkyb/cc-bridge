@@ -29,6 +29,8 @@ const SecurityTab = lazy(() => import("./components/tabs/SecurityTab").then((m) 
 const SettingsTab = lazy(() => import("./components/tabs/SettingsTab").then((m) => ({ default: m.SettingsTab })));
 const LogTab = lazy(() => import("./components/tabs/LogTab").then((m) => ({ default: m.LogTab })));
 const TerminalTab = lazy(() => import("./components/tabs/TerminalTab").then((m) => ({ default: m.TerminalTab })));
+// 实验功能（2026-10-24）：CC 对话页。懒加载，未进入本页的用户不承担这部分体积。
+const CcGuiTab = lazy(() => import("./components/tabs/CcGuiTab").then((m) => ({ default: m.CcGuiTab })));
 import { OnboardingGuide, isOnboardingDone } from "./components/modals/OnboardingGuide";
 import { CommandPalette } from "./components/modals/CommandPalette";
 import { UpgradeWelcomeBar } from "./components/update/UpgradeWelcomeBar";
@@ -294,8 +296,8 @@ function AppContent() {
         e.preventDefault();
         setShowCommandPalette((v) => !v);
       }
-      // Ctrl+1~4 切工作区页、Ctrl+, 打开设置（桌面应用标准键位，mac 下 ⌘,）；
-      // 设置排导航末位不占数字位（导航末位惯例，见 VS Code/Discord）。
+      // Ctrl+1~N 切工作区页（N = WORKSPACE_NAV.length，随导航项增减自动跟随）、Ctrl+, 打开设置
+      //（桌面应用标准键位，mac 下 ⌘,）；设置排导航末位不占数字位（导航末位惯例，见 VS Code/Discord）。
       // 输入框/可编辑元素聚焦时不拦截，避免覆盖正常输入（如密码、命令参数）
       if (
         isCtrlOrMeta &&
@@ -443,6 +445,13 @@ function AppContent() {
           <TabsContent value="terminal" keepMounted className="h-full overflow-hidden">
             <Suspense fallback={<TabFallback />}>
               <TerminalTab status={status} sidebarHost={terminalSidebarHost} sidebarCollapsed={sideCollapsed} onSidebarCollapsedChange={setSideCollapsed} onNavigate={handleNavigate} onChanged={refetchStatus} />
+            </Suspense>
+          </TabsContent>
+          {/* CC 对话页（实验）：独立页面，与终端并列。不挂 data-terminal，
+              走普通页的 12px 顶部留白，终端的专用布局与保活逻辑一概不受影响。 */}
+          <TabsContent value="ccgui" className="h-full overflow-hidden">
+            <Suspense fallback={<TabFallback />}>
+              <CcGuiTab onNavigate={handleNavigate} />
             </Suspense>
           </TabsContent>
           </main>
