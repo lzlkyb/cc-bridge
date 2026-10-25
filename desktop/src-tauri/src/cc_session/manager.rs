@@ -886,6 +886,15 @@ impl CcSessions {
         }
     }
 
+    /// 关掉一条会话：从表里摘掉并返回它（调用方负责先 `interrupt`）。
+    ///
+    /// 侧栏的「关闭会话」用它。**摘表不等于杀进程** —— 进程归 `CcSession` 自己管，
+    /// 这里不做是因为调用点（命令层）要能选顺序：先落盘再摘表，还是先摘再杀。
+    /// 返回 `Option` 让调用方分辨「本来就没有」与「刚关掉」，界面上是两种提示。
+    pub fn remove(&self, id: u64) -> Option<Arc<CcSession>> {
+        self.map.remove(&id).map(|(_, v)| v)
+    }
+
     /// 同步落盘全部会话。应用退出时调 —— 那时异步任务可能来不及跑。
     pub fn persist_all(&self, conn: &Connection) {
         for r in self.map.iter() {
@@ -1439,6 +1448,21 @@ mod tests {
         c.get(b).unwrap().shared().set_turn_active(true);
         c.get(b).unwrap().shared().set_resume_id("cc-b");
         assert_eq!(c.active_session_id(), None, "多条活跃时必须放弃归属");
+    }
+
+    #[test]
+    fn remove_takes_session_out_of_map_once() {
+        let c = CcSessions::new();
+        let a = c.new_session();
+        let b = c.new_session();
+        assert_eq!(
+            c.remove(a).map(|s| s.shared().internal_id()),
+            Some(a),
+            "摘掉的必须就是那一条"
+        );
+        assert!(c.get(a).is_none(), "摘掉后不许再查得到");
+        assert!(c.get(b).is_some(), "只摘这一条，别的会话不受影响");
+        assert!(c.remove(a).is_none(), "第二条命令要能分辨「已经没了」");
     }
 
     #[test]

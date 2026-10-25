@@ -443,8 +443,12 @@ function AppContent() {
             </Suspense>
           </TabsContent>
           {/* CC 对话页（实验）：独立页面，与终端并列。不挂 data-terminal，
-              走普通页的 12px 顶部留白，终端的专用布局与保活逻辑一概不受影响。 */}
-          <TabsContent value="ccgui" className="h-full overflow-hidden">
+              走普通页的 12px 顶部留白，终端的专用布局与保活逻辑一概不受影响。
+              2026-10-25（3-1b 多会话）：这里也改常驻挂载。会话列表与「当前是哪一条」
+              是前端状态，卸载就没了 —— 切去终端页再回来会只剩一条新会话，而其余
+              那几条仍在 Rust 内存里、谁也够不着。Rust 侧本来就是真源（`cc_snapshot`
+              可重放），所以常驻**只是**为了不丢侧栏列表，不是为了保活进程。 */}
+          <TabsContent value="ccgui" keepMounted className="h-full overflow-hidden">
             <Suspense fallback={<TabFallback />}>
               <CcGuiTab onNavigate={handleNavigate} />
             </Suspense>

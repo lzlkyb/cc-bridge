@@ -5,9 +5,9 @@ import {
   classifySlash,
   filterSlash,
   isSlashTyping,
-  SLASH_WHITELIST_TEXT,
   type SlashCommand,
 } from "../../lib/ccSlash";
+import { ComposerNotices } from "./ComposerNotices";
 import { SlashPanel } from "./SlashPanel";
 
 /** 输入区自动增高的高度上限（px）。约 8 行 13px 字：再高就该拆成文件了。 */
@@ -42,7 +42,6 @@ function ComposerImpl({
   queueCount,
   onClearQueue,
   onPolish,
-  polishing,
 }: {
   onSend: (text: string) => void;
   running?: boolean;
@@ -59,13 +58,20 @@ function ComposerImpl({
    * 「两边各存一份、不知道谁最新」的坑。失败返回 `null`，本组件不动文本。
    */
   onPolish?: (draft: string) => Promise<string | null>;
-  /** 父组件转交的「正在润色」状态（它在跑 CLI，属全局忙碌的一种）。 */
-  polishing?: boolean;
 }) {
   const [value, setValue] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
   /** 润色前的原文。非空 = 显示「撤销润色」。一打字就作废：那是新的草稿了。 */
   const [polishBackup, setPolishBackup] = useState<string | null>(null);
+  /**
+   * 润色在跑。
+   *
+   * 刻意放在本组件而不是父组件：它是**输入区自己的**忙碌状态（按钮转圈 +
+   * 防重复点），父组件不拿它做任何判断。2026-10-25 从 `CcGuiTab` 下沉到这里 ——
+   * 多会话之后每条会话一个 pane，父组件为一份纯局部状态各存一个 `useState`
+   * 只会把 pane 顶到体量门禁的天花板上。
+   */
+  const [polishing, setPolishing] = useState(false);
   /** 命令面板的高亮项。值一变就回 0（onChange 里做）。 */
   const [slashSel, setSlashSel] = useState(0);
   /** 用户按过 Esc：值不变就让面板一直关着，不然 Esc 毫无效果。 */
@@ -141,38 +147,23 @@ function ComposerImpl({
   const polish = async () => {
     const draft = value.trim();
     if (!draft || !onPolish || polishing) return;
-    const out = await onPolish(draft);
-    // 只在真的拿到文本时动：失败时保持原样，用户那句草稿不能丢。
-    if (out && out.trim()) {
-      setPolishBackup(draft);
-      setValue(out.trim());
+    setPolishing(true);
+    try {
+      const out = await onPolish(draft);
+      // 只在真的拿到文本时动：失败时保持原样，用户那句草稿不能丢。
+      if (out && out.trim()) {
+        setPolishBackup(draft);
+        setValue(out.trim());
+      }
+    } finally {
+      // 失败 / 超时也要复位：卡在「润色中」的按钮再也点不动。
+      setPolishing(false);
     }
   };
 
   return (
     <div ref={boxRef} className="relative shrink-0 px-3 pb-3 pt-1">
-      {queueCount > 0 && (
-        <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
-          <Icon name="clock" size={11} className="shrink-0 opacity-70" />
-          <span className="min-w-0 flex-1">已排队 {queueCount} 条 · 本轮结束后按顺序自动发送</span>
-          <button
-            type="button"
-            onClick={onClearQueue}
-            className="shrink-0 rounded border border-border px-1.5 py-[1px] text-[11px] transition-colors hover:border-destructive/40 hover:text-destructive-ink"
-          >
-            清空
-          </button>
-        </div>
-      )}
-      {slashReject && (
-        <div className="mb-1 flex items-start gap-1.5 px-1 text-[11px] leading-[1.5] text-warning-ink">
-          <Icon name="alertTriangle" size={11} className="mt-[1px] shrink-0 opacity-80" />
-          <span className="min-w-0 flex-1">
-            未发送 <span className="font-mono">{slashReject}</span>：不在白名单里。对话页只转发{" "}
-            {SLASH_WHITELIST_TEXT}，其它命令请到终端页里用。
-          </span>
-        </div>
-      )}
+      <ComposerNotices queueCount={queueCount} onClearQueue={onClearQueue} slashReject={slashReject} />
       {/* data-cc-composer：玻璃下 composer 要压过 .ui-card 的 reading 档，改 floating
           （唯一「必须实心」的输入位）；classic 下不加任何样式。 */}
       <div

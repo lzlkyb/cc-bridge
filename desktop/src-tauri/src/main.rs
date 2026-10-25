@@ -1047,6 +1047,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cc_probe,
             // 铸发内部会话 id：进对话页调一次，之后所有命令带它寻址（3-1a）。
             commands::cc_new_session,
+            // 关闭一条会话：侧栏「关闭会话」用（中断 → 落盘 → 摘表，见命令注释）。
+            commands::cc_close_session,
             commands::cc_start,
             commands::cc_send,
             commands::cc_respond,

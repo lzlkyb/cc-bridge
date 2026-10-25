@@ -45,6 +45,10 @@
 .settings-category { scrollbar-gutter:stable; }
 .terminal-side-resizer { position:absolute;right:0;top:0;bottom:0;width:7px;z-index:4;border:0;padding:0;background:transparent;cursor:col-resize;touch-action:none; }
 .terminal-side-resizer:hover,.terminal-side-resizer:focus-visible { background:hsl(var(--primary) / .25); }
+/* 对话页会话栏的同类抓手。与终端那份同一套手感（7px、命中区比视觉宽），
+   只是 class 分开：两处宽度偏好存在不同的 localStorage key 上。 */
+.cc-session-resizer { position:absolute;right:0;top:0;bottom:0;width:7px;z-index:4;border:0;padding:0;background:transparent;cursor:col-resize;touch-action:none; }
+.cc-session-resizer:hover,.cc-session-resizer:focus-visible { background:hsl(var(--primary) / .25); }
 .terminal-empty[data-mode="dark"] { --empty-fill:#ffffff09; --empty-hover:#ffffff14; --empty-border:#ffffff20; --empty-muted:#b5bfce; }
 .terminal-empty[data-mode="light"] { --empty-fill:#00000004; --empty-hover:#0000000a; --empty-border:#00000022; --empty-muted:#536075; }
 .terminal-empty { display:grid;align-items:safe center;justify-items:center;height:100%;min-height:0;overflow:auto;padding:32px;font-size:14px; }

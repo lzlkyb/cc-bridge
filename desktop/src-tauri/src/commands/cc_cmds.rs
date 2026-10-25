@@ -584,6 +584,31 @@ pub async fn cc_new_session(state: State<'_, Arc<AppState>>) -> Result<u64, Stri
     Ok(state.cc.new_session())
 }
 
+/// 关掉一条会话（侧栏的「关闭会话」）。返回「是否真的关掉了一条」。
+///
+/// 顺序是**中断 → 落盘 → 摘表**，每一步都不能省：
+/// - 先中断：摘表之后就没有句柄能再给这条会话发中断了，进程会变成没人管的孤儿；
+/// - 再落盘：内容还在库里，3-1c 的「重启后从历史恢复」要靠它；
+/// - 最后摘表：侧栏这条从此消失，`cc_snapshot`/`cc_send` 再带这个 id 会拿到
+///   「会话不存在」，不会静默串到别的会话上。
+///
+/// 查不到就是 `Ok(false)` 而不是 `Err`：用户连点两下「关闭」不该看到报错。
+#[tauri::command]
+pub async fn cc_close_session(
+    state: State<'_, Arc<AppState>>,
+    session_id: u64,
+) -> Result<bool, String> {
+    let Some(cc) = state.cc.get(session_id) else {
+        return Ok(false);
+    };
+    cc.interrupt();
+    {
+        let conn = state.db.lock().await;
+        cc.persist(&conn);
+    }
+    Ok(state.cc.remove(session_id).is_some())
+}
+
 /// 润色的 SYSTEM 提示词。**逐字取自 `mods/prompt-polish/hooks/register.js`** ——
 /// 那边是给终端用户的 mod 版本，这边是对话 GUI 的后端半边，两边必须同一份文案，
 /// 改一处忘一处会让「同一个功能两种脾气」。

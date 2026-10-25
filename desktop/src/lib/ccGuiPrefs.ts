@@ -52,3 +52,33 @@ export function readCwd(target: string): string {
 export function saveCwd(target: string, cwd: string): void {
   localStorage.setItem(cwdKey(target), cwd);
 }
+
+/**
+ * 恢复出来的会话 → 这一页要写回去的目标与偏好。**纯计算**，不动 localStorage。
+ *
+ * 为什么值得单独一个函数：这四样东西的写入顺序有讲究（`saveCwd` 必须在
+ * `setTargetId` 之前，否则被 `targetId` 的 effect 用旧键重读覆盖），而
+ * 「哪些字段缺席时不许覆盖用户当前选择」也有明确口径（模型为空串时不动）。
+ * 把这段判断摊在组件的 effect 里，多会话后每个 pane 都要再解释一遍。
+ *
+ * `mode` / `model` 为 `null` 表示「库里没记 / 值不合法」，调用方**不要动**
+ * 当前选择 —— 拿空值覆盖用户刚设的东西，等于替用户改设置。
+ */
+export function restorePlan(row: {
+  connectionId: string;
+  cwd?: string | null;
+  permissionMode?: string | null;
+  model?: string | null;
+}): {
+  connectionId: string;
+  cwd: string;
+  mode: CcPermissionMode | null;
+  model: string | null;
+} {
+  return {
+    connectionId: row.connectionId,
+    cwd: row.cwd ?? "",
+    mode: asMode(row.permissionMode),
+    model: row.model && row.model.trim() ? row.model.trim() : null,
+  };
+}

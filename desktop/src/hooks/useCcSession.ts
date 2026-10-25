@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "../lib/tauri";
-import type { CcHistoryOpened, CcProbe } from "../lib/ccEventTypes";
+import type { CcProbe } from "../lib/ccEventTypes";
 import { ccReducer, initialCcView, pendingApprovals } from "../lib/ccReducer";
 import { pickClaudePath } from "../lib/ccTarget";
 import type { CcPermissionMode } from "../lib/ccGuiTypes";
 import { useCcEventStream } from "./useCcEventStream";
+import { useCcOpenHistory } from "./useCcOpenHistory";
 
 /** 起一轮要传给后端的东西。 */
 export type CcTarget = {
@@ -230,54 +231,22 @@ export function useCcSession(target: CcTarget) {
   }, []);
 
   /**
-   * 打开一条历史会话。
-   *
-   * 后端会把它接管成**当前会话**（清流水 → 灌历史 → 设 resume id），
-   * 所以这里只需要把结果重放进来 + 对齐序号，不需要先 `reset`。
-   *
-   * `historyId` 是 **CC 的**历史会话 id（转录文件名 stem）；命令寻址用的
-   * 内部 id 另走 `sessionId` 参数 —— 两者同名不同物，别混。
-   *
-   * ## 为什么要手动设 `seqRef`
-   *
-   * 那些历史事件是后端**直接写进 ring** 的，没有逐条 emit（emit 会和这次
-   * `replay` 撞成两份）。所以前端游标停在旧值上，不重置的话，下一条实时事件的
-   * `seq` 比它大得多没问题，但若用户先开了历史再开另一条，`seq` 会回绕到更小值
-   * —— 那时 `apply` 里的 `p.seq < seqRef.current` 会把**所有**新事件当重复丢掉。
+   * 打开一条历史会话（把后端那条接管成当前会话）。整套时序约定在
+   * `useCcOpenHistory` 里写明 —— 这里只做接线。
    */
-  const openHistory = useCallback(
-    async (historyId: string): Promise<CcHistoryOpened | null> => {
-      try {
-        const res = await invoke<CcHistoryOpened>("cc_history_open", {
-          sessionId: sessionIdRef.current,
-          historyId,
-        });
-        seqRef.current = res.snapshot.nextSeq;
-        dispatch({
-          type: "replay",
-          events: res.snapshot.events,
-          // 两个缺口相加：`dropped` 是环形缓冲溢出，`trimmed` 是体积上限裁掉的头部。
-          dropped: res.snapshot.dropped + res.trimmed,
-          running: false,
-        });
-        // 「上次那条」到此为止 —— 当前会话已经就是它了，再弹一次恢复提示纯属噪音。
-        clearRestored();
-        return res;
-      } catch (e) {
-        dispatch({ type: "error", message: String(e) });
-        return null;
-      }
-      // `clearRestored`（useCallback([])）与 `seqRef`（ref）实际都稳定，列出来只是
-      // 让 lint 看得见：它们来自自定义 hook 的返回，规则无法自己证明。
-    },
-    [clearRestored, seqRef, sessionIdRef],
-  );
+  const openHistory = useCcOpenHistory({ sessionIdRef, seqRef, dispatch, clearRestored });
 
   return {
     view,
     ready,
     busy,
     probe,
+    /**
+     * 本路对话的内部 id（`cc_new_session` 铸发）。**以 ref 形式给出去**：
+     * 多会话侧栏要在关闭某条时拿它调 `cc_close_session`，而这里没有理由为它
+     * 引入一次额外渲染 —— 它一变就意味着后端已经认识这条会话了，界面不需要重画。
+     */
+    sessionIdRef,
     /** 上次进程留下的会话。`null` = 这次是全新开始（或用户点过「新对话」）。 */
     restored,
     runProbe,
