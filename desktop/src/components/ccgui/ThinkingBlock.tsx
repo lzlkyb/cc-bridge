@@ -1,20 +1,9 @@
 import { memo, useState } from "react";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { Icon } from "../ui/icon";
-
-/** 首个非空行。不用 `split("\n")`：流式期间每次渲染都全文拆一遍是 O(n²)， indexOf + slice 只扫到第一个换行。 */
-function firstNonEmptyLine(text: string): string {
-  let start = 0;
-  while (start <= text.length) {
-    const nl = text.indexOf("\n", start);
-    const end = nl === -1 ? text.length : nl;
-    const line = text.slice(start, end).trim();
-    if (line) return line;
-    if (nl === -1) return "";
-    start = nl + 1;
-  }
-  return "";
-}
+import { thinkingTitle } from "./summarize";
+import { MarkedText } from "./MarkedText";
+import type { CcMark } from "../../lib/ccMarkdown";
 
 /**
  * 思维链块：**默认折叠**的一行，点开看全文。
@@ -25,12 +14,13 @@ function firstNonEmptyLine(text: string): string {
  *
  * 流式中（`running`）前缀显示呼吸点：这是「正在想」和「想完了」的区分，
  * 只看文字长度是分不出来的（想完了也可以很长）。
+ *
+ * `titleMarks`：会话内搜索的标题命中（标题只有一段，marks 恒为 seg 0）。
  */
-function ThinkingBlockImpl({ text, running }: { text: string; running: boolean }) {
+function ThinkingBlockImpl({ text, running, titleMarks }: { text: string; running: boolean; titleMarks?: CcMark[] }) {
   const [open, setOpen] = useState(false);
   const { copy, isCopied } = useCopyFeedback();
-  const firstLine = firstNonEmptyLine(text);
-  const summary = firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine || "（空）";
+  const summary = thinkingTitle(text);
 
   return (
     <div className="flex gap-2">
@@ -48,7 +38,7 @@ function ThinkingBlockImpl({ text, running }: { text: string; running: boolean }
             <span className="h-[5px] w-[5px] shrink-0 animate-pulse rounded-full bg-primary" />
           )}
           <span className="shrink-0">{running ? "正在思考" : "思考过程"}</span>
-          <span className="truncate opacity-70">· {summary}</span>
+          <span className="truncate opacity-70">· <MarkedText text={summary} marks={titleMarks} /></span>
         </button>
         {open && (
           <div className="group/think relative mt-1">

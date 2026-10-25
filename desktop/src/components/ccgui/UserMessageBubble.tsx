@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { memo, useState } from "react";
+import type { CcMark } from "../../lib/ccMarkdown";
 import { MessageText } from "./MessageText";
 
 /**
@@ -17,11 +18,14 @@ import { MessageText } from "./MessageText";
  * 那些改动也不会被撤销。这是产品做不到的事，界面不能装成做到了 ——
  * 提示条常驻在编辑态，不藏在 tooltip 里。
  */
-export function UserMessageBubble({
+function UserMessageBubbleImpl({
   text,
+  marks,
   onFork,
 }: {
   text: string;
+  /** 会话内搜索的命中标注（透传给 MessageText）。 */
+  marks?: CcMark[];
   /** 用（可能是编辑后的）文本开一条新会话说出去。 */
   onFork: (text: string) => void;
 }) {
@@ -36,7 +40,7 @@ export function UserMessageBubble({
           data-cc-bubble
           className="max-w-[86%] rounded-xl rounded-br-sm border border-border bg-muted/60 px-3 py-1.5"
         >
-          <MessageText text={text} />
+          <MessageText text={text} marks={marks} />
         </div>
         <div className="flex items-center gap-2 pr-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           <button
@@ -116,3 +120,6 @@ export function UserMessageBubble({
     </div>
   );
 }
+
+/** memo：与 MessageText / ToolCard / ThinkingBlock 同一口径 —— 流式 tick 不重渲染历史节点。 */
+export const UserMessageBubble = memo(UserMessageBubbleImpl);

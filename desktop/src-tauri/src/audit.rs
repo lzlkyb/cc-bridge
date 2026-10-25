@@ -137,6 +137,23 @@ static AUDIT_WRITER: OnceLock<Mutex<AuditWriter>> = OnceLock::new();
 type AuditCache = Option<(PathBuf, u64, u64, Vec<AuditEntry>)>;
 static AUDIT_CACHE: OnceLock<Mutex<AuditCache>> = OnceLock::new();
 
+/// 审计落盘 → 前端事件推送的句柄（`audit:appended`）。启动时由 main.rs 无条件注入，
+/// 与 `AppState::app_handle`（notifications 专属、feature-gated）互不相干：
+/// 日志页的即时刷新不该跟着通知插件走。未注入（单元测试 / 无窗口环境）或
+/// emit 失败都静默跳过 —— write_audit_log 只对写盘负责，通知不是它的职责成功标准。
+static EMIT_HANDLE: OnceLock<Option<tauri::AppHandle>> = OnceLock::new();
+
+pub fn set_emit_handle(handle: Option<tauri::AppHandle>) {
+    let _ = EMIT_HANDLE.set(handle);
+}
+
+fn notify_appended() {
+    if let Some(Some(handle)) = EMIT_HANDLE.get() {
+        use tauri::Emitter as _;
+        let _ = handle.emit("audit:appended", ());
+    }
+}
+
 pub fn write_audit_log(data_dir: &Path, entry: &AuditEntry) -> Result<(), String> {
     let line = serde_json::to_string(entry)
         .map_err(|e| format!("Failed to serialize audit entry: {e}"))?;
@@ -160,6 +177,9 @@ pub fn write_audit_log(data_dir: &Path, entry: &AuditEntry) -> Result<(), String
     writeln!(w, "{}", line).map_err(|e| format!("Failed to write audit log: {e}"))?;
     w.flush()
         .map_err(|e| format!("Failed to flush audit log: {e}"))?;
+    drop(guard);
+    // 落盘成功才通知（前端拿去即时刷新日志页；失败静默，由其轮询兜底）。
+    notify_appended();
     Ok(())
 }
 

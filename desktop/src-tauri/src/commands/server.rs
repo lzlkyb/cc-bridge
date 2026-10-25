@@ -21,8 +21,12 @@ use crate::network;
 use crate::state::AppState;
 
 #[tauri::command]
-pub async fn browse_directory(path: Option<String>) -> Result<browse::BrowseResult, String> {
-    browse::browse_directory(path.as_deref()).await
+pub async fn browse_directory(
+    path: Option<String>,
+    // @引用补全面板要文件；目录选择器（DirectoryBrowser 等）不传，行为不变。
+    include_files: Option<bool>,
+) -> Result<browse::BrowseResult, String> {
+    browse::browse_directory(path.as_deref(), include_files.unwrap_or(false)).await
 }
 
 #[tauri::command]

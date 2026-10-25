@@ -1,22 +1,42 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
 
 /**
- * slash 命令面板 + 白名单闸门的行为锁。
+ * slash 命令面板 + 白名单闸门 + @引用补全的行为锁。
  *
  * 为什么值得单测：面板的「自动开合」由正则派生，闸门的「什么能出去」是安全
- * 边界——两者坏了都不报错，只会安静地要么不弹面板、要么把未知命令当提示词
- * 发给模型浪费一轮。
+ * 边界，@引用的「选中目录续写 / 选中文件收尾」是 token 状态机——三者坏了都
+ * 不报错，只会安静地要么不弹面板、要么把未知命令当提示词发给模型浪费一轮。
  */
+vi.mock("../../lib/tauri", () => ({
+  invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
+    if (cmd === "get_status") return { allowedRoots: ["D:\\proj"] };
+    if (cmd === "browse_directory") {
+      const p = String(args.path);
+      return {
+        path: p,
+        parent: null,
+        entries: [
+          { name: "src", path: `${p}\\src`, isDir: true },
+          { name: "readme.md", path: `${p}\\readme.md`, isDir: false },
+        ],
+      };
+    }
+    throw new Error(`测试未预期地调用了 ${cmd}`);
+  }),
+}));
+
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-let root: Root, container: HTMLDivElement;
+let root: Root, container: HTMLDivElement, qc: QueryClient;
 const onSend = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -24,11 +44,27 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
+  qc.clear();
 });
 
 async function render() {
   await act(async () => {
-    root.render(<Composer onSend={onSend} queueCount={0} onClearQueue={() => {}} />);
+    root.render(
+      <QueryClientProvider client={qc}>
+        <Composer
+          onSend={onSend}
+          queueCount={0}
+          onClearQueue={() => {}}
+          mentionSource={{ connectionId: "", cwd: "D:\\work" }}
+        />
+      </QueryClientProvider>,
+    );
+  });
+}
+/** 层级解析在下钻 effect 里异步跑，等微任务 + 一帧再断言。 */
+async function flush() {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 10));
   });
 }
 function area() {
@@ -49,6 +85,9 @@ async function key(k: string, init: KeyboardEventInit = {}) {
 }
 function panelText() {
   return container.querySelector('[aria-label="slash 命令"]')?.textContent ?? "";
+}
+function mentionText() {
+  return container.querySelector('[aria-label="引用文件或目录"]')?.textContent ?? "";
 }
 async function clickSend() {
   await act(async () => {
@@ -133,4 +172,47 @@ it("普通文本不弹面板，裸 Enter 不触发发送（换行是浏览器原
   expect(panelText()).toBe("");
   await key("Enter");
   expect(onSend).not.toHaveBeenCalled();
+});
+
+/* ── @引用补全（设计稿《对话页-@引用与排版偏好》）── */
+
+it("打出 @ 浮出引用面板：本会话目录置顶 + 白名单根", async () => {
+  await render();
+  await type("@");
+  await flush();
+  expect(mentionText()).toContain("本会话目录");
+  expect(mentionText()).toContain("work");
+  expect(mentionText()).toContain("proj");
+  // 邮箱形态（@ 前是非空白）不弹
+  await type("user@hos");
+  expect(mentionText()).toBe("");
+});
+
+it("选中目录续写路径并下钻，选中文件插入并收尾", async () => {
+  await render();
+  await type("@");
+  await flush();
+  // 第一项是置顶的会话目录，Enter = 续写 @D:\work/ 并自动列出下一层
+  await key("Enter");
+  expect((area() as HTMLTextAreaElement).value).toBe("@D:\\work/");
+  await flush();
+  expect(mentionText()).toContain("src");
+  expect(mentionText()).toContain("readme.md");
+  // 过滤剩文件，Enter = 插入 + 尾随空格（token 结束，面板收起）
+  await type("@D:\\work/readme");
+  await flush();
+  expect(mentionText()).toContain("readme.md");
+  expect(mentionText()).not.toContain("src");
+  await key("Enter");
+  expect((area() as HTMLTextAreaElement).value).toBe("@D:\\work\\readme.md ");
+  expect(mentionText()).toBe("");
+});
+
+it("Esc 关闭引用面板，a@b 形态不误伤普通输入", async () => {
+  await render();
+  await type("@");
+  await flush();
+  expect(mentionText()).not.toBe("");
+  await key("Escape");
+  expect(mentionText()).toBe("");
 });

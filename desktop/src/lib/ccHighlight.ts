@@ -77,3 +77,23 @@ export function highlightSegments(text: string, query: string): HighlightSegment
   if (cursor < text.length) segs.push({ text: text.slice(cursor), hit: false });
   return segs;
 }
+
+/**
+ * 整词出现的全部区间（会话内搜索用）。
+ *
+ * 与 `highlightSegments` 的差别：那边要跟 Rust SQL 的 3 字滑窗口对齐（历史搜索），
+ * 这里是「用户看到什么就匹配什么」——查询串原样、找全部出现位置，不做滑窗。
+ * foldSafe 守卫同上（İ 类折叠变长字符退回区分大小写）。
+ */
+export function plainOccurrences(hay: string, needle: string): Array<[number, number]> {
+  if (!needle) return [];
+  const folded = hay.toLowerCase();
+  const foldSafe = folded.length === hay.length;
+  const h = foldSafe ? folded : hay;
+  const n = foldSafe ? needle.toLowerCase() : needle;
+  const out: Array<[number, number]> = [];
+  for (let at = h.indexOf(n); at >= 0; at = h.indexOf(n, at + 1)) {
+    out.push([at, at + n.length]);
+  }
+  return out;
+}

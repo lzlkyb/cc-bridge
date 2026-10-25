@@ -1,6 +1,4 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { Button } from "../ui/button";
-import { Icon } from "../ui/icon";
 import { toast } from "../ui/toast";
 import {
   classifySlash,
@@ -9,7 +7,10 @@ import {
   type SlashCommand,
 } from "../../lib/ccSlash";
 import { isImeComposing } from "../../lib/utils";
+import { useCcMention } from "../../hooks/useCcMention";
 import { ComposerNotices } from "./ComposerNotices";
+import { ComposerTools } from "./ComposerTools";
+import { MentionPanel } from "./MentionPanel";
 import { SlashPanel } from "./SlashPanel";
 
 /** 输入区自动增高的高度上限（px）。约 8 行 13px 字：再高就该拆成文件了。 */
@@ -45,6 +46,7 @@ function ComposerImpl({
   queueCount,
   onClearQueue,
   onPolish,
+  mentionSource,
 }: {
   onSend: (text: string) => void;
   running?: boolean;
@@ -55,6 +57,8 @@ function ComposerImpl({
   /** 已排队、还没发出去的消息条数。 */
   queueCount: number;
   onClearQueue: () => void;
+  /** @引用补全的目标与本会话目录（远端目标列远端目录，见 useCcMention）。 */
+  mentionSource: { connectionId: string; cwd: string };
   /**
    * 调 prompt-polish 改写草稿，返回改写后的文本。
    *
@@ -85,6 +89,14 @@ function ComposerImpl({
   const [slashReject, setSlashReject] = useState<string | null>(null);
   /** 整个输入区（含面板）的定位锚点与「点外面关闭」的判定框。 */
   const boxRef = useRef<HTMLDivElement>(null);
+  // @引用补全（设计稿《对话页-@引用与排版偏好》）：状态与取数全在 hook 里，
+  // 这里只接线 —— Composer 本体已贴体量门限，不能再长。
+  const mention = useCcMention({
+    value,
+    setValue,
+    connectionId: mentionSource.connectionId,
+    cwd: mentionSource.cwd,
+  });
 
   // 自动增高：内容变化时重算，上限 MAX_TEXTAREA_H。
   // 挂在 effect 里而不是 onChange 里：粘贴、程序回填（润色）也走同一条路。
@@ -182,12 +194,14 @@ function ComposerImpl({
           value={value}
           onChange={(e) => {
             setValue(e.target.value);
+            mention.syncCaret(e.target.selectionStart);
             setSlashSel(0);
             setSlashDismissed(false);
             setSlashReject(null);
             // 一打字，润色备份就作废：那是新草稿，还原回去只会覆盖用户刚写的。
             if (polishBackup !== null) setPolishBackup(null);
           }}
+          onSelect={(e) => mention.syncCaret(e.currentTarget.selectionStart)}
           onPaste={(e) => {
             // 对话页走的是纯文本通道（协议不支持图片块）。终端页能粘贴截图，
             // 这里至少给一句去向说明，而不是毫无反应地丢掉。
@@ -203,6 +217,8 @@ function ComposerImpl({
             //    上屏。拦走任何一个，中文用户要么选不了词、要么半截拼音被当成
             //    命令补全 / 直接发送。
             if (isImeComposing(e.nativeEvent)) return;
+            // @引用面板开着时方向键 / Enter / Tab / Esc 归它（焦点在 textarea，见 MentionPanel）。
+            if (mention.open && mention.handleKey(e)) return;
             // 面板开着时方向键 / Enter / Tab 归它。Enter 在输入框里本是换行，
             // 但「正选着命令」的时刻用户要的是补全；换行还有 Shift+Enter
             // （浏览器原生行为，不用我们接）。
@@ -238,52 +254,21 @@ function ComposerImpl({
           placeholder={placeholder ?? "给 CC 发消息…"}
           className="block max-h-[168px] w-full resize-none overflow-y-auto bg-transparent px-3 pt-2.5 text-[13px] leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground"
         />
-        <div className="flex items-center gap-2 px-2 pb-1.5">
-          <span className="text-[11px] text-muted-foreground">
-            <span data-cc-inset className="rounded border border-border bg-muted/60 px-[3px] py-[1px] font-mono text-[11px]">
-              {sendHint}
-            </span>{" "}
-            发送
-          </span>
-          {polishBackup !== null && (
-            <button
-              type="button"
-              onClick={() => {
-                setValue(polishBackup);
-                setPolishBackup(null);
-              }}
-              className="text-[11px] text-muted-foreground underline decoration-dotted transition-colors hover:text-foreground"
-            >
-              撤销润色
-            </button>
-          )}
-          {onPolish && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 gap-1 px-2 text-[12px] text-muted-foreground"
-              disabled={polishing || !value.trim()}
-              onClick={() => void polish()}
-              title="用提示词改写器把草稿改写成更清晰、可执行的指令（mods/prompt-polish）"
-            >
-              <Icon name={polishing ? "spinner" : "paintbrush"} size={12} />
-              {polishing ? "润色中" : "润色"}
-            </Button>
-          )}
-          {running && onInterrupt && (
-            <Button variant="outline" size="sm" className="ml-auto h-7 px-3 text-[12px]" onClick={onInterrupt}>
-              中断
-            </Button>
-          )}
-          <Button
-            size="sm"
-            className={`${running && onInterrupt ? "" : "ml-auto"} h-7 px-3 text-[12px]`}
-            disabled={!value.trim()}
-            onClick={send}
-          >
-            {running ? "排队" : "发送"}
-          </Button>
-        </div>
+        <ComposerTools
+          sendHint={sendHint}
+          polishBackup={polishBackup}
+          onUndoPolish={() => {
+            if (polishBackup === null) return;
+            setValue(polishBackup);
+            setPolishBackup(null);
+          }}
+          polishing={polishing}
+          onPolish={onPolish ? () => void polish() : undefined}
+          running={running}
+          onInterrupt={onInterrupt}
+          canSend={!!value.trim()}
+          onSend={send}
+        />
       </div>
       {slashOpen && (
         <SlashPanel
@@ -291,6 +276,18 @@ function ComposerImpl({
           active={slashActive}
           query={value.slice(1)}
           onPick={pickSlash}
+        />
+      )}
+      {mention.open && (
+        <MentionPanel
+          items={mention.items}
+          active={mention.active}
+          filter={mention.filter}
+          crumb={mention.crumb}
+          loading={mention.loading}
+          error={mention.error}
+          onPick={mention.pick}
+          onHover={mention.hover}
         />
       )}
     </div>

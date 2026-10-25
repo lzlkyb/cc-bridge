@@ -1178,6 +1178,39 @@ body {
   100% { box-shadow: 0 0 0 0 color-mix(in srgb, hsl(var(--primary)) 0%, transparent); }
 }
 
+/* ═════════════════════════════════════════════════════════════════
+   会话内搜索的命中高亮（设计稿《对话页-会话内搜索》）：
+   非当前命中 wash 底、当前命中实底反色。<mark> 由 MarkedText 产出，
+   data-cc-hit-cur 同时是「滚动到当前命中」的锚点。浅色主题下
+   primary 实底配 --background 文字同样成立。
+   ═════════════════════════════════════════════════════════════════ */
+.cc-hl {
+  background: color-mix(in srgb, hsl(var(--warning)) 28%, transparent);
+  border-radius: 3px;
+  padding: 0 1px;
+  color: inherit;
+}
+.cc-hl-cur {
+  background: hsl(var(--primary));
+  color: hsl(var(--background));
+  border-radius: 3px;
+  padding: 0 1px;
+  font-weight: 600;
+}
+
+/* ═════════════════════════════════════════════════════════════════
+   对话流长会话渲染跳过：消息列的直接子节点（每条消息的根元素）在滚出
+   视口后跳过 paint/layout（content-visibility: auto），首次渲染后由
+   `contain-intrinsic-size: auto` 记住真实高度，滚动条不跳。
+   —— 一条会话后端上限 4096 条事件，全量进 DOM 时流式输出每 tick
+   都要为上千个离屏节点付布局成本。锚点跳转（jumpTo / 搜索命中）对
+   折叠节点依旧有效：盒子一直在，只是内容按需渲染。
+   ═════════════════════════════════════════════════════════════════ */
+.cc-msgcol > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 80px;
+}
+
 /* ═══════════════════════════════════════════ */
 /* 关于卡片 — PastePanda 折叠风格            */
 /* ═══════════════════════════════════════════ */

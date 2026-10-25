@@ -1,12 +1,15 @@
 import type { CcMessage } from "../../lib/ccGuiTypes";
 import type { CcView } from "../../lib/ccReducer";
+import type { CcMark } from "../../lib/ccMarkdown";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { Icon } from "../ui/icon";
 import { ApprovalCard } from "./ApprovalCard";
 import { MessageText } from "./MessageText";
 import { ThinkingBlock } from "./ThinkingBlock";
+import { TodoProgressCard } from "./TodoProgressCard";
 import { ToolCard } from "./ToolCard";
 import { UserMessageBubble } from "./UserMessageBubble";
-import { verdictLabel } from "./summarize";
+import { todoItems, toolKind, verdictLabel } from "./summarize";
 
 /**
  * 跳过提问时告诉模型的话。
@@ -29,12 +32,15 @@ export function MessageList({
   messages,
   resolved,
   running,
+  marksByMsg,
   onRespond,
   onForkMessage,
 }: {
   messages: CcMessage[];
   resolved: CcView["resolved"];
   running: boolean;
+  /** 会话内搜索的命中标注（msgId → 该消息内的标注列表）。null/缺消息 = 无高亮。 */
+  marksByMsg?: Map<string, CcMark[]> | null;
   onRespond: (
     requestId: string,
     decision: "allow" | "deny",
@@ -47,32 +53,70 @@ export function MessageList({
    */
   onForkMessage: (index: number, text: string) => void;
 }) {
+  const { copy, isCopied } = useCopyFeedback();
+  // TodoWrite 每次调用都发全量列表：只有**最新一张**展开成进度卡，历史更新
+  // 折叠成一行（设计稿 B 期）。不折叠的话一次多步重构就是七八张重复卡刷屏。
+  let lastTodoIdx = -1;
+  messages.forEach((m, i) => {
+    if (m.kind === "tool" && toolKind(m.tool.name) === "todo") lastTodoIdx = i;
+  });
+
   return (
     <>
       {messages.map((m: CcMessage, index) => {
+        const marks = marksByMsg?.get(m.id);
         if (m.kind === "user") {
           return (
             <div key={m.id} className="flex justify-end">
-              <UserMessageBubble text={m.text} onFork={(text) => onForkMessage(index, text)} />
+              <UserMessageBubble text={m.text} marks={marks} onFork={(text) => onForkMessage(index, text)} />
             </div>
           );
         }
         if (m.kind === "assistant") {
           return (
-            <div key={m.id} className="flex gap-2">
+            <div key={m.id} className="group/msg relative flex gap-2">
               <span className="mt-[2px] flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-primary/10 text-primary">
                 <Icon name="sparkles" size={11} />
               </span>
               <div className="min-w-0 flex-1 pt-[1px]">
-                <MessageText text={m.text} />
+                <MessageText text={m.text} marks={marks} />
               </div>
+              {/* 正文悬浮复制：工具卡 / 思考全文早有了，正文是补齐项（设计稿 C 期）。
+                  focus-visible 常显 —— 键盘用户没有 hover。 */}
+              <button
+                type="button"
+                onClick={() => copy(`msg:${m.id}`, m.text)}
+                title={isCopied(`msg:${m.id}`) ? "已复制" : "复制全文"}
+                aria-label="复制全文"
+                aria-live="polite"
+                className="absolute -top-2 right-0 flex h-[22px] items-center gap-1 rounded-md border border-border bg-card/95 px-1.5 text-[10px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/msg:opacity-100"
+              >
+                <Icon name={isCopied(`msg:${m.id}`) ? "check" : "copy"} size={10} />
+                {isCopied(`msg:${m.id}`) ? "已复制" : "复制"}
+              </button>
             </div>
           );
         }
         if (m.kind === "thinking") {
-          return <ThinkingBlock key={m.id} text={m.text} running={running} />;
+          return <ThinkingBlock key={m.id} text={m.text} running={running} titleMarks={marks} />;
         }
-        if (m.kind === "tool") return <ToolCard key={m.id} tool={m.tool} />;
+        if (m.kind === "tool") {
+          if (toolKind(m.tool.name) === "todo" && todoItems(m.tool.input)) {
+            if (index === lastTodoIdx) return <TodoProgressCard key={m.id} tool={m.tool} />;
+            const items = todoItems(m.tool.input)!;
+            const done = items.filter((i) => i.status === "completed").length;
+            return (
+              <div key={m.id} data-cc-tool={m.tool.id} className="flex h-6 items-center gap-2 px-2 text-[11.5px] text-muted-foreground">
+                <Icon name="check" size={10} className="text-primary/80" />
+                任务计划 · 更新
+                <span className="ml-auto text-[10.5px] tabular-nums">
+                  {done} / {items.length}
+                </span>
+              </div>
+            );
+          }
+          return <ToolCard key={m.id} tool={m.tool} labelMarks={marks} />;
+        }
 
         const verdict = resolved[m.id];
         if (verdict) {

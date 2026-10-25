@@ -1,9 +1,11 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { CcToolCall } from "../../lib/ccGuiTypes";
+import type { CcMark } from "../../lib/ccMarkdown";
 import { computeLineDiff } from "../../lib/ccDiff";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { Icon, type IconName } from "../ui/icon";
 import { DiffBlock } from "./DiffBlock";
+import { MarkedText } from "./MarkedText";
 import {
   TOOL_TEXT_LIMIT,
   asString,
@@ -102,7 +104,7 @@ function MonoBlock({
  * 直播时 `toolUse` 先到（无 result），结果落地那一刻再自动展开一次
  * （用户亲手收起过就不代劳）；Read 与其余折叠（参数已能说明问题）。
  */
-function ToolCardImpl({ tool }: { tool: CcToolCall }) {
+function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcMark[] }) {
   const kind = toolKind(tool.name);
   const [open, setOpen] = useState(kind === "edit" || kind === "write" || (kind === "bash" && !!tool.result));
   /** 用户亲手切换过展开态之后，就不再自动展开（那是在替用户做他刚拒绝过的事）。 */
@@ -157,9 +159,10 @@ function ToolCardImpl({ tool }: { tool: CcToolCall }) {
           <Icon name={KIND_ICON[kind]} size={11} />
         </span>
         <span className="shrink-0 text-[12px] font-semibold text-foreground">{tool.name}</span>
-        {/* 命令可能很长：允许收缩并省略尾部，完整原文看 title 或展开态 */}
+        {/* 命令可能很长：允许收缩并省略尾部，完整原文看 title 或展开态。
+            labelMarks：会话内搜索在参数摘要上的命中（摘要只有一段，seg 恒 0）。 */}
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted-foreground" title={argLabel}>
-          {argLabel}
+          <MarkedText text={argLabel} marks={labelMarks} />
         </span>
         <span className="flex shrink-0 items-center gap-2 text-[11px]">
           {diffInfo && (diffInfo.added > 0 || diffInfo.removed > 0) && (

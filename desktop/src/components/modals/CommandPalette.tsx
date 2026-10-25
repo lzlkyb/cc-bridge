@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useMemo, Fragment } from "react";
-import { Icon, type IconName } from "../ui/icon";
+import { useState, useEffect, useRef, useMemo } from "react";
+import { Icon } from "../ui/icon";
 import { EmptyState } from "../ui/EmptyState";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { useToast } from "../ui/toast";
@@ -16,24 +16,13 @@ import { useDialogDismiss } from "../../hooks/useDialogDismiss";
 import { usePresence } from "../../hooks/usePresence";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useIpSedCopy } from "../../hooks/useIpSedCopy";
-
-interface CommandItem {
-  id: string;
-  label: string;
-  icon: IconName;
-  group: string;
-  shortcut?: string;
-  tab?: string;
-  /** 跳转后要定位+高亮的锚点（Header 安全徽章同一套 `highlightAnchor` 机制）：开关类传裸名（`remote-tls` → `toggle-remote-tls`），卡级传完整 id（`set-network`）。 */
-  anchor?: string;
-  /** 额外搜索词（不展示，只参与匹配）：用户想到的词往往不是标题——搜「rce」找命令执行、搜「GBK」找编码自适应；只比标题的搜索等于只能搜你已经知道的名字。 */
-  keywords?: string;
-  /** 返回值允许 boolean：useIpSedCopy 用它向「有按钮面」的调用方回传复制成败（面板自身只 void 消费）。 */
-  run?: () => void | boolean | Promise<void | boolean>;
-  /** H1 修复：不可逆/高风险操作，需先过 ConfirmDialog 而不是直接 invoke（对齐 LogTab/TokenManager 已有确认弹窗）。 */
-  confirmTitle?: string;
-  confirmDescription?: string;
-}
+import {
+  preparePaletteItems,
+  recentPaletteIds,
+  recordPaletteUse,
+  searchPalette,
+} from "../../lib/paletteSearch";
+import { CommandPaletteList, RECENT_GROUP, type CommandItem, type ListEntry } from "./CommandPaletteList";
 
 export function CommandPalette({
   onClose,
@@ -165,15 +154,28 @@ export function CommandPalette({
     ...SETTING_SEARCH_ITEMS,
   ], [running, isDark, platform, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding, copyIpSed]);
 
-  // 标题 + keywords 一起匹配（keywords 不展示）。20 多条量级下简单 includes 就够，不上模糊匹配库。
-  const q = query.trim().toLowerCase();
-  const filtered = !q ? items : items.filter((c) => c.label.toLowerCase().includes(q) || (c.keywords?.toLowerCase().includes(q) ?? false));
+  // 检索内核在 lib/paletteSearch（设计稿《命令面板-拼音模糊与最近使用》）：
+  // 子串 > 子序列 > keywords > 拼音全拼 > 拼音首字母，命中字符加亮、拼音给注音槽。
+  // 空查询时「最近使用」（frecency）置顶，其余条目仍按原分组完整出现。
+  const q = query.trim();
+  const entries = useMemo(() => preparePaletteItems(items), [items]);
+  const flat = useMemo<ListEntry[]>(() => {
+    const all = searchPalette(entries, q);
+    if (q) return all.map((match) => ({ match, displayGroup: match.item.group }));
+    const byId = new Map(all.map((m) => [m.item.id, m]));
+    const top = recentPaletteIds(items, 5)
+      .map((id) => byId.get(id))
+      .filter((m): m is (typeof all)[number] => !!m)
+      .map((match) => ({ match, displayGroup: RECENT_GROUP }));
+    return [...top, ...all.map((match) => ({ match, displayGroup: match.item.group }))];
+  }, [entries, items, q]);
 
   // 重置选中项当搜索变化
   useEffect(() => setSelectedIndex(0), [query]);
 
   const runItem = async (item: CommandItem) => {
     if (!item.run) return;
+    recordPaletteUse(item.id);
     setBusyId(item.id);
     try {
       await item.run();
@@ -186,6 +188,7 @@ export function CommandPalette({
   const selectItem = async (item: CommandItem) => {
     if (closing || busyId) return;
     if (item.tab) {
+      recordPaletteUse(item.id);
       onNavigate(item.tab, item.anchor);
       close();
       return;
@@ -193,6 +196,7 @@ export function CommandPalette({
     if (!item.run) return;
     // 打开目录选择器是子流程，不在此关闭面板
     if (item.id === "act-addroot") {
+      recordPaletteUse(item.id);
       item.run();
       return;
     }
@@ -210,14 +214,14 @@ export function CommandPalette({
     if (isImeComposing(e.nativeEvent)) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1));
+      setSelectedIndex((i) => Math.min(i + 1, flat.length - 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setSelectedIndex((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const item = filtered[selectedIndex];
-      if (item) selectItem(item);
+      const entry = flat[selectedIndex];
+      if (entry) selectItem(entry.match.item);
     } else if (e.key === "Escape") {
       if (showDirBrowser) return; // 交给 DirectoryBrowser 处理
       if (pendingConfirm) return; // 交给 ConfirmDialog 处理
@@ -225,7 +229,6 @@ export function CommandPalette({
     }
   };
 
-  let lastGroup = "";
   return (
     <>
       <div
@@ -260,42 +263,16 @@ export function CommandPalette({
 
           {/* Results */}
           <div ref={listRef} className="max-h-[300px] overflow-y-auto py-1.5 pal-list">
-            {filtered.length === 0 ? (
+            {flat.length === 0 ? (
               <EmptyState className="py-6" icon="search" description="没有匹配的结果，换个关键词试试" />
             ) : (
-              filtered.map((item, i) => {
-                const showHeader = item.group !== lastGroup;
-                lastGroup = item.group;
-                const isBusy = busyId === item.id;
-                return (
-                  <Fragment key={item.id}>
-                    {showHeader && (
-                      <div
-                        className="px-4 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground pal-g"
-                        style={{ animationDelay: `${Math.min(i, 12) * 10}ms` }}
-                      >
-                        {item.group}
-                      </div>
-                    )}
-                    <button
-                      onClick={() => selectItem(item)}
-                      onMouseEnter={() => setSelectedIndex(i)}
-                      disabled={isBusy}
-                      style={{ animationDelay: `${Math.min(i, 12) * 10}ms` }}
-                      className={`flex w-full items-center gap-3 px-4 py-2.5 text-sm transition-colors disabled:opacity-60 pal-it ${
-                        i === selectedIndex ? "sel bg-accent text-accent-foreground" : "text-foreground hover:bg-muted/60"
-                      }`}
-                    >
-                      <Icon name={item.icon} size={15} className="shrink-0" />
-                      <span className="flex-1 text-left">{item.label}</span>
-                      {isBusy && <Icon name="spinner" size={14} className="animate-spin" />}
-                      {item.shortcut && (
-                        <kbd className="text-[11px] font-mono text-muted-foreground">{item.shortcut}</kbd>
-                      )}
-                    </button>
-                  </Fragment>
-                );
-              })
+              <CommandPaletteList
+                flat={flat}
+                selectedIndex={selectedIndex}
+                busyId={busyId}
+                onSelect={selectItem}
+                onHover={setSelectedIndex}
+              />
             )}
           </div>
 
@@ -304,7 +281,8 @@ export function CommandPalette({
             <p className="text-[11px] text-muted-foreground">
               <kbd className="rounded bg-muted px-1 py-0.5 font-mono">↑↓</kbd> 导航 ·{" "}
               <kbd className="rounded bg-muted px-1 py-0.5 font-mono">Enter</kbd> 执行 ·{" "}
-              <kbd className="rounded bg-muted px-1 py-0.5 font-mono">Esc</kbd> 关闭
+              <kbd className="rounded bg-muted px-1 py-0.5 font-mono">Esc</kbd> 关闭 ·{" "}
+              <span className="text-primary/85">支持拼音首字母（mx → 模型）</span>
             </p>
           </div>
         </div>

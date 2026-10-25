@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "./lib/tauri";
+import { listen } from "@tauri-apps/api/event";
 import type { StatusResponse, StaticStatus } from "./lib/types";
 import { APP_INFO, CHANGELOG } from "./lib/about";
 import {
@@ -38,6 +39,7 @@ const TerminalTab = lazy(() => import("./components/tabs/TerminalTab").then((m) 
 const CcGuiTab = lazy(() => import("./components/tabs/CcGuiTab").then((m) => ({ default: m.CcGuiTab })));
 import { OnboardingGuide, isOnboardingDone } from "./components/modals/OnboardingGuide";
 import { CommandPalette } from "./components/modals/CommandPalette";
+import { ShortcutSheet } from "./components/modals/ShortcutSheet";
 import { UpgradeWelcomeBar } from "./components/update/UpgradeWelcomeBar";
 import "./terminal-workspace.css";
 
@@ -185,8 +187,9 @@ function AppContent() {
   // H3：重新查看引导（设置页 / 命令面板触发）——只打开弹窗，不清 localStorage。
   const openOnboarding = useCallback(() => setShowOnboarding(true), []);
 
-  // 命令面板 (Ctrl+K)
+  // 命令面板 (Ctrl+K)；快捷键速查层（? 键，非输入态）
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  const [showShortcutSheet, setShowShortcutSheet] = useState(false);
   const [activeTab, setActiveTab] = useState("connect");
 
   // 分类页常驻，切换目录不丢失正在编辑的表单或终端会话。
@@ -292,6 +295,11 @@ function AppContent() {
         // 按住不放会触发键盘重复，每帧 toggle 一次面板就闪开关；只吃首次按下。
         if (!e.repeat) setShowCommandPalette((v) => !v);
       }
+      // ?（Shift+/）速查快捷键。输入态让路 —— ? 在输入框里是普通字符。
+      if (e.key === "?" && !isCtrlOrMeta && !e.altKey && !e.repeat && !isEditableTarget(e.target)) {
+        e.preventDefault();
+        setShowShortcutSheet((v) => !v);
+      }
       // Ctrl+1~N 切工作区页（N = WORKSPACE_NAV.length，随导航项增减自动跟随）、Ctrl+, 打开设置
       //（桌面应用标准键位，mac 下 ⌘,）；设置排导航末位不占数字位（导航末位惯例，见 VS Code/Discord）。
       // 输入框/可编辑元素聚焦时不拦截，避免覆盖正常输入（如密码、命令参数）
@@ -325,6 +333,16 @@ function AppContent() {
       window.removeEventListener("online", refresh);
       window.removeEventListener("focus", refresh);
     };
+  }, [refetchStatus]);
+
+  // MCP 启停事件（后端在 start/stop/restart 时 emit，此前一直没人听）：即时刷新状态，
+  // 不等下一个 5s 周期。5s 轮询保留 —— uptime 等实时字段仍靠它跳动（ConnectHero）。
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    void listen("mcp-status-changed", () => void refetchStatus()).then((f) => {
+      un = f;
+    });
+    return () => un?.();
   }, [refetchStatus]);
 
   return (
@@ -479,6 +497,13 @@ function AppContent() {
           onReopenOnboarding={openOnboarding}
         />
       )}
+
+      {/* 快捷键速查层（? 键）：键位数据单一真源在 lib/shortcuts.ts */}
+      <ShortcutSheet
+        open={showShortcutSheet}
+        onClose={() => setShowShortcutSheet(false)}
+        platform={status?.platform}
+      />
 
       {/* 升级后首启欢迎条（方案 D）：只在「版本号变了」的那次启动浮出一次，
           补上升级流程缺的那个「结束」。fixed 零占位，不挤压内容区。 */}

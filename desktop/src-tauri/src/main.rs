@@ -439,6 +439,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 *app_state.app_handle.lock().unwrap() = Some(app.handle().clone());
             }
 
+            // 审计落盘 → `audit:appended` 事件（日志页即时刷新的数据源）。
+            // 无条件注入：它不走 notifications 那条 feature-gated 通道（见 audit.rs 注释）。
+            crate::audit::set_emit_handle(Some(app.handle().clone()));
+
             // 防火墙：启动探测 PowerShell(NetSecurity) 与 netsh 是否可用。两者都不可用时置
             // false，停止后续查询，避免 netsh 损坏时反复 spawn 失败进程、且不再触发
             // 「应用程序错误」弹窗（错误模式已在 main() 抑制）。须在后台定时刷新任务之前完成。

@@ -106,11 +106,7 @@ export function CcPane({
   );
   const { view, restored, reportError } = session;
 
-  /**
-   * 快捷键标签的平台来源（Ctrl+N / ⌘N）。与 App 层共用 `["status"]` 缓存，
-   * **不会多发请求**；取后端值而非嗅探 UA 的理由见 `lib/platform.ts`，首帧未返回时
-   * 先显示 Ctrl（那里写明的取舍）。
-   */
+  /** 快捷键标签的平台来源（Ctrl+N / ⌘N）。与 App 共用 ["status"] 缓存不发请求；取舍见 lib/platform.ts。 */
   const { data: platform } = useQuery<StatusResponse, Error, string | undefined>({
     queryKey: ["status"],
     queryFn: () => invoke<StatusResponse>("get_status"),
@@ -293,6 +289,7 @@ export function CcPane({
         queueCount={session.queue.length}
         onClearQueue={session.clearQueue}
         onPolish={onPolish}
+        mentionSource={{ connectionId: targetId, cwd }}
       />
     </div>
   );

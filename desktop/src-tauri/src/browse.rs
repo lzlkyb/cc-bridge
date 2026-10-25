@@ -5,9 +5,13 @@ use serde::Serialize;
 use crate::security::path::display_path;
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowseEntry {
     pub name: String,
     pub path: String,
+    /// include_files 打开时文件也会出现，这个字段才有了区分意义；
+    /// 纯目录模式（目录选择器）恒 true。前端类型里早就有 isDir，此前从没被发过。
+    pub is_dir: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -27,6 +31,7 @@ pub fn list_browse_roots() -> Vec<BrowseEntry> {
                 roots.push(BrowseEntry {
                     name: drive.clone(),
                     path: drive,
+                    is_dir: true,
                 });
             }
         }
@@ -37,11 +42,15 @@ pub fn list_browse_roots() -> Vec<BrowseEntry> {
         vec![BrowseEntry {
             name: "/".into(),
             path: "/".into(),
+            is_dir: true,
         }]
     }
 }
 
-pub async fn browse_directory(input_path: Option<&str>) -> Result<BrowseResult, String> {
+pub async fn browse_directory(
+    input_path: Option<&str>,
+    include_files: bool,
+) -> Result<BrowseResult, String> {
     let path_str = match input_path {
         None | Some("") => {
             return Ok(BrowseResult {
@@ -74,7 +83,7 @@ pub async fn browse_directory(input_path: Option<&str>) -> Result<BrowseResult, 
             Ok(ft) => ft,
             Err(_) => continue,
         };
-        if !ft.is_dir() {
+        if !ft.is_dir() && !include_files {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
@@ -82,10 +91,13 @@ pub async fn browse_directory(input_path: Option<&str>) -> Result<BrowseResult, 
         entries.push(BrowseEntry {
             name,
             path: display_path(&full_path),
+            is_dir: ft.is_dir(),
         });
     }
 
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    // 目录在前、名字序：@引用补全面板里目录是「导航动作」、文件是「终点」，
+    // 目录沉底会让下钻每层都要先跳过一串文件。
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
 
     let parent_dir = real.parent();
     let is_root = parent_dir.map(|p| p == real).unwrap_or(true);

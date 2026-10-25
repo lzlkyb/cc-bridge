@@ -61,12 +61,13 @@ function LogTabImpl({
   }, [highlightAnchor?.anchor, highlightAnchor?.nonce, appHidden]);
 
   // 性能分析面板独立拉取最近 500 条（后端 page_size 上限），避免统计口径只覆盖当前分页页。
-  // 仅在面板展开时启用，关闭时不轮询、不占用请求。
+  // 仅在面板展开时启用，关闭时不轮询、不占用请求。60s 兜底：新条目主要靠
+  // audit:appended 事件即时失效（见 useAuditLog），这里只防事件丢失。
   const { data: perfPage } = useQuery<AuditPage>({
     queryKey: ["auditLogPerf"],
     queryFn: () => invoke<AuditPage>("get_audit_log", { page: 1, page_size: 500 }),
     enabled: showPerf && !appHidden,
-    refetchInterval: appHidden ? false : 30000,
+    refetchInterval: appHidden ? false : 60000,
   });
   const perfEntries = perfPage?.entries ?? entries;
   // 一键回滚 / 变更 Diff 的弹窗状态（指向被点击的审计条目）。
