@@ -73,6 +73,14 @@ export type CcSession = {
   connection: string;
   cwd: string;
   branch: string;
+  /**
+   * **CC 的** session id（`system/init` 给的那个）。
+   *
+   * 与 `CcPaneMeta.sessionId` 不是一回事：那个是 cc-bridge 内部的会话 id
+   * （`cc_new_session` 铸发）。这里要的是 CLI 自己的 id —— 审计日志的
+   * `ccSessionId` 字段记的就是它，传错就永远查不到工具调用（批 4-1）。
+   */
+  sessionId: string | null;
   /** 我们为**下一轮**选的模型。空串 = 不传 `--model`（跟随 CLI 默认）。 */
   model: string;
   /** CLI 在 `system/init` 里回报的**当前**模型。选择为空时界面显示它。 */

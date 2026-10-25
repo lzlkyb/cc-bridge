@@ -275,7 +275,11 @@ fn write_sub_op_audits(
         );
         // 未出现在 `final_result_bytes` 里（进了聚合收尾）→ 0，不是「未知」：
         // 未知（None）会被聚合当 0 计，与真实 0 在 UI 上无法区分，这里直接落 0 更诚实。
-        entry.result_bytes = Some(bytes.get(&p.index).copied().unwrap_or(0));
+        let (bytes, chars) = bytes.get(&p.index).copied().unwrap_or((0, 0));
+        entry.result_bytes = Some(bytes);
+        // 批 4-1：与 http 通道同口径，子条目也要带 wire 字符数 —— 否则 batch 里的
+        // 大结果在「上下文构成」面板上永远判不出是否被客户端降级。
+        entry.result_chars = Some(chars);
         entry.backup_path = p.backup_path.clone();
         entry.target_path = p.target_path.clone();
         if let Err(e) = audit::write_audit_log(data_dir, &entry) {
@@ -284,11 +288,12 @@ fn write_sub_op_audits(
     }
 }
 
-/// 预算层输出 → `index → 实际发出字节`。
+/// 预算层输出 → `index → (实际发出字节, 客户端口径字符数)`。
 ///
-/// 口径与 `http.rs` 的 `result_bytes` 一致（text 块字节和；失败按 `"Error: " + msg`）。
+/// 字节口径与 `http.rs` 的 `result_bytes` 一致（text 块字节和；失败按 `"Error: " + msg`）；
+/// 字符数用 `wire_chars`（客户端按字符分档，中文 1 字符 = 3 字节，两者不能互相顶替）。
 /// `tail` 聚合条目整条跳过：它只带条数与前 20 个 index，被它收走的子结果原文一个字都没发出。
-fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, u64> {
+fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, (u64, u64)> {
     let mut m = std::collections::HashMap::new();
     for e in results {
         if e.get("tail").and_then(Value::as_bool) == Some(true) {
@@ -297,11 +302,21 @@ fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, u64
         let Some(idx) = e.get("index").and_then(Value::as_u64) else {
             continue;
         };
-        let bytes = match e.get("error").and_then(Value::as_str) {
-            Some(err) => ("Error: ".len() + err.len()) as u64,
-            None => e.get("result").map(result_text_bytes).unwrap_or(0),
+        let pair = match e.get("error").and_then(Value::as_str) {
+            // 错误文案是纯文本、而且短到不可能越线 ⇒ 字节与字符同值。
+            Some(err) => {
+                let n = ("Error: ".len() + err.len()) as u64;
+                (n, n)
+            }
+            None => match e.get("result") {
+                Some(r) => (
+                    result_text_bytes(r),
+                    crate::mcp::tools::wire_chars(r) as u64,
+                ),
+                None => (0, 0),
+            },
         };
-        m.insert(idx as usize, bytes);
+        m.insert(idx as usize, pair);
     }
     m
 }
@@ -847,9 +862,22 @@ mod tests {
             json!({ "index": 2, "tool": "read_files", "ok": false, "error": "nope" }),
         ];
         let m = final_result_bytes(&results);
-        assert_eq!(m.get(&0).copied(), Some(10));
-        assert_eq!(m.get(&1).copied(), Some("未内联请单独调用".len() as u64));
-        assert_eq!(m.get(&2).copied(), Some(("Error: ".len() + 4) as u64));
+        // 字节口径与原断言完全一致（第一项 10 是空 content 数组的序列化长度）。
+        assert_eq!(m.get(&0).copied().map(|p| p.0), Some(10));
+        assert_eq!(
+            m.get(&1).copied().map(|p| p.0),
+            Some("未内联请单独调用".len() as u64)
+        );
+        assert_eq!(
+            m.get(&2).copied().map(|p| p.0),
+            Some(("Error: ".len() + 4) as u64)
+        );
+        // 字符数另有一份（批 4-1）：错误文案两者同值，正常结果按 wire 口径算。
+        assert_eq!(
+            m.get(&2).copied().map(|p| p.1),
+            Some(("Error: ".len() + 4) as u64)
+        );
+        assert!(m.get(&1).copied().map(|p| p.1).unwrap_or(0) > 0);
 
         // 聚合收尾只带条数与前 20 个 index，被它收走的子结果一个字都没发出
         // → 不在表里（调用方按 0 计），绝不能记成原文大小。

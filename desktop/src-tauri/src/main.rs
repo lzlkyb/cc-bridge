@@ -1067,6 +1067,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cc_history_open,
             // 会话用量账（对话侧真实 token / 成本，按 session id）。
             commands::cc_session_usage,
+            // 批 4-1：一条会话的上下文构成（工具结果按工具名分解 + 越线告警）。
+            commands::cc_context_tax,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {

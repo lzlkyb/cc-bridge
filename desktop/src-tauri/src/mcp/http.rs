@@ -761,9 +761,12 @@ pub async fn handle_tools_call(
             let response = match result {
                 Ok(content) => {
                     if audit_enabled {
-                        // Token 用量估算埋点：结果里 **text 块**的字符数。图片块按 0 计
+                        // Token 用量估算埋点：结果里 **text 块**的字节数。图片块按 0 计
                         // （见 `tools::result_text_bytes` 的注释：base64 长度与 token 量无关）。
                         let result_bytes = Some(crate::mcp::tools::result_text_bytes(&content));
+                        // 批 4-1：降级判定要的是**字符数**（客户端按字符分档），
+                        // 与上面的字节数是两个口径，都由这里一次算好。
+                        let result_chars = Some(crate::mcp::tools::wire_chars(&content) as u64);
                         write_audit_for_call(
                             &state.data_dir,
                             tool_name,
@@ -777,6 +780,7 @@ pub async fn handle_tools_call(
                             session_id.clone(),
                             cc_session_id.clone(),
                             result_bytes,
+                            result_chars,
                         );
                         state.inc_audit_count();
                     }
@@ -797,7 +801,10 @@ pub async fn handle_tools_call(
                     state.increment_errors().await;
                     if audit_enabled {
                         // 错误文案会以 "Error: {e}" 进入模型上下文，按该长度估算。
-                        let result_bytes = Some(("Error: ".len() + e.len()) as u64);
+                        // 字符数与字节数同值：错误文案是纯文本，且这一段本来就短到
+                        // 不可能越线，没必要为它再跑一次序列化。
+                        let err_len = ("Error: ".len() + e.len()) as u64;
+                        let result_bytes = Some(err_len);
                         write_audit_for_call(
                             &state.data_dir,
                             tool_name,
@@ -811,6 +818,7 @@ pub async fn handle_tools_call(
                             session_id.clone(),
                             cc_session_id.clone(),
                             result_bytes,
+                            Some(err_len),
                         );
                         state.inc_audit_count();
                     }
@@ -857,6 +865,10 @@ pub(crate) fn write_audit_for_call(
     // 长度；失败 = 错误文案长度）。None = 该路径拿不到响应体（batch 子操作、旧日志），
     // 聚合时输出侧按 0 计。
     result_bytes: Option<u64>,
+    // 同一份结果按**客户端口径**算的字符数（`tools::wire_chars`）。客户端按字符
+    // 分档（≥49,823 整条降级成 2KB 预览），中文 1 字符 = 3 字节 ⇒ 不能拿字节顶替。
+    // 失败分支按 "Error: {e}" 的字符数计（纯文案，字节与字符在这些错误信息里等同）。
+    result_chars: Option<u64>,
 ) {
     let args_str = arguments.to_string();
     // E-P1-7: 测量序列化耗时（直接计时一次写入，消除 O1 双重序列化开销）
@@ -877,6 +889,7 @@ pub(crate) fn write_audit_for_call(
     );
     let mut entry = entry;
     entry.result_bytes = result_bytes;
+    entry.result_chars = result_chars;
     let _ = serde_json::to_string(&entry);
     // f64 毫秒（不用 .as_millis() as u64）：实测单条写盘序列化开销在微秒级（~6.8µs），
     // 若截断为整数毫秒会恒为 0，导致前端耗时拆解面板的“审计写盘”一项长期不可见。

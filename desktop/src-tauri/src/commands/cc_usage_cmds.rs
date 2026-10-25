@@ -20,6 +20,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tauri::State;
 
+use crate::cc_session::context_tax;
 use crate::cc_session::usage::{self, SessionUsage};
 use crate::state::AppState;
 
@@ -76,6 +77,26 @@ pub async fn cc_session_usage(
         t0.elapsed().as_millis()
     );
     Ok(rows)
+}
+
+/// 一条会话的上下文构成（批 4-1）：工具结果按工具名分解 + 越线告警。
+///
+/// `session_id` 是 **CC 的** session id（`system/init` 给的，也就是审计里的
+/// `ccSessionId` 字段），**不是** cc-bridge 内部 `meta.sessionId` —— 传错永远查到 0 条，
+/// 而且不会报错，只是面板上一片空白。
+///
+/// 只在浮层打开时调一次（前端不轮询）：审计是追加写，轮询会次次缓存未命中、
+/// 反复全量重解析 `audit.log`（`read_recent_tail` 头注释记过这个坑）。
+#[tauri::command]
+pub async fn cc_context_tax(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<context_tax::ContextTax, String> {
+    // 只碰 data_dir 里的 audit.log，不碰数据库 ⇒ 不拿 db 锁（拿了反而与落盘互斥）。
+    let data_dir = state.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || context_tax::context_tax(&data_dir, &session_id))
+        .await
+        .map_err(|e| format!("任务加入失败：{e}"))?
 }
 
 #[cfg(test)]

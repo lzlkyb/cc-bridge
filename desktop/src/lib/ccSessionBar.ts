@@ -27,6 +27,8 @@ export function toBarSession(input: {
     // 分支名这一版不显示：远端未必是 git 仓库，查一次要一次 SSH 往返，
     // 而它在会话条上只占一个 chip 的位置。
     branch: "",
+    // CC 自己的 session id：上下文构成面板（批 4-1）要拿它去审计里对账。
+    sessionId: view.sessionId,
     model,
     activeModel: view.model,
     permissionMode,

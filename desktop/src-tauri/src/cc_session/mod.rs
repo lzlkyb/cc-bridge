@@ -31,6 +31,7 @@
 
 pub mod autoapprove;
 pub mod channel;
+pub mod context_tax;
 pub mod manager;
 pub mod proto;
 pub mod ring;

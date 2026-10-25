@@ -1,9 +1,10 @@
 import { memo, useState } from "react";
 import { PERMISSION_MODE_LABEL, type CcPermissionMode, type CcSession } from "../../lib/ccGuiTypes";
-import { CONTEXT_WARN_RATIO, contextBar, contextPercent, formatTokens } from "../../lib/ccContextUsage";
+import { contextBar } from "../../lib/ccContextUsage";
 import type { CcHistoryRow } from "../../lib/ccEventTypes";
 import { Icon, type IconName } from "../ui/icon";
 import { ChangesetPanel } from "./ChangesetPanel";
+import { ContextMeter } from "./ContextMeter";
 import { HistoryPanel } from "./HistoryPanel";
 import { ModelPicker } from "./ModelPicker";
 
@@ -63,7 +64,6 @@ function SessionBarImpl({
   // 上下文余量条：CLI 每轮在 `result.modelUsage` 里给累计值与窗口。没有窗口
   // （老流水 / 老版本 CLI）时 bar 为 null，退回只显示已用 token 的旧形态。
   const bar = contextBar(session.modelUsage);
-  const contextWarn = bar !== null && bar.ratio >= CONTEXT_WARN_RATIO;
   const [historyOpen, setHistoryOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [changesetOpen, setChangesetOpen] = useState(false);
@@ -122,33 +122,9 @@ function SessionBarImpl({
             />
           )}
         </span>
-        {bar ? (
-          <span
-            className={`flex shrink-0 items-center gap-1.5 font-mono text-[11px] ${
-              contextWarn ? "text-warning-ink" : "text-muted-foreground"
-            }`}
-            title={
-              `上下文已用 ${formatTokens(bar.used)} / 窗口 ${formatTokens(bar.window)}` +
-              `（${bar.model}，${contextPercent(bar)}%）` +
-              (contextWarn ? " · 已超过 80%，可发送 /compact 压缩上下文" : "")
-            }
-          >
-            {/* 纯视觉条：数字就在旁边，读屏软件读文字，这条 aria 隐藏。 */}
-            <span aria-hidden className="relative h-[4px] w-10 overflow-hidden rounded-full bg-muted">
-              <span
-                className={`absolute inset-y-0 left-0 rounded-full ${
-                  contextWarn ? "bg-warning" : "bg-primary/70"
-                }`}
-                style={{ width: `${contextPercent(bar)}%` }}
-              />
-            </span>
-            {formatTokens(bar.used)}/{formatTokens(bar.window)}
-          </span>
-        ) : (
-          <span className="font-mono text-[11px] text-muted-foreground" title="输入 + 输出 token">
-            {formatTokens(tokens)}
-          </span>
-        )}
+        {/* 上下文计量表（余量条 + 构成面板入口）：批 4-1。独立成组件是因为
+            这一行已经贴到体量门禁，而它与会话条其余部分没有状态往来。 */}
+        <ContextMeter bar={bar} tokens={tokens} sessionId={session.sessionId} running={session.running} />
         <span className="font-mono text-[11px] text-muted-foreground">${session.costUsd.toFixed(2)}</span>
 
         <span data-cc-seg className="flex items-center gap-px rounded-lg border border-border bg-muted/50 p-[2px]">

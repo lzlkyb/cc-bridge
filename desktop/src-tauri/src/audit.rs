@@ -62,6 +62,17 @@ pub struct AuditEntry {
     /// 聚合时按 0 计（估算偏低，与「估算非账单值」的口径一致）。
     #[serde(rename = "resultBytes", skip_serializing_if = "Option::is_none")]
     pub result_bytes: Option<u64>,
+    /// 同一份结果按**客户端口径**算的字符数（`tools::wire_chars`）。
+    ///
+    /// 为什么不能拿 `result_bytes` 顶替：客户端是**按字符**分档的（≤49,823 原样、
+    /// 越过就整条降级成 2KB 预览），而 UTF-8 中文 1 字符 = 3 字节。按字节判的话
+    /// 一个 16,000 字的中文文件（48KB 字节）会被误判成「已降级」，而一个 60KB 的
+    /// 纯中文文件（20,000 字符）其实完好无损 —— 两个方向都错。
+    ///
+    /// 旧日志没有这个字段（`None`）：聚合时退回 `result_bytes`，那对纯 ASCII 是等价的，
+    /// 对中文只会偏高（宁可按「贵」提醒，也不要漏掉真的降级）。
+    #[serde(rename = "resultChars", skip_serializing_if = "Option::is_none")]
+    pub result_chars: Option<u64>,
 }
 
 /// 关联备份传递：在同一次工具调用（同一 async 任务）内，由写工具把本次生成的备份路径 +
@@ -501,6 +512,8 @@ pub fn new_entry(
         // 由 write_audit_for_call 在构造后补写（同 serverMs/auditMs 的补写模式）。
         // batch.rs 的子操作条目走不到那条路，保持 None → 只按请求侧估算。
         result_bytes: None,
+        // 同 result_bytes：由 write_audit_for_call 在构造后补写（batch 子条目另行补）。
+        result_chars: None,
     }
 }
 
@@ -690,8 +703,62 @@ fn entry_date_key(ts: &str) -> Option<String> {
 }
 
 /// 是否为 batch **容器**条目（兼容客户端加前缀的写法 `mcp__<server>__batch`）。
-fn is_batch_container(tool: &str) -> bool {
+pub(crate) fn is_batch_container(tool: &str) -> bool {
     tool == "batch" || tool.ends_with("__batch")
+}
+
+/// 取全量审计条目（带 mtime/len 缓存），在**持锁期间**把 `&[AuditEntry]` 交给 `f` 聚合。
+///
+/// ## 为什么把聚合塞进闭包，而不是返回 `Vec<AuditEntry>`
+///
+/// 几千条 `AuditEntry`（每条带 `params` 全文）克隆一次就是几 MB，而调用方都只是
+/// 遍历一遍。给引用就等于给了「零拷贝 + 不可能拿到过期快照」两件事。
+///
+/// ## 🔴 判命中与聚合必须在同一次持锁内完成
+///
+/// 中间放锁会让并发追加写入的条目落在「刚判过命中、聚合时文件已变」的空隙里：
+/// 结果既不是旧快照也不是新快照。这与 `read_page` 是同一条 TOCTOU 防线。
+///
+/// 文件不存在不是错误：首次启动、或用户刚清空过日志就是这个状态（顺手失效缓存，
+/// 否则清空后仍会读到清空前的旧快照）。
+pub(crate) fn with_cached_entries<R>(
+    data_dir: &Path,
+    f: impl FnOnce(&[AuditEntry]) -> R,
+) -> Result<R, String> {
+    let log_path = data_dir.join("audit.log");
+    if !log_path.exists() {
+        if let Some(m) = AUDIT_CACHE.get() {
+            if let Ok(mut g) = m.lock() {
+                *g = None;
+            }
+        }
+        return Ok(f(&[]));
+    }
+
+    let meta =
+        std::fs::metadata(&log_path).map_err(|e| format!("Failed to stat audit log: {e}"))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let len = meta.len();
+
+    let cache = AUDIT_CACHE.get_or_init(|| Mutex::new(None));
+    {
+        let g = cache.lock().unwrap();
+        if let Some((p, mt, ln, all)) = g.as_ref() {
+            if p.as_path() == log_path.as_path() && *mt == mtime && *ln == len {
+                return Ok(f(all));
+            }
+        }
+    }
+
+    let parsed = parse_all_entries(&log_path)?;
+    let out = f(&parsed);
+    *cache.lock().unwrap() = Some((log_path, mtime, len, parsed));
+    Ok(out)
 }
 
 /// 把已解析条目聚合进日期桶与工具桶。纯聚合，不做 IO——单独抽出便于单测。
@@ -1191,6 +1258,7 @@ mod tests {
             backup_path: None,
             target_path: None,
             result_bytes: rb,
+            result_chars: rb,
         };
         let entries = vec![
             // 今天：read_files 参数 40B→10 tok，结果 80B→20 tok
@@ -1267,6 +1335,7 @@ mod tests {
             backup_path: None,
             target_path: None,
             result_bytes: Some(80),
+            result_chars: Some(80),
         };
         // 今天、同一条对话：两次调用。
         let e_today = base.clone();
@@ -1320,6 +1389,7 @@ mod tests {
             backup_path: None,
             target_path: None,
             result_bytes: rb,
+            result_chars: rb,
         };
         let entries = vec![
             // 外层容器：params 裹着全部子操作参数（400B），返回体是全部子结果（800B）
