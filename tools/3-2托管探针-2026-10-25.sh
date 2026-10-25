@@ -28,7 +28,10 @@ SESS="cc-probe32"
 
 section() { printf '\n=== %s ===\n' "$1"; }
 # 写 FIFO 必须带超时：没有读者时 `> fifo` 会永久阻塞，探针会挂死在那儿。
-say() { timeout 5 bash -c 'cat > "$1"' _ "$FIFO" < "$2" && return 0 || return 1; }
+# 🔴 `$1` 是**要送进 FIFO 的文件**（FIFO 路径已固定在 `$FIFO`）。
+#    2026-10-25 首跑踩过：这里写成 `$2` 而调用只传一个参数 ⇒ 重定向目标为空，
+#    报 `: No such file or directory`，看着像「FIFO 写不进去」，其实是脚本自己错了。
+say() { timeout 5 bash -c 'cat > "$1"' _ "$FIFO" < "$1" && return 0 || return 1; }
 
 phase1() {
   section "环境"

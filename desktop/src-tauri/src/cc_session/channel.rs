@@ -119,10 +119,6 @@ pub fn remote_command(
     claude_path: &str,
     spec: &LaunchSpec,
 ) -> Result<(PathBuf, Vec<String>), String> {
-    let program = spawn::resolve_program("ssh")
-        .or_else(|_| spawn::resolve_program("ssh.exe"))
-        .map_err(|e| format!("未检测到系统 OpenSSH 客户端：{e}"))?;
-
     let mut script = String::new();
     if let Some(cwd) = spec.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
         script.push_str(&format!("cd {} || exit 97\n", shell_quote(cwd)));
@@ -135,6 +131,22 @@ pub fn remote_command(
         script.push(' ');
         script.push_str(&shell_quote(&arg));
     }
+
+    ssh_bash_script(ssh_args, destination, &script)
+}
+
+/// 把一段 bash 正文送成一条 ssh 命令：`echo <b64> | base64 -d | (bash || sh)`。
+///
+/// 抽出来给托管那几条命令共用。base64 里只有 `A-Za-z0-9+/=`，不进任何 shell 元字符，
+/// 所以正文里可以有引号、换行、heredoc，都不需要二次转义。
+fn ssh_bash_script(
+    ssh_args: &[String],
+    destination: &str,
+    script: &str,
+) -> Result<(PathBuf, Vec<String>), String> {
+    let program = spawn::resolve_program("ssh")
+        .or_else(|_| spawn::resolve_program("ssh.exe"))
+        .map_err(|e| format!("未检测到系统 OpenSSH 客户端：{e}"))?;
 
     let payload = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
     let mut args: Vec<String> = ssh_args.to_vec();
@@ -209,6 +221,189 @@ fn shell_quote(raw: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+// ===================== 批 3-2：托管会话（tmux + FIFO + 日志） =====================
+//
+// 结构与理由见 `docs/批3-2结构方案-2026-10-25.md`。这里只有**纯字符串构造**，
+// 一行都不碰运行时 —— 目的是「先把脚本钉死在单测里」，再接线。
+//
+// 远端文件布局（全部相对 `$HOME`，**不在本地展开**，因为 `$HOME` 是远端的）：
+//
+// ```text
+// ~/.cc-bridge/hosted/<key>.in      FIFO，我们往里写 NDJSON
+// ~/.cc-bridge/hosted/<key>.out     日志，我们 tail 它拿 NDJSON
+// ~/.cc-bridge/hosted/<key>.sh      worker 脚本（自己从 $0 推路径，免掉传参引号）
+// ```
+
+/// 会话名：`cc-<内部 id>-<启动毫秒>`。
+///
+/// 带时间戳是必须的：同一条内部 id 可能先后托管多次（上一次被 kill 了）。
+/// 名字不带时间戳就会撞上一个**已经死掉的名字**，`has-session` 判出「活着」而其实是别人。
+pub fn hosted_key(internal_id: u64, started_at_ms: u64) -> String {
+    format!("cc-{internal_id}-{started_at_ms}")
+}
+
+/// 会话名只允许这些字符。它会进 tmux 的 `-t` 参数与远端路径，不能有空格/引号/斜杠。
+fn assert_key(key: &str) -> Result<(), String> {
+    let ok = !key.is_empty()
+        && key.len() <= 64
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("非法的托管会话名：{key:?}"))
+    }
+}
+
+/// 远端目录（`$HOME` 故意不展开：它在远端才有值）。
+fn hosted_dir() -> &'static str {
+    "$HOME/.cc-bridge/hosted"
+}
+
+/// 起托管会话：建目录 / FIFO / worker，然后在 tmux 里把 worker 拉起来。
+///
+/// 返回的脚本 stdout 上有一行 `__LOG__<路径>`，调用方据此记下日志位置（拿不到就是没起来）。
+///
+/// ## worker 里那两个 `exec` 是整个方案的支点
+///
+/// ```text
+/// exec 9<>"$B.in"   # 读写双开：同一个 open file description 既是读端又是写端
+/// exec <&9          # claude 的 stdin 接到它
+/// exec claude ...   # 替换掉 shell（fd 9 仍然被 claude 继承）
+/// ```
+///
+/// 本地写端关闭时，**读端拿不到 EOF**（我们自己还持有一个写著）—— 进程不会自杀。
+/// 写成 `exec 9<"$B.in"` 时断线即退出，而现象与成功一模一样（日志还在、看起来在跑），
+/// 隔一会儿回来才发现它已经死了。探针 [4] 专门验这一条。
+pub fn hosted_bootstrap_script(
+    claude_path: &str,
+    spec: &LaunchSpec,
+    key: &str,
+) -> Result<String, String> {
+    assert_key(key)?;
+    let key_q = shell_quote(key);
+
+    // claude 的完整命令行（cwd 在 worker 里单独 cd，因为要在 exec 之前）。
+    let mut cmd = shell_quote(claude_path);
+    for arg in spec.claude_args()? {
+        cmd.push(' ');
+        cmd.push_str(&shell_quote(&arg));
+    }
+    let cd_line = match spec.cwd.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        Some(cwd) => format!("cd {} || exit 97\n", shell_quote(cwd)),
+        None => String::new(),
+    };
+
+    // worker 正文用**带引号的 heredoc**（`<<'SH'`）：里面一个字都不展开，
+    // 所以上面已经 quote 好的内容原样落地，不需要二次转义。
+    Ok(format!(
+        r#"set -e
+D="{dir}"
+mkdir -p "$D"
+K={key_q}
+FIFO="$D/$K.in"; LOG="$D/$K.out"; W="$D/$K.sh"
+# 同名会话可能还活着（上一次没杀掉）：先杀，避免 tmux 拒绝再建同名会话。
+tmux kill-session -t "$K" 2>/dev/null || true
+rm -f "$FIFO" "$LOG"
+mkfifo -m 600 "$FIFO"
+: > "$LOG"
+cat > "$W" <<'SH'
+#!/bin/bash
+B="${{0%.sh}}"
+exec 9<>"$B.in"
+exec <&9
+{cd_line}exec {cmd} >>"$B.out" 2>&1
+SH
+chmod +x "$W"
+tmux new-session -d -s "$K" "bash '$W'"
+printf '__LOG__%s\n' "$LOG"
+"#,
+        dir = hosted_dir(),
+    ))
+}
+
+/// 起托管会话的那条 ssh（短命：跑完就退，不占 stdin/stdout）。
+pub fn hosted_bootstrap(
+    ssh_args: &[String],
+    destination: &str,
+    script: &str,
+) -> Result<(PathBuf, Vec<String>), String> {
+    ssh_bash_script(ssh_args, destination, script)
+}
+
+/// 读通道：`exec tail -n +<N> -F <log>`。
+///
+/// `N` 从 1 起（`tail -n +1` = 从头）。用**行**不用字节：协议单位是行，
+/// 按字节切可能落在一个 UTF-8 字符或一行 JSON 的正中间。
+///
+/// `exec` 让远端 bash 被 tail 替换：本地这条 ssh 一断，tail 立刻跟着死，
+/// 不留孤儿进程（claude 不受影响 —— 它挂在 tmux 里，不挂在这条 ssh 上）。
+pub fn hosted_attach(
+    ssh_args: &[String],
+    destination: &str,
+    key: &str,
+    from_line: u64,
+) -> Result<(PathBuf, Vec<String>), String> {
+    assert_key(key)?;
+    let n = from_line.max(1);
+    let script = format!("exec tail -n +{} -F \"{}/{}.out\"", n, hosted_dir(), key);
+    ssh_bash_script(ssh_args, destination, &script)
+}
+
+/// 写通道：`exec cat > <fifo>`。
+///
+/// 本地这条 ssh 的 **stdin 就是 claude 的 stdin**（中间只隔一层 cat + FIFO），
+/// 所以 `user_message_line` / `control_response_line` 原样写进来即可。
+///
+/// 🔴 这条 ssh 会一直挂着（我们持续往里写）。它可能被 NAT / 超时静默掐掉 ——
+/// 写入报错时先重建它再重试一次，**不许**因为写失败就判进程已死
+/// （结构方案 §八.1）。
+pub fn hosted_write(
+    ssh_args: &[String],
+    destination: &str,
+    key: &str,
+) -> Result<(PathBuf, Vec<String>), String> {
+    assert_key(key)?;
+    let script = format!("exec cat > \"{}/{}.in\"", hosted_dir(), key);
+    ssh_bash_script(ssh_args, destination, &script)
+}
+
+/// 结束托管会话：杀 tmux 会话并清掉三个文件。
+///
+/// 🔴 托管会话**没有别的结束方式**。直连时「关 stdin = 送 EOF 让它收尾退出」，
+/// 而托管的写端关闭按设计**不会**让 claude 收到 EOF（那正是它能活下来的原因）。
+pub fn hosted_kill(
+    ssh_args: &[String],
+    destination: &str,
+    key: &str,
+) -> Result<(PathBuf, Vec<String>), String> {
+    assert_key(key)?;
+    let script = format!(
+        "D=\"{dir}\"; K={key_q}\n\
+         tmux kill-session -t \"$K\" 2>/dev/null || true\n\
+         rm -f \"$D/$K.in\" \"$D/$K.out\" \"$D/$K.sh\"\n",
+        dir = hosted_dir(),
+        key_q = shell_quote(key),
+    );
+    ssh_bash_script(ssh_args, destination, &script)
+}
+
+/// 存活判据：`tmux has-session`（退出码 0 = 活）。
+///
+/// 🔴 这是托管会话**唯一**可信的存活判据。`Exit` 事件每轮都会来（CLI 收到 `result`
+/// 后不退出），读通道的 ssh 也会随断网单独死掉 —— 拿这两个判「进程死没死」，
+/// 结果是**再起一个 claude 带 `--resume`，两个进程同时写同一条会话的转录**。
+pub fn hosted_alive(
+    ssh_args: &[String],
+    destination: &str,
+    key: &str,
+) -> Result<(PathBuf, Vec<String>), String> {
+    assert_key(key)?;
+    let script = format!("exec tmux has-session -t {}", shell_quote(key));
+    ssh_bash_script(ssh_args, destination, &script)
 }
 
 #[cfg(test)]
@@ -365,5 +560,175 @@ mod tests {
         let (_, args) = polish_remote(&[], "u@h", "/tmp/it's/claude").expect("构造");
         let script = args.last().expect("末位");
         assert!(script.contains(r"'\''"), "{script}");
+    }
+
+    // ---- 批 3-2：托管会话的命令构造 ----
+
+    /// 把 `ssh_bash_script` 产出的那条命令解回脚本正文。
+    fn decode_script(args: &[String]) -> String {
+        let bootstrap = args.last().expect("末位是引导串");
+        assert!(bootstrap.starts_with("echo "), "{bootstrap}");
+        assert!(bootstrap.contains("base64 -d"), "{bootstrap}");
+        let b64 = bootstrap
+            .trim_start_matches("echo ")
+            .split_whitespace()
+            .next()
+            .expect("payload");
+        String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .expect("解 base64"),
+        )
+        .expect("UTF-8")
+    }
+
+    #[test]
+    fn hosted_key_carries_start_time_so_dead_sessions_cannot_be_confused() {
+        assert_eq!(hosted_key(7, 1_700_000_000_000), "cc-7-1700000000000");
+        // 同一条内部 id 两次托管必须不同名，否则 `has-session` 会认到上一次的尸体。
+        assert_ne!(hosted_key(7, 1), hosted_key(7, 2));
+    }
+
+    /// 会话名会进 `tmux -t` 与远端路径，必须拒绝任何会在 shell 里跑偏的字符。
+    #[test]
+    fn hosted_rejects_dangerous_keys() {
+        for bad in [
+            "",
+            "cc 1",
+            "cc;rm -rf /",
+            "cc/1",
+            "cc$(id)",
+            "cc'1",
+            "cc\n1",
+        ] {
+            let e = hosted_alive(&[], "u@h", bad).expect_err("必须拒绝");
+            assert!(e.contains("非法"), "{bad:?} → {e}");
+        }
+        // 正常形态要过。
+        assert!(hosted_alive(&[], "u@h", "cc-12-1700000000000").is_ok());
+    }
+
+    /// 🔴 支点：worker 必须 `exec 9<>`（读写双开），不能是 `<`。
+    /// 写成 `<` 时断线即退出，而现象和成功一模一样 —— 这条断言就是防这个。
+    #[test]
+    fn bootstrap_worker_opens_fifo_read_write_so_eof_cannot_kill_it() {
+        let script = hosted_bootstrap_script("/usr/bin/claude", &spec(), "cc-1-2").expect("构造");
+        assert!(
+            script.contains(r#"exec 9<>"$B.in""#),
+            "必须是读写双开（<>），否则断线时读端拿到 EOF 直接退出：{script}"
+        );
+        assert!(
+            !script.contains(r#"exec 9<"$B.in""#),
+            "出现了只读打开：{script}"
+        );
+        // claude 的 stdin 接到那一份 fd 上。
+        assert!(script.contains("exec <&9"), "{script}");
+        // 日志与 FIFO 由 `$0` 推出来，不从命令行传 —— 少一层引号风险。
+        assert!(script.contains(r#"B="${0%.sh}""#), "{script}");
+    }
+
+    #[test]
+    fn bootstrap_creates_fifo_and_starts_detached_tmux_session() {
+        let script = hosted_bootstrap_script("/usr/bin/claude", &spec(), "cc-1-2").expect("构造");
+        assert!(script.contains("mkfifo -m 600"), "{script}");
+        assert!(
+            script.contains(r#"tmux new-session -d -s "$K""#),
+            "{script}"
+        );
+        // 同名残留要先杀，否则 tmux 拒绝建同名会话，而我们以为起来了。
+        assert!(
+            script.contains(r#"tmux kill-session -t "$K" 2>/dev/null || true"#),
+            "{script}"
+        );
+        // 路径在远端展开（$HOME 只有远端知道），所以本地不能把它 quote 死。
+        assert!(
+            script.contains(r#"D="$HOME/.cc-bridge/hosted""#),
+            "{script}"
+        );
+        // 把日志位置回给调用方，拿不到就是没起来。
+        assert!(script.contains("__LOG__"), "{script}");
+    }
+
+    /// cwd 与 claude 参数都要原样进 worker，且危险字符被单引号关住。
+    #[test]
+    fn bootstrap_embeds_cwd_and_args_with_quoting() {
+        let nasty = LaunchSpec {
+            cwd: Some("/tmp/a b'c$(rm -rf /)".into()),
+            resume: Some("s'1".into()),
+            ..spec()
+        };
+        let script = hosted_bootstrap_script("/usr/bin/claude", &nasty, "cc-1-2").expect("构造");
+        assert!(
+            script.contains(r#"cd '/tmp/a b'\''c$(rm -rf /)' || exit 97"#),
+            "{script}"
+        );
+        assert!(script.contains(r#"'/usr/bin/claude'"#), "{script}");
+        assert!(script.contains("--resume' 's'\\''1"), "{script}");
+    }
+
+    /// 没有 cwd 时不能留下一条空的 `cd` 行（`cd` 空参会跑到家目录）。
+    #[test]
+    fn bootstrap_without_cwd_emits_no_cd_line() {
+        let no_cwd = LaunchSpec {
+            cwd: None,
+            ..spec()
+        };
+        let script = hosted_bootstrap_script("/usr/bin/claude", &no_cwd, "cc-1-2").expect("构造");
+        assert!(!script.contains(" cd "), "{script}");
+        assert!(!script.contains("cd '"), "{script}");
+        // 正文里直接就是 exec claude。
+        assert!(script.contains(r#"exec '/usr/bin/claude'"#), "{script}");
+    }
+
+    #[test]
+    fn attach_tails_the_log_from_the_requested_line() {
+        let (_, args) = hosted_attach(&[], "u@h", "cc-1-2", 42).expect("构造");
+        let script = decode_script(&args);
+        assert!(
+            script.contains(r#"exec tail -n +42 -F "$HOME/.cc-bridge/hosted/cc-1-2.out""#),
+            "{script}"
+        );
+        // `exec`：本地 ssh 一断，tail 立刻跟着死，不留孤儿（claude 不挂在这条 ssh 上）。
+        assert!(script.starts_with("exec "), "{script}");
+    }
+
+    /// 游标 0 要变成 `+1`（`tail -n +0` 是未定义写法）。
+    #[test]
+    fn attach_clamps_zero_cursor_to_first_line() {
+        let (_, args) = hosted_attach(&[], "u@h", "cc-1", 0).expect("构造");
+        let script = decode_script(&args);
+        assert!(script.contains("tail -n +1 "), "{script}");
+        assert!(!script.contains("tail -n +0"), "{script}");
+    }
+
+    /// 写通道的 stdin 必须直通 FIFO：中间只许有一层 cat，不许再有别的管道。
+    #[test]
+    fn write_channel_is_a_plain_cat_into_the_fifo() {
+        let (_, args) = hosted_write(&[], "u@h", "cc-1-2").expect("构造");
+        let script = decode_script(&args);
+        assert_eq!(script, r#"exec cat > "$HOME/.cc-bridge/hosted/cc-1-2.in""#);
+    }
+
+    #[test]
+    fn kill_removes_session_and_files() {
+        let (_, args) = hosted_kill(&[], "u@h", "cc-1-2").expect("构造");
+        let script = decode_script(&args);
+        assert!(script.contains(r#"tmux kill-session -t "$K""#), "{script}");
+        // 三个文件在同一条 `rm -f` 里，所以只能按文件名断言（`rm -f ` 只出现在第一个前面）。
+        for name in ["in", "out", "sh"] {
+            let needle = format!("\"$D/$K.{name}\"");
+            assert!(script.contains(&needle), "缺 {needle}：{script}");
+        }
+        assert!(script.contains("rm -f "), "{script}");
+        // 找不到会话也要算成功（幂等：重复关闭不该报错）。
+        assert!(script.contains("|| true"), "{script}");
+    }
+
+    /// 存活判据只能靠 `tmux has-session`，不能靠读通道/`Exit` 事件。
+    #[test]
+    fn alive_is_decided_by_tmux_has_session() {
+        let (_, args) = hosted_alive(&[], "u@h", "cc-1-2").expect("构造");
+        let script = decode_script(&args);
+        assert_eq!(script, r#"exec tmux has-session -t 'cc-1-2'"#);
     }
 }
