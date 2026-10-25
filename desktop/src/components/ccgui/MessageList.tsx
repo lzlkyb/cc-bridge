@@ -5,6 +5,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { MessageText } from "./MessageText";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { ToolCard } from "./ToolCard";
+import { UserMessageBubble } from "./UserMessageBubble";
 import { verdictLabel } from "./summarize";
 
 /**
@@ -29,6 +30,7 @@ export function MessageList({
   resolved,
   running,
   onRespond,
+  onForkMessage,
 }: {
   messages: CcMessage[];
   resolved: CcView["resolved"];
@@ -39,20 +41,19 @@ export function MessageList({
     message?: string,
     answers?: Record<string, string[]>,
   ) => void;
+  /**
+   * 在这条用户消息处「编辑重发 / 分叉」（3-3）。参数是**消息下标**与最终文本：
+   * 下标决定摘要从哪里截断，文本是用户可能要改的那句话。
+   */
+  onForkMessage: (index: number, text: string) => void;
 }) {
   return (
     <>
-      {messages.map((m: CcMessage) => {
+      {messages.map((m: CcMessage, index) => {
         if (m.kind === "user") {
           return (
             <div key={m.id} className="flex justify-end">
-              {/* data-cc-bubble：玻璃阅读面上 primary/.12 会混成脏紫，改同色系高一档 */}
-              <div
-                data-cc-bubble
-                className="max-w-[86%] rounded-xl rounded-br-sm border border-border bg-muted/60 px-3 py-1.5"
-              >
-                <MessageText text={m.text} />
-              </div>
+              <UserMessageBubble text={m.text} onFork={(text) => onForkMessage(index, text)} />
             </div>
           );
         }

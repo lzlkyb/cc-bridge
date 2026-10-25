@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/tauri";
 import type { CcRestoreReq } from "../lib/ccEventTypes";
+import type { CcForkSeed } from "../lib/ccFork";
 import type { CcPaneMeta } from "../lib/ccPaneMeta";
 
 /** 侧栏历史区的查询键。打开 / 关闭会话后要让它失效重取。 */
@@ -18,8 +19,17 @@ export const STORED_SESSIONS_KEY = ["ccStoredSessions"] as const;
 export type CcPaneEntry = {
   key: string;
   meta: CcPaneMeta | null;
-  /** 首次挂载时要不要从库里载入，以及载入哪一条。三态见 `CcRestoreReq`。 */
+  /** 首次挂载时要不要从库里载入，以及载入哪一条。四态见 `CcRestoreReq`。 */
   restore: CcRestoreReq;
+  /**
+   * 这条是从哪条会话分叉出来的（3-3）。值是**来源 pane 的 key**，不是行号：
+   * 分叉的目标就是「另开一条 pane」，同源的两条都还在这个窗口里。
+   *
+   * 只活在这个窗口里：重启后两条都是普通会话（分叉关系没有落库）。
+   * 之所以能接受这个限制：分叉的用途是「同一个问题的两种走法，比完就收掉一条」，
+   * 跨重启还成对摆着的需求并不存在；真要看血缘，标题 + 时间就够认。
+   */
+  forkOf?: string;
 };
 
 /** 一个窗口里最多挂几条。**不是**后端限制（后端不设上限，见 `CcSessions`），
@@ -49,10 +59,10 @@ export function useCcPaneList() {
 
   /** 追加一条并切过去（与「点 + 就该进新会话」的直觉一致）。 */
   const spawn = useCallback(
-    (restore: CcRestoreReq) => {
+    (restore: CcRestoreReq, forkOf?: string) => {
       const key = `p${seq}`;
       setSeq(seq + 1);
-      setEntries((list) => [...list, { key, meta: null, restore }]);
+      setEntries((list) => [...list, { key, meta: null, restore, forkOf }]);
       setActive(key);
     },
     [seq],
@@ -60,6 +70,18 @@ export function useCcPaneList() {
 
   /** `+` / Ctrl+N：空白新会话，**不**从库里载入（3-1b 的重复载入缺陷就修在这）。 */
   const add = useCallback(() => spawn({ kind: "none" }), [spawn]);
+
+  /**
+   * 从某条消息分叉 / 编辑重发（3-3）：新开一条会话并立刻重跑那句话。
+   *
+   * 原 pane **一个字节都不动**（不截断、不重置、不换 resume id）：它是用户眼前
+   * 那条正在使用的东西，顶掉它等于把上下文抽走。分叉出来的这条要是聊歪了，
+   * 关掉就回到原会话。
+   */
+  const forkFrom = useCallback(
+    (sourceKey: string, seed: CcForkSeed) => spawn({ kind: "seed", seed }, sourceKey),
+    [spawn],
+  );
 
   /**
    * 打开库里的一条历史：新开一条 pane 载入它，**不动当前这条**。
@@ -162,5 +184,5 @@ export function useCcPaneList() {
     [entries],
   );
 
-  return { entries, active, setActive, add, openStored, close, report, cycle };
+  return { entries, active, setActive, add, openStored, forkFrom, close, report, cycle };
 }

@@ -3,6 +3,7 @@ import { Icon } from "../ui/icon";
 import type { CcPaneEntry } from "../../hooks/useCcPaneList";
 import { useSidebarWidth } from "../../hooks/useSidebarWidth";
 import type { CcStoredSummary } from "../../lib/ccEventTypes";
+import { orderForks } from "../../lib/ccFork";
 import { filterStored } from "../../lib/ccStoredList";
 import { SessionHistoryList } from "./SessionHistoryList";
 import { RailItem, SessionRow, rowOf, type SessionRowData } from "./SessionSidebarRow";
@@ -68,13 +69,17 @@ export function SessionSidebar({
 
   const rows: SessionRowData[] = useMemo(
     () =>
-      entries.map((e) => {
-        const label =
-          targets.find((t) => t.id === (e.meta?.connectionId ?? ""))?.label ??
-          e.meta?.targetLabel ??
-          "本机";
-        return rowOf(e, label);
-      }),
+      // 分叉出来的会话紧跟在来源后面（3-3）：「同组两个会话」靠相邻 + 行上标记，
+      // 不额外造分组头 —— 那会把「按目标分组」这个更重要的结构拆散。
+      orderForks(
+        entries.map((e) => {
+          const label =
+            targets.find((t) => t.id === (e.meta?.connectionId ?? ""))?.label ??
+            e.meta?.targetLabel ??
+            "本机";
+          return rowOf(e, label);
+        }),
+      ),
     [entries, targets],
   );
 

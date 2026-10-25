@@ -94,7 +94,9 @@ export function useCcEventStream(
         // 混用会让界面闪回上一次运行的内容。
         let fromDb: CcRestore | null = null;
         const plan = restore.current;
-        if (snap.nextSeq === 0 && plan.kind !== "none") {
+        // `seed`（分叉出来的新会话）**不读库**：它是一条全新会话，库里没有它，
+        // 读「最近那条」反而会把源会话的内容灌进来。
+        if (snap.nextSeq === 0 && (plan.kind === "latest" || plan.kind === "row")) {
           try {
             fromDb = await invoke<CcRestore | null>("cc_restore", {
               sessionId: sid,

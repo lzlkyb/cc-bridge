@@ -10,6 +10,8 @@
  * 改任何一边都要同步改另一边的测试，别靠肉眼比对。
  */
 
+import type { CcForkSeed } from "./ccFork";
+
 export type CcRetryInfo = {
   attempt: number;
   max: number;
@@ -163,18 +165,21 @@ export type CcStoredSummary = {
 /**
  * 一条新 pane 的「要不要从库里载入」意图。
  *
- * 三态必须显式分开（3-1c）。3-1b 是隐式的 —— 每个 pane 挂载都调 `cc_restore`
+ * 四态必须显式分开（3-1c / 3-3）。3-1b 是隐式的 —— 每个 pane 挂载都调 `cc_restore`
  * 取最近那条，于是 `+` 新建的第二条会**重复载入上一条的内容**。
  *
  * - `none`   — `+` / Ctrl+N 造的新会话，根本不调 `cc_restore`
  *              （不是调了再丢返回值：那会白读几 MB 的 `events_json`）；
  * - `latest` — 进页面造的第一条，接着上次聊（重启恢复）；
- * - `row`    — 侧栏「历史」里点开的那一条。
+ * - `row`    — 侧栏「历史」里点开的那一条；
+ * - `seed`   — 从某条消息分叉出来的新会话：**不读库**，挂载后把摘要 + 那句话
+ *              发出去（见 `lib/ccFork.ts` 与 `CcPane` 的自动重跑）。
  */
 export type CcRestoreReq =
   | { kind: "none" }
   | { kind: "latest" }
-  | { kind: "row"; rowId: number };
+  | { kind: "row"; rowId: number }
+  | { kind: "seed"; seed: CcForkSeed };
 
 /** `cc_probe` 的返回体。 */
 export type CcProbe = {  found: boolean;

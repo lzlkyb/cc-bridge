@@ -160,3 +160,37 @@ describe("载入意图（3-1c）", () => {
     expect(api.entries.filter((e) => e.restore.kind === "row")).toHaveLength(2);
   });
 });
+
+describe("分叉（3-3）", () => {
+  const seed = {
+    sourceSessionId: "s-1",
+    sourceTitle: "源会话",
+    connectionId: "",
+    cwd: "D:/proj",
+    model: "sonnet",
+    permissionMode: "default" as const,
+    digest: "【用户】旧话",
+    omitted: 0,
+    text: "改过的说法",
+  };
+
+  it("新开一条带 seed 的条目并切过去，原条目不动", async () => {
+    const origin = api.active;
+    await act(async () => api.forkFrom(origin, seed));
+    expect(api.entries).toHaveLength(2);
+    const forked = api.entries[1];
+    expect(forked.restore).toEqual({ kind: "seed", seed });
+    // 侧栏靠它把两条摆在一起
+    expect(forked.forkOf).toBe(origin);
+    expect(api.active).toBe(forked.key);
+  });
+
+  it("同一处可以连着分叉多次（与「打开历史」不同，这里不去重）", async () => {
+    const origin = api.active;
+    await act(async () => api.forkFrom(origin, seed));
+    await act(async () => api.forkFrom(origin, seed));
+    expect(api.entries.filter((e) => e.restore.kind === "seed")).toHaveLength(2);
+    // 两次都要指向同一个来源，侧栏才会把它们摆成一组
+    expect(api.entries.filter((e) => e.forkOf === origin)).toHaveLength(2);
+  });
+});

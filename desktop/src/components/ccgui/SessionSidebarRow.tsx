@@ -83,9 +83,17 @@ export function SessionRow({
       />
       <div className="min-w-0 flex-1">
         <div
-          className={`truncate text-xs leading-[1.35] ${active ? "font-semibold" : "font-normal"}`}
+          className={`flex items-center gap-1 text-xs leading-[1.35] ${active ? "font-semibold" : "font-normal"}`}
         >
-          {row.title}
+          <span className="truncate">{row.title}</span>
+          {row.forkOf && (
+            <span
+              title="从另一条会话分叉出来（原会话仍在）"
+              className="shrink-0 rounded border border-border px-1 text-[9.5px] leading-[1.4] text-muted-foreground"
+            >
+              分叉
+            </span>
+          )}
         </div>
         <div className="mt-px truncate text-[10.5px] leading-[1.4] text-muted-foreground tabular-nums">
           {row.detail}

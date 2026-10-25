@@ -19,6 +19,7 @@ export function ConversationStream({
   retryProbe,
   onSend,
   onRespond,
+  onForkMessage,
   cwd,
   onCwdChange,
   isRemote,
@@ -36,6 +37,8 @@ export function ConversationStream({
     message?: string,
     answers?: Record<string, string[]>,
   ) => void;
+  /** 编辑重发 / 从此处分叉（3-3）。见 `MessageList`。 */
+  onForkMessage: (index: number, text: string) => void;
   cwd: string;
   onCwdChange: (v: string) => void;
   isRemote: boolean;
@@ -67,6 +70,7 @@ export function ConversationStream({
             resolved={view.resolved}
             running={view.running}
             onRespond={onRespond}
+            onForkMessage={onForkMessage}
           />
         )}
       </div>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { CcRestore } from "../lib/ccEventTypes";
+import type { CcForkSeed } from "../lib/ccFork";
 import type { CcPermissionMode } from "../lib/ccGuiTypes";
 import {
   readCwd,
@@ -72,6 +73,25 @@ export function useCcPanePrefs() {
   }, []);
 
   /**
+   * 分叉出来的会话要**继承源会话的运行配置**（3-3）。
+   *
+   * 四条一起还原，理由与 `applyRestore` 同源：分叉的语义是「同一件事换个说法重跑」，
+   * 目标 / 目录 / 模型 / 权限档只要差一条，跑出来的东西就不是同一个语境 ——
+   * 最典型的是远端会话分叉成本机会话：上下文里的路径一个都不存在。
+   *
+   * 🔴 `saveCwd` 必须在 `setTargetId` 之前：目标一变就会按新 key 重读 localStorage。
+   */
+  const applySeed = useCallback((seed: CcForkSeed) => {
+    saveCwd(seed.connectionId, seed.cwd);
+    setTargetId(seed.connectionId);
+    setCwd(seed.cwd);
+    setModeRaw(seed.permissionMode);
+    saveMode(seed.permissionMode);
+    setModelRaw(seed.model);
+    saveModel(seed.model);
+  }, []);
+
+  /**
    * 打开一条 CLI 历史后把目标切成本机 + 用它的目录。
    *
    * 🔴 本机历史一律切回 `""`：`cc_start` 会拿 `connection_id` + `cwd` 和内存里的
@@ -94,6 +114,7 @@ export function useCcPanePrefs() {
     model,
     setModel,
     applyRestore,
+    applySeed,
     applyOpenedCwd,
   };
 }

@@ -1,11 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { invoke } from "../../lib/tauri";
-import type { SshConnectionList } from "../../lib/types";
 import { useCcPaneList } from "../../hooks/useCcPaneList";
 import { useCcShortcuts } from "../../hooks/useCcShortcuts";
 import { useCcSessionActions } from "../../hooks/useCcSessionActions";
 import { useCcStoredSessions } from "../../hooks/useCcStoredSessions";
+import { useCcTargets } from "../../hooks/useCcTargets";
 import { conflictWith } from "../../lib/ccPaneMeta";
 import { archivedOnly, filterStored } from "../../lib/ccStoredList";
 import { SessionSidebar } from "../ccgui/SessionSidebar";
@@ -58,18 +56,8 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
   }, []);
   const collapsed = userCollapsed ?? narrow;
 
-  const { data } = useQuery<SshConnectionList, Error>({
-    queryKey: ["sshConnections"],
-    queryFn: () => invoke<SshConnectionList>("ssh_list_connections"),
-  });
-  // 分组显示名要用它；各 pane 自己也会查同一个 key（react-query 去重，不会多发请求）。
-  const targets = useMemo(
-    () => [
-      { id: "", label: "本机" },
-      ...(data?.connections ?? []).map((c) => ({ id: c.id, label: c.name || c.host })),
-    ],
-    [data?.connections],
-  );
+  // 分组显示名要用它；各 pane 用的是同一个 hook / 同一份缓存。
+  const targets = useCcTargets();
 
   /**
    * 历史区：库里落盘过、但**当前没打开**的会话。
@@ -180,6 +168,7 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
             }
             onMeta={list.report}
             onNewSession={list.add}
+            onForkSession={(seed) => list.forkFrom(e.key, seed)}
             onNavigate={onNavigate}
           />
         ))}
