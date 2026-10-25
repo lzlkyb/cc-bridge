@@ -111,6 +111,30 @@ pub(crate) fn wire_chars(v: &Value) -> usize {
     }
 }
 
+/// [`wire_chars`] 的审计版本：量不出来时给 `None`，**不把哨兵值当事实值**。
+///
+/// `wire_chars` 用 `usize::MAX` 表达「无法计量 ⇒ 按一定越线处理」，那是给**预算判断**
+/// 用的内部约定（`read_files` 依赖它把可疑结果判成超限，绝不能内联）。
+/// 但审计条目记的是**已经发生的事实**：原样落盘的话，聚合时会变成一条
+/// `wire_chars = 18446744073709551615` 的「降级举证」，面板上显示一串天文数字，
+/// 而真实情况只是「这一次没量出来」。
+///
+/// 记 `None` 会走聚合侧既有的「老日志无字符数」通道：退回字节口径、计入
+/// `charlessCalls`，前端据此把告警语气说软一档 —— 「不知道就说不知道」。
+pub(crate) fn wire_chars_opt(v: &Value) -> Option<u64> {
+    chars_or_none(wire_chars(v))
+}
+
+/// 哨兵 → `None`。单独成函数是为了能直接测这条约定：`Value` 的序列化失败
+/// 无法构造，否则「哨兵不许落盘」只能靠读代码保证。
+fn chars_or_none(n: usize) -> Option<u64> {
+    if n == usize::MAX {
+        None
+    } else {
+        Some(n as u64)
+    }
+}
+
 /// `mcp/tools/*` 各 `mod tests` 共用的测试脚手架。
 ///
 /// 2026-10-16 前 `unique_subdir` 与 `make_state` 各被抄了 7 份（只有 label 不同），
@@ -214,6 +238,39 @@ mod result_bytes_tests {
             serde_json::to_vec(&r).unwrap().len() as u64,
             "异常形状要回退到整体长度，不能记成 0"
         );
+    }
+}
+
+#[cfg(test)]
+mod wire_chars_opt_tests {
+    //! 锁住「哨兵值不许进审计日志」。
+    //!
+    //! 背景：`wire_chars` 用 `usize::MAX` 表示量不出来，写成
+    //! `Some(wire_chars(..) as u64)` 就直接把它当成了真实字符数落盘 ——
+    //! 上下文税面板随后把它渲染成一条 1.8e19 字符的「降级举证」。
+    //! 这个错误方向很隐蔽：不 panic、不报错，只是把一个天文数字显示给用户。
+
+    use super::*;
+
+    #[test]
+    fn sentinel_becomes_none_not_a_number() {
+        assert_eq!(
+            chars_or_none(usize::MAX),
+            None,
+            "哨兵表示「没量出来」，落盘必须是 None，不是 u64::MAX"
+        );
+    }
+
+    #[test]
+    fn real_measurements_pass_through() {
+        assert_eq!(chars_or_none(0), Some(0), "空结果是真实的 0，不是未知");
+        assert_eq!(chars_or_none(49_823), Some(49_823));
+    }
+
+    #[test]
+    fn wire_chars_opt_matches_wire_chars_when_measurable() {
+        let v = json!({ "content": [{ "type": "text", "text": "中文ab" }] });
+        assert_eq!(wire_chars_opt(&v), Some(wire_chars(&v) as u64));
     }
 }
 

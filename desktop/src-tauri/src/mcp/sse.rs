@@ -313,7 +313,7 @@ pub async fn sse_message_handler(
                                 let result_bytes =
                                     Some(crate::mcp::tools::result_text_bytes(&content));
                                 let result_chars =
-                                    Some(crate::mcp::tools::wire_chars(&content) as u64);
+                                    crate::mcp::tools::wire_chars_opt(&content);
                                 write_audit_for_call(
                                     &state.data_dir, &tool_name, &arguments, true, None,
                                     Some(source_ip.clone()), elapsed, server_ms, io_ms, None,

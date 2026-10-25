@@ -766,7 +766,8 @@ pub async fn handle_tools_call(
                         let result_bytes = Some(crate::mcp::tools::result_text_bytes(&content));
                         // 批 4-1：降级判定要的是**字符数**（客户端按字符分档），
                         // 与上面的字节数是两个口径，都由这里一次算好。
-                        let result_chars = Some(crate::mcp::tools::wire_chars(&content) as u64);
+                        // 量不出来时记 None 而非哨兵值（见 `tools::wire_chars_opt`）。
+                        let result_chars = crate::mcp::tools::wire_chars_opt(&content);
                         write_audit_for_call(
                             &state.data_dir,
                             tool_name,

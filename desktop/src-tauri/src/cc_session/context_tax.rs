@@ -160,10 +160,15 @@ fn aggregate(all: &[AuditEntry], sid: &str) -> ContextTax {
         }
 
         let rb = e.result_bytes.unwrap_or(0);
-        let chars = match (e.result_chars, e.result_bytes) {
+        // 🔴 `u64::MAX` 是 `wire_chars` 的「量不出来」哨兵，不是字符数。它曾被原样写进
+        // 日志（`Some(wire_chars(..) as u64)` 那版），读到就必须按未知处理——否则面板上
+        // 会出现一条 1.8e19 字符的「降级举证」。写入端已改用 `wire_chars_opt`，
+        // 但日志是只追加的历史，读端不能假设写它的一定是新版本。
+        let measured = e.result_chars.filter(|c| *c != u64::MAX);
+        let chars = match (measured, e.result_bytes) {
             (Some(c), _) => c,
             (None, Some(b)) => {
-                // 老日志没有 wire 字符数：退回字节（纯 ASCII 等价，中文偏高 ——
+                // 没有可用的字符数（老日志 / 哨兵）：退回字节（纯 ASCII 等价，中文偏高 ——
                 // 宁可早点提醒「这条很贵」，也不要漏掉真的被降级的那次）。
                 out.charless_calls += 1;
                 b
@@ -359,6 +364,42 @@ mod tests {
             "老日志要能被识别出来（前端据此弱化告警语气）"
         );
         assert_eq!(t.result_bytes, 8_000);
+        assert!(t.oversized.is_empty());
+    }
+
+    /// 哨兵值（`u64::MAX` = `wire_chars` 量不出来）不许当成 1.8e19 字符的事实值。
+    ///
+    /// 修复前 `http.rs` 写的是 `Some(wire_chars(..) as u64)`，量不出来时那条日志
+    /// 会变成一个天文数字，面板随后把它渲染成一条荒诞的「已降级」举证。
+    #[test]
+    fn sentinel_chars_are_treated_as_unknown() {
+        let poisoned = AuditEntry {
+            result_chars: Some(u64::MAX),
+            ..entry("read_files", Some("s1"), "{\"path\":\"a\"}", Some(8_000))
+        };
+        let t = aggregate(&[poisoned], "s1");
+        assert_eq!(t.charless_calls, 1, "哨兵按「没有字符数」计");
+        assert_eq!(
+            t.tools[0].max_chars, 8_000,
+            "退回字节值，不是 u64::MAX —— 这个数会直接显示给用户"
+        );
+        assert!(
+            t.oversized.is_empty(),
+            "8,000 字节远在两条线之下，不该因为哨兵凭空造出一次越线：{:?}",
+            t.oversized
+        );
+    }
+
+    /// 哨兵且连字节都没有：只能算 0，同样不许把 `u64::MAX` 带出去。
+    #[test]
+    fn sentinel_without_bytes_degrades_to_zero() {
+        let poisoned = AuditEntry {
+            result_chars: Some(u64::MAX),
+            ..entry("read_files", Some("s1"), "{}", None)
+        };
+        let t = aggregate(&[poisoned], "s1");
+        assert_eq!(t.tools[0].max_chars, 0);
+        assert_eq!(t.charless_calls, 0, "无字节可退，不算「按字节估算」");
         assert!(t.oversized.is_empty());
     }
 

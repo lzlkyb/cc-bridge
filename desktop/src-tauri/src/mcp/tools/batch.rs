@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::audit;
 use crate::mcp::http::dispatch_tool;
-use crate::mcp::tools::{result_text_bytes, wire_chars};
+use crate::mcp::tools::{result_text_bytes, wire_chars, wire_chars_opt};
 use crate::state::AppState;
 
 /// batch 整条返回的**内容预算**（字符，wire 口径，与 [`crate::mcp::tools::MAX_INLINE_CHARS`] 同源）。
@@ -275,11 +275,11 @@ fn write_sub_op_audits(
         );
         // 未出现在 `final_result_bytes` 里（进了聚合收尾）→ 0，不是「未知」：
         // 未知（None）会被聚合当 0 计，与真实 0 在 UI 上无法区分，这里直接落 0 更诚实。
-        let (bytes, chars) = bytes.get(&p.index).copied().unwrap_or((0, 0));
+        let (bytes, chars) = bytes.get(&p.index).copied().unwrap_or((0, Some(0)));
         entry.result_bytes = Some(bytes);
         // 批 4-1：与 http 通道同口径，子条目也要带 wire 字符数 —— 否则 batch 里的
         // 大结果在「上下文构成」面板上永远判不出是否被客户端降级。
-        entry.result_chars = Some(chars);
+        entry.result_chars = chars;
         entry.backup_path = p.backup_path.clone();
         entry.target_path = p.target_path.clone();
         if let Err(e) = audit::write_audit_log(data_dir, &entry) {
@@ -291,9 +291,10 @@ fn write_sub_op_audits(
 /// 预算层输出 → `index → (实际发出字节, 客户端口径字符数)`。
 ///
 /// 字节口径与 `http.rs` 的 `result_bytes` 一致（text 块字节和；失败按 `"Error: " + msg`）；
-/// 字符数用 `wire_chars`（客户端按字符分档，中文 1 字符 = 3 字节，两者不能互相顶替）。
+/// 字符数走 `wire_chars_opt`（客户端按字符分档，中文 1 字符 = 3 字节，两者不能互相顶替；
+/// 量不出来时是 `None`，不是 `usize::MAX` —— 那会变成面板上的天文数字）。
 /// `tail` 聚合条目整条跳过：它只带条数与前 20 个 index，被它收走的子结果原文一个字都没发出。
-fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, (u64, u64)> {
+fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, (u64, Option<u64>)> {
     let mut m = std::collections::HashMap::new();
     for e in results {
         if e.get("tail").and_then(Value::as_bool) == Some(true) {
@@ -306,14 +307,12 @@ fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, (u6
             // 错误文案是纯文本、而且短到不可能越线 ⇒ 字节与字符同值。
             Some(err) => {
                 let n = ("Error: ".len() + err.len()) as u64;
-                (n, n)
+                (n, Some(n))
             }
             None => match e.get("result") {
-                Some(r) => (
-                    result_text_bytes(r),
-                    crate::mcp::tools::wire_chars(r) as u64,
-                ),
-                None => (0, 0),
+                Some(r) => (result_text_bytes(r), wire_chars_opt(r)),
+                // 没有 result 字段 = 确实什么都没发出 ⇒ 真实的 0，不是「未知」。
+                None => (0, Some(0)),
             },
         };
         m.insert(idx as usize, pair);
@@ -875,9 +874,22 @@ mod tests {
         // 字符数另有一份（批 4-1）：错误文案两者同值，正常结果按 wire 口径算。
         assert_eq!(
             m.get(&2).copied().map(|p| p.1),
-            Some(("Error: ".len() + 4) as u64)
+            Some(Some(("Error: ".len() + 4) as u64))
         );
-        assert!(m.get(&1).copied().map(|p| p.1).unwrap_or(0) > 0);
+        // 可计量的结果必须带 `Some(字符数)`：`None` 在聚合侧是「没量出来」，
+        // 会被降级成字节口径并计入 charlessCalls。
+        let stub = m.get(&1).copied().expect("stub 也要记账");
+        assert!(
+            stub.1.is_some_and(|c| c > 0),
+            "stub 那句话量得出来，必须是 Some(>0)，得到 {:?}",
+            stub.1
+        );
+        let inlined = m.get(&0).copied().expect("内联结果要记账");
+        assert!(
+            inlined.1.is_some_and(|c| c > 0),
+            "内联结果同理：{:?}",
+            inlined.1
+        );
 
         // 聚合收尾只带条数与前 20 个 index，被它收走的子结果一个字都没发出
         // → 不在表里（调用方按 0 计），绝不能记成原文大小。
