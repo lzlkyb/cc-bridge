@@ -147,8 +147,11 @@ fn ensure_column(conn: &Connection, name: &str, decl: &str) -> Result<(), String
     if exists {
         return Ok(());
     }
-    conn.execute(&format!("ALTER TABLE cc_sessions ADD COLUMN {name} {decl}"), [])
-        .map_err(|e| format!("给 cc_sessions 补列 {name} 失败：{e}"))?;
+    conn.execute(
+        &format!("ALTER TABLE cc_sessions ADD COLUMN {name} {decl}"),
+        [],
+    )
+    .map_err(|e| format!("给 cc_sessions 补列 {name} 失败：{e}"))?;
     Ok(())
 }
 
@@ -284,7 +287,11 @@ pub struct Summary {
 ///
 /// `include_archived`：归档的默认不摆。侧栏那个「显示已归档」开关会传 `true`，
 /// 否则用户归档完就再也找不到那条会话来取消归档了。
-pub fn list(conn: &Connection, limit: usize, include_archived: bool) -> Result<Vec<Summary>, String> {
+pub fn list(
+    conn: &Connection,
+    limit: usize,
+    include_archived: bool,
+) -> Result<Vec<Summary>, String> {
     let filter = if include_archived {
         ""
     } else {
@@ -942,7 +949,11 @@ mod tests {
         )
         .expect("更新");
         let got = by_row_id(&c, id).expect("读").expect("有值");
-        assert_eq!(got.title.as_deref(), Some("客户 A · 发票导出"), "手写标题不能被覆盖");
+        assert_eq!(
+            got.title.as_deref(),
+            Some("客户 A · 发票导出"),
+            "手写标题不能被覆盖"
+        );
         assert!(got.title_locked);
     }
 
@@ -1023,7 +1034,11 @@ mod tests {
         // 取消归档回到默认列表。
         set_archived(&c, old, false).expect("取消归档");
         assert_eq!(list(&c, 10, false).expect("列").len(), 2);
-        assert!(by_row_id(&c, old).expect("读").expect("有值").archived_at.is_none());
+        assert!(by_row_id(&c, old)
+            .expect("读")
+            .expect("有值")
+            .archived_at
+            .is_none());
     }
 
     /// 老库（没有这两列）要能就地补上，不能一启动就报错。
