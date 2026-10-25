@@ -6,7 +6,7 @@
  * 运行：npm run test（vitest run，仅开发期执行，不进产物）。
  */
 import { describe, it, expect } from "vitest";
-import { globMatch } from "./utils";
+import { globMatch, isEditableTarget } from "./utils";
 import {
   buildDisplayHost,
   escapeDoubleQuoted,
@@ -376,5 +376,29 @@ describe("globMatch 排除规则匹配", () => {
     expect(globMatch("src/**/x.ts", "src\\a\\x.ts")).toBe(true);
     expect(globMatch("*.KEY", "secrets.Api.key")).toBe(true);
     expect(globMatch("Build/**", "BUILD/a/b")).toBe(true);
+  });
+});
+
+describe("isEditableTarget（快捷键守卫）", () => {
+  /** 构造带 tagName/isContentEditable 的最小 EventTarget 替身（node 环境无 DOM）。 */
+  const fake = (tagName: string, isContentEditable = false) =>
+    ({ tagName, isContentEditable }) as unknown as EventTarget;
+
+  it("表单控件算可编辑", () => {
+    expect(isEditableTarget(fake("INPUT"))).toBe(true);
+    expect(isEditableTarget(fake("TEXTAREA"))).toBe(true);
+    expect(isEditableTarget(fake("SELECT"))).toBe(true);
+  });
+
+  it("contentEditable 算可编辑", () => {
+    expect(isEditableTarget(fake("DIV", true))).toBe(true);
+  });
+
+  it("普通元素与非 Node 目标不算可编辑", () => {
+    expect(isEditableTarget(fake("BODY"))).toBe(false);
+    expect(isEditableTarget(fake("BUTTON"))).toBe(false);
+    expect(isEditableTarget(fake("svg"))).toBe(false);
+    expect(isEditableTarget({} as EventTarget)).toBe(false);
+    expect(isEditableTarget(null)).toBe(false);
   });
 });

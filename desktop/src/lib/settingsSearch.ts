@@ -47,6 +47,7 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
 
   { id: "set-notify-cmd", label: "后台命令完成通知", icon: "activity", group: "设置 · 通知", tab: "settings", anchor: "notify-command", keywords: "notify 通知 toast 推送" },
   { id: "set-notify-task", label: "任务完成通知", icon: "activity", group: "设置 · 通知", tab: "settings", anchor: "notify-task", keywords: "notify push_notification 通知 推送" },
+  { id: "set-notify-cc", label: "CC 对话完成通知", icon: "bell", group: "设置 · 通知", tab: "settings", anchor: "notify-cc", keywords: "cc 对话 claude 完成 通知 轮结束 turn 长任务" },
 
   { id: "set-ratelimit", label: "限流保护", icon: "sliders", group: "设置 · 高级", tab: "settings", anchor: "ratelimit", keywords: "rate limit 限流 频率" },
   { id: "set-encoding", label: "读取编码自适应", icon: "file", group: "设置 · 高级", tab: "settings", anchor: "encoding", keywords: "encoding gbk gb18030 utf-8 乱码 编码" },
@@ -77,4 +78,5 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   // 安全页两张卡带卡级锚点（SecurityTab 的定位 effect 直接按 id 命中）。
   { id: "set-roots", label: "白名单目录与配置组", icon: "folder", group: "安全页", tab: "security", anchor: "set-roots", keywords: "root 根目录 白名单 配置组 项目切换 排除 exclude 忽略 ignore mcpignore" },
   { id: "set-backup-mgmt", label: "备份份数 / 目录 / 版本历史 / 清理", icon: "history", group: "安全页", tab: "security", anchor: "set-backup", keywords: "backup retention 备份目录 版本历史 清理备份 还原" },
+  { id: "set-cc-approve", label: "CC 审批自动放行", icon: "shield", group: "安全页", tab: "security", anchor: "sec-cc-approve", keywords: "cc 对话 claude 审批 批准 自动 放行 允许 规则 glob permission auto approve yolo" },
 ];

@@ -108,6 +108,21 @@ export interface StatusResponse {
   /** 任务完成通知开关（push_notification MCP 工具总开关）。默认开启。 */
   notifyTaskComplete: boolean;
   /**
+   * CC 对话一轮结束后弹系统通知。默认**关闭**。
+   *
+   * 与 `notifyTaskComplete` 是双层门：那一项是全局预算（AI 主动 push），
+   * 这一项只决定「对话页自己跑完的一轮」要不要弹。任一门关着都不弹。
+   */
+  ccNotifyTurnEnd: boolean;
+  /**
+   * CC 审批自动放行规则，一行一条 `工具名(主参数glob)`。
+   *
+   * 命中即自动 allow、不再弹卡，但照常写审计；`AskUserQuestion` 永不自动放行；
+   * 空列表 = 全部人工审批（fail-closed）。匹配语义在 Rust `cc_session::autoapprove`，
+   * 前端不复制那份逻辑（照抄必然 diverging，见 CcAutoApproveCard 注释）。
+   */
+  ccAutoApproveRules: string[];
+  /**
    * 关窗时释放界面内存。默认开启。
    * 开：关窗销毁窗口与 webview，再开需重新加载（1~2 秒）；
    * 关：仅隐藏，秒开但内存持续占用。两者都不影响 MCP 服务 / 托盘 / 桌面通知。
@@ -282,6 +297,10 @@ export interface ConfigPatch {
   notifyCommandComplete?: boolean;
   /** 任务完成通知开关。前端「功能开关」卡写入。 */
   notifyTaskComplete?: boolean;
+  /** CC 对话一轮结束通知开关。前端「完成提醒」卡写入。 */
+  ccNotifyTurnEnd?: boolean;
+  /** CC 审批自动放行规则（一行一条）。前端安全页「CC 审批自动放行」卡写入。 */
+  ccAutoApproveRules?: string[];
   /** 关窗时释放界面内存。前端「兼容与性能」分组写入。 */
   releaseWebviewOnClose?: boolean;
   /** 终端拖拽即选开关。前端「高级」分组写入。 */
@@ -369,6 +388,43 @@ export interface TokenUsageReport {
   tools: TokenUsageTool[];
   /** 按天×工具细分的稀疏矩阵（只含非零格，按工具+日期排序）。旧日志向前兼容：缺省为空。 */
   byDayTool: TokenUsageCell[];
+  /**
+   * 按 **CC 对话会话**归属的用量（估算口径，与 days/tools 同窗口）。
+   *
+   * 只含带 `ccSessionId` 的条目 ⇒ 它是 `days` 的**子集**，不是第三本账：
+   * 别的客户端在用的调用不属于任何对话。旧日志没有这个字段 ⇒ 空数组。
+   */
+  sessions: TokenUsageSession[];
+}
+
+/** 按 CC 对话会话归属的工具用量（估算）。 */
+export interface TokenUsageSession {
+  sessionId: string;
+  calls: number;
+  estInput: number;
+  estOutput: number;
+}
+
+/**
+ * `cc_session_usage` 返回的一行：**对话账**（CC CLI 上报的真实 token / 成本）。
+ *
+ * 🔴 与 `TokenUsageSession` 不是同一个口径，也**不能相加**：
+ * 这边是模型侧真实消耗，那边是「经桥交互增量」的字节估算（大体是前者的子集）。
+ * 两者并排展示，关系写在前端 tooltip 里。
+ */
+export interface CcSessionUsageRow {
+  sessionId: string;
+  /** 空串 = 本机。 */
+  connectionId: string;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  /** 轮次数。 */
+  turns: number;
+  /** 秒级时间戳。 */
+  updatedAt: number;
+  /** 历史索引里的标题；扫不到（远端 / 索引未建）时缺省。 */
+  title?: string;
 }
 
 /** 「按天×工具」矩阵单格：某天某工具的调用数与 token 估算（输入+输出合计）。 */

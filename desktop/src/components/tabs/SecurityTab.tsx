@@ -13,6 +13,7 @@ import { SecurityOverview } from "./SecurityOverview";
 import { RunningCommandsCard } from "./RunningCommandsCard";
 import { FileControlCard } from "./FileControlCard";
 import { CommandAllowlistCard } from "./CommandAllowlistCard";
+import { CcAutoApproveCard } from "./CcAutoApproveCard";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { useToast } from "../ui/toast";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
@@ -214,6 +215,10 @@ export function SecurityTab({
       </Card>
 
       <CommandAllowlistCard status={status} onSaved={onSaved} />
+
+      {/* 与命令白名单同族：都是「什么可以被自动放行」。CC 的审批命中规则即 allow，
+          不再弹卡，但照常写审计；语义在 Rust cc_session::autoapprove。 */}
+      <CcAutoApproveCard status={status} onSaved={onSaved} />
 
       <FileControlCard status={status} onSaved={onSaved} />
 

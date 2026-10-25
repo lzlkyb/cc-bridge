@@ -81,8 +81,22 @@ describe("ccReducer", () => {
       { kind: "permissionAsk", requestId: "r1", toolName: "Bash", input: {}, toolUseId: null, reason: null },
       { kind: "permissionResolved", requestId: "r1", decision: "allow" },
     ]);
-    expect(v.resolved.r1).toBe("allow");
+    expect(v.resolved.r1).toEqual({ decision: "allow" });
     expect(pendingApprovals(v)).toEqual([]);
+  });
+
+  /// 规则自动放行必须带 `auto` 落进 resolved：渲染层靠它把「谁放的行」标出来，
+  /// 审计回看时人工放行与规则放行不能混成一种。
+  it("规则自动放行带 auto 标记，老流水按人工算", () => {
+    const base = { kind: "permissionAsk", requestId: "r1", toolName: "Bash", input: {}, toolUseId: null, reason: null } as const;
+    const auto = run([
+      base,
+      { kind: "permissionResolved", requestId: "r1", decision: "allow", auto: true },
+    ]);
+    expect(auto.resolved.r1).toEqual({ decision: "allow", auto: true });
+    const legacy = run([base, { kind: "permissionResolved", requestId: "r1", decision: "allow" }]);
+    expect(legacy.resolved.r1?.auto).toBeUndefined();
+    expect(legacy.resolved.r1?.decision).toBe("allow");
   });
 
   /// CLI 超时撤回时卡片必须消失：留着转圈的卡会让用户反复点一个死按钮。
@@ -112,6 +126,69 @@ describe("ccReducer", () => {
     expect(v.inputTokens).toBe(105);
     expect(v.outputTokens).toBe(20);
     expect(v.costUsd).toBeCloseTo(0.03);
+  });
+
+  /// modelUsage 是上下文余量条的唯一数据源：CLI 每轮都给**累计值** ⇒ 替换式
+  /// 更新（累加会翻倍，而账目错了没人一眼看得出来）。老流水落盘时没这个字段，
+  /// 读回来必须保留上一次——清空会让余量条在轮次之间闪烁消失。
+  it("modelUsage 替换式更新，老流水不清空", () => {
+    const first = run([
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: null,
+        modelUsage: {
+          "claude-opus-5": { inputTokens: 40779, outputTokens: 384, contextWindow: 1000000 },
+        },
+        costUsd: 0.01,
+        numTurns: 1,
+        durationMs: 1000,
+      },
+    ]);
+    expect(first.modelUsage).toEqual({
+      "claude-opus-5": { input: 40779, output: 384, window: 1000000 },
+    });
+
+    const legacy = run(
+      [
+        {
+          kind: "turnEnd",
+          sessionId: "s1",
+          isError: false,
+          text: null,
+          usage: null,
+          costUsd: 0.02,
+          numTurns: 2,
+          durationMs: 1000,
+        },
+      ],
+      first,
+    );
+    expect(legacy.modelUsage).toEqual(first.modelUsage);
+
+    const second = run(
+      [
+        {
+          kind: "turnEnd",
+          sessionId: "s1",
+          isError: false,
+          text: null,
+          usage: null,
+          modelUsage: {
+            "claude-opus-5": { inputTokens: 82000, outputTokens: 900, contextWindow: 1000000 },
+          },
+          costUsd: 0.03,
+          numTurns: 3,
+          durationMs: 1000,
+        },
+      ],
+      legacy,
+    );
+    expect(second.modelUsage).toEqual({
+      "claude-opus-5": { input: 82000, output: 900, window: 1000000 },
+    });
   });
 
   /// 🔴 每条路径都会 bring Exit。只等 turnEnd 的话，崩溃/被 kill 的轮次

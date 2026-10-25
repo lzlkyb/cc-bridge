@@ -56,6 +56,15 @@ export function NotifyGroup({
           onChange={(v) => save({ notifyTaskComplete: v }, "notify-task")}
           saved={isSaved("notify-task")} pending={isPending("notify-task")} error={errorFor("notify-task")} disabled={!status}
         />
+        <ToggleRow
+          id="toggle-notify-cc"
+          label="CC 对话完成通知"
+          sub="一轮对话结束后弹系统通知"
+          info="只对对话页发起的一轮生效：长任务跑到一半切去别的窗口，完成了这边会提醒你。「任务完成通知」是总开关，关着时本项也不会推送。默认关闭"
+          checked={status?.ccNotifyTurnEnd ?? false}
+          onChange={(v) => save({ ccNotifyTurnEnd: v }, "notify-cc")}
+          saved={isSaved("notify-cc")} pending={isPending("notify-cc")} error={errorFor("notify-cc")} disabled={!status}
+        />
         <SettingsRow label="测试系统通知" sub={status?.notifyTaskComplete === false ? "任务完成通知已关闭，启用后可测试。" : "仅在点击时发送，用于检查通知是否可用。"} last control={<Button variant="outline" size="sm" disabled={!status || !status.notifyTaskComplete || isPending("notify-task")} isLoading={testing} loadingText="发送中…" onClick={() => { void testNotification(); }}>发送测试通知</Button>} />
         {testResult && <p role="status" className="text-xs leading-relaxed text-muted-foreground">{testResult}</p>}
       </CardContent>

@@ -1,14 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { invoke, listen } from "../lib/tauri";
-import {
-  CC_EVENT_NAME,
-  type CcEventPayload,
-  type CcProbe,
-  type CcSnapshot,
-} from "../lib/ccEventTypes";
+import { invoke } from "../lib/tauri";
+import type { CcHistoryOpened, CcProbe } from "../lib/ccEventTypes";
 import { ccReducer, initialCcView, pendingApprovals } from "../lib/ccReducer";
 import { pickClaudePath } from "../lib/ccTarget";
 import type { CcPermissionMode } from "../lib/ccGuiTypes";
+import { useCcEventStream } from "./useCcEventStream";
 
 /** 起一轮要传给后端的东西。 */
 export type CcTarget = {
@@ -41,11 +37,33 @@ export type CcTarget = {
  */
 export function useCcSession(target: CcTarget) {
   const [view, dispatch] = useReducer(ccReducer, initialCcView);
+  // 事件流（先订阅 → 再快照 → 序号补漏）自成生命周期，见 useCcEventStream 的文档。
+  const { ready, restored, clearRestored, seqRef } = useCcEventStream(dispatch);
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<CcProbe | null>(null);
-  const [ready, setReady] = useState(false);
-  /** 已消化的最大序号 + 1。快照与实时事件的去重全靠它。 */
-  const seqRef = useRef(0);
+  /**
+   * 待发队列（「运行中继续打字」的落点）。
+   *
+   * 两条 ref 与一份 state 并存：state 给界面显示条数，ref 给 `start` 与 flush
+   * 读取最新值 —— `start` 是 `useCallback([])`，把 state 塞进依赖会让它每次
+   * 渲染都换身份，而它是 `CcGuiTab` 探测 effect 的依赖，重订阅的代价白付。
+   */
+  const [queue, setQueue] = useState<string[]>([]);
+  const queueRef = useRef<string[]>([]);
+  queueRef.current = queue;
+  /** `view.running` 的镜像，理由同 `queueRef`。 */
+  const runningRef = useRef(false);
+  runningRef.current = view.running;
+  /**
+   * `busy` 的镜像，同理。
+   *
+   * 🔴 `start` 必须是 `useCallback([])`：它是 flush effect 的依赖，也透传给
+   * memo 化的 Composer / 空状态。而 `[]` 意味着函数体闭包读到的 `busy` 永远是
+   * **首渲染的 false** —— 「刚发出去、后端还没落定 running」那窗口里防重发的
+   * 一道闸等于没有。镜像成 ref 才是每次调用读最新值。
+   */
+  const busyRef = useRef(false);
+  busyRef.current = busy;
   /**
    * 最近一次探测到的 claude 绝对路径 + 它属于哪个目标。
    *
@@ -58,52 +76,6 @@ export function useCcSession(target: CcTarget) {
   /** 起一轮时读最新配置，避免把 target 塞进依赖导致反复重订阅。 */
   const targetRef = useRef(target);
   targetRef.current = target;
-
-  useEffect(() => {
-    let alive = true;
-    let unlisten: (() => void) | undefined;
-    const buffered: CcEventPayload[] = [];
-    let readyToApply = false;
-
-    const apply = (p: CcEventPayload) => {
-      if (p.seq < seqRef.current) return; // 快照里已经有了
-      seqRef.current = p.seq + 1;
-      dispatch({ type: "event", event: p.event });
-    };
-
-    void (async () => {
-      try {
-        unlisten = await listen<CcEventPayload>(CC_EVENT_NAME, (p) => {
-          if (!readyToApply) {
-            buffered.push(p);
-            return;
-          }
-          apply(p);
-        });
-        if (!alive) return;
-        const snap = await invoke<CcSnapshot>("cc_snapshot");
-        if (!alive) return;
-        seqRef.current = snap.nextSeq;
-        dispatch({
-          type: "replay",
-          events: snap.events,
-          dropped: snap.dropped,
-          running: snap.running,
-        });
-        readyToApply = true;
-        for (const p of buffered) apply(p);
-        buffered.length = 0;
-        setReady(true);
-      } catch (e) {
-        if (alive) dispatch({ type: "error", message: `订阅对话事件失败：${e}` });
-      }
-    })();
-
-    return () => {
-      alive = false;
-      unlisten?.();
-    };
-  }, []);
 
   /** 探测 claude 是否可用。进页面、换连接、点「重试」时调。 */
   const runProbe = useCallback(async (): Promise<CcProbe | null> => {
@@ -131,6 +103,13 @@ export function useCcSession(target: CcTarget) {
     const t = targetRef.current;
     const trimmed = text.trim();
     if (!trimmed) return;
+    // 正在跑（或刚发出去、后端还没落定 busy）⇒ 入队，不并发。
+    // 🔴 直发的后果是后端一句「上一轮还在进行」：那一句是真的，但用户看到的是
+    // 「我打好的字被拒了」，而排队本来可以让这件事无声无息地正确发生。
+    if (runningRef.current || busyRef.current) {
+      setQueue((q) => [...q, trimmed]);
+      return;
+    }
     // 调用方显式给的优先；否则用**同一目标**探到的绝对路径 —— 远端非登录 shell
     // 没有 `~/.local/bin` 那份 PATH，不带就起不来。判断逻辑见 `pickClaudePath`。
     const claudePath = pickClaudePath(t.claudePath, probeRef.current, t.connectionId);
@@ -154,6 +133,25 @@ export function useCcSession(target: CcTarget) {
       setBusy(false);
     }
   }, []);
+
+  /**
+   * 本轮一结束就把队首发出去。
+   *
+   * 判据是 `view.running` 由 true 转 false：那是 `TurnEnd` / `Exit` 落定的时刻，
+   * 也是后端 `turn_active` 被清掉的时刻 —— 两个条件必须同时满足，而它们恰好
+   * 在同一个事件里发生（`bookkeep` 先清 busy 再推事件）。
+   *
+   * `ready` 之前不动：重放历史时 running 也会从 true 翻到 false，那时队列
+   * 必然是空的，但把这道闸加上更直白。
+   */
+  useEffect(() => {
+    if (!ready || view.running || busy) return;
+    const next = queueRef.current[0];
+    if (next === undefined) return;
+    queueRef.current = queueRef.current.slice(1);
+    setQueue(queueRef.current);
+    void start(next);
+  }, [ready, view.running, busy, start]);
 
   /**
    * 裁决一条审批，或回答一条提问。
@@ -180,6 +178,9 @@ export function useCcSession(target: CcTarget) {
   );
 
   const interrupt = useCallback(async () => {
+    // 队列跟着一起清：用户打断这一轮，通常也意味着「别再把刚才那些发出去」。
+    // 只杀进程不清队列的话，下一轮会自动把用户想拦下的消息发出去。
+    setQueue([]);
     try {
       await invoke<boolean>("cc_interrupt");
     } catch (e) {
@@ -188,6 +189,7 @@ export function useCcSession(target: CcTarget) {
   }, []);
 
   const reset = useCallback(async () => {
+    setQueue([]);
     try {
       await invoke<void>("cc_reset");
       dispatch({ type: "reset" });
@@ -199,17 +201,68 @@ export function useCcSession(target: CcTarget) {
 
   const clearError = useCallback(() => dispatch({ type: "error", message: null }), []);
 
+  /**
+   * 把一条外部错误报进对话流（润色失败这类「页面自己的操作」出的错）。
+   *
+   * 不弹 toast 的理由同上面的错误：它是内容，用户要能回头看到。
+   */
+  const reportError = useCallback((message: string) => {
+    dispatch({ type: "error", message });
+  }, []);
+
+  /**
+   * 打开一条历史会话。
+   *
+   * 后端会把它接管成**当前会话**（清流水 → 灌历史 → 设 resume id），
+   * 所以这里只需要把结果重放进来 + 对齐序号，不需要先 `reset`。
+   *
+   * ## 为什么要手动设 `seqRef`
+   *
+   * 那些历史事件是后端**直接写进 ring** 的，没有逐条 emit（emit 会和这次
+   * `replay` 撞成两份）。所以前端游标停在旧值上，不重置的话，下一条实时事件的
+   * `seq` 比它大得多没问题，但若用户先开了历史再开另一条，`seq` 会回绕到更小值
+   * —— 那时 `apply` 里的 `p.seq < seqRef.current` 会把**所有**新事件当重复丢掉。
+   */
+  const openHistory = useCallback(async (sessionId: string): Promise<CcHistoryOpened | null> => {
+    try {
+      const res = await invoke<CcHistoryOpened>("cc_history_open", { sessionId });
+      seqRef.current = res.snapshot.nextSeq;
+      dispatch({
+        type: "replay",
+        events: res.snapshot.events,
+        // 两个缺口相加：`dropped` 是环形缓冲溢出，`trimmed` 是体积上限裁掉的头部。
+        dropped: res.snapshot.dropped + res.trimmed,
+        running: false,
+      });
+      // 「上次那条」到此为止 —— 当前会话已经就是它了，再弹一次恢复提示纯属噪音。
+      clearRestored();
+      return res;
+    } catch (e) {
+      dispatch({ type: "error", message: String(e) });
+      return null;
+    }
+    // `clearRestored`（useCallback([])）与 `seqRef`（ref）实际都稳定，列出来只是
+    // 让 lint 看得见：它们来自自定义 hook 的返回，规则无法自己证明。
+  }, [clearRestored, seqRef]);
+
   return {
     view,
     ready,
     busy,
     probe,
+    /** 上次进程留下的会话。`null` = 这次是全新开始（或用户点过「新对话」）。 */
+    restored,
     runProbe,
     start,
     respond,
     interrupt,
     reset,
+    openHistory,
     clearError,
+    reportError,
+    /** 已排队还没发的消息。界面上显示条数，也可一键清空。 */
+    queue,
+    clearQueue: () => setQueue([]),
     /** 还卡着等用户决定的审批 id。 */
     pending: pendingApprovals(view),
   };

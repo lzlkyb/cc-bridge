@@ -1,71 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
-import type { SshConnectionList } from "../../lib/types";
+import type { SshConnectionList, StatusResponse } from "../../lib/types";
 import {
   PERMISSION_MODE_RISK,
-  type CcMessage,
   type CcPermissionMode,
   type CcSession,
 } from "../../lib/ccGuiTypes";
 import { useCcSession } from "../../hooks/useCcSession";
-import { Icon } from "../ui/icon";
-import { ApprovalCard } from "../ccgui/ApprovalCard";
+import { useCcProbe } from "../../hooks/useCcProbe";
+import { useCcShortcuts } from "../../hooks/useCcShortcuts";
+import { asMode, readCwd, readMode, readModel, saveCwd, saveMode, saveModel } from "../../lib/ccGuiPrefs";
+import type { CcHistoryRow } from "../../lib/ccEventTypes";
+import { collectChangeset } from "../../lib/ccChangeset";
+import { shortcutLabel } from "../../lib/platform";
 import { CcEmptyState } from "../ccgui/CcEmptyState";
 import { Composer } from "../ccgui/Composer";
-import { MessageText } from "../ccgui/MessageText";
+import { MessageList } from "../ccgui/MessageList";
 import { SessionBar } from "../ccgui/SessionBar";
-import { verdictLabel } from "../ccgui/summarize";
-import { ToolCard } from "../ccgui/ToolCard";
-
-const MODE_KEY = "cc-bridge.ccgui.mode";
-const cwdKey = (target: string) => `cc-bridge.ccgui.cwd.${target || "local"}`;
-
-/**
- * 跳过提问时告诉模型的话。
- *
- * 不能只回一个空 deny —— `Verdict::deny` 的默认文案是「用户拒绝了这次调用，
- * 请换一种做法」，对提问来说会让模型以为选项被否掉，转头再来问一次。
- * 说清「跳过」它才会自己决定。
- */
-const SKIP_ASK =
-  "用户跳过了这个问题（没有选择任何选项）。请按你认为最合理的方式继续，不要重复提问。";
-
-function readMode(): CcPermissionMode {
-  const raw = localStorage.getItem(MODE_KEY);
-  return raw === "plan" || raw === "default" || raw === "acceptEdits" || raw === "bypassPermissions"
-    ? raw
-    : "default";
-}
-
-/** 一行提示（重试 / 错误 / 缓冲溢出）。都是「内容」，不用 toast。 */
-function Notice({
-  tone,
-  children,
-  onDismiss,
-}: {
-  tone: "info" | "warn" | "error";
-  children: React.ReactNode;
-  onDismiss?: () => void;
-}) {
-  const color =
-    tone === "error"
-      ? "border-destructive/35 bg-destructive/[.06] text-destructive-ink"
-      : tone === "warn"
-        ? "border-warning/35 bg-warning/[.06] text-warning-ink"
-        : "border-border bg-muted/40 text-muted-foreground";
-  return (
-    <div className={`flex shrink-0 items-start gap-1.5 border-b px-3 py-1.5 text-[11px] leading-[1.5] ${color}`}>
-      <Icon name={tone === "info" ? "info" : "alertTriangle"} size={11} className="mt-[3px] shrink-0" />
-      <span className="min-w-0 flex-1 break-words">{children}</span>
-      {onDismiss && (
-        <button type="button" onClick={onDismiss} className="shrink-0 opacity-70 hover:opacity-100" title="关闭">
-          <Icon name="close" size={11} />
-        </button>
-      )}
-    </div>
-  );
-}
+import { SessionNotices } from "../ccgui/SessionNotices";
 
 /**
  * CC 对话页。
@@ -81,7 +34,9 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
   const [targetId, setTargetId] = useState("");
   const [cwd, setCwd] = useState("");
   const [mode, setMode] = useState<CcPermissionMode>(readMode);
-  const [probing, setProbing] = useState(false);
+  // 下一轮的模型。空串 = 不传 `--model`，吃 CLI 自己的默认。全局偏好，不按连接分。
+  const [model, setModel] = useState(readModel);
+  const [polishing, setPolishing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const { data } = useQuery<SshConnectionList, Error>({
@@ -98,7 +53,7 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
 
   // 每台机器记各自的工作目录：本机的路径喂给远端只会得到一句看不懂的报错。
   useEffect(() => {
-    setCwd(localStorage.getItem(cwdKey(targetId)) ?? "");
+    setCwd(readCwd(targetId));
   }, [targetId]);
 
   const session = useCcSession({
@@ -107,36 +62,122 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
     // 留空由 hook 内部的探测结果补：远端必须用绝对路径执行，
     // 而路径只有 probe 拿得到（这里不该再探一次）。
     claudePath: null,
-    model: null,
+    model: model || null,
     permissionMode: mode,
   });
-  const { view } = session;
+  const { view, restored, reportError } = session;
+
+  /**
+   * 快捷键标签的平台来源（Ctrl+N / ⌘N）。与 App 层共用 `["status"]` 缓存，
+   * **不会多发请求**；取后端值而非嗅探 UA 的理由见 `lib/platform.ts`，首帧未返回时
+   * 先显示 Ctrl（那里写明的取舍）。
+   */
+  const { data: platform } = useQuery<StatusResponse, Error, string | undefined>({
+    queryKey: ["status"],
+    queryFn: () => invoke<StatusResponse>("get_status"),
+    select: (s) => s.platform,
+  });
+  const newSessionHint = shortcutLabel(platform, "N");
+
+  /**
+   * 把恢复出来的会话**连同它的目标**一起还原。
+   *
+   * 🔴 只还原消息是不够的：`useCcSession` 每次 `start` 都从当前 target 拼参数。
+   * 目标没跟着切回去，用户看到的是那段远端对话、发出去却落到本机的新会话上 ——
+   * 消息还在、上下文没了，而且**没有任何报错**。
+   *
+   * cwd 必须先写进 localStorage 再切 `targetId`：`targetId` 的那个 effect 会立刻
+   * 用 `cwdKey(targetId)` 重读，晚一步就会被覆盖成上次留下的值。
+   *
+   * 权限模式也跟着还原（那是上个会话的状态）；`claudePath` **故意不采信** ——
+   * 库里的路径可能早就失效，重探一次更可靠，探测本身很便宜。
+   */
+  useEffect(() => {
+    if (!restored) return;
+    saveCwd(restored.connectionId, restored.cwd ?? "");
+    setTargetId(restored.connectionId);
+    setCwd(restored.cwd ?? "");
+    const m = asMode(restored.permissionMode);
+    if (m) {
+      setMode(m);
+      // 与 `onModeChange` 保持一致：不写的话下次刷新又回到旧模式，
+      // 而用户刚看到的明明是恢复出来的那个。
+      saveMode(m);
+    }
+    // 模型跟着会话走：上一轮用什么，续聊就用那个。
+    // 空串 = 那条会话没记模型，此时**不动**用户当前的选择 ——
+    // 拿空值覆盖掉一个已选的模型，等于替用户改设置。
+    if (restored.model) {
+      setModel(restored.model);
+      saveModel(restored.model);
+    }
+  }, [restored]);
 
   const setCwdPersist = useCallback(
     (v: string) => {
       setCwd(v);
-      localStorage.setItem(cwdKey(targetId), v);
+      saveCwd(targetId, v);
     },
     [targetId],
   );
 
-  const probe = session.runProbe;
-  // 进页面 / 换目标时探一次。`probe` 是 useCallback 稳定的，不会反复触发。
-  useEffect(() => {
-    let alive = true;
-    setProbing(true);
-    void probe().finally(() => {
-      if (alive) setProbing(false);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [probe, targetId]);
+  /**
+   * 打开一条历史会话，并把**目标**一起切到它那边。
+   *
+   * 🔴 顺序不能反：`saveCwd` 必须在 `setTargetId` **之前**。`targetId` 那个 effect
+   * 会立刻用 `cwdKey(targetId)` 重读 localStorage，晚一步就会被旧值覆盖。
+   * 这和期一恢复 `restored` 时踩的是同一个坑。
+   *
+   * 本机历史一律切回 `""`：`cc_start` 会拿 `connection_id` + `cwd` 和内存里的
+   * facts 比，不一致就判「换了目标」并**清掉 resume id** —— 那时打开的历史
+   * 会静悄悄变成一条新会话，用户看到的是「我问了它一句，它完全不记得上面」。
+   */
+  const onOpenHistory = useCallback(
+    (row: CcHistoryRow) => {
+      void session.openHistory(row.sessionId).then((res) => {
+        if (!res) return;
+        const dir = res.cwd ?? "";
+        saveCwd("", dir);
+        setTargetId("");
+        setCwd(dir);
+      });
+    },
+    [session],
+  );
 
-  const retryProbe = useCallback(() => {
-    setProbing(true);
-    void probe().finally(() => setProbing(false));
-  }, [probe]);
+  // 进页面 / 换目标时探一次 + 手动重试。`runProbe` 是 useCallback 稳定的，不会反复触发。
+  const { probing, retry: retryProbe } = useCcProbe(session.runProbe, targetId);
+
+  // Ctrl+N / ⌘N 新对话。挂 window 而不是输入框：焦点在对话流/面板上时也要能按到。
+  useCcShortcuts({ onNewSession: session.reset });
+
+  /**
+   * 润色草稿（mods/prompt-polish）。
+   *
+   * 走独立的 `cc_polish` 命令而不是会话通道：它是一次性的 `claude -p`，
+   * 结果只回给输入框，不进对话流、不占会话上下文。失败返回 `null`
+   * （Composer 不动文本），原因转成对话流里的一条 notice。
+   */
+  const onPolish = useCallback(
+    async (draft: string): Promise<string | null> => {
+      setPolishing(true);
+      try {
+        return await invoke<string>("cc_polish", {
+          req: {
+            connectionId: targetId || null,
+            cwd: cwd.trim() || null,
+            draft,
+          },
+        });
+      } catch (e) {
+        reportError(`润色失败：${e}`);
+        return null;
+      } finally {
+        setPolishing(false);
+      }
+    },
+    [targetId, cwd, reportError],
+  );
 
   // 新内容贴底。ref 稳定，不进依赖。
   useEffect(() => {
@@ -144,16 +185,33 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
     if (node) node.scrollTop = node.scrollHeight;
   }, [view.messages, view.resolved]);
 
+  // 变更集：本会话改过的文件（事件流聚合，不查 git）。随消息流增量更新。
+  const changeset = useMemo(() => collectChangeset(view.messages), [view.messages]);
+  // 跳到流里第一处 diff：锚点是 ToolCard 根节点的 data-cc-tool。高亮复用设置页
+  // 深链的 anchor-highlight（主题色脉冲 2s），不新造一套动效。
+  const jumpTo = useCallback((messageId: string) => {
+    const node = scrollRef.current?.querySelector<HTMLElement>(
+      `[data-cc-tool="${CSS.escape(messageId)}"]`,
+    );
+    if (!node) return;
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    node.classList.add("anchor-highlight");
+    window.setTimeout(() => node.classList.remove("anchor-highlight"), 2000);
+  }, []);
+
   const barSession: CcSession = {
     connection: targets.find((t) => t.id === targetId)?.label ?? "本机",
     cwd: cwd.trim(),
     branch: "",
-    model: view.model ?? "默认模型",
+    model,
+    activeModel: view.model,
     permissionMode: mode,
     inputTokens: view.inputTokens,
     outputTokens: view.outputTokens,
     costUsd: view.costUsd,
+    modelUsage: view.modelUsage,
     running: view.running,
+    changeset,
     messages: [],
   };
   const risk = PERMISSION_MODE_RISK[mode];
@@ -169,39 +227,32 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
         mode={mode}
         onModeChange={(m) => {
           setMode(m);
-          localStorage.setItem(MODE_KEY, m);
+          saveMode(m);
+        }}
+        onModelChange={(m) => {
+          setModel(m);
+          saveModel(m);
         }}
         onSwitchTerminal={() => onNavigate("terminal")}
         onNewSession={() => void session.reset()}
+        newSessionHint={newSessionHint}
+        onOpenHistory={onOpenHistory}
+        onJumpTo={jumpTo}
       />
 
-      {/* 🔴 bypassPermissions 下 can_use_tool 根本不触发，界面会「看起来很安静」——
-          这条横幅是唯一能告诉用户「已经没有把关了」的地方，不能省。 */}
-      {risk && (
-        <div className="flex shrink-0 items-center gap-1.5 border-b border-warning/30 bg-warning/[.08] px-3 py-1.5 text-[11px] text-warning-ink">
-          <Icon name="alertTriangle" size={11} className="shrink-0" />
-          {risk}
-        </div>
-      )}
-
-      {view.retry && (
-        <Notice tone="warn">
-          重试中 {view.retry.attempt}/{view.retry.max} · {view.retry.message}
-        </Notice>
-      )}
-      {view.dropped > 0 && (
-        <Notice tone="info">更早的 {view.dropped} 条事件已滚出缓冲，翻不到更上面了。</Notice>
-      )}
-      {view.error && (
-        <Notice tone="error" onDismiss={session.clearError}>
-          {view.error}
-        </Notice>
-      )}
-      {lastStderr.length > 0 && (
-        <Notice tone="error" onDismiss={session.clearError}>
-          <span className="font-mono">{lastStderr.join(" / ")}</span>
-        </Notice>
-      )}
+      {/* 🔴 打开历史后必须把**目标**一起切过去（见 `onOpenHistory`）：
+          只灌消息不改 cwd，下一句会被 `cc_start` 判成「换了目录」→ 清 resume id
+          → 打开的历史当场变成一条新会话，模型忘光前面且不报错。 */}
+      <SessionNotices
+        risk={risk}
+        retry={view.retry}
+        dropped={view.dropped}
+        error={view.error}
+        stderr={lastStderr}
+        compacted={view.compactedTokens}
+        background={view.backgroundTasks}
+        onDismiss={session.clearError}
+      />
 
       {/* page-scroll：对话流是长时停留的滚动区，要跟连接页/日志页同一根 12px rail，
           不挂就只有全局 6px 细条，右边缘看着比别的页窄一档。 */}
@@ -216,68 +267,17 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
               cwd={cwd}
               onCwdChange={setCwdPersist}
               isRemote={Boolean(targetId)}
+              newSessionHint={newSessionHint}
             />
           ) : (
-            view.messages.map((m: CcMessage) => {
-              if (m.kind === "user") {
-                return (
-                  <div key={m.id} className="flex justify-end">
-                    {/* data-cc-bubble：玻璃阅读面上 primary/.12 会混成脏紫，改同色系高一档 */}
-                    <div
-                      data-cc-bubble
-                      className="max-w-[86%] rounded-xl rounded-br-sm border border-border bg-muted/60 px-3 py-1.5"
-                    >
-                      <MessageText text={m.text} />
-                    </div>
-                  </div>
-                );
+            <MessageList
+              messages={view.messages}
+              resolved={view.resolved}
+              running={view.running}
+              onRespond={(id, decision, reason, answers) =>
+                void session.respond(id, decision, reason, answers)
               }
-              if (m.kind === "assistant") {
-                return (
-                  <div key={m.id} className="flex gap-2">
-                    <span className="mt-[2px] flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-primary/10 text-primary">
-                      <Icon name="sparkles" size={11} />
-                    </span>
-                    <div className="min-w-0 flex-1 pt-[1px]">
-                      <MessageText text={m.text} />
-                    </div>
-                  </div>
-                );
-              }
-              if (m.kind === "tool") return <ToolCard key={m.id} tool={m.tool} />;
-
-              const verdict = view.resolved[m.id];
-              if (verdict) {
-                return (
-                  <div
-                    key={m.id}
-                    data-cc-inset
-                    className="flex items-center gap-1.5 rounded-[10px] border border-border bg-muted/40 px-3 py-[6px] text-[11px] text-muted-foreground"
-                  >
-                    <Icon name={verdict === "allow" ? "check" : "close"} size={11} />
-                    <span className="font-mono">{m.toolName}</span>
-                    {verdictLabel(m.toolName, verdict)}
-                  </div>
-                );
-              }
-              return (
-                <ApprovalCard
-                  key={m.id}
-                  approval={m}
-                  onAllow={() => void session.respond(m.id, "allow")}
-                  onDeny={() =>
-                    void session.respond(
-                      m.id,
-                      "deny",
-                      m.toolName === "AskUserQuestion" ? SKIP_ASK : undefined,
-                    )
-                  }
-                  onAnswer={(answers) =>
-                    void session.respond(m.id, "allow", undefined, answers)
-                  }
-                />
-              );
-            })
+            />
           )}
         </div>
       </div>
@@ -289,6 +289,10 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
         placeholder={
           session.pending.length > 0 ? "先处理上面的审批，再继续…" : "给 CC 发消息…"
         }
+        queueCount={session.queue.length}
+        onClearQueue={session.clearQueue}
+        onPolish={onPolish}
+        polishing={polishing}
       />
     </div>
   );

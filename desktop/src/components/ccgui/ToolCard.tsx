@@ -79,7 +79,8 @@ function ToolCardImpl({ tool }: { tool: CcToolCall }) {
     kind === "other";
 
   return (
-    <div>
+    // data-cc-tool：变更集面板的跳转锚点（CcGuiTab 按 tool.id  querySelector 找它）。
+    <div data-cc-tool={tool.id}>
       <button
         type="button"
         data-cc-row

@@ -3,7 +3,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "./lib/tauri";
 import type { StatusResponse, StaticStatus } from "./lib/types";
 import { APP_INFO, CHANGELOG } from "./lib/about";
-import { getLastSeenVersion, setLastSeenVersion, countUnreadVersions } from "./lib/utils";
+import {
+  getLastSeenVersion,
+  setLastSeenVersion,
+  countUnreadVersions,
+  isEditableTarget,
+} from "./lib/utils";
 import type { SettingsSection } from "./lib/settingsSections";
 import { SETTINGS_CATEGORIES } from "./lib/settingsCategories";
 import { settingsSectionForAnchor } from "./lib/settingsNavigation";
@@ -280,16 +285,6 @@ function AppContent() {
 
   // 全局键盘快捷键
   useEffect(() => {
-    const isEditableTarget = (el: EventTarget | null): boolean => {
-      if (!(el instanceof HTMLElement)) return false;
-      const tag = el.tagName;
-      return (
-        tag === "INPUT" ||
-        tag === "TEXTAREA" ||
-        tag === "SELECT" ||
-        el.isContentEditable
-      );
-    };
     const handleKeyDown = (e: KeyboardEvent) => {
       const isCtrlOrMeta = e.ctrlKey || e.metaKey;
       if (isCtrlOrMeta && e.key === "k") {

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../../lib/tauri";
-import type { TokenUsageReport } from "../../../lib/types";
+import type { TokenUsageReport, TokenUsageSession } from "../../../lib/types";
 import {
   buildHeatmap,
   buildTrend,
@@ -18,6 +18,11 @@ import { useViewActive } from "../../../lib/viewActivity";
 import { SettingsChoice } from "../../ui/SettingsChoice";
 import { UsageMatrixSection } from "./UsageMatrixSection";
 import { KpiHead, EmptyKpis } from "./UsageKpiHead";
+import { ConversationUsageSection } from "./ConversationUsageSection";
+
+/** `data` 未就绪时的占位。模块级常量：内联 `?? []` 每次渲染都是新引用，
+ *  会让子组件的 useMemo（按 sessionId join）每次渲染都失效重算。 */
+const NO_SESSIONS: TokenUsageSession[] = [];
 
 /**
  * 设置页「Token 用量（估算）」分区（卡级 id: set-tokenusage，首页用量卡点进来）。
@@ -129,6 +134,9 @@ export function TokenUsageGroup() {
             </div>
           </>
         )}
+        {/* 对话账（批 2-6）：独立数据源，刻意放在视图切换之外——工具账全空
+            （没人调过工具）时这里仍有东西可看，且两个视图下都该看得到。 */}
+        <ConversationUsageSection toolSessions={data?.sessions ?? NO_SESSIONS} />
         <div className="flex items-start justify-between gap-2 rounded-lg bg-muted/60 px-3 py-2">
           <span className="text-xs leading-relaxed text-muted-foreground">
             按「约 4 字节 ≈ 1 token」折算的<strong className="text-foreground">估算值</strong>，不是账单

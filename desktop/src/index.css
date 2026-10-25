@@ -731,15 +731,45 @@ body {
 .tool-bar > i.usage-c2 { background: hsl(199 89% 48%); }
 .tool-bar > i.usage-c3 { background: hsl(var(--success)); }
 .tool-bar > i.usage-c-other { background: hsl(var(--muted-foreground)); }
+/* 对话消耗（批 2-6 两套账打通）：每行一条会话，对话账与工具账并排。
+   5 列网格；窄窗折成「标题一行 + 数字一行」——五列挤在 600px 里会把
+   标题压成一竖条，而数字是 tabular-nums，四个一排还放得下。 */
+.usage-conv { display: flex; flex-direction: column; gap: 4px; }
+.usage-conv-head,
+.usage-conv-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 40px 64px 52px 60px;
+  align-items: baseline; gap: 8px; font-size: 11px;
+}
+.usage-conv-head {
+  padding-bottom: 3px; border-bottom: 1px solid hsl(var(--border) / 0.5);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: hsl(var(--muted-foreground));
+}
+.usage-conv-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: hsl(var(--foreground)); font-weight: 600; }
+.usage-conv-turns,
+.usage-conv-tok,
+.usage-conv-cost,
+.usage-conv-tool { text-align: right; font-variant-numeric: tabular-nums; }
+.usage-conv-turns { color: hsl(var(--muted-foreground)); }
+.usage-conv-tok { font-weight: 700; }
+.usage-conv-cost,
+.usage-conv-tool { color: hsl(var(--muted-foreground)); }
 /* 窄窗口降级：KPI 折两列、双栏折单栏（设置面板本身有 min 宽，这两条兜底小窗）。 */
 @media (max-width: 640px) {
   .usage-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .usage-duo { grid-template-columns: 1fr; }
+  /* 表头在折叠态对不上折后的列，收起来；每格 title 仍带口径。 */
+  .usage-conv-head { display: none; }
+  .usage-conv-row { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 1px; }
+  .usage-conv-name { grid-column: 1 / -1; }
 }
 /* 容器查询版（同上：@media 作为无容器支持时的兜底）。 */
 @container app-content (max-width: 640px) {
   .usage-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .usage-duo { grid-template-columns: 1fr; }
+  .usage-conv-head { display: none; }
+  .usage-conv-row { grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: 1px; }
+  .usage-conv-name { grid-column: 1 / -1; }
 }
 
 /* E1. 连接页 Bento 的状态主卡（StatusCard.tsx）

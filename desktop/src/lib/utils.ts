@@ -442,6 +442,18 @@ export function formatRelativeTime(dateStr: string): string {
   return `${Math.floor(mon / 12)} 年前`;
 }
 
+/**
+ * 相对时间，但入参是 **unix 秒**。
+ *
+ * 历史会话表里存的是秒（`file_mtime / 1000`），转成 ISO 字符串再交给
+ * `formatRelativeTime` 去解析纯属绕路 —— 但比在库里存一份字符串好：
+ * 时间戳能被排序、能被比较，字符串不能。
+ */
+export function formatRelativeSecs(sec: number): string {
+  if (!Number.isFinite(sec) || sec <= 0) return "";
+  return formatRelativeTime(new Date(sec * 1000).toISOString());
+}
+
 /** 字节数格式化为带单位的人类可读文本（B/KB/MB/GB），SecurityTab 与版本历史弹框共用（规则 11）。 */
 export function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return "0 B";
@@ -520,4 +532,27 @@ function segFnmatch(pattern: string, text: string): boolean {
   if (text.length === 0) return false;
   if (c === "?") return segFnmatch(rest, text.slice(1));
   return text[0] === c && segFnmatch(rest, text.slice(1));
+}
+
+/**
+ * 判断键盘事件目标是否是「可编辑元素」（输入框 / 多行文本 / 下拉框 / contentEditable）。
+ *
+ * 全局快捷键（Ctrl+K 命令面板、Ctrl+1~N 切页、Ctrl+, 开设置、CC 页 Ctrl+N 新对话）在焦点
+ * 落在输入区时必须让路，否则用户输密码、敲命令参数会被快捷键劫持。原先 App.tsx 的键盘监听
+ * 里写了一份内联闭包，CC 页快捷键同样需要 ⇒ 按规则 11 抽成公共纯函数。
+ *
+ * 用「鸭子类型」判据而非 `instanceof HTMLElement`：真实 KeyboardEvent.target 一定是真实
+ * Node，两者判据等价（document/window 无 tagName、SVG 的 tagName 小写且无 isContentEditable），
+ * 但本函数因此可在 node 环境的单元测试里直接用普通对象验证，不必为一个小函数起 jsdom 用例文件。
+ */
+export function isEditableTarget(el: EventTarget | null): boolean {
+  if (!el || typeof el !== "object") return false;
+  const node = el as { tagName?: unknown; isContentEditable?: unknown };
+  if (typeof node.tagName !== "string") return false;
+  return (
+    node.tagName === "INPUT" ||
+    node.tagName === "TEXTAREA" ||
+    node.tagName === "SELECT" ||
+    node.isContentEditable === true
+  );
 }

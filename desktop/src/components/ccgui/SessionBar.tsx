@@ -1,6 +1,11 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import { PERMISSION_MODE_LABEL, type CcPermissionMode, type CcSession } from "../../lib/ccGuiTypes";
+import { CONTEXT_WARN_RATIO, contextBar, contextPercent, formatTokens } from "../../lib/ccContextUsage";
+import type { CcHistoryRow } from "../../lib/ccEventTypes";
 import { Icon, type IconName } from "../ui/icon";
+import { ChangesetPanel } from "./ChangesetPanel";
+import { HistoryPanel } from "./HistoryPanel";
+import { ModelPicker } from "./ModelPicker";
 
 const MODES: CcPermissionMode[] = ["plan", "default", "acceptEdits", "bypassPermissions"];
 
@@ -30,8 +35,12 @@ function SessionBarImpl({
   onTargetChange,
   mode,
   onModeChange,
+  onModelChange,
   onSwitchTerminal,
   onNewSession,
+  newSessionHint,
+  onOpenHistory,
+  onJumpTo,
 }: {
   session: CcSession;
   targets: { id: string; label: string }[];
@@ -39,13 +48,36 @@ function SessionBarImpl({
   onTargetChange: (id: string) => void;
   mode: CcPermissionMode;
   onModeChange: (mode: CcPermissionMode) => void;
+  /** 换下一轮的模型。空串 = 跟随 CLI 默认。 */
+  onModelChange: (model: string) => void;
   onSwitchTerminal: () => void;
   onNewSession: () => void;
+  /** 新对话的快捷键标签（`Ctrl+N` / `⌘N`）。由 CcGuiTab 从 status 里取平台后拼好传下。 */
+  newSessionHint: string;
+  /** 打开一条历史会话。由 `CcGuiTab` 负责切目标、改目录、灌消息。 */
+  onOpenHistory: (row: CcHistoryRow) => void;
+  /** 跳到流里某条工具消息（变更集面板的点名跳转，滚动 + 高亮在 CcGuiTab）。 */
+  onJumpTo: (messageId: string) => void;
 }) {
   const tokens = session.inputTokens + session.outputTokens;
+  // 上下文余量条：CLI 每轮在 `result.modelUsage` 里给累计值与窗口。没有窗口
+  // （老流水 / 老版本 CLI）时 bar 为 null，退回只显示已用 token 的旧形态。
+  const bar = contextBar(session.modelUsage);
+  const contextWarn = bar !== null && bar.ratio >= CONTEXT_WARN_RATIO;
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [changesetOpen, setChangesetOpen] = useState(false);
+  // 显示优先级：我们的选择 > CLI 回报的当前模型 > 占位。
+  // 只用 CLI 回报值会让「选了默认」和「没选过」看起来一模一样。
+  const modelLabel = session.model || session.activeModel || "默认模型";
 
   return (
-    <div data-cc-rule className="flex shrink-0 items-center gap-3 border-b border-border px-3 py-2">
+    // `relative` 是历史面板的定位锚点：面板必须浮在消息区上方而**不占布局**，
+    // 占高度会让消息区在打开的瞬间收缩、正在读的位置跟着跳。
+    <div
+      data-cc-rule
+      className="relative flex shrink-0 items-center gap-3 border-b border-border px-3 py-2"
+    >
       <span className="flex shrink-0 items-center gap-1.5">
         <span
           className={`h-[6px] w-[6px] rounded-full ${session.running ? "bg-success" : "bg-muted-foreground/50"}`}
@@ -70,13 +102,53 @@ function SessionBarImpl({
       {session.branch && <Chip icon="gitBranch">{session.branch}</Chip>}
 
       <span className="ml-auto flex shrink-0 items-center gap-3">
-        <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-          <Icon name="sparkles" size={11} className="shrink-0 opacity-70" />
-          <span className="font-mono">{session.model}</span>
+        <span className="relative flex items-center">
+          <button
+            type="button"
+            onClick={() => setModelOpen((v) => !v)}
+            aria-expanded={modelOpen}
+            title="选择模型（下一轮生效）"
+            className="flex items-center gap-1 rounded-md px-1 py-[2px] text-[11px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          >
+            <Icon name="sparkles" size={11} className="shrink-0 opacity-70" />
+            <span className="max-w-[132px] truncate font-mono">{modelLabel}</span>
+            <Icon name="chevronDown" size={10} className="shrink-0 opacity-60" />
+          </button>
+          {modelOpen && (
+            <ModelPicker
+              value={session.model}
+              onChange={onModelChange}
+              onClose={() => setModelOpen(false)}
+            />
+          )}
         </span>
-        <span className="font-mono text-[11px] text-muted-foreground" title="输入 + 输出 token">
-          {(tokens / 1000).toFixed(1)}K
-        </span>
+        {bar ? (
+          <span
+            className={`flex shrink-0 items-center gap-1.5 font-mono text-[11px] ${
+              contextWarn ? "text-warning-ink" : "text-muted-foreground"
+            }`}
+            title={
+              `上下文已用 ${formatTokens(bar.used)} / 窗口 ${formatTokens(bar.window)}` +
+              `（${bar.model}，${contextPercent(bar)}%）` +
+              (contextWarn ? " · 已超过 80%，可发送 /compact 压缩上下文" : "")
+            }
+          >
+            {/* 纯视觉条：数字就在旁边，读屏软件读文字，这条 aria 隐藏。 */}
+            <span aria-hidden className="relative h-[4px] w-10 overflow-hidden rounded-full bg-muted">
+              <span
+                className={`absolute inset-y-0 left-0 rounded-full ${
+                  contextWarn ? "bg-warning" : "bg-primary/70"
+                }`}
+                style={{ width: `${contextPercent(bar)}%` }}
+              />
+            </span>
+            {formatTokens(bar.used)}/{formatTokens(bar.window)}
+          </span>
+        ) : (
+          <span className="font-mono text-[11px] text-muted-foreground" title="输入 + 输出 token">
+            {formatTokens(tokens)}
+          </span>
+        )}
         <span className="font-mono text-[11px] text-muted-foreground">${session.costUsd.toFixed(2)}</span>
 
         <span data-cc-seg className="flex items-center gap-px rounded-lg border border-border bg-muted/50 p-[2px]">
@@ -100,12 +172,71 @@ function SessionBarImpl({
           })}
         </span>
 
+        {/* 变更集入口：没有改动就不占位（同分支 chip 的「未知不占位」）。
+            带数字是因为「改了没有、改了几处」是这一行最值得知道的事。 */}
+        {session.changeset.length > 0 && (
+          <span className="relative flex shrink-0 items-center">
+            <button
+              type="button"
+              onClick={() => setChangesetOpen((v) => !v)}
+              aria-expanded={changesetOpen}
+              title={`本会话改动：${session.changeset.length} 个文件`}
+              aria-label="本会话改动"
+              className={`flex h-[26px] items-center gap-1 rounded-lg border px-1.5 text-[11px] transition-colors ${
+                changesetOpen
+                  ? "border-primary/40 text-foreground"
+                  : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+              }`}
+            >
+              <Icon name="file" size={12} />
+              <span className="font-mono">{session.changeset.length}</span>
+            </button>
+            {changesetOpen && (
+              <ChangesetPanel
+                entries={session.changeset}
+                onJump={(id) => {
+                  // 跳完即关：浮层盖着消息区，用户看不见自己跳到了哪儿。
+                  setChangesetOpen(false);
+                  onJumpTo(id);
+                }}
+                onClose={() => setChangesetOpen(false)}
+              />
+            )}
+          </span>
+        )}
+
         {/* 只给图标：这一行在 700px 窄窗下已经被挤爆过（cwd 截成 `p...`），
             任何带文字的按钮都会再吃掉 40px。 */}
+        <span className="relative flex shrink-0 items-center">
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((v) => !v)}
+            aria-expanded={historyOpen}
+            title="历史对话（本机 Claude Code 的全部转录，包括终端页里聊的）"
+            aria-label="历史对话"
+            className={`flex h-[26px] w-[26px] items-center justify-center rounded-lg border transition-colors ${
+              historyOpen
+                ? "border-primary/40 text-foreground"
+                : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+            }`}
+          >
+            <Icon name="history" size={12} />
+          </button>
+          {historyOpen && (
+            <HistoryPanel
+              onClose={() => setHistoryOpen(false)}
+              onOpen={(row) => {
+                setHistoryOpen(false);
+                onOpenHistory(row);
+              }}
+            />
+          )}
+        </span>
+
         <button
           type="button"
           onClick={onNewSession}
-          title="新对话（清空这条会话链，CC 不再记得上面的事）"
+          title={`新对话（${newSessionHint}，清空这条会话链，CC 不再记得上面的事）`}
           aria-label="新对话"
           className="flex h-[26px] w-[26px] items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
         >

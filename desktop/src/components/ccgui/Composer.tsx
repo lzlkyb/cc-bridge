@@ -1,5 +1,17 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Button } from "../ui/button";
+import { Icon } from "../ui/icon";
+import {
+  classifySlash,
+  filterSlash,
+  isSlashTyping,
+  SLASH_WHITELIST_TEXT,
+  type SlashCommand,
+} from "../../lib/ccSlash";
+import { SlashPanel } from "./SlashPanel";
+
+/** 输入区自动增高的高度上限（px）。约 8 行 13px 字：再高就该拆成文件了。 */
+const MAX_TEXTAREA_H = 168;
 
 /**
  * 输入区（接管 composer 位置，不弹模态）。
@@ -7,34 +19,160 @@ import { Button } from "../ui/button";
  * 采用 dock 而非对话框的理由：审批/追问时用户往往要边看上面的 diff 边决定，
  * 模态会把这些上下文盖住。desktop-cc-gui 的 `QuestionCard` 也是这个做法。
  *
- * `rows={1}` 是刻意的：接真协议后改成随内容自动增高，起始单行 ——
- * 输入区越矮，上面留给对话流的越高（审批卡被顶出视口是最糟的失败）。
+ * ## 运行中不再禁用发送
  *
- * `running` 时发送按钮禁用：一轮一进程，同一时刻只能有一条消息在飞。
- * 此时给出「中断」—— 没有它，卡住的一轮只能靠关窗解决。
+ * 旧行为是 `disabled={running}`：用户被迫干等一轮跑完才能打字，而「趁着它跑的时候
+ * 把下一句想好」是最自然的使用方式。现在运行中发送 = **排队**（`onSend` 收到后由
+ * `useCcSession` 决定入队还是直发），队列在本组件里如实显示条数，可一键清空。
+ *
+ * 🔴 排队不是并发：后端 `cc_start` 在 `turn_active` 时直接报错，队列只在
+ * 「本轮结束」的那一刻取下一条发出，任何时刻仍然只有一条消息在飞。
+ *
+ * ## slash 命令（白名单闸门）
+ *
+ * 值以 `/` 开头时浮出命令面板；发送前 `classifySlash` 判定：白名单内的
+ * （/compact /clear /model）原样转发给 CLI 执行，其余一律拦住并提示去向 ——
+ * 未知命令当提示词发给模型只会浪费一轮。判定与白名单在 `lib/ccSlash.ts`。
  */
 function ComposerImpl({
   onSend,
   running,
   onInterrupt,
   placeholder,
+  queueCount,
+  onClearQueue,
+  onPolish,
+  polishing,
 }: {
   onSend: (text: string) => void;
   running?: boolean;
   onInterrupt?: () => void;
   placeholder?: string;
+  /** 已排队、还没发出去的消息条数。 */
+  queueCount: number;
+  onClearQueue: () => void;
+  /**
+   * 调 prompt-polish 改写草稿，返回改写后的文本。
+   *
+   * 形状是「拿草稿、还文本」而不是「父组件塞 value 下来」：草稿只活在
+   * 本组件里（受控源在这里），让父组件经一道 props 往返只会多一个
+   * 「两边各存一份、不知道谁最新」的坑。失败返回 `null`，本组件不动文本。
+   */
+  onPolish?: (draft: string) => Promise<string | null>;
+  /** 父组件转交的「正在润色」状态（它在跑 CLI，属全局忙碌的一种）。 */
+  polishing?: boolean;
 }) {
   const [value, setValue] = useState("");
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  /** 润色前的原文。非空 = 显示「撤销润色」。一打字就作废：那是新的草稿了。 */
+  const [polishBackup, setPolishBackup] = useState<string | null>(null);
+  /** 命令面板的高亮项。值一变就回 0（onChange 里做）。 */
+  const [slashSel, setSlashSel] = useState(0);
+  /** 用户按过 Esc：值不变就让面板一直关着，不然 Esc 毫无效果。 */
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  /** 被闸门拦下的命令名。非空 = 显示提示；一打字就清。 */
+  const [slashReject, setSlashReject] = useState<string | null>(null);
+  /** 整个输入区（含面板）的定位锚点与「点外面关闭」的判定框。 */
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // 自动增高：内容变化时重算，上限 MAX_TEXTAREA_H。
+  // 挂在 effect 里而不是 onChange 里：粘贴、程序回填（润色）也走同一条路。
+  useEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_H)}px`;
+  }, [value]);
+
+  // 命令面板：`/` 开头且没打空格时开着。Esc / 点外面关。
+  const slashOpen = isSlashTyping(value) && !slashDismissed;
+  const slashMatches = slashOpen ? filterSlash(value.slice(1)) : [];
+  const slashActive = Math.min(slashSel, Math.max(0, slashMatches.length - 1));
+  useEffect(() => {
+    if (!slashOpen) return;
+    const onDown = (e: PointerEvent) => {
+      // 点在输入区里（含面板本身）不关：那是要继续打字。
+      if (boxRef.current?.contains(e.target as Node)) return;
+      setSlashDismissed(true);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSlashDismissed(true);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [slashOpen]);
 
   const send = () => {
     const text = value.trim();
-    if (!text || running) return;
+    if (!text) return;
+    // 闸门：白名单外的 slash 命令不发送。拦住时**不清空**输入——用户的字
+    // 得留着改，只显示提示告诉他该去哪儿。
+    const verdict = classifySlash(text);
+    if (verdict.kind === "unknown") {
+      setSlashReject(verdict.name);
+      return;
+    }
     onSend(text);
     setValue("");
+    setSlashSel(0);
+    setSlashReject(null);
+  };
+
+  /** 把命令名填进输入框，尾部留一个空格给参数。不直接发：/model 要写参数。 */
+  const insertSlash = (cmd: SlashCommand) => {
+    setValue(`${cmd.name} `);
+    setSlashSel(0);
+  };
+
+  /** 面板点选 / Enter。已经完整打出且不要参数的命令（/compact、/clear）
+   *  直接发送——「打完回车就走」是最顺手的路径；其余落入输入框等补全。 */
+  const pickSlash = (cmd: SlashCommand) => {
+    if (value.trim() === cmd.name && !cmd.needsArg) {
+      send();
+      return;
+    }
+    insertSlash(cmd);
+  };
+
+  const polish = async () => {
+    const draft = value.trim();
+    if (!draft || !onPolish || polishing) return;
+    const out = await onPolish(draft);
+    // 只在真的拿到文本时动：失败时保持原样，用户那句草稿不能丢。
+    if (out && out.trim()) {
+      setPolishBackup(draft);
+      setValue(out.trim());
+    }
   };
 
   return (
-    <div className="shrink-0 px-3 pb-3 pt-1">
+    <div ref={boxRef} className="relative shrink-0 px-3 pb-3 pt-1">
+      {queueCount > 0 && (
+        <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+          <Icon name="clock" size={11} className="shrink-0 opacity-70" />
+          <span className="min-w-0 flex-1">已排队 {queueCount} 条 · 本轮结束后按顺序自动发送</span>
+          <button
+            type="button"
+            onClick={onClearQueue}
+            className="shrink-0 rounded border border-border px-1.5 py-[1px] text-[11px] transition-colors hover:border-destructive/40 hover:text-destructive-ink"
+          >
+            清空
+          </button>
+        </div>
+      )}
+      {slashReject && (
+        <div className="mb-1 flex items-start gap-1.5 px-1 text-[11px] leading-[1.5] text-warning-ink">
+          <Icon name="alertTriangle" size={11} className="mt-[1px] shrink-0 opacity-80" />
+          <span className="min-w-0 flex-1">
+            未发送 <span className="font-mono">{slashReject}</span>：不在白名单里。对话页只转发{" "}
+            {SLASH_WHITELIST_TEXT}，其它命令请到终端页里用。
+          </span>
+        </div>
+      )}
       {/* data-cc-composer：玻璃下 composer 要压过 .ui-card 的 reading 档，改 floating
           （唯一「必须实心」的输入位）；classic 下不加任何样式。 */}
       <div
@@ -42,9 +180,42 @@ function ComposerImpl({
         className="ui-card rounded-xl border border-border bg-card shadow-card transition-colors focus-within:border-primary/50"
       >
         <textarea
+          ref={areaRef}
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSlashSel(0);
+            setSlashDismissed(false);
+            setSlashReject(null);
+            // 一打字，润色备份就作废：那是新草稿，还原回去只会覆盖用户刚写的。
+            if (polishBackup !== null) setPolishBackup(null);
+          }}
           onKeyDown={(e) => {
+            // 面板开着时方向键 / Enter / Tab 归它。Enter 在输入框里本是换行，
+            // 但「正选着命令」的时刻用户要的是补全；换行还有 Shift+Enter
+            // （浏览器原生行为，不用我们接）。
+            if (slashOpen && slashMatches.length > 0) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setSlashSel((v) => (v + 1) % slashMatches.length);
+                return;
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setSlashSel((v) => (v - 1 + slashMatches.length) % slashMatches.length);
+                return;
+              }
+              if (e.key === "Tab") {
+                e.preventDefault();
+                insertSlash(slashMatches[slashActive]);
+                return;
+              }
+              if (e.key === "Enter") {
+                e.preventDefault();
+                pickSlash(slashMatches[slashActive]);
+                return;
+              }
+            }
             // Windows 风格窗口：Ctrl+Enter 发送（不是 ⌘）。
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
@@ -53,7 +224,7 @@ function ComposerImpl({
           }}
           rows={1}
           placeholder={placeholder ?? "给 CC 发消息…"}
-          className="block w-full resize-none bg-transparent px-3 pt-2.5 text-[13px] leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground"
+          className="block max-h-[168px] w-full resize-none overflow-y-auto bg-transparent px-3 pt-2.5 text-[13px] leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground"
         />
         <div className="flex items-center gap-2 px-2 pb-1.5">
           <span className="text-[11px] text-muted-foreground">
@@ -66,6 +237,31 @@ function ComposerImpl({
             </span>{" "}
             发送
           </span>
+          {polishBackup !== null && (
+            <button
+              type="button"
+              onClick={() => {
+                setValue(polishBackup);
+                setPolishBackup(null);
+              }}
+              className="text-[11px] text-muted-foreground underline decoration-dotted transition-colors hover:text-foreground"
+            >
+              撤销润色
+            </button>
+          )}
+          {onPolish && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 px-2 text-[12px] text-muted-foreground"
+              disabled={polishing || !value.trim()}
+              onClick={() => void polish()}
+              title="用提示词改写器把草稿改写成更清晰、可执行的指令（mods/prompt-polish）"
+            >
+              <Icon name={polishing ? "spinner" : "paintbrush"} size={12} />
+              {polishing ? "润色中" : "润色"}
+            </Button>
+          )}
           {running && onInterrupt && (
             <Button variant="outline" size="sm" className="ml-auto h-7 px-3 text-[12px]" onClick={onInterrupt}>
               中断
@@ -74,13 +270,21 @@ function ComposerImpl({
           <Button
             size="sm"
             className={`${running && onInterrupt ? "" : "ml-auto"} h-7 px-3 text-[12px]`}
-            disabled={!value.trim() || running}
+            disabled={!value.trim()}
             onClick={send}
           >
-            发送
+            {running ? "排队" : "发送"}
           </Button>
         </div>
       </div>
+      {slashOpen && (
+        <SlashPanel
+          matches={slashMatches}
+          active={slashActive}
+          query={value.slice(1)}
+          onPick={pickSlash}
+        />
+      )}
     </div>
   );
 }

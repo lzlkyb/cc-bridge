@@ -23,6 +23,7 @@ export function CcEmptyState({
   cwd,
   onCwdChange,
   isRemote,
+  newSessionHint,
 }: {
   probe: CcProbe | null;
   probing: boolean;
@@ -35,6 +36,8 @@ export function CcEmptyState({
    * 「留空」落在哪儿（本机是家目录，远端是非登录 shell 的登录目录）。
    */
   isRemote: boolean;
+  /** 新对话的快捷键标签（`Ctrl+N` / `⌘N`）。 */
+  newSessionHint: string;
 }) {
   const missing = probe !== null && !probe.found;
 
@@ -80,6 +83,14 @@ export function CcEmptyState({
               </button>
             ))}
           </div>
+
+          {/* 键位一览。放在空状态而不是帮助页：这一页的快捷键只有三条，
+              藏进二级页面等于没有。样式与命令面板 footer 保持同一套。 */}
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            <kbd className="rounded bg-muted px-1 py-0.5 font-mono">{newSessionHint}</kbd> 新对话 ·{" "}
+            <kbd className="rounded bg-muted px-1 py-0.5 font-mono">/</kbd> 看命令 ·{" "}
+            <kbd className="rounded bg-muted px-1 py-0.5 font-mono">Esc</kbd> 关面板
+          </p>
 
           <label className="mt-2 flex w-full max-w-[420px] flex-col items-start gap-1 text-left">
             <span className="text-[10.5px] text-muted-foreground">

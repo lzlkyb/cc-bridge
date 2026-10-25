@@ -17,11 +17,14 @@ import {
   type CcRetryInfo,
 } from "./ccEventTypes";
 import type { CcMessage, CcQuestion } from "./ccGuiTypes";
+import { readModelUsage, type CcModelUsage } from "./ccContextUsage";
 
 export type CcView = {
   messages: CcMessage[];
-  /** 已落定的审批：`requestId → 裁决`。与消息列表分开存，渲染层只读它。 */
-  resolved: Record<string, "allow" | "deny">;
+  /** 已落定的审批：`requestId → 裁决`。与消息列表分开存，渲染层只读它。
+   *  `auto` = 后端规则自动放行（`autoapprove` 命中后补记的本地事件）；
+   *  2026-10-24 之前落盘的老流水没有这个字段，按 `undefined` 当人工裁决。 */
+  resolved: Record<string, { decision: "allow" | "deny"; auto?: boolean }>;
   running: boolean;
   sessionId: string | null;
   model: string | null;
@@ -29,6 +32,9 @@ export type CcView = {
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
+  /** 各模型累计用量与上下文窗口（`turnEnd.modelUsage` 解析结果）。空 = 还没有
+   *  任何一轮带过这个字段（老流水 / 老版本 CLI）⇒ 界面只显示已用 token。 */
+  modelUsage: Record<string, CcModelUsage>;
   /** 正在退避重试。**不是错误**：CLI 会重试 10 次、每次 30s+ 后继续。 */
   retry: CcRetryInfo | null;
   /** 上下文被压缩后的 token 数（`null` = 本轮没压缩过）。 */
@@ -55,6 +61,7 @@ export const initialCcView: CcView = {
   inputTokens: 0,
   outputTokens: 0,
   costUsd: 0,
+  modelUsage: {},
   retry: null,
   compactedTokens: null,
   backgroundTasks: 0,
@@ -95,6 +102,24 @@ function upsertText(messages: CcMessage[], blockId: string, text: string, stream
   if (cur.kind !== "assistant") return messages;
   const next = streaming ? cur.text + text : text;
   if (next === cur.text) return messages; // 完全相同的碎片不制造新数组，省一次重渲染
+  const copy = messages.slice();
+  copy[idx] = { ...cur, text: next };
+  return copy;
+}
+
+/**
+ * 思维链按 `blockId` upsert。与 `upsertText` 分开写而不是加个 kind 参数：
+ * 两条链路将来会长出不同的折叠/计时行为，共用一份只会让分支越叠越深。
+ */
+function upsertThinking(messages: CcMessage[], blockId: string, text: string, streaming: boolean): CcMessage[] {
+  const idx = messages.findIndex((m) => m.kind === "thinking" && m.id === blockId);
+  if (idx < 0) {
+    return [...messages, { kind: "thinking", id: blockId, at: "", text }];
+  }
+  const cur = messages[idx];
+  if (cur.kind !== "thinking") return messages;
+  const next = streaming ? cur.text + text : text;
+  if (next === cur.text) return messages;
   const copy = messages.slice();
   copy[idx] = { ...cur, text: next };
   return copy;
@@ -190,10 +215,13 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
     case "text":
       return { ...view, messages: upsertText(view.messages, event.blockId, event.text, event.streaming) };
 
-    // 思维链目前不渲染：CC 的「思考中」往往几分钟，占屏反而让人以为卡住。
-    // 事件照收不误（Rust 侧有测试保证不漏），将来加折叠面板时不用改协议层。
+    // 思维链渲染成**默认折叠**的一行：长任务里它是「还活着」的唯一证据，
+    // 摊开却会把正文冲出视口。事件照收（Rust 侧有测试保证不漏）。
     case "thinking":
-      return view;
+      return {
+        ...view,
+        messages: upsertThinking(view.messages, event.blockId, event.text, event.streaming),
+      };
 
     case "toolUse": {
       if (view.messages.some((m) => m.kind === "tool" && m.id === event.toolUseId)) {
@@ -291,7 +319,13 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       };
 
     case "permissionResolved":
-      return { ...view, resolved: { ...view.resolved, [event.requestId]: event.decision } };
+      return {
+        ...view,
+        resolved: {
+          ...view.resolved,
+          [event.requestId]: { decision: event.decision, auto: event.auto },
+        },
+      };
 
     case "retry":
       return { ...view, retry: { attempt: event.attempt, max: event.max, message: event.message } };
@@ -312,6 +346,9 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         inputTokens: view.inputTokens + usage.input,
         outputTokens: view.outputTokens + usage.output,
         costUsd: view.costUsd + (event.costUsd ?? 0),
+        // 每轮都带 ⇒ 替换式更新（CLI 给的是累计值，累加会翻倍）。没带（老流水）
+        // 就保留上一次的，不清空——清空会让余量条在一轮之间闪烁消失。
+        modelUsage: event.modelUsage ? readModelUsage(event.modelUsage) : view.modelUsage,
         // `is_error` 时 `text` 往往是给人看的错误摘要，放 stderr 通道统一展示。
         stderr: event.isError && event.text ? [...view.stderr, event.text] : view.stderr,
       };

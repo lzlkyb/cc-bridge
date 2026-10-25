@@ -204,6 +204,8 @@ const report: TokenUsageReport = {
     { date: "2026-10-16", tool: "read_files", calls: 1, estTokens: 20 },
     { date: "2026-10-16", tool: "write_files", calls: 1, estTokens: 10 },
   ],
+  // 对话账（批 2-6）：usageMath 的纯函数都不碰它，fixture 给空数组即可。
+  sessions: [],
 };
 
 describe("buildMatrix 用量矩阵", () => {
@@ -218,7 +220,7 @@ describe("buildMatrix 用量矩阵", () => {
   });
 
   it("空报告不炸：零工具、max=1", () => {
-    const m = buildMatrix({ days: [], tools: [], byDayTool: [] });
+    const m = buildMatrix({ days: [], tools: [], byDayTool: [], sessions: [] });
     expect(m.tools).toEqual([]);
     expect(m.max).toBe(1);
   });
@@ -242,6 +244,7 @@ describe("buildUsageCsv 导出", () => {
       days: [],
       tools: [{ tool: 'a,"b",c', calls: 1, estInput: 0, estOutput: 0 }],
       byDayTool: [],
+      sessions: [],
     });
     expect(csv).toContain('"a,""b"",c",1,0,0');
   });

@@ -61,10 +61,12 @@ export function editPair(input: Record<string, unknown>): { oldText: string; new
  *
  * 提问说「回答 / 跳过」，审批说「允许 / 拒绝」—— 两件事用一个词会让人分不清
  * 自己刚才是放行了一条命令，还是回答了一个问题。落款留在历史里，事后回看
- * 只能靠它判断当时发生了什么。
+ * 只能靠它判断当时发生了什么。`auto` 再补一层：规则放行的和用户亲手点的
+ * 必须能分清，否则「谁放的行」在审计里说不清。
  */
-export function verdictLabel(toolName: string, verdict: "allow" | "deny"): string {
+export function verdictLabel(toolName: string, verdict: "allow" | "deny", auto?: boolean): string {
   const ask = toolName === "AskUserQuestion";
+  if (auto && verdict === "allow") return "已按规则自动放行";
   if (verdict === "allow") return ask ? "已回答" : "已允许一次";
   return ask ? "已跳过" : "已拒绝";
 }

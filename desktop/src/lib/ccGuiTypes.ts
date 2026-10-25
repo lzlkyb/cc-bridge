@@ -8,6 +8,9 @@
  *    接真协议时只换数据源，渲染层不用动。
  */
 
+import type { CcModelUsage } from "./ccContextUsage";
+import type { ChangesetEntry } from "./ccChangeset";
+
 export type CcToolStatus = "running" | "ok" | "error";
 
 export type CcToolCall = {
@@ -60,6 +63,8 @@ export type CcApproval = {
 export type CcMessage =
   | { kind: "user"; id: string; text: string; at: string }
   | { kind: "assistant"; id: string; text: string; at: string }
+  /** 思维链。**默认折叠**：CC 的思考动辄几分钟，摊在流里会把正文冲出视口。 */
+  | { kind: "thinking"; id: string; text: string; at: string }
   | { kind: "tool"; id: string; tool: CcToolCall; at: string }
   | CcApproval;
 
@@ -68,13 +73,20 @@ export type CcSession = {
   connection: string;
   cwd: string;
   branch: string;
+  /** 我们为**下一轮**选的模型。空串 = 不传 `--model`（跟随 CLI 默认）。 */
   model: string;
+  /** CLI 在 `system/init` 里回报的**当前**模型。选择为空时界面显示它。 */
+  activeModel?: string | null;
   permissionMode: CcPermissionMode;
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
+  /** 各模型累计用量与上下文窗口（会话条余量条的数据源，解析见 `lib/ccContextUsage.ts`）。 */
+  modelUsage: Record<string, CcModelUsage>;
   /** 有没有一轮正在跑。会话条用它切换连接点的颜色（绿 = 忙）。 */
   running: boolean;
+  /** 本会话改过的文件（变更集面板数据源，聚合见 `lib/ccChangeset.ts`）。 */
+  changeset: ChangesetEntry[];
   messages: CcMessage[];
 };
 
