@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use dashmap::DashMap;
 use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -46,10 +47,22 @@ pub const CC_EVENT: &str = "cc-event";
 /// 🔴 序号不是装饰。前端重建界面的顺序是「先订阅、再拉快照、最后补漏」——
 /// 订阅和快照之间一定会有一小段重叠，没有序号就只能靠时序猜哪些是重复的，
 /// 而猜错的后果是消息重复一遍或丢一条，且只在慢机器上偶发。
+///
+/// `session_id` 是**我们自己的内部 id**（`CcSessions::new_session` 铸发的单调
+/// u64），不是 CC 的 resume id —— 那个只在 `system/init` 里出现，启动那一刻
+/// 还拿不到，而路由从第一条事件起就需要它。多会话并存时前端按它分流；
+/// 单会话期前端只认自己那一条，其余原样忽略。
+///
+/// `#[serde(default)]` 是给**旧前端**的兼容：3-1a 前后端同一个发版，但开发时
+/// 前端热重载可能早于后端重启完成，缺字段时按 0 处理（0 不是任何合法 id，
+/// `CcSessions` 从 1 开始铸发 ⇒ 旧前端的过滤只会丢事件，不会错认别人的）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CcEventPayload {
     pub seq: u64,
+    /// 内部会话 id。见结构体注释。
+    #[serde(default)]
+    pub session_id: u64,
     pub event: CcEvent,
 }
 
@@ -89,6 +102,14 @@ pub fn snapshot_running(process_alive: bool, turn_active: bool) -> bool {
 /// （管理器要持有 `Run`，`Run` 又持有读线程 —— 直接互引会死锁）。
 #[derive(Default)]
 pub struct Shared {
+    /// **我们自己的**内部会话 id（`CcSessions` 铸发的单调 u64）。
+    ///
+    /// 与 `resume_id`（CC 的 session id，只在 `system/init` 出现）是两回事：
+    /// 那个启动那一刻还拿不到，而事件路由从第一条事件起就需要一个稳定身份。
+    ///
+    /// `Default` 给 0 ⇒ 「未设置」。`CcSessions` 从 1 开始铸发，所以 0 永远
+    /// 查不到 —— 测试里裸构造的 `Shared` 落在这个格子里，正好不进任何路由。
+    internal_id: AtomicU64,
     pub ring: EventRing,
     /// `Arc` 的原子替换由外层锁保护；用 `StdMutex<Option<String>>` 而不是
     /// `RwLock`：读频率低（每轮一次），换来的是不用处理 poison 的两种分支。
@@ -146,6 +167,19 @@ pub struct PendingAsk {
 impl Shared {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// 内部会话 id。0 = 还没归进 `CcSessions`（测试裸构造的 shared）。
+    pub fn internal_id(&self) -> u64 {
+        self.internal_id.load(Ordering::SeqCst)
+    }
+
+    /// 铸发时由 `CcSessions::new_session` 设入，**只设一次**（后到者忽略）。
+    pub fn set_internal_id(&self, id: u64) {
+        // 比较交换：并发下也只有一个赢家，且不覆盖已有值。
+        let _ = self
+            .internal_id
+            .compare_exchange(0, id, Ordering::SeqCst, Ordering::SeqCst);
     }
 
     pub fn resume_id(&self) -> Option<String> {
@@ -366,7 +400,14 @@ pub fn persist_later(app: &AppHandle, shared: &Arc<Shared>) {
 /// 光等 `TurnEnd` 的话这一句就白打了。
 pub fn record_local(app: &AppHandle, shared: &Arc<Shared>, event: CcEvent) {
     let seq = shared.ring.push(event.clone()).unwrap_or(u64::MAX);
-    let _ = app.emit(CC_EVENT, &CcEventPayload { seq, event });
+    let _ = app.emit(
+        CC_EVENT,
+        &CcEventPayload {
+            seq,
+            session_id: shared.internal_id(),
+            event,
+        },
+    );
     persist_later(app, shared);
 }
 
@@ -446,6 +487,7 @@ impl EventSink for TauriSink {
             CC_EVENT,
             &CcEventPayload {
                 seq,
+                session_id: self.shared.internal_id(),
                 event: event.clone(),
             },
         );
@@ -523,10 +565,15 @@ impl TauriSink {
         };
         // 回写走与用户点击同一条路（`CcSession::respond`）：它管加锁、管进程存活。
         // 失败只可能是进程正在退 —— 那时用户自己点也一样会失败。
+        //
+        // 寻址按**这条 sink 所属的会话**（internal id 铸发时落进了 shared）：
+        // 多会话并存时自动放行必须回到提问的那一条上，不能借用户当前聚焦的那条。
+        // 拿不到（理论上不会：3-1a 没有移除入口）⇒ 安静退场，卡片留给用户。
         let wrote = state
             .cc
-            .respond(request_id, &Verdict::allow_as_is(input))
-            .is_ok();
+            .get(self.shared.internal_id())
+            .and_then(|cc| cc.respond(request_id, &Verdict::allow_as_is(input)).ok())
+            .is_some();
         if !wrote {
             return;
         }
@@ -597,17 +644,30 @@ pub struct CcSession {
 }
 
 impl Default for CcSession {
+    /// 仅测试与容器内部用：内部 id = 0（「未设置」），在任何路由里都查不到。
+    /// 生产路径一律走 `with_id` / `CcSessions::new_session`。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl CcSession {
+    /// 裸构造（内部 id = 0，未归进 `CcSessions`）。**生产路径不许用** ——
+    /// 只有测试与 `with_id` 内部走这里。`Default` 是 clippy 的
+    /// `new_without_default` 逼出来的，语义与它一致：id=0 的会话在任何路由里
+    /// 都查不到，「忘了铸发」不会静默串到别的会话头上。
     pub fn new() -> Self {
         Self {
             shared: Shared::new(),
             live: StdMutex::new(None),
         }
+    }
+
+    /// 归进 `CcSessions` 的构造：内部 id 在 shared 里落定，事件一带即走。
+    pub fn with_id(internal_id: u64) -> Self {
+        let s = Self::new();
+        s.shared.set_internal_id(internal_id);
+        s
     }
 
     pub fn shared(&self) -> &Arc<Shared> {
@@ -746,6 +806,97 @@ impl CcSession {
             if let Some(mut run) = guard.take() {
                 run.shutdown(grace);
             }
+        }
+    }
+}
+
+/// 多会话容器：内部 id → 一条 [`CcSession`]。
+///
+/// ## 为什么是它，而不是「前端自己记着哪条是哪条」
+///
+/// 切 tab 会卸载前端组件，进程与事件流水必须活过卸载 —— 那是 `CcSession`
+/// 的既有决定（`state.rs` 字段注释）。多会话只是把「唯一一条」换成「一组」，
+/// 寻址方式与业界同构：OpenHands V1 每个端点带 `conversation_id`、MCP
+/// 2026-07-28 起改显式 handle（调研见 `docs/批3多会话结构方案-2026-10-24.md` §三）。
+///
+/// ## 存 `Arc<CcSession>` 而不是裸值
+///
+/// 与 AppState 其它 DashMap 同一条教训（`state.rs` 的 `path_locks` 注释）：
+/// `DashMap::get` 返回的 Ref 不能跨 await 长期持有，而命令处理函数全程要
+/// 用它。clone 一个 `Arc` 出来，锁即用即放。
+///
+/// ## id 从 1 开始
+///
+/// 0 是 `Shared::default()` 的「未设置」值。从 1 铸发保证「查不到 0」——
+/// 测试里裸构造的 shared 因此永远不会被路由命中。
+pub struct CcSessions {
+    next_id: AtomicU64,
+    map: DashMap<u64, Arc<CcSession>>,
+}
+
+impl Default for CcSessions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CcSessions {
+    pub fn new() -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            map: DashMap::new(),
+        }
+    }
+
+    /// 铸发一条新会话，返回它的内部 id。
+    ///
+    /// 不设上限：本地产品的并发上限由机器资源与服务端 rate limit 决定，
+    /// 不是我们能代用户拍的数字（CC workflow guideline 原话 "advice rather
+    /// than a hard cap"；Cline Cloud 的 10 条是云 sandbox 成本，与我们无关）。
+    pub fn new_session(&self) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        self.map.insert(id, Arc::new(CcSession::with_id(id)));
+        id
+    }
+
+    /// 按内部 id 取会话。查不到（传了没铸发过的 id）⇒ `None`。
+    pub fn get(&self, id: u64) -> Option<Arc<CcSession>> {
+        self.map.get(&id).map(|r| Arc::clone(&r))
+    }
+
+    /// 归属给 MCP 审计的 CC session id（语义见 [`CcSession::active_session_id`]）。
+    ///
+    /// 汇总规则：**只有一条**活跃轮次时才归属；零条或多条都返回 `None`。
+    /// 多条时无法判断这一笔工具调用该记到谁头上 —— 张冠李戴比不记更糟
+    /// （审计的价值全在「对得上」）。这个判断让 `http.rs` / `sse.rs` /
+    /// `batch.rs` / `transfer.rs` 四个调用点在多实例化后一行都不用改。
+    pub fn active_session_id(&self) -> Option<String> {
+        let mut only: Option<String> = None;
+        let mut live = 0usize;
+        for r in self.map.iter() {
+            if r.shared().turn_active() {
+                live += 1;
+                only = r.active_session_id();
+            }
+        }
+        if live == 1 {
+            only
+        } else {
+            None
+        }
+    }
+
+    /// 同步落盘全部会话。应用退出时调 —— 那时异步任务可能来不及跑。
+    pub fn persist_all(&self, conn: &Connection) {
+        for r in self.map.iter() {
+            r.persist(conn);
+        }
+    }
+
+    /// 收尾全部会话。宽限期短：用户已经关窗，多等没意义。
+    pub fn shutdown_all(&self, grace: std::time::Duration) {
+        for r in self.map.iter() {
+            r.shutdown(grace);
         }
     }
 }
@@ -1244,5 +1395,62 @@ mod tests {
         assert!(s.snapshot().running, "这一轮在跑 ⇒ 快照必须说忙");
 
         s.interrupt();
+    }
+
+    // ---- CcSessions 多会话容器 ----
+
+    #[test]
+    fn new_session_mints_unique_increasing_ids() {
+        let c = CcSessions::new();
+        let a = c.new_session();
+        let b = c.new_session();
+        let d = c.new_session();
+        assert!(a >= 1, "0 是「未设置」，不许铸发");
+        assert!(b > a && d > b, "id 必须单调：{a} {b} {d}");
+        for id in [a, b, d] {
+            let s = c.get(id).expect("铸发过的 id 必须取得到");
+            assert_eq!(
+                s.shared().internal_id(),
+                id,
+                "id 必须落进 shared —— 事件路由与前端分流都靠它"
+            );
+        }
+    }
+
+    #[test]
+    fn get_unknown_id_returns_none() {
+        let c = CcSessions::new();
+        assert!(c.get(999).is_none());
+        assert!(c.get(0).is_none(), "0 是未设置值，永远查不到");
+    }
+
+    #[test]
+    fn active_session_id_needs_exactly_one_live_turn() {
+        let c = CcSessions::new();
+        // 零条活跃 ⇒ 不归属。
+        assert_eq!(c.active_session_id(), None);
+        let a = c.new_session();
+        let b = c.new_session();
+        // 一条活跃 ⇒ 归属到它（resume id 是 CC 的 id，与内部 id 两回事）。
+        c.get(a).unwrap().shared().set_turn_active(true);
+        c.get(a).unwrap().shared().set_resume_id("cc-a");
+        assert_eq!(c.active_session_id().as_deref(), Some("cc-a"));
+        // 两条同时活跃 ⇒ 判断不出该记到谁头上，宁可不归。
+        c.get(b).unwrap().shared().set_turn_active(true);
+        c.get(b).unwrap().shared().set_resume_id("cc-b");
+        assert_eq!(c.active_session_id(), None, "多条活跃时必须放弃归属");
+    }
+
+    #[test]
+    fn persist_and_shutdown_all_survive_empty_and_live() {
+        // 空容器是退出路径上最常见的形态（没聊过就关窗），不许炸。
+        let c = CcSessions::new();
+        let conn = Connection::open_in_memory().expect("内存库");
+        c.persist_all(&conn);
+        c.shutdown_all(std::time::Duration::from_millis(1));
+        // 有一条（无进程）时同理：空 ring 的 persist 直接跳过，无轮次的 shutdown 空转。
+        c.new_session();
+        c.persist_all(&conn);
+        c.shutdown_all(std::time::Duration::from_millis(1));
     }
 }

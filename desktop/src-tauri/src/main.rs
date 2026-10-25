@@ -1045,6 +1045,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::temp_file_remove,
             // CC 对话：一轮一进程 + --resume，内容全走 `cc-event` 事件 + `cc_snapshot` 快照。
             commands::cc_probe,
+            // 铸发内部会话 id：进对话页调一次，之后所有命令带它寻址（3-1a）。
+            commands::cc_new_session,
             commands::cc_start,
             commands::cc_send,
             commands::cc_respond,
@@ -1156,9 +1158,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 也不该 `blocking_lock`（可能跑在 runtime 线程上）。退出这一刻持有 `db`
                 // 的只可能是毫秒级查询，拿不到就跳过 —— 上一次 `TurnEnd` 已经落过盘。
                 if let Ok(conn) = st.db.try_lock() {
-                    st.cc.persist(&conn);
+                    st.cc.persist_all(&conn);
                 }
-                st.cc.shutdown(std::time::Duration::from_millis(600));
+                st.cc.shutdown_all(std::time::Duration::from_millis(600));
             }
             // 关掉最后一个窗口**不应**退出应用。
             //

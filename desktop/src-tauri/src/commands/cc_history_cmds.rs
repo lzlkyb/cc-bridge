@@ -101,12 +101,20 @@ pub async fn cc_history_list(
 #[tauri::command]
 pub async fn cc_history_open(
     state: State<'_, Arc<AppState>>,
-    session_id: String,
+    // 内部会话 id（`cc_new_session` 铸发）—— 历史灌进哪一条 GUI 会话。
+    session_id: u64,
+    // **CC 的**历史会话 id（转录文件名 stem）。与上面的内部 id 同名不同物：
+    // 那个是「这一路对话」的身份，这个才是 CLI `--resume` 要的值。
+    history_id: String,
 ) -> Result<CcHistoryOpened, String> {
-    let sid = session_id.trim().to_string();
+    let sid = history_id.trim().to_string();
     if sid.is_empty() {
         return Err("缺少会话 id".into());
     }
+    let cc = state
+        .cc
+        .get(session_id)
+        .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
     let st = Arc::clone(&*state);
     let sid_for_read = sid.clone();
     let (opened, row_id) = tauri::async_runtime::spawn_blocking(move || {
@@ -128,11 +136,11 @@ pub async fn cc_history_open(
     //
     // 顺序放在读正文**之后**：读文件要几十到几百毫秒，先杀进程再读，用户会看到
     // 「点了历史，回复先断了，然后过了半秒才有内容」。反过来读失败时进程毫发无伤。
-    state.cc.interrupt();
+    cc.interrupt();
 
-    take_over(state.cc.shared(), &sid, &opened, row_id);
+    take_over(cc.shared(), &sid, &opened, row_id);
     Ok(CcHistoryOpened {
-        snapshot: state.cc.snapshot(),
+        snapshot: cc.snapshot(),
         trimmed: opened.dropped,
         title: opened.meta.title(),
         cwd: opened.meta.cwd,

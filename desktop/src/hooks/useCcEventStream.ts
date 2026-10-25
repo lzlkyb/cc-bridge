@@ -9,12 +9,14 @@ import {
 import type { CcAction } from "../lib/ccReducer";
 
 /**
- * 对话事件流：**先订阅 → 再拉快照 → 用序号补漏**。
+ * 对话事件流：**先铸发 id → 订阅 → 再拉快照 → 用序号补漏**。
  *
- * 三件事必须按这个顺序做，否则会漏事件：
- * 1. 先订阅 —— 订阅之前发生的事件一条都收不到；
- * 2. 再拉快照 —— 它包含**订阅那一刻之前**的全部事件，与第 1 步必然重叠；
- * 3. 最后用序号把重叠部分丢掉（`seq < nextSeq` 的都已在快照里）。
+ * 四件事必须按这个顺序做，否则会漏事件：
+ * 1. 先铸发（`cc_new_session`）—— 它是「这一路对话」的内部身份，后面每一步
+ *    都按它寻址。纯本地操作（内存表插入），不涉及 IO，也还没有任何事件；
+ * 2. 先订阅 —— 订阅之前发生的事件一条都收不到；
+ * 3. 再拉快照 —— 它包含**订阅那一刻之前**的全部事件，与第 2 步必然重叠；
+ * 4. 最后用序号把重叠部分丢掉（`seq < nextSeq` 的都已在快照里）。
  *
  * 反过来（先快照再订阅）会丢掉两者之间的那一段，而它恰好包含「刚发出的那句话」
  * 和「刚回来的第一条流式碎片」—— 表现是偶发、只在慢机器上出现的丢头。
@@ -22,6 +24,13 @@ import type { CcAction } from "../lib/ccReducer";
  * 2026-10-24 从 `useCcSession` 拆出：整套订阅生命周期自成一个关注点，与命令类
  * 回调（start / respond / interrupt…）不共用任何状态，除了 `dispatch`。
  * 拆完两边都回到门禁之内（宿主 335 → ~280 行）。
+ *
+ * 2026-10-25 多会话化（3-1a）：铸发一步挪到最前，事件按 `sessionId` 分流。
+ * 3-1a 期前端只持有自己这一条，别路事件原样忽略 —— 行为与单例期逐字节一致。
+ *
+ * 🔴 StrictMode 下 effect 双跑会铸发两条：先跑的那条没有任何命令指向它，
+ * 没有进程、没有事件、退出时 `persist_all` 对空 ring 直接跳过 —— 一条查得到、
+ * 但谁也不占的哑会话。双跑只发生在开发模式，不值得为它加锁。
  *
  * `restored` 只负责**报告**「这条是恢复来的」：应用目标信息（connectionId /
  * cwd / model）是页面的职责，那些字段还牵着 localStorage 与探测。
@@ -35,6 +44,11 @@ export function useCcEventStream(dispatch: (action: CcAction) => void) {
   const [restored, setRestored] = useState<CcRestore | null>(null);
   /** 打开一条历史后要清掉它：当前会话已经就是那条历史了，再弹恢复提示纯属噪音。 */
   const clearRestored = useCallback(() => setRestored(null), []);
+  /**
+   * 本路对话的内部 id（`cc_new_session` 铸发）。命令类回调（start / respond /
+   * interrupt / reset / openHistory）全部带它寻址；`null` = 还没铸发完。
+   */
+  const sessionIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -50,7 +64,13 @@ export function useCcEventStream(dispatch: (action: CcAction) => void) {
 
     void (async () => {
       try {
+        // 1. 铸发。之后每一步都按这个 id 寻址。
+        const sid = await invoke<number>("cc_new_session");
+        if (!alive) return;
+        sessionIdRef.current = sid;
+        // 2. 订阅。只收自己这条：多会话并存时别路事件对本界面只是噪音。
         unlisten = await listen<CcEventPayload>(CC_EVENT_NAME, (p) => {
+          if (p.sessionId !== sid) return;
           if (!readyToApply) {
             buffered.push(p);
             return;
@@ -58,7 +78,7 @@ export function useCcEventStream(dispatch: (action: CcAction) => void) {
           apply(p);
         });
         if (!alive) return;
-        const snap = await invoke<CcSnapshot>("cc_snapshot");
+        const snap = await invoke<CcSnapshot>("cc_snapshot", { sessionId: sid });
         if (!alive) return;
         seqRef.current = snap.nextSeq;
         // 只有「这个进程一个事件都还没产生」才去读落盘的会话。
@@ -67,7 +87,7 @@ export function useCcEventStream(dispatch: (action: CcAction) => void) {
         let fromDb: CcRestore | null = null;
         if (snap.nextSeq === 0) {
           try {
-            fromDb = await invoke<CcRestore | null>("cc_restore");
+            fromDb = await invoke<CcRestore | null>("cc_restore", { sessionId: sid });
           } catch {
             // 恢复是锦上添花：库读不出来就空白起步，不能因此挡住整个对话。
             fromDb = null;
@@ -95,9 +115,10 @@ export function useCcEventStream(dispatch: (action: CcAction) => void) {
 
     return () => {
       alive = false;
+      sessionIdRef.current = null;
       unlisten?.();
     };
   }, [dispatch]);
 
-  return { ready, restored, clearRestored, seqRef };
+  return { ready, restored, clearRestored, seqRef, sessionIdRef };
 }

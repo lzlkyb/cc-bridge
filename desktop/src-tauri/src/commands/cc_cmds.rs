@@ -203,14 +203,20 @@ pub struct CcStartReq {
 
 /// 起一轮对话。**首条消息随启动一起发**，省一次往返。
 ///
-/// 返回 `()` 而不是 session id：session id 只在 `system/init` 里出现，
-/// 启动那一刻根本还不知道。前端从事件流里拿。
+/// `session_id` 是内部 id（`cc_new_session` 铸发）：这一轮的全部状态 ——
+/// 事件流水、进程、facts、库里的行 —— 都归在那一条 `CcSession` 上。
+/// 多会话并存时它决定「这句话发给谁」；3-1a 期前端只持有其中一条。
 #[tauri::command]
 pub async fn cc_start(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    session_id: u64,
     req: CcStartReq,
 ) -> Result<(), String> {
+    let cc = state
+        .cc
+        .get(session_id)
+        .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
     let text = req.text.trim().to_string();
     if text.is_empty() {
         return Err("消息不能为空".into());
@@ -223,7 +229,7 @@ pub async fn cc_start(
         model: clean(req.model),
         permission_mode: clean(req.permission_mode),
         // 待会儿按需覆盖：目标变了就不能带上一个目标的 session id。
-        resume: state.cc.shared().resume_id(),
+        resume: cc.shared().resume_id(),
     };
     let path_hint = clean(req.claude_path).unwrap_or_else(|| "claude".to_string());
     let conn_id = clean(req.connection_id);
@@ -234,35 +240,34 @@ pub async fn cc_start(
     // 写进**另一个目标**的 claude 里 —— 界面显示正常，内容却去了别处，没有任何报错。
     // 不清 id 的后果：本机的 session id 被带去远端 `--resume`，CLI 那边按机器+目录
     // 存转录，只会回一句「找不到会话」。
-    let target_changed = !state
-        .cc
+    let target_changed = !cc
         .shared()
         .same_target(conn_id.as_deref().unwrap_or(""), spec.cwd.as_deref());
     if target_changed {
-        state.cc.interrupt();
-        state.cc.shared().clear_resume();
+        cc.interrupt();
+        cc.shared().clear_resume();
         // 换目标 = 新会话：库里那条属于旧目标，接着更新它会让两个目标的记录混成一条。
-        state.cc.shared().clear_row();
+        cc.shared().clear_row();
     }
 
     // 🔴 忙碌判据是「有活跃轮次」，不是「进程活着」：实测 CLI 收到 `result` 后
     // 不会退出，它会一直等 stdin 的下一条消息。把这两件事混为一谈，第二条消息
     // 就会被永久拒绝（界面上是一句「上一轮还在进行」，而其实那一轮早就结束了）。
-    if state.cc.shared().turn_active() {
+    if cc.shared().turn_active() {
         return Err("上一轮还在进行，请等它结束或先中断".into());
     }
 
     // 进程还活着 ⇒ 直接在它身上发下一句，省掉一次冷启动。
     // 实测冷启动 8~18s（大头是用户自己的 SessionStart 钩子），每条消息都付一次
     // 在聊天界面里是不可接受的。进程死了才走下面「新起 + --resume」那条路。
-    if state.cc.is_running() && state.cc.send(&text).is_ok() {
-        manager::record_local(&app, state.cc.shared(), CcEvent::UserMessage { text });
+    if cc.is_running() && cc.send(&text).is_ok() {
+        manager::record_local(&app, cc.shared(), CcEvent::UserMessage { text });
         return Ok(());
     }
 
     // 上面可能刚刚清过 id，重新取一次才是对的。
     let spec = LaunchSpec {
-        resume: state.cc.shared().resume_id(),
+        resume: cc.shared().resume_id(),
         ..spec
     };
 
@@ -270,7 +275,7 @@ pub async fn cc_start(
     // 🔴 `claude_path` 必须在里面：远端续聊是非登录 bash，没有绝对路径就等于
     // 「远端没装 claude」—— 而这三个字段（连接/目录/可执行文件）在本地测试里
     // 全是空值，最容易被「本机通过」骗过去。
-    state.cc.shared().set_facts(SessionFacts {
+    cc.shared().set_facts(SessionFacts {
         connection_id: conn_id.clone().unwrap_or_default(),
         cwd: spec.cwd.clone(),
         claude_path: Some(path_hint.clone()),
@@ -309,20 +314,20 @@ pub async fn cc_start(
         }
     };
 
-    let sink = Arc::new(TauriSink::new(app.clone(), Arc::clone(state.cc.shared())));
-    state.cc.start(launch, sink)?;
+    let sink = Arc::new(TauriSink::new(app.clone(), Arc::clone(cc.shared())));
+    cc.start(launch, sink)?;
 
     // 先把用户这句话记进流水，再发出去：切页回来时它必须还在。
     manager::record_local(
         &app,
-        state.cc.shared(),
+        cc.shared(),
         CcEvent::UserMessage { text: text.clone() },
     );
 
-    if let Err(e) = state.cc.send(&text) {
+    if let Err(e) = cc.send(&text) {
         // 起得来却写不进去，说明进程已经在退（多半是 CLI 参数不对）。
         // 收尸，别留一个半死的轮次占着「进行中」。
-        state.cc.interrupt();
+        cc.interrupt();
         return Err(format!("消息没能送达 claude：{e}"));
     }
     Ok(())
@@ -337,16 +342,21 @@ pub async fn cc_start(
 pub async fn cc_send(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    session_id: u64,
     text: String,
 ) -> Result<(), String> {
+    let cc = state
+        .cc
+        .get(session_id)
+        .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
     let text = text.trim();
     if text.is_empty() {
         return Err("消息不能为空".into());
     }
-    state.cc.send(text)?;
+    cc.send(text)?;
     manager::record_local(
         &app,
-        state.cc.shared(),
+        cc.shared(),
         CcEvent::UserMessage {
             text: text.to_string(),
         },
@@ -368,11 +378,16 @@ pub async fn cc_send(
 pub async fn cc_respond(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
+    session_id: u64,
     request_id: String,
     decision: String,
     message: Option<String>,
     answers: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    let cc = state
+        .cc
+        .get(session_id)
+        .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
     let request_id = request_id.trim().to_string();
     if request_id.is_empty() {
         return Err("缺少 request_id".into());
@@ -380,8 +395,7 @@ pub async fn cc_respond(
     let decision = decision.trim().to_ascii_lowercase();
     let verdict = match decision.as_str() {
         "allow" => {
-            let ask = state
-                .cc
+            let ask = cc
                 .shared()
                 .pending_ask(&request_id)
                 .ok_or("这条请求已经失效（进程已退出或已处理过），请重新发起")?;
@@ -407,12 +421,12 @@ pub async fn cc_respond(
         "deny" => Verdict::deny(message.unwrap_or_default()),
         other => return Err(format!("未知的裁决：{other}")),
     };
-    state.cc.respond(&request_id, &verdict)?;
+    cc.respond(&request_id, &verdict)?;
     // 写成功才摘单：写失败（进程刚好退出）时用户还能再点一次。
-    state.cc.shared().forget(&request_id);
+    cc.shared().forget(&request_id);
     manager::record_local(
         &app,
-        state.cc.shared(),
+        cc.shared(),
         CcEvent::PermissionResolved {
             request_id,
             decision,
@@ -425,14 +439,28 @@ pub async fn cc_respond(
 
 /// 中断这一轮。返回「是否真有一轮被打断」。
 #[tauri::command]
-pub async fn cc_interrupt(state: State<'_, Arc<AppState>>) -> Result<bool, String> {
-    Ok(state.cc.interrupt())
+pub async fn cc_interrupt(
+    state: State<'_, Arc<AppState>>,
+    session_id: u64,
+) -> Result<bool, String> {
+    let cc = state
+        .cc
+        .get(session_id)
+        .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
+    Ok(cc.interrupt())
 }
 
 /// 快照：切页回来 / 断线重连时重建界面用。
 #[tauri::command]
-pub async fn cc_snapshot(state: State<'_, Arc<AppState>>) -> Result<SnapshotDto, String> {
-    Ok(state.cc.snapshot())
+pub async fn cc_snapshot(
+    state: State<'_, Arc<AppState>>,
+    session_id: u64,
+) -> Result<SnapshotDto, String> {
+    let cc = state
+        .cc
+        .get(session_id)
+        .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
+    Ok(cc.snapshot())
 }
 
 /// 上次那条会话的完整内容。**关掉 app 再打开**时用它。
@@ -464,9 +492,16 @@ pub struct CcRestore {
 
 /// 读取并接管上次的会话。
 #[tauri::command]
-pub async fn cc_restore(state: State<'_, Arc<AppState>>) -> Result<Option<CcRestore>, String> {
+pub async fn cc_restore(
+    state: State<'_, Arc<AppState>>,
+    session_id: u64,
+) -> Result<Option<CcRestore>, String> {
+    let cc = state
+        .cc
+        .get(session_id)
+        .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
     // 用户点过「新对话」就不再拉旧的 —— 见 `Shared::suppress_restore`。
-    if state.cc.shared().restore_suppressed() {
+    if cc.shared().restore_suppressed() {
         return Ok(None);
     }
     let row = {
@@ -475,7 +510,7 @@ pub async fn cc_restore(state: State<'_, Arc<AppState>>) -> Result<Option<CcRest
         crate::cc_session::store::latest(&conn)?
     };
     let Some(row) = row else { return Ok(None) };
-    Ok(Some(adopt(state.cc.shared(), row)))
+    Ok(Some(adopt(cc.shared(), row)))
 }
 
 /// 把库里读到的会话**接管**进内存，并翻成前端 DTO。
@@ -524,10 +559,29 @@ fn adopt(shared: &crate::cc_session::Shared, row: crate::cc_session::store::Stor
 /// 新对话：清流水 + 清 session id。
 ///
 /// 请求 id / 缓冲都清掉，等于换了一条会话链。**只在用户点「新对话」时调**。
+///
+/// 内部 id 不变：reset 清的是「这条会话里发生过什么」，不是「这条会话本身」。
+/// 多会话期每条 GUI 会话各清各的，id 照旧寻址。
 #[tauri::command]
-pub async fn cc_reset(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.cc.reset();
+pub async fn cc_reset(state: State<'_, Arc<AppState>>, session_id: u64) -> Result<(), String> {
+    let cc = state
+        .cc
+        .get(session_id)
+        .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
+    cc.reset();
     Ok(())
+}
+
+/// 铸发一条新的对话会话，返回内部 id。
+///
+/// 前端进对话页时调一次，之后所有命令都带这个 id。**它不等价于 CC 的
+/// session id**（那个只在 `system/init` 里出现）—— 它是「这一路对话」的
+/// 稳定身份：事件分流、命令寻址、快照重放全按它。
+///
+/// 不设并发上限，见 [`crate::cc_session::CcSessions::new_session`]。
+#[tauri::command]
+pub async fn cc_new_session(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
+    Ok(state.cc.new_session())
 }
 
 /// 润色的 SYSTEM 提示词。**逐字取自 `mods/prompt-polish/hooks/register.js`** ——

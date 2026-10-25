@@ -38,7 +38,9 @@ export type CcTarget = {
 export function useCcSession(target: CcTarget) {
   const [view, dispatch] = useReducer(ccReducer, initialCcView);
   // 事件流（先订阅 → 再快照 → 序号补漏）自成生命周期，见 useCcEventStream 的文档。
-  const { ready, restored, clearRestored, seqRef } = useCcEventStream(dispatch);
+  // `sessionIdRef` 是本路对话的内部 id：下面每个命令都带它寻址（3-1a 多会话化）。
+  const { ready, restored, clearRestored, seqRef, sessionIdRef } =
+    useCcEventStream(dispatch);
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<CcProbe | null>(null);
   /**
@@ -113,10 +115,18 @@ export function useCcSession(target: CcTarget) {
     // 调用方显式给的优先；否则用**同一目标**探到的绝对路径 —— 远端非登录 shell
     // 没有 `~/.local/bin` 那份 PATH，不带就起不来。判断逻辑见 `pickClaudePath`。
     const claudePath = pickClaudePath(t.claudePath, probeRef.current, t.connectionId);
+    // 内部 id 还没铸发完（点得比 `cc_new_session` 的 IPC 还快）⇒ 说明白，
+    // 别带着 null 去找后端换一句看不懂的「会话不存在」。
+    const sid = sessionIdRef.current;
+    if (sid === null) {
+      dispatch({ type: "error", message: "会话正在初始化，请稍候再试" });
+      return;
+    }
     setBusy(true);
     dispatch({ type: "sending" });
     try {
       await invoke<void>("cc_start", {
+        sessionId: sid,
         req: {
           connectionId: t.connectionId,
           cwd: t.cwd,
@@ -132,7 +142,9 @@ export function useCcSession(target: CcTarget) {
     } finally {
       setBusy(false);
     }
-  }, []);
+    // `sessionIdRef` 是 ref（对象稳定），列出来是让 exhaustive-deps 看得见：
+    // 函数体读它的 `.current`，规则无法自己证明那不会变。
+  }, [sessionIdRef]);
 
   /**
    * 本轮一结束就把队首发出去。
@@ -168,13 +180,20 @@ export function useCcSession(target: CcTarget) {
       answers?: Record<string, string[]>,
     ) => {
       try {
-        await invoke<void>("cc_respond", { requestId, decision, message, answers });
+        await invoke<void>("cc_respond", {
+          sessionId: sessionIdRef.current,
+          requestId,
+          decision,
+          message,
+          answers,
+        });
       } catch (e) {
         // 常见原因：这一轮已经结束（60s 超时 / 用户中断），请求 id 随之失效。
         dispatch({ type: "error", message: String(e) });
       }
     },
-    [],
+    // 同 `start`：ref 本身稳定，列出来给 exhaustive-deps 看。
+    [sessionIdRef],
   );
 
   const interrupt = useCallback(async () => {
@@ -182,22 +201,22 @@ export function useCcSession(target: CcTarget) {
     // 只杀进程不清队列的话，下一轮会自动把用户想拦下的消息发出去。
     setQueue([]);
     try {
-      await invoke<boolean>("cc_interrupt");
+      await invoke<boolean>("cc_interrupt", { sessionId: sessionIdRef.current });
     } catch (e) {
       dispatch({ type: "error", message: String(e) });
     }
-  }, []);
+  }, [sessionIdRef]);
 
   const reset = useCallback(async () => {
     setQueue([]);
     try {
-      await invoke<void>("cc_reset");
+      await invoke<void>("cc_reset", { sessionId: sessionIdRef.current });
       dispatch({ type: "reset" });
       setProbe(null);
     } catch (e) {
       dispatch({ type: "error", message: String(e) });
     }
-  }, []);
+  }, [sessionIdRef]);
 
   const clearError = useCallback(() => dispatch({ type: "error", message: null }), []);
 
@@ -216,6 +235,9 @@ export function useCcSession(target: CcTarget) {
    * 后端会把它接管成**当前会话**（清流水 → 灌历史 → 设 resume id），
    * 所以这里只需要把结果重放进来 + 对齐序号，不需要先 `reset`。
    *
+   * `historyId` 是 **CC 的**历史会话 id（转录文件名 stem）；命令寻址用的
+   * 内部 id 另走 `sessionId` 参数 —— 两者同名不同物，别混。
+   *
    * ## 为什么要手动设 `seqRef`
    *
    * 那些历史事件是后端**直接写进 ring** 的，没有逐条 emit（emit 会和这次
@@ -223,27 +245,33 @@ export function useCcSession(target: CcTarget) {
    * `seq` 比它大得多没问题，但若用户先开了历史再开另一条，`seq` 会回绕到更小值
    * —— 那时 `apply` 里的 `p.seq < seqRef.current` 会把**所有**新事件当重复丢掉。
    */
-  const openHistory = useCallback(async (sessionId: string): Promise<CcHistoryOpened | null> => {
-    try {
-      const res = await invoke<CcHistoryOpened>("cc_history_open", { sessionId });
-      seqRef.current = res.snapshot.nextSeq;
-      dispatch({
-        type: "replay",
-        events: res.snapshot.events,
-        // 两个缺口相加：`dropped` 是环形缓冲溢出，`trimmed` 是体积上限裁掉的头部。
-        dropped: res.snapshot.dropped + res.trimmed,
-        running: false,
-      });
-      // 「上次那条」到此为止 —— 当前会话已经就是它了，再弹一次恢复提示纯属噪音。
-      clearRestored();
-      return res;
-    } catch (e) {
-      dispatch({ type: "error", message: String(e) });
-      return null;
-    }
-    // `clearRestored`（useCallback([])）与 `seqRef`（ref）实际都稳定，列出来只是
-    // 让 lint 看得见：它们来自自定义 hook 的返回，规则无法自己证明。
-  }, [clearRestored, seqRef]);
+  const openHistory = useCallback(
+    async (historyId: string): Promise<CcHistoryOpened | null> => {
+      try {
+        const res = await invoke<CcHistoryOpened>("cc_history_open", {
+          sessionId: sessionIdRef.current,
+          historyId,
+        });
+        seqRef.current = res.snapshot.nextSeq;
+        dispatch({
+          type: "replay",
+          events: res.snapshot.events,
+          // 两个缺口相加：`dropped` 是环形缓冲溢出，`trimmed` 是体积上限裁掉的头部。
+          dropped: res.snapshot.dropped + res.trimmed,
+          running: false,
+        });
+        // 「上次那条」到此为止 —— 当前会话已经就是它了，再弹一次恢复提示纯属噪音。
+        clearRestored();
+        return res;
+      } catch (e) {
+        dispatch({ type: "error", message: String(e) });
+        return null;
+      }
+      // `clearRestored`（useCallback([])）与 `seqRef`（ref）实际都稳定，列出来只是
+      // 让 lint 看得见：它们来自自定义 hook 的返回，规则无法自己证明。
+    },
+    [clearRestored, seqRef, sessionIdRef],
+  );
 
   return {
     view,

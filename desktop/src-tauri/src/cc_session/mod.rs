@@ -38,7 +38,7 @@ pub mod session;
 pub mod store;
 pub mod usage;
 
-pub use manager::{CcSession, Shared, SnapshotDto, CC_EVENT};
+pub use manager::{CcSession, CcSessions, Shared, SnapshotDto, CC_EVENT};
 pub use proto::CcEvent;
 pub use session::Verdict;
 pub use store::SessionFacts;

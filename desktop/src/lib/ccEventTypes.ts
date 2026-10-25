@@ -76,8 +76,14 @@ export type CcEvent =
 /** 后端 `cc_session::manager::CC_EVENT` 的值。改名必须两处一起改。 */
 export const CC_EVENT_NAME = "cc-event";
 
-/** `cc-event` 的载荷：带序号，用于订阅与快照之间的去重。 */
-export type CcEventPayload = { seq: number; event: CcEvent };
+/**
+ * `cc-event` 的载荷：带序号，用于订阅与快照之间的去重。
+ *
+ * `sessionId` 是后端 `CcSessions` 铸发的**内部 id**（2026-10-25 多会话化），
+ * 不是 CC 的 resume id —— 那个在 `event.kind === "init"` 里，只在 CLI 启动后
+ * 才拿得到。前端只消化属于自己的那一条，其余原样忽略；单会话期也只有一条会进来。
+ */
+export type CcEventPayload = { seq: number; sessionId: number; event: CcEvent };
 
 /** `cc_snapshot` 的返回体。 */
 export type CcSnapshot = {
