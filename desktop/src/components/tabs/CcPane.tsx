@@ -1,20 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import type { SshConnectionList, StatusResponse } from "../../lib/types";
-import type { CcPermissionMode } from "../../lib/ccGuiTypes";
 import { useCcSession } from "../../hooks/useCcSession";
 import { useCcProbe } from "../../hooks/useCcProbe";
-import {
-  readCwd,
-  readMode,
-  readModel,
-  restorePlan,
-  saveCwd,
-  saveMode,
-  saveModel,
-} from "../../lib/ccGuiPrefs";
-import type { CcHistoryRow } from "../../lib/ccEventTypes";
+import { useCcPanePrefs } from "../../hooks/useCcPanePrefs";
+import type { CcHistoryRow, CcRestoreReq } from "../../lib/ccEventTypes";
 import { derivePaneMeta, type CcPaneMeta } from "../../lib/ccPaneMeta";
 import { toBarSession } from "../../lib/ccSessionBar";
 import { shortcutLabel } from "../../lib/platform";
@@ -23,7 +14,7 @@ import { Composer } from "../ccgui/Composer";
 import { ConversationStream } from "../ccgui/ConversationStream";
 
 /**
- * 一条对话会话的完整界面：偏好状态 + 会话条/提示条 + 消息流 + 输入区。
+ * 一条对话会话的完整界面：会话条/提示条 + 消息流 + 输入区。
  *
  * 2026-10-25 从 `CcGuiTab` 拆出（3-1b 多会话）：原来 Tab 本身就是「那一条会话」，
  * 多会话之后 Tab 变成**宿主**（侧栏 + 若干 pane），每条会话一个 pane 实例。
@@ -38,30 +29,48 @@ import { ConversationStream } from "../ccgui/ConversationStream";
  * 副作用是「切走的那条继续收事件」—— 这正是我们要的：切回来时审批卡还在、
  * 流式正文是连续的，不需要重放。隐藏用 CSS（`hidden`），不卸载。
  *
- * 🔴 状态数顶在体量门禁的 8 个（4 个偏好 + 4 个 effect）：**再加状态必须往子组件
- *    里放**（润色状态已经这么挪进 `Composer` 了）。
+ * 运行配置（目标 / 目录 / 模型 / 权限）在 `useCcPanePrefs`，这里只剩接线与三段布局。
  */
 export function CcPane({
   paneKey,
   active,
+  restore,
+  conflict,
   onMeta,
   onNewSession,
   onNavigate,
 }: {
   paneKey: string;
   active: boolean;
+  /**
+   * 首次挂载时从库里载入哪一条（三态见 `CcRestoreReq`）。**只在创建那一刻有意义**：
+   * 收进 ref 固化首帧值，之后宿主就算重新渲染也不会触发重订阅
+   * （重订阅会清空事件游标与「这是恢复来的」状态）。
+   */
+  restore: CcRestoreReq;
+  /** 同目录下正在跑的另一条会话标题（`conflictWith`）。`null` = 没有冲突。 */
+  conflict: string | null;
   /** 把侧栏要显示的元信息报上去。按引用判重，见 `useCcPaneList.report`。 */
   onMeta: (key: string, meta: CcPaneMeta) => void;
   /** 新建**另一条**会话（侧栏的 +、Ctrl+N、会话条的「新对话」都走它）。 */
   onNewSession: () => void;
   onNavigate: (tab: string) => void;
 }) {
-  const [targetId, setTargetId] = useState("");
-  const [cwd, setCwd] = useState("");
-  const [mode, setMode] = useState<CcPermissionMode>(readMode);
-  // 下一轮的模型。空串 = 不传 `--model`，吃 CLI 自己的默认。全局偏好，不按连接分。
-  const [model, setModel] = useState(readModel);
+  const {
+    targetId,
+    setTargetId,
+    cwd,
+    setCwdPersist,
+    mode,
+    setMode,
+    model,
+    setModel,
+    applyRestore,
+    applyOpenedCwd,
+  } = useCcPanePrefs();
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 载入意图在 pane 生命周期内不会变，用 ref 固化 —— 见 props 注释。 */
+  const restoreRef = useRef<CcRestoreReq>(restore);
 
   const { data } = useQuery<SshConnectionList, Error>({
     queryKey: ["sshConnections"],
@@ -75,20 +84,18 @@ export function CcPane({
     [data?.connections],
   );
 
-  // 每台机器记各自的工作目录：本机的路径喂给远端只会得到一句看不懂的报错。
-  useEffect(() => {
-    setCwd(readCwd(targetId));
-  }, [targetId]);
-
-  const session = useCcSession({
-    connectionId: targetId || null,
-    cwd: cwd.trim() || null,
-    // 留空由 hook 内部的探测结果补：远端必须用绝对路径执行，
-    // 而路径只有 probe 拿得到（这里不该再探一次）。
-    claudePath: null,
-    model: model || null,
-    permissionMode: mode,
-  });
+  const session = useCcSession(
+    {
+      connectionId: targetId || null,
+      cwd: cwd.trim() || null,
+      // 留空由 hook 内部的探测结果补：远端必须用绝对路径执行，
+      // 而路径只有 probe 拿得到（这里不该再探一次）。
+      claudePath: null,
+      model: model || null,
+      permissionMode: mode,
+    },
+    restoreRef,
+  );
   const { view, restored, reportError } = session;
 
   /**
@@ -103,63 +110,19 @@ export function CcPane({
   });
   const newSessionHint = shortcutLabel(platform, "N");
 
-  /**
-   * 把恢复出来的会话**连同它的目标**一起还原（判据全在 `restorePlan`）。
-   *
-   * 🔴 只还原消息是不够的：`useCcSession` 每次 `start` 都从当前 target 拼参数。
-   * 目标没跟着切回去，用户看到的是那段远端对话、发出去却落到本机的新会话上 ——
-   * 消息还在、上下文没了，而且**没有任何报错**。
-   *
-   * 顺序不能反：`saveCwd` 必须在 `setTargetId` **之前**，那个 effect 会立刻
-   * 用新 `cwdKey(targetId)` 重读 localStorage，晚一步就被覆盖成上次留下的值。
-   * `claudePath` **故意不采信** —— 库里的路径可能早就失效，重探一次更可靠。
-   */
+  /** 恢复出来的会话连同它的目标一起还原（含那三条容易踩的规则，见 hook 注释）。 */
   useEffect(() => {
-    if (!restored) return;
-    const p = restorePlan(restored);
-    saveCwd(p.connectionId, p.cwd);
-    setTargetId(p.connectionId);
-    setCwd(p.cwd);
-    if (p.mode) {
-      setMode(p.mode);
-      saveMode(p.mode);
-    }
-    if (p.model) {
-      setModel(p.model);
-      saveModel(p.model);
-    }
-  }, [restored]);
+    if (restored) applyRestore(restored);
+  }, [restored, applyRestore]);
 
-  const setCwdPersist = useCallback(
-    (v: string) => {
-      setCwd(v);
-      saveCwd(targetId, v);
-    },
-    [targetId],
-  );
-
-  /**
-   * 打开一条历史会话，并把**目标**一起切到它那边。
-   *
-   * 🔴 顺序不能反：`saveCwd` 必须在 `setTargetId` **之前**。`targetId` 那个 effect
-   * 会立刻用 `cwdKey(targetId)` 重读 localStorage，晚一步就会被旧值覆盖。
-   * 这和期一恢复 `restored` 时踩的是同一个坑。
-   *
-   * 本机历史一律切回 `""`：`cc_start` 会拿 `connection_id` + `cwd` 和内存里的
-   * facts 比，不一致就判「换了目标」并**清掉 resume id** —— 那时打开的历史
-   * 会静悄悄变成一条新会话，用户看到的是「我问了它一句，它完全不记得上面」。
-   */
+  /** 打开一条历史会话，并把**目标**一起切到它那边。 */
   const onOpenHistory = useCallback(
     (row: CcHistoryRow) => {
       void session.openHistory(row.sessionId).then((res) => {
-        if (!res) return;
-        const dir = res.cwd ?? "";
-        saveCwd("", dir);
-        setTargetId("");
-        setCwd(dir);
+        if (res) applyOpenedCwd(res.cwd ?? "");
       });
     },
-    [session],
+    [session, applyOpenedCwd],
   );
 
   // 进页面 / 换目标时探一次 + 手动重试。`runProbe` 是 useCallback 稳定的，不会反复触发。
@@ -223,11 +186,26 @@ export function CcPane({
       connectionId: targetId || null,
       targetLabel,
       targetAlive: targetId === "" || targets.some((t) => t.id === targetId),
+      // 输入框里的目录（不是 `view.cwd`）：同目录并发判的是「按下发送会落到哪」。
+      cwd,
+      // 恢复没走完就别让历史区露出来 —— 那时本条还没有 rowId / cliSessionId，
+      // 对不上账会让它自己在历史区里再出现一次（可点 ⇒ 开出重复的一条）。
+      restoring: !session.ready,
     });
-  }, [view, session.pending, targetId, targets]);
+  }, [view, session.pending, targetId, targets, cwd, session.ready]);
+  /**
+   * 库里那一行的行号，给侧栏历史区对账用。
+   *
+   * 两个来源：「从历史打开」的 entry 自带（不用等后端）；「接着上次聊」的
+   * 要等 `cc_restore` 返回。新会话是 `null`（一句话没说，还没落盘）。
+   *
+   * 有它，历史区在恢复完成的那一刻就能把这条摘掉 —— 只靠 `view.sessionId`
+   * 会慢几百毫秒（`Init` 事件才带），那段时间用户能点出重复的一条。
+   */
+  const rowId = restore.kind === "row" ? restore.rowId : (session.restored?.rowId ?? null);
   useEffect(() => {
-    onMeta(paneKey, { ...metaBase, sessionId: session.sessionIdRef.current });
-  }, [paneKey, metaBase, session.ready, session.sessionIdRef, onMeta]);
+    onMeta(paneKey, { ...metaBase, sessionId: session.sessionIdRef.current, rowId });
+  }, [paneKey, metaBase, session.ready, session.sessionIdRef, onMeta, rowId]);
 
   const bar = useMemo(
     () =>
@@ -253,17 +231,12 @@ export function CcPane({
         targetId={targetId}
         onTargetChange={setTargetId}
         mode={mode}
-        onModeChange={(m) => {
-          setMode(m);
-          saveMode(m);
-        }}
-        onModelChange={(m) => {
-          setModel(m);
-          saveModel(m);
-        }}
+        onModeChange={setMode}
+        onModelChange={setModel}
         onSwitchTerminal={() => onNavigate("terminal")}
         onNewSession={onNewSession}
         newSessionHint={newSessionHint}
+        conflict={conflict}
         onOpenHistory={onOpenHistory}
         onJumpTo={jumpTo}
         onDismissError={session.clearError}

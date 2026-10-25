@@ -23,6 +23,7 @@ export function CcPaneHead({
   onSwitchTerminal,
   onNewSession,
   newSessionHint,
+  conflict,
   onOpenHistory,
   onJumpTo,
   onDismissError,
@@ -38,6 +39,8 @@ export function CcPaneHead({
   onSwitchTerminal: () => void;
   onNewSession: () => void;
   newSessionHint: string;
+  /** 同目录下正在跑的另一条会话标题（`conflictWith`）。`null` = 没有冲突。 */
+  conflict: string | null;
   onOpenHistory: (row: CcHistoryRow) => void;
   onJumpTo: (messageId: string) => void;
   onDismissError: () => void;
@@ -66,6 +69,7 @@ export function CcPaneHead({
           → 打开的历史当场变成一条新会话，模型忘光前面且不报错。 */}
       <SessionNotices
         risk={risk}
+        conflict={conflict}
         retry={view.retry}
         dropped={view.dropped}
         error={view.error}

@@ -2,6 +2,9 @@ import { useMemo, useState } from "react";
 import { Icon } from "../ui/icon";
 import type { CcPaneEntry } from "../../hooks/useCcPaneList";
 import { useSidebarWidth } from "../../hooks/useSidebarWidth";
+import type { CcStoredSummary } from "../../lib/ccEventTypes";
+import { filterStored } from "../../lib/ccStoredList";
+import { SessionHistoryList } from "./SessionHistoryList";
 import { RailItem, SessionRow, rowOf, type SessionRowData } from "./SessionSidebarRow";
 
 /** 会话数达到这个量才显示搜索框（与终端侧栏同一条阈值）。 */
@@ -12,10 +15,13 @@ type Props = {
   active: string;
   collapsed: boolean;
   targets: { id: string; label: string }[];
+  /** 库里没打开的会话（已按「已打开 / 空行 / 搜索词」过滤好，见 `filterStored`）。 */
+  stored: CcStoredSummary[];
   onToggleCollapsed: () => void;
   onPick: (key: string) => void;
   onNew: () => void;
   onClose: (key: string) => void;
+  onOpenStored: (rowId: number) => void;
 };
 
 /**
@@ -35,10 +41,12 @@ export function SessionSidebar({
   active,
   collapsed,
   targets,
+  stored,
   onToggleCollapsed,
   onPick,
   onNew,
   onClose,
+  onOpenStored,
 }: Props) {
   const [query, setQuery] = useState("");
   const sizing = useSidebarWidth("cc-bridge.cc-sidebar-width");
@@ -64,6 +72,9 @@ export function SessionSidebar({
       (r) => r.title.toLowerCase().includes(k) || r.detail.toLowerCase().includes(k),
     );
   }, [rows, query, showSearch]);
+
+  /** 历史区跟着同一个搜索词收窄（「已打开」外层已滤过，这里只筛词）。 */
+  const storedShown = useMemo(() => filterStored(stored, {}, query), [stored, query]);
 
   /** 按目标分组，组顺序 = 首次出现顺序（本机通常在最前，因为它最先被用到）。 */
   const groups = useMemo(() => {
@@ -187,6 +198,9 @@ export function SessionSidebar({
                   ))}
                 </div>
               ))}
+              {/* 历史区跟着搜索词一起收窄：搜索框问的是「哪条会话」，
+                  没道理只搜已打开的那几条而把历史排除在外。 */}
+              <SessionHistoryList rows={storedShown} targets={targets} onOpen={onOpenStored} />
             </div>
 
             <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-1.5 text-[10.5px] text-muted-foreground tabular-nums">

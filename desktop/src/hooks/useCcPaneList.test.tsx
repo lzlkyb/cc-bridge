@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCcPaneList } from "./useCcPaneList";
 import type { CcPaneMeta } from "../lib/ccPaneMeta";
@@ -17,19 +18,25 @@ function Probe() {
 
 const meta = (sessionId: number | null, title = "会话"): CcPaneMeta => ({
   sessionId,
+  cliSessionId: null,
+  rowId: null,
   title,
   turns: 1,
   state: "idle",
+  restoring: false,
   detail: "1 轮 · 空闲",
   connectionId: "",
   targetLabel: "本机",
+  cwd: "",
 });
 
 beforeEach(async () => {
   vi.clearAllMocks();
   h.invoke.mockResolvedValue(true);
+  // `close` 成功后要 `invalidateQueries`，所以必须有 QueryClient。
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root = createRoot(document.createElement("div"));
-  await act(async () => root.render(<Probe />));
+  await act(async () => root.render(<QueryClientProvider client={qc}><Probe /></QueryClientProvider>));
 });
 afterEach(async () => {
   await act(async () => root.unmount());
@@ -112,5 +119,44 @@ describe("侧栏会话列表", () => {
     const only = api.active;
     await act(async () => api.cycle(1));
     expect(api.active).toBe(only);
+  });
+});
+
+describe("载入意图（3-1c）", () => {
+  /**
+   * 🔴 回归 3-1b 的隐性缺陷：每个新 pane 都在挂载时调 `cc_restore` 取最近那条，
+   * 于是 `+` 出来的第二条会**重复载入上一条的内容**。只有进页面的第一条该恢复。
+   */
+  it("首条 = latest，+ 出来的 = none", async () => {
+    expect(api.entries[0].restore).toEqual({ kind: "latest" });
+    await act(async () => api.add());
+    expect(api.entries[1].restore).toEqual({ kind: "none" });
+  });
+
+  it("打开历史：新开一条带 rowId 的条目并切过去，不动原来那条", async () => {
+    const first = api.active;
+    await act(async () => api.openStored(31));
+    expect(api.entries).toHaveLength(2);
+    expect(api.entries[0].key).toBe(first);
+    expect(api.entries[1].restore).toEqual({ kind: "row", rowId: 31 });
+    expect(api.active).toBe(api.entries[1].key);
+  });
+
+  it("关掉一条已落盘的会话会让历史列表失效重取（它该重新出现在历史区）", async () => {
+    await act(async () => api.add());
+    const b = api.entries[1];
+    await act(async () => api.report(b.key, meta(9, "有内容的")));
+    await act(async () => api.close(b.key));
+    expect(h.invoke).toHaveBeenCalledWith("cc_close_session", { sessionId: 9 });
+  });
+
+  /** 连点两下同一行不该得到两个一模一样的 pane。 */
+  it("同一行重复打开只开一条", async () => {
+    await act(async () => api.openStored(31));
+    await act(async () => api.openStored(31));
+    expect(api.entries.filter((e) => e.restore.kind === "row")).toHaveLength(1);
+    // 换一行仍然照开
+    await act(async () => api.openStored(32));
+    expect(api.entries.filter((e) => e.restore.kind === "row")).toHaveLength(2);
   });
 });

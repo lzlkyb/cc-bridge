@@ -13,6 +13,7 @@ import { Notice } from "./Notice";
  */
 export function SessionNotices({
   risk,
+  conflict,
   retry,
   dropped,
   error,
@@ -23,6 +24,14 @@ export function SessionNotices({
 }: {
   /** `bypassPermissions` 的风险文案。没有就不渲染。 */
   risk: string | undefined;
+  /**
+   * 同目录下正在跑的另一条会话标题。`null` = 没有冲突。
+   *
+   * 两个 CC 进程指向同一台机器的同一个目录时会改同一批文件、互相覆盖，
+   * 而界面上看不出任何异常 —— 这条提示是唯一的线索。只提示不拦截：
+   * 「两个都跑、改不同文件」是正当用法（R17 不做审批门）。
+   */
+  conflict: string | null;
   retry: CcRetryInfo | null;
   /** 缓冲/裁剪缺口条数。 */
   dropped: number;
@@ -44,6 +53,17 @@ export function SessionNotices({
         <div className="flex shrink-0 items-center gap-1.5 border-b border-warning/30 bg-warning/[.08] px-3 py-1.5 text-[11px] text-warning-ink">
           <Icon name="alertTriangle" size={11} className="shrink-0" />
           {risk}
+        </div>
+      )}
+
+      {/* 同目录并发排在权限风险之后：它同样影响「这次发送会改变什么」，
+          但不是配置问题，是环境里另有一条会话正在动同样的文件。 */}
+      {conflict && (
+        <div className="flex shrink-0 items-start gap-1.5 border-b border-warning/30 bg-warning/[.08] px-3 py-1.5 text-[11px] leading-[1.5] text-warning-ink">
+          <Icon name="alertTriangle" size={11} className="mt-[2px] shrink-0" />
+          <span className="min-w-0 flex-1">
+            同一目录下「{conflict}」正在运行 —— 两个进程会改同一批文件，可能互相覆盖。
+          </span>
         </div>
       )}
 

@@ -103,6 +103,11 @@ export type CcSnapshot = {
  * 一定不比库里旧。判定在前端做（见 `useCcSession`）。
  */
 export type CcRestore = {
+  /**
+   * 库里那一行的行号。侧栏「历史」区用它去重：这条已经在某个 pane 里开着，
+   * 就不要在历史里再摆一遍。**新建的会话在首轮落盘之前拿不到它**（那时它还没进库）。
+   */
+  rowId: number;
   /** 空串 = 本机。恢复后要把目标切回这里，否则消息在、发下一句却是本机新会话。 */
   connectionId: string;
   cwd: string | null;
@@ -120,9 +125,48 @@ export type CcRestore = {
   dropped: number;
 };
 
+/**
+ * 库里一条会话的摘要（`cc_list_stored`，侧栏「历史」区）。
+ *
+ * **没有 events**：正文是一行几十到几百 KB 的 `events_json`，列表只要标题与时间。
+ * 点开某条时才由 `cc_restore({ rowId })` 把正文读出来。
+ */
+export type CcStoredSummary = {
+  rowId: number;
+  /** 空串 = 本机。 */
+  connectionId: string;
+  /** CLI 的 session id。与「已打开 pane」的 `view.sessionId` 对账去重用。 */
+  sessionId: string | null;
+  cwd: string | null;
+  title: string | null;
+  preview: string | null;
+  model: string | null;
+  permissionMode: string | null;
+  messageCount: number;
+  /** 最后活跃时间（秒）。 */
+  updatedAt: number;
+  /** 落盘时因超限被丢掉的事件数。 */
+  dropped: number;
+};
+
+/**
+ * 一条新 pane 的「要不要从库里载入」意图。
+ *
+ * 三态必须显式分开（3-1c）。3-1b 是隐式的 —— 每个 pane 挂载都调 `cc_restore`
+ * 取最近那条，于是 `+` 新建的第二条会**重复载入上一条的内容**。
+ *
+ * - `none`   — `+` / Ctrl+N 造的新会话，根本不调 `cc_restore`
+ *              （不是调了再丢返回值：那会白读几 MB 的 `events_json`）；
+ * - `latest` — 进页面造的第一条，接着上次聊（重启恢复）；
+ * - `row`    — 侧栏「历史」里点开的那一条。
+ */
+export type CcRestoreReq =
+  | { kind: "none" }
+  | { kind: "latest" }
+  | { kind: "row"; rowId: number };
+
 /** `cc_probe` 的返回体。 */
-export type CcProbe = {
-  found: boolean;
+export type CcProbe = {  found: boolean;
   path: string;
   version: string | null;
   message: string;

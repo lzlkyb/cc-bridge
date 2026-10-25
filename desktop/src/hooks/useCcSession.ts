@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, type MutableRefObject } from "react";
 import { invoke } from "../lib/tauri";
-import type { CcProbe } from "../lib/ccEventTypes";
+import type { CcProbe, CcRestoreReq } from "../lib/ccEventTypes";
 import { ccReducer, initialCcView, pendingApprovals } from "../lib/ccReducer";
 import { pickClaudePath } from "../lib/ccTarget";
 import type { CcPermissionMode } from "../lib/ccGuiTypes";
@@ -36,12 +36,15 @@ export type CcTarget = {
  * 对话页的错误（CLI 没装、模型名不对、远端路径找不到）是**内容**而不是打扰：
  * 它就长在对话流里，用户要能回头看到。toast 三秒后就没了。
  */
-export function useCcSession(target: CcTarget) {
+export function useCcSession(target: CcTarget, restore: MutableRefObject<CcRestoreReq>) {
   const [view, dispatch] = useReducer(ccReducer, initialCcView);
   // 事件流（先订阅 → 再快照 → 序号补漏）自成生命周期，见 useCcEventStream 的文档。
   // `sessionIdRef` 是本路对话的内部 id：下面每个命令都带它寻址（3-1a 多会话化）。
-  const { ready, restored, clearRestored, seqRef, sessionIdRef } =
-    useCcEventStream(dispatch);
+  // `restore` 决定这条 pane 首次挂载时从库里载入哪一条（3-1c，三态见 `CcRestoreReq`）。
+  const { ready, restored, clearRestored, seqRef, sessionIdRef } = useCcEventStream(
+    dispatch,
+    restore,
+  );
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<CcProbe | null>(null);
   /**

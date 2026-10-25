@@ -25,7 +25,7 @@ use crate::cc_session::channel::{self, LaunchSpec};
 use crate::cc_session::manager::{self, Launch, SnapshotDto, TauriSink};
 use crate::cc_session::proto::CcEvent;
 use crate::cc_session::session::{with_answers, Verdict};
-use crate::cc_session::store::SessionFacts;
+use crate::cc_session::store::{self, SessionFacts};
 use crate::mcp::bridge::spawn;
 use crate::state::AppState;
 
@@ -471,6 +471,12 @@ pub async fn cc_snapshot(
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CcRestore {
+    /// 库里那一行的行号。
+    ///
+    /// 前端要它：侧栏「历史」区按它去重（这条已经在某个 pane 里开着，就不要再
+    /// 摆一遍），关掉再点开也要认得是同一条。**新建的会话在首轮落盘之前是
+    /// `None`** —— 那时它本来也还没进库。
+    pub row_id: i64,
     /// 空串 = 本机。
     pub connection_id: String,
     pub cwd: Option<String>,
@@ -490,27 +496,61 @@ pub struct CcRestore {
     pub dropped: u64,
 }
 
-/// 读取并接管上次的会话。
+/// 读取并接管一条落盘的会话。
+///
+/// `row_id` 为 `None` = 最近那条（进页面自动恢复）；`Some` = 侧栏点开的那一行。
+/// 两种都走同一条 `adopt` 路径 —— 三件套（row_id / facts / resume_id）漏一样
+/// 就是一个静默故障，两套实现必然漂。
 #[tauri::command]
 pub async fn cc_restore(
     state: State<'_, Arc<AppState>>,
     session_id: u64,
+    row_id: Option<i64>,
 ) -> Result<Option<CcRestore>, String> {
     let cc = state
         .cc
         .get(session_id)
         .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
-    // 用户点过「新对话」就不再拉旧的 —— 见 `Shared::suppress_restore`。
-    if cc.shared().restore_suppressed() {
+    // 用户点过「新对话」就不再**自动**拉旧的 —— 见 `Shared::suppress_restore`。
+    // 明确给了行号的不受这条限制：那是用户在侧栏里主动点开的一条历史。
+    if row_id.is_none() && cc.shared().restore_suppressed() {
         return Ok(None);
     }
     let row = {
         // 用完即放：`db` 是 tokio 的 `Mutex`，guard 不能跨 await 留着。
         let conn = state.db.lock().await;
-        crate::cc_session::store::latest(&conn)?
+        match row_id {
+            Some(id) => store::by_row_id(&conn, id)?,
+            None => store::latest(&conn)?,
+        }
     };
     let Some(row) = row else { return Ok(None) };
-    Ok(Some(adopt(cc.shared(), row)))
+    Ok(Some(with_leading_init(adopt(cc.shared(), row))))
+}
+
+/// 给恢复出来的事件流补一条开头的 `Init`（原来就有就原样返回）。
+///
+/// 为什么要补：库里的流水有体积上限，超限时**从头丢到一条用户消息为止** ——
+/// 那时候第一条 `system/init` 早就被裁掉了。而前端的 `view.sessionId` / `view.cwd`
+/// 全靠这条事件：
+/// - `sessionId` 缺了 ⇒ 侧栏「历史」区对不上账，把**已经打开的那条**又摆一遍，
+///   点它就会再开一个 pane，越点越多；
+/// - 它还会被 `bookkeep` 用来确认 resume id。
+///
+/// 只补进返回给前端的 `events`，**不碰 `shared.ring`**：ring 的序号是前端事件
+/// 游标的基准，凭空插一条会让之后每条的 `seq` 与前端预期错开一位。
+/// （`cc_history_open` 那边补 Init 是 push 进 ring 的 —— 那条路径会把整段历史
+/// 灌进 ring，语境不同，别把两处混起来。）
+fn with_leading_init(mut out: CcRestore) -> CcRestore {
+    if !matches!(out.events.first(), Some(CcEvent::Init { .. })) {
+        let init = CcEvent::Init {
+            session_id: out.session_id.clone().unwrap_or_default(),
+            cwd: out.cwd.clone(),
+            model: out.model.clone(),
+        };
+        out.events.insert(0, init);
+    }
+    out
 }
 
 /// 把库里读到的会话**接管**进内存，并翻成前端 DTO。
@@ -541,6 +581,7 @@ fn adopt(shared: &crate::cc_session::Shared, row: crate::cc_session::store::Stor
     }
 
     CcRestore {
+        row_id: row.row_id,
         connection_id: row.connection_id,
         cwd: row.cwd,
         claude_path: row.claude_path,
@@ -554,6 +595,29 @@ fn adopt(shared: &crate::cc_session::Shared, row: crate::cc_session::store::Stor
         events: row.events,
         dropped: row.dropped,
     }
+}
+
+/// 侧栏「历史」区一次摆几条。
+///
+/// 30 的来历：240px 侧栏一屏大约放得下 12 行，30 条够翻两屏半；再多的会话
+/// 用户也不会靠滚侧栏去找（那该用搜索）。后端上限仍是 `KEEP_SESSIONS`。
+const DEFAULT_STORED_LIMIT: usize = 30;
+
+/// 库里落盘过的会话摘要，新的在前。**不含正文**。
+///
+/// 与 `cc_history_list` 的分工见 `docs/批3-1c历史会话与同目录并发-2026-10-25.md`：
+/// 这个只列「在对话页里聊过的」（有界面快照，所以能直接摆回侧栏），
+/// 那个列 CLI 的全部转录（含终端页手敲 claude 产生的）。
+#[tauri::command]
+pub async fn cc_list_stored(
+    state: State<'_, Arc<AppState>>,
+    limit: Option<usize>,
+) -> Result<Vec<store::Summary>, String> {
+    let n = limit
+        .unwrap_or(DEFAULT_STORED_LIMIT)
+        .clamp(1, store::KEEP_SESSIONS);
+    let conn = state.db.lock().await;
+    store::list(&conn, n)
 }
 
 /// 新对话：清流水 + 清 session id。
@@ -823,6 +887,57 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn restore_of(events: Vec<CcEvent>) -> CcRestore {
+        CcRestore {
+            row_id: 1,
+            connection_id: String::new(),
+            cwd: Some("/proj".into()),
+            claude_path: None,
+            model: Some("opus".into()),
+            permission_mode: None,
+            session_id: Some("s-1".into()),
+            resume_id: Some("s-1".into()),
+            title: None,
+            message_count: 1,
+            updated_at: 0,
+            events,
+            dropped: 0,
+        }
+    }
+
+    /// 老流水可能因为体积裁剪丢了开头的 `system/init`。缺了它，前端
+    /// `view.sessionId` 为空 ⇒ 侧栏历史区把已打开的会话又摆一遍（越点越多）。
+    #[test]
+    fn leading_init_is_synthesized_when_trimmed_away() {
+        let out = with_leading_init(restore_of(vec![CcEvent::UserMessage {
+            text: "旧问题".into(),
+        }]));
+        match out.events.first() {
+            Some(CcEvent::Init {
+                session_id, cwd, ..
+            }) => {
+                assert_eq!(session_id, "s-1");
+                assert_eq!(cwd.as_deref(), Some("/proj"));
+            }
+            other => panic!("第一条必须是 Init，实际 {other:?}"),
+        }
+        assert_eq!(out.events.len(), 2, "原有事件不能丢");
+    }
+
+    /// 本来就有 Init 的（绝大多数）不能被补成两条。
+    #[test]
+    fn existing_init_is_not_duplicated() {
+        let out = with_leading_init(restore_of(vec![
+            CcEvent::Init {
+                session_id: "s-1".into(),
+                cwd: Some("/proj".into()),
+                model: None,
+            },
+            CcEvent::UserMessage { text: "x".into() },
+        ]));
+        assert_eq!(out.events.len(), 2);
+    }
 
     #[test]
     fn clean_treats_blank_as_absent() {

@@ -28,6 +28,21 @@ export type CcPaneState = "run" | "ask" | "wait" | "idle" | "dead";
 export type CcPaneMeta = {
   /** 内部会话 id（`cc_new_session` 铸发）。`null` = 还没铸发完。 */
   sessionId: number | null;
+  /**
+   * CC 自己的 session id（`Init` 事件里的那个）。侧栏「历史」区靠它去重：
+   * 这条会话已经在某个 pane 里开着，就不要再在历史里摆一遍。
+   * `null` = 还没起过进程（必然也还没进库）。
+   */
+  cliSessionId: string | null;
+  /**
+   * 库里那一行的行号（`cc_restore` 返回的，或「从历史打开」时那一行的）。
+   * `null` = 还没落过盘（新会话、一句话都没说）。
+   *
+   * 与 `cliSessionId` **两个都要**：刚恢复的那一瞬间还没有 `Init` 事件
+   * （`view.sessionId` 仍为 null），但有行号 —— 只靠 session id 对账的话，
+   * 已打开的那条会在历史区里短暂再出现一次，用户点它就会开出重复的一条。
+   */
+  rowId: number | null;
   /** 侧栏标题：首条用户消息的首行；没有消息就是「新对话」。 */
   title: string;
   /** 用户消息条数（= 轮数）。 */
@@ -39,6 +54,24 @@ export type CcPaneMeta = {
   connectionId: string;
   /** 分组显示名（本机 / 连接名）。 */
   targetLabel: string;
+  /**
+   * 这条会话**即将使用**的工作目录（输入框里的值）。`""` = 没填，落到 CLI 默认目录。
+   *
+   * 取输入框而不是 `view.cwd`：后者是上一轮真正用的，用户改了目录还没发消息时
+   * 两者不同 —— 而同目录并发判定关心的是「按下发送会落到哪里」。
+   */
+  cwd: string;
+  /**
+   * 这条 pane 还在**载入库里那条会话**（`cc_restore` 未回来 / 事件流未就绪）。
+   *
+   * 侧栏用它挡一个真实的竞态：恢复完成前，这条会话的 `rowId` 与 `cliSessionId`
+   * 都还是 `null`，历史区**对不上账**，于是正在恢复的那条会照样摆在那里 ——
+   * 用户点它，就开出重复的第二条。所以只要有 pane 在恢复中，历史区整体不摆。
+   *
+   * 不拿「meta 还没上报」当判据：pane 挂载那一刻就报了（标题「新对话」），
+   * 而那时恢复才刚开始。必须有这个显式位。
+   */
+  restoring: boolean;
 };
 
 /** 标题上限。240px 侧栏减掉状态点与内边距后大约放得下 13~14 个汉字。 */
@@ -66,8 +99,12 @@ export function derivePaneMeta(input: {
   targetLabel: string;
   /** 目标连接还在不在（远端被删 ⇒ false）。本机恒 true。 */
   targetAlive: boolean;
+  /** 输入框里的工作目录（不是 `view.cwd`，理由见 `CcPaneMeta.cwd`）。 */
+  cwd: string | null;
+  /** 还在载入库里那条会话（理由见 `CcPaneMeta.restoring`）。 */
+  restoring: boolean;
 }): CcPaneMeta {
-  const { view, pending, connectionId, targetLabel, targetAlive } = input;
+  const { view, pending, connectionId, targetLabel, targetAlive, cwd, restoring } = input;
   const turns = view.messages.reduce((n, m) => (m.kind === "user" ? n + 1 : n), 0);
 
   // 未决卡片里先看「需要选的」还是「需要批的」其实无所谓 —— 两者都要求用户动手，
@@ -98,13 +135,43 @@ export function derivePaneMeta(input: {
 
   return {
     sessionId: null, // 由调用方按 `sessionIdRef` 回填：纯函数拿不到 ref 里的值
+    cliSessionId: view.sessionId,
+    rowId: null, // 同上：库里的行号只有调用方（restore 的返回值）知道
     title: titleOf(view),
     turns,
     state,
     detail,
     connectionId: connectionId ?? "",
     targetLabel,
+    cwd: cwd?.trim() ?? "",
+    restoring,
   };
+}
+
+/**
+ * 同目录并发的「对方标题」。没有冲突就是 `null`。
+ *
+ * 判据（`docs/批3-1c历史会话与同目录并发-2026-10-25.md` D4）：
+ * **同目标 + 同目录 + 对方真在跑**（run / ask / wait）。
+ *
+ * 为什么要求对方在跑：两条空白会话目录都空着是常态（都落到 CLI 默认目录），
+ * 只看「目录相同」会天天误报。为什么自己跑没跑不重要：我要发消息就会撞上，
+ * 提示的价值在于**发之前**看得到。
+ *
+ * 空目录也参与比较 —— 两条都不填就是同一个默认目录，一样会打架。
+ */
+export function conflictWith(
+  self: CcPaneMeta | null,
+  others: (CcPaneMeta | null)[],
+): string | null {
+  if (!self) return null;
+  for (const o of others) {
+    if (!o || o === self) continue;
+    if (o.connectionId !== self.connectionId) continue;
+    if (o.cwd !== self.cwd) continue;
+    if (o.state === "run" || o.state === "ask" || o.state === "wait") return o.title;
+  }
+  return null;
 }
 
 /** 侧栏底栏那句「N 个在跑 · 共 M 个」。 */

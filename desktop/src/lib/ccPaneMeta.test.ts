@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { derivePaneMeta, paneSummary } from "./ccPaneMeta";
+import { conflictWith, derivePaneMeta, paneSummary, type CcPaneMeta } from "./ccPaneMeta";
 import { initialCcView, type CcView } from "./ccReducer";
 import type { CcMessage } from "./ccGuiTypes";
 
@@ -23,7 +23,14 @@ const approval = (id: string, toolName: string, withQuestions = false): CcMessag
     : {}),
 });
 
-const base = { pending: [] as string[], connectionId: null, targetLabel: "本机", targetAlive: true };
+const base = {
+  pending: [] as string[],
+  connectionId: null,
+  targetLabel: "本机",
+  targetAlive: true,
+  cwd: null as string | null,
+  restoring: false,
+};
 
 describe("derivePaneMeta 标题", () => {
   it("没有用户消息时是「新对话」", () => {
@@ -91,7 +98,9 @@ describe("derivePaneMeta 五态", () => {
       pending: [],
       connectionId: "c1",
       targetLabel: "已删除的连接",
+      restoring: false,
       targetAlive: false,
+      cwd: null,
     });
     expect(m.state).toBe("dead");
     expect(m.detail).toBe("1 轮 · 连接已断");
@@ -116,6 +125,68 @@ describe("derivePaneMeta 五态", () => {
 
   it("sessionId 由调用方回填，纯函数一律给 null", () => {
     expect(derivePaneMeta({ ...base, view: view() }).sessionId).toBeNull();
+  });
+
+  it("cliSessionId 取 CC 的 session id（侧栏历史区靠它对账去重）", () => {
+    const m = derivePaneMeta({ ...base, view: view({ sessionId: "cli-1" }) });
+    expect(m.cliSessionId).toBe("cli-1");
+  });
+
+  it("cwd 取传入值并去掉首尾空白（同目录并发判定用）", () => {
+    expect(derivePaneMeta({ ...base, view: view(), cwd: "  D:/proj  " }).cwd).toBe("D:/proj");
+    expect(derivePaneMeta({ ...base, view: view(), cwd: null }).cwd).toBe("");
+  });
+});
+
+describe("conflictWith 同目录并发", () => {
+  /** 造一条侧栏元信息：给谁在跑、在哪跑。 */
+  const meta = (patch: Partial<CcPaneMeta>): CcPaneMeta => ({
+    sessionId: null,
+    cliSessionId: null,
+    rowId: null,
+    title: "某条",
+    turns: 1,
+    state: "idle",
+    detail: "",
+    connectionId: "",
+    targetLabel: "本机",
+    cwd: "",
+    restoring: false,
+    ...patch,
+  });
+
+  const self = meta({ title: "我", cwd: "D:/proj", state: "idle" });
+
+  it("同目标 + 同目录 + 对方在跑 ⇒ 报出对方标题", () => {
+    expect(conflictWith(self, [meta({ title: "对面", cwd: "D:/proj", state: "run" })])).toBe("对面");
+  });
+
+  it("对方只是空闲 ⇒ 不算冲突（避免天天误报）", () => {
+    expect(conflictWith(self, [meta({ title: "对面", cwd: "D:/proj", state: "idle" })])).toBeNull();
+  });
+
+  it("目录不同 ⇒ 不算冲突", () => {
+    expect(conflictWith(self, [meta({ title: "对面", cwd: "D:/other", state: "run" })])).toBeNull();
+  });
+
+  it("目标不同（本机 vs 远端）⇒ 不算冲突，哪怕目录字符串一样", () => {
+    expect(
+      conflictWith(self, [meta({ title: "对面", cwd: "D:/proj", state: "run", connectionId: "c1" })]),
+    ).toBeNull();
+  });
+
+  it("两条都没填目录 ⇒ 都落到 CLI 默认目录，同样算冲突", () => {
+    const empty = meta({ title: "我", cwd: "" });
+    expect(conflictWith(empty, [meta({ title: "对面", cwd: "", state: "ask" })])).toBe("对面");
+  });
+
+  it("等审批 / 等你选 也算在跑（进程卡在等人，文件仍被它占着）", () => {
+    expect(conflictWith(self, [meta({ title: "A", cwd: "D:/proj", state: "wait" })])).toBe("A");
+  });
+
+  it("没有别的 pane ⇒ null", () => {
+    expect(conflictWith(self, [])).toBeNull();
+    expect(conflictWith(null, [meta({ state: "run" })])).toBeNull();
   });
 });
 

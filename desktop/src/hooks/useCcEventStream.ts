@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { invoke, listen } from "../lib/tauri";
 import {
   CC_EVENT_NAME,
   type CcEventPayload,
   type CcRestore,
+  type CcRestoreReq,
   type CcSnapshot,
 } from "../lib/ccEventTypes";
 import type { CcAction } from "../lib/ccReducer";
@@ -34,8 +35,15 @@ import type { CcAction } from "../lib/ccReducer";
  *
  * `restored` 只负责**报告**「这条是恢复来的」：应用目标信息（connectionId /
  * cwd / model）是页面的职责，那些字段还牵着 localStorage 与探测。
+ *
+ * 2026-10-25（3-1c）：载入哪一条由调用方以 `restore` **ref** 指定，三态见
+ * [`CcRestoreReq`]。用 ref 而不是普通参数：它决定的是「首帧那一刻的意图」，
+ * 之后无论如何变都不该重订阅（重订阅会清空 `seqRef` 与 `restored`）。
  */
-export function useCcEventStream(dispatch: (action: CcAction) => void) {
+export function useCcEventStream(
+  dispatch: (action: CcAction) => void,
+  restore: MutableRefObject<CcRestoreReq>,
+) {
   /** 已消化的最大序号 + 1。快照与实时事件的去重全靠它。 */
   const seqRef = useRef(0);
   /** 快照与补漏都吃完了。这之前实时事件只进缓冲，不进 reducer。 */
@@ -85,9 +93,14 @@ export function useCcEventStream(dispatch: (action: CcAction) => void) {
         // 切页回来 / 前端热重载时 ring 里就是当前会话，它一定不比库里的旧 ——
         // 混用会让界面闪回上一次运行的内容。
         let fromDb: CcRestore | null = null;
-        if (snap.nextSeq === 0) {
+        const plan = restore.current;
+        if (snap.nextSeq === 0 && plan.kind !== "none") {
           try {
-            fromDb = await invoke<CcRestore | null>("cc_restore", { sessionId: sid });
+            fromDb = await invoke<CcRestore | null>("cc_restore", {
+              sessionId: sid,
+              // `latest` 传 null：后端按「最近那条」取（重启恢复）。
+              rowId: plan.kind === "row" ? plan.rowId : null,
+            });
           } catch {
             // 恢复是锦上添花：库读不出来就空白起步，不能因此挡住整个对话。
             fromDb = null;
@@ -118,7 +131,7 @@ export function useCcEventStream(dispatch: (action: CcAction) => void) {
       sessionIdRef.current = null;
       unlisten?.();
     };
-  }, [dispatch]);
+  }, [dispatch, restore]);
 
   return { ready, restored, clearRestored, seqRef, sessionIdRef };
 }

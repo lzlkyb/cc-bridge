@@ -203,6 +203,88 @@ pub fn latest(conn: &Connection) -> Result<Option<Stored>, String> {
     .map_err(|e| format!("读取最近会话失败：{e}"))
 }
 
+/// 列表用的摘要：**不含 `events_json`**。
+///
+/// 那一列是正文（一行几十到几百 KB），而侧栏只要标题 / 轮数 / 时间。列表一次
+/// 几十行，带上正文就是几十 MB 的读放大 —— 而侧栏每次进页面都会重取一次。
+/// `SELECT` 里不出现那一列就够，不需要额外索引。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Summary {
+    pub row_id: i64,
+    /// 空串 = 本机。
+    pub connection_id: String,
+    /// CLI 的 session id。侧栏用它和「已经打开的 pane」对账去重。
+    pub session_id: Option<String>,
+    pub cwd: Option<String>,
+    pub title: Option<String>,
+    pub preview: Option<String>,
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    pub message_count: i64,
+    pub updated_at: i64,
+    /// 落盘时因超限被丢掉的事件数。
+    pub dropped: u64,
+}
+
+/// 最近活跃的前 `limit` 条会话摘要。侧栏的「历史」区用它。
+///
+/// 排序与 [`latest`] 一致（`last_active_at DESC, id DESC`）：列表第一行必须正好是
+/// 「重启时会自动恢复的那条」，否则用户看到的是「列表最上面那条」和「打开的那条」
+/// 不是同一个，很容易以为恢复错了。
+pub fn list(conn: &Connection, limit: usize) -> Result<Vec<Summary>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, connection_id, session_id, cwd, title, preview, model,
+                    permission_mode, message_count, updated_at, dropped
+             FROM cc_sessions
+             WHERE events_json IS NOT NULL
+             ORDER BY last_active_at DESC, id DESC
+             LIMIT ?1",
+        )
+        .map_err(|e| format!("准备会话列表查询失败：{e}"))?;
+    let rows = stmt
+        .query_map(params![limit as i64], |row| {
+            Ok(Summary {
+                row_id: row.get(0)?,
+                connection_id: row.get(1)?,
+                session_id: row.get(2)?,
+                cwd: row.get(3)?,
+                title: row.get(4)?,
+                preview: row.get(5)?,
+                model: row.get(6)?,
+                permission_mode: row.get(7)?,
+                message_count: row.get(8)?,
+                updated_at: row.get(9)?,
+                dropped: row.get::<_, i64>(10)? as u64,
+            })
+        })
+        .map_err(|e| format!("查询会话列表失败：{e}"))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| format!("读取会话列表失败：{e}"))?);
+    }
+    Ok(out)
+}
+
+/// 按行号取一条完整会话（含正文）。侧栏点开历史时用它。
+///
+/// `None` 不是错误：行可能刚好被 [`prune`] 淘汰掉（用户在很旧的列表上点了它）。
+/// 那时给一句「这条会话已经不在库里」，比报「查询失败」准确得多。
+pub fn by_row_id(conn: &Connection, row_id: i64) -> Result<Option<Stored>, String> {
+    conn.query_row(
+        "SELECT id, connection_id, session_id, resume_id, cwd, claude_path, model,
+                permission_mode, title, preview, message_count, updated_at,
+                dropped, events_json
+         FROM cc_sessions
+         WHERE id = ?1",
+        params![row_id],
+        map_row,
+    )
+    .optional()
+    .map_err(|e| format!("读取会话失败：{e}"))
+}
+
 /// 库里有没有「这条 CLI 会话」的落盘行。
 ///
 /// 打开历史时用它复用行号：同一条会话在 `cc_sessions` 里只该有一行，
@@ -509,6 +591,68 @@ mod tests {
             .expect("压低其余");
         let got = latest(&c).expect("读").expect("有值");
         assert_eq!(got.session_id.as_deref(), Some("b"));
+    }
+
+    /// 列表必须按最后活跃倒序，且**第一行就是 `latest` 会给的那条** ——
+    /// 两个口径不一致时，用户看到「列表最上面那条」和「自动恢复打开的那条」
+    /// 不是同一个，很容易以为恢复错了。
+    #[test]
+    fn list_matches_latest_order() {
+        let c = conn();
+        let mut a = snap(vec![user("旧")]);
+        a.session_id = Some("a".into());
+        let id_a = save(&c, None, &a).expect("插 a");
+        let mut b = snap(vec![user("新")]);
+        b.session_id = Some("b".into());
+        let id_b = save(&c, None, &b).expect("插 b");
+        c.execute(
+            "UPDATE cc_sessions SET last_active_at = 100 WHERE id = ?1",
+            params![id_b],
+        )
+        .expect("抬高");
+        c.execute(
+            "UPDATE cc_sessions SET last_active_at = 50 WHERE id = ?1",
+            params![id_a],
+        )
+        .expect("压低");
+
+        let rows = list(&c, 10).expect("列");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].row_id, id_b);
+        assert_eq!(rows[0].session_id.as_deref(), Some("b"));
+        assert_eq!(rows[1].row_id, id_a);
+        assert_eq!(
+            latest(&c).expect("读").expect("有值").row_id,
+            rows[0].row_id,
+            "第一行必须与 latest 一致"
+        );
+    }
+
+    /// `limit` 生效：侧栏只摆最近几十条，不能把 100 条全拉给前端。
+    #[test]
+    fn list_respects_limit() {
+        let c = conn();
+        for i in 0..5 {
+            let mut s = snap(vec![user(&format!("第{i}条"))]);
+            s.session_id = Some(format!("s-{i}"));
+            save(&c, None, &s).expect("插入");
+        }
+        assert_eq!(list(&c, 3).expect("列").len(), 3);
+    }
+
+    /// 按行号取要能拿到正文（侧栏点历史靠它载入）；行不在时是 `None` 而不是报错。
+    #[test]
+    fn by_row_id_reads_events_and_tolerates_missing() {
+        let c = conn();
+        let events = vec![user("历史里的问题"), text("历史里的回答")];
+        let id = save(&c, None, &snap(events.clone())).expect("写");
+        let got = by_row_id(&c, id).expect("读").expect("有值");
+        assert_eq!(got.events, events);
+        assert_eq!(got.title.as_deref(), Some("历史里的问题"));
+        assert!(
+            by_row_id(&c, id + 999).expect("查").is_none(),
+            "行不存在应是 None"
+        );
     }
 
     /// 行被 prune 掉之后仍要能落盘，不能因为 row_id 失效就把这一轮丢了。
