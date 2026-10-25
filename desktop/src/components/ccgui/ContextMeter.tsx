@@ -73,6 +73,9 @@ export function ContextMeter({
     <span className="relative flex shrink-0 items-center">
       <button
         type="button"
+        // 🔴 这个标记是「面板别把我当外点」的唯一凭据（见 ContextTaxPanel 的
+        // `isOutsideDismiss`）。去掉它，按钮就只能开、不能关。
+        data-cc-toggle="context"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="dialog"

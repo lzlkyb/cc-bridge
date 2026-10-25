@@ -9,6 +9,7 @@ import {
   type CcContextTax,
 } from "../../lib/ccContextTax";
 import { Icon } from "../ui/icon";
+import { isOutsideDismiss } from "../../lib/utils";
 
 /**
  * 上下文构成面板（批 4-1）。
@@ -46,11 +47,14 @@ export function ContextTaxPanel({
   const view = useMemo(() => breakdown(tax, used), [tax, used]);
   const level = warnLevel(tax);
 
-  // 点外面关 + Esc 关（与 ChangesetPanel 同一条规矩：`pointerdown` 按下即收）。
+  // 点外面关 + Esc 关（`pointerdown` 按下即收，同 HistoryPanel）。
+  //
+  // 🔴 必须走 `isOutsideDismiss` 并让开关按钮带上 `data-cc-toggle`：这里监听的是
+  // **捕获阶段**的 `pointerdown`，它比按钮自己的 `click` 先跑。若开关按钮不算「自己人」，
+  // 点它就是「先关掉、再被 click 翻回打开」—— 表现是从按钮关不掉这个面板。
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
-      if (boxRef.current?.contains(e.target as Node)) return;
-      onClose();
+      if (isOutsideDismiss(e, boxRef.current, "context")) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
