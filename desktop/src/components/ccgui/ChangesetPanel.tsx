@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { ChangesetEntry } from "../../lib/ccChangeset";
 import { changesetStat } from "../../lib/ccChangeset";
+import { isOutsideDismiss } from "../../lib/utils";
 import { Icon } from "../ui/icon";
 
 /**
@@ -25,10 +26,10 @@ export function ChangesetPanel({
   const stat = changesetStat(entries);
 
   // 点外面关 + Esc 关。`pointerdown` 而不是 `click`：按下的那一刻就该收。
+  // 开关按钮自身不算外点（`isOutsideDismiss` 的理由写在那边）。
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
-      if (boxRef.current?.contains(e.target as Node)) return;
-      onClose();
+      if (isOutsideDismiss(e, boxRef.current, "changeset")) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();

@@ -238,6 +238,11 @@ export type CcHistoryOpened = {
   trimmed: number;
   title: string;
   /**
+   * 这条历史在工作库里的行号（历史转录在 `cc_sessions` 里已有对应行时才有）。
+   * 侧栏对账、改名 / 归档都要它 —— 接管后 `restored` 被清，这是唯一行号来源。
+   */
+  rowId: number | null;
+  /**
    * 这条历史的工作目录。
    *
    * 🔴 必须写回工作目录输入框：`cc_start` 会拿它和内存里的 facts 比，

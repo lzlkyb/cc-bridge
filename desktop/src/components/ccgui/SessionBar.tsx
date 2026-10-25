@@ -105,6 +105,7 @@ function SessionBarImpl({
         <span className="relative flex items-center">
           <button
             type="button"
+            data-cc-toggle="model"
             onClick={() => setModelOpen((v) => !v)}
             aria-expanded={modelOpen}
             title="选择模型（下一轮生效）"
@@ -154,6 +155,7 @@ function SessionBarImpl({
           <span className="relative flex shrink-0 items-center">
             <button
               type="button"
+              data-cc-toggle="changeset"
               onClick={() => setChangesetOpen((v) => !v)}
               aria-expanded={changesetOpen}
               title={`本会话改动：${session.changeset.length} 个文件`}
@@ -186,6 +188,7 @@ function SessionBarImpl({
         <span className="relative flex shrink-0 items-center">
           <button
             type="button"
+            data-cc-toggle="history"
             onClick={() => setHistoryOpen((v) => !v)}
             aria-expanded={historyOpen}
             title="历史对话（本机 Claude Code 的全部转录，包括终端页里聊的）"
@@ -212,7 +215,7 @@ function SessionBarImpl({
         <button
           type="button"
           onClick={onNewSession}
-          title={`新对话（${newSessionHint}，清空这条会话链，CC 不再记得上面的事）`}
+          title={`新对话（${newSessionHint}，新开一条空白会话；当前这条原样保留在侧栏）`}
           aria-label="新对话"
           className="flex h-[26px] w-[26px] items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
         >

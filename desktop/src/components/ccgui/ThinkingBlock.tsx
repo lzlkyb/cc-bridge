@@ -1,5 +1,20 @@
 import { memo, useState } from "react";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { Icon } from "../ui/icon";
+
+/** 首个非空行。不用 `split("\n")`：流式期间每次渲染都全文拆一遍是 O(n²)， indexOf + slice 只扫到第一个换行。 */
+function firstNonEmptyLine(text: string): string {
+  let start = 0;
+  while (start <= text.length) {
+    const nl = text.indexOf("\n", start);
+    const end = nl === -1 ? text.length : nl;
+    const line = text.slice(start, end).trim();
+    if (line) return line;
+    if (nl === -1) return "";
+    start = nl + 1;
+  }
+  return "";
+}
 
 /**
  * 思维链块：**默认折叠**的一行，点开看全文。
@@ -13,7 +28,8 @@ import { Icon } from "../ui/icon";
  */
 function ThinkingBlockImpl({ text, running }: { text: string; running: boolean }) {
   const [open, setOpen] = useState(false);
-  const firstLine = text.split("\n").find((l) => l.trim().length > 0) ?? "";
+  const { copy, isCopied } = useCopyFeedback();
+  const firstLine = firstNonEmptyLine(text);
   const summary = firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine || "（空）";
 
   return (
@@ -35,9 +51,22 @@ function ThinkingBlockImpl({ text, running }: { text: string; running: boolean }
           <span className="truncate opacity-70">· {summary}</span>
         </button>
         {open && (
-          <pre className="mt-1 whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 text-[12px] leading-[1.6] text-muted-foreground">
-            {text}
-          </pre>
+          <div className="group/think relative mt-1">
+            <pre className="whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 pr-14 text-[12px] leading-[1.6] text-muted-foreground">
+              {text}
+            </pre>
+            <button
+              type="button"
+              onClick={() => copy("text", text)}
+              title={isCopied("text") ? "已复制" : "复制思考全文"}
+              aria-label="复制思考全文"
+              aria-live="polite"
+              className="absolute right-1.5 top-1.5 flex h-5 items-center gap-1 rounded border border-border bg-card/90 px-1.5 text-[10px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/think:opacity-100"
+            >
+              <Icon name={isCopied("text") ? "check" : "copy"} size={10} />
+              {isCopied("text") ? "已复制" : "复制"}
+            </button>
+          </div>
         )}
       </div>
     </div>

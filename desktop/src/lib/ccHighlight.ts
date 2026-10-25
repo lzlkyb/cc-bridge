@@ -41,12 +41,18 @@ export function highlightSegments(text: string, query: string): HighlightSegment
   const chunks = searchChunks(query);
   if (chunks.length === 0 || text === "") return [{ text, hit: false }];
 
-  const lower = text.toLowerCase();
+  // 🔴 大小写折叠必须先验「等长」：个别字符小写化后长度会变（如 İ → i̇，1→2 码点），
+  //    拿折叠串的 indexOf 去切原串，区间会整体错位、<mark> 切出残字。
+  //    不等长就退回区分大小写的匹配 —— 少高亮几个大小写变体，远好过高亮错字。
+  const folded = text.toLowerCase();
+  const foldSafe = folded.length === text.length;
+  const hay = foldSafe ? folded : text;
+
   const ranges: Array<[number, number]> = [];
   for (const chunk of chunks) {
-    const needle = chunk.toLowerCase();
+    const needle = foldSafe ? chunk.toLowerCase() : chunk;
     // from = at + 1：重叠出现也要找（同一 chunk 在文本里可能出现多次）。
-    for (let at = lower.indexOf(needle); at >= 0; at = lower.indexOf(needle, at + 1)) {
+    for (let at = hay.indexOf(needle); at >= 0; at = hay.indexOf(needle, at + 1)) {
       ranges.push([at, at + needle.length]);
     }
   }

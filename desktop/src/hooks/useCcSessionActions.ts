@@ -27,6 +27,14 @@ import { STORED_SESSIONS_KEY } from "./useCcPaneList";
 export function useCcSessionActions() {
   const qc = useQueryClient();
   const [titles, setTitles] = useState<Record<number, string>>({});
+  /**
+   * 本窗口里归档过的行（`rowId → true`，取消归档即删键）。
+   *
+   * 打开着的行其归档态不在 `CcPaneMeta` 里（meta 是从会话流现算的），不记一份
+   * 的话，「⋯」菜单对一条已归档的打开行仍显示「归档」，点下去等于再归档一次，
+   * 而「取消归档」这条路反而走不通。
+   */
+  const [archived, setArchived] = useState<Record<number, boolean>>({});
 
   const rename = useCallback(
     async (rowId: number, title: string) => {
@@ -40,13 +48,20 @@ export function useCcSessionActions() {
   );
 
   const archive = useCallback(
-    async (rowId: number, archived: boolean) => {
-      await invoke<void>("cc_archive_session", { rowId, archived });
+    async (rowId: number, wantArchived: boolean) => {
+      await invoke<void>("cc_archive_session", { rowId, archived: wantArchived });
+      setArchived((m) => {
+        if (!wantArchived) {
+          const { [rowId]: _drop, ...rest } = m;
+          return rest;
+        }
+        return { ...m, [rowId]: true };
+      });
       // 归档 / 取消归档会同时影响「历史」与「已归档」两批，一次失效就够。
       await qc.invalidateQueries({ queryKey: STORED_SESSIONS_KEY });
     },
     [qc],
   );
 
-  return { titles, rename, archive };
+  return { titles, archived, rename, archive };
 }

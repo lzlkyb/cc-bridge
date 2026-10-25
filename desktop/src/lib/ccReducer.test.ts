@@ -227,12 +227,16 @@ describe("ccReducer", () => {
     expect(v.stderr).toEqual([]);
   });
 
-  it("stderr 去重，同一行不重复出现", () => {
+  /// CLI 退出时同一段 stderr 可能既作为事件来一次、又随 Exit 再来一次 ——
+  /// 只对「相邻且完全相同」的批次去重；不同时刻合法重复的行要保留（构建工具
+  /// 的重复警告很常见），全局去重会把它们吞掉。
+  it("stderr 只对相邻重复批次去重", () => {
     const v = run([
+      { kind: "stderr", lines: ["boom"] },
       { kind: "stderr", lines: ["boom"] },
       { kind: "stderr", lines: ["boom", "second"] },
     ]);
-    expect(v.stderr).toEqual(["boom", "second"]);
+    expect(v.stderr).toEqual(["boom", "boom", "second"]);
   });
 
   it("sending 立刻标为运行中并清掉上轮错误", () => {
@@ -242,9 +246,59 @@ describe("ccReducer", () => {
     expect(v.exitCode).toBeNull();
   });
 
-  it("reset 回到初始态", () => {
-    const dirty = run([{ kind: "userMessage", text: "x" }, { kind: "exit", code: 0 }]);
-    expect(ccReducer(dirty, { type: "reset" })).toEqual(initialCcView);
+  /// 错误横幅与轮次正交：运行中润色失败 / 点掉横幅都不许把 running 拍成 false
+  /// —— 那会开出一个假空闲窗口，队列在窗口里发消息被后端拒收、消息即失。
+  /// 乐观发送失败撤 running 走专门的 sendAborted。
+  it("error 不动 running；sendAborted 才撤", () => {
+    const running = ccReducer(initialCcView, { type: "sending" });
+    const withErr = ccReducer(running, { type: "error", message: "润色失败" });
+    expect(withErr.running).toBe(true);
+    expect(withErr.error).toBe("润色失败");
+    const dismissed = ccReducer(withErr, { type: "error", message: null });
+    expect(dismissed.running).toBe(true);
+    expect(dismissed.error).toBeNull();
+    const aborted = ccReducer(withErr, { type: "sendAborted" });
+    expect(aborted.running).toBe(false);
+    expect(aborted.error).toBe("润色失败");
+  });
+
+  /// costUsd 与 modelUsage 同判据：CLI 的 `total_cost_usd` 是会话累计值 ⇒ 替换式。
+  /// 累加会把第 2 轮显示成「第 1 轮 + 两条累计」的虚高值。
+  it("costUsd 替换式更新（CLI 给的是会话累计值）", () => {
+    const v = run([
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: null,
+        costUsd: 0.1,
+        numTurns: 1,
+        durationMs: 1000,
+      },
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: null,
+        costUsd: 0.25,
+        numTurns: 2,
+        durationMs: 1000,
+      },
+    ]);
+    expect(v.costUsd).toBeCloseTo(0.25);
+  });
+
+  /// 退避重试中被打断：Exit 要把「重试中」横幅一起收掉，
+  /// 否则「已退出」和「正在重试」并排出现，自相矛盾。
+  it("exit 清掉退避重试状态", () => {
+    const v = run([
+      { kind: "retry", attempt: 2, max: 10, message: "overloaded" },
+      { kind: "exit", code: 1 },
+    ]);
+    expect(v.retry).toBeNull();
+    expect(v.exitCode).toBe(1);
   });
 
   it("未知事件被忽略，不炸也不改状态", () => {

@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import { buildAnswers } from "../../lib/ccReducer";
 import type { CcApproval } from "../../lib/ccGuiTypes";
+import { useExpiryCountdown } from "../../hooks/useExpiryCountdown";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 
@@ -34,6 +35,7 @@ function QuestionCardImpl({
 }) {
   const questions = approval.questions ?? [];
   const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const left = useExpiryCountdown(approval.expiresInSec);
 
   const toggle = (question: string, label: string, multi: boolean) => {
     setPicked((prev) => {
@@ -60,7 +62,7 @@ function QuestionCardImpl({
         <Icon name="message" size={12} className="shrink-0 text-warning-ink" />
         <span className="text-[12px] font-semibold text-warning-ink">CC 在问你</span>
         <span className="ml-auto shrink-0 text-[11px] text-warning-ink/80">
-          {approval.expiresInSec}s 后自动跳过
+          {left}s 后自动跳过
         </span>
       </div>
 
@@ -71,10 +73,10 @@ function QuestionCardImpl({
             这条提问没有给出可读的选项，在这里回答不了。跳过之后 CC 会自己决定。
           </p>
         )}
-        {questions.map((q) => {
+        {questions.map((q, qi) => {
           const multi = q.multiSelect === true;
           return (
-            <div key={q.question} className="flex flex-col gap-1.5">
+            <div key={`${qi}:${q.question}`} className="flex flex-col gap-1.5">
               <div className="flex flex-wrap items-center gap-1.5 text-[12px] font-medium leading-[1.5] text-foreground">
                 {q.header && (
                   <span className="shrink-0 rounded-[4px] bg-warning/15 px-1.5 py-[1px] text-[10.5px] text-warning-ink">
@@ -96,11 +98,11 @@ function QuestionCardImpl({
                 </p>
               ) : (
                 <div className="flex flex-col gap-1">
-                  {q.options.map((o) => {
+                  {q.options.map((o, oi) => {
                     const on = (picked[q.question] ?? []).includes(o.label);
                     return (
                       <button
-                        key={o.label}
+                        key={`${oi}:${o.label}`}
                         type="button"
                         aria-pressed={on}
                         onClick={() => toggle(q.question, o.label, multi)}

@@ -23,7 +23,8 @@ function DiffBlockImpl({
   newText: string;
   context?: number;
 }) {
-  const rows = useMemo(() => compactDiff(computeLineDiff(oldText, newText), context), [oldText, newText, context]);
+  const diff = useMemo(() => computeLineDiff(oldText, newText), [oldText, newText]);
+  const rows = useMemo(() => compactDiff(diff, context), [diff, context]);
 
   return (
     <div data-cc-data className="overflow-hidden rounded-lg border border-border/70 bg-muted/30 font-mono text-[12px] leading-[18px]">
@@ -66,6 +67,13 @@ function DiffBlockImpl({
           </div>
         );
       })}
+      {/* `ccDiff` 中段过大时降级为整段替换并置 `truncated`——这里必须把降级说出口：
+          那份 diff 的行号与 ± 数字都是近似值，不提示就是拿错的数字冒充对的。 */}
+      {diff.truncated && (
+        <p className="border-t border-border/50 bg-muted/40 px-3 py-[2px] text-[10.5px] text-muted-foreground">
+          改动段过大，已降级为整段替换 —— 行号与增删统计是近似值
+        </p>
+      )}
     </div>
   );
 }

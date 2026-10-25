@@ -556,3 +556,21 @@ export function isEditableTarget(el: EventTarget | null): boolean {
     node.isContentEditable === true
   );
 }
+
+/**
+ * 浮层「点外面关闭」的公共判定：面板自身里的按下不算外点；**本面板的开关按钮**
+ * （`data-cc-toggle="<owner>"`）也不算 —— 不豁免它的话，capture 的 pointerdown
+ * 先把面板收掉，随后的 click 再把面板翻开，这个按钮就永远关不掉自己的浮层。
+ *
+ * `owner` 之外的开关按钮**仍然算外点**（点了别家开关 ⇒ 先收自己，click 去开别家），
+ * 与没有这个 bug 之前的行为一致。
+ */
+export function isOutsideDismiss(
+  e: PointerEvent,
+  box: HTMLElement | null,
+  owner: string,
+): boolean {
+  if (box?.contains(e.target as Node)) return false;
+  const target = e.target;
+  return !(target instanceof Element && target.closest(`[data-cc-toggle="${owner}"]`));
+}

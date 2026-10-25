@@ -45,6 +45,12 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     dispatch,
     restore,
   );
+  /**
+   * `ready` 的镜像：`start` 是 `useCallback([])`，闭包读不到最新 ready ——
+   * 没有它，「订阅/恢复还没就绪」这个闸就得靠 state 进依赖，`start` 身份就稳不住。
+   */
+  const readyRef = useRef(false);
+  readyRef.current = ready;
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<CcProbe | null>(null);
   /**
@@ -112,7 +118,10 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     // 正在跑（或刚发出去、后端还没落定 busy）⇒ 入队，不并发。
     // 🔴 直发的后果是后端一句「上一轮还在进行」：那一句是真的，但用户看到的是
     // 「我打好的字被拒了」，而排队本来可以让这件事无声无息地正确发生。
-    if (runningRef.current || busyRef.current) {
+    // 🔴 **订阅/恢复未就绪（!ready）也入队**：`cc_restore` 在途时直发，会在后端
+    // 撞出同一种「上一轮还在进行」（或带着半恢复的状态起进程），出队即失。
+    // 入队后 ready 一翻、flush effect 就把它发出去，一句话都不丢。
+    if (runningRef.current || busyRef.current || !readyRef.current) {
       setQueue((q) => [...q, trimmed]);
       return;
     }
@@ -143,6 +152,8 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     } catch (e) {
       // 后端已经把进程收尸了（`cc_start` 里的 interrupt），这里只负责说清楚。
       dispatch({ type: "error", message: String(e) });
+      // 撤回 `sending` 置上的乐观 running —— `error` 不再背这个副作用（见 reducer）。
+      dispatch({ type: "sendAborted" });
     } finally {
       setBusy(false);
     }
@@ -211,17 +222,6 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     }
   }, [sessionIdRef]);
 
-  const reset = useCallback(async () => {
-    setQueue([]);
-    try {
-      await invoke<void>("cc_reset", { sessionId: sessionIdRef.current });
-      dispatch({ type: "reset" });
-      setProbe(null);
-    } catch (e) {
-      dispatch({ type: "error", message: String(e) });
-    }
-  }, [sessionIdRef]);
-
   const clearError = useCallback(() => dispatch({ type: "error", message: null }), []);
 
   /**
@@ -233,11 +233,24 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     dispatch({ type: "error", message });
   }, []);
 
+  /** 清空待发队列（stable 引用：透传给 memo 化的 Composer）。 */
+  const clearQueue = useCallback(() => setQueue([]), []);
+
   /**
    * 打开一条历史会话（把后端那条接管成当前会话）。整套时序约定在
    * `useCcOpenHistory` 里写明 —— 这里只做接线。
+   *
+   * `adoptedRowId`：接管落地后库里的行号。侧栏对账（历史区去重）、改名 / 归档
+   * 都靠它 —— `restored` 被清掉之后它就是唯一的行号来源。
    */
-  const openHistory = useCcOpenHistory({ sessionIdRef, seqRef, dispatch, clearRestored });
+  const [adoptedRowId, setAdoptedRowId] = useState<number | null>(null);
+  const openHistory = useCcOpenHistory({
+    sessionIdRef,
+    seqRef,
+    dispatch,
+    clearRestored,
+    onAdopted: setAdoptedRowId,
+  });
 
   return {
     view,
@@ -252,17 +265,19 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     sessionIdRef,
     /** 上次进程留下的会话。`null` = 这次是全新开始（或用户点过「新对话」）。 */
     restored,
+    /** 「打开历史」接管进来的库行号（接管后 `restored` 已清，它是唯一行号来源）。 */
+    adoptedRowId,
     runProbe,
     start,
     respond,
     interrupt,
-    reset,
     openHistory,
     clearError,
     reportError,
     /** 已排队还没发的消息。界面上显示条数，也可一键清空。 */
     queue,
-    clearQueue: () => setQueue([]),
+    // useCallback 包住：Composer 是 memo 组件，内联箭头会让它每次渲染都重渲。
+    clearQueue,
     /** 还卡着等用户决定的审批 id。 */
     pending: pendingApprovals(view),
   };

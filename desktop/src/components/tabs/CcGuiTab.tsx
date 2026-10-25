@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "../../lib/tauri";
 import { useCcPaneList } from "../../hooks/useCcPaneList";
 import { useCcShortcuts } from "../../hooks/useCcShortcuts";
 import { useCcSessionActions } from "../../hooks/useCcSessionActions";
@@ -137,6 +138,31 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
     onToggleSidebar: toggleCollapsed,
   });
 
+  /**
+   * 切走本页（切 app tab ⇒ 本组件卸载）时，把**没有进行中轮次**的会话收掉。
+   *
+   * 不收的后果：重进本页会重新铸发新会话，旧的那条从此没有任何入口能摸到，
+   * 却连同最多 4096 条 ring 一起永久滞留在后端的无上限会话表里 —— 切几十次
+   * tab 就是几十条死会话。在跑的（run/ask/wait）**不收**：它们的产出用户还等着。
+   */
+  const entriesRef = useRef(list.entries);
+  entriesRef.current = list.entries;
+  useEffect(
+    () => () => {
+      for (const e of entriesRef.current) {
+        const sid = e.meta?.sessionId;
+        const st = e.meta?.state;
+        if (typeof sid !== "number") continue;
+        if (st === "run" || st === "ask" || st === "wait") continue;
+        // 失败只记日志：页面已经在走了，这里能做的只有尽力收尸。
+        void invoke<boolean>("cc_close_session", { sessionId: sid }).catch((err) => {
+          console.warn("切页收尾关闭会话失败", err);
+        });
+      }
+    },
+    [],
+  );
+
   return (
     <div className="flex h-full gap-2">
       <SessionSidebar
@@ -153,7 +179,11 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
         onNew={list.add}
         onClose={list.close}
         onOpenStored={list.openStored}
-        actions={{ rename: actions.rename, archive: actions.archive }}
+        actions={{
+          rename: actions.rename,
+          archive: actions.archive,
+          archived: actions.archived,
+        }}
       />
       <div className="min-w-0 flex-1">
         {list.entries.map((e) => (

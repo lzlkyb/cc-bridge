@@ -199,6 +199,9 @@ pub struct Run {
     stdin: Arc<Mutex<Option<StdinBox>>>,
     stderr_tail: StderrTail,
     alive: Arc<AtomicBool>,
+    /// 读线程是否已把 stdout 排干并发出 `Exit`。
+    /// `kill` / `shutdown` 靠它等「迟到事件」全部落地，理由见 [`Run::kill`]。
+    reader_done: Arc<AtomicBool>,
 }
 
 impl Run {
@@ -235,11 +238,13 @@ impl Run {
 
         let stderr_tail = drain_stderr(stderr);
         let alive = Arc::new(AtomicBool::new(true));
+        let reader_done = Arc::new(AtomicBool::new(false));
 
         // 读线程：吃 stdout，直到 EOF。
         let reader_sink = Arc::clone(&sink);
         let reader_tail = Arc::clone(&stderr_tail);
         let reader_alive = Arc::clone(&alive);
+        let reader_done_flag = Arc::clone(&reader_done);
         std::thread::spawn(move || {
             pump(stdout, |event| reader_sink.emit(event));
             // stdout 关了，进程也就到头了。stderr 的尾巴这时才是完整的。
@@ -252,6 +257,8 @@ impl Run {
             }
             reader_alive.store(false, Ordering::SeqCst);
             reader_sink.emit(CcEvent::Exit { code: None });
+            // 「排干结束」必须放在**最后**（Exit 已经发出）：kill/shutdown 等的就是它。
+            reader_done_flag.store(true, Ordering::SeqCst);
         });
 
         Ok(Self {
@@ -259,6 +266,7 @@ impl Run {
             stdin: Arc::new(Mutex::new(Some(stdin))),
             stderr_tail,
             alive,
+            reader_done,
         })
     }
 
@@ -314,6 +322,23 @@ impl Run {
         let _ = self.child.start_kill();
         let _ = self.child.wait();
         self.alive.store(false, Ordering::SeqCst);
+        // 🔴 等读线程排干再返回。进程死了，它管道里的积压还要往下走：EOF 后它会
+        // 补发残留的 Stderr 与 Exit。不等的话，这些迟到事件会在调用方接下来的
+        // 动作（ring.clear() 灌历史 / 起新进程）**之后**才落进流水 —— 表现是
+        // 「换目标续聊的假空闲窗口」和「旧会话尾部拼进新灌的历史」。
+        self.wait_reader_done(Duration::from_secs(2));
+    }
+
+    /// 等读线程把 stdout 积压全部 emit 完（`reader_done` 置位）。
+    /// 宽限期过就放弃：读线程卡死在不受控的 IO 上时，不能让「中断」本身也挂住。
+    fn wait_reader_done(&self, grace: Duration) {
+        let deadline = Instant::now() + grace;
+        while !self.reader_done.load(Ordering::SeqCst) {
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// 等它自己退，宽限期过了就强杀。
@@ -322,7 +347,10 @@ impl Run {
         let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
             match self.child.try_wait() {
-                Ok(Some(_)) => return ShutdownHow::Graceful,
+                Ok(Some(_)) => {
+                    self.wait_reader_done(Duration::from_secs(2));
+                    return ShutdownHow::Graceful;
+                }
                 Ok(None) => std::thread::sleep(Duration::from_millis(30)),
                 Err(_) => break,
             }
@@ -330,6 +358,7 @@ impl Run {
         let _ = self.child.start_kill();
         let _ = self.child.wait();
         self.alive.store(false, Ordering::SeqCst);
+        self.wait_reader_done(Duration::from_secs(2));
         ShutdownHow::Forced
     }
 }

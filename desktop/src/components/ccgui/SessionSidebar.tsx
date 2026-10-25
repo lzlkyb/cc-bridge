@@ -28,10 +28,12 @@ type Props = {
   onNew: () => void;
   onClose: (key: string) => void;
   onOpenStored: (rowId: number) => void;
-  /** 改名 / 归档：同一个对象传给每一行（重命名就地输入，见 `SessionRowMenu`）。 */
+  /** 改名 / 归档：同一个对象传给每一行（重命名就地输入，见 `SessionRowMenu`）。
+   *  `archived` 是本窗口归档过的行号，让「已打开且被归档」的行也能显示「取消归档」。 */
   actions: {
     rename: (rowId: number, title: string) => Promise<unknown>;
     archive: (rowId: number, archived: boolean) => Promise<unknown>;
+    archived: Record<number, boolean>;
   };
 };
 
@@ -83,7 +85,9 @@ export function SessionSidebar({
     [entries, targets],
   );
 
-  const showSearch = !collapsed && rows.length >= SEARCH_THRESHOLD;
+  // 阈值数的是「可搜的内容」，不是只数打开的 pane —— 历史区（最多 30 条）才是
+  // 搜索的大头：2 个 pane + 25 条历史却没有搜索框，是最说不通的组合。
+  const showSearch = !collapsed && rows.length + stored.length >= SEARCH_THRESHOLD;
   const shown = useMemo(() => {
     const k = query.trim().toLowerCase();
     if (!k || !showSearch) return rows;
@@ -191,7 +195,7 @@ export function SessionSidebar({
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder={`搜索 ${rows.length} 个会话（标题 / 状态）`}
+                  placeholder={`搜索 ${rows.length + stored.length} 条会话（标题 / 状态）`}
                   aria-label="搜索会话"
                   className="h-7 w-full rounded-md border border-border bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus:border-primary"
                 />
@@ -214,6 +218,7 @@ export function SessionSidebar({
                       row={r}
                       active={r.key === active}
                       canClose={canClose}
+                      archivedRows={actions.archived}
                       onPick={onPick}
                       onClose={onClose}
                       onRename={actions.rename}

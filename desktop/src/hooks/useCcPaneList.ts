@@ -32,10 +32,6 @@ export type CcPaneEntry = {
   forkOf?: string;
 };
 
-/** 一个窗口里最多挂几条。**不是**后端限制（后端不设上限，见 `CcSessions`），
- *  纯粹是「一屏塞满还翻不到」的界面阈值：到这个数会自动折叠成 rail。 */
-export const PANE_SOFT_LIMIT = 12;
-
 /**
  * 窗口里的会话列表：增 / 切 / 关 + 各自上报的侧栏元信息。
  *
@@ -93,9 +89,18 @@ export function useCcPaneList() {
   const openStored = useCallback(
     (rowId: number) => {
       // 同一行已经在开了就别再开一条：连点两下不该得到两个一模一样的 pane。
+      // 两套判据：`restore` 挡「从历史点开的」；`meta.rowId` 挡「接着上次聊 /
+      // 分叉出来、但恰好就是这一行」的 pane —— 归档视图会把已打开的行照样摆出来，
+      // 只查 `restore` 的话点它就开出第二条同库行的 pane（两个进程续同一条 CLI 会话）。
       // （历史上还有一种「点了正在恢复的那条」—— 那条不走这里，它由宿主用
       // `settled` 挡，见 `CcGuiTab`。）
-      if (entries.some((e) => e.restore.kind === "row" && e.restore.rowId === rowId)) return;
+      if (
+        entries.some(
+          (e) =>
+            (e.restore.kind === "row" && e.restore.rowId === rowId) || e.meta?.rowId === rowId,
+        )
+      )
+        return;
       spawn({ kind: "row", rowId });
     },
     [entries, spawn],
@@ -122,11 +127,14 @@ export function useCcPaneList() {
       const sid = target?.meta?.sessionId;
       if (typeof sid === "number") {
         // 失败只记日志：用户已经把这条从界面上关掉了，再弹一个错误也修不回来。
+        // 但历史区**无论成败都要重取**：失败时它也留在库里，不失效的话要等 30s
+        // staleTime 过期才重新出现在历史区。
         void invoke<boolean>("cc_close_session", { sessionId: sid })
-          // 关掉的这条刚落进库 ⇒ 侧栏历史区要能立刻看到它。
-          .then(() => qc.invalidateQueries({ queryKey: STORED_SESSIONS_KEY }))
           .catch((e) => {
             console.warn("关闭会话失败", e);
+          })
+          .finally(() => {
+            void qc.invalidateQueries({ queryKey: STORED_SESSIONS_KEY });
           });
       }
     },

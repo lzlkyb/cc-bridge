@@ -317,19 +317,17 @@ pub async fn cc_start(
     let sink = Arc::new(TauriSink::new(app.clone(), Arc::clone(cc.shared())));
     cc.start(launch, sink)?;
 
-    // 先把用户这句话记进流水，再发出去：切页回来时它必须还在。
-    manager::record_local(
-        &app,
-        cc.shared(),
-        CcEvent::UserMessage { text: text.clone() },
-    );
-
+    // 🔴 先送进 stdin、成功才记账。反过来（先记再发）的话，send 失败（进程正在退）
+    // 时这句话已经留在流水里 —— 用户重发一遍，重放时就是两条相同的消息。
+    // 热路径（进程活着直接 send，上面 `is_running` 分支）本来就是这个顺序。
+    // 「切页回来它必须还在」不受影响：send 成功后必然记账，间隔只有一次 IPC 往返。
     if let Err(e) = cc.send(&text) {
         // 起得来却写不进去，说明进程已经在退（多半是 CLI 参数不对）。
         // 收尸，别留一个半死的轮次占着「进行中」。
         cc.interrupt();
         return Err(format!("消息没能送达 claude：{e}"));
     }
+    manager::record_local(&app, cc.shared(), CcEvent::UserMessage { text });
     Ok(())
 }
 

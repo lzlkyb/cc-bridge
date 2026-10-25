@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { isOutsideDismiss } from "../../lib/utils";
 import { Icon } from "../ui/icon";
 
 /**
@@ -40,10 +41,10 @@ export function ModelPicker({
   const boxRef = useRef<HTMLDivElement>(null);
 
   // 点外面关 + Esc 关。`pointerdown` Capture：按下的那一刻就收。
+  // 开关按钮自身不算外点（`isOutsideDismiss` 的理由写在那边）。
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
-      if (boxRef.current?.contains(e.target as Node)) return;
-      onClose();
+      if (isOutsideDismiss(e, boxRef.current, "model")) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();

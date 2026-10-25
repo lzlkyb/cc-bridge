@@ -20,12 +20,15 @@ export function useCcOpenHistory({
   seqRef,
   dispatch,
   clearRestored,
+  onAdopted,
 }: {
   sessionIdRef: RefObject<number | null>;
   seqRef: MutableRefObject<number>;
   dispatch: Dispatch<CcAction>;
   /** 「上次那条」的提示已经没意义了（当前会话就是它）。 */
   clearRestored: () => void;
+  /** 接管落地后回报库里的行号（没有对应行就是 `null`）。侧栏对账、改名 / 归档靠它。 */
+  onAdopted: (rowId: number | null) => void;
 }) {
   /**
    * ## 为什么要手动设 `seqRef`
@@ -34,9 +37,19 @@ export function useCcOpenHistory({
    * `replay` 撞成两份）。所以前端游标停在旧值上，不重置的话，下一条实时事件的
    * `seq` 比它大得多没问题，但若用户先开了历史再开另一条，`seq` 会回绕到更小值
    * —— 那时 `apply` 里的 `p.seq < seqRef.current` 会把**所有**新事件当重复丢掉。
+   *
+   * `connectionId` 是这条转录**当时**在哪跑的：远端转录的接管路径后端还没实现
+   * （`take_over` 硬编码本机），现在放它过去会被静默切到本机、resume 对不上。
    */
   return useCallback(
-    async (historyId: string): Promise<CcHistoryOpened | null> => {
+    async (historyId: string, connectionId = ""): Promise<CcHistoryOpened | null> => {
+      if (connectionId) {
+        dispatch({
+          type: "error",
+          message: "远端历史暂不支持在对话页打开（即将支持）；请到那条连接的终端页里继续它",
+        });
+        return null;
+      }
       try {
         const res = await invoke<CcHistoryOpened>("cc_history_open", {
           sessionId: sessionIdRef.current,
@@ -52,6 +65,7 @@ export function useCcOpenHistory({
         });
         // 「上次那条」到此为止 —— 当前会话已经就是它了，再弹一次恢复提示纯属噪音。
         clearRestored();
+        onAdopted(res.rowId ?? null);
         return res;
       } catch (e) {
         dispatch({ type: "error", message: String(e) });
@@ -60,6 +74,6 @@ export function useCcOpenHistory({
       // `clearRestored` / `seqRef` / `sessionIdRef` 实际都稳定，列出来只是让
       // lint 看得见：它们来自自定义 hook 的返回或 ref，规则无法自己证明。
     },
-    [clearRestored, seqRef, sessionIdRef, dispatch],
+    [clearRestored, seqRef, sessionIdRef, dispatch, onAdopted],
   );
 }

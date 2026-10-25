@@ -76,7 +76,9 @@ export type CcAction =
   | { type: "replay"; events: CcEvent[]; dropped: number; running: boolean }
   | { type: "error"; message: string | null }
   | { type: "sending" }
-  | { type: "reset" };
+  /** 一次发送没能送达（invoke 失败 / 进程没起来）：撤回 `sending` 置上的乐观 running。
+   *  与 `error` 分开 —— 错误横幅不该背「清 running」这个副作用（见 error 分支注释）。 */
+  | { type: "sendAborted" };
 
 /** 从 `result.usage` 里挖 token 数。字段名是 API 原样的 snake_case。 */
 function readUsage(usage: Record<string, unknown> | null): { input: number; output: number } {
@@ -345,7 +347,10 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         sessionId: event.sessionId ?? view.sessionId,
         inputTokens: view.inputTokens + usage.input,
         outputTokens: view.outputTokens + usage.output,
-        costUsd: view.costUsd + (event.costUsd ?? 0),
+        // CLI 给的是 `total_cost_usd`（会话累计，Rust 优先取它）⇒ **替换式**，与下方
+        // modelUsage 同一判据。累加会把第 2 轮显示成「第 1 轮 + 两条累计」的虚高值。
+        // 没带（老流水）就保留上一次的，不清空。
+        costUsd: event.costUsd ?? view.costUsd,
         // 每轮都带 ⇒ 替换式更新（CLI 给的是累计值，累加会翻倍）。没带（老流水）
         // 就保留上一次的，不清空——清空会让余量条在一轮之间闪烁消失。
         modelUsage: event.modelUsage ? readModelUsage(event.modelUsage) : view.modelUsage,
@@ -354,17 +359,22 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       };
     }
 
-    case "stderr":
-      // 去重：CLI 退出时同一段 stderr 可能既作为事件来一次，又随 Exit 再来一次。
-      return {
-        ...view,
-        stderr: [...view.stderr, ...event.lines.filter((l) => !view.stderr.includes(l))],
-      };
+    case "stderr": {
+      // 去重只对「相邻且完全相同」的批次：CLI 退出时同一段 stderr 可能既作为事件
+      // 来一次、又随 Exit 再来一次。全局去重会吞掉 CLI 在不同时刻合法重复的同一行
+      // （构建工具的重复警告很常见），而且 `includes` 对长列表是 O(n²)。
+      const batch = event.lines.join("\n");
+      const tail = view.stderr.slice(-event.lines.length).join("\n");
+      if (batch !== "" && batch === tail) return view;
+      return { ...view, stderr: [...view.stderr, ...event.lines] };
+    }
 
     case "exit":
-      // 🔴 每一轮都会收到。**不能只靠 turnEnd**：崩溃、被 kill、CLI 直接退出
-      // 都不会发 `result`，那时界面会永远停在「进行中」。
-      return { ...view, running: false, exitCode: event.code };
+      // 🔴 进程退出（崩溃 / 被 kill / CLI 自己退）时必须有它兜底：这些路径不会有
+      // `result`/TurnEnd，没有 Exit 界面会永远停在「进行中」。
+      // 正常多轮复用进程时**不会**来 Exit —— 轮次靠 TurnEnd 落定，两者别混。
+      // 退避重试中被打断也一样退干净：留着「重试中」横幅和「已退出」并排是矛盾信息。
+      return { ...view, running: false, exitCode: event.code, retry: null };
 
     default:
       return view;
@@ -386,9 +396,13 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
     case "sending":
       return { ...view, running: true, error: null, retry: null, exitCode: null };
     case "error":
-      return { ...view, error: action.message, running: false };
-    case "reset":
-      return { ...initialCcView };
+      // 🔴 不动 `running`：错误横幅与轮次是两件正交的事 —— 运行中润色失败、审批
+      // 回写失败、用户点掉横幅都会走这里，顺手清 running 会把进行中的一轮伪装成
+      // 空闲，队列会在假空闲窗口里把下一条发出去、被后端拒收 ⇒ 消息丢失。
+      // 乐观发送失败要撤 running 用 `sendAborted`（它明确对应「这一轮没起来」）。
+      return { ...view, error: action.message };
+    case "sendAborted":
+      return { ...view, running: false };
     default:
       return view;
   }

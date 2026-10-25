@@ -47,6 +47,9 @@ pub struct CcHistoryOpened {
     /// 是两回事，但界面上的含义一样：「更早的内容没加载」。
     pub trimmed: u64,
     pub title: String,
+    /// 这条历史对应 `cc_sessions` 里的行号（库里已有行时才有；纯终端聊出来的没有）。
+    /// 侧栏历史区对账、改名 / 归档都要它 —— 接管之后它是前端唯一的行号来源。
+    pub row_id: Option<i64>,
     /// 这条历史在哪跑的。
     ///
     /// 🔴 前端必须把它写进工作目录输入框：`cc_start` 会拿它和内存里的
@@ -143,6 +146,7 @@ pub async fn cc_history_open(
         snapshot: cc.snapshot(),
         trimmed: opened.dropped,
         title: opened.meta.title(),
+        row_id,
         cwd: opened.meta.cwd,
     })
 }

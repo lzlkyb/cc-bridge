@@ -52,6 +52,7 @@ export function SessionRow({
   row,
   active,
   canClose,
+  archivedRows,
   onPick,
   onClose,
   onRename,
@@ -60,6 +61,8 @@ export function SessionRow({
   row: SessionRowData;
   active: boolean;
   canClose: boolean;
+  /** 本窗口归档过的行号（打开着的行不在库里查归档态，靠这份本地账）。 */
+  archivedRows: Record<number, boolean>;
   onPick: (key: string) => void;
   onClose: (key: string) => void;
   onRename: (rowId: number, title: string) => Promise<unknown>;
@@ -103,7 +106,7 @@ export function SessionRow({
         <SessionRowMenu
           rowId={rowId}
           title={row.title}
-          archived={false}
+          archived={rowId !== null && archivedRows[rowId] === true}
           onRename={onRename}
           onArchive={onArchive}
         />

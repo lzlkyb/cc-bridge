@@ -63,9 +63,37 @@ export function useCcEventStream(
     let unlisten: (() => void) | undefined;
     const buffered: CcEventPayload[] = [];
     let readyToApply = false;
+    /** 缺口自愈的防抖句柄：seq 跳号 ⇒ 中间有事件没送到（webview 重载 / 事件丢失）。 */
+    let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    /** 本路会话的内部 id；铸发完成后供 `reconcile` 寻址。 */
+    let sidVal: number | null = null;
+
+    /** 拉一次快照、从空态重放：缺口前后的事件状态都由它重建，游标对到最新。 */
+    const reconcile = async () => {
+      reconcileTimer = undefined;
+      if (sidVal === null) return;
+      try {
+        const snap = await invoke<CcSnapshot>("cc_snapshot", { sessionId: sidVal });
+        if (!alive || !readyToApply) return;
+        seqRef.current = snap.nextSeq;
+        dispatch({
+          type: "replay",
+          events: snap.events,
+          dropped: snap.dropped,
+          running: snap.running,
+        });
+      } catch {
+        // 拉不动就作罢：下一条实时事件来时若仍有缺口会再排一次。
+      }
+    };
 
     const apply = (p: CcEventPayload) => {
       if (p.seq < seqRef.current) return; // 快照里已经有了
+      // 跳号 ⇒ 传输层丢了事件。本条照常应用，稍后拉快照把缺口补齐。
+      // （emit 与 seq 的顺序在 Rust 侧有锁保证一致，缺口只可能来自传输层。）
+      if (p.seq > seqRef.current && reconcileTimer === undefined) {
+        reconcileTimer = setTimeout(() => void reconcile(), 300);
+      }
       seqRef.current = p.seq + 1;
       dispatch({ type: "event", event: p.event });
     };
@@ -75,6 +103,7 @@ export function useCcEventStream(
         // 1. 铸发。之后每一步都按这个 id 寻址。
         const sid = await invoke<number>("cc_new_session");
         if (!alive) return;
+        sidVal = sid;
         sessionIdRef.current = sid;
         // 2. 订阅。只收自己这条：多会话并存时别路事件对本界面只是噪音。
         unlisten = await listen<CcEventPayload>(CC_EVENT_NAME, (p) => {
@@ -85,7 +114,13 @@ export function useCcEventStream(
           }
           apply(p);
         });
-        if (!alive) return;
+        if (!alive) {
+          // cleanup 在 `await listen` 期间已经跑过（`unlisten?.()` 那时还是 undefined）。
+          // 此刻必须亲手摘掉刚挂上的监听 —— 否则它收着**所有会话**的每条事件、
+          // 永不回收，快速开关 pane 几次就攒一堆。
+          unlisten();
+          return;
+        }
         const snap = await invoke<CcSnapshot>("cc_snapshot", { sessionId: sid });
         if (!alive) return;
         seqRef.current = snap.nextSeq;
@@ -131,6 +166,7 @@ export function useCcEventStream(
     return () => {
       alive = false;
       sessionIdRef.current = null;
+      if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);
       unlisten?.();
     };
   }, [dispatch, restore]);

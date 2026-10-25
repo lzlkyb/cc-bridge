@@ -9,7 +9,9 @@ import { memo } from "react";
 function MessageTextImpl({ text }: { text: string }) {
   const parts = text.split(/(`[^`\n]+`)/g);
   return (
-    <p className="text-[13px] leading-[1.72] text-foreground">
+    // 🔴 whitespace-pre-wrap 不能省：模型输出的多段回复靠 \n 分段，HTML 默认把
+    //    换行折叠成空格，少这一个类整段排版会压成一坨。break-words 管超长 token。
+    <p className="whitespace-pre-wrap break-words text-[13px] leading-[1.72] text-foreground">
       {parts.map((part, i) =>
         part.length > 2 && part.startsWith("`") && part.endsWith("`") ? (
           <code

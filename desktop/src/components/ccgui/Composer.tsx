@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { toast } from "../ui/toast";
 import {
   classifySlash,
   filterSlash,
@@ -39,6 +40,7 @@ function ComposerImpl({
   running,
   onInterrupt,
   placeholder,
+  sendHint = "Ctrl+Enter",
   queueCount,
   onClearQueue,
   onPolish,
@@ -47,6 +49,8 @@ function ComposerImpl({
   running?: boolean;
   onInterrupt?: () => void;
   placeholder?: string;
+  /** 发送快捷键的平台标签（`Ctrl+Enter` / `⌘Enter`），宿主从 status 里取。 */
+  sendHint?: string;
   /** 已排队、还没发出去的消息条数。 */
   queueCount: number;
   onClearQueue: () => void;
@@ -126,6 +130,8 @@ function ComposerImpl({
     setValue("");
     setSlashSel(0);
     setSlashReject(null);
+    // 已发出的草稿不再可「撤销润色」：那会把旧稿填回空输入框，像是能撤回发送。
+    setPolishBackup(null);
   };
 
   /** 把命令名填进输入框，尾部留一个空格给参数。不直接发：/model 要写参数。 */
@@ -181,7 +187,21 @@ function ComposerImpl({
             // 一打字，润色备份就作废：那是新草稿，还原回去只会覆盖用户刚写的。
             if (polishBackup !== null) setPolishBackup(null);
           }}
+          onPaste={(e) => {
+            // 对话页走的是纯文本通道（协议不支持图片块）。终端页能粘贴截图，
+            // 这里至少给一句去向说明，而不是毫无反应地丢掉。
+            const hasImage = Array.from(e.clipboardData?.items ?? []).some((it) =>
+              it.type.startsWith("image/"),
+            );
+            if (!hasImage) return;
+            e.preventDefault();
+            toast("对话页暂不支持粘贴图片：请到终端页粘贴（会自动上传并填入路径）", "info");
+          }}
           onKeyDown={(e) => {
+            // 🔴 IME 组合期间的键全部放行给输入法：此刻方向键在选候选词、Enter 在
+            //    上屏。拦走任何一个，中文用户要么选不了词、要么半截拼音被当成
+            //    命令补全 / 直接发送。`keyCode === 229` 兜底个别引擎不置 isComposing。
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
             // 面板开着时方向键 / Enter / Tab 归它。Enter 在输入框里本是换行，
             // 但「正选着命令」的时刻用户要的是补全；换行还有 Shift+Enter
             // （浏览器原生行为，不用我们接）。
@@ -220,11 +240,7 @@ function ComposerImpl({
         <div className="flex items-center gap-2 px-2 pb-1.5">
           <span className="text-[11px] text-muted-foreground">
             <span data-cc-inset className="rounded border border-border bg-muted/60 px-[3px] py-[1px] font-mono text-[11px]">
-              Ctrl
-            </span>
-            {" + "}
-            <span data-cc-inset className="rounded border border-border bg-muted/60 px-[3px] py-[1px] font-mono text-[11px]">
-              Enter
+              {sendHint}
             </span>{" "}
             发送
           </span>

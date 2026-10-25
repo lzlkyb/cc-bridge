@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "../../lib/tauri";
 import type { CcHistoryList, CcHistoryRow } from "../../lib/ccEventTypes";
+import { isOutsideDismiss } from "../../lib/utils";
 import { formatRelativeSecs } from "../../lib/utils";
 import { highlightSegments } from "../../lib/ccHighlight";
 import { Icon } from "../ui/icon";
@@ -48,16 +49,23 @@ export function HistoryPanel({
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const boxRef = useRef<HTMLDivElement>(null);
+  /** 请求序号：慢的全量扫描可能晚于快的过滤查询返回，旧响应回来必须丢弃，
+   *  否则搜索框已清空、列表却停在过期的过滤结果上。 */
+  const reqSeqRef = useRef(0);
 
   const load = useCallback(async (q: string) => {
+    const token = ++reqSeqRef.current;
     setLoading(true);
     setError(null);
     try {
-      setData(await invoke<CcHistoryList>("cc_history_list", { query: q }));
+      const res = await invoke<CcHistoryList>("cc_history_list", { query: q });
+      if (token !== reqSeqRef.current) return;
+      setData(res);
     } catch (e) {
+      if (token !== reqSeqRef.current) return;
       setError(String(e));
     } finally {
-      setLoading(false);
+      if (token === reqSeqRef.current) setLoading(false);
     }
   }, []);
 
@@ -71,10 +79,10 @@ export function HistoryPanel({
 
   // 点外面关掉 + Esc 关掉。用 `pointerdown` 而不是 `click`：
   // 用户按下的那一刻就该收，等 `click` 会先看到消息区被点中。
+  // 开关按钮自身不算外点（`isOutsideDismiss` 的理由写在那边）。
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
-      if (boxRef.current?.contains(e.target as Node)) return;
-      onClose();
+      if (isOutsideDismiss(e, boxRef.current, "history")) onClose();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();

@@ -137,10 +137,10 @@ export function CcPane({
     start: session.start,
   });
 
-  /** 打开一条历史会话，并把**目标**一起切到它那边。 */
+  /** 打开一条历史会话，并把**目标**一起切到它那边（远端转录会被拒，见 hook）。 */
   const onOpenHistory = useCallback(
     (row: CcHistoryRow) => {
-      void session.openHistory(row.sessionId).then((res) => {
+      void session.openHistory(row.sessionId, row.connectionId).then((res) => {
         if (res) applyOpenedCwd(res.cwd ?? "");
       });
     },
@@ -158,6 +158,7 @@ export function CcPane({
 
   // 新内容贴底 + 跳到某条工具卡（两块共用同一个滚动节点，见 `useCcStreamScroll`）。
   const jumpTo = useCcStreamScroll(scrollRef, {
+    active,
     messages: view.messages,
     resolved: view.resolved,
   });
@@ -189,13 +190,17 @@ export function CcPane({
   /**
    * 库里那一行的行号，给侧栏历史区对账用。
    *
-   * 两个来源：「从历史打开」的 entry 自带（不用等后端）；「接着上次聊」的
-   * 要等 `cc_restore` 返回。新会话是 `null`（一句话没说，还没落盘）。
+   * 三个来源：「从历史打开」的 entry 自带（不用等后端）；「接着上次聊」的等
+   * `cc_restore` 返回；「会话条的历史按钮接管进当前 pane」的等 `cc_history_open`
+   * 返回（`adoptedRowId`，`restored` 那时已被清掉）。新会话是 `null`（没落过盘）。
    *
-   * 有它，历史区在恢复完成的那一刻就能把这条摘掉 —— 只靠 `view.sessionId`
+   * 有它，历史区在载入完成的那一刻就能把这条摘掉 —— 只靠 `view.sessionId`
    * 会慢几百毫秒（`Init` 事件才带），那段时间用户能点出重复的一条。
    */
-  const rowId = restore.kind === "row" ? restore.rowId : (session.restored?.rowId ?? null);
+  const rowId =
+    restore.kind === "row"
+      ? restore.rowId
+      : (session.restored?.rowId ?? session.adoptedRowId ?? null);
   useEffect(() => {
     onMeta(paneKey, { ...metaBase, sessionId: session.sessionIdRef.current, rowId });
   }, [paneKey, metaBase, session.ready, session.sessionIdRef, onMeta, rowId]);
@@ -284,6 +289,7 @@ export function CcPane({
         running={view.running || session.busy}
         onInterrupt={() => void session.interrupt()}
         placeholder={session.pending.length > 0 ? "先处理上面的审批，再继续…" : "给 CC 发消息…"}
+        sendHint={shortcutLabel(platform, "Enter")}
         queueCount={session.queue.length}
         onClearQueue={session.clearQueue}
         onPolish={onPolish}

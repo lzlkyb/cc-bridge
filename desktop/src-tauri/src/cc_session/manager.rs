@@ -149,6 +149,17 @@ pub struct Shared {
     /// 而用量长在事件里。这样同步退出路径与异步落盘路径读到的是同一份。
     /// 清零时机只有 `reset()`（换了一条会话链，旧账不该跟过去）。
     usage: StdMutex<Option<CcUsage>>,
+    /// 事件「push 进 ring + emit 给前端」这一整段的顺序锁。
+    ///
+    /// 读线程（[`TauriSink::emit`]）与命令线程（[`record_local`]）都会做这两步；
+    /// 每一步各自原子、两步合起来却可能跨线程交错 —— seq=n 的 emit 晚于
+    /// seq=n+1 到达时，前端的单向去重会把 n 当重复丢掉（实例：`PermissionResolved`
+    /// 丢失 ⇒ 审批卡永远「等待中」）。把这俩动作绑进同一临界区，emit 的到达顺序
+    /// 就与 seq 严格一致。
+    ///
+    /// 🔴 临界区**不得**包含 `maybe_auto_approve`：它会再走 `record_local` 拿同一把锁，
+    /// `std::sync::Mutex` 不可重入，多持一步就是死锁。
+    emit_order: StdMutex<()>,
 }
 
 /// 一条待批请求。
@@ -399,6 +410,8 @@ pub fn persist_later(app: &AppHandle, shared: &Arc<Shared>) {
 /// 顺带落盘：用户发完消息立刻关掉 app 是最常见的「丢内容」场景，
 /// 光等 `TurnEnd` 的话这一句就白打了。
 pub fn record_local(app: &AppHandle, shared: &Arc<Shared>, event: CcEvent) {
+    // push + emit 绑成原子（与读线程的 TauriSink::emit 互斥），见 `Shared::emit_order`。
+    let _order = shared.emit_order.lock().ok();
     let seq = shared.ring.push(event.clone()).unwrap_or(u64::MAX);
     let _ = app.emit(
         CC_EVENT,
@@ -408,6 +421,7 @@ pub fn record_local(app: &AppHandle, shared: &Arc<Shared>, event: CcEvent) {
             event,
         },
     );
+    drop(_order);
     persist_later(app, shared);
 }
 
@@ -479,18 +493,24 @@ impl EventSink for TauriSink {
         // 一轮落定（正常结束 / 进程退出）就把内容写下去。
         // `Exit` 也要：崩在 `result` 之前的那半轮同样是用户打出来的东西。
         let settled = matches!(event, CcEvent::TurnEnd { .. } | CcEvent::Exit { .. });
-        let seq = self.shared.ring.push(event.clone()).unwrap_or(u64::MAX);
-        self.seen.fetch_add(1, Ordering::Relaxed);
-        // 前端没在听是**正常**的（切到终端页时监听器已卸）。忽略错误，
-        // 事件已经在 ring 里，回来靠快照重放。
-        let _ = self.app.emit(
-            CC_EVENT,
-            &CcEventPayload {
-                seq,
-                session_id: self.shared.internal_id(),
-                event: event.clone(),
-            },
-        );
+        {
+            // push + emit 绑成原子（与命令线程的 record_local 互斥），见
+            // `Shared::emit_order`。临界区到这里为止 —— 下面的 autoapprove 会再走
+            // record_local 拿同一把锁，std::sync::Mutex 不可重入。
+            let _order = self.shared.emit_order.lock().ok();
+            let seq = self.shared.ring.push(event.clone()).unwrap_or(u64::MAX);
+            self.seen.fetch_add(1, Ordering::Relaxed);
+            // 前端没在听是**正常**的（切到终端页时监听器已卸）。忽略错误，
+            // 事件已经在 ring 里，回来靠快照重放。
+            let _ = self.app.emit(
+                CC_EVENT,
+                &CcEventPayload {
+                    seq,
+                    session_id: self.shared.internal_id(),
+                    event: event.clone(),
+                },
+            );
+        }
         // 审批规则命中就在这条 Ask 进流水**之后**代替用户回 allow：前端会先看到
         // 卡片、再收到一条 auto 的 Resolved，卡片自己落定成「已自动放行」。
         // 🔴 只对 PermissionAsk 生效：Question（AskUserQuestion）的答案只能用户给。
