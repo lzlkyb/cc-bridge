@@ -39,6 +39,16 @@ pub struct AuditEntry {
     /// 会话级 cwd 持久化的 handle（run_command 开启会话时记录，便于审计追溯）。
     #[serde(rename = "sessionId", skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// **发起这次工具调用的 CC 对话会话**（`system/init` 给的 session id）。
+    ///
+    /// 与 `sessionId` 是两回事：那个是 run_command 的 cwd 会话 handle，
+    /// 这个才是「哪条对话让 CC 来调工具」。两者都只在各自场景下有值，
+    /// 不要合并成一个字段——审计追溯与用量归属要分开。
+    ///
+    /// 只在 `turn_active` 期间填充（见 `CcSession::active_session_id`）：
+    /// 轮次之间从别的客户端来的调用不属于任何对话。
+    #[serde(rename = "ccSessionId", skip_serializing_if = "Option::is_none")]
+    pub cc_session_id: Option<String>,
     /// 关联备份：本操作执行前生成的 .bak 绝对路径（仅写/删类操作、且备份开启时存在）。
     /// 前端据此提供「一键回滚 / 变更 Diff」入口。旧日志无此字段，`skip_serializing_if` 兼容。
     #[serde(rename = "backupPath", skip_serializing_if = "Option::is_none")]
@@ -461,6 +471,8 @@ pub fn new_entry(
     audit_ms: Option<f64>,
     net_ms: Option<u64>,
     session_id: Option<String>,
+    // 发起这次调用的 CC 对话会话（见字段上的说明）。
+    cc_session_id: Option<String>,
 ) -> AuditEntry {
     // overhead = server − dispatch调度 − audit写盘；缺任一分量则留 None。f64 运算，不再用
     // saturating_sub（那是整数语义），max(0.0) 处理负数四舍五入误差。
@@ -482,6 +494,7 @@ pub fn new_entry(
         net_ms,
         overhead_ms,
         session_id,
+        cc_session_id,
         backup_path: None,
         target_path: None,
         // Token 用量估算：new_entry 拿不到响应体（dispatch 返回值在调用方手里），
@@ -637,6 +650,25 @@ pub struct TokenUsageReport {
     /// 按（工具，日期）排序的非零格。与 days/tools **同一窗口**，三处合计必然一致。
     #[serde(rename = "byDayTool")]
     pub by_day_tool: Vec<TokenUsageCell>,
+    /// 按 **CC 对话会话**归属的用量（窗口期内）。
+    ///
+    /// 只有带 `ccSessionId` 的条目才进得来：老日志没有这个字段，
+    /// 非对话客户端（直接调桥的其它工具）也不该被算到某条对话头上。
+    /// 因此这里的合计**小于** `days` 的合计，是它的一个子集，不是第三本账。
+    #[serde(rename = "sessions")]
+    pub sessions: Vec<TokenUsageSession>,
+}
+
+/// 按 CC 对话会话归属的用量汇总（窗口期内）。
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenUsageSession {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub calls: u64,
+    #[serde(rename = "estInput")]
+    pub est_input: u64,
+    #[serde(rename = "estOutput")]
+    pub est_output: u64,
 }
 
 /// 「按天 × 工具」矩阵的单格：某天某工具的调用数与 token 估算（输入+输出合计）。
@@ -684,6 +716,9 @@ fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport
     // 保证三个视图的合计口径必然一致（窗口内条目三方全计，窗口外三方全不计）。
     let mut grid: std::collections::HashMap<(usize, &str), [u64; 2]> =
         std::collections::HashMap::new();
+    // key: cc_session_id → [calls, est_input, est_output]。只收带了归属的条目，
+    // 与 days/tools **同一个窗口、同一套 inp/out**（batch 容器同样只记 calls）。
+    let mut sessions: std::collections::HashMap<&str, [u64; 3]> = std::collections::HashMap::new();
 
     for e in all {
         let Some(dk) = entry_date_key(&e.timestamp) else {
@@ -722,6 +757,14 @@ fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport
         let g = grid.entry((i, e.tool.as_str())).or_insert([0, 0]);
         g[0] += 1;
         g[1] += inp + out;
+        // 归属：只在这次调用确实由某条对话发起时记账。`turn_active` 之外的
+        // 调用（别的客户端在用桥）不带这个字段，不计入任何会话。
+        if let Some(sid) = e.cc_session_id.as_deref() {
+            let s = sessions.entry(sid).or_insert([0, 0, 0]);
+            s[0] += 1;
+            s[1] += inp;
+            s[2] += out;
+        }
     }
 
     let mut tools: Vec<TokenUsageTool> = tools
@@ -752,10 +795,27 @@ fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport
         .collect();
     by_day_tool.sort_by(|a, b| a.tool.cmp(&b.tool).then_with(|| a.date.cmp(&b.date)));
 
+    let mut sessions: Vec<TokenUsageSession> = sessions
+        .into_iter()
+        .map(|(session_id, c)| TokenUsageSession {
+            session_id: session_id.to_string(),
+            calls: c[0],
+            est_input: c[1],
+            est_output: c[2],
+        })
+        .collect();
+    // 与 tools 同一排序口径：估算量降序，同量按 id 升序（稳定、可对账）。
+    sessions.sort_by(|a, b| {
+        (b.est_input + b.est_output)
+            .cmp(&(a.est_input + a.est_output))
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+
     TokenUsageReport {
         days,
         tools,
         by_day_tool,
+        sessions,
     }
 }
 
@@ -864,6 +924,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         old_entry.timestamp = "2000-01-01T00:00:00+08:00".into();
         write_audit_log(&dir, &old_entry).expect("seed old");
@@ -877,7 +938,7 @@ mod tests {
                 for i in 0..PER_WRITER {
                     let marker = format!("probe-{w}-{i}");
                     let e = new_entry(
-                        &marker, "{}", true, None, None, None, None, None, None, None, None,
+                        &marker, "{}", true, None, None, None, None, None, None, None, None, None,
                     );
                     write_audit_log(&d, &e).expect("append");
                 }
@@ -910,6 +971,7 @@ mod tests {
             "read_files",
             "{}",
             true,
+            None,
             None,
             None,
             None,
@@ -1125,6 +1187,7 @@ mod tests {
             net_ms: None,
             overhead_ms: None,
             session_id: None,
+            cc_session_id: None,
             backup_path: None,
             target_path: None,
             result_bytes: rb,
@@ -1179,6 +1242,60 @@ mod tests {
         );
     }
 
+    /// 按 CC 会话归属：只有带 `ccSessionId` 的条目才进 `sessions`，
+    /// 且与 days/tools 同一窗口、同一套 inp/out。它是 days 的**子集**
+    /// （别的客户端在用的调用不属于任何对话），不是第三本账。
+    #[test]
+    fn sessions_only_collect_attributed_entries() {
+        let date_keys = vec![Local::now().format("%Y-%m-%d").to_string()];
+        let today = Local::now().to_rfc3339();
+        let base = AuditEntry {
+            timestamp: today,
+            tool: "read_files".into(),
+            params: "x".repeat(40),
+            success: true,
+            error: None,
+            source_ip: None,
+            duration_ms: None,
+            server_ms: None,
+            io_ms: None,
+            audit_ms: None,
+            net_ms: None,
+            overhead_ms: None,
+            session_id: None,
+            cc_session_id: Some("cc-a".into()),
+            backup_path: None,
+            target_path: None,
+            result_bytes: Some(80),
+        };
+        // 今天、同一条对话：两次调用。
+        let e_today = base.clone();
+        let e_today2 = AuditEntry { ..base.clone() };
+        // 不带归属（别的客户端在用桥）：进 days/tools，不进 sessions。
+        let e_unattributed = AuditEntry {
+            cc_session_id: None,
+            ..base.clone()
+        };
+        // 窗口外的归属条目：两边都不该出现。
+        let e_old = AuditEntry {
+            timestamp: (Local::now() - chrono::Duration::days(9)).to_rfc3339(),
+            ..base.clone()
+        };
+        let report = aggregate_usage(&[e_today, e_today2, e_unattributed, e_old], &date_keys);
+        assert_eq!(
+            report.days[0].calls, 3,
+            "三条今天的都进总账（含不带归属的）"
+        );
+        assert_eq!(report.sessions.len(), 1, "只有一条会话被归属");
+        let s = &report.sessions[0];
+        assert_eq!(s.session_id, "cc-a");
+        assert_eq!(s.calls, 2, "窗口外那条不计");
+        assert_eq!(s.est_input, est_tokens(40) * 2);
+        assert_eq!(s.est_output, est_tokens(80) * 2);
+        // 子集关系：会话合计 ≤ 当日合计（这里严格小于，因为还有一条不带归属的）。
+        assert!(s.est_input + s.est_output < report.days[0].est_input + report.days[0].est_output);
+    }
+
     /// batch 容器条目不重复计 token：子操作已各自落审计（带自己的 params 与
     /// resultBytes），外层若也计入，同一次调用会被记两遍。calls 仍保留 1
     /// （它确实被调用了一次，日志页要看得到这行）。
@@ -1199,6 +1316,7 @@ mod tests {
             net_ms: None,
             overhead_ms: None,
             session_id: None,
+            cc_session_id: None,
             backup_path: None,
             target_path: None,
             result_bytes: rb,
@@ -1249,11 +1367,12 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         e1.result_bytes = Some(40);
         write_audit_log(&dir, &e1).expect("write 1");
         let e2 = new_entry(
-            "list_dir", "{}", true, None, None, None, None, None, None, None, None,
+            "list_dir", "{}", true, None, None, None, None, None, None, None, None, None,
         );
         write_audit_log(&dir, &e2).expect("write 2");
 
@@ -1271,7 +1390,7 @@ mod tests {
         // 追加一条 → 缓存失效 → 计数增长（缓存回填路径正确）。
         // 排行不变：list_dir 合计 0 tok，read_files（11 tok）仍是第一。
         let e3 = new_entry(
-            "list_dir", "{}", true, None, None, None, None, None, None, None, None,
+            "list_dir", "{}", true, None, None, None, None, None, None, None, None, None,
         );
         write_audit_log(&dir, &e3).expect("write 3");
         let again = read_usage_report(&dir, 7).expect("report again");
@@ -1298,6 +1417,7 @@ mod tests {
             Some(2.0),
             None,
             None,
+            None,
         );
         assert_eq!(e.server_ms, Some(20));
         assert_eq!(e.io_ms, Some(4));
@@ -1320,6 +1440,7 @@ mod tests {
             Some(1),
             None,
             Some(0.0068),
+            None,
             None,
             None,
         );
@@ -1349,6 +1470,7 @@ mod tests {
                 None,
                 Some(i as u64),
                 Some(i as u64),
+                None,
                 None,
                 None,
                 None,
@@ -1394,6 +1516,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             );
             write_audit_log(&dir, &e).expect("write");
         }
@@ -1412,6 +1535,7 @@ mod tests {
             None,
             Some(3),
             Some(3),
+            None,
             None,
             None,
             None,

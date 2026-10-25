@@ -2,6 +2,8 @@ pub mod audit;
 pub mod backup;
 pub mod branding;
 pub mod browse;
+/// 历史对话：扫 CLI 自己的 `~/.claude/projects/*.jsonl`，把任意旧会话读回来。
+pub mod cc_history;
 /// CC 对话（Claude Code 图形客户端）。协议解析 / 进程 / 事件流水 / 会话管理。
 pub mod cc_session;
 pub mod commands;

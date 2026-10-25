@@ -369,6 +369,7 @@ fn audit_change(state: &Arc<AppState>, action: &str, params: Value, error: Optio
         None,
         None,
         None,
+        None,
     );
     let _ = audit::write_audit_log(&state.data_dir, &entry);
 }

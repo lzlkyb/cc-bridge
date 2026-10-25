@@ -25,6 +25,7 @@ use crate::cc_session::channel::{self, LaunchSpec};
 use crate::cc_session::manager::{self, Launch, SnapshotDto, TauriSink};
 use crate::cc_session::proto::CcEvent;
 use crate::cc_session::session::{with_answers, Verdict};
+use crate::cc_session::store::SessionFacts;
 use crate::mcp::bridge::spawn;
 use crate::state::AppState;
 
@@ -214,6 +215,36 @@ pub async fn cc_start(
     if text.is_empty() {
         return Err("消息不能为空".into());
     }
+
+    // 先把这一轮的形状拼出来 —— 下面「目标变没变」要用它判断，而判断必须发生在
+    // 「能不能复用旧进程」之前。
+    let spec = LaunchSpec {
+        cwd: clean(req.cwd),
+        model: clean(req.model),
+        permission_mode: clean(req.permission_mode),
+        // 待会儿按需覆盖：目标变了就不能带上一个目标的 session id。
+        resume: state.cc.shared().resume_id(),
+    };
+    let path_hint = clean(req.claude_path).unwrap_or_else(|| "claude".to_string());
+    let conn_id = clean(req.connection_id);
+
+    // 🔴 目标变了（换机器 / 换目录）必须先把旧进程收掉，并且**清掉 session id**。
+    //
+    // 不收的后果：`cc_start` 会走「进程还活着 ⇒ 直接 send」那条快路径，把这条消息
+    // 写进**另一个目标**的 claude 里 —— 界面显示正常，内容却去了别处，没有任何报错。
+    // 不清 id 的后果：本机的 session id 被带去远端 `--resume`，CLI 那边按机器+目录
+    // 存转录，只会回一句「找不到会话」。
+    let target_changed = !state
+        .cc
+        .shared()
+        .same_target(conn_id.as_deref().unwrap_or(""), spec.cwd.as_deref());
+    if target_changed {
+        state.cc.interrupt();
+        state.cc.shared().clear_resume();
+        // 换目标 = 新会话：库里那条属于旧目标，接着更新它会让两个目标的记录混成一条。
+        state.cc.shared().clear_row();
+    }
+
     // 🔴 忙碌判据是「有活跃轮次」，不是「进程活着」：实测 CLI 收到 `result` 后
     // 不会退出，它会一直等 stdin 的下一条消息。把这两件事混为一谈，第二条消息
     // 就会被永久拒绝（界面上是一句「上一轮还在进行」，而其实那一轮早就结束了）。
@@ -229,14 +260,23 @@ pub async fn cc_start(
         return Ok(());
     }
 
+    // 上面可能刚刚清过 id，重新取一次才是对的。
     let spec = LaunchSpec {
-        cwd: clean(req.cwd),
-        model: clean(req.model),
-        permission_mode: clean(req.permission_mode),
         resume: state.cc.shared().resume_id(),
+        ..spec
     };
-    let path_hint = clean(req.claude_path).unwrap_or_else(|| "claude".to_string());
-    let conn_id = clean(req.connection_id);
+
+    // 先记下「这一轮在哪跑」，落盘和恢复都要它。
+    // 🔴 `claude_path` 必须在里面：远端续聊是非登录 bash，没有绝对路径就等于
+    // 「远端没装 claude」—— 而这三个字段（连接/目录/可执行文件）在本地测试里
+    // 全是空值，最容易被「本机通过」骗过去。
+    state.cc.shared().set_facts(SessionFacts {
+        connection_id: conn_id.clone().unwrap_or_default(),
+        cwd: spec.cwd.clone(),
+        claude_path: Some(path_hint.clone()),
+        model: spec.model.clone(),
+        permission_mode: spec.permission_mode.clone(),
+    });
 
     let launch = match conn_id {
         None => {
@@ -376,6 +416,8 @@ pub async fn cc_respond(
         CcEvent::PermissionResolved {
             request_id,
             decision,
+            // 用户亲手点的，永远不是 auto。
+            auto: false,
         },
     );
     Ok(())
@@ -393,6 +435,92 @@ pub async fn cc_snapshot(state: State<'_, Arc<AppState>>) -> Result<SnapshotDto,
     Ok(state.cc.snapshot())
 }
 
+/// 上次那条会话的完整内容。**关掉 app 再打开**时用它。
+///
+/// 与 `cc_snapshot` 的分工：快照是「这个进程里发生过什么」（内存流水），
+/// 恢复是「上次进程里发生过什么」（落盘的）。两者重叠时**以快照为准** ——
+/// 活着的流水一定不比库里旧。判定放在前端（见 `useCcSession`）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcRestore {
+    /// 空串 = 本机。
+    pub connection_id: String,
+    pub cwd: Option<String>,
+    /// 远端续聊必须的绝对路径。
+    pub claude_path: Option<String>,
+    pub model: Option<String>,
+    pub permission_mode: Option<String>,
+    pub session_id: Option<String>,
+    /// 下一轮 `--resume` 要带的值。**没有它，恢复出来的对话发下一句就是新会话**。
+    pub resume_id: Option<String>,
+    pub title: Option<String>,
+    pub message_count: i64,
+    /// 最后活跃时间（秒）。
+    pub updated_at: i64,
+    pub events: Vec<CcEvent>,
+    /// 落盘时因超限被丢掉的事件数。`> 0` ⇒ 界面开头缺内容，必须提示。
+    pub dropped: u64,
+}
+
+/// 读取并接管上次的会话。
+#[tauri::command]
+pub async fn cc_restore(state: State<'_, Arc<AppState>>) -> Result<Option<CcRestore>, String> {
+    // 用户点过「新对话」就不再拉旧的 —— 见 `Shared::suppress_restore`。
+    if state.cc.shared().restore_suppressed() {
+        return Ok(None);
+    }
+    let row = {
+        // 用完即放：`db` 是 tokio 的 `Mutex`，guard 不能跨 await 留着。
+        let conn = state.db.lock().await;
+        crate::cc_session::store::latest(&conn)?
+    };
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(adopt(state.cc.shared(), row)))
+}
+
+/// 把库里读到的会话**接管**进内存，并翻成前端 DTO。
+///
+/// 单独成函数是为了能测「接管」这一步。三样东西少任何一样都是一个静默故障：
+///
+/// | 漏掉 | 症状 |
+/// |---|---|
+/// | `set_row_id` | 恢复后聊了几句，重开又回到恢复那一刻（新内容写进了另一行） |
+/// | `set_facts` | 消息在、发出去却落到本机新会话上（远端会话最常见的踩法） |
+/// | `set_resume_id` | 发下一句成了新会话，模型忘光前面 |
+///
+/// 三样全是「界面看起来正常」的那种错，只能靠测试守住。
+fn adopt(shared: &crate::cc_session::Shared, row: crate::cc_session::store::Stored) -> CcRestore {
+    // 🔴 必须把「当前会话就是这一行」写回内存。否则下一条消息会插入一条新会话，
+    // 恢复出来的这条从此再不更新。
+    shared.set_row_id(row.row_id);
+    shared.set_facts(SessionFacts {
+        connection_id: row.connection_id.clone(),
+        cwd: row.cwd.clone(),
+        claude_path: row.claude_path.clone(),
+        model: row.model.clone(),
+        permission_mode: row.permission_mode.clone(),
+    });
+    if let Some(id) = row.resume_id.as_deref() {
+        // 只填空值：万一这个进程里已经有一条活着的会话链，不能让恢复覆盖它。
+        shared.set_resume_id(id);
+    }
+
+    CcRestore {
+        connection_id: row.connection_id,
+        cwd: row.cwd,
+        claude_path: row.claude_path,
+        model: row.model,
+        permission_mode: row.permission_mode,
+        session_id: row.session_id,
+        resume_id: row.resume_id,
+        title: row.title,
+        message_count: row.message_count,
+        updated_at: row.updated_at,
+        events: row.events,
+        dropped: row.dropped,
+    }
+}
+
 /// 新对话：清流水 + 清 session id。
 ///
 /// 请求 id / 缓冲都清掉，等于换了一条会话链。**只在用户点「新对话」时调**。
@@ -400,6 +528,198 @@ pub async fn cc_snapshot(state: State<'_, Arc<AppState>>) -> Result<SnapshotDto,
 pub async fn cc_reset(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.cc.reset();
     Ok(())
+}
+
+/// 润色的 SYSTEM 提示词。**逐字取自 `mods/prompt-polish/hooks/register.js`** ——
+/// 那边是给终端用户的 mod 版本，这边是对话 GUI 的后端半边，两边必须同一份文案，
+/// 改一处忘一处会让「同一个功能两种脾气」。
+const POLISH_SYSTEM: &str = "你是提示词改写器。把用户给的草稿改写成一条更清晰、更可执行的编码任务提示词。\n要求：\n1. 只输出改写后的提示词本身，不要前言、解释、markdown 代码围栏。\n2. 保持用户原本的语言（中文草稿出中文），技术名词、路径、变量名逐字不变。\n3. 不要凭空添加用户没提过的需求、文件、验收标准；信息不足就保留原样。\n4. 补的是结构：目标、约束、验收。通常不超过原文 2.5 倍。";
+
+/// 润色超时（秒）。`claude -p` 冷启动 + 生成，90s 对默认模型也够；
+/// 到点强杀并报错 —— 一个按钮不该把界面挂住。
+const POLISH_TIMEOUT_SECS: u64 = 90;
+
+/// 草稿长度上限（字符）。再长就该拆文件了，润色也救不回来。
+const POLISH_MAX_CHARS: usize = 20_000;
+
+/// `cc_polish` 的入参。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcPolishReq {
+    /// 空 = 本机跑。
+    pub connection_id: Option<String>,
+    pub cwd: Option<String>,
+    /// 探测得到的 claude 绝对路径（可选）。给了就省一次探测。
+    pub claude_path: Option<String>,
+    pub draft: String,
+}
+
+/// 提示词润色 —— mods/prompt-polish 的后端半边。
+///
+/// ## 为什么是独立子进程而不是会话里的一句话
+///
+/// 润色是**界面的辅助动作**，不是对话内容：它不该进事件流水、不占会话上下文、
+/// 不该让模型「记得」用户改写过草稿。所以走一次性 `claude -p --bare`，
+/// 提示词经 stdin 进、结果从 stdout 出，进程随即退出。
+///
+/// 远端走 ssh 的 stdin 直达（见 `channel::polish_remote`），本机直跑。
+#[tauri::command]
+pub async fn cc_polish(
+    state: State<'_, Arc<AppState>>,
+    req: CcPolishReq,
+) -> Result<String, String> {
+    let draft = req.draft.trim().to_string();
+    if draft.is_empty() {
+        return Err("草稿不能为空".into());
+    }
+    if draft.chars().count() > POLISH_MAX_CHARS {
+        return Err(format!(
+            "草稿太长（{} 字符，上限 {POLISH_MAX_CHARS}），请先自行精简",
+            draft.chars().count()
+        ));
+    }
+    let prompt = format!("{POLISH_SYSTEM}\n\n用户草稿：\n{draft}");
+    let conn_id = clean(req.connection_id);
+    let cwd = clean(req.cwd);
+
+    let launch = match conn_id {
+        None => {
+            let hint = clean(req.claude_path).unwrap_or_else(|| "claude".to_string());
+            let (program, args) = channel::polish_local(&hint)?;
+            // 留空 ⇒ 家用目录。与 `cc_start` 同义：不能让 agent 在安装目录里翻。
+            let dir = cwd.as_deref().map(PathBuf::from).or_else(home_dir);
+            if let Some(d) = dir.as_deref() {
+                if !d.is_dir() {
+                    return Err(format!("工作目录不存在：{}", d.display()));
+                }
+            }
+            Launch {
+                program,
+                args,
+                env: manager::git_bash_env(),
+                cwd: dir,
+            }
+        }
+        Some(id) => {
+            if !state.config.read().await.ssh_enabled {
+                return Err("SSH 终端未启用，无法在远端运行".into());
+            }
+            let (ssh_args, destination) = ssh_link_args(state.inner(), &id).await?;
+            // 远端必须用绝对路径（非登录 bash 没有 `~/.local/bin` 的 PATH）。
+            // 调用方给过就用；否则先探一次 —— 与 `cc_probe` 同一条路。
+            let hint = match clean(req.claude_path) {
+                Some(p) => p,
+                None => {
+                    let program = spawn::resolve_program("ssh")
+                        .or_else(|_| spawn::resolve_program("ssh.exe"))
+                        .map_err(|e| format!("未检测到系统 OpenSSH 客户端：{e}"))?;
+                    let mut args = ssh_args.clone();
+                    args.push("--".into());
+                    args.push(destination.clone());
+                    args.push(channel::probe_script().to_string());
+                    let target = destination.clone();
+                    let probe = tauri::async_runtime::spawn_blocking(move || {
+                        probe_remote_sync(&program, &args, target)
+                    })
+                    .await
+                    .map_err(|e| format!("探测任务失败：{e}"))?;
+                    if !probe.found {
+                        return Err(probe.message);
+                    }
+                    probe.path
+                }
+            };
+            let (program, args) = channel::polish_remote(&ssh_args, &destination, &hint)?;
+            // 远端 cwd 由调用方在本地判过存在性即可，ssh 不带 current_dir。
+            Launch {
+                program,
+                args,
+                env: Vec::new(),
+                cwd: None,
+            }
+        }
+    };
+
+    // 🔴 外部进程必须走 spawn_blocking：`run_polish_sync` 里全是阻塞调用
+    // （CLAUDE.md 的 `#[tokio::test]` 死锁教训 —— 占着 tokio worker 等子进程
+    // 会把整个 runtime 挂住）。
+    tauri::async_runtime::spawn_blocking(move || {
+        run_polish_sync(launch, prompt, POLISH_TIMEOUT_SECS)
+    })
+    .await
+    .map_err(|e| format!("润色任务失败：{e}"))?
+}
+
+/// 跑一次性润色进程：stdin 喂提示词，stdout 收结果，超时强杀。
+///
+/// 为什么不用 `Command::output()`：它**没有超时**。claude 卡在登录/网络时
+/// 这个调用会永远挂住，而它跑在阻塞线程池里 —— 池子被占满，别的阻塞操作
+/// （落盘、探测）会跟着全停。
+///
+/// `timeout_secs` 是参数而不是常量：测试要用 1s 验证强杀路径，
+/// 不可能等真常量 90s。
+fn run_polish_sync(launch: Launch, prompt: String, timeout_secs: u64) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut cmd = hidden_command(&launch.program);
+    cmd.args(&launch.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(dir) = launch.cwd.as_deref() {
+        cmd.current_dir(dir);
+    }
+    for (k, v) in &launch.env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("启动 claude 失败：{e}"))?;
+    // 提示词另起一条线程写：管道缓冲可能小于提示词（Windows 上只有几 KB），
+    // 主线程直接 write_all 会互卡到超时。写完 drop 即 EOF，claude 这才开始读。
+    if let Some(mut stdin) = child.stdin.take() {
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(prompt.as_bytes());
+        });
+    }
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "润色超时（{timeout_secs}s 没返回），已中断。可重试或缩短草稿"
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("等待 claude 退出失败：{e}"));
+            }
+        }
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("读取 claude 输出失败：{e}"))?;
+    if !out.status.success() {
+        let tail = String::from_utf8_lossy(&out.stderr);
+        let last = tail
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("没有任何输出");
+        return Err(format!("claude 退出码 {:?}：{last}", out.status.code()));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() {
+        return Err("润色没有返回内容（模型回了空）".into());
+    }
+    Ok(text)
 }
 
 /// 去空白；全空视作未提供。
@@ -440,5 +760,142 @@ mod tests {
         assert!(!probe.found);
         assert!(probe.path.is_empty());
         assert!(probe.message.contains("找不到"), "{}", probe.message);
+    }
+
+    fn stored_row(resume: &str) -> crate::cc_session::store::Stored {
+        crate::cc_session::store::Stored {
+            row_id: 7,
+            connection_id: "conn-1".into(),
+            session_id: Some(resume.into()),
+            resume_id: Some(resume.into()),
+            cwd: Some("/home/u/proj".into()),
+            claude_path: Some("/usr/bin/claude".into()),
+            model: Some("m".into()),
+            permission_mode: Some("acceptEdits".into()),
+            title: Some("标题".into()),
+            preview: None,
+            message_count: 3,
+            updated_at: 1,
+            events: Vec::new(),
+            dropped: 0,
+        }
+    }
+
+    /// 恢复必须**接管**：行号、目标、session id 三样都要写回内存。
+    ///
+    /// 这三样漏任何一个都不会报错，只会让「恢复」变成一次性快照 ——
+    /// 聊几句、重开，内容又回到恢复那一刻。
+    #[test]
+    fn restore_adopts_row_into_shared() {
+        let shared = crate::cc_session::Shared::new();
+        let dto = adopt(&shared, stored_row("s-1"));
+        assert_eq!(shared.row_id(), Some(7), "必须接管行号");
+        assert_eq!(
+            shared.resume_id().as_deref(),
+            Some("s-1"),
+            "必须接管 session id"
+        );
+        assert_eq!(shared.facts().connection_id, "conn-1");
+        assert_eq!(
+            shared.facts().claude_path.as_deref(),
+            Some("/usr/bin/claude"),
+            "远端续聊靠这个绝对路径"
+        );
+        assert_eq!(dto.connection_id, "conn-1");
+        assert_eq!(dto.message_count, 3);
+    }
+
+    /// 这个进程里已经有活着的会话链时，恢复**不能**把它的 id 顶掉。
+    #[test]
+    fn restore_does_not_steal_live_resume_id() {
+        let shared = crate::cc_session::Shared::new();
+        shared.set_resume_id("live-id");
+        adopt(&shared, stored_row("stale-id"));
+        assert_eq!(shared.resume_id().as_deref(), Some("live-id"));
+    }
+
+    // ---- 润色执行器（run_polish_sync） ----
+
+    /// 占位进程：把 stdin 原样印到 stdout。
+    ///
+    /// Windows 用 `sort` 而不是 `findstr`：`findstr /R "^"` 经 cmd 的 `/C` 引号
+    /// 规则会被啃掉（退出码 1、零输出）。`sort` 对**单行**输入是恒等映射，
+    /// 也不像 `more` 那样做分页与制表符展开。
+    #[cfg(windows)]
+    fn echo_launch() -> Launch {
+        Launch {
+            program: PathBuf::from("cmd"),
+            args: vec!["/C".into(), "sort".into()],
+            env: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn echo_launch() -> Launch {
+        Launch {
+            program: PathBuf::from("cat"),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+        }
+    }
+
+    /// 提示词必须经 stdin 抵达、stdout 原样收回 —— 这是整个润色功能的命脉
+    /// （argv 传会在 Windows 32767 上限处炸掉，见 `channel::POLISH_ARGS` 注释）。
+    #[test]
+    fn run_polish_sync_echoes_stdin_to_stdout() {
+        // 单行：执行器对 stdout 做 trim，多行只会把断言复杂化（这里要验的是
+        // 「提示词完整抵达」而不是「换行符原样保留」）
+        let prompt = "把这段代码改成异步的";
+        let out = run_polish_sync(echo_launch(), prompt.to_string(), 30).expect("回显进程必须成功");
+        assert_eq!(out, prompt, "stdout 必须与 stdin 逐字一致");
+    }
+
+    /// 卡死的进程必须被强杀并报错，不能永远挂住（调用点在阻塞线程池里）。
+    #[test]
+    fn run_polish_sync_times_out_and_kills() {
+        #[cfg(windows)]
+        let launch = Launch {
+            program: PathBuf::from("cmd"),
+            // ~4s 的占位：1s 超时足够验证强杀，孤儿进程最多再活几秒。
+            args: vec!["/C".into(), "ping -n 5 127.0.0.1".into()],
+            env: Vec::new(),
+            cwd: None,
+        };
+        #[cfg(not(windows))]
+        let launch = Launch {
+            program: PathBuf::from("sleep"),
+            args: vec!["5".into()],
+            env: Vec::new(),
+            cwd: None,
+        };
+        let err = run_polish_sync(launch, "随便".into(), 1).expect_err("必须超时");
+        assert!(err.contains("超时"), "{err}");
+    }
+
+    /// 退出码非零 = 失败，且 stderr 的尾巴要带给用户（登录过期只在 stderr 说）。
+    ///
+    /// 标记用 ASCII：cmd 的 echo 按 OEM 代码页（中文系统 GBK）写字节，中文断言
+    /// 串回读是乱码；真的 claude CLI 由 Node 写 UTF-8，不受这个测试坑影响。
+    #[test]
+    fn run_polish_sync_reports_nonzero_exit() {
+        #[cfg(windows)]
+        let launch = Launch {
+            program: PathBuf::from("cmd"),
+            args: vec!["/C".into(), "echo POLISH_BOOM 1>&2 & exit 3".into()],
+            env: Vec::new(),
+            cwd: None,
+        };
+        #[cfg(not(windows))]
+        let launch = Launch {
+            program: PathBuf::from("sh"),
+            args: vec!["-c".into(), "echo POLISH_BOOM 1>&2; exit 3".into()],
+            env: Vec::new(),
+            cwd: None,
+        };
+        let err = run_polish_sync(launch, "x".into(), 30).expect_err("必须报错");
+        assert!(err.contains("退出码"), "{err}");
+        assert!(err.contains("POLISH_BOOM"), "stderr 尾巴必须带上：{err}");
     }
 }

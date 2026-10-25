@@ -23,13 +23,18 @@
 
 use std::collections::HashMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// 归一化后的对话事件。前端 reducer 只认这个。
 ///
 /// `rename_all_fields` 让变体字段输出 camelCase，与 Tauri 命令参数的既有约定一致。
-#[derive(Debug, Clone, PartialEq, Serialize)]
+///
+/// 🔴 `Deserialize` 是**落盘回放**用的（`store.rs` 把事件存成 JSON 再读回）。
+/// 它必须与 `Serialize` 共用同一套 rename，否则存进去的 `camelCase` 字段
+/// 反序列化时按 `snake_case` 找不到 —— 表现是恢复出来的会话只剩用户消息，
+/// 助手正文和工具卡全空，而且没有任何报错（`store.rs` 那边是 `.ok()` 兜底）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -92,6 +97,14 @@ pub enum CcEvent {
         request_id: String,
         /// `"allow"` / `"deny"`。
         decision: String,
+        /// `true` = 审批规则命中、系统**代替用户**放行的（不是用户点的）。
+        ///
+        /// 审计与界面靠它区分「谁做的决定」：自动放行的卡落定成
+        /// 「已自动放行」，人工的落定成「已允许 / 已拒绝」。
+        /// `#[serde(default)]` 让 2026-10-24 之前落盘的老流水读回来是 false
+        ///（那条路本来就是人工的），不会反序列化失败被整箱丢掉。
+        #[serde(default)]
+        auto: bool,
     },
     /// `AskUserQuestion`：与审批同构，但语义是「选择」而不是「放行」。
     Question {
@@ -117,6 +130,14 @@ pub enum CcEvent {
         is_error: bool,
         text: Option<String>,
         usage: Option<Value>,
+        /// `result.modelUsage`：每个模型的累计用量与上下文窗口（探针 0-3 实测
+        /// 每轮 `result` 都带，字段是 camelCase 且版本间还在加）。原样透传，
+        /// 理由同 `usage`——前端只读其中几个，拆结构体等于每加一个键改一次 Rust。
+        ///
+        /// `#[serde(default)]`：2026-10-24 之前落盘的老流水没有这个字段，
+        /// 读回 `None` 而不是反序列化失败被整箱丢掉（余量条 simply 不显示）。
+        #[serde(default)]
+        model_usage: Option<Value>,
         cost_usd: Option<f64>,
         num_turns: Option<u64>,
         duration_ms: Option<u64>,
@@ -581,6 +602,10 @@ fn turn_end(value: &Value) -> CcEvent {
             .and_then(Value::as_str)
             .map(str::to_string),
         usage: value.get("usage").cloned(),
+        // 上下文余量条的唯一数据源（探针 0-3）：`usage` 里没有 contextWindow，
+        // 它在 `modelUsage.<model>` 里，且是 camelCase——与 `usage` 的 snake_case
+        // 不是一套命名，别读错键。
+        model_usage: value.get("modelUsage").cloned(),
         // 不同版本放在不同层的两个位置都试一遍。
         cost_usd: value
             .get("total_cost_usd")
@@ -619,7 +644,10 @@ fn format_retry(value: &Value, attempt: u64, max: u64) -> String {
 
 /// `tool_result.content` 可能是字符串、`[{type:"text",text}]`、或混合块数组。
 /// 只取文本，非文本块（图片等）用占位符标出来 —— 静默丢掉会让用户以为工具没输出。
-fn flatten_content(content: Option<&Value>) -> String {
+///
+/// `pub(crate)` 是因为历史回放（`cc_history::parse`）要处理**同一种**块数组：
+/// jsonl 里的 `tool_result` 与实时流里的完全是同一个形状，各写一份迟早漂。
+pub(crate) fn flatten_content(content: Option<&Value>) -> String {
     match content {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(s)) => s.clone(),
@@ -833,6 +861,34 @@ mod tests {
         );
     }
 
+    /// `auto` 标记必须能序列化：前端与落盘都靠它区分「用户点的」和「规则放的」。
+    #[test]
+    fn permission_resolved_auto_flag_serializes() {
+        let ev = CcEvent::PermissionResolved {
+            request_id: "r1".into(),
+            decision: "allow".into(),
+            auto: true,
+        };
+        let json = serde_json::to_string(&ev).expect("序列化");
+        assert!(json.contains("\"auto\":true"), "{json}");
+        // camelCase 约定：字段名不能变成 auto_flag 之类。
+        assert!(json.contains("\"requestId\":\"r1\""), "{json}");
+    }
+
+    /// 🔴 老流水（2026-10-24 之前落盘的会话）里没有 `auto` 字段。
+    /// 读不回来 = 整条会话恢复失败，用户看到的是「上次的对话消失了」。
+    #[test]
+    fn old_permission_resolved_without_auto_still_loads() {
+        let json = r#"{"kind":"permissionResolved","requestId":"r1","decision":"allow"}"#;
+        let ev: CcEvent = serde_json::from_str(json).expect("老流水必须能读");
+        match ev {
+            CcEvent::PermissionResolved { auto, .. } => {
+                assert!(!auto, "老事件本来就是人工的，默认 false");
+            }
+            other => panic!("期望 PermissionResolved，实际 {other:?}"),
+        }
+    }
+
     /// 真机样本（2026-10-24 实抓，`--permission-prompt-tool stdio` + `--permission-mode default`）。
     ///
     /// 这条样本证明了三件当时只能靠推断的事：
@@ -921,6 +977,35 @@ mod tests {
                 assert_eq!(session_id.as_deref(), Some("s-2"));
                 assert_eq!(*num_turns, Some(3));
             }
+            other => panic!("期望 TurnEnd，实际 {other:?}"),
+        }
+    }
+
+    /// `modelUsage` 必须原样透传（上下文余量条的唯一数据源，探针 0-3 实测
+    /// 每轮 `result` 都带），且落盘字段是 camelCase；老流水缺这个字段要能读回
+    /// `None`，不能反序列化失败被整箱丢掉。
+    #[test]
+    fn result_passes_model_usage_through_and_old_streams_still_load() {
+        let mut state = ProtoState::new();
+        let out = state.feed(
+            r#"{"type":"result","subtype":"success","session_id":"s-3","usage":{"input_tokens":5},"modelUsage":{"claude-opus-5":{"inputTokens":40779,"outputTokens":384,"contextWindow":1000000}}}"#,
+        );
+        match &out[0] {
+            CcEvent::TurnEnd { model_usage, .. } => {
+                let mu = model_usage.as_ref().expect("modelUsage 必须透传");
+                let opus = mu.get("claude-opus-5").expect("按模型名索引");
+                assert_eq!(
+                    opus.get("contextWindow").and_then(Value::as_u64),
+                    Some(1_000_000)
+                );
+                assert_eq!(opus.get("inputTokens").and_then(Value::as_u64), Some(40779));
+            }
+            other => panic!("期望 TurnEnd，实际 {other:?}"),
+        }
+        // 老流水（落盘时还没有这个字段）必须读得回来。
+        let old = r#"{"kind":"turnEnd","sessionId":"s-3","isError":false,"text":null,"usage":null,"costUsd":null,"numTurns":null,"durationMs":null}"#;
+        match serde_json::from_str::<CcEvent>(old).expect("老流水必须能读回") {
+            CcEvent::TurnEnd { model_usage, .. } => assert!(model_usage.is_none()),
             other => panic!("期望 TurnEnd，实际 {other:?}"),
         }
     }

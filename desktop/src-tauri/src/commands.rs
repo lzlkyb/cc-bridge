@@ -27,6 +27,10 @@ mod audit_cmds;
 mod backup_cmds;
 /// CC 对话（Claude Code 图形客户端的数据源；名字带 `_cmds` 同 `ssh_cmds`）。
 mod cc_cmds;
+/// 历史对话：扫 CLI 自己的转录、列表、打开。
+mod cc_history_cmds;
+/// 会话用量账：对话侧真实 token / 成本，按 session id 读。
+mod cc_usage_cmds;
 mod config_cmds;
 mod firewall_cmds;
 /// 外挂 MCP 桥（名字带 `_cmds`：`crate::mcp::bridge` 下已有同名概念）。
@@ -43,6 +47,8 @@ mod update;
 pub use audit_cmds::*;
 pub use backup_cmds::*;
 pub use cc_cmds::*;
+pub use cc_history_cmds::*;
+pub use cc_usage_cmds::*;
 pub use config_cmds::*;
 pub use firewall_cmds::*;
 pub use mcp_bridge_cmds::*;

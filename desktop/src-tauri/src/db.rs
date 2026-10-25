@@ -53,6 +53,15 @@ pub fn init_database(data_dir: &Path) -> Result<Connection, String> {
     // 避免表结构跟读写它的代码分两处维护。
     crate::mcp::bridge::manifest::ensure_table(&conn)?;
 
+    // CC 对话会话落盘（「关掉 app 就没了」的解）。同上，表归 `cc_session::store` 管。
+    crate::cc_session::store::ensure_table(&conn)?;
+
+    // 会话用量账（对话账按 session id 落库，与工具账并排对账用）。
+    crate::cc_session::usage::ensure_table(&conn)?;
+
+    // 历史对话索引（CLI 自己那些 jsonl 的缓存）。表归 `cc_history::index` 管。
+    crate::cc_history::index::ensure_table(&conn)?;
+
     // Migrate from config.json if it exists and the config table is empty
     let config_json_path = data_dir.join("config.json");
     if config_json_path.exists() {

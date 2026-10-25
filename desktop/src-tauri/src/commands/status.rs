@@ -182,6 +182,12 @@ pub struct StatusResponse {
     /// 接入命令保持既有形态——与引入前逐字一致。
     #[serde(rename = "multiDeviceMode")]
     pub multi_device_mode: bool,
+    /// CC 对话轮结束桌面通知开关。默认关。前端「完成提醒」卡读写。
+    #[serde(rename = "ccNotifyTurnEnd")]
+    pub cc_notify_turn_end: bool,
+    /// CC 对话审批自动放行规则（`工具名(参数glob)` 列表）。默认空。
+    #[serde(rename = "ccAutoApproveRules")]
+    pub cc_auto_approve_rules: Vec<String>,
     /// 近期鉴权失败来源数（批3-1）：封禁窗口内仍有 401 失败记录的来源 IP 数。
     /// 多设备模式「令牌失效」的证据信号——远端 AI 工具带旧令牌连接时每次请求都
     /// 记账、认证成功即清除，窗口内非空 ≈ 问题仍在。封禁关闭（127.0.0.1 绑定）时
@@ -538,6 +544,8 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         device_id: config.device_id.clone(),
         device_name: crate::config::device_hostname(),
         multi_device_mode: config.multi_device_mode,
+        cc_notify_turn_end: config.cc_notify_turn_end,
+        cc_auto_approve_rules: config.cc_auto_approve_rules.clone(),
         // 批3-1：多设备「令牌失效」证据。窗口对齐封禁窗口（remote_ban_window_min）——
         // 失败记账的清零周期本就按它走，两个窗口用同一个值语义才自洽。纯内存读，
         // BanRegistry 是 DashMap，与 config 读锁无交叉。

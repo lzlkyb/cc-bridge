@@ -143,6 +143,7 @@ fn audit_backup_deletion(data_dir: &std::path::Path, action: &str, detail: serde
         None,
         None,
         None,
+        None,
     );
     if let Err(e) = audit::write_audit_log(data_dir, &entry) {
         log::warn!("写入删备份审计失败：{e}");
@@ -391,6 +392,7 @@ pub async fn restore_file(
         "restore_file",
         &serde_json::json!({ "backupPath": backup_path, "targetPath": target_path }).to_string(),
         true,
+        None,
         None,
         None,
         None,

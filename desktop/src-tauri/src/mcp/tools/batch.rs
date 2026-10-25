@@ -203,6 +203,9 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
         audit_enabled,
         source_ip,
         &state.data_dir,
+        // 子条目也要带会话归属：token 全记在子条目上（外层只记 calls），
+        // 漏了它 batch 的用量就归不到任何对话名下。
+        state.cc.active_session_id(),
     );
     let mut envelope = json!({
         "executed": executed,
@@ -249,6 +252,7 @@ fn write_sub_op_audits(
     audit_enabled: bool,
     source_ip: Option<String>,
     data_dir: &std::path::Path,
+    cc_session_id: Option<String>,
 ) {
     if !audit_enabled {
         return;
@@ -267,6 +271,7 @@ fn write_sub_op_audits(
             None,
             None,
             None,
+            cc_session_id.clone(),
         );
         // 未出现在 `final_result_bytes` 里（进了聚合收尾）→ 0，不是「未知」：
         // 未知（None）会被聚合当 0 计，与真实 0 在 UI 上无法区分，这里直接落 0 更诚实。

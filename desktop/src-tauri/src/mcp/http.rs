@@ -747,6 +747,9 @@ pub async fn handle_tools_call(
             } else {
                 None
             };
+            // 用量归属：这次调用是不是某条 CC 对话让它干的。只在对话正跑着一轮时
+            // 才有值（见 `CcSession::active_session_id`），别的时候是别的客户端在用。
+            let cc_session_id = state.cc.active_session_id();
 
             // I/O 耗时（task_local 跨各工具累加）；必须在 with_io_timer 作用域内取。
             let io_ms = crate::timing::take_io();
@@ -772,6 +775,7 @@ pub async fn handle_tools_call(
                             server_ms_dispatch,
                             io_ms,
                             session_id.clone(),
+                            cc_session_id.clone(),
                             result_bytes,
                         );
                         state.inc_audit_count();
@@ -805,6 +809,7 @@ pub async fn handle_tools_call(
                             server_ms_dispatch,
                             io_ms,
                             session_id.clone(),
+                            cc_session_id.clone(),
                             result_bytes,
                         );
                         state.inc_audit_count();
@@ -845,6 +850,9 @@ pub(crate) fn write_audit_for_call(
     server_ms_dispatch: u64,
     io_ms: Option<u64>,
     session_id: Option<String>,
+    // 发起这次调用的 CC 对话会话（`turn_active` 期间才有值，见
+    // `CcSession::active_session_id`）。工具账按它归属到对话。
+    cc_session_id: Option<String>,
     // Token 用量估算埋点：工具返回结果的序列化字节数（成功 = 结果 Value 的 JSON
     // 长度；失败 = 错误文案长度）。None = 该路径拿不到响应体（batch 子操作、旧日志），
     // 聚合时输出侧按 0 计。
@@ -865,6 +873,7 @@ pub(crate) fn write_audit_for_call(
         None,
         None,
         session_id,
+        cc_session_id,
     );
     let mut entry = entry;
     entry.result_bytes = result_bytes;

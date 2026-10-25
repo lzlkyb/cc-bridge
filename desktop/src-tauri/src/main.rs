@@ -1050,7 +1050,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cc_respond,
             commands::cc_interrupt,
             commands::cc_snapshot,
+            commands::cc_restore,
             commands::cc_reset,
+            // 润色：一次性 `claude -p --bare` 子进程，结果只回输入框，不进会话。
+            commands::cc_polish,
+            commands::cc_history_list,
+            commands::cc_history_open,
+            // 会话用量账（对话侧真实 token / 成本，按 session id）。
+            commands::cc_session_usage,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
@@ -1139,6 +1146,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 st.kill_all_ssh_helpers();
                 // CC 对话轮次同理：`Run` 没有 `Drop` 杀，claude 还会再拉 Bash 子进程。
                 // 宽限期给短一点 —— 用户已经关窗，多等只会拖慢退出。
+                //
+                // 🔴 落盘必须**先于** shutdown：异步落盘是另一个线程，进程一退就被强杀，
+                // 而「关掉 app 再看还在」正是这个功能存在的理由。shutdown 里的宽限期
+                // （600ms）会让 claude 收到 EOF、写完最后一条 jsonl，但那时读线程
+                // 可能已经随进程消失了 —— 那 600ms 里的内容只能靠这里的同步落盘保住。
+                //
+                // 用 `try_lock`：`db` 是 tokio 的 Mutex，这里既不能 await（同步回调）
+                // 也不该 `blocking_lock`（可能跑在 runtime 线程上）。退出这一刻持有 `db`
+                // 的只可能是毫秒级查询，拿不到就跳过 —— 上一次 `TurnEnd` 已经落过盘。
+                if let Ok(conn) = st.db.try_lock() {
+                    st.cc.persist(&conn);
+                }
                 st.cc.shutdown(std::time::Duration::from_millis(600));
             }
             // 关掉最后一个窗口**不应**退出应用。

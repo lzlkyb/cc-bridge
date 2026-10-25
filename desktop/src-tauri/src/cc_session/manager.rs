@@ -26,12 +26,17 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
+use rusqlite::Connection;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
+use super::autoapprove;
 use super::proto::CcEvent;
 use super::ring::{EventRing, RingSnapshot};
 use super::session::{EventSink, Run, Verdict};
+use super::store::{self, SessionFacts};
+use super::usage::{self, CcUsage};
+use crate::state::AppState;
 
 /// 前端订阅的事件名。所有对话事件都从这里出去。
 pub const CC_EVENT: &str = "cc-event";
@@ -101,6 +106,28 @@ pub struct Shared {
     /// 让前端把入参再传一遍，等于把「批准的是哪条命令」这个判据交给了一个可能
     /// 被旧状态污染的图层。sink 收到 `PermissionAsk` 时登记，批准/撤回时消费。
     pending: StdMutex<HashMap<String, PendingAsk>>,
+    /// 这一轮「在哪跑、用什么模型」—— 落盘和恢复都要它。
+    ///
+    /// 🔴 `claude_path` / `connection_id` / `cwd` 三者共同决定「下一轮能不能接着聊」：
+    /// 远端续聊是非登录 bash，没有绝对路径就等于「远端没装 claude」；没有 cwd
+    /// 就没有远端工作目录；没有 connection_id 就不知道该 ssh 到哪台机器。
+    facts: StdMutex<SessionFacts>,
+    /// 当前会话在 `cc_sessions` 里的行号。`None` = 还没落过盘（下一轮插入新行）。
+    row_id: StdMutex<Option<i64>>,
+    /// 落盘代次。见 [`persist_later`]：写入线程靠它丢弃过期的落盘任务。
+    persist_gen: AtomicU64,
+    /// 用户**主动**开了新对话吗。一旦为 true，`cc_restore` 就不再返回旧会话。
+    ///
+    /// 为什么需要它：`ring.clear()` 会把事件序号归零，前端据此判断「这个进程还
+    /// 什么都没产生」——而**冷启动也是这个状态**，两者从流水上看完全一样。
+    /// 不分清楚的话，用户点「新对话」、切到终端页再切回来，旧对话就会自己冒出来。
+    suppress_restore: AtomicBool,
+    /// 最近一轮 `TurnEnd` 的累计用量（`modelUsage` 求和）。
+    ///
+    /// 放在共享态而不是顺着事件往下传：`persist_shared` 只拿得到 `&Shared`，
+    /// 而用量长在事件里。这样同步退出路径与异步落盘路径读到的是同一份。
+    /// 清零时机只有 `reset()`（换了一条会话链，旧账不该跟过去）。
+    usage: StdMutex<Option<CcUsage>>,
 }
 
 /// 一条待批请求。
@@ -129,7 +156,11 @@ impl Shared {
             .filter(|s| !s.trim().is_empty())
     }
 
-    fn set_resume_id(&self, id: &str) {
+    /// 记下 session id（`system/init` 给的那个）。
+    ///
+    /// 公开是因为 `cc_restore` 要把库里的值填回来 —— 少了它，恢复出来的对话
+    /// 发下一句就成了新会话，模型忘光前面。
+    pub fn set_resume_id(&self, id: &str) {
         if id.trim().is_empty() {
             return;
         }
@@ -193,14 +224,150 @@ impl Shared {
     pub fn pending_count(&self) -> usize {
         self.pending.lock().map(|g| g.len()).unwrap_or(0)
     }
+
+    /// 记下这一轮的目标信息。`cc_start` 在起进程前调一次。
+    pub fn set_facts(&self, facts: SessionFacts) {
+        if let Ok(mut g) = self.facts.lock() {
+            *g = facts;
+        }
+    }
+
+    pub fn facts(&self) -> SessionFacts {
+        self.facts.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// 本次请求的目标和「当前这条会话链」一致吗。
+    ///
+    /// 只比 `connection_id` 与 `cwd`：模型和权限模式变了**不该**重开会话链
+    /// （CLI 支持同一会话换模型，权限模式更是每轮都能改）。但换了机器或目录就必须
+    /// 重开 —— 转录在 CLI 那边是按「机器 + 目录」分开存的，跨目标 `--resume`
+    /// 一定找不到会话。
+    ///
+    /// 尾部斜杠必须抹平：前端从 localStorage 读回来的 `D:\proj\` 与 `D:\proj`
+    /// 是同一个目录，判成不同会让用户每切一次页就多出一条会话记录。
+    pub fn same_target(&self, connection_id: &str, cwd: Option<&str>) -> bool {
+        let facts = self.facts();
+        let norm = |v: &str| v.trim().trim_end_matches(['/', '\\']).to_string();
+        norm(&facts.connection_id) == norm(connection_id)
+            && facts.cwd.as_deref().map(norm) == cwd.map(norm)
+    }
+
+    pub fn row_id(&self) -> Option<i64> {
+        self.row_id.lock().ok().and_then(|g| *g)
+    }
+
+    pub fn set_row_id(&self, id: i64) {
+        if let Ok(mut g) = self.row_id.lock() {
+            *g = Some(id);
+        }
+    }
+
+    /// 忘掉「当前是库里哪一行」。点「新对话」时用：下一轮插入一条新会话，
+    /// 旧会话留在表里（那是历史，不能因为开了新的就消失）。
+    pub fn clear_row(&self) {
+        if let Ok(mut g) = self.row_id.lock() {
+            *g = None;
+        }
+    }
+
+    /// 用户显式开了新对话 ⇒ 不再允许从库里「恢复上次那条」。
+    pub fn mark_new_session(&self) {
+        self.suppress_restore.store(true, Ordering::SeqCst);
+    }
+
+    pub fn restore_suppressed(&self) -> bool {
+        self.suppress_restore.load(Ordering::SeqCst)
+    }
+
+    /// 记下这一轮的累计用量。由 `bookkeep` 在 `TurnEnd` 上调。
+    ///
+    /// 🔴 覆盖而不是累加：CLI 的 `modelUsage` 给的就是累计值（见 `usage.rs` 模块文档）。
+    pub fn set_usage(&self, usage: CcUsage) {
+        if let Ok(mut g) = self.usage.lock() {
+            *g = Some(usage);
+        }
+    }
+
+    pub fn usage(&self) -> Option<CcUsage> {
+        self.usage.lock().ok().and_then(|g| g.clone())
+    }
+}
+
+/// 把当前会话写进库。返回行号；没有内容可写时返回 `None`。
+///
+/// 同步版本。异步路径见 [`persist_later`]；**应用退出时用这个** ——
+/// 那一刻必须保证写下去，异步任务可能还没轮到就随进程消失了。
+pub fn persist_shared(conn: &Connection, shared: &Shared) -> Result<Option<i64>, String> {
+    let events = shared.ring.snapshot().events;
+    if events.is_empty() {
+        // 从没聊过（比如刚开新对话就退出）—— 不要往库里插一条空会话。
+        return Ok(None);
+    }
+    // 期一里 `session_id` 与 `resume_id` 同源（都是 CLI 的 `system/init` 给的）。
+    // 期二打开历史后两者才分岔：`session_id` 是这条转录的身份，`resume_id` 是
+    // 下一轮 `--resume` 要带的值。
+    let sid = shared.resume_id();
+    let snap = shared.facts().snapshot(sid.clone(), sid, events);
+    let id = store::save(conn, shared.row_id(), &snap)?;
+    shared.set_row_id(id);
+    // 用量账：覆盖写同一行（累计值），失败只警告——它是锦上添花的统计，
+    // 不能反过来把「会话内容落盘」这件事带崩。
+    // `sid` 已在上面被 `snapshot()` 移走，这里按值再取一次。
+    if let (Some(sid), Some(usage)) = (shared.resume_id(), shared.usage()) {
+        let conn_id = shared.facts().connection_id.clone();
+        if let Err(e) = usage::record(conn, &sid, &conn_id, &usage) {
+            log::warn!("会话用量落库失败：{e}");
+        }
+    }
+    Ok(Some(id))
+}
+
+/// 异步落盘：**不占读线程**。
+///
+/// 🔴 为什么必须换线程拿 `db` 锁：调用点之一是 `TauriSink::emit`，它跑在 claude
+/// 的 stdout 读线程上。那条线程一停，claude 的管道就会写满 → 整个 CLI 卡住 →
+/// 界面表现为「对话莫名不动了」。落盘只是件锦上添花的事，绝不能让它反过来冻住
+/// 主流程，所以哪怕一次慢查询也不行。
+///
+/// 🔴 代次检查必须在**锁内**：两次落盘（用户消息一次、`TurnEnd` 一次）可能乱序
+/// 完成，锁外检查挡不住「先拿锁的是旧代次」。丢掉中间态无所谓，最后态必须落地。
+pub fn persist_later(app: &AppHandle, shared: &Arc<Shared>) {
+    let Some(state) = app.try_state::<Arc<AppState>>() else {
+        return;
+    };
+    let gen = shared.persist_gen.fetch_add(1, Ordering::SeqCst) + 1;
+    let st = Arc::clone(&*state);
+    let sh = Arc::clone(shared);
+    std::thread::spawn(move || {
+        // `blocking_lock` 只能在非 runtime 线程上用 —— 这里正是自建的 std 线程，
+        // 所以安全。改成 `.lock().await` 就需要 async 上下文，而调用方之一
+        // （stdout 读线程）根本没有 runtime。
+        let conn = st.db.blocking_lock();
+        if sh.persist_gen.load(Ordering::SeqCst) != gen {
+            return;
+        }
+        match persist_shared(&conn, &sh) {
+            Ok(_) => {
+                // 顺手清理：会话数只增不减会把库撑大，保留最近 100 条足够。
+                if let Err(e) = store::prune(&conn, store::KEEP_SESSIONS) {
+                    log::warn!("清理旧会话失败：{e}");
+                }
+            }
+            Err(e) => log::warn!("会话落盘失败：{e}"),
+        }
+    });
 }
 
 /// 记一条**本地产生**的事件（用户自己的消息）。
 ///
 /// 它必须走和 CLI 事件同一条流水：前端切页回来只认快照，本地消息不进流水就会消失。
-pub fn record_local(app: &AppHandle, shared: &Shared, event: CcEvent) {
+///
+/// 顺带落盘：用户发完消息立刻关掉 app 是最常见的「丢内容」场景，
+/// 光等 `TurnEnd` 的话这一句就白打了。
+pub fn record_local(app: &AppHandle, shared: &Arc<Shared>, event: CcEvent) {
     let seq = shared.ring.push(event.clone()).unwrap_or(u64::MAX);
     let _ = app.emit(CC_EVENT, &CcEventPayload { seq, event });
+    persist_later(app, shared);
 }
 
 /// 推到 Tauri 事件，同时落进环形缓冲。
@@ -247,6 +414,19 @@ fn bookkeep(shared: &Shared, event: &CcEvent) {
             shared.clear_pending();
             // 落定「这一轮跑完了」。**不能靠进程退出**：进程会活着等下一条消息。
             shared.set_turn_active(false);
+            // 用量账：只有正常结束的 `TurnEnd` 带 `modelUsage`（`Exit` 是崩溃路径，
+            // 那一轮没有 result 行，没有可信用量）。`turns` 取 CLI 的累计值，
+            // 它缺失时保留上一轮的数——不清零，否则余量条会在一轮之间闪没。
+            if let CcEvent::TurnEnd {
+                model_usage: Some(mu),
+                num_turns,
+                ..
+            } = event
+            {
+                let mut u = usage::from_model_usage(mu);
+                u.turns = num_turns.unwrap_or(u.turns);
+                shared.set_usage(u);
+            }
         }
         _ => {}
     }
@@ -255,11 +435,150 @@ fn bookkeep(shared: &Shared, event: &CcEvent) {
 impl EventSink for TauriSink {
     fn emit(&self, event: CcEvent) {
         bookkeep(&self.shared, &event);
+        // 一轮落定（正常结束 / 进程退出）就把内容写下去。
+        // `Exit` 也要：崩在 `result` 之前的那半轮同样是用户打出来的东西。
+        let settled = matches!(event, CcEvent::TurnEnd { .. } | CcEvent::Exit { .. });
         let seq = self.shared.ring.push(event.clone()).unwrap_or(u64::MAX);
         self.seen.fetch_add(1, Ordering::Relaxed);
         // 前端没在听是**正常**的（切到终端页时监听器已卸）。忽略错误，
         // 事件已经在 ring 里，回来靠快照重放。
-        let _ = self.app.emit(CC_EVENT, &CcEventPayload { seq, event });
+        let _ = self.app.emit(
+            CC_EVENT,
+            &CcEventPayload {
+                seq,
+                event: event.clone(),
+            },
+        );
+        // 审批规则命中就在这条 Ask 进流水**之后**代替用户回 allow：前端会先看到
+        // 卡片、再收到一条 auto 的 Resolved，卡片自己落定成「已自动放行」。
+        // 🔴 只对 PermissionAsk 生效：Question（AskUserQuestion）的答案只能用户给。
+        if let CcEvent::PermissionAsk {
+            request_id,
+            tool_name,
+            input,
+            ..
+        } = &event
+        {
+            self.maybe_auto_approve(request_id, tool_name, input);
+        }
+        if let CcEvent::TurnEnd { is_error, text, .. } = &event {
+            self.notify_turn_end(*is_error, text.as_deref());
+        }
+        if settled {
+            persist_later(&self.app, &self.shared);
+        }
+    }
+}
+
+/// 这条 Ask 要不要自动放行。**纯函数**，抽出来是为了能脱离 AppHandle 测接线。
+///
+/// 返回 `Some(规则原文)` = 放行（原文进日志，用户得知道是哪一条放的行）。
+/// 三条 fail-closed：空规则表、没有规则命中、`AskUserQuestion` ——
+/// 最后一条是**纵深防御**：调用方本来就只对 `PermissionAsk` 调它，
+/// 这里再挡一次，免得将来有人把 Question 也接上来还不知道。
+pub fn auto_approve_hit(
+    rules: &[String],
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> Option<String> {
+    if rules.is_empty() || tool_name == "AskUserQuestion" {
+        return None;
+    }
+    autoapprove::RuleSet::compile(rules)
+        .match_rule(tool_name, input)
+        .map(str::to_string)
+}
+
+impl TauriSink {
+    /// 读一条配置的**当前值**。读线程（stdout 泵）专用：
+    /// `try_read` 拿不到锁（正在保存配置）时返回 `None` = 按关闭处理 ——
+    /// 那条线程一停，claude 的 stdout 管道就会写满、整个 CLI 卡住。
+    fn config_flag(&self, pick: impl Fn(&crate::config::BridgeConfig) -> bool) -> bool {
+        let Some(state) = self.app.try_state::<Arc<AppState>>() else {
+            return false;
+        };
+        let Ok(cfg) = state.config.try_read() else {
+            return false;
+        };
+        pick(&cfg)
+    }
+
+    /// 命中规则就代替用户回 `allow`，并记一条 `auto: true` 的 Resolved。
+    ///
+    /// 全程 fail-closed：规则表空 / 编译失败 / 主参数取不到 / 写 stdin 失败，
+    /// 统统安静退场，卡片留在原地等用户 —— 自动放行是**优化**，不是必需路径。
+    fn maybe_auto_approve(&self, request_id: &str, tool_name: &str, input: &serde_json::Value) {
+        let Some(state) = self.app.try_state::<Arc<AppState>>() else {
+            return;
+        };
+        // 一次读完就用：`try_read` 失败（正在存配置）= 本轮不自动放行。
+        let rules = {
+            let Ok(cfg) = state.config.try_read() else {
+                return;
+            };
+            cfg.cc_auto_approve_rules.clone()
+        };
+        let Some(hit) = auto_approve_hit(&rules, tool_name, input) else {
+            return;
+        };
+        // 回写走与用户点击同一条路（`CcSession::respond`）：它管加锁、管进程存活。
+        // 失败只可能是进程正在退 —— 那时用户自己点也一样会失败。
+        let wrote = state
+            .cc
+            .respond(request_id, &Verdict::allow_as_is(input))
+            .is_ok();
+        if !wrote {
+            return;
+        }
+        // 摘单：晚了进来的用户点击会得到「已失效」，而不是重复回一条裁决。
+        self.shared.forget(request_id);
+        record_local(
+            &self.app,
+            &self.shared,
+            CcEvent::PermissionResolved {
+                request_id: request_id.to_string(),
+                decision: "allow".to_string(),
+                auto: true,
+            },
+        );
+        log::info!("审批规则命中，已自动放行 {tool_name}（规则：{hit}）");
+    }
+
+    /// 本轮结束推一条桌面通知。**两道门**都开才推：
+    /// `cc_notify_turn_end`（要不要为对话弹）与 `notify_task_complete`（让不让弹）。
+    fn notify_turn_end(&self, is_error: bool, text: Option<&str>) {
+        let on = self.config_flag(|c| c.cc_notify_turn_end && c.notify_task_complete);
+        if !on {
+            return;
+        }
+        let title = if is_error {
+            "CC 对话出错了"
+        } else {
+            "CC 对话已完成"
+        };
+        let body = match text.map(str::trim).filter(|t| !t.is_empty()) {
+            // 结果正文可能很长，取第一行、再截断：通知是摘要不是全文。
+            Some(t) => {
+                let first = t.lines().next().unwrap_or(t);
+                let mut out: String = first.chars().take(100).collect();
+                if first.chars().count() > 100 {
+                    out.push('…');
+                }
+                out
+            }
+            None => "本轮已结束。".to_string(),
+        };
+        let app = self.app.clone();
+        // 转成 owning：`run_on_main_thread` 要 `'static` 闭包，借用的 &str 进不去。
+        let title = title.to_string();
+        // 闭包要 move 一个 AppHandle 进去，而 `run_on_main_thread` 本身借的是
+        // 外面这个 —— 各持一份克隆，互不占用。
+        let notify_app = app.clone();
+        // 通知插件在 mac 上要求主线程；`run_on_main_thread` 从任何线程调都安全，
+        // 而这里跑在 claude 的 stdout 读线程上。
+        let _ = app.run_on_main_thread(move || {
+            let _ = crate::commands::notify_desktop_impl(notify_app, &title, &body);
+        });
     }
 }
 
@@ -293,6 +612,22 @@ impl CcSession {
 
     pub fn shared(&self) -> &Arc<Shared> {
         &self.shared
+    }
+
+    /// 当前**正在进行的那一轮**属于哪个 CC 会话（拿不到 ⇒ `None`）。
+    ///
+    /// 用途：MCP 工具调用把它记进审计，两套账才能按同一个 session id 对上
+    /// （见 `audit.rs` 的 `ccSessionId`）。
+    ///
+    /// 🔴 只在 `turn_active` 时返回。轮次之间从**别的客户端**来的调用若也被记到
+    /// 上一条会话头上，就是张冠李戴——那时根本不是它在干活。
+    /// 残余误差只有毫秒级（`send()` 先置位再写 stdin；`TurnEnd` 落定与 CLI 最后
+    /// 一次工具返回之间可能差几毫秒），可接受，但方向必须是「宁可漏、不可错」。
+    pub fn active_session_id(&self) -> Option<String> {
+        if !self.shared().turn_active() {
+            return None;
+        }
+        self.shared().resume_id()
     }
 
     pub fn is_running(&self) -> bool {
@@ -375,14 +710,34 @@ impl CcSession {
         }
     }
 
-    /// 新会话：清流水 + 清 session_id。**只在用户显式「新对话」时调用**。
+    /// 新会话：清流水 + 清 session_id + 忘掉库里的行。**只在用户显式「新对话」时调用**。
+    ///
+    /// 不清库里的旧行 —— 那是历史。下一次落盘会插入一条新会话。
     pub fn reset(&self) {
         let _ = self.interrupt();
         self.shared.ring.clear();
         self.shared.clear_resume();
         self.shared.clear_pending();
+        self.shared.clear_row();
+        self.shared.mark_new_session();
+        self.shared.set_facts(SessionFacts::default());
+        // 用量账跟着会话链一起清：新对话从零开始，不能把上一条的 token 带过来
+        // （否则「新对话」第一轮就显示一条老账）。
+        if let Ok(mut g) = self.shared.usage.lock() {
+            *g = None;
+        }
         if let Ok(mut guard) = self.live.lock() {
             drop(guard.take());
+        }
+    }
+
+    /// 同步落盘一次。应用退出时调 —— 那时异步任务可能来不及跑。
+    ///
+    /// 不返回 `Result`：退出路径上没地方处理错误，记进日志即可。
+    pub fn persist(&self, conn: &Connection) {
+        match persist_shared(conn, &self.shared) {
+            Ok(_) => {}
+            Err(e) => log::warn!("退出前落盘会话失败：{e}"),
         }
     }
     /// 应用退出时收尾。宽限期短：用户已经关窗，多等没意义。
@@ -452,8 +807,11 @@ fn git_bash_env_from(already_set: bool, detected: Option<&Path>) -> Vec<(String,
 /// cc-bridge 自己的 [`crate::mcp::tools::shell::detect_bash_exe`] 有三级兜底
 /// （常见路径 → Scoop → `where git` 倒推），这里把它的结果透传过去，
 /// 让「命令执行壳层」和「cli 自己的 BashTool」用同一个 bash。
+///
+/// `pub(crate)`：润色（`cc_polish`）的一次性子进程也用它 —— 那边虽然 `--bare`
+/// 跳过钩子，但保持一致比省一个环境变量更不容易出事。
 #[cfg(windows)]
-fn git_bash_env() -> Vec<(String, String)> {
+pub(crate) fn git_bash_env() -> Vec<(String, String)> {
     git_bash_env_from(
         std::env::var_os(GIT_BASH_ENV).is_some(),
         crate::mcp::tools::shell::detect_bash_exe().as_deref(),
@@ -462,7 +820,7 @@ fn git_bash_env() -> Vec<(String, String)> {
 
 /// 非 Windows：bash 是系统自带的，claude 自己找得到，不需要接管。
 #[cfg(not(windows))]
-fn git_bash_env() -> Vec<(String, String)> {
+pub(crate) fn git_bash_env() -> Vec<(String, String)> {
     Vec::new()
 }
 
@@ -507,6 +865,44 @@ mod tests {
         assert!(shared.resume_id().is_none());
     }
 
+    /// 首次调用（`facts` 还是默认值）与本机空目标必须算「同一目标」。
+    ///
+    /// 判成不同会走到「清 session id + 清行号」那条路 —— 对第一次说话无害，
+    /// 但它同时会 `interrupt()`，在恢复后第一次发言时把刚起来的进程打断。
+    #[test]
+    fn default_facts_match_local_target() {
+        let shared = Shared::new();
+        assert!(shared.same_target("", None));
+    }
+
+    /// 尾部斜杠 / 空白不能算成不同目标：前端从 localStorage 读回来的值
+    /// 常常带一个尾巴，判错会让用户每切一次页就多出一条会话记录。
+    #[test]
+    fn trailing_separator_is_not_a_target_change() {
+        let shared = Shared::new();
+        shared.set_facts(SessionFacts {
+            cwd: Some("D:\\proj".into()),
+            ..SessionFacts::default()
+        });
+        assert!(shared.same_target("", Some("D:\\proj\\  ")));
+    }
+
+    /// 换机器、换目录都必须算目标变了 —— 转录在 CLI 那边按「机器 + 目录」分开存，
+    /// 跨目标复用进程会把消息写进另一个目标的 claude 里，且没有任何报错。
+    #[test]
+    fn different_machine_or_dir_is_a_new_target() {
+        let shared = Shared::new();
+        shared.set_facts(SessionFacts {
+            connection_id: "conn-1".into(),
+            cwd: Some("/home/u/a".into()),
+            ..SessionFacts::default()
+        });
+        assert!(shared.same_target("conn-1", Some("/home/u/a")));
+        assert!(!shared.same_target("conn-2", Some("/home/u/a")), "换机器");
+        assert!(!shared.same_target("conn-1", Some("/home/u/b")), "换目录");
+        assert!(!shared.same_target("", Some("/home/u/a")), "本地↔远端");
+    }
+
     #[test]
     fn snapshot_reports_idle_initially() {
         let s = CcSession::new();
@@ -535,6 +931,36 @@ mod tests {
     fn interrupt_when_idle_returns_false() {
         let s = CcSession::new();
         assert!(!s.interrupt());
+    }
+
+    /// 工具账归属的判据：**空闲时一律不归属**，否则轮次之间从别的客户端来的
+    /// 调用会被张冠李戴记到上一条对话头上。跑着一轮时才给 session id。
+    #[test]
+    fn active_session_id_only_while_turn_active() {
+        let s = CcSession::new();
+        assert!(s.active_session_id().is_none(), "没聊过 ⇒ 无归属");
+        s.shared().set_resume_id("cc-1");
+        assert!(s.active_session_id().is_none(), "有 id 但没在跑 ⇒ 仍不归属");
+        s.shared().set_turn_active(true);
+        assert_eq!(s.active_session_id().as_deref(), Some("cc-1"));
+        // 一轮落定后立刻收回：CLI 进程还活着，但那一轮已经结束了。
+        s.shared().set_turn_active(false);
+        assert!(s.active_session_id().is_none());
+    }
+
+    /// 用量账跟着会话链清零：新对话不能带着上一条的 token 出场。
+    #[test]
+    fn reset_clears_usage() {
+        let s = CcSession::new();
+        s.shared().set_usage(crate::cc_session::usage::CcUsage {
+            input_tokens: 100,
+            output_tokens: 10,
+            cost_usd: 0.1,
+            turns: 2,
+        });
+        assert!(s.shared().usage().is_some());
+        s.reset();
+        assert!(s.shared().usage().is_none());
     }
 
     #[test]
@@ -605,6 +1031,7 @@ mod tests {
                 is_error: false,
                 text: None,
                 usage: None,
+                model_usage: None,
                 cost_usd: None,
                 num_turns: None,
                 duration_ms: None,
@@ -721,6 +1148,54 @@ mod tests {
         assert!(!snapshot_running(false, true));
         assert!(!snapshot_running(false, false));
         assert!(snapshot_running(true, true));
+    }
+
+    // ---- 审批自动放行（接线守卫：TauriSink 只认这个纯函数的结论） ----
+
+    #[test]
+    fn auto_approve_hit_empty_rules_returns_none() {
+        // 空规则表 = 全部人工。这是默认形态，必须是「谁都不放」。
+        assert!(auto_approve_hit(&[], "Bash", &serde_json::json!({"command": "ls"})).is_none());
+    }
+
+    #[test]
+    fn auto_approve_hit_matches_rule_and_reports_raw() {
+        let rules = vec!["Bash(git status)".to_string()];
+        assert_eq!(
+            auto_approve_hit(
+                &rules,
+                "Bash",
+                &serde_json::json!({"command": "git status"})
+            ),
+            Some("Bash(git status)".to_string())
+        );
+        assert!(
+            auto_approve_hit(&rules, "Bash", &serde_json::json!({"command": "rm -rf /"})).is_none()
+        );
+    }
+
+    /// 🔴 提问永不自动放行：答案只能用户给。规则写得再宽（`AskUserQuestion(**)`）
+    /// 也不放 —— 这是纯函数里的纵深防御，与调用方「只对 PermissionAsk 调」双保险。
+    #[test]
+    fn auto_approve_hit_never_allows_questions() {
+        let rules = vec!["AskUserQuestion(**)".to_string()];
+        let input = serde_json::json!({"questions": [{"question": "吃什么"}]});
+        assert!(auto_approve_hit(&rules, "AskUserQuestion", &input).is_none());
+    }
+
+    /// 通知标题/正文的截断逻辑不能把多字节字符劈碎（`chars()` 计数，不是字节）。
+    #[test]
+    fn notify_body_truncates_on_char_boundary() {
+        // 与 `notify_turn_end` 同规则的截断：先取第一行，再按字符截到 100。
+        let long: String = "中".repeat(300);
+        let first = long.lines().next().unwrap_or(&long);
+        let mut out: String = first.chars().take(100).collect();
+        if first.chars().count() > 100 {
+            out.push('…');
+        }
+        assert_eq!(out.chars().count(), 101);
+        assert!(out.ends_with('…'));
+        assert!(out.is_char_boundary(out.len()));
     }
 
     #[test]

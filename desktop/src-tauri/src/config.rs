@@ -239,6 +239,24 @@ pub struct BridgeConfig {
     /// 接入命令保持 sed 形态、冲突文案维持两分支、确认弹窗维持现有文案、无任何
     /// 「本机身份」UI。开启后接入命令变为条目级并出现身份卡 / 三分支文案。
     pub multi_device_mode: bool,
+    /// CC 对话「本轮结束」桌面通知。默认关。
+    ///
+    /// 与 `notify_task_complete` 是**两层门**：那个管「让不让弹通知」（全局预算），
+    /// 这个管「要不要为对话弹」。两个都开才推；关任何一个都静默。
+    /// 为什么默认关：长任务跑完提示是有用的，但「每轮结束都弹」对把对话页
+    /// 挂在屏幕上的人就是噪音 —— 先让需要的人自己开。
+    pub cc_notify_turn_end: bool,
+    /// CC 对话审批自动放行规则。默认空 = 一条都不放行，全部人工决定。
+    ///
+    /// 形状 `工具名(参数glob)`：`Bash(git status)`、`Read(**)`、`Edit(src/**)`。
+    /// 参数 glob 匹配工具的**主参数**（Bash→`command`、Read/Write/Edit→`file_path`、
+    /// Glob/Grep→`pattern`，其余→整入参的紧凑 JSON）；不带括号 = 只匹配工具名。
+    /// glob 默认让 `*` 跨 `/`（globset 默认行为），要精确到目录用 `**`。
+    ///
+    /// 🔴 命中即**代替用户**回 `allow`，并记一条 `PermissionResolved{auto:true}`
+    /// 进事件流水与审计 —— 界面上那张卡会自己落定成「已自动放行」。
+    /// `AskUserQuestion` 永不自动放行：答案只能用户给，规则写得再宽也不问。
+    pub cc_auto_approve_rules: Vec<String>,
 }
 
 impl Default for BridgeConfig {
@@ -315,6 +333,8 @@ impl Default for BridgeConfig {
             remote_ban_window_min: 15,
             device_id: String::new(),
             multi_device_mode: false,
+            cc_notify_turn_end: false,
+            cc_auto_approve_rules: vec![],
         }
     }
 }
@@ -432,6 +452,10 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             }
             "device_id" => config.device_id = parse_or_warn(key, value, String::new()),
             "multi_device_mode" => config.multi_device_mode = parse_or_warn(key, value, false),
+            "cc_notify_turn_end" => config.cc_notify_turn_end = parse_or_warn(key, value, false),
+            "cc_auto_approve_rules" => {
+                config.cc_auto_approve_rules = parse_or_warn(key, value, vec![])
+            }
             "transport" => {
                 let s = parse_or_warn::<String>(key, value, "http".into());
                 config.transport = if s == "sse" {
@@ -788,6 +812,18 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         conn,
         "multi_device_mode",
         &to_value(config.multi_device_mode).unwrap(),
+    )?;
+    // CC 对话两项：轮结束通知 + 审批自动放行规则。漏写同样造成「导入后内存领先
+    // 于 DB」（见下面 connect_client 的注释），必须与 ConfigPatch 同步。
+    save_config_field(
+        conn,
+        "cc_notify_turn_end",
+        &to_value(config.cc_notify_turn_end).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "cc_auto_approve_rules",
+        &to_value(&config.cc_auto_approve_rules).unwrap(),
     )?;
     // 🔴 这两个键曾漏写（审查 B7）：`import_config_inner` 是「先落库再整体替换内存」，
     // 漏写即造成内存领先于 DB——导入后界面按新配置跑、重启又变回旧值；`has_onboarded`

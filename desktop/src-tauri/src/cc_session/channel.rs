@@ -151,6 +151,51 @@ pub fn probe_script() -> &'static str {
     r#"p=$(bash -lc 'command -v claude' 2>/dev/null); if [ -z "$p" ]; then p=$(command -v claude 2>/dev/null); fi; if [ -z "$p" ]; then echo "__CC_MISSING__"; else printf '__CC_PATH__%s\n' "$p"; fi"#
 }
 
+/// 润色（prompt-polish）用的 claude 参数：一次性 `-p --bare`。
+///
+/// - `-p`：无头打印模式，stdout 即结果。
+/// - `--bare` = "Minimal mode: skip hooks"（2026-10-24 探针确认）—— 省掉
+///   SessionStart 钩子那 12~19s 冷启动。润色是按钮点击的一次性动作，等不起。
+///
+/// 🔴 提示词走 **stdin**，不进 argv：Windows `CreateProcess` 的 32767 字符上限下，
+/// 两万字的草稿（中文按 UTF-16 还要翻倍）会把命令直接撑爆。
+pub const POLISH_ARGS: &[&str] = &["-p", "--bare"];
+
+/// 本机润色：`<claude 绝对路径> -p --bare`，提示词经 stdin。
+pub fn polish_local(claude_path: &str) -> Result<(PathBuf, Vec<String>), String> {
+    let program = spawn::resolve_program(claude_path).map_err(|e| format!("找不到 claude：{e}"))?;
+    Ok((program, POLISH_ARGS.iter().map(|s| s.to_string()).collect()))
+}
+
+/// 远端润色：`ssh <opts> -- user@host "exec '<claude>' -p --bare"`。
+///
+/// 提示词经 **ssh 的 stdin** 直达远端 claude 的 stdin —— ssh 本来就把本地
+/// stdin 转发给远程命令，不需要任何中间层。
+///
+/// 🔴 这里**不走 base64 引导**（`echo <b64> | base64 -d | bash`）：那个形状会把
+/// stdin 占给脚本本身，claude 一个字都读不到。命令串里没有任何用户数据
+/// （只有探测得来的绝对路径），单引号转义足够。
+pub fn polish_remote(
+    ssh_args: &[String],
+    destination: &str,
+    claude_path: &str,
+) -> Result<(PathBuf, Vec<String>), String> {
+    let program = spawn::resolve_program("ssh")
+        .or_else(|_| spawn::resolve_program("ssh.exe"))
+        .map_err(|e| format!("未检测到系统 OpenSSH 客户端：{e}"))?;
+    let mut script = String::from("exec ");
+    script.push_str(&shell_quote(claude_path));
+    for arg in POLISH_ARGS {
+        script.push(' ');
+        script.push_str(&shell_quote(arg));
+    }
+    let mut args: Vec<String> = ssh_args.to_vec();
+    args.push("--".into());
+    args.push(destination.to_string());
+    args.push(script);
+    Ok((program, args))
+}
+
 /// POSIX 单引号转义。`'` → `'\''` 是唯一可靠且不依赖 locale 的写法。
 fn shell_quote(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len() + 2);
@@ -289,5 +334,36 @@ mod tests {
         let (_, args) = remote_command(&ssh_args, "u@h", "/usr/bin/claude", &spec()).expect("构造");
         assert_eq!(&args[..3], &["-p", "2222", "--"]);
         assert_eq!(args[3], "u@h");
+    }
+
+    // ---- 润色（prompt-polish）命令构造 ----
+
+    #[test]
+    fn polish_local_passes_bare_flag_and_no_prompt_in_argv() {
+        let (_, args) = polish_local("claude").expect("构造");
+        assert_eq!(args, vec!["-p".to_string(), "--bare".to_string()]);
+    }
+
+    /// 远端润色的命令串里**不能有用户数据**：提示词走 ssh stdin，
+    /// 命令里只有探测来的绝对路径。这也是它不走 base64 引导的原因。
+    #[test]
+    fn polish_remote_keeps_prompt_out_of_command_line() {
+        let (_, args) = polish_remote(&[], "u@h", "/home/u/.local/bin/claude").expect("构造");
+        let script = args.last().expect("末位是远端命令");
+        assert!(script.starts_with("exec '"), "{script}");
+        assert!(script.contains("'-p'"), "{script}");
+        assert!(script.contains("'--bare'"), "{script}");
+        assert!(script.contains("'/home/u/.local/bin/claude'"), "{script}");
+        // 没有 base64 / 管道中间层：stdin 必须直通 claude。
+        assert!(!script.contains("base64"), "{script}");
+        assert!(!script.contains('|'), "{script}");
+    }
+
+    /// 路径里的单引号必须被关住，不能把远端命令劈开。
+    #[test]
+    fn polish_remote_quotes_nasty_paths() {
+        let (_, args) = polish_remote(&[], "u@h", "/tmp/it's/claude").expect("构造");
+        let script = args.last().expect("末位");
+        assert!(script.contains(r"'\''"), "{script}");
     }
 }

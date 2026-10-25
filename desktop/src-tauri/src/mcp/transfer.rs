@@ -1013,6 +1013,8 @@ async fn write_audit(
         Some(0.0),
         None,
         None,
+        // 直传也可能发生在某一轮对话进行中（CC 让客户端下个大文件）。
+        state.cc.active_session_id(),
     );
     entry.backup_path = backup.map(|p| p.to_string_lossy().into_owned());
     entry.target_path = Some(path.to_string_lossy().into_owned());

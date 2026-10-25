@@ -142,6 +142,12 @@ pub struct ConfigPatch {
     /// 缺了它 → 设置页拨开关不落盘、弹回，「会话持久化」胶囊永远显示关（审查 B2）。
     #[serde(rename = "sessionCwdEnabled")]
     pub session_cwd_enabled: Option<bool>,
+    /// CC 对话轮结束桌面通知开关。前端「完成提醒」卡写入。
+    #[serde(rename = "ccNotifyTurnEnd")]
+    pub cc_notify_turn_end: Option<bool>,
+    /// CC 对话审批自动放行规则。前端「完成提醒」卡（对话子区）写入。
+    #[serde(rename = "ccAutoApproveRules")]
+    pub cc_auto_approve_rules: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -315,6 +321,17 @@ pub async fn save_config(
         session_cwd_enabled,
         "session_cwd_enabled",
         &patch.session_cwd_enabled
+    );
+    // CC 对话：轮结束通知 + 审批自动放行规则。都是纯配置，无重启副作用。
+    apply_field!(
+        cc_notify_turn_end,
+        "cc_notify_turn_end",
+        &patch.cc_notify_turn_end
+    );
+    apply_field!(
+        cc_auto_approve_rules,
+        "cc_auto_approve_rules",
+        &patch.cc_auto_approve_rules
     );
     // 接入工具（connect_client 在 config 中是 Option<String>，与 apply_field! 宏的
     // "T vs Option<T>" 假设不符，故单独处理——同 scope / project_path）。
@@ -602,6 +619,7 @@ pub(crate) async fn switch_root_profile_inner(
         "switch_root_profile",
         &serde_json::json!({ "from": from, "to": name, "rootCount": count }).to_string(),
         true,
+        None,
         None,
         None,
         None,

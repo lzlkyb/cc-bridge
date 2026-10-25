@@ -245,8 +245,15 @@ pub async fn notify_desktop(
 
 /// `notifications` feature 关闭时是 no-op，**不链接**通知插件——与 `push_notification`
 /// 同理，否则 `cargo test --no-default-features` 会以 `0xc0000139` 崩在 DLL 装载上。
+///
+/// `pub(crate)`：CC 对话的轮结束通知（`cc_session::manager::TauriSink`）也走它 ——
+/// 通知预算的统一闸门是 `notify_task_complete`，那边再过一遍自己的开关。
 #[cfg(feature = "notifications")]
-fn notify_desktop_impl(app: tauri::AppHandle, title: &str, body: &str) -> Result<bool, String> {
+pub(crate) fn notify_desktop_impl(
+    app: tauri::AppHandle,
+    title: &str,
+    body: &str,
+) -> Result<bool, String> {
     use tauri_plugin_notification::NotificationExt;
     match app.notification().builder().title(title).body(body).show() {
         Ok(()) => Ok(true),
@@ -259,6 +266,10 @@ fn notify_desktop_impl(app: tauri::AppHandle, title: &str, body: &str) -> Result
 }
 
 #[cfg(not(feature = "notifications"))]
-fn notify_desktop_impl(_app: tauri::AppHandle, _title: &str, _body: &str) -> Result<bool, String> {
+pub(crate) fn notify_desktop_impl(
+    _app: tauri::AppHandle,
+    _title: &str,
+    _body: &str,
+) -> Result<bool, String> {
     Ok(false)
 }

@@ -302,6 +302,8 @@ pub async fn sse_message_handler(
                     let io_ms = crate::timing::take_io();
                     let server_ms = t_recv.elapsed().as_millis() as u64;
                     let audit_enabled = state.config.read().await.audit_enabled;
+                    // 用量归属：与 HTTP 通道同口径（见 `CcSession::active_session_id`）。
+                    let cc_session_id = state.cc.active_session_id();
                     match result {
                         Ok(content) => {
                             if audit_enabled {
@@ -312,6 +314,7 @@ pub async fn sse_message_handler(
                                 write_audit_for_call(
                                     &state.data_dir, &tool_name, &arguments, true, None,
                                     Some(source_ip.clone()), elapsed, server_ms, io_ms, None,
+                                    cc_session_id.clone(),
                                     result_bytes,
                                 );
                                 state.inc_audit_count();
@@ -332,6 +335,7 @@ pub async fn sse_message_handler(
                                 write_audit_for_call(
                                     &state.data_dir, &tool_name, &arguments, false, Some(e.clone()),
                                     Some(source_ip.clone()), elapsed, server_ms, io_ms, None,
+                                    cc_session_id.clone(),
                                     result_bytes,
                                 );
                                 state.inc_audit_count();
