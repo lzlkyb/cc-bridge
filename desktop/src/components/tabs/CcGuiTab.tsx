@@ -4,9 +4,10 @@ import { invoke } from "../../lib/tauri";
 import type { SshConnectionList } from "../../lib/types";
 import { useCcPaneList } from "../../hooks/useCcPaneList";
 import { useCcShortcuts } from "../../hooks/useCcShortcuts";
+import { useCcSessionActions } from "../../hooks/useCcSessionActions";
 import { useCcStoredSessions } from "../../hooks/useCcStoredSessions";
 import { conflictWith } from "../../lib/ccPaneMeta";
-import { filterStored } from "../../lib/ccStoredList";
+import { archivedOnly, filterStored } from "../../lib/ccStoredList";
 import { SessionSidebar } from "../ccgui/SessionSidebar";
 import { CcPane } from "./CcPane";
 
@@ -38,6 +39,10 @@ const AUTO_COLLAPSE_W = 1160;
  */
 export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) {
   const list = useCcPaneList();
+  /** 改名 / 归档（3-1d）。`titles` 是本窗口改过的标题，按库里的行号索引。 */
+  const actions = useCcSessionActions();
+  /** 历史区摆「已归档」那一档（3-1d）。窗口级界面状态，不进库。 */
+  const [archivedView, setArchivedView] = useState(false);
   /** 用户手动折叠过没有。`null` = 还没表态，跟随窗口宽度。 */
   const [userCollapsed, setUserCollapsed] = useState<boolean | null>(null);
   const [narrow, setNarrow] = useState(false);
@@ -88,10 +93,23 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
     }
     return { cliIds, rowIds };
   }, [list.entries]);
+  /**
+   * 历史区当前那一档：`archivedView` 决定摆「历史」还是「已归档」。
+   *
+   * 两档共用一次查询（`cc_list_stored` 带 `includeArchived: true`）：归档条数
+   * 要用来决定开关摆不摆，为一份计数再发一次请求不划算。
+   */
   const historyRows = useMemo(
-    () => filterStored(stored.data ?? [], openIds),
-    [stored.data, openIds],
+    () =>
+      filterStored(
+        stored.data ?? [],
+        openIds,
+        "",
+        archivedView ? "archived" : "active",
+      ),
+    [stored.data, openIds, archivedView],
   );
+  const archivedCount = useMemo(() => archivedOnly(stored.data ?? []).length, [stored.data]);
   /**
    * 有 pane 还在恢复 ⇒ 历史区**整体不摆**。
    *
@@ -139,11 +157,15 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
         collapsed={collapsed}
         targets={targets}
         stored={historyView}
+        archived={archivedView}
+        archivedCount={archivedCount}
         onToggleCollapsed={toggleCollapsed}
+        onToggleArchived={() => setArchivedView((v) => !v)}
         onPick={list.setActive}
         onNew={list.add}
         onClose={list.close}
         onOpenStored={list.openStored}
+        actions={{ rename: actions.rename, archive: actions.archive }}
       />
       <div className="min-w-0 flex-1">
         {list.entries.map((e) => (
@@ -153,6 +175,9 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
             active={e.key === list.active}
             restore={e.restore}
             conflict={conflicts[e.key] ?? null}
+            titleOverride={
+              typeof e.meta?.rowId === "number" ? actions.titles[e.meta.rowId] : undefined
+            }
             onMeta={list.report}
             onNewSession={list.add}
             onNavigate={onNavigate}

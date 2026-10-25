@@ -24,7 +24,11 @@ export const STORED_LIMIT = 30;
 export function useCcStoredSessions() {
   return useQuery<CcStoredSummary[], Error>({
     queryKey: STORED_SESSIONS_KEY,
-    queryFn: () => invoke<CcStoredSummary[]>("cc_list_stored", { limit: STORED_LIMIT }),
+    // 已归档的**一起取**（3-1d）：侧栏那个「已归档 N」开关要有总数才能决定
+    // 摆不摆，而它不该为了一份计数再发一次请求。归档行也是摘录列（不含正文），
+    // 多几十行换一次请求，比两套查询键互相失效便宜得多。
+    queryFn: () =>
+      invoke<CcStoredSummary[]>("cc_list_stored", { limit: STORED_LIMIT, includeArchived: true }),
     staleTime: 30_000,
   });
 }

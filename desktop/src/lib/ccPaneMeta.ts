@@ -103,8 +103,17 @@ export function derivePaneMeta(input: {
   cwd: string | null;
   /** 还在载入库里那条会话（理由见 `CcPaneMeta.restoring`）。 */
   restoring: boolean;
+  /**
+   * 用户手写的标题（3-1d）。有它就压过「首条用户消息」派生的标题。
+   *
+   * 为什么要这个口子：改名写的是库里的 `title`，而界面上的标题本来是**现算**的
+   * —— 那条消息还在，现算永远是旧内容。不给口子的话，用户改完名字发现侧栏
+   * 一点变化都没有（历史区那条却变了），像是只改了一半。
+   */
+  titleHint?: string | null;
 }): CcPaneMeta {
-  const { view, pending, connectionId, targetLabel, targetAlive, cwd, restoring } = input;
+  const { view, pending, connectionId, targetLabel, targetAlive, cwd, restoring, titleHint } =
+    input;
   const turns = view.messages.reduce((n, m) => (m.kind === "user" ? n + 1 : n), 0);
 
   // 未决卡片里先看「需要选的」还是「需要批的」其实无所谓 —— 两者都要求用户动手，
@@ -137,7 +146,7 @@ export function derivePaneMeta(input: {
     sessionId: null, // 由调用方按 `sessionIdRef` 回填：纯函数拿不到 ref 里的值
     cliSessionId: view.sessionId,
     rowId: null, // 同上：库里的行号只有调用方（restore 的返回值）知道
-    title: titleOf(view),
+    title: titleHint?.trim() || titleOf(view),
     turns,
     state,
     detail,

@@ -1,6 +1,7 @@
 import { Icon } from "../ui/icon";
 import type { CcPaneMeta, CcPaneState } from "../../lib/ccPaneMeta";
 import type { CcPaneEntry } from "../../hooks/useCcPaneList";
+import { SessionRowMenu } from "./SessionRowMenu";
 
 /** 侧栏一行（`CcPaneEntry` + 派生出来的四段文字）。 */
 export type SessionRowData = CcPaneEntry & {
@@ -41,11 +42,11 @@ export function rowOf(entry: CcPaneEntry, label: string): SessionRowData {
 }
 
 /**
- * 展开态的一行：状态点 + 标题 + 副标题 + hover 才出现的关闭键。
+ * 展开态的一行：状态点 + 标题 + 副标题 + hover 才出现的「⋯」与关闭键。
  *
- * 关闭键只有一个动作、没有菜单：设计稿那个「更多」菜单里另有重命名/归档两项，
- * 而那两项还没做（能力对齐表「重命名 / 归档：期三未做」）。只剩一个动作时套
- * 菜单等于让用户为了关掉一条点两次。
+ * 关闭键是**单一动作**，所以不塞进菜单：为了关掉一条会话点两次没必要。
+ * 重命名 / 归档在「⋯」里（3-1d），行内不再挂第二个常驻按钮 —— 240px 宽的一行
+ * 塞两个图标加正文，标题只剩十来个字。
  */
 export function SessionRow({
   row,
@@ -53,13 +54,18 @@ export function SessionRow({
   canClose,
   onPick,
   onClose,
+  onRename,
+  onArchive,
 }: {
   row: SessionRowData;
   active: boolean;
   canClose: boolean;
   onPick: (key: string) => void;
   onClose: (key: string) => void;
+  onRename: (rowId: number, title: string) => Promise<unknown>;
+  onArchive: (rowId: number, archived: boolean) => Promise<unknown>;
 }) {
+  const rowId = row.meta?.rowId ?? null;
   return (
     <div
       data-active={active || undefined}
@@ -85,21 +91,30 @@ export function SessionRow({
           {row.detail}
         </div>
       </div>
-      {canClose && (
-        <button
-          type="button"
-          title="关闭会话（内容仍在历史里）"
-          aria-label={`关闭会话：${row.title}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose(row.key);
-          }}
-          className="mt-px flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/[.07] group-hover:opacity-100 data-[active]:opacity-100"
-          data-active={active || undefined}
-        >
-          <Icon name="close" size={11} />
-        </button>
-      )}
+      <div className="flex shrink-0 items-center">
+        <SessionRowMenu
+          rowId={rowId}
+          title={row.title}
+          archived={false}
+          onRename={onRename}
+          onArchive={onArchive}
+        />
+        {canClose && (
+          <button
+            type="button"
+            title="关闭会话（内容仍在历史里）"
+            aria-label={`关闭会话：${row.title}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose(row.key);
+            }}
+            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/[.07] group-hover:opacity-100 data-[active]:opacity-100"
+            data-active={active || undefined}
+          >
+            <Icon name="close" size={11} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }

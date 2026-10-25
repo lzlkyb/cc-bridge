@@ -488,6 +488,9 @@ pub struct CcRestore {
     /// 下一轮 `--resume` 要带的值。**没有它，恢复出来的对话发下一句就是新会话**。
     pub resume_id: Option<String>,
     pub title: Option<String>,
+    /// 标题是用户手写的（`cc_rename_session` 写的）。前端据此决定「库里的标题」
+    /// 能不能压过「首条消息派生的标题」。
+    pub title_locked: bool,
     pub message_count: i64,
     /// 最后活跃时间（秒）。
     pub updated_at: i64,
@@ -590,6 +593,7 @@ fn adopt(shared: &crate::cc_session::Shared, row: crate::cc_session::store::Stor
         session_id: row.session_id,
         resume_id: row.resume_id,
         title: row.title,
+        title_locked: row.title_locked,
         message_count: row.message_count,
         updated_at: row.updated_at,
         events: row.events,
@@ -612,12 +616,44 @@ const DEFAULT_STORED_LIMIT: usize = 30;
 pub async fn cc_list_stored(
     state: State<'_, Arc<AppState>>,
     limit: Option<usize>,
+    include_archived: Option<bool>,
 ) -> Result<Vec<store::Summary>, String> {
     let n = limit
         .unwrap_or(DEFAULT_STORED_LIMIT)
         .clamp(1, store::KEEP_SESSIONS);
     let conn = state.db.lock().await;
-    store::list(&conn, n)
+    store::list(&conn, n, include_archived.unwrap_or(false))
+}
+
+/// 给一条落盘会话改名（侧栏的「重命名」）。返回落库后的标题。
+///
+/// 改名写的是 `cc_sessions.title` 并打上 `title_locked`：下一次落盘会用首条用户
+/// 消息重算标题，没有这个锁就等于每说一句话名字就被抹一次（见 `store::save`）。
+///
+/// 只认 `row_id`（库里的行），不认内部 id：改名是**对内容**的操作，而一条还没
+/// 落过盘的新会话没有内容可命名 —— 前端那时不摆这个入口。
+#[tauri::command]
+pub async fn cc_rename_session(
+    state: State<'_, Arc<AppState>>,
+    row_id: i64,
+    title: String,
+) -> Result<String, String> {
+    let conn = state.db.lock().await;
+    store::rename(&conn, row_id, &title)
+}
+
+/// 归档 / 取消归档（侧栏的「归档」）。
+///
+/// 归档不是删除：只打一个时间戳，内容原样留在库里，用户随时能在「显示已归档」
+/// 里把它捞回来。归档的会话不参与自动恢复（见 `store::latest`）。
+#[tauri::command]
+pub async fn cc_archive_session(
+    state: State<'_, Arc<AppState>>,
+    row_id: i64,
+    archived: bool,
+) -> Result<(), String> {
+    let conn = state.db.lock().await;
+    store::set_archived(&conn, row_id, archived)
 }
 
 /// 新对话：清流水 + 清 session id。
@@ -899,6 +935,7 @@ mod tests {
             session_id: Some("s-1".into()),
             resume_id: Some("s-1".into()),
             title: None,
+            title_locked: false,
             message_count: 1,
             updated_at: 0,
             events,
@@ -967,9 +1004,11 @@ mod tests {
             model: Some("m".into()),
             permission_mode: Some("acceptEdits".into()),
             title: Some("标题".into()),
+            title_locked: false,
             preview: None,
             message_count: 3,
             updated_at: 1,
+            archived_at: None,
             events: Vec::new(),
             dropped: 0,
         }

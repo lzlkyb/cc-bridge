@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agoText, filterStored } from "./ccStoredList";
+import { agoText, archivedOnly, filterStored } from "./ccStoredList";
 import type { CcStoredSummary } from "./ccEventTypes";
 
 const row = (patch: Partial<CcStoredSummary> = {}): CcStoredSummary => ({
@@ -8,11 +8,13 @@ const row = (patch: Partial<CcStoredSummary> = {}): CcStoredSummary => ({
   sessionId: "s-1",
   cwd: "D:/proj",
   title: "改 read_files 上限",
+  titleLocked: false,
   preview: "好，我改一下",
   model: null,
   permissionMode: null,
   messageCount: 3,
   updatedAt: 1_700_000_000,
+  archivedAt: null,
   dropped: 0,
   ...patch,
 });
@@ -81,5 +83,22 @@ describe("filterStored", () => {
 
   it("空搜索词 = 不过滤", () => {
     expect(filterStored([row(), row({ rowId: 2 })], {}, "   ")).toHaveLength(2);
+  });
+
+  it("已归档的不在正常历史里出现", () => {
+    const rows = [row({ rowId: 1 }), row({ rowId: 2, archivedAt: 1_700_000_100 })];
+    expect(filterStored(rows, {}).map((r) => r.rowId)).toEqual([1]);
+  });
+});
+
+describe("archivedOnly", () => {
+  it("只摆归档的，且不受「已打开」影响（归档视图是独立的第二次机会）", () => {
+    const rows = [
+      row({ rowId: 1 }),
+      row({ rowId: 2, archivedAt: 1_700_000_100 }),
+      row({ rowId: 3, archivedAt: 1_700_000_200 }),
+    ];
+    expect(archivedOnly(rows).map((r) => r.rowId)).toEqual([2, 3]);
+    expect(archivedOnly([])).toEqual([]);
   });
 });

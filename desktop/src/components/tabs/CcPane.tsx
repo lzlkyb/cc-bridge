@@ -36,6 +36,7 @@ export function CcPane({
   active,
   restore,
   conflict,
+  titleOverride,
   onMeta,
   onNewSession,
   onNavigate,
@@ -50,6 +51,13 @@ export function CcPane({
   restore: CcRestoreReq;
   /** 同目录下正在跑的另一条会话标题（`conflictWith`）。`null` = 没有冲突。 */
   conflict: string | null;
+  /**
+   * 用户手写的标题（3-1d）。`undefined` = 没改过名，标题仍按首条消息现算。
+   *
+   * 两条来源合一：本窗口刚改的（宿主 `useCcSessionActions.titles`）、上次改过
+   * 存进库里的（`restored.titleLocked`）。前者优先 —— 它就是最新的。
+   */
+  titleOverride?: string;
   /** 把侧栏要显示的元信息报上去。按引用判重，见 `useCcPaneList.report`。 */
   onMeta: (key: string, meta: CcPaneMeta) => void;
   /** 新建**另一条**会话（侧栏的 +、Ctrl+N、会话条的「新对话」都走它）。 */
@@ -191,8 +199,10 @@ export function CcPane({
       // 恢复没走完就别让历史区露出来 —— 那时本条还没有 rowId / cliSessionId，
       // 对不上账会让它自己在历史区里再出现一次（可点 ⇒ 开出重复的一条）。
       restoring: !session.ready,
+      // 手写标题优先于「首条消息」：改完名看不到变化，等于改名没生效。
+      titleHint: titleOverride ?? (session.restored?.titleLocked ? session.restored.title : null),
     });
-  }, [view, session.pending, targetId, targets, cwd, session.ready]);
+  }, [view, session.pending, targetId, targets, cwd, session.ready, titleOverride, session.restored]);
   /**
    * 库里那一行的行号，给侧栏历史区对账用。
    *

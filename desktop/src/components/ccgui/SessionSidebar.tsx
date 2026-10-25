@@ -17,11 +17,21 @@ type Props = {
   targets: { id: string; label: string }[];
   /** 库里没打开的会话（已按「已打开 / 空行 / 搜索词」过滤好，见 `filterStored`）。 */
   stored: CcStoredSummary[];
+  /** 摆的是「已归档」那一档（3-1d）。 */
+  archived: boolean;
+  /** 归档总数。`0` 时不摆那个开关（点了也只会看到空列表）。 */
+  archivedCount: number;
   onToggleCollapsed: () => void;
+  onToggleArchived: () => void;
   onPick: (key: string) => void;
   onNew: () => void;
   onClose: (key: string) => void;
   onOpenStored: (rowId: number) => void;
+  /** 改名 / 归档：同一个对象传给每一行（重命名就地输入，见 `SessionRowMenu`）。 */
+  actions: {
+    rename: (rowId: number, title: string) => Promise<unknown>;
+    archive: (rowId: number, archived: boolean) => Promise<unknown>;
+  };
 };
 
 /**
@@ -42,11 +52,15 @@ export function SessionSidebar({
   collapsed,
   targets,
   stored,
+  archived,
+  archivedCount,
   onToggleCollapsed,
+  onToggleArchived,
   onPick,
   onNew,
   onClose,
   onOpenStored,
+  actions,
 }: Props) {
   const [query, setQuery] = useState("");
   const sizing = useSidebarWidth("cc-bridge.cc-sidebar-width");
@@ -73,8 +87,11 @@ export function SessionSidebar({
     );
   }, [rows, query, showSearch]);
 
-  /** 历史区跟着同一个搜索词收窄（「已打开」外层已滤过，这里只筛词）。 */
-  const storedShown = useMemo(() => filterStored(stored, {}, query), [stored, query]);
+  /** 历史区跟着同一个搜索词收窄（「已打开 / 归档」两档的筛选规则在 `filterStored`）。 */
+  const storedShown = useMemo(
+    () => filterStored(stored, {}, query, archived ? "archived" : "active"),
+    [stored, query, archived],
+  );
 
   /** 按目标分组，组顺序 = 首次出现顺序（本机通常在最前，因为它最先被用到）。 */
   const groups = useMemo(() => {
@@ -194,20 +211,47 @@ export function SessionSidebar({
                       canClose={canClose}
                       onPick={onPick}
                       onClose={onClose}
+                      onRename={actions.rename}
+                      onArchive={actions.archive}
                     />
                   ))}
                 </div>
               ))}
               {/* 历史区跟着搜索词一起收窄：搜索框问的是「哪条会话」，
                   没道理只搜已打开的那几条而把历史排除在外。 */}
-              <SessionHistoryList rows={storedShown} targets={targets} onOpen={onOpenStored} />
+              <SessionHistoryList
+                rows={storedShown}
+                targets={targets}
+                archived={archived}
+                onOpen={onOpenStored}
+                onRename={actions.rename}
+                onArchive={actions.archive}
+              />
             </div>
 
             <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-1.5 text-[10.5px] text-muted-foreground tabular-nums">
               <span
                 className={`h-1.5 w-1.5 rounded-full ${runningCount > 0 ? "bg-success" : "bg-muted-foreground/40"}`}
               />
-              {runningCount} 个在跑 · 共 {rows.length} 个
+              <span className="truncate">
+                {runningCount} 个在跑 · 共 {rows.length} 个
+              </span>
+              {archivedCount > 0 && (
+                <button
+                  type="button"
+                  onClick={onToggleArchived}
+                  title={
+                    archived
+                      ? "回到历史列表"
+                      : `显示已归档的 ${archivedCount} 条（归档不删内容，可随时捞回）`
+                  }
+                  className={`ml-auto shrink-0 rounded px-1 py-0.5 transition-colors hover:bg-foreground/[.06] hover:text-foreground ${
+                    archived ? "text-primary" : ""
+                  }`}
+                >
+                  {archived ? "返回历史" : `已归档 ${archivedCount}`}
+                </button>
+              )}
             </div>
           </>
         )}

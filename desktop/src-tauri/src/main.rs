@@ -1057,6 +1057,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cc_restore,
             // 侧栏「历史」区：库里落盘过的会话摘要（不含正文，见命令注释）。
             commands::cc_list_stored,
+            // 侧栏改名 / 归档（3-1d）：只动 `cc_sessions` 的两列，不碰内容。
+            commands::cc_rename_session,
+            commands::cc_archive_session,
             commands::cc_reset,
             // 润色：一次性 `claude -p --bare` 子进程，结果只回输入框，不进会话。
             commands::cc_polish,

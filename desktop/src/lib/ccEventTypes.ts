@@ -118,6 +118,13 @@ export type CcRestore = {
   sessionId: string | null;
   resumeId: string | null;
   title: string | null;
+  /**
+   * 标题是用户手写的（`cc_rename_session` 写过）。
+   *
+   * 只有它为 `true` 时，库里的 `title` 才是**权威标题**；否则那只是「首条用户
+   * 消息的自动截断」，界面仍按消息现算（用户继续聊时标题跟着走）。
+   */
+  titleLocked: boolean;
   messageCount: number;
   /** 最后活跃时间（秒）。 */
   updatedAt: number;
@@ -139,12 +146,16 @@ export type CcStoredSummary = {
   sessionId: string | null;
   cwd: string | null;
   title: string | null;
+  /** 标题是用户手写的（见 `CcRestore.titleLocked`）。 */
+  titleLocked: boolean;
   preview: string | null;
   model: string | null;
   permissionMode: string | null;
   messageCount: number;
   /** 最后活跃时间（秒）。 */
   updatedAt: number;
+  /** 归档时间（秒）。`null` = 未归档。只在「显示已归档」时才有非空值。 */
+  archivedAt: number | null;
   /** 落盘时因超限被丢掉的事件数。 */
   dropped: number;
 };

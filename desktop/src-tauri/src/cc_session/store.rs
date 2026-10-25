@@ -42,6 +42,12 @@ pub const MAX_EVENTS_BYTES: usize = 4 * 1024 * 1024;
 /// 设上限纯粹是防「events_json 越攒越大把库撑爆」。
 pub const KEEP_SESSIONS: usize = 100;
 
+/// 用户手写标题的长度上限（字符）。
+///
+/// 比自动标题的 80 字宽一点：手写的往往是「客户 A · 发票导出」这种短标签，
+/// 但也不该让一行侧栏塞下一整句话。按**字符**截（中文按字节切会乱码）。
+pub const MAX_TITLE_CHARS: usize = 120;
+
 /// 一次落盘的内容。
 #[derive(Debug, Default, Clone)]
 pub struct Snapshot {
@@ -71,15 +77,22 @@ pub struct Stored {
     pub model: Option<String>,
     pub permission_mode: Option<String>,
     pub title: Option<String>,
+    /// 标题是用户手写的（`cc_rename_session` 写的）。
+    ///
+    /// 🔴 落盘每次都会用「第一条用户消息」重算标题 —— 没有这一位，用户改完名字
+    /// 发下一句就变回原来的自动标题，而且**没有任何提示**，看起来像改名没生效。
+    pub title_locked: bool,
     pub preview: Option<String>,
     pub message_count: i64,
     pub updated_at: i64,
+    /// 归档时间（秒）。`Some` = 已归档，不出现在默认列表与自动恢复里。
+    pub archived_at: Option<i64>,
     pub events: Vec<CcEvent>,
     /// 落盘时因为超限被丢掉了多少条事件（`> 0` 时界面必须提示）。
     pub dropped: u64,
 }
 
-/// 建表。只在 `init_database` 里调一次。
+/// 建表 + 补列。只在 `init_database` 里调一次。
 pub fn ensure_table(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS cc_sessions (
@@ -101,7 +114,9 @@ pub fn ensure_table(conn: &Connection) -> Result<(), String> {
             file_mtime_ms   INTEGER,
             source          TEXT    NOT NULL DEFAULT 'local',
             dropped         INTEGER NOT NULL DEFAULT 0,
-            events_json     TEXT
+            events_json     TEXT,
+            title_locked    INTEGER NOT NULL DEFAULT 0,
+            archived_at     INTEGER
         );
         CREATE UNIQUE INDEX IF NOT EXISTS cc_sessions_ident
             ON cc_sessions(connection_id, session_id)
@@ -109,7 +124,32 @@ pub fn ensure_table(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS cc_sessions_active
             ON cc_sessions(last_active_at DESC);",
     )
-    .map_err(|e| format!("建 cc_sessions 表失败：{e}"))
+    .map_err(|e| format!("建 cc_sessions 表失败：{e}"))?;
+    // 老库补列（`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做）。
+    ensure_column(conn, "title_locked", "INTEGER NOT NULL DEFAULT 0")?;
+    ensure_column(conn, "archived_at", "INTEGER")?;
+    Ok(())
+}
+
+/// 老库补一列。已经有了就什么都不做。
+///
+/// 只走 `ADD COLUMN`（SQLite 支持且不重写表），不动已有数据 —— 缺的列由默认值
+/// 兜底，语义等价于「没改过名 / 没归档」。
+fn ensure_column(conn: &Connection, name: &str, decl: &str) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM pragma_table_info('cc_sessions')")
+        .map_err(|e| format!("读取表结构失败：{e}"))?;
+    let exists = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("读取表结构失败：{e}"))?
+        .filter_map(Result::ok)
+        .any(|c| c == name);
+    if exists {
+        return Ok(());
+    }
+    conn.execute(&format!("ALTER TABLE cc_sessions ADD COLUMN {name} {decl}"), [])
+        .map_err(|e| format!("给 cc_sessions 补列 {name} 失败：{e}"))?;
+    Ok(())
 }
 
 /// 落盘。`row_id` 为空则插新行，否则更新它（行已不存在时也退回插入）。
@@ -132,7 +172,8 @@ pub fn save(conn: &Connection, row_id: Option<i64>, snap: &Snapshot) -> Result<i
                 "UPDATE cc_sessions SET
                     connection_id = ?1, session_id = ?2, resume_id = ?3, cwd = ?4,
                     claude_path = ?5, model = ?6, permission_mode = ?7,
-                    title = ?8, preview = ?9, message_count = ?10,
+                    title = CASE WHEN title_locked = 1 THEN title ELSE ?8 END,
+                    preview = ?9, message_count = ?10,
                     updated_at = ?11, last_active_at = ?11,
                     dropped = ?12, events_json = ?13
                  WHERE id = ?14",
@@ -187,13 +228,16 @@ pub fn save(conn: &Connection, row_id: Option<i64>, snap: &Snapshot) -> Result<i
 }
 
 /// 最后活跃的一条。启动恢复用它。
+///
+/// 归档的**不参与**自动恢复：用户把它收起来就是不想再看到它，重开又自己跳出来
+/// 等于归档没生效。
 pub fn latest(conn: &Connection) -> Result<Option<Stored>, String> {
     conn.query_row(
         "SELECT id, connection_id, session_id, resume_id, cwd, claude_path, model,
                 permission_mode, title, preview, message_count, updated_at,
-                dropped, events_json
+                dropped, events_json, title_locked, archived_at
          FROM cc_sessions
-         WHERE events_json IS NOT NULL
+         WHERE events_json IS NOT NULL AND archived_at IS NULL
          ORDER BY last_active_at DESC, id DESC
          LIMIT 1",
         [],
@@ -218,11 +262,16 @@ pub struct Summary {
     pub session_id: Option<String>,
     pub cwd: Option<String>,
     pub title: Option<String>,
+    /// 标题是不是用户手写的。前端据此把库里的标题当作「权威标题」用，
+    /// 而不是拿它跟首条消息派生的标题打架。
+    pub title_locked: bool,
     pub preview: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
     pub message_count: i64,
     pub updated_at: i64,
+    /// 归档时间（秒）。`Some` = 已归档，只在「显示已归档」时摆出来。
+    pub archived_at: Option<i64>,
     /// 落盘时因超限被丢掉的事件数。
     pub dropped: u64,
 }
@@ -232,16 +281,24 @@ pub struct Summary {
 /// 排序与 [`latest`] 一致（`last_active_at DESC, id DESC`）：列表第一行必须正好是
 /// 「重启时会自动恢复的那条」，否则用户看到的是「列表最上面那条」和「打开的那条」
 /// 不是同一个，很容易以为恢复错了。
-pub fn list(conn: &Connection, limit: usize) -> Result<Vec<Summary>, String> {
+///
+/// `include_archived`：归档的默认不摆。侧栏那个「显示已归档」开关会传 `true`，
+/// 否则用户归档完就再也找不到那条会话来取消归档了。
+pub fn list(conn: &Connection, limit: usize, include_archived: bool) -> Result<Vec<Summary>, String> {
+    let filter = if include_archived {
+        ""
+    } else {
+        "AND archived_at IS NULL"
+    };
     let mut stmt = conn
-        .prepare(
-            "SELECT id, connection_id, session_id, cwd, title, preview, model,
-                    permission_mode, message_count, updated_at, dropped
+        .prepare(&format!(
+            "SELECT id, connection_id, session_id, cwd, title, title_locked, preview, model,
+                    permission_mode, message_count, updated_at, dropped, archived_at
              FROM cc_sessions
-             WHERE events_json IS NOT NULL
+             WHERE events_json IS NOT NULL {filter}
              ORDER BY last_active_at DESC, id DESC
-             LIMIT ?1",
-        )
+             LIMIT ?1"
+        ))
         .map_err(|e| format!("准备会话列表查询失败：{e}"))?;
     let rows = stmt
         .query_map(params![limit as i64], |row| {
@@ -251,12 +308,14 @@ pub fn list(conn: &Connection, limit: usize) -> Result<Vec<Summary>, String> {
                 session_id: row.get(2)?,
                 cwd: row.get(3)?,
                 title: row.get(4)?,
-                preview: row.get(5)?,
-                model: row.get(6)?,
-                permission_mode: row.get(7)?,
-                message_count: row.get(8)?,
-                updated_at: row.get(9)?,
-                dropped: row.get::<_, i64>(10)? as u64,
+                title_locked: row.get::<_, i64>(5)? != 0,
+                preview: row.get(6)?,
+                model: row.get(7)?,
+                permission_mode: row.get(8)?,
+                message_count: row.get(9)?,
+                updated_at: row.get(10)?,
+                dropped: row.get::<_, i64>(11)? as u64,
+                archived_at: row.get(12)?,
             })
         })
         .map_err(|e| format!("查询会话列表失败：{e}"))?;
@@ -271,11 +330,13 @@ pub fn list(conn: &Connection, limit: usize) -> Result<Vec<Summary>, String> {
 ///
 /// `None` 不是错误：行可能刚好被 [`prune`] 淘汰掉（用户在很旧的列表上点了它）。
 /// 那时给一句「这条会话已经不在库里」，比报「查询失败」准确得多。
+///
+/// 归档的**照样能取**：用户点「显示已归档」就是为了把它捞回来。
 pub fn by_row_id(conn: &Connection, row_id: i64) -> Result<Option<Stored>, String> {
     conn.query_row(
         "SELECT id, connection_id, session_id, resume_id, cwd, claude_path, model,
                 permission_mode, title, preview, message_count, updated_at,
-                dropped, events_json
+                dropped, events_json, title_locked, archived_at
          FROM cc_sessions
          WHERE id = ?1",
         params![row_id],
@@ -283,6 +344,44 @@ pub fn by_row_id(conn: &Connection, row_id: i64) -> Result<Option<Stored>, Strin
     )
     .optional()
     .map_err(|e| format!("读取会话失败：{e}"))
+}
+
+/// 用户改名。返回落库后的标题（已按 [`MAX_TITLE_CHARS`] 截断）。
+///
+/// 空白标题直接拒绝：那会让侧栏出现一行空白的会话，用户再也认不出它是什么。
+pub fn rename(conn: &Connection, row_id: i64, title: &str) -> Result<String, String> {
+    let flat = flatten(title);
+    if flat.is_empty() {
+        return Err("标题不能为空".into());
+    }
+    let title = truncate_chars(&flat, MAX_TITLE_CHARS);
+    let changed = conn
+        .execute(
+            "UPDATE cc_sessions SET title = ?1, title_locked = 1 WHERE id = ?2",
+            params![title, row_id],
+        )
+        .map_err(|e| format!("改名失败：{e}"))?;
+    if changed == 0 {
+        return Err("这条会话已经不在库里了（可能被清理），刷新列表后重试".into());
+    }
+    Ok(title)
+}
+
+/// 归档 / 取消归档。
+///
+/// 归档只改一个时间戳，**不删内容**：用户随时能捞回来，这也是「归档」和
+/// 「删除」的区别（后者我们没做，也不打算做 —— 删了就找不回来了）。
+pub fn set_archived(conn: &Connection, row_id: i64, archived: bool) -> Result<(), String> {
+    let changed = conn
+        .execute(
+            "UPDATE cc_sessions SET archived_at = ?1 WHERE id = ?2",
+            params![if archived { Some(now_secs()) } else { None }, row_id],
+        )
+        .map_err(|e| format!("归档失败：{e}"))?;
+    if changed == 0 {
+        return Err("这条会话已经不在库里了（可能被清理），刷新列表后重试".into());
+    }
+    Ok(())
 }
 
 /// 库里有没有「这条 CLI 会话」的落盘行。
@@ -331,6 +430,8 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Stored> {
         message_count: row.get(10)?,
         updated_at: row.get(11)?,
         dropped: row.get::<_, i64>(12)? as u64,
+        title_locked: row.get::<_, i64>(14)? != 0,
+        archived_at: row.get(15)?,
         events,
     })
 }
@@ -616,7 +717,7 @@ mod tests {
         )
         .expect("压低");
 
-        let rows = list(&c, 10).expect("列");
+        let rows = list(&c, 10, false).expect("列");
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].row_id, id_b);
         assert_eq!(rows[0].session_id.as_deref(), Some("b"));
@@ -637,7 +738,7 @@ mod tests {
             s.session_id = Some(format!("s-{i}"));
             save(&c, None, &s).expect("插入");
         }
-        assert_eq!(list(&c, 3).expect("列").len(), 3);
+        assert_eq!(list(&c, 3, false).expect("列").len(), 3);
     }
 
     /// 按行号取要能拿到正文（侧栏点历史靠它载入）；行不在时是 `None` 而不是报错。
@@ -819,5 +920,138 @@ mod tests {
             matches!(out.last(), Some(CcEvent::PermissionCancel { request_id }) if request_id == "q1"),
             "{out:?}"
         );
+    }
+
+    // ---- 改名 / 归档（3-1d） ----
+
+    /// 🔴 改名必须扛得住下一次落盘。
+    ///
+    /// `save` 每次都用首条用户消息重算标题 —— 没有 `title_locked` 的话，用户改完
+    /// 名字发下一句就变回自动标题，而且没有任何提示，看起来像「改名没生效」。
+    #[test]
+    fn rename_survives_next_save() {
+        let c = conn();
+        let id = save(&c, None, &snap(vec![user("原来的自动标题")])).expect("插入");
+        let title = rename(&c, id, "  客户 A · 发票导出  ").expect("改名");
+        assert_eq!(title, "客户 A · 发票导出", "首尾空白要被压掉");
+        // 再落一次盘（内容还变了）。
+        save(
+            &c,
+            Some(id),
+            &snap(vec![user("原来的自动标题"), text("新回复")]),
+        )
+        .expect("更新");
+        let got = by_row_id(&c, id).expect("读").expect("有值");
+        assert_eq!(got.title.as_deref(), Some("客户 A · 发票导出"), "手写标题不能被覆盖");
+        assert!(got.title_locked);
+    }
+
+    /// 没改过名的会话照旧跟着首条消息走（不然行为变了没人发现）。
+    #[test]
+    fn auto_title_still_follows_first_message() {
+        let c = conn();
+        let id = save(&c, None, &snap(vec![user("第一版")])).expect("插入");
+        save(&c, Some(id), &snap(vec![user("第二版")])).expect("更新");
+        let got = by_row_id(&c, id).expect("读").expect("有值");
+        assert_eq!(got.title.as_deref(), Some("第二版"));
+        assert!(!got.title_locked);
+    }
+
+    /// 空白标题必须拒绝：一行没有标题的会话，用户再也认不出它是什么。
+    #[test]
+    fn blank_rename_is_rejected() {
+        let c = conn();
+        let id = save(&c, None, &snap(vec![user("x")])).expect("插入");
+        assert!(rename(&c, id, "   \n ").is_err());
+        assert!(rename(&c, id, "").is_err());
+        // 行不存在时给一句能懂的话，而不是 `Ok` 让界面显示改成功了。
+        let err = rename(&c, id + 99, "新名字").expect_err("必须报错");
+        assert!(err.contains("不在库里"), "{err}");
+    }
+
+    /// 超长标题按**字符**截断（中文按字节切会出乱码）。
+    #[test]
+    fn long_rename_truncates_by_char() {
+        let c = conn();
+        let id = save(&c, None, &snap(vec![user("x")])).expect("插入");
+        let long = "中".repeat(MAX_TITLE_CHARS + 50);
+        let title = rename(&c, id, &long).expect("改名");
+        assert_eq!(title.chars().count(), MAX_TITLE_CHARS + 1, "上限 + 省略号");
+        assert!(title.ends_with('…'));
+    }
+
+    /// 归档 = 从默认列表与「自动恢复」里消失，而不是删掉。
+    #[test]
+    fn archived_hides_from_list_and_latest() {
+        let c = conn();
+        let mut s = snap(vec![user("要归档的")]);
+        s.session_id = Some("s-old".into());
+        let old = save(&c, None, &s).expect("插 old");
+        let mut s = snap(vec![user("还留着的")]);
+        s.session_id = Some("s-new".into());
+        let new = save(&c, None, &s).expect("插 new");
+        c.execute(
+            "UPDATE cc_sessions SET last_active_at = last_active_at + 100 WHERE id = ?1",
+            params![old],
+        )
+        .expect("抬高");
+
+        assert_eq!(latest(&c).expect("读").expect("有值").row_id, old);
+        set_archived(&c, old, true).expect("归档");
+
+        let rows = list(&c, 10, false).expect("列");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].row_id, new, "归档的不摆");
+        assert_eq!(
+            latest(&c).expect("读").expect("有值").row_id,
+            new,
+            "自动恢复必须跳过归档的"
+        );
+
+        // 「显示已归档」能把它捞回来，且带归档标记。
+        let all = list(&c, 10, true).expect("列");
+        assert_eq!(all.len(), 2);
+        let got = all.iter().find(|r| r.row_id == old).expect("有它");
+        assert!(got.archived_at.is_some());
+
+        // 归档不删内容：点开还能看。
+        assert_eq!(
+            by_row_id(&c, old).expect("读").expect("有值").events.len(),
+            1
+        );
+
+        // 取消归档回到默认列表。
+        set_archived(&c, old, false).expect("取消归档");
+        assert_eq!(list(&c, 10, false).expect("列").len(), 2);
+        assert!(by_row_id(&c, old).expect("读").expect("有值").archived_at.is_none());
+    }
+
+    /// 老库（没有这两列）要能就地补上，不能一启动就报错。
+    ///
+    /// 这是升级路径的回归：`CREATE TABLE IF NOT EXISTS` 对已存在的表什么都不做。
+    #[test]
+    fn old_table_gets_new_columns() {
+        let c = Connection::open_in_memory().expect("内存库");
+        c.execute_batch(
+            "CREATE TABLE cc_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                connection_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT, resume_id TEXT, cwd TEXT, claude_path TEXT,
+                model TEXT, permission_mode TEXT, title TEXT, preview TEXT,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                last_active_at INTEGER NOT NULL, file_size INTEGER,
+                file_mtime_ms INTEGER, source TEXT NOT NULL DEFAULT 'local',
+                dropped INTEGER NOT NULL DEFAULT 0, events_json TEXT
+            );",
+        )
+        .expect("老表");
+        ensure_table(&c).expect("补列");
+        // 补完就能用新语义（默认值 = 没改名、没归档）。
+        let id = save(&c, None, &snap(vec![user("老会话")])).expect("插入");
+        let got = by_row_id(&c, id).expect("读").expect("有值");
+        assert!(!got.title_locked);
+        assert!(got.archived_at.is_none());
+        rename(&c, id, "补列之后仍能改名").expect("改名");
     }
 }

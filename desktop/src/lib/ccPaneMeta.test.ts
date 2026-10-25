@@ -54,6 +54,19 @@ describe("derivePaneMeta 标题", () => {
     expect(title.length).toBe(41);
     expect(title.endsWith("…")).toBe(true);
   });
+
+  it("手写标题压过首条消息（3-1d 改名要立刻看起来生效）", () => {
+    const v = view({ messages: [user("原来的自动标题")] });
+    expect(derivePaneMeta({ ...base, view: v, titleHint: "客户 A · 发票导出" }).title).toBe(
+      "客户 A · 发票导出",
+    );
+  });
+
+  it("手写标题是空白时不生效，仍按消息现算（避免出现一行空白标题）", () => {
+    const v = view({ messages: [user("自动标题")] });
+    expect(derivePaneMeta({ ...base, view: v, titleHint: "   " }).title).toBe("自动标题");
+    expect(derivePaneMeta({ ...base, view: v, titleHint: null }).title).toBe("自动标题");
+  });
 });
 
 describe("derivePaneMeta 五态", () => {
