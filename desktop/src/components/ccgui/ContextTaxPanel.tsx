@@ -28,7 +28,7 @@ import { isOutsideDismiss } from "../../lib/utils";
  * - `drop`（≥49,823 字符）：**客户端**把整条降级成 2KB 预览，模型当轮没看到、
  *   也不会回读。后者才是事故 —— 用户抱怨「它说没看到文件」时答案就在这里。
  *
- * 浮层不占布局（`absolute`，同 HistoryPanel / ChangesetPanel）：占高度会触发消息区
+ * 浮层不占布局（`absolute`，同 HistoryPanel / ApprovalAuditPanel）：占高度会触发消息区
  * 收缩，正在读的位置跟着跳。
  */
 export function ContextTaxPanel({

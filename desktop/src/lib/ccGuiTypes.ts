@@ -46,6 +46,14 @@ export type CcApproval = {
   id: string;
   toolName: string;
   input: Record<string, unknown>;
+  /**
+   * 这次审批对应的**工具调用 id**（与 `CcMessage(kind:"tool").id` 是同一个值，
+   * 都来自协议里的 `tool_use_id`）。
+   *
+   * 批 4-2 靠它把「我点的那一下允许」和「它实际改了哪个文件」精确对上 ——
+   * 不是靠时间窗猜。`null` 的两种情形：协议没给、或 2026-10-25 之前落盘的老事件。
+   */
+  toolUseId?: string | null;
   /** 协议里的 `decision_reason`，原样展示 —— 用户要知道"为什么问我"。 */
   reason: string;
   /** 审批有超时（CLI 侧 60s），到点自动拒绝。界面必须显式呈现，不能只转圈。 */

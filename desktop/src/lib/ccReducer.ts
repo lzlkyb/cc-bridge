@@ -278,6 +278,8 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
             id,
             toolName: event.toolName,
             input: event.input,
+            // 批 4-2：留住工具调用 id，「我点的允许」才能对上「它改的文件」。
+            toolUseId: event.toolUseId ?? null,
             // `reason` 为空时也要给一句：空白比错误的解释更糟。
             reason: event.reason ?? "CC 需要你的确认才能继续。",
             expiresInSec: APPROVAL_TIMEOUT_SEC,
@@ -302,6 +304,8 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
             id,
             toolName: "AskUserQuestion",
             input: event.input,
+            // 提问也是「一次调用」：对齐口径与审批一致（批 4-2）。
+            toolUseId: event.toolUseId ?? null,
             reason:
               questions.length > 0
                 ? "选好之后提交。不想答就跳过 —— 跳过后 CC 会自己决定。"

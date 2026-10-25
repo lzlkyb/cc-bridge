@@ -1,9 +1,11 @@
 import { memo, useState } from "react";
 import { PERMISSION_MODE_LABEL, type CcPermissionMode, type CcSession } from "../../lib/ccGuiTypes";
+import type { CcMessage } from "../../lib/ccGuiTypes";
 import { contextBar } from "../../lib/ccContextUsage";
 import type { CcHistoryRow } from "../../lib/ccEventTypes";
+import { useCcApprovalAudit } from "../../hooks/useCcApprovalAudit";
 import { Icon, type IconName } from "../ui/icon";
-import { ChangesetPanel } from "./ChangesetPanel";
+import { ApprovalAuditPanel } from "./ApprovalAuditPanel";
 import { ContextMeter } from "./ContextMeter";
 import { HistoryPanel } from "./HistoryPanel";
 import { ModelPicker } from "./ModelPicker";
@@ -31,6 +33,8 @@ function Chip({ icon, children, title }: { icon: IconName; children: React.React
  */
 function SessionBarImpl({
   session,
+  messages,
+  resolved,
   targets,
   targetId,
   onTargetChange,
@@ -44,6 +48,10 @@ function SessionBarImpl({
   onJumpTo,
 }: {
   session: CcSession;
+  /** 会话流水：批 4-2 的「改动」面板要按审批点分组，得从消息里取工具入参与 reason。 */
+  messages: CcMessage[];
+  /** `requestId → 裁决`：审批点显示「允许 / 拒绝 / 自动放行」靠它。 */
+  resolved: Record<string, { decision: "allow" | "deny"; auto?: boolean }>;
   targets: { id: string; label: string }[];
   targetId: string;
   onTargetChange: (id: string) => void;
@@ -67,6 +75,14 @@ function SessionBarImpl({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [changesetOpen, setChangesetOpen] = useState(false);
+  // 批 4-2：审批点分组 + 撤销。只在面板打开时查审计（理由见 hook 头注释）。
+  const audit = useCcApprovalAudit({
+    messages,
+    resolved,
+    cwd: session.cwd,
+    sessionId: session.sessionId,
+    enabled: changesetOpen,
+  });
   // 显示优先级：我们的选择 > CLI 回报的当前模型 > 占位。
   // 只用 CLI 回报值会让「选了默认」和「没选过」看起来一模一样。
   const modelLabel = session.model || session.activeModel || "默认模型";
@@ -170,8 +186,13 @@ function SessionBarImpl({
               <span className="font-mono">{session.changeset.length}</span>
             </button>
             {changesetOpen && (
-              <ChangesetPanel
-                entries={session.changeset}
+              <ApprovalAuditPanel
+                groups={audit.groups}
+                stat={audit.stat}
+                reverted={audit.reverted}
+                busyKey={audit.busyKey}
+                onRevertOne={(p, f) => void audit.revertOne(p, f)}
+                onRevertGroup={(g) => void audit.revertGroup(g)}
                 onJump={(id) => {
                   // 跳完即关：浮层盖着消息区，用户看不见自己跳到了哪儿。
                   setChangesetOpen(false);

@@ -1069,6 +1069,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cc_session_usage,
             // 批 4-1：一条会话的上下文构成（工具结果按工具名分解 + 越线告警）。
             commands::cc_context_tax,
+            // 批 4-2：这条会话里哪些改动有备份（前端据此判断「能不能撤销」）。
+            commands::cc_session_backups,
+            // 批 4-2：用反向补丁撤销一次内置 Edit（没有备份时的唯一还原手段）。
+            commands::restore_edit_patch,
+            // 批 4-2：撤销「新建文件」——内容未被改动过才删。
+            commands::restore_delete_created,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {

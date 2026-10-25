@@ -52,6 +52,8 @@ export function CcPaneHead({
     <>
       <SessionBar
         session={bar}
+        messages={view.messages}
+        resolved={view.resolved}
         targets={targets}
         targetId={targetId}
         onTargetChange={onTargetChange}

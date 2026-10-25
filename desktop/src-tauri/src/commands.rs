@@ -29,6 +29,8 @@ mod backup_cmds;
 mod cc_cmds;
 /// 历史对话：扫 CLI 自己的转录、列表、打开。
 mod cc_history_cmds;
+/// 会话内的改动还原（批 4-2）：备份清单 + 反向补丁。
+mod cc_revert_cmds;
 /// 会话用量账：对话侧真实 token / 成本，按 session id 读。
 mod cc_usage_cmds;
 mod config_cmds;
@@ -48,6 +50,7 @@ pub use audit_cmds::*;
 pub use backup_cmds::*;
 pub use cc_cmds::*;
 pub use cc_history_cmds::*;
+pub use cc_revert_cmds::*;
 pub use cc_usage_cmds::*;
 pub use config_cmds::*;
 pub use firewall_cmds::*;

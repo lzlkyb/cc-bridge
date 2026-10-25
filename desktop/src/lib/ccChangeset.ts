@@ -33,7 +33,13 @@ const FILE_TOOLS = new Set(["Edit", "MultiEdit", "NotebookEdit", "Write"]);
 /** 改文件工具的入参里放路径的键。NotebookEdit 用 `notebook_path`，不列就漏。 */
 const PATH_KEYS = ["file_path", "path", "notebook_path"] as const;
 
-function readPath(input: Record<string, unknown>): string {
+/**
+ * 从工具入参里读目标路径。读不到就是空串（调用方自己决定当「不改文件」处理）。
+ *
+ * 导出给批 4-2 复用：那边要按路径把「审批点改的文件」与「审计里的备份」对齐，
+ * 两处各写一份的话，哪天加了新的路径键就会一边认一边不认。
+ */
+export function readPath(input: Record<string, unknown>): string {
   for (const k of PATH_KEYS) {
     const v = input[k];
     if (typeof v === "string" && v.trim()) return v.trim();
