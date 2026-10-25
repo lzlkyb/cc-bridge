@@ -30,7 +30,9 @@ export function RestoreBackupDialog({ entry, onClose }: { entry: BackupFileInfo;
   };
 
   return (
-    <ConfirmModal open onClose={onClose} maxWidth="md" zIndex={1001}>
+    // 还原进行中不许关（Esc / 遮罩点击同取消按钮一样被 busy 拦住）——
+    // 对齐 LogRestoreDialog：放行的话弹窗没了、还原还在后台跑，结果没人接。
+    <ConfirmModal open onClose={() => { if (!busy) onClose(); }} maxWidth="md" zIndex={1001}>
       <h4 className="mb-2 flex items-center gap-2 text-base font-semibold text-destructive-ink">
         <Icon name="restore" size={18} />
         还原备份

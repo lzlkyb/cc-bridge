@@ -5,7 +5,7 @@ import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { useToast } from "../ui/toast";
 import { invoke } from "../../lib/tauri";
 import { toggleTheme } from "../../lib/theme";
-import { copyText } from "../../lib/utils";
+import { copyText, isImeComposing } from "../../lib/utils";
 import type { StaticStatus } from "../../lib/types";
 import { DirectoryBrowser } from "./DirectoryBrowser";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -170,9 +170,7 @@ export function CommandPalette({
   const filtered = !q ? items : items.filter((c) => c.label.toLowerCase().includes(q) || (c.keywords?.toLowerCase().includes(q) ?? false));
 
   // 重置选中项当搜索变化
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [query]);
+  useEffect(() => setSelectedIndex(0), [query]);
 
   const runItem = async (item: CommandItem) => {
     if (!item.run) return;
@@ -208,6 +206,8 @@ export function CommandPalette({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // IME 组词中放行：Enter 是上屏、方向键属于候选窗，此时执行选中项会劫持输入法
+    if (isImeComposing(e.nativeEvent)) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setSelectedIndex((i) => Math.min(i + 1, filtered.length - 1));

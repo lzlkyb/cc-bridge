@@ -1,4 +1,5 @@
 import { useEffect, useRef, type RefObject } from "react";
+import { isImeComposing } from "../lib/utils";
 
 interface FocusTrapOptions {
   /**
@@ -40,6 +41,9 @@ export function useFocusTrap(
     )).filter(el => !el.matches(":disabled") && !el.closest("[inert]") && el.getClientRects().length > 0);
     focusables()[0]?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => {
+      // IME 组词中的 Esc 属于输入法（收候选窗），不触发关闭——
+      // Modal / ConfirmDialog / CommandPalette 内都有中文输入场景。
+      if (isImeComposing(e)) return;
       if (e.key === "Escape" && escapeRef.current) {
         e.stopPropagation();
         escapeRef.current();

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "../../lib/tauri";
-import { toolLabel, formatDurationMs, formatVersion, copyText } from "../../lib/utils";
+import { toolLabel, formatDurationMs, formatVersion, copyText, isImeComposing } from "../../lib/utils";
 import { APP_INFO } from "../../lib/about";
 import type { AuditFilter } from "../../lib/auditQuery";
 import type { AuditEntry, StatusResponse } from "../../lib/types";
@@ -212,6 +212,8 @@ export function LogExportMenu({ filtered, entriesCount, total, filter, pending }
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLSelectElement) return;
+      // IME 组词中的 Enter/Esc/方向键属于输入法（上屏 / 收候选窗 / 候选导航），不导出、不关菜单
+      if (isImeComposing(e)) return;
       const list = itemsRef.current;
       if (e.key === "Escape") {
         e.stopPropagation(); // 别让同一下 Esc 顺手关掉底下的弹窗

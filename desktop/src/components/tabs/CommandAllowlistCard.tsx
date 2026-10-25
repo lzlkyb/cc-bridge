@@ -11,6 +11,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { useToast } from "../ui/toast";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { dangerousCommandExample } from "../../lib/platform";
+import { isImeComposing } from "../../lib/utils";
 
 /**
  * 「命令白名单」卡（④P0-1 Layer 2）。仅当命令执行（shellEnabled）开启时才可配置——
@@ -200,7 +201,8 @@ export function CommandAllowlistCard({
                     value={newProg}
                     onChange={(e) => setNewProg(e.target.value)}
                     placeholder="输入程序名，如 git / cargo / npm"
-                    onKeyDown={(e) => e.key === "Enter" && addProg()}
+                    // IME 组词的 Enter 是上屏候选词，不是提交
+                    onKeyDown={(e) => !isImeComposing(e.nativeEvent) && e.key === "Enter" && addProg()}
                     className="min-w-0 flex-1"
                   />
                   <Button size="sm" onClick={() => addProg()}>

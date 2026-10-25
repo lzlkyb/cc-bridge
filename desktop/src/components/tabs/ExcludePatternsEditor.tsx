@@ -1,7 +1,7 @@
 import { useState, type KeyboardEvent, type ClipboardEvent } from "react";
 import { invoke } from "../../lib/tauri";
 import type { ConfigSaveResult } from "../../lib/types";
-import { globMatch } from "../../lib/utils";
+import { globMatch, isImeComposing } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { useToast } from "../ui/toast";
@@ -56,6 +56,8 @@ export function ExcludePatternsEditor({
   const remove = (p: string) => void save(patterns.filter((v) => v !== p));
 
   const handleKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    // IME 组词中的 Enter/逗号/分号属于输入法（上屏 / 标点），不当成分隔符提交
+    if (isImeComposing(e.nativeEvent)) return;
     if (e.key === "Enter" || e.key === "," || e.key === ";") {
       e.preventDefault();
       draft.split(/[,;\s]+/).filter(Boolean).forEach(add);

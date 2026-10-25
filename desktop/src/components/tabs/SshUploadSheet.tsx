@@ -5,6 +5,7 @@ import { Input } from "../ui/input";
 import { Icon } from "../ui/icon";
 import { toast } from "../ui/toast";
 import { humanSize, remoteDirError } from "../../lib/uploadDir";
+import { isImeComposing } from "../../lib/utils";
 import type { LocalFile } from "./useTerminalUpload";
 
 interface SheetProps {
@@ -55,7 +56,8 @@ export function SshUploadSheet({ files, initialDir, onCancel, onConfirm }: Sheet
           spellCheck={false}
           onChange={(e) => setDir(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !err) onConfirm(dir);
+            // IME 组词的 Enter 是上屏候选词，不是提交
+            if (e.key === "Enter" && !err && !isImeComposing(e.nativeEvent)) onConfirm(dir);
           }}
           className="font-mono text-xs"
         />

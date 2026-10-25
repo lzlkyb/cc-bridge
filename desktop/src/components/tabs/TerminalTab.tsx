@@ -22,6 +22,7 @@ import { useTerminalSplit } from "./useTerminalSplit";
 import { SshEnableGate, SshMissingCard } from "./TerminalGates";
 import { useTerminalViewState } from "./useTerminalViewState";
 import { useSshSessions } from "./useSshSessions";
+import { useTerminalCwds } from "./useTerminalCwds";
 import { TerminalTabsBar } from "./TerminalTabsBar";
 import { TerminalEmptyState } from "./TerminalEmptyState";
 import { RestoreBanner } from "./TerminalRestore";
@@ -73,11 +74,8 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
     activeSession && !activeSession.closedReason ? activeSession.conn : null;
   // 各会话的远端 cwd（OSC 7 探测，见 hooks/useTerminalOsc.ts）。拖拽上传拿它当目标目录，
   // 省掉「每次拖文件都问传到哪」——那正是文件面板侧早就免掉的一步。
-  const [cwdBySession, setCwdBySession] = useState<Record<string, string | null>>({});
-  const onCwd = useCallback((sessionId: string, cwd: string | null) => {
-    setCwdBySession((m) => (m[sessionId] === cwd ? m : { ...m, [sessionId]: cwd }));
-  }, []);
-  const activeCwd = activeId ? (cwdBySession[activeId] ?? null) : null;
+  // 表本体与清理在 useTerminalCwds（会话移除 / 重连换 sessionId 后同步删旧 key）。
+  const { onCwd, activeCwd } = useTerminalCwds(sessions, activeId);
   const up = useTerminalUpload(activeConn, activeCwd);
   const drop = useFileDrop({
     collectZones: () => {
@@ -130,9 +128,10 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
       return;
     }
     let cancelled = false;
-    void invoke<SshCheckResult>("ssh_check").then((r) => {
-      if (!cancelled) setCheck(r);
-    });
+    // 探测失败保持 check=null（视为未知：不弹降级卡、不阻断终端），只消掉 unhandled rejection。
+    void invoke<SshCheckResult>("ssh_check")
+      .then((r) => { if (!cancelled) setCheck(r); })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -175,7 +174,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
       <SshMissingCard
         check={check}
         onDismiss={() => setCheck(null)}
-        onRecheck={() => void invoke<SshCheckResult>("ssh_check").then(setCheck)}
+        onRecheck={() => void invoke<SshCheckResult>("ssh_check").then(setCheck).catch((e) => toast(`检测失败：${e}`, "error"))}
       />
     );
   }

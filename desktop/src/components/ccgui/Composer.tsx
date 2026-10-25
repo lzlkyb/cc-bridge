@@ -8,6 +8,7 @@ import {
   isSlashTyping,
   type SlashCommand,
 } from "../../lib/ccSlash";
+import { isImeComposing } from "../../lib/utils";
 import { ComposerNotices } from "./ComposerNotices";
 import { SlashPanel } from "./SlashPanel";
 
@@ -200,8 +201,8 @@ function ComposerImpl({
           onKeyDown={(e) => {
             // 🔴 IME 组合期间的键全部放行给输入法：此刻方向键在选候选词、Enter 在
             //    上屏。拦走任何一个，中文用户要么选不了词、要么半截拼音被当成
-            //    命令补全 / 直接发送。`keyCode === 229` 兜底个别引擎不置 isComposing。
-            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+            //    命令补全 / 直接发送。
+            if (isImeComposing(e.nativeEvent)) return;
             // 面板开着时方向键 / Enter / Tab 归它。Enter 在输入框里本是换行，
             // 但「正选着命令」的时刻用户要的是补全；换行还有 Shift+Enter
             // （浏览器原生行为，不用我们接）。

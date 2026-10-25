@@ -26,6 +26,9 @@ export function useSshSessions() {
   const [activeId, setActiveId] = useState<string | null>(null);
   // 连接进行中：列表项灰显「连接中…」+ 按钮 loading（纯前端态，无后端依赖）。
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  // 连接重入闸（ref 而非上面的 state：同一帧内的连点两次读到的都是旧 state，挡不住）。
+  // 没有它，双击连接按钮会并发出两个 ssh_connect、开出两个重复标签。
+  const connectingIdsRef = useRef<Set<string>>(new Set());
   // 标签 meta（OSC 标题 / 进度 / 铃），由 SshTerminal 经 patchMeta 上报，标签栏展示。
   // 按 sessionId 存：重连换 sessionId，旧 key 随 closeTab / dropConnection 清理。
   const [metaBySession, setMetaBySession] = useState<Record<string, TermTabMeta>>({});
@@ -95,6 +98,9 @@ export function useSshSessions() {
           return null;
         }
       }
+      // 同一连接的连接请求已在飞：吃掉重复点击（双击 / 回车连发），避免双标签。
+      if (connectingIdsRef.current.has(conn.id)) return null;
+      connectingIdsRef.current.add(conn.id);
       setConnectingId(conn.id);
       try {
         const sessionId = await invoke<string>("ssh_connect", {
@@ -130,6 +136,7 @@ export function useSshSessions() {
         toast(`连接失败：${e}`, "error");
         return null;
       } finally {
+        connectingIdsRef.current.delete(conn.id);
         setConnectingId(null);
       }
     },

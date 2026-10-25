@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "../../lib/tauri";
 import type { BrowseResult, BrowseEntry } from "../../lib/types";
 import { Button } from "../ui/button";
@@ -20,30 +20,43 @@ export function DirectoryBrowser({
   const [entries, setEntries] = useState<BrowseEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
+  // 请求序号：快速连点目录（上级 + 某目录、双击文件夹）时响应可能乱序到达，
+  // 过期响应直接丢弃，否则界面会显示成「点击路径 ≠ 展示路径」的错位状态。
+  const seqRef = useRef(0);
+  // 首次自动加载只试一次（每次 open 重置）：失败后不再由下方 effect 重试——
+  // 否则 loading 归位让 effect 条件全部重新成立 → browse → 失败 → …，无限 toast 刷屏。
+  const initialTriedRef = useRef(false);
 
   const browse = useCallback(async (path?: string) => {
+    const seq = ++seqRef.current;
     setLoading(true);
     try {
       const result = await invoke<BrowseResult>("browse_directory", {
         path: path ?? null,
       });
+      if (seq !== seqRef.current) return; // 已有更新的导航，本响应作废
       setCurrentPath(result.path ?? null);
       setParentPath(result.parent ?? null);
       setEntries(result.entries);
     } catch (e) {
       // 之前仅 console.error，用户看不到任何反馈（目录无权限/不存在时静默失败）。
       console.error("Browse error:", e);
-      toast(`无法浏览目录：${e}`, "error");
+      if (seq === seqRef.current) toast(`无法浏览目录：${e}`, "error");
     } finally {
-      setLoading(false);
+      if (seq === seqRef.current) setLoading(false);
     }
   }, [toast]);
 
   useEffect(() => {
-    if (open && entries.length === 0 && !loading && currentPath === null) {
-      browse();
+    if (!open) {
+      initialTriedRef.current = false;
+      return;
     }
-  }, [open, entries.length, loading, currentPath, browse]);
+    // 已经浏览过（重开弹窗）就保留原位置，不重新拉；fresh 判定与旧版一致。
+    if (initialTriedRef.current || currentPath !== null || entries.length > 0) return;
+    initialTriedRef.current = true;
+    browse();
+  }, [open, currentPath, entries.length, browse]);
 
   return (
     <Modal open={open} onClose={onClose} zIndex={50} className="mx-4 w-full max-w-lg rounded-xl modal-surface p-4">

@@ -289,7 +289,8 @@ function AppContent() {
       const isCtrlOrMeta = e.ctrlKey || e.metaKey;
       if (isCtrlOrMeta && e.key === "k") {
         e.preventDefault();
-        setShowCommandPalette((v) => !v);
+        // 按住不放会触发键盘重复，每帧 toggle 一次面板就闪开关；只吃首次按下。
+        if (!e.repeat) setShowCommandPalette((v) => !v);
       }
       // Ctrl+1~N 切工作区页（N = WORKSPACE_NAV.length，随导航项增减自动跟随）、Ctrl+, 打开设置
       //（桌面应用标准键位，mac 下 ⌘,）；设置排导航末位不占数字位（导航末位惯例，见 VS Code/Discord）。

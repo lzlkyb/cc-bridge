@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { StaticStatus } from "../../lib/types";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { StepAddDir } from "./onboarding/StepAddDir";
 import { StepPickAddress } from "./onboarding/StepPickAddress";
 import { StepConnectCmd } from "./onboarding/StepConnectCmd";
@@ -61,6 +62,7 @@ export function OnboardingGuide({
   // H3：步骤③/④ 的完成态由子组件上报（复制过命令 / 自检通过）。
   const [copiedCmd, setCopiedCmd] = useState(false);
   const [tested, setTested] = useState(false);
+  const surfaceRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => setVisible(true));
@@ -72,27 +74,20 @@ export function OnboardingGuide({
     onClose();
   }, [onClose]);
 
+  // 焦点陷阱（a11y，见 hooks/useFocusTrap）：Tab 在弹窗内循环、卸载归还焦点，
+  // Esc 交给 onEscape。之前是裸 window 监听：焦点能 Tab 出遮罩跑到背景页，
+  // 键盘用户会「消失」在看不见的内容里。
+  // Esc = 仅**收起本次**引导（内存态），不写「已完成」标记（审查 U7）——
+  // 原来走 finish()，把「顺手按 Esc 看看」变成永久跳过，引导从此不再出现。
+  // 永久完成只由「跳过引导」/ 走完最后一步写入。
+  useFocusTrap(surfaceRef, { onEscape: onClose });
+
   const handleNext = () => {
     if (step < steps.length - 1) setStep(step + 1);
     else finish();
   };
 
   const handleSkip = () => finish();
-
-  // Esc = 仅**收起本次**引导（内存态），不写「已完成」标记（审查 U7）。
-  //
-  // 原来的 Esc 走 finish()，等于把「顺手按 Esc 看看界面」变成了永久跳过——
-  // 引导从此再也不出现，用户连「重看引导」的入口在哪都不知道。
-  // 现在永久完成只由「跳过引导」/ 走完最后一步写入。
-  //
-  // onClose 进依赖（不再空依赖 + eslint-disable）：此前把首次渲染的 onClose 锁死在闭包里。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
 
   // H3：点遮罩不再永久关闭引导，仅轻微抖动提示改用下方按钮（跳过 / 下一步）。
   const handleOverlayClick = () => {
@@ -127,6 +122,10 @@ export function OnboardingGuide({
       onClick={handleOverlayClick}
     >
       <div
+        ref={surfaceRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="首次使用引导"
         className={`mx-4 flex max-h-[88vh] w-full max-w-md flex-col rounded-2xl modal-surface p-6 transition-[transform,opacity] duration-200 ${
           visible ? "translate-y-0 opacity-100 scale-100" : "translate-y-4 opacity-0 scale-95"
         } ${shake ? "animate-shake" : ""}`}

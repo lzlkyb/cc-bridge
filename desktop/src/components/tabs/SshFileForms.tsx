@@ -1,5 +1,6 @@
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { isImeComposing } from "../../lib/utils";
 
 /* ── 新建文件夹表单 ── */
 
@@ -20,7 +21,8 @@ export function MkdirForm({ value, busy, onChange, onSubmit, onCancel }: MkdirFo
         value={value}
         placeholder="文件夹名"
         onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && onSubmit()}
+        // IME 组词的 Enter 是上屏候选词，不是提交
+        onKeyDown={(e) => !isImeComposing(e.nativeEvent) && e.key === "Enter" && onSubmit()}
       />
       <Button size="sm" className="h-7 px-3 text-xs" disabled={busy} onClick={onSubmit}>
         创建
@@ -78,7 +80,8 @@ export function UploadForm({
             : "本机文件完整路径，例如 C:/Users/you/file.zip"
         }
         onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && onSubmit()}
+        // IME 组词的 Enter 是上屏候选词，不是提交
+        onKeyDown={(e) => !isImeComposing(e.nativeEvent) && e.key === "Enter" && onSubmit()}
       />
       <Button size="sm" className="h-7 px-3 text-xs" disabled={busy} onClick={onSubmit}>
         上传

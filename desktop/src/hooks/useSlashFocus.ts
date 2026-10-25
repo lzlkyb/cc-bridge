@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from "react";
 import { useViewActive } from "../lib/viewActivity";
+import { isImeComposing } from "../lib/utils";
 
 const isEditable = (el: EventTarget | null): boolean =>
   el instanceof HTMLElement &&
@@ -28,7 +29,8 @@ export function useSlashFocus(
       if (e.key === "/" && !isEditable(e.target)) {
         e.preventDefault(); // 拦掉即将打进页面的 `/`
         inputRef.current?.focus();
-      } else if (e.key === "Escape" && e.target === inputRef.current) {
+      } else if (e.key === "Escape" && e.target === inputRef.current && !isImeComposing(e)) {
+        // 组词中的 Esc 属于输入法（收起候选窗），不清搜索内容
         escapeRef.current?.();
         inputRef.current?.blur();
       }

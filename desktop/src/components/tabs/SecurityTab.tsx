@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
+import { isImeComposing } from "../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { RootProfilePill } from "./RootProfilePill";
 import { RootProfilePanel } from "./RootProfilePanel";
@@ -182,7 +183,8 @@ export function SecurityTab({
               value={newRoot}
               onChange={(e) => setNewRoot(e.target.value)}
               placeholder="输入目录路径..."
-              onKeyDown={(e) => e.key === "Enter" && addRoot()}
+              // IME 组词的 Enter 是上屏候选词，不是提交
+              onKeyDown={(e) => !isImeComposing(e.nativeEvent) && e.key === "Enter" && addRoot()}
               className="min-w-0 flex-1"
             />
             <Button variant="outline" size="sm" onClick={() => setBrowserOpen(true)}>

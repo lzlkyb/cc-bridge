@@ -1,4 +1,5 @@
 import { useState, useRef, type KeyboardEvent, type ClipboardEvent } from "react";
+import { isImeComposing } from "../../lib/utils";
 
 /** 分类定义 */
 const CATEGORIES = [
@@ -68,6 +69,8 @@ export function ChipInput({
   };
 
   const handleKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    // IME 组词中的 Enter/逗号/分号属于输入法（上屏 / 标点），不当成分隔符提交
+    if (isImeComposing(e.nativeEvent)) return;
     if (e.key === "Enter" || e.key === "," || e.key === ";") {
       e.preventDefault();
       input

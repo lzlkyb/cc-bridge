@@ -23,6 +23,7 @@ import { useTerminalTabMeta, type TermTabMetaPatch } from "../../hooks/useTermin
 import { useClipboardImagePaste } from "../../hooks/useClipboardImagePaste";
 import { forceRepaint } from "../../lib/terminalRepaint";
 import { invoke } from "../../lib/tauri";
+import { isImeComposing } from "../../lib/utils";
 import { toast } from "../ui/toast";
 import { useTerminalThemeMode } from "../../hooks/useTerminalAppearance";
 import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
@@ -154,7 +155,7 @@ export function SshTerminal({
       void invoke("ssh_input", { sessionId, data });
     };
     const onKey = (e: KeyboardEvent) => {
-      if (!focusedRef.current || e.isComposing) return;
+      if (!focusedRef.current || isImeComposing(e)) return;
       // 命令导航：Ctrl+Shift+↑/↓ 跳到上一条/下一条命令的提示符行。
       if (e.ctrlKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         e.preventDefault();
@@ -254,11 +255,7 @@ export function SshTerminal({
         onGuideHintClick={wheel.expandGuide}
       />
       {/* 槽位化横幅（2026-10-17）：reason 为 null 时收起为 0 高，展开/收起 200ms 平滑 */}
-      <SshDisconnectedBar
-        reason={closedReason}
-        onReconnect={onReconnect}
-        onCloseTab={onCloseTab}
-      />
+      <SshDisconnectedBar reason={closedReason} onReconnect={onReconnect} onCloseTab={onCloseTab} />
       {/* 内边距与底色放外层；内层是 fit 的测量基准，**必须无 padding**。
           FitAddon 读的是 parentElement 的 computed height（不含 padding），而 doFit 的实测用的是
           clientHeight（含 padding）——两者对 padding 的口径不一样，分层之后就不存在这个陷阱。 */}

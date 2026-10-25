@@ -2,6 +2,7 @@ import { useState } from "react";
 import { invoke } from "../../../lib/tauri";
 import type { StaticStatus, ConfigSaveResult } from "../../../lib/types";
 import { APP_INFO } from "../../../lib/about";
+import { isImeComposing } from "../../../lib/utils";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
 import { DirectoryBrowser } from "../DirectoryBrowser";
@@ -97,7 +98,8 @@ export function StepAddDir({
         <input
           value={newRoot}
           onChange={(e) => setNewRoot(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addRoot()}
+          // IME 组词的 Enter 是上屏候选词，不是提交
+          onKeyDown={(e) => !isImeComposing(e.nativeEvent) && e.key === "Enter" && addRoot()}
           placeholder="输入目录路径，如 D:\Projects\my-app"
           className="min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-1.5 text-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />

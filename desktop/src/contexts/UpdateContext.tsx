@@ -230,7 +230,11 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       // 静默检查失败不处理
     } finally {
       checkingRef.current = false;
-      localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+      try {
+        localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+      } catch {
+        // 存储不可用只影响「24 小时内不重复自动检查」的抑制，不值得打断更新流程
+      }
     }
   }, []);
 
@@ -241,7 +245,10 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   // ─── 检查更新（manual=false 自动/启动/定时；manual=true 用户主动点击）──
   // 自动检查只更新版本号区域状态、不弹「已是最新」提示框；手动检查命中 uptodate 才弹框。
   const runCheck = useCallback(async (manual: boolean) => {
-    if (checkingRef.current) return;
+    // 下载进行中不接受检查：状态会被打成 checking，而 start_update 内部复查发的
+    // checking/available 事件又被监听器的 downloadingRef 守卫吃掉，没有任何事件
+    // 能把状态救回来 → 徽章永远停在「检查中」。下载完成后可再查。
+    if (checkingRef.current || downloadingRef.current) return;
     checkingRef.current = true;
     manualCheckRef.current = manual;
     userInitiatedRef.current = manual;
@@ -261,7 +268,11 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       setStatus("error");
     } finally {
       checkingRef.current = false;
-      localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+      try {
+        localStorage.setItem(LAST_CHECK_KEY, String(Date.now()));
+      } catch {
+        // 同 silentCheck：写不进只丢「24 小时抑制」，不影响检查本身
+      }
     }
   }, []);
   const checkForUpdate = useCallback(() => runCheck(false), [runCheck]);

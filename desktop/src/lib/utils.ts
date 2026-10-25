@@ -558,6 +558,22 @@ export function isEditableTarget(el: EventTarget | null): boolean {
 }
 
 /**
+ * 键盘事件是否发生在输入法组词（IME composition）过程中。
+ *
+ * 组词期间的 Enter 是「上屏候选词」、Esc 是「收起候选窗」、逗号是普通标点——
+ * 都不是对当前 UI 的操作。所有 Enter/Esc/逗号 类提交处理的入口都应先用它放行，
+ * 否则中文输入法会被快捷键劫持（候选词还没选，命令就执行了）。
+ *
+ * 两种判据并用的原因：Safari 的 keydown 在组词中 `isComposing` 恒为 false 但
+ * keyCode 会变成 229；反之旧内核只置 `isComposing`。取并集最稳。
+ * 鸭子类型（同 isEditableTarget）：React 合成事件传 `e.nativeEvent`，
+ * 原生事件直接传 `e`，两者都具备这两个属性，也因此可在 node 单测里直接验证。
+ */
+export function isImeComposing(e: { isComposing?: unknown; keyCode?: unknown }): boolean {
+  return e.isComposing === true || e.keyCode === 229;
+}
+
+/**
  * 浮层「点外面关闭」的公共判定：面板自身里的按下不算外点；**本面板的开关按钮**
  * （`data-cc-toggle="<owner>"`）也不算 —— 不豁免它的话，capture 的 pointerdown
  * 先把面板收掉，随后的 click 再把面板翻开，这个按钮就永远关不掉自己的浮层。

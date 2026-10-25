@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Icon } from "../ui/icon";
+import { isImeComposing } from "../../lib/utils";
 import type { TerminalSearch } from "./useTerminalSearch";
 
 /**
@@ -34,6 +35,8 @@ export function SshTerminalFind({ search }: { search: TerminalSearch }) {
         placeholder="搜索终端内容"
         onChange={(e) => search.setQuery(e.target.value)}
         onKeyDown={(e) => {
+          // IME 组词中的 Esc/Enter 属于输入法（收候选窗 / 上屏），这里不关窗、不跳匹配。
+          if (isImeComposing(e.nativeEvent)) return;
           // Esc 只在搜索框聚焦时关窗——终端聚焦时 Esc 必须原样发给远端（vim / Claude Code 靠它）。
           if (e.key === "Escape") {
             e.preventDefault();
