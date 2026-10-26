@@ -160,6 +160,11 @@ pub struct Shared {
     /// 🔴 临界区**不得**包含 `maybe_auto_approve`：它会再走 `record_local` 拿同一把锁，
     /// `std::sync::Mutex` 不可重入，多持一步就是死锁。
     emit_order: StdMutex<()>,
+    /// 上一次「等你批准」通知的时间（毫秒，0 = 本次运行内还没弹过）。节流用。
+    ///
+    /// 为什么必须节流：默认权限模式下几乎每个 Bash / Edit 都要批准，一次重构就是
+    /// 几十条请求。逐条弹通知等于让用户把通知关掉 —— 那就连真正要紧的那一条也丢了。
+    ask_notified_at: AtomicU64,
 }
 
 /// 一条待批请求。
@@ -521,7 +526,10 @@ impl EventSink for TauriSink {
             ..
         } = &event
         {
-            self.maybe_auto_approve(request_id, tool_name, input);
+            // 规则替用户放行的，不再弹「等你批准」—— 那会让人以为还得自己点。
+            if !self.maybe_auto_approve(request_id, tool_name, input) {
+                self.notify_ask(tool_name, input);
+            }
         }
         if let CcEvent::TurnEnd { is_error, text, .. } = &event {
             self.notify_turn_end(*is_error, text.as_deref());
@@ -569,19 +577,26 @@ impl TauriSink {
     ///
     /// 全程 fail-closed：规则表空 / 编译失败 / 主参数取不到 / 写 stdin 失败，
     /// 统统安静退场，卡片留在原地等用户 —— 自动放行是**优化**，不是必需路径。
-    fn maybe_auto_approve(&self, request_id: &str, tool_name: &str, input: &serde_json::Value) {
+    /// 返回**是否已自动放行**。调用方靠它决定要不要给用户弹「等你批准」——
+    /// 规则替用户点了「允许」的那些不该再打扰他。
+    fn maybe_auto_approve(
+        &self,
+        request_id: &str,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> bool {
         let Some(state) = self.app.try_state::<Arc<AppState>>() else {
-            return;
+            return false;
         };
         // 一次读完就用：`try_read` 失败（正在存配置）= 本轮不自动放行。
         let rules = {
             let Ok(cfg) = state.config.try_read() else {
-                return;
+                return false;
             };
             cfg.cc_auto_approve_rules.clone()
         };
         let Some(hit) = auto_approve_hit(&rules, tool_name, input) else {
-            return;
+            return false;
         };
         // 回写走与用户点击同一条路（`CcSession::respond`）：它管加锁、管进程存活。
         // 失败只可能是进程正在退 —— 那时用户自己点也一样会失败。
@@ -595,7 +610,7 @@ impl TauriSink {
             .and_then(|cc| cc.respond(request_id, &Verdict::allow_as_is(input)).ok())
             .is_some();
         if !wrote {
-            return;
+            return false;
         }
         // 摘单：晚了进来的用户点击会得到「已失效」，而不是重复回一条裁决。
         self.shared.forget(request_id);
@@ -609,6 +624,7 @@ impl TauriSink {
             },
         );
         log::info!("审批规则命中，已自动放行 {tool_name}（规则：{hit}）");
+        true
     }
 
     /// 本轮结束推一条桌面通知。**两道门**都开才推：
@@ -647,7 +663,116 @@ impl TauriSink {
             let _ = crate::commands::notify_desktop_impl(notify_app, &title, &body);
         });
     }
+
+    /// 「等你批准」通知。**四道门**：开关、窗口不在前台、待批单从 0 变 1、20 秒节流。
+    ///
+    /// 🔴 为什么需要它：审批请求 60 秒不处理 CLI 就自动拒绝，而此前**轮结束有桌面
+    /// 通知、等批准没有**。多会话下用户在别的 pane 或别的应用里，唯一的线索是侧栏
+    /// 一个 6px 圆点 —— 超时就是一次静默失败：任务被拒了，人还以为在跑。
+    ///
+    /// 三门都是为了**不让人关掉这个通知**：默认权限模式下审批是高频事件，
+    /// 逐条弹会把通知变成噪音，用户关掉之后真正要紧的那条也就一起没了。
+    fn notify_ask(&self, tool_name: &str, input: &serde_json::Value) {
+        let on = self.config_flag(|c| c.cc_notify_turn_end && c.notify_task_complete);
+        if !on {
+            return;
+        }
+        // 还有别的待批单挂着 ⇒ 用户已经被告知过一次，别再弹。
+        if self.shared.pending_count() > 1 {
+            return;
+        }
+        let cwd = self.shared.facts().cwd;
+        let (title, body) = ask_notify_text(cwd.as_deref(), tool_name, input);
+        let shared = self.shared.clone();
+        let app = self.app.clone();
+        let notify_app = app.clone();
+        // 通知插件在 mac 上要求主线程；`is_focused` 也从主线程问才准。
+        let _ = app.run_on_main_thread(move || {
+            // 窗口就在前台 ⇒ 那张卡片已经在他眼前，再弹一次纯属噪音。
+            if let Some(w) = notify_app.get_webview_window("main") {
+                if w.is_focused().unwrap_or(false) {
+                    return;
+                }
+            }
+            // 节流放在聚焦判断**之后**：刚看过窗口的那几秒不该白白吃掉一个名额。
+            let now = now_ms();
+            let last = shared.ask_notified_at.load(Ordering::Relaxed);
+            if now.saturating_sub(last) < ASK_NOTIFY_MIN_GAP_MS {
+                return;
+            }
+            shared.ask_notified_at.store(now, Ordering::Relaxed);
+            let _ = crate::commands::notify_desktop_impl(notify_app, &title, &body);
+        });
+    }
 }
+
+/// 「等你批准」通知的标题与正文。
+///
+/// 标题带会话目录的末段：多会话并存时，「等你批准」这四个字得能回答「**哪一条**」。
+/// 正文只说三件事：什么工具、动什么、会怎样（60 秒自动拒绝）。
+fn ask_notify_text(
+    cwd: Option<&str>,
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> (String, String) {
+    let dir = cwd
+        .map(|c| c.trim_end_matches(['/', '\\']))
+        .and_then(|c| c.rsplit(['/', '\\']).next())
+        .filter(|s| !s.is_empty());
+    let title = match dir {
+        Some(d) => format!("CC 等你批准（{d}）"),
+        None => "CC 等你批准".to_string(),
+    };
+
+    let pick = |k: &str| {
+        input
+            .get(k)
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let raw = pick("file_path")
+        .or_else(|| pick("path"))
+        .map(tail_path)
+        .or_else(|| pick("command").map(|c| c.lines().next().unwrap_or(c).to_string()))
+        .or_else(|| pick("pattern").map(str::to_string))
+        .unwrap_or_default();
+    // 通知能显示的字数很有限，长路径/长命令一律截断（100 字与 `notify_turn_end` 同口径）。
+    let mut what: String = raw.chars().take(100).collect();
+    if raw.chars().count() > 100 {
+        what.push('…');
+    }
+
+    let body = if what.is_empty() {
+        format!("{tool_name}　60 秒内不处理会自动拒绝。")
+    } else {
+        format!("{tool_name}　{what}\n60 秒内不处理会自动拒绝。")
+    };
+    (title, body)
+}
+
+/// 路径的后两段（绝对路径会把通知撑爆，而末两段足以定位）。
+fn tail_path(p: &str) -> String {
+    let mut parts: Vec<&str> = p
+        .rsplit(['/', '\\'])
+        .filter(|s| !s.is_empty())
+        .take(2)
+        .collect();
+    parts.reverse();
+    parts.join("/")
+}
+
+/// 毫秒时间戳（节流用）。系统时钟被拨回去时给 0 —— 最多多弹一条，不至于卡住不弹。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 「等你批准」通知的最小间隔。20 秒是「看得见、但不吵」的折中：
+/// 用户切走一下就能收到，而连批十条也只响一声。
+const ASK_NOTIFY_MIN_GAP_MS: u64 = 20_000;
 
 /// 一轮启动需要的一切。
 pub struct Launch {
@@ -1029,6 +1154,35 @@ mod tests {
                 v.push(event);
             }
         }
+    }
+
+    /// 通知正文只说三件事：什么工具、动什么、会怎样（60 秒自动拒绝）。
+    /// 多会话并存时标题还要能回答「**哪一条**」—— 所以带目录末段。
+    #[test]
+    fn ask_notify_text_names_session_and_tool() {
+        let input = serde_json::json!({"file_path": "/repo/desktop/src/a.ts", "old_string": "x"});
+        let (title, body) = ask_notify_text(Some("/repo/desktop"), "Edit", &input);
+        assert_eq!(title, "CC 等你批准（desktop）");
+        // 只留后两段：绝对路径会把通知撑爆，末两段已经能定位。
+        assert!(body.contains("src/a.ts"), "{body}");
+        assert!(body.contains("60 秒内不处理会自动拒绝"), "{body}");
+        assert!(!body.contains("/repo/desktop/src"), "{body}");
+    }
+
+    #[test]
+    fn ask_notify_text_uses_command_first_line() {
+        let input = serde_json::json!({"command": "cargo build\necho 第二行"});
+        let (_, body) = ask_notify_text(None, "Bash", &input);
+        assert!(body.contains("cargo build"), "{body}");
+        assert!(!body.contains("echo 第二行"), "{body}");
+    }
+
+    /// 认不出参数时给一句完整的说明，而不是留个空白的通知。
+    #[test]
+    fn ask_notify_text_without_recognizable_input() {
+        let (title, body) = ask_notify_text(Some("/repo/"), "mcp__x__y", &serde_json::json!({}));
+        assert_eq!(title, "CC 等你批准（repo）");
+        assert!(body.starts_with("mcp__x__y"), "{body}");
     }
 
     /// sink 收到 `Init` 必须把 session_id 记下来 —— 这是 `--resume` 的唯一来源。
