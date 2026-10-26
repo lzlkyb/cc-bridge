@@ -296,7 +296,15 @@ mod tests {
         );
         let v: Value = serde_json::from_str(txt).unwrap();
         assert_eq!(v["terminated"], json!(true), "应标明是被终止的：{v}");
-        assert_eq!(v["outputComplete"], json!(true), "{v}");
+        // `outputComplete` 同理不硬断言：Unix 上管道收尾（进程组里还有成员握着读端）
+        // 可能还没完成，此时产品会带上「稍等片刻再取」的 note —— 那也是正确行为。
+        // 所以要求的是「要么已排空，要么明确告诉调用方还能再取」，而不是「一定已排空」。
+        if v["outputComplete"] != json!(true) {
+            assert!(
+                v["note"].as_str().unwrap_or("").contains("收尾"),
+                "未排空时必须说明还能再取：{v}"
+            );
+        }
         assert!(!v["running"].as_bool().unwrap_or(true), "已不再运行：{v}");
     }
 
