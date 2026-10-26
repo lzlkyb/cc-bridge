@@ -1,10 +1,12 @@
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { CHAT_TYPOGRAPHY, cycleChatTypography, useChatTypography } from "../../lib/chatTypography";
+import { CHAT_VERBOSITY, cycleChatVerbosity, useChatVerbosity } from "../../lib/chatVerbosity";
 
 /**
  * 输入区底行（从 Composer 拆出，2026-10-26：给 @引用接线腾行数）。
- * 纯展示 + 回调，含「Aa」排版循环钮（小→中→大，全局记忆，只作用正文）。
+ * 纯展示 + 回调，含「Aa」排版循环钮（小→中→大，全局记忆，只作用正文）
+ * 与「详略」循环钮（详细→标准→精简，全局记忆，只作用消息流）。
  */
 export function ComposerTools({
   sendHint,
@@ -28,6 +30,7 @@ export function ComposerTools({
   onSend: () => void;
 }) {
   const typo = useChatTypography();
+  const verbosity = useChatVerbosity();
   return (
     <div className="flex items-center gap-2 px-2 pb-1.5">
       <span className="text-[11px] text-muted-foreground">
@@ -45,6 +48,19 @@ export function ComposerTools({
         aria-pressed={typo !== "m"}
       >
         Aa · {CHAT_TYPOGRAPHY[typo].label}
+      </button>
+      {/* 与「Aa」并排：两个都是「我这条会话想看多细」的全局偏好，放一起才找得到。
+          档位只影响消息流的元信息层（思考 / 工具），不动正文与输入框。 */}
+      <button
+        type="button"
+        onClick={cycleChatVerbosity}
+        title={`消息详略：当前「${CHAT_VERBOSITY[verbosity].label}」· ${CHAT_VERBOSITY[verbosity].hint}（点击切换，全局记忆）`}
+        aria-label="切换消息详略"
+        className="flex h-[26px] items-center gap-1 rounded-[7px] border border-border px-[7px] text-[11.5px] text-muted-foreground transition-colors hover:text-foreground aria-pressed:border-primary/45 aria-pressed:text-primary"
+        aria-pressed={verbosity !== "n"}
+      >
+        <Icon name="sliders" size={11} className="shrink-0 opacity-70" />
+        {CHAT_VERBOSITY[verbosity].label}
       </button>
       {polishBackup !== null && (
         <button

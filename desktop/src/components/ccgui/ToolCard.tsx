@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { CcToolCall } from "../../lib/ccGuiTypes";
 import type { CcMark } from "../../lib/ccMarkdown";
 import { computeLineDiff } from "../../lib/ccDiff";
+import { useChatVerbosity } from "../../lib/chatVerbosity";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { Icon, type IconName } from "../ui/icon";
 import { DiffBlock } from "./DiffBlock";
@@ -13,6 +14,7 @@ import {
   editCount,
   editPair,
   toolArgLabel,
+  toolDefaultOpen,
   toolKind,
 } from "./summarize";
 
@@ -106,16 +108,6 @@ function MonoBlock({
  */
 function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcMark[] }) {
   const kind = toolKind(tool.name);
-  const [open, setOpen] = useState(kind === "edit" || kind === "write" || (kind === "bash" && !!tool.result));
-  /** 用户亲手切换过展开态之后，就不再自动展开（那是在替用户做他刚拒绝过的事）。 */
-  const touchedRef = useRef(false);
-  useEffect(() => {
-    if (kind === "bash" && tool.result && !touchedRef.current) setOpen(true);
-  }, [kind, tool.result]);
-  const toggle = () => {
-    touchedRef.current = true;
-    setOpen((v) => !v);
-  };
 
   const { copy, isCopied } = useCopyFeedback();
   const pair = useMemo(() => editPair(tool.input), [tool.input]);
@@ -144,6 +136,38 @@ function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcM
     (kind === "bash" && !!tool.result) ||
     kind === "read" ||
     kind === "other";
+
+  /* ── 详略档位（`lib/chatVerbosity.ts`）──────────────────────────────────
+   * 只改「默认展开态」，不改任何内容是否存在：档位随时可切，切完还能手点。
+   * 「精简」档下所有工具都收成一行 —— 一次重构三十次 Edit，标准档每个 diff
+   * 摊开就是上千行，那正是这个档要解决的问题。 */
+  const verbosity = useChatVerbosity();
+  const [open, setOpen] = useState(() => toolDefaultOpen(verbosity, kind, hasBody, !!tool.result));
+  /** 用户亲手切换过展开态之后，就不再自动展开（那是在替用户做他刚拒绝过的事）。 */
+  const touchedRef = useRef(false);
+
+  // 档位变化 ⇒ 把手动改过的展开态也拉回该档默认。用 ref 比对而不是把
+  // `hasBody`/`tool.result` 塞进依赖：那两个会在流式期间反复变，会让用户刚点开
+  // 的块被重置（`touchedRef` 的整个意义就是避免这件事）。
+  const prevVerbosity = useRef(verbosity);
+  useEffect(() => {
+    if (prevVerbosity.current === verbosity) return;
+    prevVerbosity.current = verbosity;
+    touchedRef.current = false;
+    setOpen(toolDefaultOpen(verbosity, kind, hasBody, !!tool.result));
+  }, [verbosity, kind, hasBody, tool.result]);
+
+  // 直播时 `toolUse` 先到（此时没有结果，行是收着的），结果落地那一刻自动展开一次。
+  // 「精简」档不代劳：那个档的语义就是「别自动摊开」。
+  useEffect(() => {
+    if (verbosity === "c") return;
+    if (kind === "bash" && tool.result && !touchedRef.current) setOpen(true);
+  }, [kind, tool.result, verbosity]);
+
+  const toggle = () => {
+    touchedRef.current = true;
+    setOpen((v) => !v);
+  };
 
   return (
     // data-cc-tool：变更集面板的跳转锚点（CcGuiTab 按 tool.id  querySelector 找它）。

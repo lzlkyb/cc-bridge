@@ -1,5 +1,6 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
+import { useChatVerbosity } from "../../lib/chatVerbosity";
 import { Icon } from "../ui/icon";
 import { thinkingTitle } from "./summarize";
 import { MarkedText } from "./MarkedText";
@@ -18,9 +19,21 @@ import type { CcMark } from "../../lib/ccMarkdown";
  * `titleMarks`：会话内搜索的标题命中（标题只有一段，marks 恒为 seg 0）。
  */
 function ThinkingBlockImpl({ text, running, titleMarks }: { text: string; running: boolean; titleMarks?: CcMark[] }) {
-  const [open, setOpen] = useState(false);
+  const verbosity = useChatVerbosity();
+  // 「详细」档默认摊开；另两档维持折叠一行。用户手点过的展开态优先，直到切档为止。
+  const [open, setOpen] = useState(verbosity === "v");
   const { copy, isCopied } = useCopyFeedback();
   const summary = thinkingTitle(text);
+
+  // 切档时把展开态拉回该档默认：在「详细」下摊开的几千字，切到「精简」还继续
+  // 占着视口就失去了这个开关的意义。只在**档位真的变了**时动手 —— 拿 `text`
+  // 做依赖会把流式期间用户手点开的块每秒重置一次。
+  const prevVerbosity = useRef(verbosity);
+  useEffect(() => {
+    if (prevVerbosity.current === verbosity) return;
+    prevVerbosity.current = verbosity;
+    setOpen(verbosity === "v");
+  }, [verbosity]);
 
   return (
     <div className="flex gap-2">

@@ -9,6 +9,7 @@ import {
   editPair,
   thinkingTitle,
   todoItems,
+  toolDefaultOpen,
   toolKind,
 } from "./summarize";
 
@@ -133,5 +134,30 @@ describe("summarize", () => {
 
   it("buildConvHits：空查询无命中", () => {
     expect(buildConvHits([{ kind: "user", id: "u1", at: "", text: "任意" }], "  ")).toEqual([]);
+  });
+});
+
+describe("toolDefaultOpen 详略三档", () => {
+  it("标准档 = 改动前的行为（Edit/Write 展开、Bash 看有没有输出、其余收起）", () => {
+    expect(toolDefaultOpen("n", "edit", true, false)).toBe(true);
+    expect(toolDefaultOpen("n", "write", true, false)).toBe(true);
+    expect(toolDefaultOpen("n", "bash", true, true)).toBe(true);
+    expect(toolDefaultOpen("n", "bash", false, false)).toBe(false);
+    expect(toolDefaultOpen("n", "read", true, false)).toBe(false);
+    expect(toolDefaultOpen("n", "other", true, false)).toBe(false);
+  });
+
+  it("精简档一律收起 —— 一次重构三十次 Edit 也不摊开", () => {
+    for (const kind of ["edit", "write", "bash", "read", "other"] as const) {
+      expect(toolDefaultOpen("c", kind, true, true)).toBe(false);
+    }
+  });
+
+  it("详细档有内容就摊开（Read 与 MCP 工具的入参 JSON 只在这一档露出来）", () => {
+    expect(toolDefaultOpen("v", "read", true, false)).toBe(true);
+    expect(toolDefaultOpen("v", "other", true, false)).toBe(true);
+    expect(toolDefaultOpen("v", "edit", true, false)).toBe(true);
+    // 没有内容可展开的工具（例如纯文本工具）摊不开，别给它一个空壳
+    expect(toolDefaultOpen("v", "other", false, false)).toBe(false);
   });
 });

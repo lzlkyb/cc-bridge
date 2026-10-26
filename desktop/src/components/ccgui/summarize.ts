@@ -9,6 +9,7 @@
 
 import { plainOccurrences } from "../../lib/ccHighlight";
 import { markdownLeaves } from "../../lib/ccMarkdown";
+import type { ChatVerbosity } from "../../lib/chatVerbosity";
 import type { CcMessage } from "../../lib/ccGuiTypes";
 
 export type ToolKind = "edit" | "write" | "bash" | "read" | "todo" | "other";
@@ -29,6 +30,29 @@ const EXACT: Record<string, ToolKind> = {
 export function toolKind(name: string): ToolKind {
   const tail = name.includes("__") ? name.slice(name.lastIndexOf("__") + 2) : name;
   return EXACT[name] ?? EXACT[tail] ?? "other";
+}
+
+/**
+ * 工具行的**默认展开态**，由详略档位决定（`lib/chatVerbosity.ts`）。
+ *
+ * 纯函数放在这里而不是 `ToolCard` 里：展开策略是这个文件既有的职责
+ * （`toolKind` / `editPair` / `clampToolText` 都在回答「这条工具怎么展示」），
+ * 而且能直接单测三档 × 六种工具，不必挂渲染。
+ *
+ * - `c` 精简：一律收着，只留那一行摘要。
+ * - `v` 详细：有内容就摊开（Read 的入参 JSON、MCP 工具的入参都在这一档才看得到）。
+ * - `n` 标准：改动前的行为 —— 编辑类摊开（diff 就是这次调用的意义）、
+ *   Bash 有输出才摊开、其余收着。
+ */
+export function toolDefaultOpen(
+  verbosity: ChatVerbosity,
+  kind: ToolKind,
+  hasBody: boolean,
+  hasResult: boolean,
+): boolean {
+  if (verbosity === "c") return false;
+  if (verbosity === "v") return hasBody;
+  return kind === "edit" || kind === "write" || (kind === "bash" && hasResult);
 }
 
 /** 卡片头部那行参数摘要：路径只留后两段，避免绝对路径把行撑爆。 */
