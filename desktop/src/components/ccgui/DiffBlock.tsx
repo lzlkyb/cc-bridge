@@ -27,20 +27,24 @@ function DiffBlockImpl({
   newText,
   context = 2,
   edits = 1,
+  layout = "auto",
 }: {
   oldText: string;
   newText: string;
   context?: number;
   /** 这条 diff 由几处修改拼成（MultiEdit）；>1 时顶栏说明拼接口径。 */
   edits?: number;
+  /** `unified` 恒单栏、不给切换控件：审批卡在窄列里，井排每栏只剩 ~200px，
+   *  等宽 12px 十来字符就折行，比看单栏还费劲（与审批面板 mini diff 同一条理由）。 */
+  layout?: "auto" | "unified";
 }) {
   const diff = useMemo(() => computeLineDiff(oldText, newText), [oldText, newText]);
   const rows = useMemo(() => compactDiff(diff, context), [diff, context]);
   const hunks = useMemo(() => pairDiffRows(rows), [rows]);
   const view = useDiffView();
 
-  /** 有旧内容才有「两侧」可言。 */
-  const canSideBySide = oldText !== "";
+  /** 有旧内容才有「两侧」可言；`unified` 档连这个选择都不给。 */
+  const canSideBySide = oldText !== "" && layout === "auto";
   const sideBySide = canSideBySide && view === "s";
   const showBar = canSideBySide || edits > 1;
 

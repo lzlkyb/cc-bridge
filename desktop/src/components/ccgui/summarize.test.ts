@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { CcMessage } from "../../lib/ccGuiTypes";
 import {
   TOOL_TEXT_LIMIT,
+  approvalCopyText,
+  approvalPayload,
   buildConvHits,
   clampToolText,
   convSegments,
@@ -159,5 +161,83 @@ describe("toolDefaultOpen 详略三档", () => {
     expect(toolDefaultOpen("v", "edit", true, false)).toBe(true);
     // 没有内容可展开的工具（例如纯文本工具）摊不开，别给它一个空壳
     expect(toolDefaultOpen("v", "other", false, false)).toBe(false);
+  });
+});
+
+describe("approvalPayload 审批卡看什么", () => {
+  /// 这条是审批面最核心的判据：Edit 必须给 diff。曾经一律 JSON.stringify，
+  /// 用户在 `"old_string": "const a = 1;\nconst b = 2;"` 里判断要不要放行文件改动 ——
+  /// 字面的 `\n` 人读不出来，等于盲批。
+  it("Edit → diff（旧/新都拿到，不是转义 JSON）", () => {
+    const p = approvalPayload("Edit", {
+      file_path: "/repo/src/a.ts",
+      old_string: "const a = 1;\nconst b = 2;",
+      new_string: "const a = 1;\nconst b = 3;",
+    });
+    expect(p.kind).toBe("diff");
+    if (p.kind !== "diff") return;
+    expect(p.oldText).toBe("const a = 1;\nconst b = 2;");
+    expect(p.newText).toBe("const a = 1;\nconst b = 3;");
+    expect(p.path).toBe("/repo/src/a.ts");
+    expect(p.edits).toBe(1);
+    // 单处修改不啰嗦
+    expect(p.note).toBe("");
+  });
+
+  it("MultiEdit → diff 且说清「共 N 处」（多处按顺序拼接）", () => {
+    const p = approvalPayload("MultiEdit", {
+      file_path: "/repo/b.ts",
+      edits: [
+        { old_string: "一", new_string: "1" },
+        { old_string: "二", new_string: "2" },
+      ],
+    });
+    expect(p.kind).toBe("diff");
+    if (p.kind !== "diff") return;
+    expect(p.edits).toBe(2);
+    expect(p.newText).toBe("1\n⋯\n2");
+    expect(p.note).toContain("共 2 处");
+  });
+
+  it("Write → 全 + 的 diff，并如实说明「看不到改动前的样子」", () => {
+    const p = approvalPayload("Write", { file_path: "/repo/new.ts", content: "export const x = 1;\n" });
+    expect(p.kind).toBe("diff");
+    if (p.kind !== "diff") return;
+    expect(p.oldText).toBe("");
+    expect(p.newText).toBe("export const x = 1;\n");
+    expect(p.note).toContain("改动前的样子");
+  });
+
+  /// `content` 是空串也要走 diff：用真假判会把它当成「没有内容」退化成一团 JSON，
+  /// 而「写一个空文件」本身是个要紧的决定，得让人看见「它将变空」。
+  it("Write 空内容 → 仍是 diff（空串不等于没有字段）", () => {
+    const p = approvalPayload("Write", { file_path: "/repo/empty.ts", content: "" });
+    expect(p.kind).toBe("diff");
+    if (p.kind !== "diff") return;
+    expect(p.newText).toBe("");
+  });
+
+  it("Bash → 命令原文", () => {
+    const p = approvalPayload("Bash", { command: "rm -rf dist", description: "清掉构建产物" });
+    expect(p).toEqual({ kind: "command", text: "rm -rf dist" });
+  });
+
+  it("认不出的工具（桥的 write_files / MCP）→ JSON 兜底", () => {
+    const input = { files: [{ path: "/a", content: "x" }] };
+    const p = approvalPayload("mcp__cc-bridge__write_files", input);
+    expect(p.kind).toBe("json");
+    if (p.kind !== "json") return;
+    expect(p.text).toBe(JSON.stringify(input, null, 2));
+  });
+
+  it("Edit 形状不认识（没 old/new）→ 退 JSON 而不是画个空 diff", () => {
+    const p = approvalPayload("Edit", { file_path: "/a.ts", mystery: 1 });
+    expect(p.kind).toBe("json");
+  });
+
+  /// 剪贴板里放无损原文：拼出来的 `- 旧 / + 新` 粘到别处还原不回去。
+  it("approvalCopyText 是完整入参原文", () => {
+    const input = { file_path: "/a.ts", old_string: "a", new_string: "b" };
+    expect(JSON.parse(approvalCopyText(input))).toEqual(input);
   });
 });

@@ -187,6 +187,68 @@ export function editCount(input: Record<string, unknown>): number {
   return edits.length;
 }
 
+/** 审批卡里「这次到底改什么」的形态。
+ *
+ * 🔴 审批是这产品的护城河，却曾经一律 `JSON.stringify(input)` —— 用户要在
+ *    `"old_string": "const a = 1;\nconst b = 2;"` 这种转义文本里判断要不要放行
+ *    一次文件改动。字面的 `\n` 是人读不出来的，等于让人盲批。
+ *
+ * 分流规则与工具行（`toolKind`）同源，但**不共用 `toolDefaultOpen`**：审批必须
+ * 直接给结果，没有「默认折叠」这一说 —— 折叠起来就等于让人凭什么都不看就点允许。
+ */
+export type ApprovalPayload =
+  | { kind: "diff"; path: string; oldText: string; newText: string; edits: number; note: string }
+  | { kind: "command"; text: string }
+  | { kind: "json"; text: string };
+
+export function approvalPayload(
+  toolName: string,
+  input: Record<string, unknown>,
+): ApprovalPayload {
+  const kind = toolKind(toolName);
+  const path = asString(input.file_path) || asString(input.path);
+  if (kind === "edit") {
+    const pair = editPair(input);
+    if (pair) {
+      const edits = editCount(input);
+      return {
+        kind: "diff",
+        path,
+        oldText: pair.oldText,
+        newText: pair.newText,
+        edits,
+        note: edits > 1 ? `共 ${edits} 处修改，diff 按执行顺序拼接（⋯ 行是分隔）。` : "",
+      };
+    }
+  }
+  // Write 的入参只有 path + content：`typeof` 判字段在不在，不判真假 ——
+  // 写空文件时 `content` 是空串，用真假判会把它当成「没有内容」退化成一团 JSON。
+  if (kind === "write" && typeof input.content === "string") {
+    return {
+      kind: "diff",
+      path,
+      oldText: "",
+      newText: input.content,
+      edits: 1,
+      // 如实说清看到的是什么：审批发生在写入之前，我们手上没有这个文件的旧内容
+      // （也许根本不存在）。不写这句，用户会以为上面那一片绿色是「改成了这样」。
+      note: "整体写入：文件不存在则新建，存在则整个覆盖。这里只有即将写入的内容，改动前的样子不经过本机。",
+    };
+  }
+  const command = asString(input.command);
+  if (command) return { kind: "command", text: command };
+  return { kind: "json", text: JSON.stringify(input, null, 2) };
+}
+
+/** 审批卡「复制」按钮的内容：完整入参原文，不复制拼出来的 diff。
+ *
+ * 界面上给人看的是**读得懂的视图**，剪贴板里存**无损的原文** —— 拼一份
+ * `- 旧行 / + 新行` 出来，粘到别处没办法还原成入参，反而把 `\n` 和真实内容
+ * 混成一片。两个目的不同，不要合并。 */
+export function approvalCopyText(input: Record<string, unknown>): string {
+  return JSON.stringify(input, null, 2);
+}
+
 /** 工具输出 / 入参 JSON 的展示截断上限。
  *
  * 与历史入库侧的 16k 截断（`cc_history/parse.rs`）同口径：那道闸只在入库时生效，
