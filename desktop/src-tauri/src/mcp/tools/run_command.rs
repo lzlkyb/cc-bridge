@@ -1401,9 +1401,14 @@ mod tests {
         });
         let command = {
             let cfg = state.config.read().await;
-            match crate::mcp::tools::shell::parse_shell_type(&cfg.shell_type) {
-                ShellType::Bash => "echo \"[$CCB_ENV_PROBE]\"",
-                _ => "echo [%CCB_ENV_PROBE%]",
+            // 🔴 判据是「**实际**用哪个 shell 展开命令」，不是配置里写了什么：
+            //    Unix 上 `ShellType::Cmd` 也映射到 `/bin/sh`（见 `build_invocation_unix`），
+            //    那边只有 `$VAR` 会展开。此前按 `shell_type` 分支 ⇒ macOS 上
+            //    默认配置（cmd）拼出 `%CCB_ENV_PROBE%`，sh 原样打印字面量，测试红。
+            if cfg!(windows) && matches!(parse_shell_type(&cfg.shell_type), ShellType::Cmd) {
+                "echo [%CCB_ENV_PROBE%]"
+            } else {
+                "echo \"[$CCB_ENV_PROBE]\""
             }
         };
         let v = handle(

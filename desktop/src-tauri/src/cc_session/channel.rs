@@ -535,7 +535,12 @@ mod tests {
 
     #[test]
     fn polish_local_passes_bare_flag_and_no_prompt_in_argv() {
-        let (_, args) = polish_local("claude").expect("构造");
+        // 🔴 不要拿字面量 "claude" 去碰 PATH：这条测试只该钉 argv 的形状，
+        //    「这台机器上装没装 claude」是环境的事，而 GitHub 的 runner 从不装它。
+        //    此前就是这么连红四次的（本机有 claude ⇒ 永远看不见）。
+        //    拿测试进程自己的 exe 当「一定存在的 claude」，两平台都稳。
+        let me = std::env::current_exe().expect("当前 exe 路径");
+        let (_, args) = polish_local(&me.to_string_lossy()).expect("构造");
         assert_eq!(args, vec!["-p".to_string(), "--bare".to_string()]);
     }
 
