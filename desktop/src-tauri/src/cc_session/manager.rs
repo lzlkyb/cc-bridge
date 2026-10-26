@@ -34,7 +34,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::autoapprove;
 use super::proto::CcEvent;
 use super::ring::{EventRing, RingSnapshot};
-use super::session::{EventSink, Run, UserImage, Verdict};
+use super::session::{EventSink, Run, Transport, UserImage, Verdict};
 use super::store::{self, SessionFacts};
 use super::usage::{self, CcUsage};
 use crate::state::AppState;
@@ -660,7 +660,11 @@ pub struct Launch {
 /// 对话会话管理器。
 pub struct CcSession {
     shared: Arc<Shared>,
-    live: StdMutex<Option<Run>>,
+    /// 当前的 IO 挂载点。`None` = 没有在跑的进程。
+    ///
+    /// 批 3-2 起是 [`Transport`] 而不是 [`Run`]：托管（S4）要换的是 IO 挂载点，
+    /// 而 `Run` 的「一个子进程 + 一条 stdout」语义不动。
+    live: StdMutex<Option<Transport>>,
 }
 
 impl Default for CcSession {
@@ -713,15 +717,15 @@ impl CcSession {
     pub fn is_running(&self) -> bool {
         self.live
             .lock()
-            .map(|g| g.as_ref().map(Run::is_alive).unwrap_or(false))
+            .map(|g| g.as_ref().map(Transport::is_alive).unwrap_or(false))
             .unwrap_or(false)
     }
 
     /// 起一轮。已在跑则拒绝 —— 两个进程写同一份 `~/.claude/projects` 会互相踩。
     pub fn start(&self, launch: Launch, sink: Arc<dyn EventSink>) -> Result<(), String> {
         let mut guard = self.live.lock().map_err(|_| "会话状态已锁死".to_string())?;
-        if let Some(run) = guard.as_ref() {
-            if run.is_alive() {
+        if let Some(t) = guard.as_ref() {
+            if t.is_alive() {
                 return Err("上一轮还在进行，请等它结束或先中断".into());
             }
         }
@@ -736,7 +740,7 @@ impl CcSession {
             launch.cwd.as_deref(),
             sink,
         )?;
-        *guard = Some(run);
+        *guard = Some(Transport::Direct(run));
         // 上一轮残留的待批单在新一轮里永远不可能被满足（request_id 是上一轮进程的）。
         self.shared.clear_pending();
         Ok(())
@@ -752,16 +756,16 @@ impl CcSession {
     /// 且发生在写 stdin 之前 —— 与 `send` 一样，写成功才算这一轮开始。
     pub fn send_user_images(&self, text: &str, images: &[UserImage]) -> Result<(), String> {
         let guard = self.live.lock().map_err(|_| "会话状态已锁死".to_string())?;
-        let run = guard.as_ref().ok_or("当前没有进行中的对话")?;
-        run.send_user_images(text, images)?;
+        let t = guard.as_ref().ok_or("当前没有进行中的对话")?;
+        t.send_user_images(text, images)?;
         self.shared.set_turn_active(true);
         Ok(())
     }
 
     pub fn respond(&self, request_id: &str, verdict: &Verdict) -> Result<(), String> {
         let guard = self.live.lock().map_err(|_| "会话状态已锁死".to_string())?;
-        let run = guard.as_ref().ok_or("这一轮已经结束，无法再批准")?;
-        run.respond(request_id, verdict)
+        let t = guard.as_ref().ok_or("这一轮已经结束，无法再批准")?;
+        t.respond(request_id, verdict)
     }
 
     /// 中断：杀进程树，**保留已收到的内容**（ring 不清）。
@@ -770,8 +774,8 @@ impl CcSession {
             return false;
         };
         match guard.as_mut() {
-            Some(run) if run.is_alive() => {
-                run.kill();
+            Some(t) if t.is_alive() => {
+                t.kill();
                 self.shared.set_turn_active(false);
                 true
             }

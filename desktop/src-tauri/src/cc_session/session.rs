@@ -454,6 +454,66 @@ impl Run {
     }
 }
 
+/// 一条会话的 IO 挂载点 —— 批 3-2（会话不死）的结构基座。
+///
+/// ## 为什么要有这一层
+///
+/// 托管（tmux + FIFO + 日志）换的是「IO 从哪来」，**不是协议**：`Run` 保持
+/// 「一个子进程 + 一条 stdout」的语义不变，托管另起一套读写通道。把差异收进
+/// 这个枚举，`CcSession` 的 6 个调用点（`is_running` / `start` /
+/// `send_user_images` / `respond` / `interrupt` / `shutdown`）才不用各自分支。
+///
+/// 当前只有 `Direct`。这一步（S3）是**纯重构**：行为与加枚举之前逐字节等价，
+/// 单独提交是为了把「重构引入的问题」与「托管引入的问题」分开 —— 两条未知数
+/// 混在一起时，门禁红了不知道是谁红的。
+///
+/// ## 🔴 `is_alive()` 的语义**按变体不同**，绝不能当成同一个意思共用
+///
+/// - `Direct`：读线程活着（stdout 未 EOF）。
+/// - `Hosted`（S4 起）：**`tmux has-session`** 的结论，不是「读线程活着」。
+///   托管时读通道那条 ssh 会随断网 / 超时单独死掉，而 claude 还在跑。若沿用
+///   「读线程活着」判死 ⇒ `cc_send` 会新起一个 claude 带 `--resume` ⇒
+///   **两个 claude 同时写同一条会话的 `~/.claude/projects`**。那是损坏会话
+///   历史的错，不是显示问题。
+pub enum Transport {
+    Direct(Run),
+}
+
+impl Transport {
+    pub fn is_alive(&self) -> bool {
+        match self {
+            Self::Direct(run) => run.is_alive(),
+        }
+    }
+
+    pub fn send_user_images(&self, text: &str, images: &[UserImage]) -> Result<(), String> {
+        match self {
+            Self::Direct(run) => run.send_user_images(text, images),
+        }
+    }
+
+    pub fn respond(&self, request_id: &str, verdict: &Verdict) -> Result<(), String> {
+        match self {
+            Self::Direct(run) => run.respond(request_id, verdict),
+        }
+    }
+
+    /// 杀进程树（Direct）/ `tmux kill-session`（Hosted）。
+    pub fn kill(&mut self) {
+        match self {
+            Self::Direct(run) => run.kill(),
+        }
+    }
+
+    /// 应用退出时的收尾。**Hosted 只拆 ssh，不杀 tmux** —— 关窗恰恰是
+    /// 「进程该继续跑」的场景，这也是本批存在的理由。
+    pub fn shutdown(&mut self, grace: Duration) -> ShutdownHow {
+        match self {
+            Self::Direct(run) => run.shutdown(grace),
+        }
+    }
+}
+
 /// 把 stdout 的每一行喂给解析器。**纯函数式**：不碰进程，测试可以直接喂字节。
 ///
 /// 用 `read_until` 而不是 `read_line`：后者要求 UTF-8，一行脏字节会让整个读取
