@@ -15,6 +15,7 @@ export function SessionNotices({
   risk,
   conflict,
   retry,
+  processExited,
   dropped,
   error,
   stderr,
@@ -33,6 +34,15 @@ export function SessionNotices({
    */
   conflict: string | null;
   retry: CcRetryInfo | null;
+  /**
+   * 生成到一半 claude 进程没了（崩溃 / 被杀 / 自己退出）。
+   *
+   * 为什么必须说出来：后端下一轮会自动收尸重开（`manager.rs::start`），
+   * 所以**行为上是自愈的**；但界面上什么都不显示时，用户看到的只有
+   * 「刚才那句没反应、也不知道要不要重发」。这条提示就是那句解释。
+   * 重开成功（新 `init`）后它自动消失，不需要手动关掉。
+   */
+  processExited: boolean;
   /** 缓冲/裁剪缺口条数。 */
   dropped: number;
   /** 前端侧错误（invoke 失败、探测失败）。 */
@@ -70,6 +80,14 @@ export function SessionNotices({
       {retry && (
         <Notice tone="warn">
           重试中 {retry.attempt}/{retry.max} · {retry.message}
+        </Notice>
+      )}
+      {/* 与上面的重试互斥（`Exit` 会把 `retry` 清空），所以不会两条并排出现。
+          这里刻意不给 dismiss：重开后事件流自己会撤掉它，让用户手动关反而多一步。 */}
+      {processExited && (
+        <Notice tone="warn">
+          claude 进程在生成中退出了（崩溃或被中断）。下一句会自动带{" "}
+          <span className="font-mono">--resume</span> 重开，前面的对话不会丢。
         </Notice>
       )}
       {/* 压缩与后台任务都是「CC 自己做的事」：不提示的话用户只看到模型突然

@@ -125,6 +125,40 @@ describe("derivePaneMeta 五态", () => {
     expect(m.detail).toBe("新会话");
   });
 
+  /// 进程中途挂了也是 dead，但要和「连接已断」区分开：一个是有救的（发下一句就重开），
+  /// 一个要重连。文案与 hover 都必须指向正确的下一步。
+  it("进程中途退出 = dead，且提示发下一句会重开", () => {
+    const m = derivePaneMeta({
+      ...base,
+      view: view({ messages: [user("跑测试")], processExited: true }),
+    });
+    expect(m.state).toBe("dead");
+    expect(m.detail).toBe("1 轮 · 进程已退出");
+    expect(m.stateHint).toContain("--resume");
+  });
+
+  /// 连接被删时连进程都管不着了，不能让「进程已退出」抢走提示。
+  it("连接已断优先于进程已退出", () => {
+    const m = derivePaneMeta({
+      ...base,
+      view: view({ messages: [user("跑测试")], processExited: true }),
+      connectionId: "c1",
+      targetAlive: false,
+    });
+    expect(m.detail).toBe("1 轮 · 连接已断");
+    expect(m.stateHint).toBeUndefined();
+  });
+
+  /// 进程没了也不该把上一轮的待批单算成「等你批准」—— 新进程里那单永远满足不了。
+  it("进程已退出时不显示待批准", () => {
+    const m = derivePaneMeta({
+      ...base,
+      view: view({ messages: [approval("a1", "Edit")], processExited: true }),
+      pending: ["a1"],
+    });
+    expect(m.state).toBe("dead");
+  });
+
   it("targetLabel / connectionId 原样传出（侧栏分组靠它）", () => {
     const m = derivePaneMeta({
       ...base,

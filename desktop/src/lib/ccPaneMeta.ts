@@ -48,6 +48,14 @@ export type CcPaneMeta = {
   /** 用户消息条数（= 轮数）。 */
   turns: number;
   state: CcPaneState;
+  /**
+   * 覆盖 hover 提示（`STATE_HINT[state]` 的例外）。
+   *
+   * 为什么要这个口子：`dead` 这一个态现在承载两种完全不同的原因 —— 远端连接被删
+   * （「连接已断」，重连才有救）与 claude 进程中途挂了（「进程已退出」，发下一句
+   * 就重开）。两者对用户下一步该做什么的指示相反，混成一句会误导人。
+   */
+  stateHint?: string;
   /** 行内第二段：一句话说清「现在在干什么」。 */
   detail: string;
   /** 分组键：`""` = 本机，其余是 SSH 连接 id。 */
@@ -127,9 +135,17 @@ export function derivePaneMeta(input: {
 
   let state: CcPaneState = "idle";
   let detail = turns === 0 ? "新会话" : `${turns} 轮 · 空闲`;
+  let stateHint: string | undefined;
   if (!targetAlive) {
     state = "dead";
     detail = turns === 0 ? "连接已断" : `${turns} 轮 · 连接已断`;
+  } else if (view.processExited) {
+    // 生成到一半进程没了（崩溃 / 被杀）。后端下一轮会自己收尸重开（带 `--resume`），
+    // 所以这里**只提示不阻止**：用户接着打字就能继续，前面的对话也不丢。
+    // 排在审批之前：进程都没了，上一轮那些待批单在新进程里永远满足不了。
+    state = "dead";
+    detail = turns === 0 ? "进程已退出" : `${turns} 轮 · 进程已退出`;
+    stateHint = "claude 进程中途退出了 · 发下一句会带 --resume 重开";
   } else if (approval) {
     // 待批准优先于「等你选」：两条都卡着时，先显示更危险的那条（工具要动文件）。
     state = "ask";
@@ -149,6 +165,7 @@ export function derivePaneMeta(input: {
     title: titleHint?.trim() || titleOf(view),
     turns,
     state,
+    stateHint,
     detail,
     connectionId: connectionId ?? "",
     targetLabel,

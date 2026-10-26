@@ -45,8 +45,24 @@ export type CcView = {
   stderr: string[];
   /** 环形缓冲溢出条数。`> 0` ⇒ 更早的内容已被挤掉，界面要提示。 */
   dropped: number;
-  /** 进程退出码。`null` = 还没退出。 */
+  /** 进程退出码。`null` = 还没退出。
+   *
+   *  ⚠️ **运行时恒为 `null`**：后端 `session.rs` 的读线程只在 stdout EOF 时发
+   *  `Exit { code: None }`，从没等过子进程，所以拿不到真实退出码（只有单测里
+   *  会塞 `Some(0)`/`Some(1)`）。判「进程死过」请用下面的 `processExited`。 */
   exitCode: number | null;
+  /**
+   * 进程在**这一轮跑到一半时**没了（崩溃 / 被杀 / 自己退出）。
+   *
+   * 为什么需要这个字段：`Exit` 事件本身不带退出码，也不区分「跑完一轮后进程被
+   * 顺手收掉」和「中途挂了」—— 两者混起来会让每个恢复出来的历史会话都显示
+   * 「已退出」。所以只在 `Exit` 到达时 `running` 仍为真（= 正在跑）才置位，
+   * 一旦有新的 `init`（重开成功）立即复位。
+   *
+   * 它唯一的用途是**解释性**：后端下一轮会自动重建进程（`manager.rs` 的
+   * `start()` 收尸后重起），界面不说的话用户只会觉得「刚才那句没反应」。
+   */
+  processExited: boolean;
   /** 前端侧错误（invoke 失败、探测失败）。与 stderr 分开，来源不同。 */
   error: string | null;
 };
@@ -68,6 +84,7 @@ export const initialCcView: CcView = {
   stderr: [],
   dropped: 0,
   exitCode: null,
+  processExited: false,
   error: null,
 };
 
@@ -202,6 +219,8 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         cwd: event.cwd ?? view.cwd,
         // 新一轮起来了，上一轮的退出码不再有意义。
         exitCode: null,
+        // 重开成功 ⇒ 上一轮那次「进程没了」的提示必须撤掉，否则横幅会一直挂着。
+        processExited: false,
         retry: null,
       };
 
@@ -386,7 +405,15 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       // `result`/TurnEnd，没有 Exit 界面会永远停在「进行中」。
       // 正常多轮复用进程时**不会**来 Exit —— 轮次靠 TurnEnd 落定，两者别混。
       // 退避重试中被打断也一样退干净：留着「重试中」横幅和「已退出」并排是矛盾信息。
-      return { ...view, running: false, exitCode: event.code, retry: null };
+      // `running` 在这一刻的值就是判据：为真 ⇒ 跑到一半没了（值得提示），
+      // 为假 ⇒ 一轮正常落定后进程被收掉（满大街都是，不能拿它刷屏）。
+      return {
+        ...view,
+        running: false,
+        exitCode: event.code,
+        retry: null,
+        processExited: view.running,
+      };
 
     default:
       return view;
@@ -403,7 +430,16 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
       // `error` 是前端侧的（探测失败之类），不属于事件流，保留。
       let next: CcView = { ...initialCcView, error: view.error };
       for (const e of action.events) next = applyEvent(next, e);
-      return { ...next, dropped: action.dropped, running: action.running };
+      // 🔴 `processExited` 必须归零：这里重放的是**库里那条会话的历史**，不是本次运行。
+      // 历史流水末尾那条 `Exit` 只说明上次结束得不干净（崩溃 / 强杀），把它显示成
+      // 「刚才崩了、下一句会重开」是错的 —— 此刻还没起进程，那句话反而让人以为
+      // 有进程刚死。真崩溃走 `event` 路径（那时 `running` 来自下面这个快照），不受影响。
+      return {
+        ...next,
+        dropped: action.dropped,
+        running: action.running,
+        processExited: false,
+      };
     }
     case "sending":
       return { ...view, running: true, error: null, retry: null, exitCode: null };

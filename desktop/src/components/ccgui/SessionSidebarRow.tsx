@@ -80,8 +80,8 @@ export function SessionRow({
     >
       {active && <span className="absolute bottom-1.5 left-0.5 top-1.5 w-0.5 rounded bg-primary" />}
       <span
-        title={STATE_HINT[row.state]}
-        aria-label={STATE_HINT[row.state]}
+        title={row.meta?.stateHint ?? STATE_HINT[row.state]}
+        aria-label={row.meta?.stateHint ?? STATE_HINT[row.state]}
         className={`mt-1 h-2 w-2 shrink-0 rounded-full ${DOT_CLASS[row.state]}`}
       />
       <div className="min-w-0 flex-1">

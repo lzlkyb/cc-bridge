@@ -73,6 +73,7 @@ export function CcPaneHead({
         risk={risk}
         conflict={conflict}
         retry={view.retry}
+        processExited={view.processExited}
         dropped={view.dropped}
         error={view.error}
         stderr={lastStderr}

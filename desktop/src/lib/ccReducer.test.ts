@@ -199,6 +199,55 @@ describe("ccReducer", () => {
     expect(v.exitCode).toBe(1);
   });
 
+  /// 进程在生成中途没了 ⇒ 置 `processExited`，界面据此说明「刚才那句为什么没反应」。
+  /// 后端拿不到真实退出码（读线程只看 EOF），所以判据只能是「exit 到达时还在跑」。
+  it("生成中途进程退出留标记", () => {
+    const v = run([{ kind: "init", sessionId: "s1", cwd: null, model: null }, { kind: "exit", code: null }]);
+    expect(v.processExited).toBe(true);
+  });
+
+  /// 一轮正常落定后进程被顺手收掉 ⇒ **不算**异常退出。
+  /// 少了这条约束，每个恢复出来的历史会话都会挂一条「进程已退出」的横幅。
+  it("正常落定后收进程不算异常退出", () => {
+    const v = run([
+      { kind: "init", sessionId: "s1", cwd: null, model: null },
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: { input_tokens: 10, output_tokens: 10 },
+        costUsd: 0.01,
+        numTurns: null,
+        durationMs: null,
+      },
+      { kind: "exit", code: null },
+    ]);
+    expect(v.processExited).toBe(false);
+  });
+
+  /// 重开成功就把提示撤掉，否则横幅会一直挂着，变成「狼来了」。
+  it("重开成功后清掉退出标记", () => {
+    const v = run([
+      { kind: "init", sessionId: "s1", cwd: null, model: null },
+      { kind: "exit", code: null },
+      { kind: "init", sessionId: "s1", cwd: null, model: null },
+    ]);
+    expect(v.processExited).toBe(false);
+    expect(v.running).toBe(true);
+  });
+
+  /// 打开一条上次崩溃结束的历史会话 ≠ 刚才崩了。
+  /// 重放末尾那条 Exit 若不归零，每条这种历史一打开就先挂一条「进程已退出」。
+  it("重放历史不会复活退出标记", () => {
+    const events: CcEvent[] = [
+      { kind: "init", sessionId: "s1", cwd: null, model: null },
+      { kind: "exit", code: null },
+    ];
+    const v = ccReducer(initialCcView, { type: "replay", events, dropped: 0, running: false });
+    expect(v.processExited).toBe(false);
+  });
+
   /// 重放必须从空状态拼，不能往现有状态上叠：否则 token / cost 会翻倍。
   it("重放不会把账目算两遍", () => {
     const events: CcEvent[] = [
