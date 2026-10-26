@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CcApproval } from "../../lib/ccGuiTypes";
 import { ApprovalCard } from "./ApprovalCard";
@@ -29,6 +30,17 @@ afterEach(async () => {
 });
 
 const show = (node: React.ReactNode) => act(async () => root.render(node));
+/**
+ * 带 QueryClient 的渲染壳。
+ *
+ * 审批卡要读 `["status"]` 缓存（「以后都放行这类」得在现有规则表上追加），
+ * 而 `useQueryClient` 在 Provider 外面直接抛 —— 用真 Provider 而不是 mock
+ * 整条链路：被测的正是「点了按钮之后卡片还正不正常」，把 hook 换掉测的就不是它了。
+ * `retry: false` = 查询失败别退避重试，否则 unmount 后还会留着定时器。
+ */
+const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const showWithQuery = (node: React.ReactNode) =>
+  show(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
 const buttons = () => [...document.body.querySelectorAll<HTMLButtonElement>("button")];
 const byText = (t: string) => buttons().find((b) => b.textContent?.trim() === t);
 const click = (el: Element | undefined) => act(async () => (el as HTMLElement).click());
@@ -165,14 +177,16 @@ describe("审批 / 提问卡超时", () => {
   });
 
   it("倒计时未归零时按钮可用", async () => {
-    await show(<ApprovalCard approval={approval()} onAllow={() => {}} onDeny={() => {}} onAnswer={() => {}} />);
+    await showWithQuery(
+      <ApprovalCard approval={approval()} onAllow={() => {}} onDeny={() => {}} onAnswer={() => {}} />,
+    );
     expect(byText("拒绝")!.disabled).toBe(false);
     expect(byText("允许一次")!.disabled).toBe(false);
     expect(container.querySelector('[role="group"]')).not.toBeNull();
   });
 
   it("审批卡归零后按钮禁用并说明已超时", async () => {
-    await show(
+    await showWithQuery(
       <ApprovalCard approval={approval({ expiresInSec: 0 })} onAllow={() => {}} onDeny={() => {}} onAnswer={() => {}} />,
     );
     expect(container.textContent).toContain("已超时");

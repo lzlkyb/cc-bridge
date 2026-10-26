@@ -1065,6 +1065,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cc_rename_session,
             commands::cc_archive_session,
             commands::cc_reset,
+            // 审批卡「以后都放行这类」：规则文本在 Rust 侧拼（glob 转义不能让前端猜）。
+            commands::cc_approval_rule,
             // 润色：一次性 `claude -p --bare` 子进程，结果只回输入框，不进会话。
             commands::cc_polish,
             commands::cc_history_list,

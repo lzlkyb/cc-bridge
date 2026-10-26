@@ -29,3 +29,19 @@ export function malformedCcRules(rules: string[]): { line: number; rule: string 
   });
   return bad;
 }
+
+/**
+ * 把一条新规则并进规则表。已存在同一条时**原样返回**（引用都不变）。
+ *
+ * 用于审批卡的「以后都放行这类」：`changed === false` 表示这条规则本来就有，
+ * 调用方据此只放行这一次、不再写一遍配置。写一遍本身无害，但会多一次
+ * `save_config` 与一次 `status` 失效 —— 而用户看不出任何区别。
+ *
+ * 不排序、不去重别的条目：规则表是**有序**的（先命中的先用），
+ * 动顺序等于改动别人的匹配优先级。
+ */
+export function appendRule(rules: string[], rule: string): { next: string[]; changed: boolean } {
+  const trimmed = rule.trim();
+  if (!trimmed || rules.includes(trimmed)) return { next: rules, changed: false };
+  return { next: [...rules, trimmed], changed: true };
+}

@@ -134,6 +134,50 @@ pub fn primary_arg(tool: &str, input: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// 把一次**具体调用**变成一条只放行它自己的规则文本。
+///
+/// 用于对话页审批卡的「以后都放行这类」—— 用户不必去设置页手写 glob。
+///
+/// 两条性质都有测试钉住：
+///
+/// 1. 生成的规则**一定命中**这次调用。否则用户点了「以后都放行」，下次照样弹卡，
+///    而他会以为规则坏了（或者更糟：以为已经放行了而没再看那条卡）。
+/// 2. glob 元字符**全部转义成字面量**。`Bash(ls *.rs)` 里的 `*` 若不转义就是
+///    通配符，而 globset 的 `*` 连空格都能跨过去 —— 那条规则会顺手放行
+///    `ls *.rs && rm -rf /`。界面写着「以后都放行 ls *.rs」，实际放宽的是整类命令，
+///    这是本模块最危险的失败方向。
+///
+/// 取不到主参数时返回 `None`：那时只剩「工具名全放行」一条路（`Bash` 不带括号），
+/// 而那是很宽的授权，不替用户做这个决定。
+pub fn suggest_rule(tool: &str, input: &Value) -> Option<String> {
+    let primary = primary_arg(tool, input);
+    if primary.trim().is_empty() {
+        return None;
+    }
+    Some(format!("{}({})", escape_glob(tool), escape_glob(&primary)))
+}
+
+/// 把 glob 元字符包进字符类，让它们只匹配自己（`*` → `[*]`）。
+///
+/// `[` / `]` 也走同一条路（`[[]`、`[]]`）：bash 命令里带方括号是常态
+/// （`grep -E '[0-9]+'`），不处理就等于「含方括号的命令不能加规则」。
+/// 这两条写法是否被 globset 接受由测试钉住 —— 一旦它不支持，表现是规则
+/// **不命中**（fail-closed，安全方向），而不是放宽。
+fn escape_glob(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for ch in s.chars() {
+        match ch {
+            '*' | '?' | '[' | ']' | '{' | '}' | '\\' => {
+                out.push('[');
+                out.push(ch);
+                out.push(']');
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +332,78 @@ mod tests {
         assert_eq!(
             rs.match_rule("Bash", &bash("never mind")),
             Some("Bash(never *)")
+        );
+    }
+
+    // ---- 从一次调用生成规则（审批卡的「以后都放行这类」）----
+
+    /// 生成的规则必须命中它自己 —— 否则用户点了按钮却没生效，下次照样弹卡。
+    #[test]
+    fn suggest_rule_matches_its_own_call() {
+        let input = bash("git status");
+        let rule = suggest_rule("Bash", &input).expect("有主参数");
+        let rs = rules(&[rule.as_str()]);
+        assert!(
+            rs.match_rule("Bash", &input).is_some(),
+            "必须命中自己：{rule}"
+        );
+        assert!(rs.match_rule("Bash", &bash("git push")).is_none());
+    }
+
+    /// 🔴 最关键的一条：`*` 若不转义就是通配符，而 globset 的 `*` 连空格都跨得过去。
+    /// 那样「以后都放行 `ls *.rs`」实际会放行 `ls *.rs && rm -rf /`。
+    #[test]
+    fn suggest_rule_escapes_star() {
+        let input = bash("ls *.rs");
+        let rule = suggest_rule("Bash", &input).expect("有主参数");
+        let rs = rules(&[rule.as_str()]);
+        assert!(
+            rs.match_rule("Bash", &input).is_some(),
+            "必须命中自己：{rule}"
+        );
+        assert!(
+            rs.match_rule("Bash", &bash("ls a.rs")).is_none(),
+            "星号被当成通配符了：{rule}"
+        );
+        assert!(
+            rs.match_rule("Bash", &bash("ls *.rs && rm -rf /"))
+                .is_none(),
+            "星号跨过了空格：{rule}"
+        );
+    }
+
+    /// bash 命令里带方括号是常态（`grep -E '[0-9]+'`），转义必须真的可用。
+    #[test]
+    fn suggest_rule_escapes_brackets() {
+        let input = bash("grep -E '[0-9]+' a.txt");
+        let rule = suggest_rule("Bash", &input).expect("有主参数");
+        let rs = rules(&[rule.as_str()]);
+        assert!(
+            rs.match_rule("Bash", &input).is_some(),
+            "必须命中自己：{rule}"
+        );
+        assert!(
+            rs.match_rule("Bash", &bash("grep -E 5 a.txt")).is_none(),
+            "字符类被当成模式了：{rule}"
+        );
+    }
+
+    /// 取不到主参数时不给规则：那时只剩「`Bash` 全放行」，不替用户做这个决定。
+    #[test]
+    fn suggest_rule_gives_up_without_primary_arg() {
+        assert!(suggest_rule("Bash", &json!({})).is_none());
+        assert!(suggest_rule("Read", &json!({"path": ""})).is_none());
+    }
+
+    /// 认不出的工具退到整入参 JSON（`primary_arg` 的口径），规则照样能用。
+    #[test]
+    fn suggest_rule_works_for_unknown_tools() {
+        let input = json!({"url": "https://example.com"});
+        let rule = suggest_rule("WebFetch", &input).expect("整入参当主参数");
+        let rs = rules(&[rule.as_str()]);
+        assert!(
+            rs.match_rule("WebFetch", &input).is_some(),
+            "必须命中自己：{rule}"
         );
     }
 }

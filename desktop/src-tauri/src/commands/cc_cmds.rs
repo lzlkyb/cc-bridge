@@ -737,6 +737,25 @@ pub async fn cc_reset(state: State<'_, Arc<AppState>>, session_id: u64) -> Resul
     Ok(())
 }
 
+/// 把一次具体审批调用变成一条自动放行规则（审批卡的「以后都放行这类」）。
+///
+/// 规则文本**在 Rust 侧拼**（[`crate::cc_session::autoapprove::suggest_rule`]），
+/// 不让前端拼：glob 转义一旦做错，生成的规则会比界面上那行字**更宽**
+/// （`Bash(ls *.rs)` 里的 `*` 若未转义就能跨空格匹配），而用户看到的正是
+/// 「以后都放行 `ls *.rs`」—— 没人会去核对星号是不是被转义了。
+///
+/// 返回 `None` = 这次调用取不到主参数，生成不了窄规则（只剩「整个工具全放行」，
+/// 那件事该由用户去设置页明确写下，不由一个按钮代劳）。
+#[tauri::command]
+pub async fn cc_approval_rule(
+    tool_name: String,
+    input: serde_json::Value,
+) -> Result<Option<String>, String> {
+    Ok(crate::cc_session::autoapprove::suggest_rule(
+        &tool_name, &input,
+    ))
+}
+
 /// 铸发一条新的对话会话，返回内部 id。
 ///
 /// 前端进对话页时调一次，之后所有命令都带这个 id。**它不等价于 CC 的
