@@ -34,7 +34,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use super::autoapprove;
 use super::proto::CcEvent;
 use super::ring::{EventRing, RingSnapshot};
-use super::session::{EventSink, Run, Verdict};
+use super::session::{EventSink, Run, UserImage, Verdict};
 use super::store::{self, SessionFacts};
 use super::usage::{self, CcUsage};
 use crate::state::AppState;
@@ -743,10 +743,17 @@ impl CcSession {
     }
 
     pub fn send(&self, text: &str) -> Result<(), String> {
+        self.send_user_images(text, &[])
+    }
+
+    /// 带图发一条（走既有进程）。
+    ///
+    /// 格式 / 5 MB / 裸 base64 的校验在 `Run::send_user_images` 里 fail-closed，
+    /// 且发生在写 stdin 之前 —— 与 `send` 一样，写成功才算这一轮开始。
+    pub fn send_user_images(&self, text: &str, images: &[UserImage]) -> Result<(), String> {
         let guard = self.live.lock().map_err(|_| "会话状态已锁死".to_string())?;
         let run = guard.as_ref().ok_or("当前没有进行中的对话")?;
-        run.send_user(text)?;
-        // 写成功才算「这一轮开始了」：写失败说明进程已经走了，别把界面锁在忙碌态。
+        run.send_user_images(text, images)?;
         self.shared.set_turn_active(true);
         Ok(())
     }

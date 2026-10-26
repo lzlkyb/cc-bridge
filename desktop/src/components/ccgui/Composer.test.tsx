@@ -127,7 +127,8 @@ it("完整 /compact 上回车直接发送", async () => {
   await render();
   await type("/compact");
   await key("Enter");
-  expect(onSend).toHaveBeenCalledWith("/compact");
+  // 第二个参数是附件（这里没有图 ⇒ 空数组）。
+  expect(onSend).toHaveBeenCalledWith("/compact", []);
   expect((area() as HTMLTextAreaElement).value).toBe("");
 });
 
@@ -135,7 +136,7 @@ it("白名单命令带参数原样转发", async () => {
   await render();
   await type("/model opus");
   await clickSend();
-  expect(onSend).toHaveBeenCalledWith("/model opus");
+  expect(onSend).toHaveBeenCalledWith("/model opus", []);
 });
 
 it("未知命令被闸门拦住：不发送、给提示、不清空输入", async () => {
@@ -163,7 +164,7 @@ it("Ctrl+Enter 照旧发送普通文本", async () => {
   await render();
   await type("帮我看下这个 bug");
   await key("Enter", { ctrlKey: true });
-  expect(onSend).toHaveBeenCalledWith("帮我看下这个 bug");
+  expect(onSend).toHaveBeenCalledWith("帮我看下这个 bug", []);
 });
 
 it("普通文本不弹面板，裸 Enter 不触发发送（换行是浏览器原生行为）", async () => {

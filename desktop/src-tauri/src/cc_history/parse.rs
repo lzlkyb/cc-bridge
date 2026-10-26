@@ -317,7 +317,15 @@ impl Parser {
         if self.meta.first_user.is_none() {
             self.meta.first_user = Some(truncate(&flatten(&text), 60));
         }
-        self.push(CcEvent::UserMessage { text });
+        // 🔴 `images: vec![]` 是**故意的**：这条路径是从 CLI 的转录文件恢复，
+        //    里面能拿到的只有原图 base64（几十上百 KB 到几 MB），既不该塞进我们
+        //    的流水，也没有办法在 Rust 侧缩略化（要引图像解码依赖）。
+        //    所以「从 CLI 转录恢复」的会话看不到历史图片 —— 与我们自己落盘的
+        //    流水（`CcEvent::UserMessage.images`）不是同一条路，界面上也不必区分。
+        self.push(CcEvent::UserMessage {
+            text,
+            images: Vec::new(),
+        });
     }
 
     fn push(&mut self, event: CcEvent) {
@@ -400,7 +408,8 @@ mod tests {
         assert_eq!(
             events,
             vec![CcEvent::UserMessage {
-                text: "帮我看看构建为什么红了".into()
+                text: "帮我看看构建为什么红了".into(),
+                images: Vec::new(),
             }]
         );
         assert_eq!(meta.user_count, 1);
@@ -532,7 +541,8 @@ mod tests {
         assert_eq!(
             events,
             vec![CcEvent::UserMessage {
-                text: "[Request interrupted by user]".into()
+                text: "[Request interrupted by user]".into(),
+                images: Vec::new(),
             }]
         );
     }
@@ -581,7 +591,8 @@ mod tests {
         assert_eq!(
             events,
             vec![CcEvent::UserMessage {
-                text: "真话".into()
+                text: "真话".into(),
+                images: Vec::new(),
             }],
             "只有最后一条合法且不超限"
         );

@@ -525,13 +525,14 @@ pub fn trim_events(events: &[CcEvent], max_bytes: usize) -> (Vec<CcEvent>, u64) 
 /// 这里只做最小可用版本 —— 但逻辑独立成函数，届时替换它即可。
 pub fn derive_title(events: &[CcEvent]) -> Option<String> {
     events.iter().find_map(|e| match e {
-        CcEvent::UserMessage { text } => {
+        CcEvent::UserMessage { text, images } => {
             let flat = flatten(text);
-            if flat.is_empty() {
-                None
-            } else {
-                Some(truncate_chars(&flat, 80))
+            if !flat.is_empty() {
+                return Some(truncate_chars(&flat, 80));
             }
+            // 纯图片消息没有文字。不补标题的话这条会话在列表里就是无名行，
+            // 而「发了一张图问它哪里不对」正是最容易没文字的一类消息。
+            (!images.is_empty()).then(|| format!("[{} 张图片]", images.len()))
         }
         _ => None,
     })
@@ -628,7 +629,10 @@ mod tests {
     }
 
     fn user(t: &str) -> CcEvent {
-        CcEvent::UserMessage { text: t.into() }
+        CcEvent::UserMessage {
+            text: t.into(),
+            images: Vec::new(),
+        }
     }
 
     fn text(t: &str) -> CcEvent {
@@ -796,6 +800,59 @@ mod tests {
         assert!(title.ends_with('…'));
     }
 
+    /// 纯图片消息没有文字，但必须有标题 —— 否则这条会话在列表里是无名行。
+    #[test]
+    fn title_of_image_only_message() {
+        let only_img = CcEvent::UserMessage {
+            text: String::new(),
+            images: vec![
+                "data:image/jpeg;base64,AAA".into(),
+                "data:image/jpeg;base64,BBB".into(),
+            ],
+        };
+        assert_eq!(derive_title(&[only_img]).as_deref(), Some("[2 张图片]"));
+    }
+
+    /// 有空文字的用户消息排在前面时，标题要接着往后找，而不是定格在空串上。
+    #[test]
+    fn title_skips_empty_user_message() {
+        let events = vec![user("   "), user("真正的问题")];
+        assert_eq!(derive_title(&events).as_deref(), Some("真正的问题"));
+    }
+
+    /// 🔴 缩略图要能原样落盘再读回来。
+    ///
+    /// 这条链上有两个 serde 属性（`default` + `skip_serializing_if`），配错了
+    /// 表现分别是「老流水整箱读不出」和「新流水读回来图没了」，都不会报错。
+    #[test]
+    fn user_message_images_roundtrip() {
+        let e = CcEvent::UserMessage {
+            text: "看图".into(),
+            images: vec!["data:image/jpeg;base64,AAA".into()],
+        };
+        let json = serde_json::to_string(&e).expect("序列化");
+        assert!(
+            json.contains("data:image/jpeg"),
+            "缩略图必须进 JSON：{json}"
+        );
+        let back: CcEvent = serde_json::from_str(&json).expect("反序列化");
+        assert_eq!(back, e);
+    }
+
+    /// 2026-10-26 之前落盘的事件没有 `images` 字段，读回来必须是空数组而不是报错。
+    #[test]
+    fn old_user_message_without_images_still_parses() {
+        let back: CcEvent = serde_json::from_str(r#"{"kind":"userMessage","text":"老消息"}"#)
+            .expect("老流水要能读");
+        assert_eq!(
+            back,
+            CcEvent::UserMessage {
+                text: "老消息".into(),
+                images: Vec::new()
+            }
+        );
+    }
+
     /// 超限时从头丢，且必须落在一条用户消息上。
     #[test]
     fn trim_starts_at_user_message_boundary() {
@@ -814,7 +871,7 @@ mod tests {
         let (kept, dropped) = trim_events(&events, 2500);
         assert!(dropped > 0, "应当丢掉开头");
         assert!(
-            matches!(kept.first(), Some(CcEvent::UserMessage { text }) if text == "二"),
+            matches!(kept.first(), Some(CcEvent::UserMessage { text, .. }) if text == "二"),
             "开头必须是完整用户消息：{:?}",
             kept.first()
         );

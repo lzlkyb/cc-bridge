@@ -68,7 +68,12 @@ export function MessageList({
         if (m.kind === "user") {
           return (
             <div key={m.id} className="flex justify-end">
-              <UserMessageBubble text={m.text} marks={marks} onFork={(text) => onForkMessage(index, text)} />
+              <UserMessageBubble
+                text={m.text}
+                images={m.images}
+                marks={marks}
+                onFork={(text) => onForkMessage(index, text)}
+              />
             </div>
           );
         }

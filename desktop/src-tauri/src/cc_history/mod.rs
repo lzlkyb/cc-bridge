@@ -233,7 +233,7 @@ mod tests {
         assert!(opened.events.len() < 400);
         // 保留的必须是**后面**的内容：最新的那轮一定要在。
         match opened.events.last() {
-            Some(CcEvent::UserMessage { text }) => assert!(text.starts_with("第399轮")),
+            Some(CcEvent::UserMessage { text, .. }) => assert!(text.starts_with("第399轮")),
             other => panic!("末尾应当是最后一轮，实际 {other:?}"),
         }
     }

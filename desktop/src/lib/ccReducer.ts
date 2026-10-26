@@ -210,7 +210,15 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         ...view,
         messages: [
           ...view.messages,
-          { kind: "user", id: nextUserId(view.messages), at: "", text: event.text },
+          {
+            kind: "user",
+            id: nextUserId(view.messages),
+            at: "",
+            text: event.text,
+            // 空数组不落进消息：`images: []` 与「没有这个字段」在渲染上是同一件事，
+            // 但前者会让 `===` 比较永远不相等（memo 化的气泡白重渲染）。
+            ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
+          },
         ],
       };
 

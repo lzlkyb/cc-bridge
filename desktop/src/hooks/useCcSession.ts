@@ -4,6 +4,7 @@ import type { CcProbe, CcRestoreReq } from "../lib/ccEventTypes";
 import { ccReducer, initialCcView, pendingApprovals } from "../lib/ccReducer";
 import { pickClaudePath } from "../lib/ccTarget";
 import type { CcPermissionMode } from "../lib/ccGuiTypes";
+import type { CcImage } from "../lib/ccImage";
 import { useCcEventStream } from "./useCcEventStream";
 import { useCcOpenHistory } from "./useCcOpenHistory";
 
@@ -17,6 +18,9 @@ export type CcTarget = {
   model: string | null;
   permissionMode: CcPermissionMode;
 };
+
+/** 排队中的一条消息。图跟着文字走，否则出队时不知道该带哪几张图。 */
+type QueuedMessage = { text: string; images: CcImage[] };
 
 /**
  * 对话状态机（React 侧的门面）。
@@ -60,8 +64,9 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
    * 读取最新值 —— `start` 是 `useCallback([])`，把 state 塞进依赖会让它每次
    * 渲染都换身份，而它是 `CcGuiTab` 探测 effect 的依赖，重订阅的代价白付。
    */
-  const [queue, setQueue] = useState<string[]>([]);
-  const queueRef = useRef<string[]>([]);
+  /** 待发队列里的一条。**图跟着文字一起排队**：分开存会让「排队的图」失去归属。 */
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const queueRef = useRef<QueuedMessage[]>([]);
   queueRef.current = queue;
   /** `view.running` 的镜像，理由同 `queueRef`。 */
   const runningRef = useRef(false);
@@ -111,10 +116,11 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     }
   }, []);
 
-  const start = useCallback(async (text: string) => {
+  const start = useCallback(async (text: string, images: CcImage[] = []): Promise<boolean> => {
     const t = targetRef.current;
     const trimmed = text.trim();
-    if (!trimmed) return;
+    // 纯图片消息合法（协议探针验证过），所以判据是「文字和图都空」才不发。
+    if (!trimmed && images.length === 0) return false;
     // 正在跑（或刚发出去、后端还没落定 busy）⇒ 入队，不并发。
     // 🔴 直发的后果是后端一句「上一轮还在进行」：那一句是真的，但用户看到的是
     // 「我打好的字被拒了」，而排队本来可以让这件事无声无息地正确发生。
@@ -122,8 +128,8 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     // 撞出同一种「上一轮还在进行」（或带着半恢复的状态起进程），出队即失。
     // 入队后 ready 一翻、flush effect 就把它发出去，一句话都不丢。
     if (runningRef.current || busyRef.current || !readyRef.current) {
-      setQueue((q) => [...q, trimmed]);
-      return;
+      setQueue((q) => [...q, { text: trimmed, images }]);
+      return true;
     }
     // 调用方显式给的优先；否则用**同一目标**探到的绝对路径 —— 远端非登录 shell
     // 没有 `~/.local/bin` 那份 PATH，不带就起不来。判断逻辑见 `pickClaudePath`。
@@ -133,7 +139,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     const sid = sessionIdRef.current;
     if (sid === null) {
       dispatch({ type: "error", message: "会话正在初始化，请稍候再试" });
-      return;
+      return false;
     }
     setBusy(true);
     dispatch({ type: "sending" });
@@ -147,13 +153,22 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
           permissionMode: t.permissionMode,
           claudePath,
           text: trimmed,
+          // 原图（裸 base64）走这一次 IPC，落进 stdin；缩略图跟着后端记流水。
+          // 两条数据一起送是为了省一次往返 —— 缩略图本来就在前端手上。
+          images: images.map((i) => ({
+            mediaType: i.mediaType,
+            data: i.data,
+            thumb: i.thumb,
+          })),
         },
       });
+      return true;
     } catch (e) {
       // 后端已经把进程收尸了（`cc_start` 里的 interrupt），这里只负责说清楚。
       dispatch({ type: "error", message: String(e) });
       // 撤回 `sending` 置上的乐观 running —— `error` 不再背这个副作用（见 reducer）。
       dispatch({ type: "sendAborted" });
+      return false;
     } finally {
       setBusy(false);
     }
@@ -177,7 +192,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     if (next === undefined) return;
     queueRef.current = queueRef.current.slice(1);
     setQueue(queueRef.current);
-    void start(next);
+    void start(next.text, next.images);
   }, [ready, view.running, busy, start]);
 
   /**

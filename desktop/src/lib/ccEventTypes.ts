@@ -21,7 +21,7 @@ export type CcRetryInfo = {
 export type CcEvent =
   | { kind: "init"; sessionId: string; cwd: string | null; model: string | null }
   /** 用户自己的消息（后端本地事件，不来自 CLI）。 */
-  | { kind: "userMessage"; text: string }
+  | { kind: "userMessage"; text: string; images?: string[] }
   /** `streaming=true` 是增量追加，`false` 是最终全文覆盖，两者共用 `blockId`。 */
   | { kind: "text"; blockId: string; text: string; streaming: boolean }
   | { kind: "thinking"; blockId: string; text: string; streaming: boolean }

@@ -50,7 +50,22 @@ pub enum CcEvent {
     },
     /// 用户自己的消息。**不来自 CLI**，但必须进事件流水：切页回来时前端靠重放
     /// 重建界面，本地消息若只活在 React 里就会凭空消失。
-    UserMessage { text: String },
+    UserMessage {
+        text: String,
+        /// 回显用的图片：**缩略图 data URL**（长边 256px、JPEG），不是原图。
+        ///
+        /// 🔴 原图只走 stdin 那一次，不落这里。原因有两层：原图 base64 动辄几 MB，
+        ///    进事件流水会把 `MAX_EVENTS_BYTES`（4 MB）一两条就撑满，后面的对话
+        ///    全被 `trim_events` 从头丢掉；而流水本身是要长期躺在 SQLite 里的。
+        ///    代价是历史里点开只能看到缩略图 —— 这是明确取舍，见
+        ///    `design/对话页-图片输入-设计稿-2026-10-26.html` 定案 6。
+        ///
+        /// `#[serde(default)]` + `skip_serializing_if` 是**老流水兼容**：2026-10-26
+        /// 之前落盘的事件没有这个字段，缺了就整箱反序列化失败（`store.rs` 那边
+        /// 是 `.ok()` 兜底），表现是整个会话恢复成空白。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<String>,
+    },
     /// 助手正文。`streaming=true` 是增量追加，`false` 是最终全文覆盖。
     ///
     /// 🔴 两者共用同一个 `block_id`（`{message_id}:{index}`），所以覆盖是安全的：

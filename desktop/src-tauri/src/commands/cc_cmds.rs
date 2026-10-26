@@ -24,7 +24,7 @@ use super::ssh_cmds::ssh_link_args;
 use crate::cc_session::channel::{self, LaunchSpec};
 use crate::cc_session::manager::{self, Launch, SnapshotDto, TauriSink};
 use crate::cc_session::proto::CcEvent;
-use crate::cc_session::session::{with_answers, Verdict};
+use crate::cc_session::session::{check_images, with_answers, UserImage, Verdict};
 use crate::cc_session::store::{self, SessionFacts};
 use crate::mcp::bridge::spawn;
 use crate::state::AppState;
@@ -199,6 +199,42 @@ pub struct CcStartReq {
     /// 探测得到的 claude 绝对路径。远端模式下**必须**给：真正跑起来的 bash 是非登录的。
     pub claude_path: Option<String>,
     pub text: String,
+    /// 这条消息附的图。空数组 = 纯文本消息，行为与 2026-10-26 之前完全一致。
+    #[serde(default)]
+    pub images: Vec<CcStartImage>,
+}
+
+/// `cc_start` 里的一张图。
+///
+/// 🔴 **两个字段装的是两份不同大小的东西**，别合并：
+/// - `data` 是原图裸 base64，只走 stdin 那一次，不进事件流水（详见
+///   `CcEvent::UserMessage.images` 的注释）；
+/// - `thumb` 是前端编好的缩略图 data URL，**落盘**给回显用。
+///
+/// 分开还带来一个好处：后端不必为了「记一笔回显」去理解 JPEG/PNG 编码，
+/// 前端已经有 canvas 了，缩图本来就是它的活。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcStartImage {
+    pub media_type: String,
+    /// 裸 base64（不带 `data:` 前缀）。
+    pub data: String,
+    /// 缩略图 data URL（`data:image/jpeg;base64,…`）。空 = 不记回显。
+    #[serde(default)]
+    pub thumb: String,
+}
+
+/// 取回显用的缩略图，要求与图片列表 **1:1 对齐**。
+///
+/// 少一个就整体返回空：三张图只显示两张，用户会以为第三张没发出去；
+/// 而「一张都不显示」至少是诚实的 —— 消息本身发出去了。
+fn collect_thumbs(images: &[CcStartImage]) -> Vec<String> {
+    let thumbs: Vec<String> = images.iter().map(|i| i.thumb.trim().to_string()).collect();
+    if thumbs.iter().all(|t| !t.is_empty()) {
+        thumbs
+    } else {
+        Vec::new()
+    }
 }
 
 /// 起一轮对话。**首条消息随启动一起发**，省一次往返。
@@ -218,9 +254,24 @@ pub async fn cc_start(
         .get(session_id)
         .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
     let text = req.text.trim().to_string();
-    if text.is_empty() {
+    // 纯图片消息是合法的（协议探针验证过），所以空文字不再一律拒。
+    if text.is_empty() && req.images.is_empty() {
         return Err("消息不能为空".into());
     }
+    // 图分成两份：原图给 stdin、缩略图给流水。校验（格式/5MB/裸 base64）在
+    // `send_user_images` 里 fail-closed，这里只做形状转换。
+    let images: Vec<UserImage> = req
+        .images
+        .iter()
+        .map(|i| UserImage {
+            media_type: i.media_type.clone(),
+            data: i.data.clone(),
+        })
+        .collect();
+    // 回显只认「前端编好的缩略图」，且**全有才用**：过滤掉个别空值会让三张图
+    // 只剩两个缩略图，界面上就成了「发了三张、只显示两张」的错位。
+    let thumbs = collect_thumbs(&req.images);
+    check_images(&images)?;
 
     // 先把这一轮的形状拼出来 —— 下面「目标变没变」要用它判断，而判断必须发生在
     // 「能不能复用旧进程」之前。
@@ -260,8 +311,15 @@ pub async fn cc_start(
     // 进程还活着 ⇒ 直接在它身上发下一句，省掉一次冷启动。
     // 实测冷启动 8~18s（大头是用户自己的 SessionStart 钩子），每条消息都付一次
     // 在聊天界面里是不可接受的。进程死了才走下面「新起 + --resume」那条路。
-    if cc.is_running() && cc.send(&text).is_ok() {
-        manager::record_local(&app, cc.shared(), CcEvent::UserMessage { text });
+    if cc.is_running() && cc.send_user_images(&text, &images).is_ok() {
+        manager::record_local(
+            &app,
+            cc.shared(),
+            CcEvent::UserMessage {
+                text,
+                images: thumbs,
+            },
+        );
         return Ok(());
     }
 
@@ -321,13 +379,20 @@ pub async fn cc_start(
     // 时这句话已经留在流水里 —— 用户重发一遍，重放时就是两条相同的消息。
     // 热路径（进程活着直接 send，上面 `is_running` 分支）本来就是这个顺序。
     // 「切页回来它必须还在」不受影响：send 成功后必然记账，间隔只有一次 IPC 往返。
-    if let Err(e) = cc.send(&text) {
+    if let Err(e) = cc.send_user_images(&text, &images) {
         // 起得来却写不进去，说明进程已经在退（多半是 CLI 参数不对）。
         // 收尸，别留一个半死的轮次占着「进行中」。
         cc.interrupt();
         return Err(format!("消息没能送达 claude：{e}"));
     }
-    manager::record_local(&app, cc.shared(), CcEvent::UserMessage { text });
+    manager::record_local(
+        &app,
+        cc.shared(),
+        CcEvent::UserMessage {
+            text,
+            images: thumbs,
+        },
+    );
     Ok(())
 }
 
@@ -357,6 +422,8 @@ pub async fn cc_send(
         cc.shared(),
         CcEvent::UserMessage {
             text: text.to_string(),
+            // 这个命令只收纯文本（不带图，见上）：留空数组而不是不给，形状才对。
+            images: Vec::new(),
         },
     );
     Ok(())
@@ -922,6 +989,32 @@ fn home_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    fn img(thumb: &str) -> CcStartImage {
+        CcStartImage {
+            media_type: "image/png".into(),
+            data: "AAAA".into(),
+            thumb: thumb.into(),
+        }
+    }
+
+    /// 缩略图必须与图 1:1 对齐；有任何一个缺就整体放弃回显。
+    ///
+    /// 分开显示会让「发了三张」看起来像「只发出去两张」——那比不显示更误导。
+    #[test]
+    fn thumbs_require_full_alignment() {
+        assert_eq!(collect_thumbs(&[]), Vec::<String>::new());
+        assert_eq!(
+            collect_thumbs(&[img("data:a"), img("data:b")]),
+            vec!["data:a".to_string(), "data:b".to_string()]
+        );
+        assert!(
+            collect_thumbs(&[img("data:a"), img("")]).is_empty(),
+            "缺一张就整体不记"
+        );
+        // 纯空白也算缺：别让一个空格混过去变成坏 <img src>。
+        assert!(collect_thumbs(&[img("  ")]).is_empty());
+    }
+
     fn restore_of(events: Vec<CcEvent>) -> CcRestore {
         CcRestore {
             row_id: 1,
@@ -947,6 +1040,7 @@ mod tests {
     fn leading_init_is_synthesized_when_trimmed_away() {
         let out = with_leading_init(restore_of(vec![CcEvent::UserMessage {
             text: "旧问题".into(),
+            images: Vec::new(),
         }]));
         match out.events.first() {
             Some(CcEvent::Init {
@@ -969,7 +1063,10 @@ mod tests {
                 cwd: Some("/proj".into()),
                 model: None,
             },
-            CcEvent::UserMessage { text: "x".into() },
+            CcEvent::UserMessage {
+                text: "x".into(),
+                images: Vec::new(),
+            },
         ]));
         assert_eq!(out.events.len(), 2);
     }

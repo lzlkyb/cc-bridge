@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import type { CcMark } from "../../lib/ccMarkdown";
 import { MessageText } from "./MessageText";
+import { UserMessageImages } from "./UserMessageImages";
 
 /**
  * 用户消息气泡 + 「编辑并重发 / 从此处分叉」（批 3-3）。
@@ -20,10 +21,13 @@ import { MessageText } from "./MessageText";
  */
 function UserMessageBubbleImpl({
   text,
+  images,
   marks,
   onFork,
 }: {
   text: string;
+  /** 这条消息附的图（缩略图 data URL）。缺省 = 纯文本。 */
+  images?: string[];
   /** 会话内搜索的命中标注（透传给 MessageText）。 */
   marks?: CcMark[];
   /** 用（可能是编辑后的）文本开一条新会话说出去。 */
@@ -31,6 +35,7 @@ function UserMessageBubbleImpl({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(text);
+  const hasImages = images !== undefined && images.length > 0;
 
   if (!editing) {
     return (
@@ -40,7 +45,13 @@ function UserMessageBubbleImpl({
           data-cc-bubble
           className="max-w-[86%] rounded-xl rounded-br-sm border border-border bg-muted/60 px-3 py-1.5"
         >
-          <MessageText text={text} marks={marks} />
+          {hasImages && <UserMessageImages images={images} />}
+          {/* 纯图片消息没有文字，就不要再渲染一个空段落（它会白占一行高度）。 */}
+          {(text !== "" || !hasImages) && (
+            <div className={hasImages ? "mt-1.5" : undefined}>
+              <MessageText text={text} marks={marks} />
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2 pr-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           <button

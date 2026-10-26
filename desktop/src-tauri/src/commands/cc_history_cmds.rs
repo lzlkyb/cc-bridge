@@ -222,6 +222,7 @@ mod tests {
             "s-1",
             &opened(vec![CcEvent::UserMessage {
                 text: "旧问题".into(),
+                images: Vec::new(),
             }]),
             Some(9),
         );
@@ -239,6 +240,7 @@ mod tests {
         let shared = crate::cc_session::Shared::new();
         shared.ring.push(CcEvent::UserMessage {
             text: "当前会话的话".into(),
+            images: Vec::new(),
         });
         shared.set_resume_id("current");
         take_over(&shared, "old", &opened(Vec::new()), None);

@@ -7,7 +7,15 @@ import {
   type SlashCommand,
 } from "../../lib/ccSlash";
 import { isImeComposing } from "../../lib/utils";
+import type { CcImage } from "../../lib/ccImage";
 import { useCcMention } from "../../hooks/useCcMention";
+import { useComposerPolish } from "../../hooks/useComposerPolish";
+import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
+import {
+  ComposerAttachments,
+  collectPastedImages,
+  type ComposerAttachHandle,
+} from "./ComposerAttachments";
 import { ComposerNotices } from "./ComposerNotices";
 import { ComposerTools } from "./ComposerTools";
 import { MentionPanel } from "./MentionPanel";
@@ -48,7 +56,17 @@ function ComposerImpl({
   onPolish,
   mentionSource,
 }: {
-  onSend: (text: string) => void;
+  /**
+   * 发一条消息。`images` 是这条消息附的图（可能为空数组）。
+   *
+   * 返回 `false` 表示**没送出去**（后端拒了 / 会话还没就绪）：调用方据此
+   * 保留草稿与附件。返回 `true`（或 undefined，兼容旧调用方）视为已受理 ——
+   * 排队也算受理，那条消息迟早会发出去。
+   */
+  onSend: (
+    text: string,
+    images: CcImage[],
+  ) => Promise<boolean> | boolean | void;
   running?: boolean;
   onInterrupt?: () => void;
   placeholder?: string;
@@ -70,17 +88,12 @@ function ComposerImpl({
 }) {
   const [value, setValue] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
-  /** 润色前的原文。非空 = 显示「撤销润色」。一打字就作废：那是新的草稿了。 */
-  const [polishBackup, setPolishBackup] = useState<string | null>(null);
-  /**
-   * 润色在跑。
-   *
-   * 刻意放在本组件而不是父组件：它是**输入区自己的**忙碌状态（按钮转圈 +
-   * 防重复点），父组件不拿它做任何判断。2026-10-25 从 `CcGuiTab` 下沉到这里 ——
-   * 多会话之后每条会话一个 pane，父组件为一份纯局部状态各存一个 `useState`
-   * 只会把 pane 顶到体量门禁的天花板上。
-   */
-  const [polishing, setPolishing] = useState(false);
+  /** 待发图片区的把手（用 ref 而不是把附件状态提到这里，理由见 ComposerAttachments）。 */
+  const attachRef = useRef<ComposerAttachHandle>(null);
+  /** 有图时发送按钮要能点亮 —— 这是唯一需要订阅的附件状态。 */
+  const [hasImages, setHasImages] = useState(false);
+  // 润色草稿的备份与忙碌态（2026-10-26 外移到 hooks/useComposerPolish.ts）。
+  const polish = useComposerPolish(onPolish);
   /** 命令面板的高亮项。值一变就回 0（onChange 里做）。 */
   const [slashSel, setSlashSel] = useState(0);
   /** 用户按过 Esc：值不变就让面板一直关着，不然 Esc 毫无效果。 */
@@ -111,27 +124,19 @@ function ComposerImpl({
   const slashOpen = isSlashTyping(value) && !slashDismissed;
   const slashMatches = slashOpen ? filterSlash(value.slice(1)) : [];
   const slashActive = Math.min(slashSel, Math.max(0, slashMatches.length - 1));
-  useEffect(() => {
-    if (!slashOpen) return;
-    const onDown = (e: PointerEvent) => {
-      // 点在输入区里（含面板本身）不关：那是要继续打字。
-      if (boxRef.current?.contains(e.target as Node)) return;
-      setSlashDismissed(true);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setSlashDismissed(true);
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [slashOpen]);
+  useDismissOnOutside(slashOpen, boxRef, () => setSlashDismissed(true));
 
-  const send = () => {
+  const send = async () => {
     const text = value.trim();
-    if (!text) return;
+    const images = attachRef.current?.ready() ?? [];
+    // 图还在编码：此刻发出去只有文字到达，用户却以为图也跟着走了。
+    // 拦在这里比发出去再补一句「图没发成功」便宜得多。
+    if (attachRef.current?.busy()) {
+      toast("图片还在处理，稍等一下再发", "info");
+      return;
+    }
+    // 纯图片消息合法：没有文字但有图就照发。
+    if (!text && images.length === 0) return;
     // 闸门：白名单外的 slash 命令不发送。拦住时**不清空**输入——用户的字
     // 得留着改，只显示提示告诉他该去哪儿。
     const verdict = classifySlash(text);
@@ -139,12 +144,16 @@ function ComposerImpl({
       setSlashReject(verdict.name);
       return;
     }
-    onSend(text);
+    // 发送失败 ⇒ 草稿与附件都留着。那是用户刚拼好的东西，
+    // 一次后端抖动就清掉会让人重贴一遍图。
+    const accepted = await onSend(text, images);
+    if (accepted === false) return;
     setValue("");
     setSlashSel(0);
     setSlashReject(null);
     // 已发出的草稿不再可「撤销润色」：那会把旧稿填回空输入框，像是能撤回发送。
-    setPolishBackup(null);
+    polish.reset();
+    attachRef.current?.clear();
   };
 
   /** 把命令名填进输入框，尾部留一个空格给参数。不直接发：/model 要写参数。 */
@@ -157,38 +166,32 @@ function ComposerImpl({
    *  直接发送——「打完回车就走」是最顺手的路径；其余落入输入框等补全。 */
   const pickSlash = (cmd: SlashCommand) => {
     if (value.trim() === cmd.name && !cmd.needsArg) {
-      send();
+      void send();
       return;
     }
     insertSlash(cmd);
   };
 
-  const polish = async () => {
-    const draft = value.trim();
-    if (!draft || !onPolish || polishing) return;
-    setPolishing(true);
-    try {
-      const out = await onPolish(draft);
-      // 只在真的拿到文本时动：失败时保持原样，用户那句草稿不能丢。
-      if (out && out.trim()) {
-        setPolishBackup(draft);
-        setValue(out.trim());
-      }
-    } finally {
-      // 失败 / 超时也要复位：卡在「润色中」的按钮再也点不动。
-      setPolishing(false);
-    }
+  /** 润色当前草稿。失败时文本一个字都不动（用户那句草稿不能丢）。 */
+  const runPolish = async () => {
+    const out = await polish.run(value.trim());
+    if (out !== null) setValue(out);
   };
 
   return (
     <div ref={boxRef} className="relative shrink-0 px-3 pb-3 pt-1">
-      <ComposerNotices queueCount={queueCount} onClearQueue={onClearQueue} slashReject={slashReject} />
+      <ComposerNotices
+        queueCount={queueCount}
+        onClearQueue={onClearQueue}
+        slashReject={slashReject}
+      />
       {/* data-cc-composer：玻璃下 composer 要压过 .ui-card 的 reading 档，改 floating
           （唯一「必须实心」的输入位）；classic 下不加任何样式。 */}
       <div
         data-cc-composer
         className="ui-card rounded-xl border border-border bg-card shadow-card transition-colors focus-within:border-primary/50"
       >
+        <ComposerAttachments ref={attachRef} onHasImages={setHasImages} />
         <textarea
           ref={areaRef}
           value={value}
@@ -199,18 +202,16 @@ function ComposerImpl({
             setSlashDismissed(false);
             setSlashReject(null);
             // 一打字，润色备份就作废：那是新草稿，还原回去只会覆盖用户刚写的。
-            if (polishBackup !== null) setPolishBackup(null);
+            polish.reset();
           }}
           onSelect={(e) => mention.syncCaret(e.currentTarget.selectionStart)}
           onPaste={(e) => {
-            // 对话页走的是纯文本通道（协议不支持图片块）。终端页能粘贴截图，
-            // 这里至少给一句去向说明，而不是毫无反应地丢掉。
-            const hasImage = Array.from(e.clipboardData?.items ?? []).some((it) =>
-              it.type.startsWith("image/"),
-            );
-            if (!hasImage) return;
+            // 图片走附件通道（协议已通，见 docs/图片输入协议探针-2026-10-26.md）。
+            // 没有图片时一律放行，粘贴文本/富文本的行为一个字都不改。
+            const files = collectPastedImages(e.clipboardData);
+            if (files.length === 0) return;
             e.preventDefault();
-            toast("对话页暂不支持粘贴图片：请到终端页粘贴（会自动上传并填入路径）", "info");
+            attachRef.current?.add(files);
           }}
           onKeyDown={(e) => {
             // 🔴 IME 组合期间的键全部放行给输入法：此刻方向键在选候选词、Enter 在
@@ -230,7 +231,9 @@ function ComposerImpl({
               }
               if (e.key === "ArrowUp") {
                 e.preventDefault();
-                setSlashSel((v) => (v - 1 + slashMatches.length) % slashMatches.length);
+                setSlashSel(
+                  (v) => (v - 1 + slashMatches.length) % slashMatches.length,
+                );
                 return;
               }
               if (e.key === "Tab") {
@@ -247,7 +250,7 @@ function ComposerImpl({
             // Windows 风格窗口：Ctrl+Enter 发送（不是 ⌘）。
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
-              send();
+              void send();
             }
           }}
           rows={1}
@@ -256,17 +259,16 @@ function ComposerImpl({
         />
         <ComposerTools
           sendHint={sendHint}
-          polishBackup={polishBackup}
+          polishBackup={polish.backup}
           onUndoPolish={() => {
-            if (polishBackup === null) return;
-            setValue(polishBackup);
-            setPolishBackup(null);
+            const prev = polish.undo();
+            if (prev !== null) setValue(prev);
           }}
-          polishing={polishing}
-          onPolish={onPolish ? () => void polish() : undefined}
+          polishing={polish.polishing}
+          onPolish={polish.enabled ? () => void runPolish() : undefined}
           running={running}
           onInterrupt={onInterrupt}
-          canSend={!!value.trim()}
+          canSend={!!value.trim() || hasImages}
           onSend={send}
         />
       </div>

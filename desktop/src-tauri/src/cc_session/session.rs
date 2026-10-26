@@ -384,10 +384,6 @@ impl Run {
             .map_err(|e| format!("写入 claude 失败：{e}"))
     }
 
-    pub fn send_user(&self, text: &str) -> Result<(), String> {
-        self.send_user_images(text, &[])
-    }
-
     /// 带图发一条。
     ///
     /// 校验放在写 stdin **之前**：不合格的图不该碰到进程 —— 一旦写进去，

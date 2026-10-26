@@ -69,7 +69,19 @@ export type CcApproval = {
 };
 
 export type CcMessage =
-  | { kind: "user"; id: string; text: string; at: string }
+  | {
+      kind: "user";
+      id: string;
+      text: string;
+      at: string;
+      /**
+       * 这条消息附的图（缩略图 data URL）。缺省 = 纯文本消息。
+       *
+       * 🔴 只渲染缩略图：原图不落盘，历史里看不到原始分辨率。这是
+       *    `design/对话页-图片输入-设计稿-2026-10-26.html` 定案 6 的取舍。
+       */
+      images?: string[];
+    }
   | { kind: "assistant"; id: string; text: string; at: string }
   /** 思维链。**默认折叠**：CC 的思考动辄几分钟，摊在流里会把正文冲出视口。 */
   | { kind: "thinking"; id: string; text: string; at: string }
