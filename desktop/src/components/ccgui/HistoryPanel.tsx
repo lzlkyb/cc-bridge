@@ -97,12 +97,19 @@ export function HistoryPanel({
 
   const rows = data?.rows ?? [];
 
+  /**
+   * 🔴 `right-0` 而不是 `left-0`：开关按钮在会话条**最右端**那一组里（它右边只剩
+   * 新对话与终端，约 110px），而面板宽 380px。用 `left-0` 向右展开必然越过 pane
+   * 右边界约 220px，被 `data-cc-panel` 的 `overflow-hidden` 裁掉 —— 任何窗口宽度
+   * 都一样，不是窄窗才有的问题。同排浮层（`ApprovalAuditPanel` / `ContextTaxPanel` /
+   * `ModelPicker`）用的都是 `right-0`。
+   */
   return (
     <div
       ref={boxRef}
       role="dialog"
       aria-label="历史对话"
-      className="absolute left-0 top-full z-30 mt-1 flex max-h-[min(420px,calc(100vh-180px))] w-[min(380px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+      className="absolute right-0 top-full z-30 mt-1 flex max-h-[min(420px,calc(100vh-180px))] w-[min(380px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
     >
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
         <Icon name="history" size={12} className="shrink-0 opacity-70" />
