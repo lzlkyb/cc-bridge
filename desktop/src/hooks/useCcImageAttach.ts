@@ -203,9 +203,16 @@ export function useCcImageAttach() {
     setRejects((prev) => prev.filter((r) => r.id !== id));
   }, []);
 
-  /** 发送成功后清空。只清图，不碰用户的文字/草稿（那是 Composer 的事）。 */
-  const clear = useCallback(() => {
-    setItems([]);
+  /**
+   * 发送成功后清理。只清图，不碰用户的文字/草稿（那是 Composer 的事）。
+   *
+   * `sent` = 这次实际发出去的那几张：发送 IPC 在途期间（远端可达数秒）用户可能又粘贴了
+   * 新图，全量清空会把这些「没发出去」的图一起删掉。不传 = 全清（旧行为）。
+   */
+  const clear = useCallback((sent?: CcImage[]) => {
+    setItems((prev) =>
+      sent === undefined ? [] : prev.filter((it) => it.image === null || !sent.includes(it.image)),
+    );
     setRejects([]);
   }, []);
 

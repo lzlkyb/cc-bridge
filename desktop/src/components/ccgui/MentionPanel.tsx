@@ -35,7 +35,7 @@ export function MentionPanel({
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
         <span className="font-mono text-[12px] font-semibold text-foreground">@</span>
         <span className="text-[11px] text-muted-foreground">引用文件或目录 · 目录进入，文件插入</span>
-        <span className="ml-auto max-w-[46%] truncate font-mono text-[10.5px] text-muted-foreground" title={crumb ?? undefined}>
+        <span className="ml-auto max-w-[46%] truncate font-mono text-[11px] text-muted-foreground" title={crumb ?? undefined}>
           {crumb ?? "根目录"}
         </span>
       </div>
@@ -44,7 +44,7 @@ export function MentionPanel({
         <p className="break-all px-3 py-3 text-[11px] leading-[1.6] text-destructive-ink">{error}</p>
       ) : items.length === 0 ? (
         <p className="px-3 py-3 text-[11px] leading-[1.6] text-muted-foreground">
-          {loading ? "正在列目录…" : `没有匹配「${filter}」的条目。目录可继续下钻，文件选中即插入。`}
+          {loading ? "正在列目录…" : `没有匹配「${filter}」的条目`}
         </p>
       ) : (
         <div className="flex max-h-[186px] flex-col overflow-y-auto py-1">
@@ -66,9 +66,9 @@ export function MentionPanel({
                 className={it.isDir ? "shrink-0 text-primary/85" : "shrink-0 text-muted-foreground"}
               />
               <span className="min-w-0 truncate font-mono text-[11.5px] text-foreground">{it.name}</span>
-              {it.tag && <span className="ml-auto shrink-0 text-[10px] text-primary/90">{it.tag}</span>}
+              {it.tag && <span className="ml-auto shrink-0 text-[11px] text-primary/90">{it.tag}</span>}
               {!it.tag && typeof it.size === "number" && it.size > 0 && (
-                <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground/80">
+                <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground/80">
                   {it.size >= 1048576 ? `${(it.size / 1048576).toFixed(1)}MB` : it.size >= 1024 ? `${Math.round(it.size / 1024)}KB` : `${it.size}B`}
                 </span>
               )}
@@ -77,7 +77,7 @@ export function MentionPanel({
         </div>
       )}
 
-      <div className="border-t border-border px-3 py-1 text-[10.5px] text-muted-foreground">
+      <div className="border-t border-border px-3 py-1 text-[11px] text-muted-foreground">
         ↑↓ 选择 · Enter / Tab 填入 · Esc 关闭 · 目录在前
       </div>
     </div>

@@ -1,16 +1,11 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { toast } from "../ui/toast";
-import {
-  classifySlash,
-  filterSlash,
-  isSlashTyping,
-  type SlashCommand,
-} from "../../lib/ccSlash";
+import { classifySlash } from "../../lib/ccSlash";
 import { isImeComposing } from "../../lib/utils";
 import type { CcImage } from "../../lib/ccImage";
 import { useCcMention } from "../../hooks/useCcMention";
 import { useComposerPolish } from "../../hooks/useComposerPolish";
-import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
+import { useCcSlashInput } from "../../hooks/useCcSlashInput";
 import {
   ComposerAttachments,
   collectPastedImages,
@@ -52,9 +47,11 @@ function ComposerImpl({
   placeholder,
   sendHint = "Ctrl+Enter",
   queueCount,
+  queuePaused,
   onClearQueue,
   onPolish,
   mentionSource,
+  prefill,
 }: {
   /**
    * 发一条消息。`images` 是这条消息附的图（可能为空数组）。
@@ -74,6 +71,8 @@ function ComposerImpl({
   sendHint?: string;
   /** 已排队、还没发出去的消息条数。 */
   queueCount: number;
+  /** 队首发送失败、自动发送已暂停（见 `useCcSession`）。 */
+  queuePaused?: boolean;
   onClearQueue: () => void;
   /** @引用补全的目标与本会话目录（远端目标列远端目录，见 useCcMention）。 */
   mentionSource: { connectionId: string; cwd: string };
@@ -85,6 +84,8 @@ function ComposerImpl({
    * 「两边各存一份、不知道谁最新」的坑。失败返回 `null`，本组件不动文本。
    */
   onPolish?: (draft: string) => Promise<string | null>;
+  /** 外部往输入框填一段草稿（空状态的示例 prompt）。`nonce` 变就重填，同一句连点两次也生效。 */
+  prefill?: { text: string; nonce: number } | null;
 }) {
   const [value, setValue] = useState("");
   const areaRef = useRef<HTMLTextAreaElement>(null);
@@ -94,12 +95,6 @@ function ComposerImpl({
   const [hasImages, setHasImages] = useState(false);
   // 润色草稿的备份与忙碌态（2026-10-26 外移到 hooks/useComposerPolish.ts）。
   const polish = useComposerPolish(onPolish);
-  /** 命令面板的高亮项。值一变就回 0（onChange 里做）。 */
-  const [slashSel, setSlashSel] = useState(0);
-  /** 用户按过 Esc：值不变就让面板一直关着，不然 Esc 毫无效果。 */
-  const [slashDismissed, setSlashDismissed] = useState(false);
-  /** 被闸门拦下的命令名。非空 = 显示提示；一打字就清。 */
-  const [slashReject, setSlashReject] = useState<string | null>(null);
   /** 整个输入区（含面板）的定位锚点与「点外面关闭」的判定框。 */
   const boxRef = useRef<HTMLDivElement>(null);
   // @引用补全（设计稿《对话页-@引用与排版偏好》）：状态与取数全在 hook 里，
@@ -120,13 +115,27 @@ function ComposerImpl({
     el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_H)}px`;
   }, [value]);
 
-  // 命令面板：`/` 开头且没打空格时开着。Esc / 点外面关。
-  const slashOpen = isSlashTyping(value) && !slashDismissed;
-  const slashMatches = slashOpen ? filterSlash(value.slice(1)) : [];
-  const slashActive = Math.min(slashSel, Math.max(0, slashMatches.length - 1));
-  useDismissOnOutside(slashOpen, boxRef, () => setSlashDismissed(true));
+  // 外部预填（空状态示例 prompt）：填进草稿并聚焦，光标落到末尾，用户可改后再发。
+  useEffect(() => {
+    if (!prefill) return;
+    setValue(prefill.text);
+    const el = areaRef.current;
+    if (!el) return;
+    el.focus();
+    // 值更新后再放光标：同步设会落在旧值的位置。
+    requestAnimationFrame(() => el.setSelectionRange(prefill.text.length, prefill.text.length));
+  }, [prefill]);
+
+  // slash 命令交互（面板开合 / 补全 / 键位）见 `useCcSlashInput`。
+  const slash = useCcSlashInput(value, setValue, boxRef);
+
+  // 发送 IPC 在途的同步锁：`onSend` 要等后端起进程（远端 SSH 可能数秒），输入框在它返回后才清空。
+  // 没有这把锁时按住 Ctrl+Enter / 连点发送，第二次会把同一条文本再排进队列。
+  // 用 ref 而不是 state：state 要等下一次渲染才生效，挡不住同一帧内的连发。
+  const sendingRef = useRef(false);
 
   const send = async () => {
+    if (sendingRef.current) return;
     const text = value.trim();
     const images = attachRef.current?.ready() ?? [];
     // 图还在编码：此刻发出去只有文字到达，用户却以为图也跟着走了。
@@ -141,35 +150,24 @@ function ComposerImpl({
     // 得留着改，只显示提示告诉他该去哪儿。
     const verdict = classifySlash(text);
     if (verdict.kind === "unknown") {
-      setSlashReject(verdict.name);
+      slash.setReject(verdict.name);
       return;
     }
     // 发送失败 ⇒ 草稿与附件都留着。那是用户刚拼好的东西，
     // 一次后端抖动就清掉会让人重贴一遍图。
-    const accepted = await onSend(text, images);
-    if (accepted === false) return;
-    setValue("");
-    setSlashSel(0);
-    setSlashReject(null);
-    // 已发出的草稿不再可「撤销润色」：那会把旧稿填回空输入框，像是能撤回发送。
-    polish.reset();
-    attachRef.current?.clear();
-  };
-
-  /** 把命令名填进输入框，尾部留一个空格给参数。不直接发：/model 要写参数。 */
-  const insertSlash = (cmd: SlashCommand) => {
-    setValue(`${cmd.name} `);
-    setSlashSel(0);
-  };
-
-  /** 面板点选 / Enter。已经完整打出且不要参数的命令（/compact、/clear）
-   *  直接发送——「打完回车就走」是最顺手的路径；其余落入输入框等补全。 */
-  const pickSlash = (cmd: SlashCommand) => {
-    if (value.trim() === cmd.name && !cmd.needsArg) {
-      void send();
-      return;
+    sendingRef.current = true;
+    try {
+      const accepted = await onSend(text, images);
+      if (accepted === false) return;
+      // 发送在途时用户若又改了输入框，那是新草稿，不能跟着已发出的那句一起清掉。
+      setValue((cur) => (cur.trim() === text ? "" : cur));
+      slash.onSent();
+      // 已发出的草稿不再可「撤销润色」：那会把旧稿填回空输入框，像是能撤回发送。
+      polish.reset();
+      attachRef.current?.clear(images);
+    } finally {
+      sendingRef.current = false;
     }
-    insertSlash(cmd);
   };
 
   /** 润色当前草稿。失败时文本一个字都不动（用户那句草稿不能丢）。 */
@@ -182,8 +180,9 @@ function ComposerImpl({
     <div ref={boxRef} className="relative shrink-0 px-3 pb-3 pt-1">
       <ComposerNotices
         queueCount={queueCount}
+        queuePaused={queuePaused}
         onClearQueue={onClearQueue}
-        slashReject={slashReject}
+        slashReject={slash.reject}
       />
       {/* data-cc-composer：玻璃下 composer 要压过 .ui-card 的 reading 档，改 floating
           （唯一「必须实心」的输入位）；classic 下不加任何样式。 */}
@@ -198,9 +197,7 @@ function ComposerImpl({
           onChange={(e) => {
             setValue(e.target.value);
             mention.syncCaret(e.target.selectionStart);
-            setSlashSel(0);
-            setSlashDismissed(false);
-            setSlashReject(null);
+            slash.onTyped();
             // 一打字，润色备份就作废：那是新草稿，还原回去只会覆盖用户刚写的。
             polish.reset();
           }}
@@ -220,33 +217,7 @@ function ComposerImpl({
             if (isImeComposing(e.nativeEvent)) return;
             // @引用面板开着时方向键 / Enter / Tab / Esc 归它（焦点在 textarea，见 MentionPanel）。
             if (mention.open && mention.handleKey(e)) return;
-            // 面板开着时方向键 / Enter / Tab 归它。Enter 在输入框里本是换行，
-            // 但「正选着命令」的时刻用户要的是补全；换行还有 Shift+Enter
-            // （浏览器原生行为，不用我们接）。
-            if (slashOpen && slashMatches.length > 0) {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setSlashSel((v) => (v + 1) % slashMatches.length);
-                return;
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setSlashSel(
-                  (v) => (v - 1 + slashMatches.length) % slashMatches.length,
-                );
-                return;
-              }
-              if (e.key === "Tab") {
-                e.preventDefault();
-                insertSlash(slashMatches[slashActive]);
-                return;
-              }
-              if (e.key === "Enter") {
-                e.preventDefault();
-                pickSlash(slashMatches[slashActive]);
-                return;
-              }
-            }
+            if (slash.handleKey(e, () => void send())) return;
             // Windows 风格窗口：Ctrl+Enter 发送（不是 ⌘）。
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
@@ -272,12 +243,12 @@ function ComposerImpl({
           onSend={send}
         />
       </div>
-      {slashOpen && (
+      {slash.open && (
         <SlashPanel
-          matches={slashMatches}
-          active={slashActive}
+          matches={slash.matches}
+          active={slash.active}
           query={value.slice(1)}
-          onPick={pickSlash}
+          onPick={(c) => slash.pick(c, () => void send())}
         />
       )}
       {mention.open && (

@@ -48,7 +48,7 @@ export function SessionHistoryList({
 
   return (
     <div>
-      <div className="sticky top-0 z-[1] flex h-[26px] items-center gap-1.5 bg-card/95 px-1.5 text-[10.5px] text-muted-foreground backdrop-blur-[2px]">
+      <div className="sticky top-0 z-[1] flex h-[26px] items-center gap-1.5 bg-card/95 px-1.5 text-[11px] text-muted-foreground backdrop-blur-[2px]">
         <span className="flex-1 truncate font-medium">{archived ? "已归档" : "历史"}</span>
         <span className="tabular-nums">{rows.length} 条</span>
       </div>
@@ -77,7 +77,7 @@ export function SessionHistoryList({
             <span className="block truncate text-xs font-normal leading-[1.35]">
               {r.title || "（无标题）"}
             </span>
-            <span className="mt-px block truncate text-[10.5px] leading-[1.4] text-muted-foreground tabular-nums">
+            <span className="mt-px block truncate text-[11px] leading-[1.4] text-muted-foreground tabular-nums">
               {labelOf(r.connectionId)} · {r.messageCount} 轮 · {agoText(r.updatedAt)}
             </span>
           </span>
@@ -94,7 +94,7 @@ export function SessionHistoryList({
         <button
           type="button"
           onClick={() => setExpanded(true)}
-          className="mb-1 w-full rounded-md py-1 text-center text-[10.5px] text-muted-foreground transition-colors hover:bg-foreground/[.045] hover:text-foreground"
+          className="mb-1 w-full rounded-md py-1 text-center text-[11px] text-muted-foreground transition-colors hover:bg-foreground/[.045] hover:text-foreground"
         >
           展开其余 {rest} 条
         </button>

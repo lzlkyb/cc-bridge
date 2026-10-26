@@ -79,7 +79,7 @@ export function ContextTaxPanel({
       <div className="flex shrink-0 flex-col gap-1.5 border-b border-border px-3 pb-2 pt-2.5">
         <div className="flex items-baseline gap-1.5">
           <span className="text-[12px] font-semibold text-foreground">上下文构成</span>
-          <span className="text-[10.5px] text-muted-foreground">与余量条同源</span>
+          <span className="text-[11px] text-muted-foreground">与余量条同源</span>
           <span className="ml-auto font-mono text-[11px] tabular-nums text-foreground">
             {view.total > 0 ? `${formatK(view.total)} token` : "—"}
           </span>
@@ -124,12 +124,12 @@ export function ContextTaxPanel({
                 <span className="shrink-0 font-mono text-[11px] tabular-nums text-foreground">
                   {formatK(r.tokens)}
                 </span>
-                <span className="w-8 shrink-0 text-right font-mono text-[10.5px] tabular-nums text-muted-foreground">
+                <span className="w-8 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
                   {r.calls !== undefined ? `${r.calls} 次` : `${percentOf(r.share)}%`}
                 </span>
               </div>
               {r.kind === "other" && (
-                <p className="pb-1 pl-0 text-[10.5px] leading-snug text-muted-foreground">
+                <p className="pb-1 pl-0 text-[11px] leading-snug text-muted-foreground">
                   {view.compressed
                     ? "压缩过：压缩前计入的工具结果已不在当前上下文里"
                     : "系统提示 + 对话正文 + CC 内置工具"}
@@ -153,7 +153,7 @@ export function ContextTaxPanel({
                   : "")
               : `${tax.oversizedTotal} 次顶到裁剪线`}
           </div>
-          <p className="mt-1 text-[10.5px] leading-relaxed text-foreground/80">
+          <p className="mt-1 text-[11px] leading-relaxed text-foreground/80">
             {level === "drop"
               ? "降级的那几次模型当轮没看到内容，也不会回读；裁剪的那几次内容到了，只是尾部被截。"
               : "结果尾部被截断（内容仍然到达了模型），缩短单次读取可以避免。"}
@@ -164,7 +164,7 @@ export function ContextTaxPanel({
               return (
                 <div
                   key={`${h.tool}-${h.timestamp}-${i}`}
-                  className="flex items-baseline gap-2 border-t border-warning/25 pt-1 text-[10.5px]"
+                  className="flex items-baseline gap-2 border-t border-warning/25 pt-1 text-[11px]"
                 >
                   <span
                     className={`min-w-0 flex-1 truncate font-mono ${drop ? "text-foreground/90" : "text-muted-foreground"}`}
@@ -182,19 +182,19 @@ export function ContextTaxPanel({
             })}
           </div>
           {tax.oversizedTotal > tax.oversized.length && (
-            <p className="mt-1 text-[10px] text-muted-foreground">
+            <p className="mt-1 text-[11px] text-muted-foreground">
               另有 {tax.oversizedTotal - tax.oversized.length} 次未列出（审计日志页可查全部）
             </p>
           )}
           {tax.charlessCalls > 0 && (
-            <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
+            <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
               其中 {tax.charlessCalls} 条来自旧版日志（只记了字节），中文内容可能被高估。
             </p>
           )}
         </div>
       )}
 
-      <p className="shrink-0 border-t border-border px-3 py-2 text-[10px] leading-relaxed text-muted-foreground">
+      <p className="shrink-0 border-t border-border px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
         工具账按「≈4 字节 = 1 token」估算，是对话账的一部分，不相加。
         {tax && tax.paramsBytes > 0 && ` 入参另计 ${formatBytes(tax.paramsBytes)}。`}
       </p>

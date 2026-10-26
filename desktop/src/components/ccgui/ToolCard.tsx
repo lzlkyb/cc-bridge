@@ -71,7 +71,7 @@ function MonoBlock({
         {text}
       </pre>
       {clipped && (
-        <p className="px-2.5 pt-1 text-[10.5px] text-muted-foreground">
+        <p className="px-2.5 pt-1 text-[11px] text-muted-foreground">
           内容过长，仅显示前 {TOOL_TEXT_LIMIT / 1000}k 字符（完整内容在会话记录里）
         </p>
       )}
@@ -82,7 +82,7 @@ function MonoBlock({
           title={copied ? "已复制" : "复制全文"}
           aria-label="复制全文"
           aria-live="polite"
-          className="absolute right-1.5 top-1.5 flex h-5 items-center gap-1 rounded border border-border bg-card/90 px-1.5 text-[10px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/mono:opacity-100"
+          className="absolute right-1.5 top-1.5 flex h-6 items-center gap-1 rounded border border-border bg-card/90 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/mono:opacity-100"
         >
           <Icon name={copied ? "check" : "copy"} size={10} />
           {copied ? "已复制" : "复制"}

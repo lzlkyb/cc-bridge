@@ -36,6 +36,8 @@ function QuestionCardImpl({
   const questions = approval.questions ?? [];
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const left = useExpiryCountdown(approval.expiresInSec);
+  // 归零后 CLI 会撤回请求：这段空档里提交 / 跳过都会报错，禁用并说明。
+  const expired = left === 0;
 
   const toggle = (question: string, label: string, multi: boolean) => {
     setPicked((prev) => {
@@ -56,13 +58,15 @@ function QuestionCardImpl({
   return (
     <div
       data-cc-entity
+      role="group"
+      aria-label="CC 在问你"
       className="overflow-hidden rounded-[10px] border border-warning/45 bg-warning/[.06]"
     >
       <div className="flex items-center gap-2 border-b border-warning/25 px-3 py-[6px]">
         <Icon name="message" size={12} className="shrink-0 text-warning-ink" />
         <span className="text-[12px] font-semibold text-warning-ink">CC 在问你</span>
         <span className="ml-auto shrink-0 text-[11px] text-warning-ink/80">
-          {left}s 后自动跳过
+          {expired ? "已超时，等待撤回" : `${left}s 后自动跳过`}
         </span>
       </div>
 
@@ -79,13 +83,13 @@ function QuestionCardImpl({
             <div key={`${qi}:${q.question}`} className="flex flex-col gap-1.5">
               <div className="flex flex-wrap items-center gap-1.5 text-[12px] font-medium leading-[1.5] text-foreground">
                 {q.header && (
-                  <span className="shrink-0 rounded-[4px] bg-warning/15 px-1.5 py-[1px] text-[10.5px] text-warning-ink">
+                  <span className="shrink-0 rounded-[4px] bg-warning/15 px-1.5 py-[1px] text-[11px] text-warning-ink">
                     {q.header}
                   </span>
                 )}
                 <span className="min-w-0 break-words">{q.question}</span>
                 {multi && (
-                  <span className="shrink-0 text-[10.5px] font-normal text-muted-foreground">
+                  <span className="shrink-0 text-[11px] font-normal text-muted-foreground">
                     可多选
                   </span>
                 )}
@@ -105,6 +109,7 @@ function QuestionCardImpl({
                         key={`${oi}:${o.label}`}
                         type="button"
                         aria-pressed={on}
+                        disabled={expired}
                         onClick={() => toggle(q.question, o.label, multi)}
                         className={`flex items-start gap-1.5 rounded-lg border px-2 py-1.5 text-left transition-colors ${
                           on
@@ -143,13 +148,13 @@ function QuestionCardImpl({
         <span className="mr-auto shrink-0 text-[11px] text-muted-foreground">
           {questions.length > 1 ? `${answered}/${questions.length} 已选` : ""}
         </span>
-        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={onSkip}>
+        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={onSkip} disabled={expired}>
           跳过
         </Button>
         <Button
           size="sm"
           className="h-7 px-3 text-[12px]"
-          disabled={answered === 0}
+          disabled={answered === 0 || expired}
           onClick={() => onSubmit(answers)}
         >
           提交

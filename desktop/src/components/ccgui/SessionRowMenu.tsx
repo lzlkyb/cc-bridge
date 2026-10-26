@@ -160,7 +160,7 @@ export function SessionRowMenu({
           setError(null);
           setOpen(true);
         }}
-        className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/[.07] group-hover:opacity-100 data-[open]:opacity-100"
+        className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/[.07] focus-visible:opacity-100 group-hover:opacity-100 data-[open]:opacity-100"
         data-open={open || undefined}
       >
         <Icon name="more" size={12} />
@@ -210,12 +210,12 @@ export function SessionRowMenu({
                 >
                   取消
                 </button>
-                <span className="ml-auto text-[10.5px] text-muted-foreground tabular-nums">
+                <span className="ml-auto text-[11px] text-muted-foreground tabular-nums">
                   {draft.trim().length}/120
                 </span>
               </div>
               {error && (
-                <p className="mt-1 text-[10.5px] leading-[1.4] text-destructive-ink">{error}</p>
+                <p className="mt-1 text-[11px] leading-[1.4] text-destructive-ink">{error}</p>
               )}
             </form>
           ) : (
@@ -237,12 +237,12 @@ export function SessionRowMenu({
               >
                 {archived ? "取消归档" : "归档"}
               </button>
-              <p className="px-2 pb-1 pt-0.5 text-[10.5px] leading-[1.4] text-muted-foreground">
+              <p className="px-2 pb-1 pt-0.5 text-[11px] leading-[1.4] text-muted-foreground">
                 {archived
                   ? "取消后回到历史列表，并重新参与自动恢复。"
                   : "归档只收起来，不删内容；自动恢复会跳过它。"}
               </p>
-              {error && <p className="px-2 pb-1 text-[10.5px] text-destructive-ink">{error}</p>}
+              {error && <p className="px-2 pb-1 text-[11px] text-destructive-ink">{error}</p>}
             </div>
           )}
         </div>

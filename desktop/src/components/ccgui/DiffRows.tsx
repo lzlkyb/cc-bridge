@@ -23,7 +23,7 @@ const DIMS: Record<Dims, { cols: string; no: string; text: string }> = {
   },
   compact: {
     cols: "grid-cols-[22px_22px_12px_minmax(0,1fr)]",
-    no: "text-[10.5px]",
+    no: "text-[11px]",
     text: "text-[11.5px]",
   },
 };
@@ -117,7 +117,7 @@ export function SideCell({
   const { bg, ink } = toneOf(line.kind);
   return (
     <div className={`grid min-w-0 grid-cols-[22px_12px_minmax(0,1fr)] items-start ${bg} ${edge}`}>
-      <span className="select-none pr-1 text-right text-[10.5px] leading-[18px] tabular-nums text-muted-foreground/50">
+      <span className="select-none pr-1 text-right text-[11px] leading-[18px] tabular-nums text-muted-foreground/50">
         {(side === "old" ? line.oldNo : line.newNo) ?? ""}
       </span>
       <span className={`select-none pl-[2px] leading-[18px] ${ink}`}>{signOf(line.kind)}</span>

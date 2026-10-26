@@ -61,7 +61,7 @@ export function SlashPanel({
         </div>
       )}
 
-      <div className="border-t border-border px-3 py-1 text-[10.5px] text-muted-foreground">
+      <div className="border-t border-border px-3 py-1 text-[11px] text-muted-foreground">
         ↑↓ 选择 · Enter 填入 · Esc 关闭 · 只转发白名单命令
       </div>
     </div>

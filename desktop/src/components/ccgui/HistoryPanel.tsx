@@ -193,7 +193,7 @@ export function HistoryPanel({
                 <Highlighted text={row.preview} query={query} />
               </span>
             )}
-            <span className="flex w-full items-center gap-2 text-[10.5px] text-muted-foreground">
+            <span className="flex w-full items-center gap-2 text-[11px] text-muted-foreground">
               <span className="shrink-0">{formatRelativeSecs(row.lastUsedAt)}</span>
               <span className="shrink-0">·</span>
               <span className="shrink-0">{row.messageCount} 轮</span>
@@ -217,7 +217,7 @@ export function HistoryPanel({
       </div>
 
       {data && data.failed > 0 && (
-        <p className="shrink-0 border-t border-border bg-warning/[.06] px-3 py-1.5 text-[10.5px] leading-[1.5] text-warning-ink">
+        <p className="shrink-0 border-t border-border bg-warning/[.06] px-3 py-1.5 text-[11px] leading-[1.5] text-warning-ink">
           有 {data.failed} 份转录读不开（权限或文件损坏），它们不在上面的列表里。
         </p>
       )}

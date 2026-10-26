@@ -32,6 +32,8 @@ function ApprovalCardImpl({
   // hooks 必须在「提问分流」那个早退**之前**：同一实例的 toolName 理论上不变，
   // 但 rules-of-hooks 只认调用顺序，不认「它实际上不会变」。
   const left = useExpiryCountdown(approval.expiresInSec);
+  // 归零后 CLI 会撤回请求（卡片随之消失），这段空档里点按钮只会因后端找不到请求而报错。
+  const expired = left === 0;
   const { copy, isCopied } = useCopyFeedback();
   // 提问一律走选项卡（哪怕一道题都没读出来 —— 那也有「跳过」这条路，
   // 而「允许」在协议上无法表达一个答案）。
@@ -42,7 +44,12 @@ function ApprovalCardImpl({
   const detail = command || JSON.stringify(approval.input, null, 2);
 
   return (
-    <div data-cc-entity className="overflow-hidden rounded-[10px] border border-warning/45 bg-warning/[.06]">
+    <div
+      data-cc-entity
+      role="group"
+      aria-label={`等待批准：${approval.toolName}`}
+      className="overflow-hidden rounded-[10px] border border-warning/45 bg-warning/[.06]"
+    >
       <div className="flex items-center gap-2 border-b border-warning/25 px-3 py-[6px]">
         <Icon name="alertTriangle" size={12} className="shrink-0 text-warning-ink" />
         <span className="text-[12px] font-semibold text-warning-ink">等待批准</span>
@@ -50,7 +57,7 @@ function ApprovalCardImpl({
           {approval.toolName}
         </span>
         <span className="ml-auto shrink-0 text-[11px] text-warning-ink/80">
-          {left}s 后自动拒绝
+          {expired ? "已超时，等待撤回" : `${left}s 后自动拒绝`}
         </span>
       </div>
 
@@ -65,7 +72,7 @@ function ApprovalCardImpl({
             title={isCopied("detail") ? "已复制" : "复制详情"}
             aria-label="复制审批详情"
             aria-live="polite"
-            className="absolute right-1.5 top-1.5 flex h-5 items-center gap-1 rounded border border-border bg-card/90 px-1.5 text-[10px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/detail:opacity-100"
+            className="absolute right-1.5 top-1.5 flex h-6 min-w-6 items-center justify-center gap-1 rounded border border-border bg-card/90 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/detail:opacity-100"
           >
             <Icon name={isCopied("detail") ? "check" : "copy"} size={10} />
           </button>
@@ -76,11 +83,12 @@ function ApprovalCardImpl({
         </p>
       </div>
 
-      <div className="flex items-center justify-end gap-2 px-3 pb-2">
-        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={onDeny}>
+      {/* gap-3：拒绝 / 允许并排且不做主次，间距太窄会在打字时顺手点错。 */}
+      <div className="flex items-center justify-end gap-3 px-3 pb-2">
+        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={onDeny} disabled={expired}>
           拒绝
         </Button>
-        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={onAllow}>
+        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={onAllow} disabled={expired}>
           允许一次
         </Button>
       </div>

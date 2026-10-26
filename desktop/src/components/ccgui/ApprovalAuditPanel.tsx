@@ -64,7 +64,7 @@ function Row({
           <Icon name={v.icon} size={11} className={v.cls} />
         </span>
         <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{point.toolName}</span>
-        <span className="min-w-0 flex-1 truncate text-[10.5px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
           {point.note}
         </span>
       </div>
@@ -169,10 +169,10 @@ export function ApprovalAuditPanel({
             return (
               <div key={g.turn}>
                 <div className="flex items-center gap-2 border-y border-border/50 bg-muted/45 px-3 py-[4px] first:border-t-0">
-                  <span className="text-[10.5px] font-semibold text-muted-foreground">
+                  <span className="text-[11px] font-semibold text-muted-foreground">
                     第 {g.turn} 轮
                   </span>
-                  <span className="text-[10.5px] text-muted-foreground/80">
+                  <span className="text-[11px] text-muted-foreground/80">
                     {g.points.length} 个审批点
                   </span>
                   <button
@@ -184,7 +184,7 @@ export function ApprovalAuditPanel({
                         ? "把这一轮里所有可撤销的改动一起还原（逐条串行，失败即停）"
                         : "这一轮没有可撤销的改动"
                     }
-                    className="ml-auto flex h-5 items-center rounded-md border border-border px-1.5 text-[10.5px] text-muted-foreground transition-colors hover:border-primary/45 hover:text-foreground disabled:opacity-40"
+                    className="ml-auto flex h-5 items-center rounded-md border border-border px-1.5 text-[11px] text-muted-foreground transition-colors hover:border-primary/45 hover:text-foreground disabled:opacity-40"
                   >
                     整组撤销
                   </button>
@@ -205,7 +205,7 @@ export function ApprovalAuditPanel({
         )}
       </div>
 
-      <p className="shrink-0 border-t border-border px-3 py-1.5 text-[10.5px] leading-[1.5] text-muted-foreground">
+      <p className="shrink-0 border-t border-border px-3 py-1.5 text-[11px] leading-[1.5] text-muted-foreground">
         可撤销的走审计备份或反向补丁；内容已被改动则整体拒绝，一个字不动。
       </p>
     </div>

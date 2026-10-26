@@ -50,7 +50,7 @@ function DiffBlockImpl({
       className="overflow-hidden rounded-lg border border-border/70 bg-muted/30 font-mono text-[12px] leading-[18px]"
     >
       {showBar && (
-        <div className="flex items-center gap-2 border-b border-border/70 bg-card/60 py-1 pl-2.5 pr-2 text-[10.5px] text-muted-foreground">
+        <div className="flex items-center gap-2 border-b border-border/70 bg-card/60 py-1 pl-2.5 pr-2 text-[11px] text-muted-foreground">
           {edits > 1 && (
             <span className="min-w-0 truncate" title="diff 按执行顺序拼接（⋯ 行是分隔）">
               共 {edits} 处修改
@@ -64,7 +64,7 @@ function DiffBlockImpl({
                   type="button"
                   onClick={() => setDiffView(v)}
                   aria-pressed={view === v}
-                  className={`px-[9px] py-[2px] text-[10.5px] leading-[18px] transition-colors ${
+                  className={`px-[9px] py-[2px] text-[11px] leading-[18px] transition-colors ${
                     i > 0 ? "border-l border-border" : ""
                   } ${
                     view === v
@@ -82,7 +82,7 @@ function DiffBlockImpl({
 
       {sideBySide ? (
         <div className="grid grid-cols-2">
-          <div className="col-span-2 grid grid-cols-2 border-b border-border/70 bg-card/60 text-[10.5px] text-muted-foreground">
+          <div className="col-span-2 grid grid-cols-2 border-b border-border/70 bg-card/60 text-[11px] text-muted-foreground">
             <span className="border-r border-border/70 px-2 py-[1px]">改动前</span>
             <span className="px-2 py-[1px]">改动后</span>
           </div>
@@ -133,7 +133,7 @@ function DiffBlockImpl({
           那份 diff 的行号与 ± 数字都是近似值，不提示就是拿错的数字冒充对的。
           定案 6：两种视图通用，挂在视图区外层。 */}
       {diff.truncated && (
-        <p className="border-t border-border/50 bg-muted/40 px-3 py-[2px] text-[10.5px] text-muted-foreground">
+        <p className="border-t border-border/50 bg-muted/40 px-3 py-[2px] text-[11px] text-muted-foreground">
           改动段过大，已降级为整段替换 —— 行号与增删统计是近似值
         </p>
       )}

@@ -32,7 +32,8 @@ export function ComposerTools({
   const typo = useChatTypography();
   const verbosity = useChatVerbosity();
   return (
-    <div className="flex items-center gap-2 px-2 pb-1.5">
+    // flex-wrap：这一行最多有 7 项，窗口缩到最小宽度时要换行而不是挤压 / 溢出。
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pb-1.5">
       <span className="text-[11px] text-muted-foreground">
         <span data-cc-inset className="rounded border border-border bg-muted/60 px-[3px] py-[1px] font-mono text-[11px]">
           {sendHint}
@@ -85,7 +86,13 @@ export function ComposerTools({
         </Button>
       )}
       {running && onInterrupt && (
-        <Button variant="outline" size="sm" className="ml-auto h-7 px-3 text-[12px]" onClick={onInterrupt}>
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto h-7 px-3 text-[12px]"
+          onClick={onInterrupt}
+          title="中断本轮（同时清空已排队的消息）"
+        >
           中断
         </Button>
       )}
@@ -94,6 +101,7 @@ export function ComposerTools({
         className={`${running && onInterrupt ? "" : "ml-auto"} h-7 px-3 text-[12px]`}
         disabled={!canSend}
         onClick={onSend}
+        title={running ? "本轮还在生成：这条会排队，本轮结束后自动发送" : undefined}
       >
         {running ? "排队" : "发送"}
       </Button>

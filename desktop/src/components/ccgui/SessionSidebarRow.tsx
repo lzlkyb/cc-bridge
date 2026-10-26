@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Icon } from "../ui/icon";
 import type { CcPaneMeta, CcPaneState } from "../../lib/ccPaneMeta";
 import type { CcPaneEntry } from "../../hooks/useCcPaneList";
@@ -69,14 +71,30 @@ export function SessionRow({
   onArchive: (rowId: number, archived: boolean) => Promise<unknown>;
 }) {
   const rowId = row.meta?.rowId ?? null;
+  const [confirming, setConfirming] = useState(false);
+  // 生成中 / 等批准 / 等选择的会话：一次误点 × 就会中断一轮任务或作废一条待答请求，关前必须确认。
+  // 空闲 / 已断开的直接关（内容都在历史里，没有什么可丢）。
+  const busyState = row.state === "run" || row.state === "ask" || row.state === "wait";
   return (
+    <>
     <div
       data-active={active || undefined}
       data-dead={row.state === "dead" || undefined}
+      role="button"
+      tabIndex={0}
+      aria-current={active ? "true" : undefined}
       className={`group relative flex cursor-pointer items-start gap-[7px] rounded-lg py-1.5 pl-2.5 pr-1.5 transition-colors hover:bg-foreground/[.045] ${
         active ? "bg-primary/[.085]" : ""
       } ${row.state === "dead" ? "opacity-55" : ""}`}
       onClick={() => onPick(row.key)}
+      onKeyDown={(e) => {
+        // 只接管行自己的键：内部的「⋯」「×」按钮有自己的 Enter / Space，不能被行拦走。
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onPick(row.key);
+        }
+      }}
     >
       {active && <span className="absolute bottom-1.5 left-0.5 top-1.5 w-0.5 rounded bg-primary" />}
       <span
@@ -92,13 +110,13 @@ export function SessionRow({
           {row.forkOf && (
             <span
               title="从另一条会话分叉出来（原会话仍在）"
-              className="shrink-0 rounded border border-border px-1 text-[9.5px] leading-[1.4] text-muted-foreground"
+              className="shrink-0 rounded border border-border px-1 text-[10px] leading-[1.4] text-muted-foreground"
             >
               分叉
             </span>
           )}
         </div>
-        <div className="mt-px truncate text-[10.5px] leading-[1.4] text-muted-foreground tabular-nums">
+        <div className="mt-px truncate text-[11px] leading-[1.4] text-muted-foreground tabular-nums">
           {row.detail}
         </div>
       </div>
@@ -117,9 +135,11 @@ export function SessionRow({
             aria-label={`关闭会话：${row.title}`}
             onClick={(e) => {
               e.stopPropagation();
-              onClose(row.key);
+              if (busyState) setConfirming(true);
+              else onClose(row.key);
             }}
-            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/[.07] group-hover:opacity-100 data-[active]:opacity-100"
+            // focus-visible:opacity-100：键盘 Tab 到这里时必须看得见；h-6 w-6 = 24px 点击目标下限。
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-foreground/[.07] focus-visible:opacity-100 group-hover:opacity-100 data-[active]:opacity-100"
             data-active={active || undefined}
           >
             <Icon name="close" size={11} />
@@ -127,6 +147,24 @@ export function SessionRow({
         )}
       </div>
     </div>
+    {confirming && (
+      <ConfirmDialog
+        title="关闭这条会话？"
+        variant="destructive"
+        confirmLabel="关闭会话"
+        description={
+          row.state === "run"
+            ? `「${row.title}」正在生成，关闭会中断这一轮。对话内容仍保留在历史里。`
+            : `「${row.title}」正在等你${row.state === "ask" ? "批准" : "选择"}，关闭后这条请求作废。对话内容仍保留在历史里。`
+        }
+        onCancel={() => setConfirming(false)}
+        onConfirm={() => {
+          setConfirming(false);
+          onClose(row.key);
+        }}
+      />
+    )}
+    </>
   );
 }
 

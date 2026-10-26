@@ -129,7 +129,7 @@ function MarkdownTextImpl({ text, marks }: { text: string; marks?: CcMark[] }) {
           return (
             <div key={i} className="group/mdcode relative my-2 rounded-r-md border-l-2 border-border bg-muted/25">
               <div className="flex h-4 items-center px-2.5 pt-1.5">
-                <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">{lang}</span>
+                <span className="font-mono text-[11px] uppercase tracking-wide text-muted-foreground">{lang}</span>
               </div>
               <pre data-cc-inset className="max-h-[240px] overflow-auto whitespace-pre px-2.5 pb-2 pt-1 pr-14 font-mono text-[12px] leading-[1.6] text-muted-foreground">
                 {leaf(ct.text)}
@@ -140,7 +140,7 @@ function MarkdownTextImpl({ text, marks }: { text: string; marks?: CcMark[] }) {
                 title={isCopied(`code:${idx}`) ? "已复制" : "复制代码"}
                 aria-label="复制代码"
                 aria-live="polite"
-                className="absolute right-1.5 top-1.5 flex h-5 items-center gap-1 rounded border border-border bg-card/90 px-1.5 text-[10px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/mdcode:opacity-100"
+                className="absolute right-1.5 top-1.5 flex h-6 items-center gap-1 rounded border border-border bg-card/90 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/mdcode:opacity-100"
               >
                 <Icon name={isCopied(`code:${idx}`) ? "check" : "copy"} size={10} />
                 {isCopied(`code:${idx}`) ? "已复制" : "复制"}

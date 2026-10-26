@@ -1,11 +1,13 @@
-import { useCallback, useEffect, type CSSProperties, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type RefObject } from "react";
 import type { CcProbe } from "../../lib/ccEventTypes";
-import type { CcView } from "../../lib/ccReducer";
+import { pendingApprovals, type CcView } from "../../lib/ccReducer";
 import { CHAT_TYPOGRAPHY, useChatTypography } from "../../lib/chatTypography";
 import { useCcConvSearch } from "../../hooks/useCcConvSearch";
+import { useCcScrollAway } from "../../hooks/useCcScrollAway";
 import { CcEmptyState } from "./CcEmptyState";
 import { CcFindBar } from "./CcFindBar";
 import { MessageList } from "./MessageList";
+import { ScrollToBottom } from "./ScrollToBottom";
 
 /**
  * 一个 pane 的中段：消息流（滚动容器 + 空状态 / 消息列表）+ 会话内搜索。
@@ -23,7 +25,7 @@ export function ConversationStream({
   probe,
   probing,
   retryProbe,
-  onSend,
+  onPickPrompt,
   onRespond,
   onForkMessage,
   cwd,
@@ -36,7 +38,8 @@ export function ConversationStream({
   probe: CcProbe | null;
   probing: boolean;
   retryProbe: () => void;
-  onSend: (text: string) => void;
+  /** 空状态里点示例 prompt：填进输入框（不直接发送）。 */
+  onPickPrompt: (text: string) => void;
   onRespond: (
     requestId: string,
     decision: "allow" | "deny",
@@ -52,6 +55,12 @@ export function ConversationStream({
 }) {
   const search = useCcConvSearch(view.messages);
   const { hits, occ, openSearch } = search;
+  const { away, toBottom } = useCcScrollAway(scrollRef);
+  // 流式输出时 view 每个 tick 都变，但待批准数只随消息列表 / 裁决表变，用 memo 避免每次都全量遍历。
+  const pendingCount = useMemo(
+    () => pendingApprovals({ messages: view.messages, resolved: view.resolved }).length,
+    [view.messages, view.resolved],
+  );
   // 正文排版偏好（设计稿《对话页-@引用与排版偏好》C 期）：CSS 变量挂在本容器，
   // MarkdownText 消费 —— 不穿 props 链，所有 pane 同时生效。
   const typo = useChatTypography();
@@ -76,10 +85,19 @@ export function ConversationStream({
 
   // 当前命中滚进视口（nearest：已在视口内就不动）。由此触发的滚动事件会让
   // useCcStreamScroll 自然解除贴底 —— 搜索期间新内容不会把人拽走，这是要的。
+  // 🔴 只在「查询词 / 当前命中序号」变化（或命中从无到有）时滚动，不跟着 `hits` 引用走：
+  // 流式输出时 `hits` 每个 tick 都重算，跟着它滚会在用户往别处翻阅时反复把视口拉回命中处。
+  const scrolledKeyRef = useRef("");
   useEffect(() => {
-    if (hits.length === 0) return;
+    if (hits.length === 0) {
+      scrolledKeyRef.current = "";
+      return;
+    }
+    const key = `${search.query}\u0000${occ}`;
+    if (scrolledKeyRef.current === key) return;
+    scrolledKeyRef.current = key;
     scrollRef.current?.querySelector("[data-cc-hit-cur]")?.scrollIntoView({ block: "nearest" });
-  }, [scrollRef, hits, occ]);
+  }, [scrollRef, hits, occ, search.query]);
 
   const closeSearch = useCallback(() => {
     search.close();
@@ -103,7 +121,7 @@ export function ConversationStream({
               probe={probe}
               probing={probing}
               onRetryProbe={retryProbe}
-              onSend={onSend}
+              onPickPrompt={onPickPrompt}
               cwd={cwd}
               onCwdChange={onCwdChange}
               isRemote={isRemote}
@@ -122,6 +140,9 @@ export function ConversationStream({
           )}
         </div>
       </div>
+      {away && view.messages.length > 0 && (
+        <ScrollToBottom pending={pendingCount} running={view.running} onClick={toBottom} />
+      )}
       {search.open && (
         <CcFindBar
           query={search.query}

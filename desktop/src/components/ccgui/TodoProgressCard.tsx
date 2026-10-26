@@ -24,7 +24,7 @@ function TodoProgressCardImpl({ tool }: { tool: CcToolCall }) {
       <div className="flex h-[30px] items-center gap-2 border-b border-border/80 px-2.5">
         <Icon name="check" size={12} className={allDone ? "text-success-ink" : "text-primary"} />
         <span className="text-[11.5px] font-semibold tracking-[0.02em]">任务计划</span>
-        <span className="ml-auto text-[10.5px] tabular-nums text-muted-foreground">
+        <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
           {allDone ? `${done} / ${items.length} · 全部完成` : `${done} / ${items.length}`}
         </span>
         <span className="relative h-0.5 w-16 overflow-hidden rounded-full bg-muted">

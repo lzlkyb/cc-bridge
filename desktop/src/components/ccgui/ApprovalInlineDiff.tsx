@@ -97,7 +97,7 @@ export function ApprovalInlineDiff({ file }: { file: ApprovalFileChange }) {
         );
       })}
       {view.clipped && (
-        <p className="border-t border-border/50 bg-muted/40 px-3 py-[2px] text-[10.5px] text-muted-foreground">
+        <p className="border-t border-border/50 bg-muted/40 px-3 py-[2px] text-[11px] text-muted-foreground">
           改动段过大，仅显示前 {MAX_ROWS} 行
         </p>
       )}

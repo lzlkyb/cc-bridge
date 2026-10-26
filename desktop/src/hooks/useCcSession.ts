@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useReducer, useRef, useState, type MutableRefObject } from "react";
 import { invoke } from "../lib/tauri";
 import type { CcProbe, CcRestoreReq } from "../lib/ccEventTypes";
 import { ccReducer, initialCcView, pendingApprovals } from "../lib/ccReducer";
@@ -7,6 +7,7 @@ import type { CcPermissionMode } from "../lib/ccGuiTypes";
 import type { CcImage } from "../lib/ccImage";
 import { useCcEventStream } from "./useCcEventStream";
 import { useCcOpenHistory } from "./useCcOpenHistory";
+import { useCcQueueFlush, useCcSendQueue } from "./useCcSendQueue";
 
 /** 起一轮要传给后端的东西。 */
 export type CcTarget = {
@@ -18,9 +19,6 @@ export type CcTarget = {
   model: string | null;
   permissionMode: CcPermissionMode;
 };
-
-/** 排队中的一条消息。图跟着文字走，否则出队时不知道该带哪几张图。 */
-type QueuedMessage = { text: string; images: CcImage[] };
 
 /**
  * 对话状态机（React 侧的门面）。
@@ -57,17 +55,9 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   readyRef.current = ready;
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<CcProbe | null>(null);
-  /**
-   * 待发队列（「运行中继续打字」的落点）。
-   *
-   * 两条 ref 与一份 state 并存：state 给界面显示条数，ref 给 `start` 与 flush
-   * 读取最新值 —— `start` 是 `useCallback([])`，把 state 塞进依赖会让它每次
-   * 渲染都换身份，而它是 `CcGuiTab` 探测 effect 的依赖，重订阅的代价白付。
-   */
-  /** 待发队列里的一条。**图跟着文字一起排队**：分开存会让「排队的图」失去归属。 */
-  const [queue, setQueue] = useState<QueuedMessage[]>([]);
-  const queueRef = useRef<QueuedMessage[]>([]);
-  queueRef.current = queue;
+  // 待发队列（「运行中继续打字」的落点）：状态、暂停与冲刷见 `useCcSendQueue`。
+  const { queue, paused: queuePaused, enqueue, clear: clearQueue, resume, take, putBack } =
+    useCcSendQueue();
   /** `view.running` 的镜像，理由同 `queueRef`。 */
   const runningRef = useRef(false);
   runningRef.current = view.running;
@@ -128,7 +118,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     // 撞出同一种「上一轮还在进行」（或带着半恢复的状态起进程），出队即失。
     // 入队后 ready 一翻、flush effect 就把它发出去，一句话都不丢。
     if (runningRef.current || busyRef.current || !readyRef.current) {
-      setQueue((q) => [...q, { text: trimmed, images }]);
+      enqueue({ text: trimmed, images });
       return true;
     }
     // 调用方显式给的优先；否则用**同一目标**探到的绝对路径 —— 远端非登录 shell
@@ -162,6 +152,8 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
           })),
         },
       });
+      // 真的发出去了 ⇒ 之前的故障已排除，恢复队列自动发送。
+      resume();
       return true;
     } catch (e) {
       // 后端已经把进程收尸了（`cc_start` 里的 interrupt），这里只负责说清楚。
@@ -174,26 +166,13 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     }
     // `sessionIdRef` 是 ref（对象稳定），列出来是让 exhaustive-deps 看得见：
     // 函数体读它的 `.current`，规则无法自己证明那不会变。
-  }, [sessionIdRef]);
+  }, [sessionIdRef, enqueue, resume]);
 
-  /**
-   * 本轮一结束就把队首发出去。
-   *
-   * 判据是 `view.running` 由 true 转 false：那是 `TurnEnd` / `Exit` 落定的时刻，
-   * 也是后端 `turn_active` 被清掉的时刻 —— 两个条件必须同时满足，而它们恰好
-   * 在同一个事件里发生（`bookkeep` 先清 busy 再推事件）。
-   *
-   * `ready` 之前不动：重放历史时 running 也会从 true 翻到 false，那时队列
-   * 必然是空的，但把这道闸加上更直白。
-   */
-  useEffect(() => {
-    if (!ready || view.running || busy) return;
-    const next = queueRef.current[0];
-    if (next === undefined) return;
-    queueRef.current = queueRef.current.slice(1);
-    setQueue(queueRef.current);
-    void start(next.text, next.images);
-  }, [ready, view.running, busy, start]);
+  // 本轮一结束就把队首发出去（判据与失败处理见 `useCcQueueFlush`）。
+  useCcQueueFlush(
+    { paused: queuePaused, take, putBack },
+    { ready, running: view.running, busy, start },
+  );
 
   /**
    * 裁决一条审批，或回答一条提问。
@@ -229,13 +208,13 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   const interrupt = useCallback(async () => {
     // 队列跟着一起清：用户打断这一轮，通常也意味着「别再把刚才那些发出去」。
     // 只杀进程不清队列的话，下一轮会自动把用户想拦下的消息发出去。
-    setQueue([]);
+    clearQueue();
     try {
       await invoke<boolean>("cc_interrupt", { sessionId: sessionIdRef.current });
     } catch (e) {
       dispatch({ type: "error", message: String(e) });
     }
-  }, [sessionIdRef]);
+  }, [sessionIdRef, clearQueue]);
 
   const clearError = useCallback(() => dispatch({ type: "error", message: null }), []);
 
@@ -247,9 +226,6 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   const reportError = useCallback((message: string) => {
     dispatch({ type: "error", message });
   }, []);
-
-  /** 清空待发队列（stable 引用：透传给 memo 化的 Composer）。 */
-  const clearQueue = useCallback(() => setQueue([]), []);
 
   /**
    * 打开一条历史会话（把后端那条接管成当前会话）。整套时序约定在
@@ -291,6 +267,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     reportError,
     /** 已排队还没发的消息。界面上显示条数，也可一键清空。 */
     queue,
+    queuePaused,
     // useCallback 包住：Composer 是 memo 组件，内联箭头会让它每次渲染都重渲。
     clearQueue,
     /** 还卡着等用户决定的审批 id。 */

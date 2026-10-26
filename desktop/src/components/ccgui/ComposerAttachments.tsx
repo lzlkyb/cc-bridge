@@ -21,7 +21,8 @@ export type ComposerAttachHandle = {
   ready: () => CcImage[];
   /** 还有图在编码。此时发送会把文字和图拆开发，必须先拦住。 */
   busy: () => boolean;
-  clear: () => void;
+  /** `sent` = 这次实际发出去的图：只清它们，发送在途时新粘的图保留。不传 = 全清。 */
+  clear: (sent?: CcImage[]) => void;
   add: (files: File[]) => void;
 };
 
@@ -64,7 +65,7 @@ export const ComposerAttachments = forwardRef<
     () => ({
       ready: () => latest.current.ready,
       busy: () => latest.current.busy,
-      clear: () => latest.current.clear(),
+      clear: (sent) => latest.current.clear(sent),
       add: (files) => void latest.current.addFiles(files),
     }),
     [],
@@ -98,7 +99,7 @@ export const ComposerAttachments = forwardRef<
                     className="h-full w-full object-cover"
                   />
                   {/* 体积压在图上：56px 的方块里再排版一行说明会让图只剩 30px。 */}
-                  <span className="absolute inset-x-0 bottom-0 bg-foreground/55 text-center text-[10px] leading-[13px] text-background">
+                  <span className="absolute inset-x-0 bottom-0 bg-foreground/55 text-center text-[11px] leading-[13px] text-background">
                     {it.image ? formatBytes(it.image.bytes) : ""}
                   </span>
                 </>

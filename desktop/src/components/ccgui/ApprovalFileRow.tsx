@@ -64,13 +64,13 @@ export function ApprovalFileRow({
         )}
         {/* 批量写只对第一个文件有内容，± 是它的；其余不显示数字而不是显示 0 */}
         {file.created && (
-          <span className="shrink-0 rounded bg-success/12 px-1 text-[10px] text-success-ink">
+          <span className="shrink-0 rounded bg-success/12 px-1 text-[11px] text-success-ink">
             新建
           </span>
         )}
       </button>
       {done ? (
-        <span className="flex items-center gap-1 text-[10.5px] text-success-ink">
+        <span className="flex items-center gap-1 text-[11px] text-success-ink">
           <Icon name="check" size={10} className="shrink-0" />
           已撤销
         </span>
@@ -86,7 +86,7 @@ export function ApprovalFileRow({
                 ? "反向应用这次编辑（内容已变则整体拒绝）"
                 : "删除这次新建的文件（内容被改过就不删）"
           }
-          className="flex h-5 items-center gap-1 rounded border border-border px-1.5 text-[10.5px] text-muted-foreground transition-colors hover:border-warning/50 hover:text-warning-ink disabled:opacity-40"
+          className="flex h-5 items-center gap-1 rounded border border-border px-1.5 text-[11px] text-muted-foreground transition-colors hover:border-warning/50 hover:text-warning-ink disabled:opacity-40"
         >
           {busy ? (
             <Icon name="spinner" size={10} className="animate-spin" />
@@ -96,7 +96,7 @@ export function ApprovalFileRow({
           撤销
         </button>
       ) : (
-        <span className="flex items-center gap-1 text-[10.5px] text-muted-foreground/80">
+        <span className="flex items-center gap-1 text-[11px] text-muted-foreground/80">
           <Icon name="alertTriangle" size={10} className="shrink-0" />
           不可撤销
         </span>
@@ -119,12 +119,12 @@ export function ApprovalFileRow({
       <div className="col-span-full min-w-0">
         {/* 不可撤销必须说清「为什么」—— 一个点了没反应的按钮比没有按钮更糟 */}
         {file.revert === "none" && file.reason && (
-          <p className="mt-[2px] pl-[21px] text-[10.5px] leading-[1.55] text-muted-foreground">
+          <p className="mt-[2px] pl-[21px] text-[11px] leading-[1.55] text-muted-foreground">
             {file.reason}
           </p>
         )}
         {note && (
-          <p className="mt-[2px] pl-[21px] text-[10.5px] leading-[1.55] text-muted-foreground">
+          <p className="mt-[2px] pl-[21px] text-[11px] leading-[1.55] text-muted-foreground">
             {note}
           </p>
         )}

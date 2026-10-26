@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
@@ -86,6 +86,8 @@ export function CcPane({
     applyOpenedCwd,
   } = useCcPanePrefs();
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** 空状态示例 prompt 的预填（`nonce` 递增：同一句连点两次也要重填）。 */
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
   /** 载入意图在 pane 生命周期内不会变，用 ref 固化 —— 见 props 注释。 */
   const restoreRef = useRef<CcRestoreReq>(restore);
 
@@ -269,7 +271,7 @@ export function CcPane({
         probe={session.probe}
         probing={probing}
         retryProbe={retryProbe}
-        onSend={session.start}
+        onPickPrompt={(text) => setPrefill((p) => ({ text, nonce: (p?.nonce ?? 0) + 1 }))}
         onRespond={(id, decision, reason, answers) =>
           void session.respond(id, decision, reason, answers)
         }
@@ -287,9 +289,11 @@ export function CcPane({
         placeholder={session.pending.length > 0 ? "先处理上面的审批，再继续…" : "给 CC 发消息…"}
         sendHint={shortcutLabel(platform, "Enter")}
         queueCount={session.queue.length}
+        queuePaused={session.queuePaused}
         onClearQueue={session.clearQueue}
         onPolish={onPolish}
         mentionSource={{ connectionId: targetId, cwd }}
+        prefill={prefill}
       />
     </div>
   );

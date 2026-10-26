@@ -19,6 +19,9 @@ import { UserMessageImages } from "./UserMessageImages";
  * 那些改动也不会被撤销。这是产品做不到的事，界面不能装成做到了 ——
  * 提示条常驻在编辑态，不藏在 tooltip 里。
  */
+/** 原图不落盘（历史里只有缩略图），新会话拿不到：必须当面说，不能让用户以为图也跟过去了。 */
+const IMAGE_NOT_CARRIED = "图片不会带到新会话（原图不落盘，历史里只有缩略图）";
+
 function UserMessageBubbleImpl({
   text,
   images,
@@ -60,14 +63,24 @@ function UserMessageBubbleImpl({
               setDraft(text);
               setEditing(true);
             }}
-            className="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
+            title={hasImages ? IMAGE_NOT_CARRIED : undefined}
+            className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
           >
             编辑并重发
           </button>
           <button
             type="button"
             onClick={() => onFork(text)}
-            className="text-[10.5px] text-muted-foreground transition-colors hover:text-foreground"
+            // 纯图片消息没有文字：原图不落盘、分叉带不过去，发出去就是一条空会话。
+            disabled={!text.trim()}
+            title={
+              !text.trim()
+                ? "这条消息没有文字，没有可重跑的内容"
+                : hasImages
+                  ? IMAGE_NOT_CARRIED
+                  : undefined
+            }
+            className="text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
             从此处分叉
           </button>
@@ -121,12 +134,13 @@ function UserMessageBubbleImpl({
           >
             取消
           </button>
-          <span className="ml-auto text-[10.5px] text-muted-foreground">⌘/Ctrl+Enter 发送</span>
+          <span className="ml-auto text-[11px] text-muted-foreground">⌘/Ctrl+Enter 发送</span>
         </div>
       </div>
-      <p className="max-w-[86%] text-right text-[10.5px] leading-[1.5] text-muted-foreground">
+      <p className="max-w-[86%] text-right text-[11px] leading-[1.5] text-muted-foreground">
         会<strong className="font-medium text-foreground">另开一条会话</strong>重跑，原会话不动；
         新会话只带这段之前的对话正文，其中的工具调用与文件改动它看不到，也不会被撤销。
+        {hasImages && <> {IMAGE_NOT_CARRIED}。</>}
       </p>
     </div>
   );

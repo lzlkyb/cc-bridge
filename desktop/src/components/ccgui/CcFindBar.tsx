@@ -59,7 +59,7 @@ export function CcFindBar({
         }}
         className="h-6 w-44 rounded-md bg-transparent px-1.5 text-xs text-foreground outline-none placeholder:text-muted-foreground"
       />
-      <span className={`min-w-[46px] text-center text-[10.5px] tabular-nums ${none ? "text-warning-ink" : "text-muted-foreground"}`}>
+      <span className={`min-w-[46px] text-center text-[11px] tabular-nums ${none ? "text-warning-ink" : "text-muted-foreground"}`}>
         {none ? "无结果" : total > 0 ? `${occ + 1} / ${total}` : ""}
       </span>
       <FindBtn title="上一个（Shift+Enter）" disabled={total === 0} onClick={onPrev}>

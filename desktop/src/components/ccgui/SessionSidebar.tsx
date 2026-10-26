@@ -173,8 +173,8 @@ export function SessionSidebar({
               <button
                 type="button"
                 onClick={onNew}
-                title="新建对话 (Ctrl/Cmd+N)"
-                aria-label="新建对话"
+                title="新对话 (Ctrl/Cmd+N)"
+                aria-label="新对话"
                 className="flex h-7 w-7 items-center justify-center rounded-md border border-primary/20 bg-primary/10 text-primary transition-colors hover:bg-primary/15"
               >
                 <Icon name="plus" size={13} />
@@ -208,7 +208,7 @@ export function SessionSidebar({
               )}
               {groups.map((g) => (
                 <div key={g.label}>
-                  <div className="sticky top-0 z-[1] flex h-[26px] items-center gap-1.5 bg-card/95 px-1.5 text-[10.5px] text-muted-foreground backdrop-blur-[2px]">
+                  <div className="sticky top-0 z-[1] flex h-[26px] items-center gap-1.5 bg-card/95 px-1.5 text-[11px] text-muted-foreground backdrop-blur-[2px]">
                     <span className="flex-1 truncate font-medium">{g.label}</span>
                     <span className="tabular-nums">{g.rows.filter(live).length} 在跑</span>
                   </div>
@@ -239,7 +239,7 @@ export function SessionSidebar({
               />
             </div>
 
-            <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-1.5 text-[10.5px] text-muted-foreground tabular-nums">
+            <div className="flex shrink-0 items-center gap-1.5 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground tabular-nums">
               <span
                 className={`h-1.5 w-1.5 rounded-full ${runningCount > 0 ? "bg-success" : "bg-muted-foreground/40"}`}
               />

@@ -217,3 +217,57 @@ it("Esc 关闭引用面板，a@b 形态不误伤普通输入", async () => {
   await key("Escape");
   expect(mentionText()).toBe("");
 });
+
+/// 发送 IPC 在途（onSend 还没返回）时再点发送 / 按住 Ctrl+Enter：不能把同一条再提交一次，
+/// 否则第二次会被当成「运行中」排进队列，本轮结束后同一句话自动再发一遍。
+it("发送在途时重复触发只提交一次，返回后清空输入", async () => {
+  let resolveSend: (v: boolean) => void = () => {};
+  onSend.mockImplementation(() => new Promise<boolean>((r) => (resolveSend = r)));
+  await render();
+  await type("你好");
+  await clickSend();
+  await clickSend();
+  await key("Enter", { ctrlKey: true });
+  expect(onSend).toHaveBeenCalledTimes(1);
+  expect(area().value).toBe("你好");
+  await act(async () => resolveSend(true));
+  expect(area().value).toBe("");
+});
+
+/// 发送失败（onSend 返回 false）要把锁放开：草稿留着，用户改完能再发。
+it("发送失败后草稿保留且可再次发送", async () => {
+  onSend.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+  await render();
+  await type("重试我");
+  await clickSend();
+  expect(area().value).toBe("重试我");
+  await clickSend();
+  expect(onSend).toHaveBeenCalledTimes(2);
+  expect(area().value).toBe("");
+});
+
+/// 空状态点示例 prompt：填进草稿并聚焦（不直接发送），用户可改后再发；同一句连点两次（nonce 变）也要重填。
+it("prefill 填入草稿并聚焦，不触发发送", async () => {
+  const mount = (prefill: { text: string; nonce: number }) =>
+    act(async () => {
+      root.render(
+        <QueryClientProvider client={qc}>
+          <Composer
+            onSend={onSend}
+            queueCount={0}
+            onClearQueue={() => {}}
+            mentionSource={{ connectionId: "", cwd: "D:\\work" }}
+            prefill={prefill}
+          />
+        </QueryClientProvider>,
+      );
+    });
+  await mount({ text: "跑一下测试", nonce: 1 });
+  expect(area().value).toBe("跑一下测试");
+  expect(document.activeElement).toBe(area());
+  expect(onSend).not.toHaveBeenCalled();
+
+  await type("我改过了");
+  await mount({ text: "跑一下测试", nonce: 2 });
+  expect(area().value).toBe("跑一下测试");
+});

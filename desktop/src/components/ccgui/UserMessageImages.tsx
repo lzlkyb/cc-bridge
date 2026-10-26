@@ -44,7 +44,7 @@ export function UserMessageImages({ images }: { images: string[] }) {
         ))}
       </div>
       {/* 单图不需要计数（一眼就数得清）；多图才需要「还有几张没显示」的提示。 */}
-      {n > 1 && <p className="mt-1 text-[10.5px] text-muted-foreground">{n} 张</p>}
+      {n > 1 && <p className="mt-1 text-[11px] text-muted-foreground">{n} 张</p>}
     </div>
   );
 }

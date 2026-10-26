@@ -117,7 +117,7 @@ export function MessageList({
                   title={isCopied(`msg:${m.id}`) ? "已复制" : "复制全文"}
                   aria-label="复制全文"
                   aria-live="polite"
-                  className="absolute -top-2 right-0 flex h-[22px] items-center gap-1 rounded-md border border-border bg-card/95 px-1.5 text-[10px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/msg:opacity-100"
+                  className="absolute -top-2 right-0 flex h-6 items-center gap-1 rounded-md border border-border bg-card/95 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/msg:opacity-100"
                 >
                   <Icon name={isCopied(`msg:${m.id}`) ? "check" : "copy"} size={10} />
                   {isCopied(`msg:${m.id}`) ? "已复制" : "复制"}
@@ -141,7 +141,7 @@ export function MessageList({
                 >
                   <Icon name="check" size={10} className="text-primary/80" />
                   任务计划 · 更新
-                  <span className="ml-auto text-[10.5px] tabular-nums">
+                  <span className="ml-auto text-[11px] tabular-nums">
                     {done} / {items.length}
                   </span>
                 </div>

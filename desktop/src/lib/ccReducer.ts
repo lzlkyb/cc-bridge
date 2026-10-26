@@ -406,7 +406,9 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       // 这一轮花的钱。`max(0, …)` 兜住累计被重置（换模型 / 中转重算）时的负数。
       const turnCost =
         typeof event.costUsd === "number" ? Math.max(0, event.costUsd - view.costUsd) : null;
-      const last = view.messages[view.messages.length - 1];
+      // 先收残留再取 `last`：脚注靠 `afterId` 找锚点，锚点若是被收掉的审批卡就找不到了。
+      const messages = settleOpen(view);
+      const last = messages[messages.length - 1];
       const stat: CcTurnStat = {
         afterId: last?.id ?? "",
         input: parts.input,
@@ -422,6 +424,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       };
       return {
         ...view,
+        messages,
         running: false,
         retry: null,
         sessionId: event.sessionId ?? view.sessionId,
@@ -463,6 +466,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       // 为假 ⇒ 一轮正常落定后进程被收掉（满大街都是，不能拿它刷屏）。
       return {
         ...view,
+        messages: settleOpen(view),
         running: false,
         exitCode: event.code,
         retry: null,
@@ -510,8 +514,43 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
   }
 }
 
+/**
+ * 一轮落定（`turnEnd`）或进程退出（`exit`）时，收掉已经不可能再有下文的残留：
+ *  - 没有裁决的审批 / 提问卡：请求已随这一轮结束而作废，留着会一直转「N 秒后自动拒绝」，
+ *    侧栏显示「待批准」，点按钮还会因后端找不到请求而报错；
+ *  - 仍是「执行中」的工具卡：进程被杀 / 被中断时拿不到 `tool_result`，不收的话会永远转圈。
+ *
+ * 没有残留时原样返回 `view.messages`（引用不变，不触发多余的重渲染）。
+ * 与 `permissionCancel` 同一口径：审批卡直接移除，不留「已取消」的壳。
+ */
+function settleOpen(view: CcView): CcMessage[] {
+  let changed = false;
+  const out: CcMessage[] = [];
+  for (const m of view.messages) {
+    if (m.kind === "approval" && !view.resolved[m.id]) {
+      changed = true;
+      continue;
+    }
+    if (m.kind === "tool" && m.tool.status === "running") {
+      changed = true;
+      out.push({
+        ...m,
+        tool: {
+          ...m.tool,
+          status: "error",
+          isError: true,
+          result: m.tool.result ?? "已中断，没有拿到执行结果",
+        },
+      });
+      continue;
+    }
+    out.push(m);
+  }
+  return changed ? out : view.messages;
+}
+
 /** 有没有卡在等用户决定的审批。composer 据此提示「先处理上面的审批」。 */
-export function pendingApprovals(view: CcView): string[] {
+export function pendingApprovals(view: Pick<CcView, "messages" | "resolved">): string[] {
   return view.messages
     .filter((m): m is Extract<CcMessage, { kind: "approval" }> => m.kind === "approval")
     .filter((m) => !view.resolved[m.id])

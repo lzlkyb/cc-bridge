@@ -519,6 +519,75 @@ describe("ccReducer", () => {
     const v = run([{ kind: "nope" } as unknown as CcEvent]);
     expect(v).toEqual(initialCcView);
   });
+
+  describe("一轮落定 / 进程退出时收掉残留", () => {
+    const ask = (id: string): CcEvent => ({
+      kind: "permissionAsk",
+      requestId: id,
+      toolName: "Bash",
+      input: {},
+      toolUseId: null,
+      reason: null,
+    });
+    const turnEnd: CcEvent = {
+      kind: "turnEnd",
+      sessionId: "s1",
+      isError: false,
+      text: null,
+      usage: null,
+      costUsd: 0.01,
+      numTurns: 1,
+      durationMs: 1000,
+    };
+
+    /// 点「停止」时后端只清 pending、不发 PermissionCancel：卡片不收会永远停在「待批准」。
+    it("turnEnd 收掉没有裁决的审批卡，已裁决的保留", () => {
+      const v = run([
+        ask("r1"),
+        ask("r2"),
+        { kind: "permissionResolved", requestId: "r1", decision: "allow" },
+        turnEnd,
+      ]);
+      expect(v.messages.filter((m) => m.kind === "approval").map((m) => m.id)).toEqual(["r1"]);
+      expect(pendingApprovals(v)).toEqual([]);
+    });
+
+    it("exit 收掉审批卡，并把执行中的工具标成已中断", () => {
+      const v = run([
+        { kind: "toolUse", toolUseId: "t1", name: "Bash", input: {} },
+        ask("r1"),
+        { kind: "exit", code: null },
+      ]);
+      expect(pendingApprovals(v)).toEqual([]);
+      const tool = v.messages.find((m) => m.kind === "tool");
+      expect(tool).toMatchObject({ tool: { status: "error", isError: true } });
+      expect(tool && tool.kind === "tool" ? tool.tool.result : "").toContain("已中断");
+    });
+
+    it("已有结果的工具卡不被改动", () => {
+      const v = run([
+        { kind: "toolUse", toolUseId: "t1", name: "Read", input: {} },
+        { kind: "toolResult", toolUseId: "t1", content: "ok", isError: false },
+        turnEnd,
+      ]);
+      expect(v.messages.find((m) => m.kind === "tool")).toMatchObject({
+        tool: { status: "ok", result: "ok" },
+      });
+    });
+
+    /// 脚注靠 `afterId` 找锚点：锚点不能是刚被收掉的审批卡。
+    it("turnEnd 的脚注锚点不指向被收掉的卡", () => {
+      const v = run([{ kind: "userMessage", text: "hi" }, ask("r1"), turnEnd]);
+      const anchor = v.turns[v.turns.length - 1].afterId;
+      expect(v.messages.some((m) => m.id === anchor)).toBe(true);
+    });
+
+    it("没有残留时 messages 引用不变", () => {
+      const before = run([{ kind: "userMessage", text: "hi" }]);
+      const after = ccReducer(before, { type: "event", event: turnEnd });
+      expect(after.messages).toBe(before.messages);
+    });
+  });
 });
 
 /** 真机抓到的 `AskUserQuestion` 入参（2026-10-24 探针），字段顺序也照抄。 */

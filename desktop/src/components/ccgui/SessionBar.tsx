@@ -92,7 +92,9 @@ function SessionBarImpl({
     // 占高度会让消息区在打开的瞬间收缩、正在读的位置跟着跳。
     <div
       data-cc-rule
-      className="relative flex shrink-0 items-center gap-3 border-b border-border px-3 py-2"
+      // flex-wrap：窗口缩到最小宽度（560px）时右端一组按钮约需 650px，不换行就会被 pane 的
+      // overflow-hidden 裁掉（「历史 / 新对话 / 终端」看不见也点不到）。
+      className="relative flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border px-3 py-2"
     >
       <span className="flex shrink-0 items-center gap-1.5">
         <span
@@ -117,7 +119,8 @@ function SessionBarImpl({
       {/* 分支未知时不占位：空白 chip 比没有 chip 更像 bug。 */}
       {session.branch && <Chip icon="gitBranch">{session.branch}</Chip>}
 
-      <span className="ml-auto flex shrink-0 items-center gap-3">
+      {/* max-w-full + flex-wrap：这一组自己也比容器宽时在组内换行，而不是撑破容器。 */}
+      <span className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
         <span className="relative flex items-center">
           <button
             type="button"
