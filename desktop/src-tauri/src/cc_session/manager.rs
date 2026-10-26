@@ -1226,6 +1226,9 @@ mod tests {
                 cost_usd: None,
                 num_turns: None,
                 duration_ms: None,
+                gen_ms: None,
+                ttft_ms: None,
+                api_ms: None,
             },
         );
         assert!(!shared.turn_active(), "TurnEnd 之后必须不再忙碌");

@@ -306,6 +306,9 @@ impl Parser {
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            // 历史转录里没有实时计时，也就没有工具耗时（`parse.rs` 走的是
+            // 落盘的 JSONL，不是活着的流）。`None` = 卡片不显示耗时。
+            duration_ms: None,
         });
     }
 
@@ -486,10 +489,13 @@ mod tests {
                 tool_use_id,
                 content,
                 is_error,
+                duration_ms,
             } => {
                 assert_eq!(tool_use_id, "call_1");
                 assert_eq!(content, "第一行\n[image]");
                 assert!(is_error);
+                // 历史转录不测速：没有实时计时源。
+                assert_eq!(*duration_ms, None);
             }
             other => panic!("期望 ToolResult，实际 {other:?}"),
         }

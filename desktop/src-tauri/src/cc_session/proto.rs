@@ -22,6 +22,7 @@
 //! 前端只加渲染分支、不碰字段名。见源码分析 §一.1「前端几乎零引擎分支」。
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -92,6 +93,17 @@ pub enum CcEvent {
         tool_use_id: String,
         content: String,
         is_error: bool,
+        /// 这个工具跑了多久（`ToolUse` 到达 → `ToolResult` 到达）。
+        ///
+        /// 口径是**墙钟**，含审批等待：用户自己犹豫了两分钟也会算进去。这是
+        /// 有意的 —— 卡片上的耗时该回答「我这一下等了多久」，而不是「进程
+        /// 忙了多久」。
+        ///
+        /// `#[serde(default)]`：2026-10-26 之前落盘的老流水没有这个字段，
+        /// 缺了就整箱反序列化失败（`store.rs` 那边是 `.ok()` 兜底），表现是
+        /// 整个会话恢复成空白。老数据读回 `None`，卡片退化成不显示耗时。
+        #[serde(default)]
+        duration_ms: Option<u64>,
     },
     /// 需要用户批准。`request_id` 是回写 `control_response` 的唯一凭据。
     PermissionAsk {
@@ -156,14 +168,39 @@ pub enum CcEvent {
         cost_usd: Option<f64>,
         num_turns: Option<u64>,
         duration_ms: Option<u64>,
+        /// **纯生成时长**：本轮里每个 API 请求「首个输出片段 → `message_stop`」
+        /// 的时长之和。算 token 速度只用它当分母。
+        ///
+        /// 🔴 为什么不用上面的 `duration_ms`：那是整轮墙钟，把工具执行、审批
+        /// 等待、首 token 等待全算进去了。一次跑三十个 Edit 的轮次，输出可能
+        /// 只有几千 token 而墙钟五分钟 —— 直接相除会显示 10 tok/s，看起来像
+        /// 模型在爬，实际是它在等你点「允许」。GitHub 上做这件事的项目口径
+        /// 一致（`cc-use` 的 REQUEST_PERFORMANCE 写得最明确：输入与缓存
+        /// token、首 token 前的等待、输出完成后的收尾都不计入）。
+        ///
+        /// `None` = 这一轮没有任何流式输出（纯错误 / 老版本 CLI 不发
+        /// `message_stop` / 2026-10-26 之前落盘的老流水）⇒ 界面显示 `—`，
+        /// 不拿墙钟顶替（编出来的速度比不显示更糟）。
+        #[serde(default)]
+        gen_ms: Option<u64>,
+        /// 首 token 延迟（CLI 的 `ttft_ms`）。只用于明细展示，不进速度分母。
+        #[serde(default)]
+        ttft_ms: Option<u64>,
+        /// CLI 累计的 API 时长（`duration_api_ms`）。明细里用来对比
+        /// 「生成占了多少、等待占了多少」。
+        #[serde(default)]
+        api_ms: Option<u64>,
     },
     /// CLI 写到 stderr 的内容（去重后的尾巴）。
     ///
     /// 不是协议解析产物，但必须走同一条事件通道：启动失败、模型名不对、认证过期
     /// 这些**只有 stderr 会说**，而 stdout 上只会静静地看着。
     Stderr { lines: Vec<String> },
-    /// 进程退出。**每一轮都会收到**，是前端把「运行中」落定的唯一可靠信号 ——
-    /// 不能只等 `TurnEnd`，因为崩溃、被 kill、CLI 直接退出都不会发 `result`。
+    /// 进程退出（stdout EOF）。
+    ///
+    /// 🔴 **不是「一轮结束」信号**：一轮正常结束走 `result` → `TurnEnd`，这个事件
+    /// 只在进程真的终止时来（`code` 恒为 `None` —— 读线程不 `wait()` 子进程）。
+    /// 判据用**时序**：`Exit` 到达时前端 `running` 仍为真 ⇒ 是生成中途死掉。
     Exit { code: Option<i32> },
 }
 
@@ -178,8 +215,53 @@ enum BlockAcc {
     },
 }
 
-/// 解析器的跨行状态。**一轮一个进程**，所以这个状态只需要活一轮。
+/// 生成时长计时器：按「首个输出片段 → `message_stop`」**分段累加**。
+///
+/// 一轮可能有好几次 API 请求（模型-工具往返），每次请求都有自己的生成窗口。
+/// 分段累加而不是取首尾，是为了把中间的工具执行时间排除掉 —— 那正是
+/// `result.duration_ms` 做不到的事。
+///
+/// 边界取「首个 `content_block_delta`」而不是 `message_start`：`message_start`
+/// 之后到第一个 token 之间是 TTFT（排队 + 首 token 延迟），业界口径不算速度。
 #[derive(Default)]
+struct GenTimer {
+    /// 当前段的起点。`None` = 这段还没开始输出（或已经结账）。
+    open: Option<Instant>,
+    /// 已完成各段的毫秒和。
+    closed_ms: u64,
+}
+
+impl GenTimer {
+    /// 见到第一个输出片段就开表（重复调用无副作用）。
+    fn on_output(&mut self, now: Instant) {
+        if self.open.is_none() {
+            self.open = Some(now);
+        }
+    }
+
+    /// 结一段账。
+    fn close(&mut self, now: Instant) {
+        if let Some(start) = self.open.take() {
+            self.closed_ms += now.saturating_duration_since(start).as_millis() as u64;
+        }
+    }
+
+    /// 已累计的生成毫秒（含还开着的那一段）。
+    fn live_ms(&self, now: Instant) -> u64 {
+        self.closed_ms
+            + self.open.map_or(0, |start| {
+                now.saturating_duration_since(start).as_millis() as u64
+            })
+    }
+
+    /// 收尾：把还开着的那段关掉（没收到 `message_stop` 就来了 `result`）。
+    fn finish(&mut self, now: Instant) -> u64 {
+        self.close(now);
+        self.live_ms(now)
+    }
+}
+
+/// 解析器的跨行状态。**一轮一个进程**，所以这个状态只需要活一轮。
 pub struct ProtoState {
     /// 当前流式消息 id（`message_start` 给）。拼 `block_id` 用。
     msg_id: Option<String>,
@@ -195,11 +277,46 @@ pub struct ProtoState {
     full_index_base: u64,
     /// 上一条完整快照属于哪条消息（换消息时把上一行清零）。
     full_msg_id: Option<String>,
+    /// 生成时长计时（每个 API 请求一段）。
+    gen: GenTimer,
+    /// `tool_use_id` → 该工具开始执行的时刻。`ToolResult` 到达时算差值。
+    ///
+    /// ⚠️ 只增不减会漏：工具被中断（`PermissionCancel` / 进程被杀）时永远等不到
+    /// `ToolResult`。但那是一轮的结尾，`ProtoState` 随进程一起丢，不会积累。
+    tools: HashMap<String, Instant>,
+    /// 计时时钟。默认 `Instant::now`；单测换成受控时钟才能验证口径，
+    /// 否则真实时间只有微秒级，算出来的速度毫无意义。
+    clock: fn() -> Instant,
+}
+
+impl Default for ProtoState {
+    fn default() -> Self {
+        Self {
+            msg_id: None,
+            blocks: HashMap::new(),
+            full_index_base: 0,
+            full_msg_id: None,
+            gen: GenTimer::default(),
+            tools: HashMap::new(),
+            clock: Instant::now,
+        }
+    }
 }
 
 impl ProtoState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 当前的「现在」。所有计时都从这里取，单测才好替换。
+    fn now(&self) -> Instant {
+        (self.clock)()
+    }
+
+    /// 换时钟（单测用）。
+    #[cfg(test)]
+    fn set_clock(&mut self, clock: fn() -> Instant) {
+        self.clock = clock;
     }
 
     /// 吃一行，吐出若干个事件。
@@ -303,6 +420,11 @@ impl ProtoState {
                         if tool_use_id.is_empty() {
                             continue;
                         }
+                        // 取走起点算耗时。缺失（老流水 / 进程重启）就是 None，
+                        // 界面不显示耗时，别编一个 0。
+                        let duration_ms = self.tools.remove(&tool_use_id).map(|start| {
+                            self.now().saturating_duration_since(start).as_millis() as u64
+                        });
                         out.push(CcEvent::ToolResult {
                             tool_use_id,
                             content: flatten_content(block.get("content")),
@@ -310,11 +432,16 @@ impl ProtoState {
                                 .get("is_error")
                                 .and_then(Value::as_bool)
                                 .unwrap_or(false),
+                            duration_ms,
                         });
                     }
                 }
             }
-            "result" => out.push(turn_end(&value)),
+            "result" => {
+                // 收尾：有的版本在 `result` 之前不发 `message_stop`，开着的段要关掉。
+                let gen_ms = self.gen.finish(self.now());
+                out.push(turn_end(&value, gen_ms));
+            }
             "control_request" => self.on_control_request(&value, &mut out),
             "control_cancel_request" => {
                 if let Some(request_id) = value.get("request_id").and_then(Value::as_str) {
@@ -449,6 +576,11 @@ impl ProtoState {
                 }
             }
             "content_block_delta" => {
+                // 首个输出片段 = 生成窗口的起点。放在取 `acc` 之前：
+                // 万一某个 delta 的 index 对不上（本函数会提前 return），
+                // 这一段的时间也不能白丢。
+                let now = self.now();
+                self.gen.on_output(now);
                 let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let delta = event.get("delta");
                 let Some(acc) = self.blocks.get_mut(&index) else {
@@ -500,6 +632,8 @@ impl ProtoState {
                     if id.is_empty() {
                         return;
                     }
+                    // 从「入参拼完、即将执行」开始计时：这正是工具真正开跑的时刻。
+                    self.tools.insert(id.clone(), self.now());
                     out.push(CcEvent::ToolUse {
                         tool_use_id: id,
                         name,
@@ -508,6 +642,17 @@ impl ProtoState {
                             .unwrap_or(Value::Object(Default::default())),
                     });
                 }
+            }
+            // 🔴 曾经拿 `message_delta` 做实时进度（`TurnProgress`），已删除：它
+            // 每个 API 请求只有一条、且在这个请求结束时才到 —— 一次纯文本长回答
+            // （没有工具往返）全程只有一条，界面上根本看不到数字在动。实测见
+            // 2026-10-26 探针：整轮 1 段请求 = 1 条 `message_delta`。做「每秒速度」
+            // 得从 `content_block_delta` 节流发并估算 token，而当前链路并非真流式
+            // （一次把全文给完，实测 1 条 delta），估出来的数字也是假的 ⇒ 只保留
+            // 结束态统计。这个分支现在什么都不做，留着只为说明「它被考虑过」。
+            "message_stop" => {
+                // 一段 API 请求收尾：把这一段的生成时长记进账。
+                self.gen.close(self.now());
             }
             _ => {}
         }
@@ -596,10 +741,14 @@ fn ask_reason(request: Option<&Value>) -> Option<String> {
 
 /// `result` 行 → `TurnEnd`。
 ///
+/// `gen_ms` 由调用方（`ProtoState::feed`）用计时器算好传进来：它是跨行累积的
+/// 状态，解析单行拿不到。为 0 时存 `None` —— 「没有任何流式输出」和「生成用了
+/// 0 毫秒」是两回事，后者不存在。
+///
 /// 🔴 `usage` 原样透传而不是拆成字段：CLI 在 `usage` 里塞了 `cache_read_input_tokens`、
 /// `server_tool_use`、`service_tier` 等十几个键，版本间还在加。前端只需要读其中几个，
 /// 拆成结构体等于每加一个键就改一次 Rust。
-fn turn_end(value: &Value) -> CcEvent {
+fn turn_end(value: &Value, gen_ms: u64) -> CcEvent {
     let subtype = value.get("subtype").and_then(Value::as_str).unwrap_or("");
     let is_error = value
         .get("is_error")
@@ -628,6 +777,11 @@ fn turn_end(value: &Value) -> CcEvent {
             .and_then(Value::as_f64),
         num_turns: value.get("num_turns").and_then(Value::as_u64),
         duration_ms: value.get("duration_ms").and_then(Value::as_u64),
+        gen_ms: (gen_ms > 0).then_some(gen_ms),
+        // 实测两个都在（2026-10-26 抓包）：`ttft_ms` 是首 token 延迟，
+        // `duration_api_ms` 是 API 往返累计。只用于明细展示。
+        ttft_ms: value.get("ttft_ms").and_then(Value::as_u64),
+        api_ms: value.get("duration_api_ms").and_then(Value::as_u64),
     }
 }
 
@@ -693,6 +847,155 @@ mod tests {
             out.extend(state.feed(line));
         }
         out
+    }
+
+    /// 受控时钟：测试自己推进虚拟时间。
+    ///
+    /// 不用真实时钟的原因很直白：`feed` 是同步连续调用，真实时间只有几十微秒，
+    /// 断言「生成用了 2 秒」根本不可能。用虚拟时间才能把口径钉死。
+    /// 每个测试线程各有一份（`thread_local`），并行跑不会互相干扰。
+    mod clock {
+        use std::cell::Cell;
+        use std::time::{Duration, Instant};
+        thread_local! {
+            static BASE: Instant = Instant::now();
+            static NOW_MS: Cell<u64> = const { Cell::new(0) };
+        }
+        pub fn now() -> Instant {
+            BASE.with(|b| *b + Duration::from_millis(NOW_MS.with(Cell::get)))
+        }
+        pub fn set(ms: u64) {
+            NOW_MS.with(|n| n.set(ms));
+        }
+    }
+
+    /// 🔴 本轮核心口径：`gen_ms` 只算「首个输出片段 → `message_stop`」。
+    ///
+    /// 首 token 前的等待与工具执行都必须排除。这条写错的后果很具体：一次跑
+    /// 三十个 Edit 的轮次会显示 10 tok/s，用户以为模型在爬，实际是它在等你点
+    /// 「允许」。GitHub 上做这件事的项目（`cc-use` / `ccstatusline`）口径一致。
+    #[test]
+    fn gen_ms_excludes_first_token_wait_and_tool_time() {
+        let mut state = ProtoState::new();
+        state.set_clock(clock::now);
+
+        clock::set(0);
+        feed_all(
+            &mut state,
+            &[r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}}}"#],
+        );
+        // 首 token 等了 1 秒：这段不算。
+        clock::set(1000);
+        feed_all(
+            &mut state,
+            &[
+                r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#,
+                r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"好"}}}"#,
+            ],
+        );
+        // 生成 2 秒后 API 请求结束。
+        clock::set(3000);
+        feed_all(
+            &mut state,
+            &[
+                r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}}"#,
+                r#"{"type":"stream_event","event":{"type":"message_stop"}}"#,
+            ],
+        );
+        // 工具又跑了 57 秒：这段也不算。
+        clock::set(60_000);
+        let out = state.feed(
+            r#"{"type":"result","subtype":"success","usage":{"output_tokens":50},"duration_ms":60000,"ttft_ms":1000}"#,
+        );
+        match &out[0] {
+            CcEvent::TurnEnd {
+                gen_ms,
+                duration_ms,
+                ttft_ms,
+                ..
+            } => {
+                assert_eq!(*gen_ms, Some(2000), "只算生成的那 2 秒");
+                assert_eq!(*duration_ms, Some(60_000), "墙钟仍原样透传（明细里要对比）");
+                assert_eq!(*ttft_ms, Some(1000));
+            }
+            other => panic!("期望 TurnEnd，实际 {other:?}"),
+        }
+    }
+
+    /// 多段（模型-工具往返）必须**分段累加**，不是取首尾 —— 取首尾会把中间
+    /// 的工具时间算进去，等于白做。
+    #[test]
+    fn gen_ms_accumulates_across_api_requests() {
+        let mut state = ProtoState::new();
+        state.set_clock(clock::now);
+
+        for (start, end) in [(0_u64, 1000_u64), (5000, 8000)] {
+            clock::set(start);
+            feed_all(
+                &mut state,
+                &[
+                    r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"x"}}}"#,
+                ],
+            );
+            clock::set(end);
+            feed_all(
+                &mut state,
+                &[r#"{"type":"stream_event","event":{"type":"message_stop"}}"#],
+            );
+        }
+        clock::set(8000);
+        let out = state.feed(r#"{"type":"result","subtype":"success"}"#);
+        match &out[0] {
+            CcEvent::TurnEnd { gen_ms, .. } => {
+                assert_eq!(*gen_ms, Some(4000), "1000 + 3000，中间的 4 秒工具时间不计")
+            }
+            other => panic!("期望 TurnEnd，实际 {other:?}"),
+        }
+    }
+
+    // 🔴 曾经有 `message_delta → TurnProgress` 的实时进度测试，随该事件一起删除
+    // （理由见 `feed` 里 `message_stop` 分支的注释：粒度不够，链路也不是真流式）。
+    // `gen_ms` 本身仍由下面两条测试守口径。
+
+    /// 工具耗时：`content_block_stop`（入参拼完、即将执行）到 `tool_result` 的差值。
+    #[test]
+    fn tool_result_carries_duration_from_tool_use() {
+        let mut state = ProtoState::new();
+        state.set_clock(clock::now);
+
+        clock::set(0);
+        feed_all(
+            &mut state,
+            &[
+                r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m1"}}}"#,
+                r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu1","name":"Read"}}}"#,
+                r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}}"#,
+                r#"{"type":"stream_event","event":{"type":"content_block_stop","index":0}}"#,
+            ],
+        );
+        clock::set(1500);
+        let out = state.feed(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","content":[{"type":"text","text":"ok"}]}]}}"#,
+        );
+        match &out[0] {
+            CcEvent::ToolResult { duration_ms, .. } => {
+                assert_eq!(*duration_ms, Some(1500));
+            }
+            other => panic!("期望 ToolResult，实际 {other:?}"),
+        }
+    }
+
+    /// 没有 `ToolUse` 起点时不编数字：`None` ⇒ 卡片不显示耗时。
+    #[test]
+    fn tool_result_without_start_has_no_duration() {
+        let mut state = ProtoState::new();
+        let out = state.feed(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"orphan","content":[]}]}}"#,
+        );
+        match &out[0] {
+            CcEvent::ToolResult { duration_ms, .. } => assert_eq!(*duration_ms, None),
+            other => panic!("期望 ToolResult，实际 {other:?}"),
+        }
     }
 
     #[test]
@@ -832,7 +1135,10 @@ mod tests {
             vec![CcEvent::ToolResult {
                 tool_use_id: "t1".into(),
                 content: "第一行\n[image]".into(),
-                is_error: true
+                is_error: true,
+                // 单测的行是瞬间喂进来的，但要的是「有没有这个值」而不是具体数：
+                // 起点在 `content_block_stop` 才记，这里没有 ToolUse ⇒ 无起点。
+                duration_ms: None
             }]
         );
     }

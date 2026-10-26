@@ -863,6 +863,7 @@ mod tests {
                 tool_use_id: "t1".into(),
                 content: big.clone(),
                 is_error: false,
+                duration_ms: None,
             },
             user("二"),
             text(&big),
