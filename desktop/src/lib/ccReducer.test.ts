@@ -7,6 +7,7 @@ import {
   type CcView,
 } from "./ccReducer";
 import type { CcEvent } from "./ccEventTypes";
+import { turnSpeed } from "./ccTurnStat";
 
 const run = (events: CcEvent[], from: CcView = initialCcView): CcView =>
   events.reduce((v, e) => ccReducer(v, { type: "event", event: e }), from);
@@ -126,6 +127,170 @@ describe("ccReducer", () => {
     expect(v.inputTokens).toBe(105);
     expect(v.outputTokens).toBe(20);
     expect(v.costUsd).toBeCloseTo(0.03);
+  });
+
+  /// 每轮用量落进 `turns`，四类**分开记**。合并 cache read 是本轮改动前的老
+  /// 做法：它每轮重报（实测一轮 89K），几轮之后总量会虚高到没法读。
+  it("turnEnd 产出带四类分项与速度的轮次统计", () => {
+    const v = run([
+      { kind: "init", sessionId: "s1", cwd: null, model: null },
+      { kind: "userMessage", text: "hi" },
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: {
+          input_tokens: 1000,
+          cache_creation_input_tokens: 200,
+          cache_read_input_tokens: 8000,
+          output_tokens: 400,
+        },
+        costUsd: 0.12,
+        numTurns: 1,
+        durationMs: 30_000,
+        genMs: 10_000,
+        ttftMs: 1200,
+        apiMs: 9000,
+      },
+    ]);
+    expect(v.turns).toHaveLength(1);
+    const t = v.turns[0];
+    expect(t).toMatchObject({
+      input: 1000,
+      cacheWrite: 200,
+      cacheRead: 8000,
+      output: 400,
+      genMs: 10_000,
+      durationMs: 30_000,
+      ttftMs: 1200,
+      apiMs: 9000,
+      costUsd: 0.12,
+      isError: false,
+    });
+    // 脚注挂在「这一轮最后一条消息」之后。
+    expect(t.afterId).toBe(v.messages[v.messages.length - 1].id);
+    // 速度只按生成时长算：400 tok / 10s。用墙钟（30s）会算成 13 tok/s。
+    expect(turnSpeed(t.output, t.genMs)).toBe(40);
+  });
+
+  /// 零消息就结束的轮次（认证失败、只报错）也要留下账：`afterId` 是空串，
+  /// `MessageList` 会把它们统一挂到流末尾。如果这里返回 `undefined` 或者干脆
+  /// 不记账，这一轮的 token 与成本就彻底看不见了 —— 而那正是最该看的时候。
+  it("没有任何消息的轮次也记一笔，afterId 是空串", () => {
+    const v = run([
+      { kind: "init", sessionId: "s1", cwd: null, model: null },
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: true,
+        text: "Invalid API key",
+        usage: { input_tokens: 10, output_tokens: 5 },
+        costUsd: 0,
+        numTurns: 1,
+        durationMs: 800,
+      },
+    ]);
+    expect(v.messages).toHaveLength(0);
+    expect(v.turns).toHaveLength(1);
+    expect(v.turns[0].afterId).toBe("");
+    expect(v.turns[0].output).toBe(5);
+    expect(v.turns[0].isError).toBe(true);
+  });
+
+  /// CLI 给的成本是**会话累计**，所以本轮成本只能靠两次累计相减。
+  it("本轮成本是累计值之差", () => {
+    const end = (costUsd: number): CcEvent => ({
+      kind: "turnEnd",
+      sessionId: "s1",
+      isError: false,
+      text: null,
+      usage: { output_tokens: 10 },
+      costUsd,
+      numTurns: 1,
+      durationMs: 1000,
+    });
+    const v = run([end(0.1), end(0.25)]);
+    expect(v.turns[0].costUsd).toBeCloseTo(0.1);
+    expect(v.turns[1].costUsd).toBeCloseTo(0.15);
+  });
+
+  it("CLI 没报成本时本轮成本是 null（不显示 $0.00 误导）", () => {
+    const v = run([
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: { output_tokens: 10 },
+        costUsd: null,
+        numTurns: 1,
+        durationMs: null,
+      },
+    ]);
+    expect(v.turns[0].costUsd).toBeNull();
+  });
+
+  /// 老流水（2026-10-26 之前落盘的）没有 `genMs`：token 账照记，速度显示 `—`。
+  it("没有 genMs 的老流水：token 照记，速度不可算", () => {
+    const v = run([
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: { output_tokens: 400 },
+        costUsd: 0.1,
+        numTurns: 1,
+        durationMs: 20_000,
+      },
+    ]);
+    expect(v.turns[0].output).toBe(400);
+    expect(v.turns[0].genMs).toBeNull();
+    expect(turnSpeed(v.turns[0].output, v.turns[0].genMs)).toBeNull();
+  });
+
+  // 🔴 这里刻意没有「progress 实时进度」的测试：那条链路已整条删除（理由见
+  // `proto.rs` 里 `message_stop` 分支的注释），只保留轮次结束后的统计。
+
+  /// 重放要能重建 `turns`：历史会话打开后同样看得到每一轮的用量。
+  it("replay 从事件流重建 turns", () => {
+    const events: CcEvent[] = [
+      { kind: "init", sessionId: "s1", cwd: null, model: null },
+      { kind: "userMessage", text: "一" },
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: { output_tokens: 100 },
+        costUsd: 0.05,
+        numTurns: 1,
+        durationMs: 5000,
+        genMs: 4000,
+      },
+      { kind: "userMessage", text: "二" },
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: { output_tokens: 200 },
+        costUsd: 0.09,
+        numTurns: 2,
+        durationMs: 6000,
+        genMs: 5000,
+      },
+    ];
+    const v = ccReducer(initialCcView, {
+      type: "replay",
+      events,
+      dropped: 0,
+      running: false,
+    });
+    expect(v.turns).toHaveLength(2);
+    expect(v.turns.map((t) => t.output)).toEqual([100, 200]);
+    expect(v.outputTokens).toBe(300);
   });
 
   /// modelUsage 是上下文余量条的唯一数据源：CLI 每轮都给**累计值** ⇒ 替换式

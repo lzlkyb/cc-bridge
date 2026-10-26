@@ -115,6 +115,7 @@ export function ConversationStream({
               resolved={view.resolved}
               running={view.running}
               marksByMsg={search.marksByMsg}
+              turns={view.turns}
               onRespond={onRespond}
               onForkMessage={onForkMessage}
             />

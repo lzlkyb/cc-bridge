@@ -18,6 +18,7 @@ import {
 } from "./ccEventTypes";
 import type { CcMessage, CcQuestion } from "./ccGuiTypes";
 import { readModelUsage, type CcModelUsage } from "./ccContextUsage";
+import { readUsageParts, type CcTurnStat } from "./ccTurnStat";
 
 export type CcView = {
   messages: CcMessage[];
@@ -31,7 +32,23 @@ export type CcView = {
   cwd: string | null;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * 输入侧的分项累计（会话级）。`inputTokens` 仍等于三者之和 —— 那是设置页
+   * 统计在用的旧口径，不改；这三项是给「每轮脚注」做明细用的。
+   *
+   * 🔴 为什么要拆：`cache_read_input_tokens` 每轮都会重报（实测一轮 89K），
+   * 只把它并进 input 累加，会话跑几轮后那个数字就虚高到没法读。
+   */
+  uncachedInputTokens: number;
+  cacheWriteTokens: number;
+  cacheReadTokens: number;
   costUsd: number;
+  /**
+   * 每一轮的用量与速度。**刻意不进 `messages`**：进消息流会连带影响会话内搜索、
+   * 导出、分叉切点这一整圈消费者，而它们都不该看见统计行。渲染时按
+   * `afterId` 把脚注插到对应消息之后。
+   */
+  turns: CcTurnStat[];
   /** 各模型累计用量与上下文窗口（`turnEnd.modelUsage` 解析结果）。空 = 还没有
    *  任何一轮带过这个字段（老流水 / 老版本 CLI）⇒ 界面只显示已用 token。 */
   modelUsage: Record<string, CcModelUsage>;
@@ -67,6 +84,9 @@ export type CcView = {
   error: string | null;
 };
 
+/** `turns` 只留最近这么多轮：它是渲染用的旁路数据，不是账本。 */
+const MAX_TURNS = 500;
+
 export const initialCcView: CcView = {
   messages: [],
   resolved: {},
@@ -76,7 +96,11 @@ export const initialCcView: CcView = {
   cwd: null,
   inputTokens: 0,
   outputTokens: 0,
+  uncachedInputTokens: 0,
+  cacheWriteTokens: 0,
+  cacheReadTokens: 0,
   costUsd: 0,
+  turns: [],
   modelUsage: {},
   retry: null,
   compactedTokens: null,
@@ -97,12 +121,15 @@ export type CcAction =
    *  与 `error` 分开 —— 错误横幅不该背「清 running」这个副作用（见 error 分支注释）。 */
   | { type: "sendAborted" };
 
-/** 从 `result.usage` 里挖 token 数。字段名是 API 原样的 snake_case。 */
+/**
+ * 从 `result.usage` 里挖出「输入侧总量」与 output。
+ *
+ * 保留这个薄封装只为一件事：`inputTokens` 的旧口径 = 未缓存 + 写缓存 + 读缓存
+ * （设置页的统计按它算）。分项在 `readUsageParts` 里，别在这里重复实现。
+ */
 function readUsage(usage: Record<string, unknown> | null): { input: number; output: number } {
-  if (!usage) return { input: 0, output: 0 };
-  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
-  const input = num(usage.input_tokens) + num(usage.cache_creation_input_tokens) + num(usage.cache_read_input_tokens);
-  return { input, output: num(usage.output_tokens) };
+  const p = readUsageParts(usage);
+  return { input: p.input + p.cacheWrite + p.cacheRead, output: p.output };
 }
 
 /** 下一条用户消息的 id。**不取时间戳**：重放时会变成另一串 id，React key 全变。 */
@@ -287,6 +314,8 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
                   status: event.isError ? "error" : "ok",
                   result: event.content,
                   isError: event.isError,
+                  // 老流水没有这个字段 ⇒ `undefined`，卡片不显示耗时。
+                  durationMs: event.durationMs ?? undefined,
                 },
               }
             : m,
@@ -371,6 +400,26 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
 
     case "turnEnd": {
       const usage = readUsage(event.usage);
+      const parts = readUsageParts(event.usage);
+      const costUsd = event.costUsd ?? view.costUsd;
+      // 本轮成本 = 两次累计值之差。CLI 给的是**会话累计**（替换式），相减才是
+      // 这一轮花的钱。`max(0, …)` 兜住累计被重置（换模型 / 中转重算）时的负数。
+      const turnCost =
+        typeof event.costUsd === "number" ? Math.max(0, event.costUsd - view.costUsd) : null;
+      const last = view.messages[view.messages.length - 1];
+      const stat: CcTurnStat = {
+        afterId: last?.id ?? "",
+        input: parts.input,
+        cacheWrite: parts.cacheWrite,
+        cacheRead: parts.cacheRead,
+        output: parts.output,
+        genMs: event.genMs ?? null,
+        durationMs: event.durationMs ?? null,
+        ttftMs: event.ttftMs ?? null,
+        apiMs: event.apiMs ?? null,
+        costUsd: turnCost,
+        isError: event.isError,
+      };
       return {
         ...view,
         running: false,
@@ -378,10 +427,16 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         sessionId: event.sessionId ?? view.sessionId,
         inputTokens: view.inputTokens + usage.input,
         outputTokens: view.outputTokens + usage.output,
+        uncachedInputTokens: view.uncachedInputTokens + parts.input,
+        cacheWriteTokens: view.cacheWriteTokens + parts.cacheWrite,
+        cacheReadTokens: view.cacheReadTokens + parts.cacheRead,
         // CLI 给的是 `total_cost_usd`（会话累计，Rust 优先取它）⇒ **替换式**，与下方
         // modelUsage 同一判据。累加会把第 2 轮显示成「第 1 轮 + 两条累计」的虚高值。
         // 没带（老流水）就保留上一次的，不清空。
-        costUsd: event.costUsd ?? view.costUsd,
+        costUsd,
+        // 只留最近若干轮：`turns` 是渲染用的旁路数据，不是审计账本，
+        // 长会话没必要为一个脚注无限增长。
+        turns: [...view.turns, stat].slice(-MAX_TURNS),
         // 每轮都带 ⇒ 替换式更新（CLI 给的是累计值，累加会翻倍）。没带（老流水）
         // 就保留上一次的，不清空——清空会让余量条在一轮之间闪烁消失。
         modelUsage: event.modelUsage ? readModelUsage(event.modelUsage) : view.modelUsage,
@@ -389,7 +444,6 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         stderr: event.isError && event.text ? [...view.stderr, event.text] : view.stderr,
       };
     }
-
     case "stderr": {
       // 去重只对「相邻且完全相同」的批次：CLI 退出时同一段 stderr 可能既作为事件
       // 来一次、又随 Exit 再来一次。全局去重会吞掉 CLI 在不同时刻合法重复的同一行

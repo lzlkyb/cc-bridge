@@ -26,7 +26,20 @@ export type CcEvent =
   | { kind: "text"; blockId: string; text: string; streaming: boolean }
   | { kind: "thinking"; blockId: string; text: string; streaming: boolean }
   | { kind: "toolUse"; toolUseId: string; name: string; input: Record<string, unknown> }
-  | { kind: "toolResult"; toolUseId: string; content: string; isError: boolean }
+  | {
+      kind: "toolResult";
+      toolUseId: string;
+      content: string;
+      isError: boolean;
+      /**
+       * 这个工具跑了多久（`toolUse` 到达 → `toolResult` 到达）。口径是**墙钟**，
+       * 含审批等待 —— 卡片要回答的是「我这一下等了多久」。
+       *
+       * 可选：2026-10-26 之前落盘的老流水没有这个字段，读回 `undefined`，
+       * 卡片退化成不显示耗时。
+       */
+      durationMs?: number | null;
+    }
   | {
       kind: "permissionAsk";
       requestId: string;
@@ -71,6 +84,17 @@ export type CcEvent =
       costUsd: number | null;
       numTurns: number | null;
       durationMs: number | null;
+      /**
+       * 纯生成时长（ms）：本轮各 API 请求「首个输出片段 → `message_stop`」之和。
+       * 算 token 速度只用它当分母（口径见 `lib/ccTurnStat.ts`）。
+       *
+       * 可选：老流水没有这个字段 ⇒ 速度显示 `—`，绝不拿 `durationMs` 顶替。
+       */
+      genMs?: number | null;
+      /** 首 token 延迟。 */
+      ttftMs?: number | null;
+      /** CLI 累计 API 时长。 */
+      apiMs?: number | null;
     }
   | { kind: "stderr"; lines: string[] }
   | { kind: "exit"; code: number | null };
