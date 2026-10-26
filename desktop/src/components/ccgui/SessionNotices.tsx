@@ -22,6 +22,7 @@ export function SessionNotices({
   compacted,
   background,
   onDismiss,
+  onDismissStderr,
 }: {
   /** `bypassPermissions` 的风险文案。没有就不渲染。 */
   risk: string | undefined;
@@ -54,6 +55,9 @@ export function SessionNotices({
   /** 正在跑的后台任务数。 */
   background: number;
   onDismiss: () => void;
+  /** 关掉 stderr 红条。**必须与 `onDismiss` 分开**：此前两者共用同一个回调，
+   *  那个 × 只清了前端 `error`，stderr 原封不动 —— 于是红条看起来「关不掉」。 */
+  onDismissStderr: () => void;
 }) {
   return (
     <>
@@ -107,7 +111,7 @@ export function SessionNotices({
         </Notice>
       )}
       {stderr.length > 0 && (
-        <Notice tone="error" onDismiss={onDismiss}>
+        <Notice tone="error" onDismiss={onDismissStderr}>
           <span className="font-mono">{stderr.join(" / ")}</span>
         </Notice>
       )}

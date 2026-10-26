@@ -49,6 +49,11 @@ export function cycleChatTypography(): ChatTypography {
   return next;
 }
 
+/** 直接置某一档（分段控件用）。同值不触发重渲。 */
+export function setChatTypography(next: ChatTypography): void {
+  if (next !== current) write(next);
+}
+
 export function useChatTypography(): ChatTypography {
   return useSyncExternalStore(
     (cb) => {

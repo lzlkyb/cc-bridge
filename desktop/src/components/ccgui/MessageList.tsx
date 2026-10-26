@@ -39,6 +39,7 @@ export function MessageList({
   turns,
   onRespond,
   onForkMessage,
+  onResend,
 }: {
   messages: CcMessage[];
   resolved: CcView["resolved"];
@@ -63,6 +64,13 @@ export function MessageList({
    * 下标决定摘要从哪里截断，文本是用户可能要改的那句话。
    */
   onForkMessage: (index: number, text: string) => void;
+  /**
+   * 在原地重发最后一条用户消息（不改文本、不另开会话）。
+   *
+   * 只给最后一条：重发中间那几条没有意义 —— 上下文早就走过去了，重发只会在
+   * 会话末尾多插一句孤立的提问。
+   */
+  onResend: (text: string) => void;
 }) {
   const { copy, isCopied } = useCopyFeedback();
   // TodoWrite 每次调用都发全量列表：只有**最新一张**展开成进度卡，历史更新
@@ -70,6 +78,10 @@ export function MessageList({
   let lastTodoIdx = -1;
   messages.forEach((m, i) => {
     if (m.kind === "tool" && toolKind(m.tool.name) === "todo") lastTodoIdx = i;
+  });
+  let lastUserIdx = -1;
+  messages.forEach((m, i) => {
+    if (m.kind === "user") lastUserIdx = i;
   });
   // 一轮的脚注跟在「那一轮最后一条消息」后面。同一 id 可能有多条（例如某轮
   // 一条消息都没产出、两轮都落在同一条上），所以是数组不是单值。
@@ -96,6 +108,7 @@ export function MessageList({
                   images={m.images}
                   marks={marks}
                   onFork={(text) => onForkMessage(index, text)}
+                  onResend={index === lastUserIdx ? () => onResend(m.text) : undefined}
                 />
               </div>
             );
@@ -110,14 +123,16 @@ export function MessageList({
                   <MessageText text={m.text} marks={marks} />
                 </div>
                 {/* 正文悬浮复制：工具卡 / 思考全文早有了，正文是补齐项（设计稿 C 期）。
-                    focus-visible 常显 —— 键盘用户没有 hover。 */}
+                    focus-visible 常显 —— 键盘用户没有 hover。
+                    🔴 `top-0` 不是 `-top-2`：负偏移会让按钮探出本节容器，压在上一条
+                    消息的正文上，hover 时看着像给上一条挂了操作。 */}
                 <button
                   type="button"
                   onClick={() => copy(`msg:${m.id}`, m.text)}
                   title={isCopied(`msg:${m.id}`) ? "已复制" : "复制全文"}
                   aria-label="复制全文"
                   aria-live="polite"
-                  className="absolute -top-2 right-0 flex h-6 items-center gap-1 rounded-md border border-border bg-card/95 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/msg:opacity-100"
+                  className="absolute right-0 top-0 flex h-6 items-center gap-1 rounded-md border border-border bg-card/95 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/msg:opacity-100"
                 >
                   <Icon name={isCopied(`msg:${m.id}`) ? "check" : "copy"} size={10} />
                   {isCopied(`msg:${m.id}`) ? "已复制" : "复制"}

@@ -453,6 +453,39 @@ describe("ccReducer", () => {
     expect(v.stderr).toEqual(["boom", "boom", "second"]);
   });
 
+  /// 实测过的真缺陷：启动失败的 stderr 会跨轮永久留在顶部，红条的 × 也关不掉它
+  /// （那个 × 只清前端 `error`）。修法是**两端都堵** —— 新进程起来时清空，
+  /// 外加一个真正清 stderr 的 dismiss。
+  it("init（新进程）清掉上一轮的 stderr", () => {
+    const v = run([
+      { kind: "stderr", lines: ["Failed to connect to api"] },
+      { kind: "init", sessionId: "s1", cwd: null, model: "opus" },
+    ]);
+    expect(v.stderr).toEqual([]);
+  });
+
+  it("stderrClear 只清 stderr，不碰前端 error", () => {
+    const dirty: CcView = {
+      ...initialCcView,
+      stderr: ["boom"],
+      error: "润色失败",
+    };
+    const v = ccReducer(dirty, { type: "stderrClear" });
+    expect(v.stderr).toEqual([]);
+    expect(v.error).toBe("润色失败");
+  });
+
+  /// 不设上限的话，同一个进程跑一整天、每轮吐一行 warning，state 里会躺着几百行，
+  /// 而每来一条都要重建整个视图。留 40 行够看一个完整堆栈。
+  it("stderr 只保留最近 40 行", () => {
+    const lines = Array.from({ length: 60 }, (_, i) => `warn ${i}`);
+    const v = run([{ kind: "stderr", lines }]);
+    expect(v.stderr).toHaveLength(40);
+    // 保留的是**最新**的（报错要看最近这次发生了什么）
+    expect(v.stderr[v.stderr.length - 1]).toBe("warn 59");
+    expect(v.stderr[0]).toBe("warn 20");
+  });
+
   it("sending 立刻标为运行中并清掉上轮错误", () => {
     const v = ccReducer({ ...initialCcView, error: "旧错", exitCode: 1 }, { type: "sending" });
     expect(v.running).toBe(true);

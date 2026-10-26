@@ -11,12 +11,15 @@ export function ComposerNotices({
   queueCount,
   queuePaused = false,
   onClearQueue,
+  onResumeQueue,
   slashReject,
 }: {
   queueCount: number;
-  /** 队首发送失败后自动发送已暂停：提示文案要改，否则「本轮结束后自动发送」是假话。 */
+  /** 自动发送已暂停（中断 / 队首发送失败）：提示文案要改，否则「本轮结束后自动发送」是假话。 */
   queuePaused?: boolean;
   onClearQueue: () => void;
+  /** 解除暂停、继续发。暂停时才有入口 —— 用户得能自己决定「那几句还算数」。 */
+  onResumeQueue?: () => void;
   /** 被闸门拦下的命令名。`null` = 不显示。 */
   slashReject: string | null;
 }) {
@@ -27,9 +30,18 @@ export function ComposerNotices({
           <Icon name="clock" size={11} className="shrink-0 opacity-70" />
           <span className="min-w-0 flex-1">
             {queuePaused
-              ? `排队的第一条发送失败，已暂停自动发送（仍保留 ${queueCount} 条）· 排除问题后再发一条即可继续，或清空`
+              ? `已暂停自动发送 · ${queueCount} 条还留着（中断或发送失败后才这样，内容没丢）`
               : `已排队 ${queueCount} 条 · 本轮结束后按顺序自动发送`}
           </span>
+          {queuePaused && onResumeQueue && (
+            <button
+              type="button"
+              onClick={onResumeQueue}
+              className="shrink-0 rounded border border-border px-1.5 py-[1px] text-[11px] transition-colors hover:border-primary/40 hover:text-foreground"
+            >
+              继续
+            </button>
+          )}
           <button
             type="button"
             onClick={onClearQueue}

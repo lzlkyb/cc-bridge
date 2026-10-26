@@ -87,6 +87,16 @@ export type CcView = {
 /** `turns` 只留最近这么多轮：它是渲染用的旁路数据，不是账本。 */
 const MAX_TURNS = 500;
 
+/** stderr 保留多少行。界面只显示最后两行，但多留一些是为了展开时还能看到一个
+ *  完整的报错（启动失败的堆栈十来行）。**不无限累积**：同一个进程跑一整天，
+ *  CLI 每轮吐一行 warning 就是几百行躺在 state 里，而且每条都会让整个视图重建。 */
+const MAX_STDERR_LINES = 40;
+
+/** 截到尾部 N 行（保留**最新**的：报错要看的是最近这次发生了什么）。 */
+function capStderr(lines: string[]): string[] {
+  return lines.length <= MAX_STDERR_LINES ? lines : lines.slice(-MAX_STDERR_LINES);
+}
+
 export const initialCcView: CcView = {
   messages: [],
   resolved: {},
@@ -119,7 +129,11 @@ export type CcAction =
   | { type: "sending" }
   /** 一次发送没能送达（invoke 失败 / 进程没起来）：撤回 `sending` 置上的乐观 running。
    *  与 `error` 分开 —— 错误横幅不该背「清 running」这个副作用（见 error 分支注释）。 */
-  | { type: "sendAborted" };
+  | { type: "sendAborted" }
+  /** 关掉 stderr 红条。与 `error` 分开：两者的来源不同、生命周期也不同
+   *  （stderr 会跨轮累积，`error` 是这一次操作失败），共用一个 dismiss
+   *  会让「关掉报错」看起来把 CLI 的错误也一起关了，实际没有。 */
+  | { type: "stderrClear" };
 
 /**
  * 从 `result.usage` 里挖出「输入侧总量」与 output。
@@ -246,6 +260,10 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         cwd: event.cwd ?? view.cwd,
         // 新一轮起来了，上一轮的退出码不再有意义。
         exitCode: null,
+        // 同理：新进程的 stderr 与上一个进程无关。不清的话，启动失败留下的
+        // 红条会一直挂在会话顶部 —— 用户改好配置重试成功了，界面还在报旧错，
+        // 而那条红条的 × 关不掉它（此前只清前端 error）。这是实测过的真缺陷。
+        stderr: [],
         // 重开成功 ⇒ 上一轮那次「进程没了」的提示必须撤掉，否则横幅会一直挂着。
         processExited: false,
         retry: null,
@@ -444,7 +462,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         // 就保留上一次的，不清空——清空会让余量条在一轮之间闪烁消失。
         modelUsage: event.modelUsage ? readModelUsage(event.modelUsage) : view.modelUsage,
         // `is_error` 时 `text` 往往是给人看的错误摘要，放 stderr 通道统一展示。
-        stderr: event.isError && event.text ? [...view.stderr, event.text] : view.stderr,
+        stderr: event.isError && event.text ? capStderr([...view.stderr, event.text]) : view.stderr,
       };
     }
     case "stderr": {
@@ -454,7 +472,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       const batch = event.lines.join("\n");
       const tail = view.stderr.slice(-event.lines.length).join("\n");
       if (batch !== "" && batch === tail) return view;
-      return { ...view, stderr: [...view.stderr, ...event.lines] };
+      return { ...view, stderr: capStderr([...view.stderr, ...event.lines]) };
     }
 
     case "exit":
@@ -509,6 +527,9 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
       return { ...view, error: action.message };
     case "sendAborted":
       return { ...view, running: false };
+    case "stderrClear":
+      // 只清 stderr，不碰 `error`：用户点的那个 × 属于哪条红条，就只关哪一条。
+      return view.stderr.length === 0 ? view : { ...view, stderr: [] };
     default:
       return view;
   }

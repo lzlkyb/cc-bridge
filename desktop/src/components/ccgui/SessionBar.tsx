@@ -7,6 +7,7 @@ import { useCcApprovalAudit } from "../../hooks/useCcApprovalAudit";
 import { Icon, type IconName } from "../ui/icon";
 import { ApprovalAuditPanel } from "./ApprovalAuditPanel";
 import { ContextMeter } from "./ContextMeter";
+import { CwdChip } from "./CwdChip";
 import { HistoryPanel } from "./HistoryPanel";
 import { ModelPicker } from "./ModelPicker";
 
@@ -41,6 +42,8 @@ function SessionBarImpl({
   mode,
   onModeChange,
   onModelChange,
+  onCwdChange,
+  isRemote,
   onSwitchTerminal,
   onNewSession,
   newSessionHint,
@@ -59,6 +62,10 @@ function SessionBarImpl({
   onModeChange: (mode: CcPermissionMode) => void;
   /** 换下一轮的模型。空串 = 跟随 CLI 默认。 */
   onModelChange: (model: string) => void;
+  /** 换工作目录（下一轮生效；说过话的会话会另起一条）。 */
+  onCwdChange: (cwd: string) => void;
+  /** 远端目标：目录选择器不提供本机「浏览」。 */
+  isRemote: boolean;
   onSwitchTerminal: () => void;
   onNewSession: () => void;
   /** 新对话的快捷键标签（`Ctrl+N` / `⌘N`）。由 CcGuiTab 从 status 里取平台后拼好传下。 */
@@ -113,9 +120,12 @@ function SessionBarImpl({
           ))}
         </select>
       </span>
-      <Chip icon="folder" title={session.cwd || "继承 claude 的当前目录"}>
-        {session.cwd || "默认目录"}
-      </Chip>
+      <CwdChip
+        cwd={session.cwd}
+        isRemote={isRemote}
+        hasMessages={messages.some((m) => m.kind === "user")}
+        onChange={onCwdChange}
+      />
       {/* 分支未知时不占位：空白 chip 比没有 chip 更像 bug。 */}
       {session.branch && <Chip icon="gitBranch">{session.branch}</Chip>}
 
@@ -145,7 +155,13 @@ function SessionBarImpl({
         {/* 上下文计量表（余量条 + 构成面板入口）：批 4-1。独立成组件是因为
             这一行已经贴到体量门禁，而它与会话条其余部分没有状态往来。 */}
         <ContextMeter bar={bar} tokens={tokens} sessionId={session.sessionId} running={session.running} />
-        <span className="font-mono text-[11px] text-muted-foreground">${session.costUsd.toFixed(2)}</span>
+        {/* 没花钱的会话不占位 —— 与分支 chip 的「未知不占位」同一条规矩：
+            一排 `$0.00` 只是噪音，而它恰好是最容易被误读成「已经计费了」的那种噪音。 */}
+        {session.costUsd > 0 && (
+          <span className="font-mono text-[11px] text-muted-foreground">
+            ${session.costUsd.toFixed(2)}
+          </span>
+        )}
 
         <span data-cc-seg className="flex items-center gap-px rounded-lg border border-border bg-muted/50 p-[2px]">
           {MODES.map((m) => {
@@ -167,6 +183,11 @@ function SessionBarImpl({
             );
           })}
         </span>
+
+        {/* 🔴 一条竖线把「这一行在说什么」劈成两半：左边是**运行参数**（模型 / 上下文 /
+            花费 / 权限，都是「这一轮怎么跑」），右边是**动作**（改动 / 历史 / 新对话 /
+            终端）。此前十来个元素等距平铺，读的人得逐个辨认才发现它们不是一类东西。 */}
+        <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
 
         {/* 变更集入口：没有改动就不占位（同分支 chip 的「未知不占位」）。
             带数字是因为「改了没有、改了几处」是这一行最值得知道的事。 */}

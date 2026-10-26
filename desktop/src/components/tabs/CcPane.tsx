@@ -10,7 +10,7 @@ import { useCcPolish } from "../../hooks/useCcPolish";
 import { useCcStreamScroll } from "../../hooks/useCcStreamScroll";
 import { useCcTargets } from "../../hooks/useCcTargets";
 import type { CcHistoryRow, CcRestoreReq } from "../../lib/ccEventTypes";
-import { makeForkSeed, type CcForkSeed } from "../../lib/ccFork";
+import { paneForkSeed, type CcForkSeed } from "../../lib/ccFork";
 import { derivePaneMeta, type CcPaneMeta } from "../../lib/ccPaneMeta";
 import { toBarSession } from "../../lib/ccSessionBar";
 import { shortcutLabel } from "../../lib/platform";
@@ -204,29 +204,21 @@ export function CcPane({
   }, [paneKey, metaBase, session.ready, session.sessionIdRef, onMeta, rowId]);
 
   /**
-   * 在这条消息处编辑重发 / 分叉。
-   *
-   * 摘要按**下标**截断（不吃这条消息本身），文本用用户改过的那份 —— 两者合起来
-   * 才是「从这条消息重跑」。真正的会话切换在宿主（`useCcPaneList.forkFrom`）。
-   *
-   * 放在 `metaBase` 之后：标题要从它取（新会话的提示里写清「从哪条分出来的」）。
+   * 在这条消息处分叉重发（切换会话在宿主 `useCcPaneList.forkFrom`）；标题取自 `metaBase`。
+   * 🔴 依赖只列 `view.messages`/`view.sessionId` 而不是整个 `view`：流式每 tick 都换 `view`。
    */
   const onForkMessage = useCallback(
-    (index: number, text: string) => {
+    (index: number, text: string) =>
       onForkSession(
-        makeForkSeed({
-          messages: view.messages,
+        paneForkSeed(
+          {
+            messages: view.messages, sessionId: view.sessionId, title: metaBase.title,
+            connectionId: targetId, cwd: cwd.trim(), model, permissionMode: mode,
+          },
           index,
           text,
-          sourceSessionId: view.sessionId,
-          sourceTitle: metaBase.title,
-          connectionId: targetId,
-          cwd: cwd.trim(),
-          model,
-          permissionMode: mode,
-        }),
-      );
-    },
+        ),
+      ),
     [view.messages, view.sessionId, metaBase.title, targetId, cwd, model, mode, onForkSession],
   );
 
@@ -253,6 +245,7 @@ export function CcPane({
         targets={targets}
         targetId={targetId}
         onTargetChange={setTargetId}
+        onCwdChange={setCwdPersist}
         mode={mode}
         onModeChange={setMode}
         onModelChange={setModel}
@@ -263,6 +256,7 @@ export function CcPane({
         onOpenHistory={onOpenHistory}
         onJumpTo={jumpTo}
         onDismissError={session.clearError}
+        onDismissStderr={session.clearStderr}
       />
 
       <ConversationStream
@@ -276,6 +270,8 @@ export function CcPane({
           void session.respond(id, decision, reason, answers)
         }
         onForkMessage={onForkMessage}
+        // 原地重发不带图（原图不落盘，历史里只有缩略图），气泡上的 title 已说明。
+        onResend={(text) => void session.start(text, [])}
         cwd={cwd}
         onCwdChange={setCwdPersist}
         isRemote={Boolean(targetId)}
@@ -286,11 +282,15 @@ export function CcPane({
         onSend={session.start}
         running={view.running || session.busy}
         onInterrupt={() => void session.interrupt()}
-        placeholder={session.pending.length > 0 ? "先处理上面的审批，再继续…" : "给 CC 发消息…"}
+        // 待批准时**能打字、能排队**，旧文案「先处理上面的审批，再继续」是错的。
+        placeholder={
+          session.pending.length > 0 ? "本轮在等批准，现在发的会排队，批准后自动发…" : "给 CC 发消息…"
+        }
         sendHint={shortcutLabel(platform, "Enter")}
         queueCount={session.queue.length}
         queuePaused={session.queuePaused}
         onClearQueue={session.clearQueue}
+        onResumeQueue={session.resumeQueue}
         onPolish={onPolish}
         mentionSource={{ connectionId: targetId, cwd }}
         prefill={prefill}

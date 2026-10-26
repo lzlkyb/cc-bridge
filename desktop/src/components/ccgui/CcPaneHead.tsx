@@ -17,6 +17,7 @@ export function CcPaneHead({
   targets,
   targetId,
   onTargetChange,
+  onCwdChange,
   mode,
   onModeChange,
   onModelChange,
@@ -27,12 +28,15 @@ export function CcPaneHead({
   onOpenHistory,
   onJumpTo,
   onDismissError,
+  onDismissStderr,
 }: {
   bar: CcSession;
   view: CcView;
   targets: { id: string; label: string }[];
   targetId: string;
   onTargetChange: (id: string) => void;
+  /** 换工作目录（会话条上的目录 chip）。当前值走 `bar.cwd`，不由这里传。 */
+  onCwdChange: (cwd: string) => void;
   mode: CcPermissionMode;
   onModeChange: (mode: CcPermissionMode) => void;
   onModelChange: (model: string) => void;
@@ -44,6 +48,8 @@ export function CcPaneHead({
   onOpenHistory: (row: CcHistoryRow) => void;
   onJumpTo: (messageId: string) => void;
   onDismissError: () => void;
+  /** 关 stderr 红条（与 `onDismissError` 分开，见 `SessionNotices`）。 */
+  onDismissStderr: () => void;
 }) {
   const risk = PERMISSION_MODE_RISK[mode];
   // 只留最近两行：stderr 动辄几十行，全铺出来会把消息区挤到看不见。
@@ -57,6 +63,8 @@ export function CcPaneHead({
         targets={targets}
         targetId={targetId}
         onTargetChange={onTargetChange}
+        onCwdChange={onCwdChange}
+        isRemote={Boolean(targetId)}
         mode={mode}
         onModeChange={onModeChange}
         onModelChange={onModelChange}
@@ -80,6 +88,7 @@ export function CcPaneHead({
         compacted={view.compactedTokens}
         background={view.backgroundTasks}
         onDismiss={onDismissError}
+        onDismissStderr={onDismissStderr}
       />
     </>
   );

@@ -28,6 +28,7 @@ export function ConversationStream({
   onPickPrompt,
   onRespond,
   onForkMessage,
+  onResend,
   cwd,
   onCwdChange,
   isRemote,
@@ -48,6 +49,8 @@ export function ConversationStream({
   ) => void;
   /** 编辑重发 / 从此处分叉（3-3）。见 `MessageList`。 */
   onForkMessage: (index: number, text: string) => void;
+  /** 在原地重发最后一条用户消息。见 `MessageList`。 */
+  onResend: (text: string) => void;
   cwd: string;
   onCwdChange: (v: string) => void;
   isRemote: boolean;
@@ -136,6 +139,7 @@ export function ConversationStream({
               turns={view.turns}
               onRespond={onRespond}
               onForkMessage={onForkMessage}
+              onResend={onResend}
             />
           )}
         </div>

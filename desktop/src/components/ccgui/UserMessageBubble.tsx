@@ -27,6 +27,7 @@ function UserMessageBubbleImpl({
   images,
   marks,
   onFork,
+  onResend,
 }: {
   text: string;
   /** 这条消息附的图（缩略图 data URL）。缺省 = 纯文本。 */
@@ -35,6 +36,14 @@ function UserMessageBubbleImpl({
   marks?: CcMark[];
   /** 用（可能是编辑后的）文本开一条新会话说出去。 */
   onFork: (text: string) => void;
+  /**
+   * 用同样的内容**在这条会话里**再发一次。只有最后一条用户消息会收到它。
+   *
+   * 与「从此处分叉」是两件事：分叉另开一条会话（原会话不动、模型看不到截断点
+   * 之后的改动），重发就在原地再问一遍 —— 上一轮因为网络 / 进程崩溃没收尾时，
+   * 用户要的是后者，不是多开一个 pane。
+   */
+  onResend?: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(text);
@@ -57,6 +66,23 @@ function UserMessageBubbleImpl({
           )}
         </div>
         <div className="flex items-center gap-2 pr-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+          {onResend && (
+            <button
+              type="button"
+              onClick={onResend}
+              disabled={!text.trim()}
+              title={
+                !text.trim()
+                  ? "这条消息没有文字，没有可重发的内容"
+                  : hasImages
+                    ? "在会话里再发一次同样的文字（图片不跟着重发：原图不落盘）"
+                    : "用同样的内容在这条会话里再发一次"
+              }
+              className="text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              重发
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {

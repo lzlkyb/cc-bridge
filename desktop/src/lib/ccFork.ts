@@ -83,6 +83,46 @@ export function makeForkSeed(input: {
   };
 }
 
+/**
+ * 从「这条 pane 现在是什么状态」组装分叉种子。
+ *
+ * 与 `makeForkSeed` 的分工：那个决定**怎么拼**，这个决定**从哪取**。分开的理由是
+ * 调用方（`CcPane`）就在 JSX 旁边，把十行字段字面量摊在那里，最难看的不是长度，
+ * 而是「这几个值必须一起取对」这条约束没有名字、也没法单测。
+ *
+ * 🔴 入参刻意**拆开** messages / sessionId，而不是整个 `CcView`：调用方要用它们
+ * 做 `useCallback` 的依赖。传整个 view 的话，流式输出每来一个 tick 依赖就变一次，
+ * 分叉回调跟着换身份 —— `MessageList` → `UserMessageBubble` 的 memo 全部失效，
+ * 历史气泡每 tick 重渲染一遍。
+ */
+export function paneForkSeed(
+  pane: {
+    messages: CcMessage[];
+    /** CC 自己的 session id（`view.sessionId`）。 */
+    sessionId: string | null;
+    /** 当前标题（新会话的提示里写「从哪条分出来的」）。 */
+    title: string;
+    connectionId: string;
+    cwd: string;
+    model: string;
+    permissionMode: CcPermissionMode;
+  },
+  index: number,
+  text: string,
+): CcForkSeed {
+  return makeForkSeed({
+    messages: pane.messages,
+    index,
+    text,
+    sourceSessionId: pane.sessionId,
+    sourceTitle: pane.title,
+    connectionId: pane.connectionId,
+    cwd: pane.cwd,
+    model: pane.model,
+    permissionMode: pane.permissionMode,
+  });
+}
+
 /** 摘要里一条消息的形态。工具调用 / 思考 / 审批不进摘要（理由见模块注释）。 */
 type DigestLine = { role: "用户" | "助手"; body: string };
 

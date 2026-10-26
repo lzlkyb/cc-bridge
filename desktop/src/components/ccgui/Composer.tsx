@@ -1,9 +1,11 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { toast } from "../ui/toast";
 import { classifySlash } from "../../lib/ccSlash";
+import { isSendKey, useSendKey } from "../../lib/ccSendKey";
 import { isImeComposing } from "../../lib/utils";
 import type { CcImage } from "../../lib/ccImage";
 import { useCcMention } from "../../hooks/useCcMention";
+import { useCcDropImages } from "../../hooks/useCcDropImages";
 import { useComposerPolish } from "../../hooks/useComposerPolish";
 import { useCcSlashInput } from "../../hooks/useCcSlashInput";
 import {
@@ -49,6 +51,7 @@ function ComposerImpl({
   queueCount,
   queuePaused,
   onClearQueue,
+  onResumeQueue,
   onPolish,
   mentionSource,
   prefill,
@@ -74,6 +77,8 @@ function ComposerImpl({
   /** 队首发送失败、自动发送已暂停（见 `useCcSession`）。 */
   queuePaused?: boolean;
   onClearQueue: () => void;
+  /** 解除暂停、继续发（暂停时提示条上的「继续」）。 */
+  onResumeQueue?: () => void;
   /** @引用补全的目标与本会话目录（远端目标列远端目录，见 useCcMention）。 */
   mentionSource: { connectionId: string; cwd: string };
   /**
@@ -88,6 +93,8 @@ function ComposerImpl({
   prefill?: { text: string; nonce: number } | null;
 }) {
   const [value, setValue] = useState("");
+  /** 发送键偏好（Enter / Ctrl+Enter），全局记忆。 */
+  const sendKey = useSendKey();
   const areaRef = useRef<HTMLTextAreaElement>(null);
   /** 待发图片区的把手（用 ref 而不是把附件状态提到这里，理由见 ComposerAttachments）。 */
   const attachRef = useRef<ComposerAttachHandle>(null);
@@ -105,6 +112,9 @@ function ComposerImpl({
     connectionId: mentionSource.connectionId,
     cwd: mentionSource.cwd,
   });
+
+  /** 拖图进输入区（与粘贴同一条通道，见 `useCcDropImages`）。 */
+  const drop = useCcDropImages((files) => attachRef.current?.add(files));
 
   // 自动增高：内容变化时重算，上限 MAX_TEXTAREA_H。
   // 挂在 effect 里而不是 onChange 里：粘贴、程序回填（润色）也走同一条路。
@@ -182,14 +192,25 @@ function ComposerImpl({
         queueCount={queueCount}
         queuePaused={queuePaused}
         onClearQueue={onClearQueue}
+        onResumeQueue={onResumeQueue}
         slashReject={slash.reject}
       />
       {/* data-cc-composer：玻璃下 composer 要压过 .ui-card 的 reading 档，改 floating
           （唯一「必须实心」的输入位）；classic 下不加任何样式。 */}
       <div
         data-cc-composer
-        className="ui-card rounded-xl border border-border bg-card shadow-card transition-colors focus-within:border-primary/50"
+        {...drop.handlers}
+        className={`ui-card relative rounded-xl border bg-card shadow-card transition-colors focus-within:border-primary/50 ${
+          // 拖拽中把整块描成虚线主色：不提示的话用户不知道「这里能放」，
+          // 而拖到别处会被浏览器当成「用这个文件打开新页面」。
+          drop.over ? "border-dashed border-primary/60 ring-2 ring-primary/15" : "border-border"
+        }`}
       >
+        {drop.over && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-card/85 text-[12px] font-medium text-primary">
+            松手添加图片
+          </div>
+        )}
         <ComposerAttachments ref={attachRef} onHasImages={setHasImages} />
         <textarea
           ref={areaRef}
@@ -218,8 +239,10 @@ function ComposerImpl({
             // @引用面板开着时方向键 / Enter / Tab / Esc 归它（焦点在 textarea，见 MentionPanel）。
             if (mention.open && mention.handleKey(e)) return;
             if (slash.handleKey(e, () => void send())) return;
-            // Windows 风格窗口：Ctrl+Enter 发送（不是 ⌘）。
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            // 发送键按偏好（默认 Enter 发送、Shift+Enter 换行，见 lib/ccSendKey）。
+            // 🔴 判据是纯函数：`Shift+Enter` 在**两档**下都必须换行 —— 写反一次，
+            //    用户每敲一个换行就发出一条消息。
+            if (isSendKey(sendKey, e)) {
               e.preventDefault();
               void send();
             }

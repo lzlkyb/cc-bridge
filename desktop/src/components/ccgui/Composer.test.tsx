@@ -167,12 +167,24 @@ it("Ctrl+Enter 照旧发送普通文本", async () => {
   expect(onSend).toHaveBeenCalledWith("帮我看下这个 bug", []);
 });
 
-it("普通文本不弹面板，裸 Enter 不触发发送（换行是浏览器原生行为）", async () => {
+/// 默认发送键是 Enter（主流），换行留给 Shift+Enter。旧实现写死 Ctrl+Enter 且没有
+/// 设置入口，而「回车打出一句半截的话」是每天都会发生的事。
+it("默认 Enter 发送；Shift+Enter 只换行、不发", async () => {
   await render();
   await type("你好");
   expect(panelText()).toBe("");
-  await key("Enter");
+  await key("Enter", { shiftKey: true });
   expect(onSend).not.toHaveBeenCalled();
+  await key("Enter");
+  expect(onSend).toHaveBeenCalledWith("你好", []);
+});
+
+/// 老习惯的人会按 Ctrl+Enter：两档都能发，不冲突（Ctrl+Enter 不含 Shift）。
+it("Ctrl+Enter 在默认档下也发送", async () => {
+  await render();
+  await type("再来一句");
+  await key("Enter", { ctrlKey: true });
+  expect(onSend).toHaveBeenCalledWith("再来一句", []);
 });
 
 /* ── @引用补全（设计稿《对话页-@引用与排版偏好》）── */

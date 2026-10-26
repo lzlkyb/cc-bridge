@@ -12,10 +12,13 @@ export type QueuedMessage = { text: string; images: CcImage[] };
  * 渲染都换身份，而它是 `CcGuiTab` 探测 effect 的依赖，重订阅的代价白付。
  * 所以这里对外暴露的操作函数都是稳定引用。
  *
- * `paused`：队首那条发送失败后暂停自动冲刷。不暂停的话：失败 ⇒ `running` 回 false ⇒
- * flush 立刻发下一条，在 CLI 没装 / 模型名不对这类「每条都会失败」的情形下把整队
- * 消息逐条发错、逐条丢掉。恢复条件：用户清空队列 / 中断，或者下一条消息真的发出去了
- * （说明故障已排除）。
+ * `paused`：暂停自动冲刷。两种情况会置上：
+ *  1. 队首那条发送失败 —— 不暂停的话：失败 ⇒ `running` 回 false ⇒ flush 立刻发下一条，
+ *     在 CLI 没装 / 模型名不对这类「每条都会失败」的情形下把整队消息逐条发错、逐条丢掉；
+ *  2. 用户点了中断 —— 队列**不丢**（中断是「停这一轮」，不是「把我想好的下一句也扔掉」），
+ *     但也不能放任自动冲刷，否则「中断」会变成「跳过这一轮、马上开始下一轮」。
+ *
+ * 恢复条件：用户点「继续」/ 清空队列，或者下一条消息真的发出去了（说明故障已排除）。
  */
 export function useCcSendQueue() {
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
@@ -30,6 +33,8 @@ export function useCcSendQueue() {
     setPaused(false);
   }, []);
   const resume = useCallback(() => setPaused(false), []);
+  /** 暂停自动冲刷（中断用）。队列原样保留。 */
+  const pause = useCallback(() => setPaused(true), []);
   /** 取走队首（出队）。队空返回 `undefined`，不动状态。 */
   const take = useCallback((): QueuedMessage | undefined => {
     const next = queueRef.current[0];
@@ -45,7 +50,7 @@ export function useCcSendQueue() {
     setPaused(true);
   }, []);
 
-  return { queue, paused, enqueue, clear, resume, take, putBack };
+  return { queue, paused, enqueue, clear, resume, pause, take, putBack };
 }
 
 /**

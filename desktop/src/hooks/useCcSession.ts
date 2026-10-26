@@ -56,7 +56,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   const [busy, setBusy] = useState(false);
   const [probe, setProbe] = useState<CcProbe | null>(null);
   // 待发队列（「运行中继续打字」的落点）：状态、暂停与冲刷见 `useCcSendQueue`。
-  const { queue, paused: queuePaused, enqueue, clear: clearQueue, resume, take, putBack } =
+  const { queue, paused: queuePaused, enqueue, clear: clearQueue, resume, pause, take, putBack } =
     useCcSendQueue();
   /** `view.running` 的镜像，理由同 `queueRef`。 */
   const runningRef = useRef(false);
@@ -206,17 +206,24 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   );
 
   const interrupt = useCallback(async () => {
-    // 队列跟着一起清：用户打断这一轮，通常也意味着「别再把刚才那些发出去」。
-    // 只杀进程不清队列的话，下一轮会自动把用户想拦下的消息发出去。
-    clearQueue();
+    // 🔴 不动队列，只**暂停**它。
+    //
+    // 旧行为是 `clearQueue()`，理由是「打断这一轮通常也意味着别把刚才那些发出去」——
+    // 但那是替用户猜，而且猜错时后果最重：他排了三条想好的话，点一下中断全没了，
+    // 而界面上只在 tooltip 里写过这件事（等于没说）。
+    // 反过来「什么都不做」也不行：`running` 一翻 false，`useCcQueueFlush` 会立刻
+    // 发下一条，「中断」就变成了「跳过这一轮、马上开始下一轮」。所以暂停而不丢弃。
+    pause();
     try {
       await invoke<boolean>("cc_interrupt", { sessionId: sessionIdRef.current });
     } catch (e) {
       dispatch({ type: "error", message: String(e) });
     }
-  }, [sessionIdRef, clearQueue]);
+  }, [sessionIdRef, pause]);
 
   const clearError = useCallback(() => dispatch({ type: "error", message: null }), []);
+  /** 关掉 stderr 红条。与 `clearError` 分开：那个 × 只关它自己那条。 */
+  const clearStderr = useCallback(() => dispatch({ type: "stderrClear" }), []);
 
   /**
    * 把一条外部错误报进对话流（润色失败这类「页面自己的操作」出的错）。
@@ -264,12 +271,15 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     interrupt,
     openHistory,
     clearError,
+    clearStderr,
     reportError,
     /** 已排队还没发的消息。界面上显示条数，也可一键清空。 */
     queue,
     queuePaused,
     // useCallback 包住：Composer 是 memo 组件，内联箭头会让它每次渲染都重渲。
     clearQueue,
+    /** 解除暂停、继续按顺序自动发送（中断或发送失败后）。 */
+    resumeQueue: resume,
     /** 还卡着等用户决定的审批 id。 */
     pending: pendingApprovals(view),
   };

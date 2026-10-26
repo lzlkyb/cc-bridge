@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildForkDigest, buildForkPrompt, orderForks, FORK_DIGEST_MAX } from "./ccFork";
+import {
+  buildForkDigest,
+  buildForkPrompt,
+  makeForkSeed,
+  paneForkSeed,
+  orderForks,
+  FORK_DIGEST_MAX,
+} from "./ccFork";
 import type { CcMessage } from "./ccGuiTypes";
 
 const user = (text: string): CcMessage => ({ kind: "user", id: `u${text}`, text, at: "" });
@@ -78,6 +85,60 @@ describe("buildForkPrompt", () => {
 
   it("没有前缀时原样发，不硬塞「以下是之前的对话」", () => {
     expect(buildForkPrompt({ digest: "", omitted: 0, text: "  你好  " })).toBe("你好");
+  });
+});
+
+describe("paneForkSeed", () => {
+  const msgs = [user("第一句"), assistant("答一"), user("第二句")];
+
+  it("把 pane 的字段摆到种子上：sessionId→来源、title→标题，其余原样带过去", () => {
+    const seed = paneForkSeed(
+      {
+        messages: msgs,
+        sessionId: "sess-42",
+        title: "改 readme",
+        connectionId: "conn-1",
+        cwd: "/repo",
+        model: "opus",
+        permissionMode: "acceptEdits",
+      },
+      2,
+      "换个说法",
+    );
+    expect(seed).toEqual(
+      makeForkSeed({
+        messages: msgs,
+        index: 2,
+        text: "换个说法",
+        sourceSessionId: "sess-42",
+        sourceTitle: "改 readme",
+        connectionId: "conn-1",
+        cwd: "/repo",
+        model: "opus",
+        permissionMode: "acceptEdits",
+      }),
+    );
+    // 摘要只到截断点之前：这条自己不进摘要，也不带后面没有的东西。
+    expect(seed.digest).toContain("第一句");
+    expect(seed.digest).not.toContain("第二句");
+  });
+
+  it("还没起过进程（sessionId 为空）时不编造来源 id", () => {
+    const seed = paneForkSeed(
+      {
+        messages: msgs,
+        sessionId: null,
+        title: "",
+        connectionId: "",
+        cwd: "",
+        model: "",
+        permissionMode: "default",
+      },
+      0,
+      "  ",
+    );
+    expect(seed.sourceSessionId).toBeNull();
+    expect(seed.text).toBe("");
   });
 });
 
