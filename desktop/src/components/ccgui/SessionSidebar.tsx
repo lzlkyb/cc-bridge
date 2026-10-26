@@ -210,7 +210,11 @@ export function SessionSidebar({
                 <div key={g.label}>
                   <div className="sticky top-0 z-[1] flex h-[26px] items-center gap-1.5 bg-card/95 px-1.5 text-[11px] text-muted-foreground backdrop-blur-[2px]">
                     <span className="flex-1 truncate font-medium">{g.label}</span>
-                    <span className="tabular-nums">{g.rows.filter(live).length} 在跑</span>
+                    {/* 一个组里一条都不在跑时，「0 在跑」是纯噪音 —— 每个分组头都写一遍
+                        同样的 0，读起来像状态坏了。只有真有在跑的才占位。 */}
+                    {g.rows.filter(live).length > 0 && (
+                      <span className="tabular-nums">{g.rows.filter(live).length} 在跑</span>
+                    )}
                   </div>
                   {g.rows.map((r) => (
                     <SessionRow

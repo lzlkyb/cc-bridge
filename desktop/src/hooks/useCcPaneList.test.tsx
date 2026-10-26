@@ -28,6 +28,8 @@ const meta = (sessionId: number | null, title = "会话"): CcPaneMeta => ({
   connectionId: "",
   targetLabel: "本机",
   cwd: "",
+  askId: null,
+  askExpiresInSec: 0,
 });
 
 beforeEach(async () => {

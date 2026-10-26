@@ -80,6 +80,15 @@ export type CcPaneMeta = {
    * 而那时恢复才刚开始。必须有这个显式位。
    */
   restoring: boolean;
+  /**
+   * 未决那条请求的 id 与超时秒数 —— 侧栏行用它跑倒计时。
+   *
+   * 只给「是谁、多久」，**不给「还剩多久」**：剩余时间由渲染层按挂载时刻往下数，
+   * 在这里算的话，每次渲染（流式输出每 tick 都会重算 meta）都会把剩余时间重置一遍，
+   * 倒计时就永远停在 60。
+   */
+  askId: string | null;
+  askExpiresInSec: number;
 };
 
 /** 标题上限。240px 侧栏减掉状态点与内边距后大约放得下 13~14 个汉字。 */
@@ -171,6 +180,10 @@ export function derivePaneMeta(input: {
     targetLabel,
     cwd: cwd?.trim() ?? "",
     restoring,
+    // 与 `state` 同一优先级取同一条（approval 先于 question），否则会出现
+    // 「行上写待批准、倒计时却在数另一条提问」的错位。
+    askId: (approval ?? question)?.id ?? null,
+    askExpiresInSec: (approval ?? question)?.expiresInSec ?? 0,
   };
 }
 

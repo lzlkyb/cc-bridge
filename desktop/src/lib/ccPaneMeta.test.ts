@@ -199,6 +199,8 @@ describe("conflictWith 同目录并发", () => {
     targetLabel: "本机",
     cwd: "",
     restoring: false,
+    askId: null,
+    askExpiresInSec: 0,
     ...patch,
   });
 

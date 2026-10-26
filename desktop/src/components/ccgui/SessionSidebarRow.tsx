@@ -3,6 +3,7 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Icon } from "../ui/icon";
 import type { CcPaneMeta, CcPaneState } from "../../lib/ccPaneMeta";
 import type { CcPaneEntry } from "../../hooks/useCcPaneList";
+import { useExpiryCountdown } from "../../hooks/useExpiryCountdown";
 import { SessionRowMenu } from "./SessionRowMenu";
 
 /** 侧栏一行（`CcPaneEntry` + 派生出来的四段文字）。 */
@@ -75,6 +76,20 @@ export function SessionRow({
   // 生成中 / 等批准 / 等选择的会话：一次误点 × 就会中断一轮任务或作废一条待答请求，关前必须确认。
   // 空闲 / 已断开的直接关（内容都在历史里，没有什么可丢）。
   const busyState = row.state === "run" || row.state === "ask" || row.state === "wait";
+  /**
+   * 等批准 / 等选择时的剩余秒数。
+   *
+   * 🔴 这是这一行唯一需要「每秒重画一次」的东西，而它解决的是一个真实的静默失败：
+   *    审批 60 秒不处理 CLI 就自动拒绝，用户切到别的会话后完全看不到这条正在到期。
+   *    倒计时挂在行上（不是把剩余秒数从 meta 传下来）：meta 每次渲染都重算，
+   *    在那里算会永远显示 60。
+   */
+  const pending = row.state === "ask" || row.state === "wait";
+  const left = useExpiryCountdown(
+    row.meta?.askExpiresInSec ?? 0,
+    row.meta?.askId ?? undefined,
+    pending,
+  );
   return (
     <>
     <div
@@ -118,6 +133,10 @@ export function SessionRow({
         </div>
         <div className="mt-px truncate text-[11px] leading-[1.4] text-muted-foreground tabular-nums">
           {row.detail}
+          {/* 剩 20 秒内转警示色：到点就自动拒绝，这是最后一次能救回来的窗口。 */}
+          {pending && left > 0 && (
+            <span className={left <= 20 ? " text-destructive-ink" : ""}> · {left}s</span>
+          )}
         </div>
       </div>
       <div className="flex shrink-0 items-center">
