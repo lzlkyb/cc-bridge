@@ -4,6 +4,7 @@ import { isOutsideDismiss } from "../../lib/utils";
 import { revertKey } from "../../hooks/useCcApprovalAudit";
 import type { ApprovalFileChange, ApprovalGroup, ApprovalPoint } from "../../lib/ccApprovalAudit";
 import { Icon, type IconName } from "../ui/icon";
+import { ApprovalFileRow } from "./ApprovalFileRow";
 
 /**
  * 「本会话改动」浮层（批 4-2）：按**审批点**分组，不是按文件聚合。
@@ -74,83 +75,17 @@ function Row({
     <>
       {point.files.map((f) => {
         const key = revertKey(point.key, f.path);
-        const done = reverted[key] === true;
-        const busy = busyKey === key;
-        const canRevert = f.revert !== "none" && !done;
         return (
-          <div
+          <ApprovalFileRow
             key={key}
-            className="grid grid-cols-[14px_1fr_auto] items-start gap-x-[7px] border-b border-border/60 px-3 py-[6px] last:border-0"
-          >
-            <span title={v.title} className="mt-[3px] shrink-0">
-              <Icon name={v.icon} size={11} className={v.cls} />
-            </span>
-            <button
-              type="button"
-              onClick={() => point.jumpId && onJump(point.jumpId)}
-              title={`${f.path}\n点击跳到流里那一次调用`}
-              className="flex min-w-0 items-center gap-1.5 text-left"
-            >
-              <span className="shrink-0 font-mono text-[11px] text-muted-foreground">
-                {point.toolName}
-              </span>
-              <span className="min-w-0 truncate font-mono text-[12px] text-foreground">
-                {f.label}
-              </span>
-              {f.added > 0 && (
-                <span className="shrink-0 font-mono text-[11px] text-success-ink">+{f.added}</span>
-              )}
-              {f.removed > 0 && (
-                <span className="shrink-0 font-mono text-[11px] text-destructive-ink">
-                  −{f.removed}
-                </span>
-              )}
-              {/* 批量写只对第一个文件有内容，± 是它的；其余不显示数字而不是显示 0 */}
-              {f.created && (
-                <span className="shrink-0 rounded bg-success/12 px-1 text-[10px] text-success-ink">
-                  新建
-                </span>
-              )}
-            </button>
-            {done ? (
-              <span className="flex items-center gap-1 text-[10.5px] text-success-ink">
-                <Icon name="check" size={10} className="shrink-0" />
-                已撤销
-              </span>
-            ) : f.revert !== "none" ? (
-              <button
-                type="button"
-                onClick={() => onRevert(point, f)}
-                disabled={!canRevert || busy}
-                title={
-                  f.revert === "backup"
-                    ? "用审计里的备份还原到这次改动之前"
-                    : f.revert === "patch"
-                      ? "反向应用这次编辑（内容已变则整体拒绝）"
-                      : "删除这次新建的文件（内容被改过就不删）"
-                }
-                className="flex h-5 items-center gap-1 rounded border border-border px-1.5 text-[10.5px] text-muted-foreground transition-colors hover:border-warning/50 hover:text-warning-ink disabled:opacity-40"
-              >
-                {busy ? (
-                  <Icon name="spinner" size={10} className="animate-spin" />
-                ) : (
-                  <Icon name="restore" size={10} />
-                )}
-                撤销
-              </button>
-            ) : (
-              <span className="flex items-center gap-1 text-[10.5px] text-muted-foreground/80">
-                <Icon name="alertTriangle" size={10} className="shrink-0" />
-                不可撤销
-              </span>
-            )}
-            {/* 不可撤销必须说清「为什么」—— 一个点了没反应的按钮比没有按钮更糟 */}
-            {f.revert === "none" && f.reason && (
-              <p className="col-start-2 col-end-4 mt-[2px] text-[10.5px] leading-[1.55] text-muted-foreground">
-                {f.reason}
-              </p>
-            )}
-          </div>
+            point={point}
+            file={f}
+            verdict={v}
+            busyKey={busyKey}
+            done={reverted[key] === true}
+            onRevert={onRevert}
+            onJump={onJump}
+          />
         );
       })}
     </>

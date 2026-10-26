@@ -217,6 +217,51 @@ function resultSaysCreated(result: string | undefined): boolean | null {
   return null;
 }
 
+/** Edit / MultiEdit 的入参 → 补丁列表（按执行顺序；单次与批量两种形状统一到这里）。 */
+function editPatches(input: Record<string, unknown>): EditPatch[] {
+  const raw = input.edits;
+  if (Array.isArray(raw) && raw.length > 0) {
+    return raw.map((e) => {
+      const o = (e ?? {}) as Record<string, unknown>;
+      return { oldString: asString(o.old_string), newString: asString(o.new_string) };
+    });
+  }
+  return [{ oldString: asString(input.old_string), newString: asString(input.new_string) }];
+}
+
+/**
+ * 展示用内容：把「改动前 / 改动后」的原文带出去，面板就地展开看真 diff。
+ *
+ * 🔴 与 `classify` 分开是有意的：**能不能撤销**（`revert`）和**能不能看**（内容）
+ *    是两件事。混在一条链路里会让「撤不了」看起来像「也看不到」——而事实恰恰相反：
+ *    内置 Edit 撤不了的情况（入参残缺）仍然有原文可看。
+ *
+ * `index` 只对桥的批量写有意义（`files: [{path, content}]` 按入参顺序对齐）。
+ * 显式 `base64` 编码的写入不带内容：那是二进制，按文本展示只会是乱码。
+ */
+function contentOf(
+  tool: string,
+  input: Record<string, unknown>,
+  index: number,
+): Pick<ApprovalFileChange, "patches" | "writtenContent"> {
+  if (BUILTIN_EDIT.has(tool)) {
+    const patches = editPatches(input);
+    return patches.some((p) => p.oldString || p.newString) ? { patches } : {};
+  }
+  if (BUILTIN_WRITE.has(tool)) {
+    const content = asString(input.content);
+    return content ? { writtenContent: content } : {};
+  }
+  if (tool === "write_files") {
+    const list = input.files;
+    const one = Array.isArray(list) ? (list[index] as Record<string, unknown> | undefined) : undefined;
+    if (asString(one?.encoding) === "base64") return {};
+    const content = asString(one?.content);
+    return content ? { writtenContent: content } : {};
+  }
+  return {};
+}
+
 /** 判定一个文件的可还原手段 + 落好要用的数据。 */
 function classify(
   tool: string,
@@ -229,14 +274,7 @@ function classify(
     return { revert: "backup", backupPath: backup.backupPath };
   }
   if (BUILTIN_EDIT.has(tool)) {
-    const raw = input.edits;
-    const patches: EditPatch[] =
-      Array.isArray(raw) && raw.length > 0
-        ? raw.map((e) => {
-            const o = (e ?? {}) as Record<string, unknown>;
-            return { oldString: asString(o.old_string), newString: asString(o.new_string) };
-          })
-        : [{ oldString: asString(input.old_string), newString: asString(input.new_string) }];
+    const patches = editPatches(input);
     // 有一侧是空的就没法反向拼回去（Write 形态的 Edit、或入参残缺）。
     if (patches.every((p) => p.newString !== "") && patches.some((p) => p.oldString !== "")) {
       return { revert: "patch", patches };
@@ -373,6 +411,8 @@ export function buildApprovalAudit(
         removed: i === 0 ? stat.removed : 0,
         created: created === true,
         ...cls,
+        // 展示内容放最后：撤销分支里那份可能因为条件不齐而缺席，这里补齐。
+        ...contentOf(tool.name, tool.input, i),
       };
     });
 

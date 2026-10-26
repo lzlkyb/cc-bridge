@@ -237,6 +237,61 @@ describe("buildApprovalAudit", () => {
     expect(approvalStat(groups)).toEqual({ points: 1, files: 2, revertable: 1, denied: 0 });
     expect(revertableFiles(groups[0].points[0])).toHaveLength(1);
   });
+
+  /* ── 展示内容（优化轨道 A）：能不能撤销 ≠ 能不能看 ────────────────── */
+
+  it("撤不了的编辑仍然带着原文，面板照样能展开看", () => {
+    const msgs: CcMessage[] = [
+      user("u1"),
+      toolMsg("t1", "Edit", { file_path: "/proj/a.ts", old_string: "", new_string: "只有新内容" }),
+    ];
+    const f = buildApprovalAudit(msgs, {}, [], CWD)[0].points[0].files[0];
+    expect(f.revert).toBe("none");
+    expect(f.reason).toContain("没有可反向恢复的原文");
+    // 撤销没有回头路，但「改了什么」照样给出
+    expect(f.patches).toEqual([{ oldString: "", newString: "只有新内容" }]);
+  });
+
+  it("批量写的每个文件都带上自己那份内容，按入参顺序对齐", () => {
+    const msgs: CcMessage[] = [
+      user("u1"),
+      toolMsg("t1", "write_files", {
+        files: [
+          { path: "src/a.ts", content: "AAA" },
+          { path: "src/b.ts", content: "BBB" },
+        ],
+      }),
+    ];
+    const files = buildApprovalAudit(msgs, {}, [], CWD)[0].points[0].files;
+    expect(files[0].writtenContent).toBe("AAA");
+    expect(files[1].writtenContent).toBe("BBB");
+  });
+
+  it("base64 写入不带文本内容：二进制按文本展示只会是乱码", () => {
+    const msgs: CcMessage[] = [
+      user("u1"),
+      toolMsg("t1", "write_files", {
+        files: [{ path: "src/logo.png", content: "iVBORw0KGgo=", encoding: "base64" }],
+      }),
+    ];
+    const f = buildApprovalAudit(msgs, {}, [], CWD)[0].points[0].files[0];
+    expect(f.writtenContent).toBeUndefined();
+  });
+
+  it("Write 覆盖已有文件也带着写入内容（只是没有旧内容可对比）", () => {
+    const msgs: CcMessage[] = [
+      user("u1"),
+      toolMsg(
+        "t1",
+        "Write",
+        { file_path: "/proj/a.ts", content: "新内容" },
+        "The file /proj/a.ts has been updated",
+      ),
+    ];
+    const f = buildApprovalAudit(msgs, {}, [], CWD)[0].points[0].files[0];
+    expect(f.revert).toBe("none");
+    expect(f.writtenContent).toBe("新内容");
+  });
 });
 
 describe("pathKey", () => {

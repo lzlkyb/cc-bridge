@@ -205,17 +205,13 @@ function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcM
       {open && hasBody && (
         <div className="pb-1.5 pl-[30px] pr-1">
           {(kind === "edit" || kind === "write") && (
-            <>
-              {edits > 1 && (
-                <p className="mb-1 text-[10.5px] text-muted-foreground">
-                  共 {edits} 处修改，diff 按执行顺序拼接（⋯ 行是分隔）
-                </p>
-              )}
-              <DiffBlock
-                oldText={kind === "write" ? "" : (pair?.oldText ?? "")}
-                newText={kind === "write" ? asString(tool.input.content) : (pair?.newText ?? "")}
-              />
-            </>
+            /* 「共 N 处修改」与视图切换都在 DiffBlock 顶栏里 —— 它们是同一份 diff
+               的元信息，挂在卡片外面会被 diff 自身的边框切成两块（设计稿场景一）。 */
+            <DiffBlock
+              oldText={kind === "write" ? "" : (pair?.oldText ?? "")}
+              newText={kind === "write" ? asString(tool.input.content) : (pair?.newText ?? "")}
+              edits={edits}
+            />
           )}
           {kind === "bash" && outs.bash && (
             <div className="flex flex-col gap-1.5">

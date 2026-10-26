@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { compactDiff, computeLineDiff } from "./ccDiff";
+import {
+  compactDiff,
+  computeLineDiff,
+  computeWordDiff,
+  pairDiffRows,
+  type DiffLine,
+  type WordSeg,
+} from "./ccDiff";
 
 const stats = (d: ReturnType<typeof computeLineDiff>) => `${d.added}/${d.removed}`;
 
@@ -95,5 +102,111 @@ describe("compactDiff", () => {
     const compact = compactDiff(computeLineDiff(text, text), 3);
     expect(compact.length).toBe(3);
     expect(compact[1]).toEqual({ kind: "gap", count: 28 });
+  });
+});
+
+const joined = (segs: WordSeg[]) => segs.map((s) => s.text).join("");
+const changedOf = (segs: WordSeg[]) => segs.filter((s) => s.changed).map((s) => s.text);
+
+describe("computeWordDiff", () => {
+  it("只标出改动的词，前后文的空格一并保留原样", () => {
+    const d = computeWordDiff("const w = 1;", "const width = 1;");
+    expect(d.oldSegs).toEqual([
+      { text: "const ", changed: false },
+      { text: "w", changed: true },
+      { text: " = 1;", changed: false },
+    ]);
+    expect(d.newSegs).toEqual([
+      { text: "const ", changed: false },
+      { text: "width", changed: true },
+      { text: " = 1;", changed: false },
+    ]);
+  });
+
+  it("拼回去必须与原文逐字符相等（定案 3 的前提：不吞空格与标点）", () => {
+    const cases: Array<[string, string]> = [
+      ["const a = b.slice(0, 1);  // 取首段", "const a = b.slice(0, 2);  // 取首段"],
+      ["\tif (x) { return; }", "\tif (y) { return; }"],
+      ["", "x"],
+      ["abc", ""],
+      ["  ", "    "],
+      ["中文注释", "中文注解"],
+    ];
+    for (const [o, n] of cases) {
+      const d = computeWordDiff(o, n);
+      expect(joined(d.oldSegs)).toBe(o);
+      expect(joined(d.newSegs)).toBe(n);
+    }
+  });
+
+  it("中文按字切：换一个字就只高亮那一个字", () => {
+    const d = computeWordDiff("// 计算旧行号与新行号", "// 计算旧行号和新行号");
+    expect(changedOf(d.oldSegs)).toEqual(["与"]);
+    expect(changedOf(d.newSegs)).toEqual(["和"]);
+  });
+
+  it("空行没有词序列：空的那侧给空片段，另一侧整行标 changed", () => {
+    const d = computeWordDiff("", "x");
+    expect(d.oldSegs).toEqual([]);
+    expect(d.newSegs).toEqual([{ text: "x", changed: true }]);
+  });
+
+  it("毫无公共词时两侧整行标 changed", () => {
+    const d = computeWordDiff("abc", "xyz");
+    expect(d.oldSegs).toEqual([{ text: "abc", changed: true }]);
+    expect(d.newSegs).toEqual([{ text: "xyz", changed: true }]);
+  });
+});
+
+describe("pairDiffRows", () => {
+  it("ctx 独行、gap 透传", () => {
+    const ctx: DiffLine = { kind: "ctx", text: "a", oldNo: 1, newNo: 1 };
+    const hunks = pairDiffRows([ctx, { kind: "gap", count: 3 }]);
+    expect(hunks).toEqual([{ kind: "ctx", line: ctx }, { kind: "gap", count: 3 }]);
+  });
+
+  it("相邻 del+add 配对并给出词级片段", () => {
+    const d = computeLineDiff("a\nold\nb", "a\nnew\nb");
+    const hunks = pairDiffRows(compactDiff(d, 2));
+    const change = hunks.find((h) => h.kind === "change");
+    if (!change || change.kind !== "change") throw new Error("没有 change 段");
+    expect(change.pairs.length).toBe(1);
+    expect(change.pairs[0].old?.text).toBe("old");
+    expect(change.pairs[0].new?.text).toBe("new");
+    expect(change.pairs[0].words).toBeDefined();
+  });
+
+  it("del 后面没有紧跟 add ⇒ 单边行，不算词级（跨行不配对）", () => {
+    const del: DiffLine = { kind: "del", text: "x", oldNo: 1, newNo: null };
+    expect(pairDiffRows([del])).toEqual([
+      { kind: "change", pairs: [{ old: del, new: null }] },
+    ]);
+  });
+
+  it("ad 单独出现（前面没有 del）也是单边行", () => {
+    const add: DiffLine = { kind: "add", text: "y", oldNo: null, newNo: 1 };
+    const hunks = pairDiffRows([add]);
+    if (hunks[0].kind !== "change") throw new Error("不是 change 段");
+    expect(hunks[0].pairs).toEqual([{ old: null, new: add }]);
+  });
+
+  it("多行 del 块与 add 块按位置配对，多出来的成单边行", () => {
+    const d1: DiffLine = { kind: "del", text: "d1", oldNo: 1, newNo: null };
+    const d2: DiffLine = { kind: "del", text: "d2", oldNo: 2, newNo: null };
+    const a1: DiffLine = { kind: "add", text: "a1", oldNo: null, newNo: 1 };
+    const hunks = pairDiffRows([d1, d2, a1]);
+    if (hunks[0].kind !== "change") throw new Error("不是 change 段");
+    expect(hunks[0].pairs.map((p) => [p.old?.text ?? null, p.new?.text ?? null])).toEqual([
+      ["d1", "a1"],
+      ["d2", null],
+    ]);
+  });
+
+  it("空行不配对：位置照配，但不做词级", () => {
+    const del: DiffLine = { kind: "del", text: "", oldNo: 1, newNo: null };
+    const add: DiffLine = { kind: "add", text: "x", oldNo: null, newNo: 1 };
+    const hunks = pairDiffRows([del, add]);
+    if (hunks[0].kind !== "change") throw new Error("不是 change 段");
+    expect(hunks[0].pairs[0].words).toBeUndefined();
   });
 });
