@@ -80,8 +80,28 @@ export type CcView = {
    * `start()` 收尸后重起），界面不说的话用户只会觉得「刚才那句没反应」。
    */
   processExited: boolean;
-  /** 前端侧错误（invoke 失败、探测失败）。与 stderr 分开，来源不同。 */
-  error: string | null;
+  /**
+   * 用户按停的落点：每个元素是一条消息 id，标记插在**那条消息之后**。
+   * **空串** = 按停时一条消息都还没产出，此时落点在时间轴上位于所有消息之前
+   * （渲染层把它挂在流开头，不是流尾 —— 挂流尾的话，等下一轮回复进来，
+   * 「已停止」会跑到新回复下面，读起来像新那一轮被停了）。
+   *
+   * 为什么不塞进 `messages` 当一种新 kind：搜索、导出、分叉切点都在遍历消息数组，
+   * 多一种「标记」会让它们各自长出一个排除分支，而它们本不该知道这件事。与
+   * `turns` 同一个理由 —— 挂在视图上，渲染时按锚点插进去。
+   *
+   * ⚠️ 只记「用户主动停止」。`/clear` 的清空线**不在这里**：那是从消息内容本身
+   *    （首 token 等于 `/clear`）推导出来的，所以连历史重放也自动有。
+   */
+  stops: string[];
+  /**
+   * 前端侧错误（invoke 失败、探测失败、润色失败）。与 `stderr` 分开，来源不同。
+   *
+   * 🔴 是**列表**不是单值：此前只有一个槽，连续两件事出错时后一条会把前一条顶掉，
+   *    而先发生的那条往往更重要（探测失败会让后面一整套操作都失败）。渲染层
+   *    每条一个 ×，各关各的。
+   */
+  errors: string[];
 };
 
 /** `turns` 只留最近这么多轮：它是渲染用的旁路数据，不是账本。 */
@@ -95,6 +115,22 @@ const MAX_STDERR_LINES = 40;
 /** 截到尾部 N 行（保留**最新**的：报错要看的是最近这次发生了什么）。 */
 function capStderr(lines: string[]): string[] {
   return lines.length <= MAX_STDERR_LINES ? lines : lines.slice(-MAX_STDERR_LINES);
+}
+
+/** 前端错误最多留几条。不设上限的话，一个坏配置会让每轮都失败一次，
+ *  横幅一叠十几条，把消息区挤到看不见。 */
+const MAX_ERRORS = 5;
+
+/**
+ * 超限时**头尾各留**：第一条（根因）+ 最新的几条。
+ *
+ * 只留最新的会把根因挤掉 —— 一次探测失败会让之后每一步都失败一条，
+ * 而那些后续错误的文案（「审批回写失败」「润色失败」）解释不了任何事情。
+ * 只留最旧的又会冻住横幅：后面新发生的事一条都进不来。
+ */
+function capErrors(list: string[]): string[] {
+  if (list.length <= MAX_ERRORS) return list;
+  return [list[0], ...list.slice(-(MAX_ERRORS - 1))];
 }
 
 export const initialCcView: CcView = {
@@ -119,17 +155,33 @@ export const initialCcView: CcView = {
   dropped: 0,
   exitCode: null,
   processExited: false,
-  error: null,
+  stops: [],
+  errors: [],
 };
 
 export type CcAction =
   | { type: "event"; event: CcEvent }
   | { type: "replay"; events: CcEvent[]; dropped: number; running: boolean }
   | { type: "error"; message: string | null }
+  /** 关掉第 `index` 条前端错误（每条红条自己的 ×）。 */
+  | { type: "errorDismiss"; index: number }
   | { type: "sending" }
   /** 一次发送没能送达（invoke 失败 / 进程没起来）：撤回 `sending` 置上的乐观 running。
    *  与 `error` 分开 —— 错误横幅不该背「清 running」这个副作用（见 error 分支注释）。 */
   | { type: "sendAborted" }
+  /**
+   * 用户按了「停止」。**不是** `error`、也不是 `exit`：
+   *
+   * 🔴 `cc_interrupt` 走的是杀进程（`session.rs::kill` —— `start_kill` + `wait` +
+   *    等读线程排干），所以 `Exit` 事件**一定会来**。而此刻 `running` 仍为真，
+   *    `exit` 分支的判据 `processExited: view.running` 会把主动停止读成
+   *    「跑到一半没了」，在顶部挂一条「claude 进程在生成中退出了（崩溃或被中断）」。
+   *    用户按的是停止，不该被告知出了事故。
+   *
+   * 所以停止必须先落一步：置 `running: false`，紧接着来的 `Exit` 自然判成
+   * 「正常收尾」；同时把落点记进 `stops`。
+   */
+  | { type: "interrupted" }
   /** 关掉 stderr 红条。与 `error` 分开：两者的来源不同、生命周期也不同
    *  （stderr 会跨轮累积，`error` 是这一次操作失败），共用一个 dismiss
    *  会让「关掉报错」看起来把 CLI 的错误也一起关了，实际没有。 */
@@ -266,6 +318,13 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         stderr: [],
         // 重开成功 ⇒ 上一轮那次「进程没了」的提示必须撤掉，否则横幅会一直挂着。
         processExited: false,
+        // 🔴 `stops` **不在这里清**。此前清过，理由是「新进程 = 新的会话链」——
+        //    但停止点的锚是消息 id，消息数组并不会因为换进程而重建，指针依然有效。
+        //    而「停止」这个动作本身就会杀进程（`cc_interrupt`），所以下一轮**必然**
+        //    起一个新进程、必然来一条 `init` ⇒ 清空意味着「已停止」那条线在用户
+        //    发出下一句的瞬间消失。翻回历史时只能看到半句话，正是这条线要拦的事。
+        // 压缩是上一个进程里发生过的事；新进程的上下文是重新加载的。
+        compactedTokens: null,
         retry: null,
       };
 
@@ -503,8 +562,8 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
     case "replay": {
       // 🔴 必须从**空状态**重放。从当前状态往上叠会把 token / cost 累加两遍，
       // 而账目类数字错了没人能一眼看出来，只会在月底对账时炸。
-      // `error` 是前端侧的（探测失败之类），不属于事件流，保留。
-      let next: CcView = { ...initialCcView, error: view.error };
+      // 前端侧错误（探测失败之类）不属于事件流，保留 —— 重放的是历史，不是这次操作。
+      let next: CcView = { ...initialCcView, errors: view.errors };
       for (const e of action.events) next = applyEvent(next, e);
       // 🔴 `processExited` 必须归零：这里重放的是**库里那条会话的历史**，不是本次运行。
       // 历史流水末尾那条 `Exit` 只说明上次结束得不干净（崩溃 / 强杀），把它显示成
@@ -518,20 +577,73 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
       };
     }
     case "sending":
-      return { ...view, running: true, error: null, retry: null, exitCode: null };
+      // `compactedTokens` 在这里清：那条提示描述的是**刚刚那一轮**发生过的事，
+      // 只该活到「下一轮开始」。不清的话它会在会话顶部一直挂到进程重启 ——
+      // 文案是「更早的细节模型不再逐字记得」，常驻读起来像「现在仍处于压缩态」。
+      // 前端错误一并清：它是「上一次操作没成功」，用户已经重新发了一轮，留着只会
+      // 在流里叠成噪音（旧实现只有一个槽，也是这么清的）。
+      return {
+        ...view,
+        running: true,
+        errors: [],
+        retry: null,
+        exitCode: null,
+        compactedTokens: null,
+      };
     case "error":
       // 🔴 不动 `running`：错误横幅与轮次是两件正交的事 —— 运行中润色失败、审批
       // 回写失败、用户点掉横幅都会走这里，顺手清 running 会把进行中的一轮伪装成
       // 空闲，队列会在假空闲窗口里把下一条发出去、被后端拒收 ⇒ 消息丢失。
       // 乐观发送失败要撤 running 用 `sendAborted`（它明确对应「这一轮没起来」）。
-      return { ...view, error: action.message };
+      //
+      // `message: null` = 清空整列（旧语义的「关掉横幅」）；单条关闭走 `errorDismiss`。
+      if (action.message === null) {
+        return view.errors.length === 0 ? view : { ...view, errors: [] };
+      }
+      return { ...view, errors: capErrors([...view.errors, action.message]) };
+    case "errorDismiss": {
+      // 只摘掉这一条：其它红条各有各的原因，一起消失会让用户以为都修好了。
+      if (!view.errors[action.index]) return view;
+      return { ...view, errors: view.errors.filter((_, i) => i !== action.index) };
+    }
     case "sendAborted":
       return { ...view, running: false };
+    case "interrupted": {
+      // 用户主动停：这一轮不会再有 `turnEnd`，界面自己收尾（与 `exit` 同一套清理）。
+      // `processExited` 显式压掉是本 action 存在的**主要理由** —— 紧接着到达的
+      // `Exit` 会拿 `running` 当判据，而它此刻若还是 true，就会把「我按了停止」
+      // 记成「跑到一半崩了」。
+      const settled = settleOpen(view);
+      const at = anchorAfter(settled);
+      return {
+        ...view,
+        messages: settled,
+        running: false,
+        retry: null,
+        processExited: false,
+        // 只在真有一轮在跑时落点：连点两下停止不该多出一条标记。
+        // 同一锚点也只留一条：停止后队列推着下一轮起来又停，锚点会重复。
+        stops: view.running ? [...view.stops.filter((s) => s !== at), at] : view.stops,
+      };
+    }
     case "stderrClear":
-      // 只清 stderr，不碰 `error`：用户点的那个 × 属于哪条红条，就只关哪一条。
+      // 只清 stderr，不碰前端 `errors`：用户点的那个 × 属于哪条红条，就只关哪一条。
       return view.stderr.length === 0 ? view : { ...view, stderr: [] };
-    default:
+    default: {
+      /**
+       * 🔴 穷尽性检查，别删。
+       *
+       * `CcAction` 是**封闭**联合，上面每个 `type` 都必须有一个分支。此前这里是
+       * `default: return view`，于是新增一个动作却忘了写分支时 tsc 一声不响，表现
+       * 是「按钮点了没反应」—— 上一批加 `interrupted` 与 `errorDismiss` 时各漏过
+       * 一次，两次都是靠人翻代码才发现的。
+       *
+       * 把这行 `never` 赋值留着：多出一个没处理的动作，这里就编译报错。
+       */
+      const missing: never = action;
+      void missing;
       return view;
+    }
   }
 }
 
@@ -568,6 +680,21 @@ function settleOpen(view: CcView): CcMessage[] {
     out.push(m);
   }
   return changed ? out : view.messages;
+}
+
+/**
+ * 停止点锚在哪条消息之后。
+ *
+ * 空串 = 按停时一条消息都没有（刚发出去就停且消息还没落地），标记挂到**流开头**
+ * —— 那个落点在时间轴上位于所有消息之前（`MessageList` 里 `stopSet.has("")` 渲染
+ * 在最前面）。挂流尾的话，等下一轮回复进来，这条「已停止」会跑到新回复下面，
+ * 读起来像「刚才那一轮（已经成功的那轮）被停了」。
+ *
+ * 入参必须是 `settleOpen` 处理**之后**的消息：它会把不可能再有下文的审批卡
+ * 摘掉，拿旧数组算锚点会指向一条已经不渲染的 id，标记就永远不出现。
+ */
+function anchorAfter(messages: CcMessage[]): string {
+  return messages[messages.length - 1]?.id ?? "";
 }
 
 /** 有没有卡在等用户决定的审批。composer 据此提示「先处理上面的审批」。 */

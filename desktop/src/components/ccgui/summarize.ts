@@ -10,7 +10,7 @@
 import { plainOccurrences } from "../../lib/ccHighlight";
 import { markdownLeaves } from "../../lib/ccMarkdown";
 import type { ChatVerbosity } from "../../lib/chatVerbosity";
-import type { CcMessage } from "../../lib/ccGuiTypes";
+import type { CcMessage, CcToolCall } from "../../lib/ccGuiTypes";
 
 export type ToolKind = "edit" | "write" | "bash" | "read" | "todo" | "other";
 
@@ -135,8 +135,11 @@ export function convSegments(m: CcMessage): string[] {
     case "thinking":
       return [thinkingTitle(m.text)];
     case "tool": {
-      const label = toolArgLabel(m.tool.input);
-      return label ? [label] : [];
+      // 两段：seg 0 = 行上的参数摘要，seg 1 = 展开区正文（`toolBodyText`）。
+      // 口径与 `ToolCard` 一一对应。此前只索引 seg 0，于是「那个报错在哪一轮」
+      // 根本搜不到 —— 而那是最常搜的东西。
+      // 空串也占位：seg 下标是渲染层的契约，塌掉一段会让后面的段整体前移。
+      return [toolArgLabel(m.tool.input), toolBodyText(m.tool) ?? ""];
     }
     default:
       return []; // 审批 / 已裁决行不入搜索口径
@@ -259,6 +262,25 @@ export const TOOL_TEXT_LIMIT = 16_000;
 export function clampToolText(text: string): { text: string; clipped: boolean } {
   if (text.length <= TOOL_TEXT_LIMIT) return { text, clipped: false };
   return { text: text.slice(0, TOOL_TEXT_LIMIT), clipped: true };
+}
+
+/**
+ * 工具卡展开区里的那段正文（**搜索索引与渲染共用这一份**）。
+ *
+ * 🔴 必须与 `ToolCard` 渲染的完全一致，包括同一处 `clampToolText` 截断：
+ *    搜索命中带的是「段内字符区间」，渲染的那份但凡比索引短一截，高亮就会
+ *    落在别的字上。所以两边都从这里取，而不是各写一遍 `JSON.stringify`。
+ *
+ * `edit` / `write` 返回 `null`：它们展开的是行级 diff，那东西经过裁剪
+ * （`compactDiff`）与行号重排，字符区间根本对不上源文本。
+ */
+export function toolBodyText(tool: CcToolCall): string | null {
+  const kind = toolKind(tool.name);
+  if (kind === "bash") return tool.result ? clampToolText(tool.result).text : null;
+  if (kind === "read" || kind === "other") {
+    return clampToolText(JSON.stringify(tool.input, null, 2)).text;
+  }
+  return null;
 }
 
 /**

@@ -186,14 +186,11 @@ export function CcPane({
     });
   }, [view, session.pending, targetId, targets, cwd, session.ready, titleOverride, session.restored]);
   /**
-   * 库里那一行的行号，给侧栏历史区对账用。
-   *
-   * 三个来源：「从历史打开」的 entry 自带（不用等后端）；「接着上次聊」的等
-   * `cc_restore` 返回；「会话条的历史按钮接管进当前 pane」的等 `cc_history_open`
-   * 返回（`adoptedRowId`，`restored` 那时已被清掉）。新会话是 `null`（没落过盘）。
-   *
-   * 有它，历史区在载入完成的那一刻就能把这条摘掉 —— 只靠 `view.sessionId`
-   * 会慢几百毫秒（`Init` 事件才带），那段时间用户能点出重复的一条。
+   * 库里那一行的行号，给侧栏历史区对账用。三个来源：「从历史打开」的 entry
+   * 自带；「接着上次聊」的等 `cc_restore`；「历史按钮接管进当前 pane」的等
+   * `cc_history_open`（`adoptedRowId`，那时 `restored` 已被清）。新会话为 `null`。
+   * 有它历史区在载入完成那一刻就能把这条摘掉 —— 只靠 `view.sessionId` 会慢
+   * 几百毫秒（`Init` 才带），那段时间用户能点出重复的一条。
    */
   const rowId =
     restore.kind === "row"
@@ -242,6 +239,7 @@ export function CcPane({
       <CcPaneHead
         bar={bar}
         view={view}
+        title={metaBase.title}
         targets={targets}
         targetId={targetId}
         onTargetChange={setTargetId}
@@ -255,7 +253,7 @@ export function CcPane({
         conflict={conflict}
         onOpenHistory={onOpenHistory}
         onJumpTo={jumpTo}
-        onDismissError={session.clearError}
+        onDismissError={session.dismissError}
         onDismissStderr={session.clearStderr}
       />
 
@@ -294,6 +292,7 @@ export function CcPane({
         onPolish={onPolish}
         mentionSource={{ connectionId: targetId, cwd }}
         prefill={prefill}
+        draftKey={paneKey}
       />
     </div>
   );

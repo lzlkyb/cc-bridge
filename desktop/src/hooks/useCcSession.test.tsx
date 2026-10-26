@@ -74,7 +74,7 @@ describe("useCcSession 待发队列", () => {
     expect(starts).toHaveLength(1);
     expect(api.queue.map((q) => q.text)).toEqual(["甲", "乙"]);
     expect(api.queuePaused).toBe(true);
-    expect(api.view.error).toContain("claude 不存在");
+    expect(api.view.errors.join("\n")).toContain("claude 不存在");
   });
 
   it("清空队列同时解除暂停", async () => {

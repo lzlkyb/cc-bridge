@@ -4,9 +4,11 @@ import type { CcView } from "../../lib/ccReducer";
 import type { CcMark } from "../../lib/ccMarkdown";
 import type { CcTurnStat } from "../../lib/ccTurnStat";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
+import { isClearCommand } from "../../lib/ccSlash";
 import { Icon } from "../ui/icon";
 import { ApprovalCard } from "./ApprovalCard";
 import { MessageText } from "./MessageText";
+import { ClearMark, StopMark } from "./StreamMarks";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { TodoProgressCard } from "./TodoProgressCard";
 import { ToolCard } from "./ToolCard";
@@ -37,6 +39,7 @@ export function MessageList({
   running,
   marksByMsg,
   turns,
+  stops,
   onRespond,
   onForkMessage,
   onResend,
@@ -53,6 +56,13 @@ export function MessageList({
    * 「统计行」会让它们各自长出一个排除分支，而它们本不该知道这件事。
    */
   turns: CcTurnStat[];
+  /**
+   * 用户按停的落点（见 `CcView.stops`）。每个元素是一条消息 id，空串 = 按停时
+   * 还没有任何消息（标记挂在流开头）。
+   *
+   * 与 `turns` 一样是旁路数据：挂在某条消息**之后**，不参与 `messages` 的遍历。
+   */
+  stops: string[];
   onRespond: (
     requestId: string,
     decision: "allow" | "deny",
@@ -91,9 +101,16 @@ export function MessageList({
     if (arr) arr.push(t);
     else turnsByAfterId.set(t.afterId, [t]);
   }
+  /** 停止点锚集合（元素是消息 id，空串 = 流**开头**）。每条消息 `includes` 一遍数组没必要。 */
+  const stopSet = new Set(stops);
 
   return (
     <>
+      {/* 空串的停止点：刚发出去就被停，一条消息都没产出 ⇒ 那个落点在时间轴上
+          位于**所有消息之前**，所以挂在开头而不是流尾。
+          挂流尾的话，等下一轮回复进来，这条「已停止」会跑到新回复下面 ——
+          读起来像是「刚才那一轮（已经成功的那轮）被停了」。 */}
+      {stopSet.has("") && <StopMark />}
       {messages.map((m: CcMessage, index) => {
         const marks = marksByMsg?.get(m.id);
         const footers = turnsByAfterId.get(m.id);
@@ -102,7 +119,10 @@ export function MessageList({
         const node = (() => {
           if (m.kind === "user") {
             return (
-              <div key={m.id} className="flex justify-end">
+              // `data-cc-user`：按轮导航的锚点（`useCcMessageNav` 靠布局找位置，
+              // 不从 state 重算下标 —— 搜索高亮、折叠展开都会改变实际位置）。
+              // `scroll-mt-2`：跳到某条时别贴着容器顶边，留一点呼吸。
+              <div key={m.id} data-cc-user className="flex scroll-mt-2 justify-end">
                 <UserMessageBubble
                   text={m.text}
                   images={m.images}
@@ -162,7 +182,7 @@ export function MessageList({
                 </div>
               );
             }
-            return <ToolCard key={m.id} tool={m.tool} labelMarks={marks} />;
+            return <ToolCard key={m.id} tool={m.tool} marks={marks} />;
           }
 
           const verdict = resolved[m.id];
@@ -195,13 +215,18 @@ export function MessageList({
             />
           );
         })();
-        if (!footers?.length) return <Fragment key={m.id}>{node}</Fragment>;
+        // `/clear` 的清空线：从消息内容推导，不额外记状态 —— 历史重放时也自动在。
+        const cleared = m.kind === "user" && isClearCommand(m.text);
+        const stopped = stopSet.has(m.id);
+        if (!footers?.length && !cleared && !stopped) return <Fragment key={m.id}>{node}</Fragment>;
         return (
           <Fragment key={m.id}>
             {node}
-            {footers.map((s, i) => (
+            {cleared && <ClearMark />}
+            {footers?.map((s, i) => (
               <TurnFooter key={`${m.id}#turn${i}`} stat={s} />
             ))}
+            {stopped && <StopMark />}
           </Fragment>
         );
       })}

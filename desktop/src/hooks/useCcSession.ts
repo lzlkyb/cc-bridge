@@ -21,22 +21,13 @@ export type CcTarget = {
 };
 
 /**
- * 对话状态机（React 侧的门面）。
+ * 对话状态机（React 侧的门面）：命令类回调 + 视图状态。
  *
- * ## 为什么先订阅、再拉快照、最后补漏
+ * 「先订阅 → 再拉快照 → 按序号补漏」那三步不在这里，见 `useCcEventStream`
+ * （顺序错了会丢掉「刚发出去那句话」的头部事件）。
  *
- * 三件事必须按这个顺序做，否则会漏事件：
- * 1. 先订阅 —— 订阅之前发生的事件一条都收不到；
- * 2. 再拉快照 —— 它包含**订阅那一刻之前**的全部事件，与第 1 步必然重叠；
- * 3. 最后用序号把重叠部分丢掉（`seq < snapshot.nextSeq` 的都已在快照里）。
- *
- * 反过来（先快照再订阅）会丢掉两者之间的那一段，而它恰好包含「刚发出的那句话」
- * 和「刚回来的第一条流式碎片」—— 表现是偶发、只在慢机器上出现的丢头。
- *
- * ## 为什么这里的错误不弹 toast
- *
- * 对话页的错误（CLI 没装、模型名不对、远端路径找不到）是**内容**而不是打扰：
- * 它就长在对话流里，用户要能回头看到。toast 三秒后就没了。
+ * 这里的错误一律进对话流、不弹 toast：CLI 没装 / 模型名不对这类是**内容**，
+ * 用户要能回头看到，而 toast 三秒后就没了。
  */
 export function useCcSession(target: CcTarget, restore: MutableRefObject<CcRestoreReq>) {
   const [view, dispatch] = useReducer(ccReducer, initialCcView);
@@ -61,6 +52,15 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   /** `view.running` 的镜像，理由同 `queueRef`。 */
   const runningRef = useRef(false);
   runningRef.current = view.running;
+  /**
+   * 「已请求停止、进程还没收干净」的那段等待（存 promise 不是布尔）。
+   *
+   * 🔴 `interrupt` 必须先把 `running` 落成 false（否则随后必到的 `Exit` 会被判成
+   * 「跑到一半崩了」），而杀进程是异步的，这期间后端 `turn_active` 仍是 true ——
+   * 立刻发送会被拒成「上一轮还在进行」。所以 `start` 要**等它收干净再发**；
+   * 只挡成入队不行，那会落进被 `pause()` 停住的队列里，按了回车什么都没发生。
+   */
+  const stoppingRef = useRef<Promise<void> | null>(null);
   /**
    * `busy` 的镜像，同理。
    *
@@ -111,6 +111,9 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     const trimmed = text.trim();
     // 纯图片消息合法（协议探针验证过），所以判据是「文字和图都空」才不发。
     if (!trimmed && images.length === 0) return false;
+    // 停止请求还在路上 ⇒ 先等它收干净（理由见 `stoppingRef`），再走下面的统一判据：
+    // 等的时候队列可能已经把另一条发出去了。
+    if (stoppingRef.current) await stoppingRef.current;
     // 正在跑（或刚发出去、后端还没落定 busy）⇒ 入队，不并发。
     // 🔴 直发的后果是后端一句「上一轮还在进行」：那一句是真的，但用户看到的是
     // 「我打好的字被拒了」，而排队本来可以让这件事无声无息地正确发生。
@@ -206,40 +209,48 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   );
 
   const interrupt = useCallback(async () => {
-    // 🔴 不动队列，只**暂停**它。
-    //
-    // 旧行为是 `clearQueue()`，理由是「打断这一轮通常也意味着别把刚才那些发出去」——
-    // 但那是替用户猜，而且猜错时后果最重：他排了三条想好的话，点一下中断全没了，
-    // 而界面上只在 tooltip 里写过这件事（等于没说）。
-    // 反过来「什么都不做」也不行：`running` 一翻 false，`useCcQueueFlush` 会立刻
-    // 发下一条，「中断」就变成了「跳过这一轮、马上开始下一轮」。所以暂停而不丢弃。
+    // 只**暂停**队列，不丢弃：旧行为 `clearQueue()` 是替用户猜，猜错时后果最重
+    // （他排了三条想好的话，点一下全没了）。不暂停也不行 —— `running` 一翻 false，
+    // 冲刷会立刻发下一条，「中断」就成了「跳过这一轮、马上开始下一轮」。
+    // 完整取舍见 `useCcSendQueue` 的 `paused` 说明。
     pause();
-    try {
-      await invoke<boolean>("cc_interrupt", { sessionId: sessionIdRef.current });
-    } catch (e) {
-      dispatch({ type: "error", message: String(e) });
-    }
+    // 🔴 先自己落一步再发命令：`cc_interrupt` 是杀进程，`Exit` 一定会来，而它拿
+    //    `running` 当「跑到一半没了」的判据 —— 不先置 false，按一次停止就会看到
+    //    一条「进程崩溃」的黄色警告（实测路径，不是理论）。
+    dispatch({ type: "interrupted" });
+    // 杀进程在 invoke 返回前不会完成；这段窗口由 `stoppingRef` 让 `start` 等住。
+    const done = (async () => {
+      try {
+        await invoke<boolean>("cc_interrupt", { sessionId: sessionIdRef.current });
+      } catch (e) {
+        dispatch({ type: "error", message: String(e) });
+      }
+    })();
+    stoppingRef.current = done;
+    await done;
+    // 🔴 只清自己这一条：连按两次停止时，先完成的那条若无条件置 null，就把后一条
+    //    的等待解除了 —— 紧接着发送的消息会在第二次杀进程还没收干净时直发、被拒成
+    //    「上一轮还在进行」。比较身份而不是靠顺序。
+    if (stoppingRef.current === done) stoppingRef.current = null;
   }, [sessionIdRef, pause]);
 
-  const clearError = useCallback(() => dispatch({ type: "error", message: null }), []);
-  /** 关掉 stderr 红条。与 `clearError` 分开：那个 × 只关它自己那条。 */
-  const clearStderr = useCallback(() => dispatch({ type: "stderrClear" }), []);
-
   /**
-   * 把一条外部错误报进对话流（润色失败这类「页面自己的操作」出的错）。
-   *
-   * 不弹 toast 的理由同上面的错误：它是内容，用户要能回头看到。
+   * 关掉第 `index` 条前端错误。按条关而不是一键全关：一次探测失败会让之后每一步
+   * 都失败一条，全关会把真正解释原因的那条一起带走。
    */
-  const reportError = useCallback((message: string) => {
-    dispatch({ type: "error", message });
-  }, []);
+  const dismissError = useCallback(
+    (index: number) => dispatch({ type: "errorDismiss", index }),
+    [],
+  );
+  /** 关掉 stderr 红条。与 `dismissError` 分开：那个 × 只关它自己那条。 */
+  const clearStderr = useCallback(() => dispatch({ type: "stderrClear" }), []);
+  /** 把一条外部错误（润色失败这类）报进对话流：它是内容，用户要能回头看到。 */
+  const reportError = useCallback((message: string) => dispatch({ type: "error", message }), []);
 
   /**
-   * 打开一条历史会话（把后端那条接管成当前会话）。整套时序约定在
-   * `useCcOpenHistory` 里写明 —— 这里只做接线。
-   *
-   * `adoptedRowId`：接管落地后库里的行号。侧栏对账（历史区去重）、改名 / 归档
-   * 都靠它 —— `restored` 被清掉之后它就是唯一的行号来源。
+   * 打开一条历史会话（把后端那条接管成当前会话）。时序约定在 `useCcOpenHistory`
+   * 里写明 —— 这里只做接线。`adoptedRowId` 是接管落地后库里的行号：侧栏对账
+   * （历史区去重）、改名 / 归档都靠它 —— `restored` 被清掉后它是唯一的行号来源。
    */
   const [adoptedRowId, setAdoptedRowId] = useState<number | null>(null);
   const openHistory = useCcOpenHistory({
@@ -270,7 +281,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     respond,
     interrupt,
     openHistory,
-    clearError,
+    dismissError,
     clearStderr,
     reportError,
     /** 已排队还没发的消息。界面上显示条数，也可一键清空。 */

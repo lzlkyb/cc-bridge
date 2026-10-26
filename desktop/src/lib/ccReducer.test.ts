@@ -437,7 +437,7 @@ describe("ccReducer", () => {
   it("retry 是进度不是错误", () => {
     const v = run([{ kind: "retry", attempt: 2, max: 10, message: "overloaded" }]);
     expect(v.retry).toMatchObject({ attempt: 2, max: 10 });
-    expect(v.error).toBeNull();
+    expect(v.errors).toEqual([]);
     expect(v.stderr).toEqual([]);
   });
 
@@ -464,15 +464,15 @@ describe("ccReducer", () => {
     expect(v.stderr).toEqual([]);
   });
 
-  it("stderrClear 只清 stderr，不碰前端 error", () => {
+  it("stderrClear 只清 stderr，不碰前端 errors", () => {
     const dirty: CcView = {
       ...initialCcView,
       stderr: ["boom"],
-      error: "润色失败",
+      errors: ["润色失败"],
     };
     const v = ccReducer(dirty, { type: "stderrClear" });
     expect(v.stderr).toEqual([]);
-    expect(v.error).toBe("润色失败");
+    expect(v.errors).toEqual(["润色失败"]);
   });
 
   /// 不设上限的话，同一个进程跑一整天、每轮吐一行 warning，state 里会躺着几百行，
@@ -487,10 +487,80 @@ describe("ccReducer", () => {
   });
 
   it("sending 立刻标为运行中并清掉上轮错误", () => {
-    const v = ccReducer({ ...initialCcView, error: "旧错", exitCode: 1 }, { type: "sending" });
+    const v = ccReducer({ ...initialCcView, errors: ["旧错"], exitCode: 1 }, { type: "sending" });
     expect(v.running).toBe(true);
-    expect(v.error).toBeNull();
+    expect(v.errors).toEqual([]);
     expect(v.exitCode).toBeNull();
+  });
+
+  /// 🔴 这条钉的是「点停止被报成崩溃」：`cc_interrupt` 走的是杀进程
+  /// （`session.rs::kill` = `start_kill` + `wait` + 等读线程排干），所以 `Exit`
+  /// 一定会来；而那条分支拿 `running` 当「跑到一半没了」的判据。不先把
+  /// running 落下，用户每按一次停止都会看到一条黄色「进程崩溃」警告。
+  it("主动停止不被随后到达的 Exit 判成进程崩溃", () => {
+    const running = run([{ kind: "init", sessionId: "s1", cwd: null, model: null }]);
+    expect(running.running).toBe(true);
+    const stopped = ccReducer(running, { type: "interrupted" });
+    expect(stopped.running).toBe(false);
+    expect(stopped.processExited).toBe(false);
+    // 读线程排干后补发的 Exit
+    const after = ccReducer(stopped, { type: "event", event: { kind: "exit", code: null } });
+    expect(after.processExited).toBe(false);
+    expect(after.running).toBe(false);
+  });
+
+  it("停止点锚在最后一条消息之后", () => {
+    const v = ccReducer(
+      run([
+        { kind: "userMessage", text: "改一下" },
+        { kind: "init", sessionId: "s1", cwd: null, model: null },
+        { kind: "text", blockId: "b1", text: "正在", streaming: true },
+      ]),
+      { type: "interrupted" },
+    );
+    expect(v.stops).toEqual(["b1"]);
+  });
+
+  it("一条消息都没产出时停止点是空串（标记挂流尾）", () => {
+    const v = run([{ kind: "init", sessionId: "s1", cwd: null, model: null }]);
+    expect(ccReducer(v, { type: "interrupted" }).stops).toEqual([""]);
+  });
+
+  it("没在跑时点停止不留停止点", () => {
+    const v = run([{ kind: "userMessage", text: "a" }]);
+    expect(v.running).toBe(false);
+    expect(ccReducer(v, { type: "interrupted" }).stops).toEqual([]);
+  });
+
+  /// 压缩提示描述的是「刚刚那一轮」，只该活到下一轮开始 —— 不清的话它会一直
+  /// 挂在会话顶部直到进程重启，而文案读起来像「现在仍处于压缩态」。
+  it("压缩提示在下一轮开始时清掉", () => {
+    const compacted = run([{ kind: "compact", postTokens: 42_000 }]);
+    expect(compacted.compactedTokens).toBe(42_000);
+    expect(ccReducer(compacted, { type: "sending" }).compactedTokens).toBeNull();
+  });
+
+  it("新进程清掉上一轮的压缩提示", () => {
+    const compacted = run([{ kind: "compact", postTokens: 900 }]);
+    expect(compacted.compactedTokens).toBe(900);
+    const reinit = run([{ kind: "init", sessionId: "s10", cwd: null, model: null }], compacted);
+    expect(reinit.compactedTokens).toBeNull();
+  });
+
+  /// 🔴 `stops` **不随 `init` 清空**：停止点锚的是消息 id，消息数组不会因为换进程
+  /// 而重建。而「停止」本身就杀进程 ⇒ 下一轮必然起新进程、必然来 `init`。
+  /// 清空过一次，结果是「已停止」那条线在用户发出下一句时当场消失。
+  it("新进程保留上一轮的停止点", () => {
+    const stopped = ccReducer(
+      run([
+        { kind: "text", blockId: "b1", text: "半句话", streaming: false },
+        { kind: "init", sessionId: "s9", cwd: null, model: null },
+      ]),
+      { type: "interrupted" },
+    );
+    expect(stopped.stops).toEqual(["b1"]);
+    const reinit = run([{ kind: "init", sessionId: "s10", cwd: null, model: null }], stopped);
+    expect(reinit.stops).toEqual(["b1"]);
   });
 
   /// 错误横幅与轮次正交：运行中润色失败 / 点掉横幅都不许把 running 拍成 false
@@ -500,13 +570,34 @@ describe("ccReducer", () => {
     const running = ccReducer(initialCcView, { type: "sending" });
     const withErr = ccReducer(running, { type: "error", message: "润色失败" });
     expect(withErr.running).toBe(true);
-    expect(withErr.error).toBe("润色失败");
+    expect(withErr.errors).toEqual(["润色失败"]);
     const dismissed = ccReducer(withErr, { type: "error", message: null });
     expect(dismissed.running).toBe(true);
-    expect(dismissed.error).toBeNull();
+    expect(dismissed.errors).toEqual([]);
     const aborted = ccReducer(withErr, { type: "sendAborted" });
     expect(aborted.running).toBe(false);
-    expect(aborted.error).toBe("润色失败");
+    expect(aborted.errors).toEqual(["润色失败"]);
+  });
+
+  /// 此前 error 只有一个槽：连续两件事出错时后一条把前一条顶掉，而先发生的那条
+  /// 往往更重要（探测失败会让之后一整套操作都失败）。现在按条追加、按条关。
+  it("多条前端错误并存，各关各的", () => {
+    let v = ccReducer(initialCcView, { type: "error", message: "探测失败" });
+    v = ccReducer(v, { type: "error", message: "润色失败" });
+    expect(v.errors).toEqual(["探测失败", "润色失败"]);
+    v = ccReducer(v, { type: "errorDismiss", index: 1 });
+    expect(v.errors).toEqual(["探测失败"]);
+    // 越界下标必须无副作用（渲染层在动画/竞态里可能晚一拍派发）。
+    expect(ccReducer(v, { type: "errorDismiss", index: 9 })).toBe(v);
+  });
+
+  /// 一个坏配置会让每轮都失败一次 —— 不设上限的话横幅能叠十几条，把消息区挤没。
+  /// 截断**保头**：第一条是根因（探测失败之后每一步都会各失败一条），
+  /// 只留最新会把唯一能解释原因的那条挤掉。
+  it("前端错误超限时保头 + 最新的几条", () => {
+    let v = initialCcView;
+    for (let i = 0; i < 8; i++) v = ccReducer(v, { type: "error", message: `e${i}` });
+    expect(v.errors).toEqual(["e0", "e4", "e5", "e6", "e7"]);
   });
 
   /// costUsd 与 modelUsage 同判据：CLI 的 `total_cost_usd` 是会话累计值 ⇒ 替换式。

@@ -36,6 +36,9 @@ const onSend = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // 草稿会落 localStorage：用例之间串了就会出现「输入框初始带着上一条用例的字」
+  // （`readDraft` 是 `useState` 的惰性初值，装配那一刻就读）。
+  localStorage.clear();
   qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   container = document.createElement("div");
   document.body.append(container);
@@ -55,6 +58,7 @@ async function render() {
           onSend={onSend}
           queueCount={0}
           onClearQueue={() => {}}
+          draftKey="test-pane"
           mentionSource={{ connectionId: "", cwd: "D:\\work" }}
         />
       </QueryClientProvider>,
@@ -270,6 +274,7 @@ it("prefill 填入草稿并聚焦，不触发发送", async () => {
             onClearQueue={() => {}}
             mentionSource={{ connectionId: "", cwd: "D:\\work" }}
             prefill={prefill}
+            draftKey="test-pane"
           />
         </QueryClientProvider>,
       );

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifySlash,
   filterSlash,
+  isClearCommand,
   isSlashTyping,
   SLASH_COMMANDS,
   SLASH_WHITELIST_TEXT,
@@ -66,5 +67,28 @@ describe("classifySlash", () => {
 describe("SLASH_WHITELIST_TEXT", () => {
   it("提示文案随白名单自动更新", () => {
     expect(SLASH_WHITELIST_TEXT).toBe("/compact、/clear、/model");
+  });
+});
+
+/**
+ * 清空线靠它从消息内容推导（`MessageList` → `ClearMark`）。判定必须与
+ * `classifySlash` 同口径 —— 分叉的话会出现「命令发出去了、线没划」，
+ * 而那种不一致只在用户已经忘了上下文的时候才被发现。
+ */
+describe("isClearCommand", () => {
+  it("认 /clear 及其前后空白", () => {
+    expect(isClearCommand("/clear")).toBe(true);
+    expect(isClearCommand("  /clear  ")).toBe(true);
+    // CLI 会把首 token 当命令、后面当参数，所以这里也认
+    expect(isClearCommand("/clear 一下")).toBe(true);
+  });
+
+  it("其它命令与普通文本都不算", () => {
+    expect(isClearCommand("/compact")).toBe(false);
+    expect(isClearCommand("/model opus")).toBe(false);
+    expect(isClearCommand("帮我 /clear 一下")).toBe(false);
+    // 大小写敏感是白名单的既有口径（`/CLEAR` 本来就不会被发送）
+    expect(isClearCommand("/CLEAR")).toBe(false);
+    expect(isClearCommand("")).toBe(false);
   });
 });

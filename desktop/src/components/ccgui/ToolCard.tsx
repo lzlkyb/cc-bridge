@@ -10,10 +10,10 @@ import { MarkedText } from "./MarkedText";
 import {
   TOOL_TEXT_LIMIT,
   asString,
-  clampToolText,
   editCount,
   editPair,
   toolArgLabel,
+  toolBodyText,
   toolDefaultOpen,
   toolKind,
 } from "./summarize";
@@ -50,12 +50,15 @@ function MonoBlock({
   tone = "plain",
   clipped = false,
   copied = false,
+  marks,
   onCopy,
 }: {
   text: string;
   tone?: "plain" | "error";
   clipped?: boolean;
   copied?: boolean;
+  /** 会话内搜索在**这段正文**里的命中（`summarize.convSegments` 的 seg 1）。 */
+  marks?: CcMark[];
   onCopy?: () => void;
 }) {
   return (
@@ -68,7 +71,7 @@ function MonoBlock({
             : "border-border text-muted-foreground"
         }`}
       >
-        {text}
+        <MarkedText text={text} marks={marks} />
       </pre>
       {clipped && (
         <p className="px-2.5 pt-1 text-[11px] text-muted-foreground">
@@ -106,8 +109,11 @@ function MonoBlock({
  * 直播时 `toolUse` 先到（无 result），结果落地那一刻再自动展开一次
  * （用户亲手收起过就不代劳）；Read 与其余折叠（参数已能说明问题）。
  */
-function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcMark[] }) {
+function ToolCardImpl({ tool, marks }: { tool: CcToolCall; marks?: CcMark[] }) {
   const kind = toolKind(tool.name);
+  // seg 下标与 `summarize.convSegments` 一一对应：0 = 行上参数摘要，1 = 展开区正文。
+  const labelMarks = useMemo(() => marks?.filter((m) => m.seg === 0), [marks]);
+  const bodyMarks = useMemo(() => marks?.filter((m) => m.seg === 1), [marks]);
 
   const { copy, isCopied } = useCopyFeedback();
   const pair = useMemo(() => editPair(tool.input), [tool.input]);
@@ -119,23 +125,23 @@ function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcM
     const d = computeLineDiff(source.oldText, source.newText);
     return { added: d.added, removed: d.removed, truncated: d.truncated };
   }, [kind, pair, tool.input]);
-  /** 输出 / 入参 JSON 的展示级截断（实时链路没有入库那道 16k 闸，见 `clampToolText`）。 */
-  const outs = useMemo(() => {
-    const cl = (raw: string) => ({ ...clampToolText(raw), raw });
-    if (kind === "bash" && tool.result) return { bash: cl(tool.result) };
-    if (kind === "read") return { read: cl(JSON.stringify(tool.input, null, 2)) };
-    if (kind === "other") return { other: cl(JSON.stringify(tool.input, null, 2)) };
-    return {};
-  }, [kind, tool.input, tool.result]);
+  /**
+   * 展开区那段正文。**文本取自 `toolBodyText`**，与会话内搜索的索引同一份口径
+   * （两处各写一遍 `JSON.stringify` 迟早分叉，而分叉的表现是高亮标错字）；
+   * `raw` 是未截断的原文，留给「复制全文」—— 复制到一半等于没复制。
+   *
+   * `clipped` 用「原文比渲染出的长」判定，不重复一遍上限比较。
+   */
+  const body = useMemo(() => {
+    const text = toolBodyText(tool);
+    if (text === null) return null;
+    const raw = kind === "bash" ? (tool.result ?? "") : JSON.stringify(tool.input, null, 2);
+    return { text, clipped: raw.length > text.length, raw };
+  }, [tool, kind]);
 
   const argLabel = toolArgLabel(tool.input);
   const command = asString(tool.input.command);
-  const hasBody =
-    (kind === "edit" && !!pair) ||
-    kind === "write" ||
-    (kind === "bash" && !!tool.result) ||
-    kind === "read" ||
-    kind === "other";
+  const hasBody = (kind === "edit" && !!pair) || kind === "write" || body !== null;
 
   /* ── 详略档位（`lib/chatVerbosity.ts`）──────────────────────────────────
    * 只改「默认展开态」，不改任何内容是否存在：档位随时可切，切完还能手点。
@@ -169,6 +175,23 @@ function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcM
     setOpen((v) => !v);
   };
 
+  /**
+   * 会话内搜索的命中落在**展开区**里（`convSegments` 的 seg 1）时必须摊开。
+   *
+   * 🔴 索引（`buildConvHits`）收了 seg 1：Bash 输出、Read / MCP 工具的入参 JSON。
+   *    而渲染只在展开时才有那份文本，Read 与「其余工具」默认还是收着的 ——
+   *    于是搜索条说「2/5」，点下一处界面一动不动，`querySelector("[data-cc-hit-cur]")`
+   *    也什么都找不到。
+   *
+   * 用派生值而不是 `setOpen` 的 effect：effect 要到下一轮提交才把卡撑开，而那正是
+   * 父组件 `ConversationStream` 的滚动 effect 已经跑完的时刻。派生值让命中的
+   * `<mark>` 与这份文本同一帧进 DOM，滚动才找得到它。
+   *
+   * 搜索关闭 / 换词后 `marks` 变空，卡片自动回到用户自己的 `open`。代价是搜索
+   * 期间点这行收起看不出反应 —— 相对「命中看不见」，这个方向是对的。
+   */
+  const reveal = open || (hasBody && (bodyMarks?.length ?? 0) > 0);
+
   return (
     // data-cc-tool：变更集面板的跳转锚点（CcGuiTab 按 tool.id  querySelector 找它）。
     <div data-cc-tool={tool.id}>
@@ -177,14 +200,15 @@ function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcM
         data-cc-row
         className="flex w-full items-center gap-2 rounded-md px-2 py-[3px] text-left transition-colors hover:bg-accent/40"
         onClick={() => hasBody && toggle()}
-        aria-expanded={hasBody ? open : undefined}
+        aria-expanded={hasBody ? reveal : undefined}
       >
         <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-primary/10 text-primary">
           <Icon name={KIND_ICON[kind]} size={11} />
         </span>
         <span className="shrink-0 text-[12px] font-semibold text-foreground">{tool.name}</span>
         {/* 命令可能很长：允许收缩并省略尾部，完整原文看 title 或展开态。
-            labelMarks：会话内搜索在参数摘要上的命中（摘要只有一段，seg 恒 0）。 */}
+            `marks`：会话内搜索的命中（seg 0 = 参数摘要，seg 1 = 展开区正文，见
+            `summarize.convSegments`）。 */}
         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted-foreground" title={argLabel}>
           <MarkedText text={argLabel} marks={labelMarks} />
         </span>
@@ -220,13 +244,13 @@ function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcM
             <Icon
               name="chevronDown"
               size={11}
-              className={`text-muted-foreground transition-transform ${open ? "" : "-rotate-90"}`}
+              className={`text-muted-foreground transition-transform ${reveal ? "" : "-rotate-90"}`}
             />
           )}
         </span>
       </button>
 
-      {open && hasBody && (
+      {reveal && hasBody && (
         <div className="pb-1.5 pl-[30px] pr-1">
           {(kind === "edit" || kind === "write") && (
             /* 「共 N 处修改」与视图切换都在 DiffBlock 顶栏里 —— 它们是同一份 diff
@@ -237,38 +261,24 @@ function ToolCardImpl({ tool, labelMarks }: { tool: CcToolCall; labelMarks?: CcM
               edits={edits}
             />
           )}
-          {kind === "bash" && outs.bash && (
+          {body && (
             <div className="flex flex-col gap-1.5">
-              {command.length > CMD_FULL_THRESHOLD && (
+              {/* Bash 的命令比一行摘要长时，展开态里补一份完整命令 —— 摘要那行
+                  被截断了，而「它到底跑了什么」正是展开要看的。 */}
+              {kind === "bash" && command.length > CMD_FULL_THRESHOLD && (
                 <p className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.6] text-foreground">
                   {command}
                 </p>
               )}
               <MonoBlock
-                text={outs.bash.text}
-                clipped={outs.bash.clipped}
+                text={body.text}
+                clipped={body.clipped}
+                marks={bodyMarks}
                 tone={tool.isError ? "error" : "plain"}
                 copied={isCopied(tool.id)}
-                onCopy={() => copy(tool.id, outs.bash!.raw)}
+                onCopy={() => copy(tool.id, body.raw)}
               />
             </div>
-          )}
-          {kind === "read" && outs.read && (
-            <MonoBlock
-              text={outs.read.text}
-              clipped={outs.read.clipped}
-              tone={tool.isError ? "error" : "plain"}
-              copied={isCopied(`${tool.id}:in`)}
-              onCopy={() => copy(`${tool.id}:in`, outs.read!.raw)}
-            />
-          )}
-          {kind === "other" && outs.other && (
-            <MonoBlock
-              text={outs.other.text}
-              clipped={outs.other.clipped}
-              copied={isCopied(`${tool.id}:in`)}
-              onCopy={() => copy(`${tool.id}:in`, outs.other!.raw)}
-            />
           )}
         </div>
       )}

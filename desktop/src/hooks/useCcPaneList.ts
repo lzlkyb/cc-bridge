@@ -1,6 +1,7 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/tauri";
+import { clearDraft, pruneDrafts } from "../lib/ccDraft";
 import type { CcRestoreReq } from "../lib/ccEventTypes";
 import type { CcForkSeed } from "../lib/ccFork";
 import type { CcPaneMeta } from "../lib/ccPaneMeta";
@@ -52,6 +53,22 @@ export function useCcPaneList() {
   const [active, setActive] = useState("p1");
   /** 自增的 key 序列。`p1` 已被初始条目占用，从 2 起。 */
   const [seq, setSeq] = useState(2);
+
+  /**
+   * 清掉「当前窗口没有对应 pane」的输入框草稿。
+   *
+   * 🔴 必须做这一步，否则草稿会串会话：`seq` 每次**窗口启动**都从 2 重来，所以
+   *    重启后新建的第二条 pane 又叫 `p2` —— 它会读到**上一个窗口** p2 里打了一半
+   *    的字。`CcGuiTab` 是 `keepMounted` 的（切 app 标签不卸载），所以这个 effect
+   *    一个窗口只跑一次，孤儿也只可能在重启时留下。详见 `lib/ccDraft.ts::pruneDrafts`。
+   *
+   * 依赖用拼好的字符串而不是 `entries`：每条流式碎片都会让 `report` 换一次
+   * `entries` 的引用，而 key 集合其实没变 —— 那样会每帧扫一遍 localStorage。
+   */
+  const paneKeys = entries.map((e) => e.key).join(",");
+  useEffect(() => {
+    pruneDrafts(paneKeys ? paneKeys.split(",") : []);
+  }, [paneKeys]);
 
   /** 追加一条并切过去（与「点 + 就该进新会话」的直觉一致）。 */
   const spawn = useCallback(
@@ -122,6 +139,9 @@ export function useCcPaneList() {
       const target = entries.find((e) => e.key === key);
       const idx = entries.findIndex((e) => e.key === key);
       const rest = entries.filter((e) => e.key !== key);
+      // 这条会话没了，它的输入框草稿也没有落点了。留着只会占配额，而且
+      // `seq` 重启后会重新分配同一个 key（见上面 prune 的说明）。
+      clearDraft(key);
       setEntries(rest);
       setActive((cur) => (cur === key ? rest[Math.max(0, Math.min(idx, rest.length - 1))].key : cur));
       const sid = target?.meta?.sessionId;

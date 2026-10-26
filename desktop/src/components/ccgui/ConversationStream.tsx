@@ -3,10 +3,12 @@ import type { CcProbe } from "../../lib/ccEventTypes";
 import { pendingApprovals, type CcView } from "../../lib/ccReducer";
 import { CHAT_TYPOGRAPHY, useChatTypography } from "../../lib/chatTypography";
 import { useCcConvSearch } from "../../hooks/useCcConvSearch";
+import { useCcMessageNav } from "../../hooks/useCcMessageNav";
 import { useCcScrollAway } from "../../hooks/useCcScrollAway";
 import { CcEmptyState } from "./CcEmptyState";
 import { CcFindBar } from "./CcFindBar";
 import { MessageList } from "./MessageList";
+import { MessageNav } from "./MessageNav";
 import { ScrollToBottom } from "./ScrollToBottom";
 
 /**
@@ -59,6 +61,8 @@ export function ConversationStream({
   const search = useCcConvSearch(view.messages);
   const { hits, occ, openSearch } = search;
   const { away, toBottom } = useCcScrollAway(scrollRef);
+  /** 按轮导航（在「我的提问」之间跳）。读布局定位，见 hook 头注释。 */
+  const nav = useCcMessageNav(scrollRef);
   // 流式输出时 view 每个 tick 都变，但待批准数只随消息列表 / 裁决表变，用 memo 避免每次都全量遍历。
   const pendingCount = useMemo(
     () => pendingApprovals({ messages: view.messages, resolved: view.resolved }).length,
@@ -137,6 +141,7 @@ export function ConversationStream({
               running={view.running}
               marksByMsg={search.marksByMsg}
               turns={view.turns}
+              stops={view.stops}
               onRespond={onRespond}
               onForkMessage={onForkMessage}
               onResend={onResend}
@@ -145,7 +150,18 @@ export function ConversationStream({
         </div>
       </div>
       {away && view.messages.length > 0 && (
-        <ScrollToBottom pending={pendingCount} running={view.running} onClick={toBottom} />
+        // 一条浮条：「按轮导航」+「回到底部」。
+        //
+        // 🔴 用 `inset-x-0 + justify-center` 居中，**不用** `left-1/2 + -translate-x-1/2`：
+        //    后者是绝对定位的 shrink-to-fit，可用宽度只等于**容器的一半**（left 已经吃掉
+        //    一半），窄 pane 下「有 N 条待批准 · 回到底部」会被压成两行、在固定的 32px
+        //    高度里溢出。实测 420px 宽就复现。
+        // 外层 `pointer-events-none` + 两个按钮自己 `pointer-events-auto`：这一行横跨
+        // 整个消息区底部，不放开穿透就会挡住底下的正文点击。
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex items-center justify-center gap-2 px-3">
+          <MessageNav onPrev={nav.prev} onNext={nav.next} />
+          <ScrollToBottom pending={pendingCount} running={view.running} onClick={toBottom} />
+        </div>
       )}
       {search.open && (
         <CcFindBar

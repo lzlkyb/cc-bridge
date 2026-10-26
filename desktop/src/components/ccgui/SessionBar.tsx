@@ -3,13 +3,11 @@ import { PERMISSION_MODE_LABEL, type CcPermissionMode, type CcSession } from "..
 import type { CcMessage } from "../../lib/ccGuiTypes";
 import { contextBar } from "../../lib/ccContextUsage";
 import type { CcHistoryRow } from "../../lib/ccEventTypes";
-import { useCcApprovalAudit } from "../../hooks/useCcApprovalAudit";
 import { Icon, type IconName } from "../ui/icon";
-import { ApprovalAuditPanel } from "./ApprovalAuditPanel";
 import { ContextMeter } from "./ContextMeter";
 import { CwdChip } from "./CwdChip";
-import { HistoryPanel } from "./HistoryPanel";
 import { ModelPicker } from "./ModelPicker";
+import { SessionActions } from "./SessionActions";
 
 const MODES: CcPermissionMode[] = ["plan", "default", "acceptEdits", "bypassPermissions"];
 
@@ -31,11 +29,18 @@ function Chip({ icon, children, title }: { icon: IconName; children: React.React
  * 左端的连接名现在是个下拉：本机 / 某台 SSH（`id === ""` 表示本机）。
  * 用原生 `<select>` 而不是自绘菜单 —— 这一行里它只是「切换目标」，
  * 不值得为它引入一层弹层与焦点管理。
+ *
+ * ## 这一行现在是「参数 | 动作」两段
+ *
+ * 本组件只管**运行参数**（目标 / 目录 / 分支 / 模型 / 上下文 / 花费 / 权限），
+ * 右端的**动作**（改动 / 导出 / 历史 / 新对话 / 终端）连同它们的浮层在
+ * `SessionActions` 里 —— 两者没有状态往来，只是排在同一行。
  */
 function SessionBarImpl({
   session,
   messages,
   resolved,
+  title,
   targets,
   targetId,
   onTargetChange,
@@ -51,10 +56,12 @@ function SessionBarImpl({
   onJumpTo,
 }: {
   session: CcSession;
-  /** 会话流水：批 4-2 的「改动」面板要按审批点分组，得从消息里取工具入参与 reason。 */
+  /** 会话流水：动作区那边要靠它分组审批点、拼导出正文。 */
   messages: CcMessage[];
   /** `requestId → 裁决`：审批点显示「允许 / 拒绝 / 自动放行」靠它。 */
   resolved: Record<string, { decision: "allow" | "deny"; auto?: boolean }>;
+  /** 会话标题（导出 Markdown 的 H1）。与侧栏那一行同源，由 `CcPane` 现算后传下来。 */
+  title: string;
   targets: { id: string; label: string }[];
   targetId: string;
   onTargetChange: (id: string) => void;
@@ -79,17 +86,7 @@ function SessionBarImpl({
   // 上下文余量条：CLI 每轮在 `result.modelUsage` 里给累计值与窗口。没有窗口
   // （老流水 / 老版本 CLI）时 bar 为 null，退回只显示已用 token 的旧形态。
   const bar = contextBar(session.modelUsage);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  const [changesetOpen, setChangesetOpen] = useState(false);
-  // 批 4-2：审批点分组 + 撤销。只在面板打开时查审计（理由见 hook 头注释）。
-  const audit = useCcApprovalAudit({
-    messages,
-    resolved,
-    cwd: session.cwd,
-    sessionId: session.sessionId,
-    enabled: changesetOpen,
-  });
   // 显示优先级：我们的选择 > CLI 回报的当前模型 > 占位。
   // 只用 CLI 回报值会让「选了默认」和「没选过」看起来一模一样。
   const modelLabel = session.model || session.activeModel || "默认模型";
@@ -184,98 +181,18 @@ function SessionBarImpl({
           })}
         </span>
 
-        {/* 🔴 一条竖线把「这一行在说什么」劈成两半：左边是**运行参数**（模型 / 上下文 /
-            花费 / 权限，都是「这一轮怎么跑」），右边是**动作**（改动 / 历史 / 新对话 /
-            终端）。此前十来个元素等距平铺，读的人得逐个辨认才发现它们不是一类东西。 */}
-        <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
-
-        {/* 变更集入口：没有改动就不占位（同分支 chip 的「未知不占位」）。
-            带数字是因为「改了没有、改了几处」是这一行最值得知道的事。 */}
-        {session.changeset.length > 0 && (
-          <span className="relative flex shrink-0 items-center">
-            <button
-              type="button"
-              data-cc-toggle="changeset"
-              onClick={() => setChangesetOpen((v) => !v)}
-              aria-expanded={changesetOpen}
-              title={`本会话改动：${session.changeset.length} 个文件`}
-              aria-label="本会话改动"
-              className={`flex h-[26px] items-center gap-1 rounded-lg border px-1.5 text-[11px] transition-colors ${
-                changesetOpen
-                  ? "border-primary/40 text-foreground"
-                  : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
-              }`}
-            >
-              <Icon name="file" size={12} />
-              <span className="font-mono">{session.changeset.length}</span>
-            </button>
-            {changesetOpen && (
-              <ApprovalAuditPanel
-                groups={audit.groups}
-                stat={audit.stat}
-                reverted={audit.reverted}
-                busyKey={audit.busyKey}
-                onRevertOne={(p, f) => void audit.revertOne(p, f)}
-                onRevertGroup={(g) => void audit.revertGroup(g)}
-                onJump={(id) => {
-                  // 跳完即关：浮层盖着消息区，用户看不见自己跳到了哪儿。
-                  setChangesetOpen(false);
-                  onJumpTo(id);
-                }}
-                onClose={() => setChangesetOpen(false)}
-              />
-            )}
-          </span>
-        )}
-
-        {/* 只给图标：这一行在 700px 窄窗下已经被挤爆过（cwd 截成 `p...`），
-            任何带文字的按钮都会再吃掉 40px。 */}
-        <span className="relative flex shrink-0 items-center">
-          <button
-            type="button"
-            data-cc-toggle="history"
-            onClick={() => setHistoryOpen((v) => !v)}
-            aria-expanded={historyOpen}
-            title="历史对话（本机 Claude Code 的全部转录，包括终端页里聊的）"
-            aria-label="历史对话"
-            className={`flex h-[26px] w-[26px] items-center justify-center rounded-lg border transition-colors ${
-              historyOpen
-                ? "border-primary/40 text-foreground"
-                : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
-            }`}
-          >
-            <Icon name="history" size={12} />
-          </button>
-          {historyOpen && (
-            <HistoryPanel
-              onClose={() => setHistoryOpen(false)}
-              onOpen={(row) => {
-                setHistoryOpen(false);
-                onOpenHistory(row);
-              }}
-            />
-          )}
-        </span>
-
-        <button
-          type="button"
-          onClick={onNewSession}
-          title={`新对话（${newSessionHint}，新开一条空白会话；当前这条原样保留在侧栏）`}
-          aria-label="新对话"
-          className="flex h-[26px] w-[26px] items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-        >
-          <Icon name="plus" size={12} />
-        </button>
-
-        <button
-          type="button"
-          onClick={onSwitchTerminal}
-          title="切回终端（原终端页不受影响）"
-          className="flex h-[26px] items-center gap-1 rounded-lg border border-border px-2 text-[11px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-        >
-          <Icon name="terminal" size={12} />
-          终端
-        </button>
+        <SessionActions
+          session={session}
+          messages={messages}
+          resolved={resolved}
+          title={title}
+          modelLabel={modelLabel}
+          newSessionHint={newSessionHint}
+          onOpenHistory={onOpenHistory}
+          onJumpTo={onJumpTo}
+          onNewSession={onNewSession}
+          onSwitchTerminal={onSwitchTerminal}
+        />
       </span>
     </div>
   );

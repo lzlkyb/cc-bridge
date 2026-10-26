@@ -17,11 +17,11 @@ export function SessionNotices({
   retry,
   processExited,
   dropped,
-  error,
+  errors,
   stderr,
   compacted,
   background,
-  onDismiss,
+  onDismissError,
   onDismissStderr,
 }: {
   /** `bypassPermissions` 的风险文案。没有就不渲染。 */
@@ -46,16 +46,21 @@ export function SessionNotices({
   processExited: boolean;
   /** 缓冲/裁剪缺口条数。 */
   dropped: number;
-  /** 前端侧错误（invoke 失败、探测失败）。 */
-  error: string | null;
+  /**
+   * 前端侧错误（invoke 失败、探测失败、润色失败）。**列表**：连续两件事出错时
+   * 后一条不该把前一条顶掉 —— 先发生的那条往往更重要（探测失败会让之后一整套
+   * 操作都失败）。每条一个 ×，各关各的。
+   */
+  errors: string[];
   /** CLI 的 stderr 尾巴（已截好）。 */
   stderr: string[];
   /** 上下文被压缩后的 token 数。`null` = 这一轮没压缩过。 */
   compacted: number | null;
   /** 正在跑的后台任务数。 */
   background: number;
-  onDismiss: () => void;
-  /** 关掉 stderr 红条。**必须与 `onDismiss` 分开**：此前两者共用同一个回调，
+  /** 关掉第 `index` 条前端错误（每条红条自己的 ×）。 */
+  onDismissError: (index: number) => void;
+  /** 关掉 stderr 红条。**必须与 `onDismissError` 分开**：两者此前共用同一个回调，
    *  那个 × 只清了前端 `error`，stderr 原封不动 —— 于是红条看起来「关不掉」。 */
   onDismissStderr: () => void;
 }) {
@@ -105,11 +110,13 @@ export function SessionNotices({
       {dropped > 0 && (
         <Notice tone="info">更早的 {dropped} 条事件已滚出缓冲，翻不到更上面了。</Notice>
       )}
-      {error && (
-        <Notice tone="error" onDismiss={onDismiss}>
-          {error}
+      {/* 每个前端错误各一条、各带自己的 ×：关掉一条不该顺手关掉另一条。
+          key 用下标是安全的 —— 关掉的永远是「第 i 条」，列表本身只做尾部追加。 */}
+      {errors.map((msg, i) => (
+        <Notice key={`e${i}`} tone="error" onDismiss={() => onDismissError(i)}>
+          {msg}
         </Notice>
-      )}
+      ))}
       {stderr.length > 0 && (
         <Notice tone="error" onDismiss={onDismissStderr}>
           <span className="font-mono">{stderr.join(" / ")}</span>

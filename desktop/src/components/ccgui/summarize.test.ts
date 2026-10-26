@@ -11,6 +11,7 @@ import {
   editPair,
   thinkingTitle,
   todoItems,
+  toolBodyText,
   toolDefaultOpen,
   toolKind,
 } from "./summarize";
@@ -107,16 +108,58 @@ describe("summarize", () => {
     expect(convSegments(m)).toEqual(["先说结论", "甲", "项", "乙项", "tar -x"]);
   });
 
-  it("convSegments：工具行只取参数摘要；思考只取标题", () => {
-    const tool: CcMessage = {
+  it("convSegments：工具行 = 参数摘要 + 展开区正文；思考只取标题", () => {
+    const edit: CcMessage = {
       kind: "tool",
       id: "t1",
       at: "",
       tool: { id: "tu1", name: "Edit", input: { file_path: "/repo/src/a.ts" }, status: "ok" },
     };
-    expect(convSegments(tool)).toEqual(["src/a.ts"]);
+    // Edit 展开的是行级 diff（经裁剪与行号重排），字符区间对不上源文本 ⇒ seg 1 留空占位。
+    // 🔴 空串也必须占位：seg 下标是渲染层的契约，塌掉一段会让后面的段整体前移。
+    expect(convSegments(edit)).toEqual(["src/a.ts", ""]);
+
+    // Bash 的输出此前完全不进索引 —— 「那个报错在哪一轮」正是最常搜的东西。
+    const bash: CcMessage = {
+      kind: "tool",
+      id: "t2",
+      at: "",
+      tool: {
+        id: "tu2",
+        name: "Bash",
+        input: { command: "cargo test" },
+        status: "error",
+        isError: true,
+        result: "error[E0308]: mismatched types",
+      },
+    };
+    expect(convSegments(bash)).toEqual(["cargo test", "error[E0308]: mismatched types"]);
+
     const think: CcMessage = { kind: "thinking", id: "h1", at: "", text: "标题行\n后面很长的思考" };
     expect(convSegments(think)).toEqual(["标题行"]);
+  });
+
+  /// 索引与渲染必须是同一份文本：搜索命中带的是**段内字符区间**，渲染那份但凡
+  /// 比索引短一截（比如索引用了未截断的原文），高亮就会落在别的字上。
+  it("convSegments：超长工具输出按展示上限截断后再索引", () => {
+    const huge = "x".repeat(TOOL_TEXT_LIMIT + 500);
+    const m: CcMessage = {
+      kind: "tool",
+      id: "t3",
+      at: "",
+      tool: { id: "tu3", name: "Bash", input: { command: "cat big" }, status: "ok", result: huge },
+    };
+    const [, body] = convSegments(m);
+    expect(body).toHaveLength(TOOL_TEXT_LIMIT);
+  });
+
+  it("toolBodyText：edit/write 没有正文段，bash 没结果也没有", () => {
+    expect(toolBodyText({ id: "a", name: "Edit", input: {}, status: "ok" })).toBeNull();
+    expect(toolBodyText({ id: "b", name: "Write", input: { content: "x" }, status: "ok" })).toBeNull();
+    expect(toolBodyText({ id: "c", name: "Bash", input: {}, status: "running" })).toBeNull();
+    expect(toolBodyText({ id: "d", name: "Read", input: { file_path: "/a" }, status: "ok" })).toContain(
+      "/a",
+    );
   });
 
   it("buildConvHits：按文档顺序收集、跨段定位、大小写不敏感", () => {

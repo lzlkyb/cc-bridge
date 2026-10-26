@@ -14,6 +14,7 @@ import { SessionNotices } from "./SessionNotices";
 export function CcPaneHead({
   bar,
   view,
+  title,
   targets,
   targetId,
   onTargetChange,
@@ -32,6 +33,8 @@ export function CcPaneHead({
 }: {
   bar: CcSession;
   view: CcView;
+  /** 会话标题（侧栏那一行现算的结果）。导出 Markdown 的 H1 用它。 */
+  title: string;
   targets: { id: string; label: string }[];
   targetId: string;
   onTargetChange: (id: string) => void;
@@ -47,7 +50,7 @@ export function CcPaneHead({
   conflict: string | null;
   onOpenHistory: (row: CcHistoryRow) => void;
   onJumpTo: (messageId: string) => void;
-  onDismissError: () => void;
+  onDismissError: (index: number) => void;
   /** 关 stderr 红条（与 `onDismissError` 分开，见 `SessionNotices`）。 */
   onDismissStderr: () => void;
 }) {
@@ -60,6 +63,7 @@ export function CcPaneHead({
         session={bar}
         messages={view.messages}
         resolved={view.resolved}
+        title={title}
         targets={targets}
         targetId={targetId}
         onTargetChange={onTargetChange}
@@ -83,11 +87,11 @@ export function CcPaneHead({
         retry={view.retry}
         processExited={view.processExited}
         dropped={view.dropped}
-        error={view.error}
+        errors={view.errors}
         stderr={lastStderr}
         compacted={view.compactedTokens}
         background={view.backgroundTasks}
-        onDismiss={onDismissError}
+        onDismissError={onDismissError}
         onDismissStderr={onDismissStderr}
       />
     </>

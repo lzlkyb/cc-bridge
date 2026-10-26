@@ -61,3 +61,16 @@ export function classifySlash(text: string): SlashVerdict {
   const command = SLASH_COMMANDS.find((c) => c.name === name);
   return command ? { kind: "known", command } : { kind: "unknown", name };
 }
+
+/**
+ * 这条用户消息是不是 `/clear`。
+ *
+ * 用途只有一个：在流里给清空点划一条线（`MessageList` → `ClearMark`）。
+ * 🔴 刻意**复用 `classifySlash`** 而不是再写一遍字符串比较：两处口径一旦分叉，
+ *    就会出现「命令真的发出去了、线却没划」（或反过来），而这种不一致只在
+ *    用户已经忘了上下文的时候才被发现。
+ */
+export function isClearCommand(text: string): boolean {
+  const v = classifySlash(text);
+  return v.kind === "known" && v.command.name === "/clear";
+}

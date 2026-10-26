@@ -6,6 +6,7 @@ import { isImeComposing } from "../../lib/utils";
 import type { CcImage } from "../../lib/ccImage";
 import { useCcMention } from "../../hooks/useCcMention";
 import { useCcDropImages } from "../../hooks/useCcDropImages";
+import { useComposerDraft } from "../../hooks/useComposerDraft";
 import { useComposerPolish } from "../../hooks/useComposerPolish";
 import { useCcSlashInput } from "../../hooks/useCcSlashInput";
 import {
@@ -55,6 +56,7 @@ function ComposerImpl({
   onPolish,
   mentionSource,
   prefill,
+  draftKey,
 }: {
   /**
    * 发一条消息。`images` 是这条消息附的图（可能为空数组）。
@@ -91,8 +93,11 @@ function ComposerImpl({
   onPolish?: (draft: string) => Promise<string | null>;
   /** 外部往输入框填一段草稿（空状态的示例 prompt）。`nonce` 变就重填，同一句连点两次也生效。 */
   prefill?: { text: string; nonce: number } | null;
+  /** 草稿落盘的键（`CcPane` 传 `paneKey`）：关窗口 / 重启后回来，字还在。不负责
+   *  切 app 标签（`CcGuiTab` 是 `keepMounted`）；取舍见 `lib/ccDraft.ts`。 */
+  draftKey: string;
 }) {
-  const [value, setValue] = useState("");
+  const [value, setValue] = useComposerDraft(draftKey);
   /** 发送键偏好（Enter / Ctrl+Enter），全局记忆。 */
   const sendKey = useSendKey();
   const areaRef = useRef<HTMLTextAreaElement>(null);
@@ -134,7 +139,8 @@ function ComposerImpl({
     el.focus();
     // 值更新后再放光标：同步设会落在旧值的位置。
     requestAnimationFrame(() => el.setSelectionRange(prefill.text.length, prefill.text.length));
-  }, [prefill]);
+    // `setValue` 是 `useState` 的 setter（引用恒定），列出只为让 exhaustive-deps 看得见。
+  }, [prefill, setValue]);
 
   // slash 命令交互（面板开合 / 补全 / 键位）见 `useCcSlashInput`。
   const slash = useCcSlashInput(value, setValue, boxRef);
