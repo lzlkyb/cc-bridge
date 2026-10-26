@@ -181,16 +181,102 @@ pub fn control_response_line(request_id: &str, verdict: &Verdict) -> String {
     .to_string()
 }
 
-/// 一条用户消息。
-pub fn user_message_line(text: &str) -> String {
+/// 一条用户消息里的一张图。
+///
+/// 🔴 `data` 是**裸 base64**，不带 `data:image/png;base64,` 前缀 —— CLI 不剥前缀，
+/// 带了它就把那一长串当图片数据原样转发给 API。判据见
+/// `docs/图片输入协议探针-2026-10-26.md`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserImage {
+    pub media_type: String,
+    pub data: String,
+}
+
+/// API 侧接受的格式。
+///
+/// 探针发现 CLI 会**按文件头重新嗅探并纠正**错误的 `media_type`（实测声明
+/// `image/bmp`、数据是 PNG ⇒ 转发出去变成一个正确的 `image/png`）。但那不是让
+/// 我们随便传的理由：明知不对就该在本地拦下，省得用户等一整轮才发现图没进去。
+const IMAGE_MEDIA_TYPES: &[&str] = &["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// 单图上限（二进制 5 MB）—— Anthropic 的硬限制，超了 API 直接 400。
+const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+
+/// 校验图片列表，不合格就整体拒绝。
+///
+/// 🔴 fail-closed，不做「跳过坏的、发好的」：用户以为发了三张、实际进去两张，
+/// 比直接报错糟得多 —— 他会基于一个错误的前提继续对话。
+pub fn check_images(images: &[UserImage]) -> Result<(), String> {
+    for (i, img) in images.iter().enumerate() {
+        let n = i + 1;
+        let mt = img.media_type.trim().to_ascii_lowercase();
+        if !IMAGE_MEDIA_TYPES.contains(&mt.as_str()) {
+            return Err(format!(
+                "第 {n} 张图格式不支持（{}），只收 PNG / JPEG / GIF / WebP",
+                img.media_type.trim()
+            ));
+        }
+        if img.data.is_empty() {
+            return Err(format!("第 {n} 张图没有内容"));
+        }
+        // base64 每 4 个字符 3 字节。这里取**上界**估算：宁可早拒一张刚好卡在
+        // 5 MB 边上的图（用户换一张的成本极低），也不要让真超限的图跑到 API 才 400
+        // —— 那时用户已经等了一整轮，而且错误信息里只有一句英文。
+        let bytes = img.data.len().div_ceil(4) * 3;
+        if bytes > MAX_IMAGE_BYTES {
+            return Err(format!(
+                "第 {n} 张图约 {:.1} MB，超过 5 MB 上限",
+                bytes as f64 / 1_048_576.0
+            ));
+        }
+        if !img
+            .data
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
+        {
+            return Err(format!(
+                "第 {n} 张图不是裸 base64（是不是带了 data: 前缀？）"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 一条带图的用户消息。
+///
+/// 图在前、文字在后：与 CLI 自己的排列一致（它会在 content 末尾追加
+/// `[Image: source: <临时文件路径>]`，那是它落盘后的引用，不占我们的位置）。
+/// 只有图没有文字时**不塞空 text 块** —— 空字符串对模型是无意义噪声。
+pub fn user_message_line_images(text: &str, images: &[UserImage]) -> String {
+    let mut content: Vec<Value> = Vec::with_capacity(images.len() + 1);
+    for img in images {
+        content.push(json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": img.media_type.trim().to_ascii_lowercase(),
+                "data": img.data,
+            },
+        }));
+    }
+    // 无图时保持原有行为（哪怕 text 是空串也照发一个 text 块），
+    // 免得「空消息」这件事在没有图片的场景下悄悄换了语义。
+    if !text.is_empty() || images.is_empty() {
+        content.push(json!({ "type": "text", "text": text }));
+    }
     json!({
         "type": "user",
         "message": {
             "role": "user",
-            "content": [{ "type": "text", "text": text }],
+            "content": content,
         },
     })
     .to_string()
+}
+
+/// 一条用户消息（纯文本）。
+pub fn user_message_line(text: &str) -> String {
+    user_message_line_images(text, &[])
 }
 
 /// 一个活着的轮次。
@@ -299,7 +385,16 @@ impl Run {
     }
 
     pub fn send_user(&self, text: &str) -> Result<(), String> {
-        self.write_line(&user_message_line(text))
+        self.send_user_images(text, &[])
+    }
+
+    /// 带图发一条。
+    ///
+    /// 校验放在写 stdin **之前**：不合格的图不该碰到进程 —— 一旦写进去，
+    /// 这一轮就已经开始了，用户只能看着一轮注定失败（或悄悄丢图）的对话跑完。
+    pub fn send_user_images(&self, text: &str, images: &[UserImage]) -> Result<(), String> {
+        check_images(images)?;
+        self.write_line(&user_message_line_images(text, images))
     }
 
     pub fn respond(&self, request_id: &str, verdict: &Verdict) -> Result<(), String> {
@@ -447,6 +542,114 @@ mod tests {
         assert_eq!(v["message"]["content"][0]["type"], "text");
         // 换行必须被 JSON 转义，不能变成两行 —— 否则协议流被劈开。
         assert!(!line.contains('\n'), "一行一条，不能含裸换行：{line}");
+    }
+
+    /// 一张可用的假图：`data` 只放 base64 合法字符，长度可控。
+    fn img(media_type: &str, bytes: usize) -> UserImage {
+        UserImage {
+            media_type: media_type.into(),
+            // 每 4 个字符 3 字节，补齐到 4 的倍数
+            data: "A".repeat(bytes.div_ceil(3) * 4),
+        }
+    }
+
+    /// 无图时**逐字节**等于老行为 —— 这条是给「改协议层」这件事兜底的：
+    /// 纯文本消息不允许因为图片支持而改变形状。
+    #[test]
+    fn no_image_is_byte_identical_to_plain_message() {
+        assert_eq!(
+            user_message_line("你好"),
+            user_message_line_images("你好", &[])
+        );
+    }
+
+    /// 图在前、文字在后（照 CLI 自己的排列）。
+    #[test]
+    fn image_goes_before_text() {
+        let line = user_message_line_images("看图", &[img("image/png", 300)]);
+        let v: Value = serde_json::from_str(&line).expect("合法 JSON");
+        let content = v["message"]["content"].as_array().expect("数组");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["type"], "base64");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["type"], "text");
+        assert!(!line.contains('\n'), "一行一条：{line}");
+    }
+
+    /// 只发图、不打字：不能塞一个空 text 块进 content。
+    #[test]
+    fn image_only_has_no_empty_text_block() {
+        let line = user_message_line_images("", &[img("image/jpeg", 300)]);
+        let v: Value = serde_json::from_str(&line).expect("合法 JSON");
+        let content = v["message"]["content"].as_array().expect("数组");
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "image");
+    }
+
+    /// 多图保序 —— 用户按粘贴顺序理解「第一张、第二张」。
+    #[test]
+    fn multiple_images_keep_order() {
+        let a = UserImage {
+            media_type: "image/png".into(),
+            data: "AAAA".into(),
+        };
+        let b = UserImage {
+            media_type: "image/webp".into(),
+            data: "BBBB".into(),
+        };
+        let line = user_message_line_images("", &[a, b]);
+        let v: Value = serde_json::from_str(&line).expect("合法 JSON");
+        let content = v["message"]["content"].as_array().expect("数组");
+        assert_eq!(content[0]["source"]["data"], "AAAA");
+        assert_eq!(content[1]["source"]["data"], "BBBB");
+    }
+
+    /// 声明大小写不该影响判定（前端可能拿到 `image/PNG`）。
+    #[test]
+    fn media_type_is_normalised() {
+        let line = user_message_line_images("", &[img("IMAGE/PNG", 300)]);
+        let v: Value = serde_json::from_str(&line).expect("合法 JSON");
+        assert_eq!(
+            v["message"]["content"][0]["source"]["media_type"],
+            "image/png"
+        );
+    }
+
+    /// 格式白名单外的图在写 stdin 之前就该被拒。
+    #[test]
+    fn unsupported_media_type_is_rejected() {
+        let err = check_images(&[img("image/bmp", 300)]).expect_err("bmp 不该放行");
+        assert!(err.contains("格式不支持"), "{err}");
+    }
+
+    /// 带了 `data:` 前缀的「base64」不是 base64 —— 放行等于让 CLI 转发生垃圾。
+    #[test]
+    fn data_url_prefix_is_rejected() {
+        let bad = UserImage {
+            media_type: "image/png".into(),
+            data: "data:image/png;base64,iVBORw0KGgo=".into(),
+        };
+        let err = check_images(&[bad]).expect_err("带前缀应被拒");
+        assert!(err.contains("裸 base64"), "{err}");
+    }
+
+    /// 空图 / 超 5 MB 都拒；两张一份不合格就整体拒（fail-closed）。
+    #[test]
+    fn size_and_emptiness_are_guarded() {
+        let empty = UserImage {
+            media_type: "image/png".into(),
+            data: String::new(),
+        };
+        assert!(check_images(&[empty]).is_err());
+
+        let huge = img("image/png", 5 * 1024 * 1024 + 3);
+        let err = check_images(&[huge]).expect_err("超限应被拒");
+        assert!(err.contains("5 MB"), "{err}");
+
+        // 一张好一张坏 ⇒ 整体拒
+        let mixed = [img("image/png", 300), img("image/bmp", 300)];
+        assert!(check_images(&mixed).is_err(), "不允许静默丢图");
     }
 
     /// pump 要能容忍坏行、BOM、非 UTF-8 残迹，并且读满整段。
