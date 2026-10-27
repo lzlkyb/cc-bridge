@@ -3,6 +3,29 @@ import { Icon } from "../ui/icon";
 import { Notice } from "./Notice";
 
 /**
+ * stderr 是不是「已经在某条前端错误里说过了」。
+ *
+ * 典型场景：远端探测失败 ⇒ 前端先落一条
+ * `远端探测失败: user@host: Permission denied (publickey,password).`，
+ * 同一时刻 CLI 的 stderr 尾巴里也有
+ * `Permission denied, please try again. / user@host: Permission denied (publickey,password).`。
+ * 两条各占一行、内容几乎一样，第一眼像重复渲染。实际是两个来源，但用户不需要看两遍。
+ *
+ * 判据刻意保守：只有 stderr 的**整行**被某条 error 完整包含才算重复（长度 ≥12 才比，
+ * 免得 `Error` 这种短词误判）。真重复藏掉；只要有一个细节不同就照常显示 ——
+ * 宁可多一条，不可少一条真正有用的。
+ */
+function isStderrRedundant(stderr: string[], errors: string[]): boolean {
+  if (errors.length === 0) return false;
+  const lines = stderr
+    .join(" / ")
+    .split(" / ")
+    .map((l) => l.trim())
+    .filter((l) => l.length >= 12);
+  return lines.length > 0 && lines.some((l) => errors.some((e) => e.includes(l)));
+}
+
+/**
  * 会话条下面那一叠提示：权限风险 / 重试 / 缓冲溢出 / CLI 错误 / 前端错误。
  *
  * 单独拆出来纯粹是因为 `CcGuiTab` 贴到 300 行的体量门禁了 —— 但这几块本来就
@@ -117,7 +140,7 @@ export function SessionNotices({
           {msg}
         </Notice>
       ))}
-      {stderr.length > 0 && (
+      {stderr.length > 0 && !isStderrRedundant(stderr, errors) && (
         <Notice tone="error" onDismiss={onDismissStderr}>
           <span className="font-mono">{stderr.join(" / ")}</span>
         </Notice>
