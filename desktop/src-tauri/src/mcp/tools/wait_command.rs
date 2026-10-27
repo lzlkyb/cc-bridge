@@ -114,9 +114,12 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
         let exited = exit_code_arc.lock().await.is_some() || stop_requested.load(Ordering::Relaxed);
         let exited_and_drained =
             exited && out_done.load(Ordering::Relaxed) && err_done.load(Ordering::Relaxed);
-        if exited_and_drained {
-            break;
-        }
+        // 🔴 先匹配、再判结束。顺序反过来有个真实的漏判：命令可能在**第一次轮询之前**
+        // 就跑完（快命令，或高并发下 `run_command` 的启动确认排队几秒、等 wait 拿到
+        // handle 时进程早已退出），那时 `exited_and_drained` 直接 break，`until_pattern`
+        // 一次都没扫过 —— 输出里明明有标记，返回的却是 `matchedPattern: false`，
+        // 调用方据此以为「等的东西没出现」。命令已结束时 `running` 仍按实际为 false，
+        // `timedOut` 由 `exit_code.is_some()` 压住，都不会被这次匹配带偏。
         if let Some(re) = &until {
             // 每次轮询都对**保存缓冲**重扫一遍（头 1/8 + 尾 7/8，约 1MB），100ms 一次完全
             // 可接受；换成「增量扫描」要为跨越缓冲边界的匹配单独设计，不值得为这点收益引入
@@ -133,6 +136,9 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
                 matched = true;
                 break;
             }
+        }
+        if exited_and_drained {
+            break;
         }
         if tokio::time::Instant::now() >= deadline {
             break;
@@ -303,11 +309,17 @@ mod tests {
     }
 
     /// 先打标记再慢跑：用来验证「命中即返回」时命令确实还在跑。
+    ///
+    /// 🔴 必须**明显慢于任何启动延迟**。曾用 `ping -n 4`（约 3 秒），全量并行跑
+    /// 800+ 测试时 `run_command(background)` 的启动确认会被排队几秒，等 wait 拿到
+    /// handle 时这条命令已经自己跑完 —— `running: true` 的前提直接不成立，两条用到
+    /// 它的测试随机变红（单跑必绿）。命令拉长到十几秒，排队再久也仍在跑；两条测试
+    /// 都是命中或超时即返回，不会因此变慢，只有真的失败时才会等满。
     fn slow_marker_command() -> &'static str {
         if cfg!(windows) {
-            "echo DONE_MARKER && ping -n 4 127.0.0.1 >NUL"
+            "echo DONE_MARKER && ping -n 15 127.0.0.1 >NUL"
         } else {
-            "echo DONE_MARKER && sleep 3"
+            "echo DONE_MARKER && sleep 12"
         }
     }
 
