@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { Fragment, useMemo, type ReactNode } from "react";
 import type { Token, Tokens } from "marked";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { Icon } from "../ui/icon";
@@ -107,12 +107,14 @@ function MarkdownTextImpl({ text, marks }: { text: string; marks?: CcMark[] }) {
   const blocks = (ts: Token[], tight = false): ReactNode =>
     ts.map((t, i) => {
       switch (t.type) {
-        case "paragraph":
-          return (
-            <p key={i} className={tight ? "" : "mb-2"}>
-              {inline((t as Tokens.Paragraph).tokens)}
-            </p>
-          );
+        case "paragraph": {
+          const kids = inline((t as Tokens.Paragraph).tokens);
+          // 🔴 `tight`（紧凑列表，`!lt.loose`）里不能再包 `<p>`：
+          // 列表是 `list-inside`，marker 属于**行内**盒。`<li>` 的第一个子元素
+          // 一旦是块级元素，marker 就自成一行、正文整体下移缩进 —— 截图里
+          // 表现为孤零零一个 `•` 挂在上一行。裸 inline 才和 marker 同行。
+          return tight ? <Fragment key={i}>{kids}</Fragment> : <p key={i} className="mb-2">{kids}</p>;
+        }
         case "heading": {
           const ht = t as Tokens.Heading;
           const Tag = (`h${Math.min(ht.depth, 4)}` as "h1" | "h2" | "h3" | "h4");
@@ -203,11 +205,9 @@ function MarkdownTextImpl({ text, marks }: { text: string; marks?: CcMark[] }) {
           return null;
         case "text": {
           const tt = t as Tokens.Text;
-          return (
-            <p key={i} className={tight ? "" : "mb-2"}>
-              {tt.tokens && tt.tokens.length > 0 ? inline(tt.tokens) : leaf(tt.text)}
-            </p>
-          );
+          const kids = tt.tokens && tt.tokens.length > 0 ? inline(tt.tokens) : leaf(tt.text);
+          // 同上：紧凑列表里裸 inline，否则 marker 单独占一行。
+          return tight ? <Fragment key={i}>{kids}</Fragment> : <p key={i} className="mb-2">{kids}</p>;
         }
         case "html":
           // 原始 HTML 不解析、原样展示为转义文本 —— 内容不丢，也不开 XSS 面。

@@ -48,6 +48,30 @@ it("列表与粗体渲染成元素而不是源码", () => {
   expect(container.textContent).not.toContain("**");
 });
 
+/**
+ * 🔴 紧凑列表的 `<li>` 里**不能有块级 `<p>`**。
+ *
+ * 列表是 `list-inside`，项目符号属于行内盒。`li` 的第一个子元素一旦是块级的
+ * `<p>`，marker 会自成一行、正文整体下移 —— 表现就是截图里孤零零一个 `•`
+ * 挂在上一行、内容和它分家。这条断言直接盯着那个结构。
+ */
+it("紧凑列表：项目符号与内容同行（li 内不出现 p）", () => {
+  render("- `Path`: /tmp/ws\n- `Contents`: 空目录\n");
+  const lis = Array.from(container.querySelectorAll("li"));
+  expect(lis).toHaveLength(2);
+  for (const li of lis) {
+    expect(li.querySelector("p")).toBeNull();
+    expect(li.textContent).toContain(":");
+  }
+});
+
+it("松列表（项之间有空行）仍按段落分段", () => {
+  render("- 第一项\n\n- 第二项\n");
+  const lis = Array.from(container.querySelectorAll("li"));
+  expect(lis).toHaveLength(2);
+  expect(lis[0].querySelector("p")).not.toBeNull();
+});
+
 it("https 链接带 target=_blank；javascript: 不成链接", () => {
   render("[正常](https://example.com) 与 [危险](javascript:alert(1))");
   const links = Array.from(container.querySelectorAll("a"));
