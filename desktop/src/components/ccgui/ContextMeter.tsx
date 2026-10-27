@@ -87,10 +87,13 @@ export function ContextMeter({
       >
         {bar && (
           // 纯视觉条：数字就在旁边，读屏软件读文字，这条 aria 隐藏。
-          <span aria-hidden className="relative h-[4px] w-10 overflow-hidden rounded-full bg-muted">
+          // 🔴 轨道不能用 `bg-muted`：浅色主题下它和 `bg-card` 几乎同色，2% 占用时
+          // 整条读起来像数字前面多打了个逗号（截图里就是这么回事）。中性加深 +
+          // 高度 5px，并给填充段最小 2px 保证「用了一点」看得见。
+          <span aria-hidden className="relative h-[5px] w-10 overflow-hidden rounded-full bg-foreground/15">
             <span
-              className={`absolute inset-y-0 left-0 rounded-full ${warn ? "bg-warning" : "bg-primary/70"}`}
-              style={{ width: `${contextPercent(bar)}%` }}
+              className={`absolute inset-y-0 left-0 rounded-full ${warn ? "bg-warning" : "bg-primary"}`}
+              style={{ width: `${contextPercent(bar)}%`, minWidth: 2 }}
             />
           </span>
         )}
