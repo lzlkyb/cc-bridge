@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { invoke } from "../../lib/tauri";
 import type { CcHistoryList, CcHistoryRow } from "../../lib/ccEventTypes";
 import { isOutsideDismiss } from "../../lib/utils";
 import { formatRelativeSecs } from "../../lib/utils";
 import { highlightSegments } from "../../lib/ccHighlight";
 import { Icon } from "../ui/icon";
+import { useAnchoredPopover } from "../../hooks/useAnchoredPopover";
 
 /**
  * 历史会话面板。
@@ -40,15 +41,19 @@ const SEARCH_DEBOUNCE_MS = 150;
 export function HistoryPanel({
   onOpen,
   onClose,
+  anchorRef,
 }: {
   onOpen: (row: CcHistoryRow) => void;
   onClose: () => void;
+  /** 历史按钮的容器。浮层按它的 rect 定位（fixed + clamp）。 */
+  anchorRef: RefObject<HTMLElement>;
 }) {
   const [data, setData] = useState<CcHistoryList | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const boxRef = useRef<HTMLDivElement>(null);
+  const style = useAnchoredPopover(anchorRef, true, { width: 380, align: "end", maxH: 420 });
   /** 请求序号：慢的全量扫描可能晚于快的过滤查询返回，旧响应回来必须丢弃，
    *  否则搜索框已清空、列表却停在过期的过滤结果上。 */
   const reqSeqRef = useRef(0);
@@ -98,18 +103,19 @@ export function HistoryPanel({
   const rows = data?.rows ?? [];
 
   /**
-   * 🔴 `right-0` 而不是 `left-0`：开关按钮在会话条**最右端**那一组里（它右边只剩
-   * 新对话与终端，约 110px），而面板宽 380px。用 `left-0` 向右展开必然越过 pane
-   * 右边界约 220px，被 `data-cc-panel` 的 `overflow-hidden` 裁掉 —— 任何窗口宽度
-   * 都一样，不是窄窗才有的问题。同排浮层（`ApprovalAuditPanel` / `ContextTaxPanel` /
-   * `ModelPicker`）用的都是 `right-0`。
+   * 🔴 定位交给 `useAnchoredPopover`（fixed + 视口 clamp），不能用 `absolute right-0`。
+   * 上一版把 `left-0` 改成 `right-0` 只挡住了「越过 pane 右边界」，漏了另一半：
+   * 会话条 `flex-wrap` 之后这一组会整组换到第二行、贴到 pane 左端，380px 宽的面板
+   * 从那里向左伸，前半截又被 `data-cc-panel` 的 `overflow-hidden` 切掉。
+   * 两个边界都得管，所以按锚点 rect 算坐标才是完整解法。
    */
   return (
     <div
       ref={boxRef}
       role="dialog"
       aria-label="历史对话"
-      className="absolute right-0 top-full z-30 mt-1 flex max-h-[min(420px,calc(100vh-180px))] w-[min(380px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+      style={style}
+      className="z-30 flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
     >
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
         <Icon name="history" size={12} className="shrink-0 opacity-70" />

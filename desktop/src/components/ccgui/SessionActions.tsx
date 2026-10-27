@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useRef, useState } from "react";
 import type { CcHistoryRow } from "../../lib/ccEventTypes";
 import type { CcMessage, CcSession } from "../../lib/ccGuiTypes";
 import { useCcApprovalAudit } from "../../hooks/useCcApprovalAudit";
@@ -45,6 +45,10 @@ function SessionActionsImpl({
 }) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [changesetOpen, setChangesetOpen] = useState(false);
+  // 两个浮层的定位锚点：fixed 坐标由 `useAnchoredPopover` 按它们的 rect 算，
+  // 不再用 `absolute`（会话条换行后会被 pane 的左边界裁掉）。
+  const historyAnchor = useRef<HTMLSpanElement>(null);
+  const changesetAnchor = useRef<HTMLSpanElement>(null);
   // 批 4-2：审批点分组 + 撤销。只在面板打开时查审计（理由见 hook 头注释）。
   const audit = useCcApprovalAudit({
     messages,
@@ -70,7 +74,7 @@ function SessionActionsImpl({
       {/* 变更集入口：没有改动就不占位（同分支 chip 的「未知不占位」）。
           带数字是因为「改了没有、改了几处」是这一行最值得知道的事。 */}
       {session.changeset.length > 0 && (
-        <span className="relative flex shrink-0 items-center">
+        <span ref={changesetAnchor} className="relative flex shrink-0 items-center">
           <button
             type="button"
             data-cc-toggle="changeset"
@@ -101,6 +105,7 @@ function SessionActionsImpl({
                 onJumpTo(id);
               }}
               onClose={() => setChangesetOpen(false)}
+              anchorRef={changesetAnchor}
             />
           )}
         </span>
@@ -120,7 +125,7 @@ function SessionActionsImpl({
         </button>
       )}
 
-      <span className="relative flex shrink-0 items-center">
+      <span ref={historyAnchor} className="relative flex shrink-0 items-center">
         <button
           type="button"
           data-cc-toggle="history"
@@ -143,6 +148,7 @@ function SessionActionsImpl({
               setHistoryOpen(false);
               onOpenHistory(row);
             }}
+            anchorRef={historyAnchor}
           />
         )}
       </span>

@@ -101,6 +101,9 @@ async function render(
     onClose: vi.fn<() => void>(),
   };
   const list = opts.groups ?? groups;
+  // 定位锚点：组件用 `useAnchoredPopover` 按锚点 rect 算 fixed 坐标。
+  const anchor = document.createElement("button");
+  document.body.append(anchor);
   await act(async () => {
     root.render(
       <ApprovalAuditPanel
@@ -112,9 +115,11 @@ async function render(
         onRevertGroup={h.onRevertGroup}
         onJump={h.onJump}
         onClose={h.onClose}
+        anchorRef={{ current: anchor }}
       />,
     );
   });
+  anchor.remove();
   return h;
 }
 

@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { isOutsideDismiss } from "../../lib/utils";
+import { useAnchoredPopover } from "../../hooks/useAnchoredPopover";
 import { Icon } from "../ui/icon";
 
 /**
@@ -32,13 +33,20 @@ export function ModelPicker({
   value,
   onChange,
   onClose,
+  anchorRef,
 }: {
   value: string;
   onChange: (model: string) => void;
   onClose: () => void;
+  /** 触发按钮的容器（会话条里那个 `span`）。浮层按它的 rect 定位，见 hook 头注。 */
+  anchorRef: RefObject<HTMLElement>;
 }) {
   const [draft, setDraft] = useState(value);
   const boxRef = useRef<HTMLDivElement>(null);
+  // 🔴 不能用 `absolute right-0`：会话条一换行，锚点就跑到 pane 左端，
+  // 浮层左半边会被 `data-cc-panel` 的 `overflow-hidden` 切掉（`Opus Plan`
+  // 显示成 `s Plan`）。详见 `useAnchoredPopover`。
+  const style = useAnchoredPopover(anchorRef, true, { width: 260 });
 
   // 点外面关 + Esc 关。`pointerdown` Capture：按下的那一刻就收。
   // 开关按钮自身不算外点（`isOutsideDismiss` 的理由写在那边）。
@@ -62,7 +70,8 @@ export function ModelPicker({
       ref={boxRef}
       role="dialog"
       aria-label="选择模型"
-      className="absolute right-0 top-full z-30 mt-1 w-[260px] overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+      style={style}
+      className="z-30 flex flex-col overflow-y-auto rounded-xl border border-border bg-card shadow-xl"
     >
       <div className="border-b border-border px-3 py-2">
         <span className="text-[12px] font-semibold text-foreground">模型</span>

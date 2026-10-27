@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   CONTEXT_WARN_RATIO,
   contextPercent,
@@ -45,6 +45,7 @@ export function ContextMeter({
   running: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLSpanElement>(null);
   // `enabled` 恒真：见组件头注释「为什么这里就查」。
   const tax = useCcContextTax(sessionId, true, running);
   const drop = (tax.data?.droppedTotal ?? 0) > 0;
@@ -70,7 +71,7 @@ export function ContextMeter({
     : "输入 + 输出 token · 点击查看被什么吃掉";
 
   return (
-    <span className="relative flex shrink-0 items-center">
+    <span ref={anchorRef} className="relative flex shrink-0 items-center">
       <button
         type="button"
         // 🔴 这个标记是「面板别把我当外点」的唯一凭据（见 ContextTaxPanel 的
@@ -103,6 +104,7 @@ export function ContextMeter({
           loading={tax.isFetching}
           used={bar?.used ?? tokens}
           onClose={() => setOpen(false)}
+          anchorRef={anchorRef}
         />
       )}
     </span>

@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useRef, useState } from "react";
 import { PERMISSION_MODE_LABEL, type CcPermissionMode, type CcSession } from "../../lib/ccGuiTypes";
 import type { CcMessage } from "../../lib/ccGuiTypes";
 import { contextBar } from "../../lib/ccContextUsage";
@@ -87,6 +87,9 @@ function SessionBarImpl({
   // （老流水 / 老版本 CLI）时 bar 为 null，退回只显示已用 token 的旧形态。
   const bar = contextBar(session.modelUsage);
   const [modelOpen, setModelOpen] = useState(false);
+  // 浮层的定位锚点。必须挂在**按钮容器**上：浮层按它的 rect 算 fixed 坐标，
+  // 用 `absolute` 会随会话条换行被 pane 的左边界裁掉（见 useAnchoredPopover）。
+  const modelAnchor = useRef<HTMLSpanElement>(null);
   // 显示优先级：我们的选择 > CLI 回报的当前模型 > 占位。
   // 只用 CLI 回报值会让「选了默认」和「没选过」看起来一模一样。
   const modelLabel = session.model || session.activeModel || "默认模型";
@@ -128,7 +131,7 @@ function SessionBarImpl({
 
       {/* max-w-full + flex-wrap：这一组自己也比容器宽时在组内换行，而不是撑破容器。 */}
       <span className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
-        <span className="relative flex items-center">
+        <span ref={modelAnchor} className="relative flex items-center">
           <button
             type="button"
             data-cc-toggle="model"
@@ -146,6 +149,7 @@ function SessionBarImpl({
               value={session.model}
               onChange={onModelChange}
               onClose={() => setModelOpen(false)}
+              anchorRef={modelAnchor}
             />
           )}
         </span>

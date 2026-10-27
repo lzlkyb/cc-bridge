@@ -1,10 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 import { isOutsideDismiss } from "../../lib/utils";
 import { revertKey } from "../../hooks/useCcApprovalAudit";
 import type { ApprovalFileChange, ApprovalGroup, ApprovalPoint } from "../../lib/ccApprovalAudit";
 import { Icon, type IconName } from "../ui/icon";
 import { ApprovalFileRow } from "./ApprovalFileRow";
+import { useAnchoredPopover } from "../../hooks/useAnchoredPopover";
 
 /**
  * 「本会话改动」浮层（批 4-2）：按**审批点**分组，不是按文件聚合。
@@ -15,7 +16,9 @@ import { ApprovalFileRow } from "./ApprovalFileRow";
  *
  * 沿用同排浮层的材质（`bg-card` + `shadow-xl`），宽度 400 → 440：
  * 一行要放 [决定][工具][路径][±][撤销] 五段，400 会挤到换行。
- * 浮层 `absolute` 不占布局 —— 占高度会把消息区顶跳（同 HistoryPanel 的理由）。
+ * 浮层不占布局 —— 占高度会把消息区顶跳（同 HistoryPanel 的理由）。定位走
+ * `useAnchoredPopover`（fixed + 视口 clamp）：`absolute right-0` 在会话条换行后
+ * 会让 440px 宽的面板左半截被 `data-cc-panel` 的 `overflow-hidden` 切掉。
  */
 
 /** 决定 → 图标 + 颜色 + 说明。区分「自动放行」与「我点的允许」，那是两件事。 */
@@ -101,6 +104,7 @@ export function ApprovalAuditPanel({
   onRevertGroup,
   onJump,
   onClose,
+  anchorRef,
 }: {
   groups: ApprovalGroup[];
   stat: { points: number; files: number; revertable: number; denied: number };
@@ -110,8 +114,11 @@ export function ApprovalAuditPanel({
   onRevertGroup: (g: ApprovalGroup) => void;
   onJump: (messageId: string) => void;
   onClose: () => void;
+  /** 变更集按钮的容器。浮层按它的 rect 定位。 */
+  anchorRef: RefObject<HTMLElement>;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  const style = useAnchoredPopover(anchorRef, true, { width: 440, align: "end", maxH: 520 });
 
   // 点外面关 + Esc 关。开关按钮自身不算外点（`isOutsideDismiss` 的理由写在那边）。
   useEffect(() => {
@@ -134,7 +141,8 @@ export function ApprovalAuditPanel({
       ref={boxRef}
       role="dialog"
       aria-label="本会话改动"
-      className="absolute right-0 top-full z-30 mt-1 flex max-h-[520px] w-[min(440px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+      style={style}
+      className="z-30 flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
     >
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
         <Icon name="file" size={12} className="shrink-0 opacity-70" />

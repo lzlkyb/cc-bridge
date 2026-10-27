@@ -59,9 +59,14 @@ afterEach(async () => {
 });
 
 async function mount(onClose: () => void = vi.fn()) {
+  // 浮层的定位锚点：组件现在用 `useAnchoredPopover` 按锚点 rect 算 fixed 坐标，
+  // 没有锚点就拿不到 style。测试里挂一个真实节点即可（getBoundingClientRect 全 0 也无妨）。
+  const anchor = document.createElement("button");
+  document.body.append(anchor);
   await act(async () => {
-    root.render(<HistoryPanel onOpen={vi.fn()} onClose={onClose} />);
+    root.render(<HistoryPanel onOpen={vi.fn()} onClose={onClose} anchorRef={{ current: anchor }} />);
   });
+  anchor.remove();
   // 首次加载走 setTimeout(0)：等它跑完并落定。
   await act(async () => {
     await sleep(20);

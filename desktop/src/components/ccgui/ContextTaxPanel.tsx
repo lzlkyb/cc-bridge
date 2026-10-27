@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type RefObject } from "react";
 import {
   breakdown,
   formatBytes,
@@ -10,6 +10,7 @@ import {
 } from "../../lib/ccContextTax";
 import { Icon } from "../ui/icon";
 import { isOutsideDismiss } from "../../lib/utils";
+import { useAnchoredPopover } from "../../hooks/useAnchoredPopover";
 
 /**
  * 上下文构成面板（批 4-1）。
@@ -28,22 +29,27 @@ import { isOutsideDismiss } from "../../lib/utils";
  * - `drop`（≥49,823 字符）：**客户端**把整条降级成 2KB 预览，模型当轮没看到、
  *   也不会回读。后者才是事故 —— 用户抱怨「它说没看到文件」时答案就在这里。
  *
- * 浮层不占布局（`absolute`，同 HistoryPanel / ApprovalAuditPanel）：占高度会触发消息区
- * 收缩，正在读的位置跟着跳。
+ * 浮层不占布局，但**也不是 `absolute`**：会话条会 `flex-wrap`，窗口一窄右端那一组
+ * 就整组换到第二行、贴在 pane 左端，`right-0` 的左半边会被 `data-cc-panel` 的
+ * `overflow-hidden` 切掉。定位由 `useAnchoredPopover` 统一给（fixed + clamp）。
  */
 export function ContextTaxPanel({
   tax,
   loading,
   used,
   onClose,
+  anchorRef,
 }: {
   tax: CcContextTax | null;
   loading: boolean;
   /** 当前上下文已用 token（与会话条余量条同源）。 */
   used: number;
   onClose: () => void;
+  /** 余量条按钮容器，浮层按它的 rect 定位。 */
+  anchorRef: RefObject<HTMLElement>;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  const style = useAnchoredPopover(anchorRef, true, { width: 328, align: "end" });
   const view = useMemo(() => breakdown(tax, used), [tax, used]);
   const level = warnLevel(tax);
 
@@ -74,7 +80,8 @@ export function ContextTaxPanel({
       ref={boxRef}
       role="dialog"
       aria-label="上下文构成"
-      className="absolute right-0 top-full z-40 mt-1 flex w-[min(328px,calc(100vw-24px))] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
+      style={style}
+      className="z-40 flex flex-col overflow-y-auto rounded-xl border border-border bg-card shadow-xl"
     >
       <div className="flex shrink-0 flex-col gap-1.5 border-b border-border px-3 pb-2 pt-2.5">
         <div className="flex items-baseline gap-1.5">
