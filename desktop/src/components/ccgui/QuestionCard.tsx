@@ -58,6 +58,7 @@ function QuestionCardImpl({
   return (
     <div
       data-cc-entity
+      data-cc-approval
       role="group"
       aria-label="CC 在问你"
       className="overflow-hidden rounded-[10px] border border-warning/45 bg-warning/[.06]"

@@ -1,29 +1,7 @@
 import type { CcRetryInfo } from "../../lib/ccEventTypes";
 import { Icon } from "../ui/icon";
 import { Notice } from "./Notice";
-
-/**
- * stderr 是不是「已经在某条前端错误里说过了」。
- *
- * 典型场景：远端探测失败 ⇒ 前端先落一条
- * `远端探测失败: user@host: Permission denied (publickey,password).`，
- * 同一时刻 CLI 的 stderr 尾巴里也有
- * `Permission denied, please try again. / user@host: Permission denied (publickey,password).`。
- * 两条各占一行、内容几乎一样，第一眼像重复渲染。实际是两个来源，但用户不需要看两遍。
- *
- * 判据刻意保守：只有 stderr 的**整行**被某条 error 完整包含才算重复（长度 ≥12 才比，
- * 免得 `Error` 这种短词误判）。真重复藏掉；只要有一个细节不同就照常显示 ——
- * 宁可多一条，不可少一条真正有用的。
- */
-function isStderrRedundant(stderr: string[], errors: string[]): boolean {
-  if (errors.length === 0) return false;
-  const lines = stderr
-    .join(" / ")
-    .split(" / ")
-    .map((l) => l.trim())
-    .filter((l) => l.length >= 12);
-  return lines.length > 0 && lines.some((l) => errors.some((e) => e.includes(l)));
-}
+import { ConnectionIssue } from "./ConnectionIssue";
 
 /**
  * 会话条下面那一叠提示：权限风险 / 重试 / 缓冲溢出 / CLI 错误 / 前端错误。
@@ -46,8 +24,13 @@ export function SessionNotices({
   background,
   onDismissError,
   onDismissStderr,
+  unavailable, retrying, onRetry, onSettings,
 }: {
   /** `bypassPermissions` 的风险文案。没有就不渲染。 */
+  unavailable?: boolean;
+  retrying?: boolean;
+  onRetry?: () => void;
+  onSettings?: () => void;
   risk: string | undefined;
   /**
    * 同目录下正在跑的另一条会话标题。`null` = 没有冲突。
@@ -118,8 +101,7 @@ export function SessionNotices({
           这里刻意不给 dismiss：重开后事件流自己会撤掉它，让用户手动关反而多一步。 */}
       {processExited && (
         <Notice tone="warn">
-          claude 进程在生成中退出了（崩溃或被中断）。下一句会自动带{" "}
-          <span className="font-mono">--resume</span> 重开，前面的对话不会丢。
+          本轮生成意外结束。发送下一条消息时会尝试恢复原会话，前面的对话已保留。
         </Notice>
       )}
       {/* 压缩与后台任务都是「CC 自己做的事」：不提示的话用户只看到模型突然
@@ -133,18 +115,10 @@ export function SessionNotices({
       {dropped > 0 && (
         <Notice tone="info">更早的 {dropped} 条事件已滚出缓冲，翻不到更上面了。</Notice>
       )}
-      {/* 每个前端错误各一条、各带自己的 ×：关掉一条不该顺手关掉另一条。
-          key 用下标是安全的 —— 关掉的永远是「第 i 条」，列表本身只做尾部追加。 */}
-      {errors.map((msg, i) => (
-        <Notice key={`e${i}`} tone="error" onDismiss={() => onDismissError(i)}>
-          {msg}
-        </Notice>
-      ))}
-      {stderr.length > 0 && !isStderrRedundant(stderr, errors) && (
-        <Notice tone="error" onDismiss={onDismissStderr}>
-          <span className="font-mono">{stderr.join(" / ")}</span>
-        </Notice>
-      )}
+      <ConnectionIssue errors={errors} stderr={stderr} unavailable={unavailable} retrying={retrying} onRetry={onRetry} onSettings={onSettings} onDismiss={() => {
+        for (let i = errors.length - 1; i >= 0; i--) onDismissError(i);
+        onDismissStderr();
+      }} />
     </>
   );
 }

@@ -205,10 +205,10 @@ function nextUserId(messages: CcMessage[]): string {
   return `user:${n}`;
 }
 
-function upsertText(messages: CcMessage[], blockId: string, text: string, streaming: boolean): CcMessage[] {
+function upsertText(messages: CcMessage[], blockId: string, text: string, streaming: boolean, model: string | null): CcMessage[] {
   const idx = messages.findIndex((m) => m.kind === "assistant" && m.id === blockId);
   if (idx < 0) {
-    return [...messages, { kind: "assistant", id: blockId, at: "", text }];
+    return [...messages, { kind: "assistant", id: blockId, at: "", text, ...(model ? { model } : {}) }];
   }
   const cur = messages[idx];
   if (cur.kind !== "assistant") return messages;
@@ -346,7 +346,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       };
 
     case "text":
-      return { ...view, messages: upsertText(view.messages, event.blockId, event.text, event.streaming) };
+      return { ...view, messages: upsertText(view.messages, event.blockId, event.text, event.streaming, view.model) };
 
     // 思维链渲染成**默认折叠**的一行：长任务里它是「还活着」的唯一证据，
     // 摊开却会把正文冲出视口。事件照收（Rust 侧有测试保证不漏）。

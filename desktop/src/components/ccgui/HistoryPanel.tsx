@@ -1,3 +1,4 @@
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { invoke } from "../../lib/tauri";
 import type { CcHistoryList, CcHistoryRow } from "../../lib/ccEventTypes";
@@ -53,6 +54,7 @@ export function HistoryPanel({
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const boxRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(boxRef, { onEscape: onClose });
   const style = useAnchoredPopover(anchorRef, true, { width: 380, align: "end", maxH: 420 });
   /** 请求序号：慢的全量扫描可能晚于快的过滤查询返回，旧响应回来必须丢弃，
    *  否则搜索框已清空、列表却停在过期的过滤结果上。 */

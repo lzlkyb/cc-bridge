@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { ChatPopover } from "./ChatPopover";
+import { useRef, useState } from "react";
 import { Icon } from "../ui/icon";
 
 /**
@@ -39,68 +40,7 @@ export function SessionRowMenu({
   const [renaming, setRenaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /**
-   * 浮层坐标（`position: fixed`）。
-   *
-   * 🔴 不能用 `absolute right-0 top-full`：侧栏列表容器是 `overflow-y-auto`，
-   * 绝对定位的子元素会被它**裁掉**（CSS 里一个轴不是 visible 时另一个轴会变成
-   * auto）—— 最后一行的菜单会「点了没反应」，其实是被裁在容器外。
-   * 所以按按钮的 `getBoundingClientRect()` 算屏幕坐标，靠近底部时向上翻。
-   */
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  const MENU_W = 210;
-  /** 估算高度（两行菜单 + 说明），只用于判断「下面放不放得下」。 */
-  const MENU_H = 132;
-
-  const place = () => {
-    const r = btnRef.current?.getBoundingClientRect();
-    if (!r) return false;
-    const left = Math.max(8, Math.min(r.right - MENU_W, window.innerWidth - MENU_W - 8));
-    const below = r.bottom + 4;
-    const top =
-      below + MENU_H > window.innerHeight - 8
-        ? Math.max(8, r.top - MENU_H - 4)
-        : below;
-    setPos({ top, left });
-    return true;
-  };
-
-  // 点外面 / Esc 关（与 ModelPicker 同一条规矩：pointerdown Capture，按下即收）。
-  // 另外滚动时直接关：fixed 浮层不会跟着行滚，留着它就会飘在别的行上。
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: PointerEvent) => {
-      if (boxRef.current?.contains(e.target as Node)) return;
-      setOpen(false);
-      setRenaming(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      // Esc 先退掉「正在改名」，再退菜单 —— 一步退到底会丢掉刚写的内容。
-      if (renaming) {
-        setRenaming(false);
-        setError(null);
-      } else {
-        setOpen(false);
-      }
-    };
-    const onScroll = () => {
-      setOpen(false);
-      setRenaming(false);
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("scroll", onScroll, true);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("scroll", onScroll, true);
-    };
-  }, [open, renaming]);
-
   const startRename = () => {
     setDraft(title);
     setRenaming(true);
@@ -141,7 +81,7 @@ export function SessionRowMenu({
   };
 
   return (
-    <div ref={boxRef} className="shrink-0" onClick={(e) => e.stopPropagation()}>
+    <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
       <button
         ref={btnRef}
         type="button"
@@ -155,7 +95,6 @@ export function SessionRowMenu({
             setRenaming(false);
             return;
           }
-          if (!place()) return;
           setRenaming(false);
           setError(null);
           setOpen(true);
@@ -166,12 +105,9 @@ export function SessionRowMenu({
         <Icon name="more" size={12} />
       </button>
 
-      {open && pos && (
-        <div
-          role="menu"
-          style={{ top: pos.top, left: pos.left, width: MENU_W }}
-          className="fixed z-40 overflow-hidden rounded-xl border border-border bg-card shadow-xl"
-        >
+      {open && (
+        <ChatPopover anchorRef={btnRef} label="会话操作" width={260} onClose={() => { if (renaming) setRenaming(false); else setOpen(false); }}>
+          <div data-cc-sidebar-menu>
           {rowId === null ? (
             <p className="px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">
               这条会话还没落过盘（说一句话之后才能改名 / 归档）。
@@ -245,7 +181,8 @@ export function SessionRowMenu({
               {error && <p className="px-2 pb-1 text-[11px] text-destructive-ink">{error}</p>}
             </div>
           )}
-        </div>
+          </div>
+        </ChatPopover>
       )}
     </div>
   );

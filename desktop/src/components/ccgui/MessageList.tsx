@@ -11,6 +11,7 @@ import { MessageText } from "./MessageText";
 import { ClearMark, StopMark } from "./StreamMarks";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { TodoProgressCard } from "./TodoProgressCard";
+import { ExecutionSummary } from "./ExecutionSummary";
 import { ToolCard } from "./ToolCard";
 import { TurnFooter } from "./TurnFooter";
 import { UserMessageBubble } from "./UserMessageBubble";
@@ -104,6 +105,22 @@ export function MessageList({
   /** 停止点锚集合（元素是消息 id，空串 = 流**开头**）。每条消息 `includes` 一遍数组没必要。 */
   const stopSet = new Set(stops);
 
+  const groups = new Map<number, Extract<CcMessage, { kind: "tool" }>[] >();
+  const grouped = new Set<number>();
+  for (let i = 0; i < messages.length; i++) {
+    const group: Extract<CcMessage, { kind: "tool" }>[] = [];
+    let end = i;
+    while (end < messages.length) {
+      const item = messages[end];
+      if (item.kind !== "tool" || item.tool.status !== "ok" || toolKind(item.tool.name) === "todo" || turnsByAfterId.has(item.id) || stopSet.has(item.id)) break;
+      group.push(item); end++;
+    }
+    if (group.length > 1) {
+      groups.set(i, group);
+      for (let j = i + 1; j < end; j++) grouped.add(j);
+      i = end - 1;
+    }
+  }
   return (
     <>
       {/* 空串的停止点：刚发出去就被停，一条消息都没产出 ⇒ 那个落点在时间轴上
@@ -112,6 +129,9 @@ export function MessageList({
           读起来像是「刚才那一轮（已经成功的那轮）被停了」。 */}
       {stopSet.has("") && <StopMark />}
       {messages.map((m: CcMessage, index) => {
+        if (grouped.has(index)) return null;
+        const group = groups.get(index);
+        if (group) return <ExecutionSummary key={m.id} messages={group} marksByMsg={marksByMsg} />;
         const marks = marksByMsg?.get(m.id);
         const footers = turnsByAfterId.get(m.id);
         // 整个消息渲染体放进 IIFE，只为在它后面补脚注：五个分支各自 `return`
@@ -135,29 +155,11 @@ export function MessageList({
           }
           if (m.kind === "assistant") {
             return (
-              <div key={m.id} className="group/msg relative flex gap-2">
-                <span className="mt-[2px] flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] bg-primary/10 text-primary">
-                  <Icon name="sparkles" size={11} />
-                </span>
-                <div className="min-w-0 flex-1 pt-[1px]">
-                  <MessageText text={m.text} marks={marks} />
-                </div>
-                {/* 正文悬浮复制：工具卡 / 思考全文早有了，正文是补齐项（设计稿 C 期）。
-                    focus-visible 常显 —— 键盘用户没有 hover。
-                    🔴 `top-0` 不是 `-top-2`：负偏移会让按钮探出本节容器，压在上一条
-                    消息的正文上，hover 时看着像给上一条挂了操作。 */}
-                <button
-                  type="button"
-                  onClick={() => copy(`msg:${m.id}`, m.text)}
-                  title={isCopied(`msg:${m.id}`) ? "已复制" : "复制全文"}
-                  aria-label="复制全文"
-                  aria-live="polite"
-                  className="absolute right-0 top-0 flex h-6 items-center gap-1 rounded-md border border-border bg-card/95 px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/msg:opacity-100"
-                >
-                  <Icon name={isCopied(`msg:${m.id}`) ? "check" : "copy"} size={10} />
-                  {isCopied(`msg:${m.id}`) ? "已复制" : "复制"}
-                </button>
-              </div>
+              <article key={m.id} className="cc-assistant-message">
+                <div className="cc-assistant-heading"><Icon name="sparkles" size={19} /><span>Claude</span>{m.model && <small>{m.model}</small>}</div>
+                <div className="cc-assistant-content"><MessageText text={m.text} marks={marks} /></div>
+                <button type="button" className="cc-message-copy" onClick={() => copy(`msg:${m.id}`, m.text)} aria-label="复制全文" aria-live="polite"><Icon name={isCopied(`msg:${m.id}`) ? "check" : "copy"} size={14} />{isCopied(`msg:${m.id}`) ? "已复制" : "复制回复"}</button>
+              </article>
             );
           }
           if (m.kind === "thinking") {

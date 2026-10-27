@@ -54,7 +54,7 @@ function toggle(): HTMLButtonElement {
   return hit;
 }
 function panel(): HTMLElement | null {
-  return host.querySelector('[role="dialog"]');
+  return document.querySelector('[role="dialog"]');
 }
 /** 真实浏览器里点一下的顺序。 */
 async function realClick(el: Element) {

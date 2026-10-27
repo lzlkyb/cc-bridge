@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useState, type RefObject } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { isOutsideDismiss } from "../../lib/utils";
+import { ChatPopover } from "./ChatPopover";
 import { Icon } from "../ui/icon";
 
 /**
@@ -20,7 +20,9 @@ export function CwdPicker({
   hasMessages,
   onChange,
   onClose,
+  anchorRef,
 }: {
+  anchorRef: RefObject<HTMLElement>;
   value: string;
   /** 远端目标：目录在**对方机器**上，本机的「选择文件夹」对它没有意义。 */
   isRemote: boolean;
@@ -31,24 +33,6 @@ export function CwdPicker({
 }) {
   const [draft, setDraft] = useState(value);
   const [picking, setPicking] = useState(false);
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  // 点外面关 + Esc 关（与 ModelPicker 同一条规矩：`pointerdown` 按下即收）。
-  useEffect(() => {
-    const onDown = (e: PointerEvent) => {
-      if (isOutsideDismiss(e, boxRef.current, "cwd")) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
   const apply = (next: string) => {
     onChange(next.trim());
     onClose();
@@ -66,12 +50,7 @@ export function CwdPicker({
   };
 
   return (
-    <div
-      ref={boxRef}
-      role="dialog"
-      aria-label="工作目录"
-      className="absolute left-0 top-full z-30 mt-1 w-[320px] overflow-hidden rounded-xl border border-border bg-card shadow-xl"
-    >
+    <ChatPopover anchorRef={anchorRef} onClose={onClose} label="工作目录" width={320}>
       <div className="border-b border-border px-3 py-2">
         <span className="text-[12px] font-semibold text-foreground">工作目录</span>
         <p className="mt-[2px] text-[11px] leading-[1.5] text-muted-foreground">
@@ -135,6 +114,6 @@ export function CwdPicker({
           </p>
         )}
       </div>
-    </div>
+    </ChatPopover>
   );
 }

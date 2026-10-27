@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useRef, useState } from "react";
 import {
   CONTEXT_WARN_RATIO,
@@ -101,14 +102,14 @@ export function ContextMeter({
         {alert}
         <Icon name="chevronDown" size={9} className="shrink-0 opacity-50" />
       </button>
-      {open && (
+      {open && createPortal(
         <ContextTaxPanel
           tax={tax.data ?? null}
           loading={tax.isFetching}
           used={bar?.used ?? tokens}
           onClose={() => setOpen(false)}
           anchorRef={anchorRef}
-        />
+        />, document.body
       )}
     </span>
   );

@@ -803,3 +803,13 @@ describe("buildAnswers", () => {
     expect(buildAnswers(questions, {})).toEqual({});
   });
 });
+
+it("历史回复保留当时模型，后续切换不改写旧标注", () => {
+  const v = run([
+    {kind: "init", sessionId: "s1", cwd: null, model: "opus"},
+    {kind: "text", blockId: "a", text: "第一轮", streaming: false},
+    {kind: "init", sessionId: "s1", cwd: null, model: "sonnet"},
+    {kind: "text", blockId: "b", text: "第二轮", streaming: false},
+  ]);
+  expect(v.messages.filter(m => m.kind === "assistant").map(m => m.model)).toEqual(["opus", "sonnet"]);
+});

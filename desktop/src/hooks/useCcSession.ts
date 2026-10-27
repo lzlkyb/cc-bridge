@@ -1,10 +1,11 @@
 import { useCallback, useReducer, useRef, useState, type MutableRefObject } from "react";
 import { invoke } from "../lib/tauri";
-import type { CcProbe, CcRestoreReq } from "../lib/ccEventTypes";
+import type { CcRestoreReq } from "../lib/ccEventTypes";
 import { ccReducer, initialCcView, pendingApprovals } from "../lib/ccReducer";
 import { pickClaudePath } from "../lib/ccTarget";
 import type { CcPermissionMode } from "../lib/ccGuiTypes";
 import type { CcImage } from "../lib/ccImage";
+import { useCcEnvironment } from "./useCcEnvironment";
 import { useCcEventStream } from "./useCcEventStream";
 import { useCcOpenHistory } from "./useCcOpenHistory";
 import { useCcQueueFlush, useCcSendQueue } from "./useCcSendQueue";
@@ -45,9 +46,9 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   const readyRef = useRef(false);
   readyRef.current = ready;
   const [busy, setBusy] = useState(false);
-  const [probe, setProbe] = useState<CcProbe | null>(null);
   // 待发队列（「运行中继续打字」的落点）：状态、暂停与冲刷见 `useCcSendQueue`。
-  const { queue, paused: queuePaused, enqueue, clear: clearQueue, resume, pause, take, putBack } =
+  const { queue, paused: queuePaused, enqueue, clear: clearQueue, resume, pause, take, putBack,
+    edit: editQueue, remove: removeQueue, hasPausedItems } =
     useCcSendQueue();
   /** `view.running` 的镜像，理由同 `queueRef`。 */
   const runningRef = useRef(false);
@@ -71,40 +72,11 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
    */
   const busyRef = useRef(false);
   busyRef.current = busy;
-  /**
-   * 最近一次探测到的 claude 绝对路径 + 它属于哪个目标。
-   *
-   * 远端**必须**用绝对路径执行：真正跑起来的 bash 是非登录的，拿不到
-   * `~/.local/bin` 那份 PATH，直接写 `claude` 会「命令不存在」。
-   * 记 `connId` 是为了防止换了连接还用上一个目标的路径 —— 那会让它 exec 一个
-   * 根本没装在这台机器上的文件。
-   */
-  const probeRef = useRef<{ connId: string | null; path: string } | null>(null);
   /** 起一轮时读最新配置，避免把 target 塞进依赖导致反复重订阅。 */
   const targetRef = useRef(target);
   targetRef.current = target;
 
-  /** 探测 claude 是否可用。进页面、换连接、点「重试」时调。 */
-  const runProbe = useCallback(async (): Promise<CcProbe | null> => {
-    const t = targetRef.current;
-    try {
-      const res = await invoke<CcProbe>("cc_probe", {
-        connectionId: t.connectionId,
-        claudePath: t.claudePath,
-      });
-      setProbe(res);
-      // 路径要留着给 `start` 用：远端靠它才能 exec 到 claude。
-      probeRef.current =
-        res.found && res.path.trim() ? { connId: t.connectionId, path: res.path.trim() } : null;
-      if (!res.found) dispatch({ type: "error", message: res.message });
-      return res;
-    } catch (e) {
-      const msg = String(e);
-      setProbe({ found: false, path: "", version: null, message: msg, target: "" });
-      dispatch({ type: "error", message: msg });
-      return null;
-    }
-  }, []);
+  const { probe, runProbe, probeRef } = useCcEnvironment(targetRef, view.errors, dispatch);
 
   const start = useCallback(async (text: string, images: CcImage[] = []): Promise<boolean> => {
     const t = targetRef.current;
@@ -120,7 +92,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     // 🔴 **订阅/恢复未就绪（!ready）也入队**：`cc_restore` 在途时直发，会在后端
     // 撞出同一种「上一轮还在进行」（或带着半恢复的状态起进程），出队即失。
     // 入队后 ready 一翻、flush effect 就把它发出去，一句话都不丢。
-    if (runningRef.current || busyRef.current || !readyRef.current) {
+    if (runningRef.current || busyRef.current || !readyRef.current || hasPausedItems()) {
       enqueue({ text: trimmed, images });
       return true;
     }
@@ -169,7 +141,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     }
     // `sessionIdRef` 是 ref（对象稳定），列出来是让 exhaustive-deps 看得见：
     // 函数体读它的 `.current`，规则无法自己证明那不会变。
-  }, [sessionIdRef, enqueue, resume]);
+  }, [sessionIdRef, enqueue, resume, hasPausedItems, probeRef]);
 
   // 本轮一结束就把队首发出去（判据与失败处理见 `useCcQueueFlush`）。
   useCcQueueFlush(
@@ -289,6 +261,8 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     queuePaused,
     // useCallback 包住：Composer 是 memo 组件，内联箭头会让它每次渲染都重渲。
     clearQueue,
+    editQueue,
+    removeQueue,
     /** 解除暂停、继续按顺序自动发送（中断或发送失败后）。 */
     resumeQueue: resume,
     /** 还卡着等用户决定的审批 id。 */

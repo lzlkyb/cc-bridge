@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
-import { isOutsideDismiss } from "../../lib/utils";
-import { useAnchoredPopover } from "../../hooks/useAnchoredPopover";
+import { useState, type RefObject } from "react";
+import { ChatPopover } from "./ChatPopover";
 import { Icon } from "../ui/icon";
 
 /**
@@ -42,37 +41,8 @@ export function ModelPicker({
   anchorRef: RefObject<HTMLElement>;
 }) {
   const [draft, setDraft] = useState(value);
-  const boxRef = useRef<HTMLDivElement>(null);
-  // 🔴 不能用 `absolute right-0`：会话条一换行，锚点就跑到 pane 左端，
-  // 浮层左半边会被 `data-cc-panel` 的 `overflow-hidden` 切掉（`Opus Plan`
-  // 显示成 `s Plan`）。详见 `useAnchoredPopover`。
-  const style = useAnchoredPopover(anchorRef, true, { width: 260 });
-
-  // 点外面关 + Esc 关。`pointerdown` Capture：按下的那一刻就收。
-  // 开关按钮自身不算外点（`isOutsideDismiss` 的理由写在那边）。
-  useEffect(() => {
-    const onDown = (e: PointerEvent) => {
-      if (isOutsideDismiss(e, boxRef.current, "model")) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
   return (
-    <div
-      ref={boxRef}
-      role="dialog"
-      aria-label="选择模型"
-      style={style}
-      className="z-30 flex flex-col overflow-y-auto rounded-xl border border-border bg-card shadow-xl"
-    >
+    <ChatPopover anchorRef={anchorRef} onClose={onClose} label="选择模型" width={286}>
       <div className="border-b border-border px-3 py-2">
         <span className="text-[12px] font-semibold text-foreground">模型</span>
         <p className="mt-[2px] text-[11px] leading-[1.5] text-muted-foreground">
@@ -129,6 +99,6 @@ export function ModelPicker({
           用这个
         </button>
       </form>
-    </div>
+    </ChatPopover>
   );
 }

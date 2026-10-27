@@ -12,9 +12,9 @@ import { useSyncExternalStore } from "react";
 export type ChatTypography = "s" | "m" | "l";
 
 export const CHAT_TYPOGRAPHY: Record<ChatTypography, { label: string; px: string; lh: string }> = {
-  s: { label: "小", px: "12px", lh: "1.65" },
-  m: { label: "中", px: "13px", lh: "1.72" },
-  l: { label: "大", px: "14.5px", lh: "1.8" },
+  s: { label: "紧凑", px: "14px", lh: "1.7" },
+  m: { label: "舒适", px: "15px", lh: "1.75" },
+  l: { label: "大字", px: "16px", lh: "1.8" },
 };
 
 const KEY = "ccbridge_chat_typography";

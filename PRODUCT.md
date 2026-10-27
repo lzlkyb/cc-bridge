@@ -24,11 +24,11 @@ The conversation surface supports local and SSH targets, working directories, mu
 
 ## Confirmed Current Priority
 
-On 2026-10-27 the user requested a comprehensive conversation-page upgrade proposal, prioritizing everyday chat efficiency and consistency with the overall application. This request is for a proposal; implementation is a subsequent step.
+On 2026-10-27 the user requested a comprehensive conversation-page upgrade, prioritizing everyday chat efficiency and consistency with the overall application. After approving the interactive prototype, the user authorized production implementation. The workspace upgrade is now implemented in the desktop source, extending the existing appearance system. The implemented scope and remaining proposal differences are recorded in [the implementation and acceptance record](docs/对话页升级实施与验收-2026-10-27.md).
 
 ## Evidence on Hand
 
-The current desktop source, the running application's connection and conversation pages, and existing design artifacts under `design/`. The proposal is not evidence of completed implementation or usability testing.
+Evidence includes the desktop source, the original application observations, the approved prototype under `design/`, production unit tests and build checks, and the browser report under `.impeccable/review/chat-production/`. The production browser fixture uses real components with simulated IPC; it does not establish live model/backend behavior, a packaged release, or installed-app acceptance. The original proposal remains a historical statement of intent, not a claim that every recommendation was implemented.
 
 ## Open Decisions
 

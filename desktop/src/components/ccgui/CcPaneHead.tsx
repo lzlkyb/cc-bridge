@@ -30,7 +30,17 @@ export function CcPaneHead({
   onJumpTo,
   onDismissError,
   onDismissStderr,
+  onFind, onToggleSidebar, sidebarExpanded, compact, connectionStatus, unavailable, probing, onRetry, onSettings,
 }: {
+  onFind?: () => void;
+  onToggleSidebar?: () => void;
+  sidebarExpanded?: boolean;
+  compact?: boolean;
+  connectionStatus?: string;
+  unavailable?: boolean;
+  probing?: boolean;
+  onRetry?: () => void;
+  onSettings?: () => void;
   bar: CcSession;
   view: CcView;
   /** 会话标题（侧栏那一行现算的结果）。导出 Markdown 的 H1 用它。 */
@@ -60,6 +70,7 @@ export function CcPaneHead({
   return (
     <>
       <SessionBar
+        onFind={onFind} onToggleSidebar={onToggleSidebar} sidebarExpanded={sidebarExpanded} compact={compact} connectionStatus={connectionStatus}
         session={bar}
         messages={view.messages}
         resolved={view.resolved}
@@ -81,7 +92,8 @@ export function CcPaneHead({
       {/* 🔴 打开历史后必须把**目标**一起切过去（见 pane 里的 `onOpenHistory`）：
           只灌消息不改 cwd，下一句会被 `cc_start` 判成「换了目录」→ 清 resume id
           → 打开的历史当场变成一条新会话，模型忘光前面且不报错。 */}
-      <SessionNotices
+      <div className="cc-session-notices"><SessionNotices
+        unavailable={unavailable} retrying={probing} onRetry={onRetry} onSettings={onSettings}
         risk={risk}
         conflict={conflict}
         retry={view.retry}
@@ -93,7 +105,7 @@ export function CcPaneHead({
         background={view.backgroundTasks}
         onDismissError={onDismissError}
         onDismissStderr={onDismissStderr}
-      />
+      /></div>
     </>
   );
 }

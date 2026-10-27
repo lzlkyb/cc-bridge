@@ -59,7 +59,7 @@ export function CcEmptyState({
   };
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-3 py-8 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 px-3 py-8 text-center">
       <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
         <Icon name={missing ? "alertTriangle" : "sparkles"} size={18} />
       </span>
@@ -80,8 +80,8 @@ export function CcEmptyState({
       ) : (
         <>
           <div className="flex flex-col gap-1">
-            <p className="text-[13px] font-semibold text-foreground">问 CC 点什么</p>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-[24px] font-semibold text-foreground">从一个问题开始</p>
+            <p className="text-[12px] text-muted-foreground">
               {probe?.version ? `claude ${probe.version}` : "直接对话，工具调用会显示在下面"}
             </p>
           </div>
@@ -94,7 +94,7 @@ export function CcEmptyState({
                 onClick={() => onPickPrompt(p)}
                 title={`${p}（点击填入输入框，可修改后再发送）`}
                 data-cc-inset
-                className="max-w-[420px] truncate rounded-lg border border-border bg-card px-3 py-1.5 text-left text-[12px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                className="max-w-[420px] rounded-lg border border-border bg-card px-3 py-1.5 text-left text-[12px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
               >
                 {p}
               </button>

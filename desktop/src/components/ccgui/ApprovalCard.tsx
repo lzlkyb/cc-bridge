@@ -112,6 +112,7 @@ function ApprovalCardImpl({
       data-cc-entity
       role="group"
       aria-label={`等待批准：${approval.toolName}`}
+      data-cc-approval
       className="overflow-hidden rounded-[10px] border border-warning/45 bg-warning/[.06]"
     >
       <div className="flex items-center gap-2 border-b border-warning/25 px-3 py-[6px]">

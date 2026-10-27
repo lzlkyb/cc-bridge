@@ -144,22 +144,22 @@ describe("UserMessageBubble 分叉", () => {
   const bubble = (text: string, images?: string[]) =>
     show(<UserMessageBubble text={text} images={images} onFork={() => {}} />);
 
-  it("纯图片消息禁用「从此处分叉」（原图不落盘，分叉出来是空会话）", async () => {
+  it("纯图片消息禁用「从这里新开会话」（原图不落盘，分叉出来是空会话）", async () => {
     await bubble("", ["data:image/png;base64,AAAA"]);
-    expect(byText("从此处分叉")!.disabled).toBe(true);
+    expect(byText("从这里新开会话")!.disabled).toBe(true);
   });
 
   it("带图且有文字时可分叉，但提示图片不会带过去", async () => {
     await bubble("看这张图", ["data:image/png;base64,AAAA"]);
-    const fork = byText("从此处分叉")!;
+    const fork = byText("从这里新开会话")!;
     expect(fork.disabled).toBe(false);
     expect(fork.title).toContain("图片不会带到新会话");
-    expect(byText("编辑并重发")!.title).toContain("图片不会带到新会话");
+    expect(byText("编辑并新开会话")!.title).toContain("图片不会带到新会话");
   });
 
   it("纯文字消息分叉不带多余提示", async () => {
     await bubble("你好");
-    const fork = byText("从此处分叉")!;
+    const fork = byText("从这里新开会话")!;
     expect(fork.disabled).toBe(false);
     expect(fork.title).toBe("");
   });

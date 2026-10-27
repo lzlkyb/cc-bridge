@@ -1,26 +1,22 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "../ui/toast";
 import { classifySlash } from "../../lib/ccSlash";
 import { isSendKey, useSendKey } from "../../lib/ccSendKey";
-import { isImeComposing } from "../../lib/utils";
 import type { CcImage } from "../../lib/ccImage";
 import { useCcMention } from "../../hooks/useCcMention";
 import { useCcDropImages } from "../../hooks/useCcDropImages";
 import { useComposerDraft } from "../../hooks/useComposerDraft";
 import { useComposerPolish } from "../../hooks/useComposerPolish";
 import { useCcSlashInput } from "../../hooks/useCcSlashInput";
-import {
-  ComposerAttachments,
-  collectPastedImages,
-  type ComposerAttachHandle,
-} from "./ComposerAttachments";
+import { ComposerAttachments, type ComposerAttachHandle } from "./ComposerAttachments";
+import { ComposerDraft } from "./ComposerDraft";
 import { ComposerNotices } from "./ComposerNotices";
-import { ComposerTools } from "./ComposerTools";
+import { ComposerFooter, ComposerTools } from "./ComposerTools";
+import type { QueuedMessage } from "../../hooks/useCcSendQueue";
+import { ComposerPolishPreview } from "./ComposerPolishPreview";
+import "./composer.css";
 import { MentionPanel } from "./MentionPanel";
 import { SlashPanel } from "./SlashPanel";
-
-/** 输入区自动增高的高度上限（px）。约 8 行 13px 字：再高就该拆成文件了。 */
-const MAX_TEXTAREA_H = 168;
 
 /**
  * 输入区（接管 composer 位置，不弹模态）。
@@ -57,6 +53,13 @@ function ComposerImpl({
   mentionSource,
   prefill,
   draftKey,
+  controls,
+  footer,
+  queueItems,
+  onEditQueue,
+  onRemoveQueue,
+  pendingCount,
+  onShowPending,
 }: {
   /**
    * 发一条消息。`images` 是这条消息附的图（可能为空数组）。
@@ -96,6 +99,13 @@ function ComposerImpl({
   /** 草稿落盘的键（`CcPane` 传 `paneKey`）：关窗口 / 重启后回来，字还在。不负责
    *  切 app 标签（`CcGuiTab` 是 `keepMounted`）；取舍见 `lib/ccDraft.ts`。 */
   draftKey: string;
+  controls?: ReactNode;
+  footer?: ReactNode;
+  queueItems?: QueuedMessage[];
+  onEditQueue?: (id: string, text: string) => boolean;
+  onRemoveQueue?: (id: string) => void;
+  pendingCount?: number;
+  onShowPending?: () => void;
 }) {
   const [value, setValue] = useComposerDraft(draftKey);
   /** 发送键偏好（Enter / Ctrl+Enter），全局记忆。 */
@@ -105,6 +115,9 @@ function ComposerImpl({
   const attachRef = useRef<ComposerAttachHandle>(null);
   /** 有图时发送按钮要能点亮 —— 这是唯一需要订阅的附件状态。 */
   const [hasImages, setHasImages] = useState(false);
+  const [imagesBusy, setImagesBusy] = useState(false);
+  const [sending, setSending] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   // 润色草稿的备份与忙碌态（2026-10-26 外移到 hooks/useComposerPolish.ts）。
   const polish = useComposerPolish(onPolish);
   /** 整个输入区（含面板）的定位锚点与「点外面关闭」的判定框。 */
@@ -120,15 +133,6 @@ function ComposerImpl({
 
   /** 拖图进输入区（与粘贴同一条通道，见 `useCcDropImages`）。 */
   const drop = useCcDropImages((files) => attachRef.current?.add(files));
-
-  // 自动增高：内容变化时重算，上限 MAX_TEXTAREA_H。
-  // 挂在 effect 里而不是 onChange 里：粘贴、程序回填（润色）也走同一条路。
-  useEffect(() => {
-    const el = areaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, MAX_TEXTAREA_H)}px`;
-  }, [value]);
 
   // 外部预填（空状态示例 prompt）：填进草稿并聚焦，光标落到末尾，用户可改后再发。
   useEffect(() => {
@@ -172,6 +176,7 @@ function ComposerImpl({
     // 发送失败 ⇒ 草稿与附件都留着。那是用户刚拼好的东西，
     // 一次后端抖动就清掉会让人重贴一遍图。
     sendingRef.current = true;
+    setSending(true);
     try {
       const accepted = await onSend(text, images);
       if (accepted === false) return;
@@ -183,30 +188,49 @@ function ComposerImpl({
       attachRef.current?.clear(images);
     } finally {
       sendingRef.current = false;
+      setSending(false);
     }
   };
 
   /** 润色当前草稿。失败时文本一个字都不动（用户那句草稿不能丢）。 */
   const runPolish = async () => {
-    const out = await polish.run(value.trim());
-    if (out !== null) setValue(out);
+    try { await polish.run(value); }
+    catch { toast("润色未完成，原稿已保留", "info"); }
+  };
+
+  const insertMention = () => {
+    const el = areaRef.current;
+    const caret = el?.selectionStart ?? value.length;
+    const prefix = value.slice(0, caret);
+    const token = prefix && !/\s$/.test(prefix) ? " @" : "@";
+    const next = prefix + token + value.slice(el?.selectionEnd ?? caret);
+    setValue(next);
+    polish.reset();
+    mention.syncCaret(caret + token.length);
+    el?.focus();
+    requestAnimationFrame(() => el?.setSelectionRange(caret + token.length, caret + token.length));
   };
 
   return (
-    <div ref={boxRef} className="relative shrink-0 px-3 pb-3 pt-1">
+    <div ref={boxRef} className="cc-composer-dock">
       <ComposerNotices
         queueCount={queueCount}
         queuePaused={queuePaused}
         onClearQueue={onClearQueue}
         onResumeQueue={onResumeQueue}
         slashReject={slash.reject}
+        queueItems={queueItems}
+        onEditQueue={onEditQueue}
+        onRemoveQueue={onRemoveQueue}
+        pendingCount={pendingCount}
+        onShowPending={onShowPending}
       />
       {/* data-cc-composer：玻璃下 composer 要压过 .ui-card 的 reading 档，改 floating
           （唯一「必须实心」的输入位）；classic 下不加任何样式。 */}
       <div
         data-cc-composer
         {...drop.handlers}
-        className={`ui-card relative rounded-xl border bg-card shadow-card transition-colors focus-within:border-primary/50 ${
+        className={`ui-card cc-composer-surface relative rounded-xl border bg-card transition-colors focus-within:border-primary/50 ${
           // 拖拽中把整块描成虚线主色：不提示的话用户不知道「这里能放」，
           // 而拖到别处会被浏览器当成「用这个文件打开新页面」。
           drop.over ? "border-dashed border-primary/60 ring-2 ring-primary/15" : "border-border"
@@ -217,61 +241,37 @@ function ComposerImpl({
             松手添加图片
           </div>
         )}
-        <ComposerAttachments ref={attachRef} onHasImages={setHasImages} />
-        <textarea
-          ref={areaRef}
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value);
-            mention.syncCaret(e.target.selectionStart);
-            slash.onTyped();
-            // 一打字，润色备份就作废：那是新草稿，还原回去只会覆盖用户刚写的。
-            polish.reset();
+        <ComposerAttachments ref={attachRef} onHasImages={setHasImages} onBusy={setImagesBusy} />
+        <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden onChange={event => { attachRef.current?.add(Array.from(event.target.files ?? [])); event.target.value = ""; areaRef.current?.focus(); }} />
+        <ComposerDraft areaRef={areaRef} value={value} placeholder={placeholder}
+          onChange={(text, caret) => { setValue(text); mention.syncCaret(caret); slash.onTyped(); polish.reset(); }}
+          onCaret={mention.syncCaret}
+          onImages={files => attachRef.current?.add(files)}
+          onKeyDown={event => {
+            if (mention.open && mention.handleKey(event)) return;
+            if (slash.handleKey(event, () => void send())) return;
+            if (isSendKey(sendKey, event)) { event.preventDefault(); void send(); }
           }}
-          onSelect={(e) => mention.syncCaret(e.currentTarget.selectionStart)}
-          onPaste={(e) => {
-            // 图片走附件通道（协议已通，见 docs/图片输入协议探针-2026-10-26.md）。
-            // 没有图片时一律放行，粘贴文本/富文本的行为一个字都不改。
-            const files = collectPastedImages(e.clipboardData);
-            if (files.length === 0) return;
-            e.preventDefault();
-            attachRef.current?.add(files);
-          }}
-          onKeyDown={(e) => {
-            // 🔴 IME 组合期间的键全部放行给输入法：此刻方向键在选候选词、Enter 在
-            //    上屏。拦走任何一个，中文用户要么选不了词、要么半截拼音被当成
-            //    命令补全 / 直接发送。
-            if (isImeComposing(e.nativeEvent)) return;
-            // @引用面板开着时方向键 / Enter / Tab / Esc 归它（焦点在 textarea，见 MentionPanel）。
-            if (mention.open && mention.handleKey(e)) return;
-            if (slash.handleKey(e, () => void send())) return;
-            // 发送键按偏好（默认 Enter 发送、Shift+Enter 换行，见 lib/ccSendKey）。
-            // 🔴 判据是纯函数：`Shift+Enter` 在**两档**下都必须换行 —— 写反一次，
-            //    用户每敲一个换行就发出一条消息。
-            if (isSendKey(sendKey, e)) {
-              e.preventDefault();
-              void send();
-            }
-          }}
-          rows={1}
-          placeholder={placeholder ?? "给 CC 发消息…"}
-          className="block max-h-[168px] w-full resize-none overflow-y-auto bg-transparent px-3 pt-2.5 text-[13px] leading-[1.6] text-foreground outline-none placeholder:text-muted-foreground"
         />
         <ComposerTools
-          sendHint={sendHint}
-          polishBackup={polish.backup}
-          onUndoPolish={() => {
-            const prev = polish.undo();
-            if (prev !== null) setValue(prev);
-          }}
+          controls={controls}
+          sending={sending}
+          imagesBusy={imagesBusy}
+          queuePaused={queuePaused}
+          queueCount={queueCount}
           polishing={polish.polishing}
           onPolish={polish.enabled ? () => void runPolish() : undefined}
           running={running}
           onInterrupt={onInterrupt}
           canSend={!!value.trim() || hasImages}
           onSend={send}
+          onAttach={() => fileRef.current?.click()}
+          onMention={insertMention}
+          onCommand={() => { if (value.trim() && !value.startsWith("/")) { toast("先发送或保留当前草稿，再输入 / 查看命令", "info"); areaRef.current?.focus(); return; } setValue("/"); slash.onTyped(); areaRef.current?.focus(); }}
         />
       </div>
+      <ComposerFooter sendHint={sendHint}>{footer}</ComposerFooter>
+      {polish.preview?.source === value && <ComposerPolishPreview anchorRef={areaRef} text={polish.preview.text} onCancel={polish.reset} onApply={() => { setValue(polish.preview!.text); polish.reset(); areaRef.current?.focus(); }} />}
       {slash.open && (
         <SlashPanel
           matches={slash.matches}

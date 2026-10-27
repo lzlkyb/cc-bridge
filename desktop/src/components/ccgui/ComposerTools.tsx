@@ -1,174 +1,66 @@
-import { Button } from "../ui/button";
+import { useRef, useState, type ReactNode } from "react";
+import { setSendKey, useSendKey, type SendKey } from "../../lib/ccSendKey";
 import { Icon } from "../ui/icon";
-import { CHAT_TYPOGRAPHY, setChatTypography, useChatTypography, type ChatTypography } from "../../lib/chatTypography";
-import { CHAT_VERBOSITY, setChatVerbosity, useChatVerbosity, type ChatVerbosity } from "../../lib/chatVerbosity";
-import { SEND_KEY_META, toggleSendKey, useSendKey } from "../../lib/ccSendKey";
+import { ChatPopover } from "./ChatPopover";
 
-/**
- * 三档分段控件。
- *
- * 🔴 从「点一下切一档的循环钮」改过来：循环钮有三个说不出口的问题 ——
- *    看不出有几档、不知道该点几下、`aria-pressed` 也没有意义（它不是开关）。
- *    分段控件把三档一次摊开，当前档高亮，点哪儿去哪儿。与权限模式同一形态。
- */
-function Seg<T extends string>({
-  items,
-  value,
-  onChange,
-  label,
-}: {
-  items: { value: T; label: string; hint: string }[];
-  value: T;
-  onChange: (v: T) => void;
-  label: string;
-}) {
-  return (
-    <span
-      role="group"
-      aria-label={label}
-      data-cc-seg
-      className="flex items-center gap-px rounded-[7px] border border-border bg-muted/50 p-[2px]"
-    >
-      {items.map((it) => {
-        const on = it.value === value;
-        return (
-          <button
-            key={it.value}
-            type="button"
-            aria-pressed={on}
-            title={it.hint}
-            onClick={() => onChange(it.value)}
-            className={`rounded-[5px] px-1.5 py-[1px] text-[11px] leading-[16px] transition-colors ${
-              on ? "bg-card font-medium text-foreground" : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {it.label}
-          </button>
-        );
-      })}
-    </span>
-  );
-}
-
-const TYPO_ITEMS: { value: ChatTypography; label: string; hint: string }[] = (
-  ["s", "m", "l"] as ChatTypography[]
-).map((v) => ({
-  value: v,
-  label: CHAT_TYPOGRAPHY[v].label,
-  hint: `正文排版「${CHAT_TYPOGRAPHY[v].label}」（只作用对话正文，全局记忆）`,
-}));
-
-const VERB_ITEMS: { value: ChatVerbosity; label: string; hint: string }[] = (
-  ["v", "n", "c"] as ChatVerbosity[]
-).map((v) => ({
-  value: v,
-  label: CHAT_VERBOSITY[v].label.slice(0, 1),
-  hint: `消息详略「${CHAT_VERBOSITY[v].label}」· ${CHAT_VERBOSITY[v].hint}（全局记忆）`,
-}));
-
-/**
- * 输入区底行（从 Composer 拆出，2026-10-26：给 @引用接线腾行数）。
- * 纯展示 + 回调：发送键提示（可点切换）、正文排版、消息详略、润色、中断、发送。
- */
+/** 高频输入操作与发送状态；阅读偏好留在对话顶栏。 */
 export function ComposerTools({
-  sendHint,
-  polishBackup,
-  onUndoPolish,
-  polishing,
-  onPolish,
-  running,
-  onInterrupt,
-  canSend,
-  onSend,
+  controls, polishing, onPolish, running, onInterrupt, canSend, sending,
+  imagesBusy, queuePaused, queueCount, onSend, onAttach, onMention, onCommand,
 }: {
-  /** `Ctrl+Enter` 的平台写法（Windows 上 `Ctrl+Enter`、mac 上 `⌘Enter`）。 */
-  sendHint: string;
-  polishBackup: string | null;
-  onUndoPolish: () => void;
+  controls?: ReactNode;
   polishing: boolean;
   onPolish?: () => void;
   running?: boolean;
   onInterrupt?: () => void;
   canSend: boolean;
+  sending: boolean;
+  imagesBusy: boolean;
+  queuePaused?: boolean;
+  queueCount: number;
   onSend: () => void;
+  onAttach: () => void;
+  onMention: () => void;
+  onCommand: () => void;
 }) {
-  const typo = useChatTypography();
-  const verbosity = useChatVerbosity();
-  const sendKey = useSendKey();
+  const [extrasOpen, setExtrasOpen] = useState(false);
+  const extrasAnchor = useRef<HTMLButtonElement>(null);
+  const queued = running || (queuePaused && queueCount > 0);
+  const label = sending ? "发送中" : imagesBusy ? "处理图片" : queued ? "排队" : "发送";
   return (
-    // flex-wrap：这一行最多有 7 项，窗口缩到最小宽度时要换行而不是挤压 / 溢出。
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 pb-1.5">
-      {/* 发送键提示本身就是切换入口：用户看着这四个字想改时，手就在这儿。
-          比塞进设置页少走三步（设置 → 对话 → 找那一项），也不用新开一个浮层。 */}
-      <button
-        type="button"
-        onClick={() => toggleSendKey()}
-        title={`发送键：${SEND_KEY_META[sendKey].hint} · 点击切换`}
-        aria-label="切换发送键"
-        className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <span
-          data-cc-inset
-          className="rounded border border-border bg-muted/60 px-[3px] py-[1px] font-mono text-[11px]"
-        >
-          {sendKey === "enter" ? "Enter" : sendHint}
-        </span>
-        发送
-      </button>
-      <span className="flex items-center gap-1">
-        <span className="text-[11px] leading-[16px] text-muted-foreground">Aa</span>
-        <Seg items={TYPO_ITEMS} value={typo} onChange={setChatTypography} label="正文排版" />
-      </span>
-      {/* 与「Aa」并排：两个都是「我这条会话想看多细」的全局偏好，放一起才找得到。
-          档位只影响消息流的元信息层（思考 / 工具），不动正文与输入框。 */}
-      <span className="flex items-center gap-1">
-        <Icon name="sliders" size={11} className="shrink-0 opacity-70" />
-        <Seg items={VERB_ITEMS} value={verbosity} onChange={setChatVerbosity} label="消息详略" />
-      </span>
-      {polishBackup !== null && (
-        <button
-          type="button"
-          onClick={onUndoPolish}
-          className="text-[11px] text-muted-foreground underline decoration-dotted transition-colors hover:text-foreground"
-        >
-          撤销润色
-        </button>
-      )}
-      {onPolish && (
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 gap-1 px-2 text-[12px] text-muted-foreground"
-          disabled={polishing || !canSend}
-          onClick={onPolish}
-          title="用提示词改写器把草稿改写成更清晰、可执行的指令（mods/prompt-polish）"
-        >
-          <Icon name={polishing ? "spinner" : "paintbrush"} size={12} />
-          {polishing ? "润色中" : "润色"}
-        </Button>
-      )}
-      {running && onInterrupt && (
-        <Button
-          variant="outline"
-          size="sm"
-          className="ml-auto h-7 px-3 text-[12px]"
-          onClick={onInterrupt}
-          // 说清它对队列做了什么：此前只写在 tooltip 里，用户中断完发现排队的三句
-          // 也没了。现在中断**不动队列**（见 useCcSession.interrupt），文案跟着改。
-          title="中断本轮（已排队的消息会保留，本轮结束后继续发）"
-        >
-          中断
-        </Button>
-      )}
-      <Button
-        size="sm"
-        className={`${running && onInterrupt ? "" : "ml-auto"} h-7 px-3 text-[12px]`}
-        disabled={!canSend}
-        onClick={onSend}
-        title={running ? "本轮还在生成：这条会排队，本轮结束后自动发送" : undefined}
-      >
-        {running ? "排队" : "发送"}
-      </Button>
+    <div className="cc-composer-tools">
+      <div className="cc-composer-input-tools">
+        <button type="button" className="cc-chat-icon" aria-label="添加图片" title="添加图片，也可粘贴或拖入" onClick={onAttach}><Icon name="image" size={17} /></button>
+        <button type="button" className="cc-chat-icon" aria-label="引用文件" title="引用文件或目录" onClick={onMention}><span aria-hidden="true">@</span></button>
+        <button type="button" className="cc-chat-icon cc-composer-command" aria-label="查看命令" title="查看命令" onClick={onCommand}><Icon name="terminal" size={16} /></button>
+        <button ref={extrasAnchor} type="button" className="cc-chat-icon cc-composer-extras" aria-label="更多输入操作" aria-expanded={extrasOpen} onClick={() => setExtrasOpen(!extrasOpen)}><Icon name="more" size={17} /></button>
+        {extrasOpen && <ChatPopover anchorRef={extrasAnchor} label="更多输入操作" onClose={() => setExtrasOpen(false)} width={240}>
+          <button type="button" className="cc-chat-menu-item" onClick={() => { setExtrasOpen(false); requestAnimationFrame(onCommand); }}><Icon name="terminal" size={16} />查看命令</button>
+          {onPolish && <button type="button" className="cc-chat-menu-item" disabled={polishing || !canSend || sending} onClick={() => { setExtrasOpen(false); onPolish(); }}><Icon name={polishing ? "spinner" : "paintbrush"} size={16} />{polishing ? "正在润色草稿" : "润色草稿"}</button>}
+        </ChatPopover>}
+        {controls && <span className="cc-composer-config">{controls}</span>}
+      </div>
+      <div className="cc-composer-send-tools">
+        {onPolish && <button type="button" className="cc-chat-icon cc-composer-polish" onClick={onPolish} disabled={polishing || !canSend || sending} aria-label={polishing ? "正在润色草稿" : "润色草稿"} title="预览润色建议，采用前保留原稿"><Icon name={polishing ? "spinner" : "paintbrush"} size={16} className={polishing ? "animate-spin" : undefined} /></button>}
+        {running && onInterrupt && <button type="button" className="cc-composer-stop" aria-label="停止" onClick={onInterrupt} title="停止本轮并暂停发送队列，排队内容保留"><Icon name="pause" size={14} /><span>停止</span></button>}
+        <button type="button" data-cc-send className="cc-composer-send" disabled={!canSend || sending || imagesBusy} onClick={onSend} aria-label={label} title={queued ? "加入队列，暂停时需手动继续" : undefined}><span>{label}</span><Icon name={sending || imagesBusy ? "spinner" : "arrowUp"} size={16} className={sending || imagesBusy ? "animate-spin" : undefined} /></button>
+      </div>
+    </div>
+  );
+}
+
+export function ComposerFooter({ sendHint, children }: { sendHint: string; children?: ReactNode }) {
+  const sendKey = useSendKey();
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLButtonElement>(null);
+  return (
+    <div className="cc-composer-footer">
+      <button type="button" ref={anchorRef} onClick={() => setOpen(!open)} aria-expanded={open} aria-label="设置发送快捷键" className="rounded text-left hover:text-foreground">{sendKey === "enter" ? "Enter 发送 · Shift Enter 换行" : `${sendHint} 发送 · Enter 换行`}</button>
+      {children}
+      {open && <ChatPopover anchorRef={anchorRef} onClose={() => setOpen(false)} label="输入偏好" width={290}>
+        <div className="cc-chat-section"><strong>发送快捷键</strong></div>
+        {(["enter", "ctrlEnter"] as SendKey[]).map(value => <button type="button" className="cc-chat-menu-item" key={value} aria-pressed={value === sendKey} onClick={() => { setSendKey(value); setOpen(false); }}><Icon name="check" size={15} className={value === sendKey ? "text-primary" : "opacity-0"} /><span>{value === "enter" ? "Enter 发送" : `${sendHint} 发送`}<small className="block text-muted-foreground">{value === "enter" ? "Shift + Enter 换行" : "Enter 换行"}</small></span></button>)}
+      </ChatPopover>}
     </div>
   );
 }

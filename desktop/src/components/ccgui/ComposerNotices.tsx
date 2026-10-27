@@ -1,66 +1,56 @@
+import { useRef, useState } from "react";
 import { Icon } from "../ui/icon";
+import { toast } from "../ui/toast";
 import { SLASH_WHITELIST_TEXT } from "../../lib/ccSlash";
+import type { QueuedMessage } from "../../hooks/useCcSendQueue";
+import { ChatPopover } from "./ChatPopover";
 
-/**
- * 输入区上方的两行提示：排队条数与 slash 被拦下的说明。
- *
- * 从 `Composer` 拆出的（2026-10-25）：那两行是「条件渲染 + 各自的关闭动作」，
- * 与草稿状态、命令面板没有交集，留在同一个文件里只会把 `Composer` 顶到体量门禁。
- */
 export function ComposerNotices({
-  queueCount,
-  queuePaused = false,
-  onClearQueue,
-  onResumeQueue,
-  slashReject,
+  queueCount, queuePaused = false, queueItems = [], onClearQueue, onResumeQueue,
+  onEditQueue, onRemoveQueue, slashReject, pendingCount = 0, onShowPending,
 }: {
   queueCount: number;
-  /** 自动发送已暂停（中断 / 队首发送失败）：提示文案要改，否则「本轮结束后自动发送」是假话。 */
   queuePaused?: boolean;
+  queueItems?: QueuedMessage[];
   onClearQueue: () => void;
-  /** 解除暂停、继续发。暂停时才有入口 —— 用户得能自己决定「那几句还算数」。 */
   onResumeQueue?: () => void;
-  /** 被闸门拦下的命令名。`null` = 不显示。 */
+  onEditQueue?: (id: string, text: string) => boolean;
+  onRemoveQueue?: (id: string) => void;
   slashReject: string | null;
+  pendingCount?: number;
+  onShowPending?: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState<{ id: string; text: string; images: number } | null>(null);
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
   return (
     <>
+      {pendingCount > 0 && <div className="cc-composer-pending"><Icon name="shield" size={14} /><span>{pendingCount} 项操作等待确认</span>{onShowPending && <button type="button" onClick={onShowPending}>查看审批</button>}</div>}
       {queueCount > 0 && (
-        <div className="mb-1 flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
-          <Icon name="clock" size={11} className="shrink-0 opacity-70" />
-          <span className="min-w-0 flex-1">
-            {queuePaused
-              ? `已暂停自动发送 · ${queueCount} 条还留着（中断或发送失败后才这样，内容没丢）`
-              : `已排队 ${queueCount} 条 · 本轮结束后按顺序自动发送`}
-          </span>
-          {queuePaused && onResumeQueue && (
-            <button
-              type="button"
-              onClick={onResumeQueue}
-              className="shrink-0 rounded border border-border px-1.5 py-[1px] text-[11px] transition-colors hover:border-primary/40 hover:text-foreground"
-            >
-              继续
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onClearQueue}
-            className="shrink-0 rounded border border-border px-1.5 py-[1px] text-[11px] transition-colors hover:border-destructive/40 hover:text-destructive-ink"
-          >
-            清空
-          </button>
+        <div className="cc-composer-queue">
+          <div className="cc-composer-queue-head"><Icon name={queuePaused ? "pause" : "clock"} size={14} /><strong>{queuePaused ? "队列已暂停" : "已排队"} · {queueCount} 条</strong><span>{queuePaused ? "内容已保留" : "本轮结束后发送"}</span>
+            {queuePaused && onResumeQueue && <button type="button" onClick={onResumeQueue}>继续发送</button>}
+            <button type="button" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>{expanded ? "收起" : "管理"}</button>
+          </div>
+          {!expanded && queueItems[0] && <p className="cc-composer-queue-peek">下一条：{queueItems[0].text || "图片消息"}{queueItems[0].images.length > 0 && ` · ${queueItems[0].images.length} 张图片`}</p>}
+          {expanded && <div className="cc-composer-queue-items">
+            {queueItems.map((item, index) => <div key={item.id} className="cc-composer-queue-item"><span>{index + 1}</span><p title={item.text}>{item.text || "图片消息"}{item.images.length > 0 && <small> · {item.images.length} 张图片</small>}</p>
+              {onEditQueue && <button type="button" className="cc-chat-icon" aria-label={`编辑第 ${index + 1} 条排队消息`} onClick={event => { anchorRef.current = event.currentTarget; setEditing({ id: item.id, text: item.text, images: item.images.length }); }}><Icon name="edit" size={14} /></button>}
+              {onRemoveQueue && <button type="button" className="cc-chat-icon" aria-label={`移除第 ${index + 1} 条排队消息`} onClick={() => onRemoveQueue(item.id)}><Icon name="close" size={14} /></button>}
+            </div>)}
+            <button type="button" className="cc-composer-clear" onClick={onClearQueue}>清空队列</button>
+          </div>}
         </div>
       )}
-      {slashReject && (
-        <div className="mb-1 flex items-start gap-1.5 px-1 text-[11px] leading-[1.5] text-warning-ink">
-          <Icon name="alertTriangle" size={11} className="mt-[1px] shrink-0 opacity-80" />
-          <span className="min-w-0 flex-1">
-            未发送 <span className="font-mono">{slashReject}</span>：不在白名单里。对话页只转发{" "}
-            {SLASH_WHITELIST_TEXT}，其它命令请到终端页里用。要发的是路径？前面加几个字即可（如「看下{" "}
-            <span className="font-mono">/var/log/x.log</span>」）。
-          </span>
-        </div>
-      )}
+      {editing && <ChatPopover anchorRef={anchorRef} onClose={() => setEditing(null)} label="编辑排队消息" width={360}>
+        <form className="cc-chat-section" onSubmit={event => { event.preventDefault(); const accepted = onEditQueue?.(editing.id, editing.text); setEditing(null); if (!accepted) toast("这条消息已开始发送，未修改后续消息", "info"); }}>
+          <label htmlFor={`queue-edit-${editing.id}`} className="block font-medium">编辑排队消息</label>
+          <textarea id={`queue-edit-${editing.id}`} value={editing.text} onChange={event => setEditing({ ...editing, text: event.target.value })} className="cc-composer-edit" rows={4} />
+          {editing.images > 0 && <p className="cc-chat-note">保留 {editing.images} 张图片</p>}
+          <div className="cc-composer-edit-actions"><button type="button" onClick={() => setEditing(null)}>取消</button><button type="submit" disabled={!editing.text.trim() && editing.images === 0}>保存</button></div>
+        </form>
+      </ChatPopover>}
+      {slashReject && <div className="cc-composer-reject" role="status"><Icon name="alertTriangle" size={14} /><span>未发送 {slashReject}：支持 {SLASH_WHITELIST_TEXT}，其他命令请到终端运行。引用绝对路径时，请在前面加上说明文字。</span></div>}
     </>
   );
 }

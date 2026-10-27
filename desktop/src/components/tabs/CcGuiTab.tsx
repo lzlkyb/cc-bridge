@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "../../lib/tauri";
 import { useCcPaneList } from "../../hooks/useCcPaneList";
 import { useCcShortcuts } from "../../hooks/useCcShortcuts";
@@ -7,17 +7,13 @@ import { useCcStoredSessions } from "../../hooks/useCcStoredSessions";
 import { useCcTargets } from "../../hooks/useCcTargets";
 import { conflictWith } from "../../lib/ccPaneMeta";
 import { archivedOnly, filterStored } from "../../lib/ccStoredList";
+import { isImeComposing } from "../../lib/utils";
 import { SessionSidebar } from "../ccgui/SessionSidebar";
 import { CcPane } from "./CcPane";
+import "../ccgui/sessionWorkspace.css";
 
-/**
- * 窗口窄到这个宽度以下就自动折叠侧栏。
- *
- * 1160 的来历：1280 窗口下主区 1080 − 12 − 240 − 8 = 820 给消息列（设计稿算过，
- * 240 是让 772px 的 thread 刚好铺满的那一档）。再窄下去 240px 侧栏会开始挤
- * 消息列的行长，所以低于 1160 时让位给内容，用户仍可手动展开。
- */
-const AUTO_COLLAPSE_W = 1160;
+/** 按工作区实际可用宽度切换；全局导航收起后也能立即恢复双栏。 */
+const DRAWER_WIDTH = 900;
 
 /**
  * CC 对话页（宿主）。
@@ -42,20 +38,54 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
   const actions = useCcSessionActions();
   /** 历史区摆「已归档」那一档（3-1d）。窗口级界面状态，不进库。 */
   const [archivedView, setArchivedView] = useState(false);
-  /** 用户手动折叠过没有。`null` = 还没表态，跟随窗口宽度。 */
-  const [userCollapsed, setUserCollapsed] = useState<boolean | null>(null);
-  const [narrow, setNarrow] = useState(false);
+  const [userCollapsed, setUserCollapsed] = useState(false);
+  const [compact, setCompact] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+  const collapsed = !compact && userCollapsed;
 
-  // 窄窗自动折叠成 48px rail。用户一旦手动点过收起/展开，就以他的选择为准 ——
-  // 「我明明展开了它又自己缩回去」是最容易被骂的一类自作聪明。
-  useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${AUTO_COLLAPSE_W}px)`);
-    const apply = () => setNarrow(mq.matches);
-    apply();
-    mq.addEventListener("change", apply);
-    return () => mq.removeEventListener("change", apply);
+  useLayoutEffect(() => {
+    const el = workspaceRef.current;
+    if (!el) return;
+    const measure = (width: number) => {
+      if (width > 0) setCompact(width < DRAWER_WIDTH);
+    };
+    measure(el.getBoundingClientRect().width);
+    const observer = new ResizeObserver(([entry]) => measure(entry.contentRect.width));
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
-  const collapsed = userCollapsed ?? narrow;
+  useEffect(() => { setDrawerOpen(false); }, [compact]);
+  const closeDrawer = useCallback(() => {
+    setDrawerOpen(false);
+    requestAnimationFrame(() => workspaceRef.current
+      ?.querySelector<HTMLButtonElement>('[data-cc-panel]:not(.hidden) [data-cc-sidebar-toggle]')?.focus());
+  }, []);
+  // 抽屉打开时保留消息流实例，只隔离背景交互，草稿和后台生成不会中断。
+  useEffect(() => {
+    if (!compact || !drawerOpen) return;
+    const main = mainRef.current;
+    if (main) main.inert = true;
+    sidebarRef.current?.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (isImeComposing(event) || event.defaultPrevented || document.querySelector('[data-cc-sidebar-menu], [data-confirm-dialog]')) return;
+      if (event.key === "Escape") { event.preventDefault(); closeDrawer(); }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault(); event.stopPropagation();
+        sidebarRef.current?.querySelector<HTMLInputElement>('input[type="search"]')?.focus();
+      }
+      if (event.key !== "Tab" || event.ctrlKey || event.metaKey) return;
+      const items = Array.from(sidebarRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, [tabindex="0"]') ?? [])
+        .filter(item => item.getClientRects().length > 0);
+      const first = items[0], last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => { if (main) main.inert = false; document.removeEventListener("keydown", onKey); };
+  }, [compact, drawerOpen, closeDrawer]);
 
   // 分组显示名要用它；各 pane 用的是同一个 hook / 同一份缓存。
   const targets = useCcTargets();
@@ -99,6 +129,10 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
     [stored.data, openIds, archivedView],
   );
   const archivedCount = useMemo(() => archivedOnly(stored.data ?? []).length, [stored.data]);
+  const archivedRows = useMemo(() => ({
+    ...Object.fromEntries((stored.data ?? []).map((row) => [row.rowId, row.archivedAt !== null])),
+    ...actions.archived,
+  }), [stored.data, actions.archived]);
   /**
    * 有 pane 还在恢复 ⇒ 历史区**整体不摆**。
    *
@@ -129,12 +163,20 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
   }, [list.entries]);
 
   const toggleCollapsed = useCallback(() => {
-    setUserCollapsed((cur) => !(cur ?? narrow));
-  }, [narrow]);
-
+    if (compact) {
+      if (drawerOpen) closeDrawer();
+      else setDrawerOpen(true);
+    } else setUserCollapsed((cur) => !cur);
+  }, [compact, drawerOpen, closeDrawer]);
+  const addSession = list.add;
+  const newSession = useCallback(() => {
+    setArchivedView(false);
+    addSession();
+    if (compact) closeDrawer();
+  }, [addSession, compact, closeDrawer]);
   useCcShortcuts({
-    onNewSession: list.add,
-    onCycleSession: list.cycle,
+    onNewSession: newSession,
+    onCycleSession: (delta) => { list.cycle(delta); if (compact) closeDrawer(); },
     onToggleSidebar: toggleCollapsed,
   });
 
@@ -164,28 +206,34 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
   );
 
   return (
-    <div className="flex h-full gap-2">
+    <div ref={workspaceRef} className="cc-workspace-root" data-compact={compact || undefined}>
+      {compact && drawerOpen && <button className="cc-sidebar-shade" tabIndex={-1} aria-label="关闭会话列表" onClick={closeDrawer} />}
+      <div ref={sidebarRef} className="cc-sidebar-slot" hidden={compact && !drawerOpen}
+        role={compact && drawerOpen ? "dialog" : undefined} aria-modal={compact && drawerOpen ? true : undefined}
+        aria-label="会话列表" data-cc-sidebar-drawer={compact && drawerOpen || undefined}>
       <SessionSidebar
         entries={list.entries}
         active={list.active}
         collapsed={collapsed}
+        drawer={compact}
         targets={targets}
         stored={historyView}
         archived={archivedView}
         archivedCount={archivedCount}
         onToggleCollapsed={toggleCollapsed}
         onToggleArchived={() => setArchivedView((v) => !v)}
-        onPick={list.setActive}
-        onNew={list.add}
+        onPick={(key) => { list.setActive(key); if (compact) closeDrawer(); }}
+        onNew={newSession}
         onClose={list.close}
-        onOpenStored={list.openStored}
+        onOpenStored={(id) => { list.openStored(id); if (compact) closeDrawer(); }}
         actions={{
           rename: actions.rename,
           archive: actions.archive,
-          archived: actions.archived,
+          archived: archivedRows,
         }}
       />
-      <div className="min-w-0 flex-1">
+      </div>
+      <div ref={mainRef} className="cc-workspace-main">
         {list.entries.map((e) => (
           <CcPane
             key={e.key}
@@ -197,7 +245,10 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
               typeof e.meta?.rowId === "number" ? actions.titles[e.meta.rowId] : undefined
             }
             onMeta={list.report}
-            onNewSession={list.add}
+            onNewSession={newSession}
+            onToggleSidebar={toggleCollapsed}
+            sidebarExpanded={compact ? drawerOpen : !collapsed}
+            compact={compact}
             onForkSession={(seed) => list.forkFrom(e.key, seed)}
             onNavigate={onNavigate}
           />

@@ -95,7 +95,7 @@ function mentionText() {
 }
 async function clickSend() {
   await act(async () => {
-    [...container.querySelectorAll("button")].find((b) => b.textContent === "发送")!.click();
+    container.querySelector<HTMLButtonElement>("[data-cc-send]")!.click();
   });
 }
 

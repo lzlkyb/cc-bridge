@@ -8,13 +8,11 @@ import { filterStored } from "../../lib/ccStoredList";
 import { SessionHistoryList } from "./SessionHistoryList";
 import { RailItem, SessionRow, rowOf, type SessionRowData } from "./SessionSidebarRow";
 
-/** 会话数达到这个量才显示搜索框（与终端侧栏同一条阈值）。 */
-const SEARCH_THRESHOLD = 6;
-
 type Props = {
   entries: CcPaneEntry[];
   active: string;
   collapsed: boolean;
+  drawer?: boolean;
   targets: { id: string; label: string }[];
   /** 库里没打开的会话（已按「已打开 / 空行 / 搜索词」过滤好，见 `filterStored`）。 */
   stored: CcStoredSummary[];
@@ -53,6 +51,7 @@ export function SessionSidebar({
   entries,
   active,
   collapsed,
+  drawer = false,
   targets,
   stored,
   archived,
@@ -67,7 +66,7 @@ export function SessionSidebar({
 }: Props) {
   const [query, setQuery] = useState("");
   const sizing = useSidebarWidth("cc-bridge.cc-sidebar-width");
-  const width = collapsed ? 48 : sizing.width;
+  const width = drawer ? 272 : collapsed ? 48 : sizing.width;
 
   const rows: SessionRowData[] = useMemo(
     () =>
@@ -87,14 +86,14 @@ export function SessionSidebar({
 
   // 阈值数的是「可搜的内容」，不是只数打开的 pane —— 历史区（最多 30 条）才是
   // 搜索的大头：2 个 pane + 25 条历史却没有搜索框，是最说不通的组合。
-  const showSearch = !collapsed && rows.length + stored.length >= SEARCH_THRESHOLD;
+  const showSearch = !collapsed;
   const shown = useMemo(() => {
     const k = query.trim().toLowerCase();
-    if (!k || !showSearch) return rows;
-    return rows.filter(
-      (r) => r.title.toLowerCase().includes(k) || r.detail.toLowerCase().includes(k),
-    );
-  }, [rows, query, showSearch]);
+    return rows.filter((r) => {
+      const isArchived = r.meta?.rowId != null && actions.archived[r.meta.rowId] === true;
+      return isArchived === archived && (!k || !showSearch || r.title.toLowerCase().includes(k) || r.detail.toLowerCase().includes(k));
+    });
+  }, [rows, query, showSearch, archived, actions.archived]);
 
   /** 历史区跟着同一个搜索词收窄（「已打开 / 归档」两档的筛选规则在 `filterStored`）。 */
   const storedShown = useMemo(
@@ -124,7 +123,7 @@ export function SessionSidebar({
       className="relative flex shrink-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card transition-[width] duration-200 ease-[var(--ease)]"
       style={{ width }}
     >
-      {!collapsed && (
+      {!collapsed && !drawer && (
         <button
           type="button"
           role="separator"
@@ -161,6 +160,7 @@ export function SessionSidebar({
             >
               <Icon name="chevronLeft" size={16} style={{ transform: "rotate(180deg)" }} />
             </button>
+<button type="button" className="cc-chat-icon" aria-label="新对话" title="新对话" onClick={onNew}><Icon name="plus" size={17} /></button>
             <div className="h-px w-6 shrink-0 bg-border" />
             {rows.map((r) => (
               <RailItem key={r.key} row={r} active={r.key === active} onPick={onPick} />
@@ -172,15 +172,6 @@ export function SessionSidebar({
               <span className="flex-1 truncate text-xs font-semibold">对话</span>
               <button
                 type="button"
-                onClick={onNew}
-                title="新对话 (Ctrl/Cmd+N)"
-                aria-label="新对话"
-                className="flex h-7 w-7 items-center justify-center rounded-md border border-primary/20 bg-primary/10 text-primary transition-colors hover:bg-primary/15"
-              >
-                <Icon name="plus" size={13} />
-              </button>
-              <button
-                type="button"
                 onClick={onToggleCollapsed}
                 title="收起会话列表 (Ctrl/Cmd+Shift+B)"
                 aria-label="收起会话列表"
@@ -190,18 +181,21 @@ export function SessionSidebar({
               </button>
             </div>
 
+            <button type="button" className="cc-sidebar-new" onClick={onNew}><Icon name="plus" size={16} />新对话</button>
             {showSearch && (
               <div className="shrink-0 border-b border-border px-2 py-1.5">
                 <input
+                  type="search"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder={`搜索 ${rows.length + stored.length} 条会话（标题 / 状态）`}
+                  placeholder="搜索会话或项目"
                   aria-label="搜索会话"
-                  className="h-7 w-full rounded-md border border-border bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus:border-primary"
+                  className="h-9 w-full rounded-md border border-border bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus:border-primary"
                 />
               </div>
             )}
 
+            <div className="cc-sidebar-tabs" role="group" aria-label="会话范围"><button type="button" aria-pressed={!archived} onClick={() => { if (archived) onToggleArchived(); }}>最近</button><button type="button" aria-pressed={archived} onClick={() => { if (!archived) onToggleArchived(); }}>已归档 {archivedCount || ""}</button></div>
             <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
               {groups.length === 0 && (
                 <p className="p-3 text-center text-xs text-muted-foreground">没有匹配的会话</p>
@@ -248,24 +242,9 @@ export function SessionSidebar({
                 className={`h-1.5 w-1.5 rounded-full ${runningCount > 0 ? "bg-success" : "bg-muted-foreground/40"}`}
               />
               <span className="truncate">
-                {runningCount} 个在跑 · 共 {rows.length} 个
+                {runningCount > 0 ? `${runningCount} 个生成中 · ` : ""}{rows.length} 个会话 · 草稿自动保留
               </span>
-              {archivedCount > 0 && (
-                <button
-                  type="button"
-                  onClick={onToggleArchived}
-                  title={
-                    archived
-                      ? "回到历史列表"
-                      : `显示已归档的 ${archivedCount} 条（归档不删内容，可随时捞回）`
-                  }
-                  className={`ml-auto shrink-0 rounded px-1 py-0.5 transition-colors hover:bg-foreground/[.06] hover:text-foreground ${
-                    archived ? "text-primary" : ""
-                  }`}
-                >
-                  {archived ? "返回历史" : `已归档 ${archivedCount}`}
-                </button>
-              )}
+
             </div>
           </>
         )}

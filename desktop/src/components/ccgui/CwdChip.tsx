@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Icon } from "../ui/icon";
 import { CwdPicker } from "./CwdPicker";
 
@@ -24,10 +24,11 @@ export function CwdChip({
   hasMessages: boolean;
   onChange: (cwd: string) => void;
 }) {
+  const anchorRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   return (
-    <span className="relative flex min-w-0 shrink-0 items-center">
-      <button
+    <span className="relative flex min-w-0 items-center">
+      <button ref={anchorRef}
         type="button"
         data-cc-toggle="cwd"
         onClick={() => setOpen((v) => !v)}
@@ -43,7 +44,7 @@ export function CwdChip({
         <Icon name="chevronDown" size={10} className="shrink-0 opacity-60" />
       </button>
       {open && (
-        <CwdPicker
+        <CwdPicker anchorRef={anchorRef}
           value={cwd}
           isRemote={isRemote}
           hasMessages={hasMessages}

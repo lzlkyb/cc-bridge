@@ -1,3 +1,4 @@
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useEffect, useMemo, useRef, type RefObject } from "react";
 import {
   breakdown,
@@ -49,6 +50,7 @@ export function ContextTaxPanel({
   anchorRef: RefObject<HTMLElement>;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(boxRef, { onEscape: onClose });
   const style = useAnchoredPopover(anchorRef, true, { width: 328, align: "end" });
   const view = useMemo(() => breakdown(tax, used), [tax, used]);
   const level = warnLevel(tax);

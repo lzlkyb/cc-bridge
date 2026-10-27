@@ -82,7 +82,7 @@ export type CcMessage =
        */
       images?: string[];
     }
-  | { kind: "assistant"; id: string; text: string; at: string }
+  | { kind: "assistant"; id: string; text: string; at: string; model?: string }
   /** 思维链。**默认折叠**：CC 的思考动辄几分钟，摊在流里会把正文冲出视口。 */
   | { kind: "thinking"; id: string; text: string; at: string }
   | { kind: "tool"; id: string; tool: CcToolCall; at: string }

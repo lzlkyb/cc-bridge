@@ -49,7 +49,7 @@ export function SessionHistoryList({
   return (
     <div>
       <div className="sticky top-0 z-[1] flex h-[26px] items-center gap-1.5 bg-card/95 px-1.5 text-[11px] text-muted-foreground backdrop-blur-[2px]">
-        <span className="flex-1 truncate font-medium">{archived ? "已归档" : "历史"}</span>
+        <span className="flex-1 truncate font-medium">{archived ? "已归档的会话" : "更早的会话"}</span>
         <span className="tabular-nums">{rows.length} 条</span>
       </div>
       {shown.map((r) => (
@@ -65,7 +65,7 @@ export function SessionHistoryList({
               onOpen(r.rowId);
             }
           }}
-          title={`打开这条${archived ? "已归档" : "历史"}会话（${labelOf(r.connectionId)}${r.cwd ? ` · ${r.cwd}` : ""}）`}
+          title={`打开这条${archived ? "已归档的会话" : "更早的会话"}会话（${labelOf(r.connectionId)}${r.cwd ? ` · ${r.cwd}` : ""}）`}
           className="group flex w-full cursor-pointer items-start gap-[7px] rounded-lg py-1.5 pl-2.5 pr-1.5 text-left transition-colors hover:bg-foreground/[.045]"
         >
           <Icon

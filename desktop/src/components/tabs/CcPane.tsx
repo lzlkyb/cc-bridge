@@ -15,7 +15,8 @@ import { derivePaneMeta, type CcPaneMeta } from "../../lib/ccPaneMeta";
 import { toBarSession } from "../../lib/ccSessionBar";
 import { shortcutLabel } from "../../lib/platform";
 import { CcPaneHead } from "../ccgui/CcPaneHead";
-import { Composer } from "../ccgui/Composer";
+import "../ccgui/chatWorkspace.css";
+import { CcPaneComposer } from "../ccgui/CcPaneComposer";
 import { ConversationStream } from "../ccgui/ConversationStream";
 
 /**
@@ -46,7 +47,11 @@ export function CcPane({
   onNewSession,
   onForkSession,
   onNavigate,
+  onToggleSidebar, sidebarExpanded, compact,
 }: {
+  onToggleSidebar?: () => void;
+  sidebarExpanded?: boolean;
+  compact?: boolean;
   paneKey: string;
   active: boolean;
   /**
@@ -85,6 +90,7 @@ export function CcPane({
     applySeed,
     applyOpenedCwd,
   } = useCcPanePrefs();
+  const [findRequest, setFindRequest] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 空状态示例 prompt 的预填（`nonce` 递增：同一句连点两次也要重填）。 */
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
@@ -234,9 +240,14 @@ export function CcPane({
   return (
     <div
       data-cc-panel
-      className={`${active ? "flex" : "hidden"} h-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card`}
+      className={`${active ? "flex" : "hidden"} cc-conversation-panel h-full min-h-0 flex-col overflow-hidden`}
     >
       <CcPaneHead
+        onToggleSidebar={onToggleSidebar} sidebarExpanded={sidebarExpanded} compact={compact}
+        onFind={() => setFindRequest((n) => n + 1)}
+        connectionStatus={probing ? "检查连接中…" : session.probe?.found === false ? "环境不可用" : session.probe?.found ? "已连接" : undefined}
+        unavailable={session.probe?.found === false} probing={probing} onRetry={retryProbe}
+        onSettings={targetId ? () => onNavigate("connect") : undefined}
         bar={bar}
         view={view}
         title={metaBase.title}
@@ -258,6 +269,7 @@ export function CcPane({
       />
 
       <ConversationStream
+        findRequest={findRequest}
         scrollRef={scrollRef}
         view={view}
         probe={session.probe}
@@ -276,19 +288,8 @@ export function CcPane({
         newSessionHint={newSessionHint}
       />
 
-      <Composer
-        onSend={session.start}
-        running={view.running || session.busy}
-        onInterrupt={() => void session.interrupt()}
-        // 待批准时**能打字、能排队**，旧文案「先处理上面的审批，再继续」是错的。
-        placeholder={
-          session.pending.length > 0 ? "本轮在等批准，现在发的会排队，批准后自动发…" : "给 CC 发消息…"
-        }
-        sendHint={shortcutLabel(platform, "Enter")}
-        queueCount={session.queue.length}
-        queuePaused={session.queuePaused}
-        onClearQueue={session.clearQueue}
-        onResumeQueue={session.resumeQueue}
+      <CcPaneComposer session={session} scrollRef={scrollRef} model={model} mode={mode}
+        setModel={setModel} setMode={setMode} sendHint={shortcutLabel(platform, "Enter")}
         onPolish={onPolish}
         mentionSource={{ connectionId: targetId, cwd }}
         prefill={prefill}

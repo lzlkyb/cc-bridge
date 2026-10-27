@@ -80,7 +80,7 @@ function UserMessageBubbleImpl({
               }
               className="text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
-              重发
+              再问一次
             </button>
           )}
           <button
@@ -92,7 +92,7 @@ function UserMessageBubbleImpl({
             title={hasImages ? IMAGE_NOT_CARRIED : undefined}
             className="text-[11px] text-muted-foreground transition-colors hover:text-foreground"
           >
-            编辑并重发
+            编辑并新开会话
           </button>
           <button
             type="button"
@@ -108,7 +108,7 @@ function UserMessageBubbleImpl({
             }
             className="text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
           >
-            从此处分叉
+            从这里新开会话
           </button>
         </div>
       </div>

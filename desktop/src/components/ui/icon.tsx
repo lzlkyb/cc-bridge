@@ -63,6 +63,7 @@ const paths: Record<string, string> = {
   // 那两个是标题栏窗口按钮的实心方块，用在终端里会和「最大化窗口」混淆。
   expand: "M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3",
   // 三个点靠 strokeLinecap="round" 的零长线段画出来（与 alert/info 的 "h.01" 同一套做法）。
+  panelLeft: "M3 4h18v16H3zM9 4v16",
   more: "M5 12h.01M12 12h.01M19 12h.01",
   collapse: "M3 8h3a2 2 0 0 0 2-2V3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M21 16h-3a2 2 0 0 0-2 2v3",
   // 终端状态栏的 git 分支段。刻意不用 emoji（依赖 Nerd Font，缺字体就是豆腐块），

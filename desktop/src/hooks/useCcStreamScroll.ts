@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import type { CcMessage } from "../lib/ccGuiTypes";
 
 /** 高亮持续多久（与设置页深链的 `anchor-highlight` 同一档）。 */
@@ -37,18 +37,34 @@ export function useCcStreamScroll(
   useEffect(() => {
     const node = scrollRef.current;
     if (!node) return;
+    let height = node.clientHeight;
+    let contentHeight = node.scrollHeight;
+    const rememberSize = () => { height = node.clientHeight; contentHeight = node.scrollHeight; };
     const onScroll = () => {
       // 隐藏期间浏览器可能把 scrollTop 归零，那不是用户的滚动，别记。
       if (!activeRef.current) return;
+      const gap = node.scrollHeight - node.scrollTop - node.clientHeight;
+      const resized = height !== node.clientHeight || contentHeight !== node.scrollHeight;
+      // 队列展开会缩短视口，浏览器也会发 scroll；它不代表用户上翻。
+      // 真正离开底部时 scrollTop 会减小，仍立即停止追随。
+      if (pinnedRef.current && resized && node.scrollTop >= lastTopRef.current) node.scrollTop = node.scrollHeight;
+      else pinnedRef.current = gap <= STICK_GAP;
       lastTopRef.current = node.scrollTop;
-      pinnedRef.current = node.scrollHeight - node.scrollTop - node.clientHeight <= STICK_GAP;
+      rememberSize();
     };
     node.addEventListener("scroll", onScroll, { passive: true });
-    return () => node.removeEventListener("scroll", onScroll);
+    const observer = new ResizeObserver(() => {
+      if (activeRef.current && pinnedRef.current) node.scrollTop = node.scrollHeight;
+      rememberSize();
+    });
+    observer.observe(node);
+    // 折叠过程、延迟排版也会改变正文高度，而滚动容器本身不一定变大。
+    if (node.firstElementChild) observer.observe(node.firstElementChild);
+    return () => { node.removeEventListener("scroll", onScroll); observer.disconnect(); };
   }, [scrollRef]);
 
   // 新内容贴底：只有「可见 && 贴着底」才追。隐藏 pane 上 scrollHeight 是 0，写了也无意义。
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = scrollRef.current;
     if (!node || !deps.active || !pinnedRef.current) return;
     node.scrollTop = node.scrollHeight;
@@ -71,7 +87,9 @@ export function useCcStreamScroll(
         `[data-cc-tool="${CSS.escape(messageId)}"]`,
       );
       if (!node) return;
-      node.scrollIntoView({ behavior: "smooth", block: "center" });
+      let detail = node.closest("details");
+      while (detail) { detail.open = true; detail = detail.parentElement?.closest("details") ?? null; }
+      node.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
       node.classList.add("anchor-highlight");
       window.setTimeout(() => node.classList.remove("anchor-highlight"), HIGHLIGHT_MS);
     },

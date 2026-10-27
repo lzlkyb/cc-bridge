@@ -49,8 +49,9 @@ export const ComposerAttachments = forwardRef<
      * 传 `setState` 本身即可（引用稳定，不会把 effect 变成每次渲染都跑）。
      */
     onHasImages?: (has: boolean) => void;
+    onBusy?: (busy: boolean) => void;
   }
->(function ComposerAttachments({ onHasImages }, ref) {
+>(function ComposerAttachments({ onHasImages, onBusy }, ref) {
   const attach = useCcImageAttach();
   // 镜像：`useImperativeHandle` 的依赖是 []（handle 必须稳定，否则每次渲染
   // 都换一个对象，Composer 那个 ref 就指向旧闭包里的旧列表）。
@@ -60,6 +61,7 @@ export const ComposerAttachments = forwardRef<
   useEffect(() => {
     onHasImages?.(has);
   }, [has, onHasImages]);
+  useEffect(() => { onBusy?.(attach.busy); }, [attach.busy, onBusy]);
   useImperativeHandle(
     ref,
     () => ({

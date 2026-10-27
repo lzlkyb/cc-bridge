@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CcImage } from "../lib/ccImage";
 
 /** 待发队列里的一条。**图跟着文字一起排队**：分开存会让「排队的图」失去归属。 */
-export type QueuedMessage = { text: string; images: CcImage[] };
+export type QueuedMessage = { id: string; text: string; images: CcImage[] };
 
 /**
  * 待发队列（「运行中继续打字」的落点）。
@@ -23,18 +23,44 @@ export type QueuedMessage = { text: string; images: CcImage[] };
 export function useCcSendQueue() {
   const [queue, setQueue] = useState<QueuedMessage[]>([]);
   const queueRef = useRef<QueuedMessage[]>([]);
-  queueRef.current = queue;
+  const nextId = useRef(0);
   const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
 
-  const enqueue = useCallback((m: QueuedMessage) => setQueue((q) => [...q, m]), []);
+  const enqueue = useCallback((m: Omit<QueuedMessage, "id">) => {
+    queueRef.current = [...queueRef.current, { ...m, id: `queued-${++nextId.current}` }];
+    setQueue(queueRef.current);
+  }, []);
   /** 清空队列，同时解除暂停。 */
   const clear = useCallback(() => {
-    setQueue([]);
+    queueRef.current = [];
+    setQueue(queueRef.current);
+    pausedRef.current = false;
     setPaused(false);
   }, []);
-  const resume = useCallback(() => setPaused(false), []);
+  const resume = useCallback(() => {
+    pausedRef.current = false;
+    setPaused(false);
+  }, []);
   /** 暂停自动冲刷（中断用）。队列原样保留。 */
-  const pause = useCallback(() => setPaused(true), []);
+  const pause = useCallback(() => {
+    pausedRef.current = true;
+    setPaused(true);
+  }, []);
+  const hasPausedItems = useCallback(() => pausedRef.current && queueRef.current.length > 0, []);
+  // Edit by identity: an automatic dequeue must not redirect a pending edit to the next message.
+  const edit = useCallback((id: string, text: string): boolean => {
+    const item = queueRef.current.find((m) => m.id === id);
+    const trimmed = text.trim();
+    if (!item || (!trimmed && item.images.length === 0)) return false;
+    queueRef.current = queueRef.current.map((m) => m.id === id ? { ...m, text: trimmed } : m);
+    setQueue(queueRef.current);
+    return true;
+  }, []);
+  const remove = useCallback((id: string) => {
+    queueRef.current = queueRef.current.filter((m) => m.id !== id);
+    setQueue(queueRef.current);
+  }, []);
   /** 取走队首（出队）。队空返回 `undefined`，不动状态。 */
   const take = useCallback((): QueuedMessage | undefined => {
     const next = queueRef.current[0];
@@ -47,10 +73,11 @@ export function useCcSendQueue() {
   const putBack = useCallback((m: QueuedMessage) => {
     queueRef.current = [m, ...queueRef.current];
     setQueue(queueRef.current);
+    pausedRef.current = true;
     setPaused(true);
   }, []);
 
-  return { queue, paused, enqueue, clear, resume, pause, take, putBack };
+  return { queue, paused, enqueue, clear, resume, pause, take, putBack, edit, remove, hasPausedItems };
 }
 
 /**

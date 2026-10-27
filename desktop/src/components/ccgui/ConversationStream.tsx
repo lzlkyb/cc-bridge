@@ -23,6 +23,7 @@ import { ScrollToBottom } from "./ScrollToBottom";
  */
 export function ConversationStream({
   scrollRef,
+  findRequest = 0,
   view,
   probe,
   probing,
@@ -36,6 +37,7 @@ export function ConversationStream({
   isRemote,
   newSessionHint,
 }: {
+  findRequest?: number;
   scrollRef: RefObject<HTMLDivElement>;
   view: CcView;
   probe: CcProbe | null;
@@ -60,6 +62,7 @@ export function ConversationStream({
 }) {
   const search = useCcConvSearch(view.messages);
   const { hits, occ, openSearch } = search;
+  useEffect(() => { if (findRequest > 0) openSearch(); }, [findRequest, openSearch]);
   const { away, toBottom } = useCcScrollAway(scrollRef);
   /** 按轮导航（在「我的提问」之间跳）。读布局定位，见 hook 头注释。 */
   const nav = useCcMessageNav(scrollRef);
@@ -120,9 +123,9 @@ export function ConversationStream({
     // page-scroll：对话流是长时停留的滚动区，要跟连接页/日志页同一根 12px rail，
     // 不挂就只有全局 6px 细条，右边缘看着比别的页窄一档。
     <div className="relative min-h-0 flex-1" style={typoStyle}>
-      <div ref={scrollRef} data-cc-stream className="page-scroll h-full overflow-y-auto px-3 py-1">
+      <div ref={scrollRef} data-cc-stream className="cc-conversation-stream page-scroll h-full overflow-y-auto">
         {/* cc-msgcol：消息列。子节点（每条消息的根元素）离屏跳渲染，见 index.css。 */}
-        <div className="cc-msgcol mx-auto flex min-h-full max-w-[820px] flex-col gap-1.5">
+        <div className="cc-msgcol mx-auto flex min-h-full max-w-[834px] flex-col gap-3">
           {view.messages.length === 0 ? (
             <CcEmptyState
               probe={probe}

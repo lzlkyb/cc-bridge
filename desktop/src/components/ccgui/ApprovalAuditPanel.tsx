@@ -1,3 +1,4 @@
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 import { useEffect, useRef, type RefObject } from "react";
 
 import { isOutsideDismiss } from "../../lib/utils";
@@ -118,6 +119,7 @@ export function ApprovalAuditPanel({
   anchorRef: RefObject<HTMLElement>;
 }) {
   const boxRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(boxRef, { onEscape: onClose });
   const style = useAnchoredPopover(anchorRef, true, { width: 440, align: "end", maxH: 520 });
 
   // 点外面关 + Esc 关。开关按钮自身不算外点（`isOutsideDismiss` 的理由写在那边）。

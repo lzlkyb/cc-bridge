@@ -1,4 +1,5 @@
 import { memo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { CcHistoryRow } from "../../lib/ccEventTypes";
 import type { CcMessage, CcSession } from "../../lib/ccGuiTypes";
 import { useCcApprovalAudit } from "../../hooks/useCcApprovalAudit";
@@ -6,174 +7,42 @@ import { useCcExport } from "../../hooks/useCcExport";
 import { Icon } from "../ui/icon";
 import { ApprovalAuditPanel } from "./ApprovalAuditPanel";
 import { HistoryPanel } from "./HistoryPanel";
+import { ChatPopover } from "./ChatPopover";
 
-/**
- * 会话条右端的**动作区**：改动 / 导出 / 历史 / 新对话 / 终端。
- *
- * 从 `SessionBar` 拆出（2026-10-26）：那一条已经 309 行，而这一组与左边的
- * 「运行参数」（目标 / 目录 / 模型 / 上下文 / 权限）没有状态往来 —— 它们各自
- * 持着自己的浮层开关，只是恰好排在同一行里。拆开后 `SessionBar` 只管参数，
- * 这里只管动作与浮层。
- *
- * 开头的竖线留在这里而不是父组件：它是「参数 | 动作」的分界，跟着这一组走，
- * 将来动作增减时不会和参数区错位。
- */
-function SessionActionsImpl({
-  session,
-  messages,
-  resolved,
-  title,
-  modelLabel,
-  newSessionHint,
-  onOpenHistory,
-  onJumpTo,
-  onNewSession,
-  onSwitchTerminal,
-}: {
-  session: CcSession;
-  messages: CcMessage[];
-  /** `requestId → 裁决`：审计面板要靠它把审批点分组。 */
+function SessionActionsImpl({ session, messages, resolved, title, modelLabel, newSessionHint,
+  onOpenHistory, onJumpTo, onNewSession, onSwitchTerminal }: {
+  session: CcSession; messages: CcMessage[];
   resolved: Record<string, { decision: "allow" | "deny"; auto?: boolean }>;
-  title: string;
-  /** 会话条上显示的模型名（导出用，与用户在那一行看到的一致）。 */
-  modelLabel: string;
-  newSessionHint: string;
+  title: string; modelLabel: string; newSessionHint: string;
   onOpenHistory: (row: CcHistoryRow) => void;
   onJumpTo: (messageId: string) => void;
-  onNewSession: () => void;
-  onSwitchTerminal: () => void;
+  onNewSession: () => void; onSwitchTerminal: () => void;
 }) {
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [changesetOpen, setChangesetOpen] = useState(false);
-  // 两个浮层的定位锚点：fixed 坐标由 `useAnchoredPopover` 按它们的 rect 算，
-  // 不再用 `absolute`（会话条换行后会被 pane 的左边界裁掉）。
-  const historyAnchor = useRef<HTMLSpanElement>(null);
-  const changesetAnchor = useRef<HTMLSpanElement>(null);
-  // 批 4-2：审批点分组 + 撤销。只在面板打开时查审计（理由见 hook 头注释）。
-  const audit = useCcApprovalAudit({
-    messages,
-    resolved,
-    cwd: session.cwd,
-    sessionId: session.sessionId,
-    enabled: changesetOpen,
-  });
-  const { exportMarkdown, canExport } = useCcExport({
-    messages,
-    title,
-    cwd: session.cwd,
-    model: modelLabel,
-  });
-
-  return (
-    <>
-      {/* 🔴 一条竖线把「这一行在说什么」劈成两半：左边是**运行参数**（模型 / 上下文 /
-          花费 / 权限，都是「这一轮怎么跑」），右边是**动作**（改动 / 导出 / 历史 /
-          新对话 / 终端）。此前十来个元素等距平铺，读的人得逐个辨认才发现它们不是一类。 */}
-      <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
-
-      {/* 变更集入口：没有改动就不占位（同分支 chip 的「未知不占位」）。
-          带数字是因为「改了没有、改了几处」是这一行最值得知道的事。 */}
-      {session.changeset.length > 0 && (
-        <span ref={changesetAnchor} className="relative flex shrink-0 items-center">
-          <button
-            type="button"
-            data-cc-toggle="changeset"
-            onClick={() => setChangesetOpen((v) => !v)}
-            aria-expanded={changesetOpen}
-            title={`本会话改动：${session.changeset.length} 个文件`}
-            aria-label="本会话改动"
-            className={`flex h-[26px] items-center gap-1 rounded-lg border px-1.5 text-[11px] transition-colors ${
-              changesetOpen
-                ? "border-primary/40 text-foreground"
-                : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
-            }`}
-          >
-            <Icon name="file" size={12} />
-            <span className="font-mono">{session.changeset.length}</span>
-          </button>
-          {changesetOpen && (
-            <ApprovalAuditPanel
-              groups={audit.groups}
-              stat={audit.stat}
-              reverted={audit.reverted}
-              busyKey={audit.busyKey}
-              onRevertOne={(p, f) => void audit.revertOne(p, f)}
-              onRevertGroup={(g) => void audit.revertGroup(g)}
-              onJump={(id) => {
-                // 跳完即关：浮层盖着消息区，用户看不见自己跳到了哪儿。
-                setChangesetOpen(false);
-                onJumpTo(id);
-              }}
-              onClose={() => setChangesetOpen(false)}
-              anchorRef={changesetAnchor}
-            />
-          )}
-        </span>
-      )}
-
-      {/* 导出整段对话为 Markdown。只给图标 —— 这一行在 700px 窄窗下被挤爆过，
-          带文字的按钮会再吃掉 40px。空会话不摆（没什么可导出）。 */}
-      {canExport && (
-        <button
-          type="button"
-          onClick={exportMarkdown}
-          title="导出这段对话为 Markdown（复制到剪贴板）"
-          aria-label="导出对话"
-          className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-        >
-          <Icon name="download" size={12} />
-        </button>
-      )}
-
-      <span ref={historyAnchor} className="relative flex shrink-0 items-center">
-        <button
-          type="button"
-          data-cc-toggle="history"
-          onClick={() => setHistoryOpen((v) => !v)}
-          aria-expanded={historyOpen}
-          title="历史对话（本机 Claude Code 的全部转录，包括终端页里聊的）"
-          aria-label="历史对话"
-          className={`flex h-[26px] w-[26px] items-center justify-center rounded-lg border transition-colors ${
-            historyOpen
-              ? "border-primary/40 text-foreground"
-              : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
-          }`}
-        >
-          <Icon name="history" size={12} />
-        </button>
-        {historyOpen && (
-          <HistoryPanel
-            onClose={() => setHistoryOpen(false)}
-            onOpen={(row) => {
-              setHistoryOpen(false);
-              onOpenHistory(row);
-            }}
-            anchorRef={historyAnchor}
-          />
-        )}
-      </span>
-
-      <button
-        type="button"
-        onClick={onNewSession}
-        title={`新对话（${newSessionHint}，新开一条空白会话；当前这条原样保留在侧栏）`}
-        aria-label="新对话"
-        className="flex h-[26px] w-[26px] items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-      >
-        <Icon name="plus" size={12} />
-      </button>
-
-      <button
-        type="button"
-        onClick={onSwitchTerminal}
-        title="切回终端（原终端页不受影响）"
-        className="flex h-[26px] items-center gap-1 rounded-lg border border-border px-2 text-[11px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-      >
-        <Icon name="terminal" size={12} />
-        终端
-      </button>
-    </>
-  );
+  const [open, setOpen] = useState<"more" | "info" | "history" | "changes" | null>(null);
+  const [changesFromMenu, setChangesFromMenu] = useState(false);
+  const anchor = useRef<HTMLButtonElement>(null);
+  const changesAnchor = useRef<HTMLButtonElement>(null);
+  const audit = useCcApprovalAudit({ messages, resolved, cwd: session.cwd, sessionId: session.sessionId, enabled: open === "changes" });
+  const { exportMarkdown, canExport } = useCcExport({ messages, title, cwd: session.cwd, model: modelLabel });
+  return <>
+    {session.changeset.length > 0 && <button ref={changesAnchor} type="button" className="cc-chat-chip cc-changes-trigger" data-cc-toggle="changeset" aria-label="本会话改动" aria-expanded={open === "changes"} title={`本会话改动：${session.changeset.length} 个文件`} onClick={() => { setChangesFromMenu(false); setOpen(open === "changes" ? null : "changes"); }}><Icon name="file" size={15} /><span>{session.changeset.length}</span></button>}
+    <button ref={anchor} type="button" className="cc-chat-icon" aria-label="更多会话操作" aria-expanded={open !== null && open !== "changes"} data-cc-toggle="history" onClick={() => setOpen(open ? null : "more")}><Icon name="more" size={18} /></button>
+    {(open === "more" || open === "info") && <ChatPopover anchorRef={anchor} label={open === "info" ? "会话信息" : "会话操作"} onClose={() => setOpen(null)}>
+      <div className="cc-chat-section"><strong>{open === "info" ? "会话信息" : "会话操作"}</strong></div>
+      {open === "info" ? <>
+        <dl className="cc-session-info"><dt>当前模型</dt><dd>{modelLabel}</dd><dt>工作目录</dt><dd>{session.cwd || "默认目录"}</dd><dt>分支</dt><dd>{session.branch || "未检测到"}</dd><dt>累计用量</dt><dd>{(session.inputTokens + session.outputTokens).toLocaleString()} tokens</dd><dt>累计费用</dt><dd>${session.costUsd.toFixed(2)}</dd></dl>
+        <button className="cc-chat-menu-item" type="button" onClick={() => setOpen("more")}><Icon name="arrowLeft" size={15} />返回会话操作</button>
+      </> : <>
+        <button className="cc-chat-menu-item" type="button" onClick={() => setOpen("info")}><Icon name="activity" size={16} /><span>会话信息<small>模型、用量与费用</small></span></button>
+        {session.changeset.length > 0 && <button className="cc-chat-menu-item" type="button" onClick={() => { setChangesFromMenu(true); setOpen("changes"); }}><Icon name="file" size={16} /><span>本会话改动<small>{session.changeset.length} 个文件</small></span></button>}
+        <button className="cc-chat-menu-item" type="button" disabled={!canExport} onClick={() => { exportMarkdown(); setOpen(null); }}><Icon name="download" size={16} /><span>导出对话<small>复制为 Markdown</small></span></button>
+        <button className="cc-chat-menu-item" type="button" onClick={() => setOpen("history")}><Icon name="history" size={16} /><span>从本机历史打开<small>包含终端中的 Claude Code 对话</small></span></button>
+        <button className="cc-chat-menu-item" type="button" onClick={() => { setOpen(null); onNewSession(); }}><Icon name="plus" size={16} /><span>新对话<small>{newSessionHint} · 当前会话保留</small></span></button>
+        <button className="cc-chat-menu-item" type="button" onClick={() => { setOpen(null); onSwitchTerminal(); }}><Icon name="terminal" size={16} />切换到终端</button>
+      </>}
+    </ChatPopover>}
+    {open === "history" && createPortal(<HistoryPanel onClose={() => setOpen(null)} onOpen={(row) => { setOpen(null); onOpenHistory(row); }} anchorRef={anchor} />, document.body)}
+    {open === "changes" && createPortal(<ApprovalAuditPanel groups={audit.groups} stat={audit.stat} reverted={audit.reverted} busyKey={audit.busyKey} onRevertOne={(p, f) => void audit.revertOne(p, f)} onRevertGroup={(g) => void audit.revertGroup(g)} onJump={(id) => { setOpen(null); onJumpTo(id); }} onClose={() => setOpen(null)} anchorRef={changesFromMenu ? anchor : changesAnchor} />, document.body)}
+  </>;
 }
-
 export const SessionActions = memo(SessionActionsImpl);
