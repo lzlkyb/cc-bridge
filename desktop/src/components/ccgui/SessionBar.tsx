@@ -163,7 +163,13 @@ function SessionBarImpl({
             ${session.costUsd.toFixed(2)}
           </span>
         )}
+      </span>
 
+      {/* 开关与动作单独一组（也 `ml-auto`）：整组挤在一个 `ml-auto` 里时，组内
+          换行会把「模型…权限」和「动作」都堆到右端，于是第一行只剩目标与目录、
+          右半截全空（1578px 窗口下实测空出约 800px）。拆成两组后 flex 先在第一行
+          放参数、放不下才让动作整体落到第二行，两行都贴右端且第一行不再大段留白。 */}
+      <span className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1.5">
         <span data-cc-seg className="flex items-center gap-px rounded-lg border border-border bg-muted/50 p-[2px]">
           {MODES.map((m) => {
             const on = m === mode;
