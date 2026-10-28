@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { Terminal } from "@xterm/xterm";
 import { invoke } from "../lib/tauri";
 import {
-  PROBE_CMD,
   hookCmd,
   isOsc133A,
   isSupportedShell,
@@ -15,9 +14,9 @@ import {
   attachEchoStripWhenReady,
   claimInjection,
   DANCE,
-  ECHO_OFF_CMD,
   ECHO_ON_CMD,
   ECHO_ON_CLEAN_CMD,
+  PROBE_ECHO_OFF_CMD,
   danceNext,
   tuiOnScreen,
   type DancePhase,
@@ -187,6 +186,14 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     };
   }, [termRef]);
 
+  // ── 残渣剥除器：随**终端实例**常驻且幂等 ──
+  // 🔴 不能挂在会话 effect 里：它换开关/断开/HMR 时会重跑，cleanup 撤包装 + claimInjection
+  // 提前 return = 整场会话再没剥除器，ConPTY 重绘时残渣「又自己输入一遍」（2026-10-28 报障）。
+  useEffect(() => {
+    const handle = attachEchoStripWhenReady(termRef);
+    return () => handle.cancel();
+  }, [termRef]);
+
   // ── 会话流程：stty 舞步（探针 → 注入 → kick 全静默，异常路径强制恢复 ECHO）──
   useEffect(() => {
     if (!enabled) {
@@ -204,16 +211,9 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     setState("pending");
     const send = (data: string): Promise<void> => invoke("ssh_input", { sessionId, data });
 
-    // ── 残渣常驻吞除（fail-open，实现见 lib/terminalSttyDance.ts）──
-    // 命令原文全部入 token 表（含两条 stty echo：异常路径会在 ECHO 已恢复后发出，是唯一会自己回显的收尾命令）。
-    // 剥离器常驻整个会话：ConPTY 整屏重绘会把残渣反复重发，常驻才每次都吞掉。长 token 排前——
-    // `stty echo` 是正常收尾命令的尾部，先擦短串会把前半截留在屏上。
-    const stripHandle = attachEchoStripWhenReady(termRef, [ECHO_OFF_CMD, PROBE_CMD, ECHO_ON_CLEAN_CMD, ECHO_ON_CMD]);
-
     // ── 舞步状态机接线 ──
     let phase: DancePhase = "idle";
     // 恢复 ECHO。单次消费（echoOffRef 闸门）：第二句 stty echo 会被回显成残渣（红线）。
-    // 剥离器不在这里撤——它常驻整个会话，撤包装只在 cleanup 里做。
     const restore = (clean = false) => {
       if (!echoOffRef.current) return;
       echoOffRef.current = false;
@@ -232,42 +232,42 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
 
     at(DANCE.PROBE_DELAY, () => {
-      if (typedRef.current) {
+      const term = termRef.current;
+      // 🔴 备用屏（全屏 TUI）绝不注入：字节会被 TUI 输入行吃进去并显示出来（2026-10-16 报障）。
+      if (typedRef.current || tuiOnScreen(term)) {
         abortDance();
         return;
       }
-      // 🔴 屏幕上有全屏 TUI（备用屏）时绝不注入：字节会被 TUI 输入行吃进去并显示出来
-      // （2026-10-16 报障）。正常新会话此刻停在干净提示符（主屏），不会命中这条。
-      if (tuiOnScreen(termRef.current)) {
+      // 🔴 折行安全阀：剥除器单行匹配，token 被 PTY 折成两行就永远命中不了 ⇒ 宁可不注入。
+      // 此时 echoOffRef 还是 false，abortDance 不会发多余的 stty echo。
+      if (!term || term.cols < PROBE_ECHO_OFF_CMD.length + 4) {
         abortDance();
         return;
       }
       echoOffRef.current = true;
-      // 🔴 每条注入命令都带**前导空格**：bash 的 HISTCONTROL=ignoreboth（Ubuntu 默认）
-      // 忽略带空格的命令——不进 history，按 ↑ 翻不到（否则会调出 stty -echo，误执行
-      // 还把回显关死）。zsh 需 HIST_IGNORE_SPACE，默认无——尽力而为。空格不影响剥除：
-      void send(` ${ECHO_OFF_CMD}\n`).catch(() => {
+      // 🔴 前导空格：bash HISTCONTROL=ignoreboth 忽略带空格的命令，不进 history（zsh 尽力而为）。
+      // 🔴 这一条同时关回显与报 shell 名：**回执到达 = shell 已 ready 且 ECHO 已关**，钩子才允许发。
+      void send(` ${PROBE_ECHO_OFF_CMD}\n`).catch(() => {
         // 发送失败 = 字节没到远端，回显从未关——闸门必须复位（否则 restore 补发
-        // stty echo 被回显成残渣），并中止舞步免得探针在回显开着时照发。
+        // stty echo 被回显成残渣），并中止舞步。
         echoOffRef.current = false;
         phase = danceNext(phase, "abort").phase;
         setState("unsupported");
       });
+      // 关回显与探针已合并成同一条命令：两态一起推进，hook 仍由回执门禁把守。
       phase = danceNext(phase, "echoOffSent").phase;
-    });
-    at(DANCE.PROBE_DELAY + DANCE.ECHO_GAP, () => {
-      if (typedRef.current || phase !== "echoOffSent") return;
-      void send(` ${PROBE_CMD}\n`).catch(() => abortDance());
       phase = danceNext(phase, "probeSent").phase;
     });
-    at(DANCE.PROBE_DELAY + DANCE.ECHO_GAP + DANCE.PROBE_TIMEOUT, () => {
+    at(DANCE.PROBE_DELAY + DANCE.PROBE_TIMEOUT, () => {
       if (probeOkRef.current) return;
       abortDance(); // 回执没到：恢复 ECHO + 走 unsupported 降级
     });
-    // 探针回执到达（OSC 处理器回调）→ 舞步后半场：
+    // 合并探针的回执到达 → 舞步后半场。🔴 此刻 ECHO **已确定关闭**，649 字符钩子才开始
+    // 打字（2026-10-28 核心修复：长命令永远排在 `stty -echo` 之后，不再被回显）。
     probeGoRef.current = () => {
+      if (phase !== "probeSent") return; // 回执迟到（已超时 abort）：ECHO 已恢复，不再续步
       at(DANCE.HOOK_DELAY, () => {
-        if (typedRef.current || phase !== "probeSent") return; // 回执迟到/已中止：不注入
+        if (typedRef.current || phase !== "probeSent") return; // 已中止：不注入
         void send(` ${hookCmd()}\n`).catch(() => abortDance());
         phase = danceNext(phase, "hookSent").phase;
       });
@@ -284,15 +284,14 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
 
     return () => {
       timers.forEach((t) => window.clearTimeout(t));
-      // 兜底：卸载/重连/开关切换时 ECHO 仍关闭就尽力恢复一次（会话已死则 invoke
-      // 失败即忽略；PTY 销毁本身也会重置 termios）。
+      // 兜底：卸载/重连/开关切换时 ECHO 仍关闭就尽力恢复一次（会话已死则忽略）。
+      // 🔴 剥除器**不在这里撤**——它挂在终端实例上，这条兜底命令的回显仍归它擦。
       if (echoOffRef.current) {
         echoOffRef.current = false;
         void invoke("ssh_input", { sessionId, data: ` ${ECHO_ON_CMD}\n` }).catch(() => {});
       }
       abortRef.current = null;
       probeGoRef.current = null;
-      stripHandle?.end();
     };
   }, [sessionId, enabled, closed, reset, termRef]);
 

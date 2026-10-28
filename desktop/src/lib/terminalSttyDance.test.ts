@@ -2,12 +2,15 @@ import type { Terminal } from "@xterm/xterm";
 import { describe, expect, it } from "vitest";
 import {
   attachEchoStrip,
+  attachEchoStripWhenReady,
   claimInjection,
   createEchoStripper,
   danceNext,
   ECHO_OFF_CMD,
   ECHO_ON_CMD,
   ECHO_ON_CLEAN_CMD,
+  PROBE_ECHO_OFF_CMD,
+  STRIP_TOKENS,
   tuiOnScreen,
   type DanceEvent,
   type DancePhase,
@@ -32,6 +35,9 @@ describe("danceNext 正常时序", () => {
     expect(danceNext("idle", "probeSent")).toEqual({ phase: "idle", restore: false });
     // 探针未回执就想发钩子 → 不动
     expect(danceNext("echoOffSent", "hookSent")).toEqual({ phase: "echoOffSent", restore: false });
+    // 🔴 2026-10-28 不变量：回执没到（连探针都没发）时钩子绝不能发——649 字符会在
+    // ECHO 仍是 on 时到达 tty 被整行回显，且折行后无 token 可匹配。
+    expect(danceNext("idle", "hookSent")).toEqual({ phase: "idle", restore: false });
     // 重复事件 → 不动
     expect(danceNext("probeSent", "probeSent")).toEqual({ phase: "probeSent", restore: false });
     // 已结束再收 restoreSent → 不动
@@ -264,5 +270,71 @@ describe("正常收尾命令（ECHO_ON_CLEAN_CMD，修「连接后两个提示�
     const out = createEchoStripper(ECHO_ON_CLEAN_CMD).feed(`$ ${ECHO_ON_CLEAN_CMD}\r\nNEXT`);
     expect(out).not.toContain("printf");
     expect(out).toContain("NEXT");
+  });
+});
+
+/* ==================== 合并探针（2026-10-28：时序不再靠猜） ==================== */
+
+describe("PROBE_ECHO_OFF_CMD —— 关回显 + 报 shell，一条命令一个回执", () => {
+  it("形态：先 stty -echo，再 printf 回执（回执到达 = ECHO 已关 + shell 已 ready）", () => {
+    const off = PROBE_ECHO_OFF_CMD.indexOf(ECHO_OFF_CMD);
+    const probe = PROBE_ECHO_OFF_CMD.indexOf("1337;Shell=");
+    expect(off).toBe(0); // 必须是命令第一个动作，否则关不干净
+    expect(probe).toBeGreaterThan(off);
+  });
+
+  it("短到能整行放下（长命令才会被 PTY 折行，这是它必须短的原因）", () => {
+    expect(PROBE_ECHO_OFF_CMD.length).toBeLessThan(80);
+  });
+
+  it("带前导空格的整行回显照样被吞（history 抑制形态）", () => {
+    const s = createEchoStripper(PROBE_ECHO_OFF_CMD);
+    const out = s.feed(`$  ${PROBE_ECHO_OFF_CMD}\r\n`);
+    expect(out).toBe(`$  ${" ".repeat(PROBE_ECHO_OFF_CMD.length)}\r\n`);
+  });
+
+  it("🔴 一旦被折成两行就命中不了 —— 这正是注入前必须有 cols 安全阀的理由", () => {
+    const s = createEchoStripper(PROBE_ECHO_OFF_CMD);
+    const cut = 40;
+    const folded = `${PROBE_ECHO_OFF_CMD.slice(0, cut)}\r\n${PROBE_ECHO_OFF_CMD.slice(cut)}`;
+    expect(s.feed(`$ ${folded}\r\n`)).toContain("stty -echo");
+  });
+
+  it("STRIP_TOKENS：长 token 排前，且不再收单条 ECHO_OFF_CMD（否则折行只吞半截）", () => {
+    expect(STRIP_TOKENS[0]).toBe(PROBE_ECHO_OFF_CMD);
+    expect(STRIP_TOKENS).not.toContain(ECHO_OFF_CMD);
+    // ECHO_ON_CLEAN_CMD 必须排在 ECHO_ON_CMD 之前：它是后者的超串，反了会留 printf 残尾。
+    expect(STRIP_TOKENS.indexOf(ECHO_ON_CLEAN_CMD)).toBeLessThan(STRIP_TOKENS.indexOf(ECHO_ON_CMD));
+  });
+});
+
+describe("attachEchoStripWhenReady —— 随终端实例常驻、幂等", () => {
+  function fakeTerm(): { term: Terminal; writes: string[] } {
+    const writes: string[] = [];
+    const term = { write: (d: string) => void writes.push(d) } as unknown as Terminal;
+    return { term, writes };
+  }
+
+  it("cancel 只取消 rAF 重试，**不撤包装**（effect 重跑后残渣仍归它擦）", () => {
+    const { term, writes } = fakeTerm();
+    const h = attachEchoStripWhenReady({ current: term });
+    h.cancel();
+    // 尾字别用 s/t（会被当成 token 前缀扣住，见上面「以首字母结尾」那条）
+    term.write(`$ ${ECHO_ON_CMD}\r\nrest!`);
+    expect(writes[0]).toBe(`$ ${" ".repeat(ECHO_ON_CMD.length)}\r\nrest!`);
+  });
+
+  it("同一终端实例重复调用不叠加包装（HMR / effect 重跑安全）", () => {
+    const { term } = fakeTerm();
+    const ref = { current: term };
+    const pristine = term.write;
+    attachEchoStripWhenReady(ref);
+    const wrapped = term.write;
+    // 🔴 只能靠引用身份判定幂等：双层包装在**行为上无法观测**（第二层看到的已是被
+    // 第一层抹成空格的文本，不会再吞一次），旧断言「写入次数为 1」双层也照样通过。
+    attachEchoStripWhenReady(ref);
+    attachEchoStripWhenReady(ref).cancel();
+    expect(wrapped).not.toBe(pristine);
+    expect(term.write).toBe(wrapped);
   });
 });

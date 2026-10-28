@@ -329,6 +329,10 @@ export function parseOsc1337(data: string): { shell?: string; git?: string; cmd?
  * 喷语法错误，与回显残渣同类）。探针的价值是拿到 shell 名给门禁判定 + 时序同步。
  *
  * 注意 `$0` 在登录 shell 下通常是 `-bash` / `-zsh`（带前导 `-`），判定时要剥掉。
+ *
+ * @deprecated 2026-10-28 起 `useTerminalOsc` 改用 `terminalSttyDance.ts` 的
+ * `PROBE_ECHO_OFF_CMD`（关回显 + 报 shell 合并成一条命令、一个回执），本常量仅留作
+ * 回归对照。单独发它就意味着「发之前 ECHO 还是开的」，慢 shell 下必然被回显。
  */
 export const PROBE_CMD = `printf '\\033]1337;Shell=%s\\007' "$0"`;
 

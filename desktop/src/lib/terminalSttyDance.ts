@@ -8,15 +8,25 @@
  * （exec 包装 / rcfile，见 docs/SSH钩子注入回显治理方案.md 方案 B/C），代价大且
  * 违背「不写远端文件」的产品承诺。本文件给出纯前端两段式治理：
  *
- * 1. **舞步时序**：t0 先发 `stty -echo` 关回显，探针/钩子/kick 全程静默，
- *    最后 `stty echo` 恢复。回显发生在行规程层（比 shell 读输入还早），
- *    与提示符时机无关——所以「掐时机注入」治不了本，只有开关 ECHO 治得了。
- * 2. **残渣常驻吞除**：关掉回显后，唯一会回显的只剩 t0 那行 `stty -echo`
- *    （慢 shell 下还有 ECHO 生效前被整行回显的探针行）。内容完全已知，
- *    用 `createEchoStripper` 在前端 write 路径上识别它：命中时不逐字节抠——
- *    前面的旧提示符（带颜色序列）早已渲染上屏、内容不可预知——而是输出
- *    「回车 + 整行擦除」(`\r\x1b[2K`) 把旧提示符连同命令一起从屏幕抹掉，
- *    随后的换行照常放行，新提示符落在下一行（fail-open）。
+ * 1. **舞步时序**：t0 发**合并探针**（`stty -echo` + 报 shell 名，一条命令一个回执），
+ *    拿到回执才发钩子，最后 `stty echo` 恢复。回显发生在行规程层（比 shell 读输入
+ *    还早），与提示符时机无关——所以「掐时机注入」治不了本，只有开关 ECHO 治得了。
+ * 2. **残渣常驻吞除**：关掉回显后，唯一会回显的只剩合并探针那一行。内容完全已知，
+ *    用 `createEchoStripper` 在前端 write 路径上识别它：命中时输出**等宽空格覆盖**
+ *    （token 字节从未渲染，光标与 ConPTY 保持一致），其余字节原样透传（fail-open）。
+ *
+ * ## 2026-10-28 第三次修复：时序不能靠猜
+ *
+ * 用户报「终端偶尔自己输入 echo，新建会话时尤其明显」。根因是**旧时序在猜**：
+ * `ssh_connect` 是 spawn 即返回，而 t0 固定 900ms 就盲发 `stty -echo`、250ms 后盲发
+ * 探针、回执后发 649 字符钩子——远端 ready 往往要 1~3s，于是这些字节全在 ECHO 仍是
+ * on 时到达 tty 被整行回显。短命令能被剥除（有 token），钩子折成 7~9 行后**无 token
+ * 可匹配**，明文整屏露出。同时 `claimInjection` 失败分支提前 return + cleanup 撤包装，
+ * 让剥除器在 effect 重跑后永久丢失，残渣便在 resize 时「又自己输入一遍」。
+ *
+ * 两条修法都落在本文件：① 合并探针（`PROBE_ECHO_OFF_CMD`）用**回执**证明「shell 已
+ * ready 且 ECHO 已关」，长命令永远排在它之后；② 剥除器改为**随终端实例常驻且幂等**
+ * （`attachEchoStripWhenReady` 不再提供 end），与注入 effect 的生死彻底解耦。
  *
  * ## 为什么剥离器必须「常驻」整个会话（2026-10-13 二次修复）
  *
@@ -41,9 +51,26 @@
 
 import type { Terminal } from "@xterm/xterm";
 
-/** 舞步动作：先关回显再干活，干完恢复。发往远端的两条 stty 命令。 */
+/** 舞步动作：先关回显再干活，干完恢复。 */
 export const ECHO_OFF_CMD = "stty -echo";
 export const ECHO_ON_CMD = "stty echo";
+
+/**
+ * **合并探针**：关回显 + 报 shell 名，一条命令一个回执（2026-10-28）。
+ *
+ * WHY 合并：旧时序在 t0 盲发 `stty -echo`、250ms 后盲发探针，全靠固定延时假设
+ * 「远端 shell 已经在读了」。可 `ssh_connect` 是 spawn 即返回（`ssh_cmds.rs`），
+ * 远端 TCP+认证+profile+MOTD 往往 1~3s ⇒ 两条命令都在 ECHO 仍是 on 时到达 tty 被
+ * 整行回显；649 字符的钩子更惨——折成 7~9 行后没有任何 token 能匹配，明文整屏露出。
+ * （回显发生在**字节进 tty 的那一刻**，由当时的 ECHO 状态决定，与 shell 何时执行无关。）
+ *
+ * 合并后语义变成：**回执到达 = shell 已 ready 且 ECHO 已关**，两个前提一次拿到；
+ * 钩子必须等这个回执（`useTerminalOsc` 的 probeGoRef）——命令在 tty 队列里排多久都安全。
+ *
+ * ⚠️ 这一行自身必然被回显（ECHO 在它执行前仍是 on），必须进 STRIP_TOKENS；
+ * 且因为它以 `stty -echo` 开头，剥除表里必须排在短命令之前。
+ */
+export const PROBE_ECHO_OFF_CMD = `stty -echo 2>/dev/null; printf '\\033]1337;Shell=%s\\007' "$0"`;
 
 /**
  * **正常收尾**用的恢复命令：先把光标所在行擦掉，再恢复回显（2026-10-20 修「连接后两个 $」）。
@@ -61,20 +88,41 @@ export const ECHO_ON_CMD = "stty echo";
  */
 export const ECHO_ON_CLEAN_CMD = "printf '\\r\\033[2K'; stty echo";
 
+/**
+ * 剥除器的 token 表（常驻整个会话）。
+ *
+ * 顺序即串行链顺序：**长 token 必须排前**——`PROBE_ECHO_OFF_CMD` 以 `stty -echo`
+ * 开头、`ECHO_ON_CLEAN_CMD` 以 `stty echo` 结尾，短串先跑会把长命令的中段吞掉、
+ * 把前后半截留在屏上。
+ *
+ * 不再收 `ECHO_OFF_CMD`：关回显已并入合并探针，单独留这一条反而会在折行时
+ * 只吞掉开头 11 字符、把 `2>/dev/null; printf …` 的尾巴留在屏上。
+ *
+ * 钩子命令**刻意不收**：它 649 字符，必然被 PTY 按列宽折行，跨行无法匹配；
+ * 正确做法是让它永远在 ECHO 关闭后才发（见 `PROBE_ECHO_OFF_CMD`），而不是事后擦。
+ */
+export const STRIP_TOKENS: readonly string[] = [
+  PROBE_ECHO_OFF_CMD,
+  ECHO_ON_CLEAN_CMD,
+  ECHO_ON_CMD,
+];
+
 /** 舞步时序（毫秒）。t0 = 会话接线完成（等 banner / MOTD 走完再起舞）。 */
 export const DANCE = {
-  /** t0：发 `stty -echo`。太早发会被登录脚本吞掉（沿用原探针延时）。 */
+  /** t0：发合并探针。不能再早——还要躲开首连的密码提示自动填充。 */
   PROBE_DELAY: 900,
-  /** stty -echo → 探针：给行规程生效留余量（跨洋 RTT 也远小于此）。 */
-  ECHO_GAP: 250,
   /** 探针回执 → 钩子。 */
   HOOK_DELAY: 60,
   /** 钩子 → kick 空回车（逼 shell 重绘一次提示符，触发 133;A）。 */
   KICK_DELAY: 150,
   /** kick → `stty echo`：舞步收尾，ECHO 恢复。 */
   RESTORE_DELAY: 250,
-  /** 探针发出后多久没回执就判「不是 bash/zsh」。 */
-  PROBE_TIMEOUT: 1200,
+  /**
+   * 探针发出后多久没回执就判「不是 bash/zsh，或 shell 迟迟不就绪」。
+   * 命令可能在 tty 队列里等 ready，故给足 8s（旧值 1200ms 是按「固定延时后必已执行」
+   * 的错误前提定的）；等待期间用户一敲键就走 onData 立刻 abort + 恢复 ECHO。
+   */
+  PROBE_TIMEOUT: 8000,
   /** 钩子发出后多久没等到 133;A 就降级（ECHO 此时已被 restore 恢复，这里只判死）。 */
   HOOK_TIMEOUT: 2000,
 } as const;
@@ -351,35 +399,55 @@ export function claimInjection(sessionId: string): boolean {
   return true;
 }
 
+export interface EchoStripCancel {
+  /** 只取消「还没拿到 term」时的 rAF 重试；**不撤包装**（剥除器随终端实例常驻）。 */
+  cancel(): void;
+}
+
 /**
- * 尽早挂上残渣剥除器。终端的创建 effect 与注入的会话 effect 谁先跑不由本模块决定，
- * 而**漏挂的代价是整场会话残渣可见**——老写法 `term ? attachEchoStrip(term) : null`
- * 在拿不到 term 时静默降级成一个空 handle，屏幕上的命令原文再没人擦。
- * 这里改成 rAF 重试：termRef 一就绪就挂（t0 在 900ms 之后，时间绰绰有余）。
- * tokens 由调用方给（探针命令原文在 terminalStatusbar，本模块不反向依赖它）。
+ * 终端实例 → 是否已挂过剥除器。挂 `globalThis`（与 `claimInjection` 同理）：
+ * HMR 会重新求值本模块，模块级 WeakSet 会被清掉，于是热更新一次就再包一层。
+ */
+function attachedLedger(): WeakSet<Terminal> {
+  const g = globalThis as Record<string, unknown>;
+  return (g.__ccbStripAttached ??= new WeakSet<Terminal>()) as WeakSet<Terminal>;
+}
+
+/**
+ * 尽早挂上残渣剥除器，**幂等**，生命周期跟着**终端实例**而不是 effect。
+ *
+ * 终端的创建 effect 与注入的会话 effect 谁先跑不由本模块决定，而**漏挂的代价是整场
+ * 会话残渣可见**——老写法 `term ? attachEchoStrip(term) : null` 在拿不到 term 时静默
+ * 降级成一个空 handle，屏幕上的命令原文再没人擦。这里用 rAF 重试：termRef 一就绪就挂。
+ *
+ * 🔴 2026-10-28 起**不再提供 end()**：ConPTY 整屏重绘随时可能重发残渣，而 `useTerminalOsc`
+ * 的会话 effect 会在 HMR / 重挂 / 换开关时重跑——旧实现在它的 cleanup 里撤包装，重跑后
+ * 又因 `claimInjection` 返回 false 提前 return，于是**整场会话再没有剥除器**，残渣就在
+ * resize / 字号 / TUI 进出时「又自己输入一遍」。挂在实例上并去重，这条路径彻底关死。
  */
 export function attachEchoStripWhenReady(
   termRef: { current: Terminal | null },
-  tokens: readonly string[],
-): EchoStripHandle {
-  let handle: EchoStripHandle | null = null;
+  tokens: readonly string[] = STRIP_TOKENS,
+): EchoStripCancel {
   let raf = 0;
-  let ended = false;
+  let cancelled = false;
   const tryAttach = () => {
-    if (ended) return;
+    if (cancelled) return;
     const term = termRef.current;
     if (!term) {
       raf = requestAnimationFrame(tryAttach);
       return;
     }
-    handle = attachEchoStrip(term, tokens);
+    const seen = attachedLedger();
+    if (seen.has(term)) return;
+    seen.add(term);
+    attachEchoStrip(term, tokens);
   };
   tryAttach();
   return {
-    end() {
-      ended = true;
+    cancel() {
+      cancelled = true;
       if (raf) cancelAnimationFrame(raf);
-      handle?.end();
     },
   };
 }
