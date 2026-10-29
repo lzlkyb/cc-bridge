@@ -102,7 +102,9 @@ export function SshUploadResult({
   onDismiss: () => void;
 }) {
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-primary/5 px-3 py-1.5">
+    // 同 RestoreBanner：这条也在终端画布上，必须用不透明 bg-card（半透明主题色叠深色画布
+    // 会把 text-muted-foreground 压到 2.98:1，不达 AA）。
+    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-1.5">
       <Icon name="check" size={13} className="shrink-0 text-primary" />
       <span className="shrink-0 text-xs text-muted-foreground">
         已上传 {count} 个文件到

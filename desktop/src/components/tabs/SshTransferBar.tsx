@@ -29,7 +29,9 @@ export function TransferBar({
   const eta = fmtEta(transfer.eta);
   const pct = transfer.percent;
   return (
-    <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-3 border-y border-border bg-muted/40 px-3 py-3">
+    // 传输条同样落在终端画布上：`bg-muted/40` 半透明会被深色画布吃成中灰，
+    // 文件名与进度文字（muted-foreground）几乎看不见 —— 改用不透明 bg-muted。
+    <div className="flex min-w-0 shrink-0 flex-wrap items-center gap-3 border-y border-border bg-muted px-3 py-3">
       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-primary/15 text-primary">
         <Icon name={transfer.kind === "up" ? "upload" : "download"} size={12} />
       </span>

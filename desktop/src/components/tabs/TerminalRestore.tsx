@@ -65,7 +65,9 @@ export function RestoreBanner({
   const restored = sessions.filter((s) => s.closedReason === "restored" && !s.splitOnly);
   // 进度用「已发起条数」而非「已成功」：失败的也会 toast 说明原因并继续下一条。
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  if (restored.length === 0) return null;
+  // 本次忽略：只是当次会话不想被提示（占位卡仍在标签栏，随时可手动恢复），故不持久化。
+  const [dismissed, setDismissed] = useState(false);
+  if (restored.length === 0 || dismissed) return null;
   const running = progress !== null;
   const handleAll = async () => {
     if (running) return;
@@ -77,18 +79,32 @@ export function RestoreBanner({
     setProgress(null);
   };
   return (
-    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-primary/5 px-3 py-1.5 text-xs">
+    // 底色必须是**不透明** bg-card：这条横幅渲染在终端画布上（终端有自己的明暗设置，
+    // 浅色应用 + 深色画布是合法组合），半透明主题色叠深色画布会把文字压到 1.1:1 即看不见。
+    // 与标签栏 / 窗格头 / 状态栏同一套 chrome 语言，也让深色主题自动成立。
+    <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-1.5 text-xs">
       <Icon name="history" size={13} className="shrink-0 text-primary" />
-      <span className="text-muted-foreground">
-        已恢复 {restored.length} 个上次会话的标签，连接由你手动发起
+      <span className="min-w-0 flex-1 truncate text-muted-foreground">
+        <span className="font-medium text-foreground">{restored.length} 个上次会话待恢复</span>
+        <span className="mx-1.5">·</span>
+        连上后自动替换占位
       </span>
       <button
         type="button"
         disabled={running}
         onClick={() => void handleAll()}
-        className="ml-auto shrink-0 rounded-md border border-border px-2 py-0.5 text-foreground transition-colors hover:border-primary hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+        className="ml-auto shrink-0 rounded-md bg-primary px-2.5 py-1 text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {running ? `恢复中 ${Math.min(progress.done + 1, progress.total)}/${progress.total}` : "全部恢复"}
+      </button>
+      <button
+        type="button"
+        onClick={() => setDismissed(true)}
+        title="本次忽略"
+        aria-label="本次忽略"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <Icon name="close" size={12} />
       </button>
     </div>
   );
