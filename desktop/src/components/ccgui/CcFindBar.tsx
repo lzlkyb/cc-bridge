@@ -37,7 +37,7 @@ export function CcFindBar({
   const none = total === 0 && query.trim().length > 0;
 
   return (
-    <div className="animate-scale-in absolute right-3 top-3 z-20 flex items-center gap-0.5 rounded-lg border border-border bg-card/95 p-1 shadow-lg">
+    <div className="animate-scale-in absolute right-3 top-3 z-20 flex max-w-[calc(100%-24px)] items-center gap-0.5 rounded-lg border border-border bg-card/95 p-1 shadow-lg">
       <Icon name="search" size={12} className="ml-1 shrink-0 text-muted-foreground" />
       <input
         ref={inputRef}
@@ -57,9 +57,9 @@ export function CcFindBar({
             onClose();
           }
         }}
-        className="h-6 w-44 rounded-md bg-transparent px-1.5 text-xs text-foreground outline-none placeholder:text-muted-foreground"
+        className="h-6 w-44 min-w-0 rounded-md bg-transparent px-1.5 text-xs text-foreground outline-none placeholder:text-muted-foreground"
       />
-      <span className={`min-w-[46px] text-center text-[11px] tabular-nums ${none ? "text-warning-ink" : "text-muted-foreground"}`}>
+      <span className={`min-w-[46px] shrink-0 text-center text-[11px] tabular-nums ${none ? "text-warning-ink" : "text-muted-foreground"}`}>
         {none ? "无结果" : total > 0 ? `${occ + 1} / ${total}` : ""}
       </span>
       <FindBtn title="上一个（Shift+Enter）" disabled={total === 0} onClick={onPrev}>

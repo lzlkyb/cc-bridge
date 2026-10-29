@@ -28,7 +28,7 @@ On 2026-10-27 the user requested a comprehensive conversation-page upgrade, prio
 
 ## Evidence on Hand
 
-Evidence includes the desktop source, the original application observations, the approved prototype under `design/`, production unit tests and build checks, and the browser report under `.impeccable/review/chat-production/`. The production browser fixture uses real components with simulated IPC; it does not establish live model/backend behavior, a packaged release, or installed-app acceptance. The original proposal remains a historical statement of intent, not a claim that every recommendation was implemented.
+Evidence includes the desktop source, the original application observations, the approved prototype under `design/`, production unit tests and build checks, and the earlier reduced-motion [browser report](.impeccable/review/chat-production/report.json). The subsequent glass and motion extension has a separate [normal-motion report](.impeccable/review/chat-motion-no-preference/report.json), [scoped independent review](.impeccable/review/chat-motion-no-preference/finish-review.md), and [documentation record](.impeccable/review/chat-motion-no-preference/documentation.md). The implementation and acceptance record separates these stages and the focused reduced-motion checks; their counts do not form a new full-suite result. The production browser fixture uses real components with simulated IPC; it does not establish live model/backend behavior, a packaged release, or installed-app acceptance. The original proposal remains a historical statement of intent, not a claim that every recommendation was implemented.
 
 ## Open Decisions
 

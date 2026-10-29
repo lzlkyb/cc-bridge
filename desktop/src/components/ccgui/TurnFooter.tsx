@@ -39,7 +39,7 @@ export function TurnFooter({ stat }: { stat: CcTurnStat }) {
   const hit = cacheHitRatio(stat);
 
   // 一行都没有 token 的轮次（纯报错、用户中断）不占位：没有信息量。
-  if (total <= 0) return null;
+  if (total <= 0 && !stat.isError) return null;
 
   return (
     <div className="flex flex-col gap-1 py-1">
@@ -49,7 +49,8 @@ export function TurnFooter({ stat }: { stat: CcTurnStat }) {
           size={10}
           className={stat.isError ? "shrink-0 text-destructive-ink" : "shrink-0 opacity-60"}
         />
-        <span className="font-mono">{formatTokens(total)} tok</span>
+        {stat.isError && <span className="text-destructive-ink">本轮执行失败</span>}
+        {total > 0 && <span className="font-mono">{formatTokens(total)} tok</span>}
         {speed !== null && (
           <>
             <span aria-hidden className="opacity-40">

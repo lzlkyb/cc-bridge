@@ -269,9 +269,9 @@ export function CcPane({
       />
 
       <ConversationStream
-        findRequest={findRequest}
-        scrollRef={scrollRef}
+        findRequest={findRequest} scrollRef={scrollRef}
         view={view}
+        sending={session.busy} activityStartedAt={session.activityStartedAt} stopState={session.stopState}
         probe={session.probe}
         probing={probing}
         retryProbe={retryProbe}

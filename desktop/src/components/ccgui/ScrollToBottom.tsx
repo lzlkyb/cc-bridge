@@ -12,15 +12,17 @@ import { Icon } from "../ui/icon";
 export function ScrollToBottom({
   pending,
   running,
+  activity,
   onClick,
 }: {
   /** 等待用户裁决的审批 / 提问条数。 */
   pending: number;
   running: boolean;
+  activity?: string | null;
   onClick: () => void;
 }) {
   const warn = pending > 0;
-  const label = warn ? `有 ${pending} 条待批准 · 回到底部` : running ? "回到底部 · 生成中" : "回到底部";
+  const label = warn ? `有 ${pending} 条待批准 · 回到底部` : running ? `${activity || "本轮进行中"} · 查看` : "回到底部";
   return (
     <button
       type="button"

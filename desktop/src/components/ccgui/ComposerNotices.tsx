@@ -3,6 +3,7 @@ import { Icon } from "../ui/icon";
 import { toast } from "../ui/toast";
 import { SLASH_WHITELIST_TEXT } from "../../lib/ccSlash";
 import type { QueuedMessage } from "../../hooks/useCcSendQueue";
+import { usePresence } from "../../hooks/usePresence";
 import { ChatPopover } from "./ChatPopover";
 
 export function ComposerNotices({
@@ -21,6 +22,7 @@ export function ComposerNotices({
   onShowPending?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const queue = usePresence(expanded && queueCount > 0);
   const [editing, setEditing] = useState<{ id: string; text: string; images: number } | null>(null);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   return (
@@ -33,13 +35,14 @@ export function ComposerNotices({
             <button type="button" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>{expanded ? "收起" : "管理"}</button>
           </div>
           {!expanded && queueItems[0] && <p className="cc-composer-queue-peek">下一条：{queueItems[0].text || "图片消息"}{queueItems[0].images.length > 0 && ` · ${queueItems[0].images.length} 张图片`}</p>}
-          {expanded && <div className="cc-composer-queue-items">
+          {queue.mounted && <div className="cc-queue-reveal" data-entered={queue.entered} aria-hidden={!expanded}
+            ref={node => { if (node) node.inert = !expanded; }}><div className="cc-queue-clip"><div className="cc-composer-queue-items">
             {queueItems.map((item, index) => <div key={item.id} className="cc-composer-queue-item"><span>{index + 1}</span><p title={item.text}>{item.text || "图片消息"}{item.images.length > 0 && <small> · {item.images.length} 张图片</small>}</p>
               {onEditQueue && <button type="button" className="cc-chat-icon" aria-label={`编辑第 ${index + 1} 条排队消息`} onClick={event => { anchorRef.current = event.currentTarget; setEditing({ id: item.id, text: item.text, images: item.images.length }); }}><Icon name="edit" size={14} /></button>}
               {onRemoveQueue && <button type="button" className="cc-chat-icon" aria-label={`移除第 ${index + 1} 条排队消息`} onClick={() => onRemoveQueue(item.id)}><Icon name="close" size={14} /></button>}
             </div>)}
             <button type="button" className="cc-composer-clear" onClick={onClearQueue}>清空队列</button>
-          </div>}
+          </div></div></div>}
         </div>
       )}
       {editing && <ChatPopover anchorRef={anchorRef} onClose={() => setEditing(null)} label="编辑排队消息" width={360}>

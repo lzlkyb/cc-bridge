@@ -1,5 +1,6 @@
 import type { SlashCommand } from "../../lib/ccSlash";
 import { SLASH_WHITELIST_TEXT } from "../../lib/ccSlash";
+import { ComposerCompletion } from "./ComposerCompletion";
 
 /**
  * slash 命令面板：输入框里打出 `/` 时浮在输入区上方。
@@ -28,10 +29,7 @@ export function SlashPanel({
   onPick: (cmd: SlashCommand) => void;
 }) {
   return (
-    <div
-      aria-label="slash 命令"
-      className="absolute bottom-full left-3 right-3 z-30 mb-1 overflow-hidden rounded-xl border border-border bg-card shadow-xl"
-    >
+    <ComposerCompletion label="slash 命令" active={active}>
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
         <span className="font-mono text-[12px] font-semibold text-foreground">/</span>
         <span className="text-[11px] text-muted-foreground">CC 内置命令 · 由 CLI 执行</span>
@@ -42,7 +40,7 @@ export function SlashPanel({
           没有匹配「/{query}」的命令。对话页只转发 {SLASH_WHITELIST_TEXT}，其它命令请到终端页里用。
         </p>
       ) : (
-        <div className="flex flex-col py-1">
+        <div className="cc-completion-options flex flex-col overflow-y-auto py-1">
           {matches.map((c, i) => (
             <button
               key={c.name}
@@ -64,6 +62,6 @@ export function SlashPanel({
       <div className="border-t border-border px-3 py-1 text-[11px] text-muted-foreground">
         ↑↓ 选择 · Enter 填入 · Esc 关闭 · 只转发白名单命令
       </div>
-    </div>
+    </ComposerCompletion>
   );
 }

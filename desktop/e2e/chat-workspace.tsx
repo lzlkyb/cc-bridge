@@ -25,6 +25,14 @@ const initial: CcEvent[] = [
   { kind: "text", blockId: "answer-1", streaming: false, text: "**定位到了：超时主要发生在请求重试环节。**\n\n登录入口本身没有阻塞。网络不稳定时，自动重试会把等待时间叠加，界面又没有及时结束加载状态。\n\n### 建议先处理这两处\n\n- **收紧重试范围。** 登录请求超时后直接提示重试，避免重复提交。\n- **补齐失败反馈。** 区分网络超时与账号验证失败，保留已填写内容。\n\n我可以先补上超时处理与测试，再一起检查错误提示。" }, finish,
 ];
 if (scene === "approval") initial.push({ kind: "permissionAsk", requestId: "approval-1", toolUseId: "edit-1", toolName: "Edit", input: { file_path: "src/api/client.ts", old_string: "retry: 3", new_string: "retry: 0" }, reason: "修改超时重试前，请确认改动范围。" });
+if (scene === "results") initial.push(
+  { kind: "userMessage", text: "修复并运行检查" },
+  { kind: "toolUse", toolUseId: "edit-result", name: "Edit", input: { file_path: "src/api/client.ts", old_string: "retry: 3", new_string: "retry: 0" } },
+  { kind: "toolResult", toolUseId: "edit-result", content: "修改完成", isError: false },
+  { kind: "toolUse", toolUseId: "cmd-result", name: "Bash", input: { command: "npm run test" } },
+  { kind: "toolResult", toolUseId: "cmd-result", content: "命令结束", isError: false },
+  { kind: "text", blockId: "answer-results", streaming: false, text: "已完成修改和检查。" }, finish,
+);
 if (scene === "long") for (let index = 0; index < 250; index++) initial.push({ kind: "userMessage", text: `历史问题 ${index + 1}` }, { kind: "text", blockId: `long-${index}`, streaming: false, text: `这是第 ${index + 1} 条历史回复，用来检查长会话中的输入和滚动。` });
 let nextId = 0, failedProbe = scene === "error", turn = 0;
 const sequences = new Map<number, number>();
@@ -60,7 +68,7 @@ mockIPC(async (command, payload = {}) => {
   if (command === "cc_archive_session") { const row = stored.find(row => row.rowId === args.rowId); if (row) row.archivedAt = args.archived ? Date.now() / 1000 : null; return true; }
   if (command === "cc_rename_session") return args.title;
   if (command === "cc_close_session") return true;
-  if (command === "browse_directory") return { path: args.path, parent: null, entries: [{ name: "README.md", path: "D:/projects/README.md", isDir: false }] };
+  if (command === "browse_directory") return { path: args.path, parent: null, entries: scene === "files" ? Array.from({ length: 24 }, (_, index) => ({ name: `file-${index + 1}.ts`, path: `${args.path}/file-${index + 1}.ts`, isDir: false })) : [{ name: "README.md", path: "D:/projects/README.md", isDir: false }] };
   return null;
 }, { shouldMockEvents: true });
 const { CcGuiTab } = await import("../src/components/tabs/CcGuiTab");
@@ -70,7 +78,7 @@ const { UpdateProvider } = await import("../src/contexts/UpdateContext");
 const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 function Review() {
   const [destination, setDestination] = useState("ccgui");
-  return <QueryClientProvider client={query}><UpdateProvider><ToastProvider><div style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
+  return <QueryClientProvider client={query}><UpdateProvider><ToastProvider><div className="app-boot-fade bg-background text-foreground" style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
     <div style={{ height: 36, flex: "none", padding: "8px 18px", fontSize: 11, color: "hsl(var(--muted-foreground))" }}>正式组件验收 · 模拟服务 · {destination === "ccgui" ? "对话页" : `已导航至 ${destination}`}</div>
     <div className="app-shell"><SideNav activeTab="ccgui" onNavigate={setDestination} unreadCount={0} collapsed={innerWidth < 850} /><main className="app-main" style={{ padding: innerWidth < 850 ? 8 : 18, display: "flex", flexDirection: "column" }}><CcGuiTab onNavigate={setDestination} /></main></div>
   </div></ToastProvider></UpdateProvider></QueryClientProvider>;

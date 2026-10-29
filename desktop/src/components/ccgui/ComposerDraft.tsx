@@ -1,4 +1,4 @@
-import { useEffect, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useLayoutEffect, type KeyboardEvent, type RefObject } from "react";
 import { isImeComposing } from "../../lib/utils";
 import { collectPastedImages } from "./ComposerAttachments";
 
@@ -12,13 +12,26 @@ export function ComposerDraft({ areaRef, value, placeholder, onChange, onCaret, 
   onImages: (files: File[]) => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
 }) {
-  // 程序回填与粘贴也会改变高度，不只监听键盘输入。
-  useEffect(() => {
+  const resize = useCallback(() => {
     const el = areaRef.current;
     if (!el) return;
-    el.style.height = "auto";
+    // 从内容测量而非 rows 高度起步；缩窗/侧栏展开也会改变折行。
+    el.style.height = "0px";
     el.style.height = `${Math.max(76, Math.min(el.scrollHeight, 168))}px`;
-  }, [value, areaRef]);
+  }, [areaRef]);
+  useLayoutEffect(resize, [value, resize]);
+  useLayoutEffect(() => {
+    const el = areaRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.getBoundingClientRect().width;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.width === width) return;
+      width = entry.contentRect.width;
+      resize();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [areaRef, resize]);
   return <textarea ref={areaRef} aria-label="消息" value={value}
     onChange={event => onChange(event.target.value, event.target.selectionStart)}
     onSelect={event => onCaret(event.currentTarget.selectionStart)}
@@ -31,5 +44,5 @@ export function ComposerDraft({ areaRef, value, placeholder, onChange, onCaret, 
       // 组合期间方向键与 Enter 归输入法，不能让补全或发送截走。
       if (!isImeComposing(event.nativeEvent)) onKeyDown(event);
     }}
-    rows={3} placeholder={placeholder ?? "给 CC 发消息…"} className="cc-composer-draft" />;
+    rows={1} placeholder={placeholder ?? "给 CC 发消息…"} className="cc-composer-draft" />;
 }

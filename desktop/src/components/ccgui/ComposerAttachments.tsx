@@ -110,9 +110,9 @@ export const ComposerAttachments = forwardRef<
                 type="button"
                 onClick={() => attach.remove(it.id)}
                 aria-label="移除这张图"
-                className="absolute right-0 top-0 flex h-3.5 w-3.5 items-center justify-center rounded-bl-[4px] bg-foreground/60 text-background transition-colors hover:bg-destructive"
+                className="absolute right-0 top-0 flex h-6 w-6 items-center justify-center rounded-bl-md bg-foreground/60 text-background transition-colors hover:bg-destructive"
               >
-                <Icon name="close" size={8} />
+                <Icon name="close" size={12} />
               </button>
             </div>
           ))}
@@ -123,7 +123,7 @@ export const ComposerAttachments = forwardRef<
       {attach.rejects.map((r) => (
         <div
           key={r.id}
-          className="mt-1.5 flex items-start gap-1.5 rounded-[7px] border-l-2 border-destructive bg-destructive/[0.06] px-2 py-[5px]"
+          className="mt-1.5 flex items-start gap-1.5 rounded-[7px] border border-destructive/20 bg-destructive/[0.06] px-2 py-[5px]"
         >
           <Icon
             name="alertTriangle"
@@ -137,7 +137,7 @@ export const ComposerAttachments = forwardRef<
             type="button"
             onClick={() => attach.dismissReject(r.id)}
             aria-label="忽略这条提示"
-            className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:text-foreground"
           >
             <Icon name="close" size={10} />
           </button>

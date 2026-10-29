@@ -27,10 +27,10 @@ function MarkLine({ icon, tone, children }: { icon: IconName; tone: string; chil
 }
 
 /** 用户按了停止：这一轮没跑完，不会有下文。 */
-export function StopMark() {
+export function StopMark({ state = null }: { state?: "stopping" | "unconfirmed" | null }) {
   return (
     <MarkLine icon="pause" tone="text-muted-foreground">
-      已停止 · 这一轮没跑完
+      {state === "stopping" ? "正在停止本轮…" : state === "unconfirmed" ? "停止结果待确认 · 请检查连接" : "已停止 · 这一轮没跑完"}
     </MarkLine>
   );
 }

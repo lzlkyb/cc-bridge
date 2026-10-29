@@ -46,6 +46,8 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   const readyRef = useRef(false);
   readyRef.current = ready;
   const [busy, setBusy] = useState(false);
+  const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null);
+  const [stopState, setStopState] = useState<"stopping" | "unconfirmed" | null>(null);
   // 待发队列（「运行中继续打字」的落点）：状态、暂停与冲刷见 `useCcSendQueue`。
   const { queue, paused: queuePaused, enqueue, clear: clearQueue, resume, pause, take, putBack,
     edit: editQueue, remove: removeQueue, hasPausedItems } =
@@ -107,6 +109,8 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
       return false;
     }
     setBusy(true);
+    setActivityStartedAt(Date.now());
+    setStopState(null);
     dispatch({ type: "sending" });
     try {
       await invoke<void>("cc_start", {
@@ -181,6 +185,8 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   );
 
   const interrupt = useCallback(async () => {
+    if (stoppingRef.current) return stoppingRef.current;
+    setStopState("stopping");
     // 只**暂停**队列，不丢弃：旧行为 `clearQueue()` 是替用户猜，猜错时后果最重
     // （他排了三条想好的话，点一下全没了）。不暂停也不行 —— `running` 一翻 false，
     // 冲刷会立刻发下一条，「中断」就成了「跳过这一轮、马上开始下一轮」。
@@ -193,8 +199,10 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     // 杀进程在 invoke 返回前不会完成；这段窗口由 `stoppingRef` 让 `start` 等住。
     const done = (async () => {
       try {
-        await invoke<boolean>("cc_interrupt", { sessionId: sessionIdRef.current });
+        const stopped = await invoke<boolean>("cc_interrupt", { sessionId: sessionIdRef.current });
+        setStopState(stopped ? null : "unconfirmed");
       } catch (e) {
+        setStopState("unconfirmed");
         dispatch({ type: "error", message: String(e) });
       }
     })();
@@ -237,6 +245,8 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     view,
     ready,
     busy,
+    activityStartedAt,
+    stopState,
     probe,
     /**
      * 本路对话的内部 id（`cc_new_session` 铸发）。**以 ref 形式给出去**：

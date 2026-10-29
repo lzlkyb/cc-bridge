@@ -10,6 +10,7 @@ import { CcFindBar } from "./CcFindBar";
 import { MessageList } from "./MessageList";
 import { MessageNav } from "./MessageNav";
 import { ScrollToBottom } from "./ScrollToBottom";
+import { TurnActivity, turnActivity } from "./TurnActivity";
 
 /**
  * 一个 pane 的中段：消息流（滚动容器 + 空状态 / 消息列表）+ 会话内搜索。
@@ -25,6 +26,9 @@ export function ConversationStream({
   scrollRef,
   findRequest = 0,
   view,
+  sending = false,
+  activityStartedAt = null,
+  stopState = null,
   probe,
   probing,
   retryProbe,
@@ -40,6 +44,9 @@ export function ConversationStream({
   findRequest?: number;
   scrollRef: RefObject<HTMLDivElement>;
   view: CcView;
+  sending?: boolean;
+  activityStartedAt?: number | null;
+  stopState?: "stopping" | "unconfirmed" | null;
   probe: CcProbe | null;
   probing: boolean;
   retryProbe: () => void;
@@ -126,7 +133,7 @@ export function ConversationStream({
       <div ref={scrollRef} data-cc-stream className="cc-conversation-stream page-scroll h-full overflow-y-auto">
         {/* cc-msgcol：消息列。子节点（每条消息的根元素）离屏跳渲染，见 index.css。 */}
         <div className="cc-msgcol mx-auto flex min-h-full max-w-[834px] flex-col gap-3">
-          {view.messages.length === 0 ? (
+          {view.messages.length === 0 && !view.running && !sending && view.stops.length === 0 ? (
             <CcEmptyState
               probe={probe}
               probing={probing}
@@ -145,11 +152,13 @@ export function ConversationStream({
               marksByMsg={search.marksByMsg}
               turns={view.turns}
               stops={view.stops}
+              stopState={stopState}
               onRespond={onRespond}
               onForkMessage={onForkMessage}
               onResend={onResend}
             />
           )}
+          <TurnActivity messages={view.messages} running={view.running} sending={sending} startIndex={view.activityStartIndex} resolved={view.resolved} retrying={!!view.retry} startedAt={activityStartedAt} />
         </div>
       </div>
       {away && view.messages.length > 0 && (
@@ -163,7 +172,7 @@ export function ConversationStream({
         // 整个消息区底部，不放开穿透就会挡住底下的正文点击。
         <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex items-center justify-center gap-2 px-3">
           <MessageNav onPrev={nav.prev} onNext={nav.next} />
-          <ScrollToBottom pending={pendingCount} running={view.running} onClick={toBottom} />
+          <ScrollToBottom pending={pendingCount} running={view.running || stopState === "stopping"} activity={stopState === "stopping" ? "正在停止本轮" : view.retry ? `正在重试 ${view.retry.attempt}/${view.retry.max}` : turnActivity(view.messages, view.running, sending, view.activityStartIndex, view.resolved)} onClick={toBottom} />
         </div>
       )}
       {search.open && (

@@ -2,6 +2,7 @@ import { memo, useState } from "react";
 import type { CcMark } from "../../lib/ccMarkdown";
 import { MessageText } from "./MessageText";
 import { UserMessageImages } from "./UserMessageImages";
+import { isImeComposing } from "../../lib/utils";
 
 /**
  * 用户消息气泡 + 「编辑并重发 / 从此处分叉」（批 3-3）。
@@ -51,7 +52,7 @@ function UserMessageBubbleImpl({
 
   if (!editing) {
     return (
-      <div className="group flex flex-col items-end gap-0.5">
+      <div className="cc-user-message group flex flex-col items-end gap-0.5">
         {/* data-cc-bubble：玻璃阅读面上 primary/.12 会混成脏紫，改同色系高一档 */}
         <div
           data-cc-bubble
@@ -65,7 +66,7 @@ function UserMessageBubbleImpl({
             </div>
           )}
         </div>
-        <div className="flex items-center gap-2 pr-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        <div className="cc-user-actions flex items-center gap-2 pr-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
           {onResend && (
             <button
               type="button"
@@ -126,13 +127,14 @@ function UserMessageBubbleImpl({
     <div className="flex w-full flex-col items-end gap-1">
       <div
         data-cc-bubble
-        className="w-full max-w-[86%] rounded-xl rounded-br-sm border border-primary/40 bg-card px-2 py-1.5"
+        className="cc-user-edit w-full max-w-[86%] rounded-xl rounded-br-sm border border-primary/40 bg-card px-2 py-1.5"
       >
         <textarea
           autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
+            if (isImeComposing(e.nativeEvent)) return;
             // Ctrl/⌘+Enter 发送：与输入区一致；裸 Enter 留作换行（改多行提示是常态）。
             if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
               e.preventDefault();
@@ -144,7 +146,7 @@ function UserMessageBubbleImpl({
           aria-label="编辑这条消息"
           className="w-full resize-y bg-transparent text-[13px] leading-[1.6] outline-none"
         />
-        <div className="mt-1 flex items-center gap-1.5 border-t border-border pt-1.5">
+        <div className="cc-user-edit-actions mt-1 flex flex-wrap items-center gap-1.5 border-t border-border pt-1.5">
           <button
             type="button"
             onClick={submit}
@@ -160,7 +162,7 @@ function UserMessageBubbleImpl({
           >
             取消
           </button>
-          <span className="ml-auto text-[11px] text-muted-foreground">⌘/Ctrl+Enter 发送</span>
+          <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">⌘/Ctrl+Enter 发送</span>
         </div>
       </div>
       <p className="max-w-[86%] text-right text-[11px] leading-[1.5] text-muted-foreground">

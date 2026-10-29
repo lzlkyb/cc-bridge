@@ -15,7 +15,7 @@ export function ChatPopover({ anchorRef, onClose, label, width = 296, children }
   const close = useRef(onClose);
   close.current = onClose;
   const style = useAnchoredPopover(anchorRef, true, { width, maxH: 480 });
-  useFocusTrap(box, { onEscape: onClose });
+  useFocusTrap(box, { enabled: !!style, onEscape: onClose });
   useEffect(() => {
     const dismiss = (event: PointerEvent) => {
       const target = event.target as Node;
@@ -25,7 +25,8 @@ export function ChatPopover({ anchorRef, onClose, label, width = 296, children }
     return () => document.removeEventListener("pointerdown", dismiss, true);
   }, [anchorRef]);
   return createPortal(
-    <div ref={box} role="dialog" aria-label={label} className="cc-chat-popover" style={style}>
+    <div ref={box} role="dialog" aria-label={label} className="cc-chat-popover"
+      style={style ?? { position: "fixed", visibility: "hidden" }}>
       {children}
     </div>, document.body,
   );

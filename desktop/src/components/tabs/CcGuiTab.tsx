@@ -5,6 +5,7 @@ import { useCcShortcuts } from "../../hooks/useCcShortcuts";
 import { useCcSessionActions } from "../../hooks/useCcSessionActions";
 import { useCcStoredSessions } from "../../hooks/useCcStoredSessions";
 import { useCcTargets } from "../../hooks/useCcTargets";
+import { usePresence } from "../../hooks/usePresence";
 import { conflictWith } from "../../lib/ccPaneMeta";
 import { archivedOnly, filterStored } from "../../lib/ccStoredList";
 import { isImeComposing } from "../../lib/utils";
@@ -41,9 +42,10 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
   const [userCollapsed, setUserCollapsed] = useState(false);
   const [compact, setCompact] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawer = usePresence(compact && drawerOpen);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLDivElement>(null);
-  const sidebarRef = useRef<HTMLDivElement>(null);
+  const sidebarRef = useRef<HTMLDivElement | null>(null);
   const collapsed = !compact && userCollapsed;
 
   useLayoutEffect(() => {
@@ -207,8 +209,11 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
 
   return (
     <div ref={workspaceRef} className="cc-workspace-root" data-compact={compact || undefined}>
-      {compact && drawerOpen && <button className="cc-sidebar-shade" tabIndex={-1} aria-label="关闭会话列表" onClick={closeDrawer} />}
-      <div ref={sidebarRef} className="cc-sidebar-slot" hidden={compact && !drawerOpen}
+      {compact && drawer.mounted && <button className="cc-sidebar-shade" data-entered={drawer.entered}
+        disabled={!drawerOpen} aria-hidden={!drawerOpen} tabIndex={-1} aria-label="关闭会话列表" onClick={closeDrawer} />}
+      <div ref={node => { sidebarRef.current = node; if (node) node.inert = compact && !drawerOpen; }}
+        className="cc-sidebar-slot" hidden={compact && !drawer.mounted} data-entered={drawer.entered}
+        aria-hidden={compact && !drawerOpen || undefined}
         role={compact && drawerOpen ? "dialog" : undefined} aria-modal={compact && drawerOpen ? true : undefined}
         aria-label="会话列表" data-cc-sidebar-drawer={compact && drawerOpen || undefined}>
       <SessionSidebar

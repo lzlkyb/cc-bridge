@@ -1,7 +1,9 @@
 /* The conversation extends the application's semantic surfaces in both appearance modes. */
 .cc-conversation-panel{container-type:inline-size;background:hsl(var(--card));color:hsl(var(--foreground));border:0;border-radius:0;box-shadow:none}
-html[data-ui-style="glass"] .cc-workspace-root [data-cc-panel]{background:var(--glass-reading);border:0;box-shadow:none}
-.cc-conversation-head{display:flex;align-items:center;gap:10px;min-height:84px;flex-shrink:0;padding:14px 24px;border-bottom:1px solid hsl(var(--border))}
+/* The workspace owns one canvas; a second reading sheet would wash out the soft light. */
+html[data-ui-style="glass"] .cc-workspace-root [data-cc-panel]{background:transparent;border:0;box-shadow:none}
+html[data-ui-style="glass"] .cc-conversation-head{background:var(--glass-panel);border-color:var(--glass-chrome-edge)}
+.cc-conversation-head{display:flex;align-items:center;gap:10px;min-height:68px;flex-shrink:0;padding:10px 24px;border-bottom:1px solid hsl(var(--border))}
 .cc-conversation-heading{min-width:0;flex:1}.cc-conversation-heading h1{font-size:17px;line-height:1.5;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cc-conversation-environment{display:flex;align-items:center;gap:6px;margin-top:5px;color:hsl(var(--muted-foreground));font-size:12px;min-width:0}
 .cc-target-select{display:flex;align-items:center;gap:5px;flex-shrink:0}.cc-target-select select{background:transparent;border:0;max-width:116px;outline-offset:2px;font-size:12px}
@@ -12,18 +14,42 @@ html[data-ui-style="glass"] .cc-workspace-root [data-cc-panel]{background:var(--
 .cc-chat-icon:disabled{opacity:.45;cursor:default}.cc-chat-icon:focus-visible,.cc-chat-chip:focus-visible,.cc-chat-popover :is(button,input,textarea):focus-visible{outline:2px solid hsl(var(--primary));outline-offset:2px}
 .cc-chat-chip{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 7px;border:0;border-radius:7px;color:hsl(var(--muted-foreground));font-size:12px;cursor:pointer;white-space:nowrap;min-width:0}
 .cc-model-chip>span{max-width:144px;overflow:hidden;text-overflow:ellipsis}
-.cc-chat-popover{z-index:80;overflow:auto;padding:5px;border:1px solid hsl(var(--border));border-radius:12px;background:hsl(var(--card));color:hsl(var(--foreground));box-shadow:0 12px 36px -12px hsl(var(--foreground)/.25);font-size:13px;animation:cc-popover-in .16s var(--ease)}
-html[data-ui-style="glass"] .cc-chat-popover{background:var(--glass-floating);border-color:var(--glass-chrome-edge)}
+.cc-chat-popover{z-index:80;overflow:auto;padding:5px;border:1px solid hsl(var(--border));border-radius:12px;background:hsl(var(--card));color:hsl(var(--foreground));box-shadow:0 12px 36px -12px hsl(var(--foreground)/.25);font-size:13px;animation:cc-popover-in var(--dur-enter) var(--ease)}
+/* Precompose the floating tint so underlying text cannot show through controls. */
+html[data-ui-style="glass"] .cc-chat-popover{background:linear-gradient(var(--glass-floating),var(--glass-floating)),hsl(var(--card));border-color:var(--glass-chrome-edge)}
 .cc-chat-section{padding:10px}.cc-chat-note{color:hsl(var(--muted-foreground));font-size:12px;line-height:1.65;margin-top:4px}
 .cc-chat-menu-item{display:flex;align-items:center;gap:10px;width:100%;padding:10px;border:0;border-radius:8px;text-align:left;font-size:13px;cursor:pointer}.cc-chat-menu-item:hover{background:hsl(var(--foreground)/.055)}.cc-chat-menu-item small{display:block;margin-top:3px;color:hsl(var(--muted-foreground));font-size:12px;line-height:1.5}.cc-chat-menu-item:disabled{opacity:.45;cursor:default}.cc-mode-danger{border-top:1px solid hsl(var(--border));border-radius:0 0 8px 8px;margin-top:5px}
 .cc-reading-options{display:flex;gap:5px;margin-top:8px}.cc-reading-options button{flex:1;border:1px solid hsl(var(--border));border-radius:7px;min-height:34px}.cc-reading-options button[aria-pressed=true]{color:hsl(var(--primary));background:hsl(var(--primary)/.1);border-color:hsl(var(--primary)/.3)}
 .cc-session-info{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;padding:12px;font-size:12px}.cc-session-info dt{color:hsl(var(--muted-foreground))}.cc-session-info dd{text-align:right;overflow-wrap:anywhere}
 .cc-conversation-stream{padding:24px 28px;overscroll-behavior:contain;scrollbar-gutter:stable}.cc-msgcol{overflow-wrap:anywhere}
+.cc-turn-activity{display:flex;align-items:center;gap:8px;padding:8px 0 14px;color:hsl(var(--muted-foreground));font-size:13px}
+.cc-turn-activity-spinner{color:hsl(var(--primary));animation:cc-activity-spin 1s linear infinite}
+.cc-turn-results{margin:8px 0 14px;padding-top:10px;border-top:1px solid hsl(var(--border));font-size:12px;color:hsl(var(--muted-foreground))}
+.cc-turn-results>summary{display:flex;align-items:center;gap:7px;cursor:pointer;list-style:none}.cc-turn-results>summary::-webkit-details-marker{display:none}.cc-turn-results>summary span{margin-left:auto}
+.cc-turn-results>div{display:flex;flex-direction:column;gap:3px;padding:8px 0}.cc-turn-results button{display:flex;align-items:center;gap:8px;min-height:32px;padding:4px 8px;border-radius:6px;text-align:left;overflow-wrap:anywhere}.cc-turn-results button:hover{background:hsl(var(--foreground)/.055);color:hsl(var(--foreground))}
+.cc-approval-focus{margin:0 12px 10px;padding:5px 8px;border-radius:6px;font-size:12px;color:hsl(var(--muted-foreground))}.cc-approval-focus:hover{background:hsl(var(--foreground)/.055);color:hsl(var(--foreground))}
+.cc-approval-dialog{width:min(620px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;padding:18px;border:1px solid hsl(var(--border));border-radius:12px;background:hsl(var(--card));color:hsl(var(--foreground));box-shadow:0 12px 36px -12px hsl(var(--foreground)/.25)}.cc-approval-dialog::backdrop{background:rgb(10 17 32 / .46)}.cc-approval-dialog-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.cc-approval-dialog h2{font-size:16px;font-weight:600}.cc-approval-dialog-head button{padding:6px;border-radius:6px}
+@keyframes cc-activity-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.cc-turn-activity-spinner{animation:none}}
 .cc-msgcol [data-cc-user]{margin:6px 0 18px}.cc-msgcol [data-cc-bubble]{padding:12px 16px;border:0}.cc-assistant-message{padding:8px 0 18px}.cc-assistant-heading{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:12px;font-weight:600}.cc-assistant-heading svg{color:hsl(var(--primary))}.cc-assistant-heading small{color:hsl(var(--muted-foreground));font-weight:400;font-size:11px}.cc-assistant-content{padding-left:28px;min-width:0}.cc-message-copy{display:flex;align-items:center;gap:5px;min-height:30px;margin:7px 0 0 28px;font-size:12px;color:hsl(var(--muted-foreground));opacity:0}.cc-assistant-message:hover .cc-message-copy,.cc-message-copy:focus-visible{opacity:1}
 .cc-session-notices{flex:none;max-height:30%;overflow:auto}.cc-connection-issue{margin:12px 22px 6px;padding:12px 14px;border-radius:10px;background:hsl(var(--destructive)/.07);color:hsl(var(--destructive-ink));font-size:12px}.cc-connection-issue-title{display:flex;align-items:center;gap:7px}.cc-connection-issue-title .cc-chat-icon{margin-left:auto;width:28px;height:28px}.cc-connection-issue p{line-height:1.65;margin:3px 0 9px}.cc-connection-issue-actions{display:flex;align-items:start;flex-wrap:wrap;gap:8px}.cc-connection-issue-actions>button,.cc-connection-issue summary{padding:5px 8px;border:1px solid hsl(var(--destructive)/.2);border-radius:6px;cursor:pointer}.cc-connection-issue-actions details{min-width:0;flex:1}.cc-connection-issue pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;margin-top:8px;max-height:140px;overflow:auto}
 .cc-execution-summary{font-size:12px;color:hsl(var(--muted-foreground));margin:4px 0 12px}.cc-execution-summary>summary{cursor:pointer;padding:7px 0}.cc-execution-summary>div{display:flex;flex-direction:column;gap:8px;padding:8px 0}
 @container(max-width:650px){.cc-conversation-head{padding:12px 14px;gap:5px}.cc-conversation-heading h1{font-size:16px}.cc-conversation-actions{gap:0}.cc-conversation-actions>.cc-chat-icon,.cc-conversation-actions>span>.cc-chat-icon{width:32px}.cc-connection-label{display:none}.cc-conversation-stream{padding:20px}.cc-assistant-content{padding-left:0}.cc-message-copy{margin-left:0}.cc-message-copy{opacity:1}.cc-model-chip>span{max-width:100px}.cc-conversation-environment{font-size:11px}.cc-target-select select{max-width:82px}}
 @container(max-width:440px){.cc-chat-chip{padding-inline:4px;font-size:11px}.cc-model-chip>span{max-width:82px}.cc-conversation-head{padding:10px;min-height:78px}.cc-conversation-actions .cc-chat-icon{width:30px}.cc-conversation-heading h1{font-size:15px}.cc-changes-trigger{display:none}.cc-conversation-stream{padding:16px}.cc-conversation-environment{gap:3px}.cc-conversation-environment [title]{max-width:135px}}
 @keyframes cc-popover-in{from{opacity:.4;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
-@media(prefers-reduced-motion:reduce){.cc-chat-popover{animation:none}}
+/* A native disclosure keeps search and keyboard behavior, with an instant fallback on older WebViews. */
+@supports (interpolate-size:allow-keywords){
+  .cc-execution-summary::details-content{interpolate-size:allow-keywords;block-size:0;overflow:clip;transition:block-size var(--dur-exit) var(--ease-exit),content-visibility var(--dur-exit) allow-discrete}
+  .cc-execution-summary[open]::details-content{block-size:auto;transition-duration:var(--dur-enter)}
+}
+.cc-chat-icon,.cc-chat-chip,.cc-chat-menu-item,.cc-message-copy{transition:background-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),opacity var(--dur-fast) var(--ease)}
+.cc-chat-icon:active:not(:disabled),.cc-chat-chip:active:not(:disabled){background:hsl(var(--foreground)/.09)}
+@media(prefers-reduced-motion:reduce){.cc-chat-popover{animation:none}.cc-execution-summary::details-content{transition:none}}
 @media(forced-colors:active){.cc-chat-popover,.cc-connection-issue,.cc-conversation-panel{border:1px solid CanvasText}}
+.cc-user-actions{flex-wrap:wrap;justify-content:flex-end;max-width:100%;gap:2px 8px}
+.cc-user-actions button{min-height:28px;padding:2px 4px;border-radius:6px;font-size:12px}
+.cc-user-actions button:hover:not(:disabled){background:hsl(var(--foreground)/.055)}
+.cc-user-edit:has(textarea:focus-visible){outline:2px solid hsl(var(--ring));outline-offset:2px}
+.cc-user-edit textarea:focus-visible{outline:none}
+.cc-user-edit-actions button{min-height:28px;flex-shrink:0;white-space:nowrap}
+@media(hover:none){.cc-user-actions{opacity:1}}

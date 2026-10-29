@@ -41,7 +41,7 @@ import { SlashPanel } from "./SlashPanel";
  */
 function ComposerImpl({
   onSend,
-  running,
+  running, stopping,
   onInterrupt,
   placeholder,
   sendHint = "Ctrl+Enter",
@@ -73,6 +73,7 @@ function ComposerImpl({
     images: CcImage[],
   ) => Promise<boolean> | boolean | void;
   running?: boolean;
+  stopping?: boolean;
   onInterrupt?: () => void;
   placeholder?: string;
   /** 发送快捷键的平台标签（`Ctrl+Enter` / `⌘Enter`），宿主从 status 里取。 */
@@ -225,12 +226,11 @@ function ComposerImpl({
         pendingCount={pendingCount}
         onShowPending={onShowPending}
       />
-      {/* data-cc-composer：玻璃下 composer 要压过 .ui-card 的 reading 档，改 floating
-          （唯一「必须实心」的输入位）；classic 下不加任何样式。 */}
+      {/* 复合输入面独立承载材质，避免通用卡片给 textarea 再铺一层背景。 */}
       <div
         data-cc-composer
         {...drop.handlers}
-        className={`ui-card cc-composer-surface relative rounded-xl border bg-card transition-colors focus-within:border-primary/50 ${
+        className={`cc-composer-surface relative rounded-xl border bg-card transition-colors ${
           // 拖拽中把整块描成虚线主色：不提示的话用户不知道「这里能放」，
           // 而拖到别处会被浏览器当成「用这个文件打开新页面」。
           drop.over ? "border-dashed border-primary/60 ring-2 ring-primary/15" : "border-border"
@@ -262,16 +262,14 @@ function ComposerImpl({
           polishing={polish.polishing}
           onPolish={polish.enabled ? () => void runPolish() : undefined}
           running={running}
+          stopping={stopping}
           onInterrupt={onInterrupt}
           canSend={!!value.trim() || hasImages}
-          onSend={send}
+          onSend={() => { void send(); areaRef.current?.focus(); }}
           onAttach={() => fileRef.current?.click()}
           onMention={insertMention}
           onCommand={() => { if (value.trim() && !value.startsWith("/")) { toast("先发送或保留当前草稿，再输入 / 查看命令", "info"); areaRef.current?.focus(); return; } setValue("/"); slash.onTyped(); areaRef.current?.focus(); }}
         />
-      </div>
-      <ComposerFooter sendHint={sendHint}>{footer}</ComposerFooter>
-      {polish.preview?.source === value && <ComposerPolishPreview anchorRef={areaRef} text={polish.preview.text} onCancel={polish.reset} onApply={() => { setValue(polish.preview!.text); polish.reset(); areaRef.current?.focus(); }} />}
       {slash.open && (
         <SlashPanel
           matches={slash.matches}
@@ -292,6 +290,9 @@ function ComposerImpl({
           onHover={mention.hover}
         />
       )}
+      </div>
+      <ComposerFooter sendHint={sendHint}>{footer}</ComposerFooter>
+      {polish.preview?.source === value && <ComposerPolishPreview anchorRef={areaRef} text={polish.preview.text} onCancel={polish.reset} onApply={() => { setValue(polish.preview!.text); polish.reset(); areaRef.current?.focus(); }} />}
     </div>
   );
 }

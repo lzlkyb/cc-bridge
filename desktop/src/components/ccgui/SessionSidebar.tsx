@@ -197,7 +197,7 @@ export function SessionSidebar({
 
             <div className="cc-sidebar-tabs" role="group" aria-label="会话范围"><button type="button" aria-pressed={!archived} onClick={() => { if (archived) onToggleArchived(); }}>最近</button><button type="button" aria-pressed={archived} onClick={() => { if (!archived) onToggleArchived(); }}>已归档 {archivedCount || ""}</button></div>
             <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1">
-              {groups.length === 0 && (
+              {groups.length === 0 && storedShown.length === 0 && (
                 <p className="p-3 text-center text-xs text-muted-foreground">没有匹配的会话</p>
               )}
               {groups.map((g) => (

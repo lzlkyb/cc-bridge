@@ -52,7 +52,7 @@ describe("ScrollToBottom", () => {
     await show(<ScrollToBottom pending={2} running={false} onClick={() => {}} />);
     expect(container.textContent).toContain("有 2 条待批准");
     await show(<ScrollToBottom pending={0} running onClick={() => {}} />);
-    expect(container.textContent).toContain("回到底部 · 生成中");
+    expect(container.textContent).toContain("本轮进行中 · 查看");
     await show(<ScrollToBottom pending={0} running={false} onClick={() => {}} />);
     expect(container.textContent?.trim()).toBe("回到底部");
   });

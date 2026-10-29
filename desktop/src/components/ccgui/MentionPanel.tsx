@@ -1,5 +1,6 @@
 import type { MentionItem } from "../../lib/ccMention";
 import { Icon } from "../ui/icon";
+import { ComposerCompletion } from "./ComposerCompletion";
 
 /**
  * @引用补全面板（设计稿《对话页-@引用与排版偏好》A/B 期）。
@@ -28,10 +29,7 @@ export function MentionPanel({
   onHover: (index: number) => void;
 }) {
   return (
-    <div
-      aria-label="引用文件或目录"
-      className="absolute bottom-full left-3 right-3 z-30 mb-1 overflow-hidden rounded-xl border border-border bg-card shadow-xl"
-    >
+    <ComposerCompletion label="引用文件或目录" active={active}>
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5">
         <span className="font-mono text-[12px] font-semibold text-foreground">@</span>
         <span className="text-[11px] text-muted-foreground">引用文件或目录 · 目录进入，文件插入</span>
@@ -47,7 +45,7 @@ export function MentionPanel({
           {loading ? "正在列目录…" : `没有匹配「${filter}」的条目`}
         </p>
       ) : (
-        <div className="flex max-h-[186px] flex-col overflow-y-auto py-1">
+        <div className="cc-completion-options flex max-h-[186px] flex-col overflow-y-auto py-1">
           {items.map((it, i) => (
             <button
               key={it.path}
@@ -55,7 +53,7 @@ export function MentionPanel({
               // 按住别抢焦点：点一下输入框就该失焦的话，面板白给。
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => onPick(it)}
-              onMouseEnter={() => onHover(i)}
+              onMouseMove={() => onHover(i)}
               className={`flex items-center gap-2 px-3 py-[5px] text-left transition-colors ${
                 i === active ? "bg-muted/70" : "hover:bg-muted/40"
               }`}
@@ -80,6 +78,6 @@ export function MentionPanel({
       <div className="border-t border-border px-3 py-1 text-[11px] text-muted-foreground">
         ↑↓ 选择 · Enter / Tab 填入 · Esc 关闭 · 目录在前
       </div>
-    </div>
+    </ComposerCompletion>
   );
 }

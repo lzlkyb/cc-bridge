@@ -14,6 +14,7 @@ import { TodoProgressCard } from "./TodoProgressCard";
 import { ExecutionSummary } from "./ExecutionSummary";
 import { ToolCard } from "./ToolCard";
 import { TurnFooter } from "./TurnFooter";
+import { TurnResults } from "./TurnResults";
 import { UserMessageBubble } from "./UserMessageBubble";
 import { todoItems, toolKind, verdictLabel } from "./summarize";
 
@@ -41,6 +42,7 @@ export function MessageList({
   marksByMsg,
   turns,
   stops,
+  stopState = null,
   onRespond,
   onForkMessage,
   onResend,
@@ -64,6 +66,7 @@ export function MessageList({
    * 与 `turns` 一样是旁路数据：挂在某条消息**之后**，不参与 `messages` 的遍历。
    */
   stops: string[];
+  stopState?: "stopping" | "unconfirmed" | null;
   onRespond: (
     requestId: string,
     decision: "allow" | "deny",
@@ -115,7 +118,7 @@ export function MessageList({
       if (item.kind !== "tool" || item.tool.status !== "ok" || toolKind(item.tool.name) === "todo" || turnsByAfterId.has(item.id) || stopSet.has(item.id)) break;
       group.push(item); end++;
     }
-    if (group.length > 1) {
+    if (group.length > 0) {
       groups.set(i, group);
       for (let j = i + 1; j < end; j++) grouped.add(j);
       i = end - 1;
@@ -127,7 +130,7 @@ export function MessageList({
           位于**所有消息之前**，所以挂在开头而不是流尾。
           挂流尾的话，等下一轮回复进来，这条「已停止」会跑到新回复下面 ——
           读起来像是「刚才那一轮（已经成功的那轮）被停了」。 */}
-      {stopSet.has("") && <StopMark />}
+      {stopSet.has("") && <StopMark state={stops[stops.length - 1] === "" ? stopState : null} />}
       {messages.map((m: CcMessage, index) => {
         if (grouped.has(index)) return null;
         const group = groups.get(index);
@@ -226,9 +229,9 @@ export function MessageList({
             {node}
             {cleared && <ClearMark />}
             {footers?.map((s, i) => (
-              <TurnFooter key={`${m.id}#turn${i}`} stat={s} />
+              <Fragment key={`${m.id}#turn${i}`}><TurnFooter stat={s} />{footers.length === 1 && <TurnResults messages={messages} endIndex={index} />}</Fragment>
             ))}
-            {stopped && <StopMark />}
+            {stopped && <StopMark state={stops[stops.length - 1] === m.id ? stopState : null} />}
           </Fragment>
         );
       })}

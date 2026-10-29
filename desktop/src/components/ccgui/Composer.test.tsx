@@ -262,6 +262,18 @@ it("发送失败后草稿保留且可再次发送", async () => {
   expect(area().value).toBe("");
 });
 
+it("点击发送立即回到输入框，可连续准备下一条而不重复提交", async () => {
+  let resolveSend!: (accepted: boolean) => void;
+  onSend.mockImplementation(() => new Promise<boolean>(resolve => { resolveSend = resolve; }));
+  await render(); await type("第一条");
+  await clickSend();
+  expect(document.activeElement).toBe(area());
+  await type("继续写下一条");
+  await act(async () => resolveSend(true));
+  expect(area().value).toBe("继续写下一条");
+  expect(onSend).toHaveBeenCalledTimes(1);
+});
+
 /// 空状态点示例 prompt：填进草稿并聚焦（不直接发送），用户可改后再发；同一句连点两次（nonce 变）也要重填。
 it("prefill 填入草稿并聚焦，不触发发送", async () => {
   const mount = (prefill: { text: string; nonce: number }) =>

@@ -1,4 +1,5 @@
 import { memo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import type { StaticStatus } from "../../lib/types";
@@ -50,6 +51,7 @@ function ApprovalCardImpl({
   });
   const [remembering, setRemembering] = useState(false);
   const rememberRef = useRef(false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
   // 提问一律走选项卡（哪怕一道题都没读出来 —— 那也有「跳过」这条路，
   // 而「允许」在协议上无法表达一个答案）。
   if (approval.toolName === "AskUserQuestion") {
@@ -107,14 +109,7 @@ function ApprovalCardImpl({
     }
   };
 
-  return (
-    <div
-      data-cc-entity
-      role="group"
-      aria-label={`等待批准：${approval.toolName}`}
-      data-cc-approval
-      className="overflow-hidden rounded-[10px] border border-warning/45 bg-warning/[.06]"
-    >
+  const body = <>
       <div className="flex items-center gap-2 border-b border-warning/25 px-3 py-[6px]">
         <Icon name="alertTriangle" size={12} className="shrink-0 text-warning-ink" />
         <span className="text-[12px] font-semibold text-warning-ink">等待批准</span>
@@ -160,8 +155,14 @@ function ApprovalCardImpl({
           允许一次
         </Button>
       </div>
+  </>;
+  return <>
+    <div data-cc-entity role="group" aria-label={`等待批准：${approval.toolName}`} data-cc-approval className="overflow-hidden rounded-[10px] border border-warning/45 bg-warning/[.06]">
+      {body}
+      <button type="button" data-cc-approval-focus className="cc-approval-focus" onClick={() => dialogRef.current?.showModal()}>专注审阅</button>
     </div>
-  );
+    {createPortal(<dialog ref={dialogRef} aria-label="专注审阅审批" className="cc-approval-dialog"><div className="cc-approval-dialog-head"><h2>审阅本次操作</h2><button type="button" onClick={() => dialogRef.current?.close()} aria-label="关闭审阅"><Icon name="close" size={16} /></button></div>{body}</dialog>, document.body)}
+  </>;
 }
 
 export const ApprovalCard = memo(ApprovalCardImpl);

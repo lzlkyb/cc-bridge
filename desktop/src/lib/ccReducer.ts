@@ -22,6 +22,8 @@ import { readUsageParts, type CcTurnStat } from "./ccTurnStat";
 
 export type CcView = {
   messages: CcMessage[];
+  /** 发送开始时的消息边界，用来区分本轮事件与旧回复。 */
+  activityStartIndex?: number;
   /** 已落定的审批：`requestId → 裁决`。与消息列表分开存，渲染层只读它。
    *  `auto` = 后端规则自动放行（`autoapprove` 命中后补记的本地事件）；
    *  2026-10-24 之前落盘的老流水没有这个字段，按 `undefined` 当人工裁决。 */
@@ -584,6 +586,7 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
       // 在流里叠成噪音（旧实现只有一个槽，也是这么清的）。
       return {
         ...view,
+        activityStartIndex: view.messages.length,
         running: true,
         errors: [],
         retry: null,
