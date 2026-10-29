@@ -23,14 +23,18 @@ export function TurnActivity({ messages, running, sending, startIndex, resolved,
   const label = retrying ? null : turnActivity(messages, running, sending, startIndex, resolved);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!label || startedAt === null) return;
+    if (!label) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [label, startedAt]);
+  }, [label]);
+  const records = messages.slice(startIndex ?? 0).filter(m => "at" in m); const latest = records[records.length - 1];
+  const at = latest && "at" in latest ? Date.parse(latest.at) : NaN;
+  const age = Number.isFinite(at) ? Math.max(0, Math.floor((now - at) / 1000)) : null;
   if (!label) return null;
   return <div className="cc-turn-activity">
     <Icon name="spinner" size={15} className="cc-turn-activity-spinner" />
-    <span role="status" aria-live="polite">{label}</span>
+    <span role="status" aria-live="polite">{label === "等待响应" && age !== null && age >= 30 ? "暂未收到新进展" : label}</span>
+    {age !== null && <span className="cc-last-progress">最近收到记录 · {age} 秒前</span>}
     {startedAt !== null && <span aria-hidden="true">· 本轮 {Math.max(0, Math.floor((now - startedAt) / 1000))} 秒</span>}
   </div>;
 }

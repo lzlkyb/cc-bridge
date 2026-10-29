@@ -50,7 +50,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   const [stopState, setStopState] = useState<"stopping" | "unconfirmed" | null>(null);
   // 待发队列（「运行中继续打字」的落点）：状态、暂停与冲刷见 `useCcSendQueue`。
   const { queue, paused: queuePaused, enqueue, clear: clearQueue, resume, pause, take, putBack,
-    edit: editQueue, remove: removeQueue, hasPausedItems } =
+    edit: editQueue, remove: removeQueue, move: moveQueue, hasPausedItems } =
     useCcSendQueue();
   /** `view.running` 的镜像，理由同 `queueRef`。 */
   const runningRef = useRef(false);
@@ -63,7 +63,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
    * 立刻发送会被拒成「上一轮还在进行」。所以 `start` 要**等它收干净再发**；
    * 只挡成入队不行，那会落进被 `pause()` 停住的队列里，按了回车什么都没发生。
    */
-  const stoppingRef = useRef<Promise<void> | null>(null);
+  const stoppingRef = useRef<Promise<boolean> | null>(null);
   /**
    * `busy` 的镜像，同理。
    *
@@ -80,21 +80,22 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
 
   const { probe, runProbe, probeRef } = useCcEnvironment(targetRef, view.errors, dispatch);
 
-  const start = useCallback(async (text: string, images: CcImage[] = []): Promise<boolean> => {
+  const start = useCallback(async (text: string, images: CcImage[] = [], direct = false): Promise<boolean> => {
     const t = targetRef.current;
     const trimmed = text.trim();
     // 纯图片消息合法（协议探针验证过），所以判据是「文字和图都空」才不发。
     if (!trimmed && images.length === 0) return false;
     // 停止请求还在路上 ⇒ 先等它收干净（理由见 `stoppingRef`），再走下面的统一判据：
     // 等的时候队列可能已经把另一条发出去了。
-    if (stoppingRef.current) await stoppingRef.current;
+    if (stoppingRef.current && !(await stoppingRef.current)) return false;
     // 正在跑（或刚发出去、后端还没落定 busy）⇒ 入队，不并发。
     // 🔴 直发的后果是后端一句「上一轮还在进行」：那一句是真的，但用户看到的是
     // 「我打好的字被拒了」，而排队本来可以让这件事无声无息地正确发生。
     // 🔴 **订阅/恢复未就绪（!ready）也入队**：`cc_restore` 在途时直发，会在后端
     // 撞出同一种「上一轮还在进行」（或带着半恢复的状态起进程），出队即失。
     // 入队后 ready 一翻、flush effect 就把它发出去，一句话都不丢。
-    if (runningRef.current || busyRef.current || !readyRef.current || hasPausedItems()) {
+    if (runningRef.current || busyRef.current || !readyRef.current || (!direct && hasPausedItems())) {
+      if (direct) return false;
       enqueue({ text: trimmed, images });
       return true;
     }
@@ -132,7 +133,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
         },
       });
       // 真的发出去了 ⇒ 之前的故障已排除，恢复队列自动发送。
-      resume();
+      if (!direct) resume();
       return true;
     } catch (e) {
       // 后端已经把进程收尸了（`cc_start` 里的 interrupt），这里只负责说清楚。
@@ -196,22 +197,26 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     //    `running` 当「跑到一半没了」的判据 —— 不先置 false，按一次停止就会看到
     //    一条「进程崩溃」的黄色警告（实测路径，不是理论）。
     dispatch({ type: "interrupted" });
+    runningRef.current = false;
     // 杀进程在 invoke 返回前不会完成；这段窗口由 `stoppingRef` 让 `start` 等住。
     const done = (async () => {
       try {
         const stopped = await invoke<boolean>("cc_interrupt", { sessionId: sessionIdRef.current });
         setStopState(stopped ? null : "unconfirmed");
+        return stopped;
       } catch (e) {
         setStopState("unconfirmed");
         dispatch({ type: "error", message: String(e) });
+        return false;
       }
     })();
     stoppingRef.current = done;
-    await done;
+    const stopped = await done;
     // 🔴 只清自己这一条：连按两次停止时，先完成的那条若无条件置 null，就把后一条
     //    的等待解除了 —— 紧接着发送的消息会在第二次杀进程还没收干净时直发、被拒成
     //    「上一轮还在进行」。比较身份而不是靠顺序。
     if (stoppingRef.current === done) stoppingRef.current = null;
+    return stopped;
   }, [sessionIdRef, pause]);
 
   /**
@@ -262,6 +267,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     start,
     respond,
     interrupt,
+    stopAndSend: async (text: string, images: CcImage[]) => (await interrupt()) ? start(text, images, true) : false,
     openHistory,
     dismissError,
     clearStderr,
@@ -272,7 +278,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     // useCallback 包住：Composer 是 memo 组件，内联箭头会让它每次渲染都重渲。
     clearQueue,
     editQueue,
-    removeQueue,
+    removeQueue, moveQueue,
     /** 解除暂停、继续按顺序自动发送（中断或发送失败后）。 */
     resumeQueue: resume,
     /** 还卡着等用户决定的审批 id。 */

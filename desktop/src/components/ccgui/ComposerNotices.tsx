@@ -8,7 +8,7 @@ import { ChatPopover } from "./ChatPopover";
 
 export function ComposerNotices({
   queueCount, queuePaused = false, queueItems = [], onClearQueue, onResumeQueue,
-  onEditQueue, onRemoveQueue, slashReject, pendingCount = 0, onShowPending,
+  onEditQueue, onRemoveQueue, onMoveQueue, slashReject, pendingCount = 0, onShowPending,
 }: {
   queueCount: number;
   queuePaused?: boolean;
@@ -17,6 +17,7 @@ export function ComposerNotices({
   onResumeQueue?: () => void;
   onEditQueue?: (id: string, text: string) => boolean;
   onRemoveQueue?: (id: string) => void;
+  onMoveQueue?: (id: string, direction: -1 | 1) => void;
   slashReject: string | null;
   pendingCount?: number;
   onShowPending?: () => void;
@@ -38,6 +39,7 @@ export function ComposerNotices({
           {queue.mounted && <div className="cc-queue-reveal" data-entered={queue.entered} aria-hidden={!expanded}
             ref={node => { if (node) node.inert = !expanded; }}><div className="cc-queue-clip"><div className="cc-composer-queue-items">
             {queueItems.map((item, index) => <div key={item.id} className="cc-composer-queue-item"><span>{index + 1}</span><p title={item.text}>{item.text || "图片消息"}{item.images.length > 0 && <small> · {item.images.length} 张图片</small>}</p>
+              {onMoveQueue && <><button type="button" className="cc-chat-icon" aria-label={`上移第 ${index + 1} 条排队消息`} disabled={index === 0} onClick={() => onMoveQueue(item.id, -1)}><Icon name="arrowUp" size={13}/></button><button type="button" className="cc-chat-icon" aria-label={`下移第 ${index + 1} 条排队消息`} disabled={index === queueItems.length - 1} onClick={() => onMoveQueue(item.id, 1)}><Icon name="arrowDown" size={13}/></button></>}
               {onEditQueue && <button type="button" className="cc-chat-icon" aria-label={`编辑第 ${index + 1} 条排队消息`} onClick={event => { anchorRef.current = event.currentTarget; setEditing({ id: item.id, text: item.text, images: item.images.length }); }}><Icon name="edit" size={14} /></button>}
               {onRemoveQueue && <button type="button" className="cc-chat-icon" aria-label={`移除第 ${index + 1} 条排队消息`} onClick={() => onRemoveQueue(item.id)}><Icon name="close" size={14} /></button>}
             </div>)}

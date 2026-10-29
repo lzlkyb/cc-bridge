@@ -5,10 +5,10 @@ import { ChatPopover } from "./ChatPopover";
 
 /** 高频输入操作与发送状态；阅读偏好留在对话顶栏。 */
 export function ComposerTools({
-  controls, polishing, onPolish, running, stopping, onInterrupt, canSend, sending,
+  controls, stopBeforeSend, onSetStopBeforeSend, polishing, onPolish, running, stopping, onInterrupt, canSend, sending,
   imagesBusy, queuePaused, queueCount, onSend, onAttach, onMention, onCommand,
 }: {
-  controls?: ReactNode;
+  controls?: ReactNode; stopBeforeSend?: boolean; onSetStopBeforeSend?: (value: boolean) => void;
   polishing: boolean;
   onPolish?: () => void;
   running?: boolean;
@@ -26,8 +26,9 @@ export function ComposerTools({
 }) {
   const [extrasOpen, setExtrasOpen] = useState(false);
   const extrasAnchor = useRef<HTMLButtonElement>(null);
+  const [sendOptionsOpen, setSendOptionsOpen] = useState(false); const sendAnchor = useRef<HTMLButtonElement>(null);
   const queued = running || (queuePaused && queueCount > 0);
-  const label = sending ? "发送中" : imagesBusy ? "处理图片" : queued ? "排队发送" : "发送";
+  const label = sending ? "发送中" : imagesBusy ? "处理图片" : running && stopBeforeSend ? "停止后发送" : queued ? "排队发送" : "发送";
   return (
     <div className="cc-composer-tools">
       <div className="cc-composer-input-tools">
@@ -42,6 +43,12 @@ export function ComposerTools({
       </div>
       <div className="cc-composer-send-tools">
         {running && onInterrupt && <button type="button" className="cc-composer-stop" aria-label={stopping ? "正在停止本轮" : "停止本轮"} disabled={stopping} onClick={onInterrupt} title="停止本轮并暂停发送队列，排队内容保留"><Icon name="pause" size={14} /><span>{stopping ? "停止中" : "停止本轮"}</span></button>}
+        {running && onSetStopBeforeSend && <button ref={sendAnchor} className="cc-chat-icon" type="button" aria-label="选择发送方式" aria-expanded={sendOptionsOpen} onClick={() => setSendOptionsOpen(!sendOptionsOpen)}><Icon name="chevronDown" size={13}/></button>}
+        {sendOptionsOpen && <ChatPopover anchorRef={sendAnchor} label="发送方式" width={320} onClose={() => setSendOptionsOpen(false)}>
+          <button type="button" className="cc-chat-menu-item" onClick={() => { onSetStopBeforeSend?.(false); setSendOptionsOpen(false); }}>排队发送<small>本轮结束后发送</small></button>
+          <button type="button" className="cc-chat-menu-item" onClick={() => { onSetStopBeforeSend?.(true); setSendOptionsOpen(false); }}>停止后发送<small>确认停止后发送，旧队列暂停</small></button>
+          <p className="cc-chat-note">当前连接未提供可确认应用状态的补充指令接口。停止不会撤销已完成的操作。</p>
+        </ChatPopover>}
         <button type="button" data-cc-send className="cc-composer-send" disabled={!canSend || sending || imagesBusy} onClick={onSend} aria-label={label} title={queued ? "加入队列，暂停时需手动继续" : undefined}><span>{label}</span><Icon name={sending || imagesBusy ? "spinner" : "arrowUp"} size={16} className={sending || imagesBusy ? "animate-spin" : undefined} /></button>
       </div>
     </div>

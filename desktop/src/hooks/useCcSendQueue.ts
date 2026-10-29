@@ -61,6 +61,12 @@ export function useCcSendQueue() {
     queueRef.current = queueRef.current.filter((m) => m.id !== id);
     setQueue(queueRef.current);
   }, []);
+  const move = useCallback((id: string, direction: -1 | 1) => {
+    const index = queueRef.current.findIndex(item => item.id === id), next = index + direction;
+    if (index < 0 || next < 0 || next >= queueRef.current.length) return;
+    const items = [...queueRef.current]; [items[index], items[next]] = [items[next], items[index]];
+    queueRef.current = items; setQueue(items);
+  }, []);
   /** 取走队首（出队）。队空返回 `undefined`，不动状态。 */
   const take = useCallback((): QueuedMessage | undefined => {
     const next = queueRef.current[0];
@@ -77,7 +83,7 @@ export function useCcSendQueue() {
     setPaused(true);
   }, []);
 
-  return { queue, paused, enqueue, clear, resume, pause, take, putBack, edit, remove, hasPausedItems };
+  return { queue, paused, enqueue, clear, resume, pause, take, putBack, edit, remove, move, hasPausedItems };
 }
 
 /**

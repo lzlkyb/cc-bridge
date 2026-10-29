@@ -15,14 +15,14 @@ export function CwdChip({
   cwd,
   isRemote,
   hasMessages,
-  onChange,
+  onChange, disabled = false,
 }: {
   /** 空串 = 跟随 CLI 默认（本机是家目录）。 */
   cwd: string;
   isRemote: boolean;
   /** 说过话的会话换目录 = 下一句另起一条（浮层里要说清）。 */
   hasMessages: boolean;
-  onChange: (cwd: string) => void;
+  onChange: (cwd: string) => void; disabled?: boolean;
 }) {
   const anchorRef = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
@@ -30,7 +30,7 @@ export function CwdChip({
     <span className="relative flex min-w-0 items-center">
       <button ref={anchorRef}
         type="button"
-        data-cc-toggle="cwd"
+        data-cc-toggle="cwd" disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-label="工作目录（点击修改）"
@@ -43,7 +43,7 @@ export function CwdChip({
         <span className="max-w-[220px] truncate font-mono">{cwd || "默认目录"}</span>
         <Icon name="chevronDown" size={10} className="shrink-0 opacity-60" />
       </button>
-      {open && (
+      {open && !disabled && (
         <CwdPicker anchorRef={anchorRef}
           value={cwd}
           isRemote={isRemote}

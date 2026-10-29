@@ -143,7 +143,7 @@ export function derivePaneMeta(input: {
   const approval = asks.find((m) => (m.questions?.length ?? 0) === 0);
 
   let state: CcPaneState = "idle";
-  let detail = turns === 0 ? "新会话" : `${turns} 轮 · 空闲`;
+  let detail = turns === 0 ? "新会话" : `${turns} 轮 · 已结束`;
   let stateHint: string | undefined;
   if (!targetAlive) {
     state = "dead";
@@ -164,7 +164,7 @@ export function derivePaneMeta(input: {
     detail = `等你选 · ${question.toolName}`;
   } else if (view.running) {
     state = "run";
-    detail = turns === 0 ? "生成中" : `${turns} 轮 · 生成中`;
+    detail = turns === 0 ? "执行中" : `${turns} 轮 · 执行中`;
   }
 
   return {

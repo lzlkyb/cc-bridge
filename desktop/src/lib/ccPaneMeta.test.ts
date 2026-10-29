@@ -74,7 +74,7 @@ describe("derivePaneMeta 五态", () => {
     const v = view({ messages: [user("跑起来")], running: true });
     const m = derivePaneMeta({ ...base, view: v });
     expect(m.state).toBe("run");
-    expect(m.detail).toBe("1 轮 · 生成中");
+    expect(m.detail).toBe("1 轮 · 执行中");
     expect(m.turns).toBe(1);
   });
 
@@ -101,7 +101,7 @@ describe("derivePaneMeta 五态", () => {
     const v = view({ messages: [user("聊完"), approval("r1", "Bash")], resolved: { r1: { decision: "deny" } } });
     const m = derivePaneMeta({ ...base, view: v });
     expect(m.state).toBe("idle");
-    expect(m.detail).toBe("1 轮 · 空闲");
+    expect(m.detail).toBe("1 轮 · 已结束");
   });
 
   it("目标连接已经不在 = dead，行要标灰", () => {

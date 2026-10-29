@@ -14,7 +14,7 @@ import { paneForkSeed, type CcForkSeed } from "../../lib/ccFork";
 import { derivePaneMeta, type CcPaneMeta } from "../../lib/ccPaneMeta";
 import { toBarSession } from "../../lib/ccSessionBar";
 import { shortcutLabel } from "../../lib/platform";
-import { CcPaneHead } from "../ccgui/CcPaneHead";
+import { ConversationEnvironment } from "../ccgui/ApprovalEnvironment"; import { CcPaneHead } from "../ccgui/CcPaneHead";
 import "../ccgui/chatWorkspace.css";
 import { CcPaneComposer } from "../ccgui/CcPaneComposer";
 import { ConversationStream } from "../ccgui/ConversationStream";
@@ -238,7 +238,7 @@ export function CcPane({
   );
 
   return (
-    <div
+    <ConversationEnvironment.Provider value={{ label: bar.connection, cwd: bar.cwd, remote: Boolean(targetId) }}><div
       data-cc-panel
       className={`${active ? "flex" : "hidden"} cc-conversation-panel h-full min-h-0 flex-col overflow-hidden`}
     >
@@ -295,6 +295,6 @@ export function CcPane({
         prefill={prefill}
         draftKey={paneKey}
       />
-    </div>
+    </div></ConversationEnvironment.Provider>
   );
 }

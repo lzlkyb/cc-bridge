@@ -35,6 +35,7 @@ function SessionActionsImpl({ session, messages, resolved, title, modelLabel, ne
       </> : <>
         <button className="cc-chat-menu-item" type="button" onClick={() => setOpen("info")}><Icon name="activity" size={16} /><span>会话信息<small>模型、用量与费用</small></span></button>
         {session.changeset.length > 0 && <button className="cc-chat-menu-item" type="button" onClick={() => { setChangesFromMenu(true); setOpen("changes"); }}><Icon name="file" size={16} /><span>本会话改动<small>{session.changeset.length} 个文件</small></span></button>}
+        <p className="cc-chat-note">文件撤销见“本会话改动”；当前不支持整轮恢复，已执行的命令及外部操作不会撤销。</p>
         <button className="cc-chat-menu-item" type="button" disabled={!canExport} onClick={() => { exportMarkdown(); setOpen(null); }}><Icon name="download" size={16} /><span>导出对话<small>复制为 Markdown</small></span></button>
         <button className="cc-chat-menu-item" type="button" onClick={() => setOpen("history")}><Icon name="history" size={16} /><span>从本机历史打开<small>包含终端中的 Claude Code 对话</small></span></button>
         <button className="cc-chat-menu-item" type="button" onClick={() => { setOpen(null); onNewSession(); }}><Icon name="plus" size={16} /><span>新对话<small>{newSessionHint} · 当前会话保留</small></span></button>

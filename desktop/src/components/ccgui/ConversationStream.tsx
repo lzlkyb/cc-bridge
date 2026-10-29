@@ -10,6 +10,7 @@ import { CcFindBar } from "./CcFindBar";
 import { MessageList } from "./MessageList";
 import { MessageNav } from "./MessageNav";
 import { ScrollToBottom } from "./ScrollToBottom";
+import { SelectionQuote } from "./SelectionQuote";
 import { TurnActivity, turnActivity } from "./TurnActivity";
 
 /**
@@ -175,6 +176,7 @@ export function ConversationStream({
           <ScrollToBottom pending={pendingCount} running={view.running || stopState === "stopping"} activity={stopState === "stopping" ? "正在停止本轮" : view.retry ? `正在重试 ${view.retry.attempt}/${view.retry.max}` : turnActivity(view.messages, view.running, sending, view.activityStartIndex, view.resolved)} onClick={toBottom} />
         </div>
       )}
+      <SelectionQuote scrollRef={scrollRef} />
       {search.open && (
         <CcFindBar
           query={search.query}

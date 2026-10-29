@@ -107,3 +107,31 @@ describe("useCcSession 待发队列", () => {
     expect(api.queuePaused).toBe(false);
   });
 });
+
+describe("停止后发送与队列排序", () => {
+  it("停止未确认时不提交新消息", async () => {
+    h.invoke.mockImplementation(async (command: string) => command === "cc_interrupt" ? false : undefined);
+    h.ready = true; await rerender();
+    let accepted; await act(async () => { accepted = await api.stopAndSend("新消息", []); });
+    expect(accepted).toBe(false); expect(api.stopState).toBe("unconfirmed");
+    expect(h.invoke.mock.calls.filter(c => c[0] === "cc_start")).toHaveLength(0);
+  });
+  it("会话尚未就绪时保留草稿，不把优先消息放进暂停队列", async () => {
+    h.invoke.mockImplementation(async (command: string) => command === "cc_interrupt" ? true : undefined);
+    let accepted; await act(async () => { accepted = await api.stopAndSend("优先消息", []); });
+    expect(accepted).toBe(false); expect(api.queue).toEqual([]);
+    expect(h.invoke.mock.calls.filter(c => c[0] === "cc_start")).toHaveLength(0);
+  });
+  it("确认停止后优先发送新消息，原队列仍保留且暂停", async () => {
+    h.invoke.mockImplementation(async (command: string) => command === "cc_interrupt" ? true : undefined);
+    await act(async () => { await api.start("排队甲"); await api.start("排队乙"); await api.interrupt(); });
+    h.ready = true; await rerender();
+    const id = api.queue[1].id; await act(async () => api.moveQueue(id, -1));
+    expect(api.queue.map(q => q.text)).toEqual(["排队乙", "排队甲"]);
+    let accepted; await act(async () => { accepted = await api.stopAndSend("优先新消息", []); });
+    expect(accepted).toBe(true); expect(api.queuePaused).toBe(true);
+    expect(api.queue.map(q => q.text)).toEqual(["排队乙", "排队甲"]);
+    const starts = h.invoke.mock.calls.filter(c => c[0] === "cc_start");
+    expect(starts).toHaveLength(1); expect(starts[0][1].req.text).toBe("优先新消息");
+  });
+});

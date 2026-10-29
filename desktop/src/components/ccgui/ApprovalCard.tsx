@@ -10,6 +10,7 @@ import { useExpiryCountdown } from "../../hooks/useExpiryCountdown";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { toast } from "../ui/toast";
+import { ApprovalEnvironment } from "./ApprovalEnvironment";
 import { ApprovalDetail } from "./ApprovalDetail";
 import { QuestionCard } from "./QuestionCard";
 import { approvalCopyText } from "./summarize";
@@ -122,6 +123,7 @@ function ApprovalCardImpl({
       </div>
 
       <div className="flex flex-col gap-2 px-3 py-2">
+        <ApprovalEnvironment toolName={approval.toolName} />
         <ApprovalDetail
           toolName={approval.toolName}
           input={approval.input}

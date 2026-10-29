@@ -145,7 +145,7 @@ export function MessageList({
               // `data-cc-user`：按轮导航的锚点（`useCcMessageNav` 靠布局找位置，
               // 不从 state 重算下标 —— 搜索高亮、折叠展开都会改变实际位置）。
               // `scroll-mt-2`：跳到某条时别贴着容器顶边，留一点呼吸。
-              <div key={m.id} data-cc-user className="flex scroll-mt-2 justify-end">
+              <div key={m.id} data-cc-user data-cc-msg={m.id} className="flex scroll-mt-2 justify-end">
                 <UserMessageBubble
                   text={m.text}
                   images={m.images}

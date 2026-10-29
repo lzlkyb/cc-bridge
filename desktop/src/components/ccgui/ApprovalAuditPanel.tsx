@@ -164,6 +164,7 @@ export function ApprovalAuditPanel({
         </button>
       </div>
 
+      <p className="cc-chat-note">依据审批与工具记录；撤销仅影响可还原文件，不回退对话或已执行命令、网络请求。后续修改可能导致撤销被拒绝。</p>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {groups.length === 0 ? (
           <p className="px-3 py-6 text-center text-[11px] leading-[1.7] text-muted-foreground">

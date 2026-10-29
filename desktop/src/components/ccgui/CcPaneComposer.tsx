@@ -21,14 +21,14 @@ export function CcPaneComposer({ session, scrollRef, model, mode, setModel, setM
   return <Composer {...draft}
     controls={<RunControls model={model} mode={mode} onModelChange={setModel} onModeChange={setMode} />}
     footer={<ContextMeter bar={contextBar(view.modelUsage)} tokens={view.inputTokens + view.outputTokens} sessionId={view.sessionId} running={view.running} />}
-    queueItems={session.queue} onEditQueue={session.editQueue} onRemoveQueue={session.removeQueue}
+    queueItems={session.queue} onEditQueue={session.editQueue} onRemoveQueue={session.removeQueue} onMoveQueue={session.moveQueue}
     pendingCount={approvalOffscreen ? session.pending.length : 0} onShowPending={() => {
       const el = scrollRef.current ? firstOffscreenApproval(scrollRef.current) : undefined;
       const review = el?.querySelector<HTMLButtonElement>("[data-cc-approval-focus]");
       if (review) review.click();
       else { el?.scrollIntoView({ block: "center" }); el?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true }); }
     }}
-    onSend={session.start} running={view.running || session.busy || session.stopState === "stopping"} stopping={session.stopState === "stopping"}
+    onStopAndSend={session.stopAndSend} onSend={session.start} running={view.running || session.busy || session.stopState === "stopping"} stopping={session.stopState === "stopping"}
     onInterrupt={() => void session.interrupt()}
     placeholder={session.pending.length > 0 ? "本轮在等批准，现在发的会排队，批准后自动发…" : "给 CC 发消息…"}
     queueCount={session.queue.length} queuePaused={session.queuePaused}

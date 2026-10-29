@@ -81,6 +81,40 @@ try {
     await summary.getByRole('button', { name: /文件操作/ }).click();
     assert.equal(await active(p).locator('[data-cc-tool="edit-result"]').isVisible(), true);
   }, { scene: 'results' });
+  await test('设计升级：停止后发送且旧队列保持暂停', async p => {
+    await draft(p).fill('启动当前任务'); await send(p).click();
+    await draft(p).fill('旧队列消息'); await send(p).click();
+    await active(p).locator('.cc-composer-queue').waitFor();
+    await button(p, '选择发送方式').click();
+    await p.getByRole('button', { name: /停止后发送.*确认停止/ }).click();
+    await draft(p).fill('停止后优先消息'); await send(p).click();
+    await p.getByText(/收到：停止后优先消息/).waitFor({ timeout: 9000 });
+    assert.match(await active(p).locator('.cc-composer-queue').innerText(), /队列已暂停/);
+    assert.match(await active(p).locator('.cc-composer-queue').innerText(), /旧队列消息/);
+  }, { scene: 'approval' });
+  await test('设计升级：问题目录跳转和返回阅读位置', async p => {
+    await button(p, '问题目录').click();
+    const panel = p.getByRole('dialog', { name: '问题目录', exact: true });
+    await panel.getByRole('button').filter({ hasText: /1\./ }).click();
+    await button(p, '回到刚才阅读处').click();
+    assert.equal(await button(p, '回到刚才阅读处').count(), 0);
+  });
+  await test('设计升级：上下文引用移除保留其他草稿', async p => {
+    await draft(p).fill('保留草稿 @src/api/request.ts');
+    await p.getByRole('button', { name: /上下文清单/ }).click();
+    const panel = p.getByRole('dialog', { name: '上下文清单', exact: true });
+    assert.match(await panel.innerText(), /不代表文件已被读取/);
+    await panel.getByRole('button', { name: '移除', exact: true }).click();
+    assert.equal(await draft(p).inputValue(), '保留草稿 ');
+    await p.keyboard.press('Escape');
+  });
+  await test('设计升级：真实命令输出追加草稿', async p => {
+    await draft(p).fill('保留现有草稿');
+    const summary = active(p).locator('.cc-turn-results'); await summary.locator('summary').click();
+    await summary.getByRole('button', { name: /执行命令/ }).click();
+    await active(p).getByRole('button', { name: '带入对话继续分析', exact: true }).click();
+    const value = await draft(p).inputValue(); assert.match(value, /^保留现有草稿/); assert.match(value, /npm run test/);
+  }, { scene: 'results' });
   await test('会话搜索常驻，切换会话保留独立草稿', async p => {
     await draft(p).fill('登录会话未发送的草稿');
     await button(p, '新对话').click();

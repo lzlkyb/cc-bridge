@@ -2,6 +2,7 @@ import { memo } from "react";
 import type { CcPermissionMode, CcMessage, CcSession } from "../../lib/ccGuiTypes";
 import type { CcHistoryRow } from "../../lib/ccEventTypes";
 import { Icon } from "../ui/icon";
+import { ConversationDirectory } from "./ConversationDirectory";
 import { CwdChip } from "./CwdChip";
 import { ReadingOptions } from "./ReadingOptions";
 import { SessionActions } from "./SessionActions";
@@ -40,17 +41,17 @@ function SessionBarImpl({ session, messages, resolved, title, targets, targetId,
       <h1 title={title}>{title || "新对话"}</h1>
       <div className="cc-conversation-environment">
         <label className="cc-target-select"><Icon name={isRemote ? "server" : "folder"} size={13} />
-          <select aria-label="对话运行在哪" value={targetId} onChange={(e) => onTargetChange(e.target.value)}>
+          {isRemote && <span>SSH</span>}<select disabled={session.running} title={session.running ? "本轮执行中，结束后可更换环境" : undefined} aria-label="对话运行在哪" value={targetId} onChange={(e) => onTargetChange(e.target.value)}>
             {targets.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
           </select>
         </label><span aria-hidden>/</span>
-        <CwdChip cwd={session.cwd} isRemote={isRemote} hasMessages={messages.some((m) => m.kind === "user")} onChange={onCwdChange} />
+        <CwdChip disabled={session.running} cwd={session.cwd} isRemote={isRemote} hasMessages={messages.some((m) => m.kind === "user")} onChange={onCwdChange} />
         {connectionStatus && <span className="cc-connection-label">{connectionStatus}</span>}
       </div>
     </div>
     <div className="cc-conversation-actions">
       <button type="button" className="cc-chat-icon" aria-label="搜索当前对话" title="搜索当前对话 · Ctrl+F" onClick={onFind}><Icon name="search" size={17} /></button>
-      <ReadingOptions />
+      <ConversationDirectory messages={messages} /><ReadingOptions />
       <SessionActions session={session} messages={messages} resolved={resolved} title={title} modelLabel={session.model || session.activeModel || "默认模型"} newSessionHint={newSessionHint} onOpenHistory={onOpenHistory} onJumpTo={onJumpTo} onNewSession={onNewSession} onSwitchTerminal={onSwitchTerminal} />
     </div>
   </header>;

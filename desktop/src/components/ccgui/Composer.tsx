@@ -15,7 +15,7 @@ import { ComposerFooter, ComposerTools } from "./ComposerTools";
 import type { QueuedMessage } from "../../hooks/useCcSendQueue";
 import { ComposerPolishPreview } from "./ComposerPolishPreview";
 import "./composer.css";
-import { MentionPanel } from "./MentionPanel";
+import { useCcDraftInsert } from "../../hooks/useCcDraftInsert"; import { DraftContextList } from "./DraftContextList"; import { MentionPanel } from "./MentionPanel";
 import { SlashPanel } from "./SlashPanel";
 
 /**
@@ -42,7 +42,7 @@ import { SlashPanel } from "./SlashPanel";
 function ComposerImpl({
   onSend,
   running, stopping,
-  onInterrupt,
+  onInterrupt, onStopAndSend,
   placeholder,
   sendHint = "Ctrl+Enter",
   queueCount,
@@ -57,8 +57,7 @@ function ComposerImpl({
   footer,
   queueItems,
   onEditQueue,
-  onRemoveQueue,
-  pendingCount,
+  onRemoveQueue, onMoveQueue, pendingCount,
   onShowPending,
 }: {
   /**
@@ -74,7 +73,7 @@ function ComposerImpl({
   ) => Promise<boolean> | boolean | void;
   running?: boolean;
   stopping?: boolean;
-  onInterrupt?: () => void;
+  onInterrupt?: () => void; onStopAndSend?: (text: string, images: CcImage[]) => Promise<boolean>;
   placeholder?: string;
   /** 发送快捷键的平台标签（`Ctrl+Enter` / `⌘Enter`），宿主从 status 里取。 */
   sendHint?: string;
@@ -105,6 +104,7 @@ function ComposerImpl({
   queueItems?: QueuedMessage[];
   onEditQueue?: (id: string, text: string) => boolean;
   onRemoveQueue?: (id: string) => void;
+  onMoveQueue?: (id: string, direction: -1 | 1) => void;
   pendingCount?: number;
   onShowPending?: () => void;
 }) {
@@ -117,12 +117,12 @@ function ComposerImpl({
   /** 有图时发送按钮要能点亮 —— 这是唯一需要订阅的附件状态。 */
   const [hasImages, setHasImages] = useState(false);
   const [imagesBusy, setImagesBusy] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [sending, setSending] = useState(false), [stopBeforeSend, setStopBeforeSend] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   // 润色草稿的备份与忙碌态（2026-10-26 外移到 hooks/useComposerPolish.ts）。
   const polish = useComposerPolish(onPolish);
   /** 整个输入区（含面板）的定位锚点与「点外面关闭」的判定框。 */
-  const boxRef = useRef<HTMLDivElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null); useCcDraftInsert(boxRef, areaRef, setValue);
   // @引用补全（设计稿《对话页-@引用与排版偏好》）：状态与取数全在 hook 里，
   // 这里只接线 —— Composer 本体已贴体量门限，不能再长。
   const mention = useCcMention({
@@ -179,11 +179,11 @@ function ComposerImpl({
     sendingRef.current = true;
     setSending(true);
     try {
-      const accepted = await onSend(text, images);
+      const accepted = await (running && stopBeforeSend && onStopAndSend ? onStopAndSend(text, images) : onSend(text, images));
       if (accepted === false) return;
       // 发送在途时用户若又改了输入框，那是新草稿，不能跟着已发出的那句一起清掉。
       setValue((cur) => (cur.trim() === text ? "" : cur));
-      slash.onSent();
+      setStopBeforeSend(false); slash.onSent();
       // 已发出的草稿不再可「撤销润色」：那会把旧稿填回空输入框，像是能撤回发送。
       polish.reset();
       attachRef.current?.clear(images);
@@ -222,7 +222,7 @@ function ComposerImpl({
         slashReject={slash.reject}
         queueItems={queueItems}
         onEditQueue={onEditQueue}
-        onRemoveQueue={onRemoveQueue}
+        onRemoveQueue={onRemoveQueue} onMoveQueue={onMoveQueue}
         pendingCount={pendingCount}
         onShowPending={onShowPending}
       />
@@ -254,7 +254,7 @@ function ComposerImpl({
           }}
         />
         <ComposerTools
-          controls={controls}
+          controls={controls} stopBeforeSend={stopBeforeSend} onSetStopBeforeSend={onStopAndSend ? setStopBeforeSend : undefined}
           sending={sending}
           imagesBusy={imagesBusy}
           queuePaused={queuePaused}
@@ -291,7 +291,7 @@ function ComposerImpl({
         />
       )}
       </div>
-      <ComposerFooter sendHint={sendHint}>{footer}</ComposerFooter>
+      <ComposerFooter sendHint={sendHint}><DraftContextList value={value} onChange={setValue} hasImages={hasImages}/>{footer}</ComposerFooter>
       {polish.preview?.source === value && <ComposerPolishPreview anchorRef={areaRef} text={polish.preview.text} onCancel={polish.reset} onApply={() => { setValue(polish.preview!.text); polish.reset(); areaRef.current?.focus(); }} />}
     </div>
   );

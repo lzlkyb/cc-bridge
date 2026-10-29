@@ -4,6 +4,7 @@ import type { CcMark } from "../../lib/ccMarkdown";
 import { computeLineDiff } from "../../lib/ccDiff";
 import { useChatVerbosity } from "../../lib/chatVerbosity";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
+import { appendCcDraft } from "../../lib/ccDraftInsert";
 import { Icon, type IconName } from "../ui/icon";
 import { DiffBlock } from "./DiffBlock";
 import { MarkedText } from "./MarkedText";
@@ -270,6 +271,7 @@ function ToolCardImpl({ tool, marks }: { tool: CcToolCall; marks?: CcMark[] }) {
                   {command}
                 </p>
               )}
+              {kind === "bash" && body.raw && <button type="button" className="cc-output-to-draft" onClick={event => appendCcDraft(event.currentTarget, `命令输出（${tool.name}）：\n${command}\n\n${body.raw}`)}>带入对话继续分析</button>}
               <MonoBlock
                 text={body.text}
                 clipped={body.clipped}

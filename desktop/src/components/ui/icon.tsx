@@ -5,6 +5,8 @@ import type { SVGProps } from "react";
  * WHY 不用 lucide-react：设计稿已用内联 SVG 达标，避免新增依赖撑大二进制（3.4MB 是核心卖点）。
  */
 const paths: Record<string, string> = {
+  list: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01",
+  arrowDown: "M12 5v14M5 12l7 7 7-7",
   plug: "M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1",
   shield: "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z",
   settings:

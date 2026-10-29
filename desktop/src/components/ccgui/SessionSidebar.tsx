@@ -109,6 +109,7 @@ export function SessionSidebar({
       if (g) g.rows.push(r);
       else out.push({ label: r.label, rows: [r] });
     }
+    for (const group of out) group.rows.sort((a, b) => Number(!(a.state === "ask" || a.state === "wait")) - Number(!(b.state === "ask" || b.state === "wait")));
     return out;
   }, [shown]);
 
