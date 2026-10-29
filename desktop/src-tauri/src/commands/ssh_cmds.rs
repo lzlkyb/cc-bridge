@@ -102,25 +102,178 @@ pub struct SshConnectArgs {
 /// Windows：先 `System32\OpenSSH\ssh.exe`，回退 `SysWOW64\OpenSSH\ssh.exe`
 /// （旧 Win10 / Server / 精简镜像可能只在其一）。
 /// macOS / Linux：永远自带 `/usr/bin/ssh`。
+/// Windows 下的 ssh 候选路径，按优先级排列。
+///
+/// 顺序即偏好：系统自带 → 微软 MSI 独立安装 → Git for Windows 自带 → PATH。
+/// 之所以还要 Git 这一档：2026-10-29 实机遇到 `System32\OpenSSH` 下整套 8.1
+/// （ssh/scp/ssh-keygen/ssh-agent）都存在、签名有效，但**执行即 exit 255 且零输出**；
+/// 而 Git 自带的 OpenSSH 10.x 在同一台机器上完全正常。没有这一档，用户机器上系统
+/// ssh 一坏，整个终端功能就全废，还只会看到「进程过早退出」这种误导信息。
+#[cfg(windows)]
+fn ssh_candidates() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = Vec::new();
+    let sys = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+    v.push(
+        PathBuf::from(&sys)
+            .join("System32")
+            .join("OpenSSH")
+            .join("ssh.exe"),
+    );
+    v.push(
+        PathBuf::from(&sys)
+            .join("SysWOW64")
+            .join("OpenSSH")
+            .join("ssh.exe"),
+    );
+    for key in ["ProgramFiles", "ProgramW6432"] {
+        if let Ok(pf) = std::env::var(key) {
+            let pf = PathBuf::from(pf);
+            v.push(pf.join("OpenSSH").join("ssh.exe"));
+            v.push(pf.join("Git").join("usr").join("bin").join("ssh.exe"));
+        }
+    }
+    if let Ok(pf) = std::env::var("ProgramFiles(x86)") {
+        v.push(
+            PathBuf::from(pf)
+                .join("Git")
+                .join("usr")
+                .join("bin")
+                .join("ssh.exe"),
+        );
+    }
+    if let Ok(la) = std::env::var("LOCALAPPDATA") {
+        v.push(
+            PathBuf::from(la)
+                .join("Programs")
+                .join("Git")
+                .join("usr")
+                .join("bin")
+                .join("ssh.exe"),
+        );
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(';') {
+            let d = dir.trim();
+            if !d.is_empty() {
+                v.push(PathBuf::from(d).join("ssh.exe"));
+            }
+        }
+    }
+    v
+}
+
+/// 单个候选的探测等待上限。健康 ssh 的 `-V` 是毫秒级，给到 1.5s 已极端宽松。
+const SSH_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// 全部候选的探测总预算。候选集合里含 PATH 里的每个目录，数量不可控，
+/// 必须给个整体上界（见 `find_ssh` 的说明）。
+const SSH_PROBE_TOTAL_BUDGET: Duration = Duration::from_millis(3000);
+
+/// 探测某个 ssh **是否真能执行**（`exists()` 远远不够，见 `ssh_candidates` 注释）。
+///
+/// `-V` 是最轻的自检：不联网、不读 config、不等终端，健康程序立刻返回 0。
+/// 🔴 必须带 `CREATE_NO_WINDOW`：Tauri 是 GUI 进程，起控制台子程序会闪黑框。
+/// 🔴 必须有超时：`status()` 会一直等到子进程退出，遇上「启动就挂住」的坏程序
+/// （安全软件拦截的常见形态）会把调用线程永久堵死——宁可判它不可用。
+///
+/// `overall` 是调用方给的总预算，取它与「现在 + 单候选上限」中更早的那个作截止时间。
+#[cfg(windows)]
+fn ssh_runnable(path: &Path, overall: Instant) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let mut cmd = std::process::Command::new(path);
+    cmd.arg("-V")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let deadline = (Instant::now() + SSH_PROBE_TIMEOUT).min(overall);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return st.success(),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
+/// 按顺序挑第一个**既存在又能执行**的候选。
+///
+/// 这次的线上故障就出在这个循环里：旧实现只判 `exists()`，于是「文件在、但执行
+/// 即 exit 255 零输出」的 ssh 被当成可用程序，连接全程黑屏且报「进程过早退出」。
+/// 抽成纯函数是为了把它测住——`exists` / `runnable` / `expired` 全由调用方注入，
+/// 断言不依赖本机装了哪些 ssh（CI 上也跑得动）。
+///
+/// - 同一路径只探测一次（PATH 里同一目录重复出现很常见）
+/// - `expired()` 为真时立刻收手，剩下的候选不再探测（避免总耗时不可控）
+fn pick_runnable(
+    candidates: impl IntoIterator<Item = PathBuf>,
+    exists: impl Fn(&Path) -> bool,
+    runnable: impl Fn(&Path) -> bool,
+    expired: impl Fn() -> bool,
+) -> Option<PathBuf> {
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for cand in candidates {
+        if expired() {
+            break;
+        }
+        if !seen.insert(cand.clone()) || !exists(&cand) {
+            continue;
+        }
+        if runnable(&cand) {
+            return Some(cand);
+        }
+        // 存在但跑不起来：继续找下一个候选，别把坏程序当成「已安装」。
+        #[cfg(debug_assertions)]
+        eprintln!("[SSH] 跳过不可执行的 ssh={:?}", cand);
+    }
+    None
+}
+
+/// 探测可用的 ssh 路径（不抛错，一个都不可用返回 None）。
+///
+/// Windows：按 `ssh_candidates` 顺序挑第一个**能执行**的
+/// （旧 Win10 / Server / 精简镜像可能只在其中一个目录）。
+/// macOS / Linux：永远自带 `/usr/bin/ssh`。
+///
+/// 结果缓存：探测要起子进程（约几十毫秒），`ssh_check` / 连接 / 传输都会反复问，
+/// 不缓存等于每次交互都多一次进程创建。代价是「用户修好 ssh 后需重启应用」。
+///
+/// 🔴 调用方都是 async 上下文（`ssh_check` / `ssh_connect` / SFTP），这里的阻塞会
+/// 占住 tokio 工作线程，所以整个探测必须**有总预算**：候选再多、再异常也不能
+/// 累计成十几秒卡顿。超预算直接放弃剩余候选（判不可用，报错比卡死好）。
 fn find_ssh() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        let sys = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
-        let p1 = PathBuf::from(&sys)
-            .join("System32")
-            .join("OpenSSH")
-            .join("ssh.exe");
-        if p1.exists() {
-            return Some(p1);
-        }
-        let p2 = PathBuf::from(&sys)
-            .join("SysWOW64")
-            .join("OpenSSH")
-            .join("ssh.exe");
-        if p2.exists() {
-            return Some(p2);
-        }
-        None
+        use std::sync::OnceLock;
+        static CACHE: OnceLock<Option<PathBuf>> = OnceLock::new();
+        CACHE
+            .get_or_init(|| {
+                let deadline = Instant::now() + SSH_PROBE_TOTAL_BUDGET;
+                let picked = pick_runnable(
+                    ssh_candidates(),
+                    |p| p.exists(),
+                    |p| ssh_runnable(p, deadline),
+                    || Instant::now() >= deadline,
+                );
+                #[cfg(debug_assertions)]
+                if let Some(p) = &picked {
+                    eprintln!("[SSH] 选用 ssh={:?}", p);
+                }
+                picked
+            })
+            .clone()
     }
     #[cfg(not(windows))]
     {
@@ -1034,8 +1187,11 @@ pub async fn ssh_check() -> Result<SshCheckResult, String> {
         None => {
             #[cfg(windows)]
             let install_hint = Some(
-                "未检测到 OpenSSH 客户端。请以管理员身份运行 PowerShell 执行：\n\
-                 Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0"
+                "未找到**可执行**的 OpenSSH 客户端。若系统已安装 OpenSSH，则其程序可能已损坏或被安全软件拦截。\n\
+                 修复方式（管理员 PowerShell）：\n\
+                 Remove-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0\n\
+                 Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0\n\
+                 或安装 Git for Windows（自带可用的 ssh）后重启本应用。"
                     .to_string(),
             );
             #[cfg(not(windows))]
@@ -1519,45 +1675,13 @@ pub async fn ssh_input(
         .ssh_sessions
         .get(&session_id)
         .ok_or_else(|| format!("SSH 会话不存在或已断开：{session_id}"))?;
-    // 诊断日志（debug 构建）：确认前端 onData → ssh_input 是否真正到达后端。
-    // 若敲键时后台出现该日志，说明链路通、问题在下游；若不出现，说明前端 onData 未触发（焦点）。
-    //
-    // 🔴 只能打长度，不能打内容。这里流过的就是用户敲的每一个字符——包括在
-    // 远端密码提示下手动输入的密码。本项目对凭据的基线是「明文绝不外露」，
-    // 把它逐字符打进 dev 控制台与这条基线直接冲突。长度足够完成它的诊断职责。
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "[SSH] input session={} bytes={}",
-        &session_id[..8.min(session_id.len())],
-        data.len()
-    );
     let mut w = entry
         .writer
         .lock()
         .map_err(|_| "SSH 写入端锁被毒化".to_string())?;
-    // 诊断：写之前已打印 input（见上），这里确认 write+flush 是否真的成功送达 PTY。
-    // 若只看到 input 但看不到 input-ok → write_all/flush 失败（写入端问题）；
-    // 若看到 input-ok 但屏幕仍无回显 → 写入成功但远端 shell 没收/未回显（下游问题）。
-    match w.write_all(data.as_bytes()).and_then(|_| w.flush()) {
-        Ok(_) => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[SSH] input-ok session={} bytes={}",
-                &session_id[..8.min(session_id.len())],
-                data.len()
-            );
-        }
-        Err(e) => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[SSH] input-FAIL session={} err={}",
-                &session_id[..8.min(session_id.len())],
-                e
-            );
-            return Err(format!("写入 SSH 输入失败：{e}"));
-        }
-    }
-    Ok(())
+    w.write_all(data.as_bytes())
+        .and_then(|_| w.flush())
+        .map_err(|e| format!("写入 SSH 输入失败：{e}"))
 }
 
 /// 终端缩放（前端 xterm onResize → 这里）。更新 PTY 尺寸，vi/htop 之类才跟手。
@@ -2001,6 +2125,93 @@ pub async fn ssh_sftp_remove(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── ssh 路径挑选 ────────────────────────────────────────
+
+    /// 🔴 回归（2026-10-29 实机故障）：`System32\OpenSSH\ssh.exe` 存在、签名有效，
+    /// 但执行即 exit 255 且零输出。旧实现只判 `exists()` 就把它当成可用程序，
+    /// 结果连接全程黑屏、只报「进程过早退出」，用户完全看不出是 ssh 本身坏了。
+    ///
+    /// 这里钉死行为：存在但不可执行的候选必须被跳过，继续往下找。
+    #[test]
+    fn pick_runnable_skips_existing_but_broken_candidate() {
+        let bad = PathBuf::from("/fake/System32/OpenSSH/ssh.exe");
+        let good = PathBuf::from("/fake/Git/usr/bin/ssh.exe");
+        let picked = pick_runnable(
+            vec![bad.clone(), good.clone()],
+            |_| true,                // 两个文件都在
+            |p| p == good.as_path(), // 只有 Git 那个能执行
+            || false,
+        );
+        assert_eq!(picked, Some(good));
+    }
+
+    /// 不存在的候选不该被探测（PATH 里一堆不存在的目录，探测即浪费一次进程创建）。
+    #[test]
+    fn pick_runnable_never_probes_missing_files() {
+        let probed = std::cell::RefCell::new(Vec::new());
+        let picked = pick_runnable(
+            vec![PathBuf::from("/nope/a"), PathBuf::from("/here/b")],
+            |p| p == Path::new("/here/b"),
+            |p| {
+                probed.borrow_mut().push(p.to_path_buf());
+                true
+            },
+            || false,
+        );
+        assert_eq!(picked, Some(PathBuf::from("/here/b")));
+        assert_eq!(probed.borrow().len(), 1, "只应探测存在的那一个");
+    }
+
+    /// 同一路径重复出现（PATH 里同一目录多次）只探测一次，且顺序即偏好。
+    #[test]
+    fn pick_runnable_dedups_and_keeps_priority_order() {
+        let a = PathBuf::from("/first/ssh");
+        let b = PathBuf::from("/second/ssh");
+        let count = std::cell::Cell::new(0);
+        let picked = pick_runnable(
+            vec![a.clone(), a.clone(), b.clone()],
+            |_| true,
+            |p| {
+                count.set(count.get() + 1);
+                p == b.as_path()
+            },
+            || false,
+        );
+        assert_eq!(picked, Some(b));
+        assert_eq!(count.get(), 2, "a 只探测一次（重复项被去重）");
+    }
+
+    /// 总预算耗尽后必须立刻收手，不能再往下探测——调用方在 tokio 的工作线程上，
+    /// 候选集合又含 PATH 里任意多目录，没有这条就可能把界面卡住十几秒。
+    #[test]
+    fn pick_runnable_stops_when_budget_exhausted() {
+        let calls = std::cell::Cell::new(0);
+        let picked = pick_runnable(
+            vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            |_| true,
+            |_| {
+                calls.set(calls.get() + 1);
+                false
+            },
+            || calls.get() >= 1, // 探测过一次后即视为超预算
+        );
+        assert_eq!(picked, None);
+        assert_eq!(calls.get(), 1, "超预算后不再探测第二个候选");
+    }
+
+    /// 一个都不可执行时返回 None，让上层给出「OpenSSH 不可用」的明确提示，
+    /// 而不是拿着坏路径去 spawn 然后黑屏。
+    #[test]
+    fn pick_runnable_returns_none_when_all_broken() {
+        let picked = pick_runnable(
+            vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            |_| true,
+            |_| false,
+            || false,
+        );
+        assert_eq!(picked, None);
+    }
 
     // ── 列目录命令：tty 下的引用必须关掉 ─────────────────────
 
