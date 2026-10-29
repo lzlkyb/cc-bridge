@@ -1,5 +1,5 @@
 import type { Terminal } from "@xterm/xterm";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachEchoStrip,
   attachEchoStripWhenReady,
@@ -62,28 +62,76 @@ describe("danceNext 异常退出（四条路径共用 abort）", () => {
 
 /* ============================== 残渣剥除器（常驻 + 空格覆盖） ============================== */
 
+/**
+ * 极简屏幕：只实现 `\r` / `\n` / `\x1b[2K` / 可见字符，足够回答「屏幕上剩几个提示符」。
+ *
+ * 为什么需要它：剥除器输出的是**字节流**，前缀在命中之前就已经写进 out 了，靠
+ * `\r\x1b[2K` 在渲染层擦掉。只断言字符串会得出「前缀还在」的错误结论——用户看到的是
+ * 渲染结果，断言就该落在渲染结果上。
+ */
+function screenOf(text: string, cols = 200): string[] {
+  const rows: string[][] = [[]];
+  let y = 0;
+  let x = 0;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === "\x1b") {
+      // CSI：ESC [ 参数 final。手写扫而不是正则 —— 正则字面量里的 \x1b 会触发 no-control-regex。
+      let j = i + 2;
+      while (j < text.length && !/[A-Za-z]/.test(text[j]!)) j++;
+      if (text.slice(i, j + 1) === "\x1b[2K") rows[y] = []; // 擦整行，光标列不动
+      i = j + 1;
+      continue;
+    }
+    if (ch === "\r") {
+      x = 0;
+      i++;
+      continue;
+    }
+    if (ch === "\n") {
+      y++;
+      rows[y] = [];
+      x = 0;
+      i++;
+      continue;
+    }
+    if (x >= cols) {
+      y++;
+      rows[y] = [];
+      x = 0;
+    }
+    rows[y]![x] = ch;
+    x++;
+    i++;
+  }
+  return rows.map((r) => (r ?? []).join("").replace(/\s+$/, ""));
+}
+
 describe("createEchoStripper", () => {
   const T = "stty -echo";
   const GAP = " ".repeat(T.length);
-  // 命中语义：token 字节永不进输出，命中点输出**等长空格**覆盖 token 所占的列——
-  // xterm 光标与 ConPTY 光标保持同步（旧方案 \r\x1b[2K 会搬走光标 + 抹掉已渲染
-  // 的提示符，ConPTY 的增量更新不会补发，按 ↑ 翻历史时提示符就消失了）。
+  // 命中语义（2026-10-28 方案 A）：先看 token 后面跟什么再决定擦法。
+  //   直接换行 ⇒ 一整行命令回显，整行擦 `\r\x1b[2K`（连行首提示符一起，否则屏幕上
+  //             会多一个「提示符 + 一串空格」的假 prompt）；列差被随后的换行归零。
+  //   可见字符 ⇒ 只是行中一段，用**等长空格**覆盖 token 所占的列，与 ConPTY 保持
+  //             列同步（无条件整行擦会搬走光标，按 ↑ 翻历史时提示符就消失了）。
 
-  it("整行一次性到达：命中输出等长空格覆盖，换行照常透传", () => {
+  it("🔴 整行回显：连行首提示符一起从屏幕上消失（本次报障的「假 prompt」）", () => {
     const s = createEchoStripper(T);
-    expect(s.feed("lizuliang@code7:~$ stty -echo\r\n")).toBe(
-      `lizuliang@code7:~$ ${GAP}\r\n`,
-    );
+    const out = s.feed("lizuliang@code7:~$ stty -echo\r\n");
+    // 前缀在命中前已经写进字节流，靠 \r\x1b[2K 在渲染层擦：屏幕上这一行必须是空的
+    expect(screenOf(out)).toEqual(["", ""]);
   });
 
   it("常驻：命中后不失效，同 token 再次出现（ConPTY 重发）照样命中", () => {
     const s = createEchoStripper(T);
     s.feed(`$ stty -echo\r\n`);
-    expect(s.feed(`$ stty -echo\r\n`)).toBe(`$ ${GAP}\r\n`);
+    expect(screenOf(s.feed(`$ stty -echo\r\n`))).toEqual(["", ""]);
     expect(s.active).toBe(true);
   });
 
-  it("同一 chunk 两处残渣（整屏重发形态）：两处都覆盖", () => {
+  it("同一 chunk 两处残渣（整屏重发形态，后面跟定位序列不是换行）：都按行中 token 覆盖", () => {
     const s = createEchoStripper(T);
     expect(s.feed(`$ stty -echo\x1b[2;1H$ stty -echo\x1b[3;1Hok`)).toBe(
       `$ ${GAP}\x1b[2;1H$ ${GAP}\x1b[3;1Hok`,
@@ -94,7 +142,7 @@ describe("createEchoStripper", () => {
     const s = createEchoStripper(T);
     expect(s.feed("$ st")).toBe("$ "); // "st" 是前缀，扣住
     expect(s.feed("ty -ec")).toBe(""); // 仍是前缀，继续扣
-    expect(s.feed("ho\r\nnext")).toBe(`${GAP}\r\nnext`); // 拼齐命中
+    expect(s.feed("ho\r\nnext")).toBe(`\r\x1b[2K\r\nnext`); // 拼齐命中 → 整行回显
   });
 
   it("ConPTY 变体：换行被改写成光标定位序列（无 \\r\\n），照样命中且定位序列透传", () => {
@@ -125,16 +173,15 @@ describe("createEchoStripper", () => {
     expect(s.feed("st\x1b[3;1Hxy")).toBe("st\x1b[3;1Hxy");
   });
 
-  it("ONLCR 关闭时回显为 \\n 变体，同样命中", () => {
+  it("ONLCR 关闭时回显为 \\n 变体，同样判为整行回显", () => {
     const s = createEchoStripper(T);
-    expect(s.feed(`$ stty -echo\nrestX`)).toBe(`$ ${GAP}\nrestX`);
+    expect(screenOf(s.feed(`$ stty -echo\nrestX`))).toEqual(["", "restX"]);
   });
 
   it("与 banner 交错：只命中目标 token，其余原样透传", () => {
     const s = createEchoStripper(T);
-    expect(s.feed("Welcome to Ubuntu 22.04\r\n$ stty -echo\r\nlast login: today\r\n")).toBe(
-      `Welcome to Ubuntu 22.04\r\n$ ${GAP}\r\nlast login: today\r\n`,
-    );
+    const out = s.feed("Welcome to Ubuntu 22.04\r\n$ stty -echo\r\nlast login: today\r\n");
+    expect(screenOf(out)).toEqual(["Welcome to Ubuntu 22.04", "", "last login: today", ""]);
   });
 
   it("回显完全缺席：透传所有内容，flush 无残留", () => {
@@ -162,6 +209,76 @@ describe("createEchoStripper", () => {
     expect(s.feed(" ok")).toBe("s ok");
   });
 
+  // ── 2026-10-29 报障：敲 `s` / `p` 屏幕上不出现 ───────────────────────
+  // 生产 token 的首字母恰好是 s（`stty -echo …` / `stty echo`）与 p（`printf …`），
+  // 用户敲这两个字母的回显被当成探针开头扣住，无限期不显示。扣留必须有时间上界。
+
+  it("🔴 敲单个 `s`：feed 先扣住，idle 必须立刻吐回", () => {
+    const s = createEchoStripper(ECHO_ON_CMD);
+    expect(s.feed("s")).toBe(""); // 头一个字符就命中 token[0]，被扣
+    expect(s.idle()).toBe("s"); // 没有续接字节 ⇒ 它只是用户输入
+  });
+
+  it("🔴 敲单个 `p`（printf 首字母）同理", () => {
+    const s = createEchoStripper(ECHO_ON_CLEAN_CMD);
+    expect(s.feed("p")).toBe("");
+    expect(s.idle()).toBe("p");
+  });
+
+  it("敲以 s / p 开头的普通命令：idle 吐出后整串可见", () => {
+    const s = createEchoStripper(PROBE_ECHO_OFF_CMD);
+    // `pwd` / `ps` / `ssh` / `sudo` 这类高频命令的头一个字母都在剥除表里
+    expect(s.feed("p") + s.feed("wd") + s.idle()).toBe("pwd");
+  });
+
+  it("idle 不失效、不干扰后续命中：吐回前缀后 token 照样被剥掉", () => {
+    const s = createEchoStripper(ECHO_ON_CMD);
+    expect(s.feed("s")).toBe("");
+    expect(s.idle()).toBe("s");
+    expect(s.active).toBe(true);
+    expect(screenOf(s.feed(`$ ${ECHO_ON_CMD}\r\n`))).toEqual(["", ""]);
+  });
+
+  it("idle 对无扣留的输出是空操作（不要凭空产出字节）", () => {
+    const s = createEchoStripper(ECHO_ON_CMD);
+    expect(s.feed("hello\r\n")).toBe("hello\r\n");
+    expect(s.idle()).toBe("");
+  });
+
+  it("🔴 穷举：任何可打印字符喂进整条剥除链，idle 后都必须原样出现", () => {
+    // 守卫 2026-10-29 那类缺陷（扣留无时间上界）。串行链语义与 attachEchoStrip 一致，
+    // 三个 token 一起上，才能证明「不只有 s/p，而是没有任何字符会被吞」。
+    const lost: string[] = [];
+    for (let code = 0x20; code <= 0x7e; code++) {
+      const ch = String.fromCharCode(code);
+      const chain = STRIP_TOKENS.map((t) => createEchoStripper(t));
+      let visible = "";
+      for (const s of chain) {
+        s.feed(ch);
+        visible = ch;
+      }
+      let tail = "";
+      for (const s of chain) tail = s.feed(tail) + s.idle();
+      if (!(visible + tail).includes(ch)) lost.push(JSON.stringify(ch));
+    }
+    expect(lost).toEqual([]);
+  });
+
+  it("🔴 逐字符到达的普通命令：idle 后整串完整（含 s/p 开头的高频命令）", () => {
+    for (const cmd of ["ssh", "sudo", "stty", "stty -a", "ps", "pwd", "python", "printf", "ls -l"]) {
+      const chain = STRIP_TOKENS.map((t) => createEchoStripper(t));
+      let out = "";
+      for (const ch of cmd) {
+        let tail = ch;
+        for (const s of chain) tail = s.feed(tail);
+        out += tail;
+      }
+      let tail = "";
+      for (const s of chain) tail = s.feed(tail) + s.idle();
+      expect(out + tail).toBe(cmd);
+    }
+  });
+
   it("flush 交还扣留的尾部（会话销毁兜底，不丢数据）", () => {
     const s = createEchoStripper(T);
     expect(s.feed("$ stty -ech")).toBe("$ ");
@@ -169,24 +286,81 @@ describe("createEchoStripper", () => {
     expect(s.active).toBe(false);
   });
 
+  // ── 2026-10-29 第六次修复：手打 `stty echo` 不能被擦 ─────────────────
+  // 剥离是纯内容匹配，注入残渣与用户手打的那一行字节完全相同 ⇒ 只能用时间关联区分。
+
+  it("🔴 刚有按键时命中 token：判为用户自己的输入，原样透传", () => {
+    const s = createEchoStripper(ECHO_ON_CMD, { userTypedRecently: () => true });
+    expect(s.feed(`$ ${ECHO_ON_CMD}\r\n`)).toBe(`$ ${ECHO_ON_CMD}\r\n`);
+  });
+
+  it("同样一串在没有近期按键时仍然整行擦（残渣路径不受影响）", () => {
+    const s = createEchoStripper(ECHO_ON_CMD, { userTypedRecently: () => false });
+    expect(screenOf(s.feed(`$ ${ECHO_ON_CMD}\r\n`))).toEqual(["", ""]);
+  });
+
+  it("跨 chunk 的手打 token：命中时把整个候选区间原样归还", () => {
+    const s = createEchoStripper(ECHO_ON_CMD, { userTypedRecently: () => true });
+    expect(s.feed("$ stty ec") + s.feed("ho\r\n")).toBe("$ stty echo\r\n");
+  });
+
+  it("🔴 不终止的 VT 序列不能把后续输出一起扣死（pending 有长度上界）", () => {
+    const s = createEchoStripper(ECHO_ON_CMD);
+    const out1 = s.feed("\x1b]" + "x".repeat(2000)); // OSC 无 BEL / ST
+    expect(out1.length).toBeGreaterThan(0); // 超界即 fail-open，不能一字不出
+    expect(out1 + s.feed("hello\r\n")).toContain("hello");
+  });
+
+  it("短的不终止序列仍会扣留等续接（上界不破坏跨 chunk 拼接）", () => {
+    const s = createEchoStripper(ECHO_ON_CMD);
+    expect(s.feed("\x1b[3")).toBe(""); // CSI 未到 final，等下一个 chunk
+    expect(s.feed("2mhi")).toBe("\x1b[32mhi");
+  });
+
   it("探针行（慢 shell 下 ECHO 生效前被回显）也是剥除目标", () => {
     const p = "printf '\\033]1337;Shell=%s\\007' \"$0\"";
     const s = createEchoStripper(p);
-    expect(s.feed(`$ ${p}\r\n`)).toBe(`$ ${" ".repeat(p.length)}\r\n`);
+    expect(screenOf(s.feed(`$ ${p}\r\n`))).toEqual(["", ""]);
     // 同样常驻：重发照样吞
-    expect(s.feed(`$ ${p}\r\n`)).toBe(`$ ${" ".repeat(p.length)}\r\n`);
+    expect(screenOf(s.feed(`$ ${p}\r\n`))).toEqual(["", ""]);
   });
 
   it("前导空格的注入命令回显（history 抑制形态）照样命中", () => {
     const s = createEchoStripper(T);
-    // 回显 = 提示符尾部空格 + 注入命令的前导空格（原样渲染）+ token（覆盖为空格）
-    expect(s.feed(`$  stty -echo\r\n`)).toBe(`$  ${GAP}\r\n`);
+    // 回显 = 提示符 + 注入命令的前导空格 + token，整行连前缀一起擦
+    expect(screenOf(s.feed(`$  stty -echo\r\n`))).toEqual(["", ""]);
   });
 
   it("光标移动序列穿插 token 内：退回整行擦除（列数不可信）", () => {
     const s = createEchoStripper("AB");
     // 'A' 是候选前缀，命中后随 token 一起抑制，不进输出
     expect(s.feed("x A\x1b[3;1HB y")).toBe("x \r\x1b[2K y");
+  });
+
+  /* ══ 行尾判定（2026-10-28 方案 A：假提示符）══ */
+
+  it("🔴 判定跨 chunk：命中落在 chunk 末尾时先按住，下一段见换行再整行擦", () => {
+    const s = createEchoStripper(T);
+    expect(s.feed("$ stty -echo")).toBe("$ "); // 命中但后续未到：不出结论
+    expect(s.feed("\r")).toBe(""); // 只来了 \r，继续等
+    expect(s.feed("\nprompt")).toBe("\r\x1b[2K\r\nprompt");
+  });
+
+  it("命中后跟可见字符 ⇒ 行中 token，退回空格覆盖保列同步", () => {
+    const s = createEchoStripper(T);
+    expect(s.feed("$ stty -echoX")).toBe(`$ ${GAP}X`);
+  });
+
+  it("flush 兜底：判定未定就销毁会话，退回空格覆盖（不丢字节）", () => {
+    const s = createEchoStripper(T);
+    expect(s.feed("$ stty -echo")).toBe("$ ");
+    expect(s.flush()).toBe(GAP);
+  });
+
+  it("判定期暂存超上限 ⇒ 立即按行中 token 收尾，不让数据无限滞留", () => {
+    const s = createEchoStripper(T);
+    const longVt = "\x1b[" + "0;".repeat(12) + "1m"; // 28 字符，超过上限
+    expect(s.feed(`$ stty -echo${longVt}`)).toBe(`$ ${GAP}${longVt}`);
   });
 });
 
@@ -204,8 +378,8 @@ describe("attachEchoStrip（write 包装 + 多 token 串行链）", () => {
     term.write("stty -echo\r\nkeep me\r\n");
     term.write(`${p}\r\n`);
     h.end();
-    expect(writes[0]).toBe(`${" ".repeat(ECHO_OFF_CMD.length)}\r\nkeep me\r\n`);
-    expect(writes[1]).toBe(`${" ".repeat(p.length)}\r\n`);
+    expect(writes[0]).toBe("\r\x1b[2K\r\nkeep me\r\n");
+    expect(writes[1]).toBe("\r\x1b[2K\r\n");
   });
 
   it("end 后一切数据原样透传（幂等）", () => {
@@ -230,7 +404,68 @@ describe("attachEchoStrip（write 包装 + 多 token 串行链）", () => {
     const h = attachEchoStrip(term, [ECHO_OFF_CMD, ECHO_ON_CMD]);
     term.write(`$ ${ECHO_ON_CMD}\r\n`);
     h.end();
-    expect(writes[0]).toBe(`$ ${" ".repeat(ECHO_ON_CMD.length)}\r\n`);
+    expect(screenOf(writes[0]!)).toEqual(["", ""]);
+  });
+
+  it("🔴 刚敲过键 ⇒ 默认闸（来自 term.onData）判为用户输入，整行保留", () => {
+    const writes: string[] = [];
+    let fire: (() => void) | null = null;
+    const term = {
+      write: (d: string) => void writes.push(d),
+      onData: (cb: () => void) => {
+        fire = cb;
+        return { dispose: () => {} };
+      },
+    } as unknown as Terminal;
+    const h = attachEchoStrip(term, [ECHO_ON_CMD]);
+    // 没敲过键：照旧剥（注入残渣路径不能退化）
+    term.write(`$ ${ECHO_ON_CMD}\r\n`);
+    expect(screenOf(writes[0]!)).toEqual(["", ""]);
+    // 敲一下键后：同一个字面量必须原样留下（自己手打的命令不能被擦）
+    fire!();
+    term.write(`$ ${ECHO_ON_CMD}\r\n`);
+    expect(writes[1]).toContain(ECHO_ON_CMD);
+    h.end();
+  });
+
+  // ── 空闲冲刷：扣留的时间上界（2026-10-29 报障：敲 s/p 不显示）────────────
+  // 真实场景不是「下一 chunk 马上到」，而是用户敲完一个字母就停在那儿等回显。
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("🔴 敲完 `s` 就停手：空闲到期后字符必须出现（否则这就是吞字）", () => {
+    vi.useFakeTimers();
+    const { term, writes } = fakeTerm();
+    const h = attachEchoStrip(term, [ECHO_ON_CMD]);
+    term.write("s"); // 用户敲 s，回显被当成 `stty echo` 的开头扣住
+    expect(writes).toEqual([""]);
+    vi.advanceTimersByTime(40);
+    expect(writes).toEqual(["", "s"]);
+    h.end();
+  });
+
+  it("拆包间隔小于空闲窗口：token 仍能拼齐并剥掉（不能因为加了超时就漏剥）", () => {
+    vi.useFakeTimers();
+    const { term, writes } = fakeTerm();
+    const h = attachEchoStrip(term, [ECHO_ON_CMD]);
+    term.write("$ st");
+    vi.advanceTimersByTime(20); // 不足空闲窗口，不冲刷
+    term.write("ty echo\r\n"); // 拼齐 → 命中
+    h.end();
+    expect(screenOf(writes.join(""))).toEqual(["", ""]);
+  });
+
+  it("end 会清掉空闲定时器：之后不能再有迟到的写入", () => {
+    vi.useFakeTimers();
+    const { term, writes } = fakeTerm();
+    const h = attachEchoStrip(term, [ECHO_ON_CMD]);
+    term.write("s");
+    h.end();
+    const before = writes.length;
+    vi.advanceTimersByTime(200);
+    expect(writes.length).toBe(before);
   });
 });
 
@@ -290,7 +525,8 @@ describe("PROBE_ECHO_OFF_CMD —— 关回显 + 报 shell，一条命令一个�
   it("带前导空格的整行回显照样被吞（history 抑制形态）", () => {
     const s = createEchoStripper(PROBE_ECHO_OFF_CMD);
     const out = s.feed(`$  ${PROBE_ECHO_OFF_CMD}\r\n`);
-    expect(out).toBe(`$  ${" ".repeat(PROBE_ECHO_OFF_CMD.length)}\r\n`);
+    // 整行擦：行首那截提示符也不留 —— 否则它看起来就是个干净 prompt（本次报障）
+    expect(screenOf(out)).toEqual(["", ""]);
   });
 
   it("🔴 一旦被折成两行就命中不了 —— 这正是注入前必须有 cols 安全阀的理由", () => {
@@ -298,6 +534,13 @@ describe("PROBE_ECHO_OFF_CMD —— 关回显 + 报 shell，一条命令一个�
     const cut = 40;
     const folded = `${PROBE_ECHO_OFF_CMD.slice(0, cut)}\r\n${PROBE_ECHO_OFF_CMD.slice(cut)}`;
     expect(s.feed(`$ ${folded}\r\n`)).toContain("stty -echo");
+  });
+
+  it("🔴 完整注入场景：屏幕上只剩 1 个提示符（上面那行是被擦掉的回显行）", () => {
+    const s = createEchoStripper(PROBE_ECHO_OFF_CMD);
+    const p1 = "lizuliang@code7:~$ ";
+    const out = s.feed(`${p1} ${PROBE_ECHO_OFF_CMD}\r\n${p1}`);
+    expect(screenOf(out)).toEqual(["", "lizuliang@code7:~$"]);
   });
 
   it("STRIP_TOKENS：长 token 排前，且不再收单条 ECHO_OFF_CMD（否则折行只吞半截）", () => {
@@ -321,7 +564,7 @@ describe("attachEchoStripWhenReady —— 随终端实例常驻、幂等", () =>
     h.cancel();
     // 尾字别用 s/t（会被当成 token 前缀扣住，见上面「以首字母结尾」那条）
     term.write(`$ ${ECHO_ON_CMD}\r\nrest!`);
-    expect(writes[0]).toBe(`$ ${" ".repeat(ECHO_ON_CMD.length)}\r\nrest!`);
+    expect(screenOf(writes[0]!)).toEqual(["", "rest!"]);
   });
 
   it("同一终端实例重复调用不叠加包装（HMR / effect 重跑安全）", () => {

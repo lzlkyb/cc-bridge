@@ -12,8 +12,10 @@
  *    拿到回执才发钩子，最后 `stty echo` 恢复。回显发生在行规程层（比 shell 读输入
  *    还早），与提示符时机无关——所以「掐时机注入」治不了本，只有开关 ECHO 治得了。
  * 2. **残渣常驻吞除**：关掉回显后，唯一会回显的只剩合并探针那一行。内容完全已知，
- *    用 `createEchoStripper` 在前端 write 路径上识别它：命中时输出**等宽空格覆盖**
- *    （token 字节从未渲染，光标与 ConPTY 保持一致），其余字节原样透传（fail-open）。
+ *    用 `createEchoStripper` 在前端 write 路径上识别它，其余字节原样透传（fail-open）。
+ *    擦除方式**分两种**（2026-10-28 方案 A）：token 后直接换行 ⇒ 那就是一整行命令
+ *    回显，整行擦 `\r\x1b[2K`（连行首提示符一起）；token 后面还有可见字符 ⇒ 只是行中
+ *    一段，退回等宽空格覆盖保列同步。
  *
  * ## 2026-10-28 第三次修复：时序不能靠猜
  *
@@ -28,6 +30,47 @@
  * ready 且 ECHO 已关」，长命令永远排在它之后；② 剥除器改为**随终端实例常驻且幂等**
  * （`attachEchoStripWhenReady` 不再提供 end），与注入 effect 的生死彻底解耦。
  *
+ * ## 2026-10-28 第四次修复：空格覆盖留下了「假提示符」
+ *
+ * 用户报「新建窗口出现两个 `lizuliang@code7:~$`」。第二个不是真 prompt，是探针回显行：
+ * 空格覆盖只抹 token 所占的列，**token 之前已经渲染出去的提示符前缀原封不动**，于是
+ * 那一行看起来就是个干净提示符（单测曾把这个形态当成期望值写死）。
+ *
+ * 修法见 `settleHit`：命中后先判行尾——紧跟换行就是整行回显，连前缀一起擦；否则维持
+ * 空格覆盖。**不做无条件整行擦**，因为 10-13 实测过：行中 token 被整行擦会让本地光标
+ * 回到行首而远端认为光标还在 token 末尾，列号错开，翻历史/退格重绘全部画歪。
+ *
+ * ## 2026-10-29 第五次修复：扣留吞掉了用户敲的 `s` / `p`
+ *
+ * 用户报「进入终端后输入 s、p 看不到，接着敲别的字母才一起出现」。
+ * 根因是 `feed` 为了支持 token 跨 chunk 到达，会把「可能的前缀」扣在 `pending` 里等续接
+ * 字节——而 `STRIP_TOKENS` 三条命令的首字母恰好是 `s`（`stty -echo …` / `stty echo`）
+ * 和 `p`（`printf …`）。用户敲这两个字母时回显被当成探针开头**无限期扣住**，只有当下一
+ * 个字节到来、失配后才连带吐出，所以看起来「先不显示、接着打才出现」。
+ *
+ * 修法：扣留必须有**时间上界**。剥除器新增 `idle()`（原样吐回扣留部分，不失效），
+ * `attachEchoStrip` 在每次 write 后重置一个 40ms 的空闲定时器——拆包间隔是毫秒级，
+ * 用户按键间隔远大于它，于是 token 仍能拼齐，而单字符输入最多等一帧就出现在屏幕上。
+ * 教训：任何「为了跨包匹配而扣留字节」的过滤器，都必须有超时，否则它扣的就是用户
+ * 看得见的输入。
+ *
+ * ## 2026-10-29 第六次修复：手打 `stty echo` 被擦 + pending 没有上界
+ *
+ * 穷举实测（95 个可打印字符 + 常见命令 + 不同连打间隔）确认字母层面已干净，但暴露两处：
+ *
+ * ① **手打/输出里的字面 token 被当残渣擦掉**。`stty echo` 是终端乱掉时的常用自救命令，
+ *    而它恰好是 `ECHO_ON_CMD` 全文 ⇒ 回车后整行消失（命令照常执行，用户以为丢字）。
+ *    剥离是纯内容匹配，注入残渣与用户手打的那一行字节完全相同，只能靠**时间关联**区分：
+ *    残渣要么紧跟在我们自己发出的字节之后，要么由 ConPTY 重绘触发；用户手打的那行，
+ *    其回显必然紧跟按键（≤ 一个 RTT）。见 `EchoStripOptions.userTypedRecently` /
+ *    `USER_INPUT_WINDOW_MS`（阈值必须大于链路 RTT，否则高延迟链路上闸失效）。
+ *    ⚠️ 反直觉：`stty -echo` **安全**（只是长 token 的前缀，遇 `\r` 失配即还原）。
+ *
+ * ② **`pending` 无长度上界**。远端若发出不终止的 OSC（`\x1b]…` 没有 BEL / ST），扣留会
+ *    连同**后续所有输出**一起冻在 pending 里（整屏卡住 + 内存无界），且 `idle()` 不救
+ *    （它只在 `k > 0` 分支交还）。修法是 `PENDING_MAX`：超界即 fail-open 原样交给 xterm，
+ *    由它自己的解析器去等终止符，我们不再替它囤积。
+ *
  * ## 为什么剥离器必须「常驻」整个会话（2026-10-13 二次修复）
  *
  * Windows 上 ssh 跑在 ConPTY（portable_pty）里：远端输出先被 ConPTY 渲染进
@@ -38,9 +81,10 @@
  * 用户不要清屏动作（连接后屏幕跳变），改为剥离器**常驻**：重发多少次就吞
  * 多少次，屏幕其余内容分毫不动。
  *
- * 误剥代价（可接受）：输出流里恰好出现字面 `stty -echo` / 探针 printf 原文的
- * 那一行会被整行擦掉（只碰输出路径，命令执行不受影响）。正常工作内容几乎
- * 不含这两条字面量；确有顾虑时在设置里关掉注入开关。
+ * 误剥代价（可接受）：输出流里恰好出现字面 `stty -echo` / 探针 printf 原文时，
+ * 整行回显（其后紧跟换行）会被整行擦掉，行中一段（其后还有可见字符）只覆盖那一段；
+ * 两者都只碰输出路径，命令执行不受影响。正常工作内容几乎不含这两条字面量；
+ * 确有顾虑时在设置里关掉注入开关。
  *
  * ## 红线：restore 绝不能发两次
  *
@@ -219,35 +263,97 @@ function vtSeqLen(s: string, i: number): { len: number; complete: boolean } | nu
 export interface EchoStripper {
   /** 喂入一段输出，返回应当真正交给 xterm 渲染的部分。 */
   feed(chunk: string): string;
+  /**
+   * 空闲冲刷：把扣留的疑似前缀**原样吐出**（不失效）。
+   *
+   * 🔴 没有它就会吞掉用户看得见的字符（2026-10-29 报障：敲 `s` / `p` 屏幕没反应，
+   * 接着敲下一个字母才一起出现）。因为 `feed` 为了支持 token 跨 chunk 到达，会把
+   * 「可能的前缀」扣住——而 STRIP_TOKENS 里三条命令的首字母正是 `s`（`stty …`）和
+   * `p`（`printf …`），用户每次敲这两个字母都被当成了探针开头扣在那里等。
+   * 扣住**必须有时间上界**：调用方在输出流安静下来后调本方法，判定"这不是 token"。
+   */
+  idle(): string;
   /** 失效并交还扣留的尾部（调用方负责把它 write 出去，不丢数据）。 */
   flush(): string;
   /** flush 之前恒为 true：常驻语义，命中不再自动失效。 */
   readonly active: boolean;
 }
 
+/** 剥除器可选行为（2026-10-29 第六次修复）。 */
+export interface EchoStripOptions {
+  /**
+   * 「这段输出更可能是用户自己敲的」——命中 token 时若返回 true，**原样透传不擦**。
+   *
+   * WHY：剥离是纯内容匹配，注入残渣与用户手打/程序打印出的同一串字面量在字节上
+   * 完全无法区分。于是用户手打 `stty echo`（终端乱了时的常用自救命令）回车后整行被
+   * 擦掉，`cat 脚本` 打出这行字面量也会被擦一行。
+   * 区分依据只有**时间关联**：注入残渣要么紧跟在我们自己发出的字节之后出现，要么
+   * 由 ConPTY 重绘触发；而用户手打的那一行，其回显必然紧跟用户按键（≤ 一个 RTT）。
+   *
+   * 阈值必须**大于链路 RTT**（远端 tty 回显，公网可达数百毫秒），否则高延迟链路上
+   * 这道闸失效、回到误擦。代价是「重绘残渣恰好落在按键后 1s 内」会漏出来一次，
+   * 下一次重绘（resize / 字号 / TUI 进出）会把它擦掉。
+   *
+   * 不传则由 `attachEchoStrip` 用**本终端实例的 onData** 自动提供；
+   * 直接调 `createEchoStripper` 时不传 = 永远剥（测试与旧语义）。
+   */
+  userTypedRecently?: () => boolean;
+}
+
+/**
+ * `pending` 扣留的长度上界。最长 token 约 70 字符，加上候选内部穿插的 VT 序列也远不到
+ * 这个数；超过它必然是「不终止的 VT 序列」（见 feed 末尾的 fail-open 说明）。
+ */
+const PENDING_MAX = 1024;
+
 /**
  * 残渣剥除器（常驻）：在 `term.write` 外面滚一个滑动窗口，识别 token 的
- * 回显行并整行擦除；命中后复位继续扫——ConPTY 整屏重发多少次就吞多少次。
+ * 回显行并抹掉（整行擦 / 空格覆盖，见 `settleHit`）；命中后复位继续扫——ConPTY 整屏重发多少次就吞多少次。
  *
  * ConPTY 容忍策略（fail-open 三原则不变）：
  * 1. 只识别内容完全已知的 token，其余字节原样透传；
  * 2. token 内部允许穿插 VT 序列（跳过、不进输出；失配时**如数归还**）；
  * 3. 候选区间之外的 VT 序列（颜色、光标定位……）原样透传——常驻模式下若
  *    吞掉它们，整场会话的渲染都会坏掉（一次性窗口时代无所谓，常驻后是红线）；
- * 4. 命中时用**等宽空格覆盖** token 所占的列（光标与 ConPTY 保持同步，提示符
- *    与同行其余内容完好，视觉上只是一段空白）；token 内穿插过 VT 序列时列数
- *    不可信，退回 `\r\x1b[2K` 整行擦除。命中后的所有字节照常透传。
- *    失配的内容全部原样吐回，绝不扣留数据；扣留只发生在「疑似部分匹配」时，
- *    且由下个 chunk 立即见分晓。
+ * 4. 命中**先判行尾再决定擦法**（2026-10-28 方案 A）：
+ *    · token 后直接换行 ⇒ 一整行命令回显，整行擦 `\r\x1b[2K`（连行首提示符一起，
+ *      否则屏幕上多一个「提示符 + 一串空格」的假 prompt）。列差被随后的换行归零；
+ *    · token 后还有可见字符 ⇒ 只是行中一段，用**等宽空格覆盖** token 所占的列，
+ *      保住与 ConPTY 的列同步（10-13 实测：整行擦会让本地光标回行首、远端不动，
+ *      翻历史与退格重绘全部画歪）；
+ *    · token 内穿插过 VT 序列时列数不可信，一律整行擦。
+ *    判定期的扣留只发生在「命中与后续字节之间」，且下个 chunk 立即见分晓；
+ *    失配的内容全部原样吐回，绝不扣留数据。
  *
  * 误剥风险：输出流里恰好出现字面 token——正常工作内容几乎不含，见文件头注。
  */
-export function createEchoStripper(token: string): EchoStripper {
+export function createEchoStripper(token: string, opts: EchoStripOptions = {}): EchoStripper {
   let active = true;
   let pending = ""; // 疑似部分匹配的扣留（候选起点起的整段）
   let k = 0; // 已匹配 token 的前缀长度
   let matchStart = 0; // 当前候选匹配在 buf 中的起点（k>0 时有效）
   let vtInside = false; // 当前候选内是否跳过过 VT 序列（决定命中时的擦除策略）
+  // ── 命中后的「行尾判定」状态（2026-10-28 方案 A）──
+  // 命中时不立刻出结论：先看紧随的字节是换行还是可见字符。
+  //   换行   ⇒ 这是**一整行命令回显**，连行首那截提示符一起擦——否则屏幕上会多出
+  //            一个「提示符 + 一串空格」的假 prompt（2026-10-28 报障：新建窗口两个 $）。
+  //   可见字符 ⇒ 只是行中的一段 token，必须退回空格覆盖保列同步（10-13 的错位教训）。
+  let hitWait = false;
+  let hitBuf = ""; // 判定期间暂存的字节（`\r` / VT 序列）
+  let hitVt = false; // 命中的 token 内部是否穿插过 VT 序列（列数不可信 ⇒ 只能整行擦）
+  /** 暂存上限：超了就按「行中 token」收尾，绝不让数据无限滞留。 */
+  const HIT_TAIL_MAX = 16;
+
+  /** 给命中收尾：whole=true 走整行擦，否则等宽空格覆盖。返回应当输出的字节。 */
+  const settleHit = (whole: boolean): string => {
+    const erase = whole || hitVt ? "\r\x1b[2K" : " ".repeat(token.length);
+    const s = erase + hitBuf;
+    hitWait = false;
+    hitBuf = "";
+    hitVt = false;
+    return s;
+  };
+
   return {
     get active() {
       return active;
@@ -261,21 +367,59 @@ export function createEchoStripper(token: string): EchoStripper {
       let i = 0;
       while (i < buf.length) {
         const ch = buf[i]!;
+        // ── 命中后的行尾判定（优先于一切其它规则）──
+        if (hitWait) {
+          if (ch === "\n") {
+            // 整行回显：擦掉整行（含行首提示符前缀），随后的换行照常放行。
+            // 光标此时在行首、远端也认为该行已结束 ⇒ 列号天然对齐，不会重演 10-13 的错位。
+            out += settleHit(true) + "\n";
+            i++;
+            continue;
+          }
+          if (ch === "\r") {
+            hitBuf += ch; // 等下一个字节：`\n` ⇒ 换行；可见字符 ⇒ 行中 token
+            i++;
+            if (hitBuf.length > HIT_TAIL_MAX) out += settleHit(false);
+            continue;
+          }
+          if (ch === "\x1b") {
+            const vt = vtSeqLen(buf, i);
+            if (vt) {
+              if (!vt.complete) {
+                // 序列被 chunk 边界切断：剩下的连判定状态一起留到下一段
+                pending = buf.slice(i);
+                break;
+              }
+              hitBuf += buf.slice(i, i + vt.len); // 序列不占列，不影响判定
+              i += vt.len;
+              if (hitBuf.length > HIT_TAIL_MAX) out += settleHit(false);
+              continue;
+            }
+          }
+          // 可见字符 ⇒ 不是整行回显，退回空格覆盖（保列同步）
+          out += settleHit(false) + ch;
+          i++;
+          continue;
+        }
         if (k > 0 && ch === token[k]) {
           i++;
           k++;
           if (k === token.length) {
+            // 用户自己的输入（手打 `stty echo` / 程序打印出这行字面量）：不擦，原样交还
+            // 整个候选区间。判据只能是时间关联，见 `EchoStripOptions.userTypedRecently`。
+            if (opts.userTypedRecently?.()) {
+              out += buf.slice(matchStart, i);
+              k = 0;
+              vtInside = false;
+              continue;
+            }
             // 命中 + 复位继续扫（常驻：ConPTY 重发多少次吞多少次）。
-            // 擦除策略：token 连续（无 VT 穿插）时用**等宽空格覆盖**——token 字节
-            // 从未渲染，xterm 光标正停在 token 起点；写 L 个空格后光标停在 token
-            // 终点，与 ConPTY 的光标完全同步（ConPTY 认为自己写了这 L 列）。
-            // 旧方案 `\r\x1b[2K` 把 xterm 光标搬回行首而 ConPTY 不动——两边从此
-            // 错位：①已渲染的提示符被整行抹掉后，ConPTY 的增量更新不会补发；
-            // ②readline 之后的退格/重绘增量全部画歪（2026-10-13 实测：按 ↑ 翻
-            // 历史时提示符消失、残渣正文反而露出来）。空格覆盖则两边列数一致，
-            // 视觉上只是一段空白，提示符完好。
-            // token 内穿插过 VT 序列时列数不可信，退回整行擦除（罕见路径）。
-            out += vtInside ? "\r\x1b[2K" : " ".repeat(token.length);
+            // 🔴 这里**不立刻输出**：擦除方式取决于紧随的字节（见 settleHit）——
+            // token 后面直接换行 = 一整行命令回显，要连行首提示符一起擦；否则只是
+            // 行中的一段 token，退回空格覆盖保列同步。判定逻辑在循环顶的 hitWait 分支。
+            hitWait = true;
+            hitVt = vtInside;
+            vtInside = false;
             k = 0;
           }
           continue;
@@ -316,16 +460,64 @@ export function createEchoStripper(token: string): EchoStripper {
         i++;
       }
       if (k > 0) pending = buf.slice(matchStart);
+      // 🔴 扣留必须有**长度**上界（2026-10-29 第六次修复）：真正可能命中的候选最多
+      // 「token 长度 + 若干穿插的 VT 序列」，远不到 PENDING_MAX。一旦超了，说明它是
+      // 一条**不终止的 VT 序列**（远端发了 `\x1b]…` 却没有 BEL / ST），此时继续扣会让
+      // 后续所有输出一起冻在 pending 里（整屏卡住 + 内存无界）。fail-open：原样交给
+      // xterm 自己对付——它的解析器同样会等终止符，但我们不再替它囤积。
+      if (pending.length > PENDING_MAX) {
+        out += pending;
+        pending = "";
+        k = 0;
+        vtInside = false;
+      }
+      return out;
+    },
+    idle(): string {
+      if (!active) return "";
+      let out = "";
+      // 行尾判定悬着：本来就要「看见下一个字节才能定」，空闲即视为行中 token ⇒ 空格覆盖。
+      if (hitWait) out += settleHit(false);
+      if (k > 0) {
+        // 扣着的前缀迟迟等不到续接字节 ⇒ 它不是 token，原样交还。
+        out += pending;
+        pending = "";
+        k = 0;
+        vtInside = false;
+      }
       return out;
     },
     flush(): string {
       active = false;
-      const out = pending;
+      // 行尾判定还没定（会话结束 / 剥除器撤销）：退回空格覆盖，绝不丢字节。
+      let out = hitWait ? settleHit(false) : "";
+      out += pending;
       pending = "";
+      k = 0;
       return out;
     },
   };
 }
+
+/**
+ * 输出流安静多久算「这一批结束了」——到期把剥除器扣留的疑似前缀吐出去。
+ *
+ * 取值权衡（2026-10-29）：
+ * - **不能太长**：用户敲 `s` / `p` 后屏幕上要等这么久才出现字符，超过 ~50ms 就能感觉到卡。
+ * - **不能太短**：ConPTY 会把一次回显拆成多个 chunk 流过来（同一次 read 循环内的间隔
+ *   通常只有几毫秒）。太短会在 token 拼齐之前就吐出前半截，探针回显漏到屏幕上。
+ * 40ms 落在「人眼几乎无感」与「拆包必然更密」之间。
+ */
+const IDLE_FLUSH_MS = 40;
+
+/**
+ * 「按键之后多久之内的 token 命中，算用户自己的输入」。
+ *
+ * 🔴 必须**大于链路 RTT**：回显由远端 tty 产生，公网 / 跨机房可达数百毫秒；阈值定小了，
+ * 高延迟链路上这道闸就失效，又退回「手打 `stty echo` 整行被擦」。
+ * 越界代价：ConPTY 重绘残渣恰好落在按键后这个窗口内会漏出来一次，下一次重绘会擦掉。
+ */
+export const USER_INPUT_WINDOW_MS = 1000;
 
 export interface EchoStripHandle {
   /** 撤掉 write 包装并交还扣留的尾部（幂等；end 后一切数据原样透传）。 */
@@ -334,7 +526,7 @@ export interface EchoStripHandle {
 
 /**
  * 把 `term.write` 包一层**常驻**剥除链：tokens 里每个 token 一个剥除器串行
- * 过滤，命中行整行擦除，其余字节原样透传。会话期间不撤包装（ConPTY 重发
+ * 过滤，命中处按行尾判定抹掉（整行擦 / 空格覆盖），其余字节原样透传。会话期间不撤包装（ConPTY 重发
  * 残渣的时刻不可预知——resize / 字号 / CC fullscreen 进出都可能触发），
  * 由调用方在会话销毁/重连时 `end()`。
  *
@@ -342,13 +534,43 @@ export interface EchoStripHandle {
  * - 串行链保持输出顺序：前级扣留的尾部会在后续 chunk 到达时流经后级；
  * - end() 按链序 flush，扣留尾部不丢。
  */
-export function attachEchoStrip(term: Terminal, tokens: readonly string[]): EchoStripHandle {
-  const strippers = tokens.map(createEchoStripper);
+export function attachEchoStrip(
+  term: Terminal,
+  tokens: readonly string[],
+  opts: EchoStripOptions = {},
+): EchoStripHandle {
+  // 输入关联闸的默认来源：**本终端实例**自己的 onData（`InputEvent` 是 xterm 的公开事件）。
+  // 放在这里而不是调用方，有两个理由：① 判据属于剥除器自己；② 每个终端一份时间戳，
+  // 多标签之间不会互相「借」按键时间（否则 A 敲键会让 B 的残渣漏出来）。
+  let lastInputAt = 0;
+  const onData = typeof term.onData === "function" ? term.onData(() => (lastInputAt = Date.now())) : null;
+  const userTypedRecently =
+    opts.userTypedRecently ?? (() => Date.now() - lastInputAt < USER_INPUT_WINDOW_MS);
+  const strippers = tokens.map((t) => createEchoStripper(t, { userTypedRecently }));
   const real = term.write.bind(term);
   let ended = false;
+  // 空闲冲刷定时器：见 IDLE_FLUSH_MS 的说明。没有它，以 `s` / `p` 开头的用户输入会被
+  // 当成 token 前缀扣住不显示（2026-10-29 报障）。
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearIdle = () => {
+    if (idleTimer !== null) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+  };
+  const flushIdle = () => {
+    idleTimer = null;
+    if (ended) return;
+    // 串行链：前级吐出的内容仍要过后级（顺序不能反，否则后级会看到未过滤的原始字节）。
+    let tail = "";
+    for (const s of strippers) tail = s.feed(tail) + s.idle();
+    if (tail) real(tail);
+  };
   const end = () => {
     if (ended) return;
     ended = true;
+    clearIdle();
+    onData?.dispose();
     term.write = real; // 撤包装（先撤再补写，扣留尾部走原始路径）
     let tail = "";
     for (const s of strippers) {
@@ -364,6 +586,10 @@ export function attachEchoStrip(term: Terminal, tokens: readonly string[]): Echo
     let out = data;
     for (const s of strippers) out = s.feed(out);
     real(out, cb);
+    // 每次写入都重置空闲窗口：连续到达的 chunk 之间不会触发（token 能拼齐），
+    // 真正安静下来才把扣留的字符吐出去。
+    clearIdle();
+    idleTimer = setTimeout(flushIdle, IDLE_FLUSH_MS);
   };
   return { end };
 }
@@ -428,6 +654,7 @@ function attachedLedger(): WeakSet<Terminal> {
 export function attachEchoStripWhenReady(
   termRef: { current: Terminal | null },
   tokens: readonly string[] = STRIP_TOKENS,
+  opts: EchoStripOptions = {},
 ): EchoStripCancel {
   let raf = 0;
   let cancelled = false;
@@ -441,7 +668,7 @@ export function attachEchoStripWhenReady(
     const seen = attachedLedger();
     if (seen.has(term)) return;
     seen.add(term);
-    attachEchoStrip(term, tokens);
+    attachEchoStrip(term, tokens, opts);
   };
   tryAttach();
   return {
