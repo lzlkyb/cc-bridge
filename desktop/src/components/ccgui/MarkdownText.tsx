@@ -27,15 +27,25 @@ function groupBySeg(marks?: CcMark[]): Map<number, CcMark[]> {
   return m;
 }
 
-function MarkdownTextImpl({ text, marks }: { text: string; marks?: CcMark[] }) {
+function MarkdownTextImpl({ text, marks, streaming = false }: { text: string; marks?: CcMark[]; streaming?: boolean }) {
   const marksBySeg = useMemo(() => groupBySeg(marks), [marks]);
   const blocks = useMemo(() => (text ? splitBlocks(text) : []), [text]);
   // `raw` 相同 ⇒ 内容相同（`token.raw` 就是该块的源码），所以 memo 键安全。
+  //
+  // 流式光标（P0-2）：
+  // 🔴 必须渲染在块序列**之外**（容器的最后一个兄弟节点），不能塞进 `MarkdownBlock`
+  //    或 `walkTextLeaves` 的遍历里 —— 那会让 `seg` 下标整体错位，会话内搜索变成
+  //    「计数说命中、界面标错字」。也不进 memo 键：光标由 `streaming` 驱动，与块内容无关。
+  // 末块是围栏代码块时不放：光标会落在 `<pre>` 右外侧，看起来像代码里多了个字符；
+  // 那种情况交给底部浮条（`StreamHud`）说明「还在跑」。
+  const last = blocks[blocks.length - 1];
+  const caret = streaming && !(last?.code ?? false);
   return (
     <div className="min-w-0 break-words text-[length:var(--cc-chat-fs,13px)] leading-[var(--cc-chat-lh,1.72)] text-foreground [&>*:last-child]:mb-0">
       {blocks.map((b) =>
         b.raw ? <MarkdownBlock key={b.key} raw={b.raw} startSeg={b.seg} marksBySeg={marksBySeg} /> : null,
       )}
+      {caret && <span className="cc-caret" aria-hidden="true" />}
     </div>
   );
 }

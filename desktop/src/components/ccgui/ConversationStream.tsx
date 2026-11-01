@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type RefObject } from "react";
+import { useCallback, useMemo, useRef, type CSSProperties, type RefObject } from "react";
 import type { CcProbe } from "../../lib/ccEventTypes";
 import { pendingApprovals, type CcView } from "../../lib/ccReducer";
 import { CHAT_TYPOGRAPHY, useChatTypography } from "../../lib/chatTypography";
+import { useAnnouncer } from "../../hooks/useAnnouncer";
 import { useCcConvSearch } from "../../hooks/useCcConvSearch";
 import { useCcMessageNav } from "../../hooks/useCcMessageNav";
 import { useCcScrollAway } from "../../hooks/useCcScrollAway";
+import { useCcFindReveal } from "../../hooks/useCcFindReveal";
+import { useMessageWindow } from "../../hooks/useMessageWindow";
 import { CcEmptyState } from "./CcEmptyState";
 import { CcFindBar } from "./CcFindBar";
 import { MessageList } from "./MessageList";
@@ -12,7 +15,6 @@ import { StreamHud } from "./StreamHud";
 import { SelectionQuote } from "./SelectionQuote";
 import { clawdActivity } from "../../lib/ccClawd";
 import { ClawdWorkspace } from "./ClawdWorkspace";
-import { MOTION } from "../../lib/motion";
 import type { StopTask } from "../../hooks/useClawdTaskStop";
 
 /**
@@ -75,16 +77,43 @@ export function ConversationStream({
   const rootRef = useRef<HTMLDivElement>(null);
   const activity = useMemo(() => clawdActivity(view, { sending, stopState }), [view, sending, stopState]);
   const search = useCcConvSearch(view.messages);
-  const { hits, occ, openSearch } = search;
-  useEffect(() => { if (findRequest > 0) openSearch(); }, [findRequest, openSearch]);
+  const { hits, occ } = search;
   const { away, toBottom } = useCcScrollAway(scrollRef);
   /** 按轮导航（在「我的提问」之间跳）。读布局定位，见 hook 头注释。 */
   const nav = useCcMessageNav(scrollRef);
+  /**
+   * 长会话渲染窗口（P0-5）：首屏只画最近 200 条。
+   *
+   * 状态放在这里而不是 `MessageList`：「加载更早」要记住旧 `scrollHeight` 并在下一帧
+   * 补 `scrollTop`，只有拿着 `scrollRef` 的地方做得到。
+   * `sessionKey` 用记录 id：切会话时窗口复位，否则在一条长会话里翻到全量之后，
+   * 换一条会话会直接全量渲染。
+   */
+  const win = useMessageWindow(view.messages.length, `${view.rowId ?? ""}:${view.sessionId ?? ""}`);
+  const loadEarlier = useCallback(() => {
+    const el = scrollRef.current;
+    const before = el?.scrollHeight ?? 0;
+    const top = el?.scrollTop ?? 0;
+    win.loadEarlier();
+    // 🔴 必须在 rAF 里补：此刻 DOM 还是旧高度，同步读到的 scrollHeight 没有变化。
+    requestAnimationFrame(() => {
+      if (!el) return;
+      el.scrollTop = top + (el.scrollHeight - before);
+    });
+  }, [scrollRef, win]);
   // 流式输出时 view 每个 tick 都变，但待批准数只随消息列表 / 裁决表变，用 memo 避免每次都全量遍历。
   const pendingCount = useMemo(
     () => pendingApprovals({ messages: view.messages, resolved: view.resolved }).length,
     [view.messages, view.resolved],
   );
+  /**
+   * 读屏播报：只出四条（开始 / 阶段 / 完成 / 失败），见 `lib/ccAnnounce.ts`。
+   *
+   * 与下面滚动容器上的 `aria-live` 分工：容器负责「转录区本身可读、可导航」，
+   * 播报区负责「一句话说清现在发生什么」。两者都不逐 token 出声 —— 容器靠
+   * `aria-busy`（轮次进行中把播报压到结束），播报区靠 id 去重 + 最小间隔。
+   */
+  const announce = useAnnouncer(view, pendingCount);
   // 正文排版偏好（设计稿《对话页-@引用与排版偏好》C 期）：CSS 变量挂在本容器，
   // MarkdownText 消费 —— 不穿 props 链，所有 pane 同时生效。
   const typo = useChatTypography();
@@ -93,42 +122,9 @@ export function ConversationStream({
     "--cc-chat-lh": CHAT_TYPOGRAPHY[typo].lh,
   } as CSSProperties;
 
-  // Ctrl+F 唤起。🔴 多 pane 各挂一个 window 监听，只让**可见** pane 响应：
-  // 隐藏 pane 是 display:none（offsetParent 为 null），正好当可见性判据，
-  // 不用为这一个布尔往 CcPane 再穿一条 props（它已顶到体量门限）。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "f") return;
-      if (scrollRef.current?.offsetParent == null) return;
-      e.preventDefault();
-      openSearch();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [scrollRef, openSearch]);
-
-  // 当前命中滚进视口（nearest：已在视口内就不动）。由此触发的滚动事件会让
-  // useCcStreamScroll 自然解除贴底 —— 搜索期间新内容不会把人拽走，这是要的。
-  // 🔴 只在「查询词 / 当前命中序号」变化（或命中从无到有）时滚动，不跟着 `hits` 引用走：
-  // 流式输出时 `hits` 每个 tick 都重算，跟着它滚会在用户往别处翻阅时反复把视口拉回命中处。
-  const scrolledKeyRef = useRef("");
-  useEffect(() => {
-    if (hits.length === 0) {
-      scrolledKeyRef.current = "";
-      return;
-    }
-    const key = `${search.query}\u0000${occ}`;
-    if (scrolledKeyRef.current === key) return;
-    scrolledKeyRef.current = key;
-    const reveal = () => {
-      scrollRef.current?.dispatchEvent(new Event("cc-reading-jump"));
-      scrollRef.current?.querySelector("[data-cc-hit-cur]")?.scrollIntoView({ block: "nearest" });
-    };
-    reveal();
-    // Search can open an animated execution group; align once its height has settled.
-    const settled = window.setTimeout(reveal, MOTION.enter + 20);
-    return () => window.clearTimeout(settled);
-  }, [scrollRef, hits, occ, search.query]);
+  // 搜索的三段副作用（唤起 / 命中滚进视口 / 命中在窗口外时扩窗）都在这个 hook 里，
+  // 连同那两条「不跟着 hits 引用走」「只让可见 pane 响应」的讲究。
+  useCcFindReveal({ scrollRef, findRequest, search, expandAll: win.expandAll });
 
   const closeSearch = useCallback(() => {
     search.close();
@@ -152,7 +148,27 @@ export function ConversationStream({
         浮条贴它的底就永远贴着 dock 的顶，也不再依赖另一个组件的副作用。
       */}
       <div className="cc-stream-viewport relative flex min-h-0 flex-1">
-        <div ref={scrollRef} data-cc-stream className="cc-conversation-stream page-scroll h-full w-full overflow-y-auto">
+        {/*
+          转录区的无障碍语义（P0-1）：
+          - `role="log"`：这是「追加型日志」，读屏可以按消息跳读。
+          - `aria-live="polite"` + `aria-relevant="additions"`：只念**新插入**的节点。
+            流式是改写已有节点，带上 `text` 会让每个碎片都被念一遍。
+          - `aria-busy`：一轮进行中把播报压住，结束时一次性放行 —— 这是「不逐 token
+            播报」最省事的实现，不用自己写节流。
+            ⚠️ 代价是某些读屏会在放行那一刻把本轮新增内容整段念出来。真机（NVDA）
+            验收若确认太吵，把 `aria-live` 改成 `off`、只留独立播报区即可 —— 一行回退，
+            语义（role=log）和导航能力都不受影响。
+        */}
+        <div
+          ref={scrollRef}
+          data-cc-stream
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions"
+          aria-busy={view.running || sending}
+          aria-label="对话记录"
+          className="cc-conversation-stream page-scroll h-full w-full overflow-y-auto"
+        >
           {/* cc-msgcol：消息列。子节点（每条消息的根元素）离屏跳渲染，见 index.css。 */}
           <div className="cc-msgcol mx-auto flex min-h-full max-w-[834px] flex-col gap-3">
             {view.messages.length === 0 && !view.running && !sending && view.stops.length === 0 ? (
@@ -179,6 +195,8 @@ export function ConversationStream({
                 onRespond={onRespond}
                 onForkMessage={onForkMessage}
                 onResend={onResend}
+                startIndex={win.start}
+                onLoadEarlier={loadEarlier}
               />
             )}
           </div>
@@ -210,6 +228,18 @@ export function ConversationStream({
         )}
       </div>
       <ClawdWorkspace view={view} activity={activity} rootRef={rootRef} scrollRef={scrollRef} startedAt={activityStartedAt} onStopTask={onStopTask} />
+      {/*
+        播报区：**不挂在 log 内部** —— 挂在里面就成了「日志新增一条」，会被容器
+        自己的 `aria-busy` 一起压住（那就永远不播了）。
+        两个节点分列 polite / assertive：`role="alert"` 自带 assertive，只给失败用；
+        `key={seq}` 让同一句文案重复出现时也换节点，读屏才会再念一次。
+      */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announce && announce.level === "polite" ? <span key={announce.seq}>{announce.text}</span> : null}
+      </div>
+      <div className="sr-only" role="alert" aria-atomic="true">
+        {announce && announce.level === "assertive" ? <span key={announce.seq}>{announce.text}</span> : null}
+      </div>
       <SelectionQuote scrollRef={scrollRef} />
       {search.open && (
         <CcFindBar

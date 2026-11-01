@@ -11,9 +11,12 @@ import type { CcMark } from "../../lib/ccMarkdown";
  * （词法与叶子游走在 `lib/ccMarkdown.ts`，与会话内搜索共用）。
  *
  * `marks`：会话内搜索的命中标注（透传）。
+ *
+ * `streaming`：这条正文是否还在生成（决定末尾要不要画光标）。由 `MessageList`
+ * 按「是否本轮最后一条消息」判定，本组件只透传 —— 薄壳不持有判断。
  */
-function MessageTextImpl({ text, marks }: { text: string; marks?: CcMark[] }) {
-  return <MarkdownText text={text} marks={marks} />;
+function MessageTextImpl({ text, marks, streaming }: { text: string; marks?: CcMark[]; streaming?: boolean }) {
+  return <MarkdownText text={text} marks={marks} streaming={streaming} />;
 }
 
 export const MessageText = memo(MessageTextImpl);

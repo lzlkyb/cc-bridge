@@ -23,7 +23,19 @@ export function lexMarkdown(text: string): Token[] {
 }
 
 /** 一个顶层块：原始源码 + 该块**首个**文本叶子的 seg 序号。 */
-export type CcBlock = { key: number; raw: string; seg: number };
+export type CcBlock = {
+  key: number;
+  raw: string;
+  seg: number;
+  /**
+   * 这一块是围栏代码块（top-level `code` token）。
+   *
+   * 只有一个消费者：`MarkdownText` 决定流式光标放不放 —— 末块是代码块时，
+   * 光标会落在 `<pre>` 的右外侧，看着像代码里多了个字符。判定用 token 类型而不是
+   * 对 `raw` 做正则：缩进代码块、`~~~` 围栏、列表里的代码都能一次判对。
+   */
+  code: boolean;
+};
 
 /**
  * 把整段 markdown 按 **top-level token** 切成块，并给出每块的起始 `seg`。
@@ -46,7 +58,7 @@ export function splitBlocks(text: string): CcBlock[] {
   const out: CcBlock[] = [];
   let seg = 0;
   tokens.forEach((t, key) => {
-    out.push({ key, raw: (t as { raw?: string }).raw ?? "", seg });
+    out.push({ key, raw: (t as { raw?: string }).raw ?? "", seg, code: t.type === "code" });
     walkTextLeaves([t], () => {
       seg += 1;
     });

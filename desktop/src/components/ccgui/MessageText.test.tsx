@@ -119,3 +119,37 @@ it("长代码块默认折叠，点开后不再截断", () => {
   });
   expect(container.textContent).toContain("收起");
 });
+
+/* ── 流式光标（P0-2）─────────────────────────────────────────────────────
+ * 光标必须是容器里**块序列之外**的最后一个节点：塞进块里会让会话内搜索的
+ * `seg` 下标整体错位（计数说命中、界面标错字）。下面三条盯着这个结构。 */
+function renderStream(text: string, streaming: boolean) {
+  act(() => {
+    root.render(
+      <ToastProvider>
+        <MessageText text={text} streaming={streaming} />
+      </ToastProvider>,
+    );
+  });
+}
+
+it("流式光标：不在生成时没有光标", () => {
+  renderStream("段落一\n\n段落二", false);
+  expect(container.querySelector(".cc-caret")).toBeNull();
+});
+
+it("流式光标：在生成时是容器的最后一个直接子节点，且不带文字", () => {
+  renderStream("段落一\n\n段落二", true);
+  const caret = container.querySelector(".cc-caret");
+  expect(caret).toBeTruthy();
+  const host = caret!.parentElement!;
+  expect(host.lastElementChild).toBe(caret);
+  expect(caret!.textContent).toBe("");
+  // 光标之前必须还有真的块（否则说明有人把它塞进了第一块里）。
+  expect(host.children.length).toBeGreaterThan(1);
+});
+
+it("流式光标：末块是围栏代码块时不放（会落在 pre 右外侧像多了个字符）", () => {
+  renderStream("看这段：\n\n```js\nconst a = 1;\n```", true);
+  expect(container.querySelector(".cc-caret")).toBeNull();
+});

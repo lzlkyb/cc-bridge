@@ -4,6 +4,7 @@ import type { CcView } from "../../lib/ccReducer";
 import type { CcMark } from "../../lib/ccMarkdown";
 import type { CcTurnStat } from "../../lib/ccTurnStat";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
+import { buildMessageIndex } from "../../lib/ccMessageIndex";
 import { isClearCommand } from "../../lib/ccSlash";
 import { Icon } from "../ui/icon";
 import { ClawdCharacter } from "./ClawdCharacter";
@@ -48,6 +49,8 @@ export function MessageList({
   onRespond,
   onForkMessage,
   onResend,
+  startIndex = 0,
+  onLoadEarlier,
 }: {
   messages: CcMessage[];
   resolved: CcView["resolved"];
@@ -88,53 +91,46 @@ export function MessageList({
    * 会话末尾多插一句孤立的提问。
    */
   onResend: (text: string) => void;
+  /**
+   * 渲染窗口的起点（全量 `messages` 下标）。0 = 全量渲染。
+   *
+   * 🔴 只影响**画出来的**消息，不影响任何遍历：`lastUserIdx` 这类判定仍按全量算，
+   *    会话内搜索 / 导出 / 分叉也各自遍历 `messages`。窗口缩小不改语义
+   *    （见 `lib/ccWindow.ts` 头注）。
+   */
+  startIndex?: number;
+  /** 点顶部「加载更早」：由持有 `scrollRef` 的调用方做滚动锚点补偿。 */
+  onLoadEarlier?: () => void;
 }) {
   const { copy, isCopied } = useCopyFeedback();
-  // TodoWrite 每次调用都发全量列表：只有**最新一张**展开成进度卡，历史更新
-  // 折叠成一行（设计稿 B 期）。不折叠的话一次多步重构就是七八张重复卡刷屏。
-  let lastTodoIdx = -1;
-  messages.forEach((m, i) => {
-    if (m.kind === "tool" && toolKind(m.tool.name) === "todo") lastTodoIdx = i;
-  });
-  let lastUserIdx = -1;
-  messages.forEach((m, i) => {
-    if (m.kind === "user") lastUserIdx = i;
-  });
-  // 一轮的脚注跟在「那一轮最后一条消息」后面。同一 id 可能有多条（例如某轮
-  // 一条消息都没产出、两轮都落在同一条上），所以是数组不是单值。
-  const turnsByAfterId = new Map<string, CcTurnStat[]>();
-  for (const t of turns) {
-    const arr = turnsByAfterId.get(t.afterId);
-    if (arr) arr.push(t);
-    else turnsByAfterId.set(t.afterId, [t]);
-  }
-  /** 停止点锚集合（元素是消息 id，空串 = 流**开头**）。每条消息 `includes` 一遍数组没必要。 */
-  const stopSet = new Set(stops);
-
-  const groups = new Map<number, Extract<CcMessage, { kind: "tool" }>[] >();
-  const grouped = new Set<number>();
-  for (let i = 0; i < messages.length; i++) {
-    const group: Extract<CcMessage, { kind: "tool" }>[] = [];
-    let end = i;
-    while (end < messages.length) {
-      const item = messages[end];
-      if (item.kind !== "tool" || item.tool.status !== "ok" || toolKind(item.tool.name) === "todo" || turnsByAfterId.has(item.id) || stopSet.has(item.id)) break;
-      group.push(item); end++;
-    }
-    if (group.length > 0) {
-      groups.set(i, group);
-      for (let j = i + 1; j < end; j++) grouped.add(j);
-      i = end - 1;
-    }
-  }
+  const start = Math.min(Math.max(0, startIndex), messages.length);
+  const visible = start > 0 ? messages.slice(start) : messages;
+  // 下标账本（最后一条提问 / 最后一条回复 / 工具分组 / 脚注挂载点）全是纯计算，
+  // 在 `lib/ccMessageIndex.ts`：这里只消费，不推导。
+  const { lastTodoIdx, lastUserIdx, lastAssistantIdx, turnsByAfterId, stopSet, groups, grouped } =
+    buildMessageIndex({ messages, start, turns, stops });
+  /** 「重新生成」重发的是最后一条**提问**（与用户气泡的「再问一次」同源）。 */
+  const lastUserText = lastUserIdx >= 0 ? (messages[lastUserIdx] as { text: string }).text : "";
   return (
     <>
       {/* 空串的停止点：刚发出去就被停，一条消息都没产出 ⇒ 那个落点在时间轴上
           位于**所有消息之前**，所以挂在开头而不是流尾。
           挂流尾的话，等下一轮回复进来，这条「已停止」会跑到新回复下面 ——
-          读起来像是「刚才那一轮（已经成功的那轮）被停了」。 */}
-      {stopSet.has("") && <StopMark state={stops[stops.length - 1] === "" ? stopState : null} />}
-      {messages.map((m: CcMessage, index) => {
+          读起来像是「刚才那一轮（已经成功的那轮）被停了」。
+          `start === 0` 才画：窗口化之后，「流开头」已经不在屏幕上，把那条停止线
+          顶在窗口第一条消息上方，会读成「这里刚被停」。 */}
+      {start === 0 && stopSet.has("") && <StopMark state={stops[stops.length - 1] === "" ? stopState : null} />}
+      {start > 0 && (
+        <div className="cc-load-earlier">
+          <button type="button" onClick={onLoadEarlier} disabled={!onLoadEarlier}>
+            <Icon name="arrowUp" size={12} />
+            加载更早的 {start} 条
+          </button>
+          <small>已载入最近 {messages.length - start} 条</small>
+        </div>
+      )}
+      {visible.map((m: CcMessage, vi) => {
+        const index = start + vi;
         if (grouped.has(index)) return null;
         const group = groups.get(index);
         if (group) return <ExecutionSummary key={m.id} messages={group} marksByMsg={marksByMsg} />;
@@ -163,8 +159,42 @@ export function MessageList({
             return (
               <article key={m.id} className="cc-assistant-message">
                 <div className="cc-assistant-heading"><ClawdCharacter staticPose /><span className="sr-only">Claude Code</span>{m.model && <small>{m.model}</small>}</div>
-                <div className="cc-assistant-content"><MessageText text={m.text} marks={marks} /></div>
-                <button type="button" className="cc-message-copy" onClick={() => copy(`msg:${m.id}`, m.text)} aria-label="复制全文" aria-live="polite"><Icon name={isCopied(`msg:${m.id}`) ? "check" : "copy"} size={14} />{isCopied(`msg:${m.id}`) ? "已复制" : "复制回复"}</button>
+                <div className="cc-assistant-content">
+                  {/* 光标只给「本轮最后一条」：历史消息画光标等于说有东西正在写。 */}
+                  <MessageText text={m.text} marks={marks} streaming={running && index === messages.length - 1} />
+                </div>
+                {/*
+                  助手侧动作区（P0-4）：常显低对比。
+                  此前只有一个 `opacity:0`、hover 才现形的「复制回复」—— 键盘用户靠 Tab
+                  摸过去才发现，发现性为零。动作区放在正文**之后**：读屏先念内容，再念按钮。
+                  「重新生成」实为把最后一条提问原样再发一次（会话真源在 CLI 进程里，
+                  没有「回到第 N 轮」的原语），所以 title 里必须说清新回复接在末尾，
+                  文案也不能写成「重新生成这条回复」。
+                */}
+                <div className="cc-msg-actions">
+                  <button
+                    type="button"
+                    onClick={() => copy(`msg:${m.id}`, m.text)}
+                    aria-label="复制全文"
+                    aria-live="polite"
+                    title="复制这条回复的全文"
+                  >
+                    <Icon name={isCopied(`msg:${m.id}`) ? "check" : "copy"} size={13} />
+                    <span className="cc-msg-action-label">{isCopied(`msg:${m.id}`) ? "已复制" : "复制"}</span>
+                  </button>
+                  {index === lastAssistantIdx && !running && (
+                    <button
+                      type="button"
+                      className="accent"
+                      onClick={() => onResend(lastUserText)}
+                      aria-label="重新生成"
+                      title="会把最后一条提问原样再发一次，新回复接在末尾（旧回复不会被替换）"
+                    >
+                      <Icon name="refresh" size={13} />
+                      <span className="cc-msg-action-label">重新生成</span>
+                    </button>
+                  )}
+                </div>
               </article>
             );
           }
