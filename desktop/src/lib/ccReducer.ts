@@ -171,7 +171,15 @@ export const initialCcView: CcView = {
 };
 
 export type CcAction =
-  | { type: "event"; event: CcEvent }
+  | { type: "event"; event: CcEvent; at?: string }
+  /**
+   * 一次合批的实时事件（见 `useCcEventStream` 的 `FLUSH_MS`）。
+   *
+   * 语义上等于把 `at` 相同的 N 条 `event` 连着 dispatch 一次，区别只在**只触发
+   * 一次渲染** —— 而渲染恰恰是流式期间唯一的成本大头。放在 reducer 里而不是
+   * 复用一个 `apply` 闭包，是为了让穷尽检查照旧生效（漏一个 action 编译就报错）。
+   */
+  | { type: "batch"; events: CcEvent[]; at?: string }
   | { type: "replay"; events: CcEvent[]; dropped: number; running: boolean; historical?: boolean }
   | { type: "error"; message: string | null }
   /** 关掉第 `index` 条前端错误（每条红条自己的 ×）。 */
@@ -216,17 +224,26 @@ function nextUserId(messages: CcMessage[]): string {
   return `user:${n}`;
 }
 
-function upsertText(messages: CcMessage[], blockId: string, text: string, streaming: boolean, model: string | null): CcMessage[] {
+/**
+ * 一轮里「最近一条记录」的时间戳来源。
+ *
+ * 🔴 必须由**调用方**传入，不能在 reducer 里 `Date.now()`：reducer 是纯函数，
+ *    重放同一串事件必须得到同一个视图（`replay` 路径就不传 —— 历史流水的
+ *    真实时刻无从得知，留空串，界面按「没有时间参照」处理）。
+ *    见 `TurnActivity` 的停滞提示：它靠 `Date.parse(at)` 算「多久没新记录了」。
+ */
+function upsertText(messages: CcMessage[], blockId: string, text: string, streaming: boolean, model: string | null, at?: string): CcMessage[] {
   const idx = messages.findIndex((m) => m.kind === "assistant" && m.id === blockId);
   if (idx < 0) {
-    return [...messages, { kind: "assistant", id: blockId, at: "", text, ...(model ? { model } : {}) }];
+    return [...messages, { kind: "assistant", id: blockId, at: at ?? "", text, ...(model ? { model } : {}) }];
   }
   const cur = messages[idx];
   if (cur.kind !== "assistant") return messages;
   const next = streaming ? cur.text + text : text;
-  if (next === cur.text) return messages; // 完全相同的碎片不制造新数组，省一次重渲染
+  const nextAt = at ?? cur.at;
+  if (next === cur.text && nextAt === cur.at) return messages; // 完全相同的碎片不制造新数组，省一次重渲染
   const copy = messages.slice();
-  copy[idx] = { ...cur, text: next };
+  copy[idx] = { ...cur, text: next, at: nextAt };
   return copy;
 }
 
@@ -234,17 +251,18 @@ function upsertText(messages: CcMessage[], blockId: string, text: string, stream
  * 思维链按 `blockId` upsert。与 `upsertText` 分开写而不是加个 kind 参数：
  * 两条链路将来会长出不同的折叠/计时行为，共用一份只会让分支越叠越深。
  */
-function upsertThinking(messages: CcMessage[], blockId: string, text: string, streaming: boolean): CcMessage[] {
+function upsertThinking(messages: CcMessage[], blockId: string, text: string, streaming: boolean, at?: string): CcMessage[] {
   const idx = messages.findIndex((m) => m.kind === "thinking" && m.id === blockId);
   if (idx < 0) {
-    return [...messages, { kind: "thinking", id: blockId, at: "", text }];
+    return [...messages, { kind: "thinking", id: blockId, at: at ?? "", text }];
   }
   const cur = messages[idx];
   if (cur.kind !== "thinking") return messages;
   const next = streaming ? cur.text + text : text;
-  if (next === cur.text) return messages;
+  const nextAt = at ?? cur.at;
+  if (next === cur.text && nextAt === cur.at) return messages;
   const copy = messages.slice();
-  copy[idx] = { ...cur, text: next };
+  copy[idx] = { ...cur, text: next, at: nextAt };
   return copy;
 }
 
@@ -312,7 +330,11 @@ export function buildAnswers(
   return out;
 }
 
-function applyEvent(view: CcView, event: CcEvent): CcView {
+/**
+ * 单条事件 → 视图。`at` 是这条事件**到达前端**的时刻（ISO 串），只在实时路径给：
+ * 停滞提示要靠它算「多久没有新记录」，历史重放没有这个信息，留空。
+ */
+function applyEvent(view: CcView, event: CcEvent, at?: string): CcView {
   switch (event.kind) {
     case "inputMessage": {
       const inputs = updateInput(view.inputs, event);
@@ -363,7 +385,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
           {
             kind: "user",
             id: nextUserId(view.messages),
-            at: "",
+            at: at ?? "",
             text: event.text,
             // 空数组不落进消息：`images: []` 与「没有这个字段」在渲染上是同一件事，
             // 但前者会让 `===` 比较永远不相等（memo 化的气泡白重渲染）。
@@ -376,14 +398,14 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       return { ...view, rowId: event.rowId };
 
     case "text":
-      return { ...view, retry: null, messages: upsertText(view.messages, event.blockId, event.text, event.streaming, view.model) };
+      return { ...view, retry: null, messages: upsertText(view.messages, event.blockId, event.text, event.streaming, view.model, at) };
 
     // 思维链渲染成**默认折叠**的一行：长任务里它是「还活着」的唯一证据，
     // 摊开却会把正文冲出视口。事件照收（Rust 侧有测试保证不漏）。
     case "thinking":
       return {
         ...view,
-        messages: upsertThinking(view.messages, event.blockId, event.text, event.streaming),
+        messages: upsertThinking(view.messages, event.blockId, event.text, event.streaming, at),
         retry: null,
       };
 
@@ -399,7 +421,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
           {
             kind: "tool",
             id: event.toolUseId,
-            at: "",
+            at: at ?? "",
             tool: {
               id: event.toolUseId,
               name: event.name,
@@ -418,6 +440,8 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
           m.kind === "tool" && m.id === event.toolUseId
             ? {
                 ...m,
+                // 结果回来也算「有新进展」：停滞提示读的是最后一条消息的 at。
+                at: at ?? m.at,
                 tool: {
                   ...m.tool,
                   status: event.isError ? "error" : "ok",
@@ -602,7 +626,14 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
 export function ccReducer(view: CcView, action: CcAction): CcView {
   switch (action.type) {
     case "event":
-      return applyEvent(view, action.event);
+      return applyEvent(view, action.event, action.at);
+    case "batch": {
+      // 与逐条 `event` 完全等价（顺序、at 都一样），只是把 N 次 dispatch 合成一次。
+      // `applyEvent` 对无变化的事件返回原引用，整批都是噪音时不会制造新对象。
+      let next = view;
+      for (const e of action.events) next = applyEvent(next, e, action.at);
+      return next;
+    }
     case "replay": {
       // 🔴 必须从**空状态**重放。从当前状态往上叠会把 token / cost 累加两遍，
       // 而账目类数字错了没人能一眼看出来，只会在月底对账时炸。

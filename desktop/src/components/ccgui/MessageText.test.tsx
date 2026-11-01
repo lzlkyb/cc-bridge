@@ -86,3 +86,36 @@ it("原始 HTML 不解析：script 以文本形态出现，不产生元素", () 
   expect(container.querySelector("script")).toBeNull();
   expect(container.textContent).toContain("alert(1)");
 });
+
+/**
+ * 🔴 GFM 任务列表：`- [ ]` / `- [x]` 的勾选状态以前被完全吞掉
+ * （`checkbox` token 落进 `default` 分支读不存在的 `text`），已完成项与未完成项
+ * 在界面上长得一模一样。这两条钉住两种列表形态（紧凑 / 松）都要保留勾选。
+ */
+it("任务列表：紧凑形态保留勾选状态", () => {
+  render("- [ ] 未完成\n- [x] 已完成\n");
+  expect(container.querySelector('[aria-label="未完成"]')).toBeTruthy();
+  expect(container.querySelector('[aria-label="已完成"]')).toBeTruthy();
+  expect(container.textContent).toContain("未完成");
+  expect(container.textContent).toContain("已完成");
+  // 有勾选框就不再画圆点，否则会出现「• ✓ 事项」两个标记。
+  expect(container.querySelector("ul")?.className).toContain("list-none");
+});
+
+it("任务列表：松列表（项间空行）同样保留勾选", () => {
+  render("- [ ] 甲\n\n- [x] 乙\n");
+  expect(container.querySelector('[aria-label="未完成"]')).toBeTruthy();
+  expect(container.querySelector('[aria-label="已完成"]')).toBeTruthy();
+});
+
+it("长代码块默认折叠，点开后不再截断", () => {
+  const code = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join("\n");
+  render("```js\n" + code + "\n```");
+  const toggle = () =>
+    Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("展开全部"));
+  expect(toggle()).toBeTruthy();
+  act(() => {
+    toggle()!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  expect(container.textContent).toContain("收起");
+});

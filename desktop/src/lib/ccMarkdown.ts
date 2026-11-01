@@ -22,6 +22,38 @@ export function lexMarkdown(text: string): Token[] {
   return marked.lexer(text);
 }
 
+/** 一个顶层块：原始源码 + 该块**首个**文本叶子的 seg 序号。 */
+export type CcBlock = { key: number; raw: string; seg: number };
+
+/**
+ * 把整段 markdown 按 **top-level token** 切成块，并给出每块的起始 `seg`。
+ *
+ * 🔴 为什么要切：`marked.lexer` 的结果是整段的一个数组，`MarkdownText` 以前把
+ *    整个数组一次性渲染成元素树，而 `useMemo` 的依赖是**累计的整段文本** ⇒
+ *    流式期间每个碎片都让整棵树重建一次，单条回复的累计代价随长度平方增长。
+ *    切成块之后 `raw` 相同的块 memo 命中，只有尾巴那一块重建。
+ *
+ * 🔴 `seg` 必须**跨块连续**：渲染是分块进行的，但会话内搜索的 `CcMark.seg`
+ *    是全消息的一个连续序号。所以这里先把每块的起点算出来传给块组件，
+ *    块内从那个起点往后递增（见 `walkTextLeaves` 头注那条同构红线）。
+ *
+ * `token.raw` 是该块的原始源码，重新 `lexMarkdown(raw)` 得到的是同一块 —— 这条等价性
+ * （含逐块重词法的叶子序列必须与整段 `markdownLeaves` 逐字相等）的守门测试在
+ * `lib/ccMarkdown.test.ts` 的 `describe("splitBlocks")`。
+ */
+export function splitBlocks(text: string): CcBlock[] {
+  const tokens = lexMarkdown(text);
+  const out: CcBlock[] = [];
+  let seg = 0;
+  tokens.forEach((t, key) => {
+    out.push({ key, raw: (t as { raw?: string }).raw ?? "", seg });
+    walkTextLeaves([t], () => {
+      seg += 1;
+    });
+  });
+  return out;
+}
+
 /**
  * 按渲染顺序访问所有「文本叶子」—— 段落/标题/强调/链接的正文、行内代码、
  * fenced 代码块、表格单元格、引用块……

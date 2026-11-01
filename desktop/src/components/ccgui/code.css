@@ -1,0 +1,18 @@
+/* 代码块语法高亮（lowlight → hast → React 元素，见 `lib/ccCodeHighlight.ts`）。
+ *
+ * 🔴 只吃主题变量，不引 highlight.js 的官方主题 CSS：那套是写死的十六进制色值，
+ *    在 glass / 暗色 / 自定义主题下会跟正文撞色（本项目的主题是 hsl 变量 + 明暗两套）。
+ *    这里给的是「一类语法一个语义色」，亮暗自动跟随。
+ *
+ * 只上必要的色：关键字、字符串、数字/常量、注释、函数名、类型。全量上色会让代码
+ * 变成调色板，反而更难读。 */
+.cc-codeblock pre{color:hsl(var(--foreground))}
+.cc-codeblock .hljs-comment,.cc-codeblock .hljs-quote{color:hsl(var(--muted-foreground));font-style:italic}
+.cc-codeblock .hljs-keyword,.cc-codeblock .hljs-selector-tag,.cc-codeblock .hljs-literal,.cc-codeblock .hljs-doctag,.cc-codeblock .hljs-name,.cc-codeblock .hljs-meta .hljs-keyword{color:hsl(var(--primary));font-weight:600}
+.cc-codeblock .hljs-string,.cc-codeblock .hljs-regexp,.cc-codeblock .hljs-addition,.cc-codeblock .hljs-attribute,.cc-codeblock .hljs-template-variable{color:hsl(var(--success-ink))}
+.cc-codeblock .hljs-number,.cc-codeblock .hljs-symbol,.cc-codeblock .hljs-bullet,.cc-codeblock .hljs-meta,.cc-codeblock .hljs-selector-attr{color:hsl(var(--warning-ink))}
+.cc-codeblock .hljs-title,.cc-codeblock .hljs-section,.cc-codeblock .hljs-title.function_,.cc-codeblock .hljs-built_in{color:hsl(var(--accent-foreground))}
+.cc-codeblock .hljs-type,.cc-codeblock .hljs-title.class_,.cc-codeblock .hljs-class .hljs-title,.cc-codeblock .hljs-params{color:hsl(var(--primary))}
+.cc-codeblock .hljs-deletion{color:hsl(var(--destructive-ink))}
+.cc-codeblock .hljs-emphasis{font-style:italic}
+.cc-codeblock .hljs-strong{font-weight:600}

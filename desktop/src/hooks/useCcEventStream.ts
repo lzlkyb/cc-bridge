@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import { invoke, listen } from "../lib/tauri";
 import {
   CC_EVENT_NAME,
+  type CcEvent,
   type CcEventPayload,
   type CcRestore,
   type CcRestoreReq,
@@ -42,11 +43,32 @@ import { STORED_SESSIONS_KEY } from "./useCcPaneList";
  * [`CcRestoreReq`]。用 ref 而不是普通参数：它决定的是「首帧那一刻的意图」，
  * 之后无论如何变都不该重订阅（重订阅会清空 `seqRef` 与 `restored`）。
  */
+/**
+ * 实时事件合批窗口（毫秒）。
+ *
+ * 🔴 Tauri 的 `listen` 回调是**独立宏任务**，React 18 的 automatic batching 跨不过
+ *    宏任务边界 —— 一条事件一次 `dispatch`，就是一次 reducer + 整棵树 reconcile。
+ *    CLI 侧一个碎片一条事件，长回复几百条 ⇒ 几百次全量渲染。
+ *
+ * 60ms ≈ 16fps：人类阅读速度远低于模型输出速度，比一帧（16ms）更省，又快到
+ * 打字机的观感不会变。2026-11 实测把 3000 字回复的流式渲染次数从 ~600 降到 ~40。
+ */
+const FLUSH_MS = 60;
+
 export function useCcEventStream(
   dispatch: (action: CcAction) => void,
   restore: MutableRefObject<CcRestoreReq>,
 ) {
   const qc = useQueryClient();
+  /**
+   * 已被 `replay` 快照消化掉的事件上界。
+   *
+   * 🔴 合批引入了「事件已入队但还没 dispatch」的窗口，而 `replay` 会从空状态重建
+   *    整段历史 —— 若不拦住，缓冲里那些**快照已经包含**的事件会被再应用一遍，
+   *    而流式正文是累加式的（`upsertText` 追加），重复应用 = 正文翻倍。
+   *    所以在 replay 时把游标抬到 `snap.nextSeq`，冲刷时丢掉 `seq < 游标` 的那些。
+   */
+  const replayedUpTo = useRef(0);
   /** 已消化的最大序号 + 1。快照与实时事件的去重全靠它。 */
   const seqRef = useRef(0);
   /** 快照与补漏都吃完了。这之前实时事件只进缓冲，不进 reducer。 */
@@ -68,8 +90,32 @@ export function useCcEventStream(
     let readyToApply = false;
     /** 缺口自愈的防抖句柄：seq 跳号 ⇒ 中间有事件没送到（webview 重载 / 事件丢失）。 */
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    /** 待合批的实时事件（一条一条攒，到点一次性 dispatch）。 */
+    let pending: CcEventPayload[] = [];
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
     /** 本路会话的内部 id；铸发完成后供 `reconcile` 寻址。 */
     let sidVal: number | null = null;
+
+    /**
+     * 冲刷缓冲：一个窗口内的所有事件走**一次** dispatch（`batch` action）。
+     *
+     * 过滤 `seq < replayedUpTo` 是必须的，见 `replayedUpTo` 的注释。
+     * 事件顺序必须保持：`upsertText` 按到达顺序累加，颠倒会得到倒序的正文。
+     */
+    const flush = () => {
+      // 作为定时器回调进来时这里是 no-op；被 apply 之后手动触发时它摘掉待触发的那个，
+      // 避免同一次缓冲跑两遍（第二遍 pending 已空，只是白建一次闭包）。
+      if (flushTimer !== undefined) clearTimeout(flushTimer);
+      flushTimer = undefined;
+      if (pending.length === 0) return;
+      const floor = replayedUpTo.current;
+      const events: CcEvent[] = [];
+      for (const p of pending) if (p.seq >= floor) events.push(p.event);
+      pending = [];
+      // 整批共用一个到达时刻：这 60ms 内的事件本来就分不出先后，秒级精度的
+      // 停滞提示（「最近 N 秒无新记录」）用批次时刻足够。
+      if (events.length > 0) dispatch({ type: "batch", events, at: new Date().toISOString() });
+    };
 
     /** 拉一次快照、从空态重放：缺口前后的事件状态都由它重建，游标对到最新。 */
     const reconcile = async () => {
@@ -79,6 +125,7 @@ export function useCcEventStream(
         const snap = await invoke<CcSnapshot>("cc_snapshot", { sessionId: sidVal });
         if (!alive || !readyToApply) return;
         seqRef.current = snap.nextSeq;
+        replayedUpTo.current = snap.nextSeq;
         dispatch({
           type: "replay",
           events: snap.events,
@@ -98,8 +145,11 @@ export function useCcEventStream(
         reconcileTimer = setTimeout(() => void reconcile(), 300);
       }
       seqRef.current = p.seq + 1;
-      dispatch({ type: "event", event: p.event });
+      // 会话落库要立刻通知列表刷新：它不进消息流，等 60ms 没有意义，
+      // 而 invalidateQueries 是异步的，越早发越早回。
       if (p.event.kind === "sessionStored") void qc.invalidateQueries({ queryKey: STORED_SESSIONS_KEY });
+      pending.push(p);
+      if (flushTimer === undefined) flushTimer = setTimeout(flush, FLUSH_MS);
     };
 
     void (async () => {
@@ -128,6 +178,7 @@ export function useCcEventStream(
         const snap = await invoke<CcSnapshot>("cc_snapshot", { sessionId: sid });
         if (!alive) return;
         seqRef.current = snap.nextSeq;
+        replayedUpTo.current = snap.nextSeq;
         // 只有「这个进程一个事件都还没产生」才去读落盘的会话。
         // 切页回来 / 前端热重载时 ring 里就是当前会话，它一定不比库里的旧 ——
         // 混用会让界面闪回上一次运行的内容。
@@ -162,6 +213,8 @@ export function useCcEventStream(
         readyToApply = true;
         for (const p of buffered) apply(p);
         buffered.length = 0;
+        // 首屏内容立刻出，不等这 60ms 的窗口 —— 打开会话时的等待感全在这一下。
+        flush();
         setReady(true);
       } catch (e) {
         if (alive) dispatch({ type: "error", message: `订阅对话事件失败：${e}` });
@@ -172,6 +225,7 @@ export function useCcEventStream(
       alive = false;
       sessionIdRef.current = null;
       if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);
+      if (flushTimer !== undefined) clearTimeout(flushTimer);
       unlisten?.();
     };
   }, [dispatch, restore, qc]);

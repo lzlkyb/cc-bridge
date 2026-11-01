@@ -4,17 +4,18 @@ import {
   TOOL_TEXT_LIMIT,
   approvalCopyText,
   approvalPayload,
-  buildConvHits,
   clampToolText,
-  convSegments,
   editCount,
   editPair,
   thinkingTitle,
   todoItems,
   toolBodyText,
   toolDefaultOpen,
+  toolArgLabel,
+  toolArgTitle,
   toolKind,
 } from "./summarize";
+import { buildConvHits, convSegments } from "./convIndex";
 
 describe("summarize", () => {
   it("editPair：单处 Edit 走 old_string/new_string", () => {
@@ -282,5 +283,18 @@ describe("approvalPayload 审批卡看什么", () => {
   it("approvalCopyText 是完整入参原文", () => {
     const input = { file_path: "/a.ts", old_string: "a", new_string: "b" };
     expect(JSON.parse(approvalCopyText(input))).toEqual(input);
+  });
+
+  /// 🔴 行上摘要只留末两段，但 hover 必须是**完整路径** ——
+  /// 两处用同一个截断值时，tooltip 等于什么都没解释（老缺陷）。
+  it("toolArgTitle 保留完整路径，toolArgLabel 仍然截断", () => {
+    const input = { file_path: "C:\\Users\\x\\proj\\src\\deep\\nested\\file.ts" };
+    expect(toolArgLabel(input)).toBe("nested/file.ts");
+    expect(toolArgTitle(input)).toBe("C:\\Users\\x\\proj\\src\\deep\\nested\\file.ts");
+  });
+
+  it("toolArgTitle 对非路径入参与摘要同源", () => {
+    expect(toolArgTitle({ command: "npm run build" })).toBe("npm run build");
+    expect(toolArgTitle({ pattern: "TODO" })).toBe("TODO");
   });
 });
