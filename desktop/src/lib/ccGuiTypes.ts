@@ -25,6 +25,19 @@ export type CcToolCall = {
   result?: string;
   /** `tool_result.is_error`。 */
   isError?: boolean;
+  /**
+   * 「这一轮被用户按停了，没拿到结果」。
+   *
+   * 🔴 刻意**不加**到 `CcToolStatus` 联合类型里：那个类型参与变更集统计、失败计数与
+   *    多处穷尽判断，多一个成员会牵出一片编译错误，收益与风险不匹配。
+   *    这里用可选字段，**只有** `ccReducer::settleOpen` 会写（协议不产出），
+   *    渲染层（`ToolCard`）判在 `isError` 之前。
+   *
+   * 为什么还需要它：`settleOpen` 把仍是 `running` 的工具落成 `status:"error"` +
+   * `isError:true` —— 那是给「没拿到结果」留的兜底，但从界面上看，用户主动按的停止
+   * 变成了一排红色「失败」。
+   */
+  canceled?: boolean;
 };
 
 /** 权限模式：与 CLI 的 `--permission-mode` 取值同名。 */

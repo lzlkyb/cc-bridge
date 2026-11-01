@@ -756,9 +756,14 @@ function settleOpen(view: CcView): CcMessage[] {
         ...m,
         tool: {
           ...m.tool,
+          // `status`/`isError` 保持「没成功」的原样：变更集、失败计数、轮次结论都靠它
+          // 判定，改成 `ok` 会让「一个跑到一半的工具」在统计里变成成功的。
           status: "error",
           isError: true,
-          result: m.tool.result ?? "已中断，没有拿到执行结果",
+          // 界面靠这个字段把它画成中性的「已中断」而不是红色「失败」。
+          // 见 `CcToolCall.canceled` 那条注释（为什么不加进 CcToolStatus）。
+          canceled: true,
+          result: m.tool.result ?? "没有拿到执行结果（这一轮被停止了）",
         },
       });
       continue;

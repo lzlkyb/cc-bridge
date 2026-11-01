@@ -684,8 +684,9 @@ describe("ccReducer", () => {
       ]);
       expect(pendingApprovals(v)).toEqual([]);
       const tool = v.messages.find((m) => m.kind === "tool");
-      expect(tool).toMatchObject({ tool: { status: "error", isError: true } });
-      expect(tool && tool.kind === "tool" ? tool.tool.result : "").toContain("已中断");
+      // 统计口径仍是「没成功」，界面靠 `canceled` 把它画成中性的「已中断」。
+      expect(tool).toMatchObject({ tool: { status: "error", isError: true, canceled: true } });
+      expect(tool && tool.kind === "tool" ? tool.tool.result : "").toContain("这一轮被停止了");
     });
 
     it("已有结果的工具卡不被改动", () => {
@@ -821,4 +822,58 @@ it("首次落盘通知提供操作行号，重放仍保留，不伪造消息", (
   expect(ccReducer(initialCcView, { type: "replay", events, dropped: 0, running: false }).rowId).toBe(17);
   expect(ccReducer(view, { type: "replay", events: [events[0]], dropped: 50, running: false }).rowId).toBe(17);
   expect(ccReducer(view, { type: "replay", events: [], dropped: 0, running: false, historical: true }).rowId).toBeUndefined();
+});
+
+/**
+ * 用户按停（P0-3）：`settleOpen` 把还在跑的工具收成「没拿到结果」。
+ *
+ * 🔴 `status`/`isError` 必须保持「没成功」——变更集、失败计数、轮次结论都读它。
+ *    界面区分「用户按停」与「真失败」靠新增的 `canceled` 标记，所以这两件事
+ *    要同时成立：**统计上算失败，呈现上算中断**。
+ */
+describe("settleOpen 的取消态", () => {
+  it("轮次结束时仍在跑的工具打成 canceled，统计口径不变", () => {
+    const v = run([
+      { kind: "toolUse", toolUseId: "t1", name: "Bash", input: { command: "npm test" } },
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: { output_tokens: 1 },
+        costUsd: 0,
+        numTurns: 1,
+        durationMs: 100,
+      },
+    ]);
+    const tool = v.messages.find((m) => m.kind === "tool");
+    expect(tool?.kind).toBe("tool");
+    if (tool?.kind !== "tool") return;
+    expect(tool.tool.canceled).toBe(true);
+    // 统计仍算失败（这是刻意的，见 CcToolCall.canceled 注释）。
+    expect(tool.tool.status).toBe("error");
+    expect(tool.tool.isError).toBe(true);
+    expect(tool.tool.result).toContain("这一轮被停止了");
+  });
+
+  it("正常结束的工具不会被标成 canceled", () => {
+    const v = run([
+      { kind: "toolUse", toolUseId: "t1", name: "Read", input: { file_path: "/a.ts" } },
+      { kind: "toolResult", toolUseId: "t1", content: "ok", isError: false },
+      {
+        kind: "turnEnd",
+        sessionId: "s1",
+        isError: false,
+        text: null,
+        usage: { output_tokens: 1 },
+        costUsd: 0,
+        numTurns: 1,
+        durationMs: 100,
+      },
+    ]);
+    const tool = v.messages.find((m) => m.kind === "tool");
+    if (tool?.kind !== "tool") throw new Error("no tool");
+    expect(tool.tool.canceled).toBeUndefined();
+    expect(tool.tool.status).toBe("ok");
+  });
 });
