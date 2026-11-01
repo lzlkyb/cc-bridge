@@ -11,7 +11,9 @@
 .cc-clawd-character[data-act=complete] .body{animation:clawd-done .7s ease-out 1}.cc-clawd-character[data-act=complete] .mouth{d:path('M42 51 Q48 58 54 51')}.cc-clawd-character[data-act=error] .mouth{d:path('M42 54 Q48 49 54 54')}.cc-clawd-character[data-act=stopped]{opacity:.65}
 .cc-clawd-character.is-static *{animation:none!important}.cc-clawd-character.is-static .eyes{transform:none!important}
 .cc-assistant-heading .cc-clawd-character{width:26px;height:26px}.cc-assistant-heading .cc-clawd-character{color:var(--clawd-pet)}
-.cc-clawd-stream{display:flex;flex-direction:column;container-type:inline-size}.cc-clawd-stream> [data-cc-stream]{flex:1;min-height:0;height:auto}
+.cc-clawd-stream{display:flex;flex-direction:column;container-type:inline-size}
+/* 滚动区在 `.cc-stream-viewport`（浮条的定位锚）里，所以这里是后代选择器而不是子选择器。 */
+.cc-clawd-stream [data-cc-stream]{flex:1;min-height:0;height:auto}
 .cc-clawd-target{position:relative;padding-inline-start:100px;min-height:100px}.cc-clawd-target::before{content:"";position:absolute;inset-inline-start:0;top:4px;width:88px;height:88px;pointer-events:none}
 .cc-clawd-dock{flex:none;width:100%;padding:6px max(16px,calc((100% - 834px)/2)) 8px;border-top:1px solid hsl(var(--border));background:hsl(var(--background));container-type:inline-size}
 [data-ui-style=glass] .cc-clawd-dock{background:transparent}
@@ -38,7 +40,22 @@
 .cc-clawd-member{display:flex;flex-wrap:wrap;align-items:center;gap:4px}.cc-clawd-member>.cc-clawd-agent{flex:1;min-width:0;width:auto}.cc-clawd-stop{font-size:12px;padding:8px;border-radius:7px;color:hsl(var(--destructive));cursor:pointer}.cc-clawd-stop:hover{background:hsl(var(--muted))}.cc-clawd-stop:disabled{opacity:.6;cursor:wait}.cc-clawd-stop:focus-visible{outline:2px solid hsl(var(--primary));outline-offset:2px}.cc-clawd-stop-note{width:100%;font-size:12px;color:hsl(var(--muted-foreground));padding:0 8px 8px;overflow-wrap:anywhere}
 .cc-clawd-team,.cc-clawd-records{position:static;width:auto;max-height:none;overflow:visible;border:0;padding-top:4px}
 .cc-clawd-preferences{position:relative;font-size:12px;color:hsl(var(--muted-foreground))}.cc-clawd-preferences summary{cursor:pointer;padding:6px 8px;border-radius:7px}.cc-clawd-preferences[open]>button{position:absolute;bottom:100%;right:0;white-space:nowrap;background:hsl(var(--popover));box-shadow:0 4px 16px #0002;z-index:2}
-.cc-clawd-dock[data-busy=false] .cc-clawd-status{min-height:44px}.cc-clawd-dock[data-busy=false] .cc-clawd-home{height:56px}
+/* 空闲态收成一条状态行（2026-11 审查 P2-7）。
+ *
+ * 常驻信息只有「状态一句话 + 执行记录按钮」，而 720px 高的窗口里原来那块占掉
+ * 13% 的正文高度。忙时保留完整高度（那时 note 有两三行，信息是真的）。 */
+.cc-clawd-dock[data-busy=false]{padding-top:4px;padding-bottom:4px}
+.cc-clawd-dock[data-busy=false] .cc-clawd-status{min-height:44px}
+.cc-clawd-dock[data-busy=false] .cc-clawd-home{width:44px;height:44px;flex-basis:44px}
+/* 🔴 角色不缩的话 home 槽缩了也没用：`button.cc-clawd-companion` 是 `section.cc-clawd-dock`
+ *    的**前兄弟**（`ClawdWorkspace` 里 button 在 section 之前），所以
+ *    `.cc-clawd-dock[data-busy=false] .cc-clawd-companion`（后代）**永不匹配** ——
+ *    那条规则曾原样写在这里，实测结果是闲态 home 缩到 44 而角色仍是 48
+ *    （`clawdSquad.css:44`），溢出 4px。改从共同祖先 `.cc-clawd-stream` 上 `:has()` 取条件。
+ *    选择器必须压过 `clawdSquad.css` 的 `.cc-clawd-stream .cc-clawd-companion`（0,2,0），
+ *    而 squad 的包序在后 —— 这里的特异性是 0,4,0，与顺序无关。 */
+.cc-clawd-stream:has(.cc-clawd-dock[data-busy=false]) .cc-clawd-companion{width:44px;height:44px}
+.cc-clawd-stream:has(.cc-clawd-dock[data-busy=false]) .cc-clawd-companion>.cc-clawd-character{width:44px;height:44px}
 .cc-clawd-label{font-size:14px}.cc-clawd-note{font-size:12px}.cc-clawd-companion .brows{transition:transform .16s ease-out;transform-origin:48px 34px}
 .cc-clawd-character[data-act=thinking] .body{animation:clawd-consider 3.6s ease-in-out infinite}.cc-clawd-character[data-act=error] .brows{transform:rotate(-5deg)}.cc-clawd-character[data-act=approval] .brows,.cc-clawd-character[data-act=question] .brows{transform:translateY(-2px)}
 .cc-assistant-heading .brows{display:none}
@@ -48,8 +65,11 @@
 @container(max-width:600px){.cc-clawd-target{padding-inline-start:0;min-height:0}.cc-clawd-target::before{display:none}.cc-clawd-actions{margin-inline-start:0;width:100%;justify-content:flex-end;gap:2px}.cc-clawd-status{gap:4px 8px}.cc-clawd-home{width:48px;height:48px;flex-basis:48px}.cc-clawd-copy{flex-basis:calc(100% - 60px)}.cc-clawd-inspector{right:8px;width:calc(100% - 16px)}}
 
 .cc-clawd-target{padding-inline-start:0;min-height:0}
-.cc-msgcol>[data-cc-message]:has([data-cc-tool]){padding-inline-start:76px}
+/* 🔴 这里曾经有一条 `.cc-msgcol>[data-cc-message]:has([data-cc-tool]){padding-inline-start:76px}`
+ *    —— 用永久内边距给角色留坑位。后果是一屏里两种左边距（助手正文不缩进、工具行
+ *    缩进），角色飘走后坑位还留着，窄窗下正文可用宽度从 834 掉到 758。
+ *    现在角色只在「消息列左侧真有空间」时飞过去（见 `useClawdMotion` 的 `visible`），
+ *    空间不够就留在 dock —— 浮层不占布局，这是项目红线。 */
 [data-clawd-reading=true] .cc-clawd-character *{animation-play-state:paused!important}
 .cc-clawd-companion .prop{animation:clawd-prop-enter .18s ease-out both;transform-origin:48px 60px}
 @keyframes clawd-prop-enter{from{opacity:0;transform:translateY(2px) scale(.96)}to{opacity:1;transform:none}}
-@container(max-width:600px){.cc-msgcol>[data-cc-message]:has([data-cc-tool]){padding-inline-start:0}}

@@ -14,6 +14,7 @@ import {
   editCount,
   editPair,
   toolArgLabel,
+  toolArgTitle,
   toolBodyText,
   toolDefaultOpen,
   toolKind,
@@ -141,6 +142,8 @@ function ToolCardImpl({ tool, marks }: { tool: CcToolCall; marks?: CcMark[] }) {
   }, [tool, kind]);
 
   const argLabel = toolArgLabel(tool.input);
+  // hover 给完整路径（摘要只留末两段，全路径是「改了哪个文件」的唯一线索）。
+  const argTitle = toolArgTitle(tool.input);
   const command = asString(tool.input.command);
   const hasBody = (kind === "edit" && !!pair) || kind === "write" || body !== null;
 
@@ -210,7 +213,7 @@ function ToolCardImpl({ tool, marks }: { tool: CcToolCall; marks?: CcMark[] }) {
         {/* 命令可能很长：允许收缩并省略尾部，完整原文看 title 或展开态。
             `marks`：会话内搜索的命中（seg 0 = 参数摘要，seg 1 = 展开区正文，见
             `summarize.convSegments`）。 */}
-        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted-foreground" title={argLabel}>
+        <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted-foreground" title={argTitle}>
           <MarkedText text={argLabel} marks={labelMarks} />
         </span>
         <span className="flex shrink-0 items-center gap-2 text-[11px]">
@@ -252,7 +255,7 @@ function ToolCardImpl({ tool, marks }: { tool: CcToolCall; marks?: CcMark[] }) {
       </button>
 
       {reveal && hasBody && (
-        <div className="pb-1.5 pl-[30px] pr-1">
+        <div className="cc-disclosure pb-1.5 pl-[30px] pr-1">
           {(kind === "edit" || kind === "write") && (
             /* 「共 N 处修改」与视图切换都在 DiffBlock 顶栏里 —— 它们是同一份 diff
                的元信息，挂在卡片外面会被 diff 自身的边框切成两块（设计稿场景一）。 */

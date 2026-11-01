@@ -1,9 +1,9 @@
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "../ui/toast";
-import { classifySlash } from "../../lib/ccSlash";
-import { isSendKey, useSendKey } from "../../lib/ccSendKey";
+import { isSendKey, isSendNowKey, useSendKey } from "../../lib/ccSendKey";
 import type { CcImage } from "../../lib/ccImage";
 import { useCcMention } from "../../hooks/useCcMention";
+import { useComposerSend } from "../../hooks/useComposerSend";
 import { useCcDropImages } from "../../hooks/useCcDropImages";
 import { useComposerDraft } from "../../hooks/useComposerDraft";
 import { useComposerPolish } from "../../hooks/useComposerPolish";
@@ -15,7 +15,9 @@ import { ComposerFooter, ComposerTools } from "./ComposerTools";
 import type { QueuedMessage } from "../../hooks/useCcSendQueue";
 import { ComposerPolishPreview } from "./ComposerPolishPreview";
 import "./composer.css";
-import { useCcDraftInsert } from "../../hooks/useCcDraftInsert"; import { DraftContextList } from "./DraftContextList"; import { MentionPanel } from "./MentionPanel";
+import { useCcDraftInsert } from "../../hooks/useCcDraftInsert";
+import { DraftContextList } from "./DraftContextList";
+import { MentionPanel } from "./MentionPanel";
 import { SlashPanel } from "./SlashPanel";
 import { InputReceipts } from "./InputReceipts";
 import type { CcInputMode, CcInputs } from "../../lib/ccInput";
@@ -113,12 +115,14 @@ function ComposerImpl({
   /** 有图时发送按钮要能点亮 —— 这是唯一需要订阅的附件状态。 */
   const [hasImages, setHasImages] = useState(false);
   const [imagesBusy, setImagesBusy] = useState(false);
-  const [sending, setSending] = useState(false), [delivery, setDelivery] = useState<CcInputMode>(onSteer ? "steer" : "queue");
+  /** 投递档位（补充 / 排队 / 立即调整）。发送本身见 `useComposerSend`。 */
+  const [delivery, setDelivery] = useState<CcInputMode>(onSteer ? "steer" : "queue");
   const fileRef = useRef<HTMLInputElement>(null);
   // 润色草稿的备份与忙碌态（2026-10-26 外移到 hooks/useComposerPolish.ts）。
   const polish = useComposerPolish(onPolish);
   /** 整个输入区（含面板）的定位锚点与「点外面关闭」的判定框。 */
-  const boxRef = useRef<HTMLDivElement>(null); useCcDraftInsert(boxRef, areaRef, setValue);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useCcDraftInsert(boxRef, areaRef, setValue);
   // @引用补全（设计稿《对话页-@引用与排版偏好》）：状态与取数全在 hook 里，
   // 这里只接线 —— Composer 本体已贴体量门限，不能再长。
   const mention = useCcMention({
@@ -146,50 +150,24 @@ function ComposerImpl({
   // slash 命令交互（面板开合 / 补全 / 键位）见 `useCcSlashInput`。
   const slash = useCcSlashInput(value, setValue, boxRef);
 
-  // 发送 IPC 在途的同步锁：`onSend` 要等后端起进程（远端 SSH 可能数秒），输入框在它返回后才清空。
-  // 没有这把锁时按住 Ctrl+Enter / 连点发送，第二次会把同一条文本再排进队列。
-  // 用 ref 而不是 state：state 要等下一次渲染才生效，挡不住同一帧内的连发。
-  const sendingRef = useRef(false);
-
-  const send = async (forcedMode?: CcInputMode) => {
-    if (sendingRef.current) return;
-    const text = value.trim();
-    const images = attachRef.current?.ready() ?? [];
-    // 图还在编码：此刻发出去只有文字到达，用户却以为图也跟着走了。
-    // 拦在这里比发出去再补一句「图没发成功」便宜得多。
-    if (attachRef.current?.busy()) {
-      toast("图片还在处理，稍等一下再发", "info");
-      return;
-    }
-    // 纯图片消息合法：没有文字但有图就照发。
-    if (!text && images.length === 0) return;
-    // 闸门：白名单外的 slash 命令不发送。拦住时**不清空**输入——用户的字
-    // 得留着改，只显示提示告诉他该去哪儿。
-    const verdict = classifySlash(text);
-    if (verdict.kind === "unknown") {
-      slash.setReject(verdict.name);
-      return;
-    }
-    // 发送失败 ⇒ 草稿与附件都留着。那是用户刚拼好的东西，
-    // 一次后端抖动就清掉会让人重贴一遍图。
-    sendingRef.current = true;
-    setSending(true);
-    try {
-      const mode = text.startsWith("/") || text.startsWith("!") ? "queue" : forcedMode ?? delivery;
-      const submit = !running || mode === "queue" ? onSend : mode === "steer" ? onSteer ?? onSend : onSendNow ?? onStopAndSend ?? onSend;
-      const accepted = await submit(text, images);
-      if (accepted === false) return;
-      // 发送在途时用户若又改了输入框，那是新草稿，不能跟着已发出的那句一起清掉。
-      setValue((cur) => (cur.trim() === text ? "" : cur));
-      setDelivery(onSteer ? "steer" : "queue"); slash.onSent();
-      // 已发出的草稿不再可「撤销润色」：那会把旧稿填回空输入框，像是能撤回发送。
-      polish.reset();
-      attachRef.current?.clear(images);
-    } finally {
-      sendingRef.current = false;
-      setSending(false);
-    }
-  };
+  // 发送 = 闸门 + 在途锁 + 失败保留草稿，整块在 `useComposerSend`（2026-11 外移，
+  // 理由见那个 hook 的头注）。这里只接线。
+  const { send, sending } = useComposerSend({
+    value,
+    setValue,
+    attachRef,
+    delivery,
+    setDelivery,
+    running,
+    onSend,
+    onSteer,
+    onSendNow,
+    onStopAndSend,
+    steering: !!onSteer,
+    onUnknownSlash: slash.setReject,
+    onSent: slash.onSent,
+    onResetPolish: polish.reset,
+  });
 
   /** 润色当前草稿。失败时文本一个字都不动（用户那句草稿不能丢）。 */
   const runPolish = async () => {
@@ -249,7 +227,9 @@ function ComposerImpl({
           onKeyDown={event => {
             if (mention.open && mention.handleKey(event)) return;
             if (slash.handleKey(event, () => void send())) return;
-            if (running && onSendNow && event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) { event.preventDefault(); void send("now"); return; }
+            // 运行中的「立即调整」。判据在 `isSendNowKey`：`ctrlEnter` 档下
+            // Ctrl+Enter 是发送键，不能兼任这个（否则运行中按发送 = 软中断 + 重发）。
+            if (running && onSendNow && isSendNowKey(sendKey, event)) { event.preventDefault(); void send("now"); return; }
             if (isSendKey(sendKey, event)) { event.preventDefault(); void send(); }
           }}
         />

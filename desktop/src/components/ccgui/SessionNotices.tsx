@@ -115,10 +115,16 @@ export function SessionNotices({
       {dropped > 0 && (
         <Notice tone="info">更早的 {dropped} 条事件已滚出缓冲，翻不到更上面了。</Notice>
       )}
-      <ConnectionIssue errors={errors} stderr={stderr} unavailable={unavailable} retrying={retrying} onRetry={onRetry} onSettings={onSettings} onDismiss={() => {
-        for (let i = errors.length - 1; i >= 0; i--) onDismissError(i);
-        onDismissStderr();
-      }} />
+      <ConnectionIssue
+        errors={errors}
+        stderr={stderr}
+        unavailable={unavailable}
+        retrying={retrying}
+        onRetry={onRetry}
+        onSettings={onSettings}
+        onDismissError={onDismissError}
+        onDismissStderr={onDismissStderr}
+      />
     </>
   );
 }

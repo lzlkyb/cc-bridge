@@ -3,6 +3,7 @@ import type { CcMark } from "../../lib/ccMarkdown";
 import { MessageText } from "./MessageText";
 import { UserMessageImages } from "./UserMessageImages";
 import { isImeComposing } from "../../lib/utils";
+import { isSendKey, useSendKey } from "../../lib/ccSendKey";
 
 /**
  * 用户消息气泡 + 「编辑并重发 / 从此处分叉」（批 3-3）。
@@ -48,6 +49,8 @@ function UserMessageBubbleImpl({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(text);
+  // 编辑框与主输入区共用同一个发送键偏好（此前恒为 Ctrl+Enter，与设置里选的档位打架）。
+  const sendKey = useSendKey();
   const hasImages = images !== undefined && images.length > 0;
 
   if (!editing) {
@@ -135,8 +138,9 @@ function UserMessageBubbleImpl({
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (isImeComposing(e.nativeEvent)) return;
-            // Ctrl/⌘+Enter 发送：与输入区一致；裸 Enter 留作换行（改多行提示是常态）。
-            if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+            // 走与主输入区同一套判据（`isSendKey`）：偏好设成 Ctrl+Enter 时裸 Enter
+            // 就是换行 —— 改多行提示是常态，两处行为必须一致。
+            if (isSendKey(sendKey, e)) {
               e.preventDefault();
               submit();
             }
@@ -162,7 +166,9 @@ function UserMessageBubbleImpl({
           >
             取消
           </button>
-          <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">⌘/Ctrl+Enter 发送</span>
+          <span className="ml-auto whitespace-nowrap text-[11px] text-muted-foreground">
+            {sendKey === "enter" ? "Enter 发送 · Shift+Enter 换行" : "Ctrl/⌘+Enter 发送 · Enter 换行"}
+          </span>
         </div>
       </div>
       <p className="max-w-[86%] text-right text-[11px] leading-[1.5] text-muted-foreground">

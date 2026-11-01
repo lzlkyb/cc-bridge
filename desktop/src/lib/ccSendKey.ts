@@ -85,3 +85,32 @@ export function isSendKey(
   if (e.shiftKey) return false;
   return key === "enter" ? true : e.ctrlKey || e.metaKey;
 }
+
+/**
+ * 运行中「立即调整」（软中断 + 立即重发）的按键。
+ *
+ * 两档各用一个键，且**都不与「主发送方式」重合**：
+ * - `enter` 档：`Ctrl/⌘+Enter`。注意它在空闲时也**是**发送键（`isSendKey` 为兼容
+ *   老习惯收下了它，见上一条），所以这里是一处**刻意的语义分叉**：空闲时 Ctrl+Enter
+ *   = 发送（按 `delivery` 档，运行中即「补充」），运行中 Ctrl+Enter = 立即调整。
+ *   理由是 `enter` 档的主发送方式是裸 Enter，运行中「补充」还能用裸 Enter 触发，
+ *   让 Ctrl+Enter 在运行中升级成「中断并重发」不会让人丢掉任何能力。
+ * - `ctrlEnter` 档：`Alt+Enter`。这一档没有分叉的余地 —— Ctrl+Enter 就是**唯一**的
+ *   发送键，运行中若把它借给「立即调整」，用户按发送键得到的是软中断 + 重发，
+ *   而界面上一个字都不提示。所以换一个不与任何既有绑定冲突的键。
+ *
+ * 对应文案在 `ComposerFooter`（`sendNowHint`），两边必须一起改。
+ */
+export function isSendNowKey(
+  key: SendKey,
+  e: { key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean },
+): boolean {
+  if (e.key !== "Enter" || e.shiftKey) return false;
+  if (key === "enter") return (e.ctrlKey || e.metaKey) && !e.altKey;
+  return e.altKey && !e.ctrlKey && !e.metaKey;
+}
+
+/** 「立即调整」在提示里的按键片段（`enter` 档复用发送键的修饰符标签）。 */
+export function sendNowHint(key: SendKey, mod: string): string {
+  return key === "enter" ? `${mod}+Enter` : "Alt+Enter";
+}

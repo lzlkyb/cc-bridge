@@ -54,7 +54,7 @@ function ThinkingBlockImpl({ text, running, titleMarks }: { text: string; runnin
           <span className="truncate opacity-70">· <MarkedText text={summary} marks={titleMarks} /></span>
         </button>
         {open && (
-          <div className="group/think relative mt-1">
+          <div className="cc-disclosure group/think relative mt-1">
             <pre className="whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 pr-14 text-[12px] leading-[1.6] text-muted-foreground">
               {text}
             </pre>

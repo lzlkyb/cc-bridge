@@ -1,4 +1,4 @@
-import { memo, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
@@ -51,8 +51,24 @@ function ApprovalCardImpl({
     queryFn: () => invoke<StaticStatus>("get_status"),
   });
   const [remembering, setRemembering] = useState(false);
+  /**
+   * 专注审阅弹窗是否打开。
+   *
+   * 🔴 用它控制**弹窗内容是否渲染**：`body` 里可能是一份上千行的 MultiEdit diff，
+   *    而此前同一份 JSX 既进卡片、又进一个长期挂载（只是 hidden）的 `<dialog>` ——
+   *    等于每次审批都渲染两遍 DOM 树。弹窗是用户主动点开的少数时刻，到那时再
+   *    付这份钱（审查 P3-5）。
+   */
+  const [reviewing, setReviewing] = useState(false);
   const rememberRef = useRef(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  // 内容先挂上、再开 modal：showModal 必须在 `<dialog>` 已经渲染之后调用，
+  // 否则 ref 还是 null（第一次点「专注审阅」必然撞上）。
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (!reviewing || !el || el.open) return;
+    el.showModal();
+  }, [reviewing]);
   // 提问一律走选项卡（哪怕一道题都没读出来 —— 那也有「跳过」这条路，
   // 而「允许」在协议上无法表达一个答案）。
   if (approval.toolName === "AskUserQuestion") {
@@ -161,9 +177,21 @@ function ApprovalCardImpl({
   return <>
     <div data-cc-entity role="group" aria-label={`等待批准：${approval.toolName}`} data-cc-approval className="overflow-hidden rounded-[10px] border border-warning/45 bg-warning/[.06]">
       {body}
-      <button type="button" data-cc-approval-focus className="cc-approval-focus" onClick={() => dialogRef.current?.showModal()}>专注审阅</button>
+      <button type="button" data-cc-approval-focus className="cc-approval-focus" onClick={() => setReviewing(true)}>专注审阅</button>
     </div>
-    {createPortal(<dialog ref={dialogRef} aria-label="专注审阅审批" className="cc-approval-dialog"><div className="cc-approval-dialog-head"><h2>审阅本次操作</h2><button type="button" onClick={() => dialogRef.current?.close()} aria-label="关闭审阅"><Icon name="close" size={16} /></button></div>{body}</dialog>, document.body)}
+    {createPortal(
+      <dialog
+        ref={dialogRef}
+        aria-label="专注审阅审批"
+        className="cc-approval-dialog"
+        // Esc 关闭走原生 `close` 事件，不会经过我们那两个按钮。
+        onClose={() => setReviewing(false)}
+      >
+        <div className="cc-approval-dialog-head"><h2>审阅本次操作</h2><button type="button" onClick={() => dialogRef.current?.close()} aria-label="关闭审阅"><Icon name="close" size={16} /></button></div>
+        {reviewing ? body : null}
+      </dialog>,
+      document.body,
+    )}
   </>;
 }
 

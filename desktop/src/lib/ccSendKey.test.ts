@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSendKey, type SendKey } from "./ccSendKey";
+import { isSendKey, isSendNowKey, sendNowHint, type SendKey } from "./ccSendKey";
 
 const press = (key: string, mods: { shift?: boolean; ctrl?: boolean; meta?: boolean } = {}) => ({
   key,
@@ -41,5 +41,39 @@ describe("isSendKey", () => {
     expect(isSendKey("enter", press("a"))).toBe(false);
     expect(isSendKey("enter", press("Escape"))).toBe(false);
     expect(isSendKey("ctrlEnter", press("NumpadEnter", { ctrl: true }))).toBe(false);
+  });
+});
+
+describe("isSendNowKey（运行中「立即调整」）", () => {
+  const now = (key: string, mods: { shift?: boolean; ctrl?: boolean; meta?: boolean; alt?: boolean } = {}) => ({
+    key,
+    shiftKey: Boolean(mods.shift),
+    ctrlKey: Boolean(mods.ctrl),
+    metaKey: Boolean(mods.meta),
+    altKey: Boolean(mods.alt),
+  });
+
+  /// 🔴 这条是修复本身：`ctrlEnter` 档下 Ctrl+Enter 是**发送键**，不能再兼任
+  /// 立即调整，否则用户运行中按发送键得到一次软中断 + 重发，且界面毫无提示。
+  it("ctrlEnter 档：Ctrl+Enter 不触发立即调整，改用 Alt+Enter", () => {
+    expect(isSendNowKey("ctrlEnter", now("Enter", { ctrl: true }))).toBe(false);
+    expect(isSendNowKey("ctrlEnter", now("Enter", { meta: true }))).toBe(false);
+    expect(isSendNowKey("ctrlEnter", now("Enter", { alt: true }))).toBe(true);
+  });
+
+  it("enter 档：Ctrl/⌘+Enter 触发立即调整，Alt 组合不抢", () => {
+    expect(isSendNowKey("enter", now("Enter", { ctrl: true }))).toBe(true);
+    expect(isSendNowKey("enter", now("Enter", { meta: true }))).toBe(true);
+    expect(isSendNowKey("enter", now("Enter", { alt: true }))).toBe(false);
+  });
+
+  it("Shift+Enter 永远不是立即调整（两档一致，与发送键同一口径）", () => {
+    expect(isSendNowKey("enter", now("Enter", { ctrl: true, shift: true }))).toBe(false);
+    expect(isSendNowKey("ctrlEnter", now("Enter", { alt: true, shift: true }))).toBe(false);
+  });
+
+  it("提示文案跟着档位走", () => {
+    expect(sendNowHint("enter", "Ctrl")).toBe("Ctrl+Enter");
+    expect(sendNowHint("ctrlEnter", "Ctrl")).toBe("Alt+Enter");
   });
 });

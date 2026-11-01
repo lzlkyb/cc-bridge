@@ -31,10 +31,18 @@ it("模型菜单选择下一轮模型并关闭", () => {
   act(() => button.click()); expect(change).toHaveBeenCalledWith("sonnet"); expect(document.querySelector('[role="dialog"]')).toBeNull();
 });
 
-it("错误合并展示但完整保留不同诊断，重试可见", () => {
-  const retry = vi.fn(); render(<ConnectionIssue errors={["Permission denied", "model unavailable"]} stderr={["Permission denied", "host key changed"]} unavailable onRetry={retry} onDismiss={() => {}} />);
-  expect(host.querySelectorAll("section")).toHaveLength(1); expect(host.querySelector("pre")?.textContent).toContain("host key changed");
-  expect(host.querySelector("pre")?.textContent?.match(/Permission denied/g)).toHaveLength(1);
+it("错误分段展示：CLI 输出与界面错误各自保留原序，界面错误逐条可关", () => {
+  const retry = vi.fn(); const dismissError = vi.fn(); const dismissStderr = vi.fn();
+  render(<ConnectionIssue errors={["Permission denied", "model unavailable"]} stderr={["Permission denied", "host key changed"]} unavailable onRetry={retry} onDismissError={dismissError} onDismissStderr={dismissStderr} />);
+  expect(host.querySelectorAll("section")).toHaveLength(1);
+  // 🔴 不再全局去重：CLI 合法的重复行要保留，两个来源分开呈现。
+  const groups = [...host.querySelectorAll(".cc-connection-issue-group pre")].map(p => p.textContent);
+  expect(groups[0]).toBe("Permission denied\nhost key changed");
+  expect(groups[1]).toBe("Permission denied\nmodel unavailable");
+  const items = host.querySelectorAll(".cc-connection-issue-list li");
+  expect(items).toHaveLength(2);
+  act(() => (items[1].querySelector("button") as HTMLButtonElement).click());
+  expect(dismissError).toHaveBeenCalledWith(1);
   act(() => [...host.querySelectorAll("button")].find(b => b.textContent === "重新检查环境")!.click()); expect(retry).toHaveBeenCalledTimes(1);
 });
 

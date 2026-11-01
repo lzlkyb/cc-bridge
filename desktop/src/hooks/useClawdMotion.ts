@@ -23,14 +23,26 @@ export function useClawdMotion({ rootRef, scrollRef, homeRef, petRef, targetId, 
     const target = findClawdMessage(scroll, targetId);
     const position = () => {
       const base = root.getBoundingClientRect(), viewport = scroll.getBoundingClientRect();
-      root.style.setProperty("--clawd-dock-height", `${home.closest(".cc-clawd-dock")?.getBoundingClientRect().height ?? 64}px`);
+      // 🔴 不再写 `--clawd-dock-height`：底部浮条已经改为贴 `.cc-stream-viewport` 的底
+      //    （见 `ConversationStream`），没有消费者了。留着它只会让人以为浮条还依赖
+      //    这个每帧重算的值 —— 而它的首帧必然不准（dock 折叠前后高度差一截）。
       root.style.setProperty("--clawd-detail-height", `${Math.max(80, viewport.height - 16)}px`);
       const box = target?.getBoundingClientRect();
       const inset = pet.dataset.landing === "task" ? 2 : 18;
-      const visible = box && target?.querySelector("[data-cc-tool]") && viewport.width >= 600 && box.top >= viewport.top + inset && box.top + pet.offsetHeight + 4 <= viewport.bottom - inset;
+      /**
+       * 🔴 角色只能落在消息**左侧外面**，不许压住正文。
+       *
+       * 此前靠给含工具调用的消息加 76px 左内边距来腾位置（`clawd.css` 里那条
+       * `:has([data-cc-tool])`）—— 代价是一屏两种左边距、角色飘走后坑位还在、
+       * 窄窗正文可用宽度少 76px。现在换成「左侧真有空间才飞过去，没有就留在 dock」：
+       * 浮层不占布局，也不需要任何永久坑位。
+       */
+      const gap = pet.offsetWidth + 6;
+      const room = box ? box.left - base.left : 0;
+      const visible = box && target?.querySelector("[data-cc-tool]") && viewport.width >= 600 && room >= gap && box.top >= viewport.top + inset && box.top + pet.offsetHeight + 4 <= viewport.bottom - inset;
       const landing = visible ? box : home.getBoundingClientRect();
       if (!landing.width || !base.width) return;
-      const x = Math.max(0, Math.min(landing.left - base.left, base.width - pet.offsetWidth));
+      const x = Math.max(0, Math.min(landing.left - base.left - (visible ? gap : 0), base.width - pet.offsetWidth));
       const y = landing.top - base.top + (visible ? 4 : 0);
       const next = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
       if (next !== previous.current) {

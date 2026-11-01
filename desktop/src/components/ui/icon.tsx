@@ -41,6 +41,7 @@ const paths: Record<string, string> = {
   arrowRight: "M5 12h14M12 5l7 7-7 7",
   chevronLeft: "M15 18l-6-6 6-6",
   chevronDown: "M6 9l6 6 6-6",
+  chevronUp: "M18 15l-6-6-6 6",
   power: "M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10",
   play: "M5 3l14 9-14 9V3z",
   pause: "M6 4h4v16H6zM14 4h4v16h-4z",

@@ -1,5 +1,5 @@
 import { useRef, useState, type ReactNode } from "react";
-import { setSendKey, useSendKey, type SendKey } from "../../lib/ccSendKey";
+import { sendNowHint, setSendKey, useSendKey, type SendKey } from "../../lib/ccSendKey";
 import { Icon } from "../ui/icon";
 import { ChatPopover } from "./ChatPopover";
 import type { CcInputMode } from "../../lib/ccInput";
@@ -63,9 +63,12 @@ export function ComposerFooter({ sendHint, children, steering }: { sendHint: str
   const sendKey = useSendKey();
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement>(null);
+  // 修饰符标签从 `sendHint`（"Ctrl+Enter" / "⌘Enter"）里剥出来，避免再开一个 platform 通道。
+  const mod = sendHint.replace(/\s*Enter$/, "").replace(/\+$/, "");
+  const nowHint = sendNowHint(sendKey, mod);
   return (
     <div className="cc-composer-footer">
-      <button type="button" ref={anchorRef} onClick={() => setOpen(!open)} aria-expanded={open} aria-label="设置发送快捷键" className="rounded text-left hover:text-foreground">{steering ? `${sendKey === "enter" ? "Enter 补充 · " : ""}${sendHint} 立即调整 · Shift Enter 换行` : sendKey === "enter" ? "Enter 发送 · Shift Enter 换行" : `${sendHint} 发送 · Enter 换行`}</button>
+      <button type="button" ref={anchorRef} onClick={() => setOpen(!open)} aria-expanded={open} aria-label="设置发送快捷键" className="rounded text-left hover:text-foreground">{steering ? `${sendKey === "enter" ? "Enter 补充 · " : ""}${nowHint} 立即调整 · Shift Enter 换行` : sendKey === "enter" ? "Enter 发送 · Shift Enter 换行" : `${sendHint} 发送 · Enter 换行`}</button>
       {children}
       {open && <ChatPopover anchorRef={anchorRef} onClose={() => setOpen(false)} label="输入偏好" width={290}>
         <div className="cc-chat-section"><strong>发送快捷键</strong></div>
