@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
@@ -10,14 +10,16 @@ import { useCcPolish } from "../../hooks/useCcPolish";
 import { useCcStreamScroll } from "../../hooks/useCcStreamScroll";
 import { useCcTargets } from "../../hooks/useCcTargets";
 import type { CcHistoryRow, CcRestoreReq } from "../../lib/ccEventTypes";
-import { paneForkSeed, type CcForkSeed } from "../../lib/ccFork";
-import { derivePaneMeta, type CcPaneMeta } from "../../lib/ccPaneMeta";
-import { toBarSession } from "../../lib/ccSessionBar";
+import type { CcForkSeed } from "../../lib/ccFork";
+import type { CcPaneMeta } from "../../lib/ccPaneMeta";
 import { shortcutLabel } from "../../lib/platform";
-import { ConversationEnvironment } from "../ccgui/ApprovalEnvironment"; import { CcPaneHead } from "../ccgui/CcPaneHead";
+import { useCcPaneViewModel } from "../../hooks/useCcPaneViewModel";
+import { ConversationEnvironment } from "../ccgui/ApprovalEnvironment";
+import { CcPaneHead } from "../ccgui/CcPaneHead";
 import "../ccgui/chatWorkspace.css";
 import { CcPaneComposer } from "../ccgui/CcPaneComposer";
-import { ConversationStream } from "../ccgui/ConversationStream"; import { CcConversationLayout } from "../ccgui/CcConversationLayout";
+import { ConversationStream } from "../ccgui/ConversationStream";
+import { CcConversationLayout } from "../ccgui/CcConversationLayout";
 
 /**
  * 一条对话会话的完整界面：会话条/提示条 + 消息流 + 输入区。
@@ -167,75 +169,22 @@ export function CcPane({
     resolved: view.resolved,
   });
 
-  /**
-   * 侧栏那一行：标题 / 轮数 / 五态点 / 副标题。纯计算在 `lib/ccPaneMeta`。
-   *
-   * `sessionId` 在 effect 里读 ref 而不是在 `useMemo` 里：内部 id 是**铸发后**
-   * 才写进 ref 的，进来那一刻（甚至第一帧）还是 null。`ready` 从 false 变 true
-   * 正好是「铸发 + 快照都走完」的那一刻，拿它当依赖才能把 id 补上。
-   */
-  const metaBase = useMemo(() => {
-    const targetLabel = targets.find((t) => t.id === targetId)?.label ?? "本机";
-    return derivePaneMeta({
-      view,
-      pending: session.pending,
-      connectionId: targetId || null,
-      targetLabel,
-      targetAlive: targetId === "" || targets.some((t) => t.id === targetId),
-      // 输入框里的目录（不是 `view.cwd`）：同目录并发判的是「按下发送会落到哪」。
-      cwd,
-      // 恢复没走完就别让历史区露出来 —— 那时本条还没有 rowId / cliSessionId，
-      // 对不上账会让它自己在历史区里再出现一次（可点 ⇒ 开出重复的一条）。
-      restoring: !session.ready,
-      // 手写标题优先于「首条消息」：改完名看不到变化，等于改名没生效。
-      titleHint: titleOverride ?? (session.restored?.titleLocked ? session.restored.title : null),
-    });
-  }, [view, session.pending, targetId, targets, cwd, session.ready, titleOverride, session.restored]);
-  /**
-   * 库里那一行的行号，给侧栏历史区对账用。三个来源：「从历史打开」的 entry
-   * 自带；「接着上次聊」的等 `cc_restore`；「历史按钮接管进当前 pane」的等
-   * `cc_history_open`（`adoptedRowId`，那时 `restored` 已被清）。新会话为 `null`。
-   * 有它历史区在载入完成那一刻就能把这条摘掉 —— 只靠 `view.sessionId` 会慢
-   * 几百毫秒（`Init` 才带），那段时间用户能点出重复的一条。
-   */
-  const rowId = view.rowId ?? (
-    restore.kind === "row"
-      ? restore.rowId
-      : (session.restored?.rowId ?? session.adoptedRowId ?? null));
-  useEffect(() => {
-    onMeta(paneKey, { ...metaBase, sessionId: session.sessionIdRef.current, rowId });
-  }, [paneKey, metaBase, session.ready, session.sessionIdRef, onMeta, rowId]);
-
-  /**
-   * 在这条消息处分叉重发（切换会话在宿主 `useCcPaneList.forkFrom`）；标题取自 `metaBase`。
-   * 🔴 依赖只列 `view.messages`/`view.sessionId` 而不是整个 `view`：流式每 tick 都换 `view`。
-   */
-  const onForkMessage = useCallback(
-    (index: number, text: string) =>
-      onForkSession(
-        paneForkSeed(
-          {
-            messages: view.messages, sessionId: view.sessionId, title: metaBase.title,
-            connectionId: targetId, cwd: cwd.trim(), model, permissionMode: mode,
-          },
-          index,
-          text,
-        ),
-      ),
-    [view.messages, view.sessionId, metaBase.title, targetId, cwd, model, mode, onForkSession],
-  );
-
-  const bar = useMemo(
-    () =>
-      toBarSession({
-        connectionLabel: targets.find((t) => t.id === targetId)?.label ?? "本机",
-        cwd,
-        model,
-        permissionMode: mode,
-        view,
-      }),
-    [targets, targetId, cwd, model, mode, view],
-  );
+  // 侧栏元信息 / 会话条 / 历史行号 / 分叉切点全在 `useCcPaneViewModel`（2026-11 外移，
+  // 那个文件头注写明了三条容易踩的规则）。
+  const { metaBase, onForkMessage, bar } = useCcPaneViewModel({
+    paneKey,
+    view,
+    session,
+    targetId,
+    targets,
+    cwd,
+    model,
+    mode,
+    titleOverride,
+    restore,
+    onMeta,
+    onForkSession,
+  });
 
   return (
     <ConversationEnvironment.Provider value={{ label: bar.connection, cwd: bar.cwd, remote: Boolean(targetId) }}><div
