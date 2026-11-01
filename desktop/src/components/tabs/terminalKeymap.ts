@@ -31,7 +31,10 @@ export function attachTerminalKeymap(
   term.attachCustomKeyEventHandler((e) => {
     if (e.type !== "keydown") return true;
     const ctrl = e.ctrlKey || e.metaKey;
-    // e.key 在 Ctrl+Shift+V 下是 "V"，故一条判定同时覆盖 Ctrl+V 与 Ctrl+Shift+V。
+    // e.key 在 Ctrl+V 下是 "v"、Ctrl+Shift+V 下是 "V"，一条判定两处都命中。
+    // ⚠️ 但 Ctrl+Shift+V 实际**到不了这里**：SshTerminal 的 window capture 先接走它
+    // （优先当文本粘贴，剪贴板没文本才上传图片，见 hooks/useTerminalShortcuts.ts）。
+    // 留着这条分支是为了 ctrl+key 的语义闭合与「万一 capture 被绕过」的兜底。
     if (ctrl && (e.key === "v" || e.key === "V")) {
       // 🔴 必须 preventDefault：xterm 的 keydown 监听丢弃返回值且从不 preventDefault，
       // 返回 false 只是不让 xterm 发 \x16，浏览器的默认粘贴动作照常执行 → 往 xterm
@@ -54,6 +57,10 @@ export function attachTerminalKeymap(
       actionsRef.current.openSearch();
       return false;
     }
+    // Ctrl+Shift+G 打开「搜索所有标签」。真正的处理在 TerminalTabsBar 的 window capture
+    // 里（它是布局级动作，不归单个终端）；这里只负责不发往远端——不拦的话 xterm 会把它
+    // 映射成 \x07（BEL），按一下快捷键远端「嘟」一声，还会点亮标签的未读铃点。
+    if (ctrl && e.shiftKey && (e.key === "g" || e.key === "G")) return false;
     // 🔴 侧栏折叠是 Ctrl+Shift+B，**不是 Ctrl+B**。
     // Ctrl+B 是 tmux 的默认前缀键，也是 readline 的 backward-char（光标左移），
     // 与上面不抢 Ctrl+F 是同一个理由——它们互为镜像。抢了之后更难受的是：

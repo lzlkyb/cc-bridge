@@ -46,6 +46,7 @@ mod ssh_cmds;
 mod status;
 mod system;
 mod update;
+mod update_safety;
 
 pub use audit_cmds::*;
 pub use backup_cmds::*;
@@ -64,3 +65,4 @@ pub use ssh_cmds::*;
 pub use status::*;
 pub use system::*;
 pub use update::*;
+pub use update_safety::*;

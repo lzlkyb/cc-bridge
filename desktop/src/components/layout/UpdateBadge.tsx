@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { useUpdate, friendlyError, AUTO_RESTART_DELAY_SECS } from "../../contexts/UpdateContext";
+import { useUpdate, friendlyError } from "../../contexts/UpdateContext";
 import { useToast } from "../ui/toast";
 import { Icon } from "../ui/icon";
 import { Spinner } from "../ui/Spinner";
@@ -20,14 +20,14 @@ import { formatBytes, formatBytesPerSec } from "../../lib/utils";
  * 七态（完整信息不丢，只是从可见文案移进 `title`）：
  * - idle        `v0.1.5`   → 点击检查更新
  * - checking    `检查中`    → 旋转 spinner
- * - available   `更新`      → 点击查看更新详情 / 直接下载
+ * - available   `更新`      → 点击查看更新详情
  * - downloading `42%`      → 进度环按百分比推进
- * - ready       `重启`      → 点击重启
+ * - ready       `重启`      → 查看并确认重启
  * - uptodate    `最新`      → 4 秒后自动回 idle
  * - error       `重试`      → 点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, errorCode, errorToastAllowed, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
+  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, error, errorCode, errorToastAllowed, manualCheckForUpdate, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -39,7 +39,7 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
     // 仅当状态真正变化时才触发（跳过初始化 idle → idle）
     if (prev === status) return;
 
-    if (status === "available") {
+    if (status === "available" && !isDismissed(update?.version)) {
       toast(`发现新版本 v${update?.version ?? ""}`, "info");
     } else if (status === "uptodate") {
       // 仅手动检查时弹「已是最新」提示框；自动检查（启动/定时）只显示版本号 pill
@@ -48,8 +48,7 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
         acknowledgeUptodate();
       }
     } else if (status === "ready") {
-      // 与弹窗文案对齐：安装已完成，倒计时结束后自动重启（点徽章可取消）。
-      toast(`更新已安装，${AUTO_RESTART_DELAY_SECS} 秒后自动重启（点徽章可取消）`, "success");
+      toast("更新已安装，准备好后可在更新窗口确认重启", "success");
     } else if (status === "error") {
       const fe = error ? friendlyError(error, errorCode) : null;
       // 自动检查失败不弹：用户没点任何东西，不该收到红色警报（详见 UpdateContext 的
@@ -79,15 +78,8 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   }, [restarting, status, error, toast]);
 
   const handleClick = async () => {
-    if (status === "available") {
-      // 本版本已「稍后」过 → 直接下载；否则打开更新内容弹框
-      if (isDismissed(update?.version)) {
-        await downloadAndInstall();
-      } else {
-        openUpdateNotes();
-      }
-    } else if (status === "ready") {
-      await restart();
+    if (status === "available" || status === "ready" || (status === "error" && update)) {
+      openUpdateNotes();
     } else if (status === "error") {
       await manualCheckForUpdate();
     }
@@ -152,38 +144,30 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
     const speed = bytesPerSec > 0 ? ` · ${formatBytesPerSec(bytesPerSec)}` : "";
     return (
       <Slot>
-        <span
-          className="header-badge header-badge-downloading"
+        <button
+          type="button"
+          onClick={openUpdateNotes}
+          className="header-badge header-badge-downloading cursor-pointer"
           title={`正在下载更新… ${progressIndeterminate ? "大小未知" : `${pct}%`}${speed} · ${dl}`}
         >
           <DownloadRing progress={pct} indeterminate={progressIndeterminate} />
           <span>{progressIndeterminate ? "下载中" : `${pct}%`}</span>
-        </span>
+        </button>
       </Slot>
     );
   }
 
   // ─── ready ────────────────────────────────
-  // 两种子态共用一个 66px 槽位：
-  // - 倒计时中 `8s`（时钟图标）：点击 = **取消**自动重启。这里必须让点击语义
-  //   变成「撤销」，否则用户看到「8s 后重启」的第一反应点下去反而立即重启。
-  // - 已取消/手动 `重启`（对勾图标）：点击 = 立即重启。
-  // 文案都是 2-3 字符，槽位宽度不变 ⇒ foot 高度与导航区零位移。
   if (status === "ready") {
-    const counting = autoRestartIn !== null;
     return (
       <Slot>
         <button
           className="header-badge header-badge-ready cursor-pointer tabular-nums"
-          title={
-            counting
-              ? `${autoRestartIn} 秒后自动重启 · 点击取消`
-              : "更新已安装，点击重启"
-          }
-          onClick={counting ? cancelAutoRestart : handleClick}
+          title="更新已安装，点击查看并确认重启"
+          onClick={handleClick}
         >
-          <Icon name={counting ? "clock" : "check"} size={10} />
-          <span>{counting ? `${autoRestartIn}s` : "重启"}</span>
+          <Icon name="check" size={10} />
+          <span>重启</span>
         </button>
       </Slot>
     );

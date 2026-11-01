@@ -3,10 +3,16 @@ import { Icon } from "../ui/icon";
 import { getTerminal } from "../../lib/terminalRegistry";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 
-/** Keep the header host and terminal siblings stable as a session moves in and out of a split. */
-export function TerminalPaneFrame({ session, label, splitPane, focused, zoomed, style, onFocus, onZoom, children }: {
+/**
+ * Keep the header host and terminal siblings stable as a session moves in and out of a split.
+ *
+ * `onClosePane` 只给**副格**传（主格关掉意味着分屏该塌掉，语义不同）：
+ * 以前副格只有「放大/还原」，想撤掉它得回标签栏点「收起分屏」，或者干脆把它断开——
+ * 用户找不到出口就把连接杀了。
+ */
+export function TerminalPaneFrame({ session, label, splitPane, focused, zoomed, style, onFocus, onZoom, onClosePane, children }: {
   session: SshSessionRef; label: string; splitPane: boolean; focused: boolean; zoomed: boolean;
-  style: CSSProperties; onFocus: () => void; onZoom: () => void;
+  style: CSSProperties; onFocus: () => void; onZoom: () => void; onClosePane?: () => void;
   children: (toolbarHost: HTMLDivElement | null) => ReactNode;
 }) {
   const [host, setHost] = useState<HTMLDivElement | null>(null);
@@ -28,6 +34,12 @@ export function TerminalPaneFrame({ session, label, splitPane, focused, zoomed, 
         aria-label={`${zoomed ? "还原分屏" : "放大窗格"} ${label}`} title={zoomed ? "还原分屏布局" : "临时放大此窗格"}>
         <Icon name={zoomed ? "collapse" : "expand"} size={14}/>
       </button>
+      {onClosePane && (
+        <button type="button" className="terminal-pane-close" onClick={onClosePane}
+          aria-label={`关闭分屏窗格 ${label}`} title="关闭这个分屏窗格（会话保留在标签栏）">
+          <Icon name="close" size={14}/>
+        </button>
+      )}
     </div>
     {children(host)}
   </div>;

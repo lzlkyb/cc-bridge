@@ -22,6 +22,13 @@ export interface SshSessionRef {
    */
   closedReason: string | null;
   /**
+   * 用户给这个标签起的名字（双击标签名修改）。空 = 用连接名/主机名。
+   *
+   * 🔴 按 tabId 而不是按 conn.id：同一台机器开多个终端时各标签需要各自的名字，
+   * 而改连接名不该 retroactively 改掉用户已经起好的标签名。
+   */
+  label?: string;
+  /**
    * 分屏专属会话：不出现在标签栏，只活在宿主标签的分屏格里（轻量双栏，方案 A）。
    * 宿主标签关闭 / 分屏关闭 / 连接被删时一并回收。
    */

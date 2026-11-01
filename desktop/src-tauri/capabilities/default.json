@@ -14,6 +14,7 @@
     "core:window:allow-set-size",
     "core:window:allow-show",
     "core:window:allow-set-focus",
+    "core:window:allow-request-user-attention",
     "updater:default",
     "process:default",
     "opener:default",

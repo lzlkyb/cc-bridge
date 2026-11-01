@@ -29,11 +29,17 @@ function formatDate(s: number): string {
 
 interface SshFileRowProps {
   highlighted?: boolean;
+  /** 多选选中态（行底色 + aria-selected）。 */
+  selected?: boolean;
   entry: SshFileEntry;
   busy: boolean;
   onOpenDir: (name: string) => void;
   onDownload: (name: string) => void;
   onRemove: (entry: SshFileEntry) => void;
+  /** 带修饰键的点击：多选/区间选择。返回 true = 已按选择处理。 */
+  onSelect?: (name: string, e: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean }) => boolean;
+  /** 双击普通文件：下载（以前双击完全没动作，只能点行尾按钮）。 */
+  onActivateFile?: (name: string) => void;
 }
 
 /**
@@ -41,22 +47,43 @@ interface SshFileRowProps {
  */
 export function SshFileRow({
   highlighted,
+  selected,
   entry,
   busy,
   onOpenDir,
   onDownload,
   onRemove,
+  onSelect,
+  onActivateFile,
 }: SshFileRowProps) {
   const clickable = entry.isDir || entry.isSymlink;
   const row = useRef<HTMLTableRowElement>(null);
   useEffect(() => { if (highlighted) row.current?.scrollIntoView({block:"nearest"}); }, [highlighted]);
+  // 单键点击保持原语义（目录进、文件不做事），修饰键点击才进多选——
+  // 否则「点一下文件想选中」和「点一下目录想进入」会互相打架。
+  const onRowClick = (e: React.MouseEvent) => {
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      onSelect?.(entry.name, e);
+      return;
+    }
+    if (clickable) {
+      if (!busy) onOpenDir(entry.name);
+      return;
+    }
+    onSelect?.(entry.name, e);
+  };
   return (
     <tr
-      ref={row} aria-selected={highlighted || undefined}
+      ref={row} aria-selected={selected || highlighted || undefined}
       className={`border-b border-border/60 ${
         clickable && !busy ? "cursor-pointer hover:bg-muted/30" : "hover:bg-muted/20"
-      } ${highlighted ? "bg-accent" : ""}`}
-      onClick={() => clickable && !busy && onOpenDir(entry.name)}
+      } ${selected ? "bg-primary/10" : ""} ${highlighted && !selected ? "bg-accent" : ""}`}
+      onClick={onRowClick}
+      onDoubleClick={() => {
+        if (entry.isDir || busy) return;
+        onActivateFile?.(entry.name);
+      }}
+      title={entry.isDir ? undefined : "双击下载"}
     >
       {/* max-w 约束列宽：超长文件名截断（title 看全文），不把右侧列挤出面板 */}
       <td className="max-w-[340px] py-1.5 pl-3">
@@ -123,10 +150,16 @@ interface FileTableProps {
   loading: boolean;
   error: string | null;
   busy: boolean;
+  /** 已多选的文件名集合（行底色 + aria-selected）。 */
+  selectedNames?: string[];
   onOpenDir: (name: string) => void;
   onDownload: (name: string) => void;
   onRemove: (entry: SshFileEntry) => void;
   onRetry?: () => void;
+  /** 带修饰键的点击 → 多选。 */
+  onSelect?: (name: string, e: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean }) => boolean;
+  /** 双击普通文件 → 下载。 */
+  onActivateFile?: (name: string) => void;
 }
 
 /**
@@ -144,10 +177,13 @@ export function FileTable({
   loading,
   error,
   busy,
+  selectedNames,
   onOpenDir,
   onDownload,
   onRemove,
   onRetry,
+  onSelect,
+  onActivateFile,
 }: FileTableProps) {
   const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>();
   return (
@@ -182,10 +218,13 @@ export function FileTable({
               key={e.name}
               entry={e}
               highlighted={e.name === highlightName}
+              selected={!!selectedNames?.includes(e.name)}
               busy={busy || loading}
               onOpenDir={onOpenDir}
               onDownload={onDownload}
               onRemove={onRemove}
+              onSelect={onSelect}
+              onActivateFile={onActivateFile}
             />
           ))}
         </tbody>

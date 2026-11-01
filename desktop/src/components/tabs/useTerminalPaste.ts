@@ -5,7 +5,7 @@ import type { Terminal } from "@xterm/xterm";
 // 但需在 capabilities 里显式给 `clipboard-manager:allow-read-text`——
 // `clipboard-manager:default` 自述就是“No features are enabled by default”，它什么都不授予。
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
-import { invoke } from "../../lib/tauri";
+import { sendTerminalUserInput } from "../../lib/terminalUserInput";
 import { toast } from "../ui/toast";
 import { preparePaste, shouldConfirmPaste } from "../../lib/terminalPaste";
 
@@ -45,7 +45,7 @@ export function useTerminalPaste({ sessionId, closedRef, termRef }: Args) {
       // 每次都读远端当前模式，不缓存：同一会话里 vi / less / cat 各会开关各的。
       const data = preparePaste(text, termRef.current?.modes.bracketedPasteMode === true);
       try {
-        await invoke("ssh_input", { sessionId, data });
+        await sendTerminalUserInput(sessionId, data);
       } catch (e) {
         toast(`粘贴失败：${e}`, "error");
       }
@@ -56,36 +56,53 @@ export function useTerminalPaste({ sessionId, closedRef, termRef }: Args) {
   /**
    * 粘贴入口（快捷键 / 工具栏 / 右键菜单共用）。
    *
+   * 返回 true = 剪贴板里有文本且已处理（含「已拦住等确认」）；false = 没有文本，
+   * 调用方（Ctrl+Shift+V）据此决定要不要退化成图片上传。
+   *
    * 空剪贴板**静默返回**：右键误触不应该弹提示。读取失败则必须报，不吞。
+   * `notifyEmpty` 给键盘路径用（Ctrl+V 是按下去的明确意图，静默会让人以为快捷键坏了）。
    * 粘完把焦点还给终端（按钮/右键路径不依赖焦点，但粘完得能接着敲）。
    */
-  const paste = useCallback(async () => {
-    let text: string;
-    try {
-      text = (await readText()) ?? "";
-    } catch (e) {
-      toast(`读取剪贴板失败：${e}`, "error");
-      return;
-    }
-    if (!text) return;
-    // 两段式：上次被拦的粘贴还在窗口内 → 这次就是确认，直接发。
-    const pending = pendingRef.current;
-    if (pending && Date.now() <= pending.expiresAt) {
+  const paste = useCallback(
+    async (opts?: { notifyEmpty?: boolean }): Promise<boolean> => {
+      let text: string;
+      try {
+        text = (await readText()) ?? "";
+      } catch (e) {
+        toast(`读取剪贴板失败：${e}`, "error");
+        return false;
+      }
+      if (!text) {
+        if (opts?.notifyEmpty) toast("剪贴板里没有文本；图片请按 Ctrl+Shift+V", "info");
+        return false;
+      }
+      const pending = pendingRef.current;
       pendingRef.current = null;
-      await sendPaste(pending.text);
+      // 两段式：上次被拦的粘贴还在窗口内 **且剪贴板内容没变** → 这次就是确认。
+      // 必须比对内容：拦下之后用户又复制了别的东西，照旧内容执行是危险的（他以为在执行新的）。
+      if (pending && Date.now() <= pending.expiresAt && pending.text === text) {
+        await sendPaste(text);
+        termRef.current?.focus();
+        return true;
+      }
+      const bracketed = termRef.current?.modes.bracketedPasteMode === true;
+      if (shouldConfirmPaste(text, bracketed)) {
+        pendingRef.current = { expiresAt: Date.now() + PASTE_CONFIRM_WINDOW_MS, text };
+        // 🔴 必须把焦点还给终端：从工具栏 / 右键菜单触发时焦点还在按钮上，而确认按键走的是
+        // xterm 的 custom key handler（只在终端聚焦时触发）⇒ 不给焦点这 10 秒就是死路。
+        termRef.current?.focus();
+        toast("内容含多行且远端未开启安全粘贴模式，10 秒内再按一次 Ctrl+V 确认执行", "info");
+        return true;
+      }
+      await sendPaste(text);
       termRef.current?.focus();
-      return;
-    }
-    pendingRef.current = null;
-    const bracketed = termRef.current?.modes.bracketedPasteMode === true;
-    if (shouldConfirmPaste(text, bracketed)) {
-      pendingRef.current = { expiresAt: Date.now() + PASTE_CONFIRM_WINDOW_MS, text };
-      toast("内容含多行且远端未开启安全粘贴模式，10 秒内再按一次 Ctrl+V 确认执行", "info");
-      return;
-    }
-    await sendPaste(text);
-    termRef.current?.focus();
-  }, [sendPaste, termRef]);
+      return true;
+    },
+    [sendPaste, termRef],
+  );
 
-  return { paste };
+  // 键盘路径专用入口：Ctrl+V 是按下去的明确意图，空剪贴板也要说一句，否则看着像快捷键坏了。
+  const pasteFromKey = useCallback(() => void paste({ notifyEmpty: true }), [paste]);
+
+  return { paste, pasteFromKey };
 }

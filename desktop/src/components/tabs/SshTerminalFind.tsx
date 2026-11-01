@@ -22,8 +22,15 @@ export function SshTerminalFind({ search }: { search: TerminalSearch }) {
 
   if (!search.open) return null;
 
-  const { result, query } = search;
-  const label = !query ? "" : result.count === 0 ? "无结果" : `${result.index + 1} / ${result.count}`;
+  const { result, query, patternError } = search;
+  // 「模式非法」必须和「无结果」分开：正则写半截时搜索其实一次都没跑，说「无结果」是撒谎。
+  const label = !query
+    ? ""
+    : patternError
+      ? "模式非法"
+      : result.count === 0
+        ? "无结果"
+        : `${result.index + 1} / ${result.count}`;
 
   return (
     // animate-scale-in：弹出从锚点缩放淡入（0.16s）。只加动画类，不动浮层定位——
@@ -56,7 +63,12 @@ export function SshTerminalFind({ search }: { search: TerminalSearch }) {
       />
       {/* key={label}：命中数变化重触发 metric-pop 微弹，提示「结果变了」。
           .metric-pop 自带 inline-block（纯行内元素上 transform 不生效）。 */}
-      <span key={label} className="metric-pop min-w-[46px] text-center font-mono text-[10.5px] text-muted-foreground">
+      <span
+        key={label}
+        className={`metric-pop min-w-[46px] text-center font-mono text-[10.5px] ${
+          patternError ? "text-destructive-ink" : "text-muted-foreground"
+        }`}
+      >
         {label}
       </span>
       <FindBtn title="上一个（Shift+Enter）" onClick={search.findPrev}>

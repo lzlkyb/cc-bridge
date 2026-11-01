@@ -9,6 +9,7 @@ import {
   ECHO_OFF_CMD,
   ECHO_ON_CMD,
   ECHO_ON_CLEAN_CMD,
+  echoRestoreCommand,
   PROBE_ECHO_OFF_CMD,
   STRIP_TOKENS,
   tuiOnScreen,
@@ -579,5 +580,21 @@ describe("attachEchoStripWhenReady —— 随终端实例常驻、幂等", () =>
     attachEchoStripWhenReady(ref).cancel();
     expect(wrapped).not.toBe(pristine);
     expect(term.write).toBe(wrapped);
+  });
+});
+
+/* ============================== 恢复命令的字节 ============================== */
+
+describe("echoRestoreCommand", () => {
+  it("没敲键：干净的一行，不带任何控制字符", () => {
+    expect(echoRestoreCommand(false, false)).toBe(` ${ECHO_ON_CMD}\n`);
+    expect(echoRestoreCommand(true, false)).toBe(` ${ECHO_ON_CLEAN_CMD}\n`);
+  });
+
+  it("🔴 敲过键：前面必须补 ^U 清行，否则 stty echo 被拼进用户命令", () => {
+    // `cd /tmp` 已敲下时直接发 ` stty echo\n` ⇒ 远端执行 `cd /tmp stty echo`（报错）。
+    // ^U（0x15）先杀行，恢复命令才是独立一条。
+    expect(echoRestoreCommand(false, true)).toBe(`\x15 ${ECHO_ON_CMD}\n`);
+    expect(echoRestoreCommand(true, true).startsWith("\x15")).toBe(true);
   });
 });

@@ -39,7 +39,7 @@ export function useSessionRestore({
     for (const t of snap.tabs) {
       const conn = byId.get(t.connId);
       if (!conn) continue; // 连接已被删除：静默跳过该标签
-      tabIds.push(sshRef.current.addRestoredTab(conn));
+      tabIds.push(sshRef.current.addRestoredTab(conn, t.label));
     }
     if (tabIds.length > 0) {
       const idx = Math.min(Math.max(snap.active, 0), tabIds.length - 1);
@@ -57,7 +57,8 @@ export function useSessionRestore({
       const cur = sshRef.current;
       const tabs = cur.sessions.filter((s) => !s.splitOnly);
       const active = Math.max(tabs.findIndex((s) => s.sessionId === cur.activeId), 0);
-      saveRestoreSnapshot(tabs.map((s) => ({ connId: s.conn.id })), active);
+      // 用户起过的标签名要跟着走：否则重启后三个同名标签又分不出来了。
+      saveRestoreSnapshot(tabs.map((s) => ({ connId: s.conn.id, ...(s.label ? { label: s.label } : {}) })), active);
     }, 600);
     return () => clearTimeout(id);
   }, [phase, ssh.sessions, ssh.activeId]);

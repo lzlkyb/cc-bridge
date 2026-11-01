@@ -45,7 +45,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
   /** 自增信号：变化时自动展开本卡片并滚动到更新历史。 */
   changelogOpenToken?: number;
 }) {
-  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, autoRestartIn, error, errorCode, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes } = useUpdate();
+  const { status: updateStatus, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, autoRestartIn, error, errorCode, manualCheckForUpdate, openUpdateNotes } = useUpdate();
   const { toast } = useToast();
   const [expanded, setExpanded] = useState(true); // 默认展开（2026-10-17）：收起态只有一行头部，默认折叠反而多一次点击
   const [showModal, setShowModal] = useState(false);
@@ -144,7 +144,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
 
           {/* 操作按钮区（阻止冒泡，不触发展开）。邀 Star 未关闭时 GitHub 图标钮让位给胶囊 */}
           <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-            <UpdateActionBtn status={updateStatus} onCheck={manualCheckForUpdate} onDownload={downloadAndInstall} onRestart={restart} />
+            <UpdateActionBtn status={updateStatus} onCheck={manualCheckForUpdate} onDownload={openUpdateNotes} onRestart={openUpdateNotes} />
             {starDismissed ? (
               <button
                 type="button"
@@ -302,15 +302,15 @@ function UpdateActionBtn({
     return (
       <Button size="sm" onClick={onDownload}>
         <Icon name="download" size={13} />
-        下载安装
+        查看更新
       </Button>
     );
   }
   if (status === "downloading") {
     return (
-      <Button size="sm" disabled>
+      <Button size="sm" onClick={onDownload}>
         <Icon name="download" size={13} />
-        下载安装
+        查看进度
       </Button>
     );
   }

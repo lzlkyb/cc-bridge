@@ -77,7 +77,7 @@ export function useSshFileForms({
     uploadLocal,
     setUploadLocal,
     download,
-    handleDownload: (name: string) => { void download.start(name); },
+    handleDownload: (name: string) => download.start(name),
     doUpload,
     pickUpload,
   };

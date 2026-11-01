@@ -45,7 +45,7 @@
 .terminal-workspace .terminal-tabs-actions > button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; }
 .terminal-toolbar-host { flex-shrink: 0; }
 .terminal-icon-button > svg { width: 16px; height: 16px; }
-.terminal-session-close { display:grid;place-items:center;width:28px;height:28px;flex-shrink:0; }
+.terminal-session-close, .terminal-session-power { display:grid;place-items:center;width:28px;height:28px;flex-shrink:0; }
 .terminal-session-tab { min-height:28px; }
 .terminal-session-toolbar[data-compact] { padding: 0; border: 0; background: transparent; gap: 4px; }
 .terminal-session-toolbar[data-compact] > div { padding-left: 7px; gap: 1px; }
@@ -59,8 +59,8 @@
 .terminal-pane-tools { flex-shrink: 0; }
 .terminal-pane-actions { display: flex; align-items: center; gap: 2px; }
 .terminal-pane-alert { display: grid; place-items: center; width: 20px; }
-.terminal-pane-zoom { display: grid; flex-shrink: 0; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: hsl(var(--muted-foreground)); }
-.terminal-pane-zoom:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
+.terminal-pane-zoom, .terminal-pane-close { display: grid; flex-shrink: 0; place-items: center; width: 28px; height: 28px; border-radius: 6px; color: hsl(var(--muted-foreground)); }
+.terminal-pane-zoom:hover, .terminal-pane-close:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }
 .terminal-split-controls { display: flex; flex-shrink: 0; align-items: center; gap: 4px; padding-left: 7px; border-left: 1px solid hsl(var(--border)); }
 .terminal-layout-button { display: flex; align-items: center; justify-content: center; gap: 5px; height: 28px; padding: 0 7px; border-radius: 6px; font-size: 12px; color: hsl(var(--muted-foreground)); white-space: nowrap; }
 .terminal-layout-button:hover { background: hsl(var(--muted)); color: hsl(var(--foreground)); }

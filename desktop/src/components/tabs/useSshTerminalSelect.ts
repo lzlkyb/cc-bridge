@@ -11,7 +11,7 @@ import { toast } from "../ui/toast";
 import { createSelectionCache, GESTURE_COPY_CACHE_MS } from "../../lib/terminalSelectionCache";
 import { attachContextMenuGuard } from "../../lib/terminalContextMenu";
 import { attachSelectionKeepGuard } from "../../lib/terminalSelectionKeep";
-import { releaseSelectHoldNow, releaseSelectHoldSoon } from "../../lib/terminalInputHold";
+import { isSelectHold, releaseSelectHoldNow, releaseSelectHoldSoon } from "../../lib/terminalInputHold";
 import { attachSelectWheelGuard } from "../../lib/terminalScroll";
 import { beginDragSelection, beginSelection, createSelectGesture, isSynthMouse } from "../../lib/terminalSelectGesture";
 
@@ -170,7 +170,15 @@ export function useSshTerminalSelect({
       const copyOnRelease = (e: PointerEvent) => {
         if (e.button !== 0) return;
         pointerDownRef.current = false;
-        if (!selectActiveRef.current) return;
+        if (!selectActiveRef.current) {
+          // 🔴 兜底自愈：闸可能在异常路径上没等到 pointerup（右键按在终端上、
+          // 指针在**窗口外**松手且窗口没失焦），此时键盘全程哑火，而唯一能救的是滚一格滚轮
+          // ——界面上没有任何提示，用户只会以为「终端坏了」。普通点击是用户的第一反应，
+          // 这里顺手把闸松开。
+          const t0 = termRef.current;
+          if (t0 && isSelectHold(t0)) releaseSelectHoldNow(t0);
+          return;
+        }
         const t = termRef.current;
         if (!t) return;
         const live = t.getSelection() ?? "";

@@ -17,14 +17,16 @@ import { TerminalAppearanceOptions } from "./TerminalAppearanceMenu";
  */
 const SHORTCUTS: { keys: string; desc: string }[] = [
   { keys: "Ctrl+Shift+F", desc: "查找终端内容（Enter / Shift+Enter 切下/上一个）" },
+  { keys: "Ctrl+Shift+G", desc: "搜索所有标签的终端内容（跨会话滚动历史）" },
+  { keys: "Ctrl+Tab / Ctrl+Shift+Tab", desc: "切到下一个 / 上一个标签" },
   { keys: "Ctrl+Shift+↑ / ↓", desc: "跳到上一条 / 下一条命令的提示符行" },
   { keys: "Shift+Enter", desc: "输入框内换行（LF，Claude Code 多行输入）" },
   { keys: "Alt+Enter", desc: "换行并转义（ESC+CR）" },
   { keys: "Ctrl+Shift+C", desc: "复制选中" },
   { keys: "Ctrl+Shift+A", desc: "全选" },
-  { keys: "Ctrl+V / Ctrl+Shift+V", desc: "粘贴文本 / 粘贴剪贴板图片到远端" },
+  { keys: "Ctrl+V / Ctrl+Shift+V", desc: "粘贴文本（无文本时 Ctrl+Shift+V 上传剪贴板图片）" },
   { keys: "Shift+滚轮", desc: "强制滚本地历史（TUI 全屏程序里救急）" },
-  { keys: "Ctrl+滚轮", desc: "缩放字号（9–24px，全局生效）" },
+  { keys: "Ctrl+滚轮 / Ctrl+= / Ctrl+- / Ctrl+0", desc: "缩放字号（9–24px，全局生效；Ctrl+0 归位）" },
   { keys: "Ctrl+Shift+B", desc: "折叠 / 展开会话侧栏" },
   { keys: "F11", desc: "终端全屏 / 退出全屏" },
   { keys: "Ctrl+K", desc: "全局命令面板（应用级）" },
@@ -132,8 +134,9 @@ function TerminalShortcutsModal({ onClose }: { onClose: () => void }) {
         ))}
       </div>
       <p className="mt-3 border-t border-border pt-2.5 text-xs leading-relaxed text-muted-foreground">
-        除 Ctrl+K 外，快捷键在终端聚焦时生效。Shift+滚轮与 Ctrl+Shift+↑/↓ 是 TUI
-        全屏程序（如 Claude Code）里的滚动救急键。
+        Ctrl+K、Ctrl+Shift+G、Ctrl+Shift+B、F11 与 Ctrl+Tab 不要求终端聚焦，其余快捷键
+        在终端聚焦时生效。Shift+滚轮与 Ctrl+Shift+↑/↓ 是 TUI 全屏程序（如 Claude Code）
+        里的滚动救急键。
       </p>
     </Modal>
   );

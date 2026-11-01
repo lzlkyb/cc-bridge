@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { invoke } from "../../lib/tauri";
+import { sendTerminalUserInput } from "../../lib/terminalUserInput";
 import { toast } from "../ui/toast";
 import { TUI_FULLSCREEN_CMD } from "../../lib/terminalTuiGuide";
 import type { WheelPopStep } from "../../hooks/useWheelGuide";
@@ -50,7 +50,7 @@ export function WheelOwnerPopover({ sessionId, initialStep, onSent, onClose }: P
   }, [onClose]);
 
   const send = () => {
-    invoke("ssh_input", { sessionId, data: TUI_FULLSCREEN_CMD })
+    sendTerminalUserInput(sessionId, TUI_FULLSCREEN_CMD)
       .then(() => {
         onSent();
         toast("已发送 /tui fullscreen · Claude Code 重启后滚轮将固定转发", "success");

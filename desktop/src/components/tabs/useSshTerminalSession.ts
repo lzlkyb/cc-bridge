@@ -1,5 +1,4 @@
 import {
-  useCallback,
   useEffect,
   useRef,
   useState,
@@ -36,12 +35,13 @@ import {
 import { loadScrollback } from "../../lib/terminalScrollback";
 import { loadFontSize } from "../../lib/terminalFontSize";
 import { loadFontStack } from "../../lib/terminalFontFamily";
-import { screenToText } from "../../lib/terminalScreen";
-import { trimCopyText } from "../../lib/terminalPaste";
+import { sendTerminalUserInput } from "../../lib/terminalUserInput";
+import { markReconnected } from "../../lib/terminalSessionPhase";
 import { useTerminalFit } from "../../hooks/useTerminalFit";
 import { useTerminalVisibility } from "../../hooks/useTerminalVisibility";
 import { useTerminalRuntimeOptions } from "../../hooks/useTerminalRuntimeOptions";
 import { useTerminalPaste } from "./useTerminalPaste";
+import { useTerminalCopyScreen } from "../../hooks/useTerminalCopyScreen";
 import type { Theme } from "../../lib/theme";
 import type { SshOutput, SshClosed, SshConnectFailed } from "../../lib/types";
 
@@ -122,11 +122,12 @@ export function useSshTerminalSession({
   const doFit = useTerminalFit({ containerRef, termRef, fitRef });
 
   // 粘贴（规范化 + bracketed paste 包裹）单独成 hook，与终端生命周期无逻辑耦合。
-  const { paste } = useTerminalPaste({ sessionId, closedRef, termRef });
+  const { paste, pasteFromKey } = useTerminalPaste({ sessionId, closedRef, termRef });
+  const copyScreen = useTerminalCopyScreen(termRef);
 
   // 供 xterm 按键钩子调用：那个钩子在创建 effect 里只注册一次，直接闭包会拿到陈旧引用。
-  const keyActionsRef = useRef<TerminalKeyActions>({ paste, copy: copySelection, openSearch });
-  keyActionsRef.current = { paste, copy: copySelection, openSearch };
+  const keyActionsRef = useRef<TerminalKeyActions>({ paste: pasteFromKey, copy: copySelection, openSearch });
+  keyActionsRef.current = { paste: pasteFromKey, copy: copySelection, openSearch };
 
   // 最近一次已经写进终端的输入错误（用于去重，见下面 onData）。
   const writtenInputErrRef = useRef<string | null>(null);
@@ -173,11 +174,11 @@ export function useSshTerminalSession({
     // Unicode 11 宽度表：必须在 open() 前加载并显式切到 "11"，光 loadAddon 不生效。
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11";
-    // 链接可点。🔴 **只开 http/https**：终端输出是远端内容，把 `file://` 之类的 scheme
-    // 盲目交给系统打开等于给远端一个本机执行面。
+    // 链接可点。🔴 只开 http/https：终端输出是远端内容，把 file:// 交给系统打开等于给
+    // 远端一个本机执行面。其他协议要明确提示「已拦下」——静默会像「点了没反应」。
     term.loadAddon(
       new WebLinksAddon((_event, uri) => {
-        if (!/^https?:\/\//i.test(uri)) return;
+        if (!/^https?:\/\//i.test(uri)) return void toast("只支持打开 http/https 链接（其他协议已拦下）", "info");
         void openUrl(uri).catch((e) => toast(`打开链接失败：${e}`, "error"));
       }),
     );
@@ -294,8 +295,9 @@ export function useSshTerminalSession({
     // 直接接在断开前的输出后面，看不出中间断过。比对 sessionId 而不是用布尔量，
     // 是为了不被 StrictMode 的双调误判成重连。
     if (wiredSessionRef.current !== null && wiredSessionRef.current !== sessionId) {
-      term.write("\r\n\x1b[36m[已重新连接]\x1b[0m\r\n");
+      markReconnected(term);
       writtenInputErrRef.current = null;
+      setInputErr(null);
     }
     wiredSessionRef.current = sessionId;
     // 接线即治愈：上个会话 TUI 残留的 "any" 会把新会话的鼠标移动编码成 SGR 乱码发给裸 bash。
@@ -313,7 +315,7 @@ export function useSshTerminalSession({
     });
 
     const offData = term.onData((data) => {
-      void invoke("ssh_input", { sessionId, data })
+      void sendTerminalUserInput(sessionId, data)
         .then(() => {
           writtenInputErrRef.current = null;
           setInputErr(null);
@@ -382,23 +384,5 @@ export function useSshTerminalSession({
       unlistens.forEach((u) => u());
     };
   }, [sessionId, termRef]);
-
-  /** 整屏快照复制：从 xterm 缓冲区导出可视区域纯文本，不依赖选区（鼠标报告模式下也必成）。 */
-  const copyScreen = useCallback(() => {
-    const term = termRef.current;
-    if (!term) return;
-    const text = screenToText(term.buffer, term.rows);
-    if (!text.trim()) {
-      toast("终端为空", "error");
-      return;
-    }
-    navigator.clipboard
-      // 与「复制选中」同走 trimCopyText：两条复制路径行为必须一致，
-      // 整屏快照按 cell 网格取字，行尾空白只会更多不会更少。
-      .writeText(trimCopyText(text))
-      .then(() => toast("已复制整屏", "success"))
-      .catch(() => toast("复制失败", "error"));
-  }, [termRef]);
-
   return { focused, inputErr, paste, copyScreen, doFit };
 }

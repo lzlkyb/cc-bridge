@@ -17,7 +17,7 @@ export function TerminalFullscreenTools(p: SshTerminalToolbarProps & {cmdOpen: b
       extraItems={close => <>
         <MenuItem label="复制选中" icon="copy" hint="Ctrl+Shift+C" onClick={() => { p.onCopy(); close(); }}/>
         <MenuItem label="粘贴" icon="clipboard" hint="Ctrl+V" disabled={p.closed} onClick={() => { p.onPaste(); close(); }}/>
-        <MenuItem label="发送剪贴板图片" icon="image" hint="Ctrl+Shift+V" disabled={p.closed || p.imgBusy} onClick={() => { p.onPasteImage(); close(); }}/>
+        <MenuItem label="发送剪贴板图片" icon="image" disabled={p.closed || p.imgBusy} onClick={() => { p.onPasteImage(); close(); }}/>
         <MenuItem label="命令历史" icon="history" active={p.cmdOpen} onClick={() => { setCmdPanelOpen(!p.cmdOpen); close(); }}/>
         {actions.terminalItems?.(close)}
       </>} footerItems={actions.applicationItems}/>

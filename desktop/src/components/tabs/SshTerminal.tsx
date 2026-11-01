@@ -13,7 +13,6 @@ import { TerminalStatusBar } from "./TerminalStatusBar";
 import { TuiGuideBar } from "./TuiGuideBar";
 import { WheelOwnerPopover } from "./WheelOwnerPopover";
 import { useWheelGuide } from "../../hooks/useWheelGuide";
-import { navJump } from "../../lib/terminalCommandNav";
 import { registerPathLinkProvider } from "../../lib/terminalPathLink";
 import { registerTerminal } from "../../lib/terminalRegistry";
 import { useTerminalExport } from "./useTerminalExport";
@@ -22,9 +21,10 @@ import { setCmdPanelOpen, useCmdPanelOpen } from "../../lib/terminalPanelStore";
 import { useTerminalTabMeta, type TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
 import { useClipboardImagePaste } from "../../hooks/useClipboardImagePaste";
 import { forceRepaint } from "../../lib/terminalRepaint";
-import { invoke } from "../../lib/tauri";
-import { isImeComposing } from "../../lib/utils";
 import { toast } from "../ui/toast";
+import { flashWindow } from "../../lib/windowAttention";
+import { useTerminalShortcuts } from "../../hooks/useTerminalShortcuts";
+import { useTerminalFocusReturn } from "../../hooks/useTerminalFocusReturn";
 import { useTerminalThemeMode } from "../../hooks/useTerminalAppearance";
 import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
 import { useTerminalOsc } from "../../hooks/useTerminalOsc";
@@ -118,7 +118,7 @@ export function SshTerminal({
   closedRef.current = closed;
   const cwdRef = useRef(status.cwd);
   cwdRef.current = status.cwd;
-  // 剪贴板图片 → SFTP 上传远端 → 路径插入输入行（Ctrl+Shift+V / 工具栏按钮）。
+  // 剪贴板图片 → SFTP 上传远端 → 路径插入输入行（工具栏按钮 / Ctrl+Shift+V 无文本时）。
   const { busy: imgBusy, pasteImage } = useClipboardImagePaste({ sessionId, connId: conn.id, closed });
   const pasteImageRef = useRef(pasteImage);
   pasteImageRef.current = pasteImage;
@@ -147,64 +147,50 @@ export function SshTerminal({
     };
   }, [sessionId]);
 
-  // 终端聚焦时的 window capture 快捷键（🔴 不能走 attachTerminalKeymap——xterm 的 custom
-  // key handler 是单槽位、session hook 已占用；capture 先于 xterm 的 textarea 处理）。
-  useEffect(() => {
-    const send = (data: string) => {
-      if (closedRef.current) return;
-      void invoke("ssh_input", { sessionId, data });
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (!focusedRef.current || isImeComposing(e)) return;
-      // 命令导航：Ctrl+Shift+↑/↓ 跳到上一条/下一条命令的提示符行。
-      if (e.ctrlKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
-        e.preventDefault();
-        e.stopPropagation();
-        const term = termRef.current;
-        if (!term) return;
-        const dir = e.key === "ArrowUp" ? -1 : 1;
-        if (!navJump(term, dir)) {
-          toast(dir === -1 ? "没有更早的命令了" : "已经是最新的命令了", "info");
-        }
-        return;
-      }
-      // Shift+Enter → LF / Alt+Enter → ESC+CR：多行换行。Claude Code 把 LF 当换行、
-      // \r 当提交（shell readline 对 LF 同样 accept-line，与 Ctrl+J 等价，零副作用）。
-      // 🔴 必须绕开 useTerminalPaste——preparePaste 会把 \n 规范成 \r，语义就错了。
-      if (e.key === "Enter" && !e.ctrlKey) {
-        const seq = e.shiftKey && !e.altKey ? "\n" : e.altKey && !e.shiftKey ? "\x1b\r" : null;
-        if (seq !== null) {
-          e.preventDefault();
-          e.stopPropagation();
-          send(seq);
-          return;
-        }
-      }
-      // Ctrl+Shift+V → 剪贴板图片上传远端。必须在 xterm keymap 的 Ctrl+V 分支
-      // （ctrl+key 是 v/V 都命中）之前拦下，否则会当成文本粘贴。
-      if (e.ctrlKey && e.shiftKey && (e.key === "V" || e.key === "v")) {
-        e.preventDefault();
-        e.stopPropagation();
-        void pasteImageRef.current(cwdRef.current);
-        return;
-      }
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [sessionId]);
+  // 终端聚焦时的 window capture 快捷键（图片粘贴 / 多行换行 / 命令导航）。
+  // 🔴 不能走 attachTerminalKeymap——xterm 的 custom key handler 是单槽位、session hook 已占用。
+  // 逻辑在 hooks/useTerminalShortcuts.ts（从这里抽走是为了不让本文件顶破体量棘轮线）。
+  const pasteRef = useRef(paste);
+  pasteRef.current = paste;
+  const fontZoomRef = useRef<(kind: "in" | "out" | "reset") => void>(() => undefined);
+  fontZoomRef.current = (kind) =>
+    kind === "reset" ? font.reset() : font.bump(kind === "in" ? 1 : -1);
+  useTerminalShortcuts({
+    sessionId,
+    termRef,
+    focusedRef,
+    closedRef,
+    pasteRef,
+    pasteImageRef,
+    cwdRef,
+    fontZoomRef,
+  });
+
+  // 工具栏 / 菜单动作点完把焦点还给终端（见 hook 头注：否则「点了复制之后打字没反应」）。
+  const rootRef = useRef<HTMLDivElement>(null);
+  const chromeHostsRef = useRef<(Element | null)[]>([]);
+  chromeHostsRef.current = [rootRef.current, toolbarHost];
+  useTerminalFocusReturn(termRef, focusedRef, chromeHostsRef);
 
   // 标签 meta 上报（标题/进度/铃）。后台标签收到 BEL 才 toast：正盯着看时不必再弹。
   useTerminalTabMeta({
     termRef,
     closed,
     onMeta: (p) => {
-      if (p.bellAt != null && !visible)
-        toast(`${conn.name || conn.host}：终端有铃声（可能需要关注）`, "info");
+      if (p.bellAt != null) {
+        if (!visible) toast(`${conn.name || conn.host}：终端有铃声（可能需要关注）`, "info");
+        // Visible terminal panes can still belong to a minimized/unfocused window.
+        flashWindow();
+      }
       onMeta(p);
     },
     // OSC 9 通知带正文，是远端程序的显式提醒（如 Claude 的「任务完成/需要确认」）：
     // 无论标签是否活跃都弹——用户盯着看时多一条 toast 无伤大雅，切走了错过才是损失。
-    onNotify: (text) => toast(`${conn.name || conn.host}：${text}`, "info"),
+    onNotify: (text) => {
+      toast(`${conn.name || conn.host}：${text}`, "info");
+      // The helper skips focused windows; pane visibility alone cannot tell that.
+      flashWindow();
+    },
   });
 
   // 导出整个滚动历史（「更多」菜单里的「导出终端内容…」）。断开态也能用。
@@ -214,7 +200,7 @@ export function SshTerminal({
 
   const surface = TERMINAL_SURFACE[preset][mode];
   return (
-    <div className="ssh-terminal flex h-full min-h-0 flex-col" style={{ background: surface }}>
+    <div ref={rootRef} className="ssh-terminal flex h-full min-h-0 flex-col" style={{ background: surface }}>
       {toolbarHost && ((pane && !fullscreen) || toolbarActive) && createPortal(<SshTerminalToolbar
         compact
         pane={!!pane} onDisconnect={onDisconnect}

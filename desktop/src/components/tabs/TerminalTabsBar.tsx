@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "../ui/icon";
 import { TerminalGlobalSearch } from "./TerminalGlobalSearch";
+import { TabRenameInput } from "./TerminalTabRename";
 import { setCmdPanelOpen } from "../../lib/terminalPanelStore";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 import type { TermTabMeta } from "../../lib/terminalTabMeta";
@@ -23,8 +24,10 @@ interface TerminalTabsBarProps {
   onDisconnect: (sessionId: string) => void;
   /** 已断开的会话点 ×：真正移除标签。 */
   onCloseTab: (sessionId: string) => void;
-  /** 对当前活动连接另开一个终端；null = 没有可另开的目标（按钮隐藏）。 */
+  /** 当前活动连接另开一个终端；null = 没有可另开的目标（按钮隐藏）。 */
   onNewTerminal: (() => void) | null;
+  /** 重命名标签（双击标签名）；null = 不支持（隐藏重命名入口）。 */
+  onRename?: ((tabId: string, label: string) => void) | null;
   /** 开/关当前标签的分屏（轻量双栏）；null = 没有活动标签（按钮隐藏）。 */
   onToggleSplit: (() => void) | null;
   /** 当前标签是否处于分屏态（按钮高亮）。 */
@@ -68,14 +71,34 @@ export function TerminalTabsBar({
   onDisconnect,
   onCloseTab,
   onNewTerminal,
+  onRename,
   onToggleSplit,
   splitActive,
 }: TerminalTabsBarProps) {
   const fullscreenActions = useTerminalFullscreenActions();
   const activeRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   // 跨标签搜索浮层。它是 `fixed` 定位，所以放在这条 `overflow-x-auto` 里也不会被裁剪
   // （定位于视口，不参与这条 flex 布局）——省掉一层 Fragment 包裹与整块缩进。
   const [searchOpen, setSearchOpen] = useState(false);
+  // 正在重命名的标签（双击标签名进入；见 TerminalTabRename）。
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  // Ctrl+Shift+G 打开跨标签搜索。此前只有标签栏那个按钮，键盘用户必须摸鼠标。
+  // 🔴 必须 capture + stopPropagation：xterm 把 Ctrl+G 映射成 \x07（BEL），不抢在它
+  // 前面按一下就会往远端发一个响铃（还会点亮标签的未读铃点）。
+  // 只在终端页可见时接：App 用 display:none 隐藏本页来保活 SSH 会话，此时 offsetParent 为 null。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey) return;
+      if (e.key.toLowerCase() !== "g") return;
+      if (!rootRef.current?.offsetParent) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setSearchOpen(true);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
   // 标签多了会溢出横向滚动区，新连的会话可能落在可视区外，看着像「没反应」。
   // block: "nearest" 避免把页面垂直方向也拉跑了。
   useEffect(() => {
@@ -86,7 +109,7 @@ export function TerminalTabsBar({
   const tabSessions = sessions.filter((s) => !s.splitOnly);
 
   return (
-    <div className="terminal-tabs-header flex shrink-0 items-center gap-1 border-b border-border bg-card px-2 py-1.5" data-fullscreen={fullscreen || undefined}>
+    <div ref={rootRef} className="terminal-tabs-header flex shrink-0 items-center gap-1 border-b border-border bg-card px-2 py-1.5" data-fullscreen={fullscreen || undefined}>
       <div className="terminal-tabs-scroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="终端会话">
       {tabSessions.map((s, index) => {
         const closed = !!s.closedReason;
@@ -132,9 +155,22 @@ export function TerminalTabsBar({
               />
               <span
                 className={`min-w-0 max-w-48 truncate ${closed ? "line-through opacity-70" : ""}`}
-                title={s.conn.name || s.conn.host}
+                // 同名不同主机的连接光看标签名分不出，tooltip 里带完整登录地址 + 会话序号。
+                title={`${s.label || s.conn.name || s.conn.host} · ${s.conn.username}@${s.conn.host}:${s.conn.port}${seq ? ` · #${seq}` : ""}`}
+                onDoubleClick={() => onRename && setRenamingId(s.tabId)}
               >
-                {s.conn.name || s.conn.host}
+                {renamingId === s.tabId ? (
+                  <TabRenameInput
+                    initial={s.label ?? s.conn.name ?? s.conn.host}
+                    onCommit={v => {
+                      setRenamingId(null);
+                      onRename?.(s.tabId, v);
+                    }}
+                    onCancel={() => setRenamingId(null)}
+                  />
+                ) : (
+                  s.label || s.conn.name || s.conn.host
+                )}
               </span>
               {/* 标题只作主机名的附加段：正常程序可显示，恶意标题顶不掉主机名。 */}
               {title && (
@@ -149,22 +185,44 @@ export function TerminalTabsBar({
               {closed && <span className="sr-only">，已断开</span>}
               {hasBell && <Icon name="bell" size={11} className="text-amber-500" />}
             </button>
+            {/* 🔴 断开与关闭必须是**两个独立按钮**。这里曾共用一个按状态换行为的按钮：
+                连着时是断开、断开后变关闭，于是双击 × = 「断开 + 永久删除标签」，
+                该终端全部历史输出跟着 xterm.dispose() 一起没，既没有确认也没有撤销。
+                现在 power 恒为断开（断开后禁用、位置不动），✕ 只在已断开时追加在它右侧——
+                双击的第二下仍落在原坐标（禁用的 power）上，不会误删。 */}
             <button
               type="button"
-              tabIndex={active ? 0 : -1}
-              aria-label={`${closed ? "关闭标签" : "断开会话，保留历史"}：${s.conn.name || s.conn.host}`}
-              onClick={() => {
-                // 真正移除标签时顺手收起「命令历史」面板：那是个全局开关，而面板本体挂在
-                // 各会话自己的容器里——不关的话，标签一消失它就在相邻标签上自己打开，
-                // 用户没点过任何东西。断开（保留标签）不关，那时继续看记录是合理的。
-                if (closed) setCmdPanelOpen(false);
-                return closed ? onCloseTab(s.sessionId) : onDisconnect(s.sessionId);
-              }}
-              className="terminal-session-close rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive-ink"
-              title={closed ? "关闭标签" : "断开会话，保留历史与重连入口"}
+              tabIndex={active && !closed ? 0 : -1}
+              disabled={closed}
+              aria-label={
+                closed
+                  ? `已断开：${s.conn.name || s.conn.host}`
+                  : `断开会话，保留历史：${s.conn.name || s.conn.host}`
+              }
+              onClick={() => onDisconnect(s.sessionId)}
+              className="terminal-session-power rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive-ink disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+              title={closed ? "已断开（历史仍可查看）" : "断开会话，保留历史与重连入口"}
             >
-              <Icon name={closed ? "close" : "power"} size={16} />
+              <Icon name="power" size={16} />
             </button>
+            {closed && (
+              <button
+                type="button"
+                tabIndex={active ? 0 : -1}
+                aria-label={`关闭标签：${s.conn.name || s.conn.host}`}
+                onClick={() => {
+                  // 真正移除标签时顺手收起「命令历史」面板：那是个全局开关，而面板本体挂在
+                  // 各会话自己的容器里——不关的话，标签一消失它就在相邻标签上自己打开，
+                  // 用户没点过任何东西。
+                  setCmdPanelOpen(false);
+                  onCloseTab(s.sessionId);
+                }}
+                className="terminal-session-close rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive-ink"
+                title="关闭标签——该终端的历史输出会一起清除，不可恢复"
+              >
+                <Icon name="close" size={16} />
+              </button>
+            )}
             {/* OSC 9;4 进度：贴标签底缘的 2px 细条，激活与否都显示（后台任务也要看得见）。 */}
             {bar && (
               <div className="absolute inset-x-1.5 bottom-0 h-0.5 overflow-hidden rounded-full bg-muted-foreground/15">
@@ -184,7 +242,7 @@ export function TerminalTabsBar({
       {!fullscreen && <button
         type="button"
         onClick={() => setSearchOpen(true)}
-        title="搜索所有标签的终端内容（含已断开标签的历史）"
+        title="搜索所有标签的终端内容（含已断开标签的历史，Ctrl+Shift+G）"
         aria-label="搜索所有标签"
         className="ml-auto flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
       >

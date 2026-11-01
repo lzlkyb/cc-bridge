@@ -1,3 +1,4 @@
+import { toast } from "../ui/toast";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { SshConnection } from "../../lib/types";
 import type { SshSessionRef } from "./TerminalConnectionItem";
@@ -76,7 +77,14 @@ export function useTerminalSplit({ ssh, activeSession, areaRef }: { ssh: Ssh; ac
   useEffect(() => {
     const ids = new Set(ssh.sessions.map(s => s.tabId));
     for (const [host, info] of Object.entries(splitsRef.current)) {
-      if (!ids.has(host) || (info.secTabId && !ids.has(info.secTabId))) closeSplit(host);
+      if (!ids.has(host)) {
+        // 🔴 宿主标签被关掉时，副格会话**不会**跟着结束——它静默降级成队尾的普通标签。
+        // 不说一句的话，用户以为「连它一起关了」，实际上远端进程还在跑。
+        if (info.secTabId) toast("分屏的宿主标签已关闭，副格已转为独立标签（会话没有断）", "info");
+        closeSplit(host);
+      } else if (info.secTabId && !ids.has(info.secTabId)) {
+        closeSplit(host);
+      }
     }
   }, [ssh.sessions, closeSplit]);
 

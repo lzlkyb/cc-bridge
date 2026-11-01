@@ -32,37 +32,60 @@ export interface SearchOptions {
  */
 export const MAX_HITS = 200;
 
+/** 匹配函数的状态：`ok` 可扫；`empty` 没关键词；`invalid` 正则半截。 */
+type Matcher =
+  | { kind: "ok"; test: (line: string) => boolean }
+  | { kind: "empty" }
+  | { kind: "invalid" };
+
 /**
- * 造匹配函数。正则没写完（输入过程中的 `[`、`(`）时返回 null——不抛错、不弹提示，
- * 就当没匹配，否则边敲边报错比没结果更烦人。
+ * 造匹配函数。正则没写完（输入过程中的 `[`、`(`）时返回 `invalid`——不抛错（边敲边报错
+ * 比没结果更烦人），但**必须让调用方能区分「真的没有匹配」和「这条表达式根本没扫」**：
+ * 以前两者都表示成 `null`，面板于是对 `[` 显示「没有匹配的行」，用户以为历史里没有，
+ * 与单标签查找的「模式非法」判定（`useTerminalSearch.isValidPattern`）也不一致。
  */
-function makeMatcher(query: string, opts: SearchOptions): ((line: string) => boolean) | null {
-  if (!query) return null;
+function makeMatcher(query: string, opts: SearchOptions): Matcher {
+  if (!query) return { kind: "empty" };
   if (opts.regex) {
     try {
       // 不能带 g 标志：带 lastIndex 的 test 在逐行调用时会跳行。
       const re = new RegExp(query, opts.caseSensitive ? "" : "i");
-      return (line) => re.test(line);
+      return { kind: "ok", test: (line) => re.test(line) };
     } catch {
-      return null;
+      return { kind: "invalid" };
     }
   }
-  if (opts.caseSensitive) return (line) => line.includes(query);
+  if (opts.caseSensitive) return { kind: "ok", test: (line) => line.includes(query) };
   const lower = query.toLowerCase();
-  return (line) => line.toLowerCase().includes(lower);
+  return { kind: "ok", test: (line) => line.toLowerCase().includes(lower) };
 }
 
-/** 扫一个缓冲区，最多返回 `limit` 条。空行直接跳过（空白行不可能有意义的命中）。 */
-export function searchBuffer(
+/** 一次搜索的结果：命中 + 两个「别把沉默当结论」的标记。 */
+export interface SearchReport {
+  hits: GlobalHit[];
+  /**
+   * 命中数已达上限，**后面还有**（不是「只有这么多」）。判定要求真的多命中一条
+   * （内部按 `limit + 1` 扫），否则「恰好 200 条」会被误报成被截断。
+   */
+  truncated: boolean;
+  /** 开正则且表达式写不完整，本次一条都没扫。 */
+  invalidPattern: boolean;
+}
+
+/**
+ * 扫一个缓冲区，最多收录 `limit` 条，并额外多探一条用于判定 `truncated`。
+ * 空行直接跳过（空白行不可能有意义的命中）。
+ */
+function scanBuffer(
   sessionId: string,
   buffer: IBuffer,
-  query: string,
-  opts: SearchOptions,
-  limit: number = MAX_HITS,
-): GlobalHit[] {
-  const test = makeMatcher(query, opts);
-  if (!test || limit <= 0) return [];
+  test: (line: string) => boolean,
+  limit: number,
+): { hits: GlobalHit[]; overflow: boolean } {
   const hits: GlobalHit[] = [];
+  if (limit <= 0) return { hits, overflow: true };
+  // 多探一条：`limit + 1` 条命中就说明「还有」，正好 limit 条才是「就这么多」。
+  const budget = limit + 1;
   const total = buffer.length;
   for (let i = 0; i < total; i++) {
     const line = buffer.getLine(i);
@@ -71,15 +94,70 @@ export function searchBuffer(
     if (!text) continue;
     if (test(text)) {
       hits.push({ sessionId, line: i, text });
-      if (hits.length >= limit) break;
+      if (hits.length >= budget) break;
     }
   }
-  return hits;
+  return { hits, overflow: hits.length > limit };
+}
+
+/** 扫一个缓冲区（结构化结果版）。 */
+export function searchBufferReport(
+  sessionId: string,
+  buffer: IBuffer,
+  query: string,
+  opts: SearchOptions,
+  limit: number = MAX_HITS,
+): SearchReport {
+  const m = makeMatcher(query, opts);
+  if (m.kind !== "ok") {
+    return { hits: [], truncated: false, invalidPattern: m.kind === "invalid" };
+  }
+  const { hits, overflow } = scanBuffer(sessionId, buffer, m.test, limit);
+  return { hits: overflow ? hits.slice(0, limit) : hits, truncated: overflow, invalidPattern: false };
+}
+
+/** 扫一个缓冲区，最多返回 `limit` 条（只要命中列表）。 */
+export function searchBuffer(
+  sessionId: string,
+  buffer: IBuffer,
+  query: string,
+  opts: SearchOptions,
+  limit: number = MAX_HITS,
+): GlobalHit[] {
+  return searchBufferReport(sessionId, buffer, query, opts, limit).hits;
 }
 
 export interface SearchSource {
   sessionId: string;
   buffer: IBuffer;
+}
+
+/** 按会话顺序汇总（结构化结果版）；总命中数受 `limit` 约束（前几个会话可能就吃满额度）。 */
+export function searchAllReport(
+  sources: SearchSource[],
+  query: string,
+  opts: SearchOptions,
+  limit: number = MAX_HITS,
+): SearchReport {
+  const m = makeMatcher(query, opts);
+  if (m.kind !== "ok") {
+    return { hits: [], truncated: false, invalidPattern: m.kind === "invalid" };
+  }
+  const hits: GlobalHit[] = [];
+  for (const s of sources) {
+    const remaining = limit - hits.length;
+    if (remaining <= 0) {
+      // 额度已用完：还要回答「后面到底有没有」。再多扫一条即可（不是全扫）。
+      if (scanBuffer(s.sessionId, s.buffer, m.test, 1).hits.length > 0) {
+        return { hits, truncated: true, invalidPattern: false };
+      }
+      continue;
+    }
+    const r = scanBuffer(s.sessionId, s.buffer, m.test, remaining);
+    hits.push(...r.hits.slice(0, remaining));
+    if (r.overflow) return { hits, truncated: true, invalidPattern: false };
+  }
+  return { hits, truncated: false, invalidPattern: false };
 }
 
 /** 按会话顺序汇总；总命中数受 `MAX_HITS` 约束（前几个会话可能就吃满额度）。 */
@@ -89,10 +167,5 @@ export function searchAll(
   opts: SearchOptions,
   limit: number = MAX_HITS,
 ): GlobalHit[] {
-  const out: GlobalHit[] = [];
-  for (const s of sources) {
-    if (out.length >= limit) break;
-    out.push(...searchBuffer(s.sessionId, s.buffer, query, opts, limit - out.length));
-  }
-  return out;
+  return searchAllReport(sources, query, opts, limit).hits;
 }

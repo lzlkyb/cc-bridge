@@ -137,6 +137,7 @@ export function useTerminalTypography({ termRef, containerRef, doFit }: Args) {
     fontSize,
     fontFamily,
     badge,
+    bump,
     reset: () => bump(FONT_SIZE_DEFAULT - fontSize),
   };
 }

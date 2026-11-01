@@ -8,6 +8,7 @@ import type { SshSessionRef } from "./TerminalConnectionItem";
 import type { TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
 import { focusedTerminalSession, terminalSessionOrdinal } from "../../lib/terminalWorkspace";
 import { TerminalPaneFrame } from "./TerminalPaneFrame";
+import { getTerminal } from "../../lib/terminalRegistry";
 import { useTerminalPaneLayout } from "../../hooks/useTerminalPaneLayout";
 
 interface TerminalPanesProps {
@@ -115,7 +116,8 @@ export function TerminalPanes({
             const label = `${s.conn.name || s.conn.host}${ordinal ? ` #${ordinal}` : ""}`;
             return (
               <TerminalPaneFrame key={s.tabId} session={s} label={label} splitPane={isPane} focused={focused?.tabId === s.tabId} zoomed={zoomed === s.tabId}
-                style={wrapStyle(s)} onFocus={() => onFocusPane(s.tabId)} onZoom={() => { onFocusPane(s.tabId); onZoomPane(s.tabId); }}>
+                style={wrapStyle(s)} onFocus={() => onFocusPane(s.tabId)} onZoom={() => { onFocusPane(s.tabId); onZoomPane(s.tabId); }}
+                onClosePane={isSec ? () => { onCloseSplit(); requestAnimationFrame(() => { const t = getTerminal(activeId ?? ""); t?.focus(); }); } : undefined}>
                 {localHost => <>
                 {/* 会话恢复占位（closedReason: "restored" 哨兵）：不挂 SshTerminal——
                     假 sessionId 没有对应 PTY，挂上去只会拿到一堆报错。 */}

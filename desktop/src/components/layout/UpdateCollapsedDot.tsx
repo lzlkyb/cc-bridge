@@ -9,7 +9,7 @@ import { friendlyError, useUpdate } from "../../contexts/UpdateContext";
  * 行动的状态零反馈（只剩一次性 toast 和下载中的顶栏读数）。
  *
  * 交互（经方案对比选定，2026-10-18）：
- * - **状态点直接可点**：点状态点 = 直接执行对应更新动作（打开弹框 / 取消倒计时 /
+ * - **状态点直接可点**：点状态点 = 直接执行对应更新动作（打开弹框 / 查看重启状态 /
  *   重试），一步直达 —— 不必「点齿轮进设置页再找徽章」两跳。
  * - **齿轮本身不被替换**：曾考虑「有更新时把设置按钮整个换成更新按钮」，否决 ——
  *   available/error 态会挂数天，设置入口不能被长期劫持；ready 态替换成重启按钮
@@ -20,22 +20,22 @@ import { friendlyError, useUpdate } from "../../contexts/UpdateContext";
  *
  * 七态浓缩四形按优先级渲染，无更新态返回 null（未读提示由设置按钮内的
  * changelog-dot 承担，与本组件无关）：
- * - available   → 靛蓝脉冲点，点击打开更新详情（已「稍后」过则直接下载）
- * - downloading → 11px 进度环（不可点，title 显示百分比；不确定态旋转，
+ * - available   → 靛蓝脉冲点，点击打开更新详情
+ * - downloading → 11px 进度环（可打开进度，title 显示百分比；不确定态旋转，
  *                 animate-spin 已在 data-app-hidden 暂停列表）
- * - ready       → 绿色实心点，点击取消自动重启倒计时（安全动作）
+ * - ready       → 绿色实心点，点击查看并确认重启
  * - error       → 红色快脉冲点，点击直接重试
  */
 export function UpdateCollapsedDot() {
-  const { status, update, progress, progressIndeterminate, error, errorCode, isDismissed, openUpdateNotes, downloadAndInstall, cancelAutoRestart, manualCheckForUpdate } = useUpdate();
+  const { status, update, progress, progressIndeterminate, error, errorCode, openUpdateNotes, manualCheckForUpdate } = useUpdate();
 
-  // downloading：无需行动（顶栏读数 + 本环就是全部反馈），渲染为不可点元素
+  // The compact entry reopens the same progress panel without starting another download.
   if (status === "downloading") {
     const pct = Math.min(100, Math.max(0, progress));
     return (
-      <span className="upd-dot upd-dot--dl" title={`正在下载更新…${progressIndeterminate ? "大小未知" : `${pct}%`}`}>
+      <button type="button" onClick={openUpdateNotes} aria-label="查看更新下载进度" className="upd-dot upd-dot--dl" title={`正在下载更新…${progressIndeterminate ? "大小未知" : `${pct}%`}`}>
         <DotRing progress={pct} indeterminate={progressIndeterminate} />
-      </span>
+      </button>
     );
   }
   if (status === "available") {
@@ -45,7 +45,7 @@ export function UpdateCollapsedDot() {
         className="upd-dot upd-dot--available"
         title="发现新版本，点击查看更新详情"
         aria-label="发现新版本，点击查看更新详情"
-        onClick={() => (isDismissed(update?.version) ? void downloadAndInstall() : openUpdateNotes())}
+        onClick={openUpdateNotes}
       />
     );
   }
@@ -54,9 +54,9 @@ export function UpdateCollapsedDot() {
       <button
         type="button"
         className="upd-dot upd-dot--ready"
-        title="更新已安装，点击取消自动重启"
-        aria-label="更新已安装，点击取消自动重启"
-        onClick={() => cancelAutoRestart()}
+        title="更新已安装，点击查看并确认重启"
+        aria-label="更新已安装，点击查看并确认重启"
+        onClick={openUpdateNotes}
       />
     );
   }
@@ -72,7 +72,7 @@ export function UpdateCollapsedDot() {
         className="upd-dot upd-dot--error"
         title={error ? `${label}\n\n原因：${error}` : label}
         aria-label={label}
-        onClick={() => manualCheckForUpdate()}
+        onClick={() => update ? openUpdateNotes() : void manualCheckForUpdate()}
       />
     );
   }

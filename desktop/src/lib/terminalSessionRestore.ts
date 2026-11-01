@@ -14,8 +14,11 @@ const VERSION = 1;
 
 export interface RestoreSnapshot {
   v: number;
-  /** 主格标签序列（按标签栏顺序），splitOnly 副格不存——分屏形状每次自己开。 */
-  tabs: { connId: string }[];
+  /**
+   * 主格标签序列（按标签栏顺序），splitOnly 副格不存——分屏形状每次自己开。
+   * `label` 是用户双击标签名起的名字；缺失按无名字处理（老快照样兼容）。
+   */
+  tabs: { connId: string; label?: string }[];
   /** 活动标签在 tabs 里的下标；越界由恢复方夹紧。 */
   active: number;
 }
@@ -33,7 +36,7 @@ export function loadRestoreSnapshot(): RestoreSnapshot | null {
   }
 }
 
-export function saveRestoreSnapshot(tabs: { connId: string }[], active: number): void {
+export function saveRestoreSnapshot(tabs: { connId: string; label?: string }[], active: number): void {
   try {
     localStorage.setItem(KEY, JSON.stringify({ v: VERSION, tabs, active }));
   } catch {

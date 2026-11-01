@@ -31,6 +31,13 @@ fn terminal(status: &str) -> bool {
 }
 
 impl TaskControl {
+    pub fn active_count(&self) -> Result<usize, String> {
+        self.0
+            .lock()
+            .map(|state| state.tasks.values().filter(|task| active(task)).count())
+            .map_err(|_| "无法读取后台成员状态".into())
+    }
+
     /// Only live events mint tokens. A persisted/replayed task cannot control a new process.
     pub fn observe(&self, event: &mut CcEvent) {
         let Ok(mut state) = self.0.lock() else { return };
@@ -225,6 +232,21 @@ mod tests {
     }
     fn start(control: &TaskControl, id: &str) -> String {
         feed(control, json!({"type":"system","subtype":"task_started","task_id":id,"run_id":"r1","task_type":"local_agent","patch":{"status":"running","is_backgrounded":true}})).unwrap()
+    }
+    #[test]
+    fn update_activity_counts_only_live_tasks_and_clears_on_exit() {
+        let control = TaskControl::default();
+        assert_eq!(control.active_count().unwrap(), 0);
+        start(&control, "a");
+        start(&control, "b");
+        assert_eq!(control.active_count().unwrap(), 2);
+        feed(
+            &control,
+            json!({"type":"system","subtype":"task_updated","task_id":"a","patch":{"status":"completed"}}),
+        );
+        assert_eq!(control.active_count().unwrap(), 1);
+        control.observe(&mut CcEvent::Exit { code: Some(0) });
+        assert_eq!(control.active_count().unwrap(), 0);
     }
     #[tokio::test]
     async fn ack_is_not_terminal_and_only_selected_member_settles() {

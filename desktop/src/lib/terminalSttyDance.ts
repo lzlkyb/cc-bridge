@@ -151,6 +151,20 @@ export const STRIP_TOKENS: readonly string[] = [
   ECHO_ON_CMD,
 ];
 
+/**
+ * 恢复 ECHO 时要发的那一行字节。
+ *
+ * `hasPendingInput` 为真 = ECHO 关闭期用户已经敲了东西：这时必须先发 `^U` 把输入行清掉，
+ * 否则 `stty echo` 会接在用户已敲的字节后面变成同一条命令（`cd /tmp` → `cd /tmp stty echo`，
+ * 报 too many arguments）。清掉之后由调用方把缓冲的按键原样重放。
+ *
+ * 纯计算，单测在 `terminalSttyDance.test.ts`。
+ */
+export function echoRestoreCommand(clean: boolean, hasPendingInput: boolean): string {
+  const cmd = ` ${clean ? ECHO_ON_CLEAN_CMD : ECHO_ON_CMD}\n`;
+  return hasPendingInput ? `\x15${cmd}` : cmd;
+}
+
 /** 舞步时序（毫秒）。t0 = 会话接线完成（等 banner / MOTD 走完再起舞）。 */
 export const DANCE = {
   /** t0：发合并探针。不能再早——还要躲开首连的密码提示自动填充。 */
@@ -169,6 +183,12 @@ export const DANCE = {
   PROBE_TIMEOUT: 8000,
   /** 钩子发出后多久没等到 133;A 就降级（ECHO 此时已被 restore 恢复，这里只判死）。 */
   HOOK_TIMEOUT: 2000,
+  /**
+   * 恢复 ECHO 后多久把用户敲的按键重放回去（见 useTerminalOsc 的 restore）。
+   * 要等 `stty echo` 真正执行完、提示符重画好，否则重放的字符会被 `printf '\r\033[2K'`
+   * 那条清行命令擦掉；200ms 足够一个本地网段的往返 + shell 执行。
+   */
+  REPLAY_DELAY: 200,
 } as const;
 
 /* ============================== 时序状态机 ============================== */

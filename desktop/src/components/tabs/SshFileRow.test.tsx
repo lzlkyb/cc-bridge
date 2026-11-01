@@ -7,7 +7,7 @@ import type { SshFileEntry } from "../../lib/types";
 vi.mock("../../hooks/useAutoAnimateRM",()=>({useAutoAnimateRM:()=>()=>{}}));
 const dir:SshFileEntry={name:"项目文件夹",isDir:true,isSymlink:false,size:0,mtime:0};
 const file:SshFileEntry={...dir,name:"report.txt",isDir:false};
-const open=vi.fn(),download=vi.fn(),remove=vi.fn(),retry=vi.fn();
+const open=vi.fn(),download=vi.fn(),remove=vi.fn(),retry=vi.fn(),select=vi.fn(()=>true);
 let root:Root,host:HTMLDivElement;
 async function render(loading=false,busy=false,error:string|null=null) {await act(async()=>root.render(<FileTable entries={[dir,file]} loading={loading} busy={busy} error={error} onOpenDir={open} onDownload={download} onRemove={remove} onRetry={retry}/>));}
 beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);vi.clearAllMocks();host=document.createElement("div");document.body.append(host);root=createRoot(host);});
@@ -26,4 +26,18 @@ it("行内下载不冒泡打开，错误处可直接重试",async()=>{
   expect(download).toHaveBeenCalledExactlyOnceWith(file.name);expect(open).not.toHaveBeenCalled();
   await render(false,false,"permission denied");expect(host.querySelector('[role="alert"]')?.textContent).toContain("permission denied");
   await act(async()=>[...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="重试")!.click());expect(retry).toHaveBeenCalledOnce();
+});
+it("🔴 双击普通文件即下载；单击只选中（以前双击完全没动作）",async()=>{
+  await act(async()=>root.render(<FileTable entries={[dir,file]} loading={false} busy={false} error={null} onOpenDir={open} onDownload={download} onRemove={remove} onRetry={retry} onSelect={select} onActivateFile={download}/>));
+  const row=[...host.querySelectorAll<HTMLTableRowElement>("tbody tr")][1];
+  await act(async()=>row.dispatchEvent(new MouseEvent("click",{bubbles:true})));
+  expect(download).not.toHaveBeenCalled();            // 单击不下载
+  expect(select).toHaveBeenCalledExactlyOnceWith(file.name,expect.anything());
+  await act(async()=>row.dispatchEvent(new MouseEvent("dblclick",{bubbles:true})));
+  expect(download).toHaveBeenCalledExactlyOnceWith(file.name);expect(open).not.toHaveBeenCalled();
+});
+it("带修饰键的点击交给多选，不再顺手打开目录",async()=>{
+  await act(async()=>root.render(<FileTable entries={[dir,file]} loading={false} busy={false} error={null} onOpenDir={open} onDownload={download} onRemove={remove} onRetry={retry} onSelect={select}/>));
+  await act(async()=>host.querySelector("tbody tr")!.dispatchEvent(new MouseEvent("click",{bubbles:true,ctrlKey:true})));
+  expect(select).toHaveBeenCalledWith(dir.name,expect.objectContaining({ctrlKey:true}));expect(open).not.toHaveBeenCalled();
 });

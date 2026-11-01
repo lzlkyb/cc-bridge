@@ -103,24 +103,32 @@ export function TerminalStatusBar({
         {/* 远端程序自报状态（OSC 7501）。紧跟主机名：左区空间不足时横向滚动，
             要紧的信息必须排在最前面才不会被滚出视口。断开后不再显示（会变成陈旧值）。 */}
         {!closed && <AgentSeg skin={skin} agent={agent} />}
-        {status.cwd !== null && (
-          <Seg skin={skin} kind="path" icon="folder" title={status.cwd}>
-            {shortenPath(status.cwd)}
-          </Seg>
-        )}
-        {status.branch !== null && (
-          <Seg skin={skin} kind="git" icon="gitBranch" title="git 分支">
-            {status.branch}
-          </Seg>
-        )}
-        {/* Starship 默认行为：退出码只在失败时显示，成功不占位置。 */}
-        {status.exitCode !== null && status.exitCode !== 0 && <ExitSeg skin={skin} code={status.exitCode} />}
-        {/* 上一条命令耗时（OSC 133;A→D 配对）。会话时长是钟表时间，这个是「上一条跑了多久」——
-            长命令挂后台时一眼看出它刚结束没有、跑了多久。 */}
-        {formatCmdDuration(status.lastCmdMs) !== null && (
-          <Seg skin={skin} kind="muted" icon="activity" title="上一条命令耗时（Ctrl+Shift+↑ 跳到它的输出起点）">
-            {formatCmdDuration(status.lastCmdMs)}
-          </Seg>
+        {/* 🔴 断开后这一整组必须收起：它们全是上个会话的**残留值**（不再更新），
+            照常渲染等于告诉用户「cwd 在 /home/u、分支是 main、上一条命令失败退出码 2」，
+            而他看到的其实是一个已经死掉的会话。断开的唯一真相是右侧的「已断开」。
+            会话时长仍保留（本地可算、已冻结），那是「这个标签存在了多久」而非远端状态。 */}
+        {!closed && (
+          <>
+            {status.cwd !== null && (
+              <Seg skin={skin} kind="path" icon="folder" title={status.cwd}>
+                {shortenPath(status.cwd)}
+              </Seg>
+            )}
+            {status.branch !== null && (
+              <Seg skin={skin} kind="git" icon="gitBranch" title="git 分支">
+                {status.branch}
+              </Seg>
+            )}
+            {/* Starship 默认行为：退出码只在失败时显示，成功不占位置。 */}
+            {status.exitCode !== null && status.exitCode !== 0 && <ExitSeg skin={skin} code={status.exitCode} />}
+            {/* 上一条命令耗时（OSC 133;A→D 配对）。会话时长是钟表时间，这个是「上一条跑了多久」——
+                长命令挂后台时一眼看出它刚结束没有、跑了多久。 */}
+            {formatCmdDuration(status.lastCmdMs) !== null && (
+              <Seg skin={skin} kind="muted" icon="activity" title="上一条命令耗时（Ctrl+Shift+↑ 跳到它的输出起点）">
+                {formatCmdDuration(status.lastCmdMs)}
+              </Seg>
+            )}
+          </>
         )}
       </div>
 
@@ -155,20 +163,28 @@ export function TerminalStatusBar({
   );
 }
 
-/** 非 ready 时右侧的提示文案。刻意区分「还没探到」「探过了但不支持」「终端没建好」，避免误导。 */
+/**
+ * 非 ready 时右侧的提示文案。刻意区分「还没探到」「探过了但不支持」「终端没建好」，避免误导。
+ *
+ * pending 期间远端 ECHO 是关的（见 lib/terminalSttyDance.ts 舞步）：这段时间敲键屏上不会回显，
+ * 只能靠这里告诉用户「在准备，稍等」，否则看起来就是「终端卡住了」。
+ */
 const HINT_TEXT: Record<OscState, string> = {
-  pending: "正在探测…",
+  pending: "正在准备远端环境…",
   ready: "",
   off: "远端探测已关闭",
   unsupported: "路径/git 不可用",
+  skipped: "已跳过远端探测",
   termNotReady: "终端未就绪",
 };
 
 const HINT_TITLE: Record<OscState, string> = {
-  pending: "正在判断远端 shell 类型，稍后显示路径与 git 分支",
+  pending:
+    "正在判断远端 shell 类型并准备提示符钩子（约 1~2 秒）。这期间没有回显，你敲的键会先缓存、随后原样重放，不会丢也不会拼进准备命令",
   ready: "",
   off: "你在设置里关掉了远端提示符钩子，状态栏只显示本地可算的信息",
   unsupported: "远端不是 bash/zsh，或钩子未生效。终端本身不受影响",
+  skipped: "你在准备阶段就开始输入了，于是本次会话跳过钩子注入以免打断你。终端与命令完全不受影响，重连后会重试",
   termNotReady: "终端组件尚未初始化，远端信息暂不可用。终端本身不受影响",
 };
 

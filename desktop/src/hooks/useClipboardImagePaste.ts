@@ -1,3 +1,4 @@
+import { sendTerminalUserInput } from "../lib/terminalUserInput";
 import { useCallback, useRef, useState } from "react";
 import { readImage } from "@tauri-apps/plugin-clipboard-manager";
 import { invoke } from "../lib/tauri";
@@ -92,7 +93,7 @@ export function useClipboardImagePaste({ sessionId, connId, closed }: Args) {
       // 5. 收尾：删中转文件（失败不阻塞），路径插入输入行（不带换行，回车交给用户）。
       // 路径按需加引号：cwd 带空格等字符时，裸路径会被远端 shell 切词。
       void invoke("temp_file_remove", { path: local }).catch(() => {});
-      await invoke("ssh_input", { sessionId: s.sessionId, data: quoteShellArgIfNeeded(remote) });
+      await sendTerminalUserInput(s.sessionId, quoteShellArgIfNeeded(remote));
       toast(`图片已上传到 ${remote}，路径已填入输入行`, "success");
     } catch (e) {
       // readImage 对「剪贴板没有图片」的报错文案里带 image 关键字，翻译成友好提示。

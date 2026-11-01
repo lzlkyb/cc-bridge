@@ -92,7 +92,8 @@ export function FileHeader({
 }
 
 interface RemoveConfirmDialogProps {
-  target: SshFileEntry | null;
+  /** 待删除条目（多选时是多个）。单条时只显示名字，多条时给数量 + 清单。 */
+  targets: SshFileEntry[];
   busy: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -102,23 +103,40 @@ interface RemoveConfirmDialogProps {
  * 删除二次确认（项目内 Dialog，统一 Tauri 风格）。
  */
 export function RemoveConfirmDialog({
-  target,
+  targets,
   busy,
   onConfirm,
   onCancel,
 }: RemoveConfirmDialogProps) {
+  const one = targets.length === 1 ? targets[0] : null;
   return (
-    <Dialog open={!!target} onClose={onCancel}>
+    <Dialog open={targets.length > 0} onClose={onCancel}>
       <DialogHeader>
         <DialogTitle>删除确认</DialogTitle>
       </DialogHeader>
       <p className="text-sm text-muted-foreground">
-        确定要删除远程文件
-        <code className="mx-1 rounded bg-muted px-1.5 py-0.5 text-foreground">
-          {target?.name}
-        </code>
-        吗？该操作会<strong className="text-destructive-ink">递归删除且不可恢复</strong>。
+        {one ? (
+          <>
+            确定要删除远程文件
+            <code className="mx-1 rounded bg-muted px-1.5 py-0.5 text-foreground">{one.name}</code>
+            吗？
+          </>
+        ) : (
+          <>
+            确定要删除选中的 <strong className="text-foreground">{targets.length}</strong> 个文件吗？
+          </>
+        )}
+        该操作会<strong className="text-destructive-ink">递归删除且不可恢复</strong>。
       </p>
+      {!one && (
+        <ul className="mt-2 max-h-24 overflow-y-auto rounded border border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
+          {targets.map((t) => (
+            <li key={t.name} className="truncate">
+              {t.name}
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="mt-5 flex justify-end gap-2">
         <Button variant="outline" onClick={onCancel}>
           取消

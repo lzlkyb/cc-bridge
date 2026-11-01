@@ -15,13 +15,14 @@ html[data-ui-style="glass"] .terminal-workspace .terminal-tabs-header[data-fulls
   background: var(--glass-terminal-chrome);
   border-color: var(--glass-chrome-edge);
 }
-.terminal-tabs-header[data-fullscreen] .terminal-tabs-scroll { flex: 0 1 auto; max-width: 60%; min-width: 96px; order: 0; scrollbar-width: none; }
-.terminal-tabs-header[data-fullscreen] .terminal-tabs-scroll::-webkit-scrollbar { display: none; }
+/* 全屏不再隐藏滚动条：被挤出去的标签以前既没有「还有 N 个」提示、也没有 ◀▶，
+   滚动条是唯一「这里还有东西」的视觉线索。Ctrl+Tab 是键盘兜底（hooks/useTerminalTabCycling）。 */
+.terminal-tabs-header[data-fullscreen] .terminal-tabs-scroll { flex: 0 1 auto; max-width: 60%; min-width: 96px; order: 0; scrollbar-width: thin; }
 .terminal-tabs-header[data-fullscreen] .terminal-tabs-scroll > div { max-width: 330px; height: 32px; }
 .terminal-tabs-header[data-fullscreen] .terminal-session-tab { min-width: 0; }
 .terminal-tabs-header[data-fullscreen] .terminal-session-tab > span:first-child { flex-shrink: 0; }
 .terminal-tabs-header[data-fullscreen] .terminal-session-tab > span:nth-child(2) { flex-shrink: 0; max-width: 160px; }
-.terminal-tabs-header[data-fullscreen] .terminal-session-close { flex-shrink: 0; display: grid; place-items: center; width: 28px; height: 28px; }
+.terminal-tabs-header[data-fullscreen] .terminal-session-close, .terminal-tabs-header[data-fullscreen] .terminal-session-power { flex-shrink: 0; display: grid; place-items: center; width: 28px; height: 28px; }
 .terminal-tabs-header[data-fullscreen] .terminal-tabs-actions { display: contents; }
 .terminal-tabs-header[data-fullscreen] [aria-label="新终端"] { order: 1; width: 32px; height: 32px; }
 .terminal-tabs-header[data-fullscreen] [aria-label="分屏"] { order: 4; width: 32px; height: 32px; }

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { IBuffer } from "@xterm/xterm";
-import { MAX_HITS, searchAll, searchBuffer } from "./terminalGlobalSearch";
+import { MAX_HITS, searchAll, searchAllReport, searchBuffer, searchBufferReport } from "./terminalGlobalSearch";
 
 /**
  * 假缓冲区：只需要 `length` + `getLine`，够 searchBuffer 用。
@@ -114,5 +114,61 @@ describe("searchAll（跨会话）", () => {
 
   it("上限常量是个正数（面板文案依赖它）", () => {
     expect(MAX_HITS).toBeGreaterThan(0);
+  });
+});
+
+describe("SearchReport：区分「真的没有」与「没扫 / 没扫完」", () => {
+  it("正则写半截 ⇒ invalidPattern=true（不是「没有匹配」）", () => {
+    const r = searchBufferReport("s1", fakeBuffer(["hello hit"]), "([", { ...NOOP, regex: true });
+    expect(r).toEqual({ hits: [], truncated: false, invalidPattern: true });
+  });
+
+  it("命中数正好等于上限 ⇒ 不算被截断（不能平白告诉用户「还有更多」）", () => {
+    const r = searchBufferReport("s1", fakeBuffer(["hit", "hit", "hit"]), "hit", NOOP, 3);
+    expect(r.hits).toHaveLength(3);
+    expect(r.truncated).toBe(false);
+  });
+
+  it("命中数超过上限 ⇒ truncated=true，且列表仍只给 limit 条", () => {
+    const r = searchBufferReport("s1", fakeBuffer(["hit", "hit", "hit", "hit"]), "hit", NOOP, 3);
+    expect(r.hits).toHaveLength(3);
+    expect(r.truncated).toBe(true);
+  });
+
+  it("额度被前一个会话吃满、后一个会话还有命中 ⇒ truncated=true", () => {
+    const r = searchAllReport(
+      [
+        { sessionId: "s1", buffer: fakeBuffer(["hit", "hit"]) },
+        { sessionId: "s2", buffer: fakeBuffer(["nothing", "hit"]) },
+      ],
+      "hit",
+      NOOP,
+      2,
+    );
+    // 关键：老实现命中满额就 break，压根不往后看，于是会把「还有」报成「就这么多」
+    expect(r.hits.map((h) => h.sessionId)).toEqual(["s1", "s1"]);
+    expect(r.truncated).toBe(true);
+  });
+
+  it("额度正好用满且后面确实没有 ⇒ truncated=false", () => {
+    const r = searchAllReport(
+      [
+        { sessionId: "s1", buffer: fakeBuffer(["hit", "hit"]) },
+        { sessionId: "s2", buffer: fakeBuffer(["nothing", "nothing"]) },
+      ],
+      "hit",
+      NOOP,
+      2,
+    );
+    expect(r.hits).toHaveLength(2);
+    expect(r.truncated).toBe(false);
+  });
+
+  it("空关键词 ⇒ 空结果且不是「模式非法」", () => {
+    expect(searchAllReport([{ sessionId: "s1", buffer: fakeBuffer(["hit"]) }], "", NOOP)).toEqual({
+      hits: [],
+      truncated: false,
+      invalidPattern: false,
+    });
   });
 });

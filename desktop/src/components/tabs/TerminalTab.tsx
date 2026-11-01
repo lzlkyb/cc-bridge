@@ -7,18 +7,14 @@ import { toast } from "../ui/toast";
 import { useTerminalThemeMode } from "../../hooks/useTerminalAppearance";
 import { useTerminalPreset } from "../../hooks/useTerminalPreset";
 import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
-import type {
-  SshConnection,
-  SshConnectionList,
-  SshCheckResult,
-  StaticStatus,
-} from "../../lib/types";
+import type { SshConnection, SshConnectionList, SshCheckResult, StaticStatus } from "../../lib/types";
 import { SshConnectionDialog } from "./SshConnectionDialog";
 import type { SshSessionRef } from "./TerminalConnectionItem";
-import { TerminalFilePanel } from "./TerminalFilePanel";
+import { TerminalFilePanelHost } from "./TerminalFilePanelHost";
 import { TerminalSidebar } from "./TerminalSidebar";
 import { TerminalPanes } from "./TerminalPanes";
 import { useTerminalSplit } from "./useTerminalSplit";
+import { useTerminalTabCycling } from "../../hooks/useTerminalTabCycling";
 import { SshEnableGate, SshMissingCard } from "./TerminalGates";
 import { useTerminalViewState } from "./useTerminalViewState";
 import { useSshSessions } from "./useSshSessions";
@@ -64,11 +60,12 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
   useSessionRestore({ ssh, connections, ready: data !== undefined });
   const { collapsed, setCollapsed, fullscreen, setFullscreen } = useTerminalViewState(rootRef, activeId, { collapsed: sidebarCollapsed, setCollapsed: onSidebarCollapsedChange });
 
-  // 拖拽上传（终端侧）。只对**当前活动且未断开**的会话生效：
-  // 没有会话就没有「传到哪台机器」。
+  // 拖拽上传（终端侧）。只对**当前活动且未断开**的会话生效：没有会话就没有「传到哪台机器」。
   const termAreaRef = useRef<HTMLDivElement>(null);
   const activeSession = sessions.find((s) => s.sessionId === activeId);
   const splitCtl = useTerminalSplit({ ssh, activeSession: activeSession ?? null, areaRef: termAreaRef });
+  // Ctrl+Tab / Ctrl+Shift+Tab 循环切标签（全屏时标签会溢出到滚动区外，靠它兜底）。
+  useTerminalTabCycling(sessions.filter((s) => !s.splitOnly).map((s) => s.sessionId), activeId, ssh.setActiveId);
   const workspace = useTerminalWorkspace(sessions, activeId, splitCtl.split);
   const activeConn =
     activeSession && !activeSession.closedReason ? activeSession.conn : null;
@@ -137,9 +134,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
     };
   }, [enabled]);
 
-  // 切主题不再弹提醒。跑着的 TUI（Claude Code 这类在启动时探测背景明暗的程序）不会跟着
-  // 变色——这条信息已写进设置页「终端风格」的说明里。放在那里是常驻可见的，而弹 toast 是
-  // 每次切主题都打断一下，调一次配色能弹好几次。
+  // 切主题不弹提醒：跑着的 TUI 启动时就把配色定死了，说明写在设置页「终端风格」里常驻可见。
 
   const enableSsh = async () => {
     try {
@@ -228,6 +223,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
             up={up}
             dropping={drop.zone === "terminal"}
             count={drop.count}
+            cwd={activeCwd}
           />
           {sessions.length > 0 && (
             <TerminalTabsBar
@@ -238,6 +234,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
               onActivate={openSession}
               onDisconnect={(sessionId) => void ssh.disconnect(sessionId)}
               onCloseTab={ssh.closeTab}
+              onRename={ssh.renameTab}
               // 新终端跟随当前操作的窗格，而分屏开关始终属于宿主标签。
               onNewTerminal={workspace.focusedSession && !workspace.focusedSession.closedReason ? () => newTerminal(workspace.focusedSession!.conn) : null}
               onToggleSplit={activeSession ? splitCtl.toggleSplit : null}
@@ -278,10 +275,12 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
 
         {/* 文件管理面板（覆盖在终端之上） */}
         {fileConn && (
-          <TerminalFilePanel
+          <TerminalFilePanelHost
             conn={fileConn}
             initialPath={filePath ?? undefined}
             onBack={() => (setFileConn(null), setFilePath(null))}
+            sessions={sessions}
+            onConnect={ssh.connect}
           />
         )}
       </div>

@@ -1,5 +1,6 @@
 import { Modal } from "../ui/Modal";
 import { UpdateDialogContent } from "./UpdateDialogContent";
+import type { UpdatePresentation } from "../../lib/updatePresentation";
 import type { UpdateNotesInfo } from "../../lib/updateNotes";
 
 /** 将文本中的 **...** 转换为 <strong> 标签，其余保持纯文本。 */
@@ -160,15 +161,19 @@ export function ReleaseNotes({ body }: { body: string | null | undefined }) {
 }
 
 /** 更新下载行为沿用现有通道；展示层单独解析版本范围。 */
-export function UpdateNotesDialog({ open, update, onClose, onDownload, onDismiss }: {
+export function UpdateNotesDialog({ open, update, process, onClose, onDownload, onDismiss, onRestart, onRetry, onRefreshSafety }: {
   open: boolean;
   update: UpdateNotesInfo | null;
+  process?: UpdatePresentation;
   onClose: () => void;
   onDownload: () => void;
   onDismiss: () => void;
+  onRestart?: () => void;
+  onRetry?: () => void;
+  onRefreshSafety?: () => void;
 }) {
   if (!update) return null;
   return <Modal open={open} onClose={onClose} zIndex={1000} ariaLabel="CC Bridge 软件更新" className="modal-surface update-dialog">
-    <UpdateDialogContent key={`${update.currentVersion ?? ""}/${update.version ?? ""}`} update={update} onClose={onClose} onDownload={onDownload} onDismiss={onDismiss} />
+    <UpdateDialogContent key={`${update.currentVersion ?? ""}/${update.version ?? ""}`} update={update} process={process} onClose={onClose} onDownload={onDownload} onDismiss={onDismiss} onRestart={onRestart} onRetry={onRetry} onRefreshSafety={onRefreshSafety} />
   </Modal>;
 }

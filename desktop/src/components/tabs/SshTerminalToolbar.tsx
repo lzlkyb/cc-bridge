@@ -79,7 +79,7 @@ export function SshTerminalToolbar({
   if (fullscreen && compact) return <TerminalFullscreenTools {...{ pane, conn, closed, focused, inputErr, selectMode, shiftActive, dragSelecting, fullscreen, onCopy, onCopyScreen, onPaste, onPasteImage, imgBusy, onRepaint, onSearch, onToggleSelectMode, onClear, onToggleFullscreen, onExport, onDisconnect, cmdOpen }}/>;
   if (pane) return <TerminalPaneActions {...{ conn, closed, inputErr, selectMode, shiftActive, dragSelecting, onCopy, onCopyScreen, onPaste, onPasteImage, imgBusy, onRepaint, onSearch, onToggleSelectMode, onClear, onExport, fullscreen, onToggleFullscreen, onDisconnect, cmdOpen }}/>;
   return (
-    <div className="terminal-session-toolbar flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2" data-compact={compact || undefined} aria-label={`${conn.name || conn.host}终端操作`}>
+    <div className="terminal-session-toolbar flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2" data-compact={compact || undefined} data-focused={focused || undefined} aria-label={`${conn.name || conn.host}终端操作${focused ? "" : "（未聚焦，点击终端可继续输入）"}`}>
       {!compact && <><Icon name="terminal" size={14} className="shrink-0 text-muted-foreground" />
       <span className="min-w-0 truncate text-sm font-medium" title={conn.name || conn.host}>
         {conn.name || conn.host}
@@ -125,15 +125,13 @@ export function SshTerminalToolbar({
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" />
           输入失败
         </span>
-      ) : (
-        !compact && !focused &&
-        !closed && (
-          <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-400">
-            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />
-            点击终端以输入
-          </span>
-        )
-      )}
+      ) : null}
+      {/* 这里曾有一个「点击终端以输入」的琥珀胶囊，条件写的是 `!compact && !focused`，
+          而唯一的调用点恒传 compact ⇒ 永远是死代码：用户点完工具栏键盘哑火时，
+          屏幕上其实一个提示都没有。
+          现在真正的修法是「动作点完自动把焦点还给终端」（hooks/useTerminalFocusReturn），
+          拿不到焦点的情形只剩「用户主动点了别处」，那时再喊一句是噪音而不是帮助。
+          焦点状态仍保留：进 aria-label，屏幕阅读器用户能听到。 */}
       <div className="ml-auto flex shrink-0 items-center gap-1 border-l border-border pl-2">
         <ButtonIcon title="复制选中（Ctrl+Shift+C）" onClick={onCopy}>
           <Icon name="copy" size={14} />
@@ -146,9 +144,7 @@ export function SshTerminalToolbar({
           <Icon name="clipboard" size={14} />
         </ButtonIcon>
         <ButtonIcon
-          title={
-            closed ? "连接已断开，无法发送图片" : "粘贴剪贴板图片到远端（Ctrl+Shift+V）"
-          }
+          title={closed ? "连接已断开，无法发送图片" : "把剪贴板里的图片传到远端（Ctrl+Shift+V 优先粘文本）"}
           disabled={closed || imgBusy}
           onClick={onPasteImage}
         >

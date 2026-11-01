@@ -1,21 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { invoke } from "../lib/tauri";
-import {
-  hookCmd,
-  isOsc133A,
-  isSupportedShell,
-  parseOsc7,
-  parseOsc133,
-  parseOsc1337,
-} from "../lib/terminalStatusbar";
-import { navCmdStart, navCmdEnd, navCmdText } from "../lib/terminalCommandNav";
+import { hookCmd } from "../lib/terminalStatusbar";
+import { attachOscHandlers } from "../lib/terminalOscAttach";
+import { interceptTerminalUserInput } from "../lib/terminalUserInput";
 import {
   attachEchoStripWhenReady,
   claimInjection,
   DANCE,
   ECHO_ON_CMD,
-  ECHO_ON_CLEAN_CMD,
+  echoRestoreCommand,
   PROBE_ECHO_OFF_CMD,
   danceNext,
   tuiOnScreen,
@@ -36,9 +30,10 @@ export interface TerminalStatus {
 
 /**
  * 钩子状态机：`pending` 探测中 / `ready` 钩子已生效 / `off` 设置里关了注入 /
- * `unsupported` 远端不是 bash/zsh 或注入出错（**自动降级，不重试**）。
+ * `unsupported` 远端不是 bash/zsh 或注入出错（**自动降级，不重试**）/
+ * `skipped` 用户在准备期就开始打字，主动放弃注入（不是缺陷，提示语必须区别对待）。
  */
-export type OscState = "pending" | "ready" | "off" | "unsupported" | "termNotReady";
+export type OscState = "pending" | "ready" | "off" | "unsupported" | "skipped" | "termNotReady";
 
 interface Args {
   /** 会话 id。变化时（含重连）重置状态并重新探测。 */
@@ -51,17 +46,15 @@ interface Args {
 }
 
 /**
- * 远端提示符钩子：注入 + OSC 解析。
+ * 远端提示符钩子：注入 + OSC 解析（解析层在 lib/terminalOscAttach.ts）。
  *
  * 注入是往一个**活着的 shell** 里打字，只在会话刚建立、用户一个字都还没敲时做一次
  * （VS Code / iTerm2 / Warp 通行做法），`typedRef` 兜底：收到过一次用户输入即永久放弃。
  * 🔴 另两条硬前置见 lib/terminalSttyDance.ts 的 `claimInjection` / `tuiOnScreen`：
  * 同一会话只注入一次（HMR / 重挂 / 会话恢复都会重跑本 effect），且屏幕上有全屏 TUI 时
  * 绝不注入——否则命令会被 TUI 的输入行吃掉并显示出来（2026-10-16 报障）。
- *
- * 回显治理（stty 舞步时序 + 残渣常驻剥除）见 lib/terminalSttyDance.ts 头注与
- * docs/SSH钩子注入回显治理方案.md。restore 单次消费（echoOffRef）：ECHO 已恢复后
- * 再发的 `stty echo` 会被回显成第二行残渣。
+ * 回显治理与时序见 lib/terminalSttyDance.ts 头注；restore 单次消费（echoOffRef）：
+ * ECHO 已恢复后再发 `stty echo` 会被回显成第二行残渣。
  */
 export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
   status: TerminalStatus;
@@ -76,17 +69,18 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
   const [state, setState] = useState<OscState>("pending");
   // 用户是否已经在本次会话里敲过字。敲过就永不注入（见文件头注释）。
   const typedRef = useRef(false);
-  // 探针回执 / 第一条 133;A 的 ref 镜像：舞步定时器触发时读 ref，不读 setState 闭包。
   const probeOkRef = useRef(false);
   const readyRef = useRef(false);
   // ECHO 是否处于关闭期：restore 的单次消费闸门（红线见 lib/terminalSttyDance.ts）。
   const echoOffRef = useRef(false);
-  // 用户敲键时的紧急恢复回调（会话 effect 每轮重挂；restore 后置 null）。
-  const abortRef = useRef<(() => void) | null>(null);
+  // Buffer user input before IPC until ECHO is restored.
+  const collectingRef = useRef(false);
+  const typedBufRef = useRef("");
+  // User input aborts preparation; distinguish that from an unsupported shell.
+  const abortRef = useRef<((reason?: "skipped") => void) | null>(null);
   // 探针回执到达时的续步回调：hook/kick/restore 时序从这里接棒。
   const probeGoRef = useRef<(() => void) | null>(null);
-  // 注入开关的实时镜像：OSC 处理器挂在 term 实例上、生命周期比本 hook 长，必须靠 ref
-  // 读到开关最新值，否则关掉探测后处理器仍在偷偷更新状态。
+  // OSC handlers outlive renders and must read the latest injection setting.
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
 
@@ -95,11 +89,14 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     probeOkRef.current = false;
     readyRef.current = false;
     echoOffRef.current = false;
+    collectingRef.current = false;
+    typedBufRef.current = "";
     abortRef.current = null;
     setStatus({ cwd: null, branch: null, exitCode: null, lastCmdMs: null });
   }, []);
 
   // ── 注册 OSC 处理器 ──
+  // 解析与「字节→语义」的映射在 lib/terminalOscAttach.ts；这里只接状态。
   // 挂在 term 实例上，与 sessionId 无关（OSC 数据来自这个终端的输出流），故按终端实例
   // 注册一次，重连不重挂。
   useEffect(() => {
@@ -109,8 +106,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
 
     const attach = () => {
       const term = termRef.current;
-      // term 由 useSshTerminalSession 的创建 effect 填好，那个 effect 声明在更前面，
-      // 正常情况下此刻已就绪。这里重试只是不把「hook 声明顺序」当成硬依赖。
+      // Retry without depending on the terminal creation effect running first.
       if (!term) {
         // 30 帧（约 0.5s）还没就绪就放弃：此时不是「远端不支持」，而是 xterm 实例本身
         // 没建好（罕见）。给独立态，避免状态栏把「终端未就绪」误报成「远端不支持」。
@@ -121,62 +117,33 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
         raf = requestAnimationFrame(attach);
         return;
       }
-      const d7 = term.parser.registerOscHandler(7, (data) => {
-        if (!enabledRef.current) return true; // 探测已关：吞掉，不更新状态
-        const cwd = parseOsc7(data);
-        if (cwd) {
+      dispose = attachOscHandlers(term, {
+        enabled: () => enabledRef.current,
+        onCwd: (cwd) => {
           setStatus((s) => ({ ...s, cwd }));
           setState("ready");
-        }
-        return true; // 已消费：不要让 xterm 再处理
-      });
-      // 只把「命令结束」当钩子生效的信号（D 带退出码，也是我们要显示的那段）。
-      // 顺路喂命令导航：A 钉 marker（跳转锚点），D 配对算耗时给状态栏显示。
-      const d133 = term.parser.registerOscHandler(133, (data) => {
-        if (!enabledRef.current) return true;
-        if (isOsc133A(data)) {
+        },
+        onCommandStart: () => {
           readyRef.current = true; // 舞步钩子超时判死用
-          navCmdStart(term);
-          setState((s) => (s === "ready" ? s : "ready"));
-          return true;
-        }
-        const code = parseOsc133(data);
-        if (code === null) return false;
-        const durMs = navCmdEnd(term, code);
-        setStatus((s) => ({ ...s, exitCode: code, lastCmdMs: durMs ?? s.lastCmdMs }));
-        setState((s) => (s === "ready" ? s : "ready"));
-        return true;
+          setState("ready");
+        },
+        onCommandEnd: (code, durMs) => {
+          setStatus((s) => ({ ...s, exitCode: code, lastCmdMs: durMs ?? s.lastCmdMs }));
+          setState("ready");
+        },
+        onBranch: (git) => setStatus((s) => ({ ...s, branch: git })),
+        onProbeOk: () => {
+          probeOkRef.current = true;
+          probeGoRef.current?.(); // 回执到达 → 舞步后半场接棒
+        },
+        onProbeUnsupported: () => abortRef.current?.(),
+        onUserInput: () => {
+          // Buffered bytes were already observed by the transport interceptor.
+          if (collectingRef.current) return;
+          typedRef.current = true;
+          abortRef.current?.("skipped");
+        },
       });
-      const d1337 = term.parser.registerOscHandler(1337, (data) => {
-        if (!enabledRef.current) return true;
-        const { shell, git, cmd } = parseOsc1337(data);
-        if (shell) {
-          // 🔴 门禁：回执 ≠ 支持——fish/ksh 也能执行探针并回执，钩子（bash 语法）
-          // 盲发会在对方屏幕喷语法错误。立即 abortDance：恢复 ECHO 不能等探针超时
-          // （PROBE_TIMEOUT 内 ECHO 是关的，用户敲键会隐形）。
-          if (isSupportedShell(shell)) {
-            probeOkRef.current = true;
-            probeGoRef.current?.(); // 回执到达 → 舞步后半场接棒
-          } else {
-            abortRef.current?.();
-          }
-        }
-        if (git) setStatus((s) => ({ ...s, branch: git })); // 分支按目录缓存：钩子只在 cwd 变化时才发，直接替换（旧分支属旧目录）
-        // 命令文本与 133;D 同轮到达（钩子一次 printf 连发），回填到 D 刚填退出码的那一块。
-        if (cmd) navCmdText(term, cmd);
-        return true;
-      });
-      // 用户输入监听：一旦敲过字就永久放弃注入；若 ECHO 正处于关闭期，立即恢复。
-      const onData = term.onData(() => {
-        typedRef.current = true;
-        abortRef.current?.();
-      });
-      dispose = () => {
-        d7.dispose();
-        d133.dispose();
-        d1337.dispose();
-        onData.dispose();
-      };
     };
     attach();
 
@@ -213,29 +180,53 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
 
     // ── 舞步状态机接线 ──
     let phase: DancePhase = "idle";
+    const timers: number[] = [];
+    const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
     // 恢复 ECHO。单次消费（echoOffRef 闸门）：第二句 stty echo 会被回显成残渣（红线）。
+    // 字节组成（含「有用户按键时补 ^U 清行」）是纯计算，见 lib/terminalSttyDance.echoRestoreCommand。
     const restore = (clean = false) => {
       if (!echoOffRef.current) return;
       echoOffRef.current = false;
       abortRef.current = null;
       phase = danceNext(phase, "restoreSent").phase;
-      void send(` ${clean ? ECHO_ON_CLEAN_CMD : ECHO_ON_CMD}\n`).catch(() => {});
+      const hasInput = typedBufRef.current !== "";
+      const cmd = echoRestoreCommand(clean, hasInput);
+      void send(cmd).catch(() => {});
+      if (!hasInput) {
+        collectingRef.current = false;
+        return;
+      }
+      // Keep buffering through restoration, then send the original bytes exactly once.
+      collectingRef.current = true;
+      at(DANCE.REPLAY_DELAY, () => {
+        collectingRef.current = false;
+        const replay = typedBufRef.current;
+        typedBufRef.current = "";
+        if (replay) void send(replay).catch(() => {});
+      });
     };
-    // 异常退出：恢复 ECHO + 判 unsupported（已 ready 则不动）。
-    const abortDance = () => {
+    // 异常退出：恢复 ECHO + 降级（已 ready 则不动）。
+    // reason="skipped"：用户自己开始输入了，不是「远端不支持」——状态栏不能把话说成缺陷。
+    const abortDance = (reason?: "skipped") => {
       restore();
       phase = danceNext(phase, "abort").phase;
-      setState((s) => (s === "pending" ? "unsupported" : s));
+      const next = reason === "skipped" ? "skipped" : "unsupported";
+      setState((s) => (s === "pending" ? next : s));
     };
     abortRef.current = abortDance;
-    const timers: number[] = [];
-    const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
+    const releaseInput = interceptTerminalUserInput(sessionId, (data) => {
+      typedRef.current = true;
+      const buffered = collectingRef.current;
+      if (buffered) typedBufRef.current += data;
+      abortRef.current?.("skipped");
+      return buffered;
+    });
 
     at(DANCE.PROBE_DELAY, () => {
       const term = termRef.current;
       // 🔴 备用屏（全屏 TUI）绝不注入：字节会被 TUI 输入行吃进去并显示出来（2026-10-16 报障）。
       if (typedRef.current || tuiOnScreen(term)) {
-        abortDance();
+        abortDance(typedRef.current ? "skipped" : undefined);
         return;
       }
       // 🔴 折行安全阀：剥除器单行匹配，token 被 PTY 折成两行就永远命中不了 ⇒ 宁可不注入。
@@ -245,12 +236,16 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
         return;
       }
       echoOffRef.current = true;
+      // ECHO 一关就开始攒用户的按键（restore 里重放）。
+      collectingRef.current = true;
       // 🔴 前导空格：bash HISTCONTROL=ignoreboth 忽略带空格的命令，不进 history（zsh 尽力而为）。
       // 🔴 这一条同时关回显与报 shell 名：**回执到达 = shell 已 ready 且 ECHO 已关**，钩子才允许发。
       void send(` ${PROBE_ECHO_OFF_CMD}\n`).catch(() => {
         // 发送失败 = 字节没到远端，回显从未关——闸门必须复位（否则 restore 补发
         // stty echo 被回显成残渣），并中止舞步。
         echoOffRef.current = false;
+        collectingRef.current = false;
+        typedBufRef.current = "";
         phase = danceNext(phase, "abort").phase;
         setState("unsupported");
       });
@@ -284,12 +279,18 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
 
     return () => {
       timers.forEach((t) => window.clearTimeout(t));
+      releaseInput();
       // 兜底：卸载/重连/开关切换时 ECHO 仍关闭就尽力恢复一次（会话已死则忽略）。
       // 🔴 剥除器**不在这里撤**——它挂在终端实例上，这条兜底命令的回显仍归它擦。
       if (echoOffRef.current) {
         echoOffRef.current = false;
         void invoke("ssh_input", { sessionId, data: ` ${ECHO_ON_CMD}\n` }).catch(() => {});
       }
+      // Flush queued bytes on cleanup; no interceptor may survive this session effect.
+      const pendingInput = typedBufRef.current;
+      collectingRef.current = false;
+      typedBufRef.current = "";
+      if (pendingInput && !closed) void send(pendingInput).catch(() => {});
       abortRef.current = null;
       probeGoRef.current = null;
     };

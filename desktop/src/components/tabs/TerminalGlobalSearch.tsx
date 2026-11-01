@@ -2,12 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../ui/icon";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 import { getTerminal, listTerminals } from "../../lib/terminalRegistry";
-import {
-  MAX_HITS,
-  searchAll,
-  type GlobalHit,
-  type SearchSource,
-} from "../../lib/terminalGlobalSearch";
+import { MAX_HITS, searchAllReport, type GlobalHit, type SearchReport } from "../../lib/terminalGlobalSearch";
 
 interface Props {
   /** 全部会话（拿 sessionId → 连接名，用于结果里标「是哪台机器」）。 */
@@ -33,9 +28,10 @@ export function TerminalGlobalSearch({ sessions, onActivate, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [regex, setRegex] = useState(false);
-  const [hits, setHits] = useState<GlobalHit[]>([]);
+  const [report, setReport] = useState<SearchReport | null>(null);
   const [scanning, setScanning] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const hits = report?.hits ?? [];
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -43,17 +39,17 @@ export function TerminalGlobalSearch({ sessions, onActivate, onClose }: Props) {
 
   useEffect(() => {
     if (!query) {
-      setHits([]);
+      setReport(null);
       setScanning(false);
       return;
     }
     setScanning(true);
     const t = setTimeout(() => {
-      const sources: SearchSource[] = listTerminals().map(({ sessionId, term }) => ({
+      const sources = listTerminals().map(({ sessionId, term }) => ({
         sessionId,
         buffer: term.buffer.active,
       }));
-      setHits(searchAll(sources, query, { caseSensitive, regex }));
+      setReport(searchAllReport(sources, query, { caseSensitive, regex }));
       setScanning(false);
     }, DEBOUNCE_MS);
     return () => clearTimeout(t);
@@ -74,7 +70,18 @@ export function TerminalGlobalSearch({ sessions, onActivate, onClose }: Props) {
     term.focus();
   };
 
-  const count = !query ? "" : hits.length === 0 ? "无结果" : hits.length >= MAX_HITS ? `前 ${MAX_HITS} 条` : `${hits.length} 条`;
+  // 「模式非法」必须单独一态：正则半截时一条都没扫，显示「无结果」是在撒谎。
+  const invalid = report?.invalidPattern ?? false;
+  const truncated = report?.truncated ?? false;
+  const count = !query
+    ? ""
+    : invalid
+      ? "模式非法"
+      : hits.length === 0
+        ? "无结果"
+        : truncated
+          ? `前 ${MAX_HITS} 条`
+          : `${hits.length} 条`;
 
   return (
     <>
@@ -96,7 +103,10 @@ export function TerminalGlobalSearch({ sessions, onActivate, onClose }: Props) {
             }}
             className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
           />
-          <span className="min-w-0 shrink-0 text-[10.5px] text-muted-foreground">
+          <span
+            className={`min-w-0 shrink-0 text-[10.5px] ${invalid ? "text-destructive-ink" : "text-muted-foreground"}`}
+            data-testid="global-search-count"
+          >
             {scanning ? "扫描中…" : count}
           </span>
           <ToggleBtn title="区分大小写" active={caseSensitive} onClick={() => setCaseSensitive((v) => !v)}>
@@ -115,30 +125,41 @@ export function TerminalGlobalSearch({ sessions, onActivate, onClose }: Props) {
             <p className="px-2.5 py-3 text-[11.5px] leading-relaxed text-muted-foreground">
               输入关键词，一次搜过所有已打开的会话（含已断开标签的历史输出）。
             </p>
+          ) : invalid ? (
+            <p className="px-2.5 py-3 text-[11.5px] leading-relaxed text-destructive-ink">
+              正则表达式不完整（比如只输了 <code>[</code>），补全后才会开始搜索。
+            </p>
           ) : hits.length === 0 ? (
             <p className="px-2.5 py-3 text-[11.5px] text-muted-foreground">
               {scanning ? "正在扫描…" : "没有匹配的行。"}
             </p>
           ) : (
-            hits.map((h) => (
-              <button
-                key={`${h.sessionId}:${h.line}`}
-                type="button"
-                onClick={() => goto(h)}
-                title={`跳到 ${nameOf.get(h.sessionId) ?? h.sessionId} 第 ${h.line + 1} 行`}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted"
-              >
-                <span className="shrink-0 max-w-28 truncate rounded bg-muted px-1.5 py-px text-[10.5px] text-muted-foreground">
-                  {nameOf.get(h.sessionId) ?? "(已关闭)"}
-                </span>
-                <span className="w-12 shrink-0 text-right font-mono text-[10.5px] text-muted-foreground">
-                  {h.line + 1}
-                </span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-foreground">
-                  <HitText text={h.text} query={query} caseSensitive={caseSensitive} />
-                </span>
-              </button>
-            ))
+            <>
+              {hits.map((h) => (
+                <button
+                  key={`${h.sessionId}:${h.line}`}
+                  type="button"
+                  onClick={() => goto(h)}
+                  title={`跳到 ${nameOf.get(h.sessionId) ?? h.sessionId} 第 ${h.line + 1} 行`}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted"
+                >
+                  <span className="shrink-0 max-w-28 truncate rounded bg-muted px-1.5 py-px text-[10.5px] text-muted-foreground">
+                    {nameOf.get(h.sessionId) ?? "(已关闭)"}
+                  </span>
+                  <span className="w-12 shrink-0 text-right font-mono text-[10.5px] text-muted-foreground">
+                    {h.line + 1}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-foreground">
+                    <HitText text={h.text} query={query} caseSensitive={caseSensitive} />
+                  </span>
+                </button>
+              ))}
+              {truncated && (
+                <p className="px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+                  已达 {MAX_HITS} 条上限，后面还有命中没有列出。把关键词或正则写具体些再搜。
+                </p>
+              )}
+            </>
           )}
         </div>
 

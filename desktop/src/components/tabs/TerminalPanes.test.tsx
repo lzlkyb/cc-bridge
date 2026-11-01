@@ -8,7 +8,7 @@ import type { SshSessionRef } from "./TerminalConnectionItem";
 import type { SplitInfo } from "./useTerminalSplit";
 import type { SshConnection } from "../../lib/types";
 
-const h = vi.hoisted(() => ({ mount: vi.fn(), unmount: vi.fn(), action: vi.fn(), ratio: vi.fn(), zoom: vi.fn(), focus: vi.fn() }));
+const h = vi.hoisted(() => ({ mount: vi.fn(), unmount: vi.fn(), action: vi.fn(), ratio: vi.fn(), zoom: vi.fn(), focus: vi.fn(), closeSplit: vi.fn() }));
 vi.mock("../../lib/terminalRegistry", () => ({ getTerminal: (id: string) => ({ focus: () => h.focus(id) }) }));
 vi.mock("./SshTerminal", () => ({ SshTerminal: ({ sessionId, toolbarHost, toolbarActive, pane, visible, fullscreen }: { sessionId: string; toolbarHost: HTMLDivElement | null; toolbarActive: boolean; pane?: string; visible: boolean; fullscreen:boolean }) => {
   useEffect(() => { h.mount(sessionId); return () => { h.unmount(sessionId); }; }, [sessionId]);
@@ -23,7 +23,7 @@ let root: Root, container: HTMLDivElement, host: HTMLDivElement;
 const noop = () => {};
 function Harness({ activeId, splitState, data = sessions, fullscreen=false }: { activeId: string; splitState: SplitInfo | null; data?: SshSessionRef[]; fullscreen?: boolean }) {
   const [focus, setFocus] = useState<string | null>(null);
-  return <TerminalPanes sessions={data} activeId={activeId} split={splitState} toolbarHost={host} focusedTabId={focus} onFocusPane={setFocus} connections={[conn]} connectingId={null} emptyState={<div>空态</div>} dragSelectEnabled copyOnSelectEnabled fullscreen={fullscreen} onToggleFullscreen={noop} onClosed={noop} onReconnect={noop} onCloseTab={noop} onCwd={noop} onMeta={noop} onOpenFilePath={noop} onPickSplitConn={noop} onCloseSplit={noop} onToggleDir={noop} onSplitRatio={h.ratio} onZoomPane={h.zoom} onDisconnect={noop}/>;
+  return <TerminalPanes sessions={data} activeId={activeId} split={splitState} toolbarHost={host} focusedTabId={focus} onFocusPane={setFocus} connections={[conn]} connectingId={null} emptyState={<div>空态</div>} dragSelectEnabled copyOnSelectEnabled fullscreen={fullscreen} onToggleFullscreen={noop} onClosed={noop} onReconnect={noop} onCloseTab={noop} onCwd={noop} onMeta={noop} onOpenFilePath={noop} onPickSplitConn={noop} onCloseSplit={h.closeSplit} onToggleDir={noop} onSplitRatio={h.ratio} onZoomPane={h.zoom} onDisconnect={noop}/>;
 }
 async function render(activeId = "a", splitState: SplitInfo | null = null, data = sessions, fullscreen=false) { await act(async () => root.render(<Harness activeId={activeId} splitState={splitState} data={data} fullscreen={fullscreen}/>)); }
 async function focus(id: string) { await act(async () => container.querySelector<HTMLElement>(`[data-session="${id}"]`)!.focus()); }
@@ -63,6 +63,20 @@ describe("terminal workspace lifecycle and shared actions", () => {
     const original = container.querySelector('[data-session="a"]');
     await render("a", null, [{ ...sessions[0], closedReason: "连接断开" }, sessions[2]]);
     expect(container.querySelector('[data-session="a"]')).toBe(original);
+  });
+  it("🔴 分屏副格有自己的关闭入口，关掉后焦点回到主格（以前只能去标签栏收起，或干脆断开它）", async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => { frames.push(fn); return frames.length; });
+    await render("a", split);
+    // 主格（#1）没有关闭按钮：关掉宿主格意味着分屏该塌，语义不同。
+    expect(container.querySelector('[aria-label="服务器 #1"] .terminal-pane-close')).toBeNull();
+    const close = container.querySelector<HTMLButtonElement>('[aria-label="关闭分屏窗格 服务器 #3"]')!;
+    expect(close).toBeTruthy();
+    await act(async () => close.click());
+    expect(h.closeSplit).toHaveBeenCalledTimes(1);
+    // 关掉后焦点必须回到剩下那格，否则打字没反应
+    await act(async () => frames.forEach(fn => fn(0)));
+    expect(h.focus).toHaveBeenCalledWith("a");
   });
   it("恢复占位不会保留先前页签的工具栏", async () => {
     await render("a", split); await focus("b");

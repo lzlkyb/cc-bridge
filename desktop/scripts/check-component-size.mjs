@@ -55,7 +55,8 @@ const BASELINE = {
   // 2026-10-16：423 → 421（选择手势改走 terminalInputHold 输入闸，session hook 里的
   // 每帧重关鼠标报告的接线与其依赖一并下线）。
   // 2026-10-21：421 → 404（可见尺寸适配与选中窗格聚焦分离，避免还原分屏抢焦点）。
-  "src/components/tabs/useSshTerminalSession.ts": { lines: 404 },
+  // 2026-10-29：404 → 388（整屏快照复制→hooks/useTerminalCopyScreen.ts，为重连滚动/清红标腾位置）。
+  "src/components/tabs/useSshTerminalSession.ts": { lines: 388 },
   "src/components/tabs/PerfCharts.tsx": { lines: 401 },
   // 2026-09-16：`LogDetailPanel.tsx` 已从本表**移除**。它原本登记 361 行，本次把
   // 内联的 DiffModal / RestoreConfirmDialog 抽成 `LogDiffModal.tsx` / `LogRestoreDialog.tsx`

@@ -1124,6 +1124,20 @@ impl CcSessions {
         self.map.get(&id).map(|r| Arc::clone(&r))
     }
 
+    /// Idle CLI processes stay alive between turns; only live turns/tasks block an update restart.
+    pub fn update_activity(&self) -> Result<(usize, usize), String> {
+        let mut turns = 0;
+        let mut tasks = 0;
+        for entry in self.map.iter() {
+            let live = entry.live.lock().map_err(|_| "无法读取对话状态")?;
+            if live.as_ref().is_some_and(Transport::is_alive) {
+                turns += usize::from(entry.shared.turn_active());
+                tasks += entry.shared.task_control.active_count()?;
+            }
+        }
+        Ok((turns, tasks))
+    }
+
     /// 归属给 MCP 审计的 CC session id（语义见 [`CcSession::active_session_id`]）。
     ///
     /// 汇总规则：**只有一条**活跃轮次时才归属；零条或多条都返回 `None`。
@@ -1287,6 +1301,16 @@ pub(crate) fn git_bash_env() -> Vec<(String, String)> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn update_activity_ignores_idle_and_dead_sessions() {
+        let sessions = CcSessions::new();
+        let id = sessions.new_session();
+        assert_eq!(sessions.update_activity().unwrap(), (0, 0));
+        sessions.get(id).unwrap().shared().set_turn_active(true);
+        // A stale turn flag without a living transport must not block updates.
+        assert_eq!(sessions.update_activity().unwrap(), (0, 0));
+    }
 
     #[derive(Default)]
     struct Collect(Mutex<Vec<CcEvent>>);

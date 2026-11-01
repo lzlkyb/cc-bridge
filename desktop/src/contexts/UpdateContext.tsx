@@ -1,3 +1,5 @@
+import { useUpdateRestartSafety } from "../hooks/useUpdateRestartSafety";
+import { canRestart } from "../lib/updatePresentation";
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { invoke } from "../lib/tauri";
@@ -34,10 +36,9 @@ export interface UpdateState {
   totalBytes: number | null;
   /** 重启过渡层可见：点击重启后先播 1.1 秒仪式感过渡，再真正 relaunch */
   restarting: boolean;
-  /** 距自动重启剩余秒数；null = 不在倒计时（手动态 / 用户已取消 / 正在重启）。
-   *  更新安装完成后给一个**可见、可撤销**的 8 秒窗口，而不是无限期停在「重启」。 */
+  /** Legacy status-consumer compatibility; manual restart keeps this null. */
   autoRestartIn: number | null;
-  /** 取消本轮自动重启：徽章回到「重启」按钮，本轮不再自动触发（下次安装完成重置）。 */
+  /** Legacy compatibility; updates no longer schedule automatic restarts. */
   cancelAutoRestart: () => void;
   error: string | null;
   /** 错误原因码（见 `UpdateErrorCode`）；旧后端或未知错误为 null */
@@ -56,9 +57,9 @@ export interface UpdateState {
   restart: () => Promise<void>;
   /** 打开「查看更新内容」弹窗 */
   openUpdateNotes: () => void;
-  /** 记住当前可用版本为「稍后」：本版本不再弹框（按版本号记忆，换版本自动解除） */
+  /** 记住当前可用版本为「忽略此版本」：本版本不再弹框（按版本号记忆，换版本自动解除） */
   dismissUpdate: () => void;
-  /** 判断某版本是否已被「稍后」抑制 */
+  /** 判断某版本是否已被「忽略此版本」抑制 */
   isDismissed: (version?: string) => boolean;
   /** 本次「已是最新」提示是否来自手动检查：自动检查（启动/定时）不弹框，只在版本号 pill 提示 */
   manualCheck: boolean;
@@ -158,22 +159,10 @@ export function useUpdate() {
 /** 自动检查间隔：24 小时 */
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const LAST_CHECK_KEY = "ccbridge_last_update_check";
-/** 「稍后」抑制记忆：记录的版本号（本版本不再弹框，换版本自动解除） */
+/** 「忽略此版本」抑制记忆：记录的版本号（本版本不再弹框，换版本自动解除） */
 const DISMISSED_KEY = "ccbridge_dismissed_update_version";
 /** 重启过渡层停留时长：这段刻意的等待本身就是「正在应用更新」的载体（方案 C） */
 const RESTART_OVERLAY_MS = 1100;
-/**
- * 安装完成后的自动重启延迟（秒）。
- *
- * 为什么要有这一段：更新弹窗的文案承诺「下载完成后自动安装并重启」，而实现一直
- * 只做到「安装」，重启得用户自己回来点——用户去忙别的，回来发现还是旧版本。
- * 这里补上最后一步，同时给一个**可见、可撤销**的窗口：倒计时显示在徽章上，
- * 期间点一下就取消（退回手动「重启」按钮），避免用户正在跑终端命令时被打断。
- *
- * 8 秒的取值：短到用户离开前基本一定执行（不然等于没自动），长到够看到并反应。
- */
-export const AUTO_RESTART_DELAY_SECS = 8;
-
 // ─── Provider ────────────────────────────
 
 export function UpdateProvider({ children }: { children: ReactNode }) {
@@ -188,11 +177,11 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [errorToastAllowed, setErrorToastAllowed] = useState(true);
   const [restarting, setRestarting] = useState(false);
-  /** 自动重启倒计时（null = 不在倒计时），见 AUTO_RESTART_DELAY_SECS 注释。 */
-  const [autoRestartIn, setAutoRestartIn] = useState<number | null>(null);
-  /** 本轮 ready 是否被用户取消过自动重启。只在下一次 `update:ready` 时复位。 */
-  const autoRestartCancelledRef = useRef(false);
+  // Keep the context contract for existing status consumers; restart is always explicit.
+  const autoRestartIn = null;
   const [showNotes, setShowNotes] = useState(false);
+  const { safety, refresh: refreshSafety } = useUpdateRestartSafety(showNotes && status === "ready");
+  const readyRef = useRef(false);
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(() => {
     try {
       return localStorage.getItem(DISMISSED_KEY);
@@ -221,7 +210,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   // 统一走后端 check_update 命令，状态由事件驱动（update:available / update:uptodate）。
 
   const silentCheck = useCallback(async () => {
-    if (checkingRef.current) return;
+    if (checkingRef.current || downloadingRef.current || readyRef.current) return;
     checkingRef.current = true;
     userInitiatedRef.current = false; // 这一轮失败不弹 toast
     try {
@@ -248,7 +237,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     // 下载进行中不接受检查：状态会被打成 checking，而 start_update 内部复查发的
     // checking/available 事件又被监听器的 downloadingRef 守卫吃掉，没有任何事件
     // 能把状态救回来 → 徽章永远停在「检查中」。下载完成后可再查。
-    if (checkingRef.current || downloadingRef.current) return;
+    if (checkingRef.current || downloadingRef.current || readyRef.current) return;
     checkingRef.current = true;
     manualCheckRef.current = manual;
     userInitiatedRef.current = manual;
@@ -302,10 +291,15 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   // 由 update:ready / update:error 复位守卫。
 
   const downloadAndInstall = useCallback(async () => {
-    if (!update || downloadingRef.current) return;
+    if (!update || downloadingRef.current || readyRef.current) return;
     downloadingRef.current = true;
     userInitiatedRef.current = true; // 下载是明确的手动动作，失败必须告知
     setStatus("downloading");
+    setProgress(0);
+    setProgressIndeterminate(true);
+    setDownloadedBytes(0);
+    setTotalBytes(null);
+    setBytesPerSec(0);
     setError(null);
     setErrorCode(null);
     try {
@@ -336,7 +330,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       track(
         await listen("update:checking", () => {
           // 下载进行中（start_update 内部复查也会发 checking），不回退状态
-          if (downloadingRef.current) return;
+          if (downloadingRef.current || readyRef.current) return;
           setStatus("checking");
           setError(null);
           setErrorCode(null);
@@ -345,7 +339,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       track(
         await listen<{ version: string; body: string | null; date?: string | null; currentVersion?: string }>("update:available", (e) => {
           // 下载进行中（start_update 内部复查会再发 available），保持 downloading 不被回退
-          if (downloadingRef.current) return;
+          if (downloadingRef.current || readyRef.current) return;
           setStatus("available");
           setUpdate({ version: e.payload.version, body: e.payload.body, date: e.payload.date, currentVersion: e.payload.currentVersion });
         }),
@@ -382,8 +376,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
           setProgress(100);
           setStatus("ready");
           downloadingRef.current = false;
-          // 新一轮安装完成：清掉上一轮的「已取消」标记，重新给自动重启窗口。
-          autoRestartCancelledRef.current = false;
+          readyRef.current = true;
         }),
       );
       track(
@@ -458,15 +451,25 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     // 重入防护用 ref 而非 state：state 在同一次渲染里恒为旧值，双击 / 连按 Enter
     // 会在同一帧内拿到两次 `restarting === false` ⇒ 两次 relaunch（双杀进程）。
     // 本文件对下载用的是同一个套路（downloadingRef），保持一致。
-    if (restartingRef.current) return;
+    if (restartingRef.current || !readyRef.current) return;
     restartingRef.current = true;
-    // 无论入口是「用户点重启」还是「倒计时到点」，都先撤下倒计时显示/定时器，
-    // 避免过渡层盖住界面后徽章还在背后倒数。
-    setAutoRestartIn(null);
+    setError(null);
+    setShowNotes(true);
+    const activity = await refreshSafety();
+    if (!canRestart(activity)) {
+      restartingRef.current = false;
+      return;
+    }
     setRestarting(true);
     // 让过渡层播完再重启 —— 这段刻意的等待本身就是「仪式感」的载体。
     await new Promise((r) => setTimeout(r, RESTART_OVERLAY_MS));
     try {
+      // Recheck after the transition: another window may have started work meanwhile.
+      if (!canRestart(await refreshSafety())) {
+        restartingRef.current = false;
+        setRestarting(false);
+        return;
+      }
       await relaunch();
     } catch (e) {
       // 🔴 必须复位。忘了这一步，过渡层会永久盖住界面、用户只能杀进程 ——
@@ -480,40 +483,16 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       // 分支触发的是 check_update，用户被迫重走「检查 → 下载」一整轮，纯属多余。
       // 失败反馈改由 UpdateBadge 监听 restarting 回落 + error 弹 toast。
     }
-  }, []);
+  }, [refreshSafety]);
 
-  // ─── 安装完成后自动重启（AUTO_RESTART_DELAY_SECS 可见窗口，可取消）────
-  //
-  // 倒计时只由 status 驱动：进入 ready 时起一轮；用户取消后由 ref 拦住重来
-  // （只在下一次 update:ready 复位），所以取消后徽章停在「重启」按钮，必须手动点。
-  useEffect(() => {
-    if (status !== "ready" || autoRestartCancelledRef.current) return;
-    setAutoRestartIn(AUTO_RESTART_DELAY_SECS);
-    // 递减放在 updater 里（而不是用闭包里的 autoRestartIn），不受 StrictMode 双跑影响。
-    const id = window.setInterval(() => {
-      setAutoRestartIn((n) => (n === null ? null : n - 1));
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [status]);
-
-  // 归零 → 真正重启。单独一个 effect 而不是在 interval 回调里调 restart：
-  // 在 setState 更新函数里跑异步副作用，StrictMode 下会被调用两次（双 relaunch）。
-  useEffect(() => {
-    if (autoRestartIn !== 0) return;
-    void restart();
-  }, [autoRestartIn, restart]);
-
-  const cancelAutoRestart = useCallback(() => {
-    autoRestartCancelledRef.current = true;
-    setAutoRestartIn(null);
-  }, []);
+  const cancelAutoRestart = useCallback(() => undefined, []);
 
   // ─── 更新内容弹窗 ────────────────────────
 
   const openUpdateNotes = useCallback(() => setShowNotes(true), []);
   const closeUpdateNotes = useCallback(() => setShowNotes(false), []);
 
-  // ─── 「稍后」抑制（按版本号记忆，换版本自动解除）────
+  // ─── 「忽略此版本」抑制（按版本号记忆，换版本自动解除）────
   const dismissUpdate = useCallback(() => {
     const v = update?.version;
     if (!v) return;
@@ -537,7 +516,10 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, errorCode, errorToastAllowed, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
       {children}
       {restarting && <RestartOverlay current={update?.currentVersion} next={update?.version} />}
-      <UpdateNotesDialog open={showNotes} update={update} onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate} />
+      <UpdateNotesDialog open={showNotes} update={update}
+        process={{ status: status === "downloading" || status === "ready" || status === "error" || status === "checking" ? status : "available", progress, indeterminate: progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, error: status === "ready" ? error : error ? friendlyError(error, errorCode).friendly : null, safety, restarting }}
+        onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate}
+        onRestart={() => void restart()} onRetry={() => void manualCheckForUpdate()} onRefreshSafety={() => void refreshSafety()} />
     </UpdateContext.Provider>
   );
 }

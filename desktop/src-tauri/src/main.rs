@@ -1004,6 +1004,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::get_command_output,
             commands::start_update,
             commands::check_update,
+            commands::update_activity,
             commands::export_config,
             // 外挂 MCP 桥（阶段 6）。这八个**只经 Tauri 暴露给本机面板**，
             // 绝不注册为 MCP 工具——能改它们的配置 = 能以本机用户身份执行任意程序（S1）。

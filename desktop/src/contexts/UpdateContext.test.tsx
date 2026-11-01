@@ -11,7 +11,7 @@
  *    永久丢失（这是 CI 在真实 macOS runner 上抓到过的竞态，见 UpdateContext 里的长注释）。
  * 2. **`relaunch` 抛错时 `restarting` 必须复位**——唯一会导致「过渡层永久盖住界面、
  *    用户只能杀进程」的失败路径。
- * 3. **8 秒自动重启倒计时**：到点触发、取消后不再触发、下一轮恢复。
+ * 3. 安装完成后等待确认，重启前复查真实任务状态。
  * 4. `total=null`（源不给 Content-Length）走不确定态，且后续带 total 时能恢复百分比。
  *
  * 只 mock 掉三个展示组件：本文件测的是状态机，不是渲染。
@@ -19,7 +19,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AUTO_RESTART_DELAY_SECS, UpdateProvider, friendlyError, useUpdate, type UpdateState } from "./UpdateContext";
+import { UpdateProvider, friendlyError, useUpdate, type UpdateState } from "./UpdateContext";
 
 // ─── 事件总线与 IPC 打桩 ────────────────────
 // vi.hoisted：mock 工厂会被提升到 import 之前，所以共享状态必须一起提升。
@@ -32,7 +32,7 @@ const h = vi.hoisted(() => {
     order,
     invoke: vi.fn(async (cmd: string) => {
       order.push(`invoke:${cmd}`);
-      return undefined;
+      return cmd === "update_activity" ? { conversations: 0, agents: 0, commands: 0, transfers: 0 } : undefined;
     }),
     relaunch: vi.fn(async () => {}),
   };
@@ -118,20 +118,10 @@ async function emit(event: string, payload?: unknown) {
   });
 }
 
-/**
- * 走完「倒计时 → 过渡层 → relaunch」。
- *
- * 必须分两步推进：倒计时归零后才在 effect 里调 restart()，而 restart() 的
- * RESTART_OVERLAY_MS 定时器要等 effect 跑完才注册——一次 advance 到底的话，
- * 那个 1.1 秒 timer 根本没机会被推进（表现为 relaunch 一次都没被调用）。
- */
+/** Explicit confirmation, then advance the restart transition. */
 async function advanceToRelaunch() {
-  await act(async () => {
-    vi.advanceTimersByTime(AUTO_RESTART_DELAY_SECS * 1000);
-  });
-  await act(async () => {
-    vi.advanceTimersByTime(1200);
-  });
+  await act(async () => { void state().restart(); });
+  await act(async () => { vi.advanceTimersByTime(1200); });
 }
 
 const available = (version = "99.9.9") => ({
@@ -243,7 +233,7 @@ describe("事件驱动的状态转移", () => {
     expect(state().update?.version).toBe("99.9.9");
   });
 
-  it("update:ready 置 100% 并清掉下载守卫（可以再发起下载）", async () => {
+  it("update:ready 置 100% 并保持已安装状态", async () => {
     await mount();
     await emit("update:available", available());
     await act(async () => {
@@ -254,12 +244,12 @@ describe("事件驱动的状态转移", () => {
     expect(state().status).toBe("ready");
     expect(state().progress).toBe(100);
 
-    // 守卫若没复位，这次调用会被静默吞掉 —— 表现是「装完了点不动」。
+    // 已安装状态只能重启，重复下载不能覆盖它。
     h.invoke.mockClear();
     await act(async () => {
       void state().downloadAndInstall();
     });
-    expect(h.invoke).toHaveBeenCalledWith("start_update");
+    expect(h.invoke).not.toHaveBeenCalledWith("start_update");
   });
 
   it("update:error 记录原始文案并复位下载守卫", async () => {
@@ -303,58 +293,32 @@ describe("下载重入防护", () => {
   });
 });
 
-describe("8 秒自动重启窗口", () => {
-  it("进入 ready 开始倒计时，到点自动 relaunch（含 1.1 秒过渡层）", async () => {
-    await mount();
-    await emit("update:available", available());
-    await emit("update:ready");
-
-    expect(state().autoRestartIn).toBe(AUTO_RESTART_DELAY_SECS);
-
-    // 倒计时本身走完还不重启：restart() 里还有 RESTART_OVERLAY_MS 的仪式感等待。
-    await act(async () => {
-      vi.advanceTimersByTime(AUTO_RESTART_DELAY_SECS * 1000);
-    });
-    expect(h.relaunch).not.toHaveBeenCalled();
-    expect(state().restarting).toBe(true);
-
-    await act(async () => {
-      vi.advanceTimersByTime(1200);
-    });
-    expect(h.relaunch).toHaveBeenCalledTimes(1);
-  });
-
-  it("取消后本轮不再自动重启，且倒计时读数清空", async () => {
-    await mount();
-    await emit("update:available", available());
-    await emit("update:ready");
-
-    await act(async () => {
-      state().cancelAutoRestart();
-    });
+describe("确认重启与任务保护", () => {
+  it("ready 不自动重启，也不允许重新下载覆盖已安装状态", async () => {
+    await mount(); await emit("update:available", available()); await emit("update:ready");
     expect(state().autoRestartIn).toBeNull();
-
-    await act(async () => {
-      vi.advanceTimersByTime(60_000);
-    });
+    await act(async () => { vi.advanceTimersByTime(60_000); });
     expect(h.relaunch).not.toHaveBeenCalled();
+    await act(async () => { void state().downloadAndInstall(); void state().manualCheckForUpdate(); });
+    expect(h.invoke).not.toHaveBeenCalledWith("start_update");
+    expect(state().status).toBe("ready");
   });
-
-  it("取消只影响本轮：下一次 ready 重新开始倒计时", async () => {
-    await mount();
-    await emit("update:ready");
-    await act(async () => {
-      state().cancelAutoRestart();
-    });
-    expect(state().autoRestartIn).toBeNull();
-
-    // 真实顺序：第二轮下载会先经过 downloading，status 变化才会让倒计时 effect 重跑。
-    await emit("update:downloading");
-    await emit("update:ready");
-    expect(state().autoRestartIn).toBe(AUTO_RESTART_DELAY_SECS);
-
+  it("忙碌或状态查询失败时禁止重启", async () => {
+    await mount(); await emit("update:ready");
+    h.invoke.mockResolvedValueOnce({ conversations: 1, agents: 2, commands: 0, transfers: 0 });
     await advanceToRelaunch();
-    expect(h.relaunch).toHaveBeenCalledTimes(1);
+    expect(h.relaunch).not.toHaveBeenCalled();
+    h.invoke.mockRejectedValueOnce(new Error("activity unavailable"));
+    await advanceToRelaunch();
+    expect(h.relaunch).not.toHaveBeenCalled();
+    expect(state().restarting).toBe(false);
+  });
+  it("重启过渡期间开始新任务时取消重启", async () => {
+    await mount(); await emit("update:ready");
+    await act(async () => { void state().restart(); });
+    h.invoke.mockResolvedValueOnce({ conversations: 0, agents: 1, commands: 0, transfers: 0 });
+    await act(async () => { vi.advanceTimersByTime(1200); });
+    expect(h.relaunch).not.toHaveBeenCalled(); expect(state().restarting).toBe(false);
   });
 
   it("relaunch 抛错时 restarting 必须复位，且状态留在 ready", async () => {
@@ -375,6 +339,7 @@ describe("8 秒自动重启窗口", () => {
 
   it("手动重启连按两次只 relaunch 一次", async () => {
     await mount();
+    await emit("update:ready");
     await act(async () => {
       void state().restart();
       void state().restart();

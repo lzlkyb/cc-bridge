@@ -3,6 +3,7 @@ import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import type { SshConnection } from "../../lib/types";
 import { EMPTY_TAB_META, type TermTabMeta } from "../../lib/terminalTabMeta";
+import { sessionLimitMessage } from "../../lib/terminalWorkspace";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 
 /** 新建会话的初始 PTY 尺寸；终端挂载后会立即用真实尺寸 resize 一次。 */
@@ -100,6 +101,13 @@ export function useSshSessions() {
       }
       // 同一连接的连接请求已在飞：吃掉重复点击（双击 / 回车连发），避免双标签。
       if (connectingIdsRef.current.has(conn.id)) return null;
+      // 会话数闸：到顶后**一次都不发** ssh_connect——远端的拒绝信息只是「失败」，
+      // 远不如提前说清「已达上限，先断开不用的标签」。断开的标签不计入（它们不占 sshd 会话）。
+      const overLimit = sessionLimitMessage(sessionsRef.current.filter((s) => !s.closedReason).length + connectingIdsRef.current.size);
+      if (overLimit) {
+        toast(overLimit, "info");
+        return null;
+      }
       connectingIdsRef.current.add(conn.id);
       setConnectingId(conn.id);
       try {
@@ -152,11 +160,11 @@ export function useSshSessions() {
    * 占位转正，正是「重连保留标签」的现成路径。
    */
   const addRestoredTab = useCallback(
-    (conn: SshConnection): string => {
+    (conn: SshConnection, label?: string): string => {
       const tabId = nextTabId();
       patch((prev) => [
         ...prev,
-        { tabId, sessionId: `restore:${tabId}`, conn, closedReason: "restored" },
+        { tabId, sessionId: `restore:${tabId}`, conn, closedReason: "restored", label },
       ]);
       return tabId;
     },
@@ -246,6 +254,18 @@ export function useSshSessions() {
     [patch],
   );
 
+  /** 重命名标签（双击标签名）。空字符串（含纯空格）= 恢复默认名（连接名或主机名）。 */
+  const renameTab = useCallback(
+    (tabId: string, label: string) => {
+      // trim 放在状态层：调用方（输入框）已经 trim 过，但状态层要能自己扛住脏值。
+      const next = label.trim();
+      patch((prev) =>
+        prev.map((s) => (s.tabId === tabId ? { ...s, label: next || undefined } : s)),
+      );
+    },
+    [patch],
+  );
+
   return {
     sessions,
     activeId,
@@ -259,6 +279,7 @@ export function useSshSessions() {
     markClosed,
     dropConnection,
     patchMeta,
+    renameTab,
     addRestoredTab,
   };
 }

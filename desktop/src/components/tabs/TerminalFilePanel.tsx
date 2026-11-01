@@ -10,10 +10,15 @@ export function TerminalFilePanel({
   conn,
   initialPath,
   onBack,
+  disconnected,
+  onReconnect,
 }: {
   conn: SshConnection;
   initialPath?: string;
   onBack: () => void;
+  /** 该连接当前已断开：给一条带「重新连接」出路的提示（否则只能返回再找终端横幅）。 */
+  disconnected?: boolean;
+  onReconnect?: () => void;
 }) {
   return (
     <div className="terminal-file-panel absolute inset-0 z-10 bg-card">
@@ -24,6 +29,8 @@ export function TerminalFilePanel({
         key={`${conn.id}:${initialPath ?? ""}`}
         conn={conn}
         initialPath={initialPath}
+        disconnected={disconnected}
+        onReconnect={onReconnect}
         onBack={onBack}
       />
     </div>
