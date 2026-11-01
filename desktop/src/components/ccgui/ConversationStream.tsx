@@ -8,10 +8,8 @@ import { useCcScrollAway } from "../../hooks/useCcScrollAway";
 import { CcEmptyState } from "./CcEmptyState";
 import { CcFindBar } from "./CcFindBar";
 import { MessageList } from "./MessageList";
-import { MessageNav } from "./MessageNav";
-import { ScrollToBottom } from "./ScrollToBottom";
+import { StreamHud } from "./StreamHud";
 import { SelectionQuote } from "./SelectionQuote";
-import { turnActivity } from "./TurnActivity";
 import { clawdActivity } from "../../lib/ccClawd";
 import { ClawdWorkspace } from "./ClawdWorkspace";
 import { MOTION } from "../../lib/motion";
@@ -146,52 +144,72 @@ export function ConversationStream({
     // page-scroll：对话流是长时停留的滚动区，要跟连接页/日志页同一根 12px rail，
     // 不挂就只有全局 6px 细条，右边缘看着比别的页窄一档。
     <div ref={rootRef} className="cc-clawd-stream relative min-h-0 flex-1" style={typoStyle}>
-      <div ref={scrollRef} data-cc-stream className="cc-conversation-stream page-scroll h-full overflow-y-auto">
-        {/* cc-msgcol：消息列。子节点（每条消息的根元素）离屏跳渲染，见 index.css。 */}
-        <div className="cc-msgcol mx-auto flex min-h-full max-w-[834px] flex-col gap-3">
-          {view.messages.length === 0 && !view.running && !sending && view.stops.length === 0 ? (
-            <CcEmptyState
-              probe={probe}
-              probing={probing}
-              onRetryProbe={retryProbe}
-              onPickPrompt={onPickPrompt}
-              cwd={cwd}
-              onCwdChange={onCwdChange}
-              isRemote={isRemote}
-              newSessionHint={newSessionHint}
-            />
-          ) : (
-            <MessageList
+      {/*
+        🔴 底部浮条相对**这一层**定位，不相对外层：外层底下还坐着 Clawd dock，
+        相对外层就得靠 `--clawd-dock-height` 把浮条顶上去，而那个值是 JS 每帧
+        写的、首帧回退值必然对不上（dock 实测闲态约 51px / 忙态约 55px，JS 里写死的
+        回退值是 72px）⇒ 打开会话时浮条先浮高约 20px 再落下来。多包一层 flex 容器，
+        浮条贴它的底就永远贴着 dock 的顶，也不再依赖另一个组件的副作用。
+      */}
+      <div className="cc-stream-viewport relative flex min-h-0 flex-1">
+        <div ref={scrollRef} data-cc-stream className="cc-conversation-stream page-scroll h-full w-full overflow-y-auto">
+          {/* cc-msgcol：消息列。子节点（每条消息的根元素）离屏跳渲染，见 index.css。 */}
+          <div className="cc-msgcol mx-auto flex min-h-full max-w-[834px] flex-col gap-3">
+            {view.messages.length === 0 && !view.running && !sending && view.stops.length === 0 ? (
+              <CcEmptyState
+                probe={probe}
+                probing={probing}
+                onRetryProbe={retryProbe}
+                onPickPrompt={onPickPrompt}
+                cwd={cwd}
+                onCwdChange={onCwdChange}
+                isRemote={isRemote}
+                newSessionHint={newSessionHint}
+              />
+            ) : (
+              <MessageList
+                messages={view.messages}
+                resolved={view.resolved}
+                running={view.running}
+                marksByMsg={search.marksByMsg}
+                turns={view.turns}
+                stops={view.stops}
+                stopState={stopState}
+                companionTarget={activity.targetId}
+                onRespond={onRespond}
+                onForkMessage={onForkMessage}
+                onResend={onResend}
+              />
+            )}
+          </div>
+        </div>
+        {away && view.messages.length > 0 && (
+          // 一条浮条：「按轮导航」+「回到底部」。
+          //
+          // 🔴 用 `inset-x-0 + justify-center` 居中，**不用** `left-1/2 + -translate-x-1/2`：
+          //    后者是绝对定位的 shrink-to-fit，可用宽度只等于**容器的一半**（left 已经吃掉
+          //    一半），窄 pane 下「有 N 条待批准 · 回到底部」会被压成两行、在固定的 32px
+          //    高度里溢出。实测 420px 宽就复现。
+          // 外层 `pointer-events-none` + 两个按钮自己 `pointer-events-auto`：这一行横跨
+          // 整个消息区底部，不放开穿透就会挡住底下的正文点击。
+          <div className="pointer-events-none absolute inset-x-0 bottom-2 z-10 flex items-center justify-center gap-2 px-3">
+            <StreamHud
               messages={view.messages}
+              startIndex={view.activityStartIndex}
               resolved={view.resolved}
               running={view.running}
-              marksByMsg={search.marksByMsg}
-              turns={view.turns}
-              stops={view.stops}
+              sending={sending}
+              retry={view.retry}
               stopState={stopState}
-              companionTarget={activity.targetId}
-              onRespond={onRespond}
-              onForkMessage={onForkMessage}
-              onResend={onResend}
+              pending={activity.pose === "approval" || activity.pose === "question" ? 0 : pendingCount}
+              onPrev={nav.prev}
+              onNext={nav.next}
+              onBottom={toBottom}
             />
-          )}
-        </div>
+          </div>
+        )}
       </div>
       <ClawdWorkspace view={view} activity={activity} rootRef={rootRef} scrollRef={scrollRef} startedAt={activityStartedAt} onStopTask={onStopTask} />
-      {away && view.messages.length > 0 && (
-        // 一条浮条：「按轮导航」+「回到底部」。
-        //
-        // 🔴 用 `inset-x-0 + justify-center` 居中，**不用** `left-1/2 + -translate-x-1/2`：
-        //    后者是绝对定位的 shrink-to-fit，可用宽度只等于**容器的一半**（left 已经吃掉
-        //    一半），窄 pane 下「有 N 条待批准 · 回到底部」会被压成两行、在固定的 32px
-        //    高度里溢出。实测 420px 宽就复现。
-        // 外层 `pointer-events-none` + 两个按钮自己 `pointer-events-auto`：这一行横跨
-        // 整个消息区底部，不放开穿透就会挡住底下的正文点击。
-        <div style={{ bottom: "calc(var(--clawd-dock-height, 72px) + 8px)" }} className="pointer-events-none absolute inset-x-0 z-10 flex items-center justify-center gap-2 px-3">
-          <MessageNav onPrev={nav.prev} onNext={nav.next} />
-          <ScrollToBottom pending={activity.pose === "approval" || activity.pose === "question" ? 0 : pendingCount} running={view.running || stopState === "stopping"} activity={stopState === "stopping" ? "正在停止本轮" : view.retry ? `正在重试 ${view.retry.attempt}/${view.retry.max}` : turnActivity(view.messages, view.running, sending, view.activityStartIndex, view.resolved)} onClick={toBottom} />
-        </div>
-      )}
       <SelectionQuote scrollRef={scrollRef} />
       {search.open && (
         <CcFindBar

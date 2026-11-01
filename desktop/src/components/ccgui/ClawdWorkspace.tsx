@@ -8,6 +8,7 @@ import { useClawdPreference } from "../../hooks/useClawdPreference";
 import { ClawdTeam } from "./ClawdTeam";
 import { ClawdRosterSlot } from "./CcConversationLayout";
 import { useClawdTaskStop, type StopTask } from "../../hooks/useClawdTaskStop";
+import { lastRecordAge, STALE_SEC } from "./TurnActivity";
 
 export function ClawdWorkspace({ view, activity, scrollRef, rootRef, startedAt, onStopTask }: {
   view: CcView; activity: ClawdActivity; scrollRef: RefObject<HTMLDivElement>;
@@ -71,6 +72,12 @@ export function ClawdWorkspace({ view, activity, scrollRef, rootRef, startedAt, 
   const failed = agents.filter(task => task.status === "failed" || task.status === "unknown").length;
   const lastUser = view.messages.map(message => message.kind).lastIndexOf("user");
   const tools = view.messages.slice(view.activityStartIndex ?? Math.max(0, lastUser)).filter(m => m.kind === "tool");
+  /**
+   * 本轮多久没有新记录。**只在忙的时候算** —— 空闲时它是「上一轮结束后过了多久」，
+   * 对用户没有意义，写出来反而像在报错误码。
+   */
+  const idleAge = activity.busy ? lastRecordAge(view.messages, view.activityStartIndex, now) : null;
+  const staleSec = idleAge !== null && idleAge >= STALE_SEC ? idleAge : null;
   const closeDetails = () => { setRecords(false); petRef.current?.focus(); };
   useEffect(() => {
     if (!records) return;
@@ -93,6 +100,7 @@ export function ClawdWorkspace({ view, activity, scrollRef, rootRef, startedAt, 
           <div className="cc-clawd-label" role="status" aria-live="polite">{activity.label}</div>
           {activity.busy || activity.pose === "error" || activity.pose === "stopped" ? <div className="cc-clawd-note" title={activity.note}>{activity.note}</div> : null}
           {activity.busy && startedAt !== null && <div className="cc-clawd-note" aria-hidden="true">本轮 {Math.max(0, Math.floor((now - startedAt) / 1000))} 秒</div>}
+          {staleSec !== null && <div className="cc-clawd-note" role="status" aria-live="polite">最近 {staleSec} 秒无新记录，仍在运行</div>}
         </div>
         <div className="cc-clawd-actions">
           {(tools.length > 0 || activity.targetId) && <button type="button" className="cc-clawd-detail" onClick={() => { if (["editing", "approval", "question"].includes(activity.pose)) locate(); else { setRecords(!records); } }}>{activity.pose === "editing" ? "查看修改" : activity.pose === "approval" || activity.pose === "question" ? "查看请求" : "执行记录"}</button>}
