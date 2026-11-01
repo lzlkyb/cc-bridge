@@ -36,9 +36,13 @@ const DRAWER_WIDTH = 900;
 export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) {
   const list = useCcPaneList();
   /** 改名 / 归档（3-1d）。`titles` 是本窗口改过的标题，按库里的行号索引。 */
-  const actions = useCcSessionActions();
   /** 历史区摆「已归档」那一档（3-1d）。窗口级界面状态，不进库。 */
   const [archivedView, setArchivedView] = useState(false);
+  const forgetSession = list.forgetDeleted;
+  const forgetDeleted = useCallback((result: { rowId: number | null; sessionIds: number[] }) => {
+    if (forgetSession(result)) setArchivedView(false);
+  }, [forgetSession]);
+  const actions = useCcSessionActions(forgetDeleted);
   const [userCollapsed, setUserCollapsed] = useState(false);
   const [compact, setCompact] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -131,7 +135,7 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
     [stored.data, openIds, archivedView],
   );
   const archivedCount = useMemo(() => archivedOnly(stored.data ?? []).length, [stored.data]);
-  const archivedRows = useMemo(() => ({
+  const archivedRows = useMemo<Record<number, boolean>>(() => ({
     ...Object.fromEntries((stored.data ?? []).map((row) => [row.rowId, row.archivedAt !== null])),
     ...actions.archived,
   }), [stored.data, actions.archived]);
@@ -191,6 +195,8 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
    */
   const entriesRef = useRef(list.entries);
   entriesRef.current = list.entries;
+  const activeRef = useRef(list.active);
+  activeRef.current = list.active;
   useEffect(
     () => () => {
       for (const e of entriesRef.current) {
@@ -206,6 +212,17 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
     },
     [],
   );
+
+  const archiveSession = async (rowId: number, archived: boolean) => {
+    await actions.archive(rowId, archived);
+    if (!archived) { setArchivedView(false); return; }
+    const current = entriesRef.current.find(e => e.key === activeRef.current);
+    if (current?.meta?.rowId !== rowId) return;
+    setArchivedView(false);
+    const next = entriesRef.current.find(e => e.key !== current.key && !(e.meta?.rowId != null && archivedRows[e.meta.rowId]));
+    if (next) list.setActive(next.key);
+    else list.add();
+  };
 
   return (
     <div ref={workspaceRef} className="cc-workspace-root" data-compact={compact || undefined}>
@@ -233,7 +250,8 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
         onOpenStored={(id) => { list.openStored(id); if (compact) closeDrawer(); }}
         actions={{
           rename: actions.rename,
-          archive: actions.archive,
+          archive: archiveSession,
+          remove: actions.remove,
           archived: archivedRows,
         }}
       />

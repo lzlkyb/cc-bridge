@@ -32,11 +32,15 @@
 pub mod autoapprove;
 pub mod channel;
 pub mod context_tax;
+pub mod input_control;
 pub mod manager;
 pub mod proto;
 pub mod ring;
 pub mod session;
+pub mod steering;
 pub mod store;
+pub mod task_control;
+pub mod tasks;
 pub mod usage;
 
 pub use manager::{CcSession, CcSessions, Shared, SnapshotDto, CC_EVENT};

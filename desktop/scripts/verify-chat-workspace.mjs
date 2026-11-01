@@ -1,3 +1,4 @@
+/* global window */
 import assert from 'node:assert/strict';
 /* global document, getComputedStyle, requestAnimationFrame, CSS, innerWidth, innerHeight, URLSearchParams, setTimeout */
 import { createRequire } from 'node:module';
@@ -72,25 +73,29 @@ try {
   }, { width: 560, height: 600, scene: 'approval' });
   await test('完成轮次展示真实工具结果并定位原记录', async p => {
     const summary = active(p).locator('.cc-turn-results'); await summary.waitFor();
-    assert.match(await summary.innerText(), /本轮操作 · 2 项/);
+    assert.match(await summary.innerText(), /修改与命令 · 2 项/);
     await summary.locator('summary').click();
     assert.match(await summary.innerText(), /api\/client\.ts/);
     assert.equal(await summary.getByRole('button', { name: /文件操作/ }).getAttribute('title'), 'src/api/client.ts');
     assert.match(await summary.innerText(), /npm run test/);
     assert.doesNotMatch(await summary.innerText(), /测试通过/);
     await summary.getByRole('button', { name: /文件操作/ }).click();
-    assert.equal(await active(p).locator('[data-cc-tool="edit-result"]').isVisible(), true);
+    await active(p).locator('[data-cc-tool="edit-result"]').waitFor({ state: 'visible' });
   }, { scene: 'results' });
-  await test('设计升级：停止后发送且旧队列保持暂停', async p => {
+  await test('立即调整走插话接口，显式下一轮队列保留到补充结束', async p => {
     await draft(p).fill('启动当前任务'); await send(p).click();
+    await button(p, '选择发送方式').click();
+    await p.getByRole('button', { name: /下一轮发送.*当前任务结束/ }).click();
     await draft(p).fill('旧队列消息'); await send(p).click();
     await active(p).locator('.cc-composer-queue').waitFor();
     await button(p, '选择发送方式').click();
-    await p.getByRole('button', { name: /停止后发送.*确认停止/ }).click();
+    await p.getByRole('button', { name: /立即调整方向.*优先转后台/ }).click();
     await draft(p).fill('停止后优先消息'); await send(p).click();
-    await p.getByText(/收到：停止后优先消息/).waitFor({ timeout: 9000 });
-    assert.match(await active(p).locator('.cc-composer-queue').innerText(), /队列已暂停/);
+    const calls = await p.evaluate(() => window.ccSteeringTest.calls());
+    assert.equal(calls.filter(c => c.command === 'cc_interrupt').length, 0);
+    assert.equal(calls.filter(c => c.command === 'cc_steer' && c.input.mode === 'now').length, 1);
     assert.match(await active(p).locator('.cc-composer-queue').innerText(), /旧队列消息/);
+    await p.getByText(/收到：停止后优先消息/).waitFor({ timeout: 9000 });
   }, { scene: 'approval' });
   await test('设计升级：问题目录跳转和返回阅读位置', async p => {
     await button(p, '问题目录').click();
@@ -127,6 +132,7 @@ try {
   });
   await test('发送、排队、停止、编辑和明确恢复队列', async p => {
     await draft(p).fill('处理第一条'); await send(p).click();
+    await button(p, '选择发送方式').click(); await p.getByRole('button', { name: /下一轮发送.*当前任务结束/ }).click();
     await draft(p).fill('等待处理的第二条'); await send(p).click();
     await button(p, '停止本轮').click();
     assert.match(await p.locator('.cc-composer-queue').innerText(), /队列已暂停/);
@@ -244,7 +250,7 @@ try {
     assert.equal(await draft(p).inputValue(), '建议稿：先确认超时原因');
     await draft(p).fill('');
     await button(p, '添加内容').click();
-    await p.getByRole('dialog', { name: '添加内容' }).getByRole('button', { name: '查看命令' }).click();
+    await p.keyboard.press('Escape'); await button(p, '查看命令').click();
     await eventually(() => draft(p).inputValue(), value => value === '/', '命令入口应写入斜杠');
     assert.ok(await draft(p).evaluate(e => e === document.activeElement));
   }, { width, height: 820 });
@@ -257,6 +263,7 @@ try {
   }, { scene: 'long' });
   await test('队列高度变化和回复完成时继续跟随底部', async p => {
     await draft(p).fill('底部阅读第一条'); await send(p).click();
+    await button(p, '选择发送方式').click(); await p.getByRole('button', { name: /下一轮发送.*当前任务结束/ }).click();
     await draft(p).fill('底部阅读排队第二条'); await send(p).click();
     await button(p, '管理').click();
     await p.waitForTimeout(5000);
@@ -304,6 +311,7 @@ try {
   }, { width: 700, height: 860 });
   await test('动效：队列快速反转保留内容，收起后不留下交互节点', async p => {
     await draft(p).fill('首条'); await send(p).click();
+    await button(p, '选择发送方式').click(); await p.getByRole('button', { name: /下一轮发送.*当前任务结束/ }).click();
     await draft(p).fill('保留的队列内容'); await send(p).click();
     await button(p, '停止本轮').click();
     await button(p, '管理').click();

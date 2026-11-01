@@ -28,6 +28,7 @@ export function SessionHistoryList({
   onOpen,
   onRename,
   onArchive,
+  onDelete,
 }: {
   /** 已过滤好的历史（见 `filterStored` / `archivedOnly`）。`[]` = 不渲染整区。 */
   rows: CcStoredSummary[];
@@ -37,6 +38,7 @@ export function SessionHistoryList({
   onOpen: (rowId: number) => void;
   onRename: (rowId: number, title: string) => Promise<unknown>;
   onArchive: (rowId: number, archived: boolean) => Promise<unknown>;
+  onDelete?: (rowId: number | null) => Promise<unknown>;
 }) {
   const [expanded, setExpanded] = useState(false);
   if (rows.length === 0) return null;
@@ -88,6 +90,7 @@ export function SessionHistoryList({
             archived={archived}
             onRename={onRename}
             onArchive={onArchive}
+            onDelete={onDelete ? () => onDelete(r.rowId) : undefined}
           />
         </div>
       ))}

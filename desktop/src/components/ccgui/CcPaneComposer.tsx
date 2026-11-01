@@ -28,9 +28,9 @@ export function CcPaneComposer({ session, scrollRef, model, mode, setModel, setM
       if (review) review.click();
       else { el?.scrollIntoView({ block: "center" }); el?.querySelector<HTMLButtonElement>("button")?.focus({ preventScroll: true }); }
     }}
-    onStopAndSend={session.stopAndSend} onSend={session.start} running={view.running || session.busy || session.stopState === "stopping"} stopping={session.stopState === "stopping"}
+    onSteer={session.steer} onSendNow={session.sendNow} inputs={view.inputs} onSend={session.start} running={view.running || session.busy || session.stopState === "stopping"} stopping={session.stopState === "stopping"}
     onInterrupt={() => void session.interrupt()}
-    placeholder={session.pending.length > 0 ? "本轮在等批准，现在发的会排队，批准后自动发…" : "给 CC 发消息…"}
+    placeholder={session.pending.length > 0 ? "当前在等批准，可以补充要求；补充不会代替批准…" : view.running ? "补充要求，Clawd 会在工具完成后读取…" : "告诉 Clawd，@文件 /命令"}
     queueCount={session.queue.length} queuePaused={session.queuePaused}
     onClearQueue={session.clearQueue} onResumeQueue={session.resumeQueue}
   />;

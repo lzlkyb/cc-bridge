@@ -27,4 +27,33 @@ html[data-ui-style="glass"] .cc-completion{background:linear-gradient(var(--glas
 .cc-queue-reveal{display:grid;flex:0 1 auto;min-height:0;grid-template-rows:0fr;opacity:0;transition:grid-template-rows var(--dur-exit) var(--ease-exit),opacity var(--dur-exit) var(--ease-exit)}
 .cc-queue-reveal[data-entered=true]{grid-template-rows:1fr;opacity:1;transition-duration:var(--dur-enter);transition-timing-function:var(--ease)}
 .cc-queue-clip{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.cc-composer-dock .cc-composer-surface{border-radius:18px;border-color:hsl(var(--border));box-shadow:0 5px 20px hsl(var(--foreground)/.035)}
+.cc-composer-dock .cc-composer-surface:focus-within{border-color:hsl(var(--ring)/.6);box-shadow:0 5px 22px hsl(var(--foreground)/.06)}
+.cc-composer-dock .cc-composer-tools{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px;padding:4px 12px 12px}
+.cc-composer-dock .cc-composer-config{border:0;margin:0;padding:0;justify-content:flex-end;min-width:0;gap:2px}
+.cc-composer-dock .cc-composer-add>span{display:none}.cc-composer-dock .cc-composer-add{width:32px;padding:5px;justify-content:center}
+.cc-composer-direct{display:inline-flex;gap:5px;align-items:center;justify-content:center;min-height:32px;padding:5px 7px;border-radius:7px;color:hsl(var(--muted-foreground));font-size:12px;cursor:pointer;white-space:nowrap}
+.cc-composer-direct:hover{background:hsl(var(--muted));color:hsl(var(--foreground))}.cc-composer-direct:focus-visible{outline:2px solid hsl(var(--primary));outline-offset:2px}
+.cc-composer-draft{--cc-draft-min:76;--cc-draft-max:168;font-size:15px;line-height:1.7;min-height:calc(var(--cc-draft-min)*1px)}
+.cc-composer-dock .cc-composer-send{border-radius:10px;min-height:36px}.cc-composer-dock .cc-composer-send-tools{gap:3px}
+@container(max-width:860px){.cc-composer-direct-label{display:none}.cc-composer-direct{width:30px;padding:5px}.cc-composer-dock .cc-composer-tools{gap:3px;padding-inline:8px}}
+@container(max-width:600px){
+ .cc-composer-dock .cc-composer-tools{grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"add send" "config config";row-gap:6px}
+ .cc-composer-input-tools{grid-area:add}.cc-composer-send-tools{grid-area:send}.cc-composer-dock .cc-composer-config{grid-area:config;justify-content:space-between;border-top:1px solid hsl(var(--border)/.65);padding-top:6px}
+ .cc-composer-dock .cc-composer-send{width:auto;padding:0 10px;min-height:34px;height:34px}.cc-composer-dock .cc-composer-send>span{display:inline;font-size:11px}.cc-composer-dock .cc-composer-stop{width:30px;height:34px;padding:0}.cc-composer-stop>span{display:none}.cc-composer-send-tools>.cc-chat-icon{width:22px}
+ .cc-composer-dock .cc-composer-footer{font-size:10px;margin-top:6px}.cc-composer-draft{font-size:16px}
+}
+@media(max-height:720px){.cc-composer-draft{--cc-draft-min:52;--cc-draft-max:112}.cc-composer-dock{padding-bottom:8px}.cc-composer-dock .cc-composer-tools{padding-bottom:8px}}
 @media(prefers-reduced-motion:reduce){.cc-queue-reveal{transition:none}}
+.cc-input-receipts{flex:none;min-width:0;margin-bottom:7px;font-size:11px;color:hsl(var(--muted-foreground))}
+.cc-input-receipt{display:flex;align-items:center;gap:6px;min-width:0;padding:5px 2px;line-height:1.5}
+.cc-input-status{flex:none;color:hsl(var(--foreground));font-weight:500}.cc-input-receipt>svg{flex:none}
+.cc-input-preview{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cc-input-receipt>button{flex:none;color:hsl(var(--primary));padding:3px 5px;border-radius:4px}.cc-input-receipt>button:hover{background:hsl(var(--muted))}
+.cc-input-receipt[data-state=failed] .cc-input-status,.cc-input-receipt[data-state=unconfirmed] .cc-input-status{color:hsl(var(--destructive))}
+.cc-input-receipts summary{cursor:pointer;font-size:10px;padding:2px}.cc-input-receipts summary>span{margin-left:8px}
+.cc-input-history{max-height:150px;overflow:auto;border-top:1px solid hsl(var(--border));margin-top:4px}
+.cc-input-history .cc-input-preview{white-space:normal;overflow-wrap:anywhere}
+.cc-input-receipts :is(button,summary):focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+@container(max-width:600px){.cc-input-receipts summary>span{display:none}.cc-input-receipt{gap:4px}.cc-input-preview{max-width:36ch}}
+@media(prefers-reduced-motion:reduce){.cc-input-receipt .animate-spin{animation:none}}

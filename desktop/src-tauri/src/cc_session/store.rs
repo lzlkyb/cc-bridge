@@ -377,7 +377,7 @@ pub fn rename(conn: &Connection, row_id: i64, title: &str) -> Result<String, Str
 /// 归档 / 取消归档。
 ///
 /// 归档只改一个时间戳，**不删内容**：用户随时能捞回来，这也是「归档」和
-/// 「删除」的区别（后者我们没做，也不打算做 —— 删了就找不回来了）。
+/// 「删除」的区别（删除会移除 CC Bridge 的记录）。
 pub fn set_archived(conn: &Connection, row_id: i64, archived: bool) -> Result<(), String> {
     let changed = conn
         .execute(
@@ -388,6 +388,13 @@ pub fn set_archived(conn: &Connection, row_id: i64, archived: bool) -> Result<()
     if changed == 0 {
         return Err("这条会话已经不在库里了（可能被清理），刷新列表后重试".into());
     }
+    Ok(())
+}
+
+/// Only the Bridge snapshot is removed; Claude Code transcripts and file changes are untouched.
+pub fn delete(conn: &Connection, row_id: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM cc_sessions WHERE id = ?1", params![row_id])
+        .map_err(|e| format!("删除会话失败：{e}"))?;
     Ok(())
 }
 

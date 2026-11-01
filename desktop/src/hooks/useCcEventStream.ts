@@ -8,6 +8,8 @@ import {
   type CcSnapshot,
 } from "../lib/ccEventTypes";
 import type { CcAction } from "../lib/ccReducer";
+import { useQueryClient } from "@tanstack/react-query";
+import { STORED_SESSIONS_KEY } from "./useCcPaneList";
 
 /**
  * 对话事件流：**先铸发 id → 订阅 → 再拉快照 → 用序号补漏**。
@@ -44,6 +46,7 @@ export function useCcEventStream(
   dispatch: (action: CcAction) => void,
   restore: MutableRefObject<CcRestoreReq>,
 ) {
+  const qc = useQueryClient();
   /** 已消化的最大序号 + 1。快照与实时事件的去重全靠它。 */
   const seqRef = useRef(0);
   /** 快照与补漏都吃完了。这之前实时事件只进缓冲，不进 reducer。 */
@@ -96,6 +99,7 @@ export function useCcEventStream(
       }
       seqRef.current = p.seq + 1;
       dispatch({ type: "event", event: p.event });
+      if (p.event.kind === "sessionStored") void qc.invalidateQueries({ queryKey: STORED_SESSIONS_KEY });
     };
 
     void (async () => {
@@ -150,6 +154,7 @@ export function useCcEventStream(
         dispatch({
           type: "replay",
           events: fromDb?.events ?? snap.events,
+          ...(fromDb ? { historical: true } : {}),
           dropped: fromDb ? fromDb.dropped : snap.dropped,
           running: snap.running,
         });
@@ -169,7 +174,7 @@ export function useCcEventStream(
       if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);
       unlisten?.();
     };
-  }, [dispatch, restore]);
+  }, [dispatch, restore, qc]);
 
   return { ready, restored, clearRestored, seqRef, sessionIdRef };
 }

@@ -31,6 +31,7 @@ export function useCcStreamScroll(
   const pinnedRef = useRef(true);
   /** 最后一次**可见时**的滚动位置。 */
   const lastTopRef = useRef(0);
+  const readingUntilRef = useRef(0);
   const activeRef = useRef(deps.active);
   activeRef.current = deps.active;
 
@@ -40,9 +41,18 @@ export function useCcStreamScroll(
     let height = node.clientHeight;
     let contentHeight = node.scrollHeight;
     const rememberSize = () => { height = node.clientHeight; contentHeight = node.scrollHeight; };
+    const readingJump = () => {
+      pinnedRef.current = false;
+      // Disclosure transitions can resize the transcript after a deliberate jump.
+      // Keep that resize from reclaiming the user's reading position.
+      readingUntilRef.current = Date.now() + 700;
+    };
     const onScroll = () => {
       // 隐藏期间浏览器可能把 scrollTop 归零，那不是用户的滚动，别记。
       if (!activeRef.current) return;
+      if (Date.now() < readingUntilRef.current) {
+        pinnedRef.current = false; lastTopRef.current = node.scrollTop; rememberSize(); return;
+      }
       const gap = node.scrollHeight - node.scrollTop - node.clientHeight;
       const resized = height !== node.clientHeight || contentHeight !== node.scrollHeight;
       // 队列展开会缩短视口，浏览器也会发 scroll；它不代表用户上翻。
@@ -53,6 +63,7 @@ export function useCcStreamScroll(
       rememberSize();
     };
     node.addEventListener("scroll", onScroll, { passive: true });
+    node.addEventListener("cc-reading-jump", readingJump);
     const observer = new ResizeObserver(() => {
       if (activeRef.current && pinnedRef.current) node.scrollTop = node.scrollHeight;
       rememberSize();
@@ -60,7 +71,7 @@ export function useCcStreamScroll(
     observer.observe(node);
     // 折叠过程、延迟排版也会改变正文高度，而滚动容器本身不一定变大。
     if (node.firstElementChild) observer.observe(node.firstElementChild);
-    return () => { node.removeEventListener("scroll", onScroll); observer.disconnect(); };
+    return () => { node.removeEventListener("scroll", onScroll); node.removeEventListener("cc-reading-jump", readingJump); observer.disconnect(); };
   }, [scrollRef]);
 
   // 新内容贴底：只有「可见 && 贴着底」才追。隐藏 pane 上 scrollHeight 是 0，写了也无意义。
@@ -87,6 +98,7 @@ export function useCcStreamScroll(
         `[data-cc-tool="${CSS.escape(messageId)}"]`,
       );
       if (!node) return;
+      scrollRef.current?.dispatchEvent(new Event("cc-reading-jump"));
       let detail = node.closest("details");
       while (detail) { detail.open = true; detail = detail.parentElement?.closest("details") ?? null; }
       node.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });

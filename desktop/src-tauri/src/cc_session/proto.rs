@@ -21,11 +21,36 @@
 //! CLI 的原始形状随版本漂移（`system` 子类型每年都在加），归一化必须放在 Rust 侧：
 //! 前端只加渲染分支、不碰字段名。见源码分析 §一.1「前端几乎零引擎分支」。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+fn input_statuses(value: &Value, status: &str, out: &mut Vec<CcEvent>) {
+    if !value.get("parent_tool_use_id").is_none_or(Value::is_null) {
+        return;
+    }
+    let mut ids: Vec<&str> = value
+        .get("user_message_uuids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if let Some(id) = value.get("user_message_uuid").and_then(Value::as_str) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    for id in ids {
+        out.push(CcEvent::InputStatus {
+            message_id: id.into(),
+            status: status.into(),
+            detail: None,
+        });
+    }
+}
 
 /// 归一化后的对话事件。前端 reducer 只认这个。
 ///
@@ -66,6 +91,10 @@ pub enum CcEvent {
         /// 是 `.ok()` 兜底），表现是整个会话恢复成空白。
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<String>,
+    },
+    /// The async first save has assigned a durable row; menus can now address it.
+    SessionStored {
+        row_id: i64,
     },
     /// 助手正文。`streaming=true` 是增量追加，`false` 是最终全文覆盖。
     ///
@@ -115,7 +144,9 @@ pub enum CcEvent {
         reason: Option<String>,
     },
     /// CLI 撤回了审批请求（超时或被打断）。界面必须把卡片落定，不能留着转圈。
-    PermissionCancel { request_id: String },
+    PermissionCancel {
+        request_id: String,
+    },
     /// 用户已经决定了（本地事件，不来自 CLI）。
     ///
     /// 必须进流水：否则切页回来重放时这张卡会重新变回「等待批准」，
@@ -148,9 +179,39 @@ pub enum CcEvent {
     },
     /// `system/compact_boundary`：上下文刚被压缩。必须提示，否则用户不知道
     /// 为什么模型「忘了」前面的事。
-    Compact { post_tokens: i64 },
+    Compact {
+        post_tokens: i64,
+    },
     /// 后台任务数变化。>0 时说明 turn 结束后 CLI 还会自己再开一轮。
-    BackgroundTasks { pending: usize },
+    BackgroundTasks {
+        pending: usize,
+    },
+    /// Task identities and progress are separate from the legacy background count.
+    TaskUpdate {
+        task: super::tasks::TaskUpdate,
+    },
+    TaskSnapshot {
+        tasks: Vec<super::tasks::TaskUpdate>,
+    },
+    ControlResponse {
+        request_id: String,
+        error: Option<String>,
+        #[serde(default)]
+        data: Value,
+    },
+    InputMessage {
+        message_id: String,
+        text: String,
+        mode: String,
+    },
+    InputStatus {
+        message_id: String,
+        status: String,
+        detail: Option<String>,
+    },
+    SessionState {
+        running: bool,
+    },
     /// `result`：本轮结束。
     TurnEnd {
         session_id: Option<String>,
@@ -195,13 +256,17 @@ pub enum CcEvent {
     ///
     /// 不是协议解析产物，但必须走同一条事件通道：启动失败、模型名不对、认证过期
     /// 这些**只有 stderr 会说**，而 stdout 上只会静静地看着。
-    Stderr { lines: Vec<String> },
+    Stderr {
+        lines: Vec<String>,
+    },
     /// 进程退出（stdout EOF）。
     ///
     /// 🔴 **不是「一轮结束」信号**：一轮正常结束走 `result` → `TurnEnd`，这个事件
     /// 只在进程真的终止时来（`code` 恒为 `None` —— 读线程不 `wait()` 子进程）。
     /// 判据用**时序**：`Exit` 到达时前端 `running` 仍为真 ⇒ 是生成中途死掉。
-    Exit { code: Option<i32> },
+    Exit {
+        code: Option<i32>,
+    },
 }
 
 /// 跨行累积的 block（流式 `content_block_*` 三段式）。
@@ -263,6 +328,7 @@ impl GenTimer {
 
 /// 解析器的跨行状态。**一轮一个进程**，所以这个状态只需要活一轮。
 pub struct ProtoState {
+    replayed_inputs: HashSet<String>,
     /// 当前流式消息 id（`message_start` 给）。拼 `block_id` 用。
     msg_id: Option<String>,
     /// `content_block.index` → 累积中的块。
@@ -292,6 +358,7 @@ pub struct ProtoState {
 impl Default for ProtoState {
     fn default() -> Self {
         Self {
+            replayed_inputs: HashSet::new(),
             msg_id: None,
             blocks: HashMap::new(),
             full_index_base: 0,
@@ -338,6 +405,7 @@ impl ProtoState {
             "system" => self.on_system(&value, &mut out),
             "stream_event" => self.on_stream_event(&value, &mut out),
             "assistant" => {
+                input_statuses(&value, "processing", &mut out);
                 // 完整消息快照：流式碎片到此收口，用全文覆盖。
                 let message = value.get("message");
                 let msg_id = message
@@ -402,6 +470,20 @@ impl ProtoState {
                 }
             }
             "user" => {
+                if value.get("isReplay").and_then(Value::as_bool) == Some(true)
+                    && value.get("parent_tool_use_id").is_none_or(Value::is_null)
+                {
+                    if let Some(id) = value.get("uuid").and_then(Value::as_str) {
+                        if self.replayed_inputs.len() < 256 {
+                            self.replayed_inputs.insert(id.into());
+                        }
+                        out.push(CcEvent::InputStatus {
+                            message_id: id.into(),
+                            status: "received".into(),
+                            detail: None,
+                        });
+                    }
+                }
                 // tool_result 走这里。注意它和 assistant 的 tool_use 是**分开的两条消息**。
                 if let Some(blocks) = value
                     .get("message")
@@ -438,11 +520,58 @@ impl ProtoState {
                 }
             }
             "result" => {
+                input_statuses(&value, "complete", &mut out);
+                let answered: Vec<_> = out
+                    .iter()
+                    .filter_map(|event| match event {
+                        CcEvent::InputStatus { message_id, .. } => Some(message_id.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if answered.is_empty() {
+                    // Older CLIs may replay input but omit result correlation. Release the turn without inventing success.
+                    for id in self.replayed_inputs.drain() {
+                        out.push(CcEvent::InputStatus {
+                            message_id: id,
+                            status: "unconfirmed".into(),
+                            detail: Some(
+                                "CLI 已结束本轮，但未提供消息关联回执，请查看回复确认".into(),
+                            ),
+                        });
+                    }
+                } else {
+                    for id in answered {
+                        self.replayed_inputs.remove(&id);
+                    }
+                }
                 // 收尾：有的版本在 `result` 之前不发 `message_stop`，开着的段要关掉。
                 let gen_ms = self.gen.finish(self.now());
                 out.push(turn_end(&value, gen_ms));
             }
             "control_request" => self.on_control_request(&value, &mut out),
+            "control_response" => {
+                if let Some(response) = value.get("response") {
+                    if let Some(id) = response.get("request_id").and_then(Value::as_str) {
+                        out.push(CcEvent::ControlResponse {
+                            request_id: id.to_string(),
+                            error: if response.get("subtype").and_then(Value::as_str)
+                                == Some("error")
+                            {
+                                Some(
+                                    response
+                                        .get("error")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("CLI 拒绝控制请求")
+                                        .to_string(),
+                                )
+                            } else {
+                                None
+                            },
+                            data: response.get("response").cloned().unwrap_or(Value::Null),
+                        });
+                    }
+                }
+            }
             "control_cancel_request" => {
                 if let Some(request_id) = value.get("request_id").and_then(Value::as_str) {
                     out.push(CcEvent::PermissionCancel {
@@ -457,7 +586,19 @@ impl ProtoState {
 
     fn on_system(&mut self, value: &Value, out: &mut Vec<CcEvent>) {
         let subtype = value.get("subtype").and_then(Value::as_str).unwrap_or("");
+        if subtype == "status" {
+            input_statuses(value, "processing", out);
+        }
         match subtype {
+            "session_state_changed" => {
+                if let Some(state) = value.get("state").and_then(Value::as_str) {
+                    if ["running", "idle", "requires_action"].contains(&state) {
+                        out.push(CcEvent::SessionState {
+                            running: state != "idle",
+                        });
+                    }
+                }
+            }
             "init" => {
                 let session_id = value
                     .get("session_id")
@@ -504,10 +645,20 @@ impl ProtoState {
                     .and_then(Value::as_array)
                     .map_or(0, Vec::len);
                 out.push(CcEvent::BackgroundTasks { pending });
+                if let Some(tasks) = value.get("tasks").and_then(Value::as_array) {
+                    out.push(CcEvent::TaskSnapshot {
+                        tasks: tasks
+                            .iter()
+                            .filter_map(|task| super::tasks::parse(task, true))
+                            .collect(),
+                    });
+                }
             }
-            // `task_started` / `task_updated` / `task_notification` 属于后台任务细节，
-            // 对话页只用 `background_tasks_changed` 的计数。其余子类型忽略：
-            // CLI 每版都在加，白名单比黑名单安全。
+            "task_started" | "task_progress" | "task_updated" | "task_notification" => {
+                if let Some(task) = super::tasks::parse(value, false) {
+                    out.push(CcEvent::TaskUpdate { task });
+                }
+            }
             _ => {}
         }
     }
@@ -518,6 +669,7 @@ impl ProtoState {
         };
         match event.get("type").and_then(Value::as_str).unwrap_or("") {
             "message_start" => {
+                input_statuses(value, "processing", out);
                 self.msg_id = event
                     .get("message")
                     .and_then(|m| m.get("id"))
@@ -1360,7 +1512,16 @@ mod tests {
         let out = state.feed(
             r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"a"},{"task_id":"b"}]}"#,
         );
-        assert_eq!(out, vec![CcEvent::BackgroundTasks { pending: 2 }]);
+        assert_eq!(out[0], CcEvent::BackgroundTasks { pending: 2 });
+        let CcEvent::TaskSnapshot { tasks } = &out[1] else {
+            panic!("missing identities")
+        };
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].task_id, "a");
+        assert_eq!(
+            tasks[0].task_type, None,
+            "legacy counts must not invent agents"
+        );
     }
 
     /// 事件发到前端是 camelCase —— 与 Tauri 命令参数约定一致。
@@ -1377,5 +1538,51 @@ mod tests {
         assert!(json.contains("\"kind\":\"permissionAsk\""), "{json}");
         assert!(json.contains("\"requestId\""), "{json}");
         assert!(json.contains("\"toolName\""), "{json}");
+    }
+
+    #[test]
+    fn steering_replay_is_a_receipt_not_a_duplicate_user_message() {
+        let mut proto = ProtoState::new();
+        let events = proto.feed(r#"{"type":"user","uuid":"input-1","isReplay":true,"message":{"role":"user","content":[{"type":"text","text":"correction"}]}}"#);
+        assert!(
+            matches!(&events[..], [CcEvent::InputStatus { message_id, status, .. }] if message_id == "input-1" && status == "received")
+        );
+        assert!(proto
+            .feed(
+                r#"{"type":"user","uuid":"child","isReplay":true,"parent_tool_use_id":"agent-1"}"#
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn old_cli_result_without_correlation_does_not_leave_input_pending_forever() {
+        let mut proto = ProtoState::new();
+        proto.feed(r#"{"type":"user","uuid":"input-1","isReplay":true}"#);
+        let events = proto.feed(r#"{"type":"result","subtype":"success"}"#);
+        assert!(
+            matches!(&events[..], [CcEvent::InputStatus { status, .. }, CcEvent::TurnEnd { .. }] if status == "unconfirmed")
+        );
+    }
+
+    #[test]
+    fn result_completes_each_answered_uuid_before_ending_turn() {
+        let mut proto = ProtoState::new();
+        let events = proto.feed(r#"{"type":"result","subtype":"success","user_message_uuid":"original","user_message_uuids":["original","correction"]}"#);
+        assert!(
+            matches!(&events[..], [CcEvent::InputStatus { message_id:a, status:s, .. }, CcEvent::InputStatus { message_id:b, .. }, CcEvent::TurnEnd { .. }] if a == "original" && b == "correction" && s == "complete")
+        );
+    }
+
+    #[test]
+    fn processing_receipts_ignore_subagent_output() {
+        let mut proto = ProtoState::new();
+        let events = proto.feed(r#"{"type":"system","subtype":"status","user_message_uuids":["correction"],"status":null}"#);
+        assert!(
+            matches!(&events[..], [CcEvent::InputStatus { status, .. }] if status == "processing")
+        );
+        assert!(proto.feed(r#"{"type":"assistant","parent_tool_use_id":"child","user_message_uuid":"correction"}"#).is_empty());
+        let json = serde_json::to_value(&events[0]).unwrap();
+        assert_eq!(json["messageId"], "correction");
+        assert_eq!(json["kind"], "inputStatus");
     }
 }

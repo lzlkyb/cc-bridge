@@ -1055,8 +1055,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::cc_close_session,
             commands::cc_start,
             commands::cc_send,
+            commands::cc_steer,
             commands::cc_respond,
             commands::cc_interrupt,
+            commands::cc_stop_task,
             commands::cc_snapshot,
             commands::cc_restore,
             // 侧栏「历史」区：库里落盘过的会话摘要（不含正文，见命令注释）。
@@ -1064,6 +1066,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 侧栏改名 / 归档（3-1d）：只动 `cc_sessions` 的两列，不碰内容。
             commands::cc_rename_session,
             commands::cc_archive_session,
+            commands::cc_delete_session,
             commands::cc_reset,
             // 审批卡「以后都放行这类」：规则文本在 Rust 侧拼（glob 转义不能让前端猜）。
             commands::cc_approval_rule,

@@ -11,6 +11,7 @@
  */
 
 import type { CcForkSeed } from "./ccFork";
+import type { CcTaskUpdate } from "./ccAgentTasks";
 
 export type CcRetryInfo = {
   attempt: number;
@@ -19,9 +20,13 @@ export type CcRetryInfo = {
 };
 
 export type CcEvent =
+  | { kind: "inputMessage"; messageId: string; text: string; mode: string }
+  | { kind: "inputStatus"; messageId: string; status: import("./ccInput").CcInputStatus; detail: string | null }
+  | { kind: "sessionState"; running: boolean }
   | { kind: "init"; sessionId: string; cwd: string | null; model: string | null }
   /** 用户自己的消息（后端本地事件，不来自 CLI）。 */
   | { kind: "userMessage"; text: string; images?: string[] }
+  | { kind: "sessionStored"; rowId: number }
   /** `streaming=true` 是增量追加，`false` 是最终全文覆盖，两者共用 `blockId`。 */
   | { kind: "text"; blockId: string; text: string; streaming: boolean }
   | { kind: "thinking"; blockId: string; text: string; streaming: boolean }
@@ -65,6 +70,8 @@ export type CcEvent =
   | { kind: "retry"; attempt: number; max: number; message: string }
   | { kind: "compact"; postTokens: number }
   | { kind: "backgroundTasks"; pending: number }
+  | { kind: "taskUpdate"; task: CcTaskUpdate }
+  | { kind: "taskSnapshot"; tasks: CcTaskUpdate[] }
   | {
       kind: "turnEnd";
       sessionId: string | null;

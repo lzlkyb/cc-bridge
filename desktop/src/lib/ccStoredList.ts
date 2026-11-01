@@ -57,13 +57,10 @@ export function filterStored(
   const k = query.trim().toLowerCase();
   const wantArchived = mode === "archived";
   return rows.filter((r) => {
-    // 归档视图是「第二次机会」：已打开的那条也可能是归档的（用户点开了它），
-    // 那时它照样要出现在这里，不然按钮点了没有任何反馈。
-    if (!wantArchived) {
+    // Opened archived sessions already have a row in the same sidebar; do not duplicate them.
       if (open.rowIds?.has(r.rowId)) return false;
       if (r.sessionId && open.cliIds?.has(r.sessionId)) return false;
       if (!r.title && r.messageCount <= 0) return false;
-    }
     if (wantArchived !== (r.archivedAt !== null)) return false;
     if (!k) return true;
     const hay = `${r.title ?? ""} ${r.preview ?? ""} ${r.cwd ?? ""}`.toLowerCase();

@@ -37,16 +37,58 @@ if (scene === "long") for (let index = 0; index < 250; index++) initial.push({ k
 let nextId = 0, failedProbe = scene === "error", turn = 0;
 const sequences = new Map<number, number>();
 const timers = new Map<number, ReturnType<typeof setTimeout>>();
+const steeringCalls: Record<string, any>[] = [], steeringPending = new Map<number, string[]>();
+let failSteering = false;
 const send = async (sessionId: number, event: CcEvent) => {
   const seq = sequences.get(sessionId) ?? 0; sequences.set(sessionId, seq + 1);
   await emit("cc-event", { seq, sessionId, event });
 };
+// Isolated fixture only: drive the same IPC/reducer path used by the real session.
+if (scene === "clawd") Object.assign(window, { ccClawdEvent: (event: CcEvent) => send(1, event) });
+Object.assign(window, { ccSteeringTest: { calls: () => steeringCalls, failNext: () => { failSteering = true; }, receipt: (messageId: string, status: any) => send(1, { kind: "inputStatus", messageId, status, detail: null }) } });
+const finishInputs = async (id: number) => { for (const messageId of steeringPending.get(id) ?? []) await send(id, { kind: "inputStatus", messageId, status: "complete", detail: null }); steeringPending.delete(id); };
+const stopCalls: Record<string, unknown>[] = [];
+const pendingStops = new Map<string, { resolve: (status: string) => void; reject: (error: string) => void }>();
+if (scene === "clawd") Object.assign(window, { ccTaskStopTest: {
+  calls: () => stopCalls,
+  confirm: async (taskId: string, status = "killed") => { await send(1, { kind: "taskUpdate", task: { taskId, status } }); pendingStops.get(taskId)?.resolve(status); pendingStops.delete(taskId); },
+  reject: (taskId: string, error: string) => { pendingStops.get(taskId)?.reject(error); pendingStops.delete(taskId); },
+} });
 const stored = [{ rowId: 2, connectionId: "", sessionId: "other", cwd: "D:/projects/api-service", title: "梳理 API 错误处理", titleLocked: true, preview: "检查请求失败时的提示", model: "sonnet", permissionMode: "default", messageCount: 4, updatedAt: Date.now() / 1000, archivedAt: null, dropped: 0 }];
 mockWindows("main");
+const linkedRows = new Map<number, number>([[1, 1]]);
+let failDelete = false, deleteCalls = 0, nextRow = 10;
+let archiveGate: Promise<void> | null = null, releaseArchive: (() => void) | null = null;
+if (scene === "sessions") {
+  stored.unshift({ ...stored[0], rowId: 1, sessionId: "review-session", title: "排查登录请求超时", cwd: "D:/projects/web-console" });
+  Object.assign(window, { ccSessionTest: { failDelete: () => { failDelete = true; }, holdArchive: () => { archiveGate = new Promise(resolve => { releaseArchive = resolve; }); }, releaseArchive: () => { releaseArchive?.(); }, deleted: () => deleteCalls, rows: () => stored.map(row => ({ rowId: row.rowId, archivedAt: row.archivedAt })) } });
+}
 mockIPC(async (command, payload = {}) => {
   const args = payload as Record<string, any>;
+  if (["cc_start", "cc_steer", "cc_interrupt"].includes(command)) steeringCalls.push({ command, ...args });
+  if (command === "cc_steer") {
+    const { messageId, mode, req } = args.input, id = args.sessionId;
+    await send(id, { kind: "inputMessage", messageId, mode, text: req.text });
+    if (failSteering) { failSteering = false; await send(id, { kind: "inputStatus", messageId, status: "failed", detail: "测试控制请求失败；草稿与附件保留" }); return "failed"; }
+    if (mode === "now") { clearTimeout(timers.get(id)); await send(id, finish); }
+    await send(id, { kind: "userMessage", text: req.text, images: req.images.map((image: any) => image.thumb) });
+    await send(id, { kind: "inputStatus", messageId, status: "written", detail: null });
+    steeringPending.set(id, [...steeringPending.get(id) ?? [], messageId]);
+    if (scene !== "clawd" && mode === "now") timers.set(id, setTimeout(async () => { await send(id, { kind: "inputStatus", messageId, status: "received", detail: null }); await send(id, { kind: "text", blockId: `steered-${messageId}`, streaming: false, text: `收到：${req.text}` }); await finishInputs(id); await send(id, finish); }, 1500));
+    return "written";
+  }
+  if (scene === "clawd" && command === "cc_stop_task") {
+    stopCalls.push({ command, ...args });
+    return new Promise<string>((resolve, reject) => pendingStops.set(args.taskId, { resolve, reject }));
+  }
   if (command === "cc_new_session") return ++nextId;
   if (command === "cc_snapshot") return { events: [], nextSeq: 0, dropped: 0, running: false, resumeId: null };
+  if (command === "cc_restore" && scene === "sessions") {
+    const row = stored.find(row => row.rowId === (args.rowId ?? (args.sessionId === 1 ? 1 : -1)));
+    if (!row) return null;
+    linkedRows.set(args.sessionId, row.rowId);
+    return { ...row, claudePath: null, permissionMode: "default", resumeId: row.sessionId, events: initial, dropped: 0 };
+  }
   if (command === "cc_restore") return args.sessionId === 1 || args.rowId ? { rowId: args.rowId || 1, connectionId: "", cwd: "D:/projects/web-console", model: "opus", permissionMode: "default", sessionId: "review-session", resumeId: "review-session", title: args.rowId ? "梳理 API 错误处理" : "排查登录请求超时", titleLocked: true, messageCount: 2, updatedAt: Date.now() / 1000, events: scene === "empty" ? [] : initial, dropped: 0 } : null;
   if (command === "cc_probe") { const unavailable = failedProbe; failedProbe = false; return { found: !unavailable, path: "C:/tools/claude.exe", version: "2.1", message: unavailable ? "SSH authentication failed: Permission denied (publickey,password)" : "可用", target: "本机" }; }
   if (command === "get_status") return { platform: "windows", running: true, allowedRoots: ["D:/projects"], autoApproveRules: [] };
@@ -58,14 +100,29 @@ mockIPC(async (command, payload = {}) => {
   if (command === "cc_history_list") return { rows: [], total: 0, scanned: 0 };
   if (command === "cc_start") {
     const id = args.sessionId, n = ++turn;
-    await send(id, { kind: "init", sessionId: "review-session", cwd: args.req.cwd, model: args.req.model || "opus" });
+    const cliId = scene === "sessions" && id !== 1 ? `review-session-${id}` : "review-session";
+    await send(id, { kind: "init", sessionId: cliId, cwd: args.req.cwd, model: args.req.model || "opus" });
     await send(id, { kind: "userMessage", text: args.req.text });
-    timers.set(id, setTimeout(async () => { await send(id, { kind: "text", blockId: `answer-${n + 1}`, streaming: false, text: `收到：${args.req.text}。\n\n这是正式组件接收测试事件后的回复，用于检查发送、队列和会话切换。` }); await send(id, finish); }, 4000));
+    if (scene === "sessions" && !linkedRows.has(id)) {
+      const rowId = ++nextRow; linkedRows.set(id, rowId);
+      stored.push({ ...stored[0], rowId, sessionId: cliId, title: args.req.text.slice(0, 120), titleLocked: false, archivedAt: null });
+      await send(id, { kind: "sessionStored", rowId });
+    }
+    timers.set(id, setTimeout(async () => { await send(id, { kind: "text", blockId: `answer-${n + 1}`, streaming: false, text: `收到：${args.req.text}。\n\n这是正式组件接收测试事件后的回复，用于检查发送、队列和会话切换。` }); await finishInputs(id); await send(id, finish); }, 4000));
     return true;
   }
   if (command === "cc_interrupt") { clearTimeout(timers.get(args.sessionId)); return true; }
   if (command === "cc_respond") { await send(args.sessionId, { kind: "permissionResolved", requestId: args.requestId, decision: args.decision }); return true; }
-  if (command === "cc_archive_session") { const row = stored.find(row => row.rowId === args.rowId); if (row) row.archivedAt = args.archived ? Date.now() / 1000 : null; return true; }
+  if (command === "cc_archive_session") { if (archiveGate) { await archiveGate; archiveGate = null; } const row = stored.find(row => row.rowId === args.rowId); if (row) row.archivedAt = args.archived ? Date.now() / 1000 : null; return true; }
+  if (command === "cc_delete_session") {
+    if (failDelete) { failDelete = false; throw new Error("删除失败：数据库暂时不可用"); }
+    ++deleteCalls;
+    const rowId = args.rowId ?? linkedRows.get(args.sessionId) ?? null;
+    const ids = [...linkedRows].filter(([id, row]) => rowId !== null && row === rowId || id === args.sessionId).map(([id]) => id);
+    for (const id of ids) { clearTimeout(timers.get(id)); linkedRows.delete(id); }
+    const index = stored.findIndex(row => row.rowId === rowId); if (index >= 0) stored.splice(index, 1);
+    return { rowId, sessionIds: ids };
+  }
   if (command === "cc_rename_session") return args.title;
   if (command === "cc_close_session") return true;
   if (command === "browse_directory") return { path: args.path, parent: null, entries: scene === "files" ? Array.from({ length: 24 }, (_, index) => ({ name: `file-${index + 1}.ts`, path: `${args.path}/file-${index + 1}.ts`, isDir: false })) : [{ name: "README.md", path: "D:/projects/README.md", isDir: false }] };

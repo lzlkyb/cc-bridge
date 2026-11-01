@@ -27,6 +27,7 @@ export function SessionRowMenu({
   archived,
   onRename,
   onArchive,
+  onDelete,
 }: {
   rowId: number | null;
   title: string;
@@ -34,12 +35,14 @@ export function SessionRowMenu({
   archived: boolean;
   onRename: (rowId: number, title: string) => Promise<unknown>;
   onArchive: (rowId: number, archived: boolean) => Promise<unknown>;
+  onDelete?: () => Promise<unknown>;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [renaming, setRenaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const startRename = () => {
     setDraft(title);
@@ -80,12 +83,20 @@ export function SessionRowMenu({
     }
   };
 
+  const remove = async () => {
+    if (!onDelete || busy) return;
+    setBusy(true); setError(null);
+    try { await onDelete(); setOpen(false); }
+    catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  };
+
   return (
     <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
       <button
         ref={btnRef}
         type="button"
-        title="更多操作（重命名 / 归档）"
+        title="更多操作（重命名 / 归档 / 删除）"
         aria-label={`更多操作：${title}`}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -96,6 +107,7 @@ export function SessionRowMenu({
             return;
           }
           setRenaming(false);
+          setDeleting(false);
           setError(null);
           setOpen(true);
         }}
@@ -106,9 +118,18 @@ export function SessionRowMenu({
       </button>
 
       {open && (
-        <ChatPopover anchorRef={btnRef} label="会话操作" width={260} onClose={() => { if (renaming) setRenaming(false); else setOpen(false); }}>
+        <ChatPopover anchorRef={btnRef} label={deleting ? "确认删除会话" : "会话操作"} width={280} onClose={() => { if (busy) return; if (deleting) setDeleting(false); else if (renaming) setRenaming(false); else setOpen(false); }}>
           <div data-cc-sidebar-menu>
-          {rowId === null ? (
+          {deleting ? <div className="p-3">
+            <strong className="block text-sm">删除这条会话？</strong>
+            <p className="mt-2 break-words text-xs text-muted-foreground">「{title}」将从 CC Bridge 中删除，无法撤销。正在运行的本会话会停止。</p>
+            <p className="mt-2 text-xs text-muted-foreground">不会撤销文件修改，也不会删除 Claude Code 的原始历史。</p>
+            {error && <p role="alert" className="mt-2 text-xs text-destructive-ink">{error}</p>}
+            <div className="mt-3 flex justify-end gap-2">
+              <button autoFocus type="button" disabled={busy} className="cc-chat-chip" onClick={() => { setDeleting(false); setError(null); }}>取消</button>
+              <button type="button" disabled={busy} className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive-ink disabled:opacity-50" onClick={() => void remove()}>{busy ? "正在删除…" : "确认删除"}</button>
+            </div>
+          </div> : rowId === null ? (
             <p className="px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">
               这条会话还没落过盘（说一句话之后才能改名 / 归档）。
             </p>
@@ -175,12 +196,13 @@ export function SessionRowMenu({
               </button>
               <p className="px-2 pb-1 pt-0.5 text-[11px] leading-[1.4] text-muted-foreground">
                 {archived
-                  ? "取消后回到历史列表，并重新参与自动恢复。"
+                  ? "取消后移回最近，并重新参与自动恢复。"
                   : "归档只收起来，不删内容；自动恢复会跳过它。"}
               </p>
               {error && <p className="px-2 pb-1 text-[11px] text-destructive-ink">{error}</p>}
             </div>
           )}
+          {!deleting && !renaming && onDelete && <div className="border-t border-border p-1"><button type="button" role="menuitem" disabled={busy} className="w-full rounded-lg px-2 py-1.5 text-left text-xs text-destructive-ink hover:bg-destructive/10 disabled:opacity-50" onClick={() => { setDeleting(true); setError(null); }}>删除会话…</button></div>}
           </div>
         </ChatPopover>
       )}

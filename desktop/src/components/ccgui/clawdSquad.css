@@ -1,0 +1,55 @@
+.cc-conversation-panel{container-name:cc-pane}
+.cc-conversation-layout{display:grid;grid-template-areas:"conversation" "squad" "composer";grid-template-rows:minmax(0,1fr) auto auto;flex:1;min-height:0;min-width:0;overflow:hidden}
+.cc-conversation-layout>.cc-clawd-stream{grid-area:conversation;min-width:0}
+.cc-conversation-layout>.cc-composer-dock{grid-area:composer}
+.cc-conversation-layout:has(.cc-input-receipts){grid-template-rows:minmax(120px,1fr) auto minmax(0,max-content)}
+.cc-conversation-layout>.cc-composer-dock:has(.cc-input-receipts):not(:has(.cc-completion)){overflow-y:auto;overscroll-behavior:contain}
+.cc-composer-dock:has(.cc-input-receipts) :is(.cc-composer-surface,.cc-composer-queue){flex-shrink:0}
+.cc-squad-host{grid-area:squad;min-width:0;min-height:0;max-height:min(164px,22vh);overflow:auto;overscroll-behavior:contain;border-top:1px solid hsl(var(--border));background:hsl(var(--muted)/.18)}
+.cc-squad-host:empty{display:none}
+.cc-clawd-roster{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;padding:8px 12px;color:hsl(var(--foreground))}
+.cc-clawd-roster-heading,.cc-clawd-task-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.cc-clawd-roster-heading strong{font-size:13px;font-weight:600}.cc-clawd-roster-heading>span,.cc-clawd-roster-summary{font-size:11px;color:hsl(var(--muted-foreground))}
+.cc-clawd-roster-heading>span{display:none}.cc-clawd-roster-summary{margin:0;justify-self:end;align-self:center}
+.cc-clawd-roster .cc-clawd-team{grid-column:1/-1;padding:0;max-height:none;overflow:visible;border:0}
+.cc-clawd-members{display:grid;grid-auto-flow:column;grid-auto-columns:210px;gap:12px;align-items:start}
+.cc-clawd-roster .cc-clawd-member{display:block;min-width:0;padding-right:10px;border-right:1px solid hsl(var(--border))}.cc-clawd-roster .cc-clawd-member:last-child{border-right:0}
+.cc-clawd-roster .cc-clawd-agent{display:flex;gap:7px;width:100%;padding:0 2px 3px;align-items:center;min-width:0}
+.cc-clawd-roster .cc-clawd-agent .cc-clawd-character{width:40px;height:40px}
+.cc-clawd-roster .cc-clawd-agent-copy strong{display:flex;align-items:center;gap:5px;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.cc-clawd-member-number{color:hsl(var(--muted-foreground));font-size:10px;font-variant-numeric:tabular-nums;font-weight:400}
+.cc-clawd-roster .cc-clawd-agent-copy small{font-size:11px}.cc-clawd-roster .cc-clawd-agent-status{font-size:11px}
+.cc-clawd-member-task{font-size:12px;line-height:1.6;margin-top:7px;display:none;overflow-wrap:anywhere}
+.cc-clawd-member-progress{display:flex;align-items:center;gap:5px;font-size:11px;color:hsl(var(--muted-foreground));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin:2px 0}
+.cc-clawd-member-progress>span{width:5px;height:5px;flex:none;border-radius:50%;background:hsl(var(--primary));opacity:.7}
+.cc-clawd-member[data-state=completed] .cc-clawd-member-progress>span{border-radius:1px;background:hsl(var(--success-ink))}
+.cc-clawd-member[data-state=failed] .cc-clawd-member-progress>span{background:hsl(var(--destructive))}
+.cc-clawd-member-actions{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.cc-clawd-member-actions .cc-clawd-toggle,.cc-clawd-member-actions .cc-clawd-stop{font-size:11px;padding:4px 6px;min-height:26px}
+.cc-clawd-roster .cc-clawd-stop-note{padding:3px 4px;font-size:11px;white-space:normal}
+.cc-clawd-roster .cc-clawd-task-detail{margin-top:10px;white-space:normal;font-size:12px}
+.cc-clawd-character[data-palette]{--clawd-pet:var(--clawd-base);--clawd-pet-light:color-mix(in srgb,var(--clawd-base),white 36%);--clawd-pet-dark:color-mix(in srgb,var(--clawd-base),black 18%)}
+.cc-clawd-character[data-palette="0"]{--clawd-base:#c87959}.cc-clawd-character[data-palette="1"]{--clawd-base:#719f93}.cc-clawd-character[data-palette="2"]{--clawd-base:#7c9dbd}.cc-clawd-character[data-palette="3"]{--clawd-base:#a08bb4}.cc-clawd-character[data-palette="4"]{--clawd-base:#c5a064}.cc-clawd-character[data-palette="5"]{--clawd-base:#bb8c9d}
+.dark .cc-clawd-character[data-palette]{--clawd-pet:color-mix(in srgb,var(--clawd-base),white 18%)}
+.cc-clawd-member .cc-clawd-character .body,.cc-clawd-member .cc-clawd-character .eyelids,.cc-clawd-member .cc-clawd-character .glass,.cc-clawd-member .cc-clawd-character .hand-l{animation-delay:var(--clawd-phase,0s)}
+.cc-clawd-member[data-motion=quiet]:is([data-state=running],[data-state=pending]) .cc-clawd-character .body{animation:clawd-breathe 5s ease-in-out var(--clawd-phase,0s) infinite}
+.cc-clawd-member[data-motion=quiet] .cc-clawd-character :is(.prop,.prop *,.hand-l,.hand-r,.leg-l,.leg-r){animation:none}
+.cc-clawd-character[data-mark="1"] .brows{transform:translateY(-1px) rotate(-2deg)}.cc-clawd-character[data-mark="2"] .brows{transform:translateY(1px)}
+.cc-conversation-layout:has(textarea:focus) .cc-squad-host .cc-clawd-character *, .cc-conversation-layout:has([data-clawd-reading=true]) .cc-squad-host .cc-clawd-character *, .cc-conversation-layout:has([data-clawd-paused=true]) .cc-squad-host .cc-clawd-character *{animation-play-state:paused!important}
+.cc-clawd-stream .cc-clawd-dock{padding:3px max(16px,calc((100% - 834px)/2)) 4px;border-top:0;background:transparent}
+.cc-clawd-dock .cc-clawd-status{display:grid;grid-template-columns:48px minmax(0,1fr) auto;gap:8px;min-height:48px}
+.cc-clawd-dock .cc-clawd-home{width:48px;height:48px;min-height:48px}
+.cc-clawd-dock .cc-clawd-label{font-size:13px}.cc-clawd-dock .cc-clawd-note{font-size:11px;max-height:1.6em;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+.cc-clawd-dock .cc-clawd-actions{margin:0;width:auto;gap:0;flex-wrap:nowrap}.cc-clawd-dock .cc-clawd-actions button{font-size:11px;padding:5px 6px}
+.cc-clawd-stream .cc-clawd-companion{width:48px;height:48px}.cc-clawd-stream .cc-clawd-companion>.cc-clawd-character{width:48px;height:48px}
+@container cc-pane (min-width:1100px){
+ .cc-conversation-layout:has(.cc-input-receipts):has(.cc-clawd-roster){grid-template-rows:minmax(120px,1fr) minmax(0,max-content)}
+ .cc-conversation-layout:has(.cc-clawd-roster){grid-template-columns:minmax(0,1fr) 280px;grid-template-areas:"conversation squad" "composer squad";grid-template-rows:minmax(0,1fr) auto}
+ .cc-conversation-layout .cc-squad-host{max-height:none;border-top:0;border-left:1px solid hsl(var(--border))}
+ .cc-clawd-roster{display:block;padding:18px 14px}.cc-clawd-roster-heading>span{display:inline}.cc-clawd-roster-heading strong{font-size:14px}.cc-clawd-roster-summary{margin:7px 0 12px}
+ .cc-clawd-members{grid-auto-flow:row;grid-auto-columns:auto;gap:0}
+ .cc-clawd-roster .cc-clawd-member{padding:12px 0;border-right:0;border-bottom:1px solid hsl(var(--border))}
+ .cc-clawd-roster .cc-clawd-agent .cc-clawd-character{width:52px;height:52px}
+ .cc-clawd-member-task{display:block}.cc-clawd-member-progress{margin:6px 0}.cc-clawd-roster .cc-clawd-agent-copy strong{font-size:13px}
+}
+@media(prefers-reduced-motion:reduce){.cc-clawd-member .cc-clawd-character *{animation:none!important}}

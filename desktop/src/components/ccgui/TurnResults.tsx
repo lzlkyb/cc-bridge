@@ -17,11 +17,12 @@ export function TurnResults({ messages, endIndex }: { messages: CcMessage[]; end
   const results = turnResults(messages, endIndex);
   if (!results.length) return null;
   return <details className="cc-turn-results">
-    <summary><Icon name={results.some(m => m.tool.status === "error" || m.tool.isError) ? "alertTriangle" : "check"} size={13} />本轮操作 · {results.length} 项<span>查看详情</span></summary>
+    <summary><Icon name={results.some(m => m.tool.status === "error" || m.tool.isError) ? "alertTriangle" : "check"} size={13} />修改与命令 · {results.length} 项<span>查看结果</span></summary>
     <p className="cc-chat-note">依据已完成的工具记录；命令完成不代表验证成功，其他途径产生的改动可能未收录。</p><div>{results.map(({ id, tool }) => <button key={id} type="button" title={typeof tool.input.file_path === "string" ? tool.input.file_path : typeof tool.input.path === "string" ? tool.input.path : undefined} onClick={(event) => {
       const panel = event.currentTarget.closest("[data-cc-panel]");
       const target = panel?.querySelector<HTMLElement>(`[data-cc-tool="${CSS.escape(id)}"]`);
       if (!target) return;
+      panel?.querySelector("[data-cc-stream]")?.dispatchEvent(new Event("cc-reading-jump"));
       let parent = target.closest("details");
       while (parent) { parent.open = true; parent = parent.parentElement?.closest("details") ?? null; }
       target.scrollIntoView({ block: "center", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });

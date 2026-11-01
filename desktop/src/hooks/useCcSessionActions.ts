@@ -2,6 +2,9 @@ import { useCallback, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/tauri";
 import { STORED_SESSIONS_KEY } from "./useCcPaneList";
+import type { CcStoredSummary } from "../lib/ccEventTypes";
+
+export type CcDeletedSession = { rowId: number | null; sessionIds: number[] };
 
 /**
  * 侧栏的改名 / 归档（3-1d）。
@@ -24,7 +27,7 @@ import { STORED_SESSIONS_KEY } from "./useCcPaneList";
  * 「这条会话已经不在库里了」是用户能据此行动的信息（刷新列表），必须显示在
  * 点下去的那个菜单里。吞掉只会让改名看起来成功了。
  */
-export function useCcSessionActions() {
+export function useCcSessionActions(onDeleted?: (result: CcDeletedSession) => void) {
   const qc = useQueryClient();
   const [titles, setTitles] = useState<Record<number, string>>({});
   /**
@@ -51,17 +54,21 @@ export function useCcSessionActions() {
     async (rowId: number, wantArchived: boolean) => {
       await invoke<void>("cc_archive_session", { rowId, archived: wantArchived });
       setArchived((m) => {
-        if (!wantArchived) {
-          const { [rowId]: _drop, ...rest } = m;
-          return rest;
-        }
-        return { ...m, [rowId]: true };
+        return { ...m, [rowId]: wantArchived };
       });
+      qc.setQueryData<CcStoredSummary[]>(STORED_SESSIONS_KEY, rows => rows?.map(row => row.rowId === rowId ? { ...row, archivedAt: wantArchived ? Math.floor(Date.now() / 1000) : null } : row));
       // 归档 / 取消归档会同时影响「历史」与「已归档」两批，一次失效就够。
       await qc.invalidateQueries({ queryKey: STORED_SESSIONS_KEY });
     },
     [qc],
   );
 
-  return { titles, archived, rename, archive };
+  const remove = useCallback(async (rowId: number | null, sessionId?: number) => {
+    const result = await invoke<CcDeletedSession>("cc_delete_session", { rowId, sessionId: sessionId ?? null });
+    onDeleted?.(result);
+    qc.setQueryData<CcStoredSummary[]>(STORED_SESSIONS_KEY, rows => rows?.filter(row => row.rowId !== result.rowId));
+    await qc.invalidateQueries({ queryKey: STORED_SESSIONS_KEY });
+  }, [qc, onDeleted]);
+
+  return { titles, archived, rename, archive, remove };
 }

@@ -3,8 +3,8 @@ import { invoke } from "../lib/tauri";
 import type { CcStoredSummary } from "../lib/ccEventTypes";
 import { STORED_SESSIONS_KEY } from "./useCcPaneList";
 
-/** 一次取多少条。与后端 `DEFAULT_STORED_LIMIT` 同一个数（那边是兜底，这里显式给）。 */
-export const STORED_LIMIT = 30;
+/** Fetch the retained set so older archived records remain discoverable; rows are paged in the UI. */
+export const STORED_LIMIT = 100;
 
 /**
  * 库里落盘过的会话（侧栏「历史」区）。

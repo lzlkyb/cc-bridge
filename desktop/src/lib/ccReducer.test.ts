@@ -813,3 +813,12 @@ it("历史回复保留当时模型，后续切换不改写旧标注", () => {
   ]);
   expect(v.messages.filter(m => m.kind === "assistant").map(m => m.model)).toEqual(["opus", "sonnet"]);
 });
+
+it("首次落盘通知提供操作行号，重放仍保留，不伪造消息", () => {
+  const events: CcEvent[] = [{ kind: "userMessage", text: "检查登录" }, { kind: "sessionStored", rowId: 17 }];
+  const view = run(events);
+  expect(view.rowId).toBe(17); expect(view.messages).toHaveLength(1);
+  expect(ccReducer(initialCcView, { type: "replay", events, dropped: 0, running: false }).rowId).toBe(17);
+  expect(ccReducer(view, { type: "replay", events: [events[0]], dropped: 50, running: false }).rowId).toBe(17);
+  expect(ccReducer(view, { type: "replay", events: [], dropped: 0, running: false, historical: true }).rowId).toBeUndefined();
+});

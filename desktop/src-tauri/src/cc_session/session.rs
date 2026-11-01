@@ -369,7 +369,7 @@ impl Run {
     }
 
     /// 写一行进 stdin。turn 结束后会关掉 stdin，那时写失败是**预期**的。
-    fn write_line(&self, line: &str) -> Result<(), String> {
+    pub(super) fn write_line(&self, line: &str) -> Result<(), String> {
         let mut guard = self
             .stdin
             .lock()
@@ -480,6 +480,18 @@ pub enum Transport {
 }
 
 impl Transport {
+    pub fn write_line(&self, line: &str) -> Result<(), String> {
+        match self {
+            Self::Direct(run) => run.write_line(line),
+        }
+    }
+    pub fn stop_task(&self, request_id: &str, task_id: &str) -> Result<(), String> {
+        match self {
+            Self::Direct(run) => {
+                run.write_line(&super::task_control::stop_line(request_id, task_id))
+            }
+        }
+    }
     pub fn is_alive(&self) -> bool {
         match self {
             Self::Direct(run) => run.is_alive(),

@@ -40,6 +40,7 @@ const PROTOCOL_ARGS: &[&str] = &[
     "stream-json",
     "--verbose",
     "--include-partial-messages",
+    "--replay-user-messages",
     "--permission-prompt-tool",
     "stdio",
 ];
@@ -125,7 +126,7 @@ pub fn remote_command(
     }
     // `exec` 是关键：它让远端 bash 被 claude 替换掉，于是 stdin/stdout 不再经过
     // 任何中间层，Ctrl+C / 进程组 kill 的语义与本地完全一致。
-    script.push_str("exec ");
+    script.push_str("export CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1\nexec ");
     script.push_str(&shell_quote(claude_path));
     for arg in spec.claude_args()? {
         script.push(' ');

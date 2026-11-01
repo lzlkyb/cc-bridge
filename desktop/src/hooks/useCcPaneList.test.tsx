@@ -196,3 +196,27 @@ describe("分叉（3-3）", () => {
     expect(api.entries.filter((e) => e.forkOf === origin)).toHaveLength(2);
   });
 });
+
+describe("删除与归档后重新打开", () => {
+  it("点击已打开的存档会聚焦原页面，不是无操作", async () => {
+    await act(async () => api.openStored(31)); const opened = api.active;
+    await act(async () => api.add()); expect(api.active).not.toBe(opened);
+    await act(async () => api.openStored(31)); expect(api.active).toBe(opened);
+    expect(api.entries).toHaveLength(3);
+  });
+  it("删除最后一条时创建空白页，不调用会重新保存记录的关闭命令", async () => {
+    const old = api.active;
+    await act(async () => api.report(old, { ...meta(9), rowId: 31 }));
+    await act(async () => api.forgetDeleted({ rowId: 31, sessionIds: [9] }));
+    expect(api.entries).toHaveLength(1); expect(api.active).not.toBe(old);
+    expect(api.entries[0].restore).toEqual({ kind: "none" }); expect(h.invoke).not.toHaveBeenCalled();
+  });
+  it("删除等待期间新开的页面不会丢失，未落盘会话按内部ID删除", async () => {
+    const old = api.active;
+    await act(async () => api.report(old, meta(9)));
+    const delayed = api.forgetDeleted;
+    await act(async () => api.add()); const fresh = api.active;
+    await act(async () => delayed({ rowId: null, sessionIds: [9] }));
+    expect(api.entries.map(e => e.key)).toEqual([fresh]); expect(api.active).toBe(fresh);
+  });
+});

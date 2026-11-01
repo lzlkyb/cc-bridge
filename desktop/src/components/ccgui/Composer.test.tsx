@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -50,7 +50,7 @@ afterEach(async () => {
   qc.clear();
 });
 
-async function render() {
+async function render(props: Partial<ComponentProps<typeof Composer>> = {}) {
   await act(async () => {
     root.render(
       <QueryClientProvider client={qc}>
@@ -60,6 +60,7 @@ async function render() {
           onClearQueue={() => {}}
           draftKey="test-pane"
           mentionSource={{ connectionId: "", cwd: "D:\\work" }}
+          {...props}
         />
       </QueryClientProvider>,
     );
@@ -98,6 +99,54 @@ async function clickSend() {
     container.querySelector<HTMLButtonElement>("[data-cc-send]")!.click();
   });
 }
+
+it("运行中默认补充；Ctrl Enter 立即调整且输入法组合不会误发", async () => {
+  const onSteer = vi.fn().mockResolvedValue(true), onSendNow = vi.fn().mockResolvedValue(true);
+  await render({ running: true, onSteer, onSendNow });
+  await type("补充范围"); await clickSend();
+  expect(onSteer).toHaveBeenCalledWith("补充范围", []);
+  expect(onSend).not.toHaveBeenCalled();
+  await type("立即调整");
+  await key("Enter", { ctrlKey: true, isComposing: true });
+  expect(onSendNow).not.toHaveBeenCalled();
+  await key("Enter", { ctrlKey: true });
+  expect(onSendNow).toHaveBeenCalledWith("立即调整", []);
+  expect(area().value).toBe("");
+});
+
+it("下一轮发送是独立选项，命令始终延后发送", async () => {
+  const onSteer = vi.fn().mockResolvedValue(true), onSendNow = vi.fn().mockResolvedValue(true);
+  await render({ running: true, onSteer, onSendNow });
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="选择发送方式"]')!.click());
+  await act(async () => [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("下一轮发送"))!.click());
+  await type("下轮单独审查"); await clickSend();
+  expect(onSend).toHaveBeenCalledWith("下轮单独审查", []);
+  expect(onSteer).not.toHaveBeenCalled();
+  await type("/compact"); await clickSend();
+  expect(onSend).toHaveBeenLastCalledWith("/compact", []);
+  expect(onSendNow).not.toHaveBeenCalled();
+});
+
+it("补充失败保留草稿，发送期间新草稿不会被完成回调清掉", async () => {
+  let finish!: (accepted: boolean) => void;
+  const onSteer = vi.fn().mockResolvedValueOnce(false).mockImplementation(() => new Promise<boolean>(resolve => { finish = resolve; }));
+  await render({ running: true, onSteer });
+  await type("保留原稿"); await clickSend();
+  expect(area().value).toBe("保留原稿");
+  await clickSend();
+  await type("新的草稿");
+  await act(async () => finish(true));
+  expect(area().value).toBe("新的草稿");
+  expect(onSteer).toHaveBeenCalledTimes(2);
+});
+
+it("恢复插话文字只填草稿，不触发重发", async () => {
+  await render({ inputs: { a: { messageId: "a", text: "需要找回的补充", status: "unconfirmed" } } });
+  await type("现有草稿");
+  await act(async () => [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "恢复文字")!.click());
+  expect(area().value).toBe("现有草稿\n需要找回的补充");
+  expect(onSend).not.toHaveBeenCalled();
+});
 
 it("打出 / 浮出白名单面板", async () => {
   await render();

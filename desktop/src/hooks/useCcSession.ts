@@ -9,6 +9,7 @@ import { useCcEnvironment } from "./useCcEnvironment";
 import { useCcEventStream } from "./useCcEventStream";
 import { useCcOpenHistory } from "./useCcOpenHistory";
 import { useCcQueueFlush, useCcSendQueue } from "./useCcSendQueue";
+import { useCcSteering } from "./useCcSteering";
 
 /** 起一轮要传给后端的东西。 */
 export type CcTarget = {
@@ -149,9 +150,10 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   }, [sessionIdRef, enqueue, resume, hasPausedItems, probeRef]);
 
   // 本轮一结束就把队首发出去（判据与失败处理见 `useCcQueueFlush`）。
+  const steering = useCcSteering({ sessionIdRef, targetRef, sessionId: view.sessionId, ready, running: view.running, busy: busy || stopState === "stopping", dispatch, start });
   useCcQueueFlush(
-    { paused: queuePaused, take, putBack },
-    { ready, running: view.running, busy, start },
+    { paused: queuePaused, take, putBack, pause },
+    { ready, running: view.running, busy: busy || steering.busy, failed: view.processExited, start },
   );
 
   /**
@@ -265,6 +267,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     adoptedRowId,
     runProbe,
     start,
+    steer: steering.steer, sendNow: steering.sendNow,
     respond,
     interrupt,
     stopAndSend: async (text: string, images: CcImage[]) => (await interrupt()) ? start(text, images, true) : false,

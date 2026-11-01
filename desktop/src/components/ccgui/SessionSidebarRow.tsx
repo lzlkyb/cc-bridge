@@ -60,6 +60,7 @@ export function SessionRow({
   onClose,
   onRename,
   onArchive,
+  onDelete,
 }: {
   row: SessionRowData;
   active: boolean;
@@ -70,8 +71,9 @@ export function SessionRow({
   onClose: (key: string) => void;
   onRename: (rowId: number, title: string) => Promise<unknown>;
   onArchive: (rowId: number, archived: boolean) => Promise<unknown>;
+  onDelete?: (rowId: number | null, sessionId?: number) => Promise<unknown>;
 }) {
-  const rowId = row.meta?.rowId ?? null;
+  const rowId = row.meta?.rowId ?? (row.restore.kind === "row" ? row.restore.rowId : null);
   const [confirming, setConfirming] = useState(false);
   // 生成中 / 等批准 / 等选择的会话：一次误点 × 就会中断一轮任务或作废一条待答请求，关前必须确认。
   // 空闲 / 已断开的直接关（内容都在历史里，没有什么可丢）。
@@ -146,6 +148,7 @@ export function SessionRow({
           archived={rowId !== null && archivedRows[rowId] === true}
           onRename={onRename}
           onArchive={onArchive}
+          onDelete={onDelete && (rowId !== null || typeof row.meta?.sessionId === "number") ? () => onDelete(rowId, row.meta?.sessionId ?? undefined) : undefined}
         />
         {canClose && (
           <button

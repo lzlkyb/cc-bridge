@@ -17,7 +17,10 @@ export function ComposerDraft({ areaRef, value, placeholder, onChange, onCaret, 
     if (!el) return;
     // 从内容测量而非 rows 高度起步；缩窗/侧栏展开也会改变折行。
     el.style.height = "0px";
-    el.style.height = `${Math.max(76, Math.min(el.scrollHeight, 168))}px`;
+    const style = getComputedStyle(el);
+    const min = Number.parseFloat(style.getPropertyValue("--cc-draft-min")) || 76;
+    const max = Number.parseFloat(style.getPropertyValue("--cc-draft-max")) || 168;
+    el.style.height = `${Math.max(min, Math.min(el.scrollHeight, max))}px`;
   }, [areaRef]);
   useLayoutEffect(resize, [value, resize]);
   useLayoutEffect(() => {
@@ -44,5 +47,5 @@ export function ComposerDraft({ areaRef, value, placeholder, onChange, onCaret, 
       // 组合期间方向键与 Enter 归输入法，不能让补全或发送截走。
       if (!isImeComposing(event.nativeEvent)) onKeyDown(event);
     }}
-    rows={1} placeholder={placeholder ?? "给 CC 发消息…"} className="cc-composer-draft" />;
+    rows={1} placeholder={placeholder ?? "告诉 Clawd，@文件 /命令"} className="cc-composer-draft" />;
 }

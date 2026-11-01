@@ -17,21 +17,12 @@ import { ComposerPolishPreview } from "./ComposerPolishPreview";
 import "./composer.css";
 import { useCcDraftInsert } from "../../hooks/useCcDraftInsert"; import { DraftContextList } from "./DraftContextList"; import { MentionPanel } from "./MentionPanel";
 import { SlashPanel } from "./SlashPanel";
+import { InputReceipts } from "./InputReceipts";
+import type { CcInputMode, CcInputs } from "../../lib/ccInput";
 
 /**
  * 输入区（接管 composer 位置，不弹模态）。
- *
- * 采用 dock 而非对话框的理由：审批/追问时用户往往要边看上面的 diff 边决定，
- * 模态会把这些上下文盖住。desktop-cc-gui 的 `QuestionCard` 也是这个做法。
- *
- * ## 运行中不再禁用发送
- *
- * 旧行为是 `disabled={running}`：用户被迫干等一轮跑完才能打字，而「趁着它跑的时候
- * 把下一句想好」是最自然的使用方式。现在运行中发送 = **排队**（`onSend` 收到后由
- * `useCcSession` 决定入队还是直发），队列在本组件里如实显示条数，可一键清空。
- *
- * 🔴 排队不是并发：后端 `cc_start` 在 `turn_active` 时直接报错，队列只在
- * 「本轮结束」的那一刻取下一条发出，任何时刻仍然只有一条消息在飞。
+ * 运行中默认补充当前任务；立即调整走软中断，下一轮发送保留独立队列。
  *
  * ## slash 命令（白名单闸门）
  *
@@ -43,6 +34,7 @@ function ComposerImpl({
   onSend,
   running, stopping,
   onInterrupt, onStopAndSend,
+  onSteer, onSendNow, inputs,
   placeholder,
   sendHint = "Ctrl+Enter",
   queueCount,
@@ -74,6 +66,9 @@ function ComposerImpl({
   running?: boolean;
   stopping?: boolean;
   onInterrupt?: () => void; onStopAndSend?: (text: string, images: CcImage[]) => Promise<boolean>;
+  onSteer?: (text: string, images: CcImage[]) => Promise<boolean>;
+  onSendNow?: (text: string, images: CcImage[]) => Promise<boolean>;
+  inputs?: CcInputs;
   placeholder?: string;
   /** 发送快捷键的平台标签（`Ctrl+Enter` / `⌘Enter`），宿主从 status 里取。 */
   sendHint?: string;
@@ -111,13 +106,14 @@ function ComposerImpl({
   const [value, setValue] = useComposerDraft(draftKey);
   /** 发送键偏好（Enter / Ctrl+Enter），全局记忆。 */
   const sendKey = useSendKey();
+  const command = /^[!/]/.test(value.trimStart());
   const areaRef = useRef<HTMLTextAreaElement>(null);
   /** 待发图片区的把手（用 ref 而不是把附件状态提到这里，理由见 ComposerAttachments）。 */
   const attachRef = useRef<ComposerAttachHandle>(null);
   /** 有图时发送按钮要能点亮 —— 这是唯一需要订阅的附件状态。 */
   const [hasImages, setHasImages] = useState(false);
   const [imagesBusy, setImagesBusy] = useState(false);
-  const [sending, setSending] = useState(false), [stopBeforeSend, setStopBeforeSend] = useState(false);
+  const [sending, setSending] = useState(false), [delivery, setDelivery] = useState<CcInputMode>(onSteer ? "steer" : "queue");
   const fileRef = useRef<HTMLInputElement>(null);
   // 润色草稿的备份与忙碌态（2026-10-26 外移到 hooks/useComposerPolish.ts）。
   const polish = useComposerPolish(onPolish);
@@ -155,7 +151,7 @@ function ComposerImpl({
   // 用 ref 而不是 state：state 要等下一次渲染才生效，挡不住同一帧内的连发。
   const sendingRef = useRef(false);
 
-  const send = async () => {
+  const send = async (forcedMode?: CcInputMode) => {
     if (sendingRef.current) return;
     const text = value.trim();
     const images = attachRef.current?.ready() ?? [];
@@ -179,11 +175,13 @@ function ComposerImpl({
     sendingRef.current = true;
     setSending(true);
     try {
-      const accepted = await (running && stopBeforeSend && onStopAndSend ? onStopAndSend(text, images) : onSend(text, images));
+      const mode = text.startsWith("/") || text.startsWith("!") ? "queue" : forcedMode ?? delivery;
+      const submit = !running || mode === "queue" ? onSend : mode === "steer" ? onSteer ?? onSend : onSendNow ?? onStopAndSend ?? onSend;
+      const accepted = await submit(text, images);
       if (accepted === false) return;
       // 发送在途时用户若又改了输入框，那是新草稿，不能跟着已发出的那句一起清掉。
       setValue((cur) => (cur.trim() === text ? "" : cur));
-      setStopBeforeSend(false); slash.onSent();
+      setDelivery(onSteer ? "steer" : "queue"); slash.onSent();
       // 已发出的草稿不再可「撤销润色」：那会把旧稿填回空输入框，像是能撤回发送。
       polish.reset();
       attachRef.current?.clear(images);
@@ -214,6 +212,7 @@ function ComposerImpl({
 
   return (
     <div ref={boxRef} className="cc-composer-dock">
+      <InputReceipts inputs={inputs} onRecover={text => { setValue(cur => cur.trim() ? `${cur}\n${text}` : text); areaRef.current?.focus(); }} />
       <ComposerNotices
         queueCount={queueCount}
         queuePaused={queuePaused}
@@ -250,11 +249,12 @@ function ComposerImpl({
           onKeyDown={event => {
             if (mention.open && mention.handleKey(event)) return;
             if (slash.handleKey(event, () => void send())) return;
+            if (running && onSendNow && event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) { event.preventDefault(); void send("now"); return; }
             if (isSendKey(sendKey, event)) { event.preventDefault(); void send(); }
           }}
         />
         <ComposerTools
-          controls={controls} stopBeforeSend={stopBeforeSend} onSetStopBeforeSend={onStopAndSend ? setStopBeforeSend : undefined}
+          controls={controls} delivery={command ? "queue" : delivery} onDeliveryChange={onSteer || onSendNow || onStopAndSend ? setDelivery : undefined} steeringEnabled={!!onSteer}
           sending={sending}
           imagesBusy={imagesBusy}
           queuePaused={queuePaused}
@@ -291,7 +291,7 @@ function ComposerImpl({
         />
       )}
       </div>
-      <ComposerFooter sendHint={sendHint}><DraftContextList value={value} onChange={setValue} hasImages={hasImages}/>{footer}</ComposerFooter>
+      <ComposerFooter sendHint={sendHint} steering={running && !!onSendNow && !command}><DraftContextList value={value} onChange={setValue} hasImages={hasImages}/>{footer}</ComposerFooter>
       {polish.preview?.source === value && <ComposerPolishPreview anchorRef={areaRef} text={polish.preview.text} onCancel={polish.reset} onApply={() => { setValue(polish.preview!.text); polish.reset(); areaRef.current?.focus(); }} />}
     </div>
   );

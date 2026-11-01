@@ -6,6 +6,7 @@ import type { CcTurnStat } from "../../lib/ccTurnStat";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { isClearCommand } from "../../lib/ccSlash";
 import { Icon } from "../ui/icon";
+import { ClawdCharacter } from "./ClawdCharacter";
 import { ApprovalCard } from "./ApprovalCard";
 import { MessageText } from "./MessageText";
 import { ClearMark, StopMark } from "./StreamMarks";
@@ -43,6 +44,7 @@ export function MessageList({
   turns,
   stops,
   stopState = null,
+  companionTarget,
   onRespond,
   onForkMessage,
   onResend,
@@ -67,6 +69,7 @@ export function MessageList({
    */
   stops: string[];
   stopState?: "stopping" | "unconfirmed" | null;
+  companionTarget?: string;
   onRespond: (
     requestId: string,
     decision: "allow" | "deny",
@@ -159,7 +162,7 @@ export function MessageList({
           if (m.kind === "assistant") {
             return (
               <article key={m.id} className="cc-assistant-message">
-                <div className="cc-assistant-heading"><Icon name="sparkles" size={19} /><span>Claude</span>{m.model && <small>{m.model}</small>}</div>
+                <div className="cc-assistant-heading"><ClawdCharacter staticPose /><span className="sr-only">Claude Code</span>{m.model && <small>{m.model}</small>}</div>
                 <div className="cc-assistant-content"><MessageText text={m.text} marks={marks} /></div>
                 <button type="button" className="cc-message-copy" onClick={() => copy(`msg:${m.id}`, m.text)} aria-label="复制全文" aria-live="polite"><Icon name={isCopied(`msg:${m.id}`) ? "check" : "copy"} size={14} />{isCopied(`msg:${m.id}`) ? "已复制" : "复制回复"}</button>
               </article>
@@ -223,10 +226,11 @@ export function MessageList({
         // `/clear` 的清空线：从消息内容推导，不额外记状态 —— 历史重放时也自动在。
         const cleared = m.kind === "user" && isClearCommand(m.text);
         const stopped = stopSet.has(m.id);
-        if (!footers?.length && !cleared && !stopped) return <Fragment key={m.id}>{node}</Fragment>;
+        const message = <div data-cc-message={m.id} className={companionTarget === m.id ? "cc-clawd-target" : undefined}>{node}</div>;
+        if (!footers?.length && !cleared && !stopped) return <Fragment key={m.id}>{message}</Fragment>;
         return (
           <Fragment key={m.id}>
-            {node}
+            {message}
             {cleared && <ClearMark />}
             {footers?.map((s, i) => (
               <Fragment key={`${m.id}#turn${i}`}><TurnFooter stat={s} />{footers.length === 1 && <TurnResults messages={messages} endIndex={index} />}</Fragment>

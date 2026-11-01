@@ -32,6 +32,7 @@ type Props = {
     rename: (rowId: number, title: string) => Promise<unknown>;
     archive: (rowId: number, archived: boolean) => Promise<unknown>;
     archived: Record<number, boolean>;
+    remove?: (rowId: number | null, sessionId?: number) => Promise<unknown>;
   };
 };
 
@@ -90,7 +91,8 @@ export function SessionSidebar({
   const shown = useMemo(() => {
     const k = query.trim().toLowerCase();
     return rows.filter((r) => {
-      const isArchived = r.meta?.rowId != null && actions.archived[r.meta.rowId] === true;
+      const rowId = r.meta?.rowId ?? (r.restore.kind === "row" ? r.restore.rowId : null);
+      const isArchived = rowId != null && actions.archived[rowId] === true;
       return isArchived === archived && (!k || !showSearch || r.title.toLowerCase().includes(k) || r.detail.toLowerCase().includes(k));
     });
   }, [rows, query, showSearch, archived, actions.archived]);
@@ -163,7 +165,7 @@ export function SessionSidebar({
             </button>
 <button type="button" className="cc-chat-icon" aria-label="新对话" title="新对话" onClick={onNew}><Icon name="plus" size={17} /></button>
             <div className="h-px w-6 shrink-0 bg-border" />
-            {rows.map((r) => (
+            {shown.map((r) => (
               <RailItem key={r.key} row={r} active={r.key === active} onPick={onPick} />
             ))}
           </div>
@@ -222,6 +224,7 @@ export function SessionSidebar({
                       onClose={onClose}
                       onRename={actions.rename}
                       onArchive={actions.archive}
+                      onDelete={actions.remove}
                     />
                   ))}
                 </div>
@@ -235,6 +238,7 @@ export function SessionSidebar({
                 onOpen={onOpenStored}
                 onRename={actions.rename}
                 onArchive={actions.archive}
+                onDelete={actions.remove}
               />
             </div>
 

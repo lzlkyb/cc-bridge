@@ -92,6 +92,10 @@ describe("filterStored", () => {
 });
 
 describe("archivedOnly", () => {
+  it("已打开的归档会话只在打开区显示一次", () => {
+    const rows = [row({ rowId: 1, archivedAt: 100 }), row({ rowId: 2, archivedAt: 101 })];
+    expect(filterStored(rows, { rowIds: new Set([1]) }, "", "archived").map(r => r.rowId)).toEqual([2]);
+  });
   it("只摆归档的，且不受「已打开」影响（归档视图是独立的第二次机会）", () => {
     const rows = [
       row({ rowId: 1 }),

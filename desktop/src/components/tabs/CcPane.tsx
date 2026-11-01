@@ -17,7 +17,7 @@ import { shortcutLabel } from "../../lib/platform";
 import { ConversationEnvironment } from "../ccgui/ApprovalEnvironment"; import { CcPaneHead } from "../ccgui/CcPaneHead";
 import "../ccgui/chatWorkspace.css";
 import { CcPaneComposer } from "../ccgui/CcPaneComposer";
-import { ConversationStream } from "../ccgui/ConversationStream";
+import { ConversationStream } from "../ccgui/ConversationStream"; import { CcConversationLayout } from "../ccgui/CcConversationLayout";
 
 /**
  * 一条对话会话的完整界面：会话条/提示条 + 消息流 + 输入区。
@@ -198,10 +198,10 @@ export function CcPane({
    * 有它历史区在载入完成那一刻就能把这条摘掉 —— 只靠 `view.sessionId` 会慢
    * 几百毫秒（`Init` 才带），那段时间用户能点出重复的一条。
    */
-  const rowId =
+  const rowId = view.rowId ?? (
     restore.kind === "row"
       ? restore.rowId
-      : (session.restored?.rowId ?? session.adoptedRowId ?? null);
+      : (session.restored?.rowId ?? session.adoptedRowId ?? null));
   useEffect(() => {
     onMeta(paneKey, { ...metaBase, sessionId: session.sessionIdRef.current, rowId });
   }, [paneKey, metaBase, session.ready, session.sessionIdRef, onMeta, rowId]);
@@ -268,10 +268,10 @@ export function CcPane({
         onDismissStderr={session.clearStderr}
       />
 
-      <ConversationStream
+      <CcConversationLayout><ConversationStream
         findRequest={findRequest} scrollRef={scrollRef}
         view={view}
-        sending={session.busy} activityStartedAt={session.activityStartedAt} stopState={session.stopState}
+        sending={session.busy} activityStartedAt={session.activityStartedAt} stopState={session.stopState} onStopTask={(taskId, stopToken) => invoke<string>("cc_stop_task", { sessionId: session.sessionIdRef.current, taskId, stopToken })}
         probe={session.probe}
         probing={probing}
         retryProbe={retryProbe}
@@ -295,6 +295,6 @@ export function CcPane({
         prefill={prefill}
         draftKey={paneKey}
       />
-    </div></ConversationEnvironment.Provider>
+    </CcConversationLayout></div></ConversationEnvironment.Provider>
   );
 }

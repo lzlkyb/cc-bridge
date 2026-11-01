@@ -102,6 +102,9 @@ pub fn snapshot_running(process_alive: bool, turn_active: bool) -> bool {
 /// （管理器要持有 `Run`，`Run` 又持有读线程 —— 直接互引会死锁）。
 #[derive(Default)]
 pub struct Shared {
+    cli_active: AtomicBool,
+    pub(super) input_control: super::input_control::InputControl,
+    task_control: super::task_control::TaskControl,
     /// **我们自己的**内部会话 id（`CcSessions` 铸发的单调 u64）。
     ///
     /// 与 `resume_id`（CC 的 session id，只在 `system/init` 出现）是两回事：
@@ -137,6 +140,8 @@ pub struct Shared {
     row_id: StdMutex<Option<i64>>,
     /// 落盘代次。见 [`persist_later`]：写入线程靠它丢弃过期的落盘任务。
     persist_gen: AtomicU64,
+    /// Checked under the database lock so queued saves cannot resurrect a deleted record.
+    deleted: AtomicBool,
     /// 用户**主动**开了新对话吗。一旦为 true，`cc_restore` 就不再返回旧会话。
     ///
     /// 为什么需要它：`ring.clear()` 会把事件序号归零，前端据此判断「这个进程还
@@ -181,6 +186,15 @@ pub struct PendingAsk {
 }
 
 impl Shared {
+    pub(super) fn is_deleted(&self) -> bool {
+        self.deleted.load(Ordering::SeqCst)
+    }
+    pub fn mark_deleted(&self) {
+        self.deleted.store(true, Ordering::SeqCst);
+        self.persist_gen.fetch_add(1, Ordering::SeqCst);
+        self.mark_new_session();
+    }
+
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
@@ -234,7 +248,14 @@ impl Shared {
     }
 
     pub fn set_turn_active(&self, on: bool) {
+        self.cli_active.store(on, Ordering::SeqCst);
         self.turn_active.store(on, Ordering::SeqCst);
+    }
+    pub(super) fn refresh_input_activity(&self) {
+        self.turn_active.store(
+            self.cli_active.load(Ordering::SeqCst) || self.input_control.has_pending(),
+            Ordering::SeqCst,
+        );
     }
 
     fn ask(&self, request_id: &str, accepts_answers: bool, input: &serde_json::Value) {
@@ -348,6 +369,9 @@ impl Shared {
 /// 同步版本。异步路径见 [`persist_later`]；**应用退出时用这个** ——
 /// 那一刻必须保证写下去，异步任务可能还没轮到就随进程消失了。
 pub fn persist_shared(conn: &Connection, shared: &Shared) -> Result<Option<i64>, String> {
+    if shared.deleted.load(Ordering::SeqCst) {
+        return Ok(None);
+    }
     let events = shared.ring.snapshot().events;
     if events.is_empty() {
         // 从没聊过（比如刚开新对话就退出）—— 不要往库里插一条空会话。
@@ -388,6 +412,7 @@ pub fn persist_later(app: &AppHandle, shared: &Arc<Shared>) {
     let gen = shared.persist_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let st = Arc::clone(&*state);
     let sh = Arc::clone(shared);
+    let app = app.clone();
     std::thread::spawn(move || {
         // `blocking_lock` 只能在非 runtime 线程上用 —— 这里正是自建的 std 线程，
         // 所以安全。改成 `.lock().await` 就需要 async 上下文，而调用方之一
@@ -396,8 +421,12 @@ pub fn persist_later(app: &AppHandle, shared: &Arc<Shared>) {
         if sh.persist_gen.load(Ordering::SeqCst) != gen {
             return;
         }
+        let previous_row = sh.row_id();
         match persist_shared(&conn, &sh) {
-            Ok(_) => {
+            Ok(row) => {
+                if let Some(row_id) = row.filter(|id| Some(*id) != previous_row) {
+                    publish(&app, &sh, CcEvent::SessionStored { row_id });
+                }
                 // 顺手清理：会话数只增不减会把库撑大，保留最近 100 条足够。
                 if let Err(e) = store::prune(&conn, store::KEEP_SESSIONS) {
                     log::warn!("清理旧会话失败：{e}");
@@ -415,6 +444,16 @@ pub fn persist_later(app: &AppHandle, shared: &Arc<Shared>) {
 /// 顺带落盘：用户发完消息立刻关掉 app 是最常见的「丢内容」场景，
 /// 光等 `TurnEnd` 的话这一句就白打了。
 pub fn record_local(app: &AppHandle, shared: &Arc<Shared>, event: CcEvent) {
+    shared.input_control.observe(&event);
+    if matches!(event, CcEvent::InputStatus { .. }) {
+        shared.refresh_input_activity();
+    }
+    publish(app, shared, event);
+    persist_later(app, shared);
+}
+
+/// Publish metadata without scheduling another save of that same metadata.
+fn publish(app: &AppHandle, shared: &Arc<Shared>, event: CcEvent) {
     // push + emit 绑成原子（与读线程的 TauriSink::emit 互斥），见 `Shared::emit_order`。
     let _order = shared.emit_order.lock().ok();
     let seq = shared.ring.push(event.clone()).unwrap_or(u64::MAX);
@@ -427,7 +466,6 @@ pub fn record_local(app: &AppHandle, shared: &Arc<Shared>, event: CcEvent) {
         },
     );
     drop(_order);
-    persist_later(app, shared);
 }
 
 /// 推到 Tauri 事件，同时落进环形缓冲。
@@ -468,12 +506,18 @@ fn bookkeep(shared: &Shared, event: &CcEvent) {
             request_id, input, ..
         } => shared.ask(request_id, true, input),
         CcEvent::PermissionCancel { request_id } => shared.forget(request_id),
+        // Startup idle and result may be reordered relative to a stdin write. Result/Exit settle turns.
+        CcEvent::SessionState { running: true } => {
+            shared.cli_active.store(true, Ordering::SeqCst);
+            shared.refresh_input_activity();
+        }
         // 一轮结束（正常或崩溃）后，任何还挂着的待批单都**永远不会到达**了
         // —— CLI 那只 60s 计时器已经跟着这一轮结束。留着只会让卡片一直转圈。
         CcEvent::TurnEnd { .. } | CcEvent::Exit { .. } => {
             shared.clear_pending();
             // 落定「这一轮跑完了」。**不能靠进程退出**：进程会活着等下一条消息。
-            shared.set_turn_active(false);
+            shared.cli_active.store(false, Ordering::SeqCst);
+            shared.refresh_input_activity();
             // 用量账：只有正常结束的 `TurnEnd` 带 `modelUsage`（`Exit` 是崩溃路径，
             // 那一轮没有 result 行，没有可信用量）。`turns` 取 CLI 的累计值，
             // 它缺失时保留上一轮的数——不清零，否则余量条会在一轮之间闪没。
@@ -493,7 +537,28 @@ fn bookkeep(shared: &Shared, event: &CcEvent) {
 }
 
 impl EventSink for TauriSink {
-    fn emit(&self, event: CcEvent) {
+    fn emit(&self, mut event: CcEvent) {
+        // Ordinary user replay UUIDs must not create phantom steering receipts.
+        if let CcEvent::InputStatus { message_id, .. } = &event {
+            if self.shared.input_control.status(message_id).is_none() {
+                return;
+            }
+        }
+        for receipt in self.shared.input_control.observe(&event) {
+            self.emit(receipt);
+        }
+        if let CcEvent::InputStatus { status, .. } = &event {
+            if matches!(status.as_str(), "received" | "processing" | "complete") {
+                self.shared.cli_active.store(true, Ordering::SeqCst);
+            }
+        }
+        if matches!(event, CcEvent::InputStatus { .. }) {
+            self.shared.refresh_input_activity();
+        }
+        self.shared.task_control.observe(&mut event);
+        if matches!(event, CcEvent::ControlResponse { .. }) {
+            return;
+        }
         bookkeep(&self.shared, &event);
         // 一轮落定（正常结束 / 进程退出）就把内容写下去。
         // `Exit` 也要：崩在 `result` 之前的那半轮同样是用户打出来的东西。
@@ -784,12 +849,13 @@ pub struct Launch {
 
 /// 对话会话管理器。
 pub struct CcSession {
+    pub(super) steering_epoch: AtomicU64,
     shared: Arc<Shared>,
     /// 当前的 IO 挂载点。`None` = 没有在跑的进程。
     ///
     /// 批 3-2 起是 [`Transport`] 而不是 [`Run`]：托管（S4）要换的是 IO 挂载点，
     /// 而 `Run` 的「一个子进程 + 一条 stdout」语义不动。
-    live: StdMutex<Option<Transport>>,
+    pub(super) live: StdMutex<Option<Transport>>,
 }
 
 impl Default for CcSession {
@@ -808,6 +874,7 @@ impl CcSession {
     pub fn new() -> Self {
         Self {
             shared: Shared::new(),
+            steering_epoch: AtomicU64::new(0),
             live: StdMutex::new(None),
         }
     }
@@ -849,6 +916,9 @@ impl CcSession {
     /// 起一轮。已在跑则拒绝 —— 两个进程写同一份 `~/.claude/projects` 会互相踩。
     pub fn start(&self, launch: Launch, sink: Arc<dyn EventSink>) -> Result<(), String> {
         let mut guard = self.live.lock().map_err(|_| "会话状态已锁死".to_string())?;
+        if self.shared.deleted.load(Ordering::SeqCst) {
+            return Err("这条会话已删除，请新建会话".into());
+        }
         if let Some(t) = guard.as_ref() {
             if t.is_alive() {
                 return Err("上一轮还在进行，请等它结束或先中断".into());
@@ -858,6 +928,10 @@ impl CcSession {
         if let Some(mut dead) = guard.take() {
             dead.kill();
         }
+        self.shared
+            .task_control
+            .observe(&mut CcEvent::Exit { code: None });
+        self.steering_epoch.fetch_add(1, Ordering::SeqCst);
         let run = Run::start(
             &launch.program,
             &launch.args,
@@ -881,6 +955,9 @@ impl CcSession {
     /// 且发生在写 stdin 之前 —— 与 `send` 一样，写成功才算这一轮开始。
     pub fn send_user_images(&self, text: &str, images: &[UserImage]) -> Result<(), String> {
         let guard = self.live.lock().map_err(|_| "会话状态已锁死".to_string())?;
+        if self.shared.deleted.load(Ordering::SeqCst) {
+            return Err("这条会话已删除，请新建会话".into());
+        }
         let t = guard.as_ref().ok_or("当前没有进行中的对话")?;
         t.send_user_images(text, images)?;
         self.shared.set_turn_active(true);
@@ -891,6 +968,30 @@ impl CcSession {
         let guard = self.live.lock().map_err(|_| "会话状态已锁死".to_string())?;
         let t = guard.as_ref().ok_or("这一轮已经结束，无法再批准")?;
         t.respond(request_id, verdict)
+    }
+
+    pub async fn stop_task(&self, task_id: &str, token: &str) -> Result<String, String> {
+        let (request_id, receiver) = {
+            let guard = self.live.lock().map_err(|_| "会话状态不可用")?;
+            if self.shared.deleted.load(Ordering::SeqCst) {
+                return Err("会话已删除".into());
+            }
+            let transport = guard
+                .as_ref()
+                .filter(|t| t.is_alive())
+                .ok_or("会话连接已结束，无法停止成员")?;
+            let (id, receiver) = self.shared.task_control.prepare(task_id, token)?;
+            if let Err(error) = transport.stop_task(&id, task_id) {
+                self.shared.task_control.cancel(&id);
+                return Err(error);
+            }
+            (id, receiver)
+        };
+        // Never hold the transport lock while waiting: stdout must deliver ACKs and terminal events.
+        self.shared
+            .task_control
+            .wait(&request_id, receiver, std::time::Duration::from_secs(60))
+            .await
     }
 
     /// 中断：杀进程树，**保留已收到的内容**（ring 不清）。
@@ -930,6 +1031,7 @@ impl CcSession {
     ///
     /// 不清库里的旧行 —— 那是历史。下一次落盘会插入一条新会话。
     pub fn reset(&self) {
+        self.steering_epoch.fetch_add(1, Ordering::SeqCst);
         let _ = self.interrupt();
         self.shared.ring.clear();
         self.shared.clear_resume();
@@ -989,6 +1091,8 @@ pub struct CcSessions {
     next_id: AtomicU64,
     map: DashMap<u64, Arc<CcSession>>,
 }
+
+type RemovedSessions = Vec<(u64, Arc<CcSession>)>;
 
 impl Default for CcSessions {
     fn default() -> Self {
@@ -1051,6 +1155,43 @@ impl CcSessions {
         self.map.remove(&id).map(|(_, v)| v)
     }
 
+    /// Caller holds the DB lock. Detach before stopping processes; late writers retain the tombstone.
+    pub fn delete_stored(
+        &self,
+        conn: &Connection,
+        row_id: Option<i64>,
+        session_id: Option<u64>,
+    ) -> Result<(Option<i64>, RemovedSessions), String> {
+        let selected = match session_id {
+            Some(id) => Some(self.get(id).ok_or("会话已关闭，请刷新列表")?),
+            None => None,
+        };
+        let actual = selected.as_ref().and_then(|cc| cc.shared.row_id());
+        if row_id.is_some() && actual.is_some() && row_id != actual {
+            return Err("会话身份已变化，请刷新列表".into());
+        }
+        let row = row_id.or(actual);
+        if row.is_none() && selected.is_none() {
+            return Err("没有指定要删除的会话".into());
+        }
+        let matching: Vec<_> = self
+            .map
+            .iter()
+            .filter(|entry| {
+                Some(*entry.key()) == session_id || row.is_some() && entry.shared.row_id() == row
+            })
+            .map(|entry| (*entry.key(), entry.value().clone()))
+            .collect();
+        if let Some(id) = row {
+            store::delete(conn, id)?;
+        }
+        for (id, cc) in &matching {
+            cc.shared.mark_deleted();
+            self.remove(*id);
+        }
+        Ok((row, matching))
+    }
+
     /// 同步落盘全部会话。应用退出时调 —— 那时异步任务可能来不及跑。
     pub fn persist_all(&self, conn: &Connection) {
         for r in self.map.iter() {
@@ -1080,10 +1221,12 @@ pub fn probe_local(path_hint: &str) -> Result<String, String> {
 /// 乱设反而可能触发别的分支。唯一补的是 `CLAUDE_CODE_GIT_BASH_PATH`（见
 /// [`git_bash_env`]）。
 pub fn local_launch(claude_path: &str, args: Vec<String>, cwd: Option<&Path>) -> Launch {
+    let mut env = git_bash_env();
+    env.push(("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS".into(), "1".into()));
     Launch {
         program: PathBuf::from(claude_path),
         args,
-        env: git_bash_env(),
+        env,
         cwd: cwd.map(Path::to_path_buf),
     }
 }
@@ -1468,7 +1611,14 @@ mod tests {
     #[test]
     fn local_launch_matches_this_machine_state() {
         // 真机冒烟：防止「函数写好了但没接进 local_launch」。
-        let launch = local_launch("claude", Vec::new(), None);
+        let mut launch = local_launch("claude", Vec::new(), None);
+        assert!(launch
+            .env
+            .iter()
+            .any(|(key, value)| key == "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS" && value == "1"));
+        launch
+            .env
+            .retain(|(key, _)| key != "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS");
         match crate::mcp::tools::shell::detect_bash_exe() {
             None => assert!(
                 launch.env.is_empty(),
@@ -1651,6 +1801,56 @@ mod tests {
         assert!(c.get(a).is_none(), "摘掉后不许再查得到");
         assert!(c.get(b).is_some(), "只摘这一条，别的会话不受影响");
         assert!(c.remove(a).is_none(), "第二条命令要能分辨「已经没了」");
+    }
+
+    #[test]
+    fn delete_detaches_all_handles_and_blocks_late_persistence() {
+        let conn = Connection::open_in_memory().unwrap();
+        store::ensure_table(&conn).unwrap();
+        let sessions = CcSessions::new();
+        let a = sessions.new_session();
+        let b = sessions.new_session();
+        let other = sessions.new_session();
+        let original = sessions.get(a).unwrap();
+        original.shared().ring.push(CcEvent::UserMessage {
+            text: "delete me".into(),
+            images: vec![],
+        });
+        let row = persist_shared(&conn, original.shared()).unwrap().unwrap();
+        sessions.get(b).unwrap().shared().set_row_id(row);
+        let (deleted_row, removed) = sessions.delete_stored(&conn, Some(row), None).unwrap();
+        assert_eq!(deleted_row, Some(row));
+        assert_eq!(removed.len(), 2);
+        assert!(sessions.get(a).is_none() && sessions.get(b).is_none());
+        assert!(sessions.get(other).is_some());
+        assert!(store::by_row_id(&conn, row).unwrap().is_none());
+        // A queued writer can still own this Arc after the UI has removed its pane.
+        assert_eq!(persist_shared(&conn, original.shared()).unwrap(), None);
+        original.persist(&conn);
+        assert!(store::list(&conn, 100, true).unwrap().is_empty());
+        assert!(original.send("late send").unwrap_err().contains("已删除"));
+    }
+
+    #[test]
+    fn delete_unsaved_and_reject_mismatched_identity() {
+        let conn = Connection::open_in_memory().unwrap();
+        store::ensure_table(&conn).unwrap();
+        let sessions = CcSessions::new();
+        let a = sessions.new_session();
+        let cc = sessions.get(a).unwrap();
+        cc.shared().set_row_id(7);
+        assert!(sessions.delete_stored(&conn, Some(8), Some(a)).is_err());
+        assert!(sessions.get(a).is_some());
+        cc.shared().clear_row();
+        let (row, removed) = sessions.delete_stored(&conn, None, Some(a)).unwrap();
+        assert_eq!(row, None);
+        assert_eq!(removed.len(), 1);
+        cc.shared().ring.push(CcEvent::UserMessage {
+            text: "late output".into(),
+            images: vec![],
+        });
+        assert_eq!(persist_shared(&conn, cc.shared()).unwrap(), None);
+        assert!(sessions.delete_stored(&conn, None, None).is_err());
     }
 
     #[test]

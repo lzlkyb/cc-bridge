@@ -517,6 +517,18 @@ pub async fn cc_interrupt(
 
 /// 快照：切页回来 / 断线重连时重建界面用。
 #[tauri::command]
+pub async fn cc_stop_task(
+    state: State<'_, Arc<AppState>>,
+    session_id: u64,
+    task_id: String,
+    stop_token: String,
+) -> Result<String, String> {
+    let cc = state.cc.get(session_id).ok_or("会话不存在")?;
+    cc.stop_task(&task_id, &stop_token).await
+}
+
+/// 快照：切页回来 / 断线重连时重建界面用。
+#[tauri::command]
 pub async fn cc_snapshot(
     state: State<'_, Arc<AppState>>,
     session_id: u64,
@@ -719,6 +731,35 @@ pub async fn cc_archive_session(
 ) -> Result<(), String> {
     let conn = state.db.lock().await;
     store::set_archived(&conn, row_id, archived)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CcDeletedSession {
+    row_id: Option<i64>,
+    session_ids: Vec<u64>,
+}
+
+/// Delete the Bridge record and all open handles for it, without touching CLI history.
+#[tauri::command]
+pub async fn cc_delete_session(
+    state: State<'_, Arc<AppState>>,
+    row_id: Option<i64>,
+    session_id: Option<u64>,
+) -> Result<CcDeletedSession, String> {
+    let (row_id, sessions) = {
+        let conn = state.db.lock().await;
+        state.cc.delete_stored(&conn, row_id, session_id)?
+    };
+    let session_ids = sessions.iter().map(|(id, _)| *id).collect();
+    // Reader shutdown can publish events; never wait for it while holding the database lock.
+    for (_, cc) in sessions {
+        cc.interrupt();
+    }
+    Ok(CcDeletedSession {
+        row_id,
+        session_ids,
+    })
 }
 
 /// 新对话：清流水 + 清 session id。

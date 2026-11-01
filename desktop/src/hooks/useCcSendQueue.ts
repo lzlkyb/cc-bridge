@@ -97,17 +97,22 @@ export function useCcSendQueue() {
  * 但把这道闸加上更直白。
  */
 export function useCcQueueFlush(
-  q: Pick<ReturnType<typeof useCcSendQueue>, "paused" | "take" | "putBack">,
+  q: Pick<ReturnType<typeof useCcSendQueue>, "paused" | "take" | "putBack" | "pause">,
   deps: {
     ready: boolean;
     running: boolean;
     busy: boolean;
+    failed?: boolean;
     start: (text: string, images: CcImage[]) => Promise<boolean>;
   },
 ) {
-  const { paused, take, putBack } = q;
-  const { ready, running, busy, start } = deps;
+  const { paused, take, putBack, pause } = q;
+  const { ready, running, busy, start, failed } = deps;
+  const failureSeen = useRef(false);
   useEffect(() => {
+    // A lost connection must not silently launch the next task before the user reviews uncertain inputs.
+    if (failed && !failureSeen.current) { failureSeen.current = true; pause(); return; }
+    if (!failed) failureSeen.current = false;
     if (!ready || running || busy || paused) return;
     const next = take();
     if (next === undefined) return;
@@ -115,5 +120,5 @@ export function useCcQueueFlush(
       // 发失败（错误横幅 `start` 已经报了）：放回队首并暂停，草稿不丢。
       if (!ok) putBack(next);
     });
-  }, [ready, running, busy, paused, take, putBack, start]);
+  }, [ready, running, busy, paused, take, putBack, start, failed, pause]);
 }

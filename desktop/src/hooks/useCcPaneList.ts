@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/tauri";
 import { clearDraft, pruneDrafts } from "../lib/ccDraft";
@@ -52,7 +52,11 @@ export function useCcPaneList() {
   ]);
   const [active, setActive] = useState("p1");
   /** 自增的 key 序列。`p1` 已被初始条目占用，从 2 起。 */
-  const [seq, setSeq] = useState(2);
+  const seq = useRef(2);
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+  const activeRef = useRef(active);
+  activeRef.current = active;
 
   /**
    * 清掉「当前窗口没有对应 pane」的输入框草稿。
@@ -73,12 +77,11 @@ export function useCcPaneList() {
   /** 追加一条并切过去（与「点 + 就该进新会话」的直觉一致）。 */
   const spawn = useCallback(
     (restore: CcRestoreReq, forkOf?: string) => {
-      const key = `p${seq}`;
-      setSeq(seq + 1);
+      const key = `p${seq.current++}`;
       setEntries((list) => [...list, { key, meta: null, restore, forkOf }]);
       setActive(key);
     },
-    [seq],
+    [],
   );
 
   /** `+` / Ctrl+N：空白新会话，**不**从库里载入（3-1b 的重复载入缺陷就修在这）。 */
@@ -111,13 +114,11 @@ export function useCcPaneList() {
       // 只查 `restore` 的话点它就开出第二条同库行的 pane（两个进程续同一条 CLI 会话）。
       // （历史上还有一种「点了正在恢复的那条」—— 那条不走这里，它由宿主用
       // `settled` 挡，见 `CcGuiTab`。）
-      if (
-        entries.some(
+      const existing = entries.find(
           (e) =>
             (e.restore.kind === "row" && e.restore.rowId === rowId) || e.meta?.rowId === rowId,
-        )
-      )
-        return;
+        );
+      if (existing) { setActive(existing.key); return; }
       spawn({ kind: "row", rowId });
     },
     [entries, spawn],
@@ -160,6 +161,21 @@ export function useCcPaneList() {
     },
     [entries, qc],
   );
+
+  /** Backend already deleted these handles; never call close (which saves) for them. */
+  const forgetDeleted = useCallback(({ rowId, sessionIds }: { rowId: number | null; sessionIds: number[] }) => {
+    const current = entriesRef.current;
+    const removed = current.filter(e => rowId !== null && (e.meta?.rowId === rowId || e.restore.kind === "row" && e.restore.rowId === rowId) || typeof e.meta?.sessionId === "number" && sessionIds.includes(e.meta.sessionId));
+    if (!removed.length) return false;
+    const keys = new Set(removed.map(e => e.key));
+    removed.forEach(e => clearDraft(e.key));
+    const rest = current.filter(e => !keys.has(e.key));
+    if (!rest.length) rest.push({ key: `p${seq.current++}`, meta: null, restore: { kind: "none" } });
+    entriesRef.current = rest;
+    setEntries(rest);
+    setActive(key => rest.some(e => e.key === key) ? key : rest[0].key);
+    return keys.has(activeRef.current);
+  }, []);
 
   /**
    * pane 上报自己的元信息。
@@ -212,5 +228,5 @@ export function useCcPaneList() {
     [entries],
   );
 
-  return { entries, active, setActive, add, openStored, forkFrom, close, report, cycle };
+  return { entries, active, setActive, add, openStored, forkFrom, close, forgetDeleted, report, cycle };
 }

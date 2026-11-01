@@ -58,6 +58,7 @@ export function useCcOpenHistory({
         seqRef.current = res.snapshot.nextSeq;
         dispatch({
           type: "replay",
+          historical: true,
           events: res.snapshot.events,
           // 两个缺口相加：`dropped` 是环形缓冲溢出，`trimmed` 是体积上限裁掉的头部。
           dropped: res.snapshot.dropped + res.trimmed,

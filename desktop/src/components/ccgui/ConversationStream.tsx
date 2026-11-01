@@ -11,7 +11,11 @@ import { MessageList } from "./MessageList";
 import { MessageNav } from "./MessageNav";
 import { ScrollToBottom } from "./ScrollToBottom";
 import { SelectionQuote } from "./SelectionQuote";
-import { TurnActivity, turnActivity } from "./TurnActivity";
+import { turnActivity } from "./TurnActivity";
+import { clawdActivity } from "../../lib/ccClawd";
+import { ClawdWorkspace } from "./ClawdWorkspace";
+import { MOTION } from "../../lib/motion";
+import type { StopTask } from "../../hooks/useClawdTaskStop";
 
 /**
  * 一个 pane 的中段：消息流（滚动容器 + 空状态 / 消息列表）+ 会话内搜索。
@@ -30,6 +34,7 @@ export function ConversationStream({
   sending = false,
   activityStartedAt = null,
   stopState = null,
+  onStopTask,
   probe,
   probing,
   retryProbe,
@@ -48,6 +53,7 @@ export function ConversationStream({
   sending?: boolean;
   activityStartedAt?: number | null;
   stopState?: "stopping" | "unconfirmed" | null;
+  onStopTask?: StopTask;
   probe: CcProbe | null;
   probing: boolean;
   retryProbe: () => void;
@@ -68,6 +74,8 @@ export function ConversationStream({
   isRemote: boolean;
   newSessionHint: string;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const activity = useMemo(() => clawdActivity(view, { sending, stopState }), [view, sending, stopState]);
   const search = useCcConvSearch(view.messages);
   const { hits, occ, openSearch } = search;
   useEffect(() => { if (findRequest > 0) openSearch(); }, [findRequest, openSearch]);
@@ -114,7 +122,14 @@ export function ConversationStream({
     const key = `${search.query}\u0000${occ}`;
     if (scrolledKeyRef.current === key) return;
     scrolledKeyRef.current = key;
-    scrollRef.current?.querySelector("[data-cc-hit-cur]")?.scrollIntoView({ block: "nearest" });
+    const reveal = () => {
+      scrollRef.current?.dispatchEvent(new Event("cc-reading-jump"));
+      scrollRef.current?.querySelector("[data-cc-hit-cur]")?.scrollIntoView({ block: "nearest" });
+    };
+    reveal();
+    // Search can open an animated execution group; align once its height has settled.
+    const settled = window.setTimeout(reveal, MOTION.enter + 20);
+    return () => window.clearTimeout(settled);
   }, [scrollRef, hits, occ, search.query]);
 
   const closeSearch = useCallback(() => {
@@ -130,7 +145,7 @@ export function ConversationStream({
     // 外层只做定位锚（搜索条浮在滚动区之上，不随内容滚动）；
     // page-scroll：对话流是长时停留的滚动区，要跟连接页/日志页同一根 12px rail，
     // 不挂就只有全局 6px 细条，右边缘看着比别的页窄一档。
-    <div className="relative min-h-0 flex-1" style={typoStyle}>
+    <div ref={rootRef} className="cc-clawd-stream relative min-h-0 flex-1" style={typoStyle}>
       <div ref={scrollRef} data-cc-stream className="cc-conversation-stream page-scroll h-full overflow-y-auto">
         {/* cc-msgcol：消息列。子节点（每条消息的根元素）离屏跳渲染，见 index.css。 */}
         <div className="cc-msgcol mx-auto flex min-h-full max-w-[834px] flex-col gap-3">
@@ -154,14 +169,15 @@ export function ConversationStream({
               turns={view.turns}
               stops={view.stops}
               stopState={stopState}
+              companionTarget={activity.targetId}
               onRespond={onRespond}
               onForkMessage={onForkMessage}
               onResend={onResend}
             />
           )}
-          <TurnActivity messages={view.messages} running={view.running} sending={sending} startIndex={view.activityStartIndex} resolved={view.resolved} retrying={!!view.retry} startedAt={activityStartedAt} />
         </div>
       </div>
+      <ClawdWorkspace view={view} activity={activity} rootRef={rootRef} scrollRef={scrollRef} startedAt={activityStartedAt} onStopTask={onStopTask} />
       {away && view.messages.length > 0 && (
         // 一条浮条：「按轮导航」+「回到底部」。
         //
@@ -171,9 +187,9 @@ export function ConversationStream({
         //    高度里溢出。实测 420px 宽就复现。
         // 外层 `pointer-events-none` + 两个按钮自己 `pointer-events-auto`：这一行横跨
         // 整个消息区底部，不放开穿透就会挡住底下的正文点击。
-        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex items-center justify-center gap-2 px-3">
+        <div style={{ bottom: "calc(var(--clawd-dock-height, 72px) + 8px)" }} className="pointer-events-none absolute inset-x-0 z-10 flex items-center justify-center gap-2 px-3">
           <MessageNav onPrev={nav.prev} onNext={nav.next} />
-          <ScrollToBottom pending={pendingCount} running={view.running || stopState === "stopping"} activity={stopState === "stopping" ? "正在停止本轮" : view.retry ? `正在重试 ${view.retry.attempt}/${view.retry.max}` : turnActivity(view.messages, view.running, sending, view.activityStartIndex, view.resolved)} onClick={toBottom} />
+          <ScrollToBottom pending={activity.pose === "approval" || activity.pose === "question" ? 0 : pendingCount} running={view.running || stopState === "stopping"} activity={stopState === "stopping" ? "正在停止本轮" : view.retry ? `正在重试 ${view.retry.attempt}/${view.retry.max}` : turnActivity(view.messages, view.running, sending, view.activityStartIndex, view.resolved)} onClick={toBottom} />
         </div>
       )}
       <SelectionQuote scrollRef={scrollRef} />

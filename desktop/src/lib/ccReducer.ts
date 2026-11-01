@@ -19,8 +19,12 @@ import {
 import type { CcMessage, CcQuestion } from "./ccGuiTypes";
 import { readModelUsage, type CcModelUsage } from "./ccContextUsage";
 import { readUsageParts, type CcTurnStat } from "./ccTurnStat";
+import { endTasks, snapshotTasks, updateTask, type CcTasks } from "./ccAgentTasks";
+import { endInputs, hasPendingInput, updateInput, type CcInputs } from "./ccInput";
 
 export type CcView = {
+  inputs?: CcInputs;
+  cliRunning?: boolean;
   messages: CcMessage[];
   /** 发送开始时的消息边界，用来区分本轮事件与旧回复。 */
   activityStartIndex?: number;
@@ -30,6 +34,7 @@ export type CcView = {
   resolved: Record<string, { decision: "allow" | "deny"; auto?: boolean }>;
   running: boolean;
   sessionId: string | null;
+  rowId?: number | null;
   model: string | null;
   cwd: string | null;
   inputTokens: number;
@@ -59,6 +64,8 @@ export type CcView = {
   /** 上下文被压缩后的 token 数（`null` = 本轮没压缩过）。 */
   compactedTokens: number | null;
   backgroundTasks: number;
+  tasks?: CcTasks;
+  lastOutcome?: "complete" | "error" | "stopped" | null;
   /** CLI 侧的错误信息：stderr 原文 + `result.is_error` 的摘要。启动失败、模型名不对、
    *  认证过期**只在这里**，stdout 上什么都看不到。 */
   stderr: string[];
@@ -153,6 +160,8 @@ export const initialCcView: CcView = {
   retry: null,
   compactedTokens: null,
   backgroundTasks: 0,
+  tasks: {},
+  lastOutcome: null,
   stderr: [],
   dropped: 0,
   exitCode: null,
@@ -163,7 +172,7 @@ export const initialCcView: CcView = {
 
 export type CcAction =
   | { type: "event"; event: CcEvent }
-  | { type: "replay"; events: CcEvent[]; dropped: number; running: boolean }
+  | { type: "replay"; events: CcEvent[]; dropped: number; running: boolean; historical?: boolean }
   | { type: "error"; message: string | null }
   /** 关掉第 `index` 条前端错误（每条红条自己的 ×）。 */
   | { type: "errorDismiss"; index: number }
@@ -305,10 +314,24 @@ export function buildAnswers(
 
 function applyEvent(view: CcView, event: CcEvent): CcView {
   switch (event.kind) {
+    case "inputMessage": {
+      const inputs = updateInput(view.inputs, event);
+      return { ...view, inputs, running: view.running || hasPendingInput(inputs) };
+    }
+    case "inputStatus": {
+      if (view.inputs?.[event.messageId]?.status === "complete" && event.status === "complete") return view;
+      const inputs = updateInput(view.inputs, event);
+      // A correlated result is followed by TurnEnd; that event, not the receipt, releases the queue.
+      const cliRunning = ["received", "processing", "complete"].includes(event.status) || (view.cliRunning ?? view.running);
+      return { ...view, inputs, cliRunning, running: cliRunning || hasPendingInput(inputs) };
+    }
+    case "sessionState":
+      return event.running ? { ...view, cliRunning: true, running: true } : view;
     case "init":
       return {
         ...view,
         running: true,
+        cliRunning: true,
         sessionId: event.sessionId || view.sessionId,
         model: event.model ?? view.model,
         cwd: event.cwd ?? view.cwd,
@@ -328,6 +351,8 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         // 压缩是上一个进程里发生过的事；新进程的上下文是重新加载的。
         compactedTokens: null,
         retry: null,
+        tasks: endTasks(view.tasks ?? {}, "unknown"),
+        backgroundTasks: 0,
       };
 
     case "userMessage":
@@ -347,8 +372,11 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         ],
       };
 
+    case "sessionStored":
+      return { ...view, rowId: event.rowId };
+
     case "text":
-      return { ...view, messages: upsertText(view.messages, event.blockId, event.text, event.streaming, view.model) };
+      return { ...view, retry: null, messages: upsertText(view.messages, event.blockId, event.text, event.streaming, view.model) };
 
     // 思维链渲染成**默认折叠**的一行：长任务里它是「还活着」的唯一证据，
     // 摊开却会把正文冲出视口。事件照收（Rust 侧有测试保证不漏）。
@@ -356,6 +384,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       return {
         ...view,
         messages: upsertThinking(view.messages, event.blockId, event.text, event.streaming),
+        retry: null,
       };
 
     case "toolUse": {
@@ -364,6 +393,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       }
       return {
         ...view,
+        retry: null,
         messages: [
           ...view.messages,
           {
@@ -477,6 +507,11 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
     case "backgroundTasks":
       return { ...view, backgroundTasks: event.pending };
 
+    case "taskUpdate":
+      return { ...view, tasks: updateTask(view.tasks ?? {}, event.task) };
+    case "taskSnapshot":
+      return { ...view, tasks: snapshotTasks(view.tasks ?? {}, event.tasks) };
+
     case "turnEnd": {
       const usage = readUsage(event.usage);
       const parts = readUsageParts(event.usage);
@@ -504,7 +539,8 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
       return {
         ...view,
         messages,
-        running: false,
+        running: hasPendingInput(view.inputs),
+        cliRunning: false,
         retry: null,
         sessionId: event.sessionId ?? view.sessionId,
         inputTokens: view.inputTokens + usage.input,
@@ -519,6 +555,7 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         // 只留最近若干轮：`turns` 是渲染用的旁路数据，不是审计账本，
         // 长会话没必要为一个脚注无限增长。
         turns: [...view.turns, stat].slice(-MAX_TURNS),
+        lastOutcome: event.isError ? "error" : "complete",
         // 每轮都带 ⇒ 替换式更新（CLI 给的是累计值，累加会翻倍）。没带（老流水）
         // 就保留上一次的，不清空——清空会让余量条在一轮之间闪烁消失。
         modelUsage: event.modelUsage ? readModelUsage(event.modelUsage) : view.modelUsage,
@@ -548,8 +585,13 @@ function applyEvent(view: CcView, event: CcEvent): CcView {
         messages: settleOpen(view),
         running: false,
         exitCode: event.code,
+        inputs: endInputs(view.inputs),
+        cliRunning: false,
         retry: null,
         processExited: view.running,
+        lastOutcome: view.running ? "error" : view.lastOutcome,
+        tasks: endTasks(view.tasks ?? {}, "unknown"),
+        backgroundTasks: 0,
       };
 
     default:
@@ -576,6 +618,9 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
         dropped: action.dropped,
         running: action.running,
         processExited: false,
+        ...(action.historical ? { tasks: endTasks(next.tasks ?? {}, "unknown"), inputs: endInputs(next.inputs), cliRunning: false, backgroundTasks: 0 } : {}),
+        // The first-save notification can age out of the ring; a same-handle reconciliation must keep its row.
+        ...(next.rowId === undefined && !action.historical && view.rowId !== undefined ? { rowId: view.rowId } : {}),
       };
     }
     case "sending":
@@ -587,7 +632,9 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
       return {
         ...view,
         activityStartIndex: view.messages.length,
+        lastOutcome: null,
         running: true,
+        cliRunning: true,
         errors: [],
         retry: null,
         exitCode: null,
@@ -610,7 +657,7 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
       return { ...view, errors: view.errors.filter((_, i) => i !== action.index) };
     }
     case "sendAborted":
-      return { ...view, running: false };
+      return { ...view, running: false, cliRunning: false, lastOutcome: "error" };
     case "interrupted": {
       // 用户主动停：这一轮不会再有 `turnEnd`，界面自己收尾（与 `exit` 同一套清理）。
       // `processExited` 显式压掉是本 action 存在的**主要理由** —— 紧接着到达的
@@ -622,8 +669,13 @@ export function ccReducer(view: CcView, action: CcAction): CcView {
         ...view,
         messages: settled,
         running: false,
+        cliRunning: false,
+        inputs: endInputs(view.inputs),
         retry: null,
         processExited: false,
+        lastOutcome: "stopped",
+        tasks: endTasks(view.tasks ?? {}, "stopped"),
+        backgroundTasks: 0,
         // 只在真有一轮在跑时落点：连点两下停止不该多出一条标记。
         // 同一锚点也只留一条：停止后队列推着下一轮起来又停，锚点会重复。
         stops: view.running ? [...view.stops.filter((s) => s !== at), at] : view.stops,
