@@ -163,10 +163,17 @@ fn ssh_candidates() -> Vec<PathBuf> {
 }
 
 /// 单个候选的探测等待上限。健康 ssh 的 `-V` 是毫秒级，给到 1.5s 已极端宽松。
+///
+/// 仅 Windows 探测链路使用；Unix 侧 `find_ssh` 直接走 `/usr/bin/ssh`，
+/// 编译期裁掉后本常量不可达，放行 dead_code（Windows 侧仍保持 lint 活跃）。
+#[cfg_attr(not(windows), allow(dead_code))]
 const SSH_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// 全部候选的探测总预算。候选集合里含 PATH 里的每个目录，数量不可控，
 /// 必须给个整体上界（见 `find_ssh` 的说明）。
+///
+/// 仅 Windows 探测链路使用（同 `SSH_PROBE_TIMEOUT`，Unix 侧放行 dead_code）。
+#[cfg_attr(not(windows), allow(dead_code))]
 const SSH_PROBE_TOTAL_BUDGET: Duration = Duration::from_millis(3000);
 
 /// 探测某个 ssh **是否真能执行**（`exists()` 远远不够，见 `ssh_candidates` 注释）。
@@ -217,6 +224,11 @@ fn ssh_runnable(path: &Path, overall: Instant) -> bool {
 ///
 /// - 同一路径只探测一次（PATH 里同一目录重复出现很常见）
 /// - `expired()` 为真时立刻收手，剩下的候选不再探测（避免总耗时不可控）
+///
+/// Unix 侧 `find_ssh` 不走候选探测（直接用 `/usr/bin/ssh`），本函数在 lib
+/// target 不可达；测试 target 全平台都在用它（见本文件测试模块），
+/// 故只对非 Windows 放行 dead_code，Windows 侧保持 lint 活跃。
+#[cfg_attr(not(windows), allow(dead_code))]
 fn pick_runnable(
     candidates: impl IntoIterator<Item = PathBuf>,
     exists: impl Fn(&Path) -> bool,
