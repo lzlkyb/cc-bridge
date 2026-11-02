@@ -50,3 +50,6 @@ s[0-9]*.log
 
 # impeccable 技能工作目录（审查/批评的临时产物，勿入库）
 .impeccable/
+
+# 发版 CI 在仓库根生成的 Release 说明（由 CHANGELOG 抽取，供 body_path 读取）
+/release-notes.md
