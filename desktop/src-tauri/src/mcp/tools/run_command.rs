@@ -2976,16 +2976,27 @@ mod tests {
             c.whitelist_enabled = true;
         });
         let shell = parse_shell_type(&state.config.read().await.shell_type);
+        // 🔴 不能用「睡 6 秒」来等交接点。主循环是**先**判子进程是否已退出、退出就直接走
+        // 「正常结束」分支，handoff 只在 `try_wait() == None` 里判 —— 全量并行时轮询线程
+        // 被饿住几秒，等它终于被调度时命令已经跑完（2026-11-02 发版实测红过一次）。
+        // 那一刻产品行为是对的（命令都结束了，没必要再转后台），红的是测试的假设。
+        // 改成闸门文件：命令自己走不到结尾，必须由测试放行，交接点必然命中。
+        let gate = dir.join("handoff_gate");
+        let gate_disp = gate.to_string_lossy().into_owned();
         let command = if cfg!(windows) && matches!(shell, ShellType::Cmd) {
-            "echo before_handoff && ping -n 7 127.0.0.1 >NUL && echo after_handoff"
+            format!(
+                "echo before_handoff & (for /l %i in (1,1,600) do @if not exist \"{gate_disp}\" ping -n 2 127.0.0.1 >NUL) & echo after_handoff"
+            )
         } else {
-            "echo before_handoff; sleep 6; echo after_handoff"
+            format!(
+                "echo before_handoff; while [ ! -f '{gate_disp}' ]; do sleep 0.2; done; echo after_handoff"
+            )
         };
         let st = state.clone();
         let cwd = dir.clone();
         let (v, _) = tokio::task::spawn_blocking(move || {
             spawn_shell(
-                command,
+                &command,
                 &cwd,
                 cwd.to_string_lossy().into_owned(),
                 false,
@@ -3011,6 +3022,8 @@ mod tests {
         let handle = info["handle"].as_str().expect("应返回 handle").to_string();
         assert!(state.running_commands.contains_key(&handle));
 
+        // 交接已经发生，放行闸门让后台子进程自己跑完（输出要经 wait_command 完整取回）。
+        std::fs::write(&gate, b"go").expect("放行闸门");
         let waited = wait_command::handle(
             WaitCommandArgs {
                 handle: handle.clone(),
