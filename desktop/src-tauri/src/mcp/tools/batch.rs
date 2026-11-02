@@ -86,6 +86,30 @@ tokio::task_local! {
     static BATCH_DEPTH: std::cell::Cell<u32>;
 }
 
+tokio::task_local! {
+    /// 本次 batch 必须收工的时刻（见 [`remaining_budget`]）。
+    static BATCH_DEADLINE: std::time::Instant;
+}
+
+/// 在 batch 的时间预算作用域内运行 `f`。
+pub(crate) async fn with_batch_deadline<F: std::future::Future>(
+    deadline: std::time::Instant,
+    f: F,
+) -> F::Output {
+    BATCH_DEADLINE.scope(deadline, f).await
+}
+
+/// 当前 batch 还剩多少可以挂起等待的时间；不在 batch 里返回 `None`。
+///
+/// 客户端约 60s 断开的是**整次** batch 调用，子操作各自守 50s 线不够：两条各跑 40s 的命令
+/// 加起来就越线，整条返回作废，而里面的写操作其实已执行。batch 用它决定还要不要开始下一条；
+/// run_command（转后台时刻）、wait_command（等待时长）、search_files（软超时）据此收紧。
+pub(crate) fn remaining_budget() -> Option<std::time::Duration> {
+    BATCH_DEADLINE
+        .try_with(|d| d.saturating_duration_since(std::time::Instant::now()))
+        .ok()
+}
+
 /// 嵌套 batch 的深度上限（顶层 = 0；只允许一层）。
 const MAX_BATCH_DEPTH: u32 = 1;
 
@@ -97,9 +121,29 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
     if depth >= MAX_BATCH_DEPTH {
         return Err("nested batch is not allowed".into());
     }
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(crate::mcp::tools::CLIENT_SAFE_WAIT_SECS);
     BATCH_DEPTH
-        .scope(std::cell::Cell::new(depth + 1), handle_inner(args, state))
+        .scope(
+            std::cell::Cell::new(depth + 1),
+            with_batch_deadline(deadline, handle_inner(args, state)),
+        )
         .await
+}
+
+/// 子调用参数的默认值修正：read_files 未指定 `format` 时补成 `"json"`。
+///
+/// read_files 单独调用默认 raw（每个文件一个文本块），但在 batch 里没有好处：子结果本就要整体
+/// 再做一次 JSON 转义，省不了字符；反而 [`flatten_sub_result`] 会把第 2 个起的文件归进 `notes`，
+/// 语义不对。保持 json 则得到结构化的 `data` 数组。显式传了 `format` 的不动。
+fn sub_op_arguments(tool: &str, mut args: Value) -> Value {
+    let is_read_files = tool == "read_files" || tool.ends_with("__read_files");
+    if is_read_files {
+        if let Some(obj) = args.as_object_mut() {
+            obj.entry("format").or_insert_with(|| json!("json"));
+        }
+    }
+    args
 }
 
 async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, String> {
@@ -111,8 +155,15 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
     // 审计条目延后到预算层之后写（见循环内注释）：先收集，等知道「哪条被内联」再记字节。
     let mut pending: Vec<PendingAudit> = Vec::new();
     let mut executed = 0usize;
+    let op_count = args.operations.len();
+    // 时间预算用完时还没开始的第一条（之后的都未执行）。
+    let mut not_run_from: Option<usize> = None;
 
     for (idx, op) in args.operations.into_iter().enumerate() {
+        if remaining_budget().is_some_and(|r| r.is_zero()) {
+            not_run_from = Some(idx);
+            break;
+        }
         // 复用现有分发 → 复用全部安全校验（只读模式 / WRITE_TOOLS / 路径白名单）。
         // 这是 batch 设计的核心：零新文件操作代码 = 零新攻击面。
         // Box::pin 断开与 dispatch_tool 的互递归（async fn 递归必须加间接层）。
@@ -126,7 +177,12 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
         // 作用域，作为整体结果返回。
         let t0 = std::time::Instant::now();
         let (res, op_backup) = crate::audit::with_op_backup(Box::pin(async {
-            let r = dispatch_tool(&op.tool, op.arguments.clone(), state).await;
+            let r = dispatch_tool(
+                &op.tool,
+                sub_op_arguments(&op.tool, op.arguments.clone()),
+                state,
+            )
+            .await;
             (r, crate::audit::take_op_backup())
         }))
         .await;
@@ -166,12 +222,15 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
         match res {
             Ok(v) => {
                 executed += 1;
-                results.push(json!({
+                let mut entry = json!({
                     "index": idx,
                     "tool": op.tool,
                     "ok": true,
-                    "result": v,
-                }));
+                });
+                if let Value::Object(m) = &mut entry {
+                    m.extend(flatten_sub_result(v));
+                }
+                results.push(entry);
             }
             Err(e) => {
                 results.push(json!({
@@ -212,8 +271,18 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
         "total": total,
         "results": results,
     });
-    if let Some(note) = budget_note {
-        envelope["note"] = json!(note);
+    let mut notes: Vec<String> = budget_note.into_iter().collect();
+    if let Some(from) = not_run_from {
+        envelope["notExecuted"] = json!({ "fromIndex": from, "count": op_count - from });
+        notes.push(format!(
+            "batch 已用满单次时间预算（约 {}s，客户端约 60s 会断开整次调用），index {from} 起共 {} 条**未执行**。\
+             请把它们放进新的 batch 再调一次；耗时长的命令改用 background:true。",
+            crate::mcp::tools::CLIENT_SAFE_WAIT_SECS,
+            op_count - from
+        ));
+    }
+    if !notes.is_empty() {
+        envelope["note"] = json!(notes.join("\n"));
     }
     Ok(json!({
         "content": [{
@@ -221,6 +290,90 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
             "text": serde_json::to_string(&envelope).unwrap_or_default()
         }]
     }))
+}
+
+/// 把子结果的 `{content:[{type:"text",text:S}]}` 展平成字段，省掉一层转义。
+///
+/// 为什么：子工具的 `S` 本身已是一段 JSON 文本，整条 batch 又被序列化进外层 text，
+/// `S` 里的每个 `"` 和 `\` 就被转义两次（实测中文路径密集时体积多约 10–15%）。
+/// - 全是 text 块、且没有 `content` 以外的字段（如 `isError`）才展平；
+/// - 首块能解析成对象/数组 → `data`（直接内嵌），否则 → `text`（原文字符串）；
+/// - 其余 text 块（如 search_files 的截断提示）→ `notes`；
+/// - 含图片等非文本块或形状异常 → 原样放在 `result`，不动。
+fn flatten_sub_result(v: Value) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    let flat = v
+        .as_object()
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.get("content"))
+        .and_then(Value::as_array)
+        .filter(|blocks| {
+            !blocks.is_empty()
+                && blocks.iter().all(|b| {
+                    b.get("type").and_then(Value::as_str) == Some("text")
+                        && b.get("text").and_then(Value::as_str).is_some()
+                })
+        });
+    let Some(blocks) = flat else {
+        out.insert("result".into(), v);
+        return out;
+    };
+    let texts: Vec<&str> = blocks
+        .iter()
+        .filter_map(|b| b.get("text").and_then(Value::as_str))
+        .collect();
+    match serde_json::from_str::<Value>(texts[0]) {
+        Ok(parsed @ (Value::Object(_) | Value::Array(_))) => {
+            out.insert("data".into(), parsed);
+        }
+        _ => {
+            out.insert("text".into(), Value::String(texts[0].to_string()));
+        }
+    }
+    if texts.len() > 1 {
+        out.insert(
+            "notes".into(),
+            Value::Array(
+                texts[1..]
+                    .iter()
+                    .map(|s| Value::String(s.to_string()))
+                    .collect(),
+            ),
+        );
+    }
+    out
+}
+
+/// 展平后子结果的正文字节与 wire 字符数（`data`/`text`/`notes` 三个字段合计）。
+///
+/// 没有这三个字段时返回 `None`，调用方再按 `result` 的旧口径算。
+fn flat_payload_size(e: &Value) -> Option<(u64, Option<u64>)> {
+    let mut payload = serde_json::Map::new();
+    for k in ["data", "text", "notes"] {
+        if let Some(v) = e.get(k) {
+            payload.insert(k.into(), v.clone());
+        }
+    }
+    if payload.is_empty() {
+        return None;
+    }
+    let mut bytes = 0u64;
+    if let Some(d) = payload.get("data") {
+        bytes += serde_json::to_string(d)
+            .map(|s| s.len() as u64)
+            .unwrap_or(0);
+    }
+    if let Some(Value::String(t)) = payload.get("text") {
+        bytes += t.len() as u64;
+    }
+    if let Some(Value::Array(ns)) = payload.get("notes") {
+        bytes += ns
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|s| s.len() as u64)
+            .sum::<u64>();
+    }
+    Some((bytes, wire_chars_opt(&Value::Object(payload))))
 }
 
 /// batch 子操作的待写审计条目。
@@ -309,10 +462,12 @@ fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, (u6
                 let n = ("Error: ".len() + err.len()) as u64;
                 (n, Some(n))
             }
-            None => match e.get("result") {
-                Some(r) => (result_text_bytes(r), wire_chars_opt(r)),
+            None => match (flat_payload_size(e), e.get("result")) {
+                // 展平过的子结果：按展平后的实际体积记（已少一层转义）。
+                (Some(pair), _) => pair,
+                (None, Some(r)) => (result_text_bytes(r), wire_chars_opt(r)),
                 // 没有 result 字段 = 确实什么都没发出 ⇒ 真实的 0，不是「未知」。
-                None => (0, Some(0)),
+                (None, None) => (0, Some(0)),
             },
         };
         m.insert(idx as usize, pair);
@@ -612,10 +767,9 @@ mod tests {
         let parsed: Value = serde_json::from_str(text).unwrap();
         assert_eq!(parsed["total"], 1);
         assert_eq!(parsed["results"][0]["ok"], true);
-        assert!(parsed["results"][0]["result"]["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("hello"));
+        // 子结果已展平：read_files 的 JSON 直接内嵌在 data，不再是转义字符串。
+        assert!(parsed["results"][0]["data"].is_array());
+        assert!(parsed["results"][0]["data"].to_string().contains("hello"));
     }
 
     #[tokio::test]
@@ -643,7 +797,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(text).unwrap();
         // read_files 对单文件越权是把错误内联进结果（工具级仍返回 Ok），
         // 因此这里校验子结果内部包含 "Access denied"，而非外层 ok 标志。
-        assert!(parsed["results"][0]["result"]
+        assert!(parsed["results"][0]["data"]
             .to_string()
             .contains("Access denied"));
     }
@@ -734,7 +888,7 @@ mod tests {
         let parsed: Value = serde_json::from_str(text).expect("整条结果必须仍是合法 JSON");
         assert_eq!(parsed["total"], 2, "被省略不等于不存在，total 不能变");
         assert!(
-            parsed["results"][0]["result"]["content"].is_array(),
+            parsed["results"][0]["data"].is_array(),
             "第一项应正常内联：{}",
             parsed["results"][0]
         );
@@ -835,6 +989,130 @@ mod tests {
         assert!(parsed.get("note").is_none(), "未超限时不该插说明");
         assert!(parsed["results"][0].get("omitted").is_none());
         assert_eq!(parsed["executed"], 1);
+    }
+
+    /// 展平：JSON 文本 → data、普通文本 → text、后续块 → notes、含图片 / 带 isError → 原样 result。
+    #[test]
+    fn remaining_budget_is_none_outside_batch() {
+        assert!(remaining_budget().is_none());
+    }
+
+    /// 时间预算用完：后面的子操作不再执行，并在返回里写明从哪条起、共几条未执行。
+    #[tokio::test]
+    async fn ops_past_time_budget_are_not_executed() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|_| {});
+        let p = dir.join("never.txt");
+        let args = BatchArgs {
+            operations: vec![BatchOp {
+                tool: "write_files".into(),
+                arguments: json!({ "files": [{ "path": p.to_string_lossy(), "content": "x" }] }),
+            }],
+            stop_on_error: true,
+        };
+        let out = with_batch_deadline(std::time::Instant::now(), handle_inner(args, &state))
+            .await
+            .expect("batch");
+        let env: Value = serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(env["executed"], json!(0), "{env}");
+        assert_eq!(
+            env["notExecuted"],
+            json!({ "fromIndex": 0, "count": 1 }),
+            "{env}"
+        );
+        assert!(env["note"].as_str().unwrap().contains("未执行"), "{env}");
+        assert!(!p.exists(), "未执行的写操作不应生效");
+    }
+
+    /// batch 里的前台命令按整次 batch 剩余的时间转后台，而不是各自等满 50s。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_command_in_batch_hands_off_at_remaining_budget() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let slow = if cfg!(windows) {
+            "ping -n 8 127.0.0.1"
+        } else {
+            "sleep 7"
+        };
+        let args = BatchArgs {
+            operations: vec![BatchOp {
+                tool: "run_command".into(),
+                arguments: json!({ "command": slow, "cwd": dir.to_string_lossy() }),
+            }],
+            stop_on_error: true,
+        };
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(1);
+        let out = with_batch_deadline(deadline, handle_inner(args, &state))
+            .await
+            .expect("batch");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "应在剩余预算处转后台，而不是等命令跑完"
+        );
+        let env: Value = serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
+        let r = &env["results"][0];
+        assert_eq!(r["data"]["backgrounded"], json!(true), "{env}");
+        let handle = r["data"]["handle"].as_str().expect("handle").to_string();
+        let _ = crate::mcp::tools::stop_command::handle(
+            crate::mcp::tools::stop_command::StopCommandArgs { handle },
+            &state,
+        )
+        .await;
+    }
+
+    #[test]
+    fn read_files_sub_op_defaults_to_json_only_when_unset() {
+        assert_eq!(
+            sub_op_arguments("read_files", json!({ "files": ["a"] }))["format"],
+            json!("json")
+        );
+        assert_eq!(
+            sub_op_arguments("mcp__cc-bridge__read_files", json!({}))["format"],
+            json!("json")
+        );
+        assert_eq!(
+            sub_op_arguments("read_files", json!({ "format": "raw" }))["format"],
+            json!("raw")
+        );
+        assert!(sub_op_arguments("run_command", json!({}))
+            .get("format")
+            .is_none());
+    }
+
+    #[test]
+    fn flatten_sub_result_shapes() {
+        let m = flatten_sub_result(json!({ "content": [
+            { "type": "text", "text": "[{\"a\":\"D:\\\\x\"}]" },
+            { "type": "text", "text": "结果已截断" },
+        ]}));
+        assert_eq!(m.get("data"), Some(&json!([{ "a": "D:\\x" }])));
+        assert_eq!(m.get("notes"), Some(&json!(["结果已截断"])));
+        assert!(m.get("result").is_none());
+
+        let m = flatten_sub_result(json!({ "content": [{ "type": "text", "text": "ok" }] }));
+        assert_eq!(m.get("text"), Some(&json!("ok")));
+        // 标量 JSON 不展开，避免「"123" 到底是数字还是文本」的歧义。
+        let m = flatten_sub_result(json!({ "content": [{ "type": "text", "text": "123" }] }));
+        assert_eq!(m.get("text"), Some(&json!("123")));
+
+        let img =
+            json!({ "content": [{ "type": "image", "data": "AAAA", "mimeType": "image/png" }] });
+        assert_eq!(flatten_sub_result(img.clone()).get("result"), Some(&img));
+        let err = json!({ "isError": true, "content": [{ "type": "text", "text": "{}" }] });
+        assert_eq!(flatten_sub_result(err.clone()).get("result"), Some(&err));
+    }
+
+    /// 展平后的审计字节按展平体积记，不再带第二层转义。
+    #[test]
+    fn final_result_bytes_counts_flattened_payload() {
+        let results = vec![
+            json!({ "index": 0, "tool": "read_files", "ok": true, "data": [1, 2], "notes": ["ab"] }),
+        ];
+        let m = final_result_bytes(&results);
+        assert_eq!(m.get(&0).map(|p| p.0), Some(("[1,2]".len() + 2) as u64));
+        assert!(m.get(&0).and_then(|p| p.1).is_some_and(|c| c > 0));
     }
 
     /// `final_result_bytes`：内联 / stub / 错误 / 聚合收尾 四种形态的字节口径。
@@ -988,6 +1266,7 @@ mod tests {
                 start_line: None,
                 end_line: None,
                 encoding: None,
+                format: Some("json".into()),
             },
             &state,
         )

@@ -33,12 +33,48 @@ pub struct ReadFilesArgs {
         alias = "paths"
     )]
     pub files: Vec<FileRef>,
+    #[schema(desc = "1-based, inclusive; applies to every file unless set per file.")]
     #[serde(rename = "startLine")]
     pub start_line: Option<u32>,
     #[serde(rename = "endLine")]
     pub end_line: Option<u32>,
     /// 可选：强制按此编码解码（如 "gbk"）。省略时自动探测（UTF-8/GBK/…）。
     pub encoding: Option<String>,
+    /// 输出形态：省略或 `"raw"` = 每个文件单独一个文本块，首行是元信息 JSON、之后直接是原文
+    /// （见 [`raw_blocks`]）；`"json"` = 旧形态（整条 JSON 数组）。batch 子调用未指定时由 batch 补成 json。
+    #[schema(
+        desc = "Default raw = one text block per file: metadata JSON on the first line, then the body unescaped. json = the whole result as one JSON array.",
+        values = "raw|json"
+    )]
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// `format:"raw"` 的输出：正文不再包进 JSON 字符串。
+///
+/// 为什么：正文进 JSON 后每个换行变 `\n`、每个引号变 `\"`、每个反斜杠变 `\\`，
+/// 代码里这三样恰恰最密。每个文件一个文本块：首行是去掉 `content` 的元信息 JSON，
+/// 之后原样接正文；错误 / 超限 / 延后等没有正文的条目仍整条输出 JSON。
+/// 内联预算仍按 JSON 口径计（raw 只会更小），所以不会因为换格式越线。
+fn raw_blocks(results: Vec<Value>) -> Value {
+    let blocks: Vec<Value> = results
+        .into_iter()
+        .map(|mut v| {
+            let text = match v.as_object_mut().and_then(|o| o.remove("content")) {
+                Some(Value::String(body)) => {
+                    format!("{}\n{body}", serde_json::to_string(&v).unwrap_or_default())
+                }
+                Some(other) => {
+                    // 理论上不会出现（content 恒为字符串）：放回去整条输出，不丢信息。
+                    v["content"] = other;
+                    serde_json::to_string(&v).unwrap_or_default()
+                }
+                None => serde_json::to_string(&v).unwrap_or_default(),
+            };
+            json!({ "type": "text", "text": text })
+        })
+        .collect();
+    json!({ "content": blocks })
 }
 
 /// 单文件读取的结果 + 生成「超限指引」需要的元信息（方案 §3.5「超限即拒」）。
@@ -270,7 +306,11 @@ pub async fn handle(args: ReadFilesArgs, state: &Arc<AppState>) -> Result<Value,
         }
     }
 
-    Ok(text_result_compact(&results))
+    // 默认 raw：读文件占全部返回量的约 4 成，正文进 JSON 的转义开销不该靠调用方记得关。
+    if args.format.as_deref() == Some("json") {
+        return Ok(text_result_compact(&results));
+    }
+    Ok(raw_blocks(results))
 }
 
 async fn read_single_file(
@@ -525,6 +565,7 @@ mod tests {
             start_line: None,
             end_line: None,
             encoding: Some("utf-16le".into()),
+            format: Some("json".into()),
         };
         let out = handle(args, &state).await.expect("read");
         let s = serde_json::to_string(&out).expect("serialize");
@@ -565,6 +606,7 @@ mod tests {
             start_line: None,
             end_line: None,
             encoding: None,
+            format: Some("json".into()),
         };
         let out = handle(args, state).await.expect("read");
         let text = out["content"][0]["text"].as_str().expect("text block");
@@ -625,6 +667,59 @@ mod tests {
         assert!(v[0].get("error").is_none());
     }
 
+    /// `format:"raw"`：每个文件一块，首行元信息 JSON，之后原文一字不差（不转义）；出错条目仍是 JSON。
+    #[tokio::test]
+    async fn raw_format_returns_body_verbatim_with_header_line() {
+        let (state, dir) = make_state(|_| {});
+        let p = dir.join("raw.rs");
+        let body = "let s = \"a\\\\b\";\n// 中文\n";
+        std::fs::write(&p, body).expect("seed");
+        let args = ReadFilesArgs {
+            files: vec![
+                FileRef::Simple(p.to_string_lossy().into_owned()),
+                FileRef::Simple(dir.join("missing.rs").to_string_lossy().into_owned()),
+            ],
+            start_line: None,
+            end_line: None,
+            encoding: None,
+            format: Some("raw".into()),
+        };
+        let out = handle(args, &state).await.expect("read");
+        let blocks = out["content"].as_array().expect("blocks");
+        assert_eq!(blocks.len(), 2, "每个文件一块：{out}");
+        let text = blocks[0]["text"].as_str().unwrap();
+        let (header, rest) = text.split_once('\n').expect("首行是元信息");
+        let meta: Value = serde_json::from_str(header).expect("首行必须是 JSON");
+        assert!(meta["path"].as_str().unwrap().ends_with("raw.rs"));
+        assert!(meta.get("content").is_none(), "元信息里不该再带正文");
+        assert_eq!(rest, body, "正文必须原样、不转义");
+        let err: Value =
+            serde_json::from_str(blocks[1]["text"].as_str().unwrap()).expect("错误条目仍是 JSON");
+        assert!(err.get("error").is_some(), "{err}");
+    }
+
+    /// 不传 `format` 就是 raw；显式 `"json"` 才是整条 JSON 数组。
+    #[tokio::test]
+    async fn format_defaults_to_raw_and_json_is_opt_in() {
+        let (state, dir) = make_state(|_| {});
+        let p = dir.join("d.txt");
+        std::fs::write(&p, "say \"hi\"\n").expect("seed");
+        let args = |format: Option<&str>| ReadFilesArgs {
+            files: vec![FileRef::Simple(p.to_string_lossy().into_owned())],
+            start_line: None,
+            end_line: None,
+            encoding: None,
+            format: format.map(Into::into),
+        };
+        let out = handle(args(None), &state).await.expect("read");
+        let text = out["content"][0]["text"].as_str().unwrap();
+        assert!(text.ends_with("\nsay \"hi\"\n"), "默认应为原文：{text}");
+        let out = handle(args(Some("json")), &state).await.expect("read");
+        let arr: Value =
+            serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).expect("json");
+        assert_eq!(arr[0]["content"], json!("say \"hi\"\n"));
+    }
+
     /// 每个文件**只记一次预算**。回归：内联分支曾先 `used += size` 又统一追记一次，
     /// 于是一个 32K 的文件被记成 64K，紧跟着的小文件被误判「该延后」——
     /// 结果是模型必须多发一次调用读一个 20 字符的文件。
@@ -642,6 +737,7 @@ mod tests {
             start_line: None,
             end_line: None,
             encoding: None,
+            format: Some("json".into()),
         };
         let out = handle(args, &state).await.expect("read");
         let v: Value = serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -668,6 +764,7 @@ mod tests {
             start_line: None,
             end_line: None,
             encoding: None,
+            format: Some("json".into()),
         };
         let out = handle(args, &state).await.expect("read");
         let v: Value = serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -706,6 +803,7 @@ mod tests {
             start_line: Some(1),
             end_line: Some(per_page as u32),
             encoding: None,
+            format: Some("json".into()),
         };
         let out = handle(args, &state).await.expect("read");
         let v: Value = serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -789,6 +887,7 @@ mod tests {
                 start_line: None,
                 end_line: None,
                 encoding: None,
+                format: Some("json".into()),
             },
             &state,
         )

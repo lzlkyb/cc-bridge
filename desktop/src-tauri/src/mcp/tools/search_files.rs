@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::mcp::tools::{wire_chars, MAX_INLINE_CHARS};
 use crate::security;
 use crate::state::AppState;
 use crate::timing;
@@ -21,9 +22,11 @@ pub struct SearchFilesArgs {
     /// 别名 `path`：客户端按 native Grep 词汇传参的实测误用（审计实锤）。
     #[serde(rename = "rootPath", alias = "path")]
     pub root_path: String,
+    #[schema(desc = "Glob on the file path, e.g. **/*.rs or *.java.")]
     #[serde(rename = "namePattern")]
     pub name_pattern: Option<String>,
     /// 别名 `pattern`：同上，对齐 native Grep 的词汇。
+    #[schema(desc = "Regex matched against file contents.")]
     #[serde(rename = "contentPattern", alias = "pattern")]
     pub content_pattern: Option<String>,
     #[serde(rename = "maxResults", default = "default_max_results")]
@@ -35,18 +38,26 @@ pub struct SearchFilesArgs {
     pub before_context: Option<usize>,
     #[serde(rename = "afterContext", default)]
     pub after_context: Option<usize>,
+    #[schema(desc = "Context lines before and after each match (default 0, max 5).")]
     #[serde(rename = "context", default)]
     pub context: Option<usize>,
+    #[schema(desc = "Default true.")]
     #[serde(rename = "lineNumbers", default)]
     pub line_numbers: Option<bool>,
+    #[schema(desc = "Max entries returned (defaults to maxResults = 50, capped at 1000).")]
     #[serde(rename = "headLimit", default)]
     pub head_limit: Option<usize>,
+    #[schema(desc = "Default content.", values = "content|files_with_matches|count")]
     #[serde(rename = "outputMode", default)]
     pub output_mode: Option<String>,
+    #[schema(desc = "Let the regex match across lines.")]
     #[serde(rename = "multiline", default)]
     pub multiline: Option<bool>,
     /// 可选：非 UTF-8 文件按该编码转码后再匹配（如 "gbk"）。不传时按原始字节匹配，
     /// 中文 pattern 在 GBK 文件里必然命不中。合法 UTF-8 的文件始终不转码，混合编码目录也安全。
+    #[schema(
+        desc = "e.g. gbk: transcode non-UTF-8 files before matching (needed for CJK patterns in GBK sources)."
+    )]
     #[serde(default)]
     pub encoding: Option<String>,
     /// 软超时（毫秒）。0 = 不限时。
@@ -54,6 +65,9 @@ pub struct SearchFilesArgs {
     /// 超时**不报错**，而是把已经找到的部分结果照常返回，并在结果最前面加一条说明
     /// （见 `handle` 里 `timed_out` 分支）——报错会把找到的东西一起丢掉，
     /// 再让模型重搜一次，更慢更贵。
+    #[schema(
+        desc = "Soft timeout in ms (default 20000; 0 = none). Partial results come back with a notice."
+    )]
     #[serde(rename = "deadlineMs", default = "default_deadline_ms")]
     pub deadline_ms: u64,
 }
@@ -122,13 +136,109 @@ const MAX_CONTEXT_LINES: usize = 5;
 /// 把请求的上下文行数压到 [`MAX_CONTEXT_LINES`]，返回 `(生效值, 被压掉的原值)`。
 ///
 /// 原值只在真的超出时才是 `Some`，用于在返回里写明「已从 N 压到 5」——不静默改变语义。
+///
+/// 未传时默认 0（原为 2）：实测多数调用只要「在哪一行」，默认带的前后 2 行常是长条目，
+/// 单条命中能多出数百字符；需要上下文时显式传 `context` 即可。
 fn clamp_context(requested: Option<usize>) -> (usize, Option<usize>) {
-    let want = requested.unwrap_or(2);
+    let want = requested.unwrap_or(0);
     if want > MAX_CONTEXT_LINES {
         (MAX_CONTEXT_LINES, Some(want))
     } else {
         (want, None)
     }
+}
+
+/// 单条命中 / 上下文行的字符上限：压缩 JS、生成文件一行就几万字符，命中一次能吃光整个返回预算。
+const MAX_LINE_CHARS: usize = 500;
+
+/// 截断长命中行时，命中点之前保留的字符数（其余放在命中点之后）。
+const LINE_LEAD_CHARS: usize = 200;
+
+/// 条数硬上限：字符预算才是主控，这里只防「maxResults:20000」把遍历拖得很久。
+const MAX_HEAD_LIMIT: usize = 1000;
+
+/// 命中列表的字符预算（wire 口径）。比 [`MAX_INLINE_CHARS`] 少 2,000，给超时 / 截断等说明块留位置。
+const MATCHES_BUDGET_CHARS: usize = MAX_INLINE_CHARS - 2_000;
+
+/// 把请求的条数压到 [`MAX_HEAD_LIMIT`]，返回 `(生效值, 被压掉的原值)`，语义同 [`clamp_context`]。
+fn clamp_head_limit(requested: usize) -> (usize, Option<usize>) {
+    if requested > MAX_HEAD_LIMIT {
+        (MAX_HEAD_LIMIT, Some(requested))
+    } else {
+        (requested, None)
+    }
+}
+
+/// 超长行只保留一段：有 `locate` 时以首个命中点为中心（命中点常在几千字符之后，从行首截会丢掉它），
+/// 否则从行首截。被截掉的一侧用 `…` 标记；未超长返回 `None`。按字符切，不会切断多字节字符。
+fn clip_line(line: &str, locate: Option<&regex::Regex>) -> Option<String> {
+    let total = line.chars().count();
+    if total <= MAX_LINE_CHARS {
+        return None;
+    }
+    let hit = locate
+        .and_then(|re| re.find(line))
+        .map(|m| line[..m.start()].chars().count())
+        .unwrap_or(0);
+    let start = hit
+        .saturating_sub(LINE_LEAD_CHARS)
+        .min(total - MAX_LINE_CHARS);
+    let body: String = line.chars().skip(start).take(MAX_LINE_CHARS).collect();
+    let head = if start > 0 { "…" } else { "" };
+    let tail = if start + MAX_LINE_CHARS < total {
+        "…"
+    } else {
+        ""
+    };
+    Some(format!("{head}{body}{tail}"))
+}
+
+/// 截断全部命中里的超长行，返回被截的命中行数。
+///
+/// 命中行截断后写 `lineChars`（原长度），让模型知道看到的不是整行；上下文行只截不标——
+/// 它们本来就只是参考，首尾的 `…` 已足够说明。
+fn clip_long_lines(matches: &mut [Value], locate: Option<&regex::Regex>) -> usize {
+    let mut clipped = 0;
+    for m in matches.iter_mut() {
+        let Some(obj) = m.as_object_mut() else {
+            continue;
+        };
+        if let Some(Value::String(line)) = obj.get("line") {
+            if let Some(short) = clip_line(line, locate) {
+                let total = line.chars().count();
+                obj.insert("line".into(), Value::String(short));
+                obj.insert("lineChars".into(), json!(total));
+                clipped += 1;
+            }
+        }
+        for key in ["contextBefore", "contextAfter"] {
+            if let Some(Value::Array(lines)) = obj.get_mut(key) {
+                for l in lines.iter_mut() {
+                    if let Some(short) = l.as_str().and_then(|s| clip_line(s, None)) {
+                        *l = Value::String(short);
+                    }
+                }
+            }
+        }
+    }
+    clipped
+}
+
+/// 按字符预算保留前面的命中，返回被省略的条数。整条保留或整条丢弃，不返回切半的 JSON。
+fn apply_budget(matches: &mut Vec<Value>, budget: usize) -> usize {
+    let mut used = 2; // 数组的 `[` `]`
+    let mut keep = 0;
+    for m in matches.iter() {
+        let cost = wire_chars(m).saturating_add(1); // 加分隔逗号
+        if used + cost > budget {
+            break;
+        }
+        used += cost;
+        keep += 1;
+    }
+    let omitted = matches.len() - keep;
+    matches.truncate(keep);
+    omitted
 }
 
 pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Value, String> {
@@ -180,6 +290,15 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
             }
         })
         .transpose()?;
+    // 只用来在超长行里定位命中点（见 clip_line）；编不出来就从行首截，不影响搜索本身。
+    let locate_regex = args.content_pattern.as_deref().and_then(|p| {
+        let build = |pat: &str| {
+            regex::RegexBuilder::new(pat)
+                .case_insensitive(args.case_insensitive.unwrap_or(false))
+                .build()
+        };
+        build(p).or_else(|_| build(&regex::escape(p))).ok()
+    });
     let encoding = args
         .encoding
         .as_deref()
@@ -196,11 +315,13 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     let (before, before_clamped) = clamp_context(args.before_context.or(args.context));
     let (after, after_clamped) = clamp_context(args.after_context.or(args.context));
     let context_clamped = before_clamped.or(after_clamped);
+    let (head_limit, head_limit_clamped) =
+        clamp_head_limit(args.head_limit.unwrap_or(args.max_results));
     let grep = GrepOptions {
         before,
         after,
         line_numbers: args.line_numbers.unwrap_or(true),
-        head_limit: args.head_limit.unwrap_or(args.max_results),
+        head_limit,
         output_mode: match args.output_mode.as_deref() {
             Some("files_with_matches") => OutputMode::FilesWithMatches,
             Some("count") => OutputMode::Count,
@@ -224,6 +345,14 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     let deadline = match args.deadline_ms {
         0 => None,
         ms => Some(Duration::from_millis(ms.clamp(1_000, MAX_DEADLINE_MS))),
+    };
+    // 在 batch 里软超时不超过整次 batch 剩余的时间（见 batch::remaining_budget），至少留 1s。
+    let deadline = match super::batch::remaining_budget() {
+        Some(r) => {
+            let r = r.max(Duration::from_secs(1));
+            Some(deadline.map_or(r, |d| d.min(r)))
+        }
+        None => deadline,
     };
     let deadline_ms_eff = deadline.map(|d| d.as_millis() as u64).unwrap_or(0);
     let (matches, truncated, timed_out) = tokio::task::spawn_blocking(move || {
@@ -262,6 +391,9 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
             m["path"] = json!(shown);
         }
     }
+    let mut matches = compact_matches(matches, cfg!(windows));
+    let clipped_lines = clip_long_lines(&mut matches, locate_regex.as_ref());
+    let budget_omitted = apply_budget(&mut matches, MATCHES_BUDGET_CHARS);
 
     // ④ 截断回显：walker 触及 head_limit（= head_limit.unwrap_or(max_results)）提前终止时
     // `truncated=true`，结果不完整。追加一个文本块告知远程 CC「结果被截断、可缩小范围或分页」，
@@ -292,6 +424,31 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
             )
         }));
     }
+    if budget_omitted > 0 {
+        content_blocks.push(json!({
+            "type": "text",
+            "text": format!(
+                "返回内容超出单次预算（约 {MATCHES_BUDGET_CHARS} 字符），已列出 {} 条、省略后面 {budget_omitted} 条，结果不完整——未列出的不代表不存在。可改用 outputMode:\"files_with_matches\" 或 \"count\" 先看分布（每条很小，同样预算能覆盖全部），或缩小 rootPath / namePattern / contentPattern 范围。",
+                matches.len()
+            )
+        }));
+    }
+    if let Some(want) = head_limit_clamped {
+        content_blocks.push(json!({
+            "type": "text",
+            "text": format!(
+                "条数上限已从 {want} 压到 {MAX_HEAD_LIMIT}：需要全量时用 outputMode:\"files_with_matches\" / \"count\"，或按子目录分次搜索。"
+            )
+        }));
+    }
+    if clipped_lines > 0 {
+        content_blocks.push(json!({
+            "type": "text",
+            "text": format!(
+                "{clipped_lines} 条命中行超过 {MAX_LINE_CHARS} 字符，只保留命中点附近一段（首尾 … 表示有截断，lineChars 是整行原长度）；需要整行时用 read_files 按 lineNumber 读。"
+            )
+        }));
+    }
     // context 超上限被压：必须注明，否则模型以为自己拿到的是 12 行上下文而误判命中情况。
     if let Some(want) = context_clamped {
         content_blocks.push(json!({
@@ -311,6 +468,42 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     }
 
     Ok(json!({ "content": content_blocks }))
+}
+
+/// 压缩对外返回的命中列表（只改展示形态，不改含义）。
+///
+/// - Windows 路径把 `\` 换成 `/`：反斜杠在 JSON 里要转义成 2 个字符（嵌进 batch 再翻倍），
+///   而全部工具都接受 `D:/a/b` 写法。仍保留**绝对路径**：相对路径会被原样传给 read_files
+///   读错文件。Unix 上反斜杠是合法文件名字符，不动。
+/// - `type` 为 `content` / `name` 的条目去掉 `type`：搜索模式已经说明了类型，每条重复一遍
+///   是纯开销；`skipped` / `error` 保留——它们和命中混在一起，必须可区分。
+/// - 去掉后只剩 `path` 的条目（files_with_matches、按文件名搜索）压成路径字符串。
+fn compact_matches(matches: Vec<Value>, windows_slashes: bool) -> Vec<Value> {
+    matches
+        .into_iter()
+        .map(|mut m| {
+            let Some(obj) = m.as_object_mut() else {
+                return m;
+            };
+            if windows_slashes {
+                if let Some(Value::String(p)) = obj.get_mut("path") {
+                    *p = p.replace('\\', "/");
+                }
+            }
+            if matches!(
+                obj.get("type").and_then(Value::as_str),
+                Some("content" | "name")
+            ) {
+                obj.remove("type");
+            }
+            if obj.len() == 1 {
+                if let Some(p) = obj.remove("path") {
+                    return p;
+                }
+            }
+            m
+        })
+        .collect()
 }
 
 fn compile_glob(pattern: &str) -> Result<globset::GlobMatcher, String> {
@@ -692,15 +885,17 @@ impl<'a> Sink for ContentSink<'a> {
             "path": self.path.to_string_lossy(),
             "type": "content",
             "line": line,
-            // 上下文行由 grep-searcher 在 `matched` 之前按从远到近推送，与旧版
-            // `lines[idx-before..idx]`（从远到近）顺序一致。
-            "contextBefore": self
-                .pending_before
-                .iter()
-                .map(|(_, t)| Value::String(t.clone()))
-                .collect::<Vec<_>>(),
-            "contextAfter": Vec::<Value>::new(),
         });
+        // 上下文行由 grep-searcher 在 `matched` 之前按从远到近推送，与旧版
+        // `lines[idx-before..idx]`（从远到近）顺序一致。空数组不输出，省掉每条命中的固定开销。
+        if !self.pending_before.is_empty() {
+            obj["contextBefore"] = Value::Array(
+                self.pending_before
+                    .iter()
+                    .map(|(_, t)| Value::String(t.clone()))
+                    .collect(),
+            );
+        }
         if self.line_numbers {
             obj["lineNumber"] = json!(ln);
         }
@@ -720,11 +915,16 @@ impl<'a> Sink for ContentSink<'a> {
             SinkContextKind::After => {
                 // `after` 行在下一个 `matched` 或 `finish` 前 flush，此刻 results 的最后一个
                 // 元素正是它所属的匹配。
+                // `contextAfter` 按需创建：没有后文行的命中不带这个字段。
                 if let Some(last) = self.results.last_mut() {
-                    last["contextAfter"]
-                        .as_array_mut()
-                        .expect("contextAfter is always an array")
-                        .push(Value::String(text));
+                    let slot = last
+                        .as_object_mut()
+                        .expect("匹配结果总是对象")
+                        .entry("contextAfter")
+                        .or_insert_with(|| Value::Array(Vec::new()));
+                    if let Value::Array(arr) = slot {
+                        arr.push(Value::String(text));
+                    }
                 }
             }
             SinkContextKind::Other => {}
@@ -1232,6 +1432,143 @@ mod tests {
             .collect();
         assert_eq!(before, vec!["L3".to_string()], "before=1 应仅含 L3");
         assert_eq!(after, vec!["L5".to_string()], "after=1 应仅含 L5");
+    }
+
+    #[test]
+    fn no_context_omits_empty_context_fields() {
+        let root = unique_subdir("ctx0");
+        touch(&root.join("f.txt"), "L1\nMATCH\nL3\n");
+        let re = matcher("MATCH");
+        let opts = GrepOptions {
+            before: 0,
+            after: 0,
+            ..Default::default()
+        };
+        let matches = walk_search_blocking(&root, None, Some(&re), &opts, 1_000_000);
+        assert_eq!(matches.len(), 1, "应恰好 1 个匹配，实际：{matches:?}");
+        assert!(
+            matches[0].get("contextBefore").is_none(),
+            "无上下文时不应输出 contextBefore"
+        );
+        assert!(
+            matches[0].get("contextAfter").is_none(),
+            "无上下文时不应输出 contextAfter"
+        );
+    }
+
+    /// `#[schema(...)]` 标注进入 inputSchema；没标的字段形状不变。
+    #[test]
+    fn schema_carries_param_descriptions_and_enums() {
+        let s = SearchFilesArgs::schema();
+        let p = &s["properties"];
+        assert_eq!(
+            p["outputMode"]["enum"],
+            json!(["content", "files_with_matches", "count"])
+        );
+        assert!(p["outputMode"]["description"].is_string());
+        assert!(p["deadlineMs"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("20000"));
+        assert_eq!(
+            p["rootPath"],
+            json!({ "type": "string" }),
+            "未标注字段不应多出任何东西"
+        );
+    }
+
+    #[test]
+    fn compact_matches_shrinks_only_presentation() {
+        let out = compact_matches(
+            vec![
+                json!({ "path": "D:\\a\\b.rs", "type": "content" }),
+                json!({ "path": "D:\\a\\c.rs", "type": "content", "line": "x\n", "lineNumber": 3 }),
+                json!({ "path": "D:\\a\\d.rs", "type": "name" }),
+                json!({ "path": "D:\\a\\e.bin", "type": "skipped", "reason": "binary" }),
+                json!({ "path": "D:\\a\\f.rs", "type": "content", "count": 2 }),
+            ],
+            true,
+        );
+        assert_eq!(out[0], json!("D:/a/b.rs"), "只剩路径的压成字符串");
+        assert_eq!(
+            out[1],
+            json!({ "path": "D:/a/c.rs", "line": "x\n", "lineNumber": 3 })
+        );
+        assert_eq!(out[2], json!("D:/a/d.rs"));
+        assert_eq!(
+            out[3],
+            json!({ "path": "D:/a/e.bin", "type": "skipped", "reason": "binary" }),
+            "skipped 必须保留 type"
+        );
+        assert_eq!(out[4], json!({ "path": "D:/a/f.rs", "count": 2 }));
+
+        // 非 Windows：反斜杠是合法文件名字符，不替换。
+        let out = compact_matches(vec![json!({ "path": "/x/a\\b", "type": "name" })], false);
+        assert_eq!(out[0], json!("/x/a\\b"));
+    }
+
+    #[test]
+    fn context_defaults_to_zero() {
+        assert_eq!(clamp_context(None), (0, None));
+    }
+
+    #[test]
+    fn head_limit_is_capped_with_original_reported() {
+        assert_eq!(clamp_head_limit(50), (50, None));
+        assert_eq!(clamp_head_limit(20_000), (MAX_HEAD_LIMIT, Some(20_000)));
+    }
+
+    #[test]
+    fn clip_line_keeps_window_around_match() {
+        let re = regex::Regex::new("NEEDLE").unwrap();
+        // 短行不动
+        assert_eq!(clip_line("short NEEDLE", Some(&re)), None);
+        // 命中点在中间：两侧都有 …，且保留命中文本
+        let line = format!("{}NEEDLE{}", "中".repeat(3000), "b".repeat(3000));
+        let out = clip_line(&line, Some(&re)).unwrap();
+        assert!(out.contains("NEEDLE"));
+        assert!(out.starts_with('…') && out.ends_with('…'));
+        assert_eq!(out.chars().count(), MAX_LINE_CHARS + 2);
+        // 命中点靠行尾：窗口贴到行尾，尾部不加 …
+        let line = format!("{}NEEDLE", "a".repeat(3000));
+        let out = clip_line(&line, Some(&re)).unwrap();
+        assert!(out.ends_with("NEEDLE") && out.starts_with('…'));
+        // 没有定位正则：从行首截
+        let out = clip_line(&"x".repeat(1000), None).unwrap();
+        assert!(!out.starts_with('…') && out.ends_with('…'));
+    }
+
+    #[test]
+    fn clip_long_lines_marks_match_and_clips_context() {
+        let long = "y".repeat(2000);
+        let mut matches = vec![
+            json!({ "path": "a", "line": long, "contextBefore": [long], "lineNumber": 1 }),
+            json!({ "path": "b", "line": "ok\n", "lineNumber": 2 }),
+            json!("c"),
+        ];
+        assert_eq!(clip_long_lines(&mut matches, None), 1);
+        assert_eq!(matches[0]["lineChars"], json!(2000));
+        assert!(matches[0]["line"].as_str().unwrap().chars().count() <= MAX_LINE_CHARS + 2);
+        assert!(matches[0]["contextBefore"][0]
+            .as_str()
+            .unwrap()
+            .ends_with('…'));
+        assert!(matches[1].get("lineChars").is_none());
+    }
+
+    #[test]
+    fn budget_keeps_whole_entries_and_reports_omitted() {
+        let mut matches: Vec<Value> = (0..1000)
+            .map(|i| json!({ "path": format!("D:/p/{i}.rs"), "line": "z".repeat(80) }))
+            .collect();
+        let omitted = apply_budget(&mut matches, 5_000);
+        assert!(omitted > 0 && !matches.is_empty());
+        assert_eq!(matches.len() + omitted, 1000);
+        assert!(wire_chars(&Value::Array(matches.clone())) <= 5_000);
+        // 预算充足时一条不丢
+        let mut small = vec![json!("a"), json!("b")];
+        assert_eq!(apply_budget(&mut small, MATCHES_BUDGET_CHARS), 0);
+        assert_eq!(small.len(), 2);
     }
     /// 受控基准（默认 ignore，避免拖慢常规 `cargo test`）：复现 P6-1 真实最坏场景——
     /// 一个「没有 .gitignore 挡住构建目录」的项目根，含大量 target/ 构建产物。

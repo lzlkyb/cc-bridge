@@ -28,6 +28,7 @@ pub struct EditEntry {
     /// WHY：模型改代码前最想确认的就是「这段原文是不是恰好出现 N 次」，没有这个参数时
     /// 只能手写 `assert s.count(a) == N` 的脚本绕路。它是**断言**，不改变替换规则：
     /// 是否全替换仍由 `replaceAll` 决定。
+    #[schema(desc = "Assert oldString occurs exactly N times; on mismatch nothing is written.")]
     #[serde(default, rename = "expectCount")]
     pub expect_count: Option<usize>,
 }
@@ -112,6 +113,10 @@ pub struct EditFilesArgs {
     pub files: Vec<EditEntry>,
     /// 回显档位：`none` | `stat` | `hunks` | `full` | `auto`（省略 = `auto`，编辑场景落成 `hunks`）。
     /// 详见 [`crate::diff_utils::DiffMode`]。
+    #[schema(
+        desc = "How much of the change to echo back (default auto).",
+        values = "auto|none|stat|hunks|full"
+    )]
     pub diff: Option<String>,
 }
 
@@ -313,8 +318,13 @@ async fn edit_single(
         content.matches(&needle).take(2).count()
     };
     if match_count == 0 {
+        // 附上「最接近处」的位置与差异：只报 not found 时，模型只能再读一遍文件去猜哪里不对。
+        let message = match nearest_hint(content, &needle) {
+            Some(h) => format!("oldString not found in file。{h}"),
+            None => "oldString not found in file".into(),
+        };
         return Err(EditError {
-            message: "oldString not found in file".into(),
+            message,
             warning: warning.clone(),
         });
     }
@@ -421,6 +431,91 @@ pub(crate) async fn write_atomic(path: &std::path::Path, data: &[u8]) -> Result<
     Ok(())
 }
 
+/// 展示用：截到 120 字符并用「」包起来。
+fn show_line(s: &str) -> String {
+    let t: String = s.chars().take(120).collect();
+    let more = if s.chars().count() > 120 { "…" } else { "" };
+    format!("「{t}{more}」")
+}
+
+/// 全角符号 / 中文引号归一成半角，用来判断「是不是只差在全半角」。
+fn fold_width(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
+            '\u{3000}' => ' ',
+            '“' | '”' => '"',
+            '‘' | '’' => '\'',
+            '、' => ',',
+            '。' => '.',
+            _ => c,
+        })
+        .collect()
+}
+
+/// 两行差在哪一类（只识别最常见、可直接动手修的三类）。
+fn classify_diff(file_line: &str, given: &str) -> Option<&'static str> {
+    if file_line.trim() == given.trim() {
+        return Some("只差在缩进或行首尾空白");
+    }
+    if file_line.replace('\\', "") == given.replace('\\', "") {
+        return Some("反斜杠个数不同（多半是转义层级不对：文件里的是字面反斜杠）");
+    }
+    if fold_width(file_line).trim() == fold_width(given).trim() {
+        return Some("只差在全角 / 半角符号");
+    }
+    None
+}
+
+/// `oldString` 匹配不到时，找文件里「最接近」的一处并说明差在哪。
+///
+/// 做法：以 needle 的第一个非空行为锚点，在文件里找「去首尾空白后相同」的行；从每个候选
+/// 往下逐行比，取连续对上最多的那处。只在错误分支调用，代价无所谓。
+/// 锚点行都找不到时也要说出来——那通常是改错了文件，或文件已被改过。
+fn nearest_hint(content: &str, needle: &str) -> Option<String> {
+    let want: Vec<&str> = needle.split('\n').collect();
+    let (anchor_idx, anchor) = want
+        .iter()
+        .enumerate()
+        .find(|(_, l)| !l.trim().is_empty())?;
+    let have: Vec<&str> = content.split('\n').collect();
+    let mut best: Option<(usize, usize)> = None; // (文件里对应 needle 首行的下标, 连续一致的行数)
+    for (i, line) in have.iter().enumerate() {
+        if line.trim() != anchor.trim() || i < anchor_idx {
+            continue;
+        }
+        let start = i - anchor_idx;
+        let same = want
+            .iter()
+            .enumerate()
+            .take_while(|(k, w)| have.get(start + k).is_some_and(|h| h == *w))
+            .count();
+        if best.is_none_or(|(_, b)| same > b) {
+            best = Some((start, same));
+        }
+    }
+    let Some((start, same)) = best else {
+        return Some(format!(
+            "文件里找不到 oldString 的首行 {}（忽略首尾空白也没有）：可能改错了文件，或这段已被改过，建议先重新读取。",
+            show_line(anchor)
+        ));
+    };
+    let at = start + same; // 第一处不一致（文件侧下标）
+    let file_line = have.get(at).copied().unwrap_or("（文件已结束）");
+    let given = want.get(same).copied().unwrap_or("");
+    let kind = classify_diff(file_line, given)
+        .map(|k| format!("差异类型：{k}。"))
+        .unwrap_or_default();
+    Some(format!(
+        "最接近处从第 {} 行开始：前 {same}/{} 行一致，第 {} 行不同。文件里是 {}，oldString 里是 {}。{kind}",
+        start + 1,
+        want.len(),
+        at + 1,
+        show_line(file_line),
+        show_line(given),
+    ))
+}
+
 /// 给「次数不符」类错误定位的行号提示：按出现顺序最多列 5 处，如 `位置：第 12、48 行`。
 ///
 /// 只在错误分支调用，代价无所谓；`needle` 为空时返回空串（调用方已挡掉空 oldString）。
@@ -482,6 +577,45 @@ fn whitespace_warning(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nearest_hint_points_at_first_differing_line() {
+        let content = "fn a() {\n    let p = \"D:\\\\x\";\n    call(p);\n}\n";
+        // 常见错误：反斜杠少了一层。
+        let needle = "fn a() {\n    let p = \"D:\\x\";\n    call(p);";
+        let h = nearest_hint(content, needle).expect("应给出提示");
+        assert!(h.contains("第 1 行开始"), "{h}");
+        assert!(h.contains("前 1/3 行一致"), "{h}");
+        assert!(h.contains("第 2 行不同"), "{h}");
+        assert!(h.contains("反斜杠"), "{h}");
+    }
+
+    #[test]
+    fn nearest_hint_classifies_whitespace_and_width() {
+        let content = "a\n\tb();\nc\n";
+        let h = nearest_hint(content, "a\n    b();").unwrap();
+        assert!(h.contains("缩进"), "{h}");
+        let content = "// 注释(一)\nx\n";
+        let h = nearest_hint(content, "x\n").unwrap();
+        // 锚点对上、后续行不同的情形也要给位置；这里只是确保不 panic。
+        assert!(h.contains("第 2 行开始"), "{h}");
+        let h = nearest_hint(content, "// 注释（一）\ny").unwrap();
+        assert!(h.contains("找不到"), "首行全半角不同时锚点也对不上：{h}");
+        assert_eq!(
+            classify_diff("// 注释(一)", "// 注释（一）"),
+            Some("只差在全角 / 半角符号")
+        );
+    }
+
+    #[test]
+    fn nearest_hint_reports_missing_anchor() {
+        let h = nearest_hint("alpha\nbeta\n", "gamma\nbeta").unwrap();
+        assert!(h.contains("找不到") && h.contains("gamma"), "{h}");
+        assert!(
+            nearest_hint("x", "  \n ").is_none(),
+            "全空白 needle 不给提示"
+        );
+    }
 
     /// 归一化规则本身的说明性断言：原串匹配不上、归一化后能匹配上。
     ///

@@ -115,7 +115,7 @@ impl Capture {
 
     /// 整份保留内容的文本形态（`untilPattern` 匹配、`include` 过滤都扫这个）。
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.snapshot()).into_owned()
+        decode_output(&self.snapshot())
     }
 
     /// 从 `offset`（整条输出里的真实字节位置）开始读保留的内容。
@@ -142,11 +142,82 @@ impl Capture {
         }
 
         RangeRead {
-            text: String::from_utf8_lossy(&parts).into_owned(),
+            text: decode_output(&parts),
             next_offset: cursor,
             gap_bytes,
         }
     }
+}
+
+/// 把命令输出的字节解成文本：按行判断，合法 UTF-8 原样，否则（仅 Windows）试 GBK。
+///
+/// 为什么：中文 Windows 上 ping / dir / netsh / Java / Maven 等按系统代码页（GBK）输出，
+/// 一律按 UTF-8 lossy 解会变成满屏 `�`（实测 `Ping �����Ҳ�������`），报错全部看不懂。
+/// - **按行**而不是整段：同一份输出里常混着 Git Bash 的 UTF-8 与 Windows 工具的 GBK，
+///   整段按 GBK 解会把 UTF-8 的中文解坏（UTF-8 中文字节多半也是合法 GB18030）。
+/// - **仅 Windows**：GB18030 解码器几乎接受任意字节，在 Unix 上会把二进制垃圾「解」成
+///   一串汉字，比 `�` 更误导。
+/// - GBK 也解不干净（有错误）的行仍走 UTF-8 lossy。字节偏移不受影响（只改展示文本）。
+pub fn decode_output(bytes: &[u8]) -> String {
+    decode_output_with(bytes, cfg!(windows))
+}
+
+fn decode_output_with(bytes: &[u8], try_gbk: bool) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(bytes.len());
+    for line in bytes.split_inclusive(|b| *b == b'\n') {
+        match std::str::from_utf8(line) {
+            Ok(s) => out.push_str(s),
+            // 只是首尾切在多字节字符中间（输出截断、按偏移读）：仍是 UTF-8，只坏边上那一个字。
+            // 不先排除这种情况，GBK 常能「无错」解出 UTF-8 中文字节，整行变乱码（实测约 1/4）。
+            Err(_) if looks_like_cut_utf8(line) => {
+                out.push_str(&String::from_utf8_lossy(line));
+            }
+            Err(_) => {
+                let gbk = try_gbk.then(|| encoding_rs::GBK.decode_without_bom_handling(line));
+                match gbk {
+                    Some((s, false)) => out.push_str(&s),
+                    _ => out.push_str(&String::from_utf8_lossy(line)),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 这一行是不是「被切坏了一两处的 UTF-8」：切点可能在行首（按偏移读）、换行前，或行中间
+/// （截断后头尾两段拼在一起）。
+///
+/// 判据：UTF-8 意义下的坏处不超过 2 处（行首残留的续字节算 1 处），且至少有一个完整的
+/// 3/4 字节字符。真正的 GBK 行几乎每个汉字都是一处坏处，也极少凑出合法的 3 字节序列。
+fn looks_like_cut_utf8(line: &[u8]) -> bool {
+    let lead = line
+        .iter()
+        .take(3)
+        .take_while(|b| (**b & 0xC0) == 0x80)
+        .count();
+    let mut bad = usize::from(lead > 0);
+    let mut wide = false;
+    let mut rest = &line[lead..];
+    loop {
+        let (ok, err) = match std::str::from_utf8(rest) {
+            Ok(s) => (s, None),
+            Err(e) => (
+                std::str::from_utf8(&rest[..e.valid_up_to()]).unwrap_or(""),
+                Some(e),
+            ),
+        };
+        wide |= ok.chars().any(|c| c.len_utf8() >= 3);
+        let Some(e) = err else { break };
+        bad += 1;
+        match e.error_len() {
+            Some(n) => rest = &rest[e.valid_up_to() + n..],
+            None => break,
+        }
+    }
+    wide && bad <= 2
 }
 
 /// [`Capture::read_from`] 的结果。
@@ -555,6 +626,54 @@ mod tests {
             },
         );
         assert!(!out.contains("ERROR: hidden"), "调用方已过滤时不再抽关键行");
+    }
+
+    #[test]
+    fn decode_output_recovers_gbk_lines_and_keeps_utf8_lines() {
+        let (gbk, _, _) = encoding_rs::GBK.encode("Ping 请求找不到主机\r\n");
+        let mut mixed = "中文 UTF-8 行\n".as_bytes().to_vec();
+        mixed.extend_from_slice(&gbk);
+        mixed.extend_from_slice("末行\n".as_bytes());
+
+        let out = decode_output_with(&mixed, true);
+        assert_eq!(
+            out, "中文 UTF-8 行\nPing 请求找不到主机\r\n末行\n",
+            "混合输出应逐行各自解对"
+        );
+
+        // 不试 GBK（非 Windows）：仍是旧的 lossy 行为，UTF-8 行不受影响。
+        let out = decode_output_with(&mixed, false);
+        assert!(
+            out.starts_with("中文 UTF-8 行\n") && out.contains('\u{FFFD}'),
+            "{out}"
+        );
+
+        // 纯 UTF-8 走快路径、原样返回。
+        assert_eq!(decode_output_with("a\n中\n".as_bytes(), true), "a\n中\n");
+    }
+
+    /// 切在中文字符中间的 UTF-8 行不能被当成 GBK：只坏切点那一个字，其余原样。
+    #[test]
+    fn cut_utf8_lines_are_not_decoded_as_gbk() {
+        let line = "编译错误：找不到符号\n".as_bytes();
+        let n = line.len();
+        // 行首切在「编」中间
+        let head = line[1..].to_vec();
+        // 换行前切在「号」中间
+        let mut tail = line[..n - 2].to_vec();
+        tail.push(b'\n');
+        // 行中间：「错」少一个字节（截断后两段拼接）
+        let cuo = "编译".len();
+        let mut mid = line[..cuo + 2].to_vec();
+        mid.extend_from_slice(&line[cuo + 3..]);
+        for cut in [head, tail, mid] {
+            assert!(std::str::from_utf8(&cut).is_err(), "前提：切坏了");
+            let out = decode_output_with(&cut, true);
+            assert!(out.contains("找不到符"), "不应整行变乱码：{out}");
+        }
+        // 短的 GBK 行仍按 GBK 解。
+        let (gbk, _, _) = encoding_rs::GBK.encode("错误\r\n");
+        assert_eq!(decode_output_with(&gbk, true), "错误\r\n");
     }
 
     #[test]

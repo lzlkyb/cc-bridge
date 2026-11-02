@@ -11,11 +11,9 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{
-    parse_macro_input, Data, DeriveInput, Fields, GenericArgument, PathArguments, Type,
-};
+use syn::{parse_macro_input, Data, DeriveInput, Fields, GenericArgument, PathArguments, Type};
 
-#[proc_macro_derive(ToolSchema)]
+#[proc_macro_derive(ToolSchema, attributes(schema))]
 pub fn derive_tool_schema(input: TokenStream) -> TokenStream {
     let ast = parse_macro_input!(input as DeriveInput);
     let name = &ast.ident;
@@ -67,7 +65,7 @@ fn gen_object_schema(fields: &Fields) -> proc_macro2::TokenStream {
         let field_name = f.ident.as_ref().unwrap();
         let prop_name = get_rename(f).unwrap_or_else(|| field_name.to_string());
         let prop_lit = syn::LitStr::new(&prop_name, field_name.span());
-        let schema_expr = type_schema(&f.ty);
+        let schema_expr = with_schema_attrs(type_schema(&f.ty), f);
         let is_option = is_option_type(&f.ty);
         let has_default = has_serde_default(f);
         if !(is_option || has_default) {
@@ -90,6 +88,56 @@ fn gen_object_schema(fields: &Fields) -> proc_macro2::TokenStream {
                 "properties": properties,
                 "required": required,
             })
+        }
+    }
+}
+
+/// 把字段上的 `#[schema(desc = "..", values = "a|b")]` 合进该字段的 schema。
+///
+/// 为什么不直接用文档注释：那些注释是写给开发者的长篇中文（设计取舍、踩过的坑），
+/// 全塞进 tools/list 会让每个会话的固定开销暴涨。显式属性只给「模型容易猜错」的参数写
+/// 一句简短说明；没标的字段生成结果与改动前逐字相同。
+/// - `desc` → `description`
+/// - `values` → `enum`（`|` 分隔）：只用于字符串参数的可选值。
+fn with_schema_attrs(base: proc_macro2::TokenStream, f: &syn::Field) -> proc_macro2::TokenStream {
+    let mut desc: Option<String> = None;
+    let mut values: Option<Vec<String>> = None;
+    for attr in &f.attrs {
+        if !attr.path().is_ident("schema") {
+            continue;
+        }
+        let r = attr.parse_nested_meta(|m| {
+            let lit: syn::LitStr = m.value()?.parse()?;
+            if m.path.is_ident("desc") {
+                desc = Some(lit.value());
+            } else if m.path.is_ident("values") {
+                values = Some(
+                    lit.value()
+                        .split('|')
+                        .map(|s| s.trim().to_string())
+                        .collect(),
+                );
+            } else {
+                return Err(m.error("schema 属性只支持 desc / values"));
+            }
+            Ok(())
+        });
+        if let Err(e) = r {
+            // 写错就编译失败，而不是静默丢掉说明。
+            return e.to_compile_error();
+        }
+    }
+    if desc.is_none() && values.is_none() {
+        return base;
+    }
+    let set_desc = desc.map(|d| quote! { s["description"] = ::serde_json::json!(#d); });
+    let set_enum = values.map(|v| quote! { s["enum"] = ::serde_json::json!([ #(#v),* ]); });
+    quote! {
+        {
+            let mut s = #base;
+            #set_desc
+            #set_enum
+            s
         }
     }
 }

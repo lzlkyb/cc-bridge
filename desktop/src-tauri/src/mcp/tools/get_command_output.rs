@@ -12,6 +12,9 @@ use crate::state::AppState;
 #[derive(Debug, Deserialize, cc_bridge_macros::ToolSchema)]
 pub struct GetCommandOutputArgs {
     pub handle: String,
+    #[schema(
+        desc = "Bytes already consumed (stdoutTotalBytes from the previous call) to fetch only new output."
+    )]
     #[serde(default, rename = "stdoutOffset")]
     pub stdout_offset: usize,
     #[serde(default, rename = "stderrOffset")]

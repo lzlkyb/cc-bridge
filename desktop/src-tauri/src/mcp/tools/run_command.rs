@@ -87,8 +87,14 @@ pub struct RunCommandArgs {
     /// 仅在 `session_cwd_enabled` 开启时生效；关闭或缺失时忽略（行为同旧版）。
     #[serde(default, rename = "sessionId")]
     pub session_id: Option<String>,
+    #[schema(desc = "Return a handle immediately; collect the result with wait_command.")]
     #[serde(default)]
     pub background: bool,
+    /// 前台超时。≤ 约 50s 时到点杀整树；更长（含默认 120s）时，跑到约 50s 仍未结束就转后台
+    /// 继续运行、返回 handle，不再杀——客户端约 60s 就断开，等更久只会两头落空。
+    #[schema(
+        desc = "Hard limit in ms (default 120000); the command tree is killed when it is reached. Past ~50s a still-running command moves to the background and a handle is returned (it keeps running until done or this limit). For longer jobs use background:true."
+    )]
     #[serde(default = "default_timeout_ms", rename = "timeoutMs")]
     pub timeout_ms: u64,
     /// 本次**返回正文**的上限，单位是序列化后的 UTF-8 字节：默认 32KB，封顶 45KB。
@@ -117,11 +123,49 @@ pub struct RunCommandArgs {
     #[serde(default)]
     pub exclude: Option<String>,
     /// 可选：只返回末尾 N 行（先过滤再截尾）。省略即不截尾。
+    #[schema(desc = "Return only the last N output lines (after include/exclude).")]
     #[serde(default, rename = "tailLines")]
     pub tail_lines: Option<usize>,
+    /// 可选：`"raw"` = stdout / stderr 各自作为独立文本块原样返回（见 `split_output_blocks`）。
+    #[schema(
+        desc = "raw = status JSON block, then stdout and stderr as unescaped text blocks.",
+        values = "raw"
+    )]
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 const MAX_CONCURRENT_BACKGROUND: usize = 5;
+
+/// 命令以 `cd <路径>` 开头（其后是 `&&` / `;` / 换行 / 结束）时取出那个路径。
+///
+/// 支持双引号 / 单引号 / 不带引号，以及 cmd 的 `cd /d`。只做字面提取，是否可用由调用方
+/// 再过白名单校验——这里不展开变量、不猜 `~`。
+fn cd_prefix_dir(command: &str) -> Option<String> {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r#"^\s*cd\s+(?:/d\s+)?(?:"([^"]+)"|'([^']+)'|([^\s;&|"']+))\s*(?:&&|;|\r?\n|$)"#,
+        )
+        .expect("正则合法")
+    });
+    let c = re.captures(command)?;
+    let p = c.get(1).or_else(|| c.get(2)).or_else(|| c.get(3))?.as_str();
+    // 不取带变量、家目录简写的路径：字面解析一定错。
+    if p.contains('$') || p.contains('%') || p.starts_with('~') {
+        return None;
+    }
+    // 只取绝对路径：相对路径会按本进程自己的当前目录解析，当了起始目录后命令里的
+    // `cd` 还会再执行一次，变成 `src/src`。
+    // 盘符写法单独认：非 Windows 上 `Path::is_absolute` 不认 `D:/a`（之后仍要过白名单与存在性校验）。
+    let b = p.as_bytes();
+    let drive =
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\');
+    if !drive && !std::path::Path::new(p).is_absolute() {
+        return None;
+    }
+    Some(p.to_string())
+}
 
 /// 用 `cmd /C <command>` 在白名单 cwd 内执行命令，stdout/stderr 分别经管道捕获。
 ///
@@ -162,6 +206,22 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     let mut cwd_fallback = false;
     // 开关关闭却传了 sessionId：照旧忽略，但在响应里明说，免得模型以为 cwd 会被记住。
     let session_ignored = !config.session_cwd_enabled && args.session_id.is_some();
+    // 从命令开头的 `cd <路径>` 推出的起始目录（仅在没传 cwd 时用；必须过白名单且是目录）。
+    let cd_dir = if args.cwd.is_none() {
+        cd_prefix_dir(&args.command).and_then(|d| {
+            security::path::resolve_safe_path_cached(
+                &d,
+                &state.cached_roots(),
+                &config.exclude_patterns,
+                config.whitelist_enabled,
+            )
+            .ok()
+            .filter(|r| r.is_dir())
+            .map(|r| (r, d))
+        })
+    } else {
+        None
+    };
     let (resolved_cwd, cwd_display, effective_session_id) = if config.session_cwd_enabled {
         if let Some(sid) = &args.session_id {
             match state.cwd_sessions.get(sid) {
@@ -217,6 +277,16 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
                     config.whitelist_enabled,
                 )?;
                 (resolved, cwd.clone(), None)
+            }
+            // 没传 cwd 但命令以 `cd <路径>` 开头：那就是调用方想要的目录，直接用它做起始目录
+            // （同样过白名单），不再报 cwdFallback。解析不了（含变量、`/d/` 写法等）就走下面的回退。
+            // 开头的 cd 仍会照常执行，结果目录不变，只是起点与回显正确了。
+            //
+            // 不做「记住上一次的 cwd」：本服务没有连接级标识，只能按来源 IP 记，而同一台机器上
+            // 常有多个并行会话——串户会让命令在别人的仓库里跑，比回退到固定目录危险得多。
+            None if cd_dir.is_some() => {
+                let (resolved, d) = cd_dir.expect("guard 已确认");
+                (resolved, d, None)
             }
             None => {
                 // B 类容错（审计近 30 天实锤 27 条「cwd 必传」报错）：cwd 缺失时
@@ -281,6 +351,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
         ));
     }
 
+    let raw_format = args.format.as_deref() == Some("raw");
     let command = args.command;
     let background = args.background;
     let timeout_ms = args.timeout_ms;
@@ -329,6 +400,10 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     // 故先 clone 一份供闭包使用，原值留给末尾回显。
     let resolved_cwd_spawn = resolved_cwd.clone();
     let state_for_blocking = state.clone();
+    // 在 batch 里按整次 batch 剩余的时间提前转后台（见 batch::remaining_budget）。
+    // 必须在这里取：task_local 在 spawn_blocking 的线程里读不到。
+    let handoff_ms = super::batch::remaining_budget()
+        .map_or(HANDOFF_MS, |r| (r.as_millis() as u64).min(HANDOFF_MS));
     let result = tokio::task::spawn_blocking(move || {
         spawn_shell(
             &command,
@@ -344,6 +419,7 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
             session_env,
             notify_command_complete,
             filter,
+            handoff_ms,
         )
     })
     .await
@@ -374,14 +450,20 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
     }
 
     // 回声当前壳层由 inject_session_info 一并写进 content[0].text（见该函数注释）。
-    inject_session_info(
+    let out = inject_session_info(
         Ok(value),
         effective_session_id,
         &resolved_cwd,
         cwd_fallback,
         session_ignored,
         shell,
-    )
+    )?;
+    // raw 拆块必须放在最后：前面的截断登记 / 字段注入都按 content[0].text 是 JSON 工作。
+    Ok(if raw_format {
+        crate::mcp::tools::split_output_blocks(out)
+    } else {
+        out
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -399,6 +481,7 @@ fn spawn_shell(
     extra_env: Vec<(String, String)>,
     notify_command_complete: bool,
     filter: OutputFilter,
+    handoff_ms: u64,
 ) -> Result<(Value, Option<PathBuf>), String> {
     // 用 process-wrap 的 StdCommandWrap 组合包装（Windows 实测结论，见复现测试）：
     // - 关键陷阱：JobObject 的 pre_spawn 会重设 creation_flags 为 CREATE_SUSPENDED（且不合并
@@ -421,6 +504,17 @@ fn spawn_shell(
             ),
         };
     let mut cmd = StdCommandWrap::with_new(inv.program.as_str(), |c| {
+        // cmd 必须原样传参（见 `Invocation::raw_args`），否则命令里的双引号会被转成 cmd 不认的 `\"`。
+        #[cfg(windows)]
+        if inv.raw_args {
+            use std::os::windows::process::CommandExt;
+            for a in &inv.args {
+                c.raw_arg(a);
+            }
+        } else {
+            c.args(&inv.args);
+        }
+        #[cfg(not(windows))]
         c.args(&inv.args);
         // 修复：显式给 stdin 一个空句柄。cc-bridge 本身是 GUI 子系统程序，没有控制台、
         // 也就没有可继承的有效 stdin 句柄。若不显式设置（默认继承父进程句柄），
@@ -461,6 +555,7 @@ fn spawn_shell(
             description,
             state,
             notify_command_complete,
+            inv.cwd_capture_file.clone(),
         )
         .map(|v| (v, None))
     } else {
@@ -475,6 +570,8 @@ fn spawn_shell(
             command,
             &cwd_display,
             description,
+            notify_command_complete,
+            handoff_ms,
         )
     }
 }
@@ -569,6 +666,8 @@ fn run_foreground(
     command: &str,
     cwd_display: &str,
     description: Option<String>,
+    notify_command_complete: bool,
+    handoff_ms: u64,
 ) -> Result<(Value, Option<PathBuf>), String> {
     let pid = child.id();
     let started_at = Instant::now();
@@ -588,10 +687,29 @@ fn run_foreground(
     };
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    // 转后台时刻：只有调用方给的超时长于客户端安全线时才有。
+    // 超时本就在安全线内的，保持旧语义（到点杀整树）。
+    // 阈值由调用方传入（正式路径恒为 HANDOFF_MS），只为测试能用短阈值验证这条路。
+    let handoff_at =
+        (timeout_ms > handoff_ms).then(|| started_at + Duration::from_millis(handoff_ms));
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
+                if handoff_at.is_some_and(|t| Instant::now() >= t) {
+                    return Ok((
+                        hand_off_to_background(
+                            child,
+                            &ctx,
+                            filter,
+                            max_output_bytes,
+                            notify_command_complete,
+                            deadline,
+                            cwd_file.map(std::path::Path::to_path_buf),
+                        ),
+                        None,
+                    ));
+                }
                 if Instant::now() >= deadline {
                     break None;
                 }
@@ -689,6 +807,97 @@ fn run_foreground(
             ))
         }
     }
+}
+
+/// 前台命令最多挂起多久就转后台（毫秒）。
+///
+/// 客户端约 60s 就断开请求（见 [`crate::mcp::tools::CLIENT_SAFE_WAIT_SECS`]）。以前默认超时 120s：
+/// 跑 60–120s 的命令，客户端先断开、一个字都拿不到，命令却还在跑，到 120s 又被杀掉——
+/// 两头落空。现在到安全线就把它登记成后台命令、返回 handle 与已有输出，进程继续跑。
+const HANDOFF_MS: u64 = crate::mcp::tools::CLIENT_SAFE_WAIT_SECS * 1000;
+
+/// 前台命令跑过安全线：转为后台继续运行，返回当前输出 + handle。
+///
+/// 不杀进程、不换缓冲：后台条目直接接管前台阶段的读线程与缓冲，`wait_command` 拿到的
+/// 是从头开始的完整输出。不过后台名额上限：命令已经在跑了，为名额杀掉它只会更糟。
+/// 调用方的 `timeoutMs` 仍然有效（`kill_at`）：否则卡死的命令转后台后永不结束，还不占名额地越积越多。
+/// 会话内 cwd 追踪在这条路上不生效（命令还没跑完，没有「结束后的 cwd」可读），
+/// 它的临时文件交给后台等待线程在命令结束后删除。
+#[allow(clippy::too_many_arguments)]
+fn hand_off_to_background(
+    child: Box<dyn StdChildWrapper>,
+    ctx: &FinishCtx<'_>,
+    filter: &OutputFilter,
+    max_output_bytes: usize,
+    notify_command_complete: bool,
+    kill_at: Instant,
+    cleanup_file: Option<PathBuf>,
+) -> Value {
+    let handle_id = register_background(
+        child,
+        BgPipes {
+            stdout: ctx.stdout.clone(),
+            stderr: ctx.stderr.clone(),
+            stdout_done: ctx.stdout_done.clone(),
+            stderr_done: ctx.stderr_done.clone(),
+        },
+        ctx.started_at,
+        ctx.command.to_string(),
+        ctx.cwd.to_string(),
+        ctx.description.clone(),
+        ctx.state,
+        notify_command_complete,
+        Some(kill_at),
+        cleanup_file,
+    );
+    let secs = ctx.started_at.elapsed().as_secs();
+    let limit_secs = kill_at.saturating_duration_since(ctx.started_at).as_secs();
+    let result = {
+        let stdout = ctx.stdout.blocking_lock();
+        let stderr = ctx.stderr.blocking_lock();
+        build_output_result(
+            &stdout,
+            &stderr,
+            Value::Null,
+            false,
+            Some(format!(
+                "命令已运行 {secs}s 仍未结束，已转为后台继续运行（未终止）。以上是目前的输出；\
+                 用 wait_command(handle) 等结果，stop_command(handle) 可结束它。\
+                 跑满 timeoutMs（{limit_secs}s）仍未结束会被自动终止（含子进程）。"
+            )),
+            filter,
+            max_output_bytes,
+            false,
+        )
+    };
+    with_fields(
+        result,
+        &[
+            ("handle", json!(handle_id)),
+            ("running", json!(true)),
+            ("backgrounded", json!(true)),
+        ],
+    )
+}
+
+/// 往 `text_result` 的 JSON 正文里补字段（正文不是 JSON 对象时原样返回）。
+fn with_fields(value: Value, extra: &[(&str, Value)]) -> Value {
+    let Some(mut info) = value
+        .get("content")
+        .and_then(|c| c.get(0))
+        .and_then(|b| b.get("text"))
+        .and_then(|t| t.as_str())
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+    else {
+        return value;
+    };
+    let Some(fields) = info.as_object_mut() else {
+        return value;
+    };
+    for (k, v) in extra {
+        fields.insert((*k).to_string(), v.clone());
+    }
+    text_result(&info)
 }
 
 /// 前台结果组装：stdout/stderr 经服务端过滤后，再压进返回上限（方案 §3.3）。
@@ -842,12 +1051,69 @@ fn spawn_background(
     description: Option<String>,
     state: &Arc<AppState>,
     notify_command_complete: bool,
+    // 会话模式下的 cwd 捕获文件：后台命令不读回 cwd，结束后删掉免得堆在 %TEMP%。
+    cwd_capture_file: Option<PathBuf>,
 ) -> Result<Value, String> {
     let (stdout_buf, stdout_done) = take_reader(child.stdout().take());
     let (stderr_buf, stderr_done) = take_reader(child.stderr().take());
-
     let pid = child.id();
-    let started_at = Instant::now();
+    let handle_id = register_background(
+        child,
+        BgPipes {
+            stdout: stdout_buf,
+            stderr: stderr_buf,
+            stdout_done,
+            stderr_done,
+        },
+        Instant::now(),
+        command,
+        cwd,
+        description,
+        state,
+        notify_command_complete,
+        None,
+        cwd_capture_file,
+    );
+    Ok(text_result(&json!({ "handle": handle_id, "pid": pid })))
+}
+
+/// 一条命令的两路输出缓冲与 EOF 标记（由读线程写入）。
+struct BgPipes {
+    stdout: Arc<AsyncMutex<Capture>>,
+    stderr: Arc<AsyncMutex<Capture>>,
+    stdout_done: Arc<AtomicBool>,
+    stderr_done: Arc<AtomicBool>,
+}
+
+/// 把一个**已在运行**的子进程登记为后台命令：起 wait 线程追退出码、写注册表，返回 handle。
+///
+/// 两个入口共用：`background:true` 直接起的后台命令，以及前台命令跑过客户端安全线后
+/// 「转后台」（见 `run_foreground`）。后者沿用前台阶段的缓冲与 `started_at`，输出与耗时都不断档。
+///
+/// - `kill_at`：到点仍未结束就杀整树（转后台的命令沿用调用方的 `timeoutMs`）；置 `stop_requested`，
+///   wait_command 据此报 `terminated`。`background:true` 的命令没有上限，传 `None`。
+/// - `cleanup_file`：命令结束后删除的临时文件（转后台时没人再读的会话 cwd 捕获文件）。
+#[allow(clippy::too_many_arguments)]
+#[cfg_attr(not(feature = "notifications"), allow(unused_variables))]
+fn register_background(
+    child: Box<dyn StdChildWrapper>,
+    pipes: BgPipes,
+    started_at: Instant,
+    command: String,
+    cwd: String,
+    description: Option<String>,
+    state: &Arc<AppState>,
+    notify_command_complete: bool,
+    kill_at: Option<Instant>,
+    cleanup_file: Option<PathBuf>,
+) -> String {
+    let BgPipes {
+        stdout: stdout_buf,
+        stderr: stderr_buf,
+        stdout_done,
+        stderr_done,
+    } = pipes;
+    let pid = child.id();
     // 后台任务的 wait 线程与 stop_command 共享同一份 child（Arc<Mutex>）：
     // wait 线程持有它调 wait() 更新 exit_code；stop_command 持有它调 start_kill() 杀整树。
     let child = Arc::new(StdMutex::new(child));
@@ -857,6 +1123,10 @@ fn spawn_background(
     // 修复：进程结束时同步定格“已运行秒数”，避免面板在进程早已退出后还用 started_at.elapsed() 实时计算，导致时长一直增长。
     let finished_elapsed: Arc<AsyncMutex<Option<u64>>> = Arc::new(AsyncMutex::new(None));
     let finished_elapsed_clone = finished_elapsed.clone();
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let stop_requested_at: Arc<AsyncMutex<Option<Instant>>> = Arc::new(AsyncMutex::new(None));
+    let stop_requested_wait = stop_requested.clone();
+    let stop_requested_at_wait = stop_requested_at.clone();
     // 后台命令完成通知：在 spawn 线程前提取 AppHandle（StdMutex，同步安全）。
     // 开关标志 notify_command_complete 由调用方（handle）在 async 上下文读出后传入。
     // notifications feature 关闭时 app_handle 字段不存在（state.rs 用 feature gate 剔除），
@@ -870,46 +1140,62 @@ fn spawn_background(
     // 旧实现 c.wait() 期间独占 child 锁，导致 stop_command 的 start_kill 抢不到锁、
     // 永远杀不掉运行中的后台进程。现每次只在 try_wait 瞬间短暂持锁，其余时间释放，
     // 让 stop_command 能在进程运行期拿到锁执行 start_kill。
-    std::thread::spawn(move || loop {
-        let status = {
-            let mut c = child_for_wait.lock().unwrap();
-            match c.try_wait() {
-                Ok(Some(s)) => Some(s),
-                Ok(None) => None,
-                Err(_) => break,
-            }
-        };
-        match status {
-            Some(s) => {
-                let elapsed_secs = started_at.elapsed().as_secs();
-                let code = s.code();
-                *exit_code_clone.blocking_lock() = code;
-                *finished_elapsed_clone.blocking_lock() = Some(elapsed_secs);
-                // 后台命令完成通知（notifications feature 关闭时不链接 notification 插件，避免 0xc0000139）
-                #[cfg(feature = "notifications")]
-                if notify_command_complete {
-                    if let Some(ref h) = app_handle {
-                        use tauri_plugin_notification::NotificationExt;
-                        let body = match code {
-                            Some(0) => format!("{} 已完成（退出码 0）", notify_cmd),
-                            Some(c) => format!("{} 已结束（退出码 {}）", notify_cmd, c),
-                            None => format!("{} 已结束（无退出码）", notify_cmd),
-                        };
-                        // 不吞错：理由见 main.rs::notify_toast 的注释（mac 上这是唯一的失败信号）。
-                        if let Err(e) = h
-                            .notification()
-                            .builder()
-                            .title("后台命令完成")
-                            .body(&body)
-                            .show()
-                        {
-                            log::warn!("后台命令完成通知发送失败：{e}");
+    std::thread::spawn(move || {
+        loop {
+            let status = {
+                let mut c = child_for_wait.lock().unwrap();
+                match c.try_wait() {
+                    Ok(Some(s)) => Some(s),
+                    Ok(None) => None,
+                    Err(_) => break,
+                }
+            };
+            match status {
+                Some(s) => {
+                    let elapsed_secs = started_at.elapsed().as_secs();
+                    let code = s.code();
+                    *exit_code_clone.blocking_lock() = code;
+                    *finished_elapsed_clone.blocking_lock() = Some(elapsed_secs);
+                    // 后台命令完成通知（notifications feature 关闭时不链接 notification 插件，避免 0xc0000139）
+                    #[cfg(feature = "notifications")]
+                    if notify_command_complete {
+                        if let Some(ref h) = app_handle {
+                            use tauri_plugin_notification::NotificationExt;
+                            let body = match code {
+                                Some(0) => format!("{} 已完成（退出码 0）", notify_cmd),
+                                Some(c) => format!("{} 已结束（退出码 {}）", notify_cmd, c),
+                                None => format!("{} 已结束（无退出码）", notify_cmd),
+                            };
+                            // 不吞错：理由见 main.rs::notify_toast 的注释（mac 上这是唯一的失败信号）。
+                            if let Err(e) = h
+                                .notification()
+                                .builder()
+                                .title("后台命令完成")
+                                .body(&body)
+                                .show()
+                            {
+                                log::warn!("后台命令完成通知发送失败：{e}");
+                            }
                         }
                     }
+                    break;
                 }
-                break;
+                None => {
+                    // 到了 timeoutMs 仍在跑：与前台超时同样杀整树。杀成功才置标记（同 stop_command），
+                    // 之后 try_wait 拿到退出状态、按正常结束收尾。
+                    if kill_at.is_some_and(|t| Instant::now() >= t)
+                        && !stop_requested_wait.load(Ordering::Relaxed)
+                        && child_for_wait.lock().unwrap().start_kill().is_ok()
+                    {
+                        stop_requested_wait.store(true, Ordering::Relaxed);
+                        *stop_requested_at_wait.blocking_lock() = Some(Instant::now());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
             }
-            None => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+        if let Some(f) = cleanup_file {
+            let _ = std::fs::remove_file(f);
         }
     });
 
@@ -925,16 +1211,15 @@ fn spawn_background(
             stdout: stdout_buf,
             stderr: stderr_buf,
             exit_code,
-            stop_requested: Arc::new(AtomicBool::new(false)),
-            stop_requested_at: Arc::new(AsyncMutex::new(None)),
+            stop_requested,
+            stop_requested_at,
             stdout_done,
             stderr_done,
             started_at,
             finished_elapsed_secs: finished_elapsed,
         },
     );
-
-    Ok(text_result(&json!({ "handle": handle_id, "pid": pid })))
+    handle_id
 }
 
 /// 把会话 id 与本次生效 cwd 注入 run_command 返回的 JSON 文本
@@ -981,6 +1266,8 @@ fn inject_session_info(
                                     json!("「命令会话持久化」未开启，sessionId 已忽略：工作目录与 env 不会带到下一次调用，请每次显式传 cwd。本次传入的 env 仍已生效。"),
                                 );
                             }
+                            // 最后一道出口：去掉值为默认的计数/截断字段（见 prune_default_output_fields）。
+                            super::prune_default_output_fields(fields);
                             // 与 `text_result` 同档位（compact）：这里是把字段补回已经序列化好的
                             // content[0].text，用 pretty 会让同一个返回前后两种格式并存。
                             let new_text =
@@ -1022,6 +1309,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1057,6 +1345,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1090,6 +1379,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1136,6 +1426,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1156,6 +1447,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1181,6 +1473,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1221,6 +1514,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1256,6 +1550,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1292,6 +1587,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1376,6 +1672,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1422,6 +1719,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: Some(vec![EnvEntry {
                     key: "CCB_ENV_PROBE".into(),
@@ -1461,6 +1759,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1514,6 +1813,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1544,6 +1844,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1588,6 +1889,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1632,6 +1934,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1721,6 +2024,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1765,6 +2069,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1847,6 +2152,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: Some("a deploy step".into()),
                 env: None,
             },
@@ -1892,6 +2198,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1937,6 +2244,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -1983,6 +2291,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2021,6 +2330,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2055,6 +2365,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2095,6 +2406,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2160,6 +2472,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2204,6 +2517,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2229,6 +2543,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2271,6 +2586,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2298,6 +2614,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2352,6 +2669,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2405,6 +2723,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2472,6 +2791,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2498,6 +2818,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 description: None,
                 env: None,
             },
@@ -2524,5 +2845,261 @@ mod tests {
     #[test]
     fn default_timeout_is_not_30s() {
         assert_eq!(default_timeout_ms(), 120_000);
+    }
+
+    #[test]
+    fn cd_prefix_dir_extracts_literal_paths_only() {
+        assert_eq!(cd_prefix_dir("cd D:/a/b && ls").as_deref(), Some("D:/a/b"));
+        assert_eq!(
+            cd_prefix_dir("  cd \"D:/a b\"; ls").as_deref(),
+            Some("D:/a b")
+        );
+        assert_eq!(
+            cd_prefix_dir("cd /d C:\\x && dir").as_deref(),
+            Some("C:\\x")
+        );
+        assert_eq!(cd_prefix_dir("cd D:/a").as_deref(), Some("D:/a"));
+        assert_eq!(cd_prefix_dir("cd D:/a\nls").as_deref(), Some("D:/a"));
+        assert_eq!(cd_prefix_dir("cd \"$APPDATA\" && ls"), None, "含变量不取");
+        assert_eq!(cd_prefix_dir("cd ~/x && ls"), None);
+        assert_eq!(cd_prefix_dir("cd D:/a | x"), None, "管道不是「先 cd 再跑」");
+        assert_eq!(cd_prefix_dir("ls && cd D:/a"), None, "只看开头");
+        assert_eq!(cd_prefix_dir("cdx D:/a"), None);
+        assert_eq!(cd_prefix_dir("cd src && cargo test"), None, "相对路径不取");
+        assert_eq!(cd_prefix_dir("cd ./src && ls"), None);
+    }
+
+    /// 没传 cwd、命令以 `cd <白名单内目录>` 开头：不再报 cwdFallback。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cd_prefix_is_used_as_cwd_without_fallback_flag() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        // 用原生路径：cmd 的 cd 不认正斜杠。
+        let d = security::path::display_path(&sub);
+        let v = handle(
+            RunCommandArgs {
+                command: format!("cd \"{d}\" && echo ok"),
+                cwd: None,
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
+                format: None,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await
+        .expect("应成功");
+        let info: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert!(info.get("cwdFallback").is_none(), "不该再报回退：{info}");
+        assert!(
+            info["stdout"].as_str().unwrap_or("").contains("ok"),
+            "{info}"
+        );
+    }
+
+    /// 回归：cmd 模式下命令曾按普通参数传给 `cmd /C`，引号被转成 `\"`，带双引号的命令全部失败
+    /// （「文件名、目录名或卷标语法不正确」）。覆盖：带空格目录的 `cd "…"`、引号内容原样输出。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cmd_commands_with_double_quotes_work() {
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let spaced = dir.join("a b");
+        std::fs::create_dir_all(&spaced).unwrap();
+        std::fs::write(spaced.join("marker.txt"), "x").unwrap();
+        let d = security::path::display_path(&spaced);
+        let is_cmd = cfg!(windows)
+            && matches!(
+                parse_shell_type(&state.config.read().await.shell_type),
+                ShellType::Cmd
+            );
+        let command = if is_cmd {
+            format!("cd \"{d}\" && dir /b && echo \"q 1\"")
+        } else {
+            format!("cd \"{d}\" && ls && echo '\"q 1\"'")
+        };
+        let v = handle(
+            RunCommandArgs {
+                command,
+                cwd: Some(dir.to_string_lossy().into_owned()),
+                session_id: None,
+                background: false,
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                include: None,
+                exclude: None,
+                tail_lines: None,
+                format: None,
+                description: None,
+                env: None,
+            },
+            &state,
+        )
+        .await
+        .expect("应成功");
+        let info: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(info["exitCode"], json!(0), "{info}");
+        let out = info["stdout"].as_str().unwrap_or_default();
+        assert!(out.contains("marker.txt"), "应已 cd 进带空格的目录：{info}");
+        assert!(out.contains("\"q 1\""), "引号内容应原样输出：{info}");
+    }
+
+    /// 转后台的阈值必须低于客户端约 60s 的断开线，否则长命令又会「两头落空」。
+    #[test]
+    fn handoff_is_below_client_cutoff() {
+        const { assert!(HANDOFF_MS < 60_000) };
+        assert!(
+            HANDOFF_MS < default_timeout_ms(),
+            "默认超时下必须走转后台而不是被杀"
+        );
+    }
+
+    /// 前台命令跑过阈值：转后台、不杀进程、返回 handle；wait_command 能接着拿到完整输出。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn foreground_past_handoff_becomes_background() {
+        use crate::mcp::tools::stop_command::{self, StopCommandArgs};
+        use crate::mcp::tools::wait_command::{self, WaitCommandArgs};
+
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let shell = parse_shell_type(&state.config.read().await.shell_type);
+        let command = if cfg!(windows) && matches!(shell, ShellType::Cmd) {
+            "echo before_handoff && ping -n 7 127.0.0.1 >NUL && echo after_handoff"
+        } else {
+            "echo before_handoff; sleep 6; echo after_handoff"
+        };
+        let st = state.clone();
+        let cwd = dir.clone();
+        let (v, _) = tokio::task::spawn_blocking(move || {
+            spawn_shell(
+                command,
+                &cwd,
+                cwd.to_string_lossy().into_owned(),
+                false,
+                60_000,
+                4096,
+                None,
+                &st,
+                shell,
+                false,
+                Vec::new(),
+                false,
+                OutputFilter::new(None, None, None).unwrap(),
+                1_500,
+            )
+        })
+        .await
+        .expect("join")
+        .expect("前台命令应成功返回");
+        let info: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(info["backgrounded"], json!(true), "{info}");
+        assert_eq!(info["running"], json!(true), "{info}");
+        assert_eq!(info["timedOut"], json!(false), "转后台不是超时被杀：{info}");
+        let handle = info["handle"].as_str().expect("应返回 handle").to_string();
+        assert!(state.running_commands.contains_key(&handle));
+
+        let waited = wait_command::handle(
+            WaitCommandArgs {
+                handle: handle.clone(),
+                timeout_sec: 30,
+                until_pattern: None,
+                tail_lines: None,
+                format: None,
+                include: None,
+                exclude: None,
+            },
+            &state,
+        )
+        .await
+        .expect("wait");
+        let _ = stop_command::handle(StopCommandArgs { handle }, &state).await;
+        let w: Value =
+            serde_json::from_str(waited["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(w["exitCode"], json!(0), "进程应自己跑完而不是被杀：{w}");
+        let out = w["stdout"].as_str().unwrap_or_default();
+        assert!(
+            out.contains("before_handoff") && out.contains("after_handoff"),
+            "后台条目应接管前台阶段的缓冲，输出不断档：{w}"
+        );
+    }
+
+    /// 转后台后调用方的 timeoutMs 仍然有效：卡住的命令到点被杀，不会永远留在后台。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn backgrounded_command_is_still_killed_at_timeout() {
+        use crate::mcp::tools::wait_command::{self, WaitCommandArgs};
+
+        let (state, dir) = make_state_with_config(|c| {
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let shell = parse_shell_type(&state.config.read().await.shell_type);
+        let command = if cfg!(windows) && matches!(shell, ShellType::Cmd) {
+            "ping -n 30 127.0.0.1 >NUL && echo never"
+        } else {
+            "sleep 30; echo never"
+        };
+        let st = state.clone();
+        let cwd = dir.clone();
+        let started = Instant::now();
+        let (v, _) = tokio::task::spawn_blocking(move || {
+            spawn_shell(
+                command,
+                &cwd,
+                cwd.to_string_lossy().into_owned(),
+                false,
+                3_000,
+                4096,
+                None,
+                &st,
+                shell,
+                false,
+                Vec::new(),
+                false,
+                OutputFilter::new(None, None, None).unwrap(),
+                1_000,
+            )
+        })
+        .await
+        .expect("join")
+        .expect("前台命令应成功返回");
+        let info: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(info["backgrounded"], json!(true), "{info}");
+        let handle = info["handle"].as_str().expect("应返回 handle").to_string();
+
+        let waited = wait_command::handle(
+            WaitCommandArgs {
+                handle,
+                timeout_sec: 20,
+                until_pattern: None,
+                tail_lines: None,
+                format: None,
+                include: None,
+                exclude: None,
+            },
+            &state,
+        )
+        .await
+        .expect("wait");
+        let w: Value =
+            serde_json::from_str(waited["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(w["terminated"], json!(true), "跑满 timeoutMs 应被杀：{w}");
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "应在 timeoutMs 附近结束，而不是等命令自己跑完：{w}"
+        );
+        assert!(!w["stdout"].as_str().unwrap_or_default().contains("never"));
     }
 }

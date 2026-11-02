@@ -229,14 +229,15 @@ async fn batch_collapses_multiple_ops_into_one_round_trip() {
     assert_eq!(inner["results"][0]["ok"], true);
     assert_eq!(inner["results"][1]["ok"], true);
     assert_eq!(inner["results"][2]["ok"], true);
-    assert!(inner["results"][0]["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("alpha"));
-    assert!(inner["results"][1]["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("beta"));
+    // 子结果已展平：read_files 的 JSON 直接内嵌在 `data`（数组），不再是再转义一层的
+    // `result.content[0].text` 字符串。断言 data 是数组本身，顺带守住「不被包回字符串」。
+    assert!(
+        inner["results"][0]["data"].is_array(),
+        "read_files 子结果应展平成 data 数组：{}",
+        inner["results"][0]
+    );
+    assert!(inner["results"][0]["data"].to_string().contains("alpha"));
+    assert!(inner["results"][1]["data"].to_string().contains("beta"));
 }
 
 /// 真实验证 batch 内写操作审计留痕：外层只记一条 "batch"，

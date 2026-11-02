@@ -18,22 +18,25 @@ use serde_json::{json, Map, Value};
 
 use crate::mcp::tools::output_clip::{fit_result, FitOpts, DEFAULT_RETURN_LIMIT};
 use crate::mcp::tools::output_filter::OutputFilter;
-use crate::mcp::tools::text_result;
+use crate::mcp::tools::{text_result, CLIENT_SAFE_WAIT_SECS};
 use crate::state::AppState;
 
-/// 默认等待上限（秒）。与 `run_command` 前台默认 120s 对齐——超过这个量级本就该
-/// 用后台 + 通知，而不是把一次 HTTP 请求挂十分钟。
+/// 默认等待上限（秒）。取客户端安全线（见 [`CLIENT_SAFE_WAIT_SECS`]）：原默认 120s
+/// 一定会被客户端在约 60s 时断开，整次结果作废。等不完就返回 `running:true`，再调一次接着等。
 fn default_timeout_sec() -> u64 {
-    120
+    CLIENT_SAFE_WAIT_SECS
 }
 
 /// 返回值里默认只留最后 40 行：编译日志的真正结论在尾部，头部几千行只是过程。
-fn default_tail_lines() -> usize {
-    40
-}
+const DEFAULT_TAIL_LINES: usize = 40;
 
-/// 上限 600s（10 分钟）。HTTP 客户端普遍在 5 分钟前后就放弃，再长只是白占连接。
-const MAX_TIMEOUT_SEC: u64 = 600;
+/// 等到超时、命令仍在跑时的默认尾行数：只为看一眼进度。
+/// 长构建会连续等很多轮，每轮都带 40 行过程日志是纯浪费；显式传 `tailLines` 时以调用方为准。
+const RUNNING_TAIL_LINES: usize = 5;
+
+/// 上限：客户端约 60s 就断开（见 [`CLIENT_SAFE_WAIT_SECS`]），再长的等待没有意义——
+/// 旧上限 600s 实测必然失败。超出时压到上限，并在返回里写明。
+const MAX_TIMEOUT_SEC: u64 = CLIENT_SAFE_WAIT_SECS + 5;
 
 /// 轮询间隔。100ms 对「等构建」这种量级完全够用，又不会把 CPU 叫醒太勤。
 const POLL_INTERVAL_MS: u64 = 100;
@@ -42,16 +45,29 @@ const POLL_INTERVAL_MS: u64 = 100;
 pub struct WaitCommandArgs {
     /// `run_command(background:true)` 返回的句柄。
     pub handle: String,
-    /// 最长等待秒数，默认 120，上限 600。传 0 表示「只看一眼、不等待」。
+    /// 最长等待秒数，默认 50，上限 55。传 0 表示「只看一眼、不等待」。
+    #[schema(
+        desc = "Default 50, max 55 (the client drops a request at ~60s; call again to keep waiting). 0 = peek."
+    )]
     #[serde(default = "default_timeout_sec", rename = "timeoutSec")]
     pub timeout_sec: u64,
     /// 可选：stdout/stderr 中出现匹配该正则的行就立即返回（如 `EXIT=\\d+`）。
     /// 命中时命令可能仍在运行——返回值里的 `running` 会说明。
+    #[schema(desc = "Regex; return as soon as a matching output line appears.")]
     #[serde(default, rename = "untilPattern")]
     pub until_pattern: Option<String>,
     /// 返回最后 N 行（先过滤再截尾），默认 40。
-    #[serde(default = "default_tail_lines", rename = "tailLines")]
-    pub tail_lines: usize,
+    /// 省略时：命令已结束或命中 untilPattern 给 40 行，仍在跑给 5 行。
+    #[schema(desc = "Default 40 once finished or matched, 5 while still running.")]
+    #[serde(default, rename = "tailLines")]
+    pub tail_lines: Option<usize>,
+    /// 可选：`"raw"` = stdout / stderr 各自作为独立文本块原样返回。
+    #[schema(
+        desc = "raw = status JSON block, then stdout and stderr as unescaped text blocks.",
+        values = "raw"
+    )]
+    #[serde(default)]
+    pub format: Option<String>,
     /// 可选：只保留匹配该正则的行。
     #[serde(default)]
     pub include: Option<String>,
@@ -61,18 +77,23 @@ pub struct WaitCommandArgs {
 }
 
 pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Value, String> {
-    let filter = OutputFilter::new(
-        args.include.as_deref(),
-        args.exclude.as_deref(),
-        Some(args.tail_lines),
-    )?;
+    // 先校验正则（无效就立刻报错，不白等）；真正用的 filter 等知道「结束没有」后再建，
+    // 因为默认尾行数取决于它。
+    OutputFilter::new(args.include.as_deref(), args.exclude.as_deref(), None)?;
     let until = match args.until_pattern.as_deref() {
         Some(p) if !p.trim().is_empty() => {
             Some(Regex::new(p).map_err(|e| format!("untilPattern 正则无效（{p}）：{e}"))?)
         }
         _ => None,
     };
+    let timeout_clamped = (args.timeout_sec > MAX_TIMEOUT_SEC).then_some(args.timeout_sec);
     let timeout_sec = args.timeout_sec.min(MAX_TIMEOUT_SEC);
+    // 在 batch 里不能等过整次 batch 剩余的时间（见 batch::remaining_budget）。
+    // 被压短时记下来，返回里说明：否则模型只看到「等了 3s 未结束」，会误判命令卡住。
+    let batch_cap = super::batch::remaining_budget()
+        .map(|r| r.as_secs())
+        .filter(|r| *r < timeout_sec);
+    let timeout_sec = batch_cap.unwrap_or(timeout_sec);
 
     // 与 get_command_output 同做法：先克隆出需要的 Arc 再释放 DashMap 的 Ref，
     // 避免持有 Ref 期间跨 await。
@@ -158,6 +179,14 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
         None => started_at.elapsed().as_secs(),
     };
 
+    // 仍在跑、且没命中等待标记 = 中间返回，只给几行进度；调用方显式传了 tailLines 则以它为准。
+    let still_running = exit_code.is_none() && !terminated && !matched;
+    let tail = args.tail_lines.unwrap_or(if still_running {
+        RUNNING_TAIL_LINES
+    } else {
+        DEFAULT_TAIL_LINES
+    });
+    let filter = OutputFilter::new(args.include.as_deref(), args.exclude.as_deref(), Some(tail))?;
     let out = filter.apply(&stdout_buf.text());
     let err = filter.apply(&stderr_buf.text());
 
@@ -210,7 +239,7 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
                 .to_string()
         } else {
             format!(
-                "该命令是被 stop_command 主动终止的；以上是它被杀之前产出的输出（退出码 {}）。",
+                "该命令已被终止（stop_command 主动结束，或转后台后跑满 timeoutMs 被自动终止）；以上是它被杀之前产出的输出（退出码 {}）。",
                 exit_code
                     .map(|c| c.to_string())
                     .unwrap_or_else(|| "无".into())
@@ -244,8 +273,33 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
             next_offsets: false,
         },
     );
+    // 去掉值为默认的计数/截断字段（见 prune_default_output_fields）。
+    let mut info = info;
+    if let Some(want) = timeout_clamped {
+        // 不静默改变语义：说清楚为什么只等了这么久。
+        info.insert(
+            "timeoutNote".into(),
+            json!(format!(
+                "timeoutSec 已从 {want} 压到 {MAX_TIMEOUT_SEC}：客户端约 60s 就会断开请求、整次结果作废。未结束就再调一次接着等。"
+            )),
+        );
+    }
+    if let (Some(secs), true) = (batch_cap, still_running) {
+        info.insert(
+            "timeoutNote".into(),
+            json!(format!(
+                "在 batch 里只等了 {secs}s（整次 batch 剩余时间不足），命令仍在运行、不是卡住了；可单独再调 wait_command 继续等。"
+            )),
+        );
+    }
+    crate::mcp::tools::prune_default_output_fields(&mut info);
 
-    Ok(text_result(&Value::Object(info)))
+    let out = text_result(&Value::Object(info));
+    Ok(if args.format.as_deref() == Some("raw") {
+        crate::mcp::tools::split_output_blocks(out)
+    } else {
+        out
+    })
 }
 
 #[cfg(test)]
@@ -276,6 +330,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
+                format: None,
                 env: None,
                 description: None,
             },
@@ -292,7 +347,8 @@ mod tests {
             handle: handle.to_string(),
             timeout_sec: 30,
             until_pattern: None,
-            tail_lines: 40,
+            tail_lines: None,
+            format: None,
             include: None,
             exclude: None,
         }
@@ -353,7 +409,7 @@ mod tests {
     async fn until_pattern_returns_before_command_ends() {
         let (state, handle) = spawn_background(slow_marker_command()).await;
         let mut a = base_args(&handle);
-        a.timeout_sec = 60;
+        a.timeout_sec = MAX_TIMEOUT_SEC;
         a.until_pattern = Some("DONE_MARKER".into());
         let info = info_of(&wait_and_cleanup(&state, a).await.expect("wait"));
         assert_eq!(info["matchedPattern"], json!(true), "{info}");
@@ -392,6 +448,78 @@ mod tests {
         assert!(stdout.contains("keep_me"), "{info}");
         assert!(!stdout.contains("drop_me"), "exclude 应剔除该行：{info}");
         assert_eq!(info["stdoutDroppedLines"], json!(1), "{info}");
+    }
+
+    /// 超过客户端安全线的 timeoutSec 被压到上限，并在返回里写明（不静默改语义）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn oversized_timeout_is_clamped_with_note() {
+        let (state, handle) = spawn_background("echo clamp_ok").await;
+        let mut a = base_args(&handle);
+        a.timeout_sec = 600;
+        let info = info_of(&wait_and_cleanup(&state, a).await.expect("wait"));
+        assert_eq!(info["timeoutSec"], json!(MAX_TIMEOUT_SEC), "{info}");
+        assert!(
+            info["timeoutNote"]
+                .as_str()
+                .is_some_and(|n| n.contains("600")),
+            "应说明被压了：{info}"
+        );
+        // 上限必须低于客户端约 60s 的断开线（编译期检查）。
+        const { assert!(MAX_TIMEOUT_SEC < 60) };
+    }
+
+    /// 在 batch 里等待被压到剩余时间：要说明原因，免得模型以为命令卡住。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wait_capped_by_batch_budget_explains_why() {
+        let cmd = if cfg!(windows) {
+            "ping -n 15 127.0.0.1 >NUL"
+        } else {
+            "sleep 12"
+        };
+        let (state, handle) = spawn_background(cmd).await;
+        let a = base_args(&handle);
+        let started = std::time::Instant::now();
+        let deadline = started + std::time::Duration::from_secs(2);
+        let info = info_of(
+            &crate::mcp::tools::batch::with_batch_deadline(deadline, wait_and_cleanup(&state, a))
+                .await
+                .expect("wait"),
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(6),
+            "{info}"
+        );
+        assert_eq!(info["running"], json!(true), "前提：命令应仍在跑：{info}");
+        assert!(
+            info["timeoutNote"]
+                .as_str()
+                .is_some_and(|n| n.contains("batch")),
+            "应说明是 batch 剩余时间不足：{info}"
+        );
+    }
+
+    /// 等到超时仍在跑：未显式传 tailLines 时只给最后几行进度，不再每轮带 40 行。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn running_return_keeps_only_a_few_tail_lines() {
+        let cmd = if cfg!(windows) {
+            "(for /L %i in (1,1,20) do @echo line%i) && ping -n 15 127.0.0.1 >NUL"
+        } else {
+            "for i in $(seq 1 20); do echo line$i; done; sleep 12"
+        };
+        let (state, handle) = spawn_background(cmd).await;
+        let mut a = base_args(&handle);
+        a.timeout_sec = 6;
+        let info = info_of(&wait_and_cleanup(&state, a).await.expect("wait"));
+        assert_eq!(info["running"], json!(true), "前提：命令应仍在跑：{info}");
+        let lines = info["stdout"].as_str().unwrap_or_default().lines().count();
+        assert!(
+            lines <= RUNNING_TAIL_LINES,
+            "仍在跑时最多 {RUNNING_TAIL_LINES} 行，实得 {lines}：{info}"
+        );
+        assert!(
+            info["stdoutOmittedLines"].as_u64().unwrap_or(0) > 0,
+            "20 行里应有被省略的：{info}"
+        );
     }
 
     #[tokio::test]

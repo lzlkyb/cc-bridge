@@ -78,6 +78,74 @@ pub(crate) fn result_text_bytes(result: &Value) -> u64 {
     }
 }
 
+/// 单次工具调用「挂起等待」的安全上限（秒）。
+///
+/// 客户端（Claude Code 的 HTTP 传输）对「等第一个字节」有约 60s 的时限，而本服务要等
+/// 工具跑完才开始发响应。实测（2026-11-02）：审计全量历史里没有一次调用超过 60s
+/// （50–60s 共 147 次，最长 59.6s），`wait_command` 等 65/90/300/600s 全部在客户端报
+/// 「The operation timed out」，等 55s 全部成功。服务端自身没有任何超时层。
+/// 超过这条线，客户端会断开、整次结果作废（命令却还在跑），所以凡是会挂起等待的工具
+/// 都要在此之前返回。留 10s 余量给网络传输与序列化。
+pub(crate) const CLIENT_SAFE_WAIT_SECS: u64 = 50;
+
+/// `format:"raw"`：把命令结果里的 stdout / stderr 从 JSON 拆成独立文本块。
+///
+/// 输出进 JSON 后每个换行 / 引号 / 反斜杠都多占一个字符，编译日志和 Windows 路径里这些最密。
+/// 结果：第 1 块 = 去掉 stdout/stderr 的状态 JSON；非空的 stdout 原样一块；非空的 stderr
+/// 以 `[stderr]` 开头一块；原有的其余文本块接在后面。第 1 块不是 JSON 对象时原样返回。
+pub(crate) fn split_output_blocks(value: Value) -> Value {
+    let Some(blocks) = value.get("content").and_then(Value::as_array) else {
+        return value;
+    };
+    let Some(mut info) = blocks
+        .first()
+        .and_then(|b| b.get("text"))
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .filter(Value::is_object)
+    else {
+        return value;
+    };
+    let obj = info.as_object_mut().expect("已校验是对象");
+    let stdout = obj.remove("stdout");
+    let stderr = obj.remove("stderr");
+    let mut out = vec![serde_json::json!({ "type": "text", "text": info.to_string() })];
+    if let Some(Value::String(s)) = stdout.filter(|v| v.as_str().is_some_and(|s| !s.is_empty())) {
+        out.push(serde_json::json!({ "type": "text", "text": s }));
+    }
+    if let Some(Value::String(s)) = stderr.filter(|v| v.as_str().is_some_and(|s| !s.is_empty())) {
+        out.push(serde_json::json!({ "type": "text", "text": format!("[stderr]\n{s}") }));
+    }
+    out.extend(blocks.iter().skip(1).cloned());
+    serde_json::json!({ "content": out })
+}
+
+/// 去掉命令类返回里「值等于默认、不携带信息」的字段，缩短每次返回的固定开销。
+///
+/// 实测一次普通 run_command 约 200 字符花在 `stderrTotalBytes:0`、`stderrTruncated:false`、
+/// `stdoutDroppedLines:0` 这类字段上，调用一多积少成多。约定：缺失 = 默认值。
+/// - stderr 为空且总字节 0 → 去掉 `stderr` / `stderrTotalBytes` / `stderrTruncated`；
+/// - `*Truncated:false`、`*DroppedLines:0`、`*OmittedLines:0` → 去掉。
+///
+/// 不动 `timedOut` / `exitCode` / `running` 等状态字段：它们的 false/0 本身就是结论。
+pub(crate) fn prune_default_output_fields(m: &mut serde_json::Map<String, Value>) {
+    let stderr_empty = m.get("stderr").and_then(Value::as_str) == Some("")
+        && m.get("stderrTotalBytes")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            == 0;
+    if stderr_empty {
+        m.remove("stderr");
+        m.remove("stderrTotalBytes");
+    }
+    m.retain(|k, v| {
+        let zero_count =
+            (k.ends_with("DroppedLines") || k.ends_with("OmittedLines")) && v.as_u64() == Some(0);
+        let not_truncated = k.ends_with("Truncated") && v.as_bool() == Some(false);
+        !(zero_count || not_truncated)
+    });
+}
+
 /// 单次工具返回的「客户端口径」内联上限：**字符数**。
 ///
 /// 🔴 为什么是字符而不是字节：客户端的分档门槛按**序列化后的字符数**算（实测
@@ -265,6 +333,65 @@ mod wire_chars_opt_tests {
     fn real_measurements_pass_through() {
         assert_eq!(chars_or_none(0), Some(0), "空结果是真实的 0，不是未知");
         assert_eq!(chars_or_none(49_823), Some(49_823));
+    }
+
+    #[test]
+    fn prune_default_output_fields_drops_only_noise() {
+        let mut m = serde_json::json!({
+            "stdout": "hi", "stderr": "", "exitCode": 0, "timedOut": false,
+            "stdoutTotalBytes": 2, "stderrTotalBytes": 0,
+            "stdoutTruncated": false, "stderrTruncated": false,
+            "stdoutDroppedLines": 0, "stdoutOmittedLines": 3, "stderrDroppedLines": 0,
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        prune_default_output_fields(&mut m);
+        let mut keys: Vec<&str> = m.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "exitCode",
+                "stdout",
+                "stdoutOmittedLines",
+                "stdoutTotalBytes",
+                "timedOut"
+            ],
+            "状态字段与非 0 计数必须保留：{m:?}"
+        );
+
+        // stderr 有内容（或曾有产出）时整组保留。
+        let mut m =
+            serde_json::json!({ "stderr": "", "stderrTotalBytes": 5, "stderrTruncated": true })
+                .as_object()
+                .unwrap()
+                .clone();
+        prune_default_output_fields(&mut m);
+        assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn split_output_blocks_moves_streams_out_of_json() {
+        let v = text_result(&serde_json::json!({
+            "stdout": "a\\b \"q\"\n", "stderr": "oops", "exitCode": 1,
+        }));
+        let out = split_output_blocks(v);
+        let blocks = out["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        let meta: Value = serde_json::from_str(blocks[0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(meta, serde_json::json!({ "exitCode": 1 }));
+        assert_eq!(blocks[1]["text"], "a\\b \"q\"\n", "stdout 原样、不转义");
+        assert_eq!(blocks[2]["text"], "[stderr]\noops");
+
+        // stdout/stderr 为空或缺失时不出空块。
+        let out = split_output_blocks(text_result(
+            &serde_json::json!({ "stdout": "", "exitCode": 0 }),
+        ));
+        assert_eq!(out["content"].as_array().unwrap().len(), 1);
+        // 非 JSON 正文原样返回。
+        let plain = serde_json::json!({ "content": [{ "type": "text", "text": "hi" }] });
+        assert_eq!(split_output_blocks(plain.clone()), plain);
     }
 
     #[test]

@@ -728,12 +728,22 @@ pub async fn handle_tools_call(
                 .unwrap_or(json!({}));
 
             let start = std::time::Instant::now();
+            // 客户端中途断开时本 future 会被直接丢弃、走不到下面的审计分支——由守卫在 Drop 里补记。
+            let mut cancel_guard = CancelAuditGuard {
+                armed: state.config.read().await.audit_enabled,
+                state: state.clone(),
+                tool: tool_name.to_string(),
+                arguments: arguments.clone(),
+                source_ip: source_ip.clone(),
+                start,
+            };
             // 把 source_ip 注入 task_local 作用域，使 batch 子操作的审计条目也能拿到 sourceIp。
             let result = crate::audit::with_source_ip(
                 Some(source_ip.clone()),
                 dispatch_tool(tool_name, arguments.clone(), &state),
             )
             .await;
+            cancel_guard.armed = false;
             let elapsed = start.elapsed().as_millis() as u64;
             // 方案 A：记录实时耗时 + 工具调用计数（热门工具 Top3 用）。
             state.record_latency(elapsed);
@@ -839,6 +849,59 @@ pub async fn handle_tools_call(
         .await
     })
     .await
+}
+
+/// 请求被取消（客户端断开）时补写一条审计。
+///
+/// 为什么需要：客户端约 60s 断开请求时，axum 会丢弃处理中的 future，正常的审计分支根本
+/// 走不到——这类失败调用在日志里**一条都没有**（2026-11-02 实测：等 65/90/300/600s 的
+/// wait_command 全部缺席），面板看不到、事后也没法查。
+/// 正常返回前调用方把 `armed` 置 false；只有「没等到返回就被丢弃」才会在 Drop 里落盘。
+/// 输出字节 / 字符记 0：一个字都没进入客户端上下文。
+struct CancelAuditGuard {
+    armed: bool,
+    state: Arc<AppState>,
+    tool: String,
+    arguments: serde_json::Value,
+    source_ip: String,
+    start: std::time::Instant,
+}
+
+impl Drop for CancelAuditGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let elapsed = self.start.elapsed().as_millis() as u64;
+        // 工具 panic 时栈展开也会走到这里，那不是客户端的问题，分开记。
+        let reason = if std::thread::panicking() {
+            format!(
+                "服务端处理异常（panic），在 {:.1}s 时中止、未返回结果",
+                elapsed as f64 / 1000.0
+            )
+        } else {
+            format!(
+                "客户端在 {:.1}s 时断开了请求，服务端处理已取消、未返回结果（后台命令如有仍在运行）",
+                elapsed as f64 / 1000.0
+            )
+        };
+        write_audit_for_call(
+            &self.state.data_dir,
+            &self.tool,
+            &self.arguments,
+            false,
+            Some(reason),
+            Some(self.source_ip.clone()),
+            elapsed,
+            elapsed,
+            None,
+            None,
+            self.state.cc.active_session_id(),
+            Some(0),
+            Some(0),
+        );
+        self.state.inc_audit_count();
+    }
 }
 
 /// 构造并写入一条 `tools/call` 审计记录，附带 O1 结构化耗时字段。
@@ -1026,9 +1089,9 @@ fn build_instructions(strong_notify: bool) -> String {
     // 🔴 规则里引用的**参数名 / 返回字段名必须对着工具源码核**：这里写错一个字，模型就会去
     // 找一个不存在的字段（已踩过：`run_command` 后台返回的是 `handle`，写成 `commandId`
     // 模型只会反复试错，白烧往返，且报错信息里看不出是提示层写错了）。
-    let rules = "\n\n工具使用硬规则（优先于下文任何描述）：\n1. 文件读写 / 查找 / 列目录一律用专用工具（read_files / write_files / edit_files / search_files / list_directory），不要用 shell 的 cat / ls / grep / find / head / tail；命令输出可能很大时先加 include / tailLines 或管道过滤。\n2. 超过约 500 行的文件先用 search_files 定位，再按 startLine / endLine 读需要的段；比较两个文件用 diff（如 git diff --no-index），不要把两份全文都读进上下文。\n3. 禁止用 base64 走 run_command 传文件，文件进出必须用 prepare_upload / prepare_download。\n4. 预计超过约 10 秒的命令（构建、安装依赖、全量测试、全盘扫描、批量处理）用 run_command 的 background:true 发出——它立即返回 handle，随后你先并行推进其他工具调用，最后用 wait_command 拿 handle 收结果；不要用默认的前台方式空等几十秒。等待仍应靠 wait_command，不要反复轮询 get_command_output。";
+    let rules = "\n\n工具使用硬规则（优先于下文任何描述）：\n1. 文件读写 / 查找 / 列目录一律用专用工具（read_files / write_files / edit_files / search_files / list_directory），不要用 shell 的 cat / ls / grep / find / head / tail；命令输出可能很大时先加 include / tailLines 或管道过滤。\n2. 超过约 500 行的文件先用 search_files 定位，再按 startLine / endLine 读需要的段；比较两个文件用 diff（如 git diff --no-index），不要把两份全文都读进上下文。\n3. 禁止用 base64 走 run_command 传文件，文件进出必须用 prepare_upload / prepare_download。\n4. 预计超过约 10 秒的命令（构建、安装依赖、全量测试、全盘扫描、批量处理）用 run_command 的 background:true 发出——它立即返回 handle，随后你先并行推进其他工具调用，最后用 wait_command 拿 handle 收结果；不要用默认的前台方式空等几十秒。等待仍应靠 wait_command，不要反复轮询 get_command_output；前台命令超过约 50 秒会自动转后台并返回 handle。\n5. read_files 默认每个文件一个文本块（首行元信息 JSON，之后是不转义的原文）；run_command / wait_command 可传 format:\"raw\" 让输出不经 JSON 转义，更省 token。";
     format!(
-        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。{rules}当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。完整工具清单由 tools/list 提供,主要包括:\n- run_command / wait_command / get_command_output / stop_command:在本地执行命令、等待后台命令结束、读取后台命令输出、停止运行中的命令(支持危险命令拦截与审计；壳层为 {shells}，取决于 shell_type 配置)\n- read_files / write_files / edit_files:本地文件的读取、写入与精确编辑\n- list_directory / create_directory / remove_directory / delete_files / move_files / copy_files:目录与文件的列举、创建、删除、移动、复制\n- search_files:本地文件内容检索(Grep,支持大小写/上下文/计数等)\n- notebook_edit:编辑本地 Jupyter(.ipynb)笔记本单元格(replace/insert/delete)\n- analyze_file:分析本地文件的结构与内容\n- prepare_upload / prepare_download:大文件或二进制文件直传。工具只返回一次性 URL 与 curl 命令,文件字节不经过对话上下文——远优于 write_files(base64) 与用 read_files 读二进制。需要传 pptx、xlsx、pdf、图片、压缩包到本地或取回时优先用它\n- list_allowed_roots:查询本地允许访问的根目录范围(返回中同时带 allowedExtensions 扩展名白名单；若允许根目录顶层存在项目规则文件 AGENTS.md 或 CLAUDE.md，还会内嵌其内容到 projectInstructions，用于自动获知项目规则)\n- batch:在一次网络往返中批量执行多个上述操作;远程链路下若需多步文件/命令操作,应优先用它以显著降低往返延迟\n所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
+        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。{rules}当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。各工具的用法见 tools/list（这里不再逐条重复）；命令壳层为 {shells}，取决于 shell_type 配置。二进制或大文件（pptx、xlsx、pdf、图片、压缩包）用 prepare_upload / prepare_download 直传，字节不经过对话上下文；多步文件/命令操作优先用 batch 合并成一次往返。所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
     )
 }
 
@@ -1108,9 +1171,10 @@ fn run_command_description(shell_type: &str) -> String {
         "在本地执行一条命令并返回其 stdout / stderr / 退出码。返回中的 shell 字段是本次实际生效的壳层，\
          与下面的描述不一致时以它为准。{shell_part}{common}\
          输出可在服务端过滤：可选 include / exclude（正则）与 tailLines 只对**前台**输出生效，\
-         被剔除的行只报数量——不必再为此跑一次 grep -v。数分钟级的构建请用 background:true 启动后\
-         调 wait_command 等结果（等到结束或 untilPattern 命中才返回，超时**不杀进程**），\
-         而不是反复轮询 get_command_output。"
+         被剔除的行只报数量——不必再为此跑一次 grep -v。format:\"raw\" 时 stdout / stderr 作为独立文本块原样返回\
+         （不经 JSON 转义，更省 token）。前台命令超过约 50s 仍未结束会\
+         自动转为后台继续运行（跑满 timeoutMs、默认 120s 才终止），返回 backgrounded:true + handle，再用 wait_command 等结果\
+         （客户端约 60s 会断开单次请求）。明知是长任务就直接用 background:true，不要反复轮询 get_command_output。"
     )
 }
 
@@ -1317,6 +1381,72 @@ mod over_wire_tests {
     }
 
     // ── 耗时链路（G6）──────────────────────────────────────────────
+
+    /// 客户端中途断开（future 被丢弃）也必须留一条审计：此前这类调用在日志里完全消失。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_call_is_still_audited() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|c| {
+            c.audit_enabled = true;
+            c.shell_enabled = true;
+            c.whitelist_enabled = true;
+        });
+        let slow = if cfg!(windows) {
+            "ping -n 6 127.0.0.1"
+        } else {
+            "sleep 5"
+        };
+        let body = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "run_command", "arguments": {
+                "command": slow, "cwd": dir.to_string_lossy(), "timeoutMs": 10_000
+            } }
+        });
+        // 模拟客户端 300ms 后断开：timeout 到点会丢弃处理中的 future。
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(300),
+            super::handle_tools_call(state.clone(), "10.0.0.9".into(), body),
+        )
+        .await;
+        assert!(r.is_err(), "前提：调用应在完成前被丢弃");
+        let log = std::fs::read_to_string(dir.join("audit.log")).expect("audit.log 应存在");
+        let hit: Vec<serde_json::Value> = log
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .filter(|e: &serde_json::Value| e["tool"] == "run_command")
+            .collect();
+        assert_eq!(hit.len(), 1, "应恰有一条 run_command 审计：{log}");
+        let e = &hit[0];
+        assert_eq!(e["success"], json!(false), "{e}");
+        assert!(e["error"].as_str().unwrap_or("").contains("断开"), "{e}");
+        assert_eq!(e["sourceIp"], json!("10.0.0.9"), "{e}");
+        assert_eq!(e["resultBytes"], json!(0), "一个字都没进上下文：{e}");
+    }
+
+    /// 工具 panic 时守卫也会在栈展开里落盘，但不能记成「客户端断开」。
+    #[tokio::test]
+    async fn panic_during_call_is_not_audited_as_client_disconnect() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|c| c.audit_enabled = true);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = super::CancelAuditGuard {
+                armed: true,
+                state: state.clone(),
+                tool: "read_files".into(),
+                arguments: json!({}),
+                source_ip: "10.0.0.9".into(),
+                start: std::time::Instant::now(),
+            };
+            panic!("模拟工具内部 panic");
+        }));
+        assert!(r.is_err());
+        let log = std::fs::read_to_string(dir.join("audit.log")).expect("audit.log 应存在");
+        let e: serde_json::Value = log
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .find(|e: &serde_json::Value| e["tool"] == "read_files")
+            .expect("应有一条 read_files 审计");
+        let err = e["error"].as_str().unwrap_or("");
+        assert!(err.contains("panic") && !err.contains("断开"), "{e}");
+    }
 
     /// G6：`audit.rs` 的 duration/server/audit/overhead 之前只有单测验证四则运算本身
     /// （手带数字传入 `new_entry`），没有任何测试真正走过一次真实 HTTP 调用验证这条链路
@@ -1682,10 +1812,17 @@ mod over_wire_tests {
         )
         .await;
         assert_dispatch_ok(&r);
+        // 默认已是 `format:"raw"`：content[0].text 是「首行元信息 JSON + 换行 + 原文」，
+        // 整条不再是合法 JSON —— 这里按 raw 契约读，顺带守住「首行必须是 JSON」。
+        let t = r["result"]["content"][0]["text"]
+            .as_str()
+            .expect("content[0].text 缺失");
+        let (header, body) = t.split_once('\n').expect("raw 形态应是「元信息行 + 正文」");
         assert!(
-            inner_text(&r).to_string().contains("read content"),
-            "read_files 应回读内容"
+            serde_json::from_str::<Value>(header).is_ok(),
+            "首行应是元信息 JSON：{t}"
         );
+        assert!(body.contains("read content"), "read_files 应回读内容：{t}");
 
         // 4) write_files —— 落盘校验
         let wp = p("written.txt");

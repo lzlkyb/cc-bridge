@@ -150,7 +150,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             read_files,
             ReadFilesArgs,
-            r#"Read one or more files, optionally by line range (1-based, inclusive). Returns UTF-8 text plus the detected encoding and newline style. Encoding auto-detection (GBK/GB18030 heuristic) is a server-side toggle, OFF by default (reads as UTF-8); pass `encoding` (e.g. "gbk") to force a specific decoding regardless of the toggle."#,
+            r#"Read one or more files, optionally by line range (1-based, inclusive). Returns UTF-8 text plus the detected encoding and newline style. Encoding auto-detection (GBK/GB18030 heuristic) is a server-side toggle, OFF by default (reads as UTF-8); pass `encoding` (e.g. "gbk") to force a specific decoding regardless of the toggle. Output (default `format:"raw"`): one text block per file — first line = metadata JSON, then the file body verbatim (no JSON escaping). Pass `format:"json"` for a single JSON array instead."#,
             false
         ),
         register_tool!(
@@ -198,7 +198,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             search_files,
             SearchFilesArgs,
-            r#"Search files by name glob and/or content regex with context lines. Matching is on raw bytes, so a CJK pattern never matches inside GBK/other non-UTF-8 files — pass `encoding` (e.g. "gbk") to transcode those files first; valid UTF-8 files are never transcoded, so mixed-encoding trees are safe."#,
+            r#"Search files by name glob and/or content regex (no context lines unless `context` is set). Lines over 500 chars are clipped around the match (`lineChars` = original length); output is capped at ~43K chars and at most 1000 entries, with a note listing what was omitted — use outputMode files_with_matches/count for full coverage. Matching is on raw bytes, so a CJK pattern never matches inside GBK/other non-UTF-8 files — pass `encoding` (e.g. "gbk") to transcode those files first; valid UTF-8 files are never transcoded, so mixed-encoding trees are safe."#,
             false
         ),
         register_tool!(
@@ -255,7 +255,7 @@ pub fn all_tools() -> Vec<ToolSpec> {
         register_tool!(
             wait_command,
             WaitCommandArgs,
-            r#"Wait for a background command (run_command background=true) to finish, then return its filtered output in ONE round trip — use this instead of polling get_command_output while a long build runs. `timeoutSec` defaults to 120 (max 600; 0 = just peek without waiting). Optional `untilPattern` (regex) returns as soon as a matching line appears — useful when the command prints a completion marker long before it exits; check `matchedPattern` and `running` in the result. `include`/`exclude` regexes and `tailLines` (default 40) filter the output server-side and report how many lines were dropped/omitted. On timeout the process is NOT killed: `timedOut:true` + `running:true`, call again to keep waiting or use stop_command to end it. Prefer this over `run_command` foreground mode for anything longer than a couple of minutes."#,
+            r#"Wait for a background command (run_command background=true) to finish, then return its filtered output in ONE round trip — use this instead of polling get_command_output while a long build runs. `timeoutSec` defaults to 50 (max 55 — the client drops any single request at ~60s, so for longer builds just call again; 0 = just peek without waiting). Optional `untilPattern` (regex) returns as soon as a matching line appears — useful when the command prints a completion marker long before it exits; check `matchedPattern` and `running` in the result. `include`/`exclude` regexes and `tailLines` (default 40 once finished or matched, 5 while still running) filter the output server-side and report how many lines were dropped/omitted; `format:"raw"` returns stdout/stderr as separate verbatim text blocks after a status JSON block. On timeout the process is NOT killed: `timedOut:true` + `running:true`, call again to keep waiting or use stop_command to end it. Use it for any command expected to run longer than ~50s (a foreground run_command that passes ~50s is moved to the background automatically and returns a handle)."#,
             false
         ),
         register_tool!(stop_command, StopCommandArgs, STOP_COMMAND_DESC, false),

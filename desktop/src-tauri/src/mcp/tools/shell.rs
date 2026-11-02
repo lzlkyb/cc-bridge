@@ -246,6 +246,21 @@ pub struct Invocation {
     /// cwd 捕获文件（**原生**路径，仅 track_cwd 时 Some）。bash 内部用其 POSIX 形式写 pwd；
     /// Rust 侧用原生路径读回。文件在命令结束前不存在，读回时若不存在说明命令提前失败。
     pub cwd_capture_file: Option<PathBuf>,
+    /// `args` 是否须**原样**拼进命令行（Windows 的 `raw_arg`），而不是按 MSVC 规则加引号转义。
+    ///
+    /// cmd 必须用它：cmd 不按 MSVC 规则解析命令行，普通 `args` 会把命令里的 `"` 转成 `\"`，
+    /// 于是任何带双引号的命令（如 `cd "D:\a b"`）都会报「文件名、目录名或卷标语法不正确」。
+    /// bash / sh 按 MSVC 规则解析参数，保持 false。
+    pub raw_args: bool,
+}
+
+/// cmd 的原样参数：`/S /C "<命令>"`。
+///
+/// `/S` 让 cmd 只去掉首尾那一对引号、其余原样执行——不管命令里有几对引号、是否以引号开头，
+/// 都不会触发 cmd 那套「引号个数不同处理就不同」的老规则。
+#[cfg(windows)]
+fn cmd_raw_args(command: &str) -> Vec<String> {
+    vec!["/S".into(), "/C".into(), format!("\"{command}\"")]
 }
 
 /// 构造一次命令调用的壳层细节。
@@ -291,19 +306,18 @@ fn build_invocation_windows(
         ShellType::Cmd => match &cwd_file {
             None => Some(Invocation {
                 program: "cmd".into(),
-                args: vec!["/C".into(), command.to_string()],
+                args: cmd_raw_args(command),
                 env_extra: vec![],
                 cwd_capture_file: None,
+                raw_args: true,
             }),
             // 会话内：命令成功（`&&`）才写 cwd 到文件（best-effort，cmd 无 pwd -P，用 `cd` 打印）。
             Some(f) => Some(Invocation {
                 program: "cmd".into(),
-                args: vec![
-                    "/C".into(),
-                    format!("{} && cd > \"{}\"", command, f.display()),
-                ],
+                args: cmd_raw_args(&format!("{} && cd > \"{}\"", command, f.display())),
                 env_extra: vec![],
                 cwd_capture_file: Some(f.clone()),
+                raw_args: true,
             }),
         },
         ShellType::Bash => {
@@ -328,6 +342,7 @@ fn build_invocation_windows(
                 args: vec!["-c".into(), script],
                 env_extra: vec![("MSYS_NO_PATHCONV".into(), "1".into())],
                 cwd_capture_file: file,
+                raw_args: false,
             })
         }
     }
@@ -369,6 +384,7 @@ fn build_invocation_unix(
                 args: vec!["-c".into(), script],
                 env_extra: vec![],
                 cwd_capture_file: cwd_file,
+                raw_args: false,
             })
         }
         ShellType::Bash => {
@@ -385,6 +401,7 @@ fn build_invocation_unix(
                 args: vec!["-c".into(), script],
                 env_extra: vec![],
                 cwd_capture_file: cwd_file,
+                raw_args: false,
             })
         }
     }
@@ -466,6 +483,27 @@ mod tests {
             normalize_cwd_from_shell("C:\\foo\\bar"),
             PathBuf::from("C:\\foo\\bar")
         );
+    }
+
+    /// cmd 必须原样传参：`/S /C "<命令>"`，命令里的引号不转义。
+    #[test]
+    #[cfg(windows)]
+    fn windows_cmd_uses_raw_args() {
+        let inv =
+            build_invocation(ShellType::Cmd, "cd \"C:\\a b\"", Path::new("C:\\"), false).unwrap();
+        assert!(inv.raw_args);
+        assert_eq!(
+            inv.args,
+            vec![
+                "/S".to_string(),
+                "/C".to_string(),
+                "\"cd \"C:\\a b\"\"".to_string()
+            ]
+        );
+        let bash = build_invocation(ShellType::Bash, "echo hi", Path::new("C:\\"), false);
+        if let Some(b) = bash {
+            assert!(!b.raw_args, "bash 按 MSVC 规则解析参数，不该原样传");
+        }
     }
 
     /// Unix 壳层构造：Cmd 映射到 /bin/sh，且不注入 MSYS 专属环境变量。
