@@ -4,6 +4,46 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "3.1.1",
+    date: "2026-11-02",
+    highlights: [
+      "长命令不再白跑：前台命令跑过约 50 秒会自动转后台，用 `wait_command` 接着等，结果一个字不丢（此前客户端约 60 秒就断开，命令却还在跑）。",
+      "返回体积瘦身：读文件默认不再套一层 JSON 转义，命令输出省略空字段、搜索结果带预算，同样的上下文能装更多真内容。",
+      "点「停止」不再像报错：被停下的工具显示中性的「已中断」，不再是一排红色「失败」。",
+    ],
+    items: [
+      { category: "feat", text: "对话侧：读屏软件能听到「开始执行 / 等待批准 / 本轮完成」四类播报（流式期间不逐个字念）；生成中正文末尾显示光标；每条回复下方常显「复制 / 重新生成」，不必再靠鼠标悬停；长会话只渲染最近 200 条，往上翻可加载更早（搜索仍覆盖全部）。" },
+      { category: "feat", text: "`read_files` / `run_command` / `wait_command` 新增可选参数 `format:\"raw\"`：正文与命令输出不再包进 JSON 字符串（换行 / 引号 / 反斜杠不再转义）。read_files 每个文件一个文本块，首行元信息 JSON、之后原文；命令类是「状态 JSON 块 + stdout 块 + `[stderr]` 块」。省略时行为不变；内联上限仍按 JSON 口径计，换格式不会越线。" },
+      { category: "feat", text: "`edit_files` 匹配失败时给出「最接近处」：从第几行开始、前几行一致、第几行不同，并贴出文件原文与 oldString 对应行；能识别「只差缩进空白」「反斜杠个数不同（转义层级）」「全角 / 半角符号」三类；连首行都找不到时明确提示可能改错文件或已被改过。省掉一次重新读文件的往返。" },
+      { category: "improve", text: "对话流式渲染分层：涨字时只重画末尾那一块，长会话滚动与搜索不再整棵树重算，切回旧会话的白屏时间明显缩短。" },
+      { category: "improve", text: "工具参数 schema 带上说明：`ToolSchema` 派生宏新增 `#[schema(desc = \"..\", values = \"a|b\")]`，分别生成 `description` 与 `enum`。此前 inputSchema 只有类型，`outputMode` 的可选值、`deadlineMs` 的单位与默认值、`diff` 的档位等全靠模型猜。只给容易猜错的参数标注（search_files / read_files / edit_files / run_command / wait_command / get_command_output），不搬开发者文档注释，避免 tools/list 暴涨；标注写错会直接编译失败。" },
+      { category: "improve", text: "`read_files` 默认改为 `format:\"raw\"`：每个文件一个文本块，首行元信息 JSON，之后是不转义的原文。读文件占全部返回量约 39%，代码里密集的换行、引号、反斜杠进 JSON 都要转义。需要旧形态传 `format:\"json\"`；batch 里的 read_files 子调用未指定时仍是 json（子结果要整体再转义，raw 在那里省不了字符，还会把多文件拆乱）。" },
+      { category: "improve", text: "`search_files` 工具描述更新：去掉过时的「with context lines」（默认已是 0 行），写明长行截断、返回预算和条数上限。" },
+      { category: "improve", text: "`search_files` 增加返回预算：命中行超过 500 字符时只保留命中点附近一段（首尾 `…` 标记，`lineChars` 给出原长度），上下文行同样截断；命中列表总量按 wire 口径控制在约 43,000 字符内，超出时整条省略后面的命中并说明「已列出 N 条、省略 M 条、未列出的不代表不存在」，建议改用 `files_with_matches` / `count`；`maxResults` / `headLimit` 上限 1000，超出压值并注明。审计里曾有单次返回 13.5 万～180 万字符，超过客户端约 5 万字符的门槛后只剩 2KB 预览，等于白跑一次。" },
+      { category: "improve", text: "`search_files` 返回更紧凑：Windows 路径改用 `/`（仍是绝对路径，可直接传给其他工具；反斜杠在 JSON 里要转义、进 batch 再翻倍）；`type` 为 `content` / `name` 的条目不再带 `type`；只剩路径的条目（`files_with_matches`、按文件名搜索）直接是路径字符串。`skipped` / `error` 条目不变。" },
+      { category: "improve", text: "`run_command` 没传 `cwd`、但命令以 `cd <路径>` 开头时，用该路径作起始目录（同样过白名单），不再报 `cwdFallback`。含变量 / `~` 的路径不推断。有意不做「记住上一次 cwd」：没有连接级标识，只能按来源 IP 记，同机并行会话会串到别人的目录。" },
+      { category: "improve", text: "server instructions 删掉与 tools/list 逐条重复的工具清单（约 -700 字符），硬规则第 4 条补充「前台超过约 50 秒自动转后台」，新增第 5 条引导使用 `format:\"raw\"`。" },
+      { category: "improve", text: "`search_files` 上下文行默认从 2 改为 0，并且没有上下文时不再输出空的 `contextBefore` / `contextAfter`：多数搜索只为定位行号，默认带的前后 2 行常是长条目，实测单条命中多出约 600 字符。需要上下文时显式传 `context`。" },
+      { category: "improve", text: "`batch` 子结果展平：子工具返回的 JSON 文本直接内嵌为 `data`（普通文本为 `text`，附加文本块为 `notes`），不再以「JSON 里套 JSON 字符串」的形式被转义两次；含图片或带 `isError` 的子结果仍按原样放在 `result`。路径 / 引号密集的结果体积约降 10–15%，审计字节按展平后的实际体积记。" },
+      { category: "improve", text: "`run_command` / `wait_command` 返回省略默认值字段：stderr 为空时不再带 `stderr` / `stderrTotalBytes` / `stderrTruncated`，值为 0 的 `*DroppedLines` / `*OmittedLines` 与值为 false 的 `*Truncated` 一律省略（缺失 = 默认值）；`timedOut` / `exitCode` 等状态字段保留。`get_command_output` 依赖 `*TotalBytes` 算偏移，不变。" },
+      { category: "improve", text: "`wait_command` 默认等待从 120s 改为 50s、上限从 600s 改为 55s（超出时压到上限并用 `timeoutNote` 写明）；未显式传 `tailLines` 时，命令仍在跑的中间返回只带最后 5 行，结束或命中 `untilPattern` 时仍给 40 行。" },
+      { category: "fix", text: "点「停止」后，正在跑的工具不再显示成一排红色「失败」：改为中性的「已中断」，文案说明「没有拿到执行结果（这一轮被停止了）」。统计口径不变（仍算未成功，以免变更集与失败计数失真）。" },
+      { category: "fix", text: "对话界面九处明确缺陷：任务列表的勾选框终于显示对（此前已完成与未完成长得一样）；工具行的悬停提示能看出改的是哪个文件；运行中按 Ctrl+Enter 不再误触「发送」；错误详情逐条列出、不再吞掉合法的重复行；Clawd 侧栏不再永久占用左侧 76px。" },
+      { category: "fix", text: "「卡住了」终于看得见：本轮超过 30 秒没有新记录时，浮条与 Clawd 会显示「N 秒无新记录，仍在运行」。此前这条提示从未真正出现过（消息时间戳恒为空）。" },
+      { category: "fix", text: "命令输出里的中文变乱码：中文 Windows 上 ping / dir / netsh / Java / Maven 等按系统代码页（GBK）输出，`run_command` / `wait_command` / `get_command_output` 一律按 UTF-8 解码，报错变成满屏 `�`。现在按行解码：合法 UTF-8 的行原样，否则（仅 Windows）按 GBK 无错解码，都不行才退回 `�`。按行是为了兼顾 Git Bash 的 UTF-8 与 Windows 工具的 GBK 混在同一份输出里的情形。输出被截断时，切在中文字符中间的 UTF-8 行仍按 UTF-8 处理（只坏切点那一个字），不会被 GBK 「无错」解成整行乱码（实测约 1/4 的切点会触发）。" },
+      { category: "fix", text: "前台命令转后台后 `timeoutMs` 仍然生效：跑满就杀整树（wait_command 报 `terminated`），卡死的命令不再永远留在后台；会话 cwd 捕获用的临时文件在命令结束后删除。" },
+      { category: "fix", text: "`cd 相对路径 && …` 不再被推断为起始目录：相对路径会按服务进程自己的当前目录解析，再叠加命令里的 `cd` 就成了 `src/src`。" },
+      { category: "fix", text: "工具 panic 时审计记为「服务端处理异常」，不再误记成「客户端断开」。" },
+      { category: "fix", text: "batch 整次调用有了时间预算（约 50s）：客户端约 60s 断开的是整个 batch，此前几条长操作加起来越线时，整条返回作废、里面的写操作却已执行。现在预算用完就不再开始后面的子操作，返回 `notExecuted` 并说明；batch 内的 run_command 按剩余时间转后台，wait_command 的等待、search_files 的软超时也压到剩余时间以内。" },
+      { category: "fix", text: "`background:true` 的命令在会话模式下不再把 cwd 捕获临时文件留在 %TEMP%。" },
+      { category: "fix", text: "run_command 的描述与 `timeoutMs` 说明更正：转后台后跑满 `timeoutMs` 仍会被终止，不是「不杀进程」。" },
+      { category: "fix", text: "客户端中途断开的工具调用在审计里不留任何记录（处理中的请求被直接取消，走不到写审计的分支），面板看不到、事后也无法回查。现在会补记一条失败审计：「客户端在 N 秒时断开了请求…」，输出字节记 0。" },
+      { category: "fix", text: "白名单根目录会重复（实测同一目录出现两次，`list_allowed_roots` 也返回两遍）：加载、保存、切换配置组、导入配置时统一去重，保留首次出现的；比较时忽略 `\\\\?\\` 前缀与末尾分隔符，Windows 上再忽略大小写与斜杠方向。" },
+      { category: "fix", text: "`run_command` 在 cmd 壳层下，只要命令里带双引号（如 `cd \"D:\\a b\"`、`echo \"x\"`）就必然失败，报「文件名、目录名或卷标语法不正确」：命令按普通参数传给 `cmd /C`，Rust 按 MSVC 规则把 `\"` 转成 `\\\"`，而 cmd 不认这套转义。现在 cmd 改为原样传参 `cmd /S /C \"<命令>\"`。Git Bash / sh 壳层不受影响。" },
+      { category: "fix", text: "单次工具调用超过约 60s 就拿不到任何结果：Claude Code 的 HTTP 传输对「等第一个字节」有约 60s 的时限，而服务端要等工具跑完才发响应（审计全量历史无一次超过 60s；`wait_command` 等 65/90/300/600s 全部失败、等 55s 全部成功）。旧默认值全部越线：`wait_command` 默认 120s 必失败；`run_command` 前台默认 120s，跑 60–120s 的命令客户端先断开、一个字拿不到，命令却继续跑到 120s 被杀。现在前台命令跑到约 50s 仍未结束就自动转后台（不杀进程，接管已有输出缓冲），返回 `backgrounded:true` + `handle`，用 `wait_command` 接着等；`timeoutMs` ≤ 50s 的调用仍按旧语义到点杀。" },
+    ],
+  },
+  {
     version: "3.1.0",
     date: "2026-11-01",
     items: [
@@ -454,13 +494,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "审计与备份的错误提示改成人话。「备份文件不存在」「文件被占用」「没有权限」这些以前直接显示 `os error 32` 之类的英文错误码。" },
       { category: "fix", text: "更新失败不再只剩一个孤立的「重试」按钮，关于卡现在会显示「更新失败」状态并说明原因。" },
       { category: "fix", text: "引导 / 关于 / 审计弹窗统一支持 Esc 关闭。" },
-    ],
-  },
-  {
-    version: "2.7.5",
-    date: "2026-09-04",
-    items: [
-      { category: "fix", text: "检查更新和下载更新包走的是两个不同的镜像。读更新信息用的是 `gh-proxy.com`，实际下载走的却还是 `ghproxy.net`——上上个版本刚因为它证书过期把它换掉，但只换了「读取」这一半，`updater.json` 里的下载地址没跟着改。现在两边统一到 `gh-proxy.com`，GitHub 官方地址保留兜底。" },
     ],
   },
 ];

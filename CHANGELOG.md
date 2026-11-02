@@ -5,15 +5,23 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [3.1.1] - 2026-11-02
+
+### 亮点
+- **长命令不再白跑**：前台命令跑过约 50 秒会自动转后台，用 `wait_command` 接着等，结果一个字不丢（此前客户端约 60 秒就断开，命令却还在跑）。
+- **返回体积瘦身**：读文件默认不再套一层 JSON 转义，命令输出省略空字段、搜索结果带预算，同样的上下文能装更多真内容。
+- **点「停止」不再像报错**：被停下的工具显示中性的「已中断」，不再是一排红色「失败」。
+
+### 更新摘要
+工具调用不再白跑：单次操作守住客户端的时限，跑久了自动转后台接着等；返回体积明显变瘦，中文乱码、带引号的 cmd 命令、白名单目录重复等一批老毛病一并修好。对话侧补上读屏播报、流式光标与长会话窗口化。
 
 ### 新增
-
+- 对话侧：读屏软件能听到「开始执行 / 等待批准 / 本轮完成」四类播报（流式期间不逐个字念）；生成中正文末尾显示光标；每条回复下方常显「复制 / 重新生成」，不必再靠鼠标悬停；长会话只渲染最近 200 条，往上翻可加载更早（搜索仍覆盖全部）。
 - `read_files` / `run_command` / `wait_command` 新增可选参数 `format:"raw"`：正文与命令输出不再包进 JSON 字符串（换行 / 引号 / 反斜杠不再转义）。read_files 每个文件一个文本块，首行元信息 JSON、之后原文；命令类是「状态 JSON 块 + stdout 块 + `[stderr]` 块」。省略时行为不变；内联上限仍按 JSON 口径计，换格式不会越线。
 - `edit_files` 匹配失败时给出「最接近处」：从第几行开始、前几行一致、第几行不同，并贴出文件原文与 oldString 对应行；能识别「只差缩进空白」「反斜杠个数不同（转义层级）」「全角 / 半角符号」三类；连首行都找不到时明确提示可能改错文件或已被改过。省掉一次重新读文件的往返。
 
 ### 变更
-
+- 对话流式渲染分层：涨字时只重画末尾那一块，长会话滚动与搜索不再整棵树重算，切回旧会话的白屏时间明显缩短。
 - 工具参数 schema 带上说明：`ToolSchema` 派生宏新增 `#[schema(desc = "..", values = "a|b")]`，分别生成 `description` 与 `enum`。此前 inputSchema 只有类型，`outputMode` 的可选值、`deadlineMs` 的单位与默认值、`diff` 的档位等全靠模型猜。只给容易猜错的参数标注（search_files / read_files / edit_files / run_command / wait_command / get_command_output），不搬开发者文档注释，避免 tools/list 暴涨；标注写错会直接编译失败。
 - `read_files` 默认改为 `format:"raw"`：每个文件一个文本块，首行元信息 JSON，之后是不转义的原文。读文件占全部返回量约 39%，代码里密集的换行、引号、反斜杠进 JSON 都要转义。需要旧形态传 `format:"json"`；batch 里的 read_files 子调用未指定时仍是 json（子结果要整体再转义，raw 在那里省不了字符，还会把多文件拆乱）。
 - `search_files` 工具描述更新：去掉过时的「with context lines」（默认已是 0 行），写明长行截断、返回预算和条数上限。
@@ -21,14 +29,15 @@
 - `search_files` 返回更紧凑：Windows 路径改用 `/`（仍是绝对路径，可直接传给其他工具；反斜杠在 JSON 里要转义、进 batch 再翻倍）；`type` 为 `content` / `name` 的条目不再带 `type`；只剩路径的条目（`files_with_matches`、按文件名搜索）直接是路径字符串。`skipped` / `error` 条目不变。
 - `run_command` 没传 `cwd`、但命令以 `cd <路径>` 开头时，用该路径作起始目录（同样过白名单），不再报 `cwdFallback`。含变量 / `~` 的路径不推断。有意不做「记住上一次 cwd」：没有连接级标识，只能按来源 IP 记，同机并行会话会串到别人的目录。
 - server instructions 删掉与 tools/list 逐条重复的工具清单（约 -700 字符），硬规则第 4 条补充「前台超过约 50 秒自动转后台」，新增第 5 条引导使用 `format:"raw"`。
-
 - `search_files` 上下文行默认从 2 改为 0，并且没有上下文时不再输出空的 `contextBefore` / `contextAfter`：多数搜索只为定位行号，默认带的前后 2 行常是长条目，实测单条命中多出约 600 字符。需要上下文时显式传 `context`。
 - `batch` 子结果展平：子工具返回的 JSON 文本直接内嵌为 `data`（普通文本为 `text`，附加文本块为 `notes`），不再以「JSON 里套 JSON 字符串」的形式被转义两次；含图片或带 `isError` 的子结果仍按原样放在 `result`。路径 / 引号密集的结果体积约降 10–15%，审计字节按展平后的实际体积记。
 - `run_command` / `wait_command` 返回省略默认值字段：stderr 为空时不再带 `stderr` / `stderrTotalBytes` / `stderrTruncated`，值为 0 的 `*DroppedLines` / `*OmittedLines` 与值为 false 的 `*Truncated` 一律省略（缺失 = 默认值）；`timedOut` / `exitCode` 等状态字段保留。`get_command_output` 依赖 `*TotalBytes` 算偏移，不变。
 - `wait_command` 默认等待从 120s 改为 50s、上限从 600s 改为 55s（超出时压到上限并用 `timeoutNote` 写明）；未显式传 `tailLines` 时，命令仍在跑的中间返回只带最后 5 行，结束或命中 `untilPattern` 时仍给 40 行。
 
 ### 修复
-
+- 点「停止」后，正在跑的工具不再显示成一排红色「失败」：改为中性的「已中断」，文案说明「没有拿到执行结果（这一轮被停止了）」。统计口径不变（仍算未成功，以免变更集与失败计数失真）。
+- 对话界面九处明确缺陷：任务列表的勾选框终于显示对（此前已完成与未完成长得一样）；工具行的悬停提示能看出改的是哪个文件；运行中按 Ctrl+Enter 不再误触「发送」；错误详情逐条列出、不再吞掉合法的重复行；Clawd 侧栏不再永久占用左侧 76px。
+- 「卡住了」终于看得见：本轮超过 30 秒没有新记录时，浮条与 Clawd 会显示「N 秒无新记录，仍在运行」。此前这条提示从未真正出现过（消息时间戳恒为空）。
 - 命令输出里的中文变乱码：中文 Windows 上 ping / dir / netsh / Java / Maven 等按系统代码页（GBK）输出，`run_command` / `wait_command` / `get_command_output` 一律按 UTF-8 解码，报错变成满屏 `�`。现在按行解码：合法 UTF-8 的行原样，否则（仅 Windows）按 GBK 无错解码，都不行才退回 `�`。按行是为了兼顾 Git Bash 的 UTF-8 与 Windows 工具的 GBK 混在同一份输出里的情形。输出被截断时，切在中文字符中间的 UTF-8 行仍按 UTF-8 处理（只坏切点那一个字），不会被 GBK 「无错」解成整行乱码（实测约 1/4 的切点会触发）。
 - 前台命令转后台后 `timeoutMs` 仍然生效：跑满就杀整树（wait_command 报 `terminated`），卡死的命令不再永远留在后台；会话 cwd 捕获用的临时文件在命令结束后删除。
 - `cd 相对路径 && …` 不再被推断为起始目录：相对路径会按服务进程自己的当前目录解析，再叠加命令里的 `cd` 就成了 `src/src`。
