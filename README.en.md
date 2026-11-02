@@ -22,6 +22,24 @@ Installer size: **4.5 MB** (Windows) / **5.7 MB** (macOS).
 
 > The rule is simple: **install the bridge where the files are; the AI connects from the other side.** Both directions use the same installer, the same port, and the same security model.
 
+## Three real setups
+
+| Setup | AI runs on | Files live on | Mode |
+|---|---|---|---|
+| **Claude Code on a VPS edits the repo on my laptop** (the one people ask about) | rented VPS / work cluster | your Windows / macOS | A |
+| **Laptop at home works on the project on the office machine** | laptop | office Windows desktop | B |
+| **Local AI tidies assets sitting on the NAS** | your machine | that other box | B |
+
+The first one, step by step:
+
+1. Install cc-bridge **on the machine that holds the files** (4.5 MB, double-click).
+2. The connect page shows an MCP endpoint and a bearer token; add one MCP entry in **Claude Code on the VPS**.
+3. After that, "read `src/app.tsx`" and "change these three spots" land on **your machine** — the code is never uploaded anywhere, and the edit shows up in your editor immediately.
+4. Every write is audited and auto-backed-up; a bad batch can be reverted as a group.
+5. Anything outside the allow-list is refused.
+
+> **The AI can run anywhere; the files stay where they are.** Putting Claude Code on a VPS buys compute and bandwidth — it is not a reason to hand over your source. The same setup covers "code must not leave the intranet, but we want a cloud model".
+
 ## Quick start (~1 minute)
 
 **Step 1 (both modes)** — download and install on **the machine where the files live**, from [Releases](https://github.com/lzlkyb/cc-bridge/releases):
