@@ -347,6 +347,24 @@ fn parse_or_warn<T: serde::de::DeserializeOwned>(key: &str, value: &str, fallbac
     })
 }
 
+/// 白名单根目录去重：保留首次出现的那个（顺序有意义——第一个还是 cwd 回退目标）。
+///
+/// 比较时忽略 `\\?\` 前缀与末尾分隔符；Windows 上再忽略大小写与 `/`、`\` 之分（同一个
+/// 目录的不同写法）。实测已有配置里同一根目录出现两次，`list_allowed_roots` 也原样返回两遍。
+pub fn dedupe_roots(roots: Vec<String>) -> Vec<String> {
+    let key = |r: &str| {
+        let s = r.strip_prefix(r"\\?\").unwrap_or(r);
+        let s = s.trim_end_matches(['/', '\\']);
+        if cfg!(windows) {
+            s.replace('/', "\\").to_lowercase()
+        } else {
+            s.to_string()
+        }
+    };
+    let mut seen = std::collections::HashSet::new();
+    roots.into_iter().filter(|r| seen.insert(key(r))).collect()
+}
+
 pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
     let mut config = BridgeConfig::default();
 
@@ -364,10 +382,12 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
         match key.as_str() {
             "allowed_roots" => {
                 let roots: Vec<String> = parse_or_warn(key, value, vec![]);
-                config.allowed_roots = roots
-                    .into_iter()
-                    .map(|r| r.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(r))
-                    .collect();
+                config.allowed_roots = dedupe_roots(
+                    roots
+                        .into_iter()
+                        .map(|r| r.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(r))
+                        .collect(),
+                );
             }
             "root_profiles" => config.root_profiles = parse_or_warn(key, value, vec![]),
             "exclude_patterns" => config.exclude_patterns = parse_or_warn(key, value, vec![]),
@@ -1116,6 +1136,25 @@ mod save_load_contract_tests {
     }
 
     /// 空库（全新安装）语义：所有值取默认，且不得被 load 过程改写成奇怪的东西。
+    #[test]
+    fn dedupe_roots_keeps_first_and_order() {
+        let out = dedupe_roots(vec![
+            "D:\\a".into(),
+            "D:\\b".into(),
+            "D:\\a".into(),
+            "D:\\b\\".into(),
+            r"\\?\D:\a".into(),
+        ]);
+        assert_eq!(out, vec!["D:\\a".to_string(), "D:\\b".to_string()]);
+        if cfg!(windows) {
+            // Windows 上大小写与斜杠方向不同也是同一目录。
+            assert_eq!(
+                dedupe_roots(vec!["D:\\Work".into(), "d:/work".into()]).len(),
+                1
+            );
+        }
+    }
+
     #[test]
     fn load_config_on_empty_db_yields_defaults() {
         let conn = mem_conn();

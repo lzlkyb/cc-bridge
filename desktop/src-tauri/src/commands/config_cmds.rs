@@ -181,7 +181,9 @@ pub async fn save_config(
         };
     }
 
-    apply_field!(allowed_roots, "allowed_roots", &patch.allowed_roots);
+    // 根目录先去重再入库（见 `config::dedupe_roots`）。
+    let roots_patch = patch.allowed_roots.clone().map(crate::config::dedupe_roots);
+    apply_field!(allowed_roots, "allowed_roots", &roots_patch);
     // 排除规则：先 normalize 再入库，保证参与匹配的模式永远干净可用。
     let normalized_excludes = patch
         .exclude_patterns
@@ -644,6 +646,7 @@ fn apply_profile_switch(
     roots: Vec<String>,
     excludes: Vec<String>,
 ) -> Result<(), String> {
+    let roots = crate::config::dedupe_roots(roots);
     save_config_field(db, "allowed_roots", &serde_json::to_value(&roots).unwrap())?;
     save_config_field(
         db,
@@ -769,6 +772,8 @@ pub(crate) async fn import_config_inner(
 
     // 白名单兜底校验（复用 security::path 白名单逻辑，不可绕过）。
     // incoming 尚未写入 state，用其自身 roots 预 canonicalize 的本地缓存集合校验。
+    incoming.allowed_roots =
+        crate::config::dedupe_roots(std::mem::take(&mut incoming.allowed_roots));
     let incoming_roots = crate::security::path::canonicalize_roots(&incoming.allowed_roots);
     for root in &incoming.allowed_roots {
         if let Err(e) =
