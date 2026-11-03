@@ -95,7 +95,15 @@ pub struct RunningCommand {
     /// 修复：之前面板的“已运行”一直用 started_at.elapsed() 实时计算，即使进程早已结束
     /// （v1 不自动回收注册表条目，要等 stop_command 显式移除），还会随面板轮询一直增长下去。
     pub finished_elapsed_secs: Arc<Mutex<Option<u64>>>,
+    /// 命令结束后的结果是否已被取走过（wait_command / get_command_output 拿到了结束状态）。
+    ///
+    /// 没读过的结果保留更久（见 [`UNREAD_RESULT_RETENTION`]）：调用方常常隔一会儿才来取，
+    /// 按 2 分钟清掉就只剩「未知的 handle」，只能整条重跑。
+    pub result_read: Arc<AtomicBool>,
 }
+
+/// 已结束但结果还没被取走的后台命令，至少保留多久。
+pub const UNREAD_RESULT_RETENTION: Duration = Duration::from_secs(30 * 60);
 
 pub struct RuntimeStats {
     pub total_requests: u64,
@@ -428,15 +436,26 @@ impl AppState {
     /// 命令立即移除，为新命令腾出空位。修复：之前一旦命中并发上限，即使前面的早已跑完，
     /// 新命令也会被硬拒绝，用户必须手动 stop_command 才能重试。由 `run_command.rs` 在打包 5
     /// 上限报错前先调用。
-    pub async fn evict_finished_commands(&self) {
+    ///
+    /// `include_unread = false` 时只腾「结果已被取走」的；调用方腾完仍满，再用 `true`
+    /// 连没读过的也清掉——新命令能启动比保留旧结果更要紧。
+    pub async fn evict_finished_commands(&self, include_unread: bool) {
         let snapshot: Vec<_> = self
             .running_commands
             .iter()
-            .map(|entry| (entry.key().clone(), entry.value().exit_code.clone()))
+            .map(|entry| {
+                (
+                    entry.key().clone(),
+                    entry.value().exit_code.clone(),
+                    entry.value().result_read.clone(),
+                )
+            })
             .collect();
 
-        for (handle, exit_code_arc) in snapshot {
-            if exit_code_arc.lock().await.is_some() {
+        for (handle, exit_code_arc, read) in snapshot {
+            if exit_code_arc.lock().await.is_some()
+                && (include_unread || read.load(Ordering::Relaxed))
+            {
                 self.running_commands.remove(&handle);
             }
         }
@@ -465,12 +484,14 @@ impl AppState {
                     cmd.finished_elapsed_secs.clone(),
                     cmd.started_at,
                     cmd.stop_requested_at.clone(),
+                    cmd.result_read.clone(),
                 )
             })
             .collect();
 
         let mut to_remove = Vec::new();
-        for (handle, exit_code_arc, finished_elapsed_arc, started_at, stop_at_arc) in snapshot {
+        for (handle, exit_code_arc, finished_elapsed_arc, started_at, stop_at_arc, read) in snapshot
+        {
             if exit_code_arc.lock().await.is_none() {
                 // 还在跑，不清 —— 除非已被请求终止却迟迟不退出（kill 未生效）。
                 if let Some(at) = *stop_at_arc.lock().await {
@@ -487,7 +508,13 @@ impl AppState {
                 continue; // exit_code 已写但 finished_elapsed 还没来得及写入（极短窗口），下一轮再看
             };
             let finished_at = started_at + Duration::from_secs(finished_secs);
-            if finished_at.elapsed() >= grace_period {
+            // 结果还没被取走：至少保留 UNREAD_RESULT_RETENTION（配置的宽容期更长则按配置）。
+            let keep = if read.load(Ordering::Relaxed) {
+                grace_period
+            } else {
+                grace_period.max(UNREAD_RESULT_RETENTION)
+            };
+            if finished_at.elapsed() >= keep {
                 to_remove.push(handle);
             }
         }
@@ -597,7 +624,47 @@ mod tests {
             stderr_done: Arc::new(AtomicBool::new(false)),
             started_at: Instant::now(),
             finished_elapsed_secs: Arc::new(Mutex::new(None)),
+            result_read: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 没读过的结果过了宽容期也要留着；读过的照常清。名额腾位先腾读过的。
+    #[tokio::test]
+    async fn unread_results_outlive_grace_period() {
+        let (state, _dir) = make_state(|c| c.command_cleanup_secs = 0);
+        let finished = |read: bool| {
+            let e = entry(Some(0), false, None);
+            *e.finished_elapsed_secs.try_lock().unwrap() = Some(0);
+            e.result_read.store(read, Ordering::Relaxed);
+            e
+        };
+        state
+            .running_commands
+            .insert("cmd_read".into(), finished(true));
+        state
+            .running_commands
+            .insert("cmd_unread".into(), finished(false));
+        state.cleanup_finished_commands().await;
+        assert!(!state.running_commands.contains_key("cmd_read"));
+        assert!(
+            state.running_commands.contains_key("cmd_unread"),
+            "没读过的应保留"
+        );
+
+        state
+            .running_commands
+            .insert("cmd_read".into(), finished(true));
+        state.evict_finished_commands(false).await;
+        assert!(!state.running_commands.contains_key("cmd_read"));
+        assert!(
+            state.running_commands.contains_key("cmd_unread"),
+            "先腾读过的"
+        );
+        state.evict_finished_commands(true).await;
+        assert!(
+            !state.running_commands.contains_key("cmd_unread"),
+            "仍不够时才腾没读过的"
+        );
     }
 
     /// 🔴 被请求终止但 kill 没生效的条目：`exit_code` 永远是 None（进程还在，或不响应）。

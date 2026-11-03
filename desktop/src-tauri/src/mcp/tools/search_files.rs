@@ -414,32 +414,14 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     }
     content_blocks
         .push(json!({ "type": "text", "text": serde_json::to_string(&matches).unwrap() }));
-    if truncated {
-        content_blocks.push(json!({
-            "type": "text",
-            "text": format!(
-                "搜索结果已被截断：本次返回 {} 条（上限 {}）。结果可能不完整——建议缩小 rootPath / namePattern / contentPattern 范围，或调小 maxResults 进一步分页。",
-                matches.len(),
-                grep.head_limit
-            )
-        }));
-    }
-    if budget_omitted > 0 {
-        content_blocks.push(json!({
-            "type": "text",
-            "text": format!(
-                "返回内容超出单次预算（约 {MATCHES_BUDGET_CHARS} 字符），已列出 {} 条、省略后面 {budget_omitted} 条，结果不完整——未列出的不代表不存在。可改用 outputMode:\"files_with_matches\" 或 \"count\" 先看分布（每条很小，同样预算能覆盖全部），或缩小 rootPath / namePattern / contentPattern 范围。",
-                matches.len()
-            )
-        }));
-    }
-    if let Some(want) = head_limit_clamped {
-        content_blocks.push(json!({
-            "type": "text",
-            "text": format!(
-                "条数上限已从 {want} 压到 {MAX_HEAD_LIMIT}：需要全量时用 outputMode:\"files_with_matches\" / \"count\"，或按子目录分次搜索。"
-            )
-        }));
+    if let Some(note) = truncation_note(
+        matches.len(),
+        grep.head_limit,
+        truncated,
+        budget_omitted,
+        head_limit_clamped,
+    ) {
+        content_blocks.push(json!({ "type": "text", "text": note }));
     }
     if clipped_lines > 0 {
         content_blocks.push(json!({
@@ -468,6 +450,41 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     }
 
     Ok(json!({ "content": content_blocks }))
+}
+
+/// 结果不完整时的**一条**说明；完整时返回 `None`。
+///
+/// 两种截断可能同时发生：遍历到条数上限就停（`walker_truncated`）、列表超出字符预算被省略
+/// 后半（`budget_omitted`）。以前各出一条，再加一条「条数上限已压低」，三条里的数字互相对不上、
+/// 读着绕。条数上限被压低（`clamped_from`）只在真的截到时才提——没截到就不影响结果。
+fn truncation_note(
+    shown: usize,
+    head_limit: usize,
+    walker_truncated: bool,
+    budget_omitted: usize,
+    clamped_from: Option<usize>,
+) -> Option<String> {
+    let mut why: Vec<String> = Vec::new();
+    if budget_omitted > 0 {
+        why.push(format!(
+            "因单次字符预算（约 {MATCHES_BUDGET_CHARS} 字符）省略了后面 {budget_omitted} 条"
+        ));
+    }
+    if walker_truncated {
+        let clamp = clamped_from
+            .map(|want| format!("（请求的 {want} 已压到 {MAX_HEAD_LIMIT}）"))
+            .unwrap_or_default();
+        why.push(format!(
+            "命中数已达条数上限 {head_limit}{clamp}，之后的没有再扫"
+        ));
+    }
+    if why.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "结果不完整：列出 {shown} 条，{}。未列出的不代表不存在——要看全部用 outputMode:\"files_with_matches\" 或 \"count\"（每条很小），或缩小 rootPath / namePattern / contentPattern 范围。",
+        why.join("；")
+    ))
 }
 
 /// 压缩对外返回的命中列表（只改展示形态，不改含义）。
@@ -1510,6 +1527,30 @@ mod tests {
     #[test]
     fn context_defaults_to_zero() {
         assert_eq!(clamp_context(None), (0, None));
+    }
+
+    #[test]
+    fn truncation_note_is_one_consistent_message() {
+        // 完整：不出说明；条数上限被压低但没截到，也不提。
+        assert_eq!(truncation_note(10, 50, false, 0, None), None);
+        assert_eq!(truncation_note(10, 1000, false, 0, Some(20_000)), None);
+        // 两种截断同时发生：合成一条，数字自洽。
+        let n = truncation_note(246, 1000, true, 754, Some(20_000)).unwrap();
+        assert!(n.starts_with("结果不完整：列出 246 条"), "{n}");
+        assert!(
+            n.contains("省略了后面 754 条") && n.contains("条数上限 1000"),
+            "{n}"
+        );
+        assert!(n.contains("20000 已压到 1000"), "{n}");
+        // 只是到了条数上限
+        let n = truncation_note(50, 50, true, 0, None).unwrap();
+        assert!(n.contains("条数上限 50") && !n.contains("预算"), "{n}");
+        // 只是超出字符预算
+        let n = truncation_note(30, 50, false, 20, None).unwrap();
+        assert!(
+            n.contains("省略了后面 20 条") && !n.contains("条数上限"),
+            "{n}"
+        );
     }
 
     #[test]

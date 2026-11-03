@@ -42,7 +42,16 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
     )?;
 
     // 先克隆出需要的 Arc，再释放 DashMap 的 Ref，避免在持有 Ref 期间跨 await。
-    let (stdout_arc, stderr_arc, exit_code_arc, pid, stop_requested, out_done, err_done) = {
+    let (
+        stdout_arc,
+        stderr_arc,
+        exit_code_arc,
+        pid,
+        stop_requested,
+        out_done,
+        err_done,
+        result_read,
+    ) = {
         let entry = state
             .running_commands
             .get(&args.handle)
@@ -55,6 +64,7 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
             entry.stop_requested.clone(),
             entry.stdout_done.clone(),
             entry.stderr_done.clone(),
+            entry.result_read.clone(),
         )
     };
 
@@ -62,6 +72,10 @@ pub async fn handle(args: GetCommandOutputArgs, state: &Arc<AppState>) -> Result
     let stderr = stderr_arc.lock().await;
     let exit_code = *exit_code_arc.lock().await;
     let terminated = stop_requested.load(Ordering::Relaxed);
+    // 拿到了结束状态 = 结果已被取走，清理时不再为它多留（见 RunningCommand::result_read）。
+    if exit_code.is_some() || terminated {
+        result_read.store(true, Ordering::Relaxed);
+    }
     // 🔴 exit ≠ close：进程退出后管道里可能还有残余字节没读完。只有两路都见 EOF 才算完整。
     let output_complete =
         exit_code.is_some() && out_done.load(Ordering::Relaxed) && err_done.load(Ordering::Relaxed);

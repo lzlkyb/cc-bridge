@@ -106,6 +106,7 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
         out_done,
         err_done,
         stop_requested,
+        result_read,
     ) = {
         let entry = state
             .running_commands
@@ -120,6 +121,7 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
             entry.stdout_done.clone(),
             entry.stderr_done.clone(),
             entry.stop_requested.clone(),
+            entry.result_read.clone(),
         )
     };
 
@@ -171,6 +173,10 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
     let stderr_buf = stderr_arc.lock().await;
     let exit_code = *exit_code_arc.lock().await;
     let terminated = stop_requested.load(Ordering::Relaxed);
+    // 拿到了结束状态 = 结果已被取走，清理时不再为它多留（见 RunningCommand::result_read）。
+    if exit_code.is_some() || terminated {
+        result_read.store(true, Ordering::Relaxed);
+    }
     // exit ≠ close：进程退出后管道可能还有残余字节，只有两路 EOF 才算输出完整。
     let output_complete =
         exit_code.is_some() && out_done.load(Ordering::Relaxed) && err_done.load(Ordering::Relaxed);

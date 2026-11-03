@@ -342,8 +342,11 @@ pub async fn handle(args: RunCommandArgs, state: &Arc<AppState>) -> Result<Value
 
     if args.background && state.running_commands.len() >= MAX_CONCURRENT_BACKGROUND {
         // 修复：先尝试把已结束的命令腾出去（不用等 5 分钟宽限期，这里优先保新命令能启动），
-        // 真正 5 个都还在跑时才拒绝。
-        state.evict_finished_commands().await;
+        // 真正 5 个都还在跑时才拒绝。先腾结果已被取走的，仍不够才动没读过的。
+        state.evict_finished_commands(false).await;
+        if state.running_commands.len() >= MAX_CONCURRENT_BACKGROUND {
+            state.evict_finished_commands(true).await;
+        }
     }
     if args.background && state.running_commands.len() >= MAX_CONCURRENT_BACKGROUND {
         return Err(format!(
@@ -1023,6 +1026,8 @@ fn register_truncated_output(
             finished_elapsed_secs: Arc::new(AsyncMutex::new(Some(
                 ctx.started_at.elapsed().as_secs(),
             ))),
+            // 第一页已随本次前台结果返回，算已读：翻页快照照旧按宽容期清理，不多占内存。
+            result_read: Arc::new(AtomicBool::new(true)),
         },
     );
 
@@ -1217,6 +1222,7 @@ fn register_background(
             stderr_done,
             started_at,
             finished_elapsed_secs: finished_elapsed,
+            result_read: Arc::new(AtomicBool::new(false)),
         },
     );
     handle_id

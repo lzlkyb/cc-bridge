@@ -31,6 +31,18 @@ pub struct EditEntry {
     #[schema(desc = "Assert oldString occurs exactly N times; on mismatch nothing is written.")]
     #[serde(default, rename = "expectCount")]
     pub expect_count: Option<usize>,
+    /// 行号模式：把第 `startLine`..`endLine` 行整行换成 `newString`（见 [`replace_line_range`]）。
+    ///
+    /// WHY：转义层级多的文本（Rust 字符串里的 `\\\"`、正则、路径）很难把 `oldString` 写对，
+    /// 以前只能另写脚本定位。这时 `oldString` 只需是这几行里一小段好写的文字，用来防行号过期。
+    #[schema(
+        desc = "Line mode: replace whole lines startLine..endLine (1-based, inclusive) with newString (empty = delete them). oldString then only needs to be a short fragment that occurs in those lines, as a guard against stale line numbers. Not combinable with replaceAll / expectCount."
+    )]
+    #[serde(default, rename = "startLine")]
+    pub start_line: Option<usize>,
+    #[schema(desc = "Last line for line mode (default = startLine).")]
+    #[serde(default, rename = "endLine")]
+    pub end_line: Option<usize>,
 }
 
 /// 分组形态的内部 edit 项：{oldString, newString, replaceAll?, encoding?, expectCount?}
@@ -47,6 +59,11 @@ struct GroupedEdit {
     encoding: Option<String>,
     #[serde(default, rename = "expectCount")]
     expect_count: Option<usize>,
+    // 行号按「这一条执行时」的文件算：同一文件的多条 edit 是依次执行的。
+    #[serde(default, rename = "startLine")]
+    start_line: Option<usize>,
+    #[serde(default, rename = "endLine")]
+    end_line: Option<usize>,
 }
 
 /// 客户端实际发过的两种 item 形态（untagged 按序尝试）：
@@ -98,6 +115,8 @@ where
                         replace_all: e.replace_all,
                         encoding: e.encoding,
                         expect_count: e.expect_count,
+                        start_line: e.start_line,
+                        end_line: e.end_line,
                     });
                 }
             }
@@ -209,6 +228,20 @@ async fn edit_single(
             warning: warning.clone(),
         });
     }
+    // 行号模式的参数组合先校验，再碰文件。
+    let line_mode = f.start_line.is_some();
+    if f.end_line.is_some() && !line_mode {
+        return Err(EditError {
+            message: "只给了 endLine，缺 startLine：行号模式必须传 startLine（endLine 可省略，默认等于 startLine）。".into(),
+            warning: warning.clone(),
+        });
+    }
+    if line_mode && (f.replace_all || f.expect_count.is_some()) {
+        return Err(EditError {
+            message: "startLine / endLine 不能与 replaceAll / expectCount 同时使用：行号模式只替换那几行。".into(),
+            warning: warning.clone(),
+        });
+    }
     // 🔴 newString 里的 `\r` 必须在碰文件之前就拦住。
     //
     // 不拦的话它会一路跑到 `encode_text` 的 round-trip 守卫那里被拒，
@@ -243,7 +276,8 @@ async fn edit_single(
 
     // 比的是**归一化后**的：`"a\r\nb"` → `"a\nb"` 对上 `"a\nb"` 也是空操作，
     // 按原串比会放它过去，然后报一次“成功替换”但文件一个字没变。
-    if needle == f.new_string {
+    // 行号模式下 oldString 只是防错位的片段，不是被替换的原文，不做这项比较（写完后另查）。
+    if !line_mode && needle == f.new_string {
         return Err(EditError {
             message: "oldString and newString are identical, nothing to do".into(),
             warning: warning.clone(),
@@ -309,59 +343,27 @@ async fn edit_single(
     let ft = encoding::read_text(&raw, effective_encoding)?;
     let content = &ft.text;
 
-    // 计数：只有需要精确值时才全量扫描（`replaceAll` 要上报真实次数、`expectCount` 要断言），
-    // 其余情况沿用早停（E-P0-5），避免对大文件做无谓的全串扫描。
-    let need_exact = f.replace_all || f.expect_count.is_some();
-    let match_count = if need_exact {
-        content.matches(&needle).count()
-    } else {
-        content.matches(&needle).take(2).count()
-    };
-    if match_count == 0 {
-        // 附上「最接近处」的位置与差异：只报 not found 时，模型只能再读一遍文件去猜哪里不对。
-        let message = match nearest_hint(content, &needle) {
-            Some(h) => format!("oldString not found in file。{h}"),
-            None => "oldString not found in file".into(),
-        };
-        return Err(EditError {
+    let (updated, replacements) = match f.start_line {
+        Some(start) => {
+            let end = f.end_line.unwrap_or(start);
+            let updated = replace_line_range(content, start, end, &needle, &f.new_string).map_err(
+                |message| EditError {
+                    message,
+                    warning: warning.clone(),
+                },
+            )?;
+            if updated == *content {
+                return Err(EditError {
+                    message: "替换后的内容与原来完全相同，nothing to do".into(),
+                    warning: warning.clone(),
+                });
+            }
+            (updated, 1)
+        }
+        None => replace_matches(content, &needle, f).map_err(|message| EditError {
             message,
             warning: warning.clone(),
-        });
-    }
-
-    // `expectCount` 是**断言**：不符就整条拒写。绝不能「照着头一次出现的位置改下去」——
-    // 调用方要的正是「确认这里恰好只有一处」，改错了位置比不改更糟。
-    if let Some(expected) = f.expect_count {
-        if match_count != expected {
-            return Err(EditError {
-                message: format!(
-                    "expectCount={expected} 与实际情况不符：oldString 在文件里出现 {match_count} 次（{}）；未写盘。",
-                    occurrence_hint(content, &needle)
-                ),
-                warning: warning.clone(),
-            });
-        }
-    }
-
-    let (updated, replacements) = if f.replace_all {
-        (content.replace(&needle, &f.new_string), match_count)
-    } else {
-        if match_count > 1 {
-            // 早停时 `match_count` 只是「≥2」的下界；错误信息里报真实总数才有助于
-            // 判断该补多少上下文（这条路径已经是错误分支，多扫一次不影响正常开销）。
-            let total = if need_exact {
-                match_count
-            } else {
-                content.matches(&needle).count()
-            };
-            return Err(EditError {
-                message: format!(
-                    "oldString matched {total} times, not unique; add more surrounding context or set replaceAll=true"
-                ),
-                warning: warning.clone(),
-            });
-        }
-        (content.replacen(&needle, &f.new_string, 1), 1)
+        })?,
     };
 
     // 按原编码/换行/BOM 无损编码（内含 round-trip 守卫，编码有损会报错）。
@@ -403,6 +405,89 @@ async fn edit_single(
         encoding: ft.encoding.name().to_string(),
         newline: ft.newline_label(),
         diff,
+    })
+}
+
+/// 行号模式：把第 `start`..=`end` 行（1 起）整行换成 `new_text`，返回替换后的全文。
+///
+/// - `anchor`（即 oldString）必须出现在这几行里：行号是读文件时记下的，文件之后可能已被改过，
+///   不校验就会静默改错地方。对不上就拒写，并展示这几行现在的首行。
+/// - 被替换的最后一行带换行而 `new_text` 没带时补上，免得和下一行粘在一起；`new_text` 为空 = 删除这几行。
+fn replace_line_range(
+    content: &str,
+    start: usize,
+    end: usize,
+    anchor: &str,
+    new_text: &str,
+) -> Result<String, String> {
+    let lines: Vec<&str> = content.split_inclusive('\n').collect();
+    let total = lines.len();
+    if start == 0 || end < start || end > total {
+        return Err(format!(
+            "行号范围 {start}-{end} 无效：文件共 {total} 行（行号从 1 开始，endLine 不能小于 startLine）；未写盘。"
+        ));
+    }
+    let old = lines[start - 1..end].concat();
+    if !old.contains(anchor) {
+        return Err(format!(
+            "第 {start}-{end} 行里找不到 oldString {}：行号可能已过期（文件被改过），未写盘。第 {start} 行现在是 {}，建议重新读取这一段再改。",
+            show_line(anchor),
+            show_line(lines[start - 1].trim_end_matches('\n'))
+        ));
+    }
+    let mut repl = new_text.to_string();
+    if !repl.is_empty() && old.ends_with('\n') && !repl.ends_with('\n') {
+        repl.push('\n');
+    }
+    Ok([lines[..start - 1].concat(), repl, lines[end..].concat()].concat())
+}
+
+/// 按 `oldString` 匹配替换（非行号模式）：计数、未命中提示、`expectCount` 断言、唯一性检查都在这里。
+fn replace_matches(content: &str, needle: &str, f: &EditEntry) -> Result<(String, usize), String> {
+    // 计数：只有需要精确值时才全量扫描（`replaceAll` 要上报真实次数、`expectCount` 要断言），
+    // 其余情况沿用早停（E-P0-5），避免对大文件做无谓的全串扫描。
+    let need_exact = f.replace_all || f.expect_count.is_some();
+    let match_count = if need_exact {
+        content.matches(needle).count()
+    } else {
+        content.matches(needle).take(2).count()
+    };
+    if match_count == 0 {
+        // 附上「最接近处」的位置与差异：只报 not found 时，模型只能再读一遍文件去猜哪里不对。
+        let message = match nearest_hint(content, needle) {
+            Some(h) => format!("oldString not found in file。{h}"),
+            None => "oldString not found in file".into(),
+        };
+        return Err(message);
+    }
+
+    // `expectCount` 是**断言**：不符就整条拒写。绝不能「照着头一次出现的位置改下去」——
+    // 调用方要的正是「确认这里恰好只有一处」，改错了位置比不改更糟。
+    if let Some(expected) = f.expect_count {
+        if match_count != expected {
+            return Err(format!(
+                    "expectCount={expected} 与实际情况不符：oldString 在文件里出现 {match_count} 次（{}）；未写盘。",
+                    occurrence_hint(content, needle)
+                ));
+        }
+    }
+
+    Ok(if f.replace_all {
+        (content.replace(needle, &f.new_string), match_count)
+    } else {
+        if match_count > 1 {
+            // 早停时 `match_count` 只是「≥2」的下界；错误信息里报真实总数才有助于
+            // 判断该补多少上下文（这条路径已经是错误分支，多扫一次不影响正常开销）。
+            let total = if need_exact {
+                match_count
+            } else {
+                content.matches(needle).count()
+            };
+            return Err(format!(
+                    "oldString matched {total} times, not unique; add more surrounding context or set replaceAll=true"
+                ));
+        }
+        (content.replacen(needle, &f.new_string, 1), 1)
     })
 }
 
@@ -715,6 +800,68 @@ mod tests {
         let r: Result<EditFilesArgs, _> =
             serde_json::from_value(serde_json::json!({ "files": "not json" }));
         assert!(r.is_err());
+    }
+
+    /// 行号模式的纯函数边界：换行补齐、整段删除、片段对不上（行号过期）、越界。
+    #[test]
+    fn replace_line_range_swaps_whole_lines_with_guard() {
+        let src = "a\nlet s = \"x\\\\y\";\nc\n";
+        // 正常：只替换第 2 行，newString 没带换行也不会和下一行粘住。
+        assert_eq!(
+            replace_line_range(src, 2, 2, "let s", "let s = 1;").unwrap(),
+            "a\nlet s = 1;\nc\n"
+        );
+        // 多行替换、删除
+        assert_eq!(replace_line_range(src, 1, 2, "a", "z\n").unwrap(), "z\nc\n");
+        assert_eq!(replace_line_range(src, 2, 3, "c", "").unwrap(), "a\n");
+        // 行号过期：片段不在这几行里 → 拒写并展示当前首行
+        let e = replace_line_range(src, 3, 3, "let s", "x").unwrap_err();
+        assert!(e.contains("行号可能已过期") && e.contains("「c」"), "{e}");
+        // 越界
+        assert!(replace_line_range(src, 0, 1, "a", "x").is_err());
+        assert!(replace_line_range(src, 2, 9, "a", "x").is_err());
+        assert!(replace_line_range(src, 3, 2, "a", "x").is_err());
+    }
+
+    /// 行号模式走完整链路：GBK + CRLF 文件改完仍是 GBK + CRLF；参数组合不对时不碰文件。
+    #[tokio::test]
+    async fn line_mode_edits_gbk_crlf_file_losslessly() {
+        use crate::mcp::tools::testutil::*;
+
+        let (state, dir) = make_state(|c| c.backup_enabled = false);
+        let file = dir.join("g.java");
+        let (gbk, _, _) = encoding_rs::GBK.encode("// 注释\r\nString a = \"旧\\\\值\";\r\n}\r\n");
+        std::fs::write(&file, &gbk).expect("seed");
+        let path = file.to_string_lossy().into_owned();
+
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": path, "encoding": "gbk", "startLine": 2,
+                        "oldString": "String a", "newString": "String a = \"新值\";" }],
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("edit");
+        let rows: Value =
+            serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).expect("rows");
+        assert_eq!(rows[0]["ok"], json!(true), "{rows}");
+        let (want, _, _) = encoding_rs::GBK.encode("// 注释\r\nString a = \"新值\";\r\n}\r\n");
+        assert_eq!(
+            std::fs::read(&file).unwrap(),
+            want.into_owned(),
+            "应保持 GBK + CRLF"
+        );
+
+        // 与 replaceAll 同用：拒绝，文件不变
+        let before = std::fs::read(&file).unwrap();
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": path, "encoding": "gbk", "startLine": 1, "replaceAll": true,
+                        "oldString": "//", "newString": "#" }],
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("edit");
+        let rows: Value =
+            serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).expect("rows");
+        assert_eq!(rows[0]["ok"], json!(false), "{rows}");
+        assert_eq!(std::fs::read(&file).unwrap(), before);
     }
 
     /// 回显档位（RFC 十五）：`none` 让结果里**没有** diff 字段，`full` 与改造前一致。

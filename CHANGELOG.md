@@ -5,6 +5,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+- edit_files 增加行号模式：条目带 `startLine` / `endLine` 时，把这几行整行换成 `newString`（为空即删除），`oldString` 只需是这几行里一小段好写的文字，用来防行号过期——对不上就拒写并给出当前首行。转义层级多的文本（代码里的字符串、正则、路径）不必再把原文一字不差地写进 oldString。不能与 `replaceAll` / `expectCount` 同用；编码、行尾、备份与普通替换一致。
+
+### 变更
+- 后台命令的结果没被取走时不再 2 分钟就清掉：未读过的至少保留 30 分钟，读过（wait_command / get_command_output 拿到了结束状态）的照旧按宽容期清理。此前隔一会儿再来取会拿到「未知的 handle」，只能整条重跑。后台名额满时先腾读过的，仍不够才腾没读过的。
+- `search_files` 结果不完整时只给**一条**说明（列出几条、因字符预算省略几条、是否到了条数上限），不再三条提示、数字互相对不上；条数上限被压低但没截到时不再提示。
+
 ## [3.1.1] - 2026-11-02
 
 ### 亮点
