@@ -72,8 +72,15 @@ function isMacBrowser(): boolean {
 /**
  * 在 (x,y) 处起一次本地选区。鼠标跟踪没开时**什么都不做**——那是普通 shell，
  * xterm 原生拖选本来就能用，凭空补一枚 mousedown 只会多一次无谓的点击语义。
+ *
+ * `column` 为真时刻意让合成事件**同时带 Shift 与 Alt**：
+ * - Shift 过 `shouldForceSelection`（非 mac 的强制选择判据），选区才起得来；
+ * - Alt 过 `shouldColumnSelect`，落进 xterm 原生 `SelectionMode.COLUMN`（矩形列选）。
+ *   两个条件在 `handleMouseDown` 里是「先强制、再按 detail 分派」，互不冲突（已核对源码）。
+ * ⚠️ macOS 上列选走不通：`shouldColumnSelect` 显式排除
+ * `macOptionClickForcesSelection`（而那是 mac 唯一的强制选择键），两语义死锁。
  */
-export function forceSelectAt(term: Terminal, x: number, y: number): void {
+export function forceSelectAt(term: Terminal, x: number, y: number, column = false): void {
   if (!mouseTrackingActive(term)) return;
   const mac = macForceSelection(term);
   const target = (term.element?.querySelector(".xterm-screen") ?? term.element) as HTMLElement | null;
@@ -88,7 +95,7 @@ export function forceSelectAt(term: Terminal, x: number, y: number): void {
     buttons: 1,
     detail: 1,
     shiftKey: !mac,
-    altKey: mac,
+    altKey: mac || column,
   });
   markSynthMouse(ev);
   target.dispatchEvent(ev);
@@ -142,10 +149,10 @@ export function replayMouseUp(term: Terminal, x: number, y: number): void {
  * 这里**不**补 mouseup：真实那枚 mousedown 被 xterm 的 `shouldForceSelection` 拦下、
  * 压根没发给远端（见 forceSelectAt 头注），没有要收尾的按下。
  */
-export function beginSelection(term: Terminal, x: number, y: number): void {
+export function beginSelection(term: Terminal, x: number, y: number, column = false): void {
   cancelPendingRelease(term);
   setSelectHold(term, true);
-  forceSelectAt(term, x, y);
+  forceSelectAt(term, x, y, column);
 }
 
 /**
@@ -161,11 +168,11 @@ export function beginSelection(term: Terminal, x: number, y: number): void {
  * 而没开追踪时远端根本没收到过「按下」，`forceSelectAt` 也只在这种情况下才动手——
  * 三者是同一条前提，必须一起判。
  */
-export function beginDragSelection(term: Terminal, x: number, y: number): void {
+export function beginDragSelection(term: Terminal, x: number, y: number, column = false): void {
   if (mouseTrackingActive(term)) replayMouseUp(term, x, y);
   cancelPendingRelease(term);
   setSelectHold(term, true);
-  forceSelectAt(term, x, y);
+  forceSelectAt(term, x, y, column);
 }
 
 /* ────────────────────────────────────────────────────────────────────────────

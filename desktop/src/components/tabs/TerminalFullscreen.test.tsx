@@ -19,7 +19,7 @@ vi.mock("./TerminalGlobalSearch", () => ({ TerminalGlobalSearch: ({onClose}: {on
 const conn = {id:"a", name:"公司claude code", host:"192.0.2.10"} as SshConnection;
 const sessions: SshSessionRef[] = [{conn, sessionId:"a", tabId:"tab-a", closedReason:null}];
 const noop = () => {};
-const toolbar: SshTerminalToolbarProps = {conn, compact:true, fullscreen:true, closed:false, focused:true, inputErr:null, selectMode:false, shiftActive:false, dragSelecting:false, imgBusy:false, onCopy:noop, onCopyScreen:noop, onPaste:h.paste, onPasteImage:noop, onRepaint:noop, onSearch:h.search, onToggleSelectMode:noop, onClear:noop, onToggleFullscreen:h.exit, onExport:noop};
+const toolbar: SshTerminalToolbarProps = {conn, compact:true, fullscreen:true, closed:false, focused:true, inputErr:null, selectMode:false, shiftActive:false, dragSelecting:false, imgBusy:false, onCopy:noop, onCopyScreen:noop, onPaste:h.paste, onPasteImage:noop, onRepaint:noop, onSearch:h.search, onToggleSelectMode:noop, onClear:noop, onClearInput:noop, onToggleFullscreen:h.exit, onExport:noop};
 let root: Root, container: HTMLDivElement;
 function Harness({fullscreen=true,closed=false,running=true}: {fullscreen?:boolean;closed?:boolean;running?:boolean}) {
   const [host, setHost] = useState<HTMLDivElement|null>(null);

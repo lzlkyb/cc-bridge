@@ -40,7 +40,14 @@
 .terminal-workspace .terminal-tabs-header { position: relative; z-index: 1; min-height: 44px; padding: 5px 8px 5px 12px; }
 /* Pane find/history overlays stay below toolbar menus; the file overlay remains above both. */
 .terminal-workspace .terminal-panes { isolation: isolate; }
-.terminal-tabs-scroll { scrollbar-width: thin; }
+.terminal-tabs-scroll { scrollbar-width: thin; --tabs-fade: 24px; }
+/* 标签溢出时在**可滚的那一侧**做渐隐（属性由 hooks/useScrollFade 维护）。
+   硬切会让半截标签看起来像渲染坏了；渐隐表达的是「这边还有，可以滚」。
+   两侧都写 -webkit- 前缀：WebView2 的具体版本随运行时变，标准 mask-image 在旧版 Chromium 上不生效。
+   mask 只作用于这条滚动容器自身——跨标签搜索浮层是 fixed 且不在它的子树里，不受影响。 */
+.terminal-tabs-scroll[data-fade-left] { -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--tabs-fade)); mask-image: linear-gradient(to right, transparent 0, #000 var(--tabs-fade)); }
+.terminal-tabs-scroll[data-fade-right] { -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--tabs-fade)); mask-image: linear-gradient(to left, transparent 0, #000 var(--tabs-fade)); }
+.terminal-tabs-scroll[data-fade-left][data-fade-right] { -webkit-mask-image: linear-gradient(to right, transparent 0, #000 var(--tabs-fade), #000 calc(100% - var(--tabs-fade)), transparent 100%); mask-image: linear-gradient(to right, transparent 0, #000 var(--tabs-fade), #000 calc(100% - var(--tabs-fade)), transparent 100%); }
 .terminal-workspace .terminal-action-label { display: none; }
 .terminal-workspace .terminal-tabs-actions > button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; }
 .terminal-toolbar-host { flex-shrink: 0; }

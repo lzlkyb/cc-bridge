@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSshSessions } from "./useSshSessions";
 import { MAX_LIVE_SESSIONS, sessionLimitMessage } from "../../lib/terminalWorkspace";
 import type { SshConnection } from "../../lib/types";
+import type { ProgramStatus } from "../../lib/terminalProgramStatus";
 
 const h = vi.hoisted(() => ({ invoke: vi.fn(), toast: vi.fn(), sequence: 0 }));
 vi.mock("../../lib/tauri", () => ({ invoke: h.invoke }));
@@ -109,5 +110,123 @@ describe("标签重命名", () => {
     await act(async () => api.addRestoredTab(conn, "调试"));
     expect(api.sessions[0].label).toBe("调试");
     expect(api.sessions[0].closedReason).toBe("restored");
+  });
+});
+
+describe("标签 meta 去重（OSC 7501 程序状态）", () => {
+  const st = (state: ProgramStatus["state"], extra: Partial<ProgramStatus> = {}): ProgramStatus =>
+    ({ state, kind: null, app: "claude-code", title: null, msg: null, progress: null, ...extra });
+  it("重复上报同一条状态不产生新对象（CC 每条上报都造新对象，只比引用等于没去重）", async () => {
+    const agent = st("working", { progress: 40 });
+    await act(async () => api.patchMeta("s1", { agent }));
+    const first = api.metaBySession;
+    expect(first.s1.agent).toBe(agent);
+    await act(async () => api.patchMeta("s1", { agent: { ...agent } }));
+    expect(api.metaBySession).toBe(first);
+  });
+  it("状态 / 进度 / msg 任一变化都要更新（msg 就是 tooltip 里那句「它在问什么」）", async () => {
+    await act(async () => api.patchMeta("s1", { agent: st("working", { progress: 40 }) }));
+    await act(async () => api.patchMeta("s1", { agent: st("working", { progress: 60 }) }));
+    expect(api.metaBySession.s1.agent?.progress).toBe(60);
+    await act(async () => api.patchMeta("s1", { agent: st("blocked", { kind: "question", msg: "要继续吗？" }) }));
+    expect(api.metaBySession.s1.agent?.state).toBe("blocked");
+    await act(async () => api.patchMeta("s1", { agent: st("blocked", { kind: "question", msg: "换了个问题？" }) }));
+    expect(api.metaBySession.s1.agent?.msg).toBe("换了个问题？");
+  });
+  it("🔴 agent: null 是有效写值（断开清零），不能被当成「这个字段没传」", async () => {
+    await act(async () => api.patchMeta("s2", { agent: st("working") }));
+    expect(api.metaBySession.s2.agent).not.toBeNull();
+    await act(async () => api.patchMeta("s2", { agent: null }));
+    expect(api.metaBySession.s2.agent).toBeNull();
+  });
+});
+
+describe("标签未读（agentUnread）：区分「变了」和「你还没看」", () => {
+  const st = (state: ProgramStatus["state"], extra: Partial<ProgramStatus> = {}): ProgramStatus =>
+    ({ state, kind: null, app: "claude-code", title: null, msg: null, progress: null, ...extra });
+  /** 开两个标签，返回 [后台那个, 当前激活那个] 的 sessionId。 */
+  async function twoTabs(): Promise<[string, string]> {
+    await connect();
+    const first = api.sessions[0].sessionId;
+    await connect({ newTab: true });
+    expect(api.sessions).toHaveLength(2);
+    return [first, api.activeId!];
+  }
+
+  it("后台标签跑到 blocked / done / error ⇒ 标未读", async () => {
+    const [bg] = await twoTabs();
+    for (const state of ["blocked", "done", "error"] as const) {
+      await act(async () => api.patchMeta(bg, { agent: st(state) }));
+      expect(api.metaBySession[bg].agentUnread, state).toBe(true);
+      await act(async () => api.patchMeta(bg, { agentUnread: false })); // 复位，测下一档
+    }
+  });
+
+  it("🔴 working 不标未读：每个后台在跑的标签都变未读，未读就失去区分度", async () => {
+    const [bg] = await twoTabs();
+    await act(async () => api.patchMeta(bg, { agent: st("working", { progress: 30 }) }));
+    expect(api.metaBySession[bg].agentUnread).toBe(false);
+  });
+
+  it("切到该标签 ⇒ 已读（切过去就算看过了）", async () => {
+    const [bg] = await twoTabs();
+    await act(async () => api.patchMeta(bg, { agent: st("done") }));
+    await act(async () => api.setActiveId(bg));
+    expect(api.metaBySession[bg].agentUnread).toBe(false);
+  });
+
+  it("🔴 离开标签时把刚看过的那个也清掉：否则「盯着跑完再切走」会永久高亮", async () => {
+    const [bg, front] = await twoTabs();
+    await act(async () => api.setActiveId(bg));
+    await act(async () => api.patchMeta(bg, { agent: st("done") }));
+    expect(api.metaBySession[bg].agentUnread).toBe(true); // 正停在它上面时仍先标未读
+    await act(async () => api.setActiveId(front)); // 切走
+    expect(api.metaBySession[bg].agentUnread).toBe(false);
+  });
+
+  it("🔴 CC 周期重发同一条状态不把刚清掉的未读重新点亮", async () => {
+    const [bg] = await twoTabs();
+    const done = st("done");
+    await act(async () => api.patchMeta(bg, { agent: done }));
+    await act(async () => api.setActiveId(bg));
+    expect(api.metaBySession[bg].agentUnread).toBe(false);
+    await act(async () => api.patchMeta(bg, { agent: { ...done } })); // 同值重发
+    expect(api.metaBySession[bg].agentUnread).toBe(false);
+  });
+
+  it("同一档内 msg 变了是新问题 ⇒ 重新标未读（blocked 从一个提问换成另一个）", async () => {
+    const [bg] = await twoTabs();
+    await act(async () => api.patchMeta(bg, { agent: st("blocked", { kind: "permission", msg: "允许 rm 吗？" }) }));
+    await act(async () => api.setActiveId(bg));
+    await act(async () => api.patchMeta(bg, { agent: st("blocked", { kind: "permission", msg: "允许 push 吗？" }) }));
+    expect(api.metaBySession[bg].agentUnread).toBe(true);
+  });
+});
+
+describe("关标签：延迟断开 + 撤销（A+D）", () => {
+  it("🔴 关掉活着的标签不立刻断开：窗口期内连接还在，撤销才能把 shell 原样拿回来", async () => {
+    await connect();
+    const id = api.sessions[0].sessionId;
+    h.invoke.mockClear();
+    h.toast.mockClear();
+    await act(async () => api.closeTab(id));
+    expect(api.sessions).toHaveLength(0);
+    expect(h.invoke).not.toHaveBeenCalledWith("ssh_disconnect", { sessionId: id });
+    const last = h.toast.mock.calls[h.toast.mock.calls.length - 1] as unknown as [string, string, { label: string; onClick: () => void }];
+    const action = last[2];
+    expect(action.label).toBe("撤销");
+    await act(async () => action.onClick());
+    expect(api.sessions.map((s) => s.sessionId)).toEqual([id]);
+    expect(api.activeId).toBe(id);
+  });
+
+  it("关掉已断开的标签不给撤销：后端早没连接了，要它回来是「重连」不是「撤回」", async () => {
+    await connect();
+    const id = api.sessions[0].sessionId;
+    await act(async () => api.markClosed(id, "网络断开"));
+    h.toast.mockClear();
+    await act(async () => api.closeTab(id));
+    expect(api.sessions).toHaveLength(0);
+    expect(h.toast).not.toHaveBeenCalled();
   });
 });

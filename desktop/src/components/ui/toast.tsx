@@ -6,14 +6,31 @@ import { useAppHidden } from "../../lib/appVisibility";
 
 type ToastVariant = "success" | "error" | "warning" | "info";
 
+/**
+ * 通知里的一个可点动作（目前只有「撤销」）。
+ *
+ * WHY 不给 toast 做二次确认弹窗：项目红线是「不做审批门」，而误操作的补救手段应该是**可撤销**，
+ * 不是**先拦住**。撤销是事后补救，不阻塞主流程，代价也低。
+ */
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface ToastItem {
   id: number;
   message: string;
   variant: ToastVariant;
+  action?: ToastAction;
+  /**
+   * 驻留时长（ms）。省略用默认 3.5s。
+   * 带撤销的通知**必须与撤销窗口等长**：toast 先没了、窗口还开着，用户就失去了唯一的撤销入口。
+   */
+  lifetime?: number;
 }
 
 interface ToastContextValue {
-  toast: (message: string, variant?: ToastVariant) => void;
+  toast: (message: string, variant?: ToastVariant, action?: ToastAction, lifetime?: number) => void;
 }
 
 const ToastContext = createContext<ToastContextValue>({ toast: () => {} });
@@ -36,10 +53,17 @@ export function useToast() {
 
 // 模块级单例：供非组件代码（如 lib/tauri.ts 的 invokeOrToast）直接调用 toast。
 // 由 ToastProvider 挂载时写入实现；未挂载时调用为 no-op。
-let toastImpl: ((message: string, variant?: ToastVariant) => void) | null = null;
+let toastImpl:
+  | ((message: string, variant?: ToastVariant, action?: ToastAction, lifetime?: number) => void)
+  | null = null;
 
-export function toast(message: string, variant: ToastVariant = "info") {
-  toastImpl?.(message, variant);
+export function toast(
+  message: string,
+  variant: ToastVariant = "info",
+  action?: ToastAction,
+  lifetime?: number,
+) {
+  toastImpl?.(message, variant, action, lifetime);
 }
 
 let toastId = 0;
@@ -79,10 +103,13 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const stackRef = useAutoAnimateRM<HTMLDivElement>();
 
-  const addToast = useCallback((message: string, variant: ToastVariant = "info") => {
-    const id = ++toastId;
-    setToasts((prev) => [...prev, { id, message, variant }]);
-  }, []);
+  const addToast = useCallback(
+    (message: string, variant: ToastVariant = "info", action?: ToastAction, lifetime?: number) => {
+      const id = ++toastId;
+      setToasts((prev) => [...prev, { id, message, variant, action, lifetime }]);
+    },
+    [],
+  );
 
   const removeToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -120,7 +147,8 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: (id: n
   const { mounted, entered } = usePresence(open);
   const hidden = useAppHidden();
   const paused = interaction.hover || interaction.focus || hidden;
-  const remaining = useRef(TOAST_LIFETIME);
+  const lifetime = item.lifetime ?? TOAST_LIFETIME;
+  const remaining = useRef(lifetime);
 
   // 计时归通知自身所有：手动关闭、卸载及暂停均清理同一个时钟。
   useEffect(() => {
@@ -157,6 +185,20 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: (id: n
         <Icon name={variantIcons[item.variant] as any} size={15} />
       </span>
       <span className="min-w-0 flex-1 break-words py-1 leading-snug">{item.message}</span>
+      {item.action && (
+        // 必须 stopPropagation：整条 toast 是可点的（点了就关），不拦住的话动作还没执行完就退场了。
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen(false);
+            item.action?.onClick();
+          }}
+          className="shrink-0 rounded px-1.5 py-1 text-xs font-semibold underline-offset-2 hover:underline focus-visible:underline"
+        >
+          {item.action.label}
+        </button>
+      )}
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -171,7 +213,7 @@ function ToastItemView({ item, onDismiss }: { item: ToastItem; onDismiss: (id: n
       <span
         aria-hidden
         className={`toast-countdown absolute bottom-0 left-0 h-[2.5px] rounded-full ${variantProgress[item.variant]}`}
-        style={{ animationDuration: `${TOAST_LIFETIME}ms`, animationPlayState: paused || !open ? "paused" : "running" }}
+        style={{ animationDuration: `${lifetime}ms`, animationPlayState: paused || !open ? "paused" : "running" }}
       />
     </div>
   );

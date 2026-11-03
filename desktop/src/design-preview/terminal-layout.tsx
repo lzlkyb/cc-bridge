@@ -136,7 +136,7 @@ function SessionPane({ session, candidate, workspace, toolbarHost, paneHeader, f
   const { mode, preset } = useSampleAppearance();
   const cmdOpen = useCmdPanelOpen();
   const closed = !!session.closedReason;
-  const toolbar = <div className="review-session-toolbar"><SshTerminalToolbar conn={session.conn} closed={closed} focused selectMode={selectMode} shiftActive={false} dragSelecting={false} inputErr={null} fullscreen={fullscreen} onCopy={() => { void navigator.clipboard?.writeText(termRef.current?.getSelection() ?? ""); notify("已复制示例终端选区。"); }} onCopyScreen={() => notify("示例终端可选中、复制；不读取真实会话。") } onPaste={() => notify("此稿没有远端输入通道。") } onPasteImage={() => notify("此稿不上传文件。") } imgBusy={false} onRepaint={() => termRef.current?.refresh(0, termRef.current.rows - 1)} onSearch={() => setFind(!find)} onToggleSelectMode={() => setSelectMode(!selectMode)} onClear={() => termRef.current?.clear()} onToggleFullscreen={toggleFullscreen} onExport={() => notify("导出终端内容沿用现有实现。") }/></div>;
+  const toolbar = <div className="review-session-toolbar"><SshTerminalToolbar conn={session.conn} closed={closed} focused selectMode={selectMode} shiftActive={false} dragSelecting={false} inputErr={null} fullscreen={fullscreen} onCopy={() => { void navigator.clipboard?.writeText(termRef.current?.getSelection() ?? ""); notify("已复制示例终端选区。"); }} onCopyScreen={() => notify("示例终端可选中、复制；不读取真实会话。") } onPaste={() => notify("此稿没有远端输入通道。") } onPasteImage={() => notify("此稿不上传文件。") } imgBusy={false} onRepaint={() => termRef.current?.refresh(0, termRef.current.rows - 1)} onSearch={() => setFind(!find)} onToggleSelectMode={() => setSelectMode(!selectMode)} onClear={() => termRef.current?.clear()} onClearInput={() => notify("示例终端：清空输入会向远端发送等量 Backspace，此稿不连远端。")} onToggleFullscreen={toggleFullscreen} onExport={() => notify("导出终端内容沿用现有实现。") }/></div>;
   return <div className={`review-pane ${secondary ? "secondary-pane" : ""}`} data-focused={focused || undefined} onPointerDown={onFocus} onFocusCapture={onFocus} style={{ background: terminalTheme(mode, preset).background }}>
     {(paneHeader || secondary) && <div className="review-pane-head"><Icon name="server" size={12}/><span>{session.conn.name}</span>{workspace && <small>{session.conn.username}@{session.conn.host}</small>}{workspace && focused && <span className="workspace-pane-focus">当前操作</span>}{secondary && <button title="关闭分屏" onClick={closeSplit}><Icon name="close" size={12}/></button>}</div>}
     {workspace ? toolbarHost && focused && createPortal(toolbar, toolbarHost) : toolbar}
@@ -148,7 +148,7 @@ function SessionPane({ session, candidate, workspace, toolbarHost, paneHeader, f
 
 function Status({ session }: { session: SshSessionRef }) {
   const { mode, preset } = useSampleAppearance();
-  return <TerminalStatusBar sessionId={session.sessionId} conn={session.conn} preset={preset} mode={mode} status={{ cwd: "/home/deploy/workspace/cc-bridge", branch: "main", exitCode: 0, lastCmdMs: 1342 }} state="ready" closed={!!session.closedReason}/>;
+  return <TerminalStatusBar sessionId={session.sessionId} conn={session.conn} preset={preset} mode={mode} status={{ cwd: "/home/deploy/workspace/cc-bridge", branch: "main", exitCode: 0, lastCmdMs: 1342, cmdSeq: 1 }} state="ready" closed={!!session.closedReason}/>;
 }
 function useSampleAppearance() { return { mode: useTerminalThemeMode(), preset: useTerminalPreset() }; }
 

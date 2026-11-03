@@ -21,6 +21,8 @@ import { setCmdPanelOpen, useCmdPanelOpen } from "../../lib/terminalPanelStore";
 import { useTerminalTabMeta, type TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
 import { useClipboardImagePaste } from "../../hooks/useClipboardImagePaste";
 import { forceRepaint } from "../../lib/terminalRepaint";
+import { clearTerminalInput } from "../../lib/terminalClearInput";
+import { sendTerminalUserInput } from "../../lib/terminalUserInput";
 import { toast } from "../ui/toast";
 import { flashWindow } from "../../lib/windowAttention";
 import { useTerminalShortcuts } from "../../hooks/useTerminalShortcuts";
@@ -29,6 +31,7 @@ import { useTerminalThemeMode } from "../../hooks/useTerminalAppearance";
 import { useTerminalPreset, useTerminalInject } from "../../hooks/useTerminalPreset";
 import { useTerminalOsc } from "../../hooks/useTerminalOsc";
 import { useTerminalProtocol } from "../../hooks/useTerminalProtocol";
+import { useShellCommandBadge } from "../../hooks/useShellCommandBadge";
 import { TERMINAL_SURFACE } from "../../lib/terminalTheme";
 import type { SshConnection } from "../../lib/types";
 
@@ -113,6 +116,8 @@ export function SshTerminal({
   const { status, state } = useTerminalOsc({ sessionId, enabled: inject, closed, termRef });
   // 终端协议接缝：OSC 7501（远端自报「在干活 / 在等确认」）+ DEC 2031（主题变化通知）。
   const agent = useTerminalProtocol({ sessionId, closed, mode, termRef, visible, label: conn.name || conn.host });
+  // 普通命令跑完 → 标签徽标（OSC 133;D）。CC 之外的构建/安装类命令在标签上原本毫无痕迹。
+  useShellCommandBadge({ status, visible, agent, onMeta });
   // closed / cwd 用 ref 承接：window 键盘监听只挂一次，闭包要总读到最新值。
   const closedRef = useRef(closed);
   closedRef.current = closed;
@@ -172,10 +177,12 @@ export function SshTerminal({
   chromeHostsRef.current = [rootRef.current, toolbarHost];
   useTerminalFocusReturn(termRef, focusedRef, chromeHostsRef);
 
-  // 标签 meta 上报（标题/进度/铃）。后台标签收到 BEL 才 toast：正盯着看时不必再弹。
+  // 标签 meta 上报（标题/进度/铃/OSC 7501 程序状态）。后台标签收到 BEL 才 toast：正盯着看时不必再弹。
   useTerminalTabMeta({
     termRef,
     closed,
+    // 程序状态进标签 meta：多标签时状态栏只覆盖当前可见 pane，标签栏要靠这份数据画徽标。
+    agent,
     onMeta: (p) => {
       if (p.bellAt != null) {
         if (!visible) toast(`${conn.name || conn.host}：终端有铃声（可能需要关注）`, "info");
@@ -221,6 +228,11 @@ export function SshTerminal({
         onSearch={search.openSearch}
         onToggleSelectMode={select.toggleSelectMode}
         onClear={() => termRef.current?.clear()}
+        onClearInput={() => {
+          const t = termRef.current;
+          if (!t) return;
+          clearTerminalInput(t, (d) => void sendTerminalUserInput(sessionId, d).catch(() => toast("输入失败，请检查终端连接", "error")));
+        }}
         onToggleFullscreen={onToggleFullscreen}
         onExport={exportSession}
       />, toolbarHost)}

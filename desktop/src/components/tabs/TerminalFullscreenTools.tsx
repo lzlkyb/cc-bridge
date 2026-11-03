@@ -13,7 +13,7 @@ export function TerminalFullscreenTools(p: SshTerminalToolbarProps & {cmdOpen: b
     {p.inputErr && <span className="terminal-fullscreen-alert text-destructive-ink" role="status" title={p.inputErr}><Icon name="alertTriangle" size={14}/><span className="sr-only">输入失败</span></span>}
     {(p.selectMode || p.shiftActive || p.dragSelecting) && <span className="terminal-fullscreen-alert text-primary" title="选择模式：拖选复制"><Icon name="sliders" size={14}/><span className="sr-only">选择模式</span></span>}
     <ButtonIcon title="查找当前终端（Ctrl+Shift+F）" onClick={p.onSearch}><Icon name="search" size={16}/></ButtonIcon>
-    <MoreMenu portal appearance selectMode={p.selectMode} onCopyScreen={p.onCopyScreen} onToggleSelectMode={p.onToggleSelectMode} onClear={p.onClear} onRepaint={p.onRepaint} onExport={p.onExport}
+    <MoreMenu portal appearance selectMode={p.selectMode} onCopyScreen={p.onCopyScreen} onToggleSelectMode={p.onToggleSelectMode} onClear={p.onClear} onClearInput={p.onClearInput} onRepaint={p.onRepaint} onExport={p.onExport}
       extraItems={close => <>
         <MenuItem label="复制选中" icon="copy" hint="Ctrl+Shift+C" onClick={() => { p.onCopy(); close(); }}/>
         <MenuItem label="粘贴" icon="clipboard" hint="Ctrl+V" disabled={p.closed} onClick={() => { p.onPaste(); close(); }}/>

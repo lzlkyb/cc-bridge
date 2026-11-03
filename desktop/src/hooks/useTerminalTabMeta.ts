@@ -2,6 +2,7 @@ import { useEffect, useRef, type RefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { ProgressAddon, type IProgressState } from "@xterm/addon-progress";
 import { sanitizeTitle } from "../lib/terminalTabMeta";
+import type { ProgramStatus } from "../lib/terminalProgramStatus";
 
 export type { IProgressState };
 
@@ -16,6 +17,11 @@ export interface TermTabMetaPatch {
    * bellAt 永远不会被写上，标签铃点永远不亮。
    */
   bellAt?: number;
+  /**
+   * OSC 7501 程序状态。`null` 是**有意义的写值**（清空），不是「没传」——
+   * 断开与重连都靠它把标签上的「运行中」擦掉。
+   */
+  agent?: ProgramStatus | null;
 }
 
 interface Args {
@@ -27,6 +33,11 @@ interface Args {
    * 「响铃了」，这条带正文。弹不弹 toast 由组件决定（本 hook 只转发）。
    */
   onNotify?: (text: string) => void;
+  /**
+   * OSC 7501 程序状态（`useTerminalProtocol` 的返回值）。只读转发给标签栏，
+   * 变化粒度与终端事件不同，所以由下面的独立 effect 上报。
+   */
+  agent?: ProgramStatus | null;
   /** 会话已断开：不再挂事件（重连由父组件换 sessionId 重挂组件承接）。 */
   closed: boolean;
 }
@@ -35,7 +46,8 @@ interface Args {
  * 终端内部事件 → 标签栏 meta 的上报桥（P0 批次「标签页友好化」）：
  * - **OSC 0/2 标题** → 净化后上报，标签显示 `主机 ▸ 程序名`；
  * - **OSC 9;4 进度**（ConEmu 协议）→ addon-progress 解析后上报，标签画细进度条；
- * - **BEL 铃** → 上报 bell 事件（toast 与否由组件按可见性决定）。
+ * - **BEL 铃** → 上报 bell 事件（toast 与否由组件按可见性决定）；
+ * - **OSC 7501 程序状态** → 原样转发给标签栏（标签徽标）。
  *
  * WHY 独立成 hook：`useSshTerminalSession` 在体量棘轮基线上（一行不能加），
  * 这三个事件又都只是「监听 → 转发」，不值得塞进任何现有 hook。
@@ -44,7 +56,7 @@ interface Args {
  * WHY onMeta 用 ref 承接：调用方传内联箭头函数，进依赖会让本 effect 每次
  * 渲染重跑（反复 loadAddon / 重挂监听）。
  */
-export function useTerminalTabMeta({ termRef, onMeta, onNotify, closed }: Args) {
+export function useTerminalTabMeta({ termRef, onMeta, onNotify, agent = null, closed }: Args) {
   const onMetaRef = useRef(onMeta);
   onMetaRef.current = onMeta;
   const onNotifyRef = useRef(onNotify);
@@ -84,4 +96,12 @@ export function useTerminalTabMeta({ termRef, onMeta, onNotify, closed }: Args) 
     // 终端实例由 session hook 创建（其 effect 先于本 effect 运行），termRef 必有值。
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 挂一次；closed 翻转时卸载
   }, [closed]);
+
+  // OSC 7501 单独转发：它的来源是 useTerminalProtocol 的 state（远端上报），不是终端事件，
+  // 变化粒度与上面那套监听完全不同，硬塞进同一个 effect 只会反复重挂监听。
+  // 🔴 closed 时必须显式写 null：intoTab 重连保留 tabId、React 不重挂组件，
+  // 一旦残留就成了「标签上永久挂着一个转圈，其实早断了」。断开 = 没有程序在跑，这是硬事实。
+  useEffect(() => {
+    onMetaRef.current({ agent: closed ? null : agent });
+  }, [agent, closed]);
 }

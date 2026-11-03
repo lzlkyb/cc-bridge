@@ -16,24 +16,10 @@ import {
   type DancePhase,
 } from "../lib/terminalSttyDance";
 
-/** 状态栏可见的远端信息。未拿到的字段保持 null，由状态栏决定要不要显示。 */
-export interface TerminalStatus {
-  /** 远端当前目录（OSC 7）。null = 还没收到。 */
-  cwd: string | null;
-  /** git 分支（钩子探测）。null = 非 git 仓库或还没收到。 */
-  branch: string | null;
-  /** 上一条命令退出码（OSC 133;D）。null = 还没收到。 */
-  exitCode: number | null;
-  /** 上一条命令耗时毫秒（OSC 133;A→D 配对），null = 还没完成过一条命令。 */
-  lastCmdMs: number | null;
-}
+import type { OscState, TerminalStatus } from "../lib/terminalOscTypes";
 
-/**
- * 钩子状态机：`pending` 探测中 / `ready` 钩子已生效 / `off` 设置里关了注入 /
- * `unsupported` 远端不是 bash/zsh 或注入出错（**自动降级，不重试**）/
- * `skipped` 用户在准备期就开始打字，主动放弃注入（不是缺陷，提示语必须区别对待）。
- */
-export type OscState = "pending" | "ready" | "off" | "unsupported" | "skipped" | "termNotReady";
+// 类型真源已搬到 lib（见 lib/terminalOscTypes.ts 头注）；这里保留重导出，调用方无需改 import。
+export type { OscState, TerminalStatus };
 
 interface Args {
   /** 会话 id。变化时（含重连）重置状态并重新探测。 */
@@ -65,6 +51,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     branch: null,
     exitCode: null,
     lastCmdMs: null,
+    cmdSeq: 0,
   });
   const [state, setState] = useState<OscState>("pending");
   // 用户是否已经在本次会话里敲过字。敲过就永不注入（见文件头注释）。
@@ -92,7 +79,7 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     collectingRef.current = false;
     typedBufRef.current = "";
     abortRef.current = null;
-    setStatus({ cwd: null, branch: null, exitCode: null, lastCmdMs: null });
+    setStatus({ cwd: null, branch: null, exitCode: null, lastCmdMs: null, cmdSeq: 0 });
   }, []);
 
   // ── 注册 OSC 处理器 ──
@@ -128,7 +115,12 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
           setState("ready");
         },
         onCommandEnd: (code, durMs) => {
-          setStatus((s) => ({ ...s, exitCode: code, lastCmdMs: durMs ?? s.lastCmdMs }));
+          setStatus((s) => ({
+            ...s,
+            exitCode: code,
+            lastCmdMs: durMs ?? s.lastCmdMs,
+            cmdSeq: s.cmdSeq + 1,
+          }));
           setState("ready");
         },
         onBranch: (git) => setStatus((s) => ({ ...s, branch: git })),

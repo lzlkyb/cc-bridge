@@ -10,7 +10,7 @@ vi.mock("../../hooks/usePrefersReducedMotion", () => ({ usePrefersReducedMotion:
 let root: Root, container: HTMLDivElement;
 const noop = () => {};
 const actions = { onSearch: vi.fn(), onCopy: vi.fn(), onPaste: vi.fn(), onDisconnect: vi.fn() };
-const props: SshTerminalToolbarProps = { pane: true, conn: { name: "server-a", host: "192.0.2.10" } as SshConnection, closed: false, focused: false, inputErr: null, selectMode: false, shiftActive: false, dragSelecting: false, fullscreen: false, imgBusy: false, ...actions, onCopyScreen: noop, onPasteImage: noop, onRepaint: noop, onToggleSelectMode: noop, onClear: noop, onToggleFullscreen: noop, onExport: noop };
+const props: SshTerminalToolbarProps = { pane: true, conn: { name: "server-a", host: "192.0.2.10" } as SshConnection, closed: false, focused: false, inputErr: null, selectMode: false, shiftActive: false, dragSelecting: false, fullscreen: false, imgBusy: false, ...actions, onCopyScreen: noop, onPasteImage: noop, onRepaint: noop, onToggleSelectMode: noop, onClear: noop, onClearInput: noop, onToggleFullscreen: noop, onExport: noop };
 async function render(closed = false) { await act(async () => root.render(<SshTerminalToolbar {...props} closed={closed}/>)); }
 async function menu() { await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="更多"]')!.click()); }
 function item(label: string) { return [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(e => e.textContent?.startsWith(label))!; }

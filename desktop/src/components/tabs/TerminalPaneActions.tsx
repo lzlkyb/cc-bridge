@@ -14,7 +14,7 @@ export function TerminalPaneActions(p: Props) {
     {selecting && <span className="terminal-pane-alert text-primary" title="选择模式：拖选复制"><Icon name="sliders" size={13}/><span className="sr-only">选择模式</span></span>}
     <ButtonIcon title="查找此窗格" onClick={p.onSearch}><Icon name="search" size={14}/></ButtonIcon>
     <MoreMenu portal selectMode={p.selectMode} onCopyScreen={p.onCopyScreen} onToggleSelectMode={p.onToggleSelectMode}
-      onClear={p.onClear} onRepaint={p.onRepaint} onExport={p.onExport} extraItems={close => <>
+      onClear={p.onClear} onClearInput={p.onClearInput} onRepaint={p.onRepaint} onExport={p.onExport} extraItems={close => <>
         <MenuItem label="复制选中" icon="copy" hint="Ctrl+Shift+C" onClick={() => { p.onCopy(); close(); }}/>
         <MenuItem label="粘贴" icon="clipboard" hint="Ctrl+V" disabled={p.closed} onClick={() => { p.onPaste(); close(); }}/>
         <MenuItem label="粘贴剪贴板图片" icon="image" disabled={p.closed || p.imgBusy} onClick={() => { p.onPasteImage(); close(); }}/>

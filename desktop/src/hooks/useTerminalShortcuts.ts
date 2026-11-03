@@ -1,6 +1,7 @@
 import { useEffect, type MutableRefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { sendTerminalUserInput } from "../lib/terminalUserInput";
+import { clearTerminalInput } from "../lib/terminalClearInput";
 import { navJump } from "../lib/terminalCommandNav";
 import { isImeComposing } from "../lib/utils";
 import { toast } from "../components/ui/toast";
@@ -85,6 +86,19 @@ export function useTerminalShortcuts({
           fontZoomRef.current(zoom);
           return;
         }
+      }
+      // Ctrl+Shift+U：清空已经敲进去的输入。终端里没有"输入框"，只能按屏幕反推该发
+      // 多少个 Backspace（见 lib/terminalClearInput.ts）。远端的 Ctrl+U 是 readline 的
+      // kill-line，只删光标所在行；这个组合键连多行粘贴一起清。
+      if (e.ctrlKey && e.shiftKey && (e.key === "u" || e.key === "U")) {
+        e.preventDefault();
+        e.stopPropagation();
+        const term = termRef.current;
+        if (!term) return;
+        const r = clearTerminalInput(term, send);
+        if (r.blocked) toast("当前是选择状态或连接已断开，先点一下终端", "info");
+        else if (r.count === 0) toast("没有可清空的输入", "info");
+        return;
       }
       // Ctrl+Shift+V：**先当文本粘贴**（Linux/Windows 通行约定），剪贴板里没有文本才
       // 退化成「上传图片」。以前这里无条件走图片，结果：从网页复制一段文字按

@@ -2,9 +2,12 @@ import { useCallback, useRef, useState } from "react";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import type { SshConnection } from "../../lib/types";
-import { EMPTY_TAB_META, type TermTabMeta } from "../../lib/terminalTabMeta";
+import { EMPTY_TAB_META, mergeTabMeta, type TermTabMeta } from "../../lib/terminalTabMeta";
+import { useClearUnreadOnActivate } from "../../hooks/useClearUnreadOnActivate";
 import { sessionLimitMessage } from "../../lib/terminalWorkspace";
 import type { SshSessionRef } from "./TerminalConnectionItem";
+import { useTabCloseUndo } from "./useTabCloseUndo";
+
 
 /** 新建会话的初始 PTY 尺寸；终端挂载后会立即用真实尺寸 resize 一次。 */
 const INITIAL_ROWS = 30;
@@ -42,26 +45,17 @@ export function useSshSessions() {
     setSessions(sessionsRef.current);
   }, []);
 
-  /** 上报/修改某会话的标签 meta（标题、进度、铃）。浅合并，只写传入的字段。 */
+  /** 上报/修改某会话的标签 meta（标题、进度、铃、OSC 7501 程序状态）。浅合并，只写传入的字段。 */
   const patchMeta = useCallback((sessionId: string, p: Partial<TermTabMeta>) => {
     setMetaBySession((m) => {
       const cur = m[sessionId] ?? EMPTY_TAB_META;
-      const next: TermTabMeta = { ...cur, ...p };
-      // 值没变就不产生新对象，避免标签栏无谓重渲染。
-      // 🔴 progress 要按值比（state/value）而不是比引用：addon 每次 onChange 都造新对象，
-      // 有的程序（如 rsync 包装器）会周期性重发同一进度值。
-      const progressSame =
-        next.progress === cur.progress ||
-        (next.progress != null &&
-          cur.progress != null &&
-          next.progress.state === cur.progress.state &&
-          next.progress.value === cur.progress.value);
-      if (next.title === cur.title && progressSame && next.bellAt === cur.bellAt) {
-        return m;
-      }
-      return { ...m, [sessionId]: next };
+      const next = mergeTabMeta(cur, p);
+      return next === cur ? m : { ...m, [sessionId]: next };
     });
   }, []);
+
+  // 「看过即读」：切标签时把离开的和进入的两个都清（六条激活入口逐个补必漏，见 hook 头注）。
+  useClearUnreadOnActivate(activeId, setMetaBySession);
 
   /**
    * 会话被远端结束（断开 / 连接失败）。已经是断开态就直接忽略：
@@ -190,11 +184,16 @@ export function useSshSessions() {
     [patch],
   );
 
+  /** 关闭标签的撤销窗口：撤回时按原位置塞回列表并激活，不需要重连（理由见 useTabCloseUndo 头注）。 */
+  const closeUndo = useTabCloseUndo(patch, setActiveId);
+
   /** 真正移除标签（已断开的会话）。 */
   const closeTab = useCallback(
     (sessionId: string) => {
       const prev = sessionsRef.current;
       const idx = prev.findIndex((s) => s.sessionId === sessionId);
+      if (idx < 0) return;
+      const session = prev[idx];
       const next = prev.filter((s) => s.sessionId !== sessionId);
       patch(() => next);
       setMetaBySession((m) => {
@@ -213,8 +212,11 @@ export function useSshSessions() {
             })()
           : cur,
       );
+      // 活着的会话给撤销窗口：8 秒内连接仍在，撤回只是把标签塞回去。
+      // 已断开的会话后端早没连接了，撤销没有意义（要它回来是「重连」，走恢复路径）。
+      if (!session.closedReason) closeUndo.schedule(session, idx);
     },
-    [patch],
+    [patch, closeUndo],
   );
 
   /** 收起分屏仅把副格变为独立标签；稳定的 tabId 让画布与历史继续存活。 */

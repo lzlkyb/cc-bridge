@@ -4,8 +4,11 @@ import { TerminalGlobalSearch } from "./TerminalGlobalSearch";
 import { TabRenameInput } from "./TerminalTabRename";
 import { setCmdPanelOpen } from "../../lib/terminalPanelStore";
 import type { SshSessionRef } from "./TerminalConnectionItem";
-import type { TermTabMeta } from "../../lib/terminalTabMeta";
-import type { IProgressState } from "@xterm/addon-progress";
+import { progressStyle, type TermTabMeta } from "../../lib/terminalTabMeta";
+import { tabAgentMissingHint } from "../../lib/terminalTabAgent";
+import { useScrollFade } from "../../hooks/useScrollFade";
+import { TerminalTabAgentBadge } from "./TerminalTabAgentBadge";
+import { TerminalTabAttentionPill } from "./TerminalTabAttentionPill";
 import { terminalSessionOrdinal } from "../../lib/terminalWorkspace";
 import { TitleBarControls } from "../layout/TitleBarControls";
 import { useTerminalFullscreenActions } from "./TerminalFullscreenContext";
@@ -34,22 +37,6 @@ interface TerminalTabsBarProps {
   splitActive: boolean;
 }
 
-/** OSC 9;4 进度条在标签底部的配色与几何（进度条条宽按 value%）。 */
-function progressStyle(p: IProgressState): { className: string; width: string } {
-  switch (p.state) {
-    case 1:
-      return { className: "bg-primary", width: `${Math.min(100, Math.max(0, p.value))}%` };
-    case 2:
-      return { className: "bg-destructive", width: `${Math.min(100, Math.max(0, p.value)) || 100}%` };
-    case 3:
-      return { className: "bg-primary animate-pulse", width: "100%" };
-    case 4:
-      return { className: "bg-amber-500", width: `${Math.min(100, Math.max(0, p.value)) || 100}%` };
-    default:
-      return { className: "", width: "0%" };
-  }
-}
-
 /**
  * 终端标签栏：多会话时顶部横向标签。
  *
@@ -58,6 +45,11 @@ function progressStyle(p: IProgressState): { className: string; width: string } 
  * meta 增强（P0 批次）：标题（OSC 0/2，显示为 `主机 ▸ 程序名`——标题**只作附加段**，
  * 不可顶替主机名，防「标题诈骗」）、进度条（OSC 9;4，贴标签底部）、未读铃点（BEL，
  * 激活标签即清零）。
+ *
+ * CC 运行态徽标（2026-11-02）：标题之后那个 12px 图标来自 OSC 7501 的**程序自报**
+ * （转圈=干活中 / 琥珀点=等确认 / ✓=已完成 / △=出错）。状态栏里也有一份同样的状态，
+ * 但那只属于当前可见的 pane——多标签时全靠这个徽标才知道该切到哪个标签。见
+ * `TerminalTabAgentBadge.tsx`。
  */
 export function TerminalTabsBar({
   fullscreen = false,
@@ -78,6 +70,7 @@ export function TerminalTabsBar({
   const fullscreenActions = useTerminalFullscreenActions();
   const activeRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useScrollFade<HTMLDivElement>();
   // 跨标签搜索浮层。它是 `fixed` 定位，所以放在这条 `overflow-x-auto` 里也不会被裁剪
   // （定位于视口，不参与这条 flex 布局）——省掉一层 Fragment 包裹与整块缩进。
   const [searchOpen, setSearchOpen] = useState(false);
@@ -110,7 +103,7 @@ export function TerminalTabsBar({
 
   return (
     <div ref={rootRef} className="terminal-tabs-header flex shrink-0 items-center gap-1 border-b border-border bg-card px-2 py-1.5" data-fullscreen={fullscreen || undefined}>
-      <div className="terminal-tabs-scroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="终端会话">
+      <div ref={scrollRef} className="terminal-tabs-scroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" role="tablist" aria-label="终端会话">
       {tabSessions.map((s, index) => {
         const closed = !!s.closedReason;
         const active = s.sessionId === activeId;
@@ -120,6 +113,11 @@ export function TerminalTabsBar({
         const hasBell = !closed && meta?.bellAt != null;
         const progress = !closed ? meta?.progress : null;
         const bar = progress && progress.state !== 0 ? progressStyle(progress) : null;
+        // CC 运行态（OSC 7501）。🔴 断开后一律 null：标签上挂着一个转圈而会话其实早就断了，
+        // 是最坏的一种错信息——比不显示更糟。
+        const agent = closed ? null : (meta?.agent ?? null);
+        // 未读只在需要你看的那一档有意义；断开态同 agent 一起归零，免得留下一个暗掉的 ✓。
+        const agentUnread = !closed && (meta?.agentUnread ?? false);
         return (
           <div
             key={s.tabId}
@@ -156,7 +154,9 @@ export function TerminalTabsBar({
               <span
                 className={`min-w-0 max-w-48 truncate ${closed ? "line-through opacity-70" : ""}`}
                 // 同名不同主机的连接光看标签名分不出，tooltip 里带完整登录地址 + 会话序号。
-                title={`${s.label || s.conn.name || s.conn.host} · ${s.conn.username}@${s.conn.host}:${s.conn.port}${seq ? ` · #${seq}` : ""}`}
+                // 旧版 CC（< 2.1.295）不发 OSC 7501：有 TUI 标题却没有任何上报时补一句弱提示，
+                // 免得用户以为是我们的徽标坏了（纯 shell 标签不加，它没有 CC 可报）。
+                title={`${s.label || s.conn.name || s.conn.host} · ${s.conn.username}@${s.conn.host}:${s.conn.port}${seq ? ` · #${seq}` : ""}${tabAgentMissingHint(!!title, agent)}`}
                 onDoubleClick={() => onRename && setRenamingId(s.tabId)}
               >
                 {renamingId === s.tabId ? (
@@ -176,6 +176,8 @@ export function TerminalTabsBar({
               {title && (
                 <span className="terminal-session-title max-w-40 truncate font-mono text-muted-foreground" title={title}>▸ {title}</span>
               )}
+              {/* CC 运行态徽标：放在标题之后、序号之前——不挤铃和按钮，也和「当前标签」那个绿点分开。 */}
+              <TerminalTabAgentBadge agent={agent} unread={agentUnread} />
               {seq && (
                 <span className="rounded bg-muted-foreground/15 px-1 font-mono text-[11px]">
                   #{seq}
@@ -236,6 +238,8 @@ export function TerminalTabsBar({
         );
       })}
       </div>
+      {/* 待处理汇总：放在滚动区与操作按钮之间——它汇总的是标签，不是操作。见 TerminalTabAttentionPill。 */}
+      <TerminalTabAttentionPill tabs={tabSessions} metaBySession={metaBySession} activeId={activeId} onActivate={onActivate} />
       <div className="terminal-tabs-actions flex shrink-0 items-center gap-1">
       {/* 跨标签搜索入口（和当前终端查找分开）。
           与工具栏的「搜索」区别：那个只搜当前标签，这个横跨所有会话的滚动历史。 */}

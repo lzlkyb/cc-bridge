@@ -33,6 +33,8 @@ export interface SshTerminalToolbarProps {
   onSearch: () => void;
   onToggleSelectMode: () => void;
   onClear: () => void;
+  /** 清空已输入未提交的文本（「清屏」清的是显示，两者别混）。 */
+  onClearInput: () => void;
   onToggleFullscreen: () => void;
   /** 导出整个滚动历史为 .txt（「更多」菜单项）。 */
   onExport: () => void;
@@ -70,14 +72,15 @@ export function SshTerminalToolbar({
   onSearch,
   onToggleSelectMode,
   onClear,
+  onClearInput,
   onToggleFullscreen,
   onExport,
 }: SshTerminalToolbarProps) {
   // 命令历史面板的开关在模块级 store 里：按钮在每个会话自己的工具栏上，面板本体挂在
   // 会话容器（SshTerminal）里——两端不同子树，靠 props 串会把 SshTerminal.tsx 撑破 300 行线。
   const cmdOpen = useCmdPanelOpen();
-  if (fullscreen && compact) return <TerminalFullscreenTools {...{ pane, conn, closed, focused, inputErr, selectMode, shiftActive, dragSelecting, fullscreen, onCopy, onCopyScreen, onPaste, onPasteImage, imgBusy, onRepaint, onSearch, onToggleSelectMode, onClear, onToggleFullscreen, onExport, onDisconnect, cmdOpen }}/>;
-  if (pane) return <TerminalPaneActions {...{ conn, closed, inputErr, selectMode, shiftActive, dragSelecting, onCopy, onCopyScreen, onPaste, onPasteImage, imgBusy, onRepaint, onSearch, onToggleSelectMode, onClear, onExport, fullscreen, onToggleFullscreen, onDisconnect, cmdOpen }}/>;
+  if (fullscreen && compact) return <TerminalFullscreenTools {...{ pane, conn, closed, focused, inputErr, selectMode, shiftActive, dragSelecting, fullscreen, onCopy, onCopyScreen, onPaste, onPasteImage, imgBusy, onRepaint, onSearch, onToggleSelectMode, onClear, onClearInput, onToggleFullscreen, onExport, onDisconnect, cmdOpen }}/>;
+  if (pane) return <TerminalPaneActions {...{ conn, closed, inputErr, selectMode, shiftActive, dragSelecting, onCopy, onCopyScreen, onPaste, onPasteImage, imgBusy, onRepaint, onSearch, onToggleSelectMode, onClear, onClearInput, onExport, fullscreen, onToggleFullscreen, onDisconnect, cmdOpen }}/>;
   return (
     <div className="terminal-session-toolbar flex shrink-0 items-center gap-2 border-b border-border bg-card px-3 py-2" data-compact={compact || undefined} data-focused={focused || undefined} aria-label={`${conn.name || conn.host}终端操作${focused ? "" : "（未聚焦，点击终端可继续输入）"}`}>
       {!compact && <><Icon name="terminal" size={14} className="shrink-0 text-muted-foreground" />
@@ -175,6 +178,7 @@ export function SshTerminalToolbar({
           onCopyScreen={onCopyScreen}
           onToggleSelectMode={onToggleSelectMode}
           onClear={onClear}
+          onClearInput={onClearInput}
           onRepaint={onRepaint}
           onExport={onExport}
         />

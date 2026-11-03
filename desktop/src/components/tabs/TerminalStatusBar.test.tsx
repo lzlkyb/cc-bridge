@@ -26,7 +26,7 @@ function render(over: { closed?: boolean; state?: "pending" | "skipped" | "ready
         conn={conn}
         preset="indigo"
         mode="dark"
-        status={{ cwd: "/home/u/work", branch: "main", exitCode: 2, lastCmdMs: 4200 }}
+        status={{ cwd: "/home/u/work", branch: "main", exitCode: 2, lastCmdMs: 4200, cmdSeq: 1 }}
         state={over.state ?? "ready"}
         closed={over.closed ?? false}
       />,

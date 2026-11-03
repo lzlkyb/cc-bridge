@@ -9,8 +9,7 @@ import {
 import type { Terminal } from "@xterm/xterm";
 import { toast } from "../ui/toast";
 import { createSelectionCache, GESTURE_COPY_CACHE_MS } from "../../lib/terminalSelectionCache";
-import { attachContextMenuGuard } from "../../lib/terminalContextMenu";
-import { attachSelectionKeepGuard } from "../../lib/terminalSelectionKeep";
+import { attachSelectionAids } from "../../lib/terminalSelectionAids";
 import { isSelectHold, releaseSelectHoldNow, releaseSelectHoldSoon } from "../../lib/terminalInputHold";
 import { attachSelectWheelGuard } from "../../lib/terminalScroll";
 import { beginDragSelection, beginSelection, createSelectGesture, isSynthMouse } from "../../lib/terminalSelectGesture";
@@ -88,10 +87,7 @@ export function useSshTerminalSelect({
 
   const toggleSelectMode = useCallback(() => setSelectMode((v) => !v), []);
 
-  const hasSelection = useCallback(
-    () => Boolean(termRef.current?.getSelection() || cache.read()),
-    [termRef, cache],
-  );
+  const hasSelection = useCallback(() => Boolean(termRef.current?.getSelection() || cache.read()), [termRef, cache]);
 
   const copySelection = useCallback(() => {
     // 优先读 live selection；被 TUI 重绘冲空时回退到缓存的最近非空选区。
@@ -106,9 +102,8 @@ export function useSshTerminalSelect({
 
   const attach = useCallback(
     (term: Terminal, container: HTMLElement) => {
-      // 两个「选区保活」模块：右键闭闸 + 松手后吞掉无按键的鼠标移动（机制见各自头注）。
-      const detachContextMenu = attachContextMenuGuard(term, container);
-      const detachSelectionKeep = attachSelectionKeepGuard(term, container);
+      // 选区辅助三件套（双击取单元格 / 右键保选区 / 松手保活），装配顺序见 lib 头注。
+      const detachAids = attachSelectionAids(term, container, { isEnabled: () => selectModeRef.current, onSelected: copySelection });
 
       // 起手按下：先记指针状态（拖拽阈值判定要用）。只认左键——右键已由上面的守卫接管，
       // 若也置位 pointerDownRef，右键上的轻微移动就会被当成拖选。
@@ -135,7 +130,8 @@ export function useSshTerminalSelect({
         }
         selectActiveRef.current = true;
         gesture.begin();
-        beginSelection(term, ev.clientX, ev.clientY);
+        // Alt 透传：xterm 的列选判据只看 mousedown 的 altKey（见 forceSelectAt）
+        beginSelection(term, ev.clientX, ev.clientY, ev.altKey);
       };
       container.addEventListener("mousedown", onDown, true);
 
@@ -147,7 +143,8 @@ export function useSshTerminalSelect({
       // 拖拽即选择：左键移动超阈值即进选择态；纯点击不移动仍当普通点击（不动 TUI 光标）。
       const onPointerMove = (e: PointerEvent) => {
         // 开关关闭则不触发（保持默认交互）；Shift / 选择模式两条路径不受此开关影响。
-        if (!dragSelectEnabledRef.current) return;
+        // ⚠️ Alt 是显式列选意图，不受本开关约束——否则关掉「拖拽即选」就等于没有列选。
+        if (!dragSelectEnabledRef.current && !e.altKey) return;
         if (!pointerDownRef.current) return;
         if (!(e.buttons & 1)) return; // 只认左键拖动（右键补按 / 左键已松都会让位掩码不含 1）
         if (selectActiveRef.current) return; // 已进选择态不重复触发
@@ -162,7 +159,7 @@ export function useSshTerminalSelect({
         // 不出去了；补发的报告会触发 onUserInput → clearSelection，故必须早于起选区。
         // 补发只在远端真开着鼠标追踪时做（否则会摘掉原生拖选的延伸监听，见 beginDragSelection）。
         gesture.begin();
-        beginDragSelection(term, downPosRef.current.x, downPosRef.current.y);
+        beginDragSelection(term, downPosRef.current.x, downPosRef.current.y, e.altKey);
       };
       window.addEventListener("pointermove", onPointerMove);
 
@@ -240,7 +237,7 @@ export function useSshTerminalSelect({
           // 裸按后中途按 Shift：远端若已收到那次按下，先补 mouseup 收尾，否则它永远停在
           // 「按着左键」（补发判据见 beginDragSelection）。
           gesture.begin();
-          beginDragSelection(term, downPosRef.current.x, downPosRef.current.y);
+          beginDragSelection(term, downPosRef.current.x, downPosRef.current.y, e.altKey);
         }
       };
       const onKeyUpShift = (e: KeyboardEvent) => {
@@ -259,8 +256,7 @@ export function useSshTerminalSelect({
         container.removeEventListener("mousedown", onDown, true);
         container.removeEventListener("pointerdown", onPointerDown, true);
         detachWheelGuard();
-        detachContextMenu();
-        detachSelectionKeep();
+        detachAids();
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", copyOnRelease, true);
         window.removeEventListener("pointercancel", releaseHold);
@@ -272,7 +268,7 @@ export function useSshTerminalSelect({
         releaseSelectHoldNow(term);
       };
     },
-    [termRef, focusedRef, dragSelectEnabledRef, copyOnSelectEnabledRef, cache, gesture],
+    [termRef, focusedRef, dragSelectEnabledRef, copyOnSelectEnabledRef, cache, gesture, copySelection],
   );
 
   // 选择态（手动选择模式 / 按住 Shift）开关：只做状态记账，**不再动本地鼠标报告**——

@@ -117,6 +117,45 @@ describe("手势起手（beginSelection / beginDragSelection）", () => {
   });
 });
 
+describe("Alt 透传：合成 mousedown 的修饰键组合（矩形列选的前提）", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", {});
+    vi.stubGlobal(
+      "MouseEvent",
+      class {
+        constructor(
+          public type: string,
+          public init: MouseEventInit,
+        ) {}
+      },
+    );
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const down = (events: { type: string; init: MouseEventInit }[]) =>
+    events.find((e) => e.type === "mousedown")?.init;
+
+  it("🔴 column=true：Shift 与 Alt 同时带——Shift 过强制选择判据，Alt 落进 xterm 原生列选", () => {
+    const { term, events } = fakeTermForBegin("any");
+    beginSelection(term, 10, 10, true);
+    expect(down(events)?.shiftKey).toBe(true);
+    expect(down(events)?.altKey).toBe(true);
+    expect(down(events)?.detail).toBe(1);
+  });
+
+  it("不放 Alt 时保持线性选择（Excel 式拖选不受影响）", () => {
+    const { term, events } = fakeTermForBegin("any");
+    beginSelection(term, 10, 10);
+    expect(down(events)?.altKey).toBe(false);
+  });
+
+  it("拖拽过阈值那条路径同样透传 Alt", () => {
+    const { term, events } = fakeTermForBegin("any");
+    beginDragSelection(term, 10, 10, true);
+    expect(down(events)?.altKey).toBe(true);
+  });
+});
+
 describe("createSelectGesture（同一手势只自动复制一次）", () => {
   it("同一手势内重复领取只放行一次（同一次松手可能触发多个 pointerup）", () => {
     const g = createSelectGesture();

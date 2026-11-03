@@ -24,6 +24,7 @@ const SHORTCUTS: { keys: string; desc: string }[] = [
   { keys: "Alt+Enter", desc: "换行并转义（ESC+CR）" },
   { keys: "Ctrl+Shift+C", desc: "复制选中" },
   { keys: "Ctrl+Shift+A", desc: "全选" },
+  { keys: "Ctrl+Shift+U", desc: "清空已输入的文本（多行粘贴也能一次清掉）" },
   { keys: "Ctrl+V / Ctrl+Shift+V", desc: "粘贴文本（无文本时 Ctrl+Shift+V 上传剪贴板图片）" },
   { keys: "Shift+滚轮", desc: "强制滚本地历史（TUI 全屏程序里救急）" },
   { keys: "Ctrl+滚轮 / Ctrl+= / Ctrl+- / Ctrl+0", desc: "缩放字号（9–24px，全局生效；Ctrl+0 归位）" },
@@ -37,6 +38,7 @@ export function MoreMenu({
   onCopyScreen,
   onToggleSelectMode,
   onClear,
+  onClearInput,
   onRepaint,
   onExport,
   extraItems,
@@ -48,6 +50,8 @@ export function MoreMenu({
   onCopyScreen: () => void;
   onToggleSelectMode: () => void;
   onClear: () => void;
+  /** 清空已输入但还没提交的文本（区别于「清屏」：那个是清显示）。 */
+  onClearInput: () => void;
   onRepaint: () => void;
   /** 导出整个滚动历史为 .txt（断开态也能用——读的是本地缓冲区）。 */
   onExport: () => void;
@@ -86,6 +90,12 @@ export function MoreMenu({
               icon="sliders"
               active={selectMode}
               onClick={() => { onToggleSelectMode(); close(); }}
+            />
+            <MenuItem
+              label="清空输入"
+              hint="Ctrl+Shift+U"
+              icon="trash"
+              onClick={() => { onClearInput(); close(); }}
             />
             <MenuItem label="清屏" icon="refresh" onClick={() => { onClear(); close(); }} />
             <MenuItem

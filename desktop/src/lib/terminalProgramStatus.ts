@@ -27,6 +27,12 @@
 /** OSC 7501 的状态值。`clear` 不是状态，是「删除该记录」。 */
 export type ProgramState = "idle" | "working" | "done" | "blocked" | "error" | "clear";
 
+/**
+ * 由本机合成的「普通 shell 命令结束」状态的 `app` 标识（信号源是 OSC 133;D，不是 7501）。
+ * 用它可以把这个状态和真正的程序上报区分开（tooltip 文案不同）。
+ */
+export const SHELL_APP = "shell";
+
 /** `blocked` 的原因（`kind`）：权限确认 / 提问 / 登录。 */
 export type BlockedKind = "permission" | "question" | "auth";
 
@@ -162,6 +168,9 @@ export function programStateLabel(p: ProgramStatus): string | null {
 
 /** 状态栏段的中文悬停说明（补上下文，比如它在问什么）。 */
 export function programStateTitle(p: ProgramStatus, label: string): string {
+  // shell 的「命令结束」是我们自己合成的（OSC 133;D），不是程序上报的状态机。
+  // 套下面的模板会读成「shell 这个程序当前处于已完成状态」，反而含糊——直接给 msg。
+  if (p.app === SHELL_APP) return p.msg ?? `上一条命令：${label}`;
   const app = p.app ?? "远端程序";
   const head =
     p.state === "blocked"
