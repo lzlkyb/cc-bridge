@@ -256,6 +256,72 @@ html[data-ui-style="glass"] :is(.modal-surface, .ui-surface, [role="listbox"], [
   }
 }
 
+/* ── 徽章面料（单一真源）─────────────────────────────────────────────────
+   版本号 / 更新状态 / 品牌标记的立体感以前是「就地各写一套」：侧栏 4 段、
+   关于页 3 段、更新历史 0 段 ⇒ 同一个 v3.1.1 在三个位置三种长相（实测 7px/8px
+   圆角、4/3/0 段投影）。这一节把投影串与染色收成唯一来源，下面的徽章规则只
+   引用变量，不再写字面值。
+
+   语义分层（「统一」指的是这个，不是把所有东西染成同一色）：
+     中性档  版本号 / 元信息                --gb-fill-neutral + --gb-ink-neutral
+     强调档  一次性状态（更新 / 下载中 / 最新）  --gb-fill-accent  + --gb-ink-accent
+     实色档  品牌与主行动（logo 块 / 升级条按钮） --gb-fill-solid   + --gb-fabric-solid
+
+   🔴 --gb-fabric 与侧栏原有字面值逐字节一致（4 段，含 `inset 0 -1px 0` 暗底边）：
+      侧栏七态已上线，改它等于扩大回归面。
+   🔴 --gb-fabric-edge 只把那条暗底边换成 1px 靛发丝描边（99 102 241 / .16）——
+      这一根线负责「灰白 pill 放在大标题旁边还算不算版本号」。 */
+html[data-ui-style="glass"] {
+  --gb-fabric:
+    inset 0 1px 0 rgb(255 255 255 / .56),
+    inset 0 -1px 0 rgb(63 82 125 / .10),
+    0 1px 2px rgb(45 61 101 / .10),
+    0 4px 8px -4px rgb(55 70 114 / .28);
+  --gb-fabric-edge:
+    inset 0 1px 0 rgb(255 255 255 / .56),
+    inset 0 0 0 1px rgb(99 102 241 / .16),
+    0 1px 2px rgb(45 61 101 / .10),
+    0 4px 8px -4px rgb(55 70 114 / .26);
+  --gb-fabric-edge-sm:
+    inset 0 1px 0 rgb(255 255 255 / .58),
+    inset 0 0 0 1px rgb(99 102 241 / .20),
+    0 1px 2px rgb(45 61 101 / .12);
+  --gb-fabric-solid:
+    inset 0 1px 0 rgb(255 255 255 / .26),
+    inset 0 0 0 1px rgb(255 255 255 / .12),
+    0 1px 2px rgb(45 61 101 / .16),
+    0 4px 10px -4px rgb(55 70 114 / .34);
+  --gb-fill-neutral: var(--glass-panel);
+  --gb-fill-accent: var(--glass-status-panel);
+  --gb-ink-neutral: #465974;
+  --gb-ink-accent: #323b70;
+  /* 弹窗 32×32 品牌块的内联投影（组件侧 var(--brand-slab-shadow, 原值)） */
+  --brand-slab-shadow: var(--gb-fabric-solid);
+}
+html.dark[data-ui-style="glass"] {
+  --gb-fabric:
+    inset 0 1px 0 rgb(215 232 255 / .22),
+    inset 0 -1px 0 rgb(0 4 20 / .22),
+    0 1px 2px rgb(0 4 20 / .22),
+    0 4px 8px -4px rgb(0 4 20 / .48);
+  --gb-fabric-edge:
+    inset 0 1px 0 rgb(215 232 255 / .22),
+    inset 0 0 0 1px rgb(191 215 255 / .16),
+    0 1px 2px rgb(0 4 20 / .22),
+    0 4px 8px -4px rgb(0 4 20 / .46);
+  --gb-fabric-edge-sm:
+    inset 0 1px 0 rgb(215 232 255 / .20),
+    inset 0 0 0 1px rgb(191 215 255 / .22),
+    0 1px 2px rgb(0 4 20 / .22);
+  --gb-fabric-solid:
+    inset 0 1px 0 rgb(215 232 255 / .18),
+    inset 0 0 0 1px rgb(191 215 255 / .10),
+    0 1px 2px rgb(0 4 20 / .28),
+    0 4px 10px -4px rgb(0 4 20 / .52);
+  --gb-ink-neutral: #c5d2e6;
+  --gb-ink-accent: #eeeaff;
+}
+
 /* Update badges share the connection cards' material, scaled to a stable sidebar slot. */
 html[data-ui-style="glass"] .update-slot .header-badge {
   width: 66px;
@@ -264,10 +330,10 @@ html[data-ui-style="glass"] .update-slot .header-badge {
   gap: 4px;
   padding: 2px 6px;
   border-radius: 7px;
-  background: var(--glass-panel);
-  color: #465974;
+  background: var(--gb-fill-neutral);
+  color: var(--gb-ink-neutral);
   /* Scale the connection cards' highlight and directional depth to a 22px surface. */
-  --badge-depth: inset 0 1px 0 rgb(255 255 255 / .56), inset 0 -1px 0 rgb(63 82 125 / .10), 0 1px 2px rgb(45 61 101 / .10), 0 4px 8px -4px rgb(55 70 114 / .28);
+  --badge-depth: var(--gb-fabric);
   --badge-hover-depth: inset 0 1px 0 rgb(255 255 255 / .72), inset 0 -1px 0 rgb(63 82 125 / .10), 0 2px 3px rgb(45 61 101 / .10), 0 5px 10px -4px rgb(55 70 114 / .30);
   --badge-pressed-depth: inset 0 1px 3px rgb(45 61 101 / .18), 0 1px 0 rgb(255 255 255 / .26);
   box-shadow: var(--badge-depth);
@@ -278,19 +344,26 @@ html[data-ui-style="glass"] .update-slot .header-badge {
   transition: box-shadow 140ms ease, filter 140ms ease;
 }
 html.dark[data-ui-style="glass"] .update-slot .header-badge {
-  --badge-depth: inset 0 1px 0 rgb(215 232 255 / .22), inset 0 -1px 0 rgb(0 4 20 / .22), 0 1px 2px rgb(0 4 20 / .22), 0 4px 8px -4px rgb(0 4 20 / .48);
+  --badge-depth: var(--gb-fabric);
   --badge-hover-depth: inset 0 1px 0 rgb(215 232 255 / .30), inset 0 -1px 0 rgb(0 4 20 / .22), 0 2px 3px rgb(0 4 20 / .22), 0 5px 10px -4px rgb(0 4 20 / .50);
   --badge-pressed-depth: inset 0 1px 3px rgb(0 4 20 / .38), 0 1px 0 rgb(215 232 255 / .12);
-  background: var(--glass-panel);
-  color: #c5d2e6;
 }
+/* 侧栏里代表「版本号 / 待命」的三态跟版本胶囊同一档（--gb-fabric-edge）。
+   🔴 必须写在深色基础段之后：两者选择器权重相同（0,3,1），靠先后顺序决出胜负。
+   🔴 hover 也要跟着换，否则一悬停描边就消失（box-shadow 整体被 hover-depth 顶掉）。 */
+html[data-ui-style="glass"] .update-slot :is(.header-badge-idle, .header-badge-checking, .header-badge-uptodate) {
+  --badge-depth: var(--gb-fabric-edge);
+  --badge-hover-depth: inset 0 1px 0 rgb(255 255 255 / .72), inset 0 0 0 1px rgb(99 102 241 / .22), 0 2px 3px rgb(45 61 101 / .10), 0 5px 10px -4px rgb(55 70 114 / .30);
+}
+html.dark[data-ui-style="glass"] .update-slot :is(.header-badge-idle, .header-badge-checking, .header-badge-uptodate) {
+  --badge-depth: var(--gb-fabric-edge);
+  --badge-hover-depth: inset 0 1px 0 rgb(215 232 255 / .30), inset 0 0 0 1px rgb(191 215 255 / .22), 0 2px 3px rgb(0 4 20 / .22), 0 5px 10px -4px rgb(0 4 20 / .50);
+}
+/* 强调档只有一条规则：--gb-fill-accent / --gb-ink-accent 自带深色值，
+   不再重复写一遍深色块（重复写就是下一次分叉的起点）。 */
 html[data-ui-style="glass"] .update-slot :is(.header-badge-update,.header-badge-downloading) {
-  background: var(--glass-status-panel);
-  color: #323b70;
-}
-html.dark[data-ui-style="glass"] .update-slot :is(.header-badge-update,.header-badge-downloading) {
-  background: var(--glass-status-panel);
-  color: #eeeaff;
+  background: var(--gb-fill-accent);
+  color: var(--gb-ink-accent);
 }
 html[data-ui-style="glass"] .update-slot .header-badge-ready {
   background: linear-gradient(145deg, rgb(191 225 227 / .94), rgb(183 215 201 / .92));
@@ -315,6 +388,89 @@ html[data-ui-style="glass"] .update-slot button:focus-visible { outline: 2px sol
 html[data-ui-style="glass"] .update-slot .header-badge::after { content: none; }
 html[data-ui-style="glass"] .header-badge-downloading circle { stroke: currentColor; }
 html[data-ui-style="glass"] .header-badge-downloading circle:first-child { opacity: .23; }
+
+/* ── 关于页：版本胶囊 / 更新历史版本条 / 本期亮点条 ───────────────────────
+   版本号（关于页 chip、更新历史胶囊）统一走上面的中性档面料，与侧栏 idle
+   同源：底 = --gb-fill-neutral、投影 = --gb-fabric-edge、字 = --gb-ink-neutral、
+   圆角 7px ⇒ 三处的 getComputedStyle 逐字段相等。classic 下的实底白字 +
+   `0 2px 6px` 饱和紫投影由组件侧的变量兜底保留，本段完全不参与。
+
+   🔴 底色由组件侧写成 `var(--cl-*, 原值)`，这里只注入变量：三处底色是 React
+      内联 style，优先级高于任何选择器，`!important` 之外只有变量能穿透。
+      classic 主题读不到这些变量 ⇒ 一律走原值，逐像素不变。
+   🔴 「最新」tag 是状态不是版本号，走强调档（--cl-latest-bg → --gb-fill-accent）
+      + 小尺寸面料 --gb-fabric-edge-sm；与版本胶囊同档会跟中性底混成一片。 */
+html[data-ui-style="glass"] {
+  /* 版本号一律走中性档（底 / 投影 / 字色），与侧栏 idle 同源 ⇒ 三处逐字段相等。
+     以前 --version-chip-bg 与 --cl-capsule-bg 是同一串字面值抄了两遍，
+     再微调其一就会真的分叉。 */
+  --version-chip-bg: var(--gb-fill-neutral);
+  --version-chip-shadow: var(--gb-fabric-edge);
+  --cl-bar-bg: linear-gradient(145deg, rgb(240 243 255 / .66), rgb(234 237 252 / .48));
+  --cl-capsule-bg: var(--gb-fill-neutral);
+  --cl-capsule-muted-bg: linear-gradient(145deg, rgb(231 235 242 / .88), rgb(222 227 237 / .78));
+  --cl-latest-bg: var(--gb-fill-accent);
+  --cl-hl-ink: #333a8f;
+}
+/* 版本号（含历史版本胶囊）统一中性字色；「最新」是状态，走强调档字色。 */
+html[data-ui-style="glass"] :is(.version-chip, .cl-version-capsule) {
+  color: var(--gb-ink-neutral);
+}
+html[data-ui-style="glass"] .cl-version-bar {
+  box-shadow: inset 0 0 0 1px rgb(99 102 241 / .10), inset 0 1px 0 rgb(255 255 255 / .55);
+}
+/* 更新历史胶囊原来 box-shadow 是 none（三种投影段数里最少的那个），补上同一档面料 */
+html[data-ui-style="glass"] .cl-version-capsule {
+  box-shadow: var(--gb-fabric-edge);
+}
+html[data-ui-style="glass"] .cl-latest-tag {
+  color: var(--gb-ink-accent);
+  box-shadow: var(--gb-fabric-edge-sm);
+}
+/* 圆角统一 7px（= 侧栏槽位）。chip / 胶囊原本是 rounded-md，glass 下算出来 8px，
+   单看无感、并排立现 1px 断层。「最新」只有 15px 高，收 6px。 */
+html[data-ui-style="glass"] :is(.version-chip, .cl-version-capsule) {
+  border-radius: 7px;
+}
+html[data-ui-style="glass"] .cl-latest-tag {
+  border-radius: 6px;
+}
+/* 本期亮点条：全宽多行块不能留实底渐变，收到 10% 染度 + 内描边 */
+html[data-ui-style="glass"] .cl-highlight-bar {
+  background: linear-gradient(135deg, rgb(99 102 241 / .10), rgb(139 92 246 / .07));
+  box-shadow: inset 0 0 0 1px rgb(99 102 241 / .14), inset 0 1px 0 rgb(255 255 255 / .50);
+}
+html[data-ui-style="glass"] .cl-highlight-bar :is(li, svg) { color: var(--cl-hl-ink); }
+
+/* 深色只保留「本段专有」的三个值：版本条底 / 历史版本灰胶囊 / 亮点条字色。
+   版本胶囊与「最新」的底、投影、字色全部由 --gb-* 自带深色值，不在这里再抄一遍。 */
+html.dark[data-ui-style="glass"] {
+  --cl-bar-bg: linear-gradient(145deg, rgb(120 130 200 / .14), rgb(130 120 200 / .10));
+  --cl-capsule-muted-bg: linear-gradient(145deg, rgb(74 80 96 / .58), rgb(64 70 86 / .48));
+  --cl-hl-ink: #cfd6fb;
+}
+html.dark[data-ui-style="glass"] .cl-version-bar {
+  box-shadow: inset 0 0 0 1px rgb(191 215 255 / .10), inset 0 1px 0 rgb(215 232 255 / .08);
+}
+html.dark[data-ui-style="glass"] .cl-highlight-bar {
+  background: linear-gradient(135deg, rgb(129 140 248 / .16), rgb(167 139 250 / .12));
+  box-shadow: inset 0 0 0 1px rgb(191 215 255 / .12), inset 0 1px 0 rgb(215 232 255 / .08);
+}
+
+/* ── 品牌与主行动：底保留实色靛，只把投影换成中性 ───────────────────────────
+   这两处是全页唯一允许的饱和块（品牌语言 + 主行动），不该降级成玻璃；
+   问题只在 classic 那条 `0 2px 6px rgba(79,70,229,.32)` —— 饱和色投影贴在
+   半透明卡片上会像一块发光的贴纸。换成 --gb-fabric-solid 的定向中性投影。 */
+html[data-ui-style="glass"] .upgrade-welcome .uw-icon,
+html[data-ui-style="glass"] .upgrade-welcome .uw-link {
+  box-shadow: var(--gb-fabric-solid);
+}
+html[data-ui-style="glass"] .upgrade-welcome .uw-link:hover {
+  box-shadow: var(--gb-fabric-solid), 0 6px 14px -6px rgb(55 70 114 / .40);
+}
+html.dark[data-ui-style="glass"] .upgrade-welcome .uw-link:hover {
+  box-shadow: var(--gb-fabric-solid), 0 6px 14px -6px rgb(0 4 20 / .60);
+}
 
 @media (prefers-reduced-motion: reduce) {
   html[data-ui-style="glass"] .update-slot .header-badge { transition: none; }

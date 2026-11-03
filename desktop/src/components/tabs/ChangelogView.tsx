@@ -10,9 +10,13 @@ const CATEGORY_CLASS: Record<ChangeCategory, string> = {
   sec: "cl-badge-sec",
 };
 
-const STYLE_CL_VERSIONBar: CSSProperties = { background: "var(--color-accent)" };
-const STYLE_CL_CAPSULE: CSSProperties = { background: "var(--color-primary)" };
-const STYLE_CL_CAPSULE_MUTED: CSSProperties = { background: "var(--color-muted)" };
+/* 底色一律走「CSS 变量 + 原值兜底」：毛玻璃主题要在 appearance.css 里换成染色玻璃材质，
+   而这些底色写在 React 内联 style 上（优先级高于任何选择器）⇒ 只有变量能穿透。
+   classic 主题不定义这些变量 ⇒ 走兜底值，视觉零变化。 */
+const STYLE_CL_VERSIONBar: CSSProperties = { background: "var(--cl-bar-bg, var(--color-accent))" };
+const STYLE_CL_CAPSULE: CSSProperties = { background: "var(--cl-capsule-bg, var(--color-primary))" };
+const STYLE_CL_CAPSULE_MUTED: CSSProperties = { background: "var(--cl-capsule-muted-bg, var(--color-muted))" };
+const STYLE_CL_LATEST: CSSProperties = { background: "var(--cl-latest-bg, var(--color-primary))" };
 const STYLE_CL_ITEM_PAD: CSSProperties = { paddingLeft: 28 };
 const STYLE_CL_DATE: CSSProperties = { minWidth: 40 };
 
@@ -45,7 +49,7 @@ export function ChangelogView() {
           <span className="flex-1" />
           <span
             className="cl-latest-tag shrink-0 rounded px-1.5 text-[10px] font-bold tracking-wider text-white"
-            style={STYLE_CL_CAPSULE}
+            style={STYLE_CL_LATEST}
           >
             最新
           </span>

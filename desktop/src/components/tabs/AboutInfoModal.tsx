@@ -24,9 +24,12 @@ const HIGHLIGHTS = [
   { label: "路径白名单安全校验", color: "#EF4444" },
 ];
 
+// 品牌块：底保留实色靛（品牌语言，唯一允许的饱和块），投影走变量回退 ——
+// glass 主题在 appearance.css 换成中性定向投影（饱和紫投影贴在玻璃上像发光贴纸）；
+// classic 读不到变量 ⇒ 走原值，逐像素不变。内联优先级高于选择器，只有变量能穿透。
 const STYLE_VERSION_BADGE_LG: CSSProperties = {
   background: "var(--version-gradient)",
-  boxShadow: "0 3px 10px var(--version-shadow)",
+  boxShadow: "var(--brand-slab-shadow, 0 3px 10px var(--version-shadow))",
 };
 
 export function AboutInfoModal({

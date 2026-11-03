@@ -30,8 +30,8 @@ const TECH_STACK = [
    lib/platform.ts 的 aboutCopy()——安装包体积、内存口径、进程隔离机制
    这三项在 Windows 与 macOS 上全都不一样。 */
 
-// E-P2-7: 把内联 style 对象提取为模块级常量，避免每次渲染重建（约 15 处）。
-const STYLE_VERSION_BADGE: CSSProperties = { background: "var(--version-gradient)", boxShadow: "0 2px 6px var(--version-shadow)" };
+// E-P2-7: 内联 style 提为模块级常量（约 15 处）。底色/投影走变量回退：glass 在 appearance.css 换成染色玻璃材质（内联优先级更高，只有变量能穿透；classic 读不到 ⇒ 逐像素不变）。
+const STYLE_VERSION_BADGE: CSSProperties = { background: "var(--version-chip-bg, var(--version-gradient))", boxShadow: "var(--version-chip-shadow, 0 2px 6px var(--version-shadow))" };
 const STYLE_ICON_INDIGO: CSSProperties = { background: "rgba(99,102,241,0.12)", color: "var(--color-primary)" };
 const STYLE_ICON_GREEN: CSSProperties = { background: "rgba(22,163,74,0.12)", color: "#16A34A" };
 const STYLE_ICON_ACCENT: CSSProperties = { background: "var(--color-accent)", color: "var(--color-primary)" };
@@ -113,7 +113,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
           <div className="flex min-w-0 flex-1 items-center gap-2.5">
             <span className="ui-h-section text-foreground">关于 {APP_INFO.name}</span>
             <span
-              className="inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[11px] font-bold tracking-wide text-white"
+              className="version-chip inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[11px] font-bold tracking-wide text-white"
               style={STYLE_VERSION_BADGE}
             >
               {formatVersion(status?.version)}

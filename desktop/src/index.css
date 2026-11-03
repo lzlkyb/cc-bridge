@@ -134,7 +134,7 @@
   /* 视觉增强专用（非 Tailwind 语义色）
      （2026-10-17 清理：--hero-gradient、--hero-shadow、--hero-glow-*、--hero-metric-*、
      --hero-addr-*、--hero-stopped-* 随 Hero 卡下线一并删除，全仓零引用；
-     --hero-text 保留——version-badge / header-badge / upgrade-welcome 在用）*/
+     --hero-text 保留——header-badge / upgrade-welcome 在用）*/
   --hero-text: #fff;
   --version-gradient: linear-gradient(135deg, #6366F1, #4F46E5);
   --version-shadow: rgba(79, 70, 229, 0.32);
@@ -419,12 +419,8 @@ body {
   user-select: auto;
 }
 
-/* 版本徽章（渐变 pill）*/
-.version-badge {
-  color: var(--hero-text);
-  background: var(--version-gradient);
-  box-shadow: 0 2px 6px var(--version-shadow);
-}
+/* （`.version-badge` 渐变 pill 已于 2026-11-03 删除：全仓零引用，版本号统一改走
+   `--gb-*` 面料 + 组件侧 `var(--*-bg, 原值)` 回退，见 appearance.css 徽章面料段。）*/
 
 /* 状态胶囊的脉冲点 `.status-pill .p-dot` 已删（2026-10-17，见文件上部存档注） */
 
