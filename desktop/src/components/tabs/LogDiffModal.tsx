@@ -6,6 +6,7 @@ import { friendlyAuditError } from "../../lib/auditError";
 import type { AuditEntry, FileDiffResult } from "../../lib/types";
 import { Icon } from "../ui/icon";
 import { Skeleton } from "../ui/Skeleton";
+import { useDelayedLoading } from "../../hooks/useDelayedLoading";
 
 /**
  * 变更 Diff 弹窗：调 get_file_diff，行级红绿高亮展示备份（前）vs 当前文件（后）。
@@ -21,6 +22,9 @@ export function LogDiffModal({ entry, onClose: onClosed }: { entry: AuditEntry; 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<FileDiffResult | null>(null);
+  // 骨架延迟门：diff 是本地文件对比，多数几百毫秒内返回；弹窗本身还有入场动画，
+  // 骨架若只在动画期间闪一下反而更乱。
+  const showSkeleton = useDelayedLoading(loading);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,15 +64,16 @@ export function LogDiffModal({ entry, onClose: onClosed }: { entry: AuditEntry; 
           </button>
         </div>
         <div className="flex-1 overflow-auto p-3">
-          {loading && (
-            <div className="space-y-2 p-1">
-              <Skeleton className="h-3.5 w-full" />
-              <Skeleton className="h-3.5 w-11/12" />
-              <Skeleton className="h-3.5 w-full" />
-              <Skeleton className="h-3.5 w-4/5" />
-              <Skeleton className="h-3.5 w-full" />
-              <Skeleton className="h-3.5 w-3/4" />
-              <Skeleton className="h-3.5 w-10/12" />
+          {/* 行号列 + 代码列（2026-11-06）：真实 diff 是「行号 | 代码」两列，
+              旧版七条同宽灰条看不出是 diff。 */}
+          {showSkeleton && (
+            <div className="space-y-2 p-1" aria-hidden="true">
+              {[92, 74, 100, 58, 86, 66, 80].map((w, i) => (
+                <div key={i} className="flex gap-2">
+                  <Skeleton className="h-3.5 w-8 shrink-0" />
+                  <Skeleton className="h-3.5" style={{ width: `${w}%` }} />
+                </div>
+              ))}
             </div>
           )}
           {err && (

@@ -8,6 +8,7 @@ import type {
 } from "../../lib/types";
 import { formatRelativeTime, formatBytes } from "../../lib/utils";
 import { Icon } from "../ui/icon";
+import { Skeleton } from "../ui/Skeleton";
 import { Modal } from "../ui/Modal";
 import { BackupDeleteConfirm, type BackupDeleteTarget } from "./BackupDeleteConfirm";
 import { DiffView, type DiffState, countDiff } from "./DiffView";
@@ -200,14 +201,13 @@ export function VersionHistoryModal({
         <div className="flex-1 overflow-y-auto p-4">
           {loading && (
             <div className="space-y-2.5" aria-label="加载备份清单">
+              {/* 扫光挂在内部骨条上、卡片本体不动（2026-11-06 从前是 `.vh-skel`
+                  让整卡 opacity 呼吸，边框跟着明暗，看着像卡片自己在闪）。 */}
               {Array.from({ length: 5 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="vh-skel overflow-hidden rounded-xl border border-border"
-                >
+                <div key={i} className="overflow-hidden rounded-xl border border-border">
                   <div className="flex items-center justify-between gap-2 bg-muted/50 px-3 py-2.5">
-                    <div className="h-3.5 w-1/3 rounded bg-muted-foreground/20" />
-                    <div className="h-3 w-16 rounded bg-muted-foreground/15" />
+                    <Skeleton className="h-3.5 w-1/3" />
+                    <Skeleton className="h-3 w-16" />
                   </div>
                 </div>
               ))}

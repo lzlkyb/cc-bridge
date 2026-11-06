@@ -5,20 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CC Bridge</title>
     <script>
-      // 抢先定主题。主题本来是 main.tsx 里打的 class，也就是说 JS bundle 加载完
-      // 之前页面永远是浅色（窗口 backgroundColor 写死为 #F4F6F9）——深色用户每次开窗
-      // 都先挨一下白屏。同步 script 会阻塞渲染，所以不会有中间态。
-      // 与 main.tsx 里那行不冲突（重复置为同一值，幂等）。
+      // 抢先定主题与材质。两者本来是 main.tsx 里打的标记，也就是说 JS bundle 加载完
+      // 之前页面永远是「浅色 + 经典」——深色/玻璃用户每次开窗都先挨一下白壳。
+      // 同步 script 会阻塞渲染，所以不会有中间态。与 main.tsx / lib/appearance.ts 里
+      // 那两处设置不冲突（重复置为同一值，幂等）。
       try {
         if (localStorage.getItem("theme") === "dark") {
           document.documentElement.classList.add("dark");
         }
+        // 材质键与 lib/appearance.ts 的 KEY 必须一致；默认 glass（那边同样是
+        // `=== "classic" ? "classic" : "glass"`），所以只有明确存了 classic 才走实色。
+        document.documentElement.dataset.uiStyle =
+          localStorage.getItem("cc-bridge.ui-style") === "classic" ? "classic" : "glass";
       } catch (_) {
-        /* 隐私模式下 localStorage 可能抛错，按浅色走就行 */
+        /* 隐私模式下 localStorage 可能抛错，按浅色 + 玻璃走就行 */
       }
     </script>
     <style>
-      /* 首帧骨架屏（设计稿：design/开窗首帧骨架屏-设计稿.html）。
+      /* 首帧骨架屏（设计稿：design/骨架屏对齐-设计稿-2026-11-06.html）。
 
          为何写在这里而不是做成 React 组件：空白的 1~2 秒正是「JS bundle 还没加载完」
          的时间，React 组件要等 bundle 执行完才能渲染，恰好错过了需要它的那段时间。
@@ -26,22 +30,76 @@
          自然把它清掉，不需要任何手动拆除代码。
 
          样式全部内联、不依赖 Tailwind 那份 CSS（它也是外部资源）。
-         参考尺寸取自真实布局：Header 的 px-5 py-3.5 + 40×40 图标，TabsList 的
-         px-5 pt-4 pb-3 / rounded-xl bg-secondary p-1。只画到卡片轮廓为止：真实内容
-         高度随状态变，画得越细越快过时。 */
+
+         ## 结构照抄连接页（2026-11-06 实测对齐）
+         连接页是 12 列 bento（index.css:518-538），不是几张竖着排的卡：
+           行1 [状态卡 col1-5, row1-2][指标×4 col5-7/7-9/9-11/11-13]
+           行2 [     状态卡继续      ][健康 col5-9][用量 col9-13]
+           行3 [接入向导 12 列]
+         状态卡是**靛蓝渐变**（`.status-card--live`，index.css:782）——首屏最抢眼的一块，
+         骨架不画它，React 挂载那一下就是「白卡 → 紫卡」的整块跳变。
+         旧版画的是「顶栏 + 横向 4 格 Tab 条 + 两卡片」，那是 2026-10-14 侧栏导航改造
+         之前的布局，之后一直没同步。
+
+         尺寸来源（真窗口 1597×989 @125% 缩放实测，CSS px）：
+           - 侧栏 200 / 折叠 56              index.css:1778
+           - 顶栏 52                        index.css:2133
+           - 内容区左右内边距 20、上 6       App.tsx:458 的 px-5 + dashboard-scroll 的 2px
+           - 网格 gap 12，卡圆角 14          index.css:518-550
+           - 指标卡行高 149、下方卡 231      实测（状态卡跨两行会被拉伸，故 149>min-height:118）
+           - 状态卡 padding 16 / 其余 12-16  index.css:775、826、550
+           - 品牌 52 + logo 28×28 圆角 7     index.css:1799、SideNav.tsx:134
+
+         ⚠ 只画到「卡内分几行、每行多高」为止：真实文字随 status/横幅变化，画死必错。
+         但卡片外壳（白底/靛蓝底 + 1px 边框 + 圆角）是确定的，必须保留 ——
+         骨架块 #EFF2F6 叠在应用底 #F4F6F9 上色差只有 5/255，不画边框等于一片空白。 */
       :root {
         --sk-bg: #f4f6f9;
         --sk-card: #ffffff;
-        --sk-border: #e3e7ed;
-        --sk-block: #edf0f4;
-        --sk-sheen: rgba(255, 255, 255, 0.55);
+        --sk-border: #e1e5eb;
+        --sk-block: #eff2f6;
+        --sk-sheen: rgb(255 255 255 / 0.55);
+        --sk-on: #e8ebf9;
+        /* 状态卡渐变。--primary 是 #4F46E5（index.css:90），`.status-card--live`
+           用的是 `hsl(var(--primary)) → hsl(var(--primary)/.72)`；这里写死成同一组值，
+           因为首帧拿不到 CSS 变量（Tailwind 那份还没加载）。 */
+        --sk-primary: #4f46e5;
+        --sk-primary-dim: rgb(79 70 229 / 0.72);
+        /* 彩色卡内的条：白膜，不能再用 --sk-block（浅灰叠在靛蓝上等于没画）。 */
+        --sk-on-card: rgb(255 255 255 / 0.32);
+        --sk-on-card-soft: rgb(255 255 255 / 0.16);
       }
       :root.dark {
-        --sk-bg: #09090b;
-        --sk-card: #1e1e21;
-        --sk-border: #37373c;
-        --sk-block: #2e2e33;
-        --sk-sheen: rgba(255, 255, 255, 0.1);
+        --sk-bg: #121620;
+        --sk-card: #191f2c;
+        --sk-border: #363a3e;
+        --sk-block: #2c2e32;
+        --sk-sheen: rgb(255 255 255 / 0.1);
+        --sk-on: #2b3a5c;
+        --sk-primary: #6366f1;
+        --sk-primary-dim: rgb(99 102 241 / 0.72);
+        --sk-on-card: rgb(255 255 255 / 0.22);
+        --sk-on-card-soft: rgb(255 255 255 / 0.12);
+      }
+      /* 玻璃材质：壳透明、骨架块半透明（叠在光晕底上），与 appearance.css 的
+         --glass-panel / --glass-edge 同一路取值逻辑 —— 不自己发明新色。 */
+      :root[data-ui-style="glass"] {
+        --sk-bg: #e7edf6;
+        --sk-card: rgb(255 255 255 / 0.58);
+        --sk-border: rgb(65 84 127 / 0.12);
+        --sk-block: rgb(120 138 168 / 0.26);
+        --sk-on: rgb(99 102 241 / 0.17);
+        --sk-primary: #818cf8;
+        --sk-primary-dim: rgb(129 140 248 / 0.72);
+      }
+      :root.dark[data-ui-style="glass"] {
+        --sk-bg: #18243a;
+        --sk-card: rgb(57 76 109 / 0.55);
+        --sk-border: rgb(191 215 255 / 0.12);
+        --sk-block: rgb(186 206 235 / 0.2);
+        --sk-on: rgb(129 140 248 / 0.2);
+        --sk-primary: #6366f1;
+        --sk-primary-dim: rgb(99 102 241 / 0.72);
       }
       html,
       body {
@@ -49,83 +107,416 @@
         height: 100%;
         background: var(--sk-bg);
       }
+      /* 玻璃态的应用底不是纯色，是三团柔光叠在基色上（appearance.css 的 .app-boot-fade
+         同款配方）。只改底色不算「跟材质走」——纯灰白底会在 React 挂载那一刻整片换成
+         带青紫的玻璃底，比骨架结构错更刺眼。 */
+      :root[data-ui-style="glass"] body {
+        background:
+          radial-gradient(ellipse at 12% 4%, rgb(111 203 213 / 0.46), transparent 61%),
+          radial-gradient(ellipse at 92% 8%, rgb(166 151 219 / 0.4), transparent 64%),
+          radial-gradient(ellipse at 95% 100%, rgb(232 189 171 / 0.3), transparent 60%),
+          #e7edf6;
+      }
+      :root.dark[data-ui-style="glass"] body {
+        background:
+          radial-gradient(ellipse at 12% 4%, rgb(25 133 156 / 0.4), transparent 61%),
+          radial-gradient(ellipse at 92% 8%, rgb(105 78 177 / 0.34), transparent 64%),
+          radial-gradient(ellipse at 95% 100%, rgb(156 93 69 / 0.22), transparent 60%),
+          #18243a;
+      }
+      /* 🔴 必须自己写这一条：真实界面靠 Tailwind preflight 全局设了 border-box，而这段
+         样式在它之外。少了它，下面每张卡的 `height/min-height` 都会再叠上 padding 与
+         1px 边框 —— 实测指标卡 149 变 175、向导卡 460 变 490，整片网格跟着长高 60px，
+         与真实首屏错位。 */
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
       #root {
         height: 100%;
       }
       .boot {
         height: 100%;
         display: flex;
-        flex-direction: column;
         overflow: hidden;
         font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
       }
-      .boot-hd {
+
+      /* ── 骨架块基类 ──
+         🔴 必须排在最前面：`.sk-node` / `.sk-chip` / `.sk-pill-btn` 等是在它后面按需
+         覆盖圆角与 flex 的，两者同为单类选择器、特异性相同 ⇒ **后定义的赢**。
+         曾经把它放在最后，结果圆形节点全变 5px 圆角方块、`flex:1` 的按钮被压成 0 宽。 */
+      .sk {
+        position: relative;
+        overflow: hidden;
+        border-radius: 5px;
+        background: var(--sk-block);
+        flex: none;
+      }
+      /* 状态卡里的条换成白膜：浅灰叠在靛蓝上等于没画过。 */
+      .boot-status .sk {
+        background: var(--sk-on-card);
+      }
+
+      /* ── 侧栏 ── */
+      .boot-side {
+        flex: none;
+        width: 200px;
+        display: flex;
+        flex-direction: column;
+        background: var(--sk-card);
+        border-right: 1px solid var(--sk-border);
+      }
+      .boot-side-head {
         flex: none;
         display: flex;
         align-items: center;
         gap: 10px;
-        padding: 14px 20px;
-        border-bottom: 1px solid var(--sk-border);
+        height: 52px;
+        padding: 0 16px;
       }
-      .boot-tabs {
+      .boot-logo {
+        width: 28px;
+        height: 28px;
         flex: none;
-        display: flex;
-        gap: 2px;
-        margin: 16px 20px 12px;
-        padding: 4px;
-        height: 40px;
-        border-radius: 12px;
-        background: var(--sk-block);
+        border-radius: 7px;
       }
-      .boot-tab {
-        flex: 1;
-        border-radius: 8px;
-      }
-      .boot-tab.on {
-        background: var(--sk-card);
-      }
-      .boot-body {
-        padding: 0 20px;
+      .boot-brand {
         display: flex;
         flex-direction: column;
+        gap: 3px;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .boot-nav {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 8px;
+        min-height: 0;
+      }
+      .boot-item {
+        display: flex;
+        align-items: center;
         gap: 10px;
+        padding: 8px 10px;
+        border-radius: 10px;
+        flex: none;
       }
-      .boot-card {
-        border: 1px solid var(--sk-border);
+      .boot-item.on {
+        background: var(--sk-on);
+      }
+      .sk-ico {
+        width: 16px;
+        height: 16px;
+        flex: none;
+        border-radius: 4px;
+      }
+      .sk-lab {
+        width: 48px;
+        height: 9px;
+      }
+      .boot-foot {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px;
+        border-top: 1px solid var(--sk-border);
+      }
+      .sk-slot {
+        width: 66px;
+        height: 24px;
+        flex: none;
         border-radius: 12px;
-        background: var(--sk-card);
-        padding: 12px;
       }
-      .sk {
-        border-radius: 5px;
+
+      /* ── 主列 ── */
+      .boot-main {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .boot-top {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 52px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--sk-border);
+      }
+      .sk-btn {
+        width: 32px;
+        height: 32px;
+        flex: none;
+        border-radius: 8px;
+      }
+      .sk-badge {
+        width: 96px;
+        height: 24px;
+        flex: none;
+        border-radius: 12px;
+      }
+      .sk-cta {
+        width: 72px;
+        height: 28px;
+        flex: none;
+        border-radius: 8px;
+      }
+      .sk-ctl {
+        width: 46px;
+        height: 32px;
+        flex: none;
+        border-radius: 6px;
+      }
+
+      /* ── 内容区：12 列 bento ── */
+      .boot-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        /* 上 6 = 真窗口实测（顶栏底线到第一张卡的间距）；左右 20 = px-5。
+           底部不给留白：真实页面在这里被视口裁掉，下面还有内容。 */
+        padding: 6px 20px 0;
+        overflow: hidden;
+      }
+      .boot-bento {
+        flex: none;
+        display: grid;
+        grid-template-columns: repeat(12, minmax(0, 1fr));
+        gap: 12px;
+        align-items: stretch;
+      }
+      /* 列跨度照抄 index.css:532-538 的子选择器，连 nth-child 的次序都一样 ——
+         以后真布局改列，改这里就能一眼对上。 */
+      .boot-status {
+        grid-column: 1 / 5;
+        grid-row: 1 / 3;
+      }
+      .boot-bento > .boot-metric:nth-child(2) {
+        grid-column: 5 / 7;
+      }
+      .boot-bento > .boot-metric:nth-child(3) {
+        grid-column: 7 / 9;
+      }
+      .boot-bento > .boot-metric:nth-child(4) {
+        grid-column: 9 / 11;
+      }
+      .boot-bento > .boot-metric:nth-child(5) {
+        grid-column: 11 / 13;
+      }
+      .boot-bento > .boot-panel:nth-child(6) {
+        grid-column: 5 / 9;
+      }
+      .boot-bento > .boot-panel:nth-child(7) {
+        grid-column: 9 / 13;
+      }
+      .boot-status,
+      .boot-metric,
+      .boot-panel {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        overflow: hidden;
+        border-radius: 14px;
+      }
+      /* 状态卡：靛蓝渐变 + 白字。骨架块改用白膜（--sk-on-card）。 */
+      .boot-status {
+        gap: 11px;
+        padding: 16px;
+        background: linear-gradient(160deg, var(--sk-primary), var(--sk-primary-dim));
+      }
+      .boot-metric {
+        grid-row: 1;
+        gap: 8px;
+        /* 149 而不是 min-height:118：状态卡跨两行、比右侧两行加起来还高，
+           多出的高度被网格摊给行1，实测就是 149。 */
+        min-height: 149px;
+        padding: 12px 14px;
+        background: var(--sk-card);
+        border: 1px solid var(--sk-border);
+      }
+      .boot-panel {
+        grid-row: 2;
+        gap: 9px;
+        min-height: 231px;
+        padding: 14px 16px;
+        background: var(--sk-card);
+        border: 1px solid var(--sk-border);
+      }
+
+      /* ── 卡内元素 ── */
+      .boot-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: none;
+      }
+      .sk-chain {
+        position: relative;
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        flex: none;
+      }
+      /* 三个节点各占一列，下面跟两行说明（真实卡是「本机服务 / 运行中·地址已绑定」那种两行）。
+         连线单独绝对定位在节点的垂直中线上：走 flex 排版的话，节点下面一长说明会把
+         连线一起拽歪，跟真实结构对不上。 */
+      .sk-node-col {
+        flex: 1 1 0;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+      }
+      .sk-node {
+        width: 24px;
+        height: 24px;
+        flex: none;
+        border-radius: 999px;
+        background: var(--sk-on-card);
+      }
+      .sk-link {
+        position: absolute;
+        left: 26%;
+        right: 26%;
+        top: 11px;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--sk-on-card-soft);
+      }
+      .sk-addr {
+        display: flex;
+        align-items: center;
+        height: 30px;
+        padding: 0 10px;
+        border-radius: 8px;
+        background: var(--sk-on-card-soft);
+        flex: none;
+      }
+      .sk-pill-btn {
+        height: 36px;
+        flex: 1 1 auto;
+        border-radius: 8px;
+        background: rgb(255 255 255 / 0.9);
+      }
+      .sk-pill-btn.ghost {
+        flex: 0 0 88px;
+        background: var(--sk-on-card-soft);
+        border: 1px solid var(--sk-on-card);
+      }
+      .sk-dot {
+        width: 10px;
+        height: 10px;
+        flex: none;
+        border-radius: 999px;
+      }
+      .sk-chip {
+        height: 18px;
+        width: 56px;
+        flex: none;
+        border-radius: 999px;
+      }
+      .sk-hr {
+        height: 1px;
+        flex: none;
+        background: var(--sk-border);
+      }
+      /* 柱状图（Token 用量卡）。真实卡是 7 根细柱、高低不一、贴底对齐 ——
+         柱子不能 flex:1，那样在宽卡里会变成几块大方砖。 */
+      .sk-bars {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 6px;
+        height: 46px;
+        flex: none;
+      }
+      .sk-bars > i {
+        flex: 0 0 12px;
+        max-width: 14%;
+        border-radius: 2px 2px 0 0;
         background: var(--sk-block);
       }
-      /* 流光用 background-position 平移渐变，纯合成。
-         不用 box-shadow / filter——项目里早就因为那个每帧重绘做过一轮优化。 */
-      @keyframes boot-sheen {
-        from {
-          background-position: -240px 0;
-        }
+      /* 接入向导：白色大卡，内部一块带边框的表单面板。 */
+      .boot-guide {
+        flex: none;
+        /* 真实页面这张卡的下沿在视口之外（往下滚才看全），这里故意给足高度让
+           .boot-body 裁掉一点，避免「骨架收口 → React 展开」的抖动。 */
+        height: 460px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: var(--sk-card);
+        border: 1px solid var(--sk-border);
+        overflow: hidden;
+      }
+      .boot-form {
+        display: flex;
+        flex: 1 1 auto;
+        flex-direction: column;
+        gap: 10px;
+        padding: 14px;
+        border: 1px solid var(--sk-border);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .sk-field {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 44px;
+        padding: 0 12px;
+        flex: 1 1 0;
+        border: 1px solid var(--sk-border);
+        border-radius: 10px;
+      }
+      .sk-field.short {
+        height: 32px;
+        border-radius: 8px;
+        flex: none;
+      }
+
+      /* ── 扫光 ── */
+      /* 流光走伪元素的 transform，不用 background-position：后者不是合成属性，
+         每帧都要重绘整块。这也是与 React 侧 .skeleton 统一后的同一套写法。 */
+      .sk.live::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent, var(--sk-sheen) 50%, transparent);
+        transform: translateX(-100%);
+        animation: boot-sweep 1.3s ease-in-out infinite;
+      }
+      @keyframes boot-sweep {
         to {
-          background-position: calc(240px + 100%) 0;
+          transform: translateX(100%);
         }
       }
-      .sk.live {
-        background-image: linear-gradient(
-          90deg,
-          var(--sk-block) 0%,
-          var(--sk-sheen) 50%,
-          var(--sk-block) 100%
-        );
-        background-size: 240px 100%;
-        background-repeat: no-repeat;
-        animation: boot-sheen 1.3s ease-in-out infinite;
+
+      /* 玻璃态：壳透明，让 body 的光晕透出来（appearance.css 的
+         `.app-shell :is(.app-side,.app-topbar){background:transparent}` 同款做法）。 */
+      :root[data-ui-style="glass"] .boot-side,
+      :root[data-ui-style="glass"] .boot-top {
+        background: transparent;
+        border-color: transparent;
       }
-      /* 全局减弱动效守卫在 Tailwind CSS 里，而这段在它之外，得自己写一份。 */
+
+      /* 全局减弱动效守卫在 Tailwind CSS 里，而这段在它之外，得自己写一份。
+         只停扫光，静态底色保留 —— 连背景一起停会让整块消失。 */
       @media (prefers-reduced-motion: reduce) {
-        .sk.live {
-          background-image: none;
+        .sk.live::after {
           animation: none;
+          opacity: 0;
         }
       }
     </style>
@@ -134,35 +525,197 @@
     <div id="root">
       <!-- React 挂载后这整块会被自动替掉，无需手动清理 -->
       <div class="boot" aria-hidden="true">
-        <div class="boot-hd">
-          <!-- logo 用真图而不是骨架块：它是 public/ 下的静态文件，浏览器解析到这行就能发请求，
-               不用等 JS bundle——能画的就不该拿灰块代替，看着像「应用已经在了」而不是「还在加载」。
-               外层保留 .sk 作底（注意不带 live，不流光）：万一图没加载出来，看到的还是个灰方块，
-               不会变成浏览器的破图标。旁边的应用名仍用骨架块：那是文字，字体未就绪时画出来会跳。 -->
-          <div class="sk" style="width: 40px; height: 40px; border-radius: 8px; flex: none">
-            <img src="/icon.png" alt="" width="40" height="40" style="display: block; border-radius: 8px" />
+        <aside class="boot-side">
+          <div class="boot-side-head">
+            <!-- logo 用真图而不是骨架块：它是 public/ 下的静态文件，浏览器解析到这行就能发请求，
+                 不用等 JS bundle——能画的就不该拿灰块代替，看着像「应用已经在了」而不是「还在加载」。
+                 外层保留 .sk 作底（不带 live，不流光）：万一图没加载出来，看到的还是个灰方块，
+                 不会变成浏览器的破图标。旁边的应用名仍用骨架块：那是文字，字体未就绪时画出来会跳。 -->
+            <div class="sk boot-logo">
+              <img src="/icon.png" alt="" width="28" height="28" style="display: block; border-radius: 7px" />
+            </div>
+            <div class="boot-brand">
+              <div class="sk live" style="width: 96px; height: 13px"></div>
+              <div class="sk live" style="width: 150px; height: 9px"></div>
+            </div>
           </div>
-          <div style="flex: 1; display: flex; flex-direction: column; gap: 6px">
-            <div class="sk live" style="width: 96px; height: 13px"></div>
-            <div class="sk live" style="width: 150px; height: 9px"></div>
+          <div class="boot-nav">
+            <div class="boot-item on">
+              <div class="sk live sk-ico"></div>
+              <div class="sk live sk-lab"></div>
+            </div>
+            <div class="boot-item">
+              <div class="sk live sk-ico"></div>
+              <div class="sk live sk-lab"></div>
+            </div>
+            <div class="boot-item">
+              <div class="sk live sk-ico"></div>
+              <div class="sk live sk-lab"></div>
+            </div>
+            <div class="boot-item">
+              <div class="sk live sk-ico"></div>
+              <div class="sk live sk-lab"></div>
+            </div>
+            <div class="boot-item">
+              <div class="sk live sk-ico"></div>
+              <div class="sk live sk-lab"></div>
+            </div>
           </div>
-          <div class="sk live" style="width: 64px; height: 24px; border-radius: 12px; flex: none"></div>
-        </div>
-        <div class="boot-tabs">
-          <div class="boot-tab on"></div>
-          <div class="boot-tab"></div>
-          <div class="boot-tab"></div>
-          <div class="boot-tab"></div>
-        </div>
-        <div class="boot-body">
-          <div class="boot-card">
-            <div class="sk live" style="width: 40%; height: 10px; margin-bottom: 10px"></div>
-            <div class="sk live" style="width: 72%; height: 8px; margin-bottom: 6px"></div>
-            <div class="sk live" style="width: 55%; height: 8px"></div>
+          <div class="boot-foot">
+            <div class="sk live sk-ico"></div>
+            <div class="sk live sk-lab"></div>
+            <div class="sk live sk-slot"></div>
           </div>
-          <div class="boot-card">
-            <div class="sk live" style="width: 32%; height: 10px; margin-bottom: 10px"></div>
-            <div class="sk live" style="width: 64%; height: 8px"></div>
+        </aside>
+
+        <div class="boot-main">
+          <div class="boot-top">
+            <div class="sk live sk-btn"></div>
+            <div class="sk live sk-badge"></div>
+            <div style="flex: 1"></div>
+            <div class="sk live sk-cta"></div>
+            <div class="sk live sk-btn"></div>
+            <div class="sk live sk-btn"></div>
+            <div class="sk live sk-ctl"></div>
+            <div class="sk live sk-ctl"></div>
+            <div class="sk live sk-ctl"></div>
+          </div>
+
+          <div class="boot-body">
+            <div class="boot-bento">
+              <!-- ① 状态主卡（靛蓝渐变，跨两行）：眉行 / 链路三点 / 标题 / 说明 / 地址 / 两颗按钮 / 最近活动 -->
+              <div class="boot-status">
+                <div class="boot-row">
+                  <div class="sk live" style="width: 44%; height: 10px"></div>
+                  <div class="sk live" style="width: 26%; height: 10px; margin-left: auto"></div>
+                </div>
+                <div class="sk-chain">
+                  <div class="sk-link"></div>
+                  <div class="sk-node-col">
+                    <div class="sk live sk-node"></div>
+                    <div class="sk live" style="width: 52px; height: 8px"></div>
+                    <div class="sk live" style="width: 64px; height: 6px"></div>
+                  </div>
+                  <div class="sk-node-col">
+                    <div class="sk live sk-node"></div>
+                    <div class="sk live" style="width: 40px; height: 8px"></div>
+                    <div class="sk live" style="width: 44px; height: 6px"></div>
+                  </div>
+                  <div class="sk-node-col">
+                    <div class="sk live sk-node"></div>
+                    <div class="sk live" style="width: 52px; height: 8px"></div>
+                    <div class="sk live" style="width: 48px; height: 6px"></div>
+                  </div>
+                </div>
+                <div class="sk live" style="width: 62%; height: 14px"></div>
+                <div class="sk live" style="width: 88%; height: 10px"></div>
+                <div class="sk live sk-addr"><div class="sk live" style="width: 62%; height: 9px"></div></div>
+                <div class="boot-row" style="gap: 8px">
+                  <div class="sk live sk-pill-btn"></div>
+                  <div class="sk live sk-pill-btn ghost"></div>
+                </div>
+                <!-- margin-top:auto 让「最近活动」贴底，与真实卡 RecentActivity 的位置一致 -->
+                <div class="boot-row" style="margin-top: auto">
+                  <div class="sk live" style="width: 34%; height: 8px"></div>
+                  <div class="sk live" style="width: 22%; height: 8px; margin-left: auto"></div>
+                </div>
+                <div class="boot-row"><div class="sk live sk-dot"></div><div class="sk live" style="width: 78%; height: 8px"></div></div>
+                <div class="boot-row"><div class="sk live sk-dot"></div><div class="sk live" style="width: 64%; height: 8px"></div></div>
+                <div class="boot-row"><div class="sk live sk-dot"></div><div class="sk live" style="width: 70%; height: 8px"></div></div>
+              </div>
+
+              <!-- ②③④⑤ 指标卡 ×4：标题 / 大数字 / 备注 / 底部说明 -->
+              <div class="boot-metric">
+                <div class="sk live" style="width: 44%; height: 9px"></div>
+                <div class="sk live" style="width: 38%; height: 24px"></div>
+                <div class="sk live" style="width: 68%; height: 9px"></div>
+                <div class="sk-hr" style="margin-top: auto"></div>
+                <div class="sk live" style="width: 46%; height: 8px"></div>
+              </div>
+              <div class="boot-metric">
+                <div class="sk live" style="width: 52%; height: 9px"></div>
+                <div class="sk live" style="width: 30%; height: 24px"></div>
+                <div class="sk live" style="width: 60%; height: 9px"></div>
+                <div class="sk-hr" style="margin-top: auto"></div>
+                <div class="sk live" style="width: 46%; height: 8px"></div>
+              </div>
+              <div class="boot-metric">
+                <div class="sk live" style="width: 40%; height: 9px"></div>
+                <div class="sk live" style="width: 34%; height: 24px"></div>
+                <div class="sk live" style="width: 72%; height: 9px"></div>
+                <div class="sk-hr" style="margin-top: auto"></div>
+                <div class="sk live" style="width: 40%; height: 8px"></div>
+              </div>
+              <div class="boot-metric">
+                <div class="sk live" style="width: 48%; height: 9px"></div>
+                <div class="sk live" style="width: 28%; height: 24px"></div>
+                <div class="sk live" style="width: 64%; height: 9px"></div>
+                <div class="sk-hr" style="margin-top: auto"></div>
+                <div class="sk live" style="width: 44%; height: 8px"></div>
+              </div>
+
+              <!-- ⑥ 健康度 · 安全治理：眉行 / 结论 / 两条说明 / 三条清单 / 一排标签 -->
+              <div class="boot-panel">
+                <div class="boot-row">
+                  <div class="sk live" style="width: 40%; height: 9px"></div>
+                  <div class="sk live" style="width: 24%; height: 9px; margin-left: auto"></div>
+                </div>
+                <div class="boot-row" style="gap: 10px">
+                  <div class="sk live sk-node" style="width: 26px; height: 26px"></div>
+                  <div class="sk live" style="width: 46%; height: 15px"></div>
+                </div>
+                <div class="sk live" style="width: 62%; height: 8px"></div>
+                <div class="sk live" style="width: 48%; height: 8px"></div>
+                <div class="boot-row"><div class="sk live sk-dot"></div><div class="sk live" style="width: 58%; height: 8px"></div></div>
+                <div class="boot-row"><div class="sk live sk-dot"></div><div class="sk live" style="width: 44%; height: 8px"></div></div>
+                <div class="boot-row"><div class="sk live sk-dot"></div><div class="sk live" style="width: 52%; height: 8px"></div></div>
+                <div class="boot-row" style="gap: 6px; margin-top: auto">
+                  <div class="sk live sk-chip"></div>
+                  <div class="sk live sk-chip" style="width: 64px"></div>
+                  <div class="sk live sk-chip" style="width: 48px"></div>
+                </div>
+              </div>
+
+              <!-- ⑦ Token 用量：眉行 / 大数字 / 两行明细 / 柱状图 / 脚注 -->
+              <div class="boot-panel">
+                <div class="boot-row">
+                  <div class="sk live" style="width: 30%; height: 9px"></div>
+                  <div class="sk live" style="width: 18%; height: 9px; margin-left: auto"></div>
+                </div>
+                <div class="sk live" style="width: 56%; height: 20px"></div>
+                <div class="sk live" style="width: 62%; height: 8px"></div>
+                <div class="sk live" style="width: 48%; height: 8px"></div>
+                <div class="sk-bars">
+                  <i style="height: 38%"></i><i style="height: 62%"></i><i style="height: 46%"></i><i style="height: 54%"></i><i style="height: 30%"></i><i style="height: 44%"></i><i style="height: 100%"></i>
+                </div>
+                <div class="sk live" style="width: 72%; height: 8px; margin-top: auto"></div>
+              </div>
+            </div>
+
+            <!-- ⑧ 接入向导（12 列，独立白卡，内含带边框的表单面板） -->
+            <div class="boot-guide">
+              <div class="boot-row">
+                <div class="sk live" style="width: 18px; height: 18px; border-radius: 5px"></div>
+                <div class="sk live" style="width: 22%; height: 11px"></div>
+                <div class="sk live" style="width: 30%; height: 11px; margin-left: auto"></div>
+              </div>
+              <div class="boot-form">
+                <div class="sk live" style="width: 56%; height: 10px"></div>
+                <div class="sk live" style="width: 74%; height: 8px"></div>
+                <div class="boot-row" style="gap: 10px">
+                  <div class="sk-field"><div class="sk live" style="width: 46%; height: 9px"></div></div>
+                  <div class="sk-field"><div class="sk live" style="width: 52%; height: 9px"></div></div>
+                </div>
+                <div class="sk live" style="width: 44%; height: 8px"></div>
+                <div class="sk-field short"><div class="sk live" style="width: 58%; height: 8px"></div></div>
+                <!-- 分隔线 + 最下面一行「命令 + 复制」：真实卡在这之后还有内容，被视口裁掉 -->
+                <div class="sk-hr" style="margin-top: auto"></div>
+                <div class="boot-row" style="gap: 10px">
+                  <div class="sk live" style="width: 62%; height: 8px"></div>
+                  <div class="sk live" style="width: 56px; height: 22px; margin-left: auto; border-radius: 6px"></div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

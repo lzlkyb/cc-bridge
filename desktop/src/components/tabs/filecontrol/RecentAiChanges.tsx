@@ -5,6 +5,7 @@ import type { AuditEntry, AuditPage } from "../../../lib/types";
 import { toolLabel } from "../../../lib/utils";
 import { Icon } from "../../ui/icon";
 import { Skeleton } from "../../ui/Skeleton";
+import { useDelayedLoading } from "../../../hooks/useDelayedLoading";
 import { LogDiffModal } from "../LogDiffModal";
 import { LogRestoreDialog } from "../LogRestoreDialog";
 
@@ -45,6 +46,8 @@ export function RecentAiChanges({ active }: { active: boolean }) {
   const changes = (data?.entries ?? [])
     .filter((e) => e.backupPath && e.targetPath && CHANGE_TOOLS.has(e.tool))
     .slice(0, MAX_SHOW);
+  // 骨架延迟门：本地 SQLite 通常 30~90ms 就回来了，直接画骨架等于闪一下。
+  const showSkeleton = useDelayedLoading(isLoading);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["recentAiChanges"] });
@@ -52,11 +55,26 @@ export function RecentAiChanges({ active }: { active: boolean }) {
 
   return (
     <div className="space-y-2.5 px-2.5 pb-2">
-      {isLoading && (
-        <div className="space-y-2 p-1">
-          <Skeleton className="h-4 w-3/4" />
-          <Skeleton className="h-4 w-2/3" />
-          <Skeleton className="h-4 w-4/5" />
+      {/* 骨架挂在真实的 .s-row / .title-chip 上（2026-11-06）：行高由真实 CSS 决定
+          （9px padding + 28px chip = 46px），旧版是 3 条 h-4 共 64px，而真实 3 行 158px
+          —— 数据到达那一刻整块往下跳。现在形状、行高、右侧按钮位都跟真行一致。 */}
+      {showSkeleton && (
+        <div className="space-y-2.5" aria-hidden="true">
+          {["62%", "52%", "70%"].map((w, i) => (
+            <div key={i} className="s-row">
+              <span className="title-chip">
+                <Skeleton className="h-[15px] w-[15px] rounded-[4px]" />
+              </span>
+              <div className="s-body min-w-0">
+                <Skeleton className="h-[9px]" style={{ width: w }} />
+                <Skeleton className="mt-1 h-[7px] w-[38%]" />
+              </div>
+              <div className="s-right">
+                <Skeleton className="h-7 w-7 rounded-md" />
+                <Skeleton className="h-7 w-7 rounded-md" />
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

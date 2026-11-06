@@ -1507,15 +1507,9 @@ body {
   border-right: none;
 }
 
-/* 版本历史加载骨架屏微光 */
-@keyframes vh-skel-shimmer {
-  0%   { opacity: 0.55; }
-  50%  { opacity: 1; }
-  100% { opacity: 0.55; }
-}
-.vh-skel {
-  animation: vh-skel-shimmer 1.3s ease-in-out infinite;
-}
+/* 版本历史加载骨架屏的整卡呼吸已删（2026-11-06）：改用统一 .skeleton 扫光，
+   挂在卡片内部的骨条上（见 VersionHistoryModal）。整卡呼吸会在边框上也明暗起伏，
+   看着像「卡片在闪」而不是「内容在加载」，而且与其它三处加载语言不同源。 */
 
 /* 版本历史弹框全屏（requestFullscreen） */
 .vh-fullscreen-container {
@@ -1657,7 +1651,7 @@ select:focus-visible,
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
   }
-  .skeleton { animation: none; }
+  .skeleton::after { animation: none; }
 }
 
 /* ═══ 窗口不可见（收进托盘 / 最小化）时暂停全部动画与过渡 ═══
@@ -1682,8 +1676,7 @@ select:focus-visible,
 :root[data-app-hidden] .changelog-dot,
 :root[data-app-hidden] .upd-dot::before,
 :root[data-app-hidden] .update-glow::after,
-:root[data-app-hidden] .vh-skel,
-:root[data-app-hidden] .skeleton,
+:root[data-app-hidden] .skeleton::after,
 /* 2026-10-16 更新体验新增（见文件尾「更新体验」一节）：
    读数扫光、槽位呼吸光圈、重启过渡层扫光，以及所有 spinner。
    （原通栏进度线 .update-line-sweep 已随组件于 2026-10-18 删除。） */
@@ -1705,16 +1698,31 @@ select:focus-visible,
   pointer-events: none;
 }
 
-/* ═══ 骨架屏 Skeleton（统一加载反馈，替代散落"加载中…"）═══ */
-@keyframes skeleton-shimmer {
-  0%   { opacity: 0.5; }
-  50%  { opacity: 1; }
-  100% { opacity: 0.5; }
-}
+/* ═══ 骨架屏 Skeleton（统一加载反馈，替代散落"加载中…"）═══
+   2026-11-06：从「整块 opacity 呼吸」改成「一道高光扫过」。两个理由：
+   ① 呼吸是整块一起闪，同屏多处骨架不同步时看着很乱；
+   ② 首帧骨架（desktop/index.html）在 JS 加载前就得画出来，两处必须同一套语言，
+      否则开窗那一下会先看到呼吸、再看到扫光。
+   扫光走伪元素的 transform（合成属性），不用 background-position（那不是合成属性，
+   每帧重绘整块）。周期 1.3s 与首帧骨架一致，改一处必须同步另一处。 */
 .skeleton {
+  --skeleton-sheen: rgb(255 255 255 / 0.55);
+  position: relative;
+  overflow: hidden;
   background: hsl(var(--muted));
   border-radius: 6px;
-  animation: skeleton-shimmer 1.3s ease-in-out infinite;
+}
+.dark .skeleton { --skeleton-sheen: rgb(255 255 255 / 0.1); }
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, var(--skeleton-sheen) 50%, transparent);
+  transform: translateX(-100%);
+  animation: skeleton-sweep 1.3s ease-in-out infinite;
+}
+@keyframes skeleton-sweep {
+  to { transform: translateX(100%); }
 }
 
 /* ═══ 动画质感升级：减弱动效守卫 ═══

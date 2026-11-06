@@ -29,14 +29,23 @@ import { Tabs, TabsContent } from "./components/ui/tabs";
 import { ToastProvider, useToast, toast } from "./components/ui/toast";
 import { ActionCard } from "./components/ui/notice";
 import { ConnectTab } from "./components/tabs/ConnectTab";
-import { Skeleton } from "./components/ui/Skeleton";
-// 非首屏 Tab 懒加载：减小首屏 JS，切到对应 Tab 时才加载（fallback 用骨架屏）
-const SecurityTab = lazy(() => import("./components/tabs/SecurityTab").then((m) => ({ default: m.SecurityTab })));
-const SettingsTab = lazy(() => import("./components/tabs/SettingsTab").then((m) => ({ default: m.SettingsTab })));
-const LogTab = lazy(() => import("./components/tabs/LogTab").then((m) => ({ default: m.LogTab })));
-const TerminalTab = lazy(() => import("./components/tabs/TerminalTab").then((m) => ({ default: m.TerminalTab })));
+import { TabFallback } from "./components/layout/TabFallback";
+// 非首屏 Tab 懒加载：减小首屏 JS，切到对应 Tab 时才加载（fallback 用骨架屏）。
+// 2026-11-06：import 抽成具名函数，首屏空闲 1.5s 后统一预取（见 AppContent 里的
+// prefetch effect）。本地 chunk 都只有几十 KB，预取后切 Tab 基本不再出现 fallback ——
+// 骨架画得再准也只是兜底，能不出就不出。
+const importSecurity = () => import("./components/tabs/SecurityTab").then((m) => ({ default: m.SecurityTab }));
+const importSettings = () => import("./components/tabs/SettingsTab").then((m) => ({ default: m.SettingsTab }));
+const importLog = () => import("./components/tabs/LogTab").then((m) => ({ default: m.LogTab }));
+const importTerminal = () => import("./components/tabs/TerminalTab").then((m) => ({ default: m.TerminalTab }));
 // 实验功能（2026-10-24）：CC 对话页。懒加载，未进入本页的用户不承担这部分体积。
-const CcGuiTab = lazy(() => import("./components/tabs/CcGuiTab").then((m) => ({ default: m.CcGuiTab })));
+const importCcGui = () => import("./components/tabs/CcGuiTab").then((m) => ({ default: m.CcGuiTab }));
+
+const SecurityTab = lazy(importSecurity);
+const SettingsTab = lazy(importSettings);
+const LogTab = lazy(importLog);
+const TerminalTab = lazy(importTerminal);
+const CcGuiTab = lazy(importCcGui);
 import { OnboardingGuide, isOnboardingDone } from "./components/modals/OnboardingGuide";
 import { CommandPalette } from "./components/modals/CommandPalette";
 import { ShortcutSheet } from "./components/modals/ShortcutSheet";
@@ -345,6 +354,21 @@ function AppContent() {
     return () => un?.();
   }, [refetchStatus]);
 
+  // 闲时预取非首屏 Tab 的 chunk（2026-11-06，与 TabFallback 分档配套）。
+  // 1.5s 已经过了首屏绘制与首帧骨架的交接，此时加载不抢资源；本地盘读几百 KB
+  // 通常几十毫秒。预取后切 Tab 几乎不触发 Suspense —— 那才是「不闪」的根本解，
+  // 骨架只是慢盘/冷启动时的兜底。失败不处理：真加载失败时 lazy 会重新 import 并抛出。
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void importSecurity();
+      void importSettings();
+      void importLog();
+      void importTerminal();
+      void importCcGui();
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   return (
     <ToastProvider>
     {/* h-screen flex-col：外壳纵向排布，.app-shell（grid）撑满余下空间；
@@ -436,19 +460,19 @@ function AppContent() {
             <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} pendingSuspended={!!pendingCmd} onSuspendCmd={handleSuspendCmd} onCopySed={copyIpSed} />
           </TabsContent>
           <TabsContent value="security" keepMounted className="page-scroll h-full overflow-y-auto overflow-x-hidden">
-            <Suspense fallback={<TabFallback />}>
+            <Suspense fallback={<TabFallback kind="cards" />}>
               {/* highlightAnchor：安全概览 / 白名单目录等锚点（Header 徽章、命令面板、
                   HealthCard 胶囊、设置页安全卡跳转按钮都走这条链路定位高亮）。 */}
               <SecurityTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} />
             </Suspense>
           </TabsContent>
           <TabsContent value="settings" keepMounted className="app-content-box h-full overflow-hidden">
-            <Suspense fallback={<TabFallback />}>
+            <Suspense fallback={<TabFallback kind="cards" />}>
               <SettingsTab status={status} onSaved={refetchStatus} highlightAnchor={pendingAnchor} unreadCount={unreadCount} onReopenOnboarding={openOnboarding} onMarkSeen={markChangelogSeen} changelogOpenToken={changelogOpenToken} sections={settingsSections} activeSection={settingsActiveId} onActiveSectionChange={setSettingsActiveId} onNavigate={handleNavigate} />
             </Suspense>
           </TabsContent>
           <TabsContent value="log" keepMounted className="h-full overflow-hidden">
-            <Suspense fallback={<TabFallback />}>
+            <Suspense fallback={<TabFallback kind="table" />}>
               {/* highlightAnchor 传同一份 pendingAnchor：本页只认 "perf"（展开性能面板）。 */}
               <LogTab highlightAnchor={pendingAnchor} />
             </Suspense>
@@ -457,7 +481,7 @@ function AppContent() {
               避免 TabsContent 在 active!==value 时 return null 卸载 TerminalTab、
               导致前端 sessions state 丢失需重新连接。复用 TerminalTab 内部已验证的 display:none 模式。 */}
           <TabsContent value="terminal" keepMounted className="h-full overflow-hidden">
-            <Suspense fallback={<TabFallback />}>
+            <Suspense fallback={<TabFallback kind="blank" />}>
               <TerminalTab status={status} sidebarHost={terminalSidebarHost} sidebarCollapsed={sideCollapsed} onSidebarCollapsedChange={setSideCollapsed} onNavigate={handleNavigate} onChanged={refetchStatus} />
             </Suspense>
           </TabsContent>
@@ -468,7 +492,7 @@ function AppContent() {
               那几条仍在 Rust 内存里、谁也够不着。Rust 侧本来就是真源（`cc_snapshot`
               可重放），所以常驻**只是**为了不丢侧栏列表，不是为了保活进程。 */}
           <TabsContent value="ccgui" keepMounted className="h-full overflow-hidden">
-            <Suspense fallback={<TabFallback />}>
+            <Suspense fallback={<TabFallback kind="split" />}>
               <CcGuiTab onNavigate={handleNavigate} />
             </Suspense>
           </TabsContent>
@@ -582,15 +606,8 @@ function LinkStateWatcher({
   return null;
 }
 
-/** 懒加载 Tab 的占位骨架屏：模拟卡片布局，加载期间微光呼吸 */
-function TabFallback() {
-  return (
-    <div className="space-y-4 p-1">
-      <Skeleton className="h-36 w-full rounded-xl" />
-      <Skeleton className="h-64 w-full rounded-xl" />
-    </div>
-  );
-}
+/** 懒加载 Tab 的占位骨架已抽到 components/layout/TabFallback.tsx（按页分档，
+ *  2026-11-06）。此处只负责按 Tab 传档。 */
 
 export default function App() {
   return (

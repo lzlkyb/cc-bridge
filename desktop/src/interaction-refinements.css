@@ -96,7 +96,7 @@
  .sw.on:active:not(:disabled) .sw-thumb { transform:translateX(22px); }
  /* 保留颜色与文字反馈；取消倒计时、骨架和循环装饰。 */
  .toast-countdown { animation:none;display:none; }
- .skeleton, .vh-skel { animation:none; }
+ .skeleton::after { animation:none; }
  .ui-overlay[data-state], .ui-surface[data-state], .toast[data-state] { transition-duration:0s; }
 }
 .settings-toggle-state[data-pending] { display:inline;white-space:nowrap; }

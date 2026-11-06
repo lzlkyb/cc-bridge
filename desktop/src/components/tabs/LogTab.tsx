@@ -8,6 +8,8 @@ import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { EmptyState } from "../ui/EmptyState";
+import { TableRowsSkeleton } from "../layout/TabFallback";
+import { useDelayedLoading } from "../../hooks/useDelayedLoading";
 import { Table, TableHeader, TableBody, TableRow, TableHead } from "../ui/table";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { useAuditLog } from "../../hooks/useAuditLog";
@@ -39,6 +41,8 @@ function LogTabImpl({
   const audit = useAuditLog();
   const { page, pageSize, search, setSearch, setPage, setToolFilter, setStatusFilter, resetFilters, appHidden } = audit;
   const pageData = audit.data, refetch = audit.refetch;
+  // 行骨架的延迟门：本地审计库通常几十毫秒返回，直接画九行灰条等于闪一下。
+  const showRowsSkeleton = useDelayedLoading(!pageData);
   const toolFilter = audit.tool, statusFilter = audit.status;
   const entries = pageData?.entries ?? [], total = pageData?.total ?? 0;
   const toolNames = pageData?.toolNames ?? [];
@@ -187,15 +191,10 @@ function LogTabImpl({
           </div>
         )}
         {audit.isError ? <div role="alert" className="py-8 text-sm text-destructive-ink">日志读取失败：{String(audit.error)} <button className="underline" onClick={() => void refetch()}>重试</button></div> : !pageData ? (
-          <div className="space-y-1.5 py-2" aria-hidden="true">
-            {Array.from({ length: 9 }).map((_, i) => (
-              <div key={i} className="skel-row flex items-center gap-3 px-1">
-                <div className="skel h-3 w-20 rounded bg-muted" />
-                <div className="skel h-3 flex-1 rounded bg-muted" />
-                <div className="skel h-3 w-24 rounded bg-muted" />
-              </div>
-            ))}
-          </div>
+          /* 骨架按真实表头列宽铺（74/124/1fr/100/64/64/36，见下面的 TableHead）：
+             旧版是「20 / 1fr / 24」三段灰条，且 `.skel` 全仓没有 CSS 定义 —— 那是死类，
+             实际只剩 bg-muted 的静态灰条，连扫光都没有（2026-11-06）。 */
+          showRowsSkeleton ? <TableRowsSkeleton rows={9} /> : <div className="py-1" />
         ) : filtered.length === 0 ? (
           <EmptyState
             className="h-52 empty"

@@ -12,6 +12,7 @@ import { fmtTokens, toolLabel } from "../../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
 import { Skeleton } from "../../ui/Skeleton";
+import { useDelayedLoading } from "../../../hooks/useDelayedLoading";
 import { InfoPopover } from "../../ui/InfoPopover";
 import { useAppHidden } from "../../../lib/appVisibility";
 import { useViewActive } from "../../../lib/viewActivity";
@@ -23,6 +24,26 @@ import { ConversationUsageSection } from "./ConversationUsageSection";
 /** `data` 未就绪时的占位。模块级常量：内联 `?? []` 每次渲染都是新引用，
  *  会让子组件的 useMemo（按 sessionId join）每次渲染都失效重算。 */
 const NO_SESSIONS: TokenUsageSession[] = [];
+
+/** KPI 骨架：label / value / delta / spark 四行。
+ *
+ *  必须四行都画 —— 旧版只画 label + value，卡片比真实的 `.usage-kpi` 矮约 35px
+ *  （真实是 11px 标签 + 19px 数值 + 11px 环比 + 16px 迷你趋势线），
+ *  数据到达那一刻整排卡往下跳一下（2026-11-06 修）。 */
+function KpiSkeleton() {
+  return (
+    <>
+      {[0, 1, 2, 3].map((i) => (
+        <div className="usage-kpi" key={i}>
+          <Skeleton className="h-[7px] w-14" />
+          <Skeleton className="mt-1.5 h-4 w-20" />
+          <Skeleton className="mt-1.5 h-[7px] w-11" />
+          <Skeleton className="mt-1.5 h-4 w-full" />
+        </div>
+      ))}
+    </>
+  );
+}
 
 /**
  * 设置页「Token 用量（估算）」分区（卡级 id: set-tokenusage，首页用量卡点进来）。
@@ -69,6 +90,8 @@ export function TokenUsageGroup() {
 
   const days = data?.days ?? [];
   const hasData = days.some((d) => d.calls > 0);
+  // 骨架延迟门：这两条查询走本地缓存，通常几十毫秒就回来。
+  const showSkeleton = useDelayedLoading(isLoading);
 
   return (
     <Card id="set-tokenusage">
@@ -78,18 +101,13 @@ export function TokenUsageGroup() {
         <SettingsChoice label="用量统计维度" value={view} onChange={value => setView(value as "overview" | "matrix")} options={[{value:"overview",label:"概览"},{value:"matrix",label:"按天×工具"}]} />
       </CardHeader>
       <CardContent className="space-y-4">
-        {isLoading ? (
-          /* Skeleton（2026-10-17）：替代「加载中…」纯文本——骨架形状预示即将出现的
-             KPI 卡布局，加载完成内容原地接上，不再「空白→内容跳出」。 */
+        {showSkeleton ? (
+          /* Skeleton（2026-10-17 引入，2026-11-06 补齐四行）：形状预示即将出现的
+             KPI 卡布局，加载完成内容原地接上。 */
           <div className="space-y-2" aria-hidden="true">
             <Skeleton className="h-3 w-24" />
             <div className="usage-kpis">
-              {[0, 1, 2, 3].map((i) => (
-                <div className="usage-kpi" key={i}>
-                  <Skeleton className="h-2.5 w-16" />
-                  <Skeleton className="mt-2 h-5 w-20" />
-                </div>
-              ))}
+              <KpiSkeleton />
             </div>
           </div>
         ) : !hasData ? (
@@ -104,12 +122,7 @@ export function TokenUsageGroup() {
             /* 矩阵按需取数有自己的加载窗口（切档/首次进入），骨架形状预示 KPI + 表。 */
             <div className="space-y-2" aria-hidden="true">
               <div className="usage-kpis">
-                {[0, 1, 2, 3].map((i) => (
-                  <div className="usage-kpi" key={i}>
-                    <Skeleton className="h-2.5 w-16" />
-                    <Skeleton className="mt-2 h-5 w-20" />
-                  </div>
-                ))}
+                <KpiSkeleton />
               </div>
               <Skeleton className="h-28 w-full" />
             </div>

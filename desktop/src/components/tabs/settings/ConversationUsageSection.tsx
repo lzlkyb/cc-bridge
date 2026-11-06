@@ -5,6 +5,7 @@ import type { CcSessionUsageRow, TokenUsageSession } from "../../../lib/types";
 import { fmtTokens, formatRelativeSecs } from "../../../lib/utils";
 import { Icon } from "../../ui/icon";
 import { Skeleton } from "../../ui/Skeleton";
+import { useDelayedLoading } from "../../../hooks/useDelayedLoading";
 import { InfoPopover } from "../../ui/InfoPopover";
 import { useAppHidden } from "../../../lib/appVisibility";
 
@@ -67,6 +68,8 @@ export function ConversationUsageSection({ toolSessions }: { toolSessions: Token
     (a, r) => ({ tokens: a.tokens + r.tokens, cost: a.cost + r.costUsd }),
     { tokens: 0, cost: 0 },
   );
+  // 骨架延迟门：本地查询 30~90ms 就回来，直接画骨架等于闪一下。
+  const showSkeleton = useDelayedLoading(isLoading);
 
   return (
     <div>
@@ -78,8 +81,28 @@ export function ConversationUsageSection({ toolSessions }: { toolSessions: Token
         </InfoPopover>
       </div>
 
-      {isLoading ? (
-        <Skeleton className="h-24 w-full" />
+      {showSkeleton ? (
+        /* 骨架复用真实表头与 .usage-conv-row：表头是静态结构，先画出来，
+           数据到达时只有行在替换，表头不跳。旧版是一整块 h-24 的灰块，
+           形态与 5 列表格完全不符（2026-11-06）。 */
+        <div className="usage-conv" aria-hidden="true">
+          <div className="usage-conv-head">
+            <span>会话</span>
+            <span>轮次</span>
+            <span>token</span>
+            <span>成本</span>
+            <span>工具(估)</span>
+          </div>
+          {Array.from({ length: 4 }, (_, i) => (
+            <div className="usage-conv-row" key={i}>
+              <Skeleton className="h-[9px] self-center" />
+              <Skeleton className="h-[9px] self-center" />
+              <Skeleton className="h-[9px] self-center" />
+              <Skeleton className="h-[9px] self-center" />
+              <Skeleton className="h-[9px] self-center" />
+            </div>
+          ))}
+        </div>
       ) : rows.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
           还没有记录到对话用量。在对话页发过消息、并且那一轮正常结束后，这里会出现每条会话的
