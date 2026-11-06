@@ -7,16 +7,20 @@
 //!
 //! - 远端**不能**用「stdin 写脚本」的三步法（`ssh host "tee /tmp/x.sh"` + 再跑一次），
 //!   那会把 stdin 占掉，user 消息就没地方写了。
-//! - 改用 **base64 单参传递**：`ssh host "echo <b64> | base64 -d | bash"`。
+//! - 改用 **base64 单参传递**：`ssh host 'exec bash -c "$(echo <b64> | base64 -d)"'`。
 //!   base64 只有 `A-Za-z0-9+/=`，不进任何 shell 元字符，彻底绕开引号地狱；
 //!   脚本内 `exec` 让远端 bash 被 claude 替换，stdin/stdout 原样直通，
 //!   进程组 kill → ssh 断 → 远端 SIGHUP 直达 claude，中断语义与本地一致。
+//! - 🔴 脚本必须经 `bash -c` 的**参数**送进去，**不能**写成 `echo <b64> | base64 -d | bash`：
+//!   那样 bash 的 stdin 是 base64 的管道，`exec claude` 继承的也是它，
+//!   ssh 的 stdin（用户消息）一个字节都到不了 claude —— 界面只会一直「连接中」。
+//!   2026-11-06 正是这么坏的，`ssh_stdin_reaches_exec_target` 专门防它。
 //!
 //! ## 为什么必须 `bash -lc` 探测、却用绝对路径执行
 //!
 //! `claude` 常装在 `~/.local/bin`，**非登录 shell 的 PATH 探不到**（源码分析 §四.1）。
 //! 所以探测走 `bash -lc "command -v claude"`，但执行时用探测到的**绝对路径** ——
-//! 因为真正跑起来的那个 bash 是非登录的（`base64 -d | bash`），它没有那份 PATH。
+//! 因为真正跑起来的那个 bash 是非登录的（`bash -c "$(… | base64 -d)"`），它没有那份 PATH。
 
 use std::path::PathBuf;
 
@@ -110,7 +114,7 @@ pub fn local_command(
     Ok((program, spec.claude_args()?))
 }
 
-/// SSH 远端跑：`ssh <opts> -- user@host "echo <b64> | base64 -d | bash"`。
+/// SSH 远端跑：`ssh <opts> -- user@host 'exec bash -c "$(echo <b64> | base64 -d)"'`。
 ///
 /// `ssh_args` 由调用方给（含 `ProxyCommand` 等连接选项），本函数只管
 /// 「怎么把 claude 命令安全地送过去」。
@@ -136,10 +140,13 @@ pub fn remote_command(
     ssh_bash_script(ssh_args, destination, &script)
 }
 
-/// 把一段 bash 正文送成一条 ssh 命令：`echo <b64> | base64 -d | (bash || sh)`。
+/// 把一段 bash 正文送成一条 ssh 命令：`exec bash -c "$(echo <b64> | base64 -d)"`。
 ///
 /// 抽出来给托管那几条命令共用。base64 里只有 `A-Za-z0-9+/=`，不进任何 shell 元字符，
 /// 所以正文里可以有引号、换行、heredoc，都不需要二次转义。
+///
+/// 🔴 正文走 `-c` 参数而不是 stdin：`bash -c` 的 stdin 就是 ssh 的 stdin，
+/// 正文里 `exec claude` / `exec cat > fifo` 才拿得到我们写进去的消息。
 fn ssh_bash_script(
     ssh_args: &[String],
     destination: &str,
@@ -155,7 +162,11 @@ fn ssh_bash_script(
     args.push("--".into());
     args.push(destination.to_string());
     // `base64 -d` 在 busybox / GNU 上都一样；`bash` 不存在时退 `sh`（两者语法在此无差）。
-    args.push(format!("echo {payload} | base64 -d | (bash || sh)"));
+    // 先探测再选，不能写 `bash ... || sh ...`：bash 在但脚本非 0 退出时会被 sh 再跑一遍。
+    let decode = format!("\"$(echo {payload} | base64 -d)\"");
+    args.push(format!(
+        "if command -v bash >/dev/null 2>&1; then exec bash -c {decode}; else exec sh -c {decode}; fi"
+    ));
     Ok((program, args))
 }
 
@@ -185,9 +196,8 @@ pub fn polish_local(claude_path: &str) -> Result<(PathBuf, Vec<String>), String>
 /// 提示词经 **ssh 的 stdin** 直达远端 claude 的 stdin —— ssh 本来就把本地
 /// stdin 转发给远程命令，不需要任何中间层。
 ///
-/// 🔴 这里**不走 base64 引导**（`echo <b64> | base64 -d | bash`）：那个形状会把
-/// stdin 占给脚本本身，claude 一个字都读不到。命令串里没有任何用户数据
-/// （只有探测得来的绝对路径），单引号转义足够。
+/// 这里**不走 base64 引导**：命令串里没有任何用户数据（只有探测得来的绝对路径），
+/// 单引号转义足够，少一层就少一处出错的地方。
 pub fn polish_remote(
     ssh_args: &[String],
     destination: &str,
@@ -411,6 +421,25 @@ pub fn hosted_alive(
 mod tests {
     use super::*;
 
+    /// 从引导串里取出 base64 正文（它紧跟在 `echo ` 后面）。
+    fn payload_of(bootstrap: &str) -> &str {
+        assert!(bootstrap.contains("base64 -d"), "{bootstrap}");
+        bootstrap
+            .split("echo ")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("payload")
+    }
+
+    fn decode_payload(bootstrap: &str) -> String {
+        String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(payload_of(bootstrap))
+                .expect("解 base64"),
+        )
+        .expect("UTF-8")
+    }
+
     fn spec() -> LaunchSpec {
         LaunchSpec {
             cwd: Some("/home/u/proj".into()),
@@ -470,20 +499,12 @@ mod tests {
     fn remote_payload_starts_with_cd_and_uses_exec() {
         let (_, args) = remote_command(&[], "u@h", "/usr/bin/claude", &spec()).expect("构造");
         let bootstrap = args.last().expect("末位是引导串");
-        assert!(bootstrap.starts_with("echo "), "{bootstrap}");
-        assert!(bootstrap.contains("base64 -d"), "{bootstrap}");
+        // 🔴 正文必须走 `-c` 参数，不能管进 bash 的 stdin（那会吃掉 ssh 的 stdin）。
+        assert!(!bootstrap.contains("| bash"), "{bootstrap}");
+        assert!(!bootstrap.contains("| (bash"), "{bootstrap}");
+        assert!(bootstrap.contains("exec bash -c \"$(echo "), "{bootstrap}");
         // 解出脚本本体核对内容。
-        let b64 = bootstrap
-            .trim_start_matches("echo ")
-            .split_whitespace()
-            .next()
-            .expect("payload");
-        let script = String::from_utf8(
-            base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .expect("解 base64"),
-        )
-        .expect("UTF-8");
+        let script = decode_payload(bootstrap);
         assert!(
             script.starts_with("cd '/home/u/proj' || exit 97"),
             "{script}"
@@ -503,11 +524,7 @@ mod tests {
         };
         let (_, args) = remote_command(&[], "u@h", "/usr/bin/claude", &nasty).expect("构造");
         let bootstrap = args.last().expect("末位");
-        let payload = bootstrap
-            .trim_start_matches("echo ")
-            .split_whitespace()
-            .next()
-            .expect("payload");
+        let payload = payload_of(bootstrap);
         for ch in payload.chars() {
             assert!(
                 ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '='),
@@ -515,12 +532,7 @@ mod tests {
             );
         }
         // 而解出来的脚本里，危险字符已被单引号关住。
-        let script = String::from_utf8(
-            base64::engine::general_purpose::STANDARD
-                .decode(payload)
-                .expect("解 base64"),
-        )
-        .expect("UTF-8");
+        let script = decode_payload(bootstrap);
         assert!(script.contains(r"/tmp/a b'\''c$(rm -rf /);`x`"), "{script}");
     }
 
@@ -572,20 +584,42 @@ mod tests {
 
     /// 把 `ssh_bash_script` 产出的那条命令解回脚本正文。
     fn decode_script(args: &[String]) -> String {
-        let bootstrap = args.last().expect("末位是引导串");
-        assert!(bootstrap.starts_with("echo "), "{bootstrap}");
-        assert!(bootstrap.contains("base64 -d"), "{bootstrap}");
-        let b64 = bootstrap
-            .trim_start_matches("echo ")
-            .split_whitespace()
-            .next()
-            .expect("payload");
-        String::from_utf8(
-            base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .expect("解 base64"),
-        )
-        .expect("UTF-8")
+        decode_payload(args.last().expect("末位是引导串"))
+    }
+
+    /// 🔴 真跑一遍远端引导串：写进「ssh stdin」的内容必须到得了 `exec` 出来的进程。
+    /// 旧写法 `echo <b64> | base64 -d | bash` 形状上完全正常，但 stdin 被管道占掉，
+    /// SSH 对话永远停在「连接中」—— 只验字符串的单测拦不住它。
+    #[cfg(unix)]
+    #[test]
+    fn ssh_stdin_reaches_exec_target() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let (_, args) = hosted_write(&[], "u@h", "cc-1-2").expect("构造");
+        // 换成 `exec cat`：它把 stdin 原样吐到 stdout，正好拿来验直通。
+        let bootstrap = args.last().expect("末位").replace(
+            payload_of(args.last().expect("末位")),
+            &base64::engine::general_purpose::STANDARD.encode("exec cat"),
+        );
+        // 远端的登录 shell 执行这一串，就是 `sh -c <串>`。
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(&bootstrap)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("起 sh");
+        let msg = "{\"type\":\"user\",\"text\":\"你好\"}\n";
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(msg.as_bytes())
+            .expect("写 stdin");
+        let out = child.wait_with_output().expect("等退出");
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), msg);
     }
 
     #[test]
