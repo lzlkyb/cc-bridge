@@ -4,6 +4,24 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "3.1.4",
+    date: "2026-11-09",
+    highlights: [
+      "SSH 连接页重做了一遍：一台主机一行，名称、地址、用户名分开显示，状态直接写字（连接中 / 已连接 / 连接失败）而不是只靠一个小圆点。点在线的主机会回到你上次用的那个终端，开了多个可以展开选；连接失败就在行上说明原因，给「重试」和「编辑配置」两个出口。",
+      "新建连接变成双栏表单：左边填主机和跳板机，右边选认证方式并看到完整连接路径（本机 → 跳板 → 目标）。密码和密钥切换不再跳高度，私钥可以用系统文件选择器挑。哪个字段填错就在哪个字段下面说，提交时自动聚焦第一个错的；没填完关掉窗口，草稿还在。",
+      "密码只在这一次连接里出现：不勾「记住」的话，密码只用于本次终端连接，不进配置、不进会话、不进恢复快照，重连也不复用。编辑一条连接想看存过什么，点密码框旁那只眼睛才会按需解密。",
+    ],
+    items: [
+      { category: "feat", text: "SSH 支持「保存并连接」：表单里填的密码或密码短语，不勾「记住」就只传给这一次终端连接，用完即弃——不写连接配置、不写前端缓存、不写会话对象、不进恢复快照，重连也不复用。旧的不带凭据的调用方式保持兼容。" },
+      { category: "feat", text: "新建与编辑共用一套双栏表单：左侧连接信息与跳板机，右侧认证方式与连接路径。私钥路径可以用系统文件选择器选；字段内联校验并在提交时聚焦第一个错误；同一帧连点只提交一次；新建草稿只留内存，误关窗口可以恢复。" },
+      { category: "feat", text: "侧栏菜单补「复制连接地址」；搜索支持名称、主机与用户名，可一键清空；空列表和搜不到都给一个可点的入口。" },
+      { category: "improve", text: "SSH 侧栏从「连接列表」改成「主机导航」：一台主机一行，名称、地址、用户名分层，状态用文字（连接中 / 已连接 / 连接失败 / 未连接）而不是只靠色点。点在线主机优先回到上次使用的终端，多终端可展开切换；连接失败在行内显示原因并提供重试与编辑；删除前如实说明会断开几个会话。" },
+      { category: "improve", text: "编辑连接时点密码框旁的眼睛，才会向本机后端要一次已保存的明文。这条命令只读、只在本机界面可用，不进 MCP 也不进审计日志。切换认证方式或改过输入框后，迟到的解密结果不会覆盖当前内容。" },
+      { category: "fix", text: "登录后提示「密码已过期，需要修改」时，我们那个自动注入的状态栏探针会在 900ms 无条件下发，整行命令被当成「当前密码」提交；超时后还会再补一条命令，变成第二个错值。这期间用户敲的密码被缓冲后重放到下一个提示，现象是「输了三遍密码都不对」。现在改成先读屏：屏幕上还是密码提示、或出现改密横幅、或界面还在输出，就推迟发送；预算 20 秒后放弃降级，不影响正常登录。" },
+      { category: "fix", text: "自动填密码不再回答「新密码 / 重复输入 / 确认密码」这类提示。以前没出事只是靠「每个凭据槽只填一次」这一个巧合，换个不以冒号结尾的本地化提示，旧密码就会被当成新密码提交。" },
+    ],
+  },
+  {
     version: "3.1.3",
     date: "2026-11-09",
     highlights: [
@@ -467,38 +485,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "全站小字对比度达标 + 自签兼容性徽章三态" },
       { category: "fix", text: "终端亮色主题可读性——12 个 ANSI 色值校准到 WCAG AA + 亮色开启对比度兜底" },
       { category: "fix", text: "终端滚轮不再打断 Claude Code——滚动条用真实指针坐标 + 选择态守卫" },
-    ],
-  },
-  {
-    version: "2.8.0",
-    date: "2026-10-13",
-    highlights: [
-      "接入你常用的 AI 工具：接入向导覆盖 Claude Code、WorkBuddy、Codex 与通用工具。",
-    ],
-    items: [
-      { category: "feat", text: "连接页评审修复——has_onboarded 新用户判定、本机探测三态角标、结构收敛、CJK 排版、generic 提示词接入" },
-      { category: "feat", text: "设置 tab 移到最末位（导航末位惯例）+ Ctrl+, 键位" },
-      { category: "feat", text: "终端滚轮归属四态徽章+翻转引导+救急面板；stty 残渣常驻吞除" },
-      { category: "feat", text: "微动画补全第二批——工具tab/引导步骤体/版本历史视图切换入场" },
-      { category: "feat", text: "微动画补全 P0+P1（设计稿 design/微动画补全-P0P1-设计稿.html）" },
-      { category: "feat", text: "设置页信息架构重排（簇标题 + 用户任务分簇 + 五入口确认）" },
-      { category: "feat", text: "日志页 a11y 键盘交互批次（设计稿 8 项全落地）" },
-      { category: "feat", text: "P0 四项 + P1 两项——Claude Code 用户痛点批次" },
-      { category: "feat", text: "代答 OSC 10/11 颜色查询，Claude Code theme:auto 跟随桥主题" },
-      { category: "feat", text: "P1 批次命令导航 + 路径点击跳文件浏览器" },
-      { category: "feat", text: "P0 批次 TUI 友好功能五项" },
-      { category: "feat", text: "TUI 态虚拟滚动条（Claude Code 等全屏程序滚动）" },
-      { category: "feat", text: "接入向导多工具化（Claude Code/WorkBuddy/Codex/通用）+ 接入命令 TLS 感知" },
-      { category: "feat", text: "P1 HTTPS 远程访问（自签 TLS + 401 封禁）+ 双向桥 RFC" },
-      { category: "feat", text: "统一通知系统——三级分级模型收敛 12 处分散通知实现" },
-      { category: "improve", text: "文件管控卡渐进披露拆分，移出体量基线（301→117 行）" },
-      { category: "improve", text: "安全页去重统一——三核心开关唯一家，风险判定单一源" },
-      { category: "fix", text: "终端 UI critique 修复——引导条覆盖层化、语义色分诊、卡片动作收口、快捷键面板" },
-      { category: "fix", text: "SSH 钩子注入回显治理（stty 舞步）+ 六处截断/竖排 UI 缺陷" },
-      { category: "fix", text: "终端重连后鼠标移动/滚轮变 SGR 乱码" },
-      { category: "fix", text: "终端拖选 Claude Code 输出内容复制不出文字" },
-      { category: "fix", text: "设置页侧栏导航点击高亮错位/无响应" },
-      { category: "fix", text: "终端 Ctrl+V 粘贴内容重复两条" },
     ],
   },
 ];
