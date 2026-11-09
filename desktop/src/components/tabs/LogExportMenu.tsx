@@ -9,6 +9,7 @@ import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { perfSummaryLine } from "../../lib/logFormat";
 import { useViewActive } from "../../lib/viewActivity";
+import { saveTextExport, exportedToast } from "../../lib/exportFile";
 
 interface LogExportMenuProps {
   /** 当前筛选结果（导出范围）。空数组时菜单项整体 disabled。 */
@@ -42,6 +43,8 @@ export function LogExportMenu({ filtered, entriesCount, total, filter, pending }
   const scopeLabel = scope === "page" ? `当前页 ${filtered.length} 条` : scope === "results" ? `匹配结果 ${total} 条` : "全部历史（忽略筛选）";
   const loadEntries = () => scope === "page" ? Promise.resolve(filtered) : invoke<AuditEntry[]>("get_audit_export", { filter: scope === "results" ? filter : null });
   const disabledTitle = "当前没有可导出的日志";
+  /** 成功提示里带上完整路径 +「在文件夹中显示」，用户才知道文件去哪了。 */
+  const toastSaved = (message: string, path: string) => exportedToast(toast, message, path);
 
   const handleExport = async (format: "json" | "csv" = "json") => {
     if (empty) {
@@ -58,6 +61,7 @@ export function LogExportMenu({ filtered, entriesCount, total, filter, pending }
         toast("所选范围内没有日志，已取消导出", "info");
         return;
       }
+      let content: string;
       if (format === "csv") {
         const header = "时间,工具,工具名,参数,来源IP,耗时(ms),状态,错误\n";
         // 统一转义**所有**列（审查 U6）：原来只对 params / error 做 esc，
@@ -82,32 +86,27 @@ export function LogExportMenu({ filtered, entriesCount, total, filter, pending }
             ].join(","),
           )
           .join("\n");
-        const csv = "\uFEFF" + header + rows; // BOM for Excel Chinese support
-        const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "cc-bridge-audit-log.csv";
-        a.click();
-        URL.revokeObjectURL(url);
+        // 开头加 BOM，Excel 才按 UTF-8 打开中文（写成 fromCharCode 而不是字面转义，免得被工具链双重解码）。
+        content = String.fromCharCode(0xfeff) + header + rows;
       } else {
-        const blob = new Blob([JSON.stringify(filtered, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "cc-bridge-audit-log.json";
-        a.click();
-        URL.revokeObjectURL(url);
+        content = JSON.stringify(filtered, null, 2);
       }
-      // 与「导出诊断报告」对齐：导出要有成功反馈，否则瞬间下完时不知道导没导出。
-      toast(`已导出 ${filtered.length} 条审计日志（${format.toUpperCase()}）`, "success");
+      const path = await saveTextExport({
+        title: "导出审计日志",
+        defaultName: `cc-bridge-audit-log.${format}`,
+        ext: format,
+        filterName: format === "csv" ? "CSV（Excel 可打开）" : "JSON",
+        content,
+      });
+      if (!path) return; // 用户在「另存为」里取消
+      toastSaved(`已导出 ${filtered.length} 条审计日志到`, path);
     } catch (e) {
       toast(`导出失败：${String(e)}`, "error");
     } finally { setBusy(false); }
   };
 
   // O3：导出诊断报告——基于已有的日志聚合拼 Markdown（版本 + 性能摘要 + 按工具耗时 + 错误列表），
-  // 下载为 .md 文件同时复制到剪贴板，方便直接粘进 issue/反馈。LogTab 不持有 status，这里 invoke 一次拿版本。
+  // 「另存为」.md 文件同时复制到剪贴板，方便直接粘进 issue/反馈。LogTab 不持有 status，这里 invoke 一次拿版本。
   const handleExportDiagnostic = async () => {
     if (empty) return;
     setBusy(true);
@@ -165,19 +164,22 @@ export function LogExportMenu({ filtered, entriesCount, total, filter, pending }
       ];
       const md = lines.join("\n");
 
-      const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "cc-bridge-diagnostic-report.md";
-      a.click();
-      URL.revokeObjectURL(url);
-
-      await copyText(
-        md,
-        () => toast("诊断报告已导出并复制到剪贴板", "success"),
-        () => toast("诊断报告已导出为文件（复制到剪贴板失败）", "warning"),
-      );
+      // 先复制再弹「另存为」：剪贴板写入要在用户点击的激活态里做，对话框会抢走焦点。
+      // 用户取消保存时报告仍在剪贴板里，可以直接粘进 issue / 反馈。
+      let copied = false;
+      await copyText(md, () => { copied = true; }, () => { copied = false; });
+      const path = await saveTextExport({
+        title: "导出诊断报告",
+        defaultName: "cc-bridge-diagnostic-report.md",
+        ext: "md",
+        filterName: "Markdown",
+        content: md,
+      });
+      if (path) {
+        toastSaved(copied ? "诊断报告已复制到剪贴板，并保存到" : "诊断报告已保存到（复制到剪贴板失败）", path);
+      } else if (copied) {
+        toast("未保存文件，诊断报告已复制到剪贴板", "info");
+      }
     } catch (e) {
       toast(`导出诊断报告失败：${e}`, "error");
     } finally { setBusy(false); }

@@ -4,6 +4,7 @@ import { buildMatrix, buildUsageCsv, fmtWan } from "../../../lib/usageMath";
 import { toolLabel } from "../../../lib/utils";
 import { Icon } from "../../ui/icon";
 import { useToast } from "../../ui/toast";
+import { saveTextExport, exportedToast } from "../../../lib/exportFile";
 
 /** 矩阵可选时间范围（天）。90 是取数上限（后端 clamp 1..=120）内的长窗档。 */
 const RANGES = [7, 30, 90] as const;
@@ -21,8 +22,8 @@ const RANGES = [7, 30, 90] as const;
  * 空态分层：本组件只处理「所选范围内无数据」（整卡空态在父组件按 90 天判定）——
  * 更早有调用、范围内没有时，给一键放宽到 90 天的出口。
  *
- * CSV 导出是纯前端拼装（usageMath.buildUsageCsv，三张表 + UTF-8 BOM），
- * 与日志页导出同一交互范式：Blob → a.download，不需要后端参与；
+ * CSV 内容仍是纯前端拼装（usageMath.buildUsageCsv，三张表 + UTF-8 BOM）；
+ * 落盘与其它导出统一走 `lib/exportFile.ts`（「另存为」+ 后端写文件，回头给出完整路径），
  * 文件名带所选范围（如 usage-30d），导出口径与当前所见一致。
  */
 export function UsageMatrixSection({
@@ -47,17 +48,18 @@ export function UsageMatrixSection({
     if (el) el.scrollLeft = el.scrollWidth - el.clientWidth;
   }, [rangeDays, report]);
 
-  const exportCsv = () => {
+  // 弹「另存为」并把路径告诉用户（原来的 <a download> 静默存进「下载」，见 lib/exportFile.ts）。
+  const exportCsv = async () => {
     try {
-      const csv = buildUsageCsv(report);
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `cc-bridge-token-usage-${rangeDays}d-${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast(`已导出 CSV（最近 ${rangeDays} 天 · 三张表）`, "success");
+      const path = await saveTextExport({
+        title: "导出 token 用量",
+        defaultName: `cc-bridge-token-usage-${rangeDays}d-${new Date().toISOString().slice(0, 10)}.csv`,
+        ext: "csv",
+        filterName: "CSV（Excel 可打开）",
+        content: buildUsageCsv(report),
+      });
+      if (!path) return;
+      exportedToast(toast, `已导出 CSV（最近 ${rangeDays} 天 · 三张表）到`, path);
     } catch (e) {
       toast(`导出失败：${e}`, "error");
     }
@@ -114,7 +116,7 @@ export function UsageMatrixSection({
 
         <button
           type="button"
-          onClick={exportCsv}
+          onClick={() => void exportCsv()}
           className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary hover:bg-muted hover:text-foreground"
           title={`导出最近 ${rangeDays} 天的三张表：按天 / 按工具 / 按天×工具（UTF-8 CSV，Excel 可直接打开）`}
         >

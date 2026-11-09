@@ -1,7 +1,8 @@
 import { useCallback, type MutableRefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { toast } from "../ui/toast";
-import { bufferToText, downloadText, exportFileName } from "../../lib/terminalExport";
+import { bufferToText, saveTerminalLog, exportFileName } from "../../lib/terminalExport";
+import { exportedToast } from "../../lib/exportFile";
 
 /**
  * 导出当前会话的整个滚动历史为 .txt。
@@ -23,7 +24,9 @@ export function useTerminalExport(
       toast("终端没有可导出的内容", "info");
       return;
     }
-    downloadText(exportFileName(name), text);
-    toast(`已导出 ${text.split("\n").length} 行`, "success");
+    const lines = text.split("\n").length;
+    saveTerminalLog(exportFileName(name), text)
+      .then((path) => { if (path) exportedToast(toast, `已导出 ${lines} 行到`, path); })
+      .catch((e) => toast(`导出失败：${e}`, "error"));
   }, [termRef, name]);
 }

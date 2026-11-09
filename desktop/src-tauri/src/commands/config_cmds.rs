@@ -678,6 +678,67 @@ pub async fn export_config(state: State<'_, Arc<AppState>>) -> Result<String, St
     export_config_json(&config)
 }
 
+/// 把配置导出到用户在「另存为」对话框里选的路径，返回实际写入的绝对路径。
+///
+/// 🔴 为什么不再用前端 `<a download>`：WebView2 会把文件**静默**存进系统「下载」目录，
+/// 界面只弹一句「已导出」——用户找不到文件（2026-11-09 用户反馈）。
+///
+/// 内容由后端自己生成（与 `export_config` 同一份脱敏逻辑），前端只给路径：
+/// 不提供「写任意内容到任意路径」的通用命令；再限定 `.json` 后缀，缩小误用面。
+#[tauri::command]
+pub async fn export_config_to_file(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<String, String> {
+    let json = {
+        let config = state.config.read().await;
+        export_config_json(&config)?
+    };
+    let target = check_export_path(&path, &["json"])?;
+    tokio::fs::write(&target, json.as_bytes())
+        .await
+        .map_err(|e| format!("写入 {} 失败：{e}", target.display()))?;
+    Ok(target.display().to_string())
+}
+
+/// 导出审计日志 / 诊断报告 / token 用量 / 终端会话：内容由前端拼好（CSV / JSON / Markdown / 纯文本日志），路径来自「另存为」。
+/// 返回实际写入的绝对路径，前端据此告诉用户文件在哪。
+///
+/// 与 `export_config_to_file` 同一个问题：原来的 `<a download>` 静默存进「下载」、不给路径。
+/// 🔴 这个命令能写前端给的任意文本，所以后缀写死几种纯文本格式，不允许 .exe/.bat/.ps1 之类。
+/// 增减后缀要同步前端 `lib/exportFile.ts` 的 `ExportExt`。
+/// 只经 Tauri 暴露给本机面板，绝不注册为 MCP 工具。
+#[tauri::command]
+pub async fn save_export_text(path: String, content: String) -> Result<String, String> {
+    let target = check_export_path(&path, &["csv", "json", "md", "log"])?;
+    tokio::fs::write(&target, content.as_bytes())
+        .await
+        .map_err(|e| format!("写入 {} 失败：{e}", target.display()))?;
+    Ok(target.display().to_string())
+}
+
+/// 导出路径校验：必须是绝对路径、后缀必须在 `exts` 里（忽略大小写）。抽成纯函数便于单测。
+pub(crate) fn check_export_path(raw: &str, exts: &[&str]) -> Result<std::path::PathBuf, String> {
+    let p = std::path::PathBuf::from(raw.trim());
+    // 相对路径会落到进程 cwd（安装目录），用户更找不到。
+    if !p.is_absolute() {
+        return Err(format!("导出路径必须是绝对路径：{raw}"));
+    }
+    let ok = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| exts.iter().any(|x| e.eq_ignore_ascii_case(x)));
+    if !ok {
+        let list = exts
+            .iter()
+            .map(|e| format!(".{e}"))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        return Err(format!("只能导出为 {list} 文件：{}", p.display()));
+    }
+    Ok(p)
+}
+
 /// `export_config` 的纯逻辑入口。抽出来是为了让脱敏不变量能被直接单测（同
 /// `import_config_inner`）——它守的是密钥不外泄，不能只靠人看。
 pub(crate) fn export_config_json(config: &crate::config::BridgeConfig) -> Result<String, String> {
@@ -862,6 +923,27 @@ pub async fn import_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_path_must_be_absolute_with_allowed_ext() {
+        let abs = if cfg!(windows) {
+            r"C:\Users\u\Downloads\cc.json"
+        } else {
+            "/home/u/cc.json"
+        };
+        let text = ["csv", "json", "md"];
+        assert!(check_export_path(abs, &["json"]).is_ok());
+        assert!(check_export_path(&abs.replace(".json", ".JSON"), &["json"]).is_ok());
+        assert!(check_export_path(&abs.replace(".json", ".md"), &text).is_ok());
+        // 配置导出只认 .json；日志导出也不认可执行后缀。
+        assert!(check_export_path(&abs.replace(".json", ".csv"), &["json"]).is_err());
+        assert!(check_export_path("cc.json", &["json"]).is_err());
+        for bad in [".exe", ".bat", ".ps1", ""] {
+            let p = abs.replace(".json", bad);
+            assert!(check_export_path(&p, &text).is_err(), "{p} 应被拒绝");
+        }
+    }
+
     use crate::config::BridgeConfig;
     use crate::db;
     use std::path::{Path, PathBuf};

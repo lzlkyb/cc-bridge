@@ -9,7 +9,8 @@ import {
   navBlockOutput,
   type CmdBlock,
 } from "../../lib/terminalCommandNav";
-import { bufferToText, downloadText, exportFileName } from "../../lib/terminalExport";
+import { bufferToText, saveTerminalLog, exportFileName } from "../../lib/terminalExport";
+import { exportedToast } from "../../lib/exportFile";
 
 interface Props {
   /** 活动会话的终端。面板跟着**活动标签**走（切换标签即换数据）。 */
@@ -135,8 +136,10 @@ export function SshCommandBlocksPanel({ termRef, name, closed, onClose }: Props)
       toast("终端没有可导出的内容", "info");
       return;
     }
-    downloadText(exportFileName(name), text);
-    toast(`已导出 ${text.split("\n").length} 行`, "success");
+    const lines = text.split("\n").length;
+    saveTerminalLog(exportFileName(name), text)
+      .then((path) => { if (path) exportedToast(toast, `已导出 ${lines} 行到`, path); })
+      .catch((e) => toast(`导出失败：${e}`, "error"));
   }, [termRef, name]);
 
   return (
