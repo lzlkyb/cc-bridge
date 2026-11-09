@@ -25,7 +25,7 @@ use process_wrap::std::ProcessGroup;
 use process_wrap::std::{CreationFlags, JobObject};
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_CREATION_FLAGS,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_CREATION_FLAGS,
 };
 
 use serde::Deserialize;
@@ -486,17 +486,9 @@ fn spawn_shell(
     filter: OutputFilter,
     handoff_ms: u64,
 ) -> Result<(Value, Option<PathBuf>), String> {
-    // 用 process-wrap 的 StdCommandWrap 组合包装（结论均有复现测试支撑）：
-    // - 顺序：CreationFlags 先注册、JobObject 后注册。pre_spawn 按注册顺序执行，CreationFlags
-    //   是纯覆盖，JobObject 是「flags |= 用户 flags」再补 CREATE_SUSPENDED。反过来注册时
-    //   CREATE_SUSPENDED 会被覆盖掉：子进程不等 assign job 就起跑，而 wrap_child 仍会调
-    //   resume_threads 对**可能已退出的进程** OpenThread —— 实测 16 线程并发 192 次里 7 次报
-    //   「启动命令失败: 参数错误。 (os error -2147024809)」；交换后同样 192 次零失败。
-    // - CreationFlags 里【不要】带 CREATE_SUSPENDED：JobObject 的 wrap_child 会检测用户 flags
-    //   是否含 SUSPENDED，若含则跳过 resume_threads、子进程永久挂起且无输出（即
-    //   background_registers_with_handle 测试失败）。补 SUSPENDED 由 JobObject 自己负责。
-    // - CREATE_NO_WINDOW / CREATE_NEW_PROCESS_GROUP 走用户 flags，会被 JobObject 合并保留，
-    //   不存在「被重设冲掉 → 弹黑窗口」的问题（合并语义见 8.0.2 的 JobObject::pre_spawn）。
+    // 用 process-wrap 的 StdCommandWrap 组合包装，口径与 `bridge::spawn::spawn_piped` 一致：
+    // 先 JobObject、后 CreationFlags，且 CREATE_SUSPENDED 由我们自己放进 CreationFlags。
+    // 理由与实测见 `bridge::spawn` 里那段注释（两处曾各踩一个坑，写在一处免得再分叉）。
     // 壳层（cmd/bash）由 build_invocation 决定；进程管道封装（flags / JobObject / stdin null /
     // piped / current_dir）shell 无关，一行不动。
     let inv =
@@ -536,13 +528,13 @@ fn spawn_shell(
             c.env(k, v);
         }
     });
-    // 顺序敏感：CreationFlags 先、JobObject 后（理由见上方注释；反序会偶发「启动命令失败」）。
+    // 🔴 顺序与 flags 都不能动，理由见 `bridge::spawn::spawn_piped`。
     #[cfg(windows)]
     {
-        cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
-            CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0,
-        )));
         cmd.wrap(JobObject);
+        cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
+            CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0 | CREATE_SUSPENDED.0,
+        )));
     }
     // Unix 对应物：把子进程设为进程组组长，于是 `start_kill()` 向整组发信号，
     // 连子孙进程一起杀（对应 Windows 的 TerminateJobObject）。

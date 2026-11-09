@@ -27,7 +27,7 @@ use process_wrap::std::{CreationFlags, JobObject};
 use process_wrap::std::{StdChildWrapper, StdCommandWrap};
 #[cfg(windows)]
 use windows::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_CREATION_FLAGS,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_CREATION_FLAGS,
 };
 
 /// Windows 下找不到 PATHEXT 时的兜底值（与系统默认一致，只保留跟“可执行”相关的那几个）。
@@ -296,17 +296,22 @@ pub fn spawn_piped(
         }
     });
 
-    // 顺序敏感，与 `run_command::spawn_shell` 同一个坑：
-    // JobObject 的 pre_spawn 会重设 creation_flags（且不合并），所以必须
-    // **先 wrap(JobObject) 再 wrap(CreationFlags)**，让 CreationFlags 最后写入；
-    // 反了的话 CREATE_NO_WINDOW 被冲掉 → 弹黑窗口。
-    // 另：CreationFlags 里【不要】带 CREATE_SUSPENDED，否则 JobObject 会跳过 resume，
-    // 子进程永久挂起、一个字节也不会吐。
+    // 🔴 顺序与 flags 都不能动（`run_command::spawn_shell` 用的是同一套，改要两处一起改）。
+    //
+    // process-wrap 8.0.2 的 `spawn()` 会先把全部 wrapper `mem::take` 出来再逐个调 pre_spawn，
+    // 所以 JobObject 里那句 `core.get_wrap::<CreationFlags>()` **永远拿到 None**：
+    // - pre_spawn 并不合并用户 flags，而是整个覆盖成 CREATE_SUSPENDED。所以 CreationFlags 必须
+    //   **后**注册、最后写入；反过来 CREATE_NO_WINDOW 被冲掉，每条命令弹一个黑窗口
+    //   （a96707b 就是这么回归的，2026-11-09 修复）。
+    // - wrap_child 判断「用户是否自带 SUSPENDED」同样拿不到，故总是 assign job 后 resume。
+    //   所以 CREATE_SUSPENDED 要**我们自己**放进 CreationFlags：不放的话子进程不等 assign 就起跑，
+    //   resume 时对已退出的线程 OpenThread → 并发下偶发「参数错误 (os error -2147024809)」。
+    // 实测（模拟无控制台的 GUI 父进程）：本写法不弹窗、不挂起，16 线程并发 192 次零失败。
     #[cfg(windows)]
     {
         cmd.wrap(JobObject);
         cmd.wrap(CreationFlags(PROCESS_CREATION_FLAGS(
-            CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0,
+            CREATE_NO_WINDOW.0 | CREATE_NEW_PROCESS_GROUP.0 | CREATE_SUSPENDED.0,
         )));
     }
     // Unix 对应物：子进程作为进程组组长，`start_kill()` 向整组发信号。
