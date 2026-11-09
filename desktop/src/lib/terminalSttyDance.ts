@@ -167,7 +167,11 @@ export function echoRestoreCommand(clean: boolean, hasPendingInput: boolean): st
 
 /** 舞步时序（毫秒）。t0 = 会话接线完成（等 banner / MOTD 走完再起舞）。 */
 export const DANCE = {
-  /** t0：发合并探针。不能再早——还要躲开首连的密码提示自动填充。 */
+  /**
+   * t0：**最早**可以发合并探针的时刻。
+   * 🔴 它只是下限，不是「到点就发」——真要发还得过 `runProbeGate`：
+   * 屏幕上有输出、没有停在密码/改密提示上、并且已经静默一轮（见 2026-11-09 修）。
+   */
   PROBE_DELAY: 900,
   /** 探针回执 → 钩子。 */
   HOOK_DELAY: 60,
@@ -190,6 +194,25 @@ export const DANCE = {
    */
   REPLAY_DELAY: 200,
 } as const;
+
+/**
+ * 注入闸门的轮询间隔：每一轮重新读屏，条件不满足就再等一轮。
+ *
+ * 300ms 是「一轮往返够 shell 打完提示符、又不至于让正常连接等太久」的折中。
+ */
+export const PROBE_GATE_POLL = 300;
+
+/**
+ * 闸门总预算：从会话接线算起最多等这么久。超过就放弃注入（状态栏降级）。
+ *
+ * 20s 覆盖「改密流程要用户敲三遍」的最短情况；再久就不该等了——那时用户多半
+ * 已经在自己操作，注入只会添乱。
+ */
+export const PROBE_GATE_BUDGET = 20_000;
+
+/** 探针被密码提示吞掉后给用户的本地提示（**只写本地屏幕，不发给远端**）。 */
+export const SWALLOWED_NOTICE =
+  "\r\n\x1b[33m[远端正在等待密码输入，本次自动注入已跳过，请重新输入]\x1b[0m\r\n";
 
 /* ============================== 时序状态机 ============================== */
 
@@ -624,6 +647,213 @@ export function attachEchoStrip(
  */
 export function tuiOnScreen(term: Terminal | null): boolean {
   return term?.buffer?.active?.type === "alternate";
+}
+
+/* ---------------------------- 注入闸门：先读屏再打字 ---------------------------- */
+
+/**
+ * 「远端正在等凭据」的提示形态：登录密码 / 密码短语（中英 + 繁体）。
+ *
+ * 只判**光标所在那一行**——提示写完就阻塞等输入，光标一定停在它上面；
+ * 历史行里出现过的同类文字（比如用户 `cat` 过的脚本）不能算。
+ *
+ * 🔴 关键词与冒号必须**分开判**：密码短语提示的真实形态是
+ * `Enter passphrase for key '/home/u/.ssh/id_rsa':`，关键词与冒号之间隔着一整个路径。
+ */
+const CREDENTIAL_KEYWORD = /(password|passphrase|密码短语|密码|密碼|口令)/i;
+const PROMPT_TAIL = /[:：]$/;
+
+/**
+ * 强制改密流程的横幅 / 子提示。
+ *
+ * 🔴 只收「已经过期 / 必须改」这类**确凿**说法：MOTD 里经常有
+ * 「Your password will expire in 3 days」这种例行提醒，把它算进来会让一大批
+ * 正常连接白白丢掉状态栏钩子。
+ */
+const PASSWORD_CHANGE_BANNER =
+  /(password (has )?expired|must change your password|required to change your password|changing password for|密码(已)?过期|密码已失效|必须(修改|更改|更换)密码|需要(修改|更改|更换)密码|正在(修改|更改)密码|更改密码的)/i;
+
+/** 读光标所在行的可见文本（右侧空白已裁掉）。拿不到终端时返回空串。 */
+function lineAtCursor(term: Terminal | null): string {
+  const buf = term?.buffer?.active;
+  if (!buf || typeof buf.getLine !== "function") return "";
+  return buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true)?.trim() ?? "";
+}
+
+/**
+ * 光标停在「密码 / 密码短语」提示上（远端在等我们填凭据）。
+ *
+ * 🔴 这时注入的整行命令（末尾还带换行）会被当成输入提交，改密流程直接报废：
+ * 探针那一行成了「当前密码」，用户随后敲的真密码被缓冲、错位到下一个提示。
+ */
+export function credentialWaiting(term: Terminal | null): boolean {
+  const line = lineAtCursor(term);
+  return line !== "" && PROMPT_TAIL.test(line) && CREDENTIAL_KEYWORD.test(line);
+}
+
+/**
+ * 屏幕最近十几行里出现「密码已过期 / 正在改密码」的流程。
+ *
+ * 比 `credentialWaiting` 宽：改密过程中远端可能刚打印完横幅、还没出提示，
+ * 这段空档里注入同样会被后续的提示吃掉。反过来，改密横幅留在屏上时注入也毫无意义
+ * （改完 ssh 就断开重连了），所以宁可一直等到闸门超时。
+ */
+export function passwordChangeOnScreen(term: Terminal | null): boolean {
+  const buf = term?.buffer?.active;
+  if (!buf || typeof buf.getLine !== "function") return false;
+  const bottom = buf.baseY + buf.cursorY;
+  for (let y = bottom; y >= 0 && y > bottom - 14; y--) {
+    const text = buf.getLine(y)?.translateToString(true) ?? "";
+    if (PASSWORD_CHANGE_BANNER.test(text)) return true;
+  }
+  return false;
+}
+
+/** 屏幕还一个字都没输出（连接尚未有任何回显）。 */
+export function screenBlank(term: Terminal | null): boolean {
+  const buf = term?.buffer?.active;
+  if (!buf) return true;
+  if (buf.baseY !== 0 || buf.cursorY !== 0) return false;
+  return lineAtCursor(term) === "";
+}
+
+/**
+ * 屏幕内容指纹：两次轮询之间它没变过 ⇒ 远端已经安静下来（MOTD 打完 / 提示符停在原地）。
+ * 只取光标坐标，够用且便宜——任何新输出都会推动光标。
+ */
+export function screenSignature(term: Terminal | null): string {
+  const buf = term?.buffer?.active;
+  if (!buf) return "";
+  return `${buf.baseY}:${buf.cursorY}:${buf.cursorX}`;
+}
+
+/** `restoreEcho` 要读写的那一撮状态（hook 的 refs 原样传进来，不另造副本）。 */
+export interface EchoRestoreCtx {
+  echoOff: { current: boolean };
+  typedBuf: { current: string };
+  collecting: { current: boolean };
+  abort: { current: ((reason?: "skipped") => void) | null };
+  term: { current: Terminal | null };
+  send: (data: string) => void;
+  at: (ms: number, fn: () => void) => void;
+  /** 状态机推进到「恢复命令已发」（推进规则留在 hook 的状态机里）。 */
+  onRestoreSent: () => void;
+}
+
+/**
+ * 恢复 ECHO：正常收尾（`clean`）或异常中止都走这里。
+ *
+ * 两条分支：
+ * - **正常**：发 `stty echo`（`clean` 时先擦当前行），用户在这期间敲的键延迟重放；
+ * - **探针被密码提示吃掉**：远端根本没执行过 `stty -echo`，此刻屏幕上还停着密码/改密
+ *   提示——再补一条 `stty echo` 就是往那个提示里**又提交一次错值**。这里什么都不发，
+ *   用户被缓冲的按键也一并丢弃（它们本该进的那个提示已被探针占掉，重放可能把
+ *   「当前密码」送进「新密码」），只在本机屏幕上留一行提示。
+ *
+ * 🔴 判据只用 `credentialWaiting`（光标那一行），不看改密横幅：横幅在正常会话里
+ * 也可能停在屏上，误判会让 ECHO 永远关着——那是比多按一次回车更糟的死窗。
+ */
+export function restoreEcho(ctx: EchoRestoreCtx, clean = false): void {
+  if (!ctx.echoOff.current) return;
+  ctx.echoOff.current = false;
+  ctx.abort.current = null;
+  ctx.onRestoreSent();
+  if (credentialWaiting(ctx.term.current)) {
+    const dropped = ctx.typedBuf.current !== "";
+    ctx.typedBuf.current = "";
+    ctx.collecting.current = false;
+    if (dropped) ctx.term.current?.write(SWALLOWED_NOTICE);
+    return;
+  }
+  ctx.send(echoRestoreCommand(clean, ctx.typedBuf.current !== ""));
+  if (ctx.typedBuf.current === "") {
+    ctx.collecting.current = false;
+    return;
+  }
+  // Keep buffering through restoration, then send the original bytes exactly once.
+  ctx.collecting.current = true;
+  ctx.at(DANCE.REPLAY_DELAY, () => {
+    ctx.collecting.current = false;
+    const replay = ctx.typedBuf.current;
+    ctx.typedBuf.current = "";
+    if (replay) ctx.send(replay);
+  });
+}
+
+/**
+ * 会话收尾（卸载 / 重连 / 切开关）时的兜底：ECHO 还关着就尽力恢复一次。
+ *
+ * 与 `restoreEcho` 共用同一条红线：屏幕停在密码提示上时**什么都不发**——
+ * 探针根本没被执行过，补一条 `stty echo` 只会往提示里再提交一次错值。
+ */
+export function restoreEchoOnTeardown(ctx: {
+  echoOff: { current: boolean };
+  term: { current: Terminal | null };
+  send: (data: string) => void;
+}): void {
+  if (!ctx.echoOff.current) return;
+  ctx.echoOff.current = false;
+  if (credentialWaiting(ctx.term.current)) return;
+  ctx.send(` ${ECHO_ON_CMD}\n`);
+}
+
+export interface ProbeGateArgs {
+  term: () => Terminal | null;
+  /** 立刻该放弃注入的原因（用户已敲字 / 屏上是全屏 TUI），null = 不拦。 */
+  blockReason: () => "typed" | "tui" | null;
+  /** 调度器（hook 里是 window.setTimeout 的封装，cleanup 能统一清掉）。 */
+  at: (ms: number, fn: () => void) => void;
+  onFire: () => void;
+  onAbort: (reason?: "skipped") => void;
+}
+
+/**
+ * 决定「现在能不能往远端打字」，否则按 `PROBE_GATE_POLL` 轮询重试。
+ *
+ * 三条闸门，缺一不可：
+ * 1. 屏幕**有输出**——空屏说明还在建连，此刻写进 PTY 的字节会排在队列里，
+ *    被随后到来的密码框读走（这条比定时更接近真相）；
+ * 2. 屏上**没有**凭据提示 / 改密流程（见 `credentialWaiting` / `passwordChangeOnScreen`）；
+ * 3. **静默一轮**：与上次轮询相比光标没动过。MOTD 正一行行打的时候不能插话。
+ *
+ * 🔴 遇到凭据提示是**推迟**而不是放弃：直接 abort 会让「密码登录」这种最普通的情况
+ * （900ms 时屏上还是 `user@host's password:`）永久丢掉状态栏钩子。改密成功后 ssh
+ * 会断开重连，新会话自带新的注入机会；期间用户只要敲一个字，`blockReason` 就接管。
+ */
+export function runProbeGate(a: ProbeGateArgs): void {
+  let elapsed = 0;
+  let prevSig = "";
+  const step = () => {
+    const blocked = a.blockReason();
+    if (blocked === "tui") {
+      a.onAbort();
+      return;
+    }
+    if (blocked === "typed") {
+      a.onAbort("skipped");
+      return;
+    }
+    if (elapsed >= PROBE_GATE_BUDGET) {
+      a.onAbort();
+      return;
+    }
+    const term = a.term();
+    const sig = screenSignature(term);
+    const ready =
+      !!term &&
+      !screenBlank(term) &&
+      !credentialWaiting(term) &&
+      !passwordChangeOnScreen(term) &&
+      sig === prevSig;
+    if (ready) {
+      a.onFire();
+      return;
+    }
+    prevSig = sig;
+    elapsed += PROBE_GATE_POLL;
+    a.at(PROBE_GATE_POLL, step);
+  };
+  a.at(DANCE.PROBE_DELAY, step);
 }
 
 /**

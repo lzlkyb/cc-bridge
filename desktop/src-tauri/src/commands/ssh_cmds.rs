@@ -747,7 +747,36 @@ fn prompt_tail(chunk: &[u8]) -> Option<String> {
     }
 }
 
+/// 提示是否是**改密流程里的「设新密码」环节**（`New password:` / `Retype new password:`
+/// / `确认密码：`）。
+///
+/// 🔴 这类提示和登录提示长得一模一样（同样冒号结尾、同样含 password），但语义相反：
+/// 往里填旧密码等于**替用户把密码改成旧的**，而且换行会把这次提交坐实。
+/// 密码过期强制改密时之所以没出事，只是靠「每个凭据槽只填一次、`Current password:`
+/// 先把它消耗掉」这一个巧合——换个本地化提示（不以冒号结尾）这个巧合就没了，
+/// 于是旧密码会被当成新密码提交。宁可不填、让用户手输。
+fn password_change_prompt(t: &str) -> bool {
+    const KEYS: [&str; 12] = [
+        "new password",
+        "retype",
+        "repeat",
+        "verify",
+        "confirm",
+        "再次",
+        "重复",
+        "确认",
+        "重新输入",
+        "新密码",
+        "新密碼",
+        "re-enter",
+    ];
+    KEYS.iter().any(|k| t.contains(k))
+}
+
 /// 判断输出块是否是**登录密码**提示（`user@host's password: ` / `密码：`）。
+///
+/// 改密流程的「设新密码」环节必须先排除（见 `password_change_prompt`）：
+/// 那一步填进去的是**新密码**，我们手上只有旧的。
 fn password_prompt_in(chunk: &[u8]) -> bool {
     let Some(t) = prompt_tail(chunk) else {
         return false;
@@ -755,6 +784,9 @@ fn password_prompt_in(chunk: &[u8]) -> bool {
     // 「密码短语」里含「密码」，必须先排除，否则密钥提示会被当成密码提示，
     // 把登录密码填进密码短语输入。英文侧无此问题（password 不是 passphrase 的子串）。
     if t.contains("passphrase") || t.contains("密码短语") {
+        return false;
+    }
+    if password_change_prompt(&t) {
         return false;
     }
     t.contains("password") || t.contains("密码")
@@ -2454,6 +2486,43 @@ mod tests {
             !password_prompt_in(zh.as_bytes()),
             "「密码短语」含「密码」，必须先排除才不会填错凭据"
         );
+    }
+
+    /// 🔴 改密流程的「设新密码 / 重复输入」绝不能当成登录提示：
+    /// 填进去的是**新密码**，我们手上只有旧密码，换行还会把这次提交坐实。
+    #[test]
+    fn password_change_prompts_are_not_login_prompts() {
+        for bad in [
+            "New password: ",
+            "Retype new password: ",
+            "Re-enter new password: ",
+            "Repeat password: ",
+            "Confirm password: ",
+            "Please verify your password: ",
+            "Enter new password: ",
+            // 中文侧（本地化 passwd 常见写法）
+            "新密码：",
+            "请再次输入新密码：",
+            "确认密码：",
+            "重新输入密码：",
+            "重复密码：",
+        ] {
+            assert!(
+                !password_prompt_in(bad.as_bytes()),
+                "改密提示不得被当成登录密码提示：{bad:?}"
+            );
+        }
+        // 「当前密码」仍属于登录侧语义，要继续自动填（否则用户还得手输两遍）。
+        for good in [
+            "Current password: ",
+            "(current) UNIX password: ",
+            "当前密码：",
+        ] {
+            assert!(
+                password_prompt_in(good.as_bytes()),
+                "当前密码属于登录侧提示，应继续自动填充：{good:?}"
+            );
+        }
     }
 
     /// 非 UTF-8 字节不能 panic——PTY 读出来的就是裸字节，还可能切在码点中间。

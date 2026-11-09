@@ -5,16 +5,27 @@ import {
   attachEchoStripWhenReady,
   claimInjection,
   createEchoStripper,
+  credentialWaiting,
   danceNext,
   ECHO_OFF_CMD,
   ECHO_ON_CMD,
   ECHO_ON_CLEAN_CMD,
   echoRestoreCommand,
+  passwordChangeOnScreen,
   PROBE_ECHO_OFF_CMD,
+  PROBE_GATE_BUDGET,
+  PROBE_GATE_POLL,
+  restoreEcho,
+  restoreEchoOnTeardown,
+  runProbeGate,
+  screenBlank,
+  screenSignature,
   STRIP_TOKENS,
+  SWALLOWED_NOTICE,
   tuiOnScreen,
   type DanceEvent,
   type DancePhase,
+  type EchoRestoreCtx,
 } from "./terminalSttyDance";
 
 /* ============================== 舞步状态机 ============================== */
@@ -492,6 +503,262 @@ describe("tuiOnScreen —— 全屏 TUI 在屏时禁止注入", () => {
   it("主屏（干净提示符）/ 无终端 → 允许", () => {
     expect(tuiOnScreen({ buffer: { active: { type: "normal" } } } as unknown as Terminal)).toBe(false);
     expect(tuiOnScreen(null)).toBe(false);
+  });
+});
+
+/* ==================== 注入闸门（2026-11-09：改密流程被探针打坏） ==================== */
+
+/** 用几行可见文本造一个假终端；光标默认停在最后一行行首。 */
+function fakeTerm(lines: string[], cursor?: { y?: number; x?: number }): Terminal {
+  const cursorY = cursor?.y ?? lines.length - 1;
+  const write: string[] = [];
+  const term = {
+    buffer: {
+      active: {
+        type: "normal",
+        baseY: 0,
+        cursorY,
+        cursorX: cursor?.x ?? 0,
+        getLine: (y: number) =>
+          y >= 0 && y < lines.length
+            ? { translateToString: (trim?: boolean) => (trim ? lines[y].replace(/\s+$/, "") : lines[y]) }
+            : undefined,
+      },
+    },
+    write: (s: string) => write.push(s),
+  };
+  (term as unknown as { written: string[] }).written = write;
+  return term as unknown as Terminal;
+}
+
+function written(term: Terminal): string[] {
+  return (term as unknown as { written: string[] }).written;
+}
+
+describe("credentialWaiting —— 远端在等凭据时不打字", () => {
+  it("登录密码 / 密码短语 / 中文提示都算（中英 + 繁体）", () => {
+    for (const line of [
+      "u@10.0.0.1's password: ",
+      "Password:",
+      "Current password: ",
+      "(current) UNIX password: ",
+      "Enter passphrase for key '/home/u/.ssh/id_rsa': ",
+      "请输入密码：",
+      "当前密码：",
+      "請輸入密碼：",
+    ]) {
+      expect(credentialWaiting(fakeTerm(["Welcome", line]))).toBe(true);
+    }
+  });
+
+  it("正常提示符 / 历史行里的 password 不算", () => {
+    expect(credentialWaiting(fakeTerm(["u@h:~$ "]))).toBe(false);
+    // 提示只认光标那一行：上面那行是 cat 出来的内容
+    expect(credentialWaiting(fakeTerm(["password:", "u@h:~$ "]))).toBe(false);
+    expect(credentialWaiting(null)).toBe(false);
+  });
+});
+
+describe("passwordChangeOnScreen —— 强制改密流程", () => {
+  it("过期横幅 / 正在改密都命中", () => {
+    for (const line of [
+      "WARNING: Your password has expired.",
+      "You are required to change your password immediately (administrator enforced).",
+      "Changing password for user ubuntu.",
+      "您的密码已过期，请立即修改",
+      "必须更改密码后才能继续",
+    ]) {
+      expect(passwordChangeOnScreen(fakeTerm(["Last login: x", line]))).toBe(true);
+    }
+  });
+
+  it("例行提醒不算（MOTD 里天天有，误判会白白丢掉状态栏钩子）", () => {
+    expect(passwordChangeOnScreen(fakeTerm(["Your password will expire in 3 days."]))).toBe(false);
+    expect(passwordChangeOnScreen(fakeTerm(["u@h:~$ "]))).toBe(false);
+    expect(passwordChangeOnScreen(null)).toBe(false);
+  });
+
+  it("只看最近 14 行：很早以前的历史不再拦截", () => {
+    const old = ["password has expired", ...Array.from({ length: 20 }, () => "later")];
+    expect(passwordChangeOnScreen(fakeTerm(old))).toBe(false);
+  });
+});
+
+describe("screenBlank / screenSignature", () => {
+  it("没终端或一个字都没输出 = 空屏", () => {
+    expect(screenBlank(null)).toBe(true);
+    expect(screenBlank(fakeTerm([""]))).toBe(true);
+    expect(screenBlank(fakeTerm(["u@h:~$ "]))).toBe(false);
+  });
+
+  it("指纹随光标变化（用它判「远端安静下来了」）", () => {
+    expect(screenSignature(fakeTerm(["a"]))).not.toBe(screenSignature(fakeTerm(["a", "b"])));
+    expect(screenSignature(fakeTerm(["a"]))).toBe(screenSignature(fakeTerm(["a"])));
+  });
+});
+
+/** 手动时钟：`at` 只是排队，由用例显式推进（不依赖真实定时器）。 */
+function gateHarness(term: () => Terminal | null, block: "typed" | "tui" | null = null) {
+  const queue: { due: number; fn: () => void }[] = [];
+  let now = 0;
+  const fired: number[] = [];
+  const aborts: (string | undefined)[] = [];
+  runProbeGate({
+    term,
+    blockReason: () => block,
+    at: (ms, fn) => queue.push({ due: now + ms, fn }),
+    onFire: () => fired.push(now),
+    onAbort: (r) => aborts.push(r),
+  });
+  const step = () => {
+    if (!queue.length) return false;
+    queue.sort((a, b) => a.due - b.due);
+    const t = queue.shift()!;
+    now = t.due;
+    t.fn();
+    return true;
+  };
+  return {
+    fired,
+    aborts,
+    step,
+    ticks: (n: number) => {
+      for (let i = 0; i < n; i++) step();
+    },
+  };
+}
+
+describe("runProbeGate —— 改密场景的护栏", () => {
+  it("停在「当前密码」上：一直不注入，预算用尽才放弃", () => {
+    // 🔴 只留提示本身、不放改密横幅：这条断言必须由 `credentialWaiting` 挡住，
+    // 否则「横幅滚出屏幕 / 进程内直接 passwd」的情况就没人拦了。
+    const h = gateHarness(() => fakeTerm(["Last login: Mon Nov  9", "Current password: "]));
+    h.ticks(Math.ceil(PROBE_GATE_BUDGET / PROBE_GATE_POLL) + 5);
+    expect(h.fired).toEqual([]);
+    expect(h.aborts).toEqual([undefined]);
+  });
+
+  it("只看到改密横幅、还没出提示也不注入", () => {
+    const h = gateHarness(() => fakeTerm(["WARNING: Your password has expired."]));
+    h.ticks(5);
+    expect(h.fired).toEqual([]);
+  });
+
+  it("空屏（还在建连）不注入：此刻写进去的字节会被随后的密码框读走", () => {
+    const h = gateHarness(() => fakeTerm([""]));
+    h.ticks(10);
+    expect(h.fired).toEqual([]);
+  });
+
+  it("正常连接：首轮只记指纹，安静一轮后才注入", () => {
+    const h = gateHarness(() => fakeTerm(["Welcome to Ubuntu", "Last login: Mon", "u@h:~$ "]));
+    h.step();
+    expect(h.fired).toEqual([]);
+    h.step();
+    expect(h.fired).toHaveLength(1);
+  });
+
+  it("还在刷 MOTD（光标一直在动）就不注入", () => {
+    let n = 1;
+    const h = gateHarness(() => fakeTerm(Array.from({ length: ++n }, (_, i) => `line ${i}`)));
+    h.step();
+    h.step();
+    expect(h.fired).toEqual([]);
+  });
+
+  it("用户已敲字 / 全屏 TUI：立即放弃，不等闸门", () => {
+    const typed = gateHarness(() => fakeTerm(["u@h:~$ "]), "typed");
+    typed.step();
+    expect(typed.aborts).toEqual(["skipped"]);
+    const tui = gateHarness(() => fakeTerm(["u@h:~$ "]), "tui");
+    tui.step();
+    expect(tui.aborts).toEqual([undefined]);
+  });
+});
+
+describe("restoreEcho —— 探针被密码提示吃掉时不要再补 stty echo", () => {
+  function makeCtx(term: Terminal | null, typedBuf: string, sent: string[], timed: number[]) {
+    let echoOff = true;
+    let buf = typedBuf;
+    let collecting = false;
+    const ctx: EchoRestoreCtx = {
+      echoOff: { get current() { return echoOff; }, set current(v: boolean) { echoOff = v; } },
+      typedBuf: { get current() { return buf; }, set current(v: string) { buf = v; } },
+      collecting: { get current() { return collecting; }, set current(v: boolean) { collecting = v; } },
+      abort: { current: vi.fn() },
+      term: { current: term },
+      send: (d) => sent.push(d),
+      at: (ms, _fn) => timed.push(ms),
+      onRestoreSent: vi.fn(),
+    };
+    return ctx;
+  }
+
+  it("正常收尾：发 stty echo，并按需重放用户按键", () => {
+    const sent: string[] = [];
+    const timed: number[] = [];
+    const ctx = makeCtx(fakeTerm(["u@h:~$ "]), "", sent, timed);
+    restoreEcho(ctx, false);
+    expect(sent).toEqual([echoRestoreCommand(false, false)]);
+    expect(ctx.echoOff.current).toBe(false);
+
+    const sent2: string[] = [];
+    const ctx2 = makeCtx(fakeTerm(["u@h:~$ "]), "ls", sent2, timed);
+    restoreEcho(ctx2, false);
+    expect(sent2).toHaveLength(1);
+    expect(ctx2.typedBuf.current).toBe("ls");
+    expect(timed).toContain(200);
+  });
+
+  it("屏上还是密码提示：一个字节都不发，丢弃缓冲并本地提示", () => {
+    const sent: string[] = [];
+    const term = fakeTerm(["u@h's password: "]);
+    const ctx = makeCtx(term, "old-secret", sent, []);
+    restoreEcho(ctx, false);
+    expect(sent).toEqual([]);
+    expect(ctx.typedBuf.current).toBe("");
+    expect(written(term)).toEqual([SWALLOWED_NOTICE]);
+  });
+
+  it("没敲过字就不留提示（别在人家屏幕上多打一行字）", () => {
+    const sent: string[] = [];
+    const term = fakeTerm(["Current password: "]);
+    restoreEcho(makeCtx(term, "", sent, []), false);
+    expect(written(term)).toEqual([]);
+  });
+
+  it("ECHO 没关过 → 什么都不做（第二句 stty echo 会变成残渣）", () => {
+    const sent: string[] = [];
+    const ctx = makeCtx(fakeTerm(["u@h:~$ "]), "", sent, []);
+    ctx.echoOff.current = false;
+    restoreEcho(ctx, false);
+    expect(sent).toEqual([]);
+  });
+});
+
+describe("restoreEchoOnTeardown —— 卸载/重连时的兜底", () => {
+  it("ECHO 还关着就补一条 stty echo", () => {
+    const sent: string[] = [];
+    const echoOff = { current: true };
+    restoreEchoOnTeardown({ echoOff, term: { current: fakeTerm(["u@h:~$ "]) }, send: (d) => sent.push(d) });
+    expect(sent).toEqual([` ${ECHO_ON_CMD}\n`]);
+    expect(echoOff.current).toBe(false);
+  });
+
+  it("屏上还是密码提示 → 不补发（远端没执行过 stty -echo）", () => {
+    const sent: string[] = [];
+    restoreEchoOnTeardown({
+      echoOff: { current: true },
+      term: { current: fakeTerm(["u@h's password: "]) },
+      send: (d) => sent.push(d),
+    });
+    expect(sent).toEqual([]);
+  });
+
+  it("ECHO 早就恢复过 → 不重复发", () => {
+    const sent: string[] = [];
+    restoreEchoOnTeardown({ echoOff: { current: false }, term: { current: null }, send: (d) => sent.push(d) });
+    expect(sent).toEqual([]);
   });
 });
 

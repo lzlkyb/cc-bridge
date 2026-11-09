@@ -11,7 +11,7 @@ vi.mock("../lib/tauri", () => ({ invoke: invokeMock }));
 
 import { sendTerminalUserInput } from "../lib/terminalUserInput";
 import { useTerminalOsc, type OscState } from "./useTerminalOsc";
-import { DANCE, ECHO_ON_CMD, PROBE_ECHO_OFF_CMD } from "../lib/terminalSttyDance";
+import { DANCE, ECHO_ON_CMD, PROBE_ECHO_OFF_CMD, PROBE_GATE_POLL } from "../lib/terminalSttyDance";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -92,7 +92,8 @@ describe("ECHO 关闭期的用户输入", () => {
   });
   it("真实发送通道在准备期不提前发送整条命令，恢复后只执行一次", async () => {
     act(() => root.render(<Harness sessionId="osc-real-input" />));
-    await advance(DANCE.PROBE_DELAY);
+    // 900ms 只是闸门的下限，还要再安静一拍才发（见 runProbeGate）。
+    await advance(DANCE.PROBE_DELAY + PROBE_GATE_POLL);
     // 模拟 session.onData：发送通道先收到，OSC 观察者随后收到。
     act(() => type("touch /tmp/once\r"));
     expect(sent().filter(data => data === "touch /tmp/once\r")).toHaveLength(0);
@@ -102,7 +103,7 @@ describe("ECHO 关闭期的用户输入", () => {
   it("🔴 敲键不再被拼进恢复命令，而是缓冲后原样重放", async () => {
     act(() => root.render(<Harness sessionId="osc-replay" />));
     // t0：合并探针发出（这一条同时关 ECHO 与报 shell 名）。
-    await advance(DANCE.PROBE_DELAY);
+    await advance(DANCE.PROBE_DELAY + PROBE_GATE_POLL);
     expect(sent()).toEqual([` ${PROBE_ECHO_OFF_CMD}\n`]);
 
     // ECHO 已关：用户开始敲 `ls`（屏上什么都看不见，本地也不回显）。
@@ -125,7 +126,7 @@ describe("ECHO 关闭期的用户输入", () => {
 
   it("没敲键时恢复命令保持原样（不塞 ^U）", async () => {
     act(() => root.render(<Harness sessionId="osc-clean" />));
-    await advance(DANCE.PROBE_DELAY);
+    await advance(DANCE.PROBE_DELAY + PROBE_GATE_POLL);
     // 探针回执：shell=bash → 舞步后半场，收尾发干净的 stty echo
     act(() => {
       oscCbs.get(1337)?.("Shell=bash");

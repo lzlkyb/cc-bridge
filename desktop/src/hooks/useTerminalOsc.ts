@@ -8,10 +8,11 @@ import {
   attachEchoStripWhenReady,
   claimInjection,
   DANCE,
-  ECHO_ON_CMD,
-  echoRestoreCommand,
   PROBE_ECHO_OFF_CMD,
   danceNext,
+  restoreEcho,
+  restoreEchoOnTeardown,
+  runProbeGate,
   tuiOnScreen,
   type DancePhase,
 } from "../lib/terminalSttyDance";
@@ -175,28 +176,23 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
     const timers: number[] = [];
     const at = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
     // 恢复 ECHO。单次消费（echoOffRef 闸门）：第二句 stty echo 会被回显成残渣（红线）。
-    // 字节组成（含「有用户按键时补 ^U 清行」）是纯计算，见 lib/terminalSttyDance.echoRestoreCommand。
-    const restore = (clean = false) => {
-      if (!echoOffRef.current) return;
-      echoOffRef.current = false;
-      abortRef.current = null;
-      phase = danceNext(phase, "restoreSent").phase;
-      const hasInput = typedBufRef.current !== "";
-      const cmd = echoRestoreCommand(clean, hasInput);
-      void send(cmd).catch(() => {});
-      if (!hasInput) {
-        collectingRef.current = false;
-        return;
-      }
-      // Keep buffering through restoration, then send the original bytes exactly once.
-      collectingRef.current = true;
-      at(DANCE.REPLAY_DELAY, () => {
-        collectingRef.current = false;
-        const replay = typedBufRef.current;
-        typedBufRef.current = "";
-        if (replay) void send(replay).catch(() => {});
-      });
-    };
+    // 全部字节组成与「探针被密码提示吃掉」的异常分支都在 lib/terminalSttyDance.restoreEcho。
+    const restore = (clean = false) =>
+      restoreEcho(
+        {
+          echoOff: echoOffRef,
+          typedBuf: typedBufRef,
+          collecting: collectingRef,
+          abort: abortRef,
+          term: termRef,
+          send: (data) => void send(data).catch(() => {}),
+          at,
+          onRestoreSent: () => {
+            phase = danceNext(phase, "restoreSent").phase;
+          },
+        },
+        clean,
+      );
     // 异常退出：恢复 ECHO + 降级（已 ready 则不动）。
     // reason="skipped"：用户自己开始输入了，不是「远端不支持」——状态栏不能把话说成缺陷。
     const abortDance = (reason?: "skipped") => {
@@ -214,13 +210,8 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
       return buffered;
     });
 
-    at(DANCE.PROBE_DELAY, () => {
+    const fireProbe = () => {
       const term = termRef.current;
-      // 🔴 备用屏（全屏 TUI）绝不注入：字节会被 TUI 输入行吃进去并显示出来（2026-10-16 报障）。
-      if (typedRef.current || tuiOnScreen(term)) {
-        abortDance(typedRef.current ? "skipped" : undefined);
-        return;
-      }
       // 🔴 折行安全阀：剥除器单行匹配，token 被 PTY 折成两行就永远命中不了 ⇒ 宁可不注入。
       // 此时 echoOffRef 还是 false，abortDance 不会发多余的 stty echo。
       if (!term || term.cols < PROBE_ECHO_OFF_CMD.length + 4) {
@@ -244,10 +235,20 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
       // 关回显与探针已合并成同一条命令：两态一起推进，hook 仍由回执门禁把守。
       phase = danceNext(phase, "echoOffSent").phase;
       phase = danceNext(phase, "probeSent").phase;
-    });
-    at(DANCE.PROBE_DELAY + DANCE.PROBE_TIMEOUT, () => {
-      if (probeOkRef.current) return;
-      abortDance(); // 回执没到：恢复 ECHO + 走 unsupported 降级
+      // 🔴 超时从**真正发出**那一刻算起：闸门可能把探针推后十几秒，
+      // 仍按 t0 计时的话会在发出前就判死。
+      at(DANCE.PROBE_TIMEOUT, () => {
+        if (!probeOkRef.current) abortDance(); // 回执没到：恢复 ECHO + 走 unsupported 降级
+      });
+    };
+    // 发不发、什么时候发由闸门定（读屏：空屏 / 凭据提示 / 改密流程 / 还没静默 → 等下一轮）。
+    // 🔴 绝不按固定延时盲发：改密流程里那一行会被当成「当前密码」提交，整条登录报废。
+    runProbeGate({
+      term: () => termRef.current,
+      blockReason: () => (typedRef.current ? "typed" : tuiOnScreen(termRef.current) ? "tui" : null),
+      at,
+      onFire: fireProbe,
+      onAbort: abortDance,
     });
     // 合并探针的回执到达 → 舞步后半场。🔴 此刻 ECHO **已确定关闭**，649 字符钩子才开始
     // 打字（2026-10-28 核心修复：长命令永远排在 `stty -echo` 之后，不再被回显）。
@@ -274,10 +275,11 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
       releaseInput();
       // 兜底：卸载/重连/开关切换时 ECHO 仍关闭就尽力恢复一次（会话已死则忽略）。
       // 🔴 剥除器**不在这里撤**——它挂在终端实例上，这条兜底命令的回显仍归它擦。
-      if (echoOffRef.current) {
-        echoOffRef.current = false;
-        void invoke("ssh_input", { sessionId, data: ` ${ECHO_ON_CMD}\n` }).catch(() => {});
-      }
+      restoreEchoOnTeardown({
+        echoOff: echoOffRef,
+        term: termRef,
+        send: (data) => void invoke("ssh_input", { sessionId, data }).catch(() => {}),
+      });
       // Flush queued bytes on cleanup; no interceptor may survive this session effect.
       const pendingInput = typedBufRef.current;
       collectingRef.current = false;
