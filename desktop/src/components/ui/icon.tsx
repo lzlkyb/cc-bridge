@@ -42,6 +42,7 @@ const paths: Record<string, string> = {
   arrowLeft: "M19 12H5M12 19l-7-7 7-7",
   arrowRight: "M5 12h14M12 5l7 7-7 7",
   chevronLeft: "M15 18l-6-6 6-6",
+  chevronRight: "M9 6l6 6-6 6",
   chevronDown: "M6 9l6 6 6-6",
   chevronUp: "M18 15l-6-6-6 6",
   power: "M18.36 6.64a9 9 0 1 1-12.73 0M12 2v10",

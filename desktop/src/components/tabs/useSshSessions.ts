@@ -4,6 +4,7 @@ import { toast } from "../ui/toast";
 import type { SshConnection } from "../../lib/types";
 import { EMPTY_TAB_META, mergeTabMeta, type TermTabMeta } from "../../lib/terminalTabMeta";
 import { useClearUnreadOnActivate } from "../../hooks/useClearUnreadOnActivate";
+import type { SshOneTimeCredentials } from "../../lib/sshConnectionForm";
 import { sessionLimitMessage } from "../../lib/terminalWorkspace";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 import { useTabCloseUndo } from "./useTabCloseUndo";
@@ -29,7 +30,9 @@ export function useSshSessions() {
   const [sessions, setSessions] = useState<SshSessionRef[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   // 连接进行中：列表项灰显「连接中…」+ 按钮 loading（纯前端态，无后端依赖）。
-  const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [connectingIds, setConnectingIds] = useState<Set<string>>(new Set());
+  const [connectionErrors, setConnectionErrors] = useState<Record<string, string>>({});
+  const connectingId = [...connectingIds].slice(-1)[0] ?? null;
   // 连接重入闸（ref 而非上面的 state：同一帧内的连点两次读到的都是旧 state，挡不住）。
   // 没有它，双击连接按钮会并发出两个 ssh_connect、开出两个重复标签。
   const connectingIdsRef = useRef<Set<string>>(new Set());
@@ -85,7 +88,7 @@ export function useSshSessions() {
    *   再否则追加。
    */
   const connect = useCallback(
-    async (conn: SshConnection, opts?: { newTab?: boolean; intoTab?: string; forSplit?: boolean }) => {
+    async (conn: SshConnection, opts?: { newTab?: boolean; intoTab?: string; forSplit?: boolean; credentials?: SshOneTimeCredentials }) => {
       if (!opts?.newTab && !opts?.intoTab && !opts?.forSplit) {
         const live = sessionsRef.current.find((s) => s.conn.id === conn.id && !s.closedReason && !s.splitOnly);
         if (live) {
@@ -103,10 +106,11 @@ export function useSshSessions() {
         return null;
       }
       connectingIdsRef.current.add(conn.id);
-      setConnectingId(conn.id);
+      setConnectingIds(new Set(connectingIdsRef.current));
+      setConnectionErrors(prev => ({ ...prev, [conn.id]: "" }));
       try {
         const sessionId = await invoke<string>("ssh_connect", {
-          args: { connectionId: conn.id, rows: INITIAL_ROWS, cols: INITIAL_COLS },
+          args: { connectionId: conn.id, rows: INITIAL_ROWS, cols: INITIAL_COLS, ...opts?.credentials },
         });
         let createdTabId: string | null = null;
         patch((prev) => {
@@ -135,11 +139,12 @@ export function useSshSessions() {
         toast(`SSH 已连接 ${conn.username}@${conn.host}:${conn.port}`, "success");
         return createdTabId;
       } catch (e) {
+        setConnectionErrors(prev => ({ ...prev, [conn.id]: String(e) }));
         toast(`连接失败：${e}`, "error");
         return null;
       } finally {
         connectingIdsRef.current.delete(conn.id);
-        setConnectingId(null);
+        setConnectingIds(new Set(connectingIdsRef.current));
       }
     },
     [patch],
@@ -271,7 +276,7 @@ export function useSshSessions() {
   return {
     sessions,
     activeId,
-    connectingId,
+    connectingId, connectingIds, connectionErrors,
     metaBySession,
     setActiveId,
     connect,

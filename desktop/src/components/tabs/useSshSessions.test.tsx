@@ -23,6 +23,26 @@ beforeEach(async () => {
 afterEach(async () => { await act(async () => root.unmount()); });
 
 describe("workspace connection activation", () => {
+  it("一次性凭据仅传给当前连接请求，不进入会话对象", async () => {
+    await connect({ credentials: { password: "single-use" } });
+    expect(h.invoke).toHaveBeenCalledWith("ssh_connect", { args: { connectionId: conn.id, rows: 30, cols: 100, password: "single-use" } });
+    expect(JSON.stringify(api.sessions)).not.toContain("single-use");
+    await act(async () => api.disconnect(api.activeId!));
+    h.invoke.mockClear(); await connect();
+    expect(h.invoke).toHaveBeenCalledWith("ssh_connect", { args: { connectionId: conn.id, rows: 30, cols: 100 } });
+  });
+  it("并发连接各自保留忙状态，失败原因能用于侧栏重试", async () => {
+    let finish!: (id: string) => void;
+    h.invoke.mockReturnValueOnce(new Promise<string>(resolve => { finish = resolve; }));
+    let pending!: ReturnType<typeof api.connect>;
+    act(() => { pending = api.connect(conn); });
+    h.invoke.mockRejectedValueOnce("目标主机不可达");
+    await act(async () => { await api.connect({ ...conn, id: "other" }); });
+    expect(api.connectingIds.has(conn.id)).toBe(true);
+    expect(api.connectionErrors.other).toBe("目标主机不可达");
+    await act(async () => { finish("pending-session"); await pending; });
+    expect(api.connectingIds.size).toBe(0);
+  });
   it("只有分屏副格时点击服务器会创建普通标签，不能把隐藏副格提升为当前标签", async () => {
     await connect({ forSplit: true }); const secondary = api.sessions[0];
     expect(api.activeId).toBeNull();

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import type { SshConnection } from "../../lib/types";
@@ -18,6 +18,8 @@ interface Props {
   isLoading: boolean;
   collapsed: boolean;
   connectingId: string | null;
+  connectingIds?: Set<string>;
+  connectionErrors?: Record<string, string>;
   confirmingDelete: string | null;
   onSetCollapsed: (v: boolean) => void;
   onNew: () => void;
@@ -45,7 +47,7 @@ export function TerminalSidebar({
   isLoading,
   collapsed,
   connectingId,
-  confirmingDelete,
+  confirmingDelete, connectingIds, connectionErrors,
   onSetCollapsed,
   onNew,
   onConnect,
@@ -61,6 +63,11 @@ export function TerminalSidebar({
   // 连接多了就靠肉眼找不到了。数量少时不显示搜索框——288px 的侧栏本来就紧，
   // 三两个连接时它只是噪声。
   const [query, setQuery] = useState("");
+  const lastActive = useRef(new Map<string, string>());
+  useEffect(() => {
+    const active = sessions.find(s => s.sessionId === activeId && !s.splitOnly);
+    if (active) lastActive.current.set(active.conn.id, active.sessionId);
+  }, [activeId, sessions]);
   const showSearch = embedded || connections.length >= SEARCH_THRESHOLD;
   const shown = useMemo(() => {
     const k = query.trim().toLowerCase();
@@ -101,8 +108,8 @@ export function TerminalSidebar({
             <div className="terminal-connections-heading flex items-center justify-between border-b border-border px-3 py-2.5">
               <span className="text-sm font-medium">SSH 连接</span>
               <div className="flex items-center gap-1">
-                <Button variant={embedded ? "ghost" : "default"} size="sm" className={embedded ? "h-7 w-7 px-0" : "h-7 px-2 text-xs"} title="新建 SSH 连接" aria-label="新建 SSH 连接" onClick={onNew}>
-                  <Icon name="plus" size={14} />{!embedded && "新建"}
+                <Button variant={embedded ? "ghost" : "default"} size="sm" className={`h-7 px-2 text-xs ${embedded ? "text-primary" : ""}`} title="新建 SSH 连接" aria-label="新建 SSH 连接" onClick={onNew}>
+                  <Icon name="plus" size={14} />新建
                 </Button>
                 <button
                   type="button"
@@ -117,29 +124,30 @@ export function TerminalSidebar({
             </div>
             {showSearch && (
               <div className="terminal-connections-search shrink-0 border-b border-border px-2 py-1.5">
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder={embedded ? "搜索名称或主机" : `搜索 ${connections.length} 个连接（名称 / 主机 / 用户）`}
-                  aria-label="搜索 SSH 连接"
-                  className="h-7 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-primary"
-                />
+                <label className="terminal-connection-search-field"><Icon name="search" size={14}/>
+                  <input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索名称、主机或用户" aria-label="搜索 SSH 连接"/>
+                  {query && <button type="button" aria-label="清空连接搜索" onClick={() => setQuery("")}><Icon name="close" size={13}/></button>}
+                </label>
               </div>
             )}
+            {embedded && <div className="terminal-connection-list-caption"><span>{query ? `搜索结果 · ${shown.length}` : `已保存 · ${connections.length}`}</span><span>{connections.filter(c => sessions.some(s => s.conn.id === c.id && !s.closedReason)).length} 个连接在线</span></div>}
             <div className={`min-h-0 flex-1 overflow-y-auto p-2 ${embedded ? "space-y-1" : "space-y-2"}`}>
               {isLoading && <p className="p-2 text-xs text-muted-foreground">加载中…</p>}
               {!isLoading && connections.length === 0 && (
                 <p className="p-3 text-center text-xs text-muted-foreground">
-                  还没有连接，点「新建」添加一个。
+                  还没有保存的连接。<br/><button type="button" className="mt-2 text-primary" onClick={onNew}>添加第一个连接</button>
                 </p>
               )}
               {!isLoading && connections.length > 0 && shown.length === 0 && (
                 <p className="p-3 text-center text-xs text-muted-foreground">
-                  没有匹配「{query}」的连接
+                  没有匹配「{query}」的连接<br/><button type="button" className="mt-2 text-primary" onClick={() => setQuery("")}>清空搜索</button>
                 </p>
               )}
               {shown.map((c) => {
-                const { session, liveCount, active } = connectionSessions(sessions, c.id, activeId);
+                const result = connectionSessions(sessions, c.id, activeId);
+                const remembered = sessions.find(s => s.sessionId === lastActive.current.get(c.id) && !s.closedReason && !s.splitOnly);
+                const { liveCount, active } = result;
+                const session = active ? result.session : remembered ?? result.session;
                 const Item = embedded ? TerminalConnectionRow : ConnectionListItem;
                 // 跳板机名字在这里解（侧栏手里本来就有全量连接），
                 // 不让列表项为一个名字去接整个连接数组。
@@ -155,7 +163,8 @@ export function TerminalSidebar({
                     liveCount={liveCount}
                     onActivate={onActivate}
                     isActive={active}
-                    connecting={connectingId === c.id}
+                    connecting={connectingIds ? connectingIds.has(c.id) : connectingId === c.id}
+                    {...(embedded ? { sessions, activeId, connectionError: connectionErrors?.[c.id] } : {})}
                     confirmingDelete={confirmingDelete === c.id}
                     onConnect={onConnect}
                     onDisconnect={onDisconnect}

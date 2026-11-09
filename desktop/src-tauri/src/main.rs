@@ -1038,6 +1038,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_list_connections,
             commands::ssh_save_connection,
             commands::ssh_delete_connection,
+            // 只读：把已保存的凭据解密给本机面板看（不进 MCP、不进审计）。
+            commands::ssh_reveal_credential,
             // SFTP 文件传输（同一安全闸 ssh_enabled，仍只经 Tauri 暴露给本机面板）。
             commands::ssh_sftp_list,
             commands::ssh_sftp_get,

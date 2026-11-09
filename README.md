@@ -372,7 +372,7 @@ AI 工具对话中触发工具调用:
 
 - **后端**：调用本机系统自带 OpenSSH（Windows 10/11 自带 `C:\Windows\System32\OpenSSH\ssh.exe`，macOS 永远有），用 `portable-pty` 开本地 PTY（Windows = ConPTY / Unix = pty）把 ssh 的输入输出接到 xterm.js。零新网络协议、零重依赖，体积代价可忽略（portable-pty 0.9 只引 `windows-sys` 0.61.2 等小库）。
 - **连接**：支持两种认证方式——
-  - **密码**：名称 / 主机 / 端口 / 用户名 / 密码，可勾「记住密码」——密码用 aes-gcm 加密后落盘（密钥在 `data_dir/ssh_key.bin`，明文不出本地进程）。
+  - **密码**：名称 / 主机 / 端口 / 用户名 / 密码，可勾「记住密码」——密码用 aes-gcm 加密后落盘（密钥在 `data_dir/ssh_key.bin`，明文不出本地进程；编辑连接时点密码框右侧的眼睛会按需解密并显示已保存的那一份）。
   - **密钥**：选「密钥」认证后填私钥路径（`id_rsa` / `id_ed25519` 等）+ 可选密码短语（passphrase）。有 passphrase 时同样经 aes-gcm 加密落盘，ssh 握手时由 PTY 自动填充。后端在 key 模式下给 `ssh` 加 `-i <keyfile>`，并用 `IdentitiesOnly=yes` 避免 agent 干扰。
 - **交互**：xterm.js 渲染，`TERM=xterm-256color` + 中文 UTF-8；窗口缩放走 PTY `resize`；`ServerAliveInterval=30 / ServerAliveCountMax=3` 保活防断；复制粘贴走 WebView 剪贴板。
 - **多标签终端**：每个 SSH 连接一个独立 xterm 实例 + 会话标签（顶部可切换/关闭），后台连接保持不断开；点连接自动新建标签，断线后标签标红。
@@ -427,6 +427,7 @@ AI 工具对话中触发工具调用:
 | `ssh_list_connections` | 列出已保存的 SSH 连接（名称 / user@host:port，不含密码） |
 | `ssh_save_connection` | 新增 / 更新连接；密码由后端用 aes-gcm 加密后落盘（明文不经过通用 `save_config` 补丁） |
 | `ssh_delete_connection` | 删除一个已保存的连接（含其加密密码） |
+| `ssh_reveal_credential` | 只读：把某条连接已保存的密码/密码短语解密给本机面板看（编辑弹框里点眼睛时按需调用）。**不进 MCP、不写审计日志**，明文只落在本机 WebView 内存 |
 | `ssh_connect` | 用系统 ssh + 本地 PTY 建立交互会话，reader 线程把输出经 `ssh_output` 事件推给前端，检测 `password:` 提示自动填记住的密码 |
 | `ssh_input` | 把 xterm 的按键转发进 PTY（密码在本地 typed，不回显） |
 | `ssh_resize` | PTY 跟随窗口缩放（`resize`） |

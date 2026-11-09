@@ -89,12 +89,15 @@ pub struct SshFileEntry {
 }
 
 /// `ssh_connect` 入参。
-#[derive(Debug, serde::Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct SshConnectArgs {
     #[serde(rename = "connectionId")]
     pub connection_id: String,
     pub rows: u16,
     pub cols: u16,
+    /// 本次终端连接专用，不写连接配置，也不传给文件操作或恢复快照。
+    pub password: Option<String>,
+    pub passphrase: Option<String>,
 }
 
 /// 探测系统 ssh 路径（不抛错，缺失返回 None）。
@@ -355,6 +358,37 @@ fn resolve_link_secrets(
     if let Some(j) = &link.jump {
         let (jpw, jpp) = resolve_secrets(j, data_dir)?;
         creds = creds.with_jump(j, jpw, jpp);
+    }
+    Ok(creds)
+}
+
+/// A newly entered credential overrides saved ciphertext for this connection only.
+/// In particular, it must allow replacing an unreadable old credential without decrypting it.
+fn resolve_connect_secrets(
+    link: &SshLink,
+    data_dir: &Path,
+    password: Option<String>,
+    passphrase: Option<String>,
+) -> Result<PendingCreds, String> {
+    let mut target = link.conn.clone();
+    let password = password.filter(|v| !v.is_empty());
+    let passphrase = passphrase.filter(|v| !v.is_empty());
+    if password.is_some() && target.auth_type != "key" {
+        target.remember_password = false;
+    }
+    if passphrase.is_some() && target.auth_type == "key" {
+        target.remember_passphrase = false;
+    }
+    let (pw, pp) = resolve_secrets(&target, data_dir)?;
+    let (pw, pp) = if target.auth_type == "key" {
+        (pw, passphrase.or(pp))
+    } else {
+        (password.or(pw), pp)
+    };
+    let mut creds = PendingCreds::direct(&target, pw, pp);
+    if let Some(jump) = &link.jump {
+        let (pw, pp) = resolve_secrets(jump, data_dir)?;
+        creds = creds.with_jump(jump, pw, pp);
     }
     Ok(creds)
 }
@@ -1350,6 +1384,57 @@ pub async fn ssh_save_connection(
     Ok(conn)
 }
 
+/// 面板「显示密码」：把已保存的凭据解密成明文，回给本机前端。
+///
+/// 🔴 这是唯一一条把明文密码送出去的 IPC 命令，边界必须写死：
+/// - **只在本机 WebView 内**：绝不注册为 MCP 工具（`registry.rs` 里没有它），
+///   远程 AI 无论怎么调都够不到；也绝不进 `audit.log`——能读审计日志的 AI
+///   等于拿到了凭据。
+/// - **只读**：不改配置、不落盘，因此不受 `ssh_enabled` 写入门禁限制。功能关掉时
+///   用户仍可能想看一眼存过什么再决定是否删除连接。
+///
+/// 威胁模型没变：能调这条命令的人本来就能读 `data_dir/ssh_key.bin` 自行解密，
+/// 这里省的只是「手动解一次」，不新增本机暴露面。
+///
+/// `field` 取 `"password"`（密码认证）或 `"passphrase"`（密钥认证的密码短语）。
+#[tauri::command]
+pub async fn ssh_reveal_credential(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    field: String,
+) -> Result<String, String> {
+    // 密文取出来立刻放开 config 读锁：解密要读密钥文件（阻塞 IO），不占着配置锁做。
+    let cipher = {
+        let config = state.config.read().await;
+        let conn = config
+            .ssh_connections
+            .iter()
+            .find(|c| c.id == id)
+            .ok_or_else(|| "连接不存在，可能已被删除".to_string())?;
+        match field.as_str() {
+            "password" => conn.encrypted_password.clone(),
+            "passphrase" => conn.encrypted_passphrase.clone(),
+            other => return Err(format!("不支持的凭据字段：{other}")),
+        }
+    };
+    decrypt_saved_credential(&cipher, &state.data_dir)
+}
+
+/// 「已保存的密文 → 明文」这一步本身（与 AppState 解耦，便于单测）。
+///
+/// 三种失败各有各的可执行下一步，不能混成一句「解密失败」：
+/// - 没存过 → 直接输入；
+/// - 密钥文件坏了 → `load_or_create_key` 自带「删哪个文件」的指引；
+/// - 密钥对不上（换机器/重装）→ 只能重输，因为旧密文永远解不开了。
+fn decrypt_saved_credential(cipher: &str, data_dir: &Path) -> Result<String, String> {
+    if cipher.is_empty() {
+        return Err("这条连接没有保存密码，直接输入即可".into());
+    }
+    let key = crate::ssh_crypto::load_or_create_key(data_dir)?;
+    crate::ssh_crypto::decrypt_password(&key, cipher)
+        .map_err(|e| format!("{e}。密码可能是在另一台设备或另一次安装上保存的，请重新输入一次。"))
+}
+
 /// 删除一条 SSH 连接。
 #[tauri::command]
 pub async fn ssh_delete_connection(
@@ -1439,7 +1524,8 @@ pub async fn ssh_connect(
     })?;
 
     // 4) 凭据解析：密码 / 密码短语（仅此刻在内存出现明文，用过即丢）。
-    let auto_creds = resolve_link_secrets(&link, &state.data_dir)?;
+    let auto_creds =
+        resolve_connect_secrets(&link, &state.data_dir, args.password, args.passphrase)?;
 
     // 5) 开 PTY 跑 ssh。
     let pty_system = native_pty_system();
@@ -2614,5 +2700,119 @@ lrwxr-xr-x  1 u  g    7 Apr  5 10:02 link -> /tmp/target\n";
         ));
         // 非提示的输出不能因为剥离而变得误命中。
         assert!(!password_prompt_in(b"grep password: foo\r\nnext line"));
+    }
+
+    // ── 面板「显示已保存的密码／密码短语」 ──────────────────
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ccb_reveal_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    /// 正常路径：同一个 data_dir 里加密的密文能原样解回明文（含中文与空格）。
+    #[test]
+    fn reveal_round_trips_saved_credential() {
+        let dir = scratch("ok");
+        let key = crate::ssh_crypto::load_or_create_key(&dir).expect("key");
+        let ct = crate::ssh_crypto::encrypt_password(&key, "p@ss 密码").expect("encrypt");
+        assert_eq!(
+            decrypt_saved_credential(&ct, &dir).expect("reveal"),
+            "p@ss 密码"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 没存过密码：报错必须说「直接输入」，而不是笼统的「解密失败」——
+    /// 用户点了眼睛看不到东西，唯一需要知道的就是「这里本来就没存」。
+    #[test]
+    fn reveal_empty_ciphertext_tells_user_to_type_it_in() {
+        let dir = scratch("empty");
+        let e = decrypt_saved_credential("", &dir).expect_err("空密文必须报错");
+        assert!(e.contains("没有保存密码"), "{e}");
+        assert!(e.contains("直接输入"), "错误得给出下一步：{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 🔴 密钥对不上（换机器 / 重装 / 删过 `ssh_key.bin`）：旧密文永远解不开。
+    /// 报错必须指向「重新输入一次」，否则用户只会对着「解密失败」反复点眼睛。
+    #[test]
+    fn reveal_with_foreign_key_tells_user_to_retype() {
+        let src = scratch("src");
+        let dst = scratch("dst");
+        let src_key = crate::ssh_crypto::load_or_create_key(&src).expect("src key");
+        let ct = crate::ssh_crypto::encrypt_password(&src_key, "old-secret").expect("encrypt");
+        // dst 会生成自己的一把钥匙，与 src 不同。
+        let e = decrypt_saved_credential(&ct, &dst).expect_err("换密钥必须解不开");
+        assert!(e.contains("重新输入"), "错误得给出下一步：{e}");
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dst);
+    }
+    #[test]
+    fn connect_credentials_are_single_use_and_do_not_modify_saved_connection() {
+        let dir = scratch("once");
+        let conn = SshConnection {
+            host: "target.example.com".into(),
+            username: "user".into(),
+            auth_type: "password".into(),
+            remember_password: true,
+            encrypted_password: "unreadable-old-ciphertext".into(),
+            ..Default::default()
+        };
+        let link = SshLink::direct(conn);
+        let mut creds =
+            resolve_connect_secrets(&link, &dir, Some("one-time".into()), None).unwrap();
+        assert_eq!(
+            creds.take_password("user@target.example.com's password:"),
+            Some("one-time".into())
+        );
+        assert_eq!(
+            creds.take_password("user@target.example.com's password:"),
+            None
+        );
+        assert!(link.conn.remember_password);
+        assert_eq!(link.conn.encrypted_password, "unreadable-old-ciphertext");
+        assert!(resolve_connect_secrets(&link, &dir, None, None).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn connect_passphrase_uses_only_the_key_authentication_slot() {
+        let dir = scratch("once_key");
+        let conn = SshConnection {
+            host: "target.example.com".into(),
+            auth_type: "key".into(),
+            key_path: "id_ed25519".into(),
+            remember_passphrase: true,
+            encrypted_passphrase: "unreadable-old-ciphertext".into(),
+            ..Default::default()
+        };
+        let link = SshLink::direct(conn);
+        let mut creds = resolve_connect_secrets(
+            &link,
+            &dir,
+            Some("ignored".into()),
+            Some("one-time-pp".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            creds.take_passphrase("Enter passphrase for key 'id_ed25519':"),
+            Some("one-time-pp".into())
+        );
+        assert_eq!(creds.take_password("password:"), None);
+        assert_eq!(
+            creds.take_passphrase("Enter passphrase for key 'id_ed25519':"),
+            None
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn old_connect_payload_still_deserializes_without_credentials() {
+        let args: SshConnectArgs =
+            serde_json::from_str(r#"{"connectionId":"host","rows":30,"cols":100}"#).unwrap();
+        assert!(args.password.is_none());
+        assert!(args.passphrase.is_none());
     }
 }

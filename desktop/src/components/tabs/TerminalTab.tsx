@@ -134,8 +134,6 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
     };
   }, [enabled]);
 
-  // 切主题不弹提醒：跑着的 TUI 启动时就把配色定死了，说明写在设置页「终端风格」里常驻可见。
-
   const enableSsh = async () => {
     try {
       await invoke("save_config", { patch: { sshEnabled: true } });
@@ -188,6 +186,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
         isLoading={isLoading}
         collapsed={collapsed}
         connectingId={ssh.connectingId}
+        connectingIds={ssh.connectingIds} connectionErrors={ssh.connectionErrors}
         confirmingDelete={confirmingDelete}
         onSetCollapsed={setCollapsed}
         onNew={() => {
@@ -291,6 +290,10 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
         connections={connections}
         onClose={() => setShowDialog(false)}
         onSaved={() => void queryClient.invalidateQueries({ queryKey: ["sshConnections"] })}
+        onConnect={(conn, credentials) => {
+          workspace.setFocusedTabId(null); setFileConn(null);
+          void ssh.connect(conn, { newTab: true, credentials });
+        }}
       />
     </div></TerminalFullscreenProvider>
   );
