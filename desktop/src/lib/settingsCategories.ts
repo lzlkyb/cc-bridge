@@ -26,7 +26,7 @@ export const CATEGORY_DESCRIPTIONS: Record<string, string> = {
 export const SETTINGS_ANCHOR_CATEGORIES: Record<string, string> = {
   "set-install": "set-app", "set-advanced": "set-files", "set-security": "set-files",
   "set-firewall": "set-network", "set-backupaudit": "set-data", "set-config": "set-data", "set-tokenusage": "set-data",
-  "remote-tls": "set-network", ratelimit: "set-network", "network-port": "set-network", "network-transport": "set-network",
+  "remote-tls": "set-network", ratelimit: "set-network", "network-port": "set-network", "network-host": "set-network", "network-transport": "set-network",
   shell: "set-files", shelltype: "set-files", readonly: "set-files", whitelist: "set-files", encoding: "set-files", "session-persist": "set-files",
   backup: "set-data", audit: "set-data", "audit-retention": "set-data", "audit-clean": "set-data",
   "notify-command": "set-notify", "notify-task": "set-notify", "notify-cc": "set-notify",

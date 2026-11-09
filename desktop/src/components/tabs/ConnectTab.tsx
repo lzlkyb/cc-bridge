@@ -8,6 +8,10 @@ import { FirewallAlertBlock } from "./connect/FirewallAlertBlock";
 import { isWindows } from "../../lib/platform";
 import { ToolGuide } from "./connect/ToolGuide";
 import { ConnectGuide } from "./connect/ConnectGuide";
+import { AddressPicker } from "./connect/AddressPicker";
+import { InlineNotice } from "../ui/notice";
+import { Button } from "../ui/button";
+import { isLoopbackHost } from "../../lib/utils";
 import { invokeOrToast } from "../../lib/tauri";
 import type { McpClientTool } from "../../lib/mcpClients";
 
@@ -83,6 +87,9 @@ function ConnectTabImpl({
 
   // 监听全网卡时才需要选 IP；host 指定了具体地址就用它
   const listenAll = status?.host === "0.0.0.0";
+  // 只监听回环时远程一律连不上。此前界面只显示一个 127.0.0.1、地址卡片整张消失，
+  // 用户完全不知道为什么（2026-11-09 用户反馈）。
+  const loopbackOnly = !!status && isLoopbackHost(status.host);
 
   useEffect(() => {
     if (!listenAll || lanIps.length === 0) return;
@@ -188,6 +195,29 @@ function ConnectTabImpl({
                 if (r) onRefresh();
               });
             }}
+            common={
+              <>
+                {loopbackOnly && (
+                  <InlineNotice variant="warning">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span>
+                        <b>当前只监听本机（{status?.host}），远程服务器无法连接。</b>
+                        要从远程 Linux 接入，请把监听地址改为「所有网卡」。
+                      </span>
+                      {onNavigate && (
+                        <Button size="sm" variant="outline" className="shrink-0" onClick={() => onNavigate("settings", "network-host")}>
+                          去修改监听地址
+                        </Button>
+                      )}
+                    </div>
+                  </InlineNotice>
+                )}
+                {listenAll && lanIps.length > 0 && (
+                  <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp}
+                    healthCheck={guide.healthCheck} port={guide.port} onRefresh={onRefresh} onCopySed={onCopySed} />
+                )}
+              </>
+            }
             onToolChange={(t) => {
               // 必须落盘：托盘「复制命令 / 复制 IP」与 IpChangedBanner 都按这个值出内容。
               // 只存在组件本地 state 时，界面选了 Codex、托盘仍会复制一条 claude mcp add。
@@ -202,16 +232,7 @@ function ConnectTabImpl({
               });
             }}
           >
-            <ConnectGuide
-              status={status}
-              guide={guide}
-              listenAll={listenAll}
-              lanIps={lanIps}
-              selectedIp={selectedIp}
-              onSelectIp={onSelectIp}
-              onRefresh={onRefresh}
-              onCopySed={onCopySed}
-            />
+            <ConnectGuide status={status} guide={guide} onRefresh={onRefresh} />
           </ToolGuide>
         }
       />

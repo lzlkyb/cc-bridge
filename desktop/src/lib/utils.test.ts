@@ -6,7 +6,14 @@
  * 运行：npm run test（vitest run，仅开发期执行，不进产物）。
  */
 import { describe, it, expect } from "vitest";
-import { globMatch, isEditableTarget } from "./utils";
+import { globMatch, isEditableTarget, isLoopbackHost } from "./utils";
+
+describe("isLoopbackHost", () => {
+  it("回环写法都算，0.0.0.0 与网卡地址不算", () => {
+    for (const h of ["127.0.0.1", "127.1.2.3", "::1", "[::1]", "localhost", " LOCALHOST "]) expect(isLoopbackHost(h)).toBe(true);
+    for (const h of ["0.0.0.0", "10.0.7.191", "", undefined, "127.0.0.1.evil"]) expect(isLoopbackHost(h)).toBe(false);
+  });
+});
 import {
   buildDisplayHost,
   escapeDoubleQuoted,

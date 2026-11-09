@@ -127,6 +127,15 @@ export function buildDisplayHost(status: StaticStatus | undefined, selectedIp: s
   return listenAll ? selectedIp || "127.0.0.1" : status?.host ?? "";
 }
 
+/**
+ * 监听地址是否只在本机回环上（127.0.0.0/8、::1、localhost）。
+ * 与后端 `network::is_loopback_host` 同口径：为真时远程一律连不上。
+ */
+export function isLoopbackHost(host: string | undefined): boolean {
+  const h = (host ?? "").trim().replace(/^\[|\]$/g, "").toLowerCase();
+  return h === "localhost" || h === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
+
 /** 基础接入命令（不含作用域开关），用于拼接到 claude mcp add。 */
 export function buildBaseCommand(
   displayHost: string,

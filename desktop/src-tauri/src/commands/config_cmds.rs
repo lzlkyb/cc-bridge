@@ -374,7 +374,9 @@ pub async fn save_config(
         changed.push("has_onboarded".into());
     }
 
-    if let Some(ref h) = patch.host {
+    if let Some(ref raw) = patch.host {
+        // 设置页重新开放了监听地址（2026-11-09），入口多了就必须校验：非 IP 会让服务重启后绑不上。
+        let h = &crate::network::validate_listen_host(raw)?;
         if *h != config.host {
             save_config_field(&db, "host", &serde_json::to_value(h).unwrap())?;
             config.host = h.clone();
@@ -831,6 +833,23 @@ pub(crate) async fn import_config_inner(
         }
     }
 
+    // 监听地址同样要过校验（`save_config` 那条已加，见 `network::validate_listen_host`）：
+    // 导入文件可以是手改的，而 `localhost` 这种主机名会让「是否监听全部网卡」的判断
+    // 按字面量 `0.0.0.0` 比较全部走偏，服务也可能绑不上。
+    // 非法时**保留本机当前值**并给一条 warning，不整次导入失败——用户导入主要是为了
+    // 恢复白名单与连接列表，为一个地址把整份配置拒掉得不偿失。
+    let mut host_warning = None;
+    {
+        let cur = state.config.read().await.host.clone();
+        match crate::network::validate_listen_host(&incoming.host) {
+            Ok(h) => incoming.host = h,
+            Err(e) => {
+                incoming.host = cur.clone();
+                host_warning = Some(format!("导入的监听地址不可用（{e}），已保留当前值 {cur}"));
+            }
+        }
+    }
+
     // 白名单兜底校验（复用 security::path 白名单逻辑，不可绕过）。
     // incoming 尚未写入 state，用其自身 roots 预 canonicalize 的本地缓存集合校验。
     incoming.allowed_roots =
@@ -894,7 +913,7 @@ pub(crate) async fn import_config_inner(
     Ok(ConfigSaveResult {
         ok: true,
         changed: vec!["(全部配置)".into()],
-        warnings: vec![],
+        warnings: host_warning.into_iter().collect(),
         restart_required: true,
     })
 }
@@ -1143,6 +1162,65 @@ mod tests {
             state.config.read().await.device_id,
             "local-id",
             "导入不能把别人的 device_id 搬到本机"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 🔴 回归测试：导入一份 `host` 是主机名（或空串）的配置时，**保留本机当前监听地址**并给一条
+    /// warning——非 IP 会让「是否监听全部网卡」按字面量 `0.0.0.0` 的比较全部走偏，服务也可能绑不上，
+    /// 而界面里能改回来的入口刚刚才加回来。
+    #[tokio::test]
+    async fn import_keeps_local_host_when_incoming_invalid() {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir: PathBuf = std::env::temp_dir().join(format!(
+            "cc-bridge-host-import-{}-{}",
+            std::process::id(),
+            n
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+
+        let conn = db::init_database(&dir).expect("init db");
+        let cfg = BridgeConfig {
+            host: "0.0.0.0".into(),
+            ..BridgeConfig::default()
+        };
+        let state = Arc::new(AppState::new(conn, cfg, dir.clone()));
+
+        let incoming = BridgeConfig {
+            host: "localhost".into(),
+            ..BridgeConfig::default()
+        };
+        let json = serde_json::to_string(&incoming).expect("serialize");
+        let r = super::import_config_inner(&state, &json)
+            .await
+            .expect("非法 host 不该让整次导入失败");
+        assert_eq!(
+            state.config.read().await.host,
+            "0.0.0.0",
+            "非 IP 的监听地址不能落库，必须保留本机当前值"
+        );
+        assert!(
+            r.warnings.iter().any(|w| w.contains("监听地址")),
+            "应给出「已保留当前值」的警告：{:?}",
+            r.warnings
+        );
+
+        // 合法值照常生效，并顺带规整（去空格、IP 规范化）
+        let incoming = BridgeConfig {
+            host: " 127.0.0.1 ".into(),
+            ..BridgeConfig::default()
+        };
+        let json = serde_json::to_string(&incoming).expect("serialize");
+        let r = super::import_config_inner(&state, &json)
+            .await
+            .expect("导入应成功");
+        assert_eq!(state.config.read().await.host, "127.0.0.1");
+        assert!(
+            r.warnings.is_empty(),
+            "合法地址不该有警告：{:?}",
+            r.warnings
         );
 
         let _ = std::fs::remove_dir_all(&dir);

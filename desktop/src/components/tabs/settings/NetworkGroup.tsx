@@ -10,6 +10,7 @@ import { SettingsRow } from "../../ui/SettingsRow";
 import { SavedHint } from "../../ui/SavedHint";
 import { InlineNotice } from "../../ui/notice";
 import { TransportRow } from "./TransportRow";
+import { ListenHostRow } from "./ListenHostRow";
 
 
 /* ─── 网络 ─── */
@@ -117,6 +118,8 @@ export function NetworkGroup({
         <CardTitle icon={<Icon name="server" />}>服务监听</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* 监听地址放端口前面：它决定「远程能不能连」，比端口号更先要确认。 */}
+        <ListenHostRow status={status} onSaved={onSaved} />
         {/* 端口 + 按钮 同一行（统一到 SettingsRow）*/}
         <SettingsRow
           id="network-port" controlId="network-port-input"

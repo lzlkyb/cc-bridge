@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({ invoke: vi.fn(), toast: vi.fn() }));
 vi.mock("../../../lib/tauri", () => ({ invoke: mocks.invoke }));
 vi.mock("../../ui/toast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
 vi.mock("./TransportRow", () => ({ TransportRow: () => null }));
+// 监听地址行有自己的测试（ListenHostRow.test.tsx）；这里的用例用「第一个 button」当端口保存按钮。
+vi.mock("./ListenHostRow", () => ({ ListenHostRow: () => null }));
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root, host: HTMLDivElement;
 const saved = vi.fn();

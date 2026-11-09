@@ -1,23 +1,22 @@
 import { useId } from "react";
 import type { StaticStatus } from "../../../lib/types";
 import type { ConnectGuideState } from "../../../hooks/useConnectGuideState";
-import { AddressPicker } from "./AddressPicker";
 import { OptionCard } from "./widgets";
 import { ConnectCommand } from "./ConnectCommand";
 import { TokenManager } from "../TokenManager";
 import { PermissionCard } from "./PermissionCard";
 import "./connect-guide.css";
 
-/** 主要操作常驻；只有较长的授权脚本按需查看，避免配置时来回展开。 */
-export function ConnectGuide({ status, guide, listenAll, lanIps, selectedIp, onSelectIp, onRefresh, onCopySed }: {
-  status?: StaticStatus; guide: ConnectGuideState; listenAll: boolean; lanIps: string[];
-  selectedIp: string; onSelectIp: (ip: string) => void; onRefresh: () => void;
-  onCopySed?: () => boolean | Promise<boolean>;
+/**
+ * Claude Code 专属的接入步骤。主要操作常驻；只有较长的授权脚本按需查看。
+ * 地址卡片（AddressPicker）不在这里：它对四种工具都需要，由 ConnectTab 经
+ * ToolGuide 的 `common` 插槽渲染（见那里的注释）。
+ */
+export function ConnectGuide({ status, guide, onRefresh }: {
+  status?: StaticStatus; guide: ConnectGuideState; onRefresh: () => void;
 }) {
   const scopeId = useId();
   return <>
-    {listenAll && lanIps.length > 0 && <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp}
-      healthCheck={guide.healthCheck} port={guide.port} onRefresh={onRefresh} onCopySed={onCopySed} />}
     <div className="connect-guide">
       <section aria-labelledby={scopeId}>
         <div className="connect-section-heading"><h3 id={scopeId}>接入模式</h3><span>{guide.multiDevice ? "多设备接入固定使用全局模式" : "选择配置的生效范围"}</span></div>

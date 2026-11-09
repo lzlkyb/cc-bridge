@@ -56,6 +56,7 @@ export const SETTING_SEARCH_ITEMS: SettingSearchItem[] = [
   { id: "set-terminal-drag-select", label: "终端拖拽即选", icon: "terminal", group: "设置 · 高级", tab: "settings", anchor: "ssh-drag-select", keywords: "终端 拖选 拖拽 select drag 选择模式 shift 鼠标" },
   { id: "set-terminal-copy-on-select", label: "选中即复制", icon: "copy", group: "设置 · 高级", tab: "settings", anchor: "ssh-copy-on-select", keywords: "终端 复制 剪贴板 clipboard copy on select 自动复制 松手" },
 
+  { id: "set-network-host", label: "监听地址", icon: "server", group: "设置 · 网络与接入", tab: "settings", anchor: "network-host", keywords: "host 0.0.0.0 127.0.0.1 仅本机 所有网卡 绑定 远程连不上" },
   { id: "set-network", label: "监听端口", icon: "server", group: "设置 · 网络与接入", tab: "settings", anchor: "network-port", keywords: "port 7823 端口" },
   { id: "set-transport", label: "MCP 传输协议", icon: "server", group: "设置 · 网络与接入", tab: "settings", anchor: "network-transport", keywords: "transport http sse 协议 流式" },
   // 仅 Windows 渲染（`SettingsTab` 里有 isWindows 守卫）。非 Windows 上点了会跳到设置页但

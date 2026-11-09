@@ -43,6 +43,7 @@ export function ToolGuide({
   deviceId = "",
   deviceName = "",
   onToggleMultiDevice,
+  common,
   children,
 }: {
   host: string;
@@ -63,6 +64,12 @@ export function ToolGuide({
   deviceName?: string;
   /** 多设备开关回调（ConnectTab 落盘 save_config + onRefresh）。不传则不渲染开关。 */
   onToggleMultiDevice?: (next: boolean) => void;
+  /**
+   * 四种工具都要的内容（监听地址提示、「选择远程服务器能连回本机的地址」卡片）。
+   * 🔴 不能放进 children：children 只在 Claude Code 时渲染。地址卡片曾经就在里面，
+   * 选 WorkBuddy / Codex / 通用的用户从 v2.8.0 起一直看不到它、换不了地址（2026-11-09 修复）。
+   */
+  common?: ReactNode;
   /** claude-code 现有向导内容（scope / steps / token / perm），仅该工具渲染。 */
   children: ReactNode;
 }) {
@@ -151,6 +158,8 @@ export function ToolGuide({
             （与顶层 Tab 页切换同一套语言，复用现有 keyframes，零新增 CSS）。
             wrapper 接管了 CardContent 的 space-y-4（后者现在只隔 wrapper 与上方两兄弟），
             故 wrapper 自带 space-y-4 保住 guide 块之间原本的间距。 */}
+        {/* 与工具无关的公共块：放在 key={tool} 外面，切工具时不重挂、不播入场动画。 */}
+        {common}
         <div key={tool} className="animate-tab-in space-y-4">
           {tool === "claude-code" ? (
             <>

@@ -22,7 +22,7 @@ let host: HTMLDivElement;
 let root: Root;
 function Harness({ status = base }: { status?: StaticStatus }) {
   const guide = useConnectGuideState(status, "10.0.7.185");
-  return <ToastProvider><ConnectGuide status={status} guide={guide} listenAll={false} lanIps={[]} selectedIp="10.0.7.185" onSelectIp={() => {}} onRefresh={() => {}} /></ToastProvider>;
+  return <ToastProvider><ConnectGuide status={status} guide={guide} onRefresh={() => {}} /></ToastProvider>;
 }
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

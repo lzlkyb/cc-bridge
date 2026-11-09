@@ -70,6 +70,22 @@ pub fn resolve_display_host(host: &str, lan_ips: &[String], selected_ip: Option<
     }
 }
 
+/// 校验并规整「监听地址」。只接受合法 IP（`0.0.0.0` / `127.0.0.1` / 具体网卡地址）。
+///
+/// 🔴 不接受 `localhost` 这类主机名：连接页的「是否监听全部网卡」判断、封禁生效条件
+/// 都是按字面量 `0.0.0.0` 比较的，写进一个名字会让这些判断全部走偏。
+/// 前端只给两个选项，这里是兜底：`save_config`（手工调用也走它）与 `import_config`
+/// 两条写入路径都会先过这里。
+pub fn validate_listen_host(raw: &str) -> Result<String, String> {
+    let h = raw.trim();
+    match h.parse::<std::net::IpAddr>() {
+        Ok(ip) => Ok(ip.to_string()),
+        Err(_) => Err(format!(
+            "监听地址必须是 IP（如 0.0.0.0 或 127.0.0.1），收到：{h:?}"
+        )),
+    }
+}
+
 /// 是否指回环地址（`127.0.0.0/8`、`::1`、`localhost`，含 IPv6 方括号写法）。
 ///
 /// 不能靠 `lan_ips.contains` 判断：`get_lan_ips` 本身就排除回环。
@@ -440,6 +456,22 @@ pub fn ip_update_command(t: IpUpdateTarget<'_>) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listen_host_accepts_ips_and_normalizes() {
+        assert_eq!(validate_listen_host("0.0.0.0").unwrap(), "0.0.0.0");
+        assert_eq!(validate_listen_host(" 127.0.0.1 ").unwrap(), "127.0.0.1");
+        assert_eq!(validate_listen_host("10.0.7.191").unwrap(), "10.0.7.191");
+        assert_eq!(validate_listen_host("::").unwrap(), "::");
+    }
+
+    /// 主机名 / 空串 / 带端口都要拒：连接页与封禁都按字面量 `0.0.0.0` 判断。
+    #[test]
+    fn listen_host_rejects_non_ip() {
+        for bad in ["", "localhost", "0.0.0.0:7823", "my-pc", "1.2.3"] {
+            assert!(validate_listen_host(bad).is_err(), "{bad:?} 应被拒绝");
+        }
+    }
 
     /// 🔴 回归（审查 P2）：显式绑回环时**不能**回退到 LAN IP。
     ///
