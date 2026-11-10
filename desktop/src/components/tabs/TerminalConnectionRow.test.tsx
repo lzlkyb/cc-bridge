@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TerminalConnectionRow } from "./TerminalConnectionRow";
 import type { SshConnection } from "../../lib/types";
+import { forwardPanelOpen, setForwardPanelConnId } from "../../lib/sshTunnelStore";
 
 vi.mock("../../hooks/usePrefersReducedMotion", () => ({ usePrefersReducedMotion: () => true }));
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -33,6 +34,14 @@ it("单击在线服务器切换实际会话，文件入口仍指向同一连接"
   await act(async () => container.querySelector<HTMLButtonElement>(".terminal-connection-more")!.click());
   await act(async () => menuItem("文件管理").click());
   expect(props.onOpenFiles).toHaveBeenCalledWith(conn);
+});
+
+it("端口转发入口不依赖终端会话：未连接也能从菜单打开", async () => {
+  setForwardPanelConnId(null);
+  await render(); await act(async () => container.querySelector<HTMLButtonElement>(".terminal-connection-more")!.click());
+  await act(async () => menuItem("端口转发").click());
+  expect(forwardPanelOpen()).toBe(true);
+  setForwardPanelConnId(null);
 });
 
 it("删除必须经过行内确认，菜单项本身只请求确认", async () => {

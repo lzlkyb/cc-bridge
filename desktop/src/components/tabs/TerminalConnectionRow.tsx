@@ -3,6 +3,9 @@ import { Icon } from "../ui/icon";
 import { Menu, MenuItem } from "../ui/Menu";
 import { toast } from "../ui/toast";
 import type { ConnectionListItem, SshSessionRef } from "./TerminalConnectionItem";
+import { setForwardPanelConnId, useTunnelStatus } from "../../lib/sshTunnelStore";
+
+const TUNNEL_LABEL = { connecting: "连接中", up: "运行中", reconnecting: "重连中", error: "已停止", stopped: "未开启" };
 
 type Props = ComponentProps<typeof ConnectionListItem> & {
   liveCount: number; onActivate: (sessionId: string) => void;
@@ -12,6 +15,7 @@ type Props = ComponentProps<typeof ConnectionListItem> & {
 /** Host navigation keeps connection actions distinct from per-session actions. */
 export function TerminalConnectionRow({ conn, jumpName, session, sessions = [], activeId, connectionError, liveCount, isActive, connecting, confirmingDelete, onConnect, onDisconnect, onNewTerminal, onActivate, onOpenFiles, onEdit, onDeleteRequest, onConfirmDelete, onCancelDelete }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const tunnel = useTunnelStatus(conn.id);
   const connected = !!session && !session.closedReason;
   const name = conn.name || conn.host;
   const reason = connectionError || (session?.closedReason && session.closedReason !== "restored" && session.closedReason !== "已手动断开" ? session.closedReason : "");
@@ -29,6 +33,7 @@ export function TerminalConnectionRow({ conn, jumpName, session, sessions = [], 
     </button>
     <div className="terminal-connection-user" title={conn.username}>{conn.username}</div>
     {jumpName && <small className="terminal-connection-jump">经 {jumpName}</small>}
+    {tunnel && <button type="button" className="terminal-connection-jump text-left" title={tunnel.message ?? undefined} onClick={() => setForwardPanelConnId(conn.id)}>端口转发 · {TUNNEL_LABEL[tunnel.state]}</button>}
     <div className="terminal-connection-meta">
       <button type="button" className="terminal-connection-expand" disabled={connecting} aria-expanded={tabs.length > 1 ? expanded : undefined} onClick={() => tabs.length > 1 ? setExpanded(v => !v) : connected ? onActivate(session.sessionId) : onConnect(conn)}>
         {tabs.length > 1 && expanded ? "收起会话" : liveCount > 0 ? `${liveCount} 个会话` : tabs.length > 1 ? `${tabs.length} 个终端` : "连接服务器"}<Icon name="chevronRight" size={13}/>
@@ -37,6 +42,7 @@ export function TerminalConnectionRow({ conn, jumpName, session, sessions = [], 
         {close => <>
           <MenuItem label={connected ? "另开终端" : "连接"} icon="plus" disabled={connecting} onClick={() => { if (connected) onNewTerminal(conn); else onConnect(conn); close(); }}/>
           {connected && <MenuItem label="文件管理" icon="folder" onClick={() => { onOpenFiles(conn); close(); }}/>}
+          <MenuItem label="端口转发" icon="arrowRight" onClick={() => { setForwardPanelConnId(conn.id); close(); }}/>
           <MenuItem label="复制连接地址" icon="copy" onClick={() => { void copyAddress(); close(); }}/>
           <MenuItem label="编辑连接" icon="settings" onClick={() => { onEdit(conn); close(); }}/>
           {connected && <MenuItem label="断开当前会话" icon="power" onClick={() => { onDisconnect(session.sessionId); close(); }}/>}

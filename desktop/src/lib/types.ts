@@ -589,6 +589,44 @@ export interface SshConnection {
    * 只支持一跳（被引用的连接自身必须是直连）。
    */
   proxyJumpId: string;
+  /** 端口转发规则（后端总会返回；可选只是为了新建表单不必带它）。 */
+  forwards?: ForwardRule[];
+  /** 什么时候自动开启这条连接的端口转发。 */
+  forwardAuto?: ForwardAuto;
+}
+
+/** local = ssh -L，remote = ssh -R，dynamic = ssh -D（SOCKS5）。 */
+export type ForwardKind = "local" | "remote" | "dynamic";
+
+/** 自动开启转发的时机：不自动 / 连接终端时询问 / 连接终端时开启 / 随 cc-bridge 启动。 */
+export type ForwardAuto = "off" | "ask" | "connect" | "launch";
+
+export interface ForwardRule {
+  id: string;
+  enabled: boolean;
+  kind: ForwardKind;
+  listenHost: string;
+  /** remote 允许 0：由服务器分配端口。 */
+  listenPort: number;
+  targetHost: string;
+  targetPort: number;
+  note: string;
+}
+
+/** 与后端 `ssh_tunnel.rs::TunnelStatus` 对应（`ssh_tunnel_status` 事件 / `ssh_tunnel_list`）。 */
+export interface TunnelStatus {
+  connectionId: string;
+  state: "connecting" | "up" | "reconnecting" | "error" | "stopped";
+  message: string | null;
+  /** 缺密码/口令而停住：界面该弹输入框。 */
+  needsSecret: boolean;
+  rules: {
+    /** 启动时的规则快照，和草稿比出「待应用」。 */
+    rule: ForwardRule;
+    state: "pending" | "listening" | "failed";
+    boundPort: number | null;
+    message: string | null;
+  }[];
 }
 
 /** `ssh_check` 返回：系统 ssh 是否可用 + 路径 + 不可用时的安装指引。 */

@@ -349,8 +349,9 @@ pub async fn save_config(
     // ssh_sessions（DashMap），不会回头拿 config 锁，无死锁。
     if ssh_was_enabled && !config.ssh_enabled {
         state.kill_all_ssh_sessions();
-        // 不推屏的 SFTP helper 会话也是活的 SSH 连接，断路器必须一并切掉。
+        // 不推屏的 SFTP helper 会话和端口转发也是活的 SSH 连接，断路器必须一并切掉。
         state.kill_all_ssh_helpers();
+        state.kill_all_ssh_tunnels();
     }
     // 首次接入复制命令时由前端写入，记录 cc-bridge 被注册到远程的作用域，
     // 供后续 IP 变化 / Token 重生成生成精确 sed 命令（方案 A）。
@@ -904,6 +905,7 @@ pub(crate) async fn import_config_inner(
     if !new_ssh_enabled && old_ssh_enabled {
         state.kill_all_ssh_sessions();
         state.kill_all_ssh_helpers();
+        state.kill_all_ssh_tunnels();
     }
 
     // 白名单根缓存随导入刷新（性能优化）：与 save_config 一致，写完 config 后用最新 roots 重算，

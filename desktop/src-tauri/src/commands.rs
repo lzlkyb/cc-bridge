@@ -43,6 +43,8 @@ mod running;
 mod server;
 /// SSH 终端（面板内交互终端，首版密码登录）。
 mod ssh_cmds;
+/// SSH 端口转发（-L / -R / -D）。
+mod ssh_tunnel_cmds;
 mod status;
 mod system;
 mod update;
@@ -62,6 +64,7 @@ pub use remote_cmds::*;
 pub use running::*;
 pub use server::*;
 pub use ssh_cmds::*;
+pub use ssh_tunnel_cmds::*;
 pub use status::*;
 pub use system::*;
 pub use update::*;

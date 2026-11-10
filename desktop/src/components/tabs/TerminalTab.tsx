@@ -29,6 +29,7 @@ import { TerminalDropLayer } from "./TerminalDropLayer";
 import { TerminalSplitControls } from "./TerminalSplitControls";
 import { TerminalFullscreenProvider } from "./TerminalFullscreenContext";
 import { zoneOf, type DropZone } from "../../lib/dropHit";
+import { forwardPanelOpen, offerForward } from "../../lib/sshTunnelStore";
 
 /** SSH 工作区：共享侧栏，终端保活；首次使用仍需显式启用。 */
 export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCollapsedChange, onNavigate, onChanged }: { status?: StaticStatus; sidebarHost: HTMLDivElement | null; sidebarCollapsed: boolean; onSidebarCollapsedChange: Dispatch<SetStateAction<boolean>>; onNavigate?: (tab: string, anchor?: string) => void; onChanged?: () => void }) {
@@ -79,7 +80,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
       // 文件面板盖在终端之上时交给它自己的监听器。
       // 注意这里**不再**拿 up.busy 当排除条件：忙的时候也要收集拖放区，
       // 否则遮罩不出、也不提示，用户只知道「没反应」。接不接在 onDrop 里拿主意。
-      if (fileConn || !activeConn) return [];
+      if (fileConn || forwardPanelOpen() || !activeConn) return [];
       const z = zoneOf("terminal", termAreaRef.current);
       return z ? [z] : ([] as DropZone[]);
     },
@@ -103,7 +104,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
   const connect = (conn: SshConnection) => {
     workspace.setFocusedTabId(null);
     setFileConn(null);
-    void ssh.connect(conn);
+    void ssh.connect(conn).then((sid) => sid && offerForward(conn));
   };
   // 另开一个（不复用现有标签）。
   const newTerminal = (conn: SshConnection) => {
@@ -272,16 +273,15 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
           />
         </div>
 
-        {/* 文件管理面板（覆盖在终端之上） */}
-        {fileConn && (
-          <TerminalFilePanelHost
-            conn={fileConn}
-            initialPath={filePath ?? undefined}
-            onBack={() => (setFileConn(null), setFilePath(null))}
-            sessions={sessions}
-            onConnect={ssh.connect}
-          />
-        )}
+        {/* 文件管理 / 端口转发面板（覆盖在终端之上） */}
+        <TerminalFilePanelHost
+          conn={fileConn}
+          initialPath={filePath ?? undefined}
+          onBack={() => (setFileConn(null), setFilePath(null))}
+          sessions={sessions} activeId={activeId}
+          connections={connections}
+          onConnect={ssh.connect}
+        />
       </div>
 
       <SshConnectionDialog
@@ -292,7 +292,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
         onSaved={() => void queryClient.invalidateQueries({ queryKey: ["sshConnections"] })}
         onConnect={(conn, credentials) => {
           workspace.setFocusedTabId(null); setFileConn(null);
-          void ssh.connect(conn, { newTab: true, credentials });
+          void ssh.connect(conn, { newTab: true, credentials }).then((sid) => sid && offerForward(conn, credentials));
         }}
       />
     </div></TerminalFullscreenProvider>

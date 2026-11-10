@@ -64,6 +64,9 @@ html[data-ui-style="glass"] .terminal-connection-row[data-active] { background:l
 html.dark[data-ui-style="glass"] .terminal-connection-row[data-active] { background:linear-gradient(130deg,rgb(170 160 227 / .10),rgb(183 194 226 / .05)); }
 @media(max-width:1100px) { .app-side[data-mode="terminal"]:not([data-collapsed]) { width:280px; } }
 @media(prefers-reduced-motion:reduce) { .terminal-connection-row { transition:none; } }
+/* 转发规则行里的「转发 / SOCKS5」切换：沿用 SettingsChoice，压到与输入框同高（h-8）。 */
+.forward-kind .settings-choice { padding:2px; flex-wrap:nowrap; }
+.forward-kind .settings-choice button { padding:3px 8px; min-height:24px; font-size:11px; }
 .terminal-workspace .terminal-tabs-header { position: relative; z-index: 1; min-height: 44px; padding: 5px 8px 5px 12px; }
 /* Pane find/history overlays stay below toolbar menus; the file overlay remains above both. */
 .terminal-workspace .terminal-panes { isolation: isolate; }
