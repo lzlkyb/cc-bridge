@@ -12,6 +12,7 @@ import { TerminalTabAttentionPill } from "./TerminalTabAttentionPill";
 import { terminalSessionOrdinal } from "../../lib/terminalWorkspace";
 import { TitleBarControls } from "../layout/TitleBarControls";
 import { useTerminalFullscreenActions } from "./TerminalFullscreenContext";
+import { TerminalFullscreenDragStrip } from "./TerminalFullscreenDragStrip";
 
 interface TerminalTabsBarProps {
   fullscreen?: boolean;
@@ -280,7 +281,7 @@ export function TerminalTabsBar({
         </button>
       )}
       </div>
-      {fullscreen && <><div className="terminal-fullscreen-drag" data-tauri-drag-region title="拖动窗口"/>{fullscreenActions.safety}</>}
+      {fullscreen && <><TerminalFullscreenDragStrip />{fullscreenActions.safety}</>}
       {splitControls}
       <div className="terminal-toolbar-host" ref={onToolbarReady} aria-label="当前窗格操作"/>
       {fullscreen && <div className="terminal-fullscreen-window" data-tauri-drag-region="false">

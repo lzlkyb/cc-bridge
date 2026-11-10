@@ -7,6 +7,7 @@ import { APP_INFO } from "../../lib/about";
 import { UpdateBadge } from "./UpdateBadge";
 import { UpdateCollapsedDot } from "./UpdateCollapsedDot";
 import { SideNavSettings } from "./SideNavSettings";
+import { useTitlebarDrag } from "../../hooks/useTitlebarDrag";
 
 type NavItem = { key: string; label: string; icon: IconName };
 
@@ -97,6 +98,9 @@ function SideNavImpl({
     ? "本机服务正常，但防火墙可能拦截远程入站，点击前往连接页"
     : statusText;
 
+  // H8：品牌区也是自绘标题栏的拖拽区，同样要区分「这次点击是激活还是拖动」
+  const onTitlebarMouseDown = useTitlebarDrag();
+
   const unreadLabel = unreadCount > 9 ? "9+" : String(unreadCount);
 
   // 未读红点 scale 过渡（2026-10-17）：不再条件渲染——硬插入会把「设置」两个字挤一下。
@@ -127,10 +131,15 @@ function SideNavImpl({
 
   return (
     <aside className="app-side" data-collapsed={collapsed || undefined} data-mode={settingsMode ? "settings" : activeTab === "terminal" ? "terminal" : undefined}>
-      {/* 品牌区：整块可拖窗口（decorations:false，无系统标题栏，必须留出拖拽区域） */}
-      <div data-tauri-drag-region className="app-side-head">
+      {/* 品牌区：整块可拖窗口（decorations:false，无系统标题栏，必须留出拖拽区域）。
+          H8：内置脚本在 mousedown 就无条件拖，不判断窗口是否已聚焦 ⇒ 置 false 交给
+          useTitlebarDrag，从别的软件点进来那一下只激活、不拖走。 */}
+      <div
+        data-tauri-drag-region="false"
+        onMouseDown={onTitlebarMouseDown}
+        className="app-side-head"
+      >
         <img
-          data-tauri-drag-region
           src="/icon.png"
           alt={APP_INFO.name}
           width={28}
@@ -138,7 +147,7 @@ function SideNavImpl({
           className="app-side-logo"
           draggable={false}
         />
-        <div data-tauri-drag-region className="app-side-brand">
+        <div className="app-side-brand">
           <span className="app-side-name">{APP_INFO.name}</span>
           <span className="app-side-tagline">{APP_INFO.tagline}</span>
         </div>
