@@ -127,17 +127,22 @@ fn create_desktop_shortcut_impl(app: tauri::AppHandle) -> Result<(), String> {
     let mut cmd = std::process::Command::new("powershell");
     #[cfg(windows)]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW：隐藏 powershell 控制台窗口，避免闪黑框
-    let out = cmd
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            &ps,
-        ])
-        .output()
-        .map_err(|e| format!("创建快捷方式失败: {e}"))?;
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        &ps,
+    ]);
+    let out = crate::child_proc::output_with_timeout(
+        &mut cmd,
+        // 建一个 .lnk 实测不到 1s；15s 是给慢盘 / 杀软扫描留的余量。关键是有上限：
+        // `create_desktop_shortcut` 是 **sync 命令**（跑在主线程），`output()` 没有
+        // 超时时 powershell 一卡，整个窗口就被判「未响应」。
+        std::time::Duration::from_secs(15),
+    )
+    .map_err(|e| format!("创建快捷方式失败: {e}"))?;
     if !out.status.success() {
         let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
         return Err(if msg.is_empty() {

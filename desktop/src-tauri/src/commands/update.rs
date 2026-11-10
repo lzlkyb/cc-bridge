@@ -10,9 +10,26 @@
 //! 唯一新增的是下面这行 import —— 区块内 13 处 `.emit()` 需要 `Emitter` trait 在作用域，
 //! 其余外部符号（`url::Url` / `tauri_plugin_updater::` / `serde_json::` 等）原本就是全限定路径。
 
+use std::time::Duration;
+
 use tauri::Emitter;
 
 // ===== 自动更新（后台线程，不阻塞 UI），採自 PastePanda 实现 =====
+
+/// 检查更新的整体时限。
+///
+/// 🔴 为什么需要（2026-11-10）：断网时（尤其「网卡连着但没有 Internet」）每个 HTTPS
+/// 请求都要等 TCP 超时才失败，而检查链路是 3 个源 × 最多 3 次尝试 = 9 次请求，
+/// 最坏能拖几分钟。这期间前端一直停在 `checking`（顶栏转圈），用户只会认为软件卡死。
+/// 60s 足够覆盖「慢但能通」的正常场景；超过就是有问题，直接按 `timeout` 告知，
+/// 让用户看到「连接更新服务器超时」而不是无限转圈。
+const CHECK_DEADLINE: Duration = Duration::from_secs(60);
+
+/// `start_update` 里「下载前复查」的时限。
+///
+/// 比独立检查更短：用户已经点了「下载安装」，卡 45s 还没开始下载，比直接告诉他
+/// 「网络不可用，稍后重试」体验更差。
+const PRE_DOWNLOAD_CHECK_DEADLINE: Duration = Duration::from_secs(45);
 
 /// 单飞闸：同一时刻只允许一个更新 / 检查任务在跑。
 ///
@@ -250,19 +267,35 @@ pub fn start_update(app: tauri::AppHandle) {
                 }
             };
 
-            let check_result =
-                match retry_with_backoff(2, "检查更新", is_retryable_check_error, || {
+            // 复查同样要有上限：断网时 `updater.check()` 会一直等到 TCP 超时，
+            // 而重试链条还会把它乘上 3 倍（每次尝试 + 1s/2s 退避）。
+            let check_result = match tokio::time::timeout(
+                PRE_DOWNLOAD_CHECK_DEADLINE,
+                retry_with_backoff(2, "检查更新", is_retryable_check_error, || {
                     updater.check()
-                })
-                .await
-                {
-                    Ok(r) => r,
-                    Err(e) => {
-                        last_code = classify_update_error(&e);
-                        last_message = Some(format!("检查更新失败: {e}"));
-                        continue;
-                    }
-                };
+                }),
+            )
+            .await
+            {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => {
+                    last_code = classify_update_error(&e);
+                    last_message = Some(format!("检查更新失败: {e}"));
+                    continue;
+                }
+                Err(_) => {
+                    log::warn!(
+                        "[Update] 下载前复查超过 {}s 未完成，按超时换源",
+                        PRE_DOWNLOAD_CHECK_DEADLINE.as_secs()
+                    );
+                    last_code = "timeout";
+                    last_message = Some(format!(
+                        "检查更新超时（{}s）",
+                        PRE_DOWNLOAD_CHECK_DEADLINE.as_secs()
+                    ));
+                    continue;
+                }
+            };
 
             let update = match check_result {
                 Some(u) => u,
@@ -393,67 +426,92 @@ pub fn check_update(app: tauri::AppHandle) {
         let _guard = guard;
         let _ = app.emit("update:checking", ());
 
-        let groups = match candidate_endpoint_groups() {
-            Ok(g) => g,
-            Err(e) => {
-                let _ = app.emit("update:error", serde_json::json!({ "message": e }));
-                return;
-            }
-        };
-
-        let mut last_message: Option<String> = None;
-        let mut last_code: &'static str = "unknown";
-        for endpoints in groups {
-            let updater = match build_updater(&app, endpoints) {
-                Ok(u) => u,
+        // 整体时限兜底（理由见 CHECK_DEADLINE 注释）：断网时 3 个源 × 最多 3 次尝试
+        // = 9 次请求，每次都等 TCP 超时，前端会一直停在 checking（顶栏转圈），
+        // 用户只能理解成"卡死"。`app` 被下面这个 async 块 move 走，超时分支还要用它
+        // 发事件，所以先 clone 一份。
+        let app_on_timeout = app.clone();
+        let outcome = tokio::time::timeout(CHECK_DEADLINE, async move {
+            let groups = match candidate_endpoint_groups() {
+                Ok(g) => g,
                 Err(e) => {
-                    last_message = Some(e);
-                    last_code = "config";
-                    continue;
+                    let _ = app.emit("update:error", serde_json::json!({ "message": e }));
+                    return;
                 }
             };
 
-            match retry_with_backoff(2, "检查更新", is_retryable_check_error, || {
-                updater.check()
-            })
-            .await
-            {
-                Ok(Some(u)) => {
-                    let date_str = u.date.map(|d| d.to_string());
-                    let current_ver = u.current_version.clone();
-                    let _ = app.emit(
-                        "update:available",
-                        serde_json::json!({
-                            "version": u.version,
-                            "body": u.body,
-                            "date": date_str,
-                            "currentVersion": current_ver,
-                        }),
-                    );
-                    return;
-                }
-                Ok(None) => {
-                    let _ = app.emit("update:uptodate", ());
-                    return;
-                }
-                Err(e) => {
-                    last_code = classify_update_error(&e);
-                    last_message = Some(format!("检查更新失败: {e}"));
-                    continue;
+            let mut last_message: Option<String> = None;
+            let mut last_code: &'static str = "unknown";
+            for endpoints in groups {
+                let updater = match build_updater(&app, endpoints) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        last_message = Some(e);
+                        last_code = "config";
+                        continue;
+                    }
+                };
+
+                match retry_with_backoff(2, "检查更新", is_retryable_check_error, || {
+                    updater.check()
+                })
+                .await
+                {
+                    Ok(Some(u)) => {
+                        let date_str = u.date.map(|d| d.to_string());
+                        let current_ver = u.current_version.clone();
+                        let _ = app.emit(
+                            "update:available",
+                            serde_json::json!({
+                                "version": u.version,
+                                "body": u.body,
+                                "date": date_str,
+                                "currentVersion": current_ver,
+                            }),
+                        );
+                        return;
+                    }
+                    Ok(None) => {
+                        let _ = app.emit("update:uptodate", ());
+                        return;
+                    }
+                    Err(e) => {
+                        last_code = classify_update_error(&e);
+                        last_message = Some(format!("检查更新失败: {e}"));
+                        continue;
+                    }
                 }
             }
-        }
 
-        let _ = app.emit(
-            "update:error",
-            serde_json::json!({
-                "message": format!(
-                    "全部更新源均检查失败（已依次尝试）: {}",
-                    last_message.unwrap_or_else(|| "未知错误".into())
-                ),
-                "code": last_code
-            }),
-        );
+            let _ = app.emit(
+                "update:error",
+                serde_json::json!({
+                    "message": format!(
+                        "全部更新源均检查失败（已依次尝试）: {}",
+                        last_message.unwrap_or_else(|| "未知错误".into())
+                    ),
+                    "code": last_code
+                }),
+            );
+        })
+        .await;
+
+        if outcome.is_err() {
+            log::warn!(
+                "[Update] 检查更新超过 {}s 未完成，按超时处理",
+                CHECK_DEADLINE.as_secs()
+            );
+            let _ = app_on_timeout.emit(
+                "update:error",
+                serde_json::json!({
+                    "message": format!(
+                        "连接更新服务器超时（{}s），请检查网络后重试",
+                        CHECK_DEADLINE.as_secs()
+                    ),
+                    "code": "timeout"
+                }),
+            );
+        }
     });
 }
 

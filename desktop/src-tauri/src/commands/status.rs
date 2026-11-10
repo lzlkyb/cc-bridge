@@ -341,8 +341,17 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         .join(&backup_dir_name)
         .to_string_lossy()
         .into_owned();
-    let (backup_count, backup_total_bytes) =
-        backup::backup_stats(&state.data_dir, &backup_dir_name);
+    // 备份目录统计要扫磁盘：同步 std::fs 枚举一旦落在网络盘 / 映射盘上，断网时
+    // SMB 超时可达 20~45s，会把一个 tokio 工作线程占死。本函数每 5s 被前端轮询一次，
+    // 连续几次就能占满全部 worker（= 所有 IPC 命令一起排队，界面看着像卡死），
+    // 所以必须挪进阻塞线程池。
+    let stats_data_dir = state.data_dir.clone();
+    let stats_backup_dir = backup_dir_name.clone();
+    let (backup_count, backup_total_bytes) = tauri::async_runtime::spawn_blocking(move || {
+        backup::backup_stats(&stats_data_dir, &stats_backup_dir)
+    })
+    .await
+    .unwrap_or((0, 0));
 
     // ── 慢操作到此结束，现在才取锁读其余字段（全是内存读，微秒级）。──
     let config = state.config.read().await;
