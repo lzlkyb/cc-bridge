@@ -280,40 +280,113 @@ try {
 } | ConvertTo-Json -Depth 6 -Compress
 "#;
 
+/// 能力探测的超时：脚本只有一行 `Get-Command`，实测 1.4s（含 PowerShell 冷启动）。
+/// 10s 给慢机器 / 首次被杀软扫描留余量（探测在后台阻塞线程上跑，与 UI 无关）。
+#[cfg(windows)]
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// 全量诊断的超时：要枚举全部入站规则，冷启动实测 1~4s，规则多 / 慢盘更久。
+///
+/// 取 30s 而不是 10s（2026-11-10）：这条路径同样在后台阻塞线程上，放宽只会让慢机器
+/// 「慢一点出结论」；收紧的代价是超时后落到兜底分支，连接页直接显示「无法检测」——
+/// 一个假阴性比等一下糟糕得多。
+#[cfg(windows)]
+const DIAG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// 跑一次 PowerShell 脚本并返回 stdout。脚本写入临时 .ps1 再 `-File` 执行：
 /// 避免 `-Command` 长脚本的多层引号转义问题，同时 `-ExecutionPolicy Bypass`
 /// 绕开脚本执行策略限制。文件名带 PID，避免多实例并发互相覆盖。
+///
+/// 🔴 **必须带超时**（2026-11-10）：`Command::output()` 本身没有上限。本函数的调用点
+/// 既在后台刷新里，也曾经在 Tauri `setup` 主线程上（窗口 `show()` 之前）—— 断网、
+/// 杀软云查杀、组策略脚本的环境下，powershell 可能几十秒不返回，主线程被卡到 Windows
+/// 判定「未响应」并提示结束进程。用户反馈的「断网后软件卡死转圈」正是这条路径。
+///
+/// 返回 `io::Error` 以便调用方把「超时」与「明确失败」分开处理（见
+/// [`probe_powershell_available`]）。
 #[cfg(windows)]
-fn run_ps_script(script: &str) -> Option<String> {
+fn run_ps_script_raw(
+    script: &str,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
     let path = std::env::temp_dir().join(format!("cc-bridge-fw-{}.ps1", std::process::id()));
-    std::fs::write(&path, script).ok()?;
-    let out = std::process::Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(&path)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
+    std::fs::write(&path, script)?;
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+    ])
+    .arg(&path)
+    .creation_flags(CREATE_NO_WINDOW);
+    let out = crate::child_proc::output_with_timeout(&mut cmd, timeout);
     let _ = std::fs::remove_file(&path);
-    let out = out.ok()?;
-    if !out.status.success() {
-        return None;
+    out
+}
+
+/// [`run_ps_script_raw`] 的便利版：只要 stdout，任何失败都返回 `None`。
+///
+/// 失败会**重试一次**：冷启动首次执行时，临时 .ps1 可能正被杀软实时扫描，PowerShell
+/// 打开失败 / 脚本 exit 非 0 —— 这类一次性故障重试就能过，而直接回退会让连接页显示
+/// 「无法检测」。重试在后台阻塞线程上，最多多花一个超时周期。
+#[cfg(windows)]
+fn run_ps_script(script: &str, timeout: std::time::Duration) -> Option<String> {
+    for attempt in 1..=2u8 {
+        let out = match run_ps_script_raw(script, timeout) {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!(
+                    "[firewall] PowerShell 调用失败（第 {attempt} 次，上限 {}ms）：{e}",
+                    timeout.as_millis()
+                );
+                if attempt == 1 {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                continue;
+            }
+        };
+        if out.status.success() {
+            return Some(String::from_utf8_lossy(&out.stdout).into_owned());
+        }
+        log::warn!(
+            "[firewall] PowerShell 脚本退出码 {:?}（第 {attempt} 次），stderr：{:?}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .take(300)
+                .collect::<String>()
+        );
+        if attempt == 1 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
     }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    None
 }
 
 /// 启动探测：PowerShell + NetSecurity 模块是否可用。不可用时上层回退 netsh。
+///
+/// 🔴 **超时不算不可用**（2026-11-10）：返回值决定「防火墙诊断要不要跑」。判成不可用会让
+/// 连接页整块显示「无法检测」并停摆到下一轮，而超时只说明「这次没来得及」——冷启动第一次
+/// 被杀软实时扫描时 1.4s 的脚本完全可能顶到 10s 上限。所以超时取乐观值，只有「进程起来了
+/// 但脚本 exit 1」（模块确实缺失）才算明确不可用。
 #[cfg(windows)]
 pub fn probe_powershell_available() -> bool {
-    run_ps_script(
+    match run_ps_script_raw(
         "$ErrorActionPreference='Stop'\nif (Get-Command Get-NetFirewallProfile -ErrorAction SilentlyContinue) { 'ok' } else { exit 1 }\n",
-    )
-    .map(|s| s.contains("ok"))
-    .unwrap_or(false)
+        PROBE_TIMEOUT,
+    ) {
+        Ok(o) => o.status.success() && String::from_utf8_lossy(&o.stdout).contains("ok"),
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+            log::warn!(
+                "[firewall] PowerShell 能力探测超过 {}ms，按可用处理（不做不可用结论）",
+                PROBE_TIMEOUT.as_millis()
+            );
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// 列举入站规则：`netsh advfirewall firewall show rule name=all dir=in verbose`。
@@ -322,17 +395,36 @@ pub fn probe_powershell_available() -> bool {
 /// - 走 `cmd /c chcp 65001 && netsh …`：强制控制台代码页为 UTF-8，否则中文系统下输出是
 ///   GBK，`from_utf8_lossy` 会把键名搞成乱码导致解析全失败。
 /// - `verbose` 是必需的：不加则不输出「程序」字段，没法判定规则是否指向当前 exe。
+///
+/// 超时同全量诊断（`DIAG_TIMEOUT`）。⚠️ 走的是 `cmd /c` 包装，超时 kill 只终止 cmd 本身，
+/// 里面的 netsh 有可能多活一小会儿——它自己会退出，且这条路径只在结构化诊断不可用时兜底。
 #[cfg(windows)]
 fn run_netsh_rules() -> Option<String> {
-    let out = std::process::Command::new("cmd")
-        .args([
-            "/c",
-            "chcp 65001 >nul && netsh advfirewall firewall show rule name=all dir=in verbose",
-        ])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new("cmd");
+    cmd.args([
+        "/c",
+        "chcp 65001 >nul && netsh advfirewall firewall show rule name=all dir=in verbose",
+    ])
+    .creation_flags(CREATE_NO_WINDOW);
+    let out = match crate::child_proc::output_with_timeout(&mut cmd, DIAG_TIMEOUT) {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!(
+                "[firewall] netsh 入站规则枚举失败（上限 {}ms）：{e}",
+                DIAG_TIMEOUT.as_millis()
+            );
+            return None;
+        }
+    };
     if !out.status.success() {
+        log::warn!(
+            "[firewall] netsh 枚举入站规则退出码非 0（{:?}），stderr：{:?}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .take(200)
+                .collect::<String>()
+        );
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -341,8 +433,26 @@ fn run_netsh_rules() -> Option<String> {
 /// 完整诊断。返回 `None` 表示结构化路径不可用（上层回退到粗粒度 netsh 判定）。
 #[cfg(windows)]
 pub fn query_diagnosis(port: u16, exe: &str) -> Option<FirewallDiagnosis> {
-    let raw = run_ps_script(PS_DIAG_SCRIPT)?;
-    let mut value: serde_json::Value = serde_json::from_str(raw.trim()).ok()?;
+    // 每个 `None` 出口都留一条 warn：结构化诊断不可用时前端只能显示「无法检测」，
+    // 用户看到的是一句没有原因的话。日志里能直接指到是哪一步塌的。
+    // （dev 下默认日志级别是 error，要看得加 `RUST_LOG=warn`。）
+    let raw = match run_ps_script(PS_DIAG_SCRIPT, DIAG_TIMEOUT) {
+        Some(r) => r,
+        None => {
+            log::warn!("[firewall] 配置文件诊断脚本无结果，回退粗粒度判定");
+            return None;
+        }
+    };
+    let mut value: serde_json::Value = match serde_json::from_str(raw.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "[firewall] 配置诊断输出不是合法 JSON（{e}），原始前 200 字符：{:?}",
+                raw.chars().take(200).collect::<String>()
+            );
+            return None;
+        }
+    };
     // PowerShell 的 ConvertTo-Json 在数组仅 1 个元素时可能塌缩成对象，先规整回数组。
     for key in ["profiles", "active"] {
         let slot = &mut value[key];
@@ -352,8 +462,15 @@ pub fn query_diagnosis(port: u16, exe: &str) -> Option<FirewallDiagnosis> {
             *slot = serde_json::Value::Array(vec![slot.clone()]);
         }
     }
-    let out: PsOut = serde_json::from_value(value).ok()?;
+    let out: PsOut = match serde_json::from_value(value) {
+        Ok(o) => o,
+        Err(e) => {
+            log::warn!("[firewall] 配置诊断 JSON 结构不符预期（{e}）");
+            return None;
+        }
+    };
     if out.profiles.is_empty() {
+        log::warn!("[firewall] 诊断未返回任何防火墙配置文件，回退粗粒度判定");
         return None;
     }
 
@@ -363,10 +480,21 @@ pub fn query_diagnosis(port: u16, exe: &str) -> Option<FirewallDiagnosis> {
     let rules: Vec<RawRule> = if all_active_profiles_off(&out.profiles, &out.active) == Some(true) {
         Vec::new()
     } else {
-        let (blocks, rules) = parse_netsh_rules(&run_netsh_rules()?, port);
+        let raw_rules = match run_netsh_rules() {
+            Some(r) => r,
+            None => {
+                log::warn!("[firewall] netsh 入站规则枚举无结果，回退粗粒度判定");
+                return None;
+            }
+        };
+        let (blocks, rules) = parse_netsh_rules(&raw_rules, port);
         // 一条规则块都没解出来 = 输出格式/编码不对（代码页未生效等）。
         // 此时宁可回退到粗粒度判定，也不能拿空规则集去下「没有任何放行规则」的错结论。
         if blocks == 0 {
+            log::warn!(
+                "[firewall] netsh 输出解不出任何规则块（编码/格式异常），前 200 字符：{:?}",
+                raw_rules.chars().take(200).collect::<String>()
+            );
             return None;
         }
         rules

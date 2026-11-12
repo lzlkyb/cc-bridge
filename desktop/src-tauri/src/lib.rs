@@ -6,6 +6,8 @@ pub mod browse;
 pub mod cc_history;
 /// CC 对话（Claude Code 图形客户端）。协议解析 / 进程 / 事件流水 / 会话管理。
 pub mod cc_session;
+/// 带超时的子进程输出采集（powershell / netsh 这类可能久不返回的调用必须走它）。
+pub mod child_proc;
 pub mod commands;
 pub mod config;
 pub mod db;

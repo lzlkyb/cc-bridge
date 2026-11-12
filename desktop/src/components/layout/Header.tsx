@@ -10,6 +10,7 @@ import { TitleBarControls } from "./TitleBarControls";
 import { SecurityBadgeGroup } from "./SecurityBadgeGroup";
 import { UpdateReadout } from "../update/UpdateReadout";
 import { PendingCommandPill } from "../update/PendingCommandPill";
+import { useTitlebarDrag } from "../../hooks/useTitlebarDrag";
 
 /**
  * 应用顶栏（2026-10-14 侧栏改造后，由原「Header」瘦身而来）。
@@ -52,6 +53,7 @@ function HeaderImpl({
 }) {
   const [dark, setDark] = useState(() => getStoredTheme() === "dark");
   const [busy, setBusy] = useState(false);
+  const onTitlebarMouseDown = useTitlebarDrag();
 
   // 主题由 lib/theme 统一管理（命令面板也复用），这里只同步图标状态
   useEffect(() => {
@@ -84,7 +86,11 @@ function HeaderImpl({
 
   return (
     <header
-      data-tauri-drag-region
+      // H8：内置 drag.js 在 mousedown 就无条件 start_dragging，不判断窗口是否已聚焦，
+      // 于是「从别的软件点顶栏」那一下就把窗口拖走了。改成 false 关掉内置脚本，
+      // 由 useTitlebarDrag 判断这一下是激活还是拖动。
+      data-tauri-drag-region="false"
+      onMouseDown={onTitlebarMouseDown}
       className="app-header app-topbar flex shrink-0 items-center gap-2 border-b px-3"
     >
       {/* 左侧：侧栏开关 + 安全徽章（徽章仅在异常态出现，正常时这一区很窄） */}
@@ -114,8 +120,13 @@ function HeaderImpl({
       {/* 中部：拖拽空白（无系统标题栏，需要留足可拖区域）+ 下载期读数。
           读数只在这块空白里铺开、且自带 pointer-events:none，拖拽不受影响；
           顶栏高度由 .app-topbar 恒定 52px 兜住 ⇒ 读数出现/消失都不改变任何布局
-          （不触发终端 fit）。为何不放窗口级浮层见 UpdateReadout 头注释。 */}
-      <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center self-stretch">
+          （不触发终端 fit）。为何不放窗口级浮层见 UpdateReadout 头注释。
+          注意 drag-region 也必须是 "false"：点在这块 div 本身时，内置脚本的
+          `el === composedPath[0]` 会成立并直接 invoke，光关掉父级挡不住。 */}
+      <div
+        data-tauri-drag-region="false"
+        className="flex min-w-0 flex-1 items-center self-stretch"
+      >
         <UpdateReadout />
         {pendingCmd && onPendingResolved && (
           <PendingCommandPill

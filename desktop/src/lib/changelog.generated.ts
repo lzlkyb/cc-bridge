@@ -4,6 +4,23 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "3.1.5",
+    date: "2026-11-10",
+    highlights: [
+      "断网不再把软件卡到「未响应」：打开软件时，防火墙能力探测原先在窗口出现之前、主线程上同步跑一个 PowerShell（本机实测 1.4 秒），断网 / 杀毒软件云查杀 / 组策略环境下没有超时，可能几十秒不返回，Windows 会直接弹「是否结束进程」。现在这一步挪到后台，窗口先出来，所有这类系统命令也都加了上限。",
+      "检查更新不再无限转圈：断网时 3 个更新源逐个重试、每次都等 TCP 超时，顶栏能一直转好几分钟。现在整体 60 秒到点就提示「连接更新服务器超时」，可以正常重试。",
+      "从别的窗口点一下顶栏，窗口不再跟着鼠标跑：这一下只把 cc-bridge 切到前台，第二下才开始拖；正常拖动与双击最大化都不受影响。",
+    ],
+    items: [
+      { category: "improve", text: "底层升到 tauri 2.12 / wry 0.57.2，顺带一批插件小版本（更新、通知、单实例等）。最低 Rust 版本要求 1.90，支持的系统范围不变（Windows 10/11、macOS Apple Silicon）。" },
+      { category: "fix", text: "断网时启动不再卡到「未响应」。防火墙能力探测原先在窗口显示之前、主线程上同步跑一个 PowerShell（本机实测 1.4 秒），断网 / 杀毒软件云查杀 / 组策略环境下没有超时可等几十秒，Windows 会直接弹「是否结束进程」——现在这一步挪到后台，窗口先出来。所有这类系统命令都加了上限：能力探测 10 秒、netsh 查询 3 秒、全量防火墙诊断 30 秒。" },
+      { category: "fix", text: "连接页的「防火墙 无法检测」不再因为一次没赶上就长期挂着。能力探测超时现在按「可用」处理（超时只说明这次慢，不代表功能坏了），探测顺序也改成先跑几十毫秒的 netsh、再跑需要冷启动的 PowerShell；诊断脚本首次执行失败会自动重试一次。此前冷启动第一次被杀软实时扫描时，一次超时就会被当成「本机不支持」，连接页得等到下一轮（5 分钟）才可能恢复。" },
+      { category: "fix", text: "断网时检查更新最多等 60 秒。原先要等 3 个更新源各重试 2 次，每次都可能拖到 TCP 超时，顶栏能一直转好几分钟；现在到点直接提示「连接更新服务器超时」，可以正常重试。" },
+      { category: "fix", text: "备份目录在网络盘上时，断网不再拖累其它操作：目录统计（每 5 秒轮询一次）挪出了请求线程，网络盘 SMB 超时不会连带卡住别的命令。" },
+      { category: "fix", text: "从别的软件窗口点一下 cc-bridge 的顶栏（或左下角品牌区），窗口不再跟着鼠标跑。现在这一下只把窗口切到前台，第二下才开始拖；正常拖动与双击最大化都不受影响。" },
+    ],
+  },
+  {
     version: "3.1.4",
     date: "2026-11-09",
     highlights: [
@@ -462,29 +479,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "修正 DWM 圆角常量注释笔误（值 2 是 ROUND，ROUNDSMALL 实为 3）" },
       { category: "fix", text: "修复日志切页签丢失条件、端口输入和保存按钮换行、无调用仍显示成功率等级，以及重复复制通知。" },
       { category: "fix", text: "修复开发入口漏载补充样式导致终端按钮图标、文字散开的问题。" },
-    ],
-  },
-  {
-    version: "2.8.1",
-    date: "2026-10-14",
-    highlights: [
-      "外观，按你的喜好：明暗、风格与字体独立设置，内置字体随时可用。",
-    ],
-    items: [
-      { category: "feat", text: "身份转变批3——MCP 2026-07-28 协议适配 Phase 1 + /mcp/messages 补 token" },
-      { category: "feat", text: "身份转变批2——运维闭环（托盘/导入/SSE 警告多客户端覆盖）" },
-      { category: "feat", text: "身份转变批1——接入口径统一（通用 MCP 工具）" },
-      { category: "feat", text: "外观中心——明暗/风格/字体三轴独立设置 + 字体内置化" },
-      { category: "feat", text: "终端能力批——OSC 52 复制 / 环境注入 / tmux 桥接 / 命令块 / 跨标签搜索 / 导出" },
-      { category: "feat", text: "通用双向桥 P0——客户端识别 + 项目规则多格式 + 自适应 instructions" },
-      { category: "feat", text: "终端接入 OSC 7501 程序状态 + DEC 2031 主题通知" },
-      { category: "improve", text: "砍 Cascadia 预设收尾——注释 5→4 套 + 测试补 cascadia 窄化断言" },
-      { category: "improve", text: "砍掉 Cascadia 独立预设（7→5→4 套）" },
-      { category: "improve", text: "docs: 新功能规划 2026-10-14（R17 安全设计拍板：无弹窗确认的自动化安全模型）" },
-      { category: "fix", text: "终端滚轮引导条——底色透字修掉 + A+ 单行可展开 + 倒计时可见" },
-      { category: "fix", text: "全站小字对比度达标 + 自签兼容性徽章三态" },
-      { category: "fix", text: "终端亮色主题可读性——12 个 ANSI 色值校准到 WCAG AA + 亮色开启对比度兜底" },
-      { category: "fix", text: "终端滚轮不再打断 Claude Code——滚动条用真实指针坐标 + 选择态守卫" },
     ],
   },
 ];

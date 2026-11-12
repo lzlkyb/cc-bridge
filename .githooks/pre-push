@@ -20,7 +20,7 @@ set -e
 
 echo ""
 echo "══════════════════════════════════════════════"
-echo "  Pre-push: 运行门禁（7 项）..."
+echo "  Pre-push: 运行门禁（8 项）..."
 echo "══════════════════════════════════════════════"
 echo ""
 
@@ -74,6 +74,16 @@ echo ""
 echo "[7/7] Rust cargo test ..."
 (cd desktop/src-tauri && cargo test --no-default-features)
 echo "  ✅ Rust 测试通过"
+echo ""
+
+# ── 更新日志用户向门禁 ──
+# 纯读文件，放在最后不抢 target 构建锁。发布说明会原样流到 Release 页面和
+# 应用内更新弹框，所以必须是给小白看的大白话：不能是提交标题、占位摘要、
+# 开发者黑话或重复条目。v3.1.2 / v3.1.5 两次发版都靠人眼事后捞回来。
+# 历史版本段由脚本的棘轮豁免，不会把日常 push 卡住。
+echo "[8/8] 更新日志用户向校验 ..."
+(cd desktop && node scripts/check-release-notes.mjs --stage=latest)
+echo "  ✅ 更新日志通过"
 echo ""
 
 echo "══════════════════════════════════════════════"

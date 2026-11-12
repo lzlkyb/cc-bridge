@@ -32,19 +32,40 @@ pub fn suppress_child_error_dialogs() {
     }
 }
 
+/// 单个 netsh 查询的超时。实测 `show allprofiles state` 约 265ms，3s 足够宽松；
+/// 关键是**有上限** —— 见 `probe_netsh_available` 的注释。
+#[cfg(windows)]
+const NETSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// 启动探测：跑一次 `netsh advfirewall show allprofiles state`，判断系统 netsh 是否可用。
 ///
-/// 返回 `false` 表示 netsh 进程启动即崩 / 退出非 0（典型即 `0xc0000142` 损坏场景）。
-/// 不可用时由调用方把 `AppState.firewall_available` 置 `false`，此后停止后台与手动查询，
-/// 避免 netsh 损坏时反复 spawn 失败进程、且不再触发弹窗。
+/// 返回 `false` **只代表「明确不可用」**：进程启动即崩 / 退出非 0（典型即
+/// `0xc0000142` 损坏场景）。不可用时由调用方把 `AppState.firewall_available` 置
+/// `false`，此后停止后台与手动查询，避免 netsh 损坏时反复 spawn 失败进程、且不再触发弹窗。
+///
+/// 🔴 **超时不算不可用，按可用处理**（2026-11-10）：探测结果直接决定「防火墙诊断要不要跑」，
+/// 判错一次的代价极不对称——判成可用最多多 spawn 一个失败进程（有超时兜着），判成不可用
+/// 则是连接页整块显示「无法检测」并且**停摆到下一轮（5 分钟）**。冷启动第一次被杀软实时
+/// 扫描时，netsh 也可能慢过超时，所以这里对超时取乐观值。
+///
+/// 🔴 必须带超时：`output()` 没有上限，而本函数曾直接从 Tauri `setup` 主线程调用。
+/// 断网 / 杀软 / 组策略环境下 netsh 卡住 = 窗口一直不出现 = Windows 判无响应。
 #[cfg(windows)]
 pub fn probe_netsh_available() -> bool {
-    Command::new("netsh")
-        .args(["advfirewall", "show", "allprofiles", "state"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let mut cmd = Command::new("netsh");
+    cmd.args(["advfirewall", "show", "allprofiles", "state"])
+        .creation_flags(CREATE_NO_WINDOW);
+    match crate::child_proc::output_with_timeout(&mut cmd, NETSH_TIMEOUT) {
+        Ok(o) => o.status.success(),
+        Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+            log::warn!(
+                "[firewall] netsh 能力探测超过 {}ms，按可用处理（不做不可用结论）",
+                NETSH_TIMEOUT.as_millis()
+            );
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// 当前可执行文件路径（规则 `program=` 的比对基准）。取不到时返回空串，
@@ -99,6 +120,7 @@ pub fn query_full(port: u16) -> FirewallDiagnosis {
 pub async fn refresh_cache(state: &Arc<AppState>, port: u16) {
     if !*state.firewall_available.lock().unwrap() {
         // 探测不可用：仅刷新时间戳（避免每 5 分钟都重判），状态保留为 unknown。
+        log::info!("[firewall] 能力探测为不可用，跳过查询（前端显示「无法检测」）");
         let mut cache = state.firewall_cache.lock().unwrap();
         cache.checked_at = Some(Instant::now());
         return;
@@ -108,6 +130,16 @@ pub async fn refresh_cache(state: &Arc<AppState>, port: u16) {
         .await
         .ok();
     let mut cache = state.firewall_cache.lock().unwrap();
+    match &diag {
+        Some(d) => log::info!(
+            "[firewall] 查询完成：enabled={:?} port_open={:?} source={} 问题数={}",
+            d.enabled,
+            d.port_open,
+            d.source,
+            d.issues.len()
+        ),
+        None => log::warn!("[firewall] 查询任务 panic / 被取消，缓存保持原值"),
+    }
     if let Some(d) = diag {
         cache.enabled = d.enabled;
         cache.port_open = d.port_open;
@@ -119,11 +151,10 @@ pub async fn refresh_cache(state: &Arc<AppState>, port: u16) {
 #[cfg(windows)]
 fn query_firewall_enabled() -> Option<bool> {
     // 普通权限即可读取（无需管理员），实测 Windows 家庭版/专业版均可。
-    let out = Command::new("netsh")
-        .args(["advfirewall", "show", "allprofiles", "state"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
+    let mut cmd = Command::new("netsh");
+    cmd.args(["advfirewall", "show", "allprofiles", "state"])
+        .creation_flags(CREATE_NO_WINDOW);
+    let out = crate::child_proc::output_with_timeout(&mut cmd, NETSH_TIMEOUT).ok()?;
     let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
     if text.contains("已启用") || text.contains("enabled") {
         Some(true)
@@ -135,10 +166,13 @@ fn query_firewall_enabled() -> Option<bool> {
 }
 
 /// 启动探测：只要 PowerShell 或 netsh 有一个能用，防火墙功能就可用。
-/// 两者都不可用才把 `firewall_available` 置 false（停用后续查询）。
+/// 两者都**明确**不可用才把 `firewall_available` 置 false（停用后续查询）。
+///
+/// 顺序是 netsh 优先（实测 77ms）→ PowerShell 兜底（冷启动实测 1.4s，慢机器更久）：
+/// 原来的顺序反过来，把最慢的那条放在前面，冷启动首次被杀软扫描时很容易顶到超时。
 #[cfg(windows)]
 pub fn probe_available() -> bool {
-    firewall_diag::probe_powershell_available() || probe_netsh_available()
+    probe_netsh_available() || firewall_diag::probe_powershell_available()
 }
 
 /// 提权执行一段批处理脚本（一次 UAC 弹窗完成全部 netsh 动作）。

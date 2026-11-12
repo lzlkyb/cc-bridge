@@ -443,14 +443,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 无条件注入：它不走 notifications 那条 feature-gated 通道（见 audit.rs 注释）。
             crate::audit::set_emit_handle(Some(app.handle().clone()));
 
-            // 防火墙：启动探测 PowerShell(NetSecurity) 与 netsh 是否可用。两者都不可用时置
-            // false，停止后续查询，避免 netsh 损坏时反复 spawn 失败进程、且不再触发
-            // 「应用程序错误」弹窗（错误模式已在 main() 抑制）。须在后台定时刷新任务之前完成。
-            #[cfg(windows)]
-            {
-                let available = crate::firewall::probe_available();
-                *app_state.firewall_available.lock().unwrap() = available;
-            }
+            // 防火墙能力探测（PowerShell NetSecurity / netsh 是否可用）不在 setup 里做同步调用。
+            //
+            // 🔴 为什么（2026-11-10）：原实现是 `probe_available()` 直接写在这里，位置在
+            // 下面的 `window.show()` **之前**、且跑在主线程上。它内部 `Command::output()`
+            // 没有上限，本机实测一次 1.4s（PowerShell 冷启动 + NetSecurity 模块加载），
+            // 断网 / 杀软云查杀 / 组策略环境下可以膨胀到几十秒 —— 窗口迟迟不出现，
+            // Windows 直接判「未响应」并提示结束进程，正是用户反馈的「断网后卡死」。
+            // 现在挪到「防火墙缓存刷新」后台任务里、在第一次查询之前执行（见下方），
+            // 探测结果异步写回 `firewall_available`；初值保持 true（乐观），
+            // 探测完成前前端不会闪「防火墙检测不可用」告警。
 
             // D2 修复：后台周期性回收空闲路径锁，避免 path_locks 随运行时间无界增长。
             // G1 修复：套 spawn_supervised，panic 后自愈重启而非永久静默停止。
@@ -948,6 +950,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 spawn_supervised("防火墙缓存刷新", move || {
                     let fw_state = fw_state.clone();
                     Box::pin(async move {
+                        // 首次先探测「PowerShell(NetSecurity) / netsh 是否可用」，再查缓存。
+                        //
+                        // 探测本身也是拉起子进程（实测 1.4s），必须放在阻塞线程上：占住
+                        // async 工作线程一样会拖慢启动期的其它命令。原实现把这步放在
+                        // Tauri setup 主线程、窗口 show 之前 —— 断网环境下就是死等。
+                        //
+                        // 结果写回 `firewall_available`：false 时后续 `refresh_cache`
+                        // 只更新时间戳直接返回，不再反复 spawn 损坏的 netsh / powershell。
+                        #[cfg(windows)]
+                        {
+                            let probe = tauri::async_runtime::spawn_blocking(
+                                crate::firewall::probe_available,
+                            )
+                            .await
+                            .unwrap_or(false);
+                            *fw_state.firewall_available.lock().unwrap() = probe;
+                            log::info!("防火墙能力探测完成：available={probe}");
+                        }
+
                         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(300));
                         {
                             let port = fw_state.config.read().await.port;
