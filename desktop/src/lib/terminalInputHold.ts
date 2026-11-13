@@ -74,11 +74,13 @@ const PENDING_RELEASE = new WeakMap<Terminal, number>();
  * 用 0ms 定时器把开闸推到该任务之后：这枚 mouseup 仍被闸拦下（远端收不到、选区保住），
  * 下一次点击/滚动/输入照常。若期间又来一次按下，调用方应当先 `cancelPendingRelease`。
  */
-export function releaseSelectHoldSoon(term: Terminal): void {
+export function releaseSelectHoldSoon(term: Terminal, after?: () => void): void {
   cancelPendingRelease(term);
   const id = setTimeout(() => {
     PENDING_RELEASE.delete(term);
     setSelectHold(term, false);
+    // `after` 在**开闸之后**执行：补发的点击 / 补跑的 fit 都必须等闸开了才发得出去。
+    after?.();
   }, 0) as unknown as number;
   PENDING_RELEASE.set(term, id);
 }

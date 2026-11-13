@@ -45,6 +45,36 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("A 方案：按下即闭闸 + 松手补点击（侧栏收起后拖选抖动的修复）", () => {
+  it("🔴 TUI 里普通点击：按下就闭闸，松手后补出 press + release，远端看到的仍是一次点击", async () => {
+    const sent: string[] = [];
+    const t = term as unknown as { modes: unknown; element: unknown };
+    t.modes = { mouseTrackingMode: "any" }; // 远端开着 ?1003h（Claude Code）
+    t.element = { querySelector: () => ({ dispatchEvent: (e: MouseEvent) => (sent.push(e.type), true) }) };
+    act(() => {
+      api.attach(term, container);
+    });
+
+    act(() => {
+      container.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true }));
+    });
+    // 按下这一刻闸必须已闭：否则报告外泄会让远端 TUI 重绘 / 把视口弹回底部
+    expect(term.options.disableStdin).toBe(true);
+
+    act(() => {
+      window.dispatchEvent(new PointerEvent("pointerup", { button: 0, bubbles: true }));
+    });
+    // 同一任务内先不补：紧随 pointerup 的真实 mouseup 报告要被闸拦下
+    expect(sent).toHaveLength(0);
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(sent).toEqual(["mousedown", "mouseup"]);
+    expect(term.options.disableStdin).toBe(false);
+  });
+});
+
 describe("输入闸的兜底自愈", () => {
   it("🔴 闸卡在闭合态时，普通点击（pointerup）就能松开——不用靠滚一格滚轮", () => {
     act(() => {

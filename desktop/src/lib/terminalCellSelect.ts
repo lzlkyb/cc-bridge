@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { mouseTrackingActive } from "./terminalMouse";
+import { markDownConsumed } from "./terminalPointerGate";
 
 /**
  * 双击「选中单元格」：把 xterm 的词选换成**按表格/字段边界**取一整块。
@@ -279,6 +280,9 @@ export function attachCellDoubleClick(
     // 先拦事件：xterm 的 mousedown 在子元素上，容器捕获阶段停掉就传不过去
     e.preventDefault();
     e.stopImmediatePropagation();
+    // 这一按已被本地接管：告诉按下闸别再补重放点击（重放会 fire onUserInput → clearSelection，
+    // 把下面刚选好的单元格清掉）。
+    markDownConsumed(term);
     // 拦掉 mousedown 也就拦掉了 xterm 自己的聚焦路径：双击后立刻敲键盘必须还能输入
     term.focus();
     const range = resolveCellRange(text, at.col);

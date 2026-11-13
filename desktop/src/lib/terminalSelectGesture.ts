@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { cancelPendingRelease, setSelectHold } from "./terminalInputHold";
+import { holdFit } from "./terminalFitGate";
 import { mouseTrackingActive } from "./terminalMouse";
 
 /**
@@ -152,6 +153,7 @@ export function replayMouseUp(term: Terminal, x: number, y: number): void {
 export function beginSelection(term: Terminal, x: number, y: number, column = false): void {
   cancelPendingRelease(term);
   setSelectHold(term, true);
+  holdFit(term); // 手势期间不许 resize（resize 会清掉正在拖的选区），见 lib/terminalFitGate.ts
   forceSelectAt(term, x, y, column);
 }
 
@@ -172,6 +174,7 @@ export function beginDragSelection(term: Terminal, x: number, y: number, column 
   if (mouseTrackingActive(term)) replayMouseUp(term, x, y);
   cancelPendingRelease(term);
   setSelectHold(term, true);
+  holdFit(term); // 同上：手势期间挂起尺寸适配
   forceSelectAt(term, x, y, column);
 }
 

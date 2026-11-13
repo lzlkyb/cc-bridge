@@ -10,9 +10,15 @@ import type { Terminal } from "@xterm/xterm";
 import { toast } from "../ui/toast";
 import { createSelectionCache, GESTURE_COPY_CACHE_MS } from "../../lib/terminalSelectionCache";
 import { attachSelectionAids } from "../../lib/terminalSelectionAids";
-import { isSelectHold, releaseSelectHoldNow, releaseSelectHoldSoon } from "../../lib/terminalInputHold";
 import { attachSelectWheelGuard } from "../../lib/terminalScroll";
-import { beginDragSelection, beginSelection, createSelectGesture, isSynthMouse } from "../../lib/terminalSelectGesture";
+import { beginSelection, createSelectGesture, isSynthMouse } from "../../lib/terminalSelectGesture";
+import {
+  abortPointerGesture,
+  beginDragFromDown,
+  endPointerGesture,
+  finishPlainClick,
+  holdInputAtDown,
+} from "../../lib/terminalPointerGate";
 
 /** 拖拽超过这个像素数才算「拖选」，以下当普通点击（不影响 TUI 定位光标）。 */
 const DRAG_THRESHOLD = 4;
@@ -107,10 +113,13 @@ export function useSshTerminalSelect({
 
       // 起手按下：先记指针状态（拖拽阈值判定要用）。只认左键——右键已由上面的守卫接管，
       // 若也置位 pointerDownRef，右键上的轻微移动就会被当成拖选。
+      // 🔴 同时**提前闭闸**：4px 之前泄漏的报告会让远端 TUI 重绘、把视口弹回底部（见 terminalPointerGate）。
       const onPointerDown = (e: PointerEvent) => {
         if (e.button !== 0) return;
         pointerDownRef.current = true;
         downPosRef.current = { x: e.clientX, y: e.clientY };
+        const t0 = termRef.current;
+        if (t0) holdInputAtDown(t0, e, selectModeRef.current, dragSelectEnabledRef.current);
       };
       container.addEventListener("pointerdown", onPointerDown, true);
 
@@ -154,12 +163,10 @@ export function useSshTerminalSelect({
         selectActiveRef.current = true;
         dragSelectRef.current = true;
         setDragSelecting(true);
-        // 🔴 顺序要紧：用**按下点**坐标（不能用当前指针位置——抬起点已移动 4px+，远端会
-        // 把报告读成拖拽）补一枚 mouseup 收尾，再闭闸——闭闸后报告被 disableStdin 拦住就补
-        // 不出去了；补发的报告会触发 onUserInput → clearSelection，故必须早于起选区。
-        // 补发只在远端真开着鼠标追踪时做（否则会摘掉原生拖选的延伸监听，见 beginDragSelection）。
+        // 🔴 顺序要紧：补 mouseup 必须早于闭闸与起选区（理由见 beginDragSelection 头注）。
+        // 起手已在 pointerdown 闭过闸时那枚按下没外泄，走 beginSelection 分支、不补 mouseup。
         gesture.begin();
-        beginDragSelection(term, downPosRef.current.x, downPosRef.current.y, e.altKey);
+        beginDragFromDown(term, downPosRef.current.x, downPosRef.current.y, e.altKey);
       };
       window.addEventListener("pointermove", onPointerMove);
 
@@ -168,12 +175,9 @@ export function useSshTerminalSelect({
         if (e.button !== 0) return;
         pointerDownRef.current = false;
         if (!selectActiveRef.current) {
-          // 🔴 兜底自愈：闸可能在异常路径上没等到 pointerup（右键按在终端上、
-          // 指针在**窗口外**松手且窗口没失焦），此时键盘全程哑火，而唯一能救的是滚一格滚轮
-          // ——界面上没有任何提示，用户只会以为「终端坏了」。普通点击是用户的第一反应，
-          // 这里顺手把闸松开。
+          // 🔴 闭过闸 ⇒ 那枚 mousedown 没发给远端，必须补一次完整点击，否则 TUI 里点击全丢。
           const t0 = termRef.current;
-          if (t0 && isSelectHold(t0)) releaseSelectHoldNow(t0);
+          if (t0) finishPlainClick(t0, downPosRef.current.x, downPosRef.current.y, e);
           return;
         }
         const t = termRef.current;
@@ -186,11 +190,12 @@ export function useSshTerminalSelect({
         setDragSelecting(false);
         // 松手后只剩「手动选择模式」和「还按着 Shift」两种持续态。
         selectActiveRef.current = selectModeRef.current || shiftActiveRef.current;
-        // 🔴 开闸必须**延后一拍**（releaseSelectHoldSoon）：xterm 把鼠标报告当**用户输入**发
+        // 🔴 开闸必须**延后一拍**（见 endPointerGesture）：xterm 把鼠标报告当**用户输入**发
         // （triggerMouseEvent → triggerDataEvent(report, true)），立刻开闸会让紧随 pointerup
         // 的 mouseup 报告一路走到 SelectionService 的 onUserInput → clearSelection()，
-        // 用户看到的就是「一松手选区自己没了、来不及复制」。延后一拍把它拦在闸内。
-        releaseSelectHoldSoon(t);
+        // 用户看到的就是「一松手选区自己没了、来不及复制」。同一拍里顺带补跑手势期间
+        // 被挂起的尺寸适配（lib/terminalFitGate.ts）。
+        endPointerGesture(t);
         if (!sel) return;
         // 设置项「选中即复制」关掉时到此为止：选区照常建、照常保留，复制改走右键菜单 /
         // 工具栏 / 快捷键（正交语义见 lib/types.ts 的 sshCopyOnSelectEnabled）。
@@ -207,9 +212,8 @@ export function useSshTerminalSelect({
       // 滚不动、点终端外面才恢复）；capture 阶段必达，下游 stopPropagation 拦不住。
       window.addEventListener("pointerup", copyOnRelease, true);
 
-      // 兜底出口：拖到窗口外松手 / 系统抢走指针 / 切窗口（Shift 的 keyup 会丢在别的窗口）时
-      // 不会有 pointerup——闸与三个状态都必须另有一条复位路径，否则键盘一直哑、守卫一直
-      // 以为还在选字（那正是「滚轮彻底滚不动」的成因，2026-10-16 报障）。
+      // 兜底出口：拖到窗口外松手 / 系统抢走指针 / 切窗口时不会有 pointerup——两把闸与三个
+      // 状态都必须另有一条复位路径（否则键盘一直哑，那正是「滚轮彻底滚不动」的成因）。
       const releaseHold = () => {
         pointerDownRef.current = false;
         dragSelectRef.current = false;
@@ -217,7 +221,7 @@ export function useSshTerminalSelect({
         selectActiveRef.current = false;
         setShiftActive(false);
         setDragSelecting(false);
-        releaseSelectHoldNow(term);
+        abortPointerGesture(term);
       };
       window.addEventListener("pointercancel", releaseHold);
       window.addEventListener("blur", releaseHold);
@@ -234,10 +238,9 @@ export function useSshTerminalSelect({
         // 不再失败（此前只在 mousedown 时检测 shiftKey，先拖后按 Shift 无效）。
         if (pointerDownRef.current && !selectActiveRef.current) {
           selectActiveRef.current = true;
-          // 裸按后中途按 Shift：远端若已收到那次按下，先补 mouseup 收尾，否则它永远停在
-          // 「按着左键」（补发判据见 beginDragSelection）。
+          // 裸按后中途按 Shift：若起手已闭过闸则按下没外泄，不需要补 mouseup（判据在 lib 里）。
           gesture.begin();
-          beginDragSelection(term, downPosRef.current.x, downPosRef.current.y, e.altKey);
+          beginDragFromDown(term, downPosRef.current.x, downPosRef.current.y, e.altKey);
         }
       };
       const onKeyUpShift = (e: KeyboardEvent) => {
@@ -264,8 +267,8 @@ export function useSshTerminalSelect({
         window.removeEventListener("keydown", onKeyDownShift);
         window.removeEventListener("keyup", onKeyUpShift);
         offSel.dispose();
-        // 卸载时松开输入闸（幂等）：终端跨重连保留，闸留在闭合态就没人来开了。
-        releaseSelectHoldNow(term);
+        // 卸载时松开两把闸（幂等）：终端跨重连保留，闸留在闭合态就没人来开了。
+        abortPointerGesture(term);
       };
     },
     [termRef, focusedRef, dragSelectEnabledRef, copyOnSelectEnabledRef, cache, gesture, copySelection],
@@ -279,7 +282,7 @@ export function useSshTerminalSelect({
     // 别处触发重跑就会把正在进行的拖拽态抹掉（手势判据随之错位）。
     selectActiveRef.current = selectMode || shiftActive || dragSelectRef.current;
     const term = termRef.current;
-    if (term && !selectActiveRef.current) releaseSelectHoldNow(term);
+    if (term && !selectActiveRef.current) abortPointerGesture(term);
   }, [selectMode, shiftActive, termRef]);
 
   return {

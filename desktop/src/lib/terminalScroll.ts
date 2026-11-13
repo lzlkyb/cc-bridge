@@ -1,5 +1,6 @@
 import type { Terminal } from "@xterm/xterm";
 import { isSelectHold, setSelectHold } from "./terminalInputHold";
+import { releaseFit } from "./terminalFitGate";
 
 /**
  * TUI 态虚拟滚动条（终端滚动条 × Claude Code 等 fullscreen 程序）。
@@ -460,7 +461,9 @@ export function attachSelectWheelGuard(
     if (!term) return;
     // 兜底自检：选择手势收尾若被异常路径漏掉，输入闸会一直闭着（键盘鼠标全哑）。
     // 用户滚了一格就是「已经不在选择」的最强信号——顺手松开，下一次点击/输入即恢复。
+    // 尺寸闸同源（同一批释放点），漏了就再也 fit 不动，一起松。
     if (isSelectHold(term)) setSelectHold(term, false);
+    releaseFit(term);
   };
   container.addEventListener("wheel", onWheel, { capture: true, passive: false });
   return () => container.removeEventListener("wheel", onWheel, { capture: true });
