@@ -1,7 +1,8 @@
-import { useCallback, type MutableRefObject, type RefObject } from "react";
+import { useCallback, useRef, type MutableRefObject, type RefObject } from "react";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { Terminal } from "@xterm/xterm";
 import { rowsToDrop } from "../lib/terminalFit";
+import { deferFitIfHeld, registerFitRunner } from "../lib/terminalFitGate";
 
 interface Args {
   containerRef: RefObject<HTMLDivElement>;
@@ -16,12 +17,18 @@ interface Args {
  *
  * WHY 单独成文件：这段是**纯 DOM 测量 + 尺寸修正**，与 SSH 会话生命周期
  * （连断 / 输入输出 / 事件订阅）没有任何耦合，却占着 30 行——留在
- * `useSshTerminalSession` 里会把它顶到行���上限，而它压根不属于「会话」这件事。
+ * `useSshTerminalSession` 里会把它顶到行数上限，而它压根不属于「会话」这件事。
  *
  * 引用永久稳定（只读 ref），所以 `doFit` 可以安全地进任何 effect 的依赖数组。
+ *
+ * 🔴 选择手势期间由 `lib/terminalFitGate.ts` 挂起（resize 会清掉正在拖的选区）。
+ * 实现上把真实逻辑放进 ref、对外只暴露一个恒定引用：它既要进创建 effect 的依赖，
+ * 又要被 fit 闸当成「待补跑」的入口登记，不能因为依赖变化而换引用。
  */
 export function useTerminalFit({ containerRef, termRef, fitRef }: Args): () => void {
-  return useCallback(() => {
+  const runRef = useRef<() => void>(() => {});
+  const doFit = useCallback(() => runRef.current(), []);
+  runRef.current = () => {
     const fit = fitRef.current;
     const term = termRef.current;
     const box = containerRef.current;
@@ -32,6 +39,9 @@ export function useTerminalFit({ containerRef, termRef, fitRef }: Args): () => v
     // 通过 onResize 发给远端 PTY，远端 TUI 会照着 1x2 重排。ResizeObserver 在元素变为
     // display:none 时会以 0×0 触发，所以这条路径是真会走到的。
     if (box.clientHeight === 0 || box.clientWidth === 0) return;
+    // 先登记入口再判闸：被挂起的请求要靠它补跑。
+    registerFitRunner(term, doFit);
+    if (deferFitIfHeld(term)) return;
     try {
       fit.fit();
     } catch {
@@ -50,5 +60,6 @@ export function useTerminalFit({ containerRef, termRef, fitRef }: Args): () => v
     );
     const drop = rowsToDrop(contentH, box.getBoundingClientRect().height, term.rows);
     if (drop > 0) term.resize(term.cols, term.rows - drop);
-  }, [containerRef, termRef, fitRef]);
+  };
+  return doFit;
 }
