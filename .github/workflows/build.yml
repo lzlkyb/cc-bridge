@@ -24,11 +24,58 @@ on:
 #    `-L native=...atlmfc\lib\x64`）。所以两个 Windows job 都在 checkout 后清空
 #    RUSTC_WRAPPER、不装 sccache —— cargo 自己会用 @argfile 交给 rustc，天然规避上限。
 #    macOS / Ubuntu 的 ARG_MAX 在 MB 量级，保留 sccache。
+# 默认最小权限：所有非发版 job 只需读仓库。发版 job（build-macos / build-windows）
+# 在 job 级单独声明 `contents: write`，不受这里影响。
+# 开源后 fork PR 也走这套 token，保持只读能缩小供应链面。
+permissions:
+  contents: read
+
 env:
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  # PR 分支新鲜度提示。刻意**不失败**，也不列入必需检查。
+  #
+  # 为什么需要：`pull_request` 事件运行的是 **head 分支里的 workflow 文件**。
+  # 贡献者（尤其 fork）长期不 sync，就会一直跑旧版 CI —— PR #1 曾因此连红两次，
+  # 红的是旧 workflow 里 sccache 的已知问题，不是当次改动。
+  #
+  # 为什么用 warning 而不是红叉：红叉会被直接读成“我的代码有问题”，
+  # 而这里要传达的恰恰相反。Summary 里给出 rebase 命令即可。
+  up-to-date:
+    name: Branch freshness (advisory)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # 注意：不能 checkout 默认的 merge ref —— 它已经包含 base 的最新提交，
+          # 比较结果永远是“最新”。要比较的是 PR 自己的 head 提交。
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - name: 检查是否落后 base 分支
+        shell: bash
+        run: |
+          BASE="${{ github.base_ref }}"
+          git fetch --no-tags origin "+refs/heads/$BASE:refs/remotes/origin/$BASE"
+          if git merge-base --is-ancestor "origin/$BASE" HEAD; then
+            echo "### ✅ 分支已包含 \`$BASE\` 的最新提交" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          BEHIND=$(git rev-list --count "HEAD..origin/$BASE")
+          echo "::warning title=分支落后 $BASE $BEHIND 个提交::先 rebase 再排查 CI。PR 运行的是你分支里的 workflow 文件，旧分支会跑旧 CI，失败可能与本次改动无关。"
+          {
+            echo "### ⚠️ 分支落后 \`$BASE\` $BEHIND 个提交"
+            echo ""
+            echo '```bash'
+            echo "git fetch origin && git rebase origin/$BASE"
+            echo '```'
+            echo ""
+            echo "PR 运行的是你分支里的 workflow 文件。不 rebase 会继续跑旧版 CI，"
+            echo "出现的失败可能和你的改动无关 —— 先 rebase 再看红的是哪一项。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # 前端门禁。为何需要它（2026-09-02）：CI 过去**完全没有前端检查**——
   # 12 个测试文件 147 条用例只在本机 pre-push 钩子里跑，而钩子可以 `--no-verify` 绕过，
   # 也不存在于别人的机器上。那些用例盖的恰恰是真机难复现的纯计算
@@ -88,6 +135,25 @@ jobs:
       - name: cargo test
         run: cargo test --no-default-features
         working-directory: desktop/src-tauri
+      # 把 PR #1 的排查经验固化：Windows 上的“红”曾经两次与代码无关，
+      # 贡献者却没有任何提示，只能自己量命令行长度才发现。
+      - name: 失败提示
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "### ❌ Windows Rust 测试失败"
+            echo ""
+            echo "先在上面的日志里搜 \`error[E\`："
+            echo ""
+            echo "- **搜到了** → 是代码问题，按编译错误改。"
+            echo "- **一条都没有**，只有 \`sccache: failed to spawn Command\` / \`os error 206\` /"
+            echo "  \`CreateProcess\` → 是 Windows 命令行长度上限（32767）导致的，"
+            echo "  与本次改动无关。本 job 已在 checkout 后清空 \`RUSTC_WRAPPER\`，"
+            echo "  若仍复现请在 PR 里说明并 @lzlkyb。"
+            echo ""
+            echo "macOS 的 \`Rust check + test\` 若为绿，可作为「代码能编能测」的旁证。"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # macOS 编译门禁。为何需要它：本项目主力平台是 Windows，开发机也是 Windows，
   # 而平台差异（平台专属 crate feature、缺失的 cfg(not(windows)) 分支、Win32 API 调用）
