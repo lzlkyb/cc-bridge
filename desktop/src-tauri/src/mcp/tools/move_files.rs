@@ -101,6 +101,9 @@ async fn move_single(
         (Some(fg), None)
     };
 
+    // 变更日志：记在目标路径上，`from` 为源路径。
+    crate::journal::note(crate::journal::Op::Move, &to_resolved, Some(&from_resolved));
+
     if to_resolved.exists() && config.backup_enabled {
         let db = state.db.lock().await;
         let bp = backup::backup_before_overwrite(

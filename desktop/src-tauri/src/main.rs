@@ -418,7 +418,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let cleanup_dir = data_dir.clone();
                 let retention = bridge_config.audit_retention_days;
+                let journal_retention = bridge_config.journal_retention_days;
                 tauri::async_runtime::spawn(async move {
+                    // 变更日志只删整份过期文件，很快；关闭时也清（关了就不再有写入顺手清）。
+                    crate::journal::cleanup_expired(&cleanup_dir, journal_retention);
                     // 不再 `let _ =` 吞掉：这一步会重写 + rename audit.log，而 rename 在
                     // Windows 上确实会因文件被占用而失败（参见 audit.rs 里 E-P0-7 那段）。
                     // 吞掉的后果是：保留天数静默失效，日志无限增长而无人知道。
@@ -927,8 +930,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Box::pin(async move {
                         loop {
                             tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
-                            let retention = audit_state.config.read().await.audit_retention_days;
+                            let (retention, journal_retention) = {
+                                let c = audit_state.config.read().await;
+                                (c.audit_retention_days, c.journal_retention_days)
+                            };
                             let dir = audit_state.data_dir.clone();
+                            crate::journal::cleanup_expired(&dir, journal_retention);
                             match audit::cleanup_old_entries(&dir, retention) {
                                 Ok(0) => {}
                                 Ok(n) => log::info!(
@@ -1053,6 +1060,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::get_recent_activity,
             commands::diff_backups,
             commands::reveal_backup_dir,
+            commands::reveal_journal_dir,
             commands::list_backups,
             // SSH 终端（面板内交互终端，首版密码登录）。仅经 Tauri 暴露给本机面板，
             // 绝不注册为 MCP 工具——凭据只走本机 IPC，不对远程 Claude Code 暴露（S1）。

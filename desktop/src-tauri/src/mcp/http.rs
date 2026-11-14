@@ -603,7 +603,8 @@ async fn mcp_handler(
                 // 与 initialize 共用同一份文案（`server_instructions`），杜绝两处漂移。
                 // 客户端识别走 `from_request`：现代请求的 clientInfo 在 `_meta` 里。
                 "instructions": server_instructions(
-                    crate::mcp::client_kind::ClientKind::from_request(&body)
+                    crate::mcp::client_kind::ClientKind::from_request(&body),
+                    state.config.read().await.journal_enabled,
                 ),
                 // 这段文案描述的是**这台机器**的白名单与 shell 语义，不该被共享中间层
                 // 缓存后发给别人。
@@ -635,7 +636,8 @@ async fn mcp_handler(
                         "version": env!("CARGO_PKG_VERSION")
                     },
                     "instructions": server_instructions(
-                        crate::mcp::client_kind::ClientKind::from_initialize(&body)
+                        crate::mcp::client_kind::ClientKind::from_initialize(&body),
+                        state.config.read().await.journal_enabled,
                     )
                 }
             }))
@@ -648,7 +650,10 @@ async fn mcp_handler(
         "notifications/initialized" => StatusCode::ACCEPTED.into_response(),
         "tools/list" => {
             // 按当前 shell_type 动态生成工具描述，确保（重新）连接时模型拿到准确的壳层信息。
-            let shell_type = state.config.read().await.shell_type.clone();
+            let (shell_type, journal) = {
+                let c = state.config.read().await;
+                (c.shell_type.clone(), c.journal_enabled)
+            };
             let proxy_hint = crate::mcp::tools::mcp_proxy::keyword_hint(&state).await;
             Json(json!({
                 "jsonrpc": "2.0",
@@ -657,7 +662,7 @@ async fn mcp_handler(
                     // 规范第 8 条：所有 result 必带 resultType；缺失时客户端按 complete 处理，
                     // 所以无条件加、不需要按 era 分支。
                     "resultType": "complete",
-                    "tools": get_tool_definitions(&shell_type, proxy_hint.as_deref()),
+                    "tools": get_tool_definitions(&shell_type, proxy_hint.as_deref(), journal),
                     // list-caching 提示（MCP 2025-11-05+，向后兼容：旧客户端忽略未知字段）。
                     // 缓存 1 小时，减少远程隧道重复拉取。
                     //
@@ -738,9 +743,16 @@ pub async fn handle_tools_call(
                 start,
             };
             // 把 source_ip 注入 task_local 作用域，使 batch 子操作的审计条目也能拿到 sourceIp。
+            // 变更日志要记「哪个客户端改的」，客户端类型只能从请求体里识别。
+            let client = crate::journal::client_label(
+                crate::mcp::client_kind::ClientKind::from_request(&body),
+            );
             let result = crate::audit::with_source_ip(
                 Some(source_ip.clone()),
-                dispatch_tool(tool_name, arguments.clone(), &state),
+                crate::journal::with_client(
+                    client,
+                    dispatch_tool(tool_name, arguments.clone(), &state),
+                ),
             )
             .await;
             cancel_guard.armed = false;
@@ -1036,6 +1048,15 @@ pub async fn dispatch_tool(
             ));
         }
     }
+    // 变更日志：只抽出 changeSet / reason 两个小字段传进去，不整份 clone args
+    // （write_files 的 content 可能很大）。非记录类工具 with_call 会直接放行。
+    if crate::journal::JOURNAL_TOOLS.contains(&spec.name) {
+        let meta = json!({
+            "changeSet": args.get("changeSet").cloned().unwrap_or_default(),
+            "reason": args.get("reason").cloned().unwrap_or_default(),
+        });
+        return crate::journal::with_call(state, spec.name, &meta, (spec.run)(args, state)).await;
+    }
     (spec.run)(args, state).await
 }
 
@@ -1047,15 +1068,21 @@ pub async fn dispatch_tool(
 /// 结尾「任务完成通知」一段按客户端措辞不同，其余（平台 / 工具清单 / 安全约束）逐字共用。
 /// 桌面宿主（WorkBuddy）用户就在同一界面，通知降级为「可选」；CLI 类客户端
 /// （Claude Code / Codex）用户常在别处，保留强制通知。
-pub fn server_instructions(kind: crate::mcp::client_kind::ClientKind) -> &'static str {
+///
+/// `journal`：变更日志是否开启。关闭时文案与加变更日志之前逐字相同（默认关，不做需求审查的用户不受影响）。
+pub fn server_instructions(
+    kind: crate::mcp::client_kind::ClientKind,
+    journal: bool,
+) -> &'static str {
     use crate::mcp::client_kind::ClientKind;
-    // 两份缓存：通知段分「强制」与「可选」两种措辞，其余逐字相同。
-    static STRONG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    static SOFT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    match kind {
-        ClientKind::WorkBuddy => SOFT.get_or_init(|| build_instructions(false)).as_str(),
-        _ => STRONG.get_or_init(|| build_instructions(true)).as_str(),
-    }
+    use std::sync::OnceLock;
+    // 四份缓存：通知段「强制 / 可选」× 变更日志「开 / 关」，其余逐字相同。
+    static CACHE: [OnceLock<String>; 4] = [const { OnceLock::new() }; 4];
+    let strong = !matches!(kind, ClientKind::WorkBuddy);
+    let i = usize::from(strong) * 2 + usize::from(journal);
+    CACHE[i]
+        .get_or_init(|| build_instructions(strong, journal))
+        .as_str()
 }
 
 /// 拼装 instructions 正文。`strong_notify=true` 用「必须通知」的强制措辞（CLI 类客户端），
@@ -1063,7 +1090,7 @@ pub fn server_instructions(kind: crate::mcp::client_kind::ClientKind) -> &'stati
 ///
 /// 平台相关的 `{os_name}` / `{shells}` 抽成占位符而不是写两份字符串：同一段指引只应有一处
 /// 维护，说错平台会让 AI 全程用错命令语法与路径形态。
-fn build_instructions(strong_notify: bool) -> String {
+fn build_instructions(strong_notify: bool, journal: bool) -> String {
     let os_name = if cfg!(windows) {
         "Windows"
     } else if cfg!(target_os = "macos") {
@@ -1090,8 +1117,14 @@ fn build_instructions(strong_notify: bool) -> String {
     // 找一个不存在的字段（已踩过：`run_command` 后台返回的是 `handle`，写成 `commandId`
     // 模型只会反复试错，白烧往返，且报错信息里看不出是提示层写错了）。
     let rules = "\n\n工具使用硬规则（优先于下文任何描述）：\n1. 文件读写 / 查找 / 列目录一律用专用工具（read_files / write_files / edit_files / search_files / list_directory），不要用 shell 的 cat / ls / grep / find / head / tail；命令输出可能很大时先加 include / tailLines 或管道过滤。\n2. 超过约 500 行的文件先用 search_files 定位，再按 startLine / endLine 读需要的段；比较两个文件用 diff（如 git diff --no-index），不要把两份全文都读进上下文。\n3. 禁止用 base64 走 run_command 传文件，文件进出必须用 prepare_upload / prepare_download。\n4. 预计超过约 10 秒的命令（构建、安装依赖、全量测试、全盘扫描、批量处理）用 run_command 的 background:true 发出——它立即返回 handle，随后你先并行推进其他工具调用，最后用 wait_command 拿 handle 收结果；不要用默认的前台方式空等几十秒。等待仍应靠 wait_command，不要反复轮询 get_command_output；前台命令超过约 50 秒会自动转后台并返回 handle。\n5. read_files 默认每个文件一个文本块（首行元信息 JSON，之后是不转义的原文）；run_command / wait_command 可传 format:\"raw\" 让输出不经 JSON 转义，更省 token。";
+    // 变更日志开启时才有第 6 条（关闭时与改动前逐字相同）。
+    let rule6 = if journal {
+        "\n6. 写类工具可传 changeSet（本次改动所属的需求名，项目规则里有命名约定就照做；同一需求始终用同一个名字，开工前可用 change_sets 查已有名字）和 reason（一句话原因，≤30 字）。不传也能写，只是改动不归入任何需求。"
+    } else {
+        ""
+    };
     format!(
-        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。{rules}当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。各工具的用法见 tools/list（这里不再逐条重复）；命令壳层为 {shells}，取决于 shell_type 配置。二进制或大文件（pptx、xlsx、pdf、图片、压缩包）用 prepare_upload / prepare_download 直传，字节不经过对话上下文；多步文件/命令操作优先用 batch 合并成一次往返。所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
+        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。{rules}{rule6}当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。各工具的用法见 tools/list（这里不再逐条重复）；命令壳层为 {shells}，取决于 shell_type 配置。二进制或大文件（pptx、xlsx、pdf、图片、压缩包）用 prepare_upload / prepare_download 直传，字节不经过对话上下文；多步文件/命令操作优先用 batch 合并成一次往返。所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
     )
 }
 
@@ -1100,13 +1133,21 @@ fn build_instructions(strong_notify: bool) -> String {
 /// `proxy_hint`：追加到 `mcp_proxy` 描述末尾的已挂载 server 工具名清单
 /// （见 [`crate::mcp::tools::mcp_proxy::keyword_hint`]）。传 `None` 则用静态描述。
 /// 它是参数而不是在函数内部现查，是因为本函数同步、而读配置与 manifest 需要 async。
-pub fn get_tool_definitions(shell_type: &str, proxy_hint: Option<&str>) -> serde_json::Value {
+///
+/// `journal`：变更日志是否开启。关闭时不列 `change_sets`、不注入 `changeSet` / `reason`，
+/// 目录与加变更日志之前一致。
+pub fn get_tool_definitions(
+    shell_type: &str,
+    proxy_hint: Option<&str>,
+    journal: bool,
+) -> serde_json::Value {
     // 数据驱动：遍历注册表生成 tools/list 的 inputSchema（schema 由 XxxArgs 的
     // ToolSchema derive 自动生成，单一来源，消除手写 json! 与字段漂移）。
     // run_command 的描述按当前 shell_type 动态生成，让（重新）连接时模型拿到准确壳层信号。
     let run_cmd_desc = run_command_description(shell_type);
     let mut tools: Vec<serde_json::Value> = crate::mcp::tools::registry::all_tools()
         .iter()
+        .filter(|t| journal || t.name != "change_sets")
         .map(|t| {
             let desc: std::borrow::Cow<'_, str> = if t.name == "run_command" {
                 std::borrow::Cow::Borrowed(run_cmd_desc.as_str())
@@ -1128,6 +1169,23 @@ pub fn get_tool_definitions(shell_type: &str, proxy_hint: Option<&str>) -> serde
             });
             if let Some(ann) = crate::mcp::tools::registry::annotations_for(t.name) {
                 entry["annotations"] = ann;
+            }
+            // 变更日志的两个可选参数：统一注入，不必每个 XxxArgs 各加一遍。
+            // 描述压到最短，用法在 instructions 里只说一次（省 token，见 RFC §2.5）。
+            if journal && crate::journal::JOURNAL_TOOLS.contains(&t.name) {
+                if let Some(props) = entry
+                    .pointer_mut("/inputSchema/properties")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    props.insert(
+                        "changeSet".into(),
+                        json!({"type": "string", "description": "变更集名（见服务说明）"}),
+                    );
+                    props.insert(
+                        "reason".into(),
+                        json!({"type": "string", "description": "一句话改动原因"}),
+                    );
+                }
             }
             entry
         })
@@ -1565,8 +1623,12 @@ mod over_wire_tests {
     #[test]
     fn instructions_under_client_limit() {
         use crate::mcp::client_kind::ClientKind;
-        for kind in [ClientKind::ClaudeCode, ClientKind::WorkBuddy] {
-            let s = server_instructions(kind);
+        for (kind, journal) in [
+            (ClientKind::ClaudeCode, true),
+            (ClientKind::WorkBuddy, true),
+            (ClientKind::ClaudeCode, false),
+        ] {
+            let s = server_instructions(kind, journal);
             let n = s.chars().count();
             assert!(
                 n <= 4096,
@@ -1632,14 +1694,145 @@ mod over_wire_tests {
             }
         }
 
-        // 只有这两个是真的「无必填参数」：`list_allowed_roots`（纯查询）与
-        // `mcp_list_servers`（列外挂 server，没挂时返回空表）。清单变了说明有工具把
+        // 只有这几个是真的「无必填参数」：`list_allowed_roots`（纯查询）、
+        // `mcp_list_servers`（列外挂 server，没挂时返回空表）与 `change_sets`
+        // （列变更集，没有记录时返回一句说明）。清单变了说明有工具把
         // 必填项改成了可选（或反之）——那属于 API 变更，必须显式确认。
         assert_eq!(
             ran_with_empty_args,
-            vec!["list_allowed_roots", "mcp_list_servers"],
+            vec!["list_allowed_roots", "mcp_list_servers", "change_sets"],
             "空参数下仍能执行的工具清单发生变化"
         );
+    }
+
+    /// 变更日志端到端：走真实 `tools/call`，写文件带 changeSet → 新名字回显一次、日志里有记录、
+    /// 沿用同名不再回显、`change_sets` 能列出来；`tools/list` 里写工具带两个参数、读工具不带。
+    #[tokio::test]
+    async fn change_journal_end_to_end() {
+        let root = unique_temp_root("journal");
+        let mut cfg = test_config(&root);
+        cfg.journal_enabled = true;
+        let srv = spawn_server(cfg, root.clone()).await;
+        let file = root.join("a.txt");
+        let text_of = |r: &Value| -> String {
+            r["result"]["content"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|b| b["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default()
+        };
+
+        let r1 = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({"name": "write_files", "arguments": {
+                "files": [{"path": file.to_string_lossy(), "content": "v1"}],
+                "changeSet": "7691_退库锁库存", "reason": "新建"
+            }}),
+        )
+        .await;
+        assert!(
+            text_of(&r1).contains("[变更集] 新变更集「7691_退库锁库存」"),
+            "{r1}"
+        );
+
+        let r2 = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({"name": "edit_files", "arguments": {
+                "files": [{"path": file.to_string_lossy(), "edits": [{"oldString": "v1", "newString": "v2"}]}],
+                "changeSet": "7691_退库锁库存"
+            }}),
+        )
+        .await;
+        assert!(!text_of(&r2).contains("[变更集]"), "沿用同名不应回显：{r2}");
+
+        let lines: Vec<Value> = std::fs::read_dir(root.join("journal"))
+            .expect("journal 目录应已创建")
+            .flat_map(|e| {
+                std::fs::read_to_string(e.unwrap().path())
+                    .unwrap()
+                    .lines()
+                    .map(|l| serde_json::from_str::<Value>(l).unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[0]["op"], "create");
+        assert_eq!(lines[0]["reason"], "新建");
+        assert_eq!(lines[1]["op"], "edit");
+        assert_eq!(lines[1]["call"]["tool"], "edit_files");
+        assert_eq!(lines[1]["changeSet"], "7691_退库锁库存");
+        assert_eq!(lines[0]["after"], lines[1]["before"], "前后两条应首尾相接");
+
+        let r3 = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({"name": "change_sets", "arguments": {}}),
+        )
+        .await;
+        assert!(
+            text_of(&r3).starts_with("7691_退库锁库存 · 1 个文件 · "),
+            "{r3}"
+        );
+
+        let list = rpc(&srv.base, &srv.token, "tools/list", json!({})).await;
+        let tools = list["result"]["tools"].as_array().unwrap();
+        let props = |n: &str| {
+            tools.iter().find(|t| t["name"] == n).unwrap()["inputSchema"]["properties"].clone()
+        };
+        assert!(props("edit_files").get("changeSet").is_some());
+        assert!(props("batch").get("reason").is_some());
+        assert!(props("read_files").get("changeSet").is_none());
+        assert!(props("run_command").get("changeSet").is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 变更日志默认关闭，关闭时对模型可见的一切都与加这个功能之前一致：
+    /// tools/list 没有 `change_sets` 也没有 `changeSet` / `reason`，instructions 没有第 6 条，
+    /// 硬传 changeSet 写文件也不回显、不生成日志。
+    #[tokio::test]
+    async fn change_journal_off_by_default_keeps_legacy_surface() {
+        use crate::mcp::client_kind::ClientKind;
+        assert!(
+            !BridgeConfig::default().journal_enabled,
+            "变更日志必须默认关闭"
+        );
+
+        let off = super::get_tool_definitions("bash", None, false).to_string();
+        for key in ["change_sets", "\"changeSet\"", "\"reason\""] {
+            assert!(!off.contains(key), "关闭时 tools/list 不应出现 {key}");
+        }
+        let on = super::get_tool_definitions("bash", None, true).to_string();
+        assert!(on.contains("change_sets") && on.contains("\"changeSet\""));
+        for kind in [ClientKind::ClaudeCode, ClientKind::WorkBuddy] {
+            assert!(!server_instructions(kind, false).contains("changeSet"));
+            assert!(server_instructions(kind, true).contains("changeSet"));
+        }
+
+        let root = unique_temp_root("journal-off");
+        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let r = rpc(
+            &srv.base,
+            &srv.token,
+            "tools/call",
+            json!({"name": "write_files", "arguments": {
+                "files": [{"path": root.join("b.txt").to_string_lossy(), "content": "x"}],
+                "changeSet": "某需求"
+            }}),
+        )
+        .await;
+        assert!(!r.to_string().contains("[变更集]"), "关闭时不应回显：{r}");
+        assert!(root.join("b.txt").exists(), "写入本身应照常成功");
+        assert!(!root.join("journal").exists(), "关闭时不应生成日志目录");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1696,8 +1889,8 @@ mod over_wire_tests {
     #[test]
     fn proxy_hint_is_appended_only_to_mcp_proxy() {
         let sentinel = "\n\nHINT-SENTINEL codegraph_callers";
-        let base = super::get_tool_definitions("bash", None);
-        let with = super::get_tool_definitions("bash", Some(sentinel));
+        let base = super::get_tool_definitions("bash", None, false);
+        let with = super::get_tool_definitions("bash", Some(sentinel), false);
 
         let desc = |v: &serde_json::Value, name: &str| -> String {
             v.as_array()

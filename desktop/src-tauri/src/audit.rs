@@ -114,6 +114,10 @@ where
 /// 安全 no-op，而不是在写操作中途 panic（此时备份已生成、write_atomic 尚未执行）。
 /// 生产路径下 dispatch 始终包在 with_op_backup 作用域内，关联仍正常生效。
 pub fn record_op_backup(backup: Option<PathBuf>, target: Option<PathBuf>) {
+    // 变更日志：把备份挂到该路径最近一次登记上（各写工具已在备份前登记）。
+    if let Some(t) = &target {
+        crate::journal::attach_backup(t, backup.as_deref());
+    }
     let _ = OP_BACKUP.try_with(|c| {
         *c.borrow_mut() = Some((backup, target));
     });

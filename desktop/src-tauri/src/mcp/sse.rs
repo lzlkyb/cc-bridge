@@ -226,7 +226,8 @@ pub async fn sse_message_handler(
                     "capabilities": { "tools": { "listChanged": false } },
                     "serverInfo": { "name": "cc-bridge", "version": env!("CARGO_PKG_VERSION") },
                     "instructions": crate::mcp::http::server_instructions(
-                        crate::mcp::client_kind::ClientKind::from_initialize(&body)
+                        crate::mcp::client_kind::ClientKind::from_initialize(&body),
+                        state.config.read().await.journal_enabled,
                     )
                 }
             });
@@ -234,7 +235,10 @@ pub async fn sse_message_handler(
         }
         "notifications/initialized" => {}
         "tools/list" => {
-            let shell_type = state.config.read().await.shell_type.clone();
+            let (shell_type, journal) = {
+                let c = state.config.read().await;
+                (c.shell_type.clone(), c.journal_enabled)
+            };
             // 与 HTTP transport 保持一致：`mcp_proxy` 的描述带上已挂载 server 的工具名。
             // 两边必须同步，否则换一种 transport 连进来就搜不到外挂工具了。
             let proxy_hint = crate::mcp::tools::mcp_proxy::keyword_hint(&state).await;
@@ -242,7 +246,7 @@ pub async fn sse_message_handler(
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "tools": crate::mcp::http::get_tool_definitions(&shell_type, proxy_hint.as_deref()),
+                    "tools": crate::mcp::http::get_tool_definitions(&shell_type, proxy_hint.as_deref(), journal),
                     // list-caching 提示（MCP 2025-11-05+，向后兼容：旧客户端忽略未知字段）。
                     // 目录不再静态，取舍理由见 http.rs 同位置注释。
                     "ttlMs": 3_600_000,
@@ -282,6 +286,10 @@ pub async fn sse_message_handler(
             // localhost:自定义端口 / 反向代理进来的，拼出的 URL 就直接连不上。
             // HTTP 通道早已注入（`mcp_handler`），SSE 通道此前漏了 —— 同一个工具换 transport 就坏。
             let transfer_base = crate::mcp::transfer::base_url(&headers, &state).await;
+            // 变更日志的客户端标识，与 HTTP 通道同源。
+            let client = crate::journal::client_label(
+                crate::mcp::client_kind::ClientKind::from_request(&body),
+            );
 
             let resp =
                 crate::timing::with_io_timer(async move {
@@ -292,7 +300,10 @@ pub async fn sse_message_handler(
                         Some(source_ip.clone()),
                         crate::mcp::transfer::with_base_url(
                             transfer_base,
-                            dispatch_tool(&tool_name, arguments.clone(), &state),
+                            crate::journal::with_client(
+                                client,
+                                dispatch_tool(&tool_name, arguments.clone(), &state),
+                            ),
                         ),
                     )
                     .await;

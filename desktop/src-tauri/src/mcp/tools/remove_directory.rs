@@ -67,10 +67,17 @@ pub async fn handle(args: RemoveDirectoryArgs, state: &Arc<AppState>) -> Result<
         for f in &files {
             security::extension::assert_extension_allowed(f, &allowed_extensions)?;
         }
+        // 变更日志：逐文件记删除，再记目录本身。
+        for f in &files {
+            crate::journal::note(crate::journal::Op::Delete, f, None);
+        }
+        crate::journal::note(crate::journal::Op::Rmdir, &resolved, None);
         if backup_enabled {
             let db = state.db.lock().await;
             for f in &files {
-                crate::backup::backup_before_overwrite(f, &backup_dir, &state.data_dir, &db)?;
+                let bp =
+                    crate::backup::backup_before_overwrite(f, &backup_dir, &state.data_dir, &db)?;
+                crate::journal::attach_backup(f, bp.as_deref());
                 crate::backup::prune_backups(
                     f,
                     &backup_dir,
@@ -87,6 +94,7 @@ pub async fn handle(args: RemoveDirectoryArgs, state: &Arc<AppState>) -> Result<
             .map_err(|e| format!("Recursive remove failed: {e}"))?;
     } else {
         // remove_dir 仅删空目录；非空会返回错误，符合默认安全预期。
+        crate::journal::note(crate::journal::Op::Rmdir, &resolved, None);
         tokio::fs::remove_dir(&resolved)
             .await
             .map_err(|e| format!("Remove failed (directory not empty? use recursive=true): {e}"))?;

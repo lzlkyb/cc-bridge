@@ -421,8 +421,22 @@ pub async fn reveal_backup_dir(state: State<'_, Arc<AppState>>) -> Result<String
     let config = state.config.read().await;
     let dir = state.data_dir.join(&config.backup_dir);
     drop(config);
+    open_dir(&dir, "备份目录")
+}
+
+/// 在资源管理器里打开变更日志目录（设置页「打开目录」）。日志关闭时也可打开：历史文件还在。
+#[tauri::command]
+pub async fn reveal_journal_dir(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    open_dir(
+        &crate::journal::journal_dir(&state.data_dir),
+        "变更日志目录",
+    )
+}
+
+/// 打开一个本机目录（不存在先建）。`what` 只用于报错文案。
+fn open_dir(dir: &std::path::Path, what: &str) -> Result<String, String> {
     let dir_str = dir.to_string_lossy().into_owned();
-    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::create_dir_all(dir);
     #[cfg(windows)]
     {
         // 修复：漏加 CREATE_NO_WINDOW，cmd.exe 会一闪而过弹出黑框（对齐 firewall.rs 里
@@ -431,7 +445,7 @@ pub async fn reveal_backup_dir(state: State<'_, Arc<AppState>>) -> Result<String
         command.args(["/c", "start", "", &dir_str]);
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         if let Err(e) = command.status() {
-            return Err(format!("打开备份目录失败: {e}"));
+            return Err(format!("打开{what}失败: {e}"));
         }
     }
     // 非 Windows 上根本没有 `cmd`，原来这里必然返回「No such file or directory」，
@@ -440,7 +454,7 @@ pub async fn reveal_backup_dir(state: State<'_, Arc<AppState>>) -> Result<String
     // DDE 转发导致不弹窗，不能顺手「统一」掉。
     #[cfg(not(windows))]
     tauri_plugin_opener::open_path(&dir_str, None::<&str>)
-        .map_err(|e| format!("打开备份目录失败: {e}"))?;
+        .map_err(|e| format!("打开{what}失败: {e}"))?;
     Ok(dir_str)
 }
 

@@ -369,6 +369,9 @@ async fn edit_single(
     // 按原编码/换行/BOM 无损编码（内含 round-trip 守卫，编码有损会报错）。
     let out_bytes = encoding::encode_text(&updated, ft.encoding, ft.crlf, ft.had_bom)?;
 
+    // 变更日志：写盘前登记（记下改前状态），收尾由 dispatch 层统一处理。
+    crate::journal::note(crate::journal::Op::Edit, &resolved, None);
+
     if config.backup_enabled {
         let db = state.db.lock().await;
         let bp =

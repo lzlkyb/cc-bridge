@@ -22,6 +22,8 @@ pub async fn handle(args: CreateDirectoryArgs, state: &Arc<AppState>) -> Result<
         config.whitelist_enabled,
     )?;
 
+    // 变更日志：只有原本不存在、确实新建了目录时才会记录。
+    crate::journal::note(crate::journal::Op::Mkdir, &resolved, None);
     // create_dir_all 幂等：目录已存在也返回 Ok。
     tokio::fs::create_dir_all(&resolved)
         .await

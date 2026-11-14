@@ -192,6 +192,14 @@ async fn write_single(
         .clone();
     let _guard = lock.lock().await;
 
+    // 变更日志：写盘前登记（记下改前状态），收尾由 dispatch 层统一处理。
+    let op = if resolved.exists() {
+        crate::journal::Op::Write
+    } else {
+        crate::journal::Op::Create
+    };
+    crate::journal::note(op, &resolved, None);
+
     if resolved.exists() && config.backup_enabled {
         let db = state.db.lock().await;
         let bp =

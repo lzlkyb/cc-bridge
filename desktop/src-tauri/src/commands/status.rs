@@ -55,6 +55,13 @@ pub struct StatusResponse {
     pub backup_retention: u32,
     #[serde(rename = "auditRetentionDays")]
     pub audit_retention_days: u32,
+    /// 变更日志（开放能力，见 journal.rs）：开关、保留天数、目录绝对路径。
+    #[serde(rename = "journalEnabled")]
+    pub journal_enabled: bool,
+    #[serde(rename = "journalRetentionDays")]
+    pub journal_retention_days: u32,
+    #[serde(rename = "journalDir")]
+    pub journal_dir: String,
     /// 后台命令结束后保留时长（秒），默认 120（2 分钟），可配置。
     #[serde(rename = "commandCleanupSecs")]
     pub command_cleanup_secs: u64,
@@ -499,6 +506,11 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         backup_total_bytes,
         backup_retention: config.backup_retention,
         audit_retention_days: config.audit_retention_days,
+        journal_enabled: config.journal_enabled,
+        journal_retention_days: config.journal_retention_days,
+        journal_dir: crate::journal::journal_dir(&state.data_dir)
+            .to_string_lossy()
+            .into_owned(),
         command_cleanup_secs: config.command_cleanup_secs,
         host: config.host.clone(),
         port: config.port,

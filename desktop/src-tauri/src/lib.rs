@@ -16,6 +16,8 @@ pub mod encoding;
 pub mod firewall;
 pub mod firewall_diag;
 pub mod ip_watch;
+/// 变更日志（开放能力）：写类工具每改一个文件追加一条 JSONL 记录。
+pub mod journal;
 pub mod mcp;
 pub mod network;
 pub mod security;

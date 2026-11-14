@@ -136,6 +136,8 @@ pub async fn handle(args: NotebookEditArgs, state: &Arc<AppState>) -> Result<Val
     // 写回，保留其余字段（metadata / nbformat 等）。
     // 复用 edit_files::write_atomic：同目录临时文件 + rename，崩溃中途不会损坏原 .ipynb。
     let out = serde_json::to_string_pretty(&notebook).map_err(|e| format!("序列化失败: {e}"))?;
+    // 变更日志：写盘前登记（记下改前状态）。
+    crate::journal::note(crate::journal::Op::Edit, &resolved, None);
     // M11：覆写前备份（受 backup_enabled 控制）+ 记录审计关联，支撑一键回滚，与 edit_files 一致。
     if backup_enabled {
         let db = state.db.lock().await;

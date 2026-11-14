@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 
 pub mod analyze_file;
 pub mod batch;
+pub mod change_sets;
 pub mod command_policy;
 pub mod copy_files;
 pub mod create_directory;

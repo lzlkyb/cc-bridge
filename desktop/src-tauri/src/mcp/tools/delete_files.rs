@@ -55,6 +55,9 @@ async fn delete_single(
         return Err("path is a directory, refusing to delete".into());
     }
 
+    // 变更日志：删除前登记（记下改前状态）。
+    crate::journal::note(crate::journal::Op::Delete, &resolved, None);
+
     if config.backup_enabled {
         let db = state.db.lock().await;
         let bp =

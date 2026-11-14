@@ -58,6 +58,11 @@ pub struct ConfigPatch {
     pub backup_retention: Option<u32>,
     #[serde(rename = "auditRetentionDays")]
     pub audit_retention_days: Option<u32>,
+    #[serde(rename = "journalEnabled")]
+    pub journal_enabled: Option<bool>,
+    /// 变更日志保留天数，最小 1（不提供永久保留，见 RFC）。
+    #[serde(rename = "journalRetentionDays")]
+    pub journal_retention_days: Option<u32>,
     /// 后台命令结束后保留时长（秒），可调。
     #[serde(rename = "commandCleanupSecs")]
     pub command_cleanup_secs: Option<u64>,
@@ -225,6 +230,12 @@ pub async fn save_config(
         command_cleanup_secs,
         "command_cleanup_secs",
         &patch.command_cleanup_secs
+    );
+    apply_field!(journal_enabled, "journal_enabled", &patch.journal_enabled);
+    apply_field!(
+        journal_retention_days,
+        "journal_retention_days",
+        &patch.journal_retention_days.map(|d| d.max(1))
     );
     apply_field!(
         whitelist_enabled,

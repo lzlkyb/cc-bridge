@@ -187,6 +187,10 @@ pub struct BridgeConfig {
     pub backup_dir: String,
     pub backup_retention: u32,
     pub audit_retention_days: u32,
+    /// 变更日志（开放能力，见 `journal.rs`）：写类工具每改一个文件记一条。默认开。
+    pub journal_enabled: bool,
+    /// 变更日志保留天数（整天文件过期删除）。
+    pub journal_retention_days: u32,
     pub host: String,
     pub port: u16,
     // ── 功能开关（v2.1）默认值保持 v2.0 行为，即安全约束全部生效 ──
@@ -359,6 +363,9 @@ impl Default for BridgeConfig {
             backup_dir: ".cc-bridge-backup".into(),
             backup_retention: 10,
             audit_retention_days: 30,
+            // 默认关：关闭时 tools/list 与 instructions 和加变更日志前完全一致。
+            journal_enabled: false,
+            journal_retention_days: 30,
             host: "0.0.0.0".into(),
             port: 7823,
             whitelist_enabled: true,
@@ -472,6 +479,10 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "backup_retention" => config.backup_retention = parse_or_warn(key, value, 10u32),
             "audit_retention_days" => {
                 config.audit_retention_days = parse_or_warn(key, value, 30u32)
+            }
+            "journal_enabled" => config.journal_enabled = parse_or_warn(key, value, false),
+            "journal_retention_days" => {
+                config.journal_retention_days = parse_or_warn(key, value, 30u32)
             }
             "host" => config.host = parse_or_warn(key, value, "0.0.0.0".into()),
             "port" => config.port = parse_or_warn(key, value, 7823u16),
@@ -746,6 +757,16 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         conn,
         "audit_retention_days",
         &to_value(config.audit_retention_days).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "journal_enabled",
+        &to_value(config.journal_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "journal_retention_days",
+        &to_value(config.journal_retention_days).unwrap(),
     )?;
     save_config_field(conn, "host", &to_value(&config.host).unwrap())?;
     save_config_field(conn, "port", &to_value(config.port).unwrap())?;

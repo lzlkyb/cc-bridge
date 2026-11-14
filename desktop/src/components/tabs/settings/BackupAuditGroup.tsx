@@ -11,6 +11,7 @@ import { SettingsRow } from "../../ui/SettingsRow";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { useSettingSave } from "./useSettingSave";
 import { SubSetting } from "./SubSetting";
+import { JournalSettings } from "./JournalSettings";
 
 // 与备份侧的预设对齐（BackupCleanupDialog 的 DAY_PRESETS）：两边文案与心智刻意保持一致。
 const BEFORE_PRESETS = [7, 30, 90];
@@ -249,6 +250,7 @@ export function BackupAuditGroup({
             info="按临时天数清一次，不会修改上面的保留天数设置。不同于备份：审计是流式记录，不需要「保留最近 1 份」这种底线。"
           />
         </SubSetting>
+        <JournalSettings status={status} onSaved={onSaved} />
       </CardContent>
 
       {/* P1-3：五个清理入口共用一个确认框（与日志页「清空日志」同标准），描述按

@@ -16,6 +16,12 @@ export interface StatusResponse {
   backupTotalBytes: number;
   backupRetention: number;
   auditRetentionDays: number;
+  /** 变更日志开关（开放能力，见 docs/开放能力-变更日志.md）。 */
+  journalEnabled: boolean;
+  /** 变更日志保留天数，最小 1。 */
+  journalRetentionDays: number;
+  /** 变更日志目录绝对路径。 */
+  journalDir: string;
   /** 后台命令结束后保留时长（秒），默认 120。 */
   commandCleanupSecs: number;
   host: string;
@@ -268,6 +274,8 @@ export interface ConfigPatch {
   backupDir?: string;
   backupRetention?: number;
   auditRetentionDays?: number;
+  journalEnabled?: boolean;
+  journalRetentionDays?: number;
   commandCleanupSecs?: number;
   host?: string;
   port?: number;

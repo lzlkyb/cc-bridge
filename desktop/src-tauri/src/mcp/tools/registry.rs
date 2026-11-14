@@ -105,6 +105,7 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "view_image",
     "get_command_output",
     "mcp_list_servers",
+    "change_sets",
 ];
 
 /// 重复执行结果不变的写工具（`annotations.idempotentHint`）。客户端连接中断时可自动重试一次。
@@ -264,6 +265,12 @@ pub fn all_tools() -> Vec<ToolSpec> {
             PrepareUploadArgs,
             r#"Issue a one-time URL for uploading a file to this machine WITHOUT passing its bytes through the conversation. Validates the target path (whitelist, extension, read-only mode, size, overwrite) NOW and returns a `curl` command; run it from your own shell to PUT the file. The upload is streamed, size-limited, sha256-verified (pass `sha256` to have the server check it), and backs up any existing file before replacing it atomically. Prefer this over write_files with base64 for any binary or large file (pptx/xlsx/pdf/images/archives). The ticket works exactly ONCE and expires — if the HTTP call fails, call this tool again for a fresh URL. The HTTP response is JSON: check `ok`."#,
             true
+        ),
+        register_tool!(
+            change_sets,
+            ChangeSetsArgs,
+            r#"List change sets recorded in the change journal (name · file count · last change), newest first. Check before starting work so you reuse an existing name instead of inventing a near-duplicate."#,
+            false
         ),
         register_tool!(
             prepare_download,
