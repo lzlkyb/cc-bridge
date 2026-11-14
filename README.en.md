@@ -17,7 +17,7 @@ Installer size: **4.5 MB** (Windows) / **5.7 MB** (macOS).
 |---|---|---|
 | Where the AI runs | Remote Linux server (VPS, cluster) | Your laptop / local machine |
 | Where the files live | Your local Windows / macOS | Another Windows / macOS box (home desktop, office machine) |
-| Network | Same LAN / VPN (HTTP + Bearer) | Across the internet (**built-in self-signed HTTPS**, or reverse proxy + Let's Encrypt) |
+| Network | Same LAN / VPN (HTTP + Bearer), or any network via an SSH reverse tunnel (bridge stays loopback-only) | Across the internet (**built-in self-signed HTTPS**, or reverse proxy + Let's Encrypt) |
 | Typical story | "Claude Code on my VPS edits the repo on my Windows workstation — no more scp / SSHFS." | "My cloud Codex works on the toolchain that only exists on my office Windows machine." |
 
 > The rule is simple: **install the bridge where the files are; the AI connects from the other side.** Both directions use the same installer, the same port, and the same security model.
@@ -53,7 +53,7 @@ The first one, step by step:
 
 **Step 2** — open the **Security** page and add your working directories to the path whitelist (default: deny everything).
 
-### Mode A: remote AI → local files (same LAN / VPN)
+### Mode A: remote AI → local files (LAN / VPN / SSH reverse tunnel)
 
 3. On the **Connect** page, copy the generated command and run it on the remote Linux box:
 
@@ -62,6 +62,16 @@ The first one, step by step:
    ```
 
 4. Done — the remote AI client can now read, search, and edit your local files.
+
+> **Two ways to reach your machine:**
+>
+> **Same LAN / VPN** — the generated command works as-is.
+>
+> **Across networks** (your machine is behind NAT, there is no VPN, or the VPS cannot route back): click the port-forward button on that connection in the [built-in SSH terminal](#built-in-ssh-terminal-for-humans-not-the-ai) and add a row to the **server → local** table — server port `7823` (or your actual port), local target `127.0.0.1`, local target port `7823`. Then point the command at `http://127.0.0.1:7823/mcp`. No inbound port, no public IP, no self-signed certificate — traffic rides the existing SSH connection.
+>
+> ⚠️ This is not a general NAT-traversal service: no relay, so it **fails when both ends are behind NAT**; `-R` binds the server loopback by default, so other users on that host can still reach the port (the token is the remaining guard); binding `0.0.0.0` depends on sshd's `GatewayPorts`.
+>
+> Either way, never expose the bridge as plain HTTP on the public internet (see Known limitations).
 
 ### Mode B: local AI → remote files (across the internet)
 
@@ -110,11 +120,13 @@ External MCP bridging: `mcp_list_servers` (list bridged external MCP servers + t
 - **401 ban** — repeated auth failures ban the source IP (default 5 → 15 min) when remote access is on.
 - **Automatic backups** — before every write/delete/overwrite, timestamped, auto-pruned.
 - **Audit log** — every call with tool, params, result, source IP, duration; retention configurable (default 30 days).
-- **Transport** — HTTP + Bearer for trusted LAN/VPN only; built-in **self-signed HTTPS** (fingerprint verification advised) or reverse proxy + Let's Encrypt for the public internet. Defaults are conservative: remote access off until explicitly enabled, fail-closed whitelist, command execution off.
+- **Transport** — HTTP + Bearer for trusted LAN/VPN only (over an SSH reverse tunnel the traffic is SSH-encrypted and the bridge stays on loopback, so that is not a public exposure); built-in **self-signed HTTPS** (fingerprint verification advised) or reverse proxy + Let's Encrypt for the public internet. Defaults are conservative: remote access off until explicitly enabled, fail-closed whitelist, command execution off.
 
 ## Built-in SSH terminal (for humans, not the AI)
 
 The 4th tab is a real interactive SSH terminal (system OpenSSH + PTY + xterm.js): password or key auth (credentials encrypted at rest with aes-gcm), multi-tab sessions with keepalive, and an SFTP drawer (browse/upload/download/mkdir/delete). It goes over local Tauri IPC only — remote AI clients cannot touch it.
+
+Port forwarding (`-L` local → server, `-D` SOCKS5, `-R` server → local) is configured per connection and runs in its own `ssh -N` process, so it keeps working with no terminal open. The `-R` rule is what makes Mode A work across networks: the remote Claude Code connects to its own `127.0.0.1:7823` and the traffic comes back over the SSH tunnel. Reconnects back off from 2 s to 60 s, but stops immediately on auth failure or when the server asks for interactive input (2FA, forced password change) instead of hammering it; listening on a non-loopback address is flagged in the UI as an exposure risk.
 
 ## Tech stack
 
@@ -135,7 +147,7 @@ The 4th tab is a real interactive SSH terminal (system OpenSSH + PTY + xterm.js)
 
 - Windows 10/11 and macOS (Apple Silicon) only — no Intel Mac or Linux builds yet.
 - **Platform differences.** Firewall auto-allow, desktop-shortcut creation, and instant IP-change events are Windows-only. On macOS the app polls for IP changes every 5 s, and desktop notifications have not been verified on real hardware yet (they may report `pushed: false`).
-- Public-internet access is supported only via the built-in self-signed HTTPS or a reverse proxy + Let's Encrypt; no built-in tunneling/NAT traversal, and plain HTTP must not be exposed publicly.
+- **Direct** public-internet access to the bridge is supported only via the built-in self-signed HTTPS or a reverse proxy + Let's Encrypt. The bridge does no tunneling or NAT traversal itself — for Mode A across networks use the SSH reverse tunnel (`-R`) in the terminal, which reuses your existing SSH connection rather than acting as a relay. Plain HTTP must not be exposed publicly.
 - Self-signed-certificate compatibility varies by client — see the [honest compatibility matrix](docs/client-compatibility.md) instead of promises.
 - `analyze_file` uses regex heuristics, not a parser. `delete_files` only deletes single files, not directories (by design).
 - **Light theme × Claude Code theme tracking**: the terminal answers OSC 10/11 color queries on behalf of xterm.js, so Claude Code's `theme: auto` correctly follows the bridge's light/dark theme (no black user-message blocks on light backgrounds). Older Claude Code versions without auto mode need a manual `/theme light`.
