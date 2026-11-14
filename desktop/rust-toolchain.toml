@@ -1,0 +1,12 @@
+# 固定 stable 通道并预装门禁需要的组件。
+#
+# 位置说明：放在 desktop/ 而不是 desktop/src-tauri/ —— rustup 是从**当前目录**
+# 逐级向上找 toolchain 文件，不是在 Cargo.toml 旁边找。贡献者在 desktop/ 下跑
+# `npm run check:rust`（cargo --manifest-path src-tauri/Cargo.toml），只有放在这里
+# 才能命中；在 desktop/src-tauri/ 下直接跑 cargo 时也会向上找到本文件。
+#
+# 不锁具体版本：CI 用 dtolnay/rust-toolchain@stable，本地跟随 stable 才不会出现
+# 「本地能编、CI 不能编」的版本漂移；需要复现历史问题时用 rustup override。
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
