@@ -15,6 +15,15 @@ on:
 
 # 共享编译缓存：sccache 把每个 crate 的编译对象按 hash 存到 GitHub Actions Cache，
 # 跨发版 / 跨 PR 命中（依赖不变时基本秒级）；第一次或改了大段 Rust 仍要全编。
+#
+# 🔴 Windows 的 job 必须绕开 sccache（2026-11-14 定位）：sccache 0.17 起会展开 rustc 的
+#    @argfile（mozilla/sccache#2397），而本项目的 rustc 参数里有 MSVC 工具链的
+#    `-L native=C:\Program Files\...\atlmfc\lib\x64` 与数百个 `--extern`，展开后超过
+#    Windows CreateProcess 的 32767 字符上限，报 `os error 206` / `failed to spawn Command`。
+#    实证：main 靠热缓存命中躲过，fork PR 冷缓存必炸（PR #1 连红两次，报错行末尾就是
+#    `-L native=...atlmfc\lib\x64`）。所以两个 Windows job 都在 checkout 后清空
+#    RUSTC_WRAPPER、不装 sccache —— cargo 自己会用 @argfile 交给 rustc，天然规避上限。
+#    macOS / Ubuntu 的 ARG_MAX 在 MB 量级，保留 sccache。
 env:
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
@@ -68,8 +77,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - name: Sccache Setup (跨 PR 编译缓存)
-        uses: mozilla/sccache-action@v0.0.10
+      # 见文件头 env 注释：Windows 上 sccache 展开 @argfile 会超 32767 字符上限。
+      # 写进 GITHUB_ENV 让后续所有 step 都不带该变量（cargo 把空值视为未设置，已实测）。
+      - name: 关闭 sccache（Windows 命令行长度上限）
+        shell: bash
+        run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
@@ -768,7 +780,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # 发版构建：仅 tag 触发。test(release) 与 build 同 job 内复用 release target，
-  # 依赖 crate 只编译一遍（A）；sccache 让依赖不变时后续发版秒级命中（B）。
+  # 依赖 crate 只编译一遍（A）；跨发版的依赖产物由 Swatinem/rust-cache 的 target
+  # 缓存承担（B）—— Windows 侧不走 sccache，原因见文件头 env 处注释。
   build-windows:
     name: Build Windows exe + installer
     # needs 使它在 mac 之后跑（发版串行，多花约 10 分钟）——因为它要合并 mac 的
@@ -815,8 +828,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Sccache Setup (跨发版编译缓存)
-        uses: mozilla/sccache-action@v0.0.10
+      # 见文件头 env 注释：Windows 上 sccache 展开 @argfile 会超 32767 字符上限。
+      # 这里同样不装 sccache —— 发版时冷缓存的概率最高，不能靠热缓存兜。
+      - name: 关闭 sccache（Windows 命令行长度上限）
+        shell: bash
+        run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
 
       - uses: Swatinem/rust-cache@v2
         with:
