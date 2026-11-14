@@ -268,7 +268,7 @@ fn pick_runnable(
 /// 🔴 调用方都是 async 上下文（`ssh_check` / `ssh_connect` / SFTP），这里的阻塞会
 /// 占住 tokio 工作线程，所以整个探测必须**有总预算**：候选再多、再异常也不能
 /// 累计成十几秒卡顿。超预算直接放弃剩余候选（判不可用，报错比卡死好）。
-fn find_ssh() -> Option<PathBuf> {
+pub(super) fn find_ssh() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         use std::sync::OnceLock;
@@ -364,7 +364,7 @@ fn resolve_link_secrets(
 
 /// A newly entered credential overrides saved ciphertext for this connection only.
 /// In particular, it must allow replacing an unreadable old credential without decrypting it.
-fn resolve_connect_secrets(
+pub(super) fn resolve_connect_secrets(
     link: &SshLink,
     data_dir: &Path,
     password: Option<String>,
@@ -398,8 +398,8 @@ fn resolve_connect_secrets(
 /// 把两者绑在一起传，而不是给 `ssh_base_args` / `run_scp` / `spawn_capture` 一路
 /// 都加一个 `Option<&SshConnection>` 参数——后者一旦在某个调用点忘了传，表现是
 /// **静默地走直连**（连不上，且从报错里看不出为什么）。
-struct SshLink {
-    conn: SshConnection,
+pub(super) struct SshLink {
+    pub(super) conn: SshConnection,
     jump: Option<SshConnection>,
     /// 已拼好的 `-o ProxyCommand=` 的值；None = 直连。
     ///
@@ -409,7 +409,7 @@ struct SshLink {
 }
 
 impl SshLink {
-    fn new(conn: SshConnection, jump: Option<SshConnection>) -> Result<Self, String> {
+    pub(super) fn new(conn: SshConnection, jump: Option<SshConnection>) -> Result<Self, String> {
         let proxy = match &jump {
             None => None,
             Some(j) => {
@@ -439,7 +439,7 @@ impl SshLink {
 ///
 /// 无跳板时（`link.proxy == None`）输出与加跳板机功能之前**逐字节一致**，
 /// 老连接零影响（见本文件底部的 `direct_args_unchanged_by_proxy_support` 用例）。
-fn ssh_base_args(link: &SshLink, port_flag: &str) -> Vec<String> {
+pub(super) fn ssh_base_args(link: &SshLink, port_flag: &str) -> Vec<String> {
     let conn = &link.conn;
     let mut v = vec![
         "-o".into(),
@@ -677,7 +677,7 @@ fn shell_quote(p: &str) -> String {
 /// 事件与远程 shell history。
 ///
 /// 认证要么在几秒内完成、要么就是失败了，用时间窗口才是对的语义。
-const CREDENTIAL_FILL_WINDOW: Duration = Duration::from_secs(30);
+pub(super) const CREDENTIAL_FILL_WINDOW: Duration = Duration::from_secs(30);
 
 /// 剥掉 VT 转义序列（CSI / OSC / 两字节 ESC 序列），只留正文。
 ///
@@ -692,7 +692,7 @@ const CREDENTIAL_FILL_WINDOW: Duration = Duration::from_secs(30);
 /// 提示**不以冒号结尾**（后面跟着 `\x1b[1C`、设标题 OSC 和 `\x1b[?25h`），
 /// 「尾部冒号」判据永远不命中 → 自动填密码静默失效 → 一次性传输路径（scp）
 /// 没有手输的机会，表现为进度条永远停在「连接中」，直到 600s 超时。
-fn strip_ansi(s: &str) -> String {
+pub(super) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut it = s.chars();
     while let Some(c) = it.next() {
@@ -736,7 +736,7 @@ fn strip_ansi(s: &str) -> String {
 ///
 /// 🔴 匹配前必须先 `strip_ansi`：ConPTY 会把控制台标题/光标状态的转义序列追加在
 /// 提示后面（见 `strip_ansi` 文档），不剥掉的话尾部永远是 `\x1b[?25h` 而不是冒号。
-fn prompt_tail(chunk: &[u8]) -> Option<String> {
+pub(super) fn prompt_tail(chunk: &[u8]) -> Option<String> {
     let s = String::from_utf8_lossy(chunk);
     let t = strip_ansi(&s);
     let t = t.trim_end();
@@ -777,7 +777,7 @@ fn password_change_prompt(t: &str) -> bool {
 ///
 /// 改密流程的「设新密码」环节必须先排除（见 `password_change_prompt`）：
 /// 那一步填进去的是**新密码**，我们手上只有旧的。
-fn password_prompt_in(chunk: &[u8]) -> bool {
+pub(super) fn password_prompt_in(chunk: &[u8]) -> bool {
     let Some(t) = prompt_tail(chunk) else {
         return false;
     };
@@ -796,7 +796,7 @@ fn password_prompt_in(chunk: &[u8]) -> bool {
 ///
 /// 真实形式是 `Enter passphrase for key '/path/id_rsa': `——注意它**不是**以
 /// `passphrase:` 结尾，而是以引号路径加冒号结尾，所以锁定冒号、关键词用包含判定。
-fn passphrase_prompt_in(chunk: &[u8]) -> bool {
+pub(super) fn passphrase_prompt_in(chunk: &[u8]) -> bool {
     prompt_tail(chunk).is_some_and(|t| t.contains("passphrase") || t.contains("密码短语"))
 }
 
@@ -1326,6 +1326,10 @@ pub async fn ssh_save_connection(
     if conn.id.trim().is_empty() {
         conn.id = uuid::Uuid::new_v4().to_string();
     }
+    crate::ssh_tunnel::validate_rules(&conn.forwards)?;
+    for r in conn.forwards.iter_mut().filter(|r| r.id.is_empty()) {
+        r.id = uuid::Uuid::new_v4().to_string();
+    }
     // 跳板机校验。前端的下拉已经置灰了这些项，这里再守一层：
     // 配置也可以从导入文件进来，绕过 UI。
     if !conn.proxy_jump_id.is_empty() {
@@ -1502,6 +1506,7 @@ pub async fn ssh_delete_connection(
     )?;
     // 连接都删了，它的 SFTP helper 会话没必要再占着服务器的 MaxSessions。
     state.drop_ssh_helper(&id);
+    state.halt_ssh_tunnel(&id);
     Ok(())
 }
 
@@ -1882,7 +1887,7 @@ async fn fetch_link(state: &State<'_, Arc<AppState>>, id: &str) -> Result<SshLin
 
 /// 取连接配置 + 它的跳板机。**与 `fetch_link` 同源**，只是不吃 `State` ——
 /// 非命令层（`cc_session`）需要同一份解析，而它没有 `State` 可给。
-async fn load_link_parts(
+pub(super) async fn load_link_parts(
     state: &Arc<AppState>,
     id: &str,
 ) -> Result<(SshConnection, Option<SshConnection>), String> {

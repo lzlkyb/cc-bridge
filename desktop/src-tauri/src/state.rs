@@ -52,6 +52,31 @@ pub struct SshSession {
     pub disconnected: Arc<AtomicBool>,
 }
 
+/// 一条连接的端口转发（常驻 `ssh -N` 进程 + 断线重连的监管线程）。
+/// 由 `ssh_tunnel_start` 创建，进程管理见 `commands::ssh_tunnel_cmds`。
+pub struct SshTunnel {
+    pub stop: Arc<AtomicBool>,
+    pub status: Arc<StdMutex<crate::ssh_tunnel::TunnelStatus>>,
+    /// 当前这一轮 ssh 进程的 killer（重连间隔里为 None）。有它才能在应用退出时
+    /// 同步杀掉进程，而不是等监管线程下一次轮询。
+    pub killer: Arc<StdMutex<Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>>>,
+    pub thread: StdMutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl SshTunnel {
+    pub fn halt(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(k) = self
+            .killer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            let _ = k.kill();
+        }
+    }
+}
+
 pub struct RunningCommand {
     pub pid: u32,
     pub command: String,
@@ -155,6 +180,8 @@ pub struct AppState {
     /// SSH 终端会话连接池。key=session_id（uuid），value=PTY master/child/writer。
     /// 复用 cwd_sessions 的 DashMap 模式；空闲回收见 `gc_ssh_sessions`。
     pub ssh_sessions: DashMap<String, SshSession>,
+    /// 端口转发。key=connection_id（一条连接一个转发进程），与终端会话互不影响。
+    pub ssh_tunnels: DashMap<String, SshTunnel>,
     /// SFTP 传输的**取消标志**。key=transfer_id（前端生成的 uuid），置位即请求取消。
     ///
     /// 🔴 这里只放一个 `AtomicBool` 而不是 `Child`：`spawn_capture` 的 monitor 线程
@@ -268,6 +295,7 @@ impl AppState {
             running_commands: DashMap::new(),
             cwd_sessions: DashMap::new(),
             ssh_sessions: DashMap::new(),
+            ssh_tunnels: DashMap::new(),
             ssh_transfers: DashMap::new(),
             ssh_helpers: DashMap::new(),
             ssh_helper_blocked: DashMap::new(),
@@ -407,6 +435,21 @@ impl AppState {
         let ids: Vec<String> = self.ssh_helpers.iter().map(|e| e.key().clone()).collect();
         for id in ids {
             self.drop_ssh_helper(&id);
+        }
+    }
+
+    /// 停掉某条连接的端口转发（不等进程退出）。返回被停掉的句柄，需要等端口释放的调用方去 join。
+    pub fn halt_ssh_tunnel(&self, connection_id: &str) -> Option<SshTunnel> {
+        let (_, t) = self.ssh_tunnels.remove(connection_id)?;
+        t.halt();
+        Some(t)
+    }
+
+    /// 总开关关闭 / 应用退出时调用，与 `kill_all_ssh_sessions` 同一个断路器语义。
+    pub fn kill_all_ssh_tunnels(&self) {
+        let ids: Vec<String> = self.ssh_tunnels.iter().map(|e| e.key().clone()).collect();
+        for id in ids {
+            self.halt_ssh_tunnel(&id);
         }
     }
 

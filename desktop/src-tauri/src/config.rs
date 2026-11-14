@@ -64,6 +64,63 @@ pub struct SshConnection {
     /// 这样规则一句话说得清，也不必做环检测。
     #[serde(rename = "proxyJumpId", default)]
     pub proxy_jump_id: String,
+    /// 端口转发规则（`ssh -L / -R / -D`），由独立的 ssh 进程承载，与终端会话互不影响。
+    pub forwards: Vec<ForwardRule>,
+    /// 什么时候自动开启这条连接的端口转发（见 `ForwardAuto`）。
+    #[serde(rename = "forwardAuto")]
+    pub forward_auto: ForwardAuto,
+}
+
+/// 端口转发的自动开启时机，从最被动到最主动。`ask` / `connect` 是前端在用户主动连接终端时的行为，
+/// 后端只在应用启动时认 `launch`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForwardAuto {
+    Off,
+    #[default]
+    Ask,
+    Connect,
+    Launch,
+}
+
+/// 转发方向：`local` = `ssh -L`，`remote` = `ssh -R`，`dynamic` = `ssh -D`（SOCKS5）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForwardKind {
+    #[default]
+    Local,
+    Remote,
+    Dynamic,
+}
+
+/// 一条端口转发规则。`dynamic` 不用 target 字段。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ForwardRule {
+    pub id: String,
+    pub enabled: bool,
+    pub kind: ForwardKind,
+    pub listen_host: String,
+    /// `remote` 允许 0（由服务器分配端口）。
+    pub listen_port: u16,
+    pub target_host: String,
+    pub target_port: u16,
+    pub note: String,
+}
+
+impl Default for ForwardRule {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            enabled: true,
+            kind: ForwardKind::Local,
+            listen_host: "127.0.0.1".into(),
+            listen_port: 0,
+            target_host: "127.0.0.1".into(),
+            target_port: 0,
+            note: String::new(),
+        }
+    }
 }
 
 impl Default for SshConnection {
@@ -81,6 +138,8 @@ impl Default for SshConnection {
             remember_passphrase: false,
             encrypted_passphrase: String::new(),
             proxy_jump_id: String::new(),
+            forwards: Vec::new(),
+            forward_auto: ForwardAuto::Ask,
         }
     }
 }

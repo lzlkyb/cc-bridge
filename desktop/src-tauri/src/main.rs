@@ -487,6 +487,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => log::warn!("初始化 Updater 插件失败，已跳过：{e}"),
             }
 
+            tauri::async_runtime::spawn(commands::autostart_ssh_tunnels(
+                app.handle().clone(),
+                app_state.clone(),
+            ));
+
             // Spawn MCP HTTP server
             let mcp_state = app_state.clone();
             let mcp_handle = tauri::async_runtime::spawn(async move {
@@ -1059,6 +1064,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_list_connections,
             commands::ssh_save_connection,
             commands::ssh_delete_connection,
+            // 端口转发（同一安全闸 ssh_enabled，不进 MCP）。
+            commands::ssh_tunnel_start,
+            commands::ssh_tunnel_stop,
+            commands::ssh_tunnel_list,
             // 只读：把已保存的凭据解密给本机面板看（不进 MCP、不进审计）。
             commands::ssh_reveal_credential,
             // SFTP 文件传输（同一安全闸 ssh_enabled，仍只经 Tauri 暴露给本机面板）。
@@ -1196,6 +1205,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 顺序无关：helper 是按连接 id 存在的 SFTP 会话，会话是 pty 主进程。
                 st.kill_all_ssh_sessions();
                 st.kill_all_ssh_helpers();
+                st.kill_all_ssh_tunnels();
                 // CC 对话轮次同理：`Run` 没有 `Drop` 杀，claude 还会再拉 Bash 子进程。
                 // 宽限期给短一点 —— 用户已经关窗，多等只会拖慢退出。
                 //

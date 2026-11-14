@@ -41,7 +41,7 @@
 |---|---|---|
 | **AI 跑在哪** | 远程 Linux 服务器（租的 VPS / 公司集群） | 你的笔记本 / 本机 |
 | **要操作的文件在哪** | 本地这台 Windows/macOS | 另一台 Windows/macOS（家里、公司） |
-| **是否跨公网** | 通常否（同一内网 / VPN） | 通常**是**（不同网络） |
+| **是否跨公网** | 通常否（同内网 / VPN；或经 SSH 反向隧道，桥不暴露） | 通常**是**（不同网络） |
 | **传输安全** | HTTP + Bearer（内网） | **HTTPS 自签**（内置，一键开启）或反向代理 + Let's Encrypt |
 | **桥装在哪** | 你的本地开发机 | 目标机器（文件所在的那台） |
 
@@ -84,12 +84,20 @@
 
 **第 2 步**：打开「安全」页 → 点「浏览」把要开放的工作目录加进白名单（默认拒绝一切访问，安全优先）。
 
-### 模式 A：远程 AI → 读写本地文件（同一内网 / VPN）
+### 模式 A：远程 AI → 读写本地文件（同一内网 / VPN / SSH 反向隧道）
 
 3. 切到「连接」页，复制给出的 `claude mcp add ...` 命令。
 4. 粘贴到远程 Linux 终端执行，Claude Code 立刻就能读写你本机的文件了。
 
-> 仅建议在同一内网 / VPN 下使用，不要暴露到公网（详见文末「已知限制」）。
+> 两种接法，按你的网络选：
+>
+> **同一内网 / VPN**：连接页给出的命令直接能用。
+>
+> **跨网络**（本机在 NAT 后、没有 VPN、租的 VPS 回不来）：在[SSH 终端](#ssh-终端本地人操作非-mcp-工具)里点这条连接的「端口转发」按钮，在 **「服务器 → 本机」** 表里加一条：**服务器端口** `7823`（或你实际用的端口）、**本机目标地址** `127.0.0.1`、**本机目标端口** `7823`；再把命令里的地址换成 `http://127.0.0.1:7823/mcp`。本机不开入站端口、不需要公网 IP、不需要自签证书，流量走 SSH 加密。
+>
+> ⚠️ 这不是通用内网穿透：无中继，**两端都在 NAT 后无效**；`-R` 默认只绑服务器回环地址，那台机器上其他用户仍可访问（靠 token 兜底）；要绑 `0.0.0.0` 取决于 sshd 的 `GatewayPorts`。
+>
+> 无论哪种接法，都不要把桥暴露成公网裸 HTTP（详见文末「已知限制」）。
 
 ### 模式 B：本地 AI → 接入远程机器的文件（跨公网）
 
@@ -122,7 +130,7 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
-同一个安装包、同一个端口、同一套安全模型——方向只取决于 **AI 在哪一侧、文件在哪一侧**。
+同一个安装包、同一个端口、同一套安全模型——方向只取决于 **AI 在哪一侧、文件在哪一侧**。模式 A 的链路可以是同内网 / VPN 直连，也可以经 SSH 反向隧道跨网络（见上「模式 A」）。
 
 **关键架构决策**：
 - **纯 Rust 后端**编译进 Tauri 二进制，不再有 Node.js sidecar（安装包 4.5MB / mac zip 5.7MB）
@@ -377,6 +385,7 @@ AI 工具对话中触发工具调用:
 - **交互**：xterm.js 渲染，`TERM=xterm-256color` + 中文 UTF-8；窗口缩放走 PTY `resize`；`ServerAliveInterval=30 / ServerAliveCountMax=3` 保活防断；复制粘贴走 WebView 剪贴板。
 - **多标签终端**：每个 SSH 连接一个独立 xterm 实例 + 会话标签（顶部可切换/关闭），后台连接保持不断开；点连接自动新建标签，断线后标签标红。
 - **SFTP 文件管理**：每个连接带「文件」按钮，弹出文件浏览器抽屉——列目录（解析 `ls -la`）、进入上级/子目录、上传/下载（走 `scp -t` / `scp -f` 子协议）、新建目录、删除。本地路径用输入框（不引原生文件选择器插件，零新增 Rust crate）。
+- **端口转发**：每条连接可配 `-L`（本机 → 服务器）/ `-D`（本机 SOCKS5 代理）/ `-R`（服务器 → 本机）规则，由独立的 `ssh -N` 进程承载，**不开终端也能跑**。跨网络用模式 A 靠的就是 `-R`：远程 Claude Code 连自己的 `127.0.0.1:7823`，流量经 SSH 隧道回到本机。断线按 2s→60s 退避重连，认证失败或服务器要求交互式输入（2FA、改密）时直接停住，不会反复撞认证；监听在非回环地址时界面会提示暴露风险。
 - **安全闸**：`ssh_enabled` 总开关默认关，首次进终端页弹启用确认（锁图标 + 风险说明）。凭据仅经 Tauri IPC 写入本机，明文字段绝不经通用 `save_config` 补丁，也不经 MCP 暴露给远端。SFTP 与终端共用同一开关与连接池。
 - **连接池**：复用 `AppState` 的 `DashMap` 管理 SSH 会话，60s GC 回收已退出的僵尸会话（含 SFTP 用的无屏 PTY 子进程）。
 - **新增 13 个 Tauri IPC 命令**（终端 8 + SFTP 5）：`ssh_check` / `ssh_list_connections` / `ssh_save_connection` / `ssh_delete_connection` / `ssh_connect` / `ssh_input` / `ssh_resize` / `ssh_disconnect` + `ssh_sftp_list` / `ssh_sftp_get` / `ssh_sftp_put` / `ssh_sftp_mkdir` / `ssh_sftp_remove`（见上「Tauri IPC 命令」表）。
@@ -397,7 +406,7 @@ AI 工具对话中触发工具调用:
 
 ### 传输安全（模式 B 必读）
 
-- **默认 HTTP + Bearer**：明文传输，**只适合内网 / VPN**，不要暴露公网。
+- **默认 HTTP + Bearer**：明文传输，**只适合内网 / VPN**，不要暴露公网（经 SSH 反向隧道接入时由 SSH 加密，桥仍只监听回环地址，不算公网暴露）。
 - **内置 HTTPS 自签**（「设置 › 安全 › HTTPS 远程访问」一键开启）：rcgen 自签证书（825 天，SAN 绑定全部网卡 IP + 127.0.0.1），跨公网全程 TLS。接入侧务必**核对设置页显示的 SHA-256 指纹**防中间人；各 AI 工具对自签证书的信任路径见 [兼容性矩阵](docs/client-compatibility.md)。
 - **反向代理 + Let's Encrypt**（有域名时推荐）：桥只出 HTTP，由 Caddy / nginx 终结 TLS，模板见 [reverse-proxy.md](docs/reverse-proxy.md)。
 - **公网底线组合**：强 token 强制轮换 + 401 封禁 + 路径白名单 fail-closed（空名单拒绝一切）+ 写类工具可关 + 命令执行默认关。
@@ -690,7 +699,7 @@ xattr -dr com.apple.quarantine /你的路径/cc-bridge.app
 ## 已知限制
 
 - **平台**：仅 Windows 10/11 与 macOS（Apple Silicon）；没有 Intel Mac（x86_64）和 Linux 构建。mac 版的差异见 [已知差异](#已知差异与-windows-版相比)。
-- 跨公网访问只有两种受支持的形态：**内置 HTTPS 自签**（无域名）或**反向代理 + Let's Encrypt**（有域名，见 [reverse-proxy.md](docs/reverse-proxy.md)）。桥本身不做内网穿透、不开裸 HTTP 公网暴露；自签证书对部分 AI 工具的兼容性以 [实测矩阵](docs/client-compatibility.md) 为准。
+- 跨公网**直接访问桥**只有两种受支持的形态：**内置 HTTPS 自签**（无域名）或**反向代理 + Let's Encrypt**（有域名，见 [reverse-proxy.md](docs/reverse-proxy.md)）。桥本身不做内网穿透、不开裸 HTTP 公网暴露——跨网络接入模式 A 请用终端里的 SSH 反向隧道（`-R`），它复用你已有的 SSH 连接，不是中继服务；自签证书对部分 AI 工具的兼容性以 [实测矩阵](docs/client-compatibility.md) 为准。
 - `analyze_file` 的函数/类计数是正则启发式估算，不是语法解析。
 - **亮色主题 × Claude Code 主题跟随**：终端会在数据流里代答 OSC 10/11 颜色查询，Claude Code 的 `theme: auto` 能正确跟随桥的亮/暗主题（亮色下用户消息不再是黑块）；过旧的 Claude Code 版本无 auto 模式，需在会话里手动 `/theme light`。详见 [兼容性矩阵](docs/client-compatibility.md)。
 - `delete_files` 只删单个文件，不支持删目录（安全设计）。
