@@ -1,0 +1,80 @@
+name: Bug 报告
+description: 装了/跑起来之后行为不对，或某个功能不工作
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        安全漏洞请走 [私密披露](https://github.com/lzlkyb/cc-bridge/security/advisories/new)，不要开公开 issue。
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 设置页或安装包文件名里的版本号
+      placeholder: "3.1.5"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台
+      options:
+        - Windows 10/11
+        - macOS (Apple Silicon)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 接入方式
+      options:
+        - 模式 A：同一内网，远程 AI 连本机
+        - 模式 B：跨公网，HTTPS + 自签证书
+        - SSH 终端 / 端口转发
+        - 本地使用，没有接远程 AI
+        - 不确定
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动开始，一步一步写。能稳定复现最好；偶发也说清频率。
+      placeholder: |
+        1. 打开连接页，新建 SSH 连接
+        2. 点「接入向导」，选 Claude Code
+        3. 在远程执行给出的命令
+        4. 看到 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 有报错原文就贴原文，不要只写「报错了」。
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: |
+        审计日志里有文件路径与命令，**贴之前先脱敏**。
+        相关代码位置（file:line）如果有，也写在这里。
+      render: text
+    validations:
+      required: false

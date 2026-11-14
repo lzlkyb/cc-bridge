@@ -160,6 +160,25 @@ Port forwarding (`-L` local → server, `-D` SOCKS5, `-R` server → local) is c
 - [Reverse proxy templates (Caddy / nginx)](docs/reverse-proxy.md)
 - [Security review of all MCP tools](docs/MCP工具安全审查报告-2026-07-12.md)
 
+## Contributing
+
+Issues and PRs are welcome. Read these first:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — branch model, local gates, code conventions, commit format
+- [docs/dev-setup.md](docs/dev-setup.md) — toolchain, WebView2, common setup errors
+- [SECURITY.md](SECURITY.md) — report vulnerabilities privately, not in a public issue
+
+Fast path:
+
+```bash
+git clone git@github.com:lzlkyb/cc-bridge.git
+cd cc-bridge/desktop
+npm ci && npm run setup:hooks
+npm run dev
+```
+
+Before pushing: `npm run check` (frontend) and `npm run check:rust` (Rust) — same gates CI runs.
+
 ## License
 
 See [LICENSE](LICENSE).

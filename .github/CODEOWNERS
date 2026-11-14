@@ -1,0 +1,14 @@
+# 代码所有者：PR 会自动请求对应区域的 review。
+# 当前只有一位维护者；新增核心贡献者后按区域把人加进对应行即可。
+
+*                       @lzlkyb
+
+# Rust 后端：安全模块、MCP 工具、SSH 与端口转发都在这。
+/desktop/src-tauri/     @lzlkyb
+
+# 前端
+/desktop/src/           @lzlkyb
+
+# 门禁、版本同步、发版脚本：改动会影响所有人，谨慎放权。
+/desktop/scripts/       @lzlkyb
+/.github/               @lzlkyb

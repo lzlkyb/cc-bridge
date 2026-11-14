@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（请勿开公开 issue）
+    url: https://github.com/lzlkyb/cc-bridge/security/advisories/new
+    about: 路径白名单绕过、token 校验、命令执行越权等问题请走私密披露通道。
+  - name: 使用与接入问题
+    url: https://github.com/lzlkyb/cc-bridge#readme
+    about: 安装、接入向导、MCP 客户端配置先看 README 的「接入 AI 工具」章节。

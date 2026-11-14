@@ -626,6 +626,25 @@ claude mcp add --transport http cc-bridge https://<IP或域名>:7823/mcp --heade
 
 其他工具（Codex = TOML、WorkBuddy = JSON）的完整片段与各工具自签信任路径，见 [兼容性矩阵](docs/client-compatibility.md)。
 
+## 参与开发
+
+欢迎 issue 与 PR。改动前请先读：
+
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** —— 协作模型、门禁命令、代码约定、提交规范
+- **[docs/dev-setup.md](docs/dev-setup.md)** —— 从零跑起来（工具链、WebView2、`0xC0000139` 等常见错误）
+- **[SECURITY.md](SECURITY.md)** —— 安全漏洞请走私密披露，不要开公开 issue
+
+最短路径：
+
+```bash
+git clone git@github.com:lzlkyb/cc-bridge.git
+cd cc-bridge/desktop
+npm ci && npm run setup:hooks
+npm run dev
+```
+
+推送前跑 `npm run check`（前端四项）与 `npm run check:rust`（Rust 三项），与 CI 同一套标准。
+
 ## macOS 安装与更新说明
 
 > 本节结论均来自 CI 在真实 macOS（arm64）上的实测，不是推测。
