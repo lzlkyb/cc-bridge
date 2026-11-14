@@ -66,7 +66,12 @@ pub struct SshTunnel {
 impl SshTunnel {
     pub fn halt(&self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(k) = self.killer.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        if let Some(k) = self
+            .killer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
             let _ = k.kill();
         }
     }

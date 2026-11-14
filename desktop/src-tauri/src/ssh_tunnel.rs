@@ -155,7 +155,9 @@ impl TunnelStatus {
             }
             return false;
         }
-        if let Some(port) = after(line, "remote port forwarding failed for listen port ").and_then(parse_port) {
+        if let Some(port) =
+            after(line, "remote port forwarding failed for listen port ").and_then(parse_port)
+        {
             let msg = "服务器拒绝监听（端口已被占用，或 sshd 不允许绑定该地址，见 GatewayPorts）";
             return self.mark_remote(port, RuleState::Failed, Some(msg.into()));
         }
@@ -168,7 +170,8 @@ impl TunnelStatus {
     fn mark_local(&mut self, port: u16, state: RuleState, message: Option<String>) -> bool {
         let mut changed = false;
         for r in &mut self.rules {
-            if r.rule.kind != ForwardKind::Remote && r.rule.listen_port == port && r.state != state {
+            if r.rule.kind != ForwardKind::Remote && r.rule.listen_port == port && r.state != state
+            {
                 r.state = state;
                 r.message = message.clone();
                 changed = true;
@@ -201,7 +204,9 @@ impl TunnelStatus {
         let idx = self
             .rules
             .iter()
-            .position(|r| unbound(r) && format!("{}:{}", r.rule.target_host, r.rule.target_port) == target)
+            .position(|r| {
+                unbound(r) && format!("{}:{}", r.rule.target_host, r.rule.target_port) == target
+            })
             .or_else(|| self.rules.iter().position(unbound));
         let Some(i) = idx else {
             return false;
@@ -257,7 +262,10 @@ pub fn validate_rules(rules: &[ForwardRule]) -> Result<(), String> {
             &mut local_ports
         };
         if seen.contains(&r.listen_port) {
-            return Err(format!("{label}：同一方向已有规则监听端口 {}", r.listen_port));
+            return Err(format!(
+                "{label}：同一方向已有规则监听端口 {}",
+                r.listen_port
+            ));
         }
         seen.push(r.listen_port);
     }
@@ -267,8 +275,7 @@ pub fn validate_rules(rules: &[ForwardRule]) -> Result<(), String> {
 /// 只放行主机名 / IPv4 / IPv6 / `*` 的字符：参数直接进 ssh 命令行，空格、引号一类必须拒掉。
 fn host_ok(h: &str) -> bool {
     !h.is_empty()
-        && h
-            .chars()
+        && h.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '*'))
 }
 
@@ -348,15 +355,24 @@ mod tests {
         evil.target_host = "x -oProxyCommand=calc".into();
         assert!(validate_rules(&[evil]).is_err());
         // 同方向重复不行，跨方向可以（一个在本机、一个在服务器）
-        let dup = [rule(ForwardKind::Local, 8080, 80), rule(ForwardKind::Dynamic, 8080, 0)];
+        let dup = [
+            rule(ForwardKind::Local, 8080, 80),
+            rule(ForwardKind::Dynamic, 8080, 0),
+        ];
         assert!(validate_rules(&dup).is_err());
-        let cross = [rule(ForwardKind::Local, 8080, 80), rule(ForwardKind::Remote, 8080, 80)];
+        let cross = [
+            rule(ForwardKind::Local, 8080, 80),
+            rule(ForwardKind::Remote, 8080, 80),
+        ];
         assert!(validate_rules(&cross).is_ok());
     }
 
     #[test]
     fn local_and_dynamic_listen_lines() {
-        let mut s = status(&[rule(ForwardKind::Local, 8080, 80), rule(ForwardKind::Dynamic, 1080, 0)]);
+        let mut s = status(&[
+            rule(ForwardKind::Local, 8080, 80),
+            rule(ForwardKind::Dynamic, 1080, 0),
+        ]);
         assert!(s.apply_line("Authenticated to host ([1.2.3.4]:22) using \"password\"."));
         assert_eq!(s.state, TunnelState::Up);
         assert!(s.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 8080."));
@@ -374,7 +390,10 @@ mod tests {
         assert!(s.apply_line("channel_setup_fwd_listener_tcpip: cannot listen to port: 18090"));
         s.apply_line("Could not request local forwarding.");
         assert_eq!(s.rules[0].state, RuleState::Failed);
-        assert_eq!(s.rules[0].message.as_deref(), Some("bind [10.255.255.1]:18090: Unknown error"));
+        assert_eq!(
+            s.rules[0].message.as_deref(),
+            Some("bind [10.255.255.1]:18090: Unknown error")
+        );
     }
 
     #[test]
@@ -389,7 +408,9 @@ mod tests {
         ));
         assert!(s.apply_line("Warning: remote port forwarding failed for listen port 6000"));
         // 实测 9.5p2 的 listen 字段带主机：`listen 127.0.0.1:0`
-        assert!(s.apply_line("debug1: remote forward success for: listen 127.0.0.1:0, connect 127.0.0.1:3389"));
+        assert!(s.apply_line(
+            "debug1: remote forward success for: listen 127.0.0.1:0, connect 127.0.0.1:3389"
+        ));
         assert!(s.apply_line("Allocated port 34567 for remote forward to 127.0.0.1:3389"));
         assert_eq!(s.rules[0].state, RuleState::Listening);
         assert_eq!(s.rules[1].state, RuleState::Failed);
@@ -404,7 +425,10 @@ mod tests {
         s.apply_line("debug1: Connecting to h [1.2.3.4] port 22.");
         assert_eq!(s.last_error, None);
         s.apply_line("ssh: connect to host h port 22: Connection refused");
-        assert_eq!(s.last_error.as_deref(), Some("ssh: connect to host h port 22: Connection refused"));
+        assert_eq!(
+            s.last_error.as_deref(),
+            Some("ssh: connect to host h port 22: Connection refused")
+        );
         s.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 8080.");
         s.begin_attempt();
         assert_eq!(s.last_error, None);
@@ -413,8 +437,12 @@ mod tests {
 
     #[test]
     fn fatal_reasons() {
-        assert!(is_fatal("61706@127.0.0.1: Permission denied (publickey,keyboard-interactive)."));
+        assert!(is_fatal(
+            "61706@127.0.0.1: Permission denied (publickey,keyboard-interactive)."
+        ));
         assert!(is_fatal("Host key verification failed."));
-        assert!(!is_fatal("ssh: connect to host h port 22: Connection timed out"));
+        assert!(!is_fatal(
+            "ssh: connect to host h port 22: Connection timed out"
+        ));
     }
 }

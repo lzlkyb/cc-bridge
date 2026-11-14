@@ -54,7 +54,14 @@ pub async fn ssh_tunnel_start(
     if !state.config.read().await.ssh_enabled {
         return Err("SSH 终端未启用，请先在设置中开启".into());
     }
-    start_tunnel(app, state.inner().clone(), connection_id, password, passphrase).await
+    start_tunnel(
+        app,
+        state.inner().clone(),
+        connection_id,
+        password,
+        passphrase,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -87,7 +94,9 @@ pub async fn autostart_ssh_tunnels(app: AppHandle, state: Arc<AppState>) {
         }
         c.ssh_connections
             .iter()
-            .filter(|c| c.forward_auto == ForwardAuto::Launch && c.forwards.iter().any(|r| r.enabled))
+            .filter(|c| {
+                c.forward_auto == ForwardAuto::Launch && c.forwards.iter().any(|r| r.enabled)
+            })
             .map(|c| c.id.clone())
             .collect()
     };
@@ -106,7 +115,12 @@ async fn start_tunnel(
     passphrase: Option<String>,
 ) -> Result<TunnelStatus, String> {
     let (conn, jump) = load_link_parts(&state, &id).await?;
-    let rules: Vec<_> = conn.forwards.iter().filter(|r| r.enabled).cloned().collect();
+    let rules: Vec<_> = conn
+        .forwards
+        .iter()
+        .filter(|r| r.enabled)
+        .cloned()
+        .collect();
     if rules.is_empty() {
         return Err("这条连接还没有启用的转发规则".into());
     }
@@ -141,11 +155,32 @@ async fn start_tunnel(
         tunnel.killer.clone(),
         app.clone(),
     );
-    let handle = std::thread::spawn(move || supervise(&app2, &plan, &stop, &shared, &killer));
+    // 监管线程拿走一份 clone：`shared` 后面还要读一次当前快照。
+    let shared_in_thread = shared.clone();
+    let handle =
+        std::thread::spawn(move || supervise(&app2, &plan, &stop, &shared_in_thread, &killer));
     *tunnel.thread.lock().unwrap() = Some(handle);
-    state.ssh_tunnels.insert(id, tunnel);
-    let _ = app.emit(STATUS_EVENT, status.clone());
-    Ok(status)
+    // 🔴 并发启动的兜底：两次 start 可能都越过上面的 `stop_and_wait` 才走到这里，
+    // 后插入的会顶掉先插入的那条。被顶掉的监管线程再也等不到 stop 标志，ssh 进程
+    // 和它占的监听端口会一直挂着（用户以为停了，其实端口还被占着）。
+    // 这里把它一并收掉，并**等它真的退出**——端口不放，新进程 bind 不上。
+    if let Some(displaced) = state.ssh_tunnels.insert(id, tunnel) {
+        displaced.halt();
+        let old = displaced
+            .thread
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(h) = old {
+            let _ = tauri::async_runtime::spawn_blocking(move || h.join()).await;
+        }
+    }
+    // 状态以共享快照为准，不能发上面构造的那份：线程可能已经先跑出结果
+    // （解密失败、PTY 打不开、进程起不来），随后发一份 Connecting 会把它盖回去，
+    // 前端就永远停在「连接中」，连失败原因都看不到。
+    let snapshot = shared.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let _ = app.emit(STATUS_EVENT, snapshot.clone());
+    Ok(snapshot)
 }
 
 async fn stop_and_wait(state: &Arc<AppState>, id: &str) {
@@ -196,11 +231,13 @@ fn supervise(
             (s.was_up, s.last_error.clone())
         };
         let needs_secret = matches!(fatal, Some(Fatal::NeedsSecret(_)));
+        // 判定必须在取出 reason 之前做：`fatal` 在下面被 move 掉。
+        let stop_here = give_up(fatal.as_ref());
         let reason = match fatal {
-            Some(Fatal::NeedsSecret(r) | Fatal::Other(r)) => r,
+            Some(Fatal::NeedsSecret(r) | Fatal::Interactive(r) | Fatal::Other(r)) => r,
             None => last.unwrap_or_else(|| "SSH 进程已退出".into()),
         };
-        if needs_secret || is_fatal(&reason) {
+        if stop_here || is_fatal(&reason) {
             publish(app, stop, status, |s| {
                 s.state = TunnelState::Error;
                 s.message = Some(reason);
@@ -230,7 +267,18 @@ fn supervise(
 
 enum Fatal {
     NeedsSecret(String),
+    /// 后台转发**没有人能手输**：2FA 验证码、密码过期强制改密一类。重试只会一次次
+    /// 拿同样的输出撞服务器，除了喂 fail2ban 没有任何意义，所以必须停住。
+    /// 🔴 不能混进 `Other`：`Other` 是环境性失败（PTY 打不开、ssh 起不来），那些值得重连。
+    Interactive(String),
+    /// 环境性失败，可以重连。
     Other(String),
+}
+
+/// 这一轮结束后还要不要重连。`reason` 里的关键词另由 `is_fatal` 兜（`Permission denied`
+/// 这类是 ssh 自己退出时报的，不经过 `Fatal`）。
+fn give_up(fatal: Option<&Fatal>) -> bool {
+    matches!(fatal, Some(Fatal::NeedsSecret(_) | Fatal::Interactive(_)))
 }
 
 /// 跑一轮 ssh 进程直到它退出。返回不该重试的失败原因；普通退出的原因在 `status.last_error`。
@@ -287,7 +335,9 @@ fn run_once(
     let read_thread = {
         let (app, stop, status) = (app.clone(), stop.clone(), status.clone());
         let own_killer = child.clone_killer();
-        std::thread::spawn(move || read_loop(reader, writer, creds, own_killer, &app, &stop, &status))
+        std::thread::spawn(move || {
+            read_loop(reader, writer, creds, own_killer, &app, &stop, &status)
+        })
     };
 
     loop {
@@ -376,12 +426,52 @@ fn prompt_answer(tail: &str, creds: &mut PendingCreds) -> Option<Result<String, 
     } else if passphrase_prompt_in(bytes) {
         creds.take_passphrase(tail)
     } else {
-        return Some(Err(Fatal::Other(format!(
-            "服务器要求交互式输入（{}），后台转发无法应答",
+        // 既不是密码也不是口令：2FA 验证码、改密提示、主机密钥交互……都是后台答不了的。
+        // 归到 `Interactive` 而不是 `Other`，否则会按「环境性失败」无限重连。
+        return Some(Err(Fatal::Interactive(format!(
+            "服务器要求交互式输入（{}），后台转发无法应答：请先用终端手动登录一次，或改用密钥认证",
             tail.trim()
         ))));
     };
     Some(secret.ok_or_else(|| {
         Fatal::NeedsSecret("需要密码或密钥口令：请在连接设置里保存，或开启转发时输入".into())
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SshConnection;
+
+    /// 2FA 验证码这类「后台没人能应答」的提示必须直接放弃。
+    ///
+    /// 曾经它落在 `Fatal::Other` 里，而 `supervise` 只认「需要密码」和 4 个关键词
+    /// （`Permission denied` 一类），于是这种提示会走重连分支：2s→60s 退避地无限
+    /// 撞服务器，每次都是一次真实认证尝试。
+    #[test]
+    fn interactive_prompt_stops_instead_of_retrying() {
+        let mut creds = PendingCreds::direct(&SshConnection::default(), None, None);
+        let answer = prompt_answer("Verification code: ", &mut creds).expect("冒号结尾就是提示");
+        let Err(fatal) = answer else {
+            panic!("没有可用凭据，不该返回要填的内容");
+        };
+        assert!(
+            matches!(fatal, Fatal::Interactive(_)),
+            "交互式提示必须归到不可重试的 Interactive"
+        );
+        assert!(give_up(Some(&fatal)), "交互式提示不该重连");
+        // 关键词表拦不住这类提示（`is_fatal` 只看 ssh 自己退出时报的那几句），
+        // 所以必须在 `Fatal` 上分出来 —— 这条断言就是那个「为什么」。
+        assert!(!is_fatal(
+            "服务器要求交互式输入（Verification code:），后台转发无法应答"
+        ));
+    }
+
+    /// 环境性失败仍要重连；缺凭据仍要把「要密码」的旗子交给前端。
+    #[test]
+    fn env_failures_still_retry() {
+        assert!(!give_up(Some(&Fatal::Other("打开 PTY 失败".into()))));
+        assert!(!give_up(None));
+        assert!(give_up(Some(&Fatal::NeedsSecret("需要密码".into()))));
+    }
 }
