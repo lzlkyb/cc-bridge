@@ -88,7 +88,8 @@ function readArtifact({ dir, pick, label }) {
   if (!signature) {
     fail(`${sigFile} 内容为空 → 无法为 updater 生成有效签名，终止发布（避免自动更新校验失败）。`);
   }
-  return { fileName: pkgFile, signature };
+  const bytes = fs.statSync(path.join(dirPath, pkgFile)).size;
+  return { fileName: pkgFile, signature, bytes };
 }
 
 /** Windows：NSIS 安装包。 */
@@ -120,13 +121,41 @@ function readVersionFromConf() {
   return conf.version;
 }
 
-function buildDownloadUrl(tag, fileName) {
+/**
+ * Gitee raw 对匿名访问有大小上限。实测（2026-11-15，v3.1.5 回填）：
+ *   cc-bridge_3.1.5_x64-setup.exe  8.08 MB → 200
+ *   cc-bridge.app.tar.gz          10.23 MB → 403 `large file require login for access`
+ * 客户端没有登录态 ⇒ 清单一旦指向 raw 上的大文件，那个平台的自动更新**永远**装不上
+ * （update.rs 会回退下一源，但每次都先白挨一个 403）。阈值取 9MB：落在实测区间内留余量，
+ * 宁可构建期就红，也不要发一份客户端下不动的清单。安装包应走发行版附件：
+ *   https://gitee.com/<owner/repo>/releases/download/{tag}/{filename}
+ */
+export const RAW_ANONYMOUS_LIMIT_BYTES = 9 * 1024 * 1024;
+
+/**
+ * 这份 URL 交给客户端下载，会不会撞上 raw 的匿名大小上限。
+ * 抽成纯函数是为了能被测试钉住实测边界（8.08MB 通 / 10.23MB 403）。
+ */
+export function mirrorUrlTooLargeForRaw(url, bytes, limit = RAW_ANONYMOUS_LIMIT_BYTES) {
+  return /\/raw\//.test(url) && bytes > limit;
+}
+
+function assertMirrorCanServe(url, fileName, bytes) {
+  if (!mirrorUrlTooLargeForRaw(url, bytes)) return url;
+  fail(
+    `${fileName} 有 ${(bytes / 1024 / 1024).toFixed(2)} MB，但清单 URL 指向 Gitee raw：\n  ${url}\n` +
+      `Gitee raw 匿名下载上限实测在 8.08MB(200) 与 10.23MB(403) 之间，客户端无登录态下载不了。\n` +
+      `改用发行版附件：UPDATER_URL_TEMPLATE="https://gitee.com/<owner/repo>/releases/download/{tag}/{filename}"`,
+  );
+}
+
+function buildDownloadUrl(tag, fileName, bytes) {
   // URL_TEMPLATE 优先：支持 Gitee 这种与 GitHub Release 拼法形状不同的镜像（见上方注释）。
   // 注意用 replaceAll 而非 replace：模板里 {tag} 可能出现不止一次（如 Gitee 模板
   // ".../raw/{tag}/releases/{tag}/{filename}"），单次 replace 只换第一处会留下未替换的 {tag}。
-  return URL_TEMPLATE
-    ? URL_TEMPLATE.replaceAll("{tag}", tag).replaceAll("{filename}", fileName)
-    : `${GITHUB_RELEASE_BASE}/${tag}/${fileName}`;
+  if (!URL_TEMPLATE) return `${GITHUB_RELEASE_BASE}/${tag}/${fileName}`;
+  const url = URL_TEMPLATE.replaceAll("{tag}", tag).replaceAll("{filename}", fileName);
+  return bytes === undefined ? url : assertMirrorCanServe(url, fileName, bytes);
 }
 
 function loadMergeBase() {
@@ -168,7 +197,7 @@ function main() {
   if (win) {
     platforms["windows-x86_64"] = {
       signature: win.signature,
-      url: buildDownloadUrl(tag, win.fileName),
+      url: buildDownloadUrl(tag, win.fileName, win.bytes),
     };
     success(`windows-x86_64: ${win.fileName}`);
     info(`  下载 URL: ${platforms["windows-x86_64"].url}`);
@@ -179,7 +208,7 @@ function main() {
     // 只出 arm64（用户已定）。将来若改 universal，把 darwin-x86_64 也指向同一个包即可。
     platforms["darwin-aarch64"] = {
       signature: mac.signature,
-      url: buildDownloadUrl(tag, mac.fileName),
+      url: buildDownloadUrl(tag, mac.fileName, mac.bytes),
     };
     success(`darwin-aarch64: ${mac.fileName}`);
     info(`  下载 URL: ${platforms["darwin-aarch64"].url}`);
@@ -209,4 +238,7 @@ function main() {
   console.log(JSON.stringify(updaterJson, null, 2));
 }
 
-main();
+// 直接 `node generate-updater-json.mjs` 才执行；被测试 import 时不该真去扫产物目录。
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

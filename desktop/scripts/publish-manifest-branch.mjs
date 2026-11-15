@@ -16,36 +16,50 @@
  *   当时不是假绿，是**后来被剪掉的**。现在把分支建在 GitHub：镜像不剪它，还替我们搬到 Gitee
  *   （PastePanda 实测同步 4–11s，raw 边缘 20–100s，分支分叉时强制对齐窗口 260s）。
  *
- * 🔴 与 PastePanda 的唯一有意差异：**这里每次清空 latest/**。
- *   PastePanda 的 latest/ 同时住着桌面与手机两条独立发版线的 manifest，谁清空谁就删掉对端的
- *   第 1 更新源（它 2026-10-09 的真事故）。cc-bridge 只有一条发版线，一次把 Windows exe/sig
- *   与 mac tar.gz/sig 全部推齐，而产物文件名带版本号 ⇒ 不清空就会残留上一版安装包、仓库随
- *   发版次数无限膨胀。清空后必须 `git add -A latest` 才能把删除一并提交。
+ * 🔴 这个分支**只放清单**，安装包走 Gitee 发行版附件（2026-11-15 改）。
+ *   实测（v3.1.5 回填）：raw 对匿名访问有大小上限，
+ *     cc-bridge_3.1.5_x64-setup.exe  8.08MB → 200
+ *     cc-bridge.app.tar.gz          10.23MB → 403 `large file require login for access`
+ *   客户端不可能登录 Gitee，所以把安装包塞进 raw 分支这条路对大产物**从根上不通**；
+ *   而 Gitee 发行版附件实测 21MB 匿名可下（PastePanda v7.0.0 的 exe 完整 22,107,652B 拉完）。
+ *   ⇒ 分支里只留 86KB 的清单（小文件不受限），二进制放 `releases/download/{tag}/{filename}`。
+ *   Windows 包已经 8MB，涨过 10MB 只是时间问题，不能靠「现在还没超」侥幸。
  *
- * 其余四条硬约束与 PastePanda 一致：
+ * 🔴 latest/ 每次整份清空（与 PastePanda 的有意差异）。
+ *   PastePanda 的 latest/ 同时住着桌面与手机两条独立发版线的 manifest，谁清空谁就删掉对端的
+ *   第 1 更新源（它 2026-10-09 的真事故）。cc-bridge 只有一条发版线，清单文件名固定
+ *   （updater-gitee.json），不涉及多线对撞；而清空 + `git add -A latest` 还负责一件事：
+ *   把 2026-11-15 之前塞在分支里的 18MB 安装包**删掉**，不让它们继续占分支体积。
+ *
+ * 其余四条硬约束：
  *  1. **只许 fast-forward，绝不 force**。镜像同步拒绝非 FF 更新 ⇒ Gitee 停在旧 sha；而客户端
  *     读到一条「版本不比当前新」的旧 manifest 会直接判「已是最新」，后面的 GitHub 源一个都不试
  *     —— 一条旧 manifest 比 404 更毒（build.yml 原注释也写过这个坑）。
  *  2. **推之前把文件清单和体积打出来**：18MB 级产物是发布侧的主要风险来源。
- *  3. **四段验证**：GitHub sha == 推送 sha → Gitee 分支 sha == 推送 sha → raw version 对得上
- *     → latest/ 里每个安装包的直链真的可读。只验 manifest 会漏掉「清单好、exe 404」这一整类事故
- *     （PastePanda v7.1.1 就是这样让自动更新对所有用户失效的）。
- *  4. **不再需要 GITEE_TOKEN**：出境只往 GitHub 推，用 GITHUB_TOKEN；Gitee 侧由镜像搬运。
+ *  3. **四段验证**：GitHub sha == 推送 sha → Gitee 分支 sha == 推送 sha → raw 上的 version 与
+ *     **内容哈希**都对得上（同版本重发时只比 version 会被边缘缓存骗过去，实际发生过）→
+ *     每个安装包在 Gitee 发行版附件下真的可读。只验 manifest 会漏掉「清单好、exe 404」
+ *     这一整类事故（PastePanda v7.1.1 就是这样让自动更新对所有用户失效的）。
+ *     第 4 段按 `--tag` 拼 `releases/download/{tag}/{name}` 探测；**不给 --tag 就不做第 4 段**，
+ *     绝不退回 raw 去探（那会把现在的平台限制重新当成「已验证」）。
+ *  4. **本脚本不需要 GITEE_TOKEN**：它只往 GitHub 推分支；附件上传由 CI 那一步用 token 调 API
+ *     完成（只调 API，不往 Gitee push 任何 git 引用）。Gitee 侧的分支仍由镜像搬运。
  *
  * 用法（在仓库根目录跑）：
  *   node desktop/scripts/publish-manifest-branch.mjs \
- *     --file dist-out/cc-bridge_3.1.5_x64-setup.exe \
- *     --file dist-out/cc-bridge_3.1.5_x64-setup.exe.sig \
  *     --file desktop/dist/updater-gitee.json \
- *     --gitee-repo lzul/cc-bridge
+ *     --gitee-repo lzul/cc-bridge --tag v3.1.5
  *   --dry-run            只列出要发哪些文件，不 clone 不 push
  *   --no-verify-readback 跳过四段验证（只给调用方自己回读时用）
+ *   --tag <vX.Y.Z>       第 4 段按 Gitee 发行版附件探测；传了安装包却不传它会直接报错
  *
  * 环境变量：GH_TOKEN / GITHUB_TOKEN（CI 传 secrets.GITHUB_TOKEN；本地取 gh auth token）
  *           GH_REPO（默认 lzlkyb/cc-bridge）、GITEE_REPOSITORY（默认 lzul/cc-bridge）
+ *           GITEE_RELEASE_TAG（--tag 的环境变量形式，CI 用 github.ref_name）
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -117,13 +131,31 @@ export const giteeRawUrl = (repo, name) =>
   `https://gitee.com/${repo}/raw/${MANIFEST_BRANCH}/${MANIFEST_DIR}/${name}`;
 
 /**
+ * Gitee 发行版附件的直链。安装包只在这里，不进 raw 分支 —— raw 对匿名访问有大小上限，
+ * 超过就 403 `large file require login for access`，而客户端没有登录态（见文件头实测数据）。
+ */
+export const giteeReleaseAssetUrl = (repo, tag, name) =>
+  `https://gitee.com/${repo}/releases/download/${tag}/${name}`;
+
+/**
  * 四段验证的判定（纯函数）：推下去 ≠ 客户端用得了。
  * assets 是 { 文件名: boolean }，空对象表示这次只发 manifest。
  */
-export function verifyVerdict({ pushedSha, ghSha, giteeSha, version, expectedVersion, assets = {} }) {
+export function verifyVerdict({
+  pushedSha,
+  ghSha,
+  giteeSha,
+  version,
+  expectedVersion,
+  digest,
+  expectedDigest,
+  assets = {},
+}) {
   if (ghSha !== pushedSha) return "github";
   if (giteeSha !== pushedSha) return "mirror";
   if (version !== expectedVersion) return "manifest";
+  // 同版本重发时 version 比不出来，必须比内容。不给 expectedDigest 就跳过（单测/老调用方）。
+  if (expectedDigest && digest !== expectedDigest) return "manifest";
   if (Object.values(assets).some((v) => !v)) return "asset";
   return "ok";
 }
@@ -132,8 +164,10 @@ export function verifyVerdict({ pushedSha, ghSha, giteeSha, version, expectedVer
 export const VERIFY_STAGE_HINT = {
   github: "GitHub 的 releases 分支 sha 没跟上——push 其实没生效（查 contents: write / 分支保护 / 非 FF 被拒）",
   mirror: "Gitee 镜像还没把这条分支搬过去（同步由 GitHub push 触发，实测 4–11s；分叉时最长 260s）",
-  manifest: "Gitee 分支 sha 已一致，但 raw 边缘还回旧内容或版本号不对（实测传播 20–100s）",
-  asset: "清单可读，但 latest/ 里的安装包直链读不到——客户端会卡在下载 404，查 Gitee 是否同步了二进制",
+  manifest: "Gitee 分支 sha 已一致，但 raw 边缘还回旧内容（版本号或内容哈希对不上，实测传播 20–100s）",
+  asset:
+    "清单可读，但 Gitee 发行版里读不到安装包（releases/download/{tag}/{name}）——客户端会卡在下载 404/403，" +
+    "查附件是否真上传成功（API 叫 attach_files，回读字段却叫 assets）、tag 是否已在 Gitee 存在",
 };
 
 function runGit(args, label, { cwd, allowFail = false } = {}) {
@@ -183,19 +217,24 @@ export function publishManifestBranch({ repo, token, files, workDir, identity, r
   try {
     prepareWorktree(url, dir);
 
-    // cc-bridge 单发版线、产物名带版本号：必须整份替换，否则旧 exe 残留 + 仓库无限膨胀。
-    // 与 PastePanda「绝不清空 latest/」的取舍不同，原因见文件头。
+    // 分支里只留清单；安装包走 Gitee 发行版附件（raw 大文件 403，见文件头实测）。
+    // 清空 + `add -A` 仍要做：它负责把历史版本塞在分支里的安装包一并删掉。
     rmSync(path.join(dir, MANIFEST_DIR), { recursive: true, force: true });
     mkdirSync(path.join(dir, MANIFEST_DIR), { recursive: true });
 
-    for (const p of planned) {
-      const size = statSync(p.src).size;
+    const manifestFiles = planned.filter((p) => p.name === MANIFEST_NAME);
+    const binaryFiles = planned.filter((p) => p.name !== MANIFEST_NAME);
+    for (const p of manifestFiles) {
+      const kb = statSync(p.src).size / 1024;
       copyFileSync(p.src, path.join(dir, MANIFEST_DIR, p.name));
-      info(`  - ${MANIFEST_DIR}/${p.name}  ${(size / 1024 / 1024).toFixed(2)} MB`);
+      info(`  - ${MANIFEST_DIR}/${p.name}  ${kb.toFixed(1)} KB（进分支，镜像搬到 Gitee raw）`);
     }
-    const total = planned.reduce((n, p) => n + statSync(p.src).size, 0);
-    info(`本次共 ${planned.length} 个文件，合计 ${(total / 1024 / 1024).toFixed(2)} MB（推到 GitHub，Gitee 由镜像搬运）`);
-    if (!planned.some((p) => p.name === MANIFEST_NAME)) {
+    if (binaryFiles.length) {
+      const mb = binaryFiles.reduce((n, p) => n + statSync(p.src).size, 0) / 1024 / 1024;
+      info(`另 ${binaryFiles.length} 个安装包合计 ${mb.toFixed(2)} MB：不进分支，走 Gitee 发行版附件`);
+      for (const p of binaryFiles) info(`  ~ releases/download/{tag}/${p.name}`);
+    }
+    if (manifestFiles.length === 0) {
       throw new Error(`缺少 ${MANIFEST_NAME} —— 客户端就是读它，缺了等于整个国内通道白做`);
     }
 
@@ -254,6 +293,33 @@ export async function readRawVersion(url) {
 }
 
 /**
+ * 读 raw manifest 的 version **与内容哈希**。
+ * 🔴 为什么要哈希：Gitee raw 有边缘缓存，而第 3 段过去只比 version —— 同一版本重发时
+ * 旧内容也「version 对得上」，会直接判通过（2026-11-15 回填 v3.1.5 就是这么被蒙过去的：
+ * 四段全绿，但 raw 上还是指向 gh-proxy/raw 的旧清单，25s 后才传播成新的）。
+ * 发版正常会涨版本号，所以这只是兜底；但「绿了其实没生效」正是这条链路最贵的故障。
+ */
+export async function readRawManifest(url) {
+  try {
+    const r = await globalThis.fetch(url, { redirect: "follow", cache: "no-store" });
+    if (!r.ok) return null;
+    const buf = Buffer.from(await r.arrayBuffer());
+    let version = null;
+    try {
+      version = JSON.parse(buf.toString("utf8")).version ?? null;
+    } catch {
+      // 内容还不是 JSON（边缘回了个错误页）：版本留空，由调用方判失败
+    }
+    return { version, digest: createHash("sha256").update(buf).digest("hex") };
+  } catch {
+    return null;
+  }
+}
+
+/** 本地文件的内容哈希，用来和第 3 段读到的 raw 内容逐字节比。 */
+export const fileDigest = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+
+/**
  * 探一份安装包直链：只看响应头，**不读 body**（否则每轮把 18MB 拉一遍）。
  * 接受 200/206 等 2xx/3xx 最终态，但拒绝 HTML —— Gitee 的登录页/错误页也是 200。
  */
@@ -270,36 +336,73 @@ export async function probeAsset(url) {
 }
 
 /**
- * 四段验证：GitHub sha → Gitee 分支 sha → raw version → 全部安装包直链。
+ * 四段验证：GitHub sha → Gitee 分支 sha → raw version → 全部安装包在发行版附件下可读。
  * 每段失败都打印「卡在哪一段」，不再一句「读不到」把四种成因混成一团。
+ * `tag` 只用于第 4 段；有 assets 却没给 tag 时直接报错，不退回 raw 假装验过。
  */
-export async function verifyChannel({ ghRepo, giteeRepo, pushedSha, expectedVersion, assets = [], waits = DEFAULT_RETRY_WAITS }) {
+export async function verifyChannel({
+  ghRepo,
+  giteeRepo,
+  tag,
+  pushedSha,
+  expectedVersion,
+  expectedDigest,
+  assets = [],
+  waits = DEFAULT_RETRY_WAITS,
+}) {
+  if (assets.length > 0 && !tag) {
+    throw new Error(
+      "要验证安装包直链必须传 --tag：安装包已改走 Gitee 发行版附件（releases/download/{tag}/），" +
+        "没有 tag 就拼不出地址。退回 raw 探测是错的 —— 大文件在 raw 下恒 403。",
+    );
+  }
   const manifestUrl = giteeRawUrl(giteeRepo, MANIFEST_NAME);
+  const assetUrl = (name) => giteeReleaseAssetUrl(giteeRepo, tag, name);
   let last = null;
   for (let i = 0; i <= waits.length; i++) {
     const ghSha = remoteHeadSha(`https://github.com/${ghRepo}.git`);
     const giteeSha = remoteHeadSha(`https://gitee.com/${giteeRepo}.git`);
-    const version = await readRawVersion(manifestUrl);
+    const raw = await readRawManifest(manifestUrl);
+    const version = raw?.version ?? null;
+    const digest = raw?.digest ?? null;
     const assetState = {};
-    for (const n of assets) assetState[n] = await probeAsset(giteeRawUrl(giteeRepo, n));
-    const stage = verifyVerdict({ pushedSha, ghSha, giteeSha, version, expectedVersion, assets: assetState });
-    last = { stage, ghSha, giteeSha, version, assets: assetState };
+    for (const n of assets) assetState[n] = await probeAsset(assetUrl(n));
+    const stage = verifyVerdict({
+      pushedSha,
+      ghSha,
+      giteeSha,
+      version,
+      expectedVersion,
+      digest,
+      expectedDigest,
+      assets: assetState,
+    });
+    last = { stage, ghSha, giteeSha, version, digest, assets: assetState };
     if (stage === "ok") {
-      ok(`通道四段全绿：GitHub=${ghSha}｜Gitee=${giteeSha}｜version=${version}｜${assets.length} 个安装包直链可读`);
+      ok(
+        `通道四段全绿：GitHub=${ghSha}｜Gitee=${giteeSha}｜version=${version}` +
+          `｜${assets.length} 个安装包在发行版附件下可读${tag ? `（${tag}）` : ""}`,
+      );
       return last;
     }
     if (i === waits.length) break;
     const failed = Object.entries(assetState).filter(([, v]) => !v).map(([n]) => n);
+    // 同版本重发时内容可能是旧的（边缘缓存）—— 单独标出来，否则「version 对得上」会骗人
+    const contentNote =
+      expectedDigest && digest !== expectedDigest
+        ? ` 内容哈希=${String(digest).slice(0, 8)}≠期望${expectedDigest.slice(0, 8)}`
+        : "";
     info(
       `验证第 ${i + 1} 轮卡在「${VERIFY_STAGE_HINT[stage]}」` +
         `（github=${ghSha ?? "读不到"} gitee=${giteeSha ?? "读不到"} raw=${version ?? "读不到"}` +
-        `${failed.length ? ` 直链不可读=${failed.join(",")}` : ""}），${waits[i]}s 后重试`,
+        `${contentNote}${failed.length ? ` 直链不可读=${failed.join(",")}` : ""}），${waits[i]}s 后重试`,
     );
     await sleep(waits[i] * 1000);
   }
   throw new Error(
     `验证未通过，最后卡在「${VERIFY_STAGE_HINT[last.stage]}」\n` +
       `  github=${last.ghSha ?? "读不到"}｜gitee=${last.giteeSha ?? "读不到"}｜raw=${last.version ?? "读不到"}` +
+      `｜内容哈希=${String(last.digest).slice(0, 12)}（期望 ${String(expectedDigest).slice(0, 12)}）` +
       `｜期望 sha=${pushedSha} version=${expectedVersion}\n` +
       `  直链=${JSON.stringify(last.assets)}`,
   );
@@ -324,28 +427,48 @@ function readManifestVersion(src) {
  */
 export function parseArgs(argv) {
   const files = [];
+  const assets = [];
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--file") {
       const value = argv[++i];
       if (!value) throw new Error("--file 后面缺文件路径");
       files.push(value);
     }
+    // --asset 只登记「清单里引用了、要去发行版附件下探测」的文件名，不进分支、不复制。
+    // 安装包已经单独上传，清单步骤只需要按名字验它可读。
+    if (argv[i] === "--asset") {
+      const value = argv[++i];
+      if (!value) throw new Error("--asset 后面缺文件名");
+      assets.push(value);
+    }
   }
   const at = argv.indexOf("--gitee-repo");
+  const tagAt = argv.indexOf("--tag");
   return {
     files,
+    assets,
     giteeRepo: (at >= 0 ? argv[at + 1] : "") || process.env.GITEE_REPOSITORY || DEFAULT_GITEE_REPO,
     ghRepo: process.env.GH_REPO || DEFAULT_GH_REPO,
+    // 第 4 段探的是发行版附件地址，需要 tag；CI 传 github.ref_name，本地可显式给。
+    tag: ((tagAt >= 0 ? argv[tagAt + 1] : "") || process.env.GITEE_RELEASE_TAG || "").trim(),
     verify: !argv.includes("--no-verify-readback"),
     dryRun: argv.includes("--dry-run"),
   };
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  const { files, giteeRepo, ghRepo, verify, dryRun } = parseArgs(argv);
+  const { files, assets: assetNames, giteeRepo, ghRepo, tag, verify, dryRun } = parseArgs(argv);
   const planned = planFiles(files);
   const manifest = planned.find((p) => p.name === MANIFEST_NAME);
   if (!manifest) throw new Error(`缺少 ${MANIFEST_NAME} —— 客户端就是读它，缺了等于整个国内通道白做`);
+  // 要验的附件 = 本次随行传进来的安装包 + --asset 登记的（CI 里安装包单独上传，只登记名字）。
+  // 名字必须与 planFiles 同规则校验，否则能把任意路径拼进探测 URL。
+  for (const n of assetNames) {
+    if (!/^[A-Za-z0-9._-]+$/.test(n) || n === "." || n === "..") {
+      throw new Error(`--asset 文件名不合形态（只允许字母数字 . _ -）：${n}`);
+    }
+  }
+  const assets = [...new Set([...planned.filter((p) => p.name !== MANIFEST_NAME).map((p) => p.name), ...assetNames])];
   info(`目标：${ghRepo}@${MANIFEST_BRANCH}/${MANIFEST_DIR}/｜镜像=${giteeRepo}｜文件=${planned.map((p) => p.name).join(", ")}`);
   const token = ghToken();
   if (!token && !dryRun) throw new Error("拿不到 GitHub 令牌（CI 传 secrets.GITHUB_TOKEN，本地用 gh auth token）");
@@ -356,12 +479,14 @@ export async function main(argv = process.argv.slice(2)) {
     info("--no-verify-readback：跳过四段验证（由调用方自己回读时使用）");
     return res;
   }
-  const assets = planned.filter((p) => p.name !== MANIFEST_NAME).map((p) => p.name);
   return verifyChannel({
     ghRepo,
     giteeRepo,
+    tag,
     pushedSha: res.sha,
     expectedVersion: readManifestVersion(manifest.src),
+    // 同版本重发时只看 version 会被边缘缓存骗过去，所以再比一次内容哈希
+    expectedDigest: fileDigest(manifest.src),
     assets,
   });
 }

@@ -781,14 +781,16 @@ jobs:
           GITHUB_RELEASE_TAG: ${{ github.ref_name }}
           UPDATER_DOWNLOAD_BASE: "https://gh-proxy.com/https://github.com/${{ github.repository }}/releases/download"
 
-      - name: 生成 Gitee 变体的 mac 片段（覆盖 URL 为 Gitee 直链）
+      - name: 生成 Gitee 变体的 mac 片段（URL 指向 Gitee 发行版附件）
         run: |
           set -e
           UPDATER_OUTPUT_FILENAME=updater-macos-gitee.json npm run updater:generate
         working-directory: desktop
         env:
           GITHUB_RELEASE_TAG: ${{ github.ref_name }}
-          UPDATER_URL_TEMPLATE: "https://gitee.com/${{ secrets.GITEE_REPOSITORY }}/raw/releases/latest/{filename}"
+          # 指向发行版附件，不是 raw 分支：raw 对匿名访问有大小上限，10.23MB 的 mac 包实测 403
+          # `large file require login for access`，而客户端没有登录态（见 build-windows 的国内通道段）。
+          UPDATER_URL_TEMPLATE: "https://gitee.com/${{ secrets.GITEE_REPOSITORY }}/releases/download/${{ github.ref_name }}/{filename}"
 
       - name: 校验 darwin-aarch64 签名非空
         run: |
@@ -1049,9 +1051,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 以下两步解决国内用户直连 GitHub 下载安装包不稳定/很慢的问题：把产物同步一份到 Gitee，
+      # 以下步骤解决国内用户直连 GitHub 下载安装包不稳定/很慢的问题：清单与安装包各走一条路，
       # 客户端（update.rs）优先试 Gitee，失败再回退到现有的 ghproxy/GitHub 路径。
-      # GITEE_REPOSITORY 这一个 secret 未配置时自动跳过，不影响发版（出境只认 GitHub，不需要 Gitee 写令牌）。
+      # GITEE_REPOSITORY / GITEE_TOKEN 未配置时自动跳过，不影响发版。
+      #
+      # 🔴 2026-11-15 改：**安装包不再进 raw 分支，改走 Gitee 发行版附件**。
+      #   实测 raw 匿名读大文件会 403 `large file require login for access`：
+      #     cc-bridge_3.1.5_x64-setup.exe 8.08MB → 200；cc-bridge.app.tar.gz 10.23MB → 403。
+      #   客户端没有登录态 ⇒ raw 这条路对 10MB 以上的产物根本不通，而 Windows 包已 8MB。
+      #   对照实测：Gitee 发行版附件 21MB 匿名可下（PastePanda v7.0.0 的 exe 完整拉完）。
+      #   ⇒ raw 只留 86KB 的清单（小文件不受限），二进制放 releases/download/{tag}/。
       - name: 生成 Gitee 版 updater-gitee.json（国内加速镜像，可选）
         shell: pwsh
         run: |
@@ -1063,14 +1072,132 @@ jobs:
         working-directory: desktop
         env:
           GITHUB_RELEASE_TAG: ${{ github.ref_name }}
-          # Gitee raw 文件直链与 GitHub Release 拼法形状不同（owner/repo/raw/ref/path，非
-          # base/tag/filename），用 UPDATER_URL_TEMPLATE 完全接管拼接（见 generate-updater-json.mjs）。
-          # 固定走 releases 分支下的 latest/ 目录：客户端事先不知道最新 tag，需要一个不变的地址；
-          # 每次发版整份覆盖，也避免镜像仓库随发版次数无限增长。
-          UPDATER_URL_TEMPLATE: "https://gitee.com/${{ secrets.GITEE_REPOSITORY }}/raw/releases/latest/{filename}"
+          # 指向发行版附件（同一个 tag），不是 raw 分支。
+          # generate-updater-json.mjs 另有一道守卫：URL 含 /raw/ 且产物 >9MB 时直接 fail，
+          # 免得有人把这里改回 raw、又让大平台的自动更新静默下载失败。
+          UPDATER_URL_TEMPLATE: "https://gitee.com/${{ secrets.GITEE_REPOSITORY }}/releases/download/${{ github.ref_name }}/{filename}"
           UPDATER_OUTPUT_FILENAME: "updater-gitee.json"
-          # 用 Gitee 变体的 mac 片段（URL 指向 Gitee 直链），不能用 GitHub 那份。
+          # 用 Gitee 变体的 mac 片段（URL 指向 Gitee 发行版附件），不能用 GitHub 那份。
           UPDATER_MERGE_INTO: ${{ github.workspace }}\mac-artifact\updater-macos-gitee.json
+
+      # 发行版附件必须先就位，清单才能指过去：顺序反了就是给客户端一堆 404。
+      # continue-on-error 的口径与下面的清单步骤一致 —— GitHub Release 已在上面发布成功，
+      # 国内加速只是可选加速层，不能拖累发版；但步骤会标红、日志写明缺哪个文件，不许当绿灯看。
+      - name: 上传安装包到 Gitee 发行版附件（国内加速，可选）
+        shell: pwsh
+        continue-on-error: true
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_REPOSITORY: ${{ secrets.GITEE_REPOSITORY }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function Fail([string]$why) {
+            Write-Host ""
+            Write-Host "❌ Gitee 发行版附件未就绪：$why"
+            Write-Host "   GitHub Release 已正常发布，自动更新仍可走 ghproxy/GitHub 端点；"
+            Write-Host "   只有 Gitee 国内加速通道这一次不更新（清单不会指向不存在的附件）。"
+            exit 1
+          }
+          # 分开报「哪个 secret 为空」：条目存在 ≠ 值非空，空串会被当成未配置。
+          $missingSecret = @()
+          if ([string]::IsNullOrWhiteSpace($env:GITEE_TOKEN)) { $missingSecret += 'GITEE_TOKEN' }
+          if ([string]::IsNullOrWhiteSpace($env:GITEE_REPOSITORY)) { $missingSecret += 'GITEE_REPOSITORY' }
+          if ($missingSecret.Count -gt 0) {
+            Write-Host ("⚠️ 未配置 secret（值为空）：{0}，跳过发行版附件上传" -f ($missingSecret -join ' / '))
+            exit 0
+          }
+          $tag = "${{ github.ref_name }}"
+          $api = "https://gitee.com/api/v5/repos/$($env:GITEE_REPOSITORY)"
+          $token = $env:GITEE_TOKEN.Trim()
+          $headers = @{ Authorization = "token $token" }
+          Write-Host "目标：$($env:GITEE_REPOSITORY) 发行版 $tag（附件地址 releases/download/$tag/）"
+
+          # 1) 发行版挂在 tag 上，tag 得先在 Gitee 存在。tag 由 GitHub push 触发镜像搬运，
+          #    等构建跑完通常早到了；这里只兜「镜像慢/没搬」，等 2 分钟再判失败。
+          #    查法用 git ls-remote：Gitee v5 **没有** 单个 tag 的 REST 端点
+          #    （/git/refs/tags/{tag} 与 /tags/{tag} 都返回 404 网页，实测 2026-11-15）。
+          #    只读 ref，不往 Gitee push 任何东西。
+          $tagSha = ''
+          $giteeGit = "https://gitee.com/$($env:GITEE_REPOSITORY).git"
+          for ($i = 1; $i -le 6; $i++) {
+            $out = @(git ls-remote --tags $giteeGit "refs/tags/$tag" 2>&1)
+            if ($LASTEXITCODE -eq 0 -and (($out -join "`n") -match [regex]::Escape("refs/tags/$tag"))) {
+              $tagSha = (($out -join " ").Trim() -split '\s+')[0]
+              break
+            }
+            Write-Host ("tag {0} 还不在 Gitee（第 {1}/6 次），20s 后重试" -f $tag, $i)
+            if ($i -lt 6) { Start-Sleep -Seconds 20 }
+          }
+          if ([string]::IsNullOrWhiteSpace($tagSha)) { Fail "tag $tag 在 Gitee 上不存在（镜像没搬 tag），发行版挂不上去" }
+          Write-Host ("tag {0} 已就位（{1}）" -f $tag, $tagSha)
+
+          # 2) 取已有发行版，没有就建（幂等：重跑不会产生第二个发行版）
+          $rel = $null
+          try { $rel = Invoke-RestMethod -Uri "$api/releases/tags/$tag" -Headers $headers -Method Get -TimeoutSec 30 -ErrorAction Stop } catch { }
+          if ($rel -and $rel.id) {
+            Write-Host ("发行版已存在（id={0}），复用" -f $rel.id)
+          } else {
+            $body = @{
+              tag_name         = $tag
+              name             = "cc-bridge $tag"
+              body             = "cc-bridge $tag 国内加速通道（安装包附件）"
+              prerelease       = $false
+              target_commitish = $tagSha
+            } | ConvertTo-Json -Compress
+            try {
+              $rel = Invoke-RestMethod -Uri "$api/releases" -Headers $headers -Method Post -Body $body -ContentType "application/json" -TimeoutSec 30 -ErrorAction Stop
+            } catch { Fail ("创建 Gitee 发行版失败：{0}" -f $_) }
+            Write-Host ("已创建发行版（id={0}）" -f $rel.id)
+          }
+          $rid = $rel.id
+          if (-not $rid) { Fail "未取得发行版 id" }
+
+          # 3) 上传 exe/sig 与 tar.gz/sig。
+          #    🔴 接口叫 attach_files，**不是** GitHub 那个 assets（后者在 Gitee 会返回网页版 404）；
+          #       但回读发行版 JSON 时字段确实叫 assets，读写两边名字不一样，别改回去。
+          #    --fail-with-body：4xx/5xx 令 curl 非零退出（防「假成功」），同时把 Gitee 的错误正文打出来。
+          $files = @()
+          foreach ($p in @('dist-out', 'mac-artifact')) {
+            if (Test-Path $p) {
+              $files += @(Get-ChildItem -Path $p -File | Where-Object {
+                $_.Name -like '*.exe' -or $_.Name -like '*.exe.sig' -or
+                $_.Name -like '*.app.tar.gz' -or $_.Name -like '*.app.tar.gz.sig'
+              } | ForEach-Object { $_.FullName })
+            }
+          }
+          if ($files.Count -eq 0) { Fail "一个安装包都没找到（dist-out / mac-artifact 均为空）" }
+
+          $existing = @()
+          try {
+            $cur = Invoke-RestMethod -Uri "$api/releases/$rid" -Headers $headers -Method Get -TimeoutSec 30 -ErrorAction Stop
+            $existing = @($cur.assets | ForEach-Object { $_.name })
+          } catch { }
+          foreach ($f in $files) {
+            $n = Split-Path $f -Leaf
+            if ($existing -contains $n) { Write-Host ("跳过（已有同名附件）：{0}" -f $n); continue }
+            $mb = [math]::Round((Get-Item $f).Length / 1MB, 2)
+            Write-Host ("上传 {0}（{1} MB）" -f $n, $mb)
+            curl.exe -sS --fail-with-body -w "HTTP %{http_code}\n" -X POST "$api/releases/$rid/attach_files" -H "Authorization: token $token" -F "file=@$f" --max-time 1800 --retry 3 --retry-delay 10 --retry-all-errors
+            if ($LASTEXITCODE -ne 0) { Fail ("上传 {0} 失败（curl exit {1}）" -f $n, $LASTEXITCODE) }
+          }
+
+          # 4) 回读 .assets 确认真在：上传返回 201 不等于公开可读。
+          #    附件刚传完有传播延迟，退避 4 次（PastePanda 只查一次时误判过失败）。
+          $want = @($files | ForEach-Object { Split-Path $_ -Leaf })
+          $got = @()
+          for ($i = 1; $i -le 4; $i++) {
+            try {
+              $chk = Invoke-RestMethod -Uri "$api/releases/$rid" -Headers $headers -Method Get -TimeoutSec 30 -ErrorAction Stop
+              $got = @($chk.assets | ForEach-Object { $_.name })
+              $lost = @($want | Where-Object { $got -notcontains $_ })
+              if ($lost.Count -eq 0) { break }
+              Write-Host ("附件还缺 {0}（第 {1}/4 次），{2}s 后重试" -f ($lost -join ','), $i, ($i * 5))
+            } catch { Write-Host ("回读发行版失败：{0}" -f $_) }
+            if ($i -lt 4) { Start-Sleep -Seconds ($i * 5) }
+          }
+          $stillLost = @($want | Where-Object { $got -notcontains $_ })
+          if ($stillLost.Count -gt 0) { Fail ("发行版 .assets 里缺：{0}" -f ($stillLost -join ', ')) }
+          Write-Host ("✅ 发行版附件齐全：{0}" -f ($want -join ', '))
 
       # ─── 国内加速通道出境：GitHub 的 releases 分支（2026-11-11 改道）───
       # 🔴 为什么不能只把分支建在 Gitee 上，详见 desktop/scripts/publish-manifest-branch.mjs 文件头。
@@ -1082,15 +1209,21 @@ jobs:
       #   客户端读的地址写死在 update.rs（raw/releases/latest/updater-gitee.json），一个字没改，
       #   已经装上的旧版本用户不受影响。
       #
+      # 2026-11-15 补一层：**分支里只放清单**（86KB），安装包改走发行版附件。
+      #   原因是回填 v3.1.5 时实测 raw 对大文件 403（exe 8.08MB 通、mac tar.gz 10.23MB 不通），
+      #   而附件 21MB 匿名可下。上面那次「推 5 文件 / 18MB」只在 raw 上限之下才侥幸成立。
+      #   清空 latest/ 因此还多一个作用：把历史遗留在分支里的安装包删掉。
+      #
       # 可选性仍靠 continue-on-error：这一步红不拖累已经发布的 GitHub Release，但**不是无关痛痒** ——
       #   Gitee 排在客户端更新源第一位，读到旧 manifest 会被判「已是最新」而不再回退问 GitHub，
       #   同步窗口内国内用户会收到「可能已发布新版本，请重新检查」却看不到新版。步骤红了必须处理，不能当绿灯看。
       #   原来靠 try/catch 里 exit 0 做可选是错的：PowerShell 的 catch 接不到 git 这类原生命令的
       #   非零退出码（实测 LASTEXITCODE=3 但不抛），于是 v2.4.0~v2.5.0 连着四版绿灯、raw 一直 404。
-      - name: 发布国内加速通道（GitHub releases 分支 → Gitee 镜像同步）
+      - name: 发布国内加速通道（清单走 releases 分支 → Gitee 镜像）
         shell: pwsh
         continue-on-error: true
         env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           GITEE_REPOSITORY: ${{ secrets.GITEE_REPOSITORY }}
@@ -1106,32 +1239,60 @@ jobs:
             exit 0
           }
 
-          # 本次全部产物一次推齐：Windows exe/sig + mac tar.gz/sig + 清单。
+          # 本次要上架的安装包（清单里会引用它们）与清单本身分开处理：
+          # 安装包在发行版附件里（不进分支），清单才进 GitHub releases 分支。
           # mac 产物缺失时（mac job 失败）降级为只发 Windows，与清单里的平台条目一致。
-          $publish = @()
+          $assets = @()
           foreach ($p in @('dist-out', 'mac-artifact')) {
             if (Test-Path $p) {
-              $publish += @(Get-ChildItem -Path $p -File | Where-Object {
+              $assets += @(Get-ChildItem -Path $p -File | Where-Object {
                 $_.Name -like '*.exe' -or $_.Name -like '*.exe.sig' -or
                 $_.Name -like '*.app.tar.gz' -or $_.Name -like '*.app.tar.gz.sig'
-              } | ForEach-Object { $_.FullName })
+              } | ForEach-Object { $_.Name })
             }
           }
-          $publish += $manifest
-          if ($publish.Count -eq 0) { Write-Host "❌ 一个产物都没找到"; exit 1 }
-          $mb = (($publish | ForEach-Object { (Get-Item $_).Length } | Measure-Object -Sum).Sum) / 1MB
-          Write-Host ("待发布 {0} 个文件，合计 {1:N2} MB（推到 GitHub，Gitee 由镜像搬运）" -f $publish.Count, $mb)
-          $publish | ForEach-Object { Write-Host ("  - {0}" -f (Split-Path $_ -Leaf)) }
 
-          # 唯一出口：FF 提交到 GitHub 的 releases/latest/，再按「GitHub sha → Gitee 分支 sha →
-          # raw version → 每个安装包直链」四段验证，卡在哪一段就打印哪一段。
+          # 🔴 先确认附件真的都在，再发清单。反过来就是发一份指向 404 的清单：
+          #    客户端读到它 → 下载 404 → 回退下一源，每次检查更新都白挨一轮。
+          #    而「旧清单」至少自洽（客户端判「已是最新」，等下次发版）。
+          $tag = "${{ github.ref_name }}"
+          $token = "$env:GITEE_TOKEN".Trim()
+          if ([string]::IsNullOrWhiteSpace($token)) {
+            Write-Host "❌ 没有 GITEE_TOKEN，无法确认安装包附件已上传；不发清单（避免指向 404）。"
+            exit 1
+          }
+          $api = "https://gitee.com/api/v5/repos/$($env:GITEE_REPOSITORY)"
+          $headers = @{ Authorization = "token $token" }
+          $present = @()
+          try {
+            $rel = Invoke-RestMethod -Uri "$api/releases/tags/$tag" -Headers $headers -Method Get -TimeoutSec 30 -ErrorAction Stop
+            $present = @($rel.assets | ForEach-Object { $_.name })
+          } catch {
+            Write-Host ("❌ 读不到 Gitee 发行版 {0}：{1}" -f $tag, $_)
+            Write-Host "   安装包附件没就位，本次不发清单（旧清单保持原样，客户端不会拿到死链）。"
+            exit 1
+          }
+          $missing = @($assets | Where-Object { $present -notcontains $_ })
+          if ($missing.Count -gt 0) {
+            Write-Host ("❌ 发行版缺附件：{0}" -f ($missing -join ', '))
+            Write-Host "   本次不发清单（旧清单保持原样）。查上一步的上传日志（attach_files 的 4xx 正文会打出来）。"
+            exit 1
+          }
+          $kb = (Get-Item $manifest).Length / 1KB
+          Write-Host ("✅ 发行版附件齐全（{0}）" -f ($assets -join ', '))
+          Write-Host ("待发布：latest/updater-gitee.json（{0:N1} KB，经 GitHub releases 分支 → Gitee 镜像）" -f $kb)
+
+          # 唯一出口：只推清单（安装包在发行版附件里）。
+          # 四段验证：GitHub sha → Gitee 分支 sha → raw version → 每个附件在 releases/download/{tag}/ 可读。
           # 注意 $args 是 PowerShell 保留变量，传参数组必须另起名。
           $nodeArgs = @('desktop/scripts/publish-manifest-branch.mjs')
-          foreach ($f in $publish) { $nodeArgs += '--file'; $nodeArgs += $f }
+          $nodeArgs += '--file'; $nodeArgs += $manifest
           $nodeArgs += '--gitee-repo'; $nodeArgs += $env:GITEE_REPOSITORY
+          $nodeArgs += '--tag'; $nodeArgs += $tag
+          foreach ($a in $assets) { $nodeArgs += '--asset'; $nodeArgs += $a }
           node @nodeArgs
           if ($LASTEXITCODE -ne 0) {
             Write-Host "❌ 国内加速通道未确认可用（第 1 更新源可能仍旧 404 或留着旧版本清单），见上方四段验证提示"
             exit 1
           }
-          Write-Host "✅ 国内加速通道已发布并验证：GitHub releases 分支 → Gitee 镜像 → 客户端可读"
+          Write-Host "✅ 国内加速通道已发布并验证：清单经 releases 分支 → Gitee raw，安装包在发行版附件"
