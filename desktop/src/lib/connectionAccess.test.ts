@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentAccessChain, currentConnection, type ConnectionAccess } from "./connectionAccess";
+import { currentAccessChain, currentConnection, shouldShowIpChangeBanner, type ConnectionAccess } from "./connectionAccess";
 import type { StaticStatus } from "./types";
 import type { StableConnectSnapshot, StableConnection } from "./stableConnect";
 
@@ -78,5 +78,36 @@ describe("统一当前接入", () => {
       expect(next.configurationVerified).toBe(false);
       expect(next.channelReady).toBe(false);
     }
+  });
+});
+
+/**
+ * 2026-11-16 用户反馈：横幅出现「10.203.5.22 → 10.203.5.22」。
+ * 旧条件把 ipResolvedByUser 当成变化证据 —— 用户只是点过地址选择器、地址没变也弹。
+ */
+describe("地址变化横幅的出现条件", () => {
+  const base = { stableMode: false };
+
+  it("隧道模式 / 已关闭提示：一律不显示", () => {
+    expect(shouldShowIpChangeBanner({ ...base, stableMode: true, ipChanged: true })).toBe(false);
+    expect(shouldShowIpChangeBanner({ ...base, dismissed: true, ipChanged: true })).toBe(false);
+  });
+
+  it("后端标记 ipChanged 或接入快照 ip-changed：显示", () => {
+    expect(shouldShowIpChangeBanner({ ...base, ipChanged: true })).toBe(true);
+    expect(shouldShowIpChangeBanner({ ...base, state: "ip-changed" })).toBe(true);
+  });
+
+  it("点过地址选择但地址没变：不显示自相矛盾的 X → X 横幅", () => {
+    expect(shouldShowIpChangeBanner({ ...base, previousIp: "10.203.5.22", selectedIp: "10.203.5.22" })).toBe(false);
+  });
+
+  it("之前地址与当前选中不同：显示", () => {
+    expect(shouldShowIpChangeBanner({ ...base, previousIp: "10.203.5.22", selectedIp: "10.0.7.185" })).toBe(true);
+  });
+
+  it("没有可比对的历史（首次安装）：不显示", () => {
+    expect(shouldShowIpChangeBanner({ ...base, previousIp: null, selectedIp: "10.0.7.185" })).toBe(false);
+    expect(shouldShowIpChangeBanner({ ...base, selectedIp: "10.0.7.185" })).toBe(false);
   });
 });

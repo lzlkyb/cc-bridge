@@ -65,3 +65,52 @@ it("选择按钮不提交外层表单，装饰勾不重复播报", async () => {
     expect(check.getAttribute("aria-hidden")).toBe("true");
   }
 });
+
+/**
+ * 2026-11-16 用户反馈：「复制地址更新命令」点了没反应。
+ * 通用 MCP 工具（generic）没有约定配置文件 → Rust 返回空命令 → 入口只弹一条 toast 就
+ * 返回 false，按钮外观毫无变化。现在禁用 + 说明原因，不留一个静默失败的控件。
+ */
+async function renderCopy(onCopySed: () => boolean, commandAvailable: boolean) {
+  await act(async () =>
+    root.render(
+      <ToastProvider>
+        <AddressPicker
+          ips={["10.0.7.185"]}
+          selected="10.0.7.185"
+          onSelect={() => {}}
+          port={7823}
+          healthCheck="curl /health"
+          onCopySed={onCopySed}
+          commandAvailable={commandAvailable}
+        />
+      </ToastProvider>,
+    ),
+  );
+}
+const copyBtn = () =>
+  [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+    (b.textContent ?? "").includes("复制地址更新命令") || (b.textContent ?? "").includes("需手动更新地址"),
+  );
+
+it("没有约定配置文件时复制按钮禁用、给出原因且不触发入口", async () => {
+  const onCopySed = vi.fn(() => true);
+  await renderCopy(onCopySed, false);
+  const btn = copyBtn()!;
+  expect(btn).toBeDefined();
+  expect(btn.disabled).toBe(true);
+  expect(btn.textContent).toContain("需手动更新地址");
+  expect(host.textContent).toContain("没有约定的配置文件");
+  await act(async () => btn.click());
+  expect(onCopySed).not.toHaveBeenCalled();
+});
+
+it("有约定配置文件时复制按钮可用并正常触发入口", async () => {
+  const onCopySed = vi.fn(() => true);
+  await renderCopy(onCopySed, true);
+  const btn = copyBtn()!;
+  expect(btn.disabled).toBe(false);
+  expect(host.textContent).not.toContain("没有约定的配置文件");
+  await act(async () => btn.click());
+  expect(onCopySed).toHaveBeenCalledTimes(1);
+});

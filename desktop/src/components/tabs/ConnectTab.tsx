@@ -21,7 +21,7 @@ import { StableAccessGuide } from "./connect/StableAccessGuide";
 import { useCurrentConnection } from "../../hooks/useCurrentConnection";
 import { useConnectGuideAnchor } from "../../hooks/useConnectGuideAnchor";
 import { CurrentAccessAddress } from "./connect/CurrentAccessAddress";
-import { CONNECT_GUIDE_ANCHOR, connectionAddressHost } from "../../lib/connectionAccess";
+import { CONNECT_GUIDE_ANCHOR, connectionAddressHost, shouldShowIpChangeBanner } from "../../lib/connectionAccess";
 
 function ConnectTabImpl({
   status,
@@ -136,6 +136,19 @@ function ConnectTabImpl({
     }
   }, [stableMode, listenAll, lanIps.join(","), selectedIp, status?.lastSelectedIp, onSelectIp]);
 
+  // 「之前使用的地址」= 后端快照里的旧地址；没有快照时用本次会话首次看到的地址兜底。
+  const prevIp = connectionAddressHost(currentAccess?.previousAddress) ?? prevIpRef.current;
+  // 只在有真凭据时弹「已变化」横幅。`ipResolvedByUser` 单独不构成变化——用户只是点过
+  // 地址选择器，会渲染出「10.203.5.22 → 10.203.5.22」这种自相矛盾的横幅（用户反馈）。
+  const showIpBanner = shouldShowIpChangeBanner({
+    stableMode,
+    dismissed,
+    state: currentAccess?.state,
+    ipChanged: status?.ipChanged,
+    previousIp: prevIp,
+    selectedIp,
+  });
+
   return (
     <div className="space-y-3 connect-tab">
       {/* 防火墙告警块：是否现身由组件内部根据后端结构化诊断自己判定（无阻塞类问题则返回 null）。
@@ -166,11 +179,11 @@ function ConnectTabImpl({
       )}
 
       {/* 原直连地址与当前候选不一致时保留更新入口；复制不代表远端已应用。 */}
-      {!stableMode && (currentAccess?.state === "ip-changed" || status?.ipChanged || ipResolvedByUser) && !dismissed && (
+      {showIpBanner && (
         <IpChangedBanner
           lanIps={lanIps}
           selectedIp={selectedIp}
-          previousIp={connectionAddressHost(currentAccess?.previousAddress) ?? prevIpRef.current}
+          previousIp={prevIp}
           port={status?.port ?? 7823}
           scope={currentAccess?.sourceScope === "user" ? "user" : "project"}
           projectPath={currentAccess?.sourceProjectPath ?? guide.projectPath}
@@ -238,7 +251,8 @@ function ConnectTabImpl({
                 )}
                 {listenAll && lanIps.length > 0 && (
                   <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp}
-                    healthCheck={guide.healthCheck} port={guide.port} onRefresh={onRefresh} onCopySed={onCopySed} />
+                    healthCheck={guide.healthCheck} port={guide.port} onRefresh={onRefresh} onCopySed={onCopySed}
+                    commandAvailable={(status?.connectClient ?? "claude-code") !== "generic"} />
                 )}
                 </>}
               </div>

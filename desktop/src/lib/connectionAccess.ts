@@ -47,6 +47,33 @@ export function connectionAddressHost(address?: string | null): string | null {
   try { return new URL(address).hostname; } catch { return null; }
 }
 
+/**
+ * 「网络地址已变化」横幅该不该出现（2026-11-16 用户反馈：横幅自相矛盾 X → X）。
+ *
+ * 旧条件把 `ipResolvedByUser` 当成「已变化」的独立证据，但它只表示用户点过地址选择器：
+ * 地址根本没变时也会弹，出现「10.203.5.22 → 10.203.5.22」这种自相矛盾的横幅，
+ * 且把用户注意力从真正的问题（按钮无命令）上引开。
+ *
+ * 现在必须有具体证据才算变化：后端标记 `ipChanged` / 接入快照 `ip-changed` /
+ * 「之前使用的地址」与当前选中确实不同。三条任一成立即可，所以「变了但还没复制命令」
+ * 的中间态不会丢——那种情况下三个证据里必然已有其一。
+ * 首次安装（previousIp 为空且没有任何标记）不再弹横幅。
+ */
+export function shouldShowIpChangeBanner(input: {
+  stableMode: boolean;
+  dismissed?: boolean;
+  state?: string;
+  ipChanged?: boolean;
+  previousIp?: string | null;
+  selectedIp?: string;
+}): boolean {
+  if (input.stableMode || input.dismissed) return false;
+  if (input.state === "ip-changed" || input.ipChanged) return true;
+  // previousIp 为空 = 没有可比对的历史，不构成「变化」。
+  if (!input.previousIp) return false;
+  return input.previousIp !== (input.selectedIp ?? "");
+}
+
 /** Global request totals and health probes cannot verify this server, project, or client. */
 export function currentAccessChain(status?: StaticStatus, access = currentConnection(status)): ChainState {
   const running = !!status?.running;

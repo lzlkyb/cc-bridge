@@ -42,6 +42,7 @@ export function AddressPicker({
   port,
   onRefresh,
   onCopySed,
+  commandAvailable = true,
 }: {
   ips: string[];
   selected: string;
@@ -53,6 +54,12 @@ export function AddressPicker({
   /** 「复制 IP 替换命令」全局入口（App 层 useIpSedCopy，带横幅/挂起胶囊收口）。
    *  返回 true = 已写入剪贴板（失败路径由入口自行 toast）。不传则不渲染按钮。 */
   onCopySed?: () => boolean | Promise<boolean>;
+  /**
+   * 当前接入工具是否有约定的配置文件。generic（通用 MCP 工具）没有 → 生成不出
+   * 「原地替换 IP」命令。false 时按钮保持可见但禁用并给出原因：此前是点了没反应
+   * （Rust 返回空命令 → hook 只弹一条 warning → 用户以为按钮坏了，2026-11-16 反馈）。
+   */
+  commandAvailable?: boolean;
 }) {
   // 复制反馈统一走 useCopyFeedback（评审修复 ⑤）。
   const fb = useCopyFeedback();
@@ -144,11 +151,16 @@ export function AddressPicker({
                 variant="outline"
                 size="sm"
                 onClick={() => void handleCopySed()}
+                disabled={!commandAvailable}
                 aria-live="polite"
-                title="复制「原地更新 IP」的远程替换命令，粘贴到服务器执行即可把旧地址换成当前选中地址"
+                title={
+                  commandAvailable
+                    ? "复制「原地更新 IP」的远程替换命令，粘贴到服务器执行即可把旧地址换成当前选中地址"
+                    : "当前接入工具没有约定的配置文件，无法生成替换命令——请手动把地址改成选中的 IP"
+                }
               >
-                <Icon name={sedCopied ? "check" : "copy"} size={14} />
-                {sedCopied ? "已复制" : "复制地址更新命令"}
+                <Icon name={sedCopied ? "check" : commandAvailable ? "copy" : "info"} size={14} />
+                {sedCopied ? "已复制" : commandAvailable ? "复制地址更新命令" : "需手动更新地址"}
               </Button>
             )}
             {onRefresh && (
@@ -170,6 +182,19 @@ export function AddressPicker({
           </div>
         )}
       </div>
+
+      {/* 无约定配置文件（generic）：按钮禁用必须给出可见原因，否则就是一排「点了没反应」
+          的控件。文案与 IpChangedBanner 的「需手动更新」口径一致。 */}
+      {!commandAvailable && (
+        <div className="flex items-start gap-2 rounded-md border border-border bg-background px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+          <Icon name="info" size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>
+            当前接入工具没有约定的配置文件，无法生成「原地替换 IP」命令——请在该工具的配置里手动把地址改成上方选中的{" "}
+            <code className="rounded bg-muted px-1 font-mono text-foreground">{selected || "新地址"}</code>。
+            切换回 Claude Code / WorkBuddy / Codex 可自动生成。
+          </span>
+        </div>
+      )}
 
       {/* 探测失败要说出来（审查 U8）：原来失败与「全部未定」在界面上长得一模一样，
           用户看到只有「默认」徽章，会以为是网络不通。 */}

@@ -141,7 +141,10 @@ export function IpChangedBanner({
           : scope === "user"
             ? "全局（~/.claude.json）"
             : "项目（.mcp.json）";
-  const cmd = commandOverride ?? buildSed(scope);
+  // 用 `||` 而非 `??`：隧道接入路径的 update_command 恒为空串 —— 空串不是 nullish，
+  // 用 `??` 会把它当成「有命令」，本地明明能拼出来的 sed 永远轮不到，横幅按钮永久禁用。
+  // 空串 / 未传 一律回退到本地拼接（buildIpSedCommand 对 generic 也返回空串，语义一致）。
+  const cmd = commandOverride || buildSed(scope);
   const resolved = !!cmd && resolvedCommand === cmd;
 
   // 仅当用户已在下方 AddressPicker 选中一个当前在网卡列表中的「新」地址时，
@@ -150,6 +153,12 @@ export function IpChangedBanner({
   // 通用工具没有约定配置文件 → cmd 为空串，同样禁用（改为给出手动更新提示）。
   const newIpValid = !!selectedIp && lanIps.includes(selectedIp);
   const canCopy = newIpValid && !!cmd;
+
+  // 两种「无命令」必须分开说（用户反馈：灰色按钮点了像坏了）：
+  //  - !newIpValid：只是还没选到有效地址 → 选好就能复制，按钮保持禁用是合理的；
+  //  - newIpValid && !cmd：该工具没有约定的配置文件（generic）→ 永远生成不出命令，
+  //    细条上不该留一个永远点不动的灰按钮，改为直接说「需手动更新」并把入口交给下方卡片。
+  const noCommand = newIpValid && !cmd;
 
   // H6 修复（语义保留）：只在真正复制成功后才调 onResolved/onSedResolved 收口，用户其实
   // 没拿到更新命令时 banner 不消失。
@@ -178,14 +187,17 @@ export function IpChangedBanner({
     <ActionCard
       tone="warning"
       title="网络地址已变化"
-      pill="待处理"
+      pill={noCommand ? "需手动更新" : "待处理"}
       summary={
-        newIpValid
-          ? `${previousIp ?? "原地址"} → ${selectedIp} · 在服务器执行更新命令`
-          : `${previousIp ?? "原地址"} 已失效 · 在下方选中新地址后可复制修复命令`
+        noCommand
+          ? `${previousIp ?? "原地址"} → ${selectedIp} · 该工具没有约定配置文件，请手动改地址`
+          : newIpValid
+            ? `${previousIp ?? "原地址"} → ${selectedIp} · 在服务器执行更新命令`
+            : `${previousIp ?? "原地址"} 已失效 · 在下方选中新地址后可复制修复命令`
       }
       autoCollapseSec={60}
-      copyLabel="复制命令"
+      // 无命令时连按钮都不渲染：一个永远点不动的灰按钮，用户只会认为「坏了」。
+      copyLabel={noCommand ? undefined : "复制命令"}
       onCopy={copyOne}
       copyDisabled={!canCopy}
       resolved={resolved}
@@ -193,11 +205,16 @@ export function IpChangedBanner({
       onCountdownZero={handleZero}
     >
       <div className="space-y-3">
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          之前使用的 <code className="rounded bg-background px-1 text-foreground">{previousIp}</code>{" "}
-          与当前接入地址不同。复制以下命令到原接入位置执行，
-          <b className="text-foreground">更新地址，无需重新添加 MCP</b>。执行后在 Claude Code 中查看 /mcp 验证；也可在下方换选其他地址。
-        </p>
+        {/* generic 分支（下方）自带完整说明，这里不再重复「复制以下命令」——
+            对没有约定配置文件的工具，那句话本身就是错的。 */}
+        {client !== "generic" && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            之前使用的 <code className="rounded bg-background px-1 text-foreground">{previousIp}</code>{" "}
+            与当前接入地址不同。复制以下命令到原接入位置执行，
+            <b className="text-foreground">更新地址，无需重新添加 MCP</b>。执行后在接入工具的 MCP
+            列表里验证；也可在下方换选其他地址。
+          </p>
+        )}
         {client === "generic" ? (
           // selectedIp 可能为 null（用户还没在下方选新地址）——此时不渲染地址，避免「https://:7823」空 host。
           selectedIp ? (
