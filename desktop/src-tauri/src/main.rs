@@ -3,12 +3,10 @@
 use std::sync::Arc;
 
 use png::Decoder;
-use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Emitter;
 use tauri::Listener;
 use tauri::Manager;
-use tauri_plugin_clipboard_manager::ClipboardExt;
 #[cfg(feature = "notifications")]
 use tauri_plugin_notification::NotificationExt;
 
@@ -265,40 +263,57 @@ fn refresh_tray(
 /// `alerting` 必须是**两个 task 共享**的（所以是 `Arc<AtomicBool>` 而不是局部 `let mut`）：
 /// 否则 Windows 上事件 task 弹完通知、轮询 task 5s 后看到自己那份 `alerting` 还是 false，
 /// 会把同一次地址变化重复弹一遍。
+async fn refresh_connection_tray(
+    handle: &tauri::AppHandle,
+    state: &std::sync::Arc<state::AppState>,
+    last_tray: &std::sync::Arc<std::sync::Mutex<(bool, String)>>,
+) -> connection_access::ConnectionAccess {
+    let access = connection_tray::current_access(state).await;
+    let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
+    if let Some(tray) = handle.tray_by_id("main-tray") {
+        let service = state
+            .service_control
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let tip = format!(
+            "{}\n{} · {}\n{}",
+            branding::APP_DISPLAY_NAME,
+            if access.method == "stable" {
+                "隧道连接"
+            } else {
+                "IP 直连"
+            },
+            access.short,
+            if service.pending.is_some() {
+                "本机服务处理中"
+            } else if running {
+                "本机服务运行中"
+            } else {
+                "本机服务已停止"
+            }
+        );
+        refresh_tray(&tray, running, &tip, last_tray);
+        connection_tray::refresh_menu(handle, state, &access, running);
+    }
+    access
+}
+
 async fn refresh_and_report_ip_change(
     handle: &tauri::AppHandle,
     state: &std::sync::Arc<state::AppState>,
     last_tray: &std::sync::Arc<std::sync::Mutex<(bool, String)>>,
     alerting: &std::sync::atomic::AtomicBool,
 ) {
-    // 刷新缓存与判定合一，避免二次网卡枚举。
-    let ips = state.refresh_lan_ips();
-    let last_ip = state.config.read().await.last_selected_ip.clone();
-    let changed = match &last_ip {
-        Some(ip) => !ips.contains(ip),
-        None => false,
-    };
-    let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
-    if let Some(tray) = handle.tray_by_id("main-tray") {
-        // tooltip：地址变化优先提示，否则显示运行状态
-        let tip = if changed {
-            branding::TRAY_TIP_IP_CHANGED
-        } else if running {
-            branding::TRAY_TIP_RUNNING
-        } else {
-            branding::TRAY_TIP_STOPPED
-        };
-        // 去重刷新（图标随运行状态；地址变化仅改 tooltip）。
-        // 这也是轮询 task 每 5s 调它也不会造成图标闪烁的原因：同状态直接返回。
-        refresh_tray(&tray, running, tip, last_tray);
-    }
-    // 只在「从未变到已变」的边沿弹一次，否则轮询会每 5s 弹一个。
+    state.refresh_lan_ips();
+    let access = refresh_connection_tray(handle, state, last_tray).await;
+    let changed = access.method == "direct" && access.state == "ip-changed";
     let was = alerting.swap(changed, std::sync::atomic::Ordering::Relaxed);
     if changed && !was {
-        // 🔴 文案不能承诺点击：`tauri-plugin-notification` 的桌面通知**没有点击回调**
-        // （Windows 侧只透传 toast XML，不带 activation handler）。写「点击查看…」
-        // 用户点了没反应，等于把「去哪找」这条唯一有用的指引也弄丢了。
-        notify_toast(handle, "网络地址已变化，请从托盘菜单复制 IP 替换命令");
+        notify_toast(
+            handle,
+            "直连地址已变化，请从托盘或接入卡复制 IP 替换命令，在服务器执行。",
+        );
     }
 }
 
@@ -494,6 +509,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 app.handle().clone(),
                 app_state.clone(),
             ));
+            tauri::async_runtime::spawn(commands::autostart_stable_connections(
+                app.handle().clone(), app_state.clone(),
+            ));
 
             // Spawn MCP HTTP server
             let mcp_state = app_state.clone();
@@ -517,22 +535,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             // System tray
-            let show_item = MenuItem::with_id(app, "show", "打开面板", true, None::<&str>)?;
-            let copy_cmd_item =
-                MenuItem::with_id(app, "copy_cmd", "复制连接命令", true, None::<&str>)?;
-            let copy_ip_sed_item = MenuItem::with_id(
-                app,
-                "copy_ip_sed",
-                "复制IP替换命令",
-                true,
-                None::<&str>,
-            )?;
-            let restart_item = MenuItem::with_id(app, "restart", "重启服务", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(
-                app,
-                &[&show_item, &copy_cmd_item, &copy_ip_sed_item, &restart_item, &quit_item],
-            )?;
+            let menu = connection_tray::menu(app.handle(), None, &commands::ServiceControl::default(),
+                app_state.mcp_running.load(std::sync::atomic::Ordering::Relaxed))?;
 
             let tray_state = app_state.clone();
             let tray_initial_running = tray_state
@@ -593,148 +597,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 })
                 .on_menu_event(move |tray_app, event| match event.id.as_ref() {
                     "show" => show_or_create_main_window(tray_app.app_handle()),
-                    "copy_cmd" => {
-                        // 直接在 Rust 端用 clipboard_manager 插件写入系统剪贴板，
-                        // 不再依赖前端 webview。托盘点击时面板常处于隐藏/失焦状态，
-                        // 旧的前端事件通道会因 navigator.clipboard 或插件 invoke 异常而失败。
+                    "configure_access" | "check_access" => {
+                        connection_tray::request_navigation(&tray_state, tray_app.app_handle());
+                        show_or_create_main_window(tray_app.app_handle());
+                    }
+                    "copy_address" | "copy_cmd" | "copy_ip_sed" | "copy_token_update" => {
+                        let kind = match event.id.as_ref() {
+                            "copy_address" => "address", "copy_ip_sed" => "ip-update",
+                            "copy_token_update" => "token-update", _ => "command",
+                        };
                         let state = tray_state.clone();
-                        let app_h = tray_app.app_handle().clone();
+                        let handle = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            let (host, port, token, last_selected_ip, transport, tls, client, multi_device, device_id) = {
-                                let cfg = state.config.read().await;
-                                (
-                                    cfg.host.clone(),
-                                    cfg.port,
-                                    cfg.token.clone(),
-                                    cfg.last_selected_ip.clone(),
-                                    cfg.transport.clone(),
-                                    cfg.remote_tls_enabled,
-                                    cfg.connect_client
-                                        .clone()
-                                        .unwrap_or_else(|| "claude-code".into()),
-                                    cfg.multi_device_mode,
-                                    cfg.device_id.clone(),
-                                )
-                            };
-                            let lan_ips = network::get_lan_ips();
-                            // 多设备模式（opt-in）且 Claude Code：换条目级命令（可并存，不再互踢）。
-                            let cmd = if multi_device && client == "claude-code" {
-                                let display_host = network::resolve_display_host(
-                                    &host,
-                                    &lan_ips,
-                                    last_selected_ip.as_deref(),
-                                );
-                                network::build_multi_device_command(
-                                    port,
-                                    &display_host,
-                                    &token,
-                                    &transport,
-                                    tls,
-                                    &device_id,
-                                )
-                            } else {
-                                network::build_connect_command(network::ConnectTarget {
-                                    host: &host,
-                                    port,
-                                    token: &token,
-                                    transport: &transport,
-                                    tls,
-                                    client: &client,
-                                    lan_ips: &lan_ips,
-                                    selected_ip: last_selected_ip.as_deref(),
-                                    multi_device,
-                                    device_id: &device_id,
-                                })
-                            };
-                            match app_h.clipboard().write_text(cmd) {
-                                Ok(_) => {
-                                    // 复制到的内容随接入工具而变（CLI 命令 / JSON / TOML 片段），
-                                    // toast 如实说明，免得用户以为拿到的是一条命令。
-                                    let what = match client.as_str() {
-                                        "workbuddy" => "WorkBuddy 配置片段",
-                                        "codex" => "Codex 配置片段",
-                                        "generic" => "接入信息",
-                                        _ => "Claude Code 连接命令",
-                                    };
-                                    notify_toast(&app_h, &format!("{what}已复制到剪贴板"));
-                                }
-                                Err(e) => {
-                                    notify_toast(&app_h, &format!("复制失败，请手动复制：{e}"));
-                                }
+                            match connection_tray::copy(&state, &handle, kind).await {
+                                Ok(()) => notify_toast(&handle, if kind == "address" { "当前接入地址已复制" } else { "当前目标的命令已复制，请在服务器执行后验证" }),
+                                Err(error) => notify_toast(&handle, &error),
                             }
                         });
                     }
-                    "copy_ip_sed" => {
-                        // 网络变动时在 Rust 端直接生成「原地更新接入」命令并写入剪贴板，
-                        // 与连接页 IpChangedBanner 等价；不依赖前端 webview 焦点。
-                        // 生成逻辑在 network::ip_update_command（单一真源），
-                        // 前端 `get_ip_sed_command` 命令与之共用，三者永远逐字一致。
-                        // 多设备模式（opt-in）开启时产物自动换条目级命令（同一真源内分流）。
+                    "start_service" | "stop_service" | "restart" => {
+                        let action = match event.id.as_ref() { "start_service" => "start", "stop_service" => "stop", _ => "restart" };
                         let state = tray_state.clone();
-                        let app_h = tray_app.app_handle().clone();
+                        let handle = tray_app.app_handle().clone();
                         tauri::async_runtime::spawn(async move {
-                            let (host, port, token, transport, last_selected_ip, scope, project_path, tls, client, multi_device, device_id) = {
-                                let cfg = state.config.read().await;
-                                (
-                                    cfg.host.clone(),
-                                    cfg.port,
-                                    cfg.token.clone(),
-                                    cfg.transport.clone(),
-                                    cfg.last_selected_ip.clone(),
-                                    cfg.scope.clone(),
-                                    cfg.project_path.clone(),
-                                    cfg.remote_tls_enabled,
-                                    cfg.connect_client
-                                        .clone()
-                                        .unwrap_or_else(|| "claude-code".into()),
-                                    cfg.multi_device_mode,
-                                    cfg.device_id.clone(),
-                                )
-                            };
-                            let (cmd, scope_label) = network::ip_update_command(
-                                network::IpUpdateTarget {
-                                    host: &host,
-                                    port,
-                                    token: &token,
-                                    transport: &transport,
-                                    last_selected_ip: last_selected_ip.as_deref(),
-                                    scope: scope.as_deref(),
-                                    project_path: project_path.as_deref(),
-                                    tls,
-                                    client: &client,
-                                    multi_device,
-                                    device_id: &device_id,
-                                },
-                            );
-                            if cmd.is_empty() {
-                                notify_toast(
-                                    &app_h,
-                                    "通用 MCP 工具没有约定的配置文件，请手动把配置里的地址改成新 IP",
-                                );
-                                return;
-                            }
-                            match app_h.clipboard().write_text(cmd) {
-                                Ok(_) => {
-                                    notify_toast(
-                                        &app_h,
-                                        &format!("IP 替换命令已复制到剪贴板（{scope_label}）"),
-                                    );
-                                }
-                                Err(e) => {
-                                    notify_toast(&app_h, &format!("复制失败，请手动复制：{e}"));
-                                }
+                            match commands::control_service(&state, &handle, action).await {
+                                Ok(()) => notify_toast(&handle, if action == "stop" { "本机服务已停止，全部接入受影响" } else { "本机服务已就绪" }),
+                                Err(error) => notify_toast(&handle, &format!("本机服务操作失败：{error}")),
                             }
                         });
                     }
-                    "restart" => {
-                        let s = tray_state.clone();
-                        tauri::async_runtime::spawn(async move {
-                            mcp::http::restart_server(&s).await;
-                        });
-                    }
-                    "quit" => {
-                        tray_app.exit(0);
-                    }
+                    "quit" => tray_app.exit(0),
                     _ => {}
                 })
                 .build(app)?;
@@ -744,40 +636,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let last_tray =
                 std::sync::Arc::new(std::sync::Mutex::new((false, String::new())));
 
-            // 启动后即时按真实状态刷新一次托盘图标（上面初始读取可能早于 mcp 置位）
-            if let Some(tray) = app.handle().tray_by_id("main-tray") {
-                let running = app_state
-                    .mcp_running
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                let tip = if running {
-                    branding::TRAY_TIP_RUNNING
-                } else {
-                    branding::TRAY_TIP_STOPPED
-                };
-                refresh_tray(&tray, running, tip, &last_tray);
-            }
-
-            // 监听前端/命令触发的状态变更事件，即时刷新托盘图标与 tooltip
+            // Native menus consume the same facts; destroying the webview does not stop this subscription.
             {
                 let handle = app.handle().clone();
-                let last_tray = last_tray.clone();
-                app.listen("mcp-status-changed", move |_| {
-                    let h = handle.clone();
-                    let last_tray = last_tray.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let running = h
-                            .state::<std::sync::Arc<state::AppState>>()
-                            .mcp_running
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        if let Some(tray) = h.tray_by_id("main-tray") {
-                            let tip = if running {
-                                branding::TRAY_TIP_RUNNING
-                            } else {
-                                branding::TRAY_TIP_STOPPED
-                            };
-                            refresh_tray(&tray, running, tip, &last_tray);
-                        }
-                    });
+                let state = app_state.clone();
+                let previous = last_tray.clone();
+                tauri::async_runtime::spawn(async move { refresh_connection_tray(&handle, &state, &previous).await; });
+            }
+            for event in ["mcp-status-changed", "stable_connect_changed"] {
+                let handle = app.handle().clone();
+                let state = app_state.clone();
+                let previous = last_tray.clone();
+                app.listen(event, move |_| {
+                    let handle = handle.clone();
+                    let state = state.clone();
+                    let previous = previous.clone();
+                    tauri::async_runtime::spawn(async move { refresh_connection_tray(&handle, &state, &previous).await; });
                 });
             }
 
@@ -1014,6 +888,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::refresh_bash_detection,
             commands::set_selected_ip,
             commands::get_ip_sed_command,
+            commands::get_connection_copy,
+            commands::connection_command_copied,
+            commands::connection_update_copied,
+            commands::confirm_connection_update,
+            commands::take_connection_navigation,
             commands::refresh_firewall,
             commands::open_firewall_port,
             commands::get_firewall_diagnosis,
@@ -1076,6 +955,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_tunnel_start,
             commands::ssh_tunnel_stop,
             commands::ssh_tunnel_list,
+            commands::ssh_forward_context,
+            commands::stable_connect_get,
+            commands::stable_connect_select,
+            commands::stable_connect_start,
+            commands::stable_connect_stop,
+            commands::stable_connect_cancel,
+            commands::stable_connect_inspect,
+            commands::stable_connect_folders,
             // 只读：把已保存的凭据解密给本机面板看（不进 MCP、不进审计）。
             commands::ssh_reveal_credential,
             // SFTP 文件传输（同一安全闸 ssh_enabled，仍只经 Tauri 暴露给本机面板）。

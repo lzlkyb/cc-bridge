@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon";
-import { toast } from "../ui/toast";
-import { copyText } from "../../lib/utils";
+import type { StaticStatus } from "../../lib/types";
+import { useConnectionCopy } from "../../hooks/useConnectionCopy";
 
 /**
  * 顶栏挂起胶囊（方案 A，2026-10-17，design/2026-10-17-倒计时归零挂起胶囊-设计稿.html）：
@@ -25,34 +25,35 @@ import { copyText } from "../../lib/utils";
  */
 export function PendingCommandPill({
   pending,
+  status,
   onResolved,
   onDismiss,
 }: {
   pending: { ip: string; cmd: string };
+  status?: StaticStatus;
   onResolved: () => void;
   /** 忽略本次提示（= App 的 handleDismissIpChange）：不复制、直接收走。 */
   onDismiss?: () => void;
 }) {
-  const [phase, setPhase] = useState<"idle" | "copied" | "closing">("idle");
+  const [phase, setPhase] = useState<"idle" | "copying" | "copied" | "closing">("idle");
+  const copy = useConnectionCopy(status);
+  const identity = `${status?.currentAccess?.targetKey ?? ""}:${pending.cmd}`;
+  const latest = useRef(identity);
+  latest.current = identity;
   const timers = useRef<number[]>([]);
-  useEffect(() => () => timers.current.forEach((t) => window.clearTimeout(t)), []);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => { setPhase("idle"); return () => { timers.current.forEach(t => window.clearTimeout(t)); timers.current = []; }; }, [identity]);
 
-  const handleClick = () => {
+  const handleClick = async () => {
     if (phase !== "idle") return;
-    // 乐观绿态（剪贴板 API 极快）；复制失败极罕见（非安全上下文/权限拒绝）——
-    // 失败时撤掉收口定时器、回退 idle 让用户重试，绿态误导比无反馈更糟。
-    // 同时补一条 error toast（审查 U3）：只把颜色弹回橙色，用户不知道「到底成没成」。
+    const key = identity;
+    setPhase("copying");
+    // Resolve the current target again; an old suspended command must never overwrite the new one.
+    const success = await copy.copy("ip-update", undefined, pending.cmd);
+    if (!alive.current || latest.current !== key) return;
+    if (!success) { setPhase("idle"); return; }
     setPhase("copied");
-    copyText(
-      pending.cmd,
-      () => {},
-      (e) => {
-        timers.current.forEach((t) => window.clearTimeout(t));
-        timers.current = [];
-        setPhase("idle");
-        toast(`复制失败：${String(e)}`, "error");
-      },
-    );
     timers.current.push(
       // 设计稿动画链：绿态驻留 1.4s（给「已复制」读清）→ 200ms 淡出 → 卸载收口。
       // onResolved 放在淡出完成后：App 清 state 卸载组件，不存在「啪地消失」。
@@ -61,7 +62,7 @@ export function PendingCommandPill({
     );
   };
 
-  const done = phase !== "idle";
+  const done = phase === "copied" || phase === "closing";
   return (
     <span
       className={`pending-pill ml-auto flex h-6 shrink-0 animate-fade-in items-center rounded-full border transition-[opacity,transform,border-color,background-color] duration-200 ${
@@ -74,6 +75,7 @@ export function PendingCommandPill({
         type="button"
         data-tauri-drag-region="false"
         onClick={handleClick}
+        disabled={phase !== "idle"}
         title={done ? "命令已复制，到远程 AI 工具侧粘贴执行" : `复制 IP 修复命令（${pending.ip}）`}
         aria-live="polite"
         className={`pending-pill-main flex h-full min-w-0 items-center gap-1.5 rounded-full pl-2.5 pr-2 text-[11px] font-semibold ${
@@ -84,7 +86,7 @@ export function PendingCommandPill({
         {/* ≤900px 截断 IP；≤740px 收成纯图标（不再整条隐藏——560px 最小窗宽真实可达，
             整条隐藏等于用户完全不知道 IP 变了，审查 U4） */}
         <span className="pending-pill-text max-w-[150px] truncate tabular-nums">
-          {done ? "已复制，待执行" : `${pending.ip} · 复制命令`}
+          {done ? "已复制，待执行" : phase === "copying" ? "正在复制…" : `${pending.ip} · 复制命令`}
         </span>
       </button>
       {onDismiss && (

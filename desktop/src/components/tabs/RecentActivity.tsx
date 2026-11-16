@@ -43,14 +43,14 @@ export function RecentActivity({ onViewAll }: { onViewAll?: () => void }) {
           对比度偏高、显得很“硬”；与卡内其它分隔处理保持一致。 */}
       <div className="recent-activity-divider mb-2 h-px bg-gradient-to-r from-transparent via-white/[0.14] to-transparent" />
       <div className="flex items-center text-xs font-bold tracking-[0.12em]">
-        最近活动 · 历史记录
+        本机全部接入 · 历史
         {onViewAll && (
           <button
             type="button"
             onClick={onViewAll}
             className="ml-auto text-[11px] font-bold tracking-normal underline-offset-2 hover:underline"
           >
-            日志页查看全部 →
+            查看日志 →
           </button>
         )}
       </div>

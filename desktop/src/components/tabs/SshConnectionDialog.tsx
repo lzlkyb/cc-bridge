@@ -15,7 +15,7 @@ interface Props {
   initial: SshConnection | null;
   connections: SshConnection[];
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (connection: SshConnection, credentials: SshOneTimeCredentials) => void;
   onConnect?: (connection: SshConnection, credentials: SshOneTimeCredentials) => void;
 }
 

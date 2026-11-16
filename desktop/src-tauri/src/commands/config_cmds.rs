@@ -675,12 +675,42 @@ fn apply_profile_switch(
 }
 
 #[tauri::command]
-pub async fn regenerate_token(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+pub async fn regenerate_token(
+    state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
     let new_token = auth::generate_token();
     let db = state.db.lock().await;
-    save_config_field(&db, "token", &serde_json::to_value(&new_token).unwrap())?;
     let mut config = state.config.write().await;
+    let mut next = config.stable_connect.clone();
+    // Older direct setups have no copy receipt yet; capture their original location before rotating.
+    if config.has_onboarded
+        && next.direct.is_none()
+        && !crate::connection_access::uses_tunnel(&config)
+    {
+        next.direct = Some(crate::connection_access::direct_access(
+            &config,
+            &state.cached_lan_ips(),
+        ));
+    }
+    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    save_config_field(
+        &tx,
+        "stable_connect",
+        &serde_json::to_value(&next).map_err(|e| e.to_string())?,
+    )?;
+    save_config_field(
+        &tx,
+        "token",
+        &serde_json::to_value(&new_token).map_err(|e| e.to_string())?,
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
+    config.stable_connect = next;
     config.token = new_token.clone();
+    drop(config);
+    drop(db);
+    use tauri::Emitter;
+    let _ = app.emit("stable_connect_changed", ());
     Ok(new_token)
 }
 
@@ -934,18 +964,23 @@ pub(crate) async fn import_config_inner(
 #[tauri::command]
 pub async fn import_config(
     state: State<'_, Arc<AppState>>,
+    app: tauri::AppHandle,
     json: String,
 ) -> Result<ConfigSaveResult, String> {
+    let _operation = state
+        .service_operation
+        .try_lock()
+        .map_err(|_| "本机服务正在处理，请等待当前操作完成后再导入。")?;
     let result = import_config_inner(state.inner(), &json).await;
     // 仅成功时重启服务使 host/port 等配置生效（失败时不重启，与原语义一致）
     if result.is_ok() {
         // 清旧错误 + 等 bind 结果：配置已经落盘，这里**不**再把 bind 失败当导入失败，
         // 但也不能乐观置 running（审查 P2，端口可能被新 host/port 占着）。
-        *state.startup_error.lock().unwrap() = None;
-        crate::mcp::http::restart_server(state.inner()).await;
-        // 等它落定，避免前端刷新状态时读到「还没起来」的中间态。
-        let _ = crate::mcp::http::wait_listening(state.inner(), std::time::Duration::from_secs(2))
-            .await;
+        if let Err(error) =
+            super::service_control::control_service_locked(state.inner(), &app, "restart").await
+        {
+            log::warn!("配置已导入，本机服务重启失败：{error}");
+        }
     }
     result
 }

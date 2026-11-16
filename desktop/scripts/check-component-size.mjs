@@ -67,7 +67,7 @@ const BASELINE = {
   // 上一版基线 342 在提交 d4bb165 时就被突破到 343 却没人跑门禁 —— 棘轮只在被跑到时才转。
   // 2026-10-25：336 → 314（列表渲染拆到 CommandPaletteList.tsx：拼音/模糊/frecency 升级
   // 要加渲染逻辑，先拆再装，别把基线当配额用）。
-  "src/components/modals/CommandPalette.tsx": { lines: 314, hooks: 9 },
+  // 2026-11-15：连接操作共享后降到 288 行 / 7 hooks，移出豁免名单。
   // 2026-10-13：`FileControlCard.tsx` 已从本表**移除**。它原本登记 301 行（贴线），
   // 本次把备份/限流/后台命令三节改成 SumRow 摘要行（渐进披露）、展开区拆到
   // `tabs/filecontrol/`（BackupSection 210 行 / LimitSections 83 行）后降到 117 行，

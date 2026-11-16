@@ -52,7 +52,15 @@ pub struct SshSession {
     pub disconnected: Arc<AtomicBool>,
 }
 
-/// 一条连接的端口转发（常驻 `ssh -N` 进程 + 断线重连的监管线程）。
+/// In-memory authentication snapshot, retained only for the lifetime of a forwarding process.
+pub(crate) struct SshTunnelRestart {
+    pub connection: crate::config::SshConnection,
+    pub jump: Option<crate::config::SshConnection>,
+    pub password: Option<String>,
+    pub passphrase: Option<String>,
+}
+
+/// 一条连接的端口转发（常驻 SSH 进程 + 断线重连的监管线程）。
 /// 由 `ssh_tunnel_start` 创建，进程管理见 `commands::ssh_tunnel_cmds`。
 pub struct SshTunnel {
     pub stop: Arc<AtomicBool>,
@@ -61,6 +69,8 @@ pub struct SshTunnel {
     /// 同步杀掉进程，而不是等监管线程下一次轮询。
     pub killer: Arc<StdMutex<Option<Box<dyn portable_pty::ChildKiller + Send + Sync>>>>,
     pub thread: StdMutex<Option<std::thread::JoinHandle<()>>>,
+    /// A takeover can rebuild extra rules using their original credentials; never persisted or serialized.
+    pub(crate) restart: Option<Arc<SshTunnelRestart>>,
 }
 
 impl SshTunnel {
@@ -171,6 +181,12 @@ pub struct AppState {
     pub mcp_server_handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     // MCP 服务是否在运行（供 UI 显示启停状态）。用户可手动停止/启动。
     pub mcp_running: AtomicBool,
+    pub service_operation: Mutex<()>,
+    pub service_control: StdMutex<crate::commands::ServiceControl>,
+    pub local_access_probe: StdMutex<Option<(String, u16, bool)>>,
+    pub tray_access_key: StdMutex<String>,
+    /// A tray navigation survives destroying/recreating the main webview.
+    pub pending_connection_navigation: AtomicBool,
     // 后台命令注册表（run_command background=true 时登记）。v1 没有独立的定时回收任务，
     // 已结束的 handle 会一直占位直到 stop_command 显式移除或达到并发上限被拒绝新建。
     pub running_commands: DashMap<String, RunningCommand>,
@@ -182,6 +198,9 @@ pub struct AppState {
     pub ssh_sessions: DashMap<String, SshSession>,
     /// 端口转发。key=connection_id（一条连接一个转发进程），与终端会话互不影响。
     pub ssh_tunnels: DashMap<String, SshTunnel>,
+    /// Claims and process replacement must be atomic across manual and managed starts.
+    pub ssh_tunnel_start_lock: Mutex<()>,
+    pub stable_operations: DashMap<String, Arc<crate::stable_connect::StableOperation>>,
     /// SFTP 传输的**取消标志**。key=transfer_id（前端生成的 uuid），置位即请求取消。
     ///
     /// 🔴 这里只放一个 `AtomicBool` 而不是 `Child`：`spawn_capture` 的 monitor 线程
@@ -292,10 +311,17 @@ impl AppState {
             data_dir,
             mcp_server_handle: Mutex::new(None),
             mcp_running: AtomicBool::new(false),
+            service_operation: Mutex::new(()),
+            local_access_probe: StdMutex::new(None),
+            tray_access_key: StdMutex::new(String::new()),
+            pending_connection_navigation: AtomicBool::new(false),
+            service_control: StdMutex::new(crate::commands::ServiceControl::default()),
             running_commands: DashMap::new(),
             cwd_sessions: DashMap::new(),
             ssh_sessions: DashMap::new(),
             ssh_tunnels: DashMap::new(),
+            ssh_tunnel_start_lock: Mutex::new(()),
+            stable_operations: DashMap::new(),
             ssh_transfers: DashMap::new(),
             ssh_helpers: DashMap::new(),
             ssh_helper_blocked: DashMap::new(),
@@ -447,6 +473,9 @@ impl AppState {
 
     /// 总开关关闭 / 应用退出时调用，与 `kill_all_ssh_sessions` 同一个断路器语义。
     pub fn kill_all_ssh_tunnels(&self) {
+        for operation in self.stable_operations.iter() {
+            operation.cancel.store(true, Ordering::SeqCst);
+        }
         let ids: Vec<String> = self.ssh_tunnels.iter().map(|e| e.key().clone()).collect();
         for id in ids {
             self.halt_ssh_tunnel(&id);

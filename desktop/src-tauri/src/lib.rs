@@ -10,11 +10,14 @@ pub mod cc_session;
 pub mod child_proc;
 pub mod commands;
 pub mod config;
+pub mod connection_access;
+pub mod connection_tray;
 pub mod db;
 pub mod diff_utils;
 pub mod encoding;
 pub mod firewall;
 pub mod firewall_diag;
+pub mod forward_ownership;
 pub mod ip_watch;
 /// 变更日志（开放能力）：写类工具每改一个文件追加一条 JSONL 记录。
 pub mod journal;
@@ -28,6 +31,9 @@ pub mod ssh_helper;
 pub mod ssh_proxy;
 /// 端口转发：规则校验、`-L/-R/-D` 参数、`ssh -v` 输出解析。
 pub mod ssh_tunnel;
+mod ssh_tunnel_guard;
+pub mod stable_connect;
+pub mod stable_discovery;
 pub mod state;
 pub mod timing;
 pub mod utf8_stream;

@@ -30,9 +30,11 @@ pub async fn browse_directory(
 }
 
 #[tauri::command]
-pub async fn restart_mcp_server(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    crate::mcp::http::restart_server(state.inner()).await;
-    Ok(())
+pub async fn restart_mcp_server(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+) -> Result<(), String> {
+    super::control_service(state.inner(), &app, "restart").await
 }
 
 /// 停止 MCP 服务：abort 监听任务并释放端口。UI 显示「已停止」。
@@ -41,17 +43,7 @@ pub async fn stop_mcp_server(
     state: State<'_, Arc<AppState>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    let mut handle = state.mcp_server_handle.lock().await;
-    if let Some(h) = handle.take() {
-        h.abort();
-    }
-    // 立即置停止态，不必等 serve 协程感知 abort（其也会置 false，幂等）。
-    state
-        .mcp_running
-        .store(false, std::sync::atomic::Ordering::Relaxed);
-    // 即时通知托盘刷新图标/tooltip
-    let _ = app.emit("mcp-status-changed", ());
-    Ok(())
+    super::control_service(state.inner(), &app, "stop").await
 }
 
 /// 启动（或重启）MCP 服务。若已在运行先 abort 旧任务，避免端口占用。
@@ -60,22 +52,7 @@ pub async fn start_mcp_server(
     state: State<'_, Arc<AppState>>,
     app: AppHandle,
 ) -> Result<(), String> {
-    // 清掉上一轮的启动错误，否则 `wait_listening` 会立刻判失败（旧原因盖新结果）。
-    *state.startup_error.lock().unwrap() = None;
-    crate::mcp::http::restart_server(state.inner()).await;
-
-    // 🔴 **不再乐观置 running=true**（审查 P2）：原来先点亮再回退，端口被占时
-    // 用户会先看到「运行中」、几秒后莫名变灰。这里等 bind 的确定结果，
-    // 失败就把原因（`startup_error`）直接抛给前端 toast，而不是只留一个灰灯。
-    let ok =
-        crate::mcp::http::wait_listening(state.inner(), std::time::Duration::from_secs(2)).await;
-    let err = state.startup_error.lock().unwrap().clone();
-    let _ = app.emit("mcp-status-changed", ());
-    match (ok, err) {
-        (true, _) => Ok(()),
-        (false, Some(e)) => Err(e),
-        (false, None) => Err("服务未能在 2 秒内开始监听，请查看日志后重试".to_string()),
-    }
+    super::control_service(state.inner(), &app, "start").await
 }
 
 #[tauri::command]
@@ -150,8 +127,15 @@ pub async fn refresh_bash_detection() -> Result<bool, String> {
 #[tauri::command]
 pub async fn set_selected_ip(state: State<'_, Arc<AppState>>, ip: String) -> Result<(), String> {
     let db = state.db.lock().await;
-    save_config_field(&db, "last_selected_ip", &serde_json::to_value(&ip).unwrap())?;
     let mut config = state.config.write().await;
+    // Hidden direct-IP UI effects must not acknowledge an address while tunnel mode is selected.
+    if crate::connection_access::uses_tunnel(&config) {
+        return Err("当前使用隧道连接，无需更改直连地址。".into());
+    }
+    if !state.cached_lan_ips().contains(&ip) && ip != config.host {
+        return Err("该地址已不在本机网卡中，请刷新后重新选择。".into());
+    }
+    save_config_field(&db, "last_selected_ip", &serde_json::to_value(&ip).unwrap())?;
     config.last_selected_ip = Some(ip);
     Ok(())
 }
@@ -174,18 +158,179 @@ pub async fn get_ip_sed_command(
     state: State<'_, Arc<AppState>>,
 ) -> Result<IpSedCommandResult, String> {
     let cfg = state.config.read().await;
-    let (cmd, scope_label) = crate::network::ip_update_command(crate::network::IpUpdateTarget {
-        host: &cfg.host,
-        port: cfg.port,
-        token: &cfg.token,
-        transport: &cfg.transport,
-        last_selected_ip: cfg.last_selected_ip.as_deref(),
-        scope: cfg.scope.as_deref(),
-        project_path: cfg.project_path.as_deref(),
-        tls: cfg.remote_tls_enabled,
-        client: cfg.connect_client.as_deref().unwrap_or("claude-code"),
-        multi_device: cfg.multi_device_mode,
-        device_id: &cfg.device_id,
-    });
+    let (cmd, scope_label) =
+        crate::connection_access::ip_update_command(&cfg, &state.cached_lan_ips())?;
     Ok(IpSedCommandResult { cmd, scope_label })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionCopy {
+    pub text: String,
+    pub target_key: String,
+}
+
+/// All shortcut copies are resolved against the current saved target at the moment of copying.
+#[tauri::command]
+pub async fn get_connection_copy(
+    state: State<'_, Arc<AppState>>,
+    kind: String,
+) -> Result<ConnectionCopy, String> {
+    resolve_connection_copy(&state, &kind).await
+}
+
+pub async fn resolve_connection_copy(
+    state: &AppState,
+    kind: &str,
+) -> Result<ConnectionCopy, String> {
+    let config = state.config.read().await;
+    let ips = state.cached_lan_ips();
+    let access = crate::connection_access::summary(
+        &config,
+        &super::stable_connect_cmds::stable_records(&config, state),
+        &ips,
+        state.mcp_running.load(std::sync::atomic::Ordering::Relaxed),
+        crate::connection_access::cached_local_probe(state, &config, &ips),
+        None,
+        crate::connection_access::firewall_blocked(state),
+    );
+    let text = match kind {
+        "address" if access.can_copy_address => access.address,
+        "command" if access.can_copy_command => {
+            crate::connection_access::connect_command(&config, &ips)?
+        }
+        "ip-update" | "token-update" => {
+            crate::connection_access::ip_update_command(&config, &ips)?.0
+        }
+        _ => return Err("当前接入尚未配置，请前往接入卡片。".into()),
+    };
+    Ok(ConnectionCopy {
+        text,
+        target_key: access.target_key,
+    })
+}
+
+#[tauri::command]
+pub fn take_connection_navigation(state: State<'_, Arc<AppState>>) -> bool {
+    state
+        .pending_connection_navigation
+        .swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+#[tauri::command]
+pub async fn connection_command_copied(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+    target_key: String,
+) -> Result<(), String> {
+    record_connection_copy(&state, &app, &target_key).await
+}
+
+#[tauri::command]
+pub async fn connection_update_copied(
+    state: State<'_, Arc<AppState>>,
+    target_key: String,
+) -> Result<(), String> {
+    record_direct_update(&state, &target_key, false).await
+}
+
+#[tauri::command]
+pub async fn confirm_connection_update(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+    target_key: String,
+) -> Result<(), String> {
+    record_direct_update(&state, &target_key, true).await?;
+    let _ = app.emit("stable_connect_changed", ());
+    Ok(())
+}
+
+pub async fn record_direct_update(
+    state: &AppState,
+    target_key: &str,
+    confirmed: bool,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let mut config = state.config.write().await;
+    let ips = state.cached_lan_ips();
+    let Some(receipt) =
+        crate::connection_access::update_direct_receipt(&config, &ips, target_key, confirmed)?
+    else {
+        return if confirmed {
+            Err("没有可确认的原有直连接入。".into())
+        } else {
+            Ok(())
+        };
+    };
+    let mut next = config.stable_connect.clone();
+    next.direct = Some(receipt);
+    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    save_config_field(
+        &tx,
+        "stable_connect",
+        &serde_json::to_value(&next).map_err(|e| e.to_string())?,
+    )?;
+    let selected_ip = (confirmed && config.host == "0.0.0.0")
+        .then(|| {
+            crate::network::resolve_display_host(
+                &config.host,
+                &ips,
+                config.last_selected_ip.as_deref(),
+            )
+        })
+        .filter(|ip| ips.contains(ip));
+    if let Some(ip) = &selected_ip {
+        save_config_field(&tx, "last_selected_ip", &serde_json::json!(ip))?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    config.stable_connect = next;
+    if let Some(ip) = selected_ip {
+        config.last_selected_ip = Some(ip);
+    }
+    Ok(())
+}
+
+pub async fn record_connection_copy(
+    state: &AppState,
+    app: &AppHandle,
+    target_key: &str,
+) -> Result<(), String> {
+    let db = state.db.lock().await;
+    let mut config = state.config.write().await;
+    if crate::connection_access::uses_tunnel(&config) {
+        return Ok(());
+    }
+    let receipt = crate::connection_access::direct_access(&config, &state.cached_lan_ips());
+    if receipt.fingerprint != target_key {
+        return Ok(());
+    }
+    let mut next = config.stable_connect.clone();
+    next.direct = Some(receipt);
+    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    save_config_field(
+        &tx,
+        "stable_connect",
+        &serde_json::to_value(&next).map_err(|e| e.to_string())?,
+    )?;
+    save_config_field(&tx, "has_onboarded", &serde_json::json!(true))?;
+    if config.scope.is_none() {
+        save_config_field(
+            &tx,
+            "scope",
+            &serde_json::to_value(next.direct.as_ref().unwrap().scope.clone())
+                .map_err(|e| e.to_string())?,
+        )?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    config.stable_connect = next;
+    if config.scope.is_none() {
+        config.scope = config
+            .stable_connect
+            .direct
+            .as_ref()
+            .map(|r| r.scope.clone());
+    }
+    config.has_onboarded = true;
+    let _ = app.emit("stable_connect_changed", ());
+    Ok(())
 }

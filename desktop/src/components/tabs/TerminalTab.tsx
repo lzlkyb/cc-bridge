@@ -279,7 +279,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
           initialPath={filePath ?? undefined}
           onBack={() => (setFileConn(null), setFilePath(null))}
           sessions={sessions} activeId={activeId}
-          connections={connections}
+          connections={connections} onNavigate={onNavigate}
           onConnect={ssh.connect}
         />
       </div>

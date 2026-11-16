@@ -20,6 +20,10 @@ import { SideNav, WORKSPACE_NAV } from "./components/layout/SideNav";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAppHiddenFlag } from "./hooks/useAppHiddenFlag";
 import { useIpSedCopy } from "./hooks/useIpSedCopy";
+import { useStableConnectSnapshot } from "./hooks/useStableConnectSnapshot";
+import { currentConnection } from "./lib/connectionAccess";
+import { CurrentConnectionProvider } from "./hooks/useCurrentConnection";
+import { CurrentConnectionAlert } from "./components/layout/CurrentConnectionAlert";
 import { useWindowSizePersistence } from "./hooks/useWindowSizePersistence";
 import { useScrollActivity } from "./hooks/useScrollActivity";
 import { usePageInertia } from "./hooks/usePageInertia";
@@ -51,6 +55,7 @@ import { CommandPalette } from "./components/modals/CommandPalette";
 import { ShortcutSheet } from "./components/modals/ShortcutSheet";
 import { UpgradeWelcomeBar } from "./components/update/UpgradeWelcomeBar";
 import "./terminal-workspace.css";
+import "./connection-access.css";
 
 function AppContent() {
   // 窗口收进托盘/最小化时给 <html> 打 data-app-hidden，暂停全部 CSS 动画。
@@ -82,6 +87,9 @@ function AppContent() {
   // 看到的是旧数据）。用 ref 做跃迁检测：只在 hidden → visible 那一刻刷，
   // 首次挂载（appHidden 本就是 false）不重复发请求。
   const wasHiddenRef = useRef(false);
+  const stableSnapshot = useStableConnectSnapshot(status);
+  const access = currentConnection(status, stableSnapshot.data);
+  const stableActive = access?.method === "stable";
   useEffect(() => {
     if (wasHiddenRef.current && !appHidden) void refetchStatus();
     wasHiddenRef.current = appHidden;
@@ -90,10 +98,7 @@ function AppContent() {
   // IP 选择状态提升到 App 层，避免切 Tab 时 ConnectTab 卸载导致选中丢失
   const [selectedIp, setSelectedIp] = useState<string>("");
 
-  // 方案 Q: 追踪"用户已点选新地址、但尚未复制远程更新命令"的中间态。
-  // O2 乐观更新会在落盘成功后立即把 ipChanged 置 false，导致 IpChangedBanner（含 sed
-  // 命令块）在点选瞬间被卸载。用这个状态兜底，让 banner + sed 保持可见，直到用户复制了
-  // 远程更新命令（onSedResolved 收口）才随轮询自然消失。
+  // 保留用户点选后的更新入口；复制只收起本次提示，远端是否更新由接入摘要独立表达。
   const [ipResolvedByUser, setIpResolvedByUser] = useState(false);
 
   // 方案 R: 用户点关闭后「本次会话忽略此 IP 变化提示」的中间态（App 层提升）。
@@ -108,7 +113,7 @@ function AppContent() {
 
   const queryClient = useQueryClient();
 
-  // 无论自动默认选中还是手动点选,都经过这层落盘,作为下次判断地址变化的基线
+  // 保存直连候选；自动预选不确认旧地址已经更新，隧道模式不推进直连基线。
   // useCallback 稳定化：供链路状态跃迁 effect 安全引用，避免每次渲染重建导致 effect 误触发
   // byUser: 用户主动点选(默认 true)时置 ipResolvedByUser，保持 banner+sed 可见；
   //         S4 自动恢复(false)不置位，避免网络恢复后误弹 sed banner。
@@ -121,39 +126,36 @@ function AppContent() {
   // 用 ref 读最新值：status 每 5s 轮询换对象，写进 deps 会让本回调不停重建。
   const ipChangedRef = useRef(false);
   useEffect(() => {
-    ipChangedRef.current = !!status?.ipChanged;
-  }, [status?.ipChanged]);
+    ipChangedRef.current = !!status?.ipChanged || access?.state === "ip-changed";
+  }, [status?.ipChanged, access?.state]);
   const lastSelectedIpRef = useRef<string | null>(null);
   useEffect(() => {
     lastSelectedIpRef.current = status?.lastSelectedIp ?? null;
   }, [status?.lastSelectedIp]);
+  const ipSelectionRef = useRef({ tunnel: stableActive, ips: status?.lanIps ?? [], host: status?.host });
+  ipSelectionRef.current = { tunnel: stableActive, ips: status?.lanIps ?? [], host: status?.host };
   const handleSelectIp = useCallback((ip: string, byUser = true) => {
+    const current = ipSelectionRef.current;
+    if (current.tunnel || !ip || (!current.ips.includes(ip) && ip !== current.host)) return;
     setSelectedIp(ip);
-    if (!ip) return;
-    // 方案 Q: 仅用户主动点选新地址时标记"已处理待复制"，让 IpChangedBanner + sed 命令块
-    // 在 O2 乐观清除 ipChanged 后仍保持可见，直到复制远程更新命令。
-    // 挂起胶囊同步撤下：细条回来了，命令回到横幅承载（两种呈现互斥）。
+    // An automatic candidate must not acknowledge a lost address used by an existing direct setup.
+    if (!byUser && lastSelectedIpRef.current && lastSelectedIpRef.current !== ip) return;
+    // 用户换候选后将挂起命令撤回横幅，方便核对新地址；这不代表远端已更新。
     if (byUser && (ipChangedRef.current || (!!lastSelectedIpRef.current && lastSelectedIpRef.current !== ip))) {
       setIpResolvedByUser(true);
       setPendingCmd(null);
     }
     invoke("set_selected_ip", { ip })
       .then(async () => {
-        // 🔴 先取消在途轮询再写缓存（审查 P2）：5s 轮询的响应可能正好在这一刻落地，
-        // 它带的是「写盘前」的旧快照（ipChanged: true），会把乐观值覆盖回去 →
-        // 横幅闪回一下又消失。cancelQueries 让在途请求的落地被丢弃，随后的 invalidate
-        // 由调用方的 refetch 接管。
+        // 丢弃写盘前的在途快照，再读取后台摘要；不在前端把地址告警乐观清除。
         await queryClient.cancelQueries({ queryKey: ["status"] });
-        // O2: 落盘成功后乐观更新缓存,立即消除 IP 变化警告,无需等下一次 5s 轮询
-        queryClient.setQueryData<StatusResponse>(["status"], (old) =>
-          old ? { ...old, ipChanged: false, lastSelectedIp: ip } : old,
-        );
+        await queryClient.invalidateQueries({ queryKey: ["status"] });
       })
       // O3: 原 .catch(() => {}) 会静默吞掉写入失败,导致"标记已处理"无效却无提示
       .catch((e) => toast(`保存选中 IP 失败：${e}`, "error"));
   }, [queryClient]);
 
-  // 方案 Q: 用户复制了远程更新 sed 命令后收口，允许 banner 随乐观状态/下次轮询自然消失。
+  // 复制成功只结束本次挂起反馈；后台仍保留原地址与待验证状态。
   // 挂起胶囊（2026-10-17 方案 A）：胶囊复制成功也走这里收口（绿态 1.4s 淡出后卸载）。
   const handleSedResolved = useCallback(() => {
     setIpResolvedByUser(false);
@@ -166,20 +168,21 @@ function AppContent() {
   // 回调 + ipChanged 重新变 true 的 effect：复制成功 / 重选 IP / 忽略 / IP 再变。
   const [pendingCmd, setPendingCmd] = useState<{ ip: string; cmd: string } | null>(null);
   const handleSuspendCmd = useCallback((p: { ip: string; cmd: string }) => setPendingCmd(p), []);
+  useEffect(() => { setPendingCmd(null); }, [access?.targetKey, stableActive]);
 
   // 「复制 IP 替换命令」的全局入口（S3 横幅用，2026-10-17）：托盘同款 Rust 生成，
   // 关掉连接页 banner / 人在终端页时也能复制，不用再回连接页。
-  const copyIpSed = useIpSedCopy(handleSedResolved);
+  const copyIpSed = useIpSedCopy(handleSedResolved, status);
 
   // 方案 R: 用户点关闭后仅本次会话隐藏 banner。当出现「新的」地址变化(false→true)时
   // 自动解除隐藏,避免关一次就永久屏蔽后续变化;停留为 true 的轮询不会重复触发重置。
   // 挂起胶囊：IP 重新变化 = 旧命令作废（新 IP 需要新命令），一并清除。
   useEffect(() => {
-    if (status?.ipChanged) {
+    if (status?.ipChanged || access?.state === "ip-changed") {
       setIpChangeDismissed(false);
       setPendingCmd(null);
     }
-  }, [status?.ipChanged]);
+  }, [status?.ipChanged, access?.state, access?.targetKey]);
   const handleDismissIpChange = useCallback(() => {
     setIpChangeDismissed(true);
     setPendingCmd(null);
@@ -354,6 +357,21 @@ function AppContent() {
     return () => un?.();
   }, [refetchStatus]);
 
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    const consume = async () => {
+      if (disposed) return;
+      try { if (await invoke<boolean>("take_connection_navigation") && !disposed) handleNavigate("connect", "connect-guide"); }
+      catch (error) { if (!disposed) toast(`无法读取托盘定位请求：${error}`, "warning"); }
+    };
+    void listen("connection-access-navigation", () => void consume()).then(unlisten => {
+      if (disposed) unlisten();
+      else { stop = unlisten; void consume(); }
+    }).catch(error => { if (!disposed) toast(`无法接收托盘定位操作：${error}`, "warning"); });
+    return () => { disposed = true; stop?.(); };
+  }, [handleNavigate]);
+
   // 闲时预取非首屏 Tab 的 chunk（2026-11-06，与 TabFallback 分档配套）。
   // 1.5s 已经过了首屏绘制与首帧骨架的交接，此时加载不抢资源；本地盘读几百 KB
   // 通常几十毫秒。预取后切 Tab 几乎不触发 Suspense —— 那才是「不闪」的根本解，
@@ -371,6 +389,7 @@ function AppContent() {
 
   return (
     <ToastProvider>
+    <CurrentConnectionProvider access={access}>
     {/* h-screen flex-col：外壳纵向排布，.app-shell（grid）撑满余下空间；
         顶栏与侧栏固定，仅内容区滚动（横向锁死、纵向可滚）。 */}
     {/* app-boot-fade：接替 index.html 里的首帧骨架屏时做一次很短的淡入，
@@ -392,12 +411,13 @@ function AppContent() {
         <div className="app-main flex min-h-0 min-w-0 flex-col">
           <Header
             status={status}
+            stableConnection={stableActive}
             onChanged={refetchStatus}
             onNavigate={handleNavigate}
             onOpenSearch={() => setShowCommandPalette(true)}
             collapsed={sideCollapsed}
             onToggleCollapse={() => setSideCollapsed((v) => !v)}
-            pendingCmd={pendingCmd}
+            pendingCmd={stableActive ? null : pendingCmd}
             onPendingResolved={handleSedResolved}
             onPendingDismiss={handleDismissIpChange}
           />
@@ -414,50 +434,10 @@ function AppContent() {
           </ActionCard>
         </div>
       )}
-      {/* S3: 全局链路中断横幅（任意页可见，不只连接页）。与 statusError 并列但语义不同：
-          这里是「服务在跑但远程连不回」，statusError 是「连不上本地服务进程」。 */}
-      {/* 连接页本身已内联展示等价信息（地址失效→IpChangedBanner+AddressPicker；
-          远程不可达→Header 红胶囊+徽章），故在该页不再重复这条全局横幅与「前往连接」按钮（方案 A）。
-          批3-1：多设备模式额外认「近期有 401 失败来源」为渲染条件——令牌失效时服务可达、
-          TCP 探针是绿的，没有这条就永远弹不出来。多设备关闭时条件与引入前逐字一致（契约）。 */}
-      {status &&
-        status.running &&
-        (status.ipChanged ||
-          status.remoteReachable === false ||
-          (status.multiDeviceMode && status.authFailureSources > 0)) &&
-        activeTab !== "connect" && (
-        <div className="shrink-0 px-5 pt-2">
-          <ActionCard
-            tone="destructive"
-            title={status.multiDeviceMode && !status.ipChanged && status.authFailureSources > 0 ? "远程 AI 工具鉴权失败" : "远程连接中断"}
-            summary={
-              status.ipChanged
-                ? "连接地址已失效，远程 AI 工具已断开，请重选地址。"
-                : status.multiDeviceMode && status.authFailureSources > 0
-                  ? "检测到有连接在用失效的令牌访问本机服务——通常是另一台设备重新生成令牌后，远端配置还没更新。重新执行本机的接入命令即可带上新令牌。"
-                  : status.multiDeviceMode
-                    ? "本机服务在运行，但远程连不回。多设备模式下，这可能是另一台设备完成了接入（远端配置已指向它）——若要用本机，请在远端重新执行本机的接入命令。"
-                    : "本机服务在运行，但远程连不回，请检查本机网络。"
-            }
-          >
-            {/* IP 变化分支直接给「复制命令」（托盘同款 Rust 生成）——不用回连接页、
-                即使连接页 banner 被关掉这里也拿得到。多设备模式的远程不可达分支给
-                「复制本机接入命令」（多设备模式下 Rust 产物即条目级命令，在远端重跑
-                即可把条目指回本机）；关闭模式维持原状：远程不可达无命令可给，只导航。 */}
-            {(status.ipChanged || status.multiDeviceMode) && (
-              <Button variant="outline" size="sm" className="h-6 px-2.5 text-xs" onClick={() => void copyIpSed()}>
-                {status.ipChanged ? "复制命令" : "复制本机接入命令"}
-              </Button>
-            )}
-            <Button variant="outline" size="sm" className="h-6 px-2.5 text-xs" onClick={() => handleNavigate("connect")}>
-              前往连接
-            </Button>
-          </ActionCard>
-        </div>
-      )}
+      {activeTab !== "connect" && <CurrentConnectionAlert status={status} onNavigate={handleNavigate}/>}
           <main className="app-main-content min-h-0 min-w-0 flex-1 overflow-hidden px-5 pb-5" data-page={activeTab} data-terminal={activeTab === "terminal" || undefined} onScrollCapture={handleScrollActivity}>
           <TabsContent value="connect" keepMounted className="page-scroll app-content-box h-full overflow-y-auto overflow-x-hidden">
-            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} pendingSuspended={!!pendingCmd} onSuspendCmd={handleSuspendCmd} onCopySed={copyIpSed} />
+            <ConnectTab status={status} onRefresh={refetchStatus} selectedIp={selectedIp} onSelectIp={handleSelectIp} ipResolvedByUser={ipResolvedByUser} onSedResolved={handleSedResolved} dismissed={ipChangeDismissed} onDismissIpChange={handleDismissIpChange} onNavigate={handleNavigate} pendingSuspended={!!pendingCmd} onSuspendCmd={handleSuspendCmd} onCopySed={copyIpSed} highlightAnchor={pendingAnchor}/>
           </TabsContent>
           <TabsContent value="security" keepMounted className="page-scroll h-full overflow-y-auto overflow-x-hidden">
             <Suspense fallback={<TabFallback kind="cards" />}>
@@ -537,8 +517,9 @@ function AppContent() {
       />
 
       {/* S3+S4: 链路状态跃迁监听（无 UI），弹 Toast + IP 自动恢复闭环 */}
-      <LinkStateWatcher status={status} onReselectIp={handleSelectIp} />
+      <LinkStateWatcher status={stableActive ? undefined : status} onReselectIp={handleSelectIp} />
     </div>
+    </CurrentConnectionProvider>
     </ToastProvider>
   );
 }
@@ -566,7 +547,12 @@ function LinkStateWatcher({
   const lastRawDown = useRef(false);
   const streak = useRef(0);
   useEffect(() => {
-    if (!status) return;
+    if (!status) {
+      prevLinkDown.current = null;
+      lastRawDown.current = false;
+      streak.current = 0;
+      return;
+    }
     // 服务没在跑：既不报中断也不报恢复，状态归零（避免下次启动误报）。
     if (!status.running) {
       prevLinkDown.current = null;
@@ -591,12 +577,12 @@ function LinkStateWatcher({
     prevLinkDown.current = confirmed;
     if (wasDown === null || wasDown === confirmed) return;
     if (confirmed) {
-      toast("远程连接已中断，请检查本机网络连接", "error");
+      toast("本机直连地址暂不可用，请检查网络", "warning");
     } else {
       // 仅当服务仍在运行时，linkDown→false 才是真正的「网络恢复」；若 running=false
       // 则是用户主动停服，不应误报恢复、更不应自动重启用户刚停掉的服务。
       // S4: 链路由中断恢复（且服务仍在运行）。自动重新选中已记录的 IP。
-      toast("网络已恢复，AI 工具可重新连接", "success");
+      toast("本机地址已恢复，请在服务器验证接入", "success");
       if (status.lastSelectedIp) {
         // byUser=false: 自动恢复只更新选中/落盘，不触发 IP 变化 banner
         onReselectIp(status.lastSelectedIp, false);

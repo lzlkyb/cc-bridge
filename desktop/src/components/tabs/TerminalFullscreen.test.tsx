@@ -54,10 +54,10 @@ it("查找与粘贴仍绑定当前窗格，更多菜单保留完整终端功能�
   await choose("返回终端操作");expect(document.activeElement).toBe(item("复制选中"));expect(item("搜索全部会话")).toBeTruthy();
 });
 it("停止服务必须确认，取消不调用后端，确认后刷新状态",async()=>{
-  await render();await click('[aria-label="更多"]');await choose("停止桥接服务");expect(h.invoke).not.toHaveBeenCalled();
+  await render();await click('[aria-label="更多"]');await choose("停止本机服务");expect(h.invoke).not.toHaveBeenCalled();
   await act(async()=>[...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(b=>b.textContent==="取消")!.click());expect(h.invoke).not.toHaveBeenCalled();
-  await click('[aria-label="更多"]');await choose("停止桥接服务");
-  await act(async()=>[...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(b=>b.textContent==="停止服务")!.click());
+  await click('[aria-label="更多"]');await choose("停止本机服务");
+  await act(async()=>[...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(b=>b.textContent==="停止本机服务")!.click());
   expect(h.invoke).toHaveBeenCalledExactlyOnceWith("stop_mcp_server");expect(h.changed).toHaveBeenCalledOnce();
 });
 it("搜索全部会话在顶栏外显示，退出全屏后关闭",async()=>{
@@ -66,7 +66,7 @@ it("搜索全部会话在顶栏外显示，退出全屏后关闭",async()=>{
   await render({fullscreen:false});expect(document.querySelector('[aria-label="搜索全部会话"][role="dialog"]')).toBeNull();
 });
 it("停止确认期间状态刷新，不会把停止操作反转成启动",async()=>{
-  await render();await click('[aria-label="更多"]');await choose("停止桥接服务");await render({running:false});
-  await act(async()=>[...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(b=>b.textContent==="停止服务")!.click());
+  await render();await click('[aria-label="更多"]');await choose("停止本机服务");await render({running:false});
+  await act(async()=>[...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(b=>b.textContent==="停止本机服务")!.click());
   expect(h.invoke).toHaveBeenCalledExactlyOnceWith("stop_mcp_server");
 });

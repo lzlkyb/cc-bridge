@@ -398,9 +398,10 @@ pub(super) fn resolve_connect_secrets(
 /// 把两者绑在一起传，而不是给 `ssh_base_args` / `run_scp` / `spawn_capture` 一路
 /// 都加一个 `Option<&SshConnection>` 参数——后者一旦在某个调用点忘了传，表现是
 /// **静默地走直连**（连不上，且从报错里看不出为什么）。
+#[derive(Clone)]
 pub(super) struct SshLink {
     pub(super) conn: SshConnection,
-    jump: Option<SshConnection>,
+    pub(super) jump: Option<SshConnection>,
     /// 已拼好的 `-o ProxyCommand=` 的值；None = 直连。
     ///
     /// 建连接时就拼好而不是每次用到再拼：拼接会因为非法字符失败，失败必须
@@ -408,8 +409,63 @@ pub(super) struct SshLink {
     proxy: Option<String>,
 }
 
+fn same_login(a: &SshConnection, b: &SshConnection) -> bool {
+    a.id == b.id
+        && a.host == b.host
+        && a.port == b.port
+        && a.username == b.username
+        && a.auth_type == b.auth_type
+        && a.key_path == b.key_path
+        && a.proxy_jump_id == b.proxy_jump_id
+        && a.remember_password == b.remember_password
+        && a.encrypted_password == b.encrypted_password
+        && a.remember_passphrase == b.remember_passphrase
+        && a.encrypted_passphrase == b.encrypted_passphrase
+}
+
 impl SshLink {
+    pub(super) fn same_login(&self, other: &Self) -> bool {
+        same_login(&self.conn, &other.conn)
+            && match (&self.jump, &other.jump) {
+                (Some(a), Some(b)) => same_login(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
+    /// Pin both hops before any await, so editing a saved connection cannot redirect an in-flight token.
+    pub(super) fn from_config(
+        config: &crate::config::BridgeConfig,
+        id: &str,
+    ) -> Result<Self, String> {
+        let conn = config
+            .ssh_connections
+            .iter()
+            .find(|c| c.id == id)
+            .cloned()
+            .ok_or("服务器不存在")?;
+        let jump = if conn.proxy_jump_id.is_empty() {
+            None
+        } else {
+            Some(
+                config
+                    .ssh_connections
+                    .iter()
+                    .find(|c| c.id == conn.proxy_jump_id)
+                    .cloned()
+                    .ok_or("跳板机不存在")?,
+            )
+        };
+        Self::new(conn, jump)
+    }
     pub(super) fn new(conn: SshConnection, jump: Option<SshConnection>) -> Result<Self, String> {
+        // 所有生产路径（终端 / scp / 端口转发 / 会话连接）都经这一个构造器，
+        // 身份校验放这里才叫「堵住」；保存路径另有一次同样的校验，只为把错误
+        // 提前到用户点「保存」的那一刻，而不是点「连接」时。
+        validate_identity(&conn)?;
+        if let Some(j) = &jump {
+            validate_identity(j)?;
+        }
         let proxy = match &jump {
             None => None,
             Some(j) => {
@@ -432,6 +488,33 @@ impl SshLink {
             proxy: None,
         }
     }
+}
+
+/// 用户名允许的字符集：字母数字 + `.` `-` `_`。
+///
+/// 为什么必须校验：`format!("{}@{}", username, host)` 是作为**一个参数**交给 ssh 的，
+/// 而 ssh 会把 `-` 开头的目标当**选项**解析（实测 `ssh -G "-oProxyCommand=calc @h"`
+/// 落到 usage，见 `rejects_dash_prefixed_username`）。host 一侧有
+/// `ssh_tunnel::host_ok` 守着，username 此前完全没有校验，而连接也可以从导入文件
+/// 进来、绕过 UI 输入限制。
+///
+/// 空用户名**放行**：那是「交给 ssh 用默认值」的既有语义（表单未做必填），
+/// 这里只拦能改变参数性质的形态，不做顺手加严。
+fn identity_ok(user: &str) -> bool {
+    !user.starts_with('-')
+        && user
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+fn validate_identity(conn: &SshConnection) -> Result<(), String> {
+    if identity_ok(&conn.username) {
+        return Ok(());
+    }
+    Err(format!(
+        "用户名「{}」含有不支持的字符：只能用字母、数字、点、下划线和连字符，且不能以 - 开头",
+        conn.username
+    ))
 }
 
 /// 拼 ssh/scp 通用连接选项。`port_flag` 区分 ssh 的 `-p` 与 scp 的 `-P`。
@@ -889,6 +972,7 @@ struct TransferHooks {
     app: Option<AppHandle>,
     transfer_id: Option<String>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    setup_input: Option<String>,
 }
 
 /// 从一块输出里取**最后一个** `NN%`。
@@ -971,6 +1055,47 @@ async fn spawn_capture_off_runtime(
             creds,
             SSH_ONESHOT_TIMEOUT,
             TransferHooks::default(),
+        )
+    })
+    .await
+    .map_err(|e| format!("任务调度失败：{e}"))?
+}
+
+/// Windows OpenSSH needs terminal mode to forward the LF-delimited stdin frames immediately.
+fn stable_setup_args(link: &SshLink, command: String) -> Vec<String> {
+    let mut args = ssh_base_args(link, "-p");
+    args.push("-tt".into());
+    args.push(format!("{}@{}", link.conn.username, link.conn.host));
+    args.push(command);
+    args
+}
+
+/// Bounded, cancellable setup using the exact same credential and ProxyJump rules as SFTP.
+pub(super) async fn run_stable_setup(
+    state: &Arc<AppState>,
+    link: &SshLink,
+    script: (String, String),
+    password: Option<String>,
+    passphrase: Option<String>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<String, String> {
+    if script.1.len() > 32 * 1024 {
+        return Err("接入检查结果较多，请选择一个项目后重新检查。".into());
+    }
+    let ssh = find_ssh().ok_or("未检测到系统 OpenSSH 客户端")?;
+    let creds = resolve_connect_secrets(link, &state.data_dir, password, passphrase)?;
+    let args = stable_setup_args(link, script.0);
+    tokio::task::spawn_blocking(move || {
+        spawn_capture(
+            &ssh,
+            &args,
+            creds,
+            Duration::from_secs(45),
+            TransferHooks {
+                cancel: Some(cancel),
+                setup_input: Some(script.1),
+                ..Default::default()
+            },
         )
     })
     .await
@@ -1083,7 +1208,9 @@ fn spawn_capture(
         app,
         transfer_id,
         cancel,
+        setup_input,
     } = hooks;
+    let stable_setup = setup_input.is_some();
     let progress_target = app.zip(transfer_id);
     let pty_system = native_pty_system();
     let PtyPair { master, slave } = pty_system
@@ -1117,6 +1244,8 @@ fn spawn_capture(
 
     let captured = Arc::new(StdMutex::new(String::new()));
     let cap_for_reader = captured.clone();
+    let setup_login_failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let login_for_reader = setup_login_failed.clone();
 
     // reader：持续读 → 累积输出；出现密码/密码短语提示则自动写对应凭据。
     let reader_handle = std::thread::spawn(move || {
@@ -1124,6 +1253,7 @@ fn spawn_capture(
         let mut buf = [0u8; 4096];
         let mut creds = auto_creds;
         let mut last_percent: Option<u8> = None;
+        let mut setup = setup_input.map(crate::stable_connect::SetupInput::new);
         // 🔴 必须跨 read 增量解码：4096 字节的读取边界会把一个中文字符劈成两半，
         // 逐块 from_utf8_lossy 会把两半各自变成 U+FFFD。这条路径上跑的是 `ls` 输出，
         // 直接体现为**中文文件名乱码**；同时还会让下面「密码：」的中文提示匹配失效。
@@ -1137,9 +1267,20 @@ fn spawn_capture(
                     let chunk = &buf[..n];
                     let text = dec.push(chunk);
                     if !text.is_empty() {
-                        let mut s = cap_for_reader.lock().unwrap();
-                        s.push_str(&text);
-                        collapse_progress(&mut s);
+                        if let Some(input) = setup.as_mut() {
+                            let (send, output) = input.push(&strip_ansi(&text));
+                            if let Some(payload) = send {
+                                creds.clear();
+                                let _ = writer.write_all(payload.as_bytes());
+                                let _ = writer.write_all(b"\n");
+                                let _ = writer.flush();
+                            }
+                            cap_for_reader.lock().unwrap().push_str(&output);
+                        } else {
+                            let mut s = cap_for_reader.lock().unwrap();
+                            s.push_str(&text);
+                            collapse_progress(&mut s);
+                        }
                     }
                     // 进度：只在传输类调用（带钩子）时上报，且**百分比变了才发**——
                     // scp 一秒能刷很多次，每次都发一次 IPC 是白烧。
@@ -1166,7 +1307,9 @@ fn spawn_capture(
                     // **两段登录**，把目标机密码填给跳板机提示是一个真实的泄露。
                     // 提示匹配走**解码后**的文本，不再看裸 chunk：否则一个被劈开的
                     // 「密、码」就能让整句中文提示匹配不上，表现为自动填密码静默失效。
-                    if creds.has_any() && !text.is_empty() {
+                    if !text.is_empty() {
+                        let prompt = password_prompt_in(text.as_bytes())
+                            || passphrase_prompt_in(text.as_bytes());
                         let filled = if password_prompt_in(text.as_bytes()) {
                             creds.take_password(&text)
                         } else if passphrase_prompt_in(text.as_bytes()) {
@@ -1178,15 +1321,26 @@ fn spawn_capture(
                             let _ = writer.write_all(secret.as_bytes());
                             let _ = writer.write_all(b"\n");
                             let _ = writer.flush();
+                        } else if setup
+                            .as_ref()
+                            .is_some_and(crate::stable_connect::SetupInput::waiting)
+                            && (prompt || text.contains("Permission denied"))
+                        {
+                            // A read-only stable inspection must return a login state promptly, not wait for a hung prompt.
+                            login_for_reader.store(true, std::sync::atomic::Ordering::SeqCst);
                         }
                     }
                 }
                 Err(_) => break,
             }
         }
-        // EOF 收尾：流结束了，残字节再等不到后续，此时才该落盘。
+        // EOF 收尾：ConPTY may leave the final protocol marker without a literal newline.
         let tail = dec.flush();
-        if !tail.is_empty() {
+        if let Some(input) = setup.as_mut() {
+            let mut output = input.push(&strip_ansi(&tail)).1;
+            output.push_str(&input.finish());
+            cap_for_reader.lock().unwrap().push_str(&output);
+        } else if !tail.is_empty() {
             let mut s = cap_for_reader.lock().unwrap();
             s.push_str(&tail);
             collapse_progress(&mut s);
@@ -1210,6 +1364,12 @@ fn spawn_capture(
                 return;
             }
         }
+        if setup_login_failed.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = done_tx.send(Err("CCB_AUTH_REQUIRED".into()));
+            return;
+        }
         if cancel
             .as_ref()
             .is_some_and(|c| c.load(std::sync::atomic::Ordering::SeqCst))
@@ -1222,7 +1382,12 @@ fn spawn_capture(
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = done_tx.send(Err("操作超时（网络不通或远程无响应），请重试".into()));
+            let error = if stable_setup {
+                "CCB_SETUP_TIMEOUT"
+            } else {
+                "操作超时（网络不通或远程无响应），请重试"
+            };
+            let _ = done_tx.send(Err(error.into()));
             return;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -1249,6 +1414,7 @@ fn spawn_capture(
             status.exit_code(),
             output
         )),
+        Err(e) if stable_setup && output.is_empty() => Err(e),
         Err(e) => Err(format!("{e}\n--- 输出 ---\n{output}")),
     }
 }
@@ -1317,6 +1483,10 @@ pub async fn ssh_save_connection(
     state: State<'_, Arc<AppState>>,
     args: SshSaveArgs,
 ) -> Result<SshConnection, String> {
+    save_ssh_connection(state.inner(), args).await
+}
+
+async fn save_ssh_connection(state: &AppState, args: SshSaveArgs) -> Result<SshConnection, String> {
     // 写凭据也要过总开关：功能关着时不应该还能往盘上写加密密码，
     // 也不应该因此凭空创建出 `ssh_key.bin`。（删除不拦：清理凭据任何时候都该允许。）
     if !state.config.read().await.ssh_enabled {
@@ -1327,6 +1497,10 @@ pub async fn ssh_save_connection(
         conn.id = uuid::Uuid::new_v4().to_string();
     }
     crate::ssh_tunnel::validate_rules(&conn.forwards)?;
+    // 用户名字符集校验：拼进 `user@host` 后是一个 argv 元素，而 ssh 把 `-` 开头的
+    // 目标当选项（详见 `identity_ok`）。保存和连接两处都校验，前者给早反馈、
+    // 后者兜住「导入配置 / 手改库」这条绕过 UI 的入口。
+    validate_identity(&conn)?;
     for r in conn.forwards.iter_mut().filter(|r| r.id.is_empty()) {
         r.id = uuid::Uuid::new_v4().to_string();
     }
@@ -1402,11 +1576,16 @@ pub async fn ssh_save_connection(
 
     let db = state.db.lock().await;
     let mut config = state.config.write().await;
-    if let Some(slot) = config.ssh_connections.iter_mut().find(|c| c.id == conn.id) {
-        *slot = conn.clone();
-    } else {
-        config.ssh_connections.push(conn.clone());
-    }
+    // 转发规则、自动开启偏好和名称也走这里；它们不改变隧道启动时固定的服务器或凭据。
+    let identity_changed =
+        if let Some(slot) = config.ssh_connections.iter_mut().find(|c| c.id == conn.id) {
+            let changed = !same_login(slot, &conn);
+            *slot = conn.clone();
+            changed
+        } else {
+            config.ssh_connections.push(conn.clone());
+            false
+        };
     crate::config::save_config_field(
         &db,
         "ssh_connections",
@@ -1417,6 +1596,13 @@ pub async fn ssh_save_connection(
     // 并保存，5 分钟内再开文件面板，列目录/建目录/**删除**全部走缓存的旧会话——
     // `rm -rf` 会执行在**旧主机**上。删除连接的路径当时加了，保存这条漏了。
     state.drop_ssh_helper(&conn.id);
+    // 服务器或凭据变更后，旧隧道不能继续用修改前的登录信息后台重连。
+    if identity_changed {
+        if let Some(op) = state.stable_operations.get(&conn.id) {
+            op.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        state.halt_ssh_tunnel(&crate::stable_connect::runtime_id(&conn.id));
+    }
     Ok(conn)
 }
 
@@ -1507,6 +1693,22 @@ pub async fn ssh_delete_connection(
     // 连接都删了，它的 SFTP helper 会话没必要再占着服务器的 MaxSessions。
     state.drop_ssh_helper(&id);
     state.halt_ssh_tunnel(&id);
+    if let Some(op) = state.stable_operations.get(&id) {
+        op.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    state.halt_ssh_tunnel(&crate::stable_connect::runtime_id(&id));
+    config
+        .stable_connect
+        .connections
+        .retain(|s| s.connection_id != id);
+    if config.stable_connect.selected_connection_id.as_deref() == Some(&id) {
+        config.stable_connect.selected_connection_id = None;
+    }
+    crate::config::save_config_field(
+        &db,
+        "stable_connect",
+        &serde_json::to_value(&config.stable_connect).unwrap(),
+    )?;
     Ok(())
 }
 
@@ -2028,6 +2230,7 @@ pub async fn ssh_sftp_get(
         app: Some(app),
         transfer_id: Some(transfer_id.clone()),
         cancel: Some(cancel),
+        setup_input: None,
     };
     let (scp, c, r, p) = (scp_path, link, remote, part.clone());
     // 丢到阻塞线程池：传输最长 600s，占着 tokio worker 不放会让
@@ -2113,6 +2316,7 @@ pub async fn ssh_sftp_put(
         app: Some(app),
         transfer_id: Some(transfer_id.clone()),
         cancel: Some(cancel),
+        setup_input: None,
     };
     let (scp, c, r, l) = (scp_path, link, remote, local);
     let joined = tokio::task::spawn_blocking(move || {
@@ -2258,6 +2462,10 @@ pub async fn ssh_sftp_remove(
 }
 
 #[cfg(test)]
+#[path = "ssh_save_tests.rs"]
+mod save_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2371,7 +2579,70 @@ mod tests {
         assert!(c.contains("'/opt/app'"), "{c}");
     }
 
+    #[test]
+    fn stable_setup_allocates_terminal_before_sending_stdin_frames() {
+        let link = SshLink::direct(SshConnection {
+            host: "fixture.example".into(),
+            username: "fixture".into(),
+            ..Default::default()
+        });
+        let command = "python3 -c 'import sys; sys.stdin.readline()'";
+        let args = stable_setup_args(&link, command.into());
+        let destination = args
+            .iter()
+            .position(|arg| arg == "fixture@fixture.example")
+            .unwrap();
+        assert!(
+            args[..destination].iter().any(|arg| arg == "-tt"),
+            "Windows OpenSSH needs a terminal to forward submitted stdin frames"
+        );
+        assert_eq!(args.last().unwrap(), command);
+        assert!(
+            !ssh_base_args(&link, "-p").iter().any(|arg| arg == "-tt"),
+            "ordinary SSH/SFTP options must remain unchanged"
+        );
+    }
+
     // ── 跳板机：不配时参数必须逐字节不变 ────────────────────────
+
+    // ── 用户名字符集：唯一能把 argv 元素变成 ssh 选项的形态 ──────────
+
+    /// 🔴 机制是实测出来的：`ssh -G "-oProxyCommand=calc @host"` 会把整串当**选项**
+    /// 解析（打印 usage 而非用法错误），说明 `-` 开头的 `user@host` 真能变成开关。
+    /// 这里钉住两道门（保存 / 连接）都拒，同时钉住正常形态不被顺手加严。
+    #[test]
+    fn rejects_dash_prefixed_username() {
+        let bad = SshConnection {
+            host: "10.0.1.50".into(),
+            port: 22,
+            username: "-oProxyCommand=calc ".into(),
+            ..Default::default()
+        };
+        assert!(
+            validate_identity(&bad).is_err(),
+            "以 - 开头的用户名必须被拒"
+        );
+        assert!(SshLink::new(bad, None).is_err(), "连接路径必须同样拒绝");
+
+        let spaced = SshConnection {
+            username: "root user".into(),
+            ..Default::default()
+        };
+        assert!(
+            validate_identity(&spaced).is_err(),
+            "含空白的用户名必须被拒（参数不分词，交出去就是错的 host）"
+        );
+
+        // 正常形态与空值必须照旧放行：空值 = 交给 ssh 用默认值（表单未做必填），
+        // 非 ASCII 字母也要放行，否则 Windows 中文账户名连不上。
+        for ok in ["root", "ops.prod", "deploy-bot", "deploy_bot", "", "域用户"] {
+            let c = SshConnection {
+                username: ok.into(),
+                ..Default::default()
+            };
+            assert!(validate_identity(&c).is_ok(), "「{ok}」应放行");
+        }
+    }
 
     /// 🔴 加跳板机支持改动了所有连接都要走的 `ssh_base_args`。
     /// 本用例钉住「不配跳板 = 参数与以前完全一致」，否则老连接会被连带改坏。
@@ -2888,5 +3159,21 @@ lrwxr-xr-x  1 u  g    7 Apr  5 10:02 link -> /tmp/target\n";
             serde_json::from_str(r#"{"connectionId":"host","rows":30,"cols":100}"#).unwrap();
         assert!(args.password.is_none());
         assert!(args.passphrase.is_none());
+    }
+
+    #[test]
+    fn stable_setup_pins_identity_before_saved_connection_changes() {
+        let mut config = crate::config::BridgeConfig::default();
+        config.ssh_connections.push(SshConnection {
+            id: "cloud".into(),
+            host: "original.example".into(),
+            username: "original-user".into(),
+            ..Default::default()
+        });
+        let pinned = SshLink::from_config(&config, "cloud").unwrap();
+        config.ssh_connections[0].host = "replacement.example".into();
+        config.ssh_connections[0].username = "replacement-user".into();
+        assert_eq!(pinned.conn.host, "original.example");
+        assert_eq!(pinned.conn.username, "original-user");
     }
 }

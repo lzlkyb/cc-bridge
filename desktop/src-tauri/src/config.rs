@@ -275,6 +275,7 @@ pub struct BridgeConfig {
     /// 🔴 只经 Tauri IPC 修改（前端 save_config patch），绝不走 MCP（对齐 external_mcp_servers 注释）。
     /// 凭据以加密形式存于每条连接的 `encrypted_password`，明文密码不经此结构。
     pub ssh_connections: Vec<SshConnection>,
+    pub stable_connect: crate::stable_connect::StableSettings,
     /// 终端拖拽即选：在 xterm 内按住左键移动超阈值即自动进选择态。
     /// 默认开（对齐主流终端习惯）；关闭后仍可按 Shift 或点「选择模式」进入选择态。
     pub ssh_drag_select_enabled: bool,
@@ -391,6 +392,7 @@ impl Default for BridgeConfig {
             release_webview_on_close: true,
             ssh_enabled: false,
             ssh_connections: vec![],
+            stable_connect: crate::stable_connect::StableSettings::default(),
             ssh_drag_select_enabled: true,
             ssh_copy_on_select_enabled: true,
             remote_tls_enabled: false,
@@ -528,6 +530,9 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             }
             "ssh_enabled" => config.ssh_enabled = parse_or_warn(key, value, false),
             "ssh_connections" => config.ssh_connections = parse_or_warn(key, value, vec![]),
+            "stable_connect" => {
+                config.stable_connect = parse_or_warn(key, value, Default::default())
+            }
             "ssh_drag_select_enabled" => {
                 config.ssh_drag_select_enabled = parse_or_warn(key, value, true)
             }
@@ -570,8 +575,53 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
         config.has_onboarded = true;
     }
 
+    sanitize_ssh_forwards(&mut config);
     normalize_profiles(&mut config);
     Ok(config)
+}
+
+/// 加载时的转发规则体检。
+///
+/// `validate_rules` 只在**保存**路径调用，所以导入旧配置、或手改配置库，仍能塞进
+/// 非法 host（含空格 / 引号）。参数经 `args()` 独立传递、不经 shell，最坏结果也只是
+/// ssh 报错退出；但让一条坏规则把整条通道带崩不值当，而且失败原因会埋进 `-v` 日志里。
+///
+/// 策略是**逐条丢弃 + warn**，不阻断启动、不动连接本身：坏数据不该换来一个打不开的
+/// 应用。监听端口冲突同理——同方向两条规则抢一个本地端口，ssh 会整条进程退出，
+/// 这里保留先出现的那条。
+fn sanitize_ssh_forwards(config: &mut BridgeConfig) {
+    for conn in config.ssh_connections.iter_mut() {
+        let id = conn.id.clone();
+        conn.forwards.retain(|r| {
+            if let Err(e) = crate::ssh_tunnel::validate_rules(std::slice::from_ref(r)) {
+                log::warn!("连接「{id}」有非法转发规则，已忽略：{e}");
+                return false;
+            }
+            true
+        });
+        let mut local_ports: Vec<u16> = Vec::new();
+        let mut remote_ports: Vec<u16> = Vec::new();
+        conn.forwards.retain(|r| {
+            if !r.enabled || r.listen_port == 0 {
+                return true;
+            }
+            let ports = if r.kind == ForwardKind::Remote {
+                &mut remote_ports
+            } else {
+                &mut local_ports
+            };
+            if ports.contains(&r.listen_port) {
+                log::warn!(
+                    "连接「{id}」的转发规则 {}:{} 与同方向已有规则冲突，已忽略",
+                    r.listen_host,
+                    r.listen_port
+                );
+                return false;
+            }
+            ports.push(r.listen_port);
+            true
+        });
+    }
 }
 
 /// 保证 `root_profiles` / `active_profile` 自洽，并完成老配置库的**隐式迁移**：
@@ -679,6 +729,42 @@ mod profile_tests {
         normalize_profiles(&mut c);
         assert_eq!(c.root_profiles.len(), 1);
         assert_eq!(c.active_profile, "X");
+    }
+
+    /// 手改配置库能塞进非法转发规则：加载时只丢坏的那一条，不连坐整条连接、
+    /// 也不阻断启动。端口冲突同理会整条 ssh 进程退出，所以只保留先出现的那条。
+    #[test]
+    fn load_sanitizes_bad_forward_rules() {
+        let good = ForwardRule {
+            id: "a".into(),
+            enabled: true,
+            listen_host: "127.0.0.1".into(),
+            listen_port: 15432,
+            target_host: "10.0.3.7".into(),
+            target_port: 5432,
+            ..Default::default()
+        };
+        let bad_host = ForwardRule {
+            id: "b".into(),
+            listen_host: "127.0.0.1 -oProxyCommand=calc".into(),
+            ..good.clone()
+        };
+        let dup_port = ForwardRule {
+            id: "c".into(),
+            ..good.clone()
+        };
+        let mut c = BridgeConfig {
+            ssh_connections: vec![SshConnection {
+                id: "conn".into(),
+                forwards: vec![good.clone(), bad_host, dup_port],
+                ..Default::default()
+            }],
+            ..BridgeConfig::default()
+        };
+        sanitize_ssh_forwards(&mut c);
+        let kept = &c.ssh_connections[0].forwards;
+        assert_eq!(kept.len(), 1, "只应留下第一条合法规则：{kept:?}");
+        assert_eq!(kept[0].id, "a");
     }
 
     /// 兼容历史的关键一条：**旧版本导出的配置文件（大量字段缺失）必须能导入**。
@@ -876,6 +962,11 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         conn,
         "ssh_connections",
         &to_value(&config.ssh_connections).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "stable_connect",
+        &to_value(&config.stable_connect).unwrap(),
     )?;
     save_config_field(
         conn,

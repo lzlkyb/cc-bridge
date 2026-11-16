@@ -8,6 +8,8 @@ import { UpdateBadge } from "./UpdateBadge";
 import { UpdateCollapsedDot } from "./UpdateCollapsedDot";
 import { SideNavSettings } from "./SideNavSettings";
 import { useTitlebarDrag } from "../../hooks/useTitlebarDrag";
+import { useCurrentConnection } from "../../hooks/useCurrentConnection";
+import { CONNECT_GUIDE_ANCHOR } from "../../lib/connectionAccess";
 
 type NavItem = { key: string; label: string; icon: IconName };
 
@@ -64,39 +66,13 @@ function SideNavImpl({
   onBackFromSettings?: () => void;
   onTerminalSidebarReady?: (node: HTMLDivElement | null) => void;
 }) {
-  // 服务状态口径与改造前的 Header 完全一致：
-  // 启动失败 / 链路中断 = 红，防火墙未放行 = 橙，已停止 = 灰，正常 = 绿。
-  // S5: 未知态（轮询间隙 / 首帧）一律按未运行显示，避免 `?? true` 制造「总在运行」的错觉。
-  const running = status?.running ?? false;
-  const startupError = status?.startupError ?? null;
-  const linkDown = !!status && running && (!!status.ipChanged || status.remoteReachable === false);
-  const firewallBlocked =
-    !!status &&
-    running &&
-    !linkDown &&
-    status.firewallEnabled === true &&
-    status.firewallPortOpen === false;
-
-  const statusTone = startupError || linkDown ? "bad" : !running ? "idle" : firewallBlocked ? "warn" : "ok";
-  const statusText = !status
-    ? "连接中"
-    : startupError
-    ? "启动失败"
-    : !running
-    ? "已停止"
-    : linkDown
-    ? "远程连接中断"
-    : firewallBlocked
-    ? "远程未确认"
-    : "本机服务运行中";
-  const statusTarget = startupError ? "settings" : linkDown || firewallBlocked ? "connect" : null;
-  const statusTitle = startupError
-    ? "服务启动失败，点击前往设置查看"
-    : linkDown
-    ? "网络地址已失效，远程连接中断，点击前往连接页"
-    : firewallBlocked
-    ? "本机服务正常，但防火墙可能拦截远程入站，点击前往连接页"
-    : statusText;
+  const access = useCurrentConnection(status);
+  const statusTone = access?.tone === "error" ? "bad" : access?.tone === "warn" ? "warn" : access?.tone === "stopped" ? "idle" : "ok";
+  const statusText = access?.short ?? "读取状态中";
+  const serviceSettings = access?.state === "service-error" || access?.state === "unsupported";
+  const statusTarget = serviceSettings ? "settings" : "connect";
+  const statusAnchor = serviceSettings ? "set-network" : CONNECT_GUIDE_ANCHOR;
+  const statusTitle = access ? `${access.title}，点击${access.action}` : statusText;
 
   // H8：品牌区也是自绘标题栏的拖拽区，同样要区分「这次点击是激活还是拖动」
   const onTitlebarMouseDown = useTitlebarDrag();
@@ -123,11 +99,12 @@ function SideNavImpl({
     tone: string;
     text: string;
     target: string | null;
+    anchor: string;
     title: string;
   } | null>(null);
   useLayoutEffect(() => {
-    if (pillShown) setHeldPill({ tone: statusTone, text: statusText, target: statusTarget, title: statusTitle });
-  }, [pillShown, statusTone, statusText, statusTarget, statusTitle]);
+    if (pillShown) setHeldPill({ tone: statusTone, text: statusText, target: statusTarget, anchor: statusAnchor, title: statusTitle });
+  }, [pillShown, statusTone, statusText, statusTarget, statusAnchor, statusTitle]);
 
   return (
     <aside className="app-side" data-collapsed={collapsed || undefined} data-mode={settingsMode ? "settings" : activeTab === "terminal" ? "terminal" : undefined}>
@@ -235,7 +212,7 @@ function SideNavImpl({
               data-tone={heldPill.tone}
               title={heldPill.title}
               data-clickable={heldPill.target ? true : undefined}
-              onClick={() => heldPill.target && onNavigate(heldPill.target)}
+              onClick={() => heldPill.target && onNavigate(heldPill.target, heldPill.anchor)}
             >
               <span className="app-side-status-dot" />
               <span className="app-side-status-text">{heldPill.text}</span>

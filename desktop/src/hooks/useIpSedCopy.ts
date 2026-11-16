@@ -1,7 +1,5 @@
-import { useCallback } from "react";
-import { invoke } from "../lib/tauri";
-import { copyText } from "../lib/utils";
-import { useToast } from "../components/ui/toast";
+import type { StaticStatus } from "../lib/types";
+import { useConnectionCopy } from "./useConnectionCopy";
 
 /**
  * 「复制 IP 替换命令」的全局入口（2026-10-17）。
@@ -19,32 +17,11 @@ import { useToast } from "../components/ui/toast";
  * 失败路径已各自 toast，调用方只需对 true 做自己的反馈（如 AddressPicker 的
  * 按钮内联「已复制」），false 时不必也不能在按钮上谎报成功。
  */
-export function useIpSedCopy(onCopied?: () => void) {
-  const { toast } = useToast();
-  return useCallback(async () => {
-    try {
-      const res = await invoke<{ cmd: string; scopeLabel: string }>("get_ip_sed_command");
-      if (!res.cmd) {
-        toast("通用 MCP 工具没有约定的配置文件，请手动把配置里的地址改成新 IP", "warning");
-        return false;
-      }
-      let copied = false;
-      await copyText(
-        res.cmd,
-        () => {
-          toast(`IP 替换命令已复制到剪贴板（${res.scopeLabel}）`, "success");
-          // 🔴 必须回传「已复制」（审查 P2）：挂起胶囊与「待处理」横幅靠这个收口。
-          // 只在 toast 里报喜的话，用户从全局横幅复制完，顶栏胶囊还挂在那儿，
-          // 界面看起来像「命令还没处理」。
-          copied = true;
-          onCopied?.();
-        },
-        (e) => toast(`复制失败：${e}`, "error"),
-      );
-      return copied;
-    } catch (e) {
-      toast(`生成替换命令失败：${String(e)}`, "error");
-      return false;
-    }
-  }, [toast, onCopied]);
+export function useIpSedCopy(onCopied?: () => void, status?: StaticStatus) {
+  const connectionCopy = useConnectionCopy(status);
+  return async () => {
+    const copied = await connectionCopy.copy("ip-update", "地址更新命令已复制，请在服务器执行后验证。");
+    if (copied) onCopied?.();
+    return copied;
+  };
 }

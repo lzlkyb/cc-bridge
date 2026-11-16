@@ -49,6 +49,10 @@ export interface StatusResponse {
     topTools: { name: string; count: number }[];
   };
   connectCommand: string;
+  /** Shared current target; historical request totals are not evidence for this target. */
+  currentAccess?: import("./connectionAccess").ConnectionAccess;
+  serviceControl?: { pending: "start" | "stop" | "restart" | null; error: string | null };
+  remoteTlsEnabled?: boolean;
   /** 连接页选定的接入工具（决定托盘/横幅的命令形态）。后端已把旧配置的 null 折算为 "claude-code"。 */
   connectClient: string;
   token: string;

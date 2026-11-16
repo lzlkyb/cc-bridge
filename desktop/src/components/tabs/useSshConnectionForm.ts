@@ -5,7 +5,8 @@ import type { SshConnection } from "../../lib/types";
 import { toast } from "../ui/toast";
 
 interface Props {
-  open: boolean; initial: SshConnection | null; onClose: () => void; onSaved: () => void;
+  open: boolean; initial: SshConnection | null; onClose: () => void;
+  onSaved: (connection: SshConnection, credentials: SshOneTimeCredentials) => void;
   onConnect?: (connection: SshConnection, credentials: SshOneTimeCredentials) => void;
 }
 // Memory only: accidental dismissal should not discard a newly entered connection.
@@ -60,7 +61,7 @@ export function useSshConnectionForm({ open, initial, onClose, onSaved, onConnec
     draft = null; busy.current = false;
     setPassword(""); setPassphrase("");
     setStatus(prev => ({ ...prev, saving: false }));
-    onSaved(); onClose();
+    onSaved(saved, credentials); onClose();
     if (connect && onConnect) onConnect(saved, credentials);
     else toast("连接配置已保存", "success");
   };

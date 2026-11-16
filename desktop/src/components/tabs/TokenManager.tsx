@@ -1,4 +1,4 @@
-import { useId, useState, useMemo, useEffect } from "react";
+import { useId, useState, useMemo, useEffect, useRef } from "react";
 import { invoke } from "../../lib/tauri";
 import type { StaticStatus } from "../../lib/types";
 import { McpScope, buildTokenSedCommand } from "../../lib/utils";
@@ -9,6 +9,8 @@ import { InlineNotice } from "../ui/notice";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { SavedHint } from "../ui/SavedHint";
+import { useCurrentConnection } from "../../hooks/useCurrentConnection";
+import { useConnectionCopy } from "../../hooks/useConnectionCopy";
 
 /**
  * 令牌操作常驻，内容默认掩码；重生成继续保留确认与远程修复命令。
@@ -17,10 +19,12 @@ export function TokenManager({
   status,
   onRefresh,
   projectPath,
+  onStableUpdate,
 }: {
   status?: StaticStatus;
   onRefresh: () => void;
   projectPath: string;
+  onStableUpdate?: () => void;
 }) {
   const [showToken, setShowToken] = useState(false);
   const [confirmingRegen, setConfirmingRegen] = useState(false);
@@ -39,7 +43,13 @@ export function TokenManager({
   const { toast } = useToast();
   // 复制反馈统一走 useCopyFeedback（评审修复 ⑤）：原先的 SavedHint 无 toast 方案收敛进来，
   // 反馈时长与其余复制点一致（2s），失败有 toast 兜底。
-  const fb = useCopyFeedback();
+  const current = useCurrentConnection(status);
+  const feedbackIdentity = JSON.stringify([current?.method, current?.connectionId, current?.scope, current?.projectPath, projectPath]);
+  const latestIdentity = useRef(feedbackIdentity);
+  latestIdentity.current = feedbackIdentity;
+  const mounted = useRef(true);
+  const connectionCopy = useConnectionCopy(status);
+  const fb = useCopyFeedback(2000, `${current?.targetKey ?? projectPath}:${status?.token ?? ""}`);
   const tokenBody = useAutoAnimateRM<HTMLDivElement>();
   const headingId = useId();
 
@@ -50,30 +60,41 @@ export function TokenManager({
   const currentToken = newToken || (status?.token ?? "");
   // 返回值只用于等待刷新；后端令牌变化后应跟随最新配置，避免一直显示旧的临时值。
   useEffect(() => { setNewToken(""); }, [status?.token]);
-  const tokenSedCommand = useMemo(
-    () => buildTokenSedCommand(oldToken, currentToken, (status?.scope ?? "user") as McpScope, projectPath),
-    [oldToken, currentToken, status?.scope, projectPath],
-  );
+  useEffect(() => {
+    mounted.current = true;
+    setRegenDone(false); setConfirmingRegen(false); setShowToken(false); setOldToken(""); setNewToken("");
+    return () => { mounted.current = false; };
+  }, [feedbackIdentity]);
+  const tokenSedCommand = useMemo(() => current && status?.currentAccess
+    ? status.token === currentToken ? current.updateCommand : ""
+    : buildTokenSedCommand(oldToken, currentToken, (current?.sourceScope ?? status?.scope ?? "user") as McpScope, current?.sourceProjectPath ?? projectPath),
+  [current, status, oldToken, currentToken, projectPath]);
+  const updateNeeded = !!current?.tokenUpdatePending || regenDone && (!status?.currentAccess || status.token !== currentToken);
 
   const handleRegenToken = async () => {
+    if (regenerating) return;
     const old = currentToken;
+    const identity = feedbackIdentity;
     // 生成中态：避免用户连点两次（第二次会把第一次的新 token 又换掉，
     // 而界面上的命令只对得上其中一次）。
     setRegenerating(true);
     try {
       const next = await invoke<string>("regenerate_token");
+      if (!mounted.current) return;
+      onRefresh();
+      // Rotation affects every access, but an old target must not receive local success feedback.
+      if (identity !== latestIdentity.current) return;
       setOldToken(old);
       setNewToken(next);
-      onRefresh();
       setConfirmingRegen(false);
       setRegenDone(true);
       setShowToken(false);
-      toast("Token 已重新生成，请复制新连接命令到远程服务器", "warning");
+      toast(onStableUpdate ? "Token 已更新，请检查并应用原隧道接入" : "Token 已更新，请在服务器执行原接入的更新命令", "warning");
     } catch (e) {
       // 失败必须可见：静默失败时用户会以为 token 已换、去远端执行一条不存在的命令。
-      toast(`Token 重生成失败：${e}`, "error");
+      if (mounted.current && identity === latestIdentity.current) toast(`Token 重生成失败：${e}`, "error");
     } finally {
-      setRegenerating(false);
+      if (mounted.current) setRegenerating(false);
     }
   };
 
@@ -109,25 +130,25 @@ export function TokenManager({
             </div>
           </div>
 
-          {regenDone && (
+          {updateNeeded && onStableUpdate && <InlineNotice variant="warning"><div className="space-y-2"><p>原接入的 Token 待同步。检查原有接入后，点击「应用接入配置」更新当前服务器。</p><Button type="button" size="sm" variant="outline" onClick={onStableUpdate}>检查并更新原接入</Button></div></InlineNotice>}
+          {updateNeeded && !onStableUpdate && (
             <InlineNotice variant="warning">
               <div className="space-y-2">
-                <p>Token 已更新。请复制下方命令到远程服务器执行，原地替换 Bearer（不重新授权）：</p>
+                <p>原接入的 Token 待同步。请在{current?.sourceScope === "user" ? "原全局接入" : "原项目接入"}位置执行更新命令，然后在 Claude Code 中查看 /mcp。</p>
                 <div className="flex flex-wrap gap-2 items-start">
-                  <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded-md bg-background border px-3 py-2 text-xs font-mono leading-relaxed">
-                    {tokenSedCommand || "加载中..."}
-                  </code>
+                  <details className="min-w-0 flex-1 connection-update-details"><summary>查看更新命令</summary><code className="block max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-background border px-3 py-2 text-xs font-mono leading-relaxed">{tokenSedCommand || "正在读取更新命令…"}</code></details>
                   <Button
                     variant="outline"
                     size="sm"
                     className="shrink-0 mt-0.5"
                     onClick={() => {
-                      if (tokenSedCommand) fb.copy("sed", tokenSedCommand);
+                      if (status?.currentAccess) void connectionCopy.copy("token-update");
+                      else if (tokenSedCommand) fb.copy("sed", tokenSedCommand);
                     }}
                     disabled={!tokenSedCommand}
                     aria-live="polite"
                   >
-                    {fb.isCopied("sed") ? <SavedHint>已复制</SavedHint> : "复制"}
+                    {connectionCopy.isCopied("token-update") || fb.isCopied("sed") ? <SavedHint>已复制</SavedHint> : "复制更新命令"}
                   </Button>
                 </div>
               </div>

@@ -63,6 +63,10 @@ pub struct TunnelStatus {
     pub last_error: Option<String>,
     #[serde(skip)]
     pending_bind: Option<String>,
+    #[serde(skip)]
+    guard_required: bool,
+    #[serde(skip)]
+    guard_ready: bool,
 }
 
 impl TunnelStatus {
@@ -84,6 +88,8 @@ impl TunnelStatus {
             was_up: false,
             last_error: None,
             pending_bind: None,
+            guard_required: false,
+            guard_ready: false,
         }
     }
 
@@ -102,11 +108,53 @@ impl TunnelStatus {
         self.was_up = false;
         self.last_error = None;
         self.pending_bind = None;
+        self.guard_ready = false;
         for r in &mut self.rules {
             r.state = RuleState::Pending;
             r.bound_port = None;
             r.message = None;
         }
+    }
+
+    pub(crate) fn require_guard(&mut self) {
+        self.guard_required = true;
+        self.guard_ready = false;
+        self.state = TunnelState::Connecting;
+    }
+
+    pub(crate) fn guard_started(&mut self) -> bool {
+        self.guard_ready = true;
+        self.last_error = None;
+        self.refresh_guard_state()
+    }
+
+    pub(crate) fn guard_is_ready(&self) -> bool {
+        !self.guard_required || self.guard_ready
+    }
+
+    fn refresh_guard_state(&mut self) -> bool {
+        if !self.guard_required {
+            return false;
+        }
+        // A successful login cannot promise recovery before both the listener and its lease exist.
+        let next = if self.was_up
+            && self.guard_ready
+            && !self.rules.is_empty()
+            && self
+                .rules
+                .iter()
+                .all(|rule| rule.state == RuleState::Listening)
+        {
+            TunnelState::Up
+        } else {
+            TunnelState::Connecting
+        };
+        let changed = self.state != next;
+        self.state = next;
+        if next == TunnelState::Up {
+            self.message = None;
+        }
+        changed
     }
 
     /// 喂一行已去掉 ANSI 的 ssh 输出，返回对外可见的状态是否变了。
@@ -117,6 +165,9 @@ impl TunnelStatus {
         }
         if line.starts_with("Authenticated to ") || line.contains("Authentication succeeded") {
             self.was_up = true;
+            if self.guard_required {
+                return self.refresh_guard_state();
+            }
             if self.state == TunnelState::Up {
                 return false;
             }
@@ -187,14 +238,16 @@ impl TunnelStatus {
                 && r.rule.listen_port == port
                 && (port != 0 || r.state == RuleState::Pending)
         });
-        match hit {
+        let changed = match hit {
             Some(r) if r.state != state || r.message != message => {
                 r.state = state;
                 r.message = message;
                 true
             }
             _ => false,
-        }
+        };
+        let ready_changed = self.refresh_guard_state();
+        changed || ready_changed
     }
 
     fn mark_allocated(&mut self, port: u16, target: &str) -> bool {

@@ -1,49 +1,40 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
-import type { ForwardAuto, ForwardKind, ForwardRule, SshConnection } from "../../lib/types";
+import type { ForwardAuto, ForwardRule, SshConnection, SshConnectionList } from "../../lib/types";
 
-/** 目标地址留空：输入框的提示会说明 127.0.0.1 指哪台机器，预填反而把提示盖掉。 */
-export const newForwardRule = (kind: ForwardKind): ForwardRule => ({
-  id: crypto.randomUUID(),
-  enabled: true,
-  kind,
-  listenHost: "127.0.0.1",
-  listenPort: 0,
-  targetHost: "",
-  targetPort: 0,
-  note: "",
-});
-
-/**
- * 转发规则草稿：表格里的改动只是草稿，点「保存」才写进连接配置，
- * 「保存并应用」才会重启转发进程。
- *
- * 草稿只在挂载时取一次：调用方按 `key={conn.id}` 换连接就重挂。保存后列表重拉给出的
- * 新对象内容就是刚存的草稿，不需要同步回来。
- */
+/** Editors keep their unsaved fields locally; this hook tracks only persisted connection settings. */
 export function useForwardDraft(conn: SshConnection) {
   const queryClient = useQueryClient();
   const [rules, setRules] = useState<ForwardRule[]>(conn.forwards ?? []);
   const [auto, setAuto] = useState<ForwardAuto>(conn.forwardAuto ?? "ask");
   const [saving, setSaving] = useState(false);
 
-  const dirty = auto !== (conn.forwardAuto ?? "ask") || JSON.stringify(rules) !== JSON.stringify(conn.forwards ?? []);
-
-  const update = (id: string, patch: Partial<ForwardRule>) =>
-    setRules((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  const add = (kind: ForwardKind) => setRules((rs) => [...rs, newForwardRule(kind)]);
-  const remove = (id: string) => setRules((rs) => rs.filter((r) => r.id !== id));
+  useEffect(() => { setRules(conn.forwards ?? []); setAuto(conn.forwardAuto ?? "ask"); }, [conn.id, conn.forwards, conn.forwardAuto]);
 
   /** 保存失败已 toast，返回 false。 */
-  const save = async (): Promise<boolean> => {
+  const save = async (change: { rule?: ForwardRule; existing?: boolean; removeId?: string; auto?: ForwardAuto }): Promise<boolean> => {
     setSaving(true);
     try {
-      // password/passphrase 给 null：后端保留已存的密文，不会把记住的密码冲掉。
+      // Update only the requested field on the latest record; another dialog may have changed the login or other rules.
+      const list = await invoke<SshConnectionList>("ssh_list_connections");
+      const current = list.connections.find(connection => connection.id === conn.id);
+      if (!current) throw new Error("服务器连接已被移除，请重新选择。");
+      let forwards = current.forwards ?? [];
+      if (change.rule) {
+        const exists = forwards.some(rule => rule.id === change.rule!.id);
+        if (change.existing && !exists) throw new Error("这条转发已被删除，请重新添加。");
+        forwards = exists ? forwards.map(rule => rule.id === change.rule!.id ? change.rule! : rule) : [...forwards, change.rule];
+      }
+      if (change.removeId) forwards = forwards.filter(rule => rule.id !== change.removeId);
+      const updated = { ...current, forwards, forwardAuto: change.auto ?? current.forwardAuto ?? "ask" };
+      // Null credentials retain the saved ciphertext; changing forwarding never writes the one-time password.
       await invoke("ssh_save_connection", {
-        args: { connection: { ...conn, forwards: rules, forwardAuto: auto }, password: null, passphrase: null },
+        args: { connection: updated, password: null, passphrase: null },
       });
+      setRules(forwards); setAuto(updated.forwardAuto);
+      queryClient.setQueryData<SshConnectionList>(["sshConnections"], { ...list, connections: list.connections.map(connection => connection.id === conn.id ? updated : connection) });
       await queryClient.invalidateQueries({ queryKey: ["sshConnections"] });
       return true;
     } catch (e) {
@@ -54,5 +45,5 @@ export function useForwardDraft(conn: SshConnection) {
     }
   };
 
-  return { rules, auto, setAuto, dirty, saving, update, add, remove, save };
+  return { rules, auto, saving, save };
 }

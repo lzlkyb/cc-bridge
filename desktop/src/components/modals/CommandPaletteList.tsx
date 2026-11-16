@@ -9,6 +9,7 @@ export interface CommandItem {
   icon: IconName;
   group: string;
   shortcut?: string;
+  disabled?: boolean;
   tab?: string;
   /** 跳转后要定位+高亮的锚点（Header 安全徽章同一套 `highlightAnchor` 机制）。 */
   anchor?: string;
@@ -100,7 +101,7 @@ export function CommandPaletteList({
             <button
               onClick={() => onSelect(item)}
               onMouseEnter={() => onHover(i)}
-              disabled={isBusy}
+              disabled={isBusy || item.disabled}
               style={{ animationDelay: `${Math.min(i, 12) * 10}ms` }}
               className={`flex w-full items-center gap-3 px-4 py-2.5 text-sm transition-colors disabled:opacity-60 pal-it ${
                 i === selectedIndex ? "sel bg-accent text-accent-foreground" : "text-foreground hover:bg-muted/60"

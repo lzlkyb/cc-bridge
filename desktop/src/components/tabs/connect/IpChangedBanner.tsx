@@ -45,6 +45,8 @@ export function IpChangedBanner({
   onDismiss,
   suspended = false,
   onSuspend,
+  commandOverride,
+  onCopyCommand,
 }: {
   lanIps: string[];
   selectedIp: string;
@@ -74,12 +76,14 @@ export function IpChangedBanner({
    *  所以挂起不会与「轮询 ipChanged」打架；App 层在 sedResolved/selectIp/dismiss/
    *  ipChanged 重新变 true 时清除。 */
   onSuspend?: (payload: { ip: string; cmd: string }) => void;
+  commandOverride?: string;
+  onCopyCommand?: () => boolean | Promise<boolean>;
 }) {
   // 复制反馈统一走 useCopyFeedback（评审修复 ⑤，原 copiedCmd 字符串比对 + 1.5s 特例时长
   // 收敛进来，统一 2s）。「已处理」是业务状态而非反馈：复制成功即永久置位（banner 可能
   // 还要等下一轮轮询才消失），由 onCopied 回调承担——与 2s 自动回滚的内联反馈解耦。
-  const fb = useCopyFeedback();
-  const [resolved, setResolved] = useState(false);
+  const fb = useCopyFeedback(2000, commandOverride ?? `${selectedIp}:${scope}:${projectPath}:${token}`);
+  const [resolvedCommand, setResolvedCommand] = useState("");
 
   // 已挂起到顶栏胶囊：细条整体收起（内容区零占用，见设计稿决策表「归零后零占用」）。
   if (suspended) return null;
@@ -137,7 +141,8 @@ export function IpChangedBanner({
           : scope === "user"
             ? "全局（~/.claude.json）"
             : "项目（.mcp.json）";
-  const cmd = buildSed(scope);
+  const cmd = commandOverride ?? buildSed(scope);
+  const resolved = !!cmd && resolvedCommand === cmd;
 
   // 仅当用户已在下方 AddressPicker 选中一个当前在网卡列表中的「新」地址时，
   // 才允许生成/复制 sed（把远程配置里的旧 IP 替换为选中的新 IP）。
@@ -148,11 +153,15 @@ export function IpChangedBanner({
 
   // H6 修复（语义保留）：只在真正复制成功后才调 onResolved/onSedResolved 收口，用户其实
   // 没拿到更新命令时 banner 不消失。
-  const copyOne = () => {
+  const copyOne = async () => {
     if (!canCopy) return;
+    if (onCopyCommand) {
+      if (await onCopyCommand()) { setResolvedCommand(cmd); onResolved(selectedIp); onSedResolved(); }
+      return;
+    }
     fb.copy("sed", cmd, {
       onCopied: () => {
-        setResolved(true);
+        setResolvedCommand(cmd);
         onResolved(selectedIp);
         onSedResolved(); // 收口——复制远程更新命令后允许 banner 自然消失
       },
@@ -172,7 +181,7 @@ export function IpChangedBanner({
       pill="待处理"
       summary={
         newIpValid
-          ? `${previousIp ?? "原地址"} → ${selectedIp} · 复制即可原地修复`
+          ? `${previousIp ?? "原地址"} → ${selectedIp} · 在服务器执行更新命令`
           : `${previousIp ?? "原地址"} 已失效 · 在下方选中新地址后可复制修复命令`
       }
       autoCollapseSec={60}
@@ -186,8 +195,8 @@ export function IpChangedBanner({
       <div className="space-y-3">
         <p className="text-xs leading-relaxed text-muted-foreground">
           之前使用的 <code className="rounded bg-background px-1 text-foreground">{previousIp}</code>{" "}
-          已不在本机网卡列表中（大概率是网络重新连接后分配了新地址）。复制以下命令到远程服务器执行即可
-          <b className="text-foreground">原地更新 IP，无需重新授权</b>；也可在下方「选择远程服务器能连回本机的地址」中换选其他地址。
+          与当前接入地址不同。复制以下命令到原接入位置执行，
+          <b className="text-foreground">更新地址，无需重新添加 MCP</b>。执行后在 Claude Code 中查看 /mcp 验证；也可在下方换选其他地址。
         </p>
         {client === "generic" ? (
           // selectedIp 可能为 null（用户还没在下方选新地址）——此时不渲染地址，避免「https://:7823」空 host。
@@ -211,7 +220,7 @@ export function IpChangedBanner({
         ) : newIpValid ? (
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-foreground/80">{cmdLabel}</p>
-            <CommandBlock command={cmd} copied={fb.isCopied("sed")} onCopy={copyOne} />
+            <CommandBlock command={cmd} copied={resolved || fb.isCopied("sed")} onCopy={copyOne} />
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">

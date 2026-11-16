@@ -94,6 +94,10 @@ const TOOL_LABELS: Record<string, string> = {
   get_command_output: "拉取命令输出",
   wait_command: "等待命令结束",
   stop_command: "终止命令",
+  // 本地事件（非 MCP 工具）：端口转发的启停会进同一份 audit.log，
+  // 不在此登记的话日志页会直接显示内部名 `ssh_tunnel_start`。
+  ssh_tunnel_start: "开启端口转发",
+  ssh_tunnel_stop: "停止端口转发",
 };
 
 export function toolLabel(tool: string): string {
@@ -121,10 +125,12 @@ export function shortDateKey(date: string): string {
 
 /* ─── 连接页命令拼接（纯函数，ConnectTab 与 TokenManager 共用，规则 11）─── */
 
-/** 展示用主机地址：监听全网卡(0.0.0.0)时取用户选中的 IP，否则用配置的 host。 */
+/** Match the backend's address resolver; a vanished interface falls back to the first candidate. */
 export function buildDisplayHost(status: StaticStatus | undefined, selectedIp: string): string {
-  const listenAll = status?.host === "0.0.0.0";
-  return listenAll ? selectedIp || "127.0.0.1" : status?.host ?? "";
+  if (!status) return "";
+  const ips = status.lanIps;
+  if (status.host === "0.0.0.0") return selectedIp && (!ips || ips.includes(selectedIp)) ? selectedIp : ips?.[0] ?? "127.0.0.1";
+  return isLoopbackHost(status.host) || !ips || ips.includes(status.host) ? status.host : ips[0] ?? status.host;
 }
 
 /**
@@ -322,7 +328,7 @@ export function buildTokenSedCommand(
 }
 
 /** cc-bridge 除命令执行三元组外的 17 个文件/列表/图片/直传类工具，用于权限授权命令默认不包含命令执行能力。 */
-const NON_SHELL_TOOLS = [
+export const NON_SHELL_TOOLS = [
   "list_allowed_roots",
   "list_directory",
   "read_files",

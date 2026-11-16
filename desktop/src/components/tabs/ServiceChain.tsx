@@ -26,6 +26,9 @@ const SEG_NAV: Record<ChainSegment["key"], { tab: string; anchor?: string; title
   service: { tab: "settings", anchor: "set-network", title: "去设置查看监听端口与传输协议" },
   firewall: { tab: "settings", anchor: "set-firewall", title: "去设置查看防火墙规则" },
   remote: { tab: "log", title: "去日志页看远程调用明细" },
+  tunnel: { tab: "connect", anchor: "connect-guide", title: "查看当前隧道与接入配置" },
+  address: { tab: "connect", anchor: "connect-guide", title: "查看直连地址与入站检查" },
+  verification: { tab: "connect", anchor: "connect-guide", title: "在当前服务器验证 Claude Code 接入" },
 };
 
 export function ServiceChain({
@@ -142,7 +145,7 @@ function ChainNode({
         </span>
       ) : (
         <span data-tone={tone} className="chain-node-face relative grid h-full w-full place-items-center rounded-full bg-white/25 text-[13px] font-extrabold text-white">
-          {tone === "unknown" ? "?" : "–"}
+          {tone === "pending" ? <Icon name="spinner" size={14} className="animate-spin"/> : tone === "unknown" ? "?" : "–"}
         </span>
       )}
     </span>

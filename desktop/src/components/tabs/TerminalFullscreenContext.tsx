@@ -1,7 +1,5 @@
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "../../lib/tauri";
-import { cleanErr } from "../../lib/utils";
 import { applyAppearance, getAppearance } from "../../lib/appearance";
 import { toggleTheme } from "../../lib/theme";
 import { headerSecurityBadges } from "../../lib/headerSecurityBadges";
@@ -12,7 +10,9 @@ import { SecurityBadgeGroup } from "../layout/SecurityBadgeGroup";
 import { MenuItem } from "../ui/Menu";
 import { Modal } from "../ui/Modal";
 import { Button } from "../ui/button";
-import { toast } from "../ui/toast";
+import { useServiceControl } from "../../hooks/useServiceControl";
+import { useCurrentConnection } from "../../hooks/useCurrentConnection";
+import { CurrentConnectionStatus } from "../layout/CurrentConnectionStatus";
 import { TerminalGlobalSearch } from "./TerminalGlobalSearch";
 
 interface Actions {
@@ -32,20 +32,17 @@ export function TerminalFullscreenProvider({children, fullscreen, status, sessio
   const active = useViewActive();
   const [searchOpen, setSearchOpen] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
-  const badges = useMemo(() => headerSecurityBadges(status), [status]);
+  const service = useServiceControl(status, onChanged);
+  const { busy } = service;
+  const current = useCurrentConnection(status);
+  const badges = useMemo(() => headerSecurityBadges(status, false, current), [status, current]);
   useEffect(() => { if (!active || !fullscreen) { setSearchOpen(false); setConfirmStop(false); } }, [active, fullscreen]);
   const changeServer = async (action: "start" | "stop") => {
-    if (busyRef.current) return;
-    busyRef.current = true; setBusy(true);
     // The confirmation names an explicit action; a status poll must never reverse it.
-    try { await invoke(action === "stop" ? "stop_mcp_server" : "start_mcp_server"); setConfirmStop(false); onChanged?.(); }
-    catch (error) { toast(`服务操作失败：${cleanErr(error)}`, "error"); }
-    finally { busyRef.current = false; setBusy(false); }
+    if (await service.run(action)) setConfirmStop(false);
   };
   const actions: Actions = {
-    safety: <SecurityBadgeGroup compact badges={badges} onNavigate={(tab, anchor) => { onExit(); onNavigate?.(tab, anchor); }}/>,
+    safety: <><CurrentConnectionStatus status={status} onNavigate={(tab, anchor) => { onExit(); onNavigate?.(tab, anchor); }}/><SecurityBadgeGroup compact badges={badges} onNavigate={(tab, anchor) => { onExit(); onNavigate?.(tab, anchor); }}/></>,
     terminalItems: close => <>
       <MenuItem label="搜索全部会话" icon="search" onClick={() => { close(); setSearchOpen(true); }}/>
       {onToggleSplit && <MenuItem label="切换分屏" icon="monitor" hint="Ctrl+Shift+D" onClick={() => { close(); onToggleSplit(); }}/>}
@@ -55,16 +52,16 @@ export function TerminalFullscreenProvider({children, fullscreen, status, sessio
       <div className="px-2.5 pb-1 pt-2 text-xs text-muted-foreground">应用</div>
       <MenuItem label="切换应用明暗" icon="moon" onClick={() => { toggleTheme(); close(); }}/>
       <MenuItem label="切换柔光 / 经典风格" icon="palette" onClick={() => { applyAppearance(getAppearance() === "glass" ? "classic" : "glass"); close(); }}/>
-      {status && <MenuItem label={status.running ? "停止桥接服务…" : "启动桥接服务"} icon={status.running ? "pause" : "play"} disabled={busy} onClick={() => { close(); if (status.running) setConfirmStop(true); else void changeServer("start"); }}/>}
+      {status && <MenuItem label={busy ? "本机服务处理中…" : status.running ? "停止本机服务…" : "启动本机服务"} icon={status.running ? "pause" : "play"} disabled={busy} onClick={() => { close(); if (status.running) setConfirmStop(true); else void changeServer("start"); }}/>}
     </>,
   };
   return <Context.Provider value={actions}>
     {children}
     {fullscreen && active && searchOpen && createPortal(<div className="fixed inset-0 z-[60]"><TerminalGlobalSearch sessions={sessions} onActivate={onActivate} onClose={() => setSearchOpen(false)}/></div>, document.body)}
-    <Modal open={fullscreen && confirmStop} onClose={() => { if (!busy) setConfirmStop(false); }} ariaLabel="停止桥接服务" className="w-full max-w-sm rounded-xl modal-surface p-5">
-      <h3 className="text-base font-semibold">停止桥接服务？</h3>
+    <Modal open={fullscreen && confirmStop} onClose={() => { if (!busy) setConfirmStop(false); }} ariaLabel="停止本机服务" className="w-full max-w-sm rounded-xl modal-surface p-5">
+      <h3 className="text-base font-semibold">停止本机服务？</h3>
       <p className="my-3 text-sm leading-relaxed text-muted-foreground">远程 AI 工具将暂时无法访问本机桥接服务，SSH 终端会话保持连接。</p>
-      <div className="flex justify-end gap-2"><Button variant="outline" disabled={busy} onClick={() => setConfirmStop(false)}>取消</Button><Button disabled={busy} isLoading={busy} onClick={() => void changeServer("stop")}>停止服务</Button></div>
+      <div className="flex justify-end gap-2"><Button variant="outline" disabled={busy} onClick={() => setConfirmStop(false)}>取消</Button><Button disabled={busy} isLoading={busy} onClick={() => void changeServer("stop")}>停止本机服务</Button></div>
     </Modal>
   </Context.Provider>;
 }

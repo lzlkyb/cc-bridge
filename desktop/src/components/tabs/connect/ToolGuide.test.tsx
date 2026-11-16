@@ -29,3 +29,15 @@ it.each<McpClientTool>(["claude-code", "workbuddy", "codex", "generic"])("%s 下
   expect(host.querySelector('[data-testid="common"]')).not.toBeNull();
   expect(!!host.querySelector('[data-testid="claude-only"]')).toBe(tool === "claude-code");
 });
+
+it("稳定连接可隐藏卡头多设备开关，其他接入流程保留原操作", async () => {
+  const toggle = vi.fn();
+  const render = (hide: boolean) => act(async () => root.render(<ToastProvider><ToolGuide host="10.0.7.191" port={7823} token="t" transport="http" hideMultiDeviceToggle={hide} onToggleMultiDevice={toggle}><div>接入内容</div></ToolGuide></ToastProvider>));
+  await render(false);
+  const control = host.querySelector<HTMLButtonElement>('[aria-label="多设备接入模式"]')!;
+  expect(control).not.toBeNull();
+  await act(async () => control.click()); expect(toggle).toHaveBeenCalledWith(true);
+  await render(true);
+  expect(host.querySelector('[aria-label="多设备接入模式"]')).toBeNull();
+  expect(host.textContent).toContain("接入内容");
+});

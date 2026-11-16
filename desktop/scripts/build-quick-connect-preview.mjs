@@ -1,0 +1,15 @@
+import { build } from "vite";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+const desktop = fileURLToPath(new URL("../", import.meta.url));
+const result = await build({ root:desktop, configFile:path.join(desktop,"quick-connect-preview.config.ts"), build:{ write:false } });
+const output = (Array.isArray(result) ? result[0] : result).output;
+const icon = `data:image/png;base64,${(await readFile(path.join(desktop,"public/icon.png"))).toString("base64")}`;
+const js = output.find(x => x.type === "chunk" && x.isEntry).code.replaceAll("/icon.png",icon).replaceAll("</script","<\\/script");
+const css = output.filter(x => x.type === "asset" && x.fileName.endsWith(".css")).map(x => x.source).join("\n");
+const target = path.resolve(desktop,process.argv[2] || "../design/2026-11-14-one-click-connect/preview.html");
+const previewQuery = (process.argv[3] || "").replaceAll("&","&amp;").replaceAll('"',"&quot;").replaceAll("<","&lt;");
+await mkdir(path.dirname(target),{recursive:true});
+await writeFile(target,`<!doctype html><html lang="zh-CN" data-preview-query="${previewQuery}"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CC Bridge · 一键接入交互设计稿</title><link rel="icon" href="${icon}"><style>${css}</style></head><body><div id="root"></div><script type="module">${js}</script></body></html>`);
+console.log(target);

@@ -25,9 +25,11 @@ import {
 export function FirewallAlertBlock({
   port,
   onRefresh,
+  healthCheck,
 }: {
   port: number;
   onRefresh: () => void;
+  healthCheck?: string;
 }) {
   const { toast } = useToast();
   const { data, refetch } = useFirewallDiagnosis();
@@ -37,7 +39,7 @@ export function FirewallAlertBlock({
   const issues = diag ? blockingIssues(diag.issues) : [];
   if (!diag || issues.length === 0) return null;
 
-  const healthCmd = `curl http://<本机IP>:${port}/health`;
+  const healthCmd = healthCheck ?? "";
   const copyCmd = (cmd: string, label: string) => {
     if (!cmd) return;
     void copyText(
@@ -74,7 +76,7 @@ export function FirewallAlertBlock({
 
       <div className="space-y-1.5 pl-[38px]">
         <p className="text-xs text-muted-foreground">
-          在远程服务器上验证连通（返回 {"{"}"status":"ok"{"}"} 即可用该 IP）：
+          在服务器检查服务能否访问（返回 {"{"}"status":"ok"{"}"} 表示服务响应，Claude Code 接入仍需验证）：
         </p>
         <CommandBlock command={healthCmd} copied={false} onCopy={() => copyCmd(healthCmd, "命令")} />
       </div>

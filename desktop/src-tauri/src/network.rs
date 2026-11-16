@@ -89,7 +89,7 @@ pub fn validate_listen_host(raw: &str) -> Result<String, String> {
 /// 是否指回环地址（`127.0.0.0/8`、`::1`、`localhost`，含 IPv6 方括号写法）。
 ///
 /// 不能靠 `lan_ips.contains` 判断：`get_lan_ips` 本身就排除回环。
-fn is_loopback_host(host: &str) -> bool {
+pub(crate) fn is_loopback_host(host: &str) -> bool {
     let h = host.trim().trim_start_matches('[').trim_end_matches(']');
     if h.eq_ignore_ascii_case("localhost") {
         return true;
@@ -170,10 +170,7 @@ pub fn build_connect_command(t: ConnectTarget<'_>) -> String {
                     }
                 }
             });
-            format!(
-                "// 写入 ~/.workbuddy/mcp.json（保存后重启 WorkBuddy）\n{}",
-                serde_json::to_string_pretty(&snippet).unwrap_or_default()
-            )
+            serde_json::to_string_pretty(&snippet).unwrap_or_default()
         }
         "codex" => {
             let entry = entry_name(if t.multi_device { t.device_id } else { "" });
@@ -220,6 +217,17 @@ pub fn escape_double_quoted(s: &str) -> String {
         }
     }
     out
+}
+
+/// Match the page's directory quoting, including expansion of a leading home shorthand.
+pub fn quote_remote_path(path: &str) -> String {
+    if path == "~" {
+        "\"$HOME\"".into()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        format!("\"$HOME/{}\"", escape_double_quoted(rest))
+    } else {
+        format!("\"{}\"", escape_double_quoted(path))
+    }
 }
 
 /// 可移植的原地编辑：`sed -i.bak EXPR FILE && rm -f FILE.bak`。
@@ -388,7 +396,11 @@ pub struct IpUpdateTarget<'a> {
 
 pub fn ip_update_command(t: IpUpdateTarget<'_>) -> (String, String) {
     let lan_ips = get_lan_ips();
-    let display_host = resolve_display_host(t.host, &lan_ips, t.last_selected_ip);
+    ip_update_command_for(t, &lan_ips)
+}
+
+pub fn ip_update_command_for(t: IpUpdateTarget<'_>, lan_ips: &[String]) -> (String, String) {
+    let display_host = resolve_display_host(t.host, lan_ips, t.last_selected_ip);
     if t.multi_device && !t.device_id.is_empty() {
         match t.client {
             "claude-code" => {

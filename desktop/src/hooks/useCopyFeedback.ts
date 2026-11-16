@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { copyText } from "../lib/utils";
 import { useToast } from "../components/ui/toast";
 
@@ -18,23 +18,33 @@ import { useToast } from "../components/ui/toast";
  *
  * 单实例可服务多个复制按钮：`copy(key, text)` 以 key 区分，`isCopied(key)` 查询。
  */
-export function useCopyFeedback(timeoutMs = 2000) {
+export function useCopyFeedback(timeoutMs = 2000, identity = "") {
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const timerRef = useRef<number | null>(null);
   const { toast } = useToast();
+  const currentIdentity = useRef(identity);
+  currentIdentity.current = identity;
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => {
+    setCopiedKey(null);
+    return () => { if (timerRef.current != null) window.clearTimeout(timerRef.current); };
+  }, [identity]);
 
   const copy = (key: string, text: string, opts?: { onCopied?: () => void }) => {
     if (!text) return;
+    const target = identity;
     void copyText(
       text,
       () => {
+        if (!alive.current || target !== currentIdentity.current) return;
         setCopiedKey(key);
         // 连续复制不同目标时重置回滚计时，避免先复制的先到期把后复制的反馈一并清掉。
         if (timerRef.current != null) window.clearTimeout(timerRef.current);
         timerRef.current = window.setTimeout(() => setCopiedKey(null), timeoutMs);
         opts?.onCopied?.();
       },
-      (e) => toast(`复制失败：${e}`, "error"),
+      (e) => { if (alive.current && target === currentIdentity.current) toast(`复制失败：${e}`, "error"); },
     );
   };
 

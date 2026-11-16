@@ -19,6 +19,7 @@ export function TerminalFilePanelHost({
   activeId,
   connections,
   onConnect,
+  onNavigate,
 }: {
   conn: SshConnection | null;
   initialPath?: string;
@@ -26,6 +27,7 @@ export function TerminalFilePanelHost({
   sessions: SshSessionRef[];
   activeId: string | null;
   connections: SshConnection[];
+  onNavigate?: (tab: string, anchor?: string) => void;
   onConnect: (
     conn: SshConnection,
     opts?: { newTab?: boolean; intoTab?: string; forSplit?: boolean },
@@ -57,7 +59,7 @@ export function TerminalFilePanelHost({
         />
       )}
       {forwardConn && (
-        <TerminalForwardPanel key={forwardConn.id} conn={forwardConn} onBack={() => setForwardPanelConnId(null)} />
+        <TerminalForwardPanel key={forwardConn.id} conn={forwardConn} onBack={() => setForwardPanelConnId(null)} onNavigate={onNavigate}/>
       )}
       <ForwardOnConnectPrompt />
     </>

@@ -57,7 +57,7 @@ export default tseslint.config(
   },
   {
     // 脚本是 Node 环境，跑在构建/钩子里，不受浏览器规则约束。
-    files: ["scripts/**/*.mjs", "*.config.{ts,mjs,js}"],
+    files: ["scripts/**/*.{mjs,cjs}", "*.config.{ts,mjs,js}"],
     languageOptions: {
       globals: {
         process: "readonly",
@@ -67,5 +67,10 @@ export default tseslint.config(
         __dirname: "readonly",
       },
     },
+  },
+  {
+    files: ["scripts/**/*.cjs"],
+    languageOptions: { sourceType: "commonjs", globals: { require: "readonly" } },
+    rules: { "@typescript-eslint/no-require-imports": "off" },
   },
 );

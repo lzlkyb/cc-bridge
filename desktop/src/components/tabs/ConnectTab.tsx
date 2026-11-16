@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { StaticStatus } from "../../lib/types";
 import { Icon } from "../ui/icon";
 import { useConnectGuideState } from "../../hooks/useConnectGuideState";
@@ -14,6 +14,14 @@ import { Button } from "../ui/button";
 import { isLoopbackHost } from "../../lib/utils";
 import { invokeOrToast } from "../../lib/tauri";
 import type { McpClientTool } from "../../lib/mcpClients";
+import { useStableConnect } from "../../hooks/useStableConnect";
+import { ConnectionMethodToggle, StableConnectionMethod } from "./connect/StableConnectionMethod";
+import { useStableAccess } from "../../hooks/useStableAccess";
+import { StableAccessGuide } from "./connect/StableAccessGuide";
+import { useCurrentConnection } from "../../hooks/useCurrentConnection";
+import { useConnectGuideAnchor } from "../../hooks/useConnectGuideAnchor";
+import { CurrentAccessAddress } from "./connect/CurrentAccessAddress";
+import { CONNECT_GUIDE_ANCHOR, connectionAddressHost } from "../../lib/connectionAccess";
 
 function ConnectTabImpl({
   status,
@@ -28,6 +36,7 @@ function ConnectTabImpl({
   pendingSuspended,
   onSuspendCmd,
   onCopySed,
+  highlightAnchor,
 }: {
   status?: StaticStatus;
   onRefresh: () => void;
@@ -59,17 +68,29 @@ function ConnectTabImpl({
    *  透传到 AddressPicker 的「复制命令」按钮——不依赖 IP 变化横幅也能直接复制。
    *  返回 true = 已写入剪贴板（供按钮内联「已复制」反馈）。 */
   onCopySed?: () => boolean | Promise<boolean>;
+  highlightAnchor?: { anchor: string; nonce: number } | null;
 }) {
   const lanIps = status?.lanIps ?? [];
 
   // ⑤ 结构收敛：向导的 scope/路径/展开态/命令拼接/复制反馈全部下沉
   // useConnectGuideState（含 ① P0 的 has_onboarded 初始展开），本组件不再透传 18 个 props。
-  const guide = useConnectGuideState(status, selectedIp);
+  // Keep the direct flow's saved defaults; stable setup owns its own scope and directory draft.
+  const [tool, setTool] = useState<McpClientTool>((status?.connectClient as McpClientTool) ?? "claude-code");
+  useEffect(() => { setTool((status?.connectClient as McpClientTool) ?? "claude-code"); }, [status?.connectClient]);
+  const stable = useStableConnect(status);
+  const stableMode = tool === "claude-code" && stable.method === "stable";
+  const guide = useConnectGuideState(status, selectedIp, status?.hasOnboarded === false ? "user" : "project", !stableMode);
+  const currentAccess = useCurrentConnection(status);
+  const guideRef = useConnectGuideAnchor(highlightAnchor);
+  const stableAccess = useStableAccess(stable, status, stableMode, guide.tlsEnabled);
+  const toggleMultiDevice = (next: boolean) => {
+    void invokeOrToast("save_config", { patch: { multiDeviceMode: next } }).then(result => { if (result) onRefresh(); });
+  };
 
-  // 链路是否真正中断（红态）：服务在跑，但地址变了或探针不通（远程连不回本机）。
+  // Local address checks only; they do not prove a remote client can connect.
   // 防火墙告警块在链路未中断时才显示——红态优先于橙态，避免叠加制造混乱（设计稿规则）。
   const linkDown =
-    !!status && !!status.running && (status.ipChanged || status.remoteReachable === false);
+    !!status && !!status.running && (currentAccess?.state === "ip-changed" || status.ipChanged || status.remoteReachable === false);
 
   // 地址变化 banner 显示期间，固化「之前使用的地址」，避免选新地址落盘后
   // lastSelectedIp 变成新地址、把"之前使用"误显示为刚选的新地址（残留 bug 修复）。
@@ -92,7 +113,7 @@ function ConnectTabImpl({
   const loopbackOnly = !!status && isLoopbackHost(status.host);
 
   useEffect(() => {
-    if (!listenAll || lanIps.length === 0) return;
+    if (stableMode || !listenAll || lanIps.length === 0) return;
     // 场景 1：后端从没记录过选中 IP → 默认选第一个（首次接入）。
     // 注意：不能用本地 selectedIp 判断「从未选过」——它每次冷启动都会重置为 ""，
     // 会导致每次启动都把后端 last_selected_ip 覆盖成 lan_ips[0]（物理网卡 IP，永不
@@ -113,7 +134,7 @@ function ConnectTabImpl({
       // 由 status.ipChanged 驱动，不依赖这个标记。）
       onSelectIp(lanIps[0], false);
     }
-  }, [listenAll, lanIps.join(","), selectedIp, status?.lastSelectedIp]);
+  }, [stableMode, listenAll, lanIps.join(","), selectedIp, status?.lastSelectedIp, onSelectIp]);
 
   return (
     <div className="space-y-3 connect-tab">
@@ -122,13 +143,13 @@ function ConnectTabImpl({
           Block 规则」这三种常见情形下会假绿，导致用户只能去关整个防火墙。仍保留 linkDown 互斥。 */}
       {/* 仅 Windows：macOS 防火墙按应用授权、默认不拦本机监听端口的入站连接，
           netsh 诊断整套在那里没有对应物。 */}
-      {status?.running && !linkDown && isWindows(status.platform) && (
-        <FirewallAlertBlock port={status.port} onRefresh={onRefresh} />
+      {!stableMode && status?.running && !linkDown && isWindows(status.platform) && (
+        <FirewallAlertBlock port={status.port} healthCheck={guide.healthCheck} onRefresh={onRefresh} />
       )}
 
       {/* 防火墙探测不可用（netsh 异常）：温和提示，不弹系统错误框。
           与上方橙色告警互斥——netsh 损坏时 firewallEnabled/portOpen 均为 null，橙色块不会渲染。 */}
-      {isWindows(status?.platform) && status?.firewallAvailable === false && (
+      {!stableMode && isWindows(status?.platform) && status?.firewallAvailable === false && (
         <div className="animate-fade-in space-y-2 rounded-lg border border-border bg-secondary/40 p-4">
           <div className="flex items-start gap-2.5">
             <div className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
@@ -144,16 +165,17 @@ function ConnectTabImpl({
         </div>
       )}
 
-      {/* IP 变化醒目提示：上次确认的 IP 不在本机网卡列表中了（VPN 重连等），引导用户选新地址。
-          方案 Q：ipChanged 被乐观清除后，靠 ipResolvedByUser 兜底保持可见，直到用户复制远程更新命令。 */}
-      {(status?.ipChanged || ipResolvedByUser) && !dismissed && (
+      {/* 原直连地址与当前候选不一致时保留更新入口；复制不代表远端已应用。 */}
+      {!stableMode && (currentAccess?.state === "ip-changed" || status?.ipChanged || ipResolvedByUser) && !dismissed && (
         <IpChangedBanner
           lanIps={lanIps}
           selectedIp={selectedIp}
-          previousIp={prevIpRef.current}
+          previousIp={connectionAddressHost(currentAccess?.previousAddress) ?? prevIpRef.current}
           port={status?.port ?? 7823}
-          scope={guide.scope}
-          projectPath={guide.projectPath}
+          scope={currentAccess?.sourceScope === "user" ? "user" : "project"}
+          projectPath={currentAccess?.sourceProjectPath ?? guide.projectPath}
+          commandOverride={currentAccess?.updateCommand}
+          onCopyCommand={onCopySed}
           tls={guide.tlsEnabled}
           client={(status?.connectClient as McpClientTool | undefined) ?? "claude-code"}
           transport={status?.transport === "sse" ? "sse" : "http"}
@@ -178,25 +200,27 @@ function ConnectTabImpl({
         onChanged={onRefresh}
         onNavigate={onNavigate}
         guide={
+          <div ref={guideRef} id={CONNECT_GUIDE_ANCHOR} tabIndex={-1} className="connection-guide-anchor">
           <ToolGuide
-            host={guide.displayHost}
-            port={guide.port}
+            status={status}
+            host={stableMode ? "127.0.0.1" : guide.displayHost}
+            port={stableMode ? stable.record?.port ?? guide.port : guide.port}
             token={guide.token}
             transport={status?.transport === "sse" ? "sse" : "http"}
-            tlsEnabled={guide.tlsEnabled}
+            tlsEnabled={!stableMode && guide.tlsEnabled}
             defaultTool={(status?.connectClient as McpClientTool | undefined) ?? "claude-code"}
+            selectedTool={tool}
+            disabled={stable.busy}
+            hideMultiDeviceToggle={stableMode}
             multiDevice={!!status?.multiDeviceMode}
             deviceId={status?.deviceId ?? ""}
             deviceName={status?.deviceName ?? ""}
-            onToggleMultiDevice={(next) => {
-              // 🔴 save_config 形参名为 patch，必须包进 { patch: {...} }，平铺静默不落盘。
-              // 失败必须可见（invokeOrToast），成功才刷新 status（横幅/托盘/片段随之换形态）。
-              void invokeOrToast("save_config", { patch: { multiDeviceMode: next } }).then((r) => {
-                if (r) onRefresh();
-              });
-            }}
+            onToggleMultiDevice={toggleMultiDevice}
             common={
-              <>
+              <div className={stableMode ? "stable-connection-region" : "space-y-4"}>
+                {tool === "claude-code" && <ConnectionMethodToggle state={stable}/>}
+                {stableMode ? <StableConnectionMethod state={stable} status={status} onNavigate={onNavigate} picking={stableAccess.picking} hideRepair/> : <>
+                {stable.error && <InlineNotice variant="warning">{stable.error}<Button variant="ghost" size="sm" onClick={stable.retry}>重新读取</Button></InlineNotice>}
                 {loopbackOnly && (
                   <InlineNotice variant="warning">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -216,9 +240,11 @@ function ConnectTabImpl({
                   <AddressPicker ips={lanIps} selected={selectedIp} onSelect={onSelectIp}
                     healthCheck={guide.healthCheck} port={guide.port} onRefresh={onRefresh} onCopySed={onCopySed} />
                 )}
-              </>
+                </>}
+              </div>
             }
             onToolChange={(t) => {
+              setTool(t);
               // 必须落盘：托盘「复制命令 / 复制 IP」与 IpChangedBanner 都按这个值出内容。
               // 只存在组件本地 state 时，界面选了 Codex、托盘仍会复制一条 claude mcp add。
               // 失败必须可见（审查 U1）：裸 invoke 失败只留一条 unhandled rejection，
@@ -232,8 +258,10 @@ function ConnectTabImpl({
               });
             }}
           >
-            <ConnectGuide status={status} guide={guide} onRefresh={onRefresh} />
+            <CurrentAccessAddress status={status}/>
+            {stableMode ? <StableAccessGuide state={stable} access={stableAccess} status={status} onRefresh={onRefresh} tlsEnabled={guide.tlsEnabled}/> : <ConnectGuide status={status} guide={guide} onRefresh={onRefresh}/>}
           </ToolGuide>
+          </div>
         }
       />
     </div>

@@ -7,14 +7,18 @@ import { useConnectGuideState } from "../../../hooks/useConnectGuideState";
 import { ToastProvider } from "../../ui/toast";
 import type { StaticStatus } from "../../../lib/types";
 
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), save: vi.fn(), copy: vi.fn(), requests: 0 }));
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), save: vi.fn(), copy: vi.fn(), invalidate: vi.fn(), requests: 0 }));
 vi.mock("../../../lib/tauri", () => ({ invoke: mocks.invoke, invokeOrToast: mocks.save }));
+vi.mock("../../../lib/utils", async importOriginal => ({
+  ...await importOriginal<typeof import("../../../lib/utils")>(),
+  copyText: async (text: string, copied?: () => void) => { mocks.copy("connect", text); copied?.(); },
+}));
 vi.mock("../../../hooks/useCopyFeedback", () => ({ useCopyFeedback: () => ({
   copy: (key: string, command: string, options?: { onCopied?: () => void }) => { mocks.copy(key, command); options?.onCopied?.(); },
   isCopied: () => false,
 }) }));
 vi.mock("../../../hooks/useAutoAnimateRM", () => ({ useAutoAnimateRM: () => ({ current: null }) }));
-vi.mock("@tanstack/react-query", () => ({ useQuery: ({ queryKey, select }: { queryKey: string[]; select?: (s: unknown) => unknown }) => ({
+vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({ invalidateQueries: mocks.invalidate }), useQuery: ({ queryKey, select }: { queryKey: string[]; select?: (s: unknown) => unknown }) => ({
   data: queryKey[0] === "tls-status" ? { enabled: false } : select?.({ stats: { totalRequests: mocks.requests } }),
 }) }));
 const base = { running: true, host: "0.0.0.0", port: 7823, token: "token-old", scope: "project", projectPath: "", transport: "http", connectClient: "claude-code", multiDeviceMode: false, hasOnboarded: true } as StaticStatus;
@@ -26,13 +30,29 @@ function Harness({ status = base }: { status?: StaticStatus }) {
 }
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  mocks.invoke.mockReset().mockResolvedValue("token-new"); mocks.save.mockReset().mockResolvedValue(true); mocks.copy.mockReset(); mocks.requests = 0;
+  mocks.invoke.mockReset().mockImplementation(async (command: string) => command === "get_connection_copy"
+    ? { text: host.querySelector(".connect-main-code")?.textContent, targetKey: "copy-target" }
+    : command === "regenerate_token" ? "token-new" : undefined);
+  mocks.save.mockReset().mockResolvedValue(true); mocks.copy.mockReset(); mocks.invalidate.mockReset(); mocks.requests = 0;
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const button = (text: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find(e => e.textContent === text)!;
 const click = (text: string) => act(async () => button(text).click());
 const mount = (status = base) => act(async () => root.render(<Harness status={status} />));
+
+it("IP 直连沿用首次全局默认，已有项目范围仍优先于默认值", async () => {
+  function FreshHarness({ status }: { status: StaticStatus }) {
+    const guide = useConnectGuideState(status, "10.0.7.185", "user");
+    return <ToastProvider><ConnectGuide status={status} guide={guide} onRefresh={() => {}} /></ToastProvider>;
+  }
+  await act(async () => root.render(<FreshHarness status={{ ...base, hasOnboarded: false, scope: null }} />));
+  expect(host.querySelector(".connect-path")).toBeNull();
+  expect(host.querySelector(".connect-main-code")!.textContent).toContain("--scope user");
+  await act(async () => root.render(<FreshHarness status={{ ...base, projectPath: "/saved/project" }} />));
+  expect(host.querySelector<HTMLInputElement>(".connect-path input")!.value).toBe("/saved/project");
+  expect(host.querySelector(".connect-main-code")!.textContent).toContain("--scope project");
+});
 
 it.each([true, false])("已接入状态为 %s 时四块主要操作均常驻", async hasOnboarded => {
   await mount({ ...base, hasOnboarded });
@@ -99,23 +119,23 @@ it("多设备采用实际全局范围，不显示项目路径，授权与复制�
   expect(host.querySelector(".connect-main-code")!.textContent).toContain("-s user");
   await click("复制授权命令"); expect(mocks.copy.mock.calls[mocks.copy.mock.calls.length - 1][1]).toContain("~/.claude/settings.json");
   await click("复制连接命令");
-  expect(mocks.save).toHaveBeenCalledWith("save_config", { patch: { scope: "user", projectPath: "/project", hasOnboarded: true } });
+  expect(mocks.invoke).toHaveBeenCalledWith("save_config", { patch: { scope: "user", projectPath: "/project" } });
+  expect(mocks.invoke).toHaveBeenCalledWith("connection_command_copied", { targetKey: "copy-target" });
 });
-it("复制不宣称接入成功，首次真实调用到达后才显示成功提示", async () => {
+it("复制和本机累计请求都不能证明当前客户端已经接入", async () => {
   await mount(); await click("复制连接命令");
   expect(host.textContent).not.toContain("已收到首次调用");
   mocks.requests = 1; await mount();
-  expect(host.textContent).toContain("已收到首次调用，配置生效");
+  expect(host.textContent).not.toContain("已收到首次调用，配置生效");
+  expect(host.textContent).toContain("Claude Code");
 });
 it("多设备的延迟自动保存不会把全局范围写回项目级", async () => {
   vi.useFakeTimers();
   await mount({ ...base, multiDeviceMode: true, projectPath: "/project", deviceId: "device1" });
   await click("复制连接命令");
   await act(async () => { await vi.advanceTimersByTimeAsync(300); });
-  expect(mocks.save.mock.calls).toEqual([
-    ["save_config", { patch: { scope: "user", projectPath: "/project", hasOnboarded: true } }],
-    ["save_config", { patch: { scope: "user", projectPath: "/project" } }],
-  ]);
+  expect(mocks.save.mock.calls).toEqual([["save_config", { patch: { scope: "user", projectPath: "/project" } }]]);
+  expect(mocks.invoke).toHaveBeenCalledWith("save_config", { patch: { scope: "user", projectPath: "/project" } });
   for (const call of mocks.save.mock.calls) expect(call[1].patch.scope).toBe("user");
 });
 it("重生成失败时保留原令牌且允许重试", async () => {

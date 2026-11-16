@@ -1,4 +1,5 @@
-//! 端口转发（`ssh -L / -R / -D`）：每条连接一个常驻 `ssh -N -v` 进程。
+//! 端口转发（`ssh -L / -R / -D`）：每条连接一个常驻 SSH 进程。
+//! Claude Code 托管隧道在同一条连接内运行心跳与失联回收程序。
 //!
 //! 跑在 PTY 里是为了复用终端那套凭据自动填充（密码 / 口令 / 跳板机两段登录）。
 //! 状态从 `-v` 输出解析（`crate::ssh_tunnel`），经 `ssh_tunnel_status` 事件推给前端。
@@ -12,23 +13,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, PtySize};
+use portable_pty::ChildKiller;
 use tauri::{AppHandle, Emitter, State};
 
 use super::ssh_cmds::{
     find_ssh, load_link_parts, passphrase_prompt_in, password_prompt_in, prompt_tail,
     resolve_connect_secrets, ssh_base_args, strip_ansi, SshLink, CREDENTIAL_FILL_WINDOW,
 };
-use crate::config::ForwardAuto;
+use super::ssh_tunnel_process::{self as process, GuardRun, Output};
+use crate::config::{ForwardAuto, ForwardKind, ForwardRule};
 use crate::ssh_proxy::PendingCreds;
 use crate::ssh_tunnel::{forward_args, is_fatal, TunnelState, TunnelStatus};
-use crate::state::{AppState, SshTunnel};
+use crate::ssh_tunnel_guard::{reclaim_command, ManagedGuard, ReclaimResult};
+use crate::state::{AppState, SshTunnel, SshTunnelRestart};
 
 const STATUS_EVENT: &str = "ssh_tunnel_status";
 const RETRY_MIN: Duration = Duration::from_secs(2);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 
-type Killer = Box<dyn ChildKiller + Send + Sync>;
+pub(super) type Killer = Box<dyn ChildKiller + Send + Sync>;
 type SharedStatus = Arc<StdMutex<TunnelStatus>>;
 
 /// 一条转发重连时不变的部分。
@@ -40,6 +43,7 @@ struct Plan {
     /// 启动时临时输入的密码 / 口令：要留到停止为止，否则断线后没法自动重连。
     password: Option<String>,
     passphrase: Option<String>,
+    guard: Option<Arc<ManagedGuard>>,
 }
 
 /// 开启（或按最新配置重启）一条连接的端口转发。
@@ -54,14 +58,32 @@ pub async fn ssh_tunnel_start(
     if !state.config.read().await.ssh_enabled {
         return Err("SSH 终端未启用，请先在设置中开启".into());
     }
-    start_tunnel(
+    match start_tunnel(
         app,
         state.inner().clone(),
-        connection_id,
+        connection_id.clone(),
         password,
         passphrase,
     )
     .await
+    {
+        Ok(st) => {
+            audit_tunnel(&state, "ssh_tunnel_start", &connection_id, st.state, None).await;
+            Ok(st)
+        }
+        // 失败也要记：用户看到的是「点了没反应」，日志里得留下到底哪一步不认。
+        Err(e) => {
+            audit_tunnel(
+                &state,
+                "ssh_tunnel_start",
+                &connection_id,
+                TunnelState::Error,
+                Some(e.clone()),
+            )
+            .await;
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -70,9 +92,104 @@ pub async fn ssh_tunnel_stop(
     app: AppHandle,
     connection_id: String,
 ) -> Result<(), String> {
+    let _start_guard = state.ssh_tunnel_start_lock.lock().await;
     stop_and_wait(state.inner(), &connection_id).await;
+    audit_tunnel(
+        &state,
+        "ssh_tunnel_stop",
+        &connection_id,
+        TunnelState::Stopped,
+        None,
+    )
+    .await;
     let _ = app.emit(STATUS_EVENT, TunnelStatus::stopped(connection_id));
     Ok(())
+}
+
+/// 端口转发的审计。
+///
+/// 与终端、`ssh_reveal_credential` 那条「本机操作不进审计」的边界不同：转发是一条
+/// **长期驻留的网络通道**，事后必须能回答「什么时候开的、从哪到哪、谁关的」。
+///
+/// 只记**用户主动**的启停（命令层）：autostart 与 stable_connect 的拉起会随监管
+/// 线程的退避重连反复发生，逐次记会在日志里刷屏、把真正要看的东西埋掉。
+/// 因此 `start` / `stop` **不保证成对**——读日志时按事件看，不要按会话配对。
+///
+/// `state` 一并记进参数：命令返回时只是「监管线程已接管」，此时通常还是 `connecting`，
+/// 记录里带上真实状态，才不会读成「已经连上了」。关闭审计开关时不写。
+async fn audit_tunnel(
+    state: &Arc<AppState>,
+    tool: &str,
+    connection_id: &str,
+    tunnel_state: TunnelState,
+    err: Option<String>,
+) {
+    let (enabled, name, rules) = {
+        let config = state.config.read().await;
+        let found = config
+            .ssh_connections
+            .iter()
+            .find(|c| c.id == connection_id);
+        (
+            config.audit_enabled,
+            found.map(|c| c.name.clone()).unwrap_or_default(),
+            found
+                .map(|c| {
+                    c.forwards
+                        .iter()
+                        .filter(|r| r.enabled)
+                        .map(describe_rule)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        )
+    };
+    if !enabled {
+        return;
+    }
+    let params = serde_json::json!({
+        "connectionId": connection_id,
+        "name": name,
+        "rules": rules,
+        "state": tunnel_state_label(tunnel_state),
+    })
+    .to_string();
+    let entry = crate::audit::new_entry(
+        tool,
+        &params,
+        err.is_none(),
+        err,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let _ = crate::audit::write_audit_log(&state.data_dir, &entry);
+}
+
+/// 与前端 `TunnelState` 的序列化名同口径（`serde(rename_all = "lowercase")`）。
+fn tunnel_state_label(s: TunnelState) -> &'static str {
+    match s {
+        TunnelState::Connecting => "connecting",
+        TunnelState::Up => "up",
+        TunnelState::Reconnecting => "reconnecting",
+        TunnelState::Error => "error",
+        TunnelState::Stopped => "stopped",
+    }
+}
+
+/// 规则的一行人话，与抽屉里显示的形态一致：`本机 127.0.0.1:15432 → 10.0.3.7:5432`。
+fn describe_rule(r: &ForwardRule) -> String {
+    let listen = format!("{}:{}", r.listen_host, r.listen_port);
+    match r.kind {
+        ForwardKind::Local => format!("本机 {listen} → {}:{}", r.target_host, r.target_port),
+        ForwardKind::Remote => format!("远端 {listen} → {}:{}", r.target_host, r.target_port),
+        ForwardKind::Dynamic => format!("本机 {listen} → SOCKS5"),
+    }
 }
 
 /// 前端首次进入终端工作区时拉一次全量，之后靠事件增量更新。
@@ -114,32 +231,177 @@ async fn start_tunnel(
     password: Option<String>,
     passphrase: Option<String>,
 ) -> Result<TunnelStatus, String> {
+    let _start_guard = state.ssh_tunnel_start_lock.lock().await;
+    let config = state.config.read().await.clone();
+    if !config.ssh_enabled {
+        return Err("SSH 终端未启用，请先在设置中开启".into());
+    }
     let (conn, jump) = load_link_parts(&state, &id).await?;
-    let rules: Vec<_> = conn
-        .forwards
+    let context = super::forward_context_cmds::context_for(&config, &state, &conn, &conn.forwards);
+    if let Some(conflict) = context.conflicts.first() {
+        return Err(conflict.message.clone());
+    }
+    let rules: Vec<_> = context
+        .manual_rules
         .iter()
         .filter(|r| r.enabled)
         .cloned()
         .collect();
     if rules.is_empty() {
+        if !context.managed_rule_ids.is_empty() {
+            stop_and_wait(&state, &id).await;
+            let mut status = TunnelStatus::stopped(id);
+            status.message = Some("Claude Code 隧道由接入卡管理，无需额外开启转发。".into());
+            let _ = app.emit(STATUS_EVENT, status.clone());
+            return Ok(status);
+        }
         return Err("这条连接还没有启用的转发规则".into());
     }
-    let ssh = find_ssh().ok_or("未检测到系统 OpenSSH 客户端，无法开启端口转发")?;
     let link = SshLink::new(conn, jump)?;
-    let mut args = ssh_base_args(&link, "-p");
-    args.extend(["-N".into(), "-v".into()]);
-    args.extend(forward_args(&rules));
-    args.push(format!("{}@{}", link.conn.username, link.conn.host));
+    start_plan(app, state.clone(), id, link, rules, password, passphrase).await
+}
+
+/// Isolated runtime key: managing stable Claude access never stops the user's other forwarding rules.
+pub(super) async fn start_owned_tunnel(
+    app: AppHandle,
+    state: Arc<AppState>,
+    link: SshLink,
+    rules: Vec<ForwardRule>,
+    credentials: (Option<String>, Option<String>),
+    takeover: &mut super::forward_takeover::Takeover,
+    configuring: bool,
+) -> Result<(), String> {
+    let _start_guard = state.ssh_tunnel_start_lock.lock().await;
+    let config = state.config.read().await.clone();
+    if !config.ssh_enabled {
+        return Err("SSH 终端未启用，请先在设置中开启".into());
+    }
+    let operation = state.stable_operations.get(&link.conn.id);
+    let active = operation
+        .as_ref()
+        .is_some_and(|op| op.active.load(Ordering::SeqCst));
+    if active && !configuring {
+        return Err("这台服务器正在配置接入。".into());
+    }
+    if active
+        && operation
+            .as_ref()
+            .is_some_and(|op| op.cancel.load(Ordering::SeqCst))
+    {
+        return Err("操作已取消".into());
+    }
+    if !active
+        && config
+            .stable_connect
+            .connections
+            .iter()
+            .any(|s| s.connection_id == link.conn.id && !s.enabled)
+    {
+        return Err("隧道连接已暂停，请从接入卡恢复。".into());
+    }
+    drop(operation);
+    if !SshLink::from_config(&config, &link.conn.id)?.same_login(&link) {
+        return Err("服务器登录配置已变化，请重新接入。".into());
+    }
+    let runtime_id = crate::stable_connect::runtime_id(&link.conn.id);
+    if owned_tunnel_is_ready(&state, &runtime_id, &link, &rules) {
+        return Ok(());
+    }
+    find_ssh().ok_or("未检测到系统 OpenSSH 客户端，无法开启端口转发")?;
+    let original = super::forward_takeover::RunningForward::capture(&state, &runtime_id)?;
+    super::forward_takeover::prepare_owned(&app, &state, &config, &link, &rules, takeover).await?;
+    start_plan(
+        app,
+        state.clone(),
+        runtime_id.clone(),
+        link,
+        rules,
+        credentials.0,
+        credentials.1,
+    )
+    .await?;
+    takeover.record(&state, runtime_id, original);
+    Ok(())
+}
+
+pub(super) fn owned_tunnel_is_ready(
+    state: &AppState,
+    id: &str,
+    link: &SshLink,
+    rules: &[ForwardRule],
+) -> bool {
+    let Some(tunnel) = state.ssh_tunnels.get(id) else {
+        return false;
+    };
+    let status = tunnel.status.lock().unwrap_or_else(|p| p.into_inner());
+    !tunnel.stop.load(Ordering::SeqCst)
+        && status.state == TunnelState::Up
+        && status.rules.len() == rules.len()
+        && status.rules.iter().zip(rules).all(|(entry, rule)| {
+            entry.state == crate::ssh_tunnel::RuleState::Listening
+                && crate::forward_ownership::same_route(&entry.rule, rule)
+        })
+        && tunnel.restart.as_ref().is_some_and(|restart| {
+            SshLink::new(restart.connection.clone(), restart.jump.clone())
+                .is_ok_and(|original| original.same_login(link))
+        })
+}
+
+pub(super) async fn start_plan(
+    app: AppHandle,
+    state: Arc<AppState>,
+    id: String,
+    link: SshLink,
+    rules: Vec<ForwardRule>,
+    password: Option<String>,
+    passphrase: Option<String>,
+) -> Result<TunnelStatus, String> {
+    let ssh = find_ssh().ok_or("未检测到系统 OpenSSH 客户端，无法开启端口转发")?;
+    let managed = id == crate::stable_connect::runtime_id(&link.conn.id);
+    if managed
+        && (rules.len() != 1 || rules[0].kind != ForwardKind::Remote || rules[0].listen_port == 0)
+    {
+        return Err("托管隧道需要一个固定的远端监听端口。".into());
+    }
+    let args = tunnel_args(&link, &id, &rules);
 
     // 重启时必须等旧进程真正退出：它还占着本地端口，新进程会 bind 失败。
     stop_and_wait(&state, &id).await;
 
-    let status = TunnelStatus::new(id.clone(), &rules);
+    let guard = managed.then(|| {
+        let route = link
+            .jump
+            .as_ref()
+            .map(|jump| (&jump.host, jump.port, &jump.username));
+        let scope = serde_json::to_vec(&(
+            &id,
+            &link.conn.host,
+            link.conn.port,
+            &link.conn.username,
+            route,
+        ))
+        .unwrap();
+        Arc::new(ManagedGuard::new(
+            &state.data_dir,
+            &scope,
+            rules[0].listen_port,
+        ))
+    });
+    let mut status = TunnelStatus::new(id.clone(), &rules);
+    if managed {
+        status.require_guard();
+    }
     let tunnel = SshTunnel {
         stop: Arc::new(AtomicBool::new(false)),
         status: Arc::new(StdMutex::new(status.clone())),
         killer: Arc::new(StdMutex::new(None)),
         thread: StdMutex::new(None),
+        restart: Some(Arc::new(SshTunnelRestart {
+            connection: link.conn.clone(),
+            jump: link.jump.clone(),
+            password: password.clone(),
+            passphrase: passphrase.clone(),
+        })),
     };
     let plan = Plan {
         link,
@@ -148,6 +410,7 @@ async fn start_tunnel(
         data_dir: state.data_dir.clone(),
         password: password.filter(|v| !v.is_empty()),
         passphrase: passphrase.filter(|v| !v.is_empty()),
+        guard,
     };
     let (stop, shared, killer, app2) = (
         tunnel.stop.clone(),
@@ -183,7 +446,31 @@ async fn start_tunnel(
     Ok(snapshot)
 }
 
-async fn stop_and_wait(state: &Arc<AppState>, id: &str) {
+pub(super) fn tunnel_args(link: &SshLink, id: &str, rules: &[ForwardRule]) -> Vec<String> {
+    let mut args = ssh_base_args(link, "-p");
+    // A managed tunnel has one required listener: exit and retry while an old VPN peer releases it.
+    // Manual mixed rules keep their successful listeners when another rule fails.
+    if id == crate::stable_connect::runtime_id(&link.conn.id) {
+        for argument in &mut args {
+            if argument.starts_with("ServerAliveInterval=") {
+                // OpenSSH uses the first value; appending a second -o would leave the old 30s interval active.
+                *argument = "ServerAliveInterval=10".into();
+            }
+        }
+        // Windows OpenSSH needs terminal mode to forward submitted heartbeat frames promptly.
+        args.extend(["-tt".into(), "-v".into()]);
+        args.extend(["-o".into(), "ExitOnForwardFailure=yes".into()]);
+        // A stalled VPN handshake must finish before the 30s credential fill window expires.
+        args.extend(["-o".into(), "ConnectTimeout=10".into()]);
+    } else {
+        args.extend(["-N".into(), "-v".into()]);
+    }
+    args.extend(forward_args(rules));
+    args.push(format!("{}@{}", link.conn.username, link.conn.host));
+    args
+}
+
+pub(super) async fn stop_and_wait(state: &Arc<AppState>, id: &str) {
     let Some(old) = state.halt_ssh_tunnel(id) else {
         return;
     };
@@ -209,6 +496,12 @@ fn publish(
         s.clone()
     };
     if !stop.load(Ordering::SeqCst) {
+        if let Some(id) = snap.connection_id.strip_prefix("stable:") {
+            let _ = app.emit(
+                "stable_connect_changed",
+                serde_json::json!({"connectionId":id}),
+            );
+        }
         let _ = app.emit(STATUS_EVENT, snap);
     }
 }
@@ -228,20 +521,34 @@ fn supervise(
         }
         let (was_up, last) = {
             let s = status.lock().unwrap_or_else(|p| p.into_inner());
-            (s.was_up, s.last_error.clone())
+            (connected_for_retry(&s), retry_error(&s))
         };
         let needs_secret = matches!(fatal, Some(Fatal::NeedsSecret(_)));
         // 判定必须在取出 reason 之前做：`fatal` 在下面被 move 掉。
         let stop_here = give_up(fatal.as_ref());
         let reason = match fatal {
-            Some(Fatal::NeedsSecret(r) | Fatal::Interactive(r) | Fatal::Other(r)) => r,
+            Some(
+                Fatal::NeedsSecret(r)
+                | Fatal::Interactive(r)
+                | Fatal::Other(r)
+                | Fatal::GuardUnavailable(r),
+            ) => r,
             None => last.unwrap_or_else(|| "SSH 进程已退出".into()),
         };
+        if status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .connection_id
+            .starts_with("stable:")
+        {
+            log::warn!("托管隧道本次未连通：{reason}");
+        }
         if stop_here || is_fatal(&reason) {
             publish(app, stop, status, |s| {
                 s.state = TunnelState::Error;
+                // SSH may report a rejected credential only when exiting, without another prompt.
+                s.needs_secret = needs_secret || reason.contains("Permission denied");
                 s.message = Some(reason);
-                s.needs_secret = needs_secret;
                 true
             });
             return;
@@ -265,7 +572,37 @@ fn supervise(
     }
 }
 
-enum Fatal {
+fn connected_for_retry(status: &TunnelStatus) -> bool {
+    // Authentication without the required forward must not reset backoff on every failed bind.
+    status.was_up
+        && (!status.connection_id.starts_with("stable:")
+            || (status.guard_is_ready()
+                && status
+                    .rules
+                    .iter()
+                    .all(|r| r.state == crate::ssh_tunnel::RuleState::Listening)))
+}
+
+fn retry_error(status: &TunnelStatus) -> Option<String> {
+    if status.connection_id.starts_with("stable:") {
+        if let Some(message) = status
+            .rules
+            .iter()
+            .find(|r| r.state == crate::ssh_tunnel::RuleState::Failed)
+            .and_then(|r| r.message.clone())
+        {
+            return Some(message);
+        }
+        // A previously rendered login prompt is not SSH's reason for exiting.
+        return status.last_error.clone().filter(|line| {
+            !password_prompt_in(line.as_bytes()) && !passphrase_prompt_in(line.as_bytes())
+        });
+    }
+    status.last_error.clone()
+}
+
+#[derive(Clone)]
+pub(super) enum Fatal {
     NeedsSecret(String),
     /// 后台转发**没有人能手输**：2FA 验证码、密码过期强制改密一类。重试只会一次次
     /// 拿同样的输出撞服务器，除了喂 fail2ban 没有任何意义，所以必须停住。
@@ -273,12 +610,16 @@ enum Fatal {
     Interactive(String),
     /// 环境性失败，可以重连。
     Other(String),
+    GuardUnavailable(String),
 }
 
 /// 这一轮结束后还要不要重连。`reason` 里的关键词另由 `is_fatal` 兜（`Permission denied`
 /// 这类是 ssh 自己退出时报的，不经过 `Fatal`）。
 fn give_up(fatal: Option<&Fatal>) -> bool {
-    matches!(fatal, Some(Fatal::NeedsSecret(_) | Fatal::Interactive(_)))
+    matches!(
+        fatal,
+        Some(Fatal::NeedsSecret(_) | Fatal::Interactive(_) | Fatal::GuardUnavailable(_))
+    )
 }
 
 /// 跑一轮 ssh 进程直到它退出。返回不该重试的失败原因；普通退出的原因在 `status.last_error`。
@@ -289,6 +630,9 @@ fn run_once(
     status: &SharedStatus,
     killer: &StdMutex<Option<Killer>>,
 ) -> Option<Fatal> {
+    if stop.load(Ordering::SeqCst) {
+        return None;
+    }
     publish(app, stop, status, |s| {
         s.begin_attempt();
         true
@@ -302,69 +646,117 @@ fn run_once(
         Ok(c) => c,
         Err(e) => return Some(Fatal::Other(e)),
     };
-    // 宽屏：日志行不被 ConPTY 折行，解析按整行来。
-    let pair = match native_pty_system().openpty(PtySize {
-        rows: 24,
-        cols: 400,
-        pixel_width: 0,
-        pixel_height: 0,
-    }) {
-        Ok(p) => p,
-        Err(e) => return Some(Fatal::Other(format!("打开 PTY 失败：{e}"))),
-    };
-    let mut cmd = CommandBuilder::new(&plan.ssh);
-    cmd.args(&plan.args);
-    let mut child = match pair.slave.spawn_command(cmd) {
-        Ok(c) => c,
-        Err(e) => return Some(Fatal::Other(format!("启动 ssh 失败：{e}"))),
-    };
-    drop(pair.slave);
-    let io = pair
-        .master
-        .try_clone_reader()
-        .and_then(|r| Ok((r, pair.master.take_writer()?)));
-    let (reader, writer) = match io {
-        Ok(rw) => rw,
-        Err(e) => {
-            let _ = child.kill();
-            return Some(Fatal::Other(format!("获取 PTY 读写端失败：{e}")));
+    if let Some(guard) = &plan.guard {
+        if let Err(failure) =
+            reclaim_previous(guard, &plan.link, &plan.ssh, creds.clone(), stop, killer)
+        {
+            return Some(failure);
         }
-    };
-    *killer.lock().unwrap_or_else(|p| p.into_inner()) = Some(child.clone_killer());
-
-    let read_thread = {
-        let (app, stop, status) = (app.clone(), stop.clone(), status.clone());
-        let own_killer = child.clone_killer();
-        std::thread::spawn(move || {
-            read_loop(reader, writer, creds, own_killer, &app, &stop, &status)
-        })
-    };
-
-    loop {
-        if !matches!(child.try_wait(), Ok(None)) {
-            break;
-        }
-        if stop.load(Ordering::SeqCst) {
-            let _ = child.kill();
-        }
-        std::thread::sleep(Duration::from_millis(200));
     }
-    *killer.lock().unwrap_or_else(|p| p.into_inner()) = None;
-    // 与 `spawn_capture` 同一个 Windows 坑：conhost 要等 master 关掉才退，否则 reader 永远等不到 EOF。
-    // 留一小段时间让最后几行（往往就是失败原因）冲进管道。
-    std::thread::sleep(Duration::from_millis(200));
-    drop(pair.master);
-    read_thread.join().unwrap_or(None)
+    if stop.load(Ordering::SeqCst) {
+        return None;
+    }
+    let mut args = plan.args.clone();
+    let guard_run = plan.guard.as_ref().map(|guard| {
+        let attempt = guard.attempt();
+        args.push(attempt.command());
+        Arc::new(GuardRun::serve(guard.clone(), attempt, stop.clone()))
+    });
+    let (app, stop_for_output, status) = (app.clone(), stop.clone(), status.clone());
+    process::run(
+        &plan.ssh,
+        &args,
+        creds,
+        stop,
+        killer,
+        guard_run,
+        move |output| {
+            publish(&app, &stop_for_output, &status, |state| match output {
+                Output::SshLine(line) => state.apply_line(line),
+                Output::GuardReady => state.guard_started(),
+            });
+        },
+    )
 }
 
-fn read_loop(
+pub(super) fn reclaim_previous(
+    guard: &ManagedGuard,
+    link: &SshLink,
+    ssh: &PathBuf,
+    creds: PendingCreds,
+    stop: &Arc<AtomicBool>,
+    killer: &StdMutex<Option<Killer>>,
+) -> Result<(), Fatal> {
+    let Some(receipt) = guard.previous() else {
+        return Ok(());
+    };
+    let (command, nonce) = reclaim_command(&receipt);
+    let mut args = tunnel_args(link, &crate::stable_connect::runtime_id(&link.conn.id), &[]);
+    args.push(command);
+    let control = Arc::new(GuardRun::reclaim(nonce, stop.clone()));
+    let last_error = Arc::new(StdMutex::new(None::<String>));
+    let captured = last_error.clone();
+    let fatal = process::run(
+        ssh,
+        &args,
+        creds,
+        stop,
+        killer,
+        Some(control.clone()),
+        move |output| {
+            if let Output::SshLine(line) = output {
+                capture_reclaim_error(line, &captured);
+            }
+        },
+    );
+    if stop.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+    if let Some(failure) = fatal {
+        return Err(failure);
+    }
+    match control.reply() {
+        Some(ReclaimResult::Released | ReclaimResult::Gone) => {
+            if control.reply() == Some(ReclaimResult::Released) {
+                log::info!(
+                    "托管隧道旧会话已回收：端口 {}，PID {}",
+                    receipt.port,
+                    receipt.pid
+                );
+            }
+            guard.forget(&receipt).map_err(Fatal::Other)
+        }
+        Some(ReclaimResult::Unverified) => Err(Fatal::Other(
+            "旧隧道身份未能核验，正在等待原端口释放。".into(),
+        )),
+        None => Err(Fatal::Other(
+            last_error
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .unwrap_or_else(|| "暂时无法确认旧隧道已释放，请等待自动重连。".into()),
+        )),
+    }
+}
+
+fn capture_reclaim_error(line: &str, captured: &StdMutex<Option<String>>) {
+    let line = line.trim();
+    if !line.is_empty()
+        && !line.starts_with("debug")
+        && !line.starts_with("OpenSSH")
+        && !password_prompt_in(line.as_bytes())
+        && !passphrase_prompt_in(line.as_bytes())
+    {
+        *captured.lock().unwrap_or_else(|p| p.into_inner()) = Some(line.into());
+    }
+}
+
+pub(super) fn read_loop(
     mut reader: Box<dyn Read + Send>,
     mut writer: Box<dyn Write + Send>,
     mut creds: PendingCreds,
     mut killer: Killer,
-    app: &AppHandle,
-    stop: &AtomicBool,
-    status: &SharedStatus,
+    mut emit_line: impl FnMut(&str),
 ) -> Option<Fatal> {
     let mut dec = crate::utf8_stream::Utf8Stream::new();
     let mut line = String::new();
@@ -388,32 +780,68 @@ fn read_loop(
                 continue;
             }
             let clean = strip_ansi(&line);
-            publish(app, stop, status, |s| s.apply_line(&clean));
+            emit_line(&clean);
+            // ConPTY can append a newline to a login prompt in the same read: handle it before
+            // discarding the line, using the same guard as a prompt split across multiple reads.
+            reply_to_prompt(
+                &clean,
+                &mut creds,
+                writer.as_mut(),
+                killer.as_mut(),
+                &mut prompt_done,
+                &mut fatal,
+            );
             line.clear();
             prompt_done = false;
         }
-        if prompt_done || fatal.is_some() {
-            continue;
-        }
-        if let Some(answer) = prompt_answer(&strip_ansi(&line), &mut creds) {
-            prompt_done = true;
-            match answer {
-                Ok(secret) => {
-                    let _ = writer.write_all(secret.as_bytes());
-                    let _ = writer.write_all(b"\n");
-                    let _ = writer.flush();
-                }
-                Err(f) => {
-                    fatal = Some(f);
-                    let _ = killer.kill();
-                }
-            }
-        }
+        reply_to_prompt(
+            &strip_ansi(&line),
+            &mut creds,
+            writer.as_mut(),
+            killer.as_mut(),
+            &mut prompt_done,
+            &mut fatal,
+        );
+    }
+    line.push_str(&dec.flush());
+    let clean = strip_ansi(&line);
+    // ConPTY can close without rendering the last newline; retain SSH's actual exit error.
+    if !clean.trim().is_empty() {
+        emit_line(&clean);
     }
     fatal
 }
 
-/// 未换行的尾行若是登录提示，给出要填的凭据；填不了就是致命错误——后台转发没有人能手输。
+fn reply_to_prompt(
+    tail: &str,
+    creds: &mut PendingCreds,
+    writer: &mut dyn Write,
+    killer: &mut dyn ChildKiller,
+    prompt_done: &mut bool,
+    fatal: &mut Option<Fatal>,
+) {
+    if *prompt_done || fatal.is_some() {
+        return;
+    }
+    let Some(answer) = prompt_answer(tail, creds) else {
+        return;
+    };
+    *prompt_done = true;
+    match answer {
+        Ok(secret) => {
+            let _ = writer.write_all(secret.as_bytes());
+            // ConPTY interprets CR as the Enter key; LF can leave Windows OpenSSH waiting to submit.
+            let _ = writer.write_all(if cfg!(windows) { b"\r" } else { b"\n" });
+            let _ = writer.flush();
+        }
+        Err(f) => {
+            *fatal = Some(f);
+            let _ = killer.kill();
+        }
+    }
+}
+
+/// 一行若是登录提示，给出要填的凭据；填不了就是致命错误——后台转发没有人能手输。
 /// `debug` 开头的是被读取边界截断的日志行，不是提示。
 fn prompt_answer(tail: &str, creds: &mut PendingCreds) -> Option<Result<String, Fatal>> {
     if tail.trim_start().starts_with("debug") {
@@ -442,6 +870,308 @@ fn prompt_answer(tail: &str, creds: &mut PendingCreds) -> Option<Result<String, 
 mod tests {
     use super::*;
     use crate::config::SshConnection;
+    use std::io::Cursor;
+
+    #[derive(Clone)]
+    struct CapturedInput(Arc<StdMutex<Vec<u8>>>);
+
+    impl Write for CapturedInput {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct TestKiller(Arc<AtomicBool>);
+
+    impl ChildKiller for TestKiller {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.0.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Killer {
+            Box::new(self.clone())
+        }
+    }
+
+    fn read_prompt(output: &str, password: Option<&str>) -> (Option<Fatal>, Vec<u8>, bool) {
+        read_output(
+            Box::new(Cursor::new(output.as_bytes().to_vec())),
+            PendingCreds::direct(&SshConnection::default(), password.map(str::to_owned), None),
+        )
+    }
+
+    fn read_output(
+        reader: Box<dyn Read + Send>,
+        creds: PendingCreds,
+    ) -> (Option<Fatal>, Vec<u8>, bool) {
+        let input = CapturedInput(Arc::new(StdMutex::new(Vec::new())));
+        let killer = TestKiller(Arc::new(AtomicBool::new(false)));
+        let fatal = read_loop(
+            reader,
+            Box::new(input.clone()),
+            creds,
+            Box::new(killer.clone()),
+            |_| {},
+        );
+        let written = input.0.lock().unwrap().clone();
+        (fatal, written, killer.0.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn newline_login_prompt_fills_available_credential_once() {
+        let (fatal, input, killed) =
+            read_prompt("dev@server.test's password: \r\n", Some("test-secret"));
+        assert_eq!(
+            input,
+            if cfg!(windows) {
+                b"test-secret\r"
+            } else {
+                b"test-secret\n"
+            }
+        );
+        assert!(fatal.is_none());
+        assert!(!killed);
+    }
+
+    #[test]
+    fn newline_login_prompt_without_credential_stops_for_login() {
+        let (fatal, input, killed) = read_prompt("dev@server.test's password: \r\n", None);
+        assert!(matches!(fatal, Some(Fatal::NeedsSecret(_))));
+        assert!(input.is_empty());
+        assert!(killed);
+    }
+
+    #[test]
+    fn newline_key_prompt_uses_passphrase_instead_of_password() {
+        let creds = PendingCreds::direct(
+            &SshConnection::default(),
+            Some("login-secret".into()),
+            Some("key-secret".into()),
+        );
+        let (fatal, input, killed) = read_output(
+            Box::new(Cursor::new(
+                b"Enter passphrase for key '/keys/id_rsa': \r\n".to_vec(),
+            )),
+            creds,
+        );
+        assert_eq!(
+            input,
+            if cfg!(windows) {
+                b"key-secret\r"
+            } else {
+                b"key-secret\n"
+            }
+        );
+        assert!(fatal.is_none());
+        assert!(!killed);
+    }
+
+    #[test]
+    fn newline_debug_log_does_not_consume_login_credential() {
+        let (fatal, input, killed) = read_prompt(
+            "debug1: next authentication method: password:\r\ndev@server.test's password: \r\n",
+            Some("test-secret"),
+        );
+        assert_eq!(
+            input,
+            if cfg!(windows) {
+                b"test-secret\r"
+            } else {
+                b"test-secret\n"
+            }
+        );
+        assert!(fatal.is_none());
+        assert!(!killed);
+    }
+
+    #[test]
+    fn newline_interactive_and_password_change_prompts_never_fill_login_password() {
+        for prompt in ["Verification code: \r\n", "New password: \r\n"] {
+            let (fatal, input, killed) = read_prompt(prompt, Some("old-secret"));
+            assert!(matches!(fatal, Some(Fatal::Interactive(_))));
+            assert!(input.is_empty());
+            assert!(killed);
+        }
+    }
+
+    #[test]
+    fn split_login_prompt_with_late_newline_does_not_fill_twice() {
+        struct Chunks(std::collections::VecDeque<Vec<u8>>);
+        impl Read for Chunks {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let Some(chunk) = self.0.pop_front() else {
+                    return Ok(0);
+                };
+                assert!(chunk.len() <= buf.len());
+                buf[..chunk.len()].copy_from_slice(&chunk);
+                Ok(chunk.len())
+            }
+        }
+        let reader = Chunks(
+            [
+                "dev@server.test's password: ",
+                "\x1b[1C\x1b[?25h\r\n",
+                "Authenticated to server.test ([10.0.0.1]:22) using \"password\".\r\n",
+            ]
+            .into_iter()
+            .map(|s| s.as_bytes().to_vec())
+            .collect(),
+        );
+        let creds =
+            PendingCreds::direct(&SshConnection::default(), Some("test-secret".into()), None);
+        let (fatal, input, killed) = read_output(Box::new(reader), creds);
+        assert_eq!(
+            input,
+            if cfg!(windows) {
+                b"test-secret\r"
+            } else {
+                b"test-secret\n"
+            }
+        );
+        assert!(fatal.is_none());
+        assert!(!killed);
+    }
+
+    #[test]
+    fn final_forward_failure_without_newline_updates_the_listener_state() {
+        let config = crate::config::BridgeConfig::default();
+        let mut status = TunnelStatus::new(
+            crate::stable_connect::runtime_id("server"),
+            &[crate::stable_connect::rule(7823, &config)],
+        );
+        let input = CapturedInput(Arc::new(StdMutex::new(Vec::new())));
+        let fatal = read_loop(
+            Box::new(Cursor::new(
+                b"Error: remote port forwarding failed for listen port 7823".to_vec(),
+            )),
+            Box::new(input),
+            PendingCreds::direct(&SshConnection::default(), None, None),
+            Box::new(TestKiller(Arc::new(AtomicBool::new(false)))),
+            |line| {
+                status.apply_line(line);
+            },
+        );
+        assert!(fatal.is_none());
+        assert_eq!(status.rules[0].state, crate::ssh_tunnel::RuleState::Failed);
+    }
+
+    #[test]
+    fn managed_listener_failure_takes_priority_over_an_old_password_prompt() {
+        let config = crate::config::BridgeConfig::default();
+        let mut status = TunnelStatus::new(
+            crate::stable_connect::runtime_id("server"),
+            &[crate::stable_connect::rule(7823, &config)],
+        );
+        status.apply_line("dev@server.test's password:");
+        assert!(retry_error(&status).is_none());
+        status.apply_line("Error: remote port forwarding failed for listen port 7823");
+        assert!(retry_error(&status).unwrap().contains("服务器拒绝监听"));
+        status.connection_id = "server".into();
+        assert_eq!(retry_error(&status).unwrap(), "dev@server.test's password:");
+    }
+
+    #[test]
+    fn final_authentication_error_without_newline_requires_login() {
+        let mut status = TunnelStatus::stopped("server".into());
+        let fatal = read_loop(
+            Box::new(Cursor::new(
+                b"Permission denied (publickey,password).".to_vec(),
+            )),
+            Box::new(CapturedInput(Arc::new(StdMutex::new(Vec::new())))),
+            PendingCreds::direct(&SshConnection::default(), None, None),
+            Box::new(TestKiller(Arc::new(AtomicBool::new(false)))),
+            |line| {
+                status.apply_line(line);
+            },
+        );
+        assert!(fatal.is_none());
+        assert!(is_fatal(status.last_error.as_deref().unwrap()));
+    }
+
+    #[test]
+    fn vpn_owned_tunnel_retries_listener_failure_on_the_same_fixed_port() {
+        let config = crate::config::BridgeConfig::default();
+        let link = SshLink::new(
+            SshConnection {
+                id: "server".into(),
+                host: "server.test".into(),
+                username: "dev".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let args = tunnel_args(
+            &link,
+            &crate::stable_connect::runtime_id("server"),
+            &[crate::stable_connect::rule(7823, &config)],
+        );
+        assert!(!args.iter().any(|argument| argument == "-N"));
+        assert!(args.iter().any(|argument| argument == "-tt"));
+        let alive: Vec<_> = args
+            .iter()
+            .filter(|argument| argument.starts_with("ServerAliveInterval="))
+            .collect();
+        assert_eq!(alive, [&"ServerAliveInterval=10".to_string()]);
+        assert!(args.windows(2).any(|a| a == ["-o", "ExitOnForwardFailure=yes"]),
+            "A failed managed listener must exit so the supervisor can retry; ssh -N otherwise stays alive forever");
+        assert!(args
+            .windows(2)
+            .any(|a| a[0] == "-R" && a[1].starts_with("127.0.0.1:7823:")));
+        let timeout = args
+            .iter()
+            .find_map(|arg| arg.strip_prefix("ConnectTimeout="))
+            .expect("A VPN outage must not leave one connection attempt waiting indefinitely")
+            .parse::<u64>()
+            .unwrap();
+        assert!(timeout > 0 && Duration::from_secs(timeout) < CREDENTIAL_FILL_WINDOW);
+        assert!(!is_fatal(
+            "Error: remote port forwarding failed for listen port 7823"
+        ));
+    }
+
+    #[test]
+    fn vpn_manual_mixed_rules_keep_partial_success_and_authentication_still_stops() {
+        let link = SshLink::new(
+            SshConnection {
+                id: "server".into(),
+                host: "server.test".into(),
+                username: "dev".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let args = tunnel_args(&link, "server", &[ForwardRule::default()]);
+        assert!(!args.iter().any(|a| a == "ExitOnForwardFailure=yes"));
+        assert!(is_fatal("Permission denied (publickey,password)."));
+        assert!(give_up(Some(&Fatal::NeedsSecret("需要密码".into()))));
+    }
+
+    #[test]
+    fn vpn_failed_listener_does_not_reset_backoff_but_a_connected_tunnel_does() {
+        let config = crate::config::BridgeConfig::default();
+        let mut status = TunnelStatus::new(
+            crate::stable_connect::runtime_id("server"),
+            &[crate::stable_connect::rule(7823, &config)],
+        );
+        status.apply_line("Authenticated to server.test ([10.0.0.1]:22) using \"password\".");
+        status.apply_line("Warning: remote port forwarding failed for listen port 7823");
+        assert!(!connected_for_retry(&status));
+        status.begin_attempt();
+        status.apply_line("Authenticated to server.test ([10.0.0.1]:22) using \"password\".");
+        status.apply_line(
+            "debug1: remote forward success for: listen 127.0.0.1:7823, connect 127.0.0.1:7823",
+        );
+        assert!(connected_for_retry(&status));
+    }
 
     /// 2FA 验证码这类「后台没人能应答」的提示必须直接放弃。
     ///

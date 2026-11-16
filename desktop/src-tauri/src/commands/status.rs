@@ -70,6 +70,10 @@ pub struct StatusResponse {
     pub stats: StatsInfo,
     #[serde(rename = "connectCommand")]
     pub connect_command: String,
+    #[serde(rename = "currentAccess")]
+    pub current_access: crate::connection_access::ConnectionAccess,
+    #[serde(rename = "serviceControl")]
+    pub service_control: super::ServiceControl,
     /// 连接页选定的接入工具（决定托盘/横幅的命令形态）。
     /// 后端在构造响应时已把旧配置的 None 折算为 "claude-code"，前端拿到的永远是具体值。
     #[serde(rename = "connectClient")]
@@ -99,6 +103,8 @@ pub struct StatusResponse {
     pub shell_type: String,
     /// MCP 传输协议：http（默认）或 sse。设置页「MCP 传输协议」分段控件读写。
     pub transport: String,
+    #[serde(rename = "remoteTlsEnabled")]
+    pub remote_tls_enabled: bool,
     /// 本机是否检测到 Git Bash（bash.exe）。false 时前端「命令执行壳层」的 bash 选项置灰，
     /// 点击不保存并提示用户先安装 Git for Windows。
     #[serde(rename = "bashAvailable")]
@@ -111,9 +117,7 @@ pub struct StatusResponse {
     pub last_selected_ip: Option<String>,
     #[serde(rename = "ipChanged")]
     pub ip_changed: bool,
-    /// S1: 远程链路可达性探针。对「远程客户端应当连接的展示地址:port」做 TCP 探测
-    /// （超时 200ms）。running 为 false 时直接 false（服务都没跑，谈不上可达）。
-    /// 这是「远程连接中断」状态机的真实信号源，区别于 ip_changed（仅文本地址变化）。
+    /// Local TCP observation of the displayed address (200ms); it does not verify a remote client.
     #[serde(rename = "remoteReachable")]
     pub remote_reachable: bool,
     /// 用户上次接入确认的作用域（user/project），由首次接入复制命令时落盘。
@@ -257,7 +261,6 @@ pub struct ToolCount {
 pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusResponse, String> {
     let uptime = state.uptime_seconds().await;
     let running = state.mcp_running.load(std::sync::atomic::Ordering::Relaxed);
-    let startup_error = state.startup_error.lock().unwrap().clone();
     let lan_ips = state.cached_lan_ips();
 
     // 先用一次**短锁**取出下面三处慢操作要用的少量字段，随即释放。
@@ -323,9 +326,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
             None
         }
     };
-    // S1: 远程链路可达性探针。对远程客户端应当连接的展示地址（与连接命令一致）
-    // 做 TCP 探测（超时 200ms）。running 为 false 时不探测，直接不可达。
-    // 这是「远程连接中断」状态机的真实信号源，区别于 ip_changed（仅文本地址变化）。
+    // Probe the local interface only; remote configuration and client calls need separate evidence.
     // 不降频的理由：不可达时用户正盯着「连接中断」状态等恢复，拉长周期会直接
     // 拖慢恢复提示；而窗口不可见时前端已经完全停了轮询（见 lib/appVisibility.ts），
     // 常驻开销本来就已归零。
@@ -363,6 +364,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
     // ── 慢操作到此结束，现在才取锁读其余字段（全是内存读，微秒级）。──
     let config = state.config.read().await;
     let stats = state.stats.read().await;
+    let lan_ips = state.cached_lan_ips();
 
     // 地址变化检测:
     // 1) 监听全部网卡时,以用户上次确认的 IP 是否仍在网卡列表为准;
@@ -372,43 +374,46 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         .as_ref()
         .is_some_and(|ip| !lan_ips.contains(ip))
         || (config.host != "0.0.0.0"
-            && config.host != "127.0.0.1"
+            && !network::is_loopback_host(&config.host)
             && !lan_ips.contains(&config.host));
     // 旧配置没有该字段（None）→ 按 claude-code 处理，托盘/横幅的形态与升级前一致。
     let connect_client = config
         .connect_client
         .clone()
         .unwrap_or_else(|| "claude-code".into());
-    // 多设备模式（opt-in）且 Claude Code：连接命令换条目级 remove+add（可并存）。
-    // 其余客户端保持原形态（WorkBuddy/Codex 的多设备条目化是后续工作）。
-    let connect_cmd = if config.multi_device_mode && connect_client == "claude-code" {
-        let display_host = network::resolve_display_host(
-            &config.host,
-            &lan_ips,
-            config.last_selected_ip.as_deref(),
-        );
-        network::build_multi_device_command(
-            config.port,
-            &display_host,
-            &config.token,
-            &config.transport,
-            config.remote_tls_enabled,
-            &config.device_id,
-        )
-    } else {
-        network::build_connect_command(network::ConnectTarget {
-            host: &config.host,
-            port: config.port,
-            token: &config.token,
-            transport: &config.transport,
-            tls: config.remote_tls_enabled,
-            client: &connect_client,
-            lan_ips: &lan_ips,
-            selected_ip: config.last_selected_ip.as_deref(),
-            multi_device: config.multi_device_mode,
-            device_id: &config.device_id,
-        })
-    };
+    let records = super::stable_connect_cmds::stable_records(&config, &state);
+    let current_running = state.mcp_running.load(Ordering::Relaxed);
+    let probe_current = port == config.port
+        && running == current_running
+        && probe_host
+            == network::resolve_display_host(
+                &config.host,
+                &lan_ips,
+                config.last_selected_ip.as_deref(),
+            );
+    if probe_current {
+        *state
+            .local_access_probe
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some((probe_host, port, remote_reachable));
+    }
+    let running = current_running;
+    let startup_error = state
+        .startup_error
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
+    let current_access = crate::connection_access::summary(
+        &config,
+        &records,
+        &lan_ips,
+        running,
+        crate::connection_access::cached_local_probe(&state, &config, &lan_ips),
+        startup_error.as_deref(),
+        firewall_enabled == Some(true) && firewall_port_open == Some(false),
+    );
+    let connect_cmd =
+        crate::connection_access::connect_command(&config, &lan_ips).unwrap_or_default();
 
     // ── 方案 A 运行卡实时指标聚合（全做真，无伪造）──
     let total = stats.total_requests;
@@ -528,6 +533,12 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
             top_tools,
         },
         connect_command: connect_cmd,
+        current_access,
+        service_control: state
+            .service_control
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone(),
         connect_client,
         token: config.token.clone(),
         whitelist_enabled: config.whitelist_enabled,
@@ -540,6 +551,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         session_cwd_enabled: config.session_cwd_enabled,
         shell_type: config.shell_type.clone(),
         transport: config.transport.clone(),
+        remote_tls_enabled: config.remote_tls_enabled,
         bash_available: crate::mcp::tools::shell::detect_bash_exe().is_some(),
         running,
         last_selected_ip: config.last_selected_ip.clone(),

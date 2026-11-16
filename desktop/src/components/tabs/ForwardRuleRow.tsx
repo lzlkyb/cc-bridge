@@ -1,125 +1,46 @@
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/icon";
-import { SettingsChoice } from "../ui/SettingsChoice";
+import { Button } from "../ui/button";
 import { toast } from "../ui/toast";
-import { exposesListen, sameForward } from "../../lib/sshTunnelStore";
+import { copyText } from "../../lib/utils";
 import type { ForwardRule, TunnelStatus } from "../../lib/types";
+import { FORWARD_PURPOSES, forwardAddress, forwardDisplay } from "../../lib/forwardPresentation";
+import { ForwardPath } from "./ForwardSection";
 
-/** c2s = 本机 → 服务器（-L / -D），s2c = 服务器 → 本机（-R）。方向由所在的表决定，行内不再选方向。 */
-export type ForwardSide = "c2s" | "s2c";
-
-export const FORWARD_GRID: Record<ForwardSide, string> = {
-  c2s: "grid grid-cols-[24px_minmax(96px,1fr)_76px_112px_minmax(110px,1.2fr)_76px_minmax(72px,0.8fr)_120px_28px] items-center gap-2",
-  s2c: "grid grid-cols-[24px_minmax(96px,1fr)_84px_minmax(110px,1.2fr)_76px_minmax(72px,0.8fr)_120px_28px] items-center gap-2",
-};
-
-const cell = "h-8 w-full rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
-const KIND_OPTIONS = [{ value: "local", label: "转发" }, { value: "dynamic", label: "SOCKS5" }];
-
-interface Badge {
-  text: string;
-  tone: string;
-  title?: string;
-  /** 监听中时「该连哪个地址」，点状态可复制。 */
-  copy?: string;
-  where?: string;
-}
-
-/** 监听在 0.0.0.0 一类通配地址时，本机/服务器自己去连用 127.0.0.1。 */
-function usageAddr(rule: ForwardRule, boundPort: number | null): string {
-  const host = ["0.0.0.0", "*", "::", ""].includes(rule.listenHost) ? "127.0.0.1" : rule.listenHost;
-  return `${host.includes(":") ? `[${host}]` : host}:${boundPort ?? rule.listenPort}`;
-}
-
-/** 运行态对这一行草稿的说法。running=undefined 表示转发没开。 */
-function ruleBadge(rule: ForwardRule, running: TunnelStatus | undefined): Badge {
-  if (!running) return { text: rule.enabled ? "未开启" : "已停用", tone: "text-muted-foreground" };
-  const live = running.rules.find((x) => x.rule.id === rule.id);
-  if (!rule.enabled) return live ? { text: "待移除", tone: "text-amber-600" } : { text: "已停用", tone: "text-muted-foreground" };
-  if (!live || !sameForward(rule, live.rule)) return { text: "待应用", tone: "text-amber-600", title: "改动还没生效，点「保存并应用」" };
-  if (live.state === "failed") return { text: "失败", tone: "text-destructive-ink", title: live.message ?? undefined };
-  if (live.state === "pending") return { text: "等待中", tone: "text-muted-foreground" };
-  return {
-    text: live.boundPort ? `监听中 :${live.boundPort}` : "监听中",
-    tone: "text-green-600",
-    copy: usageAddr(rule, live.boundPort),
-    where: rule.kind === "remote" ? "在服务器上连接" : rule.kind === "dynamic" ? "SOCKS5 代理地址" : "连接",
-  };
-}
-
-async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast(`已复制 ${text}`, "success");
-  } catch {
-    toast("复制失败，请检查剪贴板权限", "error");
-  }
-}
-
-function PortInput({ value, onChange, placeholder, label }: { value: number; onChange: (v: number) => void; placeholder: string; label: string }) {
-  return (
-    <input
-      aria-label={label}
-      inputMode="numeric"
-      className={`${cell} tabular-nums`}
-      value={value || ""}
-      placeholder={placeholder}
-      onChange={(e) => onChange(Math.min(Number(e.target.value.replace(/\D/g, "")), 65535))}
-    />
-  );
-}
-
-export function ForwardRuleRow({
-  side,
-  rule,
-  running,
-  onChange,
-  onRemove,
-}: {
-  side: ForwardSide;
-  rule: ForwardRule;
-  running: TunnelStatus | undefined;
-  onChange: (patch: Partial<ForwardRule>) => void;
-  onRemove: () => void;
+const PHASES = { running: "转发已开启", stopped: "尚未开启", connecting: "正在建立转发", reconnecting: "正在自动重连", error: "暂时无法开启" };
+export function ForwardRuleRow({ rule, status, conflict, removed, busy, onEdit, onApply, onStart, onRemove }: {
+  rule: ForwardRule; status?: TunnelStatus; conflict?: string; removed?: boolean; busy: boolean;
+  onEdit: () => void; onApply: () => void; onStart: () => void; onRemove: () => void;
 }) {
-  const badge = ruleBadge(rule, running);
-  const c2s = side === "c2s";
-  const targetHint = c2s ? "如 127.0.0.1（服务器自己）" : "如 127.0.0.1（本机）";
-  return (
-    <div className={`${FORWARD_GRID[side]} ${rule.enabled ? "" : "opacity-60"}`}>
-      <input type="checkbox" aria-label="启用" checked={rule.enabled} onChange={(e) => onChange({ enabled: e.target.checked })} />
-      <div className="relative">
-        <input aria-label={c2s ? "本机监听地址" : "服务器监听地址"} className={cell} value={rule.listenHost} onChange={(e) => onChange({ listenHost: e.target.value.trim() })} />
-        {c2s && exposesListen(rule) && (
-          <span title="监听在非回环地址：局域网内其它机器也能经你的 SSH 通道访问目标" className="absolute right-1.5 top-2 text-amber-600">
-            <Icon name="alertTriangle" size={14} />
-          </span>
-        )}
-      </div>
-      <PortInput label={c2s ? "本机端口" : "服务器端口"} value={rule.listenPort} placeholder={c2s ? "端口" : "自动"} onChange={(listenPort) => onChange({ listenPort })} />
-      {c2s && (
-        <div className="forward-kind">
-          <SettingsChoice label="类型" value={rule.kind} options={KIND_OPTIONS} onChange={(v) => onChange({ kind: v === "dynamic" ? "dynamic" : "local" })} />
-        </div>
-      )}
-      {rule.kind === "dynamic" ? (
-        <span className="col-span-2 text-xs text-muted-foreground">— 由客户端指定 —</span>
-      ) : (
-        <>
-          <input aria-label={c2s ? "目标地址" : "本机目标地址"} title={targetHint} placeholder={targetHint} className={cell} value={rule.targetHost} onChange={(e) => onChange({ targetHost: e.target.value.trim() })} />
-          <PortInput label={c2s ? "目标端口" : "本机目标端口"} value={rule.targetPort} placeholder="端口" onChange={(targetPort) => onChange({ targetPort })} />
-        </>
-      )}
-      <input aria-label="备注" className={cell} value={rule.note} placeholder="备注" onChange={(e) => onChange({ note: e.target.value })} />
-      {badge.copy ? (
-        <button type="button" className={`truncate text-left text-xs hover:underline ${badge.tone}`} title={`${badge.where} ${badge.copy}（点击复制）`} onClick={() => void copyText(badge.copy!)}>
-          {badge.text}
-        </button>
-      ) : (
-        <span className={`truncate text-xs ${badge.tone}`} title={badge.title ?? badge.text}>{badge.text}</span>
-      )}
-      <button type="button" aria-label="删除规则" onClick={onRemove} className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive-ink">
-        <Icon name="trash" size={13} />
-      </button>
-    </div>
-  );
+  const [copied, setCopied] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [reason, setReason] = useState(false);
+  const copyTimer = useRef<number>();
+  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
+  const meta = FORWARD_PURPOSES[rule.kind];
+  const view = forwardDisplay(rule, status);
+  const currentAddress = useRef(view.address);
+  currentAddress.current = view.address;
+  useEffect(() => { setCopied(false); window.clearTimeout(copyTimer.current); }, [view.address]);
+  const newPending = !!status && !["error", "stopped"].includes(status.state) && rule.enabled && !view.live;
+  const pending = view.pending || newPending || removed;
+  const copy = async () => {
+    if (!view.canCopy || !view.address) return;
+    await copyText(view.address, () => {
+      if (currentAddress.current !== view.address) return;
+      setCopied(true); window.clearTimeout(copyTimer.current);
+      copyTimer.current = window.setTimeout(() => setCopied(false), 1600);
+    }, () => toast("复制未完成，可以选中地址手动复制。", "error"));
+  };
+  return <article id={"forward-rule-" + rule.id} className="fp-rule" data-phase={view.phase} aria-label={rule.note || meta.label}>
+    <header className="fp-rule-head"><span className="fp-rule-icon"><Icon name={meta.icon} size={20} /></span><div className="fp-rule-title"><h3>{rule.note || meta.label}</h3><p>{meta.short}{rule.kind === "dynamic" ? " · SOCKS5" : ""}</p></div><span className="fp-phase" data-phase={conflict ? "error" : view.phase}><span />{conflict ? "端口冲突" : !rule.enabled && !(view.active && view.live) ? "已停用" : PHASES[view.phase]}</span><div className="fp-rule-actions">{!removed && <><button type="button" className="fp-text-button" disabled={busy} onClick={onEdit}><Icon name="sliders" size={14} />编辑</button><button type="button" className="fp-icon-button" aria-label="删除这条转发" disabled={busy} onClick={() => setConfirm(!confirm)}><Icon name="trash" size={16} /></button></>}</div></header>
+    <ForwardPath rule={view.actual} boundPort={view.boundPort} />
+    <div className="fp-use-address"><div><span>{rule.kind === "dynamic" ? "在应用中填写代理地址" : "在" + meta.accessMachine + "上使用这个地址"}</span><code>{view.address || "开启后显示实际端口"}</code></div><Button variant="outline" onClick={() => void copy()} disabled={!view.canCopy}><Icon name={copied ? "check" : "copy"} size={15} />{copied ? "已复制" : "复制使用地址"}</Button></div>
+    {pending && <div className="fp-rule-pending"><div><Icon name="clock" size={16} /><span><strong>{removed ? "删除尚未生效" : !rule.enabled ? "停用尚未应用" : "更改尚未应用"}</strong><small>{removed || !rule.enabled ? "当前转发仍在运行，应用后停止这条规则。" : newPending ? "配置已保存，应用后加入已开启的转发。" : "当前地址仍为 " + (view.address || "服务器分配的端口") + "，应用后改为 " + (forwardAddress(rule) || "服务器重新分配的端口") + "。"}</small></span></div><Button variant="secondary" disabled={busy || !!conflict} onClick={onApply}>应用更改</Button></div>}
+    {conflict && <div className="fp-rule-failure" role="alert"><div><strong>{conflict}</strong><p>编辑访问端口，或停用这条规则后再应用。</p></div><Button variant="secondary" disabled={busy} onClick={onEdit}>编辑规则</Button></div>}
+    {view.live?.state === "failed" && !conflict && <div className="fp-rule-failure"><div><strong>访问入口暂时无法建立</strong><p>可以重试，或编辑这条转发调整访问端口。</p></div><Button variant="secondary" disabled={busy} onClick={onStart}><Icon name="refresh" size={14} />重试</Button><button type="button" className="fp-text-button" onClick={() => setReason(!reason)}>查看原因<Icon name="chevronDown" size={13} /></button>{reason && <p className="fp-error-detail">{view.live.message || "SSH 未能建立监听。请检查端口是否被占用，以及服务器是否允许转发。"}</p>}</div>}
+    {view.phase === "reconnecting" && <p className="fp-rule-note"><Icon name="refresh" size={14} />{view.actual.listenPort ? "正在等待网络恢复，原访问地址保留。" : "正在等待网络恢复，服务器端口可能重新分配。"}</p>}
+    {view.phase === "stopped" && !pending && !conflict && <div className="fp-rule-stopped"><span>配置已保留，开启后即可复制使用地址。</span><Button variant="secondary" disabled={busy} onClick={onStart}><Icon name="play" size={14} />{rule.enabled ? "开启转发" : "启用并开启"}</Button></div>}
+    {confirm && <div className="fp-delete-confirm"><span>删除这条规则{view.live ? "并应用停止它的转发" : ""}？</span><Button size="sm" variant="destructive" disabled={busy} onClick={onRemove}>删除规则</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirm(false)}>取消</Button></div>}
+  </article>;
 }

@@ -1,6 +1,4 @@
 import { useState, useEffect, useMemo, memo } from "react";
-import { invoke } from "../../lib/tauri";
-import { toast } from "../ui/toast";
 import type { StaticStatus } from "../../lib/types";
 import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
@@ -11,6 +9,9 @@ import { SecurityBadgeGroup } from "./SecurityBadgeGroup";
 import { UpdateReadout } from "../update/UpdateReadout";
 import { PendingCommandPill } from "../update/PendingCommandPill";
 import { useTitlebarDrag } from "../../hooks/useTitlebarDrag";
+import { useServiceControl } from "../../hooks/useServiceControl";
+import { useCurrentConnection } from "../../hooks/useCurrentConnection";
+import { CurrentConnectionStatus } from "./CurrentConnectionStatus";
 
 /**
  * 应用顶栏（2026-10-14 侧栏改造后，由原「Header」瘦身而来）。
@@ -26,6 +27,7 @@ import { useTitlebarDrag } from "../../hooks/useTitlebarDrag";
  */
 function HeaderImpl({
   status,
+  stableConnection = false,
   onChanged,
   onNavigate,
   onOpenSearch,
@@ -36,6 +38,7 @@ function HeaderImpl({
   onPendingDismiss,
 }: {
   status?: StaticStatus;
+  stableConnection?: boolean;
   onChanged?: () => void;
   onNavigate?: (tab: string, anchor?: string) => void;
   /** 打开命令面板：给 Ctrl+K 一个可见入口，否则不知道快捷键的人发现不了它。 */
@@ -52,7 +55,9 @@ function HeaderImpl({
   onPendingDismiss?: () => void;
 }) {
   const [dark, setDark] = useState(() => getStoredTheme() === "dark");
-  const [busy, setBusy] = useState(false);
+  const control = useServiceControl(status, onChanged);
+  const { busy, pending } = control;
+  const access = useCurrentConnection(status);
   const onTitlebarMouseDown = useTitlebarDrag();
 
   // 主题由 lib/theme 统一管理（命令面板也复用），这里只同步图标状态
@@ -65,24 +70,12 @@ function HeaderImpl({
 
   // S5: 未知态(轮询间隙/首帧)一律视为未运行，避免 `?? true` 制造"总在运行"的错觉
   const running = status?.running ?? false;
+  const serviceLabel = busy ? pending === "restart" ? "重启中…" : pending === "stop" ? "停止中…" : "启动中…" : running ? "停止本机服务" : "启动本机服务";
 
   // E-P1-10: useMemo 避免每帧重建 badge 数组
-  const securityBadges = useMemo(() => headerSecurityBadges(status), [status]);
+  const securityBadges = useMemo(() => headerSecurityBadges(status, stableConnection, access), [status, stableConnection, access]);
 
-  const toggleServer = async () => {
-    setBusy(true);
-    try {
-      await invoke(running ? "stop_mcp_server" : "start_mcp_server");
-      // 启停后立刻刷新状态；后端 running 标志已同步更新。
-      onChanged?.();
-    } catch (e) {
-      // 🔴 必须 catch（审查 U1）：原来只有 try/finally，失败时图标闪一下就没了，
-      // 控制台留一条 unhandled rejection，用户永远不知道是端口被占还是权限不足。
-      toast(`服务${running ? "停止" : "启动"}失败：${String(e)}`, "error");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const toggleServer = () => void control.run(running ? "stop" : "start");
 
   return (
     <header
@@ -127,10 +120,12 @@ function HeaderImpl({
         data-tauri-drag-region="false"
         className="flex min-w-0 flex-1 items-center self-stretch"
       >
+        <CurrentConnectionStatus status={status} onNavigate={onNavigate}/>
         <UpdateReadout />
         {pendingCmd && onPendingResolved && (
           <PendingCommandPill
             pending={pendingCmd}
+            status={status}
             onResolved={onPendingResolved}
             onDismiss={onPendingDismiss}
           />
@@ -144,12 +139,14 @@ function HeaderImpl({
             variant={running ? "outline" : "default"}
             size="sm"
             isLoading={busy}
-            loadingText={running ? "停止中…" : "启动中…"}
+            loadingText={serviceLabel}
             onClick={toggleServer}
-            className="gap-1.5"
+            className="gap-1.5 connection-header-service"
+            aria-label={serviceLabel}
+            title={serviceLabel}
           >
             {!busy && <Icon name={running ? "pause" : "play"} size={14} />}
-            {!busy && (running ? "停止服务" : "启动服务")}
+            {!busy && <span className="connection-header-service-label">{serviceLabel}</span>}
           </Button>
         )}
         {/* 搜索（命令面板）入口：Ctrl+K 的可见按钮，让搜索能力可被发现 */}

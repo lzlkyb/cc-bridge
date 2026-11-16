@@ -114,6 +114,23 @@ jobs:
         run: npm run vite:build
         working-directory: desktop
 
+  # 远端恢复与配置脚本只使用本地模拟，不访问用户保存的 SSH 服务器。
+  python-remote:
+    name: Remote scripts (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+      - name: 隧道会话身份与失联回收
+        run: python -m unittest discover -s desktop/src-tauri/tests -p "test_*.py" -v
+      - name: 接入配置与范围迁移
+        run: |
+          python desktop/src-tauri/src/stable_remote/tests.py
+          python desktop/src-tauri/src/stable_remote/scope_tests.py
+          python desktop/src-tauri/src/stable_remote/direct_update_tests.py
+
   # 轻量测试：仅 PR / 非 tag 的 push / 手动触发时跑，保护合入质量（用 dev 编译，快）。
   # tag 发版时跳过本 job —— 由 build-windows 内的 `cargo test --release` 统一覆盖，
   # 避免 dev + release 两遍全量依赖编译（A 优化的核心）。

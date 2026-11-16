@@ -22,7 +22,7 @@ export function GenericSteps({ input }: { input: SnippetInput }) {
   const [showManual, setShowManual] = useState(false);
   const [pemCopied, setPemCopied] = useState(false);
   // 复制反馈统一走 useCopyFeedback（评审修复 ⑤）：成功仅内联、失败 toast。
-  const fb = useCopyFeedback();
+  const fb = useCopyFeedback(2000, JSON.stringify(input));
 
   return (
     <div className="space-y-4">

@@ -15,7 +15,8 @@ import { WORKSPACE_NAV } from "../layout/SideNav";
 import { useDialogDismiss } from "../../hooks/useDialogDismiss";
 import { usePresence } from "../../hooks/usePresence";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
-import { useIpSedCopy } from "../../hooks/useIpSedCopy";
+import { useConnectionPaletteItems } from "../../hooks/useConnectionPaletteItems";
+import { CurrentConnectionStatus } from "../layout/CurrentConnectionStatus";
 import {
   preparePaletteItems,
   recentPaletteIds,
@@ -40,7 +41,7 @@ export function CommandPalette({
   onReopenOnboarding?: () => void;
 }) {
   const { toast } = useToast();
-  const copyIpSed = useIpSedCopy();
+  const connectionItems = useConnectionPaletteItems(status, onChanged);
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -64,34 +65,12 @@ export function CommandPalette({
       // H6 修复：之前 .catch(() => {}) 静默吞掉复制失败，下一行仍会无条件提示"已复制"。
       await copyText(
         token,
-        () => toast("访问令牌已重新生成并复制到剪贴板", "success"),
+        () => toast("Token 已生成并复制，原有接入需要同步更新", "warning"),
         () => toast("访问令牌已重新生成，但复制到剪贴板失败，请手动复制", "error"),
       );
       onChanged?.();
     } catch (e) {
       toast("生成失败：" + String(e), "error");
-    }
-  };
-
-  const runToggleServer = async () => {
-    // 与 Header S5 对齐：状态未知时当作未运行。
-    const running = status?.running ?? false;
-    try {
-      await invoke(running ? "stop_mcp_server" : "start_mcp_server");
-      toast(running ? "MCP 服务已停止" : "MCP 服务已启动", "success");
-      onChanged?.();
-    } catch (e) {
-      toast("操作失败：" + String(e), "error");
-    }
-  };
-
-  const runRestartServer = async () => {
-    try {
-      await invoke("restart_mcp_server");
-      toast("MCP 服务已重启", "success");
-      onChanged?.();
-    } catch (e) {
-      toast("重启失败：" + String(e), "error");
     }
   };
 
@@ -121,8 +100,6 @@ export function CommandPalette({
   };
 
   const isDark = document.documentElement.classList.contains("dark");
-  // 与 Header S5 对齐：状态未知（status 未加载）时默认当作未运行，避免误导。
-  const running = status?.running ?? false;
   // 快捷键标签的平台来源；首帧 status 为 undefined 时先显示 Ctrl（见 lib/platform.ts 的取舍）。
   const platform = status?.platform;
 
@@ -139,10 +116,7 @@ export function CommandPalette({
       confirmTitle: "确定重新生成访问令牌？",
       confirmDescription: status?.multiDeviceMode ? "旧令牌立即失效，所有使用旧令牌连接的 AI 工具会需要重新配置。如果你在另一台电脑也接入了同一个 AI 工具，那台机器的连接会一并断开，需要在那台机器上重新执行接入命令。" : "旧令牌立即失效，所有使用旧令牌连接的 AI 工具会需要重新配置。",
     },
-    { id: "act-server", label: running ? "停止 MCP 服务" : "启动 MCP 服务", icon: running ? "pause" : "play", group: "操作", run: runToggleServer },
-    { id: "act-restart", label: "重启 MCP 服务", icon: "refresh", group: "操作", run: runRestartServer },
-    // IP 变化后不用回连接页也能拿命令（全屏终端态下命令面板是唯一可达入口）。
-    { id: "act-ipsed", label: "复制 IP 替换命令", icon: "copy", group: "操作", run: copyIpSed, keywords: "ip 地址 替换 sed 修复 重连 中断" },
+    ...connectionItems,
     {
       id: "act-clearlog", label: "清空审计日志", icon: "trash", group: "操作", run: runClearAudit,
       confirmTitle: "确定清空全部审计日志？", confirmDescription: "此操作会删除本机所有历史调用记录，且不可恢复。",
@@ -152,7 +126,7 @@ export function CommandPalette({
     { id: "act-theme", label: isDark ? "切换到浅色主题" : "切换到深色主题", icon: isDark ? "sun" : "moon", group: "外观", run: toggleTheme },
     // 设置项索引（纯数据，见 lib/settingsSearch.ts）。只跳转、不代操——原因写在那个文件里。
     ...SETTING_SEARCH_ITEMS,
-  ], [running, isDark, platform, runToggleServer, runRestartServer, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding, copyIpSed]);
+  ], [isDark, platform, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding, connectionItems]);
 
   // 检索内核在 lib/paletteSearch（设计稿《命令面板-拼音模糊与最近使用》）：
   // 子串 > 子序列 > keywords > 拼音全拼 > 拼音首字母，命中字符加亮、拼音给注音槽。
@@ -186,7 +160,7 @@ export function CommandPalette({
   };
 
   const selectItem = async (item: CommandItem) => {
-    if (closing || busyId) return;
+    if (closing || busyId || item.disabled) return;
     if (item.tab) {
       recordPaletteUse(item.id);
       onNavigate(item.tab, item.anchor);
@@ -260,7 +234,7 @@ export function CommandPalette({
               ESC
             </kbd>
           </div>
-
+          <div className="connection-palette-context"><span>当前接入</span><CurrentConnectionStatus status={status} onNavigate={(tab, anchor) => { onNavigate(tab, anchor); close(); }}/></div>
           {/* Results */}
           <div ref={listRef} className="max-h-[300px] overflow-y-auto py-1.5 pal-list">
             {flat.length === 0 ? (

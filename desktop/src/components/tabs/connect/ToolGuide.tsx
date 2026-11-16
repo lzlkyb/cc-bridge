@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 import {
   buildClientSnippet,
+  buildMcpUrl,
   CLIENT_LABELS,
   CLIENT_SELFSIGNED,
   CLIENT_VERIFY,
@@ -10,6 +11,8 @@ import {
   type SnippetInput,
 } from "../../../lib/mcpClients";
 import { useCopyFeedback } from "../../../hooks/useCopyFeedback";
+import { useConnectionCopy } from "../../../hooks/useConnectionCopy";
+import type { StaticStatus } from "../../../lib/types";
 import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
 import { Button } from "../../ui/button";
@@ -33,6 +36,7 @@ const TOOLS: McpClientTool[] = ["claude-code", "workbuddy", "codex", "generic"];
  */
 export function ToolGuide({
   host,
+  status,
   port,
   token,
   transport,
@@ -43,10 +47,14 @@ export function ToolGuide({
   deviceId = "",
   deviceName = "",
   onToggleMultiDevice,
+  selectedTool,
+  disabled = false,
+  hideMultiDeviceToggle = false,
   common,
   children,
 }: {
   host: string;
+  status?: StaticStatus;
   port: number;
   token: string;
   transport: "http" | "sse";
@@ -64,6 +72,9 @@ export function ToolGuide({
   deviceName?: string;
   /** 多设备开关回调（ConnectTab 落盘 save_config + onRefresh）。不传则不渲染开关。 */
   onToggleMultiDevice?: (next: boolean) => void;
+  selectedTool?: McpClientTool;
+  disabled?: boolean;
+  hideMultiDeviceToggle?: boolean;
   /**
    * 四种工具都要的内容（监听地址提示、「选择远程服务器能连回本机的地址」卡片）。
    * 🔴 不能放进 children：children 只在 Claude Code 时渲染。地址卡片曾经就在里面，
@@ -73,7 +84,8 @@ export function ToolGuide({
   /** claude-code 现有向导内容（scope / steps / token / perm），仅该工具渲染。 */
   children: ReactNode;
 }) {
-  const [tool, setTool] = useState<McpClientTool>(defaultTool);
+  const [localTool, setTool] = useState<McpClientTool>(defaultTool);
+  const tool = selectedTool ?? localTool;
   const input: SnippetInput = {
     host,
     port,
@@ -92,8 +104,8 @@ export function ToolGuide({
             flex-wrap：窄窗时开关组折到第二行，绝不挤压/截断分段器。 */}
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <CardTitle icon={<Icon name="plug" />}>接入 {CLIENT_LABELS[tool]}</CardTitle>
-          <div className="flex min-w-0 flex-wrap items-center gap-3">
-            {onToggleMultiDevice && (
+          <fieldset disabled={disabled} className="flex min-w-0 flex-wrap items-center gap-3">
+            {onToggleMultiDevice && !hideMultiDeviceToggle && (
               <MultiDeviceToggle
                 enabled={multiDevice}
                 deviceId={deviceId}
@@ -126,7 +138,7 @@ export function ToolGuide({
               </button>
             ))}
             </div>
-          </div>
+          </fieldset>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -169,7 +181,7 @@ export function ToolGuide({
           ) : tool === "generic" ? (
             <GenericSteps input={input} />
           ) : (
-            <ManualSteps tool={tool} input={input} />
+            <ManualSteps tool={tool} input={input} status={status}/>
           )}
         </div>
       </CardContent>
@@ -197,11 +209,15 @@ function ClaudeTlsNote() {
 }
 
 /** WorkBuddy / Codex 的手动接入步骤：配置载体 → 片段 + notes → 验证。 */
-function ManualSteps({ tool, input }: { tool: McpClientTool; input: SnippetInput }) {
+function ManualSteps({ tool, input, status }: { tool: McpClientTool; input: SnippetInput; status?: StaticStatus }) {
   const snippet = buildClientSnippet(tool, input);
   const [pemCopied, setPemCopied] = useState(false);
   // 复制反馈统一走 useCopyFeedback（评审修复 ⑤）：成功仅内联、失败 toast。
-  const fb = useCopyFeedback();
+  const fb = useCopyFeedback(2000, JSON.stringify([tool, input]));
+  const copy = useConnectionCopy(status);
+  const ready = status?.connectClient === tool && status.token === input.token && status.currentAccess?.address === buildMcpUrl(input);
+  const command = ready && status?.connectCommand ? status.connectCommand : snippet.code;
+  const copied = status ? copy.isCopied("command") : fb.isCopied("snippet");
 
   return (
     <div className="space-y-4">
@@ -219,17 +235,18 @@ function ManualSteps({ tool, input }: { tool: McpClientTool; input: SnippetInput
           <p className="ui-h-sub">粘贴以下{snippet.kind === "toml" ? " TOML" : " JSON"}配置</p>
           <div className="code-box flex items-start gap-2">
             <code className="min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-foreground">
-              {snippet.code}
+              {command}
             </code>
             <Button
               variant="outline"
               size="sm"
               className="shrink-0"
-              onClick={() => fb.copy("snippet", snippet.code)}
+              onClick={() => { if (status) void copy.copy("command", undefined, command); else fb.copy("snippet", command); }}
+              disabled={!!status && !ready}
               aria-live="polite"
             >
-              <Icon name={fb.isCopied("snippet") ? "check" : "copy"} size={14} />
-              {fb.isCopied("snippet") ? "已复制" : "复制"}
+              <Icon name={copied ? "check" : "copy"} size={14} />
+              {copied ? "已复制" : "复制"}
             </Button>
           </div>
           {snippet.notes.map((n, i) => (
