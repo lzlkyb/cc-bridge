@@ -45,6 +45,9 @@ mod running;
 mod server;
 mod service_control;
 /// SSH 终端（面板内交互终端，首版密码登录）。
+/// SSH 批量文件传输（多源 scp 合并，按目录分组 + 临时目录原子落地）。
+mod ssh_batch_cmds;
+/// SSH 终端（面板内交互终端，首版密码登录）。
 mod ssh_cmds;
 /// SSH 远程文件读/写/本机编辑器打开（A+C 方案，复用 ssh_cmds 的 helper 与 scp 通道）。
 mod ssh_file_cmds;
@@ -74,6 +77,7 @@ pub use remote_cmds::*;
 pub use running::*;
 pub use server::*;
 pub use service_control::*;
+pub use ssh_batch_cmds::*;
 pub use ssh_cmds::*;
 pub use ssh_file_cmds::*;
 pub use ssh_tunnel_cmds::*;

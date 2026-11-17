@@ -977,6 +977,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_file_write,
             commands::ssh_file_open_external,
             commands::ssh_file_upload_edited,
+            // 批量传输（多源 scp 合并；同一 ssh_enabled 闸，仅本机面板）。
+            commands::ssh_sftp_get_many,
+            commands::ssh_sftp_put_many,
             // 拖拽上传：只读本机路径的元数据（分辨文件/目录），不读内容。
             commands::local_path_info,
             // 剪贴板图片上传的中转文件（写/删临时目录，带前缀+目录双守卫）。

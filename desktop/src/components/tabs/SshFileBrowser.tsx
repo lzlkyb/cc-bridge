@@ -126,7 +126,12 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
 
   // 多选（Ctrl/⌘+点击、Shift+区间）。clear 是 useCallback([]) 稳定引用，解构出来
   // 才能正常写依赖：sel 整体每帧都是新对象，写进依赖等于每次渲染都清一遍选择。
-  const sel = useSshFileSelection({ entries, onDownload: forms.handleDownload, busy });
+  const sel = useSshFileSelection({
+    entries,
+    onDownload: forms.handleDownload,
+    onDownloadMany: forms.handleDownloadMany,
+    busy,
+  });
   const { clear: clearSelection } = sel;
   // 删除成功后要清多选；`sel` 在 ops 之后才建，用 ref 转发（见 ops 的 onRemoved）。
   const clearSelectionRef = useRef<() => void>(() => {});

@@ -3,8 +3,13 @@ import type { SshFileEntry } from "../../lib/types";
 
 interface Params {
   entries: SshFileEntry[];
-  /** 下载一个条目。 */
+  /** 下载一个条目（逐个选保存位置）。 */
   onDownload: (name: string) => void | Promise<void>;
+  /**
+   * 批量下载（多选条目一次性传）。给了就走它：后端多源 scp 合并，一次握手传全部；
+   * 没给才回退到逐个 `onDownload`（保留旧交互与单文件测试路径）。
+   */
+  onDownloadMany?: (names: string[]) => void | Promise<void>;
   /** 传输 / 列目录进行中：禁用批量操作（并发 ssh 握手会把成本乘以 N）。 */
   busy: boolean;
 }
@@ -18,7 +23,7 @@ interface Params {
  * 双击文件下载（`SshFileRow` 里实现）。
  * 目录不参与批量删除：删除目录是递归删，风险与单文件不同，仍走行尾按钮。
  */
-export function useSshFileSelection({ entries, onDownload, busy }: Params) {
+export function useSshFileSelection({ entries, onDownload, onDownloadMany, busy }: Params) {
   const [selected, setSelected] = useState<string[]>([]);
   const [anchor, setAnchor] = useState<number | null>(null);
   const downloading = useRef(false), mounted = useRef(true);
@@ -62,13 +67,21 @@ export function useSshFileSelection({ entries, onDownload, busy }: Params) {
     if (busy || downloading.current) return;
     downloading.current = true;
     try {
-      // The download picker/transfer accepts one request at a time; await each one.
-      for (const e of chosen) {
+      // 多选里只传普通文件（目录不进批量下载）。
+      const files = chosen.filter((e) => !e.isDir);
+      if (files.length === 0) return;
+      // 批量入口：一次目录选择 + 一次多源 scp（后端按 local 目录分组）。
+      // 逐个 onDownload 的旧路径只在调用方没提供批量入口时走。
+      if (onDownloadMany) {
+        await onDownloadMany(files.map((e) => e.name));
+        return;
+      }
+      for (const e of files) {
         if (!mounted.current) break;
-        if (!e.isDir) await onDownload(e.name);
+        await onDownload(e.name);
       }
     } finally { downloading.current = false; }
-  }, [busy, chosen, onDownload]);
+  }, [busy, chosen, onDownload, onDownloadMany]);
 
   return {
     selected,

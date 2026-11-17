@@ -61,8 +61,10 @@ const BASELINE = {
   // 2026-09-16：`LogDetailPanel.tsx` 已从本表**移除**。它原本登记 361 行，本次把
   // 内联的 DiffModal / RestoreConfirmDialog 抽成 `LogDiffModal.tsx` / `LogRestoreDialog.tsx`
   // 后降到 180 行、1 个 hook，重新落在 300 行 / 8 状态的默认上限之内——不需要豁免了。
-  // 2026-09-16：325 → 303（类型契约→lib/transferTypes.ts；覆盖提问编排→useTransferPrompt.ts）。
-  "src/components/tabs/useSshTransfer.ts": { lines: 303 },
+  // 2026-11-17：`useSshTransfer.ts` 已从本表**移除**。它原本登记 303 行，
+  // 本次（批量传输多源 scp 合并）把传输态核心抽去 `useTransferCore.ts`、
+  // 批量编排搬去 `batchTransfer.ts`（纯函数）后降到 126 行 / 0 hooks，
+  // 重新落在 300 行 / 8 hooks 的默认上限之内——不需要豁免了。
   // 2026-10-20：343 → 336（搜索过滤的 IIFE + 三行 filter 收成两行，语义不变）。
   // 上一版基线 342 在提交 d4bb165 时就被突破到 343 却没人跑门禁 —— 棘轮只在被跑到时才转。
   // 2026-10-25：336 → 314（列表渲染拆到 CommandPaletteList.tsx：拼音/模糊/frecency 升级

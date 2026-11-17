@@ -579,7 +579,7 @@ pub(super) fn find_scp() -> Option<PathBuf> {
 /// 判断一次失败（或一段输出）是不是「对端不认识这个选项」。
 ///
 /// GNU / BSD 的 `ls`、新旧 OpenSSH 的 `scp` 都靠这个判定做降级。
-fn is_unknown_option_err(msg: &str) -> bool {
+pub(super) fn is_unknown_option_err(msg: &str) -> bool {
     let m = msg.to_lowercase();
     m.contains("unknown option")
         || m.contains("illegal option")
@@ -629,7 +629,7 @@ fn usage_lists_short_flag(usage: &str, flag: char) -> bool {
 ///   ——这正是带空格文件名传不了的原因；同文件的 `ls`/`mkdir`/`rm` 早就引了，
 ///   唯独 scp 这两处漏了。
 /// - **`-s`（SFTP 协议）**：路径按字面处理，引了反而会让引号变成文件名的一部分。
-fn scp_endpoint(conn: &SshConnection, remote: &str, quote_for_shell: bool) -> String {
+pub(super) fn scp_endpoint(conn: &SshConnection, remote: &str, quote_for_shell: bool) -> String {
     let path = if quote_for_shell {
         shell_quote(remote)
     } else {
@@ -1026,7 +1026,7 @@ fn collapse_progress(buf: &mut String) {
 ///
 /// 本机 OpenSSH 不支持连接复用（无 ControlMaster），**每一次这类操作都是一次完整的
 /// TCP + 认证握手**，慢链路上本来就要好几秒，所以给得比直觉宽。
-const SSH_ONESHOT_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const SSH_ONESHOT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// helper 建立失败后的冷却期。
 ///
@@ -1188,6 +1188,74 @@ pub(super) async fn run_via_helper(
     res
 }
 
+/// `run_via_helper` 的阻塞版：给**本来就在 spawn_blocking 里**的调用方用
+/// （批量传输的远端收尾命令 mkdir/mv/rm）。
+///
+/// 为什么有一份重复而不是把 `run_via_helper` 改成同步：它是列目录/读写的热路径，
+/// 8 个调用方都在 await 它；而 `HelperSession::open` / `h.run` 都是阻塞调用，
+/// 包在 `spawn_blocking` 里正是为了不占 tokio worker。批量传输整体跑在自己的
+/// `spawn_blocking` 闭包里，再嵌一层 `spawn_blocking` 纯属浪费，直接阻塞调用即可。
+/// 逻辑与 async 版逐行对应，改一边必须同步改另一边。
+pub(super) fn run_via_helper_blocking(
+    state: &Arc<AppState>,
+    link: &SshLink,
+    ssh_path: &Path,
+    creds: PendingCreds,
+    cmd: String,
+) -> Result<(String, i32), String> {
+    let conn = &link.conn;
+    let key = conn.id.clone();
+    if let Some(t) = state.ssh_helper_blocked.get(&key) {
+        if t.elapsed() < HELPER_BLOCK_TTL {
+            return Err("helper 会话近期建立失败，暂不重试".into());
+        }
+    }
+    let existing = state.ssh_helpers.get(&key).map(|e| e.value().clone());
+    let sess = match existing {
+        Some(s) => s,
+        None => {
+            let args = ssh_base_args(link, "-p");
+            let target = format!("{}@{}", conn.username, conn.host);
+            let created = HelperSession::open(
+                ssh_path,
+                &args,
+                &target,
+                creds,
+                |s| password_prompt_in(s.as_bytes()),
+                |s| passphrase_prompt_in(s.as_bytes()),
+            );
+            let created = match created {
+                Ok(c) => c,
+                Err(e) => {
+                    state.ssh_helper_blocked.insert(key.clone(), Instant::now());
+                    return Err(e);
+                }
+            };
+            let arc = Arc::new(StdMutex::new(created));
+            let winner = state
+                .ssh_helpers
+                .entry(key.clone())
+                .or_insert_with(|| arc.clone())
+                .value()
+                .clone();
+            state.ssh_helper_blocked.remove(&key);
+            winner
+        }
+    };
+
+    let running = sess.clone();
+    let res = {
+        let mut h = running
+            .lock()
+            .map_err(|_| "helper 会话锁中毒".to_string())?;
+        h.run(&cmd)
+    };
+    if res.is_err() {
+        state.drop_ssh_helper(&key);
+    }
+    res
+}
+
 /// 在 PTY 里跑一次性命令（ssh 远程命令 / scp 传输），捕获全部输出并自动填充
 /// 密码/密码短语，等待进程退出（带超时），返回捕获到的输出字符串。
 ///
@@ -1196,7 +1264,7 @@ pub(super) async fn run_via_helper(
 ///
 /// 注意它是**同步阻塞**的：在 `#[command] async fn` 里要走 `spawn_capture_off_runtime`，
 /// 不要直接调。
-fn spawn_capture(
+pub(super) fn spawn_capture(
     program: &PathBuf,
     args: &[String],
     auto_creds: PendingCreds,
@@ -2312,7 +2380,7 @@ pub async fn ssh_sftp_get(
 }
 
 /// 登记一次传输的取消标志，返回的句柄交给 monitor 线程轮询。
-fn register_transfer(
+pub(super) fn register_transfer(
     state: &AppState,
     transfer_id: &str,
 ) -> std::sync::Arc<std::sync::atomic::AtomicBool> {

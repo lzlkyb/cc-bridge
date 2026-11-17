@@ -12,12 +12,19 @@ const entries: SshFileEntry[] = [
   { name: "sub", isDir: true, isSymlink: false, size: 0, mtime: 0 },
 ];
 
-const h = vi.hoisted(() => ({ download: vi.fn() }));
+const h = vi.hoisted(() => ({ download: vi.fn(), downloadMany: vi.fn() }));
 let root: Root;
 let host: HTMLDivElement;
 let api: ReturnType<typeof useSshFileSelection>;
+/** 当前 Probe 是否挂批量入口（默认不挂，走逐个回退路径）。 */
+let withBatch = false;
 function Probe() {
-  api = useSshFileSelection({ entries, onDownload: h.download, busy: false });
+  api = useSshFileSelection({
+    entries,
+    onDownload: h.download,
+    ...(withBatch ? { onDownloadMany: h.downloadMany } : {}),
+    busy: false,
+  });
   return null;
 }
 
@@ -57,6 +64,19 @@ it("批量下载只发文件，不发目录（目录没有「下载」这回事�
   expect(api.selected).toHaveLength(4);
   await act(async () => api.downloadSelected());
   expect(h.download.mock.calls.map((c) => c[0])).toEqual(["a.txt", "b.txt", "c.txt"]);
+});
+
+it("🔴 挂了批量入口就一次传全部文件名，不再逐个走单文件链路", async () => {
+  withBatch = true;
+  await act(async () => root.render(<Probe />));
+  await act(async () => api.selectAll());
+  await act(async () => api.downloadSelected());
+  // 一次调用、带全部普通文件、按选择顺序
+  expect(h.downloadMany).toHaveBeenCalledOnce();
+  expect(h.downloadMany).toHaveBeenCalledWith(["a.txt", "b.txt", "c.txt"]);
+  expect(h.download).not.toHaveBeenCalled();
+  withBatch = false;
+  await act(async () => root.render(<Probe />));
 });
 
 it("下载队列等待前一文件完成，不并发弹选择器，重复点击不重复排队", async () => {
