@@ -4,6 +4,16 @@ import type { ChangelogEntry } from "./about";
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "3.2.1",
+    date: "2026-11-17",
+    items: [
+      { category: "feat", text: "多人共用服务器不再抢地址：以前大家的接入地址是同一个，只有先连上的人能用；现在每个账号自动分到专属地址。" },
+      { category: "fix", text: "配置没完成时给的地址连不上：以前配置还没做完就显示地址，抄下来必然连不上；现在完成后才显示，并说明地址由服务器分配。" },
+      { category: "fix", text: "地址被别人占用时会自动换一个：以前点「重新接入」拿到的还是原来那个，撞上就一直连不上；现在会自动换一个新地址并更新配置。" },
+      { category: "fix", text: "「当前接入」的名字与服务器一致：以前开着多设备也显示成默认名字，现在按本机尾号显示，和服务器上的条目对得上。" },
+    ],
+  },
+  {
     version: "3.2.0",
     date: "2026-11-17",
     items: [
@@ -449,19 +459,6 @@ export const CHANGELOG: ChangelogEntry[] = [
       { category: "fix", text: "修 security/ban.rs 测试依赖开机时长的下溢" },
       { category: "fix", text: "修复快速开关弹层时延迟卸载竞争、菜单 Esc 穿透父弹窗，以及主题切换过渡标记可能无法清理的问题。" },
       { category: "fix", text: "恢复可感知的切页微动画：内容区快照在 200ms 内轻移 6px 并交叉淡化，真实 DOM 与终端固定定位不移动；连续点击以最后一次选择为准，旧运行环境保留 CSS 动画回退。" },
-    ],
-  },
-  {
-    version: "2.9.1",
-    date: "2026-10-16",
-    highlights: [
-      "复制，更符合你的习惯：新增“选中即复制”开关，修复右键复制与选择异常。",
-    ],
-    items: [
-      { category: "feat", text: "「选中即复制」开关（设置 → 高级，默认开），与「终端拖拽即选」正交" },
-      { category: "feat", text: "连接工作台 A 方案高保真预览入口（仅开发模式，不进正式包）" },
-      { category: "fix", text: "右键复制失效——xterm 把右键的鼠标报告当用户输入，按下即清空本地选区" },
-      { category: "fix", text: "选择手势改走输入闸，修滚轮死窗 / 松手清选区 / 注入回显" },
     ],
   },
 ];
