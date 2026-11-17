@@ -5,6 +5,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import tempfile
 import threading
 
@@ -13,6 +14,11 @@ COMMON = (ROOT / 'common.py').read_text(encoding='utf-8')
 CONFIGURE = COMMON + '\n' + (ROOT / 'migrate.py').read_text(encoding='utf-8') + '\n' + (ROOT / 'configure.py').read_text(encoding='utf-8')
 ns = {}
 exec(COMMON, ns)
+# 端口账本指向临时文件：测试不该在真实 home 里留痕，也不该被宿主机端口占用影响。
+# 必须走环境变量而不是替换 ns —— CONFIGURE 用 exec(source, {}) 在全新 globals 里跑，
+# 替换主进程 ns 对它无效（曾经因此把账本写进了真实 home）。
+LEDGER = os.path.join(tempfile.gettempdir(), 'ccb-tunnel-port-%d' % os.getpid())
+os.environ['CCB_TUNNEL_PORT_FILE'] = LEDGER
 framed = __import__('base64').b64encode(json.dumps({'path': '项目目录/' * 600, 'token': 'fixture-secret'}, ensure_ascii=False).encode()).decode()
 old_stdin = __import__('sys').stdin
 __import__('sys').stdin = io.StringIO('\n'.join('CCB_PAYLOAD ' + framed[i:i+64] for i in range(0, len(framed), 64)) + '\nCCB_PAYLOAD_END\n')
@@ -88,6 +94,7 @@ with tempfile.TemporaryDirectory() as directory:
     save(home / 'history.jsonl', {'project': str(other_project)})
     discovered = ns['inspect'](p)
     assert discovered['complete'] and len(discovered['targets']) == 2
+    assert discovered['tunnelPort'] >= 1024, '检查结果必须带回该账号的隧道端口'
     assert {row['path'] for row in discovered['projects']} == {str(project), str(other_project)}
     target = next(t for t in discovered['targets'] if t['scope'] == 'user')
     custom = next(t for t in discovered['targets'] if t['scope'] == 'project')
@@ -99,6 +106,9 @@ with tempfile.TemporaryDirectory() as directory:
              'access': {'target': target, 'inspection': discovered}}
     code, output = execute(CONFIGURE, setup)
     assert code == 0 and 'CCB_CONFIGURED' in output
+    # 账本必须记下「实际写进 url 的端口」：隧道若因端口被占退避过，不写回就会每次
+    # 接入先按旧账本失败一轮，甚至让已确认的地址在两次接入之间来回跳。
+    assert open(LEDGER, encoding='utf-8').read().strip() == str(server.server_port)
     updated = json.loads(global_file.read_text(encoding='utf-8'))
     assert updated['custom'] == original['custom'] and updated['projects'] == original['projects']
     assert updated['mcpServers']['other'] == unrelated
@@ -194,5 +204,36 @@ with tempfile.TemporaryDirectory() as directory:
     assert listing['truncated'] and len(listing['directories']) <= 256
     assert all(row['name'].startswith('folder-') for row in listing['directories'])
     assert not list(project.glob('.cc-bridge-*')) and not (project / '.mcp.json.cc-bridge-lock').exists()
+# 端口账本：共享服务器上 sshd 的反向监听是独占的，端口必须按账号固定下来。
+# 账本命中就不再变，**哪怕此刻端口不可绑定**——正常使用中占着它的正是自己的 sshd，
+# 一探测就换号会让已确认的 MCP 地址跟着漂。
+ledger = ns['tunnel_ledger']()
+if os.path.exists(ledger):
+    os.unlink(ledger)
+# 账本段不能压住历史候选 7823/17823/27823/37823：老版本拿这几个号轮着试，
+# 段里若有同号，uid 落在该偏移上的账号会跟历史路径抢同一个端口。
+legacy = {7823, 17823, 27823, 37823}
+assert not legacy & set(range(ns['PORT_BASE'], ns['PORT_BASE'] + ns['PORT_SPAN']))
+first = ns['tunnel_port']()
+assert first >= 1024, first
+assert open(ledger, encoding='utf-8').read().strip() == str(first)
+assert ns['tunnel_port']() == first, '账本命中后必须稳定'
+holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+holder.bind(('127.0.0.1', 0))
+holder.listen(1)
+taken = holder.getsockname()[1]
+with open(ledger, 'w', encoding='utf-8') as handle:
+    handle.write(str(taken) + '\n')
+assert ns['port_is_free'](taken) is False
+assert ns['tunnel_port']() == taken, '端口被占（自己的隧道）也不能换号'
+holder.close()
+# 账本损坏或越界时要能自愈，不能把脏值当成端口去监听。
+for broken in ('garbage', '80', '99999', ''):
+    with open(ledger, 'w', encoding='utf-8') as handle:
+        handle.write(broken + '\n')
+    healed = ns['tunnel_port']()
+    assert 1024 <= healed <= 65535, (broken, healed)
+    assert open(ledger, encoding='utf-8').read().strip() == str(healed)
+
 server.shutdown()
 print('FIXTURE_OK')

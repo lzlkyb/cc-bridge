@@ -157,13 +157,20 @@ pub fn validate_setup(scope: &str, path: &str, multi: bool) -> Result<(), String
     Ok(())
 }
 
-/// A confirmed endpoint must never be silently replaced after a VPN reconnect.
-pub fn candidate_ports(saved: Option<u16>, preferred: u16) -> Vec<u16> {
+/// 一个已确认的地址不能被 VPN 重连悄悄换掉；尚未确认时才允许挑新端口。
+///
+/// `allocated` 是检查阶段服务器按账号分配好的端口（共享服务器上每人一个）。
+/// 它排在最前，因为历史候选（7823 / 17823 …）是「谁先连谁占」的旧逻辑产物，
+/// 同一台机器上第 5 个人开始就没有可用的号了。
+pub fn candidate_ports(saved: Option<u16>, allocated: Option<u16>, preferred: u16) -> Vec<u16> {
     if let Some(port) = saved {
         return vec![port];
     }
-    let mut ports = vec![preferred.max(1024)];
-    for port in [17823, 27823, 37823] {
+    let mut ports = Vec::new();
+    if let Some(port) = allocated.filter(|port| *port >= 1024) {
+        ports.push(port);
+    }
+    for port in [preferred.max(1024), 17823, 27823, 37823] {
         if !ports.contains(&port) {
             ports.push(port);
         }
@@ -478,8 +485,26 @@ mod tests {
     use super::*;
     #[test]
     fn confirmed_port_never_changes() {
-        assert_eq!(candidate_ports(Some(17823), 7823), vec![17823]);
-        assert_eq!(candidate_ports(None, 7823), vec![7823, 17823, 27823, 37823]);
+        assert_eq!(candidate_ports(Some(17823), Some(17827), 7823), vec![17823]);
+        assert_eq!(
+            candidate_ports(None, Some(17827), 7823),
+            vec![17827, 7823, 17823, 27823, 37823]
+        );
+        assert_eq!(
+            candidate_ports(None, None, 7823),
+            vec![7823, 17823, 27823, 37823]
+        );
+        // 分配端口与历史候选重合时不能重复出现：重复项会让同一条隧道被重建一次，
+        // 而那次重建注定失败——端口还在被自己上一轮占着。
+        assert_eq!(
+            candidate_ports(None, Some(7823), 7823),
+            vec![7823, 17823, 27823, 37823]
+        );
+        // 服务器返回 0 表示分配不出端口，不能当成合法监听端口去试。
+        assert_eq!(
+            candidate_ports(None, Some(0), 7823),
+            vec![7823, 17823, 27823, 37823]
+        );
     }
     #[test]
     fn settings_migration_preserves_direct_users() {

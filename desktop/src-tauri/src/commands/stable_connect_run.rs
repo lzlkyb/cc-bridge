@@ -63,7 +63,17 @@ async fn configure_with_takeover(
         .find(|s| &s.connection_id == id);
     let mut port = request.port;
     progress(app, op, 1)?;
-    let ports = stable::candidate_ports(saved.map(|s| s.port), config.port);
+    // 用户主动「重新接入」（带 access）时允许换端口：服务器刚按账号分配的那个号优先。
+    // 后台恢复（无 access）绝不能换，否则 VPN 重连会悄悄改掉已确认的 MCP 地址。
+    let ports = if op.access.is_some() {
+        stable::candidate_ports(
+            None,
+            op.access.as_ref().and_then(|access| access.tunnel_port),
+            config.port,
+        )
+    } else {
+        stable::candidate_ports(saved.map(|s| s.port), None, config.port)
+    };
     for (index, candidate) in ports.iter().enumerate() {
         check(op)?;
         port = *candidate;
@@ -88,8 +98,15 @@ async fn configure_with_takeover(
             Ok(()) => break,
             Err((message, port_failed)) => {
                 if !port_failed || index + 1 == ports.len() {
-                    return Err(if port_failed && saved.is_some() {
-                        format!("固定端口 {port} 无法监听。为保持原 MCP 地址，请释放该端口或检查服务器转发权限后重试。")
+                    return Err(if port_failed && saved.is_some() && op.access.is_none() {
+                        format!(
+                            "服务器上的端口 {port} 已被其他会话占用。共享服务器上每个账号需要各自的端口，点「重新接入」会自动分配一个专属端口。"
+                        )
+                    } else if port_failed {
+                        format!(
+                            "{message}。已试过 {} 个端口，请稍后重试或联系服务器管理员。",
+                            ports.len()
+                        )
                     } else {
                         message
                     });

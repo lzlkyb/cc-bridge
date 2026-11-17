@@ -219,18 +219,26 @@ pub async fn stable_connect_start(
         return Err("请先检查服务器上的原有接入，再继续配置。".into());
     }
     let link = super::ssh_cmds::SshLink::from_config(&config, &connection_id)?;
+    // 规划与真正建隧道必须用同一个端口：用户主动接入时以服务器分配的号为准备，
+    // 后台恢复沿用已确认的号，否则 takeover 检查会对着一个不会被监听的端口做判断。
+    // 服务器分配不出端口时返回 0，按「没分配」处理，与 candidate_ports 的过滤保持一致。
+    let allocated = access
+        .as_ref()
+        .and_then(|request| request.tunnel_port)
+        .filter(|port| *port >= 1024);
+    let planned_port = allocated.unwrap_or_else(|| saved.map_or(config.port, |s| s.port));
     super::forward_takeover::plan_owned(
         state.inner(),
         &config,
         &link,
-        &[stable::rule(saved.map_or(config.port, |s| s.port), &config)],
+        &[stable::rule(planned_port, &config)],
     )?;
     let op = Arc::new(StableOperation {
         cancel: Arc::new(AtomicBool::new(false)),
         active: AtomicBool::new(true),
         record: Mutex::new(StableRecord {
             connection_id: connection_id.clone(),
-            port: saved.map_or(config.port, |s| s.port),
+            port: planned_port,
             scope: scope.clone(),
             project_path: project_path.trim().into(),
             multi_device,

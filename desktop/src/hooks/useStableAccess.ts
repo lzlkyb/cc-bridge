@@ -130,7 +130,7 @@ export function useStableAccess(stable: StableConnectState, status: StaticStatus
     && (scope === "user" || projectPath) ? {
       scope, projectPath,
       multiDevice: scope === "user" && (target ? stable.record?.multiDevice ?? false : current.multiDevice),
-      access: { target: target ?? null, ...(scopeChanged ? { scopeChange: true } : {}), inspection: { signature: result.signature, complete: result.complete,
+      access: { target: target ?? null, ...(scopeChanged ? { scopeChange: true } : {}), tunnelPort: result.tunnelPort ?? null, inspection: { signature: result.signature, complete: result.complete,
         files: result.files.filter(file => file.scope === "user" || file.configFile === target?.configFile || file.projectPath === projectPath) } },
     } : undefined;
   const retry = () => void inspect(current.scoped ? current.project?.path : undefined, current.scoped,

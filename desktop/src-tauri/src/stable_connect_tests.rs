@@ -28,6 +28,9 @@ def apply(payload):
     return 0
 with tempfile.TemporaryDirectory() as directory:
     os.environ['CLAUDE_CONFIG_DIR']=directory
+    # 端口账本也落在这个临时目录：configure 成功后会把实际端口写回账本，
+    # 不隔离就会写进跑测试那个人的真实 home。
+    os.environ['CCB_TUNNEL_PORT_FILE']=str(pathlib.Path(directory)/'tunnel-port')
     project=pathlib.Path(directory)/'project with spaces'
     project.mkdir();target=project/'.mcp.json'
     original={'mcpServers':{'other':{'command':'keep'}},'custom':{'nested':True}}
@@ -109,7 +112,7 @@ fn confirmed_endpoint_roundtrips_without_touching_ordinary_forwards() {
     assert_eq!(loaded.ssh_connections[0].forwards[0].listen_port, 8888);
     assert_eq!(method(&loaded), "stable");
     assert_eq!(
-        candidate_ports(Some(loaded.stable_connect.connections[0].port), 9000),
+        candidate_ports(Some(loaded.stable_connect.connections[0].port), None, 9000),
         vec![17823]
     );
 }

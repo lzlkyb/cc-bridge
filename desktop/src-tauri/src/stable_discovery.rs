@@ -44,6 +44,9 @@ pub struct StableAccessRequest {
     pub inspection: StableInspection,
     #[serde(default)]
     pub scope_change: bool,
+    /// 检查阶段服务器给该账号分配的隧道端口，配置时直接用它建隧道。
+    #[serde(default)]
+    pub tunnel_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +61,10 @@ pub struct StableDiscovery {
     pub signature: String,
     pub complete: bool,
     pub home: String,
+    /// 服务器为该账号固定下来的反向隧道端口（共享服务器上每账号一个）。
+    /// 老版本服务器不返回该字段，缺省为 None 时退回历史候选列表。
+    #[serde(default)]
+    pub tunnel_port: Option<u16>,
     pub inspected_project_path: Option<String>,
     pub projects: Vec<RemoteProject>,
     pub targets: Vec<StableTarget>,

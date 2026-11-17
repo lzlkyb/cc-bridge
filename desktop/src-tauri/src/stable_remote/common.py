@@ -4,12 +4,22 @@ import hashlib
 import hmac
 import json
 import os
+import socket
 import sys
 import urllib.parse
 
 MAX_CONFIG = 4 * 1024 * 1024
 MAX_PROJECTS = 32
 MAX_RESULT = 28 * 1024
+
+# 共享服务器上的反向隧道端口段。sshd 的 `-R 127.0.0.1:<port>` 是独占绑定，
+# 同一台机器上 N 个账号不可能共用一个端口，所以每人必须有自己的号。
+#
+# 段起点刻意避开历史候选 7823 / 17823 / 27823 / 37823：老版本就是拿这几个号轮着试，
+# 若账本段从 17823 开始，uid 是 1000 倍数的账号（第一个普通用户往往就是）会正好
+# 领到 17823，跟历史路径抢同一个号。
+PORT_BASE = 17900
+PORT_SPAN = 1000
 
 
 class AccessError(Exception):
@@ -196,8 +206,92 @@ def known_projects(data, p):
     return paths, limited
 
 
+def tunnel_ledger():
+    # 默认放 ~/.cc-bridge/，与 cc_session 的 hosted/ 同目录但不同文件。
+    # 显式覆盖供测试隔离，也给 HOME 只读的机器一条把账本挪到可写位置的出路。
+    override = os.environ.get('CCB_TUNNEL_PORT_FILE')
+    if override:
+        return override
+    return os.path.join(os.path.expanduser('~'), '.cc-bridge', 'tunnel-port')
+
+
+def read_tunnel_port():
+    try:
+        with open(tunnel_ledger(), 'r', encoding='utf-8') as handle:
+            port = int(handle.read(16).strip())
+        return port if 1024 <= port <= 65535 else None
+    except (OSError, ValueError):
+        return None
+
+
+def write_tunnel_port(port):
+    path = tunnel_ledger()
+    temp = None
+    try:
+        # 覆盖成相对文件名（`CCB_TUNNEL_PORT_FILE=tunnel-port`）时 dirname 为空，
+        # makedirs('') 会抛 FileNotFoundError，记账就静默失效了 —— 只建非空目录。
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, mode=0o700, exist_ok=True)
+        temp = path + '.tmp'
+        with open(temp, 'w', encoding='utf-8') as handle:
+            handle.write(str(port) + '\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    except OSError:
+        # 记账失败不该让接入失败：端口仍然可用，只是下次要重新探一次。
+        if temp:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+
+
+def port_is_free(port):
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(('127.0.0.1', port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def tunnel_port():
+    """本账号在这台服务器上固定使用的反向隧道端口。
+
+    🔴 为什么必须固定：共享服务器上 `-R 127.0.0.1:<port>` 是独占绑定，谁先绑谁用。
+    如果端口是「接入那一刻碰巧空闲的那个」，那么 A 下班释放 7823、B 上线就会把它
+    记成自己的，A 回来就永久撞车且无法自愈。账本按账号隔离（各自 home），
+    所以别人离线期间也抢不走我的号。
+
+    🔴 账本命中就直接返回，**即使此刻端口不可绑定**：正常使用中该端口正是被自己的
+    sshd 反向监听占着（隧道活着，再次检查环境时就是这种状态）。若此时还去探测空闲，
+    每次重新接入都会换号，已确认的 MCP 地址跟着漂移，等于把「固定端口」这件事废掉。
+    真正的冲突由建隧道失败后的退避处置，见 candidate_ports。
+
+    起点取 uid，是为了在没有账本时（首次 / 换了机器）也天然分散到不同端口，
+    避免所有人从同一个起始号开始线性探测、把探测次数堆给排在后面的人。
+    """
+    saved = read_tunnel_port()
+    if saved:
+        return saved
+    # 服务器是 Linux；getattr 只为让本机（Windows）测试能跑同一段代码。
+    uid = os.getuid() if hasattr(os, 'getuid') else 1000
+    start = PORT_BASE + (uid % PORT_SPAN)
+    for offset in range(PORT_SPAN):
+        port = PORT_BASE + ((start - PORT_BASE + offset) % PORT_SPAN)
+        if port_is_free(port):
+            write_tunnel_port(port)
+            return port
+    return 0
+
+
 def inspect(p):
     result = {'signature': p['signature'], 'complete': True, 'home': os.path.expanduser('~'),
+              'tunnelPort': tunnel_port(),
               'inspectedProjectPath': None, 'projects': [], 'targets': [], 'files': [], 'warnings': []}
     def warning(marker):
         result['complete'] = False

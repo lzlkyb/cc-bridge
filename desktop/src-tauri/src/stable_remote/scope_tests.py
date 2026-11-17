@@ -18,6 +18,10 @@ MIGRATE = (ROOT / 'migrate.py').read_text(encoding='utf-8') if (ROOT / 'migrate.
 CONFIGURE = COMMON + '\n' + MIGRATE + '\n' + (ROOT / 'configure.py').read_text(encoding='utf-8')
 ns = {}
 exec(COMMON, ns)
+# 端口账本指向临时文件：测试不该在真实 home 里留痕，也不该被宿主机端口占用影响。
+# 走环境变量而不是替换 ns —— CONFIGURE 在全新 globals 里 exec，替换主进程 ns 对它无效。
+os.environ['CCB_TUNNEL_PORT_FILE'] = os.path.join(
+    tempfile.gettempdir(), 'ccb-scope-tunnel-port-%d' % os.getpid())
 
 
 class Response:

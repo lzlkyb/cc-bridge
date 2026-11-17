@@ -41,6 +41,7 @@ fn scope_migration_requires_an_explicit_source_and_inspected_destination() {
     let config = BridgeConfig::default();
     let mut access = StableAccessRequest {
         scope_change: false,
+        tunnel_port: None,
         target: Some(StableTarget {
             id: "project-entry".into(),
             name: "custom-bridge".into(),
@@ -134,6 +135,7 @@ fn incomplete_results_and_wrong_server_receipts_cannot_configure() {
     let mut access = StableAccessRequest {
         target: None,
         scope_change: false,
+        tunnel_port: None,
         inspection: StableInspection {
             signature: fingerprint(&config, "server"),
             complete: false,

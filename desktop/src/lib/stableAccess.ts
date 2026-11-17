@@ -9,10 +9,12 @@ export interface StableTarget {
 }
 export interface StableConfigProof { scope: "user" | "project"; projectPath: string; configFile: string; fingerprint: string }
 export interface StableInspection { signature: string; complete: boolean; files: StableConfigProof[] }
-export interface StableAccessRequest { target: StableTarget | null; inspection: StableInspection; scopeChange?: boolean }
+export interface StableAccessRequest { target: StableTarget | null; inspection: StableInspection; scopeChange?: boolean; tunnelPort?: number | null }
 export interface StableProject { name: string; path: string }
 export interface StableDiscovery extends StableInspection {
   home: string; inspectedProjectPath: string | null; projects: StableProject[]; targets: StableTarget[]; warnings: string[];
+  /** 服务器按账号分配的固定隧道端口；共享服务器上每账号一个，老服务器不返回。 */
+  tunnelPort?: number | null;
 }
 export interface StableFolders {
   signature: string; home: string; path: string; parent: string; directories: StableProject[]; truncated: boolean;

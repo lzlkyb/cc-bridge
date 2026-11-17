@@ -528,6 +528,13 @@ fn publish(
     }
 }
 
+/// 服务器拒绝监听 = 这个端口被别人占了，重连多少次都撞在同一个号上。
+/// 只有托管隧道（稳定接入）按致命处理并转成可操作提示；手动转发的端口可能等对方
+/// 释放后就好了，保持原来的无限重连行为。
+fn port_taken_stops_retry(managed: bool, reason: &str) -> bool {
+    managed && reason.contains("服务器拒绝监听")
+}
+
 fn supervise(
     app: &AppHandle,
     plan: &Plan,
@@ -557,20 +564,29 @@ fn supervise(
             ) => r,
             None => last.unwrap_or_else(|| "SSH 进程已退出".into()),
         };
-        if status
+        let is_stable = status
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .connection_id
-            .starts_with("stable:")
-        {
+            .starts_with("stable:");
+        if is_stable {
             log::warn!("托管隧道本次未连通：{reason}");
         }
-        if stop_here || is_fatal(&reason) {
+        // 服务器拒绝监听是「这个端口被别人占了」，重连多少次都一样，只会每 60 秒撞一次。
+        // 只有托管隧道按致命处理：手动转发的端口可能等对方释放后就好了，保持原行为。
+        let port_taken = port_taken_stops_retry(is_stable, &reason);
+        if stop_here || is_fatal(&reason) || port_taken {
             publish(app, stop, status, |s| {
                 s.state = TunnelState::Error;
                 // SSH may report a rejected credential only when exiting, without another prompt.
                 s.needs_secret = needs_secret || reason.contains("Permission denied");
-                s.message = Some(reason);
+                s.message = Some(if port_taken {
+                    format!(
+                        "{reason}。共享服务器上每个账号需要各自的端口，请在接入页点「重新接入」分配专属端口。"
+                    )
+                } else {
+                    reason
+                });
                 true
             });
             return;
@@ -1149,6 +1165,16 @@ mod tests {
         );
         assert!(fatal.is_none());
         assert_eq!(status.rules[0].state, crate::ssh_tunnel::RuleState::Failed);
+    }
+
+    #[test]
+    fn a_taken_port_stops_only_the_managed_tunnel() {
+        let reason = "服务器拒绝监听（端口已被占用，或 sshd 不允许绑定该地址，见 GatewayPorts）";
+        assert!(port_taken_stops_retry(true, reason));
+        // 手动转发的端口等对方释放后还能用，不能因为一次占用就永久停掉。
+        assert!(!port_taken_stops_retry(false, reason));
+        // 其他失败原因仍旧走退避重连，别把网络抖动也当成端口冲突。
+        assert!(!port_taken_stops_retry(true, "Connection reset by peer"));
     }
 
     #[test]
