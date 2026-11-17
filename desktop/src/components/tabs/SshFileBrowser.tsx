@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { isMac } from "../../lib/platform";
-import { toast } from "../ui/toast";
-import type { SshConnection, SshFileEntry } from "../../lib/types";
+import type { SshConnection } from "../../lib/types";
 import { FileTable } from "./SshFileRow";
 import { FileBatchBar } from "./FileBatchBar";
 import { useSshFileSelection } from "./useSshFileSelection";
@@ -11,7 +10,6 @@ import { MkdirForm, UploadForm } from "./SshFileForms";
 import { SshDownloadStatus } from "./SshDownloadStatus";
 import { FileHeader, RemoveConfirmDialog } from "./SshFileToolbar";
 import { useSshTransfer } from "./useSshTransfer";
-import { cleanErr } from "../../lib/utils";
 import { OverwriteConfirmDialog, TransferBarSlot } from "./SshTransferBar";
 import { SshDropOverlay } from "./SshDropOverlay";
 import { useFileBrowserDrop } from "./useFileBrowserDrop";
@@ -21,6 +19,8 @@ import { loadUploadDir, saveUploadDir } from "../../lib/uploadDir";
 import { useSshFileListing } from "../../hooks/useSshFileListing";
 import { isInitialFileListing } from "../../lib/sshFilePaths";
 import { useRemoteNavigation } from "../../hooks/useRemoteNavigation";
+import { SshFileEditor } from "./SshFileEditor";
+import { useSshFileOps } from "./useSshFileOps";
 
 interface Props {
   conn: SshConnection;
@@ -60,14 +60,19 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
   const navigation = useRemoteNavigation(initialPath ?? loadUploadDir(conn.id));
   const { path, navigate: setPath } = navigation;
   const { entries, loading, error, refresh } = useSshFileListing(conn.id, path);
-  // 传输态交给 useSshTransfer 管，这里只管 mkdir / 删除这类瞬时操作。
-  const [busyOp, setBusyOp] = useState(false);
-  // 新建文件夹名。
-  const [mkdirOpen, setMkdirOpen] = useState(false);
-  const [mkdirName, setMkdirName] = useState("");
-  // 删除确认：待删除条目（多选批量时为多个）。项目内 Dialog 二次确认，
-  // 避免 window.confirm 与 Tauri 风格割裂。
-  const [removeTargets, setRemoveTargets] = useState<(SshFileEntry & { remotePath: string })[]>([]);
+  // mkdir / 删除这类瞬时操作（含 busy 与删除确认态）自成一套生命周期，拆去
+  // useSshFileOps：本组件只留导航 / 传输 / 编辑器开关。
+  const ops = useSshFileOps({
+    connectionId: conn.id,
+    path,
+    joinRemote,
+    onDone: () => void refresh(),
+    // `sel` 在本行之后才声明，用 ref 转发，避免把 hook 调用顺序拧成环。
+    onRemoved: () => clearSelectionRef.current(),
+  });
+  // 正在编辑的文件（双击打开，覆盖在列表之上）。WinSCP / MobaXterm 的共性：
+  // 双击即编辑，而不是「另存为」。关掉编辑器后列表原地刷新（大小/时间已变）。
+  const [editing, setEditing] = useState<string | null>(null);
   // 列目录超过这个时长还没回来，就在界面上解释一下（而不是让圈一直转）。
   const SLOW_HINT_MS = 2500;
 
@@ -83,7 +88,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
   // 传输进行中也算忙：避免并发多条 ssh 握手（本机不支持连接复用，成本乘以 N）。
   // 含 `xfer.prompt`：否则确认框开着还能接第二批拖放，第二次 setPrompt 会覆盖第一次，
   // 第一批的 Promise 永远不 resolve。
-  const operationBusy = busyOp || !!xfer.transfer || !!xfer.prompt || forms.download.busy;
+  const operationBusy = ops.busy || !!xfer.transfer || !!xfer.prompt || forms.download.busy;
   const busy = operationBusy || loading || !!error;
   const highlightName = useSshFileInitialPath(initialPath, error, path, navigation.replace, entries);
 
@@ -115,61 +120,19 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
   }, [loading]);
 
   const openDir = (name: string) => { if (!busy) setPath(joinRemote(path, name)); };
+  // 双击文件：打开内联编辑器。下载仍然是行尾按钮与多选批量条的事——
+  // 「查看/编辑」是高频，「下载到本机」是低频，双击应该给前者。
+  const openEditor = (name: string) => { if (!busy) setEditing(joinRemote(path, name)); };
 
   // 多选（Ctrl/⌘+点击、Shift+区间）。clear 是 useCallback([]) 稳定引用，解构出来
   // 才能正常写依赖：sel 整体每帧都是新对象，写进依赖等于每次渲染都清一遍选择。
   const sel = useSshFileSelection({ entries, onDownload: forms.handleDownload, busy });
   const { clear: clearSelection } = sel;
+  // 删除成功后要清多选；`sel` 在 ops 之后才建，用 ref 转发（见 ops 的 onRemoved）。
+  const clearSelectionRef = useRef<() => void>(() => {});
+  clearSelectionRef.current = clearSelection;
   // 换目录后选择失效：名字只在当前目录有意义。
   useEffect(() => { clearSelection(); }, [path, clearSelection]);
-
-  const doMkdir = async () => {
-    if (busy || !mkdirName.trim()) return;
-    setBusyOp(true);
-    try {
-      await invoke("ssh_sftp_mkdir", {
-        connectionId: conn.id,
-        path: joinRemote(path, mkdirName.trim()),
-      });
-      toast("已创建文件夹", "success");
-      setMkdirOpen(false);
-      setMkdirName("");
-      void refresh();
-    } catch (e) {
-      toast(`创建失败：${cleanErr(e)}`, "error");
-    } finally {
-      setBusyOp(false);
-    }
-  };
-
-  const confirmRemove = async () => {
-    if (!removeTargets.length || busy) return;
-    const list = removeTargets;
-    setRemoveTargets([]);
-    setBusyOp(true);
-    let failed = 0;
-    try {
-      // 串行删：本机 OpenSSH 不支持连接复用，并发只会把握手成本乘以 N。
-      for (const e of list) {
-        try {
-          await invoke("ssh_sftp_remove", {
-            connectionId: conn.id,
-            path: e.remotePath,
-          });
-        } catch (err) {
-          failed++;
-          toast(`删除 ${e.name} 失败：${cleanErr(err)}`, "error");
-        }
-      }
-      if (failed === 0) {
-        toast(list.length === 1 ? `已删除：${list[0].name}` : `已删除 ${list.length} 个文件`, "success");
-        sel.clear();
-      }
-      void refresh();
-    } finally {
-      setBusyOp(false);
-    }
-  };
 
   return (
     <div ref={paneRef} className="relative flex h-full min-h-0 flex-col">
@@ -187,10 +150,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         canBack={navigation.canBack} canForward={navigation.canForward}
         onHistoryBack={navigation.back} onHistoryForward={navigation.forward}
         onRefresh={() => void refresh()}
-        onNewFolder={() => {
-          setMkdirOpen((v) => !v);
-          setMkdirName("");
-        }}
+        onNewFolder={ops.toggleMkdir}
         onUpload={() => {
           forms.setUploadOpen((v) => !v);
           forms.setUploadLocal("");
@@ -220,13 +180,13 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
       )}
 
       {/* 新建文件夹 / 上传表单（同一位置交替出现） */}
-      {mkdirOpen && (
+      {ops.mkdirOpen && (
         <MkdirForm
-          value={mkdirName}
+          value={ops.mkdirName}
           busy={busy}
-          onChange={setMkdirName}
-          onSubmit={() => void doMkdir()}
-          onCancel={() => setMkdirOpen(false)}
+          onChange={ops.setMkdirName}
+          onSubmit={() => void ops.doMkdir()}
+          onCancel={() => ops.toggleMkdir()}
         />
       )}
       {forms.uploadOpen && (
@@ -250,7 +210,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
           onDownload={sel.downloadSelected}
           onRemove={() =>
             sel.removeSelected(list =>
-              setRemoveTargets(list.map((e) => ({ ...e, remotePath: joinRemote(path, e.name) }))),
+              ops.setTargets(list.map((e) => ({ ...e, remotePath: joinRemote(path, e.name) }))),
             )
           }
           onSelectAll={sel.selectAll}
@@ -270,21 +230,34 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         selectedNames={sel.selected}
         onOpenDir={openDir}
         onDownload={forms.handleDownload}
-        onRemove={entry => setRemoveTargets([{ ...entry, remotePath: joinRemote(path, entry.name) }])}
+        onRemove={entry => ops.setTargets([{ ...entry, remotePath: joinRemote(path, entry.name) }])}
         onSelect={sel.pick}
-        onActivateFile={forms.handleDownload}
+        onActivateFile={openEditor}
         onRetry={() => void refresh()}
       />
+
+      {/* 编辑器覆盖层：关掉时刷新列表，让刚保存的大小/时间立刻可见 */}
+      {editing && (
+        <SshFileEditor
+          key={editing}
+          conn={conn}
+          path={editing}
+          onBack={() => {
+            setEditing(null);
+            void refresh();
+          }}
+        />
+      )}
 
       <TransferBarSlot transfer={xfer.transfer} onCancel={xfer.cancel} />
       {!xfer.transfer && !xfer.prompt && <SshDownloadStatus download={forms.download} busy={busy} />}
 
       {/* 删除二次确认（项目内 Dialog，统一 Tauri 风格）；多选批量时一次问完 */}
       <RemoveConfirmDialog
-        targets={removeTargets}
+        targets={ops.targets}
         busy={busy}
-        onConfirm={() => void confirmRemove()}
-        onCancel={() => setRemoveTargets([])}
+        onConfirm={() => void ops.confirmRemove()}
+        onCancel={() => ops.setTargets([])}
       />
 
       {/* 覆盖确认：删除有二次确认，覆盖也必须有——两者丢数据的后果一样。 */}

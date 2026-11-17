@@ -349,7 +349,7 @@ fn resolve_secrets(
 /// 解析「目标 + 可选跳板」两段的凭据，合成一个派发器。
 ///
 /// 跳板机的凭据来自**被引用那条连接自己**的加密存储，不新增任何落盘面。
-fn resolve_link_secrets(
+pub(super) fn resolve_link_secrets(
     link: &SshLink,
     data_dir: &std::path::Path,
 ) -> Result<PendingCreds, String> {
@@ -550,7 +550,7 @@ pub(super) fn ssh_base_args(link: &SshLink, port_flag: &str) -> Vec<String> {
 }
 
 /// 探测系统 scp 路径（与 find_ssh 同目录）。SFTP 的 get/put 用 scp 实现。
-fn find_scp() -> Option<PathBuf> {
+pub(super) fn find_scp() -> Option<PathBuf> {
     #[cfg(windows)]
     {
         let sys = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
@@ -640,12 +640,12 @@ fn scp_endpoint(conn: &SshConnection, remote: &str, quote_for_shell: bool) -> St
 
 /// 一次 scp 传输的目标描述。把 remote/local/方向收成一体，
 /// 免得 `run_scp` 参数表膨胀到 clippy 都看不下去（too_many_arguments）。
-struct ScpJob<'a> {
-    link: &'a SshLink,
-    remote: &'a str,
-    local: &'a str,
+pub(super) struct ScpJob<'a> {
+    pub(super) link: &'a SshLink,
+    pub(super) remote: &'a str,
+    pub(super) local: &'a str,
     /// true = 本机→远端，false = 远端→本机。
-    upload: bool,
+    pub(super) upload: bool,
 }
 
 /// 跑一次 scp。
@@ -657,7 +657,7 @@ struct ScpJob<'a> {
 ///
 /// 不传 `-q`：它会把进度条**和** ssh 的警告/诊断信息一起关掉，失败时错误几乎是空的；
 /// 前端 `cleanErr` 本来就是为剔掉进度条噪声写的，噪声交给它处理。
-fn run_scp(
+pub(super) fn run_scp(
     scp: &PathBuf,
     job: ScpJob<'_>,
     creds: PendingCreds,
@@ -745,7 +745,7 @@ fn bsd_ls_cmd(path: &str) -> String {
 }
 
 /// 把路径包成单引号并转义内部单引号，避免远程命令注入。
-fn shell_quote(p: &str) -> String {
+pub(super) fn shell_quote(p: &str) -> String {
     format!("'{}'", p.replace('\'', "'\\''"))
 }
 
@@ -953,7 +953,7 @@ pub const ERR_CANCELLED: &str = "CCB_CANCELLED";
 pub const ERR_TARGET_EXISTS: &str = "CCB_TARGET_EXISTS";
 
 /// 下载用的临时后缀。传完才 rename 到正式名。
-const PART_SUFFIX: &str = ".ccbpart";
+pub(super) const PART_SUFFIX: &str = ".ccbpart";
 
 /// 进度事件载荷。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -968,11 +968,11 @@ struct SshTransferProgress {
 /// 列目录 / mkdir / rm 用 `Default`（三个字段都是 None）——它们瞬时完成，
 /// 既不需要进度也不需要取消。
 #[derive(Default, Clone)]
-struct TransferHooks {
-    app: Option<AppHandle>,
-    transfer_id: Option<String>,
-    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    setup_input: Option<String>,
+pub(super) struct TransferHooks {
+    pub(super) app: Option<AppHandle>,
+    pub(super) transfer_id: Option<String>,
+    pub(super) cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub(super) setup_input: Option<String>,
 }
 
 /// 从一块输出里取**最后一个** `NN%`。
@@ -1043,7 +1043,7 @@ const HELPER_BLOCK_TTL: Duration = Duration::from_secs(60);
 /// 表现就是「界面卡住 / 一直加载中」。
 ///
 /// 传输路径（get/put）已经改用 spawn_blocking，列目录/建目录/删除当时漏了。
-async fn spawn_capture_off_runtime(
+pub(super) async fn spawn_capture_off_runtime(
     program: PathBuf,
     args: Vec<String>,
     creds: PendingCreds,
@@ -1109,7 +1109,7 @@ pub(super) async fn run_stable_setup(
 ///
 /// **任何失败都返回 Err，调用方必须退回一次性握手路径**（服务器禁 shell、
 /// MaxSessions 满、远端没有 /bin/sh 都会让 helper 起不来）。helper 一旦出错就拆掉重建。
-async fn run_via_helper(
+pub(super) async fn run_via_helper(
     state: &Arc<AppState>,
     link: &SshLink,
     ssh_path: &Path,
@@ -2127,7 +2127,10 @@ pub async fn ssh_disconnect(
 ///
 /// 跳板机缺失时给的是**能照着做的错误**，而不是默默退回直连（那会表现成
 /// 一句看不懂的超时），也不是让 ssh 带着一个空主机去报原始错误。
-async fn fetch_link(state: &State<'_, Arc<AppState>>, id: &str) -> Result<SshLink, String> {
+pub(super) async fn fetch_link(
+    state: &State<'_, Arc<AppState>>,
+    id: &str,
+) -> Result<SshLink, String> {
     let (conn, jump) = load_link_parts(state.inner(), id).await?;
     SshLink::new(conn, jump)
 }

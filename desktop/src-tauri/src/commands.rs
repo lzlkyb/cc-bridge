@@ -46,6 +46,8 @@ mod server;
 mod service_control;
 /// SSH 终端（面板内交互终端，首版密码登录）。
 mod ssh_cmds;
+/// SSH 远程文件读/写/本机编辑器打开（A+C 方案，复用 ssh_cmds 的 helper 与 scp 通道）。
+mod ssh_file_cmds;
 /// SSH 端口转发（-L / -R / -D）。
 mod ssh_tunnel_cmds;
 mod ssh_tunnel_process;
@@ -73,6 +75,7 @@ pub use running::*;
 pub use server::*;
 pub use service_control::*;
 pub use ssh_cmds::*;
+pub use ssh_file_cmds::*;
 pub use ssh_tunnel_cmds::*;
 pub use stable_connect_cmds::*;
 pub use stable_discovery_cmds::*;

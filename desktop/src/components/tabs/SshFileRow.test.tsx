@@ -27,14 +27,17 @@ it("行内下载不冒泡打开，错误处可直接重试",async()=>{
   await render(false,false,"permission denied");expect(host.querySelector('[role="alert"]')?.textContent).toContain("permission denied");
   await act(async()=>[...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="重试")!.click());expect(retry).toHaveBeenCalledOnce();
 });
-it("🔴 双击普通文件即下载；单击只选中（以前双击完全没动作）",async()=>{
-  await act(async()=>root.render(<FileTable entries={[dir,file]} loading={false} busy={false} error={null} onOpenDir={open} onDownload={download} onRemove={remove} onRetry={retry} onSelect={select} onActivateFile={download}/>));
+it("🔴 双击普通文件即打开编辑器；单击只选中（以前双击完全没动作）",async()=>{
+  const activate=vi.fn();
+  await act(async()=>root.render(<FileTable entries={[dir,file]} loading={false} busy={false} error={null} onOpenDir={open} onDownload={download} onRemove={remove} onRetry={retry} onSelect={select} onActivateFile={activate}/>));
   const row=[...host.querySelectorAll<HTMLTableRowElement>("tbody tr")][1];
   await act(async()=>row.dispatchEvent(new MouseEvent("click",{bubbles:true})));
-  expect(download).not.toHaveBeenCalled();            // 单击不下载
+  expect(activate).not.toHaveBeenCalled();            // 单击不打开
   expect(select).toHaveBeenCalledExactlyOnceWith(file.name,expect.anything());
   await act(async()=>row.dispatchEvent(new MouseEvent("dblclick",{bubbles:true})));
-  expect(download).toHaveBeenCalledExactlyOnceWith(file.name);expect(open).not.toHaveBeenCalled();
+  expect(activate).toHaveBeenCalledExactlyOnceWith(file.name);expect(open).not.toHaveBeenCalled();
+  // 下载不再是双击语义：仍在行尾按钮上，且不冒泡
+  expect(download).not.toHaveBeenCalled();
 });
 it("带修饰键的点击交给多选，不再顺手打开目录",async()=>{
   await act(async()=>root.render(<FileTable entries={[dir,file]} loading={false} busy={false} error={null} onOpenDir={open} onDownload={download} onRemove={remove} onRetry={retry} onSelect={select}/>));

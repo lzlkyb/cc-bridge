@@ -67,10 +67,18 @@ it("🔴 多选后可批量删除：一次确认、串行执行、目录不进�
   expect(h.invoke.mock.calls.filter(c=>c[0]==="ssh_sftp_remove").map(c=>c[1].path))
     .toEqual(["/parent/b.txt","/parent/old.txt"]);
 });
-it("双击普通文件即下载（不用再瞄行尾按钮）",async()=>{
-  h.invoke.mockResolvedValue([folder,file]);await render();
+it("🔴 双击普通文件即打开编辑器（不再下载；下载仍在行尾按钮）",async()=>{
+  // 列目录与读文件分开应答，避免读命令拿到目录数组
+  h.invoke.mockImplementation((cmd:string)=>cmd==="ssh_file_read"
+    ?Promise.resolve({content:"hello\nworld\n",size:12,mtime:1700000000,truncated:false,lineEnding:"lf"})
+    :Promise.resolve([folder,file]));
+  await render();
   await act(async()=>[...host.querySelectorAll<HTMLTableRowElement>("tbody tr")][1].dispatchEvent(new MouseEvent("dblclick",{bubbles:true})));
-  expect(h.download).toHaveBeenCalledExactlyOnceWith("old.txt");
+  expect(h.download).not.toHaveBeenCalled();
+  // 覆盖层出现：顶栏有文件名与「用本机编辑器打开」
+  expect(button("用本机编辑器打开")).toBeTruthy();
+  expect(host.textContent).toContain("/parent");
+  expect(h.invoke.mock.calls.some(c=>c[0]==="ssh_file_read"&&c[1].path==="/parent/old.txt")).toBe(true);
 });
 it("断线时文件面板给出「重新连接」出口，而不是只能一路返回",async()=>{
   const reconnect=vi.fn();h.invoke.mockResolvedValue([folder,file]);

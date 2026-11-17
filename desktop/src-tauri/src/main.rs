@@ -972,6 +972,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_sftp_cancel,
             commands::ssh_sftp_mkdir,
             commands::ssh_sftp_remove,
+            // 远程文件读/写/本机编辑器打开（A+C，同一 ssh_enabled 闸，仅本机面板）。
+            commands::ssh_file_read,
+            commands::ssh_file_write,
+            commands::ssh_file_open_external,
+            commands::ssh_file_upload_edited,
             // 拖拽上传：只读本机路径的元数据（分辨文件/目录），不读内容。
             commands::local_path_info,
             // 剪贴板图片上传的中转文件（写/删临时目录，带前缀+目录双守卫）。

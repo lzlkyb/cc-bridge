@@ -38,7 +38,7 @@ interface SshFileRowProps {
   onRemove: (entry: SshFileEntry) => void;
   /** 带修饰键的点击：多选/区间选择。返回 true = 已按选择处理。 */
   onSelect?: (name: string, e: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean }) => boolean;
-  /** 双击普通文件：下载（以前双击完全没动作，只能点行尾按钮）。 */
+  /** 双击普通文件：打开内联编辑器（读不出来时前端给「用本机编辑器打开」的出路）。 */
   onActivateFile?: (name: string) => void;
 }
 
@@ -83,7 +83,7 @@ export function SshFileRow({
         if (entry.isDir || busy) return;
         onActivateFile?.(entry.name);
       }}
-      title={entry.isDir ? undefined : "双击下载"}
+      title={entry.isDir ? undefined : "双击编辑"}
     >
       {/* max-w 约束列宽：超长文件名截断（title 看全文），不把右侧列挤出面板 */}
       <td className="max-w-[340px] py-1.5 pl-3">
@@ -158,7 +158,7 @@ interface FileTableProps {
   onRetry?: () => void;
   /** 带修饰键的点击 → 多选。 */
   onSelect?: (name: string, e: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean }) => boolean;
-  /** 双击普通文件 → 下载。 */
+  /** 双击普通文件 → 打开内联编辑器。 */
   onActivateFile?: (name: string) => void;
 }
 
