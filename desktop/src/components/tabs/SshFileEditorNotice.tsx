@@ -17,8 +17,7 @@ interface Props {
   onOpenExternal: () => void;
 }
 
-/** 人类可读字节数。 */
-function fmtSize(n: number): string {
+/** 人类可读字节数。 */function fmtSize(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
@@ -79,9 +78,7 @@ export function SshFileEditorNotice({
         <span className="min-w-0 flex-1">
           文件 {fmtSize(size)}，超过内联编辑上限（2 MB），当前为只读预览，仅显示前一段。
         </span>
-        <Button size="sm" className="h-6 px-2 text-xs" variant="outline" disabled={busy} onClick={onOpenExternal}>
-          用本机编辑器打开
-        </Button>
+        {/* 不在这里重复放「用本机编辑器打开」：顶栏常驻那个按钮，只读态也在（设计稿） */}
       </div>
     );
   }
