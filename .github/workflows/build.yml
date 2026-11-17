@@ -99,6 +99,13 @@ jobs:
       - name: 组件体量门禁（行数 + 状态数）
         run: node scripts/check-component-size.mjs
         working-directory: desktop
+      # 发布说明会原样流到 Release 页面和应用内更新弹框，必须是用户能看懂的大白话：
+      # 每条写成「**用户结果**：一句话」、单条 ≤80 字、不带黑话和代码符号。
+      # 本地 pre-push 也跑同一套，但钩子能 --no-verify 跳过、也不在别人的机器上，
+      # 所以 CI 再卡一道。3.1.6 之前的版本段是历史，由脚本里的棘轮自己跳过。
+      - name: 更新日志用户向校验
+        run: node scripts/check-release-notes.mjs --stage=latest
+        working-directory: desktop
       # 存量违规记在 eslint-suppressions.json（棘轮，只许减少），新违规直接拦。
       - name: eslint
         run: npm run lint

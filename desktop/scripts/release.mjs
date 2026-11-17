@@ -42,6 +42,7 @@ import {
   formatReport,
   removeUnreleased,
   collectItemSections,
+  renderVersionBlock,
 } from "./check-release-notes.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -179,7 +180,6 @@ async function main() {
   }
 
   const summary = parsed.summary;
-  const highlights = parsed.highlights.map((h) => `- ${h.text}`);
   const sections = collectItemSections(parsed);
   if (!Object.keys(sections).length) {
     console.error("\x1b[31m[RELEASE ERROR]\x1b[0m [Unreleased] 里没有任何可发布的条目，已中止。");
@@ -191,14 +191,7 @@ async function main() {
   //    [Unreleased] 读出，所以发版后不需要 amend 重写（v3.1.2 / v3.1.5 都栽在这）。
   //    removeUnreleased 的正则沿用旧版：结尾用 `$(?![\s\S])` 才是整串结尾，
   //    带 m 标记时裸 `$` 只匹配行尾，会把整段 Unreleased 留在文件抬头。
-  const highlightBlock = highlights.length
-    ? `### 亮点\n${highlights.join("\n")}\n\n`
-    : "";
-  const sectionLines = Object.entries(sections)
-    .map(([name, items]) => `### ${name}\n${items.join("\n")}`)
-    // 两个 \n：单个 \n 会让下一个 "###" 紧贴列表项，Markdown 渲染成一整段。
-    .join("\n\n");
-  const newBlock = `## [${next}] - ${todayISO()}\n\n${highlightBlock}### 更新摘要\n${summary}\n\n${sectionLines}\n\n`;
+  const newBlock = renderVersionBlock(parsed, next, todayISO());
   const changelog = removeUnreleased(sourceMd);
   // 必须插到第一个「版本段标题」之前，而非 # Changelog 大标题之后——否则新段
   // 会排在文件头描述与首个版本段之间，解析器按 ## [x.y.z] 分段时它不属于任何版本。

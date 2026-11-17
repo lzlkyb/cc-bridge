@@ -15,14 +15,17 @@
  *    PowerShell、主线程、阻塞、tokio。实在必须提功能名（如「防火墙」），
  *    后面要跟一句「它是干什么的」。
  * 4. 一条只说一件事，别把三个改动塞一句里。
+ * 5. 每条写成 `- **用户会看到的变化**：一句话`。标题是「读者扫一眼就知道
+ *    自己会不会碰到」的那层信息，不是功能名、不是 bug 名。整条不超过 80 字。
+ * 6. 光靠词表拦不住回归：黑名单永远追不上新说法，而长句 + 无标题几乎必然
+ *    意味着「塞了多件事」或「在写技术论证」。所以第 4、5 条是硬闸，不靠人记。
  *
  * 坏（真实反例，v3.1.5 原稿）：
  *   - 断网时启动不再卡到「未响应」。防火墙能力探测原先在窗口显示之前、
  *     主线程上同步跑一个 PowerShell，断网环境下没有超时可等几十秒……
  * 好（同一件事，小白版）：
- *   - 断网时打开软件不再卡住。以前开机后要先等一项系统检查做完，窗口才
- *     出现；断网时这一步可能一直等不到结果，电脑会问你要不要结束程序。
- *     现在窗口先打开，检查放在背后慢慢做，最多等 10 秒就放弃。
+ *   - **断网时打开软件不再卡住**：以前要等一项系统检查做完，窗口才出现；
+ *     断网时这一步可能一直等不到结果。现在窗口先打开，检查放在背后做。
  *
  * ── 用法 ──────────────────────────────────────────────────────────
  *   node scripts/check-release-notes.mjs                 # 校验 [Unreleased]
@@ -72,6 +75,28 @@ const PLACEHOLDERS = [
   /(修复|优化|新增|调整|解决)[^\n]{0,6}若干/,
 ];
 const COMMIT_PREFIX = /^(feat|fix|chg|change|refactor|docs|chore|perf|sec|test|style|build|ci)(\([^)]*\))?\s*[:：]/i;
+
+/**
+ * 条目形状：`- **用户会看到的变化**：一句话`。
+ * 这里只认形状，标题长短另行判断（分开判才能给出「标题太长」这种准话）。
+ */
+const TITLED_ITEM = /^\*\*([^*]+)\*\*\s*[：:]\s*(\S[\s\S]*)$/;
+
+/** 标题上限：超过这个长度就变成第二句正文了，扫视时看不出主题。 */
+const MAX_TITLE_LEN = 24;
+
+/** 标题只写这些词 = 没写标题，读者扫一眼还是不知道发生了什么。 */
+const HOLLOW_TITLES = new Set([
+  "优化", "改进", "调整", "更新", "修复", "其他", "其它", "杂项", "若干",
+  "细节", "小改", "问题", "问题修复", "体验优化", "性能优化", "已知问题",
+  "其他改动", "一些改进", "多处优化", "各种修复",
+]);
+
+/**
+ * 一条超过这个长度，几乎必然塞了不止一件事，或者在做技术论证。
+ * v3.1.5 的条目一条 110~160 字、一句里塞四个超时值，就是这条规则要拦的形状。
+ */
+const MAX_ITEM_LEN = 80;
 
 /** 用户可感知的动词/现象词。一条都没有时给个「从现象写起」的提醒。 */
 const USER_WORDS = [
@@ -153,7 +178,11 @@ export function parseNotes(md, { stage = "unreleased" } = {}) {
     }
     const item = line.match(/^\s*[-*]\s+(.*)$/);
     if (item && current) {
-      current.items.push({ text: clean(item[1]), line: i + 1 });
+      // raw 保留原始 markdown（含 `**` 粗体），text 是去掉标记的纯文本。
+      // 结构规则要看 raw，黑话/长度规则看 text；发版时写回 CHANGELOG 也必须用
+      // raw，否则 `**标题**` 会被剥成纯文本——新规则一发布就被自己破坏。
+      const raw = item[1].trim();
+      current.items.push({ text: clean(raw), raw, line: i + 1 });
       continue;
     }
     // 摘要是裸文本；条目写到第二行时把续行并回条目本身——否则换行处后面的
@@ -162,6 +191,7 @@ export function parseNotes(md, { stage = "unreleased" } = {}) {
       const last = current.items[current.items.length - 1];
       if (last) {
         last.text = clean(`${last.text} ${line.trim()}`);
+        last.raw = `${last.raw} ${line.trim()}`;
       } else {
         current.freeText = (current.freeText || []).concat({ text: line.trim(), line: i + 1 });
       }
@@ -285,17 +315,44 @@ export function validate(parsed) {
 
 function checkItem(item, section, add, warnings) {
   const { text, line } = item;
-  if (COMMIT_PREFIX.test(text)) {
+  const raw = item.raw ?? text;
+  const isCommitTitle = COMMIT_PREFIX.test(text);
+  if (isCommitTitle) {
     add(line, section, "COMMIT_TITLE", "这条是 git 提交标题，不是给用户看的说明",
       "去掉 feat:/fix:/chg: 这类前缀，改成「以前会遇到什么、现在变成什么」。提交标题留在 git 里就好。");
+  } else {
+    // 形状：`- **用户会看到的变化**：一句话`。这是「扫一眼能不能看懂」的唯一
+    // 可测代理——黑名单追不上新黑话，但没标题、写成一坨的条目一眼就能抓出来。
+    const titled = raw.match(TITLED_ITEM);
+    if (!titled) {
+      add(line, section, "UNTITLED_ITEM", "这条没有写成「标题：说明」的形状",
+        "改成 `- **用户会看到的变化**：以前怎样，现在怎样。`，例如 "
+        + "`- **断网后旧隧道占着地址**：断线约 45 秒后自动释放，重连沿用原地址。`");
+    } else {
+      const title = titled[1].trim();
+      const titleLen = [...title].length;
+      if (titleLen > MAX_TITLE_LEN) {
+        add(line, section, "TITLE_TOO_LONG", `标题 ${titleLen} 字，超过 ${MAX_TITLE_LEN} 字`,
+          "标题只写「读者一眼能对上自己经历」的那句话，其余内容放到冒号后面。");
+      } else if (HOLLOW_TITLES.has(title)) {
+        add(line, section, "HOLLOW_TITLE", `标题「${title}」等于没写标题`,
+          "换成具体现象，例如把「优化」写成「接入卡更紧凑」、把「修复」写成「复制出的地址不一致」。");
+      }
+    }
   }
   if (PLACEHOLDERS.some((re) => re.test(text))) {
     add(line, section, "PLACEHOLDER_ITEM", "这条是占位 / 敷衍文案",
       "写具体变化，例如「导出文件时可以自己选保存位置，不再悄悄存进下载目录」。");
   }
-  if ([...text].length < 10) {
-    add(line, section, "TOO_SHORT", `只有 ${[...text].length} 个字，说不清是什么变化`,
+  const len = [...text].length;
+  if (len < 10) {
+    add(line, section, "TOO_SHORT", `只有 ${len} 个字，说不清是什么变化`,
       "补一句：以前怎样、现在怎样、对你有什么影响。至少 10 个字。");
+  }
+  if (len > MAX_ITEM_LEN) {
+    add(line, section, "TOO_LONG", `${len} 字，超过 ${MAX_ITEM_LEN} 字上限`,
+      "超长通常意味着一条塞了多件事，或者在写实现细节。拆成两条；"
+      + "删掉「本机实测 1.4 秒」「netsh 查询 3 秒」这类论证，只留以前怎样、现在怎样。");
   }
   checkUserFacing(text, line, section, add, warnings);
   const soft = SOFT_TECH.filter((w) => text.includes(w));
@@ -345,10 +402,29 @@ export function collectItemSections(parsed) {
   const out = {};
   for (const s of parsed.sections) {
     if (ITEM_SECTIONS.has(s.name) && s.items.length) {
-      out[s.name] = s.items.map((i) => `- ${i.text}`);
+      // 用 raw 而不是 text：`**标题**` 的粗体是结构的一部分，发版时必须原样
+      // 搬到新版本段。早期版本这里用 text，于是下一次发版会把标题式条目静默
+      // 剥成纯文本——新规则刚发布就被发版脚本自己破坏。
+      out[s.name] = s.items.map((i) => `- ${i.raw ?? i.text}`);
     }
   }
   return out;
+}
+
+/**
+ * 把解析好的 [Unreleased] 渲染成一个已发布版本段。
+ * release.mjs 与测试共用这一份，避免测试复制粘贴逻辑后与真实发版路径走偏。
+ */
+export function renderVersionBlock(parsed, version, date) {
+  const highlights = parsed.highlights.map((h) => `- ${h.raw ?? h.text}`);
+  const highlightBlock = highlights.length
+    ? `### 亮点\n${highlights.join("\n")}\n\n`
+    : "";
+  const sectionLines = Object.entries(collectItemSections(parsed))
+    .map(([name, items]) => `### ${name}\n${items.join("\n")}`)
+    // 两个 \n：单个 \n 会让下一个 "###" 紧贴列表项，Markdown 渲染成一整段。
+    .join("\n\n");
+  return `## [${version}] - ${date}\n\n${highlightBlock}### 更新摘要\n${parsed.summary}\n\n${sectionLines}\n\n`;
 }
 
 export function formatReport(result, filePath) {

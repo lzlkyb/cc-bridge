@@ -10,25 +10,29 @@ import {
   compareVersion,
   parseNotes,
   removeUnreleased,
+  renderVersionBlock,
   validate,
 } from "./check-release-notes.mjs";
 
-/** 一段合格的小白向文案，作为「正常情况」的基准。 */
+/**
+ * 一段合格的小白向文案，作为「正常情况」的基准。
+ * 条目一律是 `- **用户结果**：一句话`，单条不超过 80 字——这是 3.2.0 起的标准写法。
+ */
 const GOOD = `## [Unreleased]
 
 ### 亮点
-- **断网时打开软件不再卡住**：以前开机后要先等一项系统检查做完，窗口才出现；断网时这一步可能一直等不到结果，电脑会问你要不要结束程序。现在窗口会先打开，检查放在背后慢慢做。
-- **检查更新不再一直转圈**：断网时顶栏的小圆圈以前会转好几分钟，现在最多等一分钟就会告诉你没连上，可以再点一次重试。
+- **断网时打开软件不再卡住**：以前开机要先等一项系统检查做完，窗口才出现；断网时这一步可能一直等不到结果。现在窗口会先打开。
+- **检查更新不再一直转圈**：断网时顶栏的小圆圈以前会转好几分钟，现在最多等一分钟就告诉你没连上，可以再点一次重试。
 
 ### 更新摘要
 断网时打开软件、检查更新和连接页面都不再长时间卡住；从别的窗口点一下顶栏，窗口也不会跟着鼠标跑。
 
 ### 修复
-- 断网时打开软件不再卡住。以前要等一项系统检查做完窗口才出现，断网时这一步可能一直等不到结果，电脑会问你要不要关掉这个软件；现在窗口先打开，检查放在背后慢慢做，最多等十秒就放弃。
-- 连接页面上的「防火墙」不再因为一次没检查出来就长时间显示「无法检测」。慢一次不代表这台电脑不支持，现在会自动再试一次。
-- 断网时检查更新最多等一分钟。以前顶栏的小圆圈能一直转好几分钟，现在到点就提示没连上，可以马上重试。
-- 备份文件夹放在网络硬盘上时，断网不再拖累别的操作。以前翻这个文件夹可能一直等，连别的按钮都点不动。
-- 从别的软件窗口点一下顶栏，窗口不再跟着鼠标跑。现在这一下只把软件切到前台，第二下才开始拖；正常拖动和双击最大化都不受影响。
+- **断网时打开软件不再卡住**：以前要等一项系统检查做完窗口才出现，断网时可能一直等不到结果，电脑会问你要不要关掉软件；现在窗口先打开。
+- **连接页的「防火墙」不再长期显示无法检测**：慢一次不代表这台电脑不支持，现在会自动再试一次。
+- **断网时检查更新最多等一分钟**：以前顶栏的小圆圈能转好几分钟，现在到点就提示没连上，可以马上重试。
+- **备份文件夹在网络硬盘上不再拖累别的操作**：以前翻这个文件夹可能一直等，连别的按钮都点不动。
+- **从别的窗口点顶栏不再拖走窗口**：现在这一下只把软件切到前台，第二下才开始拖；正常拖动和双击最大化都不受影响。
 `;
 
 const errorsOf = (md, stage = "unreleased") =>
@@ -41,6 +45,9 @@ const replace = (from, to) => {
   expect(GOOD).toContain(from);
   return GOOD.replace(from, to);
 };
+
+const WALL = "- **连接页的「防火墙」不再长期显示无法检测**：慢一次不代表这台电脑不支持，现在会自动再试一次。";
+const UPDATE = "- **断网时检查更新最多等一分钟**：以前顶栏的小圆圈能转好几分钟，现在到点就提示没连上，可以马上重试。";
 
 describe("用户向更新日志 · 正常路径", () => {
   it("大白话文案零错误，摘要/亮点/条目都被解析出来", () => {
@@ -72,6 +79,58 @@ describe("用户向更新日志 · 正常路径", () => {
   });
 });
 
+describe("用户向更新日志 · 形状硬闸（防回归的核心）", () => {
+  it("条目写成纯文本长句、没有 `**标题**：` → UNTITLED_ITEM", () => {
+    const md = replace(
+      WALL,
+      "- 连接页的「防火墙」不再长期显示无法检测，慢一次不代表这台电脑不支持，现在会自动再试一次。",
+    );
+    expect(codesOf(md)).toContain("UNTITLED_ITEM");
+    expect(errorsOf(md).find((e) => e.code === "UNTITLED_ITEM").hint).toContain("断网后旧隧道占着地址");
+  });
+
+  it("标题只写「优化」「修复」这类空壳词 → HOLLOW_TITLE", () => {
+    const md = replace(
+      WALL,
+      "- **优化**：连接页的「防火墙」慢一次不再长期显示无法检测，现在会自动再试一次。",
+    );
+    const err = errorsOf(md).find((e) => e.code === "HOLLOW_TITLE");
+    expect(err).toBeDefined();
+    expect(err.hint).toContain("接入卡更紧凑");
+  });
+
+  it("标题长到变成第二句正文 → TITLE_TOO_LONG", () => {
+    const md = replace(
+      WALL,
+      "- **连接页上的防火墙状态不再因为一次没检查出来就长期显示无法检测**：慢一次不代表不支持，现在会自动再试一次。",
+    );
+    expect(codesOf(md)).toContain("TITLE_TOO_LONG");
+  });
+
+  it("一条塞进多件事、写到上百字 → TOO_LONG", () => {
+    const long = "- **防火墙与更新检查**："
+      + "以前要等一项系统检查做完窗口才出现，断网时可能一直等不到结果，电脑会问你要不要关掉软件；".repeat(2)
+      + "现在窗口先打开。";
+    expect([...long].length).toBeGreaterThan(80);
+    const md = replace(WALL, long);
+    expect(codesOf(md)).toContain("TOO_LONG");
+  });
+
+  it("恰好 80 字的条目不算超长（边界不误伤）", () => {
+    const head = "- **边界**：";
+    const body = "啊".repeat(80 - [...head].length);
+    const md = replace(WALL, `${head}${body}`);
+    expect(codesOf(md)).not.toContain("TOO_LONG");
+  });
+
+  it("git 提交标题不会被再叠一条「没标题」，只报 COMMIT_TITLE", () => {
+    const md = replace(UPDATE, "- fix: 给更新检查加上总时限");
+    const codes = codesOf(md);
+    expect(codes).toContain("COMMIT_TITLE");
+    expect(codes).not.toContain("UNTITLED_ITEM");
+  });
+});
+
 describe("用户向更新日志 · 每条硬闸都能精确变红", () => {
   it("缺 [Unreleased] 段 → MISSING_SECTION", () => {
     expect(codesOf("# Changelog\n\n## [3.1.5] - 2026-11-10\n")).toContain("MISSING_SECTION");
@@ -99,25 +158,18 @@ describe("用户向更新日志 · 每条硬闸都能精确变红", () => {
   });
 
   it("git 提交标题混进条目 → COMMIT_TITLE", () => {
-    const md = GOOD.replace(
-      "- 断网时检查更新最多等一分钟。",
-      "- fix: 给更新检查加上总时限",
-    );
+    const md = replace(UPDATE, "- fix: 给更新检查加上总时限");
     expect(codesOf(md)).toContain("COMMIT_TITLE");
   });
 
   it("同一件事写两遍 → DUPLICATE_ITEM，并报出重复行号", () => {
-    const line = "- 断网时检查更新最多等一分钟。以前顶栏的小圆圈能一直转好几分钟，现在到点就提示没连上，可以马上重试。";
-    const md = GOOD.replace(line, `${line}\n${line}`);
+    const md = GOOD.replace(UPDATE, `${UPDATE}\n${UPDATE}`);
     expect(codesOf(md)).toContain("DUPLICATE_ITEM");
     expect(errorsOf(md).find((e) => e.code === "DUPLICATE_ITEM").message).toMatch(/第 \d+ 行/);
   });
 
   it("只有几个字的敷衍条目 → TOO_SHORT", () => {
-    const md = GOOD.replace(
-      "- 断网时检查更新最多等一分钟。以前顶栏的小圆圈能一直转好几分钟，现在到点就提示没连上，可以马上重试。",
-      "- 修复若干问题",
-    );
+    const md = replace(UPDATE, "- 修复若干问题");
     const codes = codesOf(md);
     expect(codes).toContain("PLACEHOLDER_ITEM");
     expect(codes).toContain("TOO_SHORT");
@@ -135,13 +187,14 @@ describe("用户向更新日志 · 每条硬闸都能精确变红", () => {
   });
 
   it("条目换行后，第二行里的黑话也跑不掉", () => {
-    const md = GOOD.replace(
-      "- 断网时打开软件不再卡住。以前要等一项系统检查做完窗口才出现，断网时这一步可能一直等不到结果，电脑会问你要不要关掉这个软件；现在窗口先打开，检查放在背后慢慢做，最多等十秒就放弃。",
-      "- 断网时打开软件不再卡住。以前要等一项系统检查做完窗口才出现，\n  这一步其实是在主线程上跑 PowerShell，断网时可能一直等不到结果。",
+    const md = replace(
+      "- **断网时打开软件不再卡住**：以前要等一项系统检查做完窗口才出现，断网时可能一直等不到结果，电脑会问你要不要关掉软件；现在窗口先打开。",
+      "- **断网时打开软件不再卡住**：以前要等一项系统检查做完窗口才出现，\n  这一步其实是在主线程上跑 PowerShell，断网时可能一直等不到结果。",
     );
     const parsed = parseNotes(md);
     const first = parsed.sections.find((s) => s.name === "修复").items[0];
     expect(first.text).toContain("PowerShell");
+    expect(first.raw).toContain("PowerShell");
     expect(codesOf(md)).toContain("TECH_TERM");
   });
 
@@ -166,8 +219,8 @@ describe("用户向更新日志 · 每条硬闸都能精确变红", () => {
   });
 
   it("亮点写了正文完全没有的结论 → 给警告（不拦）", () => {
-    const md = GOOD.replace(
-      "- **检查更新不再一直转圈**：断网时顶栏的小圆圈以前会转好几分钟，现在最多等一分钟就会告诉你没连上，可以再点一次重试。",
+    const md = replace(
+      "- **检查更新不再一直转圈**：断网时顶栏的小圆圈以前会转好几分钟，现在最多等一分钟就告诉你没连上，可以再点一次重试。",
       "- **拖动窗口时光标不再停止闪烁**：透明主题下拖窗也不再闪动，这个结论还没验证过。",
     );
     const result = validate(parseNotes(md));
@@ -176,17 +229,18 @@ describe("用户向更新日志 · 每条硬闸都能精确变红", () => {
   });
 });
 
-describe("发版数据流（release.mjs 用的那套解析）", () => {
+describe("发版渲染（renderVersionBlock，release.mjs 走的就是这一步）", () => {
+  it("标题式条目的粗体原样搬进新版本段，不会被剥成纯文本", () => {
+    const block = renderVersionBlock(parseNotes(GOOD), "3.1.6", "2026-11-11");
+    expect(block).toContain("- **断网时打开软件不再卡住**：");
+    expect(block).toContain("- **连接页的「防火墙」不再长期显示无法检测**：");
+    expect(block).not.toMatch(/^- 断网时打开软件不再卡住：/m);
+    // 渲染出来的段自己也得过同一套规则，否则发版当天就把 main 卡红。
+    expect(validate(parseNotes(block, { stage: "latest" })).errors).toEqual([]);
+  });
+
   it("产出新版本段时保留亮点与摘要，且不夹带 git 提交标题", () => {
-    const parsed = parseNotes(GOOD);
-    const sections = collectItemSections(parsed);
-    const highlightBlock = parsed.highlights.length
-      ? `### 亮点\n${parsed.highlights.map((h) => `- ${h.text}`).join("\n")}\n\n`
-      : "";
-    const sectionLines = Object.entries(sections)
-      .map(([name, items]) => `### ${name}\n${items.join("\n")}`)
-      .join("\n\n");
-    const block = `## [3.1.6] - 2026-11-11\n\n${highlightBlock}### 更新摘要\n${parsed.summary}\n\n${sectionLines}\n\n`;
+    const block = renderVersionBlock(parseNotes(GOOD), "3.1.6", "2026-11-11");
     expect(block).toContain("### 亮点");
     expect(block).toContain("### 更新摘要");
     expect(block).toContain("断网时打开软件、检查更新");
