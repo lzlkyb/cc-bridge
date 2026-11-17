@@ -32,7 +32,14 @@ const CMD_TIMEOUT: Duration = Duration::from_secs(15);
 /// 登录（含认证）的超时。与一次性握手路径保持一致。
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(30);
 /// 空闲多久后回收。服务器端 `MaxSessions` 默认只有 10，不能白占着。
-pub const HELPER_IDLE_TTL: Duration = Duration::from_secs(300);
+///
+/// 🔴 这个值直接决定「点开文件面板要等多久」。早先是 300 秒，而用户看日志、改配置的
+/// 实际操作间隔经常超过 5 分钟——过了就回收，下次点文件又付一次完整握手（TCP + KEX +
+/// 认证，VPN/跳板下几秒）。占用的 session 数是**每条连接 1 个**（不是每个文件 1 个），
+/// 30 分钟在这个成本下是划算的。
+/// 真正的释放时机是确定的：断开终端、删除/改动连接、关闭 SSH 总开关都会显式
+/// `drop_ssh_helper`，TTL 只是兜底。
+pub const HELPER_IDLE_TTL: Duration = Duration::from_secs(1800);
 /// 输出缓冲上限。防止一条误用的命令（如 `cat 大文件`）把内存吃光。
 const MAX_BUF: usize = 4 * 1024 * 1024;
 /// 轮询输出缓冲的间隔。太密空转 CPU，太疏拉高延迟。

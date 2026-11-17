@@ -1763,6 +1763,9 @@ pub async fn ssh_connect(
     })?;
 
     // 4) 凭据解析：密码 / 密码短语（仅此刻在内存出现明文，用过即丢）。
+    // 下面两个字段会被 move 进这次解析，而文件通道的预热（见函数末尾）又需要同一份
+    // 一次性凭据，所以先留副本——它只活在本次调用的栈上，不落盘、不进任何长生命周期结构。
+    let preheat_secrets = (args.password.clone(), args.passphrase.clone());
     let auto_creds =
         resolve_connect_secrets(&link, &state.data_dir, args.password, args.passphrase)?;
 
@@ -1993,6 +1996,48 @@ pub async fn ssh_connect(
         args.cols
     );
 
+    // 预热文件通道：登录成功后立刻把常驻 helper 会话建起来。
+    //
+    // WHY：helper 冷启动（PTY + ssh 进程 + TCP + KEX + 可能两段认证）是文件面板最大的
+    // 延迟来源，而它原本**只在用户第一次点文件时才建**——也就是说那一次点击要替整个
+    // 会话付账。实际使用里用户都是从终端里看到路径才去点，此时登录已经成功，这一跳纯属浪费。
+    //
+    // 为什么要等 `SSH_CONNECT_FAIL_GRACE`：本函数返回只代表 ssh **进程起来了**，主机不可达 /
+    // 端口错 / 密码错都会在宽限期内退出。不等就预热的话，一次密码错误会额外多发一次登录
+    // 尝试——服务器的 fail2ban 会把它记成连续失败，可能把用户锁在门外。
+    {
+        let preheat_state = state.inner().clone();
+        let preheat_link = link.clone();
+        let preheat_sid = session_id.clone();
+        let (preheat_pw, preheat_pp) = preheat_secrets;
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(SSH_CONNECT_FAIL_GRACE).await;
+            // 宽限期后会话还在 = 登录成功（与上面 reader 里的早期失败判据同源）。
+            if !preheat_state.ssh_sessions.contains_key(&preheat_sid) {
+                return;
+            }
+            // 同一连接开多个标签会各自起一个预热任务；已有 helper 就不必再登一次，
+            // 否则白占服务器一个 MaxSessions 名额。
+            if preheat_state
+                .ssh_helpers
+                .contains_key(&preheat_link.conn.id)
+            {
+                return;
+            }
+            let Ok(creds) = resolve_connect_secrets(
+                &preheat_link,
+                &preheat_state.data_dir,
+                preheat_pw,
+                preheat_pp,
+            ) else {
+                return;
+            };
+            let Some(ssh) = find_ssh() else { return };
+            // 失败静默：`run_via_helper` 自己会记 60 秒负缓存，用户点文件时直接走一次性
+            // 路径（慢但不丢能力）。预热是纯优化，任何情况下都不该冒出一个错误提示。
+            let _ = run_via_helper(&preheat_state, &preheat_link, &ssh, creds, "true".into()).await;
+        });
+    }
     Ok(session_id)
 }
 
