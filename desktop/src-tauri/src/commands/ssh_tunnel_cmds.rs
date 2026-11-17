@@ -10,7 +10,7 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::time::{Duration, Instant};
 
 use portable_pty::ChildKiller;
@@ -26,6 +26,7 @@ use crate::ssh_proxy::PendingCreds;
 use crate::ssh_tunnel::{forward_args, is_fatal, TunnelState, TunnelStatus};
 use crate::ssh_tunnel_guard::{reclaim_command, ManagedGuard, ReclaimResult};
 use crate::state::{AppState, SshTunnel, SshTunnelRestart};
+use crate::tunnel_traffic::{ByteDelta, Relay};
 
 const STATUS_EVENT: &str = "ssh_tunnel_status";
 const RETRY_MIN: Duration = Duration::from_secs(2);
@@ -36,14 +37,16 @@ type SharedStatus = Arc<StdMutex<TunnelStatus>>;
 
 /// 一条转发重连时不变的部分。
 struct Plan {
+    id: String,
     link: SshLink,
     ssh: PathBuf,
-    args: Vec<String>,
+    rules: Vec<ForwardRule>,
     data_dir: PathBuf,
     /// 启动时临时输入的密码 / 口令：要留到停止为止，否则断线后没法自动重连。
     password: Option<String>,
     passphrase: Option<String>,
     guard: Option<Arc<ManagedGuard>>,
+    state: Weak<AppState>,
 }
 
 /// 开启（或按最新配置重启）一条连接的端口转发。
@@ -93,7 +96,7 @@ pub async fn ssh_tunnel_stop(
     connection_id: String,
 ) -> Result<(), String> {
     let _start_guard = state.ssh_tunnel_start_lock.lock().await;
-    stop_and_wait(state.inner(), &connection_id).await;
+    stop_and_release(state.inner(), &connection_id).await;
     audit_tunnel(
         &state,
         "ssh_tunnel_stop",
@@ -363,8 +366,6 @@ pub(super) async fn start_plan(
     {
         return Err("托管隧道需要一个固定的远端监听端口。".into());
     }
-    let args = tunnel_args(&link, &id, &rules);
-
     // 重启时必须等旧进程真正退出：它还占着本地端口，新进程会 bind 失败。
     stop_and_wait(&state, &id).await;
 
@@ -402,15 +403,20 @@ pub(super) async fn start_plan(
             password: password.clone(),
             passphrase: passphrase.clone(),
         })),
+        // 同一份句柄也留在隧道本体上：停止时（`SshTunnel::release_receipt`）要靠它的
+        // 身份确认盘上凭据是不是自己写的，才能安全删掉。
+        guard: guard.clone(),
     };
     let plan = Plan {
+        id: id.clone(),
         link,
         ssh,
-        args,
+        rules,
         data_dir: state.data_dir.clone(),
         password: password.filter(|v| !v.is_empty()),
         passphrase: passphrase.filter(|v| !v.is_empty()),
         guard,
+        state: Arc::downgrade(&state),
     };
     let (stop, shared, killer, app2) = (
         tunnel.stop.clone(),
@@ -471,12 +477,28 @@ pub(super) fn tunnel_args(link: &SshLink, id: &str, rules: &[ForwardRule]) -> Ve
 }
 
 pub(super) async fn stop_and_wait(state: &Arc<AppState>, id: &str) {
+    stop_tunnel(state, id, false).await;
+}
+
+/// 真正的停止：用户断开、连接被删。与 [`stop_and_wait`] 的区别只有一个 ——
+/// 顺手清掉远端监听的恢复凭据，因为后面不会立刻用新参数重启。
+pub(super) async fn stop_and_release(state: &Arc<AppState>, id: &str) {
+    stop_tunnel(state, id, true).await;
+}
+
+/// `release` 只在**不会紧跟一次重启**时传 true。重启路径（`start_plan`、接管替换）
+/// 必须保留凭据：旧远端监听可能还在释放端口，下一次启动要靠它去回收。
+async fn stop_tunnel(state: &Arc<AppState>, id: &str, release: bool) {
     let Some(old) = state.halt_ssh_tunnel(id) else {
         return;
     };
     let handle = old.thread.lock().unwrap_or_else(|p| p.into_inner()).take();
     if let Some(h) = handle {
         let _ = tauri::async_runtime::spawn_blocking(move || h.join()).await;
+    }
+    // 线程退出后再清：`register` 在 stop 置位后就不再写凭据，此时删是终态。
+    if release {
+        old.release_receipt();
     }
 }
 
@@ -656,7 +678,14 @@ fn run_once(
     if stop.load(Ordering::SeqCst) {
         return None;
     }
-    let mut args = plan.args.clone();
+    let mut rules = plan.rules.clone();
+    // Keep the logical rule in TunnelStatus so matching, rollback and fixed remote ports
+    // are independent of the disposable localhost listener for this SSH attempt.
+    let _relay = plan
+        .guard
+        .as_ref()
+        .and_then(|_| attach_traffic_relay(app, plan, &mut rules[0], stop, status));
+    let mut args = tunnel_args(&plan.link, &plan.id, &rules);
     let guard_run = plan.guard.as_ref().map(|guard| {
         let attempt = guard.attempt();
         args.push(attempt.command());
@@ -677,6 +706,66 @@ fn run_once(
             });
         },
     )
+}
+
+fn attach_traffic_relay(
+    app: &AppHandle,
+    plan: &Plan,
+    rule: &mut ForwardRule,
+    stop: &Arc<AtomicBool>,
+    status: &SharedStatus,
+) -> Option<Relay> {
+    #[derive(Clone, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Activity<'a> {
+        connection_id: &'a str,
+        at: u64,
+        to_local: u64,
+        to_remote: u64,
+    }
+
+    let (app, stop, status) = (app.clone(), stop.clone(), status.clone());
+    let state = plan.state.clone();
+    let connection_id = plan.link.conn.id.clone();
+    let target = (rule.target_host.clone(), rule.target_port);
+    // This runs on the SSH supervisor thread. Bind before spawning ssh so the
+    // reverse forward never points at an unreserved port.
+    let result = tauri::async_runtime::block_on(Relay::start(target, move |delta: ByteDelta| {
+        if stop.load(Ordering::SeqCst)
+            || status.lock().unwrap_or_else(|p| p.into_inner()).state != TunnelState::Up
+        {
+            return;
+        }
+        let Some(state) = state.upgrade() else { return };
+        // Telemetry can skip a batch during a config write. Forwarding never waits for UI state.
+        let selected = state.config.try_read().is_ok_and(|config| {
+            crate::stable_connect::selected_saved(&config)
+                .is_some_and(|saved| saved.enabled && saved.connection_id == connection_id)
+        });
+        if !selected || !state.mcp_running.load(Ordering::Relaxed) {
+            return;
+        }
+        let _ = app.emit(
+            "stable_tunnel_traffic",
+            Activity {
+                connection_id: &connection_id,
+                at: crate::connection_access::now_ms(),
+                to_local: delta.to_local,
+                to_remote: delta.to_remote,
+            },
+        );
+    }));
+    match result {
+        Ok(relay) => {
+            rule.target_host = std::net::Ipv4Addr::LOCALHOST.to_string();
+            rule.target_port = relay.port;
+            Some(relay)
+        }
+        Err(error) => {
+            log::debug!("隧道流量监测不可用，继续使用原转发目标：{error}");
+            None
+        }
+    }
 }
 
 pub(super) fn reclaim_previous(

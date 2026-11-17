@@ -33,6 +33,7 @@ fn register_tunnel(state: &AppState, id: String, rules: &[ForwardRule]) -> Arc<A
             killer: Arc::new(StdMutex::new(None)),
             thread: StdMutex::new(None),
             restart: None,
+            guard: None,
         },
     );
     stop

@@ -41,6 +41,8 @@ pub struct ConnectionAccess {
     pub config_matches: bool,
     pub configuration_verified: bool,
     pub verified_at: Option<u64>,
+    /// 配置写入之后、确实有客户端经隧道连上来的时刻（Unix ms）。None = 尚无证据。
+    pub client_verified_at: Option<u64>,
     pub channel_ready: bool,
     pub channel_detail: String,
     pub channel_phase: String,
@@ -216,6 +218,33 @@ pub fn summary(
     startup_error: Option<&str>,
     firewall_blocked: bool,
 ) -> ConnectionAccess {
+    summary_with_client(
+        config,
+        records,
+        ips,
+        running,
+        local_reachable,
+        startup_error,
+        firewall_blocked,
+        None,
+    )
+}
+
+/// 同 [`summary`]，额外带一条客户端侧证据：最近一次通过鉴权的请求时刻（Unix ms）。
+///
+/// 拆成两个函数而不是给 `summary` 加参数，是为了让只关心配置侧的调用点（以及 15 处
+/// 测试）保持原签名——多出来的那个参数在绝大多数场景下确实没有值。
+#[allow(clippy::too_many_arguments)] // 参数是彼此独立的事实，打包结构体只会让调用点更长
+pub fn summary_with_client(
+    config: &BridgeConfig,
+    records: &[StableRecord],
+    ips: &[String],
+    running: bool,
+    local_reachable: Option<bool>,
+    startup_error: Option<&str>,
+    firewall_blocked: bool,
+    client_hit_at: Option<u64>,
+) -> ConnectionAccess {
     let tunnel = uses_tunnel(config);
     let direct = direct_access(config, ips);
     let receipt = config
@@ -248,6 +277,13 @@ pub fn summary(
         direct.address.clone()
     };
     let target = record.and_then(|r| r.target.as_ref());
+    // 记录里的 target 只能证明上次写了什么，不能证明服务器现在的文件内容。
+    // 有记录才比对：URL 不等于当前隧道固定地址、或 Token 变了，都不能算指向这条隧道。
+    // 没有记录（旧版本升级上来的连接）不阻断，但也不允许声称"已核实"。
+    let target_matches = target.is_none_or(|t| {
+        !address.is_empty() && t.url.as_str() == address.as_str() && t.token_matches
+    });
+    let target_confirmed = target.is_some() && target_matches;
     let scope = if tunnel {
         target
             .map(|t| t.scope.as_str())
@@ -350,7 +386,7 @@ pub fn summary(
         config_matches: matches,
         configuration_verified: tunnel
             && matches
-            && target.is_some()
+            && target_confirmed
             && phase != "error"
             && phase != "running",
         verified_at: if tunnel {
@@ -358,6 +394,7 @@ pub fn summary(
         } else {
             None
         },
+        client_verified_at: None,
         channel_ready,
         channel_detail: if tunnel {
             "已连通"
@@ -527,6 +564,18 @@ pub fn summary(
             "恢复隧道",
             "已暂停",
         ))
+    } else if tunnel && !target_matches {
+        // 隧道通了不等于接入指对了：记录的地址与固定地址不一致时，不能报"已连通"。
+        // 链路中间段同步降级，否则卡片一边写「隧道通道已连通」一边写「接入仍是旧地址」，自相矛盾。
+        Some((
+            "changed",
+            "warn",
+            "隧道已连通，服务器接入待更新",
+            "服务器上的接入仍指向原地址，更新后才能通过隧道使用。",
+            "接入待更新",
+            "更新服务器接入",
+            "已连通 · 接入未指向",
+        ))
     } else if !tunnel && ip_changed {
         Some((
             "ip-changed",
@@ -578,6 +627,30 @@ pub fn summary(
         access.short = short.into();
         access.action = action.into();
         access.channel_detail = channel.into();
+    }
+
+    // ── 客户端侧证据：配置写完之后，真有请求从隧道进来了 ──
+    // 三条同时成立才认，缺一条都不声称已验证：
+    //   1. 隧道模式且配置已写入；
+    //   2. 记录里的接入地址就是当前隧道固定地址——地址还没更新时，进门的流量
+    //      不可能来自这条隧道；
+    //   3. 请求时刻晚于配置写入时刻（verified_at），排除改配置之前就挂着的旧连接。
+    // 局限（有意接受，且不在文案里夸大）：本机自己的 Claude Code 也走回环，无法与
+    // 隧道区分；多台服务器同时挂隧道时也只能证明「有一台在用」，证明不了是哪一台。
+    access.client_verified_at = client_hit_at.filter(|at| {
+        tunnel
+            && configured
+            && target_matches
+            && record
+                .and_then(|r| r.verified_at)
+                .is_some_and(|wrote| *at > wrote)
+    });
+    if access.client_verified_at.is_some() && access.state == "waiting" {
+        // 只换掉「等待客户端」这一类文案。别的 state（重连中 / 待更新 / 异常）各有
+        // 自己的语义，不能被一条流量证据盖掉。
+        access.title = "隧道连接已生效".into();
+        access.detail = "已通过隧道收到客户端请求，接入可以正常使用。".into();
+        access.short = "接入已验证".into();
     }
     access
 }

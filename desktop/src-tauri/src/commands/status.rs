@@ -403,7 +403,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
-    let current_access = crate::connection_access::summary(
+    let current_access = crate::connection_access::summary_with_client(
         &config,
         &records,
         &lan_ips,
@@ -411,6 +411,8 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         crate::connection_access::cached_local_probe(&state, &config, &lan_ips),
         startup_error.as_deref(),
         firewall_enabled == Some(true) && firewall_port_open == Some(false),
+        // 只有回环来源才算隧道证据：服务器网卡直连也走这条端口，但那证明的是旧地址还能用。
+        state.client_hit().filter(|h| h.loopback).map(|h| h.at_ms),
     );
     let connect_cmd =
         crate::connection_access::connect_command(&config, &lan_ips).unwrap_or_default();

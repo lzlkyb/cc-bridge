@@ -129,8 +129,8 @@ async fn configure_with_takeover(
     } else {
         "CCB_VERIFIED"
     };
-    if !output.lines().any(|line| line.trim() == marker) {
-        return Err("远程配置没有返回确认结果，请重新检测".into());
+    if let Some(error) = stable::setup_error(&output, marker) {
+        return Err(error);
     }
     let target = Some(crate::stable_discovery::parse_result::<
         crate::stable_discovery::StableTarget,

@@ -18,6 +18,8 @@ export interface ConnectionAccess {
   configMatches: boolean;
   configurationVerified: boolean;
   verifiedAt: number | null;
+  /** 配置写入之后、确有客户端经隧道连上来的时刻（Unix ms）。null = 尚无证据。 */
+  clientVerifiedAt?: number | null;
   channelReady: boolean;
   channelDetail: string;
   channelPhase?: string;
@@ -91,9 +93,21 @@ export function currentAccessChain(status?: StaticStatus, access = currentConnec
     segments: [
       { key: "service", name: "本机服务", tone: running ? "ok" : status?.startupError ? "bad" : "idle", detail: running ? "运行中" : status?.startupError ? "启动失败" : "已停止" },
       middle,
-      { key: "verification", name: "接入验证", tone: "idle", detail: "客户端待验证" },
+      { key: "verification", name: "接入验证", ...verifiedSegment(access?.clientVerifiedAt) },
     ],
   };
+}
+
+/**
+ * 第三步「接入验证」的唯一依据：后端在配置写完之后，确实收到过回环来源的请求。
+ * 本机拿不到服务器上的客户端状态，但隧道是裸 TCP 转发——能从 127.0.0.1 打进来，
+ * 就只可能是 sshd 转回来的。没有这条证据时保持灰色，不装作已核实。
+ */
+function verifiedSegment(at?: number | null) {
+  if (!at) return { tone: "idle" as const, detail: "客户端待验证" };
+  const t = new Date(at);
+  const clock = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+  return { tone: "ok" as const, detail: `已验证 ${clock}` };
 }
 
 /** The backend owns facts. An event arriving before get_status uses a neutral, unverified transition. */
@@ -126,7 +140,7 @@ export function currentConnection(status?: StaticStatus, snapshot?: StableConnec
     address, previousAddress: stable ? previousAddress : null, scope: scope as McpScope, projectPath, entryName, targetId: stable ? targetId : null,
     targetKey: JSON.stringify(["transition", method, stable ? snapshot?.selectedConnectionId : host, address, scope, projectPath, entryName, targetId, saved?.targetKey]),
     configured: stable && !!record?.configured, configMatches: stable && !!record?.configMatches,
-    configurationVerified: false, verifiedAt: null, channelReady: !!status.running && (stable ? record?.phase === "ready" : !status.ipChanged && status.remoteReachable === true),
+    configurationVerified: false, verifiedAt: null, clientVerifiedAt: null, channelReady: !!status.running && (stable ? record?.phase === "ready" : !status.ipChanged && status.remoteReachable === true),
     channelDetail: stable ? record?.configured ? "读取状态中" : "待配置" : "本机地址检查", channelPhase: stable ? record?.phase ?? "idle" : "unknown",
     state: "waiting", tone: "live", title: stable ? record?.configured ? "正在读取隧道接入状态" : "隧道连接尚未配置" : "本机已就绪，接入待验证",
     detail: stable ? "在接入卡片查看当前服务器的配置和连接状态。" : "复制命令后，在服务器执行并查看 Claude Code 的 /mcp。",
@@ -153,6 +167,15 @@ export function currentConnection(status?: StaticStatus, snapshot?: StableConnec
       channelReady: record.phase === "ready" && !!status.running, canCopyCommand: !!record.configMatches && record.phase !== "running",
       configurationVerified: !!record.configMatches && !!record.target && record.phase !== "error" && record.phase !== "running", verifiedAt: record.verifiedAt ?? null });
     if (sameStableTarget && saved) access.targetKey = saved.targetKey;
+  }
+  // record.target 是服务器最近一次核对读到的真值。它和固定地址不一致时，隧道通但接入没指过来，
+  // 不能沿用「已连通，等待 Claude Code」——否则卡片一边说通了，一边又在下面提示地址是旧的。
+  if (stable && record?.target && stableAddress && record.target.url !== stableAddress) {
+    Object.assign(access, {
+      state: "changed", tone: "warn", title: "隧道已连通，服务器接入待更新", short: "接入待更新",
+      detail: "服务器上的接入仍指向原地址，更新后才能通过隧道使用。", action: "更新服务器接入",
+      channelDetail: "已连通 · 接入未指向", configurationVerified: false,
+    });
   }
   if (stable && (status.remoteTlsEnabled || status.transport === "sse")) Object.assign(access, { state: "unsupported", tone: "warn", title: "隧道接入设置需要调整", short: "设置待调整",
     detail: "自动接入需要 HTTP 且未启用 HTTPS；请前往现有网络设置调整。", action: "查看网络设置", channelReady: false, channelDetail: "等待调整", canCopyCommand: false });

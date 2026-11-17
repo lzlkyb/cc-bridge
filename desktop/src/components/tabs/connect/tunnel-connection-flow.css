@@ -1,0 +1,154 @@
+.status-card.connection-status-card[data-connection-method="stable"] > .connection-card-headline {
+  margin-top: 9px;
+  font-size: 18px;
+}
+
+.tunnel-route {
+  --route-ink: #f5f6ff;
+  --route-rail: rgb(238 242 255 / .60);
+  --route-surface: #eef2ff;
+  --route-surface-ink: #393e94;
+  --route-reconnect: #ffe0a5;
+  --route-end-width: clamp(76px, 23%, 86px);
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--route-end-width) minmax(0, 1fr) var(--route-end-width);
+  align-items: start;
+  margin-top: 17px;
+}
+
+html[data-ui-style="glass"] .tunnel-route {
+  --route-ink: #434b99;
+  --route-rail: rgb(86 103 175 / .58);
+  --route-surface: #e6eaff;
+  --route-reconnect: #98531a;
+}
+
+html.dark[data-ui-style="glass"] .tunnel-route {
+  --route-ink: #d5d8ff;
+  --route-rail: rgb(174 187 249 / .52);
+  --route-surface: #2e3960;
+  --route-surface-ink: #e6e8ff;
+  --route-reconnect: #ffd19b;
+}
+
+.tunnel-route-end {
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  text-align: center;
+  line-height: 1.4;
+  border-radius: 8px;
+}
+
+.tunnel-route-end strong { font-size: 11.5px; white-space: nowrap; }
+.tunnel-route-end small { font-size: 10.5px; color: var(--glass-status-muted, currentColor); }
+.tunnel-route-end.nav-target:hover strong { text-decoration: underline; text-underline-offset: 2px; }
+
+.tunnel-route-device {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 5px;
+  border-radius: 50%;
+  background: var(--route-surface);
+  color: var(--route-surface-ink);
+  border: 1px solid hsl(var(--background) / .65);
+  box-shadow: 0 2px 7px rgb(20 33 89 / .14);
+}
+
+.tunnel-route-device svg { stroke-width: 1.7; }
+
+.tunnel-route-tracks {
+  position: absolute;
+  top: -3px;
+  left: calc(var(--route-end-width) / 2 + 19px);
+  width: calc(100% - var(--route-end-width) - 38px);
+  height: 46px;
+  fill: none;
+  stroke: var(--route-rail);
+  stroke-width: 1.15;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tunnel-route-tracks path { vector-effect: non-scaling-stroke; }
+.tunnel-route-tracks [data-connected="false"] { stroke-dasharray: 3 4; opacity: .7; }
+.tunnel-route-direction { stroke: var(--route-ink); stroke-width: 1.5; }
+.tunnel-route-interruption { stroke: var(--route-reconnect); stroke-dasharray: 3 4; stroke-width: 1.5; }
+.tunnel-route-pulse {
+  opacity: 0;
+  stroke: var(--route-ink);
+  stroke-width: 3;
+  stroke-dasharray: 10 110;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tunnel-route-pulse { display: none; }
+}
+
+.tunnel-route-channel {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  min-width: 0;
+  padding-top: 10px;
+}
+
+.tunnel-route-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 20px;
+  max-width: 100%;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--route-surface);
+  color: var(--route-surface-ink);
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: center;
+}
+
+.tunnel-route-state svg { flex: none; }
+.tunnel-route-state.nav-target:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+.tunnel-route[data-reconnecting="true"] .tunnel-route-state {
+  color: #814305;
+  background: #f8e9d8;
+}
+
+.dark .tunnel-route[data-reconnecting="true"] .tunnel-route-state {
+  color: #ffd5a7;
+  background: #543625;
+}
+
+.tunnel-route-request,
+.tunnel-route-response {
+  position: absolute;
+  color: var(--route-ink);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.tunnel-route-request { top: -8px; right: calc(50% + 10px); }
+.tunnel-route-response { top: 40px; left: calc(50% + 10px); }
+
+html[data-ui-style="glass"] .tunnel-route .nav-target:focus-visible {
+  outline: 2px solid var(--route-ink);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .tunnel-route {
+    --route-ink: CanvasText;
+    --route-rail: CanvasText;
+    --route-reconnect: LinkText;
+  }
+  .tunnel-route-state { border: 1px solid ButtonText; }
+}

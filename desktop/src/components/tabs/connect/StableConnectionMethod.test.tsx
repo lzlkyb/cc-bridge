@@ -165,6 +165,17 @@ it("同一帧重复点击只启动一次，IPC 返回也不能把尚未完成的
   expect(host.querySelector(".stable-server-control")).toBeNull();
 });
 
+it("切回隧道会排队一次接入核对，但不强制展开配置面板", async () => {
+  await mount();
+  await act(async () => { await state.select("direct"); }); await flush();
+  expect(state.ui.verify).toBe(false);
+  await act(async () => { await state.select("stable"); }); await flush();
+  expect(calls("stable_connect_select")).toHaveLength(2);
+  // 切换只写本地偏好；核对由 useStableAccess 排队执行，紧凑视图不被顶开。
+  expect(state.ui.verify).toBe(true);
+  expect(state.ui.managing).toBe(false);
+});
+
 it("两种连接方式共用一个路径、范围、令牌和权限设置", async () => {
   await mount();
   await act(async () => { guide.setProjectPath("  /srv/My Project  "); guide.setIncludeShellTools(true); });

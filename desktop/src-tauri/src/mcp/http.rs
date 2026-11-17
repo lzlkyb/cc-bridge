@@ -562,6 +562,9 @@ async fn mcp_handler(
     state.record_request_time();
 
     let source_ip = addr.ip().to_string();
+    // 鉴权在 middle_channel 之前已完成（未授权请求不会走到这里），所以这行记的一定是
+    // 「拿正确 token 连上来」的客户端。隧道转发的对端在本机看必然是回环地址。
+    state.record_client_hit(addr.ip().is_loopback());
 
     let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
 

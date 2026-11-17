@@ -12,6 +12,7 @@ import { useAppHidden } from "../../lib/appVisibility";
 import { useRemoteActivity } from "../../lib/metricHistory";
 import { useChangeClass } from "../../hooks/useChangeClass";
 import { ServiceChain } from "./ServiceChain";
+import { TunnelConnectionFlow } from "./connect/TunnelConnectionFlow";
 import { RecentActivity } from "./RecentActivity";
 import { StopClick } from "../ui/NavTarget";
 import { useToast } from "../ui/toast";
@@ -29,13 +30,16 @@ export function StatusCard({ status, displayHost, port, onChanged, onNavigate }:
 }) {
   const { data: live } = useLiveStatus();
   const access = useCurrentConnection(status);
+  const tunnel = access?.method === "stable" ? access : undefined;
   const control = useServiceControl(status, onChanged);
   const running = !!status?.running;
   const chain = currentAccessChain(status, access);
+  // A reconnect belongs to the route. Keep the shared service controls on a stable surface.
+  const surfaceTone = tunnel?.state === "recovery" && running ? "live" : chain.tone;
   const { lastIncreaseAt } = useRemoteActivity();
   const motion = useDashboardMotion();
-  const traffic = useChangeClass(lastIncreaseAt ?? 0, "dashboard-traffic", 900, motion && running && lastIncreaseAt !== null);
-  const toneSwitch = useChangeClass(chain.tone, "status-card--switch", 400, motion);
+  const traffic = useChangeClass(lastIncreaseAt ?? 0, "dashboard-traffic", 900, !tunnel && motion && running && lastIncreaseAt !== null);
+  const toneSwitch = useChangeClass(surfaceTone, "status-card--switch", 400, motion);
   const { toast } = useToast();
 
   const [liveUptime, setLiveUptime] = useState(0);
@@ -54,14 +58,16 @@ export function StatusCard({ status, displayHost, port, onChanged, onNavigate }:
   };
   const projectName = access?.projectPath.split("/").filter(Boolean).slice(-1)[0];
 
-  return <div className={`status-card connection-status-card ${TONE_CLASS[chain.tone]} ${toneSwitch} ${traffic}`} data-connection-state={access?.state}>
+  return <div className={`status-card connection-status-card ${TONE_CLASS[surfaceTone]} ${toneSwitch} ${traffic}`}
+    data-connection-state={access?.state} data-connection-method={tunnel?.method}>
     <div className="status-eyebrow connection-card-caption">
       <span className="connection-status-dot"/><strong>当前接入</strong>
       <span className="connection-card-method">{access ? connectionMethodLabel(access) : "读取中"}</span>
     </div>
-    <div className="my-3.5"><ServiceChain segments={chain.segments} onNavigate={onNavigate} platform={status?.platform}/></div>
+    {!tunnel && <div className="my-3.5"><ServiceChain segments={chain.segments} onNavigate={onNavigate} platform={status?.platform}/></div>}
     <p className="connection-card-headline" aria-live="polite">{chain.headline}</p>
     <p className="status-summary connection-card-detail">{chain.sub}</p>
+    {tunnel && <TunnelConnectionFlow access={tunnel} service={chain.segments[0]} motion={motion} onNavigate={onNavigate}/>}
     {access && <div className="connection-card-target" title={access.projectPath}>
       <Icon name={access.method === "stable" ? "server" : "monitor"} size={13}/>
       <span>{access.serverName} · {connectionScopeLabel(access.scope)}{access.scope !== "user" && projectName ? ` · ${projectName}` : ""}</span>

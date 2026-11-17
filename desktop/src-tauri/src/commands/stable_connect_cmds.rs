@@ -311,7 +311,10 @@ pub async fn stable_connect_stop(
     {
         return Err("正在配置接入，请先取消本次操作。".into());
     }
-    super::ssh_tunnel_cmds::stop_and_wait(state.inner(), &stable::runtime_id(&connection_id)).await;
+    // 用户主动断开：远端监听会随会话关闭释放，恢复凭据一并清掉，
+    // 免得下次连接白等一次回收 SSH。
+    super::ssh_tunnel_cmds::stop_and_release(state.inner(), &stable::runtime_id(&connection_id))
+        .await;
     {
         let db = state.db.lock().await;
         let mut config = state.config.write().await;

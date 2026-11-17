@@ -57,10 +57,34 @@ describe("统一当前接入", () => {
       expect(next.channelReady).toBe(state === "changed");
     }
   });
+  it("服务器接入仍指向直连地址时不报已连通，链路中间段同步降级", () => {
+    // 本机记录里的地址已经是对的，只有服务器上的条目还停在旧 LAN 地址：
+    // 这时不能显示「隧道已连通，等待 Claude Code」，否则用户会以为只差重开客户端。
+    const next = currentConnection(status, snapshot({ target: { ...record.target!, url: "http://10.0.0.2:17823/mcp" } }))!;
+    expect(next.state).toBe("changed");
+    expect(next.title).toBe("隧道已连通，服务器接入待更新");
+    expect(next.short).toBe("接入待更新");
+    expect(next.channelDetail).toBe("已连通 · 接入未指向");
+    expect(next.configurationVerified).toBe(false);
+    expect(next.previousAddress).toBe("http://10.0.0.2:17823/mcp");
+    expect(currentAccessChain(status, next).segments[1]).toMatchObject({ tone: "ok", detail: "已连通 · 接入未指向" });
+  });
+  it("服务器接入已指向固定地址时保持等待状态", () => {
+    const next = currentConnection(status, snapshot())!;
+    expect(next.state).toBe("waiting");
+    expect(next.configurationVerified).toBe(true);
+  });
   it("历史请求与远端配置核实都不能提升客户端验证节点", () => {
     const chain = currentAccessChain({ ...status, stats: { totalRequests: 999 } } as StaticStatus, access);
     expect(chain.segments[2]).toMatchObject({ tone: "idle", detail: "客户端待验证" });
     expect(chain.headline).toContain("等待 Claude Code");
+  });
+  it("配置写入之后确有隧道流量，才把接入验证点亮", () => {
+    // 隧道是裸 TCP 转发：能从 127.0.0.1 打进来就只可能是 sshd 转回来的，
+    // 这是本机唯一拿得到的客户端侧硬证据。
+    const chain = currentAccessChain(status, { ...access, clientVerifiedAt: 1234567890000 });
+    expect(chain.segments[2].tone).toBe("ok");
+    expect(chain.segments[2].detail).toMatch(/^已验证 \d{2}:\d{2}$/);
   });
   it("相同服务器换端口或原条目后，不沿用旧地址和复制身份", () => {
     const target = { id: "new-target", name: "another-bridge", scope: "project", projectPath: "/srv/orders", url: "http://127.0.0.1:18823/mcp" } as NonNullable<StableConnection["target"]>;

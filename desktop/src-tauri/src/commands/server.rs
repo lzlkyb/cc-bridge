@@ -185,7 +185,7 @@ pub async fn resolve_connection_copy(
 ) -> Result<ConnectionCopy, String> {
     let config = state.config.read().await;
     let ips = state.cached_lan_ips();
-    let access = crate::connection_access::summary(
+    let access = crate::connection_access::summary_with_client(
         &config,
         &super::stable_connect_cmds::stable_records(&config, state),
         &ips,
@@ -193,6 +193,7 @@ pub async fn resolve_connection_copy(
         crate::connection_access::cached_local_probe(state, &config, &ips),
         None,
         crate::connection_access::firewall_blocked(state),
+        state.client_hit().filter(|h| h.loopback).map(|h| h.at_ms),
     );
     let text = match kind {
         "address" if access.can_copy_address => access.address,

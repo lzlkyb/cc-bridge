@@ -36,7 +36,25 @@ function deferred<T>() { let resolve!: (value: T) => void; const promise = new P
 const flush = () => act(async () => { await vi.advanceTimersByTimeAsync(10); });
 const button = (name: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent?.includes(name))!;
 const click = async (name: string) => { expect(button(name), name).toBeDefined(); await act(async () => button(name).click()); await flush(); };
-const mount = async (status = base) => { await act(async () => root.render(<QueryClientProvider client={client}><ConnectTab status={status} onRefresh={() => {}} selectedIp="10.7.0.9" onSelectIp={() => {}} ipResolvedByUser={false} onSedResolved={() => {}} /></QueryClientProvider>)); await flush(); };
+const mount = async (status = base, inspect = true) => {
+  await act(async () => root.render(<QueryClientProvider client={client}><ConnectTab status={status} onRefresh={() => {}} selectedIp="10.7.0.9" onSelectIp={() => {}} ipResolvedByUser={false} onSedResolved={() => {}} /></QueryClientProvider>));
+  await flush();
+  if (inspect && button("检查此服务器")) await click("检查此服务器");
+};
+const chooseRecent = async (name?: string) => {
+  if (name) await click(name);
+  else { await act(async () => host.querySelector<HTMLButtonElement>(".sc-project-list .sc-project-row")!.click()); await flush(); }
+  await click("使用所选项目");
+};
+const applyNew = async () => { await click("核对接入配置"); await click("创建隧道接入"); };
+const applyScope = async () => { await click("核对接入配置"); await click("应用范围更改"); await click("稍后验证"); };
+const step = () => host.querySelector('[aria-current="step"]')?.textContent;
+const savedTunnel = (entry = target, phase: "ready" | "reconnecting" | "stopped" | "error" = "ready", needsSecret = false) => {
+  backend.connections = [{ connectionId: server.id, port: 43127, scope: entry.scope === "user" ? "user" : "project",
+    projectPath: entry.projectPath, multiDevice: false, configured: true, enabled: phase !== "stopped", phase, step: 4,
+    message: null, needsSecret, configMatches: true, target: entry }];
+  initial = discovery([entry]);
+};
 const changeInput = async (input: HTMLInputElement, value: string) => { await act(async () => {
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
   input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -84,18 +102,26 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); host.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 it("首次接入默认推荐项目级，选择项目后接入，检查只读不自动配置 MCP", async () => {
-  await mount();
+  await mount(base, false);
+  expect(step()).toContain("服务器");
+  expect(calls("stable_connect_inspect")).toHaveLength(0);
+  await click("检查此服务器");
+  expect(step()).toContain("接入目标");
   expect(host.querySelector('.sc-scope button[aria-pressed="true"]')?.textContent).toContain("只在一个项目使用推荐");
   expect(button("所有项目都可用").textContent).not.toContain("推荐");
   expect(host.querySelector(".sc-manual")).toBeNull();
-  expect(button("一键接入").disabled).toBe(true);
+  expect(button("核对接入配置").disabled).toBe(true);
   expect(calls("stable_connect_start")).toHaveLength(0); expect(mocks.save).not.toHaveBeenCalled();
   await click("选择项目");
-  await act(async () => host.querySelector<HTMLButtonElement>(".sc-project-row")!.click()); await flush();
-  expect(host.querySelector(".sc-addresses")?.textContent).toContain("配置时自动确认");
-  await click("一键接入");
+  await chooseRecent();
+  await click("核对接入配置");
+  expect(step()).toContain("应用配置");
+  expect(host.querySelector(".tunnel-flow-data")?.textContent).toContain(project.path);
+  expect(calls("stable_connect_start")).toHaveLength(0);
+  await click("创建隧道接入");
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ scope: "project", projectPath: project.path, access: { target: null, inspection: { complete: true } } });
-  expect(host.textContent).toContain("请重新打开服务器上的 Claude Code");
+  expect(step()).toContain("验证");
+  expect(host.textContent).toContain("重新打开 Claude Code");
   expect(host.textContent).toContain("127.0.0.1:43127/mcp");
   expect(host.textContent).not.toContain("已收到首次调用");
 });
@@ -112,7 +138,7 @@ it("从已配置的隧道接入其他项目时保留选择器，检查完成后�
   expect(host.querySelector('[aria-label="选择服务器项目"]')).not.toBeNull();
   await act(async () => scan.resolve(discovery([saved]))); await flush();
   expect(host.querySelector(".sc-project-list")?.textContent).toContain("website");
-  await click("website");
+  await chooseRecent("website");
   expect(calls("stable_connect_inspect").slice(-1)[0]?.[1]).toMatchObject({ projectPath: "/home/ubuntu/projects/website" });
 });
 
@@ -120,9 +146,10 @@ it.each(["project", "local", "user"] as const)("升级 %s 保留原名称、配�
   const entry = { ...target, scope, projectPath: scope === "user" ? "" : project.path, projectKey: scope === "local" ? `${project.path}/` : null,
     configFile: scope === "project" ? target.configFile : "/home/ubuntu/.claude.json" };
   initial = discovery([entry]); await mount();
-  expect(host.textContent).toContain("的原有接入");
-  expect(button("改用隧道连接").disabled).toBe(false);
-  await click("改用隧道连接");
+  expect(host.textContent).toContain("将原有接入切换到隧道");
+  expect(step()).toBeUndefined();
+  expect(button("切换到隧道").disabled).toBe(false);
+  await click("切换到隧道");
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ scope: scope === "user" ? "user" : "project", projectPath: entry.projectPath,
     access: { target: { name: entry.name, scope, projectKey: entry.projectKey, configFile: entry.configFile, fingerprint: entry.fingerprint } } });
 });
@@ -131,9 +158,9 @@ it("不确定的名称不会自动升级，必须先核对原地址并确认", a
   const custom = { ...target, name: "my-bridge", recognized: false };
   initial = discovery([custom]); await mount();
   expect(host.textContent).toContain("这是你之前接入的桥吗");
-  expect(host.querySelector(".sc-action-row")).toBeNull();
+  expect(button("切换到隧道")).toBeUndefined();
   expect(calls("stable_connect_start")).toHaveLength(0);
-  await click("是，升级此接入"); await click("改用隧道连接");
+  await click("是，升级此接入"); await click("切换到隧道");
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ access: { target: { name: "my-bridge" } } });
 });
 
@@ -141,31 +168,31 @@ it("多个接入先选择目标，选择期间压缩服务器信息", async () =
   initial = discovery([target, { ...target, id: "global", scope: "user", projectPath: "", configFile: "/home/ubuntu/.claude.json" }]);
   await mount();
   expect(host.querySelectorAll(".sc-entry-row")).toHaveLength(2);
-  expect(host.querySelector(".sc-picker-server")).not.toBeNull();
+  expect(host.querySelector(".tunnel-flow-title")?.textContent).toContain(server.name);
   expect(host.querySelector(".stable-intro")).toBeNull();
   await act(async () => host.querySelector<HTMLButtonElement>(".sc-entry-row")!.click()); await flush();
-  expect(host.querySelector(".sc-target-meta")?.textContent).toContain(project.path);
+  expect(host.querySelector(".tunnel-flow-data")?.textContent).toContain(project.path);
 });
 
 it("选最近项目会检查该目录，不要求输入项目名或完整路径", async () => {
   await mount(); await click("只在一个项目使用");
   expect(host.querySelector(".sc-picker")).not.toBeNull();
-  expect(host.querySelector(".sc-action-row")).toBeNull();
+  expect(button("核对接入配置")).toBeUndefined();
   expect(host.querySelector(".sc-advanced")).toBeNull();
-  await act(async () => host.querySelector<HTMLButtonElement>(".sc-project-row")!.click()); await flush();
+  await chooseRecent();
   expect(calls("stable_connect_inspect").slice(-1)[0]?.[1]).toMatchObject({ projectPath: project.path });
-  await click("一键接入");
+  await applyNew();
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ scope: "project", projectPath: project.path });
   expect(mocks.save).not.toHaveBeenCalled();
 });
 
 it("读取不完整不能被当作首次接入，选一个项目检查成功后才能继续", async () => {
   initial = discovery([], null, false); await mount();
-  expect(button("一键接入").disabled).toBe(true);
-  expect(host.textContent).toContain("暂时没读到完整的接入配置");
-  await click("选择一个项目再检查");
-  await act(async () => host.querySelector<HTMLButtonElement>(".sc-project-row")!.click()); await flush();
-  expect(button("一键接入").disabled).toBe(false);
+  expect(button("核对接入配置")).toBeUndefined();
+  expect(host.textContent).toContain("一个项目暂时无法读取");
+  await click("检查指定项目");
+  await chooseRecent();
+  expect(button("核对接入配置").disabled).toBe(false);
   expect(calls("stable_connect_start")).toHaveLength(0);
 });
 
@@ -178,7 +205,7 @@ it.each(["需要登录服务器，请输入登录密码。", "解密密码失败
   await changeInput(input, "only-this-session"); await click("登录并检查");
   expect(calls("stable_connect_inspect").slice(-1)[0]?.[1]).toMatchObject({ password: "only-this-session" });
   await click("所有项目都可用");
-  await click("一键接入");
+  await applyNew();
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ password: "only-this-session" });
   expect(JSON.stringify(client.getQueryCache().getAll().map(query => [query.queryKey, query.state.data]))).not.toContain("only-this-session");
   expect(host.querySelector('.sc-login input[type="password"]')).toBeNull();
@@ -205,12 +232,14 @@ it("旧服务器的检查结果不会覆盖新服务器，也不会发送旧服�
   const first = deferred<StableDiscovery>();
   inspectHandler = async args => args.connectionId === "a" ? first.promise : discovery([{ ...target, id: "other", projectPath: "/other/work", configFile: "/other/work/.mcp.json" }]);
   await mount();
+  await click("上一步");
   const select = host.querySelector<HTMLSelectElement>(".stable-server-control select")!;
   await act(async () => { select.value = "b"; select.dispatchEvent(new Event("change", { bubbles: true })); }); await flush();
+  await click("检查此服务器");
   await act(async () => first.resolve(discovery([target]))); await flush();
-  expect(host.querySelector(".sc-target-meta")?.textContent).toContain("/other/work");
-  expect(host.querySelector(".sc-target-meta")?.textContent).not.toContain(project.path);
-  await click("改用隧道连接");
+  expect(host.querySelector(".tunnel-flow-data")?.textContent).toContain("/other/work");
+  expect(host.querySelector(".tunnel-flow-data")?.textContent).not.toContain(project.path);
+  await click("切换到隧道");
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ connectionId: "b", projectPath: "/other/work" });
 });
 
@@ -227,21 +256,20 @@ it("隧道连接的项目选择和配置完成不会改变 IP 直连原来的界
   backend.method = "direct"; initial = discovery([target]); await mount();
   const snapshot = () => { const guide = host.querySelector(".connect-guide")!; return { text: guide.textContent, inputs: [...guide.querySelectorAll<HTMLInputElement>("input")].map(input => [input.type, input.value]), buttons: [...guide.querySelectorAll<HTMLButtonElement>("button")].map(item => [item.textContent, item.disabled]) }; };
   const before = snapshot(); expect(calls("stable_connect_inspect")).toHaveLength(0);
-  await click("隧道连接"); await click("改用隧道连接");
-  await click("更改范围"); await click("所有项目都可用"); await click("应用范围更改");
+  await click("隧道连接"); expect(step()).toBeUndefined(); await click("切换到隧道"); await click("稍后验证");
+  await click("更改范围"); await click("所有项目都可用"); await applyScope();
   await click("IP 直连");
   expect(snapshot()).toEqual(before);
   expect(host.querySelector<HTMLInputElement>(".connect-path input")?.value).toBe(base.projectPath);
   expect(mocks.save).not.toHaveBeenCalled();
 });
 
-it("已经配置好的日常状态不自动登录检查，重新检测也不重写接入", async () => {
-  backend.connections = [{ connectionId: server.id, port: 43127, scope: "project", projectPath: project.path, multiDevice: false,
-    configured: true, enabled: true, phase: "ready", step: 4, message: null, needsSecret: false, configMatches: true,
-    target: { ...target, url: "http://127.0.0.1:43127/mcp" } }];
-  await mount(); expect(calls("stable_connect_inspect")).toHaveLength(0);
+it("已经配置好的日常状态启动时只核对一次，之后不再自动登录，重新检测也不重写接入", async () => {
+  savedTunnel({ ...target, url: "http://127.0.0.1:43127/mcp" });
+  // 记录里 target 是「上次写入的值」，服务器可能已经被改过；启动核一次才知道真相。
+  await mount(); expect(calls("stable_connect_inspect")).toHaveLength(1);
   await mount({ ...base, ipChanged: true, lanIps: ["10.8.0.9"] });
-  expect(calls("stable_connect_inspect")).toHaveLength(0);
+  expect(calls("stable_connect_inspect")).toHaveLength(1);
   await click("检查接入");
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ access: null, projectPath: project.path });
   expect(host.textContent).not.toContain("已收到首次调用");
@@ -252,20 +280,21 @@ it("已配置的项目接入可以更改成全局范围，沿用固定地址并�
   backend.connections = [{ connectionId: server.id, port: 43127, scope: "project", projectPath: project.path, multiDevice: false,
     configured: true, enabled: true, phase: "ready", step: 4, message: null, needsSecret: false, configMatches: true, target: saved }];
   initial = discovery([saved]); await mount();
-  expect(calls("stable_connect_inspect")).toHaveLength(0);
+  // 启动的那次只读核对不选条目、不改范围草稿，用户点进来的仍是记录里的原接入。
+  expect(calls("stable_connect_inspect")).toHaveLength(1);
   await click("更改范围");
   expect(host.querySelector('.sc-scope button[aria-pressed="true"]')?.textContent).toContain("只在一个项目使用");
   await click("所有项目都可用");
-  expect(button("应用范围更改").disabled).toBe(false);
+  expect(button("核对接入配置").disabled).toBe(false);
   expect(host.textContent).toContain("原项目接入将移到全局");
-  await click("应用范围更改");
+  await applyScope();
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ scope: "user", projectPath: "",
     access: { scopeChange: true, target: { id: saved.id, scope: "project", projectPath: project.path } } });
   expect(host.textContent).toContain("127.0.0.1:43127/mcp");
-  expect(host.querySelector(".sc-scope-summary")?.textContent).toContain("所有项目可用");
+  expect(host.querySelector(".tunnel-flow-scope")?.textContent).toContain("所有项目可用");
   await click("更改范围");
   expect(host.querySelector('.sc-scope button[aria-pressed="true"]')?.textContent).toContain("所有项目都可用");
-  expect(button("应用范围更改").disabled).toBe(true);
+  expect(button("核对接入配置").disabled).toBe(true);
   expect(calls("stable_connect_start")).toHaveLength(1);
   expect(mocks.save).not.toHaveBeenCalled();
 });
@@ -278,13 +307,13 @@ it("已配置的全局接入可以选择项目后迁移，保留多设备接入�
   expect(host.querySelector('.sc-scope button[aria-pressed="true"]')?.textContent).toContain("所有项目都可用");
   await click("只在一个项目使用");
   expect(host.querySelector(".sc-picker")).not.toBeNull();
-  await act(async () => host.querySelector<HTMLButtonElement>(".sc-project-row")!.click()); await flush();
+  await chooseRecent();
   expect(calls("stable_connect_inspect").slice(-1)[0]?.[1]).toMatchObject({ projectPath: project.path, sourceProjectPath: "" });
   expect(host.querySelector(".sc-scope-impact")?.textContent).toContain("原全局接入将移到");
-  await click("应用范围更改");
+  await applyScope();
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ scope: "project", projectPath: project.path, multiDevice: false,
     access: { scopeChange: true, target: { id: saved.id, scope: "user", name: saved.name } } });
-  expect(host.querySelector(".sc-scope-summary")?.textContent).toContain("项目级 · orders");
+  expect(host.querySelector(".tunnel-flow-scope")?.textContent).toContain("项目级 · orders");
 });
 
 it("取消范围更改不写入配置，晚到的目标范围结果不会覆盖当前接入", async () => {
@@ -295,9 +324,9 @@ it("取消范围更改不写入配置，晚到的目标范围结果不会覆盖�
   inspectHandler = async args => args.projectPath ? discovery([saved], project.path) : pending.promise;
   await mount(); await click("更改范围"); await click("所有项目都可用");
   expect(host.textContent).toContain("正在检查服务器上的接入");
-  await click("取消更改");
+  await click("取消");
   await act(async () => pending.resolve(discovery([saved]))); await flush();
-  expect(host.querySelector(".sc-scope-summary")?.textContent).toContain("项目级 · orders");
+  expect(host.querySelector(".tunnel-flow-scope")?.textContent).toContain("项目级 · orders");
   expect(host.querySelector(".sc-scope")).toBeNull();
   expect(calls("stable_connect_start")).toHaveLength(0); expect(mocks.save).not.toHaveBeenCalled();
 });
@@ -306,11 +335,25 @@ it("原接入消失后不会把范围更改当作首次接入，也不会自动�
   const saved = { ...target, url: "http://127.0.0.1:43127/mcp" };
   backend.connections = [{ connectionId: server.id, port: 43127, scope: "project", projectPath: project.path, multiDevice: false,
     configured: true, enabled: true, phase: "ready", step: 4, message: null, needsSecret: false, configMatches: true, target: saved }];
-  initial = discovery([{ ...saved, id: "unrelated-global", scope: "user", projectPath: "", configFile: "/home/ubuntu/.claude.json" }]);
+  const unrelated = { ...saved, id: "unrelated-global", scope: "user" as const, projectPath: "", configFile: "/home/ubuntu/.claude.json" };
+  inspectHandler = async args => args.sourceProjectPath != null ? discovery([unrelated]) : discovery([saved]);
   await mount(); await click("更改范围");
   expect(host.textContent).toContain("原接入已变化或不存在");
-  expect(button("应用范围更改").disabled).toBe(true);
+  expect(button("应用范围更改")).toBeUndefined();
   expect(calls("stable_connect_start")).toHaveLength(0);
+});
+
+it("切回隧道后发现服务器仍指向直连地址，明确提示需要更新", async () => {
+  const stale = { ...target, url: "http://10.7.0.9:7823/mcp" };
+  backend.connections = [{ connectionId: server.id, port: 43127, scope: "project", projectPath: project.path, multiDevice: false,
+    configured: true, enabled: true, phase: "ready", step: 4, message: null, needsSecret: false, configMatches: true, target: stale }];
+  initial = discovery([stale]);
+  await mount();
+  await click("IP 直连"); await click("隧道连接");
+  expect(calls("stable_connect_inspect").length).toBeGreaterThan(0);
+  expect(host.textContent).toContain("服务器当前配置");
+  expect(host.textContent).toContain("http://10.7.0.9:7823/mcp");
+  expect(host.textContent).toContain("http://127.0.0.1:43127/mcp");
 });
 
 it("范围编辑中切换 IP 直连再返回，不残留等待状态或隐藏原有设置", async () => {
@@ -323,7 +366,7 @@ it("范围编辑中切换 IP 直连再返回，不残留等待状态或隐藏原
   await click("IP 直连"); await click("隧道连接");
   await act(async () => pending.resolve(discovery([saved]))); await flush();
   expect(host.querySelector(".sc-advanced")).not.toBeNull();
-  expect(host.querySelector(".sc-scope-summary")?.textContent).toContain("项目级 · orders");
+  expect(host.querySelector(".tunnel-flow-scope")?.textContent).toContain("项目级 · orders");
   await click("更改范围");
   expect(host.querySelector('.sc-scope button[aria-pressed="true"]')?.textContent).toContain("只在一个项目使用");
   expect(calls("stable_connect_start")).toHaveLength(0);
@@ -334,9 +377,97 @@ it("收起范围编辑后恢复当前接入和原有更多设置", async () => {
   backend.connections = [{ connectionId: server.id, port: 43127, scope: "project", projectPath: project.path, multiDevice: false,
     configured: true, enabled: true, phase: "ready", step: 4, message: null, needsSecret: false, configMatches: true, target: saved }];
   initial = discovery([saved]); await mount(); await click("更改范围"); await click("所有项目都可用");
-  await click("收起");
-  expect(host.querySelector(".sc-scope-summary")?.textContent).toContain("项目级 · orders");
+  await click("取消");
+  expect(host.querySelector(".tunnel-flow-scope")?.textContent).toContain("项目级 · orders");
   expect(host.querySelector(".sc-advanced")).not.toBeNull();
   expect(host.querySelector(".sc-scope")).toBeNull();
   expect(calls("stable_connect_start")).toHaveLength(0);
+});
+
+it("冷启动隧道就绪后自动核对服务器接入，不展开配置面板", async () => {
+  const stale = { ...target, url: "http://10.7.0.9:7823/mcp" };
+  backend.connections = [{ connectionId: server.id, port: 43127, scope: "project", projectPath: project.path, multiDevice: false,
+    configured: true, enabled: true, phase: "ready", step: 4, message: null, needsSecret: false, configMatches: true, target: stale }];
+  initial = discovery([stale]);
+  await mount();
+  // 记录自称匹配（configMatches=true）时旧逻辑不会再核对，导致启动即显示"已连通"。
+  expect(calls("stable_connect_inspect")).toHaveLength(1);
+  expect(host.textContent).toContain("服务器当前配置");
+  expect(host.querySelector(".tunnel-flow-data")).toBeNull();
+});
+
+it("自动核对读不到服务器时说明显示的是上次记录", async () => {
+  const saved = { ...target, url: "http://127.0.0.1:43127/mcp" };
+  backend.connections = [{ connectionId: server.id, port: 43127, scope: "project", projectPath: project.path, multiDevice: false,
+    configured: true, enabled: true, phase: "ready", step: 4, message: null, needsSecret: false, configMatches: true, target: saved }];
+  inspectHandler = () => Promise.reject(new Error("连接超时"));
+  await mount();
+  expect(host.textContent).toContain("暂时没能核对服务器上的接入");
+  expect(host.querySelector(".tunnel-flow-data")).toBeNull();
+});
+
+it("首次从 IP 直连切到隧道时，先确认服务器再检查现有条目", async () => {
+  backend.method = "direct"; backend.selectedConnectionId = null;
+  initial = discovery([target]);
+  await mount(); await click("隧道连接");
+  expect(calls("stable_connect_inspect")).toHaveLength(0);
+  expect(calls("stable_connect_select")[0][1]).toMatchObject({ connectionId: null });
+  expect(step()).toBeUndefined();
+  await click("检查此服务器");
+  expect(calls("stable_connect_inspect")[0][1]).toMatchObject({ connectionId: server.id });
+  expect(button("切换到隧道")).toBeDefined();
+  expect(step()).toBeUndefined();
+});
+
+it("从 IP 直连切换时有多个条目，只选择本次要切换的条目", async () => {
+  backend.method = "direct";
+  const global = { ...target, id: "global", scope: "user" as const, projectPath: "", configFile: "/home/ubuntu/.claude.json" };
+  initial = discovery([target, global]);
+  await mount(); await click("隧道连接");
+  expect(host.querySelectorAll(".sc-entry-row")).toHaveLength(2);
+  expect(step()).toBeUndefined();
+  expect(calls("stable_connect_start")).toHaveLength(0);
+  await act(async () => host.querySelectorAll<HTMLButtonElement>(".sc-entry-row")[1].click()); await flush();
+  expect(host.querySelector(".tunnel-flow-data")?.textContent).toContain(global.configFile);
+  await click("切换到隧道");
+  expect(calls("stable_connect_start")[0][1]).toMatchObject({ access: { target: { id: global.id } } });
+});
+
+it("原地址写错时只核对并更新保存的条目", async () => {
+  savedTunnel();
+  initial = discovery([target, { ...target, id: "other", name: "other-bridge" }]);
+  await mount(); await click("更新原接入地址");
+  expect(step()).toBeUndefined();
+  expect(calls("stable_connect_inspect").slice(-1)[0]?.[1]).toMatchObject({ projectPath: project.path, sourceProjectPath: project.path });
+  expect(host.querySelector(".tunnel-flow-data")?.textContent).toContain(target.url);
+  expect(host.querySelector(".tunnel-flow-data")?.textContent).toContain("http://127.0.0.1:43127/mcp");
+  expect(calls("stable_connect_start")).toHaveLength(0);
+  await click("更新现有接入");
+  expect(calls("stable_connect_start")[0][1]).toMatchObject({ access: { target: { id: target.id, configFile: target.configFile } } });
+  await click("我已在 Claude Code 验证");
+  expect(host.textContent).toContain("你已确认 Claude Code 接入");
+});
+
+it("原条目已消失时，修复不会改写扫描发现的另一个条目", async () => {
+  savedTunnel();
+  initial = discovery([{ ...target, id: "different", name: "another-bridge" }]);
+  await mount(); await click("更新原接入地址");
+  expect(host.textContent).toContain("原接入已变化或不存在");
+  expect(button("更新现有接入")).toBeUndefined();
+  expect(host.querySelector(".sc-entry-row")).toBeNull();
+  expect(calls("stable_connect_start")).toHaveLength(0);
+});
+
+it("VPN 正在重连时展示恢复状态，暂停后的恢复只启动原隧道", async () => {
+  const ready = { ...target, url: "http://127.0.0.1:43127/mcp" };
+  savedTunnel(ready, "reconnecting");
+  await mount(); await click("查看重连详情");
+  expect(host.textContent).toContain("正在按原固定端口重试");
+  expect(step()).toBeUndefined();
+  expect(calls("stable_connect_start")).toHaveLength(0);
+  savedTunnel(ready, "stopped");
+  await act(async () => { await client.invalidateQueries({ queryKey: ["stable-connect"] }); }); await flush();
+  await click("恢复隧道");
+  expect(calls("stable_connect_start")[0][1]).toMatchObject({ access: null, connectionId: server.id, projectPath: project.path });
+  expect(step()).toBeUndefined();
 });

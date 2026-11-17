@@ -11,8 +11,8 @@ import { TokenManager } from "../TokenManager";
 import { PermissionCard } from "./PermissionCard";
 import { MultiDeviceToggle } from "./MultiDeviceToggle";
 
-export function StableAccessSettings({ state, access, status, onRefresh }: {
-  state: StableConnectState; access: StableAccessState; status?: StaticStatus; onRefresh: () => void;
+export function StableAccessSettings({ state, access, status, onRefresh, onStableUpdate }: {
+  state: StableConnectState; access: StableAccessState; status?: StaticStatus; onRefresh: () => void; onStableUpdate?: () => void;
 }) {
   const [includeShell, setIncludeShell] = useState(false);
   const commandCopy = useConnectionCopy(status);
@@ -33,7 +33,7 @@ export function StableAccessSettings({ state, access, status, onRefresh }: {
       {(target || state.record?.configured) && !state.busy && <button type="button" className="stable-link sc-other-project" onClick={otherProject}>接入其他项目<Icon name="arrowRight" size={13}/></button>}
       {state.record?.configured && state.command && sameTarget && <details className="connect-command-details"><summary>查看接入命令</summary><div className="code-box"><code className="min-w-0 flex-1 whitespace-pre-wrap break-all text-xs">{state.command}</code><Button type="button" size="sm" variant="outline" disabled={state.busy || !state.record.configMatches} onClick={() => void commandCopy.copy("command", undefined, state.command)}>{commandCopy.isCopied("command") ? "已复制" : "复制命令"}</Button></div></details>}
       <fieldset disabled={state.busy} className="connect-support-grid"><TokenManager status={status ? { ...status, scope } : undefined} onRefresh={onRefresh} projectPath={path}
-        onStableUpdate={() => { state.update({ managing: true }); access.retry(); }}/>
+        onStableUpdate={onStableUpdate ?? (() => { state.update({ managing: true }); access.retry(); })}/>
         <PermissionCard scope={scope} projectPath={path} includeShellTools={includeShell} setIncludeShellTools={setIncludeShell} permissionCommand={permission} permCopied={copy.isCopied("permission")} handlePermCopy={() => copy.copy("permission", permission)}/></fieldset>
     </div>
   </details>;

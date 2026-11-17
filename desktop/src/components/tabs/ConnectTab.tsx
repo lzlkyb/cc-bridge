@@ -15,13 +15,12 @@ import { isLoopbackHost } from "../../lib/utils";
 import { invokeOrToast } from "../../lib/tauri";
 import type { McpClientTool } from "../../lib/mcpClients";
 import { useStableConnect } from "../../hooks/useStableConnect";
-import { ConnectionMethodToggle, StableConnectionMethod } from "./connect/StableConnectionMethod";
-import { useStableAccess } from "../../hooks/useStableAccess";
-import { StableAccessGuide } from "./connect/StableAccessGuide";
-import { useCurrentConnection } from "../../hooks/useCurrentConnection";
+import { ConnectionMethodToggle } from "./connect/StableConnectionMethod";
+import { TunnelWorkflow } from "./connect/TunnelWorkflow";
+import { CurrentConnectionProvider, useCurrentConnection } from "../../hooks/useCurrentConnection";
 import { useConnectGuideAnchor } from "../../hooks/useConnectGuideAnchor";
 import { CurrentAccessAddress } from "./connect/CurrentAccessAddress";
-import { CONNECT_GUIDE_ANCHOR, connectionAddressHost, shouldShowIpChangeBanner } from "../../lib/connectionAccess";
+import { CONNECT_GUIDE_ANCHOR, connectionAddressHost, currentConnection, shouldShowIpChangeBanner } from "../../lib/connectionAccess";
 
 function ConnectTabImpl({
   status,
@@ -82,7 +81,6 @@ function ConnectTabImpl({
   const guide = useConnectGuideState(status, selectedIp, status?.hasOnboarded === false ? "user" : "project", !stableMode);
   const currentAccess = useCurrentConnection(status);
   const guideRef = useConnectGuideAnchor(highlightAnchor);
-  const stableAccess = useStableAccess(stable, status, stableMode, guide.tlsEnabled);
   const toggleMultiDevice = (next: boolean) => {
     void invokeOrToast("save_config", { patch: { multiDeviceMode: next } }).then(result => { if (result) onRefresh(); });
   };
@@ -232,7 +230,7 @@ function ConnectTabImpl({
             common={
               <div className={stableMode ? "stable-connection-region" : "space-y-4"}>
                 {tool === "claude-code" && <ConnectionMethodToggle state={stable}/>}
-                {stableMode ? <StableConnectionMethod state={stable} status={status} onNavigate={onNavigate} picking={stableAccess.picking} hideRepair/> : <>
+                {!stableMode && <>
                 {stable.error && <InlineNotice variant="warning">{stable.error}<Button variant="ghost" size="sm" onClick={stable.retry}>重新读取</Button></InlineNotice>}
                 {loopbackOnly && (
                   <InlineNotice variant="warning">
@@ -272,8 +270,8 @@ function ConnectTabImpl({
               });
             }}
           >
-            <CurrentAccessAddress status={status}/>
-            {stableMode ? <StableAccessGuide state={stable} access={stableAccess} status={status} onRefresh={onRefresh} tlsEnabled={guide.tlsEnabled}/> : <ConnectGuide status={status} guide={guide} onRefresh={onRefresh}/>}
+            {stableMode ? <CurrentConnectionProvider access={currentConnection(status, stable.snapshot)}><TunnelWorkflow key={stable.selectedId} state={stable} status={status} onRefresh={onRefresh} onNavigate={onNavigate} tlsEnabled={guide.tlsEnabled}/></CurrentConnectionProvider> :
+              <><CurrentAccessAddress status={status}/><ConnectGuide status={status} guide={guide} onRefresh={onRefresh}/></>}
           </ToolGuide>
           </div>
         }

@@ -27,6 +27,10 @@ export function StableAccessGuide({ state, access, status, onRefresh, tlsEnabled
   const configuredScope = configuredTarget?.scope ?? state.record?.scope ?? "project";
   const configuredPath = configuredTarget?.projectPath ?? state.record?.projectPath;
   const unchanged = !access.scopeChanged && state.ready && !!target && configuredTarget?.id === target.id && target.url === address && target.tokenMatches;
+  // 服务器上这条接入现在指向哪里：优先用这次核对读到的同一条，其次退回记录里后端同步回来的真值。
+  // 记录里的 target 由远端核对写回，所以即使本次读取被跳过，也能照出「服务器仍指向直连地址」。
+  const observed = configuredTarget ? result?.targets.find(item => item.id === configuredTarget.id) ?? configuredTarget : undefined;
+  const staleAddress = observed && address && observed.url !== address ? observed.url : "";
   const label = access.scopeEditing ? "应用范围更改" : unchanged ? "已使用隧道连接" : state.record?.configured && configuredTarget?.id === target?.id ? "应用接入配置" : target ? "改用隧道连接" : "一键接入";
   const needsSecret = access.needsSecret || state.record?.needsSecret && !access.loginVerified;
   const issue = access.message || state.error || (state.record?.phase === "error" && (!state.record.needsSecret || needsSecret) ? state.record.message ?? "接入未完成，请重新检查。" : "");
@@ -39,7 +43,10 @@ export function StableAccessGuide({ state, access, status, onRefresh, tlsEnabled
   return <div ref={region} className="sc-flow sc-guide" aria-label="隧道连接接入流程">
     {state.compact ? <>
       {nextStep}
-      {!state.showNextStep && current?.channelReady && <p className="connection-client-wait" role="status"><Icon name="clock" size={14}/>当前客户端待验证：重新打开服务器上的 Claude Code，用 /mcp 查看接入。</p>}
+      {!state.showNextStep && checking && <p className="connection-client-wait" role="status"><Icon name="spinner" size={14} className="animate-spin"/>正在核对服务器上的接入…</p>}
+      {!state.showNextStep && !checking && current?.channelReady && current.state === "waiting" && <p className="connection-client-wait" role="status"><Icon name="clock" size={14}/>当前客户端待验证：重新打开服务器上的 Claude Code，用 /mcp 查看接入。</p>}
+      {!state.showNextStep && staleAddress && <p className="sc-service-note" role="alert">服务器上的接入仍指向 <code>{staleAddress}</code>，隧道要求 <code>{address}</code>。<button type="button" className="stable-link" disabled={state.busy} onClick={() => state.update({ managing: true })}>更新接入</button></p>}
+      {!state.showNextStep && failed && <p className="sc-service-note" role="alert">暂时没能核对服务器上的接入，当前显示的是上次记录的配置。<button type="button" className="stable-link" onClick={access.retry}>重新检查</button></p>}
       <div className="sc-scope-summary"><span>生效范围</span><strong>{stableScopeLabel(configuredScope)}{configuredScope !== "user" && configuredPath && ` · ${configuredTarget ? stableTargetTitle(configuredTarget) : configuredPath}`}</strong><button type="button" className="stable-link" disabled={state.busy || state.loading} onClick={access.openScope}>更改范围<Icon name="chevronDown" size={13}/></button></div>
       {!state.ready && !state.reconnecting && <div className="sc-action-row"><p>{state.record?.configMatches ? "固定地址和配置已保留，恢复连接即可继续。" : "本机接入配置有变化，请检查并更新原有接入。"}</p><Button size="sm" disabled={!status?.running || state.busy} onClick={() => state.record?.configMatches ? void state.start() : state.update({ managing: true })}>{state.record?.configMatches ? "重新接入" : "检查并更新配置"}</Button></div>}
     </> : <>

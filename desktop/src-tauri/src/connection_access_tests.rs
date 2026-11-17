@@ -87,6 +87,92 @@ fn channel_and_configuration_do_not_prove_the_current_client_has_connected() {
 }
 
 #[test]
+fn tunnel_traffic_only_counts_after_the_config_was_written() {
+    let (config, record, ips) = fixture();
+    // 记录的写入时刻是 1000；早于它的请求只能说明改配置之前客户端就挂着，不算证据。
+    let before = summary_with_client(
+        &config,
+        std::slice::from_ref(&record),
+        &ips,
+        true,
+        Some(true),
+        None,
+        false,
+        Some(999),
+    );
+    assert_eq!(before.client_verified_at, None);
+    assert_eq!(before.state, "waiting");
+    assert!(
+        before.title.contains("等待 Claude Code"),
+        "{}",
+        before.title
+    );
+
+    let after = summary_with_client(
+        &config,
+        &[record],
+        &ips,
+        true,
+        Some(true),
+        None,
+        false,
+        Some(1200),
+    );
+    assert_eq!(after.client_verified_at, Some(1200));
+    assert_eq!(after.title, "隧道连接已生效");
+    assert_eq!(after.short, "接入已验证");
+    // 状态机语义不动：别的分支（重连/待更新）还靠 state 走，只有文案换掉。
+    assert_eq!(after.state, "waiting");
+}
+
+#[test]
+fn traffic_does_not_count_while_the_server_entry_still_points_elsewhere() {
+    let (config, mut record, ips) = fixture();
+    record.target = Some(crate::stable_discovery::StableTarget {
+        id: "entry".into(),
+        name: "cc-bridge".into(),
+        scope: "project".into(),
+        project_path: "/srv/orders".into(),
+        project_key: None,
+        config_file: "/srv/orders/.mcp.json".into(),
+        url: "http://10.0.0.2:17823/mcp".into(),
+        fingerprint: "fp".into(),
+        recognized: true,
+        token_matches: true,
+    });
+    // 服务器接入还指向直连地址时，进门的流量来自旧连接，不能算「隧道已验证」。
+    let access = summary_with_client(
+        &config,
+        &[record],
+        &ips,
+        true,
+        Some(true),
+        None,
+        false,
+        Some(1200),
+    );
+    assert_eq!(access.client_verified_at, None);
+    assert_eq!(access.state, "changed");
+}
+
+#[test]
+fn direct_mode_never_claims_tunnel_verification() {
+    let (mut config, _, ips) = fixture();
+    config.stable_connect.method = Some("direct".into());
+    let access = summary_with_client(
+        &config,
+        &[],
+        &ips,
+        true,
+        Some(true),
+        None,
+        false,
+        Some(1200),
+    );
+    assert_eq!(access.client_verified_at, None);
+}
+
+#[test]
 fn login_pause_changed_config_and_service_stop_have_different_recovery_actions() {
     let (config, record, ips) = fixture();
     for (phase, needs_secret, matches, state) in [
@@ -294,6 +380,62 @@ fn confirming_direct_update_keeps_original_entry_location() {
     assert_eq!(access.source_project_path, "/srv/orders");
     assert_eq!(access.source_scope, "project");
     assert!(!access.token_update_pending && !access.config_matches);
+}
+
+fn entry(url: &str, token_matches: bool) -> crate::stable_discovery::StableTarget {
+    crate::stable_discovery::StableTarget {
+        id: "entry".into(),
+        name: "cc-bridge".into(),
+        scope: "project".into(),
+        project_path: "/srv/orders".into(),
+        project_key: None,
+        config_file: "/srv/orders/.mcp.json".into(),
+        url: url.into(),
+        fingerprint: "a".repeat(64),
+        recognized: true,
+        token_matches,
+    }
+}
+
+#[test]
+fn target_pointing_at_the_direct_address_is_not_reported_as_connected() {
+    let (config, mut record, ips) = fixture();
+    record.target = Some(entry("http://10.0.0.2:7823/mcp", true));
+    let access = summary(&config, &[record], &ips, true, Some(true), None, false);
+    assert!(access.channel_ready);
+    assert_eq!(access.state, "changed");
+    assert_eq!(access.short, "接入待更新");
+    assert!(!access.configuration_verified);
+    // 链路中间段不能一边说「已连通」一边让下面写「接入仍是旧地址」。
+    assert_eq!(access.channel_detail, "已连通 · 接入未指向");
+    assert_eq!(
+        access.previous_address.as_deref(),
+        Some("http://10.0.0.2:7823/mcp")
+    );
+}
+
+#[test]
+fn only_a_target_on_the_fixed_address_counts_as_verified() {
+    let (config, mut record, ips) = fixture();
+    record.target = Some(entry("http://127.0.0.1:17823/mcp", true));
+    let access = summary(
+        &config,
+        &[record.clone()],
+        &ips,
+        true,
+        Some(true),
+        None,
+        false,
+    );
+    assert_eq!(access.state, "waiting");
+    assert!(access.configuration_verified);
+    assert_eq!(access.title, "隧道已连通，等待 Claude Code");
+
+    // Token 轮换也会让原条目失效，不能因为 URL 对得上就报已核实。
+    record.target = Some(entry("http://127.0.0.1:17823/mcp", false));
+    let access = summary(&config, &[record], &ips, true, Some(true), None, false);
+    assert!(!access.configuration_verified);
+    assert_eq!(access.state, "changed");
 }
 
 #[test]

@@ -69,6 +69,7 @@ fn insert(
                 password: Some("original-one-time".into()),
                 passphrase: None,
             })),
+            guard: None,
         },
     );
     stop

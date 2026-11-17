@@ -235,6 +235,55 @@ pub fn remote_script(
     (format!("PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; export PATH; command -v claude >/dev/null 2>&1 || {{ echo CCB_CLAUDE_MISSING; exit 41; }}; command -v python3 >/dev/null 2>&1 || {{ echo CCB_PYTHON_MISSING; exit 42; }}; python3 -c {}", shell_quote(REMOTE_CONFIGURE)),payload.to_string())
 }
 
+/// 远端只允许回这些帧标记。输入过滤与错误文案映射共用同一份清单，
+/// 否则新增一个错误标记时，运行期会把它丢掉、只留下一句无信息量的通用提示。
+const PROTOCOL_MARKERS: &[&str] = &[
+    "CCB_CONFIGURED",
+    "CCB_VERIFIED",
+    "CCB_DISCOVERED",
+    "CCB_LISTED",
+    "CCB_CLAUDE_MISSING",
+    "CCB_PYTHON_MISSING",
+    "CCB_VERIFY_FAILED",
+    "CCB_PROJECT_MISSING",
+    "CCB_CONFIG_DIRECTORY_MISSING",
+    "CCB_CONFIG_SYMLINK",
+    "CCB_CONFIG_BUSY",
+    "CCB_CONFIG_FAILED",
+    "CCB_CONFIG_READ_FAILED",
+    "CCB_CONFIG_TOO_LARGE",
+    "CCB_FOLDER_READ_FAILED",
+    "CCB_ENTRY_UNSUPPORTED",
+    "CCB_TARGET_CHANGED",
+    "CCB_TARGET_REQUIRED",
+    "CCB_SCOPE_CONFLICT",
+    "CCB_SCOPE_PARTIAL",
+    "CCB_INSPECTION_REQUIRED",
+    "CCB_RESULT_OVERFLOW",
+];
+
+pub fn is_protocol_marker(line: &str) -> bool {
+    PROTOCOL_MARKERS.contains(&line)
+}
+
+/// 远端没回预期标记时优先返回它能给出的具体原因。
+/// 只有确实一个标记都没收到，才退回通用提示。
+pub fn setup_error(output: &str, marker: &str) -> Option<String> {
+    if output.lines().any(|line| line.trim() == marker) {
+        return None;
+    }
+    Some(
+        output
+            .lines()
+            .map(str::trim)
+            .find(|line| is_protocol_marker(line))
+            .map_or_else(
+                || "远程配置没有返回确认结果，请重新检测".to_string(),
+                str::to_string,
+            ),
+    )
+}
+
 /// PTY echo can include typed input. Retain only protocol markers, never echoed JSON or arbitrary remote output.
 pub(crate) struct SetupInput {
     payload: Option<String>,
@@ -280,31 +329,7 @@ impl SetupInput {
                 }
                 if line == "CCB_INPUT_READY" {
                     send = self.take_payload();
-                } else if [
-                    "CCB_CONFIGURED",
-                    "CCB_VERIFIED",
-                    "CCB_DISCOVERED",
-                    "CCB_LISTED",
-                    "CCB_CLAUDE_MISSING",
-                    "CCB_PYTHON_MISSING",
-                    "CCB_VERIFY_FAILED",
-                    "CCB_PROJECT_MISSING",
-                    "CCB_CONFIG_DIRECTORY_MISSING",
-                    "CCB_CONFIG_SYMLINK",
-                    "CCB_CONFIG_BUSY",
-                    "CCB_CONFIG_FAILED",
-                    "CCB_CONFIG_READ_FAILED",
-                    "CCB_CONFIG_TOO_LARGE",
-                    "CCB_FOLDER_READ_FAILED",
-                    "CCB_ENTRY_UNSUPPORTED",
-                    "CCB_TARGET_CHANGED",
-                    "CCB_TARGET_REQUIRED",
-                    "CCB_SCOPE_CONFLICT",
-                    "CCB_SCOPE_PARTIAL",
-                    "CCB_INSPECTION_REQUIRED",
-                    "CCB_RESULT_OVERFLOW",
-                ]
-                .contains(&line)
+                } else if is_protocol_marker(line)
                     || (!self.waiting()
                         && line.strip_prefix("CCB_DATA ").is_some_and(|data| {
                             !data.is_empty()
@@ -519,6 +544,22 @@ mod tests {
         assert!(!friendly_error("failure secret-value", "secret-value").contains("secret-value"));
         assert!(friendly_error("CCB_CLAUDE_MISSING", "").contains("尚未安装"));
     }
+    #[test]
+    fn remote_failure_keeps_the_specific_reason() {
+        // 精确原因必须活着到 friendly_error，否则用户只会看到"请重新检测"。
+        assert_eq!(
+            setup_error("CCB_TARGET_REQUIRED\n", "CCB_CONFIGURED").as_deref(),
+            Some("CCB_TARGET_REQUIRED")
+        );
+        assert_eq!(
+            setup_error("CCB_SCOPE_CONFLICT\n", "CCB_CONFIGURED").as_deref(),
+            Some("CCB_SCOPE_CONFLICT")
+        );
+        assert!(setup_error("CCB_CONFIGURED\n", "CCB_CONFIGURED").is_none());
+        let blank = setup_error("noise\n", "CCB_CONFIGURED").unwrap();
+        assert!(blank.contains("远程配置没有返回确认结果"));
+    }
+
     #[test]
     fn setup_input_waits_for_exact_marker_and_never_captures_echo() {
         let payload = "{\"token\":\"secret\"}";

@@ -11,8 +11,8 @@ import "./stable-connect.css";
 export function ConnectionMethodToggle({ state }: { state: StableConnectState }) {
   const current = useCurrentConnection();
   return <><div className="stable-method-heading"><h3>连接方式</h3><div className="stable-method-toggle" role="group" aria-label="连接方式">
-    <button type="button" disabled={state.busy || state.ui.selecting || state.loading} aria-pressed={state.method === "stable"} onClick={() => void state.select("stable")}>隧道连接<span>推荐</span></button>
-    <button type="button" disabled={state.busy || state.ui.selecting || state.loading} aria-pressed={state.method === "direct"} onClick={() => void state.select("direct")}>IP 直连</button>
+    <button type="button" disabled={state.busy || state.ui.selecting || state.loading} aria-pressed={state.method === "stable"} onClick={() => { if (state.method !== "stable") void state.select("stable"); }}>隧道连接<span>推荐</span></button>
+    <button type="button" disabled={state.busy || state.ui.selecting || state.loading} aria-pressed={state.method === "direct"} onClick={() => { if (state.method !== "direct") void state.select("direct"); }}>IP 直连</button>
   </div>{state.loading && <span className="text-xs text-muted-foreground" role="status">正在读取连接配置…</span>}</div>{current?.selectionPending && <p className="connection-selection-note" role="status"><Icon name="info" size={14}/>已选择{current.method === "stable" ? "隧道连接" : "IP 直连"}，完成接入后才会应用到服务器。</p>}</>;
 }
 

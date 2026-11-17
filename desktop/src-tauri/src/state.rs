@@ -71,6 +71,9 @@ pub struct SshTunnel {
     pub thread: StdMutex<Option<std::thread::JoinHandle<()>>>,
     /// A takeover can rebuild extra rules using their original credentials; never persisted or serialized.
     pub(crate) restart: Option<Arc<SshTunnelRestart>>,
+    /// 托管隧道的远端监听身份（恢复凭据）。只有正常停止时才用它清凭据，
+    /// 见 [`SshTunnel::release_receipt`]。
+    pub(crate) guard: Option<Arc<crate::ssh_tunnel_guard::ManagedGuard>>,
 }
 
 impl SshTunnel {
@@ -83,6 +86,26 @@ impl SshTunnel {
             .as_mut()
         {
             let _ = k.kill();
+        }
+    }
+
+    /// 正常停止后清掉恢复凭据（用户断开 / 应用退出 / SSH 总开关关闭）。
+    ///
+    /// 远端 guard 在会话 EOF 后会自行释放监听，没有残留进程可回收，凭据留着只会让
+    /// 下次启动白跑一次 reclaim SSH（实测单次认证十几秒）。崩溃、断电这类异常退出
+    /// 不会走到这里，凭据保留，下次启动照旧按它回收。
+    ///
+    /// `forget` 只在盘上凭据仍是**本实例写入的那份**时才删除：另一个实例接管过端口
+    /// 之后写的是它自己的凭据，这里删不掉，也就不会破坏它的回收。
+    pub fn release_receipt(&self) {
+        let Some(guard) = &self.guard else {
+            return;
+        };
+        let Some(receipt) = guard.previous() else {
+            return;
+        };
+        if let Err(error) = guard.forget(&receipt) {
+            log::warn!("清理隧道恢复凭据失败：{error}");
         }
     }
 }
@@ -291,6 +314,20 @@ pub struct AppState {
     pub audit_count: AtomicU64,
     /// 各工具累计调用次数（热门工具 Top3 用）。DashMap 并发安全。
     pub tool_counts: DashMap<String, u64>,
+    /// 最近一次通过鉴权的 MCP 请求（接入验证的唯一硬证据）。
+    /// 只记一条，不按来源聚合：判定只需要「配置生效之后有没有客户端真的连上来」。
+    pub last_client_hit: StdMutex<Option<ClientHit>>,
+}
+
+/// 最近一次通过鉴权的 MCP 请求。
+#[derive(Debug, Clone, Copy)]
+pub struct ClientHit {
+    /// 到达时刻（Unix 毫秒），与配置写入的 `verified_at` 是同一时间基准，可直接比较先后。
+    pub at_ms: u64,
+    /// 是否来自回环地址。隧道走 SSH 远程转发，本机看到的对端必然是回环；
+    /// 服务器网卡直连则是局域网 IP——这一条是「隧道真的承载了流量」与
+    /// 「客户端还在用旧地址」的区分依据。
+    pub loopback: bool,
 }
 
 impl AppState {
@@ -348,6 +385,7 @@ impl AppState {
             auth_denies: AtomicU64::new(0),
             audit_count: AtomicU64::new(0),
             tool_counts: DashMap::new(),
+            last_client_hit: StdMutex::new(None),
             #[cfg(feature = "notifications")]
             app_handle: StdMutex::new(None),
         }
@@ -478,7 +516,10 @@ impl AppState {
         }
         let ids: Vec<String> = self.ssh_tunnels.iter().map(|e| e.key().clone()).collect();
         for id in ids {
-            self.halt_ssh_tunnel(&id);
+            if let Some(tunnel) = self.halt_ssh_tunnel(&id) {
+                // 总开关关闭 / 应用退出都是终态，不会有「马上用新参数重启」跟在后面。
+                tunnel.release_receipt();
+            }
         }
     }
 
@@ -606,6 +647,26 @@ impl AppState {
         while q.len() > CAP {
             q.pop_front();
         }
+    }
+
+    /// 记录一次通过鉴权的请求来源（接入验证证据）。只保留最近一次。
+    pub fn record_client_hit(&self, loopback: bool) {
+        let hit = ClientHit {
+            at_ms: crate::connection_access::now_ms(),
+            loopback,
+        };
+        *self
+            .last_client_hit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(hit);
+    }
+
+    /// 读最近一次客户端请求。判定方自己决定「要多新」才算证据。
+    pub fn client_hit(&self) -> Option<ClientHit> {
+        *self
+            .last_client_hit
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
     }
 
     /// 记录一次工具调用耗时（ms）：更新累计和/计数（avg）+ 环形样本（P95）。样本上限 500。
@@ -770,5 +831,89 @@ mod tests {
             state.running_commands.get("cmd_live").is_some(),
             "运行中的条目不能被清理"
         );
+    }
+
+    fn receipt_for(
+        attempt: &crate::ssh_tunnel_guard::GuardAttempt,
+        port: u16,
+    ) -> crate::ssh_tunnel_guard::GuardReceipt {
+        crate::ssh_tunnel_guard::GuardReceipt {
+            version: 1,
+            owner: attempt.owner.clone(),
+            nonce: attempt.nonce.clone(),
+            port,
+            boot_id: uuid::Uuid::new_v4().to_string(),
+            uid: 1004,
+            pid: 400,
+            start_ticks: 500,
+            guard_pid: 401,
+            guard_start_ticks: 501,
+        }
+    }
+
+    fn tunnel_with_guard(guard: Arc<crate::ssh_tunnel_guard::ManagedGuard>) -> SshTunnel {
+        SshTunnel {
+            stop: Arc::new(AtomicBool::new(false)),
+            status: Arc::new(StdMutex::new(crate::ssh_tunnel::TunnelStatus::new(
+                "stable:fixture".into(),
+                &[],
+            ))),
+            killer: Arc::new(StdMutex::new(None)),
+            thread: StdMutex::new(None),
+            restart: None,
+            guard: Some(guard),
+        }
+    }
+
+    fn guard_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("ccb-{tag}-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// 正常停止后凭据必须消失：远端监听随会话关闭已释放，留着只会让下次启动
+    /// 白跑一次 reclaim SSH（实测单次认证十几秒）。
+    #[test]
+    fn normal_stop_drops_the_tunnel_recovery_receipt() {
+        let dir = guard_dir("release");
+        let guard = Arc::new(crate::ssh_tunnel_guard::ManagedGuard::new(
+            &dir, b"fixture", 7823,
+        ));
+        let attempt = guard.attempt();
+        guard
+            .remember(&attempt, receipt_for(&attempt, 7823))
+            .unwrap();
+        tunnel_with_guard(guard).release_receipt();
+        assert!(
+            crate::ssh_tunnel_guard::ManagedGuard::new(&dir, b"fixture", 7823)
+                .previous()
+                .is_none(),
+            "正常停止后不应残留恢复凭据"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 另一个实例接管端口后写的是它自己的凭据。旧实例停止时删不掉它，
+    /// 否则接管方的残留监听就再也没法回收了。
+    #[test]
+    fn stopping_an_old_instance_keeps_the_takeover_receipt() {
+        let dir = guard_dir("takeover");
+        let old = Arc::new(crate::ssh_tunnel_guard::ManagedGuard::new(
+            &dir, b"fixture", 7823,
+        ));
+        let old_attempt = old.attempt();
+        old.remember(&old_attempt, receipt_for(&old_attempt, 7823))
+            .unwrap();
+        let takeover = crate::ssh_tunnel_guard::ManagedGuard::new(&dir, b"fixture", 7823);
+        let attempt = takeover.attempt();
+        let expected = receipt_for(&attempt, 7823);
+        takeover.remember(&attempt, expected.clone()).unwrap();
+
+        tunnel_with_guard(old).release_receipt();
+
+        assert_eq!(
+            crate::ssh_tunnel_guard::ManagedGuard::new(&dir, b"fixture", 7823).previous(),
+            Some(expected),
+            "接管方写入的凭据不能被旧实例的清理解掉"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

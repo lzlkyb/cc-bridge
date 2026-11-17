@@ -9,7 +9,7 @@ import type { ConnectAutomation } from "../components/tabs/connect/ConnectComman
 import { stableSavedSetup } from "../lib/stableAccess";
 import { toast } from "../components/ui/toast";
 
-const emptyUi = { managing: false, dialog: false, editing: false, error: "", pending: false, cancelling: false, selecting: false, credentials: {} as SshOneTimeCredentials, credentialConnectionId: "", nextStepConnectionId: "" };
+const emptyUi = { managing: false, dialog: false, editing: false, error: "", pending: false, cancelling: false, selecting: false, credentials: {} as SshOneTimeCredentials, credentialConnectionId: "", nextStepConnectionId: "", verify: false, fromDirect: false };
 export function useStableConnect(status: StaticStatus | undefined, draft?: StableSetup) {
   const snapshot = useStableConnectSnapshot(status);
   const client = useQueryClient();
@@ -18,7 +18,8 @@ export function useStableConnect(status: StaticStatus | undefined, draft?: Stabl
   const lock = useRef(false);
   const cancelRequested = useRef(false);
   const connections = servers.data?.connections ?? [];
-  const selectedId = snapshot.data?.selectedConnectionId ?? connections[0]?.id ?? "";
+  const selectedConnectionId = snapshot.data?.selectedConnectionId ?? "";
+  const selectedId = selectedConnectionId || connections[0]?.id || "";
   const connection = connections.find(c => c.id === selectedId);
   const record = snapshot.data?.connections.find(c => c.connectionId === selectedId);
   const setup = draft ?? stableSavedSetup(record);
@@ -34,14 +35,30 @@ export function useStableConnect(status: StaticStatus | undefined, draft?: Stabl
     if (record?.phase === "ready" && previousPhase.current === "running") setUi(prev => ({ ...prev, managing: false, credentials: {} }));
     previousPhase.current = record?.phase;
   }, [record?.phase]);
+  // 冷启动时隧道会自动恢复，但「服务器上的接入指向哪里」只有核对才知道：
+  // 记录里存的是上次写入时的值，服务器可能已被改成直连地址。不核对就会沿用旧结论显示「已连通」。
+  // 每个进程对每个连接只自动核对一次，避免反复登录服务器。
+  const autoChecked = useRef(new Set<string>());
+  useEffect(() => {
+    if (method !== "stable" || !record?.configured || record.phase !== "ready") return;
+    if (autoChecked.current.has(selectedId)) return;
+    autoChecked.current.add(selectedId);
+    setUi(prev => ({ ...prev, verify: true }));
+  }, [method, record?.configured, record?.phase, selectedId]);
   const update = (patch: Partial<typeof ui>) => setUi(prev => ({ ...prev, ...patch, ...(patch.credentials ? { credentialConnectionId: patch.credentialConnectionId ?? selectedId } : {}) }));
   const refresh = () => client.invalidateQueries({ queryKey: stableConnectKey }, { throwOnError: true });
-  const select = async (next: ConnectionMethod, id = selectedId) => {
+  const select = async (next: ConnectionMethod, id?: string) => {
     if (lock.current || busy) return false;
     lock.current = true; update({ selecting: true, error: "", credentials: {}, nextStepConnectionId: "" });
     try {
-      await invoke("stable_connect_select", { method: next, connectionId: id || null });
-      await refresh(); update({ managing: false });
+      const fromDirect = next === "stable" && (method === "direct" || ui.fromDirect);
+      // A direct address describes the local listener, not the SSH server. Only reuse a saved server choice.
+      await invoke("stable_connect_select", { method: next, connectionId: (id ?? selectedConnectionId) || null });
+      update({ fromDirect });
+      await refresh();
+      // 切换方式只写本地偏好，服务器上的条目一个字节都没动。切到隧道时排一次核对，
+      // 但不动 managing：紧凑视图保持不变，核对结果回来后再决定要不要提示更新接入。
+      update({ managing: false, verify: next === "stable" });
       return true;
     } catch (e) { update({ error: `切换连接方式失败：${e}` }); return false; }
     finally { lock.current = false; update({ selecting: false }); }
@@ -108,7 +125,7 @@ export function useStableConnect(status: StaticStatus | undefined, draft?: Stabl
     onStart: () => void start(), onCancel: () => void cancel(), showNextStep,
     onDismissNextStep: () => update({ nextStepConnectionId: "" }),
   };
-  return { method, record, connection, connections, selectedId, busy, ready, compact, reconnecting, showNextStep, ui, update, select, start, stop, cancel, saved, automation, serviceRunning: !!status?.running,
+  return { method, snapshot: snapshot.data, record, connection, connections, selectedId, selectedConnectionId, busy, ready, compact, reconnecting, showNextStep, ui, update, select, start, stop, cancel, saved, automation, serviceRunning: !!status?.running,
     command: stableConnectCommand(record, status, setup), enabled: servers.data?.enabled ?? false, loading: snapshot.isPending || servers.isPending,
     error, retry: () => { void snapshot.refetch(); void servers.refetch(); } };
 }
