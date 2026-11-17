@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { stableConnectCommand, stableSetupMatches, stableProgressIndex, usesStableConnection, type StableConnection, type StableConnectSnapshot, type StableSetup } from "./stableConnect";
+import { stableConfirmedPort } from "./stableAccess";
 import type { StaticStatus } from "./types";
 
 const setup: StableSetup = { scope: "project", projectPath: "/srv/app", multiDevice: false };
@@ -43,6 +44,27 @@ describe("稳定地址命令", () => {
     expect(stableConnectCommand({ ...connection, port: 0 }, status, setup)).toBe("");
     expect(stableConnectCommand(connection, undefined, setup)).toBe("");
     expect(stableConnectCommand(connection, { ...status, token: "" }, setup)).toBe("");
+  });
+
+  it("配置尚未完成时不能用占位端口生成地址", () => {
+    // step 2 = 隧道刚建起来、远端配置还没写：此时 port 只是候选号，地址还不成立。
+    // 早前这里照样出命令，用户抄走的是本机端口（7823）冒充的隧道地址。
+    expect(stableConnectCommand({ ...connection, configured: false, step: 2 }, status, setup)).toBe("");
+    expect(stableConnectCommand({ ...connection, configured: false, step: 3 }, status, setup))
+      .toContain("http://127.0.0.1:43127/mcp");
+  });
+});
+
+describe("隧道接入端口确认口径", () => {
+  it("只有写过远端配置或走到应用配置步，端口才算成立", () => {
+    expect(stableConfirmedPort(undefined)).toBeUndefined();
+    expect(stableConfirmedPort({ port: 7823 })).toBeUndefined();
+    expect(stableConfirmedPort({ port: 7823, configured: false, step: 2 })).toBeUndefined();
+    expect(stableConfirmedPort({ port: 17908, configured: false, step: 3 })).toBe(17908);
+    expect(stableConfirmedPort({ port: 17908, configured: true, step: 0 })).toBe(17908);
+    // 占位值与特权端口都不是合法的隧道监听号
+    expect(stableConfirmedPort({ port: 0, configured: true })).toBeUndefined();
+    expect(stableConfirmedPort({ port: 80, configured: true })).toBeUndefined();
   });
 });
 

@@ -119,7 +119,11 @@ export function currentConnection(status?: StaticStatus, snapshot?: StableConnec
   const stableAddress = record?.configured ? `http://127.0.0.1:${record.port}/mcp` : "";
   const stableScope = record?.target?.scope ?? record?.scope ?? "project";
   const stablePath = record?.target?.projectPath ?? record?.projectPath ?? "";
-  const stableName = record?.target?.name ?? "cc-bridge";
+  // 条目名必须和真正写进服务器配置的那个一致：多设备时后端用的是 `cc-bridge-<deviceId>`
+  // （stable_connect::remote_script），这里却固定回退 "cc-bridge"，会让「当前接入」显示的
+  // 名称和服务器上实际条目对不上。
+  const stableMultiDevice = record?.multiDevice ?? !!status.multiDeviceMode;
+  const stableName = record?.target?.name ?? (stableMultiDevice && status.deviceId ? `cc-bridge-${status.deviceId}` : "cc-bridge");
   const targetId = record?.target?.id ?? null;
   const previousAddress = record?.target?.url && record.target.url !== stableAddress ? record.target.url : null;
   const sameStableTarget = !!saved && saved.connectionId === snapshot?.selectedConnectionId && saved.address === stableAddress &&

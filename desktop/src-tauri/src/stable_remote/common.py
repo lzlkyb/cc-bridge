@@ -259,7 +259,7 @@ def port_is_free(port):
         probe.close()
 
 
-def tunnel_port():
+def tunnel_port(force=False):
     """本账号在这台服务器上固定使用的反向隧道端口。
 
     🔴 为什么必须固定：共享服务器上 `-R 127.0.0.1:<port>` 是独占绑定，谁先绑谁用。
@@ -272,17 +272,24 @@ def tunnel_port():
     每次重新接入都会换号，已确认的 MCP 地址跟着漂移，等于把「固定端口」这件事废掉。
     真正的冲突由建隧道失败后的退避处置，见 candidate_ports。
 
+    `force=True` 是失败后的自愈出口：账本里的号若在服务器上被别人占了（同 uid 换过机器、
+    手工改过账本、或历史遗留），用户永远撞在同一个号上。此时跳过账本、从上一个号的下一个
+    开始重新探测，并把新号写回账本 —— 建隧道失败才是唯一触发条件，所以不会无端漂移。
+
     起点取 uid，是为了在没有账本时（首次 / 换了机器）也天然分散到不同端口，
     避免所有人从同一个起始号开始线性探测、把探测次数堆给排在后面的人。
     """
     saved = read_tunnel_port()
-    if saved:
+    if saved and not force:
         return saved
     # 服务器是 Linux；getattr 只为让本机（Windows）测试能跑同一段代码。
     uid = os.getuid() if hasattr(os, 'getuid') else 1000
-    start = PORT_BASE + (uid % PORT_SPAN)
+    offset_start = uid % PORT_SPAN
+    if force and saved and PORT_BASE <= saved < PORT_BASE + PORT_SPAN:
+        # 从刚被否掉的那个号之后继续，避免第一轮探测必然命中同一个不可用端口。
+        offset_start = (saved - PORT_BASE + 1) % PORT_SPAN
     for offset in range(PORT_SPAN):
-        port = PORT_BASE + ((start - PORT_BASE + offset) % PORT_SPAN)
+        port = PORT_BASE + ((offset_start + offset) % PORT_SPAN)
         if port_is_free(port):
             write_tunnel_port(port)
             return port

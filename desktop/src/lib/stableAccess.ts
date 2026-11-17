@@ -2,6 +2,24 @@ import type { SshConnection, StaticStatus } from "./types";
 import type { StableConnection, StableSetup } from "./stableConnect";
 import { NON_SHELL_TOOLS, type McpScope } from "./utils";
 
+/**
+ * 隧道接入地址只在「这个端口真的会被服务器监听」之后才成立。
+ *
+ * 🔴 配置完成前 `record.port` 是占位值（首次接入时连 record 都没有），早先回退到
+ * `status.port`（本机服务端口，如 7823）就会让用户抄到一个必然连不上的地址：
+ * 服务器实际监听的是服务器按账号分配的端号（17900 段），和本机端口毫无关系。
+ * 所以这里只认两种证据：已写过远端配置（configured），或已走到「应用配置」步（step ≥ 3）。
+ *
+ * 定义在 stableAccess 而不是 stableConnect：后者已经值引用本模块（stableShellQuote），
+ * 若反过来再值引用回去就成环了。本模块对 stableConnect 只有 type 引用，方向单一。
+ */
+export function stableConfirmedPort(record?: { port?: number; configured?: boolean; step?: number }): number | undefined {
+  if (!record) return;
+  if (!record.configured && (record.step ?? 0) < 3) return;
+  const port = record.port ?? 0;
+  return port >= 1024 ? port : undefined;
+}
+
 export type StableTargetScope = "user" | "project" | "local";
 export interface StableTarget {
   id: string; name: string; scope: StableTargetScope; projectPath: string; projectKey: string | null;

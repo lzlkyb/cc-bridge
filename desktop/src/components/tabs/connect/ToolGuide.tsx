@@ -17,6 +17,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "../../ui/card";
 import { Icon } from "../../ui/icon";
 import { Button } from "../../ui/button";
 import { CertPemStep, CopySegs, StepNumber } from "./widgets";
+import { ClaudeTlsNote, PendingAddress } from "./ToolGuideNotes";
 import { GenericSteps } from "./GenericSteps";
 import { MultiDeviceToggle } from "./MultiDeviceToggle";
 
@@ -94,6 +95,12 @@ export function ToolGuide({
     tls: tlsEnabled,
     deviceId: multiDevice ? deviceId : undefined,
   };
+  /**
+   * 🔴 端口没确定就不出片段。隧道连接下 port 由服务器按账号分配，配置完成前本组件
+   * 拿到的是 0：早先这里回退成本机服务端口（7823），用户抄走的是一条必然连不上的地址，
+   * 因为服务器上监听的是 17900 段的号。宁可显示「完成后生成」，也不给一条错的。
+   */
+  const addressReady = port >= 1024;
   /** 当前工具的自签兼容性条目（徽章行 + 信任步骤的唯一数据源）。 */
   const sel = CLIENT_SELFSIGNED[tool];
 
@@ -178,6 +185,8 @@ export function ToolGuide({
               {children}
               {tlsEnabled && <ClaudeTlsNote />}
             </>
+          ) : !addressReady ? (
+            <PendingAddress />
           ) : tool === "generic" ? (
             <GenericSteps input={input} />
           ) : (
@@ -186,25 +195,6 @@ export function ToolGuide({
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-/**
- * claude-code 的 HTTPS 附加说明（ConnectCommand 不感知 TLS，补在这里）。
- * 文案与信任步骤统一取自 CLIENT_SELFSIGNED["claude-code"]——不再走 buildClientSnippet 的 notes，
- * 免得同一件事在片段 note 与信任步骤里各说一遍。
- */
-function ClaudeTlsNote() {
-  const sel = CLIENT_SELFSIGNED["claude-code"];
-  return (
-    <div className="space-y-2 rounded-lg border border-warning/30 bg-warning/8 p-3">
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        <b className="text-warning-ink">HTTPS 自签</b>
-        ：
-        <CopySegs segs={sel.note} />
-      </p>
-      <CertPemStep compact steps={sel.steps} />
-    </div>
   );
 }
 

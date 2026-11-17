@@ -74,7 +74,8 @@ export function StatusCard({ status, displayHost, port, onChanged, onNavigate }:
     </div>}
     <details className="connection-local-details">
       <summary>本机服务详情<Icon name="chevronDown" size={12}/></summary>
-      <p>监听地址 <code>{status?.host ?? displayHost}:{port}</code></p>
+      <p>监听地址 <code>{status?.host ?? displayHost}:{port}</code>{tunnel && <span>（本机服务端口）</span>}</p>
+      {tunnel?.address && <p>服务器上的接入地址 <code>{tunnel.address}</code>，端口由服务器按账号分配。</p>}
       <p>{status?.remoteTlsEnabled ? "HTTPS" : "HTTP"} · {status?.transport === "sse" ? "SSE" : "HTTP"} 传输 · {status?.token ? "访问令牌已启用" : "未设访问令牌"}</p>
       <p>{running ? `已运行 ${formatUptime(liveUptime)}` : "本机服务未运行"}；停止服务会影响全部接入。</p>
       {access?.configurationVerified && <p>远端配置已核实{access.verifiedAt ? ` · ${new Date(access.verifiedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}` : ""}，客户端加载情况仍待验证。</p>}

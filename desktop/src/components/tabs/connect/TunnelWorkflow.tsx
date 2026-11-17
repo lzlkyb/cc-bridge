@@ -14,7 +14,7 @@ import { SshConnectionDialog } from "../SshConnectionDialog";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
 import { stableProgressIndex, stableProgressLabels, stableSteps } from "../../../lib/stableConnect";
-import { stableFixedUrl, stableProjectName, stableScopeLabel, type StableProject } from "../../../lib/stableAccess";
+import { stableConfirmedPort, stableFixedUrl, stableProjectName, stableScopeLabel, type StableProject } from "../../../lib/stableAccess";
 import "./stable-access.css";
 import "./tunnel-flow.css";
 
@@ -48,7 +48,9 @@ export function TunnelWorkflow({ state, status, onRefresh, tlsEnabled, onNavigat
   const projectPath = target?.projectPath ?? state.record?.projectPath;
   const receipt = JSON.stringify([state.selectedId, target?.id, target?.fingerprint, target?.url, state.record?.scope, state.record?.projectPath, status?.token]);
   const used = verified === receipt && state.ready;
-  const address = state.record?.configured && state.record.port ? stableFixedUrl(state.record.port) : "";
+  // 端口只认「已写进服务器配置」或「已走到应用配置步」的证据，不用本机服务端口顶替。
+  const confirmedPort = stableConfirmedPort(state.record);
+  const address = confirmedPort ? stableFixedUrl(confirmedPort) : "";
   const observedTarget = access.result?.targets.find(item => item.id === target?.id);
   const remoteTarget = observedTarget ?? target;
   const missingTarget = !!target && !!access.result?.complete && !observedTarget && access.result.files.some(file => file.configFile === target.configFile);
@@ -107,6 +109,10 @@ export function TunnelWorkflow({ state, status, onRefresh, tlsEnabled, onNavigat
     ?? (access.scope === "user" ? "~/.claude.json" : access.project?.path ? `${access.project.path}/.mcp.json` : "由所选接入确定");
   const actualFile = access.scopeEditing ? changeFile : access.target?.configFile ?? changeFile;
   const applyLabel = access.scopeEditing ? "应用范围更改" : flow === "repair" ? "更新现有接入" : access.target ? "切换到隧道" : "创建隧道接入";
+  // 与后端真正写进配置的条目名同源：多设备时是 `cc-bridge-<deviceId>`，
+  // 草稿里 setup 还没生成时要退回已保存的 multiDevice，否则会在核对页显示成 `cc-bridge`。
+  const multiDeviceEntry = access.setup?.multiDevice ?? state.record?.multiDevice ?? false;
+  const entryName = multiDeviceEntry && status?.deviceId ? `cc-bridge-${status.deviceId}` : "cc-bridge";
   const retry = flow === "repair" ? access.inspectOriginal : access.retry;
   const inspectAgain = () => { updateControls({ cancelled: false }); retry(); setStep(2); };
   const chooseAnotherProject = () => {
@@ -162,7 +168,7 @@ export function TunnelWorkflow({ state, status, onRefresh, tlsEnabled, onNavigat
             "完成后接入卡管理所选项目，服务器上的原条目会保留。" : "核对实际要改动的服务器、条目与配置位置。")}
       {applying ? <ol className="tunnel-flow-progress" aria-label="应用进度">{stableProgressLabels.map((name, index) => <li key={name} data-complete={index < at}><Icon name={index < at ? "check" : index === at ? "spinner" : "clock"} size={16} className={index === at ? "animate-spin" : undefined}/><span>{name}</span><small>{index < at ? "已完成" : index === at ? "进行中" : "等待中"}</small></li>)}</ol> :
         <dl className="tunnel-flow-data">
-          <div><dt>服务器</dt><dd>{state.connection?.name}</dd></div><div><dt>接入名称</dt><dd><code>{access.target?.name ?? (access.setup?.multiDevice ? `cc-bridge-${status?.deviceId ?? ""}` : "cc-bridge")}</code></dd></div>
+          <div><dt>服务器</dt><dd>{state.connection?.name}</dd></div><div><dt>接入名称</dt><dd><code>{access.target?.name ?? entryName}</code></dd></div>
           <div><dt>使用范围</dt><dd>{stableScopeLabel(access.target && !access.scopeEditing ? access.target.scope : access.scope)} {access.setup?.projectPath && <code>{access.setup.projectPath}</code>}</dd></div>
           {access.scopeEditing && <div><dt>原配置位置</dt><dd><code>{access.target?.configFile}</code></dd></div>}
           <div><dt>{access.scopeEditing ? "新配置位置" : "配置位置"}</dt><dd><code>{actualFile}</code></dd></div>

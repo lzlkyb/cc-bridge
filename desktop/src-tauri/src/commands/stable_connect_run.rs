@@ -65,7 +65,7 @@ async fn configure_with_takeover(
     progress(app, op, 1)?;
     // 用户主动「重新接入」（带 access）时允许换端口：服务器刚按账号分配的那个号优先。
     // 后台恢复（无 access）绝不能换，否则 VPN 重连会悄悄改掉已确认的 MCP 地址。
-    let ports = if op.access.is_some() {
+    let mut ports = if op.access.is_some() {
         stable::candidate_ports(
             None,
             op.access.as_ref().and_then(|access| access.tunnel_port),
@@ -74,49 +74,82 @@ async fn configure_with_takeover(
     } else {
         stable::candidate_ports(saved.map(|s| s.port), None, config.port)
     };
-    for (index, candidate) in ports.iter().enumerate() {
-        check(op)?;
-        port = *candidate;
-        op.record.lock().unwrap_or_else(|p| p.into_inner()).port = port;
-        super::ssh_tunnel_cmds::start_owned_tunnel(
-            app.clone(),
-            state.clone(),
-            link.clone(),
-            vec![stable::rule(port, config)],
-            (password.clone(), passphrase.clone()),
-            takeover,
-            true,
-        )
-        .await?;
-        progress(app, op, 2)?;
-        // Restoring an unchanged saved endpoint belongs to the long-lived supervisor, not the
-        // bounded configuration deadline. A temporary VPN/bind failure must keep retrying it.
-        if let Some(saved) = saved.filter(|_| op.access.is_none()) {
-            return resume_saved(state, config, op, saved).await;
-        }
-        match wait_for_tunnel(state, &runtime_id, op).await {
-            Ok(()) => break,
-            Err((message, port_failed)) => {
-                if !port_failed || index + 1 == ports.len() {
-                    return Err(if port_failed && saved.is_some() && op.access.is_none() {
-                        format!(
-                            "服务器上的端口 {port} 已被其他会话占用。共享服务器上每个账号需要各自的端口，点「重新接入」会自动分配一个专属端口。"
-                        )
-                    } else if port_failed {
-                        format!(
-                            "{message}。已试过 {} 个端口，请稍后重试或联系服务器管理员。",
-                            ports.len()
-                        )
-                    } else {
-                        message
-                    });
+    // 一轮本地候选 + 至多一次服务器重分配：账本端口被占时，老候选（7823 / 17823 …）
+    // 在同一台共享服务器上几乎必然也被占，光靠本地退避撞不满就永远好不了。
+    // 旧记录里的 port 若被写坏成 0 或特权端口，不能拿去建隧道——`-R 0` 会让 sshd
+    // 自己挑一个号，那号没人记账、下次必然对不上。
+    ports.retain(|port| *port >= 1024);
+    if ports.is_empty() {
+        ports = stable::candidate_ports(None, None, config.port);
+    }
+    let mut reallocated = false;
+    let mut last_failure = String::new();
+    loop {
+        let mut listening = false;
+        for candidate in &ports {
+            check(op)?;
+            port = *candidate;
+            op.record.lock().unwrap_or_else(|p| p.into_inner()).port = port;
+            super::ssh_tunnel_cmds::start_owned_tunnel(
+                app.clone(),
+                state.clone(),
+                link.clone(),
+                vec![stable::rule(port, config)],
+                (password.clone(), passphrase.clone()),
+                takeover,
+                true,
+            )
+            .await?;
+            progress(app, op, 2)?;
+            // Restoring an unchanged saved endpoint belongs to the long-lived supervisor, not the
+            // bounded configuration deadline. A temporary VPN/bind failure must keep retrying it.
+            if let Some(saved) = saved.filter(|_| op.access.is_none()) {
+                return resume_saved(state, config, op, saved).await;
+            }
+            match wait_for_tunnel(state, &runtime_id, op).await {
+                Ok(()) => {
+                    listening = true;
+                    break;
                 }
-                takeover
-                    .restore(app, state)
-                    .await
-                    .map_err(|error| format!("恢复原有转发失败：{error}"))?;
+                Err((message, port_failed)) => {
+                    last_failure = message;
+                    // 不是端口问题（登录 / 网络 / 隧道被停）时换号毫无意义，直接给原因。
+                    if !port_failed {
+                        return Err(last_failure);
+                    }
+                    takeover
+                        .restore(app, state)
+                        .await
+                        .map_err(|error| format!("恢复原有转发失败：{error}"))?;
+                }
             }
         }
+        if listening {
+            break;
+        }
+        if op.access.is_some() && !reallocated {
+            if let Some(fresh) =
+                reallocate_port(state, &link, op, password.clone(), passphrase.clone()).await
+            {
+                if !ports.contains(&fresh) {
+                    // 已经证明不可用的号不再重试，直接换到服务器刚分配的那个。
+                    reallocated = true;
+                    ports = vec![fresh];
+                    continue;
+                }
+            }
+        }
+        // 自愈脚本也可能刚好在用户点「取消」时失败：真正的原因是取消，不能拿端口冲突盖掉它。
+        check(op)?;
+        // 文案必须与事实一致：换号没成（python3 缺失、服务器不受理）时不能说「已自动换端口」，
+        // 否则下一次用户还是不知道该怎么办。
+        return Err(if last_failure.is_empty() {
+            "服务器无法监听隧道端口。共享服务器上每个账号需要各自的端口，请稍后重试或联系服务器管理员。".into()
+        } else if reallocated {
+            format!("{last_failure}；已自动换端口重试仍未成功，请稍后重试或联系服务器管理员。")
+        } else {
+            format!("{last_failure}。共享服务器上每个账号需要各自的端口，请稍后重试或联系服务器管理员。")
+        });
     }
     {
         let mut r = op.record.lock().unwrap_or_else(|p| p.into_inner());
@@ -260,6 +293,36 @@ pub(super) async fn resume_saved(
     record.target = saved.target.clone();
     record.verified_at = saved.verified_at;
     Ok(())
+}
+
+/// 让服务器跳过账本重新分配一个隧道端口。
+///
+/// 任何失败都返回 `None`：自愈是尽力而为，绝不能用自己的错误盖掉真正的原因
+/// （端口被占 / 登录失败）。上层拿到 `None` 会照原样报端口错误。
+async fn reallocate_port(
+    state: &Arc<AppState>,
+    link: &super::ssh_cmds::SshLink,
+    op: &StableOperation,
+    password: Option<String>,
+    passphrase: Option<String>,
+) -> Option<u16> {
+    let output = super::ssh_cmds::run_stable_setup(
+        state,
+        link,
+        stable::reallocate_script(),
+        password,
+        passphrase,
+        op.cancel.clone(),
+    )
+    .await
+    .ok()?;
+    if stable::setup_error(&output, "CCB_PORT").is_some() {
+        return None;
+    }
+    crate::stable_discovery::parse_result::<stable::ReallocatedPort>(&output, "CCB_PORT")
+        .ok()
+        .map(|fresh| fresh.port)
+        .filter(|port| *port >= 1024)
 }
 
 async fn wait_for_tunnel(

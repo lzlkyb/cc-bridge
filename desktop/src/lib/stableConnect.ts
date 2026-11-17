@@ -1,7 +1,7 @@
 import type { StaticStatus } from "./types";
 import { buildBaseCommand, buildConnectCommand, buildMultiDeviceCommand, type McpScope } from "./utils";
 import type { StableAccessRequest, StableTarget } from "./stableAccess";
-import { stableShellQuote } from "./stableAccess";
+import { stableConfirmedPort, stableShellQuote } from "./stableAccess";
 
 export type ConnectionMethod = "stable" | "direct";
 export interface StableConnection {
@@ -38,16 +38,17 @@ export function stableSetupMatches(connection: StableConnection, setup: StableSe
 
 /** The port is the backend-confirmed remote listener, never a changed local VPN address. */
 export function stableConnectCommand(connection: StableConnection | undefined, status: StaticStatus | undefined, setup: StableSetup): string {
-  if (!status?.token || !connection?.port) return "";
-  if (connection.target) {
+  const port = stableConfirmedPort(connection);
+  if (!status?.token || !port) return "";
+  if (connection?.target) {
     const target = connection.target;
     const quote = stableShellQuote;
-    const command = `claude mcp add --scope ${target.scope} --transport ${status.transport === "sse" ? "sse" : "http"} ${quote(target.name)} ${quote(`http://127.0.0.1:${connection.port}${status.transport === "sse" ? "/mcp/sse" : "/mcp"}`)} --header ${quote(`Authorization: Bearer ${status.token}`)}`;
+    const command = `claude mcp add --scope ${target.scope} --transport ${status.transport === "sse" ? "sse" : "http"} ${quote(target.name)} ${quote(`http://127.0.0.1:${port}${status.transport === "sse" ? "/mcp/sse" : "/mcp"}`)} --header ${quote(`Authorization: Bearer ${status.token}`)}`;
     return target.scope === "user" ? command : `cd ${quote(target.projectPath)} && ${command}`;
   }
   return setup.multiDevice
-    ? buildMultiDeviceCommand("127.0.0.1", connection.port, status.token, status.transport, false, status.deviceId)
-    : buildConnectCommand(buildBaseCommand("127.0.0.1", connection.port, status.token, status.transport, false), setup.scope);
+    ? buildMultiDeviceCommand("127.0.0.1", port, status.token, status.transport, false, status.deviceId)
+    : buildConnectCommand(buildBaseCommand("127.0.0.1", port, status.token, status.transport, false), setup.scope);
 }
 
 /** Direct-IP warnings must not ask a configured stable user to replace their fixed MCP URL. */

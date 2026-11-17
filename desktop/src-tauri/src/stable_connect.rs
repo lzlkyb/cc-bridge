@@ -249,6 +249,7 @@ const PROTOCOL_MARKERS: &[&str] = &[
     "CCB_VERIFIED",
     "CCB_DISCOVERED",
     "CCB_LISTED",
+    "CCB_PORT",
     "CCB_CLAUDE_MISSING",
     "CCB_PYTHON_MISSING",
     "CCB_VERIFY_FAILED",
@@ -382,6 +383,35 @@ pub(crate) const REMOTE_CONFIGURE: &str = concat!(
     "\n",
     include_str!("stable_remote/configure.py")
 );
+
+/// 端口冲突后的自愈：让服务器跳过账本、重新分配一个号。
+///
+/// 光靠本地候选列表退避是不够的——`candidate_ports` 的老候选（7823 / 17823 …）在共享
+/// 服务器上正是冲突源，撞满一轮之后用户没有任何自助手段，只能撞在同一个账本端口上
+/// 无限重试。这里把「换号」的权利交回给服务器（账本的所有者），而不是本地硬猜。
+pub(crate) const REMOTE_REALLOCATE: &str = concat!(
+    include_str!("stable_remote/common.py"),
+    "\n",
+    include_str!("stable_remote/reallocate.py")
+);
+
+/// 不依赖 claude 可执行文件：这条路径只读端口账本，与 Claude 是否安装无关。
+pub fn reallocate_script() -> (String, String) {
+    (
+        format!(
+            "command -v python3 >/dev/null 2>&1 || {{ echo CCB_PYTHON_MISSING; exit 42; }}; python3 -c {}",
+            shell_quote(REMOTE_REALLOCATE)
+        ),
+        // 非空 payload：远端 `receive()` 靠 `CCB_PAYLOAD ` 前缀区分帧与裸 JSON，
+        // 空串只会发出 `CCB_PAYLOAD_END`，那行会被当成 JSON 解析而崩掉。
+        "{}".into(),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReallocatedPort {
+    pub port: u16,
+}
 
 pub fn friendly_error(error: &str, token: &str) -> String {
     for (marker, message) in [
@@ -583,6 +613,32 @@ mod tests {
         assert!(setup_error("CCB_CONFIGURED\n", "CCB_CONFIGURED").is_none());
         let blank = setup_error("noise\n", "CCB_CONFIGURED").unwrap();
         assert!(blank.contains("远程配置没有返回确认结果"));
+    }
+
+    /// 端口被占后的自愈链路：本地候选撞满 → 让服务器换号 → 用新号重建隧道。
+    /// 这条链路最容易静默坏在两个地方：marker 没进白名单（`SetupInput` 会把整帧丢掉，
+    /// 用户只看到一句「没有返回确认结果」），以及空 payload（远端把 `CCB_PAYLOAD_END`
+    /// 当裸 JSON 解析直接崩，自愈永远拿不到端口）。
+    #[test]
+    fn reallocation_round_trips_through_the_setup_frames() {
+        let (command, payload) = reallocate_script();
+        assert!(
+            !payload.is_empty(),
+            "空 payload 会让远端 receive() 解析崩溃"
+        );
+        assert!(command.contains("CCB_PYTHON_MISSING"));
+        assert!(is_protocol_marker("CCB_PORT"));
+        let encoded = base64::engine::general_purpose::STANDARD.encode(br#"{"port":17908}"#);
+        let mut output = String::new();
+        for chunk in encoded.as_bytes().chunks(64) {
+            output.push_str("CCB_DATA ");
+            output.push_str(std::str::from_utf8(chunk).expect("base64 is ASCII"));
+            output.push('\n');
+        }
+        output.push_str("CCB_PORT\n");
+        let fresh =
+            crate::stable_discovery::parse_result::<ReallocatedPort>(&output, "CCB_PORT").unwrap();
+        assert_eq!(fresh.port, 17908);
     }
 
     #[test]

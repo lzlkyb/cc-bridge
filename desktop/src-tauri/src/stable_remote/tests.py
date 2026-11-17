@@ -227,6 +227,32 @@ with open(ledger, 'w', encoding='utf-8') as handle:
 assert ns['port_is_free'](taken) is False
 assert ns['tunnel_port']() == taken, '端口被占（自己的隧道）也不能换号'
 holder.close()
+# 失败后的自愈出口：账本里的号在服务器上被别人占了（换过机器、手工改过账本、历史遗留），
+# 用户就会永远撞在同一个号上——本地候选 7823/17823 那批在同一台共享机上同样被占，
+# 所以必须由账本所有者（服务器）跳过错号重分配，并把新号写回账本。
+squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+squatter.bind(('127.0.0.1', 0))
+squatter.listen(1)
+taken = squatter.getsockname()[1]
+with open(ledger, 'w', encoding='utf-8') as handle:
+    handle.write(str(taken) + '\n')
+assert ns['tunnel_port']() == taken, 'force 之外绝不换号'
+moved = ns['tunnel_port'](True)
+assert moved != taken, (taken, moved)
+assert ns['port_is_free'](moved) is True
+assert open(ledger, encoding='utf-8').read().strip() == str(moved), '重分配必须写回账本'
+squatter.close()
+# 段内号被占时从它的下一个开始扫，而不是从 uid 起点重来：否则每轮都要先把
+# 一串已知不可用的号重新探测一遍，冲突严重时白跑几百次 bind。
+reserved = ns['PORT_BASE'] + 7
+if ns['port_is_free'](reserved) and ns['port_is_free'](reserved + 1):
+    squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    squatter.bind(('127.0.0.1', reserved))
+    squatter.listen(1)
+    with open(ledger, 'w', encoding='utf-8') as handle:
+        handle.write(str(reserved) + '\n')
+    assert ns['tunnel_port'](True) == reserved + 1
+    squatter.close()
 # 账本损坏或越界时要能自愈，不能把脏值当成端口去监听。
 for broken in ('garbage', '80', '99999', ''):
     with open(ledger, 'w', encoding='utf-8') as handle:
@@ -234,6 +260,21 @@ for broken in ('garbage', '80', '99999', ''):
     healed = ns['tunnel_port']()
     assert 1024 <= healed <= 65535, (broken, healed)
     assert open(ledger, encoding='utf-8').read().strip() == str(healed)
+
+# 自愈脚本必须能被单独执行：Rust 侧只是把它的源码当字符串发过来，少一个符号
+# （emit / receive / tunnel_port）直到真机才炸——而这条路径恰恰是用户已经失败过一次、
+# 最没有耐心再来一轮的时候才会走到的。
+REALLOCATE = COMMON + '\n' + (ROOT / 'reallocate.py').read_text(encoding='utf-8')
+seeded = ns['PORT_BASE'] + 11
+with open(ledger, 'w', encoding='utf-8') as handle:
+    handle.write('%d\n' % seeded)
+code, output = execute(REALLOCATE, {})
+assert code == 0, (code, output)
+assert 'CCB_PORT' in output, output
+frames = ''.join(line[len('CCB_DATA '):] for line in output.splitlines() if line.startswith('CCB_DATA '))
+moved = json.loads(__import__('base64').b64decode(frames))['port']
+assert moved != seeded, (seeded, moved)
+assert ns['PORT_BASE'] <= moved < ns['PORT_BASE'] + ns['PORT_SPAN'], moved
 
 server.shutdown()
 print('FIXTURE_OK')

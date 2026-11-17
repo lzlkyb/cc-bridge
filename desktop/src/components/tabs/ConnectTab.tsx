@@ -21,6 +21,7 @@ import { CurrentConnectionProvider, useCurrentConnection } from "../../hooks/use
 import { useConnectGuideAnchor } from "../../hooks/useConnectGuideAnchor";
 import { CurrentAccessAddress } from "./connect/CurrentAccessAddress";
 import { CONNECT_GUIDE_ANCHOR, connectionAddressHost, currentConnection, shouldShowIpChangeBanner } from "../../lib/connectionAccess";
+import { stableConfirmedPort } from "../../lib/stableAccess";
 
 function ConnectTabImpl({
   status,
@@ -215,7 +216,7 @@ function ConnectTabImpl({
           <ToolGuide
             status={status}
             host={stableMode ? "127.0.0.1" : guide.displayHost}
-            port={stableMode ? stable.record?.port ?? guide.port : guide.port}
+            port={stableMode ? stableConfirmedPort(stable.record) ?? 0 : guide.port}
             token={guide.token}
             transport={status?.transport === "sse" ? "sse" : "http"}
             tlsEnabled={!stableMode && guide.tlsEnabled}

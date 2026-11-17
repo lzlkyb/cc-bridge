@@ -2,7 +2,7 @@ import { useEffect, useId, useRef } from "react";
 import type { StaticStatus } from "../../../lib/types";
 import type { StableConnectState } from "../../../hooks/useStableConnect";
 import type { StableAccessState } from "../../../hooks/useStableAccess";
-import { stableFixedUrl, stableScopeLabel, stableTargetTitle } from "../../../lib/stableAccess";
+import { stableConfirmedPort, stableFixedUrl, stableScopeLabel, stableTargetTitle } from "../../../lib/stableAccess";
 import { useCurrentConnection } from "../../../hooks/useCurrentConnection";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
@@ -21,7 +21,7 @@ export function StableAccessGuide({ state, access, status, onRefresh, tlsEnabled
   const current = useCurrentConnection(status);
   const { target, checking, picking, failed, result } = access;
   const supported = !tlsEnabled && (status?.transport ?? "http") === "http";
-  const confirmedPort = state.record?.configured || (state.record?.step ?? 0) >= 3 ? state.record?.port : undefined;
+  const confirmedPort = stableConfirmedPort(state.record);
   const address = confirmedPort ? stableFixedUrl(confirmedPort) : "";
   const configuredTarget = state.record?.target;
   const configuredScope = configuredTarget?.scope ?? state.record?.scope ?? "project";
