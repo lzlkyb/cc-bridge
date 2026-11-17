@@ -62,7 +62,9 @@ with tempfile.TemporaryDirectory() as directory:
         # Repeat Token changes accept the latest URL, while preserving all unrelated values.
         payload[5] = 'next-token'
         assert execute(payload)
-        assert json.loads(filename.read_text())['mcpServers']['my-bridge']['headers']['Authorization'] == 'Bearer next-token'
+        # 必须显式指定 utf-8：CI runner 是英文 locale（cp1252），默认编码读不了
+        # 中文路径下这份含「保留」的文件，字节 0x9d 会直接抛 UnicodeDecodeError。
+        assert json.loads(filename.read_text(encoding='utf-8'))['mcpServers']['my-bridge']['headers']['Authorization'] == 'Bearer next-token'
         payload[5] = 'new-token'
 
     payload[0] = 'project'
