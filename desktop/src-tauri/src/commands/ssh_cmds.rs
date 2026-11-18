@@ -1664,12 +1664,20 @@ async fn save_ssh_connection(state: &AppState, args: SshSaveArgs) -> Result<SshC
     // 并保存，5 分钟内再开文件面板，列目录/建目录/**删除**全部走缓存的旧会话——
     // `rm -rf` 会执行在**旧主机**上。删除连接的路径当时加了，保存这条漏了。
     state.drop_ssh_helper(&conn.id);
-    // 服务器或凭据变更后，旧隧道不能继续用修改前的登录信息后台重连。
+    // 服务器或凭据变更后，托管隧道不能继续用修改前的登录信息后台重连，直接停掉。
+    // 🔴 手动转发隧道**不在这里停**：产品语义是「保存连接不打断用户正在用的转发」
+    // （ssh_save_tests 三条用例守着）。防「连旧服务器」的责任在监管线程——
+    // 每次重连前校验登录身份（`login_still_current`），不一致就停住提示重开，
+    // 而不是放它拿旧信息无限重连。
     if identity_changed {
         if let Some(op) = state.stable_operations.get(&conn.id) {
             op.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         }
-        state.halt_ssh_tunnel(&crate::stable_connect::runtime_id(&conn.id));
+        let runtime_id = crate::stable_connect::runtime_id(&conn.id);
+        state.halt_ssh_tunnel(&runtime_id);
+        // 监管线程的 stop 标志已置位、`publish` 不会再发事件：手动补 stopped，
+        // 否则前端 store 留着「运行中」的假状态（进程已经没了）。
+        state.emit_tunnels_stopped(&[runtime_id]);
     }
     Ok(conn)
 }
@@ -1760,11 +1768,14 @@ pub async fn ssh_delete_connection(
     )?;
     // 连接都删了，它的 SFTP helper 会话没必要再占着服务器的 MaxSessions。
     state.drop_ssh_helper(&id);
+    let runtime_id = crate::stable_connect::runtime_id(&id);
     state.halt_ssh_tunnel(&id);
     if let Some(op) = state.stable_operations.get(&id) {
         op.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     }
-    state.halt_ssh_tunnel(&crate::stable_connect::runtime_id(&id));
+    state.halt_ssh_tunnel(&runtime_id);
+    // 转发面板会随连接删除关闭，但侧栏/托盘可能还显示「运行中」：补发 stopped 归位。
+    state.emit_tunnels_stopped(&[id.clone(), runtime_id]);
     config
         .stable_connect
         .connections

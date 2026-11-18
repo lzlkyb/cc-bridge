@@ -2,12 +2,31 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { SshConnection, TunnelStatus } from "./types";
 import type { ForwardContext } from "./forwardOwnership";
 
-vi.mock("./tauri", () => ({ invoke: vi.fn(async () => []), listen: vi.fn(async () => () => {}) }));
+// 事件监听回调就地保存：B4 的回归要靠它直接喂 `ssh_tunnel_status` 事件。
+// 注意 lib/tauri 的 listen 会解包 payload，这里存/传的都是状态对象本身。
+const eventListeners = vi.hoisted(
+  () => new Map<string, (payload: unknown) => void>(),
+);
+
+vi.mock("./tauri", () => ({
+  invoke: vi.fn(async () => []),
+  listen: vi.fn(async (event: string, handler: (payload: unknown) => void) => {
+    eventListeners.set(event, handler);
+    return () => {
+      eventListeners.delete(event);
+    };
+  }),
+}));
 vi.mock("../components/ui/toast", () => ({ toast: vi.fn() }));
 
 import { invoke } from "./tauri";
 import { dismissForwardOffer, forwardPanelOpen, getForwardOffer, offerForward, setForwardPanelConnId } from "./sshTunnelStore";
 import { toast } from "../components/ui/toast";
+
+const tunnelEvent = (connectionId: string, state: TunnelStatus["state"]) =>
+  eventListeners.get("ssh_tunnel_status")?.({
+    connectionId, state, rules: [], message: null, needsSecret: false,
+  } as TunnelStatus);
 
 const rule = { id: "r", enabled: true, kind: "local", listenHost: "127.0.0.1", listenPort: 18080, targetHost: "127.0.0.1", targetPort: 22, note: "" } as const;
 const conn = (extra: Partial<SshConnection> = {}) =>
@@ -119,4 +138,27 @@ it("读取关联失败保持 SSH 连接，不猜测规则或发起转发", async
   expect(getForwardOffer()).toBeNull();
   expect(toast).toHaveBeenCalledWith(expect.stringContaining("可在端口转发面板重试"), "error");
   expect(invoke).not.toHaveBeenCalledWith("ssh_tunnel_start", expect.anything());
+});
+
+// B4：offer 只归它自己那条连接的托管隧道管。跨连接的 stable 事件曾经会反复
+// 触发 offerForward——弹窗被不断关掉重建，还每次白烧一次 IPC。
+it("另一台服务器的托管隧道事件不会误触当前询问", async () => {
+  await offerForward(conn());
+  expect(getForwardOffer()).not.toBeNull();
+  const before = vi.mocked(invoke).mock.calls.length;
+  tunnelEvent("stable:other", "reconnecting");
+  await new Promise(done => setTimeout(done, 0));
+  expect(getForwardOffer()).not.toBeNull();
+  expect(vi.mocked(invoke).mock.calls.length).toBe(before);
+});
+
+it("本服务器的托管隧道事件才会重新核对询问", async () => {
+  await offerForward(conn());
+  expect(getForwardOffer()).not.toBeNull();
+  const before = vi.mocked(invoke).mock.calls.length;
+  tunnelEvent("stable:c", "reconnecting");
+  await new Promise(done => setTimeout(done, 0));
+  // 重连中不代表连上：手动规则仍未运行，询问照旧挂起。
+  expect(getForwardOffer()).not.toBeNull();
+  expect(vi.mocked(invoke).mock.calls.length).toBeGreaterThan(before);
 });

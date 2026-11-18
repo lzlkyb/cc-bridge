@@ -33,10 +33,17 @@ it("通配 IPv6 监听展示可用的 IPv6 回环地址", () => {
   expect(forwardAddress({ ...rule, listenHost: "0.0.0.0" })).toBe("127.0.0.1:3000");
 });
 it("同方向端口按后端约束检查，已停用规则和另一方向不占用", () => {
-  expect(forwardConflict(rule, [{ ...rule, id: "other", listenHost: "127.0.0.2" }])).toContain("已有");
+  expect(forwardConflict(rule, [{ ...rule, id: "other", listenHost: "127.0.0.2" }])).toBeUndefined();
   expect(forwardConflict(rule, [{ ...rule, id: "proxy", kind: "dynamic" }])).toContain("已有");
   expect(forwardConflict(rule, [{ ...rule, id: "off", enabled: false }])).toBeUndefined();
   expect(forwardConflict(rule, [{ ...rule, id: "reverse", kind: "remote" }])).toBeUndefined();
+});
+it("同端口还要看监听地址：不同回环 IP 可共存，通配地址抢掉一切", () => {
+  expect(forwardConflict(rule, [{ ...rule, id: "same" }])).toContain("已有");
+  expect(forwardConflict(rule, [{ ...rule, id: "wildcard", listenHost: "0.0.0.0" }])).toContain("重叠");
+  expect(forwardConflict(rule, [{ ...rule, id: "star", listenHost: "*" }])).toContain("重叠");
+  expect(forwardConflict({ ...rule, listenHost: "0.0.0.0" }, [{ ...rule, id: "loopback", listenHost: "127.0.0.1" }])).toContain("重叠");
+  expect(forwardConflict(rule, [{ ...rule, id: "v6", listenHost: "::1" }])).toBeUndefined();
 });
 it("托管端口来自实际归属，默认示例端口不被硬编码占用", () => {
   expect(forwardConflict({ ...rule, kind: "remote", listenPort: 8888, targetPort: 9000 }, [], owner)).toContain("Claude Code");

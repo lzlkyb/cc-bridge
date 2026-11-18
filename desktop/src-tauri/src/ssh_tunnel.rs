@@ -290,11 +290,14 @@ pub fn is_fatal(reason: &str) -> bool {
     KEYS.iter().any(|k| reason.contains(k))
 }
 
-/// 入口校验（`ssh_save_connection`）。每个方向内监听端口不能重复：
-/// 状态解析按端口把日志对应到规则上。
+/// 入口校验（`ssh_save_connection`）。每个方向内监听地址+端口不能重叠：
+/// 状态解析按端口把日志对应到规则上，而 `127.0.0.1:8080` 与 `0.0.0.0:8080`
+/// 会互相抢绑定（前者是后者的子集）——只看端口号会放行它们，运行时必有一条
+/// bind 失败，且失败信息里看不出是规则打架。判重口径与托管冲突检测同一套
+/// （`forward_ownership::listeners_overlap` 的 hosts_overlap）。
 pub fn validate_rules(rules: &[ForwardRule]) -> Result<(), String> {
-    let mut local_ports = Vec::new();
-    let mut remote_ports = Vec::new();
+    let mut local: Vec<&ForwardRule> = Vec::new();
+    let mut remote: Vec<&ForwardRule> = Vec::new();
     for r in rules {
         let label = format!("转发规则 {}:{}", r.listen_host, r.listen_port);
         if !host_ok(&r.listen_host) {
@@ -310,26 +313,36 @@ pub fn validate_rules(rules: &[ForwardRule]) -> Result<(), String> {
             continue;
         }
         let seen = if r.kind == ForwardKind::Remote {
-            &mut remote_ports
+            &mut remote
         } else {
-            &mut local_ports
+            &mut local
         };
-        if seen.contains(&r.listen_port) {
+        if let Some(other) = seen
+            .iter()
+            .find(|other| crate::forward_ownership::listeners_overlap(r, other))
+        {
             return Err(format!(
-                "{label}：同一方向已有规则监听端口 {}",
-                r.listen_port
+                "{label}：与规则「{}」的监听地址/端口重叠，同时只能有一条在监听",
+                if other.note.is_empty() {
+                    &other.id
+                } else {
+                    &other.note
+                }
             ));
         }
-        seen.push(r.listen_port);
+        seen.push(r);
     }
     Ok(())
 }
 
-/// 只放行主机名 / IPv4 / IPv6 / `*` 的字符：参数直接进 ssh 命令行，空格、引号一类必须拒掉。
+/// 只放行主机名 / IPv4 / IPv6 / 完整 `*` 的字符：参数直接进 ssh 命令行，空格、引号一类必须拒掉。
+/// `*` 只作为完整通配符（监听所有地址）放行；当普通字符放行会让 `12*3` 这类假
+/// 主机名一路走到 ssh 命令行才失败。
 fn host_ok(h: &str) -> bool {
-    !h.is_empty()
-        && h.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '*'))
+    h == "*"
+        || (!h.is_empty()
+            && h.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':')))
 }
 
 fn spec_host(h: &str) -> String {
@@ -418,6 +431,41 @@ mod tests {
             rule(ForwardKind::Remote, 8080, 80),
         ];
         assert!(validate_rules(&cross).is_ok());
+    }
+
+    /// 同端口不同监听地址也必须拒：`0.0.0.0` / `*` 是通配，会把另一条的绑定抢掉。
+    #[test]
+    fn validation_rejects_overlapping_listen_hosts() {
+        let wildcard = [rule(ForwardKind::Local, 8080, 80), {
+            let mut r = rule(ForwardKind::Local, 8080, 81);
+            r.listen_host = "0.0.0.0".into();
+            r
+        }];
+        assert!(validate_rules(&wildcard).is_err());
+        let star = [rule(ForwardKind::Local, 8080, 80), {
+            let mut r = rule(ForwardKind::Local, 8080, 81);
+            r.listen_host = "*".into();
+            r
+        }];
+        assert!(validate_rules(&star).is_err());
+        // 回环家族（localhost / 127.x / ::1）互相重叠
+        let loopbacks = [rule(ForwardKind::Local, 8080, 80), {
+            let mut r = rule(ForwardKind::Local, 8080, 81);
+            r.listen_host = "localhost".into();
+            r
+        }];
+        assert!(validate_rules(&loopbacks).is_err());
+        // 端口不同不冲突
+        let apart = [rule(ForwardKind::Local, 8080, 80), {
+            let mut r = rule(ForwardKind::Local, 8081, 81);
+            r.listen_host = "0.0.0.0".into();
+            r
+        }];
+        assert!(validate_rules(&apart).is_ok());
+        // 通配符只作为完整 `*` 放行，不能混进主机名
+        let mut evil = rule(ForwardKind::Local, 8080, 80);
+        evil.listen_host = "12*3".into();
+        assert!(validate_rules(&[evil]).is_err());
     }
 
     #[test]

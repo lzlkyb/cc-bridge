@@ -6,6 +6,7 @@ use crate::stable_connect::{self as stable, StableOperation, StableRecord, Stabl
 use crate::state::{SshTunnel, SshTunnelRestart};
 use rusqlite::Connection;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex as StdMutex;
 use std::sync::{Arc, Mutex};
 
 fn fixture(enabled: Option<bool>) -> (BridgeConfig, Arc<AppState>, SshConnection) {
@@ -66,8 +67,8 @@ fn insert(
             restart: Some(Arc::new(SshTunnelRestart {
                 connection: connection.clone(),
                 jump: None,
-                password: Some("original-one-time".into()),
-                passphrase: None,
+                password: StdMutex::new(Some("original-one-time".into())),
+                passphrase: StdMutex::new(None),
             })),
             guard: None,
         },

@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use rusqlite::Connection;
+#[cfg(feature = "notifications")]
+use tauri::Emitter;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::config::BridgeConfig;
@@ -56,8 +58,10 @@ pub struct SshSession {
 pub(crate) struct SshTunnelRestart {
     pub connection: crate::config::SshConnection,
     pub jump: Option<crate::config::SshConnection>,
-    pub password: Option<String>,
-    pub passphrase: Option<String>,
+    /// 一次性凭据：停机（`halt_ssh_tunnel`）即 `take` 清零，不在内存里过夜。
+    /// 包 Mutex 是因为 `Arc<SshTunnelRestart>` 被监管线程和停止路径共享，停止时要不靠 &mut 清掉。
+    pub password: StdMutex<Option<String>>,
+    pub passphrase: StdMutex<Option<String>>,
 }
 
 /// 一条连接的端口转发（常驻 SSH 进程 + 断线重连的监管线程）。
@@ -86,6 +90,18 @@ impl SshTunnel {
             .as_mut()
         {
             let _ = k.kill();
+        }
+    }
+
+    /// 停机即清零内存里的一次性凭据。
+    ///
+    /// 断线重连要用它们，所以进程活着时必须留；但停机（用户停止 / 改登录信息 /
+    /// 删除连接 / 总开关断路 / 被新启动顶替）之后没有再连的道理，趁 `halt` 移出
+    /// map 的时机 `take` 掉，明文不过夜。
+    pub fn clear_secrets(&self) {
+        if let Some(restart) = &self.restart {
+            *restart.password.lock().unwrap_or_else(|p| p.into_inner()) = None;
+            *restart.passphrase.lock().unwrap_or_else(|p| p.into_inner()) = None;
         }
     }
 
@@ -503,11 +519,44 @@ impl AppState {
     }
 
     /// 停掉某条连接的端口转发（不等进程退出）。返回被停掉的句柄，需要等端口释放的调用方去 join。
+    ///
+    /// 顺手做两件终态清理：`clear_secrets`（凭据不过夜）与调用方的 `emit_tunnels_stopped`
+    /// （监管线程的 stop 标志已置位，`publish` 不会再发事件，前端 store 会留着旧状态）。
     pub fn halt_ssh_tunnel(&self, connection_id: &str) -> Option<SshTunnel> {
         let (_, t) = self.ssh_tunnels.remove(connection_id)?;
         t.halt();
+        t.clear_secrets();
         Some(t)
     }
+
+    /// halt 之后补发 `stopped` 事件。
+    ///
+    /// 🔴 只用于**不会紧跟一次重启**的 halt 路径（改登录信息、删除连接、总开关断路）。
+    /// 重启路径（`start_plan` 的 `stop_and_wait`、被顶替的 displaced 隧道）不能调：
+    /// 新进程马上会发自己的状态，先发一个 stopped 会让面板闪一下「未开启」。
+    ///
+    /// feature 门控与 `app_handle` 字段一致：`--no-default-features`（CI 测试构建）
+    /// 下没有 AppHandle 可推，退化为空操作；生产构建（默认 features）正常推事件。
+    #[cfg(feature = "notifications")]
+    pub fn emit_tunnels_stopped(&self, ids: &[String]) {
+        let Some(app) = self
+            .app_handle
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        else {
+            return;
+        };
+        for id in ids {
+            let _ = app.emit(
+                "ssh_tunnel_status",
+                crate::ssh_tunnel::TunnelStatus::stopped(id.clone()),
+            );
+        }
+    }
+
+    #[cfg(not(feature = "notifications"))]
+    pub fn emit_tunnels_stopped(&self, _ids: &[String]) {}
 
     /// 总开关关闭 / 应用退出时调用，与 `kill_all_ssh_sessions` 同一个断路器语义。
     pub fn kill_all_ssh_tunnels(&self) {
@@ -515,12 +564,14 @@ impl AppState {
             operation.cancel.store(true, Ordering::SeqCst);
         }
         let ids: Vec<String> = self.ssh_tunnels.iter().map(|e| e.key().clone()).collect();
-        for id in ids {
-            if let Some(tunnel) = self.halt_ssh_tunnel(&id) {
+        for id in &ids {
+            if let Some(tunnel) = self.halt_ssh_tunnel(id) {
                 // 总开关关闭 / 应用退出都是终态，不会有「马上用新参数重启」跟在后面。
                 tunnel.release_receipt();
             }
         }
+        // 断路器：前端必须看到「已停止」，否则侧栏/面板留着「运行中」的假状态。
+        self.emit_tunnels_stopped(&ids);
     }
 
     /// 杀掉**全部** SSH 会话（总开关被关闭时调用）。

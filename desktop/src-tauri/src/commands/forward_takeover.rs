@@ -5,7 +5,7 @@ use crate::config::{BridgeConfig, ForwardRule};
 use crate::forward_ownership::{self as ownership, ManagedForward};
 use crate::ssh_tunnel::{TunnelState, TunnelStatus};
 use crate::state::AppState;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
@@ -14,6 +14,8 @@ pub(super) struct ForwardAdjustment {
     pub original: RunningForward,
 }
 
+/// Clone 是给「先登记再动进程」用的：登记要存一份 original，动进程还要用原件。
+#[derive(Clone)]
 pub(super) struct RunningForward {
     id: String,
     pub rules: Vec<ForwardRule>,
@@ -27,24 +29,40 @@ impl RunningForward {
         let Some(tunnel) = state.ssh_tunnels.get(id) else {
             return Ok(None);
         };
-        let status = tunnel.status.lock().unwrap_or_else(|p| p.into_inner());
-        if matches!(status.state, TunnelState::Error | TunnelState::Stopped) {
-            return Ok(None);
-        }
-        let restart = tunnel
-            .restart
-            .as_ref()
-            .ok_or("缺少恢复原有转发所需的登录信息。")?;
-        Ok(Some(Self {
-            id: id.into(),
-            rules: status
+        // 在一个块里取完再松手：DashMap 的 Ref 与 status 锁都不能带到 Self 构造里。
+        let (rules, link, password, passphrase) = {
+            let status = tunnel.status.lock().unwrap_or_else(|p| p.into_inner());
+            if matches!(status.state, TunnelState::Error | TunnelState::Stopped) {
+                return Ok(None);
+            }
+            let restart = tunnel
+                .restart
+                .as_ref()
+                .ok_or("缺少恢复原有转发所需的登录信息。")?;
+            let rules = status
                 .rules
                 .iter()
                 .map(|entry| entry.rule.clone())
-                .collect(),
-            link: SshLink::new(restart.connection.clone(), restart.jump.clone())?,
-            password: restart.password.clone(),
-            passphrase: restart.passphrase.clone(),
+                .collect();
+            let link = SshLink::new(restart.connection.clone(), restart.jump.clone())?;
+            let password = restart
+                .password
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            let passphrase = restart
+                .passphrase
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            (rules, link, password, passphrase)
+        };
+        Ok(Some(Self {
+            id: id.into(),
+            rules,
+            link,
+            password,
+            passphrase,
         }))
     }
 
@@ -71,6 +89,9 @@ impl RunningForward {
 struct ChangedForward {
     id: String,
     original: Option<RunningForward>,
+    /// 动进程**之前**该连接在跑的 runtime（`None` = 当时没在跑）。
+    previous: Option<Arc<AtomicBool>>,
+    /// 动进程**之后**我们留下的 runtime（缩减版重启成功 = 新句柄；停掉 / 没起成 = `None`）。
     replacement: Option<Arc<AtomicBool>>,
 }
 
@@ -78,18 +99,29 @@ struct ChangedForward {
 pub(super) struct Takeover(Vec<ChangedForward>);
 
 impl Takeover {
+    /// 动进程**之前**登记。必须赶在 `stop_and_wait` 之前：start 中途失败时 map 已空
+    /// （`halt` 即 remove），事后登记就再也说不出原来跑的是什么，回滚便无从谈起。
     pub(super) fn record(
         &mut self,
         state: &AppState,
         id: String,
         original: Option<RunningForward>,
     ) {
-        let replacement = state.ssh_tunnels.get(&id).map(|entry| entry.stop.clone());
+        let previous = state.ssh_tunnels.get(&id).map(|entry| entry.stop.clone());
         self.0.push(ChangedForward {
             id,
             original,
-            replacement,
+            previous,
+            replacement: None,
         });
+    }
+
+    /// 动进程**之后**更新留下的 runtime：缩减版重启成功后 map 里是新句柄，
+    /// 停掉或没起成则留 `None`（该连接当前没有 runtime，回滚时直接恢复原样）。
+    pub(super) fn settle(&mut self, state: &AppState, id: &str) {
+        if let Some(change) = self.0.iter_mut().rev().find(|c| c.id == id) {
+            change.replacement = state.ssh_tunnels.get(id).map(|entry| entry.stop.clone());
+        }
     }
 
     pub(super) async fn restore(
@@ -105,7 +137,7 @@ impl Takeover {
                 .ssh_tunnels
                 .get(&change.id)
                 .map(|entry| entry.stop.clone());
-            if !same_runtime(current.as_ref(), change.replacement.as_ref()) {
+            if !ours_to_restore(current.as_ref(), &change) {
                 continue;
             }
             stop_and_wait(state, &change.id).await;
@@ -131,13 +163,38 @@ impl Takeover {
     }
 }
 
-fn same_runtime(current: Option<&Arc<AtomicBool>>, replacement: Option<&Arc<AtomicBool>>) -> bool {
-    match (current, replacement) {
-        (Some(current), Some(replacement)) => {
-            Arc::ptr_eq(current, replacement) && !current.load(Ordering::SeqCst)
+/// 当前 runtime 是不是「接管流程自己的」，能不能碰。
+///
+/// - `None`：我们停掉后没起成 / 起了又停——正是「动进程到一半失败」的现场，
+///   必须允许恢复原样（曾经这里一律跳过，用户的手动转发就静默丢了）。
+/// - `previous` / `replacement` 之一：我们留下的，可以恢复。
+/// - 第三者（用户另起的、被别的启动顶替的）：不碰。
+fn ours_to_restore(current: Option<&Arc<AtomicBool>>, change: &ChangedForward) -> bool {
+    match current {
+        None => true,
+        Some(current) => {
+            change
+                .replacement
+                .as_ref()
+                .is_some_and(|r| Arc::ptr_eq(r, current))
+                || change
+                    .previous
+                    .as_ref()
+                    .is_some_and(|p| Arc::ptr_eq(p, current))
         }
-        (None, None) => true,
-        _ => false,
+    }
+}
+
+#[cfg(test)]
+fn changed(
+    previous: Option<Arc<AtomicBool>>,
+    replacement: Option<Arc<AtomicBool>>,
+) -> ChangedForward {
+    ChangedForward {
+        id: "c".into(),
+        original: None,
+        previous,
+        replacement,
     }
 }
 
@@ -146,12 +203,33 @@ fn same_runtime(current: Option<&Arc<AtomicBool>>, replacement: Option<&Arc<Atom
 fn rollback_never_stops_a_newer_or_explicitly_stopped_runtime() {
     let attempt = Arc::new(AtomicBool::new(false));
     let newer = Arc::new(AtomicBool::new(false));
-    assert!(same_runtime(Some(&attempt), Some(&attempt)));
-    assert!(same_runtime(None, None));
-    assert!(!same_runtime(Some(&newer), Some(&attempt)));
-    assert!(!same_runtime(None, Some(&attempt)));
-    attempt.store(true, Ordering::SeqCst);
-    assert!(!same_runtime(Some(&attempt), Some(&attempt)));
+    assert!(ours_to_restore(
+        Some(&attempt),
+        &changed(Some(attempt.clone()), None)
+    ));
+    assert!(ours_to_restore(None, &changed(Some(attempt.clone()), None)));
+    assert!(!ours_to_restore(
+        Some(&newer),
+        &changed(Some(attempt.clone()), None)
+    ));
+    // 我们留下的缩减版被用户显式停掉（map 已空、stop 置位）时同样放行：
+    // 恢复的是用户接管前的手动转发，不是把用户的「停止」吞掉。
+    assert!(ours_to_restore(None, &changed(None, Some(attempt.clone()))));
+}
+
+/// 「动进程到一半失败」：旧隧道已停、新规则没起成，map 里什么都没有。
+/// 这条路径必须能恢复原手动转发——B3 的回归就在这里。
+#[test]
+fn rollback_restores_after_a_half_finished_takeover() {
+    let stopped = Arc::new(AtomicBool::new(true));
+    assert!(
+        ours_to_restore(None, &changed(Some(stopped.clone()), None)),
+        "停掉旧隧道后没起成，map 为空也必须允许恢复"
+    );
+    assert!(
+        ours_to_restore(None, &changed(None, None)),
+        "从未起过的连接同样允许恢复（original 为 None 时循环里自然跳过）"
+    );
 }
 
 pub(super) fn plan_owned(
@@ -227,16 +305,23 @@ pub(super) async fn prepare_owned(
     // Validate every collision before stopping anything. The caller holds the shared start lock.
     for adjustment in adjustments {
         let id = adjustment.original.id.clone();
-        if adjustment.rules.is_empty() {
+        // 🔴 先登记再动进程：start 中途失败时 map 已空（halt 即 remove），
+        // 事后登记就丢了这条连接的身份，外层 restore 会认不出该恢复谁，
+        // 用户的手动转发就静默没了（B3）。
+        takeover.record(state, id.clone(), Some(adjustment.original.clone()));
+        let outcome = if adjustment.rules.is_empty() {
             stop_and_wait(state, &id).await;
             let _ = app.emit("ssh_tunnel_status", TunnelStatus::stopped(id.clone()));
+            Ok(())
         } else {
             adjustment
                 .original
                 .start(app, state, adjustment.rules)
-                .await?;
-        }
-        takeover.record(state, id, Some(adjustment.original));
+                .await
+        };
+        // 无论成败都更新留下的 runtime：成功 = 缩减版新句柄，失败 = None（该恢复了）。
+        takeover.settle(state, &id);
+        outcome?;
     }
     Ok(())
 }

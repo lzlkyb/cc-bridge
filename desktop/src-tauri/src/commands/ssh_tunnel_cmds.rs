@@ -43,8 +43,9 @@ struct Plan {
     rules: Vec<ForwardRule>,
     data_dir: PathBuf,
     /// 启动时临时输入的密码 / 口令：要留到停止为止，否则断线后没法自动重连。
-    password: Option<String>,
-    passphrase: Option<String>,
+    /// 包 Mutex 是为了监管线程退出时能 `take` 清零（明文不过夜）。
+    password: StdMutex<Option<String>>,
+    passphrase: StdMutex<Option<String>>,
     guard: Option<Arc<ManagedGuard>>,
     state: Weak<AppState>,
 }
@@ -96,15 +97,18 @@ pub async fn ssh_tunnel_stop(
     connection_id: String,
 ) -> Result<(), String> {
     let _start_guard = state.ssh_tunnel_start_lock.lock().await;
-    stop_and_release(state.inner(), &connection_id).await;
-    audit_tunnel(
-        &state,
-        "ssh_tunnel_stop",
-        &connection_id,
-        TunnelState::Stopped,
-        None,
-    )
-    .await;
+    // 只有真停到了才记审计：对不存在的连接也记「停止」，日志里会出现没有对应
+    // 「开始」的无主记录，把真正要看的成对事件埋掉。
+    if stop_and_release(state.inner(), &connection_id).await {
+        audit_tunnel(
+            &state,
+            "ssh_tunnel_stop",
+            &connection_id,
+            TunnelState::Stopped,
+            None,
+        )
+        .await;
+    }
     let _ = app.emit(STATUS_EVENT, TunnelStatus::stopped(connection_id));
     Ok(())
 }
@@ -312,19 +316,31 @@ pub(super) async fn start_owned_tunnel(
     }
     find_ssh().ok_or("未检测到系统 OpenSSH 客户端，无法开启端口转发")?;
     let original = super::forward_takeover::RunningForward::capture(&state, &runtime_id)?;
-    super::forward_takeover::prepare_owned(&app, &state, &config, &link, &rules, takeover).await?;
-    start_plan(
-        app,
-        state.clone(),
-        runtime_id.clone(),
-        link,
-        rules,
-        credentials.0,
-        credentials.1,
+    // 🔴 先登记再动进程：下面任何一步失败，外层 restore 都要能认出「这条连接
+    // 原来跑的是什么」。曾经登记放在 start_plan 成功之后，中途失败时 map 已空、
+    // 登记没写上，回滚就丢了这条隧道（B3）。
+    takeover.record(&state, runtime_id.clone(), original);
+    let outcome = match super::forward_takeover::prepare_owned(
+        &app, &state, &config, &link, &rules, takeover,
     )
-    .await?;
-    takeover.record(&state, runtime_id, original);
-    Ok(())
+    .await
+    {
+        Ok(()) => start_plan(
+            app,
+            state.clone(),
+            runtime_id.clone(),
+            link,
+            rules,
+            credentials.0,
+            credentials.1,
+        )
+        .await
+        .map(|_| ()),
+        Err(e) => Err(e),
+    };
+    // 成功 = 留下新 stable 隧道句柄；失败 = None（map 已空，该恢复原样了）。
+    takeover.settle(&state, &runtime_id);
+    outcome
 }
 
 pub(super) fn owned_tunnel_is_ready(
@@ -400,8 +416,8 @@ pub(super) async fn start_plan(
         restart: Some(Arc::new(SshTunnelRestart {
             connection: link.conn.clone(),
             jump: link.jump.clone(),
-            password: password.clone(),
-            passphrase: passphrase.clone(),
+            password: StdMutex::new(password.clone().filter(|v| !v.is_empty())),
+            passphrase: StdMutex::new(passphrase.clone().filter(|v| !v.is_empty())),
         })),
         // 同一份句柄也留在隧道本体上：停止时（`SshTunnel::release_receipt`）要靠它的
         // 身份确认盘上凭据是不是自己写的，才能安全删掉。
@@ -413,8 +429,8 @@ pub(super) async fn start_plan(
         ssh,
         rules,
         data_dir: state.data_dir.clone(),
-        password: password.filter(|v| !v.is_empty()),
-        passphrase: passphrase.filter(|v| !v.is_empty()),
+        password: StdMutex::new(password.filter(|v| !v.is_empty())),
+        passphrase: StdMutex::new(passphrase.filter(|v| !v.is_empty())),
         guard,
         state: Arc::downgrade(&state),
     };
@@ -481,16 +497,18 @@ pub(super) async fn stop_and_wait(state: &Arc<AppState>, id: &str) {
 }
 
 /// 真正的停止：用户断开、连接被删。与 [`stop_and_wait`] 的区别只有一个 ——
-/// 顺手清掉远端监听的恢复凭据，因为后面不会立刻用新参数重启。
-pub(super) async fn stop_and_release(state: &Arc<AppState>, id: &str) {
-    stop_tunnel(state, id, true).await;
+/// 顺手清掉远端监听的恢复凭据，因为后面不会立刻用新参数重启。返回值见 `stop_tunnel`。
+pub(super) async fn stop_and_release(state: &Arc<AppState>, id: &str) -> bool {
+    stop_tunnel(state, id, true).await
 }
 
 /// `release` 只在**不会紧跟一次重启**时传 true。重启路径（`start_plan`、接管替换）
 /// 必须保留凭据：旧远端监听可能还在释放端口，下一次启动要靠它去回收。
-async fn stop_tunnel(state: &Arc<AppState>, id: &str, release: bool) {
+///
+/// 返回值：是否真的停掉了一条在跑的隧道（调用方据此决定要不要记审计）。
+async fn stop_tunnel(state: &Arc<AppState>, id: &str, release: bool) -> bool {
     let Some(old) = state.halt_ssh_tunnel(id) else {
-        return;
+        return false;
     };
     let handle = old.thread.lock().unwrap_or_else(|p| p.into_inner()).take();
     if let Some(h) = handle {
@@ -500,6 +518,7 @@ async fn stop_tunnel(state: &Arc<AppState>, id: &str, release: bool) {
     if release {
         old.release_receipt();
     }
+    true
 }
 
 /// 改状态并推给前端。已停止的转发不再发事件：同一连接可能已经换成了新进程，
@@ -542,8 +561,34 @@ fn supervise(
     status: &SharedStatus,
     killer: &StdMutex<Option<Killer>>,
 ) {
+    supervise_loop(app, plan, stop, status, killer);
+    // 停机即清零：监管线程退出后凭据不该继续留在 Plan 里过夜。
+    *plan.password.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    *plan.passphrase.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+fn supervise_loop(
+    app: &AppHandle,
+    plan: &Plan,
+    stop: &Arc<AtomicBool>,
+    status: &SharedStatus,
+    killer: &StdMutex<Option<Killer>>,
+) {
     let mut delay = RETRY_MIN;
     loop {
+        // 重连前确认登录身份没被「保存连接」改掉。手动隧道的 `Plan.link` 钉着启动
+        // 时的服务器/凭据，保存路径按产品语义不停它（不打断用户正在用的转发），
+        // 所以这里是把最后一道关：改过还按旧信息连，等于用户改了服务器我们却连
+        // 旧的，断线后还会拿旧凭据无限重连。托管隧道保存时已被停，走不到这。
+        if !login_still_current(plan) {
+            publish(app, stop, status, |s| {
+                s.state = TunnelState::Error;
+                s.message =
+                    Some("服务器登录信息已更改，转发已停止。请在端口转发面板重新开启。".into());
+                true
+            });
+            return;
+        }
         let fatal = run_once(app, plan, stop, status, killer);
         if stop.load(Ordering::SeqCst) {
             return;
@@ -610,15 +655,43 @@ fn supervise(
     }
 }
 
+/// 当前配置里的登录身份是否还是这条隧道启动时的那一个。
+///
+/// `try_read` 读不到（配置正在写）时放行：写配置是低频操作，宁可多连一轮也不要
+/// 因为一次读锁竞争把好端端的隧道误停。连接被删 / 读不到时返回 false——没有对应
+/// 连接的隧道没有继续连的道理。
+fn login_still_current(plan: &Plan) -> bool {
+    let Some(state) = plan.state.upgrade() else {
+        return true;
+    };
+    let Ok(config) = state.config.try_read() else {
+        return true;
+    };
+    SshLink::from_config(&config, &plan.link.conn.id)
+        .is_ok_and(|current| current.same_login(&plan.link))
+}
+
 fn connected_for_retry(status: &TunnelStatus) -> bool {
-    // Authentication without the required forward must not reset backoff on every failed bind.
-    status.was_up
-        && (!status.connection_id.starts_with("stable:")
-            || (status.guard_is_ready()
-                && status
-                    .rules
-                    .iter()
-                    .all(|r| r.state == crate::ssh_tunnel::RuleState::Listening)))
+    // 认证成功但一条监听都没打通（sshd 拒绝绑定 / 端口全冲突）时，若还按
+    // 「曾连上过」重置退避，重连就固定成 2s 一次完整登录——fail2ban 视角就是攻击。
+    // 手动与托管一视同仁：至少要有一条规则真的在监听，才算「通过」。
+    if !status.was_up {
+        return false;
+    }
+    if status.connection_id.starts_with("stable:") {
+        // 托管隧道只有一条规则，还要恢复程序（guard）就绪。
+        status.guard_is_ready()
+            && status
+                .rules
+                .iter()
+                .all(|r| r.state == crate::ssh_tunnel::RuleState::Listening)
+    } else {
+        // 手动可能是混合规则：部分失败时网络确实是通的，按 any 放行。
+        status
+            .rules
+            .iter()
+            .any(|r| r.state == crate::ssh_tunnel::RuleState::Listening)
+    }
 }
 
 fn retry_error(status: &TunnelStatus) -> Option<String> {
@@ -678,8 +751,14 @@ fn run_once(
     let creds = match resolve_connect_secrets(
         &plan.link,
         &plan.data_dir,
-        plan.password.clone(),
-        plan.passphrase.clone(),
+        plan.password
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone(),
+        plan.passphrase
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone(),
     ) {
         Ok(c) => c,
         Err(e) => return Some(Fatal::Other(e)),
@@ -974,7 +1053,7 @@ fn prompt_answer(tail: &str, creds: &mut PendingCreds) -> Option<Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SshConnection;
+    use crate::config::{BridgeConfig, SshConnection};
     use std::io::Cursor;
 
     #[derive(Clone)]
@@ -1288,6 +1367,35 @@ mod tests {
         assert!(connected_for_retry(&status));
     }
 
+    /// 手动隧道「认证成功但一条监听都没上」不得重置退避。
+    ///
+    /// 曾经只有托管隧道收紧这条：手动隧道认证过就重置，若服务器稳定拒绝监听
+    /// （sshd 不允许 / 端口全冲突）且 ssh 会退出，重连就固定成 2s 一次完整登录，
+    /// 在 fail2ban 视角里就是攻击。
+    #[test]
+    fn manual_authenticated_without_any_listener_does_not_reset_backoff() {
+        let mut status = TunnelStatus::new(
+            "server".into(),
+            &[ForwardRule {
+                listen_port: 8080,
+                ..Default::default()
+            }],
+        );
+        status.apply_line("Authenticated to server.test ([10.0.0.1]:22) using \"password\".");
+        assert!(status.was_up);
+        status.apply_line("channel_setup_fwd_listener_tcpip: cannot listen to port: 8080");
+        assert_eq!(status.rules[0].state, crate::ssh_tunnel::RuleState::Failed);
+        assert!(
+            !connected_for_retry(&status),
+            "一条监听都没上，手动隧道也不能重置退避"
+        );
+        // 至少一条监听就位就放行：混合规则下网络确实是通的。
+        status.begin_attempt();
+        status.apply_line("Authenticated to server.test ([10.0.0.1]:22) using \"password\".");
+        status.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 8080.");
+        assert!(connected_for_retry(&status));
+    }
+
     /// 2FA 验证码这类「后台没人能应答」的提示必须直接放弃。
     ///
     /// 曾经它落在 `Fatal::Other` 里，而 `supervise` 只认「需要密码」和 4 个关键词
@@ -1318,5 +1426,53 @@ mod tests {
         assert!(!give_up(Some(&Fatal::Other("打开 PTY 失败".into()))));
         assert!(!give_up(None));
         assert!(give_up(Some(&Fatal::NeedsSecret("需要密码".into()))));
+    }
+
+    fn plan_for(state: &Arc<AppState>, conn: &SshConnection) -> Plan {
+        Plan {
+            id: conn.id.clone(),
+            link: SshLink::new(conn.clone(), None).unwrap(),
+            ssh: PathBuf::from("ssh"),
+            rules: vec![],
+            data_dir: std::env::temp_dir(),
+            password: StdMutex::new(None),
+            passphrase: StdMutex::new(None),
+            guard: None,
+            state: Arc::downgrade(state),
+        }
+    }
+
+    /// B1 的回归：保存连接改了登录信息后，重连前必须发现「连的是旧服务器」。
+    /// 手动隧道按产品语义不在保存路径停（不打断用户），这道校验就是最后一道关。
+    #[tokio::test]
+    async fn reconnect_stops_instead_of_dialing_the_old_server_after_a_login_change() {
+        let mut config = BridgeConfig {
+            port: 7823,
+            token: "private-test-token".into(),
+            ..Default::default()
+        };
+        let connection = SshConnection {
+            id: "server".into(),
+            host: "server.test".into(),
+            username: "dev".into(),
+            ..Default::default()
+        };
+        config.ssh_connections = vec![connection.clone()];
+        let state = Arc::new(AppState::new(
+            rusqlite::Connection::open_in_memory().unwrap(),
+            config,
+            std::env::temp_dir().join("cc-bridge-login-check-no-io"),
+        ));
+        let plan = plan_for(&state, &connection);
+        assert!(login_still_current(&plan), "配置没变必须放行");
+
+        state.config.write().await.ssh_connections[0].host = "elsewhere.test".into();
+        assert!(
+            !login_still_current(&plan),
+            "登录身份变了必须停住，不能按旧 host 重连"
+        );
+
+        state.config.write().await.ssh_connections.clear();
+        assert!(!login_still_current(&plan), "连接被删后没有继续连的道理");
     }
 }

@@ -1,6 +1,6 @@
 import type { ForwardAuto, ForwardKind, ForwardRule, TunnelStatus } from "./types";
 import { sameForward } from "./sshTunnelStore";
-import { manualForwardDraft, sameForwardRoute, type ForwardContext } from "./forwardOwnership";
+import { manualForwardDraft, hostsOverlap, sameForwardRoute, type ForwardContext } from "./forwardOwnership";
 
 export const FORWARD_PURPOSES = {
   local: { label: "在本机访问服务器服务", short: "本机访问服务器", hint: "打开服务器上的网页、数据库等", accessMachine: "本机", targetMachine: "服务器本身", targetLabel: "服务器上的服务端口", accessLabel: "在本机使用的端口", icon: "monitor" },
@@ -46,13 +46,21 @@ export function forwardConflict(rule: ForwardRule, rules: ForwardRule[], context
   if (context?.managed.some(owner => sameForwardRoute(rule, owner.rule))) return "这条转发已由 Claude Code 接入卡管理，请在“管理接入”中调整。";
   const ownership = manualForwardDraft([rule], context).conflicts[0];
   if (ownership) return ownership.message;
-  if (rule.enabled && rule.listenPort > 0 && rules.some(other => other.id !== rule.id && other.enabled && other.listenPort === rule.listenPort && (other.kind === "remote") === (rule.kind === "remote"))) {
-    return "访问端口 " + rule.listenPort + " 已有一条转发规则，请换一个端口。";
+  // 同端口还要看监听地址：`0.0.0.0` / `*` 是通配，会把只写回环的另一条绑定抢掉
+  // （后端 validate_rules 同一口径，两边都放行才会出现「保存成功但运行失败」）。
+  if (rule.enabled && rule.listenPort > 0 && rules.some(other => other.id !== rule.id && other.enabled
+    && other.listenPort === rule.listenPort && (other.kind === "remote") === (rule.kind === "remote")
+    && hostsOverlap(rule.listenHost, other.listenHost))) {
+    return "访问端口 " + rule.listenPort + " 已有一条监听地址重叠的转发规则，请换一个端口或监听地址。";
   }
 }
 
 const validPort = (port: string) => /^\d+$/.test(port) && Number(port) > 0 && Number(port) <= 65535;
-const validHost = (host: string) => /^[a-zA-Z0-9._:*-]+$/.test(cleanHost(host));
+// 与后端 `host_ok` 同口径：`*` 只作为完整通配符放行，不混进主机名。
+const validHost = (host: string) => {
+  const cleaned = cleanHost(host);
+  return cleaned === "*" || /^[a-zA-Z0-9._:-]+$/.test(cleaned);
+};
 export function validateForwardValues(values: ForwardValues, rules: ForwardRule[], context?: ForwardContext, id = "new"): Record<string, string> {
   const errors: Record<string, string> = {};
   if (values.kind !== "dynamic" && !validPort(values.targetPort)) errors.targetPort = "请输入服务端口，范围为 1–65535。";

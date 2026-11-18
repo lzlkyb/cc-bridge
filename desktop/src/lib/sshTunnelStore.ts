@@ -25,6 +25,11 @@ let offerRequest = 0;
 const listeners = new Set<() => void>();
 let started = false;
 
+/** 托管隧道的运行态 id（与后端 `stable_connect::runtime_id` 同口径）。 */
+export function stableRuntimeId(connId: string): string {
+  return `stable:${connId}`;
+}
+
 function notify() {
   for (const l of listeners) l();
 }
@@ -39,7 +44,12 @@ function put(s: TunnelStatus) {
     offerRequest++;
   }
   notify();
-  if (s.connectionId.startsWith("stable:") && offer) void offerForward(offer.conn, offer.creds);
+  // 🔴 必须核对是哪条连接的托管隧道：stable 事件 id 形如 `stable:<connId>`，
+  // 不核对的话任意服务器的托管隧道一抖动（reconnecting 每 2s 一事件）就会对
+  // 当前 offer 反复触发 offerForward——弹窗被反复关掉重建，还白烧 IPC。
+  if (offer && s.connectionId === stableRuntimeId(offer.conn.id)) {
+    void offerForward(offer.conn, offer.creds);
+  }
 }
 
 /** 第一次有人订阅时拉全量、挂事件；之后全靠事件增量。 */
@@ -66,6 +76,15 @@ function subscribe(l: () => void) {
 
 export function useTunnelStatus(connId: string): TunnelStatus | undefined {
   return useSyncExternalStore(subscribe, () => statuses.get(connId));
+}
+
+/**
+ * 非 hook 的实时读取：只在「事件流刚推过、后端 refetch 还没回来」的竞态窗口做判断
+ * （`useForwardActions.applyLatest` 靠它决定要不要重启隧道）。要跟着渲染走的值
+ * 一律用 `useTunnelStatus`，别用这个——它不订阅。
+ */
+export function getTunnelStatus(connId: string): TunnelStatus | undefined {
+  return statuses.get(connId);
 }
 
 export function useForwardPanelConnId(): string | null {

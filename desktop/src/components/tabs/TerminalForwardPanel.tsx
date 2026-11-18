@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
-import { matchesRunning, useTunnelStatus } from "../../lib/sshTunnelStore";
+import { matchesRunning, stableRuntimeId, useTunnelStatus } from "../../lib/sshTunnelStore";
 import type { ForwardKind, ForwardRule, SshConnection } from "../../lib/types";
 import { ForwardSection } from "./ForwardSection";
 import { ForwardEditor } from "./ForwardEditor";
@@ -28,6 +28,7 @@ export function TerminalForwardPanel(props: PanelProps) {
 function ForwardPanel({ conn, onBack, onNavigate }: PanelProps) {
   const context = useForwardContext(conn.id);
   const tunnelStatus = useTunnelStatus(conn.id);
+  const managedStatus = useTunnelStatus(stableRuntimeId(conn.id));
   const status = context.data ? manualForwardStatus(tunnelStatus ?? context.data.manualStatus ?? undefined, context.data) : undefined;
   const d = useForwardDraft(conn);
   const actions = useForwardActions(conn, context, d);
@@ -36,6 +37,13 @@ function ForwardPanel({ conn, onBack, onNavigate }: PanelProps) {
   const [help, setHelp] = useState(false);
   const draft = manualForwardDraft(context.data ? d.rules : [], context.data);
   const running = !!status && !["error", "stopped"].includes(status.state);
+  // 同服务器两条独立 SSH 通道并存：手动转发与 Claude Code 托管隧道各起一条 ssh
+  // 进程（各登录、各占一份 MaxSessions）。共享服务器限制并发登录时其中一条会
+  // 间歇失败，用户从报错里看不出是这个原因——在这里讲明白。
+  const dualChannel =
+    running &&
+    !!managedStatus &&
+    !["error", "stopped"].includes(managedStatus.state);
   const hasEnabled = draft.manualRules.some(rule => rule.enabled);
   const needsApply = running && !matchesRunning(draft.manualRules, status!);
   const conflict = draft.manualRules.some(rule => forwardConflict(rule, draft.manualRules, context.data));
@@ -66,6 +74,7 @@ function ForwardPanel({ conn, onBack, onNavigate }: PanelProps) {
       </div>
     </header>
     {context.data && <ManagedForwardStatus context={context.data} onNavigate={onNavigate} />}
+    {dualChannel && <p className="fp-page-note" role="note"><Icon name="info" size={14} />这台服务器同时运行 Claude Code 隧道与手动转发（两条独立 SSH 连接）。若服务器限制并发登录，其中一条可能间歇失败。</p>}
     <div className="fp-page-body">
       {context.isPending && <><p role="status" className="fp-read-state">正在核对隧道与手动转发…</p><div className="fp-read-skeleton" aria-hidden="true" /></>}
       {context.error && <div role="alert" className="fp-read-state">暂时无法读取转发关联状态<Button type="button" size="sm" variant="outline" onClick={() => void context.refetch()}>重新读取</Button></div>}

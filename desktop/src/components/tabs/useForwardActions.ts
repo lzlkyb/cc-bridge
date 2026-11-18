@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { invoke } from "../../lib/tauri";
-import { matchesRunning, startTunnel } from "../../lib/sshTunnelStore";
+import { getTunnelStatus, matchesRunning, startTunnel } from "../../lib/sshTunnelStore";
+import { manualForwardStatus } from "../../lib/forwardOwnership";
 import { forwardConflict } from "../../lib/forwardPresentation";
 import type { ForwardAuto, ForwardRule, SshConnection } from "../../lib/types";
 import type { useForwardContext } from "../../hooks/useForwardContext";
@@ -33,7 +34,12 @@ export function useForwardActions(conn: SshConnection, context: ReturnType<typeo
       setSecret(""); void context.refetch();
       return true;
     }
-    const live = fresh.manualStatus;
+    // 以本地实时状态为准：refetch 回来的 manualStatus 可能赶在隧道被停/被顶替的
+    // 瞬间返回 null，拿它判断「已在运行」会漏判，白白重启一条好端端的隧道。
+    const live = manualForwardStatus(
+      getTunnelStatus(conn.id) ?? fresh.manualStatus ?? undefined,
+      fresh,
+    );
     if (!oneTime && live?.state === "up" && live.rules.every(rule => rule.state === "listening") && matchesRunning(fresh.manualRules, live)) {
       toast("配置已保存，当前转发保持运行。", "success");
       return true;

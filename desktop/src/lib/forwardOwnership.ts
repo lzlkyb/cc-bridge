@@ -32,7 +32,8 @@ export function sameForwardRoute(a: ForwardRule, b: ForwardRule): boolean {
     && hostKey(a.listenHost) === hostKey(b.listenHost) && hostKey(a.targetHost) === hostKey(b.targetHost);
 }
 
-function hostsOverlap(a: string, b: string): boolean {
+/** 两个监听地址是否可能抢同一个绑定（回环家族 / 通配 / 0.0.0.0 与 IPv4）。 */
+export function hostsOverlap(a: string, b: string): boolean {
   a = hostKey(a); b = hostKey(b);
   if (a === b || ["", "*", "::"].includes(a) || ["", "*", "::"].includes(b)) return true;
   const loopback = (h: string) => h === "localhost" || h === "::1" || /^127\./.test(h);
