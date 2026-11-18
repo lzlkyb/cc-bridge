@@ -53,6 +53,8 @@ if not isinstance(access, dict) or not access.get('inspection', {}).get('complet
 if access.get('scopeChange'):
     try:
         configured = migrate_access(p, access, base)
+        write_tunnel_port(p['port'])
+        enable_project_server(configured)
         emit('CCB_CONFIGURED', configured)
     except AccessError as error:
         stop(error.marker)
@@ -130,10 +132,12 @@ try:
         os.chmod(temp, os.stat(filename).st_mode & 0o777)
     os.replace(temp, filename)
     temp = None
+    configured = describe(p, name, entry, scope, filename, project, project_key)
+    enable_project_server(configured)
     # 账本必须反映「实际写进配置的端口」。隧道可能因为账本里的号被别人占了而退避到
     # 别的端口，若不写回，下次检查又会拿回那个被占的号，地址在两次接入之间来回跳。
     write_tunnel_port(p['port'])
-    emit('CCB_CONFIGURED', describe(p, name, entry, scope, filename, project, project_key))
+    emit('CCB_CONFIGURED', configured)
 except AccessError as error:
     stop(error.marker, 44 if error.marker == 'CCB_PROJECT_MISSING' else 48)
 except Exception:

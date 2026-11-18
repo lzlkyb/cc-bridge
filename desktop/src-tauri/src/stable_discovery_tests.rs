@@ -98,18 +98,20 @@ fn older_upgrade_receipts_do_not_enable_migration() {
 fn scope_conflicts_and_partial_migrations_reach_the_ui_without_secrets() {
     let mut input = crate::stable_connect::SetupInput::new("{}".into());
     input.push("CCB_INPUT_READY\n");
-    for marker in ["CCB_SCOPE_CONFLICT", "CCB_SCOPE_PARTIAL"] {
+    // 每个标记都要同时满足两件事：能穿过输入过滤、有对应的人类可读文案。
+    for (marker, expected) in [
+        ("CCB_SCOPE_CONFLICT", "全局配置"),
+        ("CCB_SCOPE_PROJECT_CONFLICT", "目标项目已有同名"),
+        ("CCB_SCOPE_LEGACY", "projects 段"),
+        ("CCB_SCOPE_PARTIAL", "未完整完成"),
+    ] {
         assert_eq!(input.push(&format!("{marker}\n")).1, format!("{marker}\n"));
         let message = crate::stable_connect::friendly_error(
             &format!("{marker} hidden-token"),
             "hidden-token",
         );
         assert!(!message.contains("hidden-token"));
-        assert!(message.contains(if marker == "CCB_SCOPE_CONFLICT" {
-            "同名"
-        } else {
-            "未完整完成"
-        }));
+        assert!(message.contains(expected), "{marker}: {message}");
     }
 }
 

@@ -1,5 +1,32 @@
 use super::*;
 
+/// 远端脚本最终是 `ssh` 的**进程参数**，长度上限按客户端操作系统算：Windows 的
+/// CreateProcess 只有 32767 字符（Linux 单参数 128KB）。超了的表现是客户端报
+/// 「文件名或扩展名太长」，服务器侧毫无线索 —— 所以钉一个远低于上限的预算，
+/// 内容再涨就先在测试里红，而不是等用户装到 Windows 上才发现。
+#[test]
+fn remote_scripts_fit_the_windows_command_line_budget() {
+    const BUDGET: usize = 20_000;
+    let items = [
+        (
+            "configure",
+            shell_quote(&python_source(REMOTE_CONFIGURE)).len(),
+        ),
+        ("reallocate", shell_quote(REMOTE_REALLOCATE).len()),
+        (
+            "inspect",
+            shell_quote(crate::stable_discovery::REMOTE_INSPECT).len(),
+        ),
+        (
+            "folders",
+            shell_quote(crate::stable_discovery::REMOTE_FOLDERS).len(),
+        ),
+    ];
+    for (name, length) in items {
+        assert!(length < BUDGET, "{name} 脚本 {length} 字符，超出命令行预算");
+    }
+}
+
 #[test]
 fn real_python_writer_verifies_auth_and_preserves_unrelated_config() {
     // Runs only inside a temporary directory with a loopback fixture; never touches saved SSH servers.
@@ -61,8 +88,11 @@ server.shutdown()
 print('FIXTURE_OK')
 "#;
     let python = if cfg!(windows) { "python" } else { "python3" };
+    // 走和线上同一条路径：命令行里带的是压缩后的源码 stub，不是 30KB+ 原文
+    // （Windows CreateProcess 上限 32767 字符，直接把原文当参数会变成「文件名或扩展名太长」）。
+    let source = python_source(REMOTE_CONFIGURE);
     let result = std::process::Command::new(python)
-        .args(["-c", harness, REMOTE_CONFIGURE])
+        .args(["-c", harness, &source])
         .output()
         .expect("Python 3 is required to validate the remote configuration writer");
     assert!(

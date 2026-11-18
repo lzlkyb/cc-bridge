@@ -112,6 +112,11 @@ portable-pty = "=0.8.1"
 aes-gcm = "0.10"
 base64 = "0.22"
 
+# 远端 Python 脚本压缩后再进 `ssh` 命令行（Windows CreateProcess 只有 32767 字符，
+# 配置脚本已逼近上限，见 stable_connect::python_source）。reqwest 的 gzip 已经带了它，
+# 这里只是显式声明，不引入新的传递依赖树。
+flate2 = "1"
+
 # 内部 proc-macro（手写 dispatch 折中重构：ToolSchema 自动派生 inputSchema）。
 # 仅编译期依赖，不进 exe（守二进制体积红线，见 规则8）。
 cc-bridge-macros = { path = "macros" }

@@ -2,6 +2,7 @@ use super::stable_connect_cmds::changed;
 use crate::config::BridgeConfig;
 use crate::ssh_tunnel::{RuleState, TunnelState};
 use crate::stable_connect::{self as stable, StableOperation, StableSaved};
+use crate::stable_discovery::{self, ConfiguredTarget, ReplacedTarget};
 use crate::state::AppState;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -30,17 +31,17 @@ pub(super) async fn configure(
     op: &StableOperation,
     password: Option<String>,
     passphrase: Option<String>,
-) -> Result<(), String> {
+) -> Result<Option<ReplacedTarget>, String> {
     let mut takeover = super::forward_takeover::Takeover::default();
     let result =
         configure_with_takeover(app, state, config, op, password, passphrase, &mut takeover).await;
-    if let Err(error) = result {
-        return match takeover.restore(app, state).await {
+    match result {
+        Ok(replaced) => Ok(replaced),
+        Err(error) => match takeover.restore(app, state).await {
             Ok(()) => Err(error),
             Err(restore) => Err(format!("{error}。恢复原有转发失败：{restore}")),
-        };
+        },
     }
-    Ok(())
 }
 
 async fn configure_with_takeover(
@@ -51,7 +52,7 @@ async fn configure_with_takeover(
     password: Option<String>,
     passphrase: Option<String>,
     takeover: &mut super::forward_takeover::Takeover,
-) -> Result<(), String> {
+) -> Result<Option<ReplacedTarget>, String> {
     let request = op.record.lock().unwrap_or_else(|p| p.into_inner()).clone();
     let id = &request.connection_id;
     let link = super::ssh_cmds::SshLink::from_config(config, id)?;
@@ -104,7 +105,7 @@ async fn configure_with_takeover(
             // Restoring an unchanged saved endpoint belongs to the long-lived supervisor, not the
             // bounded configuration deadline. A temporary VPN/bind failure must keep retrying it.
             if let Some(saved) = saved.filter(|_| op.access.is_none()) {
-                return resume_saved(state, config, op, saved).await;
+                return resume_saved(state, config, op, saved).await.map(|()| None);
             }
             match wait_for_tunnel(state, &runtime_id, op).await {
                 Ok(()) => {
@@ -182,9 +183,8 @@ async fn configure_with_takeover(
     if let Some(error) = stable::setup_error(&output, marker) {
         return Err(error);
     }
-    let target = Some(crate::stable_discovery::parse_result::<
-        crate::stable_discovery::StableTarget,
-    >(&output, marker)?);
+    let ConfiguredTarget { target, replaced } = stable_discovery::parse_result(&output, marker)?;
+    let target = Some(target);
     progress(app, op, 4)?;
     // A stopped/reconfigured local service must not produce a persisted success for stale credentials.
     let db = state.db.lock().await;
@@ -239,7 +239,7 @@ async fn configure_with_takeover(
         .iter()
         .find(|s| &s.connection_id == id)
         .and_then(|s| s.verified_at);
-    Ok(())
+    Ok(replaced)
 }
 
 pub(super) async fn resume_saved(

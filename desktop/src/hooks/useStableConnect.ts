@@ -79,6 +79,8 @@ export function useStableConnect(status: StaticStatus | undefined, draft?: Stabl
     try {
       const result = await invoke<StableConnectSnapshot>("stable_connect_start", { connectionId: selectedId, ...request, access: request.access ?? null, projectPath: request.scope === "user" ? "" : request.projectPath.trim(), password: credentials.password ?? null, passphrase: credentials.passphrase ?? null });
       const outcome = result.connections.find(c => c.connectionId === selectedId);
+      const replaced = result.replaced;
+      if (replaced) toast(`已覆盖同名接入（原地址 ${replaced.url}），原配置备份在 ${replaced.backup}`, "info", undefined, 12000);
       succeeded = outcome?.phase === "ready" && !cancelRequested.current;
       if (cancelRequested.current) {
         update({ managing: false });

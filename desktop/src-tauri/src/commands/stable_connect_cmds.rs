@@ -3,6 +3,7 @@ use super::stable_connect_run;
 use crate::config::BridgeConfig;
 use crate::ssh_tunnel::{RuleState, TunnelState};
 use crate::stable_connect::{self as stable, StableOperation, StableRecord, StableSaved};
+use crate::stable_discovery::ReplacedTarget;
 use crate::state::AppState;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +16,8 @@ pub struct StableSnapshot {
     method: String,
     selected_connection_id: Option<String>,
     connections: Vec<StableRecord>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replaced: Option<ReplacedTarget>,
 }
 
 pub(super) fn changed(app: &AppHandle, id: Option<&str>) {
@@ -122,6 +125,7 @@ pub(super) async fn snapshot(state: &Arc<AppState>) -> StableSnapshot {
         method: stable::method(&config),
         selected_connection_id: config.stable_connect.selected_connection_id.clone(),
         connections: stable_records(&config, state),
+        replaced: None,
     }
 }
 
@@ -275,27 +279,33 @@ pub async fn stable_connect_start(
     let outcome =
         stable_connect_run::configure(&app, state.inner(), &config, &op, password, passphrase)
             .await;
-    if let Err(error) = outcome {
-        let mut record = op.record.lock().unwrap_or_else(|p| p.into_inner());
-        if op.cancel.load(Ordering::SeqCst) {
-            record.phase = "stopped".into();
-            let detail = stable::friendly_error(&error, &config.token);
-            record.message = Some(if record.step >= 3 {
-                format!("{detail}。请重新检查服务器上的接入配置。")
+    let replaced = match outcome {
+        Ok(replaced) => replaced,
+        Err(error) => {
+            let mut record = op.record.lock().unwrap_or_else(|p| p.into_inner());
+            if op.cancel.load(Ordering::SeqCst) {
+                record.phase = "stopped".into();
+                let detail = stable::friendly_error(&error, &config.token);
+                record.message = Some(if record.step >= 3 {
+                    format!("{detail}。请重新检查服务器上的接入配置。")
+                } else {
+                    detail
+                });
             } else {
-                detail
-            });
-        } else {
-            record.phase = "error".into();
-            record.needs_secret |= error.contains("Permission denied")
-                || error.contains("需要密码")
-                || error.contains("CCB_AUTH_REQUIRED");
-            record.message = Some(stable::friendly_error(&error, &config.token));
+                record.phase = "error".into();
+                record.needs_secret |= error.contains("Permission denied")
+                    || error.contains("需要密码")
+                    || error.contains("CCB_AUTH_REQUIRED");
+                record.message = Some(stable::friendly_error(&error, &config.token));
+            }
+            None
         }
-    }
+    };
     op.active.store(false, Ordering::SeqCst);
     changed(&app, Some(&connection_id));
-    Ok(snapshot(state.inner()).await)
+    let mut result = snapshot(state.inner()).await;
+    result.replaced = replaced;
+    Ok(result)
 }
 
 #[tauri::command]

@@ -20,6 +20,21 @@ pub struct StableTarget {
     pub token_matches: bool,
 }
 
+#[derive(Deserialize)]
+pub struct ConfiguredTarget {
+    #[serde(flatten)]
+    pub target: StableTarget,
+    pub replaced: Option<ReplacedTarget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplacedTarget {
+    pub config_file: String,
+    pub url: String,
+    pub backup: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigProof {

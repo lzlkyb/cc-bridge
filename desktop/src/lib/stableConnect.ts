@@ -24,6 +24,8 @@ export interface StableConnectSnapshot {
   method: ConnectionMethod;
   selectedConnectionId: string | null;
   connections: StableConnection[];
+  /** 仅配置成功的响应携带覆盖回执，普通查询和恢复不重复提示。 */
+  replaced?: { configFile: string; url: string; backup: string };
 }
 export interface StableSetup { scope: McpScope; projectPath: string; multiDevice: boolean; access?: StableAccessRequest }
 export const stableSteps = ["检查本机服务", "连接服务器", "建立加密通道", "配置 Claude Code", "验证接入"];

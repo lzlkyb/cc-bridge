@@ -227,6 +227,26 @@ pub fn manual_command(config: &BridgeConfig, saved: &StableSaved) -> String {
     }
 }
 
+/// 远端 Python 脚本不是「发过去的文件」，而是 `ssh` 的**进程参数**（`ssh host python3 -c '<源码>'`）。
+/// 这条命令行的长度上限按客户端操作系统算：Windows 的 `CreateProcess` 只有 32767 字符
+/// （Linux 单参数 128KB），而配置脚本（common + migrate + settings + configure）已经超过这个数，
+/// 表现是**客户端**侧报「文件名或扩展名太长」，与服务器无关。
+///
+/// 所以源码一律先 zlib 压缩再 base64：同样内容只占三分之一左右的命令行，注释、诊断信息、
+/// 中文文案全都照旧保留在源码里，不需要为了体积删掉它们。
+pub(crate) fn python_source(source: &str) -> String {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder
+        .write_all(source.as_bytes())
+        .expect("in-memory zlib cannot fail");
+    let encoded = base64::engine::general_purpose::STANDARD
+        .encode(encoder.finish().expect("in-memory zlib cannot fail"));
+    // base64 只含 [A-Za-z0-9+/=]，放进单引号里对 shell 完全惰性。
+    format!("import base64,zlib;exec(zlib.decompress(base64.b64decode('{encoded}')))")
+}
+
 pub fn remote_script(
     config: &BridgeConfig,
     port: u16,
@@ -239,7 +259,7 @@ pub fn remote_script(
     let payload = serde_json::json!({"port":port,"scope":scope,"path":path,"token":config.token,"transport":config.transport,
         "name":if multi {format!("cc-bridge-{}",config.device_id)}else{"cc-bridge".into()},
         "access":access,"verifyOnly":verification.0,"verifyTarget":verification.1,"deviceId":config.device_id,"ports":[config.port,port]});
-    (format!("PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; export PATH; command -v claude >/dev/null 2>&1 || {{ echo CCB_CLAUDE_MISSING; exit 41; }}; command -v python3 >/dev/null 2>&1 || {{ echo CCB_PYTHON_MISSING; exit 42; }}; python3 -c {}", shell_quote(REMOTE_CONFIGURE)),payload.to_string())
+    (format!("PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; export PATH; command -v claude >/dev/null 2>&1 || {{ echo CCB_CLAUDE_MISSING; exit 41; }}; command -v python3 >/dev/null 2>&1 || {{ echo CCB_PYTHON_MISSING; exit 42; }}; python3 -c {}", shell_quote(&python_source(REMOTE_CONFIGURE))),payload.to_string())
 }
 
 /// 远端只允许回这些帧标记。输入过滤与错误文案映射共用同一份清单，
@@ -265,6 +285,8 @@ const PROTOCOL_MARKERS: &[&str] = &[
     "CCB_TARGET_CHANGED",
     "CCB_TARGET_REQUIRED",
     "CCB_SCOPE_CONFLICT",
+    "CCB_SCOPE_PROJECT_CONFLICT",
+    "CCB_SCOPE_LEGACY",
     "CCB_SCOPE_PARTIAL",
     "CCB_INSPECTION_REQUIRED",
     "CCB_RESULT_OVERFLOW",
@@ -381,6 +403,8 @@ pub(crate) const REMOTE_CONFIGURE: &str = concat!(
     "\n",
     include_str!("stable_remote/migrate.py"),
     "\n",
+    include_str!("stable_remote/settings.py"),
+    "\n",
     include_str!("stable_remote/configure.py")
 );
 
@@ -425,7 +449,15 @@ pub fn friendly_error(error: &str, token: &str) -> String {
         ),
         (
             "CCB_SCOPE_CONFLICT",
-            "新范围已有同名接入，请选择其他项目或先处理该接入，原配置已保留。",
+            "目标位置是全局配置，覆盖会同时影响这台服务器上所有项目，请改选项目或先处理该接入，原配置已保留。",
+        ),
+        (
+            "CCB_SCOPE_PROJECT_CONFLICT",
+            "目标项目已有同名接入，无法确认它属于本机。请改选项目，或核对并处理该条目后重试。原配置已保留。",
+        ),
+        (
+            "CCB_SCOPE_LEGACY",
+            "这个项目在全局配置的 projects 段还留有一条更早的同名接入，它会盖过 .mcp.json，请先在服务器上处理它，原配置已保留。",
         ),
         (
             "CCB_SCOPE_PARTIAL",

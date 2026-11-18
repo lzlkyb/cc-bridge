@@ -11,7 +11,7 @@ import threading
 
 ROOT = Path(__file__).parent
 COMMON = (ROOT / 'common.py').read_text(encoding='utf-8')
-CONFIGURE = COMMON + '\n' + (ROOT / 'migrate.py').read_text(encoding='utf-8') + '\n' + (ROOT / 'configure.py').read_text(encoding='utf-8')
+CONFIGURE = COMMON + '\n' + (ROOT / 'migrate.py').read_text(encoding='utf-8') + '\n' + (ROOT / 'settings.py').read_text(encoding='utf-8') + '\n' + (ROOT / 'configure.py').read_text(encoding='utf-8')
 ns = {}
 exec(COMMON, ns)
 # 端口账本指向临时文件：测试不该在真实 home 里留痕，也不该被宿主机端口占用影响。
@@ -74,6 +74,8 @@ threading.Thread(target=server.serve_forever, daemon=True).start()
 with tempfile.TemporaryDirectory() as directory:
     home = Path(directory)
     os.environ['CLAUDE_CONFIG_DIR'] = str(home)
+    # 覆盖同名接入/补 enabledMcpjsonServers 时会写备份，同样不能落到真实 home。
+    os.environ['CCB_BACKUP_DIR'] = str(home / 'backups')
     os.environ['http_proxy'] = 'http://127.0.0.1:1'
     os.environ['no_proxy'] = ''
     project = home / '订单系统 with spaces'

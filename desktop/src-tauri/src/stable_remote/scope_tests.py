@@ -1,4 +1,5 @@
 """Scope migrations use disposable files and a fake bridge response, never saved servers."""
+import base64
 import contextlib
 import copy
 import io
@@ -15,14 +16,11 @@ from unittest.mock import patch
 
 COMMON = (ROOT / 'common.py').read_text(encoding='utf-8')
 MIGRATE = (ROOT / 'migrate.py').read_text(encoding='utf-8') if (ROOT / 'migrate.py').exists() else ''
-CONFIGURE = COMMON + '\n' + MIGRATE + '\n' + (ROOT / 'configure.py').read_text(encoding='utf-8')
+CONFIGURE = COMMON + '\n' + MIGRATE + '\n' + (ROOT / 'settings.py').read_text(encoding='utf-8') + '\n' + (ROOT / 'configure.py').read_text(encoding='utf-8')
 ns = {}
 exec(COMMON, ns)
 # 端口账本指向临时文件：测试不该在真实 home 里留痕，也不该被宿主机端口占用影响。
 # 走环境变量而不是替换 ns —— CONFIGURE 在全新 globals 里 exec，替换主进程 ns 对它无效。
-os.environ['CCB_TUNNEL_PORT_FILE'] = os.path.join(
-    tempfile.gettempdir(), 'ccb-scope-tunnel-port-%d' % os.getpid())
-
 
 class Response:
     def __enter__(self):
@@ -52,6 +50,10 @@ def execute(payload, replace=None):
 with tempfile.TemporaryDirectory() as directory:
     home = Path(directory)
     os.environ['CLAUDE_CONFIG_DIR'] = str(home)
+    ledger = home / 'tunnel-port'
+    os.environ['CCB_TUNNEL_PORT_FILE'] = str(ledger)
+    # 备份目录也指到临时 home：覆盖同名接入会留备份，fixture 不该在真实 home 里堆文件。
+    os.environ['CCB_BACKUP_DIR'] = str(home / 'backups')
     project = home / '订单项目 with spaces'
     other = home / '另一个项目'
     project.mkdir()
@@ -89,7 +91,10 @@ with tempfile.TemporaryDirectory() as directory:
     def request(source_scope, destination, path=''):
         receipt = ns['inspect']({**read_payload, 'path': path or None, 'sourceProjectPath': str(project) if source_scope != 'user' else ''})
         assert receipt['complete'], receipt['warnings']
-        source = next(target for target in receipt['targets'] if target['scope'] == source_scope and target['name'] == name)
+        # 目的项目里也可能有同名条目，所以源必须按「范围 + 名字 + 项目路径」一起认。
+        source = next(target for target in receipt['targets']
+                      if target['scope'] == source_scope and target['name'] == name
+                      and (source_scope == 'user' or target['projectPath'] == str(project)))
         return {'port': 43127, 'scope': destination, 'path': path, 'transport': 'http', 'name': name,
                 'token': read_payload['token'], 'deviceId': 'device-a', 'ports': [43127],
                 'access': {'target': source, 'inspection': receipt, 'scopeChange': True}}
@@ -99,6 +104,11 @@ with tempfile.TemporaryDirectory() as directory:
 
     def assert_unchanged(before):
         assert bytes_before() == before
+
+    def payload_of(output):
+        """解出远端 CCB_DATA 帧，用来核对返回给客户端的字段（如覆盖记录）。"""
+        chunks = [line[len('CCB_DATA '):] for line in output.splitlines() if line.startswith('CCB_DATA ')]
+        return json.loads(base64.b64decode(''.join(chunks))) if chunks else None
 
     # Project -> global preserves the name/options and removes exactly the old project entry.
     global_original, project_original = reset()
@@ -151,24 +161,102 @@ with tempfile.TemporaryDirectory() as directory:
         assert execute(payload)[0] != 0, invalid
         assert_unchanged(before)
 
-    # Destination same-name entries and local-scope overrides are never overwritten.
-    for collision in ('global', 'project', 'local'):
-        source_scope = 'project' if collision == 'global' else 'user'
-        reset(source_scope)
-        if collision == 'global':
-            data = json.loads(global_file.read_text(encoding='utf-8'))
-            data['mcpServers'][name] = {**entry, 'extraOption': 'other-global'}
-            save(global_file, data)
-        elif collision == 'project':
-            save(project_file, {'mcpServers': {name: {**entry, 'extraOption': 'other-project'}}})
-        else:
-            data = json.loads(global_file.read_text(encoding='utf-8'))
-            data['projects'][key]['mcpServers'] = {name: {**entry, 'extraOption': 'other-local'}}
-            save(global_file, data)
-        payload = request(source_scope, 'user' if collision == 'global' else 'project', '' if collision == 'global' else str(project))
+    # 目标项目还没跑过 Claude Code（没有 `.claude/`）时不替它建目录，也不写启用名单。
+    assert not (project / '.claude').exists(), '不该替用户创建 .claude 目录'
+
+    # 目标位置的同名接入：项目级目标允许合并覆盖（留备份 + 保留目标里的手写字段），
+    # 全局目标仍拒绝（一改影响这台服务器上所有项目）；legacy local 条目会压过 .mcp.json，
+    # 覆盖了也不生效，所以单独报出来让用户先处理。
+    keep = {'type': 'http', 'url': 'http://10.0.7.215:7823/mcp',
+            'headers': {'Authorization': 'Bearer fixture-token', 'X-Custom': 'target', 'x-keep': 'target'},
+            'env': {'KEEP_ENV': '1'}, 'timeout': 120, 'alwaysAllow': ['keep-tool']}
+
+    # ① 项目 → 另一个项目，目标已有同名：覆盖，且目标的字段不能丢。
+    reset()
+    save(other_file, {'mcpServers': {name: copy.deepcopy(keep)}, 'customOther': ['keep']})
+    other_before = other_file.read_text(encoding='utf-8')
+    settings_file = other / '.claude' / 'settings.local.json'
+    settings_file.parent.mkdir(exist_ok=True)
+    save(settings_file, {'enabledMcpjsonServers': ['already-approved'], 'permissions': {'allow': ['keep']}})
+    backup_dir = home / 'backups'
+    backup_dir.mkdir(exist_ok=True)
+    unrelated_backup = backup_dir / 'manual.json'
+    unrelated_backup.write_text('{}', encoding='utf-8')
+    for number in range(21):
+        (backup_dir / ('20000101-000000-old-%02d.mcp.json' % number)).write_text('{}', encoding='utf-8')
+    ledger.write_text('17942\n', encoding='utf-8')
+    payload = request('project', 'project', str(other))
+    code, output = execute(payload)
+    assert code == 0 and 'CCB_CONFIGURED' in output, output
+    other_after = json.loads(other_file.read_text(encoding='utf-8'))
+    merged = other_after['mcpServers'][name]
+    assert other_after['customOther'] == ['keep']
+    assert merged['type'] == 'http' and merged['url'] == 'http://127.0.0.1:43127/mcp'
+    assert merged['headers']['Authorization'] == 'Bearer fixture-token'
+    assert merged['headers']['X-Custom'] == 'target' and merged['headers']['x-keep'] == 'target'
+    assert 'X-Keep' not in merged['headers']
+    assert merged['env'] == keep['env'] and merged['timeout'] == keep['timeout']
+    assert merged['alwaysAllow'] == keep['alwaysAllow'] and merged['extraOption'] == entry['extraOption']
+    assert name not in json.loads(project_file.read_text(encoding='utf-8'))['mcpServers']
+    reported = payload_of(output)
+    assert reported['replaced']['url'] == keep['url']
+    assert reported['replaced']['configFile'] == str(other_file)
+    # 备份必须是「原配置」的原字节，覆盖后才找得回来。
+    assert Path(reported['replaced']['backup']).read_text(encoding='utf-8') == other_before
+    assert ledger.read_text(encoding='utf-8') == '43127\n'
+    assert unrelated_backup.read_text(encoding='utf-8') == '{}'
+    assert len(list(backup_dir.glob('*.json'))) == 21
+    # 迁移到项目后必须补进启用名单，否则 /mcp 里显示未启用；已有的名单项和 permissions 不能动。
+    enabled = json.loads(settings_file.read_text(encoding='utf-8'))
+    assert enabled['enabledMcpjsonServers'] == ['already-approved', name]
+    assert enabled['permissions'] == {'allow': ['keep']}
+
+    # ② 全局 → 项目，目标已有同名：同样覆盖（影响范围仍只限于这个项目）。
+    reset('user')
+    save(project_file, {'mcpServers': {name: copy.deepcopy(keep)}})
+    project_settings = project / '.claude' / 'settings.local.json'
+    project_settings.parent.mkdir()
+    save(project_settings, {'disabledMcpjsonServers': [name]})
+    disabled_before = project_settings.read_bytes()
+    code, output = execute(request('user', 'project', str(project)))
+    assert code == 0, output
+    merged = json.loads(project_file.read_text(encoding='utf-8'))['mcpServers'][name]
+    assert merged['url'] == 'http://127.0.0.1:43127/mcp' and merged['timeout'] == keep['timeout']
+    assert name not in json.loads(global_file.read_text(encoding='utf-8'))['mcpServers']
+    assert project_settings.read_bytes() == disabled_before
+
+    # 自定义名称即使相同、端口也相同，仍可能属于别的服务。
+    for existing in (None, {**keep, 'url': entry['url'], 'headers': {'Authorization': 'Bearer other-service'}}):
+        reset('user')
+        save(project_file, {'mcpServers': {name: existing}})
+        payload = request('user', 'project', str(project))
         before = bytes_before()
-        assert 'CCB_SCOPE_CONFLICT' in execute(payload)[1], collision
+        backups_before = list(backup_dir.iterdir())
+        assert 'CCB_SCOPE_PROJECT_CONFLICT' in execute(payload)[1]
         assert_unchanged(before)
+        assert list(backup_dir.iterdir()) == backups_before
+
+    # ③ 项目 → 全局，全局已有同名：拒绝，原配置不动。
+    reset('project')
+    data = json.loads(global_file.read_text(encoding='utf-8'))
+    data['mcpServers'][name] = copy.deepcopy(keep)
+    save(global_file, data)
+    payload = request('project', 'user')
+    before = bytes_before()
+    assert 'CCB_SCOPE_CONFLICT' in execute(payload)[1]
+    assert_unchanged(before)
+
+    # ④ legacy local 同名：拒绝，且不在备份目录留任何副作用。
+    reset('user')
+    data = json.loads(global_file.read_text(encoding='utf-8'))
+    data['projects'][key]['mcpServers'] = {name: copy.deepcopy(keep)}
+    save(global_file, data)
+    backups_before = len(list((home / 'backups').glob('*.json')))
+    payload = request('user', 'project', str(project))
+    before = bytes_before()
+    assert 'CCB_SCOPE_LEGACY' in execute(payload)[1]
+    assert_unchanged(before)
+    assert len(list((home / 'backups').glob('*.json'))) == backups_before
 
     # Lock contention releases only our locks and never waits on an active writer.
     reset()
