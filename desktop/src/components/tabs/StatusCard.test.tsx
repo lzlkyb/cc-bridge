@@ -62,7 +62,9 @@ describe("当前接入卡片", () => {
     expect(host.querySelector('.tunnel-route[data-reconnecting="true"] .tunnel-route-interruption')).not.toBeNull();
     expect(host.querySelector(".connection-status-card")?.classList.contains("status-card--live")).toBe(true);
     expect(host.querySelector(".tunnel-route-state")?.textContent).toBe("正在重连");
-    expect(host.querySelector(".connection-card-headline")?.textContent).toContain("固定地址不变");
+    // 新设计（TunnelConnectionFlow）：headline 只说状态，「固定地址保留」的解释在 detail 行。
+    expect(host.querySelector(".connection-card-headline")?.textContent).toContain("正在恢复隧道连接");
+    expect(host.querySelector(".connection-card-detail")?.textContent).toContain("固定接入地址不变");
     expect(host.querySelector(".tunnel-route-direction")).toBeNull();
   });
 

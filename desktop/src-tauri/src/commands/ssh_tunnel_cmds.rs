@@ -199,6 +199,41 @@ fn describe_rule(r: &ForwardRule) -> String {
     }
 }
 
+/// Skip the delay without replacing the supervisor, its credentials, or the fixed listener.
+#[tauri::command]
+pub async fn stable_tunnel_retry(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+    connection_id: String,
+) -> Result<(), String> {
+    let config = state.config.read().await;
+    if !config.ssh_enabled
+        || !crate::stable_connect::selected_saved(&config)
+            .is_some_and(|saved| saved.enabled && saved.connection_id == connection_id)
+        || !state.mcp_running.load(Ordering::Relaxed)
+    {
+        return Err("当前隧道不可重试，请检查接入配置和本机服务。".into());
+    }
+    let id = crate::stable_connect::runtime_id(&connection_id);
+    let tunnel = state
+        .ssh_tunnels
+        .get(&id)
+        .ok_or("隧道已停止，请从接入卡恢复。")?;
+    if tunnel.stop.load(Ordering::SeqCst) {
+        return Err("隧道已停止，请从接入卡恢复。".into());
+    }
+    let mut accepted = false;
+    publish(&app, &tunnel.stop, &tunnel.status, |status| {
+        accepted = status.request_retry(crate::connection_access::now_ms());
+        accepted
+    });
+    if accepted {
+        Ok(())
+    } else {
+        Err("隧道已在连接中，请稍候。".into())
+    }
+}
+
 /// 前端首次进入终端工作区时拉一次全量，之后靠事件增量更新。
 #[tauri::command]
 pub async fn ssh_tunnel_list(state: State<'_, Arc<AppState>>) -> Result<Vec<TunnelStatus>, String> {
@@ -640,14 +675,24 @@ fn supervise_loop(
             delay = RETRY_MIN;
         }
         publish(app, stop, status, |s| {
-            s.state = TunnelState::Reconnecting;
-            s.message = Some(format!("{reason}（{} 秒后重连）", delay.as_secs()));
+            s.wait_for_retry(
+                reason,
+                crate::connection_access::now_ms(),
+                delay.as_millis() as u64,
+            );
             true
         });
         let wake = Instant::now() + delay;
         while Instant::now() < wake {
             if stop.load(Ordering::SeqCst) {
                 return;
+            }
+            if status
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retry_requested
+            {
+                break;
             }
             std::thread::sleep(Duration::from_millis(200));
         }

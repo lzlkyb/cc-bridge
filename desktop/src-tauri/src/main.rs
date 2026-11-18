@@ -955,6 +955,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_tunnel_start,
             commands::ssh_tunnel_stop,
             commands::ssh_tunnel_list,
+            commands::stable_tunnel_retry,
             commands::ssh_forward_context,
             commands::stable_connect_get,
             commands::stable_connect_select,

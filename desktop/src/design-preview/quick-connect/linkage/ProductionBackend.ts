@@ -5,6 +5,7 @@ import { buildBaseCommand, buildConnectCommand, buildDisplayHost, buildIpSedComm
 import { invoke as legacyInvoke, listen as legacyListen, status, previewConnections } from "../mock";
 import { prepareLinkageFixture, recoverLinkageFixture, invalidateLinkageFixture, invokeProductionFixture } from "../production-fixture";
 import type { LinkageScenario } from "./model";
+import type { TunnelStatus } from "../../../lib/types";
 
 export const scenarios = {
   waiting: "隧道已连通 · 客户端待验证", setup: "隧道尚未配置", recovery: "VPN 断开 · 自动重连",
@@ -12,10 +13,17 @@ export const scenarios = {
   direct: "IP 直连 · 客户端待验证", "ip-changed": "直连地址待更新",
 } as const;
 export type Scenario = keyof typeof scenarios;
-const listeners = new Map<string, Set<() => void>>();
+const listeners = new Map<string, Set<(payload?: unknown) => void>>();
+let tunnelStatus: TunnelStatus | undefined;
 let service: { pending: "start" | "stop" | "restart" | null; error: string | null } = { pending: null, error: null };
 let receipt: { address: string; token: string; scope: McpScope; projectPath: string } | null = null;
-const emit = () => { listeners.forEach(group => group.forEach(listener => listener())); };
+const emit = () => { listeners.forEach((group, event) => { if (!["ssh_tunnel_status", "stable_tunnel_traffic"].includes(event)) group.forEach(listener => listener()); }); };
+
+// Isolated design fixture: the same status/traffic contract as native events, with no SSH IO.
+export function sendTunnelPreview(event: "ssh_tunnel_status" | "stable_tunnel_traffic", payload: unknown) {
+  if (event === "ssh_tunnel_status") tunnelStatus = payload as TunnelStatus;
+  listeners.get(event)?.forEach(listener => listener(payload));
+}
 
 export function resetCheck(next: Scenario) {
   prepareLinkageFixture(next as LinkageScenario);
@@ -25,6 +33,11 @@ export function resetCheck(next: Scenario) {
   status.stats.totalRequests = 146; status.stats.successRate = 99.3;
   receipt = { address: "http://10.203.5.36:7823/mcp", token: status.token, scope: "project", projectPath: status.projectPath! };
   service = { pending: null, error: null }; emit();
+  const phase = new URLSearchParams(location.search).get("tunnelPhase");
+  tunnelStatus = phase ? { connectionId: "stable:cloud", state: phase === "waiting" ? "reconnecting" : phase === "connecting" ? "connecting" : "up",
+    needsSecret: false, message: null, rules: [], attempt: 3, phase: phase === "waiting" ? "waiting" : phase === "connecting" ? "ssh" : "ready",
+    retryAt: phase === "waiting" ? Date.now() + 8000 : null, disconnectedAt: phase === "transfer" ? null : Date.now() - 23000,
+    lastFailure: phase === "transfer" ? null : "Connection timed out" } : undefined;
 }
 export function recoverCheck() { recoverLinkageFixture(); emit(); }
 export const getCheckStatus = () => status;
@@ -54,6 +67,11 @@ async function readStatus() {
 }
 
 export async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (command === "ssh_tunnel_list") return (tunnelStatus ? [tunnelStatus] : []) as T;
+  if (command === "stable_tunnel_retry" && tunnelStatus?.state === "reconnecting") {
+    sendTunnelPreview("ssh_tunnel_status", { ...tunnelStatus, state: "connecting", phase: "ssh", retryAt: null, attempt: (tunnelStatus.attempt ?? 0) + 1 });
+    return undefined as T;
+  }
   if (command === "get_status") return await readStatus() as T;
   if (command === "get_connection_copy") {
     const saved = await readStatus();
@@ -92,8 +110,9 @@ export async function invoke<T>(command: string, args?: Record<string, unknown>)
   return result;
 }
 export const invokeOrToast = invoke;
-export async function listen(event: string, handler: () => void) {
-  const group = listeners.get(event) ?? new Set<() => void>(); listeners.set(event, group); group.add(handler);
-  const stop = await legacyListen(event, handler);
-  return () => { group.delete(handler); stop(); };
+export async function listen<T>(event: string, handler: (payload: T) => void) {
+  const callback = handler as (payload?: unknown) => void;
+  const group = listeners.get(event) ?? new Set<(payload?: unknown) => void>(); listeners.set(event, group); group.add(callback);
+  const stop = ["ssh_tunnel_status", "stable_tunnel_traffic"].includes(event) ? () => {} : await legacyListen(event, () => handler(undefined as T));
+  return () => { group.delete(callback); stop(); };
 }

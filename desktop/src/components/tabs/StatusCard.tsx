@@ -65,9 +65,9 @@ export function StatusCard({ status, displayHost, port, onChanged, onNavigate }:
       <span className="connection-card-method">{access ? connectionMethodLabel(access) : "读取中"}</span>
     </div>
     {!tunnel && <div className="my-3.5"><ServiceChain segments={chain.segments} onNavigate={onNavigate} platform={status?.platform}/></div>}
-    <p className="connection-card-headline" aria-live="polite">{chain.headline}</p>
-    <p className="status-summary connection-card-detail">{chain.sub}</p>
-    {tunnel && <TunnelConnectionFlow access={tunnel} service={chain.segments[0]} motion={motion} onNavigate={onNavigate}/>}
+    {tunnel ? <TunnelConnectionFlow key={tunnel.connectionId} access={tunnel} service={chain.segments[0]} motion={motion} onNavigate={onNavigate}/>
+      : <><p className="connection-card-headline" aria-live="polite">{chain.headline}</p>
+        <p className="status-summary connection-card-detail">{chain.sub}</p></>}
     {access && <div className="connection-card-target" title={access.projectPath}>
       <Icon name={access.method === "stable" ? "server" : "monitor"} size={13}/>
       <span>{access.serverName} · {connectionScopeLabel(access.scope)}{access.scope !== "user" && projectName ? ` · ${projectName}` : ""}</span>

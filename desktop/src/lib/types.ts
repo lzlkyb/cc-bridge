@@ -632,6 +632,11 @@ export interface TunnelStatus {
   message: string | null;
   /** 缺密码/口令而停住：界面该弹输入框。 */
   needsSecret: boolean;
+  attempt?: number;
+  phase?: "ssh" | "auth" | "forward" | "confirm" | "waiting" | "ready";
+  retryAt?: number | null;
+  disconnectedAt?: number | null;
+  lastFailure?: string | null;
   rules: {
     /** 启动时的规则快照，和草稿比出「待应用」。 */
     rule: ForwardRule;

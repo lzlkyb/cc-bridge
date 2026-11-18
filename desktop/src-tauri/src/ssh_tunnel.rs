@@ -54,6 +54,13 @@ pub struct TunnelStatus {
     pub message: Option<String>,
     /// 失败原因是「没有可填的密码/口令」：前端据此弹输入框再启动一次。
     pub needs_secret: bool,
+    pub attempt: u32,
+    pub phase: &'static str,
+    pub retry_at: Option<u64>,
+    pub disconnected_at: Option<u64>,
+    pub last_failure: Option<String>,
+    #[serde(skip)]
+    pub(crate) retry_requested: bool,
     pub rules: Vec<RuleStatus>,
     /// 本轮进程是否认证成功过（决定重连退避是否重置）。
     #[serde(skip)]
@@ -76,6 +83,12 @@ impl TunnelStatus {
             state: TunnelState::Connecting,
             message: None,
             needs_secret: false,
+            attempt: 0,
+            phase: "ssh",
+            retry_at: None,
+            disconnected_at: None,
+            last_failure: None,
+            retry_requested: false,
             rules: rules
                 .iter()
                 .map(|r| RuleStatus {
@@ -102,6 +115,10 @@ impl TunnelStatus {
 
     /// 新起一轮 ssh 进程：规则状态全部回到待定。
     pub fn begin_attempt(&mut self) {
+        self.attempt = self.attempt.saturating_add(1);
+        self.phase = "ssh";
+        self.retry_at = None;
+        self.retry_requested = false;
         self.state = TunnelState::Connecting;
         self.message = None;
         self.needs_secret = false;
@@ -114,6 +131,24 @@ impl TunnelStatus {
             r.bound_port = None;
             r.message = None;
         }
+    }
+
+    pub(crate) fn wait_for_retry(&mut self, reason: String, now: u64, delay_ms: u64) {
+        self.state = TunnelState::Reconnecting;
+        self.phase = "waiting";
+        self.disconnected_at.get_or_insert(now);
+        self.retry_at = Some(now.saturating_add(delay_ms));
+        self.last_failure = Some(reason.clone());
+        self.message = Some(format!("{reason}（{} 秒后重连）", delay_ms / 1000));
+    }
+
+    pub(crate) fn request_retry(&mut self, now: u64) -> bool {
+        if self.state != TunnelState::Reconnecting || self.retry_requested {
+            return false;
+        }
+        self.retry_requested = true;
+        self.retry_at = Some(now);
+        true
     }
 
     pub(crate) fn require_guard(&mut self) {
@@ -149,10 +184,23 @@ impl TunnelStatus {
         } else {
             TunnelState::Connecting
         };
-        let changed = self.state != next;
+        let phase = if next == TunnelState::Up {
+            "ready"
+        } else if !self.was_up {
+            self.phase
+        } else if self.rules.iter().all(|r| r.state == RuleState::Listening) {
+            "confirm"
+        } else {
+            "forward"
+        };
+        let changed = self.state != next || self.phase != phase;
+        self.phase = phase;
         self.state = next;
         if next == TunnelState::Up {
             self.message = None;
+            self.retry_at = None;
+            self.disconnected_at = None;
+            self.last_failure = None;
         }
         changed
     }
@@ -163,15 +211,23 @@ impl TunnelStatus {
         if line.is_empty() {
             return false;
         }
+        // Only report milestones observed in OpenSSH output; never advance on a timer.
+        if line == "debug1: Connection established." && self.phase == "ssh" {
+            self.phase = "auth";
+            return true;
+        }
         if line.starts_with("Authenticated to ") || line.contains("Authentication succeeded") {
             self.was_up = true;
             if self.guard_required {
-                return self.refresh_guard_state();
+                let changed = self.phase != "forward";
+                self.phase = "forward";
+                return self.refresh_guard_state() || changed;
             }
             if self.state == TunnelState::Up {
                 return false;
             }
             self.state = TunnelState::Up;
+            self.phase = "ready";
             self.message = None;
             return true;
         }
@@ -383,6 +439,54 @@ mod tests {
 
     fn status(rules: &[ForwardRule]) -> TunnelStatus {
         TunnelStatus::new("c".into(), rules)
+    }
+
+    #[test]
+    fn retry_progress_preserves_outage_and_failure_until_the_route_is_ready() {
+        let mut s = status(&[rule(ForwardKind::Remote, 5000, 7823)]);
+        s.require_guard();
+        s.begin_attempt();
+        assert_eq!(s.attempt, 1);
+        s.wait_for_retry("Connection timed out".into(), 10_000, 8_000);
+        assert_eq!(s.retry_at, Some(18_000));
+        assert!(s.request_retry(11_000));
+        assert!(!s.request_retry(11_001));
+        assert_eq!(s.retry_at, Some(11_000));
+        s.begin_attempt();
+        assert_eq!(s.attempt, 2);
+        assert_eq!(s.disconnected_at, Some(10_000));
+        assert_eq!(s.last_failure.as_deref(), Some("Connection timed out"));
+        assert_eq!(s.retry_at, None);
+        assert_eq!(s.phase, "ssh");
+        assert!(s.apply_line("debug1: Connection established."));
+        assert_eq!(s.phase, "auth");
+        assert!(s.apply_line("Authenticated to server ([127.0.0.1]:22) using publickey."));
+        assert_eq!(s.phase, "forward");
+        assert!(s.apply_line(
+            "debug1: remote forward success for: listen 127.0.0.1:5000, connect 127.0.0.1:7823"
+        ));
+        assert_eq!(s.phase, "confirm");
+        assert_eq!(s.state, TunnelState::Connecting);
+        assert!(s.guard_started());
+        assert_eq!(s.phase, "ready");
+        assert_eq!(s.state, TunnelState::Up);
+        assert_eq!(s.disconnected_at, None);
+        assert_eq!(s.last_failure, None);
+        assert!(!s.request_retry(20_000));
+    }
+
+    #[test]
+    fn repeated_failures_keep_original_outage_time_and_do_not_fake_progress() {
+        let mut s = status(&[]);
+        s.begin_attempt();
+        assert!(!s.apply_line("debug1: Connecting to server [10.0.0.1] port 22."));
+        assert_eq!(s.phase, "ssh");
+        s.wait_for_retry("network unreachable".into(), 1_000, 2_000);
+        s.begin_attempt();
+        s.wait_for_retry("Connection timed out".into(), 5_000, 4_000);
+        assert_eq!(s.disconnected_at, Some(1_000));
+        assert_eq!(s.retry_at, Some(9_000));
+        assert_eq!(s.attempt, 2);
     }
 
     #[test]

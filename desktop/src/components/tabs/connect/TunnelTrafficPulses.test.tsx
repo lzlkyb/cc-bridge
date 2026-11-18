@@ -9,8 +9,8 @@ vi.mock("../../../lib/tauri", () => ({ listen: vi.fn() }));
 
 const listeners = new Map<string, (payload: unknown) => void>();
 const unsubscribed = vi.fn();
-const animate = vi.fn(function (this: SVGPathElement) {
-  return { path: this, playState: "running", cancel: vi.fn() };
+const animate = vi.fn(function (this: SVGPathElement, _frames: Keyframe[], _options: KeyframeAnimationOptions) {
+  return { path: this, playState: "running", cancel: vi.fn(), onfinish: () => {} };
 });
 let host: HTMLDivElement;
 let root: Root;
@@ -28,6 +28,7 @@ function status(state: string, connectionId = "stable:orders") {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.mocked(listen).mockImplementation(async (event, handler) => {
     listeners.set(event, handler as (payload: unknown) => void);
@@ -47,9 +48,41 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   listeners.clear();
+  vi.useRealTimers();
 });
 
 describe("隧道传输光迹", () => {
+  it("传输量每秒合并一次，空闲不留刷新定时器，减少动态效果仍显示数据", async () => {
+    const onSample = vi.fn();
+    await act(async () => root.render(<svg><TunnelTrafficPulses connectionId="orders" motion={false} onSample={onSample}/></svg>));
+    for (let i = 0; i < 5; i++) traffic(100, 200);
+    expect(onSample).not.toHaveBeenCalled();
+    expect(animate).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1000));
+    expect(onSample).toHaveBeenCalledTimes(1);
+    expect(onSample.mock.calls[0][0]).toMatchObject({ toLocal: 500, toRemote: 1000 });
+    act(() => vi.advanceTimersByTime(1000));
+    expect(onSample.mock.calls[1][0]).toMatchObject({ toLocal: 0, toRemote: 0 });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("持续流量延续光迹，停止后不排队回放，卸载释放定时器", async () => {
+    await mount();
+    traffic(10, 0);
+    expect(animate.mock.calls[0][1]).toMatchObject({ duration: 900 });
+    act(() => vi.advanceTimersByTime(800));
+    traffic(20, 0);
+    const animation = animate.mock.results[0].value;
+    animation.playState = "finished";
+    animation.onfinish();
+    expect(animate).toHaveBeenCalledTimes(2);
+    act(() => vi.advanceTimersByTime(1000));
+    animate.mock.results[1].value.playState = "finished";
+    animate.mock.results[1].value.onfinish();
+    expect(animate).toHaveBeenCalledTimes(2);
+    await act(async () => root.render(<svg/>));
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("两条轨道各自响应真实方向，繁忙时同方向只留一条光迹", async () => {
     await mount();
     const [request, response] = host.querySelectorAll("path");
