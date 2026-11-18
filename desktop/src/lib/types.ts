@@ -632,6 +632,7 @@ export interface TunnelStatus {
   message: string | null;
   /** 缺密码/口令而停住：界面该弹输入框。 */
   needsSecret: boolean;
+  needsJumpSecret?: boolean;
   attempt?: number;
   phase?: "ssh" | "auth" | "forward" | "confirm" | "waiting" | "ready";
   retryAt?: number | null;

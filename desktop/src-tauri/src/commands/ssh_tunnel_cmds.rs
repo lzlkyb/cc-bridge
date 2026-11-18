@@ -97,6 +97,20 @@ pub async fn ssh_tunnel_stop(
     connection_id: String,
 ) -> Result<(), String> {
     let _start_guard = state.ssh_tunnel_start_lock.lock().await;
+    if state
+        .config
+        .read()
+        .await
+        .ssh_connections
+        .iter()
+        .any(|conn| conn.id == connection_id)
+    {
+        let mut generation = state
+            .ssh_tunnel_stops
+            .entry(connection_id.clone())
+            .or_default();
+        *generation = generation.saturating_add(1);
+    }
     // 只有真停到了才记审计：对不存在的连接也记「停止」，日志里会出现没有对应
     // 「开始」的无主记录，把真正要看的成对事件埋掉。
     if stop_and_release(state.inner(), &connection_id).await {
@@ -300,7 +314,104 @@ async fn start_tunnel(
         return Err("这条连接还没有启用的转发规则".into());
     }
     let link = SshLink::new(conn, jump)?;
-    start_plan(app, state.clone(), id, link, rules, password, passphrase).await
+    let original = super::forward_takeover::RunningForward::capture(&state, &id)?;
+    let previous_login = original.as_ref().filter(|old| old.same_login(&link));
+    let password = password
+        .filter(|value| !value.is_empty())
+        .or_else(|| previous_login.and_then(|old| old.password.clone()));
+    let passphrase = passphrase
+        .filter(|value| !value.is_empty())
+        .or_else(|| previous_login.and_then(|old| old.passphrase.clone()));
+    let mut takeover = super::forward_takeover::Takeover::default();
+    if original.is_some() {
+        // Decryption failures can be detected without touching any existing listener.
+        resolve_connect_secrets(&link, &state.data_dir, password.clone(), passphrase.clone())?;
+        takeover.record(&state, id.clone(), original);
+    }
+    let result = start_plan(
+        app.clone(),
+        state.clone(),
+        id.clone(),
+        link,
+        rules,
+        password,
+        passphrase,
+    )
+    .await;
+    takeover.settle(&state, &id);
+    let runtime = state
+        .ssh_tunnels
+        .get(&id)
+        .map(|entry| (entry.status.clone(), entry.stop.clone()));
+    drop(_start_guard);
+    if takeover.is_empty() {
+        return result;
+    }
+    let outcome = match result {
+        Ok(_) => match runtime {
+            Some((status, stop)) => wait_for_manual_listeners(&status, &stop).await,
+            None => Err("转发已停止。".into()),
+        },
+        Err(error) => Err(error),
+    };
+    match outcome {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            let restored = takeover.restore(&app, &state).await;
+            Err(match restored {
+                Ok(()) => format!("应用更改失败：{error}。新配置已保留，可修改后再应用。"),
+                Err(restore) => format!("应用更改失败：{error}。恢复旧转发也失败：{restore}"),
+            })
+        }
+    }
+}
+
+async fn wait_for_manual_listeners(
+    status: &SharedStatus,
+    stop: &AtomicBool,
+) -> Result<TunnelStatus, String> {
+    tokio::time::timeout(Duration::from_secs(18), async {
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                return Err("转发已停止或被替换。".into());
+            }
+            {
+                use crate::ssh_tunnel::RuleState;
+                let snapshot = status.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(failed) = snapshot
+                    .rules
+                    .iter()
+                    .find(|entry| entry.state == RuleState::Failed)
+                {
+                    return Err(failed
+                        .message
+                        .clone()
+                        .unwrap_or_else(|| "访问端口未能建立".into()));
+                }
+                match snapshot.state {
+                    TunnelState::Up
+                        if snapshot.rules.iter().all(|entry| {
+                            entry.state == RuleState::Listening
+                                && (entry.rule.listen_port != 0 || entry.bound_port.is_some())
+                        }) =>
+                    {
+                        return Ok(snapshot.clone())
+                    }
+                    TunnelState::Reconnecting | TunnelState::Error | TunnelState::Stopped => {
+                        return Err(snapshot
+                            .last_failure
+                            .clone()
+                            .or_else(|| snapshot.message.clone())
+                            .unwrap_or_else(|| "SSH 连接未能建立".into()))
+                    }
+                    _ => {}
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("等待监听确认超时".into()))
 }
 
 /// Isolated runtime key: managing stable Claude access never stops the user's other forwarding rules.
@@ -520,7 +631,12 @@ pub(super) fn tunnel_args(link: &SshLink, id: &str, rules: &[ForwardRule]) -> Ve
         // A stalled VPN handshake must finish before the 30s credential fill window expires.
         args.extend(["-o".into(), "ConnectTimeout=10".into()]);
     } else {
-        args.extend(["-N".into(), "-v".into()]);
+        args.extend([
+            "-N".into(),
+            "-v".into(),
+            "-o".into(),
+            "ConnectTimeout=10".into(),
+        ]);
     }
     args.extend(forward_args(rules));
     args.push(format!("{}@{}", link.conn.username, link.conn.host));
@@ -632,12 +748,14 @@ fn supervise_loop(
             let s = status.lock().unwrap_or_else(|p| p.into_inner());
             (connected_for_retry(&s), retry_error(&s))
         };
-        let needs_secret = matches!(fatal, Some(Fatal::NeedsSecret(_)));
+        let needs_jump_secret = matches!(fatal, Some(Fatal::JumpSecret(_)));
+        let needs_secret = needs_jump_secret || matches!(fatal, Some(Fatal::NeedsSecret(_)));
         // 判定必须在取出 reason 之前做：`fatal` 在下面被 move 掉。
         let stop_here = give_up(fatal.as_ref());
         let reason = match fatal {
             Some(
                 Fatal::NeedsSecret(r)
+                | Fatal::JumpSecret(r)
                 | Fatal::Interactive(r)
                 | Fatal::Other(r)
                 | Fatal::GuardUnavailable(r),
@@ -660,6 +778,11 @@ fn supervise_loop(
                 s.state = TunnelState::Error;
                 // SSH may report a rejected credential only when exiting, without another prompt.
                 s.needs_secret = needs_secret || reason.contains("Permission denied");
+                s.needs_jump_secret = needs_jump_secret
+                    || (reason.contains("Permission denied")
+                        && plan.link.jump.as_ref().is_some_and(|jump| {
+                            reason.starts_with(&format!("{}@{}:", jump.username, jump.host))
+                        }));
                 s.message = Some(if port_taken {
                     format!(
                         "{reason}。共享服务器上每个账号需要各自的端口，请在接入页点「重新接入」分配专属端口。"
@@ -760,6 +883,7 @@ fn retry_error(status: &TunnelStatus) -> Option<String> {
 #[derive(Clone)]
 pub(super) enum Fatal {
     NeedsSecret(String),
+    JumpSecret(String),
     /// 后台转发**没有人能手输**：2FA 验证码、密码过期强制改密一类。重试只会一次次
     /// 拿同样的输出撞服务器，除了喂 fail2ban 没有任何意义，所以必须停住。
     /// 🔴 不能混进 `Other`：`Other` 是环境性失败（PTY 打不开、ssh 起不来），那些值得重连。
@@ -774,7 +898,12 @@ pub(super) enum Fatal {
 fn give_up(fatal: Option<&Fatal>) -> bool {
     matches!(
         fatal,
-        Some(Fatal::NeedsSecret(_) | Fatal::Interactive(_) | Fatal::GuardUnavailable(_))
+        Some(
+            Fatal::NeedsSecret(_)
+                | Fatal::JumpSecret(_)
+                | Fatal::Interactive(_)
+                | Fatal::GuardUnavailable(_)
+        )
     )
 }
 
@@ -1078,9 +1207,11 @@ fn prompt_answer(tail: &str, creds: &mut PendingCreds) -> Option<Result<String, 
     }
     let bytes = tail.as_bytes();
     prompt_tail(bytes)?;
+    let passphrase = passphrase_prompt_in(bytes);
+    let jump = creds.prompt_is_jump(tail, passphrase);
     let secret = if password_prompt_in(bytes) {
         creds.take_password(tail)
-    } else if passphrase_prompt_in(bytes) {
+    } else if passphrase {
         creds.take_passphrase(tail)
     } else {
         // 既不是密码也不是口令：2FA 验证码、改密提示、主机密钥交互……都是后台答不了的。
@@ -1091,7 +1222,18 @@ fn prompt_answer(tail: &str, creds: &mut PendingCreds) -> Option<Result<String, 
         ))));
     };
     Some(secret.ok_or_else(|| {
-        Fatal::NeedsSecret("需要密码或密钥口令：请在连接设置里保存，或开启转发时输入".into())
+        if jump {
+            let kind = if passphrase {
+                "密钥口令"
+            } else {
+                "登录密码"
+            };
+            Fatal::JumpSecret(format!(
+                "跳板机需要{kind}。请在终端侧栏编辑跳板机的登录设置，再重试转发。"
+            ))
+        } else {
+            Fatal::NeedsSecret("需要密码或密钥口令：请在连接设置里保存，或开启转发时输入".into())
+        }
     }))
 }
 
@@ -1100,6 +1242,53 @@ mod tests {
     use super::*;
     use crate::config::{BridgeConfig, SshConnection};
     use std::io::Cursor;
+
+    #[tokio::test]
+    async fn applying_a_live_group_requires_every_listener_to_bind() {
+        let rule = ForwardRule {
+            kind: ForwardKind::Local,
+            listen_port: 8080,
+            ..Default::default()
+        };
+        let status = Arc::new(StdMutex::new(TunnelStatus::new("server".into(), &[rule])));
+        let stop = AtomicBool::new(false);
+        {
+            let mut status = status.lock().unwrap();
+            status.apply_line("Authenticated to server ([127.0.0.1]:22) using publickey.");
+            status.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 8080.");
+            status.apply_line("bind [127.0.0.1]:8080: Address already in use");
+            status.apply_line("channel_setup_fwd_listener_tcpip: cannot listen to port: 8080");
+        }
+        assert_eq!(
+            wait_for_manual_listeners(&status, &stop).await.unwrap_err(),
+            "bind [127.0.0.1]:8080: Address already in use"
+        );
+        stop.store(true, Ordering::SeqCst);
+        assert!(wait_for_manual_listeners(&status, &stop)
+            .await
+            .unwrap_err()
+            .contains("已停止"));
+    }
+
+    #[test]
+    fn missing_jump_password_is_not_reported_as_the_target_password() {
+        let target = SshConnection {
+            username: "dev".into(),
+            host: "target.test".into(),
+            ..Default::default()
+        };
+        let jump = SshConnection {
+            username: "ops".into(),
+            host: "jump.test".into(),
+            ..Default::default()
+        };
+        let creds = PendingCreds::direct(&target, Some("target-only".into()), None)
+            .with_jump(&jump, None, None);
+        let (fatal, written, _) =
+            read_output(Box::new(Cursor::new(b"ops@jump.test's password: ")), creds);
+        assert!(matches!(fatal, Some(Fatal::JumpSecret(_))));
+        assert!(written.is_empty());
+    }
 
     #[derive(Clone)]
     struct CapturedInput(Arc<StdMutex<Vec<u8>>>);
@@ -1438,6 +1627,7 @@ mod tests {
         status.begin_attempt();
         status.apply_line("Authenticated to server.test ([10.0.0.1]:22) using \"password\".");
         status.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 8080.");
+        status.apply_line("debug1: channel 0: new port-listener [port listener]");
         assert!(connected_for_retry(&status));
     }
 

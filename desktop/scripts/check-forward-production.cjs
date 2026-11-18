@@ -57,7 +57,12 @@ let browser;
     await page.locator("#fp-access-port").fill("3001"); await page.getByRole("button", { name: "仅保存配置", exact: true }).click();
     assert(await address() === "127.0.0.1:3000", "保存导致地址提前变化");
     assert(!(await calls()).some(call => call.command === "ssh_tunnel_start"), "仅保存启动了转发");
-    await page.locator(".fp-page-head").getByRole("button", { name: "应用更改", exact: true }).click(); await page.locator('#forward-rule-web[data-phase="running"]').waitFor();
+    await page.locator(".fp-page-head").getByRole("button", { name: "应用更改", exact: true }).click();
+    const confirmation = page.getByRole("dialog", { name: "重新建立手动转发？" });
+    assert((await confirmation.innerText()).includes("开发网页"), "确认框未显示受影响规则");
+    assert(!(await calls()).some(call => call.command === "ssh_tunnel_start"), "确认前已重启转发");
+    await confirmation.getByRole("button", { name: "确认并继续" }).click();
+    await page.locator('#forward-rule-web[data-phase="running"]').waitFor();
     assert(await address() === "127.0.0.1:3001", "应用未更新实际地址");
   });
   await check("启动方式栏可发现且选择只保存偏好", async () => {
@@ -83,7 +88,9 @@ let browser;
   await check("读取失败有恢复入口，管理接入定位原卡", async () => {
     await open("readError"); assert(await page.getByRole("button", { name: "新增转发", exact: true }).isDisabled(), "归属未知仍可新增");
     await page.evaluate(() => window.forwardProductionCheck.recoverRead()); await page.getByRole("button", { name: "重新读取" }).click(); await page.locator(".fp-managed-row").waitFor();
-    await page.getByRole("button", { name: "管理接入", exact: true }).click();
+    await page.getByRole("button", { name: "查看接入", exact: true }).click();
+    assert(!(await calls()).some(call => call.command === "stable_connect_select"), "查看详情改变了当前接入");
+    await page.getByRole("button", { name: "切换为当前接入", exact: true }).click();
     assert((await calls()).some(call => call.command === "stable_connect_select"), "未选择原接入服务器");
   });
   const startupOpen = () => page.getByRole("button", { name: "更改启动方式", exact: true }).click();

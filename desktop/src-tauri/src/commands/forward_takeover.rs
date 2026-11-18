@@ -21,10 +21,14 @@ pub(super) struct RunningForward {
     pub rules: Vec<ForwardRule>,
     link: SshLink,
     pub password: Option<String>,
-    passphrase: Option<String>,
+    pub(super) passphrase: Option<String>,
 }
 
 impl RunningForward {
+    pub(super) fn same_login(&self, link: &SshLink) -> bool {
+        self.link.same_login(link)
+    }
+
     pub(super) fn capture(state: &AppState, id: &str) -> Result<Option<Self>, String> {
         let Some(tunnel) = state.ssh_tunnels.get(id) else {
             return Ok(None);
@@ -93,12 +97,17 @@ struct ChangedForward {
     previous: Option<Arc<AtomicBool>>,
     /// 动进程**之后**我们留下的 runtime（缩减版重启成功 = 新句柄；停掉 / 没起成 = `None`）。
     replacement: Option<Arc<AtomicBool>>,
+    stop_generation: u64,
 }
 
 #[derive(Default)]
 pub(super) struct Takeover(Vec<ChangedForward>);
 
 impl Takeover {
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// 动进程**之前**登记。必须赶在 `stop_and_wait` 之前：start 中途失败时 map 已空
     /// （`halt` 即 remove），事后登记就再也说不出原来跑的是什么，回滚便无从谈起。
     pub(super) fn record(
@@ -108,11 +117,13 @@ impl Takeover {
         original: Option<RunningForward>,
     ) {
         let previous = state.ssh_tunnels.get(&id).map(|entry| entry.stop.clone());
+        let stop_generation = state.ssh_tunnel_stops.get(&id).map_or(0, |value| *value);
         self.0.push(ChangedForward {
             id,
             original,
             previous,
             replacement: None,
+            stop_generation,
         });
     }
 
@@ -137,7 +148,19 @@ impl Takeover {
                 .ssh_tunnels
                 .get(&change.id)
                 .map(|entry| entry.stop.clone());
-            if !ours_to_restore(current.as_ref(), &change) {
+            let stop_generation = state
+                .ssh_tunnel_stops
+                .get(&change.id)
+                .map_or(0, |value| *value);
+            if !ours_to_restore(current.as_ref(), &change, stop_generation) {
+                continue;
+            }
+            if current
+                .as_ref()
+                .zip(change.previous.as_ref())
+                .is_some_and(|(current, previous)| Arc::ptr_eq(current, previous))
+            {
+                // Validation can fail before any replacement was made. Leave the original process alive.
                 continue;
             }
             stop_and_wait(state, &change.id).await;
@@ -165,11 +188,19 @@ impl Takeover {
 
 /// 当前 runtime 是不是「接管流程自己的」，能不能碰。
 ///
+/// A later explicit user stop always wins, even if the runtime entry has disappeared.
 /// - `None`：我们停掉后没起成 / 起了又停——正是「动进程到一半失败」的现场，
 ///   必须允许恢复原样（曾经这里一律跳过，用户的手动转发就静默丢了）。
 /// - `previous` / `replacement` 之一：我们留下的，可以恢复。
 /// - 第三者（用户另起的、被别的启动顶替的）：不碰。
-fn ours_to_restore(current: Option<&Arc<AtomicBool>>, change: &ChangedForward) -> bool {
+fn ours_to_restore(
+    current: Option<&Arc<AtomicBool>>,
+    change: &ChangedForward,
+    stop_generation: u64,
+) -> bool {
+    if stop_generation != change.stop_generation {
+        return false;
+    }
     match current {
         None => true,
         Some(current) => {
@@ -195,6 +226,7 @@ fn changed(
         original: None,
         previous,
         replacement,
+        stop_generation: 0,
     }
 }
 
@@ -205,16 +237,24 @@ fn rollback_never_stops_a_newer_or_explicitly_stopped_runtime() {
     let newer = Arc::new(AtomicBool::new(false));
     assert!(ours_to_restore(
         Some(&attempt),
-        &changed(Some(attempt.clone()), None)
+        &changed(Some(attempt.clone()), None),
+        0
     ));
-    assert!(ours_to_restore(None, &changed(Some(attempt.clone()), None)));
+    assert!(ours_to_restore(
+        None,
+        &changed(Some(attempt.clone()), None),
+        0
+    ));
     assert!(!ours_to_restore(
         Some(&newer),
-        &changed(Some(attempt.clone()), None)
+        &changed(Some(attempt.clone()), None),
+        0
     ));
-    // 我们留下的缩减版被用户显式停掉（map 已空、stop 置位）时同样放行：
-    // 恢复的是用户接管前的手动转发，不是把用户的「停止」吞掉。
-    assert!(ours_to_restore(None, &changed(None, Some(attempt.clone()))));
+    assert!(!ours_to_restore(
+        None,
+        &changed(None, Some(attempt.clone())),
+        1
+    ));
 }
 
 /// 「动进程到一半失败」：旧隧道已停、新规则没起成，map 里什么都没有。
@@ -223,11 +263,11 @@ fn rollback_never_stops_a_newer_or_explicitly_stopped_runtime() {
 fn rollback_restores_after_a_half_finished_takeover() {
     let stopped = Arc::new(AtomicBool::new(true));
     assert!(
-        ours_to_restore(None, &changed(Some(stopped.clone()), None)),
+        ours_to_restore(None, &changed(Some(stopped.clone()), None), 0),
         "停掉旧隧道后没起成，map 为空也必须允许恢复"
     );
     assert!(
-        ours_to_restore(None, &changed(None, None)),
+        ours_to_restore(None, &changed(None, None), 0),
         "从未起过的连接同样允许恢复（original 为 None 时循环里自然跳过）"
     );
 }

@@ -16,7 +16,7 @@ export function useForwardActions(conn: SshConnection, context: ReturnType<typeo
   const ready = !!context.data && !context.error;
   const perform = async <T,>(next: Operation, action: () => Promise<T>): Promise<T | undefined> => {
     // A ref also blocks a second click before React has rendered the disabled controls.
-    if (locked.current || !ready) return;
+    if (locked.current || (!ready && next !== "stop")) return;
     locked.current = true; setOperation(next);
     try { return await action(); }
     catch (error) { toast(`转发操作未完成：${error}`, "error"); }

@@ -4,7 +4,7 @@
 //!
 //! 解析依赖的 OpenSSH 日志（7.x – 10.x 一致）：
 //! - `Authenticated to host ([ip]:22) using "password".` / `Authentication succeeded (password).`
-//! - `debug1: Local forwarding listening on 127.0.0.1 port 8080.`（`-L` 与 `-D` 共用）
+//! - `debug1: Local forwarding listening on 127.0.0.1 port 8080.` 随后 `new port-listener` 才确认绑定成功
 //! - `bind [127.0.0.1]:8080: Address already in use` + `...: cannot listen to port: 8080`
 //! - `debug1: remote forward success for: listen 127.0.0.1:5000, connect 127.0.0.1:3306`
 //! - `Allocated port 34567 for remote forward to 127.0.0.1:3306`（`-R` 端口填 0）
@@ -54,6 +54,7 @@ pub struct TunnelStatus {
     pub message: Option<String>,
     /// 失败原因是「没有可填的密码/口令」：前端据此弹输入框再启动一次。
     pub needs_secret: bool,
+    pub needs_jump_secret: bool,
     pub attempt: u32,
     pub phase: &'static str,
     pub retry_at: Option<u64>,
@@ -71,6 +72,10 @@ pub struct TunnelStatus {
     #[serde(skip)]
     pending_bind: Option<String>,
     #[serde(skip)]
+    local_candidate: Option<(String, u16)>,
+    #[serde(skip)]
+    remote_allocation: Option<usize>,
+    #[serde(skip)]
     guard_required: bool,
     #[serde(skip)]
     guard_ready: bool,
@@ -83,6 +88,7 @@ impl TunnelStatus {
             state: TunnelState::Connecting,
             message: None,
             needs_secret: false,
+            needs_jump_secret: false,
             attempt: 0,
             phase: "ssh",
             retry_at: None,
@@ -101,6 +107,8 @@ impl TunnelStatus {
             was_up: false,
             last_error: None,
             pending_bind: None,
+            local_candidate: None,
+            remote_allocation: None,
             guard_required: false,
             guard_ready: false,
         }
@@ -122,9 +130,12 @@ impl TunnelStatus {
         self.state = TunnelState::Connecting;
         self.message = None;
         self.needs_secret = false;
+        self.needs_jump_secret = false;
         self.was_up = false;
         self.last_error = None;
         self.pending_bind = None;
+        self.local_candidate = None;
+        self.remote_allocation = None;
         self.guard_ready = false;
         for r in &mut self.rules {
             r.state = RuleState::Pending;
@@ -232,28 +243,80 @@ impl TunnelStatus {
             return true;
         }
         if let Some(rest) = after(line, "Local forwarding listening on ") {
-            return match rest.rsplit(" port ").next().and_then(parse_port) {
-                Some(port) => self.mark_local(port, RuleState::Listening, None),
-                None => false,
-            };
+            // OpenSSH prints this before bind(). Only the channel creation confirms success.
+            self.local_candidate = rest
+                .rsplit_once(" port ")
+                .and_then(|(host, port)| Some((host.to_owned(), parse_port(port)?)));
+            return false;
+        }
+        if line.starts_with("debug")
+            && (line.contains(": new port-listener [") || line.contains(": new [port listener]"))
+        {
+            self.pending_bind = None;
+            return self.local_candidate.take().is_some_and(|(host, port)| {
+                self.mark_listener(false, Some(&host), port, RuleState::Listening, None)
+            });
         }
         if let Some(port) = after(line, "cannot listen to port: ").and_then(parse_port) {
             let msg = self
                 .pending_bind
                 .take()
                 .unwrap_or_else(|| format!("本机端口 {port} 无法监听（可能已被占用）"));
-            return self.mark_local(port, RuleState::Failed, Some(msg));
+            let address = self
+                .local_candidate
+                .take()
+                .filter(|(_, candidate)| *candidate == port)
+                .map(|(host, _)| host);
+            return self.mark_listener(
+                false,
+                address.as_deref(),
+                port,
+                RuleState::Failed,
+                Some(msg),
+            );
         }
         if line.starts_with("bind ") || line.starts_with("bind:") {
             self.pending_bind = Some(line.to_string());
             return false;
         }
-        if let Some(rest) = after(line, "remote forward success for: listen ") {
-            let listen = rest.split(',').next().unwrap_or("");
-            return match listen.rsplit(':').next().and_then(parse_port) {
-                Some(port) => self.mark_remote(port, RuleState::Listening, None),
-                None => false,
-            };
+        if let Some((rest, success)) = after(line, "remote forward success for: listen ")
+            .map(|rest| (rest, true))
+            .or_else(|| {
+                after(line, "remote forward failure for: listen ").map(|rest| (rest, false))
+            })
+        {
+            self.remote_allocation = None;
+            if let Some((listen, target)) = rest.split_once(", connect ") {
+                let (host, port) = listen.rsplit_once(':').unwrap_or(("", listen));
+                if let Some(port) = parse_port(port) {
+                    if port == 0 && success {
+                        self.remote_allocation =
+                            unique_index(self.rules.iter().enumerate().filter_map(|(i, row)| {
+                                let rule = &row.rule;
+                                (rule.kind == ForwardKind::Remote
+                                    && rule.listen_port == 0
+                                    && row.state == RuleState::Pending
+                                    && same_listener_host(&rule.listen_host, host)
+                                    && target_matches(rule, target))
+                                .then_some(i)
+                            }));
+                        return false;
+                    }
+                    let state = if success {
+                        RuleState::Listening
+                    } else {
+                        RuleState::Failed
+                    };
+                    return self.mark_listener(
+                        true,
+                        Some(host),
+                        port,
+                        state,
+                        (!success).then(|| REMOTE_LISTEN_FAILURE.into()),
+                    );
+                }
+            }
+            return false;
         }
         if let Some(rest) = after(line, "Allocated port ") {
             let mut it = rest.splitn(2, " for remote forward to ");
@@ -265,8 +328,13 @@ impl TunnelStatus {
         if let Some(port) =
             after(line, "remote port forwarding failed for listen port ").and_then(parse_port)
         {
-            let msg = "服务器拒绝监听（端口已被占用，或 sshd 不允许绑定该地址，见 GatewayPorts）";
-            return self.mark_remote(port, RuleState::Failed, Some(msg.into()));
+            return self.mark_listener(
+                true,
+                None,
+                port,
+                RuleState::Failed,
+                Some(REMOTE_LISTEN_FAILURE.into()),
+            );
         }
         if !line.starts_with("debug") && !line.starts_with("OpenSSH") {
             self.last_error = Some(line.to_string());
@@ -274,49 +342,45 @@ impl TunnelStatus {
         false
     }
 
-    fn mark_local(&mut self, port: u16, state: RuleState, message: Option<String>) -> bool {
-        let mut changed = false;
-        for r in &mut self.rules {
-            if r.rule.kind != ForwardKind::Remote && r.rule.listen_port == port && r.state != state
-            {
-                r.state = state;
-                r.message = message.clone();
-                changed = true;
-            }
-        }
-        changed
-    }
-
-    /// 端口 0 的规则在日志里只能靠顺序对上：取第一条还在待定的。
-    fn mark_remote(&mut self, port: u16, state: RuleState, message: Option<String>) -> bool {
-        let hit = self.rules.iter_mut().find(|r| {
-            r.rule.kind == ForwardKind::Remote
-                && r.rule.listen_port == port
-                && (port != 0 || r.state == RuleState::Pending)
-        });
-        let changed = match hit {
-            Some(r) if r.state != state || r.message != message => {
-                r.state = state;
-                r.message = message;
-                true
-            }
-            _ => false,
+    fn mark_listener(
+        &mut self,
+        remote: bool,
+        host: Option<&str>,
+        port: u16,
+        state: RuleState,
+        message: Option<String>,
+    ) -> bool {
+        let candidates = || {
+            self.rules.iter().enumerate().filter(|(_, entry)| {
+                (entry.rule.kind == ForwardKind::Remote) == remote && entry.rule.listen_port == port
+            })
         };
-        let ready_changed = self.refresh_guard_state();
-        changed || ready_changed
+        let exact = host.and_then(|host| {
+            unique_index(candidates().filter_map(|(i, entry)| {
+                same_listener_host(&entry.rule.listen_host, host).then_some(i)
+            }))
+        });
+        // A port-only error must never turn a neighboring successful listener into a failure.
+        let Some(index) = exact.or_else(|| unique_index(candidates().map(|(i, _)| i))) else {
+            return false;
+        };
+        let entry = &mut self.rules[index];
+        let changed = entry.state != state || entry.message != message;
+        entry.state = state;
+        entry.message = message;
+        self.refresh_guard_state() || changed
     }
 
     fn mark_allocated(&mut self, port: u16, target: &str) -> bool {
-        let unbound = |r: &RuleStatus| {
-            r.rule.kind == ForwardKind::Remote && r.rule.listen_port == 0 && r.bound_port.is_none()
-        };
-        let idx = self
-            .rules
-            .iter()
-            .position(|r| {
-                unbound(r) && format!("{}:{}", r.rule.target_host, r.rule.target_port) == target
-            })
-            .or_else(|| self.rules.iter().position(unbound));
+        let idx = self.remote_allocation.take().or_else(|| {
+            unique_index(self.rules.iter().enumerate().filter_map(|(i, r)| {
+                (r.rule.kind == ForwardKind::Remote
+                    && r.rule.listen_port == 0
+                    && r.state == RuleState::Pending
+                    && target_matches(&r.rule, target))
+                .then_some(i)
+            }))
+        });
         let Some(i) = idx else {
             return false;
         };
@@ -325,6 +389,32 @@ impl TunnelStatus {
         r.state = RuleState::Listening;
         true
     }
+}
+
+const REMOTE_LISTEN_FAILURE: &str =
+    "服务器拒绝监听（端口已被占用，或 sshd 不允许绑定该地址，见 GatewayPorts）";
+
+fn unique_index(mut candidates: impl Iterator<Item = usize>) -> Option<usize> {
+    let first = candidates.next()?;
+    candidates.next().is_none().then_some(first)
+}
+
+fn same_listener_host(configured: &str, observed: &str) -> bool {
+    let configured = configured.trim_matches(['[', ']']);
+    let observed = observed.trim_matches(['[', ']']);
+    let ip = observed.parse::<std::net::IpAddr>();
+    configured.eq_ignore_ascii_case(observed)
+        || ip.is_ok_and(|address| {
+            configured.parse::<std::net::IpAddr>() == Ok(address)
+                || configured.eq_ignore_ascii_case("localhost") && address.is_loopback()
+                || configured == "*" && address.is_unspecified()
+        })
+}
+
+fn target_matches(rule: &ForwardRule, target: &str) -> bool {
+    target.rsplit_once(':').is_some_and(|(host, port)| {
+        same_listener_host(&rule.target_host, host) && parse_port(port) == Some(rule.target_port)
+    })
 }
 
 fn after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
@@ -580,8 +670,10 @@ mod tests {
         ]);
         assert!(s.apply_line("Authenticated to host ([1.2.3.4]:22) using \"password\"."));
         assert_eq!(s.state, TunnelState::Up);
-        assert!(s.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 8080."));
-        assert!(s.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 1080."));
+        assert!(!s.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 8080."));
+        assert!(s.apply_line("debug1: channel 0: new [port listener]"));
+        assert!(!s.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 1080."));
+        assert!(s.apply_line("debug1: channel 1: new port-listener [port listener]"));
         assert!(s.rules.iter().all(|r| r.state == RuleState::Listening));
     }
 
@@ -613,7 +705,7 @@ mod tests {
         ));
         assert!(s.apply_line("Warning: remote port forwarding failed for listen port 6000"));
         // 实测 9.5p2 的 listen 字段带主机：`listen 127.0.0.1:0`
-        assert!(s.apply_line(
+        assert!(!s.apply_line(
             "debug1: remote forward success for: listen 127.0.0.1:0, connect 127.0.0.1:3389"
         ));
         assert!(s.apply_line("Allocated port 34567 for remote forward to 127.0.0.1:3389"));
@@ -621,6 +713,48 @@ mod tests {
         assert_eq!(s.rules[1].state, RuleState::Failed);
         assert_eq!(s.rules[2].state, RuleState::Listening);
         assert_eq!(s.rules[2].bound_port, Some(34567));
+    }
+
+    #[test]
+    fn listener_results_follow_addresses_and_ambiguous_warnings_do_not_overwrite() {
+        let mut second = rule(ForwardKind::Remote, 7000, 80);
+        second.listen_host = "::1".into();
+        let mut remote = status(&[rule(ForwardKind::Remote, 7000, 80), second]);
+        remote.apply_line(
+            "debug1: remote forward success for: listen ::1:7000, connect 127.0.0.1:80",
+        );
+        assert_eq!(remote.rules[0].state, RuleState::Pending);
+        assert_eq!(remote.rules[1].state, RuleState::Listening);
+        remote.apply_line(
+            "debug1: remote forward failure for: listen 127.0.0.1:7000, connect 127.0.0.1:80",
+        );
+        remote.apply_line("Warning: remote port forwarding failed for listen port 7000");
+        assert_eq!(remote.rules[0].state, RuleState::Failed);
+        assert_eq!(remote.rules[1].state, RuleState::Listening);
+
+        let mut second = rule(ForwardKind::Dynamic, 7000, 0);
+        second.listen_host = "::1".into();
+        let mut local = status(&[rule(ForwardKind::Local, 7000, 80), second]);
+        local.apply_line("debug1: Local forwarding listening on ::1 port 7000.");
+        assert_eq!(local.rules[1].state, RuleState::Pending);
+        local.apply_line("debug1: channel 0: new port-listener [port listener]");
+        local.apply_line("debug1: Local forwarding listening on 127.0.0.1 port 7000.");
+        local.apply_line("bind [127.0.0.1]:7000: Address already in use");
+        local.apply_line("channel_setup_fwd_listener_tcpip: cannot listen to port: 7000");
+        assert_eq!(local.rules[0].state, RuleState::Failed);
+        assert_eq!(local.rules[1].state, RuleState::Listening);
+    }
+
+    #[test]
+    fn remote_auto_port_uses_the_acknowledged_listener_even_with_the_same_target() {
+        let mut second = rule(ForwardKind::Remote, 0, 80);
+        second.listen_host = "::1".into();
+        let mut s = status(&[rule(ForwardKind::Remote, 0, 80), second]);
+        assert!(!s.apply_line("Allocated port 42001 for remote forward to 127.0.0.1:80"));
+        s.apply_line("debug1: remote forward success for: listen ::1:0, connect 127.0.0.1:80");
+        s.apply_line("Allocated port 42002 for remote forward to 127.0.0.1:80");
+        assert_eq!(s.rules[0].bound_port, None);
+        assert_eq!(s.rules[1].bound_port, Some(42002));
     }
 
     #[test]

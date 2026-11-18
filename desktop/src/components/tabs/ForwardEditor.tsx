@@ -71,9 +71,9 @@ export function ForwardEditor({ values, rules, context, editingId, running, busy
       <summary>更多设置<span>服务地址、访问范围、名称</span><Icon name="chevronDown" size={14} /></summary>
       <div className="fp-advanced-fields">
         {values.kind !== "dynamic" && <div className="fp-field"><label htmlFor="fp-target-host">服务地址</label><input id="fp-target-host" name="targetHost" disabled={busy} value={values.targetHost} aria-invalid={!!errorFor("targetHost")} aria-describedby="fp-host-hint" onBlur={() => touch("targetHost")} onChange={event => patch({ targetHost: event.target.value })} /><small id="fp-host-hint" className={errorFor("targetHost") ? "fp-field-error" : ""}>{errorFor("targetHost") || "127.0.0.1 指" + meta.targetMachine + "；也可填写它能访问的其他地址。"}</small></div>}
-        <div className="fp-field"><label htmlFor="fp-listen-scope">谁可以使用访问入口</label><select id="fp-listen-scope" disabled={busy} value={scope} onChange={event => patch({ listenHost: event.target.value === "loopback" ? "127.0.0.1" : event.target.value === "all" ? "0.0.0.0" : "" })}><option value="loopback">仅在{meta.accessMachine}上使用</option><option value="all">允许其他设备访问</option><option value="custom">自定义监听地址</option></select>
+        <div className="fp-field"><label htmlFor="fp-listen-scope">{values.kind === "remote" ? "请求的访问范围" : "谁可以使用访问入口"}</label><select id="fp-listen-scope" disabled={busy} value={scope} onChange={event => patch({ listenHost: event.target.value === "loopback" ? "127.0.0.1" : event.target.value === "all" ? "0.0.0.0" : "" })}><option value="loopback">仅在{meta.accessMachine}上使用</option><option value="all">允许其他设备访问</option><option value="custom">自定义监听地址</option></select>
           {scope === "custom" && <><label className="sr-only" htmlFor="fp-listen-host">自定义监听地址</label><input id="fp-listen-host" name="listenHost" disabled={busy} value={values.listenHost} placeholder="如 ::1 或指定 IP" aria-invalid={!!errorFor("listenHost")} aria-describedby="fp-listen-hint" onBlur={() => touch("listenHost")} onChange={event => patch({ listenHost: event.target.value })} /></>}
-          <small id="fp-listen-hint" className={errorFor("listenHost") ? "fp-field-error" : ""}>{errorFor("listenHost") || (scope === "all" ? values.kind === "remote" ? "需要服务器允许对外监听，其他设备使用服务器 IP。" : "其他设备使用本机 IP 访问此端口。" : "默认仅本设备可访问入口。")}</small>
+          <small id="fp-listen-hint" className={errorFor("listenHost") ? "fp-field-error" : ""}>{errorFor("listenHost") || (scope === "all" ? values.kind === "remote" ? "已请求服务器对外监听，实际范围由服务器设置决定。" : "其他设备使用本机 IP 访问此端口。" : values.kind === "remote" ? "服务器可能覆盖请求的范围，实际监听范围需在服务器确认。" : "默认仅本设备可访问入口。")}</small>
         </div>
         <div className="fp-field"><label htmlFor="fp-rule-name">转发名称（选填）</label><input id="fp-rule-name" disabled={busy} value={values.note} placeholder="如：开发网页、数据库" onChange={event => patch({ note: event.target.value })} /></div>
         <div className="fp-field fp-extra-options">
@@ -90,6 +90,6 @@ export function ForwardEditor({ values, rules, context, editingId, running, busy
       <Button type="button" variant="ghost" disabled={working} onClick={onCancel}>取消</Button>
       <button type="button" className="fp-text-button fp-save-only" disabled={busy || !!conflict} onClick={event => submit(event, false)}>仅保存配置</button>
     </div>
-    {running && <p className="fp-apply-hint">应用时会重新建立这台服务器的手动转发，其他规则的启用选择会保留。</p>}
+    {running && <p className="fp-apply-hint">应用时会重新建立这台服务器的手动转发，正在使用的连接会短暂中断。</p>}
   </form>;
 }

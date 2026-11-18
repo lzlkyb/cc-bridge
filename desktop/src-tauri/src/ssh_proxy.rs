@@ -122,6 +122,17 @@ fn mentions(hay: &str, needle: &str) -> bool {
 }
 
 impl PendingCreds {
+    pub(crate) fn prompt_is_jump(&self, prompt: &str, passphrase: bool) -> bool {
+        if passphrase {
+            let key = slashes(&self.jump_key.to_lowercase());
+            !key.is_empty()
+                && key != slashes(&self.target_key.to_lowercase())
+                && mentions(&slashes(&prompt.to_lowercase()), &key)
+        } else {
+            self.ids_distinct() && mentions(&prompt.to_lowercase(), &self.jump_id.to_lowercase())
+        }
+    }
+
     /// 无跳板的直连：行为与改造前的单槽实现一致。
     pub fn direct(conn: &SshConnection, pw: Option<String>, pp: Option<String>) -> Self {
         Self {

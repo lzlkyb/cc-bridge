@@ -28,7 +28,7 @@
 .terminal-forward-panel .fp-page-phase { font-size: 11px; padding: 3px 9px; color: var(--fp-muted); background: hsl(var(--secondary)); border-radius: 5px; white-space: nowrap; }
 .terminal-forward-panel .fp-page-phase[data-state="运行中"] { color: hsl(var(--success-ink)); background: hsl(var(--success) / .12); }
 .terminal-forward-panel .fp-page-phase[data-state="需处理"] { color: hsl(var(--destructive-ink)); background: hsl(var(--destructive) / .08); }
-.terminal-forward-panel .fp-page-phase:is([data-state="重连中"], [data-state="建立中"]) { color: hsl(var(--warning-ink)); background: hsl(var(--warning) / .09); }
+.terminal-forward-panel .fp-page-phase:is([data-state="重连中"], [data-state="建立中"], [data-state="监听待确认"]) { color: hsl(var(--warning-ink)); background: hsl(var(--warning) / .09); }
 .terminal-forward-panel .fp-page-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .terminal-forward-panel .fp-page-actions .ui-button { font-size: 12px; padding-inline: 13px; }
 .terminal-forward-panel .fp-managed-row { display: flex; align-items: center; gap: 10px; padding: 12px 24px; min-height: 53px; flex-shrink: 0; border-bottom: 1px solid var(--fp-line); font-size: 12px; flex-wrap: wrap; }

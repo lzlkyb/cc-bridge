@@ -237,6 +237,8 @@ pub struct AppState {
     pub ssh_sessions: DashMap<String, SshSession>,
     /// 端口转发。key=connection_id（一条连接一个转发进程），与终端会话互不影响。
     pub ssh_tunnels: DashMap<String, SshTunnel>,
+    // An explicit stop must survive the gap between a takeover and its rollback.
+    pub(crate) ssh_tunnel_stops: DashMap<String, u64>,
     /// Claims and process replacement must be atomic across manual and managed starts.
     pub ssh_tunnel_start_lock: Mutex<()>,
     pub stable_operations: DashMap<String, Arc<crate::stable_connect::StableOperation>>,
@@ -373,6 +375,7 @@ impl AppState {
             cwd_sessions: DashMap::new(),
             ssh_sessions: DashMap::new(),
             ssh_tunnels: DashMap::new(),
+            ssh_tunnel_stops: DashMap::new(),
             ssh_tunnel_start_lock: Mutex::new(()),
             stable_operations: DashMap::new(),
             ssh_transfers: DashMap::new(),

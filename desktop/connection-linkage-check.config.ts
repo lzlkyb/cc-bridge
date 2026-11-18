@@ -8,8 +8,8 @@ const local = (name: string) => fileURLToPath(new URL(`./src/design-preview/quic
 export default defineConfig({
   cacheDir: "node_modules/.vite-connection-linkage-check",
   optimizeDeps: { entries: ["quick-connect-preview.html"] },
-  plugins: [react(), tailwindcss(), { name: "production-linkage-check", enforce: "pre", resolveId(source) {
-    if (source.endsWith("/lib/tauri")) return local("linkage/ProductionBackend.ts");
+  plugins: [react(), tailwindcss(), { name: "production-linkage-check", enforce: "pre", resolveId(source, importer) {
+    if (source.endsWith("/lib/tauri") || source === "./tauri" && importer?.replaceAll("\\", "/").endsWith("/lib/sshTunnelStore.ts")) return local("linkage/ProductionBackend.ts");
     if (source.endsWith("/contexts/UpdateContext")) return local("mock-update.ts");
     if (source === "@tauri-apps/api/window") return local("mock-window.ts");
   }, transform(_code, id) {

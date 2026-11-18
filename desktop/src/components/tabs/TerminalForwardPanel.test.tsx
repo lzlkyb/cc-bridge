@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { h, fixture, legacy, extra, surface, button, mount, click, input, emit, manual } from "./terminalForwardTestUtils";
+import { h, fixture, legacy, extra, surface, button, mount, click, input, emit, live, manual } from "./terminalForwardTestUtils";
 import { act } from "react";
 import { expect, it } from "vitest";
 import { offerForward } from "../../lib/sshTunnelStore";
@@ -31,11 +31,24 @@ it("暂停与重连事件更新托管状态，均不启动手动转发", async (
   await emit("stable_connect_changed"); expect(surface().textContent).toContain("重连中");
   expect(h.invoke).not.toHaveBeenCalledWith("ssh_tunnel_start", expect.anything());
 });
-it("管理接入选择实际托管服务器并定位原接入卡", async () => {
+it("查看接入不切换，显式切换后才定位到对应接入卡", async () => {
   fixture.context.managed[0].connectionId = "owner";
-  await mount(); await click("管理接入");
+  await mount(); await click("查看接入");
+  expect(h.invoke).not.toHaveBeenCalledWith("stable_connect_select", expect.anything());
+  expect(h.navigate).not.toHaveBeenCalled();
+  await click("切换为当前接入");
   expect(h.invoke).toHaveBeenCalledWith("stable_connect_select", { method: "stable", connectionId: "owner" });
   expect(h.navigate).toHaveBeenCalledWith("connect", "connect-guide");
+});
+
+it("关联读取失败时仍能停止实时状态里已知的手动转发", async () => {
+  manual(); await mount(); await emit("ssh_tunnel_status", live());
+  fixture.readFails = true;
+  await emit("stable_connect_changed");
+  expect(surface().textContent).toContain("暂时无法读取转发关联状态");
+  expect(button("停止转发").disabled).toBe(false);
+  await click("停止转发");
+  expect(h.invoke).toHaveBeenCalledWith("ssh_tunnel_stop", { connectionId: fixture.connection.id });
 });
 it("冲突从结果卡打开编辑，保存新端口后解除开启阻止", async () => {
   const conflict = { ...legacy, id: "conflict", targetPort: 9000 };

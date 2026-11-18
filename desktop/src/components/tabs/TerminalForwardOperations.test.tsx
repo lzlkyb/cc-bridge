@@ -3,6 +3,8 @@ import { h, fixture, extra, legacy, surface, button, mount, click, input, emit, 
 import { act } from "react";
 import { expect, it } from "vitest";
 
+const confirmRestart = () => click("确认并继续", document.body);
+
 it.each(["在本机访问服务器服务", "在服务器访问本机服务"])("%s：填服务端口即可保存并开启，监听成功后复制", async purpose => {
   manual([]); await mount(); await click(purpose);
   await input("#fp-target-port", "3000");
@@ -21,6 +23,9 @@ it("仅保存编辑保留旧使用地址，应用后按新监听事件更新", a
   expect(h.invoke).not.toHaveBeenCalledWith("ssh_tunnel_start", expect.anything());
   await click("复制使用地址"); expect(h.clipboard).toHaveBeenLastCalledWith("127.0.0.1:15432");
   await click("应用更改", surface().querySelector("header")!);
+  expect(h.invoke).not.toHaveBeenCalledWith("ssh_tunnel_start", expect.anything());
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("数据库 · 15432");
+  await confirmRestart();
   expect(button("复制使用地址").disabled).toBe(true);
   await emit("ssh_tunnel_status", live());
   expect(surface().querySelector(".fp-use-address code")!.textContent).toBe("127.0.0.1:15433");
@@ -66,16 +71,18 @@ it("删除运行规则后应用失败，保留旧运行卡与地址供再次应�
   manual([extra, second]); live(); await mount(); fixture.startFails = true;
   await act(async () => surface().querySelector<HTMLButtonElement>('#forward-rule-database button[aria-label="删除这条转发"]')!.click());
   await click("删除规则", surface().querySelector("#forward-rule-database")!);
+  await confirmRestart();
   expect(fixture.connection.forwards).toEqual([second]);
   expect(surface().querySelector("#forward-rule-database")!.textContent).toContain("删除尚未生效");
   expect(surface().querySelector("#forward-rule-database .fp-use-address code")!.textContent).toBe("127.0.0.1:15432");
-  fixture.startFails = false; await click("应用更改", surface().querySelector("header")!);
+  fixture.startFails = false; await click("应用更改", surface().querySelector("header")!); await confirmRestart();
   expect(surface().querySelector("#forward-rule-database")).toBeNull();
 });
 it("删除最后一条运行规则调用手动停止，保持托管隧道暂停", async () => {
   fixture.connection.forwards = [legacy, extra]; fixture.context.managed[0].enabled = false; fixture.context.managed[0].phase = "stopped";
   live(); await mount();
   await act(async () => surface().querySelector<HTMLButtonElement>('button[aria-label="删除这条转发"]')!.click()); await click("删除规则");
+  await confirmRestart();
   expect(h.invoke).toHaveBeenCalledWith("ssh_tunnel_stop", { connectionId: fixture.connection.id });
   expect(h.invoke).not.toHaveBeenCalledWith("ssh_tunnel_start", expect.anything());
   expect(h.invoke).not.toHaveBeenCalledWith("stable_connect_start", expect.anything());
@@ -84,7 +91,7 @@ it("删除最后一条运行规则调用手动停止，保持托管隧道暂停"
 it("停止失败保留真实运行地址和状态", async () => {
   manual(); live(); fixture.stopFails = true; await mount(); await click("停止转发");
   expect(button("复制使用地址").disabled).toBe(false);
-  expect(surface().textContent).toContain("转发已开启");
+  expect(surface().textContent).toContain("入口已监听");
 });
 it("部分监听失败时标题提示需处理，其他成功规则仍可以复制", async () => {
   const failed = { ...legacy, id: "blocked", listenPort: 8000 };
