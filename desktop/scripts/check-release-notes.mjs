@@ -429,6 +429,57 @@ export function removeUnreleased(md) {
   return md.replace(/^##\s+\[Unreleased\][\s\S]*?(?=\n##\s+\[|$(?![\s\S]))\n?/m, "");
 }
 
+/**
+ * 发版后要重新长出来的 [Unreleased] 空骨架（含写法注释）。
+ *
+ * 🔴 为什么要有这个常量（2026-11-18 v3.2.2 实测踩坑）：`removeUnreleased` 会把整个
+ * ## [Unreleased] 段连写法注释一起删干净，旧版 release.mjs 只往里插新版本段、没有
+ * 任何一步重建骨架，于是发版后文件里再无 [Unreleased]。后果是**静默**的：pre-push
+ * 只校验「最新已发布段」（--stage=latest），不会发现少了一段，直到下一轮要写更新
+ * 说明时才发现没地方写，只能临时手工补。骨架与注释统一由这里产出，release 与测试
+ * 共用同一份，避免「脚本里一份、文件里另一份」的漂移。
+ */
+export const UNRELEASED_TEMPLATE = `## [Unreleased]
+
+<!-- 写法（发版前会硬查，不合规直接中止）。这段注释由脚本自动重建，不用手删：
+     每条 = 短标题 + 冒号 + 一句话。标题写「读者一眼能对上自己经历」的那句话（≤24 字），
+     不能是「优化 / 修复 / 调整」这类空壳词，也别只写功能名；冒号后面说清以前怎样、现在怎样。
+     一条只说一件事，整条不超过 80 字。不写 PowerShell、主线程、反引号代码、文件名、feat: 前缀。
+     更新摘要只写一句大白话（12~160 字），它会显示在更新弹框和 Release 页面。 -->
+
+`;
+
+/**
+ * 把「消费掉旧 [Unreleased]」与「重建新骨架 + 插入新版本段」合成一步。
+ *
+ * 顺序固定为：文件头 → 空 [Unreleased] 骨架 → 新版本段 → 历史版本段。
+ * 新版本段必须落在首个 `## [` 之前，否则解析器按 `## [x.y.z]` 分段时它不属于任何版本。
+ */
+export function applyRelease(md, versionBlock) {
+  const rest = removeUnreleased(md);
+  const firstVer = rest.match(/^##\s+\[/m);
+  const head = firstVer && firstVer.index !== undefined ? rest.slice(0, firstVer.index) : rest;
+  const tail = firstVer && firstVer.index !== undefined ? rest.slice(firstVer.index) : "";
+  return `${head}${UNRELEASED_TEMPLATE}${versionBlock}${tail}`;
+}
+
+/**
+ * 落盘前的形状自检：骨架必须存在、唯一，且排在新版本段之前。
+ * 返回 null 表示合格，否则返回一句给人看的错因。release.mjs 拿它当硬闸。
+ */
+export function checkReleaseShape(md, version) {
+  const heads = md.match(/^##\s+\[Unreleased\]/gm) ?? [];
+  if (heads.length !== 1) {
+    return `发版后应恰好有 1 个 ## [Unreleased]，实际 ${heads.length} 个（骨架没重建或被重复插入）`;
+  }
+  const unreleasedAt = md.search(/^##\s+\[Unreleased\]/m);
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const versionAt = md.search(new RegExp(`^##\\s+\\[${escaped}\\]`, "m"));
+  if (versionAt < 0) return `发版后找不到 ## [${version}] 版本段`;
+  if (unreleasedAt > versionAt) return `## [Unreleased] 必须排在新版本段 ## [${version}] 之前`;
+  return null;
+}
+
 /** 把 [Unreleased] 的小节转成 release.mjs 需要的 { 小节名: ["- 条目"] }。 */
 export function collectItemSections(parsed) {
   const out = {};

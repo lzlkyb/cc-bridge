@@ -1,11 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   MIN_STRICT_VERSION,
+  UNRELEASED_TEMPLATE,
+  applyRelease,
+  checkReleaseShape,
   collectItemSections,
   compareVersion,
   parseNotes,
@@ -285,14 +288,70 @@ describe("发版渲染（renderVersionBlock，release.mjs 走的就是这一步�
     expect(block).not.toContain("版本更新");
     expect(validate(parseNotes(block, { stage: "latest" })).errors).toEqual([]);
 
-    // 完整模拟 release.mjs 的第 4 步：删掉 Unreleased、把新段插到首个版本段之前
-    const rest = removeUnreleased(`${GOOD}\n## [3.1.5] - 2026-11-10\n\n### 修复\n- 旧版条目\n`);
-    const firstVer = rest.match(/^##\s+\[/m);
-    const finalMd = rest.slice(0, firstVer.index) + block + rest.slice(firstVer.index);
-    expect(finalMd).not.toContain("[Unreleased]");
+    // 完整模拟 release.mjs 的第 4 步：消费旧 Unreleased，同时补回空骨架
+    const finalMd = applyRelease(`${GOOD}\n## [3.1.5] - 2026-11-10\n\n### 修复\n- 旧版条目\n`, block);
+    expect(finalMd).toContain("## [Unreleased]");
     expect(finalMd.indexOf("## [3.1.6]")).toBeLessThan(finalMd.indexOf("## [3.1.5]"));
     expect(finalMd).toContain("旧版条目");
     expect(validate(parseNotes(finalMd, { stage: "latest" })).errors).toEqual([]);
+  });
+});
+
+describe("发版后 [Unreleased] 骨架必须自动重建（v3.2.2 踩过的坑）", () => {
+  const blockFor = (version) => renderVersionBlock(parseNotes(GOOD), version, "2026-11-11");
+  const BASE = `# Changelog\n\n格式参考 Keep a Changelog。\n\n${GOOD}\n## [3.1.5] - 2026-11-10\n\n### 修复\n- 旧版条目\n`;
+
+  it("旧条目搬进新版本段后，文件里重新长出一个空的 [Unreleased] 且排在新版本段之前", () => {
+    const md = applyRelease(BASE, blockFor("3.1.6"));
+    expect(md.match(/^##\s+\[Unreleased\]/gm)).toHaveLength(1);
+    // 骨架必须是空的：旧条目一条都不许留在 Unreleased 段里
+    const unreleased = md.slice(
+      md.indexOf("## [Unreleased]"),
+      md.indexOf("## [3.1.6]"),
+    );
+    expect(unreleased).not.toContain("断网时打开软件不再卡住");
+    expect(unreleased).toContain("<!--");
+  });
+
+  it("历史版本段与文件头原样保留，不被骨架顶掉", () => {
+    const md = applyRelease(BASE, blockFor("3.1.6"));
+    expect(md.startsWith("# Changelog\n")).toBe(true);
+    expect(md).toContain("## [3.1.5] - 2026-11-10");
+    expect(md).toContain("旧版条目");
+    expect(md.indexOf("## [Unreleased]")).toBeLessThan(md.indexOf("## [3.1.6]"));
+    expect(md.indexOf("## [3.1.6]")).toBeLessThan(md.indexOf("## [3.1.5]"));
+  });
+
+  it("连着发两版不会叠出两个 [Unreleased] 或两份写法注释", () => {
+    const first = applyRelease(BASE, blockFor("3.1.6"));
+    // 第二次发版时，上一轮重建的骨架已经在文件里，必须被消费掉再重建
+    const second = applyRelease(first, blockFor("3.1.7"));
+    expect(second.match(/^##\s+\[Unreleased\]/gm)).toHaveLength(1);
+    expect(second.match(/<!-- 写法/g)).toHaveLength(1);
+    expect(second.indexOf("## [3.1.7]")).toBeLessThan(second.indexOf("## [3.1.6]"));
+    expect(checkReleaseShape(second, "3.1.7")).toBeNull();
+  });
+
+  it("骨架缺失 / 重复 / 顺序颠倒都会被 checkReleaseShape 拦下（这三条是上面几条的牙齿）", () => {
+    const ok = applyRelease(BASE, blockFor("3.1.6"));
+    expect(checkReleaseShape(ok, "3.1.6")).toBeNull();
+    expect(checkReleaseShape(ok.replace(/## \[Unreleased\]/, ""), "3.1.6")).toMatch(/恰好有 1 个/);
+    expect(checkReleaseShape(`${ok}\n## [Unreleased]\n`, "3.1.6")).toMatch(/恰好有 1 个/);
+    expect(checkReleaseShape("## [Unreleased]\n\n## [9.9.9] - 2026-01-01\n", "3.1.6")).toMatch(
+      /找不到 ## \[3\.1\.6\]/,
+    );
+    expect(
+      checkReleaseShape("## [3.1.6] - 2026-11-11\n\n## [Unreleased]\n", "3.1.6"),
+    ).toMatch(/必须排在新版本段/);
+  });
+
+  it("真实 CHANGELOG.md 里的骨架与脚本常量逐字一致（防止只改一处）", () => {
+    const real = readFileSync(new URL("../../CHANGELOG.md", import.meta.url), "utf-8")
+      .replace(/\r\n/g, "\n");
+    expect(real.match(/^##\s+\[Unreleased\]/gm)).toHaveLength(1);
+    const realComment = real.match(/<!--[\s\S]*?-->/)?.[0];
+    const templateComment = UNRELEASED_TEMPLATE.match(/<!--[\s\S]*?-->/)?.[0];
+    expect(realComment).toBe(templateComment);
   });
 });
 

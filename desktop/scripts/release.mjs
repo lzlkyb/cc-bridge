@@ -40,7 +40,8 @@ import {
   parseNotes,
   validate,
   formatReport,
-  removeUnreleased,
+  applyRelease,
+  checkReleaseShape,
   collectItemSections,
   renderVersionBlock,
 } from "./check-release-notes.mjs";
@@ -189,16 +190,16 @@ async function main() {
   // 4. 插入 CHANGELOG.md：把第 0 步校验过的 [Unreleased] 原样搬成新版本段。
   //    🔴 不再用 git log 生成条目，也不再靠交互问摘要——亮点与更新摘要都已从
   //    [Unreleased] 读出，所以发版后不需要 amend 重写（v3.1.2 / v3.1.5 都栽在这）。
-  //    removeUnreleased 的正则沿用旧版：结尾用 `$(?![\s\S])` 才是整串结尾，
-  //    带 m 标记时裸 `$` 只匹配行尾，会把整段 Unreleased 留在文件抬头。
+  //    🔴 必须连骨架一起重建：applyRelease 会在消费旧段的同时补回空的
+  //    ## [Unreleased]（含写法注释）。只删不建的话，下一轮就没地方写条目，而且
+  //    pre-push 只看最新已发布段，不会报错——静默穿过去（v3.2.2 发版实测）。
   const newBlock = renderVersionBlock(parsed, next, todayISO());
-  const changelog = removeUnreleased(sourceMd);
-  // 必须插到第一个「版本段标题」之前，而非 # Changelog 大标题之后——否则新段
-  // 会排在文件头描述与首个版本段之间，解析器按 ## [x.y.z] 分段时它不属于任何版本。
-  const firstVer = changelog.match(/^##\s+\[/m);
-  const finalChangelog = firstVer && firstVer.index !== undefined
-    ? changelog.slice(0, firstVer.index) + newBlock + changelog.slice(firstVer.index)
-    : changelog.replace(/(^#.*\n)/, `$1\n${newBlock}`);
+  const finalChangelog = applyRelease(sourceMd, newBlock);
+  const shapeError = checkReleaseShape(finalChangelog, next);
+  if (shapeError) {
+    console.error(`\x1b[31m[RELEASE ERROR]\x1b[0m ${shapeError}，已中止（未写盘）。`);
+    process.exit(1);
+  }
   fs.writeFileSync(CHANGELOG_PATH, finalChangelog, "utf-8");
   console.log(
     `\x1b[32m[4/7]\x1b[0m 已消费 ## [Unreleased]（${Object.values(sections).flat().length} 条），插入 [${next}] 段`,
