@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import { buildUpdateNotes } from "./update-release-notes.mjs";
 
 const decode = (notes) => JSON.parse(notes.match(/<!-- cc-bridge-release-history:(.*?) -->/)[1]);
+
+test("keeps the release-specific tagline and summary in updater history", () => {
+  const markdown = "## [3.2.1] - 2026-11-17\n### 更新标语\n多人共用服务器，接入各自独立。\n### 更新摘要\n本次更新摘要。\n### 修复\n- 可用地址\n";
+  const [release] = decode(buildUpdateNotes("### 修复\n- 可用地址", "3.2.1", markdown));
+  assert.ok(release.body.includes("### 更新标语\n多人共用服务器，接入各自独立。"));
+  assert.ok(release.body.includes("### 更新摘要\n本次更新摘要。"));
+});
 test("preserves legacy notes and carries sorted history without unreleased or private sections", () => {
   const markdown = "## [Unreleased]\n### 新增\n- future\n## [2.9.0] - 2026-10-16\n### 亮点\n- **分屏**：并排\n### 用户摘要\n- private\n### 新增\n- shipped\n## [2.10.0] - 2026-10-18\n### 新增\n- latest\n";
   const result = buildUpdateNotes("### 新增\n- visible", "2.10.0", markdown);

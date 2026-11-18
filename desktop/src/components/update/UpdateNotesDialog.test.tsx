@@ -18,11 +18,10 @@ afterEach(async () => { await act(async () => root.unmount()); });
 async function mount(update: UpdateNotesInfo = props.update, process?: UpdatePresentation) { await act(async () => root.render(<UpdateNotesDialog {...props} update={update} process={process} onRestart={restart} onRetry={retry} onRefreshSafety={refresh} />)); }
 
 describe("update dialog behavior", () => {
-  it("首屏只精选三项亮点，展开说明后仍可查看其余内容", async () => {
+  it("本次发布默认展开，单版本亮点完整显示且不重复精选", async () => {
     await mount({ version: "99.0.0", body: "### 亮点\n- 一\n- 二\n- 三\n- 第四项完整内容\n### 修复\n- 修复细节" });
-    expect(document.querySelectorAll('.update-benefits>li')).toHaveLength(3);
-    expect(document.body.textContent).not.toContain("第四项完整内容");
-    await act(async () => button("本次发布").click());
+    expect(document.querySelectorAll('.update-benefits>li')).toHaveLength(0);
+    expect(button("本次发布").getAttribute("aria-expanded")).toBe("true");
     expect(document.body.textContent).toContain("第四项完整内容");
   });
   it("忽略此版本单独记忆并关闭", async () => {
@@ -69,24 +68,24 @@ describe("update dialog behavior", () => {
     expect(dismiss).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledOnce();
     expect(download).not.toHaveBeenCalled();
   });
-  it("下载后保持弹框可见，不写忽略记忆", async () => {
+  it("点击下载并更新时开始下载并立即关闭弹框，不写忽略记忆", async () => {
     await mount(); await act(async () => button("下载并更新").click());
-    expect(download).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();
+    expect(download).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
     expect(dismiss).not.toHaveBeenCalled();
   });
-  it("记录按需挂载，远端内容以安全文本呈现，切换版本重置折叠", async () => {
+  it("本次默认展开，远端内容以安全文本呈现，切换版本重新展开", async () => {
     await mount();
-    expect(document.querySelector('.update-release-notes')).toBeNull();
-    await act(async () => button("本次发布").click());
     expect(document.querySelector('.update-release-notes')?.textContent).toContain('<img src=x onerror=alert(1)>');
     expect(document.querySelectorAll('img')).toHaveLength(1);
-    await mount({ ...props.update, version: "100.0.0" });
+    await act(async () => button("本次发布").click());
     expect(button("本次发布").getAttribute("aria-expanded")).toBe("false");
     expect(document.querySelector('.update-release-notes')).toBeNull();
+    await mount({ ...props.update, version: "100.0.0" });
+    expect(button("本次发布").getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelector('.update-release-notes')).not.toBeNull();
   });
   it("纯文字说明原样保留，无从汇总时不伪造统计与亮点", async () => {
     await mount({ ...props.update, body: "plain note" });
-    await act(async () => button("本次发布").click());
     expect(document.querySelector('.update-release-notes')?.textContent).toContain('plain note');
     // 🔴 必须显式去掉 currentVersion：只要给了它，模型就会按 2.9.1 → 99.0.0 汇总**随包的** CHANGELOG，
     // 记录数与亮点条目随每次发版变化 —— 原断言（指望 .update-stats 为空）因此成了时间炸弹，
@@ -105,5 +104,19 @@ describe("update dialog behavior", () => {
     expect(document.querySelector('.update-stats')).not.toBeNull();
     // 本次发布没有说明 ⇒ 详情区仍要诚实地说没有，不能用汇总内容冒充。
     expect(document.body.textContent).toContain("此版本未提供详细说明");
+  });
+
+  it("标语和摘要来自目标版本，标签沿用设置样式，历史按需挂载", async () => {
+    await mount({ version: "99.0.0", currentVersion: "2.9.1", body: "### 更新标语\n本版专属标语\n### 更新摘要\n本版摘要只出现一次\n### 新增\n- **新功能**：说明\n### 修复\n- 修复内容\n### 兼容性\n- 未知标签保留" });
+    expect(document.querySelector('.update-brand-caption')?.textContent).toBe("本版专属标语");
+    expect(document.body.textContent?.split("本版摘要只出现一次")).toHaveLength(2);
+    expect(document.querySelector('.update-note-row .cl-badge-feat')?.textContent).toBe("新增");
+    expect(document.querySelector('.update-note-row .cl-badge-fix')?.textContent).toBe("修复");
+    expect(document.querySelector('.update-dialog-header p')?.textContent).toContain("3条更新");
+    expect(document.querySelector('.update-history-release')).toBeNull();
+    await act(async () => button("查看跨版本完整记录").click());
+    expect(document.querySelector('.update-history-release')).not.toBeNull();
+    await mount({ version: "100.0.0", body: "### 修复\n- 下一版" });
+    expect(document.querySelector('.update-brand-caption')?.textContent).toBe("连接有桥，访问有界");
   });
 });

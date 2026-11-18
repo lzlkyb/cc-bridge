@@ -82,7 +82,7 @@ const entries = [];
 let current = null; // { version, date, items: [{category, text}], highlights: string[] }
 let currentCategory = null; // 当前 ### 小节映射出的类
 let currentItem = null; // 正在累积的多行条目
-let mode = "items"; // "items" | "highlights"
+let mode = "items"; // Items and release metadata are collected separately, never double-counted.
 let currentHighlight = null; // 正在累积的多行亮点
 
 for (const line of lines) {
@@ -94,7 +94,7 @@ for (const line of lines) {
       if (currentHighlight !== null) current.highlights.push(currentHighlight);
       entries.push(current);
     }
-    current = { version: verMatch[1], date: verMatch[2], items: [], highlights: [] };
+    current = { version: verMatch[1], date: verMatch[2], items: [], highlights: [], summary: [], tagline: "" };
     currentCategory = null;
     currentItem = null;
     currentHighlight = null;
@@ -115,7 +115,10 @@ for (const line of lines) {
       currentHighlight = null;
     }
     const sec = secMatch[1].trim();
-    if (sec === "用户摘要") {
+    if (sec === "更新标语" || sec === "更新摘要") {
+      mode = sec === "更新标语" ? "tagline" : "summary";
+      currentCategory = null;
+    } else if (sec === "用户摘要") {
       // 用户摘要仅用于更新弹窗（updater.json notes），应用内更新历史跳过
       mode = "skip";
       currentCategory = null;
@@ -137,6 +140,14 @@ for (const line of lines) {
 
   // 条目：以 - 或 * 开头
   if (mode === "skip") continue;
+  if (current && (mode === "tagline" || mode === "summary")) {
+    const text = cleanText(line.replace(/^\s*[-*]\s+/, ""));
+    if (text) {
+      if (mode === "tagline") current.tagline = [current.tagline, text].filter(Boolean).join(" ");
+      else current.summary.push(text);
+    }
+    continue;
+  }
   const itemMatch = line.match(/^\s*[-*]\s+(.*)$/);
   if (itemMatch && current) {
     if (mode === "highlights") {
@@ -198,6 +209,8 @@ for (const entry of limited) {
   out += `  {\n`;
   out += `    version: ${toLiteral(entry.version)},\n`;
   out += `    date: ${toLiteral(entry.date)},\n`;
+  if (entry.tagline) out += `    tagline: ${toLiteral(entry.tagline)},\n`;
+  if (entry.summary.length) out += `    summary: ${JSON.stringify(entry.summary)},\n`;
   if (entry.highlights && entry.highlights.length) {
     out += `    highlights: [\n`;
     for (const h of entry.highlights) {

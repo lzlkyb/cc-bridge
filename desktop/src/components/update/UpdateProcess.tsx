@@ -40,7 +40,10 @@ export function UpdateActions({ process, onClose, onDownload, onDismiss, onResta
     <div className="update-dialog-actions">
       {status === "available" && <button type="button" className="interactive update-ignore" onClick={() => { onDismiss(); onClose(); }}>忽略此版本</button>}
       <Button variant="outline" disabled={process.restarting} onClick={onClose}>{status === "downloading" ? "后台下载" : status === "ready" ? "稍后重启" : "稍后提醒"}</Button>
-      {status === "available" && <Button onClick={onDownload}><Icon name="download" size={15} aria-hidden="true" />下载并更新</Button>}
+      {status === "available" && <Button onClick={() => {
+        onDownload();
+        onClose();
+      }}><Icon name="download" size={15} aria-hidden="true" />下载并更新</Button>}
       {status === "downloading" && <Button disabled><Icon name="download" size={15} aria-hidden="true" />正在下载</Button>}
       {status === "checking" && <Button disabled>检查中…</Button>}
       {status === "error" && <Button onClick={onRetry}><Icon name="refresh" size={15} aria-hidden="true" />重新检查</Button>}

@@ -1,14 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { Icon } from "../ui/icon";
-import { CHANGELOG, CATEGORY_LABELS, type ChangeCategory } from "../../lib/about";
-
-/** category → 徽章类名（与 index.css 的 cl-badge-* 对应） */
-const CATEGORY_CLASS: Record<ChangeCategory, string> = {
-  feat: "cl-badge-feat",
-  improve: "cl-badge-improve",
-  fix: "cl-badge-fix",
-  sec: "cl-badge-sec",
-};
+import { CHANGELOG } from "../../lib/about";
+import { ChangelogBadge } from "../update/ChangelogBadge";
 
 /* 底色一律走「CSS 变量 + 原值兜底」：毛玻璃主题要在 appearance.css 里换成染色玻璃材质，
    而这些底色写在 React 内联 style 上（优先级高于任何选择器）⇒ 只有变量能穿透。
@@ -75,11 +68,7 @@ export function ChangelogView() {
             className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-xs leading-relaxed text-muted-foreground transition-colors hover:bg-muted"
             style={STYLE_CL_ITEM_PAD}
           >
-            <span
-              className={`cl-badge shrink-0 rounded px-1.5 text-[10px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}
-            >
-              {CATEGORY_LABELS[item.category]}
-            </span>
+            <ChangelogBadge category={item.category}/>
             {item.text}
           </div>
         ))}
@@ -119,11 +108,7 @@ export function ChangelogView() {
                 className="cl-item flex items-baseline gap-2 rounded-md px-2.5 py-1 text-xs leading-relaxed text-muted-foreground transition-colors hover:bg-muted"
                 style={STYLE_CL_ITEM_PAD}
               >
-                <span
-                  className={`cl-badge shrink-0 rounded px-1.5 text-[10px] font-extrabold tracking-wider whitespace-nowrap ${CATEGORY_CLASS[item.category]}`}
-                >
-                  {CATEGORY_LABELS[item.category]}
-                </span>
+                <ChangelogBadge category={item.category}/>
                 {item.text}
               </div>
             ))}

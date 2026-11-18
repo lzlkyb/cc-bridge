@@ -8,6 +8,18 @@ const entry = (version: string, text = version): ChangelogEntry => ({
 const history = [entry("2.10.0"), entry("2.9.1"), entry("2.9.0"), entry("2.8.1"), entry("2.8.0"), entry("2.7.7")];
 
 describe("update release notes", () => {
+  it("标语单独解析不进入统计，远端优先且不借用别的版本", () => {
+    const notes = parseUpdateNotes("### 更新标语\n多人共用，接入独立。\n### 更新摘要\n摘要\n### 修复\n- 内容");
+    expect(notes.tagline).toBe("多人共用，接入独立。");
+    expect(notes.paragraphs).toEqual([]);
+    expect(countReleaseItems(notes)).toBe(1);
+    const bundled = [{ ...entry("2.9.1"), tagline: "旧版标语", summary: ["旧版摘要"] }];
+    const model = createUpdateNotesModel({ version: "2.9.1", body: "### 更新标语\n远端标语\n### 修复\n- 远端内容" }, bundled);
+    expect(model.latest.tagline).toBe("远端标语");
+    expect(model.latest.summary).toEqual([]);
+    expect(createUpdateNotesModel({ version: "2.9.1" }, bundled).latest.summary).toEqual(["旧版摘要"]);
+    expect(createUpdateNotesModel({ version: "99.0.0" }, bundled).latest.tagline).toBeUndefined();
+  });
   it("比较数字版本，未知和预发布版本不猜测范围", () => {
     expect(compareReleaseVersions("v2.10.0", "2.9.1")).toBeGreaterThan(0);
     expect(compareReleaseVersions("2.9.1", "2.9.1")).toBe(0);

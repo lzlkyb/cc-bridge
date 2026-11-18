@@ -11,22 +11,27 @@ import "../interaction-refinements.css";
 const labels = { feat: "新增", improve: "变更", fix: "修复", sec: "安全" };
 const records = CHANGELOG.map(release => ({
   version: release.version, date: release.date,
-  body: (release.highlights?.length ? "### 亮点\n" + release.highlights.map(text => "- " + text).join("\n") + "\n" : "") +
+  body: (release.tagline ? `### 更新标语\n${release.tagline}\n` : "") +
+    (release.summary?.length ? "### 更新摘要\n" + release.summary.join("\n") + "\n" : "") +
+    (release.highlights?.length ? "### 亮点\n" + release.highlights.map(text => "- " + text).join("\n") + "\n" : "") +
     Object.entries(labels).map(([category, label]) => "### " + label + "\n" + release.items.filter(item => item.category === category).map(item => "- " + item.text).join("\n")).join("\n"),
 }));
 const body = records[0].body + "\n\n<!-- cc-bridge-release-history:" + JSON.stringify(records) + " -->";
 const scenarios: Record<string, UpdateNotesInfo> = {
-  cross: { version: "2.9.1", currentVersion: "2.7.7", date: records[0].date, body },
-  normal: { version: "2.9.1", currentVersion: "2.9.0", date: records[0].date, body },
-  unknown: { version: "2.9.1", date: records[0].date, body },
-  empty: { version: "99.0.0", currentVersion: "2.9.1", body: null },
+  cross: { version: records[0].version, currentVersion: records[Math.min(3, records.length - 1)].version, date: records[0].date, body },
+  normal: { version: records[0].version, currentVersion: records[1]?.version, date: records[0].date, body },
+  unknown: { version: records[0].version, date: records[0].date, body },
+  empty: { version: "99.0.0", currentVersion: records[0].version, body: null },
   long: { version: "123.456.789-beta.123", currentVersion: "2.9.1", body: "长版本号兼容检查。" },
   plain: { version: "99.0.0", currentVersion: "2.9.1", body: "这是一条旧更新源提供的纯文字说明。\n第二行内容同样保留。" },
 };
 
 /** Dev-only real component harness: no UpdateProvider, IPC, installation, or persisted settings. */
 function UpdatePreview() {
-  const [scenario, setScenario] = useState("cross");
+  const [scenario, setScenario] = useState(() => {
+    const selected = new URLSearchParams(location.search).get("scenario") ?? "normal";
+    return selected in scenarios ? selected : "normal";
+  });
   const [open, setOpen] = useState(() => new URLSearchParams(location.search).has("open"));
   const [dark, setDark] = useState(false);
   const [message, setMessage] = useState("");

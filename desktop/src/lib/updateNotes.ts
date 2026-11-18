@@ -8,6 +8,7 @@ export interface UpdateNotesInfo {
 }
 
 export interface ReleaseContent {
+  tagline?: string;
   summary: string[];
   highlights: string[];
   groups: { label: string; items: string[] }[];
@@ -41,6 +42,10 @@ export function parseUpdateNotes(body?: string | null): ReleaseContent {
     if (heading) { section = heading[1].trim(); last = undefined; continue; }
     if (PRIVATE.has(section)) continue;
     const item = /^[-*]\s+(.+)$/.exec(line);
+    if (section === "更新标语") {
+      result.tagline = [result.tagline, item?.[1] ?? line].filter(Boolean).join(" ");
+      continue;
+    }
     if (section === "更新摘要") last = result.summary;
     else if (section === "亮点" || section === "Highlights") last = result.highlights;
     else if (item) {
@@ -66,7 +71,7 @@ function bundledRelease(entry: ChangelogEntry): UpdateRelease {
     if (!group) { group = { label, items: [] }; groups.push(group); }
     group.items.push(item.text);
   }
-  return { version: entry.version, date: entry.date, groups, summary: [], paragraphs: [], highlights: entry.highlights ?? [] };
+  return { version: entry.version, date: entry.date, tagline: entry.tagline, groups, summary: entry.summary ?? [], paragraphs: [], highlights: entry.highlights ?? [] };
 }
 
 function readHistory(body?: string | null): UpdateRelease[] {
@@ -96,6 +101,7 @@ export function createUpdateNotesModel(update: UpdateNotesInfo, bundled: Changel
     // Explicit server notes remain authoritative; metadata fills out the full history only.
     ...(hasContent(body) ? body : {}),
     highlights: body.highlights.length ? body.highlights : matching?.highlights ?? [],
+    tagline: body.tagline || matching?.tagline,
   };
   const current = update.currentVersion;
   const canAggregate = current && compareReleaseVersions(version, current) !== null && compareReleaseVersions(version, current)! > 0;

@@ -229,7 +229,44 @@ describe("用户向更新日志 · 每条硬闸都能精确变红", () => {
   });
 });
 
+describe("CHANGELOG 里的说明注释不能变成条目", () => {
+  const commented = `${GOOD}\n<!-- 写法（发版前会硬查）：\n     每条 = 短标题 + 冒号 + 一句话，不写 PowerShell、主线程。 -->\n`;
+
+  it("条目后面的整段注释不会被并进最后一条（真实行号并进过一次 319 字的脏数据）", () => {
+    const parsed = parseNotes(commented);
+    const last = parsed.sections.at(-1).items.at(-1);
+    expect(last.text).toBe("从别的窗口点顶栏不再拖走窗口：现在这一下只把软件切到前台，第二下才开始拖；正常拖动和双击最大化都不受影响。");
+    expect(validate(parsed).errors).toEqual([]);
+    expect(validate(parsed).warnings.map((w) => w.code)).not.toContain("TECH_TERM");
+  });
+
+  it("行尾的行内注释被剥掉，注释前后的正文都保留", () => {
+    const md = GOOD.replace("### 修复", "<!-- 这是一句说明 -->\n### 修复").replace(
+      "- **连接页的「防火墙」不再长期显示无法检测**：慢一次不代表这台电脑不支持，现在会自动再试一次。",
+      "- **连接页的「防火墙」不再长期显示无法检测**：慢一次不代表这台电脑不支持，现在会自动再试一次。<!-- 待核对 -->",
+    );
+    const item = parseNotes(md).sections.at(-1).items.find((i) => i.text.startsWith("连接页的「防火墙」"));
+    expect(item.text).toBe("连接页的「防火墙」不再长期显示无法检测：慢一次不代表这台电脑不支持，现在会自动再试一次。");
+  });
+
+  it("剥注释不删行：报错行号仍指向文件里的真实行", () => {
+    const md = GOOD.replace(
+      "- **断网时检查更新最多等一分钟**：以前顶栏的小圆圈能转好几分钟，现在到点就提示没连上，可以马上重试。",
+      "- 这条没有标题，会被判成 UNTITLED_ITEM。",
+    ).replace("\n### 修复", "\n<!-- 注释占两行\n     第二行 -->\n### 修复");
+    const error = errorsOf(md).find((e) => e.code === "UNTITLED_ITEM");
+    expect(md.split("\n")[error.line - 1]).toContain("这条没有标题");
+  });
+});
+
 describe("发版渲染（renderVersionBlock，release.mjs 走的就是这一步）", () => {
+  it("可选更新标语在发版后原样保留，不变成更新条目", () => {
+    const source = GOOD.replace("### 更新摘要", "### 更新标语\n连接状态更清楚，更新内容看得见。\n\n### 更新摘要");
+    expect(validate(parseNotes(source)).errors).toEqual([]);
+    const block = renderVersionBlock(parseNotes(source), "3.1.6", "2026-11-11");
+    expect(block).toContain("### 更新标语\n连接状态更清楚，更新内容看得见。");
+    expect(validate(parseNotes(block, { stage: "latest" })).errors).toEqual([]);
+  });
   it("标题式条目的粗体原样搬进新版本段，不会被剥成纯文本", () => {
     const block = renderVersionBlock(parseNotes(GOOD), "3.1.6", "2026-11-11");
     expect(block).toContain("- **断网时打开软件不再卡住**：");

@@ -40,6 +40,8 @@ export interface ChangelogEntry {
   version: string;
   date: string;
   items: ChangelogItem[];
+  tagline?: string;
+  summary?: string[];
   /** 本期亮点（可选）：CHANGELOG.md 的 `### 亮点` 小节，UI 顶部渐变条突出展示。 */
   highlights?: string[];
 }

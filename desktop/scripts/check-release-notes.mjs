@@ -49,7 +49,7 @@ export const MIN_STRICT_VERSION = "3.1.6";
 
 /** 允许出现在发布说明里的小节。写别的名字会被拦下，避免内容被静默丢掉。 */
 const ITEM_SECTIONS = new Set(["新增", "变更", "修复", "优化", "安全", "改进"]);
-const META_SECTIONS = new Set(["更新摘要", "亮点", "Highlights"]);
+const META_SECTIONS = new Set(["更新标语", "更新摘要", "亮点", "Highlights"]);
 
 /** 一眼就知道是开发者术语的词。命中即拦，报错里给替换建议。 */
 const HARD_TECH = [
@@ -145,11 +145,43 @@ export function findCodeSymbols(text) {
 }
 
 /**
+ * 剥掉 HTML 注释，但**逐行保留占位**（空串）。
+ *
+ * 后面所有报错都靠 `i + 1` 报文件真实行号，删行会让定位全部错位，所以只清空不清除。
+ * CHANGELOG 顶部那段「写法」说明就是注释：不剥掉会被当成上一条条目的续行并进去
+ * ——实测把 319 字的说明算成了一条「修复」，还因为它提到 PowerShell 被判成黑话。
+ */
+function stripHtmlComments(lines) {
+  const out = lines.slice();
+  let inComment = false;
+  for (let i = 0; i < out.length; i++) {
+    let rest = out[i];
+    let kept = "";
+    while (rest !== "") {
+      if (inComment) {
+        const end = rest.indexOf("-->");
+        if (end < 0) break;
+        rest = rest.slice(end + 3);
+        inComment = false;
+      } else {
+        const start = rest.indexOf("<!--");
+        if (start < 0) { kept += rest; break; }
+        kept += rest.slice(0, start);
+        rest = rest.slice(start + 4);
+        inComment = true;
+      }
+    }
+    out[i] = kept;
+  }
+  return out;
+}
+
+/**
  * 解析 CHANGELOG：找出目标段（[Unreleased] 或最新已发布版本），拆出小节与条目。
  * 每个条目带真实行号，报错能直接定位到文件某一行。
  */
 export function parseNotes(md, { stage = "unreleased" } = {}) {
-  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const lines = stripHtmlComments(md.replace(/\r\n/g, "\n").split("\n"));
   let start = -1;
   let version = null;
   if (stage === "unreleased") {
@@ -239,7 +271,7 @@ export function validate(parsed) {
   for (const s of parsed.sections) {
     if (!ITEM_SECTIONS.has(s.name) && !META_SECTIONS.has(s.name)) {
       add(s.line, s.name, "UNKNOWN_SECTION", `不认识的小节「### ${s.name}」`,
-        `发布说明只认：${[...ITEM_SECTIONS].join(" / ")}，外加「亮点」「更新摘要」。写别的小节会被静默丢掉，所以这里直接拦下。`);
+        `发布说明只认：${[...ITEM_SECTIONS].join(" / ")}，外加「更新标语」「亮点」「更新摘要」。写别的小节会被静默丢掉，所以这里直接拦下。`);
     }
   }
 
@@ -416,6 +448,9 @@ export function collectItemSections(parsed) {
  * release.mjs 与测试共用这一份，避免测试复制粘贴逻辑后与真实发版路径走偏。
  */
 export function renderVersionBlock(parsed, version, date) {
+  const taglineSection = parsed.sections.find(s => s.name === "更新标语");
+  const tagline = [...(taglineSection?.freeText ?? []), ...(taglineSection?.items ?? [])].map(item => item.text).join(" ").trim();
+  const taglineBlock = tagline ? `### 更新标语\n${tagline}\n\n` : "";
   const highlights = parsed.highlights.map((h) => `- ${h.raw ?? h.text}`);
   const highlightBlock = highlights.length
     ? `### 亮点\n${highlights.join("\n")}\n\n`
@@ -424,7 +459,7 @@ export function renderVersionBlock(parsed, version, date) {
     .map(([name, items]) => `### ${name}\n${items.join("\n")}`)
     // 两个 \n：单个 \n 会让下一个 "###" 紧贴列表项，Markdown 渲染成一整段。
     .join("\n\n");
-  return `## [${version}] - ${date}\n\n${highlightBlock}### 更新摘要\n${parsed.summary}\n\n${sectionLines}\n\n`;
+  return `## [${version}] - ${date}\n\n${taglineBlock}${highlightBlock}### 更新摘要\n${parsed.summary}\n\n${sectionLines}\n\n`;
 }
 
 export function formatReport(result, filePath) {
