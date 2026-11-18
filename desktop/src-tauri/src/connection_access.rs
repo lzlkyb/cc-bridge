@@ -721,7 +721,10 @@ pub fn ip_update_command(
     ips: &[String],
 ) -> Result<(String, String), String> {
     if uses_tunnel(config) {
-        return Err("隧道连接使用固定 MCP 地址，无需替换 IP。请前往接入卡片检查隧道。".into());
+        // 隧道模式下这条命令的语义不是「换 IP」，而是「把服务器上那条直连地址换成隧道固定地址」。
+        // 自动配置失败（同名冲突、权限、脚本超时）时它是唯一能自助的兜底手段，所以不能像以前
+        // 那样直接报「无需替换 IP」——用户拿着直连配置在新版客户端里根本无从下手。
+        return stable_sed_command(config);
     }
     let receipt = config
         .stable_connect
@@ -760,6 +763,34 @@ pub fn ip_update_command(
         },
         ips,
     ))
+}
+
+/// 隧道模式的手动兜底命令：把服务器上那条直连地址改成这台服务器的隧道固定地址。
+///
+/// 为什么允许它存在：自动配置会失败在同名冲突、目录权限、脚本超时这些地方，用户手里
+/// 只有一条写着旧地址的 `.mcp.json`，没有任何自助手段。这条命令只做一件事——换地址，
+/// 不动令牌、不动其它字段，出错面最小。
+fn stable_sed_command(config: &BridgeConfig) -> Result<(String, String), String> {
+    let saved = stable::selected_saved(config)
+        .ok_or("隧道连接尚未配置，请在接入卡片中完成一次接入后再使用此命令。")?;
+    if config.remote_tls_enabled || config.transport != "http" {
+        return Err("隧道接入需要使用 HTTP，请先在网络设置中关闭 HTTPS 或改用 HTTP 传输。".into());
+    }
+    if saved.port < 1024 {
+        return Err("隧道固定端口尚未分配，请先完成一次接入。".into());
+    }
+    let command = network::build_stable_sed_command(
+        config.port,
+        saved.port,
+        &saved.scope,
+        &saved.project_path,
+    );
+    let label = if saved.scope == "project" {
+        "隧道固定地址 · 项目级 .mcp.json"
+    } else {
+        "隧道固定地址 · 全局 ~/.claude.json"
+    };
+    Ok((command, label.into()))
 }
 
 /// Update one existing entry instead of replacing all URLs in a shared MCP file.

@@ -57,6 +57,34 @@ fn unconfigured_tunnel_never_falls_back_to_direct_commands_or_address() {
 }
 
 #[test]
+fn configured_tunnel_offers_a_direct_address_rewrite_command() {
+    let (mut config, _, ips) = fixture();
+    config.stable_connect.method = Some("stable".into());
+    config.stable_connect.selected_connection_id = Some("server".into());
+    config.stable_connect.connections = vec![crate::stable_connect::StableSaved {
+        connection_id: "server".into(),
+        port: 17903,
+        scope: "project".into(),
+        project_path: "/srv/orders".into(),
+        multi_device: false,
+        enabled: true,
+        fingerprint: String::new(),
+        token_fingerprint: String::new(),
+        target: None,
+        verified_at: None,
+    }];
+    let (command, label) = ip_update_command(&config, &ips).unwrap();
+    // 兜底命令只换地址：必须进原项目目录、改 .mcp.json、指向隧道固定端口。
+    assert!(command.starts_with("cd \"/srv/orders\" && "), "{command}");
+    assert!(command.contains("http://127.0.0.1:17903/mcp"), "{command}");
+    assert!(command.contains(&format!(":{}", config.port)), "{command}");
+    assert!(label.contains("隧道固定地址"), "{label}");
+    // 隧道不支持 HTTPS / SSE，这两种配置下不能给出一条改不出东西的命令。
+    config.remote_tls_enabled = true;
+    assert!(ip_update_command(&config, &ips).is_err());
+}
+
+#[test]
 fn vpn_recovery_keeps_endpoint_even_when_direct_ip_has_disappeared() {
     let (config, mut record, _) = fixture();
     record.phase = "reconnecting".into();

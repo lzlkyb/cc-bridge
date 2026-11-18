@@ -10,6 +10,7 @@ import { StableConnectionTargets } from "./StableConnectionTargets";
 import { StableLogin } from "./StableLogin";
 import { StableProjectPicker } from "./StableProjectPicker";
 import { StableScopeSelector } from "./StableScopeSelector";
+import { StableManualFix } from "./StableManualFix";
 import { SshConnectionDialog } from "../SshConnectionDialog";
 import { Button } from "../../ui/button";
 import { Icon } from "../../ui/icon";
@@ -178,6 +179,7 @@ export function TunnelWorkflow({ state, status, onRefresh, tlsEnabled, onNavigat
       {!applying && cancelled && note("本次配置已取消。请重新检查服务器配置后再应用。")}
       {!applying && !cancelled && issue && note(issue)}
       {!applying && access.target?.tokenMatches === false && note("服务器上的 Token 与本机不同，本次会一并更新。")}
+      {!applying && !access.scopeEditing && confirmedPort && (access.target ?? target) && <StableManualFix tunnelPort={confirmedPort} directUrl={(access.target ?? target)?.url}/>}
     </>}
 
     {active === 4 && <>
@@ -195,6 +197,7 @@ export function TunnelWorkflow({ state, status, onRefresh, tlsEnabled, onNavigat
       {state.connection && <div className="tunnel-flow-box tunnel-flow-summary-row"><div><strong>{state.connection.name}</strong><p className="tunnel-flow-scope">生效范围 · {stableScopeLabel(target?.scope ?? state.record?.scope ?? "project")}{projectPath && <> · {stableProjectName(projectPath)} <code>{projectPath}</code></>}</p></div></div>}
       <CurrentAccessAddress status={status}/>
       {addressDrift && note(`服务器当前配置为 ${remoteTarget?.url}，应使用固定地址 ${address}。`)}
+      {addressDrift && confirmedPort && <StableManualFix tunnelPort={confirmedPort} directUrl={remoteTarget?.url}/>}
       {access.checking && note("正在核对服务器上的接入…")}
       {access.failed && !authNeeded && <div className="tunnel-flow-inline">{note("暂时没能核对服务器上的接入，当前显示的是上次记录的配置。")}<Button variant="outline" onClick={access.observe}><Icon name="refresh" size={15}/>重新检查</Button></div>}
       {loginOpen && authNeeded && <StableLogin state={state} busy={state.busy || access.checking} onSubmit={state.record?.needsSecret ? resume : access.observe}/>}

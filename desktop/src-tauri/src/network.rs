@@ -288,6 +288,39 @@ pub fn build_ip_sed_command(
     format!("{cd_prefix}{}", sed_in_place(&expr, &cfg_file))
 }
 
+/// 直连 → 隧道 的手动兜底命令：把服务器上那条 `http://<旧地址>:<端口>/mcp`
+/// 原地改成隧道固定地址 `http://127.0.0.1:<隧道端口>/mcp`。
+///
+/// 🔴 **只换地址，不换凭据**。同一台设备在直连与隧道模式下用的是同一个令牌
+/// （`configure.py` 写进去的 `Bearer` 就是本机 `config.token`，隧道侧只是换了个监听端），
+/// 所以一条 sed 就够，也不需要重写 `env` / `timeout` / 自定义 header。
+/// 若服务器上那条的令牌确实与本机不同（`tokenMatches === false`），sed 修不好 401，
+/// 那种情况必须走「核对并更新配置」让 `configure.py` 一并替换 Authorization。
+///
+/// 与 `build_ip_sed_command` 同源同形（同一套 `sed_in_place`、同样的 `https\?://` 双协议匹配），
+/// 用户在两处看到的命令长得一样，不必学第二套语法。
+/// 替换段固定 `127.0.0.1`：隧道是服务器本机的监听端，和客户端选哪个网卡无关。
+pub fn build_stable_sed_command(
+    direct_port: u16,
+    tunnel_port: u16,
+    scope: &str,
+    project_path: &str,
+) -> String {
+    let expr =
+        format!("s#https\\?://[0-9.]*:{direct_port}/mcp#http://127.0.0.1:{tunnel_port}/mcp#g");
+    if scope == "project" {
+        let path = project_path.trim();
+        let cd = if path.is_empty() {
+            String::new()
+        } else {
+            format!("cd {} && ", quote_remote_path(path))
+        };
+        format!("{cd}{}", sed_in_place(&expr, ".mcp.json"))
+    } else {
+        sed_in_place(&expr, "~/.claude.json")
+    }
+}
+
 /// 多设备模式（opt-in）的接入/更新命令：条目级 remove + add，**幂等可重跑**。
 /// 条目名 `cc-bridge-<device_id>` —— 两台机器生成的条目名不同，在远端配置中
 /// 并存、互不覆盖，把「互踢」（sed 按 URL 全局替换的后写者赢）变成
@@ -959,5 +992,48 @@ mod tests {
             "",
             "claude-code 不走 scoped sed（它有条目级 CLI）"
         );
+    }
+
+    /// 隧道兜底命令：项目级要 cd 进项目再改 `.mcp.json`，替换段必须是回环固定地址。
+    #[test]
+    fn stable_sed_rewrites_direct_address_to_loopback() {
+        let cmd = build_stable_sed_command(7823, 17903, "project", "/home/lizuliang");
+        assert_eq!(
+            cmd,
+            "cd \"/home/lizuliang\" && sed -i.bak \
+             's#https\\?://[0-9.]*:7823/mcp#http://127.0.0.1:17903/mcp#g' \
+             .mcp.json && rm -f .mcp.json.bak"
+        );
+    }
+
+    /// 全局作用域改 `~/.claude.json`；没有项目路径时不能拼出空的 `cd ""`。
+    #[test]
+    fn stable_sed_uses_global_file_or_requires_a_directory() {
+        let global = build_stable_sed_command(7823, 17904, "user", "");
+        assert!(global.starts_with("sed -i.bak "), "{global}");
+        assert!(
+            global.ends_with("~/.claude.json && rm -f ~/.claude.json.bak"),
+            "{global}"
+        );
+        // 旧版 local 作用域落在全局文件里，同样走全局分支（不 cd、不碰 .mcp.json）。
+        let local = build_stable_sed_command(7823, 17904, "local", "/srv/app");
+        assert_eq!(local, global);
+
+        let no_path = build_stable_sed_command(7823, 17905, "project", "   ");
+        assert!(
+            no_path.starts_with("sed -i.bak "),
+            "空路径不能拼出 cd：{no_path}"
+        );
+        assert!(
+            no_path.ends_with(".mcp.json && rm -f .mcp.json.bak"),
+            "{no_path}"
+        );
+    }
+
+    /// 路径里的空格与 `$` 不能改变命令含义（否则 `cd` 会切到别处，sed 改错文件）。
+    #[test]
+    fn stable_sed_quotes_project_paths() {
+        let cmd = build_stable_sed_command(7823, 17903, "project", "/home/li qing/$work");
+        assert!(cmd.contains("cd \"/home/li qing/\\$work\" && "), "{cmd}");
     }
 }
