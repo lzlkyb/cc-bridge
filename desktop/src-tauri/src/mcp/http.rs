@@ -792,7 +792,10 @@ pub async fn handle_tools_call(
                         // 批 4-1：降级判定要的是**字符数**（客户端按字符分档），
                         // 与上面的字节数是两个口径，都由这里一次算好。
                         // 量不出来时记 None 而非哨兵值（见 `tools::wire_chars_opt`）。
-                        let result_chars = crate::mcp::tools::wire_chars_opt(&content);
+                        // 只数文本块（见 `tools::result_wire_chars`）：图片的 base64 不是上下文字符。
+                        let result_chars = crate::mcp::tools::result_wire_chars(&content);
+                        // 非 ASCII 字节数：token 估算按中英文分别折算（见 `audit::est_tokens_mixed`）。
+                        let result_wide = Some(crate::mcp::tools::result_text_wide_bytes(&content));
                         write_audit_for_call(
                             &state.data_dir,
                             tool_name,
@@ -807,6 +810,7 @@ pub async fn handle_tools_call(
                             cc_session_id.clone(),
                             result_bytes,
                             result_chars,
+                            result_wide,
                         );
                         state.inc_audit_count();
                     }
@@ -845,6 +849,7 @@ pub async fn handle_tools_call(
                             cc_session_id.clone(),
                             result_bytes,
                             Some(err_len),
+                            Some(crate::audit::non_ascii_bytes(&e)),
                         );
                         state.inc_audit_count();
                     }
@@ -914,6 +919,7 @@ impl Drop for CancelAuditGuard {
             self.state.cc.active_session_id(),
             Some(0),
             Some(0),
+            Some(0),
         );
         self.state.inc_audit_count();
     }
@@ -948,6 +954,8 @@ pub(crate) fn write_audit_for_call(
     // 分档（≥49,823 整条降级成 2KB 预览），中文 1 字符 = 3 字节 ⇒ 不能拿字节顶替。
     // 失败分支按 "Error: {e}" 的字符数计（纯文案，字节与字符在这些错误信息里等同）。
     result_chars: Option<u64>,
+    // 结果里非 ASCII 的字节数（中文等），token 估算据此区分中英文。
+    result_wide_bytes: Option<u64>,
 ) {
     let args_str = arguments.to_string();
     // E-P1-7: 测量序列化耗时（直接计时一次写入，消除 O1 双重序列化开销）
@@ -969,6 +977,7 @@ pub(crate) fn write_audit_for_call(
     let mut entry = entry;
     entry.result_bytes = result_bytes;
     entry.result_chars = result_chars;
+    entry.result_wide_bytes = result_wide_bytes;
     let _ = serde_json::to_string(&entry);
     // f64 毫秒（不用 .as_millis() as u64）：实测单条写盘序列化开销在微秒级（~6.8µs），
     // 若截断为整数毫秒会恒为 0，导致前端耗时拆解面板的“审计写盘”一项长期不可见。

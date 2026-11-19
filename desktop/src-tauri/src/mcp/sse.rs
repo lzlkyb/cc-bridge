@@ -324,13 +324,14 @@ pub async fn sse_message_handler(
                                 let result_bytes =
                                     Some(crate::mcp::tools::result_text_bytes(&content));
                                 let result_chars =
-                                    crate::mcp::tools::wire_chars_opt(&content);
+                                    crate::mcp::tools::result_wire_chars(&content);
                                 write_audit_for_call(
                                     &state.data_dir, &tool_name, &arguments, true, None,
                                     Some(source_ip.clone()), elapsed, server_ms, io_ms, None,
                                     cc_session_id.clone(),
                                     result_bytes,
                                     result_chars,
+                                    Some(crate::mcp::tools::result_text_wide_bytes(&content)),
                                 );
                                 state.inc_audit_count();
                             }
@@ -355,6 +356,7 @@ pub async fn sse_message_handler(
                                     cc_session_id.clone(),
                                     result_bytes,
                                     Some(err_len),
+                                    Some(crate::audit::non_ascii_bytes(&e)),
                                 );
                                 state.inc_audit_count();
                             }

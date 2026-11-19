@@ -375,7 +375,7 @@ export interface TlsStatus {
   banWindowMin: number;
 }
 
-// ── Token 用量估算（get_token_usage；口径：约 4 字节 ≈ 1 token，非账单值）──
+// ── Token 用量估算（get_token_usage；口径：英文约 4 字节、中文约 1 字 ≈ 1 token，非账单值）──
 
 /** 按天的用量汇总（本地日期，旧→新）。 */
 export interface TokenUsageDay {

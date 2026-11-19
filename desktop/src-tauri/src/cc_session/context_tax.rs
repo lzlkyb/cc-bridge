@@ -63,7 +63,7 @@ pub struct ContextTax {
     /// 工具结果合计（字节，**不含** batch 容器 —— 见 `aggregate` 里的说明）。
     #[serde(rename = "resultBytes")]
     pub result_bytes: u64,
-    /// 估算 token（`result_bytes / 4`，与 `audit::est_tokens` 同源）。
+    /// 估算 token（逐条按 `AuditEntry::est_result_tokens` 算再求和，与用量报表同源）。
     ///
     /// 🔴 **只算结果、不含入参**：面板上「工具结果」那一行要能等于下面各工具行之和，
     /// 而入参（`params_bytes`）是另一件事（模型自己写出来的工具调用参数），
@@ -139,8 +139,8 @@ fn aggregate(all: &[AuditEntry], sid: &str) -> ContextTax {
         session_id: sid.to_string(),
         ..ContextTax::default()
     };
-    // tool → [calls, result_bytes, max_chars]
-    let mut tools: std::collections::HashMap<&str, [u64; 3]> = std::collections::HashMap::new();
+    // tool → [calls, result_bytes, max_chars, est_tokens]
+    let mut tools: std::collections::HashMap<&str, [u64; 4]> = std::collections::HashMap::new();
     let mut hits: Vec<ContextTaxHit> = Vec::new();
 
     for e in all {
@@ -166,6 +166,8 @@ fn aggregate(all: &[AuditEntry], sid: &str) -> ContextTax {
         // 但日志是只追加的历史，读端不能假设写它的一定是新版本。
         let measured = e.result_chars.filter(|c| *c != u64::MAX);
         let chars = match (measured, e.result_bytes) {
+            // 被二进制撑大的字符数（见 `inflated_by_binary`）：按字节算，不当成内联超限。
+            (Some(c), Some(b)) if inflated_by_binary(c, b) => b,
             (Some(c), _) => c,
             (None, Some(b)) => {
                 // 没有可用的字符数（老日志 / 哨兵）：退回字节（纯 ASCII 等价，中文偏高 ——
@@ -176,13 +178,17 @@ fn aggregate(all: &[AuditEntry], sid: &str) -> ContextTax {
             (None, None) => 0,
         };
 
+        // 逐条估算再求和：每条的中英文构成不同，不能先把字节加总再统一折算。
+        let tok = e.est_result_tokens();
         out.result_bytes += rb;
+        out.est_tokens += tok;
         out.params_bytes += e.params.len() as u64;
 
-        let t = tools.entry(e.tool.as_str()).or_insert([0, 0, 0]);
+        let t = tools.entry(e.tool.as_str()).or_insert([0, 0, 0, 0]);
         t[0] += 1;
         t[1] += rb;
         t[2] = t[2].max(chars);
+        t[3] += tok;
 
         if chars >= TOOL_INLINE_CHARS {
             out.oversized_total += 1;
@@ -199,15 +205,13 @@ fn aggregate(all: &[AuditEntry], sid: &str) -> ContextTax {
         }
     }
 
-    out.est_tokens = audit::est_tokens(out.result_bytes);
-
     let mut rows: Vec<ContextTaxTool> = tools
         .into_iter()
         .map(|(tool, c)| ContextTaxTool {
             tool: tool.to_string(),
             calls: c[0],
             result_bytes: c[1],
-            est_tokens: audit::est_tokens(c[1]),
+            est_tokens: c[3],
             max_chars: c[2],
         })
         .collect();
@@ -225,6 +229,15 @@ fn aggregate(all: &[AuditEntry], sid: &str) -> ContextTax {
     out.oversized = hits;
 
     out
+}
+
+/// 字符数是不是被二进制数据撑大的（2026-11-06 起的旧版本把 view_image 的 base64 记进了
+/// resultChars：字节 250、字符 36 万）。写入端已改为只数文本块，但日志只追加，读端要自己识别。
+///
+/// 判据：纯文本每个字节在 wire 口径下最多约 4 个字符（引号、反斜杠被转义两层），再留 1024 给
+/// 外层结构；超过就只可能是字节数没统计的图片等二进制块。
+fn inflated_by_binary(chars: u64, bytes: u64) -> bool {
+    chars > bytes.saturating_mul(4).saturating_add(1024)
 }
 
 /// 从审计的 `params`（请求参数 JSON 全文）里认出「这次动的是什么东西」。
@@ -302,7 +315,24 @@ mod tests {
             target_path: None,
             result_bytes: bytes,
             result_chars: bytes,
+            result_wide_bytes: None,
         }
+    }
+
+    /// 2026-11 的旧版本把 view_image 的 base64 记进了 resultChars：不该报成内联超限。
+    #[test]
+    fn image_inflated_chars_are_not_oversized() {
+        let inflated = AuditEntry {
+            result_chars: Some(365_691),
+            ..entry("view_image", Some("s1"), "{}", Some(250))
+        };
+        let t = aggregate(&[inflated], "s1");
+        assert!(t.oversized.is_empty(), "{:?}", t.oversized);
+        assert_eq!(t.charless_calls, 0, "字节数是准的，不算「没有字符数」");
+        assert_eq!(t.tools[0].max_chars, 250);
+        // 正常的转义密集文本（字符数是字节的三四倍）不受影响
+        assert!(!inflated_by_binary(60_000, 16_000));
+        assert!(inflated_by_binary(365_691, 250));
     }
 
     /// 老日志：有 resultBytes、没有 resultChars。
@@ -438,5 +468,21 @@ mod tests {
         // 面板上「工具结果」那一行必须等于各工具行之和（各工具行同样只算结果）。
         assert_eq!(t.est_tokens, 999);
         assert_eq!(t.params_bytes, 4);
+    }
+
+    /// 中文结果按一字约一 token；总数仍等于各工具行之和。
+    #[test]
+    fn chinese_results_are_estimated_per_char_and_rows_still_add_up() {
+        let zh = AuditEntry {
+            result_wide_bytes: Some(300),
+            ..entry("read_files", Some("s1"), "{}", Some(300))
+        };
+        let en = entry("search_files", Some("s1"), "{}", Some(400));
+        let t = aggregate(&[zh, en], "s1");
+        assert_eq!(t.est_tokens, 200, "300 字节中文 100 + 400 字节英文 100");
+        assert_eq!(
+            t.tools.iter().map(|r| r.est_tokens).sum::<u64>(),
+            t.est_tokens
+        );
     }
 }

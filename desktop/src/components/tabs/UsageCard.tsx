@@ -10,7 +10,7 @@ import { useAnimatedNumbers } from "../../hooks/useAnimatedNumbers";
  * Bento 行2 的「Token 用量（估算）」卡（4/12 列，方案 B 布局的右侧新卡）。
  *
  * 展示外部 AI 工具经桥调用工具所消耗 token 的**估算值**：请求参数与工具返回
- * 结果按约 4 字节 ≈ 1 token 折算（口径见后端 audit.rs）。它**不是账单值**——
+ * 结果按英文约 4 字节、中文约 1 字 ≈ 1 token 折算（口径见后端 audit.rs）。它**不是账单值**——
  * 模型侧的真实消耗发生在远程 AI 工具与模型服务之间，桥看不到，UI 全程
  * 标注「估算」。
  *
@@ -104,7 +104,7 @@ export function UsageCard({
             </div>
           </div>
           <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-            按经桥请求/响应字节数 ÷4 折算，非账单值
+            按经桥请求/响应内容估算（英文约 4 字节、中文约 1 字 ≈ 1 token），非账单值
           </p>
         </>
       )}

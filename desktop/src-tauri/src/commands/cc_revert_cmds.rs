@@ -346,6 +346,7 @@ mod tests {
             target_path: target.map(str::to_string),
             result_bytes: None,
             result_chars: None,
+            result_wide_bytes: None,
         }
     }
 

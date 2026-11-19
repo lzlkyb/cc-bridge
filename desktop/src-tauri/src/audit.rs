@@ -58,8 +58,8 @@ pub struct AuditEntry {
     pub target_path: Option<String>,
     /// Token 用量估算埋点：工具返回结果的序列化字节数（http/sse 两处 dispatch 后计得）。
     /// 与 `params`（请求参数全文）一起构成「经桥交互增量」的估算基础：
-    /// est_tokens = (params.len() + result_bytes) / 4。旧日志无此字段 → None，
-    /// 聚合时按 0 计（估算偏低，与「估算非账单值」的口径一致）。
+    /// 估算口径见 [`est_tokens_mixed`]（区分中英文，非 ASCII 部分见 `result_wide_bytes`）。
+    /// 旧日志无此字段 → None，聚合时按 0 计（估算偏低，与「估算非账单值」的口径一致）。
     #[serde(rename = "resultBytes", skip_serializing_if = "Option::is_none")]
     pub result_bytes: Option<u64>,
     /// 同一份结果按**客户端口径**算的字符数（`tools::wire_chars`）。
@@ -73,6 +73,13 @@ pub struct AuditEntry {
     /// 对中文只会偏高（宁可按「贵」提醒，也不要漏掉真的降级）。
     #[serde(rename = "resultChars", skip_serializing_if = "Option::is_none")]
     pub result_chars: Option<u64>,
+    /// `result_bytes` 里**非 ASCII 的字节数**（中文等），token 估算据此区分中英文。
+    ///
+    /// 为什么单独记：中文 UTF-8 一字 3 字节、约 1 token，按「4 字节 ≈ 1 token」会少算
+    /// 约四分之一；而 `result_chars` 带两层 JSON 转义，反推不出中文占比。
+    /// 旧日志无此字段 → 估算退回纯字节口径。
+    #[serde(rename = "resultWideBytes", skip_serializing_if = "Option::is_none")]
+    pub result_wide_bytes: Option<u64>,
 }
 
 /// 关联备份传递：在同一次工具调用（同一 async 任务）内，由写工具把本次生成的备份路径 +
@@ -538,6 +545,7 @@ pub fn new_entry(
         result_bytes: None,
         // 同 result_bytes：由 write_audit_for_call 在构造后补写（batch 子条目另行补）。
         result_chars: None,
+        result_wide_bytes: None,
     }
 }
 
@@ -641,18 +649,59 @@ pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<u64, 
 //
 // 口径：桥只看得到 MCP 请求参数与工具返回结果，模型侧的真实 token 消耗发生在
 // 远程 Claude Code 与 Anthropic 之间，这里**只能估算**：
-//   est_input  ≈ params.len() / 4（请求参数进入模型上下文）
-//   est_output ≈ result_bytes / 4（工具结果返回后进入下一轮上下文）
-// 4 字节 ≈ 1 token 是 JSON/英文为主的粗略经验值；中文内容（~3 字节/字）会略低估。
+//   est_input  = 请求参数原文的估算（进入模型上下文）
+//   est_output = 工具结果 text 块的估算（返回后进入下一轮上下文）
+// 折算比例区分中英文：ASCII（英文/JSON/代码）约 4 字节 ≈ 1 token；
+// 非 ASCII（中文等）约 3 字节 ≈ 1 token（UTF-8 中文一字 3 字节、约 1 token）。
+// 两个比例都是经验值，没有用官方计数接口实测过。
+//
+// 🔴 它**不等于** Claude Code 显示的费用：那是每轮请求把整个上下文（系统提示、对话历史、
+// 缓存读写、模型输出）都计一次，同一段工具结果在之后每一轮都会按缓存读再计费一次，
+// 直到上下文被压缩。这里只回答「哪个工具、哪次调用往上下文里塞得多」。
 // UI 全程标注「估算」，绝不呈现为账单值。
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// 折算基准：约多少字节 ≈ 1 token。
+/// 折算基准：ASCII 约多少字节 ≈ 1 token。
 pub const BYTES_PER_TOKEN: u64 = 4;
 
-/// 字节数 → 估算 token 数（纯函数，收口换算常数便于将来调整与单测）。
+/// 折算基准：非 ASCII（中文等）约多少字节 ≈ 1 token。
+pub const WIDE_BYTES_PER_TOKEN: u64 = 3;
+
+/// 字节数 → 估算 token 数（不知道中英文构成时的纯字节口径，旧日志走这条）。
 pub fn est_tokens(bytes: u64) -> u64 {
     bytes / BYTES_PER_TOKEN
+}
+
+/// 区分中英文的估算：`wide` 是 `bytes` 里非 ASCII 的字节数。
+///
+/// `wide` 未知（旧日志）或比总字节还大（数据不自洽）时退回纯字节口径。
+pub fn est_tokens_mixed(bytes: u64, wide: Option<u64>) -> u64 {
+    match wide {
+        Some(w) if w <= bytes => (bytes - w) / BYTES_PER_TOKEN + w / WIDE_BYTES_PER_TOKEN,
+        _ => est_tokens(bytes),
+    }
+}
+
+/// 字符串里非 ASCII 的字节数。
+pub fn non_ascii_bytes(s: &str) -> u64 {
+    s.bytes().filter(|b| !b.is_ascii()).count() as u64
+}
+
+/// 直接按文本估算。入参原文就在日志里，所以旧日志的入参也能按新口径算。
+pub fn est_text_tokens(s: &str) -> u64 {
+    est_tokens_mixed(s.len() as u64, Some(non_ascii_bytes(s)))
+}
+
+impl AuditEntry {
+    /// 本次调用入参的估算 token。
+    pub fn est_params_tokens(&self) -> u64 {
+        est_text_tokens(&self.params)
+    }
+
+    /// 本次调用结果的估算 token（没有 `result_bytes` 按 0）。
+    pub fn est_result_tokens(&self) -> u64 {
+        est_tokens_mixed(self.result_bytes.unwrap_or(0), self.result_wide_bytes)
+    }
 }
 
 /// 按天的用量汇总（天为本地日期）。
@@ -830,12 +879,12 @@ fn aggregate_usage(all: &[AuditEntry], date_keys: &[String]) -> TokenUsageReport
         let inp = if is_container {
             0
         } else {
-            est_tokens(e.params.len() as u64)
+            e.est_params_tokens()
         };
         let out = if is_container {
             0
         } else {
-            est_tokens(e.result_bytes.unwrap_or(0))
+            e.est_result_tokens()
         };
         let d = &mut days[i];
         d.calls += 1;
@@ -1239,6 +1288,44 @@ mod tests {
         assert_eq!(est_tokens(BYTES_PER_TOKEN * 3 + 2), 3);
     }
 
+    /// 区分中英文：中文按约 1 字 1 token，英文仍按 4 字节 1 token；旧日志退回纯字节口径。
+    #[test]
+    fn mixed_estimate_counts_chinese_per_char() {
+        // 100 个汉字 = 300 字节 ⇒ 100 token（纯字节口径只有 75）
+        let zh = "汉".repeat(100);
+        assert_eq!(est_text_tokens(&zh), 100);
+        assert_eq!(est_tokens(zh.len() as u64), 75);
+        // 纯英文与旧口径完全一致
+        assert_eq!(est_text_tokens(&"a".repeat(400)), 100);
+        // 混排：40 字节英文 + 10 个汉字(30 字节) ⇒ 10 + 10
+        let mixed = format!("{}{}", "a".repeat(40), "汉".repeat(10));
+        assert_eq!(est_text_tokens(&mixed), 20);
+        // 旧日志没有非 ASCII 字节数、或数据不自洽 ⇒ 纯字节口径
+        assert_eq!(est_tokens_mixed(300, None), 75);
+        assert_eq!(est_tokens_mixed(10, Some(30)), 2);
+        // 结果侧：按条目上记录的非 ASCII 字节数算
+        let e = new_entry(
+            "read_files",
+            "{}",
+            true,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let e = AuditEntry {
+            result_bytes: Some(340),
+            result_wide_bytes: Some(300),
+            ..e
+        };
+        assert_eq!(e.est_result_tokens(), 110);
+    }
+
     /// entry_date_key：合法 RFC3339 → Some("YYYY-MM-DD")；垃圾串 → None（不计入）。
     /// 带时区偏移的时间戳须正确换算到本地日期（+08:00 的中午 12 点在 GMT+8 机器上
     /// 就是当天；本测试在非 GMT+8 机器上只断言「能解析出 10 位日期」，不断言具体值）。
@@ -1283,6 +1370,7 @@ mod tests {
             target_path: None,
             result_bytes: rb,
             result_chars: rb,
+            result_wide_bytes: None,
         };
         let entries = vec![
             // 今天：read_files 参数 40B→10 tok，结果 80B→20 tok
@@ -1360,6 +1448,7 @@ mod tests {
             target_path: None,
             result_bytes: Some(80),
             result_chars: Some(80),
+            result_wide_bytes: None,
         };
         // 今天、同一条对话：两次调用。
         let e_today = base.clone();
@@ -1414,6 +1503,7 @@ mod tests {
             target_path: None,
             result_bytes: rb,
             result_chars: rb,
+            result_wide_bytes: None,
         };
         let entries = vec![
             // 外层容器：params 裹着全部子操作参数（400B），返回体是全部子结果（800B）

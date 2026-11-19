@@ -204,7 +204,7 @@ export function ContextTaxPanel({
       )}
 
       <p className="shrink-0 border-t border-border px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-        工具账按「≈4 字节 = 1 token」估算，是对话账的一部分，不相加。
+        工具账按「英文≈4 字节、中文≈1 字 = 1 token」估算，是对话账的一部分，不相加。
         {tax && tax.paramsBytes > 0 && ` 入参另计 ${formatBytes(tax.paramsBytes)}。`}
       </p>
     </div>

@@ -15,7 +15,7 @@ import { useAppHidden } from "../../../lib/appVisibility";
  * ## 为什么单独一张表而不是并进上面的 KPI
  *
  * 上面那套（KPI / 趋势 / 热力图 / 排行）是**工具账**：`audit.log` 里每次工具
- * 调用的字节 ÷ 4 估算，口径是「经桥交互的上下文增量」。
+ * 调用的内容按英文约 4 字节、中文约 1 字 ≈ 1 token 估算，口径是「经桥交互的上下文增量」。
  * 这一张是**对话账**：CC CLI 每轮 `result.modelUsage` 上报的真实 token 与成本，
  * 按 session id 落在 `cc_session_usage` 表里。
  *
@@ -34,7 +34,7 @@ const SHOW_SESSIONS = 6;
 
 /** 两套账的口径说明。tooltip 与卡底那行共用同一份文案，改一处要连另一边一起改。 */
 const ACCOUNTING_NOTE =
-  "对话消耗是 CC CLI 每轮上报的真实 token 与成本（按会话累计）；工具消耗是 cc-bridge 按「约 4 字节 ≈ 1 token」对工具调用字节的估算。" +
+  "对话消耗是 CC CLI 每轮上报的真实 token 与成本（按会话累计）；工具消耗是 cc-bridge 按「英文约 4 字节、中文约 1 字 ≈ 1 token」对工具调用内容的估算。" +
   "工具结果本来就要进模型上下文，所以工具消耗大体包含在对话消耗里——两者是包含关系，不能相加。";
 
 export function ConversationUsageSection({ toolSessions }: { toolSessions: TokenUsageSession[] }) {

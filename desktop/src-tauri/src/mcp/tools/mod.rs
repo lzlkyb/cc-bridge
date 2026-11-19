@@ -79,6 +79,22 @@ pub(crate) fn result_text_bytes(result: &Value) -> u64 {
     }
 }
 
+/// 与 [`result_text_bytes`] 同口径（只数 text 块）的**非 ASCII 字节数**，供 token 估算区分中英文
+/// （见 `audit::est_tokens_mixed`）。
+pub(crate) fn result_text_wide_bytes(result: &Value) -> u64 {
+    match result.get("content").and_then(|c| c.as_array()) {
+        Some(blocks) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .map(crate::audit::non_ascii_bytes)
+            .sum(),
+        None => serde_json::to_string(result)
+            .map(|s| crate::audit::non_ascii_bytes(&s))
+            .unwrap_or(0),
+    }
+}
+
 /// 单次工具调用「挂起等待」的安全上限（秒）。
 ///
 /// 客户端（Claude Code 的 HTTP 传输）对「等第一个字节」有约 60s 的时限，而本服务要等
@@ -192,6 +208,28 @@ pub(crate) fn wire_chars(v: &Value) -> usize {
 /// `charlessCalls`，前端据此把告警语气说软一档 —— 「不知道就说不知道」。
 pub(crate) fn wire_chars_opt(v: &Value) -> Option<u64> {
     chars_or_none(wire_chars(v))
+}
+
+/// 审计用：工具结果里**文本块**的 wire 字符数（与 [`result_text_bytes`] 同口径，图片块按 0 计）。
+///
+/// 直接对整条结果调 [`wire_chars_opt`] 会把 view_image 的 base64 当成字符——实测一张图记成
+/// 36 万字符，而字节数只有 250。图片在客户端按像素计费、不走文本内联门槛，记进去只会让
+/// 「上下文开销」里每看一次图就报一次「超限、被降级」。没有 `content` 数组的结果按整条算。
+pub(crate) fn result_wire_chars(result: &Value) -> Option<u64> {
+    let Some(blocks) = result.get("content").and_then(Value::as_array) else {
+        return wire_chars_opt(result);
+    };
+    if blocks
+        .iter()
+        .all(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+    {
+        return wire_chars_opt(result);
+    }
+    let mut only_text = result.clone();
+    if let Some(arr) = only_text.get_mut("content").and_then(Value::as_array_mut) {
+        arr.retain(|b| b.get("type").and_then(Value::as_str) == Some("text"));
+    }
+    wire_chars_opt(&only_text)
 }
 
 /// 哨兵 → `None`。单独成函数是为了能直接测这条约定：`Value` 的序列化失败
@@ -393,6 +431,21 @@ mod wire_chars_opt_tests {
         // 非 JSON 正文原样返回。
         let plain = serde_json::json!({ "content": [{ "type": "text", "text": "hi" }] });
         assert_eq!(split_output_blocks(plain.clone()), plain);
+    }
+
+    #[test]
+    fn result_wire_chars_ignores_image_blocks() {
+        let text_only = serde_json::json!({ "content": [{ "type": "text", "text": "看图" }] });
+        let with_image = serde_json::json!({ "content": [
+            { "type": "text", "text": "看图" },
+            { "type": "image", "data": "A".repeat(300_000), "mimeType": "image/png" },
+        ]});
+        assert_eq!(
+            result_wire_chars(&with_image),
+            result_wire_chars(&text_only),
+            "图片块不该计入字符数"
+        );
+        assert_eq!(result_wire_chars(&text_only), wire_chars_opt(&text_only));
     }
 
     #[test]

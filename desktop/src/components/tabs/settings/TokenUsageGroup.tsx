@@ -152,10 +152,10 @@ export function TokenUsageGroup() {
         <ConversationUsageSection toolSessions={data?.sessions ?? NO_SESSIONS} />
         <div className="flex items-start justify-between gap-2 rounded-lg bg-muted/60 px-3 py-2">
           <span className="text-xs leading-relaxed text-muted-foreground">
-            按「约 4 字节 ≈ 1 token」折算的<strong className="text-foreground">估算值</strong>，不是账单
+            按「英文约 4 字节、中文约 1 字 ≈ 1 token」折算的<strong className="text-foreground">估算值</strong>，不是账单
           </span>
           <InfoPopover label="Token 用量口径">
-            按「约 4 字节 ≈ 1 token」折算的估算值，反映经桥交互的上下文增量；模型侧的真实消耗（系统提示词、对话历史等）不经过桥，无法统计，因此它不是账单值。
+            按「英文约 4 字节、中文约 1 字 ≈ 1 token」折算的估算值，只反映经桥交互的上下文增量。它不等于 Claude Code 显示的费用：那是每轮请求按整个上下文（系统提示词、对话历史、模型输出）计费，同一段工具结果在之后每一轮还会按缓存读取再计一次，这些都不经过桥。
           </InfoPopover>
         </div>
       </CardContent>

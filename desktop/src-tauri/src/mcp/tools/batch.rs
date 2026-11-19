@@ -344,10 +344,10 @@ fn flatten_sub_result(v: Value) -> serde_json::Map<String, Value> {
     out
 }
 
-/// 展平后子结果的正文字节与 wire 字符数（`data`/`text`/`notes` 三个字段合计）。
+/// 展平后子结果的正文字节、wire 字符数、非 ASCII 字节数（`data`/`text`/`notes` 三个字段合计）。
 ///
 /// 没有这三个字段时返回 `None`，调用方再按 `result` 的旧口径算。
-fn flat_payload_size(e: &Value) -> Option<(u64, Option<u64>)> {
+fn flat_payload_size(e: &Value) -> Option<(u64, Option<u64>, u64)> {
     let mut payload = serde_json::Map::new();
     for k in ["data", "text", "notes"] {
         if let Some(v) = e.get(k) {
@@ -358,22 +358,23 @@ fn flat_payload_size(e: &Value) -> Option<(u64, Option<u64>)> {
         return None;
     }
     let mut bytes = 0u64;
+    let mut wide = 0u64;
+    let mut add = |s: &str| {
+        bytes += s.len() as u64;
+        wide += crate::audit::non_ascii_bytes(s);
+    };
     if let Some(d) = payload.get("data") {
-        bytes += serde_json::to_string(d)
-            .map(|s| s.len() as u64)
-            .unwrap_or(0);
+        if let Ok(s) = serde_json::to_string(d) {
+            add(&s);
+        }
     }
     if let Some(Value::String(t)) = payload.get("text") {
-        bytes += t.len() as u64;
+        add(t);
     }
     if let Some(Value::Array(ns)) = payload.get("notes") {
-        bytes += ns
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|s| s.len() as u64)
-            .sum::<u64>();
+        ns.iter().filter_map(Value::as_str).for_each(&mut add);
     }
-    Some((bytes, wire_chars_opt(&Value::Object(payload))))
+    Some((bytes, wire_chars_opt(&Value::Object(payload)), wide))
 }
 
 /// batch 子操作的待写审计条目。
@@ -428,8 +429,10 @@ fn write_sub_op_audits(
         );
         // 未出现在 `final_result_bytes` 里（进了聚合收尾）→ 0，不是「未知」：
         // 未知（None）会被聚合当 0 计，与真实 0 在 UI 上无法区分，这里直接落 0 更诚实。
-        let (bytes, chars) = bytes.get(&p.index).copied().unwrap_or((0, Some(0)));
+        let (bytes, chars, wide) = bytes.get(&p.index).copied().unwrap_or((0, Some(0), 0));
         entry.result_bytes = Some(bytes);
+        // 非 ASCII 字节数：token 估算按中英文分别折算（与 http 通道同口径）。
+        entry.result_wide_bytes = Some(wide);
         // 批 4-1：与 http 通道同口径，子条目也要带 wire 字符数 —— 否则 batch 里的
         // 大结果在「上下文构成」面板上永远判不出是否被客户端降级。
         entry.result_chars = chars;
@@ -441,13 +444,15 @@ fn write_sub_op_audits(
     }
 }
 
-/// 预算层输出 → `index → (实际发出字节, 客户端口径字符数)`。
+/// 预算层输出 → `index → (实际发出字节, 客户端口径字符数, 其中非 ASCII 字节数)`。
 ///
 /// 字节口径与 `http.rs` 的 `result_bytes` 一致（text 块字节和；失败按 `"Error: " + msg`）；
 /// 字符数走 `wire_chars_opt`（客户端按字符分档，中文 1 字符 = 3 字节，两者不能互相顶替；
 /// 量不出来时是 `None`，不是 `usize::MAX` —— 那会变成面板上的天文数字）。
 /// `tail` 聚合条目整条跳过：它只带条数与前 20 个 index，被它收走的子结果原文一个字都没发出。
-fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, (u64, Option<u64>)> {
+fn final_result_bytes(
+    results: &[Value],
+) -> std::collections::HashMap<usize, (u64, Option<u64>, u64)> {
     let mut m = std::collections::HashMap::new();
     for e in results {
         if e.get("tail").and_then(Value::as_bool) == Some(true) {
@@ -460,14 +465,19 @@ fn final_result_bytes(results: &[Value]) -> std::collections::HashMap<usize, (u6
             // 错误文案是纯文本、而且短到不可能越线 ⇒ 字节与字符同值。
             Some(err) => {
                 let n = ("Error: ".len() + err.len()) as u64;
-                (n, Some(n))
+                (n, Some(n), crate::audit::non_ascii_bytes(err))
             }
             None => match (flat_payload_size(e), e.get("result")) {
                 // 展平过的子结果：按展平后的实际体积记（已少一层转义）。
                 (Some(pair), _) => pair,
-                (None, Some(r)) => (result_text_bytes(r), wire_chars_opt(r)),
+                // 只数文本块：含图片的子结果会落到这里（见 flatten_sub_result）。
+                (None, Some(r)) => (
+                    result_text_bytes(r),
+                    crate::mcp::tools::result_wire_chars(r),
+                    crate::mcp::tools::result_text_wide_bytes(r),
+                ),
                 // 没有 result 字段 = 确实什么都没发出 ⇒ 真实的 0，不是「未知」。
-                (None, None) => (0, Some(0)),
+                (None, None) => (0, Some(0), 0),
             },
         };
         m.insert(idx as usize, pair);
@@ -1113,6 +1123,16 @@ mod tests {
         let m = final_result_bytes(&results);
         assert_eq!(m.get(&0).map(|p| p.0), Some(("[1,2]".len() + 2) as u64));
         assert!(m.get(&0).and_then(|p| p.1).is_some_and(|c| c > 0));
+        assert_eq!(
+            m.get(&0).map(|p| p.2),
+            Some(0),
+            "纯 ASCII 没有非 ASCII 字节"
+        );
+
+        // 中文正文：非 ASCII 字节要记下来，估算才能按一字约一 token 算
+        let zh = vec![json!({ "index": 0, "tool": "read_files", "ok": true, "text": "中文ab" })];
+        let m = final_result_bytes(&zh);
+        assert_eq!(m.get(&0).map(|p| (p.0, p.2)), Some((8, 6)));
     }
 
     /// `final_result_bytes`：内联 / stub / 错误 / 聚合收尾 四种形态的字节口径。
