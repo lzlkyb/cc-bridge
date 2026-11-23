@@ -23,6 +23,7 @@ export function TunnelConnectionFlow({ access, service, motion, onNavigate }: {
   const [retrying, setRetrying] = useState(false);
   const { toast } = useToast();
   const serviceReady = service.tone === "ok";
+  const paused = access.state === "paused";
   const needsAction = !!runtime?.needsSecret || runtime?.state === "error" || ["login", "error", "paused"].includes(access.state);
   const connecting = serviceReady && !needsAction && (runtime
     ? runtime.state === "connecting" || runtime.state === "reconnecting"
@@ -36,16 +37,19 @@ export function TunnelConnectionFlow({ access, service, motion, onNavigate }: {
   useEffect(() => {
     // A fresh SSH attempt must not revive the previous attempt's last visible sample.
     if (!clientPath) setSample({ toLocal: 0, toRemote: 0, lastAt: 0 });
-  }, [clientPath]);
+    // The listener is unmounted while hidden, so its pending idle sample will not arrive.
+    else if (hidden) setSample(previous => ({ ...previous, toLocal: 0, toRemote: 0 }));
+  }, [clientPath, hidden]);
   const channelLabel = waiting ? "等待重试" : connecting ? reconnecting ? "正在重连" : "正在连接" : clientPath ? "SSH 加密转发" : serviceReady ? access.short : "SSH 隧道";
-  const active = clientPath && !hidden && sample.lastAt > 0 && now - sample.lastAt < 2000;
-  const clockNeeded = connecting || connected && sample.lastAt > 0;
+  const requestActive = clientPath && !hidden && sample.toLocal > 0;
+  const responseActive = clientPath && !hidden && sample.toRemote > 0;
+  const active = requestActive || responseActive;
   useEffect(() => {
-    if (hidden || !clockNeeded) return;
+    if (hidden || !waiting && !reconnecting) return;
     setNow(Date.now());
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [hidden, clockNeeded]);
+  }, [hidden, waiting, reconnecting]);
 
   const retry = async () => {
     if (!access.connectionId || retrying) return;
@@ -61,14 +65,16 @@ export function TunnelConnectionFlow({ access, service, motion, onNavigate }: {
   const attempt = runtime?.attempt;
   const statusLabel = waiting ? retrySeconds > 0 ? `${tunnelFailureLabel(failure)} · ${retrySeconds} 秒后自动重试` : "即将开始下一次重试"
     : connecting ? `${attempt ? `第 ${attempt} 次尝试 · ` : ""}${phaseLabel}`
+    : paused ? "等待手动恢复"
     : needsAction ? runtime?.needsSecret || access.state === "login" ? "需要重新登录服务器" : "隧道连接需要处理"
-    : active ? "正在传输数据" : connected ? sample.lastAt ? `通道正常 · 最近传输于 ${Math.max(0, Math.floor((now - sample.lastAt) / 1000))} 秒前` : "通道正常 · 等待数据传输" : access.short;
+    : active ? "正在传输数据" : connected ? sample.lastAt ? `最近传输 · ${new Date(sample.lastAt).toLocaleTimeString("zh-CN", { hour12: false })}` : "通道正常 · 等待数据传输" : access.short;
 
   return <>
     <p className="connection-card-headline" aria-live="polite">{reconnecting ? "正在恢复隧道连接" : access.title}</p>
     <p className="status-summary connection-card-detail">{reconnecting
       ? <>固定接入地址不变{runtime?.disconnectedAt ? ` · 已断开 ${Math.max(0, Math.floor((now - runtime.disconnectedAt) / 1000))} 秒` : "，正在自动恢复连接。"}</> : access.detail}</p>
-    <section className="tunnel-route" aria-label="SSH 隧道传输路径" data-reconnecting={connecting} data-motion={motion}>
+    <section className="tunnel-route" aria-label="SSH 隧道传输路径" data-reconnecting={connecting}
+      data-waiting={waiting} data-paused={paused} data-response-active={responseActive} data-motion={motion && !hidden}>
     <NavTarget className="tunnel-route-end" tab="connect" anchor={CONNECT_GUIDE_ANCHOR}
       title="查看服务器上的 Claude Code 接入" onNavigate={onNavigate}>
       <span className="tunnel-route-device"><Icon name="terminal" size={18} aria-hidden="true"/></span>
@@ -77,20 +83,26 @@ export function TunnelConnectionFlow({ access, service, motion, onNavigate }: {
     </NavTarget>
     <svg className="tunnel-route-tracks" viewBox="0 0 200 46" preserveAspectRatio="none" aria-hidden="true">
       <g data-connected={clientPath}>
-        <path d="M0 23C24 23 24 7 52 7H100M0 23C24 23 24 39 52 39H100"/>
+        <path d="M0 23C24 23 24 7 52 7H100"/>
+        <path className="tunnel-route-return" d="M0 23C24 23 24 39 52 39H100"/>
       </g>
       <g data-connected={connected}>
-        <path d="M100 7H148C176 7 176 23 200 23M100 39H148C176 39 176 23 200 23"/>
+        <path d="M100 7H148C176 7 176 23 200 23"/>
+        <path className="tunnel-route-return" d="M100 39H148C176 39 176 23 200 23"/>
       </g>
-      {clientPath && <path className="tunnel-route-direction" d="M84 7h50m-6-3 6 3-6 3M116 39H66m6-3-6 3 6 3"/>}
+      {clientPath && <g className="tunnel-route-direction">
+        <path d="M85 7h47m-6-3 6 3-6 3"/>
+        <path className="tunnel-route-return" d="M115 39H68m6-3-6 3 6 3"/>
+      </g>}
       {clientPath && !hidden && access.connectionId &&
         <TunnelTrafficPulses key={access.connectionId} connectionId={access.connectionId} motion={motion} onSample={setSample}/>}
-      {connecting && <path className="tunnel-route-interruption" d="M0 23C24 23 24 7 52 7H148C176 7 176 23 200 23M0 23C24 23 24 39 52 39H148C176 39 176 23 200 23"/>}
+      {connecting && !waiting && <path className="tunnel-route-interruption" pathLength="100" d="M0 23C24 23 24 7 52 7H148C176 7 176 23 200 23"/>}
     </svg>
     <div className="tunnel-route-channel">
       <NavTarget className="tunnel-route-state" tab="connect" anchor={CONNECT_GUIDE_ANCHOR}
         title="查看当前隧道与接入配置" onNavigate={onNavigate}>
-        <Icon name={waiting ? "clock" : connecting ? "spinner" : "lock"} className={connecting && !waiting && motion ? "tunnel-route-spinner" : ""} size={11} aria-hidden="true"/>{channelLabel}
+        <Icon name={waiting ? "clock" : connecting ? "spinner" : paused ? "pause" : "lock"}
+          className={connecting && !waiting && motion && !hidden ? "tunnel-route-spinner" : ""} size={12} aria-hidden="true"/>{channelLabel}
       </NavTarget>
       {clientPath && <>
         <span className="tunnel-route-request">请求<span className="sr-only">发往本机</span></span>
@@ -104,7 +116,7 @@ export function TunnelConnectionFlow({ access, service, motion, onNavigate }: {
       <small>{serviceReady ? connecting ? "本机服务正常" : "本机 MCP 服务" : `本机服务${service.detail}`}</small>
     </NavTarget>
     </section>
-    <div className="tunnel-route-activity" data-tone={connecting ? "reconnecting" : needsAction ? "error" : connected ? "connected" : "idle"}>
+    <div className="tunnel-route-activity" data-tone={connecting ? "reconnecting" : paused ? "idle" : needsAction ? "error" : connected ? "connected" : "idle"}>
       <div className="tunnel-route-activity-heading">
         <span className="tunnel-route-activity-label"><i aria-hidden="true"/>{statusLabel}</span>
         {waiting && <button type="button" onClick={() => void retry()} disabled={retrying || retrySeconds === 0}>立即重试<Icon name="refresh" size={10}/></button>}
@@ -113,10 +125,13 @@ export function TunnelConnectionFlow({ access, service, motion, onNavigate }: {
       <div className="tunnel-route-activity-detail">
         {connecting || needsAction ? <>
           <span title={failure}>{waiting ? `已尝试 ${attempt ?? "—"} 次 · ${access.configured ? "无需重复配置" : "等待网络恢复后继续"}`
-            : needsAction ? `连接问题：${tunnelFailureLabel(failure)}`
+            : paused ? "原有接入配置已保留" : needsAction ? `连接问题：${tunnelFailureLabel(failure)}`
             : runtime?.lastFailure ? `上次失败：${tunnelFailureLabel(failure)}` : "正在等待服务器响应"}</span>
           <button type="button" onClick={() => onNavigate?.("connect", CONNECT_GUIDE_ANCHOR)}>查看详情<Icon name="chevronRight" size={10}/></button>
-        </> : clientPath && <><span><Icon name="arrowDown" size={10}/>发往本机 {formatTunnelBytes(active ? sample.toLocal : 0)}</span><span><Icon name="arrowUp" size={10}/>返回远端 {formatTunnelBytes(active ? sample.toRemote : 0)}</span></>}
+        </> : <>
+          {requestActive && <span data-direction="request"><Icon name="arrowDown" size={10}/>发往本机 {formatTunnelBytes(sample.toLocal)}</span>}
+          {responseActive && <span data-direction="response"><Icon name="arrowUp" size={10}/>返回远端 {formatTunnelBytes(sample.toRemote)}</span>}
+        </>}
       </div>
     </div>
   </>;

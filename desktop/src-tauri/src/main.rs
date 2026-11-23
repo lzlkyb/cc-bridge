@@ -948,6 +948,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_input,
             commands::ssh_resize,
             commands::ssh_disconnect,
+            commands::ssh_output_attach,
+            commands::ssh_output_ack,
+            commands::ssh_output_detach,
             commands::ssh_list_connections,
             commands::ssh_save_connection,
             commands::ssh_delete_connection,
@@ -1028,6 +1031,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::relay_probe,
         ])
         .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Destroyed if window.label() == "main" => {
+                // WebView 销毁不会保证送达前端 cleanup；释放额度等待，但保留 SSH 会话。
+                let state = window.app_handle().state::<Arc<state::AppState>>();
+                for session in state.ssh_sessions.iter() {
+                    session.output.detach(None);
+                }
+            }
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 // 读「关窗时释放界面内存」开关。同步回调里不能 await，所以用 try_read；
                 // 拿不到锁（仅当恰有写者持锁，极罕见）时按配置默认值 true 处理。

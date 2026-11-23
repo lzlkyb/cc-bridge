@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, CommandBuilder, PtyPair, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::config::SshConnection;
 use crate::ssh_helper::HelperSession;
@@ -35,6 +35,8 @@ pub struct SshOutput {
     #[serde(rename = "sessionId")]
     pub session_id: String,
     pub data: String,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<crate::ssh_output::OutputReceipt>,
 }
 
 /// ssh 进程退出（EOF）通知，前端据此清掉终端「已连接」态。
@@ -1894,9 +1896,11 @@ pub async fn ssh_connect(
     const SSH_CONNECT_FAIL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
     let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let output = Arc::new(crate::ssh_output::OutputFlow::default());
     state.ssh_sessions.insert(
         session_id.clone(),
         crate::state::SshSession {
+            output: output.clone(),
             master: std::sync::Mutex::new(pair.master),
             child,
             writer: std::sync::Mutex::new(writer),
@@ -1904,6 +1908,10 @@ pub async fn ssh_connect(
             disconnected: disconnected.clone(),
         },
     );
+    // 关窗可能早于会话注册；补查一次，避免错过 Destroyed 后永远等一个不存在的界面。
+    if app.get_webview_window("main").is_none() {
+        output.detach(None);
+    }
 
     // 7) reader 线程：持续读 PTY 输出 → emit ssh_output；EOF → 按情形 emit
     //    ssh_closed（正常断开）或 ssh_connect_failed（早期失败）+ 移除会话。
@@ -1913,23 +1921,34 @@ pub async fn ssh_connect(
     // 🔴 为什么不在 reader 里直接攒：reader 阻塞在 `read()` 上，一旦远端安静下来，
     // 攒在手里的最后一批就再也没人发了——命令输出的末尾几十字节会死在缓冲里。
     // 独立线程用 `recv_timeout` 就天然有一个「没新数据也要刷一次」的兵。
-    let (out_tx, out_rx) = mpsc::channel::<String>();
+    // 泵等前端回执时，reader 的缓冲也必须有上限，背压才能传回 PTY。
+    let (out_tx, out_rx) = mpsc::sync_channel::<String>(16);
     let app_pump = app.clone();
     let ev_pump = ssh_output_event(&session_id);
     let sid_pump = session_id.clone();
     let pump = std::thread::spawn(move || {
+        let _completion = output.pump_guard();
         let mut buf = String::new();
         // 没 emit 过之前不讲节流：首屏（ssh banner / 密码提示）必须立刻出来。
         let mut ever_emitted = false;
         let mut last_emit = Instant::now();
         let emit = |data: String| {
-            let _ = app_pump.emit(
-                &ev_pump,
-                SshOutput {
-                    session_id: sid_pump.clone(),
-                    data,
-                },
-            );
+            let Some(receipt) = output.reserve(data.len()) else {
+                return;
+            };
+            if app_pump
+                .emit(
+                    &ev_pump,
+                    SshOutput {
+                        session_id: sid_pump.clone(),
+                        data,
+                        receipt: Some(receipt.clone()),
+                    },
+                )
+                .is_err()
+            {
+                output.detach(Some(&receipt.stream_id));
+            }
         };
         loop {
             match out_rx.recv_timeout(OUTPUT_FLUSH_INTERVAL) {
@@ -2189,6 +2208,7 @@ pub async fn ssh_disconnect(
         entry
             .disconnected
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        entry.output.detach(None);
         // `Child::kill(&mut self)` 要 `&mut`，故用 `get_mut` 拿可变引用。
         let _ = entry.child.kill();
     }

@@ -53,6 +53,7 @@ mod ssh_batch_cmds;
 mod ssh_cmds;
 /// SSH 远程文件读/写/本机编辑器打开（A+C 方案，复用 ssh_cmds 的 helper 与 scp 通道）。
 mod ssh_file_cmds;
+mod ssh_output_cmds;
 /// SSH 端口转发（-L / -R / -D）。
 mod ssh_tunnel_cmds;
 mod ssh_tunnel_process;
@@ -83,6 +84,7 @@ pub use service_control::*;
 pub use ssh_batch_cmds::*;
 pub use ssh_cmds::*;
 pub use ssh_file_cmds::*;
+pub use ssh_output_cmds::*;
 pub use ssh_tunnel_cmds::*;
 pub use stable_connect_cmds::*;
 pub use stable_discovery_cmds::*;

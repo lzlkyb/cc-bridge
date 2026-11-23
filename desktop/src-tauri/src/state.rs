@@ -36,6 +36,7 @@ pub struct CwdSession {
 /// 持续推本会话专属的 `ssh_output_<hex>` 事件给前端，writer 接收前端键入，child 为 ssh 进程。
 /// `master` 仅用于 `set_size`（窗口缩放）；writer 自身即 PTY stdin 通道。
 pub struct SshSession {
+    pub output: Arc<crate::ssh_output::OutputFlow>,
     /// PTY master：持有它才能 `set_size`（缩放），drop 时关闭 PTY 设备。
     /// 用 StdMutex 包一层：portable_pty 的 `MasterPty` 只 `Send` 不 `Sync`，
     /// 而 `DashMap<V>` 要求 `V: Sync`；`StdMutex<T>: Sync where T: Send`，
@@ -458,6 +459,10 @@ impl AppState {
         // 只是一次非阻塞进程状态轮询，不会嵌套其它 shard 锁，无死锁风险）。
         let mut to_remove: Vec<String> = Vec::new();
         for mut e in self.ssh_sessions.iter_mut() {
+            // 子进程可先于慢速前端退出；泵未结束时仍需会话表接收 ACK，不能截断尾部日志。
+            if !e.output.is_finished() {
+                continue;
+            }
             if e.value_mut()
                 .child
                 .try_wait()
@@ -468,7 +473,9 @@ impl AppState {
             }
         }
         for id in to_remove {
-            self.ssh_sessions.remove(&id);
+            if let Some((_, session)) = self.ssh_sessions.remove(&id) {
+                session.output.detach(None);
+            }
         }
     }
 
@@ -589,6 +596,7 @@ impl AppState {
         for id in ids {
             if let Some(mut e) = self.ssh_sessions.get_mut(&id) {
                 e.disconnected.store(true, Ordering::SeqCst);
+                e.output.detach(None);
                 let _ = e.child.kill();
             }
             self.ssh_sessions.remove(&id);

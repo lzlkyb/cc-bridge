@@ -29,6 +29,7 @@ pub mod security;
 /// SSH 终端密码加密（S1 凭据加密落盘）。
 pub mod ssh_crypto;
 pub mod ssh_helper;
+pub mod ssh_output;
 /// 跳板机（ProxyJump）参数拼接与两段登录的凭据派发。
 pub mod ssh_proxy;
 /// 端口转发：规则校验、`-L/-R/-D` 参数、`ssh -v` 输出解析。

@@ -26,7 +26,7 @@ import { setInputHoldBase } from "../../lib/terminalInputHold";
 import { createOscQueryResponder, paletteColors } from "../../lib/terminalOscQuery";
 import { watchResolutionChanges } from "../../lib/terminalDpr";
 import { attachTerminalKeymap, type TerminalKeyActions } from "./terminalKeymap";
-import { sshOutputEvent } from "../../lib/terminalEvents";
+import { listenTerminalOutput } from "../../lib/terminalOutput";
 import {
   terminalTheme,
   terminalThemeOptions,
@@ -43,7 +43,7 @@ import { useTerminalRuntimeOptions } from "../../hooks/useTerminalRuntimeOptions
 import { useTerminalPaste } from "./useTerminalPaste";
 import { useTerminalCopyScreen } from "../../hooks/useTerminalCopyScreen";
 import type { Theme } from "../../lib/theme";
-import type { SshOutput, SshClosed, SshConnectFailed } from "../../lib/types";
+import type { SshClosed, SshConnectFailed } from "../../lib/types";
 
 interface Args {
   sessionId: string;
@@ -343,17 +343,16 @@ export function useSshTerminalSession({
       void p.then((u) => {
         if (cancelled) u();
         else unlistens.push(u);
-      });
+      }).catch((e) => { if (!cancelled) toast(`终端监听失败：${e}`, "error"); });
     // 输出走**本会话专属**的事件名（不再是全局 `ssh_output` 广播），
     // 理由见 `lib/terminalEvents.ts`。sessionId 的判相当于空跑，但留着不亏。
     track(
-      listen<SshOutput>(sshOutputEvent(sessionId), (p) => {
-        if (p.sessionId !== sessionId) return;
+      listenTerminalOutput(sessionId, (data, parsed) => {
         // 先过颜色查询拦截（剥离查询并回写应答），剩余数据才进 xterm。
         // （鼠标报告的旁路不在这里做：选择手势靠 terminalInputHold 的输入闸，
         //  它是同步入口闸，与输出流时序无关，不受 TUI 每帧重绘影响。）
-        term.write(oscQuery.feed(p.data));
-      }),
+        term.write(oscQuery.feed(data), parsed);
+      }, () => cancelled),
     );
     // 🔴 断开/失败的原因不能只 `term.write` 完事——xterm 的 write 是攒到 rAF 才刷的，
     // 以前写完立刻卸载组件，那行字从来没有机会渲染，用户只看到标签凭空消失。

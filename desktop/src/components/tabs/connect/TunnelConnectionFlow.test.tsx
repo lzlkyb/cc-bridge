@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionAccess } from "../../../lib/connectionAccess";
 import type { TunnelStatus } from "../../../lib/types";
-import { invoke } from "../../../lib/tauri";
+import { invoke, listen } from "../../../lib/tauri";
 import { TunnelConnectionFlow } from "./TunnelConnectionFlow";
 
 let runtime: TunnelStatus | undefined;
@@ -38,6 +38,9 @@ describe("隧道连接进度", () => {
     await render();
     expect(host.textContent).toContain("已断开 23 秒");
     expect(host.textContent).toContain("连接超时 · 8 秒后自动重试");
+    expect(host.querySelector('.tunnel-route[data-waiting="true"]')).not.toBeNull();
+    expect(host.querySelector('.tunnel-route-interruption')).toBeNull();
+    expect(host.querySelector('.tunnel-route-spinner')).toBeNull();
     act(() => vi.advanceTimersByTime(3000));
     expect(host.textContent).toContain("5 秒后自动重试");
     const button = [...host.querySelectorAll("button")].find(e => e.textContent?.includes("立即重试"))!;
@@ -77,5 +80,33 @@ describe("隧道连接进度", () => {
     const details = [...host.querySelectorAll("button")].find(e => e.textContent?.includes("查看详情"))!;
     act(() => details.click());
     expect(navigate).toHaveBeenCalledWith("connect", "connect-guide");
+  });
+
+  it("暂停时保留本机端点，隐藏请求和响应的方向标记", async () => {
+    runtime = { ...runtime!, state: "stopped", retryAt: null };
+    await render(true, { ...access, state: "paused", short: "已暂停" });
+    expect(host.querySelector('.tunnel-route[data-paused="true"]')).not.toBeNull();
+    expect(host.querySelector('.tunnel-route-direction')).toBeNull();
+    expect(host.querySelector('.tunnel-route-request')).toBeNull();
+    expect(host.querySelector('.tunnel-route-end:last-child small')?.textContent).toBe("本机 MCP 服务");
+    expect(host.querySelector('.tunnel-route-activity')?.textContent).toContain("原有接入配置已保留");
+  });
+
+  it("只显示有流量的方向，回到空闲后保留时间并停止刷新", async () => {
+    runtime = { ...runtime!, state: "up", retryAt: null };
+    await render(true, { ...access, state: "waiting", channelReady: true });
+    const traffic = vi.mocked(listen).mock.calls.find(([event]) => event === "stable_tunnel_traffic")![1];
+    expect(host.textContent).not.toContain("0 B");
+    act(() => {
+      traffic({ connectionId: "orders", at: Date.now(), toLocal: 0, toRemote: 1536 });
+      vi.advanceTimersByTime(1000);
+    });
+    expect(host.querySelector('[data-direction="response"]')?.textContent).toContain("1.5 KB");
+    expect(host.querySelector('[data-direction="request"]')).toBeNull();
+    expect(host.querySelector('.tunnel-route[data-response-active="true"]')).not.toBeNull();
+    act(() => vi.advanceTimersByTime(1000));
+    expect(host.textContent).toContain("最近传输");
+    expect(host.querySelector('[data-direction]')).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
