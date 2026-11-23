@@ -140,17 +140,26 @@ env_logger = "0.11"
 # 而 dev-dependencies 里那条 `0.12` 只服务集成测试、不进 release 构建；若把它
 # 转正就会同时链接两份 reqwest——体积翻倍，功能零收益。
 #
-# TLS 由 rustls + rustls-platform-verifier 提供（updater 开的是 rustls-no-provider，
-# 与这里取 feature 并集）：**系统根证书会被信任**，本机挂 Clash / mitmproxy 的
-# MITM CA 时不会报证书错误。0.12 的 rustls-tls-manual-roots 做不到这点（那份
-# 不加载任何根证书，只认手动 add_root_certificate 的）。
+# TLS 由 rustls + rustls-platform-verifier 提供：**系统根证书会被信任**，本机挂
+# Clash / mitmproxy 的 MITM CA 时不会报证书错误。0.12 的 rustls-tls-manual-roots
+# 做不到这点（那份不加载任何根证书，只认手动 add_root_certificate 的）。
+#
+# 必须用 `rustls` 而不是 `rustls-no-provider`：后者只是空壳，**不装加密 provider**，
+# 构建 Client 时会 panic（"No rustls crypto provider is configured"）。tauri-plugin-updater
+# 用的正是 rustls-no-provider，provider 由它自己在运行时装——中转不能赌那个时机在
+# 我们之前，所以这里选自带 aws-lc-rs provider 的 `rustls`。
 #
 # features 取舍：
 # - json   映射表与请求体解析必需；updater 已开，此处显式声明以免依赖隐式并集。
 # - stream SSE 逐块直通（`Response::chunk()` / `bytes_stream()`）的前提；updater 已开。
+# - rustls 见上。
 # - 不开 gzip：中转是热路径，解压全量再转发会多一次内存拷贝；且千问的 SSE 响应
 #   本身不带 content-encoding。真需要时再单独评估。
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "stream",
+  "rustls",
+] }
 
 # Image decoding (tray icon overlay)
 png = "0.17"
@@ -202,16 +211,17 @@ process-wrap = { version = "=8.0.2", default-features = false, features = ["proc
 # 所以 release 的 reqwest 仍然不开 gzip（原因见正式依赖处的注释）。测试需要它是因为
 # 要 `gzip(false)` 关掉自动解压、直接观察压缩响应头。
 #
-# TLS：0.13 用 `rustls-no-provider`（0.12 的 `default-tls`/`rustls-tls-manual-roots`
-# 两个名字已不存在）。真正的 provider 与根证书由 tauri-plugin-updater 那条链提供，
-# 这里显式声明只为不依赖隐式并集。
+# TLS：0.13 用 `rustls`（0.12 的 `default-tls`/`rustls-tls-manual-roots` 两个名字已
+# 不存在）。这里必须和上面正式依赖一样选 `rustls` 而非 `rustls-no-provider`——
+# 否则 `--no-default-features` 的测试构建里没有 crypto provider，13 个 over-the-wire
+# 测试会直接 panic（实测踩过）。
 [dev-dependencies]
 axum = "0.8"
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "gzip",
   "stream",
-  "rustls-no-provider",
+  "rustls",
 ] }
 
 [profile.release]
