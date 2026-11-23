@@ -40,6 +40,8 @@ mod forward_context_cmds;
 mod forward_takeover;
 /// 外挂 MCP 桥（名字带 `_cmds`：`crate::mcp::bridge` 下已有同名概念）。
 mod mcp_bridge_cmds;
+/// 模型中转（P0 探测：保住 release 里的流式转发代码路径，见 `docs/模型中转内置方案`）。
+mod relay_cmds;
 mod remote_cmds;
 mod running;
 mod server;
@@ -73,6 +75,7 @@ pub use config_cmds::*;
 pub use firewall_cmds::*;
 pub use forward_context_cmds::*;
 pub use mcp_bridge_cmds::*;
+pub use relay_cmds::*;
 pub use remote_cmds::*;
 pub use running::*;
 pub use server::*;

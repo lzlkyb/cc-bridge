@@ -23,6 +23,8 @@ pub mod ip_watch;
 pub mod journal;
 pub mod mcp;
 pub mod network;
+/// 模型中转：上游 Anthropic 请求透传（P0 阶段只有探测骨架）。
+pub mod relay;
 pub mod security;
 /// SSH 终端密码加密（S1 凭据加密落盘）。
 pub mod ssh_crypto;

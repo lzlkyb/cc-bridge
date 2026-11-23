@@ -1023,6 +1023,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::restore_edit_patch,
             // 批 4-2：撤销「新建文件」——内容未被改动过才删。
             commands::restore_delete_created,
+            // 模型中转（P0）：诊断用的一发上游探测。注册在这里也顺带保证
+            // reqwest 的流式转发代码不被 LTO 剔除，体积测量才有意义。
+            commands::relay_probe,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {

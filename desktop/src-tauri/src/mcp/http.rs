@@ -2855,7 +2855,9 @@ mod over_wire_tests {
         let base = format!("https://{addr}");
         let tls_client = reqwest::Client::builder()
             .gzip(true)
-            .use_rustls_tls()
+            // reqwest 0.13 起 `use_rustls_tls()` 已 deprecated（内部转发到本方法），
+            // clippy -D warnings 下必须改名。语义完全一致：显式选 rustls 后端。
+            .tls_backend_rustls()
             .add_root_certificate(
                 reqwest::Certificate::from_pem(
                     std::fs::read(root.join("certs").join("self-signed.crt"))

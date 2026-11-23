@@ -133,6 +133,25 @@ chrono = { version = "0.4", features = ["serde"] }
 log = "0.4"
 env_logger = "0.11"
 
+# 模型中转（P1 起）的上游 HTTP 客户端。
+#
+# **版本必须钉在 0.13**：tauri-plugin-updater 2.14 已经在正式依赖树里带了一份
+# reqwest 0.13.5（`cargo tree -i reqwest@0.13.5` 可查），它本来就链接进 exe。
+# 而 dev-dependencies 里那条 `0.12` 只服务集成测试、不进 release 构建；若把它
+# 转正就会同时链接两份 reqwest——体积翻倍，功能零收益。
+#
+# TLS 由 rustls + rustls-platform-verifier 提供（updater 开的是 rustls-no-provider，
+# 与这里取 feature 并集）：**系统根证书会被信任**，本机挂 Clash / mitmproxy 的
+# MITM CA 时不会报证书错误。0.12 的 rustls-tls-manual-roots 做不到这点（那份
+# 不加载任何根证书，只认手动 add_root_certificate 的）。
+#
+# features 取舍：
+# - json   映射表与请求体解析必需；updater 已开，此处显式声明以免依赖隐式并集。
+# - stream SSE 逐块直通（`Response::chunk()` / `bytes_stream()`）的前提；updater 已开。
+# - 不开 gzip：中转是热路径，解压全量再转发会多一次内存拷贝；且千问的 SSE 响应
+#   本身不带 content-encoding。真需要时再单独评估。
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+
 # Image decoding (tray icon overlay)
 png = "0.17"
 # 进程树治理（真跨平台）：run_command 用它接管子进程，stop_command 靠 start_kill() 杀整树。
@@ -173,11 +192,27 @@ process-wrap = { version = "=8.0.2", default-features = false, features = ["job-
 process-wrap = { version = "=8.0.2", default-features = false, features = ["process-group"] }
 
 # 集成测试：真实起 MCP server + reqwest 客户端做 over-the-wire 验证
-# （gzip 响应头 / batch 合并 / 审计留痕）。Windows 上 default-tls 走系统
-# schannel，无需 openssl 编译；gzip(false) 用于强制观察压缩响应头。
+# （gzip 响应头 / batch 合并 / 审计留痕）。
+#
+# **必须是 0.13，和上面的正式依赖同一个 crate**：并存两个版本的 reqwest 会让
+# `#[cfg(test)]` 里的 `reqwest::Client` 出现 E0464「multiple candidates for rlib」，
+# 测试根本编不过。统一到 0.13 后 Cargo 只编一份，dev 与 release 共享同一编译单元。
+#
+# 这里的 `gzip` 只对**测试构建**生效——`cargo build --release` 不含 dev-dependencies，
+# 所以 release 的 reqwest 仍然不开 gzip（原因见正式依赖处的注释）。测试需要它是因为
+# 要 `gzip(false)` 关掉自动解压、直接观察压缩响应头。
+#
+# TLS：0.13 用 `rustls-no-provider`（0.12 的 `default-tls`/`rustls-tls-manual-roots`
+# 两个名字已不存在）。真正的 provider 与根证书由 tauri-plugin-updater 那条链提供，
+# 这里显式声明只为不依赖隐式并集。
 [dev-dependencies]
 axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "gzip", "default-tls", "rustls-tls-manual-roots"] }
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "gzip",
+  "stream",
+  "rustls-no-provider",
+] }
 
 [profile.release]
 # codegen-units 用默认 16 而不是 1：跨单元优化已由下面的 lto = "thin" 提供，
