@@ -321,6 +321,28 @@ pub struct BridgeConfig {
     /// 进事件流水与审计 —— 界面上那张卡会自己落定成「已自动放行」。
     /// `AskUserQuestion` 永不自动放行：答案只能用户给，规则写得再宽也不问。
     pub cc_auto_approve_rules: Vec<String>,
+
+    // ── 模型中转（§4.6 / §4.9.1）────────────────────────────────────────
+    /// 中转总开关。**一个键管两件事**：是否监听 + 主界面「中转」页是否注册。
+    ///
+    /// 不拆成两个：拆开会出现「服务在跑但页面看不见」（用户没法从界面确认它在跑）
+    /// 和「页面在但没有服务」（所有请求直接失败，得像排故障一样查）两种状态，
+    /// 而自建单人场景不需要它们（§4.9.1）。
+    pub relay_enabled: bool,
+    /// 接入方式：`tunnel`（只听回环，默认）或 `direct`（听指定网卡 IP）。
+    ///
+    /// 默认隧道不是习惯偏好：隧道对远端只有一个前提——那条 SSH 连接在线；
+    /// 直连还要满足防火墙已放行、网段可达、本机 IP 不变三件事，失败面明显更大。
+    pub relay_listen_mode: String,
+    /// 直连模式下绑定的网卡 IP。留空则启动时自动选。
+    ///
+    /// 绑具体 IP 而不是 `0.0.0.0`：后者会把 VirtualBox / Hyper-V 那些虚拟网卡
+    /// 一并暴露，实际暴露面比用户以为的大（§4.8）。
+    pub relay_lan_ip: Option<String>,
+    /// 中转访问令牌（`rly_` 前缀）。与 MCP token **分开**，避免一串两用。
+    pub relay_token: String,
+    /// 中转的 provider 与档位映射。
+    pub relay: crate::relay::RelaySettings,
 }
 
 impl Default for BridgeConfig {
@@ -403,6 +425,13 @@ impl Default for BridgeConfig {
             multi_device_mode: false,
             cc_notify_turn_end: false,
             cc_auto_approve_rules: vec![],
+            // 默认关闭：默认关闭＝功能不可发现，所以设置里那行开关的描述必须
+            // 写清「开启后左侧出现中转页」（§4.9.4）。
+            relay_enabled: false,
+            relay_listen_mode: "tunnel".into(),
+            relay_lan_ip: None,
+            relay_token: String::new(),
+            relay: crate::relay::RelaySettings::default(),
         }
     }
 }
@@ -551,6 +580,20 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
             "cc_auto_approve_rules" => {
                 config.cc_auto_approve_rules = parse_or_warn(key, value, vec![])
             }
+            "relay_enabled" => config.relay_enabled = parse_or_warn(key, value, false),
+            "relay_listen_mode" => {
+                let s = parse_or_warn::<String>(key, value, "tunnel".into());
+                // 只接受两个取值，其余回落 tunnel：未知字符串当成直连会让
+                // 「本来只听回环」变成对内网开放，这是安全方向上的错误默认。
+                config.relay_listen_mode = if s == "direct" {
+                    "direct".into()
+                } else {
+                    "tunnel".into()
+                };
+            }
+            "relay_lan_ip" => config.relay_lan_ip = parse_or_warn(key, value, None),
+            "relay_token" => config.relay_token = parse_or_warn(key, value, String::new()),
+            "relay" => config.relay = parse_or_warn(key, value, Default::default()),
             "transport" => {
                 let s = parse_or_warn::<String>(key, value, "http".into());
                 config.transport = if s == "sse" {
@@ -1043,6 +1086,25 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
         "external_mcp_servers",
         &to_value(&config.external_mcp_servers).unwrap(),
     )?;
+    // 模型中转的四个键。同样受上面那条「内存领先于 DB」的约束：漏写的话
+    // 导入配置后中转页按新配置跑、重启又变回旧的，用户会以为导入没生效。
+    save_config_field(
+        conn,
+        "relay_enabled",
+        &to_value(config.relay_enabled).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "relay_listen_mode",
+        &to_value(&config.relay_listen_mode).unwrap(),
+    )?;
+    save_config_field(
+        conn,
+        "relay_lan_ip",
+        &to_value(&config.relay_lan_ip).unwrap(),
+    )?;
+    save_config_field(conn, "relay_token", &to_value(&config.relay_token).unwrap())?;
+    save_config_field(conn, "relay", &to_value(&config.relay).unwrap())?;
 
     tx.commit()
         .map_err(|e| format!("Failed to commit full config: {e}"))?;

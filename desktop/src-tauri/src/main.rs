@@ -448,6 +448,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
+            // 中转开关要在 config 被 move 进 AppState 之前取出来（下面冷启动用）。
+            let bridge_config_relay_enabled = bridge_config.relay_enabled;
             let app_state = Arc::new(state::AppState::new(db_conn, bridge_config, data_dir));
             app.manage(app_state.clone());
 
@@ -460,6 +462,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 审计落盘 → `audit:appended` 事件（日志页即时刷新的数据源）。
             // 无条件注入：它不走 notifications 那条 feature-gated 通道（见 audit.rs 注释）。
             crate::audit::set_emit_handle(Some(app.handle().clone()));
+
+            // 模型中转冷启动：开关为真就起监听。
+            //
+            // 🔴 必须 spawn 到异步运行时、且**不 await**：bind 虽然是毫秒级，但失败时
+            // 要退避重试；把这段挂在 setup 主线程上会推迟窗口出现，而窗口出不来
+            // 恰恰是用户最直接的不适（下面防火墙探测那段踩过同样的坑）。
+            // 失败写进 startup_error 供界面显示，不 panic —— 一个可选服务的端口被占，
+            // 不该让整个应用起不来。
+            if bridge_config_relay_enabled {
+                let relay_state = app_state.clone();
+                tauri::async_runtime::spawn(async move {
+                    let (threshold, window) = {
+                        let config = relay_state.config.read().await;
+                        (
+                            config.remote_ban_threshold,
+                            config.remote_ban_window_min as u64,
+                        )
+                    };
+                    match relay_state.relay.start(threshold, window).await {
+                        Ok(addr) => log::info!("模型中转冷启动成功：{addr}"),
+                        Err(e) => {
+                            log::warn!("模型中转冷启动失败：{e}");
+                            *relay_state.startup_error.lock().unwrap() = Some(e);
+                        }
+                    }
+                });
+            }
 
             // 防火墙能力探测（PowerShell NetSecurity / netsh 是否可用）不在 setup 里做同步调用。
             //
@@ -1026,9 +1055,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::restore_edit_patch,
             // 批 4-2：撤销「新建文件」——内容未被改动过才删。
             commands::restore_delete_created,
-            // 模型中转（P0）：诊断用的一发上游探测。注册在这里也顺带保证
+            // 模型中转（P1）：中转页与设置开关的命令面（一发上游探测也在内）。
             // reqwest 的流式转发代码不被 LTO 剔除，体积测量才有意义。
-            commands::relay_probe,
+            commands::relay_status,
+            commands::relay_logs,
+            commands::relay_save,
+            commands::relay_set_enabled,
+            commands::relay_start,
+            commands::relay_stop,
+            commands::relay_restart,
+            commands::relay_regenerate_token,
+            commands::relay_test_upstream,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Destroyed if window.label() == "main" => {

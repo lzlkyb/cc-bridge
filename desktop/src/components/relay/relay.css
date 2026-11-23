@@ -1,0 +1,992 @@
+/* ══════════════════════════════════════════════════════════════════
+   模型中转页（RelayTab）
+
+   原则：**能复用就不新写**。卡片、指标卡、状态卡的底料全部来自
+   index.css（.bento-card / .metric-card / .status-card）与 appearance.css
+   （玻璃主题），这里只写中转特有的结构：链路、映射名块、档位横条、
+   代码块、日志表。
+
+   状态卡内部一律走 `--relay-*` 变量而不是固定白色：classic 下是白字压
+   深紫，玻璃下是深藏青字压淡蓝紫（§4.9.5）。写死 #fff 会在玻璃下变成
+   白字压白底 —— 那是最典型的一类主题 bug。
+
+   玻璃覆盖（`html[data-ui-style="glass"] …`）有一半写在本文件里而不是
+   appearance.css：这页独有的部件（映射名块 / 代码块 / 分段控件 / 档位条）
+   在 appearance.css 里没人能一眼看出它们属于哪一页。**组件里仍然零主题分支**，
+   选择器口径与 appearance.css 完全一致，这是那句话真正约束的东西。
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── 页头（不占卡）──────────────────────────────────────────────── */
+.relay-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px 2px 0;
+}
+.relay-head h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+  line-height: 1.35;
+}
+.relay-head-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.relay-head-sub {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+/* 状态徽章：跟着运行态换色。直连模式下转橙（「对内网开放」）。 */
+.relay-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.relay-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.relay-badge[data-tone="ok"] {
+  background: hsl(var(--success) / 0.12);
+  color: hsl(var(--success-ink));
+}
+.relay-badge[data-tone="lan"] {
+  background: hsl(var(--warning) / 0.14);
+  color: hsl(var(--warning-ink));
+}
+.relay-badge[data-tone="idle"] {
+  background: hsl(var(--muted-foreground) / 0.12);
+  color: hsl(var(--muted-foreground));
+}
+.relay-badge[data-tone="bad"] {
+  background: hsl(var(--destructive) / 0.12);
+  color: hsl(var(--destructive-ink));
+}
+.relay-head-meta {
+  text-align: right;
+  font-size: 11.5px;
+  line-height: 1.7;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+}
+.relay-head-meta b {
+  color: hsl(var(--foreground));
+  font-weight: 650;
+}
+
+/* ── Bento 补充定位 ───────────────────────────────────────────────
+   .bento 的子选择器只排到第 7 块（status + 四指标 + 两张配置卡）。
+   第 8~11 块（接入 / 日志 / 档位 / 关闭态提示）在这里补。 */
+.bento.relay-bento > .relay-access {
+  grid-column: 1 / 13;
+}
+.bento.relay-bento > .relay-log-card {
+  grid-column: 1 / 9;
+}
+.bento.relay-bento > .relay-tier-card {
+  grid-column: 9 / 13;
+}
+.bento.relay-bento > .relay-reopen {
+  grid-column: 1 / 13;
+}
+
+/* ── 状态卡：三段链路 ─────────────────────────────────────────────
+   链路用 flex + 连接线，不用绝对定位：卡宽在 4 列（约 340）与
+   窄视口之间变化，绝对定位会在某一档对不上。 */
+.relay-status-card {
+  --relay-ink: #fff;
+  --relay-ink-soft: rgb(255 255 255 / 0.76);
+  --relay-ink-faint: rgb(255 255 255 / 0.52);
+  --relay-on-card: rgb(255 255 255 / 0.16);
+  --relay-on-card-line: rgb(255 255 255 / 0.34);
+  --relay-on-card-edge: rgb(255 255 255 / 0.22);
+}
+html[data-ui-style="glass"] .relay-status-card {
+  --relay-ink: var(--glass-status-ink);
+  --relay-ink-soft: color-mix(in srgb, var(--glass-status-ink) 76%, transparent);
+  --relay-ink-faint: var(--glass-status-muted);
+  --relay-on-card: var(--glass-inset);
+  --relay-on-card-line: hsl(var(--muted-foreground) / 0.32);
+  --relay-on-card-edge: var(--glass-edge);
+}
+
+.relay-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--relay-ink-soft);
+}
+.relay-eyebrow .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--relay-ink);
+  box-shadow: 0 0 0 3px rgb(255 255 255 / 0.18);
+}
+html[data-ui-style="glass"] .relay-eyebrow .dot {
+  box-shadow: 0 0 0 3px rgb(27 41 72 / 0.14);
+}
+
+.relay-chain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  min-width: 0;
+}
+.relay-chain-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: var(--relay-on-card);
+  border: 1px solid var(--relay-on-card-edge);
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--relay-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.relay-chain-node code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+/* 连接线：两段短横，避免在窄卡里占宽。 */
+.relay-chain-link {
+  flex: 1 1 6px;
+  min-width: 6px;
+  height: 1.5px;
+  border-radius: 2px;
+  background: var(--relay-on-card-line);
+}
+
+.relay-status-model {
+  margin: 12px 0 0;
+  font-size: 17px;
+  line-height: 1.35;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+  color: var(--relay-ink);
+  overflow-wrap: anywhere;
+}
+.relay-status-sub {
+  margin: 4px 0 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--relay-ink-soft);
+}
+.relay-status-target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--relay-ink-soft);
+}
+.relay-status-target code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+  color: var(--relay-ink);
+}
+
+/* 最近请求：三条只读，替代连接页的 RecentActivity（那个带参数与耗时列，
+   在 4 列宽里会被压成两行）。 */
+.relay-mini-act {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--relay-on-card-edge);
+  /* flex:1 吸收多余高度：状态卡跨两行，内容不够时不能从中间裂出空白。 */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.relay-mini-act h6 {
+  margin: 0 0 6px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--relay-ink-faint);
+}
+.relay-mini-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  line-height: 1.9;
+  color: var(--relay-ink-soft);
+  min-width: 0;
+}
+.relay-mini-row time {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-variant-numeric: tabular-nums;
+  color: var(--relay-ink-faint);
+  flex-shrink: 0;
+}
+.relay-mini-row .m {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+}
+.relay-mini-row .s {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-weight: 700;
+  color: var(--relay-ink);
+}
+.relay-mini-row .s[data-bad] {
+  color: #fecaca;
+}
+html[data-ui-style="glass"] .relay-mini-row .s[data-bad] {
+  color: hsl(var(--destructive-ink));
+}
+
+/* 状态卡里的按钮：沿用 .status-btn 的白底/字色联动，只补布局。 */
+.relay-status-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.relay-status-actions .status-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 10px;
+}
+/* 主次宽度沿用 index.css 的 .status-btn--grow（玻璃下 stopped 的主动作要变实底，
+   那条规则挂在这个类名上，所以不能在这里另起一个 .grow）。 */
+
+/* ── 映射名块 ───────────────────────────────────────────────────── */
+.relay-alias-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 12px 12px;
+  border-radius: 9px;
+  background: hsl(var(--primary) / 0.05);
+  border: 1px solid hsl(var(--primary) / 0.18);
+  min-width: 0;
+}
+html[data-ui-style="glass"] .relay-alias-box {
+  background: var(--glass-inset);
+  border-color: var(--glass-edge);
+}
+.relay-alias-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.2px;
+  color: hsl(var(--primary));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html[data-ui-style="glass"] .relay-alias-name {
+  color: hsl(var(--primary));
+}
+
+/* ── 表单行：4 列宽下必须标签在上、控件占满 ──────────────────────
+   在 4 列（约 340）里按「标签左 / 控件右」排，输入框只剩不到 200，
+   URL 与密钥掩码都会被截断（设计稿实测）。 */
+.relay-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 11px;
+}
+.relay-field > label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+}
+.relay-field .row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.relay-field .tinp {
+  width: 100%;
+  height: 32px;
+  border-radius: 7px;
+  padding: 0 9px;
+  font-size: 12px;
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  color: hsl(var(--foreground));
+}
+html[data-ui-style="glass"] .relay-field .tinp {
+  background: var(--glass-inset);
+  border-color: var(--glass-edge);
+}
+.relay-field .tinp:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 0;
+}
+.relay-field .mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+}
+.relay-mask {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 9px;
+  border-radius: 7px;
+  background: hsl(var(--muted) / 0.5);
+  border: 1px solid hsl(var(--border));
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+html[data-ui-style="glass"] .relay-mask {
+  background: var(--glass-inset);
+  border-color: var(--glass-edge);
+}
+
+/* 高级折叠 / 分档折叠 */
+.relay-more {
+  margin-top: 10px;
+  border-top: 1px solid hsl(var(--border));
+  padding-top: 9px;
+}
+html[data-ui-style="glass"] .relay-more {
+  border-color: var(--glass-edge);
+}
+.relay-more > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  user-select: none;
+}
+.relay-more > summary::-webkit-details-marker {
+  display: none;
+}
+.relay-more > summary:hover {
+  color: hsl(var(--foreground));
+}
+.relay-more > summary .hint {
+  margin-left: auto;
+  font-weight: 500;
+  font-size: 10.5px;
+  color: hsl(var(--muted-foreground) / 0.8);
+}
+.relay-more > summary svg {
+  transition: transform var(--dur) var(--ease);
+}
+.relay-more[open] > summary svg {
+  transform: rotate(180deg);
+}
+.relay-more-body {
+  margin-top: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+/* 分段控件（隧道 / 直连）：复用真实 .stable-method-toggle 的外观 */
+.relay-seg {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 8px;
+  background: hsl(var(--muted) / 0.6);
+  border: 1px solid hsl(var(--border));
+}
+html[data-ui-style="glass"] .relay-seg {
+  background: var(--glass-inset);
+  border-color: var(--glass-edge);
+}
+.relay-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.relay-seg button[aria-pressed="true"] {
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  box-shadow: var(--sh-card);
+}
+html[data-ui-style="glass"] .relay-seg button[aria-pressed="true"] {
+  background: var(--glass-floating);
+  color: #fff;
+}
+.relay-seg .rec {
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 700;
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+}
+
+/* ── 接入区块：代码块 ───────────────────────────────────────────── */
+.relay-prereq {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  background: hsl(var(--muted) / 0.45);
+  color: hsl(var(--muted-foreground));
+}
+html[data-ui-style="glass"] .relay-prereq {
+  background: var(--glass-inset);
+}
+.relay-prereq[data-warn] {
+  background: hsl(var(--warning) / 0.12);
+  color: hsl(var(--warning-ink));
+}
+.relay-prereq svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.relay-code {
+  margin-top: 10px;
+  padding: 11px 13px;
+  border-radius: 9px;
+  background: hsl(var(--primary) / 0.045);
+  border: 1px solid hsl(var(--border));
+  overflow-x: auto;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11.5px;
+  line-height: 1.72;
+  white-space: pre;
+  color: hsl(var(--foreground));
+  tab-size: 2;
+}
+html[data-ui-style="glass"] .relay-code {
+  background: var(--glass-inset);
+  border-color: var(--glass-edge);
+}
+.relay-code .c {
+  color: hsl(var(--muted-foreground));
+}
+/* 每行一个 span（<pre> 里不能放块级元素），用 display:block 分行并把缩进保留住。 */
+.relay-code .ln {
+  display: block;
+}
+.relay-code .k {
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+
+.relay-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.relay-actions .note {
+  margin-left: auto;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+
+/* ── 日志表 ─────────────────────────────────────────────────────── */
+.relay-log-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+.relay-log-table th {
+  height: 34px;
+  padding: 0 8px;
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: hsl(var(--muted-foreground));
+  border-bottom: 1px solid hsl(var(--border));
+  white-space: nowrap;
+}
+.relay-log-table td {
+  height: 34px;
+  padding: 0 8px;
+  font-size: 11.5px;
+  border-bottom: 1px solid hsl(var(--border) / 0.6);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.relay-log-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.relay-log-table .mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-variant-numeric: tabular-nums;
+}
+.relay-log-table .dim {
+  color: hsl(var(--muted-foreground));
+}
+.relay-log-table tr[data-inflight] td {
+  opacity: 0.72;
+}
+.relay-empty {
+  margin-top: 10px;
+  padding: 14px 2px;
+  text-align: center;
+  font-size: 11.5px;
+  color: hsl(var(--muted-foreground));
+}
+
+/* 徽章（改写 / 状态 / 回落） */
+.relay-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.relay-pill[data-tone="ok"] {
+  background: hsl(var(--success) / 0.12);
+  color: hsl(var(--success-ink));
+}
+.relay-pill[data-tone="bad"] {
+  background: hsl(var(--destructive) / 0.12);
+  color: hsl(var(--destructive-ink));
+}
+.relay-pill[data-tone="fold"] {
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+}
+.relay-pill[data-tone="fb"] {
+  background: hsl(var(--warning) / 0.14);
+  color: hsl(var(--warning-ink));
+}
+.relay-pill[data-tone="mute"] {
+  background: hsl(var(--muted-foreground) / 0.12);
+  color: hsl(var(--muted-foreground));
+}
+
+/* ── 档位分布 ───────────────────────────────────────────────────── */
+.relay-hit {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) 44px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+}
+.relay-hit > span:first-child {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  color: hsl(var(--foreground));
+}
+.relay-hit .bar {
+  height: 6px;
+  border-radius: 999px;
+  background: hsl(var(--muted) / 0.8);
+  overflow: hidden;
+}
+.relay-hit .bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  transition: width var(--dur-slow) var(--ease);
+}
+/* 未配置档：灰色条 = 该档请求回落到了 default。 */
+.relay-hit[data-fallback] .bar > i {
+  background: hsl(var(--muted-foreground) / 0.45);
+}
+.relay-hit .n {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: hsl(var(--muted-foreground));
+}
+
+/* 卡底说明（比 .card-foot 窄一档，不抢内容） */
+.relay-foot {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid hsl(var(--border));
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: hsl(var(--muted-foreground));
+}
+html[data-ui-style="glass"] .relay-foot {
+  border-color: var(--glass-edge);
+}
+.relay-foot svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.relay-foot code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 10.5px;
+}
+
+/* 卡片头（标题 + 右侧动作） */
+.relay-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.relay-card-head .grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 窄视口：网格退回单列，别把 4 列压成两条字 */
+@container app-content (max-width: 980px) {
+  .bento.relay-bento > .relay-access,
+  .bento.relay-bento > .relay-log-card,
+  .bento.relay-bento > .relay-tier-card,
+  .bento.relay-bento > .relay-reopen {
+    grid-column: 1 / 13;
+  }
+  .relay-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .relay-head-meta {
+    text-align: left;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   组件补充：下面是组件里用到的、但上面还没有的部件
+   ══════════════════════════════════════════════════════════════════ */
+
+/* 状态卡里的接入方式标签（隧道接入 / 内网直连 / 已关闭）。
+   与 eyebrow 同色系、靠字重和间距分层，不再给底色 —— 深紫渐变上再加一层
+   半透明白块会糊成一团。 */
+.relay-method {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0;
+  color: var(--relay-ink-soft);
+}
+
+/* 链路节点被「切断」时（未运行 / 未配置上游）：删除线 + 降透明度。
+   只降透明度不换色 —— 玻璃下换色会与 ink 打架。 */
+.relay-chain-node[data-cut] {
+  text-decoration: line-through;
+  opacity: 0.62;
+}
+
+/* 状态卡里的「本机服务详情」折叠。设计稿叫 .status-local；
+   这里补上，且颜色走 --relay-*（classic 白字 / 玻璃深藏青字）。 */
+.relay-status-local {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--relay-ink-soft);
+}
+.relay-status-local > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  list-style: none;
+  cursor: pointer;
+  font-weight: 650;
+  color: var(--relay-ink);
+  user-select: none;
+}
+.relay-status-local > summary::-webkit-details-marker {
+  display: none;
+}
+.relay-status-local > summary svg {
+  transition: transform var(--dur) var(--ease);
+}
+.relay-status-local[open] > summary svg {
+  transform: rotate(180deg);
+}
+.relay-status-local p {
+  margin: 5px 0 0;
+  color: var(--relay-ink-soft);
+}
+
+/* 状态卡里的错误条：底色用半透明黑，两种基调上都能压住；
+   文字走卡内 ink 的反相（深色渐变上用浅色，玻璃浅底上用深色由 appearance 兜）。 */
+.relay-status-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  background: rgb(0 0 0 / 0.24);
+  border: 1px solid var(--relay-on-card-edge);
+  color: #fff;
+  overflow-wrap: anywhere;
+}
+.relay-status-error svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+html[data-ui-style="glass"] .relay-status-error {
+  background: hsl(var(--destructive) / 0.12);
+  color: hsl(var(--destructive-ink));
+}
+
+/* 卡片头右侧的短状态（已填写 / 待生效 / 已连通 · 182ms）。
+   `data-tone="bad"` 时转红：上游探测失败要在卡头就能看见。 */
+.relay-tail {
+  margin-left: 2px;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+}
+.relay-tail[data-tone="bad"] {
+  color: hsl(var(--destructive-ink));
+}
+
+/* 卡片头里的小动作按钮（复制映射名 / 打开日志页 / 测连通 / 更换密钥）。
+   32 高的按钮在 4 列宽的卡头里太大，这里统一降到 24。 */
+.relay-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.relay-mini-btn:hover:not(:disabled) {
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+.relay-mini-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+html[data-ui-style="glass"] .relay-mini-btn {
+  background: var(--glass-inset);
+  border-color: var(--glass-edge);
+}
+
+/* 字段标签里的小灰字（haiku「小任务」）与折底说明 */
+.relay-hint {
+  margin-left: 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+}
+.relay-hint-block {
+  margin: 2px 0 0;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: hsl(var(--muted-foreground));
+}
+
+/* 高级设置的一行：左标签 / 右控件。4 列宽下用 76px 固定标签列，
+   控件区可以换行（见 .relay-chips 的 flex-wrap）。 */
+.relay-adv-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+.relay-chips {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.relay-chip {
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted) / 0.5);
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+}
+.relay-chip[aria-pressed="true"] {
+  background: hsl(var(--primary) / 0.1);
+  border-color: hsl(var(--primary) / 0.35);
+  color: hsl(var(--primary));
+}
+html[data-ui-style="glass"] .relay-chip {
+  background: var(--glass-inset);
+  border-color: var(--glass-edge);
+}
+html[data-ui-style="glass"] .relay-chip[aria-pressed="true"] {
+  background: var(--glass-floating);
+  border-color: var(--glass-edge);
+}
+.relay-chip-note {
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+
+/* 测连通失败：上游原文直接给出来，不做二次转述。 */
+.relay-probe-fail {
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: hsl(var(--destructive) / 0.08);
+  border: 1px solid hsl(var(--destructive) / 0.28);
+  font-size: 11px;
+  color: hsl(var(--destructive-ink));
+}
+.relay-probe-fail pre {
+  margin: 4px 0 0;
+  max-height: 108px;
+  overflow: auto;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.relay-probe-ok {
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: hsl(var(--warning-ink));
+}
+
+/* 卡片内的行内错误 / 进行中提示（不抢位置，只在需要时出现） */
+.relay-inline-error {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: hsl(var(--destructive-ink));
+  overflow-wrap: anywhere;
+}
+.relay-inline-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: hsl(var(--muted-foreground));
+}
+
+/* 档位分布的容器：行间距交给 gap，`.relay-hit` 自带的上边距清掉，
+   否则「横条之间 8px、说明与横条之间 16px」看着像两组。 */
+.relay-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 10px;
+}
+.relay-hits .relay-hit {
+  margin-top: 0;
+}
+
+/* 接入卡：协议徽章 + 分段切换上方的方法说明 */
+.relay-proto {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+}
+html[data-ui-style="glass"] .relay-proto {
+  background: var(--glass-inset);
+}
+.relay-method-note {
+  margin: 8px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: hsl(var(--muted-foreground));
+}
+
+/* 关闭态「怎么开回来」三段 */
+.relay-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.relay-steps > div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+}
+.relay-steps b {
+  font-weight: 700;
+  color: hsl(var(--foreground));
+}
+.relay-steps span {
+  color: hsl(var(--muted-foreground));
+}
+.relay-steps code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+}
+
+/* 接入卡的按钮用真实的 .ui-button，这里只补 32 高（卡里其他按钮都 32）。 */
+.relay-actions .ui-button {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
+}

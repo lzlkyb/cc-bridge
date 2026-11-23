@@ -49,7 +49,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order：中转改 model 后要重新序列化，必须保持原有 key 顺序。
+# 没有它的话 `Value::Object` 是 BTreeMap，序列化会按字母序重排——
+# 每个请求的 body 字节序都和客户端发的不一样，上游按字节做 prompt 缓存时
+# 会全部 miss（账单上直接看得到）。MCP / 配置那边的 JSON 顺序也跟着变，
+# 但对它们无害（JSON 对象本身无序，只是输出更接近插入顺序）。
+serde_json = { version = "1", features = ["preserve_order"] }
 # TOML：只为读 Codex 的 ~/.codex/config.toml（导入扫描）。
 # ⚠️ 这不是新增依赖：tauri-utils 2.9.3 已把 toml 1.1.2 作为**运行时**依赖，
 # 且 default / parse / serde / display 四个 feature 在依赖树里已全部启用 →

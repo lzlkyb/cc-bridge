@@ -14,11 +14,14 @@ import { CONNECT_GUIDE_ANCHOR } from "../../lib/connectionAccess";
 type NavItem = { key: string; label: string; icon: IconName };
 
 /**
- * 工作区导航项。
+ * 工作区导航项的**全集**。
  *
- * 🔴 数组顺序即 Ctrl+1~N 的映射顺序 —— App.tsx 直接复用本数组生成快捷键表，
- *    改顺序/增删项只改这一处，避免「侧栏顺序」与「快捷键顺序」两处漂移。
+ * 🔴 数组顺序即 Ctrl+1~N 的映射顺序 —— 渲染时用的是 App 算出的可见子集
+ *    （`visibleNav`），顺序与这里一致，改顺序/增删项只改这一处。
  * 🔴 新项只能追加在末尾：插到中间会把既有 Ctrl+2/3/4 全改一遍，是破坏性变更。
+ * 🔴 「中转」是**默认不可见**的：它只在设置里打开开关后出现（§4.9.1）。所以这里
+ *    是全集，而 `visibleNav` 才是这一帧真正要画的东西——两处都直接引用全集的话，
+ *    关掉开关后侧栏与命令面板还会留着那一项，点进去是白屏。
  */
 export const WORKSPACE_NAV: NavItem[] = [
   { key: "connect", label: "连接", icon: "plug" },
@@ -27,7 +30,22 @@ export const WORKSPACE_NAV: NavItem[] = [
   { key: "log", label: "日志", icon: "log" },
   // 实验功能（2026-10-24）：CC 对话页，与原「终端」页并列而非替代。
   { key: "ccgui", label: "对话", icon: "message" },
+  // 模型中转（2026-11-23）：常驻服务，默认关闭。开关在 设置 › 网络与接入。
+  // 中文两个字，与其他项字数一致；图标用已有的 gitBranch。
+  { key: "relay", label: "中转", icon: "gitBranch" },
 ];
+
+export type { NavItem };
+
+/**
+ * 按开关算出这一帧可见的导航项。
+ *
+ * `relayEnabled` 为 `undefined` 表示**还没读到状态**（冷启动头一两百毫秒）。
+ * 未知一律按不可见处理：晚半秒出现可以，先出现再消失不行（§4.9.3 第 5 条）。
+ */
+export function visibleNav(relayEnabled: boolean | undefined): NavItem[] {
+  return relayEnabled === true ? WORKSPACE_NAV : WORKSPACE_NAV.filter((item) => item.key !== "relay");
+}
 
 /**
  * 左侧主导航栏（2026-10-14 由顶部 TabsList 改造而来）。
@@ -41,6 +59,7 @@ export const WORKSPACE_NAV: NavItem[] = [
 function SideNavImpl({
   activeTab,
   onNavigate,
+  navItems,
   unreadCount,
   status,
   collapsed,
@@ -52,6 +71,8 @@ function SideNavImpl({
 }: {
   activeTab: string;
   onNavigate: (tab: string, anchor?: string) => void;
+  /** 这一帧可见的工作区项，由 App 按「中转开关」算好传入（见 `visibleNav`）。 */
+  navItems: NavItem[];
   unreadCount: number;
   status?: StaticStatus;
   collapsed: boolean;
@@ -141,7 +162,7 @@ function SideNavImpl({
         />
       ) : (
         <nav className="app-side-nav" aria-label="主导航">
-          {WORKSPACE_NAV.map((item) => (
+          {navItems.map((item) => (
             <button
               key={item.key}
               type="button"

@@ -7,6 +7,10 @@ html[data-ui-style="glass"] {
   --glass-reading: linear-gradient(145deg, rgb(249 252 255 / .84), rgb(244 247 253 / .72));
   --glass-inset: rgb(241 246 253 / .86);
   --glass-status-panel: linear-gradient(145deg, rgb(182 211 240 / .94), rgb(193 188 232 / .91));
+  /* 关闭态专用的一档去饱和中性灰蓝（2026-11-23，模型中转页）。真实实现里
+     live 与 stopped 共用上面那块淡蓝紫，玻璃下两态几乎同色，而「停没停」是
+     中转页最该一眼看出的信息。字色仍用 --glass-status-ink，对比不变。 */
+  --glass-status-panel-idle: linear-gradient(145deg, rgb(206 215 227 / .95), rgb(193 199 213 / .93));
   --glass-status-depth: inset 0 1px 0 rgb(255 255 255 / .28), 0 1px 2px -1px rgb(45 61 101 / .12), 0 8px 20px -10px rgb(55 70 114 / .28);
   --glass-status-ink: #1b2948;
   --glass-status-muted: #354768;
@@ -32,6 +36,7 @@ html.dark[data-ui-style="glass"] {
   --glass-reading: linear-gradient(145deg, rgb(42 57 82 / .90), rgb(30 43 65 / .86));
   --glass-inset: rgb(51 68 94 / .88);
   --glass-status-panel: linear-gradient(145deg, rgb(54 80 121 / .96), rgb(66 58 107 / .94));
+  --glass-status-panel-idle: linear-gradient(145deg, rgb(66 77 96 / .96), rgb(55 62 78 / .94));
   --glass-status-depth: inset 0 1px 0 rgb(215 232 255 / .16), 0 1px 2px rgb(0 4 20 / .18), 0 8px 20px -10px rgb(0 4 20 / .44);
   --glass-status-ink: #edf2fc;
   --glass-status-muted: #bdcbe2;
@@ -143,6 +148,12 @@ html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--st
   color: var(--glass-status-ink);
   box-shadow: var(--glass-depth);
 }
+/* 关闭态换中性灰蓝（放在共用规则之后，同特异度由顺序取胜）。
+   只覆盖背景：字色、按钮、链路线仍然是上面那一套 ink 口径，不会因为「停了」
+   就换一套文字对比度。 */
+html[data-ui-style="glass"] .status-card.status-card--stopped {
+  background: var(--glass-status-panel-idle);
+}
 html[data-ui-style="glass"] .status-card--live > p:not(.status-summary) { font-size: 16px; line-height: 1.5; }
 html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--stopped) :is(.status-summary, .recent-activity-params, .recent-activity-duration) {
   color: var(--glass-status-muted); opacity: 1;
@@ -158,6 +169,11 @@ html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--st
 html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--stopped) .status-btn {
   background: var(--glass-inset); color: var(--glass-status-ink);
   border-color: var(--glass-chrome-edge); box-shadow: none;
+}
+/* 主次动作要分出「实 vs 虚」：真实实现里两颗按钮都是 --glass-inset，
+   在淡蓝紫底上几乎一样，主动作因此失去重量（§4.9.5）。主动作改近实白。 */
+html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--stopped) .status-btn--grow {
+  background: var(--glass-floating);
 }
 html[data-ui-style="glass"] .status-card:is(.status-card--live, .status-card--stopped) .status-btn:hover:not(:disabled) {
   background: hsl(var(--primary) / .10);
@@ -556,6 +572,8 @@ html[data-ui-style="glass"] [data-cc-panel] [class*="text-warning-ink"] {
   html:root[data-ui-style="glass"] .update-slot .header-badge { background: hsl(var(--card)); }
   html:root[data-ui-style="glass"] {
     --glass-status-panel: hsl(var(--card));
+    /* 关闭态的灰蓝面料同样要退成实底，否则「减少透明」下这一张卡仍然半透。 */
+    --glass-status-panel-idle: hsl(var(--card));
     --glass-reading: hsl(var(--card));
     --glass-inset: hsl(var(--muted));
     /* 对话页新增的三档：不补就会在「减少透明」下仍然半透，与其它卡不一致。 */
@@ -580,6 +598,7 @@ html[data-ui-style="glass"] [data-cc-panel] [class*="text-warning-ink"] {
   html:root[data-ui-style="glass"] .update-slot .header-badge-uptodate > svg { color: ButtonText; }
   html:root[data-ui-style="glass"] {
     --glass-status-panel: Canvas;
+    --glass-status-panel-idle: Canvas;
     --glass-status-ink: CanvasText;
     --glass-status-muted: CanvasText;
     --glass-reading: Canvas;

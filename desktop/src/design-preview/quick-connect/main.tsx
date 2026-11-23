@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { SideNav } from "../../components/layout/SideNav";
+import { SideNav, visibleNav } from "../../components/layout/SideNav";
 import { Header } from "../../components/layout/Header";
 import { ConnectTab } from "../../components/tabs/ConnectTab";
 import { ConnectBento } from "../../components/tabs/ConnectBento";
@@ -90,7 +90,7 @@ function App() {
       <button onClick={() => view === "proposal" ? changeDiscoveryScenario(discoveryScenario) : changeScenario(scenario)}><Icon name="refresh" size={14}/>重置</button>
     </div></div>
     <div className="app-boot-fade qc-app flex min-h-0 flex-1 flex-col overflow-hidden bg-background text-foreground"><div className="app-shell">
-      <SideNav activeTab="connect" onNavigate={navigate} unreadCount={0} status={status} collapsed={collapsed}/>
+      <SideNav activeTab="connect" onNavigate={navigate} navItems={visibleNav(status.relayEnabled)} unreadCount={0} status={status} collapsed={collapsed}/>
       <div className="app-main flex min-h-0 min-w-0 flex-col"><Header status={status} onChanged={refresh} onNavigate={navigate} onOpenSearch={() => setSearch(true)} collapsed={collapsed} onToggleCollapse={() => setCollapsed(v => !v)}/>
         <main className="app-main-content flex min-h-0 flex-1 flex-col overflow-hidden" data-page="connect"><div className="page-scroll min-h-0 flex-1 overflow-y-auto" data-page-panel><div className="app-content-box">
           {view === "proposal" ? <ProposalConnectPage scenario={discoveryScenario} revision={revision} status={status} ip={ip} onSelectIp={setIp} refresh={refresh} onNavigate={navigate} onCopySed={copyIpUpdate} anchor={guide}/> : view === "implemented" ? <div ref={guide} className="qc-guide-anchor"><ConnectTab key={revision} status={status} onRefresh={refresh} selectedIp={ip} onSelectIp={setIp} ipResolvedByUser={false} onSedResolved={() => {}} onNavigate={navigate} onCopySed={copyIpUpdate}/></div> : <ConnectBento status={status} displayHost={ip} port={status.port} onChanged={refresh} onNavigate={navigate} guide={<div ref={guide} className="qc-guide-anchor"><IntegratedGuide key={revision} scenario={scenario} status={status} refresh={refresh}/></div>}/>}

@@ -21,6 +21,11 @@ beforeEach(() => {
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); });
+// 「第一个 button」不再是端口保存按钮了：卡片第一行现在是「启用模型中转」开关
+// （它本身就是一个 button）。按文案定位，别依赖 DOM 里的先后次序。
+function portSaveButton() {
+  return [...host.querySelectorAll<HTMLButtonElement>("button")].find((b) => (b.textContent ?? "").includes("保存"))!;
+}
 async function editPort(value: string) {
   const input = host.querySelector("input")!;
   await act(async () => {
@@ -37,7 +42,7 @@ describe("端口配置反馈与恢复", () => {
   it("重启失败后，即使服务端已更新端口仍能重试，且不重复保存", async () => {
     mocks.invoke.mockImplementation((command: string) => command === "restart_mcp_server" ? Promise.reject(new Error("busy")) : Promise.resolve({ restartRequired: true }));
     await mount(); await editPort("9000");
-    await act(async () => host.querySelector("button")!.click());
+    await act(async () => portSaveButton().click());
     expect(host.textContent).toContain("端口已保存，但服务重启失败");
     await mount(9000);
     const retry = [...host.querySelectorAll("button")].find(button => button.textContent === "重试重启服务")!;
@@ -51,7 +56,7 @@ describe("端口配置反馈与恢复", () => {
   it("输入可清空且非法端口不能保存，刷新状态不覆盖用户草稿", async () => {
     await mount(); await editPort("");
     expect(host.querySelector("input")!.value).toBe("");
-    expect(host.querySelector("button")!.disabled).toBe(true);
+    expect(portSaveButton().disabled).toBe(true);
     await editPort("9123"); await mount(8000);
     expect(host.querySelector("input")!.value).toBe("9123");
     expect(mocks.invoke).not.toHaveBeenCalled();

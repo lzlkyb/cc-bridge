@@ -52,6 +52,14 @@ export interface StatusResponse {
   /** Shared current target; historical request totals are not evidence for this target. */
   currentAccess?: import("./connectionAccess").ConnectionAccess;
   serviceControl?: { pending: "start" | "stop" | "restart" | null; error: string | null };
+  /**
+   * 模型中转总开关。
+   *
+   * 导航项由它算（§4.9.3）：关着时侧栏与命令面板都不该出现「中转」。
+   * 跟主 status 一起下发而不是另开一次查询——两次异步读会让这一项
+   * 「先出现再消失」，正是冷启动那个坑。
+   */
+  relayEnabled: boolean;
   remoteTlsEnabled?: boolean;
   /** 连接页选定的接入工具（决定托盘/横幅的命令形态）。后端已把旧配置的 null 折算为 "claude-code"。 */
   connectClient: string;
@@ -690,4 +698,127 @@ export interface SshFileEntry {
   mtime: number;
   /** 是否为软链接。 */
   isSymlink: boolean;
+}
+
+/* ─── 模型中转（P1）────────────────────────────────────────────────────
+ *
+ * 字段名与 Rust 侧一一对应，都是 camelCase（`RelaySnapshot` / `ProviderView` /
+ * `RelayLogEntry` / `RelayStats` 全部带 `rename_all = "camelCase"`）。
+ * 唯一例外是**没有**对应的原始配置：快照不回传 `RelaySettings`，
+ * 表单要的值都在 provider / tiers 里（避免 snake_case 与 camelCase 两套字段名并存）。
+ */
+
+export interface RelayTierView {
+  tier: "default" | "haiku" | "opus";
+  /** 远端要填的映射名。只由档位决定，与上游真名无关。 */
+  alias: string;
+  /** 客户端要注入的环境变量名。 */
+  envVar: string;
+  /** 上游真名。未配置时为空串。 */
+  upstreamModel: string;
+  configured: boolean;
+}
+
+export interface RelayProviderView {
+  name: string;
+  baseUrl: string;
+  /** 掩码形态。完整密钥不下发前端——界面不需要它就能完成全部操作。 */
+  apiKeyMasked: string;
+  hasApiKey: boolean;
+  kind: string;
+  /** 鉴权头形态。字符串与 Rust `AuthStyle::as_str()` 一致：`x-api-key` / `bearer`。 */
+  authStyle: "x-api-key" | "bearer";
+  maxTokensLimit: number | null;
+  foldToolBlocks: boolean;
+  /** 三格是否齐。 */
+  configured: boolean;
+  /** 缺哪一格。 */
+  missing: "baseUrl" | "apiKey" | "model" | null;
+}
+
+export interface RelayLogEntry {
+  id: number;
+  /** UTC 毫秒，界面按本地时区显示。 */
+  tsMs: number;
+  source: string;
+  clientModel: string;
+  tier: string;
+  upstreamModel: string;
+  /** 该档未配置、请求落到了 default。 */
+  fellBack: boolean;
+  via: string;
+  /** `fold` / `strip_suffix` / `clamp` 或组合。 */
+  rewrite: string | null;
+  /** 折叠摘要，含 `messages[i].content[j]` 路径。 */
+  foldSummary: string | null;
+  sanitized: boolean;
+  status: number | null;
+  firstByteMs: number | null;
+  totalMs: number | null;
+  bytesIn: number | null;
+  bytesOut: number | null;
+  error: string | null;
+  path: string;
+}
+
+export interface RelayTierHit {
+  tier: string;
+  count: number;
+  fellBack: number;
+}
+
+export interface RelayStats {
+  todayRequests: number;
+  todayFolded: number;
+  todayErrors: number;
+  todayErrorRate: number;
+  firstByteP50Ms: number | null;
+  firstByteP95Ms: number | null;
+  avgTotalMs: number | null;
+  tierHits: RelayTierHit[];
+  lastError: string | null;
+  lastErrorAtMs: number | null;
+  inFlight: number;
+}
+
+export interface RelaySnapshot {
+  running: boolean;
+  /** 实际监听地址，如 `127.0.0.1:4100`。 */
+  addr: string | null;
+  uptimeSecs: number | null;
+  listenHost: string;
+  port: number;
+  tokenMasked: string;
+  /** 完整令牌。界面自己 mask，但要能复制（与 MCP token 一致）。 */
+  token: string;
+  stats: RelayStats;
+  /** 最近若干条，新的在前。 */
+  recent: RelayLogEntry[];
+  provider: RelayProviderView | null;
+  tiers: RelayTierView[];
+}
+
+export interface RelaySaveResult {
+  ok: boolean;
+  configured: boolean;
+  missing: string | null;
+  restartRequired: boolean;
+  warnings: string[];
+}
+
+export interface RelayEnabledResult {
+  enabled: boolean;
+  addr: string | null;
+  /** 启用失败的原因（端口被占等）。此时 enabled 仍为 true。 */
+  error: string | null;
+}
+
+export interface RelayProbeOutcome {
+  status: number;
+  ok: boolean;
+  firstByteMs: number | null;
+  totalMs: number;
+  errorHead: string | null;
+  /** 用 x-api-key 失败、换 Bearer 成功了。 */
+  switchedAuth: string | null;
 }

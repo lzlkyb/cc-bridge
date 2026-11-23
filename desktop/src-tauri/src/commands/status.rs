@@ -80,6 +80,11 @@ pub struct StatusResponse {
     pub connect_client: String,
     pub token: String,
     // ── 功能开关 + 运行状态（v2.1）──
+    /// 模型中转总开关。**导航由它算**（§4.9.3）：关着时侧栏与命令面板都不该有
+    /// 这一项。跟着主 status 一起下发，而不是让前端另开一次查询——两次异步读
+    /// 会让「先出现再消失」，正是冷启动那个坑。
+    #[serde(rename = "relayEnabled")]
+    pub relay_enabled: bool,
     #[serde(rename = "whitelistEnabled")]
     pub whitelist_enabled: bool,
     #[serde(rename = "readonlyMode")]
@@ -543,6 +548,7 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
             .clone(),
         connect_client,
         token: config.token.clone(),
+        relay_enabled: config.relay_enabled,
         whitelist_enabled: config.whitelist_enabled,
         readonly_mode: config.readonly_mode,
         backup_enabled: config.backup_enabled,

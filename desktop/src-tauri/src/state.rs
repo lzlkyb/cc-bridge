@@ -265,6 +265,11 @@ pub struct AppState {
     /// 供前端 Header 展示「启动失败」红态，避免用户盲目尝试。
     pub startup_error: StdMutex<Option<String>>,
 
+    /// 模型中转运行时（配置快照 + 监听句柄 + 日志 + 统计）。
+    ///
+    /// 放在 AppState 而不是页面里：监听要活过页面卸载，日志要活过切 tab。
+    pub relay: Arc<crate::relay::RelayRuntime>,
+
     /// 外挂 MCP server 的连接池（通用桥）。懒启动，列工具不碰它。
     pub mcp_bridge: crate::mcp::bridge::McpBridge,
 
@@ -349,6 +354,51 @@ pub struct ClientHit {
     pub loopback: bool,
 }
 
+/// 决定中转实际监听的地址。
+///
+/// - 隧道模式：只听回环。远端经 SSH 隧道访问，不需要暴露网卡。
+/// - 直连模式：绑用户指定或自动选出的网卡 IP。**绝不绑 `0.0.0.0`**——那会把
+///   VirtualBox / Hyper-V 的虚拟网卡一并暴露，实际暴露面比用户以为的大（§4.8）。
+///
+/// 直连模式下拿不到任何网卡地址时退回回环：**宁可连不上，也不要意外对内网开放**。
+pub fn relay_listen_host(config: &BridgeConfig) -> String {
+    relay_host_for(&config.relay_listen_mode, config.relay_lan_ip.as_deref())
+}
+
+/// 同 [`relay_listen_host`]，但入参是「还没落盘」的表单值——保存前要先拿它做
+/// 自转发检测，而那时配置还没写进 `BridgeConfig`。
+pub fn relay_host_for(mode: &str, lan_ip: Option<&str>) -> String {
+    if mode != "direct" {
+        return "127.0.0.1".into();
+    }
+    if let Some(ip) = lan_ip.map(str::trim).filter(|s| !s.is_empty()) {
+        return ip.to_string();
+    }
+    pick_lan_ip(&network::get_lan_ips()).unwrap_or_else(|| "127.0.0.1".into())
+}
+
+/// 从网卡列表里挑一个「远端真的连得上」的地址。
+///
+/// 排除虚拟网卡段（VirtualBox host-only `192.168.56.*`、Docker `172.17.*`、
+/// link-local `169.254.*`）——这些地址本机看着正常，远端永远连不上，
+/// 而报错只会是「连接超时」，没人会想到是选错了网卡（已知坑：多网卡 IP 选错）。
+fn pick_lan_ip(ips: &[String]) -> Option<String> {
+    let usable: Vec<&String> = ips
+        .iter()
+        .filter(|ip| {
+            !(ip.starts_with("192.168.56.")
+                || ip.starts_with("172.17.")
+                || ip.starts_with("169.254.")
+                || ip.starts_with("127."))
+        })
+        .collect();
+    usable
+        .iter()
+        .find(|ip| ip.starts_with("192.168.") || ip.starts_with("10."))
+        .or_else(|| usable.first())
+        .map(|ip| (*ip).clone())
+}
+
 impl AppState {
     pub fn new(db: Connection, config: BridgeConfig, data_dir: PathBuf) -> Self {
         // 白名单根目录缓存初始化：在 config 被移入 RwLock 前取一次 canonicalize。
@@ -358,6 +408,22 @@ impl AppState {
             config.remote_ban_threshold,
             config.remote_ban_window_min as u64,
         );
+        // 中转：日志目录在 data_dir 下独立一格，与 audit / journal 分开——
+        // 「清日志」时不该顺手把审计记录也清了。
+        let relay_log_dir = data_dir.join("relay");
+        let _ = std::fs::create_dir_all(&relay_log_dir);
+        crate::relay::log::cleanup_expired(&relay_log_dir);
+        let relay_listen = relay_listen_host(&config);
+        let relay = Arc::new(crate::relay::RelayRuntime::new(
+            config.relay.clone(),
+            config.relay_token.clone(),
+            Arc::new(crate::relay::RelayLog::new(
+                crate::relay::config::DEFAULT_LOG_KEEP,
+                Some(relay_log_dir),
+            )),
+            relay_listen,
+            crate::relay::config::DEFAULT_PORT,
+        ));
         Self {
             db: Mutex::new(db),
             config: RwLock::new(config),
@@ -383,6 +449,7 @@ impl AppState {
             ssh_helpers: DashMap::new(),
             ssh_helper_blocked: DashMap::new(),
             startup_error: StdMutex::new(None),
+            relay,
             mcp_bridge: crate::mcp::bridge::McpBridge::new(),
             cc: crate::cc_session::CcSessions::new(),
             ban,

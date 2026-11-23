@@ -1,0 +1,568 @@
+//! 请求日志：内存环形（供界面）+ 按天 JSONL（供排障）。
+//!
+//! 两条存储各有分工，都不是装饰：
+//!
+//! - **内存环形**回答「刚才那几条怎么样了」。界面每两秒拉一次，量必须可控，
+//!   所以上限固定 5000 行（`relay_log_keep`，不暴露给用户）。
+//! - **JSONL** 回答「昨天下午那次 429 是什么」。按天分文件，启动时清掉超期的整份
+//!   文件——不原地改写，读方的偏移不会失效（同 `journal.rs` 的做法）。
+//!
+//! **默认不记 body**（§4.10 第 4 条）。这条不是省事：那 937KB 的日志就是教训。
+//! 需要看 body 时走 debug 开关，且界面要标体积风险。
+//!
+//! 请求是「开始时插入一条 in-flight、流结束时回填」的两段式。这样做是因为 SSE 可能
+//! 持续几分钟——若等流结束才写日志，界面在整段时间里都看不到这条请求，
+//! 而人恰恰是在那段时间里去查「卡住了没有」。
+
+use std::collections::VecDeque;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use chrono::{Local, TimeZone};
+use serde::{Deserialize, Serialize};
+
+/// 日志保留天数（磁盘）。
+const DISK_RETENTION_DAYS: i64 = 7;
+
+/// 一条请求记录。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayLogEntry {
+    pub id: u64,
+    /// UTC 毫秒。界面按本地时区显示（§4.11「日志时间基准」）。
+    pub ts_ms: i64,
+    /// `local`（回环）或来源 IP。
+    pub source: String,
+    /// 客户端请求的原始模型名（去掉私有后缀后）。
+    pub client_model: String,
+    pub tier: String,
+    pub upstream_model: String,
+    /// 该档未配置、请求落到 default。
+    pub fell_back: bool,
+    /// 命中方式：alias / override / keyword / fallback。
+    pub via: String,
+    /// 触发过的改写：`fold` / `strip_suffix` / `clamp` 或组合。
+    pub rewrite: Option<String>,
+    /// 折叠摘要，含 `messages[i].content[j]` 路径。
+    pub fold_summary: Option<String>,
+    /// 是否被折叠过（响应头 `x-relay-sanitized` 与界面徽章用）。
+    pub sanitized: bool,
+    /// 上游状态码。in-flight 时为 `None`。
+    pub status: Option<u16>,
+    /// 首字节耗时（TTFB 的真实指标，比总耗时有意义）。
+    pub first_byte_ms: Option<u64>,
+    pub total_ms: Option<u64>,
+    pub bytes_in: Option<u64>,
+    pub bytes_out: Option<u64>,
+    /// 失败原因（上游错误摘要或本地错误）。密钥已打码。
+    pub error: Option<String>,
+    /// 请求路径，目前是 `/v1/messages` 或 `/v1/messages/count_tokens`。
+    pub path: String,
+}
+
+impl RelayLogEntry {
+    pub fn is_error(&self) -> bool {
+        self.status.is_some_and(|s| s >= 400)
+    }
+
+    pub fn is_in_flight(&self) -> bool {
+        self.status.is_none()
+    }
+}
+
+/// 流结束时回填的字段。
+#[derive(Clone, Debug, Default)]
+pub struct LogPatch {
+    pub status: Option<u16>,
+    pub first_byte_ms: Option<u64>,
+    pub total_ms: Option<u64>,
+    pub bytes_out: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// 今日 / 全部聚合，给四张指标卡与档位分布。
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayStats {
+    pub today_requests: u64,
+    pub today_folded: u64,
+    pub today_errors: u64,
+    /// 0–100。
+    pub today_error_rate: f64,
+    pub first_byte_p50_ms: Option<u64>,
+    pub first_byte_p95_ms: Option<u64>,
+    pub avg_total_ms: Option<u64>,
+    /// 三档命中数（今日）。
+    pub tier_hits: Vec<TierHit>,
+    pub last_error: Option<String>,
+    pub last_error_at_ms: Option<i64>,
+    /// 当前是否还有请求在飞。
+    pub in_flight: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TierHit {
+    pub tier: String,
+    pub count: u64,
+    /// 其中「该档未配置、落到 default」的数量。灰色横条用。
+    pub fell_back: u64,
+}
+
+struct Inner {
+    entries: VecDeque<RelayLogEntry>,
+    next_id: u64,
+}
+
+struct DiskWriter {
+    day: String,
+    file: Option<File>,
+}
+
+/// 日志仓库。内部用 `std::sync::Mutex`：临界区只有几十微秒，且不跨 await。
+pub struct RelayLog {
+    inner: Mutex<Inner>,
+    keep: usize,
+    dir: Option<PathBuf>,
+    disk: Mutex<Option<DiskWriter>>,
+}
+
+impl RelayLog {
+    /// `dir` 为 `None` 时只用内存（单元测试与「不想落盘」的场景）。
+    pub fn new(keep: usize, dir: Option<PathBuf>) -> Self {
+        Self {
+            inner: Mutex::new(Inner {
+                entries: VecDeque::new(),
+                next_id: 1,
+            }),
+            keep: keep.max(1),
+            dir,
+            disk: Mutex::new(None),
+        }
+    }
+
+    /// 插入一条 in-flight 记录，返回 id 供 [`finish`](Self::finish) 回填。
+    pub fn begin(&self, mut entry: RelayLogEntry) -> u64 {
+        entry.ts_ms = if entry.ts_ms == 0 {
+            Local::now().timestamp_millis()
+        } else {
+            entry.ts_ms
+        };
+        let id = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let id = inner.next_id;
+            inner.next_id += 1;
+            entry.id = id;
+            // 新的在前：界面只读最近几条，不必反转
+            inner.entries.push_front(entry.clone());
+            while inner.entries.len() > self.keep {
+                inner.entries.pop_back();
+            }
+            id
+        };
+        // 落盘放在锁外：文件 IO 比内存操作慢几个数量级，不能占着环形缓冲的锁。
+        // in-flight 记录也写一行，流中断时至少能看到「发出去了」。
+        self.append_disk(&entry);
+        id
+    }
+
+    /// 回填结果。
+    pub fn finish(&self, id: u64, patch: LogPatch) {
+        let updated = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(entry) = inner.entries.iter_mut().find(|e| e.id == id) else {
+                return;
+            };
+            if patch.status.is_some() {
+                entry.status = patch.status;
+            }
+            if patch.first_byte_ms.is_some() {
+                entry.first_byte_ms = patch.first_byte_ms;
+            }
+            if patch.total_ms.is_some() {
+                entry.total_ms = patch.total_ms;
+            }
+            if patch.bytes_out.is_some() {
+                entry.bytes_out = patch.bytes_out;
+            }
+            if patch.error.is_some() {
+                entry.error = patch.error;
+            }
+            Some(entry.clone())
+        };
+        if let Some(entry) = updated {
+            // 完成态再写一行（带 `final: true`），排障时以最后一行为准。
+            self.append_disk_final(&entry);
+        }
+    }
+
+    /// 最近 `n` 条（新的在前）。
+    pub fn recent(&self, n: usize) -> Vec<RelayLogEntry> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.entries.iter().take(n).cloned().collect()
+    }
+
+    /// 全部条目数。
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entries
+            .len()
+    }
+
+    /// 与 `len` 配套。空日志是正常状态（刚启动），不是异常——
+    /// 所以调用方该用它判空，而不是 `len() == 0`。
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// 今日聚合。`now_ms` 与 `day_start_ms` 由调用方给，以便测试确定性。
+    pub fn stats_for(&self, day_start_ms: i64) -> RelayStats {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        build_stats(inner.entries.iter(), day_start_ms)
+    }
+
+    /// 今日聚合，按本地时区的零点算边界。
+    ///
+    /// 用 `chrono::Local` 而不是 UTC：用户看的是自己墙上钟的「今天」，
+    /// 用 UTC 会让 08:00 之前的请求算到昨天（UTC+8）。
+    pub fn stats_today(&self) -> RelayStats {
+        self.stats_for(local_day_start_ms())
+    }
+
+    fn append_disk(&self, entry: &RelayLogEntry) {
+        let Some(dir) = self.dir.as_ref() else { return };
+        let Some(line) = serde_json::to_string(entry).ok() else {
+            return;
+        };
+        self.write_line(dir, &line);
+    }
+
+    fn append_disk_final(&self, entry: &RelayLogEntry) {
+        // 完成行多一个标记，读的时候能区分「进行中」与「已结束」的两行。
+        let Some(dir) = self.dir.as_ref() else { return };
+        let mut value = match serde_json::to_value(entry) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("final".into(), serde_json::Value::Bool(true));
+        }
+        if let Ok(line) = serde_json::to_string(&value) {
+            self.write_line(dir, &line);
+        }
+    }
+
+    fn write_line(&self, dir: &Path, line: &str) {
+        let day = Local::now().format("%Y%m%d").to_string();
+        let mut guard = self.disk.lock().unwrap_or_else(|e| e.into_inner());
+        // 换天时重开文件；其余时间复用句柄，避免每条日志都 open/close。
+        let need_reopen = guard.as_ref().is_none_or(|w| w.day != day);
+        if need_reopen {
+            let path = day_file(dir, &day);
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .ok();
+            *guard = Some(DiskWriter { day, file });
+        }
+        if let Some(writer) = guard.as_mut() {
+            if let Some(f) = writer.file.as_mut() {
+                // 写失败不 panic：日志不是业务路径，磁盘满不该让请求失败。
+                let _ = writeln!(f, "{line}");
+            }
+        }
+    }
+}
+
+fn day_file(dir: &Path, day: &str) -> PathBuf {
+    dir.join(format!("relay-{day}.jsonl"))
+}
+
+/// 本地时区「今天零点」的 epoch 毫秒。
+pub fn local_day_start_ms() -> i64 {
+    let now = Local::now();
+    let Some(naive) = now.date_naive().and_hms_opt(0, 0, 0) else {
+        return 0;
+    };
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .map(|dt| dt.timestamp_millis())
+        // DST 边界上零点可能不存在（极少数时区），退化成「24 小时前」，
+        // 宁可少算几小时也不要整块统计归零。
+        .unwrap_or_else(|| now.timestamp_millis() - 86_400_000)
+}
+
+fn build_stats<'a>(
+    entries: impl Iterator<Item = &'a RelayLogEntry>,
+    day_start_ms: i64,
+) -> RelayStats {
+    let mut stats = RelayStats {
+        tier_hits: ["default", "haiku", "opus"]
+            .into_iter()
+            .map(|tier| TierHit {
+                tier: tier.to_string(),
+                count: 0,
+                fell_back: 0,
+            })
+            .collect(),
+        ..RelayStats::default()
+    };
+    let mut first_bytes: Vec<u64> = Vec::new();
+    let mut totals: Vec<u64> = Vec::new();
+
+    for entry in entries {
+        if entry.is_in_flight() {
+            stats.in_flight += 1;
+        }
+        if entry.ts_ms < day_start_ms {
+            continue;
+        }
+        stats.today_requests += 1;
+        if entry.sanitized {
+            stats.today_folded += 1;
+        }
+        if entry.is_error() {
+            stats.today_errors += 1;
+            // 只在「今天」范围内取最后一条错误
+            if stats.last_error_at_ms.is_none_or(|ts| entry.ts_ms >= ts) {
+                stats.last_error_at_ms = Some(entry.ts_ms);
+                stats.last_error = Some(entry.error.clone().unwrap_or_else(|| {
+                    format!(
+                        "上游返回 {}（{}）",
+                        entry.status.unwrap_or(0),
+                        entry.client_model
+                    )
+                }));
+            }
+        }
+        if let Some(row) = stats.tier_hits.iter_mut().find(|r| r.tier == entry.tier) {
+            row.count += 1;
+            if entry.fell_back {
+                row.fell_back += 1;
+            }
+        }
+        if let Some(ms) = entry.first_byte_ms {
+            first_bytes.push(ms);
+        }
+        if let Some(ms) = entry.total_ms {
+            totals.push(ms);
+        }
+    }
+
+    stats.today_error_rate = if stats.today_requests == 0 {
+        0.0
+    } else {
+        (stats.today_errors as f64) * 100.0 / (stats.today_requests as f64)
+    };
+    stats.first_byte_p50_ms = percentile(&mut first_bytes, 50);
+    stats.first_byte_p95_ms = percentile(&mut first_bytes, 95);
+    stats.avg_total_ms = if totals.is_empty() {
+        None
+    } else {
+        Some(totals.iter().sum::<u64>() / totals.len() as u64)
+    };
+    stats
+}
+
+fn percentile(values: &mut [u64], p: u8) -> Option<u64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    // 用 ceil 让 p50 落在「中间那个」而不是插值——界面显示的是整数毫秒，
+    // 插值出来的 412.5 只会被四舍五入回去，不如直接取样本。
+    let idx = ((values.len() as f64 - 1.0) * (p as f64 / 100.0)).round() as usize;
+    values.get(idx.min(values.len() - 1)).copied()
+}
+
+/// 清掉超过保留期的整份日志文件。启动时调用一次。
+pub fn cleanup_expired(dir: &Path) {
+    let Ok(read) = fs::read_dir(dir) else {
+        return;
+    };
+    let cutoff = Local::now() - chrono::Duration::days(DISK_RETENTION_DAYS);
+    let cutoff_day = cutoff.format("%Y%m%d").to_string();
+    for entry in read.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(day) = name
+            .strip_prefix("relay-")
+            .and_then(|s| s.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        if day.len() == 8 && day.chars().all(|c| c.is_ascii_digit()) && day < cutoff_day.as_str() {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(ts_ms: i64, status: Option<u16>) -> RelayLogEntry {
+        RelayLogEntry {
+            id: 0,
+            ts_ms,
+            source: "local".into(),
+            client_model: "claude-sonnet-5-5".into(),
+            tier: "default".into(),
+            upstream_model: "qwen4-max-preview".into(),
+            fell_back: false,
+            via: "alias".into(),
+            rewrite: None,
+            fold_summary: None,
+            sanitized: false,
+            status,
+            first_byte_ms: None,
+            total_ms: None,
+            bytes_in: Some(100),
+            bytes_out: None,
+            error: None,
+            path: "/v1/messages".into(),
+        }
+    }
+
+    fn log() -> RelayLog {
+        RelayLog::new(3, None)
+    }
+
+    #[test]
+    fn begin_then_finish_fills_the_same_row() {
+        let log = log();
+        let id = log.begin(entry(1_000, None));
+        assert_eq!(log.len(), 1);
+        assert!(log.recent(1)[0].is_in_flight());
+
+        log.finish(
+            id,
+            LogPatch {
+                status: Some(200),
+                first_byte_ms: Some(120),
+                total_ms: Some(900),
+                bytes_out: Some(2048),
+                error: None,
+            },
+        );
+        let row = &log.recent(1)[0];
+        assert_eq!(row.status, Some(200));
+        assert_eq!(row.first_byte_ms, Some(120));
+        assert!(!row.is_in_flight());
+    }
+
+    #[test]
+    fn ring_buffer_respects_keep_limit() {
+        let log = log();
+        for i in 0..10 {
+            log.begin(entry(1_000 + i, Some(200)));
+        }
+        assert_eq!(log.len(), 3, "稳态行数必须有上限");
+        // 新的在前
+        assert!(log.recent(1)[0].ts_ms > log.recent(3)[2].ts_ms);
+    }
+
+    #[test]
+    fn stats_only_count_today() {
+        let log = log();
+        let day_start = 1_000_000;
+        log.begin(entry(day_start - 1, Some(200)));
+        log.begin(entry(day_start + 10, Some(200)));
+        log.begin(entry(day_start + 20, Some(429)));
+        let stats = log.stats_for(day_start);
+        assert_eq!(stats.today_requests, 2, "昨天的不能算进来");
+        assert_eq!(stats.today_errors, 1);
+        assert!((stats.today_error_rate - 50.0).abs() < f64::EPSILON);
+        assert!(stats.last_error.is_some());
+    }
+
+    #[test]
+    fn tier_hits_track_fall_back() {
+        let log = log();
+        let mut a = entry(100, Some(200));
+        a.tier = "haiku".into();
+        a.fell_back = true;
+        log.begin(a);
+        log.begin(entry(200, Some(200)));
+        let stats = log.stats_for(0);
+        let haiku = stats.tier_hits.iter().find(|t| t.tier == "haiku").unwrap();
+        let default = stats
+            .tier_hits
+            .iter()
+            .find(|t| t.tier == "default")
+            .unwrap();
+        assert_eq!((haiku.count, haiku.fell_back), (1, 1));
+        assert_eq!((default.count, default.fell_back), (1, 0));
+    }
+
+    #[test]
+    fn folded_and_sanitized_are_counted() {
+        let log = log();
+        let mut a = entry(100, Some(200));
+        a.sanitized = true;
+        a.rewrite = Some("fold".into());
+        log.begin(a);
+        let stats = log.stats_for(0);
+        assert_eq!(stats.today_folded, 1);
+    }
+
+    #[test]
+    fn percentile_picks_real_samples() {
+        let mut values = vec![10, 20, 30, 40, 50];
+        assert_eq!(percentile(&mut values, 50), Some(30));
+        let mut values = vec![100, 200, 300, 400];
+        assert_eq!(percentile(&mut values, 95), Some(400));
+        assert_eq!(percentile(&mut [], 50), None);
+    }
+
+    #[test]
+    fn day_start_is_local_midnight() {
+        // 只断言它落在「今天」范围内且不晚于现在——具体值随运行时时区变化。
+        let start = local_day_start_ms();
+        let now = Local::now().timestamp_millis();
+        assert!(start <= now);
+        assert!(now - start < 86_400_000 + 3_600_000);
+    }
+
+    #[test]
+    fn disk_log_is_written_per_day() {
+        let dir = std::env::temp_dir().join(format!("relay-log-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let log = RelayLog::new(100, Some(dir.clone()));
+        let id = log.begin(entry(0, None));
+        log.finish(
+            id,
+            LogPatch {
+                status: Some(200),
+                ..LogPatch::default()
+            },
+        );
+        let day = Local::now().format("%Y%m%d").to_string();
+        let path = day_file(&dir, &day);
+        let text = fs::read_to_string(&path).expect("日志文件应存在");
+        assert_eq!(text.lines().count(), 2, "in-flight 与完成各一行");
+        assert!(text.contains("\"final\":true"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expired_files_are_removed() {
+        let dir = std::env::temp_dir().join(format!("relay-log-clean-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let old = (Local::now() - chrono::Duration::days(30))
+            .format("%Y%m%d")
+            .to_string();
+        let old_path = day_file(&dir, &old);
+        fs::write(&old_path, "{}").unwrap();
+        cleanup_expired(&dir);
+        assert!(!old_path.exists(), "超期文件应删除");
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

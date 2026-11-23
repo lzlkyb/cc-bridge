@@ -20,6 +20,8 @@ export const status = {
   startupError: null, firewallEnabled: true, firewallPortOpen: true, firewallCheckedSecondsAgo: 0, firewallAvailable: true, rootProfiles: [], activeProfile: "默认",
   commandAllowlistEnabled: false, commandAllowlist: [], notifyCommandComplete: true, notifyTaskComplete: true, sshEnabled: true, sshDragSelectEnabled: true,
   sshCopyOnSelectEnabled: true, platform: "windows", deviceId: "demo", deviceName: "我的电脑", multiDeviceMode: false, authFailureSources: 0,
+  // 预览里中转默认关闭 —— 与真实默认一致（开关在设置 › 网络与接入）。
+  relayEnabled: false,
 } as StatusResponse;
 export async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (command.startsWith("stable_connect_")) return await invokeProductionFixture(command, args, status) as T;

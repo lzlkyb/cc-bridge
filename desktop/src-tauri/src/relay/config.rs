@@ -1,0 +1,609 @@
+//! 中转配置模型：一个 provider、三档映射、派生出来的映射名。
+//!
+//! 存储形态是**一条 JSON**（`config` 表里的 `relay` 键），不是三张关系表。
+//! 方案文档 §4.6 给的是字段结构，不是表数量：单 provider、单 token 的自建场景下，
+//! 三张表只会换来三次联表查询和一套没人用的 CRUD。字段名与语义保持与文档一致，
+//! 将来真要多 provider（P4）时，`providers` 已经是数组，不用改结构。
+//!
+//! 这里**不存任何派生值**——映射名由档位算、provider 名由域名算。存下来就会
+//! 出现「改了档位但映射名还是旧的」这类只有重启才能发现的问题。
+
+use serde::{Deserialize, Serialize};
+
+/// 默认监听端口。不暴露给用户（§4.6：端口冲突极少见，真冲突时错误里给建议）。
+pub const DEFAULT_PORT: u16 = 4100;
+/// 默认日志保留条数。不暴露给用户。
+pub const DEFAULT_LOG_KEEP: usize = 5_000;
+/// 请求体上限 32MB。axum 默认 2MB，Claude Code 带工具定义的大 payload 会破。
+pub const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+/// 档位。
+///
+/// **只有三档，`sonnet` 被 `default` 吸收了。** 理由见 §4.6.1：默认档的映射名
+/// `claude-sonnet-5-5` 本身就在 sonnet 的位置上，再给一个独立 sonnet 档，两档会
+/// 争同一个名字，只能靠「谁先匹配」决定。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TierKind {
+    #[default]
+    Default,
+    Haiku,
+    Opus,
+}
+
+impl TierKind {
+    /// 全部档位，顺序即 UI 与日志展示顺序。
+    pub const ALL: [TierKind; 3] = [TierKind::Default, TierKind::Haiku, TierKind::Opus];
+
+    /// 映射名。**只由档位决定，绝不拼上游真名**（§4.6.3 第 2 条）。
+    ///
+    /// 上游叫 `qwen4-max-preview`，映射名照样是 `claude-sonnet-5-5`：拼上游名既
+    /// 暴露了上游，又会让关键词匹配多出一种误判来源。
+    pub fn alias(self) -> &'static str {
+        match self {
+            TierKind::Default => "claude-sonnet-5-5",
+            TierKind::Haiku => "claude-haiku-5-5",
+            TierKind::Opus => "claude-opus-5-5",
+        }
+    }
+
+    /// 用于识别客户端自己拼的原生模型名的关键词。
+    ///
+    /// `default` 返回 `None`——它没有关键词，它是兜底。而 `sonnet` **故意不在
+    /// 任何档位的关键词里**：Claude Code 发 `claude-sonnet-4-5-20250929` 时，
+    /// 语义上就是「要主力模型」，也就是 `default`。把它当成「sonnet 档未配置已
+    /// 回落」会制造一条假的回落信号，把「配错 alias 一眼能看出来」废掉。
+    pub fn keyword(self) -> Option<&'static str> {
+        match self {
+            TierKind::Default => None,
+            TierKind::Haiku => Some("haiku"),
+            TierKind::Opus => Some("opus"),
+        }
+    }
+
+    /// 客户端要注入的环境变量名。`default` 用 `ANTHROPIC_MODEL`。
+    ///
+    /// **没有 `ANTHROPIC_DEFAULT_SONNET_MODEL`，永远不加**（§4.8.3）。
+    pub fn env_var(self) -> &'static str {
+        match self {
+            TierKind::Default => "ANTHROPIC_MODEL",
+            TierKind::Haiku => "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            TierKind::Opus => "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        }
+    }
+
+    /// 日志与 UI 里的短名。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TierKind::Default => "default",
+            TierKind::Haiku => "haiku",
+            TierKind::Opus => "opus",
+        }
+    }
+}
+
+/// 一档映射。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Tier {
+    pub tier: TierKind,
+    /// 上游真名。留空 = 该档未配置，请求落 `default`。
+    #[serde(default)]
+    pub upstream_model: String,
+}
+
+impl Tier {
+    /// 是否算「已配置」。空白串与缺行同义——用户在输入框里删干净就该当没配。
+    pub fn is_configured(&self) -> bool {
+        !self.upstream_model.trim().is_empty()
+    }
+
+    /// UI 与远端配置要用的映射名。
+    pub fn alias(&self) -> &'static str {
+        self.tier.alias()
+    }
+}
+
+/// 上游鉴权头形态。
+///
+/// 默认 `x-api-key`；首次测连通失败时自动换 `bearer` 再试一次，成功即写回
+/// （§4.6 表）。用户不用碰这一项，排障时才在「高级」里露出来。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthStyle {
+    /// `x-api-key: <token>`（Anthropic 官方形态）
+    #[default]
+    XApiKey,
+    /// `Authorization: Bearer <token>`
+    Bearer,
+}
+
+impl AuthStyle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthStyle::XApiKey => "x-api-key",
+            AuthStyle::Bearer => "bearer",
+        }
+    }
+}
+
+/// 上游协议族。P1 恒为 Anthropic 透传；OpenAI 兼容是 P3 的事。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpstreamKind {
+    #[default]
+    Anthropic,
+    Openai,
+}
+
+/// 一个上游 provider。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Provider {
+    /// 稳定 id。P1 只有一个，固定 `default`，但保留字段以便 P4 多上游。
+    #[serde(default = "default_provider_id")]
+    pub id: String,
+    /// 显示名。**由 `base_url` 的域名推导，不问用户**（§4.6.2「能推导的不出现」）。
+    #[serde(default)]
+    pub name: String,
+    /// 上游 Messages 端点。存**归一化后**的完整地址（含 `/v1/messages`）。
+    pub base_url: String,
+    /// 上游密钥。
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub kind: UpstreamKind,
+    #[serde(default)]
+    pub auth_style: AuthStyle,
+    /// `max_tokens` 上限。`None` = 不压。
+    #[serde(default)]
+    pub max_tokens_limit: Option<u32>,
+    /// 是否折叠 `tool_*` 变更块（§4.4.1 默认预折叠）。
+    #[serde(default = "default_true")]
+    pub fold_tool_blocks: bool,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 档位映射。至少要有 `default` 一行才算配好。
+    #[serde(default)]
+    pub tiers: Vec<Tier>,
+}
+
+fn default_provider_id() -> String {
+    "default".into()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for Provider {
+    fn default() -> Self {
+        Self {
+            id: default_provider_id(),
+            name: String::new(),
+            base_url: String::new(),
+            api_key: String::new(),
+            kind: UpstreamKind::Anthropic,
+            auth_style: AuthStyle::XApiKey,
+            max_tokens_limit: None,
+            fold_tool_blocks: true,
+            enabled: true,
+            tiers: vec![Tier::default()],
+        }
+    }
+}
+
+impl Provider {
+    /// 取某一档；没有那一行就返回 `None`。
+    pub fn tier(&self, kind: TierKind) -> Option<&Tier> {
+        self.tiers.iter().find(|t| t.tier == kind)
+    }
+
+    /// 该档的上游模型名，未配置返回 `None`。
+    pub fn upstream_for(&self, kind: TierKind) -> Option<&str> {
+        self.tier(kind)
+            .filter(|t| t.is_configured())
+            .map(|t| t.upstream_model.trim())
+    }
+
+    /// 已配置的档位，按 `TierKind::ALL` 顺序。
+    pub fn configured_tiers(&self) -> Vec<TierKind> {
+        TierKind::ALL
+            .into_iter()
+            .filter(|k| self.upstream_for(*k).is_some())
+            .collect()
+    }
+
+    /// 三个必填项是否齐全。返回第一个缺的那一项供 UI 定位。
+    pub fn validate(&self) -> Result<(), MissingField> {
+        if self.base_url.trim().is_empty() {
+            return Err(MissingField::BaseUrl);
+        }
+        if self.api_key.trim().is_empty() {
+            return Err(MissingField::ApiKey);
+        }
+        if self.upstream_for(TierKind::Default).is_none() {
+            return Err(MissingField::Model);
+        }
+        Ok(())
+    }
+
+    /// 该 provider 是否可以直接转发。
+    pub fn is_usable(&self) -> bool {
+        self.enabled && self.validate().is_ok()
+    }
+}
+
+/// 三格必填项里的哪一个缺了。UI 据此把焦点与错误指向那一格。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MissingField {
+    BaseUrl,
+    ApiKey,
+    Model,
+}
+
+impl MissingField {
+    pub fn label(self) -> &'static str {
+        match self {
+            MissingField::BaseUrl => "上游地址",
+            MissingField::ApiKey => "密钥",
+            MissingField::Model => "模型",
+        }
+    }
+}
+
+/// 单条模型覆盖（§4.6 的 `relay_override`）。
+///
+/// P1 不暴露 UI，但解析器已经认它——留着是因为它是「某个客户端模型名要固定走
+/// 某个上游模型」的唯一出口，去掉会让将来加回来时改解析顺序。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OverrideRule {
+    pub client_model: String,
+    pub upstream_model: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+/// 中转的全部可持久化配置。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RelaySettings {
+    /// 上游列表。P1 只用第一个（`active()`）。
+    #[serde(default)]
+    pub providers: Vec<Provider>,
+    /// 精确覆盖规则。
+    #[serde(default)]
+    pub overrides: Vec<OverrideRule>,
+}
+
+impl RelaySettings {
+    /// 当前生效的 provider。P1 单 provider，取第一个启用的；都没有则取第一个。
+    pub fn active(&self) -> Option<&Provider> {
+        self.providers
+            .iter()
+            .find(|p| p.enabled)
+            .or_else(|| self.providers.first())
+    }
+
+    /// 可变引用，供保存时就地修补（归一化地址、补 name）。
+    pub fn active_mut(&mut self) -> Option<&mut Provider> {
+        let idx =
+            self.providers
+                .iter()
+                .position(|p| p.enabled)
+                .or(if self.providers.is_empty() {
+                    None
+                } else {
+                    Some(0)
+                })?;
+        self.providers.get_mut(idx)
+    }
+
+    /// 是否已经配好三格。UI 用它决定「待填写」还是可用态。
+    pub fn is_configured(&self) -> bool {
+        self.active().map(|p| p.validate().is_ok()).unwrap_or(false)
+    }
+}
+
+/// 把用户填的地址归一化成完整 Messages 端点。
+///
+/// 用户手里只有 `https://host/apps/anthropic` 这种前缀，让他自己补 `/v1/messages`
+/// 是「多问一个他答不上来的问题」（§4.6.2）。规则：
+/// - 已以 `/v1/messages` 结尾 → 原样（去掉尾斜杠）
+/// - 否则拼 `/v1/messages`
+///
+/// 注意 `/v1/messages/count_tokens` 这类子路径**不在这里处理**：转发时按请求路径
+/// 替换后缀，所以存下来的永远是 `/v1/messages` 这一条基址。
+pub fn normalize_endpoint(raw: &str) -> String {
+    let trimmed = raw.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.ends_with("/v1/messages") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1/messages")
+    }
+}
+
+/// 从端点推导 provider 显示名：取主机名的第一段。
+///
+/// `https://token-plan.maas.qianwenaiapi.com/apps/anthropic/v1/messages`
+/// → `qianwenaiapi`。推导不出来就返回空串，UI 退化成显示「上游」。
+pub fn derive_name(endpoint: &str) -> String {
+    let without_scheme = endpoint
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(endpoint);
+    let host = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        // 去端口（含 IPv6 方括号形态）
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or_else(|| without_scheme.split('/').next().unwrap_or(""))
+        .trim_matches(['[', ']']);
+    host.split('.').next().unwrap_or("").to_string()
+}
+
+/// 规范化一份配置：地址归一化 + 补 name + 档位去重补 default。
+///
+/// **保存时调用一次**，读取时不再修补——读取路径上做修补会让「用户看到的」与
+/// 「存下来的」不一致，而这类不一致只有重启才发现。
+pub fn normalize_settings(settings: &mut RelaySettings) {
+    for provider in &mut settings.providers {
+        provider.base_url = normalize_endpoint(&provider.base_url);
+        if provider.name.trim().is_empty() {
+            provider.name = derive_name(&provider.base_url);
+        }
+        provider.api_key = provider.api_key.trim().to_string();
+        // 档位去重：同档多行以最后一行为准（用户后面填的那次）。
+        let mut seen: Vec<TierKind> = Vec::new();
+        let mut deduped: Vec<Tier> = Vec::new();
+        for tier in provider.tiers.drain(..) {
+            if let Some(pos) = seen.iter().position(|k| *k == tier.tier) {
+                deduped[pos] = tier;
+            } else {
+                seen.push(tier.tier);
+                deduped.push(tier);
+            }
+        }
+        // default 永远存在（可以为空），否则 UI 少一行、解析器还得特判。
+        if !seen.contains(&TierKind::Default) {
+            deduped.insert(0, Tier::default());
+        }
+        // 按固定顺序排，UI 不必再排；同时丢掉未知档（旧版本残留）。
+        deduped.sort_by_key(|t| {
+            TierKind::ALL
+                .iter()
+                .position(|k| *k == t.tier)
+                .unwrap_or(usize::MAX)
+        });
+        provider.tiers = deduped;
+    }
+}
+
+/// 自转发检测：`base_url` 是不是指向中转自己。
+///
+/// 保存时就要拒（§4.10 第 9 条）。不拒的后果是一次请求自己调自己，瞬间打满线程栈——
+/// 现象是「界面卡死」，没人会往「上游地址填成了自己」上想。
+///
+/// 判定：端口等于中转端口，且主机是回环或本机网卡 IP。端口不同不算——那就是另一
+/// 个服务，允许。
+pub fn is_self_forward(endpoint: &str, listen_port: u16, lan_ips: &[String]) -> bool {
+    let Some((host, port)) = split_host_port(endpoint) else {
+        return false;
+    };
+    if port != listen_port {
+        return false;
+    }
+    let is_loopback = matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]");
+    is_loopback || lan_ips.iter().any(|ip| ip == &host)
+}
+
+/// 从 URL 里拆出 (host, port)。没有端口时按 scheme 给默认值。
+fn split_host_port(url: &str) -> Option<(String, u16)> {
+    let (scheme, rest) = url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    // IPv6: [::1]:4100
+    if let Some(stripped) = authority.strip_prefix('[') {
+        let (host, tail) = stripped.split_once(']')?;
+        let port = tail
+            .strip_prefix(':')
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or_else(|| default_port_for(scheme));
+        return Some((format!("[{host}]"), port));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            Some((host.to_string(), port.parse().ok()?))
+        }
+        _ => Some((authority.to_string(), default_port_for(scheme))),
+    }
+}
+
+fn default_port_for(scheme: &str) -> u16 {
+    if scheme.eq_ignore_ascii_case("https") {
+        443
+    } else {
+        80
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alias_is_derived_from_tier_only() {
+        // §4.6.3 第 2 条：上游叫什么都不影响映射名。
+        let p = Provider {
+            tiers: upstream_model_setup("claude-sonnet-distill"),
+            ..Provider::default()
+        };
+        assert_eq!(
+            p.tier(TierKind::Default).unwrap().alias(),
+            "claude-sonnet-5-5"
+        );
+        // 名字里含 sonnet 也不许拼进 alias
+        assert!(!p
+            .tier(TierKind::Default)
+            .unwrap()
+            .alias()
+            .contains("distill"));
+    }
+
+    // 小工具：把「填一格 default」写成表达式，避免每个测试重复四行。
+    fn upstream_model_setup(model: &str) -> Vec<Tier> {
+        vec![Tier {
+            tier: TierKind::Default,
+            upstream_model: model.into(),
+        }]
+    }
+
+    #[test]
+    fn missing_fields_are_reported_in_order() {
+        let p = Provider::default();
+        assert_eq!(p.validate(), Err(MissingField::BaseUrl));
+
+        let p = Provider {
+            base_url: "https://h/apps/anthropic/v1/messages".into(),
+            ..Provider::default()
+        };
+        assert_eq!(p.validate(), Err(MissingField::ApiKey));
+
+        let p = Provider {
+            base_url: "https://h/apps/anthropic/v1/messages".into(),
+            api_key: "sk".into(),
+            ..Provider::default()
+        };
+        // 默认 tiers 里有一行空的 default → 仍算缺模型
+        assert_eq!(p.validate(), Err(MissingField::Model));
+
+        let p = Provider {
+            base_url: "https://h/apps/anthropic/v1/messages".into(),
+            api_key: "sk".into(),
+            tiers: upstream_model_setup("qwen4-max-preview"),
+            ..Provider::default()
+        };
+        assert_eq!(p.validate(), Ok(()));
+    }
+
+    #[test]
+    fn blank_tier_is_treated_as_unconfigured() {
+        // 用户在输入框里删干净 = 没配，不能因为「有一行空行」就算配置完成。
+        let p = Provider {
+            tiers: vec![Tier {
+                tier: TierKind::Haiku,
+                upstream_model: "   ".into(),
+            }],
+            ..Provider::default()
+        };
+        assert!(p.upstream_for(TierKind::Haiku).is_none());
+        assert_eq!(p.configured_tiers(), vec![]);
+    }
+
+    #[test]
+    fn endpoint_normalization_appends_messages_path() {
+        assert_eq!(
+            normalize_endpoint("https://host/apps/anthropic"),
+            "https://host/apps/anthropic/v1/messages"
+        );
+        assert_eq!(
+            normalize_endpoint("https://host/apps/anthropic/"),
+            "https://host/apps/anthropic/v1/messages"
+        );
+        assert_eq!(
+            normalize_endpoint("https://host/apps/anthropic/v1/messages"),
+            "https://host/apps/anthropic/v1/messages"
+        );
+        assert_eq!(normalize_endpoint("  "), "");
+    }
+
+    #[test]
+    fn name_is_derived_from_domain() {
+        assert_eq!(
+            derive_name("https://token-plan.maas.qianwenaiapi.com/apps/anthropic/v1/messages"),
+            "token-plan"
+        );
+        assert_eq!(derive_name("http://127.0.0.1:4100/v1/messages"), "127");
+        assert_eq!(derive_name(""), "");
+    }
+
+    #[test]
+    fn self_forward_is_detected_by_port_and_host() {
+        let lan = vec!["10.0.19.194".to_string()];
+        assert!(is_self_forward(
+            "http://127.0.0.1:4100/v1/messages",
+            4100,
+            &lan
+        ));
+        assert!(is_self_forward(
+            "http://localhost:4100/v1/messages",
+            4100,
+            &lan
+        ));
+        assert!(is_self_forward("http://[::1]:4100/v1/messages", 4100, &lan));
+        assert!(is_self_forward(
+            "http://10.0.19.194:4100/v1/messages",
+            4100,
+            &lan
+        ));
+        // 端口不同 = 另一个服务，允许
+        assert!(!is_self_forward(
+            "http://127.0.0.1:8080/v1/messages",
+            4100,
+            &lan
+        ));
+        // 外部主机同端口，允许
+        assert!(!is_self_forward(
+            "https://api.anthropic.com:4100/v1/messages",
+            4100,
+            &lan
+        ));
+    }
+
+    #[test]
+    fn normalize_fills_name_dedupes_tiers_and_keeps_default() {
+        let mut settings = RelaySettings {
+            providers: vec![Provider {
+                base_url: "https://host/apps/anthropic/".into(),
+                api_key: "  sk-1  ".into(),
+                tiers: vec![
+                    Tier {
+                        tier: TierKind::Haiku,
+                        upstream_model: "old".into(),
+                    },
+                    Tier {
+                        tier: TierKind::Haiku,
+                        upstream_model: "new".into(),
+                    },
+                ],
+                ..Provider::default()
+            }],
+            overrides: vec![],
+        };
+        normalize_settings(&mut settings);
+        let p = &settings.providers[0];
+        assert_eq!(p.base_url, "https://host/apps/anthropic/v1/messages");
+        assert_eq!(p.name, "host");
+        assert_eq!(p.api_key, "sk-1");
+        // 同档多行取最后一行
+        assert_eq!(p.tiers.len(), 2);
+        assert_eq!(p.tier(TierKind::Haiku).unwrap().upstream_model, "new");
+        // default 被补回来且排第一
+        assert_eq!(p.tiers[0].tier, TierKind::Default);
+    }
+
+    #[test]
+    fn env_vars_never_include_sonnet() {
+        // §4.8.3：没有 ANTHROPIC_DEFAULT_SONNET_MODEL，永远不加。
+        for kind in TierKind::ALL {
+            assert_ne!(kind.env_var(), "ANTHROPIC_DEFAULT_SONNET_MODEL");
+        }
+        assert_eq!(TierKind::Default.env_var(), "ANTHROPIC_MODEL");
+        assert_eq!(TierKind::Haiku.env_var(), "ANTHROPIC_DEFAULT_HAIKU_MODEL");
+    }
+}

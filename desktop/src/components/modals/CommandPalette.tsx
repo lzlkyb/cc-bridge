@@ -11,7 +11,7 @@ import { DirectoryBrowser } from "./DirectoryBrowser";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { shortcutLabel } from "../../lib/platform";
 import { SETTING_SEARCH_ITEMS } from "../../lib/settingsSearch";
-import { WORKSPACE_NAV } from "../layout/SideNav";
+import type { NavItem } from "../layout/SideNav";
 import { useDialogDismiss } from "../../hooks/useDialogDismiss";
 import { usePresence } from "../../hooks/usePresence";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
@@ -28,6 +28,7 @@ import { CommandPaletteList, RECENT_GROUP, type CommandItem, type ListEntry } fr
 export function CommandPalette({
   onClose,
   onNavigate,
+  navItems,
   status,
   onChanged,
   onReopenOnboarding,
@@ -35,6 +36,12 @@ export function CommandPalette({
   onClose: () => void;
   /** 第二个参数传锚点（App.handleNavigate 本来就支持，只是这里的类型之前没开口）。 */
   onNavigate: (tab: string, anchor?: string) => void;
+  /**
+   * 这一帧可见的工作区项，由 App 按「中转开关」算好传入。
+   * 面板自己不再引用 `WORKSPACE_NAV` 全集：那会导致关掉中转后仍然搜得到
+   * 「前往：中转页」，点下去是一片空白（§4.9.3 第 4 条）。
+   */
+  navItems: NavItem[];
   status?: StaticStatus;
   onChanged?: () => void;
   /** H3：重新打开首次使用引导（不清除 localStorage，仅重新展示）。 */
@@ -105,7 +112,7 @@ export function CommandPalette({
 
   const items = useMemo<CommandItem[]>(() => [
     // 快捷键标签按平台变（mac 显示 ⌘1）；功能本身早已兼容（App.tsx 键盘监听用 `e.ctrlKey || e.metaKey`），这里仅修正显示。
-    ...WORKSPACE_NAV.map((item, index) => ({ id: `nav-${item.key}`, label: `前往：${item.label}页`, icon: item.icon, group: "导航", tab: item.key, shortcut: shortcutLabel(platform, String(index + 1)) })),
+    ...navItems.map((item, index) => ({ id: `nav-${item.key}`, label: `前往：${item.label}页`, icon: item.icon, group: "导航", tab: item.key, shortcut: shortcutLabel(platform, String(index + 1)) })),
     { id: "nav-settings", label: "前往：设置页", icon: "settings", group: "导航", tab: "settings", shortcut: shortcutLabel(platform, ",") },
     {
       id: "act-token",
@@ -126,7 +133,7 @@ export function CommandPalette({
     { id: "act-theme", label: isDark ? "切换到浅色主题" : "切换到深色主题", icon: isDark ? "sun" : "moon", group: "外观", run: toggleTheme },
     // 设置项索引（纯数据，见 lib/settingsSearch.ts）。只跳转、不代操——原因写在那个文件里。
     ...SETTING_SEARCH_ITEMS,
-  ], [isDark, platform, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding, connectionItems]);
+  ], [isDark, platform, navItems, runRegenerateToken, runClearAudit, setShowDirBrowser, toggleTheme, onReopenOnboarding, connectionItems]);
 
   // 检索内核在 lib/paletteSearch（设计稿《命令面板-拼音模糊与最近使用》）：
   // 子串 > 子序列 > keywords > 拼音全拼 > 拼音首字母，命中字符加亮、拼音给注音槽。

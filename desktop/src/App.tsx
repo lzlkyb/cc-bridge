@@ -16,7 +16,7 @@ import { settingsSectionForAnchor } from "./lib/settingsNavigation";
 import { transitionPage } from "./lib/pageTransition";
 import { isWindows } from "./lib/platform";
 import { Header } from "./components/layout/Header";
-import { SideNav, WORKSPACE_NAV } from "./components/layout/SideNav";
+import { SideNav, visibleNav } from "./components/layout/SideNav";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAppHiddenFlag } from "./hooks/useAppHiddenFlag";
 import { useIpSedCopy } from "./hooks/useIpSedCopy";
@@ -44,12 +44,15 @@ const importLog = () => import("./components/tabs/LogTab").then((m) => ({ defaul
 const importTerminal = () => import("./components/tabs/TerminalTab").then((m) => ({ default: m.TerminalTab }));
 // 实验功能（2026-10-24）：CC 对话页。懒加载，未进入本页的用户不承担这部分体积。
 const importCcGui = () => import("./components/tabs/CcGuiTab").then((m) => ({ default: m.CcGuiTab }));
+// 模型中转（2026-11-23）：默认关闭的功能，只在开关打开时才预取 —— 见下方 prefetch effect。
+const importRelay = () => import("./components/relay/RelayTab").then((m) => ({ default: m.RelayTab }));
 
 const SecurityTab = lazy(importSecurity);
 const SettingsTab = lazy(importSettings);
 const LogTab = lazy(importLog);
 const TerminalTab = lazy(importTerminal);
 const CcGuiTab = lazy(importCcGui);
+const RelayTab = lazy(importRelay);
 import { OnboardingGuide, isOnboardingDone } from "./components/modals/OnboardingGuide";
 import { CommandPalette } from "./components/modals/CommandPalette";
 import { ShortcutSheet } from "./components/modals/ShortcutSheet";
@@ -211,6 +214,12 @@ function AppContent() {
     () => SETTINGS_CATEGORIES.filter((s) => !s.windowsOnly || isWindows(status?.platform)),
     [status?.platform],
   );
+
+  // 可见导航项（§4.9.3）：中转默认不可见，开关打开才出现。
+  // 侧栏、命令面板、Ctrl+1~N 的边界全部吃这一份，三处不再各自引用全集 ——
+  // 否则关掉开关后侧栏仍显示、快捷键导航到不存在的页、命令面板还能搜到它。
+  // `relayEnabled` 未读到时是 undefined，按不可见处理（晚半秒出现可以，闪一下不行）。
+  const navItems = useMemo(() => visibleNav(status?.relayEnabled), [status?.relayEnabled]);
   const handleSettingsSelect = useCallback((id: string, anchor?: string) => {
     setSettingsActiveId(id);
     setPendingAnchor({ anchor: anchor ?? id, nonce: Date.now() });
@@ -290,13 +299,41 @@ function AppContent() {
 
   // 「返回工作区」回到离开设置前的那个工作区 tab（而不是硬编码 connect）。
   // 必须声明在 handleNavigate 之后（引用它）。
+  // 只记**可见**的页：在设置里把中转关掉后，ref 若还指着「中转」，
+  // 返回工作区就会回到一个已经不存在的页。
   const lastWorkspaceTabRef = useRef("connect");
+  const visibleKeys = useMemo(() => new Set(navItems.map((item) => item.key)), [navItems]);
   useEffect(() => {
-    if (activeTab !== "settings") lastWorkspaceTabRef.current = activeTab;
-  }, [activeTab]);
+    if (activeTab !== "settings" && visibleKeys.has(activeTab)) lastWorkspaceTabRef.current = activeTab;
+  }, [activeTab, visibleKeys]);
   const handleBackFromSettings = useCallback(() => {
     handleNavigate(lastWorkspaceTabRef.current);
   }, [handleNavigate]);
+
+  // 当前页不在可见导航里（典型：在设置里关掉了中转）：退回上一次的工作区页，
+  // 那一页若也已不可见（它就是中转）则落到第一项。
+  // 不做这件事的后果是停在 `activeTab="relay"` 上，而那一页的 TabsContent 已经卸载 —— 白屏。
+  useEffect(() => {
+    if (activeTab === "settings" || visibleKeys.has(activeTab)) return;
+    const fallback = visibleKeys.has(lastWorkspaceTabRef.current)
+      ? lastWorkspaceTabRef.current
+      : (navItems[0]?.key ?? "connect");
+    handleNavigate(fallback);
+  }, [activeTab, visibleKeys, navItems, handleNavigate]);
+
+  // 开关由关变开的那一刻自动进入中转页（§4.9.4「开启」）：刚打开就是为了配它。
+  //
+  // 为什么这件事在 App 而不是设置页里做：点开关那一刻 status 还没刷新，`relayEnabled`
+  // 仍是 false，设置页跳过去会被上面那条兜底立刻弹回连接页。等的是 status 自己翻成
+  // true —— 同一帧里 `navItems` 也包含了中转，两边不会打架。
+  // 冷启动时 before 是 undefined（不是 false），所以启动时不会抢走当前页。
+  const prevRelayEnabled = useRef<boolean | undefined>(undefined);
+  useEffect(() => {
+    const enabled = status?.relayEnabled;
+    const before = prevRelayEnabled.current;
+    prevRelayEnabled.current = enabled;
+    if (enabled === true && before === false) handleNavigate("relay");
+  }, [status?.relayEnabled, handleNavigate]);
 
   // 全局键盘快捷键
   useEffect(() => {
@@ -312,18 +349,18 @@ function AppContent() {
         e.preventDefault();
         setShowShortcutSheet((v) => !v);
       }
-      // Ctrl+1~N 切工作区页（N = WORKSPACE_NAV.length，随导航项增减自动跟随）、Ctrl+, 打开设置
+      // Ctrl+1~N 切工作区页（N = 可见项数量，随开关与导航项增减自动跟随）、Ctrl+, 打开设置
       //（桌面应用标准键位，mac 下 ⌘,）；设置排导航末位不占数字位（导航末位惯例，见 VS Code/Discord）。
       // 输入框/可编辑元素聚焦时不拦截，避免覆盖正常输入（如密码、命令参数）
       if (
         isCtrlOrMeta &&
         e.key >= "1" &&
-        e.key <= String(WORKSPACE_NAV.length) &&
+        e.key <= String(navItems.length) &&
         !isEditableTarget(e.target)
       ) {
         e.preventDefault();
-        // 复用侧栏的导航数组，保证「侧栏展示顺序」与「快捷键顺序」永远一致
-        const target = WORKSPACE_NAV[parseInt(e.key) - 1];
+        // 复用同一份可见项，保证「侧栏展示顺序」与「快捷键顺序」永远一致
+        const target = navItems[parseInt(e.key) - 1];
         if (target) handleNavigate(target.key);
       }
       // 走 handleNavigate 而非 setActiveTab：进设置需触发标已读/开更新历史的副作用
@@ -334,7 +371,8 @@ function AppContent() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleNavigate]);
+    // navItems 变了（中转开关）要重绑：闭包里读的是它的长度与第 N 项。
+  }, [handleNavigate, navItems]);
 
   // 方案 C: 网络变化 / 切回窗口时主动刷新状态，确保连接页 IP 立即更新（不依赖 5s 轮询）。
   useEffect(() => {
@@ -383,9 +421,12 @@ function AppContent() {
       void importLog();
       void importTerminal();
       void importCcGui();
+      // 中转只在开关打开时预取：默认关闭意味着大多数用户永远看不到这一页，
+      // 没必要让每个启动都多读一个 chunk。
+      if (status?.relayEnabled) void importRelay();
     }, 1500);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [status?.relayEnabled]);
 
   return (
     <ToastProvider>
@@ -399,6 +440,7 @@ function AppContent() {
         <SideNav
           activeTab={activeTab}
           onNavigate={handleNavigate}
+          navItems={navItems}
           unreadCount={unreadCount}
           status={status}
           collapsed={sideCollapsed}
@@ -476,6 +518,14 @@ function AppContent() {
               <CcGuiTab onNavigate={handleNavigate} />
             </Suspense>
           </TabsContent>
+          {/* 模型中转：**不** keepMounted（§4.9.4）。离开这一页就整页卸载，
+              2 秒轮询随之停掉；开着它却不在这一页时也不该在后台空转。
+              代价是每次进来重新开始采样——指标卡的曲线从「采样中…」重新攒。 */}
+          <TabsContent value="relay" className="page-scroll app-content-box h-full overflow-y-auto overflow-x-hidden">
+            <Suspense fallback={<TabFallback kind="cards" />}>
+              <RelayTab onNavigate={handleNavigate} />
+            </Suspense>
+          </TabsContent>
           </main>
         </div>
       </Tabs>
@@ -496,6 +546,7 @@ function AppContent() {
         <CommandPalette
           onClose={() => setShowCommandPalette(false)}
           onNavigate={handleNavigate}
+          navItems={navItems}
           status={status}
           onChanged={refetchStatus}
           onReopenOnboarding={openOnboarding}

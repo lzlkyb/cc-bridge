@@ -7,6 +7,7 @@ import { Input } from "../../ui/input";
 import { Icon } from "../../ui/icon";
 import { useToast } from "../../ui/toast";
 import { SettingsRow } from "../../ui/SettingsRow";
+import { RelayToggleRow } from "./RelayToggleRow";
 import { SavedHint } from "../../ui/SavedHint";
 import { InlineNotice } from "../../ui/notice";
 import { TransportRow } from "./TransportRow";
@@ -118,6 +119,9 @@ export function NetworkGroup({
         <CardTitle icon={<Icon name="server" />}>服务监听</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* 开关放第一行：它是这一页「多出什么」的唯一入口。默认关闭＝功能不可发现，
+            所以描述里必须点明「开启后左侧出现中转页」，否则用户不知道会多出什么。 */}
+        <RelayToggleRow status={status} onSaved={onSaved} />
         {/* 监听地址放端口前面：它决定「远程能不能连」，比端口号更先要确认。 */}
         <ListenHostRow status={status} onSaved={onSaved} />
         {/* 端口 + 按钮 同一行（统一到 SettingsRow）*/}

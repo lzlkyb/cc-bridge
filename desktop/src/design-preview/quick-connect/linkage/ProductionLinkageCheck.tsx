@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Header } from "../../../components/layout/Header";
-import { SideNav } from "../../../components/layout/SideNav";
+import { SideNav, visibleNav } from "../../../components/layout/SideNav";
 import { ConnectTab } from "../../../components/tabs/ConnectTab";
 import { CommandPalette } from "../../../components/modals/CommandPalette";
 import { CurrentConnectionProvider } from "../../../hooks/useCurrentConnection";
@@ -46,7 +46,7 @@ function CheckPage() {
       <button onClick={() => navigate("connect")}>定位接入卡</button><button onClick={recoverCheck}>模拟网络恢复</button>
     </div></div>
     <div className="qc-app flex min-h-0 flex-1 flex-col overflow-hidden bg-background text-foreground"><div className="app-shell">
-      <SideNav activeTab="connect" onNavigate={navigate} unreadCount={0} status={status} collapsed={collapsed}/>
+      <SideNav activeTab="connect" onNavigate={navigate} navItems={visibleNav(status?.relayEnabled)} unreadCount={0} status={status} collapsed={collapsed}/>
       <div className="app-main flex min-h-0 min-w-0 flex-col"><Header status={status} onChanged={refresh} onNavigate={navigate} onOpenSearch={() => setSearch(true)} collapsed={collapsed} onToggleCollapse={() => setCollapsed(value => !value)}/>
         <main className="app-main-content flex min-h-0 flex-1 flex-col overflow-hidden" data-page="connect"><div className="page-scroll min-h-0 flex-1 overflow-y-auto" data-page-panel><div className="app-content-box">
           <CurrentConnectionAlert status={status} onNavigate={navigate}/>
@@ -54,7 +54,7 @@ function CheckPage() {
         </div></div></main>
       </div>
     </div></div>
-    {search && <CommandPalette status={status} onClose={() => setSearch(false)} onNavigate={navigate} onChanged={refresh}/>}
+    {search && <CommandPalette status={status} navItems={visibleNav(status?.relayEnabled)} onClose={() => setSearch(false)} onNavigate={navigate} onChanged={refresh}/>}
   </div></CurrentConnectionProvider>;
 }
 function CheckConnect({ status, refresh, ip, setIp, navigate, anchor }: {

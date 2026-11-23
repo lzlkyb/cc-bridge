@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { SideNav } from "../../../components/layout/SideNav";
+import { SideNav, visibleNav } from "../../../components/layout/SideNav";
 import { TitleBarControls } from "../../../components/layout/TitleBarControls";
 import { ConnectTab } from "../../../components/tabs/ConnectTab";
 import { Button } from "../../../components/ui/button";
@@ -94,7 +94,7 @@ function PreviewSurface({ preset, changePreset }: { preset: LinkageScenario; cha
       <button type="button" aria-label="重置当前演示场景" onClick={() => changePreset(preset)}><Icon name="refresh" size={14}/>重置</button>
     </div></div>
     <div className="app-boot-fade qc-app flex min-h-0 flex-1 flex-col overflow-hidden bg-background text-foreground"><div className="app-shell">
-      <SideNav activeTab="connect" onNavigate={navigate} unreadCount={0} status={link.status} collapsed={collapsed}/>
+      <SideNav activeTab="connect" onNavigate={navigate} navItems={visibleNav(link.status?.relayEnabled)} unreadCount={0} status={link.status} collapsed={collapsed}/>
       <div className="app-main flex min-h-0 min-w-0 flex-col"><LinkedHeader collapsed={collapsed} onCollapse={() => setCollapsed(old => !old)}/><main className="app-main-content flex min-h-0 flex-1 flex-col overflow-hidden" data-page="connect"><div className="page-scroll min-h-0 flex-1 overflow-y-auto" data-page-panel><div className="app-content-box"><p className="ll-statistics-scope">右侧统计范围：本机全部接入</p><div ref={link.guideAnchor} className="qc-guide-anchor"><ConnectTab status={link.status} onRefresh={link.refresh} selectedIp={link.ip} onSelectIp={link.selectIp} ipResolvedByUser={false} onSedResolved={() => {}} onNavigate={navigate} onCopySed={() => link.copy("ip")}/></div></div></div></main></div>
     </div></div><QuickEntryPreviews/>
   </div>;
