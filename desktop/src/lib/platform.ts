@@ -115,9 +115,9 @@ export function shellTypeCopy(platform: string | undefined): ShellTypeCopy {
  */
 export function releaseWebviewHint(platform: string | undefined): string {
   const saving = isMac(platform)
-    ? "关窗后界面进程整体退出，释放约 120MB（主进程约 22MB 常驻）"
+    ? "界面进程整体退出，释放约 120MB（主进程约 22MB 常驻）"
     : "托盘常驻内存约 85MB → 6MB";
-  return `开启：关窗时销毁界面进程，${saving}，再次打开需重新加载（1~2 秒）；关闭：仅隐藏窗口，再次打开瞬时显示，但界面进程持续占用内存。MCP 服务、托盘与桌面通知均不受影响。默认开启`;
+  return `开启：收起窗口只是隐藏，终端与布局原样保留；闲置 30 分钟后才销毁界面进程，${saving}；关闭：永不自动释放，界面进程持续占用内存。MCP 服务、托盘与桌面通知均不受影响。默认开启`;
 }
 
 /**

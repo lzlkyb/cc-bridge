@@ -1851,16 +1851,29 @@ mod over_wire_tests {
     #[ignore]
     async fn tools_list_returns_all_tools_with_schemas() {
         let root = unique_temp_root("list");
-        let srv = spawn_server(test_config(&root), root.clone()).await;
+        let cfg = test_config(&root);
+        // `get_tool_definitions` 的第三个参数就是它：journal 关闭时 `change_sets`
+        // 被摘掉。下面「与注册表对齐」必须套同一个过滤条件，否则永远少一个。
+        let journal_on = cfg.journal_enabled;
+        let srv = spawn_server(cfg, root.clone()).await;
         let r = rpc(&srv.base, &srv.token, "tools/list", json!({})).await;
         let tools = r["result"]["tools"].as_array().expect("tools 应是数组");
         // 🔴 加工具时这一行必须跟着改。它曾经从 17 漂到 19 再漂到现在的 24 却没人发现——
         // 因为整块 over_wire 测试都带 `#[ignore]`，默认门禁根本不跑（见 tests 区块末尾说明）。
         // 现在与 `registry::all_tools()` 双向对齐：数量对不上会直接红，不用靠记忆。
+        //
+        // ⚠ 对齐时必须**套用与 `get_tool_definitions` 相同的过滤**
+        // （`journal || t.name != "change_sets"`）：这条断言曾直接比
+        // `all_tools().len()`，而 `test_config` 不设 `journal_enabled`（默认 false）
+        // ⇒ 23 vs 24 常红，又因整块带 `#[ignore]` 无人发现。两边同源同过滤后才真保险。
+        let registry_len = crate::mcp::tools::registry::all_tools()
+            .iter()
+            .filter(|t| journal_on || t.name != "change_sets")
+            .count();
         assert_eq!(
             tools.len(),
-            crate::mcp::tools::registry::all_tools().len(),
-            "tools/list 必须与注册表逐个对齐"
+            registry_len,
+            "tools/list 必须与注册表逐个对齐（journal_enabled={journal_on}）"
         );
         // `push_notification` 挂在 `notifications` feature 之后，只有默认构建才注册。
         // 门禁跑的是 `--no-default-features`（裸 `cargo test` 会崩 0xc0000139），故取 23。

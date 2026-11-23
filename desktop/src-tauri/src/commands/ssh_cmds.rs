@@ -78,7 +78,11 @@ pub struct SshConnectionList {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SshFileEntry {
-    /// 文件名（含软链 ` -> target` 后缀）。
+    /// 文件名。
+    ///
+    /// ⚠️ **两条路径给的形态不同**：旧 helper 路径（`ls -la` 解析）对软链会给
+    /// `link -> target`；russh 路径给**纯文件名**。前端一律 `split(" -> ")[0]`
+    /// 兜底，所以两种都能正确显示；差别只是 russh 路径看不到软链目标。
     pub name: String,
     /// 是否为目录。
     pub is_dir: bool,
@@ -408,7 +412,9 @@ pub(super) struct SshLink {
     ///
     /// 建连接时就拼好而不是每次用到再拼：拼接会因为非法字符失败，失败必须
     /// 在一开始就报出来，而不是埋在某一条传输路径里。
-    proxy: Option<String>,
+    /// `pub(super)`：`ssh_russh_cmds` 要据此判断「这条连接带跳板，内置协议栈
+    /// 第一版不支持，明确失败并回退」——不能静默按直连连（那会连到跳板机）。
+    pub(super) proxy: Option<String>,
 }
 
 fn same_login(a: &SshConnection, b: &SshConnection) -> bool {
@@ -975,6 +981,27 @@ pub(super) struct TransferHooks {
     pub(super) transfer_id: Option<String>,
     pub(super) cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub(super) setup_input: Option<String>,
+}
+
+impl TransferHooks {
+    /// 上报一次传输进度（百分比 0–100）。
+    ///
+    /// 抽成方法是为了让 **russh 路径与 scp 路径共用同一份事件契约**：
+    /// 事件名 `ssh_transfer_progress` 与载荷字段都由这一处发出，前端只需监听一次。
+    /// 没有 `app`（列目录等非传输调用用的 `Default`）时静默丢弃——那些调用
+    /// 本就不该有进度。
+    pub(super) fn emit_progress(&self, percent: u8) {
+        let (Some(app), Some(tid)) = (&self.app, &self.transfer_id) else {
+            return;
+        };
+        let _ = app.emit(
+            "ssh_transfer_progress",
+            SshTransferProgress {
+                transfer_id: tid.clone(),
+                percent,
+            },
+        );
+    }
 }
 
 /// 从一块输出里取**最后一个** `NN%`。
@@ -2300,6 +2327,14 @@ pub async fn ssh_sftp_list(
     //
     // 注意：只要 helper **拿到了响应**（哪怕退出码非 0）就不再走旧路径——
     // 目录不存在这类真实错误重跑一遍只是白垃一次握手，结果一样。
+    // D 方案：russh 长连接优先于 helper——同为零握手，但 russh 不依赖服务器
+    // 给 PTY、不受 ConPTY 4 MB 缓冲限制，也不需要解析 `ls` 文本。
+    // 任何失败（含负缓存期内的「暂不重试」）都静默落到下面，不改变既有行为。
+    if let Ok(entries) =
+        super::ssh_russh_file::russh_list_dir(state.inner(), &link, creds.clone(), &path).await
+    {
+        return Ok(entries);
+    }
     if let Ok((out, code)) =
         run_via_helper(&state, &link, &ssh_path, creds.clone(), gnu_cmd.clone()).await
     {
@@ -2367,6 +2402,38 @@ pub async fn ssh_sftp_get(
     let scp_path =
         find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
     let creds = resolve_link_secrets(&link, &state.data_dir)?;
+
+    // D 方案： russh 长连接优先——小文件不再新起 scp 进程、不再付一次 11 秒握手。
+    // 进度/取消钩子与 scp 路径**同一套**（TransferHooks），前端无需区分。
+    // 失败（含负缓存期）静默落到下面的 scp 路径。
+    {
+        let cancel = register_transfer(&state, &transfer_id);
+        let hooks = TransferHooks {
+            app: Some(app.clone()),
+            transfer_id: Some(transfer_id.clone()),
+            cancel: Some(cancel),
+            setup_input: None,
+        };
+        let tried = super::ssh_russh_file::russh_download(
+            state.inner(),
+            &link,
+            creds.clone(),
+            &remote,
+            std::path::Path::new(&local),
+            &hooks,
+        )
+        .await;
+        state.ssh_transfers.remove(&transfer_id);
+        if tried.is_ok() {
+            return Ok(());
+        }
+        // russh 没成：别把「已取消」误报成失败——用户主动取消时旧路径也不必再跑。
+        if let Some(c) = &hooks.cancel {
+            if c.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("传输已取消".into());
+            }
+        }
+    }
 
     // 🔴 先下到临时名，成功再 rename。这样**取消或失败永远不会碰到用户原有的文件**——
     // 否则「确认覆盖后下到一半取消」会把原文件毁成半个，而用户在对话框里确认的是
@@ -2457,6 +2524,35 @@ pub async fn ssh_sftp_put(
     let scp_path =
         find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
     let creds = resolve_link_secrets(&link, &state.data_dir)?;
+
+    // D 方案： russh 长连接优先，理由同 `ssh_sftp_get`。
+    {
+        let cancel = register_transfer(&state, &transfer_id);
+        let hooks = TransferHooks {
+            app: Some(app.clone()),
+            transfer_id: Some(transfer_id.clone()),
+            cancel: Some(cancel),
+            setup_input: None,
+        };
+        let tried = super::ssh_russh_file::russh_upload(
+            state.inner(),
+            &link,
+            creds.clone(),
+            std::path::Path::new(&local),
+            &remote,
+            &hooks,
+        )
+        .await;
+        state.ssh_transfers.remove(&transfer_id);
+        if tried.is_ok() {
+            return Ok(());
+        }
+        if let Some(c) = &hooks.cancel {
+            if c.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("传输已取消".into());
+            }
+        }
+    }
 
     let cancel = register_transfer(&state, &transfer_id);
     let hooks = TransferHooks {
@@ -2557,6 +2653,13 @@ pub async fn ssh_sftp_mkdir(
     let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let creds = resolve_link_secrets(&link, &state.data_dir)?;
     let remote_cmd = format!("mkdir -p {}", shell_quote(&path));
+    // D 方案：russh 长连接优先（`mkdir -p` 语义已在 russh 侧对齐）。
+    if super::ssh_russh_file::russh_mkdir(state.inner(), &link, creds.clone(), &path)
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
     // 快路径：常驻 helper（同 ssh_sftp_list）。
     if let Ok((out, code)) =
         run_via_helper(&state, &link, &ssh_path, creds.clone(), remote_cmd.clone()).await
@@ -2590,6 +2693,13 @@ pub async fn ssh_sftp_remove(
     let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let creds = resolve_link_secrets(&link, &state.data_dir)?;
     let remote_cmd = format!("rm -rf {}", shell_quote(&path));
+    // D 方案：russh 长连接优先（`rm -rf` 的递归语义已在 russh 侧用显式栈对齐）。
+    if super::ssh_russh_file::russh_remove(state.inner(), &link, creds.clone(), &path)
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
     // 快路径：常驻 helper（同 ssh_sftp_list）。
     if let Ok((out, code)) =
         run_via_helper(&state, &link, &ssh_path, creds.clone(), remote_cmd.clone()).await

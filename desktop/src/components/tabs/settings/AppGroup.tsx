@@ -44,7 +44,7 @@ export function AppGroup({ status, onSaved = noop }: { status?: StaticStatus; on
         control={<div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{loading ? "读取中…" : autostart === null ? "状态未知" : autostart ? "已开启" : "已关闭"}</span>
           <Switch checked={autostart === true} disabled={loading || pending || autostart === null} onChange={next => { void toggle(next); }} ariaLabel="开机自动启动" />
           {!loading && autostart === null && <Button variant="outline" size="sm" onClick={() => { void readAutostart(); }}>重试</Button>}</div>} />
-      <ToggleRow id="toggle-release-webview" label="关窗时释放界面内存" sub="关窗后释放界面，再次打开需要重新加载" info={releaseWebviewHint(status?.platform)}
+      <ToggleRow id="toggle-release-webview" label="闲置后释放界面内存" sub="收起只是隐藏，终端与布局原样保留；闲置 30 分钟后才释放" info={releaseWebviewHint(status?.platform)}
         checked={status?.releaseWebviewOnClose ?? true} disabled={!status} pending={isPending("release-webview")} error={errorFor("release-webview")} saved={isSaved("release-webview")}
         onChange={value => { void save({ releaseWebviewOnClose: value }, "release-webview"); }} last />
     </section>

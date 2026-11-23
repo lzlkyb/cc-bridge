@@ -32,10 +32,15 @@ use super::ssh_cmds::{
     spawn_capture_off_runtime, ssh_base_args, ScpJob, SshLink, TransferHooks, PART_SUFFIX,
 };
 
-/// 内联编辑上限。base64 后约 2.7 MB，仍在 helper 的 4 MB 输出缓冲内。
-const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
-/// 大文件只读预览取前这么多字节（约 4 万行短行）。
-const PREVIEW_BYTES: u64 = 256 * 1024;
+/// 内联编辑的字节上限。`pub(super)`：`ssh_russh_file` 的限流读必须用**同一个**值，
+/// 否则 russh 路径与旧路径的「能编辑多大的文件」会出现分歧。
+/// base64 后约 2.7 MB，仍在 helper 的 4 MB 输出缓冲内。
+///
+/// 🔴 曾经还有一个 `PREVIEW_BYTES = 256 KB`，配一条恒定 `f.read(PREVIEW_BYTES)` 的
+/// 远端脚本，而 `truncated` 只在 >2 MB 时置位——两者错位导致 256KB–2MB 的文件
+/// 「打开只见到一段却显示可编辑」，保存即静默截断（P0-2）。那个常量已删除：
+/// 限量读与截断判据必须同源，分开定义就是在制造下一个错位。
+pub(super) const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
 /// 远端被改、拒绝写回的错误前缀。前端据此切到冲突态，而不是匹配文案。
 pub const ERR_FILE_CONFLICT: &str = "CCB_FILE_CONFLICT";
 /// 文件不是 UTF-8、不能内联编辑的错误前缀。前端据此引导「用本机编辑器打开」。
@@ -132,6 +137,21 @@ pub async fn ssh_file_read(
     let link = fetch_link(&state, &connection_id).await?;
     let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let creds = resolve_link_secrets(&link, &state.data_dir)?;
+    // D 方案： russh 长连接优先。**同时修掉 P0-2**：旧路径 `read_script` 恒定只读
+    // 前 256 KB 却把 `truncated` 留到 >2 MB 才置位，导致 256KB–2MB 的文件
+    // 「打开只见到一段、却显示可编辑」，保存即静默截断远端文件。
+    // russh 路径的 truncated 由「实际读到的字节数 < 文件总大小」推导，那条缝不存在。
+    if let Ok(r) =
+        super::ssh_russh_file::russh_read_file(state.inner(), &link, creds.clone(), &path).await
+    {
+        return Ok(RemoteFileContent {
+            content: r.content,
+            size: r.size,
+            mtime: r.mtime,
+            truncated: r.truncated,
+            line_ending: r.line_ending,
+        });
+    }
     let cmd = read_script(&path);
     let (out, code) = remote_exec(&state, &link, &ssh_path, creds, cmd).await?;
     if code != 0 {
@@ -149,6 +169,13 @@ pub async fn ssh_file_read(
 /// 为什么用 python3 而不是 `head -c | base64`：要同时拿到 size/mtime、判 UTF-8、
 /// 按字节截断且不劈坏多字节字符——这些 shell 拼起来又脆又长。项目本就依赖远端 python3
 /// （stable_remote 整套），这里复用同一假设；没有 python3 时给「用本机编辑器打开」的出路。
+///
+/// 🔴 P0-2 修复（2026-11-23）：这里原本恒定 `f.read(PREVIEW_BYTES)`（256 KB），
+/// 而 `truncated` 却在 `st.st_size > MAX_EDIT_BYTES`（2 MB）时才置位。两者一错位：
+/// 一个 1 MB 的配置文件打开只拿到前 256 KB、`truncated=false`、前端判定「可编辑」，
+/// 一保存就把远端文件静默截断成 256 KB（数据丢失，且用户完全看不出）。
+/// 现在限量读与 truncated 判据**同一个值**（`MAX_EDIT_BYTES`）：
+/// ≤2 MB 读全量，>2 MB 读前 2 MB 并标记截断。
 fn read_script(path: &str) -> String {
     let py = format!(
         "import os,sys,base64\n\
@@ -156,9 +183,9 @@ fn read_script(path: &str) -> String {
          try:\n\
          \x20   st=os.stat(p)\n\
          \x20   f=open(p,'rb')\n\
-         \x20   data=f.read({preview})\n\
+         \x20   data=f.read({limit})\n\
          \x20   f.close()\n\
-         \x20   trunc=st.st_size>{max}\n\
+         \x20   trunc=st.st_size>{limit}\n\
          \x20   try:\n\
          \x20       text=data.decode('utf-8')\n\
          \x20   except UnicodeDecodeError:\n\
@@ -170,8 +197,7 @@ fn read_script(path: &str) -> String {
          except Exception as e:\n\
          \x20   sys.stdout.write('__CCB_F_ERR__'+str(e)+'\\n')\n",
         path_lit = python_str(path),
-        preview = PREVIEW_BYTES,
-        max = MAX_EDIT_BYTES,
+        limit = MAX_EDIT_BYTES,
     );
     format!(
         "if command -v python3 >/dev/null 2>&1; then python3 -c {py}; \
@@ -262,6 +288,26 @@ pub async fn ssh_file_write(
     let link = fetch_link(&state, &connection_id).await?;
     let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let creds = resolve_link_secrets(&link, &state.data_dir)?;
+    // D 方案： russh 长连接优先（乐观锁 + 临时文件 + 服务端原子 rename 语义对齐）。
+    // 🔴 必须放在下面 `normalized` 之前：那里 else 分支会**move** `content`，
+    // 而本块要 `&content`。放在这里还顺带省掉 russh 成功时白算的一次 base64（最大 2MB）。
+    if let Ok(w) = super::ssh_russh_file::russh_write_file(
+        state.inner(),
+        &link,
+        creds.clone(),
+        &path,
+        &content,
+        &line_ending,
+        expected_mtime,
+        force,
+    )
+    .await
+    {
+        return Ok(RemoteFileWrite {
+            mtime: w.mtime,
+            size: w.size,
+        });
+    }
     // 还原换行符：读时归一成 LF，写回按原文件的风格，避免把整个文件的换行改掉。
     let normalized = if line_ending == "crlf" {
         content.replace('\n', "\r\n")
@@ -382,15 +428,47 @@ pub async fn ssh_file_open_external(
         find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
     let creds = resolve_link_secrets(&link, &state.data_dir)?;
     // 先拿 mtime（回传乐观锁基线）。拿不到不致命，回传时退化为不做冲突检测。
-    let mtime = remote_mtime(&state, &link, &creds, &path)
+    // D 方案： russh 优先，失败落回 helper 上的 `stat -c %Y`。
+    let mtime = match super::ssh_russh_file::russh_mtime(state.inner(), &link, creds.clone(), &path)
         .await
-        .unwrap_or(0);
+    {
+        Ok(m) => m,
+        Err(_) => remote_mtime(&state, &link, &creds, &path)
+            .await
+            .unwrap_or(0),
+    };
     let local = external_local_path(&connection_id, &path)?;
     if let Some(parent) = local.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建临时目录失败：{e}"))?;
     }
     // 先下到临时名再 rename：取消/失败不碰上一次留下的副本。
     let part = format!("{}{}", local.display(), PART_SUFFIX);
+    // D 方案： russh 长连接优先下载——省掉一次 scp 进程 + 一次 11 秒握手。
+    {
+        let tried = super::ssh_russh_file::russh_download(
+            state.inner(),
+            &link,
+            creds.clone(),
+            &path,
+            std::path::Path::new(&part),
+            &TransferHooks::default(),
+        )
+        .await;
+        if tried.is_ok() {
+            if let Err(e) = std::fs::rename(&part, &local) {
+                let _ = std::fs::remove_file(&part);
+                return Err(format!("下载完成但改名失败：{e}"));
+            }
+            let local_str = local.to_string_lossy().to_string();
+            tauri_plugin_opener::open_path(&local_str, None::<&str>)
+                .map_err(|e| format!("打开本机编辑器失败：{e}"))?;
+            return Ok(ExternalEdit {
+                local_path: local_str,
+                mtime,
+            });
+        }
+        let _ = std::fs::remove_file(&part);
+    }
     let (scp, c, r, p) = (scp_path, link, path, part.clone());
     let joined = tokio::task::spawn_blocking(move || {
         let job = ScpJob {
@@ -448,16 +526,48 @@ pub async fn ssh_file_upload_edited(
     }
     // 乐观锁：远端当前 mtime 与打开时不符就拒绝（force 除外）。
     if expected_mtime != 0 && !force {
-        if let Ok(cur) = remote_mtime(&state, &link, &creds, &path).await {
-            if cur != 0 && cur != expected_mtime {
-                return Err(format!(
-                    "{ERR_FILE_CONFLICT}: 服务器上的文件在你打开之后被改过（远端 mtime {cur}）"
-                ));
-            }
+        // D 方案： russh 优先取 mtime；取不到再落回 helper 的 `stat`。
+        let cur =
+            match super::ssh_russh_file::russh_mtime(state.inner(), &link, creds.clone(), &path)
+                .await
+            {
+                Ok(m) => m,
+                Err(_) => remote_mtime(&state, &link, &creds, &path)
+                    .await
+                    .unwrap_or(0),
+            };
+        if cur != 0 && cur != expected_mtime {
+            return Err(format!(
+                "{ERR_FILE_CONFLICT}: 服务器上的文件在你打开之后被改过（远端 mtime {cur}）"
+            ));
         }
     }
-    // 远端临时名（同目录，保证 mv 原子）。带 pid 不便在远端取，用固定后缀 + 随机数。
-    let nonce = std::process::id();
+    // D 方案： russh 长连接优先上传（同样先落远端临时名再 rename，原子替换语义对齐）。
+    {
+        let tried = super::ssh_russh_file::russh_upload(
+            state.inner(),
+            &link,
+            creds.clone(),
+            std::path::Path::new(&local_path),
+            &path,
+            &TransferHooks::default(),
+        )
+        .await;
+        if let Ok(w) = tried {
+            return Ok(RemoteFileWrite {
+                mtime: w.mtime,
+                size: w.size,
+            });
+        }
+    }
+    // 远端临时名（同目录，保证 mv 原子）。
+    // 🔴 nonce 必须**每次调用都不同**。这里原来是 `std::process::id()`，而注释
+    // 写着「随机数」——注释与实现不符（对抗视角第 2 条：假设注释是错的）。
+    // pid 在整个 app 生命周期里是固定的，于是两次回传同一文件会落到同一个远端
+    // 临时名上互相截断。注意这和上面 `write_script` 不一样：那个的 pid 是
+    // **远端 shell** 的，每次保存新起一个 ssh 会话所以天然唯一；这里是**本机** pid。
+    // 与 russh 路径共用同一个自增序号，保证两条路径的唯一性语义一致。
+    let nonce = super::ssh_russh_file::next_write_seq();
     let remote_tmp = format!("{path}.ccb-up-{nonce}.tmp");
     let (scp, c, r, l) = (scp_path, link.clone(), remote_tmp.clone(), local_path);
     // 闭包按值捕获：先克隆一份给 scp，原 creds 留给后面的清理 / finalize。
@@ -532,6 +642,42 @@ fn external_local_path(connection_id: &str, remote: &str) -> Result<PathBuf, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 🔴🔴 P0-2 回归（数据丢失级）：**限量读的上限必须与 `truncated` 判据同源**。
+    ///
+    /// 曾经的 bug：远端脚本恒定 `f.read(PREVIEW_BYTES)`（256 KB），而
+    /// `truncated` 写的是 `st.st_size > MAX_EDIT_BYTES`（2 MB）。于是一个
+    /// 1 MB 的配置文件：只读到前 256 KB，`truncated=false`，前端 `readOnly`
+    /// 只认 `truncated` ⇒ 判定「可编辑」⇒ 用户一保存，远端 1 MB 文件变成 256 KB。
+    ///
+    /// 这条测试同时钉住生成脚本里的两个数字**相等**。若有人再把限量读改回
+    /// 256 KB（或给 `truncated` 换个阈值），这里立刻红。
+    #[test]
+    fn read_script_limit_and_truncated_judgement_are_the_same_value() {
+        let script = read_script("/etc/hosts");
+        // 脚本里只能出现一个限量值：读的上限 与 截断判据 都是它
+        let limit = MAX_EDIT_BYTES.to_string();
+        assert!(
+            script.contains(&format!("f.read({limit})")),
+            "限量读必须用 MAX_EDIT_BYTES（当前脚本：{script}）"
+        );
+        assert!(
+            script.contains(&format!("st.st_size>{limit}")),
+            "truncated 判据必须用同一个 MAX_EDIT_BYTES（当前脚本：{script}）"
+        );
+        // 反证：旧的 256 KB 常量不许再以任何形式回到脚本里
+        assert!(
+            !script.contains(&(256 * 1024).to_string()),
+            "256 KB 的旧限量值又回到了读取脚本里"
+        );
+    }
+
+    /// 上一条只钉「两个数相等」，这条钉「值本身正确」：上限就是 2 MB，
+    /// 不能为了省流量偷偷调小——那会把「能整份编辑的文件」越缩越少。
+    #[test]
+    fn edit_limit_is_two_megabytes() {
+        assert_eq!(MAX_EDIT_BYTES, 2 * 1024 * 1024);
+    }
 
     #[test]
     fn split_rc_extracts_trailing_code() {

@@ -362,6 +362,7 @@ pub async fn save_config(
         state.kill_all_ssh_sessions();
         // 不推屏的 SFTP helper 会话和端口转发也是活的 SSH 连接，断路器必须一并切掉。
         state.kill_all_ssh_helpers();
+        state.kill_all_ssh_russh();
         state.kill_all_ssh_tunnels();
     }
     // 首次接入复制命令时由前端写入，记录 cc-bridge 被注册到远程的作用域，
@@ -942,10 +943,13 @@ pub(crate) async fn import_config_inner(
     // 先拆受影响的 helper，再按总开关决定要不要整体断路。
     for id in &stale_ids {
         state.drop_ssh_helper(id);
+        // D 方案：russh 长连接同理。凭据可能已经变了，旧连接必须丢掉重建。
+        crate::commands::drop_russh_session(state, id);
     }
     if !new_ssh_enabled && old_ssh_enabled {
         state.kill_all_ssh_sessions();
         state.kill_all_ssh_helpers();
+        state.kill_all_ssh_russh();
         state.kill_all_ssh_tunnels();
     }
 

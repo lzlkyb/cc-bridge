@@ -35,16 +35,106 @@ fn notify_toast(handle: &tauri::AppHandle, body: &str) {
 #[cfg(not(feature = "notifications"))]
 fn notify_toast(_handle: &tauri::AppHandle, _body: &str) {}
 
-/// 显示主窗口；若它已被销毁（关窗时我们会真的销毁以释放 webview），
-/// 则按 `tauri.conf.json` 里的原配置重建。
+/// 隐藏后闲置多久才真释放界面内存。
 ///
-/// **为何关窗要销毁而不是 `hide()`**：webview 那一组进程
+/// 30 分钟：覆盖「收起来去吃个饭 / 开个长会」这类真实间隔，又不至于让那 80MB
+/// 常年挂着。改这个值前先看 [`should_release_idle`] 的单测——阈值逻辑锁在那儿。
+const RELEASE_IDLE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// 释放令牌。每次「显示」或「重新隐藏」都自增；pending 的释放任务醒来后比对，
+/// 不等就静默退出。
+///
+/// 为什么需要它：`hide()` 幂等且可能被连续调用（托盘点两次、关窗后再点托盘），
+/// 若每次 hide 都 spawn 一个定时器，半小时后会有一叠任务同时跑。令牌保证只有
+/// 最后一次 hide 的那个活着。
+static RELEASE_TOKEN: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
+
+fn release_token() -> &'static std::sync::Mutex<u64> {
+    RELEASE_TOKEN.get_or_init(|| std::sync::Mutex::new(0))
+}
+
+/// 作废尚未触发的释放任务，并返回新的令牌值。
+fn bump_release_token() -> u64 {
+    let mut guard = release_token().lock().unwrap_or_else(|e| e.into_inner());
+    *guard += 1;
+    *guard
+}
+
+/// 是否该执行释放。**纯函数**：窗口、开关、时间全部从参数进。
+///
+/// 抽成纯函数是为了能单测——这种「跨 30 分钟才触发一次」的逻辑，靠手工点半小时
+/// 验证一次的成本太高，而它的反面（误释放）代价是用户眼前的窗口突然消失。
+fn should_release_idle(
+    hidden_at: std::time::Instant,
+    visible: bool,
+    enabled: bool,
+    now: std::time::Instant,
+) -> bool {
+    enabled && !visible && now.saturating_duration_since(hidden_at) >= RELEASE_IDLE
+}
+
+/// 隐藏主窗口时调用：挂一个 `RELEASE_IDLE` 后的释放任务。
+///
+/// 任务醒来后**重新确认三件事**才动手，任一不成立就放弃：
+/// 1. 令牌没被后来者顶掉（期间又显示过、或重新隐藏过）；
+/// 2. 窗口此刻仍不可见；
+/// 3. 开关还开着（用户可能在这半小时里改了设置）。
+///
+/// 第三条不是冗余：配置是单一事实源（写入点有四处），镜像一份 AtomicBool 必然
+/// 漏，所以这里直接再读一次。
+fn arm_release_timer(app: &tauri::AppHandle) {
+    let enabled = app
+        .state::<std::sync::Arc<state::AppState>>()
+        .config
+        .try_read()
+        .map(|c| c.release_webview_on_close)
+        .unwrap_or(true);
+    if !enabled {
+        return;
+    }
+    let token = bump_release_token();
+    let handle = app.clone();
+    let hidden_at = std::time::Instant::now();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(RELEASE_IDLE).await;
+        if *release_token().lock().unwrap_or_else(|e| e.into_inner()) != token {
+            return;
+        }
+        let Some(window) = handle.get_webview_window("main") else {
+            return;
+        };
+        if window.is_visible().unwrap_or(false) {
+            return;
+        }
+        let still_enabled = handle
+            .state::<std::sync::Arc<state::AppState>>()
+            .config
+            .try_read()
+            .map(|c| c.release_webview_on_close)
+            .unwrap_or(true);
+        if !should_release_idle(hidden_at, false, still_enabled, std::time::Instant::now()) {
+            return;
+        }
+        log::info!(
+            "主窗口已闲置 {} 分钟，释放界面内存",
+            RELEASE_IDLE.as_secs() / 60
+        );
+        let _ = window.destroy();
+    });
+}
+
+/// 显示主窗口；若它已被销毁（闲置释放真的触发过），则按 `tauri.conf.json`
+/// 里的原配置重建。
+///
+/// **为何托盘与关窗都只隐藏、不再销毁**：webview 那一组进程
 /// （BROWSER / gpu-process / renderer / utility ×2 / crashpad）实测占约 **80MB**
-/// 专用工作集，而 `hide()` 一个字节都不会释放。cc-bridge 绝大多数时间收在
-/// 托盘、用户通过远程 MCP 使用它，那 80MB 全程白挂。销毁后只剩 Rust 主进程
-/// 约 5.5MB；代价是重开窗口要重新加载前端（约 1~2 秒）。
+/// 专用工作集，`hide()` 一个字节都不释放。早期为了这 80MB，关窗走真销毁，
+/// 代价是重开要重新加载前端：页面白一下、终端缓冲清空、分屏布局与滚动位置
+/// 全丢；SSH 会话虽然还活着，但输出流已 `detach`、历史不回补，用户眼里就是
+/// 「终端断了」。收在托盘是 cc-bridge 的主要使用形态，这个代价每天都在付。
+/// 内存不是不要，而是换个时机收——见 [`arm_release_timer`]。
 ///
-/// **安全前提（已逐条核实，别担心销毁窗口会阻功能）**：
+/// **安全前提（已逐条核实，隐藏路径同样成立）**：
 /// - 托盘挂在 app 上（`TrayIconBuilder::build(app)`），不是窗口级；
 /// - MCP 服务跑在 tokio runtime（setup 里 `spawn_mcp_server`）；
 /// - 桌面通知全走 `handle.notification()`（IP 变化提示、后台命令完成、
@@ -59,6 +149,8 @@ fn show_or_create_main_window(app: &tauri::AppHandle) {
         // 窗口本来就存在 → 是从隐藏态恢复（开关关闭时的行为），要通知前端
         // 恢复动画与轮询。新建的窗口不需要——前端刚挂载，默认就是可见态。
         let _ = w.emit("app:visibility", true);
+        // 显示即作废尚未触发的释放任务，否则 30 分钟整点那一下会拆掉刚打开的窗口。
+        bump_release_token();
         return;
     }
     // 从配置重建，保证尺寸 / 装饰 / 居中等与首次启动完全一致（不手写一份参数，
@@ -385,7 +477,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // 重复启动：把界面唤到前台。窗口可能已被销毁（省内存模式），
+            // 重复启动：把界面唤到前台。窗口可能已被销毁（闲置释放触发过），
             // 所以走 or_create——否则用户双击图标会没任何反应。
             show_or_create_main_window(app);
         }))
@@ -515,6 +607,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             gc_state.gc_cwd_sessions();
                             gc_state.gc_ssh_sessions();
                             gc_state.gc_ssh_helpers();
+                            // D 方案：russh 长连接的兜底回收（主要释放是显式 drop）。
+                            // 本就在 async 块里，直接 await，不必再套一层 spawn。
+                            commands::gc_russh_sessions(&gc_state).await;
                         }
                     })
                 });
@@ -613,13 +708,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     {
                         match tray_app.app_handle().get_webview_window("main") {
                             Some(w) if w.is_visible().unwrap_or(false) => {
-                                // 收起：走正常关闭流程，由 `CloseRequested` 根据
-                                // 「关窗时释放界面内存」开关决定销毁还是仅隐藏——
-                                // 判断只写在一处，这里不重复。
-                                let _ = w.close();
+                                // 收起：只隐藏，不销毁。销毁的代价是重开要重新
+                                // 加载前端——终端缓冲、分屏布局、滚动位置全丢，
+                                // 用户眼里就是终端断了。内存交给 arm_release_timer
+                                // 在闲置 30 分钟后收。
+                                let _ = w.hide();
+                                let _ = w.emit("app:visibility", false);
+                                arm_release_timer(tray_app.app_handle());
                             }
-                            // 窗口存在但不可见（秒开模式隐藏态，或最小化）→ 恢复；
-                            // 窗口已被销毁（省内存模式）→ 重建。两种情况同一个入口。
+                            // 窗口存在但不可见（隐藏态或最小化）→ 恢复；
+                            // 窗口已被销毁（闲置释放触发过）→ 重建。两种情况同一个入口。
                             _ => show_or_create_main_window(tray_app.app_handle()),
                         }
                     }
@@ -1076,28 +1174,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                // 读「关窗时释放界面内存」开关。同步回调里不能 await，所以用 try_read；
-                // 拿不到锁（仅当恰有写者持锁，极罕见）时按配置默认值 true 处理。
-                // 为何不用 AtomicBool 镜像：配置写入点有四处（save_config / 导入配置等），
-                // 逐处同步镜像容易漏；直接读配置才是单一事实源。
-                let release = window
-                    .app_handle()
-                    .state::<std::sync::Arc<state::AppState>>()
-                    .config
-                    .try_read()
-                    .map(|c| c.release_webview_on_close)
-                    .unwrap_or(true);
-                if release {
-                    // 省内存模式：**不** prevent_close，让窗口连同 webview 一起销毁，
-                    // 释放约 80MB。应用不会退出——下面 `RunEvent::ExitRequested` 里拦住了
-                    // 「最后一个窗口关闭」引发的退出。需要界面时由托盘重建。
-                    // 这里不再 emit `app:visibility`：前端即将随 webview 一起消失。
-                } else {
-                    // 秒开模式：仅隐藏，webview 保留，所以要通知前端暂停动画与轮询。
-                    api.prevent_close();
-                    let _ = window.hide();
-                    let _ = window.emit("app:visibility", false);
-                }
+                // 一律只隐藏：销毁的代价（重载前端 + 终端断流）远大于那 80MB。
+                // 托盘左键与这里是同一条路径，用户从哪个入口收起行为都一致；
+                // 「什么时候才真释放」由 arm_release_timer 统一决定。
+                api.prevent_close();
+                let _ = window.hide();
+                let _ = window.emit("app:visibility", false);
+                arm_release_timer(window.app_handle());
             }
             // OS 级最小化 / 还原。**仅 Windows 有效**——mac 上最小化到 Dock 尺寸不变，
             // tao 不会发 `Resized`（也没有 miniaturize / 遮挡事件），详见
@@ -1159,6 +1242,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // 顺序无关：helper 是按连接 id 存在的 SFTP 会话，会话是 pty 主进程。
                 st.kill_all_ssh_sessions();
                 st.kill_all_ssh_helpers();
+                // D 方案：russh 长连接也要在这里收尾，否则退出后服务器端仍留着一个
+                // 已认证的 session（用户以为关了，其实没关）。
+                st.kill_all_ssh_russh();
                 st.kill_all_ssh_tunnels();
                 // CC 对话轮次同理：`Run` 没有 `Drop` 杀，claude 还会再拉 Bash 子进程。
                 // 宽限期给短一点 —— 用户已经关窗，多等只会拖慢退出。
@@ -1190,4 +1276,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod release_timer_tests {
+    use super::*;
+
+    #[test]
+    fn releases_only_when_enabled_hidden_and_idle() {
+        let now = std::time::Instant::now();
+        let long_ago = now - RELEASE_IDLE - std::time::Duration::from_secs(1);
+        let just_now = now - std::time::Duration::from_secs(1);
+        // 开关关着：隐藏再久也不释放。
+        assert!(!should_release_idle(long_ago, false, false, now));
+        // 窗口可见：不释放。
+        assert!(!should_release_idle(long_ago, true, true, now));
+        // 刚隐藏：没到点，不释放。
+        assert!(!should_release_idle(just_now, false, true, now));
+        // 三条都满足：释放。
+        assert!(should_release_idle(long_ago, false, true, now));
+    }
+
+    #[test]
+    fn release_token_bumps_monotonically() {
+        let first = bump_release_token();
+        let second = bump_release_token();
+        assert!(second > first);
+    }
 }

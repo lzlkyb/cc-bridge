@@ -261,6 +261,23 @@ pub struct AppState {
     /// 而失败不记的话**每一次列目录都要先白费一次完整的 TCP+认证握手**，
     /// 然后才退回一次性路径——恰好把这个模块想省的握手反而翻了一倍。
     pub ssh_helper_blocked: DashMap<String, Instant>,
+    /// D 方案：文件面板的 russh 长连接。key=connection_id，一条连接一个 SFTP 会话。
+    ///
+    /// 与 `ssh_helpers` **并存**：调用方先试 russh，任何失败自动回退 helper / scp。
+    /// 所以这里是「快路径」，不是唯一路径——服务器禁 sftp 子系统或算法协商失败时，
+    /// 文件面板仍然可用（慢，但不丢能力）。
+    /// 空闲回收见 `gc_russh_sessions`。
+    pub ssh_russh_sessions: DashMap<String, Arc<crate::commands::RusshFileSession>>,
+    /// 每条连接一把「建连锁」：避免面板刷新与拖拽上传同时发现没有会话、
+    /// 各自建一条连接（白付一次登录 + 多占一个服务器 session 名额 + 可能撞
+    /// sshd 的 `MaxStartups`）。这正是旧 helper 路径上已知的 P1-1。
+    pub ssh_russh_open_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
+    /// russh 路径**建连失败**的连接：记下失败时刻，短期内不再尝试。
+    ///
+    /// 与 `ssh_helper_blocked` 同一个理由，但这里更要紧：调用方是
+    /// 「先试 russh、失败回退旧路径」，没有负缓存的话**每一次操作都要先白付一次
+    /// russh 失败成本**（最坏 40 秒）才回退——比完全不接 russh 还慢。
+    pub ssh_russh_blocked: DashMap<String, Instant>,
     /// A3 修复：启动期错误（如端口被占用）。bind 失败时写入，成功时清除。
     /// 供前端 Header 展示「启动失败」红态，避免用户盲目尝试。
     pub startup_error: StdMutex<Option<String>>,
@@ -448,6 +465,9 @@ impl AppState {
             ssh_transfers: DashMap::new(),
             ssh_helpers: DashMap::new(),
             ssh_helper_blocked: DashMap::new(),
+            ssh_russh_sessions: DashMap::new(),
+            ssh_russh_open_locks: DashMap::new(),
+            ssh_russh_blocked: DashMap::new(),
             startup_error: StdMutex::new(None),
             relay,
             mcp_bridge: crate::mcp::bridge::McpBridge::new(),
@@ -592,6 +612,18 @@ impl AppState {
         let ids: Vec<String> = self.ssh_helpers.iter().map(|e| e.key().clone()).collect();
         for id in ids {
             self.drop_ssh_helper(&id);
+        }
+    }
+
+    /// 关掉全部 russh 长连接（D 方案）。与 `kill_all_ssh_helpers` 同一断路器语义。
+    pub fn kill_all_ssh_russh(&self) {
+        let ids: Vec<String> = self
+            .ssh_russh_sessions
+            .iter()
+            .map(|e| e.key().clone())
+            .collect();
+        for id in ids {
+            crate::commands::drop_russh_session(self, &id);
         }
     }
 

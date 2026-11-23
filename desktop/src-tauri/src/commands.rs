@@ -54,6 +54,11 @@ mod ssh_cmds;
 /// SSH 远程文件读/写/本机编辑器打开（A+C 方案，复用 ssh_cmds 的 helper 与 scp 通道）。
 mod ssh_file_cmds;
 mod ssh_output_cmds;
+/// D 方案：文件面板的内置 russh 长连接（列目录/读写/传输零握手）。
+/// 旧 helper / scp 路径**保留作降级**，调用方一律先试本模块、失败自动回退。
+mod ssh_russh_cmds;
+/// D 方案：russh 长连接上的文件操作层（列目录/读写/传输）。
+mod ssh_russh_file;
 /// SSH 端口转发（-L / -R / -D）。
 mod ssh_tunnel_cmds;
 mod ssh_tunnel_process;
@@ -85,6 +90,9 @@ pub use ssh_batch_cmds::*;
 pub use ssh_cmds::*;
 pub use ssh_file_cmds::*;
 pub use ssh_output_cmds::*;
+// `ssh_russh_file` 全是 pub(super)，glob 重导出不了任何东西，只声明模块即可；
+// 调用方（ssh_file_cmds / ssh_cmds）用 `super::ssh_russh_file::xxx` 访问。
+pub use ssh_russh_cmds::*;
 pub use ssh_tunnel_cmds::*;
 pub use stable_connect_cmds::*;
 pub use stable_discovery_cmds::*;

@@ -112,6 +112,26 @@ dashmap = "6"
 # 多家终端项目（GeminiDesktop 等）回退 0.8.1 解决。0.8.x API（openpty/spawn_command/
 # take_writer/try_clone_reader/resize）与本项目用法完全兼容，且不再引入 serial2 重绑定。
 portable-pty = "=0.8.1"
+# D 方案：内置 SSH/SFTP 协议栈，供**文件面板**走长连接（列目录/读写/传输全部零握手）。
+#
+# 为什么值得引入：外部 `ssh.exe`/`scp.exe` 在 Windows 上没有 ControlMaster，每新建一个
+# 进程就要付一次完整握手（本机到 10.0.19.194 实测约 11 秒，慢在服务器端 PAM 而非网络）。
+# 同类软件（Tabby/Yazi/Shelly SSH/fileterm）都用内置协议栈把「一次握手」摊给所有操作。
+# 终端仍走 portable-pty + ssh.exe 不动，这里只服务文件面板。
+#
+# 🔴 crypto backend 必须显式选 `aws-lc-rs`：它是**已经在依赖树里**的那一份
+# （rustls 0.23 → aws-lc-rs 1.19，`cargo tree -e normal -i aws-lc-rs` 可复核），
+# C 侧产物 aws_lc_0_47_0_crypto.lib 已在本机构建成功过 ⇒ 选它**零新增编译单元、
+# 零新工具链要求**。若写成 default-features 之外的组合而没指定 backend，russh 直接
+# 编不过（它要求「恰好一个」backend）。
+russh = { version = "0.63", features = ["aws-lc-rs"] }
+# SFTP 子系统客户端（russh 官方生态，examples/sftp_client.rs 即范本）。
+# 版本线与 russh **不同**：它走 4.x（`russh-sftp` 4.0.0 依赖 russh 0.63），
+# 别照抄 russh 的版本号——曾按 0.63 写直接解析失败。
+# 同样**不要**再引 `russh-keys`：它停在 0.50.0-beta，而 0.63 已把密钥加载
+# （OpenSSH/PEM/PPK、Pageant、agent 转发）内建为 `russh::keys` 模块，
+# `use russh::keys::*` 即可用——见官方 sftp_client.rs 顶部的 use 语句。
+russh-sftp = "4.0"
 # 「记住密码」加密落盘（S1：凭据只经 Tauri IPC 写入本机，明文不出本地进程）。
 # aes-gcm 是纯 Rust AEAD，体量极小；密钥存 data_dir/ssh_key.bin（每安装随机生成）。
 aes-gcm = "0.10"
