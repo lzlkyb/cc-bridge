@@ -30,6 +30,9 @@ Thumbs.db
 /功能优化清单.md.bak
 /cc-bridge开发*.md
 /design/
+# 设计稿截图与 HTML 草稿（与根 design/ 同性质：只留本地）。
+# 注意 desktop/src/design-preview/ 是入库的预览工程，这里只忽略 desktop 下这一层。
+/desktop/design-preview/
 /generated-images/
 /desktop/src-tauri/icons/backup_*/
 /.workbuddy/
