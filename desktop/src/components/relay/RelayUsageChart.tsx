@@ -40,7 +40,7 @@ export function RelayUsageChart({ rows, from, to, selected, onSelect }: {
   const step = ([1, 2, 2.5, 5, 10].find((n) => n * magnitude * 4 >= max) ?? 10) * magnitude;
   const ceiling = step * 4;
   return (
-    <div className="relay-usage-analysis-panel">
+    <div key={`${from}:${to}`} className="relay-usage-analysis-panel animate-fade-in">
       <div className="relay-inline relay-spread"><h3>用量趋势</h3><small>{points.some((point) => point.covered) ? "点击柱状图筛选请求" : "当前范围无可用 Token"}</small></div>
       <div className="relay-chart">
         <div className="relay-chart-axis" aria-hidden="true">{[4, 3, 2, 1, 0].map((n) => <span key={n}>{compactTokens(n * step)}</span>)}</div>

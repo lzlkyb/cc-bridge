@@ -37,30 +37,56 @@ html.dark :is(.relay-workbench, .relay-drawer) {
 .relay-end { justify-content: flex-end; }
 .relay-workbench small, .relay-drawer small, .relay-work-muted { color: hsl(var(--muted-foreground)); }
 .relay-work-muted { font-size: 13px; }
-.relay-work-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 6px; font-size: 11px; line-height: 1.35; font-weight: 650; color: hsl(var(--muted-foreground)); background: hsl(var(--muted)); white-space: nowrap; }
+.relay-work-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 6px; font-size: 11px; line-height: 1.35; font-weight: 650; color: hsl(var(--muted-foreground)); background: hsl(var(--muted)); white-space: nowrap; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
 .relay-work-badge[data-tone="ok"] { color: hsl(var(--success-ink)); background: hsl(var(--success) / .12); }
 .relay-work-badge[data-tone="warn"] { color: hsl(var(--warning-ink)); background: hsl(var(--warning) / .14); }
 .relay-work-badge[data-tone="bad"] { color: hsl(var(--destructive-ink)); background: hsl(var(--destructive) / .11); }
 .relay-work-badge[data-tone="accent"] { color: hsl(var(--primary)); background: hsl(var(--accent)); }
 .relay-service-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .relay-work-tabs { display: flex; align-items: end; gap: 24px; margin-bottom: 16px; border-bottom: 1px solid var(--relay-edge); }
-.relay-work-tabs button { display: inline-flex; align-items: center; gap: 7px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; color: var(--relay-ink); white-space: nowrap; font-size: 14px; }
+.relay-work-tabs button { display: inline-flex; align-items: center; gap: 7px; padding: 8px 2px 10px; border-bottom: 2px solid transparent; color: var(--relay-ink); white-space: nowrap; font-size: 14px; transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
 .relay-work-tabs button[aria-selected="true"] { border-color: hsl(var(--primary)); color: hsl(var(--primary)); font-weight: 700; }
 .relay-work-tabs button:hover { color: hsl(var(--primary)); }
 .relay-work-stack { display: grid; gap: 14px; min-width: 0; }
 .relay-work-panel { min-width: 0; border: 1px solid var(--relay-edge); border-radius: 13px; background: var(--relay-panel); }
+.relay-access-summary { display: grid; grid-template-columns: minmax(180px, 1.25fr) minmax(128px, 1fr) minmax(132px, 1fr) auto; gap: 12px; align-items: center; padding: 12px 15px; margin-bottom: 10px; }
+.relay-access-summary-target { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; }
+.relay-access-summary-target .relay-route-symbol { width: 36px; height: 36px; }
+.relay-access-summary-target strong, .relay-access-summary-cell strong { font-size: 13px; }
+.relay-access-summary .relay-target-select { margin-top: 3px; }
+.relay-access-summary .relay-target-select label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.relay-access-summary .relay-target-select select { width: fit-content; max-width: 100%; min-height: 28px; padding-inline: 5px; }
+.relay-access-summary-cell { display: grid; justify-items: start; gap: 2px; min-width: 0; padding-left: 12px; border-left: 1px solid var(--relay-edge); }
+.relay-access-summary-cell > code { font-size: 12px; overflow-wrap: anywhere; }
+.relay-access-summary-cell > small { font-size: 11px; }
+.relay-access-feedback { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; color: var(--relay-ink); }
+.relay-access-spinner { display: inline-block; flex: none; width: 12px; height: 12px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: relay-access-spin .8s linear infinite; }
+@keyframes relay-access-spin { to { transform: rotate(360deg); } }
+:root[data-app-hidden] .relay-access-spinner { animation-play-state: paused; }
+@media (max-width: 960px) {
+  .relay-access-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .relay-access-summary-cell { padding-left: 0; border: 0; }
+  .relay-access-summary > button { justify-self: end; }
+}
+@media (max-width: 470px) {
+  .relay-access-summary { grid-template-columns: minmax(0, 1fr); }
+  .relay-access-summary > button { justify-self: start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .relay-access-spinner { animation: none; }
+}
 .relay-section-head { padding: 13px 18px; border-bottom: 1px solid var(--relay-edge); }
 .relay-section-head h2, .relay-small-dialog h2 { font-size: 18px; font-weight: 700; line-height: 1.3; }
 .relay-section-head p { margin-top: 3px; font-size: 12px; }
 .relay-setup { padding: 15px 18px; }
-.relay-work-notice { margin-bottom: 12px; padding: 10px 14px; border-radius: 9px; color: hsl(var(--warning-ink)); background: hsl(var(--warning) / .12); font-size: 13px; overflow-wrap: anywhere; }
+.relay-work-notice { margin-bottom: 12px; padding: 10px 14px; border-radius: 9px; color: hsl(var(--warning-ink)); background: hsl(var(--warning) / .12); font-size: 13px; overflow-wrap: anywhere; animation: fade-in var(--dur-enter) var(--ease); }
 .relay-work-stack > .relay-work-notice { margin-bottom: 0; }
 .relay-work-notice strong, .relay-work-notice span { display: block; }
 .relay-work-notice strong + span { margin-top: 2px; }
 
 .relay-route-body { padding: 16px 18px 12px; }
 .relay-route-rail { display: grid; grid-template-columns: minmax(0, 1fr) clamp(36px, 6vw, 94px) minmax(0, 1fr) clamp(36px, 6vw, 94px) minmax(0, 1fr); align-items: center; }
-.relay-route-node { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 74px; padding: 10px; border: 1px solid var(--relay-edge); border-radius: 10px; background: hsl(var(--card) / .35); }
+.relay-route-node { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 74px; padding: 10px; border: 1px solid var(--relay-edge); border-radius: 10px; background: hsl(var(--card) / .35); transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); }
 .relay-route-node[data-core] { background: color-mix(in srgb, var(--relay-selected) 62%, transparent); border-color: hsl(var(--primary) / .25); }
 .relay-route-node[data-selected] { border-color: hsl(var(--primary) / .6); }
 .relay-route-node strong, .relay-route-node small { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -76,7 +102,13 @@ html.dark :is(.relay-workbench, .relay-drawer) {
 .relay-mapping { margin-top: 8px; }
 .relay-mapping summary { display: flex; align-items: center; gap: 6px; width: fit-content; padding-block: 3px; cursor: pointer; font-size: 12px; }
 .relay-mapping summary::-webkit-details-marker { display: none; }
+.relay-mapping summary > svg { transition: transform var(--dur-fast) var(--ease); }
 .relay-mapping[open] summary > svg { transform: rotate(90deg); }
+/* 原生 details 保留键盘行为；支持 interpolate-size 的 WebView 上高度平滑展开，老内核瞬时兜底。 */
+@supports (interpolate-size: allow-keywords) {
+  .relay-mapping::details-content { interpolate-size: allow-keywords; block-size: 0; overflow: clip; transition: block-size var(--dur-exit) var(--ease-exit), content-visibility var(--dur-exit) allow-discrete; }
+  .relay-mapping[open]::details-content { block-size: auto; transition-duration: var(--dur-enter); }
+}
 .relay-mapping-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 6px; }
 .relay-mapping-list > div { min-width: 0; padding: 4px; border-top: 1px solid var(--relay-edge); font-size: 12px; }
 .relay-mapping-list :is(code, small) { display: block; overflow-wrap: anywhere; }
@@ -96,7 +128,7 @@ html.dark :is(.relay-workbench, .relay-drawer) {
 .relay-work-table :is(td, th):first-child { padding-left: 18px; }
 .relay-work-table :is(td, th):last-child { padding-right: 18px; width: 1%; }
 .relay-work-table tbody td { border-top: 1px solid var(--relay-edge); }
-.relay-work-table tbody tr { cursor: pointer; }
+.relay-work-table tbody tr { cursor: pointer; transition: background var(--dur-fast) var(--ease); }
 .relay-work-table tbody tr:hover, .relay-work-table tr[data-selected] { background: color-mix(in srgb, var(--relay-selected) 66%, transparent); }
 .relay-work-model { width: 36%; max-width: 235px; }
 .relay-work-model :is(strong, small) { display: block; overflow: hidden; text-overflow: ellipsis; }
@@ -125,7 +157,7 @@ html.dark :is(.relay-workbench, .relay-drawer) {
 .relay-chart-day[aria-pressed="true"] { font-weight: 700; }
 .relay-chart-day > span + span { align-self: center; white-space: nowrap; }
 .relay-chart-stack { display: flex; flex-direction: column-reverse; width: min(44px, 75%); height: 100%; overflow: hidden; }
-.relay-chart-stack i { flex: none; width: 100%; }
+.relay-chart-stack i { flex: none; width: 100%; transition: height var(--dur-enter) var(--ease); }
 .relay-workbench [data-count="input"] { background: var(--relay-chart-input); }
 .relay-workbench [data-count="cacheWrite"] { background: var(--relay-chart-write); }
 .relay-workbench [data-count="cacheRead"] { background: var(--relay-chart-read); }
@@ -142,10 +174,18 @@ html.dark :is(.relay-workbench, .relay-drawer) {
 .relay-rank-item:hover, .relay-rank-item[aria-pressed="true"] { background: var(--relay-selected); color: hsl(var(--primary)); }
 
 .relay-drawer-overlay.ui-overlay { align-items: stretch; justify-content: flex-end; background: rgb(19 29 52 / .24); }
-.relay-drawer.ui-surface { display: flex; flex-direction: column; width: min(520px, 100vw); margin: 0; border-radius: 12px 0 0 12px; background: hsl(var(--card)); overflow: hidden; }
+.relay-drawer.ui-surface { display: flex; flex-direction: column; width: min(880px, 100vw); margin: 0; border-radius: 12px 0 0 12px; background: hsl(var(--card)); overflow: hidden; }
+.relay-drawer.relay-guide-drawer { width: min(528px, 100vw); }
 html[data-ui-style="glass"] .relay-drawer.ui-surface { background: var(--glass-floating); }
+/* 贴右缘的抽屉：进出场只做小幅横向位移，时序/遮罩淡入淡出复用 Modal 的 data-state/data-exiting。 */
+.relay-drawer.ui-surface[data-state="closed"] { transform: translateX(24px); }
+@media (prefers-reduced-motion: reduce) {
+  .relay-drawer.ui-surface[data-state] { transform: none; }
+}
 .relay-drawer .relay-section-head { flex: none; }
-.relay-drawer-body { overflow: auto; min-height: 0; display: grid; align-content: start; gap: 15px; padding: 16px 18px 22px; }
+.relay-drawer-body { overflow-y: auto; overflow-x: hidden; min-height: 0; display: grid; align-content: start; gap: 10px; padding: 12px 16px 14px; }
+/* 视图切换（请求路由↔Token 用量）整面板淡入落位，配合 key={view} 重挂载触发。 */
+.relay-work-view { animation: fade-in var(--dur-enter) var(--ease); }
 .relay-detail-section { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--relay-edge); }
 .relay-detail-section dl { display: grid; gap: 7px; margin: 0; }
 .relay-detail-section dl > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }

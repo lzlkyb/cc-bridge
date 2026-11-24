@@ -874,6 +874,9 @@ export interface RelayDeployResult {
 export interface RelayLastDeploy {
   url: string;
   connectionId: string;
+  serviceAccount?: string | null;
+  model?: string | null;
+  file?: string | null;
 }
 
 export interface RelayEnabledResult {

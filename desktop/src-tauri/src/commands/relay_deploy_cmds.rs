@@ -11,16 +11,18 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::State;
 
+use super::forward_takeover::RunningForward;
 use super::ssh_cmds::{
-    find_ssh, resolve_link_secrets, run_via_helper, spawn_capture_off_runtime, ssh_base_args,
+    find_ssh, resolve_connect_secrets, run_via_helper, spawn_capture_off_runtime, ssh_base_args,
     SshLink,
 };
 use crate::db::{get_config_value, set_config_value};
 use crate::relay::config::DEFAULT_PORT;
+use crate::ssh_tunnel::{RuleState, TunnelState};
 use crate::state::{relay_listen_host, AppState};
 
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
@@ -127,38 +129,66 @@ pub async fn relay_deploy_config(
     connection_id: String,
     service_account: Option<String>,
     model: Option<String>,
+    expected_base_url: Option<String>,
 ) -> Result<DeployResult, String> {
     let state = state.inner();
     let svc_override = service_account.unwrap_or_default();
     if !svc_override.is_empty() && !valid_service_account(&svc_override) {
         return Err("服务账号名只能含字母、数字、_、-。".into());
     }
-    let model = model.unwrap_or_else(|| DEFAULT_MODEL.to_string());
-
-    let (mode, lan_host, tunnel_port) = {
+    let (mode, lan_host, link) = {
         let config = state.config.read().await;
-        let mode = config.relay_listen_mode.clone();
-        let lan_host = relay_listen_host(&config);
-        let port = {
-            let db = state.db.lock().await;
-            get_config_value(&db, &format!("relay:{connection_id}"))
-                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                .and_then(|v| v.get("port").and_then(|p| p.as_u64()))
-                .unwrap_or(0) as u16
-        };
-        (mode, lan_host, port)
+        (
+            config.relay_listen_mode.clone(),
+            relay_listen_host(&config),
+            SshLink::from_config(&config, &connection_id)?,
+        )
     };
+    if state.relay.running_addr().await.as_deref() != Some(&format!("{lan_host}:{DEFAULT_PORT}")) {
+        return Err("中转监听地址正在更新，请确认状态后重试。".into());
+    }
+    // A saved port can survive a failed listener. Only a confirmed listener can be deployed.
+    let runtime_id = super::relay_tunnel_cmds::runtime_id(&connection_id);
+    let tunnel_port = state
+        .ssh_tunnels
+        .get(&runtime_id)
+        .and_then(|tunnel| {
+            let status = tunnel.status.lock().unwrap_or_else(|p| p.into_inner());
+            let rule = status.rules.first()?;
+            (status.state == TunnelState::Up && rule.state == RuleState::Listening).then_some(
+                rule.bound_port
+                    .filter(|port| *port > 0)
+                    .unwrap_or(rule.rule.listen_port),
+            )
+        })
+        .unwrap_or(0);
+    let base_url = deploy_base_url(&mode, &lan_host, tunnel_port)?;
+    if expected_base_url
+        .as_ref()
+        .is_some_and(|expected| expected != &base_url)
+    {
+        return Err("接入地址已变化，请确认新地址后重新部署。".into());
+    }
     let token = state.relay.token_value().await;
     if token.is_empty() {
         return Err("中转令牌为空，请先在中转页生成令牌。".into());
     }
-    let base_url = deploy_base_url(&mode, &lan_host, tunnel_port)?;
-    let config_json = deploy_config_json(&base_url, &token, &model);
+    let config_json =
+        deploy_config_json(&base_url, &token, model.as_deref().unwrap_or(DEFAULT_MODEL));
     let script = deploy_script(&config_json, &svc_override);
 
-    let link = SshLink::from_config(&*state.config.read().await, &connection_id)?;
     let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
-    let creds = resolve_link_secrets(&link, &state.data_dir)?;
+    // Reuse one-time credentials only for the same SSH login.
+    let existing =
+        RunningForward::capture(state, &runtime_id)?.filter(|running| running.same_login(&link));
+    let creds = resolve_connect_secrets(
+        &link,
+        &state.data_dir,
+        existing
+            .as_ref()
+            .and_then(|running| running.password.clone()),
+        existing.and_then(|running| running.passphrase),
+    )?;
 
     let out = match run_via_helper(state, &link, &ssh_path, creds.clone(), script.clone()).await {
         Ok((out, 0)) => out,
@@ -172,14 +202,19 @@ pub async fn relay_deploy_config(
     if !out.contains("CCB_DEPLOY_OK=1") {
         return Err(format!("远端部署未完成：{}", out.trim()));
     }
-    // 记录本次部署的地址与连接：主页据此检测「本机 IP 变了、远端还指旧地址」的漂移。
+    // Preserve the latest deployment for older callers and a receipt for each account.
     {
         let db = state.db.lock().await;
-        let _ = set_config_value(
-            &db,
-            LAST_DEPLOY_KEY,
-            &serde_json::json!({ "url": base_url, "connectionId": connection_id }).to_string(),
-        );
+        let receipt = LastDeploy {
+            url: base_url.clone(),
+            connection_id,
+            service_account: Some(svc_override),
+            model,
+            file: Some(field(&out, "CCB_DEPLOY_FILE")),
+        };
+        if let Err(error) = save_deploy_receipt(&db, &receipt) {
+            log::warn!("远端配置已部署，但写入本机部署记录失败：{error}");
+        }
     }
     Ok(DeployResult {
         base_url,
@@ -191,31 +226,111 @@ pub async fn relay_deploy_config(
     })
 }
 
-/// 上次成功部署的地址与连接（漂移检测用）。从未部署过返回 None。
-#[derive(Debug, Serialize)]
+/// Latest deployment globally, or the receipt for a selected SSH account.
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastDeploy {
     pub url: String,
     pub connection_id: String,
+    pub service_account: Option<String>,
+    pub model: Option<String>,
+    pub file: Option<String>,
+}
+
+fn save_deploy_receipt(db: &rusqlite::Connection, receipt: &LastDeploy) -> Result<(), String> {
+    let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
+    // Move a pre-upgrade global receipt to its owner before another account replaces it.
+    let legacy = get_config_value(&tx, LAST_DEPLOY_KEY).and_then(|raw| {
+        serde_json::from_str::<LastDeploy>(&raw)
+            .ok()
+            .map(|receipt| (receipt, raw))
+    });
+    if let Some((legacy, raw)) = legacy {
+        let key = format!("{LAST_DEPLOY_KEY}:{}", legacy.connection_id);
+        if get_config_value(&tx, &key).is_none() {
+            set_config_value(&tx, &key, &raw)?;
+        }
+    }
+    let raw = serde_json::to_string(receipt).map_err(|e| e.to_string())?;
+    set_config_value(
+        &tx,
+        &format!("{LAST_DEPLOY_KEY}:{}", receipt.connection_id),
+        &raw,
+    )?;
+    set_config_value(&tx, LAST_DEPLOY_KEY, &raw)?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn relay_last_deploy(
     state: State<'_, Arc<AppState>>,
+    connection_id: Option<String>,
 ) -> Result<Option<LastDeploy>, String> {
     let db = state.db.lock().await;
-    Ok(get_config_value(&db, LAST_DEPLOY_KEY).and_then(|s| {
-        let v: serde_json::Value = serde_json::from_str(&s).ok()?;
-        Some(LastDeploy {
-            url: v.get("url")?.as_str()?.to_string(),
-            connection_id: v.get("connectionId")?.as_str()?.to_string(),
+    Ok(load_deploy_receipt(&db, connection_id.as_deref()))
+}
+
+fn load_deploy_receipt(
+    db: &rusqlite::Connection,
+    connection_id: Option<&str>,
+) -> Option<LastDeploy> {
+    let load = |key: &str| {
+        get_config_value(db, key).and_then(|s| serde_json::from_str::<LastDeploy>(&s).ok())
+    };
+    connection_id
+        .and_then(|id| load(&format!("{LAST_DEPLOY_KEY}:{id}")))
+        .or_else(|| {
+            load(LAST_DEPLOY_KEY)
+                .filter(|last| connection_id.is_none_or(|id| id == last.connection_id))
         })
-    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_account_receipts_keep_legacy_record_only_for_its_owner() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
+            .unwrap();
+        set_config_value(
+            &db,
+            LAST_DEPLOY_KEY,
+            r#"{"url":"http://127.0.0.1:45201","connectionId":"alice"}"#,
+        )
+        .unwrap();
+        set_config_value(
+            &db,
+            &format!("{LAST_DEPLOY_KEY}:bob"),
+            r#"{"url":"http://127.0.0.1:45238","connectionId":"bob","model":"custom"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_deploy_receipt(&db, None).unwrap().connection_id,
+            "alice"
+        );
+        assert_eq!(
+            load_deploy_receipt(&db, Some("alice")).unwrap().url,
+            "http://127.0.0.1:45201"
+        );
+        assert_eq!(
+            load_deploy_receipt(&db, Some("bob"))
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("custom")
+        );
+        assert!(load_deploy_receipt(&db, Some("unknown")).is_none());
+        let bob = load_deploy_receipt(&db, Some("bob")).unwrap();
+        save_deploy_receipt(&db, &bob).unwrap();
+        assert_eq!(load_deploy_receipt(&db, None).unwrap().connection_id, "bob");
+        assert_eq!(
+            load_deploy_receipt(&db, Some("alice")).unwrap().url,
+            "http://127.0.0.1:45201"
+        );
+    }
 
     #[test]
     fn base_url_follows_mode() {

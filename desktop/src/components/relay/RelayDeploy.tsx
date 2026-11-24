@@ -1,216 +1,152 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { useToast } from "../ui/toast";
 import { Button } from "../ui/button";
+import { Collapse } from "../ui/Collapse";
 import { Icon } from "../ui/icon";
-import type { RelayDeployResult, SshConnectionList, TunnelStatus } from "../../lib/types";
+import type { RelayDeployResult, RelayLastDeploy, SshConnection, TunnelStatus } from "../../lib/types";
 
-const deployKey = "relayDeployConnectionId";
+type DeployOptions = { serviceAccount: string | null; model: string | null };
 
-/**
- * 一键部署到远端（P1）。
- *
- * 收口三个复发问题：配置路径漂移、属主锁（claude 服务账号写 settings → ACL mask 锁登录用户）、
- * BASE_URL 不随模式变。做法：经所选 SSH 连接以**连接用户**身份，把按当前模式算好地址的
- * own-model.json 写到该用户家目录，设 ACL 让服务账号读得到，并幂等对齐 claude-own alias。
- *
- * 🔴 目标连接必须显式选（一机多实例不静默落地）；隧道模式下默认沿用接入页选的那条。
- * 🔴 不写死用户名/家目录——后端按连接用户的 $HOME 算路径，这里只回显结果。
- */
-export function RelayDeploy({
-  listening,
-  baseUrl,
-  token,
-  model,
-  defaultConnectionId,
-}: {
-  listening: boolean;
+export function useRelayDeployment(connectionId: string | undefined, active: boolean) {
+  const client = useQueryClient();
+  const lastDeploy = useQuery({
+    queryKey: ["relayLastDeploy", connectionId],
+    enabled: active && !!connectionId,
+    queryFn: async () => {
+      const receipt = await invoke<RelayLastDeploy | null>("relay_last_deploy", { connectionId });
+      return receipt?.connectionId === connectionId ? receipt : null;
+    },
+  });
+  const mutation = useMutation({
+    mutationFn: async (args: {
+      connectionId: string; baseUrl: string; options: DeployOptions; recover?: () => Promise<boolean>;
+    }) => {
+      let baseUrl = args.baseUrl;
+      if (args.recover) {
+        if (!await args.recover()) throw new Error("未能重新分配端口，请查看 SSH 状态。");
+        baseUrl = `http://127.0.0.1:${await waitForRelayPort(args.connectionId)}`;
+      }
+      return deployRelayConfig(args.connectionId, baseUrl, args.options);
+    },
+    onSuccess: (result, args) => {
+      client.setQueryData<RelayLastDeploy>(["relayLastDeploy", args.connectionId], {
+        url: result.baseUrl, connectionId: args.connectionId, file: result.file, ...args.options,
+      });
+    },
+  });
+  return { lastDeploy, ...mutation };
+}
+
+export const relayDeployOptions = (receipt?: RelayLastDeploy | null): DeployOptions => ({
+  serviceAccount: receipt?.serviceAccount || null,
+  model: receipt?.model || null,
+});
+
+function deployRelayConfig(connectionId: string, baseUrl: string, options: DeployOptions) {
+  return invoke<RelayDeployResult>("relay_deploy_config", { connectionId, expectedBaseUrl: baseUrl, ...options });
+}
+
+export function RelayDeploy({ connection, baseUrl, model, tokenPresent, blocked, deployment, onOpenTerminal }: {
+  connection: SshConnection;
   baseUrl: string;
-  token: string;
   model: string;
-  defaultConnectionId?: string;
+  tokenPresent: boolean;
+  blocked: boolean;
+  deployment: ReturnType<typeof useRelayDeployment>;
+  onOpenTerminal?: (connectionId: string) => void;
 }) {
   const { toast } = useToast();
-  const servers = useQuery({
-    queryKey: ["sshConnections"],
-    queryFn: () => invoke<SshConnectionList>("ssh_list_connections"),
-    enabled: listening,
-  });
-  const [selected, setSelected] = useState(() => localStorage.getItem(deployKey) ?? "");
-  const [svc, setSvc] = useState("");
-  const [modelInput, setModelInput] = useState("");
+  const [svc, setSvc] = useState<string>();
+  const [modelInput, setModelInput] = useState<string>();
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [op, setOp] = useState<{ busy: boolean; error: string; result: RelayDeployResult | null }>({
-    busy: false,
-    error: "",
-    result: null,
-  });
+  const last = deployment.lastDeploy.data;
+  const deployed = last && last.url === baseUrl;
+  const result = deployment.variables?.connectionId === connection.id && deployment.data?.baseUrl === baseUrl ? deployment.data : undefined;
+  const serviceAccount = svc ?? last?.serviceAccount ?? "";
+  const selectedModel = modelInput ?? last?.model ?? "";
+  const busy = deployment.isPending;
+  const pendingOptions = serviceAccount !== (last?.serviceAccount ?? "") || selectedModel !== (last?.model ?? "");
 
-  if (!listening || !token) return null;
-
-  const connections = servers.data?.connections ?? [];
-  const connection = connections.find((c) => c.id === selected)
-    ?? connections.find((c) => c.id === defaultConnectionId)
-    ?? (connections.length === 1 ? connections[0] : undefined);
-  const effectiveModel = modelInput.trim() || model;
-  const preview = baseUrl
-    ? JSON.stringify({
-        env: {
-          ANTHROPIC_BASE_URL: baseUrl,
-          ANTHROPIC_AUTH_TOKEN: token,
-          ANTHROPIC_MODEL: effectiveModel,
-        },
-      }, null, 2)
-    : "";
-
-  function select(id: string) {
-    setSelected(id);
-    localStorage.setItem(deployKey, id);
-    setOp({ busy: false, error: "", result: null });
+  function deploy() {
+    if (!baseUrl || busy || blocked) return;
+    deployment.mutate({
+      connectionId: connection.id, baseUrl, options: {
+        serviceAccount: serviceAccount.trim() || null, model: selectedModel.trim() || null,
+      },
+    }, { onSuccess: () => toast("已部署到远端，开新终端运行 claude-own", "success") });
   }
-
-  async function deploy() {
-    if (!connection || op.busy || !baseUrl) return;
-    setOp({ busy: true, error: "", result: null });
-    try {
-      const result = await invoke<RelayDeployResult>("relay_deploy_config", {
-        connectionId: connection.id,
-        serviceAccount: svc.trim() || null,
-        model: modelInput.trim() || null,
-      });
-      setOp({ busy: false, error: "", result });
-      toast("已部署到远端，开新终端运行 claude-own", "success");
-    } catch (e) {
-      setOp({ busy: false, error: String(e), result: null });
-    }
-  }
-
   return (
     <div className="relay-deploy">
-      <div className="bento-eyebrow">
-        <Icon name="upload" size={12} />
-        一键部署到远端
+      {deployment.lastDeploy.isError && <div className="relay-inline relay-wrap" role="alert">
+        <small>读取部署记录失败。</small><Button size="sm" variant="outline" onClick={() => void deployment.lastDeploy.refetch()}>重试读取</Button>
+      </div>}
+      {deployment.variables?.connectionId === connection.id && deployment.isError &&
+        <div className="relay-prereq" data-warn role="alert">部署未完成。{String(deployment.error)}</div>}
+      {last && baseUrl && !deployed && <p className="relay-prereq" data-warn>远端上次配置使用 <code>{last.url}</code>。请更新为当前地址。</p>}
+      <button type="button" className="relay-deploy-adv" aria-expanded={showAdvanced} onClick={() => setShowAdvanced((v) => !v)}>
+        <Icon name={showAdvanced ? "chevronUp" : "chevronDown"} size={12} />高级选项（服务账号 / 模型）
+      </button>
+      <Collapse open={showAdvanced}>
+        <div className="relay-deploy-adv-body">
+          <label className="relay-inline relay-wrap">服务账号
+            <input value={serviceAccount} placeholder="留空自动探测" autoComplete="off" onChange={(e) => setSvc(e.target.value)} />
+          </label>
+          <small>仅用于给运行 Claude Code 的系统账号授予读取权限。</small>
+          <label className="relay-inline relay-wrap">模型
+            <input value={selectedModel} placeholder={model} autoComplete="off" onChange={(e) => setModelInput(e.target.value)} />
+          </label>
+        </div>
+      </Collapse>
+      {deployed && <div className="relay-deploy-result">
+        <span className="relay-work-badge" data-tone="ok"><Icon name="check" size={12} />配置已部署</span>
+        {(result?.file || last.file) && <span>配置文件 <code>{result?.file || last.file}</code></span>}
+        {result?.serviceAccount && <span>服务账号 <code>{result.serviceAccount}</code></span>}
+        <span className="relay-deploy-hint"><Icon name="terminal" size={12} />
+          在远端开一个新终端运行 <code>claude-own</code>，发送一条请求后查看「最近请求」。
+        </span>
+      </div>}
+      <div className="relay-actions">
+        {deployed && onOpenTerminal && <Button size="sm" disabled={blocked || busy} onClick={() => onOpenTerminal(connection.id)}>
+          <Icon name="terminal" size={14} />打开远端终端
+        </Button>}
+        <Button size="sm" variant={deployed && onOpenTerminal && !pendingOptions ? "outline" : "default"}
+          isLoading={busy} loadingText="正在部署配置" disabled={!tokenPresent || !baseUrl || blocked || !deployment.lastDeploy.isSuccess}
+          onClick={deploy}><Icon name="upload" size={13} />{deployed ? "重新部署" : "部署到远端"}</Button>
       </div>
-      <p className="relay-method-note">
-        经所选连接以登录用户身份写入 <code>~/.claude-own/own-model.json</code>，设 ACL 让 claude
-        服务账号读得到，并对齐 <code>claude-own</code> alias。不碰全局配置，重复部署不叠行。
-      </p>
-
-      {servers.isPending ? (
-        <div className="relay-prereq"><Icon name="info" size={13} /><span>正在读取 SSH 服务器…</span></div>
-      ) : !servers.data?.enabled ? (
-        <div className="relay-prereq"><Icon name="info" size={13} /><span>请先在设置中启用 SSH。</span></div>
-      ) : !connections.length ? (
-        <div className="relay-prereq"><Icon name="info" size={13} /><span>请先在终端页保存一条 SSH 服务器连接。</span></div>
-      ) : (
-        <>
-          <div className="relay-inline relay-wrap">
-            <label htmlFor="relay-deploy-server">目标连接</label>
-            <select id="relay-deploy-server" value={connection?.id ?? ""} disabled={op.busy}
-              onChange={(e) => select(e.target.value)}>
-              {!connection && <option value="">选择服务器和账号</option>}
-              {connections.map((c) => (
-                <option key={c.id} value={c.id}>{c.name} · {c.username}@{c.host}:{c.port}</option>
-              ))}
-            </select>
-          </div>
-
-          {!baseUrl && (
-            <div className="relay-prereq" data-warn>
-              <Icon name="alertTriangle" size={13} />
-              <span>SSH 转发就绪后即可部署（隧道模式需先分配端口）。</span>
-            </div>
-          )}
-
-          {preview && (
-            <pre className="relay-code" tabIndex={0} aria-label="将写入的 own-model.json">
-              {preview.split("\n").map((line, i) => (
-                <span key={i} className="ln">{line || " "}</span>
-              ))}
-            </pre>
-          )}
-
-          <button type="button" className="relay-deploy-adv" aria-expanded={showAdvanced}
-            onClick={() => setShowAdvanced((v) => !v)}>
-            <Icon name={showAdvanced ? "chevronUp" : "chevronDown"} size={12} />
-            高级选项（服务账号 / 模型）
-          </button>
-          {showAdvanced && (
-            <div className="relay-deploy-adv-body">
-              <label className="relay-inline relay-wrap">
-                服务账号
-                <input value={svc} placeholder="留空自动探测" autoComplete="off"
-                  onChange={(e) => setSvc(e.target.value)} />
-              </label>
-              <small>claude 以哪个系统账号运行（如 claude-svc）。留空则从远端 wrapper 探测；仅用于授读权限。</small>
-              <label className="relay-inline relay-wrap">
-                模型
-                <input value={modelInput} placeholder={model} autoComplete="off"
-                  onChange={(e) => setModelInput(e.target.value)} />
-              </label>
-            </div>
-          )}
-
-          <div className="relay-actions">
-            <Button size="sm" isLoading={op.busy} loadingText="部署中…"
-              disabled={!connection || !baseUrl || op.busy} onClick={() => void deploy()}>
-              <Icon name="upload" size={13} />
-              部署到远端
-            </Button>
-            {op.error && <span className="relay-deploy-error">{op.error}</span>}
-          </div>
-
-          {op.result && (
-            <div className="relay-deploy-result" role="status">
-              <span className="relay-work-badge" data-tone="ok"><Icon name="check" size={12} />已部署</span>
-              <span>配置文件：<code>{op.result.file}</code></span>
-              <span>服务账号：<code>{op.result.serviceAccount || "未探测到（仅登录用户可读）"}</code></span>
-              <span>alias：<code>{op.result.alias}</code></span>
-              <span className="relay-deploy-hint">
-                <Icon name="terminal" size={12} />
-                在远端<b>开一个新终端</b>运行 <code>claude-own</code> 即可生效——旧终端不会自动加载 alias。
-              </span>
-            </div>
-          )}
-        </>
-      )}
     </div>
   );
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function until<T>(probe: () => Promise<T | undefined>, timeoutMs: number, stepMs = 2000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const v = await probe().catch(() => undefined);
-    if (v) return v;
-    if (Date.now() > deadline) throw new Error("等待超时");
-    await sleep(stepMs);
-  }
+async function waitForRelayPort(connectionId: string): Promise<number> {
+  const deadline = Date.now() + 45_000;
+  do {
+    const list = await invoke<TunnelStatus[]>("ssh_tunnel_list");
+    const tunnel = list.find((item) => item.connectionId === `relay:${connectionId}`);
+    const rule = tunnel?.rules[0];
+    if (tunnel?.state === "up" && rule?.state === "listening") {
+      const port = rule.boundPort || rule.rule.listenPort;
+      if (port) return port;
+    }
+    if (tunnel?.needsSecret || tunnel?.state === "error") {
+      throw new Error(tunnel.message || tunnel.lastFailure || "SSH 转发未就绪，请在接入指南中处理。");
+    }
+    await sleep(750);
+  } while (Date.now() < deadline);
+  throw new Error("等待远端端口超时。可在转发就绪后重试部署。");
 }
 
-/**
- * P2 一键切隧道：切模式 → 等中转重启到回环 → 建 SSH 转发 → 等端口 → 重新部署。
- * 落到固定回环地址后本机 IP 变化不再影响远端。任一步失败抛错，由调用方提示并引导去接入指南。
- */
-export async function oneClickTunnel(connectionId: string): Promise<RelayDeployResult> {
-  await invoke("relay_save", { patch: { listenMode: "tunnel" } });
-  // 中转重启到回环需要时间；relay_tunnel_start 在未就绪时报错，重试到它就绪。
-  await until(async () => {
-    try {
-      await invoke("relay_tunnel_start", { connectionId, password: null, passphrase: null, reallocate: false });
-      return true;
-    } catch {
-      return undefined;
-    }
-  }, 20000);
-  await until(async () => {
-    const list = await invoke<TunnelStatus[]>("ssh_tunnel_list");
-    const t = list.find((x) => x.connectionId === `relay:${connectionId}`);
-    const r = t?.rules[0];
-    return t?.state === "up" && r?.state === "listening" ? (r.boundPort || r.rule.listenPort) : undefined;
-  }, 45000);
-  return invoke<RelayDeployResult>("relay_deploy_config", { connectionId, serviceAccount: null, model: null });
+export async function oneClickTunnel(connectionId: string, onStage: (stage: string) => void,
+  receipt?: RelayLastDeploy | null): Promise<RelayDeployResult> {
+  onStage("正在切换监听方式");
+  const result = await invoke<{ warnings: string[] }>("relay_save", { patch: { listenMode: "tunnel" } });
+  if (result.warnings.length) throw new Error(result.warnings.join("；"));
+  onStage("正在建立 SSH 转发");
+  await invoke("relay_tunnel_start", { connectionId, password: null, passphrase: null, reallocate: false });
+  const port = await waitForRelayPort(connectionId);
+  onStage("正在部署远端配置");
+  return deployRelayConfig(connectionId, `http://127.0.0.1:${port}`, relayDeployOptions(receipt));
 }

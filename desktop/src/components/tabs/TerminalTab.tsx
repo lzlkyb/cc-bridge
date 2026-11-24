@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { useTerminalWorkspace } from "../../hooks/useTerminalWorkspace";
+import { useTerminalOpenRequest, type TerminalOpenRequest } from "../../hooks/useTerminalOpenRequest";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
@@ -32,7 +33,7 @@ import { zoneOf, type DropZone } from "../../lib/dropHit";
 import { forwardPanelOpen, offerForward } from "../../lib/sshTunnelStore";
 
 /** SSH 工作区：共享侧栏，终端保活；首次使用仍需显式启用。 */
-export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCollapsedChange, onNavigate, onChanged }: { status?: StaticStatus; sidebarHost: HTMLDivElement | null; sidebarCollapsed: boolean; onSidebarCollapsedChange: Dispatch<SetStateAction<boolean>>; onNavigate?: (tab: string, anchor?: string) => void; onChanged?: () => void }) {
+export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCollapsedChange, onNavigate, onChanged, openRequest }: { status?: StaticStatus; sidebarHost: HTMLDivElement | null; sidebarCollapsed: boolean; onSidebarCollapsedChange: Dispatch<SetStateAction<boolean>>; onNavigate?: (tab: string, anchor?: string) => void; onChanged?: () => void; openRequest?: TerminalOpenRequest | null }) {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery<SshConnectionList, Error>({
     queryKey: ["sshConnections"],
@@ -106,12 +107,11 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
     setFileConn(null);
     void ssh.connect(conn).then((sid) => sid && offerForward(conn));
   };
-  // 另开一个（不复用现有标签）。
   const newTerminal = (conn: SshConnection) => {
-    workspace.setFocusedTabId(null);
-    setFileConn(null);
+    workspace.setFocusedTabId(null); setFileConn(null);
     void ssh.connect(conn, { newTab: true });
   };
+  useTerminalOpenRequest(enabled ? openRequest : null, connections, newTerminal);
   // 重连某会话回它自己的标签（断开横幅 / 恢复横幅 / 恢复占位卡共用）。
   // 🔴 返回 Promise：「全部恢复」靠它 await 出串行，`void` 掉就变成并发。
   const reconnectSession = useCallback((s: SshSessionRef) => {

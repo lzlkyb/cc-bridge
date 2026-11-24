@@ -59,10 +59,15 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
     (!filters.dimension || filters.dimension === `tier:${row.tier}` || filters.dimension === `client:${row.clientModel}`));
   const selected = filters.model ? comparable.filter((row) => actualModel(row) === filters.model) : comparable;
   const details = selectedByBucket ? selected.filter((row) => bucketKey(row, from === to) === selectedByBucket) : selected;
-  const summary = summarizeUsage(selected, rates);
-  const settled = selected.filter((row) => !isPending(row)).length;
+  const summary = summarizeUsage(details, rates);
+  const settled = details.filter((row) => !isPending(row)).length;
+  const hour = selectedByBucket?.split("T")[1];
+  const scopeLabel = selectedByBucket
+    ? hour == null ? bucketLabel(selectedByBucket) : `${shortRelayDay(from)} ${bucketLabel(selectedByBucket)}–${String(Number(hour) + 4).padStart(2, "0")}:00`
+    : from === to ? shortRelayDay(from) : `${shortRelayDay(from)}–${shortRelayDay(to)}`;
   const ranking = new Map<string, number>();
   for (const row of comparable) {
+    if (selectedByBucket && bucketKey(row, from === to) !== selectedByBucket) continue;
     const total = tokenTotal(row.usage);
     const model = actualModel(row);
     if (total != null && model) ranking.set(model, (ranking.get(model) ?? 0) + total);
@@ -79,7 +84,7 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
   const exportCurrent = async () => {
     setExporting(true);
     try {
-      const path = await saveTextExport({ title: "导出中转 Token 用量", defaultName: `中转用量-${from}_${to}.csv`, ext: "csv", filterName: "CSV 表格", content: relayUsageCsv(details, rates) });
+      const path = await saveTextExport({ title: "导出中转 Token 用量", defaultName: `中转用量-${selectedByBucket ?? `${from}_${to}`}.csv`, ext: "csv", filterName: "CSV 表格", content: relayUsageCsv(details, rates) });
       if (path) exportedToast(toast, "已导出 Token 用量", path);
     } catch (error) {
       toast(`导出失败：${String(error)}`, "error");
@@ -112,8 +117,10 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
             {clients.map((client) => <option key={`c:${client}`} value={`client:${client}`}>客户端 · {client}</option>)}
           </select>
         </div>
-        <div className="relay-inline relay-wrap"><small>{shortRelayDay(from)}{from !== to && ` – ${shortRelayDay(to)}`} · 本地时间</small>
-          <Button variant="outline" size="sm" disabled={!details.length} isLoading={exporting} onClick={() => void exportCurrent()}><Icon name="download" size={14} />导出 CSV</Button>
+        <div className="relay-inline relay-wrap">
+          <span className="relay-work-badge" data-tone={selectedByBucket ? "accent" : "mute"} role="status">{selectedByBucket && "已选 "}{scopeLabel} · {formatInt(details.length)} 条请求</span>
+          {selectedByBucket && <Button size="sm" variant="ghost" onClick={() => setBucket(null)}>清除时段</Button>}
+          <Button variant="outline" size="sm" disabled={!details.length} isLoading={exporting} onClick={() => void exportCurrent()}><Icon name="download" size={14} />导出当前范围</Button>
         </div>
       </div>
 
@@ -123,7 +130,8 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
           <RelayMetric label="输入 Token" value={compactTokens(summary.input)} />
           <RelayMetric label="输出 Token" value={compactTokens(summary.counts.output)} />
           <RelayMetric label="缓存命中率" value={summary.hit == null ? "—" : `${summary.hit.toFixed(1)}%`} />
-          <RelayMetric label="预估费用" value={moneyLabel(summary.cost)} note={summary.priced > 0 && summary.priced < settled ? "部分" : undefined} />
+          <RelayMetric label="预估费用" value={moneyLabel(summary.cost)} note={summary.priced > 0 ? `${summary.priced}/${settled} 条已计价`
+            : summary.covered > summary.partial ? "待配置单价" : undefined} />
         </dl>
         <div className="relay-usage-analysis">
           <RelayUsageChart rows={selected} from={from} to={to} selected={selectedByBucket} onSelect={(id) => setBucket(id === selectedByBucket ? null : id)} />
@@ -131,7 +139,7 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
             <div className="relay-inline relay-spread"><h3>Token 构成</h3><Button size="sm" variant="ghost" aria-label="查看统计口径" onClick={() => setInfo(true)}><Icon name="info" size={15} /></Button></div>
             <dl className="relay-token-breakdown">{TOKEN_FIELDS.map(({ key, label }) => <div key={key}><dt><i data-count={key} />{label}</dt><dd>{summary.counts[key] == null ? "—" : formatInt(summary.counts[key])}</dd></div>)}</dl>
             <div className="relay-coverage relay-inline relay-wrap relay-spread">
-              <small>{settled ? `上报用量 ${formatInt(summary.covered)} / ${formatInt(settled)} 条${summary.partial ? ` · ${summary.partial} 条部分采集` : ""}` : "暂无已结束请求"}{summary.priced > 0 && ` · ${summary.priced} 条已估价`}</small>
+              <small>{settled ? `上报用量 ${formatInt(summary.covered)} / ${formatInt(settled)} 条${summary.partial ? ` · ${summary.partial} 条部分采集` : ""}` : "暂无已结束请求"}</small>
               {canSetPrice && <button className="relay-text-button" type="button" onClick={onPricing}>配置单价</button>}
             </div>
           </section>
@@ -143,8 +151,8 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
       </section>
 
       <section className="relay-work-panel" aria-labelledby="relay-usage-requests">
-        <header className="relay-section-head"><div><h2 id="relay-usage-requests">逐请求用量</h2><p>选择一条记录，查看缓存和费用构成。</p></div>
-          {filtered && <div className="relay-inline relay-wrap">{selectedByBucket && <button className="relay-rank-item" type="button" onClick={() => setBucket(null)}>{bucketLabel(selectedByBucket)} <Icon name="close" size={12} /></button>}
+        <header className="relay-section-head"><div><h2 id="relay-usage-requests">逐请求用量</h2><p>{scopeLabel} · 本地时间</p></div>
+          {filtered && <div className="relay-inline relay-wrap">
             <Button variant="ghost" size="sm" onClick={() => { setBucket(null); setFilters(EMPTY_FILTERS); }}>清除筛选</Button>
           </div>}
         </header>

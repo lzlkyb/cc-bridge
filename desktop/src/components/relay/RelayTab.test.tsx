@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   snapshot: { current: undefined as RelaySnapshot | undefined },
   tunnels: new Map<string, TunnelStatus>(),
   invoke: vi.fn(),
+  saveTextExport: vi.fn(),
 }));
 vi.mock("../../hooks/useRelayStatus", () => ({
   useRelayStatus: () => ({
@@ -22,6 +23,7 @@ vi.mock("../../hooks/useRelayStatus", () => ({
   }),
 }));
 vi.mock("../../lib/tauri", () => ({ invoke: mocks.invoke }));
+vi.mock("../../lib/exportFile", () => ({ saveTextExport: mocks.saveTextExport, exportedToast: vi.fn() }));
 vi.mock("../../lib/sshTunnelStore", () => ({
   useTunnelStatus: (id: string) => mocks.tunnels.get(id),
 }));
@@ -106,21 +108,25 @@ function snapshot(patch: Partial<RelaySnapshot> = {}): RelaySnapshot {
 let root: Root;
 let host: HTMLDivElement;
 let client: QueryClient;
+const navigate = vi.fn<(tab: string, anchor?: string) => void>();
 
 async function mount(value?: RelaySnapshot) {
   mocks.snapshot.current = value;
-  await act(async () => root.render(<QueryClientProvider client={client}><RelayTab /></QueryClientProvider>));
+  await act(async () => root.render(<QueryClientProvider client={client}><RelayTab onNavigate={navigate} /></QueryClientProvider>));
 }
 
 beforeEach(() => {
   // 保存一律成功返回：本文件要验的是「发了什么」，不是失败分支。
   mocks.invoke.mockReset();
+  mocks.saveTextExport.mockReset();
+  navigate.mockReset();
   mocks.invoke.mockImplementation(async (command: string) => command === "ssh_list_connections"
     ? { enabled: true, connections: [{ id: "company", name: "公司", host: "server.example", port: 22, username: "alice" }] }
     : command === "relay_last_deploy" ? null
     : { configured: true, missing: null, warnings: [] });
   mocks.tunnels.clear();
   localStorage.removeItem("relaySshConnectionId");
+  localStorage.removeItem("relayDeployConnectionId");
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   host = document.createElement("div");
   document.body.append(host);
@@ -133,10 +139,38 @@ afterEach(async () => {
 });
 
 describe("中转页三种状态", () => {
-  async function click(text: string, within: ParentNode = document.body) {
+  async function click(text: string, within: ParentNode = document.querySelector('[role="dialog"]') ?? document.body) {
     const button = [...within.querySelectorAll("button")].find((button) => button.textContent?.trim() === text);
     expect(button, `应有「${text}」按钮`).toBeTruthy();
     await act(async () => button!.click());
+  }
+
+  async function openGuide() {
+    const entry = host.querySelector<HTMLButtonElement>(".relay-access-summary > button");
+    expect(entry).not.toBeNull();
+    expect(host.querySelectorAll(".relay-access-summary > button")).toHaveLength(1);
+    await act(async () => entry!.click());
+  }
+
+  const selectAccount = async (id: string, selector = "#relay-ssh-server") => {
+    await vi.waitFor(() => {
+      expect(document.querySelector(`${selector} option[value="${id}"]`)).not.toBeNull();
+      expect(document.querySelector<HTMLSelectElement>(selector)?.disabled).toBe(false);
+    });
+    const input = document.querySelector<HTMLSelectElement>(selector)!;
+    await act(async () => {
+      input.value = id;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  };
+
+  function tunnel(id: string, port: number): TunnelStatus {
+    return {
+      connectionId: `relay:${id}`, state: "up", needsSecret: false, message: null,
+      rules: [{ rule: { id: "model-relay", enabled: true, kind: "remote", listenHost: "127.0.0.1",
+        listenPort: port, targetHost: "127.0.0.1", targetPort: 4100, note: "" },
+        state: "listening", boundPort: port, message: null }],
+    };
   }
 
   it("运行中：模型路由、请求明细与接入配置可查看", async () => {
@@ -154,7 +188,7 @@ describe("中转页三种状态", () => {
     expect(text).toContain("qianwenaiapi");
     expect(text).toContain("qwen4-max-preview");
     for (const label of ["今日请求", "首字 P50", "今日 Token", "最近请求", "查看档位映射"]) expect(text).toContain(label);
-    await click("接入指南", host);
+    await openGuide();
     await vi.waitFor(() => expect(document.body.querySelector(".relay-code")).not.toBeNull());
     const code = document.body.querySelector(".relay-code")?.textContent ?? "";
     expect(code).toContain('"ANTHROPIC_BASE_URL": "http://127.0.0.1:45201"');
@@ -166,7 +200,7 @@ describe("中转页三种状态", () => {
 
   it("接入需先建立转发，重连期间不提供失效的地址", async () => {
     await mount(snapshot());
-    await click("接入指南", host);
+    await openGuide();
     await vi.waitFor(() => expect(document.querySelector("#relay-ssh-server")).not.toBeNull());
     expect(document.querySelector(".relay-code")).toBeNull();
     await click("建立 SSH 转发");
@@ -198,7 +232,7 @@ describe("中转页三种状态", () => {
 
   it("内网直连仍使用原本的监听地址和端口", async () => {
     await mount(snapshot({ listenHost: "192.0.2.15", addr: "192.0.2.15:4100" }));
-    await click("接入指南", host);
+    await openGuide();
     expect(document.querySelector(".relay-code")?.textContent).toContain('"ANTHROPIC_BASE_URL": "http://192.0.2.15:4100"');
     expect(document.querySelector("#relay-ssh-server")).toBeNull();
     // 直连不建隧道、不显示隧道选择器；但「一键部署到远端」仍需 SSH 连接列表，
@@ -234,22 +268,81 @@ describe("中转页三种状态", () => {
       return { configured: true, missing: null, warnings: [] };
     });
     await mount(snapshot());
-    await click("接入指南", host);
-    await vi.waitFor(() => expect(document.querySelector("#relay-deploy-server")).not.toBeNull());
+    await openGuide();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>(".relay-deploy .relay-actions button")?.disabled).toBe(false));
     await click("部署到远端");
     expect(mocks.invoke).toHaveBeenCalledWith("relay_deploy_config", {
-      connectionId: "company", serviceAccount: null, model: null,
+      connectionId: "company", expectedBaseUrl: "http://127.0.0.1:45201", serviceAccount: null, model: null,
     });
     await vi.waitFor(() => expect(document.querySelector(".relay-deploy-result")).not.toBeNull());
     const result = document.querySelector(".relay-deploy-result")?.textContent ?? "";
     expect(result).toContain("/home/alice/.claude-own/own-model.json");
     expect(result).toContain("claude-svc");
     expect(result).toContain("开一个新终端");
+    await click("打开远端终端");
+    expect(navigate).toHaveBeenCalledWith("terminal", "relay-ssh:company");
+  });
+
+  it("转发和部署共用一个账号，另一账号的成功或部署状态不串线", async () => {
+    localStorage.setItem("relayDeployConnectionId", "company");
+    localStorage.setItem("relaySshConnectionId", "qa");
+    mocks.tunnels.set("relay:company", tunnel("company", 45201));
+    mocks.tunnels.set("relay:qa", tunnel("qa", 45238));
+    mocks.invoke.mockImplementation(async (command: string, args: { connectionId?: string; expectedBaseUrl?: string }) => {
+      if (command === "ssh_list_connections") return { enabled: true, connections: [
+        { id: "company", name: "公司", host: "server.example", port: 22, username: "alice" },
+        { id: "qa", name: "公司", host: "server.example", port: 22, username: "bob" },
+      ] };
+      if (command === "relay_last_deploy") return args.connectionId === "company" ?
+        { connectionId: "company", url: "http://127.0.0.1:45201", file: "/home/alice/.claude-own/own-model.json" } : null;
+      if (command === "relay_deploy_config") return { baseUrl: args.expectedBaseUrl, file: "/home/bob/.claude-own/own-model.json" };
+      return null;
+    });
+    await mount(snapshot({ clientVerified: true }));
+    await openGuide();
+    await vi.waitFor(() => expect(document.querySelector<HTMLSelectElement>("#relay-ssh-server")?.value).toBe("qa"));
+    expect(document.querySelector("#relay-deploy-server")).toBeNull();
+    expect(document.querySelector(".relay-code")?.textContent).toContain(":45238");
+    expect(document.querySelector(".relay-deploy-result")).toBeNull();
+    await vi.waitFor(() => expect(document.querySelector<HTMLButtonElement>(".relay-deploy .relay-actions button")?.disabled).toBe(false));
+    await click("部署到远端");
+    expect(mocks.invoke).toHaveBeenCalledWith("relay_deploy_config", {
+      connectionId: "qa", expectedBaseUrl: "http://127.0.0.1:45238", serviceAccount: null, model: null,
+    });
+    await selectAccount("company");
+    expect(document.querySelector<HTMLSelectElement>("#relay-current-target")?.value).toBe("company");
+    expect(document.querySelector(".relay-code")?.textContent).toContain(":45201");
+    await vi.waitFor(() => expect(document.querySelector(".relay-deploy-result")?.textContent ?? "").toContain("/home/alice/"));
+    expect(document.querySelector(".relay-deploy-result")?.textContent).not.toContain("/home/bob");
+  });
+
+  it("端口冲突仅更新已部署的所选账号，并沿用其部署选项", async () => {
+    const oldUrl = "http://127.0.0.1:45201";
+    const nextUrl = "http://127.0.0.1:45214";
+    const status = tunnel("company", 45201);
+    status.state = "reconnecting";
+    status.rules[0].state = "failed";
+    mocks.tunnels.set("relay:company", status);
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "ssh_list_connections") return { enabled: true,
+        connections: [{ id: "company", name: "公司", host: "server.example", port: 22, username: "alice" }] };
+      if (command === "relay_last_deploy") return { connectionId: "company", url: oldUrl, serviceAccount: "claude-svc", model: "custom-model" };
+      if (command === "ssh_tunnel_list") return [tunnel("other", 45216), tunnel("company", 45214)];
+      if (command === "relay_deploy_config") return { baseUrl: nextUrl };
+      return null;
+    });
+    await mount(snapshot());
+    await openGuide();
+    await vi.waitFor(() => expect(document.body.textContent).toContain("重新分配并部署"));
+    await click("重新分配并部署");
+    await vi.waitFor(() => expect(mocks.invoke).toHaveBeenCalledWith("relay_deploy_config", {
+      connectionId: "company", expectedBaseUrl: nextUrl, serviceAccount: "claude-svc", model: "custom-model",
+    }));
   });
 
   it("P0：接入方式独立成块且置于代码块上方，不再埋卡头", async () => {
     await mount(snapshot({ listenHost: "192.0.2.15", addr: "192.0.2.15:4100" }));
-    await click("接入指南", host);
+    await openGuide();
     await vi.waitFor(() => expect(document.querySelector(".relay-method h3")).not.toBeNull());
     const method = document.querySelector(".relay-method")!;
     expect(method.querySelector("h3")!.textContent).toBe("接入方式");
@@ -272,7 +365,7 @@ describe("中转页三种状态", () => {
     const labels = [...notice.querySelectorAll("button")].map((b) => b.textContent ?? "");
     expect(labels.some((t) => t.includes("一键重新部署"))).toBe(true);
     expect(labels.some((t) => t.includes("切隧道"))).toBe(true);
-    expect(document.querySelector(".relay-addr-badge")!.textContent).toContain("10.203.5.45");
+    expect(host.querySelector(".relay-access-summary")!.textContent).toContain("10.203.5.45");
   });
 
   it("关闭态保留历史与上游设置，并提供启动操作", async () => {
@@ -289,8 +382,8 @@ describe("中转页三种状态", () => {
     await mount(snapshot({ clientVerified: false, latestClientStatus: null }));
     expect(host.querySelector(".relay-service-badge")?.textContent).toBe("等待首个成功请求");
     expect(host.querySelector(".relay-work-table tbody")).not.toBeNull();
-    await click("接入指南", host);
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("等待首个客户端成功请求");
+    await openGuide();
+    expect(host.querySelector(".relay-access-summary")?.textContent).toContain("中转等待首个成功请求");
   });
 
   it("还没配上游：headline 与徽章都换成中性态，不再谎报「已连通」", async () => {
@@ -435,4 +528,29 @@ describe("中转页三种状态", () => {
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain("部分采集");
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain("缓存读取0");
   });
+
+  it("选中柱形后，Token 汇总、列表和 CSV 使用同一范围", async () => {
+    const base = snapshot();
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const row = base.recent[0];
+    const usage = (input: number) => ({ input, output: 0, cacheRead: 0, cacheWrite: 0, partial: false });
+    await mount({ ...base, recent: [
+      { ...row, usage: usage(20) },
+      { ...row, id: 2, tsMs: yesterday.getTime(), upstreamModel: "yesterday-model", usage: usage(35) },
+    ] });
+    await click("Token 用量", host);
+    expect(host.querySelector(".relay-usage-metrics dd")?.textContent).toBe("55");
+    const chosen = host.querySelector<HTMLButtonElement>('.relay-chart-day[aria-label*="35 Token"]')!;
+    await act(async () => chosen.click());
+    expect(host.querySelector(".relay-usage-metrics dd")?.textContent).toBe("35");
+    expect(host.querySelector(".relay-work-table tbody")?.children).toHaveLength(1);
+    await click("导出当前范围", host);
+    const exported = mocks.saveTextExport.mock.calls[0][0];
+    expect(exported.content).toContain("yesterday-model");
+    expect(exported.content).not.toContain(row.upstreamModel);
+    await click("清除时段", host);
+    expect(host.querySelector(".relay-usage-metrics dd")?.textContent).toBe("55");
+  });
+
 });

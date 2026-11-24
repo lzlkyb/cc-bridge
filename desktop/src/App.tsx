@@ -504,7 +504,8 @@ function AppContent() {
               导致前端 sessions state 丢失需重新连接。复用 TerminalTab 内部已验证的 display:none 模式。 */}
           <TabsContent value="terminal" keepMounted className="h-full overflow-hidden">
             <Suspense fallback={<TabFallback kind="blank" />}>
-              <TerminalTab status={status} sidebarHost={terminalSidebarHost} sidebarCollapsed={sideCollapsed} onSidebarCollapsedChange={setSideCollapsed} onNavigate={handleNavigate} onChanged={refetchStatus} />
+              <TerminalTab status={status} sidebarHost={terminalSidebarHost} sidebarCollapsed={sideCollapsed} onSidebarCollapsedChange={setSideCollapsed} onNavigate={handleNavigate} onChanged={refetchStatus}
+                openRequest={activeTab === "terminal" ? pendingAnchor : null} />
             </Suspense>
           </TabsContent>
           {/* CC 对话页（实验）：独立页面，与终端并列。不挂 data-terminal，
@@ -523,7 +524,7 @@ function AppContent() {
               代价是每次进来重新开始采样——指标卡的曲线从「采样中…」重新攒。 */}
           <TabsContent value="relay" className="page-scroll app-content-box h-full overflow-y-auto overflow-x-hidden">
             <Suspense fallback={<TabFallback kind="cards" />}>
-              <RelayTab />
+              <RelayTab onNavigate={handleNavigate} />
             </Suspense>
           </TabsContent>
           </main>

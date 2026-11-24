@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, type ReactNode } from "react";
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { useToast } from "../ui/toast";
@@ -7,226 +6,164 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { copyText } from "../../lib/utils";
 import { invoke } from "../../lib/tauri";
 import { buildRelaySnippet } from "../../lib/relayFormat";
-import type { RelayLastDeploy, RelaySaveResult, RelaySnapshot } from "../../lib/types";
-import { RelaySshAccess, useRelaySshAccess } from "./RelaySshAccess";
-import { RelayDeploy, oneClickTunnel } from "./RelayDeploy";
+import type { RelaySaveResult, RelaySnapshot } from "../../lib/types";
+import { RelaySshAccess, RelayTargetSelect, relayTunnelLabel, type useRelaySshAccess } from "./RelaySshAccess";
+import { RelayDeploy, relayDeployOptions, type useRelayDeployment } from "./RelayDeploy";
 import "../tabs/connect/stable-connect.css";
 
-/**
- * ⑤ 接入（全宽）。
- *
- * 两种模式（隧道 / 内网直连）产出**同一份 settings 文件**，差别只在 `BASE_URL` 那一行。
- * 所以这里是「分段切换 + 一块代码」，不是「两种方案并排两张卡」：并排会让人以为
- * 要选一套完全不同的做法。
- *
- * 🔴 切到直连时三处必须同时变：代码块里的地址、前置条件换成橙色警告、页头徽章转橙。
- * 只变一处会让人以为还在隧道里（§4.9.2）。页头徽章由 `RelayTab` 根据 listenHost 算，
- * 另两处在这里。
- *
- * 🔴 地址文案不写「仅本机可访问」：隧道模式下监听的确是回环，但远端经隧道照样能访问。
- * 正确说法是「不对内网暴露」——说的是暴露面，不是访问来源。
- */
-export function RelayAccessCard({
-  snapshot,
-  onChanged,
-  verified,
-}: {
-  snapshot?: RelaySnapshot;
-  onChanged: () => void | Promise<unknown>;
-  verified: boolean;
+type Access = ReturnType<typeof useRelaySshAccess>;
+type Deployment = ReturnType<typeof useRelayDeployment>;
+
+export function RelayAccessSummary({ access, deployment, baseUrl, direct, verified, disabled, onOpen }: {
+  access: Access; deployment: Deployment; baseUrl: string; direct: boolean; verified: boolean;
+  disabled: boolean; onOpen: () => void;
+}) {
+  const receipt = deployment.lastDeploy.data;
+  const deployed = !!baseUrl && receipt?.url === baseUrl;
+  const target = access.connection;
+  const error = deployment.isError && deployment.variables?.connectionId === target?.id;
+  const busy = deployment.isPending || (!direct && access.busy);
+  const tone = direct || access.canReallocate || access.tunnel?.state === "reconnecting" || access.error ? "warn" : access.port ? "ok" : "accent";
+  const action = !target ? "管理接入"
+    : busy ? "查看进度"
+    : !direct && !access.port ? access.canReallocate || access.error || access.tunnel?.state === "error" ? "恢复连接" : "建立 SSH 转发"
+    : error ? "查看部署错误" : deployed ? "管理接入" : "部署到远端";
+  return (
+    <section className="relay-work-panel relay-access-summary" aria-label="远端接入">
+      <div className="relay-access-summary-target">
+        <span className="relay-route-symbol"><Icon name={direct ? "server" : "lock"} size={18} /></span>
+        <div><strong>远端接入 <small>· {direct ? "内网直连" : "SSH 隧道"}</small></strong>
+          {access.servers.data?.enabled && access.connections.length > 0 &&
+            <RelayTargetSelect access={access} id="relay-current-target" disabled={disabled || deployment.isPending || access.pending} direct={direct} />}
+        </div>
+      </div>
+      <div className="relay-access-summary-cell" role="status">
+        <small>{direct ? "内网访问地址" : "SSH 转发"}</small>
+        <span className="relay-work-badge" data-tone={tone}>
+          {!direct && access.busy && <span className="relay-access-spinner" aria-hidden="true" />}
+          {direct ? "内网开放" : relayTunnelLabel(access)}
+        </span>
+        {baseUrl ? <code>{baseUrl.replace("http://", "")}</code>
+          : access.tunnel?.rules[0]?.rule.listenPort ? <small>原端口 {access.tunnel.rules[0].rule.listenPort}</small> : null}
+      </div>
+      <div className="relay-access-summary-cell" role="status">
+        <small>远端配置</small>
+        <strong>{deployment.isPending ? (deployment.variables?.recover && !baseUrl ? "正在分配新端口" : "正在部署配置")
+          : error ? "部署未完成" : deployment.lastDeploy.isError ? "无法读取部署记录"
+          : deployed ? "配置已部署" : receipt && baseUrl ? "远端配置需更新" : "等待部署"}</strong>
+        <small>{verified ? "中转已收到成功请求" : "中转等待首个成功请求"}</small>
+      </div>
+      <Button size="sm" variant={deployed ? "outline" : "default"} onClick={onOpen} disabled={disabled}><Icon name="plug" size={15} />{action}</Button>
+    </section>
+  );
+}
+
+function RelayGuideStep({ number, title, children, complete, active }: {
+  number: number; title: string; children: ReactNode; complete?: boolean; active?: boolean;
+}) {
+  return <li className="relay-guide-step" data-complete={complete || undefined} aria-current={active ? "step" : undefined}>
+    <span className="relay-step-number" aria-label={complete ? "已完成" : undefined}>{complete ? <Icon name="check" size={15} /> : number}</span>
+    <div><h3>{title}</h3>{children}</div>
+  </li>;
+}
+
+export function RelayAccessCard({ snapshot, access, deployment, baseUrl, onChanged, blocked, onMigrate, onOpenTerminal }: {
+  snapshot: RelaySnapshot; access: Access; deployment: Deployment; baseUrl: string;
+  onChanged: () => void | Promise<unknown>; blocked: boolean; onMigrate: () => void; onOpenTerminal?: (id: string) => void;
 }) {
   const { toast } = useToast();
   const [switching, setSwitching] = useState(false);
   const [confirmMode, setConfirmMode] = useState<"tunnel" | "direct" | null>(null);
-  const port = snapshot?.port ?? 4100;
-  const direct = !!snapshot && snapshot.listenHost !== "127.0.0.1";
-  const listening = snapshot?.running ?? false;
-  const access = useRelaySshAccess(!direct && listening);
-  const baseUrl = direct ? `http://${snapshot?.listenHost}:${port}`
-    : access.port ? `http://127.0.0.1:${access.port}` : "";
-  const alias = snapshot?.tiers.find((t) => t.tier === "default")?.alias ?? "claude-sonnet-5-5";
-  const snippet = baseUrl ? buildRelaySnippet({
-    baseUrl,
-    token: snapshot?.token || "…",
-    model: alias,
-  }) : "";
+  const direct = snapshot.listenHost !== "127.0.0.1";
+  const listening = snapshot.running;
+  const target = access.connection;
+  const receipt = deployment.lastDeploy.data;
+  const deployed = !!baseUrl && receipt?.url === baseUrl;
+  const disabled = blocked || switching || deployment.isPending || !listening;
+  const alias = snapshot.tiers.find((t) => t.tier === "default")?.alias ?? "claude-sonnet-5-5";
+  const snippet = baseUrl && snapshot.token ? buildRelaySnippet({ baseUrl, token: snapshot.token, model: alias }) : "";
 
   const switchMode = async (next: "tunnel" | "direct") => {
-    if ((next === "direct") === direct || switching) return;
+    if ((next === "direct") === direct || disabled) return;
     setSwitching(true);
+    setConfirmMode(null);
     try {
       const result = await invoke<RelaySaveResult>("relay_save", { patch: { listenMode: next } });
+      await onChanged();
       for (const warning of result.warnings) toast(warning, "warning");
       if (!result.warnings.length) toast(next === "direct" ? "已切到内网直连" : "已切回 SSH 隧道", "success");
-      await onChanged();
     } catch (e) {
       toast(`切换失败：${String(e)}`, "error");
     } finally {
       setSwitching(false);
-      setConfirmMode(null);
     }
   };
 
-  // P2：一键切隧道＝切模式＋建转发＋重新部署，落固定回环地址。目标连接取上次部署的那条。
-  const lastDeploy = useQuery({
-    queryKey: ["relayLastDeploy"],
-    queryFn: () => invoke<RelayLastDeploy | null>("relay_last_deploy"),
-    enabled: listening,
-  });
-  const [tunnelBusy, setTunnelBusy] = useState(false);
-  const tunnelConnId = lastDeploy.data?.connectionId ?? access.connection?.id;
-  const goTunnel = async () => {
-    if (!tunnelConnId || tunnelBusy || switching) return;
-    setTunnelBusy(true);
-    try {
-      const r = await oneClickTunnel(tunnelConnId);
-      toast(`已切隧道并部署，固定地址 ${r.baseUrl}，IP 变化不再影响。`, "success");
-      await onChanged();
-    } catch (e) {
-      toast(`切隧道未完成：${String(e)}。可在上方手动建立转发后部署。`, "error");
-    } finally {
-      setTunnelBusy(false);
-    }
+  const recover = () => {
+    if (disabled || !target || !access.canReallocate) return;
+    if (receipt) deployment.mutate({
+      connectionId: target.id, baseUrl: "", recover: () => access.start(true), options: relayDeployOptions(receipt),
+    });
+    else void access.start(true);
   };
 
   return (
     <section className="relay-access" aria-label="远端接入步骤">
-      <div className="relay-inline relay-wrap relay-access-status">
-        <span className="relay-work-badge" data-tone={!listening ? "mute" : verified ? "ok" : "accent"}>
-          {!listening ? "已停止监听" : verified ? "已收到客户端成功请求" : "等待首个客户端成功请求"}
-        </span>
-        <small>{listening ? "在本页「最近请求」验证中转结果。" : "启动中转后再复制接入配置。"}</small>
-      </div>
-      <div className="relay-card-head">
-        <div className="bento-eyebrow grow">
-          <Icon name="plug" size={12} />
-          在远端用起来
-          <span className="relay-proto">ANTHROPIC</span>
-        </div>
-      </div>
-
-      {/* P0：模式选择是决定地址稳不稳定的最关键选择，独立成「接入方式」全宽分段＋后果卡，
-          置于代码块上方；不再埋进卡头标题行（复用本仓 stable-method 视觉范式）。 */}
       <div className="relay-method">
         <div className="stable-method-heading">
           <h3>接入方式</h3>
           <div className="stable-method-toggle" role="group" aria-label="接入方式">
-            <button
-              type="button"
-              aria-pressed={!direct}
-              disabled={switching}
-              onClick={() => { if (direct) setConfirmMode("tunnel"); }}
-            >
-              隧道连接<span>推荐</span>
-            </button>
-            <button
-              type="button"
-              aria-pressed={direct}
-              disabled={switching}
-              onClick={() => { if (!direct) setConfirmMode("direct"); }}
-            >
-              内网直连
-            </button>
+            <button type="button" aria-pressed={!direct} disabled={disabled} onClick={() => direct && setConfirmMode("tunnel")}>隧道连接<span>推荐</span></button>
+            <button type="button" aria-pressed={direct} disabled={disabled} onClick={() => !direct && setConfirmMode("direct")}>内网直连</button>
           </div>
         </div>
-        <div className="relay-method-consequence">
-          <div data-active={!direct ? "" : undefined}>
-            <b>隧道连接</b>地址固定 127.0.0.1，经 SSH 转发，本机 IP 变了也不受影响。
-          </div>
-          <div data-active={direct ? "" : undefined}>
-            <b>内网直连</b>少一跳更快，但用本机内网 IP。
-            <span className="relay-guidance">IP 变了需重新部署；要稳定请用隧道。</span>
-          </div>
-        </div>
-        {direct && (
-          <Button size="sm" variant="outline" isLoading={tunnelBusy} loadingText="切隧道…"
-            disabled={!tunnelConnId || switching} onClick={() => void goTunnel()}>
-            切隧道（一键切换并重新部署）
-          </Button>
-        )}
+        <p className="relay-method-note">{switching ? "正在切换接入方式…"
+          : direct ? "远端使用本机内网地址访问，中转服务对同网段开放。"
+          : "经 SSH 加密转发，为每个账号分配独立端口。重连会优先恢复原端口。"}</p>
       </div>
-
-      <p className="relay-method-note">
-        {direct
-          ? "远端直接用内网地址访问本机，少一个会断的环节，但同网段可探测。"
-          : "选择远端服务器和账号，CC Bridge 会自动建立 SSH 转发并分配空闲端口。"}
-      </p>
-
-      {direct ? (
-        <div className="relay-prereq" data-warn>
-          <Icon name="alertTriangle" size={13} />
-          <span>
-            直连要把中转绑到网卡上，同网段可探测，token 走明文。本机防火墙需放行{" "}
-            <code>{port}</code>，且 token 不能为空。
-          </span>
-        </div>
-      ) : (
-        <RelaySshAccess access={access} listening={listening} />
-      )}
-      {!direct && access.port > 0 && (
-        <div className="relay-stable-note" role="status">
-          <b>已隧道接入 · 固定地址</b>
-          <span><code>http://127.0.0.1:{access.port}</code> 经 SSH 转发，本机 IP 变化不再影响远端，无需重新部署。</span>
-        </div>
-      )}
-
-      <p className="relay-method-note">{direct
-        ? <>把下面的配置粘贴到远端 Shell，运行 <code>claude-own</code> 后发送一条请求。</>
-        : snippet
-        ? <>把下面的配置粘贴到所选服务器的 Shell，运行 <code>claude-own</code> 后发送一条请求。</>
-        : "SSH 转发就绪后即可生成远端配置。"}</p>
-      {snippet && <pre className="relay-code" tabIndex={0} aria-label="远端配置命令">
-        {snippet.split("\n").map((line, i) => (
-          // 行用 <span display:block> 而不是 <div>：<pre> 的内容模型是短语级内容，
-          // 里面塞块级元素在严格校验下是不合法的，虽然浏览器都容忍。
-          <span key={i} className={line.startsWith("#") ? "ln c" : "ln"}>
-            {line || " "}
-          </span>
-        ))}
-      </pre>}
-
-      <div className="relay-actions">
-        <button
-          type="button"
-          className="ui-button primary"
-          disabled={!listening || !snapshot?.token || switching || !snippet}
-          onClick={() =>
-            void copyText(
-              snippet,
-              () => toast("整块已复制，粘到远端 shell 执行即可", "success"),
-              () => toast("复制失败，请手动选中复制", "error"),
-            )
-          }
-        >
-          <Icon name="copy" size={13} />
-          复制远端配置
-        </button>
-        <p className="note">配置含中转令牌，请仅复制到自己的客户端。</p>
-      </div>
-
-      <RelayDeploy
-        listening={listening}
-        baseUrl={baseUrl}
-        token={snapshot?.token || ""}
-        model={alias}
-        defaultConnectionId={access.connection?.id}
-      />
-
-      {confirmMode && (
-        <ConfirmDialog
-          zIndex={1100}
-          title={confirmMode === "direct" ? "切到内网直连？" : "切回 SSH 隧道？"}
-          description={confirmMode === "direct" ? (
-            <>
-              中转会从 <code>127.0.0.1:{port}</code> 改绑到内网网卡，<b>同网段任何机器都能探测到这个端口</b>，
-              令牌走明文 HTTP。监听地址变了，中转会重启一次，进行中的请求会断。
-            </>
-          ) : "切换监听地址会重启中转，进行中的请求可能中断。远端客户端需要改用 SSH 转发地址。"}
-          confirmLabel={confirmMode === "direct" ? "切到直连" : "切回隧道"}
-          onCancel={() => setConfirmMode(null)}
-          onConfirm={() => void switchMode(confirmMode)}
-        />
-      )}
+      <RelayTargetSelect id={direct ? "relay-deploy-server" : "relay-ssh-server"} access={access} direct={direct} disabled={disabled || access.pending} />
+      {direct && <div className="relay-prereq" data-warn>
+        <Icon name="alertTriangle" size={16} />
+        <div><strong>远端须能访问本机内网地址</strong><br />令牌通过 HTTP 明文传输，防火墙需允许远端访问 <code>{snapshot.port}</code>。本机 IP 变化后须更新远端配置。</div>
+      </div>}
+      {direct && target && access.servers.data?.enabled && <Button size="sm" variant="outline" className="w-fit" disabled={disabled} onClick={onMigrate}>
+        切隧道并重新部署
+      </Button>}
+      <ol className="relay-guide-steps">
+        {!direct && <RelayGuideStep number={1} title="确认接入账号" complete={Boolean(target)} active={!target}>
+          <p>转发、配置和验证入口都使用所选账号。</p>
+        </RelayGuideStep>}
+        <RelayGuideStep number={direct ? 1 : 2} title={direct ? "确认内网地址" : "建立 SSH 转发"} complete={Boolean(baseUrl)} active={!!target && !baseUrl}>
+          {direct ? <code className="relay-guide-address">{baseUrl}</code>
+            : <RelaySshAccess access={access} recovery={!!receipt} onRecover={recover} disabled={disabled} />}
+        </RelayGuideStep>
+        <RelayGuideStep number={direct ? 2 : 3} title="部署并验证" complete={deployed} active={!!baseUrl && !deployed}>
+          <p>{direct ? "一键部署使用 SSH，也可以手动复制下方配置到远端。"
+            : "将配置写入所选账号的家目录，然后用 Claude Code 发送一条请求。"}</p>
+          {deployment.isError && deployment.variables?.connectionId === target?.id && !baseUrl &&
+            <p className="relay-prereq" data-warn role="alert">{String(deployment.error)}</p>}
+          {target && (baseUrl || deployment.isPending || deployment.lastDeploy.isError) && <RelayDeploy key={target.id} connection={target}
+            baseUrl={baseUrl} model={alias} tokenPresent={!!snapshot.token} blocked={disabled}
+            deployment={deployment} onOpenTerminal={onOpenTerminal} />}
+        </RelayGuideStep>
+      </ol>
+      <details className="relay-manual">
+        <summary>手动配置</summary>
+        {snippet ? <>
+          <p className="relay-method-note">在{target ? ` ${target.username}@${target.host} 的` : "远端"}终端执行。配置包含中转令牌。</p>
+          <pre className="relay-code" tabIndex={0} aria-label="远端配置命令">{snippet}</pre>
+        </> : <p className="relay-method-note">{baseUrl ? "生成中转令牌后可以复制配置。" : "SSH 转发就绪后可以复制配置。"}</p>}
+        <Button variant="outline" size="sm" disabled={disabled || !snippet} onClick={() => void copyText(snippet,
+          () => toast("已复制远端配置。", "success"), () => toast("复制失败，请手动选中复制。", "error"))}>
+          <Icon name="copy" size={13} />复制远端配置
+        </Button>
+      </details>
+      {confirmMode && <ConfirmDialog zIndex={1100} title={confirmMode === "direct" ? "切到内网直连？" : "切回 SSH 隧道？"}
+        description={confirmMode === "direct"
+          ? "中转会绑定到内网，同网段设备可探测端口，令牌通过 HTTP 明文传输。切换会重启中转，正在处理的请求可能中断。"
+          : "切换会重启中转，正在处理的请求可能中断。远端客户端需要改用 SSH 转发地址。"}
+        confirmLabel={confirmMode === "direct" ? "切到直连" : "切回隧道"}
+        onCancel={() => setConfirmMode(null)} onConfirm={() => void switchMode(confirmMode)} />}
     </section>
   );
 }
