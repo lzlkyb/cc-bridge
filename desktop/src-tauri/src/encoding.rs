@@ -17,8 +17,27 @@ pub struct FileText {
     pub encoding: &'static Encoding,
     /// 原文件使用 CRLF 换行（写回时把 `\n` 还原为 `\r\n`）。
     pub crlf: bool,
-    /// 原文件带 UTF-8 BOM（写回时补回）。
+    /// 原文件带有与 `encoding` 匹配的 BOM（UTF-8 / UTF-16LE / UTF-16BE，写回时按编码补回）。
+    ///
+    /// 🔴 曾经只认 UTF-8 BOM：UTF-16LE/BE 的 BOM 被 `decode` 剥掉后**不记录**，
+    /// 写回时也不补——文件从此丢掉 BOM。而丢 BOM 的 UTF-16 文本再被
+    /// `detect_encoding` 探测时不再是 UTF-16（含 NUL 的字节串会被当成
+    /// 「合法 UTF-8 + 垃圾」或直接二进制），`is_binary_content` 随即判它二进制
+    /// ⇒ **这个文件连本工具都再也读不了**。所以三种 BOM 都必须 round-trip。
     pub had_bom: bool,
+}
+
+/// 该编码对应的 BOM 字节（没有则 `None`）。
+fn bom_bytes(enc: &Encoding) -> Option<&'static [u8]> {
+    if enc == UTF_8 {
+        Some(&UTF8_BOM)
+    } else if enc == UTF_16LE {
+        Some(&[0xFF, 0xFE])
+    } else if enc == UTF_16BE {
+        Some(&[0xFE, 0xFF])
+    } else {
+        None
+    }
 }
 
 impl FileText {
@@ -86,9 +105,11 @@ pub fn read_text(data: &[u8], override_label: Option<&str>) -> Result<FileText, 
         }
         _ => detect_encoding(data),
     };
-    let had_bom = requested == UTF_8 && data.starts_with(&UTF8_BOM);
     // decode 会剥掉匹配的 BOM；若检测到与 requested 不同的 BOM 会改用 BOM 编码。
     let (cow, actual, had_errors) = requested.decode(data);
+    // BOM 判定按**实际用于解码的编码**来：UTF-16LE/BE 的 BOM 同样要记，
+    // 否则写回时不补，文件丢 BOM 后被自家探测判二进制（见 `FileText::had_bom`）。
+    let had_bom = bom_bytes(actual).is_some_and(|bom| data.starts_with(bom));
     // 修复：之前这里用 `_had_errors` 丢弃了解码错误标志。当 detect_encoding 四种尝试都失败（既不是合法 UTF-8，
     // 也无法被 GBK/GB18030 无损解码）时会落到这里的 UTF-8 兼底分支，`decode()` 会静默用 U+FFFD 替换无法解码的字节。
     // 若不拦截，后续 edit_files/notebook_edit 写回时会把这些 U+FFFD 永久烤进文件，与本模块注释里声明的
@@ -147,6 +168,39 @@ pub fn is_binary_content(data: &[u8]) -> bool {
     (non_print as f64 / sample.len() as f64) > 0.10
 }
 
+/// 把文本按编码编为字节流，**UTF-16 走独立路径**。
+///
+/// 🔴 为什么必须有这个分发：`encoding_rs` 的 `Encoding::encode` 对
+/// **UTF-16LE / UTF-16BE / UTF-32* 目标会静默返回 UTF-8**（返回值里的
+/// `&Encoding` 会变成 `UTF_8`，实测 `UTF_16LE.encode("content")` 得到
+/// 7 字节 ASCII）。如果像对 GBK 那样直接 `enc.encode(&restored)`，
+/// UTF-16 文件写回会吐出 UTF-8 字节：要么被 round-trip 守卫拒掉
+/// （报「字符无法表示」这句假话），要么——万一守卫没看出问题——把文件
+/// 悄悄换成另一种编码。这是**典型的静默失败**：调用方不检查第二个返回值
+/// 就永远发现不了。所以 UTF-16 必须自己用 `str::encode_utf16` 编。
+fn encode_bytes(text: &str, enc: &'static Encoding) -> Vec<u8> {
+    if enc == UTF_16LE {
+        encode_utf16(text, true)
+    } else if enc == UTF_16BE {
+        encode_utf16(text, false)
+    } else {
+        enc.encode(text).0.into_owned()
+    }
+}
+
+/// 文本 → UTF-16 字节流（`str::encode_utf16` 正确处理代理对，不会拆坏 emoji）。
+fn encode_utf16(text: &str, little_endian: bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() * 2 + 2);
+    for unit in text.encode_utf16() {
+        if little_endian {
+            out.extend_from_slice(&unit.to_le_bytes());
+        } else {
+            out.extend_from_slice(&unit.to_be_bytes());
+        }
+    }
+    out
+}
+
 /// 把归一化文本（LF）按指定编码/换行/BOM 无损编码为字节流。
 /// 编码有损（往 GBK 插入不可表示字符等）时返回错误，绝不静默损坏文件。
 pub fn encode_text(
@@ -162,7 +216,7 @@ pub fn encode_text(
         text_lf.to_string()
     };
 
-    let (body, _, _) = enc.encode(&restored);
+    let body = encode_bytes(&restored, enc);
 
     // round-trip 守卫：解码回来归一化后必须与输入一致，否则说明该编码无法无损
     // 表示新内容（如 GBK 装不下的字符），拒绝写入。
@@ -175,19 +229,25 @@ pub fn encode_text(
         ));
     }
 
-    let mut out = Vec::with_capacity(body.len() + if had_bom { 3 } else { 0 });
-    if had_bom && enc == UTF_8 {
-        out.extend_from_slice(&UTF8_BOM);
+    let mut out = Vec::with_capacity(body.len() + 4);
+    if had_bom {
+        // 按**这个**编码的 BOM 补回：UTF-8 补 3 字节、UTF-16LE/BE 补 2 字节。
+        // 曾经这里写死 `enc == UTF_8`，UTF-16 文件的 BOM 有去无回。
+        if let Some(bom) = bom_bytes(enc) {
+            out.extend_from_slice(bom);
+        }
     }
     out.extend_from_slice(&body);
     Ok(out)
 }
 
 /// 把文本按指定编码编码为字节流（仅测试用，不做守卫）。
+///
+/// 与 `encode_text` 共用 `encode_bytes`：否则测试会像曾经那样用
+/// `enc.encode()` 构造「假 UTF-16」（实际是 UTF-8），测的东西根本不是要测的。
 #[cfg(test)]
 pub fn encode_string(text: &str, enc: &'static Encoding) -> Vec<u8> {
-    let (cow, _, _) = enc.encode(text);
-    cow.into_owned()
+    encode_bytes(text, enc)
 }
 
 /// 把用户提供的编码标签映射到 Encoding。复用 WHATWG 标准别名
@@ -256,6 +316,74 @@ mod tests {
         // 回写补回 BOM
         let out = encode_text(&ft.text, ft.encoding, ft.crlf, ft.had_bom).unwrap();
         assert!(out.starts_with(&UTF8_BOM));
+    }
+
+    /// 回归：UTF-16LE + BOM 必须**原样 round-trip**。
+    ///
+    /// 修复前 `had_bom` 只记 UTF-8、回写只补 UTF-8 BOM ⇒ UTF-16 文件保存后
+    /// BOM 丢失；而丢 BOM 的 UTF-16 再探测时不再是 UTF-16（含 NUL 的字节串
+    /// 会被 `is_binary_content` 判二进制）⇒ 该文件从此连本工具都读不了。
+    #[test]
+    fn test_utf16le_bom_stripped_and_restored() {
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend_from_slice(&encode_string("content", UTF_16LE));
+        let ft = read_text(&bytes, None).unwrap();
+        assert_eq!(ft.text, "content");
+        assert_eq!(ft.encoding, UTF_16LE);
+        assert!(ft.had_bom, "UTF-16LE 的 BOM 也必须记录");
+        let out = encode_text(&ft.text, ft.encoding, ft.crlf, ft.had_bom).unwrap();
+        assert_eq!(out, bytes, "读→写必须逐字节一致（含 BOM）");
+
+        // 写回后再读：编码与 BOM 都还在，且不会被误判成二进制。
+        let again = read_text(&out, None).unwrap();
+        assert_eq!(again.encoding, UTF_16LE);
+        assert!(again.had_bom);
+        assert!(!is_binary_content(&out), "带 BOM 的 UTF-16 不是二进制");
+    }
+
+    /// 同上，BE 方向。两个方向都要守：BOM 字节序不同，写错就是乱码。
+    #[test]
+    fn test_utf16be_bom_stripped_and_restored() {
+        let mut bytes = vec![0xFE, 0xFF];
+        bytes.extend_from_slice(&encode_string("内容", UTF_16BE));
+        let ft = read_text(&bytes, None).unwrap();
+        assert_eq!(ft.text, "内容");
+        assert_eq!(ft.encoding, UTF_16BE);
+        assert!(ft.had_bom);
+        let out = encode_text(&ft.text, ft.encoding, ft.crlf, ft.had_bom).unwrap();
+        assert_eq!(out, bytes, "读→写必须逐字节一致（含 BOM）");
+    }
+
+    /// UTF-16 文件必须**真的能改**，而不只是读→写原样 round-trip。
+    ///
+    /// 修复前 `encode_text` 直接 `enc.encode()`，而 encoding_rs 对 UTF-16
+    /// 目标静默返回 UTF-8 ⇒ 任何一次 edit_files/write_files 保存都被
+    /// round-trip 守卫拒掉，报的还是「字符无法表示」这句假话——
+    /// 用户视角是「UTF-16 文件完全不能编辑」。emoji 顺带钉住代理对
+    /// （`encode_utf16` 走 `str::encode_utf16`，不会把 🎯 拆成两个独立码元）。
+    #[test]
+    fn test_utf16le_file_is_editable() {
+        let mut bytes = vec![0xFF, 0xFE];
+        bytes.extend_from_slice(&encode_string("hello", UTF_16LE));
+        let ft = read_text(&bytes, None).unwrap();
+        let edited = format!("{}\n世界 🎯", ft.text);
+        let out =
+            encode_text(&edited, ft.encoding, ft.crlf, ft.had_bom).expect("UTF-16 文件必须可保存");
+        let again = read_text(&out, None).unwrap();
+        assert_eq!(again.text, edited);
+        assert_eq!(again.encoding, UTF_16LE);
+        assert!(again.had_bom, "改完再存，BOM 还在");
+        assert!(!is_binary_content(&out));
+    }
+
+    /// UTF-16 无 BOM（用户显式指定编码时）不能凭编码补一个 BOM 出来。
+    #[test]
+    fn test_utf16_without_bom_stays_without_bom() {
+        let bytes = encode_string("no bom", UTF_16LE);
+        let ft = read_text(&bytes, Some("utf-16le")).unwrap();
+        assert!(!ft.had_bom);
+        let out = encode_text(&ft.text, ft.encoding, ft.crlf, ft.had_bom).unwrap();
+        assert_eq!(out, bytes);
     }
 
     #[test]

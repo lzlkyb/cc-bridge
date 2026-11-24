@@ -17,9 +17,12 @@
 //!
 //! ## 大文件与二进制不硬扛
 //! 超过 `MAX_EDIT_BYTES`（2 MB）只读前 2 MB 并标记截断（前端据此转只读）；
-//! 不是 UTF-8 的文件拒绝内联编辑，两者都把「用本机编辑器打开」（C 路线，scp 全量
-//! 下载）作为出路交回用户。UTF-8 判定在 **Rust 侧**做（`decode_utf8_truncated`）：
-//! 限流读按字节切，切点落在多字节字符中间时严格 decode 会把合法文本误判成二进制。
+//! 既不是 UTF-8 也不是 GBK/GB18030 的文件拒绝内联编辑，两者都把「用本机编辑器打开」
+//! （C 路线，scp 全量下载）作为出路交回用户。编码判定在 **Rust 侧**做
+//! （`encoding::decode_panel_text`，UTF-8 优先、GBK 兜底）：限流读按字节切，切点落在
+//! 多字节字符中间时严格 decode 会把合法文本误判成二进制，两条路都容忍尾部残缺。
+//! 读到的编码标签随内容带回前端，写回时按**原编码**编码（`encode_panel_text`），
+//! GBK 文件不会再被静默转码成 UTF-8。
 //!
 //! ## 安全边界（与 ssh_cmds 一致）
 //! 全部经 `ssh_enabled` 总闸；只经 Tauri IPC 给本机面板，**不注册为 MCP 工具**、
@@ -34,7 +37,7 @@ use base64::Engine as _;
 use serde::Serialize;
 use tauri::State;
 
-use crate::encoding::decode_utf8_truncated;
+use crate::encoding::{decode_panel_text, encode_panel_text};
 use crate::ssh_proxy::PendingCreds;
 use crate::state::AppState;
 
@@ -54,7 +57,7 @@ use super::ssh_cmds::{
 pub(super) const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
 /// 远端被改、拒绝写回的错误前缀。前端据此切到冲突态，而不是匹配文案。
 pub const ERR_FILE_CONFLICT: &str = "CCB_FILE_CONFLICT";
-/// 文件不是 UTF-8、不能内联编辑的错误前缀。前端据此引导「用本机编辑器打开」。
+/// 文件不是 UTF-8/GBK、不能内联编辑的错误前缀。前端据此引导「用本机编辑器打开」。
 pub const ERR_FILE_BINARY: &str = "CCB_FILE_BINARY";
 /// 本机临时副本已被外部编辑器改过之外、远端也变了的写回冲突（C 路线回传用）。
 const B64: base64::engine::general_purpose::GeneralPurpose =
@@ -65,6 +68,7 @@ const B64: base64::engine::general_purpose::GeneralPurpose =
 #[serde(rename_all = "camelCase")]
 pub struct RemoteFileContent {
     /// UTF-8 文本（已把 CRLF 归一成 LF；写回时按 `line_ending` 还原）。
+    /// GBK 文件在此已解码为 UTF-8 文本，编码标签见 `encoding`。
     pub content: String,
     /// 文件总字节数（不是 content 的长度——截断时二者不同）。
     pub size: u64,
@@ -74,6 +78,9 @@ pub struct RemoteFileContent {
     pub truncated: bool,
     /// 原文件换行符："lf" | "crlf"。
     pub line_ending: String,
+    /// 原文件编码标签："utf-8" | "gbk"。写回时原样带回，按此编码落盘
+    /// （不带回会把 GBK 文件静默转码成 UTF-8）。
+    pub encoding: String,
 }
 
 /// `ssh_file_write` 的返回。
@@ -161,6 +168,7 @@ pub async fn ssh_file_read(
             mtime: r.mtime,
             truncated: r.truncated,
             line_ending: r.line_ending,
+            encoding: r.encoding,
         });
     }
     let cmd = read_script(&path);
@@ -181,10 +189,10 @@ pub async fn ssh_file_read(
 /// 项目本就依赖远端 python3（stable_remote 整套），这里复用同一假设；没有 python3 时
 /// 给「用本机编辑器打开」的出路。
 ///
-/// 🔴 **UTF-8 判定不在这里做**（曾经在）：脚本原来读完后自己 `data.decode('utf-8')`，
+/// 🔴 **编码判定不在这里做**（曾经在）：脚本原来读完后自己 `data.decode('utf-8')`，
 /// 失败就报 `__CCB_F_BIN__`。可限量读是按**字节数**切的，一个 >2MB 的中文文件有约
 /// 1/4 概率把切点落进某个汉字的第 2/3 字节——合法 UTF-8 被误判成「不是文本」。
-/// 现在脚本只管原样回传字节，文本/二进制由 Rust 侧 `decode_utf8_truncated` 判定
+/// 现在脚本只管原样回传字节，文本/二进制由 Rust 侧 `decode_panel_text` 判定
 /// （与 russh 主路径同一个函数、同一套语义）：尾部残缺只退一个字符，真二进制仍拒绝。
 ///
 /// 🔴 P0-2 修复（2026-11-23）：这里原本恒定 `f.read(PREVIEW_BYTES)`（256 KB），
@@ -225,9 +233,10 @@ fn python_str(s: &str) -> String {
 
 /// 解析读取脚本的哨兵输出。
 ///
-/// 🔴 UTF-8 判定在**这里**做（`decode_utf8_truncated`），远端脚本不再判：
+/// 🔴 编码判定在**这里**做（`encoding::decode_panel_text`），远端脚本不再判：
 /// 限量读按字节切，切点落在多字节字符中间时严格 decode 会把合法文本误判成二进制。
-/// 尾部残缺只退一个字符；中部有非法字节（真二进制）仍然拒绝。
+/// 尾部残缺只退一个字符；中部有非法字节（真二进制）仍然拒绝。GBK 路线另有过
+/// `is_binary_content` 守卫（GBK 几乎能解码任何双字节序列，不拦会把二进制当文本）。
 fn parse_read_output(out: &str) -> Result<RemoteFileContent, String> {
     let mut meta: Option<(u64, i64, bool)> = None;
     let mut b64 = String::new();
@@ -246,16 +255,15 @@ fn parse_read_output(out: &str) -> Result<RemoteFileContent, String> {
     let bytes = B64
         .decode(b64.as_bytes())
         .map_err(|e| format!("内容解码失败：{e}"))?;
-    let text = decode_utf8_truncated(&bytes)
-        .map_err(|_| format!("{ERR_FILE_BINARY}: 文件不是 UTF-8 文本，请用本机编辑器打开"))?;
-    let line_ending = if text.contains("\r\n") { "crlf" } else { "lf" };
-    let content = text.replace("\r\n", "\n");
+    let decoded = decode_panel_text(&bytes).map_err(|e| format!("{ERR_FILE_BINARY}: {e}"))?;
+    let line_ending = if decoded.crlf { "crlf" } else { "lf" };
     Ok(RemoteFileContent {
-        content,
+        content: decoded.text,
         size,
         mtime,
         truncated,
         line_ending: line_ending.to_string(),
+        encoding: decoded.encoding.to_string(),
     })
 }
 
@@ -286,6 +294,14 @@ fn parse_meta(s: &str) -> Result<(u64, i64, bool), String> {
 /// `expected_mtime` 是打开时的 mtime；远端当前 mtime 与之不符且 `force=false` 时拒绝
 /// （返回 `ERR_FILE_CONFLICT` 前缀），由 UI 给「重新加载 / 仍然覆盖保存」两条出路。
 /// `expected_mtime=0` 表示跳过检测（读时没拿到 mtime 的兜底）。
+///
+/// `encoding` 是读时带回的编码标签（"utf-8" | "gbk"），content 按它编码成字节落盘
+/// ——少了这一步，GBK 文件会被静默转码成 UTF-8。标签来自前端但过
+/// `label_to_encoding` 白名单，未知值直接拒绝（写路径是破坏性的，不猜）。
+// 8 参：connection_id/path/content/line_ending/encoding 是文件本体与保真信息，
+// expected_mtime/force 是乐观锁输入，state 是固定容器——彼此独立，打包结构体只会让
+// 调用点更长（同 russh_write_file / write_via_scp 的判断）。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ssh_file_write(
     state: State<'_, Arc<AppState>>,
@@ -293,6 +309,7 @@ pub async fn ssh_file_write(
     path: String,
     content: String,
     line_ending: String,
+    encoding: String,
     expected_mtime: i64,
     force: bool,
 ) -> Result<RemoteFileWrite, String> {
@@ -303,8 +320,7 @@ pub async fn ssh_file_write(
     let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let creds = resolve_link_secrets(&link, &state.data_dir)?;
     // D 方案： russh 长连接优先（乐观锁 + 临时文件 + 服务端原子 rename 语义对齐）。
-    // 🔴 必须放在下面 `normalized` 之前：那里 else 分支会**move** `content`，
-    // 而本块要 `&content`。放在这里还顺带省掉 russh 成功时白算的一次 base64（最大 2MB）。
+    // 放在编码之前：russh 成功时就省掉一次 base64（最大 2MB）。
     if let Ok(w) = super::ssh_russh_file::russh_write_file(
         state.inner(),
         &link,
@@ -312,6 +328,7 @@ pub async fn ssh_file_write(
         &path,
         &content,
         &line_ending,
+        &encoding,
         expected_mtime,
         force,
     )
@@ -322,20 +339,19 @@ pub async fn ssh_file_write(
             size: w.size,
         });
     }
-    // 还原换行符：读时归一成 LF，写回按原文件的风格，避免把整个文件的换行改掉。
-    let normalized = if line_ending == "crlf" {
-        content.replace('\n', "\r\n")
-    } else {
-        content
-    };
-    let bytes = normalized.as_bytes();
+    // 按**原编码 + 原换行**编码（读时把 CRLF 归一成 LF，这里按原文件风格还原；
+    // GBK 文件不会被静默转码成 UTF-8）。round-trip 守卫在内：往 GBK 插 emoji
+    // 这类不可表示字符时拒绝写入。
+    let bytes = encode_panel_text(&content, &line_ending, &encoding)?;
+    // 🔴 大小检查必须放在编码**之后**：GBK 编码后的字节数比同一文本的 UTF-8
+    // 表示短，按 UTF-8 长度判会把本来存得下的 GBK 文件误杀。
     if bytes.len() as u64 > MAX_EDIT_BYTES {
         return Err(format!(
             "内容超过内联编辑上限（{} MB），请用本机编辑器打开后回传",
             MAX_EDIT_BYTES / 1024 / 1024
         ));
     }
-    let b64 = B64.encode(bytes);
+    let b64 = B64.encode(&bytes);
     // ---- 回退路径 A：常驻 helper，base64 分块写 part 文件 ----
     // 🔴 为什么不再把整个 base64 塞进**一行**：helper 用 `-tt` 强制分配 PTY，而
     // Linux termios 的 canonical 模式单行上限 4095 字节（含结尾换行），超出的部分
@@ -365,7 +381,7 @@ pub async fn ssh_file_write(
         &link,
         &ssh_path,
         creds,
-        bytes,
+        &bytes,
         &path,
         expected_mtime,
         force,
@@ -1013,6 +1029,23 @@ mod tests {
         assert_eq!(r.line_ending, "crlf");
         assert_eq!(r.size, 14);
         assert!(!r.truncated);
+        assert_eq!(r.encoding, "utf-8");
+    }
+
+    /// GBK 载荷：回退读路径与 russh 主路径必须同一套语义——解出文本并带回
+    /// `encoding: "gbk"`，写回时才不会把文件静默转码成 UTF-8。
+    #[test]
+    fn parse_read_output_decodes_gbk_with_label() {
+        let gbk = encoding_rs::GBK.encode("公用\r\n方法").0.into_owned();
+        let out = format!(
+            "__CCB_F_META__{{\"size\":{},\"mtime\":7,\"truncated\":false}}\n{}\n",
+            gbk.len(),
+            B64.encode(&gbk)
+        );
+        let r = parse_read_output(&out).unwrap();
+        assert_eq!(r.content, "公用\n方法");
+        assert_eq!(r.line_ending, "crlf");
+        assert_eq!(r.encoding, "gbk");
     }
 
     /// 🔴 >2MB 的合法 UTF-8 文件曾被误判二进制（体验退化级）：限量读按字节切，
@@ -1030,6 +1063,7 @@ mod tests {
         let r = parse_read_output(&out).unwrap();
         assert_eq!(r.content, "世", "切点前的完整字符必须保住");
         assert!(r.truncated);
+        assert_eq!(r.encoding, "utf-8");
         // 真二进制（中部非法字节）仍然拒绝——不能为了宽容截断把二进制当文本
         let out2 = format!(
             "__CCB_F_META__{{\"size\":4,\"mtime\":1,\"truncated\":false}}\n{}\n",

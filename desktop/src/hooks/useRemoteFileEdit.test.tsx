@@ -14,6 +14,7 @@ const READ = {
   mtime: 1700000000,
   truncated: false,
   lineEnding: "lf",
+  encoding: "utf-8",
 };
 
 interface Snap {
@@ -24,6 +25,7 @@ interface Snap {
   conflict: boolean;
   error: string | null;
   mtime: number;
+  encoding: string;
 }
 
 /** 把 hook 的状态快照进一个可变对象，便于断言。 */
@@ -41,6 +43,7 @@ function useProbe(
     conflict: edit.conflict,
     error: edit.error,
     mtime: edit.meta?.mtime ?? 0,
+    encoding: edit.meta?.encoding ?? "",
   };
   return edit;
 }
@@ -95,11 +98,30 @@ describe("useRemoteFileEdit", () => {
       path: "/a.txt",
       content: "changed",
       lineEnding: "lf",
+      encoding: "utf-8",
       expectedMtime: 1700000000,
       force: false,
     });
     expect(snap().dirty).toBe(false);
     expect(snap().mtime).toBe(1700000999);
+  });
+
+  it("GBK 文件：读回的 encoding 标签必须原样带回写命令（否则被静默转码成 UTF-8）", async () => {
+    h.invoke.mockResolvedValueOnce({ ...READ, encoding: "gbk", content: "公用\n方法\n" });
+    let api!: ReturnType<typeof useRemoteFileEdit>;
+    await act(async () => {
+      root.render(<Probe onReady={(a) => (api = a)} />);
+    });
+    expect(snap().encoding).toBe("gbk");
+    await act(async () => api.onChange("公用\n工具\n"));
+    h.invoke.mockResolvedValueOnce({ mtime: 2, size: 8 });
+    await act(async () => {
+      await api.save(false);
+    });
+    expect(h.invoke).toHaveBeenLastCalledWith(
+      "ssh_file_write",
+      expect.objectContaining({ encoding: "gbk", lineEnding: "lf" }),
+    );
   });
 
   it("🔴 远端被改：保存被拒但不丢用户修改，只置 conflict", async () => {
@@ -154,7 +176,7 @@ describe("useRemoteFileEdit", () => {
   });
 
   it("二进制文件：不进编辑态，error 标记为 binary 让 UI 引导外部打开", async () => {
-    h.invoke.mockRejectedValueOnce(new Error("CCB_FILE_BINARY: 文件不是 UTF-8 文本，请用本机编辑器打开"));
+    h.invoke.mockRejectedValueOnce(new Error("CCB_FILE_BINARY: 文件不是 UTF-8 或 GBK/GB18030 文本，请用本机编辑器打开"));
     await act(async () => {
       root.render(<Probe />);
     });

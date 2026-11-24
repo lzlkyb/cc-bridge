@@ -90,7 +90,7 @@ export function SshFileEditorNotice({
         className="flex shrink-0 flex-wrap items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive-ink"
       >
         <span className="min-w-0 flex-1">
-          {binary ? "文件不是 UTF-8 文本，无法内联编辑。" : `读取失败：${error}`}
+          {binary ? "文件不是 UTF-8 或 GBK/GB18030 文本，无法内联编辑。" : `读取失败：${error}`}
         </span>
         {binary && (
           <Button size="sm" className="h-6 px-2 text-xs" variant="outline" disabled={busy} onClick={onOpenExternal}>

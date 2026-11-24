@@ -10,6 +10,9 @@ export interface RemoteFileContent {
   mtime: number;
   truncated: boolean;
   lineEnding: string;
+  /** 原文件编码标签："utf-8" | "gbk"。保存时原样带回，按此编码落盘
+   * （不带回会把 GBK 文件静默转码成 UTF-8）。 */
+  encoding: string;
 }
 
 /** 后端 `ssh_file_write` / `ssh_file_upload_edited` 的返回。 */
@@ -76,7 +79,13 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
         setBaseline(r.content);
         setDirty(false);
         setConflict(false);
-        setMeta({ size: r.size, mtime: r.mtime, truncated: r.truncated, lineEnding: r.lineEnding });
+        setMeta({
+          size: r.size,
+          mtime: r.mtime,
+          truncated: r.truncated,
+          lineEnding: r.lineEnding,
+          encoding: r.encoding,
+        });
         setPhase("ready");
       } catch (e) {
         if (errIs(e, BINARY)) {
@@ -107,6 +116,7 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
           path,
           content,
           lineEnding: meta.lineEnding,
+          encoding: meta.encoding,
           expectedMtime: meta.mtime,
           force,
         });

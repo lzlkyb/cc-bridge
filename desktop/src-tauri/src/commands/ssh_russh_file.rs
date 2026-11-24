@@ -37,7 +37,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::ssh_cmds::{SshFileEntry, SshLink, TransferHooks, PART_SUFFIX};
 use super::ssh_file_cmds::{ERR_FILE_BINARY, ERR_FILE_CONFLICT, MAX_EDIT_BYTES};
 use super::ssh_russh_cmds::{get_russh_session, RusshFileSession};
-use crate::encoding::decode_utf8_truncated;
+use crate::encoding::{decode_panel_text, encode_panel_text};
 use crate::ssh_proxy::PendingCreds;
 use crate::state::AppState;
 
@@ -304,21 +304,22 @@ pub(super) async fn russh_read_file(
     // 于是 256KB–2MB 的文件「没截断却只读到 256KB」，保存即静默丢数据。
     let truncated = (buf.len() as u64) < size;
 
-    // 🔴 用 `decode_utf8_truncated` 而不是 `String::from_utf8`：`take` 按字节数
-    // 截断，切点落在一个多字节字符中间时严格 decode 会把合法 UTF-8 文件误判成
-    // 二进制（>2MB 的中文文件约 1/4 概率踩中）。尾部残缺只退一个字符，
-    // 中部有非法字节（真二进制）仍然拒绝。与旧路径共用同一个函数、同一套语义。
-    let text = decode_utf8_truncated(&buf)
-        .map_err(|_| format!("{ERR_FILE_BINARY}: 文件不是 UTF-8 文本，请用本机编辑器打开"))?;
-    let line_ending = if text.contains("\r\n") { "crlf" } else { "lf" };
-    let content = text.replace("\r\n", "\n");
+    // 🔴 用 `decode_panel_text`（UTF-8 优先、GBK 兜底）而不是裸
+    // `String::from_utf8`：`take` 按字节数截断，切点落在一个多字节字符中间时
+    // 严格 decode 会把合法 UTF-8 文件误判成二进制（>2MB 的中文文件约 1/4
+    // 概率踩中）。两条路都容忍尾部残缺；中部有非法字节（真二进制）仍然拒绝。
+    // 与旧路径共用同一个函数、同一套语义；GBK 路线另有过 `is_binary_content`
+    // 守卫（GBK 几乎能解码任何双字节序列，不拦会把二进制当文本打开）。
+    let decoded = decode_panel_text(&buf).map_err(|e| format!("{ERR_FILE_BINARY}: {e}"))?;
+    let line_ending = if decoded.crlf { "crlf" } else { "lf" };
 
     Ok(RusshReadResult {
-        content,
+        content: decoded.text,
         size,
         mtime,
         truncated,
         line_ending: line_ending.to_string(),
+        encoding: decoded.encoding.to_string(),
     })
 }
 
@@ -329,6 +330,8 @@ pub(super) struct RusshReadResult {
     pub(super) mtime: i64,
     pub(super) truncated: bool,
     pub(super) line_ending: String,
+    /// 编码标签（"utf-8" | "gbk"），写回时按它编码，防止 GBK 文件被静默转码。
+    pub(super) encoding: String,
 }
 
 /// lstat 看到的路径形态（[`decide_rename_target`] 的输入之一）。
@@ -391,7 +394,7 @@ async fn resolve_rename_target(sess: &RusshFileSession, path: &str) -> Result<St
 ///
 /// **临时文件必须落在同目录**：SFTP 的 `rename` 由服务端执行，跨文件系统会失败
 /// （`EXDEV` 一类），同目录才能保证是服务端的一次原子替换。
-// 8 参：path/content/line_ending 是文件本体，expected_mtime/force 是乐观锁的
+// 9 参：path/content/line_ending/encoding 是文件本体，expected_mtime/force 是乐观锁的
 // 输入，state/link/creds 是拿会话的固定三件套——彼此独立，打包结构体只会让
 // 调用点更长（同 connection_access.rs 的判断）。
 #[allow(clippy::too_many_arguments)]
@@ -402,24 +405,25 @@ pub(super) async fn russh_write_file(
     path: &str,
     content: &str,
     line_ending: &str,
+    encoding: &str,
     expected_mtime: i64,
     force: bool,
 ) -> Result<RusshWriteResult, String> {
     let sess = get_russh_session(state, link, creds).await?;
 
-    // 还原换行符：读时归一成 LF，写回按原文件风格，避免把整个文件的换行改掉。
-    let normalized = if line_ending == "crlf" {
-        content.replace('\n', "\r\n")
-    } else {
-        content.to_string()
-    };
-    let bytes = normalized.as_bytes();
+    // 按**原编码 + 原换行**编码：读时把 CRLF 归一成 LF，这里按原文件风格还原；
+    // GBK 文件按 GBK 落盘，不会被静默转码成 UTF-8。round-trip 守卫在内
+    // （往 GBK 插 emoji 这类不可表示字符时拒绝写入）。
+    let bytes = encode_panel_text(content, line_ending, encoding)?;
+    // 🔴 大小检查放在编码**之后**：GBK 编码后的字节数比同一文本的 UTF-8 表示短，
+    // 按 UTF-8 长度判会把本来存得下的 GBK 文件误杀。
     if bytes.len() as u64 > MAX_EDIT_BYTES {
         return Err(format!(
             "内容超过内联编辑上限（{} MB），请用本机编辑器打开后回传",
             MAX_EDIT_BYTES / 1024 / 1024
         ));
     }
+    let bytes = bytes.as_slice();
 
     // ---- 乐观锁 ----
     // 顺手拿原文件的权限位：下面 rename 前要把它写回临时文件（旧路径 python 的

@@ -71,7 +71,7 @@ it("二进制文件：引导用本机编辑器打开，并给按钮", async () =
   const onOpenExternal = vi.fn();
   await render({ error: "binary", onOpenExternal });
   const bar = host.querySelector('[role="alert"]')!;
-  expect(bar.textContent).toContain("不是 UTF-8");
+  expect(bar.textContent).toContain("不是 UTF-8 或 GBK/GB18030");
   await act(async () => bar.querySelector<HTMLButtonElement>("button")!.click());
   expect(onOpenExternal).toHaveBeenCalledOnce();
 });

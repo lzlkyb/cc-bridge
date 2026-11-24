@@ -1,4 +1,6 @@
 interface Props {
+  /** 原文件编码标签（"utf-8" | "gbk"），状态栏第一位显示。 */
+  encoding: string;
   lineEnding: string;
   lineCount: number;
   size: number;
@@ -19,6 +21,16 @@ function fmtSize(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/**
+ * 编码标签 → 状态栏显示名。未知值原样显示：后端只发 utf-8/gbk，但别把未来的
+ * 新编码吞成「UTF-8」——那会对用户说谎。
+ */
+function encodingLabel(label: string): string {
+  if (label === "gbk") return "GBK";
+  if (label === "utf-8") return "UTF-8";
+  return label;
+}
+
 function fmtTime(s: number): string {
   if (!s) return "—";
   try {
@@ -34,6 +46,7 @@ function fmtTime(s: number): string {
  * 避免同时出现两个矛盾的状态标签。
  */
 export function SshFileEditorStatus({
+  encoding,
   lineEnding,
   lineCount,
   size,
@@ -55,7 +68,7 @@ export function SshFileEditorStatus({
           : { text: "✓ 已保存", cls: "text-emerald-600 dark:text-emerald-400" };
   return (
     <div className="flex shrink-0 items-center gap-3 border-t border-border px-3 py-1 text-[11px] text-muted-foreground">
-      <span>UTF-8</span>
+      <span>{encodingLabel(encoding)}</span>
       <span>{lineEnding === "crlf" ? "CRLF" : "LF"}</span>
       <span>{lineCount} 行</span>
       <span>{fmtSize(size)}</span>

@@ -170,6 +170,7 @@ export function SshFileEditor({ conn, path, onBack }: Props) {
       )}
 
       <SshFileEditorStatus
+        encoding={edit.meta?.encoding ?? "utf-8"}
         lineEnding={edit.meta?.lineEnding ?? "lf"}
         lineCount={edit.content ? edit.content.split("\n").length : 0}
         size={edit.meta?.size ?? 0}
