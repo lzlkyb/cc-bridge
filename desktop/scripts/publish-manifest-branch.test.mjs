@@ -14,6 +14,7 @@ import {
   addArgs,
   giteeRawUrl,
   giteeReleaseAssetUrl,
+  gitSubprocessEnv,
   githubGitUrl,
   parseArgs,
   planFiles,
@@ -26,7 +27,9 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const read = (...p) => readFileSync(path.join(ROOT, ...p), "utf8");
-const git = (...args) => execFileSync("git", args, { encoding: "utf8" });
+// 与脚本的 runGit 同源做环境隔离：pre-push 钩子从 linked worktree 推时会注入绝对路径
+// GIT_DIR（2026-11-24 事故），不剔掉这些 git 调用会被重定向到钩子所在仓库。
+const git = (...args) => execFileSync("git", args, { encoding: "utf8", env: gitSubprocessEnv() });
 
 /**
  * 这批守卫钉的是「2026-11-11 改道」之后不许退回去的形态。
@@ -95,6 +98,19 @@ describe("CI：国内通道只从 GitHub 的 releases 分支出境", () => {
     expect(pusher).toMatch(/verifyChannel/);
     for (const stage of ["github", "mirror", "manifest", "asset"]) {
       expect(VERIFY_STAGE_HINT, `四段验证少了 ${stage} 段的提示`).toHaveProperty(stage);
+    }
+  });
+
+  it("唯一出口对 git 子进程做环境隔离：钩子注入的 GIT_DIR 不许改写作用仓库", () => {
+    // 2026-11-24 事故：git 从 linked worktree 推 main 时会给 pre-push 钩子注入**绝对路径的
+    // GIT_DIR**（普通 clone 不注入 —— .git 可发现，而 worktree 的 .git 是个文件），钩子跑
+    // npm test → vitest → e2e 里 spawnSync 的 git 全被重定向到钩子所在仓库：在真实仓库里
+    // 误建孤儿 releases 分支、还朝真实 GitHub 远端 push（被非 FF 拒绝）⇒ 测试变红而代码没错。
+    expect(pusher, "runGit 没给 git 子进程传 env —— ambient GIT_DIR 会把它重定向到别的仓库").toMatch(
+      /env:\s*gitSubprocessEnv\(\)/,
+    );
+    for (const v of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]) {
+      expect(pusher, `环境隔离漏了 ${v}`).toContain(v);
     }
   });
 });
@@ -263,6 +279,67 @@ describe("本地 bare 仓端到端彩排", () => {
       );
       expect(JSON.parse(readFileSync(path.join(src, MANIFEST_NAME), "utf8")).version).toBe("3.1.7");
     } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+/**
+ * 环境隔离回归（2026-11-24 事故的机器化重演）。
+ * git 从 linked worktree 推 main 时，会往 pre-push 钩子注入**绝对路径的 GIT_DIR**
+ * （普通 clone 不注入 —— worktree 的 .git 是个文件，不注入钩子就找不到仓库）。
+ * 钩子跑 `npm test`，本文件的 e2e 又 spawnSync git……全部被重定向到钩子所在仓库：
+ * 在真实仓库里误建孤儿 releases 分支、还朝真实 GitHub 远端发起 push（被非 FF 拒绝）。
+ * 这里用一个「钩子所在仓库」替身 + 本地彩排仓重演：发布必须只作用于彩排仓，
+ * 替身一个字节都不许被碰。
+ */
+describe("环境隔离：ambient GIT_DIR 不许把发布操作重定向到钩子所在仓库", () => {
+  it("进程里带着 GIT_DIR 时，清单仍然只落进本地彩排仓", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "ccb-manifest-isolation-"));
+    const saved = process.env.GIT_DIR;
+    try {
+      // 替身：非 bare（带工作树，跟真实 worktree 同形态），有个 origin，全程盯着它不许被写
+      const decoy = path.join(tmp, "decoy");
+      git("init", decoy);
+      writeFileSync(path.join(decoy, "README.md"), "decoy\n");
+      git("-C", decoy, "add", "README.md");
+      git("-C", decoy, "-c", "user.email=t@local", "-c", "user.name=t", "commit", "-m", "decoy");
+      git("-C", decoy, "remote", "add", "origin", path.join(tmp, "no-such-remote.git"));
+
+      // 本地彩排仓：先 Seed 一个提交，clone 默认分支才非空（reset --hard 需要可解析的 HEAD）
+      const bare = path.join(tmp, "remote.git");
+      git("init", "--bare", bare);
+      git("--git-dir", bare, "symbolic-ref", "HEAD", "refs/heads/main");
+      const seed = path.join(tmp, "seed");
+      git("init", seed);
+      writeFileSync(path.join(seed, "README.md"), "seed\n");
+      git("-C", seed, "add", "README.md");
+      git("-C", seed, "-c", "user.email=t@local", "-c", "user.name=t", "commit", "-m", "seed");
+      git("-C", seed, "push", bare, "HEAD:refs/heads/main");
+
+      const src = path.join(tmp, "artifacts");
+      mkdirSync(src, { recursive: true });
+      const manifest = path.join(src, MANIFEST_NAME);
+      writeFileSync(manifest, JSON.stringify({ version: "9.9.9" }));
+
+      process.env.GIT_DIR = path.join(decoy, ".git");
+      const res = publishManifestBranch({
+        remote: bare,
+        files: [manifest],
+        identity: { email: "ci@local", name: "ci" },
+      });
+      expect(res.pushed).toBe(true);
+
+      // 清单真的落在了本地彩排仓上
+      const tree = git("--git-dir", bare, "ls-tree", "-r", "--name-only", MANIFEST_BRANCH);
+      expect(tree).toContain(`${MANIFEST_DIR}/${MANIFEST_NAME}`);
+      // 替身仓库必须原样：没有 releases 分支（误建孤儿分支正是当天的事故形态）
+      expect(() =>
+        git("--git-dir", path.join(decoy, ".git"), "rev-parse", "--verify", `refs/heads/${MANIFEST_BRANCH}`),
+      ).toThrow();
+    } finally {
+      if (saved === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = saved;
       rmSync(tmp, { recursive: true, force: true });
     }
   }, 60000);

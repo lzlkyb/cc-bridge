@@ -170,8 +170,52 @@ export const VERIFY_STAGE_HINT = {
     "查附件是否真上传成功（API 叫 attach_files，回读字段却叫 assets）、tag 是否已在 Gitee 存在",
 };
 
+/**
+ * git 子进程的运行环境：剔掉一切会改变「这个 git 命令作用于哪个仓库」的变量。
+ * 🔴 2026-11-24 事故：git 从 linked worktree 推 main 时，会给 pre-push 钩子注入**绝对路径的
+ * GIT_DIR**（普通 clone 不注入 —— .git 可发现，而 worktree 的 .git 是个文件，不注入钩子
+ * 找不到仓库）。钩子跑 `npm test` → vitest → 本脚本 e2e 测试里 spawnSync("git", …, {
+ * cwd: 临时clone }) 全部被重定向到钩子所在仓库：在真实仓库里误建孤儿 releases 分支、
+ * 还朝真实 GitHub 远端发起 push（被非 FF 拒绝）⇒ 测试变红，而代码本身没有错。
+ * 同理适用于任何带 ambient GIT_DIR 的调用方（IDE 终端、被包在别的 git 上下文里的脚本）：
+ * 这个脚本的唯一出口是 GitHub 的 releases 分支，被重定向等于把清单发进错误的仓库。
+ */
+const REPO_SCOPED_GIT_ENV = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_NAMESPACE",
+  "GIT_PREFIX",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_CONFIG_PARAMETERS",
+];
+
+export function gitSubprocessEnv(base = process.env) {
+  const env = { ...base };
+  for (const key of REPO_SCOPED_GIT_ENV) delete env[key];
+  // git 的临时配置注入机制（GIT_CONFIG_COUNT + GIT_CONFIG_KEY_n/VALUE_n）一并剔掉：
+  // 留着等于让 ambient 上下文往这次 clone/push 里塞配置（remote 覆盖、safe.directory……）。
+  const injected = Number(env.GIT_CONFIG_COUNT);
+  if (Number.isFinite(injected) && injected > 0) {
+    for (let i = 0; i < injected; i++) {
+      delete env[`GIT_CONFIG_KEY_${i}`];
+      delete env[`GIT_CONFIG_VALUE_${i}`];
+    }
+  }
+  delete env.GIT_CONFIG_COUNT;
+  return env;
+}
+
 function runGit(args, label, { cwd, allowFail = false } = {}) {
-  const r = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    env: gitSubprocessEnv(),
+  });
   const out = sanitizeRemote(`${r.stdout || ""}${r.stderr || ""}`);
   if (r.status !== 0 && !allowFail) {
     throw new Error(`${label} 失败（exit ${r.status}）：\n${out.slice(0, 2000)}`);
