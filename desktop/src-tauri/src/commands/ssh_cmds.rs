@@ -666,7 +666,8 @@ pub(super) struct ScpJob<'a> {
 ///
 /// 优先用 `-s` 强制 SFTP 协议：遗留 SCP 协议上远程路径会被远端 shell 展开
 /// （CVE-2020-15778 一类），下载方向还有恶意服务端投放额外文件的历史问题
-/// （CVE-2019-6111），而这里的远程路径来自 `parse_ls` 解出的**远端文件名**。
+/// （CVE-2019-6111），而这里的远程路径是用户在面板里选的**远端文件名**
+/// （列目录产出的条目，曾经来自 `parse_ls` 解析的 `ls -la` 输出）。
 /// 不支持时回退到遗留协议，并**改用 shell 引号**保护路径。
 ///
 /// 不传 `-q`：它会把进度条**和** ssh 的警告/诊断信息一起关掉，失败时错误几乎是空的；
@@ -731,31 +732,6 @@ pub(super) fn run_scp(
         }
         Err(e) => Err(e),
     }
-}
-
-/// 列目录命令（GNU coreutils）。
-///
-/// - `--time-style=+%s`：把 mtime 输出成 epoch 秒，便于排序。macOS/BSD 的 `ls`
-///   不支持该选项（报 `illegal option`），调用方命中后退到 `bsd_ls_cmd`。
-/// - 🔴 `--quoting-style=literal`：**不能省**。helper 会话用 `-tt` 给了远端一个 tty，
-///   而 coreutils 在 isatty(stdout) 时默认用 shell-escape 引用——`my report.txt`
-///   会变成 `'my report.txt'`（带单引号），`parse_ls` 拿到的名字就多了一对引号，
-///   前端据此拼出的远程路径全部报「No such file」（下载/删除/进目录）。
-///   旧的一次性路径不带 `-t`、stdout 是管道，所以不会引用——开了 helper 才露出来，
-///   且恰好打掉了“带空格文件名传不了”那个修复。（已在 coreutils 8.32 实测）
-fn gnu_ls_cmd(path: &str) -> String {
-    format!(
-        "ls -la --time-style=+%s --quoting-style=literal {}",
-        shell_quote(path)
-    )
-}
-
-/// 列目录命令（BSD/macOS 降级路径）。
-///
-/// BSD `ls` 没有 `--quoting-style`（给了会直接报错），也不像 coreutils 那样
-/// 在 tty 下自动加引号，所以这边保持裸 `ls -la`。mtime 解析不到（前端显示「未知」）。
-fn bsd_ls_cmd(path: &str) -> String {
-    format!("ls -la {}", shell_quote(path))
 }
 
 /// 把路径包成单引号并转义内部单引号，避免远程命令注入。
@@ -895,75 +871,6 @@ pub(super) fn password_prompt_in(chunk: &[u8]) -> bool {
 /// `passphrase:` 结尾，而是以引号路径加冒号结尾，所以锁定冒号、关键词用包含判定。
 pub(super) fn passphrase_prompt_in(chunk: &[u8]) -> bool {
     prompt_tail(chunk).is_some_and(|t| t.contains("passphrase") || t.contains("密码短语"))
-}
-
-/// 解析 `ls -la` 输出为结构化条目。
-/// `gnu=true` 时按 GNU coreutils 语法（`--time-style=+%s`，第6列是 epoch 秒）；
-/// `gnu=false` 时按 BSD/macOS 语法（日期占多列，难以可靠转 epoch，mtime 置 0）。
-/// 两种都跳过 `total N` 与 `.`/`..`；容忍空格文件名与软链 ` -> target`。
-fn parse_ls(out: &str, gnu: bool) -> Result<Vec<SshFileEntry>, String> {
-    let mut entries = Vec::new();
-    for line in out.lines() {
-        let line = line.trim_end();
-        if line.is_empty() || line.starts_with("total ") {
-            continue;
-        }
-        let mut parts = line.split_whitespace();
-        let perms = match parts.next() {
-            Some(p) => p,
-            None => continue,
-        };
-        let _links = parts.next();
-        let _owner = parts.next();
-        let _group = parts.next();
-        let size_s = match parts.next() {
-            Some(s) => s,
-            None => continue,
-        };
-        // GNU：第6列是 epoch 秒，之后是名字；BSD：第6~8列是日期时间，之后是名字。
-        let mtime: i64 = if gnu {
-            match parts.next() {
-                Some(s) => s.parse::<i64>().unwrap_or(0),
-                None => 0,
-            }
-        } else {
-            // BSD 日期占三列（月 日 时间/年），跳过以定位名字。
-            let _mon = parts.next();
-            let _day = parts.next();
-            let _tim = parts.next();
-            0
-        };
-        let raw: String = parts.collect::<Vec<_>>().join(" ");
-        let is_dir = perms.starts_with('d');
-        let is_symlink = perms.starts_with('l');
-        // 软链整行形如 `mylink -> /target`；只取 ` -> ` 前的一段作为 name，
-        // 否则前端把它拼进路径会变成 `.../mylink -> /target` 这种非法路径。
-        // 后一段进 `link_target`（展示用，零额外远程开销）。
-        let (name, link_target) = if is_symlink {
-            let mut it = raw.splitn(2, " -> ");
-            let n = it.next().unwrap_or(&raw).to_string();
-            (n, it.next().map(|t| t.to_string()))
-        } else {
-            (raw, None)
-        };
-        if name.is_empty() || name == "." || name == ".." {
-            continue;
-        }
-        let size = size_s.parse::<u64>().unwrap_or(0);
-        entries.push(SshFileEntry {
-            name,
-            is_dir,
-            size,
-            mtime,
-            is_symlink,
-            link_target,
-            // 旧路径不补目标类型：`ls -la` 里链接行的类型位是**链接自己**的（l），
-            // 看不出目标是不是目录。双击软链进编辑器、读失败有出路，与加此字段
-            // 前的行为一致（russh 主路径用跟随 stat 补，见 ssh_russh_file）。
-            link_target_is_dir: false,
-        });
-    }
-    Ok(entries)
 }
 
 /// 传输被用户取消的错误前缀。
@@ -2319,6 +2226,28 @@ pub(crate) async fn ssh_link_args(
 }
 
 /// 列出远程目录内容。
+///
+/// 🔴 **只走 russh 长连接，不挂任何降级兜底**（2026-11-24，用户实测定位：
+/// 「正常情况下很快，遇到没有访问权限的文件夹就会进入兜底很慢，去掉降级兜底」）。
+///
+/// 曾经这里是三级链：① russh `read_dir` → ② 常驻 helper `ls` → ③ 一次性
+/// ssh `ls`。russh 一失败就静默往下掉，而第③级是**完整 TCP+认证握手**
+/// （`spawn_capture_off_runtime`，本机 OpenSSH 无连接复用，实测秒级）——
+/// 用户点一个没有权限的文件夹，面板就转圈好几秒。而权限不足换 `ls` 再问
+/// 同一台服务器还是不足（sftp-server 与 shell 查同一套 Unix 权限），
+/// 第②③级对这个场景纯属白付，还要先把 GNU→BSD 的失败重跑走一遍。
+///
+/// 现在失败即失败，错误由 russh 直接给出（`Permission denied: …` 一路可读），
+/// 前端该报错报错、该回退父目录回退——`useSshFileInitialPath` 对 error
+/// 分支本就成立（`ssh_sftp_list` 返回 Err 即触发回退），「initialPath 是
+/// 文件则进父目录并定位」这条链路不依赖兜底成功。
+///
+/// helper / 一次性 ssh 本身不删：`remote_exec`（读文件、回传）、scp 的
+/// 协议降级、批量命令仍在用。只是列目录这条热路径不再蹭它们。
+///
+/// ⚠️ 已知代价（「全部去掉」的取舍）：russh 建连失败后的 60s 负缓存期内，
+/// 列目录会直接报错（原来这些请求靠 helper 成功）；sftp-server 异常的
+/// 主机上列目录完全失效（原来能靠 `ls` 兜底）。要改回来先读上面的现场记录。
 #[tauri::command]
 pub async fn ssh_sftp_list(
     state: State<'_, Arc<AppState>>,
@@ -2329,66 +2258,11 @@ pub async fn ssh_sftp_list(
         return Err("SSH 终端未启用".into());
     }
     let link = fetch_link(&state, &connection_id).await?;
-    let conn = &link.conn;
-    let ssh_path =
-        find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端，无法列目录".to_string())?;
     let creds = resolve_link_secrets(&link, &state.data_dir)?;
-    let mut args = ssh_base_args(&link, "-p");
-    args.push(format!("{}@{}", conn.username, conn.host));
-    let gnu_cmd = gnu_ls_cmd(&path);
-    let bsd_cmd = bsd_ls_cmd(&path);
-    // 快路径：在常驻 helper 会话上跑，零握手。helper 不可用则落到下面的旧路径。
-    //
-    // 注意：只要 helper **拿到了响应**（哪怕退出码非 0）就不再走旧路径——
-    // 目录不存在这类真实错误重跑一遍只是白垃一次握手，结果一样。
-    // D 方案：russh 长连接优先于 helper——同为零握手，但 russh 不依赖服务器
-    // 给 PTY、不受 ConPTY 4 MB 缓冲限制，也不需要解析 `ls` 文本。
-    // 任何失败（含负缓存期内的「暂不重试」）都静默落到下面，不改变既有行为。
-    if let Ok(entries) =
-        super::ssh_russh_file::russh_list_dir(state.inner(), &link, creds.clone(), &path).await
-    {
-        return Ok(entries);
-    }
-    if let Ok((out, code)) =
-        run_via_helper(&state, &link, &ssh_path, creds.clone(), gnu_cmd.clone()).await
-    {
-        if code == 0 {
-            return parse_ls(&out, true);
-        }
-        if is_unknown_option_err(&out) {
-            // BSD/macOS 的 ls 不认 --time-style，降级重跑（仍在同一条 helper 上）。
-            if let Ok((out2, code2)) =
-                run_via_helper(&state, &link, &ssh_path, creds.clone(), bsd_cmd.clone()).await
-            {
-                return if code2 == 0 {
-                    parse_ls(&out2, false)
-                } else {
-                    Err(out2.trim().to_string())
-                };
-            }
-        } else {
-            return Err(out.trim().to_string());
-        }
-    }
-
-    let mut args_gnu = args.clone();
-    args_gnu.push(gnu_cmd);
-    let gnu_res = spawn_capture_off_runtime(ssh_path.clone(), args_gnu, creds.clone()).await;
-    // 🔴 失败分支也得看。BSD/macOS 的 `ls` 拒绝 `--time-style` 时是以**非零码退出**，
-    // `spawn_capture` 因此返回 Err。原实现写的是 `spawn_capture(..)?` 再去看 Ok 分支的
-    // 输出，于是降级路径**永远走不到**——远端是 macOS/BSD 时列目录直接报错。
-    // 错误文本里带着远端输出，据此判断。
-    let needs_bsd = match &gnu_res {
-        Ok(out) => is_unknown_option_err(out),
-        Err(e) => is_unknown_option_err(e),
-    };
-    if !needs_bsd {
-        return parse_ls(&gnu_res?, true);
-    }
-    let mut args_bsd = args;
-    args_bsd.push(bsd_cmd);
-    let out2 = spawn_capture_off_runtime(ssh_path, args_bsd, creds).await?;
-    parse_ls(&out2, false)
+    // russh 内建 SSH 实现，不依赖系统 OpenSSH——所以原来那句
+    // 「未检测到系统 OpenSSH 客户端，无法列目录」的前置检查也去掉了：
+    // 没装 OpenSSH 的机器现在反而能列目录（scp/一次性命令仍会检查）。
+    super::ssh_russh_file::russh_list_dir(state.inner(), &link, creds, &path).await
 }
 
 /// 下载远程文件到本机。`remote` 远程路径，`local` 本机目标路径。
@@ -2827,29 +2701,6 @@ mod tests {
         assert_eq!(picked, None);
     }
 
-    // ── 列目录命令：tty 下的引用必须关掉 ─────────────────────
-
-    /// 🔴 回归：helper 会话用 `-tt` 给了远端一个 tty，而 coreutils 在 isatty(stdout)
-    /// 时默认用 shell-escape 引用：`my report.txt` 变成 `'my report.txt'`。
-    /// `parse_ls` 拿到带引号的名字后，前端拼出的远程路径全部报「No such file」。
-    /// 旧的一次性路径（无 `-t`、stdout 是管道）不会引用，所以这个缺陷
-    /// 是开了 helper 才出现的，且恰好打掉了“带空格文件名传不了”那个修复。
-    #[test]
-    fn gnu_ls_disables_tty_quoting() {
-        let c = gnu_ls_cmd("/opt/app");
-        assert!(c.contains("--quoting-style=literal"), "{c}");
-        assert!(c.contains("--time-style=+%s"), "{c}");
-        assert!(c.contains("'/opt/app'"), "路径必须带 shell 引号：{c}");
-    }
-
-    /// BSD `ls` 没有 `--quoting-style`（给了会直接报错、连降级路径一起废掉）。
-    #[test]
-    fn bsd_ls_has_no_gnu_only_flags() {
-        let c = bsd_ls_cmd("/opt/app");
-        assert!(!c.contains("--"), "BSD 降级命令不能带 GNU 长选项：{c}");
-        assert!(c.contains("'/opt/app'"), "{c}");
-    }
-
     #[test]
     fn stable_setup_allocates_terminal_before_sending_stdin_frames() {
         let link = SshLink::direct(SshConnection {
@@ -3093,82 +2944,55 @@ mod tests {
         assert_ne!(a, ssh_output_event("00000000-0000-0000-0000-000000000001"));
     }
 
-    // ── ls 解析 ────────────────────────────────────────────────────
+    // ── 列目录不许再挂降级链 ─────────────────────────────────────────
 
-    /// GNU 格式：第 6 列是 epoch 秒；名字里的空格不能被截断；软链只取 ` -> ` 前一段。
+    /// 🔴 回归（体验退化级）：`ssh_sftp_list` **只走 russh**，函数体里不得再出现
+    /// helper / 一次性 ssh 两级降级，也不得再生成/解析 `ls` 命令。
+    ///
+    /// 事故记录（2026-11-24，用户实测定位）：「正常情况下很快，遇到没有访问权限的
+    /// 文件夹就会进入兜底很慢」。原实现是 russh → helper `ls` → 一次性 ssh `ls`
+    /// 三级链，russh 一失败就静默下掉；第③级是完整 TCP+认证握手（本机 OpenSSH
+    /// 无连接复用，秒级），而无权限目录换 `ls` 问同一台服务器还是被拒（sftp-server
+    /// 与 shell 查同一套 Unix 权限）——纯白付，还要先走一遍 GNU→BSD 的失败重跑。
+    /// `ssh_sftp_list` 的 doc 注释里有完整的取舍说明（含「全部去掉」的已知代价）。
+    ///
+    /// 为什么用源级断言：这个 bug 的形状是「代码里存在一条降级链」，真机复现要么
+    /// 连服务器、要么造一个 sftp-server 异常的主机，CI 里都做不到。所以守**形状**：
+    /// 函数体内一个降级调用都不许有。
+    ///
+    /// 🔴 needle 必须**运行时拼**：`include_str!` 把本测试的代码一起读进来了，
+    /// 字面量会自己匹配自己（`no_fallible_stat_after_rename` 第一版就这么翻车的）。
     #[test]
-    fn parse_ls_gnu_handles_spaces_symlinks_and_dot_entries() {
-        let out = "total 20\n\
-drwxr-xr-x 3 u g 4096 1712345678 .\n\
-drwxr-xr-x 5 u g 4096 1712345600 ..\n\
--rw-r--r-- 1 u g 123 1712345690 hello world.txt\n\
-lrwxrwxrwx 1 u g 7 1712345695 link -> /tmp/target\n\
-drwxr-xr-x 2 u g 4096 1712345700 sub dir\n";
-        let e = parse_ls(out, true).expect("解析应成功");
-        let names: Vec<&str> = e.iter().map(|x| x.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec!["hello world.txt", "link", "sub dir"],
-            "total / . / .. 应跳过，带空格的名字要完整保留"
+    fn list_dir_has_no_fallback_chain() {
+        let src = include_str!("ssh_cmds.rs");
+        let start = src
+            .find("pub async fn ssh_sftp_list")
+            .expect("ssh_sftp_list 应存在");
+        // 函数体截到下一个 `#[tauri::command]`（即 ssh_sftp_get 的属性）为止。
+        let body = &src[start..];
+        let end = body
+            .find("\n#[tauri::command]")
+            .unwrap_or_else(|| body.find("\npub async fn").unwrap_or(body.len()));
+        let body = &body[..end];
+        let needle = |frag: &str| frag.to_string();
+        for banned in [
+            needle("run_via_") + "helper",
+            needle("spawn_capture_") + "off_runtime",
+            needle("gnu_") + "ls_cmd",
+            needle("bsd_") + "ls_cmd",
+            needle("parse_") + "ls",
+            needle("is_unknown_") + "option_err",
+        ] {
+            assert!(
+                !body.contains(&banned),
+                "ssh_sftp_list 函数体里又出现了降级链调用：{banned}"
+            );
+        }
+        // 正向也要钉住：russh 主路径必须还在（别把整个函数删成空壳）。
+        assert!(
+            body.contains(&(needle("russh_") + "list_dir")),
+            "ssh_sftp_list 必须仍走 russh_list_dir"
         );
-        assert_eq!(e[0].size, 123);
-        assert_eq!(e[0].mtime, 1_712_345_690, "GNU 第 6 列应解成 epoch 秒");
-        assert!(!e[0].is_dir && !e[0].is_symlink);
-        assert!(e[1].is_symlink, "l 开头应识别为软链");
-        assert_eq!(
-            e[1].link_target.as_deref(),
-            Some("/tmp/target"),
-            "软链目标要拆出来"
-        );
-        assert!(!e[1].link_target_is_dir, "旧路径不补目标类型");
-        assert!(e[2].is_dir, "d 开头应识别为目录");
-        assert_eq!(e[0].link_target, None, "非软链没有目标");
-    }
-
-    /// 软链目标拆 ` -> ` 的相对路径、目标自身带 ` -> `、非软链名字带 ` -> `
-    /// 三种形态都不能串味；名字里带空格的目标要完整保留。
-    #[test]
-    fn parse_ls_splits_symlink_target_edge_cases() {
-        let out = "total 8\n\
-lrwxrwxrwx 1 u g 7 1712345695 rel -> ../sites-available/default\n\
-lrwxrwxrwx 1 u g 9 1712345696 weird -> a -> b\n\
--rw-r--r-- 1 u g 3 1712345697 not a link -> really\n";
-        let e = parse_ls(out, true).expect("解析应成功");
-        assert_eq!(e.len(), 3);
-        // 相对目标完整保留
-        assert_eq!(e[0].name, "rel");
-        assert_eq!(
-            e[0].link_target.as_deref(),
-            Some("../sites-available/default")
-        );
-        // 目标里带 ` -> `：只按第一个切（splitn(2)），剩下的都算目标
-        assert_eq!(e[1].name, "weird");
-        assert_eq!(e[1].link_target.as_deref(), Some("a -> b"));
-        // 非软链：名字连 ` -> ` 一起保留，不拆
-        assert_eq!(e[2].name, "not a link -> really");
-        assert_eq!(e[2].link_target, None);
-        assert!(!e[2].is_symlink);
-    }
-
-    /// BSD/macOS 格式：日期占三列，要跳过三列才到名字；mtime 无法可靠得到，置 0。
-    #[test]
-    fn parse_ls_bsd_skips_three_date_columns() {
-        let out = "total 8\n\
-drwxr-xr-x  3 u  g   96 Apr  5 10:00 .\n\
--rw-r--r--  1 u  g  123 Apr  5 10:01 hello world.txt\n\
-lrwxr-xr-x  1 u  g    7 Apr  5 10:02 link -> /tmp/target\n";
-        let e = parse_ls(out, false).expect("解析应成功");
-        let names: Vec<&str> = e.iter().map(|x| x.name.as_str()).collect();
-        assert_eq!(names, vec!["hello world.txt", "link"]);
-        assert_eq!(e[0].size, 123);
-        assert_eq!(e[0].mtime, 0, "BSD 日期不可靠转 epoch，约定置 0");
-    }
-
-    /// 残缺行不能 panic，也不能产出垃圾条目。
-    #[test]
-    fn parse_ls_tolerates_truncated_lines() {
-        let e = parse_ls("drwxr-xr-x\n-rw-r--r-- 1 u\n\n", true).expect("不应报错");
-        assert!(e.is_empty(), "字段不够的行应被跳过，实际：{e:?}");
     }
 
     // ── 降级判定与引号转义 ───────────────────────────────────────
