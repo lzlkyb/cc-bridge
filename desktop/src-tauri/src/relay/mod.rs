@@ -573,9 +573,21 @@ mod tests {
     /// true（旧句柄已 drop，实际一个监听都没有），静默停摆。
     ///
     /// 逼 stop 走进超时分支的办法：让一条**永不结束的流式响应**挂在半途
-    /// （假上游只回响应头、body 永不产出），中转的转发任务就一直占着连接。
-    /// `start_paused` 让那 5 秒在测试里瞬间到点，不必真等。
-    #[tokio::test(start_paused = true)]
+    /// （假上游只回响应头、body 永不产出），中转的转发任务就一直占着连接，
+    /// 于是这里真等那 5 秒优雅超时。
+    ///
+    /// 🔴 **不要改回 `start_paused = true`**（2026-11-24 macOS CI 实测挂过，
+    /// run 45314323121）：tokio 的 auto-advance 在「park 时非阻塞 I/O 轮询
+    /// 没等到事件」时会把时钟推到下一个待触发定时器
+    /// （`runtime/time/mod.rs` 的 `park_thread_timeout`：poll 0 秒，
+    /// `!did_wake()` 就 `clock.advance(下一个定时器)`）。中转上游 client 带
+    /// `connect_timeout(30s)`，回环建连在负载重的 runner 上赶不上那一轮 poll
+    /// ⇒ 时钟被推 30s ⇒ 连接超时当场触发 ⇒ 上游请求失败、中转回 502 ⇒
+    /// 第一个 `assert_eq!(resp.status(), 200)` 挂。Windows runner 快，建连
+    /// 事件在同一轮 poll 里就位（`did_wake()` 为真 ⇒ 不推时钟）所以过——
+    /// 纯粹是机器快慢的竞态，和中转逻辑无关。宁可真等这 5 秒（全量 Rust
+    /// 测试约 22s，+5s 无所谓），也不拿 paused 时钟赌竞态。
+    #[tokio::test]
     async fn restart_still_starts_after_unclean_stop() {
         use axum::body::{Body, Bytes};
         use axum::routing::post;

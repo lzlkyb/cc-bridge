@@ -242,8 +242,12 @@ process-wrap = { version = "=8.0.2", default-features = false, features = ["proc
 # 测试会直接 panic（实测踩过）。
 [dev-dependencies]
 axum = "0.8"
-# `test-util` 只为 `#[tokio::test(start_paused = true)]` 服务（paused 时钟让
-# 「优雅停止 5 秒超时」在测试里瞬间到点，不必真等 5 秒）。放 dev-dependencies
+# `test-util` 曾被唯一的 `start_paused` 用例使用；2026-11-24 那个用例已改回真实
+# 时钟（`src/relay/mod.rs` 里 `restart_still_starts_after_unclean_stop` 的注释
+# 有完整事故记录：paused 时钟的 auto-advance 会在 park 没等到 I/O 事件时把时钟
+# 推到下一个定时器，把 30s `connect_timeout` 伪造触发，macOS CI 上回 502 挂掉）。
+# feature 本身只进 dev 构建、零 release 成本故保留，但**不要再引入
+# `start_paused`**——真等几秒比赌机器快慢的竞态便宜。放 dev-dependencies
 # 而不是正式依赖：feature 只叠加不删除，进正式依赖就会改变 release 构建的
 # tokio 特性集。
 tokio = { version = "1", features = ["test-util"] }
