@@ -184,7 +184,15 @@ pub async fn start(
     ban_threshold: u32,
     ban_window_min: u64,
 ) -> Result<RunningServer, String> {
-    let addr = socket_addr(listen_host, port);
+    // direct 模式（listen_host 是 LAN IP）绑 0.0.0.0，让回环与 LAN 都可访问，
+    // 本机客户端拨 127.0.0.1 不再 ECONNREFUSED；隧道模式仍只绑回环。
+    // 对外地址与 Host 白名单仍用 listen_host（客户端实际拨的 LAN IP），守卫照常拦截。
+    let bind_host = if listen_host == "127.0.0.1" || listen_host == "::1" {
+        listen_host
+    } else {
+        "0.0.0.0"
+    };
+    let addr = socket_addr(bind_host, port);
     let client = build_client()?;
 
     // 先 bind 再算 Host 白名单：`port` 传 0 时由系统分配端口（集成测试用），
@@ -204,7 +212,9 @@ pub async fn start(
     })?;
     let local = listener.local_addr().ok();
     let actual_port = local.map(|a| a.port()).unwrap_or(port);
-    let actual_addr = local.map(|a| a.to_string()).unwrap_or_else(|| addr.clone());
+    // 报告对外地址（advertised listen_host + 实际端口），而非 bind 的 0.0.0.0：
+    // 界面、配置生成、relay_available 都认客户端实际拨的那个地址。
+    let actual_addr = socket_addr(listen_host, actual_port);
     let allowed_hosts = Arc::new(guard::allowed_hosts(listen_host, actual_port));
 
     let state = Arc::new(ServerState {
@@ -851,6 +861,55 @@ mod tests {
         start(shared, token, log, "127.0.0.1", 0, 5, 15)
             .await
             .expect("中转应能启动")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn direct_mode_binds_wildcard_so_loopback_is_reachable() {
+        let log = Arc::new(RelayLog::new(10, None));
+        let shared = Arc::new(tokio::sync::RwLock::new(Arc::new(test_settings(
+            "http://127.0.0.1:1/v1/messages".into(),
+        ))));
+        let token = Arc::new(tokio::sync::RwLock::new("rly_test".to_string()));
+        // direct 模式：listen_host 是 LAN IP（本机不必真有此 IP，实际绑 0.0.0.0）。
+        let relay = start(shared, token, log, "10.203.5.54", 0, 5, 15)
+            .await
+            .expect("direct 应能启动");
+        // 对外地址报 LAN IP，不是 bind 的 0.0.0.0。
+        assert!(
+            relay.addr.starts_with("10.203.5.54:"),
+            "addr={}",
+            relay.addr
+        );
+        let port = relay.addr.rsplit(':').next().unwrap();
+        let body = json!({"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":1});
+        // 回环可连（0.0.0.0 覆盖）且回环 Host 在白名单：上游不可达会 5xx，但绝不是 421。
+        let ok = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{port}/v1/messages"))
+            .header("x-api-key", "rly_test")
+            .json(&body)
+            .send()
+            .await
+            .expect("回环必须可连（bind 0.0.0.0）");
+        assert_ne!(
+            ok.status(),
+            StatusCode::MISDIRECTED_REQUEST,
+            "回环 Host 不该被拒"
+        );
+        // 反例：非白名单 Host 仍 421。
+        let bad = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{port}/v1/messages"))
+            .header("x-api-key", "rly_test")
+            .header("host", "evil.example:4100")
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            bad.status(),
+            StatusCode::MISDIRECTED_REQUEST,
+            "非白名单 Host 必须 421"
+        );
+        relay.stop().await;
     }
 
     #[tokio::test(flavor = "current_thread")]

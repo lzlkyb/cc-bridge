@@ -392,3 +392,77 @@ html[data-ui-style="glass"] .relay-proto {
   padding: 0 12px;
   font-size: 12px;
 }
+
+/* ── 一键部署到远端（P1）───────────────────────────────────────── */
+.relay-deploy {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid hsl(var(--border));
+}
+.relay-deploy :is(select, input) {
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  font: inherit;
+}
+.relay-deploy-adv {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  justify-self: start;
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+}
+.relay-deploy-adv:hover {
+  color: hsl(var(--foreground));
+}
+.relay-deploy-adv-body {
+  display: grid;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: hsl(var(--muted) / 0.4);
+}
+.relay-deploy-adv-body small {
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: hsl(var(--muted-foreground));
+}
+.relay-deploy-error {
+  font-size: 11.5px;
+  color: hsl(var(--destructive-ink));
+}
+.relay-deploy-result {
+  display: grid;
+  gap: 6px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: hsl(var(--success) / 0.1);
+  color: hsl(var(--success-ink));
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.relay-deploy-result code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  word-break: break-all;
+}
+.relay-deploy-hint {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+.relay-deploy-hint svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}

@@ -200,7 +200,50 @@ describe("中转页三种状态", () => {
     await click("接入指南", host);
     expect(document.querySelector(".relay-code")?.textContent).toContain('"ANTHROPIC_BASE_URL": "http://192.0.2.15:4100"');
     expect(document.querySelector("#relay-ssh-server")).toBeNull();
-    expect(mocks.invoke).not.toHaveBeenCalledWith("ssh_list_connections");
+    // 直连不建隧道、不显示隧道选择器；但「一键部署到远端」仍需 SSH 连接列表，
+    // 故直连模式现在会拉 ssh_list_connections，部署目标选择器随之出现。
+    await vi.waitFor(() => expect(document.querySelector("#relay-deploy-server")).not.toBeNull());
+    expect(mocks.invoke).toHaveBeenCalledWith("ssh_list_connections");
+    expect(mocks.invoke).not.toHaveBeenCalledWith("relay_tunnel_start", expect.anything());
+  });
+
+  it("一键部署：隧道就绪后部署到远端，回显路径/服务账号/新终端提示", async () => {
+    mocks.tunnels.set("relay:company", {
+      connectionId: "relay:company", state: "up", needsSecret: false, message: null,
+      rules: [{
+        rule: { id: "model-relay", enabled: true, kind: "remote", listenHost: "127.0.0.1",
+          listenPort: 45201, targetHost: "127.0.0.1", targetPort: 4100, note: "" },
+        state: "listening", boundPort: 45201, message: null,
+      }],
+    });
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "ssh_list_connections") {
+        return { enabled: true, connections: [{ id: "company", name: "公司", host: "server.example", port: 22, username: "alice" }] };
+      }
+      if (command === "relay_deploy_config") {
+        return {
+          baseUrl: "http://127.0.0.1:45201",
+          file: "/home/alice/.claude-own/own-model.json",
+          home: "/home/alice",
+          serviceAccount: "claude-svc",
+          alias: "alias claude-own='claude --settings ~/.claude-own/own-model.json'",
+          configJson: "{}",
+        };
+      }
+      return { configured: true, missing: null, warnings: [] };
+    });
+    await mount(snapshot());
+    await click("接入指南", host);
+    await vi.waitFor(() => expect(document.querySelector("#relay-deploy-server")).not.toBeNull());
+    await click("部署到远端");
+    expect(mocks.invoke).toHaveBeenCalledWith("relay_deploy_config", {
+      connectionId: "company", serviceAccount: null, model: null,
+    });
+    await vi.waitFor(() => expect(document.querySelector(".relay-deploy-result")).not.toBeNull());
+    const result = document.querySelector(".relay-deploy-result")?.textContent ?? "";
+    expect(result).toContain("/home/alice/.claude-own/own-model.json");
+    expect(result).toContain("claude-svc");
+    expect(result).toContain("开一个新终端");
   });
 
   it("关闭态保留历史与上游设置，并提供启动操作", async () => {

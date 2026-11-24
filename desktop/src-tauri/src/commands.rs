@@ -42,6 +42,7 @@ mod forward_takeover;
 mod mcp_bridge_cmds;
 /// 模型中转（P0 探测：保住 release 里的流式转发代码路径，见 `docs/模型中转内置方案`）。
 mod relay_cmds;
+mod relay_deploy_cmds;
 mod relay_tunnel_cmds;
 mod remote_cmds;
 mod running;
@@ -83,6 +84,7 @@ pub use firewall_cmds::*;
 pub use forward_context_cmds::*;
 pub use mcp_bridge_cmds::*;
 pub use relay_cmds::*;
+pub use relay_deploy_cmds::*;
 pub use relay_tunnel_cmds::*;
 pub use remote_cmds::*;
 pub use running::*;

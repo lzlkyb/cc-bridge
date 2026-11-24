@@ -7,6 +7,7 @@ import { invoke } from "../../lib/tauri";
 import { buildRelaySnippet } from "../../lib/relayFormat";
 import type { RelaySaveResult, RelaySnapshot } from "../../lib/types";
 import { RelaySshAccess, useRelaySshAccess } from "./RelaySshAccess";
+import { RelayDeploy } from "./RelayDeploy";
 
 /**
  * ⑤ 接入（全宽）。
@@ -148,6 +149,14 @@ export function RelayAccessCard({
         </button>
         <p className="note">配置含中转令牌，请仅复制到自己的客户端。</p>
       </div>
+
+      <RelayDeploy
+        listening={listening}
+        baseUrl={baseUrl}
+        token={snapshot?.token || ""}
+        model={alias}
+        defaultConnectionId={access.connection?.id}
+      />
 
       {confirmMode && (
         <ConfirmDialog

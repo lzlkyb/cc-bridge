@@ -833,6 +833,21 @@ export interface RelaySaveResult {
   warnings: string[];
 }
 
+/** `relay_deploy_config` 返回：部署到远端用户家目录的结果（camelCase）。 */
+export interface RelayDeployResult {
+  baseUrl: string;
+  /** 远端写入的配置文件绝对路径。 */
+  file: string;
+  /** 远端连接用户的家目录。 */
+  home: string;
+  /** 探测/指定的 claude 服务账号（空 = 未探测到）。 */
+  serviceAccount: string;
+  /** 对齐后的 claude-own alias 行。 */
+  alias: string;
+  /** 实际写入的 own-model.json 内容。 */
+  configJson: string;
+}
+
 export interface RelayEnabledResult {
   enabled: boolean;
   addr: string | null;
