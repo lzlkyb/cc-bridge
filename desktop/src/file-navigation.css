@@ -13,3 +13,6 @@
 .file-path-form input {flex:1;min-width:100px;height:30px;background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:6px;padding:4px 8px;font-family:monospace}
 .file-path-form input[aria-invalid=true] {border-color:hsl(var(--destructive))}
 .file-path-form p {width:100%;margin:0;color:hsl(var(--destructive-ink));overflow-wrap:anywhere}
+/* 文件列表列头常驻：滚动容器包整张表，不 sticky 长目录一滚就丢列名与排序入口。
+   底色必须不透明——半透明 muted/30 会让 sticky 之后的下行透出来；color-mix 保持原视觉。 */
+.ssh-file-table thead th {position:sticky;top:0;z-index:1;background:color-mix(in srgb, hsl(var(--muted)) 30%, hsl(var(--card)));box-shadow:inset 0 -1px 0 hsl(var(--border))}

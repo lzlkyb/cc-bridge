@@ -61,10 +61,10 @@ export function FileHeader({
         <span className="min-w-0 truncate text-xs text-muted-foreground" title={`${conn.username}@${conn.host}:${conn.port}`}>
           {conn.username}@{conn.host}:{conn.port}
         </span>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           <Button
             size="sm"
-            className="h-7 px-2 text-xs"
+            className="h-7 shrink-0 whitespace-nowrap px-2 text-xs"
             disabled={loading || busy}
             onClick={onRefresh}
           >
@@ -72,7 +72,7 @@ export function FileHeader({
           </Button>
           <Button
             size="sm"
-            className="h-7 px-2 text-xs"
+            className="h-7 shrink-0 whitespace-nowrap px-2 text-xs"
             variant="outline"
             disabled={loading || busy || !directoryReady}
             onClick={onNewFolder}
@@ -81,22 +81,25 @@ export function FileHeader({
           </Button>
           <Button
             size="sm"
-            className="h-7 px-2 text-xs"
+            className="h-7 shrink-0 whitespace-nowrap px-2 text-xs"
             variant="outline"
             disabled={loading || busy || !directoryReady}
             onClick={onUpload}
           >
             <Icon name="upload" size={13} /> 上传
           </Button>
-          {/* 常驻过滤：输入即时过滤，清空恢复全量。纯客户端派生，不 disable。 */}
-          <Input
-            value={query}
-            onChange={(e) => onQueryChange(e.target.value)}
-            placeholder="过滤…"
-            aria-label="按名称过滤当前目录"
-            title="按名称过滤（大小写不敏感）"
-            className="h-7 w-32 px-2 text-xs"
-          />
+          {/* 常驻过滤：输入即时过滤，清空恢复全量。纯客户端派生，不 disable。
+              外层定宽：Input 基类带 w-full，直接写 w-32 会被基类压过。 */}
+          <div className="w-32 shrink-0">
+            <Input
+              value={query}
+              onChange={(e) => onQueryChange(e.target.value)}
+              placeholder="过滤…"
+              aria-label="按名称过滤当前目录"
+              title="按名称过滤（大小写不敏感）"
+              className="h-7 px-2 text-xs"
+            />
+          </div>
         </div>
       </div>
 

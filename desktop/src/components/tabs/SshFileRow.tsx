@@ -6,6 +6,7 @@ import type { SortKey, SortState } from "../../lib/sshFileSort";
 import { canReadEntry, unreadEntryTitle } from "../../lib/utils";
 import { SortableTh } from "./SortableTh";
 import { SshFileNameCell } from "./SshFileNameCell";
+import "../../file-navigation.css";
 
 /** 字节数 → 人类可读（B/KB/MB/GB/TB）。 */
 function formatSize(n: number): string {
@@ -94,7 +95,7 @@ export function SshFileRow({
   return (
     <tr
       ref={row} aria-selected={selected || highlighted || undefined}
-      className={`border-b border-border/60 ${
+      className={`border-b border-border/60 transition-colors ${
         clickable && !busy ? "cursor-pointer hover:bg-muted/30" : "hover:bg-muted/20"
       } ${selected ? "bg-primary/10" : ""} ${highlighted && !selected ? "bg-accent" : ""}`}
       onClick={onRowClick}
@@ -122,7 +123,7 @@ export function SshFileRow({
           formatDate(entry.mtime)
         )}
       </td>
-      <td className="w-52 py-1.5 pr-3">
+      <td className="w-56 py-1.5 pr-3">
         <div className="flex items-center justify-end gap-1">
           {!entry.isDir && (
             <button
@@ -258,13 +259,13 @@ export function FileTable({
           description={filterActive ? "没有匹配的条目，换个关键词或清空过滤框。" : "目录为空。把文件拖进来，或点上方「上传」。"}
         />
       )}
-      <table className="w-full text-sm">
+      <table className="ssh-file-table w-full table-fixed text-sm">
         <thead>
-          <tr className="border-b border-border bg-muted/30 text-xs text-muted-foreground">
+          <tr className="border-b border-border text-xs text-muted-foreground">
             <SortableTh sortKey="name" label="名称" align="left" extra="py-1.5 pl-3" sort={sort} onToggleSort={onToggleSort} />
             <SortableTh sortKey="size" label="大小" align="right" extra="w-28 py-1.5" sort={sort} onToggleSort={onToggleSort} />
             <SortableTh sortKey="mtime" label="修改时间" align="right" extra="w-40 py-1.5 pr-3" sort={sort} onToggleSort={onToggleSort} />
-            <th className="w-52 py-1.5 pr-3 text-right font-medium">操作</th>
+            <th className="w-56 py-1.5 pr-3 text-right font-medium">操作</th>
           </tr>
         </thead>
         <tbody ref={tbodyRef}>

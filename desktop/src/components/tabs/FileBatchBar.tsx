@@ -25,14 +25,14 @@ export function FileBatchBar({ total, files, busy, onDownload, onRemove, onMove,
     <div
       role="toolbar"
       aria-label="批量操作"
-      className="flex shrink-0 items-center gap-2 border-b border-border bg-primary/5 px-3 py-1.5 text-xs text-muted-foreground"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-primary/5 px-3 py-1.5 text-xs text-muted-foreground"
     >
       <span className="shrink-0">已选 {total} 个</span>
       <button
         type="button"
         disabled={busy || files === 0}
         onClick={onDownload}
-        className="rounded-md px-2 py-1 text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+        className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
       >
         下载所选
       </button>
@@ -40,7 +40,7 @@ export function FileBatchBar({ total, files, busy, onDownload, onRemove, onMove,
         type="button"
         disabled={busy || files === 0}
         onClick={onRemove}
-        className="rounded-md px-2 py-1 text-destructive-ink hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+        className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-destructive-ink hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
       >
         删除所选
       </button>
@@ -48,7 +48,7 @@ export function FileBatchBar({ total, files, busy, onDownload, onRemove, onMove,
         type="button"
         disabled={busy}
         onClick={onMove}
-        className="whitespace-nowrap rounded-md px-2 py-1 text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >
         移动到…
       </button>
@@ -56,7 +56,7 @@ export function FileBatchBar({ total, files, busy, onDownload, onRemove, onMove,
         type="button"
         disabled={busy}
         onClick={onSelectAll}
-        className="whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >
         全选
       </button>
@@ -64,7 +64,7 @@ export function FileBatchBar({ total, files, busy, onDownload, onRemove, onMove,
         type="button"
         disabled={total === 0}
         onClick={onClear}
-        className="ml-auto rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        className="ml-auto shrink-0 whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >
         取消选择
       </button>

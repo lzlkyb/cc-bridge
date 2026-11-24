@@ -57,11 +57,11 @@ export function SshFileEditorBar({
           {dir}
         </span>
       </span>
-      <div className="ml-auto flex items-center gap-1">
+      <div className="ml-auto flex shrink-0 items-center gap-1">
         {/* 只读态也要能打开本机编辑器——那是大文件唯一的出路 */}
         <Button
           size="sm"
-          className="h-7 px-2 text-xs"
+          className="h-7 shrink-0 whitespace-nowrap px-2 text-xs"
           variant="outline"
           disabled={busy}
           onClick={onOpenExternal}
@@ -72,7 +72,7 @@ export function SshFileEditorBar({
           (dirty ? (
             <Button
               size="sm"
-              className="h-7 px-2 text-xs"
+              className="h-7 shrink-0 whitespace-nowrap px-2 text-xs"
               disabled={busy}
               onClick={onSave}
               title="Ctrl+S"
@@ -80,7 +80,7 @@ export function SshFileEditorBar({
               保存
             </Button>
           ) : (
-            <Button size="sm" className="h-7 px-2 text-xs" variant="outline" disabled>
+            <Button size="sm" className="h-7 shrink-0 whitespace-nowrap px-2 text-xs" variant="outline" disabled>
               <Icon name="check" size={13} /> 已保存
             </Button>
           ))}
