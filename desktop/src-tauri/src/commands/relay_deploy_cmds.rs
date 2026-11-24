@@ -19,12 +19,13 @@ use super::ssh_cmds::{
     find_ssh, resolve_link_secrets, run_via_helper, spawn_capture_off_runtime, ssh_base_args,
     SshLink,
 };
-use crate::db::get_config_value;
+use crate::db::{get_config_value, set_config_value};
 use crate::relay::config::DEFAULT_PORT;
 use crate::state::{relay_listen_host, AppState};
 
 const DEFAULT_MODEL: &str = "claude-sonnet-5-5";
 const ALIAS_LINE: &str = "alias claude-own='claude --settings ~/.claude-own/own-model.json'";
+const LAST_DEPLOY_KEY: &str = "relay_last_deploy";
 
 /// BASE_URL 随模式算（纯函数，可单测）。
 ///
@@ -171,6 +172,15 @@ pub async fn relay_deploy_config(
     if !out.contains("CCB_DEPLOY_OK=1") {
         return Err(format!("远端部署未完成：{}", out.trim()));
     }
+    // 记录本次部署的地址与连接：主页据此检测「本机 IP 变了、远端还指旧地址」的漂移。
+    {
+        let db = state.db.lock().await;
+        let _ = set_config_value(
+            &db,
+            LAST_DEPLOY_KEY,
+            &serde_json::json!({ "url": base_url, "connectionId": connection_id }).to_string(),
+        );
+    }
     Ok(DeployResult {
         base_url,
         file: field(&out, "CCB_DEPLOY_FILE"),
@@ -179,6 +189,28 @@ pub async fn relay_deploy_config(
         alias: ALIAS_LINE.to_string(),
         config_json,
     })
+}
+
+/// 上次成功部署的地址与连接（漂移检测用）。从未部署过返回 None。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastDeploy {
+    pub url: String,
+    pub connection_id: String,
+}
+
+#[tauri::command]
+pub async fn relay_last_deploy(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Option<LastDeploy>, String> {
+    let db = state.db.lock().await;
+    Ok(get_config_value(&db, LAST_DEPLOY_KEY).and_then(|s| {
+        let v: serde_json::Value = serde_json::from_str(&s).ok()?;
+        Some(LastDeploy {
+            url: v.get("url")?.as_str()?.to_string(),
+            connection_id: v.get("connectionId")?.as_str()?.to_string(),
+        })
+    }))
 }
 
 #[cfg(test)]

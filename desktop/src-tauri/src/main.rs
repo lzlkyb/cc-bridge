@@ -1237,6 +1237,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::relay_restart,
             commands::relay_tunnel_start,
             commands::relay_deploy_config,
+            commands::relay_last_deploy,
             commands::relay_regenerate_token,
             commands::relay_test_upstream,
         ])

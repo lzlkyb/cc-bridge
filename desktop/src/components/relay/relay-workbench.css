@@ -142,7 +142,7 @@ html.dark :is(.relay-workbench, .relay-drawer) {
 .relay-rank-item:hover, .relay-rank-item[aria-pressed="true"] { background: var(--relay-selected); color: hsl(var(--primary)); }
 
 .relay-drawer-overlay.ui-overlay { align-items: stretch; justify-content: flex-end; background: rgb(19 29 52 / .24); }
-.relay-drawer.ui-surface { display: flex; flex-direction: column; width: min(455px, 100vw); margin: 0; border-radius: 12px 0 0 12px; background: hsl(var(--card)); overflow: hidden; }
+.relay-drawer.ui-surface { display: flex; flex-direction: column; width: min(520px, 100vw); margin: 0; border-radius: 12px 0 0 12px; background: hsl(var(--card)); overflow: hidden; }
 html[data-ui-style="glass"] .relay-drawer.ui-surface { background: var(--glass-floating); }
 .relay-drawer .relay-section-head { flex: none; }
 .relay-drawer-body { overflow: auto; min-height: 0; display: grid; align-content: start; gap: 15px; padding: 16px 18px 22px; }

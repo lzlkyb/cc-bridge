@@ -9,6 +9,7 @@ import { dayKey, isGeneration, isPending, isRelayError, loadRelayRates, relayKey
 import { formatClock } from "../../lib/relayFormat";
 import { invoke } from "../../lib/tauri";
 import type { RelayLogEntry } from "../../lib/types";
+import { useRelayDrift } from "../../hooks/useRelayDrift";
 import { RelayAccessCard } from "./RelayAccessCard";
 import { RelayPriceForm } from "./RelayPriceForm";
 import { RelayRequestDetails } from "./RelayRequestDetails";
@@ -83,6 +84,16 @@ export function RelayTab() {
     : !verified && !limited ? "接入 Claude Code 后发送一条模型请求，回到这里验证结果。"
     : "查看客户端请求实际转往哪个模型，再按请求排查状态与用量。";
 
+  // P1：地址外露＋漂移自救（逻辑集中在 useRelayDrift，控制本组件状态数）。
+  const { lastDeploy, currentUrl, drift: isDrift, busy: driftBusy, redeploy, goTunnel } = useRelayDrift({
+    running,
+    direct,
+    listenHost: snapshot?.listenHost ?? "",
+    port: snapshot?.port ?? 4100,
+    onRefresh: refresh,
+    onNeedGuide: () => setSurface({ kind: "guide" }),
+  });
+
   const viewTab = (next: View, label: string) => <button id={`relay-tab-${next}`} type="button" role="tab"
     aria-selected={next === view} aria-controls={`relay-view-${next}`} tabIndex={view === next ? 0 : -1}
     onClick={() => setView(next)}><Icon name={next === "route" ? "gitBranch" : "activity"} size={16} />{label}</button>;
@@ -105,7 +116,9 @@ export function RelayTab() {
 
   return <div className="relay-workbench">
     <header className="relay-work-head">
-      <div><div className="relay-inline relay-wrap"><h1>模型中转</h1><span role="status" className="relay-work-badge relay-service-badge" data-tone={badge.tone}>{badge.label}</span></div><p>{caption}</p></div>
+      <div><div className="relay-inline relay-wrap"><h1>模型中转</h1><span role="status" className="relay-work-badge relay-service-badge" data-tone={badge.tone}>{badge.label}</span>
+        {running && snapshot && <span className="relay-addr-badge" data-tone={direct ? "warn" : "ok"}>{direct ? <>直连 · <code>{snapshot.listenHost}:{snapshot.port}</code></> : <>隧道 · <code>127.0.0.1</code></>}</span>}
+      </div><p>{caption}</p></div>
       {snapshot && <div className="relay-inline relay-wrap">
         {configured && <Button variant="outline" size="sm" onClick={() => setSurface({ kind: "provider" })} disabled={Boolean(serviceAction)}><Icon name="settings" size={14} />上游设置</Button>}
         {!running || serviceAction ? <Button size="sm" isLoading={Boolean(serviceAction)} loadingText={serviceAction ? ACTION_LABEL[serviceAction] : undefined}
@@ -118,6 +131,17 @@ export function RelayTab() {
         </Menu>}
       </div>}
     </header>
+
+    {isDrift && lastDeploy.data && (
+      <div className="relay-work-notice" role="alert">
+        <strong>本机地址已变，远端配置需更新</strong>
+        <span>远端仍指向旧地址 <code>{lastDeploy.data.url}</code>，客户端会「连接被拒」。本机现为 <code>{currentUrl}</code>。</span>
+        <div className="relay-drift-actions">
+          <Button size="sm" isLoading={driftBusy === "deploy"} loadingText="部署中…" onClick={() => void redeploy()}>一键重新部署</Button>
+          <Button size="sm" variant="outline" isLoading={driftBusy === "tunnel"} loadingText="切隧道…" onClick={() => void goTunnel()}>切隧道（地址不再变）</Button>
+        </div>
+      </div>
+    )}
 
     <div className="relay-work-tabs" role="tablist" aria-label="模型中转视图" onKeyDown={(event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;

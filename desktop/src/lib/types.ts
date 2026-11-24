@@ -848,6 +848,12 @@ export interface RelayDeployResult {
   configJson: string;
 }
 
+/** `relay_last_deploy` 返回：上次成功部署的地址与连接（漂移检测用）。 */
+export interface RelayLastDeploy {
+  url: string;
+  connectionId: string;
+}
+
 export interface RelayEnabledResult {
   enabled: boolean;
   addr: string | null;

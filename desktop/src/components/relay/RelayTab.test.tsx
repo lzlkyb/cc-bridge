@@ -117,6 +117,7 @@ beforeEach(() => {
   mocks.invoke.mockReset();
   mocks.invoke.mockImplementation(async (command: string) => command === "ssh_list_connections"
     ? { enabled: true, connections: [{ id: "company", name: "公司", host: "server.example", port: 22, username: "alice" }] }
+    : command === "relay_last_deploy" ? null
     : { configured: true, missing: null, warnings: [] });
   mocks.tunnels.clear();
   localStorage.removeItem("relaySshConnectionId");
@@ -246,6 +247,34 @@ describe("中转页三种状态", () => {
     expect(result).toContain("开一个新终端");
   });
 
+  it("P0：接入方式独立成块且置于代码块上方，不再埋卡头", async () => {
+    await mount(snapshot({ listenHost: "192.0.2.15", addr: "192.0.2.15:4100" }));
+    await click("接入指南", host);
+    await vi.waitFor(() => expect(document.querySelector(".relay-method h3")).not.toBeNull());
+    const method = document.querySelector(".relay-method")!;
+    expect(method.querySelector("h3")!.textContent).toBe("接入方式");
+    expect(method.querySelector(".stable-method-toggle")).not.toBeNull();
+    expect(document.querySelector(".relay-card-head .stable-method-toggle")).toBeNull();
+    const code = document.querySelector(".relay-code")!;
+    expect(method.compareDocumentPosition(code) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("P1：直连 IP 漂移出橙色横幅＋重新部署/切隧道按钮，徽章回显当前地址", async () => {
+    mocks.invoke.mockImplementation(async (command: string) => command === "ssh_list_connections"
+      ? { enabled: true, connections: [{ id: "company", name: "公司", host: "server.example", port: 22, username: "alice" }] }
+      : command === "relay_last_deploy" ? { url: "http://10.203.5.54:4100", connectionId: "company" }
+      : { configured: true, missing: null, warnings: [] });
+    await mount(snapshot({ listenHost: "10.203.5.45", addr: "10.203.5.45:4100" }));
+    await vi.waitFor(() => expect(document.querySelector(".relay-work-notice")).not.toBeNull());
+    const notice = document.querySelector(".relay-work-notice")!;
+    expect(notice.textContent).toContain("本机地址已变");
+    expect(notice.textContent).toContain("10.203.5.54");
+    const labels = [...notice.querySelectorAll("button")].map((b) => b.textContent ?? "");
+    expect(labels.some((t) => t.includes("一键重新部署"))).toBe(true);
+    expect(labels.some((t) => t.includes("切隧道"))).toBe(true);
+    expect(document.querySelector(".relay-addr-badge")!.textContent).toContain("10.203.5.45");
+  });
+
   it("关闭态保留历史与上游设置，并提供启动操作", async () => {
     await mount(snapshot({ running: false, addr: null, uptimeSecs: null }));
     expect(host.textContent).toContain("已停止");
@@ -302,11 +331,11 @@ describe("中转页三种状态", () => {
     });
     await typeInto("#relay-base-url", "https://up.example.com");
     await blur("#relay-base-url");
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalledWith("relay_save", expect.anything());
     await typeInto("#relay-api-key", "setup-key");
     await typeInto("#relay-model", "upstream-model");
     await blur("#relay-model");
-    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke.mock.calls.filter((c) => c[0] === "relay_save")).toHaveLength(1);
     expect(mocks.invoke).toHaveBeenCalledWith("relay_save", { patch: expect.objectContaining({
       baseUrl: "https://up.example.com", apiKey: "setup-key", model: "upstream-model",
     }) });
@@ -321,9 +350,9 @@ describe("中转页三种状态", () => {
     await act(async () => {
       host.querySelector("#relay-model")!.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: bearer }));
     });
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.invoke).not.toHaveBeenCalledWith("relay_save", expect.anything());
     await click("Bearer", host);
-    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke.mock.calls.filter((c) => c[0] === "relay_save")).toHaveLength(1);
     expect(mocks.invoke).toHaveBeenCalledWith("relay_save", { patch: expect.objectContaining({ authStyle: "bearer", apiKey: "setup-key" }) });
   });
 

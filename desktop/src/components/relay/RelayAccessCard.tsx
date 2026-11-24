@@ -1,13 +1,16 @@
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Icon } from "../ui/icon";
+import { Button } from "../ui/button";
 import { useToast } from "../ui/toast";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { copyText } from "../../lib/utils";
 import { invoke } from "../../lib/tauri";
 import { buildRelaySnippet } from "../../lib/relayFormat";
-import type { RelaySaveResult, RelaySnapshot } from "../../lib/types";
+import type { RelayLastDeploy, RelaySaveResult, RelaySnapshot } from "../../lib/types";
 import { RelaySshAccess, useRelaySshAccess } from "./RelaySshAccess";
-import { RelayDeploy } from "./RelayDeploy";
+import { RelayDeploy, oneClickTunnel } from "./RelayDeploy";
+import "../tabs/connect/stable-connect.css";
 
 /**
  * ⑤ 接入（全宽）。
@@ -64,6 +67,28 @@ export function RelayAccessCard({
     }
   };
 
+  // P2：一键切隧道＝切模式＋建转发＋重新部署，落固定回环地址。目标连接取上次部署的那条。
+  const lastDeploy = useQuery({
+    queryKey: ["relayLastDeploy"],
+    queryFn: () => invoke<RelayLastDeploy | null>("relay_last_deploy"),
+    enabled: listening,
+  });
+  const [tunnelBusy, setTunnelBusy] = useState(false);
+  const tunnelConnId = lastDeploy.data?.connectionId ?? access.connection?.id;
+  const goTunnel = async () => {
+    if (!tunnelConnId || tunnelBusy || switching) return;
+    setTunnelBusy(true);
+    try {
+      const r = await oneClickTunnel(tunnelConnId);
+      toast(`已切隧道并部署，固定地址 ${r.baseUrl}，IP 变化不再影响。`, "success");
+      await onChanged();
+    } catch (e) {
+      toast(`切隧道未完成：${String(e)}。可在上方手动建立转发后部署。`, "error");
+    } finally {
+      setTunnelBusy(false);
+    }
+  };
+
   return (
     <section className="relay-access" aria-label="远端接入步骤">
       <div className="relay-inline relay-wrap relay-access-status">
@@ -78,24 +103,47 @@ export function RelayAccessCard({
           在远端用起来
           <span className="relay-proto">ANTHROPIC</span>
         </div>
-        <div className="relay-seg" role="group" aria-label="接入方式">
-          <button
-            type="button"
-            aria-pressed={!direct}
-            disabled={switching}
-            onClick={() => { if (direct) setConfirmMode("tunnel"); }}
-          >
-            隧道连接<span className="rec">推荐</span>
-          </button>
-          <button
-            type="button"
-            aria-pressed={direct}
-            disabled={switching}
-            onClick={() => { if (!direct) setConfirmMode("direct"); }}
-          >
-            内网直连
-          </button>
+      </div>
+
+      {/* P0：模式选择是决定地址稳不稳定的最关键选择，独立成「接入方式」全宽分段＋后果卡，
+          置于代码块上方；不再埋进卡头标题行（复用本仓 stable-method 视觉范式）。 */}
+      <div className="relay-method">
+        <div className="stable-method-heading">
+          <h3>接入方式</h3>
+          <div className="stable-method-toggle" role="group" aria-label="接入方式">
+            <button
+              type="button"
+              aria-pressed={!direct}
+              disabled={switching}
+              onClick={() => { if (direct) setConfirmMode("tunnel"); }}
+            >
+              隧道连接<span>推荐</span>
+            </button>
+            <button
+              type="button"
+              aria-pressed={direct}
+              disabled={switching}
+              onClick={() => { if (!direct) setConfirmMode("direct"); }}
+            >
+              内网直连
+            </button>
+          </div>
         </div>
+        <div className="relay-method-consequence">
+          <div data-active={!direct ? "" : undefined}>
+            <b>隧道连接</b>地址固定 127.0.0.1，经 SSH 转发，本机 IP 变了也不受影响。
+          </div>
+          <div data-active={direct ? "" : undefined}>
+            <b>内网直连</b>少一跳更快，但用本机内网 IP。
+            <span className="relay-guidance">IP 变了需重新部署；要稳定请用隧道。</span>
+          </div>
+        </div>
+        {direct && (
+          <Button size="sm" variant="outline" isLoading={tunnelBusy} loadingText="切隧道…"
+            disabled={!tunnelConnId || switching} onClick={() => void goTunnel()}>
+            切隧道（一键切换并重新部署）
+          </Button>
+        )}
       </div>
 
       <p className="relay-method-note">
@@ -114,6 +162,12 @@ export function RelayAccessCard({
         </div>
       ) : (
         <RelaySshAccess access={access} listening={listening} />
+      )}
+      {!direct && access.port > 0 && (
+        <div className="relay-stable-note" role="status">
+          <b>已隧道接入 · 固定地址</b>
+          <span><code>http://127.0.0.1:{access.port}</code> 经 SSH 转发，本机 IP 变化不再影响远端，无需重新部署。</span>
+        </div>
       )}
 
       <p className="relay-method-note">{direct

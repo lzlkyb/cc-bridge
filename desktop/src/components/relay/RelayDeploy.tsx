@@ -4,7 +4,7 @@ import { invoke } from "../../lib/tauri";
 import { useToast } from "../ui/toast";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
-import type { RelayDeployResult, SshConnectionList } from "../../lib/types";
+import type { RelayDeployResult, SshConnectionList, TunnelStatus } from "../../lib/types";
 
 const deployKey = "relayDeployConnectionId";
 
@@ -177,4 +177,40 @@ export function RelayDeploy({
       )}
     </div>
   );
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function until<T>(probe: () => Promise<T | undefined>, timeoutMs: number, stepMs = 2000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const v = await probe().catch(() => undefined);
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error("等待超时");
+    await sleep(stepMs);
+  }
+}
+
+/**
+ * P2 一键切隧道：切模式 → 等中转重启到回环 → 建 SSH 转发 → 等端口 → 重新部署。
+ * 落到固定回环地址后本机 IP 变化不再影响远端。任一步失败抛错，由调用方提示并引导去接入指南。
+ */
+export async function oneClickTunnel(connectionId: string): Promise<RelayDeployResult> {
+  await invoke("relay_save", { patch: { listenMode: "tunnel" } });
+  // 中转重启到回环需要时间；relay_tunnel_start 在未就绪时报错，重试到它就绪。
+  await until(async () => {
+    try {
+      await invoke("relay_tunnel_start", { connectionId, password: null, passphrase: null, reallocate: false });
+      return true;
+    } catch {
+      return undefined;
+    }
+  }, 20000);
+  await until(async () => {
+    const list = await invoke<TunnelStatus[]>("ssh_tunnel_list");
+    const t = list.find((x) => x.connectionId === `relay:${connectionId}`);
+    const r = t?.rules[0];
+    return t?.state === "up" && r?.state === "listening" ? (r.boundPort || r.rule.listenPort) : undefined;
+  }, 45000);
+  return invoke<RelayDeployResult>("relay_deploy_config", { connectionId, serviceAccount: null, model: null });
 }
