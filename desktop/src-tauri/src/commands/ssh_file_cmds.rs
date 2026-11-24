@@ -208,7 +208,22 @@ pub async fn ssh_file_read(
 /// 现在限量读与 truncated 判据**同一个值**（`MAX_EDIT_BYTES`）：
 /// ≤2 MB 读全量，>2 MB 读前 2 MB 并标记截断。
 fn read_script(path: &str) -> String {
-    let py = format!(
+    let py = read_script_py(&python_str(path), MAX_EDIT_BYTES);
+    format!(
+        "if command -v python3 >/dev/null 2>&1; then python3 -c {py}; \
+         else printf '__CCB_F_ERR__%s\\n' '服务器没有 python3，无法内联读取，请用本机编辑器打开'; fi",
+        py = shell_quote(&py),
+    )
+}
+
+/// 远端读取脚本的 python 源码（**不**过 shell_quote）。
+///
+/// 从 `read_script` 抽出来只为一件事件：执行级测试要拿这份源码直接
+/// `python3 -c` 跑（真机/CI 上验语义）。从包好的 shell 命令行里反解
+/// 既脆弱又没必要——2026-11-24 finalize 的教训正是「子串断言全绿、
+/// 真跑才红」。
+fn read_script_py(path_lit: &str, limit: u64) -> String {
+    format!(
         "import os,sys,base64\n\
          p={path_lit}\n\
          try:\n\
@@ -221,14 +236,66 @@ fn read_script(path: &str) -> String {
          \x20   sys.stdout.write('__CCB_F_META__'+meta+'\\n')\n\
          \x20   sys.stdout.write(base64.b64encode(data).decode('ascii')+'\\n')\n\
          except Exception as e:\n\
-         \x20   sys.stdout.write('__CCB_F_ERR__'+str(e)+'\\n')\n",
-        path_lit = python_str(path),
-        limit = MAX_EDIT_BYTES,
-    );
+         {detail}\
+         \x20   sys.stdout.write('__CCB_F_ERR__'+str(e)+d+'\\n')\n",
+        path_lit = path_lit,
+        limit = limit,
+        detail = read_fail_detail_py(path_lit),
+    )
+}
+
+/// 读失败时附带的「归属诊断」python 片段（插进 `read_script_py` 的 except 块）。
+///
+/// 为什么需要：2026-11-24 用户报「读取失败：[Errno 13] Permission denied:
+/// /home/lizuliang/.claude/own-model.json」，我是有这个权限的」。SSH 上去
+/// 查了三轮才知道：文件属 claude-svc、mode 0600，ACL 里给 lizuliang 的授权
+/// 项被 `mask::---` 整个剥掉——`os.stat` 成功（目录有 x）但 `open()` 被拒。
+/// 排查中**唯一有用的信息（属主/权限位/当前 uid）远端 `os.stat` 一秒就能
+/// 给出**，却完全没进错误里，用户只看到一句 Errno 13，只能手工 SSH。
+///
+/// 这个片段把几个数字拼进错误行（单行，前端原样展示）：
+///
+/// ```text
+/// [Errno 13] Permission denied: '/path'（属主 claude-svc，权限 0600；你 lizuliang，不在属组 claude-svc，需属主或 root 放权）
+/// ```
+///
+/// 三个分支全部由事实推导，不猜：
+/// - 文件归你但无可读位 → `chmod u+r`；
+/// - 不在文件属组 → 需属主/root 放权（chmod/chown/setfacl）；
+/// - 在属组且组位有 r 却被拒 → POSIX ACL mask 或 SELinux 嫌疑
+///   （`getfacl` 查看）——正是上面那次事故的形状。
+///
+/// 🔴 绝不让诊断把原始错误搞丢：整段包在 try 里，任何一步失败（stat 也
+/// 失败 / 平台没有 pwd 模块 / …）都退化成 `d=''`，错误行回到原来的裸文案。
+/// 也绝不改控制流（不 exit、不 raise）。
+///
+/// 🔴 只丰富 EACCES（errno 13）：ENOENT/EISDIR 一类附上属主信息只会误导
+/// ——「打不开目录」的解不是放权。
+fn read_fail_detail_py(path_lit: &str) -> String {
     format!(
-        "if command -v python3 >/dev/null 2>&1; then python3 -c {py}; \
-         else printf '__CCB_F_ERR__%s\\n' '服务器没有 python3，无法内联读取，请用本机编辑器打开'; fi",
-        py = shell_quote(&py),
+        "\x20   d=''\n\
+         \x20   if getattr(e,'errno',None)==13:\n\
+         \x20       try:\n\
+         \x20           st=os.stat({path_lit})\n\
+         \x20           me=os.getuid()\n\
+         \x20           try:\n\
+         \x20               import pwd,grp\n\
+         \x20               on=pwd.getpwuid(st.st_uid).pw_name;og=grp.getgrgid(st.st_gid).gr_name;mn=pwd.getpwuid(me).pw_name\n\
+         \x20           except Exception:\n\
+         \x20               on='uid %d'%st.st_uid;og='gid %d'%st.st_gid;mn='uid %d'%me\n\
+         \x20           d='（属主 %s，权限 %04o；你 %s'%(on,st.st_mode&0o7777,mn)\n\
+         \x20           if st.st_uid==me:\n\
+         \x20               d+='，文件归你但无可读位，可 chmod u+r 后重试'\n\
+         \x20           elif st.st_gid!=os.getgid() and st.st_gid not in os.getgroups():\n\
+         \x20               d+='，不在属组 %s，需属主或 root 放权'%og\n\
+         \x20           elif st.st_mode&0o040:\n\
+         \x20               d+='，属组权限正常却被拒，疑为 POSIX ACL mask 或 SELinux，可用 getfacl 查看'\n\
+         \x20           else:\n\
+         \x20               d+='，属组 %s 无可读位，需属主或 root 放权'%og\n\
+         \x20           d+='）'\n\
+         \x20       except Exception:\n\
+         \x20           d=''\n",
+        path_lit = path_lit,
     )
 }
 
@@ -994,6 +1061,134 @@ mod tests {
             !script.contains(&(256 * 1024).to_string()),
             "256 KB 的旧限量值又回到了读取脚本里"
         );
+    }
+
+    /// 归属诊断片段的形状：只丰富 EACCES、三分支齐全、失败免疫、
+    /// 且是「能插进 except 块」的缩进形状。
+    ///
+    /// 缩进这条不是洁癖：片段首行顶格会直接 SyntaxError，而 SyntaxError
+    /// 让整个脚本跑不起来——读失败的理由就从「Permission denied」变成
+    /// 一句 traceback，比不诊断更糟。每行都必须有前导空格。
+    #[test]
+    fn read_fail_detail_py_shape_and_branches() {
+        let f = read_fail_detail_py("'/a.txt'");
+        // 只丰富 EACCES：ENOENT/EISDIR 一类不附属主信息（解不是放权）
+        assert!(
+            f.contains("getattr(e,'errno',None)==13"),
+            "必须只丰富 EACCES：{f}"
+        );
+        // 路径是穿进来的（片段自包含，可独立执行）
+        assert!(f.contains("os.stat('/a.txt')"), "路径必须穿进片段：{f}");
+        // 三分支齐全
+        assert!(f.contains("st.st_uid==me"), "缺「归你但无可读位」分支：{f}");
+        assert!(f.contains("os.getgroups()"), "缺「不在属组」分支：{f}");
+        assert!(
+            f.contains("st.st_mode&0o040"),
+            "缺「ACL mask 嫌疑」分支：{f}"
+        );
+        // 失败免疫：初值 + 兜底两处清空；且绝不改控制流
+        assert!(
+            f.matches("d=''").count() >= 2,
+            "必须有初值和兜底两处清空：{f}"
+        );
+        assert!(!f.contains("sys.exit"), "诊断片段不许改控制流：{f}");
+        assert!(!f.contains("raise"), "诊断片段不许抛异常：{f}");
+        // 缩进形状：每一行都得有前导空格
+        assert!(
+            f.lines().all(|l| l.starts_with(' ')),
+            "片段每行都必须缩进（首行顶格会 SyntaxError）：{f:?}"
+        );
+        // 接线：片段必须真接进读取脚本的 except 块。上面那些断言只覆盖
+        // 「片段本身对」；接线被摘掉（detail 传空串）时纯片段测试全绿，
+        // 必须有这条在全平台（含 Windows 门禁）把接线钉住。
+        // 🔴 断言必须打在 `read_script_py`（未过 shell_quote 的 python 源）上：
+        // `read_script` 的产物里单引号已被转义成 `'\''`，拿原文当 needle 永远
+        // 匹配不上——这个坑第一次写时真踩了（全量测试报红才发现）。
+        assert!(
+            read_script_py(&python_str("/a.txt"), MAX_EDIT_BYTES)
+                .contains("getattr(e,'errno',None)==13"),
+            "诊断片段没接进读取脚本（detail 被传空了？）"
+        );
+    }
+
+    /// 执行级（真跑 python3）：chmod 000 的文件必须既报错、又把归属信息
+    /// 带出来；可读文件必须不受影响。
+    ///
+    /// 为什么必须真跑：子串断言全绿不代表脚本能跑——2026-11-24 finalize
+    /// 的「data 解出来没写回 part」就是子串全绿、真跑才红的。
+    #[cfg(unix)]
+    #[test]
+    fn read_script_reports_owner_and_mode_on_eacces() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        // 没有 python3 的环境跳过（生产本就要求远端有 python3，本地没有
+        // 不代表脚本错）；root 读 000 文件不会被拒，同样跳过。
+        let has_py = Command::new("python3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !has_py {
+            return;
+        }
+        let is_root = Command::new("id")
+            .arg("-u")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+            .unwrap_or(false);
+        if is_root {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("ccb-readerr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // ① 不可读：chmod 000，属主就是执行者自己 → 「归你但无可读位」分支
+        let locked = dir.join("locked.txt");
+        std::fs::write(&locked, b"secret").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let src = read_script_py(&python_str(locked.to_str().unwrap()), MAX_EDIT_BYTES);
+        let out = Command::new("python3")
+            .arg("-c")
+            .arg(&src)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.starts_with("__CCB_F_ERR__"),
+            "必须仍走错误哨兵：{stdout}"
+        );
+        assert!(
+            stdout.contains("Permission denied"),
+            "原始错误不许被诊断信息盖掉：{stdout}"
+        );
+        assert!(stdout.contains("0000"), "必须带出权限位 0000：{stdout}");
+        assert!(
+            stdout.contains("文件归你但无可读位"),
+            "必须带出归属判断：{stdout}"
+        );
+
+        // ② 可读：正常走 META + base64，诊断片段不许破坏 happy path
+        let ok = dir.join("ok.txt");
+        std::fs::write(&ok, b"hello").unwrap();
+        let src = read_script_py(&python_str(ok.to_str().unwrap()), MAX_EDIT_BYTES);
+        let out = Command::new("python3")
+            .arg("-c")
+            .arg(&src)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("__CCB_F_META__"),
+            "可读文件必须出 META：{stdout}"
+        );
+        assert!(
+            !stdout.contains("__CCB_F_ERR__"),
+            "可读文件不许报错：{stdout}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 上一条只钉「两个数相等」，这条钉「值本身正确」：上限就是 2 MB，
