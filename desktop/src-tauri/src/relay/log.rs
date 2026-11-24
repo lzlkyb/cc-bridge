@@ -14,6 +14,7 @@
 //! 持续几分钟——若等流结束才写日志，界面在整段时间里都看不到这条请求，
 //! 而人恰恰是在那段时间里去查「卡住了没有」。
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -296,7 +297,7 @@ impl RelayLog {
             }
             history.push(entry);
         }
-        history.sort_unstable_by(|a, b| (b.ts_ms, b.id).cmp(&(a.ts_ms, a.id)));
+        history.sort_unstable_by_key(|entry| Reverse((entry.ts_ms, entry.id)));
         Ok(history)
     }
 
