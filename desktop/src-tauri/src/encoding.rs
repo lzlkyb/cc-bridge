@@ -7,7 +7,7 @@
 //! 编码有损（如往 GBK 插入不可表示字符）时**拒绝写入**而非静默损坏。
 //! 相关问题：anthropics/claude-code#56946（内置工具把 GBK 读成 U+FFFD）。
 
-use encoding_rs::{Encoding, GBK, UTF_16BE, UTF_16LE, UTF_8};
+use encoding_rs::{DecoderResult, Encoding, GBK, UTF_16BE, UTF_16LE, UTF_8};
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
@@ -94,6 +94,104 @@ pub fn detect_encoding(data: &[u8]) -> &'static Encoding {
 /// 写在这里是为了让它从**隐含前提**变成**明写的取舍**。
 pub fn normalize_newlines(s: &str) -> String {
     s.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// 解码一段**可能在尾部被截断**的 UTF-8 字节串。
+///
+/// 与 `String::from_utf8` 的唯一差别：尾部那个被切坏的多字节字符被退掉，而不是
+/// 让整个文件被判成二进制。限流读（`take(N)` / 远端 `f.read(N)`）按**字节数**切，
+/// 一个 >2 MB 的中文文件有约 1/4 概率把切点落进某个汉字的第 2/3 字节——文件本身
+/// 是合法 UTF-8，严格 decode 却会整体拒绝，用户看到「文件不是 UTF-8 文本」。
+///
+/// 🔴 只原谅**尾部不完整**：`Utf8Error::error_len() == None` 正是 std 对
+/// 「输入在一个合法字符序列中途结束」的判定，此时 `valid_up_to()` 之前必为完整
+/// 合法 UTF-8。其余任何非法字节（文件真的是二进制）原样返回 Err——绝不把二进制
+/// 静默解码成乱码再让上层写回（那会把 U+FFFD 永久烤进文件）。
+pub fn decode_utf8_truncated(bytes: &[u8]) -> Result<String, std::str::Utf8Error> {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Ok(s.to_string()),
+        Err(e) if e.error_len().is_none() => {
+            let s = std::str::from_utf8(&bytes[..e.valid_up_to()])
+                .expect("valid_up_to 之前的字节必为合法 UTF-8（std 契约）");
+            Ok(s.to_string())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// SSH 文件面板读路径的文本 + 编码标签。
+#[derive(Debug)]
+pub struct PanelText {
+    /// 已把 CRLF 归一成 LF 的文本（**孤立 CR 原样保留**，与面板既有语义一致；
+    /// 不同于 [`read_text`] 会把孤立 CR 也抹掉）。
+    pub text: String,
+    /// 编码标签："utf-8" | "gbk"。写回时原样带回后端（经 [`label_to_encoding`] 校验）。
+    pub encoding: &'static str,
+    /// 原文件是 CRLF 换行（写回时还原）。
+    pub crlf: bool,
+}
+
+/// SSH 文件面板的读路径解码：**UTF-8 优先，GBK 兜底**，两者都拒才报错。
+///
+/// WHY 需要它：面板原来两条读路径（russh / helper 回退）各抄一份
+/// [`decode_utf8_truncated`]，GBK 文件（国内服务器上极常见）一律被
+/// `ERR_FILE_BINARY` 拒掉，只能「用本机编辑器打开」。而 MCP 本地工具早有完整的
+/// GBK round-trip 支持（[`read_text`]/[`encode_text`]）。迁 GBK 的同时把两份
+/// 重复解码收回这一个函数，避免以后再分叉。
+///
+/// 🔴 顺序不能反（UTF-8 必须在 GBK 之前）：多数 UTF-8 中文恰好也是合法 GBK，
+/// 反序会把 UTF-8 文件误标成 GBK。虽然 GBK 编回去字节一致（无损），但状态栏对
+/// 用户说谎，且探测规则一旦微调就会真的损坏文件。有单测守着这个顺序。
+///
+/// 🔴 GBK 路线必须先过 [`is_binary_content`]：GBK/GB18030 几乎能无损解码任何
+/// 双字节序列，PNG/EXE 这类二进制不加守卫会被当文本打开，用户编辑保存后把乱码
+/// 永久写回远端。UTF-8 路线**不**加这道守卫——保持既有行为（合法 UTF-8 但含
+/// NUL 的文件今天就能打开，本批不改这个语义）。
+///
+/// 截断容忍两条路各自处理：UTF-8 走 [`decode_utf8_truncated`]（尾部残缺退一个
+/// 字符）；GBK 走流式 `Decoder` + `last=false`——尾部不完整的多字节序列被
+/// decoder 扣住（返回的已读字节数 < 输入长度），**不是** Malformed。限量读按
+/// 字节数切，切点落在汉字中间是常态，这条容忍必须成立。
+pub fn decode_panel_text(bytes: &[u8]) -> Result<PanelText, String> {
+    // 1. UTF-8 优先：完整合法、或仅尾部被限量读切坏的，都按 UTF-8 收下。
+    if let Ok(text) = decode_utf8_truncated(bytes) {
+        let crlf = text.contains("\r\n");
+        return Ok(PanelText {
+            text: text.replace("\r\n", "\n"),
+            encoding: "utf-8",
+            crlf,
+        });
+    }
+    // 2. 非 UTF-8：先拦二进制，再试 GBK 流式解码。
+    if is_binary_content(bytes) {
+        return Err("文件疑似二进制（含 NUL 或高比例控制字符），请用本机编辑器打开".to_string());
+    }
+    // 不用带 BOM 处理的构造器：GBK 没有 BOM，且 UTF-8 BOM 的文件在第 1 步就走掉了。
+    let mut decoder = GBK.new_decoder_without_bom_handling();
+    // 🔴 输出容量必须按 decoder 自报的最坏情况预留：GBK 双字节序列最多产出 3 字节
+    // UTF-8（单一 0x80 字节也是 3）。容量不够时 `decode_*` 会提前返回
+    // `OutputFull` 并**静默丢掉剩余输入**——表现就是「GBK 文件只解出前半段」，
+    // 而返回值又不是 Malformed，上层完全看不出。曾经按 `bytes.len()` 预留容量
+    // 踩过：8 字节输入要 12 字节输出，第 3 个汉字起整段消失。
+    let cap = decoder
+        .max_utf8_buffer_length_without_replacement(bytes.len())
+        .unwrap_or_else(|| bytes.len().saturating_mul(3).saturating_add(1));
+    let mut text = String::with_capacity(cap);
+    let (result, _read) = decoder.decode_to_string_without_replacement(bytes, &mut text, false);
+    // OutputFull 与 Malformed 一并拒绝：容量算对时前者不可达，但宁可错杀也不
+    // 静默截断（截断的文本会被用户编辑后写回远端，等于数据损坏）。
+    if matches!(
+        result,
+        DecoderResult::Malformed(..) | DecoderResult::OutputFull
+    ) {
+        return Err("文件不是 UTF-8 或 GBK/GB18030 文本，请用本机编辑器打开".to_string());
+    }
+    let crlf = text.contains("\r\n");
+    Ok(PanelText {
+        text: text.replace("\r\n", "\n"),
+        encoding: "gbk",
+        crlf,
+    })
 }
 
 /// 读取字节流为归一化文本（LF），并记录编码/换行/BOM 供无损回写。
@@ -239,6 +337,53 @@ pub fn encode_text(
     }
     out.extend_from_slice(&body);
     Ok(out)
+}
+
+/// SSH 文件面板的写路径编码：把编辑器的 LF 文本按**原编码 + 原换行**还原成字节流。
+///
+/// WHY: 面板原来把 content 当 UTF-8 字节原样落盘（`normalized.as_bytes()`）。接了
+/// GBK 读之后写路径若不改，GBK 文件会被**静默转码成 UTF-8**——远端文件编码被换掉，
+/// 用户完全看不出。所以读时带回的 `encoding` 标签必须在这里参与回写。
+///
+/// 安全性：`encoding_label` 来自前端，但写路径是破坏性的，必须过
+/// [`label_to_encoding`] 白名单——未知标签（前端被篡改 / 版本错位）直接拒绝，
+/// 绝不静默按 UTF-8 落盘。
+///
+/// 🔴 为什么不直接复用 [`encode_text`]：它的 round-trip 守卫用
+/// [`normalize_newlines`] 比对（孤立 CR 也抹成 LF），而面板读路径**不**归一化
+/// 孤立 CR（孤立 CR 原样进出）。拿 `encode_text` 的守卫套面板内容，会把「能打开
+/// 却存不回去」的孤立 CR 文件误判成不可编码。所以这里按面板自己的归一化规则
+/// （只认 CRLF→LF）做同样的守卫。两处规则差异必须一直保持，改任何一边都要
+/// 同步想清楚另一边。
+///
+/// BOM 不单独处理：面板读路径不剥 BOM，U+FEFF 作为文本内容参与往返；GBK 也没有 BOM。
+pub fn encode_panel_text(
+    content: &str,
+    line_ending: &str,
+    encoding_label: &str,
+) -> Result<Vec<u8>, String> {
+    let enc = label_to_encoding(encoding_label)
+        .ok_or_else(|| format!("不支持的编码标签：{encoding_label}"))?;
+    // 还原换行：读时把 CRLF 归一成 LF，写回按原文件风格，避免把全文换行改掉。
+    let restored = if line_ending == "crlf" {
+        content.replace('\n', "\r\n")
+    } else {
+        content.to_string()
+    };
+    let body = encode_bytes(&restored, enc);
+    // round-trip 守卫（面板版）：编回去再解回来，按面板的归一化规则（只认
+    // CRLF→LF，孤立 CR 不动）必须与输入一致，否则说明该编码装不下新内容
+    // （如往 GBK 插 emoji），拒绝写入而非把乱码写进远端文件。
+    // 🔴 必须用 `decode_without_bom_handling`：面板把 BOM 当文本内容带着走，
+    // 而带嗅探的 `decode` 会把 body 开头的 UTF-8 BOM 剥掉，守卫于是永远
+    // 对不上（带 BOM 的 UTF-8 文件会被误判成「无法编码」而存不回去）。
+    let (back, _) = enc.decode_without_bom_handling(&body);
+    if back.replace("\r\n", "\n") != content {
+        return Err(format!(
+            "无法按 {encoding_label} 编码保存：内容含有该编码无法表示的字符（如 emoji）。请移除这些字符，或用本机编辑器打开"
+        ));
+    }
+    Ok(body)
 }
 
 /// 把文本按指定编码编码为字节流（仅测试用，不做守卫）。
@@ -493,5 +638,168 @@ mod tests {
     #[test]
     fn test_is_binary_content_empty_is_not_binary() {
         assert!(!is_binary_content(b""));
+    }
+
+    #[test]
+    fn decode_utf8_truncated_passes_valid_input_through() {
+        assert_eq!(
+            decode_utf8_truncated("hello 世界\n".as_bytes()).unwrap(),
+            "hello 世界\n"
+        );
+        assert_eq!(decode_utf8_truncated(b"").unwrap(), "");
+    }
+
+    /// 限流读按字节切，切点落在多字节字符中间时只能退掉尾部那一个字符，
+    /// 前面的完整字符必须保住——这是 >2MB 中文文件不再被误判二进制的原因。
+    #[test]
+    fn decode_utf8_truncated_drops_only_the_broken_tail_char() {
+        // "世界" = E4 B8 96 | E7 95 8C
+        assert_eq!(decode_utf8_truncated(b"a\xe4\xb8").unwrap(), "a");
+        assert_eq!(
+            decode_utf8_truncated(b"\xe4\xb8\x96\xe7\x95").unwrap(),
+            "世"
+        );
+        // 4 字节 emoji 被切成两半：整段尾巴都要退掉
+        let emoji = "🎉".as_bytes();
+        assert_eq!(decode_utf8_truncated(&emoji[..2]).unwrap(), "");
+        assert_eq!(decode_utf8_truncated(&emoji[..4]).unwrap(), "🎉");
+    }
+
+    /// 真二进制仍然必须拒绝：`decode_utf8_truncated` 不是「什么都试着解码」。
+    /// 中部非法字节、尾巴不完整但前面已有非法字节、合法文本后接非法字节，都要 Err。
+    #[test]
+    fn decode_utf8_truncated_still_rejects_real_binary() {
+        assert!(decode_utf8_truncated(b"abc\xffdef").is_err());
+        assert!(decode_utf8_truncated(b"\xff\xe4\xb8").is_err());
+        let mut v = "世界".as_bytes().to_vec();
+        v.push(0xFF);
+        assert!(decode_utf8_truncated(&v).is_err());
+    }
+
+    // ---- SSH 面板 GBK 编解码（批次② 2026-11-24）----
+
+    /// UTF-8 优先：合法 UTF-8 必须标 "utf-8"。
+    /// 同时守着探测顺序——中文 UTF-8 字节多数也是合法 GBK，顺序一反就被误标 GBK。
+    #[test]
+    fn decode_panel_text_prefers_utf8_over_gbk() {
+        let t = decode_panel_text("hello 世界\n".as_bytes()).unwrap();
+        assert_eq!(t.text, "hello 世界\n");
+        assert_eq!(t.encoding, "utf-8");
+        assert!(!t.crlf);
+    }
+
+    #[test]
+    fn decode_panel_text_decodes_gbk_with_label() {
+        let bytes = encode_string("你好，世界", GBK);
+        assert!(
+            std::str::from_utf8(&bytes).is_err(),
+            "前置条件：确实是 GBK 字节"
+        );
+        let t = decode_panel_text(&bytes).unwrap();
+        assert_eq!(t.text, "你好，世界");
+        assert_eq!(t.encoding, "gbk");
+    }
+
+    /// 限量读按字节切，切点落在汉字中间：GBK 路线必须容忍（扣住尾部半个字符），
+    /// 与 UTF-8 路线的 `decode_utf8_truncated` 语义对齐。
+    #[test]
+    fn decode_panel_text_gbk_tolerates_truncated_tail() {
+        let bytes = encode_string("你好世界", GBK); // 界 = BD E7
+        let cut = &bytes[..bytes.len() - 1];
+        let t = decode_panel_text(cut).unwrap();
+        assert_eq!(t.text, "你好世", "尾部半个字符被扣住，不是错误");
+        assert_eq!(t.encoding, "gbk");
+    }
+
+    /// 中部真损坏（0xFF 不是合法 GBK 首字节）必须拒绝——截断容忍只原谅尾部。
+    #[test]
+    fn decode_panel_text_gbk_rejects_mid_file_malformed() {
+        let mut bytes = encode_string("你好", GBK); // 你 = C4 E3
+        bytes.insert(1, 0xFF);
+        assert!(decode_panel_text(&bytes).is_err());
+    }
+
+    /// GBK 路线的二进制守卫：PNG 头能被 GBK「解码」，必须被 `is_binary_content` 拦下。
+    /// （注意：纯 NUL 垃圾如 `MZ\x00\x00` 是**合法 UTF-8**，会走第 1 步被当成文本
+    /// 收下——这是 UTF-8 路线不加守卫的既定取舍，见 `decode_panel_text` 注释。）
+    #[test]
+    fn decode_panel_text_gbk_rejects_binary() {
+        let png = b"\x89PNG\r\n\x1a\n\x00\x01\x02\x03";
+        let err = decode_panel_text(png).unwrap_err();
+        assert!(err.contains("二进制"), "应报二进制：{err}");
+        // GBK 能无损解出的双字节序列里夹带 NUL：没有守卫就会被当文本打开
+        let gbk_with_nul = b"\xc4\xe3\x00\xba\xc3";
+        assert!(decode_panel_text(gbk_with_nul).is_err());
+    }
+
+    #[test]
+    fn decode_panel_text_crlf_flag_both_encodings() {
+        let u = decode_panel_text("a\r\nb".as_bytes()).unwrap();
+        assert!(u.crlf);
+        assert_eq!(u.text, "a\nb");
+        let g = decode_panel_text(&encode_string("公用\r\n方法", GBK)).unwrap();
+        assert!(g.crlf);
+        assert_eq!(g.text, "公用\n方法");
+    }
+
+    /// 读→写原样 round-trip（GBK + CRLF，逐字节）。
+    #[test]
+    fn encode_panel_text_gbk_round_trip_byte_identical() {
+        let src = encode_string("公用\r\n方法 abc 123", GBK);
+        let t = decode_panel_text(&src).unwrap();
+        let out =
+            encode_panel_text(&t.text, if t.crlf { "crlf" } else { "lf" }, t.encoding).unwrap();
+        assert_eq!(out, src);
+    }
+
+    /// 改内容后仍按 GBK + CRLF 落盘，且写回的字节再读编码标签不漂移。
+    #[test]
+    fn encode_panel_text_gbk_edit_round_trip() {
+        let src = encode_string("公用\r\n方法", GBK);
+        let t = decode_panel_text(&src).unwrap();
+        let edited = t.text.replace("方法", "工具");
+        let out = encode_panel_text(&edited, "crlf", "gbk").unwrap();
+        assert_eq!(out, encode_string("公用\r\n工具", GBK));
+        assert_eq!(decode_panel_text(&out).unwrap().encoding, "gbk");
+    }
+
+    /// round-trip 守卫：往 GBK 插 emoji 必须拒存，且错误消息点明编码、可读。
+    #[test]
+    fn encode_panel_text_rejects_unrepresentable_chars() {
+        let err = encode_panel_text("hello 🎉", "lf", "gbk").unwrap_err();
+        assert!(
+            err.contains("无法按 gbk 编码保存"),
+            "错误消息应点明编码：{err}"
+        );
+    }
+
+    /// 未知编码标签拒绝（写路径不信任前端字符串）。
+    #[test]
+    fn encode_panel_text_rejects_unknown_label() {
+        assert!(encode_panel_text("x", "lf", "no-such-encoding").is_err());
+    }
+
+    /// UTF-8 + BOM：BOM 作为文本内容参与往返，不能补重也不能丢。
+    #[test]
+    fn encode_panel_text_utf8_bom_round_trip() {
+        let mut src = UTF8_BOM.to_vec();
+        src.extend_from_slice("content".as_bytes());
+        let t = decode_panel_text(&src).unwrap();
+        assert_eq!(t.encoding, "utf-8");
+        let out = encode_panel_text(&t.text, "lf", t.encoding).unwrap();
+        assert_eq!(out, src, "BOM 必须原样回来（不重不漏）");
+    }
+
+    /// 孤立 CR 文件：面板不归一化孤立 CR，读→写必须原样往返。
+    /// 守着 `encode_panel_text` 与 `encode_text` 的守卫规则差异——后者会抹掉孤立 CR，
+    /// 直接复用会把「能打开却存不回去」的误判带进面板。
+    #[test]
+    fn encode_panel_text_preserves_lone_cr() {
+        let src = b"a\rb\rc".to_vec();
+        let t = decode_panel_text(&src).unwrap();
+        assert_eq!(t.text, "a\rb\rc", "孤立 CR 不进归一化");
+        assert!(!t.crlf);
+        let out = encode_panel_text(&t.text, "lf", t.encoding).unwrap();
+        assert_eq!(out, src, "孤立 CR 原样写回");
     }
 }
