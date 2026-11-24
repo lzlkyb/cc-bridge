@@ -1105,11 +1105,11 @@ jobs:
           UPDATER_MERGE_INTO: ${{ github.workspace }}\mac-artifact\updater-macos-gitee.json
 
       # 发行版附件必须先就位，清单才能指过去：顺序反了就是给客户端一堆 404。
-      # continue-on-error 的口径与下面的清单步骤一致 —— GitHub Release 已在上面发布成功，
-      # 国内加速只是可选加速层，不能拖累发版；但步骤会标红、日志写明缺哪个文件，不许当绿灯看。
-      - name: 上传安装包到 Gitee 发行版附件（国内加速，可选）
+      # 🔴 2026-11-24（C）：不再 continue-on-error。v3.3.0 实测它把 exit 1 记成 success（假绿），
+      #    核对产物时被误导。GitHub Release 已在上面 attach 完成，这里红 job 不会拖累发版，
+      #    但能把「国内通道本次没更新」真实 surfaced 到 run 级。
+      - name: 上传安装包到 Gitee 发行版附件（国内加速）
         shell: pwsh
-        continue-on-error: true
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITEE_REPOSITORY: ${{ secrets.GITEE_REPOSITORY }}
@@ -1141,19 +1141,17 @@ jobs:
           #    查法用 git ls-remote：Gitee v5 **没有** 单个 tag 的 REST 端点
           #    （/git/refs/tags/{tag} 与 /tags/{tag} 都返回 404 网页，实测 2026-11-15）。
           #    只读 ref，不往 Gitee push 任何东西。
-          $tagSha = ''
-          $giteeGit = "https://gitee.com/$($env:GITEE_REPOSITORY).git"
-          for ($i = 1; $i -le 6; $i++) {
-            $out = @(git ls-remote --tags $giteeGit "refs/tags/$tag" 2>&1)
-            if ($LASTEXITCODE -eq 0 -and (($out -join "`n") -match [regex]::Escape("refs/tags/$tag"))) {
-              $tagSha = (($out -join " ").Trim() -split '\s+')[0]
-              break
-            }
-            Write-Host ("tag {0} 还不在 Gitee（第 {1}/6 次），20s 后重试" -f $tag, $i)
-            if ($i -lt 6) { Start-Sleep -Seconds 20 }
-          }
-          if ([string]::IsNullOrWhiteSpace($tagSha)) { Fail "tag $tag 在 Gitee 上不存在（镜像没搬 tag），发行版挂不上去" }
-          Write-Host ("tag {0} 已就位（{1}）" -f $tag, $tagSha)
+          # 🔴 2026-11-24（B，v3.3.0 事故）：Gitee 是 Pull 镜像，同步分支但**不搬 tag**。
+          #    旧逻辑等镜像搬 tag（6×20s）仍无 → 附件传不上 → 清单拒发 → 客户端第一源停旧版。
+          #    改为用 GITEE_TOKEN 主动把 tag 直推 Gitee，不依赖镜像；sha 取 GitHub 权威值。
+          #    镜像「删除上游没有的 ref」不会剪它：GitHub 侧本就有这个 tag。
+          $tagSha = '${{ github.sha }}'
+          $giteePush = "https://oauth2:$($token)@gitee.com/$($env:GITEE_REPOSITORY).git"
+          $pushOut = @(git -c core.hooksPath=.git/hooks-disabled push $giteePush "${tagSha}:refs/tags/$tag" 2>&1)
+          $pushCode = $LASTEXITCODE
+          Write-Host (($pushOut -join "`n") -replace [regex]::Escape($token), '***')
+          if ($pushCode -ne 0) { Fail "推 tag $tag 到 Gitee 失败（exit $pushCode），发行版挂不上去" }
+          Write-Host ("tag {0} 已直推 Gitee（{1}），不依赖镜像搬 tag" -f $tag, $tagSha)
 
           # 2) 取已有发行版，没有就建（幂等：重跑不会产生第二个发行版）
           $rel = $null
@@ -1238,14 +1236,14 @@ jobs:
       #   而附件 21MB 匿名可下。上面那次「推 5 文件 / 18MB」只在 raw 上限之下才侥幸成立。
       #   清空 latest/ 因此还多一个作用：把历史遗留在分支里的安装包删掉。
       #
-      # 可选性仍靠 continue-on-error：这一步红不拖累已经发布的 GitHub Release，但**不是无关痛痒** ——
+      # 🔴 2026-11-24（C）：不再 continue-on-error。v3.3.0 实测它把 exit 1 记成 success（假绿）。
+      #   这一步红不拖累已经 attach 的 GitHub Release，但**必须红 job** 把问题 surfaced ——
       #   Gitee 排在客户端更新源第一位，读到旧 manifest 会被判「已是最新」而不再回退问 GitHub，
       #   同步窗口内国内用户会收到「可能已发布新版本，请重新检查」却看不到新版。步骤红了必须处理，不能当绿灯看。
       #   原来靠 try/catch 里 exit 0 做可选是错的：PowerShell 的 catch 接不到 git 这类原生命令的
       #   非零退出码（实测 LASTEXITCODE=3 但不抛），于是 v2.4.0~v2.5.0 连着四版绿灯、raw 一直 404。
       - name: 发布国内加速通道（清单走 releases 分支 → Gitee 镜像）
         shell: pwsh
-        continue-on-error: true
         env:
           GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

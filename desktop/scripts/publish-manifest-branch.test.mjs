@@ -50,12 +50,20 @@ describe("CI：国内通道只从 GitHub 的 releases 分支出境", () => {
     expect(channelStep).toBeTruthy();
   });
 
-  it("workflow 里不再出现任何往 Gitee 推 git 引用的写法", () => {
-    expect(workflow, "又出现 oauth2 的 Gitee 远端地址了").not.toMatch(/oauth2:[^\n]*gitee\.com/);
+  it("Gitee 直推只许 tag ref（镜像不搬 tag）；分支与二进制仍只走镜像/API", () => {
+    // 2026-11-24（v3.3.0 事故）：Gitee Pull 镜像同步分支但不搬 tag，等镜像搬 tag 恒失败。
+    // 契约改为：上传附件那一步可用 token 直推 **tag ref**；其余 Gitee git 写仍禁止
+    // （推分支会被镜像强制对齐/剪掉，二进制进 raw 会 403）。
+    const uploadStep = workflow
+      .split(/(?=^ {6}- name: )/m)
+      .find((s) => s.includes("上传安装包到 Gitee 发行版附件"));
+    expect(uploadStep, "上传附件那一步不见了").toBeTruthy();
+    expect(uploadStep).toMatch(/oauth2:[^\n]*gitee\.com/);
+    expect(uploadStep, "tag 直推必须只推 refs/tags").toMatch(/:refs\/tags\//);
+    const rest = workflow.split(uploadStep).join("");
+    expect(rest, "除上传步外又出现 Gitee git 远端").not.toMatch(/oauth2:[^\n]*gitee\.com/);
     expect(workflow, "又出现 clone Gitee 仓库了 —— 那条分支会被镜像剪掉").not.toMatch(/git clone[^\n]*gitee\.com/);
-    expect(workflow, "又出现往 Gitee push 引用了 —— Gitee 侧只收镜像，不接受我们直推").not.toMatch(
-      /git[^\n]{0,80}push[^\n]{0,80}gitee\.com/i,
-    );
+    expect(workflow, "往 Gitee 推分支会被镜像强制对齐/剪掉").not.toMatch(/gitee\.com[^\n]*refs\/heads|refs\/heads[^\n]*gitee\.com/);
   });
 
   it("安装包不进 raw 分支：URL 模板指向发行版附件，token 只用于发版 API", () => {
@@ -74,7 +82,10 @@ describe("CI：国内通道只从 GitHub 的 releases 分支出境", () => {
       .find((s) => s.includes("上传安装包到 Gitee 发行版附件"));
     expect(uploadStep, "上传附件那一步不见了").toBeTruthy();
     expect(uploadStep).toMatch(/attach_files/);
-    expect(uploadStep, "附件步骤里混进了 git 写操作").not.toMatch(/\bgit\s+(push|clone|tag)\b/);
+    // 2026-11-24：允许直推 tag ref（镜像不搬 tag），但只许 refs/tags，不许 clone/推分支。
+    expect(uploadStep, "附件步骤不许 clone Gitee").not.toMatch(/\bgit\s+clone\b/);
+    expect(uploadStep, "附件步骤的 git push 只许推 tag ref").toMatch(/push[^\n]*:refs\/tags\//);
+    expect(uploadStep, "附件步骤不许往 Gitee 推分支").not.toMatch(/push[^\n]*:refs\/heads\//);
   });
 
   it("国内通道那一步仍真的在发（守卫不是靠删掉整步变绿的）", () => {
@@ -83,7 +94,9 @@ describe("CI：国内通道只从 GitHub 的 releases 分支出境", () => {
     expect(channelStep).toMatch(/GITHUB_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
     expect(channelStep).toMatch(/GH_REPO: \$\{\{ github\.repository \}\}/);
     expect(channelStep).toMatch(/GITEE_REPOSITORY: \$\{\{ secrets\.GITEE_REPOSITORY \}\}/);
-    expect(channelStep).toMatch(/continue-on-error: true/);
+    // 2026-11-24（C）：v3.3.0 实测 continue-on-error 把 exit 1 记成 success（假绿）。
+    // 契约改为：国内通道失败必须红 job（Release 已在前面 attach，不受拖累），不许再假绿。
+    expect(channelStep, "国内通道不许 continue-on-error 假绿").not.toMatch(/continue-on-error/);
     // 清单步骤必须带上 tag（第 4 段要按发行版附件地址探测）与 --asset 名单
     expect(channelStep).toMatch(/'--tag'/);
     expect(channelStep).toMatch(/'--asset'/);
