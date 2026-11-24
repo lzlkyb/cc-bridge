@@ -293,6 +293,54 @@ fn ensure_tier(provider: &mut Provider, kind: TierKind) -> &mut Tier {
     provider.tiers.last_mut().expect("刚 push 过，必定存在")
 }
 
+/// 把整份配置同步进中转运行时。**导入路径专用**（`relay_save` 有自己的热更新逻辑）。
+///
+/// 导入是「整份替换」：替换后若不通知运行时，就会出现「配置里已是新上游、
+/// 监听里还是旧快照」——旧 token 继续有效、新上游不生效、`relay_enabled:false`
+/// 了监听还开着（安全与状态双失同步）。
+///
+/// token 与主 token 同一哲学：导出脱敏后为空串，**空串 = 保留现有**，
+/// 不把远端已配好的机器一次性全打掉。
+///
+/// 阈值/窗口由调用方从同一份 config 现取，与 `relay_start` / `relay_restart` 同源。
+pub(crate) async fn sync_relay_runtime(
+    runtime: &crate::relay::RelayRuntime,
+    cfg: &crate::config::BridgeConfig,
+    ban_threshold: u32,
+    ban_window_min: u64,
+) {
+    let token = if cfg.relay_token.trim().is_empty() {
+        runtime.token_value().await
+    } else {
+        cfg.relay_token.clone()
+    };
+    let old_listen = runtime.current_listen().await;
+    runtime.reload_settings(cfg.relay.clone()).await;
+    runtime.set_token(token).await;
+    let host = crate::state::relay_listen_host(cfg);
+    runtime
+        .set_listen(host.clone(), relay_config::DEFAULT_PORT)
+        .await;
+
+    let running = runtime.running_addr().await.is_some();
+    if cfg.relay_enabled {
+        if !running {
+            if let Err(e) = runtime.start(ban_threshold, ban_window_min).await {
+                ::log::warn!("导入配置后启动模型中转失败：{e}");
+            }
+        } else if old_listen.0 != host {
+            // 监听地址变了：旧监听还绑在旧 host 上，必须重启才认新地址。
+            if let Err(e) = runtime.restart(ban_threshold, ban_window_min).await {
+                ::log::warn!("导入配置后重启模型中转失败：{e}");
+            }
+        }
+    } else if running {
+        if let Err(e) = runtime.stop().await {
+            ::log::warn!("导入配置后停止模型中转失败：{e}");
+        }
+    }
+}
+
 /// 总开关：**一个动作同时管配置与监听**（§4.9.1）。
 ///
 /// 打开时即使三格还没填也会起监听：用户的操作顺序是「先开开关 → 侧栏出现中转 →
@@ -526,5 +574,64 @@ mod tests {
         };
         p.max_tokens_limit = if 0u32 == 0 { None } else { Some(0) };
         assert!(p.max_tokens_limit.is_none());
+    }
+
+    // ── 导入后的运行时同步（审查 #6）────────────────────────────────────
+    //
+    // 导入是整份替换：不通知运行时 = 「配置里是新上游、监听里是旧快照」。
+    // 三个分支（启用→起 / 禁用→停 / 空 token→保留）各起一个真监听来守。
+
+    fn test_runtime() -> crate::relay::RelayRuntime {
+        crate::relay::RelayRuntime::new(
+            RelaySettings::default(),
+            "rly_old".into(),
+            Arc::new(crate::relay::RelayLog::new(10, None)),
+            "127.0.0.1".into(),
+            // 端口 0 = 系统分配，测试之间不抢同一个口。
+            0,
+        )
+    }
+
+    #[tokio::test]
+    async fn sync_starts_listener_when_import_enables_relay() {
+        let rt = test_runtime();
+        let cfg = crate::config::BridgeConfig {
+            relay_enabled: true,
+            relay_token: "rly_new".into(),
+            ..Default::default()
+        };
+        sync_relay_runtime(&rt, &cfg, 5, 15).await;
+        assert!(rt.running_addr().await.is_some(), "导入启用后必须起监听");
+        assert_eq!(rt.token_value().await, "rly_new");
+        let _ = rt.stop().await;
+    }
+
+    #[tokio::test]
+    async fn sync_stops_listener_when_import_disables_relay() {
+        let rt = test_runtime();
+        rt.start(5, 15).await.expect("测试应能起监听");
+        let cfg = crate::config::BridgeConfig {
+            relay_enabled: false,
+            relay_token: "rly_new".into(),
+            ..Default::default()
+        };
+        sync_relay_runtime(&rt, &cfg, 5, 15).await;
+        assert!(rt.running_addr().await.is_none(), "导入禁用后必须停监听");
+        // token 照常同步：下一次启用立刻生效，不留旧值。
+        assert_eq!(rt.token_value().await, "rly_new");
+    }
+
+    #[tokio::test]
+    async fn sync_keeps_existing_token_when_imported_token_is_blank() {
+        // 导出脱敏 ⇒ 空 token 是常态。此时保留现有，否则一次导入就把
+        // 远端全部配置打掉（用户完全看不出原因）。
+        let rt = test_runtime();
+        let cfg = crate::config::BridgeConfig {
+            relay_enabled: false,
+            relay_token: "   ".into(),
+            ..Default::default()
+        };
+        sync_relay_runtime(&rt, &cfg, 5, 15).await;
+        assert_eq!(rt.token_value().await, "rly_old", "空 token = 保留现有");
     }
 }

@@ -242,6 +242,11 @@ process-wrap = { version = "=8.0.2", default-features = false, features = ["proc
 # 测试会直接 panic（实测踩过）。
 [dev-dependencies]
 axum = "0.8"
+# `test-util` 只为 `#[tokio::test(start_paused = true)]` 服务（paused 时钟让
+# 「优雅停止 5 秒超时」在测试里瞬间到点，不必真等 5 秒）。放 dev-dependencies
+# 而不是正式依赖：feature 只叠加不删除，进正式依赖就会改变 release 构建的
+# tokio 特性集。
+tokio = { version = "1", features = ["test-util"] }
 reqwest = { version = "0.13", default-features = false, features = [
   "json",
   "gzip",

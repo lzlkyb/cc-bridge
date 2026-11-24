@@ -957,6 +957,20 @@ pub(crate) async fn import_config_inner(
     // 否则缓存仍指向旧 roots，导致后续工具校验误放行/误拒绝。
     state.refresh_canonicalized_roots(&state.config.read().await.allowed_roots);
 
+    // 🔴 中转运行时同步（审查 #6）：导入是整份替换，运行时不跟着换就是
+    // 「配置里已是新上游、监听里还是旧快照」——旧 token 继续有效、新上游不生效、
+    // `relay_enabled: false` 了监听还开着。阈值/窗口与 relay_start 同源现取。
+    {
+        let cfg = state.config.read().await.clone();
+        super::relay_cmds::sync_relay_runtime(
+            &state.relay,
+            &cfg,
+            cfg.remote_ban_threshold,
+            cfg.remote_ban_window_min as u64,
+        )
+        .await;
+    }
+
     Ok(ConfigSaveResult {
         ok: true,
         changed: vec!["(全部配置)".into()],

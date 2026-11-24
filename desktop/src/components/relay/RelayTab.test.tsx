@@ -6,7 +6,11 @@ import type { RelaySnapshot } from "../../lib/types";
 
 // 快照由用例切换。桩掉数据订阅而不是真发 IPC：这里要验的是「三种状态各自渲染成
 // 什么」，不是轮询本身（那部分在 Rust 侧与 useRelayStatus 里）。
-const mocks = vi.hoisted(() => ({ snapshot: { current: undefined as RelaySnapshot | undefined } }));
+// `invoke` 单独拎出来是为了能查「保存到底发了什么」——见最后一个用例。
+const mocks = vi.hoisted(() => ({
+  snapshot: { current: undefined as RelaySnapshot | undefined },
+  invoke: vi.fn(),
+}));
 vi.mock("../../hooks/useRelayStatus", () => ({
   useRelayStatus: () => ({
     data: mocks.snapshot.current,
@@ -15,7 +19,7 @@ vi.mock("../../hooks/useRelayStatus", () => ({
     refetch: () => {},
   }),
 }));
-vi.mock("../../lib/tauri", () => ({ invoke: vi.fn(async () => ({})) }));
+vi.mock("../../lib/tauri", () => ({ invoke: mocks.invoke }));
 // 复制粘贴走的是 Tauri 剪贴板插件，jsdom 里没有；本用例不点复制按钮，只需能加载。
 vi.mock("../../lib/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/utils")>()),
@@ -103,6 +107,9 @@ async function mount(value?: RelaySnapshot) {
 }
 
 beforeEach(() => {
+  // 保存一律成功返回：本文件要验的是「发了什么」，不是失败分支。
+  mocks.invoke.mockReset();
+  mocks.invoke.mockImplementation(async () => ({ configured: true, missing: null, warnings: [] }));
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -161,5 +168,86 @@ describe("中转页三种状态", () => {
     expect(text).toContain("未配置上游");
     expect(text).toContain("未设置");
     expect(host.querySelector(".relay-badge")?.getAttribute("data-tone")).toBe("idle");
+  });
+
+  // ── 密钥「取消」回归 ────────────────────────────────────────────────
+  //
+  // Escape 只收输入框、不清草稿的话，那枚被取消的密钥会留在 draft 里，
+  // 之后任意一次 commit（改别的字段失焦、切鉴权方式）都把它静默写进配置——
+  // 用户以为没保存，实际上保存了。断言点选在 IPC patch 上：取消之后
+  // 的保存，patch 里**不允许出现 apiKey 这一项**。
+
+  /** React 受控 input：原生 setter + input 事件，直接赋 value 不触发 onChange。 */
+  async function typeInto(sel: string, value: string) {
+    const el = host.querySelector<HTMLInputElement>(sel);
+    expect(el, `应有 ${sel}`).not.toBeNull();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el!, value);
+      el!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  it("取消更换密钥：被取消的密钥不得随之后的保存写进配置", async () => {
+    await mount(snapshot());
+
+    const replaceBtn = Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "更换");
+    expect(replaceBtn, "已配密钥时应出现「更换」按钮").toBeTruthy();
+    await act(async () => {
+      replaceBtn!.click();
+    });
+
+    const keyInput = host.querySelector<HTMLInputElement>("#relay-api-key");
+    expect(keyInput, "点「更换」后应展开密钥输入框").not.toBeNull();
+    await typeInto("#relay-api-key", "sk-canceled-by-escape");
+    await act(async () => {
+      keyInput!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(host.querySelector("#relay-api-key"), "Escape 后输入框应收回").toBeNull();
+
+    // 之后改另一个字段并失焦，触发一次正常保存
+    await typeInto("#relay-base-url", "https://other.example.com");
+    await act(async () => {
+      host
+        .querySelector("#relay-base-url")!
+        .dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+
+    const saveCall = mocks.invoke.mock.calls.find((c) => c[0] === "relay_save");
+    expect(saveCall, "改字段失焦应触发保存").toBeTruthy();
+    const { patch } = saveCall![1] as { patch: Record<string, unknown> };
+    expect(patch.baseUrl, "新地址正常保存").toBe("https://other.example.com");
+    expect(patch, "被 Escape 取消的密钥不许进 patch").not.toHaveProperty("apiKey");
+  });
+
+  it("max_tokens 超 u32：输入侧限长、失焦说人话且不保存，改对后仍能存", async () => {
+    await mount(snapshot());
+    const sel = '[aria-label="max_tokens 上限"]';
+
+    // 超过 10 位直接截断：u32 上限就 10 位数，更长连后端都进不去
+    await typeInto(sel, "99999999999");
+    expect(host.querySelector<HTMLInputElement>(sel)!.value, "输入应被限到 10 位").toBe("9999999999");
+
+    // 10 位仍可能超 u32（9999999999 > 4294967295）：后端 Option<u32> 会整条
+    // 拒绝、报错还是 serde 天书——必须在前端拦住、说人话、且**不保存**
+    await act(async () => {
+      host.querySelector(sel)!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("max_tokens 不能超过 4294967295");
+    expect(
+      mocks.invoke.mock.calls.some((c) => c[0] === "relay_save"),
+      "超限时不许触发保存",
+    ).toBe(false);
+
+    // 自愈路径：改成合法值后失焦，正常保存（拦住不能把表单卡死）
+    await typeInto(sel, "4096");
+    await act(async () => {
+      host.querySelector(sel)!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    const saveCall = mocks.invoke.mock.calls.find((c) => c[0] === "relay_save");
+    expect(saveCall, "改对之后应能保存").toBeTruthy();
+    const { patch } = saveCall![1] as { patch: { maxTokensLimit: number } };
+    expect(patch.maxTokensLimit).toBe(4096);
   });
 });

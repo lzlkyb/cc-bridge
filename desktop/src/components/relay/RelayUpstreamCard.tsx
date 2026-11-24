@@ -17,6 +17,13 @@ import { formatMs } from "../../lib/relayFormat";
  * 「更换」换成输入框，填完即存；不提供清空入口（清空一枚正在用的密钥没有任何
  * 正常场景，只会在远端留一堆 401）。
  */
+
+/** 与后端 `Option<u32>` 对齐的上限。
+ *
+ *  超限时 serde 会**整条 patch** 拒绝，前端只看到一句天书错误，且不改就永远
+ *  存不进去。所以在输入侧就限长 + 失焦拦住，给一句人能看懂的话。 */
+const MAX_TOKENS_U32 = 4_294_967_295;
+
 export function RelayUpstreamCard({
   snapshot,
   form,
@@ -24,7 +31,7 @@ export function RelayUpstreamCard({
   snapshot?: RelaySnapshot;
   form: ReturnType<typeof useRelayDraft>;
 }) {
-  const { draft, setField, save, dirty, saving, error, savedAt, probe, probing, probeResult } = form;
+  const { draft, setField, setError, save, dirty, saving, error, savedAt, probe, probing, probeResult } = form;
   const [replacingKey, setReplacingKey] = useState(false);
   const configured = snapshot?.provider?.configured ?? false;
   const running = snapshot?.running ?? false;
@@ -100,7 +107,13 @@ export function RelayUpstreamCard({
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter") e.currentTarget.blur();
-                if (e.key === "Escape") setReplacingKey(false);
+                if (e.key === "Escape") {
+                  // 「取消」必须把草稿里的密钥一起丢掉：只关输入框的话，
+                  // 这枚被取消的密钥会留在 draft 里，之后任意一次 commit
+                  // （普通失焦也触发）把它静默写进配置——用户以为没保存。
+                  setField({ apiKey: "" });
+                  setReplacingKey(false);
+                }
               }}
             />
           ) : (
@@ -169,8 +182,18 @@ export function RelayUpstreamCard({
                 value={draft.maxTokens}
                 placeholder="不压"
                 aria-label="max_tokens 上限"
-                onChange={(e) => setField({ maxTokens: e.target.value.replace(/[^\d]/g, "") })}
-                onBlur={commit}
+                // 只留数字 + 限 10 位：u32 上限是 10 位数，更长连后端都进不去。
+                onChange={(e) => setField({ maxTokens: e.target.value.replace(/[^\d]/g, "").slice(0, 10) })}
+                onBlur={() => {
+                  // 10 位仍可能超 u32（如 9999999999）。此时后端 Option<u32>
+                  // 会整条拒绝、报错还是 serde 天书——拦住、说人话、不保存
+                  // （存了也必失败，用户没有任何自愈路径）。
+                  if (draft.maxTokens !== "" && Number(draft.maxTokens) > MAX_TOKENS_U32) {
+                    setError("max_tokens 不能超过 4294967295（后端整数上限）。");
+                    return;
+                  }
+                  commit();
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") e.currentTarget.blur();
                 }}

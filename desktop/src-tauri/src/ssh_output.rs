@@ -1,7 +1,7 @@
 //! 按 xterm 解析回执限流。最小化时解析可能变慢，不能把原生事件队列当无限缓冲。
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 
 pub const OUTPUT_WINDOW: usize = 256 * 1024;
@@ -26,6 +26,14 @@ pub struct OutputFlow {
     state: Mutex<FlowState>,
     ready: Condvar,
     finished: AtomicBool,
+    /// 无订阅者期间被丢弃的批次数 / 字节数。
+    ///
+    /// 丢弃是回执式背压的既有设计（detach 之后没有接收方，不可能无限缓冲），
+    /// 但**静默丢弃不可观测**：现象是「终端少了一截输出」，日志里却什么都没有，
+    /// 分不清「这次丢了」和「从来没丢过一直在丢」。计数器 + 限流 warn 让
+    /// 「有没有在丢、丢了多少」可查。
+    dropped_chunks: AtomicU64,
+    dropped_bytes: AtomicU64,
 }
 
 pub struct PumpGuard<'a>(&'a OutputFlow);
@@ -90,7 +98,12 @@ impl OutputFlow {
                 guard = self.ready.wait(guard).unwrap_or_else(|e| e.into_inner());
                 continue;
             }
-            let c = guard.consumer.as_mut()?;
+            let Some(c) = guard.consumer.as_mut() else {
+                // 无订阅者（detach 之后、重新 attach 之前）：整批丢弃，但必须留痕。
+                drop(guard);
+                self.note_drop(bytes);
+                return None;
+            };
             if c.bytes + bytes <= OUTPUT_WINDOW {
                 c.sequence += 1;
                 c.bytes += bytes;
@@ -117,6 +130,33 @@ impl OutputFlow {
             c.bytes -= c.pending.pop_front().unwrap().1;
         }
         self.ready.notify_all();
+    }
+
+    /// 记一次「无订阅者」丢弃，并按频率限流打日志。
+    ///
+    /// 丢弃在长输出下是高频事件（每秒成百上千批），逐条 warn 会把日志盘写满。
+    /// 首条必打（那是「开始丢」的信号），之后每 1000 批报一次进度——
+    /// 要回答的是「有没有在丢、总量多少」，不是每一批。
+    fn note_drop(&self, bytes: usize) {
+        let chunks = self.dropped_chunks.fetch_add(1, Ordering::Relaxed) + 1;
+        let total = self
+            .dropped_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed)
+            + bytes as u64;
+        if chunks == 1 || chunks.is_multiple_of(1000) {
+            ::log::warn!(
+                "终端输出流：无订阅者期间已丢弃 {chunks} 批、共 {total} 字节\
+                 （detach 之后未重新 attach，输出泵仍在写入）"
+            );
+        }
+    }
+
+    /// 丢弃统计（批次数, 字节数）。测试与排障用。
+    pub fn dropped_stats(&self) -> (u64, u64) {
+        (
+            self.dropped_chunks.load(Ordering::Relaxed),
+            self.dropped_bytes.load(Ordering::Relaxed),
+        )
     }
 }
 

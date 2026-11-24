@@ -96,12 +96,20 @@ pub fn generate_token() -> String {
 }
 
 /// 掩码显示，如 `rly_7f3a…c91d`。日志与界面只出现这个形态（§4.10 第 5 条）。
+///
+/// 🔴 **必须按 char 切，不能按字节切**：`&t[..8]` 在字符串中间落在多字节字符上时
+/// 直接 panic（`byte index N is not a char boundary`）。上游密钥是用户自由输入，
+/// 一个中文/emoji 密钥就能触发，而 `relay_status` 每 2 秒轮询一次——必崩。
+/// 同目录 `mod.rs` 的 `truncate` 早就做了 char 边界回退，这里补齐同一条防线。
 pub fn mask(token: &str) -> String {
     let t = token.trim();
-    if t.len() <= 12 {
+    let count = t.chars().count();
+    if count <= 12 {
         return "…".into();
     }
-    format!("{}…{}", &t[..8], &t[t.len() - 4..])
+    let head: String = t.chars().take(8).collect();
+    let tail: String = t.chars().skip(count - 4).collect();
+    format!("{head}…{tail}")
 }
 
 #[cfg(test)]
@@ -177,5 +185,27 @@ mod tests {
         assert!(masked.starts_with("rly_7f3a"));
         assert!(masked.ends_with("c91d"));
         assert!(!masked.contains("00000000"));
+    }
+
+    /// 回归：上游 api_key 是用户自由输入，非 ASCII 密钥曾让 `&t[..8]`
+    /// 字节切片 panic（`relay_status` 2 秒轮询一次，必崩）。
+    /// 现在必须既不 panic，也仍然不泄露中段。
+    #[test]
+    fn mask_survives_non_ascii_keys_without_panicking() {
+        // 13 个 char（>12）才会走到切片分支；若按字节长度判断这里连分支都进不去。
+        let masked = mask("sk-密钥密钥密钥密钥密钥");
+        assert!(masked.starts_with("sk-密钥密"), "{masked}");
+        assert!(masked.ends_with("密钥"), "{masked}");
+        assert!(!masked.contains("密钥密钥密钥密钥"), "中段不许出现");
+
+        // 带空格的输入先 trim 再切，前后段不能把空格算进去。
+        assert_eq!(
+            mask("  rly_7f3a000000000000c91d  "),
+            mask("rly_7f3a000000000000c91d")
+        );
+
+        // 短串（char 数 <= 12）一律只给省略号，与字节长度无关。
+        assert_eq!(mask("sk-测试测试"), "…");
+        assert_eq!(mask("short"), "…");
     }
 }

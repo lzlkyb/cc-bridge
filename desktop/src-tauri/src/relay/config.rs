@@ -25,10 +25,19 @@ pub const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TierKind {
-    #[default]
-    Default,
     Haiku,
     Opus,
+    // `#[serde(other)]` 按 serde 约束必须挂在最后一个 variant 上——variant 的
+    // **书写顺序与逻辑顺序无关**（逻辑顺序见 `ALL`，`alias`/`as_str`/`env_var`
+    // 都是 match 全覆盖，不依赖位置）。
+    //
+    // 未知档位（旧版本残留的 "sonnet"、手改错的拼写）落到 default，而不是让
+    // **整份** RelaySettings 反序列化失败。失败会被 `parse_or_warn` 吞成
+    // `Default::default()`——那会把 base_url / api_key / 三档一起重置，
+    // 且下一次保存把空值永久写回 DB。
+    #[default]
+    #[serde(other)]
+    Default,
 }
 
 impl TierKind {
@@ -85,6 +94,9 @@ impl TierKind {
 /// 一档映射。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Tier {
+    // 缺这一行字段 = 按 default 档读。没有 default 时缺字段会让整个
+    // `RelaySettings` 解析失败并被重置（见 `TierKind` 上的注释）。
+    #[serde(default)]
     pub tier: TierKind,
     /// 上游真名。留空 = 该档未配置，请求落 `default`。
     #[serde(default)]
@@ -145,6 +157,8 @@ pub struct Provider {
     #[serde(default)]
     pub name: String,
     /// 上游 Messages 端点。存**归一化后**的完整地址（含 `/v1/messages`）。
+    // 缺字段按空串读（`validate` 会报「缺上游地址」），而不是拖垮整份配置。
+    #[serde(default)]
     pub base_url: String,
     /// 上游密钥。
     #[serde(default)]
@@ -257,7 +271,9 @@ impl MissingField {
 /// 某个上游模型」的唯一出口，去掉会让将来加回来时改解析顺序。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OverrideRule {
+    #[serde(default)]
     pub client_model: String,
+    #[serde(default)]
     pub upstream_model: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -605,5 +621,81 @@ mod tests {
         }
         assert_eq!(TierKind::Default.env_var(), "ANTHROPIC_MODEL");
         assert_eq!(TierKind::Haiku.env_var(), "ANTHROPIC_DEFAULT_HAIKU_MODEL");
+    }
+
+    // ── serde 容错：单个坏字段不许重置整份配置 ──────────────────────────
+    //
+    // 这些字段曾经都没有 default：未知 enum variant / 缺字段会让**整个**
+    // `RelaySettings` 反序列化失败，`config.rs` 的 `parse_or_warn` 再用
+    // `Default::default()` 兜底——base_url / api_key / 三档全部清零，
+    // 且下一次保存把空值永久写回 DB。回归测试钉住「坏字段被局部降级」。
+
+    #[test]
+    fn unknown_tier_kind_falls_back_to_default_instead_of_failing() {
+        // 注意：`RelaySettings`/`Provider`/`Tier` **没有** `rename_all camelCase`，
+        // 存储与反序列化都是 snake_case——这里的字段名写错（曾误用 camelCase）
+        // 会被当未知字段静默忽略，测试就会以另一种方式失败。
+        let settings: RelaySettings = serde_json::from_value(serde_json::json!({
+            "providers": [{
+                "base_url": "https://host/apps/anthropic/v1/messages",
+                "api_key": "sk-keep",
+                "tiers": [
+                    { "tier": "sonnet", "upstream_model": "old-residue" },
+                    { "tier": "haiku", "upstream_model": "small" }
+                ]
+            }]
+        }))
+        .expect("未知档位不该让整份配置解析失败");
+        let p = &settings.providers[0];
+        // 其余字段原样保住——这正是修复前会被一起清零的东西。
+        assert_eq!(p.base_url, "https://host/apps/anthropic/v1/messages");
+        assert_eq!(p.api_key, "sk-keep");
+        // "sonnet" 落到 default 档
+        assert_eq!(p.tiers[0].tier, TierKind::Default);
+        assert_eq!(p.tiers[0].upstream_model, "old-residue");
+        assert_eq!(p.tiers[1].tier, TierKind::Haiku);
+    }
+
+    #[test]
+    fn missing_tier_field_defaults_to_default_tier() {
+        let settings: RelaySettings = serde_json::from_value(serde_json::json!({
+            "providers": [{
+                "base_url": "https://host/apps/anthropic/v1/messages",
+                "api_key": "sk-keep",
+                "tiers": [{ "upstream_model": "m" }]
+            }]
+        }))
+        .expect("缺 tier 字段不该失败");
+        assert_eq!(settings.providers[0].tiers[0].tier, TierKind::Default);
+        assert_eq!(settings.providers[0].tiers[0].upstream_model, "m");
+    }
+
+    #[test]
+    fn missing_base_url_becomes_empty_not_reset() {
+        // 缺 base_url 时其余字段必须保住；空地址由 `validate` 报「缺上游地址」，
+        // 走的是说人话的路径，而不是整份配置静默变默认。
+        let settings: RelaySettings = serde_json::from_value(serde_json::json!({
+            "providers": [{
+                "api_key": "sk-keep",
+                "tiers": [{ "tier": "default", "upstream_model": "m" }]
+            }]
+        }))
+        .expect("缺 base_url 不该失败");
+        let p = &settings.providers[0];
+        assert_eq!(p.base_url, "");
+        assert_eq!(p.api_key, "sk-keep");
+        assert_eq!(p.validate(), Err(MissingField::BaseUrl));
+    }
+
+    #[test]
+    fn missing_override_rule_fields_default_empty() {
+        let settings: RelaySettings = serde_json::from_value(serde_json::json!({
+            "providers": [],
+            "overrides": [{ "enabled": true }]
+        }))
+        .expect("缺 override 字段不该失败");
+        assert_eq!(settings.overrides.len(), 1);
+        assert_eq!(settings.overrides[0].client_model, "");
+        assert!(settings.overrides[0].enabled);
     }
 }

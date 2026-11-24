@@ -123,7 +123,13 @@ impl RelayRuntime {
 
     /// 重启：先停再起。用于改监听地址后应用新配置。
     pub async fn restart(&self, ban_threshold: u32, ban_window_min: u64) -> Result<String, String> {
-        self.stop().await?;
+        // 🔴 stop 失败（5 秒优雅等待超时后被强断）也**必须继续 start**。
+        // 用 `?` 早退会把「停止不干净」升级成「一次 start 都不执行」：
+        // 开关还显示开着、`relay_status` 的 running 还是 true（旧句柄已 drop，
+        // 实际一个监听都没有）——静默停摆，且 5 次退避重试一次都用不上。
+        if let Err(e) = self.stop().await {
+            ::log::warn!("中转重启：停止旧监听未干净收尾（{e}），仍继续启动");
+        }
         // Windows 上端口释放有延迟，重启必报 10048 的坑（§4.11）。这里给一小段
         // 退避重试，比让用户手动点第二次好。
         let mut last_err = String::new();
@@ -158,6 +164,15 @@ impl RelayRuntime {
 
     pub async fn token_value(&self) -> String {
         self.token.read().await.clone()
+    }
+
+    /// 当前监听地址（host, port）。同步逻辑（导入配置）要拿它判断
+    /// 「地址是否变过」——变了才重启，没变不能白重启一次。
+    pub async fn current_listen(&self) -> (String, u16) {
+        (
+            self.listen_host.read().await.clone(),
+            *self.listen_port.read().await,
+        )
     }
 
     /// 是否有监听在跑，返回地址。
@@ -342,9 +357,15 @@ pub async fn probe(
     if url.is_empty() {
         return Err("上游地址还没填。".into());
     }
+    // 🔴 **不跟随重定向**：reqwest 的敏感头清单一共只有 AUTHORIZATION /
+    // COOKIE / PROXY_AUTHORIZATION / WWW_AUTHENTICATE 四个——`x-api-key`
+    // **不在列**。跟随一个 302 就会把这把上游密钥带到重定向目标（恶意或被攻破
+    // 的上游、云元数据地址 169.254.169.254 都算）。与 `server::build_client`
+    // 同一条策略：3xx 原样当结果返回，用户看到「上游返回 302」自己能查。
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
         .timeout(std::time::Duration::from_secs(40))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| format!("构建 HTTP 客户端失败：{e}"))?;
 
@@ -459,6 +480,162 @@ mod tests {
         assert!(cut.ends_with('…'));
         // 不能切出半个字符
         assert!(cut.trim_end_matches('…').len() <= 4);
+    }
+
+    /// 回归（安全）：probe **不得跟随重定向**。
+    ///
+    /// reqwest 的敏感头清单只有 AUTHORIZATION / COOKIE / PROXY_AUTHORIZATION /
+    /// WWW_AUTHENTICATE——`x-api-key` 不在列。跟随 302 就会把这把上游密钥
+    /// 带到重定向目标（恶意上游 / 云元数据地址都算）。3xx 必须原样当结果。
+    #[tokio::test(flavor = "current_thread")]
+    async fn probe_does_not_follow_redirects() {
+        use axum::http::StatusCode;
+        use axum::routing::post;
+        use axum::Router;
+        use std::sync::atomic::AtomicBool;
+
+        let hit = Arc::new(AtomicBool::new(false));
+        let sink = hit.clone();
+        let app = Router::new()
+            .route(
+                "/v1/messages",
+                post(|| async {
+                    (
+                        StatusCode::FOUND,
+                        [(axum::http::header::LOCATION, "/elsewhere")],
+                        "redirecting",
+                    )
+                }),
+            )
+            .route(
+                "/elsewhere",
+                post(move || {
+                    let sink = sink.clone();
+                    async move {
+                        sink.store(true, std::sync::atomic::Ordering::SeqCst);
+                        (StatusCode::OK, "stolen")
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let outcome = probe(
+            &format!("http://{addr}/v1/messages"),
+            "sk-secret",
+            "m",
+            AuthStyle::XApiKey,
+        )
+        .await
+        .expect("302 是结果，不是错误");
+        assert_eq!(outcome.status, 302);
+        assert!(!outcome.ok);
+        assert!(
+            !hit.load(std::sync::atomic::Ordering::SeqCst),
+            "302 目标不许被打到——那会把 x-api-key 带过去"
+        );
+    }
+
+    #[tokio::test]
+    async fn current_listen_reports_configured_host_and_port() {
+        let rt = RelayRuntime::new(
+            RelaySettings::default(),
+            "t".into(),
+            Arc::new(RelayLog::new(10, None)),
+            "127.0.0.1".into(),
+            0,
+        );
+        assert_eq!(rt.current_listen().await, ("127.0.0.1".to_string(), 0));
+    }
+
+    /// 回归（体验退化级）：stop 不干净也**必须继续启动**。
+    ///
+    /// 曾经 `self.stop().await?`：优雅停止 5 秒超时被强断后直接返回 Err，
+    /// 一次 start 都不执行——开关还显示开着、`relay_status` 的 running 还是
+    /// true（旧句柄已 drop，实际一个监听都没有），静默停摆。
+    ///
+    /// 逼 stop 走进超时分支的办法：让一条**永不结束的流式响应**挂在半途
+    /// （假上游只回响应头、body 永不产出），中转的转发任务就一直占着连接。
+    /// `start_paused` 让那 5 秒在测试里瞬间到点，不必真等。
+    #[tokio::test(start_paused = true)]
+    async fn restart_still_starts_after_unclean_stop() {
+        use axum::body::{Body, Bytes};
+        use axum::routing::post;
+        use axum::Router;
+
+        // 假上游：立刻回响应头，body 挂着永不结束。
+        let upstream = Router::new().route(
+            "/v1/messages",
+            post(|| async {
+                let never_ends = tokio_stream::pending::<Result<Bytes, std::io::Error>>();
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                    Body::from_stream(never_ends),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, upstream).await;
+        });
+
+        let settings = RelaySettings {
+            providers: vec![Provider {
+                base_url: format!("http://{up_addr}/v1/messages"),
+                api_key: "sk-upstream".into(),
+                tiers: vec![Tier {
+                    tier: TierKind::Default,
+                    upstream_model: "m".into(),
+                }],
+                ..Provider::default()
+            }],
+            overrides: vec![],
+        };
+        let rt = RelayRuntime::new(
+            settings,
+            "rly_test".into(),
+            Arc::new(RelayLog::new(10, None)),
+            "127.0.0.1".into(),
+            0,
+        );
+        rt.start(5, 15).await.expect("先起监听");
+        let addr = rt.running_addr().await.expect("应在运行");
+
+        // 发一个请求：拿到响应头就够——body 挂着，转发任务停在半途，
+        // 优雅停止必然等不到它收尾。
+        //
+        // 🔴 **`resp` 必须活过 restart**：drop 它会关掉客户端连接，优雅停止
+        // 瞬间收尾、stop 返回 Ok，这条用例就退化成一个普通重启测试，
+        // 再也逮不住「stop 失败即早退」那个回归（变异验证时亲眼见过：
+        // 加了 drop 以后把修复改回 `?` 测试照样绿）。
+        let resp = reqwest::Client::new()
+            .post(format!("http://{addr}/v1/messages"))
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"claude-sonnet-5-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#)
+            .send()
+            .await
+            .expect("请求应发出");
+        assert_eq!(resp.status(), 200);
+
+        // 端口 0 每次 bind 都是新端口，所以只能断言「重启成功且新监听能服务」。
+        let new_addr = rt.restart(5, 15).await.expect("stop 不干净也必须重启成功");
+        assert!(rt.running_addr().await.is_some(), "重启后必须在跑");
+        let resp2 = reqwest::Client::new()
+            .post(format!("http://{new_addr}/v1/messages"))
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"claude-sonnet-5-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#)
+            .send()
+            .await
+            .expect("重启后新监听应能服务");
+        assert_eq!(resp2.status(), 200);
+        drop(resp);
+        drop(resp2);
+
+        let _ = rt.stop().await;
     }
 
     #[test]

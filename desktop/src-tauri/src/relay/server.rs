@@ -218,7 +218,7 @@ pub async fn start(
 
     let app = Router::new()
         .route("/v1/messages", post(handle_messages))
-        .route("/v1/messages/count_tokens", post(handle_messages))
+        .route("/v1/messages/count_tokens", post(handle_count_tokens))
         .fallback(fallback)
         // 32MB：Claude Code 的大 payload 实测到过 937KB 量级，带历史与工具定义
         // 很容易破 axum 默认的 2MB（§4.11「Body 上限」）。
@@ -257,12 +257,39 @@ async fn fallback(uri: axum::http::Uri) -> Response {
     )
 }
 
-/// 主处理函数。
+/// `/v1/messages` 的入口。
 async fn handle_messages(
     State(state): State<Arc<ServerState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Bytes,
+) -> Response {
+    handle_path(state, peer, headers, body, "/v1/messages").await
+}
+
+/// `/v1/messages/count_tokens` 的入口。
+///
+/// 🔴 与 `/v1/messages` 分开注册是必须的：曾经两个路由共用同一个 handler，
+/// 而 handler 里写死 `path = "/v1/messages"`——count_tokens 请求被当成普通
+/// 补全转发，每次上下文探测都变成一次**真实计费**的请求，客户端还拿不到
+/// `input_tokens`。路径只能从路由来。
+async fn handle_count_tokens(
+    State(state): State<Arc<ServerState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    handle_path(state, peer, headers, body, "/v1/messages/count_tokens").await
+}
+
+/// 主处理函数。`path` 是客户端请求的路径（由路由给定），同时决定转发到上游的
+/// 哪一个端点与日志里的记录。
+async fn handle_path(
+    state: Arc<ServerState>,
+    peer: SocketAddr,
+    headers: HeaderMap,
+    body: Bytes,
+    path: &str,
 ) -> Response {
     let started = Instant::now();
     let source = if peer.ip().is_loopback() {
@@ -270,7 +297,6 @@ async fn handle_messages(
     } else {
         peer.ip().to_string()
     };
-    let path = "/v1/messages";
 
     // ── 来源守卫 ──────────────────────────────────────────────────────
     let verdict = guard::check(&headers, &state.allowed_hosts);
@@ -412,14 +438,12 @@ async fn handle_messages(
             request = request.header(key, hv);
         }
     }
-    // 上游密钥：按 provider 配置的形态放，两种都带会有一家不认。
+    // 上游密钥：按 provider 配置的形态发**一种**。两种都带不会有「双保险」——
+    // 只认 Authorization 的网关会把多出来的 x-api-key 连同请求一起拒（401 里
+    // 看不出带了什么），只认 x-api-key 的则把 Bearer 当陌生头。探测失败时
+    // probe 会提示换另一种（`switched_auth`），那才是正确的切换路径。
     request = match provider.auth_style {
-        super::config::AuthStyle::XApiKey => {
-            request.header("x-api-key", provider.api_key.trim()).header(
-                "authorization",
-                format!("Bearer {}", provider.api_key.trim()),
-            )
-        }
+        super::config::AuthStyle::XApiKey => request.header("x-api-key", provider.api_key.trim()),
         super::config::AuthStyle::Bearer => request.header(
             "authorization",
             format!("Bearer {}", provider.api_key.trim()),
@@ -509,6 +533,9 @@ async fn handle_messages(
 }
 
 /// 把上游响应头搬到下游。跳过由本层重算或与流式冲突的字段。
+///
+/// 🔴 用 `append` 不用 `insert`：`HeaderMap::iter()` 对同名多值头会产出多项
+/// （多个 `Set-Cookie` 是真实场景），`insert` 是覆盖语义——只活最后一个。
 fn copy_response_headers(from: &HeaderMap, to: &mut HeaderMap) {
     const SKIP: [&str; 4] = [
         "content-length",
@@ -521,7 +548,7 @@ fn copy_response_headers(from: &HeaderMap, to: &mut HeaderMap) {
             continue;
         }
         if let Ok(hv) = HeaderValue::from_bytes(value.as_bytes()) {
-            to.insert(name.clone(), hv);
+            to.append(name.clone(), hv);
         }
     }
 }
@@ -685,6 +712,7 @@ mod tests {
 
     use crate::relay::config::{Provider, RelaySettings, Tier, TierKind};
     use crate::relay::log::RelayLog;
+    use std::collections::HashMap;
     use std::sync::Mutex as StdMutex;
 
     /// 假上游：把收到的 body 存下来，回一个固定 JSON。
@@ -977,6 +1005,240 @@ mod tests {
         assert!(!alias_row.fell_back, "默认名是精确命中，不该标回落");
         assert_eq!(alias_row.via, "alias");
 
+        let _ = relay.stop().await;
+    }
+
+    /// 假上游（记录收到的路径）：两个端点都收，回固定 JSON。
+    async fn spawn_upstream_capture_path(
+    ) -> (String, Arc<StdMutex<String>>, tokio::task::JoinHandle<()>) {
+        let seen: Arc<StdMutex<String>> = Arc::new(StdMutex::new(String::new()));
+        // 两个 `move` 闭包各持一份克隆：`Arc` 不是 `Copy`，共用一个变量会被
+        // 第一个闭包 move 掉。
+        let sink_messages = seen.clone();
+        let sink_count = seen.clone();
+        let app = Router::new()
+            .route(
+                "/v1/messages",
+                post(move |uri: axum::http::Uri| {
+                    let sink = sink_messages.clone();
+                    async move {
+                        *sink.lock().unwrap() = uri.path().to_string();
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/json")],
+                            r#"{"id":"msg_1","type":"message","content":[{"type":"text","text":"ok"}]}"#,
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/v1/messages/count_tokens",
+                post(move |uri: axum::http::Uri| {
+                    let sink = sink_count.clone();
+                    async move {
+                        *sink.lock().unwrap() = uri.path().to_string();
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/json")],
+                            r#"{"input_tokens":42}"#,
+                        )
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let join = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (addr, seen, join)
+    }
+
+    /// 假上游（记录**最近一次**请求的请求头，每次请求整体覆盖，不跨请求累积）。
+    /// 入站 token 头在 SKIP 列表里不透传，所以这里看到的只可能是中转补上的上游密钥。
+    async fn spawn_upstream_capture_headers() -> (
+        String,
+        Arc<StdMutex<HashMap<String, String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let seen: Arc<StdMutex<HashMap<String, String>>> = Arc::new(StdMutex::new(HashMap::new()));
+        let sink = seen.clone();
+        let app = Router::new().route(
+            "/v1/messages",
+            post(move |headers: HeaderMap| {
+                let sink = sink.clone();
+                async move {
+                    let snapshot: HashMap<String, String> = headers
+                        .iter()
+                        .map(|(name, value)| {
+                            (
+                                name.as_str().to_string(),
+                                value.to_str().unwrap_or_default().to_string(),
+                            )
+                        })
+                        .collect();
+                    // 整体覆盖而不是 insert 累积：这个 helper 被同一个上游地址下的
+                    // 多个用例（不同 auth_style）复用，累积会让第二次请求看到
+                    // 第一次请求的头，从而把「Bearer 形态不该带 x-api-key」
+                    // 误判成失败。
+                    *sink.lock().unwrap() = snapshot;
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        r#"{"id":"msg_1","type":"message","content":[{"type":"text","text":"ok"}]}"#,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let join = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (addr, seen, join)
+    }
+
+    /// 回归：`/v1/messages/count_tokens` 必须按**自己的路径**转发。
+    ///
+    /// 曾经两个路由共用 handler、handler 里 `path` 写死 `/v1/messages`：
+    /// count_tokens 请求被当成普通补全转发——每次上下文探测都变成一次真实
+    /// 计费的请求，客户端还拿不到 `input_tokens`。日志里的 `path` 也必须是真的。
+    #[tokio::test(flavor = "current_thread")]
+    async fn count_tokens_is_forwarded_under_its_own_path() {
+        let (up_addr, seen_path, _up) = spawn_upstream_capture_path().await;
+        let log = Arc::new(RelayLog::new(100, None));
+        let relay = spawn_relay(
+            test_settings(format!("http://{up_addr}/v1/messages")),
+            log.clone(),
+        )
+        .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages/count_tokens", relay.addr))
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"claude-sonnet-5-5","messages":[]}"#)
+            .send()
+            .await
+            .expect("请求应发出");
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            *seen_path.lock().unwrap(),
+            "/v1/messages/count_tokens",
+            "上游必须收到 count_tokens 路径"
+        );
+        let row = log.recent(1).into_iter().next().expect("应有一条日志");
+        assert_eq!(row.path, "/v1/messages/count_tokens", "日志必须记真实路径");
+
+        let _ = relay.stop().await;
+    }
+
+    /// 回归：上游的重复响应头（多个 `Set-Cookie`）必须**全部**透传。
+    /// `HeaderMap::insert` 是覆盖语义，曾经只活最后一个。
+    #[tokio::test(flavor = "current_thread")]
+    async fn duplicate_response_headers_all_survive() {
+        let upstream = Router::new().route(
+            "/v1/messages",
+            post(|| async {
+                let mut headers = HeaderMap::new();
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                );
+                headers.append(header::SET_COOKIE, HeaderValue::from_static("a=1"));
+                headers.append(header::SET_COOKIE, HeaderValue::from_static("b=2"));
+                (StatusCode::OK, headers, r#"{"ok":true}"#)
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, upstream).await;
+        });
+
+        let relay = spawn_relay(
+            test_settings(format!("http://{up_addr}/v1/messages")),
+            Arc::new(RelayLog::new(100, None)),
+        )
+        .await;
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"m","messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let cookies: Vec<String> = resp
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            cookies,
+            vec!["a=1".to_string(), "b=2".to_string()],
+            "两个 Set-Cookie 都必须活下来"
+        );
+
+        let _ = relay.stop().await;
+    }
+
+    /// 上游密钥按 `auth_style` 只发**一种**。两种都带不会有「双保险」：
+    /// 只认 Authorization 的网关会把多出来的 x-api-key 连同请求一起拒，
+    /// 只认 x-api-key 的则把 Bearer 当陌生头。切换路径是 probe 的
+    /// `switched_auth` 提示，不是同时发两个头。
+    #[tokio::test(flavor = "current_thread")]
+    async fn upstream_auth_header_follows_configured_style() {
+        let (up_addr, seen, _up) = spawn_upstream_capture_headers().await;
+
+        // 默认形态 XApiKey：有 x-api-key，没有 authorization
+        let relay = spawn_relay(
+            test_settings(format!("http://{up_addr}/v1/messages")),
+            Arc::new(RelayLog::new(100, None)),
+        )
+        .await;
+        let url = format!("http://{}/v1/messages", relay.addr);
+        let resp = reqwest::Client::new()
+            .post(url)
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"m","messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        {
+            let h = seen.lock().unwrap();
+            assert_eq!(h.get("x-api-key").map(String::as_str), Some("sk-upstream"));
+            assert!(
+                h.get("authorization").is_none(),
+                "XApiKey 形态不该带 Authorization：{h:?}"
+            );
+        }
+        let _ = relay.stop().await;
+
+        // Bearer 形态：只有 authorization
+        let mut settings = test_settings(format!("http://{up_addr}/v1/messages"));
+        settings.providers[0].auth_style = crate::relay::config::AuthStyle::Bearer;
+        let relay = spawn_relay(settings, Arc::new(RelayLog::new(100, None))).await;
+        let url = format!("http://{}/v1/messages", relay.addr);
+        let resp = reqwest::Client::new()
+            .post(url)
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"m","messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        {
+            let h = seen.lock().unwrap();
+            assert_eq!(
+                h.get("authorization").map(String::as_str),
+                Some("Bearer sk-upstream")
+            );
+            assert!(
+                h.get("x-api-key").is_none(),
+                "Bearer 形态不该带 x-api-key：{h:?}"
+            );
+        }
         let _ = relay.stop().await;
     }
 }

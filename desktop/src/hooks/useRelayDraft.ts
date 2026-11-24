@@ -73,10 +73,23 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
   // 「跟随服务端」的口径与设置页端口行一致：只有当前输入**仍然等于上一份服务端值**
   // （即用户没改过）时才跟随；用户正在填的值不会被 2 秒轮询冲掉。
   const lastServer = useRef<string>("");
+  // 🔴 首次回填门。重挂载时（页签切走再切回）React Query 的 gcTime 缓存会让
+  // **首渲染就带上旧快照**——`snapshot` 一进来就是 defined，不存在「先 undefined
+  // 再到达」的间隙。没有这个门，`lastServer.current` 初始 "" 与空表单指纹不相等，
+  // 回填分支永不执行 ⇒ 表单停在空白态；而 `dirty` 恒真又会让失焦即存把空值
+  // 写回后端（曾把已保存的上游地址/模型/分档/authStyle/maxTokens 清空）。
+  const hydrated = useRef(false);
   // 在线保存计数：并发保存时 `saving` 要保持到最后一发回来（见 save 的注释）。
   const inflight = useRef(0);
   useEffect(() => {
     const next = fromSnapshot(snapshot);
+    if (!hydrated.current) {
+      // 首次（含从缓存快照重挂载）：无条件回填一次，之后才进入「跟随」模式。
+      hydrated.current = true;
+      lastServer.current = fingerprint(next);
+      setDraft((cur) => ({ ...next, apiKey: cur.apiKey }));
+      return;
+    }
     const previous = lastServer.current;
     lastServer.current = fingerprint(next);
     setDraft((cur) => (fingerprint(cur) === previous ? { ...next, apiKey: cur.apiKey } : cur));
