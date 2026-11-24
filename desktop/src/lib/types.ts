@@ -749,12 +749,18 @@ export interface RelayProviderView {
 
 export interface RelayLogEntry {
   id: number;
+  requestId?: string | null;
   /** UTC 毫秒，界面按本地时区显示。 */
   tsMs: number;
   source: string;
   clientModel: string;
   tier: string;
   upstreamModel: string;
+  upstreamProvider?: string | null;
+  upstreamKey?: string | null;
+  reportedModel?: string | null;
+  usage?: RelayTokenUsage | null;
+  usageCollectionIssue?: "responseTooLarge" | "unsupportedEncoding" | null;
   /** 该档未配置、请求落到了 default。 */
   fellBack: boolean;
   via: string;
@@ -770,6 +776,14 @@ export interface RelayLogEntry {
   bytesOut: number | null;
   error: string | null;
   path: string;
+}
+
+export interface RelayTokenUsage {
+  input: number | null;
+  cacheWrite: number | null;
+  cacheRead: number | null;
+  output: number | null;
+  partial: boolean;
 }
 
 export interface RelayTierHit {
@@ -797,6 +811,8 @@ export interface RelaySnapshot {
   /** 实际监听地址，如 `127.0.0.1:4100`。 */
   addr: string | null;
   uptimeSecs: number | null;
+  clientVerified?: boolean;
+  latestClientStatus?: number | null;
   listenHost: string;
   port: number;
   tokenMasked: string;

@@ -7,7 +7,7 @@
 //! ```
 //!
 //! 透传路径的五条铁律（§4.3）在这里落地，每一条都有对应的代码注释：
-//! body 除必要改写外原样、响应不解析（SSE 逐块直通）、错误体原样回、不设自己的
+//! body 除必要改写外原样、响应逐块直通、错误体原样回、不设自己的
 //! 超时、不改 query 与 header 值。
 
 use std::net::{IpAddr, SocketAddr};
@@ -21,6 +21,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use super::auth::{self, AuthOutcome};
 use super::config::{RelaySettings, MAX_BODY_BYTES};
@@ -28,6 +29,7 @@ use super::guard;
 use super::log::{LogPatch, RelayLog, RelayLogEntry};
 use super::route::{self, RouteError};
 use super::sanitize;
+use super::usage::{UsageCollectionIssue, UsageObserver};
 
 /// 一次监听的全部运行时依赖。热更新只换 `settings` / `token`，不重启监听。
 pub struct ServerState {
@@ -227,6 +229,7 @@ pub async fn start(
 
     let (shutdown, rx) = tokio::sync::oneshot::channel::<()>();
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
+    let started_at = Instant::now();
     let join = tokio::spawn(async move {
         let server = axum::serve(listener, service).with_graceful_shutdown(async {
             let _ = rx.await;
@@ -238,7 +241,7 @@ pub async fn start(
 
     Ok(RunningServer {
         addr: actual_addr,
-        started_at: Instant::now(),
+        started_at,
         shutdown,
         join,
     })
@@ -392,13 +395,18 @@ async fn handle_path(
     };
 
     // ── 记一条 in-flight ─────────────────────────────────────────────
+    let (upstream_provider, upstream_key) = logged_upstream(&provider.base_url)
+        .map_or((None, None), |(origin, key)| (Some(origin), Some(key)));
     let log_id = state.log.begin(RelayLogEntry {
         id: 0,
+        started_at: Some(started),
         ts_ms: 0,
         source: source.clone(),
         client_model: decision.client_model.clone(),
         tier: decision.tier.as_str().to_string(),
         upstream_model: decision.upstream_model.clone(),
+        upstream_provider,
+        upstream_key,
         fell_back: decision.fell_back,
         via: decision.via.as_str().to_string(),
         rewrite: prepared.rewrite_label(),
@@ -411,6 +419,7 @@ async fn handle_path(
         bytes_out: None,
         error: None,
         path: path.to_string(),
+        ..RelayLogEntry::default()
     });
 
     // ── 转发 ──────────────────────────────────────────────────────────
@@ -471,8 +480,19 @@ async fn handle_path(
     let resp_headers = upstream.headers().clone();
 
     // ── 响应直通 ──────────────────────────────────────────────────────
-    // **不解析响应**（§4.3 第 2 条）：SSE 一旦被反序列化再序列化，打字机效果和
-    // 缓存字节稳定性都会出问题。这里只做一件事：边收边往下游写。
+    // 用量旁路观察已转发的原始块，避免为统计而重新序列化或等待整条响应。
+    let stream = resp_headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
+        });
+    let observe_usage = path == "/v1/messages" && status.is_success();
+    let unsupported_encoding = observe_usage && !identity_encoded(&resp_headers);
+    let mut usage = (observe_usage && !unsupported_encoding).then(|| UsageObserver::new(stream));
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let log_handle = state.log.clone();
     let sanitized = prepared.changed;
@@ -493,7 +513,12 @@ async fn handle_path(
                     bytes_out += chunk.len() as u64;
                     // 发送失败 = 客户端断开（用户 Ctrl+C / 关窗）。不是错误，
                     // 但要让上游停下来，不然一直读到完整响应白烧额度。
-                    if tx.send(Ok(chunk)).await.is_err() {
+                    let retained = usage.as_ref().map(|_| chunk.clone());
+                    let sent = tx.send(Ok(chunk)).await;
+                    if let (Some(observer), Some(bytes)) = (&mut usage, retained) {
+                        observer.push(&bytes);
+                    }
+                    if sent.is_err() {
                         error = Some("客户端提前断开".into());
                         break;
                     }
@@ -506,6 +531,10 @@ async fn handle_path(
             }
         }
 
+        let observed = usage.map(UsageObserver::finish).unwrap_or_default();
+        if observed.stream_error && error.is_none() {
+            error = Some("上游流式响应中断".into());
+        }
         log_handle.finish(
             log_id,
             LogPatch {
@@ -514,6 +543,15 @@ async fn handle_path(
                 total_ms: Some(started.elapsed().as_millis() as u64),
                 bytes_out: Some(bytes_out),
                 error,
+                reported_model: observed.model,
+                usage: observed.tokens,
+                usage_collection_issue: if unsupported_encoding {
+                    Some(UsageCollectionIssue::UnsupportedEncoding)
+                } else if observed.limit_reached {
+                    Some(UsageCollectionIssue::ResponseTooLarge)
+                } else {
+                    None
+                },
             },
         );
     });
@@ -530,6 +568,30 @@ async fn handle_path(
             .insert("x-relay-sanitized", HeaderValue::from_static("1"));
     }
     response
+}
+
+fn logged_upstream(endpoint: &str) -> Option<(String, String)> {
+    let url = reqwest::Url::parse(endpoint).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let origin = url.origin().ascii_serialization();
+    // Separate gateway routes on the same host without retaining credentials, query or path.
+    let identity = format!("{origin}{}", url.path());
+    Some((origin, format!("{:x}", Sha256::digest(identity.as_bytes()))))
+}
+
+fn identity_encoded(headers: &HeaderMap) -> bool {
+    headers
+        .get_all(header::CONTENT_ENCODING)
+        .iter()
+        .all(|value| {
+            value.to_str().is_ok_and(|value| {
+                value
+                    .split(',')
+                    .all(|coding| coding.trim().eq_ignore_ascii_case("identity"))
+            })
+        })
 }
 
 /// 把上游响应头搬到下游。跳过由本层重算或与流式冲突的字段。
@@ -633,6 +695,7 @@ fn log_rejected(
         bytes_out: None,
         error: None,
         path: path.to_string(),
+        ..RelayLogEntry::default()
     });
     state.log.finish(
         id,
@@ -673,6 +736,32 @@ mod tests {
             upstream_url("https://host/apps/anthropic", "/v1/messages"),
             "https://host/apps/anthropic/v1/messages"
         );
+    }
+
+    #[test]
+    fn upstream_identity_separates_paths_and_excludes_credentials_and_query() {
+        let first = logged_upstream("https://proxy.example.com/team-a/v1/messages").unwrap();
+        let second = logged_upstream("https://proxy.example.com/team-b/v1/messages").unwrap();
+        let with_private_parts = logged_upstream(
+            "https://demo:secret@proxy.example.com/team-a/v1/messages?token=demo#id",
+        )
+        .unwrap();
+        assert_eq!(first.0, "https://proxy.example.com");
+        assert_eq!(first, with_private_parts);
+        assert_ne!(first.1, second.1);
+    }
+
+    #[test]
+    fn encoded_responses_are_not_interpreted_as_plain_sse() {
+        let mut headers = HeaderMap::new();
+        assert!(identity_encoded(&headers));
+        headers.insert(
+            header::CONTENT_ENCODING,
+            HeaderValue::from_static("Identity"),
+        );
+        assert!(identity_encoded(&headers));
+        headers.append(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        assert!(!identity_encoded(&headers));
     }
 
     #[test]
@@ -762,6 +851,51 @@ mod tests {
         start(shared, token, log, "127.0.0.1", 0, 5, 15)
             .await
             .expect("中转应能启动")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn streamed_usage_is_recorded_without_changing_the_response() {
+        const SSE: &str = concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"actual-upstream\",\"usage\":{\"input_tokens\":2,\"cache_read_input_tokens\":80,\"output_tokens\":1}}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let upstream = Router::new().route(
+            "/v1/messages",
+            post(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")],
+                    SSE,
+                )
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let log = Arc::new(RelayLog::new(10, None));
+        let relay = spawn_relay(
+            test_settings(format!("http://{addr}/v1/messages")),
+            log.clone(),
+        )
+        .await;
+        let body = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("x-api-key", "rly_test")
+            .json(&json!({"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":20}))
+            .send().await.unwrap().text().await.unwrap();
+        assert_eq!(body, SSE);
+        let rows = log.recent(1);
+        assert_eq!(rows[0].reported_model.as_deref(), Some("actual-upstream"));
+        assert_eq!(
+            rows[0].upstream_provider.as_deref(),
+            Some(format!("http://{addr}").as_str())
+        );
+        let usage = rows[0].usage.as_ref().unwrap();
+        assert_eq!(
+            (usage.input, usage.cache_read, usage.output, usage.partial),
+            (Some(2), Some(80), Some(7), false)
+        );
+        task.abort();
     }
 
     /// 折叠端到端：客户端发 `tool_addition`，上游必须收到**顶层 tools 里有那个工具**，

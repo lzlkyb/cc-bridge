@@ -13,10 +13,10 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../../hooks/useRelayStatus", () => ({
   useRelayStatus: () => ({
-    data: mocks.snapshot.current,
-    series: { requests: [], firstByte: [], fold: [], errors: [] },
-    isError: false,
-    refetch: () => {},
+    status: { data: mocks.snapshot.current, isError: false, refetch: vi.fn(async () => {}) },
+    history: { isError: false, refetch: vi.fn(async () => {}) },
+    rows: mocks.snapshot.current?.recent ?? [],
+    today: new Date().toLocaleDateString("sv-SE"),
   }),
 }));
 vi.mock("../../lib/tauri", () => ({ invoke: mocks.invoke }));
@@ -120,21 +120,21 @@ afterEach(async () => {
 });
 
 describe("中转页三种状态", () => {
-  it("运行中：链路、四张指标、日志、档位与接入代码块都在", async () => {
+  async function click(text: string, within: ParentNode = document.body) {
+    const button = [...within.querySelectorAll("button")].find((button) => button.textContent?.trim() === text);
+    expect(button, `应有「${text}」按钮`).toBeTruthy();
+    await act(async () => button!.click());
+  }
+
+  it("运行中：模型路由、请求明细与接入配置可查看", async () => {
     await mount(snapshot());
     const text = host.textContent ?? "";
-    expect(text).toContain("当前中转");
+    expect(text).toContain("模型路由");
     expect(text).toContain("qianwenaiapi");
     expect(text).toContain("qwen4-max-preview");
-    // 四张指标卡
-    for (const label of ["今日请求", "首字 P50", "改写率", "错误率"]) expect(text).toContain(label);
-    // 映射名只有一个，且是档位别名而不是上游真名
-    expect(host.querySelector(".relay-alias-name")?.textContent).toBe("claude-sonnet-5-5");
-    // 日志与档位卡
-    expect(text).toContain("请求日志");
-    expect(text).toContain("档位分布");
-    // 接入代码块用的是真实值：地址、令牌、别名
-    const code = host.querySelector(".relay-code")?.textContent ?? "";
+    for (const label of ["今日请求", "首字 P50", "今日 Token", "最近请求", "查看档位映射"]) expect(text).toContain(label);
+    await click("接入指南", host);
+    const code = document.body.querySelector(".relay-code")?.textContent ?? "";
     expect(code).toContain('"ANTHROPIC_BASE_URL": "http://127.0.0.1:4100"');
     expect(code).toContain("rly_7f3a9c2e4b8d");
     expect(code).toContain('"ANTHROPIC_MODEL": "claude-sonnet-5-5"');
@@ -142,19 +142,22 @@ describe("中转页三种状态", () => {
     expect(code).not.toContain("qwen4-max-preview");
   });
 
-  it("关闭态：状态卡换「未在监听」，指标一律破折号，接入块换成怎么开回来", async () => {
+  it("关闭态保留历史与上游设置，并提供启动操作", async () => {
     await mount(snapshot({ running: false, addr: null, uptimeSecs: null }));
-    const text = host.textContent ?? "";
-    expect(text).toContain("未在监听");
-    expect(host.querySelector(".status-card--stopped")).not.toBeNull();
-    // 关闭期间不计数：显示 0 会被读成「在跑但没流量」
-    expect(host.querySelector(".metric-card .metric-value")?.textContent).toContain("—");
-    expect(text).toContain("怎么开回来");
-    // 没有流量就别摆日志与档位卡
-    expect(text).not.toContain("请求日志");
-    // 配置卡仍然可编辑，并标了「待生效」
-    expect(host.querySelector("#relay-base-url")).not.toBeNull();
-    expect(text).toContain("待生效");
+    expect(host.textContent).toContain("已停止");
+    expect(host.textContent).toContain("启动中转");
+    expect(host.querySelector(".relay-work-table tbody")).not.toBeNull();
+    expect(host.textContent).not.toContain("打开接入指南");
+    await click("上游设置", host);
+    expect(document.querySelector("#relay-base-url")).not.toBeNull();
+  });
+
+  it("历史请求不会把刚重启的监听标成已验证", async () => {
+    await mount(snapshot({ clientVerified: false, latestClientStatus: null }));
+    expect(host.querySelector(".relay-service-badge")?.textContent).toBe("等待首个成功请求");
+    expect(host.querySelector(".relay-work-table tbody")).not.toBeNull();
+    await click("接入指南", host);
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("等待首个客户端成功请求");
   });
 
   it("还没配上游：headline 与徽章都换成中性态，不再谎报「已连通」", async () => {
@@ -166,8 +169,9 @@ describe("中转页三种状态", () => {
     );
     const text = host.textContent ?? "";
     expect(text).toContain("未配置上游");
-    expect(text).toContain("未设置");
-    expect(host.querySelector(".relay-badge")?.getAttribute("data-tone")).toBe("idle");
+    expect(text).toContain("配置上游供应商");
+    expect(host.querySelector(".relay-service-badge")?.getAttribute("data-tone")).toBe("warn");
+    expect(host.querySelector('input#relay-api-key[type="password"]')).not.toBeNull();
   });
 
   // ── 密钥「取消」回归 ────────────────────────────────────────────────
@@ -179,7 +183,7 @@ describe("中转页三种状态", () => {
 
   /** React 受控 input：原生 setter + input 事件，直接赋 value 不触发 onChange。 */
   async function typeInto(sel: string, value: string) {
-    const el = host.querySelector<HTMLInputElement>(sel);
+    const el = document.querySelector<HTMLInputElement>(sel);
     expect(el, `应有 ${sel}`).not.toBeNull();
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el!, value);
@@ -187,16 +191,49 @@ describe("中转页三种状态", () => {
     });
   }
 
+  it("首次接入只在填齐三项并离开输入框后保存", async () => {
+    await mount(snapshot({ provider: null, tiers: [], recent: [] }));
+    const blur = async (selector: string) => act(async () => {
+      document.querySelector(selector)!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    await typeInto("#relay-base-url", "https://up.example.com");
+    await blur("#relay-base-url");
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    await typeInto("#relay-api-key", "setup-key");
+    await typeInto("#relay-model", "upstream-model");
+    await blur("#relay-model");
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith("relay_save", { patch: expect.objectContaining({
+      baseUrl: "https://up.example.com", apiKey: "setup-key", model: "upstream-model",
+    }) });
+  });
+
+  it("首次接入选择鉴权方式会一并保存已填齐的配置", async () => {
+    await mount(snapshot({ provider: null, tiers: [], recent: [] }));
+    await typeInto("#relay-base-url", "https://up.example.com");
+    await typeInto("#relay-api-key", "setup-key");
+    await typeInto("#relay-model", "upstream-model");
+    const bearer = [...host.querySelectorAll("button")].find((button) => button.textContent === "Bearer")!;
+    await act(async () => {
+      host.querySelector("#relay-model")!.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: bearer }));
+    });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    await click("Bearer", host);
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+    expect(mocks.invoke).toHaveBeenCalledWith("relay_save", { patch: expect.objectContaining({ authStyle: "bearer", apiKey: "setup-key" }) });
+  });
+
   it("取消更换密钥：被取消的密钥不得随之后的保存写进配置", async () => {
     await mount(snapshot());
+    await click("上游设置", host);
 
-    const replaceBtn = Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "更换");
+    const replaceBtn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "更换");
     expect(replaceBtn, "已配密钥时应出现「更换」按钮").toBeTruthy();
     await act(async () => {
       replaceBtn!.click();
     });
 
-    const keyInput = host.querySelector<HTMLInputElement>("#relay-api-key");
+    const keyInput = document.querySelector<HTMLInputElement>("#relay-api-key");
     expect(keyInput, "点「更换」后应展开密钥输入框").not.toBeNull();
     await typeInto("#relay-api-key", "sk-canceled-by-escape");
     await act(async () => {
@@ -204,15 +241,17 @@ describe("中转页三种状态", () => {
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
       );
     });
-    expect(host.querySelector("#relay-api-key"), "Escape 后输入框应收回").toBeNull();
+    expect(document.querySelector("#relay-api-key"), "Escape 后输入框应收回").toBeNull();
 
     // 之后改另一个字段并失焦，触发一次正常保存
     await typeInto("#relay-base-url", "https://other.example.com");
     await act(async () => {
-      host
+      document
         .querySelector("#relay-base-url")!
         .dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     });
+    expect(mocks.invoke.mock.calls.some((c) => c[0] === "relay_save")).toBe(false);
+    await click("应用配置");
 
     const saveCall = mocks.invoke.mock.calls.find((c) => c[0] === "relay_save");
     expect(saveCall, "改字段失焦应触发保存").toBeTruthy();
@@ -221,20 +260,21 @@ describe("中转页三种状态", () => {
     expect(patch, "被 Escape 取消的密钥不许进 patch").not.toHaveProperty("apiKey");
   });
 
-  it("max_tokens 超 u32：输入侧限长、失焦说人话且不保存，改对后仍能存", async () => {
+  it("max_tokens 超 u32：输入侧限长，应用时拦截，改对后仍能保存", async () => {
     await mount(snapshot());
+    await click("上游设置", host);
     const sel = '[aria-label="max_tokens 上限"]';
 
     // 超过 10 位直接截断：u32 上限就 10 位数，更长连后端都进不去
     await typeInto(sel, "99999999999");
-    expect(host.querySelector<HTMLInputElement>(sel)!.value, "输入应被限到 10 位").toBe("9999999999");
+    expect(document.querySelector<HTMLInputElement>(sel)!.value, "输入应被限到 10 位").toBe("9999999999");
 
     // 10 位仍可能超 u32（9999999999 > 4294967295）：后端 Option<u32> 会整条
     // 拒绝、报错还是 serde 天书——必须在前端拦住、说人话、且**不保存**
     await act(async () => {
-      host.querySelector(sel)!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      document.querySelector(sel)!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     });
-    expect(host.textContent).toContain("max_tokens 不能超过 4294967295");
+    expect(document.body.textContent).toContain("max_tokens 不能超过 4294967295");
     expect(
       mocks.invoke.mock.calls.some((c) => c[0] === "relay_save"),
       "超限时不许触发保存",
@@ -242,12 +282,24 @@ describe("中转页三种状态", () => {
 
     // 自愈路径：改成合法值后失焦，正常保存（拦住不能把表单卡死）
     await typeInto(sel, "4096");
-    await act(async () => {
-      host.querySelector(sel)!.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
-    });
+    await click("应用配置");
     const saveCall = mocks.invoke.mock.calls.find((c) => c[0] === "relay_save");
     expect(saveCall, "改对之后应能保存").toBeTruthy();
     const { patch } = saveCall![1] as { patch: { maxTokensLimit: number } };
     expect(patch.maxTokensLimit).toBe(4096);
+  });
+
+  it("Token 用量区分真实的零、部分采集与预估请求", async () => {
+    const fixture = snapshot();
+    const row = fixture.recent[0];
+    const partial = { id: 2, usage: { input: 24, cacheRead: 0, cacheWrite: null, output: null, partial: true } };
+    await mount({ ...fixture, recent: [{ ...row, ...partial }, row, { ...row, id: 3, path: "/v1/messages/count_tokens" }] });
+    await click("Token 用量", host);
+    expect(host.textContent).toContain("上报用量 1 / 2 条 · 1 条部分采集");
+    const table = host.querySelector(".relay-work-table tbody")!;
+    expect(table.children).toHaveLength(2);
+    await act(async () => table.querySelector("button")!.click());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("部分采集");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("缓存读取0");
   });
 });

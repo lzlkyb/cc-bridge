@@ -109,6 +109,15 @@ pub async fn relay_logs(
     Ok(state.relay.log().recent(limit.unwrap_or(200).min(5_000)))
 }
 
+#[tauri::command]
+pub async fn relay_history(state: State<'_, Arc<AppState>>) -> Result<Vec<RelayLogEntry>, String> {
+    let log = state.relay.log();
+    tauri::async_runtime::spawn_blocking(move || log.history())
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())
+}
+
 /// 保存配置。写盘 → 更新内存 → 热生效；监听地址变了才要求重启。
 #[tauri::command]
 pub async fn relay_save(

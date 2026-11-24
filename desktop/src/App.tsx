@@ -523,7 +523,7 @@ function AppContent() {
               代价是每次进来重新开始采样——指标卡的曲线从「采样中…」重新攒。 */}
           <TabsContent value="relay" className="page-scroll app-content-box h-full overflow-y-auto overflow-x-hidden">
             <Suspense fallback={<TabFallback kind="cards" />}>
-              <RelayTab onNavigate={handleNavigate} />
+              <RelayTab />
             </Suspense>
           </TabsContent>
           </main>

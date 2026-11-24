@@ -1,22 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FocusEvent } from "react";
 import { Icon } from "../ui/icon";
 import { SavedHint } from "../ui/SavedHint";
 import type { RelaySnapshot } from "../../lib/types";
-import type { useRelayDraft } from "../../hooks/useRelayDraft";
+import { useRelayDraft, type RelayDraft } from "../../hooks/useRelayDraft";
 import { formatMs } from "../../lib/relayFormat";
-
-/**
- * ③ 上游供应商（4 列）。
- *
- * 三格必填就在这里：地址 / 密钥 / 模型。**页面上没有「保存」按钮**，
- * 提交时机是失焦与控件变更（见 `useRelayDraft` 顶部注释）——这是接触点预算的
- * 直接后果，不是偷懒。
- *
- * 密钥只给掩码：完整值从后端就不下发（`ProviderView.api_key_masked`）。所以这里
- * **没有「眼睛」按钮**——设计稿上那只是示意，我们手上没有可以揭示的值。
- * 「更换」换成输入框，填完即存；不提供清空入口（清空一枚正在用的密钥没有任何
- * 正常场景，只会在远端留一堆 401）。
- */
 
 /** 与后端 `Option<u32>` 对齐的上限。
  *
@@ -26,15 +13,22 @@ const MAX_TOKENS_U32 = 4_294_967_295;
 
 export function RelayUpstreamCard({
   snapshot,
-  form,
+  onChanged,
+  explicit = false,
+  onApplied,
 }: {
-  snapshot?: RelaySnapshot;
-  form: ReturnType<typeof useRelayDraft>;
+  snapshot: RelaySnapshot;
+  onChanged: () => void;
+  explicit?: boolean;
+  onApplied?: () => void;
 }) {
+  const form = useRelayDraft(snapshot, onChanged);
   const { draft, setField, setError, save, dirty, saving, error, savedAt, probe, probing, probeResult } = form;
   const [replacingKey, setReplacingKey] = useState(false);
-  const configured = snapshot?.provider?.configured ?? false;
-  const running = snapshot?.running ?? false;
+  const hasKey = snapshot.provider?.hasApiKey ?? false;
+  const showKey = replacingKey || !hasKey;
+  const configured = snapshot.provider?.configured ?? false;
+  const ready = Boolean(draft.baseUrl.trim() && draft.model.trim() && (draft.apiKey.trim() || hasKey));
 
   // 「已保存」只亮 1.6 秒。常驻会更糟：那两个字一旦住下来，就再也分不清
   // 「这次改动存进去了」和「上次存的那次」——而这一页恰恰没有保存按钮。
@@ -46,30 +40,45 @@ export function RelayUpstreamCard({
     return () => clearTimeout(timer);
   }, [savedAt]);
 
-  const commit = () => {
-    if (dirty) void save();
+  const apply = (override?: Partial<RelayDraft>) => {
+    if ((!dirty && !override) || saving || !ready) return;
+    if (draft.maxTokens !== "" && Number(draft.maxTokens) > MAX_TOKENS_U32) {
+      setError("max_tokens 不能超过 4294967295（后端整数上限）。");
+      return;
+    }
+    try {
+      const url = new URL(draft.baseUrl.trim());
+      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error();
+    } catch {
+      setError("请输入有效的 HTTP 或 HTTPS 上游地址。");
+      return;
+    }
+    void save(override).then((result) => { if (result?.ok && result.configured) onApplied?.(); });
+  };
+  const commit = (event: FocusEvent<HTMLElement>) => {
+    if (explicit || event.relatedTarget?.matches("[data-relay-autosave]")) return;
+    apply();
   };
 
-  const tail = !running
-    ? "待生效"
-    : probeResult
+  const tail = probeResult
       ? probeResult.ok
-        ? `已连通 · ${formatMs(probeResult.firstByteMs)}`
+        ? `上次测试通过 · ${formatMs(probeResult.firstByteMs)}`
         : `上游 ${probeResult.status}`
       : configured
-        ? "已填写"
+        ? "已配置"
         : "待填写";
 
   return (
-    <div className="bento-card">
+    <fieldset className="relay-upstream-editor" disabled={saving} data-explicit={explicit || undefined}>
       <div className="bento-eyebrow relay-card-head">
         <Icon name="server" size={12} />
-        <span className="grow">上游供应商</span>
+        <span className="grow">{explicit ? "上游供应商" : "配置上游供应商"}</span>
         {flashSaved && <SavedHint>已保存</SavedHint>}
         <span className="relay-tail" data-tone={probeResult && !probeResult.ok ? "bad" : undefined}>
           {tail}
         </span>
       </div>
+      <p className="relay-work-muted">{explicit ? "调整地址、密钥或模型后，点击「应用配置」。" : "从上游控制台取得以下三项。填齐后，离开输入框即自动保存。"}</p>
 
       <div className="relay-fields">
         <div className="relay-field">
@@ -90,27 +99,27 @@ export function RelayUpstreamCard({
         </div>
 
         <div className="relay-field">
-          <label htmlFor={replacingKey ? "relay-api-key" : undefined}>密钥</label>
-          {replacingKey ? (
+          <label htmlFor={showKey ? "relay-api-key" : undefined}>API 密钥</label>
+          {showKey ? (
             <input
               id="relay-api-key"
               className="tinp mono"
+              type="password"
               value={draft.apiKey}
               spellCheck={false}
               autoComplete="off"
-              autoFocus
-              placeholder="粘贴新密钥，失焦即保存"
+              autoFocus={replacingKey}
+              placeholder="粘贴 API 密钥"
               onChange={(e) => setField({ apiKey: e.target.value })}
-              onBlur={() => {
-                commit();
-                setReplacingKey(false);
-              }}
+              onBlur={commit}
               onKeyDown={(e) => {
                 if (e.key === "Enter") e.currentTarget.blur();
-                if (e.key === "Escape") {
+              }}
+              onKeyDownCapture={(e) => {
+                if (e.key === "Escape" && replacingKey && !e.nativeEvent.isComposing) {
+                  e.stopPropagation();
                   // 「取消」必须把草稿里的密钥一起丢掉：只关输入框的话，
-                  // 这枚被取消的密钥会留在 draft 里，之后任意一次 commit
-                  // （普通失焦也触发）把它静默写进配置——用户以为没保存。
+                  // 之后应用其他字段时会把这枚被取消的密钥一起保存。
                   setField({ apiKey: "" });
                   setReplacingKey(false);
                 }
@@ -127,7 +136,7 @@ export function RelayUpstreamCard({
         </div>
 
         <div className="relay-field">
-          <label htmlFor="relay-model">模型</label>
+          <label htmlFor="relay-model">默认模型</label>
           <input
             id="relay-model"
             className="tinp mono"
@@ -151,6 +160,13 @@ export function RelayUpstreamCard({
           <span className="hint">都已有默认值，不用动</span>
         </summary>
         <div className="relay-more-body">
+          <div className="relay-fields relay-extra-models">
+            {(["haiku", "opus"] as const).map((tier) => <div className="relay-field" key={tier}>
+              <label htmlFor={`relay-model-${tier}`}>{tier === "haiku" ? "Haiku" : "Opus"} 模型</label>
+              <input id={`relay-model-${tier}`} className="tinp mono" value={draft[tier]} placeholder="留空时使用默认档"
+                onChange={(event) => setField({ [tier]: event.target.value })} onBlur={commit} />
+            </div>)}
+          </div>
           <div className="relay-adv-row">
             <span>鉴权方式</span>
             <div className="relay-chips">
@@ -159,12 +175,14 @@ export function RelayUpstreamCard({
                   key={style}
                   type="button"
                   className="relay-chip"
+                  data-relay-autosave={!explicit || undefined}
                   aria-pressed={draft.authStyle === style}
+                  onBlur={commit}
                   onClick={() => {
-                    // 单选按钮式的选择必须立刻落盘：没有失焦可等。
-                    // 新值随 save 一起传：此刻 draft 还是旧值（setField 尚未落地）。
-                    setField({ authStyle: style });
-                    void save({ authStyle: style });
+                    if (draft.authStyle === style) return;
+                    const update = { authStyle: style };
+                    setField(update);
+                    if (!explicit) apply(update);
                   }}
                 >
                   {style === "bearer" ? "Bearer" : "x-api-key"}
@@ -184,7 +202,7 @@ export function RelayUpstreamCard({
                 aria-label="max_tokens 上限"
                 // 只留数字 + 限 10 位：u32 上限是 10 位数，更长连后端都进不去。
                 onChange={(e) => setField({ maxTokens: e.target.value.replace(/[^\d]/g, "").slice(0, 10) })}
-                onBlur={() => {
+                onBlur={(event) => {
                   // 10 位仍可能超 u32（如 9999999999）。此时后端 Option<u32>
                   // 会整条拒绝、报错还是 serde 天书——拦住、说人话、不保存
                   // （存了也必失败，用户没有任何自愈路径）。
@@ -192,7 +210,7 @@ export function RelayUpstreamCard({
                     setError("max_tokens 不能超过 4294967295（后端整数上限）。");
                     return;
                   }
-                  commit();
+                  commit(event);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") e.currentTarget.blur();
@@ -209,10 +227,13 @@ export function RelayUpstreamCard({
                 role="switch"
                 aria-checked={draft.fold}
                 aria-label="折叠工具定义"
+                data-relay-autosave={!explicit || undefined}
                 className={`sw ${draft.fold ? "on" : ""} relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors`}
+                onBlur={commit}
                 onClick={() => {
-                  setField({ fold: !draft.fold });
-                  void save({ fold: !draft.fold });
+                  const update = { fold: !draft.fold };
+                  setField(update);
+                  if (!explicit) apply(update);
                 }}
               >
                 <span className="sw-thumb inline-block h-5 w-5 rounded-full bg-white shadow" />
@@ -222,39 +243,21 @@ export function RelayUpstreamCard({
               </span>
             </div>
           </div>
-          <div className="relay-adv-row">
-            <span />
-            <div className="relay-chips">
-              <button
-                type="button"
-                className="relay-mini-btn"
-                disabled={probing || saving}
-                onClick={() => void probe()}
-              >
-                <Icon name={probing ? "spinner" : "activity"} size={12} className={probing ? "animate-spin" : ""} />
-                测连通
-              </button>
-              <span className="relay-chip-note">
-                用当前表单值打一发 <code>max_tokens: 8</code> 的请求，失败会自动换另一种鉴权头重试
-              </span>
-            </div>
-          </div>
-          {probeResult && !probeResult.ok && (
-            <div className="relay-probe-fail" role="alert">
-              <b>上游返回 {probeResult.status}</b>
-              <pre>{probeResult.errorHead ?? "没有响应体"}</pre>
-            </div>
-          )}
-          {probeResult?.switchedAuth && (
-            <div className="relay-probe-ok">
-              这个上游只认 <code>{probeResult.switchedAuth}</code>，建议把上面的鉴权方式改过去。
-            </div>
-          )}
         </div>
       </details>
-
+      <div className="relay-inline relay-wrap">
+        <button type="button" className="relay-mini-btn" disabled={!ready || probing || saving} onClick={() => void probe()}>
+          <Icon name={probing ? "spinner" : "activity"} size={13} className={probing ? "animate-spin" : ""} />{probing ? "正在测试" : "测试上游"}
+        </button>
+        {(explicit || error) && <button type="button" className="relay-mini-btn relay-apply-button" onClick={() => apply()} disabled={!dirty || !ready || saving}>
+          {explicit ? "应用配置" : "重试保存"}
+        </button>}
+        {explicit && dirty && !saving && <small>有尚未应用的改动</small>}
+      </div>
+      {probeResult && !probeResult.ok && <div className="relay-probe-fail" role="alert"><b>上游返回 {probeResult.status}</b><pre>{probeResult.errorHead ?? "没有响应体"}</pre></div>}
+      {probeResult?.switchedAuth && <div className="relay-probe-ok">测试使用 <code>{probeResult.switchedAuth}</code> 通过，可在高级设置中切换鉴权方式。</div>}
       {error && <div className="relay-inline-error" role="alert">{error}</div>}
-      {saving && <div className="relay-inline-hint">保存中…</div>}
-    </div>
+      {saving && <div className="relay-inline-hint" role="status">正在保存…</div>}
+    </fieldset>
   );
 }

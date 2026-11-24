@@ -24,15 +24,18 @@ import type { RelaySaveResult, RelaySnapshot } from "../../lib/types";
 export function RelayAccessCard({
   snapshot,
   onChanged,
+  verified,
 }: {
   snapshot?: RelaySnapshot;
-  onChanged: () => void;
+  onChanged: () => void | Promise<unknown>;
+  verified: boolean;
 }) {
   const { toast } = useToast();
   const [switching, setSwitching] = useState(false);
-  const [confirmDirect, setConfirmDirect] = useState(false);
+  const [confirmMode, setConfirmMode] = useState<"tunnel" | "direct" | null>(null);
   const port = snapshot?.port ?? 4100;
   const direct = !!snapshot && snapshot.listenHost !== "127.0.0.1";
+  const listening = snapshot?.running ?? false;
   const baseUrl = direct ? `http://${snapshot?.listenHost}:${port}` : `http://127.0.0.1:${port}`;
   const alias = snapshot?.tiers.find((t) => t.tier === "default")?.alias ?? "claude-sonnet-5-5";
   const snippet = buildRelaySnippet({
@@ -47,18 +50,24 @@ export function RelayAccessCard({
     try {
       const result = await invoke<RelaySaveResult>("relay_save", { patch: { listenMode: next } });
       for (const warning of result.warnings) toast(warning, "warning");
-      toast(next === "direct" ? "已切到内网直连：中转会绑到网卡上" : "已切回隧道模式：中转只绑回环", "success");
-      onChanged();
+      if (!result.warnings.length) toast(next === "direct" ? "已切到内网直连" : "已切回 SSH 隧道", "success");
+      await onChanged();
     } catch (e) {
       toast(`切换失败：${String(e)}`, "error");
     } finally {
       setSwitching(false);
-      setConfirmDirect(false);
+      setConfirmMode(null);
     }
   };
 
   return (
-    <section className="bento-card relay-access">
+    <section className="relay-access" aria-label="远端接入步骤">
+      <div className="relay-inline relay-wrap relay-access-status">
+        <span className="relay-work-badge" data-tone={!listening ? "mute" : verified ? "ok" : "accent"}>
+          {!listening ? "已停止监听" : verified ? "已收到客户端成功请求" : "等待首个客户端成功请求"}
+        </span>
+        <small>{listening ? "在本页「最近请求」验证中转结果。" : "启动中转后再复制接入配置。"}</small>
+      </div>
       <div className="relay-card-head">
         <div className="bento-eyebrow grow">
           <Icon name="plug" size={12} />
@@ -70,7 +79,7 @@ export function RelayAccessCard({
             type="button"
             aria-pressed={!direct}
             disabled={switching}
-            onClick={() => void switchMode("tunnel")}
+            onClick={() => { if (direct) setConfirmMode("tunnel"); }}
           >
             隧道连接<span className="rec">推荐</span>
           </button>
@@ -78,9 +87,9 @@ export function RelayAccessCard({
             type="button"
             aria-pressed={direct}
             disabled={switching}
-            onClick={() => setConfirmDirect(true)}
+            onClick={() => { if (!direct) setConfirmMode("direct"); }}
           >
-            IP 直连
+            内网直连
           </button>
         </div>
       </div>
@@ -88,7 +97,7 @@ export function RelayAccessCard({
       <p className="relay-method-note">
         {direct
           ? "远端直接用内网地址访问本机，少一个会断的环节，但同网段可探测。"
-          : "远端不用装任何东西，走已有的 SSH 会话把端口映射回来就行。"}
+          : "让远端 Claude Code 通过 SSH 访问本机中转。已有相同端口转发时可以直接复用。"}
       </p>
 
       {direct ? (
@@ -103,13 +112,14 @@ export function RelayAccessCard({
         <div className="relay-prereq">
           <Icon name="info" size={13} />
           <span>
-            先确保远端有一条到本机的 SSH 会话，把端口反向映射回去：
-            <code>ssh -N -L {port}:127.0.0.1:{port} &lt;你的电脑&gt;</code>
+            在本机运行以下命令，并保持 SSH 会话打开：
+            <code>ssh -N -o ExitOnForwardFailure=yes -R 127.0.0.1:{port}:127.0.0.1:{port} &lt;远端 SSH 主机&gt;</code>
           </span>
         </div>
       )}
 
-      <pre className="relay-code">
+      <p className="relay-method-note">把下面的配置粘贴到远端 Shell，运行 <code>claude-own</code> 后发送一条请求。</p>
+      <pre className="relay-code" tabIndex={0} aria-label="远端配置命令">
         {snippet.split("\n").map((line, i) => (
           // 行用 <span display:block> 而不是 <div>：<pre> 的内容模型是短语级内容，
           // 里面塞块级元素在严格校验下是不合法的，虽然浏览器都容忍。
@@ -123,6 +133,7 @@ export function RelayAccessCard({
         <button
           type="button"
           className="ui-button primary"
+          disabled={!listening || !snapshot?.token || switching}
           onClick={() =>
             void copyText(
               snippet,
@@ -132,25 +143,24 @@ export function RelayAccessCard({
           }
         >
           <Icon name="copy" size={13} />
-          复制整块
+          复制远端配置
         </button>
-        <p className="note">
-          自动写入远端走已连上的 SSH 会话（备份原文件、沿用原权限、幂等追加），排在下一步。
-        </p>
+        <p className="note">配置含中转令牌，请仅复制到自己的客户端。</p>
       </div>
 
-      {confirmDirect && (
+      {confirmMode && (
         <ConfirmDialog
-          title="切到内网直连？"
-          description={
+          zIndex={1100}
+          title={confirmMode === "direct" ? "切到内网直连？" : "切回 SSH 隧道？"}
+          description={confirmMode === "direct" ? (
             <>
               中转会从 <code>127.0.0.1:{port}</code> 改绑到内网网卡，<b>同网段任何机器都能探测到这个端口</b>，
               令牌走明文 HTTP。监听地址变了，中转会重启一次，进行中的请求会断。
             </>
-          }
-          confirmLabel="切到直连"
-          onCancel={() => setConfirmDirect(false)}
-          onConfirm={() => void switchMode("direct")}
+          ) : "切换监听地址会重启中转，进行中的请求可能中断。远端客户端需要改用 SSH 转发地址。"}
+          confirmLabel={confirmMode === "direct" ? "切到直连" : "切回隧道"}
+          onCancel={() => setConfirmMode(null)}
+          onConfirm={() => void switchMode(confirmMode)}
         />
       )}
     </section>

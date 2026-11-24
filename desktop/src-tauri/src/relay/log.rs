@@ -14,23 +14,30 @@
 //! 持续几分钟——若等流结束才写日志，界面在整段时间里都看不到这条请求，
 //! 而人恰恰是在那段时间里去查「卡住了没有」。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
+
+use super::usage::{TokenUsage, UsageCollectionIssue};
 
 /// 日志保留天数（磁盘）。
 const DISK_RETENTION_DAYS: i64 = 7;
 
 /// 一条请求记录。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayLogEntry {
     pub id: u64,
+    #[serde(skip)]
+    pub(super) started_at: Option<Instant>,
+    #[serde(default)]
+    pub request_id: Option<String>,
     /// UTC 毫秒。界面按本地时区显示（§4.11「日志时间基准」）。
     pub ts_ms: i64,
     /// `local`（回环）或来源 IP。
@@ -39,6 +46,16 @@ pub struct RelayLogEntry {
     pub client_model: String,
     pub tier: String,
     pub upstream_model: String,
+    #[serde(default)]
+    pub upstream_provider: Option<String>,
+    #[serde(default)]
+    pub upstream_key: Option<String>,
+    #[serde(default)]
+    pub reported_model: Option<String>,
+    #[serde(default)]
+    pub usage: Option<TokenUsage>,
+    #[serde(default)]
+    pub usage_collection_issue: Option<UsageCollectionIssue>,
     /// 该档未配置、请求落到 default。
     pub fell_back: bool,
     /// 命中方式：alias / override / keyword / fallback。
@@ -64,11 +81,11 @@ pub struct RelayLogEntry {
 
 impl RelayLogEntry {
     pub fn is_error(&self) -> bool {
-        self.status.is_some_and(|s| s >= 400)
+        self.status.is_some_and(|s| s >= 400) || self.error.is_some()
     }
 
     pub fn is_in_flight(&self) -> bool {
-        self.status.is_none()
+        self.status.is_none() && self.error.is_none()
     }
 }
 
@@ -80,6 +97,9 @@ pub struct LogPatch {
     pub total_ms: Option<u64>,
     pub bytes_out: Option<u64>,
     pub error: Option<String>,
+    pub reported_model: Option<String>,
+    pub usage: Option<TokenUsage>,
+    pub usage_collection_issue: Option<UsageCollectionIssue>,
 }
 
 /// 今日 / 全部聚合，给四张指标卡与档位分布。
@@ -113,7 +133,10 @@ pub struct TierHit {
 
 struct Inner {
     entries: VecDeque<RelayLogEntry>,
+    evicted_pending: HashMap<u64, RelayLogEntry>,
     next_id: u64,
+    latest_client_result: Option<(Instant, u64, u16)>,
+    last_client_success: Option<Instant>,
 }
 
 struct DiskWriter {
@@ -135,7 +158,10 @@ impl RelayLog {
         Self {
             inner: Mutex::new(Inner {
                 entries: VecDeque::new(),
+                evicted_pending: HashMap::new(),
                 next_id: 1,
+                latest_client_result: None,
+                last_client_success: None,
             }),
             keep: keep.max(1),
             dir,
@@ -145,6 +171,8 @@ impl RelayLog {
 
     /// 插入一条 in-flight 记录，返回 id 供 [`finish`](Self::finish) 回填。
     pub fn begin(&self, mut entry: RelayLogEntry) -> u64 {
+        entry.request_id = Some(uuid::Uuid::new_v4().to_string());
+        entry.started_at.get_or_insert_with(Instant::now);
         entry.ts_ms = if entry.ts_ms == 0 {
             Local::now().timestamp_millis()
         } else {
@@ -158,7 +186,10 @@ impl RelayLog {
             // 新的在前：界面只读最近几条，不必反转
             inner.entries.push_front(entry.clone());
             while inner.entries.len() > self.keep {
-                inner.entries.pop_back();
+                if let Some(old) = inner.entries.pop_back().filter(RelayLogEntry::is_in_flight) {
+                    // A long stream can outlive a full rotation of the recent-request list.
+                    inner.evicted_pending.insert(old.id, old);
+                }
             }
             id
         };
@@ -172,36 +203,101 @@ impl RelayLog {
     pub fn finish(&self, id: u64, patch: LogPatch) {
         let updated = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(entry) = inner.entries.iter_mut().find(|e| e.id == id) else {
+            let updated = if let Some(entry) = inner.entries.iter_mut().find(|e| e.id == id) {
+                apply_patch(entry, patch);
+                entry.clone()
+            } else if let Some(mut entry) = inner.evicted_pending.remove(&id) {
+                apply_patch(&mut entry, patch);
+                entry
+            } else {
                 return;
             };
-            if patch.status.is_some() {
-                entry.status = patch.status;
+            if let ("/v1/messages", Some(at), Some(status)) =
+                (updated.path.as_str(), updated.started_at, updated.status)
+            {
+                if inner
+                    .latest_client_result
+                    .is_none_or(|(last, last_id, _)| (at, id) >= (last, last_id))
+                {
+                    inner.latest_client_result = Some((at, id, status));
+                }
+                if (200..300).contains(&status) && updated.error.is_none() {
+                    inner.last_client_success =
+                        Some(inner.last_client_success.map_or(at, |last| last.max(at)));
+                }
             }
-            if patch.first_byte_ms.is_some() {
-                entry.first_byte_ms = patch.first_byte_ms;
-            }
-            if patch.total_ms.is_some() {
-                entry.total_ms = patch.total_ms;
-            }
-            if patch.bytes_out.is_some() {
-                entry.bytes_out = patch.bytes_out;
-            }
-            if patch.error.is_some() {
-                entry.error = patch.error;
-            }
-            Some(entry.clone())
+            updated
         };
-        if let Some(entry) = updated {
-            // 完成态再写一行（带 `final: true`），排障时以最后一行为准。
-            self.append_disk_final(&entry);
-        }
+        self.append_disk_final(&updated);
     }
 
     /// 最近 `n` 条（新的在前）。
     pub fn recent(&self, n: usize) -> Vec<RelayLogEntry> {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.entries.iter().take(n).cloned().collect()
+    }
+
+    pub(super) fn client_state_since(&self, since: Instant) -> (bool, Option<u16>) {
+        let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        (
+            inner.last_client_success.is_some_and(|at| at >= since),
+            inner
+                .latest_client_result
+                .filter(|(at, _, _)| *at >= since)
+                .map(|(_, _, status)| status),
+        )
+    }
+
+    /// Seven local calendar days, with final records replacing their matching begin lines.
+    pub fn history(&self) -> std::io::Result<Vec<RelayLogEntry>> {
+        let today = Local::now().date_naive();
+        let first_day = today - chrono::Days::new(6);
+        let mut entries = HashMap::new();
+        if let Some(dir) = &self.dir {
+            // A request can finish in a different day's file from its begin record.
+            for offset in 0..7 {
+                let date = first_day + chrono::Days::new(offset);
+                let path = day_file(dir, &date.format("%Y%m%d").to_string());
+                let file = match File::open(path) {
+                    Ok(file) => file,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => return Err(err),
+                };
+                for line in BufReader::new(file).lines() {
+                    if let Ok(entry) = serde_json::from_str::<RelayLogEntry>(&line?) {
+                        entries.insert(history_key(&entry), entry);
+                    }
+                }
+            }
+        }
+
+        let mut pending = HashSet::new();
+        {
+            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            for entry in inner.entries.iter().chain(inner.evicted_pending.values()) {
+                let key = history_key(entry);
+                if entry.is_in_flight() {
+                    pending.insert(key.clone());
+                }
+                entries.insert(key, entry.clone());
+            }
+        }
+        let mut history = Vec::new();
+        for (key, mut entry) in entries {
+            let date = Local
+                .timestamp_millis_opt(entry.ts_ms)
+                .single()
+                .map(|d| d.date_naive());
+            if !date.is_some_and(|date| (first_day..=today).contains(&date)) {
+                continue;
+            }
+            if entry.is_in_flight() && !pending.contains(&key) {
+                entry.error = Some("请求结束前未记录到结果".into());
+            }
+            history.push(entry);
+        }
+        history.sort_unstable_by(|a, b| (b.ts_ms, b.id).cmp(&(a.ts_ms, a.id)));
+        Ok(history)
     }
 
     /// 全部条目数。
@@ -222,7 +318,10 @@ impl RelayLog {
     /// 今日聚合。`now_ms` 与 `day_start_ms` 由调用方给，以便测试确定性。
     pub fn stats_for(&self, day_start_ms: i64) -> RelayStats {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        build_stats(inner.entries.iter(), day_start_ms)
+        build_stats(
+            inner.entries.iter().chain(inner.evicted_pending.values()),
+            day_start_ms,
+        )
     }
 
     /// 今日聚合，按本地时区的零点算边界。
@@ -277,6 +376,26 @@ impl RelayLog {
             }
         }
     }
+}
+
+fn history_key(entry: &RelayLogEntry) -> String {
+    entry
+        .request_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", entry.ts_ms, entry.id))
+}
+
+fn apply_patch(entry: &mut RelayLogEntry, patch: LogPatch) {
+    entry.status = patch.status.or(entry.status);
+    entry.first_byte_ms = patch.first_byte_ms.or(entry.first_byte_ms);
+    entry.total_ms = patch.total_ms.or(entry.total_ms);
+    entry.bytes_out = patch.bytes_out.or(entry.bytes_out);
+    entry.error = patch.error.or(entry.error.take());
+    entry.reported_model = patch.reported_model.or(entry.reported_model.take());
+    entry.usage = patch.usage.or(entry.usage.take());
+    entry.usage_collection_issue = patch
+        .usage_collection_issue
+        .or(entry.usage_collection_issue);
 }
 
 fn day_file(dir: &Path, day: &str) -> PathBuf {
@@ -426,6 +545,7 @@ mod tests {
             bytes_out: None,
             error: None,
             path: "/v1/messages".into(),
+            ..RelayLogEntry::default()
         }
     }
 
@@ -448,12 +568,50 @@ mod tests {
                 total_ms: Some(900),
                 bytes_out: Some(2048),
                 error: None,
+                ..LogPatch::default()
             },
         );
         let row = &log.recent(1)[0];
         assert_eq!(row.status, Some(200));
         assert_eq!(row.first_byte_ms, Some(120));
         assert!(!row.is_in_flight());
+    }
+
+    #[test]
+    fn verification_ignores_earlier_requests_that_finish_late_and_token_probes() {
+        let log = RelayLog::new(1, None);
+        let since = Instant::now();
+        let before = |path: &str, at: Instant| RelayLogEntry {
+            path: path.to_string(),
+            started_at: Some(at),
+            ..entry(0, None)
+        };
+        let old = log.begin(before(
+            "/v1/messages",
+            since - std::time::Duration::from_millis(1),
+        ));
+        let current = log.begin(before("/v1/messages", since));
+        let count = log.begin(before("/v1/messages/count_tokens", since));
+        for (id, status) in [(current, 429), (old, 200), (count, 200)] {
+            log.finish(
+                id,
+                LogPatch {
+                    status: Some(status),
+                    ..LogPatch::default()
+                },
+            );
+        }
+        assert_eq!(log.client_state_since(since), (false, Some(429)));
+
+        let success = log.begin(before("/v1/messages", since));
+        log.finish(
+            success,
+            LogPatch {
+                status: Some(200),
+                ..LogPatch::default()
+            },
+        );
+        assert_eq!(log.client_state_since(since), (true, Some(200)));
     }
 
     #[test]
@@ -549,6 +707,50 @@ mod tests {
         assert_eq!(text.lines().count(), 2, "in-flight 与完成各一行");
         assert!(text.contains("\"final\":true"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_keeps_usage_after_rotation_and_process_restart() {
+        let dir = std::env::temp_dir().join(format!("relay-history-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let log = RelayLog::new(1, Some(dir.clone()));
+        let first = log.begin(entry(0, None));
+        let second = log.begin(entry(0, None));
+        log.finish(
+            first,
+            LogPatch {
+                status: Some(200),
+                usage: Some(TokenUsage {
+                    input: Some(40),
+                    output: Some(0),
+                    ..TokenUsage::default()
+                }),
+                ..LogPatch::default()
+            },
+        );
+        log.finish(
+            second,
+            LogPatch {
+                status: Some(429),
+                ..LogPatch::default()
+            },
+        );
+        assert_eq!(log.recent(5).len(), 1);
+        drop(log);
+
+        let restarted = RelayLog::new(1, Some(dir.clone()));
+        assert_eq!(restarted.begin(entry(0, None)), first);
+        let history = restarted.history().unwrap();
+        assert_eq!(
+            history.len(),
+            3,
+            "begin/final pairs are deduplicated without conflating process IDs"
+        );
+        assert_eq!(history.iter().filter(|row| row.is_in_flight()).count(), 1);
+        let usage = history.iter().find_map(|row| row.usage.as_ref()).unwrap();
+        assert_eq!((usage.input, usage.output), (Some(40), Some(0)));
+        drop(restarted);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

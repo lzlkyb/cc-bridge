@@ -29,6 +29,7 @@ pub mod route;
 pub mod rules;
 pub mod sanitize;
 pub mod server;
+mod usage;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -45,6 +46,7 @@ pub use server::RunningServer;
 /// `Arc<RelaySettings>` 快照，**不重启监听**（§4.6「配置热生效」）。
 pub struct RelayRuntime {
     settings: Arc<tokio::sync::RwLock<Arc<RelaySettings>>>,
+    settings_changed_at: std::sync::Mutex<Instant>,
     token: Arc<tokio::sync::RwLock<String>>,
     log: Arc<RelayLog>,
     running: tokio::sync::Mutex<Option<RunningServer>>,
@@ -62,6 +64,7 @@ impl RelayRuntime {
     ) -> Self {
         Self {
             settings: Arc::new(tokio::sync::RwLock::new(Arc::new(settings))),
+            settings_changed_at: std::sync::Mutex::new(Instant::now()),
             token: Arc::new(tokio::sync::RwLock::new(token)),
             log,
             running: tokio::sync::Mutex::new(None),
@@ -147,7 +150,12 @@ impl RelayRuntime {
 
     /// 热更新配置。不重启监听，只换快照。
     pub async fn reload_settings(&self, settings: RelaySettings) {
-        *self.settings.write().await = Arc::new(settings);
+        let mut current = self.settings.write().await;
+        *current = Arc::new(settings);
+        *self
+            .settings_changed_at
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()) = Instant::now();
     }
 
     /// 热更新 token。
@@ -180,31 +188,36 @@ impl RelayRuntime {
         self.running.lock().await.as_ref().map(|s| s.addr.clone())
     }
 
-    async fn running_uptime(&self) -> Option<u64> {
-        self.running
-            .lock()
-            .await
-            .as_ref()
-            .map(|s| s.started_at.elapsed().as_secs())
-    }
-
     /// 状态快照：界面一次拿齐「在跑没 / 地址 / 统计 / 最近几条 / 配置」。
     ///
     /// 一次返回而不是分四个命令，是因为界面两秒轮询一次，四个命令就是四倍 IPC
     /// 与四处可能不同步的时序。
     pub async fn snapshot(&self, recent_n: usize) -> RelaySnapshot {
-        let settings = self.settings.read().await.clone();
-        let token = self.token.read().await.clone();
-        let addr = self.running_addr().await;
-        let uptime = if addr.is_some() {
-            self.running_uptime().await
-        } else {
-            None
+        let (settings, settings_changed_at) = {
+            let current = self.settings.read().await;
+            let changed_at = *self
+                .settings_changed_at
+                .lock()
+                .unwrap_or_else(|err| err.into_inner());
+            (current.clone(), changed_at)
         };
+        let token = self.token.read().await.clone();
+        let (addr, started_at) = {
+            let running = self.running.lock().await;
+            running.as_ref().map_or((None, None), |server| {
+                (Some(server.addr.clone()), Some(server.started_at))
+            })
+        };
+        let (client_verified, latest_client_status) = started_at.map_or((false, None), |at| {
+            // A reply from an earlier listener or provider configuration cannot validate this one.
+            self.log.client_state_since(at.max(settings_changed_at))
+        });
         RelaySnapshot {
             running: addr.is_some(),
             addr,
-            uptime_secs: uptime,
+            uptime_secs: started_at.map(|at| at.elapsed().as_secs()),
+            client_verified,
+            latest_client_status,
             listen_host: self.listen_host.read().await.clone(),
             port: *self.listen_port.read().await,
             token_masked: auth::mask(&token),
@@ -241,6 +254,8 @@ pub struct RelaySnapshot {
     pub running: bool,
     pub addr: Option<String>,
     pub uptime_secs: Option<u64>,
+    pub client_verified: bool,
+    pub latest_client_status: Option<u16>,
     pub listen_host: String,
     pub port: u16,
     /// 掩码形态，界面标题栏用。

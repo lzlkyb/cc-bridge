@@ -1222,6 +1222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // reqwest 的流式转发代码不被 LTO 剔除，体积测量才有意义。
             commands::relay_status,
             commands::relay_logs,
+            commands::relay_history,
             commands::relay_save,
             commands::relay_set_enabled,
             commands::relay_start,
