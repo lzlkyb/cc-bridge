@@ -99,6 +99,22 @@ pub struct RemoteFileWrite {
     pub size: u64,
 }
 
+/// `ssh_file_viewer` 的返回：远端当前登录身份。
+///
+/// 文件面板用它预判「你不可读」：把 `SshFileEntry` 的 `uid/gid/mode` 与这份身份
+/// 一比，就知道列出来的条目里哪些打开必然 EACCES。一次会话只拉一次——身份不会
+/// 在会话中途变，并进每次列目录等于每翻一个目录白付一次 exec。
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteViewer {
+    /// 有效 uid。
+    pub uid: u32,
+    /// 有效 gid（主组）。
+    pub gid: u32,
+    /// 附加组列表（`id -G`，通常含主组）。
+    pub groups: Vec<u32>,
+}
+
 /// `ssh_file_open_external` 的返回。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -187,6 +203,75 @@ pub async fn ssh_file_read(
         });
     }
     parse_read_output(&out)
+}
+
+/// 取远端登录身份（`id -u; id -g; id -G`），供文件面板预判「你不可读」。
+///
+/// 与读文件走同一条 exec 通道（helper 零握手优先、一次性 ssh 兜底）。
+/// 失败一律 `Err`，但**前端会静默降级**（整面板不预标）：预标是增强项，
+/// 老主机上 `id` 输出异常不该让文件面板本身打不开。
+#[tauri::command]
+pub async fn ssh_file_viewer(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+) -> Result<RemoteViewer, String> {
+    if !state.config.read().await.ssh_enabled {
+        return Err("SSH 终端未启用".into());
+    }
+    let link = fetch_link(&state, &connection_id).await?;
+    let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
+    let creds = resolve_link_secrets(&link, &state.data_dir)?;
+    // 一条命令拿三条：分开跑三次就是三次往返，而它们是同一份身份。
+    // `id -u` / `id -G` 不带 `-r` 即**有效** uid 与有效组集，正是权限检查用的那份。
+    let (out, code) = remote_exec(
+        &state,
+        &link,
+        &ssh_path,
+        creds,
+        "id -u; id -g; id -G".to_string(),
+    )
+    .await?;
+    if code != 0 {
+        return Err(if out.trim().is_empty() {
+            format!("读取远端身份失败（退出码 {code}）")
+        } else {
+            out.trim().to_string()
+        });
+    }
+    parse_viewer(&out)
+}
+
+/// 解析 `id -u; id -g; id -G` 的输出。
+///
+/// 从**末尾**倒着取三行：helper 是长驻 PTY 会话，输出里可能挂着上一条命令的
+/// 残留或 motd（一次性 ssh 路径也有 banner 风险）。末尾三行恰好是
+/// 「uid / gid / 组列表」，倒推比正推稳，且不需要任何哨兵。
+fn parse_viewer(out: &str) -> Result<RemoteViewer, String> {
+    let lines: Vec<&str> = out
+        .lines()
+        .map(|l| l.trim_end_matches('\r').trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.len() < 3 {
+        return Err(format!("远端身份输出不完整：{}", out.trim()));
+    }
+    let n = lines.len();
+    let uid_line = lines[n - 3];
+    let gid_line = lines[n - 2];
+    let groups_line = lines[n - 1];
+    let uid = uid_line
+        .parse::<u32>()
+        .map_err(|_| format!("无法解析远端 uid：{uid_line}"))?;
+    let gid = gid_line
+        .parse::<u32>()
+        .map_err(|_| format!("无法解析远端 gid：{gid_line}"))?;
+    // 组列表里解析不了的 token 跳过而不是整条失败：身份主体（uid/gid）已经拿到，
+    // 少一个附加组只会让预标更保守（漏判），不会误标。
+    let groups = groups_line
+        .split_whitespace()
+        .filter_map(|g| g.parse::<u32>().ok())
+        .collect();
+    Ok(RemoteViewer { uid, gid, groups })
 }
 
 /// 远端读取脚本：python3 做「stat + 限量读 + base64」，结果用自定义哨兵框起。
@@ -569,6 +654,49 @@ fn symlink_resolve_py(path_lit: &str, tmp_lit: &str) -> String {
     )
 }
 
+/// 写失败时附带的「归属诊断」python 片段（插进 `finalize_script_py` 的 replace except 块）。
+///
+/// 与读取侧的 `read_fail_detail_py` 同形状、同取向：**只丰富 EACCES**，其余 errno
+/// 原样透出；片段自身失败免疫（任何异常都退化成空串，绝不影响原始报错）；
+/// 绝不改控制流（不 `sys.exit`、不 `raise`）。
+///
+/// 🔴 为什么 stat 的是**父目录**而不是文件本身：`os.replace(part, t)` 是 rename
+/// 语义，内核要的是「目标目录可写 + 可进入」，与目标文件自身的 mode 无关——
+/// 把一个 0444 的只读文件替换掉是允许的（只要目录可写），而目录 0555 时文件
+/// 就算 0666 也换不了。2026-11-24 的事故正是「看着像文件权限、其实是目录/ACL」
+/// 的误判，所以文案必须点明「目标目录」，否则用户会去 chmod 文件白费一轮。
+///
+/// `target_var`：脚本里最终落点（解析软链后的 `t`）的变量名。片段自包含、
+/// 可独立执行——执行级测试拿它直接跑。
+fn write_fail_detail_py(target_var: &str) -> String {
+    format!(
+        "\x20   d=''\n\
+         \x20   if getattr(e,'errno',None)==13:\n\
+         \x20       try:\n\
+         \x20           dp=os.path.dirname({t}) or '.'\n\
+         \x20           st=os.stat(dp)\n\
+         \x20           me=os.getuid()\n\
+         \x20           try:\n\
+         \x20               import pwd,grp\n\
+         \x20               on=pwd.getpwuid(st.st_uid).pw_name;og=grp.getgrgid(st.st_gid).gr_name;mn=pwd.getpwuid(me).pw_name\n\
+         \x20           except Exception:\n\
+         \x20               on='uid %d'%st.st_uid;og='gid %d'%st.st_gid;mn='uid %d'%me\n\
+         \x20           d='（目标目录 %s 属主 %s，权限 %04o；你 %s'%(dp,on,st.st_mode&0o7777,mn)\n\
+         \x20           if st.st_uid==me:\n\
+         \x20               d+='，目录归你但无可写位，可 chmod u+w 后重试'\n\
+         \x20           elif st.st_gid!=os.getgid() and st.st_gid not in os.getgroups():\n\
+         \x20               d+='，不在属组 %s，需属主或 root 放权'%og\n\
+         \x20           elif st.st_mode&0o020:\n\
+         \x20               d+='，属组权限正常却被拒，疑为 POSIX ACL mask 或 SELinux，可用 getfacl 查看'\n\
+         \x20           else:\n\
+         \x20               d+='，属组 %s 无可写位，需属主或 root 放权'%og\n\
+         \x20           d+='）'\n\
+         \x20       except Exception:\n\
+         \x20           d=''\n",
+        t = target_var,
+    )
+}
+
 /// 收尾脚本（helper 分块路线与 scp 路线**共用**）：读 part → 校验长度 → 冲突检测 →
 /// 保留权限位 → 原子 rename → 清场。**小命令**：helper 与一次性 ssh 的命令行都放得下。
 ///
@@ -597,7 +725,35 @@ fn finalize_script(
     expected_mtime: i64,
     force: bool,
 ) -> String {
-    let py = format!(
+    let py = finalize_script_py(
+        &python_str(part),
+        &python_str(path),
+        expected_len,
+        is_b64,
+        expected_mtime,
+        force,
+    );
+    format!(
+        "if command -v python3 >/dev/null 2>&1; then python3 -c {py}; \
+         else printf '__CCB_W_ERR__%s\\n' '服务器没有 python3，无法内联保存，请用本机编辑器打开后回传'; fi",
+        py = shell_quote(&py),
+    )
+}
+
+/// 收尾脚本的 python 源码（**不**过 `shell_quote`）。
+///
+/// 从 `finalize_script` 抽出来的理由与读取侧 `read_script_py` 完全一致：
+/// 执行级测试要拿这份源码直接 `python3 -c` 跑（真造只读目录、真撞 EACCES），
+/// 从包好的 shell 命令行里反解既脆弱又没必要。
+fn finalize_script_py(
+    part_lit: &str,
+    path_lit: &str,
+    expected_len: usize,
+    is_b64: bool,
+    expected_mtime: i64,
+    force: bool,
+) -> String {
+    format!(
         "import os,sys,base64\n\
          p={path_lit}\n\
          part={part_lit}\n\
@@ -653,27 +809,26 @@ fn finalize_script(
          \x20   os.replace(part,t)\n\
          except Exception as e:\n\
          \x20   cleanup()\n\
-         \x20   sys.stdout.write('__CCB_W_ERR__'+str(e)+'\\n')\n\
+         {detail}\
+         \x20   sys.stdout.write('__CCB_W_ERR__'+str(e)+d+'\\n')\n\
          \x20   sys.exit(0)\n\
          try:\n\
          \x20   st2=os.stat(t)\n\
          \x20   sys.stdout.write('__CCB_W_OK__{{\"mtime\":%d,\"size\":%d}}\\n'%(int(st2.st_mtime),st2.st_size))\n\
          except Exception:\n\
          \x20   sys.stdout.write('__CCB_W_OK__{{\"mtime\":0,\"size\":0}}\\n')\n",
-        path_lit = python_str(path),
-        part_lit = python_str(part),
+        path_lit = path_lit,
+        part_lit = part_lit,
         expected_len = expected_len,
         is_b64 = if is_b64 { "True" } else { "False" },
         expected = expected_mtime,
         force = if force { "True" } else { "False" },
         // 软链解析片段插在冲突检测之后、replace 之前：`t` 即最终落点。
         // 拒绝时片段自己删 part（此时 part 已写完并通过校验）。
-        resolve = symlink_resolve_py(&python_str(path), &python_str(part)),
-    );
-    format!(
-        "if command -v python3 >/dev/null 2>&1; then python3 -c {py}; \
-         else printf '__CCB_W_ERR__%s\\n' '服务器没有 python3，无法内联保存，请用本机编辑器打开后回传'; fi",
-        py = shell_quote(&py),
+        resolve = symlink_resolve_py(path_lit, part_lit),
+        // 写失败（EACCES）时附带的归属诊断。注意 rename 要的是**目标目录**可写，
+        // 不是文件本身可写——片段 stat 的是 `t` 的父目录，不是 `t`。
+        detail = write_fail_detail_py("t"),
     )
 }
 
@@ -1189,6 +1344,221 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 写侧诊断片段：形状 + 分支 + 接线。与读侧 `read_fail_detail_py` 同取向。
+    #[test]
+    fn write_fail_detail_py_shape_and_branches() {
+        let f = write_fail_detail_py("t");
+        // 只丰富 EACCES：ENOSPC/EXDEV 一类不附属主信息（解不是放权）
+        assert!(
+            f.contains("getattr(e,'errno',None)==13"),
+            "必须只丰富 EACCES：{f}"
+        );
+        // 🔴 stat 的是**父目录**：rename 要的是目录 w+x，不是文件本身可写
+        assert!(
+            f.contains("os.path.dirname(t)"),
+            "写路径必须诊断目标目录而不是文件：{f}"
+        );
+        // 三分支齐全（无写位 / 不在属组 / ACL mask 嫌疑）
+        assert!(f.contains("st.st_uid==me"), "缺「归你但无可写位」分支：{f}");
+        assert!(f.contains("os.getgroups()"), "缺「不在属组」分支：{f}");
+        assert!(
+            f.contains("st.st_mode&0o020"),
+            "缺「ACL mask 嫌疑」分支：{f}"
+        );
+        // 失败免疫：初值 + 兜底两处清空；且绝不改控制流
+        assert!(
+            f.matches("d=''").count() >= 2,
+            "必须有初值和兜底两处清空：{f}"
+        );
+        assert!(!f.contains("sys.exit"), "诊断片段不许改控制流：{f}");
+        assert!(!f.contains("raise"), "诊断片段不许抛异常：{f}");
+        // 缩进形状：每一行都得有前导空格（首行顶格会 SyntaxError）
+        assert!(
+            f.lines().all(|l| l.starts_with(' ')),
+            "片段每行都必须缩进：{f:?}"
+        );
+        // 接线：断言打在 `finalize_script_py`（未过 shell_quote 的 python 源）上。
+        // 打 `finalize_script` 的产物永远匹配不上——单引号已被转义成 `'\''`，
+        // 这个坑在读侧踩过一次（全量门禁才发现）。
+        let py = finalize_script_py(
+            &python_str("/a.part"),
+            &python_str("/a"),
+            1,
+            false,
+            0,
+            false,
+        );
+        assert!(
+            py.contains("getattr(e,'errno',None)==13"),
+            "诊断片段没接进写回脚本（detail 被传空了？）"
+        );
+        assert!(
+            py.contains("str(e)+d"),
+            "错误串必须拼上诊断（不然片段白算）：{py}"
+        );
+    }
+
+    /// 执行级（真跑 python3 + 真只读目录）：保存撞 EACCES 时必须既报错、
+    /// 又把「目标目录 + 权限 + 归属 + 出路」带出来。
+    ///
+    /// 为什么必须真跑：子串断言全绿不代表脚本能跑；`os.replace` 的 EACCES
+    /// 只有在「目录不可写」时才出现，stub 不出来。
+    #[cfg(unix)]
+    #[test]
+    fn finalize_script_reports_target_dir_on_eacces() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+
+        let has_py = Command::new("python3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !has_py {
+            return;
+        }
+        // root 无视目录写位，撞不出 EACCES
+        let is_root = Command::new("id")
+            .arg("-u")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+            .unwrap_or(false);
+        if is_root {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("ccb-writeerr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("app.conf");
+        let part = dir.join("app.conf.ccb-write-1.part");
+        std::fs::write(&target, b"old\n").unwrap();
+        std::fs::write(&part, b"hello").unwrap();
+        // 目录只读 ⇒ rename 必然 EACCES（文件本身怎么 chmod 都不影响这件事）
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let src = finalize_script_py(
+            &python_str(part.to_str().unwrap()),
+            &python_str(target.to_str().unwrap()),
+            5,
+            false,
+            0,
+            false,
+        );
+        let out = Command::new("python3")
+            .arg("-c")
+            .arg(&src)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+
+        // 先把目录权限还回去，后面的断言失败也不留一个删不掉的临时目录
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            stdout.starts_with("__CCB_W_ERR__"),
+            "必须仍走写回错误哨兵：{stdout}"
+        );
+        assert!(
+            stdout.contains("Permission denied"),
+            "原始错误不许被诊断信息盖掉：{stdout}"
+        );
+        assert!(
+            stdout.contains("目标目录"),
+            "必须点明是目录不可写（否则用户去 chmod 文件白费一轮）：{stdout}"
+        );
+        assert!(stdout.contains("0555"), "必须带出目录权限位 0555：{stdout}");
+        assert!(
+            stdout.contains("目录归你但无可写位"),
+            "必须带出归属判断：{stdout}"
+        );
+    }
+
+    /// 执行级（全平台）：正常保存路径必须照样跑通。
+    ///
+    /// 🔴 这条不只是 happy path：Python 在**解析期**就会拒掉整个脚本里的语法错，
+    /// 所以它同时钉住「插进去的诊断片段没有把脚本写坏」——片段只在 EACCES 时
+    /// 执行，但语法错会让每一次保存都当场变成 SyntaxError（数据丢失级）。
+    /// 可写目录下平台差异无关紧要（Windows 也有 os.replace/os.stat）。
+    #[test]
+    fn finalize_script_py_succeeds_on_writable_file() {
+        use std::process::Command;
+
+        let has_py = Command::new("python3")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !has_py {
+            return;
+        }
+
+        let dir = std::env::temp_dir().join(format!("ccb-writeok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("ok.conf");
+        let part = dir.join("ok.conf.ccb-write-1.part");
+        std::fs::write(&target, b"old\n").unwrap();
+        std::fs::write(&part, b"hello").unwrap();
+
+        let src = finalize_script_py(
+            &python_str(part.to_str().unwrap()),
+            &python_str(target.to_str().unwrap()),
+            5,
+            false,
+            0,
+            false,
+        );
+        let out = Command::new("python3")
+            .arg("-c")
+            .arg(&src)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let content = std::fs::read_to_string(&target).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            stdout.contains("__CCB_W_OK__"),
+            "正常保存必须走成功哨兵：stdout={stdout} stderr={stderr}"
+        );
+        assert!(!stdout.contains("__CCB_W_ERR__"), "不许误报：{stdout}");
+        assert_eq!(content, "hello", "内容必须真的落到目标文件");
+        assert!(
+            !stderr.contains("SyntaxError"),
+            "诊断片段把脚本写坏了：{stderr}"
+        );
+    }
+
+    #[test]
+    fn parse_viewer_reads_three_lines() {
+        let v = parse_viewer("1004\n1006\n1006 1002 1003\n").unwrap();
+        assert_eq!(v.uid, 1004);
+        assert_eq!(v.gid, 1006);
+        assert_eq!(v.groups, vec![1006, 1002, 1003]);
+    }
+
+    /// helper 是长驻 PTY 会话，输出前面可能挂着上一条命令的残留或 motd：
+    /// 必须从**末尾**倒取三行，而不是正取。
+    #[test]
+    fn parse_viewer_ignores_leading_noise_and_crlf() {
+        let v = parse_viewer("Last login: Tue Nov 24\r\nmotd: hi\r\n1004\r\n1006\r\n1006 1002\r\n")
+            .unwrap();
+        assert_eq!(v.uid, 1004);
+        assert_eq!(v.gid, 1006);
+        assert_eq!(v.groups, vec![1006, 1002]);
+    }
+
+    #[test]
+    fn parse_viewer_rejects_incomplete_or_garbage() {
+        assert!(parse_viewer("1004\n1006\n").is_err(), "缺组列表必须报错");
+        assert!(parse_viewer("").is_err(), "空输出必须报错");
+        assert!(
+            parse_viewer("abc\n1006\n1006 1002\n").is_err(),
+            "uid 不是数字必须报错（宁可整条失败让前端不预标，也不猜）"
+        );
     }
 
     /// 上一条只钉「两个数相等」，这条钉「值本身正确」：上限就是 2 MB，

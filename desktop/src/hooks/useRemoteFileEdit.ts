@@ -59,7 +59,13 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
   const [baseline, setBaseline] = useState("");
   const [meta, setMeta] = useState<Omit<RemoteFileContent, "content"> | null>(null);
   const [conflict, setConflict] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 错误 + 来源（读取/保存）合并成一个 state：提示条据此选前缀
+  // （「读取失败」/「保存失败」），而这段文案是要被用户复制去求助的。
+  // 不拆成两个 state：本文件已顶到 8 个 useState/useEffect 的体量上限。
+  const [errorState, setErrorState] = useState<{
+    msg: string;
+    kind: "read" | "save";
+  } | null>(null);
   // 大文件只读：读回来就是截断的，禁止编辑而不是让用户改一半存不回去。
   const readOnly = !!meta?.truncated;
   const externalCb = useRef(onExternalOpened);
@@ -72,7 +78,7 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
   const load = useCallback(
     async (force = false) => {
       setPhase("loading");
-      setError(null);
+      setErrorState(null);
       try {
         const r = await invoke<RemoteFileContent>("ssh_file_read", { connectionId, path });
         setContent(r.content);
@@ -88,12 +94,11 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
         });
         setPhase("ready");
       } catch (e) {
-        if (errIs(e, BINARY)) {
-          // 二进制：本 hook 不猜怎么打开，交给 UI 提示「用本机编辑器打开」。
-          setError("binary");
-        } else {
-          setError(cleanErr(e));
-        }
+        // 二进制：本 hook 不猜怎么打开，交给 UI 提示「用本机编辑器打开」。
+        setErrorState({
+          msg: errIs(e, BINARY) ? "binary" : cleanErr(e),
+          kind: "read",
+        });
         setPhase("ready");
         if (force) toast(`重新加载失败：${cleanErr(e)}`, "error");
       }
@@ -109,7 +114,7 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
     async (force: boolean) => {
       if (!meta || readOnly) return;
       setPhase("saving");
-      setError(null);
+      setErrorState(null);
       try {
         const r = await invoke<RemoteFileWrite>("ssh_file_write", {
           connectionId,
@@ -132,7 +137,7 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
           // 远端被改：不丢用户的修改，只标冲突，出路由 UI 给。
           setConflict(true);
         } else {
-          setError(cleanErr(e));
+          setErrorState({ msg: cleanErr(e), kind: "save" });
           toast(`保存失败：${cleanErr(e)}`, "error");
         }
       }
@@ -147,7 +152,7 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
   /** C 路线：scp 到本机临时副本并用系统默认应用打开。 */
   const openExternal = useCallback(async () => {
     setPhase("opening");
-    setError(null);
+    setErrorState(null);
     try {
       const r = await invoke<{ localPath: string; mtime: number }>("ssh_file_open_external", {
         connectionId,
@@ -157,7 +162,7 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
       toast("已用本机编辑器打开，编辑后点「回传」", "success");
       setPhase("ready");
     } catch (e) {
-      setError(cleanErr(e));
+      setErrorState({ msg: cleanErr(e), kind: "read" });
       toast(`打开失败：${cleanErr(e)}`, "error");
       setPhase("ready");
     }
@@ -175,7 +180,8 @@ export function useRemoteFileEdit({ connectionId, path, onExternalOpened }: Opti
     meta,
     readOnly,
     conflict,
-    error,
+    error: errorState?.msg ?? null,
+    errorKind: errorState?.kind ?? null,
     load,
     save,
     reload,

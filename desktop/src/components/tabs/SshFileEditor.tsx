@@ -141,6 +141,7 @@ export function SshFileEditor({ conn, path, onBack }: Props) {
         truncated={edit.readOnly}
         size={edit.meta?.size ?? 0}
         error={edit.error}
+        errorKind={edit.errorKind ?? "read"}
         busy={busy || uploading}
         onReload={() => void edit.reload()}
         onForceSave={() => save(true)}

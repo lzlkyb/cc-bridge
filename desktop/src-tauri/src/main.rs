@@ -1180,6 +1180,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_file_write,
             commands::ssh_file_open_external,
             commands::ssh_file_upload_edited,
+            // 远端登录身份（uid/gid/组）：文件面板据此预标「你不可读」。
+            // 只读一条 `id`，同样过 ssh_enabled 闸、仅本机面板。
+            commands::ssh_file_viewer,
             // 批量传输（多源 scp 合并；同一 ssh_enabled 闸，仅本机面板）。
             commands::ssh_sftp_get_many,
             commands::ssh_sftp_put_many,

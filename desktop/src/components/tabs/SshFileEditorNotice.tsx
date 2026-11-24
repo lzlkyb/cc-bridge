@@ -1,4 +1,6 @@
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "../ui/button";
+import { toast } from "../ui/toast";
 
 interface Props {
   /** 远端在打开后被改过（保存时被后端拒绝）。 */
@@ -11,6 +13,14 @@ interface Props {
   size: number;
   /** 读取出错（含二进制）。 */
   error: string | null;
+  /**
+   * 错误来自哪一步：`read`（打开/重新加载）还是 `save`（写回）。
+   *
+   * 为什么必须传：保存失败原先也复用这条 error 通路，界面一律显示
+   * 「读取失败：」——前缀说错了主体，用户会以为是文件读不出来。
+   * 诊断文案要拿去贴给管理员，前缀错了就是误导。
+   */
+  errorKind?: "read" | "save";
   busy: boolean;
   onReload: () => void;
   onForceSave: () => void;
@@ -45,11 +55,33 @@ export function SshFileEditorNotice({
   truncated,
   size,
   error,
+  errorKind = "read",
   busy,
   onReload,
   onForceSave,
   onOpenExternal,
 }: Props) {
+  // 「已复制」就地反馈（1.9s 还原）：不弹 toast、不打断阅读——
+  // 复制是顺手动作，给它一个 toast 反而像出了事（R17：不弹窗）。
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+  const copy = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      if (timer.current !== null) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopied(false), 1900);
+    } catch {
+      // 剪贴板不可用（无权限 / 非安全上下文）：退回让用户手选，不静默失败
+      toast("复制失败：剪贴板不可用，请手动选择文本", "error");
+    }
+  }, []);
   if (conflict) {
     return (
       <div
@@ -84,14 +116,37 @@ export function SshFileEditorNotice({
   }
   if (error) {
     const binary = error === "binary";
+    // 前缀按来源分：保存失败说「保存失败」——诊断文案要拿去贴给管理员，
+    // 前缀说错主体就是误导（旧版一律显示「读取失败：」）。
+    const label = errorKind === "save" ? "保存失败" : "读取失败";
+    const text = `${label}：${error}`;
     return (
       <div
         role="alert"
         className="flex shrink-0 flex-wrap items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive-ink"
       >
         <span className="min-w-0 flex-1">
-          {binary ? "文件不是 UTF-8 或 GBK/GB18030 文本，无法内联编辑。" : `读取失败：${error}`}
+          {binary ? (
+            "文件不是 UTF-8 或 GBK/GB18030 文本，无法内联编辑。"
+          ) : (
+            <>
+              {text}
+              {/* 保存失败时用户最怕丢稿：先给定心丸，再读诊断 */}
+              {errorKind === "save" && "——你的修改没有写入，编辑器里的内容还在。"}
+            </>
+          )}
         </span>
+        {!binary && (
+          // 二进制错误没有诊断价值（不是权限/路径问题），不给复制按钮
+          <Button
+            size="sm"
+            className="h-6 px-2 text-xs"
+            variant="outline"
+            onClick={() => void copy(text)}
+          >
+            {copied ? "已复制 ✓" : "复制诊断信息"}
+          </Button>
+        )}
         {binary && (
           <Button size="sm" className="h-6 px-2 text-xs" variant="outline" disabled={busy} onClick={onOpenExternal}>
             用本机编辑器打开

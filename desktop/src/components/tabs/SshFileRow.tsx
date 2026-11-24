@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
-import { Icon } from "../ui/icon";
 import { EmptyState } from "../ui/EmptyState";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
-import type { SshFileEntry } from "../../lib/types";
+import type { RemoteViewer, SshFileEntry } from "../../lib/types";
 import type { SortKey, SortState } from "../../lib/sshFileSort";
+import { canReadEntry, unreadEntryTitle } from "../../lib/utils";
 import { SortableTh } from "./SortableTh";
+import { SshFileNameCell } from "./SshFileNameCell";
 
 /** 字节数 → 人类可读（B/KB/MB/GB/TB）。 */
 function formatSize(n: number): string {
@@ -46,6 +47,10 @@ interface SshFileRowProps {
   onSelect?: (name: string, e: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean }) => boolean;
   /** 双击普通文件：打开内联编辑器（读不出来时前端给「用本机编辑器打开」的出路）。 */
   onActivateFile?: (name: string) => void;
+  /** 预判可读（`utils.canReadEntry`）；`false` = 锁图标 + 「你不可读」徽标。缺省 true。 */
+  canRead?: boolean;
+  /** 不可读时的完整 title（属主/权限/出路，`utils.unreadEntryTitle` 生成）。 */
+  unreadTitle?: string;
 }
 
 /**
@@ -63,6 +68,8 @@ export function SshFileRow({
   onMove,
   onSelect,
   onActivateFile,
+  canRead = true,
+  unreadTitle,
 }: SshFileRowProps) {
   // 软链到目录也算「可进入」：readdir 本身跟随软链，点进去就是目标目录的内容。
   // 软链到文件则按普通文件走（单击选中、双击进编辑器）——保存时后端已解析到
@@ -95,32 +102,16 @@ export function SshFileRow({
         if (effectiveIsDir || busy) return;
         onActivateFile?.(entry.name);
       }}
-      title={effectiveIsDir ? undefined : "双击编辑"}
+      title={effectiveIsDir ? undefined : canRead ? "双击编辑" : unreadTitle}
     >
-      {/* max-w 约束列宽：超长文件名截断（title 看全文），不把右侧列挤出面板 */}
-      <td className="max-w-[340px] py-1.5 pl-3">
-        <span className="flex min-w-0 items-center gap-2 text-left">
-          <Icon
-            name={effectiveIsDir ? "folder" : "file"}
-            size={15}
-            className={`shrink-0 ${effectiveIsDir ? "text-blue-500" : "text-muted-foreground"}`}
-          />
-          {clickable ? <button type="button" disabled={busy} title={entry.name} aria-label={`打开文件夹 ${entry.name}`}
-            className="min-w-0 truncate rounded text-left font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            onClick={event => { event.stopPropagation(); onOpenDir(entry.name); }}>{entry.name}</button>
-            : <span className="min-w-0 truncate" title={entry.name}>{entry.name}</span>}
-          {entry.isSymlink && (entry.linkTarget ? (
-            <span
-              className="shrink-0 max-w-[160px] truncate text-[11px] text-muted-foreground"
-              title={`${entry.name} → ${entry.linkTarget}`}
-            >
-              → {entry.linkTarget}
-            </span>
-          ) : (
-            <span className="shrink-0 text-[11px] text-muted-foreground">链接</span>
-          ))}
-        </span>
-      </td>
+      <SshFileNameCell
+        entry={entry}
+        clickable={clickable}
+        busy={busy}
+        canRead={canRead}
+        unreadTitle={unreadTitle}
+        onOpenDir={onOpenDir}
+      />
       <td className="w-28 py-1.5 text-right text-xs text-muted-foreground">
         {effectiveIsDir ? <span className="text-muted-foreground/50">—</span> : formatSize(entry.size)}
       </td>
@@ -212,6 +203,11 @@ interface FileTableProps {
    * 不是「拖文件进来」的引导——后者在只是没匹配上时会误导用户。
    */
   filterActive?: boolean;
+  /**
+   * 远端登录身份（`ssh_file_viewer`）。null/缺省 = 整表不预标（见
+   * `useSshFileViewer` 的静默降级）——预标是增强项，身份拉不到不该影响列目录。
+   */
+  viewer?: RemoteViewer | null;
 }
 
 /**
@@ -241,6 +237,7 @@ export function FileTable({
   sort,
   onToggleSort,
   filterActive,
+  viewer,
 }: FileTableProps) {
   const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>();
   return (
@@ -271,22 +268,29 @@ export function FileTable({
           </tr>
         </thead>
         <tbody ref={tbodyRef}>
-          {entries.map((e) => (
-            <SshFileRow
-              key={e.name}
-              entry={e}
-              highlighted={e.name === highlightName}
-              selected={!!selectedNames?.includes(e.name)}
-              busy={busy || loading}
-              onOpenDir={onOpenDir}
-              onDownload={onDownload}
-              onRemove={onRemove}
-              onRename={onRename}
-              onMove={onMove}
-              onSelect={onSelect}
-              onActivateFile={onActivateFile}
-            />
-          ))}
+          {entries.map((e) => {
+            // 预判「你不可读」：只在明确不可读时为 false（见 canReadEntry 的取向）。
+            // 判定与 title 都在纯函数里做，行组件只管渲染。
+            const canRead = canReadEntry(e, viewer ?? null);
+            return (
+              <SshFileRow
+                key={e.name}
+                entry={e}
+                highlighted={e.name === highlightName}
+                selected={!!selectedNames?.includes(e.name)}
+                busy={busy || loading}
+                onOpenDir={onOpenDir}
+                onDownload={onDownload}
+                onRemove={onRemove}
+                onRename={onRename}
+                onMove={onMove}
+                onSelect={onSelect}
+                onActivateFile={onActivateFile}
+                canRead={canRead}
+                unreadTitle={canRead || !viewer ? undefined : unreadEntryTitle(e, viewer)}
+              />
+            );
+          })}
         </tbody>
       </table>
     </div>

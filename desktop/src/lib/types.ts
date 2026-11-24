@@ -709,6 +709,28 @@ export interface SshFileEntry {
    * （恒 false）——软链到目录时点击不会进入，需点目标名或其父目录。
    */
   linkTargetIsDir?: boolean;
+  /**
+   * 属主 uid / 属组 gid / 权限位（`0o7777`，服务端已剥掉 `S_IF*` 类型位）。
+   *
+   * `null`/缺省 = 服务器没给（异常 SFTP 实现）：前端据此**放弃预判**而不是猜，
+   * 猜会把能读的文件标成「你不可读」。软链报的是**链接本身**的归属（lstat 语义）。
+   */
+  uid?: number | null;
+  gid?: number | null;
+  mode?: number | null;
+}
+
+/**
+ * `ssh_file_viewer` 返回：远端当前登录身份。
+ *
+ * 文件面板用它把 `SshFileEntry` 的 `uid/gid/mode` 一比，预标出「你不可读」的条目。
+ * 判定函数见 `lib/utils.ts` 的 `canReadEntry`（纯函数，可单测）。
+ */
+export interface RemoteViewer {
+  uid: number;
+  gid: number;
+  /** 附加组（`id -G`，通常含主组）。 */
+  groups: number[];
 }
 
 /* ─── 模型中转（P1）────────────────────────────────────────────────────

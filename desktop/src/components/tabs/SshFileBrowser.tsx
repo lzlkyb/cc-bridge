@@ -17,6 +17,7 @@ import { useSshFileForms } from "./useSshFileForms";
 import { useSshFileInitialPath } from "../../hooks/useSshFileInitialPath";
 import { loadUploadDir, saveUploadDir } from "../../lib/uploadDir";
 import { useSshFileListing } from "../../hooks/useSshFileListing";
+import { useSshFileViewer } from "../../hooks/useSshFileViewer";
 import { isInitialFileListing } from "../../lib/sshFilePaths";
 import { useRemoteNavigation } from "../../hooks/useRemoteNavigation";
 import { SshFileEditor } from "./SshFileEditor";
@@ -65,6 +66,8 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
   const navigation = useRemoteNavigation(initialPath ?? loadUploadDir(conn.id));
   const { path, navigate: setPath } = navigation;
   const { entries, loading, error, refresh } = useSshFileListing(conn.id, path);
+  // 远端身份（uid/gid/组）：只拉一次，供列表预标「你不可读」；失败静默不预标。
+  const viewer = useSshFileViewer(conn.id);
   // 排序 / 过滤在读取侧派生：快照必须是服务器原始序（useSshFileView 的 WHY）。
   // 选择 hook 也收 view.items——shift 区间锚点与用户看到的行序一致。
   const view = useSshFileView(entries, path);
@@ -236,6 +239,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         onRetry={() => void refresh()}
         sort={view.sort}
         onToggleSort={view.toggleSort}
+        viewer={viewer}
       />
 
       {/* 编辑器覆盖层：关掉时刷新列表，让刚保存的大小/时间立刻可见 */}

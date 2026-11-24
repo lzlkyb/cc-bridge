@@ -2,7 +2,7 @@
  * 多个组件共用的纯函数集中于此（规则 11）。
  */
 
-import type { StaticStatus } from "./types";
+import type { RemoteViewer, SshFileEntry, StaticStatus } from "./types";
 // 仅类型导入：utils ⇄ mcpClients 互为引用（mcpClients 用这里的 buildBaseCommand），
 // `import type` 在编译后完全擦除，不会产生运行时循环依赖。
 import type { McpClientTool } from "./mcpClients";
@@ -604,4 +604,52 @@ export function isOutsideDismiss(
   if (box?.contains(e.target as Node)) return false;
   const target = e.target;
   return !(target instanceof Element && target.closest(`[data-cc-toggle="${owner}"]`));
+}
+
+/**
+ * 预判「当前身份能否读这个条目」——文件面板据此预标「你不可读」。
+ *
+ * 取向：**只在明确不可读时返回 false**。预标误判（把能读的标成不能读）会把用户
+ * 误导去要权限，代价远大于漏判（漏判只是多点一次双击，读失败有归属诊断兜底）。
+ * 所以缺 `mode` / 目录 / 软链 / 归属不明，一律返回 true（不预标）。
+ *
+ * 已知盲区：POSIX ACL 的 mask 能把属组位的有效权限剥成 `---`，而 mode 里仍显示
+ * `r`——这类**漏判**由读取失败的诊断兜底（「疑为 POSIX ACL mask」那句）。
+ * 预标只是 UX，读路径才是权威裁判。
+ */
+export function canReadEntry(
+  entry: Pick<SshFileEntry, "isDir" | "isSymlink" | "uid" | "gid" | "mode">,
+  viewer: RemoteViewer | null,
+): boolean {
+  if (!viewer || entry.isDir || entry.isSymlink) return true;
+  const mode = entry.mode;
+  if (mode == null) return true;
+  const bits = mode & 0o777;
+  if (entry.uid != null && entry.uid === viewer.uid) return (bits & 0o400) !== 0;
+  if (
+    entry.gid != null &&
+    (entry.gid === viewer.gid || viewer.groups.includes(entry.gid))
+  ) {
+    return (bits & 0o040) !== 0;
+  }
+  // 归属字段缺一半：判不了属组位，宁可不预标（漏判不至于误导）
+  if (entry.uid == null || entry.gid == null) return true;
+  return (bits & 0o004) !== 0;
+}
+
+/**
+ * 「你不可读」的 title 文案：属主/属组/权限 + 你的身份 + 出路。
+ *
+ * 为什么给数字而不是用户名：预标手里只有 SFTP attrs（uid/gid），没有名字——
+ * 为名字再发一次 `id`/`getent` 不值得。真正需要名字的是**失败路径**的诊断
+ * （远端 python 顺手查了 pwd/grp），所以这里点明「属主 uid 1001」足够定位。
+ */
+export function unreadEntryTitle(entry: SshFileEntry, viewer: RemoteViewer): string {
+  // 四位八进制（0600 / 0040）：与远端诊断的 `%04o`、用户口语的「640 / 0600」一致
+  const perm = ((entry.mode ?? 0) & 0o777).toString(8).padStart(4, "0");
+  const mine = [viewer.gid, ...viewer.groups.filter((g) => g !== viewer.gid)].join("/");
+  return (
+    `你不可读：文件属主 uid ${entry.uid ?? "?"}、属组 gid ${entry.gid ?? "?"}，权限 ${perm}；` +
+    `你 uid ${viewer.uid}（组 ${mine}）。需属主或 root 放权，或 chmod 后再试。`
+  );
 }

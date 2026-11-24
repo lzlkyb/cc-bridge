@@ -13,6 +13,10 @@ vi.mock("./useFileBrowserDrop",()=>({useFileBrowserDrop:()=>({paneRef:{current:n
 vi.mock("./useSshTransfer",()=>({useSshTransfer:()=>({transfer:null,prompt:null})}));
 vi.mock("./useSshFileForms",()=>({useSshFileForms:()=>({download:{busy:false},uploadOpen:false,handleDownload:h.download})}));
 vi.mock("./SshDownloadStatus",()=>({SshDownloadStatus:()=>null}));
+// 预标身份是独立命令（ssh_file_viewer）。本文件不测预标：mock 掉，避免每次挂载
+// 多一次 invoke 打乱各用例的 mockResolvedValueOnce 序列（预标集成见
+// SshFileRow.access.test.tsx，那里直接喂 viewer 给 FileTable）。
+vi.mock("../../hooks/useSshFileViewer",()=>({useSshFileViewer:()=>null}));
 const conn={id:"one",name:"测试服务器",host:"192.0.2.10",port:22,username:"demo"} as SshConnection;
 const folder:SshFileEntry={name:"child",isDir:true,isSymlink:false,size:0,mtime:0};
 const file:SshFileEntry={...folder,name:"old.txt",isDir:false};

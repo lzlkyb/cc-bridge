@@ -101,6 +101,13 @@ fn attrs_to_entry(e: &SftpDirEntry) -> Option<SshFileEntry> {
         // 软链目标由调用方补齐；默认「无目标、目标不是目录」。
         link_target: None,
         link_target_is_dir: false,
+        // 归属与权限位：前端据此预标「你不可读」。`permissions` 带 S_IF* 类型位，
+        // 剥到 0o7777 再给前端（与 setstat 的 `perm_bits` 同一语义，前端不必再掩码）。
+        // 软链报的是**链接本身**的 uid/gid/mode（readdir 是 lstat 语义，mode 恒 0777
+        // 左右）——预标按条目判，目标可读性交给「读失败的归属诊断」，两套语义不混。
+        uid: md.uid,
+        gid: md.gid,
+        mode: md.permissions.map(perm_bits),
     })
 }
 

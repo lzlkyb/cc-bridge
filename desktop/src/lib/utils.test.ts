@@ -6,7 +6,8 @@
  * 运行：npm run test（vitest run，仅开发期执行，不进产物）。
  */
 import { describe, it, expect } from "vitest";
-import { globMatch, isEditableTarget, isLoopbackHost } from "./utils";
+import type { SshFileEntry } from "./types";
+import { canReadEntry, globMatch, isEditableTarget, isLoopbackHost, unreadEntryTitle } from "./utils";
 
 describe("isLoopbackHost", () => {
   it("回环写法都算，0.0.0.0 与网卡地址不算", () => {
@@ -407,5 +408,75 @@ describe("isEditableTarget（快捷键守卫）", () => {
     expect(isEditableTarget(fake("svg"))).toBe(false);
     expect(isEditableTarget({} as EventTarget)).toBe(false);
     expect(isEditableTarget(null)).toBe(false);
+  });
+});
+
+describe("canReadEntry（「你不可读」预标判定）", () => {
+  // 真实事故机上的身份：lizuliang uid 1004，主组 1006，附加组 1002/1003
+  const viewer = { uid: 1004, gid: 1006, groups: [1006, 1002, 1003] };
+  const f = (o: Partial<SshFileEntry>) => ({
+    isDir: false,
+    isSymlink: false,
+    ...o,
+  });
+
+  it("缺身份 / 目录 / 软链 / 缺 mode 一律不预标（宁漏不误）", () => {
+    expect(canReadEntry(f({ uid: 1001, gid: 1001, mode: 0o600 }), null)).toBe(true);
+    expect(canReadEntry(f({ isDir: true, uid: 1001, gid: 1001, mode: 0o700 }), viewer)).toBe(true);
+    expect(canReadEntry(f({ isSymlink: true, uid: 1001, gid: 1001, mode: 0o777 }), viewer)).toBe(true);
+    expect(canReadEntry(f({ uid: 1001, gid: 1001, mode: null }), viewer)).toBe(true);
+    expect(canReadEntry(f({}), viewer)).toBe(true);
+  });
+
+  it("属主是自己：只看属主位（不会回退到 other 位）", () => {
+    expect(canReadEntry(f({ uid: 1004, gid: 9, mode: 0o600 }), viewer)).toBe(true);
+    expect(canReadEntry(f({ uid: 1004, gid: 9, mode: 0o200 }), viewer)).toBe(false); // 只写
+    // POSIX 语义：命中属主类就只有属主位生效，**不会**回退到 others——
+    // 一个归自己、权限 0004 的文件，自己也读不了（内核按类判，不累加）。
+    expect(canReadEntry(f({ uid: 1004, gid: 9, mode: 0o004 }), viewer)).toBe(false);
+  });
+
+  it("属组命中（主组或附加组）：只看属组位", () => {
+    expect(canReadEntry(f({ uid: 1001, gid: 1002, mode: 0o040 }), viewer)).toBe(true); // 附加组
+    expect(canReadEntry(f({ uid: 1001, gid: 1006, mode: 0o040 }), viewer)).toBe(true); // 主组
+    expect(canReadEntry(f({ uid: 1001, gid: 1002, mode: 0o000 }), viewer)).toBe(false);
+    expect(canReadEntry(f({ uid: 1001, gid: 1002, mode: 0o600 }), viewer)).toBe(false); // 属组位 0
+  });
+
+  it("都不命中：只看 other 位（真实事故：claude-svc 0600 ⇒ 不可读）", () => {
+    expect(canReadEntry(f({ uid: 1001, gid: 1001, mode: 0o600 }), viewer)).toBe(false);
+    expect(canReadEntry(f({ uid: 1001, gid: 1001, mode: 0o604 }), viewer)).toBe(true);
+    expect(canReadEntry(f({ uid: 1001, gid: 1001, mode: 0o644 }), viewer)).toBe(true);
+  });
+
+  it("归属缺一半：不猜，放行", () => {
+    expect(canReadEntry(f({ uid: 1001, gid: null, mode: 0o600 }), viewer)).toBe(true);
+    expect(canReadEntry(f({ uid: null, gid: 1001, mode: 0o600 }), viewer)).toBe(true);
+  });
+
+  it("mode 带类型位也照判（服务端剥过，前端再掩一次防回归）", () => {
+    expect(canReadEntry(f({ uid: 1001, gid: 1001, mode: 0o100600 }), viewer)).toBe(false);
+  });
+});
+
+describe("unreadEntryTitle", () => {
+  const viewer = { uid: 1004, gid: 1006, groups: [1006, 1002] };
+
+  it("带出属主/属组/权限与自己的身份", () => {
+    const t = unreadEntryTitle(
+      { uid: 1001, gid: 1002, mode: 0o600 } as SshFileEntry,
+      viewer,
+    );
+    expect(t).toContain("uid 1001");
+    expect(t).toContain("gid 1002");
+    expect(t).toContain("0600");
+    expect(t).toContain("uid 1004");
+    expect(t).toContain("1006/1002");
+    expect(t).toContain("放权");
+  });
+
+  it("权限位补零到四位八进制（040 => 0040）", () => {
+    const t = unreadEntryTitle({ uid: 1, gid: 2, mode: 0o40 } as SshFileEntry, viewer);
+    expect(t).toContain("权限 0040");
   });
 });

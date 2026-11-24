@@ -4,6 +4,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SshFileEditorNotice } from "./SshFileEditorNotice";
 
+const h = vi.hoisted(() => ({ toast: vi.fn() }));
+vi.mock("../ui/toast", () => ({ toast: h.toast }));
+
 let root: Root;
 let host: HTMLDivElement;
 const noop = () => {};
@@ -29,6 +32,7 @@ function render(props: Partial<Parameters<typeof SshFileEditorNotice>[0]> = {}) 
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.clearAllMocks();
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -76,11 +80,47 @@ it("二进制文件：引导用本机编辑器打开，并给按钮", async () =
   expect(onOpenExternal).toHaveBeenCalledOnce();
 });
 
-it("普通读取失败：原样带出错误文案，不给外部打开按钮", async () => {
+it("普通读取失败：带出错误文案 + 只给「复制诊断信息」，不给外部打开按钮", async () => {
   await render({ error: "No such file or directory" });
   const bar = host.querySelector('[role="alert"]')!;
-  expect(bar.textContent).toContain("No such file or directory");
-  expect(bar.querySelector("button")).toBeNull();
+  expect(bar.textContent).toContain("读取失败：No such file or directory");
+  // 二进制以外的错误没有「用本机编辑器打开」，但要有复制入口（诊断拿去贴给人）
+  expect([...bar.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+    "复制诊断信息",
+  ]);
+});
+
+it("🔴 保存失败说「保存失败」并给定心丸（旧版一律显示「读取失败」，主体都说错了）", async () => {
+  await render({ error: "目标目录 /etc 属主 root", errorKind: "save" });
+  const bar = host.querySelector('[role="alert"]')!;
+  expect(bar.textContent).toContain("保存失败：目标目录 /etc 属主 root");
+  expect(bar.textContent).not.toContain("读取失败");
+  expect(bar.textContent).toContain("你的修改没有写入，编辑器里的内容还在");
+});
+
+it("复制诊断信息：整段（含前缀）进剪贴板，按钮就地切「已复制」", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true,
+  });
+  await render({ error: "[Errno 13] Permission denied（属主 claude-svc，权限 0600）" });
+  const btn = host.querySelector<HTMLButtonElement>('[role="alert"] button')!;
+  await act(async () => btn.click());
+  expect(writeText).toHaveBeenCalledWith(
+    "读取失败：[Errno 13] Permission denied（属主 claude-svc，权限 0600）",
+  );
+  expect(btn.textContent).toContain("已复制");
+  expect(h.toast).not.toHaveBeenCalled();
+});
+
+it("剪贴板不可用：给 toast 提示，不静默失败", async () => {
+  Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+  await render({ error: "Permission denied" });
+  const btn = host.querySelector<HTMLButtonElement>('[role="alert"] button')!;
+  await act(async () => btn.click());
+  expect(h.toast).toHaveBeenCalled();
+  expect(btn.textContent).toContain("复制诊断信息");
 });
 
 it("冲突优先于截断提示（两个条件同时成立时只显示冲突）", async () => {

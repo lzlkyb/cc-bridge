@@ -98,6 +98,18 @@ pub struct SshFileEntry {
     /// 为什么前端需要它：readdir 是 lstat 语义，软链到目录也报 `is_dir=false`，
     /// 不补这个字段，双击 `sites-enabled/default` 这类链接会进编辑器然后读失败。
     pub link_target_is_dir: bool,
+    /// 文件属主 uid（SFTP attrs）。`None` = 服务器没给（异常实现）或旧路径，
+    /// 前端据此**放弃预判**而不是猜——猜会把能读的文件标成不能读。
+    ///
+    /// 为什么需要：2026-11-24 事故里文件属 `claude-svc`、mode 0600，用户列目录
+    /// 看得见、一打开就 Errno 13（ACL mask 把授权剥成 effective `---`）。预标
+    /// 「你不可读」能省掉这一轮「以为能开 → 打开失败 → 以为文件坏了」的误解。
+    pub uid: Option<u32>,
+    /// 文件属组 gid（同 `uid`）。
+    pub gid: Option<u32>,
+    /// 权限位（`0o7777` 语义，**已剥掉 `S_IF*` 类型位**，与 `setstat` 的 `perm_bits`
+    /// 同一形状）。`None` 同 `uid`。
+    pub mode: Option<u32>,
 }
 
 /// `ssh_connect` 入参。
