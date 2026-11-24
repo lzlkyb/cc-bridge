@@ -689,7 +689,7 @@ export interface SshConnectFailed {
 
 /** `ssh_sftp_list` 返回：单个远程文件/目录条目。 */
 export interface SshFileEntry {
-  /** 文件名（含软链 ` -> target` 后缀）。 */
+  /** 文件名（软链的 ` -> target` 后缀已在服务端拆到 `linkTarget`，不含在此）。 */
   name: string;
   /** 是否为目录。 */
   isDir: boolean;
@@ -699,6 +699,16 @@ export interface SshFileEntry {
   mtime: number;
   /** 是否为软链接。 */
   isSymlink: boolean;
+  /**
+   * 软链目标原文（readlink 结果，可能是相对路径）。仅 `isSymlink` 时可能有值；
+   * 解析失败/旧路径（`ls` 解析）缺省时为 undefined。
+   */
+  linkTarget?: string | null;
+  /**
+   * 软链目标是否为目录。russh 路径用跟随软链的 STAT 探测；旧 `ls` 路径不补
+   * （恒 false）——软链到目录时点击不会进入，需点目标名或其父目录。
+   */
+  linkTargetIsDir?: boolean;
 }
 
 /* ─── 模型中转（P1）────────────────────────────────────────────────────

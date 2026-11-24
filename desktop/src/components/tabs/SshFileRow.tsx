@@ -43,7 +43,7 @@ interface SshFileRowProps {
 }
 
 /**
- * 远程文件表格行：名称（目录/软链整行可点进入）+ 大小 + 修改时间 + 下载/删除。
+ * 远程文件表格行：名称（目录/软链到目录整行可点进入）+ 大小 + 修改时间 + 下载/删除。
  */
 export function SshFileRow({
   highlighted,
@@ -56,10 +56,14 @@ export function SshFileRow({
   onSelect,
   onActivateFile,
 }: SshFileRowProps) {
-  const clickable = entry.isDir || entry.isSymlink;
+  // 软链到目录也算「可进入」：readdir 本身跟随软链，点进去就是目标目录的内容。
+  // 软链到文件则按普通文件走（单击选中、双击进编辑器）——保存时后端已解析到
+  // 真实路径再 rename，编辑软链文件改的是它的目标，不会再悄悄替换掉链接本身。
+  const effectiveIsDir = entry.isDir || (entry.isSymlink && !!entry.linkTargetIsDir);
+  const clickable = effectiveIsDir;
   const row = useRef<HTMLTableRowElement>(null);
   useEffect(() => { if (highlighted) row.current?.scrollIntoView({block:"nearest"}); }, [highlighted]);
-  // 单键点击保持原语义（目录进、文件不做事），修饰键点击才进多选——
+  // 单键点击保持原语义（可进入的进、文件不做事），修饰键点击才进多选——
   // 否则「点一下文件想选中」和「点一下目录想进入」会互相打架。
   const onRowClick = (e: React.MouseEvent) => {
     if (e.shiftKey || e.metaKey || e.ctrlKey) {
@@ -80,30 +84,37 @@ export function SshFileRow({
       } ${selected ? "bg-primary/10" : ""} ${highlighted && !selected ? "bg-accent" : ""}`}
       onClick={onRowClick}
       onDoubleClick={() => {
-        if (entry.isDir || busy) return;
+        if (effectiveIsDir || busy) return;
         onActivateFile?.(entry.name);
       }}
-      title={entry.isDir ? undefined : "双击编辑"}
+      title={effectiveIsDir ? undefined : "双击编辑"}
     >
       {/* max-w 约束列宽：超长文件名截断（title 看全文），不把右侧列挤出面板 */}
       <td className="max-w-[340px] py-1.5 pl-3">
         <span className="flex min-w-0 items-center gap-2 text-left">
           <Icon
-            name={entry.isDir ? "folder" : "file"}
+            name={effectiveIsDir ? "folder" : "file"}
             size={15}
-            className={`shrink-0 ${entry.isDir ? "text-blue-500" : "text-muted-foreground"}`}
+            className={`shrink-0 ${effectiveIsDir ? "text-blue-500" : "text-muted-foreground"}`}
           />
-          {clickable ? <button type="button" disabled={busy} title={entry.name} aria-label={`打开${entry.isDir ? "文件夹" : "链接"} ${entry.name}`}
+          {clickable ? <button type="button" disabled={busy} title={entry.name} aria-label={`打开文件夹 ${entry.name}`}
             className="min-w-0 truncate rounded text-left font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             onClick={event => { event.stopPropagation(); onOpenDir(entry.name); }}>{entry.name}</button>
             : <span className="min-w-0 truncate" title={entry.name}>{entry.name}</span>}
-          {entry.isSymlink && (
+          {entry.isSymlink && (entry.linkTarget ? (
+            <span
+              className="shrink-0 max-w-[160px] truncate text-[11px] text-muted-foreground"
+              title={`${entry.name} → ${entry.linkTarget}`}
+            >
+              → {entry.linkTarget}
+            </span>
+          ) : (
             <span className="shrink-0 text-[11px] text-muted-foreground">链接</span>
-          )}
+          ))}
         </span>
       </td>
       <td className="w-28 py-1.5 text-right text-xs text-muted-foreground">
-        {entry.isDir ? <span className="text-muted-foreground/50">—</span> : formatSize(entry.size)}
+        {effectiveIsDir ? <span className="text-muted-foreground/50">—</span> : formatSize(entry.size)}
       </td>
       <td className="w-40 py-1.5 pr-3 text-right text-xs text-muted-foreground">
         {formatDate(entry.mtime) === "—" ? (

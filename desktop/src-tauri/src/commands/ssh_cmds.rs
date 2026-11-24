@@ -78,11 +78,7 @@ pub struct SshConnectionList {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SshFileEntry {
-    /// 文件名。
-    ///
-    /// ⚠️ **两条路径给的形态不同**：旧 helper 路径（`ls -la` 解析）对软链会给
-    /// `link -> target`；russh 路径给**纯文件名**。前端一律 `split(" -> ")[0]`
-    /// 兜底，所以两种都能正确显示；差别只是 russh 路径看不到软链目标。
+    /// 文件名（**纯名字**，不含 ` -> target` 后缀；软链目标在 `link_target`）。
     pub name: String,
     /// 是否为目录。
     pub is_dir: bool,
@@ -92,6 +88,16 @@ pub struct SshFileEntry {
     pub mtime: i64,
     /// 是否为软链接。
     pub is_symlink: bool,
+    /// 软链目标（readlink 的原始返回值，可能是相对路径）；非软链为 None。
+    ///
+    /// russh 路径列目录时补齐；旧 `ls -la` 路径从 ` -> ` 后缀拆出（零额外开销）。
+    pub link_target: Option<String>,
+    /// 软链**目标**是否为目录（跟随 stat）。仅 russh 路径补齐；旧路径恒 false
+    /// （双击软链进编辑器、读失败有出路，与加此字段前的行为一致）。
+    ///
+    /// 为什么前端需要它：readdir 是 lstat 语义，软链到目录也报 `is_dir=false`，
+    /// 不补这个字段，双击 `sites-enabled/default` 这类链接会进编辑器然后读失败。
+    pub link_target_is_dir: bool,
 }
 
 /// `ssh_connect` 入参。
@@ -932,10 +938,13 @@ fn parse_ls(out: &str, gnu: bool) -> Result<Vec<SshFileEntry>, String> {
         let is_symlink = perms.starts_with('l');
         // 软链整行形如 `mylink -> /target`；只取 ` -> ` 前的一段作为 name，
         // 否则前端把它拼进路径会变成 `.../mylink -> /target` 这种非法路径。
-        let name = if is_symlink {
-            raw.split(" -> ").next().unwrap_or(&raw).to_string()
+        // 后一段进 `link_target`（展示用，零额外远程开销）。
+        let (name, link_target) = if is_symlink {
+            let mut it = raw.splitn(2, " -> ");
+            let n = it.next().unwrap_or(&raw).to_string();
+            (n, it.next().map(|t| t.to_string()))
         } else {
-            raw
+            (raw, None)
         };
         if name.is_empty() || name == "." || name == ".." {
             continue;
@@ -947,6 +956,11 @@ fn parse_ls(out: &str, gnu: bool) -> Result<Vec<SshFileEntry>, String> {
             size,
             mtime,
             is_symlink,
+            link_target,
+            // 旧路径不补目标类型：`ls -la` 里链接行的类型位是**链接自己**的（l），
+            // 看不出目标是不是目录。双击软链进编辑器、读失败有出路，与加此字段
+            // 前的行为一致（russh 主路径用跟随 stat 补，见 ssh_russh_file）。
+            link_target_is_dir: false,
         });
     }
     Ok(entries)
@@ -3101,7 +3115,39 @@ drwxr-xr-x 2 u g 4096 1712345700 sub dir\n";
         assert_eq!(e[0].mtime, 1_712_345_690, "GNU 第 6 列应解成 epoch 秒");
         assert!(!e[0].is_dir && !e[0].is_symlink);
         assert!(e[1].is_symlink, "l 开头应识别为软链");
+        assert_eq!(
+            e[1].link_target.as_deref(),
+            Some("/tmp/target"),
+            "软链目标要拆出来"
+        );
+        assert!(!e[1].link_target_is_dir, "旧路径不补目标类型");
         assert!(e[2].is_dir, "d 开头应识别为目录");
+        assert_eq!(e[0].link_target, None, "非软链没有目标");
+    }
+
+    /// 软链目标拆 ` -> ` 的相对路径、目标自身带 ` -> `、非软链名字带 ` -> `
+    /// 三种形态都不能串味；名字里带空格的目标要完整保留。
+    #[test]
+    fn parse_ls_splits_symlink_target_edge_cases() {
+        let out = "total 8\n\
+lrwxrwxrwx 1 u g 7 1712345695 rel -> ../sites-available/default\n\
+lrwxrwxrwx 1 u g 9 1712345696 weird -> a -> b\n\
+-rw-r--r-- 1 u g 3 1712345697 not a link -> really\n";
+        let e = parse_ls(out, true).expect("解析应成功");
+        assert_eq!(e.len(), 3);
+        // 相对目标完整保留
+        assert_eq!(e[0].name, "rel");
+        assert_eq!(
+            e[0].link_target.as_deref(),
+            Some("../sites-available/default")
+        );
+        // 目标里带 ` -> `：只按第一个切（splitn(2)），剩下的都算目标
+        assert_eq!(e[1].name, "weird");
+        assert_eq!(e[1].link_target.as_deref(), Some("a -> b"));
+        // 非软链：名字连 ` -> ` 一起保留，不拆
+        assert_eq!(e[2].name, "not a link -> really");
+        assert_eq!(e[2].link_target, None);
+        assert!(!e[2].is_symlink);
     }
 
     /// BSD/macOS 格式：日期占三列，要跳过三列才到名字；mtime 无法可靠得到，置 0。

@@ -4,12 +4,22 @@
 //! ## 为什么读/写走 helper 而不是 scp
 //! 列目录已经复用常驻 helper 会话（`run_via_helper`），读一个小文件再单独 scp 握手
 //! 是白付一次 TCP + 认证。所以**读内容、写回都走同一条 helper**：读用 `base64`
-//! （PTY 会把原始字节里的控制字符吃掉，base64 全是可打印 ASCII，天然抗 PTY），
-//! 写用「base64 -d 到临时文件再 `mv -f`」原子替换。helper 起不来时退回一次性 ssh。
+//! （PTY 会把原始字节里的控制字符吃掉，base64 全是可打印 ASCII，天然抗 PTY）；
+//! 写用「base64 分块追加进同目录 part 文件，再一条小脚本做长度校验 + 冲突检测 +
+//! 权限位回写 + 原子 rename」。helper 起不来、或 payload 超过 `HELPER_INLINE_B64_MAX`
+//! 时，写回改走 scp 把内容落到远端 part（二进制安全、不进任何命令行），收尾跑同一条脚本。
+//!
+//! 🔴 **PTY 单行上限 4095 字节**：Linux termios(3) canonical 模式「单行上限 4096
+//! 字符（含结尾换行），超出的部分被丢弃」，内核 `N_TTY_BUF_SIZE` 硬编码，
+//! `stty -echo` 只关回显、不关 canonical。helper 用 `-tt` 强制分配 PTY，写进去的
+//! 每一行都受此限——所以 base64 必须拆行，绝不能一行塞完整载荷（老写法就这么干的：
+//! 内容约 2.4KB 起保存必坏，详见 `write_script_chunked` 的注释）。
 //!
 //! ## 大文件与二进制不硬扛
-//! 超过 `MAX_EDIT_BYTES`（2 MB）只读预览前一段；不是 UTF-8 的文件直接拒绝内联编辑，
-//! 两者都把「用本机编辑器打开」（C 路线，scp 全量下载）作为出路交回用户。
+//! 超过 `MAX_EDIT_BYTES`（2 MB）只读前 2 MB 并标记截断（前端据此转只读）；
+//! 不是 UTF-8 的文件拒绝内联编辑，两者都把「用本机编辑器打开」（C 路线，scp 全量
+//! 下载）作为出路交回用户。UTF-8 判定在 **Rust 侧**做（`decode_utf8_truncated`）：
+//! 限流读按字节切，切点落在多字节字符中间时严格 decode 会把合法文本误判成二进制。
 //!
 //! ## 安全边界（与 ssh_cmds 一致）
 //! 全部经 `ssh_enabled` 总闸；只经 Tauri IPC 给本机面板，**不注册为 MCP 工具**、
@@ -24,6 +34,7 @@ use base64::Engine as _;
 use serde::Serialize;
 use tauri::State;
 
+use crate::encoding::decode_utf8_truncated;
 use crate::ssh_proxy::PendingCreds;
 use crate::state::AppState;
 
@@ -164,11 +175,17 @@ pub async fn ssh_file_read(
     parse_read_output(&out)
 }
 
-/// 远端读取脚本：python3 做「stat + 限量读 + UTF-8 校验 + base64」，结果用自定义哨兵框起。
+/// 远端读取脚本：python3 做「stat + 限量读 + base64」，结果用自定义哨兵框起。
 ///
-/// 为什么用 python3 而不是 `head -c | base64`：要同时拿到 size/mtime、判 UTF-8、
-/// 按字节截断且不劈坏多字节字符——这些 shell 拼起来又脆又长。项目本就依赖远端 python3
-/// （stable_remote 整套），这里复用同一假设；没有 python3 时给「用本机编辑器打开」的出路。
+/// 为什么用 python3 而不是 `head -c | base64`：要同时拿到 size/mtime 并按字节限量读。
+/// 项目本就依赖远端 python3（stable_remote 整套），这里复用同一假设；没有 python3 时
+/// 给「用本机编辑器打开」的出路。
+///
+/// 🔴 **UTF-8 判定不在这里做**（曾经在）：脚本原来读完后自己 `data.decode('utf-8')`，
+/// 失败就报 `__CCB_F_BIN__`。可限量读是按**字节数**切的，一个 >2MB 的中文文件有约
+/// 1/4 概率把切点落进某个汉字的第 2/3 字节——合法 UTF-8 被误判成「不是文本」。
+/// 现在脚本只管原样回传字节，文本/二进制由 Rust 侧 `decode_utf8_truncated` 判定
+/// （与 russh 主路径同一个函数、同一套语义）：尾部残缺只退一个字符，真二进制仍拒绝。
 ///
 /// 🔴 P0-2 修复（2026-11-23）：这里原本恒定 `f.read(PREVIEW_BYTES)`（256 KB），
 /// 而 `truncated` 却在 `st.st_size > MAX_EDIT_BYTES`（2 MB）时才置位。两者一错位：
@@ -186,11 +203,6 @@ fn read_script(path: &str) -> String {
          \x20   data=f.read({limit})\n\
          \x20   f.close()\n\
          \x20   trunc=st.st_size>{limit}\n\
-         \x20   try:\n\
-         \x20       text=data.decode('utf-8')\n\
-         \x20   except UnicodeDecodeError:\n\
-         \x20       sys.stdout.write('__CCB_F_BIN__\\n')\n\
-         \x20       sys.exit(0)\n\
          \x20   meta='{{\"size\":%d,\"mtime\":%d,\"truncated\":%s}}'%(st.st_size,int(st.st_mtime),'true' if trunc else 'false')\n\
          \x20   sys.stdout.write('__CCB_F_META__'+meta+'\\n')\n\
          \x20   sys.stdout.write(base64.b64encode(data).decode('ascii')+'\\n')\n\
@@ -212,6 +224,10 @@ fn python_str(s: &str) -> String {
 }
 
 /// 解析读取脚本的哨兵输出。
+///
+/// 🔴 UTF-8 判定在**这里**做（`decode_utf8_truncated`），远端脚本不再判：
+/// 限量读按字节切，切点落在多字节字符中间时严格 decode 会把合法文本误判成二进制。
+/// 尾部残缺只退一个字符；中部有非法字节（真二进制）仍然拒绝。
 fn parse_read_output(out: &str) -> Result<RemoteFileContent, String> {
     let mut meta: Option<(u64, i64, bool)> = None;
     let mut b64 = String::new();
@@ -221,10 +237,6 @@ fn parse_read_output(out: &str) -> Result<RemoteFileContent, String> {
             meta = Some(parse_meta(rest)?);
         } else if let Some(rest) = line.strip_prefix("__CCB_F_ERR__") {
             return Err(rest.to_string());
-        } else if line == "__CCB_F_BIN__" {
-            return Err(format!(
-                "{ERR_FILE_BINARY}: 文件不是 UTF-8 文本，请用本机编辑器打开"
-            ));
         } else if meta.is_some() && !line.is_empty() {
             b64.push_str(line);
         }
@@ -234,7 +246,7 @@ fn parse_read_output(out: &str) -> Result<RemoteFileContent, String> {
     let bytes = B64
         .decode(b64.as_bytes())
         .map_err(|e| format!("内容解码失败：{e}"))?;
-    let text = String::from_utf8(bytes)
+    let text = decode_utf8_truncated(&bytes)
         .map_err(|_| format!("{ERR_FILE_BINARY}: 文件不是 UTF-8 文本，请用本机编辑器打开"))?;
     let line_ending = if text.contains("\r\n") { "crlf" } else { "lf" };
     let content = text.replace("\r\n", "\n");
@@ -267,7 +279,9 @@ fn parse_meta(s: &str) -> Result<(u64, i64, bool), String> {
     Ok((size, mtime, truncated))
 }
 
-/// 写回远程文件：base64 -d 到同目录临时文件再 `mv -f` 原子替换。
+/// 写回远程文件。三条路径按优先级：russh 长连接 → helper 分块写 → scp 上传
+/// part，都以「同目录临时文件 + 原子替换」收尾；软链先解析真实落点再替换
+/// （不跟随 symlink 会把链接本身换成普通文件，见 `symlink_resolve_py`）。
 ///
 /// `expected_mtime` 是打开时的 mtime；远端当前 mtime 与之不符且 `force=false` 时拒绝
 /// （返回 `ERR_FILE_CONFLICT` 前缀），由 UI 给「重新加载 / 仍然覆盖保存」两条出路。
@@ -322,56 +336,333 @@ pub async fn ssh_file_write(
         ));
     }
     let b64 = B64.encode(bytes);
-    let cmd = write_script(&path, &b64, expected_mtime, force);
-    let (out, code) = remote_exec(&state, &link, &ssh_path, creds, cmd).await?;
-    parse_write_output(&out, code)
+    // ---- 回退路径 A：常驻 helper，base64 分块写 part 文件 ----
+    // 🔴 为什么不再把整个 base64 塞进**一行**：helper 用 `-tt` 强制分配 PTY，而
+    // Linux termios 的 canonical 模式单行上限 4095 字节（含结尾换行），超出的部分
+    // 被**内核直接丢弃**（`stty -echo` 只关回显，不关 canonical）。老写法一条命令
+    // 一行写完，内容约 2.4KB 起就被切：远端 sh 卡在半句话里等后续输入，15 秒后
+    // helper 超时被拆、再退回一次性 ssh 重付一次握手（表现为保存转圈约 26 秒）；
+    // payload 超过约 24KB 时连一次性 ssh 的命令行都超 Windows 32767 字符上限，
+    // 保存直接失败。现在按 ≤4KB 一行拆成多条 printf 追加行，两个上限都不碰。
+    if b64.len() <= HELPER_INLINE_B64_MAX {
+        if let Some(cmd) = write_script_chunked(&path, &b64, expected_mtime, force) {
+            // helper 拿到响应（哪怕是 __CCB_W_ERR__/__CCB_W_CONFLICT__）就算数，
+            // 不再走旧路径；只有 helper 本身起不来/跑坏才落到下面的 scp 路线。
+            if let Ok((out, code)) =
+                run_via_helper(&state, &link, &ssh_path, creds.clone(), cmd).await
+            {
+                return parse_write_output(&out, code);
+            }
+        }
+    }
+    // ---- 回退路径 B：payload 走 scp，不进任何命令行 ----
+    // 两种情况会到这：helper 不可用（禁 shell / MaxSessions 满 / 负缓存），或
+    // payload 超过 `HELPER_INLINE_B64_MAX`——分块行数多了会把共享 helper 会话占住
+    // 很久（挡住同连接的列目录/读取），且 PTY 写入没有超时与取消。
+    // scp 是二进制安全的 bulk 通道：本机临时文件 → 远端 part → 同一条收尾脚本。
+    write_via_scp(
+        &state,
+        &link,
+        &ssh_path,
+        creds,
+        bytes,
+        &path,
+        expected_mtime,
+        force,
+    )
+    .await
 }
 
-/// 远端写回脚本。临时文件落在**同目录**（保证 `mv` 是同文件系统 rename，原子），
-/// 名字带 pid 与固定后缀；任何失败分支都 `rm -f` 清掉临时文件，绝不碰原文件。
-fn write_script(path: &str, b64: &str, expected_mtime: i64, force: bool) -> String {
+/// PTY canonical 模式的单行上限：Linux termios(3)「单行上限 4096 字符（含结尾
+/// 换行），超出的部分被丢弃」，内核 `N_TTY_BUF_SIZE` 硬编码，`stty -echo` 不关它。
+/// helper 靠 `-tt` 强制分配 PTY，写进去的每一行都受此限。
+const PTY_LINE_LIMIT: usize = 4095;
+
+/// 走 helper 分块写路线最大的 base64 长度（约 96 KB 原文）。
+///
+/// 两条理由取这个数：① **执行预算**——分块行数 × 每行成本要压在 helper 的
+/// `CMD_TIMEOUT`（15s）内，而远端 `/bin/sh` 不一定把 `printf` 做内建（外部
+/// printf 每行一次 fork）；② **会话占用**——PTY 写入没有超时与取消，大 payload
+/// 会把共享 helper 会话占住很久，挡住同一连接的列目录/读取。超过就走 scp。
+const HELPER_INLINE_B64_MAX: usize = 128 * 1024;
+
+/// 每条 printf 行的 base64 载荷上限（行长预算见 `write_script_chunked`）。
+const WRITE_CHUNK_B64: usize = 3600;
+
+/// helper 写路径：把 base64 拆成多条 ≤PTY 行限的 printf 追加行写进同目录 part 文件，
+/// 最后一行是小 finalize（长度校验 → 冲突检测 → 权限位回写 → 原子 rename → 清场）。
+///
+/// part 与目标同目录 ⇒ `os.replace` 是同文件系统的一次原子替换，原文件在替换成功
+/// 前一个字节都没被碰。任何失败分支都清掉 part，绝不在同目录留下半个文件。
+///
+/// 🔴 part 名带 `next_write_seq()` 而不是远端 shell pid：helper 是**长驻会话**，
+/// 同一个 `sh` 进程会连续处理多次保存，pid 在会话内是常量——用它做临时名会让两次
+/// 保存落到同一个 part 上互相截断（旧路径每次保存新起 ssh 会话，pid 天然唯一）。
+///
+/// 返回 None 表示路径太长，连最小载荷都塞不进一行——此时调用方应改走 scp，
+/// **绝不生成超长行**（那正是这个函数要消除的 bug 形态）。
+///
+/// 已知取舍：helper 会话在分块写到一半时死掉（断网 / 超时被拆），那半个 part
+/// 没人清——名字带唯一序号，下次保存用新序号不会互相覆盖，最坏情况是同目录
+/// 多一个 `.<文件名>.ccb-write-<序号>.part` 残留（可手删）。scp 路线没有这个
+/// 缝隙：上传失败与 finalize 传输失败都会补 `rm -f`。
+fn write_script_chunked(path: &str, b64: &str, expected_mtime: i64, force: bool) -> Option<String> {
+    let nonce = super::ssh_russh_file::next_write_seq();
+    let part = format!("{path}.ccb-write-{nonce}.part");
+    let part_q = shell_quote(&part);
+    // 每行总长 = 包装(19) + part_q + 载荷。首行还要挂开始哨兵、末行挂结束哨兵
+    // （`wrap_command` 各约 35 字节，nonce 最长按 24 计），统一留 96 字节余量。
+    let budget = PTY_LINE_LIMIT
+        .saturating_sub(96 + 19 + part_q.len())
+        .min(WRITE_CHUNK_B64);
+    if budget < 1024 {
+        return None;
+    }
+    let mut lines: Vec<String> = Vec::new();
+    // base64 全是 ASCII，按字节切不会劈坏字符。空内容也要建一个空 part——
+    // 否则 finalize 连要替换的文件都找不到（用户清空文件再保存是合法操作）。
+    let chunks: Vec<&str> = if b64.is_empty() {
+        vec![""]
+    } else {
+        b64.as_bytes()
+            .chunks(budget)
+            .map(|c| std::str::from_utf8(c).expect("base64 输出必为 ASCII"))
+            .collect()
+    };
+    // printf 是 shell 内建（dash / bash / busybox 都是），不 fork；退化成外部
+    // /usr/bin/printf 也只是慢一点，语义不变。
+    for (i, c) in chunks.iter().enumerate() {
+        let op = if i == 0 { ">" } else { ">>" };
+        lines.push(format!("printf '%s' '{c}' {op} {part_q}"));
+    }
+    lines.push(finalize_script(
+        &part,
+        path,
+        b64.len(),
+        true,
+        expected_mtime,
+        force,
+    ));
+    Some(lines.join("\n"))
+}
+
+/// 「解析软链 → 断裂/成环则拒绝保存」的 python 片段，产出变量 `t`（最终落点）。
+///
+/// 三条旧写路径共用：helper 分块路线、scp 路线（都在 `finalize_script` 里）、
+/// C 路线回传的 scp 兜底（`ssh_file_upload_edited`）。
+///
+/// 🔴 为什么必须有：`os.replace` / `mv` / SFTP `rename` **都不跟随目标 symlink**。
+/// 用户编辑软链文件时读到的是目标内容（open 跟随链接），直接替换链接路径却会把
+/// **链接本身**换成普通文件——目标没改、链接静默消失，保存却显示成功。
+/// vim / nano / VS Code 的语义都是「编辑软链 = 编辑其目标」，这里对齐。
+///
+/// 拿不准（软链但 realpath 出的目标不存在）时**拒绝保存**：能走到保存这一步，
+/// 说明读取时链接是好的，此时断裂只能是读取之后发生的变故，拒绝是对的。
+///
+/// 自包含：拒绝分支自己删临时文件（此时 part 已经写完并通过校验，留着就是垃圾），
+/// 不依赖调用方定义 `cleanup()`——两个调用点（finalize / 回传兜底）的临时变量名
+/// 不同（`part` / `tmp`），靠隐式契约迟早出一个只在错误路径上触发的 NameError。
+fn symlink_resolve_py(path_lit: &str, tmp_lit: &str) -> String {
+    format!(
+        "t={path_lit}\n\
+         if os.path.islink({path_lit}):\n\
+         \x20   rp=os.path.realpath({path_lit})\n\
+         \x20   if not os.path.exists(rp):\n\
+         \x20       try:\n\
+         \x20           os.remove({tmp_lit})\n\
+         \x20       except Exception:\n\
+         \x20           pass\n\
+         \x20       sys.stdout.write('__CCB_W_ERR__软链目标不存在或无法解析（%s），已取消保存\\n'%rp)\n\
+         \x20       sys.exit(0)\n\
+         \x20   t=rp\n",
+        path_lit = path_lit,
+        tmp_lit = tmp_lit,
+    )
+}
+
+/// 收尾脚本（helper 分块路线与 scp 路线**共用**）：读 part → 校验长度 → 冲突检测 →
+/// 保留权限位 → 原子 rename → 清场。**小命令**：helper 与一次性 ssh 的命令行都放得下。
+///
+/// `is_b64`：helper 路线的 part 里是 base64 文本（分块 printf 落的），必须
+/// **解码后写回 part** 再 rename——part 里躺着 base64 原文，直接 rename 会把
+/// base64 文本当成文件内容存进去（用户存什么进去、读出来就是 base64 串）。
+/// 🔴 这一步在 2026-11-24 的 part 化重构里丢过一次：`data` 解出来没有任何
+/// 写回，子串断言全绿，是**执行级**语义测试（真建软链真跑脚本）逮出来的。
+/// scp 路线 part 里是原始字节（`is_b64=false`），整段跳过。
+///
+/// 🔴 软链：替换落点是解析出的**真实路径** `t`（`symlink_resolve_py`）。`os.replace`
+/// 不跟随目标 symlink，直接替换链接路径会把链接本身换成普通文件——目标没改、
+/// 链接静默消失、保存却显示成功。解析失败（断裂/成环）拒绝保存，不回退老行为。
+///
+/// 两处**故意**的非致命处理（与旧路径、russh 路径逐条对齐）：
+/// ① chmod 失败不阻断——权限错了是小事，内容存不进去是数据丢失（russh 路径
+///    `set_metadata` 失败同样只打日志）；
+/// ② `os.replace` **成功之后**的 stat 失败不让整个操作失败，只把 mtime/size 降级
+///    成 0（代价仅是下次保存跳过冲突检测）。反过来做就是「谎报失败」：保存其实
+///    已经成功，用户却看到报错，可能再 force 存一遍。
+fn finalize_script(
+    part: &str,
+    path: &str,
+    expected_len: usize,
+    is_b64: bool,
+    expected_mtime: i64,
+    force: bool,
+) -> String {
     let py = format!(
         "import os,sys,base64\n\
          p={path_lit}\n\
-         data=base64.b64decode({b64_lit})\n\
+         part={part_lit}\n\
+         n={expected_len}\n\
+         def cleanup():\n\
+         \x20   try:\n\
+         \x20       os.remove(part)\n\
+         \x20   except Exception:\n\
+         \x20       pass\n\
+         try:\n\
+         \x20   raw=open(part,'rb').read()\n\
+         except Exception as e:\n\
+         \x20   sys.stdout.write('__CCB_W_ERR__临时文件读取失败：'+str(e)+'\\n')\n\
+         \x20   sys.exit(0)\n\
+         if len(raw)!=n:\n\
+         \x20   cleanup()\n\
+         \x20   sys.stdout.write('__CCB_W_ERR__分块写入不完整（%d/%d 字节），已放弃保存\\n'%(len(raw),n))\n\
+         \x20   sys.exit(0)\n\
+         data=raw\n\
+         if {is_b64}:\n\
+         \x20   try:\n\
+         \x20       data=base64.b64decode(raw,validate=True)\n\
+         \x20   except Exception as e:\n\
+         \x20       cleanup()\n\
+         \x20       sys.stdout.write('__CCB_W_ERR__分块内容损坏：'+str(e)+'\\n')\n\
+         \x20       sys.exit(0)\n\
+         \x20   try:\n\
+         \x20       f=open(part,'wb')\n\
+         \x20       f.write(data)\n\
+         \x20       f.close()\n\
+         \x20   except Exception as e:\n\
+         \x20       cleanup()\n\
+         \x20       sys.stdout.write('__CCB_W_ERR__解码后写回临时文件失败：'+str(e)+'\\n')\n\
+         \x20       sys.exit(0)\n\
          try:\n\
          \x20   st=os.stat(p)\n\
          \x20   cur=int(st.st_mtime)\n\
+         \x20   mode=st.st_mode & 0o7777\n\
          except FileNotFoundError:\n\
          \x20   cur=0\n\
+         \x20   mode=None\n\
          if {expected}!=0 and cur!=0 and cur!={expected} and not {force}:\n\
+         \x20   cleanup()\n\
          \x20   sys.stdout.write('__CCB_W_CONFLICT__%d\\n'%cur)\n\
          \x20   sys.exit(0)\n\
-         d=os.path.dirname(p) or '.'\n\
-         tmp=os.path.join(d,'.ccb-write-%d.tmp'%os.getpid())\n\
+         {resolve}\
          try:\n\
-         \x20   f=open(tmp,'wb')\n\
-         \x20   f.write(data)\n\
-         \x20   f.close()\n\
-         \x20   try:\n\
-         \x20       os.chmod(tmp,st.st_mode & 0o7777)\n\
-         \x20   except Exception:\n\
-         \x20       pass\n\
-         \x20   os.replace(tmp,p)\n\
+         \x20   if mode is not None:\n\
+         \x20       try:\n\
+         \x20           os.chmod(part,mode)\n\
+         \x20       except Exception:\n\
+         \x20           pass\n\
+         \x20   os.replace(part,t)\n\
          except Exception as e:\n\
-         \x20   try:\n\
-         \x20       os.remove(tmp)\n\
-         \x20   except Exception:\n\
-         \x20       pass\n\
+         \x20   cleanup()\n\
          \x20   sys.stdout.write('__CCB_W_ERR__'+str(e)+'\\n')\n\
          \x20   sys.exit(0)\n\
-         st2=os.stat(p)\n\
-         sys.stdout.write('__CCB_W_OK__{{\"mtime\":%d,\"size\":%d}}\\n'%(int(st2.st_mtime),st2.st_size))\n",
+         try:\n\
+         \x20   st2=os.stat(t)\n\
+         \x20   sys.stdout.write('__CCB_W_OK__{{\"mtime\":%d,\"size\":%d}}\\n'%(int(st2.st_mtime),st2.st_size))\n\
+         except Exception:\n\
+         \x20   sys.stdout.write('__CCB_W_OK__{{\"mtime\":0,\"size\":0}}\\n')\n",
         path_lit = python_str(path),
-        b64_lit = python_str(b64),
+        part_lit = python_str(part),
+        expected_len = expected_len,
+        is_b64 = if is_b64 { "True" } else { "False" },
         expected = expected_mtime,
         force = if force { "True" } else { "False" },
+        // 软链解析片段插在冲突检测之后、replace 之前：`t` 即最终落点。
+        // 拒绝时片段自己删 part（此时 part 已写完并通过校验）。
+        resolve = symlink_resolve_py(&python_str(path), &python_str(part)),
     );
     format!(
         "if command -v python3 >/dev/null 2>&1; then python3 -c {py}; \
          else printf '__CCB_W_ERR__%s\\n' '服务器没有 python3，无法内联保存，请用本机编辑器打开后回传'; fi",
         py = shell_quote(&py),
     )
+}
+
+/// 回退路径 B：内容走 scp 落到远端 part 文件（二进制安全，不进任何命令行），
+/// 再跑同一条 finalize。用于 helper 不可用、或 payload 超过 `HELPER_INLINE_B64_MAX`。
+// 8 参：state/link/ssh_path/creds 是拿连接的四件套，bytes/path/expected_mtime/force
+// 是载荷与乐观锁输入——彼此独立，打包结构体只会让调用点更长（同 russh_write_file）。
+#[allow(clippy::too_many_arguments)]
+async fn write_via_scp(
+    state: &Arc<AppState>,
+    link: &SshLink,
+    ssh_path: &std::path::Path,
+    creds: PendingCreds,
+    bytes: &[u8],
+    path: &str,
+    expected_mtime: i64,
+    force: bool,
+) -> Result<RemoteFileWrite, String> {
+    let scp_path =
+        find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
+    let nonce = super::ssh_russh_file::next_write_seq();
+    // 本机临时文件：内容原样落盘，scp 二进制安全，不走 base64。
+    let local = std::env::temp_dir().join(format!(
+        "cc-bridge-write-{}-{nonce}.tmp",
+        std::process::id()
+    ));
+    if let Err(e) = std::fs::write(&local, bytes) {
+        return Err(format!("写入本机临时文件失败：{e}"));
+    }
+    let remote_part = format!("{path}.ccb-write-{nonce}.part");
+    let (scp, c, r, l) = (
+        scp_path,
+        link.clone(),
+        remote_part.clone(),
+        local.to_string_lossy().to_string(),
+    );
+    // 闭包按值捕获：先克隆一份给 scp，原 creds 留给后面的清理 / finalize。
+    let scp_creds = creds.clone();
+    let joined = tokio::task::spawn_blocking(move || {
+        let job = ScpJob {
+            link: &c,
+            remote: &r,
+            local: &l,
+            upload: true,
+        };
+        run_scp(&scp, job, scp_creds, TransferHooks::default())
+    })
+    .await;
+    let res = joined.map_err(|e| format!("回传任务异常终止：{e}"))?;
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&local);
+        // 清掉远端可能残留的半个 part，别在同目录里越积越多。
+        let cleanup = format!("rm -f {}", shell_quote(&remote_part));
+        let _ = remote_exec(state, link, ssh_path, creds, cleanup).await;
+        return Err(e);
+    }
+    let _ = std::fs::remove_file(&local);
+    let cmd = finalize_script(
+        &remote_part,
+        path,
+        bytes.len(),
+        false,
+        expected_mtime,
+        force,
+    );
+    // finalize 传输层失败（ssh 本身没跑起来）时，远端 part 不会有人清——补一次
+    // rm -f，别在用户目录里越积越多。脚本自己报的错（__CCB_W_ERR__ 等）它内部
+    // 已经清过场，走到这里只会是更外层的失败。
+    let finalized = remote_exec(state, link, ssh_path, creds.clone(), cmd).await;
+    let (out, code) = match finalized {
+        Ok(v) => v,
+        Err(e) => {
+            let cleanup = format!("rm -f {}", shell_quote(&remote_part));
+            let _ = remote_exec(state, link, ssh_path, creds, cleanup).await;
+            return Err(e);
+        }
+    };
+    parse_write_output(&out, code)
 }
 
 /// 解析写回脚本输出。冲突 / 错误用可识别前缀，前端据此分流。
@@ -503,7 +794,8 @@ pub async fn ssh_file_open_external(
 /// C 路线回传：把本机临时副本 scp 回远端，带 mtime 乐观锁。
 ///
 /// 远端在打开后被改过且 `force=false` 时拒绝（`ERR_FILE_CONFLICT`），与内联写回同一语义。
-/// 上传同样先传到远端临时名再 `mv -f`，避免把原文件写成半个。
+/// 上传同样先传到远端临时名再原子替换（软链解析真实落点，见 `symlink_resolve_py`），
+/// 避免把原文件写成半个。
 #[tauri::command]
 pub async fn ssh_file_upload_edited(
     state: State<'_, Arc<AppState>>,
@@ -564,9 +856,8 @@ pub async fn ssh_file_upload_edited(
     // 🔴 nonce 必须**每次调用都不同**。这里原来是 `std::process::id()`，而注释
     // 写着「随机数」——注释与实现不符（对抗视角第 2 条：假设注释是错的）。
     // pid 在整个 app 生命周期里是固定的，于是两次回传同一文件会落到同一个远端
-    // 临时名上互相截断。注意这和上面 `write_script` 不一样：那个的 pid 是
-    // **远端 shell** 的，每次保存新起一个 ssh 会话所以天然唯一；这里是**本机** pid。
-    // 与 russh 路径共用同一个自增序号，保证两条路径的唯一性语义一致。
+    // 临时名上互相截断。与 russh 路径、helper 分块写路径共用同一个自增序号，
+    // 三条路径的唯一性语义一致。
     let nonce = super::ssh_russh_file::next_write_seq();
     let remote_tmp = format!("{path}.ccb-up-{nonce}.tmp");
     let (scp, c, r, l) = (scp_path, link.clone(), remote_tmp.clone(), local_path);
@@ -590,11 +881,22 @@ pub async fn ssh_file_upload_edited(
         return Err(e);
     }
     // 原子替换 + 取新 mtime。
+    // 🔴 软链：这里原来是 `mv -f {tmp} {dst}`——`mv` 走 rename，**不跟随目标
+    // symlink**，会把链接本身替换成普通文件（目标没改、链接静默消失）。与
+    // `finalize_script` 用同一个解析片段；python3 不可用时明确报错（原来的
+    // `mv && python3 -c stat` 在这种服务器上本来也会以 127 失败）。
     let finalize = format!(
-        "mv -f {tmp} {dst} && python3 -c \"import os;st=os.stat({dst_lit});print('__CCB_W_OK__{{\\\"mtime\\\":%d,\\\"size\\\":%d}}'%(int(st.st_mtime),st.st_size))\"",
-        tmp = shell_quote(&remote_tmp),
-        dst = shell_quote(&path),
-        dst_lit = python_str(&path),
+        "if command -v python3 >/dev/null 2>&1; then python3 -c {py}; \
+         else printf '__CCB_W_ERR__%s\\n' '服务器没有 python3，无法完成回传'; fi",
+        py = shell_quote(&format!(
+            "import os,sys\n\
+             {resolve}\
+             os.replace({tmp_lit},t)\n\
+             st=os.stat(t)\n\
+             sys.stdout.write('__CCB_W_OK__{{\"mtime\":%d,\"size\":%d}}\\n'%(int(st.st_mtime),st.st_size))\n",
+            resolve = symlink_resolve_py(&python_str(&path), &python_str(&remote_tmp)),
+            tmp_lit = python_str(&remote_tmp),
+        )),
     );
     let (out, code) = remote_exec(&state, &link, &ssh_path, creds, finalize).await?;
     parse_write_output(&out, code)
@@ -713,10 +1015,28 @@ mod tests {
         assert!(!r.truncated);
     }
 
+    /// 🔴 >2MB 的合法 UTF-8 文件曾被误判二进制（体验退化级）：限量读按字节切，
+    /// 切点落在一个多字节汉字中间时，严格 decode 会把整个文件判成「不是文本」。
+    /// 现在尾部残缺只退一个字符（`decode_utf8_truncated`），真二进制仍然拒绝。
     #[test]
-    fn parse_read_output_binary_is_rejected() {
-        let err = parse_read_output("__CCB_F_BIN__\n").unwrap_err();
-        assert!(err.starts_with(ERR_FILE_BINARY));
+    fn parse_read_output_tolerates_char_boundary_cut_but_rejects_real_binary() {
+        // "世界" = E4 B8 96 | E7 95 8C；切在第 5 字节（第二个汉字只剩 1 字节）
+        let mut bytes = "世界".as_bytes().to_vec();
+        bytes.truncate(5);
+        let out = format!(
+            "__CCB_F_META__{{\"size\":6,\"mtime\":1,\"truncated\":true}}\n{}\n",
+            B64.encode(&bytes)
+        );
+        let r = parse_read_output(&out).unwrap();
+        assert_eq!(r.content, "世", "切点前的完整字符必须保住");
+        assert!(r.truncated);
+        // 真二进制（中部非法字节）仍然拒绝——不能为了宽容截断把二进制当文本
+        let out2 = format!(
+            "__CCB_F_META__{{\"size\":4,\"mtime\":1,\"truncated\":false}}\n{}\n",
+            B64.encode(b"ab\xffcd")
+        );
+        let err = parse_read_output(&out2).unwrap_err();
+        assert!(err.starts_with(ERR_FILE_BINARY), "真二进制必须拒绝：{err}");
     }
 
     #[test]
@@ -759,10 +1079,225 @@ mod tests {
     }
 
     #[test]
-    fn write_script_embeds_force_flag() {
-        let s = write_script("/a.txt", "aGk=", 5, true);
+    fn chunked_write_embeds_force_flag() {
+        let s = write_script_chunked("/a.txt", "aGk=", 5, true).expect("应能生成");
         assert!(s.contains("not True"));
-        let s2 = write_script("/a.txt", "aGk=", 5, false);
+        let s2 = write_script_chunked("/a.txt", "aGk=", 5, false).expect("应能生成");
         assert!(s2.contains("not False"));
+    }
+
+    /// 🔴 PTY 单行上限回归（曾表现为「保存转圈约 26 秒后成功 / >24KB 直接失败」）：
+    /// helper 用 `-tt` 拿 PTY，Linux canonical 模式单行上限 4095 字节、超出的部分
+    /// 被内核丢弃。老写法把整个 base64 塞进一行，内容约 2.4KB 起就被切坏。
+    /// 分块写必须保证**每一条物理行**都在上限内——首行挂的开始哨兵与末行挂的
+    /// 结束哨兵（`wrap_command` 加上的）也要算进去，所以这里按 4095 硬卡。
+    #[test]
+    fn chunked_write_keeps_every_physical_line_under_pty_limit() {
+        // ≈700KB 的 base64，远超单行上限；路径也刻意取得很深
+        let b64: String = "ABCD".repeat(700 * 1024 / 4);
+        let long_path = format!("/home/user/projects/{}", "nested-dir/".repeat(40));
+        let script =
+            write_script_chunked(&long_path, &b64, 123, false).expect("普通长度路径应能分块");
+        let lines: Vec<&str> = script.split('\n').collect();
+        // finalize 是多行脚本，所以用 take_while 只取前面的分块行
+        let chunk_lines: Vec<&str> = lines
+            .iter()
+            .copied()
+            .take_while(|l| l.starts_with("printf '%s' '"))
+            .collect();
+        assert!(
+            chunk_lines.len() > 100,
+            "真分了块才对（{} 行）",
+            chunk_lines.len()
+        );
+        assert!(chunk_lines.len() < lines.len(), "finalize 必须排在分块之后");
+        for (i, l) in lines.iter().enumerate() {
+            assert!(
+                l.len() <= 4095,
+                "第 {i} 行超限（{} 字节），PTY 会把它切坏：{}…",
+                l.len(),
+                &l[..l.len().min(60)]
+            );
+        }
+        // 分块内容拼回来必须与原 base64 逐字一致（不能丢块/多块/乱序）
+        let mut payload = String::new();
+        for l in &chunk_lines {
+            let rest = l.strip_prefix("printf '%s' '").expect("分块行形状");
+            // base64 字母表不含单引号，所以载荷后的第一个引号就是收尾引号
+            let end = rest.find('\'').expect("载荷后必有收尾引号");
+            payload.push_str(&rest[..end]);
+        }
+        assert_eq!(payload, b64);
+    }
+
+    /// 路径长到连最小载荷都塞不进一行时必须放弃 helper 路线（返回 None），
+    /// 让调用方改走 scp——**绝不生成超长行**。
+    #[test]
+    fn chunked_write_gives_up_on_absurdly_long_path() {
+        let b64 = "ABCD".repeat(1024);
+        let absurd = format!("/{}", "d/".repeat(3000));
+        assert!(write_script_chunked(&absurd, &b64, 0, false).is_none());
+    }
+
+    /// 空内容（用户清空文件再保存）也要建一个空 part，否则 finalize 找不到要
+    /// 替换的文件；finalize 的长度校验也必须知道期望是 0 字节。
+    #[test]
+    fn chunked_write_empty_content_still_creates_part() {
+        let s = write_script_chunked("/a.txt", "", 0, false).expect("应能生成");
+        let first = s.lines().next().unwrap();
+        assert!(
+            first.contains("printf '%s' '' >"),
+            "空内容也要建空 part：{first}"
+        );
+        assert!(s.contains("n=0"), "长度校验的期望值要是 0");
+    }
+
+    /// finalize 必须保留旧脚本的三个关键性质，且排在所有分块之后。
+    #[test]
+    fn finalize_script_has_lock_atomic_replace_and_cleanup() {
+        let s = finalize_script("/a.txt.ccb-write-1.part", "/a.txt", 10, true, 99, false);
+        assert!(s.contains("__CCB_W_CONFLICT__"), "乐观锁标记要在");
+        assert!(s.contains("__CCB_W_OK__"));
+        assert!(s.contains("if len(raw)!=n:"), "必须校验分块完整性");
+        assert!(s.contains("validate=True"), "base64 要严格校验");
+        // 🔴 base64 路线必须**解码后写回 part** 再 rename。曾丢失：part 里躺着
+        // base64 原文时直接 rename，用户存什么进去、读出来就是 base64 串——
+        // 子串断言全绿，是执行级语义测试（真跑脚本）逮出来的。
+        let decode_at = s.find("base64.b64decode").unwrap();
+        let write_at = s.find("f.write(data)").unwrap();
+        let replace_at = s.find("os.replace(part,t)").unwrap();
+        assert!(
+            decode_at < write_at && write_at < replace_at,
+            "必须先解码、再写回、最后才 rename：\
+             decode@{decode_at} write@{write_at} replace@{replace_at}"
+        );
+        assert!(s.contains("if True:"), "helper 路线要开解码写回分支");
+        // scp 路线：part 里是原始字节，分支整个关掉
+        let raw_route = finalize_script("/p.part", "/p", 3, false, 0, false);
+        assert!(
+            raw_route.contains("if False:"),
+            "scp 路线要关掉解码写回分支（part 里就是原始字节）"
+        );
+        assert!(s.contains("os.chmod(part,mode)"), "要保留原文件权限位");
+        assert!(
+            s.contains("os.replace(part,t)"),
+            "必须原子替换，不能原地写原文件"
+        );
+        assert!(s.contains("not False"));
+        assert!(finalize_script("/p", "/a", 0, false, 0, true).contains("not True"));
+
+        // chmod 失败必须**非致命**：权限错了是小事，内容存不进去是数据丢失
+        //（russh 路径 set_metadata 失败同样只打日志，三条路径同一取舍）。
+        let chmod_at = s.find("os.chmod(part,mode)").unwrap();
+        let window = &s[chmod_at..(chmod_at + 120).min(s.len())];
+        assert!(
+            window.contains("except Exception:") && window.contains("pass"),
+            "chmod 必须包在自己的 try 里、失败只 pass：{window}"
+        );
+        // rename **成功之后**的 stat 失败必须降级成 mtime/size=0，不能谎报失败
+        //（保存已成功却报错，用户可能再 force 存一遍）。
+        assert!(
+            s.contains("__CCB_W_OK__{\"mtime\":0,\"size\":0}"),
+            "replace 后的 stat 失败要降级成 0：{s}"
+        );
+
+        // 分块行全部排在 finalize 之前，否则 part 还没写完就去替换原文件了
+        let full = write_script_chunked("/a.txt", &"A".repeat(20000), 0, false).expect("应能生成");
+        let finalize_at = full.find("command -v python3").expect("finalize 必须在");
+        let last_append = full.rfind("' >> ").expect("应有追加行");
+        assert!(finalize_at > last_append, "finalize 必须排在所有分块之后");
+    }
+
+    /// 🔴 回归（数据丢失级）：`os.replace` / `mv` / SFTP `rename` 都**不跟随目标
+    /// symlink**。编辑软链文件时读到的是目标内容，直接替换链接路径会把**链接本身**
+    /// 换成普通文件——目标没改、链接静默消失、保存却显示成功。
+    /// finalize 必须先解析出真实落点 `t`，且解析失败（断裂/成环）时拒绝保存。
+    ///
+    /// ⚠ 只断言**不含单引号**的片段：`finalize_script` 返回的是过了 `shell_quote`
+    /// 的整条命令，python 里的 `'` 都被转义成 `'\''`，带路径的精确断言会在
+    /// `symlink_resolve_py_lstat_then_realpath_and_refuses_when_unsure` 里对
+    /// 纯函数做（不过引号转义，断言才真的咬得住）。
+    #[test]
+    fn finalize_script_resolves_symlink_before_replace() {
+        let s = finalize_script("/a.txt.ccb-write-1.part", "/a.txt", 10, true, 99, false);
+        assert!(
+            s.contains("os.path.islink("),
+            "必须用 lstat 语义判软链：{s}"
+        );
+        assert!(s.contains("os.path.realpath("), "必须解析真实落点：{s}");
+        assert!(
+            s.contains("软链目标不存在或无法解析"),
+            "解析失败要拒绝保存，不能回退到替换链接：{s}"
+        );
+        // 拒绝分支必须带走 part（此时 part 已写完并通过校验，留着就是垃圾），
+        // 且走的是 __CCB_W_ERR__ + 立刻退出
+        let refuse_at = s.find("if not os.path.exists(rp):").unwrap();
+        let window = &s[refuse_at..(refuse_at + 300).min(s.len())];
+        assert!(
+            window.contains("os.remove(")
+                && window.contains("__CCB_W_ERR__")
+                && window.contains("sys.exit(0)"),
+            "拒绝前要清场并报错：{window}"
+        );
+        // 落点是变量 t：replace 的第二个参数永远不是引号字面量
+        //（`os.replace(part,'...')` 正是要修的 bug 形态）
+        assert!(
+            s.contains("os.replace(part,t)"),
+            "必须替换到解析出的真实落点：{s}"
+        );
+        assert!(
+            !s.contains("os.replace(part,'"),
+            "绝不能直接替换字面路径（那正是要修的 bug）：{s}"
+        );
+        assert!(s.contains("os.stat(t)"), "取新 mtime/size 也要看真实落点");
+    }
+
+    /// 纯片段（不过 shell_quote）：带路径的精确断言 + 拒绝分支形状。
+    #[test]
+    fn symlink_resolve_py_lstat_then_realpath_and_refuses_when_unsure() {
+        let f = symlink_resolve_py("'/a.txt'", "'/a.txt.ccb-write-1.part'");
+        assert!(
+            f.contains("os.path.islink('/a.txt')"),
+            "lstat 语义判软链：{f}"
+        );
+        assert!(
+            f.contains("os.path.realpath('/a.txt')"),
+            "解析真实落点：{f}"
+        );
+        assert!(f.starts_with("t='/a.txt'"), "t 的初值是字面路径：{f}");
+        assert!(
+            f.contains("sys.exit(0)"),
+            "拒绝保存要立刻退出，不能继续替换：{f}"
+        );
+        assert!(
+            f.contains("__CCB_W_ERR__"),
+            "拒绝要走错误哨兵，不能静默：{f}"
+        );
+        // 拒绝时自己删临时文件：此时 part 已写完并通过校验，留着就是垃圾
+        assert!(
+            f.contains("os.remove('/a.txt.ccb-write-1.part')"),
+            "拒绝分支要带走临时文件：{f}"
+        );
+        // 片段本身不做任何替换（出口统一是变量 t）
+        assert!(!f.contains("os.replace"), "片段只负责解析，不碰替换：{f}");
+    }
+
+    /// C 路线回传的 scp 兜底也走同一套解析（原来是 `mv -f`，同样不跟随软链）。
+    #[test]
+    fn upload_edited_fallback_resolves_symlink() {
+        // 直接对片段断言：两处调用点（finalize_script / upload_edited）必须同源。
+        let frag = symlink_resolve_py(
+            &python_str("/data/conf.d/default"),
+            &python_str("/data/conf.d/default.ccb-up-7.tmp"),
+        );
+        assert!(frag.contains("os.path.islink('/data/conf.d/default')"));
+        assert!(frag.contains("os.path.realpath('/data/conf.d/default')"));
+        // 片段的出口统一是变量 t
+        assert!(frag.starts_with("t='/data/conf.d/default'"), "{frag}");
+        // 拒绝时删的是 scp 落地的那个临时文件，不是别的
+        assert!(
+            frag.contains("os.remove('/data/conf.d/default.ccb-up-7.tmp')"),
+            "{frag}"
+        );
     }
 }

@@ -9,7 +9,8 @@
 //! | 关注点 | 旧路径 | 本模块 |
 //! |---|---|---|
 //! | 列目录 | `ls -la` + GNU/BSD 双语法解析 | SFTP `read_dir`，结构化字段 |
-//! | 文件名 | 含 ` -> target` 后缀（ls 形态） | **纯文件名**（前端 `split(" -> ")[0]` 向后兼容） |
+//! | 文件名 | 纯文件名（` -> target` 拆进 `link_target` 字段） | 同左（readlink 补齐） |
+//! | 软链目标类型 | 不补（`link_target_is_dir=false`，双击进编辑器） | 跟随 stat 补齐（目标是目录则双击进入） |
 //! | 读限流 | `f.read(PREVIEW_BYTES)` 恒定 256 KB | `take(MAX_EDIT_BYTES)`，`truncated` 按实际读取量判 |
 //! | 换行符 | 含 `\r\n` → crlf，内容归一成 LF | 同左 |
 //! | 写原子性 | 远端 python `os.replace` | SFTP `rename`（服务端原子） |
@@ -20,7 +21,14 @@
 //! 只在文件 > 2 MB 时为 true——于是一个 1 MB 的配置文件打开只见到前 256 KB、
 //! 却显示「可编辑」，保存后远端文件被静默截断成 256 KB。
 //! 本模块 `truncated` 由「实际读到的字节数 < 文件大小」推导，那条缝不存在。
+//!
+//! 🔴 **软链写破坏（2026-11-24 修）**：`rename` **不跟随目标 symlink**——直接
+//! rename 到链接路径会把链接本身替换成普通文件：用户读到的是目标内容，存下去的
+//! 却是个新文件，真正的目标没改、链接静默消失。写前必须解析出真实落点
+//! （[`resolve_rename_target`] / [`decide_rename_target`]）；helper 与 scp 两条
+//! 旧路径在 `ssh_file_cmds::finalize_script` 的远端 python 里做同一件事。
 
+use futures_util::future::join_all;
 use russh_sftp::client::fs::DirEntry as SftpDirEntry;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use std::sync::atomic::AtomicU64;
@@ -29,6 +37,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::ssh_cmds::{SshFileEntry, SshLink, TransferHooks, PART_SUFFIX};
 use super::ssh_file_cmds::{ERR_FILE_BINARY, ERR_FILE_CONFLICT, MAX_EDIT_BYTES};
 use super::ssh_russh_cmds::{get_russh_session, RusshFileSession};
+use crate::encoding::decode_utf8_truncated;
 use crate::ssh_proxy::PendingCreds;
 use crate::state::AppState;
 
@@ -59,6 +68,9 @@ pub(super) fn map_sftp_err<E: std::fmt::Display>(e: E) -> String {
 ///
 /// 纯函数，可单测——字段映射错了会直接表现为「大小全是 0」「目录不识别」，
 /// 而这种 bug 在真机上要连服务器才能看见。
+///
+/// 软链的 `link_target` / `link_target_is_dir` 在这里给默认值，由
+/// [`russh_list_dir`] 列完目录后补（readlink / 跟随 stat 是 I/O，进不了纯函数）。
 fn attrs_to_entry(e: &SftpDirEntry) -> Option<SshFileEntry> {
     // `read_dir` 已过滤 `.` / `..`；再防一次空名（异常服务器可能返回）。
     // 走 `Display`（内部即 `from_utf8_lossy`）：非 UTF-8 的文件名不会 panic，
@@ -79,7 +91,68 @@ fn attrs_to_entry(e: &SftpDirEntry) -> Option<SshFileEntry> {
         // 与旧路径 BSD 降级时 mtime 置 0 的行为一致。
         mtime: md.mtime.unwrap_or(0) as i64,
         name,
+        // 软链目标由调用方补齐；默认「无目标、目标不是目录」。
+        link_target: None,
+        link_target_is_dir: false,
     })
+}
+
+/// mode 的高 4 位是否标着「这是软链」（S_IFLNK = 0o120000）。
+fn mode_is_symlink(permissions: Option<u32>) -> bool {
+    permissions.is_some_and(|m| {
+        russh_sftp::protocol::FileMode::from_bits_truncate(m) == russh_sftp::protocol::FileMode::LNK
+    })
+}
+
+/// 列目录。失败返回 Err，由调用方回退旧路径。
+pub(super) async fn russh_list_dir(
+    state: &AppState,
+    link: &SshLink,
+    creds: PendingCreds,
+    path: &str,
+) -> Result<Vec<SshFileEntry>, String> {
+    let sess = get_russh_session(state, link, creds).await?;
+    let rd = sess.sftp.read_dir(path).await.map_err(map_sftp_err)?;
+    let mut entries: Vec<SshFileEntry> = rd.filter_map(|e| attrs_to_entry(&e)).collect();
+
+    // 软链条目补两个字段：目标字符串（展示 `link -> target`，与 `ls -la` 一致）
+    // 与目标是否为目录（决定双击时「进入」还是「编辑」）。
+    //
+    // 为什么要单独取：readdir 是 lstat 语义，只给链接自己的属性；目标是什么
+    // 必须再问服务器。`metadata`（STAT）**跟随**软链，一次调用同时拿到目标类型。
+    //
+    // 并发发：N 个软链也约等于一个 RTT。旧路径（`ls -la`）的目标是免费的
+    // （就在输出行里），这里不并发就会在软链密集的目录（/etc/alternatives 那种）
+    // 明显比旧路径慢——russh 处处更快，唯独这一项不能退步。
+    let link_paths: Vec<String> = entries
+        .iter()
+        .filter(|e| e.is_symlink)
+        .map(|e| join_remote(path, &e.name))
+        .collect();
+    if !link_paths.is_empty() {
+        let readlinks = join_all(link_paths.iter().map(|p| sess.sftp.read_link(p))).await;
+        let stats = join_all(link_paths.iter().map(|p| sess.sftp.metadata(p))).await;
+        let mut links = readlinks.into_iter();
+        let mut stats_it = stats.into_iter();
+        for e in &mut entries {
+            if !e.is_symlink {
+                continue;
+            }
+            // readlink 失败（罕见）：退化成不显示目标，不影响其它字段。
+            e.link_target = links.next().and_then(|r| r.ok()).map(|s| s.to_string());
+            // 跟随 stat 失败：目标断裂/成环，视为「不是目录」（双击进编辑器，
+            // 读失败时前端本就会给「用本机编辑器打开」的出路）。
+            e.link_target_is_dir = stats_it
+                .next()
+                .and_then(|r| r.ok())
+                .and_then(|m| m.permissions)
+                .is_some_and(|m| {
+                    russh_sftp::protocol::FileMode::from_bits_truncate(m)
+                        .contains(russh_sftp::protocol::FileMode::DIR)
+                });
+        }
+    }
+    Ok(entries)
 }
 
 /// 拼远端路径。SFTP 在线上是 POSIX 风格，但**不要**在这里做 canonicalize：
@@ -117,18 +190,6 @@ fn upload_tmp_path(remote: &str, pid: u32, seq: u64) -> String {
 /// 有可能让服务器改掉文件类型，那比权限不对严重得多。
 fn perm_bits(mode: u32) -> u32 {
     mode & 0o7777
-}
-
-/// 列目录。失败返回 Err，由调用方回退旧路径。
-pub(super) async fn russh_list_dir(
-    state: &AppState,
-    link: &SshLink,
-    creds: PendingCreds,
-    path: &str,
-) -> Result<Vec<SshFileEntry>, String> {
-    let sess = get_russh_session(state, link, creds).await?;
-    let rd = sess.sftp.read_dir(path).await.map_err(map_sftp_err)?;
-    Ok(rd.filter_map(|e| attrs_to_entry(&e)).collect())
 }
 
 /// 建目录。**语义对齐旧路径的 `mkdir -p`**：父目录不存在时逐级创建，
@@ -243,7 +304,11 @@ pub(super) async fn russh_read_file(
     // 于是 256KB–2MB 的文件「没截断却只读到 256KB」，保存即静默丢数据。
     let truncated = (buf.len() as u64) < size;
 
-    let text = String::from_utf8(buf)
+    // 🔴 用 `decode_utf8_truncated` 而不是 `String::from_utf8`：`take` 按字节数
+    // 截断，切点落在一个多字节字符中间时严格 decode 会把合法 UTF-8 文件误判成
+    // 二进制（>2MB 的中文文件约 1/4 概率踩中）。尾部残缺只退一个字符，
+    // 中部有非法字节（真二进制）仍然拒绝。与旧路径共用同一个函数、同一套语义。
+    let text = decode_utf8_truncated(&buf)
         .map_err(|_| format!("{ERR_FILE_BINARY}: 文件不是 UTF-8 文本，请用本机编辑器打开"))?;
     let line_ending = if text.contains("\r\n") { "crlf" } else { "lf" };
     let content = text.replace("\r\n", "\n");
@@ -264,6 +329,62 @@ pub(super) struct RusshReadResult {
     pub(super) mtime: i64,
     pub(super) truncated: bool,
     pub(super) line_ending: String,
+}
+
+/// lstat 看到的路径形态（[`decide_rename_target`] 的输入之一）。
+pub(super) enum LstatKind {
+    /// 不是软链——含 lstat 失败（不存在 / 权限不到）：照旧写字面路径，
+    /// 「保存到新路径」这条路不能因为多一次 lstat 就被改窄。
+    NotSymlink,
+    /// 是软链。
+    Symlink,
+}
+
+/// 决定原子 rename 的**落点**。纯函数，三态可单测。
+///
+/// 🔴 为什么需要它：SFTP/POSIX 的 `rename` **不跟随目标 symlink**。用户编辑一个
+/// 软链文件时，读到的是目标的内容（open/read 跟随链接），但若直接 rename 到链接
+/// 路径，**链接本身会被替换成一个普通文件**——真正的目标文件没被改，链接静默
+/// 消失。用户以为保存成功了，部署结构已坏，且外表完全看不出。
+/// 正确语义（vim / nano / VS Code 皆如此）：编辑软链 = 编辑其目标。
+///
+/// 拿不准（软链但解析失败：断裂 / 成环）时**拒绝保存**，绝不回退到「替换链接」的
+/// 老行为——防数据丢失一侧。读取本就不可能成功的链接到不了这一步，能到这里说明
+/// 是读取之后发生的变故（TOCTOU），拒绝是对的。
+pub(super) fn decide_rename_target(
+    literal: &str,
+    kind: LstatKind,
+    canonicalize: Result<String, String>,
+) -> Result<String, String> {
+    match kind {
+        LstatKind::NotSymlink => Ok(literal.to_string()),
+        LstatKind::Symlink => match canonicalize {
+            Ok(real) if !real.is_empty() && real != literal => Ok(real),
+            // 解析结果与字面相同（异常服务器行为）：没有新信息，照旧。
+            Ok(_) => Ok(literal.to_string()),
+            Err(e) => Err(format!("无法解析软链目标，已取消保存以免替换掉链接（{e}）")),
+        },
+    }
+}
+
+/// [`decide_rename_target`] 的 I/O 版：lstat 判形态，是软链再 canonicalize
+/// （SSH_FXP_REALPATH，服务端解析整条链，含中间目录的软链与相对目标）。
+async fn resolve_rename_target(sess: &RusshFileSession, path: &str) -> Result<String, String> {
+    let kind = match sess.sftp.symlink_metadata(path).await {
+        Ok(md) if mode_is_symlink(md.permissions) => LstatKind::Symlink,
+        _ => LstatKind::NotSymlink,
+    };
+    let canonicalize = if matches!(kind, LstatKind::Symlink) {
+        sess.sftp
+            .canonicalize(path)
+            .await
+            .map(|s| s.to_string())
+            .map_err(map_sftp_err)
+    } else {
+        // 不是软链就不必多花一次往返。
+        return Ok(path.to_string());
+    };
+    decide_rename_target(path, kind, canonicalize)
 }
 
 /// 写文件：乐观锁 + 临时文件 + 原子 rename。
@@ -326,8 +447,13 @@ pub(super) async fn russh_write_file(
         }
     }
 
+    // ---- 解析软链，定 rename 落点 ----
+    // 必须赶在临时文件之前：临时名要跟**落点**同目录，否则链接指向别的文件系统时
+    // rename 会 EXDEV（同目录才保证是服务端的一次原子替换）。
+    let target = resolve_rename_target(&sess, path).await?;
+
     // ---- 写临时文件（同目录）----
-    let tmp = write_tmp_path(path, std::process::id(), next_write_seq());
+    let tmp = write_tmp_path(&target, std::process::id(), next_write_seq());
     let mut f = sess
         .sftp
         .open_with_flags(
@@ -361,12 +487,12 @@ pub(super) async fn russh_write_file(
             eprintln!("[SSH] russh 写回权限失败（{path}）：{e}");
         }
     }
-    if let Err(e) = sess.sftp.rename(&tmp, path).await {
+    if let Err(e) = sess.sftp.rename(&tmp, &target).await {
         let _ = sess.sftp.remove_file(&tmp).await;
         return Err(map_sftp_err(e));
     }
 
-    Ok(stat_after_rename(&sess, path).await)
+    Ok(stat_after_rename(&sess, &target).await)
 }
 
 pub(super) struct RusshWriteResult {
@@ -499,8 +625,12 @@ pub(super) async fn russh_upload(
     let mut lf = tokio::fs::File::open(local)
         .await
         .map_err(|e| format!("打开本机文件失败：{e}"))?;
+    // 与 `russh_write_file` 同理：软链要先解析出真实落点，否则 rename 会把上传
+    // 路径上的软链替换成普通文件（读早就跟随链接，写也必须跟随）。也要赶在临时
+    // 名之前——临时名得跟落点同目录。
+    let target = resolve_rename_target(&sess, remote).await?;
     // 与 `russh_write_file` 同理：临时名要每次唯一，否则并发上传同一目标会互相截断。
-    let tmp = upload_tmp_path(remote, std::process::id(), next_write_seq());
+    let tmp = upload_tmp_path(&target, std::process::id(), next_write_seq());
     let mut rf = sess
         .sftp
         .open_with_flags(
@@ -546,12 +676,12 @@ pub(super) async fn russh_upload(
         .await
         .map_err(|e| format!("写入收尾失败：{e}"))?;
     drop(rf);
-    if let Err(e) = sess.sftp.rename(&tmp, remote).await {
+    if let Err(e) = sess.sftp.rename(&tmp, &target).await {
         let _ = sess.sftp.remove_file(&tmp).await;
         return Err(map_sftp_err(e));
     }
     hooks.emit_progress(100);
-    Ok(stat_after_rename(&sess, remote).await)
+    Ok(stat_after_rename(&sess, &target).await)
 }
 
 #[cfg(test)]
@@ -650,14 +780,9 @@ mod tests {
         let fallible =
             |p: &str| format!("let md = sess.sftp.metadata({p}).await.map_err(map_sftp_err)?;");
         assert_eq!(
-            src.matches(&ok_call("path")).count(),
-            1,
-            "russh_write_file 的 rename 之后必须走 stat_after_rename 降级"
-        );
-        assert_eq!(
-            src.matches(&ok_call("remote")).count(),
-            1,
-            "russh_upload 的 rename 之后必须走 stat_after_rename 降级"
+            src.matches(&ok_call("&target")).count(),
+            2,
+            "写路径与上传路径的 rename 之后都必须走 stat_after_rename 降级"
         );
         // 只查「原子替换」注释**之后**的代码。不能全文件 `contains`：
         // `russh_read_file` 读前的 stat、乐观锁的 stat 本来就该「失败即 Err」——
@@ -694,5 +819,64 @@ mod tests {
         assert_eq!(perm_bits(0o100644), 0o644);
         // 全 1 也不能溢出成别的
         assert_eq!(perm_bits(u32::MAX), 0o7777);
+    }
+
+    /// 🔴 回归（数据丢失级）：软链的替换落点必须是**解析出的真实路径**。
+    ///
+    /// `rename` 不跟随目标 symlink：直接 rename 到链接路径会把链接本身换成
+    /// 普通文件（目标没改、链接静默消失）。纯函数三态各钉一例。
+    #[test]
+    fn decide_rename_target_resolves_symlinks_and_refuses_when_unsure() {
+        // ① 不是软链（含 lstat 失败）：照旧写字面路径。「保存到新路径」
+        // 这条路不能因为多一次 lstat 就被改窄。
+        assert_eq!(
+            decide_rename_target("/a/b.conf", LstatKind::NotSymlink, Ok("/x".into()))
+                .expect("非软链不该报错"),
+            "/a/b.conf"
+        );
+        // ② 是软链且解析成功：落到真实路径
+        assert_eq!(
+            decide_rename_target(
+                "/etc/nginx/conf.d/default",
+                LstatKind::Symlink,
+                Ok("/etc/nginx/sites-available/default".into())
+            )
+            .expect("解析成功不该报错"),
+            "/etc/nginx/sites-available/default"
+        );
+        // ②b 解析结果与字面相同（异常服务器）：没有新信息，照旧
+        assert_eq!(
+            decide_rename_target("/a", LstatKind::Symlink, Ok("/a".into())).expect("相同照旧"),
+            "/a"
+        );
+        // ②c 解析结果为空：当没解析到，照旧（不能 rename 到空路径）
+        assert_eq!(
+            decide_rename_target("/a", LstatKind::Symlink, Ok(String::new())).expect("空照旧"),
+            "/a"
+        );
+        // ③ 是软链但解析失败（断裂/成环）：**拒绝保存**，绝不回退到替换链接
+        let err = decide_rename_target(
+            "/etc/nginx/conf.d/default",
+            LstatKind::Symlink,
+            Err("no such file".into()),
+        )
+        .expect_err("解析失败必须拒绝");
+        assert!(
+            err.contains("已取消保存以免替换掉链接"),
+            "错误信息要说明为什么拒绝：{err}"
+        );
+    }
+
+    /// mode 高 4 位判软链：链接自己的 mode 是 0o120000 | 权限位。
+    #[test]
+    fn mode_is_symlink_reads_type_bits_only() {
+        assert!(mode_is_symlink(Some(0o120777)), "lrwxrwxrwx 是软链");
+        assert!(mode_is_symlink(Some(0o120755)));
+        assert!(!mode_is_symlink(Some(0o100644)), "普通文件不是");
+        assert!(!mode_is_symlink(Some(0o040755)), "目录不是");
+        assert!(
+            !mode_is_symlink(None),
+            "拿不到 mode 不当软链（照旧写字面路径）"
+        );
     }
 }
