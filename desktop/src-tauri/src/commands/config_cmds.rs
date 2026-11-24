@@ -945,6 +945,10 @@ pub(crate) async fn import_config_inner(
         state.drop_ssh_helper(id);
         // D 方案：russh 长连接同理。凭据可能已经变了，旧连接必须丢掉重建。
         crate::commands::drop_russh_session(state, id);
+        let relay_id = super::relay_tunnel_cmds::runtime_id(id);
+        if state.halt_ssh_tunnel(&relay_id).is_some() {
+            state.emit_tunnels_stopped(&[relay_id]);
+        }
     }
     if !new_ssh_enabled && old_ssh_enabled {
         state.kill_all_ssh_sessions();
@@ -970,6 +974,7 @@ pub(crate) async fn import_config_inner(
         )
         .await;
     }
+    super::relay_tunnel_cmds::sync_relay_tunnels(state).await;
 
     Ok(ConfigSaveResult {
         ok: true,

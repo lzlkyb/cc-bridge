@@ -18,6 +18,9 @@ interface Listing {
  * 只缓存 entries，**不缓存 loading / error**：错误必须如实反映这一次请求的结果，
  * 否则「目录已删除」会被旧快照伪装成正常。
  *
+ * 快照存**服务器返回的原始序**：排序/过滤是用户当下怎么看的选择，由
+ * `useSshFileView` 在读取侧派生——混进缓存会让「快照」不再是服务器事实。
+ *
  * 上限 24 条：文件面板通常只在几个目录之间来回切，给太多既无收益又占内存。
  */
 const SNAPSHOT_LIMIT = 24;
@@ -66,9 +69,9 @@ export function useSshFileListing(connectionId: string, path: string) {
     try {
       const entries = await invoke<SshFileEntry[]>("ssh_sftp_list", { connectionId, path });
       if (!current()) return;
-      const sorted = [...entries].sort((a, b) => a.isDir !== b.isDir ? (a.isDir ? -1 : 1) : a.name.localeCompare(b.name));
-      writeSnapshot(key, sorted);
-      setSnapshot({ connectionId, path, entries: sorted, loading: false, error: null });
+      // 原样写快照：排序在 useSshFileView 派生（目录优先 + 用户选的列）。
+      writeSnapshot(key, entries);
+      setSnapshot({ connectionId, path, entries, loading: false, error: null });
     } catch (error) {
       if (current()) setSnapshot({ connectionId, path, entries: [], loading: false, error: `列目录失败：${cleanErr(error)}` });
     }

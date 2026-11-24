@@ -1592,6 +1592,7 @@ async fn save_ssh_connection(state: &AppState, args: SshSaveArgs) -> Result<SshC
         conn.encrypted_passphrase.clear();
     }
 
+    let _relay_lock = state.relay_tunnel_lock.lock().await;
     let db = state.db.lock().await;
     let mut config = state.config.write().await;
     // 转发规则、自动开启偏好和名称也走这里；它们不改变隧道启动时固定的服务器或凭据。
@@ -1628,6 +1629,14 @@ async fn save_ssh_connection(state: &AppState, args: SshSaveArgs) -> Result<SshC
         // 监管线程的 stop 标志已置位、`publish` 不会再发事件：手动补 stopped，
         // 否则前端 store 留着「运行中」的假状态（进程已经没了）。
         state.emit_tunnels_stopped(&[runtime_id]);
+        let relay_ids = config
+            .ssh_connections
+            .iter()
+            .filter(|c| c.id == conn.id || c.proxy_jump_id == conn.id)
+            .map(|c| super::relay_tunnel_cmds::runtime_id(&c.id))
+            .filter(|id| state.halt_ssh_tunnel(id).is_some())
+            .collect::<Vec<_>>();
+        state.emit_tunnels_stopped(&relay_ids);
     }
     Ok(conn)
 }
@@ -1689,6 +1698,7 @@ pub async fn ssh_delete_connection(
     state: State<'_, Arc<AppState>>,
     id: String,
 ) -> Result<(), String> {
+    let _relay_lock = state.relay_tunnel_lock.lock().await;
     let db = state.db.lock().await;
     let mut config = state.config.write().await;
     // 先扫引用：删掉一个被当作跳板机的连接，会让引用方**下次连接才报错**。
@@ -1724,8 +1734,10 @@ pub async fn ssh_delete_connection(
         op.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     }
     state.halt_ssh_tunnel(&runtime_id);
+    let relay_id = super::relay_tunnel_cmds::runtime_id(&id);
+    state.halt_ssh_tunnel(&relay_id);
     // 转发面板会随连接删除关闭，但侧栏/托盘可能还显示「运行中」：补发 stopped 归位。
-    state.emit_tunnels_stopped(&[id.clone(), runtime_id]);
+    state.emit_tunnels_stopped(&[id.clone(), runtime_id, relay_id]);
     config
         .stable_connect
         .connections
@@ -2606,9 +2618,207 @@ pub async fn ssh_sftp_remove(
     Ok(())
 }
 
+// ── 重命名 / 移动（批次③） ────────────────────────────────────
+//
+// 两个命令共享同一套三级回退（与 mkdir / remove 同构），差别只在**目标路径
+// 怎么算**：rename 只改名称（同目录），move 只换目录（同名）。目标路径一律
+// 由后端算，前端传不进任意 `to`——「只能修改名称；要换目录请用移动」这条
+// UX 承诺由这里结构性保证，不只靠前端自觉。
+
+/// 校验面板传来的新名称。纯函数，可单测。
+///
+/// 名称是**单段**（面板语义：重命名不换目录，所以不允许出现 `/`）。
+/// 不校验长度（NAME_MAX 由服务端执法，rename 失败的错误信息更准确），
+/// 也不禁控制字符（Linux 文件名合法，过度限制会让合法操作失败）。
+pub(super) fn validate_new_name(new_name: &str) -> Result<(), String> {
+    if new_name.is_empty() {
+        return Err("名称不能为空".into());
+    }
+    if new_name.contains('\0') {
+        return Err("名称含有非法字符（NUL）".into());
+    }
+    if new_name.contains('/') {
+        return Err("名称不能包含 /（重命名不换目录，换目录请用移动）".into());
+    }
+    if new_name == "." || new_name == ".." {
+        return Err("名称不能是 . 或 ..".into());
+    }
+    Ok(())
+}
+
+/// 校验移动的目标目录：非空、无 NUL。
+///
+/// 不校验存在性（那是 `mv` / rename 的活，服务端的错误信息更准确），
+/// 也不校验「把目录挪进自己的子树」——服务端两边都会拒绝（SFTP EINVAL /
+/// mv 自带检测），让事实裁判，不在客户端重复一套可能不一致的规则。
+pub(super) fn validate_dir_path(dir: &str) -> Result<(), String> {
+    if dir.is_empty() {
+        return Err("目标目录不能为空".into());
+    }
+    if dir.contains('\0') {
+        return Err("目标目录含有非法字符（NUL）".into());
+    }
+    Ok(())
+}
+
+/// 同目录重命名的目标路径：`path` 的父目录 + `new_name`。纯函数，可单测。
+pub(super) fn rename_target_path(path: &str, new_name: &str) -> Result<String, String> {
+    validate_new_name(new_name)?;
+    let (parent, old) = path
+        .rsplit_once('/')
+        .ok_or_else(|| format!("路径不是绝对路径形态，无法定位父目录：{path}"))?;
+    if new_name == old {
+        return Err("名称未变化".into());
+    }
+    // 父目录是根时拼出来是 "//name"：POSIX 下等价但难看，且会让
+    // 「目标与来源相同」这类等式判断分心，特判掉。
+    Ok(if parent.is_empty() {
+        format!("/{new_name}")
+    } else {
+        format!("{parent}/{new_name}")
+    })
+}
+
+/// 移动到目标目录：目标路径 = `to_dir` / `from` 的文件名。纯函数，可单测。
+pub(super) fn move_target_path(from: &str, to_dir: &str) -> Result<String, String> {
+    validate_dir_path(to_dir)?;
+    let base = from
+        .rsplit_once('/')
+        .map(|(_, b)| b)
+        .filter(|b| !b.is_empty())
+        .ok_or_else(|| format!("路径不是文件形态，无法取文件名：{from}"))?;
+    let to = if to_dir == "/" {
+        format!("/{base}")
+    } else {
+        format!("{}/{base}", to_dir.trim_end_matches('/'))
+    };
+    if to == from {
+        return Err("目标与当前位置相同，无需移动".into());
+    }
+    Ok(to)
+}
+
+/// 拼 helper / 一次性 ssh 用的远端 rename 命令。纯函数，可单测。
+///
+/// 🔴 两个必须防的坑：
+/// 1. **不能用 `exit`**：helper 是常驻 `/bin/sh`（`wrap_command` 是
+///    `{cmd}; printf END_$?`），`exit` 会把会话本身杀掉，之后每次操作
+///    都白付一次完整登录。用 `false` 收尾拿非零退出码。
+/// 2. **`mv` 必须带 `-f`**：helper 跑在 PTY 上（交互式），不带 `-f` 的
+///    `mv` 遇已存在目标会挂起等 y/n 直到命令超时。
+///
+/// 🔴 **`mv` 与 SFTP rename 的语义分歧**：目标是**已存在的真目录**时，
+/// `mv` 会把源**挪进目录里**（`mv f dir` → `dir/f`）而不是报错——用户点了
+/// 「覆盖」却看到条目换个位置静默消失，而 russh 侧对这种组合返回 EISDIR。
+/// 所以 overwrite 分支显式拒绝目录目标，对齐 russh。（代价：目录→空目录的
+/// 替换在 helper 路径被拒，SFTP 本来允许——罕见组合，选「明确失败」而不是
+/// 「静默错位」。）
+///
+/// overwrite=false 的预检用 `[ -e ] || [ -L ]`：`-e` 跟随软链、`-L` 补断链
+/// （断链时 `-e` 为假但条目真实存在，rename 到断链路径会替换掉链接，
+/// 必须让用户确认——与 russh 侧 `symlink_metadata` 预检同一判据）。
+pub(super) fn rename_remote_cmd(from: &str, to: &str, overwrite: bool) -> String {
+    let f = shell_quote(from);
+    let t = shell_quote(to);
+    if overwrite {
+        format!(
+            "if [ -d {t} ] && [ ! -L {t} ]; then echo 'TARGET_IS_DIR: 目标已存在且是一个目录，无法覆盖'; false; else mv -f -- {f} {t}; fi"
+        )
+    } else {
+        format!(
+            "if [ -e {t} ] || [ -L {t} ]; then echo TARGET_EXISTS; false; else mv -- {f} {t}; fi"
+        )
+    }
+}
+
+/// rename / move 的公共骨架：**三级回退**，与 `ssh_sftp_mkdir` /
+/// `ssh_sftp_remove` 完全同构——russh 长连接优先，**失败不 return Err**，
+/// 继续往常驻 helper、一次性 ssh 走。`remote_cmd` 由调用方经
+/// [`rename_remote_cmd`]（纯函数）给出，helper 与一次性 ssh 跑同一条命令，
+/// 两条 shell 路径行为一致。
+async fn rename_via_fallback(
+    state: &State<'_, Arc<AppState>>,
+    connection_id: &str,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+) -> Result<(), String> {
+    if !state.config.read().await.ssh_enabled {
+        return Err("SSH 终端未启用".into());
+    }
+    let link = fetch_link(state, connection_id).await?;
+    let conn = &link.conn;
+    let ssh_path = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
+    let creds = resolve_link_secrets(&link, &state.data_dir)?;
+    let remote_cmd = rename_remote_cmd(from, to, overwrite);
+    // D 方案：russh 长连接优先（条目级 rename；EXDEV 留给下面的 mv）。
+    if super::ssh_russh_file::russh_rename(state.inner(), &link, creds.clone(), from, to, overwrite)
+        .await
+        .is_ok()
+    {
+        return Ok(());
+    }
+    // 快路径：常驻 helper（同 mkdir / remove）。
+    if let Ok((out, code)) =
+        run_via_helper(state, &link, &ssh_path, creds.clone(), remote_cmd.clone()).await
+    {
+        return if code == 0 {
+            Ok(())
+        } else {
+            Err(out.trim().to_string())
+        };
+    }
+    let mut args = ssh_base_args(&link, "-p");
+    args.push(format!("{}@{}", conn.username, conn.host));
+    args.push(remote_cmd);
+    // 瞬时操作：不需要进度，也不需要取消。
+    spawn_capture_off_runtime(ssh_path, args, creds).await?;
+    Ok(())
+}
+
+/// 重命名远程文件/目录（**只改名称，不换目录**——换目录是 [`ssh_sftp_move`]）。
+///
+/// `new_name` 是单段名称（不含 `/`），目标路径由后端按「同目录」算出。
+/// `overwrite=false` 时目标已存在返回 `TARGET_EXISTS` 标记（前端据此弹
+/// 确认对话框），用户点「覆盖」后才带 `overwrite=true` 重调；没有静默
+/// 覆盖路径。软链条目重命名改的是**链接本身**（条目级语义，与资源管理器
+/// 一致；「编辑软链内容解析到目标」是另一套故意不同的语义）。
+#[tauri::command]
+pub async fn ssh_sftp_rename(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    path: String,
+    new_name: String,
+    overwrite: bool,
+) -> Result<(), String> {
+    let to = rename_target_path(&path, &new_name)?;
+    rename_via_fallback(&state, &connection_id, &path, &to, overwrite).await
+}
+
+/// 移动远程文件/目录到另一个目录（**只换目录，不改名**）。
+///
+/// 目标路径 = `to_dir` / 原文件名，同样由后端算。批量移动由前端对每个
+/// 条目各调一次（串行执行）；同名冲突的预检在移动前用目标目录的列目录
+/// 结果在前端汇总成一个确认，不逐个弹窗。
+#[tauri::command]
+pub async fn ssh_sftp_move(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    from: String,
+    to_dir: String,
+    overwrite: bool,
+) -> Result<(), String> {
+    let to = move_target_path(&from, &to_dir)?;
+    rename_via_fallback(&state, &connection_id, &from, &to, overwrite).await
+}
+
 #[cfg(test)]
 #[path = "ssh_save_tests.rs"]
 mod save_tests;
+
+#[cfg(test)]
+#[path = "ssh_rename_tests.rs"]
+mod rename_tests;
 
 #[cfg(test)]
 mod tests {

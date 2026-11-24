@@ -174,6 +174,21 @@ html[data-ui-style="glass"] .relay-prereq {
   margin-top: 2px;
 }
 
+.relay-ssh-access {
+  display: grid;
+  gap: 8px;
+}
+.relay-ssh-access :is(select, input) {
+  max-width: 100%;
+  min-width: 0;
+  padding: 4px 8px;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  font: inherit;
+}
+
 .relay-code {
   margin-top: 10px;
   padding: 11px 13px;

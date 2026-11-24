@@ -3,6 +3,8 @@ import { Icon } from "../ui/icon";
 import { EmptyState } from "../ui/EmptyState";
 import { useAutoAnimateRM } from "../../hooks/useAutoAnimateRM";
 import type { SshFileEntry } from "../../lib/types";
+import type { SortKey, SortState } from "../../lib/sshFileSort";
+import { SortableTh } from "./SortableTh";
 
 /** 字节数 → 人类可读（B/KB/MB/GB/TB）。 */
 function formatSize(n: number): string {
@@ -36,6 +38,10 @@ interface SshFileRowProps {
   onOpenDir: (name: string) => void;
   onDownload: (name: string) => void;
   onRemove: (entry: SshFileEntry) => void;
+  /** 重命名（只改名称，后端保证不换目录）。 */
+  onRename: (entry: SshFileEntry) => void;
+  /** 移动到别的目录（单条；批量走 FileBatchBar）。 */
+  onMove: (entry: SshFileEntry) => void;
   /** 带修饰键的点击：多选/区间选择。返回 true = 已按选择处理。 */
   onSelect?: (name: string, e: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean }) => boolean;
   /** 双击普通文件：打开内联编辑器（读不出来时前端给「用本机编辑器打开」的出路）。 */
@@ -43,7 +49,7 @@ interface SshFileRowProps {
 }
 
 /**
- * 远程文件表格行：名称（目录/软链到目录整行可点进入）+ 大小 + 修改时间 + 下载/删除。
+ * 远程文件表格行：名称（目录/软链到目录整行可点进入）+ 大小 + 修改时间 + 下载/重命名/移动/删除。
  */
 export function SshFileRow({
   highlighted,
@@ -53,6 +59,8 @@ export function SshFileRow({
   onOpenDir,
   onDownload,
   onRemove,
+  onRename,
+  onMove,
   onSelect,
   onActivateFile,
 }: SshFileRowProps) {
@@ -123,7 +131,7 @@ export function SshFileRow({
           formatDate(entry.mtime)
         )}
       </td>
-      <td className="w-44 py-1.5 pr-3">
+      <td className="w-52 py-1.5 pr-3">
         <div className="flex items-center justify-end gap-1">
           {!entry.isDir && (
             <button
@@ -133,7 +141,7 @@ export function SshFileRow({
                 ev.stopPropagation();
                 onDownload(entry.name);
               }}
-              className="rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+              className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
             >
               下载
             </button>
@@ -143,9 +151,31 @@ export function SshFileRow({
             disabled={busy}
             onClick={(ev) => {
               ev.stopPropagation();
+              onRename(entry);
+            }}
+            className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            重命名
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onMove(entry);
+            }}
+            className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            移动
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={(ev) => {
+              ev.stopPropagation();
               onRemove(entry);
             }}
-            className="rounded-md px-2 py-1 text-xs text-destructive-ink hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+            className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-destructive-ink hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
           >
             删除
           </button>
@@ -166,15 +196,26 @@ interface FileTableProps {
   onOpenDir: (name: string) => void;
   onDownload: (name: string) => void;
   onRemove: (entry: SshFileEntry) => void;
+  onRename: (entry: SshFileEntry) => void;
+  onMove: (entry: SshFileEntry) => void;
   onRetry?: () => void;
   /** 带修饰键的点击 → 多选。 */
   onSelect?: (name: string, e: { metaKey?: boolean; ctrlKey?: boolean; shiftKey?: boolean }) => boolean;
   /** 双击普通文件 → 打开内联编辑器。 */
   onActivateFile?: (name: string) => void;
+  /** 当前排序态（表头高亮激活列 + ▲/▼）。 */
+  sort: SortState;
+  /** 表头点击 → 轮换排序（见 lib/sshFileSort 的 nextSortState）。 */
+  onToggleSort: (key: SortKey) => void;
+  /**
+   * 过滤无命中（与「目录为空」区分）：同样是 0 行，给的是过滤相关提示，
+   * 不是「拖文件进来」的引导——后者在只是没匹配上时会误导用户。
+   */
+  filterActive?: boolean;
 }
 
 /**
- * 文件列表表格：错误条 + 空态 + 表头 + 行。
+ * 文件列表表格：错误条 + 空态 + 表头（可点击排序）+ 行。
  *
  * 动画（设计稿：design/微动画补全-P0P1-设计稿.html）：
  * - 根容器 `animate-fade-in`：换目录时由父组件 `key={path}` 重挂触发整列淡入；
@@ -192,9 +233,14 @@ export function FileTable({
   onOpenDir,
   onDownload,
   onRemove,
+  onRename,
+  onMove,
   onRetry,
   onSelect,
   onActivateFile,
+  sort,
+  onToggleSort,
+  filterActive,
 }: FileTableProps) {
   const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>();
   return (
@@ -207,20 +253,21 @@ export function FileTable({
       )}
       {!error && !loading && entries.length === 0 && (
         // EmptyState（2026-10-17）：替代「空目录」一行灰字——给得出路的空态才友好，
-        // 且和「没加载完」在视觉上一眼可分。
+        // 且和「没加载完」在视觉上一眼可分。过滤无命中是第三种情况：目录不空，
+        // 只是当前关键词没匹配上，提示必须指向「改关键词」而不是「上传文件」。
         <EmptyState
           className="py-10"
-          icon="folder"
-          description="目录为空。把文件拖进来，或点上方「上传」。"
+          icon={filterActive ? "search" : "folder"}
+          description={filterActive ? "没有匹配的条目，换个关键词或清空过滤框。" : "目录为空。把文件拖进来，或点上方「上传」。"}
         />
       )}
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border bg-muted/30 text-xs text-muted-foreground">
-            <th className="py-1.5 pl-3 text-left font-medium">名称</th>
-            <th className="w-28 py-1.5 text-right font-medium">大小</th>
-            <th className="w-40 py-1.5 pr-3 text-right font-medium">修改时间</th>
-            <th className="w-44 py-1.5 pr-3 text-right font-medium">操作</th>
+            <SortableTh sortKey="name" label="名称" align="left" extra="py-1.5 pl-3" sort={sort} onToggleSort={onToggleSort} />
+            <SortableTh sortKey="size" label="大小" align="right" extra="w-28 py-1.5" sort={sort} onToggleSort={onToggleSort} />
+            <SortableTh sortKey="mtime" label="修改时间" align="right" extra="w-40 py-1.5 pr-3" sort={sort} onToggleSort={onToggleSort} />
+            <th className="w-52 py-1.5 pr-3 text-right font-medium">操作</th>
           </tr>
         </thead>
         <tbody ref={tbodyRef}>
@@ -234,6 +281,8 @@ export function FileTable({
               onOpenDir={onOpenDir}
               onDownload={onDownload}
               onRemove={onRemove}
+              onRename={onRename}
+              onMove={onMove}
               onSelect={onSelect}
               onActivateFile={onActivateFile}
             />

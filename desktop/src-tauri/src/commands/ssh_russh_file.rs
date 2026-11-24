@@ -270,6 +270,52 @@ pub(super) async fn russh_remove(
     Ok(())
 }
 
+/// rename 预检命中（目标已存在）时返回的标记串。
+///
+/// 三级回退的每一级都用同一个串：russh 侧直接 `Err` 它；helper 侧命令
+/// `echo` 它并以退出码 1 收尾；一次性 ssh 侧退出码非零让输出进错误串。
+/// 前端判据统一 `cleanErr(e).includes("TARGET_EXISTS")`（红线：禁 startsWith，
+/// 错误串前面还可能挂着「远程命令失败（退出码 1）：」这类前缀）。
+pub(super) const RENAME_TARGET_EXISTS: &str = "TARGET_EXISTS";
+
+/// 重命名 / 移动一个条目（文件、目录、软链——**动链接本身**）。
+///
+/// **条目级语义**（与资源管理器一致）：`deploy.sh` 这种软链条目重命名后
+/// 仍是软链。这与「编辑软链文件内容」时解析到目标再写
+/// （[`resolve_rename_target`]）是**两套故意不同的语义**，别「顺手统一」——
+/// 前者用户操作的对象是眼前这个条目，后者用户操作的是条目背后的内容。
+///
+/// **覆盖**：`overwrite=false` 时先预检目标，命中即返回
+/// [`RENAME_TARGET_EXISTS`]，由前端弹确认、用户点「覆盖」后才带
+/// `overwrite=true` 重来。没有静默覆盖路径。
+///
+/// **预检用 lstat 语义**（`symlink_metadata`）而非 `try_exists`（stat 跟随
+/// 软链）：目标是**断链软链**时 stat 报 NoSuchFile，会把「链上还有个条目」
+/// 误判成「可以安全覆盖」——而 rename 到断链路径会静默替换掉那个链接。
+/// 预检本身拿不准（权限等）时不猜：`is_ok()` 为 false 就放行，让 rename
+/// 自己去撞——服务端语义（替换文件 / 拒绝非空目录 / EISDIR）才是最终裁判，
+/// 预检只是 UX，真正的约束在 rename 调用本身。
+///
+/// **不做 EXDEV 回退**：跨文件系统时服务端返回失败，调用方
+/// （`ssh_sftp_rename` / `ssh_sftp_move`）自然落到 helper 的 `mv`
+/// （自带 copy+delete 回退）。在 russh 内复制一份「读完再写过去」没有意义——
+/// 那是 GB 级文件的灾难，且中间失败会留下半份。
+pub(super) async fn russh_rename(
+    state: &AppState,
+    link: &SshLink,
+    creds: PendingCreds,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+) -> Result<(), String> {
+    let sess = get_russh_session(state, link, creds).await?;
+    if !overwrite && sess.sftp.symlink_metadata(to).await.is_ok() {
+        return Err(RENAME_TARGET_EXISTS.to_string());
+    }
+    sess.sftp.rename(from, to).await.map_err(map_sftp_err)?;
+    Ok(())
+}
+
 /// 取远端 mtime（Unix 秒）。失败返回 Err，调用方兜底（旧路径语义：拿不到就跳过冲突检测）。
 pub(super) async fn russh_mtime(
     state: &AppState,

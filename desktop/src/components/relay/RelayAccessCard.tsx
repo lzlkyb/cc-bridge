@@ -6,6 +6,7 @@ import { copyText } from "../../lib/utils";
 import { invoke } from "../../lib/tauri";
 import { buildRelaySnippet } from "../../lib/relayFormat";
 import type { RelaySaveResult, RelaySnapshot } from "../../lib/types";
+import { RelaySshAccess, useRelaySshAccess } from "./RelaySshAccess";
 
 /**
  * ⑤ 接入（全宽）。
@@ -36,13 +37,15 @@ export function RelayAccessCard({
   const port = snapshot?.port ?? 4100;
   const direct = !!snapshot && snapshot.listenHost !== "127.0.0.1";
   const listening = snapshot?.running ?? false;
-  const baseUrl = direct ? `http://${snapshot?.listenHost}:${port}` : `http://127.0.0.1:${port}`;
+  const access = useRelaySshAccess(!direct && listening);
+  const baseUrl = direct ? `http://${snapshot?.listenHost}:${port}`
+    : access.port ? `http://127.0.0.1:${access.port}` : "";
   const alias = snapshot?.tiers.find((t) => t.tier === "default")?.alias ?? "claude-sonnet-5-5";
-  const snippet = buildRelaySnippet({
+  const snippet = baseUrl ? buildRelaySnippet({
     baseUrl,
     token: snapshot?.token || "…",
     model: alias,
-  });
+  }) : "";
 
   const switchMode = async (next: "tunnel" | "direct") => {
     if ((next === "direct") === direct || switching) return;
@@ -97,7 +100,7 @@ export function RelayAccessCard({
       <p className="relay-method-note">
         {direct
           ? "远端直接用内网地址访问本机，少一个会断的环节，但同网段可探测。"
-          : "让远端 Claude Code 通过 SSH 访问本机中转。已有相同端口转发时可以直接复用。"}
+          : "选择远端服务器和账号，CC Bridge 会自动建立 SSH 转发并分配空闲端口。"}
       </p>
 
       {direct ? (
@@ -109,17 +112,15 @@ export function RelayAccessCard({
           </span>
         </div>
       ) : (
-        <div className="relay-prereq">
-          <Icon name="info" size={13} />
-          <span>
-            在本机运行以下命令，并保持 SSH 会话打开：
-            <code>ssh -N -o ExitOnForwardFailure=yes -R 127.0.0.1:{port}:127.0.0.1:{port} &lt;远端 SSH 主机&gt;</code>
-          </span>
-        </div>
+        <RelaySshAccess access={access} listening={listening} />
       )}
 
-      <p className="relay-method-note">把下面的配置粘贴到远端 Shell，运行 <code>claude-own</code> 后发送一条请求。</p>
-      <pre className="relay-code" tabIndex={0} aria-label="远端配置命令">
+      <p className="relay-method-note">{direct
+        ? <>把下面的配置粘贴到远端 Shell，运行 <code>claude-own</code> 后发送一条请求。</>
+        : snippet
+        ? <>把下面的配置粘贴到所选服务器的 Shell，运行 <code>claude-own</code> 后发送一条请求。</>
+        : "SSH 转发就绪后即可生成远端配置。"}</p>
+      {snippet && <pre className="relay-code" tabIndex={0} aria-label="远端配置命令">
         {snippet.split("\n").map((line, i) => (
           // 行用 <span display:block> 而不是 <div>：<pre> 的内容模型是短语级内容，
           // 里面塞块级元素在严格校验下是不合法的，虽然浏览器都容忍。
@@ -127,13 +128,13 @@ export function RelayAccessCard({
             {line || " "}
           </span>
         ))}
-      </pre>
+      </pre>}
 
       <div className="relay-actions">
         <button
           type="button"
           className="ui-button primary"
-          disabled={!listening || !snapshot?.token || switching}
+          disabled={!listening || !snapshot?.token || switching || !snippet}
           onClick={() =>
             void copyText(
               snippet,

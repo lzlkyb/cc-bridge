@@ -6,6 +6,8 @@ interface Props {
   busy: boolean;
   onDownload: () => void;
   onRemove: () => void;
+  /** 移动到别的目录（含目录条目——批量移动不挑类型）。 */
+  onMove: () => void;
   onSelectAll: () => void;
   onClear: () => void;
 }
@@ -16,9 +18,9 @@ interface Props {
  * WHY 不做成浮层：列表本身可滚动，浮层会盖住行；做成常驻窄条只占一行高度，
  * 且选中数变化时按钮可用性一眼能看明白。
  * WHY 下载/删除按文件数判可用：目录没有「下载」这回事，删除目录是递归删，
- * 不混在批量里（仍走行尾按钮）。
+ * 不混在批量里（仍走行尾按钮）。移动不挑类型——文件和目录都能整个搬走。
  */
-export function FileBatchBar({ total, files, busy, onDownload, onRemove, onSelectAll, onClear }: Props) {
+export function FileBatchBar({ total, files, busy, onDownload, onRemove, onMove, onSelectAll, onClear }: Props) {
   return (
     <div
       role="toolbar"
@@ -45,8 +47,16 @@ export function FileBatchBar({ total, files, busy, onDownload, onRemove, onSelec
       <button
         type="button"
         disabled={busy}
+        onClick={onMove}
+        className="whitespace-nowrap rounded-md px-2 py-1 text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        移动到…
+      </button>
+      <button
+        type="button"
+        disabled={busy}
         onClick={onSelectAll}
-        className="rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        className="whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >
         全选
       </button>

@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RelaySnapshot } from "../../lib/types";
+import type { RelaySnapshot, TunnelStatus } from "../../lib/types";
 
 // 快照由用例切换。桩掉数据订阅而不是真发 IPC：这里要验的是「三种状态各自渲染成
 // 什么」，不是轮询本身（那部分在 Rust 侧与 useRelayStatus 里）。
 // `invoke` 单独拎出来是为了能查「保存到底发了什么」——见最后一个用例。
 const mocks = vi.hoisted(() => ({
   snapshot: { current: undefined as RelaySnapshot | undefined },
+  tunnels: new Map<string, TunnelStatus>(),
   invoke: vi.fn(),
 }));
 vi.mock("../../hooks/useRelayStatus", () => ({
@@ -20,6 +22,9 @@ vi.mock("../../hooks/useRelayStatus", () => ({
   }),
 }));
 vi.mock("../../lib/tauri", () => ({ invoke: mocks.invoke }));
+vi.mock("../../lib/sshTunnelStore", () => ({
+  useTunnelStatus: (id: string) => mocks.tunnels.get(id),
+}));
 // 复制粘贴走的是 Tauri 剪贴板插件，jsdom 里没有；本用例不点复制按钮，只需能加载。
 vi.mock("../../lib/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/utils")>()),
@@ -100,16 +105,22 @@ function snapshot(patch: Partial<RelaySnapshot> = {}): RelaySnapshot {
 
 let root: Root;
 let host: HTMLDivElement;
+let client: QueryClient;
 
 async function mount(value?: RelaySnapshot) {
   mocks.snapshot.current = value;
-  await act(async () => root.render(<RelayTab />));
+  await act(async () => root.render(<QueryClientProvider client={client}><RelayTab /></QueryClientProvider>));
 }
 
 beforeEach(() => {
   // 保存一律成功返回：本文件要验的是「发了什么」，不是失败分支。
   mocks.invoke.mockReset();
-  mocks.invoke.mockImplementation(async () => ({ configured: true, missing: null, warnings: [] }));
+  mocks.invoke.mockImplementation(async (command: string) => command === "ssh_list_connections"
+    ? { enabled: true, connections: [{ id: "company", name: "公司", host: "server.example", port: 22, username: "alice" }] }
+    : { configured: true, missing: null, warnings: [] });
+  mocks.tunnels.clear();
+  localStorage.removeItem("relaySshConnectionId");
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -117,6 +128,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
+  client.clear();
 });
 
 describe("中转页三种状态", () => {
@@ -127,6 +139,14 @@ describe("中转页三种状态", () => {
   }
 
   it("运行中：模型路由、请求明细与接入配置可查看", async () => {
+    mocks.tunnels.set("relay:company", {
+      connectionId: "relay:company", state: "up", needsSecret: false, message: null,
+      rules: [{
+        rule: { id: "model-relay", enabled: true, kind: "remote", listenHost: "127.0.0.1",
+          listenPort: 45201, targetHost: "127.0.0.1", targetPort: 4100, note: "" },
+        state: "listening", boundPort: 45201, message: null,
+      }],
+    });
     await mount(snapshot());
     const text = host.textContent ?? "";
     expect(text).toContain("模型路由");
@@ -134,12 +154,53 @@ describe("中转页三种状态", () => {
     expect(text).toContain("qwen4-max-preview");
     for (const label of ["今日请求", "首字 P50", "今日 Token", "最近请求", "查看档位映射"]) expect(text).toContain(label);
     await click("接入指南", host);
+    await vi.waitFor(() => expect(document.body.querySelector(".relay-code")).not.toBeNull());
     const code = document.body.querySelector(".relay-code")?.textContent ?? "";
-    expect(code).toContain('"ANTHROPIC_BASE_URL": "http://127.0.0.1:4100"');
+    expect(code).toContain('"ANTHROPIC_BASE_URL": "http://127.0.0.1:45201"');
     expect(code).toContain("rly_7f3a9c2e4b8d");
     expect(code).toContain('"ANTHROPIC_MODEL": "claude-sonnet-5-5"');
     // 上游真名不得出现在远端那份文件里
     expect(code).not.toContain("qwen4-max-preview");
+  });
+
+  it("接入需先建立转发，重连期间不提供失效的地址", async () => {
+    await mount(snapshot());
+    await click("接入指南", host);
+    await vi.waitFor(() => expect(document.querySelector("#relay-ssh-server")).not.toBeNull());
+    expect(document.querySelector(".relay-code")).toBeNull();
+    await click("建立 SSH 转发");
+    expect(mocks.invoke).toHaveBeenCalledWith("relay_tunnel_start", {
+      connectionId: "company", password: null, passphrase: null, reallocate: false,
+    });
+    mocks.tunnels.set("relay:company", {
+      connectionId: "relay:company", state: "reconnecting", needsSecret: false, message: null,
+      rules: [{
+        rule: { id: "model-relay", enabled: true, kind: "remote", listenHost: "127.0.0.1",
+          listenPort: 45201, targetHost: "127.0.0.1", targetPort: 4100, note: "" },
+        state: "listening", boundPort: 45201, message: null,
+      }],
+    });
+    await mount(snapshot());
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("SSH 正在重连");
+    expect(document.querySelector(".relay-code")).toBeNull();
+    const copy = [...document.querySelectorAll("button")].find(button => button.textContent === "复制远端配置");
+    expect(copy?.disabled).toBe(true);
+
+    const reconnecting = mocks.tunnels.get("relay:company")!;
+    reconnecting.rules[0].state = "failed";
+    await mount(snapshot());
+    await click("重新分配端口");
+    expect(mocks.invoke).toHaveBeenLastCalledWith("relay_tunnel_start", {
+      connectionId: "company", password: null, passphrase: null, reallocate: true,
+    });
+  });
+
+  it("内网直连仍使用原本的监听地址和端口", async () => {
+    await mount(snapshot({ listenHost: "192.0.2.15", addr: "192.0.2.15:4100" }));
+    await click("接入指南", host);
+    expect(document.querySelector(".relay-code")?.textContent).toContain('"ANTHROPIC_BASE_URL": "http://192.0.2.15:4100"');
+    expect(document.querySelector("#relay-ssh-server")).toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalledWith("ssh_list_connections");
   });
 
   it("关闭态保留历史与上游设置，并提供启动操作", async () => {

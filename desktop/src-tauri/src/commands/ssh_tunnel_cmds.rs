@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use portable_pty::ChildKiller;
 use tauri::{AppHandle, Emitter, State};
 
+use super::relay_tunnel_cmds;
 use super::ssh_cmds::{
     find_ssh, load_link_parts, passphrase_prompt_in, password_prompt_in, prompt_tail,
     resolve_connect_secrets, ssh_base_args, strip_ansi, SshLink, CREDENTIAL_FILL_WINDOW,
@@ -637,6 +638,15 @@ pub(super) fn tunnel_args(link: &SshLink, id: &str, rules: &[ForwardRule]) -> Ve
             "-o".into(),
             "ConnectTimeout=10".into(),
         ]);
+        if id == relay_tunnel_cmds::runtime_id(&link.conn.id) {
+            // A multiplexed session would put this listener under another SSH process.
+            args.extend([
+                "-S".into(),
+                "none".into(),
+                "-o".into(),
+                "ExitOnForwardFailure=yes".into(),
+            ]);
+        }
     }
     args.extend(forward_args(rules));
     args.push(format!("{}@{}", link.conn.username, link.conn.host));
@@ -744,9 +754,14 @@ fn supervise_loop(
         if stop.load(Ordering::SeqCst) {
             return;
         }
-        let (was_up, last) = {
+        let is_relay = plan.id == relay_tunnel_cmds::runtime_id(&plan.link.conn.id);
+        let (was_up, last, relay_allocation_pending) = {
             let s = status.lock().unwrap_or_else(|p| p.into_inner());
-            (connected_for_retry(&s), retry_error(&s))
+            (
+                connected_for_retry(&s),
+                retry_error(&s),
+                is_relay && s.rules[0].rule.listen_port == 0,
+            )
         };
         let needs_jump_secret = matches!(fatal, Some(Fatal::JumpSecret(_)));
         let needs_secret = needs_jump_secret || matches!(fatal, Some(Fatal::NeedsSecret(_)));
@@ -770,9 +785,9 @@ fn supervise_loop(
         if is_stable {
             log::warn!("托管隧道本次未连通：{reason}");
         }
-        // 服务器拒绝监听是「这个端口被别人占了」，重连多少次都一样，只会每 60 秒撞一次。
-        // 只有托管隧道按致命处理：手动转发的端口可能等对方释放后就好了，保持原行为。
-        let port_taken = port_taken_stops_retry(is_stable, &reason);
+        // After a network loss the old relay listener can still be waiting for the SSH peer
+        // to time out. Retry the assigned port with backoff so existing clients keep their URL.
+        let port_taken = port_taken_stops_retry(is_stable || relay_allocation_pending, &reason);
         if stop_here || is_fatal(&reason) || port_taken {
             publish(app, stop, status, |s| {
                 s.state = TunnelState::Error;
@@ -783,7 +798,7 @@ fn supervise_loop(
                         && plan.link.jump.as_ref().is_some_and(|jump| {
                             reason.starts_with(&format!("{}@{}:", jump.username, jump.host))
                         }));
-                s.message = Some(if port_taken {
+                s.message = Some(if port_taken && is_stable {
                     format!(
                         "{reason}。共享服务器上每个账号需要各自的端口，请在接入页点「重新接入」分配专属端口。"
                     )
@@ -835,6 +850,11 @@ fn login_still_current(plan: &Plan) -> bool {
     let Ok(config) = state.config.try_read() else {
         return true;
     };
+    if plan.id == relay_tunnel_cmds::runtime_id(&plan.link.conn.id)
+        && (!config.ssh_enabled || config.relay_listen_mode != "tunnel")
+    {
+        return false;
+    }
     SshLink::from_config(&config, &plan.link.conn.id)
         .is_ok_and(|current| current.same_login(&plan.link))
 }
@@ -863,7 +883,9 @@ fn connected_for_retry(status: &TunnelStatus) -> bool {
 }
 
 fn retry_error(status: &TunnelStatus) -> Option<String> {
-    if status.connection_id.starts_with("stable:") {
+    if status.connection_id.starts_with("stable:")
+        || relay_tunnel_cmds::is_relay_runtime(&status.connection_id)
+    {
         if let Some(message) = status
             .rules
             .iter()
@@ -918,7 +940,12 @@ fn run_once(
     if stop.load(Ordering::SeqCst) {
         return None;
     }
+    let is_relay = plan.id == relay_tunnel_cmds::runtime_id(&plan.link.conn.id);
+    let mut rules = plan.rules.clone();
     publish(app, stop, status, |s| {
+        if is_relay {
+            rules[0].listen_port = s.rules[0].rule.listen_port;
+        }
         s.begin_attempt();
         true
     });
@@ -947,7 +974,6 @@ fn run_once(
     if stop.load(Ordering::SeqCst) {
         return None;
     }
-    let mut rules = plan.rules.clone();
     // Keep the logical rule in TunnelStatus so matching, rollback and fixed remote ports
     // are independent of the disposable localhost listener for this SSH attempt.
     let _relay = plan
@@ -961,6 +987,7 @@ fn run_once(
         Arc::new(GuardRun::serve(guard.clone(), attempt, stop.clone()))
     });
     let (app, stop_for_output, status) = (app.clone(), stop.clone(), status.clone());
+    let relay_scope = is_relay.then(|| (plan.state.clone(), plan.link.clone()));
     process::run(
         &plan.ssh,
         &args,
@@ -969,10 +996,36 @@ fn run_once(
         killer,
         guard_run,
         move |output| {
-            publish(&app, &stop_for_output, &status, |state| match output {
-                Output::SshLine(line) => state.apply_line(line),
-                Output::GuardReady => state.guard_started(),
+            let mut allocated = None;
+            publish(&app, &stop_for_output, &status, |state| {
+                let changed = match output {
+                    Output::SshLine(line) => state.apply_line(line),
+                    Output::GuardReady => state.guard_started(),
+                };
+                if changed && is_relay {
+                    allocated = relay_tunnel_cmds::pin_allocated_port(state);
+                }
+                changed
             });
+            if let (Some(port), Some((state, link))) = (allocated, &relay_scope) {
+                if let Some(state) = state.upgrade() {
+                    if let Err(error) =
+                        tauri::async_runtime::block_on(relay_tunnel_cmds::save_allocated_port(
+                            &state,
+                            link,
+                            port,
+                            &stop_for_output,
+                        ))
+                    {
+                        log::warn!("保存模型中转 SSH 端口失败：{error}");
+                        publish(&app, &stop_for_output, &status, |status| {
+                            status.message =
+                                Some("端口已分配，但无法保存。下次启动应用后端口可能变化。".into());
+                            true
+                        });
+                    }
+                }
+            }
         },
     )
 }

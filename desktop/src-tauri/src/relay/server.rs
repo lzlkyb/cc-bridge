@@ -43,7 +43,7 @@ pub struct ServerState {
     pub ban: BanList,
     pub client: reqwest::Client,
     /// 允许的 Host 形态，启动时算一次。
-    pub allowed_hosts: Arc<Vec<String>>,
+    pub allowed_hosts: Arc<guard::AllowedHosts>,
 }
 
 /// 401 连击封禁。**只对非回环来源生效**——自建单人场景下回环请求 401 一定是
@@ -1044,6 +1044,28 @@ mod tests {
             "被拒的请求不该打到上游"
         );
 
+        let _ = relay.stop().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ssh_remote_port_reaches_relay_upstream() {
+        let (up_addr, captured, _up) = spawn_upstream().await;
+        let relay = spawn_relay(
+            test_settings(format!("http://{up_addr}/v1/messages")),
+            Arc::new(RelayLog::new(100, None)),
+        )
+        .await;
+        let response = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("host", "127.0.0.1:45201")
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"claude-sonnet-5-5","messages":[]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), 200);
+        assert!(!captured.lock().unwrap().is_empty());
         let _ = relay.stop().await;
     }
 

@@ -56,14 +56,20 @@ function put(s: TunnelStatus) {
 function ensureStarted() {
   if (started) return;
   started = true;
-  listen<TunnelStatus>("ssh_tunnel_status", put).catch(() => {});
+  const hydrating = new Set<string>();
+  let initialLoad = true;
+  const subscribed = listen<TunnelStatus>("ssh_tunnel_status", (status) => {
+    if (initialLoad) hydrating.add(status.connectionId);
+    put(status);
+  }).catch(() => {});
   listen("stable_connect_changed", () => { if (offer) void offerForward(offer.conn, offer.creds); }).catch(() => {});
-  void invoke<TunnelStatus[]>("ssh_tunnel_list")
+  void subscribed.then(() => invoke<TunnelStatus[]>("ssh_tunnel_list"))
     .then((list) => {
-      // 拉全量期间先到的事件更新，不能被这份快照盖回去。
-      for (const s of list) if (!statuses.has(s.connectionId)) put(s);
+      // A stop removes its entry from statuses, so remember all events while fetching.
+      for (const s of list) if (!hydrating.has(s.connectionId)) put(s);
     })
-    .catch(() => {});
+    .catch(() => {})
+    .finally(() => { initialLoad = false; hydrating.clear(); });
 }
 
 function subscribe(l: () => void) {

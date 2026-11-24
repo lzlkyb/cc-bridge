@@ -280,6 +280,7 @@ pub async fn relay_save(
         if let Err(e) = state.relay.restart(threshold, window).await {
             warnings.push(format!("监听地址已保存，但重启失败：{e}"));
         }
+        super::relay_tunnel_cmds::sync_relay_tunnels(state.inner()).await;
     }
 
     Ok(RelaySaveResult {
@@ -395,7 +396,9 @@ pub async fn relay_set_enabled(
         .await;
 
     if enabled {
-        match state.relay.start(threshold, window).await {
+        let started = state.relay.start(threshold, window).await;
+        super::relay_tunnel_cmds::sync_relay_tunnels(state.inner()).await;
+        match started {
             Ok(addr) => Ok(RelayEnabledResult {
                 enabled: true,
                 addr: Some(addr),
@@ -409,6 +412,7 @@ pub async fn relay_set_enabled(
         }
     } else {
         let error = state.relay.stop().await.err();
+        super::relay_tunnel_cmds::sync_relay_tunnels(state.inner()).await;
         Ok(RelayEnabledResult {
             enabled: false,
             addr: None,
@@ -427,13 +431,17 @@ pub async fn relay_start(state: State<'_, Arc<AppState>>) -> Result<String, Stri
             config.remote_ban_window_min as u64,
         )
     };
-    state.relay.start(threshold, window).await
+    let result = state.relay.start(threshold, window).await;
+    super::relay_tunnel_cmds::sync_relay_tunnels(state.inner()).await;
+    result
 }
 
 /// 页面内的「停止中转」。**不动开关**：停了之后页面还在，可以再起来。
 #[tauri::command]
 pub async fn relay_stop(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.relay.stop().await
+    let result = state.relay.stop().await;
+    super::relay_tunnel_cmds::sync_relay_tunnels(state.inner()).await;
+    result
 }
 
 #[tauri::command]
@@ -445,7 +453,9 @@ pub async fn relay_restart(state: State<'_, Arc<AppState>>) -> Result<String, St
             config.remote_ban_window_min as u64,
         )
     };
-    state.relay.restart(threshold, window).await
+    let result = state.relay.restart(threshold, window).await;
+    super::relay_tunnel_cmds::sync_relay_tunnels(state.inner()).await;
+    result
 }
 
 /// 换令牌。旧令牌立刻失效——远端那些配好的机器要重新复制一次配置。

@@ -12,6 +12,8 @@
 //! Claude Code 这类 CLI 客户端不会发这三个头里的任何一个，所以正常请求不受影响。
 //! 这条在**内网直连模式下同样生效**。
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use axum::http::HeaderMap;
 
 /// 守卫结论。
@@ -52,7 +54,7 @@ impl Verdict {
 /// 判一次请求。
 ///
 /// `allowed_hosts` 由 [`allowed_hosts`] 生成，调用方在监听启动时算一次。
-pub fn check(headers: &HeaderMap, allowed_hosts: &[String]) -> Verdict {
+pub fn check(headers: &HeaderMap, allowed_hosts: &AllowedHosts) -> Verdict {
     // 1. 浏览器指纹
     if headers.contains_key("origin") {
         return Verdict::Browser {
@@ -77,7 +79,7 @@ pub fn check(headers: &HeaderMap, allowed_hosts: &[String]) -> Verdict {
     //    rebinding——rebinding 的前提就是浏览器把域名塞进 Host。
     if let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) {
         let host = host.trim();
-        if !allowed_hosts.iter().any(|h| h.eq_ignore_ascii_case(host)) {
+        if !allowed_hosts.contains(host) {
             return Verdict::BadHost {
                 host: host.to_string(),
             };
@@ -87,11 +89,28 @@ pub fn check(headers: &HeaderMap, allowed_hosts: &[String]) -> Verdict {
     Verdict::Allow
 }
 
+#[derive(Debug)]
+pub struct AllowedHosts {
+    exact: Vec<String>,
+    tunnel: bool,
+}
+
+impl AllowedHosts {
+    fn contains(&self, host: &str) -> bool {
+        self.exact.iter().any(|entry| entry.eq_ignore_ascii_case(host))
+            // SSH forwards bytes unchanged, including the remote port in Host. The literal
+            // loopback IP still excludes DNS rebinding names, and browser checks run first.
+            || (self.tunnel && host.parse::<SocketAddrV4>().is_ok_and(|addr| {
+                addr.ip() == &Ipv4Addr::LOCALHOST && addr.port() != 0
+            }))
+    }
+}
+
 /// 生成 Host 白名单：监听地址本身 + 回环的三种写法。
 ///
 /// 带端口与不带端口两种形态都要进去：不同客户端写法不一致，`Host: 127.0.0.1:4100`
 /// 与 `Host: localhost` 都是合法的。
-pub fn allowed_hosts(listen_host: &str, port: u16) -> Vec<String> {
+pub fn allowed_hosts(listen_host: &str, port: u16) -> AllowedHosts {
     let mut hosts: Vec<String> = Vec::new();
     let mut push = |h: &str| {
         let with_port = if h.contains(':') && !h.starts_with('[') {
@@ -115,7 +134,10 @@ pub fn allowed_hosts(listen_host: &str, port: u16) -> Vec<String> {
     if !listen_host.is_empty() && listen_host != "127.0.0.1" {
         push(listen_host);
     }
-    hosts
+    AllowedHosts {
+        exact: hosts,
+        tunnel: listen_host == "127.0.0.1",
+    }
 }
 
 #[cfg(test)]
@@ -134,7 +156,7 @@ mod tests {
         h
     }
 
-    fn hosts() -> Vec<String> {
+    fn hosts() -> AllowedHosts {
         allowed_hosts("10.0.19.194", 4100)
     }
 
@@ -210,7 +232,25 @@ mod tests {
     #[test]
     fn ipv6_listen_address_gets_brackets() {
         let list = allowed_hosts("::1", 4100);
-        assert!(list.iter().any(|h| h == "[::1]:4100"), "{list:?}");
-        assert!(list.iter().any(|h| h == "[::1]"), "{list:?}");
+        assert!(list.contains("[::1]:4100"), "{list:?}");
+        assert!(list.contains("[::1]"), "{list:?}");
+    }
+
+    #[test]
+    fn only_tunnel_mode_accepts_a_different_loopback_port() {
+        let forwarded = headers(&[("host", "127.0.0.1:45201")]);
+        let tunnel = allowed_hosts("127.0.0.1", 4100);
+        assert_eq!(check(&forwarded, &tunnel), Verdict::Allow);
+        assert!(matches!(
+            check(&forwarded, &hosts()),
+            Verdict::BadHost { .. }
+        ));
+        let browser = headers(&[
+            ("host", "127.0.0.1:45201"),
+            ("origin", "https://example.test"),
+        ]);
+        assert!(matches!(check(&browser, &tunnel), Verdict::Browser { .. }));
+        let foreign = headers(&[("host", "relay.example:45201")]);
+        assert!(matches!(check(&foreign, &tunnel), Verdict::BadHost { .. }));
     }
 }

@@ -35,7 +35,9 @@ it("同一路径的刷新以最后一次为准，旧 finally 不能解除新请�
   const first=deferred(),second=deferred();invoke.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
   await render();await act(async()=>{void api.refresh();});await act(async()=>first.resolve([file("old")]));
   expect(api.loading).toBe(true);expect(api.entries).toEqual([]);
-  await act(async()=>second.resolve([file("z"),file("dir",true),file("a")]));expect(api.entries.map(e=>e.name)).toEqual(["dir","a","z"]);
+  await act(async()=>second.resolve([file("z"),file("dir",true),file("a")]));
+  // 快照存服务器原始序：排序/过滤由 useSshFileView 在读取侧派生，不在这里做。
+  expect(api.entries.map(e=>e.name)).toEqual(["z","dir","a"]);
 });
 it("失败释放 loading、清空条目并允许重试，不回写虚假成功",async()=>{
   invoke.mockRejectedValueOnce(new Error("permission denied")).mockResolvedValueOnce([file("ok")]);await render();

@@ -242,6 +242,8 @@ pub struct AppState {
     pub(crate) ssh_tunnel_stops: DashMap<String, u64>,
     /// Claims and process replacement must be atomic across manual and managed starts.
     pub ssh_tunnel_start_lock: Mutex<()>,
+    /// Relay start/stop must not wait for unrelated Connect setup on a remote host.
+    pub relay_tunnel_lock: Mutex<()>,
     pub stable_operations: DashMap<String, Arc<crate::stable_connect::StableOperation>>,
     /// SFTP 传输的**取消标志**。key=transfer_id（前端生成的 uuid），置位即请求取消。
     ///
@@ -461,6 +463,7 @@ impl AppState {
             ssh_tunnels: DashMap::new(),
             ssh_tunnel_stops: DashMap::new(),
             ssh_tunnel_start_lock: Mutex::new(()),
+            relay_tunnel_lock: Mutex::new(()),
             stable_operations: DashMap::new(),
             ssh_transfers: DashMap::new(),
             ssh_helpers: DashMap::new(),

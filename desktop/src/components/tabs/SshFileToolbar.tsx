@@ -1,5 +1,6 @@
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
+import { Input } from "../ui/input";
 import { Dialog, DialogHeader, DialogTitle } from "../ui/dialog";
 import type { SshConnection, SshFileEntry } from "../../lib/types";
 import { FilePathBar } from "./FilePathBar";
@@ -17,10 +18,13 @@ interface FileHeaderProps {
   onUpload: () => void;
   onNavigate: (path: string) => void;
   canBack: boolean; canForward: boolean; onHistoryBack: () => void; onHistoryForward: () => void;
+  /** 过滤词（常驻框；纯客户端派生，列目录进行中也随时可改）。 */
+  query: string;
+  onQueryChange: (q: string) => void;
 }
 
 /**
- * 文件管理器顶部：返回 + 连接信息 + 刷新/新建/上传 + 路径条（上一级）。
+ * 文件管理器顶部：返回 + 连接信息 + 刷新/新建/上传 + 过滤框 + 路径条（上一级）。
  */
 export function FileHeader({
   conn,
@@ -34,6 +38,7 @@ export function FileHeader({
   onNewFolder,
   onUpload,
   onNavigate, canBack, canForward, onHistoryBack, onHistoryForward,
+  query, onQueryChange,
 }: FileHeaderProps) {
   return (
     <>
@@ -83,6 +88,15 @@ export function FileHeader({
           >
             <Icon name="upload" size={13} /> 上传
           </Button>
+          {/* 常驻过滤：输入即时过滤，清空恢复全量。纯客户端派生，不 disable。 */}
+          <Input
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+            placeholder="过滤…"
+            aria-label="按名称过滤当前目录"
+            title="按名称过滤（大小写不敏感）"
+            className="h-7 w-32 px-2 text-xs"
+          />
         </div>
       </div>
 

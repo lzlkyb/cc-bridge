@@ -102,3 +102,42 @@ it("换目录才清空多选；同目录内的重渲染不清",async()=>{
   await click("child");
   expect(host.textContent).not.toContain("已选");
 });
+it("🔴 行尾重命名端到端：对话框预填当前名 → 提交 ssh_sftp_rename（overwrite=false）",async()=>{
+  h.invoke.mockResolvedValue([folder,file]);
+  await render();
+  const fileRow=[...host.querySelectorAll<HTMLTableRowElement>("tbody tr")][1];
+  await act(async()=>[...fileRow.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="重命名")!.click());
+  // 对话框 portal 到 body
+  const dialog=document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("正在重命名");
+  const input=dialog.querySelector<HTMLInputElement>("#ssh-rename-input")!;
+  expect(input.value).toBe("old.txt");
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(input,"new.txt");
+  await act(async()=>input.dispatchEvent(new Event("input",{bubbles:true})));
+  h.invoke.mockClear();h.invoke.mockResolvedValue([]);   // 成功后紧跟一次列目录刷新
+  await act(async()=>[...dialog.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="重命名")!.click());
+  const renameCalls=h.invoke.mock.calls.filter(c=>c[0]==="ssh_sftp_rename");
+  expect(renameCalls).toHaveLength(1);
+  expect(renameCalls[0][1]).toEqual({connectionId:"one",path:"/parent/old.txt",new_name:"new.txt",overwrite:false});
+  expect(h.invoke.mock.calls.some(c=>c[0]==="ssh_sftp_list")).toBe(true);   // 成功后原地刷新
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+it("🔴 过滤后批量条按 view 口径计数：已选数与「移动到…」实际作用对象一致",async()=>{
+  h.invoke.mockResolvedValue([folder,file,{...file,name:"note.md"}]);
+  await render();
+  // 先点一行唤出批量条，再全选 3 个，然后过滤到只剩 1 个：批量条的计数与
+  // 移动对象都必须是 chosen（过滤后仍显示的那 1 个），不能让被滤掉名字里的
+  // 另外两个漏出去。
+  await act(async()=>[...host.querySelectorAll<HTMLTableRowElement>("tbody tr")][1].dispatchEvent(new MouseEvent("click",{bubbles:true})));
+  await click("全选");
+  expect(host.textContent).toContain("已选 3 个");
+  const filter=host.querySelector<HTMLInputElement>('input[aria-label="按名称过滤当前目录"]')!;
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(filter,".txt");
+  await act(async()=>filter.dispatchEvent(new Event("input",{bubbles:true})));
+  expect([...host.querySelectorAll<HTMLTableRowElement>("tbody tr")]).toHaveLength(1);
+  expect(host.textContent).toContain("已选 1 个");
+  await click("移动到…");
+  const dialog=document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("移动到");
+  expect(dialog.querySelector<HTMLInputElement>("#ssh-move-dir")!.value).toBe("/parent");   // 默认当前目录
+});
