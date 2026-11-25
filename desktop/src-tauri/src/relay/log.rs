@@ -30,6 +30,24 @@ use super::usage::{TokenUsage, UsageCollectionIssue};
 /// 日志保留天数（磁盘）。
 const DISK_RETENTION_DAYS: i64 = 7;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FailureStage {
+    ClientSource,
+    ClientToken,
+    ClientBlocked,
+    Request,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientResult {
+    pub status: u16,
+    pub request_id: Option<String>,
+    pub failure_stage: Option<FailureStage>,
+    pub failed: bool,
+}
+
 /// 一条请求记录。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +69,12 @@ pub struct RelayLogEntry {
     pub upstream_provider: Option<String>,
     #[serde(default)]
     pub upstream_key: Option<String>,
+    #[serde(default)]
+    pub upstream_config_id: Option<String>,
+    #[serde(default)]
+    pub upstream_config_name: Option<String>,
+    #[serde(default)]
+    pub failure_stage: Option<FailureStage>,
     #[serde(default)]
     pub reported_model: Option<String>,
     #[serde(default)]
@@ -152,8 +176,44 @@ struct Inner {
     entries: VecDeque<RelayLogEntry>,
     evicted_pending: HashMap<u64, RelayLogEntry>,
     next_id: u64,
-    latest_client_result: Option<(Instant, u64, u16)>,
+    latest_client_result: Option<(Instant, u64, ClientResult)>,
     last_client_success: Option<Instant>,
+}
+
+impl Inner {
+    fn record_client_result(&mut self, entry: &RelayLogEntry) {
+        if entry.error.as_deref() == Some("客户端提前断开") {
+            return;
+        }
+        let (Some(at), Some(status)) = (entry.started_at, entry.status) else {
+            return;
+        };
+        let generation = entry.path == "/v1/messages";
+        // Claude Code may call count_tokens before it sends its first generation request.
+        if !generation && !entry.is_error() {
+            return;
+        }
+        if self
+            .latest_client_result
+            .as_ref()
+            .is_none_or(|(last, id, _)| (at, entry.id) >= (*last, *id))
+        {
+            self.latest_client_result = Some((
+                at,
+                entry.id,
+                ClientResult {
+                    status,
+                    request_id: entry.request_id.clone(),
+                    failure_stage: entry.failure_stage,
+                    failed: entry.is_error(),
+                },
+            ));
+        }
+        if generation && (200..300).contains(&status) && !entry.is_error() {
+            self.last_client_success =
+                Some(self.last_client_success.map_or(at, |last| last.max(at)));
+        }
+    }
 }
 
 struct DiskWriter {
@@ -186,7 +246,7 @@ impl RelayLog {
         }
     }
 
-    /// 插入一条 in-flight 记录，返回 id 供 [`finish`](Self::finish) 回填。
+    /// 插入请求。如果已知最终状态（例如本地鉴权拒绝），直接记录结果。
     pub fn begin(&self, mut entry: RelayLogEntry) -> u64 {
         entry.request_id = Some(uuid::Uuid::new_v4().to_string());
         entry.started_at.get_or_insert_with(Instant::now);
@@ -197,9 +257,35 @@ impl RelayLog {
         };
         let id = {
             let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            // A burst of identical local rejections should not crowd out the useful log rows.
+            if let Some(
+                stage @ (FailureStage::ClientSource
+                | FailureStage::ClientToken
+                | FailureStage::ClientBlocked),
+            ) = entry.failure_stage
+            {
+                if let Some(previous) = inner
+                    .entries
+                    .iter()
+                    .take_while(|row| entry.ts_ms.saturating_sub(row.ts_ms) < 2_000)
+                    .take(24)
+                    .find(|row| {
+                        row.failure_stage == Some(stage)
+                            && row.source == entry.source
+                            && row.path == entry.path
+                    })
+                    .cloned()
+                {
+                    entry.id = previous.id;
+                    entry.request_id = previous.request_id;
+                    inner.record_client_result(&entry);
+                    return previous.id;
+                }
+            }
             let id = inner.next_id;
             inner.next_id += 1;
             entry.id = id;
+            inner.record_client_result(&entry);
             // 新的在前：界面只读最近几条，不必反转
             inner.entries.push_front(entry.clone());
             while inner.entries.len() > self.keep {
@@ -229,20 +315,7 @@ impl RelayLog {
             } else {
                 return;
             };
-            if let ("/v1/messages", Some(at), Some(status)) =
-                (updated.path.as_str(), updated.started_at, updated.status)
-            {
-                if inner
-                    .latest_client_result
-                    .is_none_or(|(last, last_id, _)| (at, id) >= (last, last_id))
-                {
-                    inner.latest_client_result = Some((at, id, status));
-                }
-                if (200..300).contains(&status) && updated.error.is_none() {
-                    inner.last_client_success =
-                        Some(inner.last_client_success.map_or(at, |last| last.max(at)));
-                }
-            }
+            inner.record_client_result(&updated);
             updated
         };
         self.append_disk_final(&updated);
@@ -254,14 +327,15 @@ impl RelayLog {
         inner.entries.iter().take(n).cloned().collect()
     }
 
-    pub(super) fn client_state_since(&self, since: Instant) -> (bool, Option<u16>) {
+    pub(super) fn client_state_since(&self, since: Instant) -> (bool, Option<ClientResult>) {
         let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         (
             inner.last_client_success.is_some_and(|at| at >= since),
             inner
                 .latest_client_result
+                .as_ref()
                 .filter(|(at, _, _)| *at >= since)
-                .map(|(_, _, status)| status),
+                .map(|(_, _, result)| result.clone()),
         )
     }
 
@@ -625,7 +699,9 @@ mod tests {
                 },
             );
         }
-        assert_eq!(log.client_state_since(since), (false, Some(429)));
+        let (verified, result) = log.client_state_since(since);
+        assert!(!verified);
+        assert_eq!(result.unwrap().status, 429);
 
         let success = log.begin(before("/v1/messages", since));
         log.finish(
@@ -635,7 +711,28 @@ mod tests {
                 ..LogPatch::default()
             },
         );
-        assert_eq!(log.client_state_since(since), (true, Some(200)));
+        let (verified, result) = log.client_state_since(since);
+        assert!(verified);
+        assert_eq!(result.unwrap().status, 200);
+
+        let failed_probe = log.begin(before("/v1/messages/count_tokens", since));
+        log.finish(
+            failed_probe,
+            LogPatch {
+                status: Some(429),
+                ..LogPatch::default()
+            },
+        );
+        let (verified, result) = log.client_state_since(since);
+        assert!(
+            verified,
+            "a probe does not change the earlier model verification"
+        );
+        assert_eq!(
+            result.unwrap().status,
+            429,
+            "failed token probes still need a diagnosis"
+        );
     }
 
     #[test]

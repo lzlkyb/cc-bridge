@@ -136,7 +136,7 @@ pub async fn relay_save(
     let mut warnings: Vec<String> = Vec::new();
 
     // 监听方式的最终值（patch 里没提就沿用现有）
-    let (mode, lan_ip, restart_required, settings, configured, missing) = {
+    let (restart_required, configured, missing) = {
         let db = state.db.lock().await;
         let mut config = state.config.write().await;
 
@@ -155,62 +155,7 @@ pub async fn relay_save(
             return Err("中转配置里没有可用的上游。".into());
         };
 
-        // ── 三格 ──────────────────────────────────────────────────────
-        if let Some(v) = patch.base_url.as_ref() {
-            provider.base_url = v.clone();
-        }
-        // 密钥：空串表示「不改」，而不是「清空」——「更换」按钮会带新值，
-        // 而普通保存不会把已经存着的密钥抹掉。要清空请显式传 `-`。
-        if let Some(v) = patch.api_key.as_ref() {
-            if v == "-" {
-                provider.api_key = String::new();
-            } else if !v.trim().is_empty() {
-                provider.api_key = v.clone();
-            }
-        }
-        if let Some(v) = patch.model.as_ref() {
-            ensure_tier(provider, TierKind::Default).upstream_model = v.clone();
-        }
-        if let Some(v) = patch.haiku.as_ref() {
-            ensure_tier(provider, TierKind::Haiku).upstream_model = v.clone();
-        }
-        if let Some(v) = patch.opus.as_ref() {
-            ensure_tier(provider, TierKind::Opus).upstream_model = v.clone();
-        }
-
-        // ── 高级 ──────────────────────────────────────────────────────
-        if let Some(v) = patch.auth_style.as_ref() {
-            provider.auth_style = if v == "bearer" {
-                AuthStyle::Bearer
-            } else {
-                AuthStyle::XApiKey
-            };
-        }
-        if let Some(v) = patch.profile_id.as_ref() {
-            // 空串 = 回到自动推断。写进去之前先确认 id 存在：未知 id 会让
-            // `profile()` 落回 host 推断，用户以为自己选了 A、实际跑的是 B。
-            let trimmed = v.trim();
-            if trimmed.is_empty() {
-                provider.profile_id.clear();
-            } else if relay::profile::by_id(trimmed).is_some() {
-                provider.profile_id = trimmed.to_string();
-            } else {
-                return Err(format!("未知的厂商类型：{trimmed}。请重新选择。"));
-            }
-        }
-        if let Some(v) = patch.normalize_tool_patterns.as_ref() {
-            provider.normalize_tool_patterns = match v.as_str() {
-                "on" => Some(true),
-                "off" => Some(false),
-                _ => None,
-            };
-        }
-        if let Some(v) = patch.max_tokens_limit {
-            provider.max_tokens_limit = if v == 0 { None } else { Some(v) };
-        }
-        if let Some(v) = patch.fold_tool_blocks {
-            provider.fold_tool_blocks = v;
-        }
+        apply_upstream_patch(provider, &patch)?;
 
         relay_config::normalize_settings(&mut settings);
 
@@ -275,25 +220,14 @@ pub async fn relay_save(
             ),
         };
 
-        (
-            mode.to_string(),
-            lan_ip,
-            restart_required,
-            settings,
-            configured,
-            missing,
-        )
+        // Publish while holding the same configuration lock as provider changes.
+        state.relay.reload_settings(settings).await;
+        state
+            .relay
+            .set_listen(host_after, relay_config::DEFAULT_PORT)
+            .await;
+        (restart_required, configured, missing)
     };
-
-    // ── 热生效 ────────────────────────────────────────────────────────
-    state.relay.reload_settings(settings).await;
-    state
-        .relay
-        .set_listen(
-            relay_host_for(&mode, lan_ip.as_deref()),
-            relay_config::DEFAULT_PORT,
-        )
-        .await;
 
     // 地址变了且正在运行 → 直接重启，而不是让用户自己点一次「重启」。
     // 这里失败不阻断保存：配置已经写进去了，界面会显示监听错误。
@@ -320,6 +254,66 @@ pub async fn relay_save(
     })
 }
 
+fn apply_upstream_patch(provider: &mut Provider, patch: &RelayPatch) -> Result<(), String> {
+    // ── 三格 ──────────────────────────────────────────────────────
+    if let Some(v) = patch.base_url.as_ref() {
+        provider.base_url = v.clone();
+    }
+    // 密钥：空串表示「不改」，而不是「清空」——「更换」按钮会带新值，
+    // 而普通保存不会把已经存着的密钥抹掉。要清空请显式传 `-`。
+    if let Some(v) = patch.api_key.as_ref() {
+        if v == "-" {
+            provider.api_key = String::new();
+        } else if !v.trim().is_empty() {
+            provider.api_key = v.clone();
+        }
+    }
+    if let Some(v) = patch.model.as_ref() {
+        ensure_tier(provider, TierKind::Default).upstream_model = v.clone();
+    }
+    if let Some(v) = patch.haiku.as_ref() {
+        ensure_tier(provider, TierKind::Haiku).upstream_model = v.clone();
+    }
+    if let Some(v) = patch.opus.as_ref() {
+        ensure_tier(provider, TierKind::Opus).upstream_model = v.clone();
+    }
+
+    // ── 高级 ──────────────────────────────────────────────────────
+    if let Some(v) = patch.auth_style.as_ref() {
+        provider.auth_style = if v == "bearer" {
+            AuthStyle::Bearer
+        } else {
+            AuthStyle::XApiKey
+        };
+    }
+    if let Some(v) = patch.profile_id.as_ref() {
+        // 空串 = 回到自动推断。写进去之前先确认 id 存在：未知 id 会让
+        // `profile()` 落回 host 推断，用户以为自己选了 A、实际跑的是 B。
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            provider.profile_id.clear();
+        } else if relay::profile::by_id(trimmed).is_some() {
+            provider.profile_id = trimmed.to_string();
+        } else {
+            return Err(format!("未知的厂商类型：{trimmed}。请重新选择。"));
+        }
+    }
+    if let Some(v) = patch.normalize_tool_patterns.as_ref() {
+        provider.normalize_tool_patterns = match v.as_str() {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        };
+    }
+    if let Some(v) = patch.max_tokens_limit {
+        provider.max_tokens_limit = if v == 0 { None } else { Some(v) };
+    }
+    if let Some(v) = patch.fold_tool_blocks {
+        provider.fold_tool_blocks = v;
+    }
+    Ok(())
+}
+
 fn ensure_tier(provider: &mut Provider, kind: TierKind) -> &mut Tier {
     if let Some(pos) = provider.tiers.iter().position(|t| t.tier == kind) {
         return &mut provider.tiers[pos];
@@ -329,6 +323,153 @@ fn ensure_tier(provider: &mut Provider, kind: TierKind) -> &mut Tier {
         upstream_model: String::new(),
     });
     provider.tiers.last_mut().expect("刚 push 过，必定存在")
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase")]
+pub enum RelayProviderChange {
+    Save {
+        id: Option<String>,
+        name: String,
+        patch: Box<RelayPatch>,
+    },
+    Activate {
+        id: String,
+    },
+    Remove {
+        id: String,
+    },
+}
+
+#[derive(Serialize)]
+pub struct RelayProviderResult {
+    pub id: String,
+    pub snapshot: RelaySnapshot,
+}
+
+#[tauri::command]
+pub async fn relay_manage_provider(
+    state: State<'_, Arc<AppState>>,
+    change: RelayProviderChange,
+) -> Result<RelayProviderResult, String> {
+    let id = {
+        let db = state.db.lock().await;
+        let mut config = state.config.write().await;
+        let mut settings = config.relay.clone();
+        let id = change_provider(&mut settings, change)?;
+        save_config_field(&db, KEY_RELAY, &serde_json::to_value(&settings).unwrap())?;
+        config.relay = settings.clone();
+        // The listener stays up. A request that already captured a snapshot keeps using it.
+        state.relay.reload_settings(settings).await;
+        id
+    };
+    Ok(RelayProviderResult {
+        id,
+        snapshot: state.relay.snapshot(50).await,
+    })
+}
+
+fn provider_index(settings: &RelaySettings, id: &str) -> Result<usize, String> {
+    settings
+        .providers
+        .iter()
+        .position(|p| p.id == id)
+        .ok_or_else(|| "这套上游已不存在，请重新选择。".into())
+}
+
+fn upstream_url(raw: &str) -> Result<reqwest::Url, String> {
+    let url =
+        reqwest::Url::parse(raw.trim()).map_err(|_| "请输入有效的 HTTP 或 HTTPS 上游地址。")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("上游地址应使用 HTTP 或 HTTPS，密钥请填写在单独的输入框。".into());
+    }
+    if relay_config::is_self_forward(
+        url.as_str(),
+        relay_config::DEFAULT_PORT,
+        &crate::network::get_lan_ips(),
+    ) {
+        return Err("上游地址指向本机中转，请填写实际的上游服务地址。".into());
+    }
+    Ok(url)
+}
+
+fn same_upstream_origin(old: &str, new: &reqwest::Url) -> bool {
+    reqwest::Url::parse(old.trim()).is_ok_and(|old| old.origin() == new.origin())
+}
+
+fn change_provider(
+    settings: &mut RelaySettings,
+    change: RelayProviderChange,
+) -> Result<String, String> {
+    match change {
+        RelayProviderChange::Save { id, name, patch } => {
+            let name = name.trim();
+            if name.is_empty() || name.chars().count() > 48 {
+                return Err("请填写配置名称，最多 48 个字符。".into());
+            }
+            let position = id
+                .as_deref()
+                .map(|id| provider_index(settings, id))
+                .transpose()?;
+            let mut provider = position
+                .map(|i| settings.providers[i].clone())
+                .unwrap_or_else(|| Provider {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    ..Provider::default()
+                });
+            let endpoint = upstream_url(patch.base_url.as_deref().unwrap_or(&provider.base_url))?;
+            if !provider.api_key.is_empty()
+                && !same_upstream_origin(&provider.base_url, &endpoint)
+                && patch
+                    .api_key
+                    .as_deref()
+                    .is_none_or(|key| key.trim().is_empty())
+            {
+                return Err("上游地址已变更，请重新填写该服务的 API 密钥。".into());
+            }
+            apply_upstream_patch(&mut provider, &patch)?;
+            provider.base_url = endpoint.to_string();
+            provider.name = name.to_string();
+            relay_config::normalize_provider(&mut provider);
+            provider
+                .validate()
+                .map_err(|field| format!("请填写{}。", field.label()))?;
+            let id = provider.id.clone();
+            if let Some(i) = position {
+                settings.providers[i] = provider;
+            } else if !settings.is_configured() {
+                settings.providers.insert(0, provider);
+            } else {
+                settings.providers.push(provider);
+            }
+            Ok(id)
+        }
+        RelayProviderChange::Activate { id } => {
+            let i = provider_index(settings, &id)?;
+            let provider = &settings.providers[i];
+            upstream_url(&provider.base_url)?;
+            provider
+                .validate()
+                .map_err(|field| format!("请先填写{}并保存。", field.label()))?;
+            let mut provider = settings.providers.remove(i);
+            provider.enabled = true;
+            settings.providers.insert(0, provider);
+            Ok(id)
+        }
+        RelayProviderChange::Remove { id } => {
+            let i = provider_index(settings, &id)?;
+            if settings.active().is_some_and(|p| p.id == id) {
+                return Err("请先切换到其他上游，再删除当前上游。".into());
+            }
+            settings.providers.remove(i);
+            Ok(id)
+        }
+    }
 }
 
 /// 把整份配置同步进中转运行时。**导入路径专用**（`relay_save` 有自己的热更新逻辑）。
@@ -580,10 +721,9 @@ fn effective_draft(draft: RelayDraft, provider: &Provider) -> EffectiveDraft {
 pub async fn relay_test_upstream(
     state: State<'_, Arc<AppState>>,
     draft: RelayDraft,
+    provider_id: Option<String>,
 ) -> Result<relay::ProbeOutcome, String> {
-    let saved: RelaySettings = state.config.read().await.relay.clone();
-    let provider = saved.active().cloned().unwrap_or_default();
-    let effective = effective_draft(draft, &provider);
+    let effective = resolve_draft(&state, draft, provider_id.as_deref()).await?;
 
     if effective.base_url.trim().is_empty() {
         return Err("上游地址还没填。".into());
@@ -609,10 +749,9 @@ pub async fn relay_test_upstream(
 pub async fn relay_list_models(
     state: State<'_, Arc<AppState>>,
     draft: RelayDraft,
+    provider_id: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let saved: RelaySettings = state.config.read().await.relay.clone();
-    let provider = saved.active().cloned().unwrap_or_default();
-    let effective = effective_draft(draft, &provider);
+    let effective = resolve_draft(&state, draft, provider_id.as_deref()).await?;
 
     if effective.base_url.trim().is_empty() {
         return Err("上游地址还没填。".into());
@@ -629,9 +768,195 @@ pub async fn relay_list_models(
     .await
 }
 
+async fn resolve_draft(
+    state: &AppState,
+    draft: RelayDraft,
+    id: Option<&str>,
+) -> Result<EffectiveDraft, String> {
+    let provider = {
+        let config = state.config.read().await;
+        let settings = &config.relay;
+        match id {
+            Some("") => Provider::default(),
+            Some(id) => settings.providers[provider_index(settings, id)?].clone(),
+            None => settings.active().cloned().unwrap_or_default(),
+        }
+    };
+    let uses_saved_key = draft
+        .api_key
+        .as_deref()
+        .is_none_or(|key| key.trim().is_empty());
+    let effective = effective_draft(draft, &provider);
+    let endpoint = upstream_url(&effective.base_url)?;
+    if uses_saved_key
+        && !provider.api_key.is_empty()
+        && !same_upstream_origin(&provider.base_url, &endpoint)
+    {
+        return Err("上游地址已变更，请重新填写该服务的 API 密钥。".into());
+    }
+    Ok(effective)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn save_test_provider(
+        id: Option<&str>,
+        name: &str,
+        url: &str,
+        key: Option<&str>,
+    ) -> RelayProviderChange {
+        RelayProviderChange::Save {
+            id: id.map(str::to_owned),
+            name: name.into(),
+            patch: Box::new(RelayPatch {
+                base_url: Some(url.into()),
+                api_key: key.map(str::to_owned),
+                model: Some(name.into()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn provider_changes_preserve_legacy_config_and_scope_credentials() {
+        let mut settings: RelaySettings = serde_json::from_value(serde_json::json!({"providers": [{
+            "name": "legacy", "base_url": "https://one.test/v1/messages", "api_key": "first-key",
+            "tiers": [{"tier":"default", "upstream_model":"first-model"}]
+        }]})).unwrap();
+        let standby = change_provider(
+            &mut settings,
+            save_test_provider(None, "standby", "https://two.test", Some("second-key")),
+        )
+        .unwrap();
+        assert_eq!(settings.active().unwrap().id, "default");
+        assert!(change_provider(
+            &mut settings,
+            save_test_provider(Some(&standby), "standby", "https://different.test", None)
+        )
+        .is_err());
+        assert!(change_provider(
+            &mut settings,
+            RelayProviderChange::Remove {
+                id: "default".into()
+            }
+        )
+        .is_err());
+        change_provider(
+            &mut settings,
+            RelayProviderChange::Activate {
+                id: standby.clone(),
+            },
+        )
+        .unwrap();
+        let restored: RelaySettings =
+            serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+        assert_eq!(restored.active().unwrap().id, standby);
+        assert_eq!(restored.active().unwrap().api_key, "second-key");
+        assert_eq!(restored.providers[1].api_key, "first-key");
+        change_provider(
+            &mut settings,
+            RelayProviderChange::Remove {
+                id: "default".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(settings.providers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn switch_routes_new_requests_without_interrupting_existing_requests() {
+        use axum::{routing::post, Router};
+        use std::time::Duration;
+        use tokio::sync::Notify;
+        let arrived = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let old_route = {
+            let (arrived, release) = (arrived.clone(), release.clone());
+            move |headers: axum::http::HeaderMap| async move {
+                assert_eq!(headers["x-api-key"], "old-key");
+                arrived.notify_one();
+                release.notified().await;
+                axum::Json(serde_json::json!({"id":"old-response"}))
+            }
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let upstream = Router::new()
+            .route("/old/v1/messages", post(old_route))
+            .route(
+                "/new/v1/messages",
+                post(|headers: axum::http::HeaderMap| async move {
+                    assert_eq!(headers["x-api-key"], "new-key");
+                    axum::Json(serde_json::json!({"id":"new-response"}))
+                }),
+            );
+        let upstream = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let rt = test_runtime();
+        let mut settings = RelaySettings::default();
+        let previous = change_provider(
+            &mut settings,
+            save_test_provider(None, "old", &format!("http://{addr}/old"), Some("old-key")),
+        )
+        .unwrap();
+        let next = change_provider(
+            &mut settings,
+            save_test_provider(None, "new", &format!("http://{addr}/new"), Some("new-key")),
+        )
+        .unwrap();
+        rt.reload_settings(settings.clone()).await;
+        let relay = rt.start(5, 15).await.unwrap();
+        let client = reqwest::Client::new();
+        let request = || {
+            client.post(format!("http://{relay}/v1/messages")).timeout(Duration::from_secs(5))
+            .header("x-api-key", "rly_old").json(&serde_json::json!({"model":"claude-sonnet-5-5", "max_tokens":8,"messages":[{"role":"user","content":"ping"}]}))
+        };
+        let old_request = tokio::spawn(request().send());
+        tokio::time::timeout(Duration::from_secs(5), arrived.notified())
+            .await
+            .unwrap();
+        change_provider(
+            &mut settings,
+            RelayProviderChange::Activate { id: next.clone() },
+        )
+        .unwrap();
+        rt.reload_settings(settings).await;
+        assert_eq!(rt.running_addr().await.as_deref(), Some(relay.as_str()));
+        assert!(!rt.snapshot(5).await.client_verified);
+        let response = request()
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(response.contains("new-response"), "{response}");
+        release.notify_one();
+        let response = old_request
+            .await
+            .unwrap()
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(response.contains("old-response"), "{response}");
+        assert!(rt.snapshot(5).await.client_verified);
+        let rows = rt.log().recent(2);
+        assert_eq!(rows[0].upstream_config_id.as_deref(), Some(next.as_str()));
+        assert_eq!(rows[0].upstream_config_name.as_deref(), Some("new"));
+        assert_eq!(
+            rows[1].upstream_config_id.as_deref(),
+            Some(previous.as_str())
+        );
+        assert_eq!(rows[1].upstream_config_name.as_deref(), Some("old"));
+        rt.stop().await.unwrap();
+        upstream.abort();
+    }
 
     #[test]
     fn patch_rejects_unknown_keys() {

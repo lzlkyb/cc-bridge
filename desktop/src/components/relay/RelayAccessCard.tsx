@@ -7,17 +7,23 @@ import { copyText } from "../../lib/utils";
 import { invoke } from "../../lib/tauri";
 import { buildRelaySnippet } from "../../lib/relayFormat";
 import type { RelaySaveResult, RelaySnapshot } from "../../lib/types";
-import { RelaySshAccess, RelayTargetSelect, relayTunnelLabel, type useRelaySshAccess } from "./RelaySshAccess";
+import { RelaySshAccess, RelaySshSetup, RelayTargetSelect, relayTunnelLabel, type useRelaySshAccess } from "./RelaySshAccess";
 import { RelayDeploy, relayDeployOptions, type useRelayDeployment } from "./RelayDeploy";
 import "../tabs/connect/stable-connect.css";
 
 type Access = ReturnType<typeof useRelaySshAccess>;
 type Deployment = ReturnType<typeof useRelayDeployment>;
 
-export function RelayAccessSummary({ access, deployment, baseUrl, direct, verified, disabled, onOpen }: {
+export function RelayAccessSummary({ access, deployment, baseUrl, direct, verified, disabled, onOpen, prerequisite }: {
   access: Access; deployment: Deployment; baseUrl: string; direct: boolean; verified: boolean;
   disabled: boolean; onOpen: () => void;
+  prerequisite?: { title: string; action: string; run: () => void };
 }) {
+  if (prerequisite) return <section className="relay-work-panel relay-access-placeholder" aria-label="远端接入">
+    <span className="relay-route-symbol"><Icon name="plug" size={18} /></span><div><strong>远端接入</strong><p>{prerequisite.title}</p></div>
+    <div className="relay-inline relay-wrap"><Button size="sm" variant="outline" onClick={onOpen}>查看接入配置</Button>
+      <Button size="sm" disabled={disabled} onClick={prerequisite.run}>{prerequisite.action}</Button></div>
+  </section>;
   const receipt = deployment.lastDeploy.data;
   const deployed = !!baseUrl && receipt?.url === baseUrl;
   const target = access.connection;
@@ -27,7 +33,7 @@ export function RelayAccessSummary({ access, deployment, baseUrl, direct, verifi
   const action = !target ? "管理接入"
     : busy ? "查看进度"
     : !direct && !access.port ? access.canReallocate || access.error || access.tunnel?.state === "error" ? "恢复连接" : "建立 SSH 转发"
-    : error ? "查看部署错误" : deployed ? "管理接入" : "部署到远端";
+    : error ? "查看部署错误" : deployed ? "管理接入" : receipt ? "更新远端配置" : "部署到远端";
   return (
     <section className="relay-work-panel relay-access-summary" aria-label="远端接入">
       <div className="relay-access-summary-target">
@@ -50,8 +56,8 @@ export function RelayAccessSummary({ access, deployment, baseUrl, direct, verifi
         <small>远端配置</small>
         <strong>{deployment.isPending ? (deployment.variables?.recover && !baseUrl ? "正在分配新端口" : "正在部署配置")
           : error ? "部署未完成" : deployment.lastDeploy.isError ? "无法读取部署记录"
-          : deployed ? "配置已部署" : receipt && baseUrl ? "远端配置需更新" : "等待部署"}</strong>
-        <small>{verified ? "中转已收到成功请求" : "中转等待首个成功请求"}</small>
+          : deployed ? "配置已部署" : receipt ? (baseUrl ? "远端配置需更新" : "已部署 · 等待连接") : "等待部署"}</strong>
+        <small>服务全局 · {verified ? "中转已收到成功请求" : "中转等待首个成功请求"}</small>
       </div>
       <Button size="sm" variant={deployed ? "outline" : "default"} onClick={onOpen} disabled={disabled}><Icon name="plug" size={15} />{action}</Button>
     </section>
@@ -67,9 +73,11 @@ function RelayGuideStep({ number, title, children, complete, active }: {
   </li>;
 }
 
-export function RelayAccessCard({ snapshot, access, deployment, baseUrl, onChanged, blocked, onMigrate, onOpenTerminal }: {
+export function RelayAccessCard({ snapshot, access, deployment, baseUrl, onChanged, blocked, onMigrate, onOpenTerminal, onManageSsh, onStart, onRequests, onConfigure }: {
   snapshot: RelaySnapshot; access: Access; deployment: Deployment; baseUrl: string;
   onChanged: () => void | Promise<unknown>; blocked: boolean; onMigrate: () => void; onOpenTerminal?: (id: string) => void;
+  onManageSsh?: (anchor?: string) => void; onStart: () => void; onRequests: () => void;
+  onConfigure: () => void;
 }) {
   const { toast } = useToast();
   const [switching, setSwitching] = useState(false);
@@ -79,7 +87,7 @@ export function RelayAccessCard({ snapshot, access, deployment, baseUrl, onChang
   const target = access.connection;
   const receipt = deployment.lastDeploy.data;
   const deployed = !!baseUrl && receipt?.url === baseUrl;
-  const disabled = blocked || switching || deployment.isPending || !listening;
+  const disabled = blocked || switching || deployment.isPending || !listening || !snapshot.provider?.configured;
   const alias = snapshot.tiers.find((t) => t.tier === "default")?.alias ?? "claude-sonnet-5-5";
   const snippet = baseUrl && snapshot.token ? buildRelaySnippet({ baseUrl, token: snapshot.token, model: alias }) : "";
 
@@ -109,6 +117,10 @@ export function RelayAccessCard({ snapshot, access, deployment, baseUrl, onChang
 
   return (
     <section className="relay-access" aria-label="远端接入步骤">
+      {!listening && <div className="relay-prereq"><div className="relay-inline relay-wrap relay-spread"><span>中转已停止，启动后可继续接入。</span>
+        <Button size="sm" disabled={blocked} onClick={onStart}>启动中转</Button></div></div>}
+      {listening && !snapshot.provider?.configured && <div className="relay-prereq"><div className="relay-inline relay-wrap relay-spread"><span>保存上游配置后即可部署远端客户端。</span>
+        <Button size="sm" disabled={blocked} onClick={onConfigure}>配置上游</Button></div></div>}
       <div className="relay-method">
         <div className="stable-method-heading">
           <h3>接入方式</h3>
@@ -122,6 +134,7 @@ export function RelayAccessCard({ snapshot, access, deployment, baseUrl, onChang
           : "经 SSH 加密转发，为每个账号分配独立端口。重连会优先恢复原端口。"}</p>
       </div>
       <RelayTargetSelect id={direct ? "relay-deploy-server" : "relay-ssh-server"} access={access} direct={direct} disabled={disabled || access.pending} />
+      {direct && <RelaySshSetup access={access} onManage={onManageSsh} optional />}
       {direct && <div className="relay-prereq" data-warn>
         <Icon name="alertTriangle" size={16} />
         <div><strong>远端须能访问本机内网地址</strong><br />令牌通过 HTTP 明文传输，防火墙需允许远端访问 <code>{snapshot.port}</code>。本机 IP 变化后须更新远端配置。</div>
@@ -131,20 +144,27 @@ export function RelayAccessCard({ snapshot, access, deployment, baseUrl, onChang
       </Button>}
       <ol className="relay-guide-steps">
         {!direct && <RelayGuideStep number={1} title="确认接入账号" complete={Boolean(target)} active={!target}>
-          <p>转发、配置和验证入口都使用所选账号。</p>
+          <p>转发和部署都使用这里选定的 SSH 账号。</p>
         </RelayGuideStep>}
         <RelayGuideStep number={direct ? 1 : 2} title={direct ? "确认内网地址" : "建立 SSH 转发"} complete={Boolean(baseUrl)} active={!!target && !baseUrl}>
           {direct ? <code className="relay-guide-address">{baseUrl}</code>
-            : <RelaySshAccess access={access} recovery={!!receipt} onRecover={recover} disabled={disabled} />}
+            : <RelaySshAccess access={access} recovery={!!receipt} onRecover={recover} disabled={disabled} onManage={onManageSsh} />}
         </RelayGuideStep>
-        <RelayGuideStep number={direct ? 2 : 3} title="部署并验证" complete={deployed} active={!!baseUrl && !deployed}>
+        <RelayGuideStep number={direct ? 2 : 3} title="部署远端配置" complete={deployed} active={!!baseUrl && !deployed}>
           <p>{direct ? "一键部署使用 SSH，也可以手动复制下方配置到远端。"
-            : "将配置写入所选账号的家目录，然后用 Claude Code 发送一条请求。"}</p>
+            : "将配置写入所选账号的家目录。"}</p>
           {deployment.isError && deployment.variables?.connectionId === target?.id && !baseUrl &&
             <p className="relay-prereq" data-warn role="alert">{String(deployment.error)}</p>}
           {target && (baseUrl || deployment.isPending || deployment.lastDeploy.isError) && <RelayDeploy key={target.id} connection={target}
             baseUrl={baseUrl} model={alias} tokenPresent={!!snapshot.token} blocked={disabled}
-            deployment={deployment} onOpenTerminal={onOpenTerminal} />}
+            deployment={deployment} />}
+        </RelayGuideStep>
+        <RelayGuideStep number={direct ? 3 : 4} title="验证客户端" active={!disabled && Boolean(baseUrl) && (deployed || !target)}>
+          <p>在远端运行 <code>claude-own</code>，发送一条模型请求，再核对「最近请求」中的时间与结果。</p>
+          <div className="relay-inline relay-wrap">
+            {target && deployed && onOpenTerminal && <Button size="sm" disabled={disabled} onClick={() => onOpenTerminal(target.id)}><Icon name="terminal" size={14} />打开远端终端</Button>}
+            <Button size="sm" variant="outline" onClick={onRequests}>查看最近请求</Button>
+          </div>
         </RelayGuideStep>
       </ol>
       <details className="relay-manual">

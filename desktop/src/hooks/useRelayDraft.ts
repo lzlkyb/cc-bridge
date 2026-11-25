@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "../lib/tauri";
 import { toast } from "../components/ui/toast";
-import type { RelayProbeOutcome, RelaySaveResult, RelaySnapshot } from "../lib/types";
+import type { RelayProbeOutcome, RelayProviderChange, RelayProviderResult, RelaySaveResult, RelaySnapshot } from "../lib/types";
 import { useModelCatalog } from "./useModelCatalog";
 
 export type RelayAuthStyle = "x-api-key" | "bearer";
@@ -21,6 +21,7 @@ export type RelayAuthStyle = "x-api-key" | "bearer";
 export type RelayPatterns = "auto" | "on" | "off";
 
 export interface RelayDraft {
+  name: string;
   baseUrl: string;
   /** 空 = 这次没换密钥（不是清空）。 */
   apiKey: string;
@@ -37,6 +38,7 @@ export interface RelayDraft {
 }
 
 const EMPTY: RelayDraft = {
+  name: "",
   baseUrl: "",
   apiKey: "",
   model: "",
@@ -49,11 +51,12 @@ const EMPTY: RelayDraft = {
   fold: true,
 };
 
-function fromSnapshot(snapshot: RelaySnapshot | undefined): RelayDraft {
+function fromSnapshot(snapshot: Pick<RelaySnapshot, "provider" | "tiers"> | undefined): RelayDraft {
   const provider = snapshot?.provider;
   const model = (tier: string) =>
     snapshot?.tiers.find((t) => t.tier === tier)?.upstreamModel ?? "";
   return {
+    name: provider?.name ?? "",
     baseUrl: provider?.baseUrl ?? "",
     apiKey: "",
     model: model("default"),
@@ -77,7 +80,13 @@ function fingerprint(draft: RelayDraft): string {
   return JSON.stringify({ ...draft, apiKey: "" });
 }
 
-export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () => void) {
+interface ManagedDraft {
+  id: string;
+  mutate: (change: RelayProviderChange) => Promise<RelayProviderResult>;
+  onSaved: (id: string, outcome: RelayProbeOutcome | null) => void;
+}
+
+export function useRelayDraft(snapshot: Pick<RelaySnapshot, "provider" | "tiers"> | undefined, onSaved?: () => void, managed?: ManagedDraft) {
   const [draft, setDraft] = useState<RelayDraft>(EMPTY);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -85,12 +94,13 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<RelayProbeOutcome | null>(null);
   // 模型列表有自己的生命周期（点一次取一次），放在独立 hook 里。
-  const { models, listing, fetchModels } = useModelCatalog({
+  const { models, listing, fetchModels, resetCatalog } = useModelCatalog({
     baseUrl: draft.baseUrl,
     apiKey: draft.apiKey,
     model: draft.model,
     authStyle: draft.authStyle,
     profileId: draft.profileId,
+    providerId: managed?.id,
     onError: setError,
   });
 
@@ -105,6 +115,7 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
   const hydrated = useRef(false);
   // 在线保存计数：并发保存时 `saving` 要保持到最后一发回来（见 save 的注释）。
   const inflight = useRef(0);
+  const probeRevision = useRef(0);
   useEffect(() => {
     const next = fromSnapshot(snapshot);
     if (!hydrated.current) {
@@ -124,8 +135,13 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
 
   const setField = useCallback((patch: Partial<RelayDraft>) => {
     setError("");
+    if ("baseUrl" in patch || "apiKey" in patch || "authStyle" in patch || "profileId" in patch) resetCatalog();
+    if ("baseUrl" in patch || "apiKey" in patch || "model" in patch || "authStyle" in patch || "profileId" in patch) {
+      probeRevision.current += 1;
+      setProbeResult(null);
+    }
     setDraft((cur) => ({ ...cur, ...patch }));
-  }, []);
+  }, [resetCatalog]);
 
   /**
    * 提交。调用方在失焦 / 下拉收起 / 开关点击时直接调用，不需要先判断 dirty。
@@ -162,12 +178,20 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
       setSaving(true);
       setError("");
       try {
+        if (managed) {
+          const result = await managed.mutate({ action: "save", id: managed.id || undefined, name: next.name, patch });
+          const saved = fromSnapshot(result.snapshot.providers?.find(({ provider }) => provider.id === result.id));
+          lastServer.current = fingerprint(saved);
+          setDraft(saved);
+          managed.onSaved(result.id, probeResult);
+          return { ok: true, configured: true, missing: null, restartRequired: false, warnings: [] };
+        }
         const result = await invoke<RelaySaveResult>("relay_save", { patch });
         // 密钥输完就该从内存里消失。只在「这一发之后用户没再动过密钥框」时清，
         // 否则会把用户刚粘贴的下一个密钥抹掉。
         setDraft((cur) => (cur.apiKey === next.apiKey ? { ...cur, apiKey: "" } : cur));
         setSavedAt(Date.now());
-        onSaved();
+        onSaved?.();
         for (const warning of result.warnings) toast(warning, "warning");
         if (!result.configured) {
           const field =
@@ -185,33 +209,39 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
         if (inflight.current === 0) setSaving(false);
       }
     },
-    [draft, onSaved],
+    [draft, managed, onSaved, probeResult],
   );
 
   /** 用当前表单值打一发最小请求。失败原因原样带回来，不转述。 */
-  const probe = useCallback(async (): Promise<RelayProbeOutcome | null> => {
+  const probe = useCallback(async (authOverride?: RelayAuthStyle): Promise<RelayProbeOutcome | null> => {
     if (probing) return null;
+    const revision = probeRevision.current;
     setProbing(true);
+    setError("");
     setProbeResult(null);
     try {
       const outcome = await invoke<RelayProbeOutcome>("relay_test_upstream", {
+        ...(managed ? { providerId: managed.id } : {}),
         draft: {
           baseUrl: draft.baseUrl.trim(),
           apiKey: draft.apiKey.trim(),
           model: draft.model.trim(),
-          authStyle: draft.authStyle,
+          authStyle: authOverride ?? draft.authStyle,
           profileId: draft.profileId,
         },
       });
+      if (revision !== probeRevision.current) return null;
       setProbeResult(outcome);
       return outcome;
     } catch (e) {
-      toast(`测连通失败：${String(e)}`, "error");
-      return null;
+      if (revision !== probeRevision.current) return null;
+      const failure = { status: 0, ok: false, firstByteMs: null, totalMs: 0, errorHead: String(e), switchedAuth: null };
+      setProbeResult(failure);
+      return failure;
     } finally {
       setProbing(false);
     }
-  }, [draft.apiKey, draft.authStyle, draft.baseUrl, draft.model, draft.profileId, probing]);
+  }, [draft.apiKey, draft.authStyle, draft.baseUrl, draft.model, draft.profileId, managed, probing]);
 
   return {
     draft, setField, dirty, saving, error, setError, savedAt, save,

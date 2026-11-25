@@ -5,7 +5,7 @@ import { useToast } from "../ui/toast";
 import { useAppHidden } from "../../lib/appVisibility";
 import { copyText } from "../../lib/utils";
 import { formatInt, formatMs, rewriteLabel } from "../../lib/relayFormat";
-import { actualModel, isGeneration, isRelayError, providerLabel, relayKey, summarizeUsage } from "../../lib/relayUsage";
+import { actualModel, isGeneration, isRelayError, requestProviderLabel, relayKey, summarizeUsage } from "../../lib/relayUsage";
 import type { RelayLogEntry, RelaySnapshot } from "../../lib/types";
 import { tierLabel } from "./RelayRequestTable";
 import { compactTokens } from "./RelayUsageChart";
@@ -81,7 +81,7 @@ export function RelayRoute({ snapshot, todayRows, selected, busy, onClear, onUsa
           sub={selected ? rewriteLabel(selected.rewrite) ?? "原样转发" : "默认档 · Haiku · Opus"} />
         <RouteLink label="映射转发" inactive={inactive} pulse={hidden ? null : pulse} />
         <RouteNode icon="server" label="上游模型" value={selected ? actualModel(selected) || "未到达上游" : defaultTier?.upstreamModel || "待配置"}
-          sub={selected ? providerLabel(selected.upstreamProvider) : configured ? snapshot.provider?.name || "上游" : "填写地址、密钥和模型"} selected={Boolean(selected)} />
+          sub={selected ? requestProviderLabel(selected) : configured ? snapshot.provider?.name || "上游" : "填写地址、密钥和模型"} selected={Boolean(selected)} />
       </div>
       {snapshot.tiers.length > 0 && <details className="relay-mapping">
         <summary><Icon name="chevronRight" size={13} />查看档位映射 {configured && fallbackTiers.length > 0 && <small>{fallbackTiers.join("、")} 使用默认档</small>}</summary>

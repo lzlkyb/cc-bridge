@@ -16,9 +16,10 @@ export function useModelCatalog(params: {
   model: string;
   authStyle: RelayAuthStyle;
   profileId: string;
+  providerId?: string;
   onError: (message: string) => void;
 }) {
-  const { baseUrl, apiKey, model, authStyle, profileId, onError } = params;
+  const { baseUrl, apiKey, model, authStyle, profileId, providerId, onError } = params;
   const [models, setModels] = useState<string[]>([]);
   const [listing, setListing] = useState(false);
 
@@ -31,9 +32,11 @@ export function useModelCatalog(params: {
   const fetchModels = useCallback(async (): Promise<string[] | null> => {
     if (listing) return null;
     setListing(true);
+    setModels([]);
     onError("");
     try {
       const list = await invoke<string[]>("relay_list_models", {
+        ...(providerId === undefined ? {} : { providerId }),
         draft: {
           baseUrl: baseUrl.trim(),
           apiKey: apiKey.trim(),
@@ -50,7 +53,8 @@ export function useModelCatalog(params: {
     } finally {
       setListing(false);
     }
-  }, [apiKey, authStyle, baseUrl, listing, model, onError, profileId]);
+  }, [apiKey, authStyle, baseUrl, listing, model, onError, profileId, providerId]);
 
-  return { models, listing, fetchModels };
+  const resetCatalog = useCallback(() => setModels([]), []);
+  return { models, listing, fetchModels, resetCatalog };
 }

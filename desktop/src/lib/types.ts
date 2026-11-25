@@ -769,6 +769,7 @@ export interface RelayProfile {
 }
 
 export interface RelayProviderView {
+  id?: string;
   name: string;
   baseUrl: string;
   /** 掩码形态。完整密钥不下发前端——界面不需要它就能完成全部操作。 */
@@ -793,6 +794,15 @@ export interface RelayProviderView {
   missing: "baseUrl" | "apiKey" | "model" | null;
 }
 
+export type RelayFailureStage = "clientSource" | "clientToken" | "clientBlocked" | "request";
+
+export interface RelayClientResult {
+  status: number;
+  requestId?: string | null;
+  failureStage?: RelayFailureStage | null;
+  failed: boolean;
+}
+
 export interface RelayLogEntry {
   id: number;
   requestId?: string | null;
@@ -804,6 +814,9 @@ export interface RelayLogEntry {
   upstreamModel: string;
   upstreamProvider?: string | null;
   upstreamKey?: string | null;
+  upstreamConfigId?: string | null;
+  upstreamConfigName?: string | null;
+  failureStage?: RelayFailureStage | null;
   reportedModel?: string | null;
   usage?: RelayTokenUsage | null;
   usageCollectionIssue?: "responseTooLarge" | "unsupportedEncoding" | null;
@@ -863,6 +876,7 @@ export interface RelaySnapshot {
   uptimeSecs: number | null;
   clientVerified?: boolean;
   latestClientStatus?: number | null;
+  latestClientResult?: RelayClientResult | null;
   listenHost: string;
   port: number;
   tokenMasked: string;
@@ -872,9 +886,24 @@ export interface RelaySnapshot {
   /** 最近若干条，新的在前。 */
   recent: RelayLogEntry[];
   provider: RelayProviderView | null;
+  providers?: RelayProviderConfig[];
   tiers: RelayTierView[];
   /** 可选厂商画像（后端静态表，随快照下发）。 */
   profiles: RelayProfile[];
+}
+
+export interface RelayProviderConfig {
+  provider: RelayProviderView;
+  tiers: RelayTierView[];
+}
+
+export type RelayProviderChange =
+  | { action: "save"; id?: string; name: string; patch: Record<string, unknown> }
+  | { action: "activate" | "remove"; id: string };
+
+export interface RelayProviderResult {
+  id: string;
+  snapshot: RelaySnapshot;
 }
 
 export interface RelaySaveResult {

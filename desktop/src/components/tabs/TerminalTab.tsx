@@ -111,7 +111,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
     workspace.setFocusedTabId(null); setFileConn(null);
     void ssh.connect(conn, { newTab: true });
   };
-  useTerminalOpenRequest(enabled ? openRequest : null, connections, newTerminal);
+  useTerminalOpenRequest(enabled ? openRequest : null, connections, newTerminal, (conn) => { setEditing(conn); setShowDialog(true); });
   // 重连某会话回它自己的标签（断开横幅 / 恢复横幅 / 恢复占位卡共用）。
   // 🔴 返回 Promise：「全部恢复」靠它 await 出串行，`void` 掉就变成并发。
   const reconnectSession = useCallback((s: SshSessionRef) => {

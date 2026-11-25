@@ -1234,6 +1234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::relay_logs,
             commands::relay_history,
             commands::relay_save,
+            commands::relay_manage_provider,
             commands::relay_set_enabled,
             commands::relay_start,
             commands::relay_stop,

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button } from "../ui/button";
-import { NO_TOKENS, actualModel, isGeneration, providerLabel, rateKey, TOKEN_FIELDS, type RelayRates, type TokenCounts } from "../../lib/relayUsage";
+import { NO_TOKENS, actualModel, isGeneration, requestProviderLabel, rateKey, TOKEN_FIELDS, type RelayRates, type TokenCounts } from "../../lib/relayUsage";
 import type { RelayLogEntry } from "../../lib/types";
 
 export function RelayPriceForm({ rows, initial, rates, onSave }: { rows: RelayLogEntry[]; initial?: RelayLogEntry; rates: RelayRates; onSave: (rates: RelayRates) => void }) {
@@ -11,9 +11,9 @@ export function RelayPriceForm({ rows, initial, rates, onSave }: { rows: RelayLo
   }
   const [selected, setSelected] = useState((initial && rateKey(initial)) || choices.keys().next().value || "");
   if (!selected) return <p>收到带有上游模型信息的请求后，就可以为该模型配置单价。</p>;
-  return <><label className="relay-price-field">上游与实际模型
+  return <><label className="relay-price-field">上游配置与实际模型
     <select className="relay-work-select" value={selected} onChange={(e) => setSelected(e.target.value)}>
-      {Array.from(choices, ([key, row]) => <option key={key} value={key}>{providerLabel(row.upstreamProvider, row.upstreamKey)} · {actualModel(row)}</option>)}
+      {Array.from(choices, ([key, row]) => <option key={key} value={key}>{requestProviderLabel(row)} · {actualModel(row)}</option>)}
     </select>
   </label><RateFields key={selected} current={rates[selected]} onSave={(values) => onSave({ ...rates, [selected]: values })} /></>;
 }

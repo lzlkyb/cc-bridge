@@ -27,6 +27,9 @@ html.dark :is(.relay-workbench, .relay-drawer) {
 }
 
 .relay-workbench { max-width: 1632px; margin-inline: auto; padding: 22px 24px 28px; min-width: 0; }
+.relay-access-placeholder { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 15px; }
+.relay-access-placeholder > div:first-of-type { flex: 1 1 210px; }
+.relay-access-placeholder p { color: var(--relay-ink); font-size: 12px; }
 .relay-work-head, .relay-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .relay-work-head { padding-bottom: 12px; }
 .relay-work-head h1 { margin: 0; font-size: 29px; line-height: 1.2; font-weight: 740; letter-spacing: -.025em; }

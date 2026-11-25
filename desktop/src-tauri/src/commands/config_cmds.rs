@@ -791,6 +791,10 @@ pub(crate) fn export_config_json(config: &crate::config::BridgeConfig) -> Result
     // 避免导出的配置文件被备份/转发/入库时泄露凭证。导入端 token 为空时会保留现有或重新生成。
     let mut export = config.clone();
     export.token = String::new();
+    export.relay_token.clear();
+    for provider in &mut export.relay.providers {
+        provider.api_key.clear();
+    }
     // 🔴 SSH 凭据密文**必须一并抹掉**（审查 B5）。`ssh_connections` 里的
     // `encrypted_password` / `encrypted_passphrase` 是 aes-gcm 密文，密钥在本机
     // `ssh_key.bin`——密文外发等于把凭据交出去（同一台机器上导入即可还原明文）。
@@ -921,24 +925,21 @@ pub(crate) async fn import_config_inner(
         incoming.external_mcp_servers = cur.external_mcp_servers.clone();
     }
 
-    let db = state.db.lock().await;
-    crate::config::save_full_config(&db, &incoming)?;
-    drop(db);
-
     // 🔴 导入前快照旧配置，用于下面「拆 helper / 断路器」的差集判定（审查 B6）。
     // 不拆的后果很实在：导入一份改过 host 的配置后，常驻 SFTP helper 仍连着**旧主机**，
     // 文件面板的删除操作打在旧机器上；导入一份 `ssh_enabled: false` 也不会触发断路器
     // （save_config 那条有专门逻辑，导入路径漏了）。
-    let (old_conns, old_ssh_enabled) = {
-        let cur = state.config.read().await;
-        (cur.ssh_connections.clone(), cur.ssh_enabled)
-    };
     let new_ssh_enabled = incoming.ssh_enabled;
-    // 需要重连的判定：连接被删、或连到另一台机器的关键字段变了。只看 id 不够——
-    // id 不变而 host/port/user/key 变了的场景（用户编辑同一台机器的配置）同样要拆。
-    let stale_ids = stale_ssh_helper_ids(&old_conns, &incoming.ssh_connections);
-
-    *state.config.write().await = incoming;
+    let (stale_ids, old_ssh_enabled) = {
+        let db = state.db.lock().await;
+        let mut cur = state.config.write().await;
+        restore_relay_credentials(&mut incoming, &cur);
+        crate::config::save_full_config(&db, &incoming)?;
+        let stale_ids = stale_ssh_helper_ids(&cur.ssh_connections, &incoming.ssh_connections);
+        let old_ssh_enabled = cur.ssh_enabled;
+        *cur = incoming;
+        (stale_ids, old_ssh_enabled)
+    };
 
     // 先拆受影响的 helper，再按总开关决定要不要整体断路。
     for id in &stale_ids {
@@ -965,7 +966,7 @@ pub(crate) async fn import_config_inner(
     // 「配置里已是新上游、监听里还是旧快照」——旧 token 继续有效、新上游不生效、
     // `relay_enabled: false` 了监听还开着。阈值/窗口与 relay_start 同源现取。
     {
-        let cfg = state.config.read().await.clone();
+        let cfg = state.config.read().await;
         super::relay_cmds::sync_relay_runtime(
             &state.relay,
             &cfg,
@@ -982,6 +983,70 @@ pub(crate) async fn import_config_inner(
         warnings: host_warning.into_iter().collect(),
         restart_required: true,
     })
+}
+
+fn restore_relay_credentials(
+    incoming: &mut crate::config::BridgeConfig,
+    current: &crate::config::BridgeConfig,
+) {
+    crate::relay::config::ensure_provider_ids(&mut incoming.relay);
+    if incoming.relay_token.trim().is_empty() {
+        incoming.relay_token = current.relay_token.clone();
+        if incoming.relay_enabled && incoming.relay_token.trim().is_empty() {
+            incoming.relay_token = crate::relay::auth::generate_token();
+        }
+    }
+    for provider in &mut incoming.relay.providers {
+        if !provider.api_key.trim().is_empty() {
+            continue;
+        }
+        // A portable backup must never attach a local key to a different destination.
+        if let Some(saved) = current
+            .relay
+            .providers
+            .iter()
+            .find(|saved| saved.id == provider.id && saved.base_url == provider.base_url)
+        {
+            provider.api_key = saved.api_key.clone();
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn relay_config_backup_masks_secrets_and_matches_same_destination_on_import() {
+    let mut config = crate::config::BridgeConfig {
+        relay_token: "local-relay-secret".into(),
+        ..Default::default()
+    };
+    for (id, host, key) in [
+        ("default", "one.test", "first-secret"),
+        ("standby", "two.test", "second-secret"),
+    ] {
+        config.relay.providers.push(crate::relay::config::Provider {
+            id: id.into(),
+            base_url: format!("https://{host}/v1/messages"),
+            api_key: key.into(),
+            ..Default::default()
+        });
+    }
+    let exported = export_config_json(&config).unwrap();
+    assert!(
+        !exported.contains("secret"),
+        "all relay credentials should be removed"
+    );
+    let mut imported: crate::config::BridgeConfig = serde_json::from_str(&exported).unwrap();
+    imported.relay.providers[1].base_url = "https://different.test/v1/messages".into();
+    restore_relay_credentials(&mut imported, &config);
+    assert_eq!(imported.relay_token, config.relay_token);
+    assert_eq!(imported.relay.providers[0].api_key, "first-secret");
+    assert!(imported.relay.providers[1].api_key.is_empty());
+
+    let mut fresh: crate::config::BridgeConfig = serde_json::from_str(&exported).unwrap();
+    fresh.relay_enabled = true;
+    restore_relay_credentials(&mut fresh, &Default::default());
+    assert!(fresh.relay_token.starts_with("rly_"));
+    assert!(fresh.relay.providers.iter().all(|p| p.api_key.is_empty()));
 }
 
 #[tauri::command]

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { formatClock, formatInt, formatMs, rewriteLabel } from "../../lib/relayFormat";
-import { actualModel, dayKey, estimateCost, isPending, isRelayError, moneyLabel, providerLabel, rateKey, relayOutcome, relayUsageState, TOKEN_FIELDS, tokenTotal, type RelayRates } from "../../lib/relayUsage";
+import { actualModel, dayKey, estimateCost, isPending, isRelayError, moneyLabel, requestProviderLabel, rateKey, relayOutcome, relayUsageState, TOKEN_FIELDS, tokenTotal, type RelayRates } from "../../lib/relayUsage";
 import type { RelayLogEntry } from "../../lib/types";
 import { tierLabel } from "./RelayRequestTable";
 
@@ -19,8 +19,11 @@ export function RelayRequestDetails({ row, rates, onPricing }: { row: RelayLogEn
     {isRelayError(row) && <div className="relay-work-notice" role="status">
       <strong>{row.error || `上游返回 HTTP ${row.status}`}</strong>
       {row.upstreamError && <pre className="relay-upstream-error">{row.upstreamError}</pre>}
-      {row.status === 429 && <span>等待额度恢复，或到上游控制台查看限流情况。</span>}
-      {(row.status === 401 || row.status === 403) && <span>检查上游密钥和鉴权方式。也请确认客户端中转令牌仍有效。</span>}
+      {row.failureStage === "clientToken" && <span>在接入指南重新复制远端配置，更新客户端的中转令牌。</span>}
+      {row.failureStage === "clientSource" && <span>核对远端使用的是接入指南提供的地址和端口。</span>}
+      {row.failureStage === "clientBlocked" && <span>检查客户端中转令牌，待封禁解除后再试。</span>}
+      {!row.failureStage && row.status === 429 && <span>等待额度恢复，或到上游控制台查看限流情况。</span>}
+      {!row.failureStage && (row.status === 401 || row.status === 403) && <span>检查上游配置中的 API 密钥、鉴权方式和模型权限。</span>}
       {row.status === 404 && <span>检查上游地址和模型名。</span>}
     </div>}
     <section className="relay-detail-section"><h3>请求路由</h3><dl>
@@ -28,7 +31,7 @@ export function RelayRequestDetails({ row, rates, onPricing }: { row: RelayLogEn
       <Info label="实际模型">{actualModel(row) || "—"}</Info>
       {row.reportedModel && row.reportedModel !== row.upstreamModel && <Info label="转发模型名">{row.upstreamModel}</Info>}
       <Info label="映射档位">{tierLabel(row.tier)}{row.fellBack && " → 默认档"}</Info>
-      <Info label="上游供应商">{providerLabel(row.upstreamProvider, row.upstreamKey)}</Info>
+      <Info label="上游配置">{requestProviderLabel(row)}</Info>
       <Info label="来源">{row.source === "local" ? "回环" : `内网 · ${row.source}`}</Info>
       <Info label="请求路径">{row.path}</Info>
       <Info label="HTTP 状态">{row.status ?? "—"}</Info>

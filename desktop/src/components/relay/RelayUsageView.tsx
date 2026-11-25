@@ -5,32 +5,30 @@ import { useToast } from "../ui/toast";
 import { Modal } from "../ui/Modal";
 import { exportedToast, saveTextExport } from "../../lib/exportFile";
 import { formatInt } from "../../lib/relayFormat";
-import { actualModel, dayKey, isGeneration, isPending, moneyLabel, providerKey, providerLabel, relayUsageCsv, shiftDay, shortRelayDay, summarizeUsage, TOKEN_FIELDS, tokenTotal, type RelayRates } from "../../lib/relayUsage";
+import { actualModel, dayKey, isGeneration, isPending, moneyLabel, providerKey, requestProviderLabel, relayUsageCsv, shiftDay, shortRelayDay, summarizeUsage, TOKEN_FIELDS, tokenTotal, type RelayRates } from "../../lib/relayUsage";
 import type { RelayLogEntry } from "../../lib/types";
 import { RelayRequestTable, tierLabel } from "./RelayRequestTable";
 import { bucketKey, bucketLabel, compactTokens, RelayUsageChart } from "./RelayUsageChart";
-
-type Range = { mode: "week" | "today" | "custom"; from: string; to: string };
-const EMPTY_FILTERS = { model: "", provider: "", dimension: "" };
+import { EMPTY_RELAY_FILTERS, type RelayUsageScope } from "../../hooks/useRelayWorkbench";
 
 export function RelayMetric({ label, value, note }: { label: string; value: string; note?: string }) {
   return <div className="relay-work-metric"><dt>{label}</dt><dd>{value}{note && <small>{note}</small>}</dd></div>;
 }
 
-export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, onPricing, onPeriodChange }: {
+export function RelayUsageView({ rows, today, rates, onRequest, onPricing, scope, onScope }: {
   rows: RelayLogEntry[];
   today: string;
-  initialPeriod: Range["mode"];
   rates: RelayRates;
   onRequest: (row: RelayLogEntry) => void;
   onPricing: () => void;
-  onPeriodChange: (period: "week" | "today") => void;
+  scope: RelayUsageScope;
+  onScope: (patch: Partial<RelayUsageScope>) => void;
 }) {
   const earliest = shiftDay(today, -6);
-  const [range, setRange] = useState<Range>({ mode: initialPeriod, from: earliest, to: today });
+  const { range, filters, bucket, page } = scope;
+  const setFilters = (next: RelayUsageScope["filters"]) => onScope({ filters: next });
+  const setBucket = (next: string | null) => onScope({ bucket: next });
   const [custom, setCustom] = useState<{ from: string; to: string } | null>(null);
-  const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [bucket, setBucket] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [info, setInfo] = useState(false);
   const { toast } = useToast();
@@ -38,7 +36,7 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
   const to = range.mode === "custom" && range.to >= from ? range.to : today;
   const periodRows = useMemo(() => rows.filter((row) => {
     const day = dayKey(row.tsMs);
-    return isGeneration(row) && day >= from && day <= to;
+    return isGeneration(row) && !row.failureStage && day >= from && day <= to;
   }), [rows, from, to]);
 
   const models = [...new Set(periodRows.map(actualModel).filter(Boolean))].sort();
@@ -46,7 +44,7 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
     const labels = new Map<string, string>();
     for (const row of rows) {
       const key = providerKey(row);
-      if (isGeneration(row) && key && !labels.has(key)) labels.set(key, providerLabel(row.upstreamProvider, row.upstreamKey));
+      if (isGeneration(row) && key && !labels.has(key)) labels.set(key, requestProviderLabel(row));
     }
     return labels;
   }, [rows]);
@@ -77,9 +75,7 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
   const filtered = Boolean(selectedByBucket || filters.model || filters.provider || filters.dimension);
 
   const changePeriod = (mode: "week" | "today") => {
-    setRange({ mode, from: earliest, to: today });
-    setBucket(null);
-    onPeriodChange(mode);
+    onScope({ range: { mode, from: earliest, to: today }, bucket: null });
   };
   const exportCurrent = async () => {
     setExporting(true);
@@ -106,8 +102,8 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
             <option value="">全部实际模型</option>{filters.model && !models.includes(filters.model) && <option value={filters.model}>{filters.model}</option>}
             {models.map((model) => <option key={model}>{model}</option>)}
           </select>
-          <select className="relay-work-select" aria-label="上游供应商" value={filters.provider} onChange={(e) => setFilters({ ...filters, provider: e.target.value })}>
-            <option value="">全部供应商</option>{filters.provider && !providers.has(filters.provider) && <option value={filters.provider}>已筛选上游</option>}
+          <select className="relay-work-select" aria-label="上游配置" value={filters.provider} onChange={(e) => setFilters({ ...filters, provider: e.target.value })}>
+            <option value="">全部上游</option>{filters.provider && !providers.has(filters.provider) && <option value={filters.provider}>已筛选上游</option>}
             {Array.from(providers, ([key, label]) => <option key={key} value={key}>{label}</option>)}
           </select>
           <select className="relay-work-select" aria-label="客户端模型或档位" value={filters.dimension} onChange={(e) => setFilters({ ...filters, dimension: e.target.value })}>
@@ -120,6 +116,7 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
         <div className="relay-inline relay-wrap">
           <span className="relay-work-badge" data-tone={selectedByBucket ? "accent" : "mute"} role="status">{selectedByBucket && "已选 "}{scopeLabel} · {formatInt(details.length)} 条请求</span>
           {selectedByBucket && <Button size="sm" variant="ghost" onClick={() => setBucket(null)}>清除时段</Button>}
+          {filtered && <Button size="sm" variant="ghost" onClick={() => onScope({ bucket: null, filters: EMPTY_RELAY_FILTERS })}>清除筛选</Button>}
           <Button variant="outline" size="sm" disabled={!details.length} isLoading={exporting} onClick={() => void exportCurrent()}><Icon name="download" size={14} />导出当前范围</Button>
         </div>
       </div>
@@ -152,11 +149,8 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
 
       <section className="relay-work-panel" aria-labelledby="relay-usage-requests">
         <header className="relay-section-head"><div><h2 id="relay-usage-requests">逐请求用量</h2><p>{scopeLabel} · 本地时间</p></div>
-          {filtered && <div className="relay-inline relay-wrap">
-            <Button variant="ghost" size="sm" onClick={() => { setBucket(null); setFilters(EMPTY_FILTERS); }}>清除筛选</Button>
-          </div>}
         </header>
-        <RelayRequestTable key={JSON.stringify([from, to, filters, selectedByBucket])} rows={details} usage rates={rates} onRequest={onRequest}
+        <RelayRequestTable rows={details} usage rates={rates} onRequest={onRequest} requestedPage={page} onPage={(next) => onScope({ page: next })}
           empty={filtered ? "没有符合筛选条件的请求。" : "这段时间内没有模型生成请求。"} />
         <p className="relay-work-footnote">保留近 7 天明细，包含今天。Token 预估请求单独出现在请求路由中。</p>
       </section>
@@ -167,12 +161,12 @@ export function RelayUsageView({ rows, today, initialPeriod, rates, onRequest, o
           <label>结束日期<input className="relay-work-select" type="date" min={custom.from} max={today} value={custom.to} onChange={(e) => setCustom({ ...custom, to: e.target.value })} /></label>
         </div>
         <div className="relay-inline relay-end"><Button size="sm" variant="ghost" onClick={() => setCustom(null)}>取消</Button><Button size="sm" disabled={!custom.from || !custom.to || custom.from < earliest || custom.to > today || custom.from > custom.to}
-          onClick={() => { setRange({ mode: "custom", ...custom }); setBucket(null); setCustom(null); }}>应用日期</Button></div>
+          onClick={() => { onScope({ range: { mode: "custom", ...custom }, bucket: null }); setCustom(null); }}>应用日期</Button></div>
       </Modal>}
       {info && <Modal open ariaLabel="Token 统计口径" onClose={() => setInfo(false)} className="relay-small-dialog modal-surface">
         <h2>Token 统计口径</h2><p>输入包含未缓存输入、缓存写入和缓存读取。总 Token 为输入与输出的合计。</p>
         <p>缓存命中率为缓存读取 Token 占全部输入 Token 的比例。部分采集仅汇总上游已返回的字段。</p>
-        <p>预估费用以当前配置的美元单价计算，覆盖用量完整且有对应单价的记录。</p>
+        <p>预估费用以当前配置的美元单价计算，覆盖用量完整且有对应单价的记录。新请求按上游配置分别计价，旧记录按网关保留。</p>
         <Button size="sm" onClick={() => setInfo(false)}>知道了</Button>
       </Modal>}
     </div>

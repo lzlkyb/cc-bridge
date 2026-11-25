@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use super::auth::{self, AuthOutcome};
 use super::config::{RelaySettings, MAX_BODY_BYTES};
 use super::guard;
-use super::log::{LogPatch, RelayLog, RelayLogEntry};
+use super::log::{FailureStage, LogPatch, RelayLog, RelayLogEntry};
 use super::openai;
 use super::profile::{BetaHeaders, Dialect};
 use super::repair;
@@ -313,6 +313,17 @@ async fn handle_path(
     } else {
         peer.ip().to_string()
     };
+    let rejection = |stage, status: StatusCode, message: &str| {
+        state.log.begin(RelayLogEntry {
+            started_at: Some(started),
+            source: source.clone(),
+            path: path.to_string(),
+            failure_stage: Some(stage),
+            status: Some(status.as_u16()),
+            error: Some(message.to_string()),
+            ..RelayLogEntry::default()
+        });
+    };
 
     // ── 来源守卫 ──────────────────────────────────────────────────────
     let verdict = guard::check(&headers, &state.allowed_hosts);
@@ -321,11 +332,21 @@ async fn handle_path(
             guard::Verdict::BadHost { .. } => StatusCode::MISDIRECTED_REQUEST,
             _ => StatusCode::FORBIDDEN,
         };
+        rejection(
+            FailureStage::ClientSource,
+            status,
+            "请求来源未通过本机中转校验。",
+        );
         return error_response(status, "permission_error", &verdict.message());
     }
 
     // ── 封禁 ──────────────────────────────────────────────────────────
     if state.ban.is_banned(peer.ip()) {
+        rejection(
+            FailureStage::ClientBlocked,
+            StatusCode::TOO_MANY_REQUESTS,
+            "中转已暂时封禁此来源。",
+        );
         return error_response(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limit_error",
@@ -339,6 +360,11 @@ async fn handle_path(
         AuthOutcome::Ok => state.ban.record_success(peer.ip()),
         outcome => {
             state.ban.record_fail(peer.ip());
+            rejection(
+                FailureStage::ClientToken,
+                StatusCode::UNAUTHORIZED,
+                outcome.message(),
+            );
             let mut resp = error_response(
                 StatusCode::UNAUTHORIZED,
                 "authentication_error",
@@ -354,6 +380,11 @@ async fn handle_path(
     // ── 配置快照 ──────────────────────────────────────────────────────
     let settings = state.settings.read().await.clone();
     let Some(provider) = settings.active().cloned() else {
+        rejection(
+            FailureStage::Request,
+            StatusCode::SERVICE_UNAVAILABLE,
+            &RouteError::NoProvider.message(),
+        );
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "api_error",
@@ -361,6 +392,11 @@ async fn handle_path(
         );
     };
     if let Err(field) = provider.validate() {
+        rejection(
+            FailureStage::Request,
+            StatusCode::SERVICE_UNAVAILABLE,
+            &RouteError::NotConfigured { field }.message(),
+        );
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "api_error",
@@ -387,6 +423,11 @@ async fn handle_path(
     let decision = match route::resolve(&settings, &client_model) {
         Ok(d) => d,
         Err(e) => {
+            rejection(
+                FailureStage::Request,
+                StatusCode::SERVICE_UNAVAILABLE,
+                &e.message(),
+            );
             return error_response(StatusCode::SERVICE_UNAVAILABLE, "api_error", &e.message());
         }
     };
@@ -410,6 +451,7 @@ async fn handle_path(
     let upstream_body = match to_wire(&out_json) {
         Ok(b) => b,
         Err(e) => {
+            rejection(FailureStage::Request, StatusCode::INTERNAL_SERVER_ERROR, &e);
             return error_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error", &e);
         }
     };
@@ -427,6 +469,8 @@ async fn handle_path(
         upstream_model: decision.upstream_model.clone(),
         upstream_provider,
         upstream_key,
+        upstream_config_id: Some(provider.id.clone()),
+        upstream_config_name: Some(provider.name.clone()),
         fell_back: decision.fell_back,
         via: decision.via.as_str().to_string(),
         rewrite: prepared.rewrite_label(),
@@ -1022,36 +1066,17 @@ fn log_rejected(
     refusal: &sanitize::Refusal,
     bytes_in: u64,
 ) {
-    let id = state.log.begin(RelayLogEntry {
-        id: 0,
-        ts_ms: 0,
+    state.log.begin(RelayLogEntry {
         source: source.to_string(),
-        client_model: String::new(),
-        tier: String::new(),
-        upstream_model: String::new(),
-        fell_back: false,
+        failure_stage: Some(FailureStage::Request),
+        status: Some(400),
         via: "refused".into(),
-        rewrite: None,
-        fold_summary: None,
-        sanitized: false,
-        status: None,
-        first_byte_ms: None,
-        total_ms: None,
+        total_ms: Some(0),
         bytes_in: Some(bytes_in),
-        bytes_out: None,
-        error: None,
+        error: Some(refusal.cause.message()),
         path: path.to_string(),
         ..RelayLogEntry::default()
     });
-    state.log.finish(
-        id,
-        LogPatch {
-            status: Some(400),
-            total_ms: Some(0),
-            error: Some(refusal.cause.message()),
-            ..LogPatch::default()
-        },
-    );
 }
 
 #[cfg(test)]
@@ -1481,22 +1506,30 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn auth_and_guard_reject_before_reaching_upstream() {
         let (up_addr, captured, _up) = spawn_upstream().await;
+        let log = Arc::new(RelayLog::new(100, None));
         let relay = spawn_relay(
             test_settings(format!("http://{up_addr}/v1/messages")),
-            Arc::new(RelayLog::new(100, None)),
+            log.clone(),
         )
         .await;
         let client = reqwest::Client::new();
         let url = format!("http://{}/v1/messages", relay.addr);
 
-        // 无凭据 → 401
+        // Claude Code can fail before its first generation request.
+        let since = Instant::now();
         let resp = client
-            .post(&url)
+            .post(format!("{url}/count_tokens"))
             .body(r#"{"model":"m","messages":[]}"#)
             .send()
             .await
             .unwrap();
         assert_eq!(resp.status(), 401);
+        let (verified, latest) = log.client_state_since(since);
+        assert!(!verified);
+        assert_eq!(
+            latest.unwrap().failure_stage,
+            Some(FailureStage::ClientToken)
+        );
         assert_eq!(
             resp.headers()
                 .get("x-relay-auth")
@@ -1514,6 +1547,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), 403);
+        let rows = log.recent(5);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].failure_stage, Some(FailureStage::ClientSource));
+        assert_eq!(rows[1].failure_stage, Some(FailureStage::ClientToken));
+        assert!(rows.iter().all(|row| row.upstream_config_id.is_none()));
+        let serialized = serde_json::to_string(&rows).unwrap();
+        assert!(!serialized.contains("rly_test"));
 
         assert!(
             captured.lock().unwrap().is_empty(),

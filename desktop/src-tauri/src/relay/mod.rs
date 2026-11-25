@@ -162,11 +162,15 @@ impl RelayRuntime {
     /// 热更新配置。不重启监听，只换快照。
     pub async fn reload_settings(&self, settings: RelaySettings) {
         let mut current = self.settings.write().await;
+        let route_changed =
+            current.active() != settings.active() || current.overrides != settings.overrides;
         *current = Arc::new(settings);
-        *self
-            .settings_changed_at
-            .lock()
-            .unwrap_or_else(|err| err.into_inner()) = Instant::now();
+        if route_changed {
+            *self
+                .settings_changed_at
+                .lock()
+                .unwrap_or_else(|err| err.into_inner()) = Instant::now();
+        }
     }
 
     /// 热更新 token。
@@ -219,7 +223,7 @@ impl RelayRuntime {
                 (Some(server.addr.clone()), Some(server.started_at))
             })
         };
-        let (client_verified, latest_client_status) = started_at.map_or((false, None), |at| {
+        let (client_verified, latest_client_result) = started_at.map_or((false, None), |at| {
             // A reply from an earlier listener or provider configuration cannot validate this one.
             self.log.client_state_since(at.max(settings_changed_at))
         });
@@ -228,7 +232,8 @@ impl RelayRuntime {
             addr,
             uptime_secs: started_at.map(|at| at.elapsed().as_secs()),
             client_verified,
-            latest_client_status,
+            latest_client_status: latest_client_result.as_ref().map(|result| result.status),
+            latest_client_result,
             listen_host: self.listen_host.read().await.clone(),
             port: *self.listen_port.read().await,
             token_masked: auth::mask(&token),
@@ -237,24 +242,15 @@ impl RelayRuntime {
             recent: self.log.recent(recent_n),
             provider: settings.active().map(ProviderView::from_provider),
             profiles: profile::views(),
-            tiers: settings
-                .active()
-                .map(|p| {
-                    TierKind::ALL
-                        .into_iter()
-                        .map(|kind| TierView {
-                            tier: kind.as_str().to_string(),
-                            alias: kind.alias().to_string(),
-                            env_var: kind.env_var().to_string(),
-                            upstream_model: p
-                                .upstream_for(kind)
-                                .map(str::to_string)
-                                .unwrap_or_default(),
-                            configured: p.upstream_for(kind).is_some(),
-                        })
-                        .collect()
+            tiers: settings.active().map(tier_views).unwrap_or_default(),
+            providers: settings
+                .providers
+                .iter()
+                .map(|p| ProviderConfigView {
+                    provider: ProviderView::from_provider(p),
+                    tiers: tier_views(p),
                 })
-                .unwrap_or_default(),
+                .collect(),
         }
     }
 }
@@ -268,6 +264,7 @@ pub struct RelaySnapshot {
     pub uptime_secs: Option<u64>,
     pub client_verified: bool,
     pub latest_client_status: Option<u16>,
+    pub latest_client_result: Option<log::ClientResult>,
     pub listen_host: String,
     pub port: u16,
     /// 掩码形态，界面标题栏用。
@@ -278,6 +275,7 @@ pub struct RelaySnapshot {
     pub recent: Vec<RelayLogEntry>,
     /// 当前生效的 provider 视图。没配时是 `None`。
     pub provider: Option<ProviderView>,
+    pub providers: Vec<ProviderConfigView>,
     /// 三档映射（含未配置的行，界面要据此显示占位）。
     ///
     /// **不回传原始配置**：表单需要的每个值都在 `provider` / `tiers` 里，
@@ -296,6 +294,7 @@ pub struct RelaySnapshot {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderView {
+    pub id: String,
     pub name: String,
     pub base_url: String,
     pub api_key_masked: String,
@@ -324,6 +323,7 @@ impl ProviderView {
         let missing = p.validate().err();
         let preset = p.profile();
         Self {
+            id: p.id.clone(),
             name: if p.name.is_empty() {
                 config::derive_name(&p.base_url)
             } else {
@@ -356,6 +356,29 @@ impl ProviderView {
             }),
         }
     }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderConfigView {
+    pub provider: ProviderView,
+    pub tiers: Vec<TierView>,
+}
+
+fn tier_views(provider: &Provider) -> Vec<TierView> {
+    TierKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let model = provider.upstream_for(kind);
+            TierView {
+                tier: kind.as_str().to_string(),
+                alias: kind.alias().to_string(),
+                env_var: kind.env_var().to_string(),
+                upstream_model: model.unwrap_or_default().to_string(),
+                configured: model.is_some(),
+            }
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -483,7 +506,11 @@ async fn send_probe(
         ok,
         first_byte_ms,
         total_ms: started.elapsed().as_millis() as u64,
-        error_head: if ok { None } else { Some(truncate(&text, 512)) },
+        error_head: if ok {
+            None
+        } else {
+            Some(truncate(&text.replace(api_key, "[已隐藏密钥]"), 512))
+        },
         switched_auth: None,
     })
 }

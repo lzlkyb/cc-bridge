@@ -56,9 +56,13 @@ export function isRelayError(row: RelayLogEntry) {
 }
 
 export function relayOutcome(row: RelayLogEntry) {
+  if (row.failureStage === "clientToken") return { label: "客户端令牌无效", tone: "bad" };
+  if (row.failureStage === "clientSource") return { label: "来源被拒", tone: "bad" };
+  if (row.failureStage === "clientBlocked") return { label: "来源暂时封禁", tone: "warn" };
+  if (row.failureStage === "request") return { label: "请求处理失败", tone: "bad" };
   if (row.error === "客户端提前断开") return { label: "客户端断开", tone: "mute" };
   if (row.status === 429) return { label: "上游限流", tone: "warn" };
-  if (row.status === 401 || row.status === 403) return { label: "认证失败", tone: "bad" };
+  if (row.status === 401 || row.status === 403) return { label: "上游鉴权失败", tone: "bad" };
   if (isRelayError(row)) return { label: "失败", tone: "bad" };
   if (isPending(row)) return { label: "处理中", tone: "mute" };
   return row.status === 200 || (row.status != null && row.status < 300)
@@ -83,7 +87,13 @@ export function providerLabel(provider?: string | null, endpointKey?: string | n
 }
 
 export function providerKey(row: RelayLogEntry) {
-  return row.upstreamKey || row.upstreamProvider || "";
+  return row.upstreamConfigId ? `config:${row.upstreamConfigId}` : row.upstreamKey || row.upstreamProvider || "";
+}
+
+export function requestProviderLabel(row: RelayLogEntry) {
+  if (row.failureStage) return "未转发";
+  if (row.upstreamConfigId) return row.upstreamConfigName?.trim() || (row.upstreamProvider ? providerLabel(row.upstreamProvider) : "未命名上游");
+  return row.upstreamKey ? `${providerLabel(row.upstreamProvider, row.upstreamKey)}（旧记录）` : providerLabel(row.upstreamProvider);
 }
 
 export function rateKey(row: RelayLogEntry) {
@@ -166,7 +176,7 @@ export function relayUsageCsv(rows: RelayLogEntry[], rates: RelayRates) {
   const fields = ["请求 ID", "本地时间", "客户端模型", "实际模型", "上游供应商", "请求档位", "结果", ...TOKEN_FIELDS.map(({ label }) => label), "总 Token", "预估费用 USD", "用量状态"];
   const lines = rows.map((row) => [
     relayKey(row), `${dayKey(row.tsMs)} ${new Date(row.tsMs).toLocaleTimeString("zh-CN", { hour12: false })}`, row.clientModel,
-    actualModel(row), providerLabel(row.upstreamProvider, row.upstreamKey), row.tier, relayOutcome(row).label,
+    actualModel(row), requestProviderLabel(row), row.tier, relayOutcome(row).label,
     ...TOKEN_FIELDS.map(({ key }) => row.usage?.[key]), tokenTotal(row.usage), estimateCost(row, rates), relayUsageState(row),
   ]);
   return `\ufeff${[fields, ...lines].map((line) => line.map(cell).join(",")).join("\r\n")}`;

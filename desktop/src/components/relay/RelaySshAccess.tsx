@@ -101,17 +101,25 @@ export function RelayTargetSelect({ access, id, disabled, direct = false }: {
   );
 }
 
-export function RelaySshAccess({ access, recovery, onRecover, disabled }: {
-  access: Access; recovery?: boolean; onRecover: () => void; disabled?: boolean;
+export function RelaySshSetup({ access, onManage, optional }: { access: Access; onManage?: (anchor?: string) => void; optional?: boolean }) {
+  const { servers, connections } = access;
+  if (!servers.data || (servers.data.enabled && connections.length)) return null;
+  const enabled = servers.data.enabled;
+  return <div className="relay-prereq"><div className="relay-inline relay-wrap relay-spread">
+    <span>{optional ? "一键部署需要 SSH，也可手动复制远端配置。" : enabled ? "添加服务器后即可选择接入账号。" : "先启用 SSH，再保存服务器连接。"}</span>
+    {onManage && <Button size="sm" variant="outline" onClick={() => onManage(enabled ? "relay-ssh-new" : undefined)}>{enabled ? "添加服务器" : "前往启用 SSH"}</Button>}
+  </div></div>;
+}
+
+export function RelaySshAccess({ access, recovery, onRecover, disabled, onManage }: {
+  access: Access; recovery?: boolean; onRecover: () => void; disabled?: boolean; onManage?: (anchor?: string) => void;
 }) {
   const { servers, connections, connection, tunnel, busy, port } = access;
   if (servers.isPending) return <p className="relay-method-note" role="status">正在读取 SSH 服务器…</p>;
   if (servers.isError) return <div className="relay-inline relay-wrap" role="alert">
     <span>读取 SSH 服务器失败。</span><Button size="sm" variant="outline" onClick={() => void servers.refetch()}>重试读取</Button>
   </div>;
-  if (!servers.data?.enabled || !connections.length) return <p className="relay-prereq">
-    {servers.data?.enabled ? "请先在终端页保存一条 SSH 服务器连接。" : "请先在设置中启用 SSH。"}
-  </p>;
+  if (!servers.data?.enabled || !connections.length) return <RelaySshSetup access={access} onManage={onManage} />;
 
   const connecting = busy && !port;
   const oldPort = tunnel?.rules[0]?.rule.listenPort;
@@ -133,7 +141,9 @@ export function RelaySshAccess({ access, recovery, onRecover, disabled }: {
           <input type="password" value={access.secret} autoComplete="off" onChange={(event) => access.setSecret(event.target.value)} />
         </label>
       )}
-      {tunnel?.needsJumpSecret && <small>请在终端页保存跳板机的登录凭据，再重试。</small>}
+      {tunnel?.needsJumpSecret && <div className="relay-inline relay-wrap"><small>请保存跳板机的登录凭据，再重试。</small>
+        {onManage && connection?.proxyJumpId && <Button size="sm" variant="outline" onClick={() => onManage(`relay-ssh-edit:${connection.proxyJumpId}`)}>补充跳板机凭据</Button>}
+      </div>}
       {!port && (access.error || tunnel?.message || tunnel?.lastFailure) && <small>{access.error || tunnel?.message || tunnel?.lastFailure}</small>}
       {connection && !port && <div className="relay-inline relay-wrap">
         {(!connecting || retry) && <Button size="sm" disabled={disabled || busy || (access.needsSecret && !access.secret) || tunnel?.needsJumpSecret}

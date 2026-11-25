@@ -48,14 +48,13 @@ function deployRelayConfig(connectionId: string, baseUrl: string, options: Deplo
   return invoke<RelayDeployResult>("relay_deploy_config", { connectionId, expectedBaseUrl: baseUrl, ...options });
 }
 
-export function RelayDeploy({ connection, baseUrl, model, tokenPresent, blocked, deployment, onOpenTerminal }: {
+export function RelayDeploy({ connection, baseUrl, model, tokenPresent, blocked, deployment }: {
   connection: SshConnection;
   baseUrl: string;
   model: string;
   tokenPresent: boolean;
   blocked: boolean;
   deployment: ReturnType<typeof useRelayDeployment>;
-  onOpenTerminal?: (connectionId: string) => void;
 }) {
   const { toast } = useToast();
   const [svc, setSvc] = useState<string>();
@@ -103,15 +102,9 @@ export function RelayDeploy({ connection, baseUrl, model, tokenPresent, blocked,
         <span className="relay-work-badge" data-tone="ok"><Icon name="check" size={12} />配置已部署</span>
         {(result?.file || last.file) && <span>配置文件 <code>{result?.file || last.file}</code></span>}
         {result?.serviceAccount && <span>服务账号 <code>{result.serviceAccount}</code></span>}
-        <span className="relay-deploy-hint"><Icon name="terminal" size={12} />
-          在远端开一个新终端运行 <code>claude-own</code>，发送一条请求后查看「最近请求」。
-        </span>
       </div>}
       <div className="relay-actions">
-        {deployed && onOpenTerminal && <Button size="sm" disabled={blocked || busy} onClick={() => onOpenTerminal(connection.id)}>
-          <Icon name="terminal" size={14} />打开远端终端
-        </Button>}
-        <Button size="sm" variant={deployed && onOpenTerminal && !pendingOptions ? "outline" : "default"}
+        <Button size="sm" variant={deployed && !pendingOptions ? "outline" : "default"}
           isLoading={busy} loadingText="正在部署配置" disabled={!tokenPresent || !baseUrl || blocked || !deployment.lastDeploy.isSuccess}
           onClick={deploy}><Icon name="upload" size={13} />{deployed ? "重新部署" : "部署到远端"}</Button>
       </div>

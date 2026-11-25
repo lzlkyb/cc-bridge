@@ -46,6 +46,7 @@ function snapshot(patch: Partial<RelaySnapshot> = {}): RelaySnapshot {
     tokenMasked: "rly_7f3a…4b8d",
     token: "rly_7f3a9c2e4b8d",
     provider: {
+      id: "default",
       name: "qianwenaiapi",
       baseUrl: "https://up.example.com",
       apiKeyMasked: "sk-…3f9a",
@@ -130,10 +131,13 @@ beforeEach(() => {
   mocks.invoke.mockImplementation(async (command: string) => command === "ssh_list_connections"
     ? { enabled: true, connections: [{ id: "company", name: "公司", host: "server.example", port: 22, username: "alice" }] }
     : command === "relay_last_deploy" ? null
+    : command === "relay_manage_provider" ? { id: "default", snapshot: { ...mocks.snapshot.current,
+      providers: [{ provider: mocks.snapshot.current!.provider!, tiers: mocks.snapshot.current!.tiers }] } }
     : { configured: true, missing: null, warnings: [] });
   mocks.tunnels.clear();
   localStorage.removeItem("relaySshConnectionId");
   localStorage.removeItem("relayDeployConnectionId");
+  sessionStorage.removeItem("ccbridge.relay.workbench");
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   host = document.createElement("div");
   document.body.append(host);
@@ -285,7 +289,9 @@ describe("中转页三种状态", () => {
     const result = document.querySelector(".relay-deploy-result")?.textContent ?? "";
     expect(result).toContain("/home/alice/.claude-own/own-model.json");
     expect(result).toContain("claude-svc");
-    expect(result).toContain("开一个新终端");
+    const verify = [...document.querySelectorAll(".relay-guide-step")].find((step) => step.textContent?.includes("验证客户端"));
+    expect(verify?.textContent).toContain("claude-own");
+    expect(verify?.hasAttribute("data-complete")).toBe(false);
     await click("打开远端终端");
     expect(navigate).toHaveBeenCalledWith("terminal", "relay-ssh:company");
   });
@@ -385,12 +391,72 @@ describe("中转页三种状态", () => {
     expect(document.querySelector("#relay-base-url")).not.toBeNull();
   });
 
+  it("备用上游可单独测试并显式切换，页头保留停止中转", async () => {
+    const fixture = snapshot();
+    const primary = { provider: fixture.provider!, tiers: fixture.tiers };
+    const secondary = { provider: { ...primary.provider, id: "standby", name: "备用网关", baseUrl: "https://two.example.com" },
+      tiers: primary.tiers.map((tier) => tier.tier === "default" ? { ...tier, upstreamModel: "standby-model" } : tier) };
+    const invoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command, payload) => {
+      if (command === "relay_test_upstream") return { ok: true, status: 200, firstByteMs: 120, totalMs: 150, errorHead: null };
+      if (command === "relay_manage_provider" && payload.change.action === "activate") {
+        const next = { ...fixture, ...secondary, providers: [secondary, primary] };
+        mocks.snapshot.current = next;
+        return { id: "standby", snapshot: next };
+      }
+      return invoke(command, payload);
+    });
+    await mount({ ...fixture, providers: [primary, secondary] });
+    expect(host.querySelector(".relay-work-head")?.textContent).toContain("停止中转");
+    await click("上游设置", host);
+    const standby = [...document.querySelectorAll<HTMLButtonElement>(".relay-provider-list li button")].find((button) => button.textContent?.includes("备用网关"))!;
+    await act(async () => standby.click());
+    expect(host.querySelector(".relay-provider-switch")?.textContent).toContain(primary.provider.name);
+    await click("测试上游");
+    expect(mocks.invoke).toHaveBeenCalledWith("relay_test_upstream", expect.objectContaining({ providerId: "standby",
+      draft: expect.objectContaining({ baseUrl: "https://two.example.com", apiKey: "", model: "standby-model" }) }));
+    expect(document.querySelector(".relay-provider-probe")?.textContent).toContain("连接测试通过");
+    expect(mocks.invoke).not.toHaveBeenCalledWith("relay_manage_provider", expect.anything());
+    await click("切换到此上游");
+    expect(mocks.invoke).toHaveBeenCalledWith("relay_manage_provider", { change: { action: "activate", id: "standby" } });
+    await vi.waitFor(() => expect(host.querySelector(".relay-provider-switch")?.textContent).toContain("备用网关"));
+    expect(host.querySelector(".relay-route-rail")?.textContent).toContain("standby-model");
+    expect(mocks.invoke).not.toHaveBeenCalledWith("relay_restart");
+  });
+
   it("历史请求不会把刚重启的监听标成已验证", async () => {
     await mount(snapshot({ clientVerified: false, latestClientStatus: null }));
     expect(host.querySelector(".relay-service-badge")?.textContent).toBe("等待首个成功请求");
     expect(host.querySelector(".relay-work-table tbody")).not.toBeNull();
     await openGuide();
     expect(host.querySelector(".relay-access-summary")?.textContent).toContain("中转等待首个成功请求");
+  });
+
+  it("令牌错误进入故障详情与接入指南，不归为上游鉴权失败", async () => {
+    const fixture = snapshot();
+    const rejected = { ...fixture.recent[0], requestId: "denied-at-relay", failureStage: "clientToken" as const, status: 401, error: "访问令牌不匹配。" };
+    await mount({ ...fixture, clientVerified: false, recent: [rejected], latestClientResult: {
+      status: 401, requestId: rejected.requestId, failureStage: "clientToken", failed: true,
+    } });
+    expect(host.querySelector(".relay-service-badge")?.textContent).toBe("客户端令牌无效");
+    await click("查看失败详情", host);
+    const details = document.querySelector('[role="dialog"]');
+    expect(details?.textContent).toContain("更新客户端的中转令牌");
+    expect(details?.textContent).not.toContain("检查上游配置中的 API 密钥");
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="关闭请求详情"]')!.click());
+    await click("打开接入指南", host);
+    expect(document.querySelector('[aria-label="接入指南"]')).not.toBeNull();
+  });
+
+  it("没有 SSH 服务器时从接入指南打开新增连接", async () => {
+    const invoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command, payload) => command === "ssh_list_connections"
+      ? { enabled: true, connections: [] } : invoke(command, payload));
+    await mount(snapshot());
+    await openGuide();
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="接入指南"]')?.textContent).toContain("添加服务器"));
+    await click("添加服务器");
+    expect(navigate).toHaveBeenCalledWith("terminal", "relay-ssh-new");
   });
 
   it("还没配上游：headline 与徽章都换成中性态，不再谎报「已连通」", async () => {
@@ -423,6 +489,38 @@ describe("中转页三种状态", () => {
       el!.dispatchEvent(new Event("input", { bubbles: true }));
     });
   }
+
+  it("换鉴权才通过时标为需调整，重新测试使用新鉴权，快捷切换需确认", async () => {
+    const fixture = snapshot();
+    const primary = { provider: fixture.provider!, tiers: fixture.tiers };
+    const backup = { ...primary, provider: { ...primary.provider, id: "backup", name: "备用网关" } };
+    const invoke = mocks.invoke.getMockImplementation()!;
+    mocks.invoke.mockImplementation(async (command, payload) => command === "relay_test_upstream"
+      ? { ok: true, status: 200, firstByteMs: 150, totalMs: 160, switchedAuth: payload.draft.authStyle === "bearer" ? null : "bearer" }
+      : invoke(command, payload));
+    await mount({ ...fixture, providers: [primary, backup] });
+    await click("上游设置", host);
+    const choice = [...document.querySelectorAll<HTMLButtonElement>(".relay-provider-list li button")].find((button) => button.textContent?.includes("备用网关"))!;
+    await act(async () => choice.click());
+    await click("测试上游");
+    expect(document.querySelector(".relay-provider-probe")?.textContent).toContain("换用 Bearer 后通过");
+    await click("关闭");
+    await act(async () => host.querySelector<HTMLButtonElement>(".relay-provider-switch")!.click());
+    const quick = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((button) => button.textContent?.includes("备用网关"))!;
+    expect(quick.textContent).toContain("需更换鉴权");
+    await act(async () => quick.click());
+    expect(document.querySelector('[aria-label="仍要切换上游？"]')).not.toBeNull();
+    expect(mocks.invoke).not.toHaveBeenCalledWith("relay_manage_provider", expect.anything());
+    await click("取消");
+    await vi.waitFor(() => expect(document.querySelector('[aria-label="仍要切换上游？"]')).toBeNull());
+    await click("上游设置", host);
+    const again = [...document.querySelectorAll<HTMLButtonElement>(".relay-provider-list li button")].find((button) => button.textContent?.includes("备用网关"))!;
+    await act(async () => again.click());
+    await click("应用到表单并重新测试");
+    expect(mocks.invoke).toHaveBeenLastCalledWith("relay_test_upstream", expect.objectContaining({ providerId: "backup", draft: expect.objectContaining({ authStyle: "bearer" }) }));
+    expect(document.querySelector(".relay-provider-probe")?.textContent).toContain("连接测试通过");
+    expect(document.querySelector('[aria-label="上游设置"]')?.textContent).toContain("保存配置");
+  });
 
   it("首次接入只在填齐三项并离开输入框后保存", async () => {
     await mount(snapshot({ provider: null, tiers: [], recent: [] }));
@@ -477,19 +575,19 @@ describe("中转页三种状态", () => {
     expect(document.querySelector("#relay-api-key"), "Escape 后输入框应收回").toBeNull();
 
     // 之后改另一个字段并失焦，触发一次正常保存
-    await typeInto("#relay-base-url", "https://other.example.com");
+    await typeInto("#relay-base-url", "https://up.example.com/new-path");
     await act(async () => {
       document
         .querySelector("#relay-base-url")!
         .dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
     });
-    expect(mocks.invoke.mock.calls.some((c) => c[0] === "relay_save")).toBe(false);
-    await click("应用配置");
+    expect(mocks.invoke.mock.calls.some((c) => c[0] === "relay_manage_provider")).toBe(false);
+    await click("保存并应用");
 
-    const saveCall = mocks.invoke.mock.calls.find((c) => c[0] === "relay_save");
-    expect(saveCall, "改字段失焦应触发保存").toBeTruthy();
-    const { patch } = saveCall![1] as { patch: Record<string, unknown> };
-    expect(patch.baseUrl, "新地址正常保存").toBe("https://other.example.com");
+    const saveCall = mocks.invoke.mock.calls.find((c) => c[0] === "relay_manage_provider");
+    expect(saveCall, "保存按钮应提交表单").toBeTruthy();
+    const { change: { patch } } = saveCall![1] as { change: { patch: Record<string, unknown> } };
+    expect(patch.baseUrl, "新地址正常保存").toBe("https://up.example.com/new-path");
     expect(patch, "被 Escape 取消的密钥不许进 patch").not.toHaveProperty("apiKey");
   });
 
@@ -509,16 +607,16 @@ describe("中转页三种状态", () => {
     });
     expect(document.body.textContent).toContain("max_tokens 不能超过 4294967295");
     expect(
-      mocks.invoke.mock.calls.some((c) => c[0] === "relay_save"),
+      mocks.invoke.mock.calls.some((c) => c[0] === "relay_manage_provider"),
       "超限时不许触发保存",
     ).toBe(false);
 
     // 自愈路径：改成合法值后失焦，正常保存（拦住不能把表单卡死）
     await typeInto(sel, "4096");
-    await click("应用配置");
-    const saveCall = mocks.invoke.mock.calls.find((c) => c[0] === "relay_save");
+    await click("保存并应用");
+    const saveCall = mocks.invoke.mock.calls.find((c) => c[0] === "relay_manage_provider");
     expect(saveCall, "改对之后应能保存").toBeTruthy();
-    const { patch } = saveCall![1] as { patch: { maxTokensLimit: number } };
+    const { change: { patch } } = saveCall![1] as { change: { patch: { maxTokensLimit: number } } };
     expect(patch.maxTokensLimit).toBe(4096);
   });
 
@@ -558,6 +656,29 @@ describe("中转页三种状态", () => {
     expect(exported.content).not.toContain(row.upstreamModel);
     await click("清除时段", host);
     expect(host.querySelector(".relay-usage-metrics dd")?.textContent).toBe("55");
+  });
+
+  it("切换页签后保留上游筛选、选中时段和逐请求页码", async () => {
+    const fixture = snapshot();
+    const row = fixture.recent[0];
+    const usage = { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, partial: false };
+    await mount({ ...fixture, recent: [
+      ...Array.from({ length: 6 }, (_, i) => ({ ...row, id: i + 10, requestId: `team-${i}`, usage, upstreamConfigId: "team", upstreamConfigName: "团队额度" })),
+      { ...row, requestId: "personal", usage, upstreamConfigId: "personal", upstreamConfigName: "个人额度" },
+    ] });
+    await click("Token 用量", host);
+    const select = host.querySelector<HTMLSelectElement>('[aria-label="上游配置"]')!;
+    await act(async () => { select.value = "config:team"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await act(async () => host.querySelector<HTMLButtonElement>('.relay-chart-day[aria-label*="6 Token"]')!.click());
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="下一页"]')!.click());
+    await click("请求路由", host);
+    await click("Token 用量", host);
+    expect(host.querySelector<HTMLSelectElement>('[aria-label="上游配置"]')?.value).toBe("config:team");
+    expect(host.querySelector('.relay-chart-day[aria-pressed="true"]')?.getAttribute("aria-label")).toContain("6 Token");
+    expect(host.querySelector(".relay-table-foot")?.textContent).toContain("2 / 2");
+    await click("清除筛选", host);
+    expect(host.querySelector('.relay-chart-day[aria-pressed="true"]')).toBeNull();
+    expect(host.querySelector(".relay-table-foot")?.textContent).toContain("1 / 2");
   });
 
 });

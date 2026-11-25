@@ -1,12 +1,5 @@
-//! 中转配置模型：一个 provider、三档映射、派生出来的映射名。
-//!
-//! 存储形态是**一条 JSON**（`config` 表里的 `relay` 键），不是三张关系表。
-//! 方案文档 §4.6 给的是字段结构，不是表数量：单 provider、单 token 的自建场景下，
-//! 三张表只会换来三次联表查询和一套没人用的 CRUD。字段名与语义保持与文档一致，
-//! 将来真要多 provider（P4）时，`providers` 已经是数组，不用改结构。
-//!
-//! 这里**不存任何派生值**——映射名由档位算、provider 名由域名算。存下来就会
-//! 出现「改了档位但映射名还是旧的」这类只有重启才能发现的问题。
+//! 中转配置存为 `config` 表中的一条 JSON。列表中的首个启用上游承接新请求，
+//! 切换无需改动旧版存储结构。客户端使用的映射名始终由档位派生。
 
 use serde::{Deserialize, Serialize};
 
@@ -94,7 +87,7 @@ impl TierKind {
 }
 
 /// 一档映射。
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tier {
     // 缺这一行字段 = 按 default 档读。没有 default 时缺字段会让整个
     // `RelaySettings` 解析失败并被重置（见 `TierKind` 上的注释）。
@@ -150,12 +143,12 @@ pub enum UpstreamKind {
 }
 
 /// 一个上游 provider。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Provider {
-    /// 稳定 id。P1 只有一个，固定 `default`，但保留字段以便 P4 多上游。
+    /// 稳定 id。旧版单上游默认使用 `default`。
     #[serde(default = "default_provider_id")]
     pub id: String,
-    /// 显示名。**由 `base_url` 的域名推导，不问用户**（§4.6.2「能推导的不出现」）。
+    /// 配置名称。旧版没有名称时从厂商或地址推导。
     #[serde(default)]
     pub name: String,
     /// 上游 Messages 端点。存**归一化后**的完整地址（含 `/v1/messages`）。
@@ -333,7 +326,7 @@ impl MissingField {
 ///
 /// P1 不暴露 UI，但解析器已经认它——留着是因为它是「某个客户端模型名要固定走
 /// 某个上游模型」的唯一出口，去掉会让将来加回来时改解析顺序。
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OverrideRule {
     #[serde(default)]
     pub client_model: String,
@@ -346,7 +339,7 @@ pub struct OverrideRule {
 /// 中转的全部可持久化配置。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RelaySettings {
-    /// 上游列表。P1 只用第一个（`active()`）。
+    /// 上游列表。切换时把选中的上游放在首位。
     #[serde(default)]
     pub providers: Vec<Provider>,
     /// 精确覆盖规则。
@@ -355,7 +348,7 @@ pub struct RelaySettings {
 }
 
 impl RelaySettings {
-    /// 当前生效的 provider。P1 单 provider，取第一个启用的；都没有则取第一个。
+    /// 当前生效的 provider。取首个启用项，兼容旧版没有启用项时回退到首项。
     pub fn active(&self) -> Option<&Provider> {
         self.providers
             .iter()
@@ -468,50 +461,64 @@ pub fn derive_name(endpoint: &str) -> String {
 /// 「存下来的」不一致，而这类不一致只有重启才发现。
 pub fn normalize_settings(settings: &mut RelaySettings) {
     for provider in &mut settings.providers {
-        // 先按原始地址认厂商，再按它的 hint 归一化——顺序反了就用不上 hint。
-        let preset = profile::resolve(&provider.base_url, &provider.profile_id);
-        provider.base_url =
-            normalize_endpoint_with(&provider.base_url, preset.endpoint_hint, preset.dialect);
-        if provider.name.trim().is_empty() {
-            provider.name = if preset.id == profile::CUSTOM.id {
-                derive_name(&provider.base_url)
-            } else {
-                // 认出来的厂商用画像里的正名：`api.deepseek.com` 按域名推导会得到
-                // 一个没有意义的「api」，界面上完全看不出接的是谁。
-                preset.label.to_string()
-            };
-        }
-        // `kind` 是派生值，跟着方言走，只为界面/日志显示一致。
-        let dialect = provider.dialect();
-        provider.kind = match dialect {
-            Dialect::Anthropic => UpstreamKind::Anthropic,
-            Dialect::OpenAi => UpstreamKind::Openai,
-        };
-        provider.api_key = provider.api_key.trim().to_string();
-        // 档位去重：同档多行以最后一行为准（用户后面填的那次）。
-        let mut seen: Vec<TierKind> = Vec::new();
-        let mut deduped: Vec<Tier> = Vec::new();
-        for tier in provider.tiers.drain(..) {
-            if let Some(pos) = seen.iter().position(|k| *k == tier.tier) {
-                deduped[pos] = tier;
-            } else {
-                seen.push(tier.tier);
-                deduped.push(tier);
-            }
-        }
-        // default 永远存在（可以为空），否则 UI 少一行、解析器还得特判。
-        if !seen.contains(&TierKind::Default) {
-            deduped.insert(0, Tier::default());
-        }
-        // 按固定顺序排，UI 不必再排；同时丢掉未知档（旧版本残留）。
-        deduped.sort_by_key(|t| {
-            TierKind::ALL
-                .iter()
-                .position(|k| *k == t.tier)
-                .unwrap_or(usize::MAX)
-        });
-        provider.tiers = deduped;
+        normalize_provider(provider);
     }
+}
+
+pub fn ensure_provider_ids(settings: &mut RelaySettings) {
+    let mut seen = std::collections::HashSet::new();
+    for provider in &mut settings.providers {
+        if provider.id.trim().is_empty() || !seen.insert(provider.id.clone()) {
+            provider.id = uuid::Uuid::new_v4().to_string();
+            seen.insert(provider.id.clone());
+        }
+    }
+}
+
+pub fn normalize_provider(provider: &mut Provider) {
+    // 先按原始地址认厂商，再按它的 hint 归一化——顺序反了就用不上 hint。
+    let preset = profile::resolve(&provider.base_url, &provider.profile_id);
+    provider.base_url =
+        normalize_endpoint_with(&provider.base_url, preset.endpoint_hint, preset.dialect);
+    if provider.name.trim().is_empty() {
+        provider.name = if preset.id == profile::CUSTOM.id {
+            derive_name(&provider.base_url)
+        } else {
+            // 认出来的厂商用画像里的正名：`api.deepseek.com` 按域名推导会得到
+            // 一个没有意义的「api」，界面上完全看不出接的是谁。
+            preset.label.to_string()
+        };
+    }
+    // `kind` 是派生值，跟着方言走，只为界面/日志显示一致。
+    let dialect = provider.dialect();
+    provider.kind = match dialect {
+        Dialect::Anthropic => UpstreamKind::Anthropic,
+        Dialect::OpenAi => UpstreamKind::Openai,
+    };
+    provider.api_key = provider.api_key.trim().to_string();
+    // 档位去重：同档多行以最后一行为准（用户后面填的那次）。
+    let mut seen: Vec<TierKind> = Vec::new();
+    let mut deduped: Vec<Tier> = Vec::new();
+    for tier in provider.tiers.drain(..) {
+        if let Some(pos) = seen.iter().position(|k| *k == tier.tier) {
+            deduped[pos] = tier;
+        } else {
+            seen.push(tier.tier);
+            deduped.push(tier);
+        }
+    }
+    // default 永远存在（可以为空），否则 UI 少一行、解析器还得特判。
+    if !seen.contains(&TierKind::Default) {
+        deduped.insert(0, Tier::default());
+    }
+    // 按固定顺序排，UI 不必再排；同时丢掉未知档（旧版本残留）。
+    deduped.sort_by_key(|t| {
+        TierKind::ALL
+            .iter()
+            .position(|k| *k == t.tier)
+            .unwrap_or(usize::MAX)
+    });
+    provider.tiers = deduped;
 }
 
 /// 自转发检测：`base_url` 是不是指向中转自己。

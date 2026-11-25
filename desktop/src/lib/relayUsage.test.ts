@@ -39,6 +39,18 @@ describe("中转用量与计价", () => {
     expect(estimateCost(second, configured)).toBeNull();
   });
 
+  it("同一端点的两套上游有独立单价，旧记录沿用原网关单价", () => {
+    const base = { ...call, upstreamKey: "shared-endpoint" };
+    const first = { ...base, upstreamConfigId: "first", upstreamConfigName: "主额度" };
+    const second = { ...base, upstreamConfigId: "second", upstreamConfigName: "团队额度" };
+    const original = Object.values(rates)[0];
+    const configured = { [rateKey(base)!]: original, [rateKey(first)!]: { ...original, input: 4 }, [rateKey(second)!]: { ...original, input: 5 } };
+    expect(estimateCost(base, configured)).toBeCloseTo(0.0107);
+    expect(estimateCost(first, configured)).toBeCloseTo(0.0117);
+    expect(estimateCost(second, configured)).toBeCloseTo(0.0127);
+    expect(relayUsageCsv([first, second], configured)).toContain("团队额度");
+  });
+
   it("同一请求合并一次，重启后同序号的记录仍独立", () => {
     const waiting = { ...call, status: null, usage: null };
     const other = { ...call, requestId: "second", tsMs: call.tsMs + 1 };

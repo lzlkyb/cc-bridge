@@ -1,14 +1,17 @@
 import { useMemo, useRef, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "../ui/button";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { Icon } from "../ui/icon";
 import { Menu, MenuItem } from "../ui/Menu";
 import { useToast } from "../ui/toast";
 import { useRelayStatus } from "../../hooks/useRelayStatus";
-import { dayKey, isGeneration, isPending, isRelayError, loadRelayRates, relayKey, saveRelayRates, type RelayRates } from "../../lib/relayUsage";
-import { formatClock } from "../../lib/relayFormat";
+import { useRelayWorkbench, type RelayRequestScope, type RelayWorkbenchView } from "../../hooks/useRelayWorkbench";
+import { dayKey, isGeneration, isRelayError, loadRelayRates, relayKey, saveRelayRates, type RelayRates } from "../../lib/relayUsage";
+import { buildRelaySnippet, formatClock } from "../../lib/relayFormat";
 import { invoke } from "../../lib/tauri";
-import type { RelayLogEntry } from "../../lib/types";
+import { copyText } from "../../lib/utils";
+import type { RelayLogEntry, RelayProviderChange, RelayProviderResult } from "../../lib/types";
 import { useRelayDrift } from "../../hooks/useRelayDrift";
 import { RelayAccessCard, RelayAccessSummary } from "./RelayAccessCard";
 import { useRelayDeployment } from "./RelayDeploy";
@@ -19,11 +22,12 @@ import { RelayRequestTable } from "./RelayRequestTable";
 import { RelayRoute } from "./RelayRoute";
 import { RelaySidePanel } from "./RelaySidePanel";
 import { RelayUpstreamCard } from "./RelayUpstreamCard";
+import { RelayProviderMenu, RelayProviderSettings, type RelayProviderTests } from "./RelayProviderSettings";
+import { latestRelayFailure, RelayFailureNotice, relayFailureTitle } from "./RelayDiagnostics";
 import { RelayUsageView } from "./RelayUsageView";
 import "./relay.css";
 import "./relay-workbench.css";
 
-type View = "route" | "usage";
 type Action = "start" | "stop" | "restart";
 type Surface = { kind: "provider" | "guide" | "stop" } | { kind: "migrate"; fromGuide?: boolean } | { kind: "detail" | "pricing"; row?: RelayLogEntry };
 const ACTION_LABEL = { start: "正在启动", stop: "正在停止", restart: "正在重启" };
@@ -32,8 +36,16 @@ export function RelayTab({ onNavigate }: { onNavigate?: (tab: string, anchor?: s
   const { status, history, rows, today } = useRelayStatus();
   const snapshot = status.data;
   const { toast } = useToast();
-  const [view, setView] = useState<View>("route");
-  const [period, setPeriod] = useState<"week" | "today">("week");
+  const queryClient = useQueryClient();
+  const providerChange = useMutation({ mutationFn: async (change: RelayProviderChange) => {
+    const result = await invoke<RelayProviderResult>("relay_manage_provider", { change });
+    await queryClient.cancelQueries({ queryKey: ["relay"], exact: true });
+    queryClient.setQueryData(["relay"], result.snapshot);
+    if (change.action === "activate") setSelected(null);
+    return result;
+  } });
+  const { view, setView, usage, setUsage, requests, setRequests } = useRelayWorkbench();
+  const [providerTests, setProviderTests] = useState<RelayProviderTests>({});
   const [surface, setSurface] = useState<Surface | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [rates, setRates] = useState(loadRelayRates);
@@ -47,15 +59,13 @@ export function RelayTab({ onNavigate }: { onNavigate?: (tab: string, anchor?: s
   const direct = Boolean(snapshot && snapshot.listenHost !== "127.0.0.1");
   // Upstream probes travel separately from client requests. Verification only uses client traffic.
   const runtimeRows = snapshot?.recent.filter(isGeneration) ?? [];
-  const latest = runtimeRows.find((row) => !isPending(row));
   const verified = snapshot?.clientVerified ?? runtimeRows.some((row) => row.status != null && row.status >= 200 && row.status < 300 && !row.error);
-  const latestStatus = snapshot?.latestClientStatus === undefined ? latest?.status : snapshot.latestClientStatus;
-  const limited = running && latestStatus === 429;
+  const failure = latestRelayFailure(snapshot);
   const badge = serviceAction ? { label: ACTION_LABEL[serviceAction], tone: "accent" }
     : !snapshot ? { label: status.isError ? "状态不可用" : "正在读取状态", tone: "mute" }
     : !running ? { label: "已停止", tone: "mute" }
     : !configured ? { label: "未配置上游", tone: "warn" }
-    : limited ? { label: "上游限流", tone: "warn" }
+    : failure ? { label: relayFailureTitle(failure), tone: "warn" }
     : !verified ? { label: "等待首个成功请求", tone: "accent" }
     : { label: direct ? "运行中 · 内网开放" : "运行中", tone: direct ? "warn" : "ok" };
 
@@ -79,18 +89,25 @@ export function RelayTab({ onNavigate }: { onNavigate?: (tab: string, anchor?: s
     }
   };
   const close = () => setSurface(null);
+  const openProvider = () => setSurface({ kind: "provider" });
   const readyForGuide = running && configured && !serviceAction;
   const caption = !snapshot ? "正在读取中转服务与历史记录。"
     : !running ? "配置和历史记录已保留，启动后即可继续接入。"
     : !configured ? "填写上游地址、API 密钥和默认模型，准备接收客户端请求。"
-    : !verified && !limited ? "接入 Claude Code 后发送一条模型请求，回到这里验证结果。"
+    : !verified && !failure ? "接入 Claude Code 后发送一条模型请求，回到这里验证结果。"
     : "查看客户端请求实际转往哪个模型，再按请求排查状态与用量。";
 
-  const access = useRelaySshAccess(readyForGuide);
-  const deployment = useRelayDeployment(access.connection?.id, readyForGuide);
+  const access = useRelaySshAccess(Boolean(snapshot));
+  const deployment = useRelayDeployment(access.connection?.id, Boolean(snapshot));
   const baseUrl = direct && snapshot ? `http://${snapshot.listenHost}:${snapshot.port}`
     : access.port ? `http://127.0.0.1:${access.port}` : "";
   const openGuide = () => setSurface({ kind: "guide" });
+  const copyConfig = () => {
+    const model = snapshot?.tiers.find((tier) => tier.tier === "default")?.alias;
+    if (!snapshot?.token || !baseUrl || !model) return;
+    void copyText(buildRelaySnippet({ baseUrl, token: snapshot.token, model }),
+      () => toast("已复制当前远端配置。", "success"), () => { openGuide(); toast("复制失败，请在接入指南中手动复制。", "error"); });
+  };
   const receipt = deployment.lastDeploy.data;
   const drift = useRelayDrift({
     receipt, connectionId: access.connection?.id, currentUrl: baseUrl, direct: direct && readyForGuide,
@@ -98,8 +115,9 @@ export function RelayTab({ onNavigate }: { onNavigate?: (tab: string, anchor?: s
     onNeedGuide: openGuide,
   });
   const busy = deployment.isPending || Boolean(drift.stage) || access.pending;
+  const serviceBlocked = busy || providerChange.isPending;
 
-  const viewTab = (next: View, label: string) => <button id={`relay-tab-${next}`} type="button" role="tab"
+  const viewTab = (next: RelayWorkbenchView, label: string) => <button id={`relay-tab-${next}`} type="button" role="tab"
     aria-selected={next === view} aria-controls={`relay-view-${next}`} tabIndex={view === next ? 0 : -1}
     onClick={() => setView(next)}><Icon name={next === "route" ? "gitBranch" : "activity"} size={16} />{label}</button>;
   const openRequest = (row: RelayLogEntry) => {
@@ -124,19 +142,28 @@ export function RelayTab({ onNavigate }: { onNavigate?: (tab: string, anchor?: s
       <div><div className="relay-inline relay-wrap"><h1>模型中转</h1><span role="status" className="relay-work-badge relay-service-badge" data-tone={badge.tone}>{badge.label}</span>
       </div><p>{caption}</p></div>
       {snapshot && <div className="relay-inline relay-wrap">
-        {configured && <Button variant="outline" size="sm" onClick={() => setSurface({ kind: "provider" })} disabled={Boolean(serviceAction) || busy}><Icon name="settings" size={14} />上游设置</Button>}
-        {!running || serviceAction ? <Button size="sm" isLoading={Boolean(serviceAction)} loadingText={serviceAction ? ACTION_LABEL[serviceAction] : undefined}
-          onClick={() => void changeService("start")}><Icon name="play" size={14} />启动中转</Button>
-          : !configured && <Button size="sm" onClick={() => { setView("route"); window.requestAnimationFrame(() => document.getElementById("relay-base-url")?.focus()); }}><Icon name="settings" size={14} />配置上游</Button>}
-        {running && !serviceAction && <Menu trigger={(open, toggle) => <Button variant="outline" size="icon" aria-label="中转服务操作" aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={toggle}><Icon name="more" size={17} /></Button>}>
-          {(dismiss) => <><MenuItem icon="refresh" label="重启中转" onClick={() => { dismiss(); void changeService("restart"); }} />
-            <MenuItem icon="pause" label="停止中转" onClick={() => { dismiss(); setSurface({ kind: "stop" }); }} /></>}
+        <RelayProviderMenu snapshot={snapshot} tests={providerTests} disabled={Boolean(serviceAction) || serviceBlocked} onActivate={(id) => {
+          void providerChange.mutateAsync({ action: "activate", id }).then((result) => toast(`已切换到 ${result.snapshot.provider?.name ?? "上游"}。`, "success"),
+            (error) => toast(`切换上游失败：${String(error)}`, "error"));
+        }} />
+        <Button variant="outline" size="sm" onClick={openProvider} disabled={Boolean(serviceAction) || serviceBlocked}><Icon name="settings" size={14} />上游设置</Button>
+        <Button size="sm" variant={running || serviceAction === "stop" ? "outline" : "default"}
+          className={running || serviceAction === "stop" ? "relay-service-stop" : undefined}
+          disabled={serviceBlocked} isLoading={Boolean(serviceAction)} loadingText={serviceAction ? ACTION_LABEL[serviceAction] : undefined}
+          onClick={() => running ? setSurface({ kind: "stop" }) : void changeService("start")}>
+          <Icon name={running ? "pause" : "play"} size={14} />{running ? "停止中转" : "启动中转"}</Button>
+        {running && <Menu trigger={(open, toggle) => <Button variant="outline" size="icon" aria-label="中转服务操作" aria-haspopup="menu" aria-expanded={open} disabled={Boolean(serviceAction) || serviceBlocked} onClick={toggle}><Icon name="more" size={17} /></Button>}>
+          {(dismiss) => <MenuItem icon="refresh" label="重启中转" onClick={() => { dismiss(); void changeService("restart"); }} />}
         </Menu>}
       </div>}
     </header>
 
-    {readyForGuide && <RelayAccessSummary access={access} deployment={deployment} baseUrl={baseUrl} direct={direct}
-      verified={verified} disabled={Boolean(drift.stage) || status.isError} onOpen={openGuide} />}
+    {snapshot && <RelayAccessSummary access={access} deployment={deployment} baseUrl={baseUrl} direct={direct}
+      verified={verified} disabled={Boolean(serviceAction || drift.stage) || status.isError} onOpen={openGuide}
+      prerequisite={readyForGuide ? undefined : !running || serviceAction ? { title: serviceAction ? `${ACTION_LABEL[serviceAction]}中转` : "中转已停止，启动后可继续接入。",
+        action: "启动中转", run: () => void changeService("start") } : { title: "完成上游配置后即可部署远端客户端。", action: "配置上游", run: openProvider }} />}
+    {failure && !serviceAction && <RelayFailureNotice result={failure} row={failure.requestId ? rows.find((row) => row.requestId === failure.requestId) : undefined}
+      onRequest={openRequest} openGuide={openGuide} openProvider={openProvider} copyConfig={direct && baseUrl && snapshot?.token ? copyConfig : undefined} disabled={serviceBlocked || status.isError} />}
 
     {drift.drift && receipt && (
       <div className="relay-work-notice" role="alert">
@@ -168,19 +195,30 @@ export function RelayTab({ onNavigate }: { onNavigate?: (tab: string, anchor?: s
 
     <section key={view} id={`relay-view-${view}`} className="relay-work-view" role="tabpanel" aria-labelledby={`relay-tab-${view}`} aria-busy={!snapshot && !status.isError || undefined}>
       {view === "usage" ? history.isPending ? <div className="relay-work-panel relay-table-empty" role="status">正在读取近 7 天的中转用量…</div>
-        : <RelayUsageView rows={rows} today={today} initialPeriod={period} rates={rates} onPeriodChange={setPeriod}
+        : <RelayUsageView rows={rows} today={today} scope={usage} rates={rates} onScope={setUsage}
           onRequest={openRequest} onPricing={() => setSurface({ kind: "pricing" })} /> : snapshot ? <div className="relay-work-stack">
-        {!configured && <section className="relay-work-panel relay-setup"><RelayUpstreamCard snapshot={snapshot} onChanged={refresh} /></section>}
+        {!configured && surface?.kind !== "provider" && <section className="relay-work-panel relay-setup"><RelayUpstreamCard snapshot={snapshot} onChanged={refresh} /></section>}
         <RelayRoute snapshot={snapshot} todayRows={todayRows} selected={rows.find((row) => relayKey(row) === selected)}
-          busy={Boolean(serviceAction)} onClear={() => setSelected(null)} onUsage={() => { setPeriod("today"); setView("usage"); }} />
-        <RelayRecentRequests todayRows={todayRows} historyRows={rows} rates={rates} limited={limited} selected={selected} onRequest={openRequest} />
+          busy={Boolean(serviceAction)} onClear={() => setSelected(null)} onUsage={() => { setUsage({ range: { mode: "today", from: today, to: today }, bucket: null }); setView("usage"); }} />
+        <RelayRecentRequests todayRows={todayRows} historyRows={rows} rates={rates} scope={requests} onScope={setRequests} selected={selected} onRequest={openRequest} />
       </div> : !status.isError && <div className="relay-work-panel relay-table-empty" role="status">正在读取模型中转…</div>}
     </section>
 
-    {surface?.kind === "provider" && snapshot && <RelaySidePanel title="上游设置" onClose={close}><RelayUpstreamCard snapshot={snapshot} onChanged={refresh} explicit onApplied={() => { close(); toast("上游配置已应用。", "success"); }} /></RelaySidePanel>}
+    {surface?.kind === "provider" && snapshot && <RelayProviderSettings snapshot={snapshot} onClose={close} mutate={providerChange.mutateAsync} busy={providerChange.isPending}
+      tests={providerTests} remember={(id, outcome) => setProviderTests((current) => {
+        const next = { ...current };
+        if (outcome) next[id] = outcome;
+        else delete next[id];
+        return next;
+      })} />}
     {surface?.kind === "guide" && snapshot && <RelaySidePanel title="接入指南" onClose={close} compact>
       <RelayAccessCard snapshot={snapshot} access={access} deployment={deployment} baseUrl={baseUrl} onChanged={refresh}
-        blocked={Boolean(drift.stage) || status.isError} onMigrate={() => setSurface({ kind: "migrate", fromGuide: true })}
+        blocked={Boolean(serviceAction || drift.stage) || status.isError} onMigrate={() => setSurface({ kind: "migrate", fromGuide: true })}
+        onStart={() => void changeService("start")} onConfigure={openProvider} onRequests={() => {
+          close(); setView("route"); setRequests({ errors: false, full: false }); setSelected(null);
+          window.requestAnimationFrame(() => document.getElementById("relay-requests-heading")?.focus());
+        }}
+        onManageSsh={onNavigate && ((anchor) => { close(); onNavigate("terminal", anchor); })}
         onOpenTerminal={onNavigate && ((id) => { close(); onNavigate("terminal", `relay-ssh:${id}`); })} />
     </RelaySidePanel>}
     {surface?.kind === "migrate" && <ConfirmDialog title="切到隧道并重新部署？"
@@ -194,26 +232,22 @@ export function RelayTab({ onNavigate }: { onNavigate?: (tab: string, anchor?: s
   </div>;
 }
 
-function RelayRecentRequests({ todayRows, historyRows, rates, limited, selected, onRequest }: {
-  todayRows: RelayLogEntry[]; historyRows: RelayLogEntry[]; rates: RelayRates; limited: boolean;
+function RelayRecentRequests({ todayRows, historyRows, rates, scope, onScope, selected, onRequest }: {
+  todayRows: RelayLogEntry[]; historyRows: RelayLogEntry[]; rates: RelayRates; scope: RelayRequestScope;
+  onScope: (patch: Partial<RelayRequestScope>) => void;
   selected: string | null; onRequest: (row: RelayLogEntry) => void;
 }) {
-  const [filter, setFilter] = useState({ errors: false, full: false });
-  const { errors, full } = filter;
+  const { errors, full, page } = scope;
   const rows = full ? historyRows : todayRows;
-  return <>
-    {limited && <div className="relay-work-notice relay-inline relay-spread"><div><strong>上游限流</strong><span>最近一条模型请求收到 HTTP 429。</span></div>
-      <Button size="sm" variant="outline" onClick={() => setFilter({ ...filter, errors: true })}>查看异常</Button></div>}
-    <section className="relay-work-panel" aria-labelledby="relay-requests-heading">
-      <header className="relay-section-head"><div><h2 id="relay-requests-heading">{full ? "完整请求" : "最近请求"}</h2><p>{full ? "最近 7 天的模型请求与 Token 预估请求。" : "选择一条记录，查看路由和 Token 明细。"}</p></div>
+  return <section className="relay-work-panel" aria-labelledby="relay-requests-heading">
+      <header className="relay-section-head"><div><h2 id="relay-requests-heading" tabIndex={-1}>{full ? "完整请求" : "最近请求"}</h2><p>{full ? "最近 7 天的模型请求与 Token 预估请求。" : "选择一条记录，查看路由和 Token 明细。"}</p></div>
         <div className="relay-inline relay-wrap"><div className="relay-seg" role="group" aria-label="请求结果筛选">
-          <button type="button" aria-pressed={!errors} onClick={() => setFilter({ ...filter, errors: false })}>全部</button>
-          <button type="button" aria-pressed={errors} onClick={() => setFilter({ ...filter, errors: true })}>仅异常</button>
-        </div><Button size="sm" variant="ghost" onClick={() => setFilter({ ...filter, full: !full })}>{full ? "返回最近请求" : "完整请求"}<Icon name={full ? "chevronLeft" : "chevronRight"} size={13} /></Button></div>
+          <button type="button" aria-pressed={!errors} onClick={() => onScope({ errors: false })}>全部</button>
+          <button type="button" aria-pressed={errors} onClick={() => onScope({ errors: true })}>仅异常</button>
+        </div><Button size="sm" variant="ghost" onClick={() => onScope({ full: !full })}>{full ? "返回最近请求" : "完整请求"}<Icon name={full ? "chevronLeft" : "chevronRight"} size={13} /></Button></div>
       </header>
-      <RelayRequestTable key={`${full}:${errors}`} rows={errors ? rows.filter(isRelayError) : rows} rates={rates} dated={full} selected={selected} onRequest={onRequest}
+      <RelayRequestTable rows={errors ? rows.filter(isRelayError) : rows} rates={rates} dated={full} selected={selected} onRequest={onRequest} requestedPage={page} onPage={(next) => onScope({ page: next })}
         empty={errors ? "没有符合筛选条件的异常请求。" : full ? "近 7 天没有请求记录。" : "今天还没有请求记录。"} />
       <p className="relay-work-footnote">经 SSH 隧道接入的请求归入「回环」。</p>
-    </section>
-  </>;
+  </section>;
 }

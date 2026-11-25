@@ -1,8 +1,7 @@
-import { useState } from "react";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { formatClock, formatInt, formatMs } from "../../lib/relayFormat";
-import { actualModel, dayKey, estimateCost, moneyLabel, providerLabel, rateKey, relayKey, relayOutcome, relayUsageState, shortRelayDay, tokenTotal, type RelayRates } from "../../lib/relayUsage";
+import { actualModel, dayKey, estimateCost, moneyLabel, requestProviderLabel, rateKey, relayKey, relayOutcome, relayUsageState, shortRelayDay, tokenTotal, type RelayRates } from "../../lib/relayUsage";
 import type { RelayLogEntry } from "../../lib/types";
 
 const PER_PAGE = 5;
@@ -19,7 +18,7 @@ function tokenCost(row: RelayLogEntry, rates: RelayRates) {
   return rateKey(row) ? "待配置单价" : "—";
 }
 
-export function RelayRequestTable({ rows, usage = false, dated = usage, rates, selected, onRequest, empty }: {
+export function RelayRequestTable({ rows, usage = false, dated = usage, rates, selected, onRequest, empty, requestedPage, onPage }: {
   rows: RelayLogEntry[];
   usage?: boolean;
   dated?: boolean;
@@ -27,8 +26,9 @@ export function RelayRequestTable({ rows, usage = false, dated = usage, rates, s
   selected?: string | null;
   onRequest: (row: RelayLogEntry) => void;
   empty: React.ReactNode;
+  requestedPage: number;
+  onPage: (next: number) => void;
 }) {
-  const [requestedPage, setPage] = useState(0);
   if (!rows.length) return <div className="relay-table-empty">{empty}</div>;
 
   const pages = Math.ceil(rows.length / PER_PAGE);
@@ -59,7 +59,7 @@ export function RelayRequestTable({ rows, usage = false, dated = usage, rates, s
               <td className="tabular-nums">{dated && `${shortRelayDay(dayKey(row.tsMs))} `}{formatClock(row.tsMs)}</td>
               <td className="relay-work-model" title={`${row.clientModel} → ${model}`}>
                 <strong>{!usage && row.clientModel && row.clientModel !== model ? `${row.clientModel} → ${model}` : model}</strong>
-                <small>{providerLabel(row.upstreamProvider)} · {row.fellBack ? `${tierLabel(row.tier)} 回落到默认档` : tierLabel(row.tier)}</small>
+                <small>{requestProviderLabel(row)} · {row.fellBack ? `${tierLabel(row.tier)} 回落到默认档` : tierLabel(row.tier)}</small>
               </td>
               {!usage && <><td>{resultBadge}</td><td title={row.source === "local" ? undefined : row.source}>{row.source === "local" ? "回环" : "内网"}</td>
                 <td className="relay-number">{formatMs(row.firstByteMs)}</td></>}
@@ -74,9 +74,9 @@ export function RelayRequestTable({ rows, usage = false, dated = usage, rates, s
       <div className="relay-table-foot">
         <span>{start + 1}–{start + visible.length} / {formatInt(rows.length)} 条</span>
         {pages > 1 && <div className="relay-inline">
-          <Button size="sm" variant="ghost" aria-label="上一页" disabled={!page} onClick={() => setPage(page - 1)}><Icon name="chevronLeft" size={14} /></Button>
+          <Button size="sm" variant="ghost" aria-label="上一页" disabled={!page} onClick={() => onPage(page - 1)}><Icon name="chevronLeft" size={14} /></Button>
           <span>{page + 1} / {pages}</span>
-          <Button size="sm" variant="ghost" aria-label="下一页" disabled={page + 1 >= pages} onClick={() => setPage(page + 1)}><Icon name="chevronRight" size={14} /></Button>
+          <Button size="sm" variant="ghost" aria-label="下一页" disabled={page + 1 >= pages} onClick={() => onPage(page + 1)}><Icon name="chevronRight" size={14} /></Button>
         </div>}
       </div>
     </>

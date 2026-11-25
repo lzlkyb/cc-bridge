@@ -625,6 +625,7 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
 
     sanitize_ssh_forwards(&mut config);
     normalize_profiles(&mut config);
+    crate::relay::config::ensure_provider_ids(&mut config.relay);
     Ok(config)
 }
 
