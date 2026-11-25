@@ -7,7 +7,7 @@ const rates = { '["https://up.example.com","actual-model"]': { input: 3, cacheWr
 const call: RelayLogEntry = {
   id: 1, requestId: "first", tsMs: new Date(2026, 10, 24, 10).getTime(), source: "local", clientModel: "claude-sonnet-5-5",
   tier: "default", upstreamModel: "upstream-alias", upstreamProvider: "https://up.example.com", reportedModel: "actual-model",
-  fellBack: false, via: "alias", rewrite: null, foldSummary: null, sanitized: false, status: 200, firstByteMs: 120,
+  fellBack: false, via: "alias", rewrite: null, foldSummary: null, schemaSummary: null, sanitized: false, status: 200, firstByteMs: 120,
   totalMs: 400, bytesIn: 600, bytesOut: 900, error: null, path: "/v1/messages", usage,
 };
 

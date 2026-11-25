@@ -65,6 +65,10 @@ pub struct RelayLogEntry {
     pub rewrite: Option<String>,
     /// 折叠摘要，含 `messages[i].content[j]` 路径。
     pub fold_summary: Option<String>,
+    /// schema 正则归一化摘要（`\0` → `\x00` 的位置）。与折叠摘要分开记：
+    /// 折叠动了消息结构，这个只换了正则的写法，排障时不能混。
+    #[serde(default)]
+    pub schema_summary: Option<String>,
     /// 是否被折叠过（响应头 `x-relay-sanitized` 与界面徽章用）。
     pub sanitized: bool,
     /// 上游状态码。in-flight 时为 `None`。
@@ -76,6 +80,13 @@ pub struct RelayLogEntry {
     pub bytes_out: Option<u64>,
     /// 失败原因（上游错误摘要或本地错误）。密钥已打码。
     pub error: Option<String>,
+    /// 上游 4xx/5xx 的**响应体原文**（截断到 4KB）。
+    ///
+    /// 与 `error` 分开：`error` 是「哪里断了」的一句话，这里是上游自己说的话。
+    /// 之前的实现不带它，于是「`is not a "regex"`」这类唯一能定位问题的信息
+    /// 只存在于客户端界面的截图里，中转日志里只剩一个 400。
+    #[serde(default)]
+    pub upstream_error: Option<String>,
     /// 请求路径，目前是 `/v1/messages` 或 `/v1/messages/count_tokens`。
     pub path: String,
 }
@@ -98,6 +109,11 @@ pub struct LogPatch {
     pub total_ms: Option<u64>,
     pub bytes_out: Option<u64>,
     pub error: Option<String>,
+    /// 见 `RelayLogEntry::upstream_error`。
+    pub upstream_error: Option<String>,
+    /// 自愈重试追加的改写（`repair:clamp` 等）。首次清清洗的结果在 `begin`
+    /// 时就写进了 entry，这里只补重试那一次新增的部分。
+    pub rewrite: Option<String>,
     pub reported_model: Option<String>,
     pub usage: Option<TokenUsage>,
     pub usage_collection_issue: Option<UsageCollectionIssue>,
@@ -392,6 +408,13 @@ fn apply_patch(entry: &mut RelayLogEntry, patch: LogPatch) {
     entry.total_ms = patch.total_ms.or(entry.total_ms);
     entry.bytes_out = patch.bytes_out.or(entry.bytes_out);
     entry.error = patch.error.or(entry.error.take());
+    entry.upstream_error = patch.upstream_error.or(entry.upstream_error.take());
+    entry.rewrite = match (patch.rewrite, entry.rewrite.take()) {
+        // 自愈重试发生在首次清洗之后，两次改写要拼起来而不是覆盖。
+        (Some(repair), Some(first)) => Some(format!("{first}+{repair}")),
+        (Some(repair), None) => Some(repair),
+        (None, existing) => existing,
+    };
     entry.reported_model = patch.reported_model.or(entry.reported_model.take());
     entry.usage = patch.usage.or(entry.usage.take());
     entry.usage_collection_issue = patch

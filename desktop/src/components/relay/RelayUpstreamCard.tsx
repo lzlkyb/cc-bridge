@@ -1,8 +1,9 @@
-import { useEffect, useState, type FocusEvent } from "react";
+import { useEffect, useRef, useState, type FocusEvent } from "react";
 import { Icon } from "../ui/icon";
 import { SavedHint } from "../ui/SavedHint";
 import type { RelaySnapshot } from "../../lib/types";
 import { useRelayDraft, type RelayDraft } from "../../hooks/useRelayDraft";
+import { RelayAdvancedSettings } from "./RelayAdvancedSettings";
 import { formatMs } from "../../lib/relayFormat";
 
 /** 与后端 `Option<u32>` 对齐的上限。
@@ -23,12 +24,43 @@ export function RelayUpstreamCard({
   onApplied?: () => void;
 }) {
   const form = useRelayDraft(snapshot, onChanged);
-  const { draft, setField, setError, save, dirty, saving, error, savedAt, probe, probing, probeResult } = form;
+  const { draft, setField, setError, save, dirty, saving, error, savedAt, probe, probing, probeResult, models, listing, fetchModels } = form;
   const [replacingKey, setReplacingKey] = useState(false);
   const hasKey = snapshot.provider?.hasApiKey ?? false;
   const showKey = replacingKey || !hasKey;
   const configured = snapshot.provider?.configured ?? false;
   const ready = Boolean(draft.baseUrl.trim() && draft.model.trim() && (draft.apiKey.trim() || hasKey));
+
+  // ── 厂商画像 ──────────────────────────────────────────────────────
+  // 下拉的 value 是「用户显式选的 id」，空串表示跟随地址自动识别；显示用的
+  // 名字取自后端解析结果，两件事分开，才不会把推断值固化成用户选择。
+  const profiles = snapshot.profiles ?? [];
+  const resolvedId = snapshot.provider?.resolvedProfileId ?? "custom";
+  const activeProfile = profiles.find((p) => p.id === (draft.profileId || resolvedId));
+  const profileModels = activeProfile?.models ?? [];
+  // 预设候选 + 上游真实列表，去重。探测结果排前面：它是这次会话的事实，
+  // 预设只是「探测失败时别让输入框空着」。
+  const modelOptions = Array.from(new Set([...models, ...profileModels]));
+  const modelUnknown = models.length > 0 && draft.model.trim() !== "" && !models.includes(draft.model.trim());
+  const modelListId = explicit ? "relay-model-options-explicit" : "relay-model-options";
+  // 上次由「选厂商」写进去的地址。只有地址还是它（或为空）时才允许下一次
+  // 选择覆盖——否则会把用户手打的地址冲掉。
+  const prefilledHost = useRef("");
+
+  const chooseProfile = (id: string) => {
+    const next = profiles.find((p) => p.id === id);
+    const mayFill = draft.baseUrl.trim() === "" || draft.baseUrl === prefilledHost.current;
+    const update: Partial<RelayDraft> = { profileId: id };
+    if (next?.defaultHost && mayFill) {
+      const url = `https://${next.defaultHost}`;
+      prefilledHost.current = url;
+      update.baseUrl = url;
+    }
+    // 选了厂商就顺手把鉴权头摆到它常用的那种：两者不匹配的报错是 401，
+    // 而 401 里看不出「头用错了」。
+    if (next) update.authStyle = next.auth;
+    setField(update);
+  };
 
   // 「已保存」只亮 1.6 秒。常驻会更糟：那两个字一旦住下来，就再也分不清
   // 「这次改动存进去了」和「上次存的那次」——而这一页恰恰没有保存按钮。
@@ -81,6 +113,28 @@ export function RelayUpstreamCard({
       <p className="relay-work-muted">{explicit ? "调整地址、密钥或模型后，点击「应用配置」。" : "从上游控制台取得以下三项。填齐后，离开输入框即自动保存。"}</p>
 
       <div className="relay-fields">
+        <div className="relay-field">
+          <label htmlFor="relay-profile">供应商</label>
+          <select
+            id="relay-profile"
+            className="tinp"
+            value={draft.profileId}
+            onChange={(event) => chooseProfile(event.target.value)}
+            onBlur={commit}
+          >
+            <option value="">自动识别（{snapshot.provider?.profileLabel ?? "自定义"}）</option>
+            {profiles.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+                {p.dialect === "openai" ? " · 需协议转换" : ""}
+              </option>
+            ))}
+          </select>
+          <span className="relay-chip-note">
+            {activeProfile?.note || "选厂商会自动填地址前缀，也可以直接手填。"}
+          </span>
+        </div>
+
         <div className="relay-field">
           <label htmlFor="relay-base-url">上游地址</label>
           <input
@@ -137,114 +191,51 @@ export function RelayUpstreamCard({
 
         <div className="relay-field">
           <label htmlFor="relay-model">默认模型</label>
-          <input
-            id="relay-model"
-            className="tinp mono"
-            value={draft.model}
-            spellCheck={false}
-            autoComplete="off"
-            placeholder="上游控制台里的模型名"
-            onChange={(e) => setField({ model: e.target.value })}
-            onBlur={commit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") e.currentTarget.blur();
-            }}
-          />
+          <div className="relay-inline">
+            <input
+              id="relay-model"
+              className="tinp mono grow"
+              value={draft.model}
+              spellCheck={false}
+              autoComplete="off"
+              list={modelOptions.length > 0 ? modelListId : undefined}
+              placeholder={modelOptions[0] ? `如 ${modelOptions[0]}` : "上游控制台里的模型名"}
+              onChange={(e) => setField({ model: e.target.value })}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+              }}
+            />
+            <button
+              type="button"
+              className="relay-mini-btn"
+              disabled={listing || !draft.baseUrl.trim()}
+              onClick={() => void fetchModels()}
+            >
+              {listing ? "获取中…" : "获取列表"}
+            </button>
+          </div>
+          {modelOptions.length > 0 && (
+            <datalist id={modelListId}>
+              {modelOptions.map((m) => <option key={m} value={m} />)}
+            </datalist>
+          )}
+          {modelUnknown && (
+            <span className="relay-chip-note" data-tone="warn">
+              这个名字不在上游返回的列表里，仍可保存——有些网关的列表不含全部可调模型。
+            </span>
+          )}
         </div>
       </div>
 
-      <details className="relay-more">
-        <summary>
-          <Icon name="chevronDown" size={11} />
-          高级设置
-          <span className="hint">都已有默认值，不用动</span>
-        </summary>
-        <div className="relay-more-body">
-          <div className="relay-fields relay-extra-models">
-            {(["haiku", "opus"] as const).map((tier) => <div className="relay-field" key={tier}>
-              <label htmlFor={`relay-model-${tier}`}>{tier === "haiku" ? "Haiku" : "Opus"} 模型</label>
-              <input id={`relay-model-${tier}`} className="tinp mono" value={draft[tier]} placeholder="留空时使用默认档"
-                onChange={(event) => setField({ [tier]: event.target.value })} onBlur={commit} />
-            </div>)}
-          </div>
-          <div className="relay-adv-row">
-            <span>鉴权方式</span>
-            <div className="relay-chips">
-              {(["x-api-key", "bearer"] as const).map((style) => (
-                <button
-                  key={style}
-                  type="button"
-                  className="relay-chip"
-                  data-relay-autosave={!explicit || undefined}
-                  aria-pressed={draft.authStyle === style}
-                  onBlur={commit}
-                  onClick={() => {
-                    if (draft.authStyle === style) return;
-                    const update = { authStyle: style };
-                    setField(update);
-                    if (!explicit) apply(update);
-                  }}
-                >
-                  {style === "bearer" ? "Bearer" : "x-api-key"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="relay-adv-row">
-            <span>max_tokens</span>
-            <div className="relay-chips">
-              <input
-                className="tinp mono"
-                style={{ width: 96 }}
-                inputMode="numeric"
-                value={draft.maxTokens}
-                placeholder="不压"
-                aria-label="max_tokens 上限"
-                // 只留数字 + 限 10 位：u32 上限是 10 位数，更长连后端都进不去。
-                onChange={(e) => setField({ maxTokens: e.target.value.replace(/[^\d]/g, "").slice(0, 10) })}
-                onBlur={(event) => {
-                  // 10 位仍可能超 u32（如 9999999999）。此时后端 Option<u32>
-                  // 会整条拒绝、报错还是 serde 天书——拦住、说人话、不保存
-                  // （存了也必失败，用户没有任何自愈路径）。
-                  if (draft.maxTokens !== "" && Number(draft.maxTokens) > MAX_TOKENS_U32) {
-                    setError("max_tokens 不能超过 4294967295（后端整数上限）。");
-                    return;
-                  }
-                  commit(event);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") e.currentTarget.blur();
-                }}
-              />
-              <span className="relay-chip-note">留空 = 按上游；上游报超限时再压</span>
-            </div>
-          </div>
-          <div className="relay-adv-row">
-            <span>折叠工具定义</span>
-            <div className="relay-chips">
-              <button
-                type="button"
-                role="switch"
-                aria-checked={draft.fold}
-                aria-label="折叠工具定义"
-                data-relay-autosave={!explicit || undefined}
-                className={`sw ${draft.fold ? "on" : ""} relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors`}
-                onBlur={commit}
-                onClick={() => {
-                  const update = { fold: !draft.fold };
-                  setField(update);
-                  if (!explicit) apply(update);
-                }}
-              >
-                <span className="sw-thumb inline-block h-5 w-5 rounded-full bg-white shadow" />
-              </button>
-              <span className="relay-chip-note">
-                只碰含 <code>tool_*</code> 块的请求，其余原样转发
-              </span>
-            </div>
-          </div>
-        </div>
-      </details>
+      <RelayAdvancedSettings
+        draft={draft}
+        setField={setField}
+        apply={apply}
+        commit={commit}
+        explicit={explicit}
+        setError={setError}
+      />
       <div className="relay-inline relay-wrap">
         <button type="button" className="relay-mini-btn" disabled={!ready || probing || saving} onClick={() => void probe()}>
           <Icon name={probing ? "spinner" : "activity"} size={13} className={probing ? "animate-spin" : ""} />{probing ? "正在测试" : "测试上游"}

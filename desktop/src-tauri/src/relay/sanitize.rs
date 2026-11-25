@@ -19,9 +19,9 @@
 
 use serde_json::{json, Value};
 
+use super::chain;
 use super::config::Provider;
 use super::fold::{self, FoldFinding};
-use super::rules;
 
 /// 一次请求被处理后的形态。
 pub struct Prepared {
@@ -33,7 +33,9 @@ pub struct Prepared {
     pub changed: bool,
     /// 折叠发现，带 `messages[i].content[j]` 路径。
     pub findings: Vec<FoldFinding>,
-    /// 触发过的改写种类，日志里给一行摘要：`strip_suffix` / `fold` / `clamp`。
+    /// schema 正则归一化的发现，带 `tools[i](名字).…pattern` 路径。
+    pub schema_notes: Vec<String>,
+    /// 触发过的改写种类，日志里给一行摘要：`strip_suffix` / `fold` / `clamp` / `pattern`。
     pub rewrites: Vec<&'static str>,
 }
 
@@ -46,6 +48,7 @@ impl std::fmt::Debug for Prepared {
             .field("changed", &self.changed)
             .field("rewrites", &self.rewrites)
             .field("findings", &self.findings.len())
+            .field("schema_notes", &self.schema_notes.len())
             .finish()
     }
 }
@@ -65,6 +68,18 @@ impl Prepared {
             return None;
         }
         fold::findings_summary(&self.findings)
+    }
+
+    /// schema 归一化摘要（第一条 + 总数），日志详情用。
+    ///
+    /// 与折叠摘要分开两个字段：折叠是「动了消息结构」，这里只是「换了个转义写法」，
+    /// 混在一起会让排障时分不清哪条导致了上游行为变化。
+    pub fn schema_summary(&self) -> Option<String> {
+        let first = self.schema_notes.first()?;
+        Some(match self.schema_notes.len() {
+            1 => first.clone(),
+            n => format!("{first} 等 {n} 处"),
+        })
     }
 }
 
@@ -132,9 +147,12 @@ impl std::fmt::Display for Refusal {
 
 /// 把原始请求体清洗成可转发的形态。
 ///
-/// 顺序固定：解析 → 确定性改写（`rules`）→ 折叠（`fold`）。折叠放最后，是因为它
-/// 依赖 `tools` 字段的最终形态；先折叠再 clamp 虽然也能跑，但会让 finding 的路径
-/// 与最终 body 对不上。
+/// 结构是「校验 → 规则链 → 决定发哪份字节」。规则**做什么、按什么顺序做**都在
+/// `chain.rs`，这里只管三件与转发有关的事：
+///
+/// 1. 请求体得是个能处理的 JSON 对象、`messages` 是数组、`model` 存在；
+/// 2. 跑完规则链后 `model` 仍不能是空串（去后缀可能把它削成 `""`）；
+/// 3. 改过才重新序列化——没改必须逐字节等于入参（prompt 缓存的前提）。
 pub fn sanitize(raw: &[u8], provider: &Provider) -> Result<Prepared, Refusal> {
     let mut json: Value = serde_json::from_slice(raw)
         .map_err(|e| Refusal::new(RefusalCause::InvalidJson(e.to_string())))?;
@@ -146,21 +164,23 @@ pub fn sanitize(raw: &[u8], provider: &Provider) -> Result<Prepared, Refusal> {
             return Err(Refusal::new(RefusalCause::InvalidMessages));
         }
     }
-
-    let mut rewrites: Vec<&'static str> = Vec::new();
-
-    // ── 确定性改写 ────────────────────────────────────────────────────
-    // 客户端原名先把私有后缀去掉：路由要认 `claude-sonnet-4-5[1m]` 的 alias，
-    // 带后缀时精确匹配会漏。
-    if let Some(model) = json.get("model").and_then(Value::as_str) {
-        let (stripped, changed) = rules::strip_model_suffix(model);
-        if changed {
-            json["model"] = Value::String(stripped);
-            rewrites.push("strip_suffix");
-        }
-    } else {
+    // 先确认有 model 再进规则链：缺了它连「该用哪一档」都不知道，
+    // 而规则链里的 strip 对缺失字段是静默跳过的。
+    if json.get("model").and_then(Value::as_str).is_none() {
         return Err(Refusal::new(RefusalCause::MissingModel));
     }
+
+    // 怪癖一次性解析出来：规则只跟这里打交道，不再各处读裸字段。
+    let quirks = provider.quirks();
+    let outcome = chain::run(
+        &mut json,
+        &chain::Context {
+            quirks,
+            fold_tool_blocks: provider.fold_tool_blocks,
+        },
+    );
+
+    // 去后缀之后仍可能是空串（`"[]"` 这类），上游会 400 且信息更模糊。
     if json
         .get("model")
         .and_then(Value::as_str)
@@ -169,24 +189,7 @@ pub fn sanitize(raw: &[u8], provider: &Provider) -> Result<Prepared, Refusal> {
         return Err(Refusal::new(RefusalCause::MissingModel));
     }
 
-    if rules::clamp_max_tokens(&mut json, provider.max_tokens_limit).is_some() {
-        rewrites.push("clamp");
-    }
-
-    // ── 折叠（条件触发）──────────────────────────────────────────────
-    // `fold_tool_blocks` 为假时完全不碰 body：用户明确关掉了折叠，就该让上游的
-    // 原始错误返回给他，而不是我们替他改。
-    let fold_result = if provider.fold_tool_blocks {
-        let r = fold::fold_tool_blocks(&mut json);
-        if r.folded {
-            rewrites.push("fold");
-        }
-        r
-    } else {
-        fold::FoldResult::default()
-    };
-
-    let changed = !rewrites.is_empty();
+    let changed = outcome.changed();
     let bytes = if changed {
         // 只有真改动过才重新序列化。Unchanged 路径必须保持原始字节——
         // 重新序列化会按字母序重排 key，白改一次请求（§4.4.1「逐字节一致」）。
@@ -200,8 +203,9 @@ pub fn sanitize(raw: &[u8], provider: &Provider) -> Result<Prepared, Refusal> {
         bytes,
         json,
         changed,
-        findings: fold_result.findings,
-        rewrites,
+        findings: outcome.findings,
+        schema_notes: outcome.notes,
+        rewrites: outcome.rewrites,
     })
 }
 
@@ -377,5 +381,76 @@ mod tests {
         p.max_tokens_limit = Some(8192);
         let prepared = sanitize(&raw, &p).expect("应通过");
         assert_eq!(prepared.rewrite_label().unwrap(), "strip_suffix+clamp+fold");
+    }
+
+    /// Artifact 那类 schema：只换一个转义，转发字节里不能再出现 `\0`。
+    #[test]
+    fn tool_pattern_is_normalized_and_reported() {
+        let raw = serde_json::to_vec(&json!({
+            "model": "deepseek-v4.1-flash",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tools": [{
+                "name": "Artifact",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_paths": { "type": "array",
+                            "items": { "type": "string", "pattern": "^[^\\0]*$" } }
+                    }
+                }
+            }]
+        }))
+        .unwrap();
+        let prepared = sanitize(&raw, &provider(true)).expect("应通过");
+        assert!(prepared.changed);
+        assert_eq!(prepared.rewrites, vec!["pattern"]);
+        let text = String::from_utf8(prepared.bytes.clone()).expect("仍是 UTF-8");
+        assert!(
+            text.contains("^[^\\\\x00]*$"),
+            "转发字节里应是 \\x00：{text}"
+        );
+        assert!(!text.contains("\\\\0"), "不能再把 \\0 发出去：{text}");
+        assert_eq!(
+            prepared.schema_summary().unwrap(),
+            "tools[0](Artifact).input_schema.properties.file_paths.items.pattern：\\0 → \\x00"
+        );
+    }
+
+    #[test]
+    fn pattern_normalization_can_be_disabled() {
+        let raw = serde_json::to_vec(&json!({
+            "model": "m",
+            "messages": [],
+            "tools": [{ "name": "T", "input_schema": { "type": "object",
+                "properties": { "s": { "type": "string", "pattern": "^[^\\0]*$" } } } }]
+        }))
+        .unwrap();
+        let mut p = provider(true);
+        p.normalize_tool_patterns = Some(false);
+        let prepared = sanitize(&raw, &p).expect("应通过");
+        assert!(!prepared.changed, "关掉就该一个字节都不改");
+        assert_eq!(prepared.bytes, raw);
+        assert!(prepared.schema_summary().is_none());
+    }
+
+    /// 折叠搬进顶层 `tools` 的定义也必须被扫到——这就是 schema 归一化排在
+    /// 折叠之后的原因。顺序反了这条会红。
+    #[test]
+    fn folded_definition_is_also_normalized() {
+        let raw = serde_json::to_vec(&json!({
+            "model": "m",
+            "messages": [{ "role": "system", "content": [
+                { "type": "tool_addition", "tool": { "type": "tool_definition",
+                    "definition": { "name": "Late", "input_schema": { "type": "object",
+                        "properties": { "s": { "type": "string", "pattern": "^[^\\0]*$" } } } } } }
+            ]}]
+        }))
+        .unwrap();
+        let prepared = sanitize(&raw, &provider(true)).expect("应通过");
+        assert_eq!(prepared.rewrite_label().unwrap(), "fold+pattern");
+        assert_eq!(
+            prepared.json["tools"][0]["input_schema"]["properties"]["s"]["pattern"],
+            "^[^\\x00]*$"
+        );
     }
 }

@@ -14,8 +14,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "../lib/tauri";
 import { toast } from "../components/ui/toast";
 import type { RelayProbeOutcome, RelaySaveResult, RelaySnapshot } from "../lib/types";
+import { useModelCatalog } from "./useModelCatalog";
 
 export type RelayAuthStyle = "x-api-key" | "bearer";
+/** 工具 schema `\0` 归一化的三态。`auto` = 跟随厂商画像。 */
+export type RelayPatterns = "auto" | "on" | "off";
 
 export interface RelayDraft {
   baseUrl: string;
@@ -25,6 +28,9 @@ export interface RelayDraft {
   haiku: string;
   opus: string;
   authStyle: RelayAuthStyle;
+  /** 厂商画像 id。空串 = 跟随地址自动识别。 */
+  profileId: string;
+  patterns: RelayPatterns;
   /** 字符串形态：空串 = 不压。输入框不能是 number，否则删空会跳成 0。 */
   maxTokens: string;
   fold: boolean;
@@ -37,6 +43,8 @@ const EMPTY: RelayDraft = {
   haiku: "",
   opus: "",
   authStyle: "x-api-key",
+  profileId: "",
+  patterns: "auto",
   maxTokens: "",
   fold: true,
 };
@@ -52,6 +60,13 @@ function fromSnapshot(snapshot: RelaySnapshot | undefined): RelayDraft {
     haiku: model("haiku"),
     opus: model("opus"),
     authStyle: provider?.authStyle === "bearer" ? "bearer" : "x-api-key",
+    profileId: provider?.profileId ?? "",
+    patterns:
+      provider?.normalizeToolPatterns === true
+        ? "on"
+        : provider?.normalizeToolPatterns === false
+          ? "off"
+          : "auto",
     maxTokens: provider?.maxTokensLimit ? String(provider.maxTokensLimit) : "",
     fold: provider?.foldToolBlocks ?? true,
   };
@@ -69,6 +84,15 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeResult, setProbeResult] = useState<RelayProbeOutcome | null>(null);
+  // 模型列表有自己的生命周期（点一次取一次），放在独立 hook 里。
+  const { models, listing, fetchModels } = useModelCatalog({
+    baseUrl: draft.baseUrl,
+    apiKey: draft.apiKey,
+    model: draft.model,
+    authStyle: draft.authStyle,
+    profileId: draft.profileId,
+    onError: setError,
+  });
 
   // 「跟随服务端」的口径与设置页端口行一致：只有当前输入**仍然等于上一份服务端值**
   // （即用户没改过）时才跟随；用户正在填的值不会被 2 秒轮询冲掉。
@@ -123,6 +147,9 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
         haiku: next.haiku.trim(),
         opus: next.opus.trim(),
         authStyle: next.authStyle,
+        // 空串 = 回到自动识别（后端清空 profile_id）。
+        profileId: next.profileId,
+        normalizeToolPatterns: next.patterns,
         // 0 是「不压」的哨兵；清空输入框就是取消上限。
         maxTokensLimit: next.maxTokens.trim() === "" ? 0 : Number(next.maxTokens),
         foldToolBlocks: next.fold,
@@ -173,6 +200,7 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
           apiKey: draft.apiKey.trim(),
           model: draft.model.trim(),
           authStyle: draft.authStyle,
+          profileId: draft.profileId,
         },
       });
       setProbeResult(outcome);
@@ -183,7 +211,11 @@ export function useRelayDraft(snapshot: RelaySnapshot | undefined, onSaved: () =
     } finally {
       setProbing(false);
     }
-  }, [draft.apiKey, draft.authStyle, draft.baseUrl, draft.model, probing]);
+  }, [draft.apiKey, draft.authStyle, draft.baseUrl, draft.model, draft.profileId, probing]);
 
-  return { draft, setField, dirty, saving, error, setError, savedAt, save, probe, probing, probeResult };
+  return {
+    draft, setField, dirty, saving, error, setError, savedAt, save,
+    probe, probing, probeResult,
+    models, listing, fetchModels,
+  };
 }

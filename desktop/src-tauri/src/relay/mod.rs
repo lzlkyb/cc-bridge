@@ -4,9 +4,13 @@
 //!
 //! ```text
 //! config.rs    配置模型 + 派生（alias / 名称 / 地址归一化 / 自转发检测）
+//! profile.rs   厂商画像：端点前缀、协议方言、鉴权、怪癖（表驱动，不写分支）
+//! catalog.rs   模型目录：问上游要模型列表（不落盘，失败退回手填）
+//! chain.rs     规则链：去后缀 / clamp / 折叠 / schema 归一化（顺序在这里）
+//! rules.rs     单条确定性改写的实现（被 chain 调用）
 //! route.rs     客户端模型名 → 档位 → 上游模型
-//! rules.rs     确定性改写（strip_model_suffix / clamp_max_tokens）
 //! fold.rs      tool_addition / tool_removal 折叠（本方案的立身之本）
+//! schema.rs    工具 schema 正则归一化（`\0` → `\x00`，DeepSeek 类上游必需）
 //! sanitize.rs  三态清洗：Unchanged / Sanitized / Refused
 //! guard.rs     来源守卫（拒浏览器、拒 DNS rebinding）
 //! auth.rs      中转 token 校验（两种头都认）
@@ -17,17 +21,23 @@
 //! 这一个文件是**对外 API**：启停、热更新、状态快照。上层（`commands::relay_cmds`
 //! 与 `AppState`）只跟它打交道，不直接碰 `server`。
 //!
-//! P1 只做 Anthropic 透传。OpenAI 兼容（`upstream/openai/*`）是 P3 的事，
-//! 现在不建那些空目录——空壳会让人以为已经支持。
+//! P1 只做 Anthropic 透传；OpenAI 方言的编解码在 `openai/`（P3）。
+//! 方言由 `profile::Dialect` 决定，不再靠「有没有建目录」判断。
 
 pub mod auth;
+pub mod catalog;
+pub mod chain;
 pub mod config;
 pub mod fold;
 pub mod guard;
 pub mod log;
+pub mod openai;
+pub mod profile;
+pub mod repair;
 pub mod route;
 pub mod rules;
 pub mod sanitize;
+pub mod schema;
 pub mod server;
 mod usage;
 
@@ -38,6 +48,7 @@ use serde::Serialize;
 
 pub use self::log::{RelayLog, RelayLogEntry, RelayStats, TierHit};
 pub use config::{AuthStyle, MissingField, Provider, RelaySettings, Tier, TierKind, UpstreamKind};
+pub use profile::{Dialect, ProfileView};
 pub use server::RunningServer;
 
 /// 中转的运行时。放在 `AppState` 里，活过页面卸载。
@@ -225,6 +236,7 @@ impl RelayRuntime {
             stats: self.log.stats_today(),
             recent: self.log.recent(recent_n),
             provider: settings.active().map(ProviderView::from_provider),
+            profiles: profile::views(),
             tiers: settings
                 .active()
                 .map(|p| {
@@ -272,6 +284,11 @@ pub struct RelaySnapshot {
     /// 多传一份 `RelaySettings` 只会多出「snake_case 和 camelCase 两套字段名」
     /// 这个坑，还得担心密钥重复下发。
     pub tiers: Vec<TierView>,
+    /// 可选厂商画像（静态表）。
+    ///
+    /// 跟随快照下发而不是单开一个命令：内容是编译期常量，不随运行状态变；
+    /// 单开命令就要在前端多管一份加载态与缓存，而这里多出来的只是 2KB 字符串。
+    pub profiles: Vec<ProfileView>,
 }
 
 /// provider 的界面视图。**密钥只给掩码与「有没有」**，完整值不下发——
@@ -284,9 +301,18 @@ pub struct ProviderView {
     pub api_key_masked: String,
     pub has_api_key: bool,
     pub kind: String,
+    /// 用户显式选的画像 id。空串 = 跟随地址自动识别（界面下拉显示「自动」）。
+    pub profile_id: String,
+    /// 实际生效的画像 id（显式选择或推断结果）。界面用它显示「当前是哪家」。
+    pub resolved_profile_id: String,
+    pub profile_label: String,
+    /// 上游协议方言（`anthropic` / `openai`），界面用来提示「要不要转换」。
+    pub dialect: String,
     pub auth_style: String,
     pub max_tokens_limit: Option<u32>,
     pub fold_tool_blocks: bool,
+    /// 用户对 `\0` 归一化的显式设置；`None` = 跟随厂商画像。
+    pub normalize_tool_patterns: Option<bool>,
     /// 三格是否齐。
     pub configured: bool,
     /// 缺哪一格（`baseUrl` / `apiKey` / `model`）。
@@ -296,6 +322,7 @@ pub struct ProviderView {
 impl ProviderView {
     fn from_provider(p: &Provider) -> Self {
         let missing = p.validate().err();
+        let preset = p.profile();
         Self {
             name: if p.name.is_empty() {
                 config::derive_name(&p.base_url)
@@ -310,9 +337,14 @@ impl ProviderView {
                 UpstreamKind::Openai => "openai",
             }
             .into(),
+            profile_id: p.profile_id.clone(),
+            resolved_profile_id: preset.id.into(),
+            profile_label: preset.label.into(),
+            dialect: p.dialect().as_str().into(),
             auth_style: p.auth_style.as_str().into(),
             max_tokens_limit: p.max_tokens_limit,
             fold_tool_blocks: p.fold_tool_blocks,
+            normalize_tool_patterns: p.normalize_tool_patterns,
             configured: missing.is_none(),
             missing: missing.map(|m| {
                 match m {
@@ -367,8 +399,12 @@ pub async fn probe(
     api_key: &str,
     model: &str,
     auth_style: AuthStyle,
+    profile_id: &str,
 ) -> Result<ProbeOutcome, String> {
-    let url = config::normalize_endpoint(base_url);
+    // 与保存时同一套归一化：同一份输入必须得到同一个地址，否则「测通了、
+    // 保存后又连不上」这种只有在真实请求时才暴露的错会一直存在。
+    let preset = profile::resolve(base_url, profile_id);
+    let url = config::normalize_endpoint_with(base_url, preset.endpoint_hint, preset.dialect);
     if url.is_empty() {
         return Err("上游地址还没填。".into());
     }
@@ -384,11 +420,21 @@ pub async fn probe(
         .build()
         .map_err(|e| format!("构建 HTTP 客户端失败：{e}"))?;
 
-    let payload = serde_json::json!({
-        "model": model,
-        "max_tokens": 8,
-        "messages": [{ "role": "user", "content": "ping" }]
-    });
+    let payload = match preset.dialect {
+        Dialect::Anthropic => serde_json::json!({
+            "model": model,
+            "max_tokens": 8,
+            "messages": [{ "role": "user", "content": "ping" }]
+        }),
+        // OpenAI 侧：`stream` 显式关掉，否则有的网关默认回 SSE，
+        // `resp.text()` 拿到的是一串 event 流，状态码对但内容没法看。
+        Dialect::OpenAi => serde_json::json!({
+            "model": model,
+            "max_tokens": 8,
+            "stream": false,
+            "messages": [{ "role": "user", "content": "ping" }]
+        }),
+    };
 
     let first = send_probe(&client, &url, api_key, auth_style, &payload).await;
     let outcome = match first {
@@ -543,6 +589,7 @@ mod tests {
             "sk-secret",
             "m",
             AuthStyle::XApiKey,
+            "",
         )
         .await
         .expect("302 是结果，不是错误");

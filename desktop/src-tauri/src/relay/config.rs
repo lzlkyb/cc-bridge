@@ -10,6 +10,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::profile::{self, Dialect, Profile, Quirks};
+
 /// 默认监听端口。不暴露给用户（§4.6：端口冲突极少见，真冲突时错误里给建议）。
 pub const DEFAULT_PORT: u16 = 4100;
 /// 默认日志保留条数。不暴露给用户。
@@ -165,6 +167,13 @@ pub struct Provider {
     pub api_key: String,
     #[serde(default)]
     pub kind: UpstreamKind,
+    /// 用户显式选的厂商画像 id（`profile::PRESETS` 里的 id）。
+    ///
+    /// 空 = 按 `base_url` 的 host 自动推断。**推断结果不回写这里**：它是由地址
+    /// 派生的值，存下来就会出现「改了地址但画像还是旧的」这种只有重启才发现的问题。
+    /// 只有用户从下拉里主动选了厂商时才写入。
+    #[serde(default)]
+    pub profile_id: String,
     #[serde(default)]
     pub auth_style: AuthStyle,
     /// `max_tokens` 上限。`None` = 不压。
@@ -173,6 +182,14 @@ pub struct Provider {
     /// 是否折叠 `tool_*` 变更块（§4.4.1 默认预折叠）。
     #[serde(default = "default_true")]
     pub fold_tool_blocks: bool,
+    /// 是否把工具 schema 里的 `\0` 归一化成 `\x00`（语义等价，见 `schema.rs`）。
+    ///
+    /// **三态**：`None` = 跟随厂商画像（`profile::Quirks::normalize_null_escape`，
+    /// 默认为真）；`Some(v)` = 用户显式指定，压过画像。三态而不是布尔，是因为
+    /// 「用户关掉」和「还没表态」必须能区分——否则画像想替某家上游关掉时，
+    /// 会被旧配置里写死的 `true` 顶掉。
+    #[serde(default)]
+    pub normalize_tool_patterns: Option<bool>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// 档位映射。至少要有 `default` 一行才算配好。
@@ -196,9 +213,11 @@ impl Default for Provider {
             base_url: String::new(),
             api_key: String::new(),
             kind: UpstreamKind::Anthropic,
+            profile_id: String::new(),
             auth_style: AuthStyle::XApiKey,
             max_tokens_limit: None,
             fold_tool_blocks: true,
+            normalize_tool_patterns: None,
             enabled: true,
             tiers: vec![Tier::default()],
         }
@@ -243,6 +262,51 @@ impl Provider {
     /// 该 provider 是否可以直接转发。
     pub fn is_usable(&self) -> bool {
         self.enabled && self.validate().is_ok()
+    }
+
+    /// 解析后的厂商画像。用户显式选的 id 优先，否则按 host 推断，认不出落 `custom`。
+    pub fn profile(&self) -> &'static Profile {
+        profile::resolve(&self.base_url, &self.profile_id)
+    }
+
+    /// 实际生效的怪癖：画像给默认，`Provider` 上的显式字段压过它。
+    ///
+    /// 这是「表驱动」的关键一步——规则读这里，不再读一个个散落的布尔字段。
+    pub fn quirks(&self) -> Quirks {
+        let base = self.profile().quirks;
+        Quirks {
+            normalize_null_escape: self
+                .normalize_tool_patterns
+                .unwrap_or(base.normalize_null_escape),
+            clamp_max_tokens: self.max_tokens_limit.or(base.clamp_max_tokens),
+            ..base
+        }
+    }
+
+    /// 上游协议方言。转发层按它决定「透传」还是「转换」。
+    ///
+    /// 老字段 `kind` 不再参与运行时判定：它是派生值，`normalize_settings` 会
+    /// 按方言回写，只为了让界面与日志显示一致。
+    pub fn dialect(&self) -> Dialect {
+        self.profile().dialect
+    }
+
+    /// 真正要 POST 的地址。
+    ///
+    /// - Anthropic 方言：按客户端过来的路径换后缀，`/v1/messages` 与
+    ///   `/v1/messages/count_tokens` 共用同一个前缀。
+    /// - OpenAI 方言：`base_url` 本身就是 `/chat/completions`，没有可换的后缀。
+    ///   `count_tokens` 这类 Anthropic 独有的路径由上层自行处理（本地估算），
+    ///   不能塞给 OpenAI 上游。
+    pub fn endpoint_for(&self, path: &str) -> String {
+        let base = self.base_url.trim().trim_end_matches('/');
+        match self.dialect() {
+            Dialect::Anthropic => {
+                let root = base.strip_suffix("/v1/messages").unwrap_or(base);
+                format!("{root}{path}")
+            }
+            Dialect::OpenAi => base.to_string(),
+        }
     }
 }
 
@@ -329,14 +393,51 @@ impl RelaySettings {
 /// 注意 `/v1/messages/count_tokens` 这类子路径**不在这里处理**：转发时按请求路径
 /// 替换后缀，所以存下来的永远是 `/v1/messages` 这一条基址。
 pub fn normalize_endpoint(raw: &str) -> String {
+    normalize_endpoint_with(raw, "", Dialect::Anthropic)
+}
+
+/// 同上，但按厂商画像补路径段、按方言选端点后缀。
+///
+/// 国内厂商的 Anthropic 端点大多不是裸 `/v1/messages`：DeepSeek 是 `/anthropic`，
+/// 智谱是 `/api/anthropic`，百炼是 `/apps/anthropic`。让用户自己记住这些，
+/// 等于让他在「403 / 404 / 填对了」之间反复试（§4.6.2「能推导的不出现」）。
+///
+/// 规则：
+/// - 空串 → 空串
+/// - 已以该方言的端点结尾 → 原样
+/// - 地址带了路径（`/anthropic` 这类）→ 视为前缀，只补端点，**不再叠加** hint
+///   （用户填得比 hint 更准）
+/// - 地址只有域名（或域名 + `/`）→ 补 `hint` + 端点
+///
+/// 🔴 端点后缀由**方言**决定，不是常量：OpenAI 是 `/chat/completions`，
+/// 拿 Anthropic 的后缀去拼会得到 `/v1/v1/messages` 这种必然 404 的地址。
+pub fn normalize_endpoint_with(raw: &str, hint: &str, dialect: Dialect) -> String {
+    let suffix = match dialect {
+        Dialect::Anthropic => "/v1/messages",
+        Dialect::OpenAi => "/chat/completions",
+    };
     let trimmed = raw.trim().trim_end_matches('/');
     if trimmed.is_empty() {
         return String::new();
     }
-    if trimmed.ends_with("/v1/messages") {
-        trimmed.to_string()
+    if trimmed.ends_with(suffix) {
+        return trimmed.to_string();
+    }
+    let path = path_part(trimmed);
+    if path.is_empty() || path == "/" {
+        let hint = hint.trim().trim_end_matches('/');
+        format!("{trimmed}{hint}{suffix}")
     } else {
-        format!("{trimmed}/v1/messages")
+        format!("{trimmed}{suffix}")
+    }
+}
+
+/// 取 URL 的路径部分（含前导斜杠）。没有路径返回空串。
+fn path_part(raw: &str) -> &str {
+    let after_scheme = raw.split_once("://").map(|(_, rest)| rest).unwrap_or(raw);
+    match after_scheme.find('/') {
+        Some(index) => &after_scheme[index..],
+        None => "",
     }
 }
 
@@ -367,10 +468,25 @@ pub fn derive_name(endpoint: &str) -> String {
 /// 「存下来的」不一致，而这类不一致只有重启才发现。
 pub fn normalize_settings(settings: &mut RelaySettings) {
     for provider in &mut settings.providers {
-        provider.base_url = normalize_endpoint(&provider.base_url);
+        // 先按原始地址认厂商，再按它的 hint 归一化——顺序反了就用不上 hint。
+        let preset = profile::resolve(&provider.base_url, &provider.profile_id);
+        provider.base_url =
+            normalize_endpoint_with(&provider.base_url, preset.endpoint_hint, preset.dialect);
         if provider.name.trim().is_empty() {
-            provider.name = derive_name(&provider.base_url);
+            provider.name = if preset.id == profile::CUSTOM.id {
+                derive_name(&provider.base_url)
+            } else {
+                // 认出来的厂商用画像里的正名：`api.deepseek.com` 按域名推导会得到
+                // 一个没有意义的「api」，界面上完全看不出接的是谁。
+                preset.label.to_string()
+            };
         }
+        // `kind` 是派生值，跟着方言走，只为界面/日志显示一致。
+        let dialect = provider.dialect();
+        provider.kind = match dialect {
+            Dialect::Anthropic => UpstreamKind::Anthropic,
+            Dialect::OpenAi => UpstreamKind::Openai,
+        };
         provider.api_key = provider.api_key.trim().to_string();
         // 档位去重：同档多行以最后一行为准（用户后面填的那次）。
         let mut seen: Vec<TierKind> = Vec::new();
@@ -536,6 +652,116 @@ mod tests {
             "https://host/apps/anthropic/v1/messages"
         );
         assert_eq!(normalize_endpoint("  "), "");
+    }
+
+    #[test]
+    fn endpoint_hint_applies_only_to_bare_hosts() {
+        // 只填域名 → 补厂商的路径段
+        assert_eq!(
+            normalize_endpoint_with("https://api.deepseek.com", "/anthropic", Dialect::Anthropic),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+        assert_eq!(
+            normalize_endpoint_with(
+                "https://open.bigmodel.cn",
+                "/api/anthropic",
+                Dialect::Anthropic
+            ),
+            "https://open.bigmodel.cn/api/anthropic/v1/messages"
+        );
+        // 用户自己填了路径 → 视为比 hint 更准，不再叠加
+        assert_eq!(
+            normalize_endpoint_with(
+                "https://api.deepseek.com/anthropic",
+                "/anthropic",
+                Dialect::Anthropic
+            ),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+        // 已经是完整端点 → 原样
+        assert_eq!(
+            normalize_endpoint_with(
+                "https://api.deepseek.com/anthropic/v1/messages",
+                "/anthropic",
+                Dialect::Anthropic
+            ),
+            "https://api.deepseek.com/anthropic/v1/messages"
+        );
+        // 没有 hint 的厂商（官方 / 自定义）→ 行为与以前一致
+        assert_eq!(
+            normalize_endpoint_with("https://host/", "", Dialect::Anthropic),
+            "https://host/v1/messages"
+        );
+    }
+
+    #[test]
+    fn user_override_beats_profile_quirks() {
+        let mut p = Provider {
+            base_url: "https://api.deepseek.com/anthropic/v1/messages".into(),
+            ..Provider::default()
+        };
+        assert_eq!(p.profile().id, "deepseek");
+        // 默认跟随画像
+        assert!(p.quirks().normalize_null_escape);
+        assert_eq!(p.quirks().clamp_max_tokens, None);
+
+        // 显式关掉压过画像
+        p.normalize_tool_patterns = Some(false);
+        assert!(!p.quirks().normalize_null_escape);
+
+        // 显式上限压过画像里的 None
+        p.max_tokens_limit = Some(4096);
+        assert_eq!(p.quirks().clamp_max_tokens, Some(4096));
+    }
+
+    #[test]
+    fn explicit_profile_id_survives_unrecognized_host() {
+        // 自建反代：host 认不出来，但用户明确选了 DeepSeek。
+        let p = Provider {
+            base_url: "https://my-proxy.example.com".into(),
+            profile_id: "deepseek".into(),
+            ..Provider::default()
+        };
+        assert_eq!(p.profile().id, "deepseek");
+        assert_eq!(p.dialect(), Dialect::Anthropic);
+    }
+
+    #[test]
+    fn normalize_settings_fills_profile_label_and_hint() {
+        let mut settings = RelaySettings {
+            providers: vec![Provider {
+                base_url: "https://api.deepseek.com".into(),
+                api_key: "k".into(),
+                tiers: upstream_model_setup("deepseek-flash"),
+                ..Provider::default()
+            }],
+            overrides: vec![],
+        };
+        normalize_settings(&mut settings);
+        let p = &settings.providers[0];
+        assert_eq!(p.base_url, "https://api.deepseek.com/anthropic/v1/messages");
+        // 按域名推导会得到没有意义的「api」，认出来的厂商用正名
+        assert_eq!(p.name, "DeepSeek");
+        assert_eq!(p.kind, UpstreamKind::Anthropic);
+    }
+
+    #[test]
+    fn openai_profile_derives_openai_kind() {
+        let mut settings = RelaySettings {
+            providers: vec![Provider {
+                base_url: "https://api.openai.com".into(),
+                api_key: "k".into(),
+                tiers: upstream_model_setup("gpt-5.5"),
+                ..Provider::default()
+            }],
+            overrides: vec![],
+        };
+        normalize_settings(&mut settings);
+        let p = &settings.providers[0];
+        assert_eq!(p.dialect(), Dialect::OpenAi);
+        // kind 是派生值，跟着方言走
+        assert_eq!(p.kind, UpstreamKind::Openai);
+        assert_eq!(p.base_url, "https://api.openai.com/v1/chat/completions");
     }
 
     #[test]

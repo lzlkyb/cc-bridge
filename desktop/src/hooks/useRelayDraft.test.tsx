@@ -27,9 +27,14 @@ function savedSnapshot(over: Partial<RelaySnapshot> = {}): RelaySnapshot {
     apiKeyMasked: "sk-…",
     hasApiKey: true,
     kind: "anthropic",
+    profileId: "",
+    resolvedProfileId: "custom",
+    profileLabel: "自定义 / 其它",
+    dialect: "anthropic" as const,
     authStyle: "x-api-key" as const,
     maxTokensLimit: 8192,
     foldToolBlocks: true,
+    normalizeToolPatterns: null,
     configured: true,
     missing: null,
   };
@@ -56,6 +61,7 @@ function savedSnapshot(over: Partial<RelaySnapshot> = {}): RelaySnapshot {
     },
     recent: [],
     provider,
+    profiles: [],
     tiers: [
       { tier: "default", alias: "claude-sonnet-5-5", envVar: "ANTHROPIC_MODEL", upstreamModel: "up-model", configured: true },
       { tier: "haiku", alias: "claude-haiku-5-5", envVar: "ANTHROPIC_DEFAULT_HAIKU_MODEL", upstreamModel: "", configured: false },

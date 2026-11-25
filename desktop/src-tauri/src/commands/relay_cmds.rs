@@ -50,6 +50,15 @@ pub struct RelayPatch {
     pub opus: Option<String>,
     #[serde(rename = "authStyle")]
     pub auth_style: Option<String>,
+    /// 厂商画像 id。空串 = 交给 host 自动推断。
+    #[serde(rename = "profileId")]
+    pub profile_id: Option<String>,
+    /// 工具 schema `\0` 归一化：`auto` = 跟随厂商画像，`on` / `off` = 显式指定。
+    ///
+    /// 用字符串而不是 `Option<bool>`：后者只有「没传」与「传了」，没法表达
+    /// 「改回跟随画像」——而三态里真正需要的正是这一格。
+    #[serde(rename = "normalizeToolPatterns")]
+    pub normalize_tool_patterns: Option<String>,
     /// `0` 表示「不压」（清空）。0 不是合法的 max_tokens，当哨兵足够明确，
     /// 也避免了 `Option<Option<u32>>` 那套双层 Option 的 serde 麻烦。
     #[serde(rename = "maxTokensLimit")]
@@ -175,6 +184,25 @@ pub async fn relay_save(
                 AuthStyle::Bearer
             } else {
                 AuthStyle::XApiKey
+            };
+        }
+        if let Some(v) = patch.profile_id.as_ref() {
+            // 空串 = 回到自动推断。写进去之前先确认 id 存在：未知 id 会让
+            // `profile()` 落回 host 推断，用户以为自己选了 A、实际跑的是 B。
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                provider.profile_id.clear();
+            } else if relay::profile::by_id(trimmed).is_some() {
+                provider.profile_id = trimmed.to_string();
+            } else {
+                return Err(format!("未知的厂商类型：{trimmed}。请重新选择。"));
+            }
+        }
+        if let Some(v) = patch.normalize_tool_patterns.as_ref() {
+            provider.normalize_tool_patterns = match v.as_str() {
+                "on" => Some(true),
+                "off" => Some(false),
+                _ => None,
             };
         }
         if let Some(v) = patch.max_tokens_limit {
@@ -324,13 +352,14 @@ pub(crate) async fn sync_relay_runtime(
     } else {
         cfg.relay_token.clone()
     };
-    let old_listen = runtime.current_listen().await;
+    let (old_host, old_port) = runtime.current_listen().await;
     runtime.reload_settings(cfg.relay.clone()).await;
     runtime.set_token(token).await;
     let host = crate::state::relay_listen_host(cfg);
-    runtime
-        .set_listen(host.clone(), relay_config::DEFAULT_PORT)
-        .await;
+    // 配置里只有 host（`listen_mode` / `lan_ip`），端口不归它管：沿用运行时当前的
+    // 端口。写死 `DEFAULT_PORT` 会把「runtime 的端口不是 4100」这类情形静默改回去
+    // （测试用 0 拿系统分配口，就会撞上本机正在跑的那个 4100）。
+    runtime.set_listen(host.clone(), old_port).await;
 
     let running = runtime.running_addr().await.is_some();
     if cfg.relay_enabled {
@@ -338,7 +367,7 @@ pub(crate) async fn sync_relay_runtime(
             if let Err(e) = runtime.start(ban_threshold, ban_window_min).await {
                 ::log::warn!("导入配置后启动模型中转失败：{e}");
             }
-        } else if old_listen.0 != host {
+        } else if old_host != host {
             // 监听地址变了：旧监听还绑在旧 host 上，必须重启才认新地址。
             if let Err(e) = runtime.restart(ban_threshold, ban_window_min).await {
                 ::log::warn!("导入配置后重启模型中转失败：{e}");
@@ -492,20 +521,25 @@ pub struct RelayDraft {
     pub model: Option<String>,
     #[serde(rename = "authStyle")]
     pub auth_style: Option<String>,
+    /// 厂商画像 id。空 = 跟随已保存的配置 / 按地址推断。
+    #[serde(rename = "profileId")]
+    pub profile_id: Option<String>,
 }
 
-/// 用当前表单值打一发最小请求。
+/// 表单草稿补全后的实际值。
 ///
-/// 这是「测连通」而不是「发一次真请求」：`max_tokens: 8`，一句话 ping。
-/// 失败时自动换另一种鉴权头重试一次，成功就说明该把 `auth_style` 改成那个。
-#[tauri::command]
-pub async fn relay_test_upstream(
-    state: State<'_, Arc<AppState>>,
-    draft: RelayDraft,
-) -> Result<relay::ProbeOutcome, String> {
-    let saved: RelaySettings = state.config.read().await.relay.clone();
-    let provider = saved.active().cloned().unwrap_or_default();
+/// 抽出来是因为「测连通」与「列模型」用的是同一套补全规则：草稿里有的用草稿，
+/// 没有的用已保存值。两处各写一遍，迟早会出现「测连通能通、列模型用的是另一个
+/// 地址」这种只在特定顺序下复现的问题。
+struct EffectiveDraft {
+    base_url: String,
+    api_key: String,
+    model: String,
+    auth_style: AuthStyle,
+    profile_id: String,
+}
 
+fn effective_draft(draft: RelayDraft, provider: &Provider) -> EffectiveDraft {
     let base_url = draft
         .base_url
         .filter(|s| !s.trim().is_empty())
@@ -524,17 +558,75 @@ pub async fn relay_test_upstream(
         Some("x-api-key") => AuthStyle::XApiKey,
         _ => provider.auth_style,
     };
+    // 后端认不出这个 id 时落回 host 推断，不因此拒绝——探测的目的就是
+    // 「看看这么填能不能通」，不必先过一遍配置校验。
+    let profile_id = draft
+        .profile_id
+        .unwrap_or_else(|| provider.profile_id.clone());
+    EffectiveDraft {
+        base_url,
+        api_key,
+        model,
+        auth_style,
+        profile_id,
+    }
+}
 
-    if base_url.trim().is_empty() {
+/// 用当前表单值打一发最小请求。
+///
+/// 这是「测连通」而不是「发一次真请求」：`max_tokens: 8`，一句话 ping。
+/// 失败时自动换另一种鉴权头重试一次，成功就说明该把 `auth_style` 改成那个。
+#[tauri::command]
+pub async fn relay_test_upstream(
+    state: State<'_, Arc<AppState>>,
+    draft: RelayDraft,
+) -> Result<relay::ProbeOutcome, String> {
+    let saved: RelaySettings = state.config.read().await.relay.clone();
+    let provider = saved.active().cloned().unwrap_or_default();
+    let effective = effective_draft(draft, &provider);
+
+    if effective.base_url.trim().is_empty() {
         return Err("上游地址还没填。".into());
     }
-    if api_key.trim().is_empty() {
+    if effective.api_key.trim().is_empty() {
         return Err("密钥还没填。".into());
     }
-    if model.trim().is_empty() {
+    if effective.model.trim().is_empty() {
         return Err("模型还没填。".into());
     }
-    relay::probe(&base_url, &api_key, &model, auth_style).await
+    relay::probe(
+        &effective.base_url,
+        &effective.api_key,
+        &effective.model,
+        effective.auth_style,
+        &effective.profile_id,
+    )
+    .await
+}
+
+/// 问上游要模型列表。失败只让下拉退化，不影响保存与转发。
+#[tauri::command]
+pub async fn relay_list_models(
+    state: State<'_, Arc<AppState>>,
+    draft: RelayDraft,
+) -> Result<Vec<String>, String> {
+    let saved: RelaySettings = state.config.read().await.relay.clone();
+    let provider = saved.active().cloned().unwrap_or_default();
+    let effective = effective_draft(draft, &provider);
+
+    if effective.base_url.trim().is_empty() {
+        return Err("上游地址还没填。".into());
+    }
+    if effective.api_key.trim().is_empty() {
+        return Err("密钥还没填。".into());
+    }
+    relay::catalog::fetch(
+        &effective.base_url,
+        &effective.api_key,
+        effective.auth_style,
+        &effective.profile_id,
+    )
+    .await
 }
 
 #[cfg(test)]

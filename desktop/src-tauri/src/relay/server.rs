@@ -27,9 +27,12 @@ use super::auth::{self, AuthOutcome};
 use super::config::{RelaySettings, MAX_BODY_BYTES};
 use super::guard;
 use super::log::{LogPatch, RelayLog, RelayLogEntry};
+use super::openai;
+use super::profile::{BetaHeaders, Dialect};
+use super::repair;
 use super::route::{self, RouteError};
 use super::sanitize;
-use super::usage::{UsageCollectionIssue, UsageObserver};
+use super::usage::{TokenUsage, UsageCollectionIssue, UsageObserver};
 
 /// 一次监听的全部运行时依赖。热更新只换 `settings` / `token`，不重启监听。
 pub struct ServerState {
@@ -393,14 +396,21 @@ async fn handle_path(
     // 保序序列化（Cargo.toml 的 preserve_order）保证其余字段的字节顺序不变。
     let mut out_json = prepared.json.clone();
     out_json["model"] = serde_json::Value::String(decision.upstream_model.clone());
-    let upstream_body = match serde_json::to_vec(&out_json) {
+
+    // 真正写到线上之前的最后一步：Anthropic 原样发，OpenAI 整条改名。
+    // 抽成闭包是因为自愈重试要把**改过之后**的 body 再转一遍——两遍必须走
+    // 同一个函数，不然第一次与第二次的字段集合可能不同。
+    let to_wire = |json: &serde_json::Value| -> Result<Vec<u8>, String> {
+        let value = match provider.dialect() {
+            Dialect::Anthropic => json.clone(),
+            Dialect::OpenAi => openai::request::convert(json)?,
+        };
+        serde_json::to_vec(&value).map_err(|e| format!("重新序列化请求体失败：{e}"))
+    };
+    let upstream_body = match to_wire(&out_json) {
         Ok(b) => b,
         Err(e) => {
-            return error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "api_error",
-                &format!("重新序列化请求体失败：{e}"),
-            );
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "api_error", &e);
         }
     };
 
@@ -421,6 +431,7 @@ async fn handle_path(
         via: decision.via.as_str().to_string(),
         rewrite: prepared.rewrite_label(),
         fold_summary: prepared.fold_summary(),
+        schema_summary: prepared.schema_summary(),
         sanitized: prepared.changed,
         status: None,
         first_byte_ms: None,
@@ -432,44 +443,36 @@ async fn handle_path(
         ..RelayLogEntry::default()
     });
 
-    // ── 转发 ──────────────────────────────────────────────────────────
-    let url = upstream_url(&provider.base_url, path);
-    let mut request = state.client.post(&url).body(upstream_body);
-
-    // header 值原样透传（§4.3 第 5 条）：`anthropic-beta` / `anthropic-version`
-    // 的值一个字符都不能动，否则 beta 特性静默失效。
-    // 只跳过这几类：由 reqwest 重算的、必须换掉的、以及会与压缩协商冲突的。
-    const SKIP: [&str; 7] = [
-        "host",
-        "content-length",
-        "authorization",
-        "x-api-key",
-        "connection",
-        "transfer-encoding",
-        "accept-encoding",
-    ];
-    for (name, value) in headers.iter() {
-        let key = name.as_str();
-        if SKIP.contains(&key) || key.starts_with("x-relay-") {
-            continue;
-        }
-        if let Ok(hv) = reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
-            request = request.header(key, hv);
-        }
+    // OpenAI 没有 count_tokens 端点。把 /v1/messages/count_tokens 发给
+    // chat/completions 会变成一次**真实计费**的补全（历史踩过），必须本地算。
+    if path == "/v1/messages/count_tokens" && provider.dialect() == Dialect::OpenAi {
+        let payload = openai::count_tokens_body(&prepared.json);
+        let text = payload.to_string();
+        state.log.finish(
+            log_id,
+            LogPatch {
+                status: Some(200),
+                total_ms: Some(started.elapsed().as_millis() as u64),
+                bytes_out: Some(text.len() as u64),
+                ..LogPatch::default()
+            },
+        );
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            text,
+        )
+            .into_response();
     }
-    // 上游密钥：按 provider 配置的形态发**一种**。两种都带不会有「双保险」——
-    // 只认 Authorization 的网关会把多出来的 x-api-key 连同请求一起拒（401 里
-    // 看不出带了什么），只认 x-api-key 的则把 Bearer 当陌生头。探测失败时
-    // probe 会提示换另一种（`switched_auth`），那才是正确的切换路径。
-    request = match provider.auth_style {
-        super::config::AuthStyle::XApiKey => request.header("x-api-key", provider.api_key.trim()),
-        super::config::AuthStyle::Bearer => request.header(
-            "authorization",
-            format!("Bearer {}", provider.api_key.trim()),
-        ),
-    };
 
-    let upstream = match request.send().await {
+    // ── 转发 ──────────────────────────────────────────────────────────
+    let url = provider.endpoint_for(path);
+
+    // 构造请求抽成闭包：自愈重试要发第二遍，两遍必须**完全同构**（同一套头、
+    // 同一把密钥、同一个地址），否则「重试通过」说明不了任何问题。
+    let send = |body: Vec<u8>| build_request(&state.client, &provider, &url, &headers, body);
+
+    let mut upstream = match send(upstream_body).send().await {
         Ok(r) => r,
         Err(e) => {
             let message = describe_send_error(&e, &url);
@@ -486,6 +489,69 @@ async fn handle_path(
         }
     };
 
+    // ── 非 2xx：抄错误体，能诊断就修一次再发 ──────────────────────────
+    // 只在 `Content-Length` 明确且不大时才读整条响应：没有长度的响应（chunked）
+    // 或超大错误页仍然走原来的流式直通，避免为了诊断把一个 500MB 的响应拉进内存。
+    let mut repair_label: Option<&'static str> = None;
+    if inspectable_error(upstream.status(), upstream.headers()) {
+        let first_status = upstream.status();
+        let first_headers = upstream.headers().clone();
+        let bytes = upstream.bytes().await.unwrap_or_default();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+
+        // 只有 400 值得修：401/403 是鉴权、404 是路径、429 是额度，改 body 都没用。
+        let retried = if first_status == StatusCode::BAD_REQUEST {
+            repair::detect(&text).and_then(|repair| {
+                if !repair::apply(repair, &mut out_json) {
+                    return None;
+                }
+                let body = to_wire(&out_json).ok()?;
+                repair_label = Some(repair.label());
+                Some(send(body))
+            })
+        } else {
+            None
+        };
+
+        let retried = match retried {
+            Some(request) => request.send().await.ok(),
+            None => None,
+        };
+
+        match retried {
+            Some(response) => upstream = response,
+            None => {
+                // 修不了、或修完仍然连不上：把上游原话原样还给客户端，
+                // 原因留在日志里。绝不改写成我们自己的措辞。
+                state.log.finish(
+                    log_id,
+                    LogPatch {
+                        status: Some(first_status.as_u16()),
+                        first_byte_ms: Some(started.elapsed().as_millis() as u64),
+                        total_ms: Some(started.elapsed().as_millis() as u64),
+                        bytes_out: Some(bytes.len() as u64),
+                        upstream_error: Some(text.clone()),
+                        ..LogPatch::default()
+                    },
+                );
+                // OpenAI 方言：错误体要包成 Anthropic 形态，否则客户端分不清
+                // 「参数错」与「限流」，只能一律当未知错误。日志里仍是上游原话。
+                if provider.dialect() == Dialect::OpenAi {
+                    if let Some(wrapped) =
+                        openai::response::wrap_error(&text, first_status.as_u16())
+                    {
+                        return bytes_response(
+                            first_status,
+                            &first_headers,
+                            Bytes::from(wrapped.to_string()),
+                        );
+                    }
+                }
+                return bytes_response(first_status, &first_headers, bytes);
+            }
+        }
+    }
+
     let status = upstream.status();
     let resp_headers = upstream.headers().clone();
 
@@ -500,6 +566,23 @@ async fn handle_path(
                 .next()
                 .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/event-stream"))
         });
+    // OpenAI 方言：成功的响应要转回 Anthropic，客户端才认得。
+    if provider.dialect() == Dialect::OpenAi && status.is_success() {
+        return openai_response(
+            state.log.clone(),
+            log_id,
+            started,
+            upstream,
+            status,
+            resp_headers.clone(),
+            stream,
+            prepared.changed,
+            &decision.upstream_model,
+            repair_label,
+        )
+        .await;
+    }
+
     let observe_usage = path == "/v1/messages" && status.is_success();
     let unsupported_encoding = observe_usage && !identity_encoded(&resp_headers);
     let mut usage = (observe_usage && !unsupported_encoding).then(|| UsageObserver::new(stream));
@@ -507,12 +590,17 @@ async fn handle_path(
     let log_handle = state.log.clone();
     let sanitized = prepared.changed;
     let status_code = status.as_u16();
+    // 上游非 2xx 时把响应体抄一份进日志。**不改转发**：客户端拿到的仍是上游
+    // 原样字节，这里只是旁路观察，与 `UsageObserver` 同一个思路。
+    // 压缩过的响应不抄（抄下来是乱码，还会占满预算）。
+    let capture_error = !status.is_success() && identity_encoded(&resp_headers);
 
     tokio::spawn(async move {
         let mut upstream = upstream;
         let mut first_byte_ms: Option<u64> = None;
         let mut bytes_out: u64 = 0;
         let mut error: Option<String> = None;
+        let mut error_head: Vec<u8> = Vec::new();
 
         loop {
             match upstream.chunk().await {
@@ -521,6 +609,10 @@ async fn handle_path(
                         first_byte_ms = Some(started.elapsed().as_millis() as u64);
                     }
                     bytes_out += chunk.len() as u64;
+                    if capture_error && error_head.len() < UPSTREAM_ERROR_LIMIT {
+                        let room = UPSTREAM_ERROR_LIMIT - error_head.len();
+                        error_head.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                    }
                     // 发送失败 = 客户端断开（用户 Ctrl+C / 关窗）。不是错误，
                     // 但要让上游停下来，不然一直读到完整响应白烧额度。
                     let retained = usage.as_ref().map(|_| chunk.clone());
@@ -553,6 +645,14 @@ async fn handle_path(
                 total_ms: Some(started.elapsed().as_millis() as u64),
                 bytes_out: Some(bytes_out),
                 error,
+                upstream_error: if error_head.is_empty() {
+                    None
+                } else {
+                    Some(String::from_utf8_lossy(&error_head).into_owned())
+                },
+                // 自愈重试成功时把这次的修法补进「改写」列；没有重试就是空，
+                // `apply_patch` 会保留 `begin` 时写入的首次清洗结果。
+                rewrite: repair_label.map(str::to_string),
                 reported_model: observed.model,
                 usage: observed.tokens,
                 usage_collection_issue: if unsupported_encoding {
@@ -580,6 +680,244 @@ async fn handle_path(
     response
 }
 
+/// 非 2xx 的错误体能安全读进内存的上限。
+///
+/// 超过这个量级的多半是 HTML 错误页或网关的整页提示，读下来既占内存又不会
+/// 提供任何可诊断信息；这类响应用原来的流式直通，行为与之前一致。
+const ERROR_BODY_INSPECT_LIMIT: u64 = 64 * 1024;
+
+/// 这条错误响应值不值得读整条。
+///
+/// 没有 `Content-Length`（chunked）就返回 false：读它等于赌对方不会一直往外吐。
+fn inspectable_error(status: StatusCode, headers: &HeaderMap) -> bool {
+    if status.is_success() {
+        return false;
+    }
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length <= ERROR_BODY_INSPECT_LIMIT)
+}
+
+/// 把已经读进内存的字节原样返回给客户端。状态码与头都按上游的来。
+fn bytes_response(status: StatusCode, headers: &HeaderMap, body: Bytes) -> Response {
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = status;
+    copy_response_headers(headers, response.headers_mut());
+    response
+}
+
+/// 构造一次上游请求。**自愈重试必须复用它**，否则两遍请求可能带上不同的头。
+fn build_request(
+    client: &reqwest::Client,
+    provider: &super::config::Provider,
+    url: &str,
+    headers: &HeaderMap,
+    body: Vec<u8>,
+) -> reqwest::RequestBuilder {
+    let mut request = client.post(url).body(body);
+
+    // header 值原样透传（§4.3 第 5 条）：`anthropic-beta` / `anthropic-version`
+    // 的值一个字符都不能动，否则 beta 特性静默失效。
+    // 只跳过这几类：由 reqwest 重算的、必须换掉的、以及会与压缩协商冲突的。
+    // （例外：画像标了 `Strip` 时整类 `anthropic-*` 都剥掉，见下面那段。）
+    const SKIP: [&str; 7] = [
+        "host",
+        "content-length",
+        "authorization",
+        "x-api-key",
+        "connection",
+        "transfer-encoding",
+        "accept-encoding",
+    ];
+    // 画像说 Strip 才剥 `anthropic-*`。OpenAI 方言下它们是噪音：严格网关见到
+    // 未知头会整条拒（Azure 系尤其）。Anthropic 方言是 `Passthrough`——那里的
+    // 头值一个字符都不能动。
+    let strip_anthropic = provider.quirks().beta_headers == BetaHeaders::Strip;
+    for (name, value) in headers.iter() {
+        let key = name.as_str();
+        if SKIP.contains(&key) || key.starts_with("x-relay-") {
+            continue;
+        }
+        if strip_anthropic && key.starts_with("anthropic-") {
+            continue;
+        }
+        if let Ok(hv) = reqwest::header::HeaderValue::from_bytes(value.as_bytes()) {
+            request = request.header(key, hv);
+        }
+    }
+    // 上游密钥：按 provider 配置的形态发**一种**。两种都带不会有「双保险」——
+    // 只认 Authorization 的网关会把多出来的 x-api-key 连同请求一起拒（401 里
+    // 看不出带了什么），只认 x-api-key 的则把 Bearer 当陌生头。探测失败时
+    // probe 会提示换另一种（`switched_auth`），那才是正确的切换路径。
+    match provider.auth_style {
+        super::config::AuthStyle::XApiKey => request.header("x-api-key", provider.api_key.trim()),
+        super::config::AuthStyle::Bearer => request.header(
+            "authorization",
+            format!("Bearer {}", provider.api_key.trim()),
+        ),
+    }
+}
+
+/// OpenAI 上游的成功响应：非流式整条转换，流式逐块翻译。
+///
+/// 与 Anthropic 直通分开两条路，因为两者对「响应」的定义完全不同：直通是
+/// 把字节原样搬走，这里要重建整条响应。混在一个函数里，读代码的人会以为
+/// 「不转换」和「转换」只是差几个 if。
+#[allow(clippy::too_many_arguments)]
+async fn openai_response(
+    log: Arc<RelayLog>,
+    log_id: u64,
+    started: Instant,
+    upstream: reqwest::Response,
+    status: StatusCode,
+    headers: HeaderMap,
+    stream: bool,
+    sanitized: bool,
+    model: &str,
+    // 自愈重试成功时的修法标签（`repair:*`）。没有重试就是 `None`，
+    // `apply_patch` 会保留 `begin` 时写入的首次清洗结果。
+    repair: Option<&'static str>,
+) -> Response {
+    if !stream {
+        let bytes = upstream.bytes().await.unwrap_or_default();
+        let text = String::from_utf8_lossy(&bytes);
+        let converted = serde_json::from_str::<serde_json::Value>(&text)
+            .map_err(|e| format!("上游返回的不是 JSON：{e}"))
+            .and_then(|value| openai::response::convert(&value, model));
+        let converted = match converted {
+            Ok(value) => value,
+            Err(message) => {
+                log.finish(
+                    log_id,
+                    LogPatch {
+                        status: Some(502),
+                        total_ms: Some(started.elapsed().as_millis() as u64),
+                        error: Some(message.clone()),
+                        upstream_error: Some(text.chars().take(UPSTREAM_ERROR_LIMIT).collect()),
+                        ..LogPatch::default()
+                    },
+                );
+                return error_response(StatusCode::BAD_GATEWAY, "api_error", &message);
+            }
+        };
+
+        let body = converted.to_string();
+        let usage = converted.get("usage");
+        let tokens = TokenUsage {
+            input: usage
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(|v| v.as_u64()),
+            cache_read: usage
+                .and_then(|u| u.get("cache_read_input_tokens"))
+                .and_then(|v| v.as_u64()),
+            output: usage
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(|v| v.as_u64()),
+            ..TokenUsage::default()
+        };
+        log.finish(
+            log_id,
+            LogPatch {
+                status: Some(200),
+                first_byte_ms: Some(started.elapsed().as_millis() as u64),
+                total_ms: Some(started.elapsed().as_millis() as u64),
+                bytes_out: Some(body.len() as u64),
+                usage: Some(tokens),
+                rewrite: repair.map(str::to_string),
+                ..LogPatch::default()
+            },
+        );
+        let mut response = (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            body,
+        )
+            .into_response();
+        if sanitized {
+            response
+                .headers_mut()
+                .insert("x-relay-sanitized", HeaderValue::from_static("1"));
+        }
+        return response;
+    }
+
+    // ── 流式：逐块翻译 ────────────────────────────────────────────────
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
+    let log_handle = log;
+    let model = model.to_string();
+    tokio::spawn(async move {
+        let mut upstream = upstream;
+        let mut translator = openai::stream::Translator::new(&model);
+        let mut first_byte_ms: Option<u64> = None;
+        let mut bytes_out: u64 = 0;
+        let mut error: Option<String> = None;
+
+        loop {
+            match upstream.chunk().await {
+                Ok(Some(chunk)) => {
+                    if first_byte_ms.is_none() {
+                        first_byte_ms = Some(started.elapsed().as_millis() as u64);
+                    }
+                    let translated = translator.push(&chunk);
+                    if translated.is_empty() {
+                        continue;
+                    }
+                    bytes_out += translated.len() as u64;
+                    if tx.send(Ok(Bytes::from(translated))).await.is_err() {
+                        error = Some("客户端提前断开".into());
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    error = Some(format!("读取上游响应失败：{e}"));
+                    break;
+                }
+            }
+        }
+
+        // 上游就算没发 [DONE]，也要把骨架补完，否则客户端会一直等 message_stop。
+        let tail = translator.finish();
+        if !tail.is_empty() {
+            bytes_out += tail.len() as u64;
+            let _ = tx.send(Ok(Bytes::from(tail))).await;
+        }
+
+        let (input, output) = translator.usage();
+        log_handle.finish(
+            log_id,
+            LogPatch {
+                status: Some(status.as_u16()),
+                first_byte_ms,
+                total_ms: Some(started.elapsed().as_millis() as u64),
+                bytes_out: Some(bytes_out),
+                error,
+                usage: Some(TokenUsage {
+                    input: Some(input),
+                    output: Some(output),
+                    ..TokenUsage::default()
+                }),
+                rewrite: repair.map(str::to_string),
+                ..LogPatch::default()
+            },
+        );
+    });
+
+    let mut response = Response::new(Body::from_stream(
+        tokio_stream::wrappers::ReceiverStream::new(rx),
+    ));
+    *response.status_mut() = status;
+    copy_response_headers(&headers, response.headers_mut());
+    if sanitized {
+        response
+            .headers_mut()
+            .insert("x-relay-sanitized", HeaderValue::from_static("1"));
+    }
+    response
+}
+
 fn logged_upstream(endpoint: &str) -> Option<(String, String)> {
     let url = reqwest::Url::parse(endpoint).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -590,6 +928,12 @@ fn logged_upstream(endpoint: &str) -> Option<(String, String)> {
     let identity = format!("{origin}{}", url.path());
     Some((origin, format!("{:x}", Sha256::digest(identity.as_bytes()))))
 }
+
+/// 上游错误体最多抄多少字节进日志。
+///
+/// 4KB 够放一页 JSON 错误（DeepSeek 那条 `is not a "regex"` 不到 200 字节），
+/// 又不至于让一次大 HTML 错误页把日志撑爆。
+const UPSTREAM_ERROR_LIMIT: usize = 4096;
 
 fn identity_encoded(headers: &HeaderMap) -> bool {
     headers
@@ -625,22 +969,14 @@ fn copy_response_headers(from: &HeaderMap, to: &mut HeaderMap) {
     }
 }
 
-/// `https://host/apps/anthropic/v1/messages` + `/v1/messages/count_tokens`
-/// → `https://host/apps/anthropic/v1/messages/count_tokens`
-fn upstream_url(base_url: &str, path: &str) -> String {
-    let root = base_url
-        .trim()
-        .trim_end_matches('/')
-        .strip_suffix("/v1/messages")
-        .unwrap_or(base_url);
-    format!("{root}{path}")
-}
-
 /// 把 reqwest 的错误翻成用户能动手的话。`probe` 也复用它。
 ///
 /// 「连不通」在界面上必须能区分几种情况：域名解析不了（地址写错）、连接被拒
 /// （上游端口/路径不对）、证书错误（中间人代理或企业 CA）、超时（网络慢）。
 /// 一律回「请求失败」等于让人从头查。
+///
+/// 拼接上游地址的规则不在这里，住 `Provider::endpoint_for`：它要按方言分叉，
+/// 放在这个文件会变成「两处各自判断方言」。
 pub fn describe_send_error(err: &reqwest::Error, url: &str) -> String {
     let host = url
         .split_once("://")
@@ -731,19 +1067,26 @@ mod tests {
     }
 
     #[test]
-    fn upstream_url_keeps_prefix_and_swaps_suffix() {
+    fn endpoint_keeps_prefix_and_swaps_suffix() {
+        use crate::relay::config::Provider;
+
         let base = "https://host/apps/anthropic/v1/messages";
+        let p = Provider {
+            base_url: base.into(),
+            ..Provider::default()
+        };
+        assert_eq!(p.endpoint_for("/v1/messages"), base);
         assert_eq!(
-            upstream_url(base, "/v1/messages"),
-            "https://host/apps/anthropic/v1/messages"
-        );
-        assert_eq!(
-            upstream_url(base, "/v1/messages/count_tokens"),
+            p.endpoint_for("/v1/messages/count_tokens"),
             "https://host/apps/anthropic/v1/messages/count_tokens"
         );
         // 没归一化的地址也能用（防御：配置里存的是归一化值，但导入的旧数据可能不是）
+        let p = Provider {
+            base_url: "https://host/apps/anthropic".into(),
+            ..Provider::default()
+        };
         assert_eq!(
-            upstream_url("https://host/apps/anthropic", "/v1/messages"),
+            p.endpoint_for("/v1/messages"),
             "https://host/apps/anthropic/v1/messages"
         );
     }
@@ -853,6 +1196,80 @@ mod tests {
             }],
             overrides: vec![],
         }
+    }
+
+    /// OpenAI 方言的配置。地址直接是 chat/completions 端点——真实配置里由
+    /// `normalize_endpoint_with` 拼出来，这里跳过那一步只测转发。
+    fn openai_settings(base_url: String) -> RelaySettings {
+        RelaySettings {
+            providers: vec![Provider {
+                base_url,
+                api_key: "sk-upstream".into(),
+                profile_id: "openai".into(),
+                tiers: vec![Tier {
+                    tier: TierKind::Default,
+                    upstream_model: "gpt-x".into(),
+                }],
+                ..Provider::default()
+            }],
+            overrides: vec![],
+        }
+    }
+
+    /// OpenAI 方言剥掉 `anthropic-*`；Anthropic 方言原样透传（一个字符都不能动）。
+    ///
+    /// 直接测 `build_request` 这个纯函数：不需要起上游，也不会因为网络抖动假红。
+    #[test]
+    fn anthropic_headers_follow_the_profile_policy() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "anthropic-beta",
+            "interleaved-thinking-2025-05-14".parse().unwrap(),
+        );
+        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+        let client = reqwest::Client::new();
+
+        let openai = Provider {
+            api_key: "sk".into(),
+            auth_style: super::super::config::AuthStyle::Bearer,
+            profile_id: "openai".into(),
+            ..Provider::default()
+        };
+        let built = build_request(
+            &client,
+            &openai,
+            "https://api.openai.com/v1/chat/completions",
+            &headers,
+            Vec::new(),
+        )
+        .build()
+        .unwrap();
+        assert!(
+            built.headers().get("anthropic-beta").is_none(),
+            "OpenAI 方言应剥掉"
+        );
+        assert!(built.headers().get("anthropic-version").is_none());
+
+        let deepseek = Provider {
+            api_key: "sk".into(),
+            profile_id: "deepseek".into(),
+            ..Provider::default()
+        };
+        let built = build_request(
+            &client,
+            &deepseek,
+            "https://api.deepseek.com/anthropic/v1/messages",
+            &headers,
+            Vec::new(),
+        )
+        .build()
+        .unwrap();
+        assert_eq!(
+            built.headers().get("anthropic-beta").unwrap(),
+            "interleaved-thinking-2025-05-14",
+            "Anthropic 方言的值必须逐字符保持"
+        );
+        assert!(built.headers().get("anthropic-version").is_some());
     }
 
     async fn spawn_relay(settings: RelaySettings, log: Arc<RelayLog>) -> RunningServer {
@@ -1168,6 +1585,344 @@ mod tests {
         assert!(
             !text.contains("relay") && !text.contains("中转"),
             "不能把上游错误包成我们自己的话术：{text}"
+        );
+
+        let _ = relay.stop().await;
+    }
+
+    /// 上游明确说 `max_tokens` 超限时，自动压到安全值重发一次。
+    ///
+    /// 这是「一个修一个」的终点：同类 400 第二次出现时不该再让用户手改配置。
+    /// 断言三件事——客户端拿到 200、上游被打了两次、第二次的 body 真的改了。
+    #[tokio::test(flavor = "current_thread")]
+    async fn max_tokens_400_is_repaired_and_retried_once() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let last_body: Arc<StdMutex<Vec<u8>>> = Arc::new(StdMutex::new(Vec::new()));
+        let counter = calls.clone();
+        let sink = last_body.clone();
+        let upstream = Router::new().route(
+            "/v1/messages",
+            post(move |body: Bytes| {
+                let attempt = counter.fetch_add(1, AtomicOrdering::SeqCst);
+                let sink = sink.clone();
+                async move {
+                    *sink.lock().unwrap() = body.to_vec();
+                    if attempt == 0 {
+                        (
+                            StatusCode::BAD_REQUEST,
+                            [(header::CONTENT_TYPE, "application/json")],
+                            r#"{"error":{"type":"invalid_request_error","message":"max_tokens: 128000 is greater than the maximum allowed 8192"}}"#,
+                        )
+                    } else {
+                        (
+                            StatusCode::OK,
+                            [(header::CONTENT_TYPE, "application/json")],
+                            r#"{"id":"msg_1","type":"message","content":[{"type":"text","text":"ok"}]}"#,
+                        )
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, upstream).await;
+        });
+
+        let log = Arc::new(RelayLog::new(100, None));
+        let relay = spawn_relay(
+            test_settings(format!("http://{up_addr}/v1/messages")),
+            log.clone(),
+        )
+        .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("x-api-key", "rly_test")
+            .body(
+                r#"{"model":"m","max_tokens":128000,"messages":[{"role":"user","content":"hi"}]}"#,
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200, "修好之后客户端应看到成功");
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 2, "只重试一次");
+
+        let sent = last_body.lock().unwrap().clone();
+        let sent: serde_json::Value = serde_json::from_slice(&sent).unwrap();
+        assert_eq!(sent["max_tokens"], 8192, "第二次必须真的压了上限");
+        // 其余字段不能被这次修复带走
+        assert_eq!(sent["messages"][0]["content"], "hi");
+        // 路由照常把客户端模型名换成上游真名，自愈不该碰这一段
+        assert_eq!(sent["model"], "up-model");
+
+        // 日志要能看出「这条请求被自愈过」，否则下次排障又是一头雾水。
+        let entry = log.recent(1).pop().expect("应有一条日志");
+        assert_eq!(entry.status, Some(200));
+        assert!(
+            entry.rewrite.unwrap_or_default().contains("repair:clamp"),
+            "改写列应标出 repair:clamp"
+        );
+
+        let _ = relay.stop().await;
+    }
+
+    /// 认不出原因的 400 不许动 body，也不许重发——猜错比不猜更糟。
+    #[tokio::test(flavor = "current_thread")]
+    async fn unknown_400_is_passed_through_without_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let upstream = Router::new().route(
+            "/v1/messages",
+            post(move || {
+                counter.fetch_add(1, AtomicOrdering::SeqCst);
+                async {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        r#"{"error":{"type":"invalid_request_error","message":"model not found"}}"#,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, upstream).await;
+        });
+
+        let relay = spawn_relay(
+            test_settings(format!("http://{up_addr}/v1/messages")),
+            Arc::new(RelayLog::new(100, None)),
+        )
+        .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("x-api-key", "rly_test")
+            .body(
+                r#"{"model":"m","max_tokens":128000,"messages":[{"role":"user","content":"hi"}]}"#,
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 400);
+        assert!(resp.text().await.unwrap().contains("model not found"));
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1, "不可修就不许重发");
+
+        let _ = relay.stop().await;
+    }
+
+    /// OpenAI 方言的完整链路：请求转过去、非流式响应转回来。
+    #[tokio::test(flavor = "current_thread")]
+    async fn openai_dialect_translates_request_and_response() {
+        let captured: Arc<StdMutex<Vec<u8>>> = Arc::new(StdMutex::new(Vec::new()));
+        let sink = captured.clone();
+        let upstream = Router::new().route(
+            "/v1/chat/completions",
+            post(move |body: Bytes| {
+                let sink = sink.clone();
+                async move {
+                    *sink.lock().unwrap() = body.to_vec();
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/json")],
+                        r#"{"id":"chatcmpl-1","model":"gpt-x","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":2}}"#,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, upstream).await;
+        });
+
+        let relay = spawn_relay(
+            openai_settings(format!("http://{up_addr}/v1/chat/completions")),
+            Arc::new(RelayLog::new(100, None)),
+        )
+        .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"claude-sonnet-5-5","system":"be nice","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let value: serde_json::Value = resp.json().await.unwrap();
+        // 回到客户端的是 Anthropic 形状
+        assert_eq!(value["type"], "message");
+        assert_eq!(value["content"][0]["type"], "text");
+        assert_eq!(value["content"][0]["text"], "ok");
+        assert_eq!(value["usage"]["input_tokens"], 9);
+        assert_eq!(value["stop_reason"], "end_turn");
+
+        // 发给上游的是 OpenAI 形状
+        let sent: serde_json::Value = serde_json::from_slice(&captured.lock().unwrap()).unwrap();
+        assert_eq!(sent["model"], "gpt-x");
+        assert!(sent.get("system").is_none(), "system 应并进 messages");
+        assert_eq!(sent["messages"][0]["role"], "system");
+        assert_eq!(sent["messages"][1]["role"], "user");
+        assert_eq!(sent["max_tokens"], 64);
+
+        let _ = relay.stop().await;
+    }
+
+    /// OpenAI 方言的 4xx：客户端拿到 Anthropic 错误形态。
+    ///
+    /// 不转的话 Claude Code 只能当未知错误——它按 `error.type` 决定要不要重试、
+    /// 要不要提示改配置。状态码与上游原话都保留，只补上那一层结构。
+    #[tokio::test(flavor = "current_thread")]
+    async fn openai_errors_are_translated_for_the_client() {
+        let upstream = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                (
+                    StatusCode::BAD_REQUEST,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    r#"{"error":{"message":"model `gpt-9` does not exist","type":"invalid_request_error"}}"#,
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, upstream).await;
+        });
+
+        let relay = spawn_relay(
+            openai_settings(format!("http://{up_addr}/v1/chat/completions")),
+            Arc::new(RelayLog::new(100, None)),
+        )
+        .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"claude-sonnet-5-5","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 400, "状态码必须沿用上游的");
+        let value: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(value["type"], "error");
+        assert_eq!(value["error"]["type"], "invalid_request_error");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("gpt-9"),
+            "上游原话不能丢：{value}"
+        );
+
+        let _ = relay.stop().await;
+    }
+
+    /// OpenAI 方言的流式：客户端收到的是 Anthropic 事件序列。
+    #[tokio::test(flavor = "current_thread")]
+    async fn openai_dialect_translates_stream() {
+        let upstream = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async {
+                (
+                    StatusCode::OK,
+                    [(header::CONTENT_TYPE, "text/event-stream")],
+                    concat!(
+                        "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                        "data: [DONE]\n\n"
+                    ),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, upstream).await;
+        });
+
+        let relay = spawn_relay(
+            openai_settings(format!("http://{up_addr}/v1/chat/completions")),
+            Arc::new(RelayLog::new(100, None)),
+        )
+        .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"claude-sonnet-5-5","stream":true,"messages":[{"role":"user","content":"hi"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let text = resp.text().await.unwrap();
+        assert!(text.contains("event: message_start"), "{text}");
+        assert!(
+            text.contains("\"type\":\"text_delta\",\"text\":\"hi\""),
+            "{text}"
+        );
+        assert!(text.contains("event: message_stop"), "{text}");
+        // 上游的 OpenAI 形状不能漏给客户端
+        assert!(!text.contains("[DONE]"), "{text}");
+        assert!(!text.contains("\"choices\""), "{text}");
+
+        let _ = relay.stop().await;
+    }
+
+    /// OpenAI 没有 count_tokens：本地算，一个字节都不发给上游。
+    #[tokio::test(flavor = "current_thread")]
+    async fn openai_count_tokens_is_estimated_locally() {
+        use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let upstream = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                counter.fetch_add(1, AtomicOrdering::SeqCst);
+                async { (StatusCode::OK, "{}") }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up_addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, upstream).await;
+        });
+
+        let relay = spawn_relay(
+            openai_settings(format!("http://{up_addr}/v1/chat/completions")),
+            Arc::new(RelayLog::new(100, None)),
+        )
+        .await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages/count_tokens", relay.addr))
+            .header("x-api-key", "rly_test")
+            .body(r#"{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hello world"}]}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), 200);
+        let value: serde_json::Value = resp.json().await.unwrap();
+        assert!(value["input_tokens"].as_u64().unwrap() >= 1);
+        assert_eq!(
+            calls.load(AtomicOrdering::SeqCst),
+            0,
+            "count_tokens 不能变成一次真实补全"
         );
 
         let _ = relay.stop().await;

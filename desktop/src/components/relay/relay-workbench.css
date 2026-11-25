@@ -84,6 +84,23 @@ html.dark :is(.relay-workbench, .relay-drawer) {
 .relay-work-notice strong, .relay-work-notice span { display: block; }
 .relay-work-notice strong + span { margin-top: 2px; }
 
+/* 上游错误体原文。等宽 + 保留换行，并限高：一次大 HTML 错误页不该把整个
+   详情面板撑成三屏。 */
+.relay-upstream-error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow: auto;
+  border-radius: 7px;
+  background: hsl(var(--background) / .55);
+  color: hsl(var(--foreground));
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .relay-route-body { padding: 16px 18px 12px; }
 .relay-route-rail { display: grid; grid-template-columns: minmax(0, 1fr) clamp(36px, 6vw, 94px) minmax(0, 1fr) clamp(36px, 6vw, 94px) minmax(0, 1fr); align-items: center; }
 .relay-route-node { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 74px; padding: 10px; border: 1px solid var(--relay-edge); border-radius: 10px; background: hsl(var(--card) / .35); transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease); }

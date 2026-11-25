@@ -752,6 +752,22 @@ export interface RelayTierView {
   configured: boolean;
 }
 
+export interface RelayProfile {
+  id: string;
+  label: string;
+  /** 上游协议方言。`openai` 需要中转做协议转换。 */
+  dialect: "anthropic" | "openai";
+  /** 只填域名时后端补的路径段（`/anthropic` 这类）。 */
+  endpointHint: string;
+  /** 选中该厂商时预填的主机名（不含 scheme）。空 = 不预填。 */
+  defaultHost: string;
+  /** 预设鉴权头形态。 */
+  auth: "x-api-key" | "bearer";
+  /** 探测失败时的模型候选，不是白名单。 */
+  models: string[];
+  note: string;
+}
+
 export interface RelayProviderView {
   name: string;
   baseUrl: string;
@@ -759,10 +775,18 @@ export interface RelayProviderView {
   apiKeyMasked: string;
   hasApiKey: boolean;
   kind: string;
+  /** 用户显式选的厂商；空串 = 跟随地址自动识别。 */
+  profileId: string;
+  /** 实际生效的厂商（显式选择或推断结果）。 */
+  resolvedProfileId: string;
+  profileLabel: string;
+  dialect: "anthropic" | "openai";
   /** 鉴权头形态。字符串与 Rust `AuthStyle::as_str()` 一致：`x-api-key` / `bearer`。 */
   authStyle: "x-api-key" | "bearer";
   maxTokensLimit: number | null;
   foldToolBlocks: boolean;
+  /** `\0` 归一化：`null` = 跟随厂商画像。 */
+  normalizeToolPatterns: boolean | null;
   /** 三格是否齐。 */
   configured: boolean;
   /** 缺哪一格。 */
@@ -786,10 +810,12 @@ export interface RelayLogEntry {
   /** 该档未配置、请求落到了 default。 */
   fellBack: boolean;
   via: string;
-  /** `fold` / `strip_suffix` / `clamp` 或组合。 */
+  /** `fold` / `strip_suffix` / `clamp` / `pattern` 或组合。 */
   rewrite: string | null;
   /** 折叠摘要，含 `messages[i].content[j]` 路径。 */
   foldSummary: string | null;
+  /** 工具 schema 正则归一化摘要（`\0` → `\x00`），含 `tools[i]` 路径。 */
+  schemaSummary: string | null;
   sanitized: boolean;
   status: number | null;
   firstByteMs: number | null;
@@ -797,6 +823,8 @@ export interface RelayLogEntry {
   bytesIn: number | null;
   bytesOut: number | null;
   error: string | null;
+  /** 上游 4xx/5xx 的响应体原文（截断到 4KB）。定位 400 的唯一线索。 */
+  upstreamError?: string | null;
   path: string;
 }
 
@@ -845,6 +873,8 @@ export interface RelaySnapshot {
   recent: RelayLogEntry[];
   provider: RelayProviderView | null;
   tiers: RelayTierView[];
+  /** 可选厂商画像（后端静态表，随快照下发）。 */
+  profiles: RelayProfile[];
 }
 
 export interface RelaySaveResult {

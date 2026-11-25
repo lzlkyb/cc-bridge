@@ -18,6 +18,7 @@ export function RelayRequestDetails({ row, rates, onPricing }: { row: RelayLogEn
     <div className="relay-inline relay-wrap relay-spread"><span className="relay-work-badge" data-tone={result.tone}>{result.label}</span><small>{dayKey(row.tsMs)} {formatClock(row.tsMs)}</small></div>
     {isRelayError(row) && <div className="relay-work-notice" role="status">
       <strong>{row.error || `上游返回 HTTP ${row.status}`}</strong>
+      {row.upstreamError && <pre className="relay-upstream-error">{row.upstreamError}</pre>}
       {row.status === 429 && <span>等待额度恢复，或到上游控制台查看限流情况。</span>}
       {(row.status === 401 || row.status === 403) && <span>检查上游密钥和鉴权方式。也请确认客户端中转令牌仍有效。</span>}
       {row.status === 404 && <span>检查上游地址和模型名。</span>}
@@ -34,6 +35,7 @@ export function RelayRequestDetails({ row, rates, onPricing }: { row: RelayLogEn
       <Info label="首字耗时">{formatMs(row.firstByteMs)}</Info>
       <Info label="请求改写">{rewriteLabel(row.rewrite) || "无"}</Info>
       {row.foldSummary && <Info label="折叠摘要">{row.foldSummary}</Info>}
+      {row.schemaSummary && <Info label="Schema 正则">{row.schemaSummary}</Info>}
     </dl></section>
     <section className="relay-detail-section">
       <div className="relay-inline relay-spread"><h3>Token 用量</h3><span className="relay-work-badge" data-tone={row.usage?.partial ? "warn" : row.usage ? "ok" : "mute"}>{relayUsageState(row)}</span></div>

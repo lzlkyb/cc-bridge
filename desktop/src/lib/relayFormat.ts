@@ -42,7 +42,13 @@ export function rewriteLabel(rewrite: string | null): string | null {
   const names: Record<string, string> = {
     fold: "折叠",
     strip_suffix: "去后缀",
+    thinking: "剥思考",
     clamp: "压上限",
+    pattern: "正则归一",
+    // 自愈重试追加的，发生在首次清洗之后
+    "repair:clamp": "自愈压上限",
+    "repair:strip_thinking": "自愈剥思考",
+    "repair:max_completion_tokens": "自愈改字段",
   };
   return rewrite
     .split("+")

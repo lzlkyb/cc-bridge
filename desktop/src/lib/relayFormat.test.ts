@@ -27,6 +27,7 @@ function entry(patch: Partial<RelayLogEntry>): RelayLogEntry {
     via: "alias",
     rewrite: null,
     foldSummary: null,
+    schemaSummary: null,
     sanitized: false,
     status: 200,
     firstByteMs: 300,
@@ -90,7 +91,16 @@ describe("formatPercent", () => {
 describe("rewriteLabel", () => {
   it("translates every rule the sanitizer can emit", () => {
     expect(rewriteLabel("fold")).toBe("折叠");
+    expect(rewriteLabel("pattern")).toBe("正则归一");
+    expect(rewriteLabel("thinking")).toBe("剥思考");
     expect(rewriteLabel("strip_suffix+clamp+fold")).toBe("去后缀+压上限+折叠");
+    expect(rewriteLabel("thinking+fold")).toBe("剥思考+折叠");
+    expect(rewriteLabel("fold+pattern")).toBe("折叠+正则归一");
+    // 自愈重试是清洗之后追加的一段，用「+」拼在原改写后面
+    expect(rewriteLabel("repair:clamp")).toBe("自愈压上限");
+    expect(rewriteLabel("strip_suffix+repair:clamp")).toBe("去后缀+自愈压上限");
+    expect(rewriteLabel("repair:strip_thinking")).toBe("自愈剥思考");
+    expect(rewriteLabel("repair:max_completion_tokens")).toBe("自愈改字段");
   });
 
   it("returns null when nothing was rewritten", () => {

@@ -386,6 +386,10 @@ html[data-ui-style="glass"] .relay-chip[aria-pressed="true"] {
   color: hsl(var(--muted-foreground));
 }
 
+/* 模型名不在上游列表里这类「能存但可能不对」的提示。不阻断保存，
+   所以用警告色而不是错误色。 */
+.relay-chip-note[data-tone="warn"] { color: hsl(var(--warning-ink)); }
+
 /* 测连通失败：上游原文直接给出来，不做二次转述。 */
 .relay-probe-fail {
   padding: 7px 9px;

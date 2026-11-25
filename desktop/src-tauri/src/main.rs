@@ -1243,6 +1243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::relay_last_deploy,
             commands::relay_regenerate_token,
             commands::relay_test_upstream,
+            commands::relay_list_models,
         ])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::Destroyed if window.label() == "main" => {
