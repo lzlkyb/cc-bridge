@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { formatClock, formatInt, formatMs, rewriteLabel } from "../../lib/relayFormat";
+import { formatClock, formatInt, formatMs, modelRewriteLabel, rewriteLabel } from "../../lib/relayFormat";
 import { actualModel, dayKey, estimateCost, isPending, isRelayError, moneyLabel, requestProviderLabel, rateKey, relayOutcome, relayUsageState, TOKEN_FIELDS, tokenTotal, type RelayRates } from "../../lib/relayUsage";
 import type { RelayLogEntry } from "../../lib/types";
 import { tierLabel } from "./RelayRequestTable";
@@ -14,6 +14,8 @@ export function RelayRequestDetails({ row, rates, onPricing }: { row: RelayLogEn
   const price = priceKey ? rates[priceKey] : undefined;
   const amount = estimateCost(row, rates);
   const total = tokenTotal(row.usage);
+  // 回填失败时客户端看到的是上游真名——这一行就是他排查「为什么名字不对」的入口。
+  const rewriteNote = modelRewriteLabel(row.modelRewrite);
   return <>
     <div className="relay-inline relay-wrap relay-spread"><span className="relay-work-badge" data-tone={result.tone}>{result.label}</span><small>{dayKey(row.tsMs)} {formatClock(row.tsMs)}</small></div>
     {isRelayError(row) && <div className="relay-work-notice" role="status">
@@ -30,6 +32,9 @@ export function RelayRequestDetails({ row, rates, onPricing }: { row: RelayLogEn
       <Info label="客户端模型">{row.clientModel || "—"}</Info>
       <Info label="实际模型">{actualModel(row) || "—"}</Info>
       {row.reportedModel && row.reportedModel !== row.upstreamModel && <Info label="转发模型名">{row.upstreamModel}</Info>}
+      {/* 只有降级才显示：正常回填下这一行与「客户端模型」重复。 */}
+      {rewriteNote && <Info label="模型名回填">{rewriteNote}</Info>}
+      {row.modelMismatch && <Info label="上游换模型">上游报的是 {actualModel(row)}，与请求的不一致</Info>}
       <Info label="映射档位">{tierLabel(row.tier)}{row.fellBack && " → 默认档"}</Info>
       <Info label="上游配置">{requestProviderLabel(row)}</Info>
       <Info label="来源">{row.source === "local" ? "回环" : `内网 · ${row.source}`}</Info>

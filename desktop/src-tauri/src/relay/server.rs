@@ -27,6 +27,7 @@ use super::auth::{self, AuthOutcome};
 use super::config::{RelaySettings, MAX_BODY_BYTES};
 use super::guard;
 use super::log::{FailureStage, LogPatch, RelayLog, RelayLogEntry};
+use super::model_rewrite::{is_substituted, Emit, ModelRewrite, ModelRewriter};
 use super::openai;
 use super::profile::{BetaHeaders, Dialect};
 use super::repair;
@@ -621,15 +622,27 @@ async fn handle_path(
             resp_headers.clone(),
             stream,
             prepared.changed,
+            &decision.client_model,
             &decision.upstream_model,
             repair_label,
         )
         .await;
     }
 
+    let identity = identity_encoded(&resp_headers);
     let observe_usage = path == "/v1/messages" && status.is_success();
-    let unsupported_encoding = observe_usage && !identity_encoded(&resp_headers);
-    let mut usage = (observe_usage && !unsupported_encoding).then(|| UsageObserver::new(stream));
+    let unsupported_encoding = observe_usage && !identity;
+    // `identity` 已经是「响应没被压缩」的意思，这里不能再取反——压缩过的响应
+    // 解不出可读的事件，观察器与改写器都不该启动。
+    let mut usage = (observe_usage && identity).then(|| UsageObserver::new(stream));
+    // ── 模型名回填（model masking）─────────────────────────────────────
+    // 请求侧把客户端认的名字换成了上游认的名字，响应侧必须换回来。三条路径的
+    // 改写点不同：OpenAI 方言在上面已经返回，非流式改整条 JSON，流式只改首个
+    // 事件块（`message_start`）。压缩过的响应不改——改字节会破坏 gzip。
+    let mut rewriter = (status.is_success() && identity && !decision.client_model.is_empty())
+        .then(|| ModelRewriter::new(decision.client_model.clone(), stream));
+    let client_model = decision.client_model;
+    let upstream_model = decision.upstream_model;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let log_handle = state.log.clone();
     let sanitized = prepared.changed;
@@ -637,7 +650,7 @@ async fn handle_path(
     // 上游非 2xx 时把响应体抄一份进日志。**不改转发**：客户端拿到的仍是上游
     // 原样字节，这里只是旁路观察，与 `UsageObserver` 同一个思路。
     // 压缩过的响应不抄（抄下来是乱码，还会占满预算）。
-    let capture_error = !status.is_success() && identity_encoded(&resp_headers);
+    let capture_error = !status.is_success() && identity;
 
     tokio::spawn(async move {
         let mut upstream = upstream;
@@ -652,18 +665,35 @@ async fn handle_path(
                     if first_byte_ms.is_none() {
                         first_byte_ms = Some(started.elapsed().as_millis() as u64);
                     }
-                    bytes_out += chunk.len() as u64;
                     if capture_error && error_head.len() < UPSTREAM_ERROR_LIMIT {
                         let room = UPSTREAM_ERROR_LIMIT - error_head.len();
                         error_head.extend_from_slice(&chunk[..chunk.len().min(room)]);
                     }
                     // 发送失败 = 客户端断开（用户 Ctrl+C / 关窗）。不是错误，
                     // 但要让上游停下来，不然一直读到完整响应白烧额度。
+                    // 观察器看的是**上游原始字节**（要真实 usage 与真实模型名），
+                    // 改写器输出的是**发给客户端的字节**，两者不能混。
                     let retained = usage.as_ref().map(|_| chunk.clone());
-                    let sent = tx.send(Ok(chunk)).await;
+                    let emit = match rewriter.as_mut() {
+                        Some(rewriter) => rewriter.push(&chunk),
+                        None => Emit::Raw,
+                    };
                     if let (Some(observer), Some(bytes)) = (&mut usage, retained) {
                         observer.push(&bytes);
                     }
+                    let outgoing: Option<Bytes> = match emit {
+                        Emit::Raw => Some(chunk),
+                        // 改写器还在缓冲（等首个事件块）：这一块先不发。
+                        Emit::Buffered => None,
+                        Emit::Bytes(bytes) => Some(Bytes::from(bytes)),
+                    };
+                    let sent = match outgoing {
+                        Some(bytes) => {
+                            bytes_out += bytes.len() as u64;
+                            tx.send(Ok(bytes)).await
+                        }
+                        None => Ok(()),
+                    };
                     if sent.is_err() {
                         error = Some("客户端提前断开".into());
                         break;
@@ -677,10 +707,35 @@ async fn handle_path(
             }
         }
 
+        // 上游读完了，把改写器缓冲里的残料冲出去（流式多半是半截事件，
+        // 非流式就是整条 JSON）。
+        if let Some(rewriter) = rewriter.as_mut() {
+            let tail = rewriter.finish();
+            if !tail.is_empty() {
+                bytes_out += tail.len() as u64;
+                let _ = tx.send(Ok(Bytes::from(tail))).await;
+            }
+        }
+
         let observed = usage.map(UsageObserver::finish).unwrap_or_default();
         if observed.stream_error && error.is_none() {
             error = Some("上游流式响应中断".into());
         }
+        // 回给客户端的名字：改写成功就是请求名；降级时客户端看到的是上游原样，
+        // 此时如实记下来（含「上游根本没报 model」这种）。
+        let outcome = rewriter.as_ref().and_then(ModelRewriter::outcome);
+        let response_model = match outcome {
+            Some(ModelRewrite::Rewritten) => Some(client_model.clone()),
+            // 降级时**只能记真正观察到的名字**。这里若退化成 `client_model`，
+            // 日志就会声称一次没发生的回填——而这个字段的全部价值就是回答
+            // 「客户端到底看到了什么」。观察不到（上游没报 model / 首事件不是
+            // message_start / 响应被压缩）就留空，让「不知道」看起来像「不知道」。
+            _ => observed.model.clone(),
+        };
+        let model_mismatch = observed
+            .model
+            .as_deref()
+            .is_some_and(|reported| is_substituted(reported, &[&client_model, &upstream_model]));
         log_handle.finish(
             log_id,
             LogPatch {
@@ -698,6 +753,9 @@ async fn handle_path(
                 // `apply_patch` 会保留 `begin` 时写入的首次清洗结果。
                 rewrite: repair_label.map(str::to_string),
                 reported_model: observed.model,
+                response_model,
+                model_rewrite: outcome,
+                model_mismatch: Some(model_mismatch),
                 usage: observed.tokens,
                 usage_collection_issue: if unsupported_encoding {
                     Some(UsageCollectionIssue::UnsupportedEncoding)
@@ -819,7 +877,10 @@ async fn openai_response(
     headers: HeaderMap,
     stream: bool,
     sanitized: bool,
-    model: &str,
+    // 回填进响应的模型名——**客户端请求的那个**，不是上游真名。
+    response_model: &str,
+    // 配置里的上游模型名。只用于日志的「有没有被换掉」判定。
+    upstream_model: &str,
     // 自愈重试成功时的修法标签（`repair:*`）。没有重试就是 `None`，
     // `apply_patch` 会保留 `begin` 时写入的首次清洗结果。
     repair: Option<&'static str>,
@@ -827,9 +888,17 @@ async fn openai_response(
     if !stream {
         let bytes = upstream.bytes().await.unwrap_or_default();
         let text = String::from_utf8_lossy(&bytes);
-        let converted = serde_json::from_str::<serde_json::Value>(&text)
+        let parsed = serde_json::from_str::<serde_json::Value>(&text);
+        // 上游自报的模型名只进日志，不进响应（见 `openai::response::convert`）。
+        let upstream_reported = parsed
+            .as_ref()
+            .ok()
+            .and_then(|value| value.get("model"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let converted = parsed
             .map_err(|e| format!("上游返回的不是 JSON：{e}"))
-            .and_then(|value| openai::response::convert(&value, model));
+            .and_then(|value| openai::response::convert(&value, response_model));
         let converted = match converted {
             Ok(value) => value,
             Err(message) => {
@@ -870,6 +939,11 @@ async fn openai_response(
                 bytes_out: Some(body.len() as u64),
                 usage: Some(tokens),
                 rewrite: repair.map(str::to_string),
+                response_model: Some(response_model.to_string()),
+                model_mismatch: Some(upstream_reported.as_deref().is_some_and(|reported| {
+                    is_substituted(reported, &[response_model, upstream_model])
+                })),
+                reported_model: upstream_reported,
                 ..LogPatch::default()
             },
         );
@@ -890,7 +964,8 @@ async fn openai_response(
     // ── 流式：逐块翻译 ────────────────────────────────────────────────
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let log_handle = log;
-    let model = model.to_string();
+    let model = response_model.to_string();
+    let configured_upstream = upstream_model.to_string();
     tokio::spawn(async move {
         let mut upstream = upstream;
         let mut translator = openai::stream::Translator::new(&model);
@@ -930,6 +1005,9 @@ async fn openai_response(
         }
 
         let (input, output) = translator.usage();
+        // 上游 chunk 里自报的模型名（如果有）。这里的名字只进日志，
+        // 客户端收到的是 `model`——请求名。
+        let reported = translator.reported_model().map(str::to_string);
         log_handle.finish(
             log_id,
             LogPatch {
@@ -938,6 +1016,13 @@ async fn openai_response(
                 total_ms: Some(started.elapsed().as_millis() as u64),
                 bytes_out: Some(bytes_out),
                 error,
+                response_model: Some(model.clone()),
+                model_mismatch: Some(
+                    reported
+                        .as_deref()
+                        .is_some_and(|name| is_substituted(name, &[&model, &configured_upstream])),
+                ),
+                reported_model: reported,
                 usage: Some(TokenUsage {
                     input: Some(input),
                     output: Some(output),
@@ -1355,7 +1440,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn streamed_usage_is_recorded_without_changing_the_response() {
+    async fn streamed_response_gets_the_requested_model_name_back() {
         const SSE: &str = concat!(
             "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"actual-upstream\",\"usage\":{\"input_tokens\":2,\"cache_read_input_tokens\":80,\"output_tokens\":1}}}\n\n",
             "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n",
@@ -1384,9 +1469,18 @@ mod tests {
             .header("x-api-key", "rly_test")
             .json(&json!({"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":20}))
             .send().await.unwrap().text().await.unwrap();
-        assert_eq!(body, SSE);
+        // 只有 message_start 里的 model 变了，其余字节（含分隔符与后续事件）原样。
+        assert_eq!(
+            body,
+            SSE.replace("actual-upstream", "claude-sonnet-5-5"),
+            "除了模型名，流里不该有第二个字节变化"
+        );
         let rows = log.recent(1);
         assert_eq!(rows[0].reported_model.as_deref(), Some("actual-upstream"));
+        assert_eq!(rows[0].response_model.as_deref(), Some("claude-sonnet-5-5"));
+        assert_eq!(rows[0].model_rewrite, Some(ModelRewrite::Rewritten));
+        // 上游报的名字既不是请求名也不是配置的上游名 → 换了模型，要标出来。
+        assert!(rows[0].model_mismatch, "上游换了模型必须标记");
         assert_eq!(
             rows[0].upstream_provider.as_deref(),
             Some(format!("http://{addr}").as_str())
@@ -1395,6 +1489,90 @@ mod tests {
         assert_eq!(
             (usage.input, usage.cache_read, usage.output, usage.partial),
             (Some(2), Some(80), Some(7), false)
+        );
+        task.abort();
+    }
+
+    /// 非流式：整条 JSON 的 `model` 回填，其余字段一个都不动。
+    #[tokio::test(flavor = "current_thread")]
+    async fn json_response_gets_the_requested_model_name_back() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let upstream = Router::new().route(
+            "/v1/messages",
+            post(|| async {
+                (
+                    [(header::CONTENT_TYPE, "application/json")],
+                    r#"{"id":"msg_1","type":"message","role":"assistant","model":"actual-upstream","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":3,"output_tokens":1}}"#,
+                )
+            }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let log = Arc::new(RelayLog::new(10, None));
+        let relay = spawn_relay(
+            test_settings(format!("http://{addr}/v1/messages")),
+            log.clone(),
+        )
+        .await;
+
+        let response = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("x-api-key", "rly_test")
+            .json(&json!({"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"}],"max_tokens":20}))
+            .send()
+            .await
+            .unwrap();
+        // 长度变了（`actual-upstream` 18 字节 → `claude-sonnet-5-5` 17 字节），
+        // 响应头里的 content-length 必须由本层重算，不能抄上游的。
+        let value: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(value["model"], "claude-sonnet-5-5");
+        assert_eq!(value["content"][0]["text"], "ok");
+
+        let rows = log.recent(1);
+        assert_eq!(rows[0].model_rewrite, Some(ModelRewrite::Rewritten));
+        assert_eq!(rows[0].response_model.as_deref(), Some("claude-sonnet-5-5"));
+        task.abort();
+    }
+
+    /// 上游没按协议开头（首个事件不是 `message_start`）：改写放弃，原样转发，
+    /// 但**日志里必须留下原因**——静默降级等于永远查不出「为什么这次是真名」。
+    #[tokio::test(flavor = "current_thread")]
+    async fn unrewritable_stream_is_forwarded_verbatim_and_reported() {
+        const SSE: &str =
+            "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"boom\"}}\n\n";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let upstream = Router::new().route(
+            "/v1/messages",
+            post(|| async { ([(header::CONTENT_TYPE, "text/event-stream")], SSE) }),
+        );
+        let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let log = Arc::new(RelayLog::new(10, None));
+        let relay = spawn_relay(
+            test_settings(format!("http://{addr}/v1/messages")),
+            log.clone(),
+        )
+        .await;
+        let body = reqwest::Client::new()
+            .post(format!("http://{}/v1/messages", relay.addr))
+            .header("x-api-key", "rly_test")
+            .json(&json!({"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":20}))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, SSE, "降级时一个字节都不能改");
+        assert_eq!(
+            log.recent(1)[0].model_rewrite,
+            Some(ModelRewrite::NotMessageStart)
+        );
+        // 降级时客户端看到的是上游原样，日志不能声称「回填成了请求名」。
+        assert_eq!(
+            log.recent(1)[0].response_model,
+            None,
+            "降级时 response_model 必须留空，不能退化成请求名"
         );
         task.abort();
     }
@@ -1910,6 +2088,12 @@ mod tests {
         assert_eq!(resp.status(), 200);
         let text = resp.text().await.unwrap();
         assert!(text.contains("event: message_start"), "{text}");
+        // `message_start` 里必须是客户端请求的名字，不是上游的 `gpt-x`。
+        assert!(
+            text.contains("\"model\":\"claude-sonnet-5-5\""),
+            "回填请求名失败：{text}"
+        );
+        assert!(!text.contains("gpt-x"), "上游真名不能漏给客户端：{text}");
         assert!(
             text.contains("\"type\":\"text_delta\",\"text\":\"hi\""),
             "{text}"

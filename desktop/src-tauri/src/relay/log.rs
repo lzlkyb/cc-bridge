@@ -75,8 +75,26 @@ pub struct RelayLogEntry {
     pub upstream_config_name: Option<String>,
     #[serde(default)]
     pub failure_stage: Option<FailureStage>,
+    /// 上游在响应里自报的模型名。**真实**跑了什么，只有这里能看到。
     #[serde(default)]
     pub reported_model: Option<String>,
+    /// 响应里我们回填给客户端的名字（正常应等于 `client_model`）。
+    ///
+    /// 与 `reported_model` 一起构成三元组：请求名 / 上游名 / 上报名。前两个是
+    /// 「我要什么、实际给了什么」，第三个是「我告诉客户端给了什么」。
+    #[serde(default)]
+    pub response_model: Option<String>,
+    /// 模型名回填的结果。`None` = 这条路径不需要回填（错误响应、count_tokens
+    /// 或 OpenAI 方言）。`Some(..)` 里非 `Rewritten` 的都是降级——客户端看到了
+    /// 上游真名，原因记在这里。
+    #[serde(default)]
+    pub model_rewrite: Option<super::model_rewrite::ModelRewrite>,
+    /// 上游自报的名字与「请求名 / 上游名」都对不上——上游换了模型。
+    ///
+    /// 判定只容忍写法差异（大小写、`vendor/` 前缀、日期快照、`-latest`、
+    /// 版本分隔符），型号不同就一定为 true。见 `model_rewrite::is_substituted`。
+    #[serde(default)]
+    pub model_mismatch: bool,
     #[serde(default)]
     pub usage: Option<TokenUsage>,
     #[serde(default)]
@@ -139,6 +157,9 @@ pub struct LogPatch {
     /// 时就写进了 entry，这里只补重试那一次新增的部分。
     pub rewrite: Option<String>,
     pub reported_model: Option<String>,
+    pub response_model: Option<String>,
+    pub model_rewrite: Option<super::model_rewrite::ModelRewrite>,
+    pub model_mismatch: Option<bool>,
     pub usage: Option<TokenUsage>,
     pub usage_collection_issue: Option<UsageCollectionIssue>,
 }
@@ -490,6 +511,9 @@ fn apply_patch(entry: &mut RelayLogEntry, patch: LogPatch) {
         (None, existing) => existing,
     };
     entry.reported_model = patch.reported_model.or(entry.reported_model.take());
+    entry.response_model = patch.response_model.or(entry.response_model.take());
+    entry.model_rewrite = patch.model_rewrite.or(entry.model_rewrite);
+    entry.model_mismatch = patch.model_mismatch.unwrap_or(entry.model_mismatch);
     entry.usage = patch.usage.or(entry.usage.take());
     entry.usage_collection_issue = patch
         .usage_collection_issue

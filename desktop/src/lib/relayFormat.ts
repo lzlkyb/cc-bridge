@@ -56,6 +56,20 @@ export function rewriteLabel(rewrite: string | null): string | null {
     .join("+");
 }
 
+/**
+ * 模型名回填的状态 → 中文。只有降级才值得显示：`rewritten` 是正常路径，
+ * 每条记录都标一遍「已回填」只会把真正的问题淹没。
+ */
+export function modelRewriteLabel(state: string | null | undefined): string | null {
+  const names: Record<string, string> = {
+    not_message_start: "未回填：首事件不是 message_start",
+    no_model: "未回填：响应里没有模型名",
+    too_large: "未回填：响应过大",
+    unparsable: "未回填：响应格式无法解析",
+  };
+  return state && state !== "rewritten" ? (names[state] ?? state) : null;
+}
+
 /** 来源列。回环统一叫「本机」，其余直接显示 IP（不猜是哪台机器）。 */
 export function sourceLabel(source: string): string {
   return source === "local" ? "本机" : source;

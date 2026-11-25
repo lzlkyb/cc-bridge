@@ -7,6 +7,7 @@ import {
   formatMs,
   formatPercent,
   maskToken,
+  modelRewriteLabel,
   rewriteLabel,
   sourceLabel,
   statusText,
@@ -110,6 +111,26 @@ describe("rewriteLabel", () => {
   it("passes unknown rules through instead of hiding them", () => {
     // 后端加了新规则而前端没跟上时，宁可显示原文，也不要显示一个空徽章。
     expect(rewriteLabel("mystery")).toBe("mystery");
+  });
+});
+
+describe("modelRewriteLabel", () => {
+  it("says nothing on the happy path", () => {
+    // 正常回填不该多一行——每条记录都标「已回填」会把真正的问题淹没。
+    expect(modelRewriteLabel("rewritten")).toBeNull();
+    expect(modelRewriteLabel(null)).toBeNull();
+    expect(modelRewriteLabel(undefined)).toBeNull();
+  });
+
+  it("explains every way the rewrite can be skipped", () => {
+    expect(modelRewriteLabel("not_message_start")).toContain("message_start");
+    expect(modelRewriteLabel("no_model")).toContain("没有模型名");
+    expect(modelRewriteLabel("too_large")).toContain("过大");
+    expect(modelRewriteLabel("unparsable")).toContain("无法解析");
+  });
+
+  it("keeps unknown states visible", () => {
+    expect(modelRewriteLabel("brand_new")).toBe("brand_new");
   });
 });
 

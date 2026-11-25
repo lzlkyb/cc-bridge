@@ -796,6 +796,9 @@ export interface RelayProviderView {
 
 export type RelayFailureStage = "clientSource" | "clientToken" | "clientBlocked" | "request";
 
+/** 与 Rust `relay::model_rewrite::ModelRewrite` 一一对应。 */
+export type RelayModelRewrite = "rewritten" | "not_message_start" | "no_model" | "too_large" | "unparsable";
+
 export interface RelayClientResult {
   status: number;
   requestId?: string | null;
@@ -818,6 +821,17 @@ export interface RelayLogEntry {
   upstreamConfigName?: string | null;
   failureStage?: RelayFailureStage | null;
   reportedModel?: string | null;
+  /** 响应里回填给客户端的模型名（正常等于 clientModel）。 */
+  responseModel?: string | null;
+  /**
+   * 模型名回填的结果。`null` = 这条路径不需要回填。
+   *
+   * 非 `rewritten` 的都是降级：客户端看到了上游真名。以前这种降级是静默的，
+   * 于是「为什么这次又是真实名」永远查不出来。
+   */
+  modelRewrite?: RelayModelRewrite | null;
+  /** 上游自报的名字与请求名/上游名都对不上——上游换了模型。 */
+  modelMismatch?: boolean;
   usage?: RelayTokenUsage | null;
   usageCollectionIssue?: "responseTooLarge" | "unsupportedEncoding" | null;
   /** 该档未配置、请求落到了 default。 */

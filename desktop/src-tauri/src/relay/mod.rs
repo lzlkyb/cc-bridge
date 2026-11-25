@@ -31,6 +31,7 @@ pub mod config;
 pub mod fold;
 pub mod guard;
 pub mod log;
+pub mod model_rewrite;
 pub mod openai;
 pub mod profile;
 pub mod repair;

@@ -40,6 +40,8 @@ pub struct Translator {
     stop_reason: &'static str,
     input_tokens: u64,
     output_tokens: u64,
+    /// 上游自报的模型名。只进日志，不进响应——响应里填的是客户端请求的名字。
+    reported_model: Option<String>,
     done: bool,
 }
 
@@ -56,6 +58,7 @@ impl Translator {
             stop_reason: "end_turn",
             input_tokens: 0,
             output_tokens: 0,
+            reported_model: None,
             done: false,
         }
     }
@@ -89,6 +92,11 @@ impl Translator {
         (self.input_tokens, self.output_tokens)
     }
 
+    /// 上游在 chunk 里报的模型名。给日志用——客户端收到的是请求名。
+    pub fn reported_model(&self) -> Option<&str> {
+        self.reported_model.as_deref()
+    }
+
     fn handle_event(&mut self, event: &[u8], out: &mut Vec<u8>) {
         let text = String::from_utf8_lossy(event);
         let mut data = String::new();
@@ -113,6 +121,13 @@ impl Translator {
 
     fn handle_chunk(&mut self, value: &Value, out: &mut Vec<u8>) {
         self.ensure_started(out);
+
+        // 上游每个 chunk 都可能带 model。记第一次见到的就够——同一个流里它不会变。
+        if self.reported_model.is_none() {
+            if let Some(model) = value.get("model").and_then(Value::as_str) {
+                self.reported_model = Some(model.to_string());
+            }
+        }
 
         if let Some(usage) = value.get("usage").filter(|u| !u.is_null()) {
             if let Some(n) = usage.get("prompt_tokens").and_then(Value::as_u64) {

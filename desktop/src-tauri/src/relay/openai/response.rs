@@ -100,10 +100,12 @@ pub fn convert(upstream: &Value, requested_model: &str) -> Result<Value, String>
         .filter(|id| !id.is_empty())
         .map(|id| format!("msg_{id}"))
         .unwrap_or_else(|| "msg_relay".to_string());
-    let model = upstream
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or(requested_model);
+    // 回填**客户端请求的名字**，不露上游真名（model masking）。
+    //
+    // 下游客户端会把响应里的 `model` 写进会话记录、还会拿它查上下文窗口与价目表。
+    // 回上游名等于让它按一张错的能力表工作。上游真名在日志的「上报模型」列里
+    // 本来就有，排障不受影响——所以响应里没必要暴露。
+    let model = requested_model;
 
     Ok(json!({
         "id": id,
@@ -163,7 +165,7 @@ mod tests {
             "choices": [{ "message": { "role": "assistant", "content": "你好" }, "finish_reason": "stop" }],
             "usage": { "prompt_tokens": 12, "completion_tokens": 3 }
         });
-        let out = convert(&upstream, "fallback").unwrap();
+        let out = convert(&upstream, "claude-sonnet-5-5").unwrap();
         assert_eq!(out["type"], "message");
         assert_eq!(out["role"], "assistant");
         assert_eq!(out["content"][0]["type"], "text");
@@ -171,7 +173,9 @@ mod tests {
         assert_eq!(out["stop_reason"], "end_turn");
         assert_eq!(out["usage"]["input_tokens"], 12);
         assert_eq!(out["usage"]["output_tokens"], 3);
-        assert_eq!(out["model"], "gpt-x");
+        // 上游说 `gpt-x`，但客户端请求的是 `claude-sonnet-5-5`——回填请求名，
+        // 不露上游真名（model masking）。
+        assert_eq!(out["model"], "claude-sonnet-5-5");
     }
 
     #[test]
