@@ -27,14 +27,14 @@ pub struct WriteFilesArgs {
     #[serde(deserialize_with = "crate::mcp::tools::flex_args::vec_from_json_or_string")]
     pub files: Vec<WriteFileEntry>,
     /// 回显档位：`none` | `stat` | `hunks` | `full` | `auto`（省略 = `auto`）。
-    /// `auto`：新建文件只回 `+N/-M 行`，覆盖已有文件回截断到 4KB 的 hunk。
+    /// `auto`：新建与覆盖都只回 `+N/-M 行`，要看改动内容显式传 `hunks` / `full`。
     /// 详见 [`crate::diff_utils::DiffMode`]。
     pub diff: Option<String>,
 }
 
 /// `write_single` 的落盘结果。回显档位的解释放在 `handle` 里做，工具函数只管事实。
 struct WriteOutcome {
-    /// 写之前目标文件是否存在（决定 `auto` 落成 `stat` 还是 `hunks`）。
+    /// 写之前目标文件是否存在（用于识别「覆盖了非 UTF-8 原文件」）。
     existed: bool,
     old_bytes: usize,
     new_bytes: usize,
@@ -82,10 +82,11 @@ fn render_diff(
         // 改造前就返回空串，保持不变（二进制没有可比的文本行）。
         return Some(String::new());
     }
-    match mode.resolve(out.existed) {
+    match mode.resolve() {
         // 🔴 原文件非 UTF-8：既不能拿空串当 old（那会把整份新内容标成 `+` 行，20MB 文件的
         // 响应≈全文），也不能假装 diff 成功。给一句带字节数的摘要，行为与改造前一致。
-        diff_utils::DiffMode::Hunks | diff_utils::DiffMode::Full
+        // stat 同理：拿空串当 old 会数出「+N/-0 行」这种假统计。
+        diff_utils::DiffMode::Stat | diff_utils::DiffMode::Hunks | diff_utils::DiffMode::Full
             if out.existed && out.old_text.is_none() =>
         {
             Some(format!(
@@ -95,7 +96,6 @@ fn render_diff(
         }
         resolved => diff_utils::render(
             resolved,
-            out.existed,
             &f.path,
             out.old_text.as_deref().unwrap_or(""),
             &f.content,

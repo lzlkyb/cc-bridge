@@ -70,6 +70,14 @@ pub struct SearchFilesArgs {
     )]
     #[serde(rename = "deadlineMs", default = "default_deadline_ms")]
     pub deadline_ms: u64,
+    /// 返回形态。默认 `text`：grep 风格，路径每个文件只写一次、命中写成「行号:内容」；
+    /// `json`：改造前的 JSON 数组（每条命中都带完整路径与键名）。
+    #[schema(
+        desc = "text (default): grep-style, path once per file, `line:content`; json: array of match objects.",
+        values = "text|json"
+    )]
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// 单次搜索的默认软超时。
@@ -224,13 +232,13 @@ fn clip_long_lines(matches: &mut [Value], locate: Option<&regex::Regex>) -> usiz
     clipped
 }
 
-/// 按字符预算保留前面的命中，返回被省略的条数。整条保留或整条丢弃，不返回切半的 JSON。
-fn apply_budget(matches: &mut Vec<Value>, budget: usize) -> usize {
+/// 按 JSON 数组的实际字符数保留完整条目，返回被省略的条数。
+fn apply_json_budget(matches: &mut Vec<Value>, budget: usize) -> usize {
     let mut used = 2; // 数组的 `[` `]`
     let mut keep = 0;
     for m in matches.iter() {
-        let cost = wire_chars(m).saturating_add(1); // 加分隔逗号
-        if used + cost > budget {
+        let cost = wire_chars(m).saturating_add(usize::from(keep > 0));
+        if cost > budget.saturating_sub(used) {
             break;
         }
         used += cost;
@@ -242,6 +250,16 @@ fn apply_budget(matches: &mut Vec<Value>, budget: usize) -> usize {
 }
 
 pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Value, String> {
+    let as_json = match args
+        .format
+        .as_deref()
+        .map(|f| f.trim().to_ascii_lowercase())
+    {
+        None => false,
+        Some(f) if f == "text" => false,
+        Some(f) if f == "json" => true,
+        Some(other) => return Err(format!("Unknown format {other:?}; use one of: text, json")),
+    };
     let config = state.config.read().await;
     let root_resolved = security::path::resolve_safe_path_cached(
         &args.root_path,
@@ -393,29 +411,22 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     }
     let mut matches = compact_matches(matches, cfg!(windows));
     let clipped_lines = clip_long_lines(&mut matches, locate_regex.as_ref());
-    let budget_omitted = apply_budget(&mut matches, MATCHES_BUDGET_CHARS);
+    let match_count = matches.len();
+    let (body, budget_omitted) = if as_json {
+        let omitted = apply_json_budget(&mut matches, MATCHES_BUDGET_CHARS);
+        (serde_json::to_string(&matches).unwrap(), omitted)
+    } else {
+        render_matches_text(&matches, MATCHES_BUDGET_CHARS)
+    };
+    let returned = match_count - budget_omitted;
 
     // ④ 截断回显：walker 触及 head_limit（= head_limit.unwrap_or(max_results)）提前终止时
     // `truncated=true`，结果不完整。追加一个文本块告知远程 CC「结果被截断、可缩小范围或分页」，
     // 不动 matches 数组结构，模型读自然语言即可理解（不做精确 totalMatched 二次扫描，避免性能回退）。
-    let mut content_blocks: Vec<Value> = Vec::new();
-    // 超时说明放在**最前面**，因为它改变的是对后面全部内容的解读方式：
-    // 「没匹配」在这种情形下不等于「不存在」。放在末尾很容易被模型跳过。
-    if timed_out {
-        content_blocks.push(json!({
-            "type": "text",
-            "text": format!(
-                "⚠️ 搜索在 {}s 软超时处中止：下面是**已经扫到的部分结果，不完整**，剩余目录还没扫。\
-                 \n- 不要用「没有匹配」推断文件里没有这个内容——很可能只是还没扫到。\
-                 \n- 需要完整结果时：缩小 rootPath 到子目录、加 namePattern 限定扩展名（如 *.rs）、收紧 contentPattern，或增大 deadlineMs（单位毫秒，上限 {MAX_DEADLINE_MS}）重试；deadlineMs:0 表示不限时。",
-                deadline_ms_eff / 1000
-            )
-        }));
-    }
-    content_blocks
-        .push(json!({ "type": "text", "text": serde_json::to_string(&matches).unwrap() }));
+    let mut content_blocks =
+        search_result_blocks(body, timed_out.then_some(deadline_ms_eff), as_json);
     if let Some(note) = truncation_note(
-        matches.len(),
+        returned,
         grep.head_limit,
         truncated,
         budget_omitted,
@@ -426,9 +437,15 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     if clipped_lines > 0 {
         content_blocks.push(json!({
             "type": "text",
-            "text": format!(
-                "{clipped_lines} 条命中行超过 {MAX_LINE_CHARS} 字符，只保留命中点附近一段（首尾 … 表示有截断，lineChars 是整行原长度）；需要整行时用 read_files 按 lineNumber 读。"
-            )
+            "text": if as_json {
+                format!(
+                    "{clipped_lines} 条命中行超过 {MAX_LINE_CHARS} 字符，只保留命中点附近一段（首尾 … 表示有截断，lineChars 是整行原长度）；需要整行时用 read_files 按 lineNumber 读。"
+                )
+            } else {
+                format!(
+                    "{clipped_lines} 条命中行超过 {MAX_LINE_CHARS} 字符，只保留命中点附近一段（首尾 … 表示有截断，行尾 [整行 N 字符] 是原长度）；需要整行时用 read_files 按行号读。"
+                )
+            }
         }));
     }
     // context 超上限被压：必须注明，否则模型以为自己拿到的是 12 行上下文而误判命中情况。
@@ -442,7 +459,7 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     }
     // 中文等非 ASCII pattern 零命中且没指定编码：很可能是 GBK 文件按字节对不上，给出可操作提示，
     // 免得模型把空结果当成「代码里没有」。
-    if matches.is_empty() && pattern_non_ascii && grep.encoding.is_none() {
+    if match_count == 0 && pattern_non_ascii && grep.encoding.is_none() {
         content_blocks.push(json!({
             "type": "text",
             "text": "未命中。pattern 含非 ASCII 字符且未指定 encoding：若目标文件是 GBK 等非 UTF-8 编码，按字节匹配必然命不中，请加 encoding:\"gbk\" 重试（UTF-8 文件不受影响）。"
@@ -450,6 +467,128 @@ pub async fn handle(args: SearchFilesArgs, state: &Arc<AppState>) -> Result<Valu
     }
 
     Ok(json!({ "content": content_blocks }))
+}
+
+fn search_result_blocks(body: String, timed_out_ms: Option<u64>, as_json: bool) -> Vec<Value> {
+    let result = json!({ "type": "text", "text": body });
+    let Some(ms) = timed_out_ms else {
+        return vec![result];
+    };
+    let warning = json!({
+        "type": "text",
+        "text": format!(
+            "⚠️ 搜索在 {ms} ms 软超时处中止，结果不完整，剩余目录尚未扫描。\
+             \n- 需要完整结果时：缩小 rootPath、加 namePattern、收紧 contentPattern，或增大 deadlineMs（上限 {MAX_DEADLINE_MS} ms，0 表示不限时）。"
+        )
+    });
+    // batch 把首块解析成 data，后续块放 notes。JSON 的部分结果也要保留数组形态。
+    if as_json {
+        vec![result, warning]
+    } else {
+        vec![warning, result]
+    }
+}
+
+/// 把命中列表渲染成 grep 风格纯文本（默认返回形态）。
+///
+/// - 内容命中：每个文件先写一行路径，其下是 `行号:内容`；上下文行用 `行号-内容`，号码由命中行号推出。
+/// - 只有路径的条目（文件名搜索、files_with_matches）：一行一个路径。
+/// - count 模式：`路径:次数`。
+/// - `skipped` / `error`：`⚠ 路径 [类型] 原因`，与命中可区分。
+///
+/// 相比 JSON：不再每条重复完整路径与键名，也没有 `\n` / `\"` 转义。
+/// 用实际写出的片段扣预算，每条命中连同上下文整体保留或省略。
+fn render_matches_text(matches: &[Value], budget: usize) -> (String, usize) {
+    fn strings<'a>(o: &'a serde_json::Map<String, Value>, key: &str) -> Vec<&'a str> {
+        o.get(key)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default()
+    }
+    fn push_line(out: &mut String, num: Option<u64>, sep: char, text: &str) {
+        if let Some(n) = num {
+            out.push_str(&n.to_string());
+        }
+        out.push(sep);
+        out.push_str(text.trim_end_matches(['\n', '\r']));
+        out.push('\n');
+    }
+    let mut out = String::new();
+    let mut cur_path: Option<&str> = None;
+    let string_overhead = wire_chars("");
+    let mut used = string_overhead; // 序列化字符串的外层引号，只计一次。
+    let mut kept = 0;
+    for m in matches {
+        let start = out.len();
+        if kept > 0 {
+            out.push('\n');
+        }
+        match m {
+            Value::String(p) => {
+                cur_path = None;
+                out.push_str(p);
+                out.push('\n');
+            }
+            Value::Object(o) => {
+                let path = o.get("path").and_then(Value::as_str).unwrap_or("");
+                if let Some(line) = o.get("line").and_then(Value::as_str) {
+                    if cur_path != Some(path) {
+                        out.push_str(path);
+                        out.push('\n');
+                        cur_path = Some(path);
+                    }
+                    let ln = o.get("lineNumber").and_then(Value::as_u64);
+                    let before = strings(o, "contextBefore");
+                    for (i, t) in before.iter().enumerate() {
+                        let n = ln.map(|n| n.saturating_sub((before.len() - i) as u64));
+                        push_line(&mut out, n, '-', t);
+                    }
+                    push_line(&mut out, ln, ':', line);
+                    if let Some(total) = o.get("lineChars").and_then(Value::as_u64) {
+                        // 去掉刚写入的换行，把原长度标在行尾。
+                        out.pop();
+                        out.push_str(&format!(" [整行 {total} 字符]\n"));
+                    }
+                    for (i, t) in strings(o, "contextAfter").iter().enumerate() {
+                        let n = ln.map(|n| n + 1 + i as u64);
+                        push_line(&mut out, n, '-', t);
+                    }
+                } else if let Some(count) = o.get("count").and_then(Value::as_u64) {
+                    cur_path = None;
+                    out.push_str(&format!("{path}:{count}\n"));
+                } else if let Some(kind) = o.get("type").and_then(Value::as_str) {
+                    cur_path = None;
+                    let reason = o.get("reason").and_then(Value::as_str).unwrap_or("");
+                    out.push_str(&format!("⚠ {path} [{kind}] {reason}\n"));
+                } else {
+                    cur_path = None;
+                    out.push_str(&m.to_string());
+                    out.push('\n');
+                }
+            }
+            other => {
+                cur_path = None;
+                out.push_str(&other.to_string());
+                out.push('\n');
+            }
+        }
+        out.pop(); // 去掉当前条目的末尾换行，条目之间的换行已在开头加入。
+        let cost = wire_chars(&out[start..]).saturating_sub(string_overhead);
+        if cost > budget.saturating_sub(used) {
+            out.truncate(start);
+            break;
+        }
+        used += cost;
+        kept += 1;
+    }
+    if kept == 0 {
+        out.push_str(if matches.is_empty() {
+            "无命中"
+        } else {
+            "有命中，结果超出返回预算"
+        });
+    }
+    (out, matches.len() - kept)
 }
 
 /// 结果不完整时的**一条**说明；完整时返回 `None`。
@@ -1082,6 +1221,108 @@ fn grep_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_timeout_keeps_match_array_first() {
+        let matches = json!([{ "path": "a.rs", "lineNumber": 12, "line": "example" }]);
+        let blocks = search_result_blocks(matches.to_string(), Some(1000), true);
+        assert_eq!(
+            serde_json::from_str::<Value>(blocks[0]["text"].as_str().unwrap()).unwrap(),
+            matches
+        );
+        assert!(blocks[1]["text"].as_str().unwrap().contains("结果不完整"));
+    }
+
+    #[test]
+    fn text_budget_distinguishes_omitted_matches_from_no_matches() {
+        let matches = [json!({
+            "path": "a.rs", "lineNumber": 2, "line": "match",
+            "contextBefore": ["x".repeat(MATCHES_BUDGET_CHARS)]
+        })];
+        let (body, omitted) = render_matches_text(&matches, MATCHES_BUDGET_CHARS);
+        assert_eq!(omitted, 1);
+        assert!(body.contains("超出返回预算"), "{body}");
+        assert_eq!(render_matches_text(&[], MATCHES_BUDGET_CHARS).0, "无命中");
+    }
+
+    /// 默认纯文本形态：路径每个文件只写一次，命中 `行号:内容`，上下文 `行号-内容`，不带 JSON 键名与转义。
+    #[test]
+    fn text_render_groups_by_file_with_context_numbers() {
+        let matches = vec![
+            json!({ "path": "a/x.rs", "line": "fn one() {}\n", "lineNumber": 5,
+                    "contextBefore": ["// a", "// b"], "contextAfter": ["// c"] }),
+            json!({ "path": "a/x.rs", "line": "fn two() {}\n", "lineNumber": 20 }),
+            json!({ "path": "a/y.rs", "line": "fn three() {}\r\n", "lineNumber": 1 }),
+            json!("a/z.rs"),
+            json!({ "path": "a/w.rs", "count": 3 }),
+            json!({ "path": "a/bad.bin", "type": "skipped", "reason": "binary" }),
+        ];
+        let (out, omitted) = render_matches_text(&matches, MATCHES_BUDGET_CHARS);
+        let want = "a/x.rs\n3-// a\n4-// b\n5:fn one() {}\n6-// c\n20:fn two() {}\na/y.rs\n1:fn three() {}\na/z.rs\na/w.rs:3\n⚠ a/bad.bin [skipped] binary";
+        assert_eq!(out, want);
+        assert!(!out.contains("\"path\""), "纯文本不应出现 JSON 键名");
+        assert_eq!(omitted, 0);
+        assert_eq!(render_matches_text(&[], MATCHES_BUDGET_CHARS).0, "无命中");
+    }
+
+    #[test]
+    fn text_render_marks_clipped_line_with_original_length() {
+        let m =
+            vec![json!({ "path": "a.rs", "line": "abc…\n", "lineNumber": 2, "lineChars": 900 })];
+        assert_eq!(
+            render_matches_text(&m, MATCHES_BUDGET_CHARS).0,
+            "a.rs\n2:abc… [整行 900 字符]"
+        );
+    }
+
+    #[test]
+    fn text_budget_counts_escaped_characters_and_keeps_context_whole() {
+        let matches = [
+            json!({ "path": "a.rs", "lineNumber": 1, "line": "第一行\n" }),
+            json!({ "path": "a.rs", "lineNumber": 2, "line": "有\"引号\"和反斜杠\\\n",
+                    "contextAfter": ["第三行"] }),
+        ];
+        let want = "a.rs\n1:第一行\n2:有\"引号\"和反斜杠\\\n3-第三行";
+        let budget = wire_chars(want);
+        assert_eq!(render_matches_text(&matches, budget), (want.into(), 0));
+        assert_eq!(
+            render_matches_text(&matches, budget - 1),
+            ("a.rs\n1:第一行".into(), 1)
+        );
+    }
+
+    #[tokio::test]
+    async fn search_budget_uses_the_selected_output_format() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|_| {});
+        let file = dir.join("some-long-directory/".repeat(8)).join("source.ts");
+        let line = format!("needle{}\n", "x".repeat(300));
+        touch(&file, &line.repeat(100));
+        let args = json!({ "rootPath": file, "pattern": "needle", "maxResults": 101 });
+
+        let text_result = handle(serde_json::from_value(args.clone()).unwrap(), &state)
+            .await
+            .unwrap();
+        let text = text_result["content"][0]["text"].as_str().unwrap();
+        assert_eq!(text.lines().count(), 101);
+        assert!(text.ends_with(&format!("100:{}", line.trim_end())));
+        assert!(wire_chars(&json!(text)) <= MATCHES_BUDGET_CHARS);
+        assert_eq!(text_result["content"].as_array().unwrap().len(), 1);
+
+        let mut json_args = args;
+        json_args["format"] = json!("json");
+        let json_result = handle(serde_json::from_value(json_args).unwrap(), &state)
+            .await
+            .unwrap();
+        let body = json_result["content"][0]["text"].as_str().unwrap();
+        let rows: Vec<Value> = serde_json::from_str(body).unwrap();
+        assert!(!rows.is_empty() && rows.len() < 100);
+        assert!(wire_chars(&Value::Array(rows)) <= MATCHES_BUDGET_CHARS);
+        let note = json_result["content"][1]["text"].as_str().unwrap();
+        assert!(
+            note.contains("字符预算") && note.contains("结果不完整"),
+            "{note}"
+        );
+    }
     use crate::mcp::tools::testutil::unique_subdir;
     use std::fs;
 
@@ -1602,13 +1843,13 @@ mod tests {
         let mut matches: Vec<Value> = (0..1000)
             .map(|i| json!({ "path": format!("D:/p/{i}.rs"), "line": "z".repeat(80) }))
             .collect();
-        let omitted = apply_budget(&mut matches, 5_000);
+        let omitted = apply_json_budget(&mut matches, 5_000);
         assert!(omitted > 0 && !matches.is_empty());
         assert_eq!(matches.len() + omitted, 1000);
         assert!(wire_chars(&Value::Array(matches.clone())) <= 5_000);
         // 预算充足时一条不丢
         let mut small = vec![json!("a"), json!("b")];
-        assert_eq!(apply_budget(&mut small, MATCHES_BUDGET_CHARS), 0);
+        assert_eq!(apply_json_budget(&mut small, MATCHES_BUDGET_CHARS), 0);
         assert_eq!(small.len(), 2);
     }
     /// 受控基准（默认 ignore，避免拖慢常规 `cargo test`）：复现 P6-1 真实最坏场景——

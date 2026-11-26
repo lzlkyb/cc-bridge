@@ -63,8 +63,8 @@ pub struct WaitCommandArgs {
     pub tail_lines: Option<usize>,
     /// 可选：`"raw"` = stdout / stderr 各自作为独立文本块原样返回。
     #[schema(
-        desc = "raw = status JSON block, then stdout and stderr as unescaped text blocks.",
-        values = "raw"
+        desc = "raw (default) = status JSON block, then stdout and stderr as unescaped text blocks; json = everything in one JSON block.",
+        values = "raw|json"
     )]
     #[serde(default)]
     pub format: Option<String>,
@@ -256,8 +256,7 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
         info.insert(
             "note".into(),
             json!(format!(
-                "等待 {timeout_sec}s 未结束，命令仍在后台运行（未被终止）。可再调一次 wait_command 继续等，\
-                 或用 get_command_output 看增量、stop_command 结束它。"
+                "等待 {timeout_sec}s 未结束，命令仍在运行（未被终止），可再调一次继续等。"
             )),
         );
     } else if exit_code.is_some() && !output_complete {
@@ -301,7 +300,7 @@ pub async fn handle(args: WaitCommandArgs, state: &Arc<AppState>) -> Result<Valu
     crate::mcp::tools::prune_default_output_fields(&mut info);
 
     let out = text_result(&Value::Object(info));
-    Ok(if args.format.as_deref() == Some("raw") {
+    Ok(if args.format.as_deref() != Some("json") {
         crate::mcp::tools::split_output_blocks(out)
     } else {
         out
@@ -336,7 +335,7 @@ mod tests {
                 include: None,
                 exclude: None,
                 tail_lines: None,
-                format: None,
+                format: Some("json".into()),
                 env: None,
                 description: None,
             },
@@ -354,7 +353,7 @@ mod tests {
             timeout_sec: 30,
             until_pattern: None,
             tail_lines: None,
-            format: None,
+            format: Some("json".into()),
             include: None,
             exclude: None,
         }

@@ -130,7 +130,7 @@ pub struct EditFilesArgs {
     /// 容错见 [`flex_edit_files`]：字符串化数组 / `edits` 别名 / 按文件分组形态均可接受。
     #[serde(deserialize_with = "flex_edit_files", alias = "edits")]
     pub files: Vec<EditEntry>,
-    /// 回显档位：`none` | `stat` | `hunks` | `full` | `auto`（省略 = `auto`，编辑场景落成 `hunks`）。
+    /// 回显档位：`none` | `stat` | `hunks` | `full` | `auto`（省略 = `auto` = `stat`，只回行数统计）。
     /// 详见 [`crate::diff_utils::DiffMode`]。
     #[schema(
         desc = "How much of the change to echo back (default auto).",
@@ -151,13 +151,18 @@ pub async fn handle(args: EditFilesArgs, state: &Arc<AppState>) -> Result<Value,
     for f in &args.files {
         match edit_single(f, &config, state, mode).await {
             Ok(outcome) => {
-                let mut row = json!({
-                    "path": f.path,
-                    "ok": true,
-                    "replacements": outcome.replacements,
-                    "encoding": outcome.encoding,
-                    "newline": outcome.newline,
-                });
+                // 默认值不输出（缺失 = 默认）：替换 1 处、UTF-8、LF。非默认（如 GBK、CRLF）照常回显，
+                // 模型靠它判断文件编码。
+                let mut row = json!({ "path": f.path, "ok": true });
+                if outcome.replacements != 1 {
+                    row["replacements"] = json!(outcome.replacements);
+                }
+                if outcome.encoding != "UTF-8" {
+                    row["encoding"] = json!(outcome.encoding);
+                }
+                if outcome.newline != "LF" {
+                    row["newline"] = json!(outcome.newline);
+                }
                 if let Some(d) = outcome.diff {
                     row["diff"] = json!(d);
                 }
@@ -391,17 +396,9 @@ async fn edit_single(
     // 原子写：先写临时文件再 rename，避免写一半崩溃损坏原文件。
     write_atomic(&resolved, &out_bytes).await?;
 
-    // 回显档位由调用方定（`auto` 在编辑场景恒落成 `hunks`：目标文件必然存在）。
+    // 回显档位由调用方定（`auto` 落成 `stat`，不回显内容）。
     // 字节数用真实落盘长度，不是 `str::len()`——GBK 下两者差一倍。
-    let diff = diff_utils::render(
-        mode,
-        true,
-        &f.path,
-        content,
-        &updated,
-        raw.len(),
-        out_bytes.len(),
-    );
+    let diff = diff_utils::render(mode, &f.path, content, &updated, raw.len(), out_bytes.len());
 
     Ok(EditOutcome {
         replacements,
@@ -905,6 +902,18 @@ mod tests {
         let text = out["content"][0]["text"].as_str().unwrap_or_default();
         assert!(text.contains("-three"), "full 应回显被删行：{text}");
         assert!(text.contains("+THREE"), "full 应回显新增行：{text}");
+
+        // ③ 不传 diff（auto）：只给行数统计，绝不回显改动内容。
+        let args: EditFilesArgs = serde_json::from_value(serde_json::json!({
+            "files": [{ "path": path, "oldString": "one", "newString": "ONE" }]
+        }))
+        .expect("args");
+        let out = handle(args, &state).await.expect("edit");
+        let rows: Value =
+            serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).expect("rows");
+        let diff = rows[0]["diff"].as_str().unwrap_or_default();
+        assert!(diff.starts_with("+1/-1 行"), "auto 应只给行数统计：{rows}");
+        assert!(!diff.contains("ONE"), "auto 不应回显改动内容：{rows}");
     }
 
     /// 取 `content[0].text` 里那一行结果的 JSON。

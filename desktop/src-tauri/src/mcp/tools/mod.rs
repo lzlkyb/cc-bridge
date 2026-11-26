@@ -186,7 +186,7 @@ pub(crate) const MAX_INLINE_CHARS: usize = 45_000;
 /// （CSV 短行实测同样越线：6 字符/行的 CSV，第一层 45,000 ⇒ wire 51,615。）
 ///
 /// 序列化失败返回 `usize::MAX`：无法计量时按「一定越线」处理，宁可少内联也不给残文。
-pub(crate) fn wire_chars(v: &Value) -> usize {
+pub(crate) fn wire_chars(v: &(impl serde::Serialize + ?Sized)) -> usize {
     match serde_json::to_string(v) {
         Ok(s) => {
             // 嵌进外层 text 字段时，反斜杠和引号各多占 1 个字符（再转义一次）。

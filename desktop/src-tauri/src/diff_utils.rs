@@ -17,11 +17,12 @@ pub enum DiffMode {
     Hunks,
     /// 完整 unified diff —— 改造前的行为，留作精确核对时显式索取。
     Full,
-    /// 未指定时：新建文件 → [`Self::Stat`]，覆盖/编辑已有文件 → [`Self::Hunks`]。
+    /// 未指定时：一律落成 [`Self::Stat`]。
     ///
-    /// 取舍依据：新建文件的全文 diff 里没有一个字节是模型不知道的（内容就是它刚写的），
-    /// 唯一效果是把同一份内容第二次塞进上下文；而覆盖已有文件时 hunk 对核对有真实价值，
-    /// 所以只压长度、不取消。
+    /// 取舍依据（2026-11-25 实测）：改了什么，模型自己的调用入参里已经写过一遍，回显 hunk
+    /// 等于把同一份内容第二次塞进上下文、之后每轮重发。实测 edit_files/write_files 每次
+    /// 进上下文约 1,900 token，内置 Edit/Write 约 100（只回「已更新」）。要核对时显式传
+    /// `hunks` / `full`。
     Auto,
 }
 
@@ -40,10 +41,9 @@ impl DiffMode {
         }
     }
 
-    /// 把 [`Self::Auto`] 按「目标文件此前是否存在」落成具体档位。
-    pub fn resolve(self, existed: bool) -> Self {
+    /// 把 [`Self::Auto`] 落成具体档位。
+    pub fn resolve(self) -> Self {
         match self {
-            Self::Auto if existed => Self::Hunks,
             Self::Auto => Self::Stat,
             m => m,
         }
@@ -73,18 +73,17 @@ pub fn line_stat(old: &str, new: &str) -> LineStat {
 
 /// 按档位渲染一次写入/编辑的 `diff` 字段。返回 `None` 表示结果里**不带**该字段。
 ///
-/// `existed` 只影响 [`DiffMode::Auto`] 的解释；`old_bytes`/`new_bytes` 用真实落盘字节数
-/// （编码、换行展开后的），不是 `str::len()` —— GBK 下两者差一倍。
+/// `old_bytes`/`new_bytes` 用真实落盘字节数（编码、换行展开后的），不是 `str::len()`
+/// —— GBK 下两者差一倍。
 pub fn render(
     mode: DiffMode,
-    existed: bool,
     path_label: &str,
     old: &str,
     new: &str,
     old_bytes: usize,
     new_bytes: usize,
 ) -> Option<String> {
-    match mode.resolve(existed) {
+    match mode.resolve() {
         DiffMode::Stat => {
             let s = line_stat(old, new);
             Some(format!(
@@ -218,12 +217,13 @@ mod tests {
     }
 
     #[test]
-    fn auto_resolves_by_whether_target_existed() {
-        assert_eq!(DiffMode::Auto.resolve(false), DiffMode::Stat);
-        assert_eq!(DiffMode::Auto.resolve(true), DiffMode::Hunks);
-        // 显式档位不受 existed 影响。
-        assert_eq!(DiffMode::Full.resolve(false), DiffMode::Full);
-        assert_eq!(DiffMode::None.resolve(true), DiffMode::None);
+    fn auto_resolves_to_stat() {
+        // 默认不回显内容：新建与覆盖都只给行数统计。
+        assert_eq!(DiffMode::Auto.resolve(), DiffMode::Stat);
+        // 显式档位原样保留。
+        assert_eq!(DiffMode::Full.resolve(), DiffMode::Full);
+        assert_eq!(DiffMode::Hunks.resolve(), DiffMode::Hunks);
+        assert_eq!(DiffMode::None.resolve(), DiffMode::None);
     }
 
     #[test]
@@ -236,7 +236,6 @@ mod tests {
     fn stat_render_is_one_line_without_content() {
         let out = render(
             DiffMode::Stat,
-            false,
             "x.md",
             "",
             &"长内容长内容\n".repeat(50),
@@ -254,7 +253,7 @@ mod tests {
         // 中文内容：直接按字节切会在多字节序列中间 panic，这条测试盯的就是那个 panic。
         let old = "";
         let new = "第一行内容\n".repeat(2000);
-        let out = render(DiffMode::Hunks, false, "x.md", old, &new, 0, new.len()).expect("hunks");
+        let out = render(DiffMode::Hunks, "x.md", old, &new, 0, new.len()).expect("hunks");
         assert!(out.contains("diff 已截断"), "超 4KB 必须注明截断: {out}");
         assert!(
             out.contains("diff:\"full\""),
@@ -265,16 +264,7 @@ mod tests {
 
     #[test]
     fn hunks_keeps_short_diff_intact() {
-        let out = render(
-            DiffMode::Hunks,
-            true,
-            "a.rs",
-            "a\nb\nc\n",
-            "a\nB\nc\n",
-            6,
-            6,
-        )
-        .expect("hunks");
+        let out = render(DiffMode::Hunks, "a.rs", "a\nb\nc\n", "a\nB\nc\n", 6, 6).expect("hunks");
         assert!(out.contains("@@"), "短 diff 应完整保留: {out}");
         assert!(!out.contains("diff 已截断"), "不该误报截断: {out}");
     }
@@ -286,12 +276,12 @@ mod tests {
         let old = "one\ntwo\nthree\n";
         let new = "one\nTWO\nthree\n";
         let legacy = unified_diff("a.txt", old, new);
-        let out = render(DiffMode::Full, true, "a.txt", old, new, 14, 14).expect("full");
+        let out = render(DiffMode::Full, "a.txt", old, new, 14, 14).expect("full");
         assert_eq!(out, legacy);
     }
 
     #[test]
     fn none_render_returns_no_field() {
-        assert!(render(DiffMode::None, true, "a.txt", "a", "b", 1, 1).is_none());
+        assert!(render(DiffMode::None, "a.txt", "a", "b", 1, 1).is_none());
     }
 }

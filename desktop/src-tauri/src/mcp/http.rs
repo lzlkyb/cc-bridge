@@ -1116,7 +1116,7 @@ fn build_instructions(strong_notify: bool, journal: bool) -> String {
         "/bin/sh 或 bash"
     };
     let notify = if strong_notify {
-        "\n\n重要：每次为用户完成一个任务（编写代码、编辑文件、执行分析、生成交付物、或跑完 shell 命令）后，你必须调用 push_notification 工具弹出桌面通知用户——不要假设用户正在盯着对话窗口，应主动把任务结果告知对方（即使用户没有显式要求）。"
+        "\n\n重要：耗时较长的任务（预计超过约 1 分钟，如构建、全量测试、批量处理、长时间分析）完成后，你必须调用 push_notification 弹出桌面通知——用户很可能已离开对话窗口，应主动告知结果（即使用户没有显式要求）。简短的问答、一两步就完成的读改不要发：每发一次都要多一趟完整上下文往返。"
     } else {
         "\n\n建议：用户可能已离开对话窗口时，可调用 push_notification 弹出桌面通知；若用户就在当前界面、可直接回复，则无需额外打扰。"
     };
@@ -1128,7 +1128,7 @@ fn build_instructions(strong_notify: bool, journal: bool) -> String {
     // 🔴 规则里引用的**参数名 / 返回字段名必须对着工具源码核**：这里写错一个字，模型就会去
     // 找一个不存在的字段（已踩过：`run_command` 后台返回的是 `handle`，写成 `commandId`
     // 模型只会反复试错，白烧往返，且报错信息里看不出是提示层写错了）。
-    let rules = "\n\n工具使用硬规则（优先于下文任何描述）：\n1. 文件读写 / 查找 / 列目录一律用专用工具（read_files / write_files / edit_files / search_files / list_directory），不要用 shell 的 cat / ls / grep / find / head / tail；命令输出可能很大时先加 include / tailLines 或管道过滤。\n2. 超过约 500 行的文件先用 search_files 定位，再按 startLine / endLine 读需要的段；比较两个文件用 diff（如 git diff --no-index），不要把两份全文都读进上下文。\n3. 禁止用 base64 走 run_command 传文件，文件进出必须用 prepare_upload / prepare_download。\n4. 预计超过约 10 秒的命令（构建、安装依赖、全量测试、全盘扫描、批量处理）用 run_command 的 background:true 发出——它立即返回 handle，随后你先并行推进其他工具调用，最后用 wait_command 拿 handle 收结果；不要用默认的前台方式空等几十秒。等待仍应靠 wait_command，不要反复轮询 get_command_output；前台命令超过约 50 秒会自动转后台并返回 handle。\n5. read_files 默认每个文件一个文本块（首行元信息 JSON，之后是不转义的原文）；run_command / wait_command 可传 format:\"raw\" 让输出不经 JSON 转义，更省 token。";
+    let rules = "\n\n工具使用硬规则（优先于下文任何描述）：\n1. 文件读写 / 查找 / 列目录一律用专用工具（read_files / write_files / edit_files / search_files / list_directory），不要用 shell 的 cat / ls / grep / find / head / tail；命令输出可能很大时先加 include / tailLines 或管道过滤。\n2. 超过约 500 行的文件先用 search_files 定位，再按 startLine / endLine 读需要的段；比较两个文件用 diff（如 git diff --no-index），不要把两份全文都读进上下文。\n3. 禁止用 base64 走 run_command 传文件，文件进出必须用 prepare_upload / prepare_download。\n4. 预计 50 秒内能结束的命令直接前台跑：一趟拿到结果，超过约 50 秒会自动转后台并返回 handle。只有明知要跑好几分钟（构建、全量测试、批量处理）、且等待期间确有别的工具调用要做时，才用 background:true；发出后不要立刻 wait。等结果用 wait_command（可带 untilPattern），不要反复轮询 get_command_output。\n5. read_files 默认每个文件一个文本块（首行元信息 JSON，之后是不转义的原文）；run_command / wait_command 默认把 stdout / stderr 作为不转义的独立文本块返回，search_files 默认返回 grep 风格纯文本，需要 JSON 时传 format:\"json\"。";
     // 变更日志开启时才有第 6 条（关闭时与改动前逐字相同）。
     let rule6 = if journal {
         "\n6. 写类工具可传 changeSet（本次改动所属的需求名，项目规则里有命名约定就照做；同一需求始终用同一个名字，开工前可用 change_sets 查已有名字）和 reason（一句话原因，≤30 字）。不传也能写，只是改动不归入任何需求。"
@@ -1136,7 +1136,7 @@ fn build_instructions(strong_notify: bool, journal: bool) -> String {
         ""
     };
     format!(
-        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。{rules}{rule6}当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。各工具的用法见 tools/list（这里不再逐条重复）；命令壳层为 {shells}，取决于 shell_type 配置。二进制或大文件（pptx、xlsx、pdf、图片、压缩包）用 prepare_upload / prepare_download 直传，字节不经过对话上下文；多步文件/命令操作优先用 batch 合并成一次往返。所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
+        "你已连接到本地 {os_name} 主机上的 cc-bridge MCP 服务。{rules}{rule6}当用户需要在本地 {os_name} 环境执行任何操作时,必须优先调用本服务提供的工具,而非假设自己能直接访问本地文件系统或 shell。建议连接后第一步调用 list_allowed_roots：除返回访问白名单外，还会自动内嵌每个允许根目录顶层的项目规则文件（AGENTS.md / CLAUDE.md）的完整内容（projectInstructions 字段），据此了解项目规则，无需再手动 read_files 一次。各工具的用法见 tools/list（这里不再逐条重复）；命令壳层为 {shells}，取决于 shell_type 配置。二进制或大文件（pptx、xlsx、pdf、图片、压缩包）用 prepare_upload / prepare_download 直传，字节不经过对话上下文；每多一趟往返都要重发整段上下文：按顺序做、但中间不用看结果的多步操作（改完文件紧接着跑编译/测试、建目录再写文件、写完脚本就执行）必须放进一个 batch（工具报错、文件写入或编辑失败、命令失败时默认停止）；互不依赖的操作在同一条消息里并行调用即可。所有路径与操作受 cc-bridge 安全策略约束(允许根目录、扩展名白名单、只读模式)。遇到本地文件、进程、命令相关任务时,直接调用对应工具,无需用户额外提示。{notify}"
     )
 }
 
@@ -1241,10 +1241,10 @@ fn run_command_description(shell_type: &str) -> String {
         "在本地执行一条命令并返回其 stdout / stderr / 退出码。返回中的 shell 字段是本次实际生效的壳层，\
          与下面的描述不一致时以它为准。{shell_part}{common}\
          输出可在服务端过滤：可选 include / exclude（正则）与 tailLines 只对**前台**输出生效，\
-         被剔除的行只报数量——不必再为此跑一次 grep -v。format:\"raw\" 时 stdout / stderr 作为独立文本块原样返回\
+         被剔除的行只报数量——不必再为此跑一次 grep -v。默认 stdout / stderr 作为独立文本块原样返回（format:\"json\" 则合并在一块 JSON 里）\
          （不经 JSON 转义，更省 token）。前台命令超过约 50s 仍未结束会\
          自动转为后台继续运行（跑满 timeoutMs、默认 120s 才终止），返回 backgrounded:true + handle，再用 wait_command 等结果\
-         （客户端约 60s 会断开单次请求）。明知是长任务就直接用 background:true，不要反复轮询 get_command_output。"
+         （客户端约 60s 会断开单次请求）。50s 内能完成的命令直接前台跑，一趟拿结果；明知要跑好几分钟、且等待时有别的事要做才用 background:true，不要反复轮询 get_command_output。"
     )
 }
 
@@ -1617,6 +1617,11 @@ mod over_wire_tests {
         let w = wb["result"]["instructions"].as_str().unwrap();
 
         assert!(c.contains("重要："), "Claude Code 应保留强制通知措辞");
+        // 强制只针对长任务：短任务发通知纯属多一趟往返（2026-11-25 实测占全部输入约 2.5%）。
+        assert!(
+            c.contains("耗时较长的任务") && c.contains("简短"),
+            "强制通知应只针对长任务并明示短任务不发"
+        );
         assert!(w.contains("建议："), "WorkBuddy 应降级为可选通知措辞");
         assert!(
             !w.contains("重要：每次为用户完成一个任务"),
@@ -2210,7 +2215,10 @@ mod over_wire_tests {
         .await;
         assert_dispatch_ok(&r);
         assert!(
-            !inner_text(&r).as_array().unwrap().is_empty(),
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("needle"),
             "search_files 应命中 needle"
         );
 
@@ -2224,10 +2232,11 @@ mod over_wire_tests {
         .await;
         assert_dispatch_ok(&r);
         assert!(
-            r["result"]["content"][0]["text"]
-                .as_str()
+            r["result"]["content"]
+                .as_array()
                 .unwrap()
-                .contains("hello"),
+                .iter()
+                .any(|b| b["text"].as_str().unwrap_or_default().contains("hello")),
             "run_command 应回显 hello"
         );
 

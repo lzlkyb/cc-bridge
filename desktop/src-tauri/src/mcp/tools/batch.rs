@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::audit;
-use crate::mcp::http::dispatch_tool;
+use crate::mcp::http::{dispatch_tool, resolve_tool_name};
 use crate::mcp::tools::{result_text_bytes, wire_chars, wire_chars_opt};
 use crate::state::AppState;
 
@@ -131,25 +131,57 @@ pub async fn handle(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, Str
         .await
 }
 
-/// 子调用参数的默认值修正：read_files 未指定 `format` 时补成 `"json"`。
-///
-/// read_files 单独调用默认 raw（每个文件一个文本块），但在 batch 里没有好处：子结果本就要整体
-/// 再做一次 JSON 转义，省不了字符；反而 [`flatten_sub_result`] 会把第 2 个起的文件归进 `notes`，
-/// 语义不对。保持 json 则得到结构化的 `data` 数组。显式传了 `format` 的不动。
+/// 子结果本就要整体序列化，默认保留结构化的 `data`（包括搜索命中和命令输出）。
+/// 显式格式仍按调用者要求返回，`null` 与直接调用一样视为省略。
 fn sub_op_arguments(tool: &str, mut args: Value) -> Value {
-    let is_read_files = tool == "read_files" || tool.ends_with("__read_files");
-    if is_read_files {
+    if matches!(
+        tool,
+        "read_files" | "search_files" | "run_command" | "wait_command"
+    ) && args.get("format").is_none_or(Value::is_null)
+    {
         if let Some(obj) = args.as_object_mut() {
-            obj.entry("format").or_insert_with(|| json!("json"));
+            obj.insert("format".into(), json!("json"));
         }
     }
     args
+}
+
+/// 文件工具把逐文件错误留在 data，命令工具把退出状态留在 data，两者失败时仍可能成功分发。
+fn sub_op_error(tool: &str, data: Option<&Value>) -> Option<String> {
+    let data = data?;
+    match tool {
+        "edit_files" | "write_files" => {
+            let failed = data
+                .as_array()?
+                .iter()
+                .filter(|row| row["ok"] == false)
+                .count();
+            (failed > 0).then(|| format!("{failed} 个文件操作失败，详见 data 中的逐文件结果。"))
+        }
+        "run_command" | "wait_command" => {
+            if let Some(code) = data["exitCode"].as_i64().filter(|&code| code != 0) {
+                Some(format!("命令退出码为 {code}。"))
+            } else if data["timedOut"] == true {
+                Some("等待命令完成超时。".into())
+            } else if data["terminated"] == true
+                || (tool == "run_command"
+                    && data.get("exitCode").is_some_and(Value::is_null)
+                    && data["running"] != true)
+            {
+                Some("命令已终止。".into())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, String> {
     let audit_enabled = state.config.read().await.audit_enabled;
     // 从 task_local 作用域取本次调用的来源 IP，补写进每条子操作审计（之前恒为 None）。
     let source_ip = audit::current_source_ip();
+    let tools = super::registry::all_tools();
 
     let mut results = Vec::with_capacity(args.operations.len());
     // 审计条目延后到预算层之后写（见循环内注释）：先收集，等知道「哪条被内联」再记字节。
@@ -164,6 +196,7 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
             not_run_from = Some(idx);
             break;
         }
+        let tool = resolve_tool_name(&op.tool, &tools).map_or(op.tool.as_str(), |spec| spec.name);
         // 复用现有分发 → 复用全部安全校验（只读模式 / WRITE_TOOLS / 路径白名单）。
         // 这是 batch 设计的核心：零新文件操作代码 = 零新攻击面。
         // Box::pin 断开与 dispatch_tool 的互递归（async fn 递归必须加间接层）。
@@ -179,7 +212,7 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
         let (res, op_backup) = crate::audit::with_op_backup(Box::pin(async {
             let r = dispatch_tool(
                 &op.tool,
-                sub_op_arguments(&op.tool, op.arguments.clone()),
+                sub_op_arguments(tool, op.arguments.clone()),
                 state,
             )
             .await;
@@ -189,6 +222,24 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
         // 子操作自身的分发耗时：修复之前全传 None 导致日志列表里 batch 相关行耗时列一律
         // 显示“—”的问题。
         let duration_ms = t0.elapsed().as_millis() as u64;
+        let (fields, error) = match res {
+            Ok(v) => {
+                let fields = flatten_sub_result(v);
+                let error = sub_op_error(tool, fields.get("data"));
+                (fields, error)
+            }
+            Err(error) => (serde_json::Map::new(), Some(error)),
+        };
+        let ok = error.is_none();
+        executed += usize::from(ok);
+        let mut entry = json!({ "index": idx, "tool": op.tool, "ok": ok });
+        if let Some(error) = &error {
+            entry["error"] = json!(error);
+        }
+        entry
+            .as_object_mut()
+            .expect("entry is an object")
+            .extend(fields);
 
         // 逐子操作留痕：外层工具调用只记一条，写操作必须单独留痕，否则绕过审计。
         // server_ms/io_ms/audit_ms/net_ms 仍不单独测（io 归并到 batch 外层审计的 ioMs，作用域
@@ -203,7 +254,7 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
                 index: idx,
                 tool: op.tool.clone(),
                 params: op.arguments.to_string(),
-                err: res.as_ref().err().cloned(),
+                err: error,
                 duration_ms,
                 // 备份信息必须在 with_op_backup 作用域内取（审查 P2）：`take_op_backup`
                 // 读的是 task_local 槽，一旦作用域结束，外面再取恒为 None——原实现
@@ -219,30 +270,9 @@ async fn handle_inner(args: BatchArgs, state: &Arc<AppState>) -> Result<Value, S
             });
         }
 
-        match res {
-            Ok(v) => {
-                executed += 1;
-                let mut entry = json!({
-                    "index": idx,
-                    "tool": op.tool,
-                    "ok": true,
-                });
-                if let Value::Object(m) = &mut entry {
-                    m.extend(flatten_sub_result(v));
-                }
-                results.push(entry);
-            }
-            Err(e) => {
-                results.push(json!({
-                    "index": idx,
-                    "tool": op.tool,
-                    "ok": false,
-                    "error": e,
-                }));
-                if args.stop_on_error {
-                    break;
-                }
-            }
+        results.push(entry);
+        if !ok && args.stop_on_error {
+            break;
         }
     }
 
@@ -461,26 +491,24 @@ fn final_result_bytes(
         let Some(idx) = e.get("index").and_then(Value::as_u64) else {
             continue;
         };
-        let pair = match e.get("error").and_then(Value::as_str) {
-            // 错误文案是纯文本、而且短到不可能越线 ⇒ 字节与字符同值。
-            Some(err) => {
-                let n = ("Error: ".len() + err.len()) as u64;
-                (n, Some(n), crate::audit::non_ascii_bytes(err))
-            }
-            None => match (flat_payload_size(e), e.get("result")) {
-                // 展平过的子结果：按展平后的实际体积记（已少一层转义）。
-                (Some(pair), _) => pair,
-                // 只数文本块：含图片的子结果会落到这里（见 flatten_sub_result）。
-                (None, Some(r)) => (
-                    result_text_bytes(r),
-                    crate::mcp::tools::result_wire_chars(r),
-                    crate::mcp::tools::result_text_wide_bytes(r),
-                ),
-                // 没有 result 字段 = 确实什么都没发出 ⇒ 真实的 0，不是「未知」。
-                (None, None) => (0, Some(0), 0),
-            },
+        let (mut bytes, mut chars, mut wide) = match (flat_payload_size(e), e.get("result")) {
+            (Some(pair), _) => pair,
+            // 只数文本块：含图片的子结果会落到这里（见 flatten_sub_result）。
+            (None, Some(r)) => (
+                result_text_bytes(r),
+                crate::mcp::tools::result_wire_chars(r),
+                crate::mcp::tools::result_text_wide_bytes(r),
+            ),
+            (None, None) => (0, Some(0), 0),
         };
-        m.insert(idx as usize, pair);
+        // 文件回执和命令输出即使失败也会随错误一起发送，审计需同时计量。
+        if let Some(err) = e.get("error").and_then(Value::as_str) {
+            let error_text = format!("Error: {err}");
+            bytes += error_text.len() as u64;
+            chars = chars.map(|n| n + (wire_chars(&error_text) - wire_chars("")) as u64);
+            wide += crate::audit::non_ascii_bytes(&error_text);
+        }
+        m.insert(idx as usize, (bytes, chars, wide));
     }
     m
 }
@@ -839,8 +867,7 @@ mod tests {
     #[tokio::test]
     async fn stop_on_error_breaks_and_reports_completed() {
         let state = test_state(Some(std::env::temp_dir().join("cc-bridge-batch-stop")));
-        // op0：未知工具 → 工具级 Err（Unknown tool）。read_files 永远返回 Ok（单文件错误内联），
-        // 无法触发 stopOnError，故此处用工具级失败来测中断。
+        // op0：未知工具 → 工具级 Err（Unknown tool）。
         // op1：普通 read，本不应执行（stopOnError=true 应在 op0 失败后中断）。
         let args = BatchArgs {
             operations: vec![
@@ -865,6 +892,107 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Unknown tool"));
+    }
+
+    #[tokio::test]
+    async fn stop_on_error_observes_per_file_failures() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|c| c.audit_enabled = false);
+        let original = dir.join("original.txt");
+        let marker = dir.join("after.txt");
+        std::fs::write(&original, "original").unwrap();
+        let next = json!({ "tool": "write_files", "arguments": {
+            "files": [{ "path": marker, "content": "ran" }]
+        }});
+        let failed_ops = [
+            json!({ "tool": "edit_files", "arguments": { "files": [{
+                "path": original, "oldString": "missing", "newString": "changed"
+            }] }}),
+            json!({ "tool": "write_files", "arguments": { "files": [
+                { "path": dir.join("written.txt"), "content": "written" },
+                { "path": original.join("not-a-file.txt"), "content": "cannot write" }
+            ] }}),
+        ];
+        for (op, failed_row) in failed_ops.into_iter().zip([0, 1]) {
+            let args = serde_json::from_value(json!({ "operations": [op, next] })).unwrap();
+            let out = handle(args, &state).await.unwrap();
+            let result: Value =
+                serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(result["total"], 1, "{result}");
+            assert_eq!(result["executed"], 0, "{result}");
+            assert_eq!(result["results"][0]["ok"], false, "{result}");
+            assert_eq!(
+                result["results"][0]["data"][failed_row]["ok"], false,
+                "{result}"
+            );
+            assert!(!marker.exists(), "后续写入未跳过");
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.join("written.txt")).unwrap(),
+            "written"
+        );
+    }
+
+    #[tokio::test]
+    async fn nonzero_command_exit_respects_stop_on_error_with_raw_output() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|c| {
+            c.shell_enabled = true;
+            c.audit_enabled = false;
+        });
+        let marker = dir.join("after.txt");
+        for stop in [true, false] {
+            let args = serde_json::from_value(json!({ "stopOnError": stop, "operations": [
+                { "tool": "mcp__cc-bridge__run_command", "arguments": {
+                    "command": "echo command-output && exit 1", "cwd": dir, "format": "raw"
+                }},
+                { "tool": "write_files", "arguments": {
+                    "files": [{ "path": marker, "content": "ran" }]
+                }}
+            ] }))
+            .unwrap();
+            let out = handle(args, &state).await.unwrap();
+            let result: Value =
+                serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(result["total"], if stop { 1 } else { 2 }, "{result}");
+            assert_eq!(result["results"][0]["ok"], false, "{result}");
+            assert_eq!(result["results"][0]["data"]["exitCode"], 1, "{result}");
+            assert!(
+                result["results"][0]["notes"]
+                    .to_string()
+                    .contains("command-output"),
+                "{result}"
+            );
+            assert_eq!(marker.exists(), !stop);
+        }
+    }
+
+    #[tokio::test]
+    async fn search_sub_op_preserves_json_default_and_accepts_explicit_text() {
+        let (state, dir) = crate::mcp::tools::testutil::make_state(|c| c.audit_enabled = false);
+        let file = dir.join("example.txt");
+        std::fs::write(&file, "needle in a file\n").unwrap();
+        let args = serde_json::from_value(json!({ "operations": [
+            { "tool": "mcp__cc-bridge__search_files", "arguments": { "rootPath": file, "pattern": "needle" } },
+            { "tool": "search_files", "arguments": { "rootPath": file, "pattern": "needle", "format": "text" } },
+            { "tool": "search_files", "arguments": { "rootPath": file, "pattern": "needle", "format": null } }
+        ] })).unwrap();
+        let out = handle(args, &state).await.unwrap();
+        let result: Value =
+            serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            result["results"][0]["data"][0]["line"], "needle in a file\n",
+            "{result}"
+        );
+        assert!(
+            result["results"][1]["text"]
+                .as_str()
+                .unwrap()
+                .contains("1:needle in a file"),
+            "{result}"
+        );
+        assert_eq!(
+            result["results"][2]["data"], result["results"][0]["data"],
+            "{result}"
+        );
     }
 
     /// 返回预算层：整条超限时「按顺序内联 + 其余换 stub」，且**整条 JSON 必须仍可解析**。
@@ -1063,6 +1191,7 @@ mod tests {
         );
         let env: Value = serde_json::from_str(out["content"][0]["text"].as_str().unwrap()).unwrap();
         let r = &env["results"][0];
+        assert_eq!(r["ok"], true, "{env}");
         assert_eq!(r["data"]["backgrounded"], json!(true), "{env}");
         let handle = r["data"]["handle"].as_str().expect("handle").to_string();
         let _ = crate::mcp::tools::stop_command::handle(
@@ -1079,14 +1208,20 @@ mod tests {
             json!("json")
         );
         assert_eq!(
-            sub_op_arguments("mcp__cc-bridge__read_files", json!({}))["format"],
-            json!("json")
-        );
-        assert_eq!(
             sub_op_arguments("read_files", json!({ "format": "raw" }))["format"],
             json!("raw")
         );
-        assert!(sub_op_arguments("run_command", json!({}))
+        // run_command / wait_command 单独调用默认 raw，在 batch 里同样默认 json。
+        assert_eq!(
+            sub_op_arguments("run_command", json!({}))["format"],
+            json!("json")
+        );
+        assert_eq!(
+            sub_op_arguments("wait_command", json!({}))["format"],
+            json!("json")
+        );
+        // 其它工具不加 format。
+        assert!(sub_op_arguments("edit_files", json!({}))
             .get("format")
             .is_none());
     }
@@ -1157,6 +1292,8 @@ mod tests {
             }),
             // 失败子结果：与 http.rs 同口径（"Error: " + 文案）
             json!({ "index": 2, "tool": "read_files", "ok": false, "error": "nope" }),
+            json!({ "index": 3, "tool": "run_command", "ok": false, "error": "exit 1",
+                    "data": { "exitCode": 1 }, "notes": ["command output"] }),
         ];
         let m = final_result_bytes(&results);
         // 字节口径与原断言完全一致（第一项 10 是空 content 数组的序列化长度）。
@@ -1173,6 +1310,10 @@ mod tests {
         assert_eq!(
             m.get(&2).copied().map(|p| p.1),
             Some(Some(("Error: ".len() + 4) as u64))
+        );
+        assert_eq!(
+            m[&3].0,
+            ("Error: exit 1".len() + "{\"exitCode\":1}".len() + "command output".len()) as u64
         );
         // 可计量的结果必须带 `Some(字符数)`：`None` 在聚合侧是「没量出来」，
         // 会被降级成字节口径并计入 charlessCalls。
