@@ -173,6 +173,25 @@ export const TUI_EDGE_SEQ = {
   end: "\x1b[1;5F",
 } as const;
 
+/** 滚动条子树的标记属性。手势侧靠它认出「这一按不是选字」（见 isTuiScrollbarTarget）。 */
+const SCROLLBAR_ATTR = "data-tui-scrollbar";
+
+/**
+ * 事件目标是否落在 TUI 虚拟滚动条上。
+ *
+ * 🔴 滚动条 DOM 就追加在终端容器里，而容器的**捕获阶段 pointerdown** 会起选择手势
+ * （useSshTerminalSelect）。不排除它的后果是一条完整的故障链：拖 thumb 即闭输入闸
+ * ⇒ 滚动条自己合成的 wheel 与边界跳转全被 `disableStdin` 丢掉（拖了不动）；
+ * 越过 4px 阈值还会在右缘建一个幻影选区并自动写进剪贴板。
+ *
+ * 排除放在**手势侧**而不是在滚动条里 stopPropagation：后者会连带掐掉容器的 grabFocus，
+ * 拖完滚动条终端就丢焦点（onThumbPointerDown 刻意不 stopPropagation 正是为了它）。
+ */
+export function isTuiScrollbarTarget(target: EventTarget | null): boolean {
+  const el = target as Element | null;
+  return Boolean(el && typeof el.closest === "function" && el.closest(`[${SCROLLBAR_ATTR}]`));
+}
+
 export interface TuiScrollbarOptions {
   /**
    * 滚轮归属变化时回调（含挂载后首次计算）。四态枚举见 WheelOwner：
@@ -188,8 +207,9 @@ export interface TuiScrollbarOptions {
 
 /**
  * 给已 open 的终端挂上 TUI 虚拟滚动条。返回 detach 函数（幂等）。
- * 只追加 DOM 与监听，不触碰 xterm 内部状态，与拖选复制（另一条事件源）天然互斥：
- * 转发 wheel 时鼠标报告必然是开的（TUI 态），而拖选修复只在按住拖动时临时关它。
+ * 只追加 DOM 与监听，不触碰 xterm 内部状态。
+ * 🔴 它与拖选**不是**天然互斥的两条事件源：bar 就挂在同一个容器里，容器的捕获阶段
+ * pointerdown 会把它当成选择起手。手势侧必须用 isTuiScrollbarTarget 排除本子树。
  */
 export function attachTuiScrollbar(
   term: Terminal,
@@ -201,6 +221,7 @@ export function attachTuiScrollbar(
 
   // ── DOM：右缘覆盖层 + thumb ──
   const bar = document.createElement("div");
+  bar.setAttribute(SCROLLBAR_ATTR, "");
   bar.style.cssText =
     "position:absolute;right:2px;top:8px;bottom:8px;width:10px;z-index:15;display:none;" +
     "border-radius:6px;touch-action:none;cursor:default";
@@ -435,9 +456,9 @@ export function attachShiftWheel(term: Terminal): void {
  * 都不会发生。
  *
  * ⚠️ 与其它容器级监听的顺序：Shift 分支在捕获阶段 stopPropagation，注册在它之后的
- * 容器级 wheel 监听（无论捕获还是冒泡）在按住 Shift 时都收不到事件。将来若把 Ctrl+滚轮
- * 缩放（useTerminalTypography，现挂冒泡阶段）改成容器捕获监听，要么放在本守卫之前
- * 注册，要么在此处显式放行 Ctrl/Meta，否则缩放会静默失效。
+ * 容器级 wheel 监听在按住 Shift 时都收不到事件。Ctrl+滚轮缩放（useTerminalTypography）
+ * 就挂在本守卫**之后**的捕获阶段：Ctrl+Shift+滚轮归 Shift（滚本地历史），单 Ctrl 才缩放。
+ * 这是有意的归属顺序——把缩放挪到守卫前面会让 Shift+滚轮在按住 Ctrl 时静默失效。
  */
 export function attachSelectWheelGuard(
   container: HTMLElement,

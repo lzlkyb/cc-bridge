@@ -127,3 +127,65 @@ describe("输入闸的兜底自愈", () => {
     expect(term.options.disableStdin).toBe(false);
   });
 });
+
+describe("TUI 虚拟滚动条不吃选择手势", () => {
+  /** 滚动条 DOM 与终端共用一个容器；sent 收集所有合成鼠标事件（起选区 / 补点击都会留痕）。 */
+  function setupScrollbar() {
+    const sent: string[] = [];
+    const t = term as unknown as { modes: unknown; element: unknown };
+    t.modes = { mouseTrackingMode: "any" };
+    t.element = { querySelector: () => ({ dispatchEvent: (e: MouseEvent) => (sent.push(e.type), true) }) };
+    const bar = document.createElement("div");
+    bar.setAttribute("data-tui-scrollbar", "");
+    const thumb = document.createElement("div");
+    bar.append(thumb);
+    container.append(bar);
+    act(() => {
+      api.attach(term, container);
+    });
+    return { sent, bar, thumb };
+  }
+
+  it("🔴 拖 thumb 越过 4px：不闭输入闸、不起幻影选区（否则滚动条自己合成的 wheel 全被丢掉）", () => {
+    const { sent, thumb } = setupScrollbar();
+    act(() => {
+      thumb.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true, clientX: 300, clientY: 100 }));
+    });
+    expect(term.options.disableStdin).not.toBe(true);
+    act(() => {
+      window.dispatchEvent(new PointerEvent("pointermove", { buttons: 1, clientX: 300, clientY: 160 }));
+    });
+    expect(term.options.disableStdin).not.toBe(true);
+    expect(api.dragSelecting).toBe(false);
+    expect(sent).toEqual([]);
+    act(() => {
+      window.dispatchEvent(new PointerEvent("pointerup", { button: 0, bubbles: true }));
+    });
+    expect(sent).toEqual([]);
+  });
+
+  it("🔴 点轨道翻屏：不闭闸，松手也不补发点击给远端 TUI", async () => {
+    const { sent, bar } = setupScrollbar();
+    act(() => {
+      bar.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true, clientX: 300, clientY: 40 }));
+    });
+    expect(term.options.disableStdin).not.toBe(true);
+    act(() => {
+      window.dispatchEvent(new PointerEvent("pointerup", { button: 0, bubbles: true }));
+    });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(sent).toEqual([]);
+  });
+
+  it("对照：同一容器里的终端区域按下仍照常闭闸（排除只针对滚动条子树）", () => {
+    setupScrollbar();
+    const screen = document.createElement("div");
+    container.append(screen);
+    act(() => {
+      screen.dispatchEvent(new PointerEvent("pointerdown", { button: 0, bubbles: true }));
+    });
+    expect(term.options.disableStdin).toBe(true);
+  });
+});

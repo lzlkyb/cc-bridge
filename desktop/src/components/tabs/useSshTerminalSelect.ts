@@ -10,7 +10,7 @@ import type { Terminal } from "@xterm/xterm";
 import { toast } from "../ui/toast";
 import { createSelectionCache, GESTURE_COPY_CACHE_MS } from "../../lib/terminalSelectionCache";
 import { attachSelectionAids } from "../../lib/terminalSelectionAids";
-import { attachSelectWheelGuard } from "../../lib/terminalScroll";
+import { attachSelectWheelGuard, isTuiScrollbarTarget } from "../../lib/terminalScroll";
 import { beginSelection, createSelectGesture, isSynthMouse } from "../../lib/terminalSelectGesture";
 import {
   abortPointerGesture,
@@ -115,7 +115,8 @@ export function useSshTerminalSelect({
       // 若也置位 pointerDownRef，右键上的轻微移动就会被当成拖选。
       // 🔴 同时**提前闭闸**：4px 之前泄漏的报告会让远端 TUI 重绘、把视口弹回底部（见 terminalPointerGate）。
       const onPointerDown = (e: PointerEvent) => {
-        if (e.button !== 0) return;
+        // 滚动条子树不是手势：闭闸会吞掉它自己合成的 wheel（见 isTuiScrollbarTarget）。
+        if (e.button !== 0 || isTuiScrollbarTarget(e.target)) return;
         pointerDownRef.current = true;
         downPosRef.current = { x: e.clientX, y: e.clientY };
         const t0 = termRef.current;
