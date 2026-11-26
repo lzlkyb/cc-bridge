@@ -3,6 +3,7 @@ import { Icon } from "../ui/icon";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 import { getTerminal, listTerminals } from "../../lib/terminalRegistry";
 import { MAX_HITS, searchAllReport, type GlobalHit, type SearchReport } from "../../lib/terminalGlobalSearch";
+import { isImeComposing } from "../../lib/utils";
 
 interface Props {
   /** 全部会话（拿 sessionId → 连接名，用于结果里标「是哪台机器」）。 */
@@ -61,14 +62,33 @@ export function TerminalGlobalSearch({ sessions, onActivate, onClose }: Props) {
     return m;
   }, [sessions]);
 
-  /** 跳到命中：先切标签（数据在后台都在，但用户要看），再滚到那一行。 */
+  /** 跳到命中：先切标签（数据在后台都在，但用户要看），再滚到那一行，然后**关窗**。
+   * 🔴 不关窗就是个键盘陷阱：焦点已经交给终端，而 fixed 遮罩还盖着整屏——
+   * Esc 原样发给远端，浮层只能用鼠标点掉。 */
   const goto = (hit: GlobalHit) => {
     onActivate(hit.sessionId);
     const term = getTerminal(hit.sessionId);
-    if (!term) return;
-    term.scrollToLine(hit.line);
-    term.focus();
+    if (term) {
+      term.scrollToLine(hit.line);
+      term.focus();
+    }
+    onClose();
   };
+
+  // Esc 关窗挂 window 级：焦点可能已经不在输入框里（Tab 出了浮层、点过结果按钮）。
+  // 两条不抢的情形：① IME 组词中的 Esc 属于输入法（收候选窗）；② 焦点在终端里——
+  // 那时 Esc 是远端的刚需（vim / Claude Code），抢过来代价太大。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || isImeComposing(e)) return;
+      const target = e.target as Element | null;
+      if (target?.closest?.(".xterm")) return;
+      e.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose]);
 
   // 「模式非法」必须单独一态：正则半截时一条都没扫，显示「无结果」是在撒谎。
   const invalid = report?.invalidPattern ?? false;
@@ -94,13 +114,6 @@ export function TerminalGlobalSearch({ sessions, onActivate, onClose }: Props) {
             value={query}
             placeholder="搜索所有标签的终端内容"
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              // 焦点在本输入框，Esc 不会发给远端（终端没聚焦）。
-              if (e.key === "Escape") {
-                e.preventDefault();
-                onClose();
-              }
-            }}
             className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground outline-none focus:border-primary"
           />
           <span

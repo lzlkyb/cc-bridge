@@ -99,16 +99,23 @@ export function useTerminalTypography({ termRef, containerRef, doFit }: Args) {
     return () => cancelAnimationFrame(id);
   }, [fontSize, fontFamily, termRef, doFit]);
 
+  // 🔴 必须挂**捕获**阶段并 stopPropagation：xterm 的 wheel 监听在容器子元素上，
+  // 冒泡阶段才拦的话它已经把这次滚轮编码成 SGR 报告发给远端了（TUI 滚一屏 / 主屏跳
+  // scrollback），preventDefault 只挡住 WebView 的整页缩放，挡不住已经发出去的报告。
+  // 捕获阶段停掉传播，xterm 根本收不到这一格 → 只缩放字号，远端不动。
+  // ⚠️ 注册晚于 attachSelectWheelGuard（同容器捕获）：Ctrl+Shift+滚轮会先被守卫的
+  // Shift 分支吃掉（滚本地历史），这是有意的归属顺序，见 terminalScroll 头注。
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault(); // 否则 WebView 会缩放整页
+      e.stopPropagation(); // 否则 xterm 照样把这一格转发给远端
       bump(e.deltaY < 0 ? 1 : -1);
     };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
+    el.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () => el.removeEventListener("wheel", onWheel, { capture: true });
   }, [containerRef, bump]);
 
   // 内置字体（JetBrains Mono / Fira Code）是 FontFace **异步**注册的：

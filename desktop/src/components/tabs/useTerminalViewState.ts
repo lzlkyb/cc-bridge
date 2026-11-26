@@ -1,4 +1,5 @@
 import { useEffect, useState, type RefObject, type Dispatch, type SetStateAction } from "react";
+import { isTypingInUi } from "../../lib/typingFocus";
 
 /**
  * 共享侧栏的快捷键与终端全屏。折叠状态由 App 管理，避免两套侧栏状态互相覆盖。
@@ -33,6 +34,7 @@ export function useTerminalViewState(
       if (!(e.metaKey || e.ctrlKey) || !e.shiftKey) return;
       if (e.key.toLowerCase() !== "b") return;
       if (!rootRef.current?.offsetParent) return;
+      if (isTypingInUi()) return; // 重命名 / 查找 / 弹窗输入里打字时不抢键
       e.preventDefault();
       setCollapsed((c) => !c);
     };
@@ -52,6 +54,7 @@ export function useTerminalViewState(
       if (e.key !== "F11") return;
       if (!rootRef.current?.offsetParent) return;
       if (!activeId) return;
+      if (isTypingInUi()) return;
       e.preventDefault();
       setFullscreen((v) => !v);
     };

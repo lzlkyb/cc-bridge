@@ -73,6 +73,13 @@ it("Ctrl+Shift+G 打开「搜索所有标签」，且不把 \x07 发给远端",a
   // 🔴 defaultPrevented 是这个用例的关键：不拦的话 xterm 会把 Ctrl+G 映射成 \x07（BEL）
   expect(ev.defaultPrevented).toBe(true);
   expect(query()).not.toBeNull();
+  // 🔴 焦点在应用输入框里（重命名 / 查找 / 弹窗）时不抢键：与 Ctrl+Tab 同一套判据
+  await act(async()=>{window.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}));});
+  expect(query()).toBeNull();
+  const input=document.createElement("input");host.append(input);input.focus();
+  expect((await press()).defaultPrevented).toBe(false);
+  expect(query()).toBeNull();
+  input.remove();
 });
 
 it("🔴 双击标签名可重命名（同名多终端唯一的区分手段），Esc 取消、清空恢复默认名",async()=>{

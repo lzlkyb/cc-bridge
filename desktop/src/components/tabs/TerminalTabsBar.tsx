@@ -13,6 +13,7 @@ import { terminalSessionOrdinal } from "../../lib/terminalWorkspace";
 import { TitleBarControls } from "../layout/TitleBarControls";
 import { useTerminalFullscreenActions } from "./TerminalFullscreenContext";
 import { TerminalFullscreenDragStrip } from "./TerminalFullscreenDragStrip";
+import { isTypingInUi } from "../../lib/typingFocus";
 
 interface TerminalTabsBarProps {
   fullscreen?: boolean;
@@ -78,14 +79,13 @@ export function TerminalTabsBar({
   // 正在重命名的标签（双击标签名进入；见 TerminalTabRename）。
   const [renamingId, setRenamingId] = useState<string | null>(null);
   // Ctrl+Shift+G 打开跨标签搜索。此前只有标签栏那个按钮，键盘用户必须摸鼠标。
-  // 🔴 必须 capture + stopPropagation：xterm 把 Ctrl+G 映射成 \x07（BEL），不抢在它
-  // 前面按一下就会往远端发一个响铃（还会点亮标签的未读铃点）。
-  // 只在终端页可见时接：App 用 display:none 隐藏本页来保活 SSH 会话，此时 offsetParent 为 null。
+  // 🔴 必须 capture + stopPropagation：xterm 把 Ctrl+G 映射成 \x07（BEL），不抢在前面按一下就会往远端发响铃（还点亮未读铃点）。
+  // 只在终端页可见时接（display:none 保活时 offsetParent 为 null）；输入控件里打字时不抢键。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || !e.shiftKey) return;
       if (e.key.toLowerCase() !== "g") return;
-      if (!rootRef.current?.offsetParent) return;
+      if (!rootRef.current?.offsetParent || isTypingInUi()) return;
       e.preventDefault();
       e.stopPropagation();
       setSearchOpen(true);

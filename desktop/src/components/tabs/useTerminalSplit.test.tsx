@@ -79,3 +79,15 @@ it("工作区全屏时 offsetParent 为空也能使用分屏快捷键", async ()
   await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "D", ctrlKey: true, shiftKey: true })); });
   expect(split.split).not.toBeNull();
 });
+it("🔴 输入框里打字时 Ctrl+Shift+D 不抢键（关分屏会把副格会话释放成独立标签）", async () => {
+  const input = document.createElement("input");
+  document.body.append(input);
+  input.focus();
+  const e = new KeyboardEvent("keydown", { key: "D", ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+  await act(async () => { window.dispatchEvent(e); });
+  expect(e.defaultPrevented).toBe(false);
+  expect(split.split).toBeNull();
+  input.remove();
+  await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "D", ctrlKey: true, shiftKey: true, bubbles: true })); });
+  expect(split.split).not.toBeNull();
+});

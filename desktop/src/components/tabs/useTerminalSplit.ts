@@ -5,6 +5,7 @@ import type { SshSessionRef } from "./TerminalConnectionItem";
 import type { useSshSessions } from "./useSshSessions";
 import { defaultSplitDirection, type SplitDirection } from "../../lib/terminalSplitLayout";
 import { useViewActive } from "../../lib/viewActivity";
+import { isTypingInUi } from "../../lib/typingFocus";
 
 /** One host tab owns two panes. A collapsed secondary becomes an ordinary tab. */
 export interface SplitInfo {
@@ -94,6 +95,7 @@ export function useTerminalSplit({ ssh, activeSession, areaRef }: { ssh: Ssh; ac
     const onKey = (e: KeyboardEvent) => {
       // Fixed fullscreen elements have no offsetParent, but still have a rendered rectangle.
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "d" && viewActive && (!areaRef?.current || areaRef.current.getClientRects().length > 0)) {
+        if (isTypingInUi()) return; // 正在输入控件里打字：不抢键（关分屏会释放副格会话）
         e.preventDefault(); e.stopPropagation(); toggleRef.current();
       }
     };

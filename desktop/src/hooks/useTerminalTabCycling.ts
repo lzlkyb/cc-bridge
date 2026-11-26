@@ -1,15 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useViewActive } from "../lib/viewActivity";
-
-/** 焦点在输入控件里时不抢 Ctrl+Tab（那是浏览器的正常 Tab 导航语义）。 */
-function isTyping(): boolean {
-  const el = document.activeElement;
-  return (
-    el instanceof HTMLElement &&
-    !el.closest(".xterm") &&
-    (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)
-  );
-}
+import { isTypingInUi } from "../lib/typingFocus";
 
 /**
  * 终端标签的键盘切换：Ctrl+Tab / Ctrl+Shift+Tab 在会话标签间循环。
@@ -36,7 +27,7 @@ export function useTerminalTabCycling(
     if (!viewActive) return;
     const onKey = (e: KeyboardEvent) => {
       if (!e.ctrlKey || e.altKey || e.metaKey || e.key !== "Tab") return;
-      if (isTyping()) return;
+      if (isTypingInUi()) return;
       const { ids: list, activeId: current, activate: go } = ref.current;
       if (list.length < 2) return;
       e.preventDefault();
