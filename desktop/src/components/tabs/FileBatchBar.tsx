@@ -3,6 +3,9 @@ interface Props {
   total: number;
   /** 已选条目数（含目录；按 view 口径，只算列表里还看得见的）。 */
   selected: number;
+  /** 原始选择是否非空——含被过滤隐藏掉的。只用来判「取消选择」能不能点：
+   *  选择本身与过滤无关，不能因为过滤到 0 命中就变得清不掉。 */
+  hasSelection: boolean;
   /** 选中条目中普通文件的数量——下载与删除都只对文件有意义。 */
   files: number;
   busy: boolean;
@@ -25,7 +28,7 @@ interface Props {
  * WHY 下载/删除按文件数判可用：目录没有「下载」这回事，删除目录是递归删，
  * 不混在批量里（仍走行尾按钮）。移动不挑类型——文件和目录都能整个搬走。
  */
-export function FileBatchBar({ total, selected, files, busy, onDownload, onRemove, onMove, onSelectAll, onClear }: Props) {
+export function FileBatchBar({ total, selected, hasSelection, files, busy, onDownload, onRemove, onMove, onSelectAll, onClear }: Props) {
   const picking = selected > 0;
   return (
     <div
@@ -74,7 +77,7 @@ export function FileBatchBar({ total, selected, files, busy, onDownload, onRemov
       </button>
       <button
         type="button"
-        disabled={selected === 0}
+        disabled={!hasSelection}
         onClick={onClear}
         className="ml-auto shrink-0 whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >

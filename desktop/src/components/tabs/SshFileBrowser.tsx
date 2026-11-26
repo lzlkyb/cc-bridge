@@ -206,6 +206,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
       <FileBatchBar
         total={view.items.length}
         selected={sel.chosen.length}
+        hasSelection={sel.selected.length > 0}
         files={sel.fileCount}
         busy={busy}
         onDownload={sel.downloadSelected}

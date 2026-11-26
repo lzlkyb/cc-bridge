@@ -129,6 +129,27 @@ it("🔴 未选中时批量条也已挂载：点第一行不会让列表整体�
   expect(bar.getAttribute("data-selected")).toBe("true");
   expect(bar.textContent).toContain("已选 1 个");
 });
+it("🔴 过滤到 0 命中时「取消选择」仍可用：选择与过滤无关，不能被过滤掉就没法清",async()=>{
+  h.invoke.mockResolvedValue([folder,file,{...file,name:"note.md"}]);
+  await render();
+  const rows=()=>[...host.querySelectorAll<HTMLTableRowElement>("tbody tr")];
+  const filter=host.querySelector<HTMLInputElement>('input[aria-label="按名称过滤当前目录"]')!;
+  const setFilter=(v:string)=>{Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!.call(filter,v);return act(async()=>filter.dispatchEvent(new Event("input",{bubbles:true})));};
+  await act(async()=>rows()[1].dispatchEvent(new MouseEvent("click",{bubbles:true})));
+  await act(async()=>rows()[2].dispatchEvent(new MouseEvent("click",{bubbles:true,ctrlKey:true})));
+  expect(host.textContent).toContain("已选 2 个");
+  await setFilter("zzz");
+  // 视图口径：一条都不显示，计数槽退回「共 0 项」，批量操作不可用
+  expect([...host.querySelectorAll<HTMLTableRowElement>("tbody tr")]).toHaveLength(0);
+  expect(host.querySelector('[role="toolbar"]')!.textContent).toContain("共 0 项");
+  expect(button("下载所选").disabled).toBe(true);
+  // 但原始选择还在，必须能清掉——否则要用户先想起「把过滤清空」才能取消选择
+  expect(button("取消选择").disabled).toBe(false);
+  await click("取消选择");
+  await setFilter("");
+  expect(host.textContent).toContain("共 3 项");
+  expect(host.textContent).not.toContain("已选");
+});
 it("🔴 行尾重命名端到端：对话框预填当前名 → 提交 ssh_sftp_rename（overwrite=false）",async()=>{
   h.invoke.mockResolvedValue([folder,file]);
   await render();
