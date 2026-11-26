@@ -127,6 +127,15 @@ export function TerminalTabsBar({
               active ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-muted"
             }`}
           >
+            {/* 🔴 重命名时输入框**替换**整个 tab 按钮，而不是嵌在它里面：
+                button 的内容模型不允许交互控件，role="tab" 里塞 textbox 屏幕阅读器也读不对。 */}
+            {renamingId === s.tabId ? (
+              <TabRenameInput
+                initial={s.label ?? s.conn.name ?? s.conn.host}
+                onCommit={v => { setRenamingId(null); onRename?.(s.tabId, v); }}
+                onCancel={() => setRenamingId(null)}
+              />
+            ) : (
             <button
               type="button"
               role="tab"
@@ -160,18 +169,7 @@ export function TerminalTabsBar({
                 title={`${s.label || s.conn.name || s.conn.host} · ${s.conn.username}@${s.conn.host}:${s.conn.port}${seq ? ` · #${seq}` : ""}${tabAgentMissingHint(!!title, agent)}`}
                 onDoubleClick={() => onRename && setRenamingId(s.tabId)}
               >
-                {renamingId === s.tabId ? (
-                  <TabRenameInput
-                    initial={s.label ?? s.conn.name ?? s.conn.host}
-                    onCommit={v => {
-                      setRenamingId(null);
-                      onRename?.(s.tabId, v);
-                    }}
-                    onCancel={() => setRenamingId(null)}
-                  />
-                ) : (
-                  s.label || s.conn.name || s.conn.host
-                )}
+                {s.label || s.conn.name || s.conn.host}
               </span>
               {/* 标题只作主机名的附加段：正常程序可显示，恶意标题顶不掉主机名。 */}
               {title && (
@@ -188,6 +186,7 @@ export function TerminalTabsBar({
               {closed && <span className="sr-only">，已断开</span>}
               {hasBell && <Icon name="bell" size={11} className="text-amber-500" />}
             </button>
+            )}
             {/* 🔴 断开与关闭必须是**两个独立按钮**。这里曾共用一个按状态换行为的按钮：
                 连着时是断开、断开后变关闭，于是双击 × = 「断开 + 永久删除标签」，
                 该终端全部历史输出跟着 xterm.dispose() 一起没，既没有确认也没有撤销。

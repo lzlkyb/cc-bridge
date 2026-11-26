@@ -55,14 +55,20 @@ export function WheelOwnerBadge({
       )}
       {owner === "dead" && <DeadSeg skin={skin} expanded={deadBadgeExpanded} onClick={onDeadClick} />}
       {guideHint && (
+        // 命中区 24×24（WCAG 2.5.8 下限），视觉仍是 17px 小圆点。
+        // 🔴 负外边距把**布局占位**压回 17px（24 - 3.5×2）：这个徽章在 TUI 运行中动态
+        // 出现/消失，占位一变状态栏就长高 → fit → 远端 PTY 重排（与查找条/命令面板同一个坑）。
+        // 多出来的 3.5px 落在状态栏自己的 py-1（4px）内边距里，不会被 overflow-hidden 裁掉。
         <button
           type="button"
           onClick={onGuideHintClick}
           aria-label="展开滚轮归属提示"
           title="滚轮归属提示已收起，点击展开"
-          className="grid h-[17px] w-[17px] shrink-0 place-items-center rounded-full border border-warning/50 bg-warning/15 text-[11px] font-bold leading-none text-warning-ink transition-colors hover:bg-warning/30"
+          className="grid h-6 w-6 -my-[3.5px] shrink-0 place-items-center rounded-full transition-colors hover:bg-warning/20"
         >
-          !
+          <span className="grid h-[17px] w-[17px] place-items-center rounded-full border border-warning/50 bg-warning/15 text-[11px] font-bold leading-none text-warning-ink">
+            !
+          </span>
         </button>
       )}
     </>

@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Icon } from "../ui/icon";
+import { useDismissOnOutside } from "../../hooks/useDismissOnOutside";
 import type { SshConnection } from "../../lib/types";
 
 /** 一个已建立的 SSH 终端会话（TerminalTab 的 sessions 数组元素）。 */
@@ -85,6 +86,10 @@ export function ConnectionListItem({
   // 的扫描噪声，以及删除与编辑同权重并排的误触面）。
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = () => setMenuOpen(false);
+  // 🔴 不用透明遮罩收菜单：fixed inset-0 的遮罩会把「点外面那一下」整个吃掉，
+  // 用户想点的按钮第一次点不动（2026-11-26 交互审计 P2）。与 ui/Menu 同一套外点判定。
+  const menuBoxRef = useRef<HTMLSpanElement>(null);
+  useDismissOnOutside(menuOpen, menuBoxRef, closeMenu);
   return (
     <div
       className={`rounded-lg border p-2.5 transition-colors ${
@@ -179,7 +184,7 @@ export function ConnectionListItem({
             </button>
           </span>
         ) : (
-          <span className="relative ml-auto">
+          <span className="relative ml-auto" ref={menuBoxRef}>
             <button
               type="button"
               aria-label="更多操作"
@@ -192,42 +197,38 @@ export function ConnectionListItem({
               <Icon name="more" size={13} />
             </button>
             {menuOpen && (
-              <>
-                {/* 透明遮罩：点菜单外任意处收起（不挡滚动，只挡一次点击） */}
-                <div className="fixed inset-0 z-30" aria-hidden onClick={closeMenu} />
-                <div
-                  role="menu"
-                  aria-label="连接更多操作"
-                  className="animate-scale-in absolute bottom-full right-0 z-40 mb-1 w-36 rounded-lg border bg-popover p-1 shadow-pop"
-                >
-                  {session && !session.closedReason && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => { closeMenu(); onNewTerminal(conn); }}
-                      className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-foreground transition-colors hover:bg-muted"
-                    >
-                      <Icon name="plus" size={12} /> 另开终端
-                    </button>
-                  )}
+              <div
+                role="menu"
+                aria-label="连接更多操作"
+                className="animate-scale-in absolute bottom-full right-0 z-40 mb-1 w-36 rounded-lg border bg-popover p-1 shadow-pop"
+              >
+                {session && !session.closedReason && (
                   <button
                     type="button"
                     role="menuitem"
-                    onClick={() => { closeMenu(); onEdit(conn); }}
+                    onClick={() => { closeMenu(); onNewTerminal(conn); }}
                     className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-foreground transition-colors hover:bg-muted"
                   >
-                    <Icon name="settings" size={12} /> 编辑连接
+                    <Icon name="plus" size={12} /> 另开终端
                   </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => { closeMenu(); onDeleteRequest(); }}
-                    className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-destructive-ink transition-colors hover:bg-destructive/10"
-                  >
-                    <Icon name="trash" size={12} /> 删除连接
-                  </button>
-                </div>
-              </>
+                )}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { closeMenu(); onEdit(conn); }}
+                  className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-foreground transition-colors hover:bg-muted"
+                >
+                  <Icon name="settings" size={12} /> 编辑连接
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { closeMenu(); onDeleteRequest(); }}
+                  className="flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-xs text-destructive-ink transition-colors hover:bg-destructive/10"
+                >
+                  <Icon name="trash" size={12} /> 删除连接
+                </button>
+              </div>
             )}
           </span>
         )}

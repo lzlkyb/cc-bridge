@@ -36,7 +36,10 @@ export function attachContextMenuGuard(term: Terminal, container: HTMLElement): 
 
   // capture 阶段：xterm 的鼠标监听在子元素上，capture 先于它执行，闸门先于报告编码闭合。
   const onDown = (e: PointerEvent) => {
-    if (e.button !== 2) return; // 只管右键；中键的 auxclick 粘贴走 xterm 自己那条路
+    // 只管右键。中键不在这一条路上，也**不**走 xterm 粘贴：它的 auxclick 只把隐藏 textarea
+    // 移到指针下（bundle 已核对），Windows WebView2 下中键不产生粘贴。要粘走工具栏 /
+    // Ctrl+V / 右键菜单——那条路有两段式确认（useTerminalPaste）。
+    if (e.button !== 2) return;
     cancelPendingRelease(term); // 上一个手势的延时开闸可能还没跑，先撤掉再闭闸
     setSelectHold(term, true);
   };

@@ -101,6 +101,20 @@ describe("terminal workspace lifecycle and shared actions", () => {
     await act(async () => separator.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
     expect(h.ratio).toHaveBeenLastCalledWith(50);
   });
+  it("🔴 拖动分割条不抢焦点：抢了的话用户接着按方向键是在改比例，而不是翻 shell 历史", async () => {
+    await render("a", split);
+    const separator = container.querySelector<HTMLElement>('[role="separator"]')!;
+    separator.setPointerCapture = vi.fn();
+    const pane = container.querySelector<HTMLElement>('[data-session="a"]')!;
+    pane.focus();
+    await act(async () => separator.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true, pointerId: 1 })));
+    expect(document.activeElement).toBe(pane);
+    // 键盘用户仍能 Tab 到它（tabIndex 0）并用方向键微调
+    expect(separator.tabIndex).toBe(0);
+    separator.focus();
+    await act(async () => separator.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    expect(h.ratio).toHaveBeenCalled();
+  });
   it.each(["a", "b"])("从 %s 的还原按钮返回分屏后，输入明确归该会话", async id => {
     const frames: FrameRequestCallback[] = [];
     vi.stubGlobal("requestAnimationFrame", (fn: FrameRequestCallback) => { frames.push(fn); return frames.length; });

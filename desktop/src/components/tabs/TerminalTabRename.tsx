@@ -13,7 +13,9 @@ interface Props {
  * 同一台机器开三个终端（一个 `tail -f`、一个编译、一个调试）时三个标签同名，
  * 分屏与 Ctrl+Tab 切换全靠猜。
  *
- * 语义：Enter / 失焦提交，Esc 取消，**清空 = 恢复默认名**（连接名或主机名）。
+ * 语义：**只有 Enter 提交**，Esc / 失焦都取消，清空后 Enter = 恢复默认名（连接名或主机名）。
+ * 🔴 失焦不提交（2026-11-26 交互审计 P2）：输入框起手是全选状态，敲到一半点别处
+ * 就把半截名字落盘了，而用户以为自己只是「先不管它」。改名可重做，但静默落盘不可预期。
  * 不用 window.prompt：那是阻塞式系统弹窗，与 Tauri 风格割裂，也没法 Esc 取消。
  */
 export function TabRenameInput({ initial, onCommit, onCancel }: Props) {
@@ -41,7 +43,8 @@ export function TabRenameInput({ initial, onCommit, onCancel }: Props) {
           onCancel();
         }
       }}
-      onBlur={() => onCommit(value.trim())}
+      onBlur={onCancel}
+      title="Enter 保存；Esc 或点别处取消"
       className="h-5 w-28 min-w-0 rounded border border-primary bg-background px-1 text-xs text-foreground outline-none"
     />
   );

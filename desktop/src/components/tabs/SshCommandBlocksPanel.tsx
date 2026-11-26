@@ -147,7 +147,9 @@ export function SshCommandBlocksPanel({ termRef, name, closed, onClose }: Props)
     // 层叠上下文（中间没有建上下文的祖先），z 高过 10 就会浮在文件面板上面——
     // 那样面板会显示"文件浏览器看不到的终端"的数据，纯属错乱。终端内容本身没有 z-index，
     // 5 足够盖住它。
-    <div className="animate-scale-in absolute inset-y-0 right-0 z-[5] flex w-[308px] flex-col border-l border-border bg-card shadow-lg">
+    // 🔴 right 留 14px 而不是贴边：TUI 虚拟滚动条是 z-15、占右缘 2~12px（terminalScroll.ts），
+    // 贴边就会被它盖住一条并吃掉那 10px 的点击（2026-11-26 交互审计 P2）。让开它，两者都能用。
+    <div className="animate-scale-in absolute inset-y-0 right-[14px] z-[5] flex w-[308px] flex-col border-l border-border bg-card shadow-lg">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
         <Icon name="history" size={14} className="text-muted-foreground" />
         <span className="text-sm font-medium">命令历史</span>
@@ -241,35 +243,33 @@ function BlockRow({
 }) {
   const dur = formatCmdDuration(row.durMs);
   return (
+    // 🔴 行本身不是 button：里面还有「复制」这个真按钮，role="button" 套交互控件违反
+    // ARIA 内容模型，屏幕阅读器与键盘都到不了复制（2026-11-26 交互审计 P2）。
+    // 跳转做成占满行的独立按钮，复制常显（此前 hidden + group-hover:block ⇒ display:none
+    // 不可聚焦，键盘与触摸用户永远够不到）。
     <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onJump(row.line)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onJump(row.line);
-        }
-      }}
-      title={`跳到这一条（缓冲区第 ${row.line + 1} 行）`}
-      className={`group flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted ${
+      className={`group flex items-center gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted ${
         active ? "bg-primary/10" : ""
       }`}
     >
       <span className={`h-3.5 w-0.5 shrink-0 rounded-full ${active ? "bg-primary" : "bg-transparent"}`} />
-      <ExitBadge code={row.exitCode} />
-      <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-foreground">
-        {row.preview || <span className="text-muted-foreground">（无输出）</span>}
-      </span>
-      {dur && <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">{dur}</span>}
+      <button
+        type="button"
+        onClick={() => onJump(row.line)}
+        title={`跳到这一条（缓冲区第 ${row.line + 1} 行）`}
+        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+      >
+        <ExitBadge code={row.exitCode} />
+        <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-foreground">
+          {row.preview || <span className="text-muted-foreground">（无输出）</span>}
+        </span>
+        {dur && <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">{dur}</span>}
+      </button>
       <button
         type="button"
         title="复制这条命令的输出"
-        onClick={(e) => {
-          e.stopPropagation();
-          onCopy(row.index);
-        }}
-        className="hidden shrink-0 rounded px-1 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary group-hover:block"
+        onClick={() => onCopy(row.index)}
+        className="shrink-0 rounded px-1 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-primary/15 hover:text-primary"
       >
         复制
       </button>

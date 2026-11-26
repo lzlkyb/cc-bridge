@@ -170,7 +170,7 @@ export function TerminalPanes({
               onPointerDown={e => { e.preventDefault(); e.currentTarget.setPointerCapture(e.pointerId); }} onPointerMove={layout.move}
               onPointerUp={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }} onKeyDown={layout.keyDown}
               onDoubleClick={() => onSplitRatio(50)} className="terminal-splitter" data-direction={vertical ? "v" : "h"}
-              title="拖动或方向键调整比例，双击恢复均分"
+              title="拖动调整比例；键盘 Tab 聚焦后可用方向键微调，双击恢复均分"
             >
               <div className="terminal-splitter-handle"/>
             </div>

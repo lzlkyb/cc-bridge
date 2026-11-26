@@ -104,6 +104,22 @@ it("🔴 双击标签名可重命名（同名多终端唯一的区分手段）�
   expect(rename).toHaveBeenCalledExactlyOnceWith("ta","构建");
 });
 
+it("🔴 重命名输入框不在 tab 按钮里，且点别处（失焦）不落盘半截名字",async()=>{
+  const rename=vi.fn();
+  await act(async()=>root.render(<TerminalTabsBar sessions={sessions} activeId="a" metaBySession={{}} onActivate={()=>{}} onDisconnect={()=>{}} onCloseTab={()=>{}} onNewTerminal={null} onToggleSplit={null} splitActive={false} onRename={rename}/>));
+  const label=host.querySelector<HTMLElement>(".terminal-session-tab span[title]")!;
+  await act(async()=>label.dispatchEvent(new MouseEvent("dblclick",{bubbles:true})));
+  const input=host.querySelector<HTMLInputElement>('input[aria-label="重命名标签"]')!;
+  // button 的内容模型不允许交互控件：输入框必须是 tab 按钮的兄弟，不是后代
+  expect(input.closest("button")).toBeNull();
+  expect(input.closest('[role="tab"]')).toBeNull();
+  const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value")!.set!;
+  await act(async()=>{setter.call(input,"构建到一半");input.dispatchEvent(new Event("input",{bubbles:true}));});
+  await act(async()=>input.dispatchEvent(new FocusEvent("focusout",{bubbles:true})));
+  expect(rename).not.toHaveBeenCalled();
+  expect(host.querySelector('input[aria-label="重命名标签"]')).toBeNull();
+});
+
 /* ===== CC 运行态徽标（OSC 7501）===== */
 const st=(state:ProgramStatus["state"],extra:Partial<ProgramStatus>={}):ProgramStatus=>({state,kind:null,app:"claude-code",title:null,msg:null,progress:null,...extra});
 const meta=(agent:ProgramStatus|null,title:string|null=null,agentUnread=false):TermTabMeta=>({title,progress:null,bellAt:null,agent,agentUnread});
