@@ -26,7 +26,11 @@ pub async fn browse_directory(
     // @引用补全面板要文件；目录选择器（DirectoryBrowser 等）不传，行为不变。
     include_files: Option<bool>,
 ) -> Result<browse::BrowseResult, String> {
-    browse::browse_directory(path.as_deref(), include_files.unwrap_or(false)).await
+    tokio::task::spawn_blocking(move || {
+        browse::browse_directory(path.as_deref(), include_files.unwrap_or(false))
+    })
+    .await
+    .map_err(|error| format!("目录读取任务失败：{error}"))?
 }
 
 #[tauri::command]

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke, listen } from "../../lib/tauri";
+import { listen } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { cleanErr } from "../../lib/utils";
 // 错误前缀协议（与后端 ssh_cmds.rs 一一对应）统一放 lib/sshErrors.ts。
 import { isCancelled } from "../../lib/sshErrors";
 import type { TransferKind, TransferState } from "../../lib/transferTypes";
 import { useTransferPrompt } from "./useTransferPrompt";
+import { cancelQueuedSshTransfer } from "../../lib/sshTransferQueue";
 
 /** EMA 平滑系数：scp 的刷新间隔不均匀，直接用瞬时值算 ETA 会剧烈跳动。 */
 const ETA_SMOOTHING = 0.7;
@@ -72,8 +73,9 @@ export function useTransferCore() {
     name: string,
     index?: number,
     total?: number,
+    retryId?: string,
   ) => {
-    const id = crypto.randomUUID();
+    const id = retryId ?? crypto.randomUUID();
     idRef.current = id;
     lastRef.current = null;
     etaRef.current = null;
@@ -89,7 +91,7 @@ export function useTransferCore() {
   /** 取消当前传输。后端只置位标志，真正终止在 ≤200ms 后发生。 */
   const cancel = useCallback(() => {
     const id = idRef.current;
-    if (id) void invoke("ssh_sftp_cancel", { transferId: id }).catch(() => {});
+    if (id) void cancelQueuedSshTransfer(id).catch(() => {});
   }, []);
 
   /** 失败分流：取消 / 真失败，文案不能混。 */

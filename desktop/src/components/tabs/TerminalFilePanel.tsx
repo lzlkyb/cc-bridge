@@ -1,5 +1,9 @@
+import { useContext } from "react";
 import { SshFileBrowser } from "./SshFileBrowser";
+import { LocalFileWorkspace } from "./LocalFileWorkspace";
+import { TerminalFileWorkspace } from "./useTerminalFileWorkspace";
 import type { SshConnection } from "../../lib/types";
+import "../../file-workspace.css";
 
 /**
  * 终端页的文件管理覆盖层：absolute inset-0 盖在整个终端大卡之上。
@@ -20,7 +24,9 @@ export function TerminalFilePanel({
   disconnected?: boolean;
   onReconnect?: () => void;
 }) {
-  return (
+  const mode = useContext(TerminalFileWorkspace)?.mode;
+  return <>
+    {mode === "local" && <LocalFileWorkspace key={conn.id} disconnected={disconnected}/>}
     <div className="terminal-file-panel absolute inset-0 z-10 bg-card">
       {/* key 不能省：侧栏在文件面板打开时仍可点，直接换到另一条连接时
           组件不会重挂，path / entries 还是上一条的——而当前目录会被回写成
@@ -34,5 +40,5 @@ export function TerminalFilePanel({
         onBack={onBack}
       />
     </div>
-  );
+  </>;
 }

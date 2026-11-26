@@ -166,7 +166,7 @@ it("🔴 行尾重命名端到端：对话框预填当前名 → 提交 ssh_sftp
   await act(async()=>[...dialog.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="重命名")!.click());
   const renameCalls=h.invoke.mock.calls.filter(c=>c[0]==="ssh_sftp_rename");
   expect(renameCalls).toHaveLength(1);
-  expect(renameCalls[0][1]).toEqual({connectionId:"one",path:"/parent/old.txt",new_name:"new.txt",overwrite:false});
+  expect(renameCalls[0][1]).toEqual({connectionId:"one",path:"/parent/old.txt",newName:"new.txt",overwrite:false});
   expect(h.invoke.mock.calls.some(c=>c[0]==="ssh_sftp_list")).toBe(true);   // 成功后原地刷新
   expect(document.querySelector('[role="dialog"]')).toBeNull();
 });

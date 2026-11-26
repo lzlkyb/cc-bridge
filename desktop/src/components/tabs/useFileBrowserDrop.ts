@@ -17,8 +17,6 @@ interface Params {
     files: { local: string; name: string }[];
     existing?: string[];
   }) => Promise<{ done: number; total: number }>;
-  /** 传完后回调（刷新列表）。 */
-  onDone: () => void;
 }
 
 /**
@@ -35,7 +33,6 @@ export function useFileBrowserDrop({
   entries,
   busy,
   uploadMany,
-  onDone,
 }: Params) {
   const paneRef = useRef<HTMLDivElement>(null);
   const drop = useFileDrop({
@@ -54,7 +51,6 @@ export function useFileBrowserDrop({
           files: files.map((f) => ({ local: f.path, name: f.name })),
           existing: entries.map((e) => e.name.split(" -> ")[0]),
         });
-        onDone();
       })();
     },
   });

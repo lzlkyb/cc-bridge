@@ -12,6 +12,9 @@ pub struct BrowseEntry {
     /// include_files 打开时文件也会出现，这个字段才有了区分意义；
     /// 纯目录模式（目录选择器）恒 true。前端类型里早就有 isDir，此前从没被发过。
     pub is_dir: bool,
+    pub size: Option<u64>,
+    pub mtime: Option<u64>,
+    pub is_symlink: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -32,6 +35,9 @@ pub fn list_browse_roots() -> Vec<BrowseEntry> {
                     name: drive.clone(),
                     path: drive,
                     is_dir: true,
+                    size: None,
+                    mtime: None,
+                    is_symlink: false,
                 });
             }
         }
@@ -43,11 +49,14 @@ pub fn list_browse_roots() -> Vec<BrowseEntry> {
             name: "/".into(),
             path: "/".into(),
             is_dir: true,
+            size: None,
+            mtime: None,
+            is_symlink: false,
         }]
     }
 }
 
-pub async fn browse_directory(
+pub fn browse_directory(
     input_path: Option<&str>,
     include_files: bool,
 ) -> Result<BrowseResult, String> {
@@ -88,10 +97,21 @@ pub async fn browse_directory(
         }
         let name = entry.file_name().to_string_lossy().to_string();
         let full_path = real.join(&name);
+        let metadata = if include_files {
+            entry.metadata().ok()
+        } else {
+            None
+        };
         entries.push(BrowseEntry {
             name,
             path: display_path(&full_path),
             is_dir: ft.is_dir(),
+            size: metadata.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
+            mtime: metadata
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|t| t.as_secs()),
+            is_symlink: ft.is_symlink(),
         });
     }
 

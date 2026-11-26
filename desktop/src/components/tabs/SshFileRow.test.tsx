@@ -64,7 +64,7 @@ it("🔴 软链到文件：单击只选中、双击进编辑器（后端保存�
   const activate=vi.fn();
   await act(async()=>root.render(<FileTable entries={[linkFile]} loading={false} busy={false} error={null} onOpenDir={open} onDownload={download} onRemove={remove} onSelect={select} onActivateFile={activate} {...batch3}/>));
   const row=host.querySelector("tbody tr")!;
-  expect(host.querySelector('tbody button[aria-label]')).toBe(null);   // 名字不是按钮，没有键盘直达
+  expect(row.querySelector('td:first-child button')).toBe(null);
   expect(row.textContent).toContain("→ conf.d/real.conf");
   await act(async()=>row.dispatchEvent(new MouseEvent("click",{bubbles:true})));
   expect(activate).not.toHaveBeenCalled();

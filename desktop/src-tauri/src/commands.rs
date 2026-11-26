@@ -56,6 +56,7 @@ mod ssh_cmds;
 /// SSH 远程文件读/写/本机编辑器打开（A+C 方案，复用 ssh_cmds 的 helper 与 scp 通道）。
 mod ssh_file_cmds;
 mod ssh_output_cmds;
+mod ssh_resume_transfer;
 /// D 方案：文件面板的内置 russh 长连接（列目录/读写/传输零握手）。
 /// 旧 helper / scp 路径**保留作降级**，调用方一律先试本模块、失败自动回退。
 mod ssh_russh_cmds;

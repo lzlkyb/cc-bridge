@@ -2290,6 +2290,8 @@ pub async fn ssh_sftp_list(
 }
 
 /// 下载远程文件到本机。`remote` 远程路径，`local` 本机目标路径。
+// 保持现有 IPC 字段，旧前端不传 resumable 时沿用原来的传输路径。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ssh_sftp_get(
     state: State<'_, Arc<AppState>>,
@@ -2299,6 +2301,7 @@ pub async fn ssh_sftp_get(
     local: String,
     transfer_id: String,
     overwrite: bool,
+    resumable: Option<bool>,
 ) -> Result<(), String> {
     if !state.config.read().await.ssh_enabled {
         return Err("SSH 终端未启用".into());
@@ -2310,6 +2313,22 @@ pub async fn ssh_sftp_get(
         return Err(format!("{ERR_TARGET_EXISTS}: 本机已存在同名文件：{local}"));
     }
     let link = fetch_link(&state, &connection_id).await?;
+    if resumable.unwrap_or(false) {
+        return run_resumable_transfer(
+            &state,
+            app,
+            &link,
+            transfer_id,
+            super::ssh_resume_transfer::ResumeRequest {
+                local: std::path::Path::new(&local),
+                remote: &remote,
+                upload: false,
+                overwrite,
+                comparison: None,
+            },
+        )
+        .await;
+    }
     let _ = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let scp_path =
         find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
@@ -2412,11 +2431,15 @@ pub async fn ssh_sftp_cancel(
 ) -> Result<(), String> {
     if let Some(f) = state.ssh_transfers.get(&transfer_id) {
         f.store(true, std::sync::atomic::Ordering::SeqCst);
+    } else {
+        super::ssh_resume_transfer::discard(&state, &transfer_id).await?;
     }
     Ok(())
 }
 
 /// 上传本机文件到远程。`local` 本机源路径，`remote` 远程目标路径。
+// 保持现有 IPC 字段，续传与覆盖均由新入口按任务显式选择。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn ssh_sftp_put(
     state: State<'_, Arc<AppState>>,
@@ -2425,6 +2448,9 @@ pub async fn ssh_sftp_put(
     local: String,
     remote: String,
     transfer_id: String,
+    resumable: Option<bool>,
+    overwrite: Option<bool>,
+    comparison: Option<super::ssh_resume_transfer::ComparedUpload>,
 ) -> Result<(), String> {
     if !state.config.read().await.ssh_enabled {
         return Err("SSH 终端未启用".into());
@@ -2432,6 +2458,22 @@ pub async fn ssh_sftp_put(
     // 上传方向不在这里查重名：当前目录的 `entries` 前端手里已经有，
     // 在后端再查一次就多一次完整的 ssh 握手（本机 OpenSSH 不支持连接复用）。
     let link = fetch_link(&state, &connection_id).await?;
+    if resumable.unwrap_or(false) || comparison.is_some() {
+        return run_resumable_transfer(
+            &state,
+            app,
+            &link,
+            transfer_id,
+            super::ssh_resume_transfer::ResumeRequest {
+                local: std::path::Path::new(&local),
+                remote: &remote,
+                upload: true,
+                overwrite: overwrite.unwrap_or(false),
+                comparison,
+            },
+        )
+        .await;
+    }
     let _ = find_ssh().ok_or_else(|| "未检测到系统 OpenSSH 客户端".to_string())?;
     let scp_path =
         find_scp().ok_or_else(|| "未检测到系统 scp 客户端（OpenSSH 客户端缺失）".to_string())?;
@@ -2492,6 +2534,26 @@ pub async fn ssh_sftp_put(
     res
 }
 
+async fn run_resumable_transfer(
+    state: &AppState,
+    app: AppHandle,
+    link: &SshLink,
+    id: String,
+    request: super::ssh_resume_transfer::ResumeRequest<'_>,
+) -> Result<(), String> {
+    let creds = resolve_link_secrets(link, &state.data_dir)?;
+    let flag = register_transfer(state, &id);
+    let hooks = TransferHooks {
+        app: Some(app),
+        transfer_id: Some(id.clone()),
+        cancel: Some(flag),
+        setup_input: None,
+    };
+    let result = super::ssh_resume_transfer::transfer(state, link, creds, request, &hooks).await;
+    state.ssh_transfers.remove(&id);
+    result
+}
+
 /// 一个被拖进来的本机路径的基本信息。
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2506,6 +2568,36 @@ pub struct LocalPathInfo {
     pub size: u64,
     /// 路径是否存在（拿不到元信息就是 false）。
     pub exists: bool,
+}
+
+/// 比较目录只允许删除扫描到的普通文件。此入口不能递归删除目录。
+#[tauri::command]
+pub async fn ssh_sftp_remove_compared_file(
+    state: State<'_, Arc<AppState>>,
+    connection_id: String,
+    path: String,
+    size: u64,
+    mtime: u32,
+) -> Result<(), String> {
+    if !state.config.read().await.ssh_enabled {
+        return Err("SSH 终端未启用".into());
+    }
+    let link = fetch_link(&state, &connection_id).await?;
+    let creds = resolve_link_secrets(&link, &state.data_dir)?;
+    let session = super::ssh_russh_cmds::get_russh_session(&state, &link, creds).await?;
+    let info = session
+        .sftp
+        .symlink_metadata(path.as_str())
+        .await
+        .map_err(super::ssh_russh_file::map_sftp_err)?;
+    if !info.is_regular() || info.size != Some(size) || info.mtime != Some(mtime) {
+        return Err("远端文件已变化，请重新比较".into());
+    }
+    session
+        .sftp
+        .remove_file(path.as_str())
+        .await
+        .map_err(super::ssh_russh_file::map_sftp_err)
 }
 
 /// 查本机路径的类型与大小。专为**拖拽上传**服务。

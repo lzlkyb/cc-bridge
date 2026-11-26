@@ -10,6 +10,7 @@ import { CodeMirrorHost } from "./CodeMirrorHost";
 import { SshFileEditorBar } from "./SshFileEditorBar";
 import { SshFileEditorNotice } from "./SshFileEditorNotice";
 import { SshFileEditorStatus } from "./SshFileEditorStatus";
+import { SshFileConflictReview } from "./SshFileConflictReview";
 
 interface Props {
   conn: SshConnection;
@@ -148,6 +149,7 @@ export function SshFileEditor({ conn, path, onBack }: Props) {
         onOpenExternal={() => void edit.openExternal()}
       />
 
+      <SshFileConflictReview connectionId={conn.id} path={path} content={edit.content} conflict={edit.conflict} canRestore={!edit.readOnly && !busy && !edit.dirty} onRestore={edit.onChange}/>
       {edit.phase === "loading" && !edit.content ? (
         <div className="min-h-0 flex-1 animate-pulse space-y-2 overflow-hidden p-4" aria-busy="true">
           {Array.from({ length: SKELETON_ROWS }, (_, i) => (

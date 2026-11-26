@@ -26,6 +26,8 @@ import { useSshFileView } from "../../hooks/useSshFileView";
 import { useSshFileRename } from "./useSshFileRename";
 import { SshFileNotices } from "./SshFileNotices";
 import { RenameDialog, MoveDialog, RenameOverwriteDialog } from "./SshFileRenameDialogs";
+import { useFileWorkspaceLocation } from "./useTerminalFileWorkspace";
+import { SshFileWorkspaceTools } from "./SshFileWorkspaceTools";
 
 interface Props {
   conn: SshConnection;
@@ -66,6 +68,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
   const navigation = useRemoteNavigation(initialPath ?? loadUploadDir(conn.id));
   const { path, navigate: setPath } = navigation;
   const { entries, loading, error, refresh } = useSshFileListing(conn.id, path);
+  useFileWorkspaceLocation(conn.id, path, setPath, refresh, !loading && !error && !isInitialFileListing(path, entries));
   // 远端身份（uid/gid/组）：只拉一次，供列表预标「你不可读」；失败静默不预标。
   const viewer = useSshFileViewer(conn.id);
   // 排序 / 过滤在读取侧派生：快照必须是服务器原始序（useSshFileView 的 WHY）。
@@ -107,11 +110,10 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
   });
   const mac = isMac(status?.platform);
   const xfer = useSshTransfer();
-  const forms = useSshFileForms({connectionId:conn.id, path, entries, xfer, joinRemote, onUploaded:() => void refresh()});
-  // 传输进行中也算忙：避免并发多条 ssh 握手（本机不支持连接复用，成本乘以 N）。
-  // 含 `xfer.prompt`：否则确认框开着还能接第二批拖放，第二次 setPrompt 会覆盖第一次，
-  // 第一批的 Promise 永远不 resolve。rename.busy 同理：重命名/移动执行期间锁全场。
-  const operationBusy = ops.busy || rename.busy || !!xfer.transfer || !!xfer.prompt || forms.download.busy;
+  const forms = useSshFileForms({connectionId:conn.id, path, entries, xfer, joinRemote});
+  // 后台传输期间仍可浏览，确认同名时锁定目录以保留当前目标。
+  const navigationBusy = ops.busy || rename.busy || !!xfer.prompt || !!disconnected;
+  const operationBusy = navigationBusy || !!xfer.transfer || forms.download.busy;
   const busy = operationBusy || loading || !!error;
   const highlightName = useSshFileInitialPath(initialPath, error, path, navigation.replace, entries);
 
@@ -126,10 +128,9 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
     entries,
     busy,
     uploadMany: xfer.uploadMany,
-    onDone: () => void refresh(),
   });
 
-  const openDir = (name: string) => { if (!busy) setPath(joinRemote(path, name)); };
+  const openDir = (name: string) => { if (!navigationBusy && !loading && !error) setPath(joinRemote(path, name)); };
   // 双击文件：打开内联编辑器。下载仍然是行尾按钮与多选批量条的事——
   // 「查看/编辑」是高频，「下载到本机」是低频，双击应该给前者。
   const openEditor = (name: string) => { if (!busy) setEditing(joinRemote(path, name)); };
@@ -159,10 +160,13 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         path={path}
         loading={loading}
         busy={operationBusy}
+        navigationBusy={navigationBusy}
+        disconnected={disconnected}
+        moreActions={<SshFileWorkspaceTools key={conn.id} connectionId={conn.id} path={path} disabled={loading || !!error || disconnected} navigate={setPath} preview={setEditing} refresh={refresh}/>}
         directoryReady={!error}
         onBack={onBack}
         onUp={() => setPath(parentRemote(path))}
-        onNavigate={target => { if (!operationBusy && !loading) setPath(target); }}
+        onNavigate={target => { if (!navigationBusy && !loading) setPath(target); }}
         canBack={navigation.canBack} canForward={navigation.canForward}
         onHistoryBack={navigation.back} onHistoryForward={navigation.forward}
         onRefresh={() => void refresh()}
@@ -228,6 +232,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         loading={loading}
         error={error}
         busy={busy}
+        navigationBusy={navigationBusy || !!error}
         filterActive={!!view.query.trim() && view.items.length === 0}
         highlightName={highlightName}
         selectedNames={sel.selected}

@@ -71,7 +71,7 @@ export function useSshFileRename({ connectionId, path, joinRemote, onDone, onCha
       await invoke("ssh_sftp_rename", {
         connectionId,
         path: joinRemote(path, entry.name),
-        new_name: newName,
+        newName: newName,
         overwrite: false,
       });
       toast(`已重命名：${entry.name} → ${newName}`, "success");
@@ -87,7 +87,7 @@ export function useSshFileRename({ connectionId, path, joinRemote, onDone, onCha
             await invoke("ssh_sftp_rename", {
               connectionId,
               path: joinRemote(path, entry.name),
-              new_name: newName,
+              newName: newName,
               overwrite: true,
             });
             return 0;
@@ -116,7 +116,7 @@ export function useSshFileRename({ connectionId, path, joinRemote, onDone, onCha
       let failed = 0;
       for (const it of items) {
         try {
-          await invoke("ssh_sftp_move", { connectionId, from: it.from, to_dir: toDir, overwrite });
+          await invoke("ssh_sftp_move", { connectionId, from: it.from, toDir, overwrite });
         } catch (e) {
           failed++;
           toast(`移动 ${it.name} 失败：${cleanErr(e)}`, "error");
@@ -136,7 +136,7 @@ export function useSshFileRename({ connectionId, path, joinRemote, onDone, onCha
       if (entries.length === 1) {
         const from = joinRemote(path, entries[0].name);
         try {
-          await invoke("ssh_sftp_move", { connectionId, from, to_dir: toDir, overwrite: false });
+          await invoke("ssh_sftp_move", { connectionId, from, toDir, overwrite: false });
           toast(`已移动：${entries[0].name}`, "success");
           setMoveEntries(null);
           onChanged?.();
@@ -147,7 +147,7 @@ export function useSshFileRename({ connectionId, path, joinRemote, onDone, onCha
               names: [entries[0].name],
               paths: [joinRemote(toDir, entries[0].name)],
               onOverwrite: async () => {
-                await invoke("ssh_sftp_move", { connectionId, from, to_dir: toDir, overwrite: true });
+                await invoke("ssh_sftp_move", { connectionId, from, toDir, overwrite: true });
                 return 0;
               },
             });

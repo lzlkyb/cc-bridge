@@ -13,13 +13,14 @@
 //! - **下载**：先传到本地隐藏临时目录 `<目录>/.ccb-batch-<传输id>/`，全部成功后
 //!   逐个 rename 到正式名；失败/取消整体删掉临时目录。
 //! - **上传**：先传到远端隐藏目录 `<目录>/.ccb-batch-<传输id>/`，成功后一条
-//!   `mv -f` 搬回；失败/取消在远端 `rm -rf`。远端收尾走 helper（零握手），
+//!   按条目确认的覆盖权限搬回；失败/取消在远端 `rm -rf`。远端收尾走 helper（零握手），
 //!   helper 不可用退回一次性 ssh。
 //!
 //! ## 安全边界（与 ssh_cmds / ssh_file_cmds 一致）
 //! 全部经 `ssh_enabled` 总闸；只经 Tauri IPC 给本机面板，**不注册为 MCP 工具**、
 //! 不进审计、不向远程 Claude Code 暴露。凭据明文仅在登录一瞬存在（`PendingCreds`）。
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,9 +32,9 @@ use crate::ssh_proxy::PendingCreds;
 use crate::state::AppState;
 
 use super::ssh_cmds::{
-    fetch_link, find_scp, find_ssh, is_unknown_option_err, register_transfer, resolve_link_secrets,
-    run_via_helper_blocking, scp_endpoint, shell_quote, spawn_capture, ssh_base_args, SshLink,
-    TransferHooks, ERR_TARGET_EXISTS,
+    fetch_link, find_scp, find_ssh, is_unknown_option_err, register_transfer, rename_remote_cmd,
+    resolve_link_secrets, run_via_helper_blocking, scp_endpoint, shell_quote, spawn_capture,
+    ssh_base_args, SshLink, TransferHooks, ERR_TARGET_EXISTS,
 };
 
 /// 批量传输的超时。与单文件 `run_scp` 一致（600s）：一次传 N 个文件，总量不可预知。
@@ -47,6 +48,9 @@ pub struct BatchItem {
     pub local: String,
     /// 远端绝对路径。
     pub remote: String,
+    /// 上传方向只覆盖用户实际确认的条目。
+    #[serde(default)]
+    pub overwrite: bool,
 }
 
 /// 一组：同一目标目录下的若干条目（用 items 下标指向，避免克隆）。
@@ -143,13 +147,40 @@ pub(super) fn remote_mkdir_cmd(tmp: &str) -> String {
     format!("mkdir -p {}", shell_quote(tmp))
 }
 
-/// 远端把临时目录里的文件搬回目标目录（`mv -f` 多源，target 是目录）。
-pub(super) fn remote_mv_cmd(tmp: &str, names: &[&str]) -> String {
-    let mut parts = vec!["mv -f".to_string()];
-    for n in names {
-        parts.push(shell_quote(&format!("{tmp}/{n}")));
+fn upload_groups(items: &[BatchItem]) -> Vec<BatchGroup> {
+    let mut result = Vec::new();
+    for (dir, indices) in group_items(items, true) {
+        let mut basenames = HashSet::new();
+        let mut batch = Vec::new();
+        // scp stages by local basename, so two a.txt files need separate staging passes.
+        for index in indices {
+            let name = base_of(&items[index].local);
+            if !basenames.insert(name) {
+                result.push((dir.clone(), std::mem::take(&mut batch)));
+                basenames.clear();
+                basenames.insert(name);
+            }
+            batch.push(index);
+        }
+        result.push((dir, batch));
     }
-    parts.join(" ")
+    result
+}
+
+/// scp uses the local basename in staging. Publish to the exact approved destination.
+fn remote_publish_cmd(tmp: &str, items: &[BatchItem], indices: &[usize]) -> String {
+    indices
+        .iter()
+        .map(|&index| {
+            let item = &items[index];
+            let staged = format!("{tmp}/{}", base_of(&item.local));
+            format!(
+                "({})",
+                rename_remote_cmd(&staged, &item.remote, item.overwrite)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" && ")
 }
 
 /// 远端清掉临时目录（失败/取消路径）。
@@ -297,7 +328,7 @@ pub(super) fn run_scp_many_down(
 }
 
 /// 跑一次批量上传：按远端目录分组，先建远端临时目录 → 多源 scp 上传 →
-/// `mv -f` 搬回；失败/取消在远端 `rm -rf` 清场。
+/// 按确认的目标名搬回；失败/取消在远端 `rm -rf` 清场。
 ///
 /// **阻塞**：调用方放在 `spawn_blocking` 里。
 pub(super) fn run_scp_many_up(
@@ -309,7 +340,7 @@ pub(super) fn run_scp_many_up(
     creds: PendingCreds,
     hooks: TransferHooks,
 ) -> Result<usize, String> {
-    let groups = group_items(items, true);
+    let groups = upload_groups(items);
     let tid = hooks.transfer_id.clone().unwrap_or_else(|| "x".into());
     let mut moved = 0usize;
 
@@ -340,7 +371,6 @@ pub(super) fn run_scp_many_up(
     for (dir, idxs) in &groups {
         let tmp = batch_tmp_dir(dir, &tid);
         let locals: Vec<&str> = idxs.iter().map(|&i| items[i].local.as_str()).collect();
-        let names: Vec<&str> = idxs.iter().map(|&i| base_of(&items[i].remote)).collect();
 
         // 1) 建远端临时目录。
         if let Err(e) = remote(remote_mkdir_cmd(&tmp)) {
@@ -351,17 +381,24 @@ pub(super) fn run_scp_many_up(
             let _ = remote(remote_rm_cmd(&tmp));
             return Err(e);
         }
-        // 3) 搬回目标目录。
-        if let Err(e) = remote(remote_mv_cmd(&tmp, &names)) {
-            // 文件还在远端临时目录里，明确告知路径，不让用户以为传成功了。
-            let _ = remote(remote_rm_cmd(&tmp));
-            return Err(format!(
-                "上传完成但搬运失败：{e}（远端临时目录 {tmp} 已清理）"
-            ));
+        // 3) Limit shell command length while keeping the bulk scp transfer per group.
+        for chunk in idxs.chunks(8) {
+            if hooks
+                .cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+            {
+                let _ = remote(remote_rm_cmd(&tmp));
+                return Err("CCB_CANCELLED".into());
+            }
+            if let Err(e) = remote(remote_publish_cmd(&tmp, items, chunk)) {
+                let _ = remote(remote_rm_cmd(&tmp));
+                return Err(format!("批量上传未全部完成：{e}。请刷新目录并重新发起传输"));
+            }
+            moved += chunk.len();
         }
         // 4) mv 之后临时目录应为空，rm -rf 兜底（隐藏目录留着也是垃圾）。
         let _ = remote(remote_rm_cmd(&tmp));
-        moved += idxs.len();
     }
     Ok(moved)
 }
@@ -465,6 +502,7 @@ mod tests {
         BatchItem {
             local: local.into(),
             remote: remote.into(),
+            overwrite: false,
         }
     }
 
@@ -566,18 +604,33 @@ mod tests {
     fn remote_cmds_quote_paths() {
         assert_eq!(remote_mkdir_cmd("/r/x/.t"), "mkdir -p '/r/x/.t'");
         assert_eq!(remote_rm_cmd("/r/x/.t"), "rm -rf '/r/x/.t'");
-        assert_eq!(
-            remote_mv_cmd("/r/.t", &["a.txt", "b c.txt"]),
-            "mv -f '/r/.t/a.txt' '/r/.t/b c.txt'"
-        );
     }
 
     /// 单引号是 shell 里最辣的字符：文件名 `it's.txt` 必须被正确转义，
     /// 否则 mv 命令会断裂、文件留在临时目录里。
     #[test]
-    fn remote_mv_cmd_escapes_single_quote() {
-        let cmd = remote_mv_cmd("/r/.t", &["it's.txt"]);
-        assert_eq!(cmd, r"mv -f '/r/.t/it'\''s.txt'");
+    fn remote_publish_uses_staged_source_and_exact_destination_with_overwrite_checks() {
+        let mut replace = item("C:/one/known.txt", "/r/known.txt");
+        replace.overwrite = true;
+        let items = [item("C:/up/it's.txt", "/r/it's (copy).txt"), replace];
+        let cmd = remote_publish_cmd("/r/.t", &items, &[0, 1]);
+        assert!(cmd.contains(r"mv -- '/r/.t/it'\''s.txt' '/r/it'\''s (copy).txt'"));
+        assert!(cmd.contains(r"[ -L '/r/it'\''s (copy).txt' ]"));
+        assert!(cmd.contains(" && "));
+        assert!(cmd.contains("mv -f -- '/r/.t/known.txt' '/r/known.txt'"));
+    }
+
+    #[test]
+    fn same_local_basename_never_shares_a_staging_pass() {
+        let items = [
+            item("C:/one/a.txt", "/r/a.txt"),
+            item("C:/two/a.txt", "/r/a copy.txt"),
+            item("C:/two/b.txt", "/r/b.txt"),
+        ];
+        assert_eq!(
+            upload_groups(&items),
+            vec![("/r".into(), vec![0]), ("/r".into(), vec![1, 2])]
+        );
     }
 
     // ---- scp 参数 ----

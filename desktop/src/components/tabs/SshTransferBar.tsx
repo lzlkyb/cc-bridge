@@ -151,7 +151,7 @@ export function OverwriteConfirmDialog({
           下载会先写临时文件，传完才替换；中途取消不会动原文件。
         </p>
       )}
-      <div className="mt-5 flex justify-end gap-2">
+      <div className="mt-5 flex flex-wrap justify-end gap-2">
         <Button variant="outline" onClick={onCancel}>
           取消
         </Button>
@@ -160,7 +160,8 @@ export function OverwriteConfirmDialog({
             跳过同名
           </Button>
         )}
-        <Button onClick={() => prompt?.confirm()}>{many ? "全部覆盖" : "覆盖"}</Button>
+        <Button variant={up ? "outline" : "default"} onClick={() => prompt?.confirm()}>{many ? "全部覆盖" : "覆盖"}</Button>
+        {prompt?.keepBoth && <Button onClick={prompt.keepBoth}>保留两份</Button>}
       </div>
     </Dialog>
   );

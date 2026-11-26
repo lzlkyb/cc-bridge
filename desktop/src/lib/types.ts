@@ -564,6 +564,9 @@ export interface BrowseEntry {
   name: string;
   path: string;
   isDir: boolean;
+  size?: number | null;
+  mtime?: number | null;
+  isSymlink?: boolean;
 }
 
 export interface BrowseResult {

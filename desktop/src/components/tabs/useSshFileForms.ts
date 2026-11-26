@@ -18,8 +18,6 @@ interface Params {
   xfer: ReturnType<typeof useSshTransfer>;
   /** 拼接远程路径（与面板内部实现保持一致）。 */
   joinRemote: (dir: string, name: string) => string;
-  /** 上传成功后刷新列表。 */
-  onUploaded: () => void;
 }
 
 /**
@@ -34,7 +32,6 @@ export function useSshFileForms({
   entries,
   xfer,
   joinRemote,
-  onUploaded,
 }: Params) {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadLocal, setUploadLocal] = useState("");
@@ -58,7 +55,6 @@ export function useSshFileForms({
     if (ok) {
       setUploadOpen(false);
       setUploadLocal("");
-      onUploaded();
     }
   };
 

@@ -38,7 +38,7 @@ export function useSshDownload(connectionId: string, path: string, download: Ret
       try { localStorage.setItem(DIRECTORY_KEY, await dirname(local)); } catch { /* Remembering a folder must not prevent the download. */ }
       if (!mounted.current) return;
       setChoosing(false);
-      await run({connectionId, name:filename, remote, local});
+      await run({connectionId, name:filename, remote, local, transferId: crypto.randomUUID()});
     } catch (error) { if (mounted.current) toast(`无法开始下载：${cleanErr(error)}`, "error"); }
     finally { locked.current = false; if (mounted.current) setChoosing(false); }
   };

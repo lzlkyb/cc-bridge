@@ -7,6 +7,8 @@ import { isCancelled, isTargetExists } from "../../lib/sshErrors";
 import type { StartArgs } from "../../lib/transferTypes";
 import { useTransferCore, type TransferCore } from "./useTransferCore";
 import { downloadMany, putMany } from "./batchTransfer";
+import { queueSshTransfer } from "../../lib/sshTransferQueue";
+import { copyUploadName, joinRemotePath, remoteParentPath } from "../../lib/sshFilePaths";
 
 /**
  * SFTP 传输编排（**单文件**）：下载 / 上传各一条链路，含覆盖确认。
@@ -27,15 +29,16 @@ export function useSshTransfer() {
   const download = useCallback(
     async (a: StartArgs, onFailure?: (message: string) => void, nativeSaveConfirmed = false): Promise<boolean> => {
       const run = async (overwrite: boolean): Promise<"ok" | "exists" | "fail"> => {
-        const id = core.begin("down", a.name);
+        const id = core.begin("down", a.name, undefined, undefined, a.transferId);
         try {
-          await invoke("ssh_sftp_get", {
+          await queueSshTransfer({ id, connectionId: a.connectionId, direction: "down", label: a.name, target: a.local, resumable: true, confirmConflict: !overwrite }, () => invoke("ssh_sftp_get", {
             connectionId: a.connectionId,
             remote: a.remote,
             local: a.local,
             transferId: id,
             overwrite,
-          });
+            resumable: true,
+          }));
           toast(`已下载：${a.name}`, "success");
           return "ok";
         } catch (e) {
@@ -69,16 +72,18 @@ export function useSshTransfer() {
     /** 批量上传时置 true：逐条 success toast 会刷屏，改由调用方汇总告知。 */
     silent = false,
   ): Promise<"ok" | "cancelled" | "fail"> => {
-    const run = async (): Promise<"ok" | "cancelled" | "fail"> => {
-      const id = core.begin("up", a.name, a.index, a.total);
+    const run = async (name = a.name, remote = a.remote, overwrite = false): Promise<"ok" | "cancelled" | "fail"> => {
+      const id = core.begin("up", name, a.index, a.total);
       try {
-        await invoke("ssh_sftp_put", {
+        await queueSshTransfer({ id, connectionId: a.connectionId, direction: "up", label: name, target: remote, resumable: true }, () => invoke("ssh_sftp_put", {
           connectionId: a.connectionId,
           local: a.local,
-          remote: a.remote,
+          remote,
           transferId: id,
-        });
-        if (!silent) toast(`已上传：${a.name}`, "success");
+          overwrite,
+          resumable: true,
+        }));
+        if (!silent) toast(`已上传：${name}`, "success");
         return "ok";
       } catch (e) {
         core.report(e, "up", a.name);
@@ -89,9 +94,12 @@ export function useSshTransfer() {
     };
     if (!remoteExists) return run();
     const decision = await core.askOverwrite({ kind: "up", path: a.remote, names: [a.name] });
-    // 放弃覆盖 = 主动取消，批量时应当停下来而不是接着闷头传下一个。
+    if (decision === "keepBoth") {
+      const name = copyUploadName(a.name);
+      return run(name, joinRemotePath(remoteParentPath(a.remote), name));
+    }
     if (decision !== "overwrite") return "cancelled";
-    return run();
+    return run(a.name, a.remote, true);
   }, [core]);
 
   /**

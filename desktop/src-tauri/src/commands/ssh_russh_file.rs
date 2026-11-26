@@ -432,7 +432,10 @@ pub(super) fn decide_rename_target(
 
 /// [`decide_rename_target`] 的 I/O 版：lstat 判形态，是软链再 canonicalize
 /// （SSH_FXP_REALPATH，服务端解析整条链，含中间目录的软链与相对目标）。
-async fn resolve_rename_target(sess: &RusshFileSession, path: &str) -> Result<String, String> {
+pub(super) async fn resolve_rename_target(
+    sess: &RusshFileSession,
+    path: &str,
+) -> Result<String, String> {
     let kind = match sess.sftp.symlink_metadata(path).await {
         Ok(md) if mode_is_symlink(md.permissions) => LstatKind::Symlink,
         _ => LstatKind::NotSymlink,

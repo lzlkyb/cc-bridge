@@ -1182,6 +1182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::ssh_sftp_cancel,
             commands::ssh_sftp_mkdir,
             commands::ssh_sftp_remove,
+            commands::ssh_sftp_remove_compared_file,
             // 重命名 / 移动（批次③；同一 ssh_enabled 闸，仅本机面板）。
             // rename 只改名称、move 只换目录，目标路径都由后端算。
             commands::ssh_sftp_rename,

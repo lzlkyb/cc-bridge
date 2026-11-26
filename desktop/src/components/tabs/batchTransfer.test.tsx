@@ -102,7 +102,7 @@ it("批量上传：existing 缺省先列一次目标目录，防静默覆盖", a
     expect.objectContaining({
       connectionId: "c1",
       items: [
-        { local: "C:/up/a.txt", remote: "/r/a.txt" },
+        { local: "C:/up/a.txt", remote: "/r/a.txt", overwrite: true },
         { local: "C:/up/new.txt", remote: "/r/new.txt" },
       ],
     }),
@@ -126,6 +126,20 @@ it("批量上传选「跳过同名」时不传被跳过的文件", async () => {
       items: [{ local: "C:/up/new.txt", remote: "/r/new.txt" }],
     }),
   );
+});
+
+it("批量上传保留同名副本，并给同一批中的重复文件独立目标", async () => {
+  mocks.askOverwrite.mockResolvedValue("keepBoth");
+  mocks.invoke.mockResolvedValue(2);
+  await putMany(fakeCore(), { connectionId: "c1", dir: "/r", existing: ["a.txt"], files: [
+    { local: "C:/one/a.txt", name: "a.txt" }, { local: "C:/two/a.txt", name: "a.txt" },
+  ] });
+  const uploaded = mocks.invoke.mock.calls[0][1].items;
+  expect(uploaded).toEqual([
+    { local: "C:/one/a.txt", remote: expect.stringMatching(/^\/r\/a \(副本 .+\)\.txt$/) },
+    { local: "C:/two/a.txt", remote: expect.stringMatching(/^\/r\/a \(副本 .+\)\.txt$/) },
+  ]);
+  expect(uploaded[0].remote).not.toBe(uploaded[1].remote);
 });
 
 it("批量上传全部同名且选跳过：明确交代，不静默收场", async () => {

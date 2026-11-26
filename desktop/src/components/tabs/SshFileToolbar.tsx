@@ -1,16 +1,21 @@
+import type { ReactNode } from "react";
 import { Icon } from "../ui/icon";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Dialog, DialogHeader, DialogTitle } from "../ui/dialog";
 import type { SshConnection, SshFileEntry } from "../../lib/types";
 import { FilePathBar } from "./FilePathBar";
+import { FileWorkspaceActions } from "./FileWorkspaceActions";
 
 interface FileHeaderProps {
   conn: SshConnection;
   path: string;
   loading: boolean;
   busy: boolean;
+  navigationBusy?: boolean;
   directoryReady?: boolean;
+  disconnected?: boolean;
+  moreActions?: ReactNode;
   onBack: () => void;
   onUp: () => void;
   onRefresh: () => void;
@@ -31,7 +36,10 @@ export function FileHeader({
   path,
   loading,
   busy,
+  navigationBusy = busy,
   directoryReady = true,
+  disconnected,
+  moreActions,
   onBack,
   onUp,
   onRefresh,
@@ -51,17 +59,18 @@ export function FileHeader({
         >
           <Icon name="arrowLeft" size={14} /> 返回终端
         </button>
-        <span className="rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-          📁 文件管理
+        <span className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+          <Icon name="folder" size={13}/>文件管理
         </span>
         <Icon name="terminal" size={14} className="text-muted-foreground" />
         <span className="text-sm font-medium" title={`${conn.username}@${conn.host}:${conn.port}`}>
           {conn.name || conn.host}
         </span>
-        <span className="min-w-0 truncate text-xs text-muted-foreground" title={`${conn.username}@${conn.host}:${conn.port}`}>
+        <span className="file-workspace-connection-address min-w-0 truncate text-xs text-muted-foreground" title={`${conn.username}@${conn.host}:${conn.port}`}>
           {conn.username}@{conn.host}:{conn.port}
         </span>
-        <div className="ml-auto flex shrink-0 items-center gap-1">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
+          <FileWorkspaceActions disconnected={disconnected}/>
           <Button
             size="sm"
             className="h-7 shrink-0 whitespace-nowrap px-2 text-xs"
@@ -100,10 +109,11 @@ export function FileHeader({
               className="h-7 px-2 text-xs"
             />
           </div>
+          {moreActions}
         </div>
       </div>
 
-      <FilePathBar path={path} disabled={loading || busy} loading={loading} onUp={onUp} onNavigate={onNavigate} canBack={canBack} canForward={canForward} onBack={onHistoryBack} onForward={onHistoryForward}/>
+      <FilePathBar path={path} disabled={loading || navigationBusy} loading={loading} onUp={onUp} onNavigate={onNavigate} canBack={canBack} canForward={canForward} onBack={onHistoryBack} onForward={onHistoryForward}/>
     </>
   );
 }

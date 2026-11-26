@@ -43,7 +43,7 @@ it("重命名成功：overwrite=false、成功后收摊并通知调用方", asyn
   await act(async () => api.setRenameName("new.txt"));
   await act(async () => api.submitRename());
   expect(h.invoke).toHaveBeenCalledExactlyOnceWith("ssh_sftp_rename", {
-    connectionId: "one", path: "/a/old.txt", new_name: "new.txt", overwrite: false,
+    connectionId: "one", path: "/a/old.txt", newName: "new.txt", overwrite: false,
   });
   expect(h.toast).toHaveBeenCalledWith("已重命名：old.txt → new.txt", "success");
   expect(api.renameEntry).toBeNull();
@@ -61,7 +61,7 @@ it("🔴 TARGET_EXISTS 转成覆盖确认，点「覆盖」才带 overwrite=true
   h.invoke.mockResolvedValueOnce(undefined);
   await act(async () => api.confirmOverwrite());
   expect(h.invoke).toHaveBeenLastCalledWith("ssh_sftp_rename", {
-    connectionId: "one", path: "/a/old.txt", new_name: "new.txt", overwrite: true,
+    connectionId: "one", path: "/a/old.txt", newName: "new.txt", overwrite: true,
   });
   expect(api.overwrite).toBeNull();
   expect(api.renameEntry).toBeNull();
@@ -83,7 +83,7 @@ it("单条移动成功：目标目录由用户填，后端只收 to_dir", async 
   await act(async () => api.setMoveDir("/dest"));
   await act(async () => api.submitMove());
   expect(h.invoke).toHaveBeenCalledExactlyOnceWith("ssh_sftp_move", {
-    connectionId: "one", from: "/a/a.txt", to_dir: "/dest", overwrite: false,
+    connectionId: "one", from: "/a/a.txt", toDir: "/dest", overwrite: false,
   });
   expect(api.moveEntries).toBeNull();
   expect(h.done).toHaveBeenCalledOnce();
@@ -113,8 +113,8 @@ it("🔴 批量有冲突：先汇总成一个确认（不逐个弹、不先移�
   await act(async () => api.confirmOverwrite());
   const moves = h.invoke.mock.calls.filter((c) => c[0] === "ssh_sftp_move");
   expect(moves.map((c) => c[1])).toEqual([
-    { connectionId: "one", from: "/a/b.txt", to_dir: "/dest", overwrite: true },
-    { connectionId: "one", from: "/a/a.txt", to_dir: "/dest", overwrite: false },
+    { connectionId: "one", from: "/a/b.txt", toDir: "/dest", overwrite: true },
+    { connectionId: "one", from: "/a/a.txt", toDir: "/dest", overwrite: false },
   ]);
   expect(api.overwrite).toBeNull();
 });

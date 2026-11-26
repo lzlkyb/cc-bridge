@@ -12,6 +12,7 @@ import type { SshConnection, SshConnectionList, SshCheckResult, StaticStatus } f
 import { SshConnectionDialog } from "./SshConnectionDialog";
 import type { SshSessionRef } from "./TerminalConnectionItem";
 import { TerminalFilePanelHost } from "./TerminalFilePanelHost";
+import { TerminalFileWorkspace, useTerminalFileWorkspace } from "./useTerminalFileWorkspace";
 import { TerminalSidebar } from "./TerminalSidebar";
 import { TerminalPanes } from "./TerminalPanes";
 import { useTerminalSplit } from "./useTerminalSplit";
@@ -75,6 +76,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
   // 省掉「每次拖文件都问传到哪」——那正是文件面板侧早就免掉的一步。
   // 表本体与清理在 useTerminalCwds（会话移除 / 重连换 sessionId 后同步删旧 key）。
   const { onCwd, activeCwd } = useTerminalCwds(sessions, activeId);
+  const files = useTerminalFileWorkspace(fileConn, activeConn?.id === fileConn?.id ? activeCwd : null, sessions, activeId, id => (workspace.setFocusedTabId(null), ssh.setActiveId(id)));
   const up = useTerminalUpload(activeConn, activeCwd);
   const drop = useFileDrop({
     collectZones: () => {
@@ -198,7 +200,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
         onDisconnect={(sessionId) => void ssh.disconnect(sessionId)}
         onNewTerminal={newTerminal}
         onActivate={openSession}
-        onOpenFiles={setFileConn}
+        onOpenFiles={(conn) => { files.reset(); setFilePath(null); setFileConn(conn); }}
         onEdit={(conn) => {
           setEditing(conn);
           setShowDialog(true);
@@ -210,6 +212,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
 
       <div
         ref={termAreaRef}
+        data-file-workspace={fileConn && !fullscreen ? files.mode : undefined}
         className={
           fullscreen
             ? "terminal-fullscreen-area fixed inset-0 z-50 overflow-hidden"
@@ -217,8 +220,8 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
         }
         style={{ background: surface }}
       >
-        {/* 终端视图（始终挂载，文件面板覆盖其上时仍保持后台会话存活） */}
-        <div className="flex h-full min-h-0 flex-col">
+        {/* 终端隐藏时保持会话和输出。 */}
+        <div className="file-workspace-terminal flex h-full min-h-0 flex-col" aria-hidden={fileConn && files.mode !== "terminal" ? true : undefined}>
           <TerminalDropLayer
             up={up}
             dropping={drop.zone === "terminal"}
@@ -264,7 +267,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
             onCloseTab={(s) => ssh.closeTab(s.sessionId)}
             onCwd={onCwd}
             onMeta={(sessionId, p) => ssh.patchMeta(sessionId, p)}
-            onOpenFilePath={(conn, p) => (setFileConn(conn), setFilePath(p))}
+            onOpenFilePath={(conn, p) => { if (fileConn?.id !== conn.id) files.reset(); setFileConn(conn); setFilePath(p); }}
             onPickSplitConn={(conn) => void splitCtl.openSplit(conn, splitCtl.split?.dir ?? "h")}
             onCloseSplit={() => activeSession && splitCtl.closeSplit(activeSession.tabId)}
             onToggleDir={splitCtl.toggleDir}
@@ -273,15 +276,12 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
           />
         </div>
 
-        {/* 文件管理 / 端口转发面板（覆盖在终端之上） */}
-        <TerminalFilePanelHost
+        <TerminalFileWorkspace.Provider value={files}><TerminalFilePanelHost
           conn={fileConn}
           initialPath={filePath ?? undefined}
-          onBack={() => (setFileConn(null), setFilePath(null))}
-          sessions={sessions} activeId={activeId}
-          connections={connections} onNavigate={onNavigate}
-          onConnect={ssh.connect}
-        />
+          onBack={() => (files.reset(), setFileConn(null), setFilePath(null))}
+          sessions={sessions} activeId={activeId} connections={connections} onNavigate={onNavigate} onConnect={ssh.connect}
+        /></TerminalFileWorkspace.Provider>
       </div>
 
       <SshConnectionDialog

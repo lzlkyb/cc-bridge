@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "../lib/tauri";
 import { cleanErr } from "../lib/utils";
 import type { SshFileEntry } from "../lib/types";
+import { onSshUploadCompleted } from "../lib/sshTransferQueue";
 
 interface Listing {
   connectionId: string; path: string; entries: SshFileEntry[];
@@ -82,6 +83,7 @@ export function useSshFileListing(connectionId: string, path: string) {
     void refresh();
     return () => { active.current = false; requests.id++; };
   }, [refresh]);
+  useEffect(() => onSshUploadCompleted(connectionId, path, refresh), [connectionId, path, refresh]);
   const matches = snapshot.connectionId === connectionId && snapshot.path === path;
   // Mask the old snapshot during render, before the navigation effect starts its request.
   return { entries: matches ? snapshot.entries : [], loading: !matches || snapshot.loading, error: matches ? snapshot.error : null, refresh };

@@ -36,12 +36,14 @@ export interface OverwritePrompt {
   confirm: () => void;
   /** 跳过同名、继续传其余的。**仅批量提供**：UI 有这个字段才渲染该按钮。 */
   skip?: () => void;
+  keepBoth?: () => void;
   /** 用户放弃：让等待中的 Promise 以 false 收尾，避免调用方永远悬着。 */
   cancel: () => void;
 }
 
 /** 单次传输的发起参数。 */
 export interface StartArgs {
+  transferId?: string;
   connectionId: string;
   /** 展示用的文件名。 */
   name: string;

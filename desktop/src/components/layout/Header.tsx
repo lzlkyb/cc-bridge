@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, memo } from "react";
 import type { StaticStatus } from "../../lib/types";
 import { getStoredTheme, toggleTheme } from "../../lib/theme";
 import { Button } from "../ui/button";
+import { SshTransferQueueButton } from "../tabs/SshTransferQueueButton";
 import { Icon } from "../ui/icon";
 import { headerSecurityBadges } from "../../lib/headerSecurityBadges";
 import { TitleBarControls } from "./TitleBarControls";
@@ -134,6 +135,7 @@ function HeaderImpl({
 
       {/* 右侧：启停 / 搜索 / 主题 / 窗口控件 */}
       <div data-tauri-drag-region="false" className="flex shrink-0 items-center gap-2">
+        <SshTransferQueueButton/>
         {status && (
           <Button
             variant={running ? "outline" : "default"}

@@ -19,7 +19,7 @@ describe("原生另存为下载",()=>{
   it("完整远端路径只取 basename 作为默认文件名，远端下载路径不重复拼接",async()=>{
     await act(async()=>state.start("/home/demo/report.png"));
     expect(mocks.save).toHaveBeenCalledWith({title:"下载文件到本机",defaultPath:"C:/Downloads/report.png"});
-    expect(mocks.download.mock.calls[0][0]).toEqual({connectionId:"server-a",name:"report.png",remote:"/home/demo/report.png",local:"D:/Work/report.png"});
+    expect(mocks.download.mock.calls[0][0]).toEqual({connectionId:"server-a",name:"report.png",remote:"/home/demo/report.png",local:"D:/Work/report.png",transferId:expect.any(String)});
     expect(state.result?.status).toBe("done"); expect(localStorage.getItem("cc-bridge.download-directory")).toBe("D:/Work");
     expect(mocks.download.mock.calls[0][2]).toBe(true);
   });

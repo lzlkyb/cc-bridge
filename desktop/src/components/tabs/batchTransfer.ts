@@ -4,6 +4,8 @@ import { cleanErr } from "../../lib/utils";
 import { isCancelled, isTargetExists } from "../../lib/sshErrors";
 import { joinRemoteDir } from "../../lib/uploadDir";
 import type { TransferCore } from "./useTransferCore";
+import { queueSshTransfer } from "../../lib/sshTransferQueue";
+import { copyUploadName } from "../../lib/sshFilePaths";
 
 /**
  * 批量传输编排：**纯函数**（不持有 React 状态），传输态经 `core` 参数注入。
@@ -43,12 +45,12 @@ export async function downloadMany(
   const run = async (overwrite: boolean): Promise<{ done: number; total: number }> => {
     const id = core.begin("down", `批量下载 ${total} 个文件`, undefined, total);
     try {
-      const done = await invoke<number>("ssh_sftp_get_many", {
+      const done = await queueSshTransfer({ id, connectionId: a.connectionId, direction: "down", label: `批量下载 ${total} 个文件`, target: a.dir, confirmConflict: !overwrite }, () => invoke<number>("ssh_sftp_get_many", {
         connectionId: a.connectionId,
         items: a.items,
         transferId: id,
         overwrite,
-      });
+      }));
       toast(`已下载 ${done} 个文件到 ${a.dir}`, "success");
       return { done, total };
     } catch (e) {
@@ -117,6 +119,7 @@ export async function putMany(
   // 对话框列出两个 "x.txt"（React key 冲突）并把数量报成 2。
   const conflicts = [...new Set(a.files.map((f) => f.name).filter((n) => existingSet.has(n)))];
   let skipSet: Set<string> | null = null;
+  let keepNames: Set<string> | null = null;
   if (conflicts.length > 0) {
     const decision = await core.askOverwrite({
       kind: "up",
@@ -125,6 +128,7 @@ export async function putMany(
       skippable: true,
     });
     if (decision === "cancel") return { done: 0, total };
+    if (decision === "keepBoth") keepNames = new Set(conflicts);
     if (decision === "skip") {
       skipSet = new Set(conflicts);
       // 全部同名且选了跳过 → 一次都不传、done 恒为 0，而调用方是「done>0 才提示」
@@ -136,16 +140,22 @@ export async function putMany(
     }
   }
 
-  const files = a.files.filter((f) => !skipSet?.has(f.name));
+  const reserved = new Set<string>();
+  const files = a.files.filter(f => !skipSet?.has(f.name)).map(f => {
+    const name = keepNames?.has(f.name) || reserved.has(f.name) ? copyUploadName(f.name) : f.name;
+    reserved.add(name);
+    const overwrite = name === f.name && existingSet.has(name);
+    return { local: f.local, remote: joinRemoteDir(a.dir, name), ...(overwrite && { overwrite }) };
+  });
   if (files.length === 0) return { done: 0, total };
 
   const id = core.begin("up", `批量上传 ${files.length} 个文件`, undefined, total);
   try {
-    const done = await invoke<number>("ssh_sftp_put_many", {
+    const done = await queueSshTransfer({ id, connectionId: a.connectionId, direction: "up", label: `批量上传 ${files.length} 个文件`, target: a.dir }, () => invoke<number>("ssh_sftp_put_many", {
       connectionId: a.connectionId,
-      items: files.map((f) => ({ local: f.local, remote: joinRemoteDir(a.dir, f.name) })),
+      items: files,
       transferId: id,
-    });
+    }));
     return { done, total };
   } catch (e) {
     if (!isCancelled(e)) core.report(e, "up", `批量上传 ${files.length} 个文件`);

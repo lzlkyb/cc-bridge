@@ -37,3 +37,13 @@ it("确认覆盖后才重试；真实失败回传详情，取消不冒充错误"
   await act(async()=>{expect(await state.download(args,failed,true)).toBe(false);});
   expect(failed).not.toHaveBeenCalled();
 });
+it("保留两份时上传到新文件名，禁止覆盖原文件", async () => {
+  mocks.invoke.mockResolvedValue(undefined);
+  let pending!: Promise<boolean>;
+  await act(async () => { pending = state.upload({ ...args, remoteExists: true }); });
+  await act(async () => state.prompt!.keepBoth!());
+  expect(await pending).toBe(true);
+  expect(mocks.invoke).toHaveBeenCalledWith("ssh_sftp_put", expect.objectContaining({
+    remote: expect.stringMatching(/^\/home\/report \(副本 [0-9a-f]{8}\)\.png$/), overwrite: false, resumable: true,
+  }));
+});

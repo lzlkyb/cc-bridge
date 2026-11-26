@@ -14,7 +14,7 @@ import type { OverwritePrompt, TransferKind } from "../../lib/transferTypes";
  * 这里只负责状态与 Promise 的对应关系。
  */
 
-export type OverwriteDecision = "overwrite" | "skip" | "cancel";
+export type OverwriteDecision = "overwrite" | "keepBoth" | "skip" | "cancel";
 
 export interface AskOverwriteSpec {
   kind: TransferKind;
@@ -54,6 +54,7 @@ export function useTransferPrompt() {
           path: spec.path,
           names: spec.names,
           confirm: () => settle("overwrite"),
+          keepBoth: spec.kind === "up" ? () => settle("keepBoth") : undefined,
           skip: spec.skippable ? () => settle("skip") : undefined,
           cancel: () => settle("cancel"),
         });

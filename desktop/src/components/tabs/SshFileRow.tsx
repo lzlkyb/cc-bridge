@@ -6,20 +6,9 @@ import type { SortKey, SortState } from "../../lib/sshFileSort";
 import { canReadEntry, unreadEntryTitle } from "../../lib/utils";
 import { SortableTh } from "./SortableTh";
 import { SshFileNameCell } from "./SshFileNameCell";
+import { SshFileRowActions } from "./SshFileRowActions";
+import { formatFileBytes } from "../../lib/fileWorkspaceActions";
 import "../../file-navigation.css";
-
-/** 字节数 → 人类可读（B/KB/MB/GB/TB）。 */
-function formatSize(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const u = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < u.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(1)} ${u[i]}`;
-}
 
 /** Unix 秒 → 本地化时间；0/无效返回「—」。 */
 function formatDate(s: number): string {
@@ -37,6 +26,7 @@ interface SshFileRowProps {
   selected?: boolean;
   entry: SshFileEntry;
   busy: boolean;
+  navigationBusy?: boolean;
   onOpenDir: (name: string) => void;
   onDownload: (name: string) => void;
   onRemove: (entry: SshFileEntry) => void;
@@ -62,6 +52,7 @@ export function SshFileRow({
   selected,
   entry,
   busy,
+  navigationBusy = busy,
   onOpenDir,
   onDownload,
   onRemove,
@@ -87,7 +78,7 @@ export function SshFileRow({
       return;
     }
     if (clickable) {
-      if (!busy) onOpenDir(entry.name);
+      if (!navigationBusy) onOpenDir(entry.name);
       return;
     }
     onSelect?.(entry.name, e);
@@ -96,7 +87,7 @@ export function SshFileRow({
     <tr
       ref={row} aria-selected={selected || highlighted || undefined}
       className={`border-b border-border/60 transition-colors ${
-        clickable && !busy ? "cursor-pointer hover:bg-muted/30" : "hover:bg-muted/20"
+        clickable && !navigationBusy ? "cursor-pointer hover:bg-muted/30" : "hover:bg-muted/20"
       } ${selected ? "bg-primary/10" : ""} ${highlighted && !selected ? "bg-accent" : ""}`}
       onClick={onRowClick}
       onDoubleClick={() => {
@@ -108,13 +99,13 @@ export function SshFileRow({
       <SshFileNameCell
         entry={entry}
         clickable={clickable}
-        busy={busy}
+        busy={navigationBusy}
         canRead={canRead}
         unreadTitle={unreadTitle}
         onOpenDir={onOpenDir}
       />
       <td className="w-28 py-1.5 text-right text-xs text-muted-foreground">
-        {effectiveIsDir ? <span className="text-muted-foreground/50">—</span> : formatSize(entry.size)}
+        {effectiveIsDir ? <span className="text-muted-foreground/50">—</span> : formatFileBytes(entry.size)}
       </td>
       <td className="w-40 py-1.5 pr-3 text-right text-xs text-muted-foreground">
         {formatDate(entry.mtime) === "—" ? (
@@ -123,55 +114,9 @@ export function SshFileRow({
           formatDate(entry.mtime)
         )}
       </td>
-      <td className="w-56 py-1.5 pr-3">
-        <div className="flex items-center justify-end gap-1">
-          {!entry.isDir && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={(ev) => {
-                ev.stopPropagation();
-                onDownload(entry.name);
-              }}
-              className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              下载
-            </button>
-          )}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={(ev) => {
-              ev.stopPropagation();
-              onRename(entry);
-            }}
-            className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            重命名
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={(ev) => {
-              ev.stopPropagation();
-              onMove(entry);
-            }}
-            className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            移动
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={(ev) => {
-              ev.stopPropagation();
-              onRemove(entry);
-            }}
-            className="whitespace-nowrap rounded-md px-2 py-1 text-xs text-destructive-ink hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            删除
-          </button>
-        </div>
+      <td className="w-60 py-1.5 pr-3">
+        <SshFileRowActions entry={entry} disabled={busy} download={() => onDownload(entry.name)}
+          rename={() => onRename(entry)} move={() => onMove(entry)} remove={() => onRemove(entry)}/>
       </td>
     </tr>
   );
@@ -183,6 +128,7 @@ interface FileTableProps {
   loading: boolean;
   error: string | null;
   busy: boolean;
+  navigationBusy?: boolean;
   /** 已多选的文件名集合（行底色 + aria-selected）。 */
   selectedNames?: string[];
   onOpenDir: (name: string) => void;
@@ -226,6 +172,7 @@ export function FileTable({
   loading,
   error,
   busy,
+  navigationBusy = busy,
   selectedNames,
   onOpenDir,
   onDownload,
@@ -265,7 +212,7 @@ export function FileTable({
             <SortableTh sortKey="name" label="名称" align="left" extra="py-1.5 pl-3" sort={sort} onToggleSort={onToggleSort} />
             <SortableTh sortKey="size" label="大小" align="right" extra="w-28 py-1.5" sort={sort} onToggleSort={onToggleSort} />
             <SortableTh sortKey="mtime" label="修改时间" align="right" extra="w-40 py-1.5 pr-3" sort={sort} onToggleSort={onToggleSort} />
-            <th className="w-56 py-1.5 pr-3 text-right font-medium">操作</th>
+            <th className="w-60 py-1.5 pr-3 text-right font-medium">操作</th>
           </tr>
         </thead>
         <tbody ref={tbodyRef}>
@@ -280,6 +227,7 @@ export function FileTable({
                 highlighted={e.name === highlightName}
                 selected={!!selectedNames?.includes(e.name)}
                 busy={busy || loading}
+                navigationBusy={navigationBusy || loading}
                 onOpenDir={onOpenDir}
                 onDownload={onDownload}
                 onRemove={onRemove}

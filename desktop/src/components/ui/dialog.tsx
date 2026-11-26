@@ -5,11 +5,12 @@ interface DialogProps {
   open: boolean;
   onClose: () => void;
   children: ReactNode;
+  ariaLabel?: string;
 }
 
-export function Dialog({ open, onClose, children }: DialogProps) {
+export function Dialog({ open, onClose, children, ariaLabel }: DialogProps) {
   return (
-    <Modal open={open} onClose={onClose} zIndex={50} className="mx-4 w-full max-w-lg rounded-lg modal-surface p-6">
+    <Modal open={open} onClose={onClose} ariaLabel={ariaLabel} zIndex={50} className="mx-4 w-full max-w-lg rounded-lg modal-surface p-6">
       {children}
     </Modal>
   );
