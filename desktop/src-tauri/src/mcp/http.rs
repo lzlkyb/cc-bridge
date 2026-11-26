@@ -533,12 +533,15 @@ fn handle_standard_headers(
             ));
         }
     }
-    // `Mcp-Name` 只对 tools/call 有意义（规范：其它方法可缺省）。
+    // `Mcp-Name`：tools/call 对应 `params.name`；tasks/* 对应 `params.taskId`（SEP-2663）；
+    // 其它方法可缺省。
     if let Some(h) = headers.get("mcp-name").and_then(|v| v.to_str().ok()) {
-        let expected = body
-            .pointer("/params/name")
-            .and_then(|n| n.as_str())
-            .unwrap_or("");
+        let key = if method.starts_with("tasks/") {
+            "/params/taskId"
+        } else {
+            "/params/name"
+        };
+        let expected = body.pointer(key).and_then(|n| n.as_str()).unwrap_or("");
         if h != expected {
             return Some(header_mismatch_error(
                 body.get("id"),
@@ -567,6 +570,8 @@ async fn mcp_handler(
     state.record_client_hit(addr.ip().is_loopback());
 
     let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    // 记录客户端声明了什么扩展（每种组合只记一次，不影响任何行为）。
+    crate::mcp::tasks::probe_client(&body, method);
 
     // ── 现代请求判定（规范明确允许 dual-era 服务器在同一端点并存两代语义）──────
     // 现代（`2026-07-28` 起）= 无握手、每个请求自带 `_meta`；legacy = 走 initialize。
@@ -596,7 +601,8 @@ async fn mcp_handler(
             "result": {
                 "resultType": "complete",
                 "supportedVersions": SUPPORTED_VERSIONS,
-                "capabilities": { "tools": { "listChanged": false } },
+                // tasks 扩展只在探针开关打开时声明（`initialize` 与 SSE 不声明）。
+                "capabilities": crate::mcp::tasks::discover_capabilities(),
                 "_meta": {
                     META_SERVER_INFO: {
                         "name": "cc-bridge",
@@ -692,6 +698,10 @@ async fn mcp_handler(
             crate::mcp::transfer::with_base_url(base, handle_tools_call(state, source_ip, body))
                 .await
                 .into_response()
+        }
+        // Tasks 扩展（探针开关打开时才有效；关着时这些方法照旧走下面的 Method not found）。
+        "tasks/get" | "tasks/update" | "tasks/cancel" if crate::mcp::tasks::enabled() => {
+            Json(crate::mcp::tasks::handle_method(method, &body, &state).await).into_response()
         }
         _ => Json(json!({
             "jsonrpc": "2.0",
@@ -820,6 +830,14 @@ pub async fn handle_tools_call(
                     // → 无条件加即可，不需要按 era 分支。
                     if let Some(obj) = result.as_object_mut() {
                         obj.insert("resultType".into(), json!("complete"));
+                    }
+                    // Tasks 扩展：客户端声明了扩展、命令转了后台时，把「backgrounded + handle」
+                    // 包成任务返回；开关关着或不满足条件时原样不动。只在这里（顶层 tools/call）判断，
+                    // batch 的子操作不经过这里，所以永远不会变成任务。
+                    if let Some(task) = crate::mcp::tasks::create_task_result(
+                        &body, tool_name, &arguments, &result, &state,
+                    ) {
+                        result = task;
                     }
                     Json(json!({
                         "jsonrpc": "2.0",
@@ -3060,6 +3078,19 @@ mod over_wire_tests {
         let v: Value = resp.json().await.expect("响应非 JSON");
         assert_eq!(v["error"]["code"].as_i64(), Some(-32020));
         assert_eq!(v["error"]["data"]["header"].as_str(), Some("Mcp-Method"));
+    }
+
+    /// tasks/* 的 `Mcp-Name` 头必须等于 `params.taskId`（与 tools/call 的 `params.name` 同款校验）。
+    #[test]
+    fn tasks_name_header_must_match_task_id() {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("mcp-name", "cmd_1".parse().expect("header"));
+        let ok = json!({ "id": 1, "params": { "taskId": "cmd_1" } });
+        use crate::mcp::http::handle_standard_headers;
+        assert!(handle_standard_headers(&h, "tasks/get", &ok).is_none());
+        let bad = json!({ "id": 1, "params": { "taskId": "cmd_2" } });
+        let err = handle_standard_headers(&h, "tasks/get", &bad).expect("不符应报错");
+        assert_eq!(err["error"]["code"], json!(-32020));
     }
 
     /// `Mcp-Name` 头与 `params.name` 不符 → `-32020`（只对 tools/call 有意义）。
