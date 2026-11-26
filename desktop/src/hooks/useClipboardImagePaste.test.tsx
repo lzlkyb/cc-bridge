@@ -93,6 +93,21 @@ describe("剪贴板图片：上传前必须确认", () => {
     expect(api.pending).not.toBeNull();
   });
 
+  it("🔴 传完一张还能传第二张：忙标记必须真的复位（每个会话只能粘一次的成因）", async () => {
+    await act(async () => {
+      await api.pasteImage("/home/u");
+    });
+    await act(async () => {
+      await api.confirmUpload();
+    });
+    expect(api.busy).toBe(false);
+    await act(async () => {
+      await api.pasteImage("/home/u");
+    });
+    expect(api.pending).not.toBeNull();
+    expect(mocks.invoke.mock.calls.filter((c) => c[0] === "ssh_sftp_put")).toHaveLength(1);
+  });
+
   it("探不到 cwd 时目标退回远端 home（文件名不带目录前缀）", async () => {
     await act(async () => {
       await api.pasteImage(null);
