@@ -27,13 +27,28 @@ const h = vi.hoisted(() => {
   const handlers = new Map<string, ((e: { payload: unknown }) => void)[]>();
   /** 记录 listen/invoke 的调用顺序，用来断言「先注册监听、再发起检查」 */
   const order: string[] = [];
+  /** 弹框每次渲染的 open 值；最后一项即当前是否可见 */
+  const dialogOpen: boolean[] = [];
+  /** 默认 IPC 实现：会随用例被覆盖，beforeEach 里恢复它，避免 mockImplementation 泄漏。 */
+  const defaultInvoke = async (cmd: string) => {
+    order.push(`invoke:${cmd}`);
+    if (cmd === "update_activity") {
+      return { conversations: 0, agents: 0, commands: 0, transfers: 0 };
+    }
+    // 默认不强制：绝大多数用例不该因为多了一次策略检查而进入强制态。
+    if (cmd === "check_update_policy") {
+      return { mandatory: false, currentVersion: "3.4.0", source: "network-miss" };
+    }
+    return undefined;
+  };
   return {
     handlers,
     order,
-    invoke: vi.fn(async (cmd: string) => {
-      order.push(`invoke:${cmd}`);
-      return cmd === "update_activity" ? { conversations: 0, agents: 0, commands: 0, transfers: 0 } : undefined;
-    }),
+    dialogOpen,
+    defaultInvoke,
+    /** 最近一次渲染拿到的 onClose，测试里用来模拟用户点「稍后提醒」 */
+    closeDialog: undefined as (() => void) | undefined,
+    invoke: vi.fn<(cmd: string) => Promise<unknown>>(defaultInvoke),
     relaunch: vi.fn(async () => {}),
   };
 });
@@ -55,7 +70,13 @@ vi.mock("@tauri-apps/api/event", () => ({
     };
   },
 }));
-vi.mock("../components/update/UpdateNotesDialog", () => ({ UpdateNotesDialog: () => null }));
+vi.mock("../components/update/UpdateNotesDialog", () => ({
+  UpdateNotesDialog: (props: { open: boolean; onClose: () => void }) => {
+    h.dialogOpen.push(props.open);
+    h.closeDialog = props.onClose;
+    return null;
+  },
+}));
 vi.mock("../components/update/RestartOverlay", () => ({ RestartOverlay: () => null }));
 
 const EVENTS = [  "update:checking",
@@ -86,6 +107,18 @@ function Probe() {
 function state(): UpdateState {
   if (!ctx) throw new Error("Probe 尚未渲染");
   return ctx;
+}
+
+/** 弹框当前是否打开（取 mock 最后一次渲染的 open）。 */
+function dialogOpen(): boolean {
+  return h.dialogOpen[h.dialogOpen.length - 1] ?? false;
+}
+
+/** 模拟用户点弹框里的「稍后提醒」/关闭按钮。 */
+async function closeDialog() {
+  await act(async () => {
+    h.closeDialog?.();
+  });
 }
 
 let root: Root | null = null;
@@ -136,7 +169,11 @@ beforeEach(() => {
   localStorage.clear();
   h.handlers.clear();
   h.order.length = 0;
+  h.dialogOpen.length = 0;
+  h.closeDialog = undefined;
   h.invoke.mockClear();
+  // 上一个用例可能换过实现（强制策略），必须恢复默认，否则会泄漏到后面的用例。
+  h.invoke.mockImplementation(h.defaultInvoke);
   h.relaunch.mockClear();
   h.relaunch.mockImplementation(async () => {});
 });
@@ -252,6 +289,31 @@ describe("事件驱动的状态转移", () => {
     expect(h.invoke).not.toHaveBeenCalledWith("start_update");
   });
 
+  it("后台检查完成不能覆盖正在下载或已安装的状态", async () => {
+    await mount();
+    await emit("update:available", available());
+    await act(async () => state().downloadAndInstall());
+    await emit("update:uptodate");
+    await emit("update:error", { source: "check", message: "后台检查超时" });
+    expect(state().status).toBe("downloading");
+    expect(state().update?.version).toBe(available().version);
+
+    await emit("update:ready");
+    await emit("update:uptodate");
+    expect(state().status).toBe("ready");
+  });
+
+  it("下载换源时显示实际下载的版本，且不重新打开普通弹框", async () => {
+    await mount();
+    await emit("update:available", available());
+    await act(async () => state().downloadAndInstall());
+    await closeDialog();
+    await emit("update:available", { ...available("100.0.0"), source: "download" });
+    expect(state().update?.version).toBe("100.0.0");
+    expect(state().status).toBe("downloading");
+    expect(dialogOpen()).toBe(false);
+  });
+
   it("update:error 记录原始文案并复位下载守卫", async () => {
     await mount();
     await emit("update:available", available());
@@ -268,6 +330,96 @@ describe("事件驱动的状态转移", () => {
       void state().downloadAndInstall();
     });
     expect(h.invoke).toHaveBeenCalledWith("start_update");
+  });
+});
+
+/**
+ * 「有更新就弹框」（2026-11-26 恢复）。
+ *
+ * 之前刻意只亮角标 + toast，不打断用户；现在按需求恢复成发现新版本直接弹框。
+ * 但必须守住两条去重规则，否则每次 24 小时定时检查都会再弹一次、变成骚扰：
+ * 1. 同一次运行里同一版本只自动弹一次；关窗 = 「稍后提醒」，下次启动会再提醒；
+ * 2. 点过「忽略此版本」后，这个版本即使手动检查也不再弹（跨会话持久化）。
+ */
+describe("发现新版本自动弹框", () => {
+  it("自动检查命中新版本时自动打开更新框", async () => {
+    await mount();
+    expect(dialogOpen()).toBe(false);
+
+    await emit("update:available", available("99.9.9"));
+
+    expect(dialogOpen()).toBe(true);
+  });
+
+  it("同一次运行里同一版本只弹一次，关掉后不再重复弹", async () => {
+    await mount();
+    await emit("update:available", available("99.9.9"));
+    expect(dialogOpen()).toBe(true);
+
+    // 用户点「稍后提醒」/关闭：只关窗，不写「忽略」记忆。
+    await closeDialog();
+    expect(dialogOpen()).toBe(false);
+
+    // 24 小时定时检查再次命中同一版本：不应再弹。
+    await emit("update:available", available("99.9.9"));
+    expect(dialogOpen()).toBe(false);
+  });
+
+  it("换一个新版本仍会自动弹", async () => {
+    await mount();
+    await emit("update:available", available("99.9.9"));
+    await closeDialog();
+
+    await emit("update:available", available("100.0.0"));
+    expect(dialogOpen()).toBe(true);
+  });
+
+  it("「忽略此版本」后，同版本即使手动检查也不再弹", async () => {
+    await mount();
+    await emit("update:available", available("99.9.9"));
+    await closeDialog();
+    await act(async () => {
+      state().dismissUpdate();
+    });
+
+    await act(async () => {
+      await state().manualCheckForUpdate();
+    });
+    await emit("update:available", available("99.9.9"));
+
+    expect(dialogOpen()).toBe(false);
+    expect(state().isDismissed("99.9.9")).toBe(true);
+  });
+
+  it("手动检查发现新版本时弹框（无视本会话已提醒过的去重）", async () => {
+    await mount();
+    await emit("update:available", available("99.9.9"));
+    await closeDialog();
+
+    await act(async () => {
+      await state().manualCheckForUpdate();
+    });
+    await emit("update:available", available("99.9.9"));
+
+    expect(dialogOpen()).toBe(true);
+  });
+
+  it("一次手动检查不会污染后续自动检查（不重复弹）", async () => {
+    await mount();
+    // 手动检查命中：用户主动问，弹。
+    await act(async () => {
+      await state().manualCheckForUpdate();
+    });
+    await emit("update:available", available("99.9.9"));
+    expect(dialogOpen()).toBe(true);
+    await closeDialog();
+
+    // 同一次运行里定时自动检查再命中：manual 标记已被消费 + 本会话已弹过 ⇒ 不弹。
+    await act(async () => {
+      await state().checkForUpdate();
+    });
+    await emit("update:available", available("99.9.9"));
+    expect(dialogOpen()).toBe(false);
   });
 });
 
@@ -394,6 +546,92 @@ describe("已是最新（uptodate）与手动/自动区分", () => {
     });
     await emit("update:uptodate");
     expect(state().manualCheck).toBe(false);
+  });
+});
+
+/**
+ * 强制更新策略（2026-11-26）。
+ *
+ * 判定本身在 Rust 侧（有 12 条单测钉版本比较/缓冲期/fail-open），这里只锁三件
+ * 前端必须做对的事：
+ * 1. `mandatory` 为 true 时进入强制态；
+ * 2. 强制态下**不再叠一层**普通更新弹框（否则两个遮罩互相盖）；
+ * 3. IPC 异常时放行 —— 启动路径不能因为一次未知错误把用户挡在门外。
+ */
+describe("强制更新策略", () => {
+  const withPolicy = (policy: unknown) => {
+    h.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "check_update_policy") return policy;
+      return h.defaultInvoke(cmd);
+    });
+  };
+
+  const mandatory = {
+    mandatory: true,
+    currentVersion: "3.4.0",
+    minSupportedVersion: "3.5.0",
+    latestVersion: "3.5.0",
+    message: "必须升级后继续使用",
+    source: "network",
+  };
+
+  it("后端判定 mandatory 时进入强制态", async () => {
+    withPolicy(mandatory);
+    await mount();
+
+    expect(state().forceUpdate.active).toBe(true);
+    expect(state().forceUpdate.verdict?.minSupportedVersion).toBe("3.5.0");
+  });
+
+  it("非强制判定不锁界面（默认发版路径）", async () => {
+    await mount();
+    expect(state().forceUpdate.active).toBe(false);
+  });
+
+  it("强制态下普通更新弹框不再叠一层", async () => {
+    withPolicy(mandatory);
+    await mount();
+    await emit("update:available", available("99.9.9"));
+
+    // 状态照常进 available（强制遮罩内部要用版本信息），但不打开普通弹框。
+    expect(state().status).toBe("available");
+    expect(dialogOpen()).toBe(false);
+  });
+
+  it("策略判定晚于普通弹框时，强制态接管并关掉它", async () => {
+    // 两个检查是并行发起的：普通检查可能先回来并弹框，策略 8 秒后才判定强制。
+    // 这一拍如果不收掉普通弹框，就会有两个 Modal 叠着 —— 视觉上是同一块区域，
+    // 但焦点陷阱是两层，Tab 会从上层串到下层。
+    let releasePolicy: ((v: unknown) => void) | null = null;
+    h.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "check_update_policy") {
+        return new Promise((resolve) => {
+          releasePolicy = resolve;
+        });
+      }
+      return h.defaultInvoke(cmd);
+    });
+    await mount();
+
+    await emit("update:available", available("99.9.9"));
+    expect(dialogOpen()).toBe(true);
+
+    await act(async () => {
+      releasePolicy?.(mandatory);
+    });
+
+    expect(state().forceUpdate.active).toBe(true);
+    expect(dialogOpen()).toBe(false);
+  });
+
+  it("策略命令异常时按放行处理", async () => {
+    h.invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "check_update_policy") throw new Error("ipc boom");
+      return h.defaultInvoke(cmd);
+    });
+    await mount();
+
+    expect(state().forceUpdate.active).toBe(false);
   });
 });
 

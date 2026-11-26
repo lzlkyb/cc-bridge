@@ -13,6 +13,14 @@ interface FocusTrapOptions {
    * window 级关闭），陷阱只管 Tab 环与焦点归还。
    */
   onEscape?: () => void;
+  /**
+   * 初始焦点的选择器（在弹窗节点内查找），缺省聚焦首个可聚焦元素。
+   *
+   * 为什么需要：首个可聚焦元素常常是带 `tabindex="0"` 的可滚动区，程序化聚焦会让
+   * 它命中 `:focus-visible` 画出一整圈描边——内容为空时尤其像一条多余的边框。
+   * 强制更新遮罩用它把初始焦点放到主按钮上。
+   */
+  initialFocus?: string;
 }
 
 /**
@@ -26,7 +34,7 @@ export function useFocusTrap(
   ref: RefObject<HTMLElement | null>,
   opts: FocusTrapOptions = {},
 ): void {
-  const { enabled = true, onEscape } = opts;
+  const { enabled = true, onEscape, initialFocus } = opts;
   // onEscape 走 ref：调用方普遍传内联箭头函数，入 effect 依赖会随父组件每次
   // 重渲染重跑，反复把焦点抢回第一个元素（ConfirmDialog 原实现的同款教训）。
   const escapeRef = useRef(onEscape);
@@ -39,7 +47,8 @@ export function useFocusTrap(
     const focusables = () => Array.from(node.querySelectorAll<HTMLElement>(
       'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
     )).filter(el => !el.matches(":disabled") && !el.closest("[inert]") && el.getClientRects().length > 0);
-    focusables()[0]?.focus({ preventScroll: true });
+    const preferred = initialFocus ? node.querySelector<HTMLElement>(initialFocus) : null;
+    (preferred ?? focusables()[0])?.focus({ preventScroll: true });
     const onKey = (e: KeyboardEvent) => {
       // IME 组词中的 Esc 属于输入法（收候选窗），不触发关闭——
       // Modal / ConfirmDialog / CommandPalette 内都有中文输入场景。
@@ -66,5 +75,5 @@ export function useFocusTrap(
       node.removeEventListener("keydown", onKey);
       prev?.focus?.();
     };
-  }, [ref, enabled]);
+  }, [ref, enabled, initialFocus]);
 }

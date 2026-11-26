@@ -221,6 +221,11 @@ pub struct AppState {
     pub mcp_server_handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     // MCP 服务是否在运行（供 UI 显示启停状态）。用户可手动停止/启动。
     pub mcp_running: AtomicBool,
+    /// 强制更新期间为 true：托盘菜单只保留「打开面板 / 退出」。
+    ///
+    /// 前端在 `check_update_policy` 判为 mandatory 后置位。没有它的话，用户可以从托盘
+    /// 复制接入命令、启停本机服务 —— 主窗口锁住了，能力却还在外面可用。
+    pub force_update_active: AtomicBool,
     pub service_operation: Mutex<()>,
     pub service_control: StdMutex<crate::commands::ServiceControl>,
     pub local_access_probe: StdMutex<Option<(String, u16, bool)>>,
@@ -452,6 +457,7 @@ impl AppState {
             data_dir,
             mcp_server_handle: Mutex::new(None),
             mcp_running: AtomicBool::new(false),
+            force_update_active: AtomicBool::new(false),
             service_operation: Mutex::new(()),
             local_access_probe: StdMutex::new(None),
             tray_access_key: StdMutex::new(String::new()),

@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use tauri::Emitter;
 
+use super::update_policy::parse_version;
+
 // ===== 自动更新（后台线程，不阻塞 UI），採自 PastePanda 实现 =====
 
 /// 检查更新的整体时限。
@@ -194,7 +196,10 @@ fn resolve_update_endpoints() -> Result<Option<Vec<url::Url>>, String> {
 /// 公共 GitHub 代理稳定，作为更新源的第一候选；失败时自动回退到 tauri.conf.json 配置的
 /// ghproxy/GitHub 端点（见 candidate_endpoint_groups）。
 ///
-const GITEE_REPOSITORY: &str = "lzul/cc-bridge";
+/// 供同模块的 `update_policy` 复用，避免两处各写一份仓库路径、改一处忘另一处。
+pub(super) const GITEE_REPOSITORY: &str = "lzul/cc-bridge";
+/// GitHub 仓库（owner/repo），与 `tauri.conf.json` 的 updater 端点和发布脚本保持同一真源。
+pub(super) const GITHUB_REPOSITORY: &str = "lzlkyb/cc-bridge";
 
 /// 候选更新源分组，按顺序尝试：前一组检查或下载任一步失败，才换下一组。
 /// 手动 env 覆盖（CCBRIDGE_UPDATE_ENDPOINT）存在时只用这一组、不做自动换源，保持覆盖语义单一可预期。
@@ -209,6 +214,36 @@ fn candidate_endpoint_groups() -> Result<Vec<Option<Vec<url::Url>>>, String> {
         Some(vec![gitee]),
         None, // 退回 tauri.conf.json 配置的端点（现有 ghproxy → GitHub 两级）
     ])
+}
+
+/// A successful manifest response can still be stale. Try each mirror separately when enforcing
+/// a minimum version so an older manifest cannot hide a usable package on the next mirror.
+fn download_endpoint_groups(
+    app: &tauri::AppHandle,
+    forced: bool,
+) -> Result<Vec<Option<Vec<url::Url>>>, String> {
+    let groups = candidate_endpoint_groups()?;
+    if !forced {
+        return Ok(groups);
+    }
+    let mut sources = Vec::new();
+    for group in groups {
+        let endpoints = match group {
+            Some(endpoints) => endpoints,
+            None => app
+                .config()
+                .plugins
+                .0
+                .get("updater")
+                .and_then(|config| config["endpoints"].as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item.as_str().and_then(|url| url::Url::parse(url).ok()))
+                .collect(),
+        };
+        sources.extend(endpoints.into_iter().map(|endpoint| Some(vec![endpoint])));
+    }
+    Ok(sources)
 }
 
 /// 构造 `Updater`：注入指定的端点（若有），否则用配置端点。
@@ -235,7 +270,7 @@ fn build_updater(
 /// 回退），前一个候选检查或下载任一步失败就换下一个，全部失败才报错。内置指数退避重试：
 /// 每个候选内检查最多重试 2 次、下载安装最多重试 2 次。
 #[tauri::command]
-pub fn start_update(app: tauri::AppHandle) {
+pub fn start_update(app: tauri::AppHandle, min_supported_version: Option<String>) {
     // 已有任务在跑就直接忽略本次触发（事件由在跑的那个推送，不重复发状态）。
     static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let Some(guard) = SingleFlight::acquire(&RUNNING) else {
@@ -246,7 +281,8 @@ pub fn start_update(app: tauri::AppHandle) {
         let _guard = guard; // 持有到任务结束（含所有 early return）
         let _ = app.emit("update:checking", ());
 
-        let groups = match candidate_endpoint_groups() {
+        let minimum = min_supported_version.as_deref().and_then(parse_version);
+        let groups = match download_endpoint_groups(&app, minimum.is_some()) {
             Ok(g) => g,
             Err(e) => {
                 let _ = app.emit("update:error", serde_json::json!({ "message": e }));
@@ -298,6 +334,19 @@ pub fn start_update(app: tauri::AppHandle) {
             };
 
             let update = match check_result {
+                Some(u)
+                    if minimum.is_none_or(|min| {
+                        parse_version(&u.version).is_some_and(|version| version >= min)
+                    }) =>
+                {
+                    u
+                }
+                _ if minimum.is_some() => {
+                    log::warn!("[Update] 镜像尚未提供满足最低版本的安装包，改用下一源");
+                    last_message = Some("镜像尚未同步到最低支持版本，请稍后重试".into());
+                    last_code = "stale";
+                    continue;
+                }
                 Some(u) => u,
                 None => {
                     // 下载链路不负责"已是最新"判定（那是 check_update 的事）。
@@ -324,6 +373,7 @@ pub fn start_update(app: tauri::AppHandle) {
                     "body": update.body,
                     "date": date_str,
                     "currentVersion": current_ver,
+                    "source": "download",
                 }),
             );
 
@@ -435,7 +485,10 @@ pub fn check_update(app: tauri::AppHandle) {
             let groups = match candidate_endpoint_groups() {
                 Ok(g) => g,
                 Err(e) => {
-                    let _ = app.emit("update:error", serde_json::json!({ "message": e }));
+                    let _ = app.emit(
+                        "update:error",
+                        serde_json::json!({ "message": e, "source": "check" }),
+                    );
                     return;
                 }
             };
@@ -490,7 +543,8 @@ pub fn check_update(app: tauri::AppHandle) {
                         "全部更新源均检查失败（已依次尝试）: {}",
                         last_message.unwrap_or_else(|| "未知错误".into())
                     ),
-                    "code": last_code
+                    "code": last_code,
+                    "source": "check"
                 }),
             );
         })
@@ -508,7 +562,8 @@ pub fn check_update(app: tauri::AppHandle) {
                         "连接更新服务器超时（{}s），请检查网络后重试",
                         CHECK_DEADLINE.as_secs()
                     ),
-                    "code": "timeout"
+                    "code": "timeout",
+                    "source": "check"
                 }),
             );
         }

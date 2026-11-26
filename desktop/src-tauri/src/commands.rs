@@ -70,6 +70,7 @@ mod stable_discovery_cmds;
 mod status;
 mod system;
 mod update;
+mod update_policy;
 mod update_safety;
 
 pub use audit_cmds::*;
@@ -103,4 +104,5 @@ pub use stable_discovery_cmds::*;
 pub use status::*;
 pub use system::*;
 pub use update::*;
+pub use update_policy::*;
 pub use update_safety::*;

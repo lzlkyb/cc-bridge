@@ -10,6 +10,7 @@ import {
   MANIFEST_BRANCH,
   MANIFEST_DIR,
   MANIFEST_NAME,
+  POLICY_NAME,
   VERIFY_STAGE_HINT,
   addArgs,
   giteeRawUrl,
@@ -102,6 +103,12 @@ describe("CI：国内通道只从 GitHub 的 releases 分支出境", () => {
     expect(channelStep).toMatch(/'--asset'/);
     // 清单生成步骤也还在，否则通道会「发了但没有清单」。
     expect(workflow).toMatch(/UPDATER_OUTPUT_FILENAME: "updater-gitee\.json"/);
+  });
+
+  it("普通发版也随国内清单发布策略，以便撤销上一版的强制更新", () => {
+    expect(channelStep).toMatch(/throw "[^"\n]*update-policy\.json/);
+    expect(channelStep).toMatch(/\$nodeArgs \+= '--file'; \$nodeArgs \+= \$policy/);
+    expect(workflow).toMatch(/Copy-Item desktop\\dist\\update-policy\.json dist-out\\ -ErrorAction Stop/);
   });
 
   it("唯一出口里：FF-only、清空 latest/、四段验证三件都在", () => {
@@ -291,6 +298,52 @@ describe("本地 bare 仓端到端彩排", () => {
         "latest/cc-bridge_3.1.5_x64-setup.exe",
       );
       expect(JSON.parse(readFileSync(path.join(src, MANIFEST_NAME), "utf8")).version).toBe("3.1.7");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  /**
+   * 强制更新策略必须和清单住在同一个 latest/ 里。
+   *
+   * 客户端的第一判定源是 Gitee raw（见 update_policy.rs 的 policy_endpoints）：只把策略
+   * 挂到 GitHub Release 附件，国内用户就会永远「没有强制策略」——而这类静默失效
+   * 在界面上完全看不出来，只能靠这条断言拦。
+   */
+  it("强制策略与清单同目录发布，安装包仍不进分支", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "ccb-policy-e2e-"));
+    try {
+      const bare = path.join(tmp, "remote.git");
+      const seed = path.join(tmp, "seed");
+      const src = path.join(tmp, "artifacts");
+      git("init", "--bare", bare);
+      git("init", seed);
+      writeFileSync(path.join(seed, "README.md"), "seed\n");
+      git("-C", seed, "add", "README.md");
+      git("-C", seed, "-c", "user.email=test@local", "-c", "user.name=test", "commit", "-m", "seed");
+      git("-C", seed, "push", bare, "HEAD:refs/heads/main");
+      git("--git-dir", bare, "symbolic-ref", "HEAD", "refs/heads/main");
+
+      mkdirSync(src, { recursive: true });
+      const files = [MANIFEST_NAME, POLICY_NAME].map((name) => {
+        const p = path.join(src, name);
+        writeFileSync(p, JSON.stringify({ name }));
+        return p;
+      });
+      const exe = path.join(src, "cc-bridge_3.5.0_x64-setup.exe");
+      writeFileSync(exe, "exe");
+
+      publishManifestBranch({
+        remote: bare,
+        files: [...files, exe],
+        identity: { email: "ci@local", name: "ci" },
+      });
+
+      const tree = git("--git-dir", bare, "ls-tree", "-r", "--name-only", MANIFEST_BRANCH);
+      expect(tree).toContain(`${MANIFEST_DIR}/${MANIFEST_NAME}`);
+      expect(tree).toContain(`${MANIFEST_DIR}/${POLICY_NAME}`);
+      // 安装包依旧走 Gitee 发行版附件：raw 匿名读大文件恒 403。
+      expect(tree.split("\n").filter((l) => l.endsWith(".exe"))).toHaveLength(0);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

@@ -72,6 +72,16 @@ export const DEFAULT_GH_REPO = "lzlkyb/cc-bridge";
 export const DEFAULT_GITEE_REPO = "lzul/cc-bridge";
 /** 客户端认的那份清单，文件名同时也是四段验证里比 version 的对象。 */
 export const MANIFEST_NAME = "updater-gitee.json";
+/**
+ * 强制更新策略文件。与清单同目录发布，客户端从
+ * `raw/releases/latest/update-policy.json` 读取。
+ *
+ * 它必须和清单走同一条路（而不是只挂 GitHub 附件）：国内用户的第一判定源就是 Gitee，
+ * 只发 GitHub 会让强制更新对这批人静默失效。
+ */
+export const POLICY_NAME = "update-policy.json";
+/** 进 latest/ 分支的文件：清单与策略都小，其余（安装包）一律走发行版附件。 */
+const BRANCH_FILES = new Set([MANIFEST_NAME, POLICY_NAME]);
 
 /**
  * 镜像同步 + raw 边缘传播的实测窗口：正常 11s / 20–100s，分叉强制对齐 260s。
@@ -266,8 +276,8 @@ export function publishManifestBranch({ repo, token, files, workDir, identity, r
     rmSync(path.join(dir, MANIFEST_DIR), { recursive: true, force: true });
     mkdirSync(path.join(dir, MANIFEST_DIR), { recursive: true });
 
-    const manifestFiles = planned.filter((p) => p.name === MANIFEST_NAME);
-    const binaryFiles = planned.filter((p) => p.name !== MANIFEST_NAME);
+    const manifestFiles = planned.filter((p) => BRANCH_FILES.has(p.name));
+    const binaryFiles = planned.filter((p) => !BRANCH_FILES.has(p.name));
     for (const p of manifestFiles) {
       const kb = statSync(p.src).size / 1024;
       copyFileSync(p.src, path.join(dir, MANIFEST_DIR, p.name));
@@ -278,7 +288,7 @@ export function publishManifestBranch({ repo, token, files, workDir, identity, r
       info(`另 ${binaryFiles.length} 个安装包合计 ${mb.toFixed(2)} MB：不进分支，走 Gitee 发行版附件`);
       for (const p of binaryFiles) info(`  ~ releases/download/{tag}/${p.name}`);
     }
-    if (manifestFiles.length === 0) {
+    if (!manifestFiles.some((p) => p.name === MANIFEST_NAME)) {
       throw new Error(`缺少 ${MANIFEST_NAME} —— 客户端就是读它，缺了等于整个国内通道白做`);
     }
 
@@ -512,7 +522,12 @@ export async function main(argv = process.argv.slice(2)) {
       throw new Error(`--asset 文件名不合形态（只允许字母数字 . _ -）：${n}`);
     }
   }
-  const assets = [...new Set([...planned.filter((p) => p.name !== MANIFEST_NAME).map((p) => p.name), ...assetNames])];
+  const assets = [
+    ...new Set([
+      ...planned.filter((p) => !BRANCH_FILES.has(p.name)).map((p) => p.name),
+      ...assetNames,
+    ]),
+  ];
   info(`目标：${ghRepo}@${MANIFEST_BRANCH}/${MANIFEST_DIR}/｜镜像=${giteeRepo}｜文件=${planned.map((p) => p.name).join(", ")}`);
   const token = ghToken();
   if (!token && !dryRun) throw new Error("拿不到 GitHub 令牌（CI 传 secrets.GITHUB_TOKEN，本地用 gh auth token）");

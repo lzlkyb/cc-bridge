@@ -3,7 +3,7 @@ use crate::{commands, connection_access as access, state::AppState};
 use std::sync::atomic::Ordering;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    AppHandle, Emitter,
+    AppHandle, Emitter, Manager,
 };
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
@@ -32,6 +32,26 @@ pub fn menu(
     service: &commands::ServiceControl,
     running: bool,
 ) -> tauri::Result<Menu<tauri::Wry>> {
+    // 强制更新期间只留「打开面板 / 退出」：复制接入命令、启停服务都是绕过主窗口锁的能力，
+    // 而「打开面板」仍然看到同一层强制遮罩，不构成绕过。
+    let force_update = app
+        .try_state::<std::sync::Arc<AppState>>()
+        .map(|state| state.force_update_active.load(Ordering::SeqCst))
+        .unwrap_or(false);
+    if force_update {
+        let menu = Menu::new(app)?;
+        menu.append(&MenuItem::with_id(
+            app,
+            "show",
+            "打开面板（需先更新）",
+            true,
+            None::<&str>,
+        )?)?;
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+        menu.append(&MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?)?;
+        return Ok(menu);
+    }
+
     let menu = Menu::new(app)?;
     let add = |id: &str, title: &str, enabled: bool| -> tauri::Result<()> {
         menu.append(&MenuItem::with_id(app, id, title, enabled, None::<&str>)?)
@@ -117,8 +137,12 @@ pub fn refresh_menu(
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
+    // 强制标志必须进 key：它是静默变化的（前端判定后置位），不进 key 的话菜单会一直
+    // 停在上一个形态，直到连接状态恰好发生变化才刷新。
+    let force_update = state.force_update_active.load(Ordering::SeqCst);
     let key = format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}:{:?}",
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}:{:?}",
+        force_update,
         current.target_key,
         current.server_name,
         current.state,

@@ -3,7 +3,7 @@ import { formatBytes, formatBytesPerSec } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 
-export function UpdateProcess({ process }: { process: UpdatePresentation }) {
+export function UpdateProcess({ process, force = false }: { process: UpdatePresentation; force?: boolean }) {
   if (process.status === "available") return null;
   const { status, safety } = process;
   const pct = Math.min(100, Math.max(0, process.progress));
@@ -12,7 +12,8 @@ export function UpdateProcess({ process }: { process: UpdatePresentation }) {
       {status === "checking" && <h3>正在重新检查更新…</h3>}
       {status === "downloading" && <>
         <div className="update-process-heading"><h3>{pct >= 100 && !process.indeterminate ? "正在校验并安装" : "正在下载更新"}</h3><strong>{process.indeterminate ? "下载中" : `${pct}%`}</strong></div>
-        <p>关闭弹框后仍会继续下载，完成后自动启动安装。</p>
+        {/* 强制态这一屏关不掉，「关闭后仍继续下载」在语义上不成立，换成保存提醒。 */}
+        <p>{force ? "下载完成后会自动启动安装，请先保存当前工作。" : "关闭弹框后仍会继续下载，完成后自动启动安装。"}</p>
       </>}
       {status === "ready" && <>
         <h3><Icon name="check" size={18} aria-hidden="true" />更新已安装，等你准备好</h3>
@@ -30,20 +31,26 @@ export function UpdateProcess({ process }: { process: UpdatePresentation }) {
   </section>;
 }
 
-export function UpdateActions({ process, onClose, onDownload, onDismiss, onRestart, onRetry, onRefreshSafety }: {
+export function UpdateActions({ process, onClose, onDownload, onDismiss, onRestart, onRetry, onRefreshSafety, force = false, onQuit }: {
   process: UpdatePresentation; onClose: () => void; onDownload: () => void;
   onDismiss: () => void; onRestart?: () => void; onRetry?: () => void; onRefreshSafety?: () => void;
+  /** 强制更新：去掉「忽略此版本」和「稍后提醒」——它们会让强制约束形同虚设。 */
+  force?: boolean;
+  /** 强制遮罩的逃生口（策略误伤时用户至少能退出）。 */
+  onQuit?: () => void;
 }) {
   const { status, safety } = process;
   return <footer className="update-dialog-footer">
     <p className="update-restart-note"><Icon name={status === "ready" ? "refresh" : "info"} size={14} aria-hidden="true" /><span>{status === "ready" ? "重启会关闭终端连接，请先保存终端中的工作。" : "下载完成后自动启动安装器，请先保存当前工作。"}</span></p>
     <div className="update-dialog-actions">
-      {status === "available" && <button type="button" className="interactive update-ignore" onClick={() => { onDismiss(); onClose(); }}>忽略此版本</button>}
-      <Button variant="outline" disabled={process.restarting} onClick={onClose}>{status === "downloading" ? "后台下载" : status === "ready" ? "稍后重启" : "稍后提醒"}</Button>
+      {status === "available" && !force && <button type="button" className="interactive update-ignore" onClick={() => { onDismiss(); onClose(); }}>忽略此版本</button>}
+      {force
+        ? <Button variant="outline" onClick={onQuit}>退出软件</Button>
+        : <Button variant="outline" disabled={process.restarting} onClick={onClose}>{status === "downloading" ? "后台下载" : status === "ready" ? "稍后重启" : "稍后提醒"}</Button>}
       {status === "available" && <Button onClick={() => {
         onDownload();
         onClose();
-      }}><Icon name="download" size={15} aria-hidden="true" />下载并更新</Button>}
+      }}><Icon name="download" size={15} aria-hidden="true" />{force ? "立即更新" : "下载并更新"}</Button>}
       {status === "downloading" && <Button disabled><Icon name="download" size={15} aria-hidden="true" />正在下载</Button>}
       {status === "checking" && <Button disabled>检查中…</Button>}
       {status === "error" && <Button onClick={onRetry}><Icon name="refresh" size={15} aria-hidden="true" />重新检查</Button>}

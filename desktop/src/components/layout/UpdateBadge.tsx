@@ -27,7 +27,7 @@ import { formatBytes, formatBytesPerSec } from "../../lib/utils";
  * - error       `重试`      → 点击重试
  */
 export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
-  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, error, errorCode, errorToastAllowed, manualCheckForUpdate, openUpdateNotes, isDismissed, manualCheck, acknowledgeUptodate } = useUpdate();
+  const { status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, error, errorCode, errorToastAllowed, manualCheckForUpdate, openUpdateNotes, manualCheck, acknowledgeUptodate } = useUpdate();
   const { toast } = useToast();
   const prevStatusRef = useRef(status);
 
@@ -39,9 +39,10 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
     // 仅当状态真正变化时才触发（跳过初始化 idle → idle）
     if (prev === status) return;
 
-    if (status === "available" && !isDismissed(update?.version)) {
-      toast(`发现新版本 v${update?.version ?? ""}`, "info");
-    } else if (status === "uptodate") {
+    // 这里刻意**没有** available 分支：发现新版本时更新弹框已经自动打开（见
+    // UpdateContext 的 update:available 监听），而 Toast 的层级（2000）高于弹框
+    // 的 Modal（1000），再飘一条「发现新版本」只会盖在弹框上方形成重复提示。
+    if (status === "uptodate") {
       // 仅手动检查时弹「已是最新」提示框；自动检查（启动/定时）只显示版本号 pill
       if (manualCheck) {
         toast("已是最新版本", "success");

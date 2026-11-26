@@ -47,7 +47,7 @@ function Disclosure({ label, children, secondary = false, defaultOpen = false }:
   </section>;
 }
 
-export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, onClose, onDownload, onDismiss, onRestart, onRetry, onRefreshSafety }: {
+export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, onClose, onDownload, onDismiss, onRestart, onRetry, onRefreshSafety, requirement, onQuit }: {
   update: UpdateNotesInfo;
   process?: UpdatePresentation;
   onClose: () => void;
@@ -56,7 +56,10 @@ export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, 
   onRestart?: () => void;
   onRetry?: () => void;
   onRefreshSafety?: () => void;
+  requirement?: { minimumVersion: string; reason: string };
+  onQuit?: () => void;
 }) {
+  const force = Boolean(requirement);
   const model = useMemo(() => createUpdateNotesModel(update), [update]);
   const { latest, releases, highlights, total, counts } = model;
   const cross = releases.length > 1;
@@ -64,15 +67,17 @@ export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, 
   const latestCount = countReleaseItems(latest);
   const hasNotes = latest.groups.length || latest.summary.length || latest.paragraphs.length || latest.highlights.length;
   return <>
-    <button type="button" onClick={onClose} className="interactive update-close" aria-label="关闭更新弹窗"><Icon name="close" size={17} aria-hidden="true" /></button>
+    {!force && <button type="button" onClick={onClose} className="interactive update-close" aria-label="关闭更新弹窗"><Icon name="close" size={17} aria-hidden="true" /></button>}
     <UpdateBrand currentVersion={update.currentVersion} version={latest.version} ready={process.status === "ready"} tagline={latest.tagline}/>
     <div className="update-dialog-main">
     <header className="update-dialog-header">
-      <h2>{process.status === "ready" ? "新的体验，已准备好" : process.status === "downloading" ? "让好体验，即刻就绪" : process.status === "error" ? "再试一次，继续升级" : "发现新版本"}</h2>
+      <h2>{force ? "需要更新后才能继续使用" : process.status === "ready" ? "新的体验，已准备好" : process.status === "downloading" ? "让好体验，即刻就绪" : process.status === "error" ? "再试一次，继续升级" : "发现新版本"}</h2>
+      {requirement && <p>最低支持版本 v{requirement.minimumVersion.replace(/^v/i, "")}</p>}
       {(date || latestCount > 0) && <p>{[date ? `${date}发布` : "", latestCount > 0 ? `${latestCount}条更新` : ""].filter(Boolean).join(" · ")}</p>}
     </header>
     <div className="update-dialog-scroll" tabIndex={0} role="region" aria-label="更新内容">
-      <UpdateProcess process={process} />
+      <UpdateProcess process={process} force={force} />
+      {requirement && <section className="update-release-summary" aria-label="更新原因"><p>{requirement.reason}</p></section>}
       {latest.summary.length > 0 && <section className="update-release-summary" aria-label="本次更新摘要">{latest.summary.map((text, index) => <p key={index}>{textContent(text)}</p>)}</section>}
       {cross && <section className="update-upgrade" aria-label="升级版本与更新范围">
         <p>从你当前的版本起，汇总已收录的 {releases.length} 个版本更新。</p>
@@ -102,7 +107,7 @@ export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, 
         </article>)}
       </Disclosure>}
     </div>
-    <UpdateActions process={process} onClose={onClose} onDownload={onDownload} onDismiss={onDismiss} onRestart={onRestart} onRetry={onRetry} onRefreshSafety={onRefreshSafety} />
+    <UpdateActions process={process} onClose={onClose} onDownload={onDownload} onDismiss={onDismiss} onRestart={onRestart} onRetry={onRetry} onRefreshSafety={onRefreshSafety} force={force} onQuit={onQuit} />
     </div>
   </>;
 }

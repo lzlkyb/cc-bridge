@@ -1,7 +1,7 @@
 import { useUpdateRestartSafety } from "../hooks/useUpdateRestartSafety";
 import { canRestart } from "../lib/updatePresentation";
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
-import { relaunch } from "@tauri-apps/plugin-process";
+import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { invoke } from "../lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { UpdateNotesDialog } from "../components/update/UpdateNotesDialog";
@@ -10,6 +10,29 @@ import { RestartOverlay } from "../components/update/RestartOverlay";
 // ─── 类型定义 ────────────────────────────
 
 export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "error" | "uptodate";
+
+/**
+ * 后端 `check_update_policy` 的返回值（见 `commands/update_policy.rs`）。
+ *
+ * `mandatory` 只会在「远端/缓存策略合法 + enforced + 已过缓冲期 + 当前版本低于门槛」
+ * 同时成立时为 true。后端对任何异常都判放行，这里不再做二次判定 —— 两道判定只会
+ * 多一个判错的地方。
+ */
+export interface ForceUpdateVerdict {
+  mandatory: boolean;
+  currentVersion: string;
+  latestVersion?: string | null;
+  minSupportedVersion?: string | null;
+  message?: string | null;
+  graceUntil?: string | null;
+  /** network / cache / network-miss / invalid / skip，仅排查用 */
+  source: string;
+}
+
+export interface ForceUpdateInfo {
+  active: boolean;
+  verdict: ForceUpdateVerdict | null;
+}
 
 /** 更新信息（由后端 check_update / start_update 通过事件推送，仅含展示所需字段，不再依赖插件 Update 对象） */
 export interface UpdateInfo {
@@ -67,6 +90,17 @@ export interface UpdateState {
   acknowledgeUptodate: () => void;
   /** 手动触发检查更新（用户主动点击，命中 uptodate 时才弹「已是最新」提示框） */
   manualCheckForUpdate: () => Promise<void>;
+  /** 强制更新（最低可用版本）判定结果。`active` 为 true 时显示不可关闭的遮罩。 */
+  forceUpdate: ForceUpdateInfo;
+  /**
+   * 强制态下直接开始下载安装。
+   *
+   * 与 `downloadAndInstall` 的区别：它不要求 `update` 已有值 —— 强制判定来自策略文件，
+   * 此时可能还没跑过一次完整的 `updater.check()`，而用户点「立即更新」不能等。
+   */
+  startForcedUpdate: () => Promise<void>;
+  /** 退出软件（强制遮罩的逃生口：策略误伤时至少能退出，而不是卡死）。 */
+  quitApp: () => Promise<void>;
 }
 
 // ─── 友好错误翻译 ────────────────────────
@@ -189,6 +223,24 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       return null;
     }
   });
+  /**
+   * 本次运行中已经自动弹过更新框的版本。
+   *
+   * 刻意**只存在内存里、不落盘**：
+   * - 落盘会让弹框里的「稍后提醒」退化成「这一版永不再提」，与按钮文案不符；
+   * - 只记内存 ⇒ 每次启动最多提醒一次，而同一次运行里 24 小时定时再查到同一版本
+   *   不会反复弹框打扰。
+   * 「忽略此版本」是另一套语义，走 `dismissedVersion`（跨会话持久化）。
+   */
+  const promptedRef = useRef<string | null>(null);
+  /**
+   * `dismissedVersion` 的 ref 镜像。
+   *
+   * 事件监听器只注册一次，闭包里读到的是首帧的 `dismissedVersion`。用户在本次运行
+   * 里点了「忽略此版本」后，state 变了但闭包不变 ⇒ 定时检查再收到同一版本会重新弹框。
+   * 所以判断必须走 ref，state 只负责驱动 UI。
+   */
+  const dismissedRef = useRef<string | null>(dismissedVersion);
   const checkingRef = useRef(false);
   const downloadingRef = useRef(false);
   /** 重启重入防护（与 downloadingRef 同理：state 在同帧内是旧值，挡不住连点） */
@@ -205,6 +257,31 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
    */
   const userInitiatedRef = useRef(true);
   const [manualCheck, setManualCheck] = useState(false);
+  const [forceVerdict, setForceVerdict] = useState<ForceUpdateVerdict | null>(null);
+  /** 监听器里判断「是否处于强制态」必须用 ref：闭包读不到 state 的最新值。 */
+  const forceActiveRef = useRef(false);
+
+  // ─── 强制更新策略（最低可用版本）─────────────
+  // 与 check_update 分开：策略文件很小、8 秒超时，判定走返回值而不是事件 ——
+  // 前端需要的是「现在要不要锁界面」这个同步结论，不是一串状态推送。
+  const checkForcePolicy = useCallback(async () => {
+    try {
+      const verdict = await invoke<ForceUpdateVerdict>("check_update_policy");
+      forceActiveRef.current = verdict.mandatory === true;
+      setForceVerdict(verdict);
+      // 强制遮罩接管画面时，关掉可能已经打开的普通弹框：两者同时 open 时视觉上
+      // 是同一块区域（强制层 z=2500 盖在上面），但焦点陷阱是两层，Tab 会串到下层。
+      if (verdict.mandatory === true) setShowNotes(false);
+      // 同步给托盘：强制期间只留「打开面板 / 退出」，否则用户能从托盘复制接入命令、
+      // 启停本机服务 —— 主窗口锁了，能力还在。失败只影响托盘的收敛程度，不阻断判定。
+      void invoke("set_force_update_active", { active: verdict.mandatory === true }).catch(() => undefined);
+    } catch (e) {
+      // 后端命令按设计只返回 Ok；这里只有 IPC 层异常。按放行处理：启动路径不能因为
+      // 一次未知错误把用户挡在门外（与后端 fail-open 同一条原则）。
+      forceActiveRef.current = false;
+      console.warn("[Update] 强制更新策略检查失败，按放行处理:", e);
+    }
+  }, []);
 
   // ─── 静默检查（不改变 UI 状态，仅内部记录）─────
   // 统一走后端 check_update 命令，状态由事件驱动（update:available / update:uptodate）。
@@ -213,6 +290,10 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     if (checkingRef.current || downloadingRef.current || readyRef.current) return;
     checkingRef.current = true;
     userInitiatedRef.current = false; // 这一轮失败不弹 toast
+    // 静默检查也必须清掉「手动」标记：它只对发起它的那次检查有效。留成 true 的话，
+    // 用户在本次运行里手动查过一次之后，24 小时定时检查命中同一版本会被误判成手动，
+    // 于是已经自动弹过的版本又被弹一次（见 update:available 监听器里的消费逻辑）。
+    manualCheckRef.current = false;
     try {
       await invoke("check_update");
     } catch {
@@ -314,6 +395,46 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     }
   }, [update]);
 
+  /**
+   * 强制态下开始下载安装。
+   *
+   * 不复用 `downloadAndInstall`：它有 `if (!update) return` 守卫，而强制判定来自策略文件，
+   * 用户点「立即更新」时 `update` 可能还没有值（`start_update` 内部的复查会在下载前补上）。
+   * 这里直接触发 `start_update`，后续 available / progress / ready 事件照常驱动 UI。
+   */
+  const startForcedUpdate = useCallback(async () => {
+    if (downloadingRef.current || readyRef.current) return;
+    downloadingRef.current = true;
+    userInitiatedRef.current = true;
+    setStatus("downloading");
+    setProgress(0);
+    setProgressIndeterminate(true);
+    setDownloadedBytes(0);
+    setTotalBytes(null);
+    setBytesPerSec(0);
+    setError(null);
+    setErrorCode(null);
+    try {
+      await invoke("start_update", { minSupportedVersion: forceVerdict?.minSupportedVersion });
+    } catch (e) {
+      console.error("[Update] 强制更新调用失败:", e);
+      setError(String(e));
+      setErrorCode(null);
+      setErrorToastAllowed(true);
+      setStatus("error");
+      downloadingRef.current = false;
+    }
+  }, [forceVerdict?.minSupportedVersion]);
+
+  /** 强制遮罩的逃生口：策略误伤时用户至少能退出，而不是被永久卡住。 */
+  const quitApp = useCallback(async () => {
+    try {
+      await exit(0);
+    } catch (e) {
+      console.error("[Update] 退出软件失败:", e);
+    }
+  }, []);
+
   // ─── 监听后台更新事件 ────────────────────
 
   useEffect(() => {
@@ -337,15 +458,42 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
         }),
       );
       track(
-        await listen<{ version: string; body: string | null; date?: string | null; currentVersion?: string }>("update:available", (e) => {
-          // 下载进行中（start_update 内部复查会再发 available），保持 downloading 不被回退
+        await listen<UpdateInfo & { source?: "download" }>("update:available", (e) => {
+          const { source, version, body, date, currentVersion } = e.payload;
+          if (source === "download") {
+            // 换源后实际下载的版本可能变了，只替换详情，保留下载状态和弹框开关。
+            if (!readyRef.current) setUpdate({ version, body, date, currentVersion });
+            return;
+          }
           if (downloadingRef.current || readyRef.current) return;
+          const manual = manualCheckRef.current;
+          // 「手动」标记只对**本次检查**有效，读一次就消费掉。不清掉的话，本次运行里
+          // 24 小时定时检查命中同一版本会被误判成手动，绕过下面的去重再弹一次。
+          manualCheckRef.current = false;
           setStatus("available");
-          setUpdate({ version: e.payload.version, body: e.payload.body, date: e.payload.date, currentVersion: e.payload.currentVersion });
+          setUpdate({ version, body, date, currentVersion });
+
+          // ─── 有更新就弹框（2026-11-26 恢复）─────────────────────────────
+          // 两条抑制规则，缺一条都会变成骚扰：
+          // 1. `dismissedRef`：用户点过「忽略此版本」⇒ 这个版本永不再弹出（跨会话）。
+          // 2. `promptedRef`：同一次运行里同一版本只自动弹一次。用户在弹框里选
+          //    「稍后提醒」只是关窗，下次启动会再提醒；选「忽略此版本」才彻底闭嘴。
+          // 手动点「检查更新」时无视第 2 条 —— 用户主动问，必须有回应。
+          // 强制态由 ForceUpdateGate 接管，普通弹框不再叠一层。
+          if (
+            !forceActiveRef.current &&
+            version &&
+            dismissedRef.current !== version &&
+            (manual || promptedRef.current !== version)
+          ) {
+            promptedRef.current = version;
+            setShowNotes(true);
+          }
         }),
       );
       track(
         await listen("update:downloading", () => {
+          downloadingRef.current = true;
           setStatus("downloading");
           setProgress(0);
           setProgressIndeterminate(false);
@@ -380,8 +528,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
         }),
       );
       track(
-        await listen<{ message: string; code?: string }>("update:error", (e) => {
-          const { message, code } = e.payload;
+        await listen<{ message: string; code?: string; source?: "check" }>("update:error", (e) => {
+          const { message, code, source } = e.payload;
+          if (readyRef.current || (source === "check" && downloadingRef.current)) return;
           console.error("[Update] 更新失败:", code ?? "unknown", message);
           setError(message);
           setErrorCode(code ?? null);
@@ -396,6 +545,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       );
       track(
         await listen("update:uptodate", () => {
+          if (downloadingRef.current || readyRef.current) return;
           // 进入「已是最新」可见状态（版本号 pill 显示）；4 秒后自动回到 idle。
           // 仅手动检查才弹「已是最新」提示框（manualCheck），自动检查（启动/定时）不弹框。
           setStatus("uptodate");
@@ -436,7 +586,11 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
 
     setupListeners().then(() => {
       // cancelled 时不再发起检查（组件已卸载，监听器也已注销）
-      if (!cancelled) doStartupCheck();
+      if (cancelled) return;
+      // 强制策略与普通检查并行：它只决定「要不要锁界面」，不依赖事件监听，但必须
+      // 尽早出结果，所以不排在 check_update 后面。
+      void checkForcePolicy();
+      void doStartupCheck();
     });
     return () => {
       cancelled = true;
@@ -502,6 +656,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       // 存储失败忽略
     }
     setDismissedVersion(v);
+    // 监听器通过 ref 判断（见 dismissedRef 注释），必须同步更新，否则本次运行里
+    // 后续的定时检查还会把刚被忽略的版本弹出来。
+    dismissedRef.current = v;
   }, [update?.version]);
 
   const isDismissed = useCallback(
@@ -512,11 +669,16 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     [dismissedVersion],
   );
 
+  const forceUpdate: ForceUpdateInfo = {
+    active: forceVerdict?.mandatory === true,
+    verdict: forceVerdict,
+  };
+
   return (
-    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, errorCode, errorToastAllowed, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false) }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, errorCode, errorToastAllowed, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false), forceUpdate, startForcedUpdate, quitApp }}>
       {children}
       {restarting && <RestartOverlay current={update?.currentVersion} next={update?.version} />}
-      <UpdateNotesDialog open={showNotes} update={update}
+      <UpdateNotesDialog open={showNotes && !forceUpdate.active} update={update}
         process={{ status: status === "downloading" || status === "ready" || status === "error" || status === "checking" ? status : "available", progress, indeterminate: progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, error: status === "ready" ? error : error ? friendlyError(error, errorCode).friendly : null, safety, restarting }}
         onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate}
         onRestart={() => void restart()} onRetry={() => void manualCheckForUpdate()} onRefreshSafety={() => void refreshSafety()} />

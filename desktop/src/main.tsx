@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import { UpdateProvider } from "./contexts/UpdateContext";
+import { ForceUpdateGate } from "./components/update/ForceUpdateGate";
 import { getStoredTheme } from "./lib/theme";
 import { initializeAppearance } from "./lib/appearance";
 import "./index.css";
@@ -29,6 +30,8 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <UpdateProvider>
         <App />
+        {/* 强制更新遮罩挂在 App 之外：它必须盖住所有路由与浮层，而不是只盖某一页。 */}
+        <ForceUpdateGate />
       </UpdateProvider>
     </QueryClientProvider>
   </React.StrictMode>,

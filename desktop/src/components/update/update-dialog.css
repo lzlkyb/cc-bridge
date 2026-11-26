@@ -34,6 +34,12 @@
 .update-release-summary { margin:0 0 18px;font-size:12px;line-height:1.85;color:hsl(var(--muted-foreground)); }
 .update-release-summary p { margin:0; }
 .update-release-summary p+p { margin-top:7px; }
+/* 强制首屏的版本事实（没有更新正文可展示时用来占位）。
+   刻意不用分隔线：这一屏已经有一条底部分隔，再加横线会把视觉切碎。 */
+.update-force-facts { display:grid;gap:11px;margin:0 0 4px; }
+.update-force-facts>div { display:flex;align-items:baseline;justify-content:space-between;gap:16px; }
+.update-force-facts dt { font-size:12px;line-height:1.7;color:hsl(var(--muted-foreground)); }
+.update-force-facts dd { margin:0;font-size:13px;line-height:1.7;font-weight:600;font-variant-numeric:tabular-nums; }
 .update-benefits-heading { display:flex;align-items:baseline;justify-content:space-between;gap:12px; }
 .update-benefits-heading h3 { margin:0;font-size:13px;font-weight:600;line-height:1.7; }
 .update-benefits-heading>span { font-size:10px;color:hsl(var(--muted-foreground));white-space:nowrap; }

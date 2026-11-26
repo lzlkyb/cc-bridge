@@ -790,7 +790,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 })
-                .on_menu_event(move |tray_app, event| match event.id.as_ref() {
+                .on_menu_event(move |tray_app, event| {
+                    // 强制更新期间只放行「打开面板 / 退出」。菜单刷新有周期（见 refresh_menu
+                    // 的 key），所以事件可能来自上一拍的旧菜单 —— 必须在这里再拦一次。
+                    if tray_state.force_update_active.load(std::sync::atomic::Ordering::SeqCst)
+                        && !matches!(event.id.as_ref(), "show" | "quit")
+                    {
+                        return;
+                    }
+                    match event.id.as_ref() {
                     "show" => show_or_create_main_window(tray_app.app_handle()),
                     "configure_access" | "check_access" => {
                         connection_tray::request_navigation(&tray_state, tray_app.app_handle());
@@ -823,6 +831,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     "quit" => tray_app.exit(0),
                     _ => {}
+                    }
                 })
                 .build(app)?;
 
@@ -1111,6 +1120,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::get_command_output,
             commands::start_update,
             commands::check_update,
+            commands::check_update_policy,
+            commands::set_force_update_active,
             commands::update_activity,
             commands::export_config,
             commands::export_config_to_file,

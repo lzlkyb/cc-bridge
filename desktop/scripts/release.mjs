@@ -11,6 +11,15 @@
  *   npm run release -- --patch --yes      # 非交互：用默认摘要，自动确认 push/tag
  *   npm run release -- --patch --skip-tests  # 跳过 cargo test + clippy 门禁（不推荐）
  *
+ * 强制更新（默认关闭，见 desktop/release-policy.json）：
+ *   npm run release -- --patch --force                 # 强制：min = 本次版本，缓冲 1 天
+ *   npm run release -- --patch --force --min 3.4.2     # 强制：只锁 < 3.4.2
+ *   npm run release -- --patch --force --grace 0       # 缓冲 0 天（发布即刻可锁）
+ *   npm run release -- --patch --force --message "…"   # 强制遮罩上显示的原因
+ *
+ *   不带 --force 时，脚本**每次都会把** release-policy.json 重写为 { enforced: false }，
+ *   所以上一次发过强制的策略不会残留到这一版 —— 「默认不强制」由脚本保证。
+ *
  * 流程（自动）：
  *   0. 校验 CHANGELOG.md 的 ## [Unreleased]：必须是用户向文案，不合规直接中止（改任何文件之前）
  *   1. 计算新版本号 → 只改 Cargo.toml（唯一真源）
@@ -61,13 +70,43 @@ const GEN_TS_PATH = path.join(DESKTOP, "src", "lib", "changelog.generated.ts");
 const argv = process.argv.slice(2);
 const getOpt = (name) => {
   const i = argv.indexOf(name);
-  return i >= 0 ? argv[i + 1] : undefined;
+  if (i < 0) return undefined;
+  const value = argv[i + 1]?.trim();
+  if (!value || value.startsWith("--")) {
+    console.error(`\x1b[31m[RELEASE ERROR]\x1b[0m ${name} 缺少参数值。`);
+    process.exit(1);
+  }
+  return value;
 };
 const hasFlag = (name) => argv.includes(name);
 
 const DRY_RUN = hasFlag("--dry-run");
 const YES = hasFlag("--yes");
 const SKIP_TESTS = hasFlag("--skip-tests");
+// ── 强制更新（默认关闭）──
+// 不带 --force 时，每次发版都会把 release-policy.json 重写为 { enforced: false }，
+// 所以「上一次发过强制、这一次忘了关」不可能发生——默认值由脚本保证，不靠人记。
+const FORCE = hasFlag("--force");
+const FORCE_MIN = getOpt("--min");
+const FORCE_GRACE = getOpt("--grace");
+const FORCE_MESSAGE = getOpt("--message");
+// 这几个参数只在强制发版时有意义。静默忽略会让「我明明写了 --min」变成一次
+// 不生效的强制发布，所以直接中止。
+if (!FORCE && (FORCE_MIN || FORCE_GRACE !== undefined || FORCE_MESSAGE)) {
+  console.error(
+    "\x1b[31m[RELEASE ERROR]\x1b[0m --min / --grace / --message 只用于强制发版，请同时加 --force。",
+  );
+  process.exit(1);
+}
+const GRACE_DAYS = FORCE_GRACE === undefined ? 1 : Number(FORCE_GRACE);
+if (!Number.isFinite(GRACE_DAYS) || GRACE_DAYS < 0) {
+  console.error("\x1b[31m[RELEASE ERROR]\x1b[0m --grace 必须是不小于 0 的天数。");
+  process.exit(1);
+}
+if (FORCE_MIN && !/^v?\d+\.\d+\.\d+$/.test(FORCE_MIN.trim())) {
+  console.error("\x1b[31m[RELEASE ERROR]\x1b[0m --min 只接受 x.y.z。");
+  process.exit(1);
+}
 let bumpType = null;
 let explicitVersion = getOpt("--version");
 if (hasFlag("--patch")) bumpType = "patch";
@@ -127,6 +166,24 @@ async function main() {
   const next = bumpSemver(current, bumpType, explicitVersion);
   console.log(`\x1b[32m发版计划：\x1b[0m ${current} → ${next}`);
 
+  // --min 高于本次版本 = 要求用户升到一个还没发布的版本：会把所有人锁死且
+  // 「更新到最新」也解除不了。CI 侧还有一道同样的校验，这里提前拦是为了不等到
+  // 构建阶段才红（dry-run 也能提前发现打错参数）。
+  if (FORCE_MIN) {
+    const cmp = (a, b) => {
+      const pa = a.replace(/^v/, "").split(".").map(Number);
+      const pb = b.replace(/^v/, "").split(".").map(Number);
+      return pa[0] - pb[0] || pa[1] - pb[1] || pa[2] - pb[2];
+    };
+    if (cmp(FORCE_MIN, next) > 0) {
+      console.error(
+        `\x1b[31m[RELEASE ERROR]\x1b[0m --min (${FORCE_MIN}) 高于本次版本 (${next})：` +
+          "这会要求用户升级到一个还不存在的版本，导致所有人被锁死且无法通过更新解除。",
+      );
+      process.exit(1);
+    }
+  }
+
   // 0. 更新日志硬闸。必须在改 Cargo.toml 之前：不合格就一个字节都不动，
   //    避免留下「版本号已 bump、发布说明却没写」的半成品。
   const sourceMd = readTextNormalized(CHANGELOG_PATH);
@@ -149,6 +206,13 @@ async function main() {
     console.log(`  3. 把 ## [Unreleased] 原样搬成 ## [${next}] - ${todayISO()} 段（含亮点 / 更新摘要）`);
     console.log("  4. README.md 版本历史表插入行（复用更新摘要）");
     console.log("  5. node scripts/gen-changelog.mjs（重新生成 changelog.generated.ts）");
+    console.log(
+      `  5b. 写入 release-policy.json：${
+        FORCE
+          ? `强制更新（min=${FORCE_MIN || next}，缓冲 ${GRACE_DAYS} 天）`
+          : "不强制更新（默认）"
+      }`,
+    );
     if (!SKIP_TESTS) console.log("  6. cargo test + cargo clippy --no-default-features 门禁");
     console.log(`  7. git add 版本文件+CHANGELOG+README+generated.ts → commit → push → tag v${next} → push tag`);
     return;
@@ -161,7 +225,7 @@ async function main() {
   console.log(`\x1b[32m[1/7]\x1b[0m Cargo.toml → ${next}`);
 
   // 2. 同步其余文件
-  run(`node ${path.join(__dirname, "sync-version.mjs")}`, DESKTOP);
+  run("node scripts/sync-version.mjs", DESKTOP);
   console.log(`\x1b[32m[2/7]\x1b[0m 已同步 tauri.conf.json + package.json`);
 
   // 3. git log 只用来提醒「这一版攒了多少提交」，绝不当发布说明。
@@ -212,8 +276,29 @@ async function main() {
   fs.writeFileSync(README_PATH, readme, "utf-8");
   console.log(`\x1b[32m[5/7]\x1b[0m README.md 插入版本行`);
 
+  // 5b. 强制更新策略：**每次发版都重写**，默认 { enforced: false }。
+  // 🔴 这是「默认不强制」的唯一保证点：上一次选择过强制的文件不会遗留到这一版，
+  //    也不依赖发版人记得手动改回来。
+  const policyPath = path.join(DESKTOP, "release-policy.json");
+  const releasePolicy = FORCE
+    ? {
+        enforced: true,
+        minSupportedVersion: (FORCE_MIN || next).replace(/^v/, ""),
+        graceDays: GRACE_DAYS,
+        ...(FORCE_MESSAGE ? { message: FORCE_MESSAGE } : {}),
+      }
+    : { enforced: false };
+  fs.writeFileSync(policyPath, `${JSON.stringify(releasePolicy, null, 2)}\n`, "utf-8");
+  console.log(
+    `\x1b[32m[5b/7]\x1b[0m release-policy.json：${
+      FORCE
+        ? `强制更新 min=${releasePolicy.minSupportedVersion}（缓冲 ${GRACE_DAYS} 天）`
+        : "不强制更新（默认）"
+    }`,
+  );
+
   // 6. 重新生成 changelog.generated.ts
-  run(`node ${path.join(__dirname, "gen-changelog.mjs")}`, DESKTOP);
+  run("node scripts/gen-changelog.mjs", DESKTOP);
   console.log(`\x1b[32m[6/7]\x1b[0m 已重新生成 changelog.generated.ts`);
 
   // 7. 门禁：cargo test + clippy
@@ -232,12 +317,14 @@ async function main() {
     "desktop/src-tauri/Cargo.lock",
     "desktop/src-tauri/tauri.conf.json",
     "desktop/package.json",
+    "desktop/release-policy.json",
     "CHANGELOG.md",
     "README.md",
     "desktop/src/lib/changelog.generated.ts",
   ];
   run(`git add ${files.map((f) => `"${f}"`).join(" ")}`);
-  // 防漏纳：确认 7 个发版文件都已进入暂存区（CHANGELOG 写入异常时 git add 会静默跳过）。
+  // 策略文件可能与上一版相同，git add 已确保文件存在，无须每次制造一处差异。
+  // 其余文件都应随版本变化，仍检查暂存区，避免漏纳。
   // 注意：不能用 `git status --porcelain` 判空——git add 之后这些文件在 porcelain 里
   // 显示为已暂存（首列 M），输出必然非空，会误判为漏纳而中止。改查暂存区文件清单。
   const staged = execSync("git diff --cached --name-only", { cwd: ROOT, stdio: "pipe" })
@@ -245,7 +332,7 @@ async function main() {
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
-  const missing = files.filter((f) => !staged.includes(f));
+  const missing = files.filter((f) => f !== "desktop/release-policy.json" && !staged.includes(f));
   if (missing.length) {
     console.error(
       `\x1b[31m[RELEASE ERROR]\x1b[0m 以下发版文件未被 git 纳入暂存区，已中止以免漏发：\n${missing.join("\n")}`,
