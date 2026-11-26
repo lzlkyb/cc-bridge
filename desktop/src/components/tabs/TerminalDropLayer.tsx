@@ -30,12 +30,13 @@ export function TerminalDropLayer({ up, dropping, count, cwd }: Props) {
         />
       )}
       {up.transfer && <TransferBar transfer={up.transfer} onCancel={up.cancel} />}
-      {/* 🔴 必须把已知 cwd 传进去：探到了 cwd 时松手是**直接传**，遮罩却还写着
-          「松手选择上传位置」「需要你确认一下」——文案和行为对不上（2026-10-29 盘点）。 */}
-      {dropping && <SshDropOverlay count={count} busy={up.busy} dir={cwd ?? undefined} />}
+      {/* 🔴 文案必须与行为一致：终端拖放松手后一律过确认框（含探到 cwd 的情况），
+          遮罩就不能写「松手上传」；探到 cwd 时把它显示出来，用户知道预填的是哪儿。 */}
+      {dropping && <SshDropOverlay count={count} busy={up.busy} dir={cwd ?? undefined} confirm />}
       <SshUploadSheet
         files={up.pending}
         initialDir={up.dir}
+        dirFromCwd={up.dirFromCwd}
         onCancel={up.cancelSheet}
         onConfirm={(d) => void up.confirm(d)}
       />

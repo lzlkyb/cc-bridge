@@ -91,7 +91,7 @@ export function TerminalTab({ status, sidebarHost, sidebarCollapsed, onSidebarCo
     // 但**不能静默丢**：遮罩刚高亮过，接着什么都不发生比报个原因更让人困惑。
     onDrop: (_zone, paths) => {
       if (up.busy) {
-        toast("正在传输中，等这批传完再拖", "info");
+        toast("上一批还没处理完（传输中或确认框开着），先完成再拖", "info");
         return;
       }
       void up.dropped(paths);

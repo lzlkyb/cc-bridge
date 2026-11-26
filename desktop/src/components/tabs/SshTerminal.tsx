@@ -20,6 +20,7 @@ import { SshCommandBlocksPanel } from "./SshCommandBlocksPanel";
 import { setCmdPanelOpen, useCmdPanelOpen } from "../../lib/terminalPanelStore";
 import { useTerminalTabMeta, type TermTabMetaPatch } from "../../hooks/useTerminalTabMeta";
 import { useClipboardImagePaste } from "../../hooks/useClipboardImagePaste";
+import { SshImagePasteConfirm } from "./SshImagePasteConfirm";
 import { forceRepaint } from "../../lib/terminalRepaint";
 import { clearTerminalInput } from "../../lib/terminalClearInput";
 import { sendTerminalUserInput } from "../../lib/terminalUserInput";
@@ -123,10 +124,10 @@ export function SshTerminal({
   closedRef.current = closed;
   const cwdRef = useRef(status.cwd);
   cwdRef.current = status.cwd;
-  // 剪贴板图片 → SFTP 上传远端 → 路径插入输入行（工具栏按钮 / Ctrl+Shift+V 无文本时）。
-  const { busy: imgBusy, pasteImage } = useClipboardImagePaste({ sessionId, connId: conn.id, closed });
-  const pasteImageRef = useRef(pasteImage);
-  pasteImageRef.current = pasteImage;
+  // 剪贴板图片 → 确认框 → SFTP 上传远端 → 路径插入输入行（工具栏按钮 / Ctrl+Shift+V 无文本时）。
+  const image = useClipboardImagePaste({ sessionId, connId: conn.id, closed });
+  const pasteImageRef = useRef(image.pasteImage);
+  pasteImageRef.current = image.pasteImage;
 
   // 把远端 cwd 上报给父级（拖拽上传的目标目录）。ref 承接：内联箭头不能进依赖。
   const onCwdRef = useRef(onCwd);
@@ -222,8 +223,8 @@ export function SshTerminal({
         onCopy={select.copySelection}
         onCopyScreen={copyScreen}
         onPaste={paste}
-        onPasteImage={() => void pasteImage(cwdRef.current)}
-        imgBusy={imgBusy}
+        onPasteImage={() => void image.pasteImage(cwdRef.current)}
+        imgBusy={image.busy}
         onRepaint={() => forceRepaint(termRef.current)}
         onSearch={search.openSearch}
         onToggleSelectMode={select.toggleSelectMode}
@@ -290,6 +291,7 @@ export function SshTerminal({
         onPaste={paste}
         onSelectAll={() => termRef.current?.selectAll()}
       />
+      <SshImagePasteConfirm paste={image} onFocusReturn={() => termRef.current?.focus()} />
     </div>
   );
 }

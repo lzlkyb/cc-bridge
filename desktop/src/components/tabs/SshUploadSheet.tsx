@@ -11,18 +11,20 @@ import type { LocalFile } from "./useTerminalUpload";
 interface SheetProps {
   files: LocalFile[] | null;
   initialDir: string;
+  /** 预填的目录是 OSC 7 探到的远端 cwd（true）还是上次用过的目录（false）——只影响说明文案。 */
+  dirFromCwd?: boolean;
   onCancel: () => void;
   onConfirm: (dir: string) => void;
 }
 
 /**
- * 终端拖拽的目标目录确认——**只在探不到远端 cwd 时才会出现**。
+ * 终端拖拽的上传确认：文件清单 + 目标目录，回车即传。
  *
- * 正常情况下这份确认不弹：`hooks/useTerminalOsc.ts` 通过 OSC 7 已经拿到远端 shell 的
- * 当前目录，`useTerminalUpload` 直接传到那里，不问。只有注入被关、远端非 bash/zsh、
- * 或回执还没到时才退到这里，预填上次用过的目录让用户改一次。
+ * 每次拖放都过这里（含探到 cwd 的情况）：松手即传会把「拖向别处却松手在终端上」
+ * 变成一次撤不回的服务器写入，理由见 useTerminalUpload 头注。
+ * 目录预填 cwd（`hooks/useTerminalOsc.ts` 探到的远端当前目录），探不到才退回上次用过的。
  */
-export function SshUploadSheet({ files, initialDir, onCancel, onConfirm }: SheetProps) {
+export function SshUploadSheet({ files, initialDir, dirFromCwd, onCancel, onConfirm }: SheetProps) {
   const [dir, setDir] = useState(initialDir);
   const open = !!files;
 
@@ -65,8 +67,14 @@ export function SshUploadSheet({ files, initialDir, onCancel, onConfirm }: Sheet
           <p className="mt-1 text-xs text-destructive-ink">{err}</p>
         ) : (
           <p className="mt-1 text-xs text-muted-foreground">
-            终端里 <code className="rounded bg-muted px-1">cd</code> 到哪里本地无法探知，
-            这里填的是你上次用过的目录。确认后记住。
+            {dirFromCwd ? (
+              <>已预填终端当前目录，可直接回车上传，也可以改。</>
+            ) : (
+              <>
+                终端里 <code className="rounded bg-muted px-1">cd</code> 到哪里本地无法探知，
+                这里填的是你上次用过的目录。确认后记住。
+              </>
+            )}
           </p>
         )}
       </div>

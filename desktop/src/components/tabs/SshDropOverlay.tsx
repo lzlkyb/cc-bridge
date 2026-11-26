@@ -9,12 +9,14 @@ interface Props {
    * 而终端的 cwd 我们确实不知道，就不能假装知道。
    */
   dir?: string;
+  /** 松手后还要过一次确认框（终端拖放）：文案不能承诺「直接传」。 */
+  confirm?: boolean;
   /** 正在传输 / 确认框开着：接不了新的一批。 */
   busy?: boolean;
 }
 
 /** 拖入时盖在面板/终端上的提示层（遮罩 fade-in + 内容 scale-in，双层节奏）。 */
-export function SshDropOverlay({ count, dir, busy }: Props) {
+export function SshDropOverlay({ count, dir, confirm, busy }: Props) {
   // 🔴 忙的时候照样出遮罩，只是换成灰色 + 说清楚原因。
   // 以前是直接不收集拖放区，遮罩不出、也不提示，用户只知道「没反应」。
   if (busy) {
@@ -37,7 +39,9 @@ export function SshDropOverlay({ count, dir, busy }: Props) {
           <Icon name="upload" size={15} />
           {dir === undefined
             ? "松手选择上传位置"
-            : `松手上传 ${count} 个文件`}
+            : confirm
+              ? `松手确认上传 ${count} 个文件`
+              : `松手上传 ${count} 个文件`}
         </span>
         {dir === undefined ? (
           <span className="text-xs text-muted-foreground">

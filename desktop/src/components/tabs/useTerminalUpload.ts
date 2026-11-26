@@ -17,11 +17,11 @@ interface UploadResult {
 /**
  * 终端拖拽上传的编排：定目标目录 → 批量上传 → 给出远端路径。
  *
- * 目标目录优先用 `cwd`——**远端 shell 的当前目录**，由 OSC 7 探到（见
- * `hooks/useTerminalOsc.ts`）。那就是用户此刻所在的目录，完全符合直觉，所以**不问**。
- * 只有探不到 cwd 时才退回「上次用过的目录 + 问一句」（注入被关、远端非 bash/zsh、
- * 或还没收到回执）。文件面板的拖入上传早就是这个设计（见 `useFileBrowserDrop.ts`），
- * 这里只是把终端侧补齐。
+ * 🔴 松手**不直接传**，一律过一次确认框（2026-11-26 交互审计 P1）。此前探到 cwd 就静默开传，
+ * 而「拖向文件面板 / 别的窗口却松手在终端上」是常见误操作：文件已经写到服务器上了，
+ * 撤回不了（同名覆盖有确认，新文件没有）。确认框预填 cwd（OSC 7 探到的远端当前目录，
+ * 见 hooks/useTerminalOsc.ts），回车即传，代价是一次按键；探不到 cwd 时退回上次用过的目录。
+ * 文件面板那侧的拖放仍是直传——它的目标目录就写在路径条上，不存在「传到哪」的歧义。
  *
  * 单独成 hook 而不是写进 `TerminalTab`：后者已经 246 行，靠近 300 行上限（规则 7）。
  */
@@ -29,6 +29,8 @@ export function useTerminalUpload(conn: SshConnection | null, cwd: string | null
   const tx = useSshTransfer();
   const [pending, setPending] = useState<LocalFile[] | null>(null);
   const [dir, setDir] = useState("/");
+  /** 确认框里的目录是不是探到的 cwd（决定说明文案：预填当前目录 vs 上次用过的目录）。 */
+  const [dirFromCwd, setDirFromCwd] = useState(false);
   const [result, setResult] = useState<UploadResult | null>(null);
 
   /**
@@ -68,16 +70,13 @@ export function useTerminalUpload(conn: SshConnection | null, cwd: string | null
       // 文件夹 / 不存在的路径在这里面就被拒掉并提示了（与文件面板入口共用）。
       const files = await pickUploadableFiles(paths);
       if (!files.length) return;
-      // 探到了 cwd：直接传到用户当前所在的目录，不打断。
-      if (cwd) {
-        await start(cwd, files);
-        return;
-      }
-      // 探不到：确实不知道传到哪，才问（预填上次用过的目录）。
-      setDir(loadUploadDir(conn.id));
+      // 一律进确认框：预填探到的 cwd，探不到才退回上次用过的目录（理由见头注）。
+      // 归一化再预填：cwd 来自远端回执，带尾斜杠时会被目录校验判非法，确认框就卡住了。
+      setDirFromCwd(Boolean(cwd));
+      setDir(normalizeRemoteDir(cwd ?? loadUploadDir(conn.id)));
       setPending(files);
     },
-    [conn, cwd, start],
+    [conn, cwd],
   );
 
   const cancelSheet = useCallback(() => setPending(null), []);
@@ -92,11 +91,11 @@ export function useTerminalUpload(conn: SshConnection | null, cwd: string | null
 
   /**
    * 结果条上的「改目录」：把刚传完的那批放回待确认队列，重传一次。
-   *
-   * 这是免掉「每次拖拽都问一遍」的补偿出口——传错可重传，比每次都拦一下划算。
+   * 传错目录不用重新拖一遍文件。
    */
   const changeDir = useCallback(() => {
     if (!result) return;
+    setDirFromCwd(false);
     setDir(result.dir);
     setPending(result.files);
     setResult(null);
@@ -107,6 +106,7 @@ export function useTerminalUpload(conn: SshConnection | null, cwd: string | null
     busy,
     pending,
     dir,
+    dirFromCwd,
     result,
     dropped,
     cancelSheet,
