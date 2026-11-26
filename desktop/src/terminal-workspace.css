@@ -20,6 +20,7 @@
 .terminal-connection-search-field { display:flex; align-items:center; gap:7px; padding:0 9px; height:42px; border:1px solid hsl(var(--border)); border-radius:11px; background:hsl(var(--background) / .7); color:hsl(var(--muted-foreground)); }
 .terminal-connection-search-field:focus-within { border-color:hsl(var(--primary)); }
 .terminal-connection-search-field input { min-width:0; width:100%; border:0; outline:0; background:none; color:hsl(var(--foreground)); font-size:13px; caret-color:hsl(var(--primary)); }
+.terminal-connection-search-field input:focus-visible { outline:none; }
 .terminal-connection-search-field button { display:grid; place-items:center; width:22px; height:24px; flex-shrink:0; border-radius:5px; }
 .terminal-connection-list-caption { display:flex; justify-content:space-between; gap:8px; padding:14px 17px 10px; font-size:12px; color:hsl(var(--muted-foreground)); }
 .terminal-connection-row { position:relative; padding:16px 15px 10px; min-height:140px; border:1px solid transparent; border-radius:14px; transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease); }
