@@ -79,7 +79,7 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   }, [restarting, status, error, toast]);
 
   const handleClick = async () => {
-    if (status === "available" || status === "ready" || (status === "error" && update)) {
+    if (status === "available" || status === "staged" || status === "ready" || (status === "error" && update)) {
       openUpdateNotes();
     } else if (status === "error") {
       await manualCheckForUpdate();
@@ -159,16 +159,20 @@ export function UpdateBadge({ currentVersion }: { currentVersion?: string }) {
   }
 
   // ─── ready ────────────────────────────────
-  if (status === "ready") {
+  if (status === "verifying" || status === "installing") {
+    return <Slot><button type="button" onClick={openUpdateNotes} className="header-badge header-badge-checking"><Spinner size={10} /><span>{status === "verifying" ? "校验中" : "安装中"}</span></button></Slot>;
+  }
+
+  if (status === "ready" || status === "staged") {
     return (
       <Slot>
         <button
           className="header-badge header-badge-ready cursor-pointer tabular-nums"
-          title="更新已安装，点击查看并确认重启"
+          title={status === "staged" ? "更新已就绪，点击查看并安装" : "更新已安装，点击查看并确认重启"}
           onClick={handleClick}
         >
           <Icon name="check" size={10} />
-          <span>重启</span>
+          <span>{status === "staged" ? "已就绪" : "重启"}</span>
         </button>
       </Slot>
     );

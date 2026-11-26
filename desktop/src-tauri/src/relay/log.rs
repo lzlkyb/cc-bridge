@@ -427,6 +427,16 @@ impl RelayLog {
         self.len() == 0
     }
 
+    pub(crate) fn in_flight_count(&self) -> usize {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner
+            .entries
+            .iter()
+            .chain(inner.evicted_pending.values())
+            .filter(|entry| entry.is_in_flight())
+            .count()
+    }
+
     /// 今日聚合。`now_ms` 与 `day_start_ms` 由调用方给，以便测试确定性。
     pub fn stats_for(&self, day_start_ms: i64) -> RelayStats {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -697,6 +707,24 @@ mod tests {
         assert_eq!(row.status, Some(200));
         assert_eq!(row.first_byte_ms, Some(120));
         assert!(!row.is_in_flight());
+    }
+
+    #[test]
+    fn in_flight_count_preserves_evicted_requests() {
+        let log = RelayLog::new(1, None);
+        let first = log.begin(entry(1, None));
+        let second = log.begin(entry(2, None));
+        assert_eq!(log.in_flight_count(), 2);
+        for id in [first, second] {
+            log.finish(
+                id,
+                LogPatch {
+                    status: Some(200),
+                    ..LogPatch::default()
+                },
+            );
+        }
+        assert_eq!(log.in_flight_count(), 0);
     }
 
     #[test]

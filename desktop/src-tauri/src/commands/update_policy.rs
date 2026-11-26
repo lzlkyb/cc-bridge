@@ -189,7 +189,19 @@ fn policy_endpoints() -> Vec<String> {
     ]
 }
 
-/// 并发拉取并按源优先级取结果，避免前两个源超时用完预算，直连源永远没有机会。
+fn policy_timestamp(policy: &UpdatePolicy) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(policy.updated_at.as_deref()?).ok()
+}
+
+/// 相同时间戳保留源优先级。已经撤销的策略不能被仍在传播的旧镜像盖回去。
+fn prefer_policy(candidate: &UpdatePolicy, current: &UpdatePolicy) -> bool {
+    let now = chrono::Utc::now();
+    let version = env!("CARGO_PKG_VERSION");
+    let valid = |policy| evaluate(version, policy, now, "network").source != "invalid";
+    (valid(candidate), policy_timestamp(candidate)) > (valid(current), policy_timestamp(current))
+}
+
+/// 并发拉取，等待各源在各自的超时内返回，再选最新的有效策略。
 async fn fetch_policy(
     endpoints: Vec<String>,
     request_deadline: Duration,
@@ -209,13 +221,21 @@ async fn fetch_policy(
         })
         .collect();
     let mut last = String::from("无可用更新源");
+    let mut best = None;
     while let Some(result) = requests.next().await {
         match result {
-            Ok(policy) => return Ok(policy),
+            Ok(policy) => {
+                if best
+                    .as_ref()
+                    .is_none_or(|current| prefer_policy(&policy, current))
+                {
+                    best = Some(policy);
+                }
+            }
             Err(e) => last = e.to_string(),
         }
     }
-    Err(last)
+    best.ok_or(last)
 }
 
 fn write_cache(path: &Path, policy: &UpdatePolicy) -> Result<(), String> {
@@ -300,6 +320,7 @@ pub async fn check_update_policy(
         .unwrap_or(false)
     {
         log::warn!("[UpdatePolicy] CCBRIDGE_SKIP_FORCE_UPDATE 已设置，本次跳过强制更新判定");
+        apply_minimum(&state, None);
         return Ok(ForceUpdateVerdict {
             mandatory: false,
             current_version: current,
@@ -317,12 +338,19 @@ pub async fn check_update_policy(
         fetch_policy(policy_endpoints(), REQUEST_DEADLINE),
     )
     .await;
-    match fetched {
+    let verdict = match fetched {
         Ok(Ok(policy)) => {
-            if let Err(e) = write_cache(&cache_path, &policy) {
-                log::warn!("[UpdatePolicy] 缓存写入失败（不影响本次判定）: {e}");
-            }
-            let verdict = evaluate(&current, &policy, chrono::Utc::now(), "network");
+            let now = chrono::Utc::now();
+            let verdict = if let Some(cached) = read_cache(&cache_path).filter(|cached| {
+                policy_timestamp(cached).is_some() && prefer_policy(cached, &policy)
+            }) {
+                evaluate(&current, &cached, now, "cache")
+            } else {
+                if let Err(e) = write_cache(&cache_path, &policy) {
+                    log::warn!("[UpdatePolicy] 缓存写入失败（不影响本次判定）: {e}");
+                }
+                evaluate(&current, &policy, now, "network")
+            };
             log::info!(
                 "[UpdatePolicy] 远端策略命中 → mandatory={} current={} min={} source={}",
                 verdict.mandatory,
@@ -330,32 +358,41 @@ pub async fn check_update_policy(
                 verdict.min_supported_version.as_deref().unwrap_or("-"),
                 verdict.source
             );
-            Ok(verdict)
+            verdict
         }
         Ok(Err(e)) => {
             log::warn!("[UpdatePolicy] 拉取策略失败，回退缓存: {e}");
-            Ok(fallback_to_cache(&cache_path, &current))
+            fallback_to_cache(&cache_path, &current)
         }
         Err(_) => {
             log::warn!(
                 "[UpdatePolicy] 拉取策略超时（>{}s），回退缓存",
                 FETCH_DEADLINE.as_secs()
             );
-            Ok(fallback_to_cache(&cache_path, &current))
+            fallback_to_cache(&cache_path, &current)
         }
-    }
+    };
+    apply_minimum(
+        &state,
+        verdict
+            .min_supported_version
+            .clone()
+            .filter(|_| verdict.mandatory),
+    );
+    Ok(verdict)
 }
 
-/// 把「当前是否处于强制更新态」同步给托盘。
-///
-/// 托盘不是装饰：它能复制接入命令、启停本机 MCP 服务。主窗口锁住之后如果这些还在，
-/// 「必须更新才能继续使用」就只剩一层皮。强制期间托盘菜单只保留「打开面板 / 退出」，
-/// 事件层再做一次拦截（菜单可能来自上一拍，存在竞态窗口）。
-#[tauri::command(rename_all = "snake_case")]
-pub fn set_force_update_active(state: State<'_, Arc<AppState>>, active: bool) {
-    if state.force_update_active.swap(active, Ordering::SeqCst) != active {
-        log::info!("[UpdatePolicy] 强制更新态切换为 {active}");
-    }
+fn apply_minimum(state: &AppState, minimum: Option<String>) {
+    let enforced = minimum.is_some();
+    state.update_minimum.send_if_modified(|value| {
+        if *value == minimum {
+            false
+        } else {
+            *value = minimum;
+            true
+        }
+    });
+    state.force_update_active.store(enforced, Ordering::SeqCst);
 }
 
 #[cfg(test)]
@@ -457,6 +494,18 @@ mod tests {
         let v = evaluate("3.0.0", &p, chrono::Utc::now(), "cache");
         assert!(v.mandatory);
         assert_eq!(v.source, "cache");
+    }
+
+    #[test]
+    fn newer_revoke_wins_over_stale_mirror() {
+        let mut old = policy(true, "3.4.2", "3.5.0", None);
+        old.updated_at = Some("2026-11-25T08:00:00Z".into());
+        let mut revoked = policy(false, "3.5.0", "3.5.0", None);
+        revoked.updated_at = Some("2026-11-26T08:00:00Z".into());
+        assert!(prefer_policy(&revoked, &old));
+        assert!(!prefer_policy(&old, &revoked));
+        revoked.schema = 999;
+        assert!(!prefer_policy(&revoked, &old));
     }
 
     #[test]

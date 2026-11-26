@@ -163,21 +163,14 @@ export function ReleaseNotes({ body }: { body: string | null | undefined }) {
 /** 更新下载行为沿用现有通道；展示层单独解析版本范围。
  *  存在 `requirement` 时整框不可关闭（Esc / 点遮罩 / 右上角关闭全部失效），
  *  并把「忽略此版本 / 稍后提醒」换成「退出软件」——这一档不是提醒，是硬约束。 */
-export function UpdateNotesDialog({ open, update, process, onClose, onDownload, onDismiss, onRestart, onRetry, onRefreshSafety, requirement, onQuit }: {
+export function UpdateNotesDialog({ open, update, process, requirement, ...actions }: {
   open: boolean;
   update: UpdateNotesInfo | null;
   process?: UpdatePresentation;
-  onClose: () => void;
-  onDownload: () => void;
-  onDismiss: () => void;
-  onRestart?: () => void;
-  onRetry?: () => void;
-  onRefreshSafety?: () => void;
   requirement?: { minimumVersion: string; reason: string };
-  onQuit?: () => void;
-}) {
+} & import("./UpdateProcess").UpdateActionProps) {
   if (!update) return null;
-  return <Modal open={open} onClose={onClose} zIndex={requirement ? 2500 : 1000} dismissible={!requirement} ariaLabel={requirement ? "必须更新后才能继续使用" : "CC Bridge 软件更新"} className="modal-surface update-dialog">
-    <UpdateDialogContent key={`${update.currentVersion ?? ""}/${update.version ?? ""}`} update={update} process={process} onClose={onClose} onDownload={onDownload} onDismiss={onDismiss} onRestart={onRestart} onRetry={onRetry} onRefreshSafety={onRefreshSafety} requirement={requirement} onQuit={onQuit} />
+  return <Modal open={open} onClose={actions.onClose} zIndex={requirement ? 2500 : 1000} dismissible={!requirement && process?.status !== "installing"} initialFocus="[data-update-primary]" ariaLabel={requirement ? "必须更新后才能继续使用" : "CC Bridge 软件更新"} className="modal-surface update-dialog">
+    <UpdateDialogContent key={`${update.currentVersion ?? ""}/${update.version ?? ""}`} update={update} process={process} requirement={requirement} {...actions} />
   </Modal>;
 }

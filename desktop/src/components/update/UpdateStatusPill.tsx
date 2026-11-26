@@ -85,10 +85,13 @@ export function UpdateStatusPill({
       </span>
     );
   }
-  if (status === "ready") {
+  if (status === "verifying" || status === "installing") {
+    return <span className="text-xs text-muted-foreground">{status === "verifying" ? "正在校验" : "正在安装"}</span>;
+  }
+  if (status === "ready" || status === "staged") {
     return (
       <span className="flex items-center gap-1.5 rounded-full border border-success/30 bg-success/10 px-2.5 py-[3px] text-xs font-semibold text-success-ink tabular-nums">
-        {autoRestartIn ? `${autoRestartIn} 秒后重启` : "已下载"}
+        {status === "staged" ? "已就绪" : autoRestartIn ? `${autoRestartIn} 秒后重启` : "已安装"}
       </span>
     );
   }

@@ -83,6 +83,9 @@ const EVENTS = [  "update:checking",
   "update:available",
   "update:downloading",
   "update:progress",
+  "update:verifying",
+  "update:staged",
+  "update:obsolete",
   "update:ready",
   "update:error",
   "update:uptodate",
@@ -90,6 +93,7 @@ const EVENTS = [  "update:checking",
 
 const LAST_CHECK_KEY = "ccbridge_last_update_check";
 const DISMISSED_KEY = "ccbridge_dismissed_update_version";
+const PRELOAD_KEY = "ccbridge_auto_preload_update";
 
 // React 18 的 act 需要这个标记，否则每次 act 都会打「environment is not configured」警告，
 // 且异步副作用不会被正确 flush。
@@ -167,6 +171,7 @@ const available = (version = "99.9.9") => ({
 beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
+  localStorage.setItem(PRELOAD_KEY, "false");
   h.handlers.clear();
   h.order.length = 0;
   h.dialogOpen.length = 0;
@@ -441,6 +446,86 @@ describe("下载重入防护", () => {
     await act(async () => {
       void state().downloadAndInstall();
     });
+    expect(h.invoke).not.toHaveBeenCalledWith("start_update");
+  });
+});
+
+describe("后台预下载", () => {
+  const forced = {
+    mandatory: true, currentVersion: "3.4.0", minSupportedVersion: "3.5.0", latestVersion: "3.5.0", source: "network",
+  };
+
+  it("发现更新后自动准备，签名验证完成才提示，点击安装只用本地包", async () => {
+    localStorage.removeItem(PRELOAD_KEY);
+    await mount();
+    await emit("update:available", available("3.5.0"));
+    expect(state().status).toBe("downloading");
+    expect(dialogOpen()).toBe(false);
+    expect(h.invoke).toHaveBeenCalledWith("start_update");
+    await emit("update:verifying");
+    expect(state().status).toBe("verifying");
+    expect(dialogOpen()).toBe(false);
+    await emit("update:staged", { ...available("3.5.0"), size: 12000 });
+    expect(state().status).toBe("staged");
+    expect(dialogOpen()).toBe(true);
+    expect(h.invoke).not.toHaveBeenCalledWith("install_prepared_update", { version: "3.5.0" });
+    await act(async () => state().installPreparedUpdate());
+    expect(h.invoke).toHaveBeenCalledWith("install_prepared_update", { version: "3.5.0" });
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "start_update")).toHaveLength(1);
+  });
+
+  it("强制策略接管合格的下载并在撤销后解除强制界面", async () => {
+    localStorage.removeItem(PRELOAD_KEY);
+    await mount();
+    await emit("update:available", available("3.5.0"));
+    await emit("update:progress", { downloaded: 500, total: 1000 });
+    h.invoke.mockImplementation(async cmd => cmd === "check_update_policy" ? forced : h.defaultInvoke(cmd));
+    await act(async () => state().refreshForcePolicy());
+    expect(state().forceUpdate.active).toBe(true);
+    expect(state().progress).toBe(50);
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "start_update")).toHaveLength(1);
+    await emit("update:staged", { ...available("3.5.0"), size: 1000 });
+    expect(dialogOpen()).toBe(false);
+    expect(state().status).toBe("staged");
+    h.invoke.mockImplementation(h.defaultInvoke);
+    await act(async () => state().refreshForcePolicy());
+    expect(state().forceUpdate.active).toBe(false);
+    expect(dialogOpen()).toBe(true);
+  });
+
+  it("策略判定还未完成时暂缓普通提醒和安装", async () => {
+    let finishPolicy: ((value: unknown) => void) | undefined;
+    h.invoke.mockImplementation(async cmd => cmd === "check_update_policy"
+      ? new Promise(resolve => { finishPolicy = resolve; })
+      : h.defaultInvoke(cmd));
+    await mount();
+    await emit("update:staged", { ...available("3.5.0"), size: 1024 });
+    await act(async () => state().installPreparedUpdate());
+    expect(dialogOpen()).toBe(false);
+    expect(h.invoke.mock.calls.some(([cmd]) => cmd === "install_prepared_update")).toBe(false);
+    await act(async () => finishPolicy?.({ mandatory: false }));
+    expect(dialogOpen()).toBe(true);
+  });
+
+  it("下载目标低于强制门槛时才重新准备", async () => {
+    localStorage.removeItem(PRELOAD_KEY);
+    await mount();
+    await emit("update:available", available("3.4.1"));
+    h.invoke.mockImplementation(async cmd => cmd === "check_update_policy" ? forced : h.defaultInvoke(cmd));
+    await act(async () => state().refreshForcePolicy());
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "start_update")).toHaveLength(1);
+    await emit("update:obsolete");
+    expect(h.invoke).toHaveBeenCalledWith("start_update", { minSupportedVersion: "3.5.0" });
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "start_update")).toHaveLength(2);
+  });
+
+  it("关闭预下载仍可复用已校验的缓存，任务忙时保留安装包", async () => {
+    await mount();
+    await emit("update:staged", { ...available("3.5.0"), size: 1024 });
+    expect(state().status).toBe("staged");
+    h.invoke.mockImplementation(async cmd => cmd === "install_prepared_update" ? "busy" : h.defaultInvoke(cmd));
+    await act(async () => state().installPreparedUpdate());
+    expect(state().status).toBe("staged");
     expect(h.invoke).not.toHaveBeenCalledWith("start_update");
   });
 });

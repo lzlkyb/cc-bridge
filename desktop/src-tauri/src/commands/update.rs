@@ -1,20 +1,143 @@
-//! 自动更新相关的 IPC 命令（`start_update` / `check_update`）与其私有辅助。
-//!
-//! 从 `commands.rs` 拆出来的第一块（D19 方案 C 第 1 批）。选它打头阵的理由：
-//! 4 个私有辅助（`retry_with_backoff` / `resolve_update_endpoints` /
-//! `candidate_endpoint_groups` / `build_updater`）**全部只被本模块调用**，与其它域零耦合，
-//! 因此这一批能干净地验证「`pub use` 重导出 + `main.rs` 的 `invoke_handler!` 零改动」
-//! 这套机制到底成不成立——机制若不成立，在这里暴露远比在大搬动里暴露好查。
-//!
-//! 本文件是**纯搬动**：函数体逐字节未改，可用 `tools/fingerprint.py` 比对哈希验证。
-//! 唯一新增的是下面这行 import —— 区块内 13 处 `.emit()` 需要 `Emitter` trait 在作用域，
-//! 其余外部符号（`url::Url` / `tauri_plugin_updater::` / `serde_json::` 等）原本就是全限定路径。
+//! 自动更新的清单检查、安装包准备和用户确认后的安装。
 
-use std::time::Duration;
+use std::{
+    sync::{atomic::AtomicBool, Arc, Mutex},
+    time::Duration,
+};
 
-use tauri::Emitter;
+use tauri::{Emitter, State};
 
+use super::update_cache::{
+    cached_package, download_verified_package, package_path, persist_package, PackageDownloadError,
+    PreparedUpdate,
+};
 use super::update_policy::parse_version;
+use super::update_safety::read_update_activity;
+use crate::state::AppState;
+
+static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
+static UPDATE_SESSION: Mutex<UpdateSession> = Mutex::new(UpdateSession {
+    prepared: None,
+    installed: None,
+});
+
+struct UpdateSession {
+    prepared: Option<PreparedUpdate>,
+    installed: Option<tauri_plugin_updater::Update>,
+}
+
+fn update_notice(update: &tauri_plugin_updater::Update) -> serde_json::Value {
+    serde_json::json!({
+        "version": update.version,
+        "body": update.body,
+        "date": update.date.map(|date| date.to_string()),
+        "currentVersion": update.current_version,
+        "source": "download",
+    })
+}
+
+fn report_pending_restart(app: &tauri::AppHandle) -> bool {
+    let installed = UPDATE_SESSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .installed
+        .clone();
+    let Some(installed) = installed else {
+        return false;
+    };
+    let _ = app.emit("update:available", update_notice(&installed));
+    let _ = app.emit("update:ready", ());
+    true
+}
+
+fn meets_minimum(version: &str, minimum: Option<(u64, u64, u64)>) -> bool {
+    minimum.is_none_or(|min| parse_version(version).is_some_and(|version| version >= min))
+}
+
+async fn wait_until_obsolete(
+    minimum: &mut tokio::sync::watch::Receiver<Option<String>>,
+    version: &str,
+) {
+    let _ = minimum
+        .wait_for(|current| !meets_minimum(version, current.as_deref().and_then(parse_version)))
+        .await;
+}
+
+fn stage_update(
+    app: &tauri::AppHandle,
+    package: PreparedUpdate,
+    size: usize,
+    flight: SingleFlight,
+) {
+    let mut notice = update_notice(&package.update);
+    notice["size"] = serde_json::json!(size);
+    UPDATE_SESSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .prepared = Some(package);
+    // The event may immediately trigger another preparation if the minimum has changed.
+    drop(flight);
+    let _ = app.emit("update:staged", notice);
+}
+
+async fn reserve_cached_package(
+    flag: &'static AtomicBool,
+    verified_size: impl std::future::Future<Output = Option<usize>>,
+) -> Option<(usize, SingleFlight)> {
+    // A miss must never occupy the slot and swallow a simultaneous prepare request.
+    let size = verified_size.await?;
+    Some((size, SingleFlight::acquire(flag)?))
+}
+
+async fn restore_cached_update(
+    app: &tauri::AppHandle,
+    path: &std::path::Path,
+    update: &tauri_plugin_updater::Update,
+) -> bool {
+    let cache_path = path.to_owned();
+    let candidate = update.clone();
+    let Some((size, flight)) = reserve_cached_package(&UPDATE_RUNNING, async {
+        tokio::task::spawn_blocking(move || {
+            cached_package(
+                &cache_path,
+                &candidate.version,
+                &candidate.signature,
+                |bytes| candidate.verify(bytes).is_ok(),
+            )
+            .map(|bytes| bytes.len())
+        })
+        .await
+        .ok()
+        .flatten()
+    })
+    .await
+    else {
+        return false;
+    };
+    {
+        let session = UPDATE_SESSION.lock().unwrap_or_else(|p| p.into_inner());
+        if session.installed.is_some()
+            || session.prepared.as_ref().is_some_and(|prepared| {
+                prepared.update.version != update.version
+                    || prepared.update.signature != update.signature
+            })
+        {
+            // A newer preparation or installation could have completed while we were reading.
+            return false;
+        }
+    }
+    stage_update(
+        app,
+        PreparedUpdate {
+            update: update.clone(),
+            path: path.to_owned(),
+            memory: None,
+        },
+        size,
+        flight,
+    );
+    true
+}
 
 // ===== 自动更新（后台线程，不阻塞 UI），採自 PastePanda 实现 =====
 
@@ -138,9 +261,11 @@ fn classify_update_error(err: &tauri_plugin_updater::Error) -> &'static str {
         | UpdaterError::TargetNotFound(_)
         | UpdaterError::TargetsNotFound(_) => "manifest",
         // 验签失败：包可能被篡改或下载损坏，必须与「普通下载失败」区分开。
-        UpdaterError::Minisign(_) | UpdaterError::SignatureUtf8(_) | UpdaterError::Base64(_) => {
-            "signature"
-        }
+        UpdaterError::Minisign(_)
+        | UpdaterError::SignatureUtf8(_)
+        | UpdaterError::Base64(_)
+        | UpdaterError::SignedVersionMismatch { .. }
+        | UpdaterError::MissingSignedVersion => "signature",
         UpdaterError::Reqwest(e) => {
             if e.is_timeout() {
                 "timeout"
@@ -265,23 +390,33 @@ fn build_updater(
         .map_err(|e| format!("更新插件初始化失败: {e}"))
 }
 
-/// 后台执行更新检查+下载安装，通过 Tauri event 推送状态到前端。
+/// 后台检查、下载并验签。安装只能从 install_prepared_update 进入。
 /// 按 `candidate_endpoint_groups` 的顺序依次尝试候选源（默认 Gitee 优先、ghproxy/GitHub
 /// 回退），前一个候选检查或下载任一步失败就换下一个，全部失败才报错。内置指数退避重试：
 /// 每个候选内检查最多重试 2 次、下载安装最多重试 2 次。
 #[tauri::command]
-pub fn start_update(app: tauri::AppHandle, min_supported_version: Option<String>) {
-    // 已有任务在跑就直接忽略本次触发（事件由在跑的那个推送，不重复发状态）。
-    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let Some(guard) = SingleFlight::acquire(&RUNNING) else {
+pub fn start_update(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    min_supported_version: Option<String>,
+) {
+    let Some(guard) = SingleFlight::acquire(&UPDATE_RUNNING) else {
         log::info!("更新任务已在进行，忽略重复触发");
         return;
     };
+    if report_pending_restart(&app) {
+        return;
+    }
+    let path = package_path(&state.data_dir);
+    let mut live_minimum = state.update_minimum.subscribe();
     tauri::async_runtime::spawn(async move {
         let _guard = guard; // 持有到任务结束（含所有 early return）
         let _ = app.emit("update:checking", ());
 
-        let minimum = min_supported_version.as_deref().and_then(parse_version);
+        let minimum = min_supported_version
+            .as_deref()
+            .and_then(parse_version)
+            .max(live_minimum.borrow().as_deref().and_then(parse_version));
         let groups = match download_endpoint_groups(&app, minimum.is_some()) {
             Ok(g) => g,
             Err(e) => {
@@ -334,13 +469,7 @@ pub fn start_update(app: tauri::AppHandle, min_supported_version: Option<String>
             };
 
             let update = match check_result {
-                Some(u)
-                    if minimum.is_none_or(|min| {
-                        parse_version(&u.version).is_some_and(|version| version >= min)
-                    }) =>
-                {
-                    u
-                }
+                Some(u) if meets_minimum(&u.version, minimum) => u,
                 _ if minimum.is_some() => {
                     log::warn!("[Update] 镜像尚未提供满足最低版本的安装包，改用下一源");
                     last_message = Some("镜像尚未同步到最低支持版本，请稍后重试".into());
@@ -364,85 +493,88 @@ pub fn start_update(app: tauri::AppHandle, min_supported_version: Option<String>
                 }
             };
 
-            let date_str = update.date.map(|d| d.to_string());
-            let current_ver = update.current_version.clone();
-            let _ = app.emit(
-                "update:available",
-                serde_json::json!({
-                    "version": update.version,
-                    "body": update.body,
-                    "date": date_str,
-                    "currentVersion": current_ver,
-                    "source": "download",
-                }),
-            );
+            let _ = app.emit("update:available", update_notice(&update));
 
-            let _ = app.emit("update:downloading", ());
+            let local = {
+                let path = path.clone();
+                let candidate = update.clone();
+                tokio::task::spawn_blocking(move || {
+                    cached_package(&path, &candidate.version, &candidate.signature, |bytes| {
+                        candidate.verify(bytes).is_ok()
+                    })
+                })
+                .await
+                .ok()
+                .flatten()
+            };
 
-            let app_progress = app.clone();
-            // 下载阶段保持「任何错误都重试」的原有语义：这里失败多半是链路抖动，
-            // 且重试会从头下载，代价可控；换源由外层 `continue` 负责。
-            let result = retry_with_backoff(
-                2,
-                "下载安装",
-                |_: &tauri_plugin_updater::Error| true,
-                || {
-                    let u = update.clone();
-                    let ap = app_progress.clone();
-                    async move {
-                        let mut downloaded_total: u64 = 0;
-                        // 下载速度：窗口限流计算（~250ms 重算一次），不是每个 chunk 都重算——
-                        // 快网速下 chunk 回调可能每秒触发好几十次，逐次算瞬时速率会跳得难看。
-                        // downloaded/total 仍每 chunk 都发（百分比保持平滑），只有 bytesPerSec 在窗口
-                        // 间隔内复用上一次算出的值。
-                        let mut window_start = std::time::Instant::now();
-                        let mut window_bytes: u64 = 0;
-                        let mut last_bytes_per_sec: f64 = 0.0;
-                        u.download_and_install(
-                            move |chunk_len, total| {
-                                downloaded_total += chunk_len as u64;
-                                window_bytes += chunk_len as u64;
-                                let elapsed = window_start.elapsed();
-                                if elapsed.as_millis() >= 250 {
-                                    last_bytes_per_sec =
-                                        window_bytes as f64 / elapsed.as_secs_f64();
-                                    window_start = std::time::Instant::now();
-                                    window_bytes = 0;
-                                }
-                                let _ = ap.emit(
-                                    "update:progress",
-                                    serde_json::json!({
-                                        "downloaded": downloaded_total,
-                                        "total": total,
-                                        "bytesPerSec": last_bytes_per_sec,
-                                    }),
-                                );
-                            },
-                            || {
-                                // 🔴 插件这个回调是 on_download_finish（updater.rs:712），触发点在
-                                // verify_signature **之前**。绝不能在这里发 update:ready——验签失败
-                                // 时前端会误进自动重启倒计时并 relaunch，而更新根本没装上
-                                // （2026-10-18 假签名实测：失败后 +9.2s app 被自行重启）。
-                                // update:ready 改到 download_and_install 成功返回之后发（见 match）。
-                            },
-                        )
-                        .await
-                    }
-                },
-            )
-            .await;
-
+            let cached = local.is_some();
+            let prepare = async {
+                if let Some(bytes) = local {
+                    Ok(bytes)
+                } else {
+                    retry_with_backoff(
+                        2,
+                        "下载更新",
+                        |error| {
+                            matches!(
+                                error,
+                                PackageDownloadError::Updater(
+                                    tauri_plugin_updater::Error::Reqwest(_)
+                                )
+                            )
+                        },
+                        || download_verified_package(&app, update.clone()),
+                    )
+                    .await
+                }
+            };
+            let result = tokio::select! {
+                biased;
+                _ = wait_until_obsolete(&mut live_minimum, &update.version) => {
+                    drop(_guard);
+                    let _ = app.emit("update:obsolete", ());
+                    return;
+                }
+                result = prepare => result,
+            };
             match result {
-                Ok(()) => {
-                    // 下载 + 验签 + 安装全部成功才宣告 ready，前端据此起自动重启倒计时。
-                    // Windows NSIS 路径走不到这里：install_inner 以 process::exit(0) 收尾，
-                    // 重启由安装器负责；macOS/Linux 走到这里，事件才有意义。
-                    let _ = app.emit("update:ready", ());
+                Ok(bytes) => {
+                    let size = bytes.len();
+                    let version = update.version.clone();
+                    let memory = if cached {
+                        None
+                    } else {
+                        let cache_path = path.clone();
+                        let version = version.clone();
+                        let signature = update.signature.clone();
+                        tokio::task::spawn_blocking(move || {
+                            if let Err(e) =
+                                persist_package(&cache_path, &version, &signature, &bytes)
+                            {
+                                log::warn!("[Update] 无法缓存更新：{e}");
+                                Some(Arc::<[u8]>::from(bytes))
+                            } else {
+                                None
+                            }
+                        })
+                        .await
+                        .unwrap_or_default()
+                    };
+                    let package = PreparedUpdate {
+                        update,
+                        memory,
+                        path,
+                    };
+                    stage_update(&app, package, size, _guard);
                     return; // 这个源成功，结束
                 }
                 Err(e) => {
-                    last_code = classify_update_error(&e);
-                    last_message = Some(format!("下载安装失败: {e}"));
+                    last_code = match &e {
+                        PackageDownloadError::TooLarge => "package_size",
+                        PackageDownloadError::Updater(error) => classify_update_error(error),
+                    };
+                    last_message = Some(format!("下载或校验更新失败: {e}"));
                     continue; // 换下一个候选源重试
                 }
             }
@@ -461,17 +593,99 @@ pub fn start_update(app: tauri::AppHandle, min_supported_version: Option<String>
     });
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallOutcome {
+    Installed,
+    Busy,
+    Unavailable,
+}
+
+#[tauri::command]
+pub async fn install_prepared_update(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    version: String,
+) -> Result<InstallOutcome, String> {
+    let Some(_flight) = SingleFlight::acquire(&UPDATE_RUNNING) else {
+        return Ok(InstallOutcome::Busy);
+    };
+    let (update, memory, path) = {
+        let slot = UPDATE_SESSION.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(package) = slot
+            .prepared
+            .as_ref()
+            .filter(|p| p.update.version == version)
+        else {
+            return Ok(InstallOutcome::Unavailable);
+        };
+        (
+            package.update.clone(),
+            package.memory.clone(),
+            package.path.clone(),
+        )
+    };
+    let payload = if let Some(bytes) = memory {
+        Some(bytes)
+    } else {
+        let candidate = update.clone();
+        tokio::task::spawn_blocking(move || {
+            cached_package(&path, &candidate.version, &candidate.signature, |bytes| {
+                candidate.verify(bytes).is_ok()
+            })
+            .map(Arc::<[u8]>::from)
+        })
+        .await
+        .map_err(|err| err.to_string())?
+    };
+    let Some(payload) = payload else {
+        return Ok(InstallOutcome::Unavailable);
+    };
+    // Check after loading and verifying the bytes: work may have started while disk I/O ran.
+    if !read_update_activity(&state).await?.is_idle() {
+        return Ok(InstallOutcome::Busy);
+    }
+    let minimum = state
+        .update_minimum
+        .borrow()
+        .as_deref()
+        .and_then(parse_version);
+    if !meets_minimum(&update.version, minimum) {
+        return Ok(InstallOutcome::Unavailable);
+    }
+    let installed = update.clone();
+    tokio::task::spawn_blocking(move || update.install(&*payload))
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())?;
+    let package = {
+        let mut session = UPDATE_SESSION.lock().unwrap_or_else(|p| p.into_inner());
+        // macOS/Linux still need a restart after reopening a released webview.
+        session.installed = Some(installed);
+        session.prepared.take()
+    };
+    if let Some(package) = package {
+        let _ = tokio::fs::remove_file(package.path).await;
+    }
+    let _ = app.emit("update:ready", ());
+    Ok(InstallOutcome::Installed)
+}
+
 /// 只检查更新、不下载，通过 Tauri event 把结果推给前端用于展示徽章。
 /// 与 `start_update` 共用 `updater.check()`、指数退避重试与候选源回退顺序，确保检查逻辑
 /// 只有这一处实现（单一真相源）。
 #[tauri::command]
-pub fn check_update(app: tauri::AppHandle) {
+pub fn check_update(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) {
+    if report_pending_restart(&app) {
+        return;
+    }
     // 与下载任务**分开**的闸：检查和下载可以并存，但各自不能重入。
     static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let Some(guard) = SingleFlight::acquire(&RUNNING) else {
         log::info!("更新检查已在进行，忽略重复触发");
         return;
     };
+    let path = package_path(&state.data_dir);
     tauri::async_runtime::spawn(async move {
         let _guard = guard;
         let _ = app.emit("update:checking", ());
@@ -511,6 +725,9 @@ pub fn check_update(app: tauri::AppHandle) {
                 .await
                 {
                     Ok(Some(u)) => {
+                        if restore_cached_update(&app, &path, &u).await {
+                            return;
+                        }
                         let date_str = u.date.map(|d| d.to_string());
                         let current_ver = u.current_version.clone();
                         let _ = app.emit(
@@ -576,6 +793,32 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tauri_plugin_updater::Error as UpdaterError;
+
+    #[tokio::test]
+    async fn cache_miss_does_not_reserve_the_download_slot() {
+        static FLIGHT: AtomicBool = AtomicBool::new(false);
+        let restored = reserve_cached_package(&FLIGHT, async {
+            assert!(
+                SingleFlight::acquire(&FLIGHT).is_some(),
+                "强制下载必须能在缓存校验期间启动"
+            );
+            None
+        })
+        .await;
+        assert!(restored.is_none());
+    }
+
+    #[tokio::test]
+    async fn only_an_ineligible_download_is_cancelled_by_policy() {
+        let (minimum, mut changes) = tokio::sync::watch::channel(None);
+        let wait = wait_until_obsolete(&mut changes, "3.5.0");
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(wait.as_mut()).is_pending());
+        minimum.send_replace(Some("3.5.0".into()));
+        assert!(futures_util::poll!(wait.as_mut()).is_pending());
+        minimum.send_replace(Some("3.5.1".into()));
+        assert!(futures_util::poll!(wait.as_mut()).is_ready());
+    }
 
     /// 源上找不到 manifest（Gitee releases 分支失效时的真实形态）不该重试：
     /// 重试只会让用户多等一轮 1s+2s 退避。

@@ -1,5 +1,5 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
-import { AVAILABLE_PRESENTATION, type UpdatePresentation } from "../../lib/updatePresentation";
+import { AVAILABLE_PRESENTATION, canRestart, type UpdatePresentation } from "../../lib/updatePresentation";
 import { countReleaseItems, createUpdateNotesModel, type ReleaseContent, type UpdateNotesInfo } from "../../lib/updateNotes";
 import { Icon } from "../ui/icon";
 import { UpdateBrand } from "./UpdateBrand";
@@ -47,18 +47,11 @@ function Disclosure({ label, children, secondary = false, defaultOpen = false }:
   </section>;
 }
 
-export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, onClose, onDownload, onDismiss, onRestart, onRetry, onRefreshSafety, requirement, onQuit }: {
+export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, requirement, ...actions }: {
   update: UpdateNotesInfo;
   process?: UpdatePresentation;
-  onClose: () => void;
-  onDownload: () => void;
-  onDismiss: () => void;
-  onRestart?: () => void;
-  onRetry?: () => void;
-  onRefreshSafety?: () => void;
   requirement?: { minimumVersion: string; reason: string };
-  onQuit?: () => void;
-}) {
+} & import("./UpdateProcess").UpdateActionProps) {
   const force = Boolean(requirement);
   const model = useMemo(() => createUpdateNotesModel(update), [update]);
   const { latest, releases, highlights, total, counts } = model;
@@ -67,11 +60,12 @@ export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, 
   const latestCount = countReleaseItems(latest);
   const hasNotes = latest.groups.length || latest.summary.length || latest.paragraphs.length || latest.highlights.length;
   return <>
-    {!force && <button type="button" onClick={onClose} className="interactive update-close" aria-label="关闭更新弹窗"><Icon name="close" size={17} aria-hidden="true" /></button>}
-    <UpdateBrand currentVersion={update.currentVersion} version={latest.version} ready={process.status === "ready"} tagline={latest.tagline}/>
+    {!force && process.status !== "installing" && <button type="button" onClick={actions.onClose} className="interactive update-close" aria-label="关闭更新弹窗"><Icon name="close" size={17} aria-hidden="true" /></button>}
+    <UpdateBrand currentVersion={update.currentVersion} version={latest.version} ready={process.status === "ready" || process.status === "staged"} tagline={latest.tagline}/>
     <div className="update-dialog-main">
     <header className="update-dialog-header">
-      <h2>{force ? "需要更新后才能继续使用" : process.status === "ready" ? "新的体验，已准备好" : process.status === "downloading" ? "让好体验，即刻就绪" : process.status === "error" ? "再试一次，继续升级" : "发现新版本"}</h2>
+      <h2>{process.status === "installing" ? "正在安装更新" : force ? "需要更新后才能继续使用" : process.status === "staged" ? "更新已就绪" : process.status === "ready" ? "更新已安装" : process.status === "downloading" || process.status === "verifying" ? "正在准备更新" : process.status === "error" ? "更新暂未完成" : "发现新版本"}</h2>
+      {process.status === "staged" && <p>{canRestart(process.safety) ? "安装包已提前下载，点击即可安装。" : "安装包已提前下载，任务结束后可安装。"}</p>}
       {requirement && <p>最低支持版本 v{requirement.minimumVersion.replace(/^v/i, "")}</p>}
       {(date || latestCount > 0) && <p>{[date ? `${date}发布` : "", latestCount > 0 ? `${latestCount}条更新` : ""].filter(Boolean).join(" · ")}</p>}
     </header>
@@ -107,7 +101,7 @@ export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, 
         </article>)}
       </Disclosure>}
     </div>
-    <UpdateActions process={process} onClose={onClose} onDownload={onDownload} onDismiss={onDismiss} onRestart={onRestart} onRetry={onRetry} onRefreshSafety={onRefreshSafety} force={force} onQuit={onQuit} />
+    <UpdateActions {...actions} process={process} force={force} />
     </div>
   </>;
 }

@@ -49,13 +49,14 @@ export function UpdateCollapsedDot() {
       />
     );
   }
-  if (status === "ready") {
+  if (status === "ready" || status === "staged" || status === "verifying" || status === "installing") {
+    const label = { ready: "更新已安装，点击查看并确认重启", staged: "更新已就绪，点击查看并安装", verifying: "正在校验更新", installing: "正在安装更新" }[status];
     return (
       <button
         type="button"
-        className="upd-dot upd-dot--ready"
-        title="更新已安装，点击查看并确认重启"
-        aria-label="更新已安装，点击查看并确认重启"
+        className={status === "ready" || status === "staged" ? "upd-dot upd-dot--ready" : "upd-dot upd-dot--available"}
+        title={label}
+        aria-label={label}
         onClick={openUpdateNotes}
       />
     );

@@ -9,9 +9,11 @@ import { SettingsRow } from "../../ui/SettingsRow";
 import { ToggleRow } from "../../ui/ToggleRow";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { useSettingSave } from "./useSettingSave";
+import { useOptionalUpdate } from "../../../contexts/UpdateContext";
 
 const noop = () => {};
 export function AppGroup({ status, onSaved = noop }: { status?: StaticStatus; onSaved?: () => void } = {}) {
+  const updates = useOptionalUpdate();
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
@@ -48,5 +50,13 @@ export function AppGroup({ status, onSaved = noop }: { status?: StaticStatus; on
         checked={status?.releaseWebviewOnClose ?? true} disabled={!status} pending={isPending("release-webview")} error={errorFor("release-webview")} saved={isSaved("release-webview")}
         onChange={value => { void save({ releaseWebviewOnClose: value }, "release-webview"); }} last />
     </section>
+    {updates && <section className="settings-inner-section" aria-labelledby="update-settings-title">
+      <h3 id="update-settings-title">软件更新</h3>
+      <ToggleRow id="toggle-update-preload" label="自动预下载更新"
+        sub="在后台下载并验证安装包，就绪后提醒你安装"
+        checked={updates.autoPreload} onChange={updates.setAutoPreload} />
+      <SettingsRow id="app-check-update" label="检查更新" last
+        control={<Button variant="outline" size="sm" onClick={updates.manualCheckForUpdate}>检查更新</Button>} />
+    </section>}
   </CardContent></Card>;
 }

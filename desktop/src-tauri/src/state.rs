@@ -226,6 +226,7 @@ pub struct AppState {
     /// 前端在 `check_update_policy` 判为 mandatory 后置位。没有它的话，用户可以从托盘
     /// 复制接入命令、启停本机服务 —— 主窗口锁住了，能力却还在外面可用。
     pub force_update_active: AtomicBool,
+    pub update_minimum: tokio::sync::watch::Sender<Option<String>>,
     pub service_operation: Mutex<()>,
     pub service_control: StdMutex<crate::commands::ServiceControl>,
     pub local_access_probe: StdMutex<Option<(String, u16, bool)>>,
@@ -458,6 +459,7 @@ impl AppState {
             mcp_server_handle: Mutex::new(None),
             mcp_running: AtomicBool::new(false),
             force_update_active: AtomicBool::new(false),
+            update_minimum: tokio::sync::watch::channel(None).0,
             service_operation: Mutex::new(()),
             local_access_probe: StdMutex::new(None),
             tray_access_key: StdMutex::new(String::new()),

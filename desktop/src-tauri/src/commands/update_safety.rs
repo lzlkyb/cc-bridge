@@ -10,11 +10,28 @@ pub struct UpdateActivity {
     agents: usize,
     commands: usize,
     transfers: usize,
+    terminals: usize,
+    relay_requests: usize,
+}
+
+impl UpdateActivity {
+    pub(super) fn is_idle(&self) -> bool {
+        self.conversations == 0
+            && self.agents == 0
+            && self.commands == 0
+            && self.transfers == 0
+            && self.terminals == 0
+            && self.relay_requests == 0
+    }
 }
 
 /// Read live backend state rather than counting whichever conversation page is mounted.
 #[tauri::command]
 pub async fn update_activity(state: State<'_, Arc<AppState>>) -> Result<UpdateActivity, String> {
+    read_update_activity(&state).await
+}
+
+pub(super) async fn read_update_activity(state: &AppState) -> Result<UpdateActivity, String> {
     let (conversations, agents) = state.cc.update_activity()?;
     let mut commands = 0;
     let exits: Vec<_> = state
@@ -33,5 +50,7 @@ pub async fn update_activity(state: State<'_, Arc<AppState>>) -> Result<UpdateAc
         agents,
         commands,
         transfers: state.ssh_transfers.len(),
+        terminals: state.ssh_sessions.len(),
+        relay_requests: state.relay.log().in_flight_count(),
     })
 }

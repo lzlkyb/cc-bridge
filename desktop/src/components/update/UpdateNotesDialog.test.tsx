@@ -33,8 +33,8 @@ describe("update dialog behavior", () => {
     await mount(props.update, { ...AVAILABLE_PRESENTATION, status: "downloading", progress: 42, indeterminate: false, downloadedBytes: 420, totalBytes: 1000, bytesPerSec: 100 });
     expect(document.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('42');
     expect(button("正在下载").disabled).toBe(true);
-    expect(document.body.textContent).toContain("自动启动安装");
-    await act(async () => button("后台下载").click());
+    expect(document.body.textContent).toContain("关闭弹框后，下载仍会继续。");
+    await act(async () => button("在后台继续").click());
     expect(close).toHaveBeenCalledOnce(); expect(download).not.toHaveBeenCalled();
     await mount(props.update, { ...AVAILABLE_PRESENTATION, status: "downloading", indeterminate: true });
     expect(document.querySelector('[role="progressbar"]')?.hasAttribute('aria-valuenow')).toBe(false);
@@ -49,11 +49,22 @@ describe("update dialog behavior", () => {
     await mount(props.update, { ...ready, safety: { state: "known", activity: { conversations: 0, agents: 0, commands: 0, transfers: 0 } } });
     await act(async () => button("重启并体验").click()); expect(restart).toHaveBeenCalledOnce();
   });
-  it("失败允许重新检查，不直接重新下载旧版本", async () => {
+  it("失败通过统一入口重试更新", async () => {
     await mount(props.update, { ...AVAILABLE_PRESENTATION, status: "error", error: "无法连接更新服务器" });
     expect(document.body.textContent).toContain("无法连接更新服务器");
-    await act(async () => button("重新检查").click());
+    await act(async () => button("重试更新").click());
     expect(retry).toHaveBeenCalledOnce(); expect(download).not.toHaveBeenCalled();
+  });
+
+  it("有中转请求时保留已就绪的安装包，提示用户等待请求结束", async () => {
+    await mount(props.update, {
+      ...AVAILABLE_PRESENTATION, status: "staged",
+      safety: { state: "known", activity: { conversations: 0, agents: 0, commands: 0, transfers: 0, relayRequests: 1 } },
+    });
+    expect(document.body.textContent).toContain("1 个中转请求仍在运行");
+    expect(document.body.textContent).toContain("任务结束后可安装");
+    expect(button("重新检查任务")).toBeTruthy();
+    expect(button("立即更新")).toBeUndefined();
   });
 
   it("关闭不抑制当前版本，也不会触发下载", async () => {
@@ -68,8 +79,8 @@ describe("update dialog behavior", () => {
     expect(dismiss).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledOnce();
     expect(download).not.toHaveBeenCalled();
   });
-  it("点击下载并更新时开始下载并立即关闭弹框，不写忽略记忆", async () => {
-    await mount(); await act(async () => button("下载并更新").click());
+  it("点击下载更新时开始下载并立即关闭弹框，不写忽略记忆", async () => {
+    await mount(); await act(async () => button("下载更新").click());
     expect(download).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
     expect(dismiss).not.toHaveBeenCalled();
   });

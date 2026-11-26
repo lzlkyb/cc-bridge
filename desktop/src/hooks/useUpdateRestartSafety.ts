@@ -12,7 +12,7 @@ export function useUpdateRestartSafety(active: boolean) {
       const activity = await invoke<UpdateActivity>("update_activity");
       // A missing/old backend must never be interpreted as an idle application.
       if (!activity ||
-          ![activity.conversations, activity.agents, activity.commands, activity.transfers]
+          ![activity.conversations, activity.agents, activity.commands, activity.transfers, activity.terminals ?? 0, activity.relayRequests ?? 0]
             .every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error("Invalid activity");
       result = { state: "known", activity };
     } catch {

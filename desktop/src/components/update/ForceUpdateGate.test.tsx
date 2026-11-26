@@ -91,6 +91,7 @@ const bodyText = () => document.body.textContent ?? "";
 
 beforeEach(() => {
   localStorage.clear();
+  localStorage.setItem("ccbridge_auto_preload_update", "false");
   h.handlers.clear();
   h.invoke.mockClear();
   h.exit.mockClear();
@@ -122,7 +123,7 @@ describe("强制更新遮罩", () => {
     expect(text).toContain("需要更新后才能继续使用");
     expect(text).toContain("3.4.2 之前的版本存在凭据泄露风险");
     expect(text).toContain("退出软件");
-    expect(text).toContain("立即更新");
+    expect(text).toContain("下载更新");
   });
 
   it("没有任何关闭入口：无关闭按钮、无稍后/忽略", async () => {
@@ -153,7 +154,7 @@ describe("强制更新遮罩", () => {
 
     expect(text).toContain("最低支持版本");
     expect(text).toContain("v3.5.0");
-    expect(text).toContain("更新方式");
+    expect(text).toContain("安装时将关闭应用");
   });
 
   it("初始焦点在主按钮，不落在可滚动区", async () => {
@@ -161,7 +162,7 @@ describe("强制更新遮罩", () => {
     // 落在滚动区会命中 :focus-visible，沿它画一整圈描边（空内容时像多余边框）。
     const active = document.activeElement as HTMLElement | null;
     expect(active?.tagName).toBe("BUTTON");
-    expect(active?.textContent).toBe("立即更新");
+    expect(active?.textContent).toBe("下载更新");
   });
 
   it("非强制判定完全不渲染", async () => {
@@ -186,7 +187,7 @@ describe("强制更新遮罩", () => {
   it("下载中不再说「关闭弹框后仍会继续下载」", async () => {
     // 强制态这一屏关不掉，沿用提醒态的文案会自相矛盾。
     await mount();
-    const start = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "立即更新");
+    const start = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "下载更新");
     expect(start).toBeTruthy();
 
     await act(async () => {
@@ -196,7 +197,7 @@ describe("强制更新遮罩", () => {
 
     expect(h.invoke).toHaveBeenCalledWith("start_update", { minSupportedVersion: "3.5.0" });
     const text = bodyText();
-    expect(text).toContain("下载完成后会自动启动安装，请先保存当前工作。");
+    expect(text).toContain("安装包就绪后，可立即更新。");
     expect(text).not.toContain("关闭弹框后仍会继续下载");
   });
 });

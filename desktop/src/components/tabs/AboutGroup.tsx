@@ -306,7 +306,7 @@ function UpdateActionBtn({
       </Button>
     );
   }
-  if (status === "downloading") {
+  if (status === "downloading" || status === "verifying" || status === "installing") {
     return (
       <Button size="sm" onClick={onDownload}>
         <Icon name="download" size={13} />
@@ -314,8 +314,8 @@ function UpdateActionBtn({
       </Button>
     );
   }
-  if (status === "ready") {
-    return <Button size="sm" onClick={onRestart}>重启更新</Button>;
+  if (status === "ready" || status === "staged") {
+    return <Button size="sm" onClick={onRestart}>{status === "staged" ? "查看更新" : "重启更新"}</Button>;
   }
   if (status === "error") {
     return (

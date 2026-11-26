@@ -1,5 +1,5 @@
 import { useUpdateRestartSafety } from "../hooks/useUpdateRestartSafety";
-import { canRestart } from "../lib/updatePresentation";
+import { canRestart, meetsUpdateMinimum, type UpdatePresentation } from "../lib/updatePresentation";
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import { relaunch, exit } from "@tauri-apps/plugin-process";
 import { invoke } from "../lib/tauri";
@@ -9,7 +9,7 @@ import { RestartOverlay } from "../components/update/RestartOverlay";
 
 // ─── 类型定义 ────────────────────────────
 
-export type UpdateStatus = "idle" | "checking" | "available" | "downloading" | "ready" | "error" | "uptodate";
+export type UpdateStatus = "idle" | "uptodate" | UpdatePresentation["status"];
 
 /**
  * 后端 `check_update_policy` 的返回值（见 `commands/update_policy.rs`）。
@@ -99,6 +99,14 @@ export interface UpdateState {
    * 此时可能还没跑过一次完整的 `updater.check()`，而用户点「立即更新」不能等。
    */
   startForcedUpdate: () => Promise<void>;
+  installPreparedUpdate: () => Promise<void>;
+  autoPreload: boolean;
+  setAutoPreload: (enabled: boolean) => void;
+  refreshForcePolicy: () => Promise<void>;
+  checkingPolicy: boolean;
+  finishingWork: boolean;
+  finishCurrentWork: () => void;
+  returnToUpdate: () => void;
   /** 退出软件（强制遮罩的逃生口：策略误伤时至少能退出，而不是卡死）。 */
   quitApp: () => Promise<void>;
 }
@@ -132,6 +140,7 @@ export type UpdateErrorCode =
 
 /** code → 用户文案。键必须与 Rust 侧 `classify_update_error` 的返回值一一对应。 */
 const ERROR_TEXT: Record<string, string> = {
+  package_size: "更新包超出支持大小，请稍后重试或手动下载安装包",
   manifest: "更新服务器上暂时没有可用的更新信息，请稍后重试",
   network: "无法连接更新服务器，请检查网络或代理设置",
   timeout: "连接更新服务器超时，请稍后重试",
@@ -182,8 +191,12 @@ export function friendlyError(raw: string, code?: string | null): FriendlyError 
 
 const UpdateContext = createContext<UpdateState | null>(null);
 
+export function useOptionalUpdate() {
+  return useContext(UpdateContext);
+}
+
 export function useUpdate() {
-  const ctx = useContext(UpdateContext);
+  const ctx = useOptionalUpdate();
   if (!ctx) throw new Error("useUpdate 必须在 UpdateProvider 内使用");
   return ctx;
 }
@@ -214,8 +227,20 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   // Keep the context contract for existing status consumers; restart is always explicit.
   const autoRestartIn = null;
   const [showNotes, setShowNotes] = useState(false);
-  const { safety, refresh: refreshSafety } = useUpdateRestartSafety(showNotes && status === "ready");
+  const { safety, refresh: refreshSafety } = useUpdateRestartSafety(showNotes && (status === "ready" || status === "staged"));
   const readyRef = useRef(false);
+  const stagedRef = useRef<string | null>(null);
+  const installingRef = useRef(false);
+  const [autoPreload, setAutoPreloadState] = useState(() => {
+    try { return localStorage.getItem("ccbridge_auto_preload_update") !== "false"; }
+    catch { return true; }
+  });
+  const autoPreloadRef = useRef(autoPreload);
+  const setAutoPreload = useCallback((enabled: boolean) => {
+    autoPreloadRef.current = enabled;
+    setAutoPreloadState(enabled);
+    try { localStorage.setItem("ccbridge_auto_preload_update", String(enabled)); } catch { /* session preference still applies */ }
+  }, []);
   const [dismissedVersion, setDismissedVersion] = useState<string | null>(() => {
     try {
       return localStorage.getItem(DISMISSED_KEY);
@@ -260,34 +285,87 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const [forceVerdict, setForceVerdict] = useState<ForceUpdateVerdict | null>(null);
   /** 监听器里判断「是否处于强制态」必须用 ref：闭包读不到 state 的最新值。 */
   const forceActiveRef = useRef(false);
+  const forceMinRef = useRef<string | null>(null);
+  const forcedAttemptRef = useRef<string | null>(null);
+  const [checkingPolicy, setCheckingPolicy] = useState(false);
+  const policyCheckingRef = useRef(false);
+  const lastPolicyCheckRef = useRef(0);
+  const [finishingWork, setFinishingWork] = useState(false);
+  const workTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const returnToUpdate = useCallback(() => {
+    clearTimeout(workTimerRef.current);
+    setFinishingWork(false);
+  }, []);
+  const finishCurrentWork = useCallback(() => {
+    if (!forceActiveRef.current) return;
+    clearTimeout(workTimerRef.current);
+    setFinishingWork(true);
+    workTimerRef.current = setTimeout(returnToUpdate, 5 * 60_000);
+  }, [returnToUpdate]);
+  useEffect(() => () => clearTimeout(workTimerRef.current), []);
 
   // ─── 强制更新策略（最低可用版本）─────────────
   // 与 check_update 分开：策略文件很小、8 秒超时，判定走返回值而不是事件 ——
   // 前端需要的是「现在要不要锁界面」这个同步结论，不是一串状态推送。
   const checkForcePolicy = useCallback(async () => {
+    if (policyCheckingRef.current) return;
+    policyCheckingRef.current = true;
+    lastPolicyCheckRef.current = Date.now();
+    setCheckingPolicy(true);
     try {
       const verdict = await invoke<ForceUpdateVerdict>("check_update_policy");
+      const wasForced = forceActiveRef.current;
       forceActiveRef.current = verdict.mandatory === true;
+      forceMinRef.current = verdict.mandatory ? verdict.minSupportedVersion ?? null : null;
       setForceVerdict(verdict);
       // 强制遮罩接管画面时，关掉可能已经打开的普通弹框：两者同时 open 时视觉上
       // 是同一块区域（强制层 z=2500 盖在上面），但焦点陷阱是两层，Tab 会串到下层。
       if (verdict.mandatory === true) setShowNotes(false);
-      // 同步给托盘：强制期间只留「打开面板 / 退出」，否则用户能从托盘复制接入命令、
-      // 启停本机服务 —— 主窗口锁了，能力还在。失败只影响托盘的收敛程度，不阻断判定。
-      void invoke("set_force_update_active", { active: verdict.mandatory === true }).catch(() => undefined);
+      else if (wasForced) {
+        forcedAttemptRef.current = null;
+        returnToUpdate();
+      }
     } catch (e) {
       // 后端命令按设计只返回 Ok；这里只有 IPC 层异常。按放行处理：启动路径不能因为
       // 一次未知错误把用户挡在门外（与后端 fail-open 同一条原则）。
-      forceActiveRef.current = false;
-      console.warn("[Update] 强制更新策略检查失败，按放行处理:", e);
+      console.warn("[Update] 无法刷新强制更新策略:", e);
+    } finally {
+      policyCheckingRef.current = false;
+      setCheckingPolicy(false);
+      const version = stagedRef.current;
+      if (!forceActiveRef.current && version && version !== dismissedRef.current && version !== promptedRef.current) {
+        promptedRef.current = version;
+        setShowNotes(true);
+      }
     }
-  }, []);
+  }, [returnToUpdate]);
+
+  useEffect(() => {
+    const timer = setInterval(() => void checkForcePolicy(), 5 * 60_000);
+    const refreshOnResume = () => {
+      if (!document.hidden && Date.now() - lastPolicyCheckRef.current >= 60_000) void checkForcePolicy();
+    };
+    window.addEventListener("focus", refreshOnResume);
+    document.addEventListener("visibilitychange", refreshOnResume);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", refreshOnResume);
+      document.removeEventListener("visibilitychange", refreshOnResume);
+    };
+  }, [checkForcePolicy]);
+
+  useEffect(() => {
+    const remaining = Date.parse(forceVerdict?.graceUntil ?? "") - Date.now();
+    if (!(remaining > 0 && remaining < 2 ** 31 - 1)) return;
+    const timer = setTimeout(() => void checkForcePolicy(), remaining);
+    return () => clearTimeout(timer);
+  }, [forceVerdict?.graceUntil, checkForcePolicy]);
 
   // ─── 静默检查（不改变 UI 状态，仅内部记录）─────
   // 统一走后端 check_update 命令，状态由事件驱动（update:available / update:uptodate）。
 
   const silentCheck = useCallback(async () => {
-    if (checkingRef.current || downloadingRef.current || readyRef.current) return;
+    if (checkingRef.current || downloadingRef.current || readyRef.current || installingRef.current) return;
     checkingRef.current = true;
     userInitiatedRef.current = false; // 这一轮失败不弹 toast
     // 静默检查也必须清掉「手动」标记：它只对发起它的那次检查有效。留成 true 的话，
@@ -318,17 +396,20 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     // 下载进行中不接受检查：状态会被打成 checking，而 start_update 内部复查发的
     // checking/available 事件又被监听器的 downloadingRef 守卫吃掉，没有任何事件
     // 能把状态救回来 → 徽章永远停在「检查中」。下载完成后可再查。
-    if (checkingRef.current || downloadingRef.current || readyRef.current) return;
+    if (checkingRef.current || downloadingRef.current || readyRef.current || installingRef.current) return;
     checkingRef.current = true;
     manualCheckRef.current = manual;
     userInitiatedRef.current = manual;
-    setStatus("checking");
-    setError(null);
-    setErrorCode(null);
+    if (!stagedRef.current) {
+      setStatus("checking");
+      setError(null);
+      setErrorCode(null);
+    }
 
     try {
       await invoke("check_update");
     } catch (e) {
+      if (stagedRef.current) return;
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[Update] 检查更新失败:", msg);
       setError(msg);
@@ -346,7 +427,10 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     }
   }, []);
   const checkForUpdate = useCallback(() => runCheck(false), [runCheck]);
-  const manualCheckForUpdate = useCallback(() => runCheck(true), [runCheck]);
+  const manualCheckForUpdate = useCallback(async () => {
+    void checkForcePolicy();
+    await runCheck(true);
+  }, [checkForcePolicy, runCheck]);
 
   // ─── 定时检查（启动自检见下方监听 effect）──────────
 
@@ -365,66 +449,76 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ─── 下载并安装（Rust 侧后台线程，不阻塞 UI）────
 
-  // ─── 下载并安装（Rust 侧后台线程，不阻塞 UI）────
-  // 重入防护：连点不会触发 start_update 并发双下载；调用即乐观置 downloading，
-  // 由 update:ready / update:error 复位守卫。
+  // One preparation path serves both entry points. Only installPreparedUpdate can run an installer.
+  const requestPreparation = useCallback(async (interactive: boolean, minimum?: string | null) => {
+    if (downloadingRef.current || readyRef.current || installingRef.current) return;
+    if (stagedRef.current && meetsUpdateMinimum(stagedRef.current, minimum)) return;
+    downloadingRef.current = true;
+    stagedRef.current = null;
+    userInitiatedRef.current = interactive;
+    if (minimum) forcedAttemptRef.current = minimum;
+    setStatus("downloading");
+    setProgress(0);
+    setProgressIndeterminate(true);
+    setDownloadedBytes(0);
+    setTotalBytes(null);
+    setBytesPerSec(0);
+    setError(null);
+    setErrorCode(null);
+    try {
+      if (minimum) await invoke("start_update", { minSupportedVersion: minimum });
+      else await invoke("start_update");
+    } catch (e) {
+      downloadingRef.current = false;
+      setError(String(e));
+      setErrorCode(null);
+      setErrorToastAllowed(interactive);
+      setStatus("error");
+    }
+  }, []);
 
   const downloadAndInstall = useCallback(async () => {
-    if (!update || downloadingRef.current || readyRef.current) return;
-    downloadingRef.current = true;
-    userInitiatedRef.current = true; // 下载是明确的手动动作，失败必须告知
-    setStatus("downloading");
-    setProgress(0);
-    setProgressIndeterminate(true);
-    setDownloadedBytes(0);
-    setTotalBytes(null);
-    setBytesPerSec(0);
-    setError(null);
-    setErrorCode(null);
-    try {
-      await invoke("start_update");
-    } catch (e) {
-      console.error("[Update] start_update invoke 失败:", e);
-      setError(String(e));
-      setErrorCode(null);
-      setErrorToastAllowed(true);
-      setStatus("error");
-      downloadingRef.current = false;
-    }
-  }, [update]);
+    if (update) await requestPreparation(true, forceMinRef.current);
+  }, [update, requestPreparation]);
 
-  /**
-   * 强制态下开始下载安装。
-   *
-   * 不复用 `downloadAndInstall`：它有 `if (!update) return` 守卫，而强制判定来自策略文件，
-   * 用户点「立即更新」时 `update` 可能还没有值（`start_update` 内部的复查会在下载前补上）。
-   * 这里直接触发 `start_update`，后续 available / progress / ready 事件照常驱动 UI。
-   */
-  const startForcedUpdate = useCallback(async () => {
-    if (downloadingRef.current || readyRef.current) return;
-    downloadingRef.current = true;
-    userInitiatedRef.current = true;
-    setStatus("downloading");
-    setProgress(0);
-    setProgressIndeterminate(true);
-    setDownloadedBytes(0);
-    setTotalBytes(null);
-    setBytesPerSec(0);
+  const startForcedUpdate = useCallback(
+    () => requestPreparation(true, forceMinRef.current), [requestPreparation],
+  );
+
+  useEffect(() => {
+    const minimum = forceMinRef.current;
+    if (!autoPreload || !forceVerdict?.mandatory || !minimum ||
+        forcedAttemptRef.current === minimum || downloadingRef.current ||
+        (stagedRef.current && meetsUpdateMinimum(stagedRef.current, minimum))) return;
+    void requestPreparation(false, minimum);
+  }, [status, forceVerdict, autoPreload, requestPreparation]);
+
+  const installPreparedUpdate = useCallback(async () => {
+    const version = stagedRef.current;
+    if (!version || installingRef.current || policyCheckingRef.current || !meetsUpdateMinimum(version, forceMinRef.current)) return;
+    installingRef.current = true;
     setError(null);
     setErrorCode(null);
+    setStatus("installing");
     try {
-      await invoke("start_update", { minSupportedVersion: forceVerdict?.minSupportedVersion });
+      const outcome = await invoke<"installed" | "busy" | "unavailable">("install_prepared_update", { version });
+      if (outcome === "busy") {
+        setStatus("staged");
+        await refreshSafety();
+      } else if (outcome === "unavailable") {
+        stagedRef.current = null;
+        setError("本地安装包已失效，请重新准备更新。");
+        setErrorCode(null);
+        setStatus("error");
+      }
     } catch (e) {
-      console.error("[Update] 强制更新调用失败:", e);
       setError(String(e));
-      setErrorCode(null);
-      setErrorToastAllowed(true);
-      setStatus("error");
-      downloadingRef.current = false;
+      setStatus("staged");
+    } finally {
+      installingRef.current = false;
     }
-  }, [forceVerdict?.minSupportedVersion]);
+  }, [refreshSafety]);
 
   /** 强制遮罩的逃生口：策略误伤时用户至少能退出，而不是被永久卡住。 */
   const quitApp = useCallback(async () => {
@@ -451,7 +545,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       track(
         await listen("update:checking", () => {
           // 下载进行中（start_update 内部复查也会发 checking），不回退状态
-          if (downloadingRef.current || readyRef.current) return;
+          if (downloadingRef.current || stagedRef.current || readyRef.current || installingRef.current) return;
           setStatus("checking");
           setError(null);
           setErrorCode(null);
@@ -465,13 +559,25 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
             if (!readyRef.current) setUpdate({ version, body, date, currentVersion });
             return;
           }
-          if (downloadingRef.current || readyRef.current) return;
+          if (downloadingRef.current || readyRef.current || installingRef.current) return;
           const manual = manualCheckRef.current;
           // 「手动」标记只对**本次检查**有效，读一次就消费掉。不清掉的话，本次运行里
           // 24 小时定时检查命中同一版本会被误判成手动，绕过下面的去重再弹一次。
           manualCheckRef.current = false;
+          if (stagedRef.current && meetsUpdateMinimum(stagedRef.current, version)) {
+            if (manual && !forceActiveRef.current && stagedRef.current !== dismissedRef.current) setShowNotes(true);
+            return;
+          }
+          stagedRef.current = null;
           setStatus("available");
           setUpdate({ version, body, date, currentVersion });
+
+          if (version && autoPreloadRef.current &&
+              (forceActiveRef.current || dismissedRef.current !== version)) {
+            if (manual && !forceActiveRef.current) setShowNotes(true);
+            void requestPreparation(false, forceMinRef.current);
+            return;
+          }
 
           // ─── 有更新就弹框（2026-11-26 恢复）─────────────────────────────
           // 两条抑制规则，缺一条都会变成骚扰：
@@ -493,6 +599,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       );
       track(
         await listen("update:downloading", () => {
+          if (installingRef.current || readyRef.current) return;
           downloadingRef.current = true;
           setStatus("downloading");
           setProgress(0);
@@ -520,9 +627,44 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
         }),
       );
       track(
+        await listen("update:obsolete", () => {
+          downloadingRef.current = false;
+          stagedRef.current = null;
+          setStatus("available");
+        }),
+      );
+      track(
+        await listen("update:verifying", () => {
+          if (downloadingRef.current) setStatus("verifying");
+        }),
+      );
+      track(
+        await listen<UpdateInfo & { version: string; size: number }>("update:staged", ({ payload }) => {
+          downloadingRef.current = false;
+          if (!meetsUpdateMinimum(payload.version, forceMinRef.current)) {
+            stagedRef.current = null;
+            setStatus("available");
+            return;
+          }
+          stagedRef.current = payload.version;
+          const { version, body, currentVersion, date } = payload;
+          if (currentVersion) setUpdate({ version, body, currentVersion, date });
+          setProgress(100);
+          setDownloadedBytes(payload.size);
+          setTotalBytes(payload.size);
+          setStatus("staged");
+          if (!forceActiveRef.current && !policyCheckingRef.current &&
+              payload.version !== dismissedRef.current && payload.version !== promptedRef.current) {
+            promptedRef.current = payload.version;
+            setShowNotes(true);
+          }
+        }),
+      );
+      track(
         await listen("update:ready", () => {
           setProgress(100);
           setStatus("ready");
+          stagedRef.current = null;
           downloadingRef.current = false;
           readyRef.current = true;
         }),
@@ -530,7 +672,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       track(
         await listen<{ message: string; code?: string; source?: "check" }>("update:error", (e) => {
           const { message, code, source } = e.payload;
-          if (readyRef.current || (source === "check" && downloadingRef.current)) return;
+          if (readyRef.current || installingRef.current ||
+              (source === "check" && (downloadingRef.current || stagedRef.current))) return;
           console.error("[Update] 更新失败:", code ?? "unknown", message);
           setError(message);
           setErrorCode(code ?? null);
@@ -545,7 +688,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       );
       track(
         await listen("update:uptodate", () => {
-          if (downloadingRef.current || readyRef.current) return;
+          if (downloadingRef.current || stagedRef.current || readyRef.current || installingRef.current) return;
           // 进入「已是最新」可见状态（版本号 pill 显示）；4 秒后自动回到 idle。
           // 仅手动检查才弹「已是最新」提示框（manualCheck），自动检查（启动/定时）不弹框。
           setStatus("uptodate");
@@ -675,13 +818,13 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, errorCode, errorToastAllowed, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false), forceUpdate, startForcedUpdate, quitApp }}>
+    <UpdateContext.Provider value={{ status, update, progress, progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, restarting, autoRestartIn, cancelAutoRestart, error, errorCode, errorToastAllowed, checkForUpdate, manualCheckForUpdate, downloadAndInstall, restart, openUpdateNotes, dismissUpdate, isDismissed, manualCheck, acknowledgeUptodate: () => setManualCheck(false), forceUpdate, startForcedUpdate, quitApp, installPreparedUpdate, autoPreload, setAutoPreload, refreshForcePolicy: checkForcePolicy, checkingPolicy, finishingWork, finishCurrentWork, returnToUpdate }}>
       {children}
       {restarting && <RestartOverlay current={update?.currentVersion} next={update?.version} />}
       <UpdateNotesDialog open={showNotes && !forceUpdate.active} update={update}
-        process={{ status: status === "downloading" || status === "ready" || status === "error" || status === "checking" ? status : "available", progress, indeterminate: progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, error: status === "ready" ? error : error ? friendlyError(error, errorCode).friendly : null, safety, restarting }}
+        process={{ status: status === "idle" || status === "uptodate" ? "available" : status, progress, indeterminate: progressIndeterminate, bytesPerSec, downloadedBytes, totalBytes, error: status === "ready" || status === "staged" ? error : error ? friendlyError(error, errorCode).friendly : null, safety, restarting }}
         onClose={closeUpdateNotes} onDownload={downloadAndInstall} onDismiss={dismissUpdate}
-        onRestart={() => void restart()} onRetry={() => void manualCheckForUpdate()} onRefreshSafety={() => void refreshSafety()} />
+        onInstall={() => void installPreparedUpdate()} onRestart={() => void restart()} onRetry={() => void (update ? downloadAndInstall() : manualCheckForUpdate())} onRefreshSafety={() => void refreshSafety()} checkingPolicy={checkingPolicy} />
     </UpdateContext.Provider>
   );
 }

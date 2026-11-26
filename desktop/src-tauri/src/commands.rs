@@ -70,6 +70,7 @@ mod stable_discovery_cmds;
 mod status;
 mod system;
 mod update;
+mod update_cache;
 mod update_policy;
 mod update_safety;
 
