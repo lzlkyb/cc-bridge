@@ -102,9 +102,32 @@ it("换目录才清空多选；同目录内的重渲染不清",async()=>{
   // 守住 effect 的依赖写法——把整个 sel 对象写进依赖会让每次渲染都清一遍。
   await act(async()=>rows()[1].dispatchEvent(new MouseEvent("click",{bubbles:true})));
   expect(host.textContent).toContain("已选 1 个");
-  // 换目录后名字失效，必须清空。
+  // 换目录后名字失效，必须清空。批量条常驻，所以清空的证据是「已选」消失、
+  // 计数槽退回「共 N 项」且批量操作全部不可用——不是批量条整个消失。
   await click("child");
-  expect(host.textContent).not.toContain("已选");
+  const bar=host.querySelector('[role="toolbar"]')!;
+  expect(bar).not.toBeNull();
+  expect(bar.textContent).not.toContain("已选");
+  expect(bar.textContent).toContain("共 2 项");
+  expect(button("下载所选").disabled).toBe(true);
+  expect(button("移动到…").disabled).toBe(true);
+  expect(button("取消选择").disabled).toBe(true);
+});
+it("🔴 未选中时批量条也已挂载：点第一行不会让列表整体位移",async()=>{
+  // jsdom 量不到像素，零位移的可测代理是「结构恒定」：未选中态批量条必须在 DOM 里，
+  // 且与选中态同处 FileTable 之上。条件挂载 ⇒ 这条用例必红。
+  h.invoke.mockResolvedValue([folder,file]);
+  await render();
+  const bar=host.querySelector('[role="toolbar"]')!;
+  expect(bar).not.toBeNull();
+  expect(bar.getAttribute("data-selected")).toBe("false");
+  expect(bar.textContent).toContain("共 2 项");
+  expect(button("下载所选").disabled).toBe(true);
+  // 选中后同一节点仍在（只是换文案）——不是卸载再挂载
+  await act(async()=>[...host.querySelectorAll<HTMLTableRowElement>("tbody tr")][1].dispatchEvent(new MouseEvent("click",{bubbles:true})));
+  expect(host.querySelector('[role="toolbar"]')).toBe(bar);
+  expect(bar.getAttribute("data-selected")).toBe("true");
+  expect(bar.textContent).toContain("已选 1 个");
 });
 it("🔴 行尾重命名端到端：对话框预填当前名 → 提交 ssh_sftp_rename（overwrite=false）",async()=>{
   h.invoke.mockResolvedValue([folder,file]);

@@ -1,7 +1,9 @@
 interface Props {
-  /** 选中总数（含目录）。 */
+  /** 当前目录（过滤后）条目总数——未选中时计数槽显示「共 N 项」。 */
   total: number;
-  /** 其中普通文件的数量——下载与删除都只对文件有意义。 */
+  /** 已选条目数（含目录；按 view 口径，只算列表里还看得见的）。 */
+  selected: number;
+  /** 选中条目中普通文件的数量——下载与删除都只对文件有意义。 */
   files: number;
   busy: boolean;
   onDownload: () => void;
@@ -13,21 +15,31 @@ interface Props {
 }
 
 /**
- * 多选批量操作条：选了才出现，位置在文件列表上方（不遮列表）。
+ * 多选批量操作条：常驻在文件列表上方（不遮列表）。
  *
- * WHY 不做成浮层：列表本身可滚动，浮层会盖住行；做成常驻窄条只占一行高度，
- * 且选中数变化时按钮可用性一眼能看明白。
+ * WHY 常驻而不是「选了才出现」：条件挂载会让列表整体上下位移一行，用户第一次
+ * 点文件时看的行会跳走（尤其刚想点第二行时跳成别的行）。常驻后三种状态下批量条
+ * 高度恒定、列表首行位置不变，代价是空态多占一行。
+ * WHY 未选中时计数槽说「共 N 项」而不是「已选 0 个」：前者是有用信息（目录规模），
+ * 后者是噪声；两段文案都由「3 个汉字 + 数字」构成，宽度一致，切换不改换行。
  * WHY 下载/删除按文件数判可用：目录没有「下载」这回事，删除目录是递归删，
  * 不混在批量里（仍走行尾按钮）。移动不挑类型——文件和目录都能整个搬走。
  */
-export function FileBatchBar({ total, files, busy, onDownload, onRemove, onMove, onSelectAll, onClear }: Props) {
+export function FileBatchBar({ total, selected, files, busy, onDownload, onRemove, onMove, onSelectAll, onClear }: Props) {
+  const picking = selected > 0;
   return (
     <div
       role="toolbar"
       aria-label="批量操作"
-      className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border bg-primary/5 px-3 py-1.5 text-xs text-muted-foreground"
+      data-selected={picking}
+      className={`flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors ${
+        picking ? "bg-primary/5" : "bg-muted/25"
+      }`}
     >
-      <span className="shrink-0">已选 {total} 个</span>
+      {/* 固定 64px 计数槽：两种文案宽度一致，状态切换不推挤按钮，窄面板下换行行数也一致 */}
+      <span className="w-16 shrink-0 whitespace-nowrap tabular-nums">
+        {picking ? `已选 ${selected} 个` : `共 ${total} 项`}
+      </span>
       <button
         type="button"
         disabled={busy || files === 0}
@@ -46,7 +58,7 @@ export function FileBatchBar({ total, files, busy, onDownload, onRemove, onMove,
       </button>
       <button
         type="button"
-        disabled={busy}
+        disabled={busy || selected === 0}
         onClick={onMove}
         className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >
@@ -62,7 +74,7 @@ export function FileBatchBar({ total, files, busy, onDownload, onRemove, onMove,
       </button>
       <button
         type="button"
-        disabled={total === 0}
+        disabled={selected === 0}
         onClick={onClear}
         className="ml-auto shrink-0 whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >

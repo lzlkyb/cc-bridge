@@ -199,24 +199,25 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         />
       )}
 
-      {/* 多选批量操作条：选了才出现。total 用 chosen（view 口径）：过滤后
-          按钮计数与实际作用对象一致，不会出现「已选 3 个」却只移 1 个。 */}
-      {sel.selected.length > 0 && (
-        <FileBatchBar
-          total={sel.chosen.length}
-          files={sel.fileCount}
-          busy={busy}
-          onDownload={sel.downloadSelected}
-          onRemove={() =>
-            sel.removeSelected(list =>
-              ops.setTargets(list.map((e) => ({ ...e, remotePath: joinRemote(path, e.name) }))),
-            )
-          }
-          onMove={() => rename.openMove(sel.chosen)}
-          onSelectAll={sel.selectAll}
-          onClear={sel.clear}
-        />
-      )}
+      {/* 多选批量操作条：常驻。条件挂载会让列表整体上下位移一行，第一次点文件
+          时正在看的行会跳走——常驻后三种状态下批量条高度恒定，首行位置不变。
+          total 用 view 口径（过滤后条目数/已选数）：计数与按钮实际作用对象一致，
+          不会出现「已选 3 个」却只作用 1 个。 */}
+      <FileBatchBar
+        total={view.items.length}
+        selected={sel.chosen.length}
+        files={sel.fileCount}
+        busy={busy}
+        onDownload={sel.downloadSelected}
+        onRemove={() =>
+          sel.removeSelected(list =>
+            ops.setTargets(list.map((e) => ({ ...e, remotePath: joinRemote(path, e.name) }))),
+          )
+        }
+        onMove={() => rename.openMove(sel.chosen)}
+        onSelectAll={sel.selectAll}
+        onClear={sel.clear}
+      />
 
       {/* 文件列表。key={path}：换目录重挂 → FileTable 根的 animate-fade-in 播整列淡入；
           同时顺带把滚动位置归位（新目录从顶部看起是正确语义）。 */}
