@@ -53,7 +53,7 @@ export function buildStablePermissionCommand(scope: McpScope, path: string, incl
   const source = `import json,os,sys
 name,scope,include_shell=json.loads(sys.argv[1])
 p=os.path.join(os.path.expanduser(os.environ.get('CLAUDE_CONFIG_DIR') or '~/.claude'),'settings.json') if scope=='user' else '.claude/settings.local.json'
-d=json.load(open(p)) if os.path.exists(p) else {}
+d=json.load(open(p,encoding='utf-8-sig')) if os.path.exists(p) else {}
 allow=d.setdefault('permissions',{}).setdefault('allow',[])
 tools=['*'] if include_shell else ${JSON.stringify(NON_SHELL_TOOLS)}
 for tool in tools:
@@ -62,7 +62,7 @@ for tool in tools:
 servers=d.setdefault('enabledMcpjsonServers',[])
 if name not in servers: servers.append(name)
 os.makedirs(os.path.dirname(p),exist_ok=True)
-with open(p,'w') as f: json.dump(d,f,indent=2,ensure_ascii=False)
+with open(p,'w',encoding='utf-8') as f: json.dump(d,f,indent=2,ensure_ascii=False)
 print('已写入:',os.path.abspath(p))`;
   const command = `python3 -c ${stableShellQuote(source)} ${stableShellQuote(JSON.stringify([name, scope, includeShell]))}`;
   const directory = path === "~" ? '"$HOME"' : path.startsWith("~/") ? `"$HOME"/${stableShellQuote(path.slice(2))}` : stableShellQuote(path);

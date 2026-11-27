@@ -375,7 +375,7 @@ export function buildPermissionGrantCommand(
   return `${cdPrefix}python3 -c "
 import json, os
 p = os.path.expanduser('${targetFile}')
-d = json.load(open(p)) if os.path.exists(p) else {}
+d = json.load(open(p, encoding='utf-8-sig')) if os.path.exists(p) else {}
 allow = d.setdefault('permissions', {}).setdefault('allow', [])
 ${toolsBlock}
 d['enableAllProjectMcpServers'] = True
@@ -383,7 +383,7 @@ servers = d.setdefault('enabledMcpjsonServers', [])
 if 'cc-bridge' not in servers:
     servers.append('cc-bridge')
 os.makedirs(os.path.dirname(p) or '.', exist_ok=True)
-json.dump(d, open(p, 'w'), indent=2, ensure_ascii=False)
+json.dump(d, open(p, 'w', encoding='utf-8'), indent=2, ensure_ascii=False)
 print('已写入:', os.path.abspath(p))
 "`;
 }

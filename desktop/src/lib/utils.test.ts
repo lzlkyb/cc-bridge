@@ -295,6 +295,13 @@ describe("buildPermissionGrantCommand", () => {
     expect(cmd).toContain("d['enableAllProjectMcpServers'] = True");
     expect(cmd).toContain("'cc-bridge' not in servers");
   });
+
+  it("读写都显式声明 UTF-8：不写字面编码时 Python 用 locale，en-US Windows（cp1252）遇到中文直接抛 UnicodeEncodeError", () => {
+    const cmd = buildPermissionGrantCommand("user", "", false);
+    // 读用 utf-8-sig：用户可能用编辑器存出带 BOM 的文件，utf-8 会因 BOM 解析失败。
+    expect(cmd).toContain("encoding='utf-8-sig'");
+    expect(cmd).toContain("'w', encoding='utf-8'");
+  });
 });
 
 describe("formatUptime（中文时长）", () => {
