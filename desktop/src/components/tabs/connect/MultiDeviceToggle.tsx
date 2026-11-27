@@ -21,12 +21,18 @@ export function MultiDeviceToggle({
   deviceId,
   deviceName,
   onToggle,
+  scope = "user",
 }: {
   enabled: boolean;
   /** 本机身份尾号（4 位 hex）；空 = 尚未生成，chip 不渲染。 */
   deviceId: string;
   deviceName: string;
   onToggle: (next: boolean) => void;
+  /**
+   * 条目写在哪：全局（`~/.claude.json`）还是项目（`.mcp.json`）。
+   * 只影响说明文案——条目名与命令形态两种范围完全一致。
+   */
+  scope?: "user" | "project";
 }) {
   const { toast } = useToast();
   // 身份复制的内联反馈（2s 自动回滚），与全站复制反馈口径一致。
@@ -79,7 +85,7 @@ export function MultiDeviceToggle({
             在 AI 侧用 <code className="rounded bg-muted px-1">/mcp</code> 显式切换用哪台。
           </p>
           <p>
-            Claude Code 接入命令固定为用户级（~/.claude.json）；重新生成令牌会同时断开所有设备——届时每台设备重新执行自己的接入命令即可。
+            Claude Code 的条目写在{scope === "project" ? "项目的 .mcp.json 里" : "用户级 ~/.claude.json 里"}，与其他设备的条目并存；重新生成令牌会同时断开所有设备——届时每台设备重新执行自己的接入命令即可。
           </p>
         </div>
       </InfoPopover>

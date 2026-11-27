@@ -149,7 +149,8 @@ def migrate_access(p, access, base):
         source_servers = mcp_map(source_settings)
         name = selected['name']
         entry = source_servers.get(name)
-        if entry is None or entry_hash(entry) != selected['fingerprint'] or not endpoint(entry):
+        if (entry is None or entry_hash(entry) != selected['fingerprint'] or not endpoint(entry) or
+                p.get('multi') and not describe(p, name, entry, source_scope, source_file, source_project, project_key)):
             raise AccessError('CCB_TARGET_CHANGED')
         if not isinstance(entry.get('headers', {}), dict):
             raise AccessError('CCB_ENTRY_UNSUPPORTED')

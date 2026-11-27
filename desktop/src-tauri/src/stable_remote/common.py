@@ -135,19 +135,27 @@ def endpoint(entry):
 
 
 def describe(p, name, entry, scope, filename, path='', project_key=None):
-    known = name in ('cc-bridge', 'cc-bridge-' + p['deviceId'])
     url = endpoint(entry)
+    headers = entry.get('headers', {}) if isinstance(entry, dict) else {}
+    authorization = ''
+    if isinstance(headers, dict):
+        authorization = next((v for k, v in headers.items() if k.lower() == 'authorization' and isinstance(v, str)), '')
+    matches = hmac.compare_digest(authorization.encode(), ('Bearer ' + p['token']).encode())
+    own = name == 'cc-bridge-' + str(p.get('deviceId') or '')
+    if p.get('multi') and (name.startswith('cc-bridge-') and not own or name == 'cc-bridge' and not matches):
+        return None
+    # 🔴 多设备下不认别人的老条目。`cc-bridge` 是单设备时代的固定名：同账号两台都沿用
+    # 它，写进去就是互相覆盖。所以开启多设备后，旧名只有令牌是本机时才算自己的（老用户
+    # 原地升级）；令牌不符就当别人的接入忽略。未启用时判据逐字不变。
+    known = own or name == 'cc-bridge'
     if known and not url:
         raise AccessError('CCB_ENTRY_UNSUPPORTED')
     if not url or len(name) > 256 or any(c in name for c in '\0\r\n'):
         return None
-    headers = entry.get('headers', {})
     if not isinstance(headers, dict):
         if known:
             raise AccessError('CCB_ENTRY_UNSUPPORTED')
         return None
-    authorization = next((v for k, v in headers.items() if k.lower() == 'authorization' and isinstance(v, str)), '')
-    matches = hmac.compare_digest(authorization.encode(), ('Bearer ' + p['token']).encode())
     if not known and not matches and url[1] not in p['ports']:
         return None
     identity = [scope, filename, project_key, name]
@@ -206,26 +214,47 @@ def known_projects(data, p):
     return paths, limited
 
 
-def tunnel_ledger():
-    # 默认放 ~/.cc-bridge/，与 cc_session 的 hosted/ 同目录但不同文件。
-    # 显式覆盖供测试隔离，也给 HOME 只读的机器一条把账本挪到可写位置的出路。
+def ledger_device(device_id):
+    # 尾号会进文件名，只留 ASCII 字母数字与 -_，限长 32；空值退成固定串。
+    key = ''.join(c for c in str(device_id or '') if c.isascii() and (c.isalnum() or c in '-_'))
+    return key[:32] or 'device'
+
+
+def tunnel_ledger(multi=False, device_id=''):
     override = os.environ.get('CCB_TUNNEL_PORT_FILE')
-    if override:
-        return override
-    return os.path.join(os.path.expanduser('~'), '.cc-bridge', 'tunnel-port')
+    base = override or os.path.join(os.path.expanduser('~'), '.cc-bridge', 'tunnel-port')
+    return base + '-' + ledger_device(device_id) if multi else base
 
 
-def read_tunnel_port():
+def read_port_file(path):
     try:
-        with open(tunnel_ledger(), 'r', encoding='utf-8') as handle:
+        with open(path, 'r', encoding='utf-8') as handle:
             port = int(handle.read(16).strip())
         return port if 1024 <= port <= 65535 else None
     except (OSError, ValueError):
         return None
 
 
-def write_tunnel_port(port):
-    path = tunnel_ledger()
+def reserved_ports(device_id):
+    directory, base = os.path.split(tunnel_ledger())
+    own = base + '-' + ledger_device(device_id)
+    reserved = set()
+    try:
+        with os.scandir(directory or '.') as entries:
+            for entry in entries:
+                suffix = entry.name[len(base) + 1:]
+                if entry.name != base and (entry.name == own or not entry.name.startswith(base + '-') or
+                                           not suffix or ledger_device(suffix) != suffix):
+                    continue
+                if entry.is_file(follow_symlinks=False):
+                    reserved.add(read_port_file(entry.path))
+    except OSError:
+        pass
+    return reserved
+
+
+def write_tunnel_port(port, multi=False, device_id=''):
+    path = tunnel_ledger(multi, device_id)
     temp = None
     try:
         # 覆盖成相对文件名（`CCB_TUNNEL_PORT_FILE=tunnel-port`）时 dirname 为空，
@@ -259,46 +288,32 @@ def port_is_free(port):
         probe.close()
 
 
-def tunnel_port(force=False):
-    """本账号在这台服务器上固定使用的反向隧道端口。
-
-    🔴 为什么必须固定：共享服务器上 `-R 127.0.0.1:<port>` 是独占绑定，谁先绑谁用。
-    如果端口是「接入那一刻碰巧空闲的那个」，那么 A 下班释放 7823、B 上线就会把它
-    记成自己的，A 回来就永久撞车且无法自愈。账本按账号隔离（各自 home），
-    所以别人离线期间也抢不走我的号。
-
-    🔴 账本命中就直接返回，**即使此刻端口不可绑定**：正常使用中该端口正是被自己的
-    sshd 反向监听占着（隧道活着，再次检查环境时就是这种状态）。若此时还去探测空闲，
-    每次重新接入都会换号，已确认的 MCP 地址跟着漂移，等于把「固定端口」这件事废掉。
-    真正的冲突由建隧道失败后的退避处置，见 candidate_ports。
-
-    `force=True` 是失败后的自愈出口：账本里的号若在服务器上被别人占了（同 uid 换过机器、
-    手工改过账本、或历史遗留），用户永远撞在同一个号上。此时跳过账本、从上一个号的下一个
-    开始重新探测，并把新号写回账本 —— 建隧道失败才是唯一触发条件，所以不会无端漂移。
-
-    起点取 uid，是为了在没有账本时（首次 / 换了机器）也天然分散到不同端口，
-    避免所有人从同一个起始号开始线性探测、把探测次数堆给排在后面的人。
-    """
-    saved = read_tunnel_port()
+def tunnel_port(force=False, multi=False, device_id=''):
+    # 正在使用的隧道会占住自己的端口。只在建隧道失败后强制换号。
+    saved = read_port_file(tunnel_ledger(multi, device_id))
     if saved and not force:
         return saved
     # 服务器是 Linux；getattr 只为让本机（Windows）测试能跑同一段代码。
     uid = os.getuid() if hasattr(os, 'getuid') else 1000
+    reserved = reserved_ports(device_id) if multi else ()
+    if multi:
+        # 同一账号的设备共享 uid。不同起点减少同时首次接入时的竞争。
+        uid += int(hashlib.sha256(ledger_device(device_id).encode()).hexdigest()[:8], 16)
     offset_start = uid % PORT_SPAN
     if force and saved and PORT_BASE <= saved < PORT_BASE + PORT_SPAN:
         # 从刚被否掉的那个号之后继续，避免第一轮探测必然命中同一个不可用端口。
         offset_start = (saved - PORT_BASE + 1) % PORT_SPAN
     for offset in range(PORT_SPAN):
         port = PORT_BASE + ((offset_start + offset) % PORT_SPAN)
-        if port_is_free(port):
-            write_tunnel_port(port)
+        if port != saved and port not in reserved and port_is_free(port):
+            write_tunnel_port(port, multi, device_id)
             return port
     return 0
 
 
 def inspect(p):
     result = {'signature': p['signature'], 'complete': True, 'home': os.path.expanduser('~'),
-              'tunnelPort': tunnel_port(),
+              'tunnelPort': tunnel_port(False, bool(p.get('multi')), p.get('deviceId') or ''),
               'inspectedProjectPath': None, 'projects': [], 'targets': [], 'files': [], 'warnings': []}
     def warning(marker):
         result['complete'] = False

@@ -35,6 +35,41 @@ pub struct StableSaved {
     pub verified_at: Option<u64>,
 }
 
+pub(crate) fn same_saved_endpoint(current: &StableSaved, inspected: &StableSaved) -> bool {
+    current.connection_id == inspected.connection_id
+        && current.port == inspected.port
+        && current.scope == inspected.scope
+        && current.project_path == inspected.project_path
+        && current.multi_device == inspected.multi_device
+        && current.fingerprint == inspected.fingerprint
+        && current.target.as_ref().map(|target| &target.id)
+            == inspected.target.as_ref().map(|target| &target.id)
+}
+
+#[cfg(test)]
+#[test]
+fn a_repair_must_still_match_the_inspected_endpoint() {
+    let original = StableSaved {
+        connection_id: "server".into(),
+        port: 18003,
+        scope: "project".into(),
+        project_path: "/work".into(),
+        multi_device: true,
+        enabled: true,
+        fingerprint: "current".into(),
+        token_fingerprint: String::new(),
+        target: None,
+        verified_at: None,
+    };
+    let mut changed = original.clone();
+    assert!(same_saved_endpoint(&changed, &original));
+    changed.port += 1;
+    assert!(!same_saved_endpoint(&changed, &original));
+    changed.port = original.port;
+    changed.project_path = "/other".into();
+    assert!(!same_saved_endpoint(&changed, &original));
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StableRecord {
@@ -141,12 +176,24 @@ pub fn rule(port: u16, config: &BridgeConfig) -> ForwardRule {
     }
 }
 
+/// 端口被占之后，这条隧道该不该由程序自己换号重接。
+///
+/// 三件事同时成立才动手：这条连接开着、它开了多设备、（调用方）已经确认端口被占。
+/// 单设备连接一律返回 false——它的账本本该是本机独享，撞号只可能是别人手工占了端口，
+/// 那种情况让用户点「重新接入」更诚实；同时也保证了没开多设备的人，行为与从前逐字一致。
+pub fn auto_reconnects_on_port_conflict(saved: Option<&StableSaved>) -> bool {
+    saved.is_some_and(|saved| saved.enabled && saved.multi_device)
+}
+
+/// 接入参数校验。
+///
+/// 多设备**不再限定全局范围**：条目名已经按设备区分（`cc-bridge-<尾号>`），项目级
+/// `.mcp.json` 里同样能并存两条，所以「两台机器同一个项目」也有解。早先禁止多设备 +
+/// 项目级，是因为那时只有一个固定条目名，两台写同一个键必然互踢——现在那个前提没了。
 pub fn validate_setup(scope: &str, path: &str, multi: bool) -> Result<(), String> {
+    let _ = multi;
     if !["user", "project"].contains(&scope) {
         return Err("接入范围必须是全局或项目级".into());
-    }
-    if multi && scope != "user" {
-        return Err("多设备接入需要使用全局模式".into());
     }
     if scope == "project" && path.trim().is_empty() {
         return Err("请填写服务器项目路径".into());
@@ -258,7 +305,7 @@ pub fn remote_script(
 ) -> (String, String) {
     let payload = serde_json::json!({"port":port,"scope":scope,"path":path,"token":config.token,"transport":config.transport,
         "name":if multi {format!("cc-bridge-{}",config.device_id)}else{"cc-bridge".into()},
-        "access":access,"verifyOnly":verification.0,"verifyTarget":verification.1,"deviceId":config.device_id,"ports":[config.port,port]});
+        "access":access,"verifyOnly":verification.0,"verifyTarget":verification.1,"deviceId":config.device_id,"multi":multi,"ports":[config.port,port]});
     (format!("PATH=\"$HOME/.local/bin:$HOME/.npm-global/bin:$PATH\"; export PATH; command -v claude >/dev/null 2>&1 || {{ echo CCB_CLAUDE_MISSING; exit 41; }}; command -v python3 >/dev/null 2>&1 || {{ echo CCB_PYTHON_MISSING; exit 42; }}; python3 -c {}", shell_quote(&python_source(REMOTE_CONFIGURE))),payload.to_string())
 }
 
@@ -420,15 +467,17 @@ pub(crate) const REMOTE_REALLOCATE: &str = concat!(
 );
 
 /// 不依赖 claude 可执行文件：这条路径只读端口账本，与 Claude 是否安装无关。
-pub fn reallocate_script() -> (String, String) {
+///
+/// `multi` 决定重分配读写哪一本账（多设备按本机尾号分文件，见 `tunnel_ledger`）。
+/// payload 必须非空：远端 `receive()` 靠 `CCB_PAYLOAD ` 前缀区分帧与裸 JSON，
+/// 空串只会发出 `CCB_PAYLOAD_END`，那行会被当成 JSON 解析而崩掉。
+pub fn reallocate_script(multi: bool, device_id: &str) -> (String, String) {
     (
         format!(
             "command -v python3 >/dev/null 2>&1 || {{ echo CCB_PYTHON_MISSING; exit 42; }}; python3 -c {}",
             shell_quote(REMOTE_REALLOCATE)
         ),
-        // 非空 payload：远端 `receive()` 靠 `CCB_PAYLOAD ` 前缀区分帧与裸 JSON，
-        // 空串只会发出 `CCB_PAYLOAD_END`，那行会被当成 JSON 解析而崩掉。
-        "{}".into(),
+        serde_json::json!({"multi": multi, "deviceId": device_id}).to_string(),
     )
 }
 
@@ -623,8 +672,79 @@ mod tests {
     #[test]
     fn validates_project_and_multidevice() {
         assert!(validate_setup("project", "", false).is_err());
-        assert!(validate_setup("project", "/work", true).is_err());
+        assert!(validate_setup("project", "", true).is_err());
         assert!(validate_setup("user", "", true).is_ok());
+        // 多设备不再限定全局：条目名按设备区分后，项目级 .mcp.json 里同样能并存两条。
+        assert!(validate_setup("project", "/work", true).is_ok());
+        assert!(validate_setup("project", "/work", false).is_ok());
+        assert!(validate_setup("elsewhere", "/work", false).is_err());
+    }
+
+    fn saved_entry(multi_device: bool, enabled: bool) -> StableSaved {
+        StableSaved {
+            connection_id: "c1".into(),
+            port: 17900,
+            scope: "user".into(),
+            project_path: String::new(),
+            multi_device,
+            enabled,
+            fingerprint: "f".into(),
+            token_fingerprint: String::new(),
+            target: None,
+            verified_at: None,
+        }
+    }
+
+    /// 端口被占后自动换号只对「开着的多设备连接」生效。
+    ///
+    /// 这条断言就是「没开多设备按现在的代码走」的闸门：门控写宽一点，关掉开关的人
+    /// 就会在端口被占时被程序擅自改写服务器上的条目——那正是这次要避免的回归。
+    #[test]
+    fn only_enabled_multi_device_connections_heal_a_taken_port() {
+        assert!(auto_reconnects_on_port_conflict(Some(&saved_entry(
+            true, true
+        ))));
+        assert!(
+            !auto_reconnects_on_port_conflict(Some(&saved_entry(false, true))),
+            "关掉多设备的连接必须仍旧只提示用户手动重新接入"
+        );
+        assert!(
+            !auto_reconnects_on_port_conflict(Some(&saved_entry(true, false))),
+            "用户停用的连接不该被后台重新配置"
+        );
+        assert!(!auto_reconnects_on_port_conflict(None));
+    }
+
+    /// 多设备下条目名与「读哪本端口账」都跟着 `multi` 走，且两者必须同源：
+    /// 名字是 `cc-bridge-<尾号>` 而账本还是旧文件，等于换汤不换药。
+    #[test]
+    fn multi_payload_carries_device_entry_name_and_ledger_switch() {
+        let c = BridgeConfig {
+            device_id: "3f2c".into(),
+            ..BridgeConfig::default()
+        };
+        for scope in ["user", "project"] {
+            let (_, payload) = remote_script(&c, 17900, scope, "/work", true, None, (false, None));
+            let p: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(p["name"], "cc-bridge-3f2c", "{scope}");
+            assert_eq!(p["multi"], true, "{scope}");
+            assert_eq!(p["deviceId"], "3f2c", "{scope}");
+            let (_, single) = remote_script(&c, 17900, scope, "/work", false, None, (false, None));
+            let s: serde_json::Value = serde_json::from_str(&single).unwrap();
+            assert_eq!(s["name"], "cc-bridge", "{scope}");
+            assert_eq!(s["multi"], false, "{scope}");
+        }
+    }
+
+    #[test]
+    fn reallocate_payload_points_at_the_same_ledger() {
+        let (_, payload) = reallocate_script(true, "3f2c");
+        let p: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(p["multi"], true);
+        assert_eq!(p["deviceId"], "3f2c");
+        let (_, single) = reallocate_script(false, "3f2c");
+        let s: serde_json::Value = serde_json::from_str(&single).unwrap();
+        assert_eq!(s["multi"], false);
     }
     #[test]
     fn errors_do_not_expose_token() {
@@ -653,7 +773,7 @@ mod tests {
     /// 当裸 JSON 解析直接崩，自愈永远拿不到端口）。
     #[test]
     fn reallocation_round_trips_through_the_setup_frames() {
-        let (command, payload) = reallocate_script();
+        let (command, payload) = reallocate_script(false, "3f2c");
         assert!(
             !payload.is_empty(),
             "空 payload 会让远端 receive() 解析崩溃"

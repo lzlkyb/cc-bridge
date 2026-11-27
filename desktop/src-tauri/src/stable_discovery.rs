@@ -115,6 +115,7 @@ pub fn read_script(
     path: Option<&str>,
     folders: bool,
     source_path: Option<&str>,
+    multi: bool,
 ) -> (String, String) {
     let saved = config
         .stable_connect
@@ -123,7 +124,7 @@ pub fn read_script(
         .find(|s| s.connection_id == id);
     let payload = serde_json::json!({
         "signature": fingerprint(config, id), "path": path, "sourceProjectPath": source_path,
-        "deviceId": config.device_id, "token": config.token,
+        "deviceId": config.device_id, "token": config.token, "multi": multi,
         "ports": [config.port, saved.map_or(config.port, |s| s.port)],
         "hints": [saved.map_or("", |s| s.project_path.as_str())],
     });

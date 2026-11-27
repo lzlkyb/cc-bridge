@@ -3,7 +3,7 @@ use super::stable_connect_run;
 use crate::config::BridgeConfig;
 use crate::ssh_tunnel::{RuleState, TunnelState};
 use crate::stable_connect::{self as stable, StableOperation, StableRecord, StableSaved};
-use crate::stable_discovery::ReplacedTarget;
+use crate::stable_discovery::{ReplacedTarget, StableTarget};
 use crate::state::AppState;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -276,9 +276,15 @@ pub async fn stable_connect_start(
     }
     drop(start_guard);
     changed(&app, Some(&connection_id));
-    let outcome =
-        stable_connect_run::configure(&app, state.inner(), &config, &op, password, passphrase)
-            .await;
+    let outcome = stable_connect_run::configure(
+        &app,
+        state.inner(),
+        &config,
+        &op,
+        (password, passphrase),
+        true,
+    )
+    .await;
     let replaced = match outcome {
         Ok(replaced) => replaced,
         Err(error) => {
@@ -361,6 +367,334 @@ pub async fn stable_connect_stop(
     Ok(snapshot(state.inner()).await)
 }
 
+/// Check the exact failed instance. A new tunnel can reuse the same runtime ID.
+fn port_conflict_is_current(
+    state: &AppState,
+    runtime_id: &str,
+    failed_stop: &Arc<AtomicBool>,
+) -> bool {
+    state.ssh_tunnels.get(runtime_id).is_some_and(|tunnel| {
+        Arc::ptr_eq(&tunnel.stop, failed_stop)
+            && !tunnel.stop.load(Ordering::SeqCst)
+            && crate::ssh_tunnel::port_taken(
+                &tunnel.status.lock().unwrap_or_else(|p| p.into_inner()),
+            )
+    })
+}
+
+/// 重新读一次服务器上的接入，拼出 `configure` 需要的 access 载荷。
+///
+/// 只挑本机在原范围里的条目。优先使用已保存的条目，找不到时由配置脚本尝试新建。
+async fn own_access(
+    state: &Arc<AppState>,
+    saved: &StableSaved,
+    config: &BridgeConfig,
+) -> Result<crate::stable_discovery::StableAccessRequest, String> {
+    let path = (saved.scope == "project").then_some(saved.project_path.as_str());
+    let (output, signature) = super::stable_discovery_cmds::read_remote(
+        state,
+        &saved.connection_id,
+        (path, None),
+        false,
+        None,
+        None,
+        None,
+        Some(true),
+    )
+    .await?;
+    let result: crate::stable_discovery::StableDiscovery =
+        crate::stable_discovery::parse_result(&output, "CCB_DISCOVERED")?;
+    if result.signature != signature || !result.complete {
+        return Err("服务器检查没有返回完整结果".into());
+    }
+    let own_name = format!("cc-bridge-{}", config.device_id);
+    let target = result
+        .targets
+        .iter()
+        .find(|t| {
+            adopts_entry(saved, &own_name, t)
+                && saved.target.as_ref().is_some_and(|old| old.id == t.id)
+        })
+        .or_else(|| {
+            result
+                .targets
+                .iter()
+                .find(|t| adopts_entry(saved, &own_name, t))
+        })
+        .cloned();
+    Ok(crate::stable_discovery::StableAccessRequest {
+        target,
+        inspection: crate::stable_discovery::StableInspection {
+            signature: result.signature.clone(),
+            complete: result.complete,
+            files: result.files.clone(),
+        },
+        scope_change: false,
+        tunnel_port: result.tunnel_port,
+    })
+}
+
+/// Only the supervisor of the failed instance may hand off a port repair.
+pub(super) async fn recover_multi_port(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    connection_id: &str,
+    failed_stop: Arc<AtomicBool>,
+) {
+    let id = stable::runtime_id(connection_id);
+    if !port_conflict_is_current(state, &id, &failed_stop) {
+        return;
+    }
+    if state
+        .stable_operations
+        .get(connection_id)
+        .is_some_and(|op| op.active.load(Ordering::SeqCst))
+    {
+        decline(app, state, &id, &failed_stop);
+        return;
+    }
+    let saved = {
+        let config = state.config.read().await;
+        config
+            .stable_connect
+            .connections
+            .iter()
+            .find(|saved| {
+                saved.connection_id == connection_id && saved.enabled && saved.multi_device
+            })
+            .cloned()
+    };
+    if let Some(saved) = saved {
+        heal_multi_port(app, state, &saved, &failed_stop).await;
+    } else {
+        decline(app, state, &id, &failed_stop);
+    }
+}
+
+/// 这条服务器条目算不算「本机那一份、而且范围对得上」。
+///
+/// 🔴 自愈会拿认到的条目名去写服务器（`configure.py` 里 `name = selected['name']`），
+/// 所以这里认错不是「多显示一条」，而是替别人改配置。两个条件缺一不可：
+///   · 范围与保存的连接一致（用户级只认全局条目；项目级认项目条目与旧版本地条目）；
+///   · 名字是本机尾号，或令牌匹配且沿用旧固定名或用户已保存的自定义条目。
+/// 另一台电脑的 `cc-bridge-<别家尾号>` 一律不认。
+fn adopts_entry(saved: &StableSaved, own_name: &str, target: &StableTarget) -> bool {
+    let owned = target.name == own_name
+        || (target.token_matches
+            && !target.name.starts_with("cc-bridge-")
+            && (target.name == "cc-bridge"
+                || saved
+                    .target
+                    .as_ref()
+                    .is_some_and(|entry| entry.id == target.id)));
+    // 路径比较要容忍尾斜杠：`/work` 与 `/work/` 是同一个项目。认不出来会退成「没有
+    // target」，而 `configure.py` 在「同名条目已存在又没有 target」时直接
+    // `CCB_TARGET_REQUIRED` —— 自愈就白跑一趟，还给不出人话。
+    let same_path =
+        target.project_path.trim_end_matches('/') == saved.project_path.trim_end_matches('/');
+    let scope_ok = if saved.scope == "user" {
+        target.scope == "user" && target.project_path.is_empty()
+    } else {
+        matches!(target.scope.as_str(), "project" | "local") && same_path
+    };
+    scope_ok && owned
+}
+
+/// 自愈没接手时，把提示改成「下一步该干什么」。
+///
+/// 监管线程在触发自愈前已经写了「正在自动换号重接」：如果自愈因为用户刚断开、正在配置、
+/// 或者读不到服务器这几条路退出，那句提示就成了一句永远不发生的承诺。只改还停在错误态的
+/// 隧道——用户主动停掉的那条不该被我们改回错误。
+fn announce(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    runtime_id: &str,
+    failed_stop: &Arc<AtomicBool>,
+    message: &str,
+) {
+    let Some(tunnel) = state.ssh_tunnels.get(runtime_id) else {
+        return;
+    };
+    if !Arc::ptr_eq(&tunnel.stop, failed_stop) || failed_stop.load(Ordering::SeqCst) {
+        return;
+    }
+    super::ssh_tunnel_cmds::publish(app, &tunnel.stop, &tunnel.status, |s| {
+        if s.state != TunnelState::Error {
+            return false;
+        }
+        s.message = Some(message.into());
+        true
+    });
+}
+
+/// 自愈「不接手」时给出可操作的提示。
+fn decline(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    runtime_id: &str,
+    failed_stop: &Arc<AtomicBool>,
+) {
+    announce(
+        app,
+        state,
+        runtime_id,
+        failed_stop,
+        "服务器无法监听原隧道端口。请在接入页点「重新接入」。",
+    );
+}
+
+/// 多设备连接端口被占后的自愈：走一次「重新接入」，只换本机自己的号与条目。
+///
+/// 🔴 只在 `multi_device` 为真的连接上调用。单设备连接的账本本来就是本机独享，
+/// 撞号只可能是别人手工占了端口，那种情况下让用户点「重新接入」更诚实；
+/// 而同一个 SSH 账号的两台电脑共用端口命名空间，另一台丢账本后占号是**常态**，
+/// 每次都要人去点一下就等于这个功能没做完。
+async fn heal_multi_port(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    saved: &StableSaved,
+    failed_stop: &Arc<AtomicBool>,
+) {
+    let id = stable::runtime_id(&saved.connection_id);
+    let config = state.config.read().await.clone();
+    // 与服务端接入同款前置条件：用户已经切到 HTTPS / SSE、关了 SSH、或本机 MCP 没在跑时，
+    // 后台跑去改服务器条目只会留下一条连不上的配置——那种情况交给用户自己发起「重新接入」。
+    if !config.ssh_enabled
+        || config.remote_tls_enabled
+        || config.transport != "http"
+        || !state.mcp_running.load(Ordering::SeqCst)
+        || stable::fingerprint(&config, &saved.connection_id) != saved.fingerprint
+    {
+        return decline(app, state, &id, failed_stop);
+    }
+    let access = match own_access(state, saved, &config).await {
+        Ok(access) => access,
+        Err(error) => {
+            log::warn!("多设备端口自愈：重新读取接入失败：{error}");
+            return decline(app, state, &id, failed_stop);
+        }
+    };
+    let project_path = access.target.as_ref().map_or_else(
+        || {
+            let trimmed = saved.project_path.trim_end_matches('/');
+            if trimmed.is_empty() {
+                saved.project_path.as_str()
+            } else {
+                trimmed
+            }
+        },
+        |target| target.project_path.as_str(),
+    );
+    if let Err(error) = crate::stable_discovery::validate_access(
+        &config,
+        &saved.connection_id,
+        &saved.scope,
+        project_path,
+        &access,
+    ) {
+        log::warn!("多设备端口自愈：检查结果不可用：{error}");
+        return decline(app, state, &id, failed_stop);
+    }
+    let start_guard = state.ssh_tunnel_start_lock.lock().await;
+    // The server scan runs without the start lock. A user could have stopped or
+    // reconfigured this connection, or replaced the failed tunnel, during that scan.
+    let current = state.config.read().await;
+    let same_config = current.ssh_enabled
+        && !current.remote_tls_enabled
+        && current.transport == "http"
+        && state.mcp_running.load(Ordering::SeqCst)
+        && stable::fingerprint(&current, &saved.connection_id) == saved.fingerprint
+        && current.stable_connect.connections.iter().any(|entry| {
+            entry.enabled && entry.multi_device && stable::same_saved_endpoint(entry, saved)
+        });
+    drop(current);
+    if !same_config || !port_conflict_is_current(state, &id, failed_stop) {
+        drop(start_guard);
+        return decline(app, state, &id, failed_stop);
+    }
+    let op = Arc::new(StableOperation {
+        cancel: Arc::new(AtomicBool::new(false)),
+        active: AtomicBool::new(true),
+        record: Mutex::new(StableRecord {
+            connection_id: saved.connection_id.clone(),
+            port: saved.port,
+            scope: saved.scope.clone(),
+            project_path: project_path.to_string(),
+            multi_device: true,
+            configured: true,
+            enabled: true,
+            phase: "running".into(),
+            step: 0,
+            message: None,
+            needs_secret: false,
+            config_matches: false,
+            target: access.target.clone().or_else(|| saved.target.clone()),
+            verified_at: saved.verified_at,
+        }),
+        access: Some(access),
+    });
+    match state.stable_operations.entry(saved.connection_id.clone()) {
+        dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+            if entry.get().active.load(Ordering::SeqCst) {
+                drop(start_guard);
+                return decline(app, state, &id, failed_stop);
+            }
+            entry.insert(op.clone());
+        }
+        dashmap::mapref::entry::Entry::Vacant(entry) => {
+            entry.insert(op.clone());
+        }
+    }
+    drop(start_guard);
+    changed(app, Some(&saved.connection_id));
+    log::info!(
+        "多设备隧道端口被占用，正在换号重接：{}",
+        saved.connection_id
+    );
+    let outcome =
+        stable_connect_run::configure(app, state, &config, &op, (None, None), false).await;
+    match outcome {
+        Ok(_) => {
+            // 换号成功意味着这台的地址变了：条目已由 configure 改写，但用户可能把地址
+            // 复制到别处（另一个客户端、自己的脚本）。不说明白，下次它会连到一个死端口。
+            let port = op.record.lock().unwrap_or_else(|p| p.into_inner()).port;
+            if port != saved.port {
+                if let Some(tunnel) = state.ssh_tunnels.get(&id) {
+                    super::ssh_tunnel_cmds::publish(app, &tunnel.stop, &tunnel.status, |status| {
+                        if status.state != TunnelState::Up
+                            || !status.rules.iter().any(|rule| {
+                                rule.rule.listen_port == port && rule.state == RuleState::Listening
+                            })
+                        {
+                            return false;
+                        }
+                        status.message = Some(format!(
+                            "已自动换到端口 {port} 并重新接入。若在别处保存过这台的地址，请重新复制。"
+                        ));
+                        true
+                    });
+                }
+            }
+        }
+        Err(error) => {
+            let friendly = stable::friendly_error(&error, &config.token);
+            // 隧道那条提示还停在「正在自动换号重接」：失败后必须换成真正的原因，
+            // 否则用户等的是一个已经结束的流程。
+            announce(app, state, &id, failed_stop, &friendly);
+            let mut record = op.record.lock().unwrap_or_else(|p| p.into_inner());
+            record.phase = if op.cancel.load(Ordering::SeqCst) {
+                "stopped"
+            } else {
+                "error"
+            }
+            .into();
+            record.message = Some(friendly);
+        }
+    }
+    op.active.store(false, Ordering::SeqCst);
+    changed(app, Some(&saved.connection_id));
+}
+
 pub async fn autostart_stable_connections(app: AppHandle, state: Arc<AppState>) {
     let config = state.config.read().await.clone();
     if !config.ssh_enabled {
@@ -401,5 +735,115 @@ pub async fn autostart_stable_connections(app: AppHandle, state: Arc<AppState>) 
                 stable::friendly_error(&e, &config.token)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(scope: &str, project_path: &str) -> StableSaved {
+        StableSaved {
+            connection_id: "c1".into(),
+            port: 17900,
+            scope: scope.into(),
+            project_path: project_path.into(),
+            multi_device: true,
+            enabled: true,
+            fingerprint: "f".into(),
+            token_fingerprint: String::new(),
+            target: None,
+            verified_at: None,
+        }
+    }
+
+    fn target(name: &str, scope: &str, project_path: &str, token_matches: bool) -> StableTarget {
+        StableTarget {
+            id: format!("id-{name}"),
+            name: name.into(),
+            scope: scope.into(),
+            project_path: project_path.into(),
+            project_key: None,
+            config_file: "/home/u/.claude.json".into(),
+            url: "http://127.0.0.1:17900/mcp".into(),
+            fingerprint: "0".repeat(64),
+            recognized: true,
+            token_matches,
+        }
+    }
+
+    /// 自愈只认「本机那一份、范围也对得上」的条目：认错就会拿别人的名字去写服务器
+    /// （`configure.py` 写的是 `selected['name']`），等于替另一台电脑改配置。
+    #[test]
+    fn heal_only_adopts_its_own_entry_in_the_saved_scope() {
+        let user = saved("user", "");
+        let own = "cc-bridge-aaaa";
+        assert!(adopts_entry(&user, own, &target(own, "user", "", true)));
+        // 令牌轮换之后本机条目会失配，但名字仍是本机尾号：照样认，否则自愈永远修不回来。
+        assert!(adopts_entry(&user, own, &target(own, "user", "", false)));
+        // 另一台电脑的条目：名字不是本机尾号。
+        assert!(!adopts_entry(
+            &user,
+            own,
+            &target("cc-bridge-bbbb", "user", "", true)
+        ));
+        // 老固定名：令牌是本机才算自己（老用户原地升级），令牌不符就是别人的。
+        assert!(adopts_entry(
+            &user,
+            own,
+            &target("cc-bridge", "user", "", true)
+        ));
+        assert!(!adopts_entry(
+            &user,
+            own,
+            &target("cc-bridge", "user", "", false)
+        ));
+        // 范围不符不认：全局连接不该去改项目条目。
+        assert!(!adopts_entry(
+            &user,
+            own,
+            &target(own, "project", "/work", true)
+        ));
+
+        let project = saved("project", "/work");
+        assert!(adopts_entry(
+            &project,
+            own,
+            &target(own, "project", "/work", true)
+        ));
+        // 旧版把项目条目存在 projects[<key>] 里，scope 是 local，仍算项目级。
+        assert!(adopts_entry(
+            &project,
+            own,
+            &target(own, "local", "/work", true)
+        ));
+        assert!(!adopts_entry(
+            &project,
+            own,
+            &target(own, "project", "/other", true)
+        ));
+        assert!(!adopts_entry(&project, own, &target(own, "user", "", true)));
+        // 尾斜杠只是写法差异，仍算同一个项目；认不出来会退化成「没有 target」，
+        // 而 configure.py 那时会直接报 CCB_TARGET_REQUIRED。
+        assert!(adopts_entry(
+            &saved("project", "/work/"),
+            own,
+            &target(own, "project", "/work", true)
+        ));
+    }
+
+    #[test]
+    fn heal_keeps_a_saved_custom_entry_with_the_local_token() {
+        let own_name = "cc-bridge-aaaa";
+        let mut saved = saved("user", "");
+        let mut custom = target("custom-name", "user", "", true);
+        assert!(!adopts_entry(&saved, own_name, &custom));
+        saved.target = Some(custom.clone());
+        assert!(adopts_entry(&saved, own_name, &custom));
+        custom.token_matches = false;
+        assert!(!adopts_entry(&saved, own_name, &custom));
+        let foreign = target("cc-bridge-bbbb", "user", "", true);
+        saved.target = Some(foreign.clone());
+        assert!(!adopts_entry(&saved, own_name, &foreign));
     }
 }

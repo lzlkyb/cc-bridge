@@ -1,5 +1,5 @@
 //! Stable-card reads use the pinned SSH identity and temporary credentials, with no remote mutations.
-use crate::stable_connect::{fingerprint, friendly_error, StableSaved};
+use crate::stable_connect::{fingerprint, friendly_error, same_saved_endpoint, StableSaved};
 use crate::stable_discovery::{self as discovery, StableDiscovery, StableFolders, StableTarget};
 use crate::state::AppState;
 use std::sync::atomic::AtomicBool;
@@ -43,20 +43,13 @@ fn same_entry(saved: &StableSaved, targets: &[StableTarget]) -> Option<StableTar
 
 /// 把 inspect 读到的真实条目写回本地记录（只改 target，不动指纹与 verified_at）。
 /// 不改这一步，状态卡就会一直拿「上次写进去的地址」当「服务器现在的地址」报已连通。
-async fn sync_observed_target(state: &Arc<AppState>, id: &str, targets: &[StableTarget]) -> bool {
-    let Some(saved) = state
-        .config
-        .read()
-        .await
-        .stable_connect
-        .connections
-        .iter()
-        .find(|connection| connection.connection_id == id)
-        .cloned()
-    else {
-        return false;
-    };
-    let Some(observed) = same_entry(&saved, targets) else {
+async fn sync_observed_target(
+    state: &Arc<AppState>,
+    saved: &StableSaved,
+    signature: &str,
+    targets: &[StableTarget],
+) -> bool {
+    let Some(observed) = same_entry(saved, targets) else {
         return false;
     };
     if saved.target.as_ref() == Some(&observed) {
@@ -64,14 +57,24 @@ async fn sync_observed_target(state: &Arc<AppState>, id: &str, targets: &[Stable
     }
     let db = state.db.lock().await;
     let mut current = state.config.write().await;
+    if fingerprint(&current, &saved.connection_id) != signature {
+        return false;
+    }
     let mut next = current.stable_connect.clone();
     let Some(slot) = next
         .connections
         .iter_mut()
-        .find(|connection| connection.connection_id == id)
+        .find(|entry| entry.connection_id == saved.connection_id)
     else {
         return false;
     };
+    // Discovery may finish after an automatic repair has written the new endpoint.
+    if !same_saved_endpoint(slot, saved)
+        || slot.target != saved.target
+        || slot.verified_at != saved.verified_at
+    {
+        return false;
+    }
     slot.target = Some(observed);
     let Ok(value) = serde_json::to_value(&next) else {
         return false;
@@ -88,7 +91,10 @@ async fn sync_observed_target(state: &Arc<AppState>, id: &str, targets: &[Stable
     true
 }
 
-async fn read_remote(
+/// 读一次服务器上的接入配置。
+///
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn read_remote(
     state: &Arc<AppState>,
     id: &str,
     paths: (Option<&str>, Option<&str>),
@@ -96,6 +102,7 @@ async fn read_remote(
     signature: Option<&str>,
     password: Option<String>,
     passphrase: Option<String>,
+    multi: Option<bool>,
 ) -> Result<(String, String), String> {
     let (path, source_path) = paths;
     if let Some(path) = path {
@@ -113,7 +120,16 @@ async fn read_remote(
         return Err("服务器配置已变化，请重新检查。".into());
     }
     let link = super::ssh_cmds::SshLink::from_config(&config, id)?;
-    let script = discovery::read_script(&config, id, path, folders, source_path);
+    // 多设备开关由调用方给（草稿可能还没落库）；没给就按已保存的连接记录取。
+    let multi = multi.unwrap_or_else(|| {
+        config
+            .stable_connect
+            .connections
+            .iter()
+            .find(|saved| saved.connection_id == id)
+            .is_some_and(|saved| saved.multi_device)
+    });
+    let script = discovery::read_script(&config, id, path, folders, source_path, multi);
     let output = super::ssh_cmds::run_stable_setup(
         state,
         &link,
@@ -131,6 +147,7 @@ async fn read_remote(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Flat IPC fields: the web side passes them by name.
 pub async fn stable_connect_inspect(
     state: State<'_, Arc<AppState>>,
     app: AppHandle,
@@ -139,7 +156,24 @@ pub async fn stable_connect_inspect(
     source_project_path: Option<String>,
     password: Option<String>,
     passphrase: Option<String>,
+    multi_device: Option<bool>,
 ) -> Result<StableDiscovery, String> {
+    let saved = if project_path.is_none() && source_project_path.is_none() {
+        state
+            .config
+            .read()
+            .await
+            .stable_connect
+            .connections
+            .iter()
+            .find(|entry| {
+                entry.connection_id == connection_id
+                    && multi_device.is_none_or(|multi| multi == entry.multi_device)
+            })
+            .cloned()
+    } else {
+        None
+    };
     let (output, signature) = read_remote(
         state.inner(),
         &connection_id,
@@ -148,6 +182,7 @@ pub async fn stable_connect_inspect(
         None,
         password,
         passphrase,
+        multi_device,
     )
     .await?;
     let mut result: StableDiscovery = discovery::parse_result(&output, "CCB_DISCOVERED")?;
@@ -161,12 +196,10 @@ pub async fn stable_connect_inspect(
         .collect();
     // 常规核对（不是「改范围」或「换项目」）读到完整结果时，把服务器真值同步进记录，
     // 让状态卡据此判定；范围编辑分支可能只看了另一个项目，不能拿它覆盖当前连接的记录。
-    if result.complete
-        && project_path.is_none()
-        && source_project_path.is_none()
-        && sync_observed_target(state.inner(), &connection_id, &result.targets).await
-    {
-        super::stable_connect_cmds::changed(&app, Some(&connection_id));
+    if let Some(saved) = saved.filter(|_| result.complete) {
+        if sync_observed_target(state.inner(), &saved, &signature, &result.targets).await {
+            super::stable_connect_cmds::changed(&app, Some(&connection_id));
+        }
     }
     Ok(result)
 }
@@ -188,6 +221,7 @@ pub async fn stable_connect_folders(
         signature.as_deref(),
         password,
         passphrase,
+        None,
     )
     .await?;
     let result: StableFolders = discovery::parse_result(&output, "CCB_LISTED")?;

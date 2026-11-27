@@ -122,7 +122,14 @@ fn inspection_script_keeps_paths_and_secrets_out_of_process_arguments() {
         ..Default::default()
     };
     let path = "/home/user/project'$(touch bad)";
-    let script = read_script(&config, "server", Some(path), false, Some("/work/original"));
+    let script = read_script(
+        &config,
+        "server",
+        Some(path),
+        false,
+        Some("/work/original"),
+        false,
+    );
     assert!(!script.0.contains(&config.token));
     assert!(!script.0.contains(path));
     let payload: serde_json::Value = serde_json::from_str(&script.1).unwrap();

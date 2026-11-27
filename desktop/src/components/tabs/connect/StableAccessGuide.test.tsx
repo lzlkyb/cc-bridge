@@ -311,7 +311,9 @@ it("已配置的全局接入可以选择项目后迁移，保留多设备接入�
   expect(calls("stable_connect_inspect").slice(-1)[0]?.[1]).toMatchObject({ projectPath: project.path, sourceProjectPath: "" });
   expect(host.querySelector(".sc-scope-impact")?.textContent).toContain("原全局接入将移到");
   await applyScope();
-  expect(calls("stable_connect_start")[0][1]).toMatchObject({ scope: "project", projectPath: project.path, multiDevice: false,
+  // 多设备开关跟随连接记录本身，不再因为「迁到项目级」被强制关掉：条目名仍带本机尾号，
+  // 项目 .mcp.json 里同样能和另一台电脑并存（旧实现要求多设备必须全局，迁移会丢掉开关）。
+  expect(calls("stable_connect_start")[0][1]).toMatchObject({ scope: "project", projectPath: project.path, multiDevice: true,
     access: { scopeChange: true, target: { id: saved.id, scope: "user", name: saved.name } } });
   expect(host.querySelector(".tunnel-flow-scope")?.textContent).toContain("项目级 · orders");
 });
@@ -470,4 +472,53 @@ it("VPN 正在重连时展示恢复状态，暂停后的恢复只启动原隧道
   await click("恢复隧道");
   expect(calls("stable_connect_start")[0][1]).toMatchObject({ access: null, connectionId: server.id, projectPath: project.path });
   expect(step()).toBeUndefined();
+});
+
+it("项目级也能开多设备：接入目标页可切换，命令按项目范围与设备条目提交", async () => {
+  await mount(base, false);
+  await click("检查此服务器");
+  expect(calls("stable_connect_inspect")[0]?.[1]).toMatchObject({ multiDevice: false });
+  await click("选择项目");
+  await chooseRecent();
+  // 旧实现把多设备限定在全局范围，项目级连开关都不渲染。
+  const toggle = host.querySelector<HTMLButtonElement>('[aria-label="多设备接入模式"]');
+  expect(toggle).not.toBeNull();
+  await act(async () => toggle!.click());
+  await flush();
+  expect(toggle!.getAttribute("aria-checked")).toBe("true");
+  await click("核对接入配置");
+  await click("创建隧道接入");
+  expect(calls("stable_connect_start")[0][1]).toMatchObject({ scope: "project", projectPath: project.path, multiDevice: true });
+});
+
+it("开启多设备会放弃其他设备的旧条目并等待新的端口检查", async () => {
+  const legacy = { ...target, tokenMatches: false };
+  const next = deferred<StableDiscovery>();
+  inspectHandler = (args) => args.multiDevice
+    ? next.promise
+    : Promise.resolve({ ...discovery([legacy], args.projectPath as string | null), tunnelPort: 17901 });
+  await mount();
+  const toggle = host.querySelector<HTMLButtonElement>('[aria-label="多设备接入模式"]');
+  expect(toggle).not.toBeNull();
+  await act(async () => toggle!.click());
+  await flush();
+  expect(calls("stable_connect_inspect").slice(-1)[0]?.[1]).toMatchObject({ multiDevice: true });
+  expect(button("创建隧道接入")).toBeUndefined();
+  expect(calls("stable_connect_start")).toHaveLength(0);
+  await act(async () => next.resolve({ ...discovery([], project.path), signature: "multi-receipt", tunnelPort: 17902 }));
+  await flush();
+  await click("核对接入配置");
+  await click("创建隧道接入");
+  expect(calls("stable_connect_start")[0]?.[1]).toMatchObject({
+    multiDevice: true,
+    access: { target: null, tunnelPort: 17902, inspection: { signature: "multi-receipt" } },
+  });
+});
+
+it("后台换号成功后在日常接入页提示重新复制地址", async () => {
+  savedTunnel({ ...target, url: "http://127.0.0.1:43127/mcp" });
+  backend.connections[0].message = "已自动换到端口 43127 并重新接入。若在别处保存过这台的地址，请重新复制。";
+  await mount();
+  expect(host.textContent).toContain("已自动换到端口 43127");
+  expect(host.textContent).toContain("请重新复制");
 });

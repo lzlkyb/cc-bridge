@@ -394,6 +394,20 @@ impl TunnelStatus {
 const REMOTE_LISTEN_FAILURE: &str =
     "服务器拒绝监听（端口已被占用，或 sshd 不允许绑定该地址，见 GatewayPorts）";
 
+/// 规则失败是否是「服务器拒绝监听」，也就是端口被占。
+///
+/// 抽成函数是因为这条判据现在有两处消费：监管线程据此停止无意义重连，
+/// 多设备连接启动时据此决定要不要自动换号重接（见 `stable_connect_cmds`）。
+/// 文案只有一个真源，免得改一处漏一处。
+pub(crate) fn port_taken_rule(rule: &RuleStatus) -> bool {
+    rule.state == RuleState::Failed && rule.message.as_deref() == Some(REMOTE_LISTEN_FAILURE)
+}
+
+/// 整条隧道是否因为端口被占而失败。
+pub(crate) fn port_taken(status: &TunnelStatus) -> bool {
+    status.rules.iter().any(port_taken_rule)
+}
+
 fn unique_index(mut candidates: impl Iterator<Item = usize>) -> Option<usize> {
     let first = candidates.next()?;
     candidates.next().is_none().then_some(first)

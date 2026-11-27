@@ -110,6 +110,20 @@ with tempfile.TemporaryDirectory() as directory:
         chunks = [line[len('CCB_DATA '):] for line in output.splitlines() if line.startswith('CCB_DATA ')]
         return json.loads(base64.b64decode(''.join(chunks))) if chunks else None
 
+    # A receipt created before enabling multi-device mode cannot move the other device's entry.
+    _, project_data = reset()
+    project_data['mcpServers']['cc-bridge-device-b'] = project_data['mcpServers'].pop(name)
+    save(project_file, project_data)
+    receipt = ns['inspect'](read_payload)
+    foreign = next(t for t in receipt['targets'] if t['name'] == 'cc-bridge-device-b')
+    payload = {'port': 43127, 'scope': 'user', 'path': '', 'transport': 'http', 'multi': True,
+               'name': 'cc-bridge-device-a', 'deviceId': 'device-a', 'token': read_payload['token'],
+               'ports': [43127], 'access': {'target': foreign, 'inspection': receipt, 'scopeChange': True}}
+    before = bytes_before()
+    code, output = execute(payload)
+    assert code != 0 and 'CCB_TARGET_CHANGED' in output, output
+    assert_unchanged(before)
+
     # Project -> global preserves the name/options and removes exactly the old project entry.
     global_original, project_original = reset()
     payload = request('project', 'user')

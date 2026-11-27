@@ -684,7 +684,7 @@ async fn stop_tunnel(state: &Arc<AppState>, id: &str, release: bool) -> bool {
 
 /// 改状态并推给前端。已停止的转发不再发事件：同一连接可能已经换成了新进程，
 /// 旧线程收尾时的状态会盖掉新的。
-fn publish(
+pub(super) fn publish(
     app: &AppHandle,
     stop: &AtomicBool,
     status: &StdMutex<TunnelStatus>,
@@ -777,11 +777,8 @@ fn supervise_loop(
             ) => r,
             None => last.unwrap_or_else(|| "SSH 进程已退出".into()),
         };
-        let is_stable = status
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .connection_id
-            .starts_with("stable:");
+        let stable_id = plan.id.strip_prefix("stable:");
+        let is_stable = stable_id.is_some();
         if is_stable {
             log::warn!("托管隧道本次未连通：{reason}");
         }
@@ -789,6 +786,35 @@ fn supervise_loop(
         // to time out. Retry the assigned port with backoff so existing clients keep their URL.
         let port_taken = port_taken_stops_retry(is_stable || relay_allocation_pending, &reason);
         if stop_here || is_fatal(&reason) || port_taken {
+            let repair = stable_id.zip(plan.state.upgrade()).filter(|(id, state)| {
+                port_taken
+                    && crate::ssh_tunnel::port_taken(
+                        &status.lock().unwrap_or_else(|p| p.into_inner()),
+                    )
+                    && state.config.try_read().is_ok_and(|config| {
+                        let saved = config
+                            .stable_connect
+                            .connections
+                            .iter()
+                            .find(|saved| saved.connection_id == *id);
+                        crate::stable_connect::auto_reconnects_on_port_conflict(saved)
+                    })
+            });
+            if let Some((id, state)) = repair {
+                publish(app, stop, status, |s| {
+                    s.state = TunnelState::Error;
+                    s.message = Some("服务器无法监听原隧道端口，正在自动换号重接。".into());
+                    true
+                });
+                let app = app.clone();
+                let id = id.to_string();
+                let failed_stop = stop.clone();
+                tauri::async_runtime::spawn(async move {
+                    super::stable_connect_cmds::recover_multi_port(&app, &state, &id, failed_stop)
+                        .await;
+                });
+                return;
+            }
             publish(app, stop, status, |s| {
                 s.state = TunnelState::Error;
                 // SSH may report a rejected credential only when exiting, without another prompt.

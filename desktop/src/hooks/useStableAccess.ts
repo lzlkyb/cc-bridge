@@ -25,13 +25,15 @@ export function useStableAccess(stable: StableConnectState, status: StaticStatus
   const needsInspection = enabled && stable.enabled && !!stable.connection && !stable.busy && !stable.ui.selecting && !stable.ui.dialog
     && (!stable.record?.configured || !stable.ui.managing && (!stable.record.configMatches || stable.ui.verify));
 
-  const inspect = useCallback(async (path?: string, scoped = false, source?: StableTarget, destination?: { scope: "user" | "project"; project?: StableProject }, mode: "normal" | "silent" | "repair" = "normal") => {
+  const inspect = useCallback(async (path?: string, scoped = false, source?: StableTarget, destination?: { scope: "user" | "project"; project?: StableProject }, mode: "normal" | "silent" | "repair" = "normal", multiOverride?: boolean) => {
     const snapshot = latest.current;
     if (!snapshot.active || !snapshot.stable.connection) return;
     const request = ++generation.current;
     const credentials = snapshot.stable.ui.credentialConnectionId === snapshot.stable.selectedId ? snapshot.stable.ui.credentials : {};
     // Loading recent projects must not dismiss a chooser the user just opened.
-    setStored(old => ({ ...(old.key === snapshot.key ? old : initial(snapshot.key)), checking: true, error: "", needsSecret: false, loginVerified: false,
+    const multi = multiOverride ?? (snapshot.stable.record?.configured ? snapshot.stable.record.multiDevice : snapshot.current.multiDevice);
+    setStored(old => ({ ...(old.key === snapshot.key ? old : initial(snapshot.key)), checking: true, error: "", needsSecret: false, loginVerified: false, multiDevice: multi,
+      ...(multiOverride === undefined ? {} : { targetId: "", picker: null }),
       ...(mode === "repair" ? { picker: null, targetId: "", scopeEditing: false, scopeSource: undefined } :
         source ? { scopeEditing: true, scopeSource: source, targetId: source.id, ...destination } : {}) }));
     try {
@@ -39,12 +41,13 @@ export function useStableAccess(stable: StableConnectState, status: StaticStatus
         connectionId: snapshot.stable.selectedId, projectPath: path ?? null,
         sourceProjectPath: source ? source.projectPath : null,
         password: credentials.password ?? null, passphrase: credentials.passphrase ?? null,
+        multiDevice: multi,
       });
       if (request !== generation.current || latest.current.key !== snapshot.key || !latest.current.active) return;
       const targets = path && !source ? result.targets.filter(target => target.projectPath === result.inspectedProjectPath)
         : mode === "repair" && !source ? result.targets.filter(target => target.scope === snapshot.stable.record?.scope) : result.targets;
       const filtered = { ...result, targets };
-      const preferred = snapshot.current.targetId || snapshot.stable.record?.target?.id;
+      const preferred = multiOverride === undefined ? snapshot.current.targetId || snapshot.stable.record?.target?.id : undefined;
       const target = source ? targets.find(target => target.id === source.id) : mode === "repair" ? undefined : chooseStableTarget(filtered, preferred);
       const selectedPath = target?.projectPath || result.inspectedProjectPath;
       setStored(old => {
@@ -56,7 +59,7 @@ export function useStableAccess(stable: StableConnectState, status: StaticStatus
           result: filtered, checking: false, error: source && result.complete && !target ? "原接入已变化或不存在，请取消更改并重新检查接入。" : "", needsSecret: false, loginVerified: result.complete && !!(credentials.password || credentials.passphrase), scoped,
           targetId: target?.id ?? source?.id ?? "", scope: destination?.scope ?? (target ? target.scope === "user" ? "user" : "project" : "project"),
           project: destination ? destination.project : selectedPath ? { name: stableProjectName(selectedPath), path: selectedPath } : undefined,
-          multiDevice: target ? snapshot.stable.record?.multiDevice ?? false : snapshot.current.multiDevice,
+          multiDevice: multi,
           picker: old.picker === "projects" ? "projects" : !source && result.complete && targets.length > 0 && !target ? "entries" : null,
         };
       });
@@ -129,7 +132,7 @@ export function useStableAccess(stable: StableConnectState, status: StaticStatus
   const setup: StableSetup | undefined = result?.complete && !failed && !current.checking && !current.picker
     && (scope === "user" || projectPath) ? {
       scope, projectPath,
-      multiDevice: scope === "user" && (target ? stable.record?.multiDevice ?? false : current.multiDevice),
+      multiDevice: current.multiDevice,
       access: { target: target ?? null, ...(scopeChanged ? { scopeChange: true } : {}), tunnelPort: result.tunnelPort ?? null, inspection: { signature: result.signature, complete: result.complete,
         files: result.files.filter(file => file.scope === "user" || file.configFile === target?.configFile || file.projectPath === projectPath) } },
     } : undefined;
@@ -166,7 +169,13 @@ export function useStableAccess(stable: StableConnectState, status: StaticStatus
     message: current.error || result?.warnings[0] || "", chooseScope, chooseProject, chooseTarget, retry, observe, inspectOriginal,
     openProjects: () => update({ picker: "projects" }), openTargets: () => update({ picker: "entries" }),
     closePicker: () => update({ picker: result?.complete && result.targets.length && !target ? "entries" : null }),
-    setMultiDevice: (multiDevice: boolean) => update({ multiDevice }),
+    setMultiDevice: (multiDevice: boolean) => {
+      // A different mode uses a different ledger and ownership filter on the server.
+      const project = current.project;
+      const path = current.scope === "project" ? project?.path : undefined;
+      void inspect(path, !!path, undefined,
+        { scope: current.scope, project }, "normal", multiDevice);
+    },
     apply: async () => {
       if (!setup) return false;
       const success = await stable.start(setup);

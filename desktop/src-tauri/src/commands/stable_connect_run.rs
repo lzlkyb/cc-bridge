@@ -29,12 +29,12 @@ pub(super) async fn configure(
     state: &Arc<AppState>,
     config: &BridgeConfig,
     op: &StableOperation,
-    password: Option<String>,
-    passphrase: Option<String>,
+    credentials: (Option<String>, Option<String>),
+    activate: bool,
 ) -> Result<Option<ReplacedTarget>, String> {
     let mut takeover = super::forward_takeover::Takeover::default();
     let result =
-        configure_with_takeover(app, state, config, op, password, passphrase, &mut takeover).await;
+        configure_with_takeover(app, state, config, op, credentials, &mut takeover, activate).await;
     match result {
         Ok(replaced) => Ok(replaced),
         Err(error) => match takeover.restore(app, state).await {
@@ -49,9 +49,9 @@ async fn configure_with_takeover(
     state: &Arc<AppState>,
     config: &BridgeConfig,
     op: &StableOperation,
-    password: Option<String>,
-    passphrase: Option<String>,
+    (password, passphrase): (Option<String>, Option<String>),
     takeover: &mut super::forward_takeover::Takeover,
+    activate: bool,
 ) -> Result<Option<ReplacedTarget>, String> {
     let request = op.record.lock().unwrap_or_else(|p| p.into_inner()).clone();
     let id = &request.connection_id;
@@ -64,14 +64,15 @@ async fn configure_with_takeover(
         .find(|s| &s.connection_id == id);
     let mut port = request.port;
     progress(app, op, 1)?;
-    // 用户主动「重新接入」（带 access）时允许换端口：服务器刚按账号分配的那个号优先。
-    // 后台恢复（无 access）绝不能换，否则 VPN 重连会悄悄改掉已确认的 MCP 地址。
+    // 多设备只能使用服务器分配的端口。试旧候选可能占到同账号离线设备的端口，
+    // 而且这些号码不会写进该设备的账本。
     let mut ports = if op.access.is_some() {
-        stable::candidate_ports(
-            None,
-            op.access.as_ref().and_then(|access| access.tunnel_port),
-            config.port,
-        )
+        let allocated = op.access.as_ref().and_then(|access| access.tunnel_port);
+        if request.multi_device {
+            allocated.filter(|port| *port >= 1024).into_iter().collect()
+        } else {
+            stable::candidate_ports(None, allocated, config.port)
+        }
     } else {
         stable::candidate_ports(saved.map(|s| s.port), None, config.port)
     };
@@ -80,7 +81,7 @@ async fn configure_with_takeover(
     // 旧记录里的 port 若被写坏成 0 或特权端口，不能拿去建隧道——`-R 0` 会让 sshd
     // 自己挑一个号，那号没人记账、下次必然对不上。
     ports.retain(|port| *port >= 1024);
-    if ports.is_empty() {
+    if ports.is_empty() && !request.multi_device {
         ports = stable::candidate_ports(None, None, config.port);
     }
     let mut reallocated = false;
@@ -193,6 +194,14 @@ async fn configure_with_takeover(
     if !current.ssh_enabled
         || !state.mcp_running.load(Ordering::SeqCst)
         || stable::fingerprint(&current, id) != stable::fingerprint(config, id)
+        || (!activate
+            && !saved.is_some_and(|inspected| {
+                current
+                    .stable_connect
+                    .connections
+                    .iter()
+                    .any(|entry| entry.enabled && stable::same_saved_endpoint(entry, inspected))
+            }))
     {
         return Err("本机服务或 SSH 配置在接入期间发生变化，请重新接入。".into());
     }
@@ -214,8 +223,7 @@ async fn configure_with_takeover(
     } else {
         next.connections.push(saved);
     }
-    next.method = Some("stable".into());
-    next.selected_connection_id = Some(id.clone());
+    select_configured(&mut next, id, activate);
     let tx = db.unchecked_transaction().map_err(|e| e.to_string())?;
     crate::config::save_config_field(
         &tx,
@@ -242,6 +250,30 @@ async fn configure_with_takeover(
     Ok(replaced)
 }
 
+fn select_configured(settings: &mut stable::StableSettings, id: &str, activate: bool) {
+    // A background port repair must not change the user's selected server or access method.
+    if activate {
+        settings.method = Some("stable".into());
+        settings.selected_connection_id = Some(id.into());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn background_repair_preserves_the_selected_access() {
+    let mut settings = stable::StableSettings {
+        method: Some("direct".into()),
+        selected_connection_id: Some("current".into()),
+        ..Default::default()
+    };
+    select_configured(&mut settings, "repaired", false);
+    assert_eq!(settings.method.as_deref(), Some("direct"));
+    assert_eq!(settings.selected_connection_id.as_deref(), Some("current"));
+    select_configured(&mut settings, "repaired", true);
+    assert_eq!(settings.method.as_deref(), Some("stable"));
+    assert_eq!(settings.selected_connection_id.as_deref(), Some("repaired"));
+}
+
 pub(super) async fn resume_saved(
     state: &Arc<AppState>,
     config: &BridgeConfig,
@@ -265,19 +297,12 @@ pub(super) async fn resume_saved(
         .iter_mut()
         .find(|s| s.connection_id == saved.connection_id)
         .ok_or("原接入配置已变化，请重新检查。")?;
-    if entry.port != saved.port
-        || entry.scope != saved.scope
-        || entry.project_path != saved.project_path
-        || entry.multi_device != saved.multi_device
-        || entry.fingerprint != saved.fingerprint
-        || entry.target.as_ref().map(|t| &t.id) != saved.target.as_ref().map(|t| &t.id)
-    {
+    if !stable::same_saved_endpoint(entry, saved) {
         return Err("原接入配置已变化，请重新检查。".into());
     }
     // Persist the user's resume intent only; do not rewrite or re-verify MCP during network recovery.
     entry.enabled = true;
-    next.method = Some("stable".into());
-    next.selected_connection_id = Some(saved.connection_id.clone());
+    select_configured(&mut next, &saved.connection_id, true);
     crate::config::save_config_field(
         &db,
         "stable_connect",
@@ -306,10 +331,16 @@ async fn reallocate_port(
     password: Option<String>,
     passphrase: Option<String>,
 ) -> Option<u16> {
+    let multi = op
+        .record
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .multi_device;
+    let device_id = state.config.read().await.device_id.clone();
     let output = super::ssh_cmds::run_stable_setup(
         state,
         link,
-        stable::reallocate_script(),
+        stable::reallocate_script(multi, &device_id),
         password,
         passphrase,
         op.cancel.clone(),
@@ -346,8 +377,17 @@ async fn wait_for_tunnel(
                 .unwrap_or_else(|p| p.into_inner())
                 .needs_secret = true;
         }
-        if status.rules.iter().any(|r| r.state == RuleState::Failed) {
+        if crate::ssh_tunnel::port_taken(&status) {
             return Err(("服务器无法监听转发端口".into(), true));
+        }
+        if let Some(failed) = status.rules.iter().find(|r| r.state == RuleState::Failed) {
+            return Err((
+                failed
+                    .message
+                    .clone()
+                    .unwrap_or_else(|| "转发规则启动失败".into()),
+                false,
+            ));
         }
         if status.state == TunnelState::Up
             && status.rules.iter().all(|r| r.state == RuleState::Listening)

@@ -106,6 +106,10 @@ with tempfile.TemporaryDirectory() as directory:
     setup = {'port': server.server_port, 'scope': 'user', 'path': '', 'transport': 'http', 'name': 'cc-bridge',
              'token': p['token'], 'deviceId': p['deviceId'], 'ports': p['ports'],
              'access': {'target': target, 'inspection': discovered}}
+    before = global_file.read_bytes()
+    code, output = execute(CONFIGURE, {**setup, 'multi': True})
+    assert code != 0 and 'CCB_TARGET_CHANGED' in output, output
+    assert global_file.read_bytes() == before
     code, output = execute(CONFIGURE, setup)
     assert code == 0 and 'CCB_CONFIGURED' in output
     # 账本必须记下「实际写进 url 的端口」：隧道若因端口被占退避过，不写回就会每次
@@ -263,6 +267,61 @@ for broken in ('garbage', '80', '99999', ''):
     assert 1024 <= healed <= 65535, (broken, healed)
     assert open(ledger, encoding='utf-8').read().strip() == str(healed)
 
+# 多设备：同一个 SSH 账号的两台电脑共用 home，账本必须一人一本——共用一本就是
+# 「后写者覆盖先写者」，正是 A 离线、B 记下 A 的号、A 回来永久撞车的成因。
+with open(ledger + '-aaaa', 'w', encoding='utf-8') as handle:
+    handle.write('%d\n' % (ns['PORT_BASE'] + 3))
+with open(ledger + '-bbbb', 'w', encoding='utf-8') as handle:
+    handle.write('%d\n' % (ns['PORT_BASE'] + 4))
+legacy_before = open(ledger, encoding='utf-8').read().strip()
+assert ns['tunnel_port'](False, True, 'aaaa') == ns['PORT_BASE'] + 3
+assert ns['tunnel_port'](False, True, 'bbbb') == ns['PORT_BASE'] + 4, '两台设备必须各读各的账本'
+assert ns['tunnel_port']() == int(legacy_before), '多设备读写不能碰旧账本'
+# 设备尾号为空/脏值时按固定串归档，不能拼出目录外路径或覆盖别人的账本。
+assert ns['ledger_device']('') == 'device'
+assert ns['ledger_device']('../../etc/passwd') == 'etcpasswd', ns['ledger_device']('../../etc/passwd')
+# 多设备首次接入不读旧账本：旧账本记的是「这个账号上次用的号」，很可能是另一台的。
+fresh = ns['tunnel_port'](False, True, 'cccc')
+assert ns['PORT_BASE'] <= fresh < ns['PORT_BASE'] + ns['PORT_SPAN'], fresh
+assert open(ledger, encoding='utf-8').read().strip() == legacy_before, '首次分配也不能写旧账本'
+assert open(ledger + '-cccc', encoding='utf-8').read().strip() == str(fresh)
+with tempfile.TemporaryDirectory() as directory:
+    isolated = Path(directory) / 'tunnel-port'
+    os.environ['CCB_TUNNEL_PORT_FILE'] = str(isolated)
+    # Both devices are offline between allocations, so only the ledger reserves the first port.
+    free = ns['port_is_free']
+    ns['port_is_free'] = lambda _port: True
+    try:
+        first = ns['tunnel_port'](False, True, 'new-device')
+        original = isolated.with_name('tunnel-port-other-device')
+        isolated.with_name('tunnel-port-new-device').rename(original)
+        second = ns['tunnel_port'](False, True, 'new-device')
+        assert first != second, '首次接入不能选已留给另一台离线设备的端口'
+        assert int(original.read_text(encoding='utf-8')) == first
+    finally:
+        ns['port_is_free'] = free
+        os.environ['CCB_TUNNEL_PORT_FILE'] = LEDGER
+
+# 多设备下不抢别人的老条目：`cc-bridge` 是单设备时代的固定名，同账号两台都沿用它
+# 就是继续互踢；令牌不是本机的旧条目必须当别人的接入忽略。
+described = ns['describe']
+own_headers = {'Authorization': 'Bearer tok'}
+foreign = {'type': 'http', 'url': 'http://127.0.0.1:17900/mcp', 'headers': {'Authorization': 'Bearer other'}}
+own = {'type': 'http', 'url': 'http://127.0.0.1:17900/mcp', 'headers': own_headers}
+def access_payload(multi):
+    return {'signature': 's', 'token': 'tok', 'deviceId': 'aaaa', 'ports': [7823], 'multi': multi}
+assert described(access_payload(False), 'cc-bridge', foreign, 'user', '~/.claude.json')['recognized'] is True, \
+    '未启用多设备时判据必须逐字不变'
+assert described(access_payload(True), 'cc-bridge', foreign, 'user', '~/.claude.json') is None, \
+    '多设备下令牌不匹配的旧条目应视为别人的接入'
+assert described({**access_payload(True), 'ports': [17900]}, 'cc-bridge', foreign, 'user', '~/.claude.json') is None
+assert described(access_payload(True), 'cc-bridge-bbbb', own, 'user', '~/.claude.json') is None
+assert described(access_payload(True), 'cc-bridge', own, 'user', '~/.claude.json')['recognized'] is True, \
+    '本机自己写的旧条目仍要认（老用户原地升级）'
+assert described(access_payload(True), 'cc-bridge-aaaa', own, 'user', '~/.claude.json')['recognized'] is True
+assert described(access_payload(False), 'cc-bridge-aaaa', foreign, 'user', '~/.claude.json') is not None, \
+    '本机条目名不受令牌影响'
+
 # 自愈脚本必须能被单独执行：Rust 侧只是把它的源码当字符串发过来，少一个符号
 # （emit / receive / tunnel_port）直到真机才炸——而这条路径恰恰是用户已经失败过一次、
 # 最没有耐心再来一轮的时候才会走到的。
@@ -277,6 +336,24 @@ frames = ''.join(line[len('CCB_DATA '):] for line in output.splitlines() if line
 moved = json.loads(__import__('base64').b64decode(frames))['port']
 assert moved != seeded, (seeded, moved)
 assert ns['PORT_BASE'] <= moved < ns['PORT_BASE'] + ns['PORT_SPAN'], moved
+
+# 自愈脚本同样要跟着多设备走：payload 里有 multi/deviceId 时，换号结果只能写进
+# 本机那本账，绝不能顺手把旧账本（很可能是另一台设备的号）改掉。
+squatter = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+squatter.bind(('127.0.0.1', 0))
+squatter.listen(1)
+taken = squatter.getsockname()[1]
+with open(ledger + '-dddd', 'w', encoding='utf-8') as handle:
+    handle.write('%d\n' % taken)
+legacy_before = open(ledger, encoding='utf-8').read().strip()
+code, output = execute(REALLOCATE, {'multi': True, 'deviceId': 'dddd'})
+assert code == 0, (code, output)
+frames = ''.join(line[len('CCB_DATA '):] for line in output.splitlines() if line.startswith('CCB_DATA '))
+multi_moved = json.loads(__import__('base64').b64decode(frames))['port']
+assert multi_moved != taken, (taken, multi_moved)
+assert open(ledger + '-dddd', encoding='utf-8').read().strip() == str(multi_moved)
+assert open(ledger, encoding='utf-8').read().strip() == legacy_before, '多设备换号不能改旧账本'
+squatter.close()
 
 server.shutdown()
 print('FIXTURE_OK')

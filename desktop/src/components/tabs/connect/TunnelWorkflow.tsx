@@ -158,7 +158,9 @@ export function TunnelWorkflow({ state, status, onRefresh, tlsEnabled, onNavigat
         {flow === "repair" && !access.target && note("没有认出原条目。请核对服务器和配置文件，确认目标后再更新。")}
         {access.target && !access.scopeEditing && flow !== "repair" && <div className="tunnel-flow-box tunnel-flow-summary-row"><div><strong>{access.target.name} · {stableScopeLabel(access.target.scope)}</strong><p>{access.target.projectPath || "服务器上的所有项目"}</p><code>{access.target.url}</code></div><Button variant="outline" onClick={access.openTargets}><Icon name="folder" size={15}/>更换接入</Button></div>}
       </>}
-      {flow === "first" && access.scope === "user" && !access.target && !access.failed && !access.picking && access.result?.complete &&
+      {/* 更多设置两种范围都给：多设备开关住在里面，项目级也要能在核对之前打开它
+          （条目名会变成 cc-bridge-<尾号>，与另一台电脑的条目并存）。 */}
+      {flow === "first" && !access.failed && access.picker !== "projects" && access.result?.complete &&
         <StableAccessSettings state={state} access={access} status={status} onRefresh={onRefresh}/>}
     </>}
 
@@ -179,6 +181,10 @@ export function TunnelWorkflow({ state, status, onRefresh, tlsEnabled, onNavigat
       {!applying && cancelled && note("本次配置已取消。请重新检查服务器配置后再应用。")}
       {!applying && !cancelled && issue && note(issue)}
       {!applying && access.target?.tokenMatches === false && note("服务器上的 Token 与本机不同，本次会一并更新。")}
+      {!applying && !state.record?.configured && flow === "migration" && access.result?.complete &&
+        <StableAccessSettings state={state} access={{ ...access, openProjects: chooseAnotherProject, setMultiDevice: enabled => {
+          access.setMultiDevice(enabled); setFlow("first"); setStep(2);
+        } }} status={status} onRefresh={onRefresh}/>}
       {!applying && !access.scopeEditing && confirmedPort && (access.target ?? target) && <StableManualFix tunnelPort={confirmedPort} directUrl={(access.target ?? target)?.url}/>}
     </>}
 
@@ -204,6 +210,7 @@ export function TunnelWorkflow({ state, status, onRefresh, tlsEnabled, onNavigat
       {details && note(state.record?.message || "正在按原固定端口重试，网络恢复后会更新连接状态。")}
       {state.error && note(state.error)}
       {state.record?.phase === "error" && !authNeeded && !state.error && state.record.message && note(state.record.message)}
+      {state.ready && state.record?.message && note(state.record.message)}
       {pause && <div className="tunnel-flow-box"><p>暂停后，这台服务器的 Claude Code 将暂时无法通过此隧道接入。</p><div className="tunnel-flow-inline"><Button variant="destructive" size="sm" onClick={() => { void state.stop(); updateControls({ pause: false }); }}>确认暂停</Button><Button variant="outline" size="sm" onClick={() => updateControls({ pause: false })}>取消</Button></div></div>}
       <StableAccessSettings state={state} access={{ ...access, openProjects: chooseAnotherProject }} status={status} onRefresh={onRefresh} onStableUpdate={beginRepair}/>
     </>}
