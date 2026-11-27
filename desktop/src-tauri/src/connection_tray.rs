@@ -57,6 +57,7 @@ pub fn menu(
         menu.append(&MenuItem::with_id(app, id, title, enabled, None::<&str>)?)
     };
     add("show", "打开面板", true)?;
+    add("storage_maintenance", "存储与维护", true)?;
     if let Some(current) = current {
         add(
             "access_summary",

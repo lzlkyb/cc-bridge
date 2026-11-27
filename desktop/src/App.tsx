@@ -410,6 +410,28 @@ function AppContent() {
     return () => { disposed = true; stop?.(); };
   }, [handleNavigate]);
 
+  // Native reminders should keep their one-shot navigation listener across tab changes.
+  const storageNavigate = useRef(handleNavigate);
+  storageNavigate.current = handleNavigate;
+  useEffect(() => {
+    let disposed = false;
+    const stops: (() => void)[] = [];
+    const openStorage = () => storageNavigate.current("settings", "set-storage");
+    const consume = async () => {
+      try { if (!disposed && await invoke<boolean>("take_storage_navigation") && !disposed) openStorage(); }
+      catch { /* The storage page remains available from the settings and tray menus. */ }
+    };
+    const register = async (subscription: Promise<() => void>) => {
+      const stop = await subscription;
+      if (disposed) stop(); else stops.push(stop);
+    };
+    void register(listen("storage:navigate", () => void consume())).then(consume).catch(() => {});
+    void register(listen<{ body: string }>("storage:alert", event => {
+      if (!disposed) toast(event.payload.body, "warning", { label: "查看存储", onClick: openStorage }, 8000);
+    })).catch(() => {});
+    return () => { disposed = true; stops.forEach(stop => stop()); };
+  }, []);
+
   // 闲时预取非首屏 Tab 的 chunk（2026-11-06，与 TabFallback 分档配套）。
   // 1.5s 已经过了首屏绘制与首帧骨架的交接，此时加载不抢资源；本地盘读几百 KB
   // 通常几十毫秒。预取后切 Tab 几乎不触发 Suspense —— 那才是「不闪」的根本解，

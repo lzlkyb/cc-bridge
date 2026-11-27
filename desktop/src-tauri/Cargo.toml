@@ -78,6 +78,7 @@ rand = "0.8"
 
 # Filesystem
 regex = "1"
+semver = "1"
 # view_image：图片解码/裁剪/缩放/重编码。
 # ⚠️ 不是全新依赖：`image 0.25.10` 已随 arboard（tauri-plugin-clipboard-manager）链在
 # 运行时树里，且 bmp/png 两个 codec 已启用（`cargo tree -e normal -i image -f "{p} {f}"` 可复核）。
@@ -224,6 +225,7 @@ tempfile = "3"
 process-wrap = { version = "=8.0.2", default-features = false, features = ["job-object", "creation-flags"] }
 
 [target.'cfg(unix)'.dependencies]
+libc = "0.2"
 # Unix 没有 JobObject 这种“进程树容器”，用**进程组**代替：process-group 让子进程
 # spawn 时 setpgid 成为组长，于是 start_kill() 会向整个进程组发信号、连子孙进程
 # 一起杀——等价于 Windows 侧 TerminateJobObject 的效果，而且该 feature 是纯标记

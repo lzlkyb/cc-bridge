@@ -49,12 +49,6 @@
 .settings-data-page { max-width:1120px; }
 .settings-data-page>.settings-choice { margin-bottom:17px; }
 .settings-data-page>div>.ui-card { border:0; }
-.settings-side-nav { display:flex;flex-direction:column;gap:3px; }
-.settings-side-nav .app-side-item { min-height:53px; }
-.settings-side-nav .app-side-label { display:flex;flex-direction:column;gap:4px;min-width:0; }
-.settings-side-nav .app-side-label>small { font-size:10px;line-height:1.5;color:hsl(var(--muted-foreground));font-weight:400; }
-.settings-side-nav .app-side-label>span { font-size:13px; }
-.settings-about-link { margin-top:auto; }
 .settings-category .srow input,.settings-category .srow select { max-width:100%; }
 .settings-category .srow input[type=number] { min-height:34px; }
 .settings-category .srow .truncate { overflow-wrap:anywhere;white-space:normal; }

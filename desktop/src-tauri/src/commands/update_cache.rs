@@ -254,7 +254,7 @@ async fn transfer_partial(
     Ok(bytes)
 }
 
-pub(super) fn package_path(data_dir: &Path) -> PathBuf {
+pub(crate) fn package_path(data_dir: &Path) -> PathBuf {
     data_dir.join(PACKAGE_FILE)
 }
 
@@ -267,6 +267,43 @@ pub(super) fn save_metadata(path: &Path, update: &Update) -> std::io::Result<()>
 pub(super) fn read_metadata(path: &Path) -> Option<serde_json::Value> {
     let file = std::fs::File::open(path.with_extension("manifest.json")).ok()?;
     serde_json::from_reader(file.take(1024 * 1024)).ok()
+}
+
+/// The stale manifest must describe the bytes in the cache. A sidecar from a failed
+/// write must never cause a newer package to be discarded.
+pub(crate) fn obsolete_package(path: &Path, current: &semver::Version) -> bool {
+    let Some(raw) = read_metadata(path) else {
+        return false;
+    };
+    let Some(version) = raw.get("version").and_then(serde_json::Value::as_str) else {
+        return false;
+    };
+    let Ok(release) = semver::Version::parse(version.trim_start_matches('v')) else {
+        return false;
+    };
+    if release.cmp_precedence(current).is_gt() {
+        return false;
+    }
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; ID_BYTES as usize];
+    if file.read_exact(&mut header).is_err() {
+        return false;
+    }
+    let matches = |value: &serde_json::Value| {
+        value
+            .get("signature")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|signature| {
+                header == package_id(version.trim_start_matches('v'), signature)
+            })
+    };
+    matches(&raw)
+        || raw
+            .get("platforms")
+            .and_then(serde_json::Value::as_object)
+            .is_some_and(|platforms| platforms.values().any(matches))
 }
 
 pub(super) struct PreparedUpdate {
@@ -308,7 +345,7 @@ pub(super) fn cached_package(
     verify(&bytes).then_some(bytes)
 }
 
-pub(super) fn persist_package(
+pub(crate) fn persist_package(
     path: &Path,
     version: &str,
     signature: &str,

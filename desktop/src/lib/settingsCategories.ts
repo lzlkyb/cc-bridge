@@ -7,6 +7,7 @@ export const SETTINGS_CATEGORIES: SettingsSection[] = [
   { id: "set-files", label: "文件与命令", icon: "folder", group: 1 },
   { id: "set-mcpbridge", label: "外挂 MCP", icon: "plug", group: 1 },
   { id: "set-data", label: "数据与记录", icon: "history", group: 2 },
+  { id: "set-storage", label: "存储与维护", icon: "server", group: 2 },
   { id: "set-notify", label: "通知", icon: "bell", group: 2 },
   { id: "set-about", label: "关于与更新", icon: "info", group: 3 },
 ];
@@ -18,6 +19,7 @@ export const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   "set-files": "控制文件读取、MCP 命令行为与访问边界。",
   "set-mcpbridge": "管理转给远程 AI 的本机 MCP 服务。",
   "set-data": "让备份、记录保留与配置迁移更清楚。",
+  "set-storage": "查看 CC Bridge 在本机的占用，清理过期日志、缓存和临时文件。",
   "set-notify": "按需要接收命令与任务完成提醒。",
   "set-about": "版本信息、使用帮助与更新记录。",
 };

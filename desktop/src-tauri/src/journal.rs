@@ -250,10 +250,7 @@ where
     if !JOURNAL_TOOLS.contains(&tool) {
         return fut.await;
     }
-    let (enabled, retention) = {
-        let c = state.config.read().await;
-        (c.journal_enabled, c.journal_retention_days)
-    };
+    let enabled = state.config.read().await.journal_enabled;
     if !enabled {
         return fut.await;
     }
@@ -304,7 +301,7 @@ where
     let (result, echoes) = CALL
         .scope(ctx, async move {
             let r = fut.await;
-            finalize(&data_dir, retention);
+            finalize(&data_dir);
             let echoes = if is_root {
                 CALL.with(|c| {
                     std::mem::take(&mut *c.echoes.lock().unwrap_or_else(|e| e.into_inner()))
@@ -380,7 +377,7 @@ fn changed(op: Op, before: &PathState, after: &PathState, from_gone: bool) -> bo
 }
 
 /// 收尾：把本次调用登记的路径逐条写盘，必要时产生回显。
-fn finalize(data_dir: &Path, retention_days: u32) {
+fn finalize(data_dir: &Path) {
     let _ = CALL.try_with(|c| {
         let notes = std::mem::take(&mut *c.notes.borrow_mut());
         if notes.is_empty() {
@@ -422,7 +419,7 @@ fn finalize(data_dir: &Path, retention_days: u32) {
             .change_set
             .as_deref()
             .and_then(|name| register_name(data_dir, name));
-        if let Err(e) = append_entries(data_dir, retention_days, &mut entries) {
+        if let Err(e) = append_entries(data_dir, &mut entries) {
             log::error!("变更日志写入失败：{e}");
             return;
         }
@@ -491,30 +488,7 @@ fn last_seq(dir: &Path) -> u64 {
     0
 }
 
-/// 启动与每天定时调用：不管变更日志开没开都清一次超期文件。
-/// 否则关闭后不再有写入，旧日志就永远不会被删。
-pub fn cleanup_expired(data_dir: &Path, retention_days: u32) {
-    cleanup(&journal_dir(data_dir), retention_days);
-}
-
-/// 删掉超过保留天数的整份日志文件（不原地改写，跟读方的偏移不会失效）。
-fn cleanup(dir: &Path, retention_days: u32) {
-    let keep_from = (chrono::Local::now()
-        - chrono::Duration::days(i64::from(retention_days.max(1)) - 1))
-    .format("%Y%m%d")
-    .to_string();
-    for (day, path) in journal_files(dir) {
-        if day < keep_from {
-            let _ = fs::remove_file(path);
-        }
-    }
-}
-
-fn append_entries(
-    data_dir: &Path,
-    retention_days: u32,
-    entries: &mut [Entry<'_>],
-) -> std::io::Result<()> {
+fn append_entries(data_dir: &Path, entries: &mut [Entry<'_>]) -> std::io::Result<()> {
     let dir = journal_dir(data_dir);
     let mut map = WRITERS
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -531,7 +505,6 @@ fn append_entries(
         if w.next_seq == 0 {
             w.next_seq = last_seq(&dir) + 1;
         }
-        cleanup(&dir, retention_days);
         w.file = Some(
             OpenOptions::new()
                 .create(true)

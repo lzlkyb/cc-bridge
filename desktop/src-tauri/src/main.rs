@@ -484,29 +484,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 log::info!("已生成本机设备身份尾号：{}", bridge_config.device_id);
             }
 
-            // E-P2-4: 审计清理移到后台，避免大 audit.log 阻塞窗口显示
-            {
-                let cleanup_dir = data_dir.clone();
-                let retention = bridge_config.audit_retention_days;
-                let journal_retention = bridge_config.journal_retention_days;
-                tauri::async_runtime::spawn(async move {
-                    // 变更日志只删整份过期文件，很快；关闭时也清（关了就不再有写入顺手清）。
-                    crate::journal::cleanup_expired(&cleanup_dir, journal_retention);
-                    // 不再 `let _ =` 吞掉：这一步会重写 + rename audit.log，而 rename 在
-                    // Windows 上确实会因文件被占用而失败（参见 audit.rs 里 E-P0-7 那段）。
-                    // 吞掉的后果是：保留天数静默失效，日志无限增长而无人知道。
-                    match audit::cleanup_old_entries(&cleanup_dir, retention) {
-                        Ok(0) => {}
-                        Ok(n) => log::info!("启动清理审计日志：已删除 {n} 条过期记录（保留 {retention} 天）"),
-                        Err(e) => log::warn!("启动清理审计日志失败：{e}"),
-                    }
-                });
-            }
-
             // 中转开关要在 config 被 move 进 AppState 之前取出来（下面冷启动用）。
             let bridge_config_relay_enabled = bridge_config.relay_enabled;
             let app_state = Arc::new(state::AppState::new(db_conn, bridge_config, data_dir));
             app.manage(app_state.clone());
+
+            #[cfg(feature = "notifications")]
+            {
+                let notification_handle = handle.clone();
+                let notification_state = app_state.clone();
+                if let Err(error) = commands::register_storage_notification(&handle, move || {
+                    let handle = notification_handle.clone();
+                    let state = notification_state.clone();
+                    let _ = notification_handle.run_on_main_thread(move || {
+                        commands::request_storage_navigation(&handle, &state);
+                        show_or_create_main_window(&handle);
+                    });
+                }) {
+                    log::warn!("存储提醒注册失败：{error}");
+                }
+            }
 
             // 注入 AppHandle 供 MCP 工具调用 Tauri 插件（notification 等）
             #[cfg(feature = "notifications")]
@@ -703,6 +700,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     match event.id.as_ref() {
                     "show" => show_or_create_main_window(tray_app.app_handle()),
+                    "storage_maintenance" => {
+                        commands::request_storage_navigation(tray_app.app_handle(), &tray_state);
+                        show_or_create_main_window(tray_app.app_handle());
+                    }
                     "configure_access" | "check_access" => {
                         connection_tray::request_navigation(&tray_state, tray_app.app_handle());
                         show_or_create_main_window(tray_app.app_handle());
@@ -896,34 +897,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
-            // 审计日志定时清理（每 24 小时）。
-            //
-            // 为何必须有这个：原先清理**只在启动时跑一次**，而 cc-bridge 是常驻托盘
-            // 服务、设计上就是开着几周不关。于是不重启的用户那里，「保留天数」形同虚设，
-            // audit.log 会无限增长——机制与产品形态不匹配。
-            //
-            // 每次 tick 重新读配置，而不是把 retention 捕进闭包：用户中途改了保留天数
-            // 不需要重启就能生效。
             {
-                let audit_state = app_state.clone();
-                spawn_supervised("审计日志定时清理", move || {
-                    let audit_state = audit_state.clone();
+                let state = app_state.clone();
+                let handle = handle.clone();
+                spawn_supervised("存储维护", move || {
+                    let state = state.clone();
+                    let handle = handle.clone();
                     Box::pin(async move {
                         loop {
-                            tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
-                            let (retention, journal_retention) = {
-                                let c = audit_state.config.read().await;
-                                (c.audit_retention_days, c.journal_retention_days)
-                            };
-                            let dir = audit_state.data_dir.clone();
-                            crate::journal::cleanup_expired(&dir, journal_retention);
-                            match audit::cleanup_old_entries(&dir, retention) {
-                                Ok(0) => {}
-                                Ok(n) => log::info!(
-                                    "定时清理审计日志：已删除 {n} 条过期记录（保留 {retention} 天）"
-                                ),
-                                Err(e) => log::warn!("定时清理审计日志失败：{e}"),
+                            if let Err(error) = commands::storage_maintenance_tick(&handle, &state).await {
+                                log::warn!("存储维护失败：{error}");
                             }
+                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                         }
                     })
                 });
@@ -977,6 +962,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::get_status,
             // 前端主动推桌面通知（终端 OSC 7501 的 blocked）。受 notify_task_complete 开关控制。
             commands::notify_desktop,
+            commands::get_storage_overview,
+            commands::preview_storage_cleanup,
+            commands::apply_storage_cleanup,
+            commands::save_storage_policy,
+            commands::take_storage_navigation,
             commands::save_config,
             commands::regenerate_token,
             commands::get_audit_log,

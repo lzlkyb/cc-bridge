@@ -142,7 +142,15 @@ async fn restore_cached_update(
 /// 前端却把 `await invoke(...)` 当成「做完了」的信号。于是连点两次徽章 = 两个任务并发，
 /// 一边下载一边又被另一个重试覆盖，`update:*` 事件交叉推送，前端状态机直接乱掉。
 /// RAII 式持有：任务（含所有提前 return 分支）结束自动释放。
-struct SingleFlight(&'static std::sync::atomic::AtomicBool);
+pub(crate) struct SingleFlight(&'static std::sync::atomic::AtomicBool);
+
+pub(crate) fn maintenance_guard() -> Option<SingleFlight> {
+    SingleFlight::acquire(&UPDATE_RUNNING)
+}
+
+pub(crate) fn can_preview_cache_cleanup() -> bool {
+    !UPDATE_RUNNING.load(std::sync::atomic::Ordering::Acquire)
+}
 
 impl SingleFlight {
     fn acquire(flag: &'static std::sync::atomic::AtomicBool) -> Option<Self> {

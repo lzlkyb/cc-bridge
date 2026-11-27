@@ -38,6 +38,7 @@ mod ssh_tunnel_guard;
 pub mod stable_connect;
 pub mod stable_discovery;
 pub mod state;
+pub mod storage_maintenance;
 pub mod timing;
 /// 托管隧道的本地转发中继：统计双向字节，供接入卡片展示实时流量。
 mod tunnel_traffic;

@@ -16,7 +16,9 @@
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -28,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use super::usage::{TokenUsage, UsageCollectionIssue};
 
 /// 日志保留天数（磁盘）。
-const DISK_RETENTION_DAYS: i64 = 7;
+pub(crate) const DISK_RETENTION_DAYS: u32 = 7;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -632,27 +634,6 @@ fn percentile(values: &mut [u64], p: u8) -> Option<u64> {
     values.get(idx.min(values.len() - 1)).copied()
 }
 
-/// 清掉超过保留期的整份日志文件。启动时调用一次。
-pub fn cleanup_expired(dir: &Path) {
-    let Ok(read) = fs::read_dir(dir) else {
-        return;
-    };
-    let cutoff = Local::now() - chrono::Duration::days(DISK_RETENTION_DAYS);
-    let cutoff_day = cutoff.format("%Y%m%d").to_string();
-    for entry in read.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(day) = name
-            .strip_prefix("relay-")
-            .and_then(|s| s.strip_suffix(".jsonl"))
-        else {
-            continue;
-        };
-        if day.len() == 8 && day.chars().all(|c| c.is_ascii_digit()) && day < cutoff_day.as_str() {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -924,20 +905,5 @@ mod tests {
         assert_eq!((usage.input, usage.output), (Some(40), Some(0)));
         drop(restarted);
         fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn expired_files_are_removed() {
-        let dir = std::env::temp_dir().join(format!("relay-log-clean-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let old = (Local::now() - chrono::Duration::days(30))
-            .format("%Y%m%d")
-            .to_string();
-        let old_path = day_file(&dir, &old);
-        fs::write(&old_path, "{}").unwrap();
-        cleanup_expired(&dir);
-        assert!(!old_path.exists(), "超期文件应删除");
-        let _ = fs::remove_dir_all(&dir);
     }
 }

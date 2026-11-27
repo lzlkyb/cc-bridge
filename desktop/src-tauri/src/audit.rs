@@ -136,8 +136,7 @@ pub fn take_op_backup() -> Option<(Option<PathBuf>, Option<PathBuf>)> {
 }
 
 /// E-P0-7: 共享审计日志写句柄，避免每次写都 open 文件（高频批量调用下省 1000 open/s）。
-/// 以 data_dir 为键惰性打开，写后 flush；日志被轮换（cleanup/clear）时由
-/// `close_audit_writer` 释放句柄，避免 Windows 下文件被占用导致 rename 失败。
+/// 以 data_dir 为键惰性打开，写后 flush；轮换和清空时在锁内释放句柄，避免写入竞态。
 type AuditWriter = Option<(PathBuf, BufWriter<std::fs::File>)>;
 static AUDIT_WRITER: OnceLock<Mutex<AuditWriter>> = OnceLock::new();
 
@@ -194,15 +193,15 @@ pub fn write_audit_log(data_dir: &Path, entry: &AuditEntry) -> Result<(), String
     Ok(())
 }
 
-/// E-P0-7: 释放共享写句柄（审计日志轮换/清空前调用）。
-pub fn close_audit_writer() {
-    if let Some(m) = AUDIT_WRITER.get() {
-        if let Ok(mut g) = m.lock() {
-            if let Some((_, mut w)) = g.take() {
-                let _ = w.flush();
-            }
-        }
+fn lock_audit_rewrite() -> Result<std::sync::MutexGuard<'static, AuditWriter>, String> {
+    let lock = AUDIT_WRITER.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, mut writer)) = guard.take() {
+        writer
+            .flush()
+            .map_err(|e| format!("保存审计日志失败：{e}"))?;
     }
+    Ok(guard)
 }
 
 /// 分页读取结果（策略 A：页码分页）。前端依 `total` / `page_size` 计算总页数。
@@ -486,7 +485,7 @@ pub fn read_filtered_page(
 
 /// 清空全部审计日志（删除 audit.log）。用户在日志页手动触发。
 pub fn clear_all(data_dir: &Path) -> Result<(), String> {
-    close_audit_writer();
+    let _guard = lock_audit_rewrite()?;
     let log_path = data_dir.join("audit.log");
     if log_path.exists() {
         std::fs::remove_file(&log_path).map_err(|e| format!("Failed to clear audit log: {e}"))?;
@@ -549,98 +548,133 @@ pub fn new_entry(
     }
 }
 
-/// Remove audit entries older than `retention_days`. A value of 0 disables cleanup
-/// (keep everything). Rewrites audit.log in place keeping only recent lines.
-///
-/// 返回**实际删掉的条数**（不是 `()`）：调用方靠它给用户反馈「已清理 N 条」，
-/// 也靠它写日志。原先返回 `()` 且调用方用 `let _ =` 吞掉，清理成功与否、
-/// 清了多少，用户和日志都完全无感。
+pub(crate) fn retention_cutoff(days: u32) -> Option<chrono::DateTime<Local>> {
+    (days != 0)
+        .then(|| Local::now().checked_sub_signed(chrono::Duration::days(i64::from(days))))
+        .flatten()
+}
+
+#[derive(Default, PartialEq, Eq)]
+pub(crate) struct AuditCleanup {
+    pub entries: u64,
+    pub bytes: u64,
+    fingerprint: [u8; 32],
+}
+
+fn filter_expired(
+    file: std::fs::File,
+    cutoff: chrono::DateTime<Local>,
+    mut keep: impl FnMut(&[u8]) -> std::io::Result<()>,
+) -> std::io::Result<AuditCleanup> {
+    use sha2::{Digest, Sha256};
+
+    let mut reader = std::io::BufReader::new(file);
+    let mut line = Vec::new();
+    let mut hash = Sha256::new();
+    let mut removed = AuditCleanup::default();
+    while reader.read_until(b'\n', &mut line)? != 0 {
+        let expired = serde_json::from_slice::<AuditEntry>(&line)
+            .ok()
+            .and_then(|entry| chrono::DateTime::parse_from_rfc3339(&entry.timestamp).ok())
+            .is_some_and(|timestamp| timestamp < cutoff);
+        if expired {
+            removed.entries += 1;
+            removed.bytes += line.len() as u64;
+            hash.update(&line);
+        } else {
+            // Keep original bytes, including malformed lines and the original line endings.
+            keep(&line)?;
+        }
+        line.clear();
+    }
+    removed.fingerprint = hash.finalize().into();
+    Ok(removed)
+}
+
+fn open_cleanup_log(data_dir: &Path) -> std::io::Result<Option<std::fs::File>> {
+    let path = data_dir.join("audit.log");
+    match crate::storage_maintenance::regular_file(&path)? {
+        Some(_) => std::fs::File::open(path).map(Some),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn preview_expired(
+    data_dir: &Path,
+    cutoff: chrono::DateTime<Local>,
+) -> std::io::Result<AuditCleanup> {
+    match open_cleanup_log(data_dir)? {
+        Some(file) => filter_expired(file, cutoff, |_| Ok(())),
+        None => Ok(AuditCleanup::default()),
+    }
+}
+
+/// Preserve callers in the audit settings and log page, including 0 = retain forever.
 pub fn cleanup_old_entries(data_dir: &Path, retention_days: u32) -> Result<u64, String> {
-    if retention_days == 0 {
+    let Some(cutoff) = retention_cutoff(retention_days) else {
         return Ok(0);
-    }
+    };
+    cleanup_before(data_dir, cutoff, None).map(|result| result.entries)
+}
 
-    // 🔴 清理必须与**追加写**互斥（审查 P2）。
-    //
-    // 原实现只调 `close_audit_writer()` 放掉句柄，然后就自己读→写 tmp→rename：
-    // 这中间的窗口里，并发的一次 `write_audit_log` 会重新打开 audit.log 追加，
-    // 随后 rename 把 tmp 盖上去——那一行审计**静默丢失**；而审计是安全留痕，
-    // 丢一行等于给攻击者留了一个「在清理窗口里动作」的缝。
-    //
-    // 复用 AUDIT_WRITER 这把锁（write_audit_log 也拿它）：持有期间追加写会阻塞，
-    // rename 完成后它们重新打开的是新文件，追加不会丢。
-    // ⚠️ 不能再调 `close_audit_writer()`——它会去锁同一个 Mutex，直接自死锁。
-    let lock = AUDIT_WRITER.get_or_init(|| Mutex::new(None));
-    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-    // 关句柄（Windows 下 rename 不能有打开的句柄），语义等同 close_audit_writer。
-    if let Some((_, mut w)) = guard.take() {
-        let _ = w.flush();
-    }
-    let log_path = data_dir.join("audit.log");
-    if !log_path.exists() {
-        return Ok(0);
-    }
-
-    let cutoff = Local::now() - chrono::Duration::days(retention_days as i64);
-
-    let file =
-        std::fs::File::open(&log_path).map_err(|e| format!("Failed to open audit log: {e}"))?;
-
-    let mut total: u64 = 0;
-    let kept: Vec<String> = std::io::BufReader::new(file)
-        .lines()
-        .map_while(Result::ok)
-        .filter(|line| {
-            total += 1;
-            // Keep lines whose timestamp is newer than cutoff. Unparseable lines are kept.
-            match serde_json::from_str::<AuditEntry>(line) {
-                Ok(entry) => match chrono::DateTime::parse_from_rfc3339(&entry.timestamp) {
-                    Ok(ts) => ts.with_timezone(&Local) >= cutoff,
-                    Err(_) => true,
-                },
-                Err(_) => true,
+pub(crate) fn cleanup_before(
+    data_dir: &Path,
+    cutoff: chrono::DateTime<Local>,
+    approved: Option<&AuditCleanup>,
+) -> Result<AuditCleanup, String> {
+    // Hold the same lock as the appender until the rename commits, so no audit entry is lost.
+    let _guard = lock_audit_rewrite()?;
+    let rewrite = || -> std::io::Result<AuditCleanup> {
+        let preview = preview_expired(data_dir, cutoff)?;
+        if preview.entries == 0 {
+            return Ok(preview);
+        }
+        // Recent appends do not affect the approval, but replacing expired entries with
+        // different entries of equal length requires the user to review them again.
+        if approved.is_some_and(|expected| &preview != expected) {
+            return Err(std::io::Error::other("审计日志已变化，请重新预览"));
+        }
+        let Some(file) = open_cleanup_log(data_dir)? else {
+            return Ok(AuditCleanup::default());
+        };
+        let permissions = file.metadata()?.permissions();
+        let log_path = data_dir.join("audit.log");
+        let tmp_path = data_dir.join(format!("audit.log.{}.tmp", uuid::Uuid::new_v4()));
+        let mut options = std::fs::OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let temp = options.open(&tmp_path)?;
+        let result = (|| {
+            let mut writer = BufWriter::new(temp);
+            let removed = filter_expired(file, cutoff, |line| writer.write_all(line))?;
+            if removed != preview {
+                return Err(std::io::Error::other("审计日志已变化，请重新预览"));
             }
-        })
-        .collect();
-
-    // 没有过期条目就不重写文件。原实现无条件 rewrite + rename，于是**每次启动**
-    // 都白写一遍整份日志、并白白失效一次解析缓存（E-P4 那个缓存）。
-    let removed = total - kept.len() as u64;
-    if removed == 0 {
-        return Ok(0);
-    }
-
-    // 临时文件名带 pid + 纳秒：固定 `audit.log.tmp` 时两个清理任务（启动清理 +
-    // 改保留天数后的后台清理）会共用同一个 tmp，互相截断出半份日志（审查 P2）。
-    let tmp_path = data_dir.join(format!(
-        "audit.log.{}.{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    {
-        let mut tmp = std::fs::File::create(&tmp_path)
-            .map_err(|e| format!("Failed to create temp audit log: {e}"))?;
-        for line in &kept {
-            writeln!(tmp, "{}", line)
-                .map_err(|e| format!("Failed to write temp audit log: {e}"))?;
-        }
-    }
-    // rename 失败时不能留下垃圾 tmp（否则备份目录/数据目录里越积越多）。
-    if let Err(e) = std::fs::rename(&tmp_path, &log_path) {
+            writer.flush()?;
+            writer.get_ref().sync_all()?;
+            drop(writer);
+            if removed.entries != 0 {
+                std::fs::set_permissions(&tmp_path, permissions)?;
+                std::fs::rename(&tmp_path, &log_path)?;
+            }
+            Ok(removed)
+        })();
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!("Failed to replace audit log: {e}"));
-    }
-
-    // E-P4: 文件已被 rewrite，mtime/len 已变，失效解析缓存（下次读取会重建）。
-    if let Some(m) = AUDIT_CACHE.get() {
-        if let Ok(mut g) = m.lock() {
-            *g = None;
+        result
+    };
+    let removed = rewrite().map_err(|e| format!("清理审计日志失败：{e}"))?;
+    if removed.entries != 0 {
+        if let Some(cache) = AUDIT_CACHE.get() {
+            if let Ok(mut cache) = cache.lock() {
+                *cache = None;
+            }
         }
+        notify_appended();
     }
-
     Ok(removed)
 }
 

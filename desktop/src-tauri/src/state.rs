@@ -234,6 +234,7 @@ pub struct AppState {
     pub tray_access_key: StdMutex<String>,
     /// A tray navigation survives destroying/recreating the main webview.
     pub pending_connection_navigation: AtomicBool,
+    pub storage: crate::storage_maintenance::StorageRuntime,
     // 后台命令注册表（run_command background=true 时登记）。v1 没有独立的定时回收任务，
     // 已结束的 handle 会一直占位直到 stop_command 显式移除或达到并发上限被拒绝新建。
     pub running_commands: DashMap<String, RunningCommand>,
@@ -438,7 +439,6 @@ impl AppState {
         // 「清日志」时不该顺手把审计记录也清了。
         let relay_log_dir = data_dir.join("relay");
         let _ = std::fs::create_dir_all(&relay_log_dir);
-        crate::relay::log::cleanup_expired(&relay_log_dir);
         let relay_listen = relay_listen_host(&config);
         let relay = Arc::new(crate::relay::RelayRuntime::new(
             config.relay.clone(),
@@ -465,6 +465,7 @@ impl AppState {
             local_access_probe: StdMutex::new(None),
             tray_access_key: StdMutex::new(String::new()),
             pending_connection_navigation: AtomicBool::new(false),
+            storage: crate::storage_maintenance::StorageRuntime::default(),
             service_control: StdMutex::new(crate::commands::ServiceControl::default()),
             running_commands: DashMap::new(),
             cwd_sessions: DashMap::new(),

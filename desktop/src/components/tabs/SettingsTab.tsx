@@ -20,6 +20,7 @@ import { TerminalGroup } from "./settings/TerminalGroup";
 import { AppGroup } from "./settings/AppGroup";
 import { InstallGroup } from "./settings/InstallGroup";
 import { SettingsDataPage } from "./settings/SettingsDataPage";
+import { StorageMaintenancePage } from "./settings/storage/StorageMaintenancePage";
 import { ApplicationSettingsPreview } from "./settings/ApplicationSettingsPreview";
 import "../../settings.css";
 
@@ -69,6 +70,7 @@ export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onR
       case "set-network": return <div className="settings-reading"><NetworkGroup status={status} onSaved={onSaved} /><SecurityGroup status={status} onSaved={onSaved} onNavigate={onNavigate} section="network" />{isWindows(status?.platform) && <FirewallGroup onRefresh={onSaved} />}<AdvancedGroup status={status} onSaved={onSaved} section="network" /></div>;
       case "set-files": return <div className="settings-reading"><AdvancedGroup status={status} onSaved={onSaved} section="files" /><SecurityGroup status={status} onSaved={onSaved} onNavigate={onNavigate} section="files" /></div>;
       case "set-data": return <SettingsDataPage status={status} onSaved={onSaved} onNavigate={onNavigate} anchor={highlightAnchor} />;
+      case "set-storage": return <StorageMaintenancePage platform={status?.platform} onNavigate={onNavigate} />;
       case "set-mcpbridge": return <div className="settings-reading"><McpBridgeGroup status={status} /></div>;
       case "set-notify": return <div className="settings-reading"><NotifyGroup status={status} onSaved={onSaved} /></div>;
       case "set-about": return <AboutGroup status={status} unreadCount={unreadCount} onMarkSeen={onMarkSeen} changelogOpenToken={changelogOpenToken} />;
@@ -80,7 +82,7 @@ export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onR
       const index = sections.findIndex(item => item.id === section.id), previous = sections[index - 1], next = sections[index + 1];
       return <div key={section.id} data-category={section.id} hidden={section.id !== current} data-scroll-viewport className="settings-category-panel page-scroll h-full overflow-y-auto overflow-x-hidden">
       <div className="settings-category-content">
-      <header className="settings-page-heading"><div><h1>{section.label}</h1><p>{CATEGORY_DESCRIPTIONS[section.id]}</p>{previous && <button type="button" className="settings-wheel-previous" onClick={() => onActiveSectionChange(previous.id)}><Icon name="arrowUp" size={12}/>继续向上滚动进入：{previous.label}</button>}</div><span><Icon name="monitor" size={14} />{["set-app", "set-terminal"].includes(section.id) ? "本机偏好" : "服务与配置"}</span></header>
+      {section.id !== "set-storage" && <header className="settings-page-heading"><div><h1>{section.label}</h1><p>{CATEGORY_DESCRIPTIONS[section.id]}</p>{previous && <button type="button" className="settings-wheel-previous" onClick={() => onActiveSectionChange(previous.id)}><Icon name="arrowUp" size={12}/>继续向上滚动进入：{previous.label}</button>}</div><span><Icon name="monitor" size={14} />{["set-app", "set-terminal"].includes(section.id) ? "本机偏好" : "服务与配置"}</span></header>}
       <ViewActivityContext.Provider value={active && section.id === current}>{content(section.id)}</ViewActivityContext.Provider>
       {next && <button type="button" className="settings-wheel-next" onClick={() => onActiveSectionChange(next.id)}>继续向下滚动进入：{next.label}<Icon name="chevronDown" size={14}/></button>}
       </div>

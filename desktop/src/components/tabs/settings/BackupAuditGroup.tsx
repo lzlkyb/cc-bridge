@@ -209,7 +209,7 @@ export function BackupAuditGroup({
               </div>
             }
             sub={`当前生效：${appliedDays === 0 ? "永久保留" : `${appliedDays} 天`}。修改后点击应用。`}
-            info="超过保留天数的记录会在启动时、每 24 小时及应用保留策略后清理；设为 0 表示永久保留。"
+            info="超过保留天数的记录会在自动维护及应用保留策略后清理。设为 0 表示永久保留。可在「存储与维护」调整自动清理时间。"
           />
           <p id="audit-retention-help" className="mb-3 text-xs leading-relaxed text-warning-ink">缩短保留期会永久删除超期记录，应用前需确认；输入和失焦不会触发清理。{!validDays && " 请输入大于或等于 0 的整数。"}</p>
           <SettingsRow

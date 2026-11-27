@@ -10,6 +10,7 @@ import "../../settings-motion.css";
 const summaries: Record<string, string> = {
   "set-app": "外观、启动与资源", "set-terminal": "配色、字体与操作", "set-network": "端口、HTTPS 与防火墙",
   "set-files": "编码与命令行为", "set-mcpbridge": "服务与工具范围", "set-data": "备份、审计与迁移", "set-notify": "命令与任务完成提醒",
+  "set-storage": "磁盘占用、清理与提醒",
 };
 
 /** 设置目录支持滚轮逐项切换，溢出列表优先保留原生滚动。 */
