@@ -322,7 +322,7 @@ Elicitation 和它有本质区别：**弹窗是客户端画的，不是我们画
 
 | 项 | 做法 |
 |---|---|
-| 技能文本 | `desktop/src-tauri/skills/local-edit-verify/SKILL.md`（唯一来源，没有 docs 副本），编译期 `include_str!`。只写已核实的行为：改动只回行数、搜索纯文本、GBK 要传 encoding、50 秒内前台、超时不杀进程、顺序步骤合进 batch、长任务才通知 |
+| 技能文本 | `desktop/src-tauri/skills/local-edit-verify/`（唯一来源，没有 docs 副本），编译期 `include_str!`。**两个文件**：`SKILL.md`（1480 字节，只写省往返的核心用法，并指向参考文件）与 `references/pitfalls.md`（踩坑清单，遇到相关问题才读）。**踩坑每一条都先在当前版本实测再写**：`edit_files` 的 LF 与 CRLF 还原、新文本带 `\r` 被拒、GBK 保留编码与 CRLF、`search_files` 搜 GBK 中文需要 encoding、Git Bash 没有 iconv、重定向到输入文件本身会先清空、Python 文本模式写文件变 CRLF、文件工具只认白名单。**实测未复现、因此没写的**：「命令文本里的 `\r\n` 被桥提前转成真实字符」「`taskkill` 参数要关路径转换」；「旧文本带 `\r\n` 必然匹配失败」也已不成立（带 `\r\n` 的旧文本现在能匹配） |
 | 模块 | `mcp/skills.rs`：目录首次使用时构建（sha256 摘要、字节数、frontmatter）；三个方法 `skills/list`、`skills/get`、`resources/read` |
 | 安全边界 | `resources/read` 与 `skills/get` 对编译期目录**整串精确匹配**，没有路径解析、不碰磁盘；file://、绝对路径、`..`、末尾斜杠、大小写变体、未知技能全部 -32602（单测逐一覆盖）。`resources/list` 与 `resources/templates/list` 只回**空列表**（提交前自查时补的：声明 `resources` 能力后客户端可能调它们，回 -32601 会被当成服务器异常；技能靠 URI 直读）、不声明 `directoryRead`、不转发第三方技能 |
 | 能力声明 | 只在 `server/discover` 里加 `resources:{}` + skills 扩展；`initialize` 与 SSE 完全不动（单测确认 initialize 没有 resources 与 extensions） |

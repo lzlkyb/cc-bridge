@@ -39,11 +39,19 @@ const LIST_TTL_MS: u64 = 3_600_000;
 
 /// 编译期写死的技能清单：`(技能路径, 文件相对路径, 文本)`。
 /// 新增技能只需在这里加一行并放好文件；`catalog()` 的自检测试会核对 name 与路径一致。
-const SKILL_FILES: &[(&str, &str, &str)] = &[(
-    "local-edit-verify",
-    "SKILL.md",
-    include_str!("../../skills/local-edit-verify/SKILL.md"),
-)];
+/// 同一技能的 `SKILL.md` 必须排在它的其他文件前面（`catalog()` 依赖这个顺序建条目）。
+const SKILL_FILES: &[(&str, &str, &str)] = &[
+    (
+        "local-edit-verify",
+        "SKILL.md",
+        include_str!("../../skills/local-edit-verify/SKILL.md"),
+    ),
+    (
+        "local-edit-verify",
+        "references/pitfalls.md",
+        include_str!("../../skills/local-edit-verify/references/pitfalls.md"),
+    ),
+];
 
 /// 指向第一份技能的提示行：只追加给声明了 skills 扩展的客户端。
 pub const INSTRUCTIONS_POINTER: &str =
@@ -315,6 +323,30 @@ mod tests {
             read["result"]["contents"][0]["mimeType"],
             json!("text/markdown")
         );
+    }
+
+    /// 清单里的每一个文件都能读到，且摘要、大小与真实字节一致；
+    /// SKILL.md 里写的相对引用确实指向一个已发布的文件（否则模型会去读一个不存在的 URI）。
+    #[test]
+    fn every_listed_file_is_readable_and_verified() {
+        let list = call("skills/list", json!({}));
+        let resources = list["result"]["skills"][0]["resources"].as_array().unwrap();
+        assert!(resources.len() >= 2, "应包含 SKILL.md 和参考文件");
+        assert_eq!(resources[0]["uri"], json!(SKILL_URI), "SKILL.md 必须排第一");
+        for r in resources {
+            let uri = r["uri"].as_str().unwrap();
+            let read = call("resources/read", json!({ "uri": uri }));
+            let text = read["result"]["contents"][0]["text"].as_str().unwrap();
+            assert_eq!(r["digest"], json!(sha256_digest(text.as_bytes())), "{uri}");
+            assert_eq!(r["size"], json!(text.len()), "{uri}");
+        }
+        // 主文件里引用的参考文件必须真实存在（相对于技能根目录解析）。
+        let skill_md = call("resources/read", json!({ "uri": SKILL_URI }));
+        let md = skill_md["result"]["contents"][0]["text"].as_str().unwrap();
+        assert!(md.contains("references/pitfalls.md"));
+        assert!(resources
+            .iter()
+            .any(|r| r["uri"] == json!("skill://local-edit-verify/references/pitfalls.md")));
     }
 
     #[test]
