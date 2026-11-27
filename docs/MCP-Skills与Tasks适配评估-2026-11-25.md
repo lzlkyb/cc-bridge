@@ -27,8 +27,8 @@
 
 | 能力 | 最低版本 | 备注 |
 |---|---|---|
-| Skills over MCP | **2.1.330**（2026-11-21 引入加载） | 实测 2.1.331 正常，`/skills` 显示 `Skills from MCP servers are in beta` |
-| Tasks | **2.1.304**（终端） | **VS Code 扩展 / 桌面 app 会话需 2.1.331+** |
+| Skills over MCP | **2.1.331**（官方文档；更新日志的 Added 条目在 2.1.332，2026-11-27 核实） | 还要求：直连 Anthropic（自定义 `ANTHROPIC_BASE_URL`、`apiKeyHelper`、`ANTHROPIC_AUTH_TOKEN`、云厂商、`claude -p`、Agent SDK 均不支持）、较新模型、开启 feature-flag 拉取；API key 与 Console 登录目前未放量 |
+| Tasks | **2.1.304**（终端 / Agent SDK / GitHub Actions，需拉取 feature flag；不拉取时需交互终端 ≥ 2.1.317），更新日志「Added support for MCP tasks in the terminal」在 2.1.319 | **VS Code 扩展 / 桌面 app 本地会话需 2.1.331+**；子代理发起的调用需 2.1.331+；2026-11-27 实测 2.1.332 正常 |
 | Tasks 的排除项 | — | `claude -p` 一次性运行**没有** tasks；`MCP_PROTOCOL_NEGOTIATION=legacy` 会关掉；子 agent 里发起的不算 |
 
 🔴 **2.1.330 起 `skills/get` 的发送条件变了**：不再无条件发，改成「连接已知使用 `2026-07-28`+ **且**服务器声明了 skills 扩展」才发。这条对我们影响很大——`http.rs:624` 的 `initialize` 是**回显客户端版本**的，走 legacy 握手报 `2025-06-18` 的客户端（例如 Codex 0.165）永远拿不到 skills。这是**符合规范的正常行为**，不是 bug，别上线后当故障排查。
@@ -198,7 +198,7 @@ Elicitation 和它有本质区别：**弹窗是客户端画的，不是我们画
 
 **Tasks 的 token 向注意点**：收益取决于用户的客户端版本分布（`claude -p` 一次性运行、旧版本、部分宿主没有 Tasks），实施前先查实际分布；返回的任务结果仍会进一次上下文，省的只是轮询那几趟。
 
-**本文里这些引用的版本号和规范编号（如 2.1.330、2.1.304、SEP-2640、SEP-2663）尚未用官方资料核实**，实施前先核对，并用真机验证 `/mcp` 的 Protocol 行是否为 `2026-07-28`。
+**版本号已于 2026-11-27 用官方文档和更新日志核实，结果见「阶段 0 真机记录」后的「遗留核实项结论」。注意：本文前面有关「2.1.330 起 `skills/get` 发送条件变了」「2026-11-21 引入加载」的说法，在更新日志和官方文档里都找不到依据，按未核实处理。**
 
 **建议顺序（token 目标下）**：先提交并发布已改的 7 项 → Tasks → Skills（第一份 `local-edit-verify`，instructions 按客户端能力精简）→ Elicitation 等决策、File Uploads 观察。上下文占用提示（G）与这两项互不依赖，可并行。
 
@@ -256,6 +256,113 @@ Elicitation 和它有本质区别：**弹窗是客户端画的，不是我们画
 ### 阶段 3：收尾
 
 每阶段独立提交、每次都过 fmt / clippy / 单测门禁；真机验收由用户配合；CHANGELOG 写面向用户的说明。
+
+### 阶段 0 真机记录（2026-11-27，第一轮）
+
+探针日志落在 `%TEMP%\cc-bridge-mcp-probe.log`（每种「方法+协议+扩展+客户端」组合一行）。
+
+**已确认（来自真实 Claude Code 会话，非 curl）**
+
+| 事实 | 证据 |
+|---|---|
+| 协议版本是 `2026-07-28`（现代协议），不是 legacy `initialize` | 08:54 `server/discover`、`tools/list`、08:55 `tools/call` 三条记录 protocol 均为 2026-07-28 |
+| **声明了 tasks 扩展** `io.modelcontextprotocol/tasks`，且每个请求都带 | 三条记录 extensions 均为 `[io.modelcontextprotocol/tasks]` |
+| **没有声明 skills 扩展** | extensions 里只有 tasks 一项 |
+| ~~`clientInfo` 在现代协议的每请求里取不到~~ **作废（探针 bug）** | `client=` 为空是因为探针只读了 `params.clientInfo`，现代协议的在 `_meta["io.modelcontextprotocol/clientInfo"]` 里，客户端名与版本其实都在。已修探针，下次真机就能直接看到 |
+| 70 秒命令 `background:true` 需要 2 次 `wait_command`（0 秒探一眼 + 35 秒等完）才拿到结果 | 本轮调用实测 |
+
+**对决策的影响**
+- 阶段 2（Skills）：客户端没声明 skills，**instructions 保持逐字不变**，只能走「加一行指向」的保守方案，且收益要等客户端版本升级后再看；不要精简原说明。
+- 阶段 1（Tasks）：客户端确实会声明 tasks，前提成立。
+
+**未验证（本轮没测成，别当结论）**
+1. **模型是否只看到最终结果、不再出现 `wait_command` 往返**——本轮 `background:true` 返回的是普通 handle，没有任务形态。原因不明确：08:51 我起的独立实例（7830，带 `CC_BRIDGE_TASKS=1`）被关掉，真实客户端 08:54 起连的是你自己起的 dev（pid 28444，默认标识、端口 7823、与正式版共用数据目录），**不确定它是否设了 `CC_BRIDGE_TASKS=1`**，所以这条 `background:true` 不能证明「客户端不处理任务」。
+2. 超过 60 秒的前台命令是否仍断连、是否被自动转成任务。
+3. ~~Claude Code 的最低版本号依然未核实~~ 已核实，见「遗留核实项结论」。
+
+**下一轮要做的最小验证**：保证服务端确实带 `CC_BRIDGE_TASKS=1`（用 7830 独立实例最干净），客户端指到它，再发一条 `background:true` 的 `sleep 70`，看返回是不是任务形态、之后是否还要我手动 `wait_command`。
+
+### 阶段 0 真机记录（2026-11-27，第二轮：服务端确认带 `CC_BRIDGE_TASKS=1`）
+
+服务端是用户自己起的 dev（pid 26940，08:58:45 启动，带 `CC_BRIDGE_TASKS=1`）。
+
+| 验证项 | 结果 | 证据 |
+|---|---|---|
+| 显式 `background:true` 的 `sleep 70` 是否被客户端当任务接管 | **是** | 返回文本变成「started server-side task … moved to the background as task …，you'll receive a notification」，不再是普通 handle |
+| 模型是否还要手动 `wait_command` | **不要了** | 全程 0 次 `wait_command`；70 秒后由客户端收到完成通知，结果里带 stdout `task-done-09:01:18`、exitCode 0 |
+| 客户端是否自己轮询 | 是 | 探针里 09:00:08 紧跟 `tools/call` 就有 `tasks/get` |
+| 前台超 60 秒命令（不带 `background`，`sleep 75`） | **通过** | 服务端 50 秒自动转后台，客户端当任务接管，没有断连；75 秒后收到完成通知，stdout `fg-done-09:04:07`、exitCode 0，全程 0 次 `wait_command` |
+| 取消 | **通过** | 再起 `sleep 120`，用 TaskStop 取消（探针记到 `tasks/cancel`），随后查进程：`sleep 120` 已消失，仅剩未取消的 `sleep 70` |
+
+**结论**：阶段 0 通过标准（模型只看到最终结果、不再出现 `wait_command` 往返）**满足**，阶段 1（完整 Tasks）值得做。
+
+**这次实测暴露的两点，阶段 1 一并处理**
+1. 任务完成通知里的 result 是 `wait_command` 风格的元数据 JSON（`timeoutSec:0, finished:true, terminated:false, running:false, outputComplete:true, timedOut:false, matchedPattern:false…`）+ 输出，约 150 字符是纯噪声；可在 `tasks/get` 里改成精简形态（只留 `exitCode`、必要的异常标志、输出）。
+2. 仍未验证：客户端的最低版本号；`tasks/get` 目前绕过审计，审计里 wait_command 条数会偏少。
+
+**更正**：第一版记录里「`clientInfo` 取不到」是探针 bug，不是客户端没带（见上）。
+
+### 阶段 1 完成记录（2026-11-27）
+
+门禁：fmt、clippy `-D warnings`、1426 个单测全过。
+
+| 项 | 做法 |
+|---|---|
+| 开关 | **默认开启**；环境变量 `CC_BRIDGE_TASKS=0/false/off` 应急关闭。**没有做成配置项和界面**：只有「声明了扩展却处理不好」的客户端才需要回退，不值得动配置结构、数据库、前端三处；若以后确实有用户要关，再补配置字段 |
+| 通知精简 | `tasks/get` 终态结果的状态块去掉等于默认值的字段（`handle`、`timeoutSec`、`finished:true`、`terminated:false`、`running:false`、`outputComplete:true`、`timedOut:false`、`matchedPattern:false`），保留 `exitCode`、`elapsedSecs`、`stdoutTotalBytes` 与所有异常值；每次约省 150 字符 |
+| 审计 | 只记 `tasks/get` 的**终态**（completed / cancelled）与 `tasks/cancel`，工具名就是方法名；运行中的轮询不记（客户端约每 1.5s 一次，全记会刷满日志），`tasks/update` 不记 |
+| 探针 | 去掉写临时文件；`mcp::probe` 日志保留，默认日志级别改成 `error,mcp::probe=info` 使其可见 |
+| CHANGELOG | 「变更」新增「长命令由客户端自动等待」 |
+
+**已知取舍 / 待观察**
+- 审计里会出现新的工具名 `tasks/get`、`tasks/cancel`，面板的工具分布里会多这两行；终态 `tasks/get` 的字节数计入工具账，替代原来 `wait_command` 的那一趟。
+- 任务仍只在进程存活期内有效（内存表）：dev 实例重启后，客户端手里的旧 taskId 会得到 -32602。
+
+### 阶段 2 完成记录（2026-11-27）
+
+| 项 | 做法 |
+|---|---|
+| 技能文本 | `desktop/src-tauri/skills/local-edit-verify/SKILL.md`（唯一来源，没有 docs 副本），编译期 `include_str!`。只写已核实的行为：改动只回行数、搜索纯文本、GBK 要传 encoding、50 秒内前台、超时不杀进程、顺序步骤合进 batch、长任务才通知 |
+| 模块 | `mcp/skills.rs`：目录首次使用时构建（sha256 摘要、字节数、frontmatter）；三个方法 `skills/list`、`skills/get`、`resources/read` |
+| 安全边界 | `resources/read` 与 `skills/get` 对编译期目录**整串精确匹配**，没有路径解析、不碰磁盘；file://、绝对路径、`..`、末尾斜杠、大小写变体、未知技能全部 -32602（单测逐一覆盖）。`resources/list` 与 `resources/templates/list` 只回**空列表**（提交前自查时补的：声明 `resources` 能力后客户端可能调它们，回 -32601 会被当成服务器异常；技能靠 URI 直读）、不声明 `directoryRead`、不转发第三方技能 |
+| 能力声明 | 只在 `server/discover` 里加 `resources:{}` + skills 扩展；`initialize` 与 SSE 完全不动（单测确认 initialize 没有 resources 与 extensions） |
+| instructions | 按「是否声明 skills 扩展」分流：**没声明的客户端（目前的 Claude Code）拿到的文案与改动前逐字相同**，声明了的才多一行指向 `skill://local-edit-verify/SKILL.md`，加后仍不超 4096 字符 |
+| 应急开关 | 环境变量 `CC_BRIDGE_SKILLS=0/false/off`（与 tasks 同款，默认开） |
+| 头校验 | `resources/read` 与 `skills/get` 的 `Mcp-Name` 头按 `params.uri` 校验（其它方法维持原样） |
+
+**诚实的现状**：真实 Claude Code 目前不声明 skills 扩展，所以这一阶段在现在的客户端上**不产生任何可见效果也不省 token**——它是为「客户端升级后自动生效」预先铺好的通道。等客户端声明了再做两件事：真机验证「模型按需加载技能」，以及再决定要不要精简 instructions 里已被技能覆盖的文字（现在不该精简，没声明的客户端靠它）。
+
+### 遗留核实项结论（2026-11-27）
+
+来源：anthropics/claude-code 官方 CHANGELOG.md 全文（下载后本地检索）与 code.claude.com 的 `mcp.md`、`skills.md`。
+
+**① Claude Code 的最低版本**
+
+| 能力 | 结论 | 依据 |
+|---|---|---|
+| Tasks（终端） | **2.1.304 起**。更新日志「Added support for MCP tasks in the terminal」在 2.1.319，那一版起不再依赖 feature flag；关闭 flag 拉取时需交互终端 ≥ 2.1.317 | 文档 “Terminal CLI sessions, Agent SDK sessions, and GitHub Actions runs have them on v2.1.304 or later” |
+| Tasks（VS Code / 桌面 app 本地会话） | **2.1.331 起**，且会话要拉取 feature flag | 文档 “MCP tasks in VS Code and the desktop app” |
+| Skills | **2.1.331 起**（文档）；更新日志 “Added skills from MCP servers (beta)” 在 2.1.332 | 文档 “MCP skills are in public beta and require Claude Code v2.1.331 or later” |
+| 协议 2026-07-28 | HTTP 服务器默认协商自 2.1.274 起（云厠商与遥测关闭的安装），其它安装更早 | CHANGELOG 2.1.274 / 2.1.292 / 2.1.295 / 2.1.299 |
+
+**① 的附带发现（对我们有用）**
+- `CLAUDE_CODE_DISABLE_MCP_TASKS=1` 可关掉 Tasks；`CLAUDE_CODE_DISABLE_MCP_TASK_BACKGROUND=1` 让客户端在调用内等任务，而不是立即转后台。用户遇到「命令不再返回」类反馈时可以先让他试第二个。
+- 2.1.332 修复了「task ID 超过 128 字符报 malformed task handle」，现在上限 1,024。我们的 taskId 是命令 handle，约 20 字符，不受影响。
+- 2.1.330：会话移到后台后“the background session can now follow the task, but **not if its server uses stdio or sets headers**”。cc-bridge 是带 `Authorization` 头的 HTTP 服务器，所以**会话被移到后台后，那个后台会话跟不上我们的任务**（前台不受影响）。这是客户端的限制，我们无法绕开。
+- 退出 Claude Code 不会取消远端任务（即命令继续跑），`--resume` 同一会话才能再跟踪；这与我们「任务只在进程存活期内有效」一致。
+
+**① 的对止结论：为什么真机里 Skills 没被声明？目前不能下结论**
+- 本会话版本是 2.1.332（会话日志核实，2026-11-25 起），满足版本要求，所以不是版本问题。
+- 已排除：会话 shell 里 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_API_KEY` 均未设置（但这是工具 shell 的环境，不必然等于 CLI 进程的环境，**不能当作定论**）。
+- 更可能的原因是：当时连的服务器在 `server/discover` 里没有宣称 skills 扩展（阶段 2 还没做），客户端可能只对宣称了的服务器声明。**这条没有测过**：需要用已包含阶段 2 的新构建再真机验证一次，看探针里 skills 是否出现在 extensions 里，以及 `/skills` 是否列出 `<server>:local-edit-verify`。
+- 注意使用条件：即使声明了，走自定义 `ANTHROPIC_BASE_URL`、中转网关、`apiKeyHelper`、`claude -p`、Agent SDK 的用户也拿不到 MCP skills（官方明确列为不支持）。所以 skills 的受益面比 Tasks 窄得多。
+
+**② 远端 MCP 会话 id 是否稳定（G 项「服务端按会话累计」的前提）—— 结论：前提不成立**
+- 现代协议（2026-07-28）**没有协议级会话**，不存在 `Mcp-Session-Id` 可供服务端按会话归类。这也是 http.rs 里早就写明的：“新协议反而移除了协议级 session”。
+- Claude Code 对 HTTP 服务器默认就协商 2026-07-28（2.1.274 起），真机探针也确认连接走的是这个版本。更新日志里唯一谈到 MCP session ID 的是「本地（stdio）MCP 服务器在 Remote Control 进程重启后看到新 session ID」，与我们无关。
+- 能拿到的只有「来源 IP + clientInfo（名称、版本）」，这是**客户端级**而不是**对话级**标识：同一台机器上并行的多个终端会话无法区分，按字节累计会把它们混在一起，误报超阈值。
+- 因此「远端会话累计 + 超阈值提醒」的方案在现有协议下**不可行**，建议从 G 项里删掉这一条，只保留 cc-bridge 自己内嵌 CC 会话的 ContextMeter 提示（那里会话已知）。
+- 尚未实证的一点：客户端是否在 HTTP 请求头里带了别的会话标识。探针已加上「请求头名称」记录（只记名称不记值），下次真机即可直接看到。若出现类似 session id 的头，上面的「不可行」结论需要重新评估。
 
 ## 九、一句话总结
 

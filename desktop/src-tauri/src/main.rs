@@ -527,7 +527,11 @@ where
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
+    // 默认只出 error，但客户端能力探针（mcp::probe）要默认可见。
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("error,mcp::probe=info"),
+    )
+    .init();
 
     // 抑制子进程（如 netsh）初始化失败时的「应用程序错误」硬弹窗（0xc0000142）。
     // 必须在 spawn 任何 netsh 之前调用，错误模式会被其后创建的子进程继承。

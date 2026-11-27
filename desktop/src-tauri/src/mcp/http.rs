@@ -534,10 +534,12 @@ fn handle_standard_headers(
         }
     }
     // `Mcp-Name`：tools/call 对应 `params.name`；tasks/* 对应 `params.taskId`（SEP-2663）；
-    // 其它方法可缺省。
+    // resources/read 与 skills/get 对应 `params.uri`；其它方法可缺省。
     if let Some(h) = headers.get("mcp-name").and_then(|v| v.to_str().ok()) {
         let key = if method.starts_with("tasks/") {
             "/params/taskId"
+        } else if matches!(method, "resources/read" | "skills/get") {
+            "/params/uri"
         } else {
             "/params/name"
         };
@@ -571,7 +573,7 @@ async fn mcp_handler(
 
     let method = body.get("method").and_then(|m| m.as_str()).unwrap_or("");
     // 记录客户端声明了什么扩展（每种组合只记一次，不影响任何行为）。
-    crate::mcp::tasks::probe_client(&body, method);
+    crate::mcp::tasks::probe_client(&body, method, &headers);
 
     // ── 现代请求判定（规范明确允许 dual-era 服务器在同一端点并存两代语义）──────
     // 现代（`2026-07-28` 起）= 无握手、每个请求自带 `_meta`；legacy = 走 initialize。
@@ -601,8 +603,8 @@ async fn mcp_handler(
             "result": {
                 "resultType": "complete",
                 "supportedVersions": SUPPORTED_VERSIONS,
-                // tasks 扩展只在探针开关打开时声明（`initialize` 与 SSE 不声明）。
-                "capabilities": crate::mcp::tasks::discover_capabilities(),
+                // tasks / skills 扩展只在这里声明（`initialize` 与 SSE 不声明）。
+                "capabilities": discover_capabilities(),
                 "_meta": {
                     META_SERVER_INFO: {
                         "name": "cc-bridge",
@@ -611,8 +613,11 @@ async fn mcp_handler(
                 },
                 // 与 initialize 共用同一份文案（`server_instructions`），杜绝两处漂移。
                 // 客户端识别走 `from_request`：现代请求的 clientInfo 在 `_meta` 里。
-                "instructions": server_instructions(
-                    crate::mcp::client_kind::ClientKind::from_request(&body),
+                //
+                // 声明了 skills 扩展的客户端才多一行指向技能的提示；没声明的（目前的 Claude Code）
+                // 拿到的文案与改动前逐字相同。
+                "instructions": discover_instructions(
+                    &body,
                     state.config.read().await.journal_enabled,
                 ),
                 // 这段文案描述的是**这台机器**的白名单与 shell 语义，不该被共享中间层
@@ -699,9 +704,24 @@ async fn mcp_handler(
                 .await
                 .into_response()
         }
-        // Tasks 扩展（探针开关打开时才有效；关着时这些方法照旧走下面的 Method not found）。
+        // Tasks 扩展（`CC_BRIDGE_TASKS=0` 关闭时这些方法照旧走下面的 Method not found）。
         "tasks/get" | "tasks/update" | "tasks/cancel" if crate::mcp::tasks::enabled() => {
-            Json(crate::mcp::tasks::handle_method(method, &body, &state).await).into_response()
+            let t0 = std::time::Instant::now();
+            let resp = crate::mcp::tasks::handle_method(method, &body, &state).await;
+            audit_task_call(&state, method, &body, &resp, &source_ip, t0).await;
+            Json(resp).into_response()
+        }
+        // Skills 扩展（`CC_BRIDGE_SKILLS=0` 关闭时这些方法照旧走下面的 Method not found）。
+        // `resources/read` 只认编译期写死的 skill:// 目录，绝不读磁盘。
+        "skills/list"
+        | "skills/get"
+        | "resources/read"
+        | "resources/list"
+        | "resources/templates/list"
+            if crate::mcp::skills::enabled() =>
+        {
+            Json(crate::mcp::skills::handle_method(method, &body).unwrap_or_default())
+                .into_response()
         }
         _ => Json(json!({
             "jsonrpc": "2.0",
@@ -943,6 +963,57 @@ impl Drop for CancelAuditGuard {
     }
 }
 
+/// 给 `tasks/get`（终态）与 `tasks/cancel` 补一条审计。
+///
+/// 为什么需要：任务接管后模型不再调 `wait_command`，那一趟往返从审计里消失了，
+/// 但终态结果（stdout 等）仍会进上下文，工具账不记就会低估。
+/// 为什么只记终态：客户端每 1.5s 左右轮询一次 `tasks/get`，运行中的轮询不进模型上下文，
+/// 全记会把审计日志刷满；终态每个任务只有一次。
+async fn audit_task_call(
+    state: &Arc<AppState>,
+    method: &str,
+    body: &serde_json::Value,
+    resp: &serde_json::Value,
+    source_ip: &str,
+    started: std::time::Instant,
+) {
+    if resp.get("error").is_some() || !state.config.read().await.audit_enabled {
+        return;
+    }
+    // get 只记终态；update 是空确认，不记。
+    let content = match method {
+        "tasks/get" => {
+            let status = resp.pointer("/result/status").and_then(|s| s.as_str());
+            if !matches!(status, Some("completed" | "cancelled")) {
+                return;
+            }
+            resp.pointer("/result/result").cloned()
+        }
+        "tasks/cancel" => None,
+        _ => return,
+    };
+    let content = content.unwrap_or_else(|| json!({ "content": [] }));
+    let elapsed = started.elapsed().as_millis() as u64;
+    let task_id = body.pointer("/params/taskId").cloned().unwrap_or_default();
+    write_audit_for_call(
+        &state.data_dir,
+        method,
+        &json!({ "taskId": task_id }),
+        true,
+        None,
+        Some(source_ip.to_string()),
+        elapsed,
+        elapsed,
+        None,
+        None,
+        state.cc.active_session_id(),
+        Some(crate::mcp::tools::result_text_bytes(&content)),
+        crate::mcp::tools::result_wire_chars(&content),
+        Some(crate::mcp::tools::result_text_wide_bytes(&content)),
+    );
+    state.inc_audit_count();
+}
+
 /// 构造并写入一条 `tools/call` 审计记录，附带 O1 结构化耗时字段。
 ///
 /// `auditMs` 以序列化开销为代理测量（`write_audit_log` 的主要成本；`open` + `append`
@@ -1088,6 +1159,27 @@ pub async fn dispatch_tool(
         return crate::journal::with_call(state, spec.name, &meta, (spec.run)(args, state)).await;
     }
     (spec.run)(args, state).await
+}
+
+/// `server/discover` 的 `capabilities`：tools + tasks 扩展 + skills 扩展（各自有应急开关）。
+fn discover_capabilities() -> serde_json::Value {
+    let mut caps = crate::mcp::tasks::discover_capabilities();
+    crate::mcp::skills::merge_capabilities(&mut caps);
+    caps
+}
+
+/// `server/discover` 的 `instructions`：在共用文案后，只给**声明了 skills 扩展**的客户端
+/// 追加一行指向技能的提示；没声明的客户端文案与改动前逐字相同。
+fn discover_instructions(body: &serde_json::Value, journal: bool) -> String {
+    let base = server_instructions(
+        crate::mcp::client_kind::ClientKind::from_request(body),
+        journal,
+    );
+    if crate::mcp::skills::enabled() && crate::mcp::skills::client_declares(body) {
+        format!("{base}{}", crate::mcp::skills::INSTRUCTIONS_POINTER)
+    } else {
+        base.to_string()
+    }
 }
 
 /// `initialize` 响应里的 `instructions` 字段：告知连接的客户端/模型如何正确使用本服务。
@@ -1668,6 +1760,12 @@ mod over_wire_tests {
             assert!(
                 n <= 4096,
                 "instructions 已到 {n} 字符，超过客户端 4096 截断线（超出部分模型看不到）"
+            );
+            // 声明了 skills 扩展的客户端会多一行提示，加上后也不能超线。
+            let with_pointer = n + crate::mcp::skills::INSTRUCTIONS_POINTER.chars().count();
+            assert!(
+                with_pointer <= 4096,
+                "加技能提示行后已到 {with_pointer} 字符"
             );
             // 四条规则的标志片段：它们被放在最前面，但顺序/完整性仍可能被后续改动破坏。
             for key in [
@@ -3091,6 +3189,132 @@ mod over_wire_tests {
         let bad = json!({ "id": 1, "params": { "taskId": "cmd_2" } });
         let err = handle_standard_headers(&h, "tasks/get", &bad).expect("不符应报错");
         assert_eq!(err["error"]["code"], json!(-32020));
+    }
+
+    /// resources/read 与 skills/get 的 `Mcp-Name` 头必须等于 `params.uri`（而不是 `params.name`）。
+    #[test]
+    fn skills_name_header_must_match_uri() {
+        use crate::mcp::http::handle_standard_headers;
+        let uri = "skill://local-edit-verify/SKILL.md";
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("mcp-name", uri.parse().expect("header"));
+        let ok = json!({ "id": 1, "params": { "uri": uri } });
+        for m in ["resources/read", "skills/get"] {
+            assert!(handle_standard_headers(&h, m, &ok).is_none(), "{m}");
+        }
+        let bad = json!({ "id": 1, "params": { "uri": "skill://other/SKILL.md" } });
+        let err = handle_standard_headers(&h, "resources/read", &bad).expect("不符应报错");
+        assert_eq!(err["error"]["code"], json!(-32020));
+    }
+
+    /// Skills：声明了扩展的客户端才会收到指向技能的一行提示；没声明的客户端
+    /// （目前的 Claude Code）instructions 与改动前逐字相同；discover 都声明 resources + skills。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn skills_pointer_only_for_declaring_clients() {
+        use crate::mcp::client_kind::ClientKind;
+        let root = unique_temp_root("skills-disc");
+        let srv = spawn_server(test_config(&root), root).await;
+        let meta = |declare: bool| {
+            let mut caps = json!({ "extensions": {} });
+            if declare {
+                caps["extensions"]["io.modelcontextprotocol/skills"] = json!({});
+            }
+            json!({ "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": caps,
+            } })
+        };
+        let plain = rpc(&srv.base, &srv.token, "server/discover", meta(false)).await;
+        let with = rpc(&srv.base, &srv.token, "server/discover", meta(true)).await;
+        let p = plain["result"]["instructions"]
+            .as_str()
+            .expect("instructions");
+        let w = with["result"]["instructions"]
+            .as_str()
+            .expect("instructions");
+        // 没声明：与共用文案逐字相同（未识别的客户端按「强通知」分支，journal 默认关）。
+        assert_eq!(
+            p,
+            server_instructions(ClientKind::from_request(&json!({})), false)
+        );
+        assert!(!p.contains("skill://"));
+        // 声明了：基础文案 + 一行提示，且仍不超客户端 4096 截断线。
+        assert_eq!(
+            w,
+            format!("{p}{}", crate::mcp::skills::INSTRUCTIONS_POINTER)
+        );
+        assert!(w.chars().count() <= 4096, "加提示行后超过 4096 字符");
+        // 两者都声明 resources 能力与 skills 扩展，且没声明 directoryRead。
+        for v in [&plain, &with] {
+            let caps = &v["result"]["capabilities"];
+            assert!(caps["resources"].is_object(), "{v}");
+            assert!(caps["extensions"]["io.modelcontextprotocol/skills"].is_object());
+            assert!(caps["extensions"]["io.modelcontextprotocol/skills"]
+                .get("directoryRead")
+                .is_none());
+        }
+        // 老协议 initialize 完全不动：不声明 resources、不声明任何扩展。
+        let init = rpc(&srv.base, &srv.token, "initialize", json!({})).await;
+        let caps = &init["result"]["capabilities"];
+        assert!(
+            caps.get("resources").is_none() && caps.get("extensions").is_none(),
+            "{init}"
+        );
+    }
+
+    /// Skills 端到端：list / get / read 可用，摘要与真实字节一致；任何不在目录里的 URI
+    /// （包括 file:// 与路径穿越）一律 -32602，且绝不读磁盘。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn skills_methods_end_to_end() {
+        let root = unique_temp_root("skills-e2e");
+        let srv = spawn_server(test_config(&root), root).await;
+        let list = rpc(&srv.base, &srv.token, "skills/list", json!({})).await;
+        assert_eq!(list["result"]["resultType"], json!("complete"));
+        let uri = list["result"]["skills"][0]["uri"]
+            .as_str()
+            .expect("uri")
+            .to_string();
+        assert_eq!(uri, "skill://local-edit-verify/SKILL.md");
+
+        let got = rpc(&srv.base, &srv.token, "skills/get", json!({ "uri": uri })).await;
+        assert_eq!(got["result"]["skill"], list["result"]["skills"][0]);
+
+        let read = rpc(
+            &srv.base,
+            &srv.token,
+            "resources/read",
+            json!({ "uri": uri }),
+        )
+        .await;
+        let text = read["result"]["contents"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(text.contains("local-edit-verify") && text.contains("batch"));
+        assert_eq!(
+            list["result"]["skills"][0]["resources"][0]["size"],
+            json!(text.len())
+        );
+
+        for bad in [
+            "file:///C:/Windows/win.ini",
+            "skill://local-edit-verify/../../x",
+            "/etc/passwd",
+        ] {
+            let r = rpc(
+                &srv.base,
+                &srv.token,
+                "resources/read",
+                json!({ "uri": bad }),
+            )
+            .await;
+            assert_eq!(r["error"]["code"], json!(-32602), "{bad}: {r}");
+        }
+        // 声明了 resources 能力，列表请求不能报 Method not found：回空列表。
+        let rl = rpc(&srv.base, &srv.token, "resources/list", json!({})).await;
+        assert_eq!(rl["result"]["resources"], json!([]), "{rl}");
+        // 没实现的相关方法仍是 Method not found。
+        let sub = rpc(&srv.base, &srv.token, "resources/subscribe", json!({})).await;
+        assert_eq!(sub["error"]["code"], json!(-32601));
     }
 
     /// `Mcp-Name` 头与 `params.name` 不符 → `-32020`（只对 tools/call 有意义）。

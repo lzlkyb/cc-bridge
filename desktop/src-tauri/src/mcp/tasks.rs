@@ -1,12 +1,11 @@
 //! MCP Tasks 扩展（SEP-2663，扩展 ID `io.modelcontextprotocol/tasks`）的协议皮。
 //!
-//! ## 现状：阶段 0 探针版，默认关闭
+//! ## 现状：默认开启，环境变量 `CC_BRIDGE_TASKS=0` 可应急关闭
 //!
-//! 只有设置环境变量 `CC_BRIDGE_TASKS=1` 才会生效。目的是用真实的 Claude Code 验证
-//! 三件事，再决定要不要做完整版（方案见 `docs/MCP-Skills与Tasks适配评估-2026-11-25.md`）：
-//! 1. 它是否在请求里声明了 tasks 扩展；
-//! 2. 收到任务后，是自己轮询、只把最终结果给模型，还是把轮询暴露给模型；
-//! 3. 命令超过客户端约 60s 断线线的情况是否消失。
+//! 2026-11-27 真机验证通过（见 `docs/MCP-Skills与Tasks适配评估-2026-11-25.md` 的阶段 0 记录）：
+//! Claude Code 在每个请求里声明 tasks 扩展，收到任务后自己轮询、只把最终结果交给模型，
+//! 显式后台与前台超 50s 自动转后台都不再需要模型调 `wait_command`，取消也能真终止进程。
+//! 没声明扩展的客户端完全不受影响（走原来的 handle + `wait_command` 路径）。
 //!
 //! ## 设计：复用现有的后台命令表，不新建状态机
 //!
@@ -40,6 +39,8 @@ use crate::state::{AppState, UNREAD_RESULT_RETENTION};
 pub const EXT_TASKS: &str = "io.modelcontextprotocol/tasks";
 /// 客户端能力在每个请求 `params._meta` 里的键（规范固定字符串，勿改）。
 const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+/// `_meta` 里 `clientInfo` 的键（规范固定字符串，勿改）。
+const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
 /// 规范错误码：`MISSING_REQUIRED_CLIENT_CAPABILITY`。
 const ERR_MISSING_CLIENT_CAPABILITY: i64 = -32021;
 const ERR_INVALID_PARAMS: i64 = -32602;
@@ -47,12 +48,22 @@ const ERR_INTERNAL: i64 = -32603;
 /// 建议客户端的轮询间隔。进度粒度是「读管道缓冲」，比外部服务细，不需要 5s。
 const POLL_INTERVAL_MS: u64 = 1500;
 
-/// 探针开关。阶段 0 用环境变量，免得为一个可能被放弃的实验去动配置结构与界面。
+/// 总开关：默认开；`CC_BRIDGE_TASKS` 设为 `0` / `false` / `off` 时关闭（应急回退用，
+/// 不进配置结构与界面——只有「声明了扩展却处理不好」的客户端才需要它）。
 pub fn enabled() -> bool {
-    std::env::var("CC_BRIDGE_TASKS").is_ok_and(|v| v == "1")
+    !disabled_by(std::env::var("CC_BRIDGE_TASKS").ok().as_deref())
 }
 
-/// `server/discover` 的 `capabilities`：探针开关打开时才声明 tasks 扩展。
+pub(crate) fn disabled_by(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off"
+        )
+    })
+}
+
+/// `server/discover` 的 `capabilities`：开关打开时才声明 tasks 扩展。
 pub fn discover_capabilities() -> Value {
     let mut caps = json!({ "tools": { "listChanged": false } });
     if enabled() {
@@ -234,6 +245,35 @@ pub async fn handle_method(method: &str, body: &Value, state: &Arc<AppState>) ->
     }
 }
 
+/// 去掉 wait_command 状态 JSON 里「等于默认值」的字段，只留对模型有信息量的部分。
+///
+/// 任务完成时客户端会把整个 result 交给模型。按 2026-11-27 真机实测，原样透传的状态块里
+/// `handle / timeoutSec / finished:true / terminated:false / running:false /
+/// outputComplete:true / timedOut:false / matchedPattern:false` 全是已知信息（约 150 字符/次）。
+/// 异常值（`timedOut:true`、`outputComplete:false`、`terminated:true`）与 `exitCode`、
+/// `elapsedSecs`、`stdoutTotalBytes`、`note` 等照旧保留。
+fn slim_status(info: &Value) -> Value {
+    let Some(obj) = info.as_object() else {
+        return info.clone();
+    };
+    let mut out = serde_json::Map::new();
+    for (k, v) in obj {
+        let is_default = matches!(
+            (k.as_str(), v),
+            ("handle" | "timeoutSec", _)
+                | ("finished" | "outputComplete", Value::Bool(true))
+                | (
+                    "terminated" | "running" | "timedOut" | "matchedPattern",
+                    Value::Bool(false)
+                )
+        );
+        if !is_default {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    Value::Object(out)
+}
+
 async fn get(id: Option<&Value>, task_id: &str, state: &Arc<AppState>) -> Value {
     let Some(started) = state.running_commands.get(task_id).map(|e| e.started_at) else {
         return not_found(id);
@@ -252,7 +292,7 @@ async fn get(id: Option<&Value>, task_id: &str, state: &Arc<AppState>) -> Value 
         state,
     )
     .await;
-    let Ok(out) = out else {
+    let Ok(mut out) = out else {
         // 条目在两步之间被清理了。
         return not_found(id);
     };
@@ -261,6 +301,13 @@ async fn get(id: Option<&Value>, task_id: &str, state: &Arc<AppState>) -> Value 
         .and_then(Value::as_str)
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(Value::Null);
+    // 终态才把结果交给模型：先精简状态块（运行中的结果不带 result，无需处理）。
+    if let Some(slim) = out
+        .pointer_mut("/content/0/text")
+        .filter(|_| !info.is_null())
+    {
+        *slim = json!(slim_status(&info).to_string());
+    }
     let mut result = task_view(task_id, created_at(started), &info, &out);
     // 规范：tasks/get 的结果自身是标准结果，resultType 必须是 complete。
     result["resultType"] = json!("complete");
@@ -271,8 +318,31 @@ async fn get(id: Option<&Value>, task_id: &str, state: &Arc<AppState>) -> Value 
 ///
 /// 阶段 0 要回答的第一个问题：真实的 Claude Code 在请求里声明 tasks / skills 扩展吗？
 /// 以什么协议版本连上来？不依赖任何开关，默认就记。
-pub fn probe_client(body: &Value, method: &str) {
+pub fn probe_client(body: &Value, method: &str, headers: &axum::http::HeaderMap) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    // 只记请求头的**名称**（排序、去重），绝不记值：用来确认客户端有没有带会话标识头。
+    let mut names: Vec<&str> = headers.keys().map(|k| k.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    let sig = format!(
+        "{} headers=[{}]",
+        probe_signature(body, method),
+        names.join(",")
+    );
+    if let Ok(mut seen) = SEEN.get_or_init(|| Mutex::new(HashSet::new())).lock() {
+        if seen.len() < 64 && seen.insert(sig.clone()) {
+            log::info!(target: "mcp::probe", "客户端能力 {sig}");
+        }
+    }
+}
+
+/// 探针签名：方法 + 协议版本 + 客户端声明的扩展 + 客户端名/版本。
+///
+/// 🔴 `clientInfo` 在现代协议（`2026-07-28`）里在 `params._meta["io.modelcontextprotocol/clientInfo"]`，
+/// legacy 才在 `params.clientInfo`。阶段 0 第一版只读后者，导致 `client=` 恒为空，
+/// 还误把「取不到客户端版本」写进了文档。取值用链式 `get`，不用 JSON Pointer
+/// （键里的 `/` 会被当成分隔符）。
+fn probe_signature(body: &Value, method: &str) -> String {
     let ver = body
         .pointer("/params/_meta")
         .and_then(|m| m.get("io.modelcontextprotocol/protocolVersion"))
@@ -289,23 +359,23 @@ pub fn probe_client(body: &Value, method: &str) {
         .and_then(Value::as_object)
         .map(|o| o.keys().cloned().collect::<Vec<_>>().join(","))
         .unwrap_or_default();
-    let client = body
-        .pointer("/params/clientInfo/name")
+    let params = body.get("params");
+    let info = params
+        .and_then(|p| p.get("_meta"))
+        .and_then(|m| m.get(META_CLIENT_INFO))
+        .or_else(|| params.and_then(|p| p.get("clientInfo")));
+    let client = info
+        .and_then(|c| c.get("name"))
         .and_then(Value::as_str)
         .map(|n| {
-            let v = body
-                .pointer("/params/clientInfo/version")
+            let v = info
+                .and_then(|c| c.get("version"))
                 .and_then(Value::as_str)
                 .unwrap_or("?");
             format!("{n}/{v}")
         })
         .unwrap_or_default();
-    let sig = format!("method={method} protocol={ver} extensions=[{exts}] client={client}");
-    if let Ok(mut seen) = SEEN.get_or_init(|| Mutex::new(HashSet::new())).lock() {
-        if seen.len() < 64 && seen.insert(sig.clone()) {
-            log::info!(target: "mcp::probe", "客户端能力 {sig}");
-        }
-    }
+    format!("method={method} protocol={ver} extensions=[{exts}] client={client}")
 }
 
 #[cfg(test)]
@@ -338,6 +408,65 @@ mod tests {
         let bad = json!({ "params": { "_meta": { META_CLIENT_CAPABILITIES:
             { "extensions": { EXT_TASKS: true } } } } });
         assert!(!client_declares(&bad, EXT_TASKS));
+    }
+
+    #[test]
+    fn probe_signature_reads_client_info_from_meta_then_params() {
+        // 现代协议：clientInfo 在 _meta 里（第一版探针就漏了这一条）。
+        let modern = json!({ "params": { "_meta": {
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": { "name": "claude-code", "version": "2.1.332" },
+            META_CLIENT_CAPABILITIES: { "extensions": { EXT_TASKS: {} } }
+        } } });
+        assert_eq!(
+            probe_signature(&modern, "tools/call"),
+            "method=tools/call protocol=2026-07-28 extensions=[io.modelcontextprotocol/tasks] client=claude-code/2.1.332"
+        );
+        // legacy：params.clientInfo。
+        let legacy = json!({ "params": { "protocolVersion": "2025-06-18",
+            "clientInfo": { "name": "x", "version": "1" } } });
+        assert_eq!(
+            probe_signature(&legacy, "initialize"),
+            "method=initialize protocol=2025-06-18 extensions=[] client=x/1"
+        );
+        // 什么都没带：占位符，不 panic。
+        assert_eq!(
+            probe_signature(&json!({}), "tools/list"),
+            "method=tools/list protocol=- extensions=[] client="
+        );
+    }
+
+    #[test]
+    fn slim_status_drops_only_default_values() {
+        let full = json!({
+            "handle": "cmd_1", "timeoutSec": 0, "finished": true, "terminated": false,
+            "running": false, "exitCode": 3, "outputComplete": true, "timedOut": false,
+            "matchedPattern": false, "elapsedSecs": 70, "stdoutTotalBytes": 19
+        });
+        assert_eq!(
+            slim_status(&full),
+            json!({ "exitCode": 3, "elapsedSecs": 70, "stdoutTotalBytes": 19 })
+        );
+        // 异常值必须保留：被终止、输出不完整、超时。
+        let odd = json!({
+            "finished": true, "terminated": true, "outputComplete": false, "timedOut": true
+        });
+        assert_eq!(
+            slim_status(&odd),
+            json!({ "terminated": true, "outputComplete": false, "timedOut": true })
+        );
+        // 非对象原样返回，不 panic。
+        assert_eq!(slim_status(&Value::Null), Value::Null);
+    }
+
+    #[test]
+    fn kill_switch_only_for_explicit_off_values() {
+        assert!(!disabled_by(None), "未设置 = 开");
+        assert!(!disabled_by(Some("1")));
+        assert!(!disabled_by(Some("")));
+        for off in ["0", "false", "OFF", " off "] {
+            assert!(disabled_by(Some(off)), "{off} 应关闭");
+        }
     }
 
     #[test]
@@ -460,6 +589,18 @@ mod tests {
                 .contains("task_payload_ok"),
             "结果应带命令输出：{done}"
         );
+        // 状态块已精简：保留 exitCode，去掉默认值噪声字段。
+        let status_text = done["result"]["result"]["content"][0]["text"]
+            .as_str()
+            .expect("第 1 块是状态 JSON");
+        let status: Value = serde_json::from_str(status_text).unwrap();
+        assert_eq!(status["exitCode"], json!(0), "{status_text}");
+        for noisy in ["handle", "timeoutSec", "finished", "running", "timedOut"] {
+            assert!(
+                status.get(noisy).is_none(),
+                "{noisy} 不该出现：{status_text}"
+            );
+        }
 
         // update / cancel：存在即空确认。
         let upd = handle_method(
