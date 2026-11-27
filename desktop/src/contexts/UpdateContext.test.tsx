@@ -155,12 +155,6 @@ async function emit(event: string, payload?: unknown) {
   });
 }
 
-/** Explicit confirmation, then advance the restart transition. */
-async function advanceToRelaunch() {
-  await act(async () => { void state().restart(); });
-  await act(async () => { vi.advanceTimersByTime(1200); });
-}
-
 const available = (version = "99.9.9") => ({
   version,
   body: "### 更新摘要\n- 测试",
@@ -543,19 +537,28 @@ describe("确认重启与任务保护", () => {
   it("忙碌或状态查询失败时禁止重启", async () => {
     await mount(); await emit("update:ready");
     h.invoke.mockResolvedValueOnce({ conversations: 1, agents: 2, commands: 0, transfers: 0 });
-    await advanceToRelaunch();
+    await act(async () => state().restart());
     expect(h.relaunch).not.toHaveBeenCalled();
     h.invoke.mockRejectedValueOnce(new Error("activity unavailable"));
-    await advanceToRelaunch();
+    await act(async () => state().restart());
     expect(h.relaunch).not.toHaveBeenCalled();
     expect(state().restarting).toBe(false);
   });
-  it("重启过渡期间开始新任务时取消重启", async () => {
+  it("安全检查期间立即反馈，检查结果阻止重启时撤掉过渡层", async () => {
+    await mount(); await emit("update:ready");
+    let finish!: (activity: unknown) => void;
+    h.invoke.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    await act(async () => { void state().restart(); });
+    expect(state().restarting).toBe(true);
+    expect(h.relaunch).not.toHaveBeenCalled();
+    await act(async () => { finish({ conversations: 0, agents: 1, commands: 0, transfers: 0 }); });
+    expect(h.relaunch).not.toHaveBeenCalled(); expect(state().restarting).toBe(false);
+  });
+
+  it("安全检查通过就重启，无需推进动画计时器", async () => {
     await mount(); await emit("update:ready");
     await act(async () => { void state().restart(); });
-    h.invoke.mockResolvedValueOnce({ conversations: 0, agents: 1, commands: 0, transfers: 0 });
-    await act(async () => { vi.advanceTimersByTime(1200); });
-    expect(h.relaunch).not.toHaveBeenCalled(); expect(state().restarting).toBe(false);
+    expect(h.relaunch).toHaveBeenCalledOnce();
   });
 
   it("relaunch 抛错时 restarting 必须复位，且状态留在 ready", async () => {
@@ -564,7 +567,7 @@ describe("确认重启与任务保护", () => {
     await emit("update:available", available());
     await emit("update:ready");
 
-    await advanceToRelaunch();
+    await act(async () => state().restart());
 
     expect(h.relaunch).toHaveBeenCalledTimes(1);
     // 🔴 不复位就是「过渡层永久盖住界面、用户只能杀进程」。
@@ -580,9 +583,6 @@ describe("确认重启与任务保护", () => {
     await act(async () => {
       void state().restart();
       void state().restart();
-    });
-    await act(async () => {
-      vi.advanceTimersByTime(1200);
     });
     expect(h.relaunch).toHaveBeenCalledTimes(1);
   });

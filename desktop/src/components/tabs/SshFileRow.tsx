@@ -166,11 +166,7 @@ interface FileTableProps {
 /**
  * 文件列表表格：错误条 + 空态 + 表头（可点击排序）+ 行。
  *
- * 动画（设计稿：design/微动画补全-P0P1-设计稿.html）：
- * - 根容器 `animate-fade-in`：换目录时由父组件 `key={path}` 重挂触发整列淡入；
- * - tbody 接 auto-animate FLIP：新建/删除后 list 刷新时的**增量**行增删平滑过渡。
- *   ⚠ tr 的 transform 度量在个别环境有兼容性差异（已探明风险），若真机失效
- *   退级方案 = 仅保留换目录淡入（去掉 ref 即可）。
+ * Cached rows appear immediately. Only incremental row changes animate after loading.
  */
 export function FileTable({
   highlightName,
@@ -194,9 +190,9 @@ export function FileTable({
   filterActive,
   viewer,
 }: FileTableProps) {
-  const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>();
+  const tbodyRef = useAutoAnimateRM<HTMLTableSectionElement>(!loading);
   return (
-    <div aria-busy={loading || undefined} className="min-h-0 flex-1 animate-fade-in overflow-y-auto">
+    <div aria-busy={loading || undefined} className="min-h-0 flex-1 overflow-y-auto">
       {error && (
         <div role="alert" className="m-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive-ink">
           {error}

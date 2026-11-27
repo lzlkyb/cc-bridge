@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { invoke } from "../../lib/tauri";
+import { scrollToAnchor } from "../../lib/scrollMotion";
 import type {
   BackupListResult,
   BackupFileInfo,
@@ -105,8 +106,7 @@ export function VersionHistoryModal({
   const jumpTo = (idx: number, name: string) => {
     setExpanded((prev) => new Set(prev).add(name));
     setActiveRail(name);
-    const el = document.getElementById(`vh-grp-${idx}`);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToAnchor(document.getElementById(`vh-grp-${idx}`), "start");
   };
 
   const loadCur = async (entry: BackupFileInfo) => {

@@ -2,6 +2,7 @@ import { useEffect, type RefCallback } from "react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
 import { MOTION } from "../lib/motion";
+import { useAppHidden } from "../lib/appVisibility";
 
 /**
  * useAutoAnimate 的「减弱动效」安全封装。
@@ -14,10 +15,11 @@ import { MOTION } from "../lib/motion";
 export function useAutoAnimateRM<T extends HTMLElement = HTMLDivElement>(enabled = true): RefCallback<T> {
   const [parent, enable] = useAutoAnimate<T>({ duration: MOTION.standard, easing: MOTION.ease });
   const reduced = usePrefersReducedMotion();
+  const hidden = useAppHidden();
 
   useEffect(() => {
-    enable(enabled && !reduced);
-  }, [enabled, reduced, enable]);
+    enable(enabled && !reduced && !hidden);
+  }, [enabled, reduced, hidden, enable]);
 
   return parent;
 }

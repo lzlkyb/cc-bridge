@@ -5,7 +5,7 @@ vi.mock("react-dom", () => ({ flushSync: vi.fn((update: () => void) => update())
 describe("page transitions", () => {
   beforeEach(() => {
     vi.resetModules();
-    vi.stubGlobal("document", { hidden: false, documentElement: { dataset: {} } });
+    vi.stubGlobal("document", { hidden: false, documentElement: { dataset: {}, hasAttribute: vi.fn(() => false) } });
     vi.stubGlobal("window", { matchMedia: () => ({ matches: false }) });
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
@@ -18,9 +18,10 @@ describe("page transitions", () => {
     expect(document.documentElement.dataset.pageTransitions).toBeUndefined();
   });
 
-  it.each(["reduced", "hidden"])("does not capture or delay navigation when %s", async mode => {
+  it.each(["reduced", "hidden", "in the tray"])("does not capture or delay navigation when %s", async mode => {
     const start = vi.fn();
     Object.assign(document, { startViewTransition: start, hidden: mode === "hidden" });
+    vi.mocked(document.documentElement.hasAttribute).mockReturnValue(mode === "in the tray");
     vi.stubGlobal("window", { matchMedia: () => ({ matches: mode === "reduced" }) });
     const { transitionPage } = await import("./pageTransition");
     const update = vi.fn();
@@ -42,11 +43,11 @@ describe("page transitions", () => {
     expect(first).not.toHaveBeenCalled();
     captures[0]();
     expect(first).toHaveBeenCalledOnce();
-    transitionPage(last);
+    transitionPage(last, true, "fade");
     expect(skipped).toHaveBeenCalledOnce();
     captures[1]();
     expect(last).toHaveBeenCalledOnce();
-    expect(document.documentElement.dataset.pageTransitions).toBe("true");
+    expect(document.documentElement.dataset.pageTransitions).toBe("fade");
   });
 
   it("invalidates a pending capture when the user clicks straight back to the current page", async () => {

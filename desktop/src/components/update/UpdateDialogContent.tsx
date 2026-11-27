@@ -61,7 +61,7 @@ export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, 
   const hasNotes = latest.groups.length || latest.summary.length || latest.paragraphs.length || latest.highlights.length;
   return <>
     {!force && process.status !== "installing" && <button type="button" onClick={actions.onClose} className="interactive update-close" aria-label="关闭更新弹窗"><Icon name="close" size={17} aria-hidden="true" /></button>}
-    <UpdateBrand currentVersion={update.currentVersion} version={latest.version} ready={process.status === "ready" || process.status === "staged"} tagline={latest.tagline}/>
+    <UpdateBrand currentVersion={update.currentVersion} version={latest.version} tagline={latest.tagline}/>
     <div className="update-dialog-main">
     <header className="update-dialog-header">
       <h2>{process.status === "installing" ? "正在安装更新" : force ? "需要更新后才能继续使用" : process.status === "staged" ? "更新已就绪" : process.status === "ready" ? "更新已安装" : process.status === "downloading" || process.status === "verifying" ? "正在准备更新" : process.status === "error" ? "更新暂未完成" : "发现新版本"}</h2>

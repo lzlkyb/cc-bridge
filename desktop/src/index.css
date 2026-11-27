@@ -382,10 +382,13 @@ body {
 ::view-transition-group(workspace-page) { animation-duration:var(--dur-page);animation-timing-function:var(--ease); }
 ::view-transition-old(workspace-page) { animation:page-out var(--dur-fast) var(--ease-exit) both;mix-blend-mode:normal; }
 ::view-transition-new(workspace-page) { animation:tab-in var(--dur-page) var(--ease) both;mix-blend-mode:normal; }
+:root[data-page-transitions="fade"]::view-transition-old(workspace-page) { animation-name:page-fade-out; }
+:root[data-page-transitions="fade"]::view-transition-new(workspace-page) { animation-name:tab-fade-in; }
 @keyframes page-out { to { opacity:0;transform:translateY(-3px); } }
+@keyframes page-fade-out { to { opacity:0; } }
 @media(prefers-reduced-motion:reduce) {
  .animate-tab-in { animation:none; }
- ::view-transition-group(workspace-page), ::view-transition-old(workspace-page), ::view-transition-new(workspace-page) { animation:none; }
+ ::view-transition-group(workspace-page), :root::view-transition-old(workspace-page), :root::view-transition-new(workspace-page) { animation:none!important; }
 }
 
 /* 按钮 ripple 水波（pointer 位置）*/
@@ -1455,15 +1458,6 @@ body {
     radial-gradient(74% 54% at 5% 0%, rgba(99,102,241,0.22), transparent 58%),
     radial-gradient(70% 62% at 105% 100%, rgba(139,92,246,0.22), transparent 58%);
 }
-/* 托盘/最小化隐藏时冻结全部 CSS 动画（2026-10-15）：shimmer/pulse/ring 等 8 处
-   infinite 动画在窗口不可见时仍在合成器上空转，常驻托盘场景纯耗电。轮询已有
-   appVisibility 暂停体系（useAppHidden → data-app-hidden），CSS 动画同口径。
-   transition 不需要暂停：没有时间流逝感问题，且不会持续产帧。 */
-[data-app-hidden] *,
-[data-app-hidden] {
-  animation-play-state: paused !important;
-}
-
 /* 减弱动效：关闭弹框入场、光晕呼吸与内容 stagger（尊重系统设置） */
 @media (prefers-reduced-motion: reduce) {
   .update-glow,
@@ -1654,7 +1648,7 @@ select:focus-visible,
   .skeleton::after { animation: none; }
 }
 
-/* ═══ 窗口不可见（收进托盘 / 最小化）时暂停全部动画与过渡 ═══
+/* ═══ 窗口不可见（收进托盘 / 最小化）时暂停循环动画 ═══
 
    为何必要：WebView2 **不会**像浏览器隐藏标签页那样自动节流宿主窗口隐藏后的动画。
    实测：窗口收进托盘前后，webview CPU 从 61.7% → 60.4% 单核（几乎没变）。
@@ -1673,19 +1667,17 @@ select:focus-visible,
    新增 infinite 动画时记得往下面补一行。 */
 :root[data-app-hidden] .chain-ripple,
 :root[data-app-hidden] .indet-fill,
+:root[data-app-hidden] .notice-pulse,
 :root[data-app-hidden] .changelog-dot,
 :root[data-app-hidden] .upd-dot::before,
 :root[data-app-hidden] .update-glow::after,
 :root[data-app-hidden] .skeleton::after,
-/* 2026-10-16 更新体验新增（见文件尾「更新体验」一节）：
-   读数扫光、槽位呼吸光圈、重启过渡层扫光，以及所有 spinner。
-   （原通栏进度线 .update-line-sweep 已随组件于 2026-10-18 删除。） */
 :root[data-app-hidden] .ur-sweep,
 :root[data-app-hidden] .ro-bar > i,
 :root[data-app-hidden] .update-slot .header-badge-update::after,
 :root[data-app-hidden] .update-slot .header-badge-ready::after,
-:root[data-app-hidden] .animate-spin {
-  animation-play-state: paused;
+:root[data-app-hidden] :is(.animate-spin, .animate-pulse, .animate-bounce, .animate-ping) {
+  animation-play-state: paused !important;
 }
 
 /* ═══ 空状态装饰环（方案1 精修）═══ */
@@ -2289,20 +2281,10 @@ select:focus-visible,
   background:
     radial-gradient(120% 85% at 50% 28%, rgba(99, 102, 241, 0.14), rgba(124, 58, 237, 0.05) 42%, transparent 72%),
     hsl(var(--background));
-  animation: ro-in 250ms var(--ease) both;
-}
-@keyframes ro-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
 }
 .restart-overlay .ro-logo {
   border-radius: 17px;
   box-shadow: 0 12px 34px color-mix(in srgb, hsl(var(--primary)) 42%, transparent);
-  animation: ro-pop 420ms var(--ease-spring) both;
-}
-@keyframes ro-pop {
-  from { opacity: 0.6; transform: scale(0.94); }
-  to   { opacity: 1; transform: scale(1); }
 }
 .restart-overlay .ro-title {
   margin-top: 18px;
@@ -2341,6 +2323,9 @@ select:focus-visible,
 @keyframes ro-sweep {
   from { transform: translateX(-100%); }
   to   { transform: translateX(250%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .restart-overlay .ro-bar > i { animation: none; width: 100%; opacity: .5; }
 }
 .restart-overlay .ro-hint {
   margin-top: 14px;

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useSshFileListing } from "./useSshFileListing";
@@ -12,11 +12,16 @@ let root: Root, host: HTMLDivElement, api: ReturnType<typeof useSshFileListing>;
  * 用例之间共用 "one" 会让上一个用例写下的快照出现在下一个用例的首帧里。
  */
 let conn = "", seq = 0;
-function Probe({path,connectionId}: {path:string;connectionId:string}) { api=useSshFileListing(connectionId,path); return null; }
+const firstRows = new Map<string, string[]>();
+function Probe({path,connectionId}: {path:string;connectionId:string}) {
+  api=useSshFileListing(connectionId,path);
+  useLayoutEffect(() => { firstRows.set(path, api.entries.map(entry => entry.name)); }, [path]);
+  return null;
+}
 async function render(path="/a",connectionId=conn) { await act(async()=>root.render(<Probe {...{path,connectionId}}/>)); }
 function deferred() { let resolve!:(value:SshFileEntry[])=>void, reject!:(error:unknown)=>void; const promise=new Promise<SshFileEntry[]>((yes,no)=>{resolve=yes;reject=no;}); return {resolve,reject,promise}; }
 const file=(name:string,isDir=false):SshFileEntry=>({name,isDir,isSymlink:false,size:1,mtime:0});
-beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);invoke.mockReset();conn=`c${++seq}`;host=document.createElement("div");document.body.append(host);root=createRoot(host);});
+beforeEach(()=>{vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT",true);invoke.mockReset();firstRows.clear();conn=`c${++seq}`;host=document.createElement("div");document.body.append(host);root=createRoot(host);});
 afterEach(async()=>{await act(async()=>root.unmount());host.remove();vi.unstubAllGlobals();});
 it("切换路径立即隐藏旧条目，后到的旧结果不能覆盖新目录",async()=>{
   const old=deferred(),next=deferred();invoke.mockResolvedValueOnce([file("old.txt")]).mockReturnValueOnce(old.promise).mockReturnValueOnce(next.promise);
@@ -73,6 +78,7 @@ it("目录来回切时，回切那一步直接命中快照",async()=>{
   await render("/a");await render("/b");
   expect(api.entries[0].name).toBe("b.txt");
   await render("/a");
+  expect(firstRows.get("/a")).toEqual(["a.txt"]);
   expect(api.entries.map(e=>e.name)).toEqual(["a.txt"]);
   expect(api.loading).toBe(true);
 });

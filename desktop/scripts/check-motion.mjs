@@ -209,10 +209,52 @@ test("older engines retain a visible entry on every visit without remounting the
     await draft.waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "连接页", exact: true }).click();
     await draft.waitFor({ state: "visible" });
-    const frames = await page.locator(".draft-scroll").evaluate(node => node.getAnimations().flatMap(a => a.effect.getKeyframes()).map(f => f.transform));
-    assert.ok(frames.includes("translateY(6px)"));
+    const animation = await page.locator(".draft-scroll").evaluate(node => node.getAnimations().find(a => a.animationName === "tab-fade-in")?.effect.getKeyframes());
+    assert.ok(animation?.some(frame => frame.opacity === "0.45"));
+    assert.ok(animation.every(frame => !frame.transform));
     assert.equal(await draft.inputValue(), "旧环境仍保留草稿");
   }
+});
+
+test("terminal navigation only fades in both directions", async () => {
+  const sample = async name => page.getByRole("button", { name, exact: true }).evaluate(async node => {
+    const start = document.startViewTransition.bind(document);
+    let transition;
+    document.startViewTransition = update => { transition = start(update); return transition; };
+    try {
+      node.click();
+      await transition.ready;
+      const names = document.getAnimations().filter(a => a.effect.pseudoElement).map(a => a.animationName);
+      await transition.finished;
+      return names;
+    } finally {
+      document.startViewTransition = start;
+    }
+  });
+  for (const name of ["终端页", "连接页"]) {
+    const names = await sample(name);
+    assert.ok(names.includes("tab-fade-in") && names.includes("page-fade-out"));
+    assert.ok(!names.includes("tab-in") && !names.includes("page-out"));
+  }
+});
+
+test("hidden windows pause loops and let a newly mounted surface finish entering", async () => {
+  const motion = await page.evaluate(async () => {
+    document.documentElement.setAttribute("data-app-hidden", "");
+    const entry = document.createElement("div"), loop = document.createElement("span");
+    entry.className = "animate-fade-in";
+    loop.className = "notice-pulse";
+    document.body.append(entry, loop);
+    const [animation] = entry.getAnimations();
+    const initially = animation?.playState;
+    await Promise.race([animation?.finished, new Promise(resolve => window.setTimeout(resolve, 350))]);
+    const hidden = { entry: getComputedStyle(entry).opacity, loop: getComputedStyle(loop).animationPlayState };
+    document.documentElement.removeAttribute("data-app-hidden");
+    return { initially, hidden, visible: { entry: getComputedStyle(entry).opacity, loop: getComputedStyle(loop).animationPlayState } };
+  });
+  assert.deepEqual(motion, {
+    initially: "running", hidden: { entry: "1", loop: "paused" }, visible: { entry: "1", loop: "running" },
+  });
 });
 
 test("reduced motion removes spatial movement and JS animation delays, including live preference changes", async () => {

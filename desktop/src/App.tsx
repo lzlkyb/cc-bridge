@@ -61,7 +61,7 @@ import "./terminal-workspace.css";
 import "./connection-access.css";
 
 function AppContent() {
-  // 窗口收进托盘/最小化时给 <html> 打 data-app-hidden，暂停全部 CSS 动画。
+  // 窗口收进托盘/最小化时给 <html> 打 data-app-hidden，暂停循环动效。
   // WebView2 不会自己为隐藏窗口节流动画，实测不做这事会白烧约 0.6 个 CPU 核。
   useAppHiddenFlag();
   // 窗口尺寸持久化：启动恢复上次尺寸 + resize 防抖落盘（纯前端方案）
@@ -294,7 +294,7 @@ function AppContent() {
       }
       setPendingAnchor(anchor ? { anchor, nonce: Date.now() } : null);
     };
-    transitionPage(update, activeTab !== tab);
+    transitionPage(update, activeTab !== tab, activeTab === "terminal" || tab === "terminal" ? "fade" : "slide");
   }, [activeTab, markSeenOnEnter, unreadCount, settingsSections]);
 
   // 「返回工作区」回到离开设置前的那个工作区 tab（而不是硬编码 connect）。

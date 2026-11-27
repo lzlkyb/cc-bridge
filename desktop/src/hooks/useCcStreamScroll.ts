@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import type { CcMessage } from "../lib/ccGuiTypes";
-
-/** 高亮持续多久（与设置页深链的 `anchor-highlight` 同一档）。 */
-const HIGHLIGHT_MS = 2000;
+import { highlightAnchor, scrollToAnchor } from "../lib/scrollMotion";
 /** 距底多近仍算「贴着底」。再大就开始把普通阅读位置误判成贴底，再小滚轮一格就脱钉。 */
 const STICK_GAP = 32;
 
@@ -62,8 +60,13 @@ export function useCcStreamScroll(
       lastTopRef.current = node.scrollTop;
       rememberSize();
     };
+    const returnToBottom = () => {
+      readingUntilRef.current = 0;
+      onScroll();
+    };
     node.addEventListener("scroll", onScroll, { passive: true });
     node.addEventListener("cc-reading-jump", readingJump);
+    node.addEventListener("cc-return-to-bottom", returnToBottom);
     const observer = new ResizeObserver(() => {
       if (activeRef.current && pinnedRef.current) node.scrollTop = node.scrollHeight;
       rememberSize();
@@ -71,7 +74,12 @@ export function useCcStreamScroll(
     observer.observe(node);
     // 折叠过程、延迟排版也会改变正文高度，而滚动容器本身不一定变大。
     if (node.firstElementChild) observer.observe(node.firstElementChild);
-    return () => { node.removeEventListener("scroll", onScroll); node.removeEventListener("cc-reading-jump", readingJump); observer.disconnect(); };
+    return () => {
+      node.removeEventListener("scroll", onScroll);
+      node.removeEventListener("cc-reading-jump", readingJump);
+      node.removeEventListener("cc-return-to-bottom", returnToBottom);
+      observer.disconnect();
+    };
   }, [scrollRef]);
 
   // 新内容贴底：只有「可见 && 贴着底」才追。隐藏 pane 上 scrollHeight 是 0，写了也无意义。
@@ -90,20 +98,20 @@ export function useCcStreamScroll(
 
   /**
    * 跳到流里第一处 diff：锚点是 ToolCard 根节点的 data-cc-tool。高亮复用设置页
-   * 深链的 anchor-highlight（主题色脉冲 2s），不新造一套动效。
+   * 深链的 anchor-highlight，定位后保留短暂的主题色描边。
    */
   return useCallback(
     (messageId: string) => {
-      const node = scrollRef.current?.querySelector<HTMLElement>(
+      const root = scrollRef.current;
+      const node = root?.querySelector<HTMLElement>(
         `[data-cc-tool="${CSS.escape(messageId)}"]`,
       );
-      if (!node) return;
-      scrollRef.current?.dispatchEvent(new Event("cc-reading-jump"));
+      if (!node || !root) return;
+      root.dispatchEvent(new Event("cc-reading-jump"));
       let detail = node.closest("details");
       while (detail) { detail.open = true; detail = detail.parentElement?.closest("details") ?? null; }
-      node.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
-      node.classList.add("anchor-highlight");
-      window.setTimeout(() => node.classList.remove("anchor-highlight"), HIGHLIGHT_MS);
+      scrollToAnchor(node, "center", root);
+      highlightAnchor(node);
     },
     [scrollRef],
   );

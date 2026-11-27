@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "../../lib/tauri";
+import { scrollToAnchor } from "../../lib/scrollMotion";
 import type { StaticStatus, ConfigSaveResult } from "../../lib/types";
 import { isImeComposing } from "../../lib/utils";
 import { Card, CardHeader, CardTitle, CardContent } from "../ui/card";
@@ -85,7 +86,7 @@ export function SecurityTab({
     if (!highlightAnchor?.anchor) return;
     const el = document.getElementById(highlightAnchor.anchor);
     if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollToAnchor(el, "center");
     el.classList.add("anchor-highlight");
     const t = setTimeout(() => el.classList.remove("anchor-highlight"), 2000);
     return () => clearTimeout(t);

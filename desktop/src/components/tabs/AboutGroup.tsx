@@ -10,6 +10,7 @@ import { UpdateStatusPill } from "../update/UpdateStatusPill";
 import type { StaticStatus } from "../../lib/types";
 import { formatVersion } from "../../lib/utils";
 import { APP_INFO } from "../../lib/about";
+import { scrollToAnchor } from "../../lib/scrollMotion";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ChangelogView } from "./ChangelogView";
 import { ReleaseNotes } from "../update/UpdateNotesDialog";
@@ -54,10 +55,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
   // 打开更新历史：展开本卡片并滚动到「更新历史」区
   const openChangelog = useCallback(() => {
     setExpanded(true);
-    requestAnimationFrame(() => {
-      changelogRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      window.scrollBy({ top: -60, behavior: "instant" });
-    });
+    requestAnimationFrame(() => scrollToAnchor(changelogRef.current, "start"));
   }, []);
 
   // 外部信号（点设置 tab 红点 / 进设置页有未读）→ 自动展开更新历史。
@@ -252,7 +250,7 @@ export function AboutGroup({ status, unreadCount, onMarkSeen, changelogOpenToken
             <SponsorCard />
 
             {/* ═══ 更新历史（内嵌：技术栈/项目信息 双列 与 版权行之间） ═══ */}
-            <div ref={changelogRef} className="px-[22px] pt-3.5">
+            <div ref={changelogRef} className="scroll-mt-[60px] px-[22px] pt-3.5">
               <div className="section-label mb-0 flex items-center gap-1.5 ui-eyebrow">
                 <Icon name="history" size={12} /> 更新历史
               </div>

@@ -85,6 +85,7 @@ export function useSshFileListing(connectionId: string, path: string) {
   }, [refresh]);
   useEffect(() => onSshUploadCompleted(connectionId, path, refresh), [connectionId, path, refresh]);
   const matches = snapshot.connectionId === connectionId && snapshot.path === path;
-  // Mask the old snapshot during render, before the navigation effect starts its request.
-  return { entries: matches ? snapshot.entries : [], loading: !matches || snapshot.loading, error: matches ? snapshot.error : null, refresh };
+  // Read the next directory's cache in the same render as its path, before the refresh effect.
+  const entries = matches ? snapshot.entries : snapshots.get(snapKey(connectionId, path)) ?? [];
+  return { entries, loading: !matches || snapshot.loading, error: matches ? snapshot.error : null, refresh };
 }

@@ -220,8 +220,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         onClear={sel.clear}
       />
 
-      {/* 文件列表。key={path}：换目录重挂 → FileTable 根的 animate-fade-in 播整列淡入；
-          同时顺带把滚动位置归位（新目录从顶部看起是正确语义）。 */}
+      {/* A new directory starts at the top, with its cached rows visible immediately. */}
       <FileTable
         key={path}
         entries={view.items}

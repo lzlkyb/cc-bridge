@@ -208,8 +208,6 @@ const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const LAST_CHECK_KEY = "ccbridge_last_update_check";
 /** 「忽略此版本」抑制记忆：记录的版本号（本版本不再弹框，换版本自动解除） */
 const DISMISSED_KEY = "ccbridge_dismissed_update_version";
-/** 重启过渡层停留时长：这段刻意的等待本身就是「正在应用更新」的载体（方案 C） */
-const RESTART_OVERLAY_MS = 1100;
 // ─── Provider ────────────────────────────
 
 export function UpdateProvider({ children }: { children: ReactNode }) {
@@ -742,7 +740,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ─── 重启应用（方案 C 2026-10-16：先播 1.1s 过渡层，再真正 relaunch）────
+  // ─── 重启应用 ────────────────────────
 
   const restart = useCallback(async () => {
     // 重入防护用 ref 而非 state：state 在同一次渲染里恒为旧值，双击 / 连按 Enter
@@ -752,16 +750,9 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     restartingRef.current = true;
     setError(null);
     setShowNotes(true);
-    const activity = await refreshSafety();
-    if (!canRestart(activity)) {
-      restartingRef.current = false;
-      return;
-    }
     setRestarting(true);
-    // 让过渡层播完再重启 —— 这段刻意的等待本身就是「仪式感」的载体。
-    await new Promise((r) => setTimeout(r, RESTART_OVERLAY_MS));
     try {
-      // Recheck after the transition: another window may have started work meanwhile.
+      // Check current activity immediately before relaunch so a stale dialog cannot interrupt work.
       if (!canRestart(await refreshSafety())) {
         restartingRef.current = false;
         setRestarting(false);

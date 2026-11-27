@@ -5,14 +5,15 @@ export function findClawdMessage(scroll: HTMLElement | null, id?: string): HTMLE
 }
 
 /** The character has one DOM identity. Landing slots, never message text, reserve its space. */
-export function useClawdMotion({ rootRef, scrollRef, homeRef, petRef, targetId, reduced }: {
+export function useClawdMotion({ rootRef, scrollRef, homeRef, petRef, targetId, reduced, hidden }: {
   rootRef: RefObject<HTMLDivElement>; scrollRef: RefObject<HTMLDivElement>;
   homeRef: RefObject<HTMLDivElement>; petRef: RefObject<HTMLButtonElement>;
-  targetId?: string; reduced: boolean;
+  targetId?: string; reduced: boolean; hidden: boolean;
 }) {
   const previous = useRef("");
   const [ready, setReady] = useState(0);
   useLayoutEffect(() => {
+    if (hidden) return;
     const root = rootRef.current, scroll = scrollRef.current, pet = petRef.current, home = homeRef.current;
     if (!root || !scroll || !pet || !home) {
       // The parent ref may be attached after this child's layout effect.
@@ -20,6 +21,8 @@ export function useClawdMotion({ rootRef, scrollRef, homeRef, petRef, targetId, 
       return () => cancelAnimationFrame(retry);
     }
     let frame = 0, travel = 0, scrolling = false;
+    const preference = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    const quiet = () => reduced || preference?.matches || root.dataset.clawdTyping === "true" || root.dataset.clawdReading === "true";
     const target = findClawdMessage(scroll, targetId);
     const position = () => {
       const base = root.getBoundingClientRect(), viewport = scroll.getBoundingClientRect();
@@ -46,17 +49,14 @@ export function useClawdMotion({ rootRef, scrollRef, homeRef, petRef, targetId, 
       const y = landing.top - base.top + (visible ? 4 : 0);
       const next = `translate(${Math.round(x)}px,${Math.round(y)}px)`;
       if (next !== previous.current) {
-        const initial = !previous.current;
-        if (initial) pet.style.transition = "none";
-        const systemReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-        pet.dataset.travel = String(!!previous.current && !reduced && !systemReduced && !document.hidden && !scrolling);
-        if (scrolling) pet.style.transition = "none";
+        const immediate = !previous.current || scrolling || quiet() || document.hidden;
+        if (immediate) pet.style.transition = "none";
+        pet.dataset.travel = String(!immediate);
         window.clearTimeout(travel);
-        travel = window.setTimeout(() => { pet.dataset.travel = "false"; }, 310);
+        if (!immediate) travel = window.setTimeout(() => { pet.dataset.travel = "false"; }, 310);
         pet.style.transform = next;
-        if (scrolling) { pet.getBoundingClientRect(); pet.style.transition = ""; }
-        if (initial) {
-          // Commit the first landing before enabling travel; never fly in from (0,0).
+        if (immediate) {
+          // Commit the landing before restoring transitions so quiet updates cannot leave a moving target.
           pet.getBoundingClientRect(); pet.style.transition = "";
         }
         previous.current = next;
@@ -67,7 +67,7 @@ export function useClawdMotion({ rootRef, scrollRef, homeRef, petRef, targetId, 
     const onScroll = () => { scrolling = true; schedule(); };
     const visibility = () => { root.dataset.clawdPaused = String(document.hidden || !root.getClientRects().length); if (!document.hidden) schedule(); };
     const pointer = (event: PointerEvent) => {
-      if (event.pointerType === "touch" || reduced || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches || document.hidden) return;
+      if (event.pointerType === "touch" || quiet() || document.hidden) return;
       const box = pet.getBoundingClientRect();
       pet.style.setProperty("--clawd-look-x", `${Math.max(-2, Math.min(2, (event.clientX - box.left - box.width / 2) / 100))}px`);
       pet.style.setProperty("--clawd-look-y", `${Math.max(-1.5, Math.min(1.5, (event.clientY - box.top - box.height / 2) / 150))}px`);
@@ -104,5 +104,5 @@ export function useClawdMotion({ rootRef, scrollRef, homeRef, petRef, targetId, 
       document.removeEventListener("selectionchange", selection);
       root.removeEventListener("pointerleave", leave); document.removeEventListener("visibilitychange", visibility);
     };
-  }, [rootRef, scrollRef, homeRef, petRef, targetId, reduced, ready]);
+  }, [rootRef, scrollRef, homeRef, petRef, targetId, reduced, hidden, ready]);
 }

@@ -13,6 +13,18 @@ function fmtEta(sec: number | null): string | null {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+export function TransferProgress({ percent, label, className }: {
+  percent?: number | null; label: string; className: string;
+}) {
+  return <span role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100}
+    aria-valuenow={percent ?? undefined} className={`overflow-hidden rounded-full bg-border ${className}`}>
+    {percent == null
+      ? <span className="block h-full w-1/3 animate-pulse rounded-full bg-primary/70 motion-reduce:w-full motion-reduce:animate-none motion-reduce:opacity-50" />
+      : <span className="block h-full origin-left rounded-full bg-primary transition-transform duration-200"
+          style={{ transform: `scaleX(${percent / 100})` }} />}
+  </span>;
+}
+
 /**
  * 传输中的进度条（文件头下方）。
  *
@@ -43,16 +55,7 @@ export function TransferBar({
       <span className="min-w-0 max-w-[190px] flex-1 truncate text-xs" title={transfer.name}>
         {transfer.name}
       </span>
-      <span role="progressbar" aria-label={transfer.kind === "down" ? "下载进度" : "上传进度"} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct ?? undefined} className="h-1.5 min-w-[120px] flex-1 overflow-hidden rounded-full bg-border">
-        {pct == null ? (
-          <span className="block h-full w-1/3 animate-pulse rounded-full bg-primary/70" />
-        ) : (
-          <span
-            className="block h-full rounded-full bg-primary transition-[width] duration-200"
-            style={{ width: `${pct}%` }}
-          />
-        )}
-      </span>
+      <TransferProgress percent={pct} label={transfer.kind === "down" ? "下载进度" : "上传进度"} className="h-1.5 min-w-[120px] flex-1" />
       <span className="shrink-0 font-mono text-xs text-muted-foreground">
         {pct == null ? "连接中…" : eta ? `${pct}% 剩余 ${eta}` : `${pct}%`}
       </span>

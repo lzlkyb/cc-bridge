@@ -25,7 +25,7 @@ function MotionPreview() {
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const { toast } = useToast();
   const count = useCountUp(42, { duration: 500 });
-  const navigate = (value: string) => transitionPage(() => setTab(value), value !== tab);
+  const navigate = (value: string) => transitionPage(() => setTab(value), value !== tab, tab === "terminal" || value === "terminal" ? "fade" : "slide");
   useEffect(() => () => clearTimeout(timer.current), []);
   const save = () => {
     setBusy(true);
@@ -67,6 +67,7 @@ function MotionPreview() {
           <div className="mb-3 flex gap-2">
             <Button variant={tab === "connect" ? "secondary" : "ghost"} onClick={() => navigate("connect")}>连接页</Button>
             <Button variant={tab === "settings" ? "secondary" : "ghost"} onClick={() => navigate("settings")}>设置页</Button>
+            <Button variant={tab === "terminal" ? "secondary" : "ghost"} onClick={() => navigate("terminal")}>终端页</Button>
           </div>
           <TabsContent value="connect" keepMounted className="draft-scroll h-32 overflow-auto">
             <label className="text-sm">草稿<input data-testid="draft" className="ml-3 rounded border bg-background px-3 py-2" placeholder="切页后保留输入" /></label>
@@ -74,6 +75,7 @@ function MotionPreview() {
             <div className="h-48" aria-hidden="true" />
           </TabsContent>
           <TabsContent value="settings" keepMounted className="h-32"><p className="text-sm text-muted-foreground">切回连接页，草稿与滚动位置仍在。</p></TabsContent>
+          <TabsContent value="terminal" keepMounted className="h-32"><p className="font-mono text-sm">deploy@production:~/project $ git status</p></TabsContent>
         </Tabs>
       </section>
       <Modal open={open} onClose={() => setOpen(false)} ariaLabel="连接设置" className="w-full max-w-md rounded-xl modal-surface p-5">

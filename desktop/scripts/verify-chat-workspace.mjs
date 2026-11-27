@@ -261,6 +261,27 @@ try {
     assert.equal(await stream(p).evaluate(e => e.scrollTop), 0);
     assert.ok(await p.getByRole('button', { name: /回到底部/ }).isVisible());
   }, { scene: 'long' });
+  await test('长距离回到底部首帧到位，并保留后续输出的贴底', async p => {
+    const transcript = stream(p);
+    await transcript.evaluate(e => { e.scrollTop = 0; });
+    const jump = button(p, '回到底部');
+    await jump.waitFor();
+    const sample = await jump.evaluate(async control => {
+      const content = document.querySelector('[data-cc-panel]:not(.hidden) [data-cc-stream]');
+      const gap = () => content.scrollHeight - content.clientHeight - content.scrollTop;
+      const before = gap();
+      control.click();
+      await new Promise(requestAnimationFrame);
+      return { before, remaining: gap(), highlighted: !!content.querySelector('.anchor-highlight') };
+    });
+    assert.ok(sample.before > 10000);
+    assert.ok(sample.remaining <= 32, JSON.stringify(sample));
+    assert.equal(sample.highlighted, true);
+    await draft(p).fill('继续贴底');
+    await send(p).click();
+    await p.getByText(/收到：继续贴底/).waitFor();
+    await eventually(() => transcript.evaluate(e => e.scrollHeight - e.clientHeight - e.scrollTop), gap => gap <= 32, '输出后仍贴底');
+  }, { scene: 'long' });
   await test('队列高度变化和回复完成时继续跟随底部', async p => {
     await draft(p).fill('底部阅读第一条'); await send(p).click();
     await button(p, '选择发送方式').click(); await p.getByRole('button', { name: /下一轮发送.*当前任务结束/ }).click();

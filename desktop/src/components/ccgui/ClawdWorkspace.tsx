@@ -8,6 +8,7 @@ import { useClawdPreference } from "../../hooks/useClawdPreference";
 import { ClawdTeam } from "./ClawdTeam";
 import { ClawdRosterSlot } from "./CcConversationLayout";
 import { useClawdTaskStop, type StopTask } from "../../hooks/useClawdTaskStop";
+import { useAppHidden } from "../../lib/appVisibility";
 import { lastRecordAge, STALE_SEC } from "./TurnActivity";
 
 export function ClawdWorkspace({ view, activity, scrollRef, rootRef, startedAt, onStopTask }: {
@@ -18,6 +19,7 @@ export function ClawdWorkspace({ view, activity, scrollRef, rootRef, startedAt, 
   const homeRef = useRef<HTMLDivElement>(null), petRef = useRef<HTMLButtonElement>(null);
   const [records, setRecords] = useState(false);
   const { reduced, toggle } = useClawdPreference(rootRef);
+  const hidden = useAppHidden();
   const taskStop = useClawdTaskStop(onStopTask);
   const [now, setNow] = useState(Date.now);
   const [celebrate, setCelebrate] = useState(false);
@@ -30,9 +32,9 @@ export function ClawdWorkspace({ view, activity, scrollRef, rootRef, startedAt, 
     return () => clearTimeout(timer);
   }, [activity.pose, activity.busy]);
   const wave = useRef<ReturnType<typeof setTimeout>>();
-  useClawdMotion({ rootRef, scrollRef, homeRef, petRef, targetId: activity.targetId, reduced });
+  useClawdMotion({ rootRef, scrollRef, homeRef, petRef, targetId: activity.targetId, reduced, hidden });
   useEffect(() => {
-    if (!activity.busy) return;
+    if (!activity.busy || hidden) return;
     let timer: ReturnType<typeof setInterval> | undefined;
     const visibility = () => {
       clearInterval(timer);
@@ -42,7 +44,7 @@ export function ClawdWorkspace({ view, activity, scrollRef, rootRef, startedAt, 
     if (rootRef.current) observer?.observe(rootRef.current);
     visibility(); document.addEventListener("visibilitychange", visibility);
     return () => { clearInterval(timer); observer?.disconnect(); document.removeEventListener("visibilitychange", visibility); };
-  }, [activity.busy, rootRef]);
+  }, [activity.busy, hidden, rootRef]);
   useEffect(() => () => clearTimeout(wave.current), []);
 
   const locate = (id = activity.targetId) => {

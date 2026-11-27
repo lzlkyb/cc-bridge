@@ -14,6 +14,7 @@ import { cleanErr } from "../../lib/utils";
 import { ERR_CANCELLED } from "../../lib/sshErrors";
 import { invoke } from "../../lib/tauri";
 import type { SshConnectionList } from "../../lib/types";
+import { TransferProgress } from "./SshTransferBar";
 
 const statusLabel = { queued: "排队中", running: "传输中", done: "已完成", partial: "部分完成", failed: "已中断", cancelled: "已取消" };
 const isActive = (job: SshTransferJob) => job.status === "queued" || job.status === "running";
@@ -67,6 +68,7 @@ export function SshTransferPanel({ connectionId, onLocateRemote }: { connectionI
     <div className="flex min-w-0 items-center gap-2 border-t border-border/50 bg-muted/30 px-3 py-1.5 text-xs">
       <Icon name={active.length ? "activity" : errors ? "alertTriangle" : "list"} size={14} className="shrink-0 text-primary"/>
       <span role="status" title={summary} className="min-w-0 flex-1 truncate">{summary}</span>
+      {!open && running && <TransferProgress percent={running.percent} label={`${running.label} 传输进度`} className="hidden h-1 w-16 shrink-0 sm:block"/>}
       <Button size="sm" variant="ghost" className="h-6 shrink-0 px-1.5 text-primary" aria-expanded={open} onClick={() => setOpen(!open)}>
         {open ? "收起任务" : "查看任务"}<Icon name={open ? "chevronDown" : "chevronUp"} size={12}/>
       </Button>
@@ -99,7 +101,7 @@ function TransferList({ jobs, onLocateRemote, hostLabels }: { jobs: SshTransferJ
           {job.error && needsAction(job) && <p className="break-words text-destructive-ink">{job.error}</p>}
           {job.status === "cancelled" && job.error?.includes(`${ERR_CANCELLED}:`) &&
             <p className="text-muted-foreground">{job.error.split(`${ERR_CANCELLED}:`).pop()?.trim()}</p>}
-          {job.status === "running" && <progress className="h-1 w-full accent-primary" max={100} value={job.percent ?? undefined} aria-label={`${job.label} 传输进度`}/>}
+          {job.status === "running" && <TransferProgress percent={job.percent} label={`${job.label} 传输进度`} className="mt-1 block h-1 w-full"/>}
         </div>
         <div className="file-transfer-job-actions flex flex-wrap items-center justify-end gap-1">
           <span className={needsAction(job) ? "text-warning-ink" : "text-muted-foreground"}>{job.cancelling ? "正在取消…" : statusLabel[job.status]}

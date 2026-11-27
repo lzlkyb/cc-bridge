@@ -1,4 +1,5 @@
 import { useCallback, type RefObject } from "react";
+import { highlightAnchor, scrollToAnchor } from "../lib/scrollMotion";
 
 /**
  * 在「我的提问」之间跳。
@@ -47,7 +48,10 @@ export function useCcMessageNav(scrollRef: RefObject<HTMLDivElement>): {
         if (n.getBoundingClientRect().top - top <= 8) cur = i;
       });
       const target = Math.min(nodes.length - 1, Math.max(0, cur + dir));
-      nodes[target].scrollIntoView({ block: "start", behavior: "smooth" });
+      if (target === cur) return;
+      root.dispatchEvent(new Event("cc-reading-jump"));
+      scrollToAnchor(nodes[target], "start", root);
+      highlightAnchor(nodes[target]);
     },
     [scrollRef],
   );

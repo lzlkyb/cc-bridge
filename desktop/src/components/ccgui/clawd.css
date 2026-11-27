@@ -29,6 +29,10 @@
 @keyframes clawd-breathe{50%{transform:translateY(-1.6px) scale(1.015,.985)}}@keyframes clawd-blink{0%,93%,97%,100%{transform:scaleY(1)}95%{transform:scaleY(.12)}}@keyframes clawd-foot{50%{transform:rotate(9deg)}}@keyframes clawd-reading{50%{transform:translateY(1px) rotate(1.5deg)}}@keyframes clawd-page{50%{opacity:.35}}@keyframes clawd-typing{50%{transform:translateY(3px) rotate(6deg)}}@keyframes clawd-cursor{50%{opacity:.15}}@keyframes clawd-inspect{50%{transform:translateX(3px) rotate(9deg)}}@keyframes clawd-done{35%{transform:translateY(-7px) scale(.98,1.03)}75%{transform:translateY(1px) scale(1.03,.97)}}@keyframes clawd-wave{50%{transform:translateY(-5px) rotate(-25deg)}}@keyframes clawd-walk{50%{transform:translateY(-3px)}}
 @container(max-width:600px){.cc-clawd-status{gap:8px;flex-wrap:wrap}.cc-clawd-copy{flex-basis:calc(100% - 108px)}.cc-clawd-actions{margin-inline-start:96px}.cc-clawd-target{padding-inline-start:94px}.cc-clawd-bubble{max-width:200px}}
 @media(prefers-reduced-motion:reduce){.cc-clawd-character *{animation:none!important}.cc-clawd-companion,.cc-clawd-character .eyes{transition:none!important}}
+/* Allow the finite completion and wave gestures to finish while the window is hidden. */
+:root[data-app-hidden] .cc-clawd-character :is(.eyelids,.leg-l,.leg-r,.hand-l,.page-line,.cursor,.glass),
+:root[data-app-hidden] .cc-clawd-character:not([data-act=complete]) .body,
+:root[data-app-hidden] .cc-clawd-character .hand-r:not([data-wave=true] *){animation-play-state:paused}
 
 /* Keep the reading area stable while details are open. */
 .cc-clawd-dock{position:relative}

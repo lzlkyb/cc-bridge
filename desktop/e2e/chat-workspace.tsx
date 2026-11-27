@@ -129,7 +129,7 @@ mockIPC(async (command, payload = {}) => {
   return null;
 }, { shouldMockEvents: true });
 const { CcGuiTab } = await import("../src/components/tabs/CcGuiTab");
-const { SideNav } = await import("../src/components/layout/SideNav");
+const { SideNav, visibleNav } = await import("../src/components/layout/SideNav");
 const { ToastProvider } = await import("../src/components/ui/toast");
 const { UpdateProvider } = await import("../src/contexts/UpdateContext");
 const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -137,7 +137,7 @@ function Review() {
   const [destination, setDestination] = useState("ccgui");
   return <QueryClientProvider client={query}><UpdateProvider><ToastProvider><div className="app-boot-fade bg-background text-foreground" style={{ height: "100dvh", display: "flex", flexDirection: "column" }}>
     <div style={{ height: 36, flex: "none", padding: "8px 18px", fontSize: 11, color: "hsl(var(--muted-foreground))" }}>正式组件验收 · 模拟服务 · {destination === "ccgui" ? "对话页" : `已导航至 ${destination}`}</div>
-    <div className="app-shell"><SideNav activeTab="ccgui" onNavigate={setDestination} unreadCount={0} collapsed={innerWidth < 850} /><main className="app-main" style={{ padding: innerWidth < 850 ? 8 : 18, display: "flex", flexDirection: "column" }}><CcGuiTab onNavigate={setDestination} /></main></div>
+    <div className="app-shell"><SideNav navItems={visibleNav(false)} activeTab="ccgui" onNavigate={setDestination} unreadCount={0} collapsed={innerWidth < 850} /><main className="app-main" style={{ padding: innerWidth < 850 ? 8 : 18, display: "flex", flexDirection: "column" }}><CcGuiTab onNavigate={setDestination} /></main></div>
   </div></ToastProvider></UpdateProvider></QueryClientProvider>;
 }
 createRoot(document.getElementById("root")!).render(<Review />);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type RefObject } from "react";
+import { highlightAnchor, scrollMotion } from "../lib/scrollMotion";
 
 /**
  * 距底多远算「离开了底部」。
@@ -34,7 +35,12 @@ export function useCcScrollAway(scrollRef: RefObject<HTMLDivElement>) {
 
   const toBottom = useCallback(() => {
     const node = scrollRef.current;
-    if (node) node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
+    if (!node) return;
+    const behavior = scrollMotion(node.scrollHeight - node.clientHeight - node.scrollTop, node.clientHeight);
+    node.scrollTo({ top: node.scrollHeight, behavior });
+    node.dispatchEvent(new Event("cc-return-to-bottom"));
+    const latest = node.firstElementChild?.lastElementChild;
+    if (behavior === "instant" && latest) highlightAnchor(latest);
   }, [scrollRef]);
 
   return { away, toBottom };

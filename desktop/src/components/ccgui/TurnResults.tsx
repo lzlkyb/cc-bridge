@@ -1,4 +1,5 @@
 import type { CcMessage } from "../../lib/ccGuiTypes";
+import { highlightAnchor, scrollToAnchor } from "../../lib/scrollMotion";
 import { Icon } from "../ui/icon";
 import { toolArgLabel, toolKind } from "./summarize";
 
@@ -22,12 +23,12 @@ export function TurnResults({ messages, endIndex }: { messages: CcMessage[]; end
       const panel = event.currentTarget.closest("[data-cc-panel]");
       const target = panel?.querySelector<HTMLElement>(`[data-cc-tool="${CSS.escape(id)}"]`);
       if (!target) return;
-      panel?.querySelector("[data-cc-stream]")?.dispatchEvent(new Event("cc-reading-jump"));
+      const stream = panel?.querySelector<HTMLElement>("[data-cc-stream]");
+      stream?.dispatchEvent(new Event("cc-reading-jump"));
       let parent = target.closest("details");
       while (parent) { parent.open = true; parent = parent.parentElement?.closest("details") ?? null; }
-      target.scrollIntoView({ block: "center", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-      target.classList.add("anchor-highlight");
-      window.setTimeout(() => target.classList.remove("anchor-highlight"), 2000);
+      scrollToAnchor(target, "center", stream);
+      highlightAnchor(target);
     }}><Icon name={toolKind(tool.name) === "bash" ? "terminal" : "file"} size={14} />
       <span>{toolKind(tool.name) === "bash" ? "执行命令" : "文件操作"}{tool.status === "error" || tool.isError ? "（失败）" : ""} · {toolArgLabel(tool.input) || tool.name}</span>
     </button>)}</div>
