@@ -79,9 +79,9 @@ describe("update dialog behavior", () => {
     expect(dismiss).not.toHaveBeenCalled(); expect(close).toHaveBeenCalledOnce();
     expect(download).not.toHaveBeenCalled();
   });
-  it("点击下载更新时开始下载并立即关闭弹框，不写忽略记忆", async () => {
+  it("点击下载更新后保留弹框，让用户看到进度或主动放到后台", async () => {
     await mount(); await act(async () => button("下载更新").click());
-    expect(download).toHaveBeenCalledOnce(); expect(close).toHaveBeenCalledOnce();
+    expect(download).toHaveBeenCalledOnce(); expect(close).not.toHaveBeenCalled();
     expect(dismiss).not.toHaveBeenCalled();
   });
   it("本次默认展开，远端内容以安全文本呈现，切换版本重新展开", async () => {

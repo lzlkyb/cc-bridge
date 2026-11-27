@@ -4,12 +4,10 @@ import { Card, CardContent } from "../../ui/card";
 import { Switch } from "../../ui/switch";
 import { Button } from "../../ui/button";
 import { SettingsRow } from "../../ui/SettingsRow";
-import { ToggleRow } from "../../ui/ToggleRow";
 import { AppearanceSettings } from "./AppearanceSettings";
-import { useOptionalUpdate } from "../../../contexts/UpdateContext";
+import { SoftwareUpdateSettings } from "./SoftwareUpdateSettings";
 
-export function AppGroup() {
-  const updates = useOptionalUpdate();
+export function AppGroup({ currentVersion }: { currentVersion?: string }) {
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
@@ -42,13 +40,6 @@ export function AppGroup() {
           <Switch checked={autostart === true} disabled={loading || pending || autostart === null} onChange={next => { void toggle(next); }} ariaLabel="开机自动启动" />
           {!loading && autostart === null && <Button variant="outline" size="sm" onClick={() => { void readAutostart(); }}>重试</Button>}</div>} />
     </section>
-    {updates && <section className="settings-inner-section" aria-labelledby="update-settings-title">
-      <h3 id="update-settings-title">软件更新</h3>
-      <ToggleRow id="toggle-update-preload" label="自动预下载更新"
-        sub="在后台下载并验证安装包，就绪后提醒你安装"
-        checked={updates.autoPreload} onChange={updates.setAutoPreload} />
-      <SettingsRow id="app-check-update" label="检查更新" last
-        control={<Button variant="outline" size="sm" onClick={updates.manualCheckForUpdate}>检查更新</Button>} />
-    </section>}
+    <SoftwareUpdateSettings currentVersion={currentVersion} />
   </CardContent></Card>;
 }

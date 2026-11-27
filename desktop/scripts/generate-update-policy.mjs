@@ -21,6 +21,8 @@
  */
 
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,6 +35,8 @@ const OUTPUT = process.env.POLICY_OUTPUT || path.join(ROOT, "dist", "update-poli
 export const SCHEMA = 1;
 /** 强制生效前的缓冲天数。1 天是产品决定：给用户一个「今天先干活、明天必须升」的窗口。 */
 export const DEFAULT_GRACE_DAYS = 1;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const POLICY_PREFIX = "CC Bridge update policy v1\n";
 
 /** `x.y.z` / `vX.Y.Z` → [major, minor, patch]；其余返回 null。 */
 export function parseVersion(raw) {
@@ -86,16 +90,44 @@ export function buildPolicy({ version, policy = {}, now = new Date() }) {
     console.warn("[WARN] 强制更新未提供 message，将使用默认说明");
   }
 
+  const graceUntil = new Date(now.getTime() + graceDays * DAY_MS);
   return {
     schema: SCHEMA,
     latestVersion,
     minSupportedVersion,
     enforced,
-    graceUntil: new Date(now.getTime() + graceDays * 24 * 60 * 60 * 1000).toISOString(),
+    graceUntil: graceUntil.toISOString(),
     message:
       (policy.message || "").trim() || `请升级到 v${minSupportedVersion} 后继续使用。`,
     updatedAt: now.toISOString(),
+    expiresAt: new Date(graceUntil.getTime() + 7 * DAY_MS).toISOString(),
   };
+}
+
+export function signedPolicyDocument(policy, sign) {
+  const payload = POLICY_PREFIX + JSON.stringify(policy);
+  const signature = sign(payload).trim();
+  if (!signature) throw new Error("更新策略缺少签名");
+  // Older clients ignore this envelope because they cannot verify it.
+  return { payload, signature };
+}
+
+function signPolicy(payload) {
+  const dir = fs.mkdtempSync(path.join(tmpdir(), "ccb-update-policy-"));
+  const input = path.join(dir, "policy.txt");
+  const signature = input + ".sig";
+  try {
+    fs.writeFileSync(input, payload, "utf-8");
+    const cli = path.join(ROOT, "node_modules", "@tauri-apps", "cli", "tauri.js");
+    execFileSync(process.execPath, [cli, "signer", "sign", input], { stdio: "pipe" });
+    return fs.readFileSync(signature, "utf-8");
+  } catch {
+    throw new Error("无法签署更新策略，请检查发布签名密钥");
+  } finally {
+    fs.rmSync(signature, { force: true });
+    fs.rmSync(input, { force: true });
+    fs.rmdirSync(dir);
+  }
 }
 
 function fail(msg) {
@@ -123,14 +155,16 @@ function main() {
   }
 
   let result;
+  let document;
   try {
     result = buildPolicy({ version: conf.version, policy });
+    document = signedPolicyDocument(result, signPolicy);
   } catch (e) {
     fail(e.message);
   }
 
   fs.mkdirSync(path.dirname(OUTPUT), { recursive: true });
-  fs.writeFileSync(OUTPUT, JSON.stringify(result, null, 2), "utf-8");
+  fs.writeFileSync(OUTPUT, JSON.stringify(document, null, 2), "utf-8");
   info(
     `已生成 ${path.relative(ROOT, OUTPUT)}：enforced=${result.enforced} ` +
       `min=${result.minSupportedVersion} latest=${result.latestVersion} graceUntil=${result.graceUntil}`,

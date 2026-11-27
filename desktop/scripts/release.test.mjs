@@ -8,7 +8,7 @@ import { gitSubprocessEnv } from "./publish-manifest-branch.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
 
-it.each([false, true])("普通发版可提交，上一版是否启用强制更新：%s", (previouslyEnforced) => {
+it.each([[false, false], [true, false], [false, true]])("发版保护，上一版强制：%s，已有暂存改动：%s", (previouslyEnforced, preStaged) => {
   const cwd = mkdtempSync(join(tmpdir(), "ccbridge release "));
   const env = gitSubprocessEnv();
   const git = (...args) => execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: "pipe" }).trim();
@@ -40,12 +40,24 @@ it.each([false, true])("普通发版可提交，上一版是否启用强制更�
     git("config", "commit.gpgsign", "false");
     git("add", ".");
     git("commit", "-qm", "test fixture");
+    if (preStaged) {
+      write("unrelated.txt", "keep this change staged");
+      git("add", "unrelated.txt");
+    }
 
     // 模拟 Cargo 门禁刷新锁文件。这里运行真实发版脚本，所有 Git 操作都在临时仓库。
     write("desktop/src-tauri/Cargo.lock", 'version = "3.4.1"\n');
     const result = spawnSync(process.execPath, ["desktop/scripts/release.mjs", "--patch", "--skip-tests"], {
       cwd, env, encoding: "utf8", stdio: "pipe",
     });
+    if (preStaged) {
+      expect(result.status, result.stdout + result.stderr).toBe(1);
+      expect(result.stderr).toContain("暂存区已有改动");
+      expect(git("log", "-1", "--format=%s")).toBe("test fixture");
+      expect(git("diff", "--cached", "--name-only")).toBe("unrelated.txt");
+      expect(git("diff", "HEAD", "--", "CHANGELOG.md", "desktop/src-tauri/Cargo.toml")).toBe("");
+      return;
+    }
     expect(result.status, result.stdout + result.stderr).toBe(0);
     expect(git("log", "-1", "--format=%s")).toBe("chg: 发版 v3.4.1");
     expect(JSON.parse(git("show", "HEAD:desktop/release-policy.json"))).toEqual({ enforced: false });

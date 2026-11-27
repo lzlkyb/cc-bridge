@@ -84,6 +84,7 @@ const EVENTS = [  "update:checking",
   "update:downloading",
   "update:progress",
   "update:verifying",
+  "update:cancelled",
   "update:staged",
   "update:obsolete",
   "update:ready",
@@ -189,7 +190,7 @@ afterEach(async () => {
 // ─── 用例 ────────────────────────────────
 
 describe("监听注册与启动自检的顺序", () => {
-  it("7 个监听器全部注册后才发起启动自检", async () => {
+  it("全部监听器注册完成后才发起启动自检", async () => {
     await mount();
 
     expect([...h.handlers.keys()].sort()).toEqual([...EVENTS].sort());
@@ -285,7 +286,7 @@ describe("事件驱动的状态转移", () => {
     await act(async () => {
       void state().downloadAndInstall();
     });
-    expect(h.invoke).not.toHaveBeenCalledWith("start_update");
+    expect(h.invoke.mock.calls.some(([cmd]) => cmd === "start_update")).toBe(false);
   });
 
   it("后台检查完成不能覆盖正在下载或已安装的状态", async () => {
@@ -328,7 +329,7 @@ describe("事件驱动的状态转移", () => {
     await act(async () => {
       void state().downloadAndInstall();
     });
-    expect(h.invoke).toHaveBeenCalledWith("start_update");
+    expect(h.invoke).toHaveBeenCalledWith("start_update", { requestedVersion: "99.9.9" });
   });
 });
 
@@ -440,7 +441,7 @@ describe("下载重入防护", () => {
     await act(async () => {
       void state().downloadAndInstall();
     });
-    expect(h.invoke).not.toHaveBeenCalledWith("start_update");
+    expect(h.invoke.mock.calls.some(([cmd]) => cmd === "start_update")).toBe(false);
   });
 });
 
@@ -455,7 +456,7 @@ describe("后台预下载", () => {
     await emit("update:available", available("3.5.0"));
     expect(state().status).toBe("downloading");
     expect(dialogOpen()).toBe(false);
-    expect(h.invoke).toHaveBeenCalledWith("start_update");
+    expect(h.invoke).toHaveBeenCalledWith("start_update", { requestedVersion: "3.5.0" });
     await emit("update:verifying");
     expect(state().status).toBe("verifying");
     expect(dialogOpen()).toBe(false);
@@ -520,7 +521,7 @@ describe("后台预下载", () => {
     h.invoke.mockImplementation(async cmd => cmd === "install_prepared_update" ? "busy" : h.defaultInvoke(cmd));
     await act(async () => state().installPreparedUpdate());
     expect(state().status).toBe("staged");
-    expect(h.invoke).not.toHaveBeenCalledWith("start_update");
+    expect(h.invoke.mock.calls.some(([cmd]) => cmd === "start_update")).toBe(false);
   });
 });
 
@@ -531,7 +532,7 @@ describe("确认重启与任务保护", () => {
     await act(async () => { vi.advanceTimersByTime(60_000); });
     expect(h.relaunch).not.toHaveBeenCalled();
     await act(async () => { void state().downloadAndInstall(); void state().manualCheckForUpdate(); });
-    expect(h.invoke).not.toHaveBeenCalledWith("start_update");
+    expect(h.invoke.mock.calls.some(([cmd]) => cmd === "start_update")).toBe(false);
     expect(state().status).toBe("ready");
   });
   it("忙碌或状态查询失败时禁止重启", async () => {
@@ -831,5 +832,59 @@ describe("失败提示的打扰程度", () => {
 
     expect(state().errorCode).toBe("signature");
     expect(state().errorToastAllowed).toBe(true);
+  });
+});
+
+describe("更新恢复与反馈", () => {
+  it("手动加入后台检查时仍收到失败反馈", async () => {
+    let finishCheck: (() => void) | undefined;
+    h.invoke.mockImplementation(async cmd => {
+      if (cmd === "check_update") await new Promise<void>(resolve => { finishCheck = resolve; });
+      return h.defaultInvoke(cmd);
+    });
+    await mount();
+    await act(async () => { await state().manualCheckForUpdate(); });
+    await act(async () => { await state().checkForUpdate(); });
+    await emit("update:error", { message: "连接超时", code: "timeout", source: "check" });
+    await act(async () => { finishCheck?.(); });
+    expect(state().errorToastAllowed).toBe(true);
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "check_update")).toHaveLength(1);
+  });
+
+  it("关闭预下载会取消进行中的自动下载，取消后保留版本并由用户继续", async () => {
+    localStorage.setItem(PRELOAD_KEY, "true");
+    await mount();
+    await emit("update:available", available());
+    expect(state().status).toBe("downloading");
+    await act(async () => { state().setAutoPreload(false); });
+    expect(h.invoke).toHaveBeenCalledWith("cancel_update");
+    await emit("update:cancelled");
+    expect(state().status).toBe("available");
+    expect(state().downloadPaused).toBe(true);
+    await act(async () => { state().setAutoPreload(true); });
+    await emit("update:available", available());
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "start_update")).toHaveLength(1);
+    await act(async () => { await state().downloadAndInstall(); });
+    expect(h.invoke.mock.calls.filter(([cmd]) => cmd === "start_update")).toHaveLength(2);
+  });
+
+  it("安装被拒时保留已验证的本地包及可见原因", async () => {
+    h.invoke.mockImplementation(async cmd => cmd === "install_prepared_update" ? "busy" : h.defaultInvoke(cmd));
+    await mount();
+    await emit("update:staged", { ...available(), size: 4096 });
+    await act(async () => { await state().installPreparedUpdate(); });
+    expect(state().status).toBe("staged");
+    expect(state().error).toContain("暂时无法安装");
+  });
+
+  it("便携版仍可检查更新但不会触发安装器下载", async () => {
+    localStorage.setItem(PRELOAD_KEY, "true");
+    h.invoke.mockImplementation(async cmd => cmd === "update_install_kind" ? "portable" : h.defaultInvoke(cmd));
+    await mount();
+    await emit("update:available", available());
+    await act(async () => { await state().downloadAndInstall(); });
+    expect(state().portable).toBe(true);
+    expect(state().status).toBe("available");
+    expect(h.invoke.mock.calls.some(([cmd]) => cmd === "start_update")).toBe(false);
   });
 });

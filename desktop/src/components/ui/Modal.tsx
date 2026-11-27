@@ -31,6 +31,7 @@ interface ModalProps {
    * 用途见 `useFocusTrap` 的同名参数：避开可滚动区的整圈描边。
    */
   initialFocus?: string;
+  focusRefreshKey?: string;
 }
 
 /**
@@ -58,6 +59,7 @@ export function Modal({
   zIndex = 1000,
   ariaLabel,
   initialFocus,
+  focusRefreshKey,
 }: ModalProps) {
   const active = useViewActive();
   const visible = open && active;
@@ -70,6 +72,7 @@ export function Modal({
     enabled: mounted,
     onEscape: visible && dismissible ? onClose : undefined,
     initialFocus,
+    focusRefreshKey: visible ? focusRefreshKey : undefined,
   });
 
   if (!mounted) return null;
@@ -84,6 +87,7 @@ export function Modal({
     >
       <div
         ref={surfaceRef}
+        tabIndex={-1}
         role="dialog" aria-modal="true" aria-label={ariaLabel}
         data-state={entered ? "open" : "closed"}
         data-exiting={!visible || undefined}

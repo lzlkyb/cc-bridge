@@ -170,7 +170,7 @@ export function UpdateNotesDialog({ open, update, process, requirement, ...actio
   requirement?: { minimumVersion: string; reason: string };
 } & import("./UpdateProcess").UpdateActionProps) {
   if (!update) return null;
-  return <Modal open={open} onClose={actions.onClose} zIndex={requirement ? 2500 : 1000} dismissible={!requirement && process?.status !== "installing"} initialFocus="[data-update-primary]" ariaLabel={requirement ? "必须更新后才能继续使用" : "CC Bridge 软件更新"} className="modal-surface update-dialog">
+  return <Modal open={open} onClose={actions.onClose} zIndex={requirement ? 2500 : 1000} dismissible={!requirement && process?.status !== "installing"} initialFocus="[data-update-primary]" focusRefreshKey={`${update.version}/${process?.status}/${process?.safety.state}/${actions.cancelling}`} ariaLabel={requirement ? "必须更新后才能继续使用" : "CC Bridge 软件更新"} className="modal-surface update-dialog">
     <UpdateDialogContent key={`${update.currentVersion ?? ""}/${update.version ?? ""}`} update={update} process={process} requirement={requirement} {...actions} />
   </Modal>;
 }

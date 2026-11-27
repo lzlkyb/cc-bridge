@@ -4,6 +4,7 @@ export interface UpdateActivity {
   commands: number;
   transfers: number;
   terminals?: number;
+  terminalNames?: string[];
   relayRequests?: number;
 }
 
@@ -21,14 +22,17 @@ export interface UpdatePresentation {
   bytesPerSec: number;
   error?: string | null;
   restarting?: boolean;
+  downloadPaused?: boolean;
   safety: RestartSafety;
 }
 
 export function activitySummary(activity: UpdateActivity): string {
+  const names = [...new Set(activity.terminalNames ?? [])].filter(Boolean);
+  const terminals = names.length ? `个 SSH 终端（${names.join("、")}）` : "个 SSH 终端";
   return ([
     [activity.conversations, "个对话"], [activity.agents, "个后台成员"],
     [activity.commands, "个后台命令"], [activity.transfers, "个文件传输"],
-    [activity.terminals ?? 0, "个 SSH 终端"],
+    [activity.terminals ?? 0, terminals],
     [activity.relayRequests ?? 0, "个中转请求"],
   ] as const).filter(([count]) => count > 0).map(([count, label]) => `${count} ${label}`).join("、");
 }

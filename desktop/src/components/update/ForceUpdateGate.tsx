@@ -1,26 +1,23 @@
-import { useEffect } from "react";
 import { Button } from "../ui/button";
 import { UpdateNotesDialog } from "./UpdateNotesDialog";
 import { friendlyError, useUpdate } from "../../contexts/UpdateContext";
 import { useUpdateRestartSafety } from "../../hooks/useUpdateRestartSafety";
-import { canRestart, meetsUpdateMinimum, type UpdatePresentation } from "../../lib/updatePresentation";
+import { meetsUpdateMinimum, type UpdatePresentation } from "../../lib/updatePresentation";
 
 export function ForceUpdateGate() {
   const {
     forceUpdate, update, status, progress, progressIndeterminate, bytesPerSec,
     downloadedBytes, totalBytes, error, errorCode, restarting, startForcedUpdate,
     installPreparedUpdate, quitApp, restart, refreshForcePolicy, checkingPolicy,
-    finishingWork, finishCurrentWork, returnToUpdate,
+    finishingWork, canFinishWork, workSeconds, finishCurrentWork, returnToUpdate,
+    cancelPreparation, canCancelPreparation, downloadPaused, portable, retryUpdate,
   } = useUpdate();
   const { safety, refresh } = useUpdateRestartSafety(forceUpdate.active && status !== "installing");
-  useEffect(() => {
-    if (finishingWork && canRestart(safety)) returnToUpdate();
-  }, [finishingWork, returnToUpdate, safety]);
   if (!forceUpdate.active) return null;
 
   if (finishingWork) {
     return <div className="update-finish-work" role="region" aria-label="强制更新待安装">
-      <span>请保存当前工作，完成后返回更新。</span>
+      <span>请保存当前工作 · 剩余 <time>{Math.floor(workSeconds / 60)}:{String(workSeconds % 60).padStart(2, "0")}</time></span>
       <Button size="sm" onClick={returnToUpdate}>返回更新</Button>
     </div>;
   }
@@ -36,7 +33,7 @@ export function ForceUpdateGate() {
   if (phase === "staged" && !eligible) phase = "available";
   const process: UpdatePresentation = {
     status: phase, progress, indeterminate: progressIndeterminate, bytesPerSec,
-    downloadedBytes, totalBytes, safety, restarting,
+    downloadedBytes, totalBytes, safety, restarting, downloadPaused,
     error: phase === "ready" || phase === "staged" ? error : error ? friendlyError(error, errorCode).friendly : null,
   };
 
@@ -50,11 +47,14 @@ export function ForceUpdateGate() {
     onDownload={startForcedUpdate}
     onInstall={installPreparedUpdate}
     onRestart={restart}
-    onRetry={startForcedUpdate}
+    onRetry={retryUpdate}
     onRefreshSafety={refresh}
     onQuit={quitApp}
     onRefreshPolicy={refreshForcePolicy}
     checkingPolicy={checkingPolicy}
-    onFinishWork={finishCurrentWork}
+    onFinishWork={canFinishWork ? finishCurrentWork : undefined}
+    onCancelDownload={cancelPreparation}
+    cancelling={!canCancelPreparation}
+    portable={portable}
   />;
 }

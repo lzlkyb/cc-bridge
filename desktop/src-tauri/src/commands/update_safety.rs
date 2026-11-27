@@ -11,6 +11,7 @@ pub struct UpdateActivity {
     commands: usize,
     transfers: usize,
     terminals: usize,
+    terminal_names: Vec<String>,
     relay_requests: usize,
 }
 
@@ -45,12 +46,19 @@ pub(super) async fn read_update_activity(state: &AppState) -> Result<UpdateActiv
             commands += 1;
         }
     }
+    let terminal_names = state
+        .ssh_sessions
+        .iter()
+        .take(8)
+        .map(|session| session.label.chars().take(60).collect())
+        .collect();
     Ok(UpdateActivity {
         conversations,
         agents,
         commands,
         transfers: state.ssh_transfers.len(),
         terminals: state.ssh_sessions.len(),
+        terminal_names,
         relay_requests: state.relay.log().in_flight_count(),
     })
 }

@@ -13,7 +13,9 @@ export function useUpdateRestartSafety(active: boolean) {
       // A missing/old backend must never be interpreted as an idle application.
       if (!activity ||
           ![activity.conversations, activity.agents, activity.commands, activity.transfers, activity.terminals ?? 0, activity.relayRequests ?? 0]
-            .every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error("Invalid activity");
+            .every(value => Number.isSafeInteger(value) && value >= 0) ||
+          (activity.terminalNames != null && (!Array.isArray(activity.terminalNames) ||
+            !activity.terminalNames.every(name => typeof name === "string")))) throw new Error("Invalid activity");
       result = { state: "known", activity };
     } catch {
       result = { state: "unknown" };

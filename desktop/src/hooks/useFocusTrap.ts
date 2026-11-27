@@ -21,6 +21,20 @@ interface FocusTrapOptions {
    * 强制更新遮罩用它把初始焦点放到主按钮上。
    */
   initialFocus?: string;
+  /** Recheck focus after a step removes or disables its currently focused control. */
+  focusRefreshKey?: string;
+}
+
+function focusableControls(node: HTMLElement): HTMLElement[] {
+  return Array.from(node.querySelectorAll<HTMLElement>(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+  )).filter(el => !el.matches(":disabled") && !el.closest("[inert]") && el.getClientRects().length > 0);
+}
+
+function focusInside(node: HTMLElement, initialFocus?: string) {
+  const preferred = initialFocus ? node.querySelector<HTMLElement>(initialFocus) : null;
+  const target = preferred && !preferred.matches(":disabled") ? preferred : focusableControls(node)[0] ?? node;
+  target.focus({ preventScroll: true });
 }
 
 /**
@@ -34,7 +48,7 @@ export function useFocusTrap(
   ref: RefObject<HTMLElement | null>,
   opts: FocusTrapOptions = {},
 ): void {
-  const { enabled = true, onEscape, initialFocus } = opts;
+  const { enabled = true, onEscape, initialFocus, focusRefreshKey } = opts;
   // onEscape 走 ref：调用方普遍传内联箭头函数，入 effect 依赖会随父组件每次
   // 重渲染重跑，反复把焦点抢回第一个元素（ConfirmDialog 原实现的同款教训）。
   const escapeRef = useRef(onEscape);
@@ -44,11 +58,7 @@ export function useFocusTrap(
     const node = ref.current;
     if (!enabled || !node) return;
     const prev = document.activeElement as HTMLElement | null;
-    const focusables = () => Array.from(node.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    )).filter(el => !el.matches(":disabled") && !el.closest("[inert]") && el.getClientRects().length > 0);
-    const preferred = initialFocus ? node.querySelector<HTMLElement>(initialFocus) : null;
-    (preferred ?? focusables()[0])?.focus({ preventScroll: true });
+    focusInside(node, initialFocus);
     const onKey = (e: KeyboardEvent) => {
       // IME 组词中的 Esc 属于输入法（收候选窗），不触发关闭——
       // Modal / ConfirmDialog / CommandPalette 内都有中文输入场景。
@@ -58,7 +68,7 @@ export function useFocusTrap(
         escapeRef.current();
         return;
       }
-      const controls = focusables();
+      const controls = focusableControls(node);
       if (e.key !== "Tab" || controls.length === 0) return;
       const first = controls[0];
       const last = controls[controls.length - 1];
@@ -73,7 +83,14 @@ export function useFocusTrap(
     node.addEventListener("keydown", onKey);
     return () => {
       node.removeEventListener("keydown", onKey);
-      prev?.focus?.();
+      if (node.contains(document.activeElement) || document.activeElement === document.body) prev?.focus?.();
     };
   }, [ref, enabled, initialFocus]);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || !enabled || focusRefreshKey === undefined) return;
+    const focused = document.activeElement;
+    if (!node.contains(focused) || focused?.matches(":disabled")) focusInside(node, initialFocus);
+  }, [ref, enabled, initialFocus, focusRefreshKey]);
 }

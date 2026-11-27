@@ -200,4 +200,25 @@ describe("强制更新遮罩", () => {
     expect(text).toContain("安装包就绪后，可立即更新。");
     expect(text).not.toContain("关闭弹框后仍会继续下载");
   });
+
+  it("活动状态未知也能返回工作区，限时结束后恢复强制更新", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      h.invoke.mockImplementation(async cmd => {
+        if (cmd === "check_update_policy") return MANDATORY;
+        if (cmd === "update_activity") throw new Error("activity unavailable");
+      });
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      const save = Array.from(document.querySelectorAll("button")).find(b => b.textContent === "保存当前工作");
+      expect(save).toBeDefined();
+      await act(async () => save?.click());
+      expect(bodyText()).toContain("剩余 5:00");
+      await act(async () => { await vi.advanceTimersByTimeAsync(300_000); });
+      expect(bodyText()).toContain("需要更新后才能继续使用");
+      expect(Array.from(document.querySelectorAll("button")).some(b => b.textContent === "保存当前工作")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

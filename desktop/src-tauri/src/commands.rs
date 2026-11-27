@@ -74,6 +74,9 @@ mod update;
 mod update_cache;
 mod update_policy;
 mod update_safety;
+mod update_sources;
+#[cfg(windows)]
+mod update_windows;
 
 pub use audit_cmds::*;
 pub use backup_cmds::*;

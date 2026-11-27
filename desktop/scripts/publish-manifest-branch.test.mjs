@@ -230,6 +230,8 @@ describe("纯函数：路径、参数与判定", () => {
     };
     expect(verifyVerdict(base)).toBe("ok");
     expect(verifyVerdict({ ...base, digest: "oldhash" })).toBe("manifest");
+    expect(verifyVerdict({ ...base, expectedPolicyDigest: "new-policy", policyDigest: "old-policy" })).toBe("policy");
+    expect(verifyVerdict({ ...base, expectedPolicyDigest: "new-policy", policyDigest: "new-policy" })).toBe("ok");
     // 不传 expectedDigest 时退回旧行为（单测/老调用方）
     expect(verifyVerdict({ ...base, digest: "oldhash", expectedDigest: undefined })).toBe("ok");
   });

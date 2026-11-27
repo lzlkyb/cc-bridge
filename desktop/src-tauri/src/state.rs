@@ -36,6 +36,7 @@ pub struct CwdSession {
 /// 持续推本会话专属的 `ssh_output_<hex>` 事件给前端，writer 接收前端键入，child 为 ssh 进程。
 /// `master` 仅用于 `set_size`（窗口缩放）；writer 自身即 PTY stdin 通道。
 pub struct SshSession {
+    pub label: String,
     pub output: Arc<crate::ssh_output::OutputFlow>,
     /// PTY master：持有它才能 `set_size`（缩放），drop 时关闭 PTY 设备。
     /// 用 StdMutex 包一层：portable_pty 的 `MasterPty` 只 `Send` 不 `Sync`，

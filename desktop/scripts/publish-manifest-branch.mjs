@@ -159,6 +159,8 @@ export function verifyVerdict({
   expectedVersion,
   digest,
   expectedDigest,
+  policyDigest,
+  expectedPolicyDigest,
   assets = {},
 }) {
   if (ghSha !== pushedSha) return "github";
@@ -166,6 +168,7 @@ export function verifyVerdict({
   if (version !== expectedVersion) return "manifest";
   // 同版本重发时 version 比不出来，必须比内容。不给 expectedDigest 就跳过（单测/老调用方）。
   if (expectedDigest && digest !== expectedDigest) return "manifest";
+  if (expectedPolicyDigest && policyDigest !== expectedPolicyDigest) return "policy";
   if (Object.values(assets).some((v) => !v)) return "asset";
   return "ok";
 }
@@ -175,6 +178,7 @@ export const VERIFY_STAGE_HINT = {
   github: "GitHub 的 releases 分支 sha 没跟上——push 其实没生效（查 contents: write / 分支保护 / 非 FF 被拒）",
   mirror: "Gitee 镜像还没把这条分支搬过去（同步由 GitHub push 触发，实测 4–11s；分叉时最长 260s）",
   manifest: "Gitee 分支 sha 已一致，但 raw 边缘还回旧内容（版本号或内容哈希对不上，实测传播 20–100s）",
+  policy: "Gitee raw 尚未返回本次签署的更新策略",
   asset:
     "清单可读，但 Gitee 发行版里读不到安装包（releases/download/{tag}/{name}）——客户端会卡在下载 404/403，" +
     "查附件是否真上传成功（API 叫 attach_files，回读字段却叫 assets）、tag 是否已在 Gitee 存在",
@@ -401,6 +405,7 @@ export async function verifyChannel({
   pushedSha,
   expectedVersion,
   expectedDigest,
+  expectedPolicyDigest,
   assets = [],
   waits = DEFAULT_RETRY_WAITS,
 }) {
@@ -419,6 +424,9 @@ export async function verifyChannel({
     const raw = await readRawManifest(manifestUrl);
     const version = raw?.version ?? null;
     const digest = raw?.digest ?? null;
+    const policyDigest = expectedPolicyDigest
+      ? (await readRawManifest(giteeRawUrl(giteeRepo, "update-policy.json")))?.digest
+      : undefined;
     const assetState = {};
     for (const n of assets) assetState[n] = await probeAsset(assetUrl(n));
     const stage = verifyVerdict({
@@ -429,6 +437,8 @@ export async function verifyChannel({
       expectedVersion,
       digest,
       expectedDigest,
+      policyDigest,
+      expectedPolicyDigest,
       assets: assetState,
     });
     last = { stage, ghSha, giteeSha, version, digest, assets: assetState };
@@ -514,6 +524,7 @@ export async function main(argv = process.argv.slice(2)) {
   const { files, assets: assetNames, giteeRepo, ghRepo, tag, verify, dryRun } = parseArgs(argv);
   const planned = planFiles(files);
   const manifest = planned.find((p) => p.name === MANIFEST_NAME);
+  const policy = planned.find((p) => p.name === "update-policy.json");
   if (!manifest) throw new Error(`缺少 ${MANIFEST_NAME} —— 客户端就是读它，缺了等于整个国内通道白做`);
   // 要验的附件 = 本次随行传进来的安装包 + --asset 登记的（CI 里安装包单独上传，只登记名字）。
   // 名字必须与 planFiles 同规则校验，否则能把任意路径拼进探测 URL。
@@ -546,6 +557,7 @@ export async function main(argv = process.argv.slice(2)) {
     expectedVersion: readManifestVersion(manifest.src),
     // 同版本重发时只看 version 会被边缘缓存骗过去，所以再比一次内容哈希
     expectedDigest: fileDigest(manifest.src),
+    expectedPolicyDigest: policy ? fileDigest(policy.src) : undefined,
     assets,
   });
 }

@@ -101,7 +101,7 @@ export function UpdateDialogContent({ update, process = AVAILABLE_PRESENTATION, 
         </article>)}
       </Disclosure>}
     </div>
-    <UpdateActions {...actions} process={process} force={force} />
+    <UpdateActions {...actions} version={update.version} process={process} force={force} />
     </div>
   </>;
 }

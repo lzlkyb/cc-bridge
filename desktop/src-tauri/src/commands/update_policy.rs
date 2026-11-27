@@ -23,13 +23,15 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::prelude::*;
 use futures_util::{stream::FuturesOrdered, StreamExt};
+use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::state::AppState;
 
-use super::update::{GITEE_REPOSITORY, GITHUB_REPOSITORY};
+use super::update_sources::{GITEE_REPOSITORY, GITHUB_REPOSITORY};
 
 /// 策略文件的远端文件名（与 updater.json 同目录发布）。
 const POLICY_FILE: &str = "update-policy.json";
@@ -49,6 +51,8 @@ const REQUEST_DEADLINE: Duration = Duration::from_secs(4);
 const CACHE_TTL_DAYS: i64 = 7;
 /// 认得的策略版本。未来改结构时递增，旧客户端会把新文件判为 invalid（fail-open）。
 const SUPPORTED_SCHEMA: u32 = 1;
+const POLICY_PREFIX: &str = "CC Bridge update policy v1\n";
+const MAX_POLICY_BYTES: usize = 32 * 1024;
 
 /// 远端策略文件（`update-policy.json`）。
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -70,6 +74,46 @@ pub struct UpdatePolicy {
     pub message: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SignedPolicy {
+    payload: String,
+    signature: String,
+}
+
+fn authenticate_policy(
+    envelope: &SignedPolicy,
+    key: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<UpdatePolicy> {
+    let payload = envelope.payload.strip_prefix(POLICY_PREFIX)?;
+    let key = String::from_utf8(BASE64_STANDARD.decode(key.trim()).ok()?).ok()?;
+    let signature =
+        String::from_utf8(BASE64_STANDARD.decode(envelope.signature.trim()).ok()?).ok()?;
+    PublicKey::decode(&key)
+        .ok()?
+        .verify(
+            envelope.payload.as_bytes(),
+            &Signature::decode(&signature).ok()?,
+            true,
+        )
+        .ok()?;
+    let policy: UpdatePolicy = serde_json::from_str(payload).ok()?;
+    let issued_at = policy_timestamp(&policy)?;
+    let expires_at = chrono::DateTime::parse_from_rfc3339(policy.expires_at.as_deref()?).ok()?;
+    if issued_at > now + chrono::TimeDelta::minutes(5)
+        || expires_at <= now
+        || expires_at <= issued_at
+    {
+        return None;
+    }
+    if evaluate(env!("CARGO_PKG_VERSION"), &policy, now, "network").source == "invalid" {
+        return None;
+    }
+    Some(policy)
 }
 
 /// 返回给前端的判定结果。`source` 只用于日志与排查，不进 UI。
@@ -82,6 +126,7 @@ pub struct ForceUpdateVerdict {
     pub min_supported_version: Option<String>,
     pub message: Option<String>,
     pub grace_until: Option<String>,
+    pub expires_at: Option<String>,
     /// `network`（远端命中）/ `cache`（离线用缓存）/ `network-miss`（都没有，放行）/
     /// `invalid`（策略不合法，放行）/ `skip`（逃生开关）
     pub source: String,
@@ -92,7 +137,7 @@ pub struct ForceUpdateVerdict {
 #[serde(rename_all = "camelCase")]
 struct CachedPolicy {
     fetched_at: String,
-    policy: UpdatePolicy,
+    envelope: SignedPolicy,
 }
 
 /// 解析 `x.y.z` / `vX.Y.Z`。刻意只接受三段数字：
@@ -126,6 +171,7 @@ fn base_verdict(
         min_supported_version: Some(policy.min_supported_version.clone()),
         message: policy.message.clone(),
         grace_until: policy.grace_until.clone(),
+        expires_at: policy.expires_at.clone(),
         source: source.to_string(),
     }
 }
@@ -205,7 +251,9 @@ fn prefer_policy(candidate: &UpdatePolicy, current: &UpdatePolicy) -> bool {
 async fn fetch_policy(
     endpoints: Vec<String>,
     request_deadline: Duration,
-) -> Result<UpdatePolicy, String> {
+    key: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(UpdatePolicy, SignedPolicy), String> {
     let client = reqwest::Client::builder()
         .timeout(request_deadline)
         .build()
@@ -215,8 +263,24 @@ async fn fetch_policy(
         .map(|url| {
             let client = client.clone();
             async move {
-                let response = client.get(url).send().await?.error_for_status()?;
-                response.json::<UpdatePolicy>().await
+                let mut response = client
+                    .get(url)
+                    .send()
+                    .await
+                    .and_then(reqwest::Response::error_for_status)
+                    .map_err(|error| error.to_string())?;
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+                    if chunk.len() > MAX_POLICY_BYTES.saturating_sub(bytes.len()) {
+                        return Err("更新策略超出长度上限".to_string());
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                let envelope: SignedPolicy =
+                    serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+                let policy = authenticate_policy(&envelope, key, now)
+                    .ok_or("更新策略签名无效、已过期或内容有误")?;
+                Ok((policy, envelope))
             }
         })
         .collect();
@@ -224,12 +288,12 @@ async fn fetch_policy(
     let mut best = None;
     while let Some(result) = requests.next().await {
         match result {
-            Ok(policy) => {
+            Ok((policy, envelope)) => {
                 if best
                     .as_ref()
-                    .is_none_or(|current| prefer_policy(&policy, current))
+                    .is_none_or(|(current, _)| prefer_policy(&policy, current))
                 {
-                    best = Some(policy);
+                    best = Some((policy, envelope));
                 }
             }
             Err(e) => last = e.to_string(),
@@ -238,10 +302,10 @@ async fn fetch_policy(
     best.ok_or(last)
 }
 
-fn write_cache(path: &Path, policy: &UpdatePolicy) -> Result<(), String> {
+fn write_cache(path: &Path, envelope: SignedPolicy) -> Result<(), String> {
     let body = serde_json::to_vec_pretty(&CachedPolicy {
         fetched_at: chrono::Utc::now().to_rfc3339(),
-        policy: policy.clone(),
+        envelope,
     })
     .map_err(|e| e.to_string())?;
     // tmp + rename：半截文件会被下一次启动当成损坏缓存、直接丢失强制能力。
@@ -265,7 +329,7 @@ fn cache_is_fresh(fetched_at: &str, now: chrono::DateTime<chrono::Utc>) -> bool 
     age >= chrono::TimeDelta::zero() && age <= ttl
 }
 
-fn read_cache(path: &Path) -> Option<UpdatePolicy> {
+fn read_cache(path: &Path, key: &str, now: chrono::DateTime<chrono::Utc>) -> Option<UpdatePolicy> {
     let raw = std::fs::read_to_string(path).ok()?;
     let cached = match serde_json::from_str::<CachedPolicy>(&raw) {
         Ok(cached) => cached,
@@ -274,19 +338,19 @@ fn read_cache(path: &Path) -> Option<UpdatePolicy> {
             return None;
         }
     };
-    if !cache_is_fresh(&cached.fetched_at, chrono::Utc::now()) {
+    if !cache_is_fresh(&cached.fetched_at, now) {
         log::warn!(
             "[UpdatePolicy] 缓存已失效（fetchedAt={}，TTL={CACHE_TTL_DAYS} 天），按无缓存放行",
             cached.fetched_at
         );
         return None;
     }
-    Some(cached.policy)
+    authenticate_policy(&cached.envelope, key, now)
 }
 
 /// 拉取失败时的统一出口：能用缓存就用缓存判定，否则明确放行。
-fn fallback_to_cache(cache_path: &Path, current: &str) -> ForceUpdateVerdict {
-    match read_cache(cache_path) {
+fn fallback_to_cache(cache_path: &Path, current: &str, key: &str) -> ForceUpdateVerdict {
+    match read_cache(cache_path, key, chrono::Utc::now()) {
         Some(policy) => evaluate(current, &policy, chrono::Utc::now(), "cache"),
         None => ForceUpdateVerdict {
             mandatory: false,
@@ -295,6 +359,7 @@ fn fallback_to_cache(cache_path: &Path, current: &str) -> ForceUpdateVerdict {
             min_supported_version: None,
             message: None,
             grace_until: None,
+            expires_at: None,
             source: "network-miss".into(),
         },
     }
@@ -310,6 +375,7 @@ fn fallback_to_cache(cache_path: &Path, current: &str) -> ForceUpdateVerdict {
 /// 让前端再写一层兜底只会多一个可能判错的地方。
 #[tauri::command(rename_all = "snake_case")]
 pub async fn check_update_policy(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<ForceUpdateVerdict, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
@@ -328,25 +394,38 @@ pub async fn check_update_policy(
             min_supported_version: None,
             message: None,
             grace_until: None,
+            expires_at: None,
             source: "skip".into(),
         });
     }
 
     let cache_path = state.data_dir.join(CACHE_FILE);
+    let key = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|config| config["pubkey"].as_str())
+        .unwrap_or_default();
     let fetched = tokio::time::timeout(
         FETCH_DEADLINE,
-        fetch_policy(policy_endpoints(), REQUEST_DEADLINE),
+        fetch_policy(
+            policy_endpoints(),
+            REQUEST_DEADLINE,
+            key,
+            chrono::Utc::now(),
+        ),
     )
     .await;
     let verdict = match fetched {
-        Ok(Ok(policy)) => {
+        Ok(Ok((policy, envelope))) => {
             let now = chrono::Utc::now();
-            let verdict = if let Some(cached) = read_cache(&cache_path).filter(|cached| {
+            let verdict = if let Some(cached) = read_cache(&cache_path, key, now).filter(|cached| {
                 policy_timestamp(cached).is_some() && prefer_policy(cached, &policy)
             }) {
                 evaluate(&current, &cached, now, "cache")
             } else {
-                if let Err(e) = write_cache(&cache_path, &policy) {
+                if let Err(e) = write_cache(&cache_path, envelope) {
                     log::warn!("[UpdatePolicy] 缓存写入失败（不影响本次判定）: {e}");
                 }
                 evaluate(&current, &policy, now, "network")
@@ -362,14 +441,14 @@ pub async fn check_update_policy(
         }
         Ok(Err(e)) => {
             log::warn!("[UpdatePolicy] 拉取策略失败，回退缓存: {e}");
-            fallback_to_cache(&cache_path, &current)
+            fallback_to_cache(&cache_path, &current, key)
         }
         Err(_) => {
             log::warn!(
                 "[UpdatePolicy] 拉取策略超时（>{}s），回退缓存",
                 FETCH_DEADLINE.as_secs()
             );
-            fallback_to_cache(&cache_path, &current)
+            fallback_to_cache(&cache_path, &current, key)
         }
     };
     apply_minimum(
@@ -400,6 +479,15 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
+    const TEST_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU3MUZENzNGNEZDRUNDMEEKUldRS3pNNVBQOWNmNTM0QTgvejBqR2NWVGd6TnBnUXBIL0dzVHRkQUovVEJKMjM5VW42WFJGdksK";
+
+    fn signed_fixture() -> SignedPolicy {
+        SignedPolicy {
+            payload: format!("{POLICY_PREFIX}{}", r#"{"schema":1,"latestVersion":"3.5.0","minSupportedVersion":"3.4.2","enforced":true,"updatedAt":"2026-11-25T00:00:00Z","expiresAt":"2026-12-02T00:00:00Z"}"#),
+            signature: "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRS3pNNVBQOWNmNTVZMWhoWFRxUDZmblpmaWpFRGpQUjliRlE3TXMwbUVQSjFtRjFiZ2piZWlxeGJSTWtGTm9odHNnZ09mS1Z4U216Q0h0bER6NmJlNFhJR1I2dVkybmdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1NzU3Nzc5CWZpbGU6Y2NiLXBvbGljeS02N2MxZTRjNzhjMmY0NzVlODI2NGNhNjg3YTAyNjgwMy50eHQKTFlMcU5NYW50bDBSMEl4Y1NmZzdjRi93QTZVYUNBcHZiZi9WbFlQeGZqTXNzbXlVYTA1RmdSOStDVFJRYU1tWC9wV2RCeXR3bEVPNkdZVysxWnFXQkE9PQo=".into(),
+        }
+    }
+
     fn policy(enforced: bool, min: &str, latest: &str, grace: Option<&str>) -> UpdatePolicy {
         UpdatePolicy {
             schema: SUPPORTED_SCHEMA,
@@ -409,6 +497,7 @@ mod tests {
             grace_until: grace.map(str::to_string),
             message: Some("测试用强制说明".into()),
             updated_at: None,
+            expires_at: None,
         }
     }
 
@@ -535,7 +624,7 @@ mod tests {
             )
             .route(
                 "/ready",
-                axum::routing::get(|| async { axum::Json(policy(true, "3.4.2", "3.5.0", None)) }),
+                axum::routing::get(|| async { axum::Json(signed_fixture()) }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -547,11 +636,13 @@ mod tests {
                     .map(|route| format!("http://{addr}/{route}"))
                     .to_vec(),
                 Duration::from_secs(1),
+                TEST_KEY,
+                at("2026-11-27T00:00:00Z"),
             ),
         )
         .await;
         server.abort();
-        assert_eq!(direct.unwrap().unwrap().latest_version, "3.5.0");
+        assert_eq!(direct.unwrap().unwrap().0.latest_version, "3.5.0");
     }
 
     #[test]
@@ -588,25 +679,44 @@ mod tests {
     /// 过期缓存走到判定层应当是「无缓存 → 放行」，而不是带着旧策略继续锁。
     #[test]
     fn expired_cache_yields_no_policy() {
-        let dir = std::env::temp_dir().join(format!("ccbridge-policy-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::mcp::tools::testutil::unique_subdir("ccbridge-policy-test");
         let path = dir.join(CACHE_FILE);
+        let now = at("2026-11-27T00:00:00Z");
         // 8 天前的强制策略：内容本身会让 3.4.0 被锁，但时间戳已过期。
         let stale = CachedPolicy {
-            fetched_at: (chrono::Utc::now() - chrono::TimeDelta::try_days(8).unwrap()).to_rfc3339(),
-            policy: policy(true, "3.4.2", "3.5.0", None),
+            fetched_at: (now - chrono::TimeDelta::days(8)).to_rfc3339(),
+            envelope: signed_fixture(),
         };
         std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
-        assert!(read_cache(&path).is_none(), "过期缓存不能被读出来");
+        assert!(
+            read_cache(&path, TEST_KEY, now).is_none(),
+            "过期缓存不能被读出来"
+        );
 
         // 同一份策略换个新鲜时间戳，就应该能读到并触发强制。
         let fresh = CachedPolicy {
-            fetched_at: chrono::Utc::now().to_rfc3339(),
+            fetched_at: now.to_rfc3339(),
             ..stale
         };
         std::fs::write(&path, serde_json::to_vec(&fresh).unwrap()).unwrap();
-        let policy = read_cache(&path).expect("新鲜缓存应可读");
-        assert!(evaluate("3.4.0", &policy, chrono::Utc::now(), "cache").mandatory);
-        let _ = std::fs::remove_dir_all(&dir);
+        let policy = read_cache(&path, TEST_KEY, now).expect("新鲜缓存应可读");
+        assert!(evaluate("3.4.0", &policy, now, "cache").mandatory);
+    }
+
+    #[test]
+    fn changed_or_expired_policy_cannot_lock_the_app() {
+        let now = at("2026-11-27T00:00:00Z");
+        let fixture = signed_fixture();
+        assert!(
+            authenticate_policy(&fixture, TEST_KEY, now)
+                .unwrap()
+                .enforced
+        );
+        assert!(authenticate_policy(&fixture, TEST_KEY, at("2026-12-02T00:00:00Z")).is_none());
+        let changed = SignedPolicy {
+            payload: fixture.payload.replace("3.4.2", "3.5.0"),
+            ..fixture
+        };
+        assert!(authenticate_policy(&changed, TEST_KEY, now).is_none());
     }
 }

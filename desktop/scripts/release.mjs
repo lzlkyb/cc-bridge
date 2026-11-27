@@ -164,6 +164,13 @@ async function ask(question, defaultValue) {
 async function main() {
   const current = readCargoVersion();
   const next = bumpSemver(current, bumpType, explicitVersion);
+  const stableVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+  if (!stableVersion.test(next)) throw new Error("发布版本必须是 X.Y.Z 格式");
+  const previousParts = current.split(".").map(BigInt);
+  const firstChange = next.split(".").map(BigInt).findIndex((part, index) => part !== previousParts[index]);
+  if (firstChange < 0 || BigInt(next.split(".")[firstChange]) <= previousParts[firstChange]) {
+    throw new Error("发布版本必须高于当前版本");
+  }
   console.log(`\x1b[32m发版计划：\x1b[0m ${current} → ${next}`);
 
   // --min 高于本次版本 = 要求用户升到一个还没发布的版本：会把所有人锁死且
@@ -216,6 +223,11 @@ async function main() {
     if (!SKIP_TESTS) console.log("  6. cargo test + cargo clippy --no-default-features 门禁");
     console.log(`  7. git add 版本文件+CHANGELOG+README+generated.ts → commit → push → tag v${next} → push tag`);
     return;
+  }
+
+  const alreadyStaged = execSync("git diff --cached --name-only", { cwd: ROOT, encoding: "utf8" }).trim();
+  if (alreadyStaged) {
+    throw new Error(`暂存区已有改动。请先处理这些文件再发版：\n${alreadyStaged}`);
   }
 
   // 1. bump Cargo.toml（唯一真源）
@@ -339,7 +351,8 @@ async function main() {
     );
     process.exit(1);
   }
-  run(`git commit -m "chg: 发版 v${next}"`);
+  // A separate task may stage files while tests are running. Commit only the release paths.
+  run(`git commit --only -m "chg: 发版 v${next}" -- ${files.map((f) => `"${f}"`).join(" ")}`);
   console.log(`\x1b[32m[7/7]\x1b[0m 已 commit 发版 v${next}`);
 
   const wantPush = YES || (await ask("确认 push main 并打 tag v" + next + " ? (y/N)", "")) === "y";

@@ -14,6 +14,27 @@
 ; - 先 delete 再 add：幂等，重装 / 升级不会堆积重复规则。
 ; - 默认端口 7823；用户在应用内改端口后，由应用自己重建带新端口的规则。
 
+!macro NSIS_HOOK_PREINSTALL
+  ; The installer is launched before the app exits. Let the normal shutdown
+  ; hooks finish before the installer checks for and terminates old processes.
+  Push $0
+  Push $1
+  ClearErrors
+  ${GetOptions} $CMDLINE "/CCBUPDATEPID=" $1
+  ${IfNot} ${Errors}
+    System::Call 'kernel32::OpenProcess(i 0x00100000, i 0, i r1) p .r0'
+    ${If} $0 != 0
+      System::Call 'kernel32::WaitForSingleObject(p r0, i 15000) i .r1'
+      System::Call 'kernel32::CloseHandle(p r0)'
+      ${If} $1 != 0
+        Abort "CC Bridge is still closing. Reopen it and retry the update."
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  Pop $1
+  Pop $0
+!macroend
+
 !macro NSIS_HOOK_POSTINSTALL
   DetailPrint "配置 Windows 防火墙入站规则 (7823/TCP)..."
   ; 🔴 program 必须用 ${MAINBINARYNAME}（Tauri 模板顶部已 !define），不得写死

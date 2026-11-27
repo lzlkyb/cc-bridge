@@ -1872,6 +1872,11 @@ pub async fn ssh_connect(
     state.ssh_sessions.insert(
         session_id.clone(),
         crate::state::SshSession {
+            label: if link.conn.name.trim().is_empty() {
+                link.conn.host.clone()
+            } else {
+                link.conn.name.clone()
+            },
             output: output.clone(),
             master: std::sync::Mutex::new(pair.master),
             child,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPolicy, compareVersions, DEFAULT_GRACE_DAYS, parseVersion } from "./generate-update-policy.mjs";
+import { buildPolicy, compareVersions, DEFAULT_GRACE_DAYS, parseVersion, signedPolicyDocument } from "./generate-update-policy.mjs";
 
 /**
  * 锁的是「默认不强制」这条产品约定，以及三条会把用户锁死的错误配置。
@@ -61,6 +61,18 @@ describe("buildPolicy", () => {
   it("graceDays=0 表示立即可锁", () => {
     const p = buildPolicy({ version: "3.5.0", policy: { enforced: true, graceDays: 0 }, now });
     expect(p.graceUntil).toBe(now.toISOString());
+  });
+
+  it("签署包含过期时间的完整策略，并让旧客户端跳过未知格式", () => {
+    const policy = buildPolicy({ version: "3.5.0", policy: { enforced: true }, now });
+    const document = signedPolicyDocument(policy, data => {
+      expect(data).toBe("CC Bridge update policy v1\n" + JSON.stringify(policy));
+      return " signature\n";
+    });
+    expect(document.signature).toBe("signature");
+    expect(document.enforced).toBeUndefined();
+    expect(policy.expiresAt).toBe("2026-12-04T00:00:00.000Z");
+    expect(() => signedPolicyDocument(policy, () => "")).toThrow(/缺少签名/);
   });
 
   it("自定义说明原样保留，缺省时给一句人话", () => {

@@ -691,7 +691,6 @@ jobs:
       # 升不回去。前面已按源码推翻了文档里的两条推测，但推翻推测不等于验过，
       # 这一步真的跑一遍：检查 → 下载 → 验签 → 替换 .app → 重启能否启动。
       - name: 自动更新 · 完整链路真跑（临时 prerelease 作 https 源，跑完即删）
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -740,8 +739,6 @@ jobs:
     name: Build macOS app (arm64)
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v5
 
@@ -791,6 +788,39 @@ jobs:
           # bundle.targets 固定为 nsis（Windows 发版用），mac 用 --bundles 覆盖。
           npx tauri build --bundles app
         working-directory: desktop
+
+      - name: 启动并重新打开 macOS 更新包
+        run: |
+          set -euo pipefail
+          test_dir="$(mktemp -d "$RUNNER_TEMP/ccb-package.XXXXXX")"
+          tar -xzf desktop/src-tauri/target/release/bundle/macos/cc-bridge.app.tar.gz -C "$test_dir"
+          app="$test_dir/cc-bridge.app"
+          codesign --verify --deep --strict "$app"
+          version="${GITHUB_REF_NAME#v}"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$version"
+          bin="$app/Contents/MacOS/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")"
+          pid=""
+          trap 'if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi' EXIT
+          for attempt in 1 2; do
+            "$bin" > "$test_dir/app.log" 2>&1 &
+            pid=$!
+            healthy=0
+            for n in $(seq 1 35); do
+              if curl -fsS --max-time 2 http://127.0.0.1:7823/health | jq -e --arg version "$version" '.version == $version' >/dev/null; then
+                healthy=1
+                break
+              fi
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 1
+            done
+            if [ "$healthy" != 1 ]; then
+              cat "$test_dir/app.log"
+              exit 1
+            fi
+            kill "$pid"
+            wait "$pid" || true
+            pid=""
+          done
 
       # 生成两份平台片段：GitHub 路径与 Gitee 镜像路径的 URL 形状不同，
       # 各自都要一份，否则 mac 用户在 Gitee 那一组拿不到条目（updater 会返回
@@ -845,12 +875,12 @@ jobs:
         run: |
           set -e
           mkdir -p dist-out
-          cp desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz dist-out/ 2>/dev/null || true
-          cp desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig dist-out/ 2>/dev/null || true
-          cp cc-bridge_*_aarch64-apple-darwin.zip dist-out/ 2>/dev/null || true
+          cp desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz dist-out/
+          cp desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig dist-out/
+          cp cc-bridge_*_aarch64-apple-darwin.zip dist-out/
           # 平台片段只作为 artifact 传给 build-windows 合并，**不** attach 到 Release
-          cp desktop/dist/updater-macos.json dist-out/ 2>/dev/null || true
-          cp desktop/dist/updater-macos-gitee.json dist-out/ 2>/dev/null || true
+          cp desktop/dist/updater-macos.json dist-out/
+          cp desktop/dist/updater-macos-gitee.json dist-out/
           ls -l dist-out
 
       - uses: actions/upload-artifact@v5
@@ -858,40 +888,23 @@ jobs:
           name: cc-bridge-macos
           path: dist-out/*
 
-      # 只 attach 用户/updater 要下载的东西。updater.json 由 build-windows 合并后统一 attach，
-      # 在这里 attach 会与它冲突。
-      - name: Attach macOS 产物到 GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            dist-out/*.app.tar.gz
-            dist-out/*.app.tar.gz.sig
-            dist-out/*.zip
-          fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   # 发版构建：仅 tag 触发。test(release) 与 build 同 job 内复用 release target，
   # 依赖 crate 只编译一遍（A）；跨发版的依赖产物由 Swatinem/rust-cache 的 target
   # 缓存承担（B）—— Windows 侧不走 sccache，原因见文件头 env 处注释。
   build-windows:
     name: Build Windows exe + installer
-    # needs 使它在 mac 之后跑（发版串行，多花约 10 分钟）——因为它要合并 mac 的
-    # 平台片段。`always()` 保证 **mac job 失败时 Windows 仍能发**（Windows 是主平台，
-    # 不应被 mac 拖累）；此时下载片段会失败，而 generate 脚本对缺失的
-    # UPDATER_MERGE_INTO 只 warn 不 fail，于是降级为只发 Windows 条目。
     needs: [build-macos]
-    if: always() && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
+    concurrency:
+      group: ccbridge-publish-stable
+      cancel-in-progress: false
     runs-on: windows-latest
     permissions:
       contents: write   # 创建 GitHub Release 需要写权限（默认 token 只读）
     steps:
       - uses: actions/checkout@v5
 
-      # 拉 mac 的平台片段与产物。continue-on-error：mac job 挂了不能连带 Windows 发不了。
-      - name: 下载 mac 产物（用于合并 updater.json；缺失则降级为只发 Windows）
-        id: dl-mac
-        continue-on-error: true
+      - name: 下载 macOS 产物和更新清单片段
         uses: actions/download-artifact@v5
         with:
           name: cc-bridge-macos
@@ -902,9 +915,7 @@ jobs:
         run: |
           $raw = '${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}'
           if ([string]::IsNullOrWhiteSpace($raw)) {
-            Write-Host "⚠️ TAURI_SIGNING_PRIVATE_KEY 未设置，本次构建将不产生签名（.sig），updater 无法验证。"
-            "TAURI_KEY_FILE=" >> $env:GITHUB_ENV
-            exit 0
+            throw "TAURI_SIGNING_PRIVATE_KEY 未设置，无法签名并发布"
           }
           $keyFile = "${{ runner.temp }}\tauri-signing.key"
           [System.IO.File]::WriteAllText($keyFile, $raw, [System.Text.Encoding]::ASCII)
@@ -933,6 +944,10 @@ jobs:
       - name: Install frontend deps
         run: npm ci
         working-directory: desktop
+
+      - name: 前端和发布脚本检查
+        working-directory: desktop
+        run: npm run check
 
       # A：用 release profile 跑测试，编译出的 release 依赖产物直接被下面 tauri build 复用。
       - name: cargo test (release, 复用后续 build 的编译产物)
@@ -1004,37 +1019,14 @@ jobs:
       # 默认不强制：release-policy.json 由发版脚本每次重写（不带 --force 就是 enforced:false），
       # 所以「上一次发过强制、这次忘了关」不会发生。脚本自带 min<=latest 与版本格式校验，
       # 配置写错直接让发版红，避免生成一份把所有人锁死、且更新也解除不了的策略。
-      - name: 生成强制更新策略 update-policy.json（默认不强制）
-        shell: pwsh
-        run: npm run update-policy:generate
+      - name: 生成并签署强制更新策略（默认不强制）
         working-directory: desktop
-
-      - name: 校验 updater.json 签名非空
         shell: pwsh
         run: |
-          $json = Get-Content -Raw -Path desktop/dist/updater.json | ConvertFrom-Json
-          $sig = $json.platforms.'windows-x86_64'.signature
-          if ([string]::IsNullOrWhiteSpace($sig)) {
-            Write-Error "updater.json 的 windows-x86_64.signature 为空，自动更新将无法校验签名。请确认 TAURI_SIGNING_PRIVATE_KEY 已配置且构建产生 .sig。"
-            exit 1
-          }
-          Write-Host "updater.json windows-x86_64 签名校验通过"
-
-          # mac 条目的合并结果必须显式确认：它缺失时**不会报错**，mac 用户只是
-          # 永远检测不到更新——这种静默失效必须在发版时就看到。
-          $macFragment = "${{ github.workspace }}\mac-artifact\updater-macos.json"
-          $darwin = $json.platforms.'darwin-aarch64'
-          if (Test-Path $macFragment) {
-            if ($null -eq $darwin -or [string]::IsNullOrWhiteSpace($darwin.signature)) {
-              Write-Error "mac 片段存在但 darwin-aarch64 未合并进 updater.json（或签名为空）。这会让 mac 用户静默失去自动更新，终止发版。"
-              exit 1
-            }
-            Write-Host "updater.json darwin-aarch64 已合并，url=$($darwin.url)"
-          } else {
-            Write-Host "⚠️ 未拿到 mac 片段（mac job 可能失败或被跳过），本次 updater.json 只含 Windows。"
-            Write-Host "   后果：mac 用户本次检测不到更新（不报错）。若本次应该包含 mac，请查 build-macos 作业。"
-          }
-          Write-Host "最终平台条目：$($json.platforms.PSObject.Properties.Name -join ', ')"
+          $env:TAURI_SIGNING_PRIVATE_KEY_PATH = $env:TAURI_KEY_FILE
+          $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = ''
+          npm run update-policy:generate
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: 📦 打包绿色便携版
         shell: pwsh
@@ -1061,28 +1053,67 @@ jobs:
       - name: Collect artifacts
         shell: pwsh
         run: |
-          mkdir dist-out -ErrorAction SilentlyContinue
-          Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe dist-out\ -ErrorAction SilentlyContinue
-          Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe.sig dist-out\ -ErrorAction SilentlyContinue
-          Copy-Item desktop\dist\updater.json dist-out\ -ErrorAction SilentlyContinue
+          mkdir dist-out -ErrorAction Stop
+          Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe dist-out\ -ErrorAction Stop
+          Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe.sig dist-out\ -ErrorAction Stop
+          Copy-Item desktop\dist\updater.json dist-out\ -ErrorAction Stop
           Copy-Item desktop\dist\update-policy.json dist-out\ -ErrorAction Stop
-          Copy-Item cc-bridge_*.zip dist-out\ -ErrorAction SilentlyContinue
+          Copy-Item mac-artifact\*.app.tar.gz dist-out\ -ErrorAction Stop
+          Copy-Item mac-artifact\*.app.tar.gz.sig dist-out\ -ErrorAction Stop
+          Copy-Item mac-artifact\*.zip dist-out\ -ErrorAction Stop
+          Copy-Item cc-bridge_*.zip dist-out\ -ErrorAction Stop
 
       - uses: actions/upload-artifact@v5
         with:
           name: cc-bridge-windows
           path: dist-out/*
 
-      - name: Attach to GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: dist-out/*
-          fail_on_unmatched_files: false
-          # Release 页面正文（此前恒为空）。mac job 先创建 release 且不带 body，
-          # action 更新时会保留已有 body，所以这里晚一步写入不会被清掉。
-          body_path: release-notes.md
+      - name: 确认两端安装包、清单和策略的签名
+        working-directory: desktop/src-tauri
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CCBRIDGE_RELEASE_VERIFY_DIR: ${{ github.workspace }}\dist-out
+          CCBRIDGE_RELEASE_TAG: ${{ github.ref_name }}
+        run: cargo test --locked --release --no-default-features --test release_artifacts -- --ignored
+
+      - name: 启动 Windows 安装版并确认重开后的版本
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          .github/scripts/windows-release-smoke.ps1 -Installer "dist-out/cc-bridge_${version}_x64-setup.exe" -Version $version
+
+      - name: 验证发行版附件齐全后公开
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $latest = gh release view --json tagName --jq .tagName 2>$null
+          if ($LASTEXITCODE -eq 0 -and $latest -match '^v\d+\.\d+\.\d+$' -and [Version]($latest.TrimStart('v')) -gt [Version]($tag.TrimStart('v'))) {
+            throw "Refusing to move the stable release back from $latest to $tag"
+          }
+          $files = @(Get-ChildItem -File dist-out)
+          $paths = @($files | ForEach-Object { $_.FullName })
+          $existing = gh release view $tag --json isDraft,assets 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --verify-tag --draft --title $tag --notes-file release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw "Could not create release draft" }
+            $existing = '{"isDraft":true}'
+          }
+          if (($existing | ConvertFrom-Json).isDraft) {
+            gh release upload $tag @paths --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Could not upload release artifacts" }
+          }
+          $state = gh release view $tag --json isDraft,assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Could not verify release artifacts" }
+          foreach ($file in $files) {
+            $asset = $state.assets | Where-Object { $_.name -eq $file.Name -and $_.size -eq $file.Length }
+            if (!$asset) { throw "Release artifact missing or incomplete $($file.Name)" }
+          }
+          if ($state.isDraft) {
+            gh release edit $tag --draft=false --latest
+            if ($LASTEXITCODE -ne 0) { throw "Could not publish verified release" }
+          }
 
       # 以下步骤解决国内用户直连 GitHub 下载安装包不稳定/很慢的问题：清单与安装包各走一条路，
       # 客户端（update.rs）优先试 Gitee，失败再回退到现有的 ghproxy/GitHub 路径。
@@ -1187,16 +1218,11 @@ jobs:
           #    🔴 接口叫 attach_files，**不是** GitHub 那个 assets（后者在 Gitee 会返回网页版 404）；
           #       但回读发行版 JSON 时字段确实叫 assets，读写两边名字不一样，别改回去。
           #    --fail-with-body：4xx/5xx 令 curl 非零退出（防「假成功」），同时把 Gitee 的错误正文打出来。
-          $files = @()
-          foreach ($p in @('dist-out', 'mac-artifact')) {
-            if (Test-Path $p) {
-              $files += @(Get-ChildItem -Path $p -File | Where-Object {
-                $_.Name -like '*.exe' -or $_.Name -like '*.exe.sig' -or
-                $_.Name -like '*.app.tar.gz' -or $_.Name -like '*.app.tar.gz.sig'
-              } | ForEach-Object { $_.FullName })
-            }
-          }
-          if ($files.Count -eq 0) { Fail "一个安装包都没找到（dist-out / mac-artifact 均为空）" }
+          $files = @(Get-ChildItem -Path dist-out -File | Where-Object {
+            $_.Name -like '*.exe' -or $_.Name -like '*.exe.sig' -or
+            $_.Name -like '*.app.tar.gz' -or $_.Name -like '*.app.tar.gz.sig'
+          } | ForEach-Object { $_.FullName })
+          if ($files.Count -ne 4) { Fail "预期两个安装包和对应签名" }
 
           $existing = @()
           try {
@@ -1266,22 +1292,13 @@ jobs:
           }
           $manifest = Join-Path $PWD 'desktop/dist/updater-gitee.json'
           if (-not (Test-Path $manifest)) {
-            Write-Host "⚠️ updater-gitee.json 不存在（清单生成步骤被跳过），本次不发国内通道。"
-            exit 0
+            throw "未生成国内通道更新清单"
           }
 
-          # 本次要上架的安装包（清单里会引用它们）与清单本身分开处理：
-          # 安装包在发行版附件里（不进分支），清单才进 GitHub releases 分支。
-          # mac 产物缺失时（mac job 失败）降级为只发 Windows，与清单里的平台条目一致。
-          $assets = @()
-          foreach ($p in @('dist-out', 'mac-artifact')) {
-            if (Test-Path $p) {
-              $assets += @(Get-ChildItem -Path $p -File | Where-Object {
-                $_.Name -like '*.exe' -or $_.Name -like '*.exe.sig' -or
-                $_.Name -like '*.app.tar.gz' -or $_.Name -like '*.app.tar.gz.sig'
-              } | ForEach-Object { $_.Name })
-            }
-          }
+          $assets = @(Get-ChildItem -Path dist-out -File | Where-Object {
+            $_.Name -like '*.exe' -or $_.Name -like '*.exe.sig' -or
+            $_.Name -like '*.app.tar.gz' -or $_.Name -like '*.app.tar.gz.sig'
+          } | ForEach-Object { $_.Name })
 
           # 🔴 先确认附件真的都在，再发清单。反过来就是发一份指向 404 的清单：
           #    客户端读到它 → 下载 404 → 回退下一源，每次检查更新都白挨一轮。

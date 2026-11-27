@@ -136,6 +136,7 @@ russh-sftp = "4.0"
 # aes-gcm 是纯 Rust AEAD，体量极小；密钥存 data_dir/ssh_key.bin（每安装随机生成）。
 aes-gcm = "0.10"
 base64 = "0.22"
+minisign-verify = "0.3"
 
 # 远端 Python 脚本压缩后再进 `ssh` 命令行（Windows CreateProcess 只有 32767 字符，
 # 配置脚本已逼近上限，见 stable_connect::python_source）。reqwest 的 gzip 已经带了它，
@@ -206,7 +207,10 @@ windows = { version = "0.56", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
   "Win32_Storage_FileSystem",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
 ] }
+tempfile = "3"
 # 进程树治理（跨平台）：run_command 用其 JobObject wrapper 替换原手写 win32job
 # （KillOnJobClose）。stop 时显式 start_kill() 触发 TerminateJobObject 杀整树
 # （process-wrap 的 std JobObject 默认不 kill-on-close，drop 不会杀进程）。

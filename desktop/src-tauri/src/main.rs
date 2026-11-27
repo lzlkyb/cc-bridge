@@ -1024,6 +1024,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::start_update,
             commands::install_prepared_update,
             commands::check_update,
+            commands::cancel_update,
+            commands::update_install_kind,
             commands::check_update_policy,
             commands::update_activity,
             commands::export_config,
