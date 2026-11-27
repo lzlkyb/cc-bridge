@@ -4,6 +4,7 @@ import { invoke } from "../lib/tauri";
 import { hookCmd } from "../lib/terminalStatusbar";
 import { attachOscHandlers } from "../lib/terminalOscAttach";
 import { interceptTerminalUserInput } from "../lib/terminalUserInput";
+import { stripInterruptBytes } from "../lib/terminalCtrlC";
 import {
   attachEchoStripWhenReady,
   claimInjection,
@@ -280,8 +281,8 @@ export function useTerminalOsc({ sessionId, enabled, closed, termRef }: Args): {
         term: termRef,
         send: (data) => void invoke("ssh_input", { sessionId, data }).catch(() => {}),
       });
-      // Flush queued bytes on cleanup; no interceptor may survive this session effect.
-      const pendingInput = typedBufRef.current;
+      // Teardown and the scheduled replay must apply the same interrupt filtering.
+      const pendingInput = stripInterruptBytes(typedBufRef.current);
       collectingRef.current = false;
       typedBufRef.current = "";
       if (pendingInput && !closed) void send(pendingInput).catch(() => {});

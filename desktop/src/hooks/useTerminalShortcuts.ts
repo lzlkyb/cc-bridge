@@ -1,9 +1,11 @@
-import { useEffect, type MutableRefObject } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 import type { Terminal } from "@xterm/xterm";
 import { sendTerminalUserInput } from "../lib/terminalUserInput";
 import { clearTerminalInput } from "../lib/terminalClearInput";
 import { navJump } from "../lib/terminalCommandNav";
-import { isImeComposing } from "../lib/utils";
+import { decideCtrlC } from "../lib/terminalCtrlC";
+import { trimCopyText } from "../lib/terminalPaste";
+import { copyText, isImeComposing } from "../lib/utils";
 import { toast } from "../components/ui/toast";
 
 interface Args {
@@ -38,13 +40,57 @@ export function useTerminalShortcuts({
   cwdRef,
   fontZoomRef,
 }: Args): void {
+  // 复制后选区会消失，但同一次按住触发的重复按键仍不能成为远端中断。
+  const copiedInHoldRef = useRef(false);
+
   useEffect(() => {
     const send = (data: string) => {
       if (closedRef.current) return;
       void sendTerminalUserInput(sessionId, data).catch(() => toast("输入失败，请检查终端连接", "error"));
     };
     const onKey = (e: KeyboardEvent) => {
-      if (!focusedRef.current || isImeComposing(e)) return;
+      if (!focusedRef.current) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      const composing = isImeComposing(e);
+      const copyKey = ctrl && !e.shiftKey && !e.altKey
+        && (e.key === "c" || e.key === "C" || composing && e.code === "KeyC");
+      if (composing && !copyKey) return;
+      // Ctrl+C：**有 live 选区 = 复制**（复制完清选区），没选区才放行成 SIGINT。
+      // 为什么必须在这里拦：`terminalKeymap` 只抢带 shift 的组合，不带 shift 的 Ctrl+C
+      // 原样放行给 xterm ⇒ 发 \x03。而在 TUI（Claude Code）里选定文字后按 Ctrl+C 想
+      // 复制的人，收到的就是「任务被打断」。语义裁决见 lib/terminalCtrlC.ts。
+      if (copyKey) {
+        // 新的一次按下（非自动重复）⇒ 本次按住的「已复制」标记重新开始。
+        if (!e.repeat) copiedInHoldRef.current = false;
+        // 🔴 只认 live 选区，不兜 10 秒缓存：否则「十分钟前选过、现在想中断」会被
+        // 静默改成复制，用户按几次都停不下来。
+        const terminal = termRef.current;
+        const selection = terminal?.getSelection() ?? "";
+        const action = decideCtrlC({
+          hasSelection: !!terminal?.hasSelection(),
+          composing,
+          repeat: e.repeat,
+          copiedInHold: copiedInHoldRef.current,
+        });
+        if (action === "interrupt") return; // 放行给 xterm → 发 \x03
+        // 组合输入由输入法处理，拦住 xterm 时保留系统默认动作。
+        if (!composing) e.preventDefault();
+        e.stopPropagation();
+        if (action === "swallow") return; // 复制后的按住不放：一个字节都不发
+        copiedInHoldRef.current = true;
+        const text = trimCopyText(selection);
+        if (!text.trim()) {
+          toast("选区中没有可复制的文字", "info");
+          return;
+        }
+        void copyText(text, () => {
+          if (terminal && termRef.current === terminal && terminal.getSelection() === selection) terminal.clearSelection();
+          toast(`已复制 ${text.length} 字`, "success");
+        },
+          () => toast("复制失败", "error"),
+        );
+        return;
+      }
       // 命令导航：Ctrl+Shift+↑/↓ 跳到上一条/下一条命令的提示符行。
       if (e.ctrlKey && e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
         e.preventDefault();
@@ -113,7 +159,15 @@ export function useTerminalShortcuts({
         return;
       }
     };
+    // 松手复位：下一次按 Ctrl+C 才是「新的一次」。
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === "c" || e.key === "C") copiedInHoldRef.current = false;
+    };
     window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
+    window.addEventListener("keyup", onKeyUp, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("keyup", onKeyUp, true);
+    };
   }, [sessionId, termRef, focusedRef, closedRef, pasteRef, pasteImageRef, cwdRef, fontZoomRef]);
 }

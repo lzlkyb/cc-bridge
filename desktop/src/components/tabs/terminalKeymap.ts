@@ -22,6 +22,14 @@ export interface TerminalKeyActions {
  * 「跳行首 / tmux 前缀键」，都是刚需，抢不得；带 shift 的那几个目前只会发出完全相同的
  * 控制字符（shift 被忽略），拿过来不丢任何能力，而且是 GNOME Terminal 等的通行惯例。
  *
+ * ⚠️ 「不带 shift 的 Ctrl+C 一律放行」在 2026-11-27 被**部分推翻**：TUI（Claude Code）
+ * 里用户选定文字后按 Ctrl+C 想复制，收到的是 SIGINT，正在跑的任务当场被打断
+ * （`Interrupted · What should Claude do instead?`）。现在的语义是
+ * **有 live 选区 ⇒ 复制并清选区，没选区 ⇒ 照旧 SIGINT**，实现放在
+ * `hooks/useTerminalShortcuts.ts`（window capture，先于 xterm 的 textarea），
+ * 裁决是纯函数 `lib/terminalCtrlC.ts` 的 `decideCtrlC`。本文件仍不接 Ctrl+C——
+ * 它只有一个单槽位、且不掌握选区状态。
+ *
  * 代价：远端不再收到 Ctrl+V（readline 的 quoted-insert 失效）——已与使用者确认接受。
  */
 export function attachTerminalKeymap(

@@ -23,7 +23,7 @@ import { useClipboardImagePaste } from "../../hooks/useClipboardImagePaste";
 import { SshImagePasteConfirm } from "./SshImagePasteConfirm";
 import { forceRepaint } from "../../lib/terminalRepaint";
 import { clearTerminalInput } from "../../lib/terminalClearInput";
-import { sendTerminalUserInput } from "../../lib/terminalUserInput";
+import { releaseTerminalInputThrottle, sendTerminalUserInput } from "../../lib/terminalUserInput";
 import { toast } from "../ui/toast";
 import { flashWindow } from "../../lib/windowAttention";
 import { useTerminalShortcuts } from "../../hooks/useTerminalShortcuts";
@@ -150,6 +150,8 @@ export function SshTerminal({
     return () => {
       offLink();
       offRegistry();
+      // 换会话 / 卸载：鼠标移动削峰器的定时器不能在死会话上再发一次 ssh_input。
+      releaseTerminalInputThrottle(sessionId);
     };
   }, [sessionId]);
 

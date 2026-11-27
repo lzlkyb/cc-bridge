@@ -94,6 +94,7 @@
  */
 
 import type { Terminal } from "@xterm/xterm";
+import { stripInterruptBytes } from "./terminalCtrlC";
 
 /** 舞步动作：先关回显再干活，干完恢复。 */
 export const ECHO_OFF_CMD = "stty -echo";
@@ -774,7 +775,10 @@ export function restoreEcho(ctx: EchoRestoreCtx, clean = false): void {
   ctx.collecting.current = true;
   ctx.at(DANCE.REPLAY_DELAY, () => {
     ctx.collecting.current = false;
-    const replay = ctx.typedBuf.current;
+    // 🔴 重放前剥掉 ^C / ^\ / ^Z：这几秒里按下的中断键，原意是「现在就打断」；
+    // 等 200ms 再原样补发，落在已经跑起来的任务上就是「自己误发了 Ctrl+C」
+    // （2026-11-27 报障：TUI 里任务莫名 Interrupted）。见 lib/terminalCtrlC.ts。
+    const replay = stripInterruptBytes(ctx.typedBuf.current);
     ctx.typedBuf.current = "";
     if (replay) ctx.send(replay);
   });

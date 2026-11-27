@@ -90,6 +90,17 @@ describe("ECHO 关闭期的用户输入", () => {
     await sendTerminalUserInput("osc-unmount-input", "after");
     expect(last(sent())).toBe("after");
   });
+  it("关闭注入时保留缓冲文字，跳过过期的中断键", async () => {
+    act(() => root.render(<Harness sessionId="osc-unmount-interrupt" />));
+    await advance(DANCE.PROBE_DELAY + PROBE_GATE_POLL);
+    expect(sent()).toEqual([` ${PROBE_ECHO_OFF_CMD}\n`]);
+    act(() => type("\x03ls\x1a\x1c\r"));
+    act(() => root.render(null));
+    expect(sent().filter((data) => data === "ls\r")).toHaveLength(1);
+    for (const interrupt of ["\x03", "\x1a", "\x1c"]) {
+      expect(sent().join("")).not.toContain(interrupt);
+    }
+  });
   it("真实发送通道在准备期不提前发送整条命令，恢复后只执行一次", async () => {
     act(() => root.render(<Harness sessionId="osc-real-input" />));
     // 900ms 只是闸门的下限，还要再安静一拍才发（见 runProbeGate）。
