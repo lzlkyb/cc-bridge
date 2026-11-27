@@ -373,7 +373,9 @@ export function buildPermissionGrantCommand(
     : `tools = [${NON_SHELL_TOOLS.map((t) => `'${t}'`).join(", ")}]\nfor t in tools:\n    rule = f'mcp__cc-bridge__{t}'\n    if rule not in allow:\n        allow.append(rule)`;
 
   return `${cdPrefix}python3 -c "
-import json, os
+import json, os, sys
+try: sys.stdout.reconfigure(errors='replace')
+except Exception: pass
 p = os.path.expanduser('${targetFile}')
 d = json.load(open(p, encoding='utf-8-sig')) if os.path.exists(p) else {}
 allow = d.setdefault('permissions', {}).setdefault('allow', [])

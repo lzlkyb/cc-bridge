@@ -301,6 +301,9 @@ describe("buildPermissionGrantCommand", () => {
     // 读用 utf-8-sig：用户可能用编辑器存出带 BOM 的文件，utf-8 会因 BOM 解析失败。
     expect(cmd).toContain("encoding='utf-8-sig'");
     expect(cmd).toContain("'w', encoding='utf-8'");
+    // 写成功之后才 print 中文：stdout 编码装不下（LC_ALL=C 的远端 / cp1252）会抛
+    // UnicodeEncodeError，用户看到报错但文件其实已写好。errors='replace' 让它降级成问号。
+    expect(cmd).toContain("sys.stdout.reconfigure(errors='replace')");
   });
 });
 

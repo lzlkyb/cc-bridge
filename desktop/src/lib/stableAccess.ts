@@ -51,6 +51,8 @@ export const stableNeedsLogin = (message: string) => /需要登录|需要密码|
 export function buildStablePermissionCommand(scope: McpScope, path: string, includeShell: boolean, name: string): string {
   if (!name || scope === "project" && !path) return "";
   const source = `import json,os,sys
+try: sys.stdout.reconfigure(errors='replace')
+except Exception: pass
 name,scope,include_shell=json.loads(sys.argv[1])
 p=os.path.join(os.path.expanduser(os.environ.get('CLAUDE_CONFIG_DIR') or '~/.claude'),'settings.json') if scope=='user' else '.claude/settings.local.json'
 d=json.load(open(p,encoding='utf-8-sig')) if os.path.exists(p) else {}
