@@ -1,0 +1,4 @@
+{
+  "payload": "CC Bridge update policy v1\n{\"schema\":1,\"latestVersion\":\"3.4.1\",\"minSupportedVersion\":\"3.4.1\",\"enforced\":false,\"graceUntil\":\"2026-11-28T20:15:52.597Z\",\"message\":\"请升级到 v3.4.1 后继续使用。\",\"updatedAt\":\"2026-11-27T20:15:52.597Z\",\"expiresAt\":\"2026-12-05T20:15:52.597Z\"}",
+  "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUdDJ2c2hVUml2V2tLQm9sRHNDK0R4NzJsMzZaekZvNlJCVmVNeXNmMG9pMTh3ZUxWcmpPUk45d3o2RG12dERWU041cDZObk9ma1B6VVNybW51OXRBa3Myd1J2UUJGS2c4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzk1ODEwNTUyCWZpbGU6cG9saWN5LnR4dAp4cWxEdjVmKytZbUgzcDFFS1ZLcG04bzNpK09UZzZmL3U1eksxY1FJTVl6WDZ0TUdnNHZjaHVDT3dWcXdaZjFjcjBMcUYrNlpnSFVTNUs4aU5pMjZDZz09Cg=="
+}
