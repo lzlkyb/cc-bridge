@@ -64,8 +64,8 @@ WebView2 只在多个实例共享同一个 user-data-dir 时复用 BROWSER 进�
     //     自动重启 BROWSER 接管，所有 app 1-3 秒内恢复。
     //   · WebView2 Runtime 更新（Windows Update）期间 BROWSER 重启，所有同池 app
     //     短暂闪退，属正常现象。
-    //   · 不影响 release_webview_on_close 行为：关窗销毁 webview 走的是 Tauri 窗口
-    //     生命周期，与本 env var 完全正交。
+    //   · 与窗口生命周期正交：关窗只隐藏、不再销毁（曾有的「闲置释放界面内存」
+    //     已整体移除），本 env var 只决定这些进程属于哪个共享池。
     //
     // 路径选取：%LOCALAPPDATA% 而非 %APPDATA%（WebView2 推荐：低延迟、不漫游、不进 OneDrive 同步）。
     // 不在 uninstaller 里清这个目录——它是机器级共享资源，卸载 cc-bridge 不应连带删除其它 app 数据。
@@ -148,7 +148,7 @@ cc-bridge 启动后查 `%LOCALAPPDATA%\WebView2Shared\` 目录存在且 Edge run
 不实施本方案时，cc-bridge 维持现有 374MB 占用。
 
 ### 5. 其它功能不受影响
-- 关窗销毁逻辑（L49 `show_or_create_main_window`）：不变，release_webview_on_close 仍然 5.5MB 平台
+- 关窗逻辑（`show_or_create_main_window`）：现在只隐藏、不销毁，界面进程常驻（原 `release_webview_on_close` 开关与闲置释放已移除）
 - 防火墙探测（netsh / PowerShell）：不变
 - 自动更新（`start_update` 命令）：不变
 - 进程监控、托盘通知、IP 变化检测：不变

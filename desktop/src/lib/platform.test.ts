@@ -7,7 +7,6 @@ import {
   isWindows,
   modKeyLabel,
   notifyCommandCompleteSub,
-  releaseWebviewHint,
   shellTypeCopy,
   shortcutLabel,
 } from "./platform";
@@ -60,31 +59,6 @@ describe("shellTypeCopy", () => {
   it("备选项显示名两平台都是 bash", () => {
     expect(shellTypeCopy("windows").altLabel).toBe("bash");
     expect(shellTypeCopy("macos").altLabel).toBe("bash");
-  });
-});
-
-describe("releaseWebviewHint", () => {
-  it("Windows 给 85MB → 6MB（多进程 WebView2 的口径）", () => {
-    const h = releaseWebviewHint("windows");
-    expect(h).toContain("85MB");
-    expect(h).toContain("6MB");
-    expect(h).not.toContain("120MB");
-  });
-
-  it("mac 给 120MB 并说明主进程常驻（WKWebView 在独立进程里）", () => {
-    // 不能照搬 Windows 的 85MB：mac 实测是 WebContent 进程 121MB → 消失，
-    // 而主进程几乎不变（约 22MB）。
-    const h = releaseWebviewHint("macos");
-    expect(h).toContain("120MB");
-    expect(h).toContain("22MB");
-    expect(h).not.toContain("85MB");
-  });
-
-  it("两平台都声明不影响 MCP 服务 / 托盘 / 通知", () => {
-    for (const p of ["windows", "macos", undefined]) {
-      expect(releaseWebviewHint(p)).toContain("MCP 服务");
-      expect(releaseWebviewHint(p)).toContain("不受影响");
-    }
   });
 });
 

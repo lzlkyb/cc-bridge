@@ -110,9 +110,6 @@ pub struct ConfigPatch {
     /// 任务完成通知开关（push_notification 工具总开关）。前端「功能开关」卡写入。
     #[serde(rename = "notifyTaskComplete")]
     pub notify_task_complete: Option<bool>,
-    /// 关窗时释放界面内存。前端「功能开关」卡写入。
-    #[serde(rename = "releaseWebviewOnClose")]
-    pub release_webview_on_close: Option<bool>,
     /// SSH 终端总开关（仅布尔，无凭据，可走通用 patch）。
     #[serde(rename = "sshEnabled")]
     pub ssh_enabled: Option<bool>,
@@ -280,11 +277,6 @@ pub async fn save_config(
         notify_task_complete,
         "notify_task_complete",
         &patch.notify_task_complete
-    );
-    apply_field!(
-        release_webview_on_close,
-        "release_webview_on_close",
-        &patch.release_webview_on_close
     );
     // SSH 终端总开关（仅布尔，无凭据，安全可走通用 patch）。
     let ssh_was_enabled = config.ssh_enabled;
@@ -1488,7 +1480,6 @@ mod tests {
             "commandAllowlist": [],
             "notifyCommandComplete": true,
             "notifyTaskComplete": true,
-            "releaseWebviewOnClose": true,
             "sshEnabled": false,
             "sshDragSelectEnabled": true,
             "sshCopyOnSelectEnabled": true,

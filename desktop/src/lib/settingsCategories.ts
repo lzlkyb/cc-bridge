@@ -30,7 +30,7 @@ export const SETTINGS_ANCHOR_CATEGORIES: Record<string, string> = {
   shell: "set-files", shelltype: "set-files", readonly: "set-files", whitelist: "set-files", encoding: "set-files", "session-persist": "set-files",
   backup: "set-data", audit: "set-data", "audit-retention": "set-data", "audit-clean": "set-data",
   "notify-command": "set-notify", "notify-task": "set-notify", "notify-cc": "set-notify",
-  "release-webview": "set-app", "app-startup": "set-app", "appearance-title": "set-app", "app-style": "set-app", "app-mode": "set-app",
+  "app-startup": "set-app", "appearance-title": "set-app", "app-style": "set-app", "app-mode": "set-app",
   "ssh-drag-select": "set-terminal", "ssh-copy-on-select": "set-terminal", "terminal-font": "set-terminal", "terminal-size": "set-terminal",
   "terminal-mode": "set-terminal", "terminal-preset": "set-terminal", "terminal-scrollback": "set-terminal", "terminal-speed": "set-terminal",
   "terminal-scroll-speed": "set-terminal", "terminal-inject": "set-terminal", "terminal-tmux": "set-terminal",

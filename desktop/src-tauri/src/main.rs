@@ -35,112 +35,15 @@ fn notify_toast(handle: &tauri::AppHandle, body: &str) {
 #[cfg(not(feature = "notifications"))]
 fn notify_toast(_handle: &tauri::AppHandle, _body: &str) {}
 
-/// 隐藏后闲置多久才真释放界面内存。
-///
-/// 30 分钟：覆盖「收起来去吃个饭 / 开个长会」这类真实间隔，又不至于让那 80MB
-/// 常年挂着。改这个值前先看 [`should_release_idle`] 的单测——阈值逻辑锁在那儿。
-const RELEASE_IDLE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
-
-/// 释放令牌。每次「显示」或「重新隐藏」都自增；pending 的释放任务醒来后比对，
-/// 不等就静默退出。
-///
-/// 为什么需要它：`hide()` 幂等且可能被连续调用（托盘点两次、关窗后再点托盘），
-/// 若每次 hide 都 spawn 一个定时器，半小时后会有一叠任务同时跑。令牌保证只有
-/// 最后一次 hide 的那个活着。
-static RELEASE_TOKEN: std::sync::OnceLock<std::sync::Mutex<u64>> = std::sync::OnceLock::new();
-
-fn release_token() -> &'static std::sync::Mutex<u64> {
-    RELEASE_TOKEN.get_or_init(|| std::sync::Mutex::new(0))
-}
-
-/// 作废尚未触发的释放任务，并返回新的令牌值。
-fn bump_release_token() -> u64 {
-    let mut guard = release_token().lock().unwrap_or_else(|e| e.into_inner());
-    *guard += 1;
-    *guard
-}
-
-/// 是否该执行释放。**纯函数**：窗口、开关、时间全部从参数进。
-///
-/// 抽成纯函数是为了能单测——这种「跨 30 分钟才触发一次」的逻辑，靠手工点半小时
-/// 验证一次的成本太高，而它的反面（误释放）代价是用户眼前的窗口突然消失。
-fn should_release_idle(
-    hidden_at: std::time::Instant,
-    visible: bool,
-    enabled: bool,
-    now: std::time::Instant,
-) -> bool {
-    enabled && !visible && now.saturating_duration_since(hidden_at) >= RELEASE_IDLE
-}
-
-/// 隐藏主窗口时调用：挂一个 `RELEASE_IDLE` 后的释放任务。
-///
-/// 任务醒来后**重新确认三件事**才动手，任一不成立就放弃：
-/// 1. 令牌没被后来者顶掉（期间又显示过、或重新隐藏过）；
-/// 2. 窗口此刻仍不可见（最小化也算，见 [`window_is_visible`]）；
-/// 3. 开关还开着（用户可能在这半小时里改了设置）。
-///
-/// 第三条不是冗余：配置是单一事实源（写入点有四处），镜像一份 AtomicBool 必然
-/// 漏，所以这里直接再读一次。
-///
-/// 🔴 令牌与可见性必须**紧邻 `destroy()` 之前**才读：早读的结论在半小时里随时会
-/// 过期——用户完全可能「显示一下又收起」，那一刻 bump 出来的新令牌才是真相。
-/// 若拆成「先查令牌、后查可见性」两段，中间那一下显示会让后一段拿着过期的
-/// 「不可见」结论继续走完，把用户眼前的窗口拆掉。
-fn arm_release_timer(app: &tauri::AppHandle) {
-    let enabled = app
-        .state::<std::sync::Arc<state::AppState>>()
-        .config
-        .try_read()
-        .map(|c| c.release_webview_on_close)
-        .unwrap_or(true);
-    if !enabled {
-        return;
-    }
-    let token = bump_release_token();
-    let handle = app.clone();
-    let hidden_at = std::time::Instant::now();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(RELEASE_IDLE).await;
-        let Some(window) = handle.get_webview_window("main") else {
-            return;
-        };
-        let still_enabled = handle
-            .state::<std::sync::Arc<state::AppState>>()
-            .config
-            .try_read()
-            .map(|c| c.release_webview_on_close)
-            .unwrap_or(true);
-        // 三项复查挨着排，且都在动手前最后一刻：令牌若先于可见性读，中间任何一次
-        // 「显示」都会让我们拿着过期的不可见结论继续往下走。
-        let visible = window_is_visible(
-            window.is_visible().unwrap_or(true),
-            window.is_minimized().unwrap_or(false),
-        );
-        let token_now = *release_token().lock().unwrap_or_else(|e| e.into_inner());
-        if token_now != token
-            || !should_release_idle(hidden_at, visible, still_enabled, std::time::Instant::now())
-        {
-            return;
-        }
-        log::info!(
-            "主窗口已闲置 {} 分钟，释放界面内存",
-            RELEASE_IDLE.as_secs() / 60
-        );
-        let _ = window.destroy();
-    });
-}
-
 /// 窗口此刻是否「对用户可见」。**纯函数**，两个入参都是现成的 syscall 结果。
 ///
 /// 为什么值得单开一个函数：**最小化必须算不可见**。Windows 上 `is_visible()` 走
 /// `IsWindowVisible()`，而最小化并不改变 `WS_VISIBLE`，所以窗口缩在任务栏里时它
-/// 依旧返回 `true`。托盘三态判断（少这一条会把「还原」误判成「收起」）和释放任务
-/// 的可见性复查（会把最小化中的窗口当成没人看，直接拆掉）都栽在这个差别上，
-/// 故抽成一处、各自引用，不给「两边写反过来」留机会。
+/// 依旧返回 `true`。前端暂停判断（[`sync_window_visibility`]）靠的就是这个区别；
+/// 托盘三态判断也依赖同一事实，只是它用 `is_minimized()` 显式分了三支，没有走本函数。
 ///
 /// 两个默认值刻意不同：读失败时 `visible` 按可见、`minimized` 按未最小化，合起来
-/// 就是「宁可漏释放 / 漏暂停，也不能把用户正看着的界面拆掉或冻住」。
+/// 就是「宁可漏暂停，也不能把用户正看着的界面冻住」。
 fn window_is_visible(visible: bool, minimized: bool) -> bool {
     visible && !minimized
 }
@@ -148,20 +51,19 @@ fn window_is_visible(visible: bool, minimized: bool) -> bool {
 /// 主窗口「是否对用户不可见」的模块级状态。
 ///
 /// 提升到模块级，是为了让四个写入点（托盘收起 / 关窗 / 系统最小化 / 5s 状态复核）
-/// 共用同一个边沿判断，**只在真正翻转时才动释放计时器**。
+/// 共用同一个边沿判断，**只在真正翻转时才通知前端**。
 ///
 /// 若各写各的 static（`sync_window_visibility` 与 `Resized` 原先各有一个），
-/// 5s 复核那条路会每次都把自己的状态判成「刚翻转」，把 30 分钟计时无限推后：
-/// 用户最小化半小时回来，窗口还在、内存一分没省，而且没有任何报错。
+/// 5s 复核那条路会每次都把自己判成「刚翻转」，重复给前端发同一方向的 IPC。
 static MAIN_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// 统一改写「主窗口对用户不可见」：边沿触发通知前端，并挂 / 作废释放计时器。
+/// 统一改写「主窗口对用户不可见」：只在边沿翻转时通知前端暂停 / 恢复轮询与动画。
 ///
-/// 隐藏 → `arm_release_timer`（它内部自己 bump，所以连续 hide 不会叠出一叠定时器）；
-/// 显示 → bump 作废尚未触发的那一个。
+/// 四个写入点都走这里，一个都不许多：任何一处自己 `emit`，都会和别处的边沿判断
+/// 抢 [`MAIN_HIDDEN`]，表现为「有时不暂停」或重复 IPC。
 ///
-/// 四个写入点都走这里，一个都不许多：任何一处自己 `emit` + 自己 arm，都会和
-/// 别处的边沿判断抢 [`MAIN_HIDDEN`]，表现为「有时不暂停」或「计时器被悄悄重置」。
+/// 这里**只**负责前端暂停。窗口不再被自动销毁（「闲置后释放界面内存」已整体移除，
+/// 见 CHANGELOG），所以没有令牌、计时器之类的跨时段状态需要维护。
 fn set_main_window_hidden(app: &tauri::AppHandle, hidden: bool) {
     if MAIN_HIDDEN.swap(hidden, std::sync::atomic::Ordering::Relaxed) == hidden {
         return;
@@ -169,24 +71,23 @@ fn set_main_window_hidden(app: &tauri::AppHandle, hidden: bool) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.emit("app:visibility", !hidden);
     }
-    if hidden {
-        arm_release_timer(app);
-    } else {
-        // 显示即作废尚未触发的释放任务，否则 30 分钟整点那一下会拆掉刚打开的窗口。
-        bump_release_token();
-    }
 }
 
-/// 显示主窗口；若它已被销毁（闲置释放真的触发过），则按 `tauri.conf.json`
+/// 显示主窗口；`get_webview_window("main")` 返回 None 时按 `tauri.conf.json`
 /// 里的原配置重建。
 ///
-/// **为何托盘与关窗都只隐藏、不再销毁**：webview 那一组进程
+/// **为何托盘与关窗都只隐藏、不销毁**：webview 那一组进程
 /// （BROWSER / gpu-process / renderer / utility ×2 / crashpad）实测占约 **80MB**
 /// 专用工作集，`hide()` 一个字节都不释放。早期为了这 80MB，关窗走真销毁，
 /// 代价是重开要重新加载前端：页面白一下、终端缓冲清空、分屏布局与滚动位置
 /// 全丢；SSH 会话虽然还活着，但输出流已 `detach`、历史不回补，用户眼里就是
 /// 「终端断了」。收在托盘是 cc-bridge 的主要使用形态，这个代价每天都在付。
-/// 内存不是不要，而是换个时机收——见 [`arm_release_timer`]。
+/// 那 80MB 现在是常驻成本——用「闲置多久就拆掉」去换，落在用户头上就是
+/// 「窗口自己从任务栏消失」，比省下的内存更贵。
+///
+/// **为何还留重建分支**：正常路径下窗口只在退出时销毁，None 分支理论上走不到。
+/// 留着是因为它一旦真的发生（平台异常、以后的改动），没有兜底就是「点托盘毫无
+/// 反应」——与 01281a4 修掉的那个「用户以为应用已经死了」同一种病。
 ///
 /// **安全前提（已逐条核实，隐藏路径同样成立）**：
 /// - 托盘挂在 app 上（`TrayIconBuilder::build(app)`），不是窗口级；
@@ -197,9 +98,8 @@ fn set_main_window_hidden(app: &tauri::AppHandle, hidden: bool) {
 ///   前端的变化横幅靠 `get_status` 的 `ip_changed` 字段渲染，状态在后端，
 ///   重开窗口后照常显示。
 fn show_or_create_main_window(app: &tauri::AppHandle) {
-    // 先复位「不可见」标记并作废未触发的释放任务。放在最前面，是因为窗口可能
-    // 已被销毁（闲置释放真的触发过）：那一刻同样要复位，否则上一次收起留下的
-    // true 会把下一次收起当成「没有翻转」吞掉，30 分钟计时从此再也不挂。
+    // 先复位「不可见」标记：窗口可能已被销毁并重建，那一刻同样要复位，否则上一次
+    // 收起留下的 true 会把下一次收起当成「没有翻转」吞掉，前端再也不会恢复。
     // 边沿触发，所以对「本来就可见」的情况是空操作，不会多发一次 IPC。
     set_main_window_hidden(app, false);
     if let Some(w) = app.get_webview_window("main") {
@@ -242,8 +142,9 @@ fn show_or_create_main_window(app: &tauri::AppHandle) {
 /// 给窗口打上平台特异的装饰（目前只有 Win11 DWM 圆角）。
 ///
 /// **为何必须抽成函数**：这一步原先只写在 `setup` 里，只作用于启动时创建的
-/// 那个窗口。收起来闲置 30 分钟后窗口会被真销毁、再点开时重建，重建路径没补这一步
-/// ——于是窗口从圆角变成直角，同一个应用出现两种窗口外观。现在启动与重建两条路径共用它。
+/// 那个窗口。窗口若被重建（`show_or_create_main_window` 的兜底分支），重建路径
+/// 没补这一步 —— 于是窗口从圆角变成直角，同一个应用出现两种窗口外观。
+/// 现在启动与重建两条路径共用它。
 fn apply_window_decorations(window: &tauri::WebviewWindow) {
     #[cfg(target_os = "windows")]
     {
@@ -485,9 +386,10 @@ async fn refresh_and_report_ip_change(
 ///
 /// **两项必须都查**：只查 `is_minimized()` 会**破坏现有的托盘隐藏暂停**——收进托盘时窗口
 /// `is_minimized()` 是 false，会误发 `visibility = true`，把已经暂停的轮询重新打开。
-/// 合起来的判据就是 [`window_is_visible`]，托盘三态判断与释放任务复用同一处。
+/// 合起来的判据就是 [`window_is_visible`]；托盘那边是靠 `is_minimized()` 显式分了三支
+/// （还原 / 收起 / 唤回），依据的是同一个事实——`is_visible()` 在最小化时仍为 true。
 fn sync_window_visibility(handle: &tauri::AppHandle) {
-    // 窗口已销毁（闲置 30 分钟的释放真的触发过）→ 没有前端可通知，跳过。
+    // 窗口不存在（理论上只有退出途中）→ 没有前端可通知，跳过。
     let Some(w) = handle.get_webview_window("main") else {
         return;
     };
@@ -498,8 +400,6 @@ fn sync_window_visibility(handle: &tauri::AppHandle) {
         w.is_visible().unwrap_or(true),
         w.is_minimized().unwrap_or(false),
     );
-    // 边沿判断 + 挂 / 作废释放计时器都在里面：最小化期间内存同样该被回收
-    // （见 set_main_window_hidden）。
     set_main_window_hidden(handle, hidden);
 }
 
@@ -540,8 +440,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // 重复启动：把界面唤到前台。窗口可能已被销毁（闲置释放触发过），
-            // 所以走 or_create——否则用户双击图标会没任何反应。
+            // 重复启动：把界面唤到前台。走 or_create 是为了「窗口万一不存在」时
+            // 也能重建——否则用户双击图标会没任何反应。
             show_or_create_main_window(app);
         }))
         .plugin(tauri_plugin_autostart::init(
@@ -783,13 +683,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             Some(w) if w.is_visible().unwrap_or(false) => {
                                 // 收起：只隐藏，不销毁。销毁的代价是重开要重新
                                 // 加载前端——终端缓冲、分屏布局、滚动位置全丢，
-                                // 用户眼里就是终端断了。内存交给 arm_release_timer
-                                // 在闲置 30 分钟后收。
+                                // 用户眼里就是终端断了。
                                 let _ = w.hide();
                                 set_main_window_hidden(tray_app.app_handle(), true);
                             }
-                            // 窗口存在但不可见（隐藏态）→ 恢复；
-                            // 窗口已被销毁（闲置释放触发过）→ 重建。两种情况同一个入口。
+                            // 窗口存在但不可见（隐藏态）→ 恢复；窗口万一不存在 → 重建。
+                            // 两种情况同一个入口。
                             _ => show_or_create_main_window(tray_app.app_handle()),
                         }
                     }
@@ -1273,9 +1172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 // 一律只隐藏：销毁的代价（重载前端 + 终端断流）远大于那 80MB。
-                // 托盘左键与这里是同一条路径，用户从哪个入口收起行为都一致；
-                // 「什么时候才真释放」由 set_main_window_hidden → arm_release_timer
-                // 统一决定。
+                // 托盘左键与这里是同一条路径，用户从哪个入口收起行为都一致。
                 api.prevent_close();
                 let _ = window.hide();
                 set_main_window_hidden(window.app_handle(), true);
@@ -1290,9 +1187,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             //    `document.hidden` 兜底在此场景下拿不到信号。
             // 不处理的后果：暂停动画只在「收进托盘」路径生效，最小化照旧烧 CPU。
             tauri::WindowEvent::Resized(_) => {
-                // Resized 在拖动窗口边框时高频触发，所以不能在这里直接发事件 /
-                // 挂计时器——边沿判断统一收在 set_main_window_hidden 里（原因见
-                // MAIN_HIDDEN 的注释：几处各写一个 static 会互相抢状态）。
+                // Resized 在拖动窗口边框时高频触发，所以不能在这里直接发事件 ——
+                // 边沿判断统一收在 set_main_window_hidden 里（原因见 MAIN_HIDDEN
+                // 的注释：几处各写一个 static 会互相抢状态）。
                 let minimized = window.is_minimized().unwrap_or(false);
                 set_main_window_hidden(window.app_handle(), minimized);
             }
@@ -1306,10 +1203,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let _ = app_handle;
             // macOS：点 Dock 图标。
             //
-            // 不处理的后果：窗口被闲置释放销毁过（收起来 30 分钟没再打开）时，
-            // Dock 上图标还在但点下去什么都不发生——用户只能从菜单栏图标唤回，
-            // 而他很可能以为应用已经死了。（窗口只是隐藏时同样无反应，只不过那时
-            // 窗口至少还存在，问题没这么显眼。）
+            // 不处理的后果：窗口收在托盘里（隐藏态）时，Dock 上图标还在但点下去
+            // 什么都不发生——用户只能从菜单栏图标唤回，而他很可能以为应用已经死了。
             //
             // `has_visible_windows` 为 true 时不管：系统自己会把窗口提到前面。
             #[cfg(target_os = "macos")]
@@ -1359,8 +1254,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // 关掉最后一个窗口**不应**退出应用。
             //
             // Tauri 默认行为是“所有窗口关闭 → 退出进程”，而 cc-bridge 是常驻托盘服务：
-            // 闲置 30 分钟的释放会把主窗口真销毁，若不拦住这里，
-            // MCP 服务会跟着一起死——远程那边直接断连。
+            // 主窗口若真的不存在了（重建兜底触发过、或平台层面的意外销毁），若不拦住
+            // 这里，MCP 服务会跟着一起死——远程那边直接断连。
             //
             // 只拦 `code: None`：那是“窗口全关”触发的退出。托盘菜单「退出」走的是
             // `tray_app.exit(0)`，会带 `code: Some(0)`，不在此列，因此真退出仍然正常。
@@ -1373,36 +1268,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
-mod release_timer_tests {
+mod window_state_tests {
     use super::*;
 
-    #[test]
-    fn releases_only_when_enabled_hidden_and_idle() {
-        let now = std::time::Instant::now();
-        let long_ago = now - RELEASE_IDLE - std::time::Duration::from_secs(1);
-        let just_now = now - std::time::Duration::from_secs(1);
-        // 开关关着：隐藏再久也不释放。
-        assert!(!should_release_idle(long_ago, false, false, now));
-        // 窗口可见：不释放。
-        assert!(!should_release_idle(long_ago, true, true, now));
-        // 刚隐藏：没到点，不释放。
-        assert!(!should_release_idle(just_now, false, true, now));
-        // 三条都满足：释放。
-        assert!(should_release_idle(long_ago, false, true, now));
-    }
-
-    #[test]
-    fn release_token_bumps_monotonically() {
-        let first = bump_release_token();
-        let second = bump_release_token();
-        assert!(second > first);
-    }
-
-    /// 锁住 Bug 1 / Bug 3 的共同根源：**最小化时 `is_visible()` 仍是 true**。
+    /// 锁住 Windows 上那个反直觉的事实：**最小化时 `is_visible()` 仍是 true**。
     ///
-    /// 这条断言是故意写成「反直觉」的那一条——把 `window_is_visible` 写成
+    /// 这条断言故意写成「反直觉」的那一条——把 `window_is_visible` 改成
     /// `visible || !minimized`、或干脆退回只用 `is_visible()`，这里必须变红，
-    /// 否则等于没测（托盘点一下窗口就连同任务栏项一起消失）。
+    /// 否则等于没测：托盘点一下会把「还原」误判成「收起」，窗口连同任务栏项
+    /// 一起消失，之后再点托盘也只会把它重新藏起来，用户只能杀进程。
     #[test]
     fn minimized_window_is_not_visible() {
         assert!(!window_is_visible(true, true));

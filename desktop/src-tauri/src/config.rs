@@ -256,22 +256,6 @@ pub struct BridgeConfig {
     /// 任务完成通知（push_notification MCP 工具总开关）。默认开启——远程 AI 可主动调用
     /// push_notification 推桌面通知。关闭后 push_notification 静默忽略（不推通知，不报错）。
     pub notify_task_complete: bool,
-    /// 隐藏后闲置是否释放界面内存。默认开启。
-    ///
-    /// 🔴 关窗本身**不再**销毁窗口——托盘左键与 X 按钮都是 `prevent_close` +
-    /// `hide()`。早期版本关窗即销毁（省内存模式），代价是重开要重新加载前端：
-    /// 终端缓冲清空、分屏布局与滚动位置全丢，SSH 输出流也已 detach、历史不回补，
-    /// 用户眼里就是「终端断了」。收在托盘是主要使用形态，这个代价每天都在付。
-    ///
-    /// 开（默认）：窗口收起后只隐藏；闲置 `RELEASE_IDLE`（30 分钟，见 main.rs）
-    /// 才销毁 webview，释放约 80MB 专用工作集（`hide()` 一个字节都不释放）。
-    /// 期间任何时候重新打开都只是 `show()`，终端与布局全在。
-    ///
-    /// 关：永不自动释放，那 80MB 一直挂着，但保证任何时刻打开都是瞬时。
-    ///
-    /// 两种取值都不影响功能：MCP 服务、托盘、桌面通知（含 IP 变化提示）均为
-    /// app 级，不依赖窗口存活。
-    pub release_webview_on_close: bool,
     /// SSH 终端总开关（面板内交互终端）。默认关——遵循「默认关 + 多层闸」，
     /// 首次进「终端」Tab 需用户显式启用（见前端启用闸）。
     pub ssh_enabled: bool,
@@ -416,7 +400,6 @@ impl Default for BridgeConfig {
             command_allowlist: vec![],
             notify_command_complete: true,
             notify_task_complete: true,
-            release_webview_on_close: true,
             ssh_enabled: false,
             ssh_connections: vec![],
             stable_connect: crate::stable_connect::StableSettings::default(),
@@ -559,9 +542,6 @@ pub fn load_config(conn: &Connection) -> Result<BridgeConfig, String> {
                 config.notify_command_complete = parse_or_warn(key, value, true)
             }
             "notify_task_complete" => config.notify_task_complete = parse_or_warn(key, value, true),
-            "release_webview_on_close" => {
-                config.release_webview_on_close = parse_or_warn(key, value, true)
-            }
             "ssh_enabled" => config.ssh_enabled = parse_or_warn(key, value, false),
             "ssh_connections" => config.ssh_connections = parse_or_warn(key, value, vec![]),
             "stable_connect" => {
@@ -996,11 +976,6 @@ pub fn save_full_config(conn: &Connection, config: &BridgeConfig) -> Result<(), 
     )?;
     save_config_field(
         conn,
-        "release_webview_on_close",
-        &to_value(config.release_webview_on_close).unwrap(),
-    )?;
-    save_config_field(
-        conn,
         "notify_task_complete",
         &to_value(config.notify_task_complete).unwrap(),
     )?;
@@ -1305,7 +1280,6 @@ mod save_load_contract_tests {
             command_allowlist: vec!["git".into()],
             notify_command_complete: false,
             notify_task_complete: false,
-            release_webview_on_close: false,
             ssh_enabled: true,
             ssh_drag_select_enabled: false,
             ssh_copy_on_select_enabled: false,
@@ -1361,7 +1335,6 @@ mod save_load_contract_tests {
         assert_eq!(loaded.command_allowlist, vec!["git"]);
         assert!(!loaded.notify_command_complete);
         assert!(!loaded.notify_task_complete);
-        assert!(!loaded.release_webview_on_close);
         assert!(loaded.ssh_enabled);
         assert!(!loaded.ssh_drag_select_enabled);
         assert!(!loaded.ssh_copy_on_select_enabled);

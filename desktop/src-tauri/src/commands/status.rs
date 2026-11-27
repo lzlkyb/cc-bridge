@@ -172,9 +172,6 @@ pub struct StatusResponse {
     /// 任务完成通知开关（push_notification MCP 工具总开关）。默认开启。
     #[serde(rename = "notifyTaskComplete")]
     pub notify_task_complete: bool,
-    /// 关窗时释放界面内存。默认开启（关窗销毁 webview，托盘常驻约 85MB → 5.5MB）。
-    #[serde(rename = "releaseWebviewOnClose")]
-    pub release_webview_on_close: bool,
     /// 终端拖拽即选：在 xterm 内拖拽即自动进选择态。默认开启。
     #[serde(rename = "sshDragSelectEnabled")]
     pub ssh_drag_select_enabled: bool,
@@ -578,7 +575,6 @@ pub async fn get_status(state: State<'_, Arc<AppState>>) -> Result<StatusRespons
         command_allowlist: config.command_allowlist.clone(),
         notify_command_complete: config.notify_command_complete,
         notify_task_complete: config.notify_task_complete,
-        release_webview_on_close: config.release_webview_on_close,
         ssh_drag_select_enabled: config.ssh_drag_select_enabled,
         ssh_copy_on_select_enabled: config.ssh_copy_on_select_enabled,
         platform: std::env::consts::OS.to_string(),

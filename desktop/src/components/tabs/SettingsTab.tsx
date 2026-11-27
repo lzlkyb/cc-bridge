@@ -64,7 +64,7 @@ export function SettingsTab({ status, onSaved, highlightAnchor, unreadCount, onR
 
   const content = (id: string) => {
     switch (id) {
-      case "set-app": return <div className="settings-page-layout"><div className="settings-reading"><AppGroup status={status} onSaved={onSaved} /><InstallGroup platform={status?.platform} onReopenOnboarding={onReopenOnboarding} /></div><ApplicationSettingsPreview /></div>;
+      case "set-app": return <div className="settings-page-layout"><div className="settings-reading"><AppGroup /><InstallGroup platform={status?.platform} onReopenOnboarding={onReopenOnboarding} /></div><ApplicationSettingsPreview /></div>;
       case "set-terminal": return <TerminalGroup status={status} onSaved={onSaved} />;
       case "set-network": return <div className="settings-reading"><NetworkGroup status={status} onSaved={onSaved} /><SecurityGroup status={status} onSaved={onSaved} onNavigate={onNavigate} section="network" />{isWindows(status?.platform) && <FirewallGroup onRefresh={onSaved} />}<AdvancedGroup status={status} onSaved={onSaved} section="network" /></div>;
       case "set-files": return <div className="settings-reading"><AdvancedGroup status={status} onSaved={onSaved} section="files" /><SecurityGroup status={status} onSaved={onSaved} onNavigate={onNavigate} section="files" /></div>;

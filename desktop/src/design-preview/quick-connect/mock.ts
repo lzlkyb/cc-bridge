@@ -10,7 +10,7 @@ export let previewConnections = [...defaultConnections];
 export function resetPreviewConnections(empty: boolean, scenario: Scenario = "normal") { previewConnections = empty ? [] : [...defaultConnections]; resetProductionFixture(scenario); }
 export const status = {
   version: "3.1.5", uptimeSeconds: 320, allowedRoots: ["D:\\Projects"], excludePatterns: [], allowedExtensions: [], maxFileSizeBytes: 10485760,
-  journalEnabled: true, journalRetentionDays: 30, journalDir: "journal", ccNotifyTurnEnd: false, ccAutoApproveRules: [], releaseWebviewOnClose: true,
+  journalEnabled: true, journalRetentionDays: 30, journalDir: "journal", ccNotifyTurnEnd: false, ccAutoApproveRules: [],
   rateLimit: { maxRequests: 100, windowMs: 60000 }, backupDir: "backups", backupDirAbs: "D:\\cc-bridge\\backups", backupCount: 0, backupTotalBytes: 0,
   backupRetention: 10, auditRetentionDays: 30, commandCleanupSecs: 120, host: "0.0.0.0", port: 7823,
   stats: { totalRequests: 0, totalErrors: 0, successRate: 0, requestsPerMin: 0, avgLatencyMs: 0, p95LatencyMs: 0, rateLimitHits: 0, authDenies: 0, auditCount: 0, activeCommands: 0, topTools: [] },

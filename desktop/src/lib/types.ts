@@ -141,15 +141,6 @@ export interface StatusResponse {
    */
   ccAutoApproveRules: string[];
   /**
-   * 隐藏后闲置是否释放界面内存。默认开启。
-   *
-   * 关窗与托盘都只隐藏、不销毁（销毁会让重开时终端断流）；这个开关决定的是
-   * 「闲置多久才真释放」：开 = 隐藏 30 分钟后释放，关 = 永不自动释放。
-   * 具体能省多少内存两个平台差很多、且测量口径不同，数字只在
-   * lib/platform.ts 的 releaseWebviewHint() 里维护一份，别在别处再写一遍。
-   */
-  releaseWebviewOnClose: boolean;
-  /**
    * 终端拖拽即选：在 xterm 内拖拽即自动进选择态。默认开启。
    */
   sshDragSelectEnabled: boolean;
@@ -322,8 +313,6 @@ export interface ConfigPatch {
   ccNotifyTurnEnd?: boolean;
   /** CC 审批自动放行规则（一行一条）。前端安全页「CC 审批自动放行」卡写入。 */
   ccAutoApproveRules?: string[];
-  /** 关窗时释放界面内存。前端「兼容与性能」分组写入。 */
-  releaseWebviewOnClose?: boolean;
   /** 终端拖拽即选开关。前端「高级」分组写入。 */
   sshDragSelectEnabled?: boolean;
   /** 终端选中即复制开关。前端「高级」分组写入。 */

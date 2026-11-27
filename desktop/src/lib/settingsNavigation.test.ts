@@ -21,7 +21,7 @@ describe("settings deep links", () => {
     expect(searchSettings("netsh", available)).toHaveLength(0);
     expect(searchSettings("netsh", available, "windows")[0].anchor).toBe("set-firewall");
     expect(searchSettings("字号", available)[0].anchor).toBe("terminal-size");
-    expect(searchSettings("内存", available)[0].sectionId).toBe("set-app");
+    expect(searchSettings("自启", available)[0].sectionId).toBe("set-app");
     expect(searchSettings("字体", available)[0].sectionId).toBe("set-terminal");
   });
 });

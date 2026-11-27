@@ -53,12 +53,10 @@ export function TitleBarControls() {
   const close = useCallback(() => {
     // 必须是 close() 而不是 hide()。
     //
-    // 「关窗时释放界面内存」的「销毁还是仅隐藏」判断只写在后端的
-    // `CloseRequested` 里（main.rs）。hide() 不会触发那个事件，于是无论开关怎么设
-    // webview 永远不被销毁——而这个按钮是用户关窗的**主要入口**，所以那个开关
-    // 实际上是形同虚设（只有托盘左键「收起」走 w.close()，那条才真销毁）。
-    //
-    // 改成 close() 后，销毁/隐藏的判断回归到 CloseRequested 单一处，与托盘入口统一。
+    // 关窗后的收尾（给前端发 `app:visibility = false` 以暂停轮询与动画）只写在后端
+    // 的 `CloseRequested` 里（main.rs）。hide() 不触发那个事件，于是这个按钮会绕过
+    // 统一入口：窗口看不见了，前端却以为还可见，5s 轮询和动画照旧跑。而它是用户
+    // 关窗的**主要入口**，绕过等于把那条统一路径废掉（托盘左键同样走 w.close()）。
     // 注意：这靠 `capabilities/default.json` 里的 `core:window:allow-close`，
     // 没那条权限的话 IPC 会被 ACL 拦掉、按钮变成完全没反应。
     tryWin()?.close().catch(() => {});
