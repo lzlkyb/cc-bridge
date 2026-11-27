@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { dirname, join } from "@tauri-apps/api/path";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { cleanErr } from "../../lib/utils";
@@ -27,14 +28,14 @@ export function useSshTransfer() {
    * 此时**不弹错误**，而是置一个覆盖确认提示，用户确认后带 overwrite 重跑。
    */
   const download = useCallback(
-    async (a: StartArgs, onFailure?: (message: string) => void, nativeSaveConfirmed = false): Promise<boolean> => {
-      const run = async (overwrite: boolean): Promise<"ok" | "exists" | "fail"> => {
-        const id = core.begin("down", a.name, undefined, undefined, a.transferId);
+    async (a: StartArgs, onFailure?: (message: string) => void): Promise<boolean> => {
+      const run = async (overwrite: boolean, destination = a.local): Promise<"ok" | "exists" | "fail"> => {
+        const id = core.begin("down", a.name, undefined, undefined, destination === a.local ? a.transferId : undefined);
         try {
-          await queueSshTransfer({ id, connectionId: a.connectionId, direction: "down", label: a.name, target: a.local, resumable: true, confirmConflict: !overwrite }, () => invoke("ssh_sftp_get", {
+          await queueSshTransfer({ id, connectionId: a.connectionId, direction: "down", label: a.name, target: destination, resumable: true, confirmConflict: !overwrite }, () => invoke("ssh_sftp_get", {
             connectionId: a.connectionId,
             remote: a.remote,
-            local: a.local,
+            local: destination,
             transferId: id,
             overwrite,
             resumable: true,
@@ -52,10 +53,11 @@ export function useSshTransfer() {
           core.end();
         }
       };
-      // Native Save confirms this exact destination, including replacement; avoid a second prompt.
-      const first = await run(nativeSaveConfirmed);
+      // The native picker returns a path only. The file may first appear while the job is queued.
+      const first = await run(false);
       if (first !== "exists") return first === "ok";
-      const decision = await core.askOverwrite({ kind: "down", path: a.local, names: [a.name] });
+      const decision = await core.askOverwrite({ kind: "down", path: a.local, names: [a.name], keepBoth: true });
+      if (decision === "keepBoth") return (await run(false, await join(await dirname(a.local), copyUploadName(a.name)))) === "ok";
       if (decision !== "overwrite") return false;
       return (await run(true)) === "ok";
     },

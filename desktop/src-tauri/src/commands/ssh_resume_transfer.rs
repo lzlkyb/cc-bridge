@@ -433,9 +433,17 @@ pub(super) async fn transfer(
             if cancelled(hooks) {
                 return Err("CCB_CANCELLED".into());
             }
-            fs::rename(&part.temporary, &part.local)
-                .await
+            if request.overwrite {
+                fs::rename(&part.temporary, &part.local)
+                    .await
+                    .map_err(map_sftp_err)?;
+            } else {
+                super::ssh_batch_cmds::publish_without_replace(
+                    Path::new(&part.temporary),
+                    &part.local,
+                )
                 .map_err(map_sftp_err)?;
+            }
         }
         hooks.emit_progress(100);
         Ok(())

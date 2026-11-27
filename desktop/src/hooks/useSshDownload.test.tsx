@@ -9,7 +9,7 @@ vi.mock("@tauri-apps/api/path",()=>({downloadDir:async()=>"C:/Downloads",join:as
 vi.mock("../components/ui/toast",()=>({toast:mocks.toast}));
 (globalThis as unknown as {IS_REACT_ACT_ENVIRONMENT:boolean}).IS_REACT_ACT_ENVIRONMENT=true;
 let root:Root, host:HTMLDivElement, state:ReturnType<typeof useSshDownload>;
-function Harness() { state=useSshDownload("server-a","/home/demo",mocks.download); return null; }
+function Harness() { state=useSshDownload("server-a","/home/demo",mocks.download,true); return null; }
 beforeEach(async()=>{
   vi.clearAllMocks(); localStorage.clear(); mocks.save.mockResolvedValue("D:/Work/report.png"); mocks.download.mockResolvedValue(true);
   host=document.createElement("div");document.body.append(host);root=createRoot(host);await act(async()=>root.render(<Harness/>));
@@ -21,7 +21,12 @@ describe("原生另存为下载",()=>{
     expect(mocks.save).toHaveBeenCalledWith({title:"下载文件到本机",defaultPath:"C:/Downloads/report.png"});
     expect(mocks.download.mock.calls[0][0]).toEqual({connectionId:"server-a",name:"report.png",remote:"/home/demo/report.png",local:"D:/Work/report.png",transferId:expect.any(String)});
     expect(state.result?.status).toBe("done"); expect(localStorage.getItem("cc-bridge.download-directory")).toBe("D:/Work");
-    expect(mocks.download.mock.calls[0][2]).toBe(true);
+    expect(mocks.download.mock.calls[0]).toHaveLength(2);
+  });
+  it("另存为建议一个合法的 Windows 名称，读取时保留 Linux 原文件名", async () => {
+    await act(async () => state.start("trace:old.log"));
+    expect(mocks.save).toHaveBeenCalledWith(expect.objectContaining({ defaultPath: "C:/Downloads/trace_old.log" }));
+    expect(mocks.download.mock.calls[0][0].remote).toBe("/home/demo/trace:old.log");
   });
   it("取消选择不下载，下一次默认记住已选目录",async()=>{
     localStorage.setItem("cc-bridge.download-directory","E:/Reports");mocks.save.mockResolvedValue(null);

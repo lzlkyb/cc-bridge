@@ -12,13 +12,13 @@ const args={connectionId:"server",name:"report.png",remote:"/home/report.png",lo
 function Harness(){state=useSshTransfer();return null;}
 beforeEach(async()=>{vi.clearAllMocks();host=document.createElement("div");document.body.append(host);root=createRoot(host);await act(async()=>root.render(<Harness/>));});
 afterEach(async()=>{await act(async()=>root.unmount());host.remove();});
-it("原生保存已确认目的地时不再弹重复覆盖确认，后端仍负责临时文件写入",async()=>{
+it("无冲突时直接下载，仍由后端禁止覆盖晚出现的同名文件",async()=>{
   mocks.invoke.mockResolvedValue(undefined);let ok=false;
-  await act(async()=>{ok=await state.download(args,undefined,true);});
+  await act(async()=>{ok=await state.download(args);});
   expect(ok).toBe(true);expect(state.prompt).toBeNull();
-  expect(mocks.invoke).toHaveBeenCalledWith("ssh_sftp_get",expect.objectContaining({overwrite:true,local:args.local}));
+  expect(mocks.invoke).toHaveBeenCalledWith("ssh_sftp_get",expect.objectContaining({overwrite:false,local:args.local}));
 });
-it("没有原生确认的调用仍先拒绝覆盖，取消后不发起第二次写入",async()=>{
+it("首次发现同名时拒绝写入，取消后不发起第二次写入",async()=>{
   mocks.invoke.mockRejectedValueOnce("CCB_TARGET_EXISTS: exists");let pending!:Promise<boolean>;
   await act(async()=>{pending=state.download(args);});
   expect(state.prompt?.path).toBe(args.local);
@@ -31,10 +31,10 @@ it("确认覆盖后才重试；真实失败回传详情，取消不冒充错误"
   await act(async()=>state.prompt!.confirm());expect(await pending).toBe(true);
   expect(mocks.invoke.mock.calls[1][1].overwrite).toBe(true);
   const failed=vi.fn();mocks.invoke.mockRejectedValueOnce("network disconnected");
-  await act(async()=>{expect(await state.download(args,failed,true)).toBe(false);});
+  await act(async()=>{expect(await state.download(args,failed)).toBe(false);});
   expect(failed).toHaveBeenCalledWith(expect.stringContaining("network disconnected"));
   failed.mockClear();mocks.invoke.mockRejectedValueOnce("CCB_CANCELLED");
-  await act(async()=>{expect(await state.download(args,failed,true)).toBe(false);});
+  await act(async()=>{expect(await state.download(args,failed)).toBe(false);});
   expect(failed).not.toHaveBeenCalled();
 });
 it("保留两份时上传到新文件名，禁止覆盖原文件", async () => {

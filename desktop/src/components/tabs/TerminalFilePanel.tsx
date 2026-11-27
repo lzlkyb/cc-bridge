@@ -26,7 +26,7 @@ export function TerminalFilePanel({
 }) {
   const mode = useContext(TerminalFileWorkspace)?.mode;
   return <>
-    {mode === "local" && <LocalFileWorkspace key={conn.id} disconnected={disconnected}/>}
+    {mode === "local" && <LocalFileWorkspace key={conn.id} connectionId={conn.id} host={conn.name || conn.host} disconnected={disconnected}/>}
     <div className="terminal-file-panel absolute inset-0 z-10 bg-card">
       {/* key 不能省：侧栏在文件面板打开时仍可点，直接换到另一条连接时
           组件不会重挂，path / entries 还是上一条的——而当前目录会被回写成

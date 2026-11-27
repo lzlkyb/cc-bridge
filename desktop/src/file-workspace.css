@@ -8,14 +8,16 @@
 .file-workspace-local { position: absolute; inset: 0 58% 0 0; z-index: 10; border-right: 1px solid hsl(var(--border)); }
 .file-workspace-local :is(td, th) { padding-block: 7px; height: auto; }
 @container (max-width: 655px) {
-  .ssh-file-table tr > :last-child { width: 76px; }
-  .ssh-file-table .file-row-actions-wide { display: none; }
-  .ssh-file-table .file-row-actions-compact { display: flex; }
+  .ssh-file-table tr > :last-child { width: 88px; }
 }
 @container (max-width: 485px) {
   .ssh-file-table tr > :nth-child(3) { display: none; }
   .ssh-file-table tr > :nth-child(2) { width: 66px; }
   .file-workspace-connection-address { display: none; }
+  .file-batch-wide { display: none; }
+  .file-batch-compact { display: block; margin-inline-start: auto; }
+  .file-download-target { flex-basis: 0; }
+  .file-transfer-job-actions { max-width: 48%; }
 }
 @media (max-width: 980px) {
   [data-file-workspace="terminal"] > .file-workspace-terminal { width: 100%; height: 42%; border-right: 0; border-bottom: 1px solid hsl(var(--border)); }
@@ -26,4 +28,11 @@
 @media (max-width: 980px) and (max-height: 720px) {
   [data-file-workspace="local"] > .terminal-file-panel { top: 34%; }
   .file-workspace-local { bottom: 66%; }
+}
+
+.file-transfer-panel { max-height: 44%; }
+.file-transfer-panel > ul { scrollbar-gutter: stable; }
+.file-transfer-job-actions { flex-shrink: 0; }
+@media (max-width: 980px) and (max-height: 720px) {
+  [data-file-workspace="local"] .file-transfer-panel { max-height: min(34%, 150px); }
 }

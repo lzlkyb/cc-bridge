@@ -26,7 +26,7 @@ export const remoteWorkspaceList = (connectionId: string): List => async path =>
   await invoke<SshFileEntry[]>("ssh_sftp_list", { connectionId, path })
 ).map(row => ({ ...row, path: joinRemotePath(path, row.name) }));
 
-export async function scanWorkspaceTree(list: List, root: string, recursive: boolean, signal?: AbortSignal) {
+export async function scanWorkspaceTree(list: List, root: string, recursive: boolean, signal?: AbortSignal, preservePosixNames = false) {
   const directories = [{ path: root, prefix: "" }];
   const entries: WorkspaceEntry[] = [];
   for (const dir of directories) {
@@ -34,7 +34,7 @@ export async function scanWorkspaceTree(list: List, root: string, recursive: boo
     const rows = await list(dir.path);
     signal?.throwIfAborted();
     for (const { name, isSymlink, ...row } of rows) {
-      if (!name || name === "." || name === ".." || name.includes("/") || name.includes("\\") || /^\.cc-bridge-[\da-f-]{36}\.part$/i.test(name)) continue;
+      if (!name || name === "." || name === ".." || name.includes("/") || (!preservePosixNames && name.includes("\\")) || /^\.cc-bridge-[\da-f-]{36}\.part$/i.test(name)) continue;
       const relative = dir.prefix + name;
       entries.push({ ...row, relative, isSymlink });
       if (recursive && row.isDir && !isSymlink) directories.push({ path: row.path, prefix: `${relative}/` });

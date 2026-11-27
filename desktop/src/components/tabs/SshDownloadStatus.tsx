@@ -22,7 +22,7 @@ export function SshDownloadStatus({download, busy}: {download:ReturnType<typeof 
   return <div className="shrink-0 border-t bg-muted/30 px-4 py-3" aria-live="polite">
     <div className="flex flex-wrap items-center gap-3">
       <div className="min-w-0 flex-1 basis-48">
-        <p className="truncate text-sm font-medium" title={args.name}>{({ done:"下载完成", failed:"下载失败", cancelled:"已取消下载", running:"正在下载", queued:"排队下载" })[status]} · {args.name}</p>
+        <p className="truncate text-sm font-medium" title={args.name}>{({ partial:"部分完成", done:"下载完成", failed:"下载失败", cancelled:"已取消下载", running:"正在下载", queued:"排队下载" })[status]} · {args.name}</p>
         <p className="mt-1 truncate text-xs text-muted-foreground" title={args.local}>{args.local}</p>
       </div>
       <div className="flex shrink-0 flex-wrap gap-2">

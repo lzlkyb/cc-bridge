@@ -1,7 +1,8 @@
+import { join } from "@tauri-apps/api/path";
 import { invoke } from "../../lib/tauri";
 import { toast } from "../ui/toast";
 import { cleanErr } from "../../lib/utils";
-import { isCancelled, isTargetExists } from "../../lib/sshErrors";
+import { ERR_TARGET_EXISTS, isCancelled, isTargetExists } from "../../lib/sshErrors";
 import { joinRemoteDir } from "../../lib/uploadDir";
 import type { TransferCore } from "./useTransferCore";
 import { queueSshTransfer } from "../../lib/sshTransferQueue";
@@ -28,52 +29,62 @@ export interface BatchDownloadItem {
   local: string;
 }
 
-/** 「需要问覆盖」的内部信号：不进调用方视野（本模块自己消化确认流程）。 */
-const NEED_OVERWRITE = -1;
+/** Decode only the targets returned by the local preflight; filenames can contain punctuation. */
+function conflictPaths(error: unknown): Set<string> {
+  const raw = String(error);
+  try {
+    const parsed: unknown = JSON.parse(raw.slice(raw.indexOf(ERR_TARGET_EXISTS) + ERR_TARGET_EXISTS.length + 1));
+    return new Set(Array.isArray(parsed) ? parsed.filter((path): path is string => typeof path === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
 
-/**
- * 批量下载。目标已存在且未授权覆盖时，后端返回 `CCB_TARGET_EXISTS`（附清单），
- * 这里弹一次「覆盖 N 个文件」确认，确认后带 `overwrite` 整批重跑。
- */
 export async function downloadMany(
   core: TransferCore,
   a: { connectionId: string; dir: string; items: BatchDownloadItem[] },
 ): Promise<{ done: number; total: number }> {
   const total = a.items.length;
-  if (total === 0) return { done: 0, total: 0 };
-
-  const run = async (overwrite: boolean): Promise<{ done: number; total: number }> => {
-    const id = core.begin("down", `批量下载 ${total} 个文件`, undefined, total);
+  let items: (BatchDownloadItem & { overwrite?: boolean })[] = a.items;
+  while (items.length) {
+    const label = `批量下载 ${items.length} 个文件`;
+    const id = core.begin("down", label, undefined, items.length);
+    const planned = items;
+    let conflicts: Set<string>;
     try {
-      const done = await queueSshTransfer({ id, connectionId: a.connectionId, direction: "down", label: `批量下载 ${total} 个文件`, target: a.dir, confirmConflict: !overwrite }, () => invoke<number>("ssh_sftp_get_many", {
-        connectionId: a.connectionId,
-        items: a.items,
-        transferId: id,
-        overwrite,
+      const done = await queueSshTransfer({ id, connectionId: a.connectionId, direction: "down", label,
+        target: a.dir, targetKind: "directory", confirmConflict: true }, () => invoke<number>("ssh_sftp_get_many", {
+        connectionId: a.connectionId, items: planned, transferId: id, overwrite: false,
       }));
       toast(`已下载 ${done} 个文件到 ${a.dir}`, "success");
       return { done, total };
-    } catch (e) {
-      if (!overwrite && isTargetExists(e)) {
-        // 后端已把「哪些文件已存在」写进错误里；此处只做路由，文案走确认框。
-        return { done: NEED_OVERWRITE, total };
+    } catch (error) {
+      conflicts = isTargetExists(error) ? conflictPaths(error) : new Set();
+      if (!planned.some(item => !item.overwrite && conflicts.has(item.local))) {
+        if (!isCancelled(error)) core.report(error, "down", label);
+        break;
       }
-      if (!isCancelled(e)) core.report(e, "down", `批量下载 ${total} 个文件`);
-      return { done: 0, total };
-    } finally {
-      core.end();
-    }
-  };
+    } finally { core.end(); }
 
-  const first = await run(false);
-  if (first.done !== NEED_OVERWRITE) return first;
-  const decision = await core.askOverwrite({
-    kind: "down",
-    path: a.dir,
-    names: a.items.map((i) => i.name),
-  });
-  if (decision !== "overwrite") return { done: 0, total };
-  return run(true);
+    const matches = planned.filter(item => conflicts.has(item.local));
+    const decision = await core.askOverwrite({
+      kind: "down", path: a.dir, names: matches.map(item => item.name),
+      total: planned.length, skippable: true, keepBoth: true,
+    });
+    if (decision === "cancel") break;
+    if (decision === "skip") {
+      items = planned.filter(item => !conflicts.has(item.local));
+      if (!items.length) toast("已跳过全部同名文件", "info");
+    } else {
+      items = await Promise.all(planned.map(async item => {
+        if (!conflicts.has(item.local)) return item;
+        if (decision === "overwrite") return { ...item, overwrite: true };
+        const name = copyUploadName(item.name);
+        return { ...item, name, local: await join(a.dir, name), overwrite: false };
+      }));
+    }
+  }
+  return { done: 0, total };
 }
 
 /**
@@ -125,6 +136,7 @@ export async function putMany(
       kind: "up",
       path: a.dir,
       names: conflicts,
+      total,
       skippable: true,
     });
     if (decision === "cancel") return { done: 0, total };
@@ -151,7 +163,7 @@ export async function putMany(
 
   const id = core.begin("up", `批量上传 ${files.length} 个文件`, undefined, total);
   try {
-    const done = await queueSshTransfer({ id, connectionId: a.connectionId, direction: "up", label: `批量上传 ${files.length} 个文件`, target: a.dir }, () => invoke<number>("ssh_sftp_put_many", {
+    const done = await queueSshTransfer({ id, connectionId: a.connectionId, direction: "up", label: `批量上传 ${files.length} 个文件`, target: a.dir, targetKind: "directory" }, () => invoke<number>("ssh_sftp_put_many", {
       connectionId: a.connectionId,
       items: files,
       transferId: id,

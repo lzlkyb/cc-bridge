@@ -29,7 +29,7 @@ it.each([[true,false],[false,true]])("loading=%s busy=%s 时行和行内动作�
   await act(async()=>{host.querySelector("tr[aria-selected],tbody tr")!.dispatchEvent(new MouseEvent("click",{bubbles:true}));});expect(open).not.toHaveBeenCalled();
 });
 it("行内下载不冒泡打开，错误处可直接重试",async()=>{
-  await render();await act(async()=>[...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="下载")!.click());
+  await render();await act(async()=>[...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.getAttribute("aria-label")==="下载")!.click());
   expect(download).toHaveBeenCalledExactlyOnceWith(file.name);expect(open).not.toHaveBeenCalled();
   await render(false,false,"permission denied");expect(host.querySelector('[role="alert"]')?.textContent).toContain("permission denied");
   await act(async()=>[...host.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="重试")!.click());expect(retry).toHaveBeenCalledOnce();
@@ -86,10 +86,13 @@ it("🔴 行尾重命名/移动各就各位，点击不冒泡打开目录",async
   await render();
   // 按钮每行都有，断言必须落在具体行上（第一行是目录，别抓到它的）
   const fileRow=()=>[...host.querySelectorAll<HTMLTableRowElement>("tbody tr")][1];
-  const inFileRow=(text:string)=>[...fileRow().querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent===text)!;
-  await act(async()=>inFileRow("重命名").click());
+  const useMenu = async (text: string) => {
+    await act(async()=>fileRow().querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!.click());
+    await act(async()=>[...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(b=>b.textContent===text)!.click());
+  };
+  await useMenu("重命名");
   expect(rename).toHaveBeenCalledExactlyOnceWith(file);expect(open).not.toHaveBeenCalled();
-  await act(async()=>inFileRow("移动").click());
+  await useMenu("移动");
   expect(move).toHaveBeenCalledExactlyOnceWith(file);expect(open).not.toHaveBeenCalled();
 });
 it("🔴 表头点击交给轮换；箭头只在激活列出现（三列同亮会被读成三个排序同时生效）",async()=>{

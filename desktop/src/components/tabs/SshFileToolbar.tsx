@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Icon } from "../ui/icon";
+import { Menu, MenuItem } from "../ui/Menu";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Dialog, DialogHeader, DialogTitle } from "../ui/dialog";
@@ -21,6 +22,8 @@ interface FileHeaderProps {
   onRefresh: () => void;
   onNewFolder: () => void;
   onUpload: () => void;
+  onUploadFolder?: () => void;
+  onUploadPath?: () => void;
   onNavigate: (path: string) => void;
   canBack: boolean; canForward: boolean; onHistoryBack: () => void; onHistoryForward: () => void;
   /** 过滤词（常驻框；纯客户端派生，列目录进行中也随时可改）。 */
@@ -44,7 +47,7 @@ export function FileHeader({
   onUp,
   onRefresh,
   onNewFolder,
-  onUpload,
+  onUpload, onUploadFolder, onUploadPath,
   onNavigate, canBack, canForward, onHistoryBack, onHistoryForward,
   query, onQueryChange,
 }: FileHeaderProps) {
@@ -64,7 +67,7 @@ export function FileHeader({
         </span>
         <Icon name="terminal" size={14} className="text-muted-foreground" />
         <span className="text-sm font-medium" title={`${conn.username}@${conn.host}:${conn.port}`}>
-          {conn.name || conn.host}
+          远端 · {conn.name || conn.host}
         </span>
         <span className="file-workspace-connection-address min-w-0 truncate text-xs text-muted-foreground" title={`${conn.username}@${conn.host}:${conn.port}`}>
           {conn.username}@{conn.host}:{conn.port}
@@ -74,10 +77,13 @@ export function FileHeader({
           <Button
             size="sm"
             className="h-7 shrink-0 whitespace-nowrap px-2 text-xs"
+            variant="ghost"
+            aria-label="刷新"
+            title="刷新目录"
             disabled={loading || busy}
             onClick={onRefresh}
           >
-            <Icon name="refresh" size={13} /> 刷新
+            <Icon name="refresh" size={13} /><span className="sr-only">刷新</span>
           </Button>
           <Button
             size="sm"
@@ -88,15 +94,19 @@ export function FileHeader({
           >
             <Icon name="plus" size={13} /> 新建
           </Button>
-          <Button
-            size="sm"
-            className="h-7 shrink-0 whitespace-nowrap px-2 text-xs"
-            variant="outline"
-            disabled={loading || busy || !directoryReady}
-            onClick={onUpload}
-          >
-            <Icon name="upload" size={13} /> 上传
-          </Button>
+          <div className="inline-flex">
+            <Button size="sm" className="h-7 rounded-r-none px-2 text-xs" disabled={loading || busy || !directoryReady} onClick={onUpload}>
+              <Icon name="upload" size={13}/> 上传
+            </Button>
+            <Menu portal trigger={(expanded, toggle) => <Button size="sm" className="h-7 rounded-l-none border-l border-primary-foreground/30 px-1.5"
+              disabled={loading || busy || !directoryReady} aria-label="更多上传方式" aria-expanded={expanded} aria-haspopup="menu" onClick={toggle}><Icon name="chevronDown" size={13}/></Button>}>
+              {close => <>
+                <MenuItem label="上传文件…" icon="file" onClick={() => { close(); onUpload(); }}/>
+                <MenuItem label="上传文件夹…" icon="folder" onClick={() => { close(); onUploadFolder?.(); }}/>
+                <MenuItem label="输入本机路径…" icon="clipboard" onClick={() => { close(); onUploadPath?.(); }}/>
+              </>}
+            </Menu>
+          </div>
           {/* 常驻过滤：输入即时过滤，清空恢复全量。纯客户端派生，不 disable。
               外层定宽：Input 基类带 w-full，直接写 w-32 会被基类压过。 */}
           <div className="w-32 shrink-0">

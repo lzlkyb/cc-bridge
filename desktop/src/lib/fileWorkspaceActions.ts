@@ -29,7 +29,7 @@ export async function ensureRemoteFolder(connectionId: string, path: string) {
 
 export async function uploadWorkspaceFolder(connectionId: string, remote: string, label: string, entries: WorkspaceEntry[]) {
   const id = crypto.randomUUID();
-  return queueSshTransfer({ id, connectionId, label, target: remote, direction: "up" }, async signal => {
+  return queueSshTransfer({ id, connectionId, label, target: remote, targetKind: "folder", direction: "up" }, async signal => {
     const parent = remoteParentPath(remote);
     const current = await invoke<SshFileEntry[]>("ssh_sftp_list", { connectionId, path: parent });
     signal.throwIfAborted();

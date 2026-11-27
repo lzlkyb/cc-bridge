@@ -205,6 +205,7 @@ process-wrap = { version = "=8.0.2", default-features = false, features = ["std"
 windows = { version = "0.56", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",
+  "Win32_Storage_FileSystem",
 ] }
 # 进程树治理（跨平台）：run_command 用其 JobObject wrapper 替换原手写 win32job
 # （KillOnJobClose）。stop 时显式 start_kill() 触发 TerminateJobObject 杀整树

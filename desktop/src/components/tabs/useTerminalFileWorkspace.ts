@@ -7,14 +7,16 @@ type Location = { connectionId: string; path: string; ready: boolean; refresh: (
 
 export function useTerminalFileWorkspace(conn: SshConnection | null, cwd: string | null, sessions: SshSessionRef[], activeId: string | null, activate: (id: string) => void) {
   const [layout, setLayout] = useState<{ connectionId: string; mode: Layout; follow: boolean } | null>(null);
+  const [localLocation, setLocalLocation] = useState<{ connectionId: string; path: string } | null>(null);
   const [location, setLocation] = useState<Location | null>(null);
   const current = layout?.connectionId === conn?.id ? layout : null;
   const mode = current?.mode ?? "remote";
   return {
-    mode, location: location?.connectionId === conn?.id ? location : null, setLocation,
+    mode, localPath: localLocation?.connectionId === conn?.id ? localLocation?.path : undefined, setLocalLocation,
+    location: location?.connectionId === conn?.id ? location : null, setLocation,
     followPath: mode === "terminal" && current?.follow ? cwd : null,
     following: !!current?.follow,
-    reset: () => setLayout(null),
+    reset: () => { setLayout(null); setLocalLocation(null); },
     toggleFollow: () => { if (current) setLayout({ ...current, follow: !current.follow }); },
     toggleTerminal: () => {
       if (!conn) return;

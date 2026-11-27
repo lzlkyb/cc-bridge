@@ -29,6 +29,7 @@ interface SshFileRowProps {
   navigationBusy?: boolean;
   onOpenDir: (name: string) => void;
   onDownload: (name: string) => void;
+  onDownloadAs?: (name: string) => void;
   onRemove: (entry: SshFileEntry) => void;
   /** 重命名（只改名称，后端保证不换目录）。 */
   onRename: (entry: SshFileEntry) => void;
@@ -55,6 +56,7 @@ export function SshFileRow({
   navigationBusy = busy,
   onOpenDir,
   onDownload,
+  onDownloadAs,
   onRemove,
   onRename,
   onMove,
@@ -102,6 +104,8 @@ export function SshFileRow({
         busy={navigationBusy}
         canRead={canRead}
         unreadTitle={unreadTitle}
+        selected={selected}
+        onToggleSelected={onSelect ? () => onSelect(entry.name, { ctrlKey: true }) : undefined}
         onOpenDir={onOpenDir}
       />
       <td className="w-28 py-1.5 text-right text-xs text-muted-foreground">
@@ -114,8 +118,9 @@ export function SshFileRow({
           formatDate(entry.mtime)
         )}
       </td>
-      <td className="w-60 py-1.5 pr-3">
+      <td className="w-24 py-1.5 pr-2">
         <SshFileRowActions entry={entry} disabled={busy} download={() => onDownload(entry.name)}
+          downloadAs={onDownloadAs && (() => onDownloadAs(entry.name))}
           rename={() => onRename(entry)} move={() => onMove(entry)} remove={() => onRemove(entry)}/>
       </td>
     </tr>
@@ -133,6 +138,7 @@ interface FileTableProps {
   selectedNames?: string[];
   onOpenDir: (name: string) => void;
   onDownload: (name: string) => void;
+  onDownloadAs?: (name: string) => void;
   onRemove: (entry: SshFileEntry) => void;
   onRename: (entry: SshFileEntry) => void;
   onMove: (entry: SshFileEntry) => void;
@@ -176,6 +182,7 @@ export function FileTable({
   selectedNames,
   onOpenDir,
   onDownload,
+  onDownloadAs,
   onRemove,
   onRename,
   onMove,
@@ -212,7 +219,7 @@ export function FileTable({
             <SortableTh sortKey="name" label="名称" align="left" extra="py-1.5 pl-3" sort={sort} onToggleSort={onToggleSort} />
             <SortableTh sortKey="size" label="大小" align="right" extra="w-28 py-1.5" sort={sort} onToggleSort={onToggleSort} />
             <SortableTh sortKey="mtime" label="修改时间" align="right" extra="w-40 py-1.5 pr-3" sort={sort} onToggleSort={onToggleSort} />
-            <th className="w-60 py-1.5 pr-3 text-right font-medium">操作</th>
+            <th className="w-24 py-1.5 pr-3 text-right font-medium">操作</th>
           </tr>
         </thead>
         <tbody ref={tbodyRef}>
@@ -230,6 +237,7 @@ export function FileTable({
                 navigationBusy={navigationBusy || loading}
                 onOpenDir={onOpenDir}
                 onDownload={onDownload}
+                onDownloadAs={onDownloadAs}
                 onRemove={onRemove}
                 onRename={onRename}
                 onMove={onMove}

@@ -46,7 +46,6 @@ interface UploadFormProps {
   busy: boolean;
   mac: boolean;
   onChange: (v: string) => void;
-  onPick: () => void;
   onSubmit: () => void;
   onCancel: () => void;
 }
@@ -57,21 +56,11 @@ export function UploadForm({
   busy,
   mac,
   onChange,
-  onPick,
   onSubmit,
   onCancel,
 }: UploadFormProps) {
   return (
     <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
-      <Button
-        size="sm"
-        className="h-7 px-3 text-xs"
-        variant="outline"
-        disabled={busy}
-        onClick={onPick}
-      >
-        选择文件
-      </Button>
       <Input
         value={value}
         placeholder={

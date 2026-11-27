@@ -1,3 +1,7 @@
+import { Button } from "../ui/button";
+import { Icon } from "../ui/icon";
+import { Menu, MenuItem } from "../ui/Menu";
+
 interface Props {
   /** 当前目录（过滤后）条目总数——未选中时计数槽显示「共 N 项」。 */
   total: number;
@@ -8,6 +12,9 @@ interface Props {
   hasSelection: boolean;
   /** 选中条目中普通文件的数量——下载与删除都只对文件有意义。 */
   files: number;
+  downloadable?: number;
+  downloadTarget?: string;
+  downloadLabel?: string;
   busy: boolean;
   onDownload: () => void;
   onRemove: () => void;
@@ -25,17 +32,16 @@ interface Props {
  * 高度恒定、列表首行位置不变，代价是空态多占一行。
  * WHY 未选中时计数槽说「共 N 项」而不是「已选 0 个」：前者是有用信息（目录规模），
  * 后者是噪声；两段文案都由「3 个汉字 + 数字」构成，宽度一致，切换不改换行。
- * WHY 下载/删除按文件数判可用：目录没有「下载」这回事，删除目录是递归删，
- * 不混在批量里（仍走行尾按钮）。移动不挑类型——文件和目录都能整个搬走。
+ * 下载可包含目录。批量删除只接受文件，递归删除继续走目录行的单独确认。
  */
-export function FileBatchBar({ total, selected, hasSelection, files, busy, onDownload, onRemove, onMove, onSelectAll, onClear }: Props) {
+export function FileBatchBar({ total, selected, hasSelection, files, downloadable = files, downloadTarget, downloadLabel = "下载所选", busy, onDownload, onRemove, onMove, onSelectAll, onClear }: Props) {
   const picking = selected > 0;
   return (
     <div
       role="toolbar"
       aria-label="批量操作"
       data-selected={picking}
-      className={`flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors ${
+      className={`file-batch-bar flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors ${
         picking ? "bg-primary/5" : "bg-muted/25"
       }`}
     >
@@ -45,17 +51,18 @@ export function FileBatchBar({ total, selected, hasSelection, files, busy, onDow
       </span>
       <button
         type="button"
-        disabled={busy || files === 0}
+        disabled={busy || downloadable === 0}
         onClick={onDownload}
-        className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-40"
+        className="shrink-0 whitespace-nowrap rounded-md bg-primary px-2 py-1 text-primary-foreground hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground"
       >
-        下载所选
+        {downloadLabel}{downloadable !== selected && selected > 0 ? `（${downloadable} 项）` : ""}
       </button>
+      {downloadTarget && <span className="file-download-target min-w-0 flex-1 truncate" title={downloadTarget}>至 {downloadTarget}</span>}
       <button
         type="button"
         disabled={busy || files === 0}
         onClick={onRemove}
-        className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-destructive-ink hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+        className="file-batch-wide shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-destructive-ink hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
       >
         删除所选
       </button>
@@ -63,7 +70,7 @@ export function FileBatchBar({ total, selected, hasSelection, files, busy, onDow
         type="button"
         disabled={busy || selected === 0}
         onClick={onMove}
-        className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        className="file-batch-wide shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >
         移动到…
       </button>
@@ -71,7 +78,7 @@ export function FileBatchBar({ total, selected, hasSelection, files, busy, onDow
         type="button"
         disabled={busy}
         onClick={onSelectAll}
-        className="shrink-0 whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        className="file-batch-wide shrink-0 whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >
         全选
       </button>
@@ -79,10 +86,21 @@ export function FileBatchBar({ total, selected, hasSelection, files, busy, onDow
         type="button"
         disabled={!hasSelection}
         onClick={onClear}
-        className="ml-auto shrink-0 whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
+        className="file-batch-wide ml-auto shrink-0 whitespace-nowrap rounded-md px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
       >
         取消选择
       </button>
+      <div className="file-batch-compact hidden shrink-0">
+        <Menu portal trigger={(expanded, toggle) => <Button size="sm" variant="ghost" className="h-6 px-2"
+          aria-expanded={expanded} aria-haspopup="menu" onClick={toggle}><Icon name="more" size={14}/>批量操作</Button>}>
+          {close => <>
+            <MenuItem label="全选" disabled={busy} onClick={() => { close(); onSelectAll(); }}/>
+            <MenuItem label="取消选择" disabled={!hasSelection} onClick={() => { close(); onClear(); }}/>
+            <MenuItem label="移动到…" disabled={busy || selected === 0} onClick={() => { close(); onMove(); }}/>
+            <MenuItem label="删除所选" disabled={busy || files === 0} onClick={() => { close(); onRemove(); }}/>
+          </>}
+        </Menu>
+      </div>
     </div>
   );
 }

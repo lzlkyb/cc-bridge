@@ -12,6 +12,7 @@ interface Params {
   onDownloadMany?: (names: string[]) => void | Promise<void>;
   /** 传输 / 列目录进行中：禁用批量操作（并发 ssh 握手会把成本乘以 N）。 */
   busy: boolean;
+  includeDirectories?: boolean;
 }
 
 /**
@@ -23,7 +24,7 @@ interface Params {
  * 双击文件下载（`SshFileRow` 里实现）。
  * 目录不参与批量删除：删除目录是递归删，风险与单文件不同，仍走行尾按钮。
  */
-export function useSshFileSelection({ entries, onDownload, onDownloadMany, busy }: Params) {
+export function useSshFileSelection({ entries, onDownload, onDownloadMany, busy, includeDirectories = false }: Params) {
   const [selected, setSelected] = useState<string[]>([]);
   const [anchor, setAnchor] = useState<number | null>(null);
   const downloading = useRef(false), mounted = useRef(true);
@@ -68,7 +69,7 @@ export function useSshFileSelection({ entries, onDownload, onDownloadMany, busy 
     downloading.current = true;
     try {
       // 多选里只传普通文件（目录不进批量下载）。
-      const files = chosen.filter((e) => !e.isDir);
+      const files = chosen.filter(e => includeDirectories ? !e.isSymlink : !e.isDir);
       if (files.length === 0) return;
       // 批量入口：一次目录选择 + 一次多源 scp（后端按 local 目录分组）。
       // 逐个 onDownload 的旧路径只在调用方没提供批量入口时走。
@@ -81,7 +82,7 @@ export function useSshFileSelection({ entries, onDownload, onDownloadMany, busy 
         await onDownload(e.name);
       }
     } finally { downloading.current = false; }
-  }, [busy, chosen, onDownload, onDownloadMany]);
+  }, [busy, chosen, onDownload, onDownloadMany, includeDirectories]);
 
   return {
     selected,

@@ -1,129 +1,106 @@
-import { useCallback, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { downloadDir, join } from "@tauri-apps/api/path";
 import { toast } from "../ui/toast";
 import { cleanErr } from "../../lib/utils";
-import { remoteFileName } from "../../lib/sshFilePaths";
+import { copyUploadName, remoteFileName, joinRemotePath } from "../../lib/sshFilePaths";
 import type { SshFileEntry } from "../../lib/types";
-import type { useSshTransfer } from "./useSshTransfer";
+import type { SshTransfer } from "./useSshTransfer";
 import { useSshDownload } from "../../hooks/useSshDownload";
+import { useWorkspaceUpload } from "./useWorkspaceUpload";
+import { queueWorkspaceDownload, validLocalDownloadName } from "../../lib/workspaceDownload";
 
-/** 下载目标目录的记忆键。与 `useSshDownload` 的单文件键同值：两个入口共享一个「上次下载到哪」。 */
 const DOWNLOAD_DIR_KEY = "cc-bridge.download-directory";
-
+type FolderDownload = { dir: string; folders: { remote: string; name: string }[]; enqueue: () => Promise<void> };
 interface Params {
   connectionId: string;
   path: string;
   entries: SshFileEntry[];
-  xfer: ReturnType<typeof useSshTransfer>;
-  /** 拼接远程路径（与面板内部实现保持一致）。 */
-  joinRemote: (dir: string, name: string) => string;
+  xfer: SshTransfer;
+  localPath?: string;
+  dual?: boolean;
+  windows?: boolean;
+  onEnqueue?: () => void;
 }
 
-/**
- * 文件面板的「上传 / 下载表单」状态与动作。
- *
- * 与目录浏览和拖拽入口分开，避免在列表组件内混入传输状态。
- * 上传保留原有表单；下载委托原生另存为与可重试的结果状态。
- */
-export function useSshFileForms({
-  connectionId,
-  path,
-  entries,
-  xfer,
-  joinRemote,
-}: Params) {
+export function useSshFileForms({ connectionId, path, entries, xfer, localPath, dual, windows, onEnqueue }: Params) {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadLocal, setUploadLocal] = useState("");
-  const download = useSshDownload(connectionId, path, xfer.download);
+  const [folderDownload, setFolderDownload] = useState<FolderDownload | null>(null);
+  const [preparingDownload, setPreparingDownload] = useState(false);
+  const upload = useWorkspaceUpload(xfer);
+  const target = { connectionId, path, existing: entries.map(e => e.name.split(" -> ")[0]) };
+  const download = useSshDownload(connectionId, path, xfer.download, windows);
+  const preparing = useRef(false), mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
-  const doUpload = async () => {
-    if (!uploadLocal.trim()) {
-      toast("请选择或填写本机文件路径", "error");
-      return;
-    }
-    const base = uploadLocal.trim().replace(/\\/g, "/").split("/").pop() || "file";
-    // 重名判定在前端：当前目录的 entries 手里已经有，在后端再查一次
-    // 就多一次完整的 ssh 握手。
-    const ok = await xfer.upload({
-      connectionId,
-      name: base,
-      local: uploadLocal.trim(),
-      remote: joinRemote(path, base),
-      remoteExists: entries.some((e) => e.name === base),
-    });
-    if (ok) {
-      setUploadOpen(false);
-      setUploadLocal("");
-    }
-  };
+  async function chooseDestination(title: string) {
+    let defaultPath: string | undefined;
+    try { defaultPath = localPath || localStorage.getItem(DOWNLOAD_DIR_KEY) || await downloadDir(); } catch { /* Picker can open without a default. */ }
+    const dir = await open({ directory: true, title, defaultPath });
+    if (typeof dir !== "string" || !mounted.current) return null;
+    try { localStorage.setItem(DOWNLOAD_DIR_KEY, dir); } catch { /* Remembering is optional. */ }
+    return dir;
+  }
 
-  // 用系统文件选择器选本机文件（拿到真实绝对路径，scp 才能读取）。
-  const pickUpload = async () => {
+  async function handleDownloadMany(names: string[], choose = false) {
+    if (!names.length || preparing.current || folderDownload || download.busy) return;
+    preparing.current = true;
+    setPreparingDownload(true);
     try {
-      const selected = await open({
-        multiple: false,
-        title: "选择要上传的文件",
-      });
-      if (typeof selected === "string") {
-        setUploadLocal(selected);
-      }
-    } catch {
-      /* 用户取消或无选择器权限，忽略 */
-    }
-  };
-
-  /**
-   * 批量下载：**一次**目录选择 + 一次多源 scp（后端 `ssh_sftp_get_many`）。
-   *
-   * 为什么是一次目录选择而不是逐个另存为：多源 scp 的 target 是单一目录，
-   * 逐个选路径就失去合并成一次握手的意义。目录记忆与单文件下载共用。
-   */
-  const handleDownloadMany = useCallback(
-    async (names: string[]) => {
-      if (names.length === 0) return;
-      let dir: string | null;
-      try {
-        let def: string;
+      const dir = (!choose && dual && localPath) || await chooseDestination("选择本机下载目录");
+      if (!dir || !mounted.current) return;
+      const folders = names.filter(name => entries.some(row => row.name === name && row.isDir && !row.isSymlink));
+      const files = names.filter(name => !folders.includes(name));
+      const reserved = new Set<string>();
+      const items = await Promise.all(files.map(async source => {
+        let name = remoteFileName(source);
+        if (!validLocalDownloadName(name, windows)) throw Error(`文件名无法用于本机保存：${name}。请用「另存为」指定名称。`);
+        const key = (value: string) => windows ? value.toLowerCase() : value;
+        if (reserved.has(key(name))) name = copyUploadName(name);
+        reserved.add(key(name));
+        return { name, remote: source.startsWith("/") ? source : joinRemotePath(path, source), local: await join(dir, name) };
+      }));
+      if (!mounted.current) return;
+      const sources = folders.map(name => ({ remote: joinRemotePath(path, name), name }));
+      let enqueued = false;
+      const enqueue = async () => {
+        if (enqueued || !mounted.current) return;
+        enqueued = true;
+        onEnqueue?.();
         try {
-          def = await join(localStorage.getItem(DOWNLOAD_DIR_KEY) || (await downloadDir()), "");
-        } catch {
-          def = await downloadDir();
-        }
-        dir = await open({ directory: true, title: `下载 ${names.length} 个文件到`, defaultPath: def });
-      } catch (e) {
-        toast(`无法选择目录：${cleanErr(e)}`, "error");
-        return;
-      }
-      if (!dir) return;
-      try {
-        localStorage.setItem(DOWNLOAD_DIR_KEY, dir);
-      } catch {
-        /* 记忆目录失败不影响本次下载 */
-      }
-      const items = [];
-      for (const n of names) {
-        const name = remoteFileName(n);
-        items.push({
-          name,
-          remote: n.startsWith("/") ? n : `${path.replace(/\/$/, "")}/${n}`,
-          local: await join(dir, name),
-        });
-      }
-      await xfer.downloadMany({ connectionId, dir, items });
-    },
-    [connectionId, path, xfer],
-  );
+          for (const { remote, name } of sources) void queueWorkspaceDownload(connectionId, remote, dir, name, !!windows).catch(reportDownload);
+          if (items.length === 1) await xfer.download({ ...items[0], connectionId });
+          else if (items.length) await xfer.downloadMany({ connectionId, dir, items });
+        } catch (error) { reportDownload(error); }
+      };
+      if (sources.length) setFolderDownload({ dir, folders: sources, enqueue });
+      else await enqueue();
+    } catch (error) { reportDownload(error); }
+    finally { preparing.current = false; if (mounted.current) setPreparingDownload(false); }
+  }
+
+  function handleDownload(name: string) {
+    const folder = entries.some(row => row.name === name && row.isDir && !row.isSymlink);
+    return dual || folder ? handleDownloadMany([name]) : download.start(name);
+  }
 
   return {
-    uploadOpen,
-    setUploadOpen,
-    uploadLocal,
-    setUploadLocal,
-    download,
-    handleDownload: (name: string) => download.start(name),
-    handleDownloadMany,
-    doUpload,
-    pickUpload,
+    uploadOpen, setUploadOpen, uploadLocal, setUploadLocal, download, handleDownload, handleDownloadMany,
+    folderDownload, preparingDownload, dismissFolderDownload: () => setFolderDownload(null),
+    downloadAs: (name: string) => entries.some(row => row.name === name && row.isDir) ? handleDownloadMany([name], true) : download.start(name),
+    upload,
+    uploadPaths: (paths: string[]) => upload.uploadPaths(target, paths),
+    doUpload: async () => {
+      if (!uploadLocal.trim()) { toast("请填写本机文件路径", "error"); return; }
+      setUploadOpen(false);
+      await upload.uploadPaths(target, [uploadLocal.trim()]);
+    },
+    pickUpload: () => upload.pick(target, false),
+    pickFolder: () => upload.pick(target, true),
   };
+}
+
+function reportDownload(error: unknown) {
+  if (!String(error).includes("CCB_CANCELLED")) toast(`无法下载：${cleanErr(error)}`, "error");
 }

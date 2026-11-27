@@ -36,7 +36,7 @@ it("切目录期间路径已更新时，旧行不可操作，完成后只展示�
 });
 it("原地刷新保留列表但锁定目录、下载与删除",async()=>{
   const next=deferred();h.invoke.mockResolvedValueOnce([folder,file]).mockReturnValueOnce(next.promise);await render();await click("刷新");
-  expect(button("child").disabled).toBe(true);expect(button("下载").disabled).toBe(true);expect(button("删除").disabled).toBe(true);
+  expect(button("child").disabled).toBe(true);expect(host.querySelector<HTMLButtonElement>('button[aria-label="下载"]')?.disabled).toBe(true);expect(button("删除所选").disabled).toBe(true);
   await act(async()=>host.querySelector("tbody tr")!.dispatchEvent(new MouseEvent("click",{bubbles:true})));expect(h.invoke).toHaveBeenCalledTimes(2);
   await act(async()=>next.resolve([folder,file]));expect(button("child").disabled).toBe(false);
 });
@@ -154,7 +154,8 @@ it("🔴 行尾重命名端到端：对话框预填当前名 → 提交 ssh_sftp
   h.invoke.mockResolvedValue([folder,file]);
   await render();
   const fileRow=[...host.querySelectorAll<HTMLTableRowElement>("tbody tr")][1];
-  await act(async()=>[...fileRow.querySelectorAll<HTMLButtonElement>("button")].find(b=>b.textContent==="重命名")!.click());
+  await act(async()=>fileRow.querySelector<HTMLButtonElement>('button[aria-haspopup="menu"]')!.click());
+  await act(async()=>[...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(b=>b.textContent==="重命名")!.click());
   // 对话框 portal 到 body
   const dialog=document.querySelector('[role="dialog"]')!;
   expect(dialog.textContent).toContain("正在重命名");

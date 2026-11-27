@@ -3,6 +3,7 @@ import { downloadDir, dirname, join } from "@tauri-apps/api/path";
 import { save } from "@tauri-apps/plugin-dialog";
 import { cleanErr } from "../lib/utils";
 import { remoteFileName } from "../lib/sshFilePaths";
+import { validLocalDownloadName } from "../lib/workspaceDownload";
 import type { StartArgs } from "../lib/transferTypes";
 import type { useSshTransfer } from "../components/tabs/useSshTransfer";
 import { toast } from "../components/ui/toast";
@@ -11,7 +12,7 @@ const DIRECTORY_KEY = "cc-bridge.download-directory";
 export interface DownloadResult { args: StartArgs; status: "done" | "failed" | "cancelled"; error?: string; }
 
 /** Native save selection and recoverable results; the transfer hook retains overwrite/cancel protection. */
-export function useSshDownload(connectionId: string, path: string, download: ReturnType<typeof useSshTransfer>["download"]) {
+export function useSshDownload(connectionId: string, path: string, download: ReturnType<typeof useSshTransfer>["download"], windows = false) {
   const [choosing, setChoosing] = useState(false);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<DownloadResult | null>(null);
@@ -21,7 +22,7 @@ export function useSshDownload(connectionId: string, path: string, download: Ret
     if (mounted.current) { setRunning(true); setResult(null); }
     let error: string | undefined;
     try {
-      const ok = await download(args, message => { error = message; }, true);
+      const ok = await download(args, message => { error = message; });
       if (mounted.current) setResult({args, status: ok ? "done" : error ? "failed" : "cancelled", error});
     } finally { if (mounted.current) setRunning(false); }
   };
@@ -31,8 +32,9 @@ export function useSshDownload(connectionId: string, path: string, download: Ret
     const filename = remoteFileName(name);
     const remote = name.startsWith("/") ? name : `${path.replace(/\/$/, "")}/${name}`;
     try {
-      let defaultPath = filename;
-      try { defaultPath = await join(localStorage.getItem(DIRECTORY_KEY) || await downloadDir(), filename); } catch { /* Native picker can choose a location without a default directory. */ }
+      const suggested = suggestedDownloadName(filename, windows);
+      let defaultPath = suggested;
+      try { defaultPath = await join(localStorage.getItem(DIRECTORY_KEY) || await downloadDir(), suggested); } catch { /* Native picker can choose a location without a default directory. */ }
       const local = await save({title:"下载文件到本机", defaultPath});
       if (!local || !mounted.current) return;
       try { localStorage.setItem(DIRECTORY_KEY, await dirname(local)); } catch { /* Remembering a folder must not prevent the download. */ }
@@ -48,4 +50,10 @@ export function useSshDownload(connectionId: string, path: string, download: Ret
     try { await run(result.args); } finally { locked.current = false; }
   };
   return {start, retry, choosing, busy:choosing || running, result, clear:() => setResult(null)};
+}
+
+function suggestedDownloadName(name: string, windows: boolean) {
+  if (validLocalDownloadName(name, windows)) return name;
+  const safe = Array.from(name, char => char.charCodeAt(0) < 32 || /[<>:"/\\|?*]/.test(char) ? "_" : char).join("").replace(/[. ]+$/, "");
+  return validLocalDownloadName(safe, windows) ? safe : `下载_${safe}`;
 }

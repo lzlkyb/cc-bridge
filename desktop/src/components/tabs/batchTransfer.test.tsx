@@ -23,7 +23,7 @@ function fakeCore(overrides: Partial<TransferCore> = {}): TransferCore {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   mocks.askOverwrite.mockResolvedValue("overwrite");
 });
 
@@ -48,9 +48,9 @@ it("批量下载一次 invoke 传全部条目（不再逐个 ssh_sftp_get）", a
   expect(core.end).toHaveBeenCalledOnce();
 });
 
-it("目标已存在时一次问完覆盖，确认后带 overwrite 整批重跑", async () => {
+it("只确认实际同名项，并只授权替换这些文件", async () => {
   mocks.invoke
-    .mockRejectedValueOnce("CCB_TARGET_EXISTS: 本机已存在 1 个同名文件：C:/dl/a.txt")
+    .mockRejectedValueOnce('CCB_TARGET_EXISTS: ["C:/dl/a.txt"]')
     .mockResolvedValueOnce(2);
   const core = fakeCore();
   const r = await downloadMany(core, { connectionId: "c1", dir, items });
@@ -59,19 +59,33 @@ it("目标已存在时一次问完覆盖，确认后带 overwrite 整批重跑",
   expect(mocks.askOverwrite.mock.calls[0][0]).toMatchObject({
     kind: "down",
     path: dir,
-    names: ["a.txt", "b.txt"],
+    names: ["a.txt"],
+    total: 2,
   });
-  // 第二次才带 overwrite
-  expect(mocks.invoke.mock.calls[1][1].overwrite).toBe(true);
+  expect(mocks.invoke.mock.calls[1][1]).toMatchObject({ overwrite: false, items: [{ ...items[0], overwrite: true }, items[1]] });
 });
 
 it("用户放弃覆盖时不发起第二次传输", async () => {
-  mocks.invoke.mockRejectedValueOnce("CCB_TARGET_EXISTS: exists");
+  mocks.invoke.mockRejectedValueOnce('CCB_TARGET_EXISTS: ["C:/dl/a.txt"]');
   mocks.askOverwrite.mockResolvedValue("cancel");
   const core = fakeCore();
   const r = await downloadMany(core, { connectionId: "c1", dir, items });
   expect(r).toEqual({ done: 0, total: 2 });
   expect(mocks.invoke).toHaveBeenCalledOnce();
+});
+
+it("跳过同名项后仍下载另 18 项", async () => {
+  const batch = Array.from({ length: 20 }, (_, i) => ({
+    name: `文件${i}、报告.txt`, remote: `/logs/file${i}.txt`, local: `${dir}/文件${i}、报告.txt`,
+  }));
+  const conflicts = [batch[2], batch[15]];
+  mocks.invoke.mockRejectedValueOnce(`CCB_TARGET_EXISTS: ${JSON.stringify(conflicts.map(row => row.local))}`).mockResolvedValueOnce(18);
+  mocks.askOverwrite.mockResolvedValue("skip");
+  const result = await downloadMany(fakeCore(), { connectionId: "c1", dir, items: batch });
+  expect(result).toEqual({ done: 18, total: 20 });
+  expect(mocks.invoke).toHaveBeenLastCalledWith("ssh_sftp_get_many", expect.objectContaining({
+    overwrite: false, items: batch.filter(row => !conflicts.includes(row)),
+  }));
 });
 
 it("批量上传：existing 缺省先列一次目标目录，防静默覆盖", async () => {

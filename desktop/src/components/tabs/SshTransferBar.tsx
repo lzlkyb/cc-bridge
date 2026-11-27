@@ -114,54 +114,23 @@ export function OverwriteConfirmDialog({
 }) {
   const up = prompt?.kind === "up";
   const names = prompt?.names ?? [];
-  const many = names.length > 1;
+  const total = prompt?.total;
   return (
-    <Dialog open={!!prompt} onClose={onCancel}>
-      <DialogHeader>
-        <DialogTitle>
-          {many
-            ? `远端有 ${names.length} 个同名文件`
-            : up
-              ? "远端已存在同名文件"
-              : "本机已存在同名文件"}
-        </DialogTitle>
-      </DialogHeader>
+    <Dialog open={!!prompt} ariaLabel="处理同名文件" onClose={onCancel}>
+      <DialogHeader><DialogTitle>处理同名文件</DialogTitle></DialogHeader>
       <p className="text-sm text-muted-foreground">
-        {many
-          ? `继续只覆盖这些同名文件，其余照常上传。`
-          : up
-            ? "继续上传将覆盖远端文件。"
-            : "继续下载将覆盖该文件，原内容无法恢复。"}
+        {total ? <strong>{total} 个文件中，{names.length} 个同名。</strong> : up ? "远端已存在同名文件。" : "本机已存在同名文件。"}
       </p>
-      {many ? (
-        <ul className="mt-2 max-h-40 overflow-auto rounded-md border border-border bg-muted px-2.5 py-2 font-mono text-xs leading-relaxed text-foreground">
-          {names.map((n) => (
-            <li key={n} className="break-all">
-              {n}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <code className="mt-2 block break-all rounded-md border border-border bg-muted px-2.5 py-2 text-xs text-foreground">
-          {prompt?.path}
-        </code>
-      )}
-      {!up && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          下载会先写临时文件，传完才替换；中途取消不会动原文件。
-        </p>
-      )}
-      <div className="mt-5 flex flex-wrap justify-end gap-2">
-        <Button variant="outline" onClick={onCancel}>
-          取消
-        </Button>
-        {prompt?.skip && (
-          <Button variant="outline" onClick={prompt.skip}>
-            跳过同名
-          </Button>
-        )}
-        <Button variant={up ? "outline" : "default"} onClick={() => prompt?.confirm()}>{many ? "全部覆盖" : "覆盖"}</Button>
-        {prompt?.keepBoth && <Button onClick={prompt.keepBoth}>保留两份</Button>}
+      <code className="mt-2 block break-all rounded-md bg-muted p-2 text-xs">{prompt?.path}</code>
+      <ul className="mt-2 max-h-40 overflow-auto divide-y divide-border text-sm">
+        {names.map(name => <li key={name} className="flex items-center gap-2 break-all py-2"><Icon name="file" size={14} className="shrink-0"/>{name}</li>)}
+      </ul>
+      {total != null && total > names.length && <p className="mt-2 text-xs text-muted-foreground">其余文件照常传输。</p>}
+      <div className="mt-4 flex flex-wrap justify-end gap-2">
+        <Button size="sm" variant="ghost" onClick={onCancel}>取消</Button>
+        {prompt?.skip && <Button size="sm" variant="outline" onClick={prompt.skip}>跳过同名项</Button>}
+        {prompt?.keepBoth && <Button size="sm" onClick={prompt.keepBoth}>保留两份</Button>}
+        <Button size="sm" variant="outline" onClick={() => prompt?.confirm()}>替换 {names.length} 项</Button>
       </div>
     </Dialog>
   );

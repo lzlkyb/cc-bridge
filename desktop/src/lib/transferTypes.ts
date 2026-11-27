@@ -33,6 +33,7 @@ export interface OverwritePrompt {
   path: string;
   /** 同名文件清单，单个场景长度为 1。 */
   names: string[];
+  total?: number;
   confirm: () => void;
   /** 跳过同名、继续传其余的。**仅批量提供**：UI 有这个字段才渲染该按钮。 */
   skip?: () => void;

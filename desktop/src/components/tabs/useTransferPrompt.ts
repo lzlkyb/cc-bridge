@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { OverwritePrompt, TransferKind } from "../../lib/transferTypes";
 
 /**
@@ -23,11 +23,19 @@ export interface AskOverwriteSpec {
   /** 同名文件清单。调用方负责**去重**：一次拖入 `a/x.txt` 与 `b/x.txt` 时
    *  base name 相同，不去重会让对话框列出重复项并把数量报错。 */
   names: string[];
+  total?: number;
+  keepBoth?: boolean;
   /** 批量场景才提供「跳过同名」出口；单个场景给了也没有意义。 */
   skippable?: boolean;
 }
 
 export function useTransferPrompt() {
+  const cancelCurrent = useRef<(() => void) | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; cancelCurrent.current?.(); };
+  }, []);
   const [prompt, setPrompt] = useState<OverwritePrompt | null>(null);
 
   /**
@@ -43,22 +51,31 @@ export function useTransferPrompt() {
 
   /** 问一次覆盖。所有 settle 路径都会先关框再 resolve，避免框留在屏幕上。 */
   const askOverwrite = useCallback(
-    (spec: AskOverwriteSpec): Promise<OverwriteDecision> =>
-      new Promise((resolve) => {
+    (spec: AskOverwriteSpec): Promise<OverwriteDecision> => {
+      // A queued preflight can finish after its file panel has closed.
+      if (!mounted.current || cancelCurrent.current) return Promise.resolve("cancel");
+      return new Promise((resolve) => {
+        let settled = false;
         const settle = (d: OverwriteDecision) => {
-          setPrompt(null);
+          if (settled) return;
+          settled = true;
+          cancelCurrent.current = null;
+          if (mounted.current) setPrompt(null);
           resolve(d);
         };
+        cancelCurrent.current = () => settle("cancel");
         setPrompt({
           kind: spec.kind,
           path: spec.path,
           names: spec.names,
+          total: spec.total,
           confirm: () => settle("overwrite"),
-          keepBoth: spec.kind === "up" ? () => settle("keepBoth") : undefined,
+          keepBoth: (spec.keepBoth || spec.kind === "up") ? () => settle("keepBoth") : undefined,
           skip: spec.skippable ? () => settle("skip") : undefined,
           cancel: () => settle("cancel"),
         });
-      }),
+      });
+    },
     [],
   );
 

@@ -10,6 +10,8 @@ interface Props {
   canRead: boolean;
   /** 不可读时的完整 title（属主/权限/出路），由 `utils.unreadEntryTitle` 生成。 */
   unreadTitle?: string;
+  selected?: boolean;
+  onToggleSelected?: () => void;
   onOpenDir: (name: string) => void;
 }
 
@@ -36,11 +38,17 @@ export function SshFileNameCell({
   busy,
   canRead,
   unreadTitle,
+  selected,
+  onToggleSelected,
   onOpenDir,
 }: Props) {
   return (
     <td className="max-w-[340px] py-1.5 pl-3">
       <span className="flex min-w-0 items-center gap-2 text-left">
+        {onToggleSelected && <input type="checkbox" checked={!!selected} disabled={busy}
+          className="shrink-0 accent-primary" aria-label={`选择 ${entry.name}`}
+          onClick={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}
+          onChange={onToggleSelected}/>}
         {canRead ? (
           <Icon
             name={clickable ? "folder" : "file"}

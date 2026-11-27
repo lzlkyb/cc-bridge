@@ -142,20 +142,70 @@ pub(super) fn rename_plan<'a>(tmp: &str, items: &[&'a BatchItem]) -> Vec<(String
         .collect()
 }
 
+#[cfg(windows)]
+pub(super) fn publish_without_replace(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::{
+        core::PCWSTR,
+        Win32::Storage::FileSystem::{MoveFileExW, MOVE_FILE_FLAGS},
+    };
+    let from: Vec<u16> = from
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let to: Vec<u16> = to
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // Windows rename normally replaces files. Passing zero flags keeps the destination intact.
+    unsafe {
+        MoveFileExW(
+            PCWSTR(from.as_ptr()),
+            PCWSTR(to.as_ptr()),
+            MOVE_FILE_FLAGS(0),
+        )
+    }
+    .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+}
+
+#[cfg(not(windows))]
+pub(super) fn publish_without_replace(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::hard_link(from, to)?;
+    let _ = std::fs::remove_file(from);
+    Ok(())
+}
+
 /// 远端建临时目录。
 pub(super) fn remote_mkdir_cmd(tmp: &str) -> String {
     format!("mkdir -p {}", shell_quote(tmp))
 }
 
-fn upload_groups(items: &[BatchItem]) -> Vec<BatchGroup> {
+fn staged_groups(items: &[BatchItem], upload: bool) -> Vec<BatchGroup> {
     let mut result = Vec::new();
-    for (dir, indices) in group_items(items, true) {
+    for (dir, indices) in group_items(items, upload) {
         let mut basenames = HashSet::new();
         let mut batch = Vec::new();
         // scp stages by local basename, so two a.txt files need separate staging passes.
         for index in indices {
-            let name = base_of(&items[index].local);
-            if !basenames.insert(name) {
+            let name = base_of(if upload {
+                &items[index].local
+            } else {
+                &items[index].remote
+            });
+            let name = if cfg!(windows) && !upload {
+                name.to_lowercase()
+            } else {
+                name.to_owned()
+            };
+            if !basenames.insert(name.clone()) {
                 result.push((dir.clone(), std::mem::take(&mut batch)));
                 basenames.clear();
                 basenames.insert(name);
@@ -295,7 +345,7 @@ pub(super) fn run_scp_many_down(
     creds: PendingCreds,
     hooks: TransferHooks,
 ) -> Result<usize, String> {
-    let groups = group_items(items, false);
+    let groups = staged_groups(items, false);
     let tid = hooks.transfer_id.clone().unwrap_or_else(|| "x".into());
     let mut moved = 0usize;
 
@@ -308,10 +358,29 @@ pub(super) fn run_scp_many_down(
         let group_refs: Vec<&BatchItem> = idxs.iter().map(|&i| &items[i]).collect();
         match run_one_down_group(scp, link, idxs, items, creds.clone(), hooks.clone(), &tmp) {
             Ok(()) => {
-                for (from, to) in rename_plan(&tmp, &group_refs) {
-                    if let Err(e) = std::fs::rename(&from, to) {
+                for ((from, to), item) in rename_plan(&tmp, &group_refs).into_iter().zip(group_refs)
+                {
+                    if hooks
+                        .cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+                    {
+                        // scp has finished, but files that have not yet been published are cancellable.
                         let _ = std::fs::remove_dir_all(&tmp);
-                        return Err(format!("下载完成但落地失败（{from} → {to}）：{e}"));
+                        return Err(format!("CCB_CANCELLED: 已保存 {moved} 个文件"));
+                    }
+                    let result = if item.overwrite {
+                        std::fs::rename(&from, to)
+                    } else {
+                        // A destination can appear after preflight. Publishing must still honor consent.
+                        publish_without_replace(
+                            std::path::Path::new(&from),
+                            std::path::Path::new(to),
+                        )
+                    };
+                    if let Err(e) = result {
+                        let _ = std::fs::remove_dir_all(&tmp);
+                        return Err(format!("已保存 {moved} 个文件，无法保存 {to}：{e}。请确认目标目录后重新发起传输"));
                     }
                     moved += 1;
                 }
@@ -320,7 +389,11 @@ pub(super) fn run_scp_many_down(
             Err(e) => {
                 // 取消/失败：整体删掉临时目录，不碰用户原有的文件。
                 let _ = std::fs::remove_dir_all(&tmp);
-                return Err(e);
+                return if moved == 0 {
+                    Err(e)
+                } else {
+                    Err(format!("{e}。已保存 {moved} 个文件，请重新发起传输"))
+                };
             }
         }
     }
@@ -340,7 +413,7 @@ pub(super) fn run_scp_many_up(
     creds: PendingCreds,
     hooks: TransferHooks,
 ) -> Result<usize, String> {
-    let groups = upload_groups(items);
+    let groups = staged_groups(items, true);
     let tid = hooks.transfer_id.clone().unwrap_or_else(|| "x".into());
     let mut moved = 0usize;
 
@@ -403,6 +476,51 @@ pub(super) fn run_scp_many_up(
     Ok(moved)
 }
 
+/// Prepare a directory under the user-selected download root without following links
+/// supplied by pre-existing child entries.
+#[tauri::command]
+pub async fn ssh_prepare_download_folder(
+    base: String,
+    components: Vec<String>,
+    exclusive: bool,
+) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        use std::path::{Component, Path};
+        let mut current = std::fs::canonicalize(base).map_err(|e| e.to_string())?;
+        if !current.is_dir() {
+            return Err("保存位置不是目录".into());
+        }
+        for (index, name) in components.iter().enumerate() {
+            let mut parts = Path::new(name).components();
+            if !matches!(parts.next(), Some(Component::Normal(part)) if part == std::ffi::OsStr::new(name))
+                || parts.next().is_some()
+                || name.contains(['/', '\0'])
+                || (cfg!(windows) && name.contains(['\\', ':']))
+            {
+                return Err(format!("无效的目录名称：{name}"));
+            }
+            current.push(name);
+            match std::fs::create_dir(&current) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if exclusive && index + 1 == components.len() {
+                        return Err(format!("{ERR_TARGET_EXISTS}: {name}"));
+                    }
+                    let meta = std::fs::symlink_metadata(&current).map_err(|e| e.to_string())?;
+                    let resolved = std::fs::canonicalize(&current).map_err(|e| e.to_string())?;
+                    if !meta.is_dir() || meta.file_type().is_symlink() || resolved != current {
+                        return Err(format!("{ERR_TARGET_EXISTS}: 保存路径中存在同名项目：{name}"));
+                    }
+                }
+                Err(error) => return Err(format!("无法创建目录 {name}：{error}")),
+            }
+        }
+        Ok(crate::security::path::display_path(&current))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 批量下载。覆盖检查在后端做：`overwrite=false` 时**先全量预检**，把已存在的
 /// 本机文件一次性报给前端（`CCB_TARGET_EXISTS`），由前端弹一次「覆盖 N 个文件」
 /// 确认，而不是传了一半才失败。
@@ -411,7 +529,7 @@ pub async fn ssh_sftp_get_many(
     state: State<'_, Arc<AppState>>,
     app: AppHandle,
     connection_id: String,
-    items: Vec<BatchItem>,
+    mut items: Vec<BatchItem>,
     transfer_id: String,
     overwrite: bool,
 ) -> Result<usize, String> {
@@ -421,19 +539,26 @@ pub async fn ssh_sftp_get_many(
     if items.is_empty() {
         return Ok(0);
     }
-    if !overwrite {
-        let exists: Vec<String> = items
-            .iter()
-            .filter(|it| std::path::Path::new(&it.local).exists())
-            .map(|it| it.local.clone())
-            .collect();
-        if !exists.is_empty() {
-            return Err(format!(
-                "{ERR_TARGET_EXISTS}: 本机已存在 {} 个同名文件：{}",
-                exists.len(),
-                exists.join("、")
-            ));
+    for item in &mut items {
+        item.overwrite |= overwrite;
+    }
+    let mut conflicts = Vec::new();
+    for item in &items {
+        match std::fs::symlink_metadata(&item.local) {
+            Ok(_) if !item.overwrite => conflicts.push(item.local.as_str()),
+            Ok(meta) if !meta.is_file() || meta.file_type().is_symlink() => {
+                return Err(format!("目标不是普通文件：{}", item.local));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("无法检查目标 {}：{e}", item.local)),
         }
+    }
+    if !conflicts.is_empty() {
+        return Err(format!(
+            "{ERR_TARGET_EXISTS}: {}",
+            serde_json::to_string(&conflicts).map_err(|e| e.to_string())?
+        ));
     }
     let link = fetch_link(&state, &connection_id).await?;
     // 下载不走远端收尾命令（本地临时目录 + rename），不需要 ssh 路径。
@@ -504,6 +629,23 @@ mod tests {
             remote: remote.into(),
             overwrite: false,
         }
+    }
+
+    #[test]
+    fn publishing_without_consent_preserves_a_destination_created_during_transfer() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir(&dir).unwrap();
+        let staged = dir.join("staged");
+        let target = dir.join("target");
+        std::fs::write(&staged, "new data").unwrap();
+        std::fs::write(&target, "original").unwrap();
+        let collision = publish_without_replace(&staged, &target).unwrap_err();
+        assert_eq!(collision.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+        std::fs::remove_file(&target).unwrap();
+        publish_without_replace(&staged, &target).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new data");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     // ---- parent_of / base_of ----
@@ -628,7 +770,7 @@ mod tests {
             item("C:/two/b.txt", "/r/b.txt"),
         ];
         assert_eq!(
-            upload_groups(&items),
+            staged_groups(&items, true),
             vec![("/r".into(), vec![0]), ("/r".into(), vec![1, 2])]
         );
     }

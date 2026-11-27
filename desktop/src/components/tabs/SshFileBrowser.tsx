@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import { isMac } from "../../lib/platform";
@@ -7,10 +7,11 @@ import { FileTable } from "./SshFileRow";
 import { FileBatchBar } from "./FileBatchBar";
 import { useSshFileSelection } from "./useSshFileSelection";
 import { MkdirForm, UploadForm } from "./SshFileForms";
-import { SshDownloadStatus } from "./SshDownloadStatus";
+import { WorkspaceDownloadDialog, WorkspaceUploadDialog } from "./WorkspaceUploadDialog";
+import { SshTransferPanel } from "./SshTransferQueueButton";
 import { FileHeader, RemoveConfirmDialog } from "./SshFileToolbar";
 import { useSshTransfer } from "./useSshTransfer";
-import { OverwriteConfirmDialog, TransferBarSlot } from "./SshTransferBar";
+import { OverwriteConfirmDialog } from "./SshTransferBar";
 import { SshDropOverlay } from "./SshDropOverlay";
 import { useFileBrowserDrop } from "./useFileBrowserDrop";
 import { useSshFileForms } from "./useSshFileForms";
@@ -26,7 +27,7 @@ import { useSshFileView } from "../../hooks/useSshFileView";
 import { useSshFileRename } from "./useSshFileRename";
 import { SshFileNotices } from "./SshFileNotices";
 import { RenameDialog, MoveDialog, RenameOverwriteDialog } from "./SshFileRenameDialogs";
-import { useFileWorkspaceLocation } from "./useTerminalFileWorkspace";
+import { TerminalFileWorkspace, useFileWorkspaceLocation } from "./useTerminalFileWorkspace";
 import { SshFileWorkspaceTools } from "./SshFileWorkspaceTools";
 
 interface Props {
@@ -100,6 +101,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
   });
   // 正在编辑的文件（双击打开，覆盖在列表之上）。WinSCP / MobaXterm 的共性：
   // 双击即编辑，而不是「另存为」。关掉编辑器后列表原地刷新（大小/时间已变）。
+  const [located, setLocated] = useState<{ directory: string; name?: string } | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
 
   // 平台标识用于切换占位文案（mac 显示 POSIX 路径，Windows 显示盘符路径）。
@@ -109,11 +111,14 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
     queryFn: () => invoke<{ platform?: string }>("get_status"),
   });
   const mac = isMac(status?.platform);
+  const workspace = useContext(TerminalFileWorkspace);
+  const dual = workspace?.mode === "local";
   const xfer = useSshTransfer();
-  const forms = useSshFileForms({connectionId:conn.id, path, entries, xfer, joinRemote});
+  const forms = useSshFileForms({ connectionId:conn.id, path, entries, xfer, dual, localPath: workspace?.localPath,
+    windows: !mac, onEnqueue: () => clearSelectionRef.current() });
   // 后台传输期间仍可浏览，确认同名时锁定目录以保留当前目标。
-  const navigationBusy = ops.busy || rename.busy || !!xfer.prompt || !!disconnected;
-  const operationBusy = navigationBusy || !!xfer.transfer || forms.download.busy;
+  const navigationBusy = ops.busy || rename.busy || !!xfer.prompt || !!forms.upload?.plan || !!disconnected;
+  const operationBusy = navigationBusy || !!forms.upload?.busy || forms.download.busy || forms.preparingDownload || !!xfer.transfer;
   const busy = operationBusy || loading || !!error;
   const highlightName = useSshFileInitialPath(initialPath, error, path, navigation.replace, entries);
 
@@ -122,24 +127,16 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
     if (!loading && !error && !isInitialFileListing(path, entries)) saveUploadDir(conn.id, path);
   }, [conn.id, path, entries, loading, error]);
 
-  const { paneRef, ...drop } = useFileBrowserDrop({
-    connectionId: conn.id,
-    path,
-    entries,
-    busy,
-    uploadMany: xfer.uploadMany,
-  });
+  const { paneRef, ...drop } = useFileBrowserDrop({ busy, uploadPaths: forms.uploadPaths });
 
   const openDir = (name: string) => { if (!navigationBusy && !loading && !error) setPath(joinRemote(path, name)); };
   // 双击文件：打开内联编辑器。下载仍然是行尾按钮与多选批量条的事——
   // 「查看/编辑」是高频，「下载到本机」是低频，双击应该给前者。
   const openEditor = (name: string) => { if (!busy) setEditing(joinRemote(path, name)); };
 
-  // 多选（Ctrl/⌘+点击、Shift+区间）。收 view.items：shift 区间锚点与用户
-  // 看到的行序一致（排序/过滤后原始序没有意义）。clear 是 useCallback([])
-  // 稳定引用，解构出来才能正常写依赖：sel 整体每帧都是新对象，写进依赖等于
-  // 每次渲染都清一遍选择。
+  // 区间选择按可见行排序；依赖稳定的 clear，避免每次渲染清空选择。
   const sel = useSshFileSelection({
+    includeDirectories: true,
     entries: view.items,
     onDownload: forms.handleDownload,
     onDownloadMany: forms.handleDownloadMany,
@@ -154,7 +151,6 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
   return (
     <div ref={paneRef} className="relative flex h-full min-h-0 flex-col">
       {drop.zone === "files" && <SshDropOverlay count={drop.count} dir={path} />}
-      {/* 顶部：返回 + 连接信息 + 操作 + 路径条 */}
       <FileHeader
         conn={conn}
         path={path}
@@ -162,7 +158,7 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         busy={operationBusy}
         navigationBusy={navigationBusy}
         disconnected={disconnected}
-        moreActions={<SshFileWorkspaceTools key={conn.id} connectionId={conn.id} path={path} disabled={loading || !!error || disconnected} navigate={setPath} preview={setEditing} refresh={refresh}/>}
+        moreActions={<SshFileWorkspaceTools key={conn.id} connectionId={conn.id} path={path} disabled={loading || !!error || disconnected} navigate={setPath} preview={setEditing}/>}
         directoryReady={!error}
         onBack={onBack}
         onUp={() => setPath(parentRemote(path))}
@@ -171,17 +167,15 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         onHistoryBack={navigation.back} onHistoryForward={navigation.forward}
         onRefresh={() => void refresh()}
         onNewFolder={ops.toggleMkdir}
-        onUpload={() => {
-          forms.setUploadOpen((v) => !v);
-          forms.setUploadLocal("");
-        }}
+        onUpload={() => void forms.pickUpload()}
+        onUploadFolder={() => void forms.pickFolder()}
+        onUploadPath={() => { forms.setUploadOpen(true); forms.setUploadLocal(""); }}
         query={view.query}
         onQueryChange={view.setQuery}
       />
       {/* 慢加载解释 + 断线横幅（下沉 SshFileNotices：各自带计时器状态） */}
       <SshFileNotices loading={loading} disconnected={disconnected} onReconnect={onReconnect} />
 
-      {/* 新建文件夹 / 上传表单（同一位置交替出现） */}
       {ops.mkdirOpen && (
         <MkdirForm
           value={ops.mkdirName}
@@ -197,7 +191,6 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
           busy={busy}
           mac={mac}
           onChange={forms.setUploadLocal}
-          onPick={() => void forms.pickUpload()}
           onSubmit={() => void forms.doUpload()}
           onCancel={() => forms.setUploadOpen(false)}
         />
@@ -212,6 +205,9 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         selected={sel.chosen.length}
         hasSelection={sel.selected.length > 0}
         files={sel.fileCount}
+        downloadable={sel.chosen.filter(entry => !entry.isSymlink).length}
+        downloadTarget={dual ? workspace.localPath : undefined}
+        downloadLabel={dual ? (workspace.localPath ? "下载到本机" : "选择下载目录…") : "下载所选"}
         busy={busy}
         onDownload={sel.downloadSelected}
         onRemove={() =>
@@ -234,10 +230,11 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         busy={busy}
         navigationBusy={navigationBusy || !!error}
         filterActive={!!view.query.trim() && view.items.length === 0}
-        highlightName={highlightName}
+        highlightName={located?.directory === path ? located.name : highlightName}
         selectedNames={sel.selected}
         onOpenDir={openDir}
         onDownload={forms.handleDownload}
+        onDownloadAs={forms.downloadAs}
         onRemove={entry => ops.setTargets([{ ...entry, remotePath: joinRemote(path, entry.name) }])}
         onRename={rename.openRename}
         onMove={entry => rename.openMove([entry])}
@@ -262,10 +259,14 @@ export function SshFileBrowser({ conn, onBack, initialPath, disconnected, onReco
         />
       )}
 
-      <TransferBarSlot transfer={xfer.transfer} onCancel={xfer.cancel} />
-      {!xfer.transfer && !xfer.prompt && <SshDownloadStatus download={forms.download} busy={busy} />}
+      <SshTransferPanel connectionId={conn.id} onLocateRemote={target => {
+        setPath(target.directory);
+        setLocated(target);
+        if (target.directory === path) void refresh();
+      }}/>
+      {forms.upload && <WorkspaceUploadDialog upload={forms.upload}/>}
+      {forms.folderDownload && <WorkspaceDownloadDialog plan={forms.folderDownload} close={forms.dismissFolderDownload}/>}
 
-      {/* 删除二次确认（项目内 Dialog，统一 Tauri 风格）；多选批量时一次问完 */}
       <RemoveConfirmDialog
         targets={ops.targets}
         busy={busy}
