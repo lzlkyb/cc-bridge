@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "cc-bridge-desktop"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "aes-gcm 0.10.3",
  "axum",
