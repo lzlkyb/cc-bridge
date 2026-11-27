@@ -29,12 +29,13 @@ const PRESETS: { value: string; label: string; hint: string }[] = [
 ];
 
 export function ModelPicker({
-  value,
+  value, activeModel,
   onChange,
   onClose,
   anchorRef,
 }: {
   value: string;
+  activeModel?: string | null;
   onChange: (model: string) => void;
   onClose: () => void;
   /** 触发按钮的容器（会话条里那个 `span`）。浮层按它的 rect 定位，见 hook 头注。 */
@@ -43,6 +44,7 @@ export function ModelPicker({
   const [draft, setDraft] = useState(value);
   return (
     <ChatPopover anchorRef={anchorRef} onClose={onClose} label="选择模型" width={286}>
+      {activeModel && <p className="cc-chat-note">当前：{activeModel} · 变更在下次发送时生效</p>}
       <div className="border-b border-border px-3 py-2">
         <span className="text-[12px] font-semibold text-foreground">模型</span>
         <p className="mt-[2px] text-[11px] leading-[1.5] text-muted-foreground">

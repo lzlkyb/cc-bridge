@@ -1,4 +1,4 @@
-import { useCallback, useReducer, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useMemo, useReducer, useRef, useState, type MutableRefObject } from "react";
 import { invoke } from "../lib/tauri";
 import type { CcRestoreReq } from "../lib/ccEventTypes";
 import { ccReducer, initialCcView, pendingApprovals } from "../lib/ccReducer";
@@ -7,7 +7,6 @@ import type { CcPermissionMode } from "../lib/ccGuiTypes";
 import type { CcImage } from "../lib/ccImage";
 import { useCcEnvironment } from "./useCcEnvironment";
 import { useCcEventStream } from "./useCcEventStream";
-import { useCcOpenHistory } from "./useCcOpenHistory";
 import { useCcQueueFlush, useCcSendQueue } from "./useCcSendQueue";
 import { useCcSteering } from "./useCcSteering";
 
@@ -36,7 +35,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   // 事件流（先订阅 → 再快照 → 序号补漏）自成生命周期，见 useCcEventStream 的文档。
   // `sessionIdRef` 是本路对话的内部 id：下面每个命令都带它寻址（3-1a 多会话化）。
   // `restore` 决定这条 pane 首次挂载时从库里载入哪一条（3-1c，三态见 `CcRestoreReq`）。
-  const { ready, restored, clearRestored, seqRef, sessionIdRef } = useCcEventStream(
+  const { ready, restored, terminalOpened, loadFailed, sessionIdRef } = useCcEventStream(
     dispatch,
     restore,
   );
@@ -47,6 +46,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   const readyRef = useRef(false);
   readyRef.current = ready;
   const [busy, setBusy] = useState(false);
+  const [activeSettings, setActiveSettings] = useState<Pick<CcTarget, "model" | "permissionMode"> | null>(null);
   const [activityStartedAt, setActivityStartedAt] = useState<number | null>(null);
   const [stopState, setStopState] = useState<"stopping" | "unconfirmed" | null>(null);
   // 待发队列（「运行中继续打字」的落点）：状态、暂停与冲刷见 `useCcSendQueue`。
@@ -134,6 +134,7 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
         },
       });
       // 真的发出去了 ⇒ 之前的故障已排除，恢复队列自动发送。
+      setActiveSettings({ model: t.model, permissionMode: t.permissionMode });
       if (!direct) resume();
       return true;
     } catch (e) {
@@ -170,18 +171,16 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
       message?: string,
       answers?: Record<string, string[]>,
     ) => {
-      try {
-        await invoke<void>("cc_respond", {
-          sessionId: sessionIdRef.current,
-          requestId,
-          decision,
-          message,
-          answers,
-        });
-      } catch (e) {
-        // 常见原因：这一轮已经结束（60s 超时 / 用户中断），请求 id 随之失效。
-        dispatch({ type: "error", message: String(e) });
-      }
+      await invoke<void>("cc_respond", {
+        sessionId: sessionIdRef.current,
+        requestId,
+        decision,
+        message,
+        answers,
+      });
+      // The writer has accepted the verdict. Apply it immediately even if the
+      // matching event is batched behind stream output or briefly disconnected.
+      dispatch({ type: "event", event: { kind: "permissionResolved", requestId, decision, auto: false } });
     },
     // 同 `start`：ref 本身稳定，列出来给 exhaustive-deps 看。
     [sessionIdRef],
@@ -234,25 +233,12 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
   /** 把一条外部错误（润色失败这类）报进对话流：它是内容，用户要能回头看到。 */
   const reportError = useCallback((message: string) => dispatch({ type: "error", message }), []);
 
-  /**
-   * 打开一条历史会话（把后端那条接管成当前会话）。时序约定在 `useCcOpenHistory`
-   * 里写明 —— 这里只做接线。`adoptedRowId` 是接管落地后库里的行号：侧栏对账
-   * （历史区去重）、改名 / 归档都靠它 —— `restored` 被清掉后它是唯一的行号来源。
-   */
-  const [adoptedRowId, setAdoptedRowId] = useState<number | null>(null);
-  const openHistory = useCcOpenHistory({
-    sessionIdRef,
-    seqRef,
-    dispatch,
-    clearRestored,
-    onAdopted: setAdoptedRowId,
-  });
-
+  const pending = useMemo(() => pendingApprovals(view), [view]);
   return {
     view,
-    ready,
+    ready, loadFailed,
     busy,
-    activityStartedAt,
+    activityStartedAt, activeSettings,
     stopState,
     probe,
     /**
@@ -264,14 +250,13 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     /** 上次进程留下的会话。`null` = 这次是全新开始（或用户点过「新对话」）。 */
     restored,
     /** 「打开历史」接管进来的库行号（接管后 `restored` 已清，它是唯一行号来源）。 */
-    adoptedRowId,
+    terminalOpened,
     runProbe,
     start,
     steer: steering.steer, sendNow: steering.sendNow,
     respond,
     interrupt,
     stopAndSend: async (text: string, images: CcImage[]) => (await interrupt()) ? start(text, images, true) : false,
-    openHistory,
     dismissError,
     clearStderr,
     reportError,
@@ -285,6 +270,6 @@ export function useCcSession(target: CcTarget, restore: MutableRefObject<CcResto
     /** 解除暂停、继续按顺序自动发送（中断或发送失败后）。 */
     resumeQueue: resume,
     /** 还卡着等用户决定的审批 id。 */
-    pending: pendingApprovals(view),
+    pending,
   };
 }

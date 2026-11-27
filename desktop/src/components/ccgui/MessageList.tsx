@@ -18,6 +18,7 @@ import { ToolCard } from "./ToolCard";
 import { TurnFooter } from "./TurnFooter";
 import { TurnResults } from "./TurnResults";
 import { UserMessageBubble } from "./UserMessageBubble";
+import { ResendTurnButton } from "./ResendTurnButton";
 import { todoItems, toolKind, verdictLabel } from "./summarize";
 
 /**
@@ -78,7 +79,7 @@ export function MessageList({
     decision: "allow" | "deny",
     message?: string,
     answers?: Record<string, string[]>,
-  ) => void;
+  ) => void | Promise<void>;
   /**
    * 在这条用户消息处「编辑重发 / 分叉」（3-3）。参数是**消息下标**与最终文本：
    * 下标决定摘要从哪里截断，文本是用户可能要改的那句话。
@@ -109,8 +110,10 @@ export function MessageList({
   // 在 `lib/ccMessageIndex.ts`：这里只消费，不推导。
   const { lastTodoIdx, lastUserIdx, lastAssistantIdx, turnsByAfterId, stopSet, groups, grouped } =
     buildMessageIndex({ messages, start, turns, stops });
-  /** 「重新生成」重发的是最后一条**提问**（与用户气泡的「再问一次」同源）。 */
-  const lastUserText = lastUserIdx >= 0 ? (messages[lastUserIdx] as { text: string }).text : "";
+  /** Resend appends a new turn; only the latest completed answer offers it. */
+  const latestUser = messages[lastUserIdx];
+  const lastUserText = latestUser?.kind === "user" ? latestUser.text : "";
+  const usedTools = !running && messages.slice(lastUserIdx + 1).some(message => message.kind === "tool");
   return (
     <>
       {/* 空串的停止点：刚发出去就被停，一条消息都没产出 ⇒ 那个落点在时间轴上
@@ -150,7 +153,8 @@ export function MessageList({
                   images={m.images}
                   marks={marks}
                   onFork={(text) => onForkMessage(index, text)}
-                  onResend={index === lastUserIdx ? () => onResend(m.text) : undefined}
+                  onResend={index === lastUserIdx && !running ? () => onResend(m.text) : undefined}
+                  resendMayRepeatTools={usedTools}
                 />
               </div>
             );
@@ -167,9 +171,6 @@ export function MessageList({
                   助手侧动作区（P0-4）：常显低对比。
                   此前只有一个 `opacity:0`、hover 才现形的「复制回复」—— 键盘用户靠 Tab
                   摸过去才发现，发现性为零。动作区放在正文**之后**：读屏先念内容，再念按钮。
-                  「重新生成」实为把最后一条提问原样再发一次（会话真源在 CLI 进程里，
-                  没有「回到第 N 轮」的原语），所以 title 里必须说清新回复接在末尾，
-                  文案也不能写成「重新生成这条回复」。
                 */}
                 <div className="cc-msg-actions">
                   <button
@@ -182,17 +183,8 @@ export function MessageList({
                     <Icon name={isCopied(`msg:${m.id}`) ? "check" : "copy"} size={13} />
                     <span className="cc-msg-action-label">{isCopied(`msg:${m.id}`) ? "已复制" : "复制"}</span>
                   </button>
-                  {index === lastAssistantIdx && !running && (
-                    <button
-                      type="button"
-                      className="accent"
-                      onClick={() => onResend(lastUserText)}
-                      aria-label="重新生成"
-                      title="会把最后一条提问原样再发一次，新回复接在末尾（旧回复不会被替换）"
-                    >
-                      <Icon name="refresh" size={13} />
-                      <span className="cc-msg-action-label">重新生成</span>
-                    </button>
+                  {index === lastAssistantIdx && index > lastUserIdx && !running && lastUserText.trim() && (
+                    <ResendTurnButton onResend={() => onResend(lastUserText)} usedTools={usedTools} hadImages={latestUser?.kind === "user" && !!latestUser.images?.length} />
                   )}
                 </div>
               </article>
@@ -224,16 +216,17 @@ export function MessageList({
           }
 
           const verdict = resolved[m.id];
-          if (verdict) {
+          if (verdict || m.canceled) {
             return (
               <div
                 key={m.id}
                 data-cc-inset
+                role={m.canceled ? "status" : undefined}
                 className="flex items-center gap-1.5 rounded-[10px] border border-border bg-muted/40 px-3 py-[6px] text-[11px] text-muted-foreground"
               >
-                <Icon name={verdict.decision === "allow" ? "check" : "close"} size={11} />
+                <Icon name={verdict?.decision === "allow" ? "check" : "close"} size={11} />
                 <span className="font-mono">{m.toolName}</span>
-                {verdictLabel(m.toolName, verdict.decision, verdict.auto)}
+                {verdict ? verdictLabel(m.toolName, verdict.decision, verdict.auto) : "请求已撤回"}
               </div>
             );
           }

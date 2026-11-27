@@ -21,7 +21,7 @@ export function clawdActivity(view: CcView, options: ClawdOptions = {}): ClawdAc
   if (options.stopState === "unconfirmed") return activity("error", "停止尚未确认", "请检查执行记录，当前不能判断进程是否结束");
   const lastUser = view.messages.map(m => m.kind).lastIndexOf("user");
   const turn = view.messages.slice(view.activityStartIndex ?? Math.max(0, lastUser));
-  const approval = [...view.messages].reverse().find(m => m.kind === "approval" && !view.resolved[m.id]);
+  const approval = [...view.messages].reverse().find(m => m.kind === "approval" && !m.canceled && !view.resolved[m.id]);
   if (approval?.kind === "approval") return activity(approval.toolName === "AskUserQuestion" ? "question" : "approval", approval.toolName === "AskUserQuestion" ? "有一个问题需要你决定" : "需要你批准下一步", approval.toolName, approval.id, true);
   if (view.retry && view.running) return activity("retrying", `正在重试 ${view.retry.attempt}/${view.retry.max}`, view.retry.message, undefined, true);
   const agents = Object.values(view.tasks ?? {}).filter(isAgentTask).filter(taskActive);

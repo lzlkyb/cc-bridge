@@ -35,6 +35,7 @@ export function useCcPaneViewModel({
   restore,
   onMeta,
   onForkSession,
+  unsent,
 }: {
   paneKey: string;
   view: ReturnType<typeof useCcSession>["view"];
@@ -48,10 +49,11 @@ export function useCcPaneViewModel({
   restore: CcRestoreReq;
   onMeta: (key: string, meta: CcPaneMeta) => void;
   onForkSession: (seed: CcForkSeed) => void;
+  unsent: "text" | "attachments" | null;
 }) {
   /** 侧栏那一行：标题 / 轮数 / 五态点 / 副标题。纯计算在 `lib/ccPaneMeta`。 */
   const metaBase = useMemo(() => {
-    const targetLabel = targets.find((t) => t.id === targetId)?.label ?? "本机";
+    const targetLabel = targets.find((t) => t.id === targetId)?.label ?? "连接已移除";
     return derivePaneMeta({
       view,
       pending: session.pending,
@@ -62,24 +64,26 @@ export function useCcPaneViewModel({
       cwd,
       // 恢复没走完就别让历史区露出来 —— 那时本条还没有 rowId / cliSessionId，
       // 对不上账会让它自己在历史区里再出现一次（可点 ⇒ 开出重复的一条）。
-      restoring: !session.ready,
+      restoring: !session.ready && !session.loadFailed,
       // 手写标题优先于「首条消息」：改完名看不到变化，等于改名没生效。
-      titleHint: titleOverride ?? (session.restored?.titleLocked ? session.restored.title : null),
+      titleHint: titleOverride ?? session.terminalOpened?.title ?? (session.restored?.titleLocked ? session.restored.title : null),
     });
-  }, [view, session.pending, targetId, targets, cwd, session.ready, titleOverride, session.restored]);
+  }, [view, session.pending, targetId, targets, cwd, session.ready, session.loadFailed, titleOverride, session.restored, session.terminalOpened]);
 
   /**
    * 库里那一行的行号，给侧栏历史区对账用。三个来源：「从历史打开」的 entry 自带；
-   * 「接着上次聊」的等 `cc_restore`；「历史按钮接管进当前 pane」的等 `cc_history_open`
-   * （`adoptedRowId`，那时 `restored` 已被清）。新会话为 `null`。
+   * 「接着上次聊」等 `cc_restore`，终端历史等 `cc_history_open`。新会话为 `null`。
    */
   const rowId =
     view.rowId ??
-    (restore.kind === "row" ? restore.rowId : (session.restored?.rowId ?? session.adoptedRowId ?? null));
+    (restore.kind === "row" ? restore.rowId : (session.restored?.rowId ?? session.terminalOpened?.rowId ?? null));
 
+  const unsentCount = session.queue.length;
   useEffect(() => {
-    onMeta(paneKey, { ...metaBase, sessionId: session.sessionIdRef.current, rowId });
-  }, [paneKey, metaBase, session.ready, session.sessionIdRef, onMeta, rowId]);
+    const pendingIds = new Set(session.pending);
+    const pendingRequests = pendingIds.size ? view.messages.flatMap(m => m.kind === "approval" && pendingIds.has(m.id) ? [{ id: m.id, tool: m.toolName }] : []) : [];
+    onMeta(paneKey, { ...metaBase, sessionId: session.sessionIdRef.current, rowId, unsent, unsentCount, pendingRequests });
+  }, [paneKey, metaBase, session.ready, session.sessionIdRef, onMeta, rowId, unsent, unsentCount, view.messages, session.pending]);
 
   /** 在这条消息处分叉重发（切换会话在宿主 `useCcPaneList.forkFrom`）。 */
   const onForkMessage = useCallback(
@@ -105,7 +109,7 @@ export function useCcPaneViewModel({
   const bar = useMemo(
     () =>
       toBarSession({
-        connectionLabel: targets.find((t) => t.id === targetId)?.label ?? "本机",
+        connectionLabel: targets.find((t) => t.id === targetId)?.label ?? "连接已移除",
         cwd,
         model,
         permissionMode: mode,

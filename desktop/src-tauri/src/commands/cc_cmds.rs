@@ -237,6 +237,12 @@ fn collect_thumbs(images: &[CcStartImage]) -> Vec<String> {
     }
 }
 
+fn same_launch_preferences(facts: &SessionFacts, spec: &LaunchSpec) -> bool {
+    facts.model == spec.model
+        && facts.permission_mode.as_deref().unwrap_or("default")
+            == spec.permission_mode.as_deref().unwrap_or("default")
+}
+
 /// 起一轮对话。**首条消息随启动一起发**，省一次往返。
 ///
 /// `session_id` 是内部 id（`cc_new_session` 铸发）：这一轮的全部状态 ——
@@ -272,6 +278,7 @@ pub async fn cc_start(
     // 只剩两个缩略图，界面上就成了「发了三张、只显示两张」的错位。
     let thumbs = collect_thumbs(&req.images);
     check_images(&images)?;
+    let _target = cc.try_change_target()?;
 
     // 先把这一轮的形状拼出来 —— 下面「目标变没变」要用它判断，而判断必须发生在
     // 「能不能复用旧进程」之前。
@@ -311,7 +318,17 @@ pub async fn cc_start(
     // 进程还活着 ⇒ 直接在它身上发下一句，省掉一次冷启动。
     // 实测冷启动 8~18s（大头是用户自己的 SessionStart 钩子），每条消息都付一次
     // 在聊天界面里是不可接受的。进程死了才走下面「新起 + --resume」那条路。
-    if cc.is_running() && cc.send_user_images(&text, &images).is_ok() {
+    let facts = cc.shared().facts();
+    let reuse_settings = same_launch_preferences(&facts, &spec);
+    if cc.is_running() && !reuse_settings {
+        if cc.shared().active_task_count()? > 0 {
+            return Err("还有后台任务在执行，请等任务结束再切换模型或审批模式。草稿已保留".into());
+        }
+        // CLI command-line preferences stay fixed for the life of the process. Preserve
+        // the resume ID and start an idle replacement so the very next message uses them.
+        cc.shutdown(std::time::Duration::from_secs(2));
+    }
+    if reuse_settings && cc.is_running() && cc.send_user_images(&text, &images).is_ok() {
         manager::record_local(
             &app,
             cc.shared(),
@@ -487,8 +504,6 @@ pub async fn cc_respond(
         other => return Err(format!("未知的裁决：{other}")),
     };
     cc.respond(&request_id, &verdict)?;
-    // 写成功才摘单：写失败（进程刚好退出）时用户还能再点一次。
-    cc.shared().forget(&request_id);
     manager::record_local(
         &app,
         cc.shared(),
@@ -591,8 +606,11 @@ pub async fn cc_restore(
         .cc
         .get(session_id)
         .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
-    // 用户点过「新对话」就不再**自动**拉旧的 —— 见 `Shared::suppress_restore`。
-    // 明确给了行号的不受这条限制：那是用户在侧栏里主动点开的一条历史。
+    let _target = cc.try_change_target()?;
+    if cc.is_running() || cc.shared().turn_active() {
+        return Err("请在独立会话中打开历史，当前对话已保留".into());
+    }
+    // 用户点过「新对话」就不再自动拉旧的。侧栏明确选择的历史仍可打开。
     if row_id.is_none() && cc.shared().restore_suppressed() {
         return Ok(None);
     }
@@ -774,6 +792,7 @@ pub async fn cc_reset(state: State<'_, Arc<AppState>>, session_id: u64) -> Resul
         .cc
         .get(session_id)
         .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
+    let _target = cc.try_change_target()?;
     cc.reset();
     Ok(())
 }
@@ -1146,6 +1165,34 @@ mod tests {
         assert!(!probe.found);
         assert!(probe.path.is_empty());
         assert!(probe.message.contains("找不到"), "{}", probe.message);
+    }
+
+    #[test]
+    fn changing_model_or_permission_mode_requires_an_updated_launch() {
+        let facts = SessionFacts {
+            model: Some("sonnet".into()),
+            permission_mode: Some("default".into()),
+            ..Default::default()
+        };
+        let current = LaunchSpec {
+            model: Some("sonnet".into()),
+            ..Default::default()
+        };
+        assert!(same_launch_preferences(&facts, &current));
+        assert!(!same_launch_preferences(
+            &facts,
+            &LaunchSpec {
+                permission_mode: Some("acceptEdits".into()),
+                ..current.clone()
+            }
+        ));
+        assert!(!same_launch_preferences(
+            &facts,
+            &LaunchSpec {
+                model: None,
+                ..current
+            }
+        ));
     }
 
     fn stored_row(resume: &str) -> crate::cc_session::store::Stored {

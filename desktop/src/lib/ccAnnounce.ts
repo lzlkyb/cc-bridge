@@ -144,7 +144,7 @@ export function nextAnnouncement(
 
   // 4) 待批准：只在**新增**时播。这是唯一「现在轮到你」的信号，优先级高于阶段。
   if (pending > 0 && pending > prev.pending) {
-    const ask = view.messages.find((m) => m.kind === "approval");
+    const ask = view.messages.find(m => m.kind === "approval" && !m.canceled && !view.resolved[m.id]);
     const what = ask && ask.kind === "approval"
       ? [ask.toolName, toolArgLabel(ask.input)].filter(Boolean).join(" ")
       : "";

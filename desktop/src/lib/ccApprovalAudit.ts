@@ -322,7 +322,7 @@ export function buildApprovalAudit(
   // toolUseId → 审批（一个工具调用最多一次审批）
   const byToolUse = new Map<string, { requestId: string; decision: "allow" | "deny" | "pending"; auto: boolean }>();
   for (const m of messages) {
-    if (m.kind !== "approval" || !m.toolUseId) continue;
+    if (m.kind !== "approval" || !m.toolUseId || m.canceled) continue;
     const r = resolved[m.id];
     byToolUse.set(m.toolUseId, {
       requestId: m.id,
@@ -354,6 +354,7 @@ export function buildApprovalAudit(
     }
 
     if (m.kind === "approval") {
+      if (m.canceled && !resolved[m.id]) continue;
       const r = resolved[m.id];
       const decision: ApprovalDecision = r ? r.decision : "pending";
       // 已允许且有 toolUseId 的：等它的 tool 消息来生成点（那里才有入参和文件）。

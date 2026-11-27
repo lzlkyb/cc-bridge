@@ -13,7 +13,7 @@ import { UserMessageBubble } from "./UserMessageBubble";
 
 /**
  * 对话页 UX 修复的行为锁：回到底部浮钮、侧栏行的键盘 / 关闭确认、
- * 用户消息的分叉禁用、审批 / 提问卡超时后不可点。
+ * 用户消息的分叉禁用、审批 / 提问卡等待真实裁决。
  */
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -165,18 +165,17 @@ describe("UserMessageBubble 分叉", () => {
   });
 });
 
-describe("审批 / 提问卡超时", () => {
+describe("审批 / 提问卡裁决", () => {
   const approval = (over: Partial<CcApproval> = {}): CcApproval => ({
     kind: "approval",
     id: "r1",
     toolName: "Bash",
     input: { command: "ls" },
     reason: "要执行命令",
-    expiresInSec: 60,
     ...over,
   });
 
-  it("倒计时未归零时按钮可用", async () => {
+  it("CLI 仍在等批准时按钮可用", async () => {
     await showWithQuery(
       <ApprovalCard approval={approval()} onAllow={() => {}} onDeny={() => {}} onAnswer={() => {}} />,
     );
@@ -185,26 +184,48 @@ describe("审批 / 提问卡超时", () => {
     expect(container.querySelector('[role="group"]')).not.toBeNull();
   });
 
-  it("审批卡归零后按钮禁用并说明已超时", async () => {
-    await showWithQuery(
-      <ApprovalCard approval={approval({ expiresInSec: 0 })} onAllow={() => {}} onDeny={() => {}} onAnswer={() => {}} />,
-    );
-    expect(container.textContent).toContain("已超时");
-    expect(byText("拒绝")!.disabled).toBe(true);
-    expect(byText("允许一次")!.disabled).toBe(true);
+  it("超过 60 秒仍可批准，并在失败后允许重试", async () => {
+    const allow = vi.fn().mockRejectedValueOnce(new Error("连接中断")).mockResolvedValueOnce(undefined);
+    vi.useFakeTimers();
+    try {
+      await showWithQuery(<ApprovalCard approval={approval()} onAllow={allow} onDeny={() => {}} onAnswer={() => {}} />);
+      await act(async () => vi.advanceTimersByTimeAsync(64000));
+      expect(byText("允许一次")!.disabled).toBe(false);
+      await click(byText("允许一次"));
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain("连接中断");
+      await click(byText("允许一次"));
+      expect(allow).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("提问卡归零后选项、跳过、提交都禁用", async () => {
+  it("裁决在途时禁止重复提交或发送相反决定", async () => {
+    let settle!: () => void;
+    const allow = vi.fn(() => new Promise<void>(resolve => { settle = resolve; }));
+    const deny = vi.fn();
+    await showWithQuery(<ApprovalCard approval={approval()} onAllow={allow} onDeny={deny} onAnswer={() => {}} />);
+    await click(byText("允许一次"));
+    expect(byText("拒绝")!.disabled).toBe(true);
+    await click(byText("允许一次"));
+    await click(byText("拒绝"));
+    expect(allow).toHaveBeenCalledTimes(1);
+    expect(deny).not.toHaveBeenCalled();
+    await act(async () => settle());
+  });
+
+  it("提问选好答案才可提交", async () => {
     const q = approval({
       toolName: "AskUserQuestion",
-      expiresInSec: 0,
       questions: [{ question: "吃什么？", options: [{ label: "面" }, { label: "饭" }] }],
     });
-    await show(<QuestionCard approval={q} onSubmit={() => {}} onSkip={() => {}} />);
-    expect(container.textContent).toContain("已超时");
-    expect(byText("跳过")!.disabled).toBe(true);
+    const submit = vi.fn();
+    await show(<QuestionCard approval={q} onSubmit={submit} onSkip={() => {}} />);
+    expect(byText("跳过")!.disabled).toBe(false);
     expect(byText("提交")!.disabled).toBe(true);
-    expect(buttons().filter((b) => b.getAttribute("aria-pressed") !== null).every((b) => b.disabled)).toBe(true);
+    await click(byText("面"));
+    await click(byText("提交"));
+    expect(submit).toHaveBeenCalledWith({ "吃什么？": ["面"] });
   });
 });
 

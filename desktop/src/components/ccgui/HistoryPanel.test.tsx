@@ -87,7 +87,7 @@ it("打开即加载全部，标题、摘要、计数都在", async () => {
   expect(h.invoke).toHaveBeenCalledWith("cc_history_list", { query: "" });
   expect(container.textContent).toContain("修复登录页的样式");
   expect(container.textContent).toContain("端口转发的那些事儿");
-  expect(container.textContent).toContain("2 条 · 12ms");
+  expect(container.textContent).toContain("2 条");
 });
 
 it("输入防抖 150ms 后才带关键词重查", async () => {
@@ -144,8 +144,11 @@ it("清空搜索恢复全部", async () => {
 it("Esc 关面板（含焦点在搜索框里时）", async () => {
   const onClose = vi.fn();
   await mount(onClose);
-  // 搜索框 autoFocus，事件从它身上冒泡到 document——正是真实按 Esc 的路径。
   const input = container.querySelector("input")!;
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, isComposing: true }));
+  });
+  expect(onClose).not.toHaveBeenCalled();
   await act(async () => {
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   });

@@ -14,7 +14,6 @@
  */
 import type { CcPermissionMode } from "./ccGuiTypes";
 
-const MODE_KEY = "cc-bridge.ccgui.mode";
 const MODEL_KEY = "cc-bridge.ccgui.model";
 
 const cwdKey = (target: string) => `cc-bridge.ccgui.cwd.${target || "local"}`;
@@ -24,14 +23,6 @@ export function asMode(raw: string | null | undefined): CcPermissionMode | null 
   return raw === "plan" || raw === "default" || raw === "acceptEdits" || raw === "bypassPermissions"
     ? raw
     : null;
-}
-
-export function readMode(): CcPermissionMode {
-  return asMode(localStorage.getItem(MODE_KEY)) ?? "default";
-}
-
-export function saveMode(mode: CcPermissionMode): void {
-  localStorage.setItem(MODE_KEY, mode);
 }
 
 /** 空串 = 不传 `--model`，吃 CLI 自己的默认（可能是用户 settings 里设的那个）。 */

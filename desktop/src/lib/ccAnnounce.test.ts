@@ -108,7 +108,6 @@ describe("ccAnnounce", () => {
       toolName: "Bash",
       input: { command: "rm -rf dist" },
       reason: "",
-      expiresInSec: 60,
     };
     const v = view({ running: true, messages: [ask] });
     const first = nextAnnouncement(initialAnnounceState(true), v, 1, 100);

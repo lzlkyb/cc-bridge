@@ -1,3 +1,4 @@
+import { ResendTurnButton } from "./ResendTurnButton";
 import { memo, useState } from "react";
 import type { CcMark } from "../../lib/ccMarkdown";
 import { MessageText } from "./MessageText";
@@ -29,7 +30,7 @@ function UserMessageBubbleImpl({
   images,
   marks,
   onFork,
-  onResend,
+  onResend, resendMayRepeatTools,
 }: {
   text: string;
   /** 这条消息附的图（缩略图 data URL）。缺省 = 纯文本。 */
@@ -46,6 +47,7 @@ function UserMessageBubbleImpl({
    * 用户要的是后者，不是多开一个 pane。
    */
   onResend?: () => void;
+  resendMayRepeatTools?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(text);
@@ -70,23 +72,8 @@ function UserMessageBubbleImpl({
           )}
         </div>
         <div className="cc-user-actions flex items-center gap-2 pr-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-          {onResend && (
-            <button
-              type="button"
-              onClick={onResend}
-              disabled={!text.trim()}
-              title={
-                !text.trim()
-                  ? "这条消息没有文字，没有可重发的内容"
-                  : hasImages
-                    ? "在会话里再发一次同样的文字（图片不跟着重发：原图不落盘）"
-                    : "用同样的内容在这条会话里再发一次"
-              }
-              className="text-[11px] text-muted-foreground transition-colors hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              再问一次
-            </button>
-          )}
+          {onResend && <ResendTurnButton onResend={onResend} usedTools={!!resendMayRepeatTools}
+            hadImages={hasImages} disabled={!text.trim()} compact />}
           <button
             type="button"
             onClick={() => {

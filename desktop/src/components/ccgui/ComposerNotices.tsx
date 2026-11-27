@@ -8,7 +8,7 @@ import { ChatPopover } from "./ChatPopover";
 
 export function ComposerNotices({
   queueCount, queuePaused = false, queueItems = [], onClearQueue, onResumeQueue,
-  onEditQueue, onRemoveQueue, onMoveQueue, slashReject, pendingCount = 0, onShowPending,
+  onEditQueue, onRemoveQueue, onMoveQueue, slashReject,
 }: {
   queueCount: number;
   queuePaused?: boolean;
@@ -19,8 +19,6 @@ export function ComposerNotices({
   onRemoveQueue?: (id: string) => void;
   onMoveQueue?: (id: string, direction: -1 | 1) => void;
   slashReject: string | null;
-  pendingCount?: number;
-  onShowPending?: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const queue = usePresence(expanded && queueCount > 0);
@@ -28,7 +26,6 @@ export function ComposerNotices({
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   return (
     <>
-      {pendingCount > 0 && <div className="cc-composer-pending"><Icon name="shield" size={14} /><span>{pendingCount} 项操作等待确认</span>{onShowPending && <button type="button" onClick={onShowPending}>查看审批</button>}</div>}
       {queueCount > 0 && (
         <div className="cc-composer-queue">
           <div className="cc-composer-queue-head"><Icon name={queuePaused ? "pause" : "clock"} size={14} /><strong>{queuePaused ? "队列已暂停" : "已排队"} · {queueCount} 条</strong><span>{queuePaused ? "内容已保留" : "本轮结束后发送"}</span>

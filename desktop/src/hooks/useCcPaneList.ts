@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { invoke } from "../lib/tauri";
 import { clearDraft, pruneDrafts } from "../lib/ccDraft";
-import type { CcRestoreReq } from "../lib/ccEventTypes";
+import type { CcHistoryRow, CcRestoreReq } from "../lib/ccEventTypes";
 import type { CcForkSeed } from "../lib/ccFork";
 import type { CcPaneMeta } from "../lib/ccPaneMeta";
 
@@ -78,7 +78,9 @@ export function useCcPaneList() {
   const spawn = useCallback(
     (restore: CcRestoreReq, forkOf?: string) => {
       const key = `p${seq.current++}`;
-      setEntries((list) => [...list, { key, meta: null, restore, forkOf }]);
+      const entry = { key, meta: null, restore, forkOf };
+      entriesRef.current = [...entriesRef.current, entry];
+      setEntries(list => [...list, entry]);
       setActive(key);
     },
     [],
@@ -114,15 +116,27 @@ export function useCcPaneList() {
       // 只查 `restore` 的话点它就开出第二条同库行的 pane（两个进程续同一条 CLI 会话）。
       // （历史上还有一种「点了正在恢复的那条」—— 那条不走这里，它由宿主用
       // `settled` 挡，见 `CcGuiTab`。）
-      const existing = entries.find(
+      const existing = entriesRef.current.find(
           (e) =>
             (e.restore.kind === "row" && e.restore.rowId === rowId) || e.meta?.rowId === rowId,
         );
       if (existing) { setActive(existing.key); return; }
       spawn({ kind: "row", rowId });
     },
-    [entries, spawn],
+    [spawn],
   );
+
+  const openTerminalHistory = useCallback((row: CcHistoryRow) => {
+    if (row.connectionId) return;
+    const existing = entriesRef.current.find(e =>
+      (e.meta?.connectionId === "" && e.meta.cliSessionId === row.sessionId) ||
+      (e.restore.kind === "terminal" && e.restore.row.sessionId === row.sessionId));
+    if (existing) setActive(existing.key);
+    else spawn({ kind: "terminal", row });
+  }, [spawn]);
+  const openEnvironment = useCallback((connectionId: string, cwd: string) => {
+    spawn({ kind: "environment", connectionId, cwd });
+  }, [spawn]);
 
   /**
    * 关掉一条。**先让界面消失，再通知后端**：
@@ -164,11 +178,15 @@ export function useCcPaneList() {
 
   /** Backend already deleted these handles; never call close (which saves) for them. */
   const forgetDeleted = useCallback(({ rowId, sessionIds }: { rowId: number | null; sessionIds: number[] }) => {
+    if (rowId !== null) clearDraft(`row-${rowId}`);
     const current = entriesRef.current;
     const removed = current.filter(e => rowId !== null && (e.meta?.rowId === rowId || e.restore.kind === "row" && e.restore.rowId === rowId) || typeof e.meta?.sessionId === "number" && sessionIds.includes(e.meta.sessionId));
     if (!removed.length) return false;
     const keys = new Set(removed.map(e => e.key));
-    removed.forEach(e => clearDraft(e.key));
+    removed.forEach(e => {
+      clearDraft(e.key);
+      if (rowId === null && e.meta?.rowId != null) clearDraft(`row-${e.meta.rowId}`);
+    });
     const rest = current.filter(e => !keys.has(e.key));
     if (!rest.length) rest.push({ key: `p${seq.current++}`, meta: null, restore: { kind: "none" } });
     entriesRef.current = rest;
@@ -204,6 +222,9 @@ export function useCcPaneList() {
         prev.cwd === meta.cwd &&
         prev.cliSessionId === meta.cliSessionId &&
         prev.rowId === meta.rowId &&
+        prev.pendingRequests?.length === meta.pendingRequests?.length &&
+        prev.pendingRequests?.every((req, i) => req.id === meta.pendingRequests?.[i]?.id) !== false &&
+        prev.unsent === meta.unsent && prev.unsentCount === meta.unsentCount &&
         prev.restoring === meta.restoring
       ) {
         return list;
@@ -228,5 +249,5 @@ export function useCcPaneList() {
     [entries],
   );
 
-  return { entries, active, setActive, add, openStored, forkFrom, close, forgetDeleted, report, cycle };
+  return { entries, active, setActive, add, openStored, openTerminalHistory, openEnvironment, forkFrom, close, forgetDeleted, report, cycle };
 }

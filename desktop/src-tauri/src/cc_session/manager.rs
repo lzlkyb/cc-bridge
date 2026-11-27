@@ -270,7 +270,11 @@ impl Shared {
         }
     }
 
-    /// 取回待批单。**不删除**：写失败（进程刚好退出）时用户还能再点一次。
+    pub fn active_task_count(&self) -> Result<usize, String> {
+        self.task_control.active_count()
+    }
+
+    /// Read without removing. The response writer consumes the request after a successful write.
     pub fn pending_ask(&self, request_id: &str) -> Option<PendingAsk> {
         self.pending.lock().ok()?.get(request_id).cloned()
     }
@@ -309,8 +313,8 @@ impl Shared {
 
     /// 本次请求的目标和「当前这条会话链」一致吗。
     ///
-    /// 只比 `connection_id` 与 `cwd`：模型和权限模式变了**不该**重开会话链
-    /// （CLI 支持同一会话换模型，权限模式更是每轮都能改）。但换了机器或目录就必须
+    /// 只比 `connection_id` 与 `cwd`。模型和权限模式变更时可以带原会话 ID 重开 CLI。
+    /// 换了机器或目录则必须
     /// 重开 —— 转录在 CLI 那边是按「机器 + 目录」分开存的，跨目标 `--resume`
     /// 一定找不到会话。
     ///
@@ -678,7 +682,6 @@ impl TauriSink {
             return false;
         }
         // 摘单：晚了进来的用户点击会得到「已失效」，而不是重复回一条裁决。
-        self.shared.forget(request_id);
         record_local(
             &self.app,
             &self.shared,
@@ -731,7 +734,7 @@ impl TauriSink {
 
     /// 「等你批准」通知。**四道门**：开关、窗口不在前台、待批单从 0 变 1、20 秒节流。
     ///
-    /// 🔴 为什么需要它：审批请求 60 秒不处理 CLI 就自动拒绝，而此前**轮结束有桌面
+    /// 为什么需要它：审批请求等待用户，而此前**轮结束有桌面
     /// 通知、等批准没有**。多会话下用户在别的 pane 或别的应用里，唯一的线索是侧栏
     /// 一个 6px 圆点 —— 超时就是一次静默失败：任务被拒了，人还以为在跑。
     ///
@@ -774,7 +777,7 @@ impl TauriSink {
 /// 「等你批准」通知的标题与正文。
 ///
 /// 标题带会话目录的末段：多会话并存时，「等你批准」这四个字得能回答「**哪一条**」。
-/// 正文只说三件事：什么工具、动什么、会怎样（60 秒自动拒绝）。
+/// 正文显示工具与操作摘要，并提示回到对话处理。
 fn ask_notify_text(
     cwd: Option<&str>,
     tool_name: &str,
@@ -809,9 +812,9 @@ fn ask_notify_text(
     }
 
     let body = if what.is_empty() {
-        format!("{tool_name}　60 秒内不处理会自动拒绝。")
+        format!("{tool_name}　打开对话查看并处理。")
     } else {
-        format!("{tool_name}　{what}\n60 秒内不处理会自动拒绝。")
+        format!("{tool_name}　{what}\n打开对话查看并处理。")
     };
     (title, body)
 }
@@ -850,6 +853,7 @@ pub struct Launch {
 /// 对话会话管理器。
 pub struct CcSession {
     pub(super) steering_epoch: AtomicU64,
+    target_change: tokio::sync::Mutex<()>,
     shared: Arc<Shared>,
     /// 当前的 IO 挂载点。`None` = 没有在跑的进程。
     ///
@@ -875,6 +879,7 @@ impl CcSession {
         Self {
             shared: Shared::new(),
             steering_epoch: AtomicU64::new(0),
+            target_change: tokio::sync::Mutex::new(()),
             live: StdMutex::new(None),
         }
     }
@@ -911,6 +916,13 @@ impl CcSession {
             .lock()
             .map(|g| g.as_ref().map(Transport::is_alive).unwrap_or(false))
             .unwrap_or(false)
+    }
+
+    /// Keep launch, reset and history adoption from replacing each other's target.
+    pub fn try_change_target(&self) -> Result<tokio::sync::MutexGuard<'_, ()>, String> {
+        self.target_change
+            .try_lock()
+            .map_err(|_| "正在打开或启动此会话，请稍后重试".into())
     }
 
     /// 起一轮。已在跑则拒绝 —— 两个进程写同一份 `~/.claude/projects` 会互相踩。
@@ -967,7 +979,19 @@ impl CcSession {
     pub fn respond(&self, request_id: &str, verdict: &Verdict) -> Result<(), String> {
         let guard = self.live.lock().map_err(|_| "会话状态已锁死".to_string())?;
         let t = guard.as_ref().ok_or("这一轮已经结束，无法再批准")?;
-        t.respond(request_id, verdict)
+        // Serialize acknowledgement with the other verdict paths. A failed write leaves the
+        // request available for retry, and a concurrent click cannot send a second verdict.
+        let mut pending = self
+            .shared
+            .pending
+            .lock()
+            .map_err(|_| "审批状态不可用".to_string())?;
+        if !pending.contains_key(request_id) {
+            return Err("这条请求已撤回或已处理".into());
+        }
+        t.respond(request_id, verdict)?;
+        pending.remove(request_id);
+        Ok(())
     }
 
     pub async fn stop_task(&self, task_id: &str, token: &str) -> Result<String, String> {
@@ -1323,7 +1347,7 @@ mod tests {
         }
     }
 
-    /// 通知正文只说三件事：什么工具、动什么、会怎样（60 秒自动拒绝）。
+    /// 通知正文显示工具与操作摘要，并提示回到对话处理。
     /// 多会话并存时标题还要能回答「**哪一条**」—— 所以带目录末段。
     #[test]
     fn ask_notify_text_names_session_and_tool() {
@@ -1332,7 +1356,7 @@ mod tests {
         assert_eq!(title, "CC 等你批准（desktop）");
         // 只留后两段：绝对路径会把通知撑爆，末两段已经能定位。
         assert!(body.contains("src/a.ts"), "{body}");
-        assert!(body.contains("60 秒内不处理会自动拒绝"), "{body}");
+        assert!(body.contains("打开对话查看并处理"), "{body}");
         assert!(!body.contains("/repo/desktop/src"), "{body}");
     }
 
@@ -1422,6 +1446,17 @@ mod tests {
         assert!(!snap.running);
         assert!(snap.events.is_empty());
         assert!(snap.resume_id.is_none());
+    }
+
+    #[test]
+    fn target_changes_are_serialized_per_session() {
+        let first = CcSession::new();
+        let second = CcSession::new();
+        let active = first.try_change_target().unwrap();
+        assert!(first.try_change_target().is_err());
+        assert!(second.try_change_target().is_ok());
+        drop(active);
+        assert!(first.try_change_target().is_ok());
     }
 
     #[test]

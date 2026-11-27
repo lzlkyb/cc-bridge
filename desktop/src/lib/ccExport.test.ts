@@ -99,7 +99,7 @@ describe("conversationMarkdown", () => {
   it("审批 / 提问卡不进导出", () => {
     const md = conversationMarkdown(
       [
-        { kind: "approval", id: "r1", toolName: "Bash", input: { command: "ls" }, reason: "要跑命令", expiresInSec: 60 },
+        { kind: "approval", id: "r1", toolName: "Bash", input: { command: "ls" }, reason: "要跑命令" },
         ai("继续"),
       ],
       META,

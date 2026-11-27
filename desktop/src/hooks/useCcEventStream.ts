@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { invoke, listen } from "../lib/tauri";
 import {
   CC_EVENT_NAME,
   type CcEvent,
   type CcEventPayload,
+  type CcHistoryOpened,
   type CcRestore,
   type CcRestoreReq,
   type CcSnapshot,
@@ -75,8 +76,8 @@ export function useCcEventStream(
   const [ready, setReady] = useState(false);
   /** 上次进程留下的会话（`cc_restore` 的返回）。`null` = 这次是全新开始。 */
   const [restored, setRestored] = useState<CcRestore | null>(null);
-  /** 打开一条历史后要清掉它：当前会话已经就是那条历史了，再弹恢复提示纯属噪音。 */
-  const clearRestored = useCallback(() => setRestored(null), []);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [terminalOpened, setTerminalOpened] = useState<CcHistoryOpened | null>(null);
   /**
    * 本路对话的内部 id（`cc_new_session` 铸发）。命令类回调（start / respond /
    * interrupt / reset / openHistory）全部带它寻址；`null` = 还没铸发完。
@@ -175,7 +176,11 @@ export function useCcEventStream(
           unlisten();
           return;
         }
-        const snap = await invoke<CcSnapshot>("cc_snapshot", { sessionId: sid });
+        const plan = restore.current;
+        const imported = plan.kind === "terminal"
+          ? await invoke<CcHistoryOpened>("cc_history_open", { sessionId: sid, historyId: plan.row.sessionId })
+          : null;
+        const snap = imported?.snapshot ?? await invoke<CcSnapshot>("cc_snapshot", { sessionId: sid });
         if (!alive) return;
         seqRef.current = snap.nextSeq;
         replayedUpTo.current = snap.nextSeq;
@@ -183,7 +188,6 @@ export function useCcEventStream(
         // 切页回来 / 前端热重载时 ring 里就是当前会话，它一定不比库里的旧 ——
         // 混用会让界面闪回上一次运行的内容。
         let fromDb: CcRestore | null = null;
-        const plan = restore.current;
         // `seed`（分叉出来的新会话）**不读库**：它是一条全新会话，库里没有它，
         // 读「最近那条」反而会把源会话的内容灌进来。
         if (snap.nextSeq === 0 && (plan.kind === "latest" || plan.kind === "row")) {
@@ -205,11 +209,12 @@ export function useCcEventStream(
         dispatch({
           type: "replay",
           events: fromDb?.events ?? snap.events,
-          ...(fromDb ? { historical: true } : {}),
-          dropped: fromDb ? fromDb.dropped : snap.dropped,
+          ...(fromDb || imported ? { historical: true } : {}),
+          dropped: (fromDb?.dropped ?? snap.dropped) + (imported?.trimmed ?? 0),
           running: snap.running,
         });
         if (fromDb) setRestored(fromDb);
+        if (imported) setTerminalOpened(imported);
         readyToApply = true;
         for (const p of buffered) apply(p);
         buffered.length = 0;
@@ -217,7 +222,11 @@ export function useCcEventStream(
         flush();
         setReady(true);
       } catch (e) {
-        if (alive) dispatch({ type: "error", message: `订阅对话事件失败：${e}` });
+        if (!alive) return;
+        setLoadFailed(true);
+        dispatch({ type: "error", message: restore.current.kind === "terminal"
+          ? `无法打开终端历史：${e}。请关闭此标签后重试。`
+          : `订阅对话事件失败：${e}` });
       }
     })();
 
@@ -230,5 +239,5 @@ export function useCcEventStream(
     };
   }, [dispatch, restore, qc]);
 
-  return { ready, restored, clearRestored, seqRef, sessionIdRef };
+  return { ready, restored, terminalOpened, loadFailed, sessionIdRef };
 }

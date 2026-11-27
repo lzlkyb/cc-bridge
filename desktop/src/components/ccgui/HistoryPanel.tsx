@@ -6,6 +6,7 @@ import { isOutsideDismiss } from "../../lib/utils";
 import { formatRelativeSecs } from "../../lib/utils";
 import { highlightSegments } from "../../lib/ccHighlight";
 import { Icon } from "../ui/icon";
+import type { CcStoredSummary } from "../../lib/ccEventTypes";
 import { useAnchoredPopover } from "../../hooks/useAnchoredPopover";
 
 /**
@@ -40,11 +41,14 @@ import { useAnchoredPopover } from "../../hooks/useAnchoredPopover";
 const SEARCH_DEBOUNCE_MS = 150;
 
 export function HistoryPanel({
-  onOpen,
+  onOpen, onOpenStored, stored = [], targetLabels,
   onClose,
   anchorRef,
 }: {
   onOpen: (row: CcHistoryRow) => void;
+  onOpenStored?: (id: number) => void;
+  stored?: CcStoredSummary[];
+  targetLabels?: Record<string, string>;
   onClose: () => void;
   /** 历史按钮的容器。浮层按它的 rect 定位（fixed + clamp）。 */
   anchorRef: RefObject<HTMLElement>;
@@ -53,9 +57,10 @@ export function HistoryPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [source, setSource] = useState<"all" | "app" | "terminal">(onOpenStored ? "all" : "terminal");
   const boxRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(boxRef, { onEscape: onClose });
   const style = useAnchoredPopover(anchorRef, true, { width: 380, align: "end", maxH: 420 });
+  useFocusTrap(boxRef, { enabled: !!style, initialFocus: "input", onEscape: onClose });
   /** 请求序号：慢的全量扫描可能晚于快的过滤查询返回，旧响应回来必须丢弃，
    *  否则搜索框已清空、列表却停在过期的过滤结果上。 */
   const reqSeqRef = useRef(0);
@@ -80,29 +85,39 @@ export function HistoryPanel({
   // 重复调用的成本接近零，但打字过程中每个键都扫一遍仍属浪费。
   // 清空搜索走 0ms：用户删完最后一个字时，列表应当立刻回来。
   useEffect(() => {
+    if (source === "app") { reqSeqRef.current++; return; }
     const t = setTimeout(() => void load(query), query === "" ? 0 : SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [query, load]);
+  }, [query, load, source]);
 
-  // 点外面关掉 + Esc 关掉。用 `pointerdown` 而不是 `click`：
+  // 点外面关掉。用 `pointerdown` 而不是 `click`：
   // 用户按下的那一刻就该收，等 `click` 会先看到消息区被点中。
   // 开关按钮自身不算外点（`isOutsideDismiss` 的理由写在那边）。
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
       if (isOutsideDismiss(e, boxRef.current, "history")) onClose();
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
     document.addEventListener("pointerdown", onDown, true);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onDown, true);
-      document.removeEventListener("keydown", onKey);
-    };
+    return () => document.removeEventListener("pointerdown", onDown, true);
   }, [onClose]);
 
-  const rows = data?.rows ?? [];
+  const term = query.trim().toLowerCase();
+  const appRows = source === "terminal" ? [] : stored.filter(row =>
+    [row.title, row.preview, row.cwd, targetLabels?.[row.connectionId]].some(value => value?.toLowerCase().includes(term)) || !term);
+  const localIds = new Set(appRows.filter(row => !row.connectionId).map(row => row.sessionId));
+  const rows = source === "app" ? [] : (data?.rows ?? []).filter(row => row.connectionId || !localIds.has(row.sessionId));
+  const items = [
+    ...appRows.map(row => ({ key: `app:${row.rowId}`, at: row.updatedAt, count: row.messageCount,
+      title: row.title || "（无标题）", preview: row.preview, cwd: row.cwd, badge: row.archivedAt != null ? "应用内 · 已归档" : "应用内",
+      machine: targetLabels?.[row.connectionId] ?? (row.connectionId ? "SSH · 连接已移除" : "本机"),
+      open: onOpenStored ? () => onOpenStored(row.rowId) : undefined })),
+    ...rows.map(row => ({ key: `terminal:${row.connectionId}:${row.sessionId}`, at: row.lastUsedAt, count: row.messageCount,
+      title: row.title, preview: row.preview, cwd: row.cwd, badge: "终端",
+      machine: targetLabels?.[row.connectionId] ?? (row.connectionId ? "SSH" : "本机"),
+      open: row.connectionId ? undefined : () => onOpen(row) })),
+  ].sort((a, b) => b.at - a.at);
+  const scanBusy = source !== "app" && loading;
+  const scanError = source === "app" ? null : error;
 
   /**
    * 🔴 定位交给 `useAnchoredPopover`（fixed + 视口 clamp），不能用 `absolute right-0`。
@@ -122,15 +137,11 @@ export function HistoryPanel({
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2">
         <Icon name="history" size={12} className="shrink-0 opacity-70" />
         <span className="text-[12px] font-semibold text-foreground">历史对话</span>
-        {data && (
-          <span className="text-[11px] text-muted-foreground">
-            {query ? `命中 ${rows.length} 条` : `${rows.length} 条 · ${data.tookMs}ms`}
-          </span>
-        )}
+        <span className="text-[11px] text-muted-foreground">{term ? "命中 " : ""}{items.length} 条</span>
         <button
           type="button"
           onClick={() => void load(query)}
-          disabled={loading}
+          disabled={scanBusy || source === "app"}
           title="重新扫描"
           aria-label="重新扫描"
           className="ml-auto flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
@@ -158,7 +169,6 @@ export function HistoryPanel({
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索标题与摘要…"
             aria-label="搜索历史会话"
-            autoFocus
             className="h-[24px] w-full bg-transparent text-[12px] text-foreground outline-none placeholder:text-muted-foreground"
           />
           {query !== "" && (
@@ -175,63 +185,42 @@ export function HistoryPanel({
         </div>
       </div>
 
+      {onOpenStored && <div className="flex gap-1 border-b border-border px-3 py-1.5" aria-label="历史来源">
+        {([["all", "全部"], ["app", "应用内"], ["terminal", "终端"]] as const).map(([id, label]) =>
+          <button type="button" key={id} aria-pressed={source === id} className="rounded-md px-2.5 py-1 text-xs aria-pressed:bg-primary/10 aria-pressed:text-primary" onClick={() => setSource(id)}>{label}</button>)}
+      </div>}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading && rows.length === 0 && (
+        {scanBusy && items.length === 0 && (
           <p className="px-3 py-6 text-center text-[11px] text-muted-foreground">正在扫描…</p>
         )}
-        {error && (
-          <p className="px-3 py-6 text-center text-[11px] text-destructive-ink">{error}</p>
+        {scanError && (
+          <p className="px-3 py-4 text-center text-[11px] text-destructive-ink">{scanError}</p>
         )}
-        {!loading && !error && rows.length === 0 && (
+        {!scanBusy && !scanError && items.length === 0 && (
           <p className="px-3 py-6 text-center text-[11px] leading-[1.7] text-muted-foreground">
             {query
               ? `没有匹配「${query}」的会话。中文按 3 字片段匹配，记不全可以少打几个字。`
-              : data?.dirFound === false
+              : source !== "app" && data?.dirFound === false
                 ? "本机还没有 Claude Code 的转录目录。用对话页或终端聊过一次之后，这里就会出现记录。"
                 : "还没有历史会话。"}
           </p>
         )}
-        {rows.map((row) => (
-          <button
-            key={`${row.connectionId}:${row.sessionId}`}
-            type="button"
-            onClick={() => onOpen(row)}
-            className="flex w-full flex-col items-start gap-[3px] border-b border-border/60 px-3 py-2 text-left transition-colors last:border-0 hover:bg-muted/50"
-          >
-            <span className="line-clamp-2 w-full text-[12px] leading-[1.45] text-foreground">
-              <Highlighted text={row.title} query={query} />
-            </span>
-            {/* 摘要（首条用户消息）。搜索口径里它和标题并列，平时也有用 ——
-                看列表就知道那条会话聊过什么。 */}
-            {row.preview && (
-              <span className="line-clamp-2 w-full text-[11px] leading-[1.45] text-muted-foreground">
-                <Highlighted text={row.preview} query={query} />
-              </span>
-            )}
+        {items.map(row => (
+          <button key={row.key} type="button" onClick={row.open} disabled={!row.open}
+            className="flex w-full flex-col items-start gap-1 border-b border-border/60 px-3 py-2 text-left last:border-0 hover:bg-muted/50 disabled:opacity-65">
+            <span className="line-clamp-2 w-full text-xs text-foreground"><Highlighted text={row.title} query={query} /></span>
+            {row.preview && <span className="line-clamp-2 w-full text-[11px] text-muted-foreground"><Highlighted text={row.preview} query={query} /></span>}
             <span className="flex w-full items-center gap-2 text-[11px] text-muted-foreground">
-              <span className="shrink-0">{formatRelativeSecs(row.lastUsedAt)}</span>
-              <span className="shrink-0">·</span>
-              <span className="shrink-0">{row.messageCount} 轮</span>
-              {row.cwd && (
-                <>
-                  <span className="shrink-0">·</span>
-                  {/* cwd 可能很长：截断在中间没意义，直接尾部省略。 */}
-                  <span className="truncate font-mono opacity-80" title={row.cwd}>
-                    {row.cwd}
-                  </span>
-                </>
-              )}
-              {row.connectionId !== "" && (
-                <span className="ml-auto shrink-0 rounded bg-muted px-1 py-px opacity-80">
-                  远端
-                </span>
-              )}
+              <span className="shrink-0">{row.machine} · {formatRelativeSecs(row.at)} · {row.count} 轮</span>
+              {row.cwd && <span className="truncate" title={row.cwd}>{row.cwd}</span>}
+              <span className="ml-auto shrink-0">{row.badge}</span>
             </span>
+            {!row.open && <span className="text-[11px] text-muted-foreground">此记录请在对应连接的终端打开。</span>}
           </button>
         ))}
       </div>
 
-      {data && data.failed > 0 && (
+      {source !== "app" && data && data.failed > 0 && (
         <p className="shrink-0 border-t border-border bg-warning/[.06] px-3 py-1.5 text-[11px] leading-[1.5] text-warning-ink">
           有 {data.failed} 份转录读不开（权限或文件损坏），它们不在上面的列表里。
         </p>

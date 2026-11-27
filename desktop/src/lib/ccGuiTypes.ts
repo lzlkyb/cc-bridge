@@ -69,8 +69,8 @@ export type CcApproval = {
   toolUseId?: string | null;
   /** 协议里的 `decision_reason`，原样展示 —— 用户要知道"为什么问我"。 */
   reason: string;
-  /** 审批有超时（CLI 侧 60s），到点自动拒绝。界面必须显式呈现，不能只转圈。 */
-  expiresInSec: number;
+  /** The CLI explicitly withdrew this request. */
+  canceled?: boolean;
   /**
    * 提问的题目。只有 `AskUserQuestion` 非空；普通工具审批没有这个字段。
    *
@@ -134,7 +134,7 @@ export type CcSession = {
 export const PERMISSION_MODE_LABEL: Record<CcPermissionMode, string> = {
   plan: "计划",
   default: "需批准",
-  acceptEdits: "自动改",
+  acceptEdits: "自动批准编辑",
   bypassPermissions: "全自动",
 };
 

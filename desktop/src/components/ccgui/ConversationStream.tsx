@@ -14,6 +14,7 @@ import { MessageList } from "./MessageList";
 import { StreamHud } from "./StreamHud";
 import { SelectionQuote } from "./SelectionQuote";
 import { clawdActivity } from "../../lib/ccClawd";
+import { usePendingRequestReveal } from "../../hooks/usePendingRequestReveal";
 import { ClawdWorkspace } from "./ClawdWorkspace";
 import type { StopTask } from "../../hooks/useClawdTaskStop";
 
@@ -39,7 +40,7 @@ export function ConversationStream({
   probing,
   retryProbe,
   onPickPrompt,
-  onRespond,
+  onRespond, reviewRequest,
   onForkMessage,
   onResend,
   cwd,
@@ -59,12 +60,13 @@ export function ConversationStream({
   retryProbe: () => void;
   /** 空状态里点示例 prompt：填进输入框（不直接发送）。 */
   onPickPrompt: (text: string) => void;
+  reviewRequest?: { id: string; nonce: number } | null;
   onRespond: (
     requestId: string,
     decision: "allow" | "deny",
     message?: string,
     answers?: Record<string, string[]>,
-  ) => void;
+  ) => void | Promise<void>;
   /** 编辑重发 / 从此处分叉（3-3）。见 `MessageList`。 */
   onForkMessage: (index: number, text: string) => void;
   /** 在原地重发最后一条用户消息。见 `MessageList`。 */
@@ -90,6 +92,7 @@ export function ConversationStream({
    * 换一条会话会直接全量渲染。
    */
   const win = useMessageWindow(view.messages.length, `${view.rowId ?? ""}:${view.sessionId ?? ""}`);
+  usePendingRequestReveal(scrollRef, reviewRequest, win.expandAll);
   const loadEarlier = useCallback(() => {
     const el = scrollRef.current;
     const before = el?.scrollHeight ?? 0;

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { isEditableTarget } from "../lib/utils";
+import { isEditableTarget, isImeComposing } from "../lib/utils";
 
 /** CC 对话页的窗口级快捷键入参。 */
 export type CcShortcutHandlers = {
@@ -9,6 +9,7 @@ export type CcShortcutHandlers = {
   onCycleSession?: (delta: 1 | -1) => void;
   /** 收起 / 展开会话侧栏。 */
   onToggleSidebar?: () => void;
+  isVisible?: () => boolean;
 };
 
 /**
@@ -51,12 +52,12 @@ export type CcShortcutHandlers = {
 export function useCcShortcuts({
   onNewSession,
   onCycleSession,
-  onToggleSidebar,
+  onToggleSidebar, isVisible,
 }: CcShortcutHandlers) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
-      if (!mod || e.altKey || e.repeat) return;
+      if (isVisible?.() === false || !mod || e.altKey || e.repeat || isImeComposing(e) || document.querySelector("dialog[open]")) return;
 
       // Ctrl+Tab / Ctrl+Shift+Tab：切会话（Shift 反向）。
       if (e.code === "Tab" || e.key === "Tab") {
@@ -76,12 +77,11 @@ export function useCcShortcuts({
 
       if (e.code !== "KeyN" && e.key.toLowerCase() !== "n") return;
       if (e.shiftKey) return;
-      // 焦点在输入区一律让路：输密码、敲命令参数时被快捷键劫持是最烦人的一类 bug。
-      if (isEditableTarget(e.target)) return;
+      if (isEditableTarget(e.target) && !(e.target instanceof HTMLElement && e.target.closest("[data-cc-composer]"))) return;
       e.preventDefault();
       onNewSession();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onNewSession, onCycleSession, onToggleSidebar]);
+  }, [onNewSession, onCycleSession, onToggleSidebar, isVisible]);
 }

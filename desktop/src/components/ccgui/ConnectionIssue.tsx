@@ -40,8 +40,11 @@ export function ConnectionIssue({
   onDismissStderr: () => void;
 }) {
   if (!errors.length && !stderr.length) return null;
-  const auth = /permission denied|authentication failed|认证失败/i.test([...errors, ...stderr].join("\n"));
-  const title = auth ? "身份验证失败" : unavailable ? "当前环境暂不可用" : "本次操作未完成";
+  const combined = [...errors, ...stderr].join("\n");
+  const sshAuth = /(?:permission denied \(publickey|SSH[^\n]*(?:authentication failed|认证失败))/i.test(combined);
+  const disconnected = /(?:SSH[^\n]*(?:断开|连接失败|timed out|closed)|connection reset by peer)/i.test(combined);
+  const pathPermission = !sshAuth && /permission denied|access is denied|EACCES|访问被拒绝/i.test(combined);
+  const title = sshAuth ? "SSH 身份验证失败" : disconnected ? "连接已中断" : pathPermission ? "访问权限不足" : unavailable ? "Claude Code 环境暂不可用" : "本次操作未完成";
   return (
     <section className="cc-connection-issue" aria-label={title}>
       <div className="cc-connection-issue-title">
@@ -54,7 +57,7 @@ export function ConnectionIssue({
         )}
       </div>
       <p>
-        {auth ? "请检查连接凭据或密钥。" : unavailable ? "请检查连接和 Claude Code 是否可用。" : "展开详情查看原因，再决定如何继续。"}
+        {sshAuth ? "请检查连接账号、密码或密钥。" : disconnected ? "重新检查连接，确认在线后再发送。" : pathPermission ? "检查工作目录及目标文件的访问权限。" : unavailable ? "请检查 Claude Code 是否已安装并可用。" : "查看错误详情，再决定如何继续。"}
         你的对话和草稿已保留。
       </p>
       {errors.length > 0 && (
@@ -72,14 +75,14 @@ export function ConnectionIssue({
         </ul>
       )}
       <div className="cc-connection-issue-actions">
-        {unavailable && onRetry && (
+        {(unavailable || disconnected || sshAuth) && onRetry && (
           <button type="button" disabled={retrying} onClick={onRetry}>
             {retrying ? "正在检查…" : "重新检查环境"}
           </button>
         )}
-        {unavailable && onSettings && (
+        {(unavailable || disconnected || sshAuth) && onSettings && (
           <button type="button" onClick={onSettings}>
-            检查连接配置
+            查看 SSH 连接
           </button>
         )}
         <details>

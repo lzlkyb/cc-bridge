@@ -100,13 +100,13 @@ describe("ccReducer", () => {
     expect(legacy.resolved.r1?.decision).toBe("allow");
   });
 
-  /// CLI 超时撤回时卡片必须消失：留着转圈的卡会让用户反复点一个死按钮。
-  it("撤回后卡片移除", () => {
+  it("撤回后记录结果，待处理列表不再包含这条请求", () => {
     const v = run([
       { kind: "permissionAsk", requestId: "r1", toolName: "Bash", input: {}, toolUseId: null, reason: null },
       { kind: "permissionCancel", requestId: "r1" },
     ]);
-    expect(v.messages).toHaveLength(0);
+    expect(v.messages).toMatchObject([{ id: "r1", canceled: true }]);
+    expect(pendingApprovals(v)).toEqual([]);
   });
 
   it("turnEnd 累加 token 与花费并落定 running", () => {

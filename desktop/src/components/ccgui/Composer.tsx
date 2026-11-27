@@ -46,13 +46,12 @@ function ComposerImpl({
   onPolish,
   mentionSource,
   prefill,
-  draftKey,
+  draftKey, onUnsentChange,
   controls,
   footer,
   queueItems,
   onEditQueue,
-  onRemoveQueue, onMoveQueue, pendingCount,
-  onShowPending,
+  onRemoveQueue, onMoveQueue, pendingRequests, sendBlocked,
 }: {
   /**
    * 发一条消息。`images` 是这条消息附的图（可能为空数组）。
@@ -96,16 +95,17 @@ function ComposerImpl({
   /** 草稿落盘的键（`CcPane` 传 `paneKey`）：关窗口 / 重启后回来，字还在。不负责
    *  切 app 标签（`CcGuiTab` 是 `keepMounted`）；取舍见 `lib/ccDraft.ts`。 */
   draftKey: string;
+  onUnsentChange?: (unsent: "text" | "attachments" | null) => void;
   controls?: ReactNode;
   footer?: ReactNode;
   queueItems?: QueuedMessage[];
   onEditQueue?: (id: string, text: string) => boolean;
   onRemoveQueue?: (id: string) => void;
   onMoveQueue?: (id: string, direction: -1 | 1) => void;
-  pendingCount?: number;
-  onShowPending?: () => void;
+  pendingRequests?: ReactNode;
+  sendBlocked?: boolean;
 }) {
-  const [value, setValue] = useComposerDraft(draftKey);
+  const [value, setValue] = useComposerDraft(draftKey, !!onUnsentChange);
   /** 发送键偏好（Enter / Ctrl+Enter），全局记忆。 */
   const sendKey = useSendKey();
   const command = /^[!/]/.test(value.trimStart());
@@ -115,6 +115,8 @@ function ComposerImpl({
   /** 有图时发送按钮要能点亮 —— 这是唯一需要订阅的附件状态。 */
   const [hasImages, setHasImages] = useState(false);
   const [imagesBusy, setImagesBusy] = useState(false);
+  const unsent = hasImages || imagesBusy ? "attachments" : value.trim() ? "text" : null;
+  useEffect(() => onUnsentChange?.(unsent), [onUnsentChange, unsent]);
   /** 投递档位（补充 / 排队 / 立即调整）。发送本身见 `useComposerSend`。 */
   const [delivery, setDelivery] = useState<CcInputMode>(onSteer ? "steer" : "queue");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -191,6 +193,7 @@ function ComposerImpl({
   return (
     <div ref={boxRef} className="cc-composer-dock">
       <InputReceipts inputs={inputs} onRecover={text => { setValue(cur => cur.trim() ? `${cur}\n${text}` : text); areaRef.current?.focus(); }} />
+      {pendingRequests}
       <ComposerNotices
         queueCount={queueCount}
         queuePaused={queuePaused}
@@ -200,8 +203,6 @@ function ComposerImpl({
         queueItems={queueItems}
         onEditQueue={onEditQueue}
         onRemoveQueue={onRemoveQueue} onMoveQueue={onMoveQueue}
-        pendingCount={pendingCount}
-        onShowPending={onShowPending}
       />
       {/* 复合输入面独立承载材质，避免通用卡片给 textarea 再铺一层背景。 */}
       <div
@@ -244,7 +245,7 @@ function ComposerImpl({
           running={running}
           stopping={stopping}
           onInterrupt={onInterrupt}
-          canSend={!!value.trim() || hasImages}
+          canSend={!sendBlocked && (!!value.trim() || hasImages)}
           onSend={() => { void send(); areaRef.current?.focus(); }}
           onAttach={() => fileRef.current?.click()}
           onMention={insertMention}

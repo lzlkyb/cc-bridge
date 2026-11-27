@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "../../lib/tauri";
 import type { StatusResponse } from "../../lib/types";
 import { useCcSession } from "../../hooks/useCcSession";
 import { useCcProbe } from "../../hooks/useCcProbe";
+import { readCwd } from "../../lib/ccGuiPrefs";
 import { useCcPanePrefs } from "../../hooks/useCcPanePrefs";
 import { useCcForkSeedRun } from "../../hooks/useCcFork";
 import { useCcPolish } from "../../hooks/useCcPolish";
@@ -40,7 +41,7 @@ import { CcConversationLayout } from "../ccgui/CcConversationLayout";
  * 运行配置（目标 / 目录 / 模型 / 权限）在 `useCcPanePrefs`，这里只剩接线与三段布局。
  */
 export function CcPane({
-  paneKey,
+  paneKey, reviewRequest,
   active,
   restore,
   conflict,
@@ -48,6 +49,7 @@ export function CcPane({
   onMeta,
   onNewSession,
   onForkSession,
+  onOpenHistory, onOpenStored, onOpenEnvironment,
   onNavigate,
   onToggleSidebar, sidebarExpanded, compact,
 }: {
@@ -55,6 +57,7 @@ export function CcPane({
   sidebarExpanded?: boolean;
   compact?: boolean;
   paneKey: string;
+  reviewRequest?: { id: string; nonce: number } | null;
   active: boolean;
   /**
    * 首次挂载时从库里载入哪一条（三态见 `CcRestoreReq`）。**只在创建那一刻有意义**：
@@ -77,6 +80,9 @@ export function CcPane({
   onNewSession: () => void;
   /** 从本 pane 的某条消息分叉出去（3-3）：宿主负责新开一条 pane。 */
   onForkSession: (seed: CcForkSeed) => void;
+  onOpenHistory: (row: CcHistoryRow) => void;
+  onOpenStored: (rowId: number) => void;
+  onOpenEnvironment: (connectionId: string, cwd: string) => void;
   onNavigate: (tab: string) => void;
 }) {
   const {
@@ -91,7 +97,8 @@ export function CcPane({
     applyRestore,
     applySeed,
     applyOpenedCwd,
-  } = useCcPanePrefs();
+  } = useCcPanePrefs(restore);
+  const [unsent, setUnsent] = useState<"text" | "attachments" | null>(null);
   const [findRequest, setFindRequest] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   /** 空状态示例 prompt 的预填（`nonce` 递增：同一句连点两次也要重填）。 */
@@ -114,7 +121,7 @@ export function CcPane({
     },
     restoreRef,
   );
-  const { view, restored, reportError } = session;
+  const { view, restored, terminalOpened, reportError } = session;
 
   /** 快捷键标签的平台来源（Ctrl+N / ⌘N）。与 App 共用 ["status"] 缓存不发请求；取舍见 lib/platform.ts。 */
   const { data: platform } = useQuery<StatusResponse, Error, string | undefined>({
@@ -125,9 +132,11 @@ export function CcPane({
   const newSessionHint = shortcutLabel(platform, "N");
 
   /** 恢复出来的会话连同它的目标一起还原（含那三条容易踩的规则，见 hook 注释）。 */
-  useEffect(() => {
+  // The first interactive frame must already use the restored host, directory and permissions.
+  useLayoutEffect(() => {
     if (restored) applyRestore(restored);
-  }, [restored, applyRestore]);
+    if (terminalOpened) applyOpenedCwd(terminalOpened.cwd ?? "");
+  }, [restored, terminalOpened, applyRestore, applyOpenedCwd]);
 
   /**
    * 分叉出来的 pane：继承源会话的运行配置 + 自动重跑那句话。
@@ -143,15 +152,18 @@ export function CcPane({
     start: session.start,
   });
 
-  /** 打开一条历史会话，并把**目标**一起切到它那边（远端转录会被拒，见 hook）。 */
-  const onOpenHistory = useCallback(
-    (row: CcHistoryRow) => {
-      void session.openHistory(row.sessionId, row.connectionId).then((res) => {
-        if (res) applyOpenedCwd(res.cwd ?? "");
-      });
-    },
-    [session, applyOpenedCwd],
-  );
+  // A pane with an existing transcript or queued work cannot change execution ownership.
+  const ownsConversation = session.busy || view.running || view.messages.length > 0 || !!view.sessionId || session.queue.length > 0;
+  const changeTarget = (id: string) => {
+    if (id === targetId) return;
+    if (ownsConversation) onOpenEnvironment(id, readCwd(id));
+    else setTargetId(id);
+  };
+  const changeCwd = (path: string) => {
+    if (path === cwd.trim()) return;
+    if (ownsConversation) onOpenEnvironment(targetId, path);
+    else setCwdPersist(path);
+  };
 
   // 进页面 / 换目标时探一次 + 手动重试。`runProbe` 是 useCallback 稳定的，不会反复触发。
   const { probing, retry: retryProbe } = useCcProbe(session.runProbe, targetId);
@@ -171,7 +183,7 @@ export function CcPane({
 
   // 侧栏元信息 / 会话条 / 历史行号 / 分叉切点全在 `useCcPaneViewModel`（2026-11 外移，
   // 那个文件头注写明了三条容易踩的规则）。
-  const { metaBase, onForkMessage, bar } = useCcPaneViewModel({
+  const { metaBase, rowId, onForkMessage, bar } = useCcPaneViewModel({
     paneKey,
     view,
     session,
@@ -184,6 +196,7 @@ export function CcPane({
     restore,
     onMeta,
     onForkSession,
+    unsent,
   });
 
   return (
@@ -194,16 +207,16 @@ export function CcPane({
       <CcPaneHead
         onToggleSidebar={onToggleSidebar} sidebarExpanded={sidebarExpanded} compact={compact}
         onFind={() => setFindRequest((n) => n + 1)}
-        connectionStatus={probing ? "检查连接中…" : session.probe?.found === false ? "环境不可用" : session.probe?.found ? "已连接" : undefined}
+        connectionStatus={probing ? "检查连接中…" : session.probe?.found === false ? "环境不可用" : session.probe?.found ? "Claude Code 可用" : undefined}
         unavailable={session.probe?.found === false} probing={probing} onRetry={retryProbe}
-        onSettings={targetId ? () => onNavigate("connect") : undefined}
+        onSettings={targetId ? () => onNavigate("terminal") : undefined}
         bar={bar}
         view={view}
         title={metaBase.title}
         targets={targets}
         targetId={targetId}
-        onTargetChange={setTargetId}
-        onCwdChange={setCwdPersist}
+        onTargetChange={changeTarget}
+        onCwdChange={changeCwd}
         mode={mode}
         onModeChange={setMode}
         onModelChange={setModel}
@@ -211,14 +224,14 @@ export function CcPane({
         onNewSession={onNewSession}
         newSessionHint={newSessionHint}
         conflict={conflict}
-        onOpenHistory={onOpenHistory}
+        onOpenHistory={onOpenHistory} onOpenStored={onOpenStored} bridgeSessionId={session.sessionIdRef.current}
         onJumpTo={jumpTo}
         onDismissError={session.dismissError}
         onDismissStderr={session.clearStderr}
       />
 
       <CcConversationLayout><ConversationStream
-        findRequest={findRequest} scrollRef={scrollRef}
+        reviewRequest={reviewRequest} findRequest={findRequest} scrollRef={scrollRef}
         view={view}
         sending={session.busy} activityStartedAt={session.activityStartedAt} stopState={session.stopState} onStopTask={(taskId, stopToken) => invoke<string>("cc_stop_task", { sessionId: session.sessionIdRef.current, taskId, stopToken })}
         probe={session.probe}
@@ -226,23 +239,24 @@ export function CcPane({
         retryProbe={retryProbe}
         onPickPrompt={(text) => setPrefill((p) => ({ text, nonce: (p?.nonce ?? 0) + 1 }))}
         onRespond={(id, decision, reason, answers) =>
-          void session.respond(id, decision, reason, answers)
+          session.respond(id, decision, reason, answers)
         }
         onForkMessage={onForkMessage}
         // 原地重发不带图（原图不落盘，历史里只有缩略图），气泡上的 title 已说明。
         onResend={(text) => void session.start(text, [])}
         cwd={cwd}
-        onCwdChange={setCwdPersist}
+        onCwdChange={changeCwd}
         isRemote={Boolean(targetId)}
         newSessionHint={newSessionHint}
       />
 
-      <CcPaneComposer session={session} scrollRef={scrollRef} model={model} mode={mode}
+      <CcPaneComposer session={session} model={model} mode={mode}
         setModel={setModel} setMode={setMode} sendHint={shortcutLabel(platform, "Enter")}
         onPolish={onPolish}
+        loadingSession={!session.ready}
         mentionSource={{ connectionId: targetId, cwd }}
         prefill={prefill}
-        draftKey={paneKey}
+        draftKey={rowId == null ? paneKey : `row-${rowId}`} onUnsentChange={setUnsent}
       />
     </CcConversationLayout></div></ConversationEnvironment.Provider>
   );

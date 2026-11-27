@@ -25,7 +25,7 @@
 //! **清单**，不是「全部调用」：读文件、搜索、失败的调用都不在里面。
 //! 至于「这轮都干了什么」，事件流自己知道。
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,48 @@ use crate::audit::{self, AuditEntry};
 use crate::backup;
 use crate::security::path;
 use crate::state::AppState;
+
+fn local_revert_path(
+    facts: &crate::cc_session::store::SessionFacts,
+    requested: &str,
+) -> Result<PathBuf, String> {
+    if !facts.connection_id.is_empty() {
+        return Err("这项改动属于 SSH 会话，无法通过本机文件撤销".into());
+    }
+    let path = Path::new(requested);
+    if path.is_absolute() {
+        return Ok(path.to_owned());
+    }
+    // Claude runs in the session's project directory. The desktop process may
+    // have a completely different current directory, so it cannot resolve this.
+    if path.as_os_str().is_empty()
+        || matches!(
+            path.components().next(),
+            Some(Component::Prefix(_) | Component::RootDir)
+        )
+    {
+        return Err("无法确认待撤销文件的完整路径".into());
+    }
+    let cwd = facts
+        .cwd
+        .as_deref()
+        .map(Path::new)
+        .filter(|p| p.is_absolute())
+        .ok_or("会话的工作目录无法确认，请在文件所在项目中撤销")?;
+    Ok(cwd.join(path))
+}
+
+fn bind_local_revert_path(
+    state: &AppState,
+    session_id: u64,
+    requested: &str,
+) -> Result<PathBuf, String> {
+    let session = state
+        .cc
+        .get(session_id)
+        .ok_or("会话已关闭，无法确认文件所在机器")?;
+    local_revert_path(&session.shared().facts(), requested)
+}
 
 /// 一条「可还原」的改动：审计里同时有备份与目标的那次调用。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -156,9 +198,11 @@ fn apply_patches(text: &str, patches: &[EditPatchArg]) -> Result<String, String>
 #[tauri::command]
 pub async fn restore_edit_patch(
     state: State<'_, Arc<AppState>>,
+    session_id: u64,
     target_path: String,
     patches: Vec<EditPatchArg>,
 ) -> Result<(), String> {
+    let local_target = bind_local_revert_path(&state, session_id, &target_path)?;
     if patches.is_empty() {
         return Err("没有要还原的改动".into());
     }
@@ -170,7 +214,7 @@ pub async fn restore_edit_patch(
     let allowed_extensions = config.allowed_extensions.clone();
     // 排除规则只约束远程 MCP 访问，不拦本机面板的还原（与 restore_file 同一条理由）。
     let resolved = path::resolve_safe_path_cached(
-        &target_path,
+        &local_target.to_string_lossy(),
         &state.cached_roots(),
         &[],
         config.whitelist_enabled,
@@ -254,9 +298,11 @@ pub async fn restore_edit_patch(
 #[tauri::command]
 pub async fn restore_delete_created(
     state: State<'_, Arc<AppState>>,
+    session_id: u64,
     target_path: String,
     expected_content: String,
 ) -> Result<(), String> {
+    let local_target = bind_local_revert_path(&state, session_id, &target_path)?;
     let config = state.config.read().await;
     let data_dir = state.data_dir.clone();
     let backup_dir = config.backup_dir.clone();
@@ -264,7 +310,7 @@ pub async fn restore_delete_created(
     let readonly_mode = config.readonly_mode;
     let allowed_extensions = config.allowed_extensions.clone();
     let resolved = path::resolve_safe_path_cached(
-        &target_path,
+        &local_target.to_string_lossy(),
         &state.cached_roots(),
         &[],
         config.whitelist_enabled,
@@ -320,6 +366,25 @@ pub async fn restore_delete_created(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn revert_resolves_relative_paths_in_the_session_and_rejects_ssh() {
+        use crate::cc_session::store::SessionFacts;
+        let cwd = std::env::temp_dir();
+        let mut facts = SessionFacts {
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            local_revert_path(&facts, "src/example.txt").unwrap(),
+            cwd.join("src/example.txt")
+        );
+        facts.connection_id = "remote".into();
+        assert!(local_revert_path(&facts, "src/example.txt").is_err());
+        facts.connection_id.clear();
+        facts.cwd = None;
+        assert!(local_revert_path(&facts, "src/example.txt").is_err());
+    }
+
     use super::*;
     fn entry(
         tool: &str,

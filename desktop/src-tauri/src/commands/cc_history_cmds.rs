@@ -118,6 +118,10 @@ pub async fn cc_history_open(
         .cc
         .get(session_id)
         .ok_or_else(|| format!("会话不存在（内部 id {session_id}）"))?;
+    let _target = cc.try_change_target()?;
+    if cc.snapshot().next_seq != 0 || cc.is_running() || cc.shared().turn_active() {
+        return Err("请在独立会话中打开历史，当前对话已保留".into());
+    }
     let st = Arc::clone(&*state);
     let sid_for_read = sid.clone();
     let (opened, row_id) = tauri::async_runtime::spawn_blocking(move || {
@@ -129,17 +133,6 @@ pub async fn cc_history_open(
     })
     .await
     .map_err(|e| format!("读取历史失败：{e}"))??;
-
-    // 🔴 必须先收掉还在跑的那一轮。
-    //
-    // 不收的后果两种，都很难看：进程在 `result` 之后还活着（实测它不会自己退），
-    // 它**后面的每一条事件**都会接着 push 进刚灌好的历史流水里 —— 用户看到的是
-    // 「三个月的旧会话 + 半段不相干的新回复」拼在一起。若那一轮还在输出，
-    // 更糟：历史的最后一条会被新内容持续覆盖。
-    //
-    // 顺序放在读正文**之后**：读文件要几十到几百毫秒，先杀进程再读，用户会看到
-    // 「点了历史，回复先断了，然后过了半秒才有内容」。反过来读失败时进程毫发无伤。
-    cc.interrupt();
 
     take_over(cc.shared(), &sid, &opened, row_id);
     Ok(CcHistoryOpened {

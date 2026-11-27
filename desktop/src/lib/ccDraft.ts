@@ -45,6 +45,7 @@
 
 /** 键前缀。`prune` 靠它认出「这是草稿」而不是别人的偏好项。 */
 const PREFIX = "ccbridge_composer_draft:";
+const revisions = new Map<string, number>();
 
 /**
  * 单条草稿的长度上限（字符）。
@@ -85,8 +86,17 @@ export function writeDraft(pane: string, text: string): void {
   }
 }
 
+/** A deleted draft must stay deleted even if its editor still has a pending flush. */
+export function bindDraftWriter(pane: string) {
+  const revision = revisions.get(pane);
+  return (text: string) => {
+    if (revisions.get(pane) === revision) writeDraft(pane, text);
+  };
+}
+
 /** 删掉某条 pane 的草稿（关掉这条会话时）。 */
 export function clearDraft(pane: string): void {
+  revisions.set(pane, (revisions.get(pane) ?? 0) + 1);
   try {
     localStorage.removeItem(keyOf(pane));
   } catch {
@@ -110,7 +120,7 @@ export function pruneDrafts(keep: string[]): void {
     const dead: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k && k.startsWith(PREFIX) && !alive.has(k)) dead.push(k);
+      if (k && k.startsWith(PREFIX) && !k.startsWith(keyOf("row-")) && !alive.has(k)) dead.push(k);
     }
     for (const k of dead) localStorage.removeItem(k);
   } catch {

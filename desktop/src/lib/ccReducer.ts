@@ -12,7 +12,6 @@
  */
 
 import {
-  APPROVAL_TIMEOUT_SEC,
   type CcEvent,
   type CcRetryInfo,
 } from "./ccEventTypes";
@@ -471,7 +470,6 @@ function applyEvent(view: CcView, event: CcEvent, at?: string): CcView {
             toolUseId: event.toolUseId ?? null,
             // `reason` 为空时也要给一句：空白比错误的解释更糟。
             reason: event.reason ?? "CC 需要你的确认才能继续。",
-            expiresInSec: APPROVAL_TIMEOUT_SEC,
           },
         ],
       };
@@ -499,7 +497,6 @@ function applyEvent(view: CcView, event: CcEvent, at?: string): CcView {
               questions.length > 0
                 ? "选好之后提交。不想答就跳过 —— 跳过后 CC 会自己决定。"
                 : "这条提问没有可读的选项，只能整体放行或拒绝。",
-            expiresInSec: APPROVAL_TIMEOUT_SEC,
             questions,
           },
         ],
@@ -507,13 +504,15 @@ function applyEvent(view: CcView, event: CcEvent, at?: string): CcView {
     }
 
     case "permissionCancel":
-      // CLI 撤回了请求（60s 超时或被打断）：卡片不能留着转圈。
+      // Keep the outcome visible even when a focused review closes during a CLI withdrawal.
       return {
         ...view,
-        messages: view.messages.filter((m) => !(m.kind === "approval" && m.id === event.requestId)),
+        messages: view.messages.map(m => m.kind === "approval" && m.id === event.requestId ? { ...m, canceled: true } : m),
       };
 
     case "permissionResolved":
+      if (view.resolved[event.requestId]?.decision === event.decision &&
+          Boolean(view.resolved[event.requestId]?.auto) === Boolean(event.auto)) return view;
       return {
         ...view,
         resolved: {
@@ -746,7 +745,7 @@ function settleOpen(view: CcView): CcMessage[] {
   let changed = false;
   const out: CcMessage[] = [];
   for (const m of view.messages) {
-    if (m.kind === "approval" && !view.resolved[m.id]) {
+    if (m.kind === "approval" && !m.canceled && !view.resolved[m.id]) {
       changed = true;
       continue;
     }
@@ -792,6 +791,6 @@ function anchorAfter(messages: CcMessage[]): string {
 export function pendingApprovals(view: Pick<CcView, "messages" | "resolved">): string[] {
   return view.messages
     .filter((m): m is Extract<CcMessage, { kind: "approval" }> => m.kind === "approval")
-    .filter((m) => !view.resolved[m.id])
+    .filter((m) => !m.canceled && !view.resolved[m.id])
     .map((m) => m.id);
 }

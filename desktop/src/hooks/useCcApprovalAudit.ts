@@ -41,6 +41,8 @@ export function useCcApprovalAudit(args: {
   cwd: string | null;
   /** **CC 的** session id（审计口径），不是 cc-bridge 内部 id。 */
   sessionId: string | null;
+  bridgeSessionId?: number | null;
+  isRemote?: boolean;
   /** 面板是否打开。关着就不查，理由见文件头。 */
   enabled: boolean;
 }): {
@@ -54,7 +56,7 @@ export function useCcApprovalAudit(args: {
   revertOne: (point: ApprovalPoint, file: ApprovalFileChange) => Promise<boolean>;
   revertGroup: (group: ApprovalGroup) => Promise<void>;
 } {
-  const { messages, resolved, cwd, sessionId, enabled } = args;
+  const { messages, resolved, cwd, sessionId, bridgeSessionId, isRemote, enabled } = args;
   const [reverted, setReverted] = useState<Record<string, true>>({});
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
@@ -71,8 +73,15 @@ export function useCcApprovalAudit(args: {
     // 面板关着就不算：`buildApprovalAudit` 要遍历整条流水并算 diff，
     // 流式期间每帧跑一遍纯属浪费（而结果只在打开的那一刻才被看见）。
     if (!enabled) return [] as ApprovalGroup[];
-    return buildApprovalAudit(messages, resolved, backups.data ?? [], cwd);
-  }, [enabled, messages, resolved, backups.data, cwd]);
+    const groups = buildApprovalAudit(messages, resolved, backups.data ?? [], cwd);
+    if (!isRemote) return groups;
+    return groups.map(group => ({ ...group, points: group.points.map(point => ({
+      ...point,
+      files: point.files.map(file => file.revert === "patch" || file.revert === "delete-created"
+        ? { ...file, revert: "none" as const, reason: "此文件由 SSH 上的 Claude Code 修改，请在对应机器确认后撤销。" }
+        : file),
+    })) }));
+  }, [enabled, messages, resolved, backups.data, cwd, isRemote]);
 
   /** 返回是否成功：整组撤销靠它决定要不要继续（成功的判断不能读 state —— 那是上一轮渲染的值）。 */
   const revertOne = useCallback(
@@ -85,16 +94,18 @@ export function useCcApprovalAudit(args: {
             backup_path: file.backupPath,
             target_path: file.path,
           });
-        } else if (file.revert === "patch") {
+        } else if (file.revert === "patch" && !isRemote && bridgeSessionId != null) {
           await invoke("restore_edit_patch", {
+            sessionId: bridgeSessionId,
             targetPath: file.path,
             patches: (file.patches ?? []).map((p) => ({
               oldString: p.oldString,
               newString: p.newString,
             })),
           });
-        } else if (file.revert === "delete-created") {
+        } else if (file.revert === "delete-created" && !isRemote && bridgeSessionId != null) {
           await invoke("restore_delete_created", {
+            sessionId: bridgeSessionId,
             targetPath: file.path,
             expectedContent: file.writtenContent ?? "",
           });
@@ -113,7 +124,7 @@ export function useCcApprovalAudit(args: {
         setBusyKey(null);
       }
     },
-    [],
+    [isRemote, bridgeSessionId],
   );
 
   const revertGroup = useCallback(

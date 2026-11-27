@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 import { buildAnswers } from "../../lib/ccReducer";
 import type { CcApproval } from "../../lib/ccGuiTypes";
-import { useExpiryCountdown } from "../../hooks/useExpiryCountdown";
+import { useCcDecision } from "../../hooks/useCcDecision";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 
@@ -30,14 +30,12 @@ function QuestionCardImpl({
 }: {
   approval: CcApproval;
   /** 已经筛掉空答案；至少有一项。 */
-  onSubmit: (answers: Record<string, string[]>) => void;
-  onSkip: () => void;
+  onSubmit: (answers: Record<string, string[]>) => void | Promise<void>;
+  onSkip: () => void | Promise<void>;
 }) {
   const questions = approval.questions ?? [];
   const [picked, setPicked] = useState<Record<string, string[]>>({});
-  const left = useExpiryCountdown(approval.expiresInSec);
-  // 归零后 CLI 会撤回请求：这段空档里提交 / 跳过都会报错，禁用并说明。
-  const expired = left === 0;
+  const decision = useCcDecision();
 
   const toggle = (question: string, label: string, multi: boolean) => {
     setPicked((prev) => {
@@ -67,7 +65,7 @@ function QuestionCardImpl({
         <Icon name="message" size={12} className="shrink-0 text-warning-ink" />
         <span className="text-[12px] font-semibold text-warning-ink">CC 在问你</span>
         <span className="ml-auto shrink-0 text-[11px] text-warning-ink/80">
-          {expired ? "已超时，等待撤回" : `${left}s 后自动跳过`}
+          {decision.busy ? "正在提交…" : "等待你的回答"}
         </span>
       </div>
 
@@ -110,7 +108,7 @@ function QuestionCardImpl({
                         key={`${oi}:${o.label}`}
                         type="button"
                         aria-pressed={on}
-                        disabled={expired}
+                        disabled={decision.busy}
                         onClick={() => toggle(q.question, o.label, multi)}
                         className={`flex items-start gap-1.5 rounded-lg border px-2 py-1.5 text-left transition-colors ${
                           on
@@ -145,18 +143,19 @@ function QuestionCardImpl({
         })}
       </div>
 
+      {decision.error && <p role="alert" className="px-3 pb-2 text-xs text-destructive-ink">{decision.error}</p>}
       <div className="flex items-center justify-end gap-2 px-3 pb-2">
         <span className="mr-auto shrink-0 text-[11px] text-muted-foreground">
           {questions.length > 1 ? `${answered}/${questions.length} 已选` : ""}
         </span>
-        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={onSkip} disabled={expired}>
+        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={() => void decision.submit(onSkip)} disabled={decision.busy}>
           跳过
         </Button>
         <Button
           size="sm"
           className="h-7 px-3 text-[12px]"
-          disabled={answered === 0 || expired}
-          onClick={() => onSubmit(answers)}
+          disabled={answered === 0 || decision.busy}
+          onClick={() => void decision.submit(() => onSubmit(answers))}
         >
           提交
         </Button>

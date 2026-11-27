@@ -210,7 +210,9 @@ export type CcRestoreReq =
   | { kind: "none" }
   | { kind: "latest" }
   | { kind: "row"; rowId: number }
-  | { kind: "seed"; seed: CcForkSeed };
+  | { kind: "seed"; seed: CcForkSeed }
+  | { kind: "terminal"; row: CcHistoryRow }
+  | { kind: "environment"; connectionId: string; cwd: string };
 
 /** `cc_probe` 的返回体。 */
 export type CcProbe = {  found: boolean;
@@ -281,11 +283,3 @@ export type CcHistoryOpened = {
    */
   cwd: string | null;
 };
-
-/**
- * 审批超时（CLI 侧固定 60s 自动拒绝）。
- *
- * 协议里**不发**剩余时间，所以只能按收到卡片的那一刻起算。误差只影响文案，
- * 真正的裁决由 CLI 自己的计时器做，界面不参与决策。
- */
-export const APPROVAL_TIMEOUT_SEC = 60;

@@ -62,15 +62,20 @@ it("Ctrl+N 会 preventDefault，避免被 WebView2 当默认行为吞掉", async
   expect(ev.defaultPrevented).toBe(true);
 });
 
-it("焦点在输入框时不劫持（输入密码/命令参数的场景）", async () => {
+it("写草稿时可以新开会话，输入法组字期间保留焦点", async () => {
   const onNewSession = vi.fn();
   await act(async () => root.render(<Probe onNewSession={onNewSession} />));
   const input = document.createElement("input");
-  document.body.append(input);
+  const composer = document.createElement("div");
+  composer.dataset.ccComposer = "";
+  composer.append(input);
+  document.body.append(composer);
   input.focus();
-  await press({ code: "KeyN", key: "n", ctrlKey: true }, input);
+  await press({ code: "KeyN", key: "n", ctrlKey: true, isComposing: true }, input);
   expect(onNewSession).not.toHaveBeenCalled();
-  input.remove();
+  await press({ code: "KeyN", key: "n", ctrlKey: true }, input);
+  expect(onNewSession).toHaveBeenCalledTimes(1);
+  composer.remove();
 });
 
 it("Ctrl+Shift+N 与裸 n 不触发", async () => {

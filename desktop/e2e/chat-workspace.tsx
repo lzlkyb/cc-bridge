@@ -91,7 +91,7 @@ mockIPC(async (command, payload = {}) => {
   }
   if (command === "cc_restore") return args.sessionId === 1 || args.rowId ? { rowId: args.rowId || 1, connectionId: "", cwd: "D:/projects/web-console", model: "opus", permissionMode: "default", sessionId: "review-session", resumeId: "review-session", title: args.rowId ? "梳理 API 错误处理" : "排查登录请求超时", titleLocked: true, messageCount: 2, updatedAt: Date.now() / 1000, events: scene === "empty" ? [] : initial, dropped: 0 } : null;
   if (command === "cc_probe") { const unavailable = failedProbe; failedProbe = false; return { found: !unavailable, path: "C:/tools/claude.exe", version: "2.1", message: unavailable ? "SSH authentication failed: Permission denied (publickey,password)" : "可用", target: "本机" }; }
-  if (command === "get_status") return { platform: "windows", running: true, allowedRoots: ["D:/projects"], autoApproveRules: [] };
+  if (command === "get_status") return { platform: "windows", running: true, allowedRoots: ["D:/projects"], ccAutoApproveRules: [] };
   if (command === "ssh_list_connections") return { connections: [{ id: "office", name: "公司", host: "example.invalid" }] };
   if (command === "cc_list_stored") return stored;
   if (command === "cc_context_tax") return null;

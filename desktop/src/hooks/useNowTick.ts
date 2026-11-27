@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
  *
  * 抽出来是为了让「停滞提示」这类纯展示的计时不把整个消息流带着每秒重渲染 ——
  * 用它的人是小浮条 / 状态行，`MessageList` 一个字节都不用动。
- * 与 `useExpiryCountdown` 的区别：那个是倒计时（有终点、要按身份重来），
  * 这个是单调时钟（起点无关），别合并。
  */
 export function useNowTick(active: boolean, ms = 1000): number {

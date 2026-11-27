@@ -177,12 +177,18 @@ try {
     await p.keyboard.press('Escape');
     assert.equal(await draft(p).evaluate(e => e === document.activeElement), true);
   });
-  await test('更多菜单进入历史后 Escape 返回原按钮', async p => {
-    await button(p, '更多会话操作').click();
-    await p.getByRole('button', { name: /从本机历史打开/ }).click();
-    await p.getByRole('dialog').waitFor();
+  await test('历史对话支持中文输入且 Escape 返回入口按钮', async p => {
+    const trigger = button(p, '历史对话');
+    await trigger.click();
+    const dialog = p.getByRole('dialog', { name: '历史对话' });
+    const search = dialog.getByRole('textbox', { name: '搜索历史会话' });
+    await search.waitFor();
+    assert.equal(await search.evaluate(e => e === document.activeElement), true);
+    await search.dispatchEvent('keydown', { key: 'Escape', isComposing: true });
+    assert.equal(await dialog.isVisible(), true);
     await p.keyboard.press('Escape');
-    assert.equal(await button(p, '更多会话操作').evaluate(e => e === document.activeElement), true);
+    await dialog.waitFor({ state: 'hidden' });
+    assert.equal(await trigger.evaluate(e => e === document.activeElement), true);
   });
   await test('连接失败可查看诊断，重试成功保留草稿', async p => {
     await draft(p).fill('网络恢复后继续的草稿');
@@ -193,12 +199,12 @@ try {
     assert.equal(await draft(p).inputValue(), '网络恢复后继续的草稿');
   }, { scene: 'error' });
   await test('审批跳转定位并可作出裁决', async p => {
-    const shortcut = button(p, '查看审批');
-    if (await shortcut.isVisible()) await shortcut.click();
+    const shortcut = button(p, '查看请求');
+    if (await shortcut.isVisible()) { await shortcut.click(); await button(p, "审阅 Edit").click(); }
     else await active(p).locator('[data-cc-approval-focus]').click();
     const dialog = p.getByRole('dialog', { name: '专注审阅审批' }); await dialog.waitFor();
     await dialog.getByRole('button', { name: /允许一次/ }).click();
-    await eventually(() => button(p, '查看审批').count(), value => value === 0, '已裁决审批应退出待办');
+    await eventually(() => button(p, '查看请求').count(), value => value === 0, '已裁决审批应退出待办');
   }, { scene: 'approval', width: 560, height: 620 });
   await test('抽屉聚焦搜索，中文 Esc 不关闭，常规 Esc 归还焦点', async p => {
     await active(p).locator('[data-cc-sidebar-toggle]').click();

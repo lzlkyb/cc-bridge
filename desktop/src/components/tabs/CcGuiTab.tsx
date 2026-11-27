@@ -3,6 +3,7 @@ import { invoke } from "../../lib/tauri";
 import { useCcPaneList } from "../../hooks/useCcPaneList";
 import { useCcShortcuts } from "../../hooks/useCcShortcuts";
 import { useCcSessionActions } from "../../hooks/useCcSessionActions";
+import { useCcRequestDirectory } from "../../hooks/useCcRequestDirectory";
 import { useCcStoredSessions } from "../../hooks/useCcStoredSessions";
 import { useCcTargets } from "../../hooks/useCcTargets";
 import { usePresence } from "../../hooks/usePresence";
@@ -10,6 +11,7 @@ import { conflictWith } from "../../lib/ccPaneMeta";
 import { archivedOnly, filterStored } from "../../lib/ccStoredList";
 import { isImeComposing } from "../../lib/utils";
 import { SessionSidebar } from "../ccgui/SessionSidebar";
+import { PendingRequestsContext } from "../ccgui/PendingRequests";
 import { CcPane } from "./CcPane";
 import "../ccgui/sessionWorkspace.css";
 
@@ -95,6 +97,7 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
 
   // 分组显示名要用它；各 pane 用的是同一个 hook / 同一份缓存。
   const targets = useCcTargets();
+  const { sessions: pendingSessions, selection: pendingSelection, select: selectPending } = useCcRequestDirectory(list.entries, list.setActive);
 
   /**
    * 历史区：库里落盘过、但**当前没打开**的会话。
@@ -182,6 +185,7 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
   }, [addSession, compact, closeDrawer]);
   useCcShortcuts({
     onNewSession: newSession,
+    isVisible: () => !!workspaceRef.current?.getClientRects().length,
     onCycleSession: (delta) => { list.cycle(delta); if (compact) closeDrawer(); },
     onToggleSidebar: toggleCollapsed,
   });
@@ -225,7 +229,7 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
   };
 
   return (
-    <div ref={workspaceRef} className="cc-workspace-root" data-compact={compact || undefined}>
+    <PendingRequestsContext.Provider value={{ sessions: pendingSessions, select: selectPending }}><div ref={workspaceRef} className="cc-workspace-root" data-compact={compact || undefined}>
       {compact && drawer.mounted && <button className="cc-sidebar-shade" data-entered={drawer.entered}
         disabled={!drawerOpen} aria-hidden={!drawerOpen} tabIndex={-1} aria-label="关闭会话列表" onClick={closeDrawer} />}
       <div ref={node => { sidebarRef.current = node; if (node) node.inert = compact && !drawerOpen; }}
@@ -261,6 +265,7 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
           <CcPane
             key={e.key}
             paneKey={e.key}
+            reviewRequest={pendingSelection?.key === e.key ? pendingSelection : null}
             active={e.key === list.active}
             restore={e.restore}
             conflict={conflicts[e.key] ?? null}
@@ -272,11 +277,12 @@ export function CcGuiTab({ onNavigate }: { onNavigate: (tab: string) => void }) 
             onToggleSidebar={toggleCollapsed}
             sidebarExpanded={compact ? drawerOpen : !collapsed}
             compact={compact}
+            onOpenHistory={list.openTerminalHistory} onOpenStored={list.openStored} onOpenEnvironment={list.openEnvironment}
             onForkSession={(seed) => list.forkFrom(e.key, seed)}
             onNavigate={onNavigate}
           />
         ))}
       </div>
-    </div>
+    </div></PendingRequestsContext.Provider>
   );
 }

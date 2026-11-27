@@ -4,6 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCcPaneList } from "./useCcPaneList";
+import type { CcHistoryRow } from "../lib/ccEventTypes";
+import { readDraft, writeDraft } from "../lib/ccDraft";
 import type { CcPaneMeta } from "../lib/ccPaneMeta";
 
 const h = vi.hoisted(() => ({ invoke: vi.fn() }));
@@ -29,7 +31,6 @@ const meta = (sessionId: number | null, title = "会话"): CcPaneMeta => ({
   targetLabel: "本机",
   cwd: "",
   askId: null,
-  askExpiresInSec: 0,
 });
 
 beforeEach(async () => {
@@ -56,6 +57,49 @@ describe("侧栏会话列表", () => {
     expect(api.entries).toHaveLength(2);
     expect(api.entries[0].key).toBe(first);
     expect(api.active).toBe(api.entries[1].key);
+  });
+
+  it("打开终端历史使用独立会话，重复点击只聚焦同一条", async () => {
+    const original = api.entries[0].key;
+    const current = { ...meta(7, "运行中的原对话"), state: "ask" as const, unsentCount: 2 };
+    await act(async () => api.report(original, current));
+    const history: CcHistoryRow = {
+      connectionId: "", sessionId: "local-transcript", path: "", cwd: "D:/project", gitBranch: null,
+      title: "旧对话", preview: null, messageCount: 1, fileSize: 0, fileMtimeMs: 0, lastUsedAt: 0, cached: false,
+    };
+    await act(async () => { api.openTerminalHistory(history); api.openTerminalHistory(history); });
+    expect(api.entries).toHaveLength(2);
+    expect(api.entries[0].meta).toEqual(current);
+    expect(api.entries[1].restore).toEqual({ kind: "terminal", row: history });
+    expect(api.active).toBe(api.entries[1].key);
+    expect(h.invoke).not.toHaveBeenCalled();
+  });
+
+  it("本机终端历史聚焦已经恢复的本机对话", async () => {
+    const local = api.active;
+    await act(async () => api.report(local, { ...meta(7), cliSessionId: "local-transcript" }));
+    await act(async () => api.add());
+    await act(async () => api.openTerminalHistory({
+      connectionId: "", sessionId: "local-transcript", path: "", cwd: "D:/project", gitBranch: null,
+      title: "旧对话", preview: null, messageCount: 1, fileSize: 0, fileMtimeMs: 0, lastUsedAt: 0, cached: false,
+    }));
+    expect(api.entries).toHaveLength(2);
+    expect(api.active).toBe(local);
+  });
+
+  it("删除未打开的历史记录时也清除文字草稿", async () => {
+    writeDraft("row-34", "这条历史尚未打开");
+    await act(async () => api.forgetDeleted({ rowId: 34, sessionIds: [] }));
+    expect(readDraft("row-34")).toBe("");
+  });
+
+  it("关闭已保存会话后保留对应的文字草稿", async () => {
+    await act(async () => api.openStored(12));
+    const pane = api.active;
+    writeDraft("row-12", "只属于第 12 条的文字草稿");
+    await act(async () => api.close(pane));
+    expect(readDraft("row-12")).toBe("只属于第 12 条的文字草稿");
+    writeDraft("row-12", "");
   });
 
   it("报告元信息：同引用不触发更新，换内容才落到条目上", async () => {
@@ -154,8 +198,7 @@ describe("载入意图（3-1c）", () => {
 
   /** 连点两下同一行不该得到两个一模一样的 pane。 */
   it("同一行重复打开只开一条", async () => {
-    await act(async () => api.openStored(31));
-    await act(async () => api.openStored(31));
+    await act(async () => { api.openStored(31); api.openStored(31); });
     expect(api.entries.filter((e) => e.restore.kind === "row")).toHaveLength(1);
     // 换一行仍然照开
     await act(async () => api.openStored(32));

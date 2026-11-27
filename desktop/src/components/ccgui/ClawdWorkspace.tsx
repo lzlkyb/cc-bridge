@@ -66,6 +66,8 @@ export function ClawdWorkspace({ view, activity, scrollRef, rootRef, startedAt, 
       if (!petRef.current) return;
       petRef.current.dataset.wave = "true"; clearTimeout(wave.current);
       wave.current = setTimeout(() => { if (petRef.current) petRef.current.dataset.wave = "false"; }, 1300);
+    } else if (activity.pose === "approval" || activity.pose === "question") {
+      rootRef.current?.closest("[data-cc-panel]")?.querySelector<HTMLButtonElement>("[data-cc-pending-trigger]")?.click();
     } else locate();
   };
   const agents = Object.values(view.tasks ?? {}).filter(isAgentTask);
@@ -105,7 +107,7 @@ export function ClawdWorkspace({ view, activity, scrollRef, rootRef, startedAt, 
           {staleSec !== null && <div className="cc-clawd-note" role="status" aria-live="polite">最近 {staleSec} 秒无新记录，仍在运行</div>}
         </div>
         <div className="cc-clawd-actions">
-          {(tools.length > 0 || activity.targetId) && <button type="button" className="cc-clawd-detail" onClick={() => { if (["editing", "approval", "question"].includes(activity.pose)) locate(); else { setRecords(!records); } }}>{activity.pose === "editing" ? "查看修改" : activity.pose === "approval" || activity.pose === "question" ? "查看请求" : "执行记录"}</button>}
+          {activity.pose !== "approval" && activity.pose !== "question" && (tools.length > 0 || activity.targetId) && <button type="button" className="cc-clawd-detail" onClick={() => { if (activity.pose === "editing") locate(); else { setRecords(!records); } }}>{activity.pose === "editing" ? "查看修改" : "执行记录"}</button>}
           <details className="cc-clawd-preferences"><summary aria-label="Clawd 动态设置">动态</summary><button type="button" aria-label="减少 Clawd 动态效果" aria-pressed={reduced} onClick={toggle}>{reduced ? "恢复动态" : "减少动态"}</button></details>
         </div>
       </div>

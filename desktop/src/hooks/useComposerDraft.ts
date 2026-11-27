@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { readDraft, writeDraft } from "../lib/ccDraft";
+import { useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { bindDraftWriter, readDraft } from "../lib/ccDraft";
 
 /**
  * 打字停下多久后落盘。
@@ -35,8 +35,8 @@ const WRITE_DELAY = 400;
  *
  * 没有在 `beforeunload` 上做：那里做同步 I/O 会拖慢关闭，而且同样受上面那条限制。
  */
-export function useComposerDraft(pane: string): [string, Dispatch<SetStateAction<string>>] {
-  const [value, setValue] = useState(() => readDraft(pane));
+export function useComposerDraft(pane: string, identityRequired = false): [string, Dispatch<SetStateAction<string>>] {
+  const [value, setValue] = useState(() => identityRequired && !pane.startsWith("row-") ? "" : readDraft(pane));
 
   /**
    * 最新值的镜像。
@@ -48,13 +48,25 @@ export function useComposerDraft(pane: string): [string, Dispatch<SetStateAction
   const latest = useRef(value);
   latest.current = value;
 
+  const storage = useRef({ key: pane, write: bindDraftWriter(pane) });
+  useLayoutEffect(() => {
+    if (storage.current.key === pane) return;
+    // Transfer the in-memory buffer when the first turn gives it a persistent identity.
+    storage.current = { key: pane, write: bindDraftWriter(pane) };
+    const next = readDraft(pane) || latest.current;
+    latest.current = next;
+    setValue(next);
+  }, [pane]);
+
   useEffect(() => {
-    const t = window.setTimeout(() => writeDraft(pane, value), WRITE_DELAY);
+    const { write } = storage.current;
+    const t = window.setTimeout(() => write(value), WRITE_DELAY);
     return () => window.clearTimeout(t);
   }, [pane, value]);
 
   useEffect(() => {
-    const flush = () => writeDraft(pane, latest.current);
+    const binding = storage.current;
+    const flush = () => { if (binding === storage.current) binding.write(latest.current); };
     window.addEventListener("pagehide", flush);
     return () => {
       window.removeEventListener("pagehide", flush);

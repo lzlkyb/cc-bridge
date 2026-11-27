@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "../components/ui/toast";
 import type { CcImage } from "../lib/ccImage";
 
 /** 待发队列里的一条。**图跟着文字一起排队**：分开存会让「排队的图」失去归属。 */
@@ -33,10 +34,20 @@ export function useCcSendQueue() {
   }, []);
   /** 清空队列，同时解除暂停。 */
   const clear = useCallback(() => {
+    const removed = queueRef.current;
     queueRef.current = [];
     setQueue(queueRef.current);
     pausedRef.current = false;
     setPaused(false);
+    if (removed.length) toast(`已清空 ${removed.length} 条排队消息`, "info", {
+      label: "撤销清空",
+      onClick: () => {
+        queueRef.current = [...removed, ...queueRef.current];
+        setQueue(queueRef.current);
+        pausedRef.current = true;
+        setPaused(true);
+      },
+    }, 8000);
   }, []);
   const resume = useCallback(() => {
     pausedRef.current = false;

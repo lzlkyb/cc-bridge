@@ -3,6 +3,7 @@ import { act, type Dispatch, type SetStateAction } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useComposerDraft } from "./useComposerDraft";
+import { clearDraft } from "../lib/ccDraft";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -46,6 +47,19 @@ const type = async (text: string) => {
 };
 
 describe("草稿落盘的时机", () => {
+  it("删除会话后，输入框的延迟写入和卸载都不会恢复草稿", async () => {
+    await act(async () => root.render(<Probe pane="row-41" />));
+    await type("即将删除的草稿");
+    clearDraft("row-41");
+    await act(async () => {
+      vi.advanceTimersByTime(400);
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    expect(stored("row-41")).toBeNull();
+    await act(async () => root.unmount());
+    unmounted = true;
+    expect(stored("row-41")).toBeNull();
+  });
   it("打字期间不写，停下 400ms 才写", async () => {
     await act(async () => root.render(<Probe pane="p1" />));
     await type("你");

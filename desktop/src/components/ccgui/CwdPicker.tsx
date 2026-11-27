@@ -1,3 +1,4 @@
+import { isImeComposing } from "../../lib/utils";
 import { useState, type RefObject } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ChatPopover } from "./ChatPopover";
@@ -63,7 +64,7 @@ export function CwdPicker({
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
+              if (e.key === "Enter" && !isImeComposing(e.nativeEvent)) {
                 e.preventDefault();
                 apply(draft);
               }
@@ -92,7 +93,7 @@ export function CwdPicker({
             onClick={() => apply(draft)}
             className="rounded-md border border-primary/30 bg-primary/10 px-2 py-1 text-[11px] text-primary transition-colors hover:bg-primary/15"
           >
-            用这个目录
+            {hasMessages && draft.trim() !== value ? "用此目录新开对话" : "用这个目录"}
           </button>
           {value && (
             <button

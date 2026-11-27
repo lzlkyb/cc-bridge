@@ -31,7 +31,6 @@ function approval(id: string, toolName: string, toolUseId: string | null, input 
     input,
     toolUseId,
     reason: "要改文件",
-    expiresInSec: 60,
   };
 }
 

@@ -17,7 +17,6 @@ const approval = (id: string, toolName: string, withQuestions = false): CcMessag
   toolName,
   input: {},
   reason: "问一句",
-  expiresInSec: 60,
   ...(withQuestions
     ? { questions: [{ question: "选哪个？", multiSelect: false, options: [{ label: "A" }] }] }
     : {}),
@@ -200,7 +199,6 @@ describe("conflictWith 同目录并发", () => {
     cwd: "",
     restoring: false,
     askId: null,
-    askExpiresInSec: 0,
     ...patch,
   });
 

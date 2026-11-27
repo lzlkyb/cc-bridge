@@ -26,7 +26,7 @@ export function CcPaneHead({
   onNewSession,
   newSessionHint,
   conflict,
-  onOpenHistory,
+  onOpenHistory, onOpenStored, bridgeSessionId,
   onJumpTo,
   onDismissError,
   onDismissStderr,
@@ -59,6 +59,8 @@ export function CcPaneHead({
   /** 同目录下正在跑的另一条会话标题（`conflictWith`）。`null` = 没有冲突。 */
   conflict: string | null;
   onOpenHistory: (row: CcHistoryRow) => void;
+  onOpenStored?: (rowId: number) => void;
+  bridgeSessionId?: number | null;
   onJumpTo: (messageId: string) => void;
   onDismissError: (index: number) => void;
   /** 关 stderr 红条（与 `onDismissError` 分开，见 `SessionNotices`）。 */
@@ -86,7 +88,7 @@ export function CcPaneHead({
         onSwitchTerminal={onSwitchTerminal}
         onNewSession={onNewSession}
         newSessionHint={newSessionHint}
-        onOpenHistory={onOpenHistory}
+        onOpenHistory={onOpenHistory} onOpenStored={onOpenStored} bridgeSessionId={bridgeSessionId}
         onJumpTo={onJumpTo}
       />
       {/* 🔴 打开历史后必须把**目标**一起切过去（见 pane 里的 `onOpenHistory`）：

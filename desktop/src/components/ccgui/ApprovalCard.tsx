@@ -6,7 +6,7 @@ import type { StaticStatus } from "../../lib/types";
 import type { CcApproval } from "../../lib/ccGuiTypes";
 import { appendRule } from "../../lib/ccAutoApprove";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
-import { useExpiryCountdown } from "../../hooks/useExpiryCountdown";
+import { useCcDecision } from "../../hooks/useCcDecision";
 import { Button } from "../ui/button";
 import { Icon } from "../ui/icon";
 import { toast } from "../ui/toast";
@@ -20,7 +20,7 @@ import { approvalCopyText } from "./summarize";
  *
  * 三条硬要求，都来自协议事实而不是审美：
  * 1. **必须显示 `decision_reason`** —— 用户要知道"为什么问我"，否则只会条件反射按允许。
- * 2. **必须显示超时** —— CLI 侧 60s 到点自动拒绝，静默转圈会让人以为还在等。
+ * 2. 裁决有效性由 CLI 的撤回与会话事件决定。
  * 3. **允许/拒绝不做主次强调** —— 把「允许」画成主按钮等于引导放行，风险由界面承担。
  *
  * `AskUserQuestion` 不走这里：它要选项，不是放行。分派给 `QuestionCard`。
@@ -32,16 +32,14 @@ function ApprovalCardImpl({
   onAnswer,
 }: {
   approval: CcApproval;
-  onAllow: () => void;
-  onDeny: () => void;
+  onAllow: () => void | Promise<void>;
+  onDeny: () => void | Promise<void>;
   /** 提问的答案：`{问题文本: [选项 label…]}`。普通审批不会调它。 */
-  onAnswer: (answers: Record<string, string[]>) => void;
+  onAnswer: (answers: Record<string, string[]>) => void | Promise<void>;
 }) {
   // hooks 必须在「提问分流」那个早退**之前**：同一实例的 toolName 理论上不变，
   // 但 rules-of-hooks 只认调用顺序，不认「它实际上不会变」。
-  const left = useExpiryCountdown(approval.expiresInSec);
-  // 归零后 CLI 会撤回请求（卡片随之消失），这段空档里点按钮只会因后端找不到请求而报错。
-  const expired = left === 0;
+  const decision = useCcDecision();
   const { copy, isCopied } = useCopyFeedback();
   // 「以后都放行这类」要读现有规则表（追加而不是覆盖）。与 App 共用 ["status"]
   // 缓存，命中时一个请求都不发。
@@ -50,7 +48,6 @@ function ApprovalCardImpl({
     queryKey: ["status"],
     queryFn: () => invoke<StaticStatus>("get_status"),
   });
-  const [remembering, setRemembering] = useState(false);
   /**
    * 专注审阅弹窗是否打开。
    *
@@ -60,7 +57,6 @@ function ApprovalCardImpl({
    *    付这份钱（审查 P3-5）。
    */
   const [reviewing, setReviewing] = useState(false);
-  const rememberRef = useRef(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
   // 内容先挂上、再开 modal：showModal 必须在 `<dialog>` 已经渲染之后调用，
   // 否则 ref 还是 null（第一次点「专注审阅」必然撞上）。
@@ -84,45 +80,28 @@ function ApprovalCardImpl({
    *    而用户看到的正是「以后都放行 `ls *.rs`」—— 没人会去核对星号。
    */
   const remember = async () => {
-    if (rememberRef.current) return;
-    rememberRef.current = true;
-    setRemembering(true);
+    const rule = await invoke<string | null>("cc_approval_rule", {
+      toolName: approval.toolName,
+      input: approval.input,
+    });
+    if (!rule) throw new Error("无法为这次调用生成精确规则，请选择「允许一次」");
+    if (!status?.ccAutoApproveRules) {
+      throw new Error("配置尚未加载，请稍后重试，或先选择「允许一次」");
+    }
+    // If the CLI withdrew this request, do not persist a rule for an operation
+    // the user could no longer approve.
+    await onAllow();
     try {
-      const rule = await invoke<string | null>("cc_approval_rule", {
-        toolName: approval.toolName,
-        input: approval.input,
-      });
-      if (!rule) {
-        toast("这条调用取不到主参数，生成不了窄规则 —— 要全放行请去设置页手写", "info");
-        return;
-      }
-      /**
-       * 🔴 规则表必须**读到了**才动。`status` 还没回来（或 `get_status` 失败）时
-       *    `?? []` 会当成「用户一条规则都没有」，`save_config` 是整字段覆盖 ⇒
-       *    点一下「以后都放行」就把用户手写的全部规则清成只剩这一条，
-       *    而且没有任何地方能看出来发生过 —— 这里宁可让人多点一次。
-       */
-      const rules = status?.ccAutoApproveRules;
-      if (!rules) {
-        toast("配置还没读出来，稍等一下再点（现在写会覆盖掉已有规则）", "warning");
-        return;
-      }
+      const rules = qc.getQueryData<StaticStatus>(["status"])?.ccAutoApproveRules ?? status.ccAutoApproveRules;
       const { next, changed } = appendRule(rules, rule);
       if (changed) {
         await invoke("save_config", { patch: { ccAutoApproveRules: next } });
-        await qc.invalidateQueries({ queryKey: ["status"] });
-        toast(`以后都放行：${rule}（设置页可撤销）`, "info");
-      } else {
-        toast(`这条规则已经有了：${rule}`, "info");
+        qc.setQueryData<StaticStatus>(["status"], current => current && { ...current, ccAutoApproveRules: next });
+        void qc.invalidateQueries({ queryKey: ["status"] });
       }
-      // 规则已在（或刚加上），这一次自然也是放行 —— 按钮说的是「以后都放行」，
-      // 不该再让人回来补点一次「允许一次」。
-      onAllow();
-    } catch (e) {
-      toast(`加规则失败：${e}`, "error");
-    } finally {
-      rememberRef.current = false;
-      setRemembering(false);
+      toast(changed ? `以后都放行：${rule}（设置页可撤销）` : `这条规则已经有了：${rule}`, "info");
+    } catch (error) {
+      toast(`本次已批准，自动放行规则未保存：${String(error)}`, "error");
     }
   };
 
@@ -134,11 +113,11 @@ function ApprovalCardImpl({
           {approval.toolName}
         </span>
         <span className="ml-auto shrink-0 text-[11px] text-warning-ink/80">
-          {expired ? "已超时，等待撤回" : `${left}s 后自动拒绝`}
+          {decision.busy ? "正在提交…" : "等待你的决定"}
         </span>
       </div>
 
-      <div className="flex flex-col gap-2 px-3 py-2">
+      <div className="cc-approval-review-body flex flex-col gap-2 px-3 py-2">
         <ApprovalEnvironment toolName={approval.toolName} />
         <ApprovalDetail
           toolName={approval.toolName}
@@ -155,21 +134,22 @@ function ApprovalCardImpl({
       {/* gap-2 + flex-wrap：三个按钮在 320px 最窄卡里排不下，换行比挤成一团好。
           「以后都放行」用 ghost + 淡字色：它不是推荐项（见文件头第 3 条），
           只是「这条命令我一天要点十遍」时才该走的路。 */}
-      <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-2">
-        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={onDeny} disabled={expired}>
+      {decision.error && <p role="alert" className="px-3 pb-2 text-xs text-destructive-ink">{decision.error}</p>}
+      <div className="cc-approval-review-actions flex flex-wrap items-center justify-end gap-2 px-3 pb-2">
+        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={() => void decision.submit(onDeny)} disabled={decision.busy}>
           拒绝
         </Button>
         <Button
           variant="ghost"
           size="sm"
           className="h-7 px-2 text-[12px] text-muted-foreground"
-          onClick={() => void remember()}
-          disabled={expired || remembering}
+          onClick={() => void decision.submit(remember)}
+          disabled={decision.busy}
           title="把这次的工具与参数加成一条自动放行规则（规则文本显示在提示里，设置页可撤销）"
         >
-          {remembering ? "正在加…" : "以后都放行"}
+          以后都放行
         </Button>
-        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={onAllow} disabled={expired}>
+        <Button variant="outline" size="sm" className="h-7 px-3 text-[12px]" onClick={() => void decision.submit(onAllow)} disabled={decision.busy}>
           允许一次
         </Button>
       </div>
@@ -188,7 +168,7 @@ function ApprovalCardImpl({
         onClose={() => setReviewing(false)}
       >
         <div className="cc-approval-dialog-head"><h2>审阅本次操作</h2><button type="button" onClick={() => dialogRef.current?.close()} aria-label="关闭审阅"><Icon name="close" size={16} /></button></div>
-        {reviewing ? body : null}
+        {reviewing && <div className="cc-approval-review-layout">{body}</div>}
       </dialog>,
       document.body,
     )}

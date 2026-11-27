@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import type { CcRestore } from "../lib/ccEventTypes";
+import type { CcRestore, CcRestoreReq } from "../lib/ccEventTypes";
 import type { CcForkSeed } from "../lib/ccFork";
 import type { CcPermissionMode } from "../lib/ccGuiTypes";
 import {
   readCwd,
-  readMode,
   readModel,
   restorePlan,
   saveCwd,
-  saveMode,
   saveModel,
 } from "../lib/ccGuiPrefs";
 
@@ -25,22 +23,24 @@ import {
  *    重读 localStorage，晚一步就被旧值覆盖；
  * 3. `claudePath` 故意不采信库里的值（可能早已失效），重探更可靠。
  */
-export function useCcPanePrefs() {
-  const [targetId, setTargetId] = useState("");
-  const [cwd, setCwd] = useState("");
-  const [mode, setModeRaw] = useState<CcPermissionMode>(readMode);
+export function useCcPanePrefs(restore: CcRestoreReq) {
+  const [targetId, setTargetId] = useState(() => restore.kind === "environment" ? restore.connectionId : "");
+  const [cwd, setCwd] = useState(() => restore.kind === "environment" ? restore.cwd : restore.kind === "terminal" ? restore.row.cwd ?? "" : readCwd(""));
+  const [mode, setModeRaw] = useState<CcPermissionMode>("acceptEdits");
   // 下一轮的模型。空串 = 不传 `--model`，吃 CLI 自己的默认。全局偏好，不按连接分。
   const [model, setModelRaw] = useState(readModel);
 
   // 每台机器记各自的工作目录。
   useEffect(() => {
+    if (restore.kind === "environment" && targetId === restore.connectionId) {
+      saveCwd(targetId, restore.cwd);
+    } else if (restore.kind === "terminal" && !targetId) {
+      return;
+    }
     setCwd(readCwd(targetId));
-  }, [targetId]);
+  }, [restore, targetId]);
 
-  const setMode = useCallback((m: CcPermissionMode) => {
-    setModeRaw(m);
-    saveMode(m);
-  }, []);
+  const setMode = setModeRaw;
 
   const setModel = useCallback((m: string) => {
     setModelRaw(m);
@@ -62,10 +62,7 @@ export function useCcPanePrefs() {
     saveCwd(p.connectionId, p.cwd);
     setTargetId(p.connectionId);
     setCwd(p.cwd);
-    if (p.mode) {
-      setModeRaw(p.mode);
-      saveMode(p.mode);
-    }
+    setModeRaw(p.mode ?? "default");
     if (p.model) {
       setModelRaw(p.model);
       saveModel(p.model);
@@ -86,7 +83,6 @@ export function useCcPanePrefs() {
     setTargetId(seed.connectionId);
     setCwd(seed.cwd);
     setModeRaw(seed.permissionMode);
-    saveMode(seed.permissionMode);
     setModelRaw(seed.model);
     saveModel(seed.model);
   }, []);
@@ -102,6 +98,7 @@ export function useCcPanePrefs() {
     saveCwd("", dir);
     setTargetId("");
     setCwd(dir);
+    setModeRaw("default");
   }, []);
 
   return {

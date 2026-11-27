@@ -247,7 +247,7 @@ export function SessionSidebar({
                 className={`h-1.5 w-1.5 rounded-full ${runningCount > 0 ? "bg-success" : "bg-muted-foreground/40"}`}
               />
               <span className="truncate">
-                {runningCount > 0 ? `${runningCount} 个生成中 · ` : ""}{rows.length} 个会话 · 草稿自动保留
+                {runningCount > 0 ? `${runningCount} 个生成中 · ` : ""}{rows.length} 个会话 · 已保存会话保留文字草稿
               </span>
 
             </div>
