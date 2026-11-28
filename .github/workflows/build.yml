@@ -35,6 +35,64 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 jobs:
+  # ── 发版前置快检（仅 tag，约 20 秒）─────────────────────────────────────
+  # 目的不是"再加一道检查"，而是让**配置类错误在 20 秒内失败**。这些错误现在的
+  # 表现是：先白烧 mac 7 分钟、Windows 17 分钟编译，然后在发布段某一步炸出来，
+  # 或者更糟——静默发出一份版本号对不上 tag 的产物。
+  # 参考 cc-switch 的 whats-new-check（18 秒跑完，把 20 分钟的编译挡在后面）。
+  #
+  # 三条断言各自对应一次真实踩坑：
+  #   · 版本号三处不一致 → 装上去的版本与 tag 不符，客户端更新逻辑拿它做比较
+  #   · tag 打在未合并的提交上 → 产物没有任何主线门禁背书
+  #   · 更新日志缺该版本段 → Release 正文与弹框空着，用户不知道升级了什么
+  preflight:
+    name: Preflight (版本 / 更新日志 / tag 归属)
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0     # 判 tag 归属要 main 的历史
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: tag 必须指向 main 历史内的提交
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::tag ${GITHUB_REF_NAME} 的提交不在 origin/main 历史内"
+            echo "先把提交合进 main 再打 tag：否则这份产物没有任何主线门禁背书。"
+            exit 1
+          fi
+          echo "✅ tag 提交在 origin/main 历史内"
+      - name: 三处版本号必须一致且等于 tag
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const tag = (process.env.GITHUB_REF_NAME || "").replace(/^v/, "");
+            const pick = (file, re) => {
+              const m = fs.readFileSync(file, "utf8").match(re);
+              if (!m) throw new Error("未找到版本字段: " + file);
+              return m[1];
+            };
+            const cargo = pick("desktop/src-tauri/Cargo.toml", /^version\s*=\s*"([^"]+)"/m);
+            const tauri = JSON.parse(fs.readFileSync("desktop/src-tauri/tauri.conf.json", "utf8")).version;
+            const pkg = JSON.parse(fs.readFileSync("desktop/package.json", "utf8")).version;
+            console.log(`tag=${tag} Cargo.toml=${cargo} tauri.conf.json=${tauri} package.json=${pkg}`);
+            const bad = [["Cargo.toml", cargo], ["tauri.conf.json", tauri], ["package.json", pkg]]
+              .filter(([, v]) => v !== tag);
+            if (bad.length > 0) {
+              console.error("❌ 与 tag 不一致: " + bad.map(([n]) => n).join(", "));
+              process.exit(1);
+            }
+            console.log("✅ 三处版本号一致");
+          '
+      - name: 更新日志必须有这一版的用户向说明
+        run: node scripts/check-release-notes.mjs --stage=latest
+        working-directory: desktop
+
   # PR 分支新鲜度提示。刻意**不失败**，也不列入必需检查。
   #
   # 为什么需要：`pull_request` 事件运行的是 **head 分支里的 workflow 文件**。
@@ -82,9 +140,11 @@ jobs:
   # （终端行高回退、高 DPI 拖放命中判定、远程路径归一化）。
   #
   # 跑 ubuntu：纯 Node 工作，不需要 Rust/系统依赖，比 windows runner 快且便宜。
+  # tag 发版时也跑：它只用 ubuntu runner、约 3 分钟，与两个 build job 并行，
+  # 不占发版关键路径。此前 tag 时被 `if` 跳过、改由 build-windows 内部补跑一遍
+  # `npm run check`，等于把同一条检查塞进关键路径里。
   frontend:
     name: Frontend (tsc + vitest + build)
-    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -138,12 +198,12 @@ jobs:
           python desktop/src-tauri/src/stable_remote/scope_tests.py
           python desktop/src-tauri/src/stable_remote/direct_update_tests.py
 
-  # 轻量测试：仅 PR / 非 tag 的 push / 手动触发时跑，保护合入质量（用 dev 编译，快）。
-  # tag 发版时跳过本 job —— 由 build-windows 内的 `cargo test --release` 统一覆盖，
-  # 避免 dev + release 两遍全量依赖编译（A 优化的核心）。
+  # 轻量测试：PR / push / tag 都跑。tag 时它与两个 build job 并行，不占关键路径；
+  # 此前 tag 时跳过、改由 build-windows 内 `cargo test --release` 覆盖，那 12 分钟
+  # 就落在关键路径上（release 编译是 debug 的两倍）。发布前是否全绿由 publish 的
+  # `needs` 保证，不靠「测试在哪个 job 里跑」。
   test:
     name: Rust test suite (Windows)
-    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -192,9 +252,12 @@ jobs:
   # 逻辑 cfg(windows)」切分完毕（清单 N1），故升级为与 Windows 同等严格。
   # `--all-targets` 会连测试代码一起编译——mac 上跑不了的测试必须带 cfg(windows)，
   # 否则这里会红。
+  # tag 发版时也跑。此前它被 `if` 跳过，结果是 **tag 构建从来没跑过 clippy**——
+  # 发布产物只经过 `cargo test --release`，取消 `-D warnings` 那条线在发版路径上是断的。
+  # 现在它与 build 并行（约 12 分钟，冷启动时不超过 build 的关键路径），发布前由
+  # publish 的 `needs` 卡住。
   check-macos:
     name: Rust check + test (macOS)
-    if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -214,6 +277,88 @@ jobs:
       # 仍验不到的只有 GUI：托盘外观与交互、窗口行为、桌面通知、Gatekeeper、自动更新。
       - name: cargo test（真实执行，非仅编译）
         run: cargo test --no-default-features
+        working-directory: desktop/src-tauri
+
+  # ── release 编译预热（只在 main push）──────────────────────────────────────
+  # 为什么必须在 main 上预热：GitHub Actions 缓存的作用域是「当前 ref + 默认分支」，
+  # 且**不同 tag 之间互不可见**（官方文档原文：cannot restore caches created for
+  # different tag names）。而 build-macos / build-windows 只在 tag 时运行，于是每次
+  # 发版都是零命中冷编译——实测 v3.4.1 的 `cargo test --release` 在 Windows 上 12:04、
+  # macOS 上 12:19，构建紧随其后 5:14 / 7:01。仓库里之前所有 rust-cache 条目都挂在
+  # `refs/heads/refs/tags/<tag>` 这个永不复用的作用域下，命中率 0~1%。
+  #
+  # 这里在 main 上把 release 形态编一遍，产物落到默认分支的缓存作用域；tag 的 run
+  # 能读默认分支缓存，再配合三处相同的 shared-key 就能命中。
+  #
+  # 命令形态必须与使用方一致，否则只是"部分命中"：
+  #   · build-macos / build-windows 走 tauri build，即 **默认 features**（notifications）
+  #   · publish 的验签测试走 **--no-default-features**（默认 features 会拉 GUI DLL，
+  #     Windows 上 0xc0000139）。那一步在关键路径尾部，冷编一次就是 10 分钟以上，
+  #     所以它单独预热一份，key 也单独一条。
+  #
+  # 它跑失败会让 main 变红，这是刻意的：预热长期失效意味着每次发版悄悄退回 17 分钟，
+  # 属于该被看见的退化，而不是可以静默降级的优化。
+  warm-release:
+    name: Warm release cache (${{ matrix.os }} / ${{ matrix.flavor }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            flavor: default
+            cache_key: ccbridge-release
+            build: cargo build --release
+          - os: macos-latest
+            flavor: default
+            cache_key: ccbridge-release
+            build: cargo build --release
+          # publish 只在 windows-latest 上跑，所以 no-default 这份只需要 Windows。
+          # --tests 是把测试目标也编出来（publish 跑的是 --test release_artifacts）。
+          - os: windows-latest
+            flavor: no-default
+            cache_key: ccbridge-release-nodefault
+            build: cargo build --release --no-default-features --tests
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Sccache Setup
+        if: runner.os == 'macOS'
+        uses: mozilla/sccache-action@v0.0.10
+      # Windows 必须清空 RUSTC_WRAPPER，原因见文件头（@argfile 展开超 32767 字符）。
+      # 顺序很重要：必须在 rust-cache 之前，因为 RUST* 开头的环境变量会进缓存 key 的
+      # 环境哈希；放在后面会让 key 与 build-* 对不上。
+      - name: 关闭 sccache（Windows 命令行长度上限）
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          # 与使用方保持一致。rust-cache 默认拿 job 名当 key，那样 main 上的
+          # warm-release 和 tag 上的 build-* / publish 永远对不上，预热等于白跑。
+          shared-key: ${{ matrix.cache_key }}
+          # 预热 job 失败也要留下缓存：编到一半的依赖对下次仍有价值。
+          cache-on-failure: true
+      - name: Install frontend deps
+        run: npm ci
+        working-directory: desktop
+      - name: 同步版本号与更新日志
+        run: npm run prebuild
+        working-directory: desktop
+      # tauri-build 在 build.rs 阶段会校验 frontendDist 目录存在，缺 dist 直接 panic。
+      # 发版时这一步由 tauri build 的 beforeBuildCommand 完成，这里必须显式补上。
+      - name: 生成前端产物
+        run: npm run vite:build
+        working-directory: desktop
+      - name: 编译 release（${{ matrix.flavor }}）
+        run: ${{ matrix.build }}
         working-directory: desktop/src-tauri
 
   # ── macOS GUI / 打包 / 分发烟测 ────────────────────────────────────────────
@@ -738,6 +883,9 @@ jobs:
   # 内网分发给 zip 就够，多出一个未验证的环节不划算。
   build-macos:
     name: Build macOS app (arm64)
+    # needs preflight：花 20 秒先把"版本号对不上 tag / 更新日志没写 / tag 没合并"
+    # 这类错误挡掉，再开始 7~13 分钟的编译。
+    needs: preflight
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: macos-latest
     steps:
@@ -769,6 +917,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+          # 与 warm-release（只在 main 跑）用同一个 key：GitHub 的缓存作用域是
+          # 「当前 ref + 默认分支」，tag 读不到其它 tag 的缓存，只能读 main 的。
+          # 不发版时这个 key 由 warm-release 在 main 上维护，发版时在这里命中。
+          shared-key: ccbridge-release
 
       - name: Install frontend deps
         run: |
@@ -776,13 +928,9 @@ jobs:
           npm install @tauri-apps/cli-darwin-arm64 --no-save || true
         working-directory: desktop
 
-      # tag 发版时 check-macos 作业被跳过，而 main 的 push 也不在触发列表里，
-      # 所以如果这里不跑，mac 侧在发版时就**完全没有测试覆盖**。
-      # 用 release profile 跑，编译产物直接被下面 tauri build 复用（与 Windows 侧同策略）。
-      - name: cargo test (release, 复用后续 build 的编译产物)
-        run: cargo test --release --no-default-features
-        working-directory: desktop/src-tauri
-
+      # 测试不在这里跑：check-macos（clippy + 全量测试）与 test（Windows）在 tag 时
+      # 同样触发、与本 job 并行，发布前由 publish 的 needs 卡住。Release profile 的
+      # 编译产物由 P1 的 warm-release 预热缓存提供（见文件头缓存段）。
       - name: Build macOS .app
         run: |
           npm run prebuild
@@ -878,6 +1026,7 @@ jobs:
   #   随之去掉 `contents: write`：本 job 不再碰 Release，按最小权限只读。
   build-windows:
     name: Build Windows exe + installer
+    needs: preflight
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     steps:
@@ -913,20 +1062,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
+          # 见 build-macos 处注释：与 warm-release 共用 key，才能读到 main 的默认分支缓存。
+          shared-key: ccbridge-release
 
       - name: Install frontend deps
         run: npm ci
         working-directory: desktop
 
-      - name: 前端和发布脚本检查
-        working-directory: desktop
-        run: npm run check
-
-      # A：用 release profile 跑测试，编译出的 release 依赖产物直接被下面 tauri build 复用。
-      - name: cargo test (release, 复用后续 build 的编译产物)
-        run: cargo test --release --no-default-features
-        working-directory: desktop/src-tauri
-
+      # 前端检查与测试都不在这里跑：frontend / test / check-macos 在 tag 时同样触发、
+      # 与本 job 并行（此前它们被 `if` 跳过，这里要补 `npm run check` 2:13 与
+      # `cargo test --release` 12:04，两条都压在关键路径上）。产物是否可发由
+      # publish 的 needs 判定。
       - name: Build Tauri desktop app (NSIS installer)
         shell: pwsh
         run: |
@@ -1009,7 +1155,11 @@ jobs:
   # 换平台省不下多少时间。
   publish:
     name: Publish release (GitHub + Gitee)
-    needs: [build-macos, build-windows]
+    # 三个验证 job 也进 needs：它们是并行跑的，不延长关键路径，但发布前必须全绿。
+    # 此前 tag 时它们被 `if` 跳过，校验只能塞进 build job 里串行执行。
+    # 注意这里**不能**写 always()：job 级的 if 一旦出现函数调用，就不再隐含
+    # success()，依赖失败时 publish 会照样执行，等于把「未验证的产物发出去」。
+    needs: [preflight, build-macos, build-windows, frontend, test, check-macos]
     if: startsWith(github.ref, 'refs/tags/v')
     concurrency:
       group: ccbridge-publish-stable
@@ -1061,7 +1211,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: desktop/src-tauri
-          # 只吃 build-windows 存下的缓存，不再回写（key 与它相同，重复保存只会打警告）。
+          # 🔴 必须显式指定。rust-cache 默认拿 **job 名** 当 key，这里会生成
+          # `v0-rust-publish-…`，永远命中不了任何东西——下面那条验签测试就要
+          # 冷编一遍 release 版 lib + 测试目标（10 分钟以上），而且全压在关键路径
+          # 尾部。本 job 的测试用 --no-default-features（默认 features 会拉 GUI DLL，
+          # Windows 上 0xc0000139），所以对的是 warm-release 的 no-default 预热条目。
+          # （此前这行注释写着"key 与 build-windows 相同"，实际上根本没设，是错的。）
+          shared-key: ccbridge-release-nodefault
+          # 只读不写：产物由 warm-release 在 main 上维护，这里再存一份只会多占配额。
           save-if: false
 
       - name: 抽取更新说明 (CHANGELOG)
@@ -1161,6 +1318,51 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Could not publish verified release" }
           }
 
+  # ── 国内加速通道（Gitee 镜像）─────────────────────────────────────────────
+  # 与 publish 拆开的原因：publish 做到「Release 已公开、附件齐全」就算完成，
+  # 用户此刻已经能检查并下载新版。下面这段还要约 4 分钟（推清单分支 18MB、
+  # Gitee 生成附件、四段回读验证），串在 publish 里等于让所有人多等这 4 分钟。
+  # 拆出后它排在 publish 之后单独跑：失败只影响国内通道，不拖累 GitHub 发布。
+  #
+  # 需要 contents: write —— 清单要推到 GitHub 的 releases 分支（再由 Gitee 镜像
+  # 拉过去；不能直接建在 Gitee，镜像同步会删掉上游不存在的分支，见下方长注释）。
+  gitee-mirror:
+    name: Gitee mirror (国内加速通道)
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      # 产物在这里重新下一次（约 1 分钟）：与 publish 是不同 runner，不共享文件系统。
+      # 这点开销换来「Release 公开」不再等后面 4 分钟的 Gitee 同步。
+      - name: 下载两个平台的产物（合并到同一目录）
+        uses: actions/download-artifact@v5
+        with:
+          path: dist-out
+          pattern: cc-bridge-*
+          merge-multiple: true
+
+      - name: 把产物摆回 bundle 目录（供清单脚本按平台扫描）
+        shell: pwsh
+        run: |
+          $nsis  = 'desktop\src-tauri\target\release\bundle\nsis'
+          $macos = 'desktop\src-tauri\target\release\bundle\macos'
+          New-Item -ItemType Directory -Force -Path $nsis, $macos | Out-Null
+          Copy-Item dist-out\*.exe $nsis -ErrorAction Stop
+          Copy-Item dist-out\*.exe.sig $nsis -ErrorAction Stop
+          Copy-Item dist-out\*.app.tar.gz $macos -ErrorAction Stop
+          Copy-Item dist-out\*.app.tar.gz.sig $macos -ErrorAction Stop
+          # 策略文件由 build-windows 用私钥签过，直接搬回来给清单发布读，不重签。
+          New-Item -ItemType Directory -Force -Path 'desktop\dist' | Out-Null
+          Copy-Item dist-out\update-policy.json desktop\dist\update-policy.json -ErrorAction Stop
+          Get-ChildItem $nsis, $macos | Select-Object Name, Length
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
       # 以下步骤解决国内用户直连 GitHub 下载安装包不稳定/很慢的问题：清单与安装包各走一条路，
       # 客户端（update.rs）优先试 Gitee，失败再回退到现有的 ghproxy/GitHub 路径。
       # GITEE_REPOSITORY / GITEE_TOKEN 未配置时自动跳过，不影响发版。
