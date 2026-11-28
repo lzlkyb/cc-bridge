@@ -18,8 +18,11 @@ import { invoke } from "@tauri-apps/api/core";
 /** 同一异常的重报间隔。 */
 const DEDUPE_MS = 60_000;
 
-/** 单条明细上限（字符）。与后端 `ui_diag_cmds` 的字段上限一致，多传也只是白跑一趟 IPC。 */
+/** 单条明细上限（**UTF-8 字节**）。与后端 `ui_diag_cmds::MAX_FIELD` 同单位、同数值。 */
 const MAX_DETAIL = 2000;
+
+/** 截断标记。它自己也占字节预算，否则「截断后的正文 + 标记」会再超一次。 */
+const TRUNCATED = "…（已截断）";
 
 /** 去重表：`来源|消息 → 上次上报时刻`。 */
 const seen = new Map<string, number>();
@@ -43,8 +46,50 @@ function stackOf(error: unknown): string {
   return error instanceof Error && error.stack ? error.stack : "";
 }
 
-function truncate(text: string, max = MAX_DETAIL): string {
-  return text.length <= max ? text : `${text.slice(0, max)}…（已截断）`;
+/**
+ * 一个字符在**后端日志里**要占多少字节。
+ *
+ * 后端 `sanitize` 会把换行写成两个字符（换行 → `\n` 字面）、制表符换成空格、控制字符删掉。
+ * 所以预算必须按「压平之后」算：一段堆栈在前端量着没超、到后端一压又多出几百字节，
+ * 就会被截第二次，日志里出现两条「已截断」，而且中间那条标记可能被切成半截。
+ */
+function cost(ch: string): number {
+  if (ch === "\n" || ch === "\r") return 2;
+  if (ch === "\t") return 1;
+  const code = ch.codePointAt(0) ?? 0;
+  if (code < 0x20 || code === 0x7f) return 0;
+  if (code <= 0x7f) return 1;
+  if (code <= 0x7ff) return 2;
+  if (code <= 0xffff) return 3;
+  return 4;
+}
+
+function costOf(text: string): number {
+  let total = 0;
+  for (const ch of text) total += cost(ch);
+  return total;
+}
+
+/**
+ * 按字节截断，且不切断多字节字符。
+ *
+ * 为什么按字节而不是字符：后端上限约束的是日志文件大小。按字符截断时，一段中文堆栈会以
+ * 「2000 字符 ≈ 6000 字节」传过去，后端再截一次——白占一次传输，还留下两条截断标记。
+ */
+function truncate(text: string, maxBytes = MAX_DETAIL): string {
+  const budget = maxBytes - costOf(TRUNCATED);
+  let out = "";
+  let used = 0;
+  for (const ch of text) {
+    const bytes = cost(ch);
+    if (used + bytes > budget) {
+      return out + TRUNCATED;
+    }
+    out += ch;
+    used += bytes;
+  }
+  // 没超预算：原样返回（`out` 与 `text` 相同，省一次拼接）。
+  return text;
 }
 
 /**

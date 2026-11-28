@@ -55,15 +55,55 @@ it("非 Error 的拒绝原因也能描述出来", () => {
   expect(args.message).toBe("纯字符串原因");
 });
 
-it("超长堆栈被截断但保留头部", () => {
+/** 与后端 `sanitize` 同口径的字节数：换行按字面 `\n` 两字节算。 */
+function loggedBytes(text: string): number {
+  let total = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (ch === "\n" || ch === "\r") total += 2;
+    else if (ch === "\t") total += 1;
+    else if (code < 0x20 || code === 0x7f) total += 0;
+    else if (code <= 0x7f) total += 1;
+    else if (code <= 0x7ff) total += 2;
+    else if (code <= 0xffff) total += 3;
+    else total += 4;
+  }
+  return total;
+}
+
+it("超长堆栈被截断但保留头部，且不超过后端的字节上限", () => {
   const error = new Error("长堆栈");
   error.stack = `Error: 长堆栈\n${"x".repeat(9000)}`;
   reportUiError("bootstrap", error);
 
   const [, args] = mocks.invoke.mock.calls[0] as [string, Record<string, string>];
-  expect(args.detail.length).toBeLessThanOrEqual(2000 + "…（已截断）".length);
+  // 后端按字节截：这里必须用同口径断言，否则中文堆栈会「量着没超、到后端又被截一次」。
+  expect(loggedBytes(args.detail)).toBeLessThanOrEqual(2000);
   expect(args.detail.endsWith("…（已截断）")).toBe(true);
   expect(args.detail.startsWith("Error: 长堆栈")).toBe(true);
+});
+
+it("中文堆栈按字节截断，后端不会再截第二次", () => {
+  const error = new Error("中文堆栈");
+  error.stack = `Error: 中文堆栈\n${"错".repeat(3000)}`;
+  reportUiError("bootstrap", error);
+
+  const [, args] = mocks.invoke.mock.calls[0] as [string, Record<string, string>];
+  expect(loggedBytes(args.detail)).toBeLessThanOrEqual(2000);
+  // 只应有一个截断标记。出现两个说明前端按字符量、后端按字节量，两边口径不一致。
+  expect(args.detail.split("…（已截断）")).toHaveLength(2);
+  expect(args.detail.startsWith("Error: 中文堆栈")).toBe(true);
+});
+
+it("换行多时也不超上限（后端会把换行压成两个字面字符）", () => {
+  const error = new Error("多行");
+  error.stack = Array.from({ length: 500 }, () => "行").join("\n");
+  reportUiError("bootstrap", error);
+
+  const [, args] = mocks.invoke.mock.calls[0] as [string, Record<string, string>];
+  // 每行 3 字节 + 换行压平后 2 字节：只按原始字符量算会低估约 1/3。
+  expect(loggedBytes(args.detail)).toBeLessThanOrEqual(2000);
+  expect(args.detail.split("…（已截断）")).toHaveLength(2);
 });
 
 it("上报通道自己失败时不能把异常抛给调用方", () => {
