@@ -24,15 +24,73 @@ echo "  Pre-push: 运行门禁（8 项）..."
 echo "══════════════════════════════════════════════"
 echo ""
 
+# ── 判定：这次是不是「只推 tag」────────────────────────────────────────────
+# C（2026-11-28）：发版要推两次 —— 先 `git push origin main`（跑一遍全量门禁，
+# 约 6 分钟），再 `git push origin vX.Y.Z`。第二次推的是**同一个提交**，内容刚刚
+# 才在同一台机器上验过，再跑一遍 clippy + cargo test 纯属重复。
+#
+# 但「是 tag 就跳过」不安全：tag 可以指向任何未合并的提交。所以加一道更便宜的
+# 前提——每个 tag 指向的提交必须已经在 origin/main 的历史里（说明它就是某个已经
+# 走过门禁的 main 提交）。不满足（开发分支上打 tag、本地没 fetch 过 main）就退回
+# 全量，行为与改动前一致。
+#
+# 跳过的是 clippy 与 cargo test（慢慢的两项）；cargo fmt 留着，它不到 1 秒。
+# 前端五项同样留着：tag 里最可能出问题的恰恰是 CHANGELOG 与发布说明。
+PUSH_REFS=$(cat 2>/dev/null || true)
+SKIP_RUST_TESTS=0
+if [ -n "$PUSH_REFS" ]; then
+  # 落成文件再读，不用 here-doc：`<<EOF` 会对内容再做一次参数展开，
+  # ref 名里合法出现的 `$` / 反引号会被当成变量或命令替换而变形。
+  REFS_FILE="${TMPDIR:-/tmp}/ccb-prepush-refs.$$"
+  printf '%s\n' "$PUSH_REFS" > "$REFS_FILE"
+  trap 'rm -f "$REFS_FILE"' EXIT
+  ONLY_TAGS=1
+  HAS_REF=0
+  while IFS=' ' read -r local_ref local_sha _remote_ref _remote_sha; do
+    [ -z "$local_ref" ] && continue
+    HAS_REF=1
+    case "$local_sha" in
+      *0000000000000000000000000000000000000000) continue ;;   # 删除远端 ref
+    esac
+    case "$local_ref" in
+      refs/tags/*) ;;
+      *) ONLY_TAGS=0 ;;
+    esac
+  done < "$REFS_FILE"
+
+  if [ "$HAS_REF" = 1 ] && [ "$ONLY_TAGS" = 1 ]; then
+    ALL_IN_MAIN=1
+    while IFS=' ' read -r local_ref local_sha _remote_ref _remote_sha; do
+      [ -z "$local_ref" ] && continue
+      case "$local_sha" in
+        *0000000000000000000000000000000000000000) continue ;;
+      esac
+      case "$local_ref" in
+        refs/tags/*) ;;
+        *) ALL_IN_MAIN=0; continue ;;
+      esac
+      commit=$(git rev-parse -q --verify "${local_sha}^{commit}" 2>/dev/null) || { ALL_IN_MAIN=0; continue; }
+      git merge-base --is-ancestor "$commit" refs/remotes/origin/main 2>/dev/null || ALL_IN_MAIN=0
+    done < "$REFS_FILE"
+    [ "$ALL_IN_MAIN" = 1 ] && SKIP_RUST_TESTS=1
+  fi
+fi
+
+if [ "$SKIP_RUST_TESTS" = 1 ]; then
+  echo "  ⏭  只推 tag，且指向 origin/main 里已过门禁的提交"
+  echo "     → 跳过 clippy 与 cargo test（CI 会用 release profile 全量跑一遍）"
+  echo ""
+fi
+
 # ── 组件体量（纯读文件，最快，放最前）──
 # 规则 7 的机器执行版：行数 + 单文件里的 useState/useEffect 总数。
 # 存量超标文件走棘轮基线（只许变小），新文件必须直接合规。
-echo "[1/7] 组件体量门禁 ..."
+echo "[1/8] 组件体量门禁 ..."
 (cd desktop && node scripts/check-component-size.mjs)
 echo ""
 
 # ── Rust 格式（瞬完，最常见的低级失败放最前）──
-echo "[2/7] cargo fmt --check ..."
+echo "[2/8] cargo fmt --check ..."
 if ! (cd desktop/src-tauri && cargo fmt --check >/dev/null 2>&1); then
   echo "  ❌ 格式不合规。在 desktop/src-tauri 下跑一句 'cargo fmt' 即可修复。"
   exit 1
@@ -44,13 +102,13 @@ echo ""
 # 上它的唯一理由是 react-hooks 那两条规则：依赖数组不全 / hooks 调用顺序问题
 # 会造成“闭包拿陈旧值”，而 tsc 完全看不出来。存量违规记在 eslint-suppressions.json
 # 里（棘轮，只许减少），新违规直接拦。
-echo "[3/7] eslint ..."
+echo "[3/8] eslint ..."
 (cd desktop && npx eslint .)
 echo "  ✅ eslint 通过"
 echo ""
 
 # ── 前端类型 ──
-echo "[4/7] 前端 tsc --noEmit ..."
+echo "[4/8] 前端 tsc --noEmit ..."
 (cd desktop && npx tsc --noEmit)
 echo "  ✅ 前端类型检查通过"
 echo ""
@@ -59,22 +117,29 @@ echo ""
 # 旧注释写的是「cc-bridge 没有 Vitest」——那已经不成立了。目前有 12 个测试文件
 # 共 147 条用例，盖的全是真机难复现的纯计算（终端行高回退、高 DPI 拖放命中判定、
 # 远程路径归一化等）。不跑它们等于白写。
-echo "[5/7] 前端 vitest ..."
+echo "[5/8] 前端 vitest ..."
 (cd desktop && npm test --silent)
 echo "  ✅ 前端单测通过"
 echo ""
 
-# ── Rust 静态检查（与 CI 的 macOS job 同等严格）──
-echo "[6/7] cargo clippy -D warnings ..."
-(cd desktop/src-tauri && cargo clippy --all-targets --no-default-features -- -D warnings)
-echo "  ✅ clippy 零警告"
-echo ""
+if [ "$SKIP_RUST_TESTS" = 1 ]; then
+  echo "[6/8] cargo clippy -D warnings ...  ⏭ 跳过（代码已在 main 侧验过）"
+  echo ""
+  echo "[7/8] Rust cargo test ...  ⏭ 跳过（代码已在 main 侧验过）"
+  echo ""
+else
+  # ── Rust 静态检查（与 CI 的 macOS job 同等严格）──
+  echo "[6/8] cargo clippy -D warnings ..."
+  (cd desktop/src-tauri && cargo clippy --all-targets --no-default-features -- -D warnings)
+  echo "  ✅ clippy 零警告"
+  echo ""
 
-# ── Rust 测试 ──
-echo "[7/7] Rust cargo test ..."
-(cd desktop/src-tauri && cargo test --no-default-features)
-echo "  ✅ Rust 测试通过"
-echo ""
+  # ── Rust 测试 ──
+  echo "[7/8] Rust cargo test ..."
+  (cd desktop/src-tauri && cargo test --no-default-features)
+  echo "  ✅ Rust 测试通过"
+  echo ""
+fi
 
 # ── 更新日志用户向门禁 ──
 # 纯读文件，放在最后不抢 target 构建锁。发布说明会原样流到 Release 页面和

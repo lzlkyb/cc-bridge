@@ -726,12 +726,13 @@ jobs:
           path: ${{ runner.temp }}/out/**
           if-no-files-found: warn
 
-  # ── mac 发版构建（仅 tag 触发，在 build-windows 之前跑）──────────────────
-  # 为何要比 Windows 先跑：updater.json 只能有一份（attach 到同一个 Release），
-  # 而两个平台在不同 job 里构建、各自只看得到自己的产物。若两边都自行生成并 attach，
-  # 后跑的会**静默覆盖**先跑那个平台的条目 → 那个平台的用户失去自动更新。
-  # 所以 mac 只把自己的平台条目当**片段**产出（不 attach updater.json），
-  # 由 build-windows 用 UPDATER_MERGE_INTO 合并后统一 attach。
+  # ── mac 发版构建（仅 tag 触发，与 build-windows 并行）────────────────────
+  # 过去这里要「在 build-windows 之前跑」：updater.json 只能有一份（attach 到同一个
+  # Release），两个平台各自生成会**静默覆盖**另一平台的条目，被覆盖那个平台的用户
+  # 失去自动更新且不报错。当时靠跨 job 传 json 片段解决，代价是两个平台必须串行。
+  #
+  # 2026-11-28（A）：清单生成整体挪到 publish job（两个平台都构建完之后跑），
+  # 本 job 只交产物，于是两个构建 job 可以完全并行。片段机制随之取消。
   #
   # 只出 arm64（已确认）。不出 dmg：烟测只验过 --bundles app，dmg 从未构建过，
   # 内网分发给 zip 就够，多出一个未验证的环节不划算。
@@ -822,43 +823,23 @@ jobs:
             pid=""
           done
 
-      # 生成两份平台片段：GitHub 路径与 Gitee 镜像路径的 URL 形状不同，
-      # 各自都要一份，否则 mac 用户在 Gitee 那一组拿不到条目（updater 会返回
-      # TargetsNotFound 错误→自动回退到 GitHub 组，功能不断但白多一轮重试延迟）。
-      # 片段里的 version/notes 不重要：合并时只取 platforms，顶层字段由 Windows 侧提供。
-      - name: 生成 mac 平台片段（GitHub 路径）
+      # 清单不在这里生成（2026-11-28，A）：updater.json 只能有一份，两个平台各自生成
+      # 会互相静默覆盖，被覆盖那个平台的用户失去自动更新且不报错。现在统一由 publish
+      # job 拿到两个平台的安装包后一次写出双平台条目（见 publish 段注释）。
+      #
+      # 这里只留一道 early-fail：签名文件为空的话，要等到 publish 阶段（两个平台都构建完、
+      # 已经白跑十几分钟）才会红。签名本身由 tauri build 用 secrets 里的私钥产生，
+      # 这条检查只防「空文件被当成签名」这种低级事故。
+      - name: 确认更新包签名非空
         run: |
           set -e
-          UPDATER_OUTPUT_FILENAME=updater-macos.json npm run updater:generate
-        working-directory: desktop
-        env:
-          GITHUB_RELEASE_TAG: ${{ github.ref_name }}
-          UPDATER_DOWNLOAD_BASE: "https://gh-proxy.com/https://github.com/${{ github.repository }}/releases/download"
-
-      - name: 生成 Gitee 变体的 mac 片段（URL 指向 Gitee 发行版附件）
-        run: |
-          set -e
-          UPDATER_OUTPUT_FILENAME=updater-macos-gitee.json npm run updater:generate
-        working-directory: desktop
-        env:
-          GITHUB_RELEASE_TAG: ${{ github.ref_name }}
-          # 指向发行版附件，不是 raw 分支：raw 对匿名访问有大小上限，10.23MB 的 mac 包实测 403
-          # `large file require login for access`，而客户端没有登录态（见 build-windows 的国内通道段）。
-          UPDATER_URL_TEMPLATE: "https://gitee.com/${{ secrets.GITEE_REPOSITORY }}/releases/download/${{ github.ref_name }}/{filename}"
-
-      - name: 校验 darwin-aarch64 签名非空
-        run: |
-          node -e "
-            const j=require('./dist/updater-macos.json');
-            const p=j.platforms['darwin-aarch64'];
-            if(!p || !p.signature || !p.signature.trim()){
-              console.error('❌ updater-macos.json 的 darwin-aarch64.signature 为空。');
-              console.error('   mac 客户端会下载到包但验签失败、永远装不上。');
-              process.exit(1);
-            }
-            console.log('darwin-aarch64 签名校验通过，url=' + p.url);
-          "
-        working-directory: desktop
+          SIG=$(ls desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig)
+          BYTES=$(wc -c < "$SIG" | tr -d ' ')
+          if [ "$BYTES" -eq 0 ]; then
+            echo "❌ $SIG 为空。mac 客户端会下载到包但验签失败、永远装不上。"
+            exit 1
+          fi
+          echo "✅ 签名非空（${BYTES} 字节）"
 
       - name: 📦 打包给用户下载的 zip
         run: |
@@ -878,9 +859,6 @@ jobs:
           cp desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz dist-out/
           cp desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig dist-out/
           cp cc-bridge_*_aarch64-apple-darwin.zip dist-out/
-          # 平台片段只作为 artifact 传给 build-windows 合并，**不** attach 到 Release
-          cp desktop/dist/updater-macos.json dist-out/
-          cp desktop/dist/updater-macos-gitee.json dist-out/
           ls -l dist-out
 
       - uses: actions/upload-artifact@v5
@@ -889,26 +867,21 @@ jobs:
           path: dist-out/*
 
   # 发版构建：仅 tag 触发。test(release) 与 build 同 job 内复用 release target，
-  # 依赖 crate 只编译一遍（A）；跨发版的依赖产物由 Swatinem/rust-cache 的 target
-  # 缓存承担（B）—— Windows 侧不走 sccache，原因见文件头 env 处注释。
+  # 依赖 crate 只编译一遍；跨发版的依赖产物由 Swatinem/rust-cache 的 target
+  # 缓存承担 —— Windows 侧不走 sccache，原因见文件头 env 处注释。
+  #
+  # 🔴 2026-11-28（A）：本 job **只负责构建**，不再发布。
+  #   过去它 `needs: [build-macos]`，两个平台串行 ≈ 49 分钟；而 Windows 的编译与测试
+  #   其实不依赖 mac 的任何产物，唯一依赖的是「mac 的安装包 + 签名」——那是 mac job
+  #   的最后一步。把清单生成 / 建 Release / 推 Gitee 整段抽到 publish job 之后，
+  #   两个构建 job 完全并行：总时长 = max(mac, windows) + publish。
+  #   随之去掉 `contents: write`：本 job 不再碰 Release，按最小权限只读。
   build-windows:
     name: Build Windows exe + installer
-    needs: [build-macos]
     if: startsWith(github.ref, 'refs/tags/v')
-    concurrency:
-      group: ccbridge-publish-stable
-      cancel-in-progress: false
     runs-on: windows-latest
-    permissions:
-      contents: write   # 创建 GitHub Release 需要写权限（默认 token 只读）
     steps:
       - uses: actions/checkout@v5
-
-      - name: 下载 macOS 产物和更新清单片段
-        uses: actions/download-artifact@v5
-        with:
-          name: cc-bridge-macos
-          path: mac-artifact
 
       - name: 🔑 准备签名密钥（文件路径方式）
         shell: pwsh
@@ -970,52 +943,6 @@ jobs:
           npx tauri build
         working-directory: desktop
 
-      - name: 抽取更新说明 (CHANGELOG)
-        shell: pwsh
-        run: |
-          # 显式 utf8：CHANGELOG 是无 BOM 的 UTF-8，PowerShell 5.1 默认按 ANSI(GBK) 解码会整段乱码
-          # （CI 跑的是 pwsh 7，默认 UTF-8 本来就对，这句是为了本地复跑与 shell 版本无关）。
-          $changelog = Get-Content -Raw -Path CHANGELOG.md -Encoding utf8
-          # 抽取「用户向分类小节」（含顶部 ### 更新摘要，渲染为弹框高亮卡片；及 ### 新增/修复/变更/优化/安全 等），写入更新弹框。
-          # 每个小节下列 1~3 条人话要点（无代码符号、无根因），让用户一眼看懂升级了什么。
-          # 正则要求版本号形如 x.y.z，避免误抓 [Unreleased]；抓到下一个版本头为止。
-          # 剔除不进弹框的小节：### 用户摘要 / ### 技术细节 / ### 实现说明 / ### 开发者。
-          if ($changelog -match '(?s)##\s*\[\d+\.\d+\.\d+\][^\n]*\n(.*?)(?=\n##\s\[|$)') {
-            $notes = $matches[1].Trim()
-            $notes = $notes -replace '(?s)\n###\s*(用户摘要|技术细节|实现说明|开发者)[\s\S]*?(?=\n###\s|\n##\s|$)', ''
-            $notes = $notes.Trim()
-            "UPDATER_NOTES<<EOF" >> $env:GITHUB_ENV
-            $notes >> $env:GITHUB_ENV
-            "EOF" >> $env:GITHUB_ENV
-            Write-Host "已抽取用户向分类说明 ($($notes.Length) 字符)"
-          } else {
-            Write-Host "未在 CHANGELOG 中找到已发布版本段，使用默认说明"
-          }
-          # 同一份说明落盘给 GitHub Release 页面用（body_path）。此前只喂给 updater.json（应用内弹框），
-          # Release 页面正文恒为空，从网页看更新内容的人什么也看不到。兜底写一句，避免 body_path
-          # 指向不存在的文件（action 读文件失败会中断发版）。写无 BOM 的 UTF-8：带 BOM 时正文开头
-          # 会多出一个不可见字符，markdown 首行可能不成标题。
-          if ([string]::IsNullOrWhiteSpace($notes)) {
-            $notes = '本版更新说明见 [CHANGELOG.md](CHANGELOG.md)。'
-          }
-          $notesPath = Join-Path $env:GITHUB_WORKSPACE 'release-notes.md'
-          [System.IO.File]::WriteAllText($notesPath, $notes, (New-Object System.Text.UTF8Encoding($false)))
-          Write-Host "Release 说明已写入 $notesPath（$($notes.Length) 字符）"
-
-      - name: 生成 updater.json（合并 mac 平台条目）
-        shell: pwsh
-        run: npm run updater:generate
-        working-directory: desktop
-        env:
-          GITHUB_RELEASE_TAG: ${{ github.ref_name }}
-          # 合并 mac 片段：不接这一句的后果是 mac 条目根本不进 updater.json，
-          # mac 用户永远检测不到更新且不报错。指向不存在的文件时脚本只 warn，
-          # 所以 mac job 挂了也不会把 Windows 发版带倒。
-          UPDATER_MERGE_INTO: ${{ github.workspace }}\mac-artifact\updater-macos.json
-          # 二进制下载走 ghproxy 镜像，解决国内用户下载慢；元数据检查另有 tauri.conf.json 的 GitHub 端点兜底。
-          # 注意：updater.json 的 url 为单值、无二进制级兜底，故 ghproxy 域名需稳定；若失效改此 env + config 即可。
-          UPDATER_DOWNLOAD_BASE: "https://gh-proxy.com/https://github.com/${{ github.repository }}/releases/download"
-
       # 默认不强制：release-policy.json 由发版脚本每次重写（不带 --force 就是 enforced:false），
       # 所以「上一次发过强制、这次忘了关」不会发生。脚本自带 min<=latest 与版本格式校验，
       # 配置写错直接让发版红，避免生成一份把所有人锁死、且更新也解除不了的策略。
@@ -1056,17 +983,136 @@ jobs:
           mkdir dist-out -ErrorAction Stop
           Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe dist-out\ -ErrorAction Stop
           Copy-Item desktop\src-tauri\target\release\bundle\nsis\*.exe.sig dist-out\ -ErrorAction Stop
-          Copy-Item desktop\dist\updater.json dist-out\ -ErrorAction Stop
           Copy-Item desktop\dist\update-policy.json dist-out\ -ErrorAction Stop
-          Copy-Item mac-artifact\*.app.tar.gz dist-out\ -ErrorAction Stop
-          Copy-Item mac-artifact\*.app.tar.gz.sig dist-out\ -ErrorAction Stop
-          Copy-Item mac-artifact\*.zip dist-out\ -ErrorAction Stop
           Copy-Item cc-bridge_*.zip dist-out\ -ErrorAction Stop
+          # 清单（updater.json / updater-gitee.json）不在这里生成：updater.json 只能有一份，
+          # 由 publish job 拿到两个平台的安装包后统一写出双平台条目（见下方 publish 段）。
 
       - uses: actions/upload-artifact@v5
         with:
           name: cc-bridge-windows
           path: dist-out/*
+
+  # ── 发布：两个平台的产物都到齐后统一做 ───────────────────────────────────
+  # 为什么单独一个 job（2026-11-28，A）：过去 build-windows `needs: [build-macos]`，
+  # 两个平台串行构建 ≈ 49 分钟。但 Windows 的编译与测试其实不依赖 mac 的任何产物，
+  # 真正需要的只有「mac 的 .app.tar.gz 与签名」——那是 mac job 的最后一步。
+  # 把清单生成 / 建 Release / 推 Gitee 整段抽到这里，两个构建 job 就能完全并行：
+  #   总时长 = max(mac, windows) + publish，而不是 sum。
+  #
+  # 清单必须在这一个地方生成：updater.json 只能有一份，两个平台各自生成并 attach
+  # 会**静默互相覆盖**，被覆盖那个平台的用户失去自动更新且不报错。这里两个平台的
+  # 安装包都到齐了，脚本一次扫出 windows-x86_64 与 darwin-aarch64 两条。
+  #
+  # 跑 windows-latest 而不是 ubuntu：Gitee 那段（推 tag、attach_files、回读校验）
+  # 是 pwsh 写的，重写成 bash 只会平白引入一类新 bug。本 job 不编译、只做 IO，
+  # 换平台省不下多少时间。
+  publish:
+    name: Publish release (GitHub + Gitee)
+    needs: [build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    concurrency:
+      group: ccbridge-publish-stable
+      cancel-in-progress: false
+    runs-on: windows-latest
+    permissions:
+      contents: write   # 建 Release + 上传附件 + 推 releases 清单分支
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 下载两个平台的产物（合并到同一目录）
+        uses: actions/download-artifact@v5
+        with:
+          path: dist-out
+          pattern: cc-bridge-*
+          merge-multiple: true
+
+      # 清单脚本按 bundle/<平台>/ 目录找产物，所以把下载来的文件摆回那个形状。
+      # 不重新构建：.exe/.sig/.app.tar.gz/.sig 都是各平台 job 里真实产出并签名过的。
+      - name: 把产物摆回 bundle 目录（供清单脚本按平台扫描）
+        shell: pwsh
+        run: |
+          $nsis  = 'desktop\src-tauri\target\release\bundle\nsis'
+          $macos = 'desktop\src-tauri\target\release\bundle\macos'
+          New-Item -ItemType Directory -Force -Path $nsis, $macos | Out-Null
+          Copy-Item dist-out\*.exe $nsis -ErrorAction Stop
+          Copy-Item dist-out\*.exe.sig $nsis -ErrorAction Stop
+          Copy-Item dist-out\*.app.tar.gz $macos -ErrorAction Stop
+          Copy-Item dist-out\*.app.tar.gz.sig $macos -ErrorAction Stop
+          Get-ChildItem $nsis, $macos | Select-Object Name, Length
+          # 策略文件在 build-windows 里已用私钥签过，直接搬回来给下面的清单发布步骤读。
+          # 不在这里重签：重签要再引一次私钥，且两份内容会不一致。
+          New-Item -ItemType Directory -Force -Path 'desktop\dist' | Out-Null
+          Copy-Item dist-out\update-policy.json desktop\dist\update-policy.json -ErrorAction Stop
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      # 下面「确认两端安装包、清单和策略的签名」是 Rust 测试（minisign 验签），要 cargo。
+      # 不需要 npm ci：清单脚本是纯 node（fs/path），没有任何第三方依赖。
+      - uses: dtolnay/rust-toolchain@stable
+      # 🔴 必须清空：文件头 env 把所有 job 的 RUSTC_WRAPPER 设为 sccache，而本 job 不装
+      # sccache（Windows 上它会展开 rustc 的 @argfile、超命令行上限，见文件头注释）。
+      # 不清空的话 cargo 会报 "could not execute process `sccache`" 直接红。
+      - name: 关闭 sccache（本 job 不装，且 Windows 命令行长度上限）
+        shell: bash
+        run: echo "RUSTC_WRAPPER=" >> "$GITHUB_ENV"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+          # 只吃 build-windows 存下的缓存，不再回写（key 与它相同，重复保存只会打警告）。
+          save-if: false
+
+      - name: 抽取更新说明 (CHANGELOG)
+        shell: pwsh
+        run: |
+          # 显式 utf8：CHANGELOG 是无 BOM 的 UTF-8，PowerShell 5.1 默认按 ANSI(GBK) 解码会整段乱码
+          # （CI 跑的是 pwsh 7，默认 UTF-8 本来就对，这句是为了本地复跑与 shell 版本无关）。
+          $changelog = Get-Content -Raw -Path CHANGELOG.md -Encoding utf8
+          # 抽取「用户向分类小节」（含顶部 ### 更新摘要，渲染为弹框高亮卡片；及 ### 新增/修复/变更/优化/安全 等），写入更新弹框。
+          # 每个小节下列 1~3 条人话要点（无代码符号、无根因），让用户一眼看懂升级了什么。
+          # 正则要求版本号形如 x.y.z，避免误抓 [Unreleased]；抓到下一个版本头为止。
+          # 剔除不进弹框的小节：### 用户摘要 / ### 技术细节 / ### 实现说明 / ### 开发者。
+          if ($changelog -match '(?s)##\s*\[\d+\.\d+\.\d+\][^\n]*\n(.*?)(?=\n##\s\[|$)') {
+            $notes = $matches[1].Trim()
+            $notes = $notes -replace '(?s)\n###\s*(用户摘要|技术细节|实现说明|开发者)[\s\S]*?(?=\n###\s|\n##\s|$)', ''
+            $notes = $notes.Trim()
+            "UPDATER_NOTES<<EOF" >> $env:GITHUB_ENV
+            $notes >> $env:GITHUB_ENV
+            "EOF" >> $env:GITHUB_ENV
+            Write-Host "已抽取用户向分类说明 ($($notes.Length) 字符)"
+          } else {
+            Write-Host "未在 CHANGELOG 中找到已发布版本段，使用默认说明"
+          }
+          # 同一份说明落盘给 GitHub Release 页面用（body_path）。此前只喂给 updater.json（应用内弹框），
+          # Release 页面正文恒为空，从网页看更新内容的人什么也看不到。兜底写一句，避免 body_path
+          # 指向不存在的文件（action 读文件失败会中断发版）。写无 BOM 的 UTF-8：带 BOM 时正文开头
+          # 会多出一个不可见字符，markdown 首行可能不成标题。
+          if ([string]::IsNullOrWhiteSpace($notes)) {
+            $notes = '本版更新说明见 [CHANGELOG.md](CHANGELOG.md)。'
+          }
+          $notesPath = Join-Path $env:GITHUB_WORKSPACE 'release-notes.md'
+          [System.IO.File]::WriteAllText($notesPath, $notes, (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host "Release 说明已写入 $notesPath（$($notes.Length) 字符）"
+
+      - name: 生成 updater.json（两个平台一次写出）
+        shell: pwsh
+        run: npm run updater:generate
+        working-directory: desktop
+        env:
+          GITHUB_RELEASE_TAG: ${{ github.ref_name }}
+          # 二进制下载走 ghproxy 镜像，解决国内用户下载慢；元数据检查另有 tauri.conf.json 的 GitHub 端点兜底。
+          # 注意：updater.json 的 url 为单值、无二进制级兜底，故 ghproxy 域名需稳定；若失效改此 env + config 即可。
+          UPDATER_DOWNLOAD_BASE: "https://gh-proxy.com/https://github.com/${{ github.repository }}/releases/download"
+
+      # updater.json 就是 Release 的一个附件（客户端从 release 资产或 raw 镜像取），
+      # 所以要放回待上传目录；updater-gitee.json 不进 Release，它只走 releases 分支。
+      - name: 把清单放进待上传目录
+        shell: pwsh
+        run: |
+          Copy-Item desktop\dist\updater.json dist-out\updater.json -ErrorAction Stop
+          Get-ChildItem dist-out | Select-Object Name, Length
 
       - name: 确认两端安装包、清单和策略的签名
         working-directory: desktop/src-tauri
@@ -1141,8 +1187,9 @@ jobs:
           # 免得有人把这里改回 raw、又让大平台的自动更新静默下载失败。
           UPDATER_URL_TEMPLATE: "https://gitee.com/${{ secrets.GITEE_REPOSITORY }}/releases/download/${{ github.ref_name }}/{filename}"
           UPDATER_OUTPUT_FILENAME: "updater-gitee.json"
-          # 用 Gitee 变体的 mac 片段（URL 指向 Gitee 发行版附件），不能用 GitHub 那份。
-          UPDATER_MERGE_INTO: ${{ github.workspace }}\mac-artifact\updater-macos-gitee.json
+          # 不接 UPDATER_MERGE_INTO：本 job 的 bundle 目录里两个平台的产物都在
+          # （见「把产物摆回 bundle 目录」），脚本一次就扫出双平台条目。
+          # 过去要在两个平台之间传 json 片段，正是因为它们分属不同 job。
 
       # 发行版附件必须先就位，清单才能指过去：顺序反了就是给客户端一堆 404。
       # 🔴 2026-11-24（C）：不再 continue-on-error。v3.3.0 实测它把 exit 1 记成 success（假绿），
