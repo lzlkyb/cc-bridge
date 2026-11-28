@@ -298,9 +298,79 @@ fn original_update_location_is_independent_of_the_new_scope_draft() {
     assert_eq!(access.source_project_path, "/srv/orders");
     assert!(access
         .update_command
-        .starts_with("cd \"/srv/orders\" && python3"));
+        .starts_with("cd \"/srv/orders\" && sed -i.bak"));
     assert_eq!(access.state, "changed");
     assert!(!access.token_update_pending);
+}
+
+/// 「只换了 IP」是最常见的情形：凭据已同步就该给用户熟悉的那条 sed，
+/// 而不是把整段 python 脚本内联进来（多行、带明文 token、逼近终端行上限）。
+#[test]
+fn direct_ip_update_uses_sed_when_token_is_already_synced() {
+    let (mut config, _, ips) = fixture();
+    config.stable_connect.method = Some("direct".into());
+    config.stable_connect.direct = Some(direct_access(&config, &ips));
+
+    let command = ip_update_command(&config, &ips).unwrap().0;
+    assert!(
+        command.contains("sed -i.bak") && !command.contains("python3 -c"),
+        "凭据已同步时应给 sed，实际：{command}"
+    );
+    assert!(command.contains("192.168.1.8:7823/mcp") || command.contains("10.0.0.2:7823/mcp"));
+}
+
+/// 换过 Token 后必须走条目级重写：sed 不写 Authorization，只会留下 401。
+#[test]
+fn direct_ip_update_falls_back_to_entry_rewrite_when_token_is_stale() {
+    let (mut config, _, ips) = fixture();
+    config.stable_connect.method = Some("direct".into());
+    let mut receipt = direct_access(&config, &ips);
+    // 未确认的历史地址必须在 python 版里逐个列出（sed 靠通配，python 靠枚举）。
+    receipt.issued_addresses = vec!["10.0.0.9".into()];
+    config.stable_connect.direct = Some(receipt);
+    config.token = "rotated-token".into();
+
+    let command = ip_update_command(&config, &ips).unwrap().0;
+    assert!(
+        command.contains("python3 -c") && !command.contains("sed -i.bak"),
+        "凭据未同步时必须走条目级重写，实际：{command}"
+    );
+    assert!(
+        command.contains("10.0.0.9"),
+        "重写版应枚举未确认的历史地址，实际：{command}"
+    );
+}
+
+/// 老记录没有 token 指纹（引入该字段之前写的），无从判断是否同步 → 保守走重写。
+#[test]
+fn direct_ip_update_treats_missing_token_fingerprint_as_stale() {
+    let (mut config, _, ips) = fixture();
+    config.stable_connect.method = Some("direct".into());
+    let mut receipt = direct_access(&config, &ips);
+    receipt.token_fingerprint = String::new();
+    config.stable_connect.direct = Some(receipt);
+
+    let command = ip_update_command(&config, &ips).unwrap().0;
+    assert!(
+        command.contains("python3 -c"),
+        "空指纹应保守走重写，实际：{command}"
+    );
+}
+
+/// 多设备保持重写：claude-code 的多设备更新命令是 remove+add，会触发重新授权。
+#[test]
+fn direct_ip_update_keeps_entry_rewrite_in_multi_device_mode() {
+    let (mut config, _, ips) = fixture();
+    config.stable_connect.method = Some("direct".into());
+    config.multi_device_mode = true;
+    config.device_id = "dev01".into();
+    config.stable_connect.direct = Some(direct_access(&config, &ips));
+
+    let command = ip_update_command(&config, &ips).unwrap().0;
+    assert!(
+        command.contains("python3 -c") && command.contains("cc-bridge-dev01"),
+        "多设备应走条目级重写并指向 cc-bridge-dev01，实际：{command}"
+    );
 }
 
 #[test]
@@ -378,7 +448,11 @@ fn successive_direct_updates_keep_issued_addresses_until_the_user_confirms() {
     let third = vec!["10.0.0.4".into()];
     let final_target = direct_access(&config, &third);
     let command = ip_update_command(&config, &third).unwrap().0;
-    assert!(command.contains(&next.address) && command.contains(&final_target.address));
+    // 凭据未变 → 给的是 sed：pattern 用 `[0-9.]*` 通配任意 IP，天然覆盖
+    // original / issued_addresses / 本次新地址。只有 python 版才需要逐个列出旧地址，
+    // 所以这里不再断言命令里出现具体历史 IP，改为断言通配形态 + 新地址。
+    // issued_addresses 的累积仍要保留：一旦换过 token 就会转回 python，那时它是必需的。
+    assert!(command.contains("[0-9.]*:7823/mcp") && command.contains(&final_target.address));
     assert!(update_direct_receipt(&config, &third, &next.fingerprint, true).is_err());
     config.stable_connect.direct =
         update_direct_receipt(&config, &third, &final_target.fingerprint, true).unwrap();

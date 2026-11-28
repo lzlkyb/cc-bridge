@@ -731,17 +731,28 @@ pub fn ip_update_command(
         .direct
         .as_ref()
         .filter(|r| r.client == config.connect_client.as_deref().unwrap_or("claude-code"));
-    if let Some(receipt) = receipt.filter(|r| r.client == "claude-code") {
-        let next = direct_access(config, ips);
-        return Ok((
-            direct_update_command(config, receipt, &next.address),
-            if receipt.scope == "user" {
-                "全局模式"
-            } else {
-                "原项目级接入"
-            }
-            .into(),
-        ));
+    if let Some(r) = receipt.filter(|r| r.client == "claude-code") {
+        // 条目级原地重写（python）只在**必须**时用，判据是「这条命令要改什么」：
+        //   1. 凭据未同步：sed 只换 URL、不写 Authorization（见 network.rs
+        //      「只换地址，不换凭据」），给 sed 会留下 401 且用户看不出原因。
+        //      空指纹 = 引入 token_fingerprint 之前的老记录，无从判断，按未同步保守处理。
+        //   2. 多设备：claude-code 的多设备更新命令是 remove+add，会触发重新授权，
+        //      而 python 保留原条目、只改 url 与 token。
+        // 凭据已同步的单设备是「只换了 IP」的最常见情形，sed 足够，也是用户熟悉的形态。
+        let token_synced =
+            !r.token_fingerprint.is_empty() && r.token_fingerprint == token_fingerprint(config);
+        if config.multi_device_mode || !token_synced {
+            let next = direct_access(config, ips);
+            return Ok((
+                direct_update_command(config, r, &next.address),
+                if r.scope == "user" {
+                    "全局模式"
+                } else {
+                    "原项目级接入"
+                }
+                .into(),
+            ));
+        }
     }
     Ok(network::ip_update_command_for(
         IpUpdateTarget {
