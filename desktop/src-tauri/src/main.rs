@@ -427,11 +427,12 @@ where
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 默认只出 error，但客户端能力探针（mcp::probe）要默认可见。
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("error,mcp::probe=info"),
-    )
-    .init();
+    // 日志必须**最先**就绪：release 版没有控制台，白屏、启动失败这类问题全靠这份文件。
+    // 目录在这里只能按平台规则自己推导（拿不到 AppHandle），`setup` 里会用真实的
+    // `app_data_dir()` 复核一次（见 `logging::confirm_dir`）。
+    let context = tauri::generate_context!();
+    let log_hint = logging::default_app_data_dir(context.config().identifier.as_str());
+    logging::init(&log_hint);
 
     // 抑制子进程（如 netsh）初始化失败时的「应用程序错误」硬弹窗（0xc0000142）。
     // 必须在 spawn 任何 netsh 之前调用，错误模式会被其后创建的子进程继承。
@@ -463,6 +464,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .path()
                 .app_data_dir()
                 .map_err(|e| std::io::Error::other(format!("无法解析应用数据目录：{e}")))?;
+            // 与 `main` 开头自己推导的目录对一下：不一致就是日志写到了用户找不到的地方。
+            logging::confirm_dir(&data_dir);
             std::fs::create_dir_all(&data_dir)
                 .map_err(|e| std::io::Error::other(format!("无法创建应用数据目录：{e}")))?;
 
@@ -691,15 +694,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 })
                 .on_menu_event(move |tray_app, event| {
-                    // 强制更新期间只放行「打开面板 / 退出」。菜单刷新有周期（见 refresh_menu
-                    // 的 key），所以事件可能来自上一拍的旧菜单 —— 必须在这里再拦一次。
+                    // 强制更新期间只放行「打开面板 / 重新加载界面 / 退出」。菜单刷新有周期
+                    // （见 refresh_menu 的 key），所以事件可能来自上一拍的旧菜单 —— 必须在
+                    // 这里再拦一次。`reload_ui` 放行是安全的：重载后遮罩会重新盖上，它拿不到
+                    // 任何绕过更新的能力，只是白屏时唯一的自救口。
                     if tray_state.force_update_active.load(std::sync::atomic::Ordering::SeqCst)
-                        && !matches!(event.id.as_ref(), "show" | "quit")
+                        && !matches!(event.id.as_ref(), "show" | "reload_ui" | "quit")
                     {
                         return;
                     }
                     match event.id.as_ref() {
                     "show" => show_or_create_main_window(tray_app.app_handle()),
+                    "reload_ui" => {
+                        let handle = tray_app.app_handle();
+                        // 复用 `show_or_create`：它还负责复位「不可见」标记并发
+                        // `app:visibility=true`——少了它，重载后的界面会以为自己仍在后台，
+                        // 轮询与动画全都停着，看着还是「死的」。
+                        let existed = handle.get_webview_window("main").is_some();
+                        show_or_create_main_window(handle);
+                        // 窗口本来在：重载它。窗口已销毁：`show_or_create` 的重建分支
+                        // 已经是完整重载，再 reload 一次只会多闪一帧。
+                        if existed {
+                            match handle.get_webview_window("main") {
+                                Some(window) => {
+                                    if let Err(error) = window.reload() {
+                                        log::error!("托盘重新加载界面失败：{error}");
+                                    } else {
+                                        log::info!("用户从托盘重新加载界面");
+                                    }
+                                }
+                                None => log::error!("重新加载界面：显示后仍拿不到主窗口"),
+                            }
+                        } else {
+                            log::warn!("重新加载界面时主窗口不存在，已按重建处理");
+                        }
+                    }
                     "storage_maintenance" => {
                         commands::request_storage_navigation(tray_app.app_handle(), &tray_state);
                         show_or_create_main_window(tray_app.app_handle());
@@ -960,6 +989,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
+            // 界面异常上报：release 没有 devtools，前端报错只能靠这条通道进日志。
+            commands::report_ui_error,
             // 前端主动推桌面通知（终端 OSC 7501 的 blocked）。受 notify_task_complete 开关控制。
             commands::notify_desktop,
             commands::get_storage_overview,
@@ -1187,7 +1218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ => {}
         })
-        .build(tauri::generate_context!())?
+        .build(context)?
         .run(|app_handle, event| {
             // 只有 macOS 分支用得上 app_handle，其它平台不能让它变成未使用参数
             // （CI 的 clippy 带 -D warnings）。

@@ -21,6 +21,8 @@ pub mod forward_ownership;
 pub mod ip_watch;
 /// 变更日志（开放能力）：写类工具每改一个文件追加一条 JSONL 记录。
 pub mod journal;
+/// 主程序日志落盘（release 下没有控制台，日志必须自己写文件）。
+pub mod logging;
 pub mod mcp;
 pub mod network;
 /// 模型中转：上游 Anthropic 请求透传（P0 阶段只有探测骨架）。

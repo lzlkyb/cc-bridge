@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { Icon } from "./ui/icon";
 import { Button } from "./ui/button";
+import { reportUiError } from "../lib/uiErrorReport";
 
 /**
  * 全局错误边界（P0-4）：捕获子组件渲染异常，显示友好占位页而非白屏。
@@ -26,6 +27,8 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error("[ErrorBoundary]", error, info);
+    // release 没有 devtools，这一条是「用户白屏时我们能拿到什么」的唯一来源。
+    reportUiError("ErrorBoundary", error, info.componentStack ?? undefined);
   }
 
   handleRetry = () => {

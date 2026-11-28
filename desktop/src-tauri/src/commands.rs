@@ -71,6 +71,8 @@ mod stable_discovery_cmds;
 mod status;
 mod storage_cmds;
 mod system;
+/// 界面侧异常上报（前端 `onerror` / ErrorBoundary → 主程序日志）。
+mod ui_diag_cmds;
 pub(crate) mod update;
 pub(crate) mod update_cache;
 mod update_policy;
@@ -110,6 +112,7 @@ pub use stable_discovery_cmds::*;
 pub use status::*;
 pub use storage_cmds::*;
 pub use system::*;
+pub use ui_diag_cmds::*;
 pub use update::*;
 pub use update_policy::*;
 pub use update_safety::*;

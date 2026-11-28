@@ -47,6 +47,15 @@ pub fn menu(
             true,
             None::<&str>,
         )?)?;
+        // 「重新加载界面」必须留：它不绕过遮罩（重载后 ForceUpdateGate 会重新盖上），
+        // 但界面若白屏，用户连更新按钮都点不到——去掉这一项等于把人锁死在白屏上。
+        menu.append(&MenuItem::with_id(
+            app,
+            "reload_ui",
+            "重新加载界面",
+            true,
+            None::<&str>,
+        )?)?;
         menu.append(&PredefinedMenuItem::separator(app)?)?;
         menu.append(&MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?)?;
         return Ok(menu);
@@ -57,6 +66,9 @@ pub fn menu(
         menu.append(&MenuItem::with_id(app, id, title, enabled, None::<&str>)?)
     };
     add("show", "打开面板", true)?;
+    // 白屏时不必「退出再打开」：重建 webview 就够，后端（PTY / MCP / 隧道）全程不动。
+    // 放在第二项——它是应急入口，不该埋在菜单底部找不着。
+    add("reload_ui", "重新加载界面", true)?;
     add("storage_maintenance", "存储与维护", true)?;
     if let Some(current) = current {
         add(
